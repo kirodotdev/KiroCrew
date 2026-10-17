@@ -904,7 +904,14 @@ def test_an_unattended_stream_claims_nothing():
 
 
 def test_the_dashboard_runner_allocates_at_the_turns_priority():
-    tree = ast.parse((_SRC / "dashboard/chat_runner.py").read_text(encoding="utf-8"))
+    runner = _SRC / "dashboard/chat_runner.py"
+    tree = ast.parse(
+        "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+            if turn_file.name != "__init__.py"
+        )
+    )
     run_chat = next(
         n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_chat"
     )
@@ -926,15 +933,24 @@ def test_the_dashboard_runner_allocates_at_the_turns_priority():
 @pytest.mark.parametrize(
     ("path", "function"),
     [
-        ("dashboard/chat_handlers.py", "api_chat_slot_create"),
-        ("dashboard/chat_handlers.py", "api_chat_slot_agent"),
-        ("dashboard/chat_handlers.py", "api_chat_slot_project"),
+        ("dashboard/chat_api/slot_create.py", "api_chat_slot_create"),
+        ("dashboard/chat_api/session_relaunch.py", "api_chat_slot_project"),
     ],
 )
 def test_an_owner_slot_action_arms_its_eager_spawn_by_who_asked(path, function):
     assert _priority_args(path, function, "schedule_eager_spawn") == [
         "owner_start_priority(request)"
     ]
+
+
+def test_the_agent_switch_arms_its_eager_spawn_by_who_asked():
+    # The agent route's transaction lives in ``switch_slot_agent`` (the in-turn
+    # ``/agent <name>`` command shares it), so it reads the caller's owner bit
+    # rather than a request. The route derives that bit from the same owner gate
+    # ``owner_start_priority`` reads; a turn's command never claims it.
+    assert _priority_args(
+        "dashboard/chat_api/agent_switch.py", "switch_slot_agent", "schedule_eager_spawn"
+    ) == ["person_priority(caller.owner)"]
 
 
 class _Request(dict):
@@ -963,7 +979,7 @@ def test_a_slot_action_arms_its_eager_spawn_by_who_asked(request_fields, expecte
     ("path", "function"),
     [
         ("dashboard/ws.py", "_handle_slot_focused"),
-        ("dashboard/chat_handlers.py", "reload_slot_session"),
+        ("dashboard/chat_api/session_relaunch.py", "reload_slot_session"),
     ],
 )
 def test_the_focus_prefetch_and_reload_arm_background_eager_spawns(path, function):
@@ -971,9 +987,11 @@ def test_the_focus_prefetch_and_reload_arm_background_eager_spawns(path, functio
     assert _priority_args(path, function, "schedule_eager_spawn") == []
 
 
-def test_drive_turn_starts_the_session_at_the_turns_priority():
-    assert _priority_args("messaging/dispatch.py", "drive_turn", "get_or_create") == [
-        "turn.start_priority"
+def test_the_channel_pipeline_starts_the_session_at_the_askers_priority():
+    # Both claims: a monitor wake's non-waiting one and an inbound turn's.
+    assert _priority_args("messaging/dispatch.py", "_run", "get_or_create") == [
+        "asker.start_priority",
+        "asker.start_priority",
     ]
 
 
@@ -1018,8 +1036,8 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
         ("weixin/transport_dispatch.py", "ChannelTurn", 1),
         ("wecom/transport_dispatch.py", "ChannelTurn", 1),
         ("whatsapp/transport_dispatch.py", "ChannelTurn", 1),
-        ("discord/transport_dispatch.py", "get_or_create", 2),
-        ("telegram/transport_dispatch.py", "get_or_create", 1),
+        ("discord/transport_dispatch.py", "Asker", 1),
+        ("telegram/dispatch/turn_engine.py", "get_or_create", 1),
     ],
 )
 def test_a_channel_dispatcher_starts_a_turn_at_the_inbounds_origin(path, callee, count):
@@ -1043,7 +1061,13 @@ def test_slack_automation_paths_name_no_priority():
     """The gateway's own Slack wakes (auto-nudge, monitor) and its completion
     injections take the BACKGROUND default; only the event and interaction paths,
     which carry a person's message, claim one."""
-    source = (_SRC / "slack/gateway.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            _SRC / "slack/gateway.py",
+            *sorted((_SRC / "slack/gateway_runtime").glob("*.py")),
+        )
+    )
     assert "start_priority" not in source
     events = (_SRC / "slack/events.py").read_text(encoding="utf-8")
     assert events.count("start_priority=person_priority(not ") == 4
@@ -1098,13 +1122,12 @@ def test_the_background_respawn_and_the_provider_path_take_the_same_priority():
         and n.func.value.id == "replacement"
     ]
     assert spawns == [["start_priority"], ["start_priority"]]
-    # The implementation, not the Protocol stub of the same name.
+    # The body that takes the cold-start permit, behind the single-flight
+    # wrapper ``_ensure_background``.
     ensure = next(
         n
         for n in ast.walk(tree)
-        if isinstance(n, ast.AsyncFunctionDef)
-        and n.name == "_ensure_background"
-        and "_start_sem" in ast.unparse(n)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_ensure_background_single"
     )
     acquires = [
         ast.unparse(a)
@@ -1189,3 +1212,57 @@ def test_a_recovery_respawn_starts_with_an_empty_queue_total():
     assert reset_fields and all(
         queue_total and mark for queue_total, mark in reset_fields
     ), "every site that (re)stamps _exec_started must clear the paused-clock fields"
+
+
+# --------------------------------------------------------------------------- #
+# widen_to: a bound sized after it was built
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_widen_to_hands_the_new_permits_to_queued_waiters() -> None:
+    sem = PrioritySemaphore(2, foreground_reserve=1)
+    await sem.acquire(StartPriority.BACKGROUND)
+    queued = [asyncio.ensure_future(sem.acquire(StartPriority.BACKGROUND)) for _ in range(3)]
+    await asyncio.sleep(0)
+    assert not any(t.done() for t in queued)  # background cap is 1
+
+    sem.widen_to(4)
+    await asyncio.sleep(0)
+
+    assert sum(t.done() for t in queued) == 2
+    assert sem.limit == 4
+    assert sem._background_cap == 3  # the reserve is still one permit
+    assert sem.locked(StartPriority.BACKGROUND)
+    assert not sem.locked(StartPriority.FOREGROUND)
+    for t in queued:
+        t.cancel()
+    await asyncio.gather(*queued, return_exceptions=True)
+
+
+def test_widen_to_never_shrinks() -> None:
+    sem = PrioritySemaphore(5)
+    sem.widen_to(3)
+    sem.widen_to(5)
+    assert sem.limit == 5
+    assert sem._value == 5
+
+
+@pytest.mark.asyncio
+async def test_a_pending_drain_waits_for_the_widened_total() -> None:
+    sem = PrioritySemaphore(2)
+    await sem.acquire(StartPriority.BACKGROUND)
+    entered = asyncio.Event()
+    leave = asyncio.Event()
+    task = asyncio.ensure_future(_drain_until(sem, entered, leave))
+    await asyncio.sleep(0)
+    sem.widen_to(4)
+    await asyncio.sleep(0)
+    assert not entered.is_set()  # the holder is still inside
+    assert sem._drain_held == 3
+    sem.release(StartPriority.BACKGROUND)
+    await asyncio.wait_for(entered.wait(), 5)
+    assert sem._drain_held == 4
+    leave.set()
+    await asyncio.wait_for(task, 5)
+    assert sem._value == 4

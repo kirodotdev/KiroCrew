@@ -13,91 +13,24 @@ conventions around them (a11y, data fetching, typography) live in
 
 ### Dashboard in chat and Crew
 
-Long-run status uses the existing side-panel dock, expansion and narrow-screen
-overlay, not another drawer. In chat, a dock above the composer, in the
-composer's own column (`--mc-input-width`), shows three tiles: progress (done/total
-with a plan, else "N running"), blocked
-and Needs you. Each tile is a disclosure button for the short list beneath it (a
-second click closes it), and the row wraps in a narrow column; beside the tiles
-sit two actions, open the **Dashboard** tab (a labelled "Open Dashboard" button) and
-hide. Hidden, the dock is one pill at the row's end. It carries the hide glyph,
-or a red count while something needs the user (`mc-task-dashboard-hidden`, per
-browser); the dock is one element in both forms. It is removed once every run rests,
-no request waits and the plan is complete. Crew reuses its single permanent **Dashboard** tab instead: its compact
-entrance focuses that tab, and its + menu withholds the parallel chat view.
-The existing member publication and task artifacts share a Published view selector, with
-human-readable titles, while retaining their separate renderer sandboxes. A
-pipeline board is one publication, not another product. Visited Crew dashboards
-stay mounted across Notes/Work log switches and panel hiding; a pending member
-thread revalidation hides controls without discarding the last confirmed body.
-The task
-page itself is model-authored HTML and may choose any appropriate responsive
-layout. Host chrome owns scope, current activity, questions and one-shot tool
-approvals. Keep native answer drafts mounted when hiding the panel or switching
-tabs, but unload model-authored iframe documents while inactive to cap resources.
-This does not change the existing Crew protected-template renderer's lifecycle.
-Approval counts and exact session identity stay outside the
-sandboxed page, so a model redesign cannot hide or impersonate those controls.
-The panel keeps its approval count on the Approvals tab; the dock's Needs you
-tile and its hidden pill carry the same count.
+The task dashboard, the **All Dashboards** page (`/session-dashboards`) and the
+automatic session cards are specified in
+[artifacts](../../docs/system-specs/modules/artifacts.md#dynamic-dashboard-presentation):
+the iframe and live-inventory caps, the automatic-card CSS
+restrictions, and the **Needs you** inbox with its native answer and approval
+controls. The layout rules that belong here:
 
-The Sessions header's three-dot menu offers **All Dashboards**, a standalone
-`/session-dashboards` page with currently open sessions' saved summaries and authored
-dashboards. Native pending questions and approvals appear in a central **Needs
-you** inbox above the summary gallery, with each request labeled by its exact
-session. Approval headings name the requested action, with the secondary session
-name explicitly labeled “From session”. Both the fleet inbox and task panel show
-recorded session context when available, never an invented approval reason.
-Dashboard questions use “Send answer”;
-the shared chat control retains its default label. Unverified requests explain
-that this view cannot verify the request and offer
-Open session, without in-page approval or submission guidance. Native approvals
-carry the host permission-row identity bound to the current request, not just a
-reusable connection ID. Replacements get separate card keys and cannot inherit
-a previous card's submitted or expired state. Snapshots missing this identity
-use the same Open session fallback. Verified approvals
-share a per-request rejection explanation without changing permission mode.
-Successfully responding resolves the same shared request; other views show the result when
-refreshed, not necessarily immediately.
-Summary cards do not repeat these controls. Unavailable inventory shows
-a stale notice rather than an empty-inbox claim. Input-needed sessions appear
-first in the gallery, then blocked and running ones.
-Search and Needs you filter the cards and inbox without discarding answer drafts.
-The filter and inbox count pending requests, not distinct sessions. The
-current page of at most 12 active summaries reads summary/dashboard contents;
-Next sessions and Previous sessions move between pages. Wrappers remain mounted for
-the bounded live inventory (`MAX_LIVE_SLOTS`, 500), preserving published-view
-selection. There are at most 24 iframe documents, including both frame types.
-Each session can have one automatic status frame and one selected saved view.
-The task panel mounts at most twelve status frames. Needs you precedes status
-cards in both surfaces. The explicit **Automatic cards for all sessions** opt-in
-leads with summaries of recent work and next steps. Secondary copy retains the
-default-off state, background model use and shared attempt limits, including
-failures; merely opening the page never starts generation. Each
-frame shows its successful content publication time, separate from host runtime
-state and inventory read freshness. The model may reuse HTML and update only
-text data; host-native answer and approval controls are never inside the frame.
-Automatic-card CSS is parsed in detached CSSOM, never attached to the host.
-Parsed `content`, `list-style`, `list-style-type`, `quotes` and
-`hyphenate-character` declarations are removed,
-including nested rules and keyframes; custom counter styles and rules that
-cannot be inspected are omitted. Inline styles use the same generated-text
-boundary; native quotation and hyphenation cannot consume model-authored strings.
-Ordinary browser quotation and hyphenation defaults remain available.
-Safe layout styles and literal text bindings remain available. If
-isolated parsing fails, the affected model style is omitted, not passed through.
-Saved published views retain their existing CSS behavior. This is a rendering
-restriction, not a claim that the backend cache contains no encoded text.
-This is an explicit fleet view, never a fallback for an unresolved task scope.
-It uses the standard page header and scroll container, with one column narrow
-and two wide, and never generates a summary merely because the page opened.
-Verify at both 320px and 390px: keep native approval targets at least 44px tall
-and the page free of horizontal overflow. Main labels use meaningful names or
-localized numbered session/task labels; opaque IDs remain routing data, not
-headings. The artifact authoring contract asks models for the same readable,
-phone-friendly treatment without prescribing their layout.
-The Crew entry remains **Dashboard**. The agent-authored publication's collapsed
-and expanded chrome says **published view**, including loading and error states.
+- In chat, the dock sits above the composer, in the composer's own column
+  (`--mc-input-width`), and its tiles wrap in a narrow column. Long-run status reuses
+  the side-panel dock, expansion and narrow-screen overlay, not another drawer.
+- Crew's permanent **Dashboard** tab renders the crewmate's dynamic dashboard
+  (`CrewDashboardTab`) straight into the panel. There is no Command Center, no
+  Published view selector and no in-chat dock opener. Once visited, its body stays mounted across
+  tab-strip switches (Dashboard to Files), so it keeps its scroll and document.
+- The All Dashboards page uses the standard page header and scroll container, with one
+  column narrow and two wide.
+- Verify at both 320px and 390px: native approval targets at least 44px tall and no
+  horizontal overflow on the page.
 
 ### Standard page composition
 
@@ -167,9 +100,8 @@ Which layer yields is not arbitrary:
   vertical would move every card's height.
 - **The layer against the SCREEN EDGE yields more.** A phone bezel is not a drawn
   line, so a gutter narrower than the 24px desktop one reads as intentional rather
-  than cramped. 16px is where that stops being true in the other direction: this
-  was tried at 8px and then at 12px, and 8px read as content pressed against the
-  bezel rather than as a deliberately dense page. 16px keeps most of the width the
+  than cramped. 16px is where that stops being true in the other direction: 8px reads
+  as content pressed against the bezel rather than as a deliberately dense page. 16px keeps most of the width the
   narrow gutter buys while leaving the page visibly inset.
 
 This MATCHES the 16px screen margin that Material, Apple HIG, Fluent, Carbon,
@@ -188,12 +120,11 @@ At 390px the card goes from 342px wide (the 24px gutter) to 358px and its text l
 from 300px to 340px, **+13.3%**; at 320px the card goes from 272px to 288px and the
 text line from 230px to 270px, **+17.4%**. Nothing changes from `md` up.
 
-That is the comparison against the DESKTOP gutter. Against the 8px narrow gutter and
-10px card inset this replaced, the same card is 16px narrower and its text line 12px
-shorter (390px: 374 -> 358 wide, 352 -> 340 of text). Measured, not derived. The 12px
-buys a 16px screen margin on every uncontained surface and one shared left edge; a
-page that would rather have the width should drop the `Card`, not re-cut the gutter.
-Both sets of figures follow
+That is the comparison against the DESKTOP gutter. Against an 8px narrow gutter with a
+10px card inset, the same card is 16px narrower and its text line 12px shorter (390px:
+374 -> 358 wide, 352 -> 340 of text). Those 12px buy a 16px screen margin on every
+uncontained surface and one shared left edge; a page that would rather have the width
+should drop the `Card`, not re-cut the gutter. Both sets of figures follow
 from the box arithmetic -- viewport minus two gutters, then minus two 1px borders and
 two card insets -- and the text-line figures subtract the borders because a border is
 opaque to text the same way padding is.
@@ -211,47 +142,36 @@ differ:
 | **content column** — `PageHeader`, page rows, `Card` boxes | **16px** | the page gutter, `px-4` |
 | `Card` body text | 25px | 16 + 1px border + the `Card`'s own 8 |
 | top bar icon BOX (chrome) | 16px | header `pl-2` (8) + each icon button's own 8 |
-| top bar hamburger INK | 16px | that 16px box, less a 2.5px optical correction, plus `Menu`'s own 2.5px of empty box |
+| top bar nav mark | 16px | the square product logo (`w-6 h-6`, `object-contain`) in that 16px box; the `Menu` fallback shares the same `w-6` box |
 
 The title shares the container's 16px so it sits directly above the left edge of the
 cards and rows it labels. That is the rule, and it is what decides the number: the
-title follows its CONTENT, never the chrome above it. An earlier round tried the
-opposite — moving the header out to meet the top bar — and it read worse, because the
-title then sat inside the very cards beneath it.
+title follows its CONTENT, never the chrome above it. Moving the header out to meet
+the top bar instead reads worse, because the title then sits inside the very cards
+beneath it.
 
 At 16px the chrome happens to land on the same line, and that is a consequence rather
 than the reason. The top bar's icon BOXES are header inset plus each icon button's own
-8px, so an 8px header inset puts them at 16px: the hamburger, the page title, the
+8px, so an 8px header inset puts them at 16px: the nav mark, the page title, the
 chat session-list toggle and every card's left edge become one vertical line. Only the
 LEFT cluster is tuned this way — `.tb-right` carries a padding/negative-margin pair
 that keeps the notification badge's 4px overhang from being clipped, and re-tuning it
 needs a real WebKit check rather than a local one. Two things make this line easy to
-break silently: a mobile-only `px-2` on the left cluster once stacked on the header's
-own inset and pushed the hamburger out past the page's own edge, and the glyph position
+break silently: a mobile-only `px-2` on the left cluster stacks on the header's own
+inset and pushes the nav mark out past the page's own edge, and the glyph position
 is never the container's `className` — measure the rendered glyph with
 `getBoundingClientRect`, not the class.
 
-**A correctly placed box does not mean a correctly placed glyph.** An icon's artwork
-need not fill its own viewBox, and the eye sees the INK, not the box. `Menu` is the one
-icon here that does not fill it: lucide draws its three rules from `x=4` in a 24-unit
-viewBox and the round cap reaches half a stroke further, leaving 3 units — at `size={20}`
-that is 3 × 20/24 = **2.5px** — empty on the left. Measured at 390px, its box sat
-correctly at 16px while the visible glyph drew at 18.5px, reading as indented against a
-card border directly beneath it. It carries a `-translate-x-[2.5px]` correction so the
-ink lands at 16px; a transform rather than a margin, so the box, the hit target and the
-hover pill all stay on the 8px grid and no sibling in the cluster shifts.
-
-The correction is per-icon and most icons need none — the chat session-list toggle's
-`MessageSquare` starts at `x=2`, i.e. 0.67px at `size={16}`, which is already on the
-line. Do not generalise this into one shared offset. Note also what the correction
-trades: ink now agrees with hard edges (a card border, a divider) and sits ~2px left of
-the page TITLE's ink, because text carries its own left side bearing — 2px for `N` at
-24px bold. Two things cannot both be true at once, and hard edges won: a border is a
-crisp line the eye measures against, while a letter's bearing varies per glyph and per
-platform font.
+**The nav mark needs no optical correction.** It is the square product logo
+(`w-6 h-6`, `object-contain`, the same asset and treatment as the wide shell) in a `p-2`
+button over the bar's `pl-2`, so its ink lands on the 16px page gutter the title and
+every card's left edge sit on, and the button box is 24 + 16 = 40px for the tap target.
+Until the logo's own `load` event, `MobileNavGlyph` shows the `Menu` hamburger in the
+same `w-6` box, with no translate. `src/test/narrowFirstBaseline.test.ts` re-derives the
+sum.
 
 Chat is on this line too, not beside it: the transcript's message row and the composer
-are `px-4` with no responsive variant. So the hamburger glyph, the page title, a page
+are `px-4` with no responsive variant. So the nav mark, the page title, a page
 row, a card's left edge and the agent's own text all start at 16px, and a `Card`'s body
 text is the one thing that steps inside (25px). Chat is where a phone user spends most
 of their time, which is why it is the surface the rest is lined up with rather than the
@@ -303,7 +223,8 @@ arguing with the rule.
 | Page zoom off on touch, and the surfaces that own their own zoom | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
 | The 44px touch-target rule and its two-tier grading | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
 | The drag-widget `touch-action: none` exemption | [narrow-viewport.md](narrow-viewport.md#a-horizontal-drag-on-mobile-belongs-to-the-nav-drawer-unless-a-page-claims-it) |
-| The 16px gutter derivation and the field floor that was not adopted | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
+| The 16px gutter derivation | [The narrow-viewport inset budget](#the-narrow-viewport-inset-budget) (this doc) |
+| The field floor that was not adopted | [narrow-viewport.md](narrow-viewport.md#layout-and-sizing) |
 | The nav-drawer swipe contract and `data-owns-swipe` | [narrow-viewport.md](narrow-viewport.md#a-horizontal-drag-on-mobile-belongs-to-the-nav-drawer-unless-a-page-claims-it) |
 | Binding a panel's gesture live to its offset | [narrow-viewport.md](narrow-viewport.md#a-panel-that-gains-a-gesture-must-be-bound-live-to-its-offset) |
 | Horizontal insets below the breakpoint, and `Card`'s measured budget | [narrow-viewport.md](narrow-viewport.md#horizontal-insets-below-the-breakpoint) |
@@ -324,18 +245,22 @@ per mounted row, the two sentinels at the list ends, and the `offsetBefore` /
 paging bar, a header band) needs nothing extra: the hook measures that leading
 offset itself and carries a bottom-parked reader through it. A host that steers
 toward a row that may not be mounted (the pinned-prompt glide) asks the hook
-through `mountIndex` and `estimateRowTop`. The page keeps `overflow-anchor: auto`
-on the scroller as the browser's own stabiliser. WebKit ships none, so the hook
-carries its own anchors as well.
+through `mountIndex` and `estimateRowTop`. The page declares `overflow-anchor: auto`
+on the scroller as the browser's own stabiliser for a scrolled-up reader; while
+follow is armed the hook sets it to `none` inline, because the bottom pin owns the
+position and Firefox's anchoring would drag the reader off the end
+(`followAnchorMode`). WebKit ships no anchoring, so the hook carries its own
+anchors as well.
 
 The pinned-prompt card is an overlay beside the scroller, not a row in it, and
 it paints above the composer dock, so nothing but geometry bounds it. Its
 ceiling is the transcript FLOOR: the scroller's bottom less the scroller's own
 `padding-bottom`, which is each host's statement of where readable rows stop
 (the main chat pads by the dock's height plus a clearance). `usePinnedPrompt`
-measures that floor off the scroller rather than taking it as a prop, clamps the
-fold's live height to it and hands it to the card as `maxH`, which lands as
-`max-height` on the bubble; the body is a shrinkable flex column so the cap
+measures that floor off the scroller rather than taking it as a prop and hands it
+to the card as `maxH`, which lands as `max-height` on the bubble and bounds the
+card whether it is resting, expanded or peeked. The same ceiling clamps the fold's
+live height, which is reported only while a fold is in progress; the body is a shrinkable flex column so the cap
 scrolls the prompt instead of clipping it. A host that moves its floor (a dock
 that grows a status bar) only has to keep its `padding-bottom` honest. A prompt
 whose part still below the band is taller than the resting card is not pinned
@@ -372,19 +297,72 @@ position, and the scroller pays for the covered strip with its `padding-bottom`
 holds a bar and whether or not the jump-to-bottom pill is showing; the pill
 floats over the transcript. Do not make the scroller's box end above the dock,
 reserve the dock's height with a margin, or otherwise clip the transcript so that
-"no text is read through glass": [#15820](https://github.com/kirodotdev/KiroCrew/pull/15820)
-did exactly that and its transcript half was reverted on the maintainer's
-decision. Legibility of what sits over the transcript is the glass recipe's job
+"no text is read through glass": that is a maintainer decision against clipping the
+transcript. Legibility of what sits over the transcript is the glass recipe's job
 (blur and tint), never the scroller's.
 
 The welcome hero (`key="welcome-hero"`) is the one box that ENDS above the dock
-(`marginBottom: dockH`, never padding under it): its suggestion cards and the
-Refresh link are controls, and a control under the glass is an ambiguous tap.
+(`marginBottom: dockH`, never padding under it): its suggestion cards are
+controls, and a control under the glass is an ambiguous tap. A failed suggestion
+fetch shows an `ErrorNotice` there instead.
 It is `isolate` so WelcomeView's own z-indexes order its cards against each other
 and never against the composer's, and its column uses `safe center` and compact
-rows under 600px tall so a short window still fits both rows and the link above
-the dock (this is #15820's hero half, kept). The side-panel `ChatPane.tsx` keeps
-its bars in flow and needs none of this.
+rows under 600px tall so a short window still fits both rows above the dock.
+
+`ChatPane.tsx` (split panes and a crewmate's chat) floats its composer the same
+way: one dock root (`composer-dock-root`) over the scroller's bottom edge holding
+the jump pill, the bars, the queue, the question card, the notices and the
+composer, measured by the same `useComposerDockMetrics` and paid for by the same
+`DOCK_CLEARANCE_PX` (`pages/chat/composerDockMetrics.ts`, shared by both hosts).
+The pane has no welcome hero, so nothing in it ends above the dock.
+
+The same reading applies at the TOP of a chat that a host crowns with a glass
+chip: the Members page's DM header (the Glass identity pill, the switcher, the
+panel opener) floats over the pane's top edge and the conversation scrolls under
+it (#18325). `ChatPane` takes the band's measured height as `topInset` and pads
+its scroller's rows below it (a crewmate's chat draws no pinned-prompt band,
+#18346, so the inset is the only thing it pays); the host measures the header
+with `useMeasuredHeight`, never a constant. Anything with controls that sits between such a header and the pane
+(a notice, a greeting card) stays in flow, padded below the header, and the pane
+then takes no inset: a control under the glass is an ambiguous tap. The row and
+its cells pass pointer events through; only the controls catch them. Details:
+[crew-mode](../../docs/system-specs/modules/crew-mode.md#crewmate-conversation-layout-switcher-profile-dashboard-files).
+
+### Crewmate conversation sends and runtime detail
+
+A `ChatPane` with `crewmate` always uses the `responsive` composer mode:
+one normal Send arrow for idle, busy, delegated and stopping states. Enter,
+click, voice auto-submit and direct question answers use the existing send
+transport with an optional top-level `responsive: true` in
+`POST /api/chat?ws=1`. The gateway validates a human on a real member DM and
+owns prioritization; the frontend neither sends stop nor chooses a model.
+Other panes and Sessions retain their existing Steer/Queue controls and wire.
+
+The same attachment/quote/paste serializer, send-id correlation, draft recovery,
+and measured composer dock remain in use. A responsive optimistic bubble is
+marked locally with `responsiveSend` so an exact-id steer echo can reconcile it
+and buffered streaming text stays above it. A refused send restores the draft;
+a late receipt leaves a visible delivery-pending bubble. If the server really
+queues a send, the existing cancellable queue remains visible rather than
+losing the message. No system-delivery or subagent-progress bar is drawn.
+
+Cold pane mounts hydrate the slot-detail `queue` alongside `messages` through
+the shared queue normalizer and bubble hydrator, retaining the exact send id,
+attachments and quote. The first hydrate fills missing queue cards without
+replacing newer live cards; pop/cancel ids observed before it prevent a stale
+snapshot from resurrecting completed entries, even if no message array existed
+when the frame arrived. A bounded-to-unbounded history upgrade keeps the current
+queue rather than replaying its fetched queue snapshot. Active-slot hydration
+remains owned by Sessions' existing switch/refresh path.
+
+The crewmate transcript filters runtime notices and stop events as well as
+tools, reasoning and injected subagent rows, without changing stored history.
+Historical steer/requeue/decision metadata draws an ordinary user bubble.
+Errors, pending approvals, questions, files and OAuth actions remain accessible.
+The existing footer is the simple working indicator, not a tool-purpose timeline;
+the detailed Sessions view and its normal engineering UI remain available through
+the profile's session links. Narrow screens keep the same width-adaptive composer,
+attachment holds, IME/Enter handling and keyboard-preserving send control.
 
 ## Stat cards
 
@@ -457,7 +435,11 @@ Inline within a `Card`, built from the shared primitives:
     list a user would want to filter (timezones, file lists). Radix Popover plus
     a filter box.
   - `DropdownMenu` (`components/ui/dropdown-menu.tsx`) for a menu of *commands*
-    rather than a bound value.
+    rather than a bound value. It is non-modal by default on touch devices (a modal
+    menu would swallow the first tap outside it), modal with a mouse, and an explicit
+    `modal` prop wins on every device. An open modal menu closes when a file drag from
+    outside the page enters the window (`useCloseOnFileDrag`), so the composer's drop
+    zone can receive the drop.
   - `AgentSelector` for agent dropdowns specifically (portal-based, ARIA-wired).
 
   These render a `<button>`, not a `<select>`, so an external

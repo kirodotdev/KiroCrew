@@ -7,6 +7,8 @@ isolation and against the real code path it is meant to guard.
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 
 import pytest
 from windows_sim import (
@@ -16,7 +18,9 @@ from windows_sim import (
     nonatomic_write,
     open_sharing_violation,
     read_sharing_violation,
+    readonly_unlink_refused,
     replace_sharing_violation,
+    same_tick_file_stat,
     unlink_sharing_violation,
     windows_text_mode_write,
 )
@@ -232,6 +236,55 @@ class TestUnlinkSharingViolation:
         assert not f.exists()
 
 
+class TestReadonlyUnlinkRefused:
+    @staticmethod
+    def _read_only_tree(tmp_path):
+        tree = tmp_path / "checkout"
+        pack = tree / ".git" / "objects" / "pack"
+        pack.mkdir(parents=True)
+        blob = pack / "pack-0123456789abcdef0123456789abcdef01234567.pack"
+        blob.write_bytes(b"PACK")
+        os.chmod(blob, stat.S_IREAD)
+        return tree, blob
+
+    def test_a_read_only_file_cannot_be_unlinked(self, tmp_path):
+        _tree, blob = self._read_only_tree(tmp_path)
+        with readonly_unlink_refused() as state:
+            with pytest.raises(PermissionError):
+                os.unlink(blob)
+            assert blob.exists()
+        assert state["refused"] == [str(blob)]
+
+    def test_clearing_the_bit_lets_the_delete_through(self, tmp_path):
+        _tree, blob = self._read_only_tree(tmp_path)
+        with readonly_unlink_refused():
+            os.chmod(blob, stat.S_IREAD | stat.S_IWRITE)
+            os.unlink(blob)
+        assert not blob.exists()
+
+    def test_a_writable_file_is_unaffected(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.write_bytes(b"x")
+        with readonly_unlink_refused() as state:
+            plain.unlink()
+        assert not plain.exists()
+        assert state["refused"] == []
+
+    def test_ignore_errors_leaves_the_tree_behind(self, tmp_path):
+        tree, blob = self._read_only_tree(tmp_path)
+        with readonly_unlink_refused():
+            shutil.rmtree(tree, ignore_errors=True)
+        assert blob.exists()
+
+    def test_is_posix_is_restored_on_exit(self):
+        from kiro_crew import platform_compat
+
+        before = platform_compat.IS_POSIX
+        with readonly_unlink_refused():
+            assert platform_compat.IS_POSIX is False
+        assert platform_compat.IS_POSIX is before
+
+
 class TestNonatomicWrite:
     def test_empty_during_block_full_after(self, tmp_path):
         cred = tmp_path / "cred"  # does not exist yet
@@ -299,3 +352,35 @@ class TestWindowsTextModeWrite:
             finally:
                 os.close(fd)
         assert n == len(self._PAYLOAD)
+
+
+class TestSameTickFileStat:
+    def test_timestamps_pin_while_size_stays_live(self, tmp_path):
+        p = tmp_path / "t.jsonl"
+        p.write_text("a\n", encoding="utf-8", newline="\n")
+        with same_tick_file_stat(match="t.jsonl") as seen:
+            first = p.stat()
+            os.utime(p, ns=(first.st_mtime_ns + 5_000_000_000,) * 2)
+            p.write_text("a\nbb\n", encoding="utf-8", newline="\n")
+            second = p.stat()
+            assert (second.st_mtime_ns, second.st_ctime_ns) == (
+                first.st_mtime_ns,
+                first.st_ctime_ns,
+            )
+            assert second.st_mtime == first.st_mtime  # the float view pins with the ns one
+            assert second.st_size == len("a\nbb\n") > first.st_size
+            assert second.st_ino == first.st_ino
+            assert seen["n"] == 2
+            os.utime(p, ns=(first.st_mtime_ns + 7_000_000_000,) * 2)
+        assert (
+            p.stat().st_mtime_ns == first.st_mtime_ns + 7_000_000_000
+        ), "the pin outlived the block"
+
+    def test_non_matching_path_unaffected(self, tmp_path):
+        other = tmp_path / "other.txt"
+        other.write_text("x")
+        with same_tick_file_stat(match="t.jsonl") as seen:
+            before = other.stat().st_mtime_ns
+            os.utime(other, ns=(before + 5_000_000_000,) * 2)
+            assert other.stat().st_mtime_ns == before + 5_000_000_000
+            assert seen["n"] == 0

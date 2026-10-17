@@ -6,7 +6,7 @@ import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../hooks/useGlobalHotkey'
 import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortcut'
-import { PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
+import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
@@ -260,10 +260,12 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'session-panel': 'hooks.useKeyboardShortcuts.toggle_session_panel',
   'side-panel': 'hooks.useKeyboardShortcuts.toggle_side_panel',
   'terminal': 'hooks.useKeyboardShortcuts.toggle_terminal',
+  // Reuses the terminal panel's own "+" button label, so every locale already has it.
+  'terminal-new': 'components.bottomTerminalPanel.new_terminal',
 }
 
 /**
- * Read-only reference rows for the three user-rebindable panel toggles. Their
+ * Read-only reference rows for the user-rebindable panel toggles. Their
  * bindings live outside DEFAULT_SHORTCUTS (they are user-configurable and may be
  * unbound), so the caps reflect the live binding — or a muted "not set" when the
  * user has cleared it. Editing happens in Settings → Shortcuts.
@@ -380,7 +382,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
   }, [normalizedQuery, queryWithoutPlus, quickSearchConfig])
 
   const matchingPanelToggleIds = useMemo(() => {
-    const activeIds = PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled)
+    const activeIds = PANEL_TOGGLE_IDS.filter(id => !TERMINAL_PANEL_TOGGLE_IDS.has(id) || terminalEnabled)
     if (!normalizedQuery) return activeIds
     const sectionName = i18nT('components.shortcutsModal.panel_toggles').toLowerCase()
     if (matchesQuery(sectionName, normalizedQuery, queryWithoutPlus)) return activeIds

@@ -4,7 +4,7 @@
 # from the seeded ones on screen.
 #
 # The seeded sidebar is not a flat list: a "Demos" folder (with a collapsed
-# "Dormant sessions" row inside it) sits above the ungrouped rows and a link to
+# "1 dormant session hidden" row inside it) sits above the ungrouped rows and a link to
 # older sessions closes the list, so a total is ambiguous to a tester. The steps
 # therefore anchor on the titles of the ungrouped rows, never on a count.
 name: sessions-new-chat
@@ -19,7 +19,7 @@ preconditions:
   seed: rich
   start_url: /
 steps:
-  - You are on the chat page. In the left sidebar, note the titles of the session rows listed outside the "Demos" folder. Ignore the folder itself, anything inside it (including a "Dormant sessions" row) and the link to older sessions at the bottom.
+  - You are on the chat page. In the left sidebar, note the titles of the session rows listed outside the "Demos" folder. Ignore the folder itself, anything inside it (including a "Show 1 sleeping session" row) and the link to older sessions at the bottom.
   - Use the sidebar's control for starting a new chat (a "New chat" button or a plus icon near the top of the sidebar).
   - In the new session's message box type exactly "hello from the gui test" and send it with Enter.
   - Wait about two seconds for the reply to arrive.

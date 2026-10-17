@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight } from 'lucide-react'
+import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight, Star } from 'lucide-react'
 import { useAppDispatch } from '../../store'
 import { createSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
+import { defaultAgentQuery, type DefaultAgentReadout } from '../../api/defaultAgentQuery'
 import { Btn, Badge, SearchInput, EmptyState, PanelSectionHeader } from '../../components/ui'
 import Modal from '../../components/Modal'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
@@ -16,7 +17,8 @@ import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
+import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
 import { templateSourceKind } from '../../lib/templateSource'
 import { i18nT } from '../../i18n/t'
@@ -38,6 +40,11 @@ export interface TemplateRow {
   forked_from: string
   private_to: string
   read_only: 'package' | 'runtime' | 'markdown' | 'private_copy' | null
+  /** Whether the default-template picker may offer this row: not a crewmate's
+   *  private copy, not a background-only runtime spec, not an app's agent.
+   *  Independent of `read_only` -- a package template cannot be edited here
+   *  but every session start can reach it. */
+  default_eligible: boolean
   used_by: TemplateReference[]
 }
 
@@ -113,6 +120,9 @@ const changedKeys = (d: Draft, base: Draft): Record<string, unknown> => {
  *  here; the other three each say why a row is read-only. */
 type GroupKey = 'custom' | 'private' | 'package' | 'builtin'
 const GROUP_ORDER: GroupKey[] = ['custom', 'private', 'package', 'builtin']
+// Long enough to be read after the select closes, short enough that a stale
+// "Saved" never sits beside a later, unrelated state of the bar.
+const DEFAULT_TEMPLATE_SAVED_MS = 2500
 
 const readOnlyHint = (reason: TemplateRow['read_only']): string => {
   switch (reason) {
@@ -159,13 +169,39 @@ const READ_ONLY_LEAD_KEY = {
 /** kiro-cli's built-in tool names, offered as completions in the Add tool input. */
 const NATIVE_TOOL_NAMES = ['fs_read', 'fs_write', 'execute_bash', 'use_aws', 'grep', 'glob', 'web_fetch', 'web_search', 'knowledge', 'thinking'] as const
 
+/**
+ * Kiro Crew's background-subagent tools, offered as completions too. Adding one
+ * grants it and the save declares the server, so a custom agent gets the same
+ * session-attached spawn (task box, Stop, explicit `agent` / `crew`) as the
+ * built-in agent without a hand-edited spec.
+ */
+const CREW_CORE_SERVER = 'kirocrew-core'
+const CREW_SPAWN_TOOL_NAMES = ['spawn_run', 'spawn_list', 'spawn_status', 'spawn_steer', 'spawn_continue', 'spawn_release'] as const
+const CREW_CORE_REF = `@${CREW_CORE_SERVER}`
+const CREW_SPAWN_TOOL_REFS: readonly string[] = CREW_SPAWN_TOOL_NAMES.map(name => `${CREW_CORE_REF}/${name}`)
+/** The family as one label, the tooltip of the one-click button that adds it. */
+const CREW_SPAWN_FAMILY_LABEL = `${CREW_CORE_REF}/spawn_*`
+
+/**
+ * The spawn refs a template's tools still lack, or none when it already gets
+ * the whole family: `@kirocrew-core` grants it, and so does `*` once the spec
+ * declares the server (`*` grants every DECLARED server and declares none).
+ * `*` with the server undeclared mounts nothing, so the family is offered
+ * there too; the save then declares the server for the explicit refs.
+ */
+const missingSpawnRefs = (tools: readonly string[], coreDeclared: boolean): string[] => {
+  if (tools.includes(CREW_CORE_REF) || (tools.includes('*') && coreDeclared)) return []
+  return CREW_SPAWN_TOOL_REFS.filter(ref => !tools.includes(ref))
+}
+
 const referenceHref = (ref: TemplateReference): string | null => {
   switch (ref.kind) {
     case 'crew': return `/members?member=${encodeURIComponent(ref.id)}`
     case 'schedule': return '/schedule'
     case 'folder': return '/chat'
     case 'webhook': return '/webhooks'
-    case 'default': return '/capabilities?tab=crews'
+    // Changed in the bar above this very list, so there is nowhere to drill.
+    case 'default': return null
     // `label` is the crew the copy belongs to; its Template pane is where a
     // private copy is edited, reset or published.
     case 'private_copy': return ref.label ? `/members?member=${encodeURIComponent(ref.label)}` : null
@@ -436,7 +472,7 @@ export default function AgentTemplatesTab() {
     },
   })
   const enroll = useMutation({
-    mutationFn: (row: TemplateRow) => api.createKirocrewAgent({ name: row.name, kiro_agent: row.name, memory_store: 'default' }),
+    mutationFn: (row: TemplateRow) => api.createKirocrewAgent({ name: row.name, kiro_agent: row.name, memory_store: 'default', avatar: defaultLookFor(row.name) }),
     onSuccess: (r: { error?: string }, row) => {
       if (r?.error) { setNotice({ kind: 'err', text: r.error }); return }
       setNotice({ kind: 'ok', text: i18nT('pages.overview.agentTemplatesTab.enrolled', { name: row.name }) })
@@ -458,6 +494,77 @@ export default function AgentTemplatesTab() {
     },
     onError: writeError,
   })
+
+  // The template a session runs when NOTHING names one: a plain chat, a CLI
+  // chat, a warm-pool process, an agent-less schedule. A crewmate's DM thread
+  // never reads it (the crewmate carries its own template). Distinct from the
+  // Crewmates tab's "Default crewmate", although both are written through
+  // `/api/config/default-agent`: `agent_kind: 'template'` says which one.
+  // Read through the shared default-agent query (the ONE cache for that
+  // route), whose `default_template` is the effective name; this consumer
+  // also needs `overridden` / `override_path`, so it takes the whole readout.
+  const defaultReadout = useQuery(defaultAgentQuery)
+  const pickDefaultTemplate = useMutation({
+    // Every row is sent by its own name, the runtime's built-in template
+    // included. Never "": on this route an empty name writes the default
+    // crewmate, not "follow the runtime default".
+    mutationFn: (name: string) => api.setDefaultAgent(name, 'template'),
+    onSuccess: (_res, name) => {
+      setDefaultPickError('')
+      setDefaultPickSaved(n => n + 1)
+      // The write answers `{ok, default_agent}` with no `default_template`, so seed the
+      // picked name before re-reading: until the refetch lands the select would
+      // otherwise show the previous pick beside "Saved".
+      queryClient.setQueryData<DefaultAgentReadout>(defaultAgentQuery.queryKey, prev => prev && { ...prev, default_template: name })
+      void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey })
+      // The roster's `used_by` carries the "Default template" marker.
+      invalidate()
+    },
+    onError: (e: unknown, pickedName: string) => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      // A refusal means the list the pick came from is stale (the agent became
+      // a private copy, or was deleted, since the roster loaded): re-read it so
+      // the refused name drops out of the picker instead of being offered again.
+      invalidate()
+      // One sentence per refusal code, naming the agent that was picked and the
+      // one new sessions still run: the select snaps back to the latter, so a
+      // bare "this agent" would point at the wrong name.
+      // The file to edit, named by the server when it knows it; the bare file
+      // name otherwise, so the sentence still says where the pin lives.
+      const path = (e instanceof ApiError ? parseErrorField(e.body, 'override_path') : undefined) || defaultReadout.data?.override_path || 'config.local.json'
+      const vars = { name: pickedName, effective: effectiveDefaultTemplate, path }
+      // Unmapped codes (lineage_unverifiable, config_unreadable, an invalid
+      // agent type/kind, anything newer) get the generic sentence.
+      setDefaultPickError(
+        code === 'foreign_private_copy' ? i18nT('pages.overview.agentTemplatesTab.default_template_refused_private_copy', vars)
+          : code === 'default_template_background_only' ? i18nT('pages.overview.agentTemplatesTab.default_template_refused_background_only', vars)
+            : code === 'app_registered_template' ? i18nT('pages.overview.agentTemplatesTab.default_template_refused_app', vars)
+              : code === 'default_template_overlaid' ? i18nT('pages.overview.agentTemplatesTab.default_template_refused_overridden', vars)
+                : code === 'default_template_not_installed' || code === 'stale_binding' ? i18nT('pages.overview.agentTemplatesTab.default_template_refused_deleted', vars)
+                  : i18nT('pages.overview.agentTemplatesTab.default_template_failed', vars),
+      )
+    },
+  })
+  // Reported IN the bar, beside the control that was used: the page's shared
+  // notice renders inside the detail pane, which may hold no template yet.
+  const [defaultPickError, setDefaultPickError] = useState('')
+  // A pick writes the moment the select closes, with nothing else on screen
+  // changing when it lands: a brief "Saved" beside the select says the write
+  // went through. A counter, not a flag, so a second pick inside the window
+  // restarts the timer instead of being cut short by the first one's.
+  const [defaultPickSaved, setDefaultPickSaved] = useState(0)
+  useEffect(() => {
+    if (!defaultPickSaved) return
+    const t = setTimeout(() => setDefaultPickSaved(0), DEFAULT_TEMPLATE_SAVED_MS)
+    return () => clearTimeout(t)
+  }, [defaultPickSaved])
+  const defaultTemplateOptions = useMemo(() => rows.filter(r => r.default_eligible).map(r => r.name), [rows])
+  // What actually starts: the route answers the effective name, unset and a
+  // deleted template's fallback already resolved.
+  const effectiveDefaultTemplate = defaultReadout.data?.default_template ?? ''
+  // config.local.json pins the value: every pick would be refused, so the
+  // picker is disabled and says why up front instead of after a failed pick.
+  const defaultTemplatePinned = defaultReadout.data?.overridden === true
 
   const chatWith = async (row: TemplateRow) => {
     // Leaving for the chat unmounts the editor: the same dirty confirm a row
@@ -575,7 +682,9 @@ export default function AgentTemplatesTab() {
               </>
               : i18nT('pages.overview.agentTemplatesTab.runs_as_no_crewmate')}
         </span>
-        {isDefault && drill(firstOf('default'), i18nT('pages.overview.agentTemplatesTab.is_default_agent'))}
+        {/* Hidden while the bar reports a failed read: two readouts of one fact
+            must not disagree on screen. */}
+        {isDefault && !defaultReadout.error && drill(firstOf('default'), i18nT('pages.overview.agentTemplatesTab.is_default_agent'))}
         {count('schedule') > 0
           ? drill(firstOf('schedule'), i18nT('pages.overview.agentTemplatesTab.schedules_count', { count: count('schedule') }))
           : !override && <span>{i18nT('pages.overview.agentTemplatesTab.schedules_count', { count: 0 })}</span>}
@@ -607,11 +716,13 @@ export default function AgentTemplatesTab() {
     })
     : []
   const resources = strList(detailQuery.data?.resources).filter(u => !u.startsWith('skill://'))
+  const spawnRefsToAdd = draft ? missingSpawnRefs(draft.tools, mcpServers.some(([n]) => n === CREW_CORE_SERVER)) : []
   // Offered, not enforced: kiro-cli's native tool names plus whatever this
   // template already grants (an MCP tool is `@server/tool`), so the reader
   // has valid spellings to pick from without the input refusing anything.
   const toolSuggestions = useMemo(() => Array.from(new Set([
     ...NATIVE_TOOL_NAMES,
+    ...CREW_SPAWN_TOOL_REFS,
     ...(draft?.tools ?? []),
     ...(draft?.allowed ?? []),
   ])).sort(), [draft?.tools, draft?.allowed])
@@ -625,6 +736,81 @@ export default function AgentTemplatesTab() {
           to search; the empty state below carries its own New button. A failed
           load renders no empty state, so the toolbar stays for it too --
           otherwise New custom agent would exist nowhere on the tab. */}
+      {/* Option A of #18411: one bar above the list is both the readout and
+          the control, worded as the one fact it governs ("New sessions use").
+          A per-row star as the control was rejected once already -- the same
+          glyph then has to mean "this is the default" and "make this the
+          default"; the row badge below is a readout only. */}
+      {rows.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-lg border border-border bg-bg-accent px-3 py-2" data-testid="default-template-bar">
+          <Star className="lucide-inline text-accent" aria-hidden="true" />
+          <span className="text-[13px]">{i18nT('pages.overview.agentTemplatesTab.default_template_label')}</span>
+          <SimpleSelect
+            options={defaultTemplateOptions}
+            value={effectiveDefaultTemplate}
+            /* A stored name that is no longer installed (or no longer eligible)
+               would otherwise render as the first option -- a stale config
+               reading as a choice. Show the name it actually holds. */
+            triggerFallback={effectiveDefaultTemplate && !defaultTemplateOptions.includes(effectiveDefaultTemplate) ? effectiveDefaultTemplate : undefined}
+            disabled={defaultReadout.isPending || !!defaultReadout.error || defaultTemplatePinned || pickDefaultTemplate.isPending}
+            onChange={next => pickDefaultTemplate.mutate(next)}
+            aria-label={i18nT('pages.overview.agentTemplatesTab.default_template_label')}
+            style={{ width: 220 }}
+          />
+          {/* Text, not a control: the row keeps its two controls. Announced
+              politely so a screen reader hears the write land too. */}
+          {defaultPickSaved > 0 && !defaultPickError && (
+            <span className="text-[12px] text-muted" role="status" data-testid="default-template-saved">
+              {i18nT('pages.overview.agentTemplatesTab.default_template_saved')}
+            </span>
+          )}
+          {/* No hand-off: it navigates to the chat and unmounts this tab, and the
+              template editor's unsaved draft (`draft`, `dirty`) lives in local
+              state -- a hand-off here would throw it away. */}
+          {/* Why a row the list shows is missing from the picker. Only when it
+              is true of this roster, so a plain roster carries no footnote. */}
+          {defaultTemplateOptions.length < rows.length && (
+            <span className="w-full text-[12px] text-muted">{i18nT('pages.overview.agentTemplatesTab.default_template_hidden_rows')}</span>
+          )}
+          {defaultTemplatePinned && (
+            /* The fact first (why the picker is disabled, what still runs),
+               the file second and smaller: the path is where to go, not what
+               the reader needs to know. */
+            <span className="flex w-full flex-col gap-0.5" data-testid="default-template-overridden">
+              <span className="flex items-center gap-1.5 text-[12px] text-text">
+                {/* The same padlock the read-only cards carry: one glyph for
+                    "can't be changed here", wherever it is said. */}
+                <Lock className="lucide-inline shrink-0" aria-hidden="true" />
+                {i18nT('pages.overview.agentTemplatesTab.default_template_overridden_notice', { effective: effectiveDefaultTemplate })}
+              </span>
+              <span className="break-all text-[11px] text-muted" data-testid="default-template-overridden-file">
+                {i18nT('pages.overview.agentTemplatesTab.default_template_overridden_file', {
+                  path: defaultReadout.data?.override_path || 'config.local.json',
+                })}
+              </span>
+            </span>
+          )}
+          <ErrorNotice
+            /* A failed READ is an error too: without it the picker would sit
+               enabled on an empty value, and a pick made against unknown state
+               is one the user could not have judged. */
+            message={defaultPickError || (defaultReadout.error ? i18nT('pages.overview.agentTemplatesTab.default_template_read_failed') : '')}
+            variant="inline"
+            testId="default-template-error"
+            /* A refusal is a one-time report, so the reader can put it away;
+               the read failure has no dismiss because the picker stays
+               disabled until the read lands, and Retry is the way out. */
+            onDismiss={defaultPickError ? () => setDefaultPickError('') : undefined}
+          />
+          {/* ErrorNotice has no action slot, so the read's retry sits beside it
+              in the same row; the picker stays disabled until the read lands. */}
+          {!!defaultReadout.error && !defaultPickError && (
+            <Btn onClick={() => void queryClient.invalidateQueries({ queryKey: defaultAgentQuery.queryKey })} disabled={defaultReadout.isFetching}>
+              {i18nT('pages.overview.agentTemplatesTab.default_template_retry')}
+            </Btn>
+          )}
+        </div>
+      )}
       {(rows.length > 0 || error) && (
         // Narrow-first: below `sm` the search and the primary action stack (a
         // 288px pane cannot hold both on one row without clipping one); from
@@ -819,6 +1005,23 @@ export default function AgentTemplatesTab() {
                           addPlaceholder={i18nT('pages.overview.agentTemplatesTab.add_tool_placeholder')}
                           suggestions={toolSuggestions}
                         />
+                        {!detailReadOnly && spawnRefsToAdd.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
+                            <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.spawn_tool_hint')}</span>
+                            {/* The refs it adds are optional context, so they sit in the
+                                tooltip: code-like text inside a label gives a newcomer a
+                                reason not to click it. */}
+                            <Btn
+                              type="button"
+                              className="inline-flex items-center gap-1.5 border-dashed"
+                              title={CREW_SPAWN_FAMILY_LABEL}
+                              onClick={() => setD({ tools: [...detailDraft.tools, ...spawnRefsToAdd] })}
+                            >
+                              <Plus className="lucide-inline" aria-hidden />
+                              {i18nT('pages.overview.agentTemplatesTab.spawn_tool_add')}
+                            </Btn>
+                          </div>
+                        )}
                       </Section>
                       {editable ? (
                         // The editor renders its own "Skills" heading; wrapping it in a

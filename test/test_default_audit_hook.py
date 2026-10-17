@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -143,3 +144,20 @@ def test_large_concurrent_records_do_not_interleave(tmp_path: Path) -> None:
         assert value == value[0] * size
         seen.add(value[0])
     assert seen == set(payloads)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_the_log_is_created_owner_only_under_a_permissive_umask(tmp_path: Path, mode: str) -> None:
+    """``audit.log`` records every shell command, so it is created ``0600``.
+
+    Both paths: the ``python3`` one passes ``0o600`` to ``os.open``, and the
+    ``printf`` fallback sets ``umask 077`` in the hook's own shell only (that
+    shell runs nothing but the one append, so nothing else inherits it).
+    """
+    bindir = _bin_dir(tmp_path, mode)
+    previous = os.umask(0o022)  # the hook's shell inherits it, like kiro-cli's would
+    try:
+        _run_hook(tmp_path, bindir, '{"tool_input":{"command":"ls"}}\n')
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE((tmp_path / "audit.log").stat().st_mode) == 0o600

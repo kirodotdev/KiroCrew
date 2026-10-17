@@ -1,7 +1,10 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useTheme, type CustomThemeData, CUSTOM_THEMES_CHANGED_EVENT } from '../hooks/useTheme'
 import { Input, Btn } from './ui'
 import { api } from '../api/client'
+import { applyThemeCss, exampleThemeCss, parseThemeCss, refusedLabel, themeVarsToCss } from '../lib/themeCssImport'
+import { themeDesignPrompt } from '../lib/themeDesign.prompt'
+import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
@@ -118,7 +121,31 @@ export function toHex(val: string): string {
   return '#000000'
 }
 
-export type CreatorMode = 'picker' | 'json'
+export type CreatorMode = 'picker' | 'json' | 'css'
+
+type PickerFields = { name: string; emoji: string; dark: Record<string, string>; light: Record<string, string> }
+
+/**
+ * The picker fields a JSON-tab text sets: only those it carries, and none when
+ * it does not parse, so the picker keeps whatever the text leaves out.
+ */
+function themeJsonFields(text: string): Partial<PickerFields> {
+  try {
+    const p = JSON.parse(text)
+    const out: Partial<PickerFields> = {}
+    if (p.name !== undefined) out.name = p.name
+    if (p.emoji !== undefined) out.emoji = p.emoji
+    if (p.dark) out.dark = p.dark
+    if (p.light) out.light = p.light
+    return out
+  } catch { return {} }
+}
+
+/** The JSON-tab text for a picker state; empty when there is nothing to show. */
+function themeJson(name: string, emoji: string, dark: Record<string, string>, light: Record<string, string>): string {
+  if (!name && !Object.keys(dark).length) return ''
+  return JSON.stringify({ name: name || i18nT('components.themeEditor.default_theme_name'), emoji: emoji || '✨', dark, light }, null, 2)
+}
 
 /** Shared theme editor state and actions */
 export function useThemeEditor() {
@@ -132,6 +159,7 @@ export function useThemeEditor() {
   const [darkVars, setDarkVars] = useState<Record<string, string>>({})
   const [lightVars, setLightVars] = useState<Record<string, string>>({})
   const [jsonText, setJsonText] = useState('')
+  const [cssText, setCssText] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -143,11 +171,11 @@ export function useThemeEditor() {
    */
   const fingerprint = (
     name: string, emoji: string,
-    dark: Record<string, string>, light: Record<string, string>, json: string,
+    dark: Record<string, string>, light: Record<string, string>, json: string, css = '',
   ) => {
     const stable = (o: Record<string, string>) =>
       Object.keys(o).sort().map(k => `${k}=${o[k]}`).join('\u0000')
-    return [name, emoji, stable(dark), stable(light), json].join('\u0001')
+    return [name, emoji, stable(dark), stable(light), json, css].join('\u0001')
   }
 
   /**
@@ -158,15 +186,18 @@ export function useThemeEditor() {
    * because it is only ever compared against, never rendered.
    */
   const openedWith = useRef('')
+  /** The name/emoji comments the Paste CSS tab last read; see `changeCss`. */
+  const lastCssMeta = useRef<{ name?: string; emoji?: string }>({})
   const isDirty = useMemo(
-    () => editorOpen && fingerprint(themeName, themeEmoji, darkVars, lightVars, jsonText) !== openedWith.current,
-    [editorOpen, themeName, themeEmoji, darkVars, lightVars, jsonText],
+    () => editorOpen && fingerprint(themeName, themeEmoji, darkVars, lightVars, jsonText, cssText) !== openedWith.current,
+    [editorOpen, themeName, themeEmoji, darkVars, lightVars, jsonText, cssText],
   )
 
   const openNewTheme = () => {
     const current = getCurrentThemeVars()
     setDarkVars({ ...current }); setLightVars({ ...current })
-    setThemeName(''); setThemeEmoji('✨'); setJsonText(''); setError('')
+    setThemeName(''); setThemeEmoji('✨'); setJsonText(''); setCssText(''); setError('')
+    lastCssMeta.current = {}
     setEditingSlug(null); setEditorOpen(true); setCreatorMode('picker')
     openedWith.current = fingerprint('', '✨', current, current, '')
   }
@@ -178,7 +209,8 @@ export function useThemeEditor() {
       const json = JSON.stringify(data, null, 2)
       setThemeName(data.name || ''); setThemeEmoji(data.emoji || '🎨')
       setDarkVars(data.dark || {}); setLightVars(data.light || {})
-      setJsonText(json)
+      setJsonText(json); setCssText('')
+      lastCssMeta.current = {}
       setEditingSlug(slug); setEditorOpen(true); setCreatorMode('picker')
       openedWith.current = fingerprint(data.name || '', data.emoji || '🎨', data.dark || {}, data.light || {}, json)
     } catch {
@@ -186,13 +218,32 @@ export function useThemeEditor() {
       setEditorOpen(true)
       // Nothing was written before the throw (the fetch is awaited first), so
       // the values still on screen ARE what this failed open shows.
-      openedWith.current = fingerprint(themeName, themeEmoji, darkVars, lightVars, jsonText)
+      openedWith.current = fingerprint(themeName, themeEmoji, darkVars, lightVars, jsonText, cssText)
     }
   }
 
   const closeEditor = () => { setEditorOpen(false); setEditingSlug(null); setError('') }
 
+  /** Live parse of the Paste CSS tab, for its summary line and for Save. */
+  const cssImport = useMemo(() => parseThemeCss(cssText), [cssText])
+
+  /**
+   * Paste CSS tab edits. A `name:` / `emoji:` comment fills the matching field
+   * when the comment itself CHANGES, not on every keystroke, so a name the user
+   * retypes after pasting survives later edits to the CSS.
+   */
+  const changeCss = (text: string) => {
+    setCssText(text)
+    const { name, emoji } = parseThemeCss(text)
+    if (name && name !== lastCssMeta.current.name) setThemeName(name)
+    if (emoji && emoji !== lastCssMeta.current.emoji) setThemeEmoji(emoji)
+    lastCssMeta.current = { name, emoji }
+  }
+
   const saveTheme = async () => {
+    // A paste with no theme variable is a hint the Paste CSS summary already
+    // shows inline, not a save failure; Save is disabled in that state too.
+    if (creatorMode === 'css' && !cssImport.recognized) return
     setError(''); setSaving(true)
     try {
       if (creatorMode === 'json') {
@@ -207,8 +258,12 @@ export function useThemeEditor() {
           await addCustomTheme({ name: parsed.name, emoji: parsed.emoji || '✨', dark: parsed.dark, light: parsed.light })
         }
       } else {
+        // The Paste CSS tab shares the picker's name/emoji fields and lays its
+        // declarations over the picker's variables, so both save the same way.
+        let dark = darkVars, light = lightVars
+        if (creatorMode === 'css') ({ dark, light } = applyThemeCss(cssImport, darkVars, lightVars))
         if (!themeName.trim()) throw new Error('Theme name is required.')
-        const payload = { name: themeName.trim(), emoji: themeEmoji.trim() || '✨', dark: darkVars, light: lightVars }
+        const payload = { name: themeName.trim(), emoji: themeEmoji.trim() || '✨', dark, light }
         if (isEditing) {
           await api.updateTheme(editingSlug!, payload)
           await loadCustomThemes(); window.dispatchEvent(new Event(CUSTOM_THEMES_CHANGED_EVENT))
@@ -232,19 +287,32 @@ export function useThemeEditor() {
   }
 
   const syncJsonToPicker = (text: string) => {
-    try {
-      const p = JSON.parse(text)
-      if (p.name !== undefined) setThemeName(p.name)
-      if (p.emoji !== undefined) setThemeEmoji(p.emoji)
-      if (p.dark) setDarkVars(p.dark)
-      if (p.light) setLightVars(p.light)
-    } catch { /* invalid JSON */ }
+    const p = themeJsonFields(text)
+    if (p.name !== undefined) setThemeName(p.name)
+    if (p.emoji !== undefined) setThemeEmoji(p.emoji)
+    if (p.dark) setDarkVars(p.dark)
+    if (p.light) setLightVars(p.light)
   }
 
-  const pickerToJson = useMemo(() => {
-    if (!themeName && !Object.keys(darkVars).length) return ''
-    return JSON.stringify({ name: themeName || 'My Theme', emoji: themeEmoji || '✨', dark: darkVars, light: lightVars }, null, 2)
-  }, [themeName, themeEmoji, darkVars, lightVars])
+  /**
+   * Change tab, carrying the edits made on the tab being left. Computed here in
+   * one pass rather than as "sync, then read state" because a state setter does
+   * not apply until the next render: reading `darkVars` right after syncing the
+   * CSS tab would hand the next tab the values from BEFORE the paste.
+   */
+  const switchMode = (next: CreatorMode) => {
+    if (next === creatorMode) return
+    let name = themeName, emoji = themeEmoji, dark = darkVars, light = lightVars
+    if (creatorMode === 'json') {
+      ({ name, emoji, dark, light } = { name, emoji, dark, light, ...themeJsonFields(jsonText) })
+    } else if (creatorMode === 'css' && cssImport.recognized) {
+      ({ dark, light } = applyThemeCss(cssImport, dark, light))
+    }
+    setThemeName(name); setThemeEmoji(emoji); setDarkVars(dark); setLightVars(light)
+    if (next === 'json') setJsonText(themeJson(name, emoji, dark, light))
+    if (next === 'css') setCssText(themeVarsToCss(dark, light))
+    setCreatorMode(next)
+  }
 
   const updateDarkVar = (key: string, val: string) => setDarkVars(prev => ({ ...prev, [key]: val }))
   const updateLightVar = (key: string, val: string) => setLightVars(prev => ({ ...prev, [key]: val }))
@@ -253,9 +321,9 @@ export function useThemeEditor() {
     editorOpen, isEditing, editingSlug, creatorMode, setCreatorMode, isDirty,
     themeName, setThemeName, themeEmoji, setThemeEmoji,
     darkVars, lightVars, updateDarkVar, updateLightVar,
-    jsonText, setJsonText, saving, error,
+    jsonText, setJsonText, cssText, changeCss, cssImport, saving, error,
     openNewTheme, openEditTheme, closeEditor, saveTheme, handleDelete,
-    syncJsonToPicker, pickerToJson,
+    syncJsonToPicker, switchMode,
   }
 }
 
@@ -316,27 +384,116 @@ export function ColorModeEditor({ label, vars, onChange }: {
   )
 }
 
+/* ── "Design it with AI" prompt for the Paste CSS tab ── */
+
+/**
+ * Copies the theme-design prompt so a user can hand it to any AI chat with a
+ * screenshot and paste the CSS reply straight back into this tab. The prompt is
+ * also shown in full: a user should be able to read what they are about to send.
+ */
+export function ThemePromptCallout() {
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'failed'>('idle')
+  /** Whether the full prompt is shown; a failed copy opens it so it can be selected. */
+  const [promptOpen, setPromptOpen] = useState(false)
+  const prompt = useMemo(() => themeDesignPrompt(), [])
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+
+  const copy = async () => {
+    // Confirm only what actually landed: a tick over an unchanged clipboard
+    // sends the user off to paste nothing.
+    const ok = await copyToClipboard(prompt)
+    setCopied(ok ? 'ok' : 'failed')
+    if (!ok) setPromptOpen(true)
+    clearTimeout(timer.current)
+    if (ok) timer.current = setTimeout(() => setCopied('idle'), 2500)
+  }
+
+  return (
+    <div className="mb-3 rounded-md border border-border bg-bg-accent px-3 py-2">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-medium text-text-strong">{i18nT('components.themeEditor.ai_prompt_title')}</div>
+          <p className="text-[12px] text-muted mt-0.5 mb-0">{i18nT('components.themeEditor.ai_prompt_help')}</p>
+        </div>
+        <Btn onClick={() => void copy()} className="shrink-0">
+          {copied === 'ok'
+            ? i18nT('components.themeEditor.ai_prompt_copied')
+            : i18nT('components.themeEditor.ai_prompt_copy')}
+        </Btn>
+      </div>
+      <span className="sr-only" aria-live="polite">
+        {copied === 'ok' ? i18nT('components.themeEditor.ai_prompt_copied') : ''}
+      </span>
+      {/* No hand-off: navigating away would discard the unsaved theme draft. */}
+      <ErrorNotice message={copied === 'failed' ? i18nT('components.themeEditor.ai_prompt_copy_failed') : ''} className="mt-2" />
+      <details className="mt-1" open={promptOpen} onToggle={e => setPromptOpen(e.currentTarget.open)}>
+        <summary className="text-[12px] text-muted cursor-pointer hover:text-text">
+          {promptOpen ? i18nT('components.themeEditor.ai_prompt_hide') : i18nT('components.themeEditor.ai_prompt_show')}
+        </summary>
+        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-bg-elevated border border-border p-2 text-[11px] font-mono text-text">{prompt}</pre>
+      </details>
+    </div>
+  )
+}
+
 /* ── Theme editor panel (used by both DisplayTab and DisplayPanel) ── */
 export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThemeEditor> }) {
   const {
-    creatorMode, setCreatorMode, isEditing, editingSlug,
+    creatorMode, switchMode, isEditing, editingSlug,
     themeName, setThemeName, themeEmoji, setThemeEmoji,
     darkVars, lightVars, updateDarkVar, updateLightVar,
-    jsonText, setJsonText, pickerToJson, syncJsonToPicker,
+    jsonText, setJsonText, syncJsonToPicker,
+    cssText, changeCss, cssImport,
     error, saving, saveTheme, closeEditor, handleDelete,
   } = editor
+
+  const tabClass = (mode: CreatorMode) =>
+    `px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === mode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`
+
+  const nameAndEmoji = (
+    <div className="flex gap-2 mb-3">
+      <div className="flex-1">
+        {/* Control is the custom <Input> (a forwardRef <input>) nested here
+            and linked via htmlFor+id; the deprecated label-has-for rule can't
+            see through the component wrapper, so scope-disable it. */}
+        <label htmlFor="theme-editor-name">
+          <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.theme_name')}</span>
+          <Input id="theme-editor-name" value={themeName} onChange={e => setThemeName(e.target.value)} placeholder={i18nT('components.themeEditor.my_custom_theme')} />
+        </label>
+      </div>
+      <div className="w-16 shrink-0">
+        <label htmlFor="theme-editor-emoji">
+          <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.emoji')}</span>
+          <Input id="theme-editor-emoji" value={themeEmoji} onChange={e => setThemeEmoji(e.target.value)} placeholder="✨" className="text-center !flex-none w-full" />
+        </label>
+      </div>
+    </div>
+  )
+
+  /** At most ten names, so a pasted framework stylesheet stays one readable line. */
+  const nameList = (names: string[]) => names.length <= 10
+    ? names.join(', ')
+    : i18nT('components.themeEditor.css_more_names', { names: names.slice(0, 10).join(', '), extra: names.length - 10 })
+
+  const cssCounts = {
+    dark: Object.keys(cssImport.dark).length,
+    light: Object.keys(cssImport.light).length,
+    shared: Object.keys(cssImport.shared).length,
+  }
 
   return (
     <div className="animate-rise">
       <div className="flex items-center gap-2 mb-3">
-        <button
-          className={`px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === 'picker' ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`}
-          onClick={() => { if (creatorMode === 'json') syncJsonToPicker(jsonText); setCreatorMode('picker') }}
-        >{i18nT('components.themeEditor.color_picker')}</button>
-        <button
-          className={`px-3 py-1 rounded-md text-[13px] transition-colors cursor-pointer border-none ${creatorMode === 'json' ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text bg-transparent'}`}
-          onClick={() => { setCreatorMode('json'); setJsonText(pickerToJson) }}
-        >{i18nT('components.themeEditor.paste_json')}</button>
+        <button className={tabClass('picker')} onClick={() => switchMode('picker')}>
+          {i18nT('components.themeEditor.color_picker')}
+        </button>
+        <button className={tabClass('json')} onClick={() => switchMode('json')} title={i18nT('components.themeEditor.paste_json_title')}>
+          {i18nT('components.themeEditor.paste_json')}
+        </button>
+        <button className={tabClass('css')} onClick={() => switchMode('css')} title={i18nT('components.themeEditor.paste_css_title')}>
+          {i18nT('components.themeEditor.paste_css')}
+        </button>
         {isEditing && <span className="ml-auto text-[12px] text-muted">{i18nT('components.themeEditor.editing')} {themeName || editingSlug}</span>}
       </div>
 
@@ -346,26 +503,55 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
 
       {creatorMode === 'picker' ? (
         <div>
-          <div className="flex gap-2 mb-3">
-            <div className="flex-1">
-              {/* Control is the custom <Input> (a forwardRef <input>) nested here
-                  and linked via htmlFor+id; the deprecated label-has-for rule can't
-                  see through the component wrapper, so scope-disable it. */}
-              <label htmlFor="theme-editor-name">
-                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.theme_name')}</span>
-                <Input id="theme-editor-name" value={themeName} onChange={e => setThemeName(e.target.value)} placeholder={i18nT('components.themeEditor.my_custom_theme')} />
-              </label>
-            </div>
-            <div className="w-16 shrink-0">
-              <label htmlFor="theme-editor-emoji">
-                <span className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">{i18nT('components.themeEditor.emoji')}</span>
-                <Input id="theme-editor-emoji" value={themeEmoji} onChange={e => setThemeEmoji(e.target.value)} placeholder="✨" className="text-center !flex-none w-full" />
-              </label>
-            </div>
-          </div>
+          {nameAndEmoji}
           <ColorModeEditor label={i18nT('components.themeEditor.dark_mode_colors')} vars={darkVars} onChange={updateDarkVar} />
           <div className="mt-3">
             <ColorModeEditor label={i18nT('components.themeEditor.light_mode_colors')} vars={lightVars} onChange={updateLightVar} />
+          </div>
+        </div>
+      ) : creatorMode === 'css' ? (
+        <div>
+          <ThemePromptCallout />
+          {nameAndEmoji}
+          <label htmlFor="theme-editor-css" className="text-[12px] text-muted uppercase tracking-[.04em] mb-1 block">
+            {i18nT('components.themeEditor.theme_css')}
+          </label>
+          <p id="theme-editor-css-help" className="text-[12px] text-muted mb-2 mt-0">{i18nT('components.themeEditor.theme_css_help')}</p>
+          <textarea
+            id="theme-editor-css"
+            aria-label={i18nT('components.themeEditor.theme_css')}
+            aria-describedby="theme-editor-css-help theme-editor-css-summary"
+            value={cssText} onChange={e => changeCss(e.target.value)}
+            placeholder={exampleThemeCss()}
+            className="w-full h-56 bg-bg-elevated border border-border rounded-md px-3 py-2 text-[13px] text-text font-mono outline-hidden resize-y focus-ring"
+            spellCheck={false}
+          />
+          {/* Described by the textarea, deliberately not a live region: it is
+              re-derived on every keystroke. */}
+          <div id="theme-editor-css-summary" className="text-[12px] mt-1 space-y-0.5">
+            <div className={cssImport.recognized || cssText.trim() === '' ? 'text-muted' : 'text-warn'}>
+              {cssImport.recognized
+                ? i18nT('components.themeEditor.css_found_counts', cssCounts)
+                : i18nT('components.themeEditor.css_no_variables')}
+            </div>
+            {cssImport.unknown.length > 0 && (
+              <div className="text-warn break-all">
+                {i18nT('components.themeEditor.css_ignored_unknown', { names: nameList(cssImport.unknown) })}
+              </div>
+            )}
+            {cssImport.caseMismatch && (
+              <div className="text-warn break-all">
+                {i18nT('components.themeEditor.css_case_hint', cssImport.caseMismatch)}
+              </div>
+            )}
+            {cssImport.invalid.length > 0 && (
+              <div className="text-warn break-all">
+                {i18nT('components.themeEditor.css_ignored_invalid', { names: nameList(cssImport.invalid.map(refusedLabel)) })}
+              </div>
+            )}
+            {cssImport.recognized > 0 && cssImport.unknown.length + cssImport.invalid.length > 0 && (
+              <div className="text-muted">{i18nT('components.themeEditor.css_skipped_note')}</div>
+            )}
           </div>
         </div>
       ) : (
@@ -386,13 +572,14 @@ export function ThemeEditorPanel({ editor }: { editor: ReturnType<typeof useThem
       )}
 
       <div className="flex items-center gap-2 mt-3">
-        <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving}>
+        <Btn onClick={saveTheme} className="bg-accent text-accent-fg hover:bg-accent-hover" disabled={saving || (creatorMode === 'css' && !cssImport.recognized)}
+          aria-describedby={creatorMode === 'css' && !cssImport.recognized ? 'theme-editor-css-summary' : undefined}>
           {saving ? i18nT('components.themeEditor.saving') : isEditing ? i18nT('components.themeEditor.update_theme') : i18nT('components.themeEditor.save_theme')}
         </Btn>
         <Btn onClick={closeEditor}>{i18nT('components.themeEditor.cancel')}</Btn>
         {isEditing && (
           <button onClick={() => handleDelete()}
-            className="ml-auto px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer bg-danger/15 border border-danger/40 text-danger hover:bg-danger/25 hover:border-danger/60 transition-all">
+            className="ml-auto px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer bg-danger/15 border border-danger/40 text-danger-text hover:bg-danger/25 hover:border-danger/60 transition-all">
             {i18nT('components.themeEditor.delete_theme')}
           </button>
         )}

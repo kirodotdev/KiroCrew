@@ -36,7 +36,7 @@
  * to dismiss the prompt without reading it — which is exactly when it stops
  * protecting anything.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, X } from 'lucide-react'
@@ -51,9 +51,11 @@ import {
 } from '../../../components/ui/dialog'
 import { Badge, Btn, IconButton, Input, Toggle } from '../../../components/ui'
 import SimpleSelect from '../../../components/SimpleSelect'
+import { formatMultiplier } from '../../../components/ModelDropdownList'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { useAgents } from '../../../hooks/useAgents'
 import { useAvailableModels } from '../../../hooks/useAvailableModels'
+import { isPricedMultiplier } from '../../../providers/modelList'
 import CrewGhost, { djb2, ghostVariantCount } from './CrewGhost'
 import { issueRadarApi, type Crew, type CrewPatch, type CrewSpec } from '../api'
 import { repoScopeKey } from '../lib/links'
@@ -69,6 +71,7 @@ const BACKSTOP_WAKE_SECONDS = 120
 const DEFAULTS = {
   agent: 'kirocrew',
   model: '',
+  triageModel: '',
   extraPrompt: '',
   labels: [] as string[],
   autoResolveConflicts: true,
@@ -98,6 +101,8 @@ interface Draft {
   variant: number | null
   agent: string
   model: string
+  /** `''` = off: every turn runs on `model`. */
+  triageModel: string
   extraPrompt: string
   labels: string[]
   autoResolveConflicts: boolean
@@ -114,6 +119,7 @@ function draftFromCrew(crew: Crew | null | undefined): Draft {
       variant: null,
       agent: DEFAULTS.agent,
       model: DEFAULTS.model,
+      triageModel: DEFAULTS.triageModel,
       extraPrompt: DEFAULTS.extraPrompt,
       labels: DEFAULTS.labels,
       autoResolveConflicts: DEFAULTS.autoResolveConflicts,
@@ -128,6 +134,7 @@ function draftFromCrew(crew: Crew | null | undefined): Draft {
     variant: crew.avatar_variant,
     agent: crew.agent,
     model: crew.model,
+    triageModel: crew.triage_model ?? '',
     extraPrompt: crew.extra_prompt,
     labels: Array.isArray(crew.labels) ? [...crew.labels] : [],
     autoResolveConflicts: crew.auto_resolve_conflicts,
@@ -338,12 +345,12 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
     enabled: open,
   })
 
-  /** The app's own agent roster — the same `/api/agents` list the chat and
-   *  schedule pickers read, so a crew can only be pointed at an agent that
-   *  actually exists. `0` = never force a refresh; `App` owns the sync. Since
-   *  the trigger is constant the fetch runs once per mount, so `reload` is the
-   *  ONLY retry this dialog has — a failure with no affordance would strand the
-   *  picker on an empty list for the life of the mount (#5990's shape). */
+  /** The app's own agent roster — the same `GET /api/agents/catalog` read the
+   *  chat and schedule pickers use (see the `useAgents` docstring), so a crew can
+   *  only be pointed at an agent that actually exists. `0` = a constant refresh
+   *  trigger, so the fetch runs once per mount and `reload` is the ONLY retry
+   *  this dialog has — a failure with no affordance would strand the picker on
+   *  an empty list for the life of the mount. */
   const { agents, error: rosterError, reload: reloadRoster, reloading: rosterReloading } = useAgents(0)
   /** THE model list, gated on `open`: this dialog stays mounted while closed
    *  (Radix owns the exit animation), and an ungated observer would spawn
@@ -382,6 +389,46 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
     if (draft.model && !served.includes(draft.model)) return [draft.model, ...served]
     return served
   }, [availableModels, draft.model])
+
+  /** The triage picker's rows: the served models minus the work model, which as a
+   *  triage model is the same as Off (the runtime treats it so). A stored value
+   *  stays listed and selected for the same reason as above; `''` is the clear
+   *  row, which switches triage off. */
+  const triageModelOptions = useMemo<string[]>(() => {
+    const served = availableModels
+      .map(m => m.name)
+      .filter(name => name !== 'auto' && name !== draft.model)
+    if (draft.triageModel && !served.includes(draft.triageModel)) {
+      return [draft.triageModel, ...served]
+    }
+    return served
+  }, [availableModels, draft.model, draft.triageModel])
+
+  /** Each row's credit cost, in the multiplier form the chat model picker uses,
+   *  so the cheaper choice is visible while choosing. A row the backend reported
+   *  no usable multiplier for has no badge. The Model picker carries the same
+   *  badges, which is what the triage rows are read against. */
+  const costBadges = useCallback(
+    (names: string[]) => {
+      const rate = new Map(availableModels.map(m => [m.name, m.rateMultiplier]))
+      return names.map(name => {
+        const mult = rate.get(name)
+        if (!isPricedMultiplier(mult)) return undefined
+        const value = formatMultiplier(mult)
+        return {
+          label: value,
+          source: '',
+          hint: t('components.modelDropdownList.credit_multiplier', { value }),
+        }
+      })
+    },
+    [availableModels, t],
+  )
+  const modelBadges = useMemo(() => costBadges(modelOptions), [costBadges, modelOptions])
+  const triageModelBadges = useMemo(
+    () => costBadges(triageModelOptions),
+    [costBadges, triageModelOptions],
+  )
 
   const suggestions = useMemo(() => {
     const raw = namesQuery.data?.suggestions
@@ -480,6 +527,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
         if (draft.variant !== crew.avatar_variant) p.avatar_variant = draft.variant
         if (draft.agent !== crew.agent) p.agent = draft.agent
         if (draft.model !== crew.model) p.model = draft.model
+        if (draft.triageModel !== (crew.triage_model ?? '')) p.triage_model = draft.triageModel
         if (draft.extraPrompt !== crew.extra_prompt) p.extra_prompt = draft.extraPrompt
         if (!sameLabels(draft.labels, Array.isArray(crew.labels) ? crew.labels : [])) {
           p.labels = draft.labels
@@ -498,6 +546,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
         avatar_variant: draft.variant,
         agent: draft.agent,
         model: draft.model,
+        triage_model: draft.triageModel,
         extra_prompt: draft.extraPrompt,
         labels: draft.labels,
         auto_resolve_conflicts: draft.autoResolveConflicts,
@@ -571,8 +620,9 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
   const canSubmit = trimmedName.length > 0 && !submit.isPending
 
   /** Whether closing now would throw work away. Computed every render rather than
-   *  memoized: it is eleven primitive comparisons, and a stale answer here is a
-   *  half-filled form silently discarded. */
+   *  memoized: it is a few primitive comparisons plus one label-membership
+   *  comparison, and a stale answer here is a half-filled form silently
+   *  discarded. */
   const dirty = !sameDraft(draft, baseline.current)
 
   /**
@@ -782,6 +832,7 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
               <SimpleSelect
                 aria-label={t('apps.issueRadar.views.crews.editor.model_label')}
                 options={modelOptions}
+                optionBadges={modelBadges}
                 value={draft.model}
                 // The inherit-the-agent's-default row. `clearLabel` is the one
                 // affordance that can SET `''` back, so without it a user who
@@ -793,6 +844,24 @@ export default function CrewEditor({ open, onClose, crew }: CrewEditorProps) {
                 {t('apps.issueRadar.views.crews.editor.model_hint')}
               </p>
             </div>
+          </div>
+          <div className="mt-4 min-w-0" data-testid="crew-editor-triage-model">
+            <span className="mb-1.5 block text-[13px] font-semibold text-text">
+              {t('apps.issueRadar.views.crews.editor.triage_model_label')}
+            </span>
+            <SimpleSelect
+              aria-label={t('apps.issueRadar.views.crews.editor.triage_model_label')}
+              options={triageModelOptions}
+              optionBadges={triageModelBadges}
+              value={draft.triageModel}
+              // The off row: `''` runs every turn on the work model, so it has to
+              // be a choice the user can return to.
+              clearLabel={t('apps.issueRadar.views.crews.editor.triage_model_off')}
+              onChange={v => patch('triageModel', v)}
+            />
+            <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+              {t('apps.issueRadar.views.crews.editor.triage_model_hint')}
+            </p>
           </div>
           <div className="mt-4">
             <Field

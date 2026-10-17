@@ -1,10 +1,10 @@
 """``agent.sandbox="strict"`` is a tier the config layer must let through.
 
-``sandbox.py`` has carried a ``strict`` tier for as long as it has had tiers:
+``sandbox_tiers.py`` has carried a ``strict`` tier for as long as it has had tiers:
 ``_STRICT_DIRS`` masks ``~/.aws`` (and ``~/.ssh`` bar ``known_hosts``) where the
 default ``standard`` tier deliberately leaves them visible, ``_mode_to_level``
 maps the spelling to itself, and the product's own remedies name it
-(``tool_gate``: "set agent.sandbox to 'standard' or 'strict'"; ``kirocrew
+(``tool_gate``: "set agent.sandbox to 'auto' or 'strict'"; ``kirocrew
 doctor`` on macOS: ``agent.sandbox="strict"``). The config layer did not admit
 it: the ``agent.sandbox`` enum listed ``auto`` and ``off`` only, so
 ``kirocrew config set agent.sandbox strict`` was refused and a hand-written
@@ -26,6 +26,7 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import rendered_payload
 
 from kiro_crew import sandbox
 from kiro_crew.config.loader import KiroCrewConfig
@@ -103,12 +104,11 @@ class TestSelectingStrictActuallyTightens:
         # The builder asks the host's ``ssh -V`` for the accept-new flag; not what
         # this asserts, so the probe is pinned (same as test_cpp_wiring_enterprise).
         monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
-        aws = json.dumps(str(Path(Path.home(), ".aws")))
+        aws = str(Path(Path.home(), ".aws"))
 
-        def _sensitive_dirs(script: str) -> str:
-            lines = [ln for ln in script.splitlines() if ln.startswith("SENSITIVE_DIRS = ")]
-            assert len(lines) == 1, "the launcher declares its mask list exactly once"
-            return lines[0]
+        def _sensitive_dirs(script: str) -> list[str]:
+            # ``rendered_payload`` also requires the launcher to carry its plan once.
+            return rendered_payload(script)["sensitive_dirs"]
 
         assert aws in _sensitive_dirs(sandbox._build_launcher_script("strict"))
         assert aws not in _sensitive_dirs(sandbox._build_launcher_script("standard"))

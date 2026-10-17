@@ -58,9 +58,19 @@ shape, and hands the witness to :func:`prefix_admit`.
   and a change to it retires the file. Identity block.
 * the prefix CHANGED after it was folded -- a line damaged afterwards is skipped by
   a cold fold while a savepoint keeps the value that line contributed, and no
-  equality above reads the prefix at all. ``prefix_sha`` is a digest of the consumed
-  prefix's raw record bytes, recomputed on resume from ``prefix_records``. Witness,
-  because a reader cannot name that count before opening the file that states it.
+  equality above reads the prefix at all. Witness, in one of two spellings, because
+  a reader cannot name either value before opening the file that states it.
+
+  ``prefix_cuts`` is the cheap one and the one a current log gets: the unit's cut
+  count (:meth:`~kiro_crew.crew_log.store.CrewLog.cuts`), read when the savepoint was
+  written. A cut is the only thing this store does that can change a committed
+  record, and the count rises durably before each one, so the same count again means
+  the records the state was folded from are the same bytes -- settled by a file a few
+  bytes long whatever the log's size, on the write side as well as the read side.
+
+  ``prefix_sha`` is a digest of the consumed prefix's raw record bytes, recomputed on
+  resume from ``prefix_records``. It is what a log with no cut counter is settled by,
+  and it charges a walk of the whole consumed prefix to each write and each resume.
 * the log is SHORTER than the savepoint -- most of its causes are caught above,
   but it is checked on its own because a fold resumed past the end of a file is
   the one state no later read recovers from. Witness, against the live ``last_seq``.
@@ -75,8 +85,9 @@ leaving it on disk for a collector that does not exist.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
@@ -111,6 +122,21 @@ logger = logging.getLogger(__name__)
 #: Directory inside a unit's store directory that holds its fold savepoints.
 CHECKPOINT_DIR: Final[str] = "projections"
 
+#: Directory inside a unit's store directory that holds SLOT fold savepoints.
+#:
+#: A LEAF OF ITS OWN beside :data:`CHECKPOINT_DIR`, not a file inside it. The kernel
+#: store derives a file name from the fold name alone, and a slot-keyed fold can carry
+#: the same name as a session-keyed one (``tools`` is read both ways), so one directory
+#: would have the two overwrite each other -- each then refused by the other's identity
+#: block, which is correct and leaves neither fold a savepoint it ever gets to use.
+#:
+#: Inside the NEWEST unit's directory, which is the only unit a continuation lets grow
+#: and the one whose bytes the witness is a digest of. Two consequences, both wanted: the
+#: file inherits the ``crew-log`` fence and is removed with the unit, and a slot that
+#: gains a unit (a session reset) finds no savepoint at its new newest unit and folds
+#: cold once -- exactly what the warm cell already does for a changed unit list.
+SLOT_CHECKPOINT_DIR: Final[str] = "slot-projections"
+
 #: Largest savepoint file this package reads or writes, and the number the kernel
 #: store ENFORCES (:data:`~kiro_crew.projection.MAX_PAYLOAD_BYTES`). Every fold's
 #: state is already bounded by construction (``crew-log-projection.md`` section 2),
@@ -139,6 +165,16 @@ def checkpoint_dir(kind: str, unit_id: str) -> Path:
 def checkpoint_path(kind: str, unit_id: str, name: str) -> Path:
     """The savepoint file for one fold of one unit. Does not create it."""
     return checkpoint_dir(kind, unit_id) / f"{require_name(name)}.json"
+
+
+def slot_checkpoint_dir(kind: str, unit_id: str) -> Path:
+    """The directory holding the SLOT fold savepoints kept at one unit. Does not create it."""
+    return crew_log_dir(kind, unit_id) / SLOT_CHECKPOINT_DIR
+
+
+def slot_checkpoint_path(kind: str, unit_id: str, name: str) -> Path:
+    """The savepoint file for one slot fold kept at one unit. Does not create it."""
+    return slot_checkpoint_dir(kind, unit_id) / f"{require_name(name)}.json"
 
 
 class _UnitStore(DirectoryCheckpointStore):
@@ -196,6 +232,12 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
     *first_seq* is the oldest surviving entry's seq, which bounds how few raw records
     a prefix through the witness's seq can possibly hold.
 
+    TWO WITNESS SPELLINGS, and a payload carries exactly one. ``prefix_cuts`` is the
+    unit's cut count and settles the question in a few bytes; ``prefix_sha`` settles it
+    by hashing the consumed prefix, and is what a log with no cut counter has. The
+    counter is taken only when the digest keys are ABSENT, so a payload carrying both
+    is judged by the digest rather than downgraded to the cheaper half of itself.
+
     The digest is memoized per record count, because the folds of one read share a
     boundary and hashing it once per fold would walk the same bytes five times.
     """
@@ -205,6 +247,7 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
         seq = witness.get("seq")
         sha = witness.get("prefix_sha")
         records = witness.get("prefix_records")
+        cuts = witness.get("prefix_cuts")
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
             return False
         if seq > handle.last_seq:
@@ -219,6 +262,8 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
                 handle.last_seq,
             )
             return False
+        if sha is None and records is None and cuts is not None:
+            return _cuts_admit(handle, cuts)
         if (
             not isinstance(sha, str)
             or len(sha) != 64
@@ -247,14 +292,43 @@ def prefix_admit(handle: CrewLog, first_seq: int) -> Admit:
     return admit
 
 
-def witness_mapping(prefix: PrefixWitness) -> dict[str, Any]:
+def _cuts_admit(handle: CrewLog, stored: Any) -> bool:
+    """Whether *handle*'s cut count still reads as *stored*, so its prefix is intact.
+
+    The counter rises durably BEFORE each cut, and a cut is the only thing this store
+    does that can change a record already committed. So two equal readings bracket a
+    window in which no committed record changed, which is the whole of what the digest
+    proves and all a resume needs.
+
+    The live reading being ``None`` refuses. An absent or unreadable counter is NOT
+    PROVEN rather than zero: a counter lost after a cut would otherwise compare equal
+    across it, which is the one reading this evidence exists to prevent. A log with no
+    counter writes a digest witness instead, so refusing here costs nothing it had.
+    """
+    if not isinstance(stored, int) or isinstance(stored, bool) or stored < 0:
+        return False
+    live = handle.cuts()
+    if live is None:
+        logger.debug("crew log savepoint cites a cut count the unit no longer states; folding cold")
+        return False
+    if live != stored:
+        logger.debug("crew log savepoint was written %d cuts ago; folding cold", live - stored)
+        return False
+    return True
+
+
+def witness_mapping(prefix: "PrefixWitness | CutWitness") -> dict[str, Any]:
     """*prefix* as the opaque mapping a savepoint stores beside its identity.
 
-    The three keys :func:`prefix_admit` reads, written in one place so a second
-    client cannot store a witness under names the shared predicate does not look up
-    -- which would read as "carries no evidence" and cost that client every
-    savepoint it ever wrote, silently.
+    The keys :func:`prefix_admit` reads, written in one place so a second client cannot
+    store a witness under names the shared predicate does not look up -- which would
+    read as "carries no evidence" and cost that client every savepoint it ever wrote,
+    silently. One spelling per witness, never both: a cut count is evidence on its own,
+    and a payload carrying a digest beside it would be judged by the digest and pay for
+    it on every resume.
     """
+    if isinstance(prefix, CutWitness):
+        return {"seq": prefix.seq, "prefix_cuts": prefix.cuts}
     return {"seq": prefix.seq, "prefix_sha": prefix.sha, "prefix_records": prefix.records}
 
 
@@ -370,6 +444,50 @@ class PrefixWitness(NamedTuple):
     seq: int
     records: int
     sha: str
+
+
+class CutWitness(NamedTuple):
+    """The unit's cut count when the records through *seq* were folded.
+
+    What :class:`PrefixWitness` proves, proved by a COUNT instead. A cut is the only
+    mutation this store performs on a committed record and the count rises durably
+    before each one, so the same count again means those records are the same bytes.
+
+    It costs a few bytes to read where the digest costs a walk of the whole consumed
+    prefix -- and it costs them on the WRITE side too, which is where a savepoint's own
+    share of the saving is: a digest witness has to resolve a record boundary by
+    decoding every record up to it, every time one is written.
+    """
+
+    seq: int
+    cuts: int
+
+
+def cut_witness(handle: CrewLog, seq: int) -> "CutWitness | None":
+    """*handle*'s cut count as the witness for a fold that reached *seq*, or ``None``.
+
+    ``None`` when the unit states no readable count, which is every log created before
+    the counter existed. Such a log is settled by :func:`prefix_witness` instead, so the
+    caller's fallback is a digest rather than no savepoint.
+
+    Read BEFORE the pass that consumes the file, for the reason :func:`prefix_witness`
+    gives -- but with one less thing to go wrong. A digest read before a pass certifies
+    bytes a concurrent cut may change during it, and every later resume recomputes the
+    same changed bytes and matches. A count cannot: a cut during the pass RAISES it, so
+    the pre-pass reading differs from the live one and the write is refused.
+    """
+    live = handle.cuts()
+    return None if live is None else CutWitness(seq=seq, cuts=live)
+
+
+def cuts_unchanged(handle: CrewLog, witness: CutWitness) -> bool:
+    """Whether *handle*'s cut count still reads as *witness* recorded it.
+
+    :func:`prefix_unchanged` for the counter: asked after a pass about a witness read
+    before it, so a cut that landed in between refuses the write rather than recording a
+    savepoint whose own resume could never admit it.
+    """
+    return _cuts_admit(handle, witness.cuts)
 
 
 def write_is_earned(last_seq: int, saved_seq: int) -> bool:
@@ -513,6 +631,396 @@ def save(
     return dataclasses.replace(
         bundle, saved_seq=min(cp.last_seq for cp in bundle.checkpoints.values())
     )
+
+
+# --------------------------------------------------------------------------- #
+# A slot's fold -- one cell folded across the units a slot ran under
+# --------------------------------------------------------------------------- #
+#
+# A SLOT fold concatenates several units into one stream, where a session fold reads one
+# file. Everything above still applies -- the same kernel store, the same identity
+# equality, the same witness handed to :func:`prefix_admit` -- and only two things are
+# added, both forced by the concatenation.
+#
+# THE IDENTITY BLOCK CARRIES THE WHOLE UNIT VECTOR. A slot fold's state was folded over
+# every unit the slot ran under, so the facts that must match verbatim are the slot key,
+# the unit list in fold order, and every EARLIER unit's whole mark -- its origin, its
+# height and its byte fingerprint, as the fold surface recorded them. That is the same
+# comparison ``projection._continuable`` makes before carrying a warm cell forward, so a
+# savepoint is admitted on exactly the shapes a warm cell is: an added or removed unit, an
+# earlier unit that grew, an earlier unit rewritten in place, and a unit recreated under
+# the same id each refuse the file. The NEWEST unit is held to its origin and its witness
+# instead, because it is the one unit a continuation exists to let grow.
+#
+# TWO POSITIONS, NOT ONE. The kernel orders a slot stream by an ORDINAL -- a unit's base
+# plus an entry's seq -- while the checkpoint the fold surface's callers carry reports the
+# newest unit's OWN seq. So ``watermark`` is the ordinal the cell resumes at and the
+# witness's ``seq`` is the unit seq the tail stream resumes from, and the two are tied by
+# the newest unit's ordinal base. That base is reproducible on resume precisely BECAUSE
+# every earlier unit's mark is in the identity block: a vector that compares equal yields
+# the same base, so the equality is what makes the ordinal meaningful across processes.
+# The tie is checked on both sides -- nothing is written or resumed whose two numbers
+# disagree -- because an ordinal off by a unit's height would resume a cell past entries
+# the tail then folds again.
+
+
+#: Key the slot payload's ``state`` rides under, holding the fold state as a JSON STRING
+#: rather than as the object itself.
+#:
+#: THE ORDER OF A STATE'S KEYS IS PART OF THE STATE. The kernel store serializes with
+#: ``sort_keys=True``, which is right for an envelope a person greps and wrong for these
+#: folds: ``ledger``'s artifact map and ``radar``'s ``last_update`` are ordered by
+#: INSERTION and age out ``next(iter(...))``, so a state that came back alphabetical
+#: evicts whichever key sorts first instead of the oldest one. On a slot whose artifact
+#: keys are not already in alphabetical order that drops the NEWEST pointer on the first
+#: read after a restart, and the record a reader is served then disagrees with a cold
+#: fold for the life of the unit.
+#:
+#: Encoding the state here keeps the order the fold wrote it in, and keeps it without
+#: changing what the kernel does for its other clients -- whose folds would each need
+#: their own audit before that sort could be called safe to drop. The cost is the escape
+#: characters a JSON string inside JSON carries.
+#:
+#: A payload written before this wrapper decodes to a state with none of the fold's own
+#: keys, which :func:`~kiro_crew.crew_log.projection.Checkpoint.from_dict` refuses, so it
+#: is retired to a cold fold rather than misread.
+_SLOT_STATE_JSON: Final[str] = "state_json"
+
+
+class SlotSavepoint(NamedTuple):
+    """One slot fold's resumable position, as :func:`load_slot` answers it."""
+
+    name: str
+    state: Any
+    #: The kernel ORDINAL the cell stands at -- the newest unit's base plus
+    #: :attr:`reached`. What ``prime_checkpointed`` installs as the cell's watermark.
+    watermark: int
+    #: The newest unit's OWN seq. What the tail stream resumes from, and what the
+    #: witness certifies a prefix digest through.
+    #:
+    #: The digest itself is deliberately NOT handed back. It would look like a free
+    #: substitute for the one a resuming caller has to read before its own pass -- it was
+    #: just verified against these bytes, after all -- but it ends at THIS seq, and that
+    #: caller is about to fold the tail above it. A cell carrying it vouches for bytes it
+    #: never read, which costs a wrong value on the next continuation and a savepoint
+    #: :func:`prefix_admit` refuses on the next restart.
+    reached: int
+
+
+def slot_identity(
+    *,
+    slot: str,
+    units: Sequence[str],
+    marks: Sequence[Any],
+    unit: str,
+    origin: str,
+    first_seq: int,
+) -> dict[str, Any]:
+    """The facts a slot savepoint must MATCH to describe this fold, compared verbatim.
+
+    Public and client-neutral for the reason :func:`prefix_admit` is: the write and the
+    resume both build this, and two spellings of "is this the same fold over the same
+    units" would eventually disagree -- with the lenient one serving a value no cold fold
+    reproduces.
+
+    *marks* is every EARLIER unit's whole mark, JSON-shaped by the caller. Lists rather
+    than objects, so a field a later build adds cannot make an older payload's comparison
+    pass by absence: a shape change here retires every savepoint written before it, which
+    is this module's standing answer to a payload it cannot be sure of.
+    """
+    return {
+        "slot": slot,
+        "units": [str(one) for one in units],
+        "marks": [list(mark) for mark in marks],
+        "unit": unit,
+        "origin": origin,
+        "first_seq": first_seq,
+    }
+
+
+def load_slot(
+    handle: CrewLog,
+    name: str,
+    *,
+    slot: str,
+    units: Sequence[str],
+    marks: Sequence[Any],
+    ordinal_base: int,
+) -> SlotSavepoint | None:
+    """The savepoint for one slot fold, or ``None`` for every reason not to resume.
+
+    *handle* is the NEWEST unit's log. *marks* is every earlier unit's whole mark and
+    *ordinal_base* is the newest unit's ordinal base, which the caller derives from those
+    same marks -- so a block that compares equal is also a block that reproduces this
+    number.
+
+    Never raises, and every refusal is the same answer as an absent file: fold cold,
+    which reaches the same value at more cost.
+    """
+    require_name(name)
+    identity = _identity(handle)
+    if identity is None:
+        return None
+    origin, first_seq = identity
+    block = slot_identity(
+        slot=slot,
+        units=units,
+        marks=marks,
+        unit=handle.id,
+        origin=origin,
+        first_seq=first_seq,
+    )
+    try:
+        store = _UnitStore(slot_checkpoint_dir(handle.kind, handle.id))
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot savepoint path refused for %s", handle.id
+        )
+        return None
+    try:
+        savepoint = store.load(
+            handle.id,
+            name,
+            state_version=fold_state_version(name),
+            identity=block,
+            admit=prefix_admit(handle, first_seq),
+        )
+    except RecursionError:
+        # A payload nested past the interpreter's stack limit raises straight through
+        # the kernel's guard, as it does for a session fold -- and this function
+        # promises never to raise.
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot savepoint for %s unusable; folding cold", name
+        )
+        return None
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(logger, logging.DEBUG, "crew log slot savepoint refused for %s", name)
+        return None
+    if savepoint is None:
+        return None
+    reached = savepoint.witness.get("seq")
+    if not isinstance(reached, int) or isinstance(reached, bool) or reached <= 0:
+        return None
+    if savepoint.watermark != ordinal_base + reached:
+        # The payload disagrees with ITSELF about where it stands: the ordinal the cell
+        # would resume at has to be the newest unit's base plus the seq the witness
+        # certifies. Nothing here can say which of the two is right, so it is not a
+        # savepoint of this fold.
+        logger.debug("crew log slot savepoint %s/%s disagrees about its own position", slot, name)
+        return None
+    state = _decoded_slot_state(savepoint.state, name)
+    if state is None:
+        return None
+    try:
+        # The fold surface's own validation, against the UNIT seq -- the number a
+        # checkpoint's contract names -- rather than the ordinal.
+        Checkpoint.from_dict({"name": name, "last_seq": reached, "state": state})
+    except Exception:
+        log_exception_text(
+            logger,
+            logging.DEBUG,
+            "crew log slot savepoint for %s refused by the fold surface",
+            name,
+        )
+        return None
+    return SlotSavepoint(name=name, state=state, watermark=savepoint.watermark, reached=reached)
+
+
+def _decoded_slot_state(payload: Any, name: str) -> "dict[str, Any] | None":
+    """The fold state inside a slot payload, with the key order its writer used.
+
+    ``None`` for anything that is not this module's own wrapper around a JSON object --
+    a payload from before the wrapper, a truncated string, a value that decodes to a
+    list. Every one is the same answer as an absent file.
+    """
+    if not isinstance(payload, dict):
+        return None
+    encoded = payload.get(_SLOT_STATE_JSON)
+    if not isinstance(encoded, str):
+        logger.debug("crew log slot savepoint for %s carries no encoded state", name)
+        return None
+    try:
+        state = json.loads(encoded)
+    except ValueError:
+        logger.debug("crew log slot savepoint for %s has an unreadable state", name)
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def slot_resume_still_verifies(
+    handle: CrewLog,
+    name: str,
+    *,
+    slot: str,
+    units: Sequence[str],
+    marks: Sequence[Any],
+    ordinal_base: int,
+    resumed: SlotSavepoint,
+) -> bool:
+    """Whether the savepoint *resumed* came from still describes *handle*'s log.
+
+    :func:`load_slot` checks the savepoint's prefix BEFORE its caller folds the tail
+    above it, and the window between those two things is not empty. The store's
+    supersede repair replaces orphan chunk records at seqs the savepoint already
+    consumed; a tail that starts above them never reads the replacement, and a digest
+    the caller captured after the repair matches the repaired file, so every check on
+    that side passes while the state came from the bytes the repair removed.
+
+    Asking :func:`load_slot` AGAIN is what answers it, rather than a second digest
+    routine that would have to agree with the first one: the repair changes the prefix
+    the savepoint's own witness certifies, so the same admission refuses it, and the
+    answer comes back ``None`` or at another position. Either is a mismatch here. Growth
+    above the savepoint is not, since its witness ends at the seq it names.
+
+    The cost is one more pass over the records the savepoint covers, and it falls only
+    on a read that actually resumed. This is :func:`resumed_prefix_still_verifies` for
+    the slot half, and it exists separately only because the identity it re-compares is
+    the unit vector rather than one log's.
+    """
+    again = load_slot(handle, name, slot=slot, units=units, marks=marks, ordinal_base=ordinal_base)
+    if again is None:
+        return False
+    return (again.watermark, again.reached) == (resumed.watermark, resumed.reached)
+
+
+def save_slot(
+    handle: CrewLog,
+    name: str,
+    *,
+    slot: str,
+    units: Sequence[str],
+    marks: Sequence[Any],
+    ordinal_base: int,
+    state: Any,
+    watermark: int,
+    prefix: "PrefixWitness | CutWitness",
+    expect_origin: str,
+) -> bool:
+    """Write one slot fold's savepoint. ``True`` when it reached the file.
+
+    Whether a write is OWED is the caller's to ask (:func:`write_is_earned`), because the
+    position it measures is the kernel ordinal and only the caller holds it. What this
+    function owes in return is that nothing is written whose state it cannot tie to
+    bytes: *prefix* is the evidence the caller read BEFORE its pass and re-checked after
+    it -- a cut count (:class:`CutWitness`) on a unit that states one, a digest
+    (:class:`PrefixWitness`) on one that does not -- *watermark* must be
+    ``ordinal_base + prefix.seq``, and *expect_origin* is the identity the pass folded
+    under.
+
+    *expect_origin* is not redundant with the block built below. A unit removed and
+    recreated between the pass and this call gives a FRESH origin here, and writing the
+    state under it would record a savepoint claiming the new file for state folded from
+    the old one -- a payload every later read would accept and no cold fold would
+    reproduce.
+
+    Never raises. Through the unit's NON-SOLE lease, for the reasons :func:`save` states:
+    a removal takes it ``sole`` and refuses this instead, which leaves the removal whole,
+    and contention is a reason to skip rather than to wait.
+    """
+    require_name(name)
+    if prefix.seq <= 0 or watermark != ordinal_base + prefix.seq:
+        # Either the newest unit folded nothing, or the witness certifies one boundary
+        # and the state stands at another. Both leave nothing here able to say which
+        # bytes produced this state, and a savepoint that cannot say so is the one thing
+        # worse than none.
+        return False
+    identity = _identity(handle)
+    if identity is None:
+        # Also the "unit is gone" answer, and why it comes BEFORE the lease: establishing
+        # the identity stats the newest segment, so a removed unit fails here rather than
+        # creating a lease file inside a directory removal has already emptied.
+        return False
+    origin, first_seq = identity
+    if origin != expect_origin:
+        return False
+    if isinstance(prefix, PrefixWitness) and prefix.records < max(0, prefix.seq - first_seq + 1):
+        # The witness cannot cover its own seq span: a prefix through ``seq`` holds at
+        # least one raw record per surviving entry, so a count below that describes a
+        # SHORTER stretch of the file than the state was folded from. It is the same
+        # inequality :func:`prefix_admit` applies on the way in, asked here so a payload
+        # that could only ever be refused is never written -- and so a caller that
+        # carried a digest from a lower boundary than its own pass is told no at the
+        # write rather than on the restart after it.
+        #
+        # A cut witness has no span to fall short of: it says the records this unit holds
+        # are the ones they were, whichever records those are, so retention taking the
+        # front off is caught by ``first_seq`` in the identity block rather than here.
+        logger.debug(
+            "crew log slot savepoint %s/%s has a witness of %d records for seq %d; not written",
+            slot,
+            name,
+            prefix.records,
+            prefix.seq,
+        )
+        return False
+    block = slot_identity(
+        slot=slot,
+        units=units,
+        marks=marks,
+        unit=handle.id,
+        origin=origin,
+        first_seq=first_seq,
+    )
+    lease = _hold(handle)
+    if lease is None:
+        return False
+    written = False
+    try:
+        directory = _ensure_dir(handle, SLOT_CHECKPOINT_DIR)
+        if directory is None:
+            return False
+        store = _UnitStore(directory)
+        try:
+            # Encoded HERE rather than handed over as an object, so the kernel's
+            # ``sort_keys`` cannot reorder a state whose key order is part of its
+            # meaning. See :data:`_SLOT_STATE_JSON`.
+            encoded = json.dumps(state, ensure_ascii=False)
+        except (TypeError, ValueError):
+            # A fold state that will not serialize loses its savepoint and nothing
+            # else, which is the kernel store's own answer to the same thing.
+            log_exception_text(
+                logger, logging.DEBUG, "crew log slot fold %s has an unserializable state", name
+            )
+            return False
+        written = store.save(
+            handle.id,
+            Savepoint(
+                key=name,
+                state_version=fold_state_version(name),
+                watermark=watermark,
+                state={_SLOT_STATE_JSON: encoded},
+                identity=block,
+                witness=witness_mapping(prefix),
+            ),
+        )
+        if _discard_if_unit_gone(handle, directory):
+            return False
+    finally:
+        release_lease(lease)
+    return written
+
+
+def discard_slot(handle: CrewLog, names: Iterable[str]) -> None:
+    """Remove the slot savepoints for *names*, so the next read does not trip on them.
+
+    For a payload that passed every admission condition and then could not be FOLDED --
+    the case :func:`discard` exists for, with the same reasoning and the same promise
+    never to raise.
+    """
+    try:
+        store = _UnitStore(slot_checkpoint_dir(handle.kind, handle.id))
+    except Exception:  # pragma: no cover - a path refusal from the store's checks
+        log_exception_text(
+            logger, logging.DEBUG, "crew log slot savepoint path refused for %s", handle.id
+        )
+        return
+    for name in names:
+        try:
+            store.discard(handle.id, require_name(name))
+        except Exception:  # pragma: no cover - the kernel store swallows its own errors
+            log_exception_text(
+                logger, logging.DEBUG, "crew log slot savepoint for %s not removed", name
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -670,8 +1178,13 @@ def _identity(handle: CrewLog) -> tuple[str, int] | None:
     return (origin, fronts[0])
 
 
-def _ensure_dir(handle: CrewLog) -> Path | None:
+def _ensure_dir(handle: CrewLog, leaf: str = CHECKPOINT_DIR) -> Path | None:
     """*handle*'s savepoint directory, created owner-only, or ``None``.
+
+    *leaf* selects which of the unit's two savepoint directories is meant --
+    :data:`CHECKPOINT_DIR` for its own session folds, :data:`SLOT_CHECKPOINT_DIR` for the
+    slot folds kept at it. A parameter rather than two near-identical functions, so the
+    mode, the owner restriction and the mid-write-removal reasoning below have one home.
 
     ``parents=False``: this function never creates a unit directory, only the
     savepoint directory inside one that already exists. It is NOT on its own a
@@ -689,7 +1202,7 @@ def _ensure_dir(handle: CrewLog) -> Path | None:
     fence over ``crew-log`` still stand.
     """
     try:
-        directory = checkpoint_dir(handle.kind, handle.id)
+        directory = crew_log_dir(handle.kind, handle.id) / leaf
         directory.mkdir(mode=0o700, exist_ok=True)
     except OSError:
         log_exception_text(

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.cli import main
+from kiro_crew.config.paths import data_home
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -101,11 +102,54 @@ class TestAgentCreate:
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "research" in saved["agents"]
         assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
-        assert saved["agents"]["research"]["workspace"] == "default"
         store = saved["agents"]["research"]["memory_store"]
         assert store != "default"
         assert saved["memory_stores"][store]["owner_member"] == "research"
         assert saved["memory_stores"][store]["memory_version"] == 2
+        # Its own workspace, published with the record and present on disk.
+        assert saved["agents"]["research"]["workspace"] == "member-research"
+        assert saved["workspaces"]["member-research"] == {"dir": "workspace-member-research"}
+        assert (data_home() / "workspace-member-research").is_dir()
+        assert "Workspace: member-research" in out
+
+    def test_create_can_share_a_declared_workspace(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "agent", "create", "--name", "research", "--workspace", "default"],
+            ),
+        ):
+            main()
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["workspace"] == "default"
+        assert set(saved["workspaces"]) == {"default"}
+
+    def test_a_named_workspace_is_stored_as_given(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The binding the CLI always stored; nothing is allocated for it.
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "agent", "create", "--name", "research", "--workspace", "oncall"],
+            ),
+        ):
+            main()
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["research"]["workspace"] == "oncall"
+        assert set(saved["workspaces"]) == {"default"}
+        assert not (data_home() / "workspace-oncall").exists()
+        assert "Workspace: oncall" in capsys.readouterr().out
 
     def test_create_duplicate_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -302,6 +346,213 @@ class TestAgentUpdate:
 
         assert exc_info.value.code != 0
         assert "invalid kiro agent name" in capsys.readouterr().err
+
+
+def _run_agent_cli(cfg_path: Path, *argv: str) -> None:
+    with (
+        unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+        unittest.mock.patch("sys.argv", ["kirocrew", "agent", *argv]),
+    ):
+        main()
+
+
+def _labelled_config() -> dict:
+    data = _base_config()
+    data["agents"]["research"] = {
+        "kiro_agent": "kirocrew",
+        "workspace": "default",
+        "memory_store": "default",
+    }
+    data["agents"]["scribe"] = {
+        "kiro_agent": "kirocrew",
+        "workspace": "default",
+        "memory_store": "default",
+        "display_name": "Release Writer",
+    }
+    return data
+
+
+class TestAgentUpdateDisplayName:
+    """``kirocrew agent update <name> --display-name``: relabel, never re-key."""
+
+    def test_relabel_round_trips_through_agent_list(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["default"]
+
+        _run_agent_cli(cfg_path, "update", "default", "--display-name", "  Scribe  ")
+
+        assert "Updated agent: default (display name: Scribe)" in capsys.readouterr().out
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]
+        # Only the label moved: the key and every other field are as they were.
+        assert saved["default"] == {**before, "display_name": "Scribe"}
+        _run_agent_cli(cfg_path, "list")
+        (row,) = [line for line in capsys.readouterr().out.splitlines() if "default *" in line]
+        assert row.split()[-1] == "Scribe"
+
+    def test_empty_label_clears_back_to_the_name(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        _run_agent_cli(cfg_path, "update", "scribe", "--display-name", "")
+
+        assert "Updated agent: scribe (display name: scribe)" in capsys.readouterr().out
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert saved["agents"]["scribe"]["display_name"] == ""
+
+    def test_a_relabel_keeps_a_concurrent_workspace_edit(self, tmp_path: Path) -> None:
+        from kiro_crew.config.loader import update_config_locked
+        from kiro_crew.memory_stores import persist_member_config
+
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        def publish_after_concurrent_edit(*args, **kwargs):
+            assert kwargs["changed_fields"] == {"display_name"}
+
+            def mutate(doc):
+                doc["agents"]["research"]["workspace"] = "concurrent-workspace"
+                return doc
+
+            update_config_locked(mutate=mutate)
+            return persist_member_config(*args, **kwargs)
+
+        with unittest.mock.patch(
+            "kiro_crew.cli_commands.persist_member_config",
+            side_effect=publish_after_concurrent_edit,
+        ):
+            _run_agent_cli(cfg_path, "update", "research", "--display-name", "Researcher")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved["display_name"] == "Researcher"
+        assert saved["workspace"] == "concurrent-workspace"
+
+    @pytest.mark.parametrize(
+        ("label", "reason"),
+        [
+            ("Two\nLines", "line breaks"),
+            ("x" * 1000, "at most"),
+            ("..", "periods"),
+        ],
+    )
+    def test_an_unusable_label_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], label: str, reason: str
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", "--display-name", label)
+
+        assert exc_info.value.code != 0
+        err = capsys.readouterr().err
+        assert "invalid display name" in err and reason in err
+        assert cfg_path.read_bytes() == before
+
+    def test_a_credential_shaped_label_is_refused_without_echoing_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_bytes()
+        label = "https://user:password@example.com"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", "--display-name", label)
+
+        assert exc_info.value.code != 0
+        err = capsys.readouterr().err
+        assert "credential-shaped" in err
+        assert label not in err
+        assert cfg_path.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        ("name", "label"),
+        [
+            # Another crew's label.
+            ("research", "Release Writer"),
+            # Another crew's key, where that crew shows its key.
+            ("scribe", "research"),
+        ],
+    )
+    def test_a_name_another_crew_shows_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str, label: str
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", name, "--display-name", label)
+
+        assert exc_info.value.code != 0
+        assert "already shows that name" in capsys.readouterr().err
+        assert cfg_path.read_bytes() == before
+
+    def test_clearing_to_a_key_another_crew_shows_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        data["agents"]["research"]["display_name"] = "scribe"
+        cfg_path = _write_config(tmp_path, data)
+
+        with pytest.raises(SystemExit):
+            _run_agent_cli(cfg_path, "update", "scribe", "--display-name", "")
+
+        assert "agent 'research' already shows that name" in capsys.readouterr().err
+
+    def test_keeping_its_own_label_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        _run_agent_cli(cfg_path, "update", "scribe", "--display-name", "Release Writer")
+
+        assert "Updated agent: scribe (display name: Release Writer)" in capsys.readouterr().out
+
+    def test_an_unknown_agent_is_refused(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_bytes()
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "nobody", "--display-name", "Scribe")
+
+        assert exc_info.value.code != 0
+        assert "agent 'nobody' not found" in capsys.readouterr().err
+        assert cfg_path.read_bytes() == before
+
+
+class TestAgentListLabel:
+    """The DISPLAY_NAME cell prints a label one line long, with no live controls."""
+
+    def test_a_label_with_terminal_controls_prints_inert(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        data["agents"]["scribe"]["display_name"] = "Ops\x1b[2J\nCrew"
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "list")
+
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        (row,) = [line for line in out.splitlines() if line.startswith("scribe")]
+        assert row.endswith("Ops\\x0aCrew")
+
+    def test_a_credential_shaped_label_is_masked(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        label = "https://user:password@example.com"
+        data["agents"]["scribe"]["display_name"] = label
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "list")
+
+        out = capsys.readouterr().out
+        assert label not in out
+        assert "(hidden: credential-shaped)" in out
 
 
 class TestAgentDelete:

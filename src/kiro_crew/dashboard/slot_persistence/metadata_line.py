@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import TYPE_CHECKING
 
@@ -334,8 +334,25 @@ def merge_empty_window(
     closed: bool,
     closed_at: float | None,
     pending_mode_target: _ChatSlot,
-) -> None:
+    refusal_under_lock: Callable[[dict], str | None] | None = None,
+    mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
+    after_commit_under_lock: Callable[[], None] | None = None,
+    queue_deferred_under_lock: Callable[[dict], bool] | None = None,
+    turn_timeout_override: tuple[int | None] | None = None,
+) -> str | None:
     """Commit a forced or closing save of a message-less slot as a metadata merge.
+
+    ``refusal_under_lock`` is evaluated against the line read under the
+    cross-process lock, after the existence check. A non-``None`` reason skips
+    the write and is returned, so the caller can keep the slot owed; ``None``
+    is returned on a commit and on the by-design skip of a line-less tab.
+
+    ``queue_deferred_under_lock`` is evaluated at the same point. ``True``
+    commits every other field but leaves the line's queued prompts as they are
+    on disk and does not move the queue witness, so a snapshot older than a
+    queue another writer committed cannot overwrite it, and the queue stays
+    owed for the next save.
 
     Raises ``OSError`` when the record is unreadable, so a close or an
     acknowledged edit is never reported durable on a merge that did not happen.
@@ -380,12 +397,24 @@ def merge_empty_window(
     # state inside the locked block -- so whichever writer commits last writes
     # the newest slot state.
     merged_fields: dict = {}
-    guard_state = {"ran": False}
+    guard_state: dict = {"ran": False, "refusal": None}
 
     def _refresh_under_lock(meta: dict) -> bool:
         guard_state["ran"] = True
         if not meta:
+            # A line-less tab has no transcript, so no restart can restore its
+            # queue and nothing on disk is owed. Credit the witness, or the
+            # flush would re-run this save for the same drift on every tick.
+            # The tab's first line comes from a full save, which writes the
+            # live queue itself.
+            if slot_history_key(slot) == history_key:
+                slot._queue_persisted_sig = queue_persist_signature(queue_snapshot)
             return False
+        if refusal_under_lock is not None:
+            refusal = refusal_under_lock(meta)
+            if refusal is not None:
+                guard_state["refusal"] = refusal
+                return False
         merged_fields.clear()
         if slot.reasoning_effort:
             cp._remember_reasoning_effort_for_restore(slot.reasoning_effort)
@@ -394,12 +423,15 @@ def merge_empty_window(
         mode = stricter_memory_mode(
             line_memory_mode(meta), retained_memory_mode(slot, live_session)
         )
+        merged_closed_at: float | None = None
+        if closed:
+            merged_closed_at = closed_at if closed_at is not None else time.time()
         folds = cp._metadata_codec.SaveFolds(
             memory_mode=mode,
             closed=closed,
             # Without the close a closed empty newborn's line stays open-shaped
             # and the next restart resurrects a tab the user dismissed.
-            closed_at=(closed_at if closed_at is not None else time.time()) if closed else None,
+            closed_at=merged_closed_at,
             # The value is the snapshot taken WITH the window, never a fresh
             # read: a re-read here would be a second, unpaired observation of
             # the queue.
@@ -415,17 +447,51 @@ def merge_empty_window(
                 meta.get("deferred_notes"),
                 serialize_deferred_notes(slot._deferred_notes[:]),
             ),
+            # Staged mute value: persist the endpoint's NEW value here while the
+            # live ``slot.mutes_opened`` still holds the committed value, so a
+            # newborn's empty-window save reaches disk with the new value even
+            # though the live flag has not flipped yet (the round-1 F1 gap, where
+            # this branch ignored the staged value and wrote the stale live flag).
+            mutes_opened=mutes_opened_override,
+            muted=muted_override,
+            # The turn-time-limit endpoint's staged value, the same way.
+            turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, meta),
         )
         merged_fields.update(cp._metadata_codec.encode(slot, merge=True, folds=folds))
+        if queue_deferred_under_lock is not None and queue_deferred_under_lock(meta):
+            # A merge never deletes a key, so dropping it keeps the on-disk
+            # queue, and the witness below then has nothing to credit.
+            merged_fields.pop("queued_prompts", None)
         return True
+
+    def _after_commit_under_lock() -> None:
+        _record_pending_memory_mode(pending_mode_target, merged_fields["memory_mode"])
+        # The queued prompts this merge committed are now durable, so the
+        # flush's drift check must stop reporting them as owed. Set inside the
+        # lock, like the full save's witness: a writer that commits a newer
+        # queue after this lock is released must not have its witness
+        # overwritten by this merge's older value. Same routing guard as the
+        # full save's witnesses: a slot rebound while the merge was in flight
+        # would otherwise be credited for a value written to the OLD transcript.
+        if slot_history_key(slot) != history_key:
+            return
+        merged_queue = merged_fields.get("queued_prompts")
+        if isinstance(merged_queue, list):
+            slot._queue_persisted_sig = queue_persist_signature(merged_queue)
+        # Flip the live mute flag HERE, under the transcript lock this write
+        # holds, after the merge committed -- a concurrent flush cannot
+        # interleave because it needs the same lock, so it never serializes the
+        # still-prior flag over this committed value. Guarded by the same
+        # rebind check above: a slot rebound while the merge was in flight must
+        # not have its live flag flipped for a value written to the OLD transcript.
+        if after_commit_under_lock is not None:
+            after_commit_under_lock()
 
     applied = conv_log.update_metadata_if(
         history_key,
         merged_fields,
         _refresh_under_lock,
-        after_commit_under_lock=lambda: _record_pending_memory_mode(
-            pending_mode_target, merged_fields["memory_mode"]
-        ),
+        after_commit_under_lock=_after_commit_under_lock,
     )
     if not applied and not guard_state["ran"]:
         # `update_metadata_if` fails CLOSED on an unreadable record
@@ -439,15 +505,7 @@ def merge_empty_window(
         # archival callers (close, best_effort=False) roll back and
         # keep the slot.
         raise OSError(f"empty-window metadata merge skipped: record unreadable for {history_key}")
-    if applied and slot_history_key(slot) == history_key:
-        # The queued prompts this merge committed are now durable, so
-        # the flush's drift check must stop reporting them as owed. Same
-        # routing guard as the full save's witnesses: a slot rebound
-        # while the merge was in flight would otherwise be credited for
-        # a value written to the OLD transcript.
-        _merged_queue = merged_fields.get("queued_prompts")
-        if isinstance(_merged_queue, list):
-            slot._queue_persisted_sig = queue_persist_signature(_merged_queue)
+    return guard_state["refusal"]
 
 
 def _full_dismissed_line(slot: _ChatSlot, existing_meta: dict) -> list[str] | None:
@@ -488,6 +546,24 @@ def _full_dismissed_line(slot: _ChatSlot, existing_meta: dict) -> list[str] | No
     return None
 
 
+def _turn_timeout_fold(
+    slot: _ChatSlot, override: tuple[int | None] | None, on_disk: dict
+) -> tuple[int | None] | None:
+    """The staged ``turn_timeout_secs`` a save writes, or ``None`` to read the slot.
+
+    A slot bound to a transcript whose own turn time limit has not been read
+    back yet (``_turn_timeout_hydrated is False``, a reopened cron tab before
+    its off-loop metadata read) holds ``None``, which would write "follow the
+    global limit" over the saved one. Until that read lands the on-disk value
+    is carried forward instead. The endpoint's staged value always wins.
+    """
+    if override is not None or getattr(slot, "_turn_timeout_hydrated", True):
+        return override
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    return (cp._validate_turn_timeout_secs(on_disk.get("turn_timeout_secs")),)
+
+
 def build_full_line(
     slot: _ChatSlot,
     existing_meta: dict,
@@ -500,6 +576,9 @@ def build_full_line(
     queue_candidates: int,
     rewrite: bool,
     rows_only: bool,
+    mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
+    turn_timeout_override: tuple[int | None] | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
     """The line a full save writes: ``(line, mode, queue, retired note ids, tab_id)``.
 
@@ -670,6 +749,12 @@ def build_full_line(
             channel_folder_filed=channel_folder_filed,
             tab_id=tab_id,
             rotation_generation=rotation,
+            # Staged mute value (see merge_empty_window): the full save honors
+            # the same override, so the committed value reaches disk whether a
+            # session has a window or not.
+            mutes_opened=mutes_opened_override,
+            muted=muted_override,
+            turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, existing_meta),
         ),
     )
     # The drop records this write retires are CONSUMED only after the

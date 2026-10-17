@@ -14,11 +14,12 @@ The three properties the scheduling rests on, and each is a test below:
 2. **The window is its own window.** Due-ness is keyed on the SESSIONS run
    stamp, so a snapshot that ran an hour ago does not make the transcripts look
    backed up, and a wake proceeds when either kind is due.
-3. **The payload is unchanged.** The loop calls ``run_sessions_backup``, the
-   same function the owner-triggered archive calls, with the same arguments and
-   the scheduled caller. Scheduling an existing mechanism decides nothing new
-   about what is in the archive or how it is redacted; those stay properties of
-   that function, and of the issue that governs it.
+3. **The payload is unchanged.** The loop CLAIMS the sessions run through the
+   Job SDK (``start_async``, scheduled caller in params), and the registered
+   runner calls ``run_sessions_backup`` -- the same function the owner-triggered
+   archive calls. Scheduling an existing mechanism decides nothing new about what
+   is in the archive or how it is redacted; those stay properties of that
+   function, and of the issue that governs it.
 """
 
 from __future__ import annotations
@@ -150,15 +151,21 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _loop_patches(*, snapshot_due: bool, sessions_due: bool) -> list:
-    """Every guard ``_run_once`` passes before a push, with both due-checks pinned.
+def _fake_sdk():
+    sdk = mock.Mock()
+    sdk.start_async = AsyncMock(return_value="run-1")
+    return sdk
 
-    The backup runners are deliberately NOT in here: which of them is expected to
-    be called is the assertion in most of these tests, so each test states its
-    own. Entered through an ``ExitStack`` because this is a list, and the
-    parenthesized ``with`` form cannot unpack one.
+
+def _drive_loop(sdk, *, snapshot_due: bool, sessions_due: bool) -> None:
+    """Run ``_run_once`` past every guard with both due-checks pinned.
+
+    The loop CLAIMS each due kind through ``sdk.start_async``. What the claimed
+    run then does (apply the scheduled gate, honour the transcript grant, record
+    a failure into the backoff) is the runner's, pinned in
+    test_aws_control_backup_job.py.
     """
-    return [
+    with (
         mock.patch.object(
             hooks.accounts_mod,
             "resolve_default_account_profile",
@@ -172,156 +179,42 @@ def _loop_patches(*, snapshot_due: bool, sessions_due: bool) -> list:
         mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=snapshot_due),
         mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=sessions_due),
         mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-        mock.patch.object(hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc"),
-        mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-    ]
+        mock.patch.object(hooks.backup_mod.storage, "find_drive", return_value="bkt"),
+    ):
+        _run(hooks._run_once(sdk))
 
 
-def _drive(*, snapshot_due: bool, sessions_due: bool, **runners):
-    """Run ``_run_once`` with the given runner patches, returning them by name.
+class TestTheNightlyLoopClaimsTranscripts:
+    """The scheduling itself: a due transcript window CLAIMS the sessions run
+    through the SDK, as the scheduled caller, independently of the snapshot."""
 
-    ``runners`` maps a ``backup_mod`` attribute name to the mock it should be
-    replaced by, so a test names only what it cares about and reads the result
-    back under the same name.
-    """
-    with contextlib.ExitStack() as stack:
-        for patcher in _loop_patches(snapshot_due=snapshot_due, sessions_due=sessions_due):
-            stack.enter_context(patcher)
-        entered = {
-            name: stack.enter_context(mock.patch.object(hooks.backup_mod, name, new))
-            for name, new in runners.items()
+    def test_a_due_transcript_window_claims_the_sessions_run(self):
+        # A transcript window that opens on a day the snapshot already ran must
+        # still claim the sessions run -- the two kinds are independent.
+        sdk = _fake_sdk()
+        _drive_loop(sdk, snapshot_due=False, sessions_due=True)
+        sdk.start_async.assert_awaited_once()
+        call = sdk.start_async.await_args
+        assert call.args[0] == backup.KIND_SESSIONS
+        assert call.kwargs["dedupe_key"] == ACCOUNT
+        # Nobody is at the keyboard: the scheduled caller rides in params so the
+        # runner attributes the push to the schedule, not the dashboard owner, and
+        # the verified profile/region ride alongside it as the runner's TTL-expiry
+        # fallback.
+        assert call.kwargs["params"] == {
+            backup.JOB_PARAM_CALLER: backup.CALLER_SCHEDULED,
+            backup.JOB_PARAM_PROFILE: "p",
+            backup.JOB_PARAM_REGION: "us-west-2",
         }
-        audit = stack.enter_context(mock.patch.object(hooks, "_audit"))
-        _run(hooks._run_once())
-    return entered, audit
 
-
-class TestTheNightlyLoopCarriesTranscripts:
-    """The scheduling itself: a due transcript window pushes the same archive
-    the owner-triggered path pushes, as the scheduled caller."""
-
-    def test_a_due_transcript_window_pushes_the_sessions_archive(self):
-        # Red on base twice over: base has no sessions branch at all, and base
-        # returns before consent when the SNAPSHOT is not due -- so a transcript
-        # window that opens on a day the snapshot already ran is skipped.
-        ran, _audit = _drive(
-            snapshot_due=False,
-            sessions_due=True,
-            run_snapshot_backup=mock.Mock(return_value={"key": "snapshots/x"}),
-            run_sessions_backup=mock.Mock(return_value={"key": "sessions/x"}),
-        )
-        ran["run_snapshot_backup"].assert_not_called()
-        ran["run_sessions_backup"].assert_called_once()
-        call = ran["run_sessions_backup"].call_args
-        assert call.args[0] == ACCOUNT
-        # Nobody is at the keyboard: the upload must not be recorded against the
-        # dashboard owner, which is what the interactive caller would have done.
-        assert call.kwargs["caller"] == backup.CALLER_SCHEDULED
-
-    def test_an_unauthorized_transcript_window_pushes_nothing(self):
-        # The grant is what decides. With it off the loop still runs its snapshot
-        # and the archive is never produced, so the sensitive payload cannot leave
-        # the host on a grant nobody gave.
-        ran, _audit = _drive(
-            snapshot_due=True,
-            sessions_due=False,
-            run_snapshot_backup=mock.Mock(return_value={"key": "snapshots/x"}),
-            run_sessions_backup=mock.Mock(),
-        )
-        ran["run_snapshot_backup"].assert_called_once()
-        ran["run_sessions_backup"].assert_not_called()
-
-    def test_neither_due_asks_nobody_to_spend(self):
-        # Both windows closed must return before consent, so a nightly-disabled
-        # account is never even asked to spend money. Keeps the existing
-        # early-return property now that two bits feed it.
-        with (
-            mock.patch.object(
-                hooks.accounts_mod,
-                "resolve_default_account_profile",
-                AsyncMock(return_value=("p", "us-west-2")),
-            ),
-            mock.patch.object(
-                hooks.aws_consent,
-                "probe_identity",
-                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
-            ),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=False),
-            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
-            mock.patch.object(hooks.aws_consent, "refuse_and_log") as refuse,
-        ):
-            _run(hooks._run_once())
-        refuse.assert_not_called()
-
-    def test_a_failed_snapshot_does_not_cost_the_transcripts_their_window(self):
-        # The reason each kind owns its try/except. Sharing one handler turns a
-        # snapshot failure into a second skipped night for a payload that had
-        # nothing to do with it.
-        ran, audit = _drive(
-            snapshot_due=True,
-            sessions_due=True,
-            run_snapshot_backup=mock.Mock(side_effect=RuntimeError("no disk")),
-            run_sessions_backup=mock.Mock(return_value={"key": "sessions/x"}),
-        )
-        ran["run_snapshot_backup"].assert_called_once()
-        ran["run_sessions_backup"].assert_called_once()
-        assert [c.args[2] for c in audit.call_args_list] == [
-            "invoked",
-            "failed",
-            "invoked",
-            "succeeded",
-        ]
-
-    def test_a_failed_archive_does_not_cost_the_snapshot_its_window(self):
-        # The mirror direction, and the one that matters for cost: the archive is
-        # the large payload, so it is the likelier one to time out, and a timeout
-        # there must not stop the small backup that would have succeeded.
-        ran, audit = _drive(
-            snapshot_due=True,
-            sessions_due=True,
-            run_snapshot_backup=mock.Mock(return_value={"key": "snapshots/x"}),
-            run_sessions_backup=mock.Mock(side_effect=RuntimeError("timed out")),
-        )
-        ran["run_snapshot_backup"].assert_called_once()
-        ran["run_sessions_backup"].assert_called_once()
-        assert [c.args[2] for c in audit.call_args_list] == [
-            "invoked",
-            "succeeded",
-            "invoked",
-            "failed",
-        ]
-
-    def test_the_transcript_push_is_audited_under_its_own_subject(self):
-        # An unattended upload of the most sensitive payload in the product must
-        # be distinguishable in the SEL trail from the snapshot beside it, or an
-        # incident review cannot tell which bytes left the host.
-        _ran, audit = _drive(
-            snapshot_due=False,
-            sessions_due=True,
-            run_sessions_backup=mock.Mock(side_effect=RuntimeError("denied")),
-        )
-        assert [c.args[1] for c in audit.call_args_list] == [
-            "backup/sessions",
-            "backup/sessions",
-        ]
-
-    def test_a_cancel_during_the_archive_is_audited_and_reraised(self):
-        # Teardown must stop the loop cleanly AND leave a trail that it was
-        # interrupted -- and a cancel is never swallowed as a failure.
-        with contextlib.ExitStack() as stack:
-            for patcher in _loop_patches(snapshot_due=False, sessions_due=True):
-                stack.enter_context(patcher)
-            stack.enter_context(
-                mock.patch.object(
-                    hooks.backup_mod,
-                    "run_sessions_backup",
-                    side_effect=asyncio.CancelledError(),
-                )
-            )
-            audit = stack.enter_context(mock.patch.object(hooks, "_audit"))
-            with pytest.raises(asyncio.CancelledError):
-                _run(hooks._run_once())
-        assert [c.args[2] for c in audit.call_args_list] == ["invoked", "cancelled"]
+    def test_each_due_kind_is_claimed_as_its_own_run(self):
+        # Snapshot and sessions dedupe on (kind, account) independently, so a wake
+        # due for both claims two runs. A failure in one is then the SDK's to
+        # record against that run alone -- one cannot cost the other its window.
+        sdk = _fake_sdk()
+        _drive_loop(sdk, snapshot_due=True, sessions_due=True)
+        kinds = [c.args[0] for c in sdk.start_async.await_args_list]
+        assert kinds == [backup.KIND_SNAPSHOT, backup.KIND_SESSIONS]
 
 
 class TestAGrantCountsOnlyWhenItIsARealYes:
@@ -640,71 +533,24 @@ class TestAnOptedInRedactionStopsTheUnattendedUpload:
             assert backup.kind_unavailable_reason(backup.KIND_SESSIONS) is None
 
 
-class TestASetupFailureIsAuditedAgainstWhatWasActuallyDue:
-    """A failure before any push names the kinds this wake was for.
-
-    The setup block -- drive discovery and the shared-drive note -- runs whenever
-    EITHER kind is due, so a transcripts-only wake reaches it too. A fixed
-    ``backup/snapshots`` subject there is therefore a record of a snapshot that
-    was never due, and the SEL trail is append-only, so nothing later corrects it.
-    """
-
-    def _fail_setup(self, *, snapshot_due, sessions_due, exc):
-        with contextlib.ExitStack() as stack:
-            for patcher in _loop_patches(snapshot_due=snapshot_due, sessions_due=sessions_due):
-                stack.enter_context(patcher)
-            stack.enter_context(mock.patch.object(hooks.storage_mod, "find_drive", side_effect=exc))
-            audit = stack.enter_context(mock.patch.object(hooks, "_audit"))
-            if isinstance(exc, asyncio.CancelledError):
-                with pytest.raises(asyncio.CancelledError):
-                    _run(hooks._run_once())
-            else:
-                _run(hooks._run_once())
-        return [c.args[1] for c in audit.call_args_list]
-
-    def test_a_transcripts_only_wake_does_not_file_its_failure_as_a_snapshot(self):
-        # The finding itself. Before the fix this recorded "backup/snapshots" on a
-        # run the snapshot was never due for.
-        subjects = self._fail_setup(
-            snapshot_due=False, sessions_due=True, exc=RuntimeError("tagging API down")
-        )
-        assert subjects == ["backup/sessions"]
-
-    def test_a_snapshot_only_wake_still_files_against_the_snapshot(self):
-        # The direction that was already right must stay right, or the fix is a
-        # swap rather than a correction.
-        subjects = self._fail_setup(
-            snapshot_due=True, sessions_due=False, exc=RuntimeError("tagging API down")
-        )
-        assert subjects == ["backup/snapshots"]
-
-    def test_a_wake_for_both_kinds_names_both(self):
-        # One failure stopped two due payloads, so both are owed a record. A
-        # single entry would leave the other kind looking like it never came due.
-        subjects = self._fail_setup(
-            snapshot_due=True, sessions_due=True, exc=RuntimeError("tagging API down")
-        )
-        assert subjects == ["backup/snapshots", "backup/sessions"]
-
-    def test_a_cancel_during_setup_is_attributed_the_same_way(self):
-        # Teardown takes the other handler, and it carried the identical hardcoded
-        # subject, so fixing only the exception path would leave the same false
-        # record reachable by cancelling.
-        subjects = self._fail_setup(
-            snapshot_due=False, sessions_due=True, exc=asyncio.CancelledError()
-        )
-        assert subjects == ["backup/sessions"]
-
-    def test_the_subject_helper_is_the_only_spelling(self):
-        # Two copies of this expression is how a setup failure and its push end up
-        # filed under different subjects for the same kind. Derived from the
-        # constants so a kind added later cannot quietly miss a mapping.
-        for kind in backup.JOB_KINDS:
-            assert hooks._audit_subject(kind) == f"backup/{backup.KIND_SUBPATHS[kind]}"
-
-
 class TestAWithheldTranscriptNightlySaysWhy:
     """Turning the grant on and getting nothing must not be silent."""
+
+    def _guards(self):
+        return (
+            mock.patch.object(
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
+            ),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=False),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
+        )
 
     def test_the_redaction_gap_is_logged_when_it_withholds_the_run(self, caplog):
         # `due_for_sessions_nightly` answering False is the correct scheduling
@@ -712,7 +558,7 @@ class TestAWithheldTranscriptNightlySaysWhy:
         # watching a nightly that never runs with no statement of which of their
         # settings withheld it.
         with contextlib.ExitStack() as stack:
-            for patcher in _loop_patches(snapshot_due=False, sessions_due=False):
+            for patcher in self._guards():
                 stack.enter_context(patcher)
             stack.enter_context(
                 mock.patch.object(hooks.backup_mod, "nightly_sessions_enabled", return_value=True)
@@ -725,7 +571,7 @@ class TestAWithheldTranscriptNightlySaysWhy:
                 )
             )
             with caplog.at_level("INFO", logger=hooks.logger.name):
-                _run(hooks._run_once())
+                _run(hooks._run_once(_fake_sdk()))
         assert "transcripts withheld" in caplog.text
         assert "cannot be redacted" in caplog.text
 
@@ -733,13 +579,13 @@ class TestAWithheldTranscriptNightlySaysWhy:
         # An install that never asked for transcripts is not withholding anything,
         # so a line here would be noise on every wake of every such install.
         with contextlib.ExitStack() as stack:
-            for patcher in _loop_patches(snapshot_due=False, sessions_due=False):
+            for patcher in self._guards():
                 stack.enter_context(patcher)
             stack.enter_context(
                 mock.patch.object(hooks.backup_mod, "nightly_sessions_enabled", return_value=False)
             )
             with caplog.at_level("INFO", logger=hooks.logger.name):
-                _run(hooks._run_once())
+                _run(hooks._run_once(_fake_sdk()))
         assert "transcripts withheld" not in caplog.text
 
 

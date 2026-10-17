@@ -308,8 +308,8 @@ def _claim_port(app_name: str, port: int) -> None:
         _allocated_ports[app_name] = port
 
 
-def spawned_backend_owns_pid(pid: int) -> bool:
-    """Whether a backend THIS gateway spawned owns *pid*.
+def spawned_backend_owner(pid: int) -> str | None:
+    """The name of the app whose backend THIS gateway spawned owns *pid*, or None.
 
     Owning means *pid* is the spawned root or descends from it, because
     ``wrap_argv`` places a sandbox launcher between us and the real server —
@@ -324,16 +324,33 @@ def spawned_backend_owns_pid(pid: int) -> bool:
     :func:`spawned_backend_names`), so it is refused rather than trusted on a pid
     this gateway cannot vouch for.
 
+    The answer is the registry key the backend was started under, which is the
+    app identity every other registry read uses; the owner-token mint stamps it
+    into its audit record so a token minted by an app is attributed to that app
+    rather than to an anonymous local process.
+
     The ancestry walk runs OUTSIDE ``_lock``: it reads ``/proc`` per candidate,
     and the snapshot taken under the lock is all the registry state it needs.
     """
     with _lock:
         roots = [
-            ap.pid
-            for ap in _processes.values()
+            (name, ap.pid)
+            for name, ap in _processes.items()
             if ap.proc is not None and ap.pid > 0 and ap.proc.poll() is None
         ]
-    return any(_pid_is_self_or_descendant_of(pid, root) for root in roots)
+    for name, root in roots:
+        if _pid_is_self_or_descendant_of(pid, root):
+            return str(name)
+    return None
+
+
+def spawned_backend_owns_pid(pid: int) -> bool:
+    """Whether a backend THIS gateway spawned owns *pid*.
+
+    The boolean form of :func:`spawned_backend_owner`, for callers that need the
+    verdict and not the identity.
+    """
+    return spawned_backend_owner(pid) is not None
 
 
 def recorded_backend_port(app_name: str) -> int | None:

@@ -84,6 +84,8 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
   const revRef = useRef(content.length)   // float reveal progress (chars)
   const emitRef = useRef(content.length)  // last committed floored length
   const rateRef = useRef(0)               // slew-limited APPLIED reveal rate (chars/sec)
+  // Restarts a parked drain loop; null while the buffer is disabled.
+  const startRef = useRef<(() => void) | null>(null)
   // True from the first streamed frame until the post-stream drain has fully
   // caught up. Distinguishes "backlog left over from a live stream" (the rAF
   // loop must finish revealing it smoothly) from "content changed on an idle,
@@ -141,6 +143,11 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
     const lag = LAG_SECS / speed
     let raf = 0
     let last = 0
+    const start = () => {
+      if (raf) return
+      last = 0
+      raf = requestAnimationFrame(tick)
+    }
     const tick = (t: number) => {
       if (!last) last = t
       const dt = Math.min(0.1, (t - last) / 1000)  // clamp (tab refocus jumps)
@@ -187,11 +194,28 @@ export function useSmoothStream(content: string, streaming: boolean, enabled: bo
         raf = 0
       }
     }
-    raf = requestAnimationFrame(tick)
-    return () => { if (raf) cancelAnimationFrame(raf) }
+    startRef.current = start
+    start()
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = 0
+      if (startRef.current === start) startRef.current = null
+    }
   }, [enabled, speed]) // Note: `streaming` intentionally excluded — the tick reads streamingRef
   // for its continuation condition. Including it would restart the rAF loop
   // (killing the in-flight drain) the moment streaming ends.
+
+  // The loop parks itself once caught up with streaming off. A caller whose
+  // `streaming` can drop for a render and come back (a liveness flag derived
+  // from content growth rather than from the turn) would otherwise leave the
+  // loop parked while text keeps arriving: `wasStreamingRef` is up again, so
+  // the snap effect stands aside too, and the reveal freezes for good. Waking
+  // the loop on any streamed growth closes that gap; `start` is a no-op while
+  // the loop is already running.
+  useEffect(() => {
+    if (!enabled || !streaming) return
+    startRef.current?.()
+  }, [content, streaming, enabled])
 
   if (!enabled) return content
   return content.slice(0, Math.min(emitLen, content.length))

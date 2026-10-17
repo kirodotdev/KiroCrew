@@ -57,7 +57,8 @@ need no display and never call Bedrock.
    Chromium's cold start on the hosted runner image has ranged from under 2 s to
    over 30 s between nights with nothing else different.
 3. `harness.py` navigates to each scenario's `start_url` through the omnibox (the
-   token has become the `mc_token` cookie by then), takes a screenshot, and loops:
+   token has become the `mc_token` cookie by then; the URL is typed a second after
+   `ctrl+l`, so none of it can land in a chat composer the page had focused), takes a screenshot, and loops:
    the model returns one action, the harness executes it, waits about a second, and
    returns a fresh screenshot as the tool result. The conversation keeps the newest
    three screenshots; older ones become a one-line placeholder.
@@ -217,10 +218,10 @@ the whole root, sample project included.
 
 One boot also means one roster: every scenario meets the members `GUI_MEMBERS` seeded
 plus whatever an earlier scenario created, so a flow that exists only for an EMPTY
-roster -- the "Meet CrewMates" first-run chapter, offered while `config.agents` holds
+roster -- the empty Crewmates page's hero, shown while `config.agents` holds
 nothing beyond `default` -- cannot be reached in this lane and has no scenario;
-`seed_home.py` also sets `dashboard.crewmates_onboarded`, so that chapter never opens
-over a Crewmates page visit in a run. Giving
+`seed_home.py` also sets the legacy `dashboard.crewmates_onboarded` flag, which
+nothing reads any more. Giving
 it one needs a second gateway boot per run (a scenario-level reseed), which is
 per-scenario isolation work for the tracking issue, not a YAML change.
 
@@ -235,7 +236,13 @@ scenario. A create step names the one row it needs rather than the click that ma
 it: `knowledge-add-folder-source-and-scan` asks for exactly one "Team notes" source and
 adds nothing when an earlier attempt already listed it, because the backend refuses a
 second source on the same path and the form's red "source already exists" would fail
-the run. The same boot also serves every LATER scenario in the run, through one browser
+the run. A scenario whose subject IS the create flow cannot reuse the first attempt's
+row, so it names the row with the `{attempt_suffix}` placeholder instead:
+`crewmate-create-first` types `Radar{attempt_suffix}`, which the harness fills as
+"Radar" on attempt 1 and "Radar 2" on attempt 2 in the summary, steps and expectations
+it hands the model (`scenarios.attempt_suffix`). Without it the retry is refused as a
+duplicate, and the refused form stays open and dirty, so the next scenario's first
+navigation lands on the browser's "Leave site?" prompt over that form. The same boot also serves every LATER scenario in the run, through one browser
 profile, so a per-device switch (Developer Mode, Show Timestamps, a feature preview)
 that a scenario flips is still flipped when the next scenario starts. A scenario that
 flips one either puts it back before it ends or leaves a state nothing later depends on
@@ -350,7 +357,7 @@ logged, or fail with none.
   or through a lane-scoped role that trusts the branch.
 - **On a PR**: not yet -- see the note at the top and phase 2 of the tracking issue.
 - **Nightly**: `20 9 * * *` UTC on `main`, full tier (currently 32 smoke plus
-  9 nightly-only scenarios). A non-PASS night opens or updates the single open
+  8 nightly-only scenarios). A non-PASS night opens or updates the single open
   issue labelled `gui-test-report`.
 
 ### Locally

@@ -14,9 +14,9 @@ Each channel opens the window where the prompt is prepared and adopts it in
 during the send, decider runs afterwards -- because that ordering is the defect;
 a test that pressed after the wait started would pass either way.
 
-The waits below are bounded by ``_TEST_WAIT_S`` rather than the production
-window, so a regression fails in seconds instead of parking the suite for the
-full five minutes.
+The waits below ride on ``await_until`` with its lost-run bound rather than the
+production window, so a regression fails by name in well under the suite
+timeout instead of parking the suite for the full five minutes.
 """
 
 from __future__ import annotations
@@ -40,11 +40,7 @@ from kiro_crew.teams.renderer import TeamsRenderer
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
-
-#: How long a test waits on a decision it expects to already be in hand. Long
-#: enough to absorb scheduling on a loaded host, short enough that a decider
-#: which discarded the press fails here instead of at the production timeout.
-_TEST_WAIT_S = 5.0
+from kiro_crew.testing.wait import await_until
 
 _SESSION = "telegram:1:0"
 _RID = "7"
@@ -162,7 +158,10 @@ class TestTelegramEarlyPress:
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
         decider = TelegramApprovalDecider(session_key=_SESSION)
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -173,7 +172,10 @@ class TestTelegramEarlyPress:
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
         decider = TelegramApprovalDecider(session_key=_SESSION)
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is False
+        )
         # A human's refusal, NOT an expiry: the driver reads this to decide what
         # the model is told, so conflating them would misreport a real decision.
         assert decider.last_deny_cause == ""
@@ -212,7 +214,7 @@ class TestTelegramEarlyPress:
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_a_second_press_is_refused(self) -> None:
@@ -222,7 +224,10 @@ class TestTelegramEarlyPress:
         assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
         assert TelegramApprovalDecider.resolve_global(key, False, nonce="n1") is False
         decider = TelegramApprovalDecider(session_key=_SESSION)
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_a_press_with_the_wrong_nonce_is_refused_inside_the_window(self) -> None:
@@ -255,7 +260,10 @@ class TestTelegramEarlyPress:
         renderer = _telegram_renderer(client)
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         decider = TelegramApprovalDecider(session_key=_SESSION)
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is False
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -271,7 +279,10 @@ class TestTelegramEarlyPress:
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
         decider = TelegramApprovalDecider(session_key=_SESSION)
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_a_raising_send_retires_the_window_and_propagates(self) -> None:
@@ -298,7 +309,12 @@ class TestTelegramEarlyPress:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(tg, "_APPROVAL_TIMEOUT_S", 0.01)
-            assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+            assert (
+                await await_until(
+                    asyncio.ensure_future(decider(_event())), what="decider to resolve"
+                )
+                is False
+            )
         assert decider.last_deny_cause != ""
         assert key not in TelegramApprovalDecider._REGISTRY
         assert key not in TelegramApprovalDecider._NONCES
@@ -318,7 +334,7 @@ class TestTelegramEarlyPress:
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_an_unawaited_reservation_does_not_outlive_its_turn(self) -> None:
@@ -441,7 +457,7 @@ class TestAReservationFromAClosedLoop:
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         assert TelegramApprovalDecider.resolve_global(key, True, nonce="n1") is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_telegram_denies_rather_than_raising_on_a_dead_reservation(self) -> None:
@@ -453,7 +469,12 @@ class TestAReservationFromAClosedLoop:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(tg, "_APPROVAL_TIMEOUT_S", 0.01)
-            assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+            assert (
+                await await_until(
+                    asyncio.ensure_future(decider(_event())), what="decider to resolve"
+                )
+                is False
+            )
 
     @pytest.mark.asyncio
     async def test_slack_ignores_a_reservation_from_a_dead_loop(self) -> None:
@@ -514,7 +535,10 @@ class TestSlackEarlyPress:
         renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, decider=decider)
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -537,7 +561,10 @@ class TestSlackEarlyPress:
         renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, decider=decider)
         await renderer.on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is False
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -548,7 +575,7 @@ class TestSlackEarlyPress:
         await asyncio.sleep(0)
         key = _approval_registry_key(_SESSION, _RID)
         assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_a_second_click_is_refused(self) -> None:
@@ -557,7 +584,10 @@ class TestSlackEarlyPress:
         key = _approval_registry_key(_SESSION, _RID)
         assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         assert SlackApprovalDecider.resolve_global(key, False, nonce=nonce) is False
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_a_click_for_another_session_cannot_resolve_this_one(self) -> None:
@@ -588,7 +618,12 @@ class TestSlackEarlyPress:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(sl, "_APPROVAL_TIMEOUT", 0.01)
-            assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+            assert (
+                await await_until(
+                    asyncio.ensure_future(decider(_event())), what="decider to resolve"
+                )
+                is False
+            )
         assert decider.last_deny_cause != ""
         key = _approval_registry_key(_SESSION, _RID)
         assert key not in SlackApprovalDecider._REGISTRY
@@ -605,7 +640,7 @@ class TestSlackEarlyPress:
         await asyncio.sleep(0)
         key = _approval_registry_key(_SESSION, _RID)
         assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_an_unawaited_reservation_does_not_outlive_its_turn(self) -> None:
@@ -829,7 +864,10 @@ class TestTeamsEarlyPress:
         client = _PressingTeamsClient(approved=True)
         await _teams_renderer(client, decider).on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -847,7 +885,10 @@ class TestTeamsEarlyPress:
         client = _PressingTeamsClient(approved=False)
         await _teams_renderer(client, decider).on_prompt_choice([], _RID, tool_title="bash")
         assert client.press_accepted is True
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is False
+        )
         assert decider.last_deny_cause == ""
 
     @pytest.mark.asyncio
@@ -857,7 +898,7 @@ class TestTeamsEarlyPress:
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         assert TeamsApprovalDecider.resolve_global(_SESSION, _RID, "n1", approved=True) is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_a_second_click_is_refused(self) -> None:
@@ -865,7 +906,10 @@ class TestTeamsEarlyPress:
         decider.arm(_RID, "n1")
         assert TeamsApprovalDecider.resolve_global(_SESSION, _RID, "n1", approved=True) is True
         assert TeamsApprovalDecider.resolve_global(_SESSION, _RID, "n1", approved=False) is False
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_a_click_with_the_wrong_nonce_is_refused_inside_the_window(self) -> None:
@@ -894,7 +938,10 @@ class TestTeamsEarlyPress:
 
         decider = TeamsApprovalDecider(session_key=_SESSION)
         await _teams_renderer(_Refusing(), decider).on_prompt_choice([], _RID, tool_title="bash")
-        assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(decider(_event())), what="decider to resolve")
+            is False
+        )
         # Written off, so nothing is left for a late click to answer.
         assert registry_key(_SESSION, _RID) not in TeamsApprovalDecider._REGISTRY
         assert _RID not in decider._futures
@@ -907,7 +954,12 @@ class TestTeamsEarlyPress:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(tm, "APPROVAL_TIMEOUT_SECS", 0.01)
-            assert await asyncio.wait_for(decider(_event()), _TEST_WAIT_S) is False
+            assert (
+                await await_until(
+                    asyncio.ensure_future(decider(_event())), what="decider to resolve"
+                )
+                is False
+            )
         assert decider.last_deny_cause != ""
         assert registry_key(_SESSION, _RID) not in TeamsApprovalDecider._REGISTRY
 
@@ -920,7 +972,7 @@ class TestTeamsEarlyPress:
         task = asyncio.create_task(decider(_event()))
         await asyncio.sleep(0)
         assert TeamsApprovalDecider.resolve_global(_SESSION, _RID, "n1", approved=True) is True
-        assert await asyncio.wait_for(task, _TEST_WAIT_S) is True
+        assert await await_until(asyncio.ensure_future(task), what="the task to resolve") is True
 
     @pytest.mark.asyncio
     async def test_an_unawaited_reservation_does_not_outlive_its_turn(self) -> None:
@@ -1024,9 +1076,20 @@ class TestTheSweepReachesTheRealRegistry:
         reading the dispatcher shows which name its own end-of-turn path uses.
         """
         import importlib
+        import importlib.util
         import inspect
+        import pkgutil
 
         source = inspect.getsource(importlib.import_module(module_name))
+        # A dispatcher composed from owners in its channel's ``dispatch`` package runs its
+        # end-of-turn path in one of them (Telegram's turn engine), so all are read.
+        owners = f"{module_name.rpartition('.')[0]}.dispatch"
+        if importlib.util.find_spec(owners) is not None:
+            package = importlib.import_module(owners)
+            source += "".join(
+                inspect.getsource(importlib.import_module(f"{owners}.{info.name}"))
+                for info in pkgutil.iter_modules(package.__path__)
+            )
         assert f"{seam}.discard_session" not in source, (
             f"{module_name} sweeps reservations through {seam}, the name callers and "
             "tests substitute -- use the registry alias instead"
@@ -1066,7 +1129,9 @@ class TestTheSweepSparesAWindowAWaitOwns:
         waiter = asyncio.create_task(decider(_event(spawn_rid)))
         await asyncio.sleep(0)
         assert TelegramApprovalDecider.resolve_global(spawn_key, True, nonce="n-spawn") is True
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is True
+        )
 
     @pytest.mark.asyncio
     async def test_telegram_sweeps_an_undeclared_window_before_its_wait_starts(self) -> None:
@@ -1108,7 +1173,9 @@ class TestTheSweepSparesAWindowAWaitOwns:
 
         assert TelegramApprovalDecider.is_pending(spawn_key, "n-spawn") is True
         assert TelegramApprovalDecider.resolve_global(spawn_key, True, nonce="n-spawn") is True
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is True
+        )
 
     @pytest.mark.asyncio
     async def test_telegram_still_drops_an_unawaited_window_beside_it(self) -> None:
@@ -1130,7 +1197,9 @@ class TestTheSweepSparesAWindowAWaitOwns:
         # The owned one is untouched.
         assert TelegramApprovalDecider.is_pending(spawn_key, "n-spawn") is True
         TelegramApprovalDecider.resolve_global(spawn_key, False, nonce="n-spawn")
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is False
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is False
+        )
 
     @pytest.mark.asyncio
     async def test_telegram_releases_ownership_when_the_wait_ends(self) -> None:
@@ -1141,7 +1210,9 @@ class TestTheSweepSparesAWindowAWaitOwns:
         await asyncio.sleep(0)
         assert key in TelegramApprovalDecider._AWAITED
         TelegramApprovalDecider.resolve_global(key, True, nonce="n1")
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is True
+        )
         assert key not in TelegramApprovalDecider._AWAITED
 
     @pytest.mark.asyncio
@@ -1156,7 +1227,9 @@ class TestTheSweepSparesAWindowAWaitOwns:
 
         assert SlackApprovalDecider._REGISTRY.get(key) is decider
         assert SlackApprovalDecider.resolve_global(key, True, nonce=nonce) is True
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is True
+        )
 
     @pytest.mark.asyncio
     async def test_slack_releases_ownership_when_the_wait_ends(self) -> None:
@@ -1167,5 +1240,7 @@ class TestTheSweepSparesAWindowAWaitOwns:
         await asyncio.sleep(0)
         assert key in SlackApprovalDecider._AWAITED
         SlackApprovalDecider.resolve_global(key, True, nonce=nonce)
-        assert await asyncio.wait_for(waiter, _TEST_WAIT_S) is True
+        assert (
+            await await_until(asyncio.ensure_future(waiter), what="the waiter to resolve") is True
+        )
         assert key not in SlackApprovalDecider._AWAITED

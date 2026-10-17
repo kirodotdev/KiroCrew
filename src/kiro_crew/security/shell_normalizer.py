@@ -698,8 +698,15 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
 
 
 # Constructs by which a text-processing tool RUNS a command rather than printing it:
-# ``awk``'s ``system()`` and pipe-to-command, and GNU ``sed``'s ``e`` flag.
-_SCRIPT_EXECUTES_RE = re.compile(r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$")
+# ``awk``'s ``system()`` and pipe-to-command, and GNU ``sed``'s ``e`` command.  The
+# terminal ``e`` is a word of the script wherever a boundary precedes it (``e``, ``p;e``,
+# ``--expression=e``, and a custom-delimiter address such as ``\-.-e`` or ``\- -e`` whose
+# closing delimiter is ``-``).  The ``(?<!^-)`` guard excludes only the bare two-character
+# option token ``-e``/``-E``, whose ``-`` is the token's first character: no consumer runs
+# that option.
+_SCRIPT_EXECUTES_RE = re.compile(
+    r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|(?<!^-)\be\s*$"
+)
 
 
 def _stdin_redirect_carriers(tokens: list[str], start: int, stop: int) -> "Iterator[str]":

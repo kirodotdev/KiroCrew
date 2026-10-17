@@ -15,22 +15,22 @@ Paths below are relative to `src/kiro_crew/`.
 |---|---|---|
 | ACP protocol strings | `acp/types.py` | `EVENT_*` event kinds and `METHOD_*` JSON-RPC method names. |
 | Provider event kinds | `providers/base.py` | Re-exports the `EVENT_*` names from `acp/types.py`; that re-export is the seam providers code against, not a second definition. |
-| ACP client timeouts | `acp/client.py` | `_INIT_TIMEOUT`, `_DEFAULT_PROMPT_TIMEOUT`, `_READ_TIMEOUT`, `_STALE_TURN_TIMEOUT`, `_TOOL_STALL_TIMEOUT`, `_WAIT_RESPONSE_MAX_TIMEOUT`, `_SEL_AUDIT_TIMEOUT_SECONDS`. |
+| ACP client timeouts | `acp/client_timeouts.py` | `_INIT_TIMEOUT`, `_DEFAULT_PROMPT_TIMEOUT`, `_READ_TIMEOUT`, `_STALE_TURN_TIMEOUT`, `_TOOL_STALL_TIMEOUT`, `_WAIT_RESPONSE_MAX_TIMEOUT`, `_SEL_AUDIT_TIMEOUT_SECONDS`. |
 | MCP protocol version | `mcp_shared.py` | The `initialize` reply's `protocolVersion` for the managed stdio servers. `mcp_cron.py` / `mcp_core.py` do not carry their own copy. |
-| Credential keys | `config/loader.py` | `CRED_*` env-var names plus the `CREDENTIAL_KEYS` tuple. |
-| Dashboard port | `config/loader.py` | `_DEFAULT_PORT` (5476) and `DASHBOARD_PORT` (honors `KIROCREW_PORT`). `dashboard/origin.py` imports `_DEFAULT_PORT` rather than restating it. |
+| Credential keys | `config/loader_credentials.py` | `CRED_*` env-var names plus the `CREDENTIAL_KEYS` tuple. |
+| Dashboard port | `config/loader_credentials.py` | `_DEFAULT_PORT` (5476) and `DASHBOARD_PORT` (honors `KIROCREW_PORT`). `dashboard/origin.py` imports `_DEFAULT_PORT` rather than restating it. |
 | Hook results and event names | `hooks.py` | `HOOK_PASSTHROUGH` / `HOOK_REPLY` / `HOOK_MODIFY` / `HOOK_INJECT_CONTEXT`, the tool verdicts `TOOL_ALLOW` / `TOOL_AUTO_APPROVE` / `TOOL_DENY`, and `HOOK_EVENT_*` / `HOOK_EVENTS`. |
 | Memory paths and dir names | `memory.py` | `WORKSPACE_DIR_NAME`, `MEMORY_DIR_NAME`, `HISTORY_DIR_NAME`, `PREFERENCES_FILE`, `PROJECTS_FILE`, `INDEX_DB_FILE` (the FTS index *name* only — which directory a given store's index sits in is store policy, owned by `memory_stores.memory_index_path_for`). |
 | Named memory stores | `memory_stores.py` | `MEMORY_STORES_DIR_NAME`, `DEFAULT_MEMORY_STORE`, `MEMORY_DB_FILE` (the vector-store filename, which `vector_memory._DB_FILE` aliases rather than restating), `MEMORY_STORE_NAME_MAX`, `_STORE_NAME_RE`, `_WINDOWS_RESERVED_BASENAMES`; the tree's host-local entries `MEMBER_API_KEY_FILE`, `MEMBER_BACKUPS_DIR_NAME`, `EXECUTION_LOGS_DIR_NAME`, `STORE_BACKUP_DIR_NAME` (which `memory_backup.BACKUP_DIR_NAME` aliases), and the layout predicates `is_host_local_store_state` / `named_store_product_file` the snapshot and export read. A stdlib-only LEAF module, so `security.py` can build its sensitive-path fence from `MEMORY_STORES_DIR_NAME` without a cycle. |
 | Lesson limits | `learn.py` | `_LESSONS_FILE`, `_MAX_LESSONS_TOTAL` (prune oldest past the total). |
 | Cron limits | `cron_service/store.py`, `fields.py`, `model.py`, `schedule.py`; the reaper intervals in `cron.py` | `_CRONS_FILE`, `_STORE_VERSION`, `_MIN_INTERVAL_SECS`, `_JOB_TIMEOUT_SECS`, `_TIMER_POLL_SECS`, `_AUTO_PAUSE_THRESHOLD`, the reaper intervals, the skip-date horizon, the store file-lock timeouts, and the hourly/daily jitter caps and the jitter wait's wall-clock slice. |
-| Session and transcript limits | `history.py` | `SESSIONS_DIR_NAME`, `ARCHIVE_RETENTION_DAYS`, the JSONL rotation pair `_SESSION_MAX_BYTES` (10 MB) / `_SESSION_KEEP_LINES`, the file-lock timeouts, and the search caps (`SEARCH_MIN_CHARS`, `_SEARCH_SCAN_WINDOW`, `_TITLE_BOOST`). |
+| Session and transcript limits | `history.py` and its owners | `SESSIONS_DIR_NAME`, `ARCHIVE_RETENTION_DAYS` (`history_files.py`), the JSONL rotation pair `_SESSION_MAX_BYTES` (10 MB) / `_SESSION_KEEP_LINES` (`history.py`), the file-lock timeouts (`history_locks.py`), and the search caps (`SEARCH_MIN_CHARS`, `_SEARCH_SCAN_WINDOW`, `_TITLE_BOOST`, in `history_search.py`). |
 | Context budgets | `context_assembly/budget.py` | `_CONTEXT_BUDGET_BASE` plus one `_budget(fraction)` cap per block (history, preferences, projects, lessons, semantic, episodic, skills, steering, compressed history, preamble headroom). Budgets are expressed as FRACTIONS of the base, so read them there rather than quoting a byte figure. |
 | Task states | `task.py` | The `TaskState` enum, the `_TERMINAL` set, and the `_TRANSITIONS` map that defines the legal state machine. |
 | Heartbeat intervals | `heartbeat.py` | `_DEFAULT_INTERVAL`, `_FTS_REBUILD_TICKS`, `_PRUNE_TICKS`, `HEARTBEAT_TASK_TIMEOUT_SECS`, `HEARTBEAT_FILE`. |
-| Subagent limits | `subagent.py` | `_MAX_CONCURRENT`, `_TIMEOUT_SECS`, `_TURN_LIMIT`, `_MAX_DONE_RESULT_LEN`, `_STARTUP_TIMEOUT_SECS`, `INJECTION_TIMEOUT`, the reaper/stall intervals. |
-| Slot state caps | `dashboard/state.py` | `_MAX_SLOT_MESSAGES`, `_MAX_PERSISTED_NOTIFICATIONS`, `_MAX_SOURCE_LINKS_PER_SLOT`, `_MAX_PENDING_CONTEXT`, `NATIVE_SUBAGENT_DONE_RESULT_CAP`, `_QUESTION_TIMEOUT_MAX`. |
-| Injected-message envelope prefixes | `constants.py`, `dashboard/state.py` | `constants.py` owns `SUBAGENT_COMPLETION_PREFIX` / `SUBAGENT_BATCH_COMPLETION_PREFIX`; `dashboard/state.py` owns the cron, monitor, synthesis, and `*_RECOVERY_PREFIX` markers and aggregates `SUBAGENT_COMPLETION_PREFIXES`. See [injected-messages](injected-messages.md). |
+| Subagent limits | `subagent_parts/run_limits.py` (`_MAX_DONE_RESULT_LEN` in `subagent_parts/run_output.py`); read and patched as `subagent.<name>` | `_MAX_CONCURRENT`, `_TIMEOUT_SECS`, `_TURN_LIMIT`, `_MAX_DONE_RESULT_LEN`, `_STARTUP_TIMEOUT_SECS`, `INJECTION_TIMEOUT`, the reaper/stall intervals. |
+| Slot state caps | `dashboard/state.py` and its owners in `dashboard/state_parts/` | `_MAX_SLOT_MESSAGES`, `_MAX_PERSISTED_NOTIFICATIONS`, `_MAX_SOURCE_LINKS_PER_SLOT`, `_MAX_PENDING_CONTEXT`, `NATIVE_SUBAGENT_DONE_RESULT_CAP`, `_QUESTION_TIMEOUT_MAX`. |
+| Injected-message envelope prefixes | `constants.py`, `dashboard/state_parts/injected_turns.py` | `constants.py` owns `SUBAGENT_COMPLETION_PREFIX` / `SUBAGENT_BATCH_COMPLETION_PREFIX`; `dashboard/state_parts/injected_turns.py` (re-exported by `dashboard/state.py`) owns the cron, monitor, synthesis, and `*_RECOVERY_PREFIX` markers and aggregates `SUBAGENT_COMPLETION_PREFIXES`. See [injected-messages](injected-messages.md). |
 | Usage cache TTLs | `dashboard/handlers/usage.py` | `_CACHE_TTL`, `_TOKEN_CACHE_TTL`, `_CONTEXT_CACHE_TTL`, `_TOKEN_HISTORY_DAYS`, `_CONTEXT_TOP_SESSIONS`. |
 | Webhook hook limits | `dashboard/handlers/hooks.py` | `_HOOK_MAX_CONCURRENT` (semaphore-backed, 429 past it), `_HOOK_MESSAGE_MAX_LEN`, `_HOOK_TIMEOUT_DEFAULT` / `_HOOK_TIMEOUT_MAX` (both prime, to avoid a thundering herd with cron intervals). |
 | Embed cache | `embeddings.py` | `_EMBED_CACHE_MAX` (128 entries, keyed by text plus model id; the comment there carries the memory arithmetic). |
@@ -97,6 +97,10 @@ hotspot of every cleanup PR. The legacy markers the tree still carries are not
 tracked; a marker can re-enter only on an added line, which is what the gate
 judges. Without the env the script prints whole-tree counts and does not enforce.
 
+The rule applies to every comment. The gate enforces it only on added lines of
+`.py` files under `src/kiro_crew` and `test`; comments elsewhere (`website/`, the
+Electron shell, workflow files) are held to the rule by review.
+
 ```bash
 COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py
 ```
@@ -108,8 +112,8 @@ committing:
 
 ```bash
 python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py
-COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py && isort src/kiro_crew test
-flake8 src/kiro_crew test && mypy src/kiro_crew
+COMMENT_HISTORY_BASE_REF=origin/main python3 scripts/check_comment_history.py && isort src/kiro_crew test conftest.py xdist_budget.py
+flake8 src/kiro_crew test conftest.py xdist_budget.py && mypy src/kiro_crew
 python3 scripts/local-gate.py
 ```
 
@@ -120,7 +124,9 @@ CI's job (`local-gate.py --full` exists for a human who wants it locally).
 any enforcement, so a repo-wide run reformats ~95,800 lines. Those files are
 recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
-ever shrinks. Format what you touched with
+ever shrinks. Prune with `python3 scripts/check_black_formatting.py
+--update-baseline`; it refuses unless the installed black equals the
+`pyproject.toml` pin (`black==26.3.1`). The read-only check does not need the pin. Format what you touched with
 `black --target-version py310 <paths>`, never the whole tree.
 
 **On macOS, run `mypy --platform linux src/kiro_crew`.** CI type-checks on Linux, and
@@ -147,6 +153,59 @@ The formatter, linter and type-checker are pinned to exact versions in both
 `setup.cfg`'s `dev` extra and `pyproject.toml`'s `dependency-groups`, because
 black and mypy change their output across minor releases and a floating range
 makes a local venv disagree with CI. Bump them in lockstep.
+
+## No file over 2,000 lines
+
+A hand-written code file holds at most 2,000 lines: Python, TypeScript and
+JavaScript, CSS, shell, PowerShell and Swift, backend and frontend alike. Put new
+code in a new module. When a file nears the cap, move whole definitions into a
+sibling module and keep the original path as the import path callers use. A name
+tests patch must stay patchable there, through a forwarding facade or call-time
+reads of the facade (see
+[testing-conventions](testing-conventions.md#patch-the-defining-module-not-a-re-export)):
+a plain re-export silently stops the patch reaching the moved code.
+
+`scripts/check_file_line_cap.py` checks every tracked code file, and
+`test/test_file_line_cap.py` runs it in the backend test suite (Linux and
+Windows) on every change, including the leaf-test and frontend-only reductions,
+and pins every rule. Only tracked files count, so `git add` a new file before
+checking it locally.
+Generated output, vendored code, data, prose and workflow YAML are exempt; the
+script's `EXEMPTIONS` table names each one with its reason. A line counts the way
+`wc -l` counts it, plus one for an unterminated last line.
+
+The files that were already over the cap are listed in
+`.github/file-line-cap-baseline.txt` as `<lines> <path>` rows, and the list only
+shrinks. The tree is scanned whole, but the verdict is scoped to the change
+(`scripts/ratchet_scope.py`, as for the black and subprocess-encoding gates,
+read with `--no-renames` so a renamed file's old path counts): a violation in a
+file the change does not touch is main drift, a warning, because two changes
+that were each green can together push a file over the cap.
+
+| Situation | Verdict |
+|---|---|
+| A file over the cap that the baseline does not list | Fails if the change touches it; split it, never add a row. Otherwise a main-drift warning. |
+| A listed file now within the cap, deleted, or exempt | Fails if the change touches it, until its row is deleted in the same commit as the split. Otherwise a main-drift warning. |
+| A baseline edit that adds a path, raises a count, or lowers a row below its file's size | Fails: the baseline only shrinks, and a row it writes is never below the file's measured size nor above the row at the base. A deletion-only or lowering edit is judged by the rows it changed, so someone else's stale row beside it stays a main-drift warning. |
+| A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
+| A malformed or unsorted baseline | Fails. |
+
+Backend Lint and Frontend Lint run the script on the full history and enforce
+the scoped verdict, and the main ratchet audit judges the whole tree, so main
+drift turns red there. The test runs on the backend shards' shallow checkout,
+which cannot tell which files a change touched, so there it reports violations
+without failing.
+
+After a split, delete your own row in the same commit. Delete only your own
+rows: never edit someone else's, by hand or with `--update-baseline`. The
+refresh edits only the rows of files your change touches; it deletes stale rows
+and lowers counts, and never adds a path or raises a count. Where it cannot tell
+which files the change touches, it refuses unless `--whole-tree` asks it to
+rewrite every row:
+
+```bash
+python3 scripts/check_file_line_cap.py --update-baseline
+```
 
 ## Subprocess output is decoded explicitly
 

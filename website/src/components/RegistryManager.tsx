@@ -18,6 +18,7 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import { recordEvent } from '../rum'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { fmtTimeNumeric } from '../i18n/format'
 import ErrorNotice from './ErrorNotice'
 import { orderByReview } from './appstore/registryOrder'
@@ -491,7 +492,7 @@ export default function RegistryManager({ bare = false }: { bare?: boolean } = {
         </div>
       ) : (
         <div className="mt-4 flex items-center gap-2">
-          <Btn onClick={() => setAdding(true)}>
+          <Btn onClick={() => setAdding(true)} {...uiLocation('apps.sources.add-registry')}>
             <Plus size={14} /> {i18nT('components.registryManager.add_registry')}
           </Btn>
           {registries.length > 0 || pinned.length > 0 ? (

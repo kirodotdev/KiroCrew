@@ -15,6 +15,7 @@ const http = require("http");
 const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
 const { seedRenamedStore } = require("../store-rename");
+const { sessionCookieHeader } = require("../mochi-session-token");
 const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
   SELF_INSTANCE,
@@ -139,8 +140,8 @@ function withGatewayAuth(url, auth) {
     // port, which this process cannot know behind a tunnel. A borrowed
     // credential only ever exists for a URL that stated its port, so resolving a
     // default here could only ever name another gateway's cookie.
-    const port = new URL(url).port;
-    return { url, headers: { Cookie: `mc_token_${port}=${auth.value}` } };
+    const cookie = sessionCookieHeader(url, auth.value);
+    return { url, headers: cookie ? { Cookie: cookie } : {} };
   }
   const sep = url.includes("?") ? "&" : "?";
   return { url: `${url}${sep}token=${encodeURIComponent(auth.value)}`, headers: {} };

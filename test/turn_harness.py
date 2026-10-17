@@ -617,17 +617,26 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "aflush": None,
     "allocation_requested_model": "",
     "begin_turn": None,
+    # The healthy session cuts its turn cleanly at the ceiling: the native
+    # cancel is acknowledged, so the deadline reports the acknowledged outcome
+    # and the slot shows the ordinary (not the "did not acknowledge") card.
+    "cancel_owned_turn": "acked",
     "commit_provider_switch_replay_sid": False,
     "compact_wait_budget_secs": 60.0,
+    # Below the threshold: nothing to say mid-turn about a coming compaction.
+    "compaction_due_after_turn": False,
+    "consume_first_turn_history_owed": False,
     "consume_needs_reinjection": False,
     "consume_provider_switch_replay": False,
     "consume_replay_suppression": False,
     "destroy": None,
     "effective_autocompact_pct": 80.0,
+    "first_turn_history_owed_pending": False,
     "get_pid": None,
     "is_mirror_paused": False,
     "is_slack_paused": False,
     "mapped_sid": "",
+    "mark_first_turn_history_owed": False,
     "mark_needs_reinjection": None,
     "mark_provider_switch_replay": False,
     "provider_switch_replay_pending": False,
@@ -641,6 +650,7 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "set_active_dashboard_slots": None,
     "set_approval_policy": None,
     "set_compacting_callback": None,
+    "unlanded_marker_pending": False,
     "stop_generation": 0,
 }
 #: The real in-memory link stores ``chat_test_helpers._make_state`` builds,

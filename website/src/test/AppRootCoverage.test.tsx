@@ -378,12 +378,12 @@ describe('App — system metrics segment', () => {
     localStorage.setItem('mc-topbar-metrics', '1')
   })
 
-  it('shows an unavailable pill when the metrics fetch fails, and hides on click', async () => {
+  it('shows an unavailable notice when the metrics fetch fails, and hides on click', async () => {
     vi.mocked(api.system).mockRejectedValue(new Error('probe unreachable'))
     renderWithProviders(<App />, { route: '/chat' })
 
-    const pill = await screen.findByText('metrics unavailable')
-    fireEvent.click(pill)
+    expect(await screen.findByText('metrics unavailable')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'System metrics' }))
     await waitFor(() => expect(localStorage.getItem('mc-topbar-metrics')).toBe('0'))
     expect(screen.queryByText('metrics unavailable')).toBeNull()
   })

@@ -25,6 +25,7 @@ from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import eager as crew_log_eager
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log import store as crew_log_store
 
 SLOT = "chat-slotfold"
 FIRST = "acp-first"
@@ -395,6 +396,22 @@ def _rewrite_in_place(unit_id: str, old: str, new: str) -> None:
     raise AssertionError(f"{old!r} was not in {unit_id}'s log to rewrite")
 
 
+def _cut_back(unit_id: str, old: str, new: str) -> None:
+    """What one of the store's recovery paths leaves behind, including its accounting.
+
+    Those paths CUT the file back and then write over the seqs they freed, and the unit's
+    cut counter is raised on either side of that. So a stand-in for them has to move that
+    counter too: a rewrite without it stands for a hand-edit instead, which is a
+    different event with different evidence.
+
+    The NEWEST unit is settled by the counter, which is why this matters here and not
+    for an earlier unit -- an earlier unit is held to its whole mark, and a rewrite
+    there fails the comparison on its own.
+    """
+    _rewrite_in_place(unit_id, old, new)
+    _a_completed_cut(lg.crew_log_path(lg.KIND_SESSION, unit_id).parent)
+
+
 def test_an_earlier_unit_rewritten_in_place_folds_cold():
     """An already-folded entry can CHANGE without its seq moving, and must not be served.
 
@@ -436,6 +453,11 @@ def test_the_newest_unit_rewritten_under_a_grown_file_folds_cold():
     resumes above the rewritten entry and serves it from the old bytes for as long as the
     cell lives, and `rebuild_from_projection` writes that answer back over the record.
 
+    What says so is the unit's CUT COUNTER, which the store raises before each of those
+    truncations -- so the reader's evidence is a few bytes read rather than a hash of
+    every record it ever folded, and a warm read costs the same on a log of ten entries
+    and a log of a hundred thousand.
+
     An event text is what this asserts on, because events accumulate: a rewritten
     ``goal`` would be overwritten by any later entry carrying one, and the test would
     pass without the fold ever re-reading a thing.
@@ -446,7 +468,7 @@ def test_the_newest_unit_rewritten_under_a_grown_file_folds_cold():
     units = (FIRST,)
     assert _warm("ledger", units) == _cold("ledger", units)
 
-    _rewrite_in_place(FIRST, "ORIGINAL-TWO", "REWRITTEN-UNDER-A-GROWN-FILE")
+    _cut_back(FIRST, "ORIGINAL-TWO", "REWRITTEN-UNDER-A-GROWN-FILE")
     crew_log_emit.reset_caches()
     _ledger(FIRST, goal="g", event="ORIGINAL-THREE", event_kind="progress")
 
@@ -689,7 +711,7 @@ def test_the_revision_rises_across_a_rewritten_prefix():
     units = (FIRST,)
     before = _revision(units)
 
-    _rewrite_in_place(FIRST, "ORIGINAL-TWO", "REWRITTEN-UNDER-A-GROWN-FILE")
+    _cut_back(FIRST, "ORIGINAL-TWO", "REWRITTEN-UNDER-A-GROWN-FILE")
     crew_log_emit.reset_caches()
     _ledger(FIRST, goal="g", event="ORIGINAL-THREE", event_kind="progress")
 
@@ -756,3 +778,16 @@ def test_an_evicted_cell_refolds_to_a_higher_revision_not_a_lower_one(monkeypatc
         f"a cold refold after eviction reported revision {after} against the {held} a "
         "client already holds; every later frame for this board would be discarded"
     )
+
+
+def _a_completed_cut(directory) -> None:
+    """Record a cut of *directory*'s log that has FINISHED, as the store records one.
+
+    The store brackets every cut with a raise on either side of the bytes
+    (``_open_cut`` / ``_close_cut``), so a stand-in that raised the counter once would
+    leave it odd -- reported as a cut still in flight, which is a different reading with
+    a different answer. Both halves, in the store's own order, so what this stands for is
+    a completed mutation.
+    """
+    crew_log_store._open_cut(directory)
+    crew_log_store._close_cut(directory)

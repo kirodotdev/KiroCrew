@@ -42,6 +42,7 @@ import datetime as _dt
 import errno
 import os
 import pathlib
+import stat
 from contextlib import contextmanager
 from typing import Iterator, Optional
 from unittest import mock
@@ -54,8 +55,10 @@ __all__ = [
     "replace_sharing_violation",
     "open_sharing_violation",
     "unlink_sharing_violation",
+    "readonly_unlink_refused",
     "nonatomic_write",
     "windows_text_mode_write",
+    "same_tick_file_stat",
 ]
 
 _DEFAULT_INSTANT = _dt.datetime(2026, 1, 1, 0, 0, 0, tzinfo=_dt.timezone.utc)
@@ -161,6 +164,36 @@ def read_sharing_violation(
         return real_read_bytes(self)
 
     with mock.patch.object(pathlib.Path, "read_bytes", _patched):
+        yield state
+
+
+@contextmanager
+def read_text_sharing_violation(
+    *, match: Optional[str] = None, times: int = 1
+) -> Iterator[dict]:
+    """Make ``Path.read_text()`` raise a Windows-style sharing violation.
+
+    The ``read_text`` counterpart to :func:`read_sharing_violation`. Patching
+    ``builtins.open`` does not reach ``Path.read_text``, which opens through
+    ``io.open``, so a reader that slurps a small sidecar with ``read_text``
+    needs this one. Raises ``PermissionError`` (``WinError 32``) for the first
+    *times* matching reads, then delegates to the real call. *match* filters on
+    the path (basename-equality or substring); ``None`` faults every read.
+    Yields a ``{"n": count}`` dict of how many matching reads were seen.
+    """
+    real_read_text = pathlib.Path.read_text
+    state = {"n": 0}
+
+    def _patched(self: pathlib.Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if match is None or self.name == match or match in str(self):
+            state["n"] += 1
+            if state["n"] <= times:
+                raise PermissionError(
+                    f"[WinError 32] simulated sharing violation reading {self}"
+                )
+        return real_read_text(self, *args, **kwargs)
+
+    with mock.patch.object(pathlib.Path, "read_text", _patched):
         yield state
 
 
@@ -392,6 +425,44 @@ def unlink_sharing_violation(
 
 
 @contextmanager
+def readonly_unlink_refused() -> Iterator[dict]:
+    """Make deleting a read-only file fail the way Windows does.
+
+    Windows refuses to unlink a file whose read-only attribute is set, whatever its
+    directory allows, and git writes the objects, packs and index under ``.git`` that
+    way. POSIX asks the parent directory's write bit instead, so ``shutil.rmtree`` over
+    the same checkout succeeds locally and a caller that passes ``ignore_errors=True``
+    never shows the residue it leaves on Windows.
+
+    ``os.unlink`` and ``os.remove`` raise ``PermissionError`` for a regular file without
+    an owner-write bit and delegate for everything else, so the ``chmod`` that
+    ``platform_compat.rmtree_force`` does before its retry lets the delete through. The
+    ``dir_fd`` form is covered because ``shutil.rmtree`` walks by descriptor on POSIX.
+
+    ``platform_compat.IS_POSIX`` reads False while the block runs, which is what makes
+    the retry hook take its Windows branch (the ``chmod``); anything else the code under
+    test asks of it sees False too, so wrap only the call being judged. Yields
+    ``{"refused": [path, ...]}``, the deletes this simulator refused.
+    """
+    real_unlink = os.unlink
+    state: dict = {"refused": []}
+
+    def _refusing(path, *args, dir_fd=None, **kwargs):  # type: ignore[no-untyped-def]
+        info = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISREG(info.st_mode) and not info.st_mode & stat.S_IWRITE:
+            state["refused"].append(os.fspath(path))
+            raise PermissionError(
+                errno.EACCES, "[WinError 5] simulated read-only file", os.fspath(path)
+            )
+        return real_unlink(path, *args, dir_fd=dir_fd, **kwargs)
+
+    with mock.patch("os.unlink", _refusing), mock.patch("os.remove", _refusing), mock.patch(
+        "kiro_crew.platform_compat.IS_POSIX", False
+    ):
+        yield state
+
+
+@contextmanager
 def nonatomic_write(cred: pathlib.Path, data: bytes) -> Iterator[None]:
     """Reproduce a NON-ATOMIC ``write_bytes`` truncate window deterministically.
 
@@ -426,6 +497,69 @@ def nonatomic_write(cred: pathlib.Path, data: bytes) -> Iterator[None]:
         yield
     finally:
         cred.write_bytes(data)  # completion phase — full payload lands
+
+
+class _SameTickStat:
+    """A ``stat_result`` stand-in whose timestamps are pinned; every other field is live."""
+
+    __slots__ = ("_real", "_mtime_ns", "_ctime_ns")
+
+    def __init__(self, real: os.stat_result, mtime_ns: int, ctime_ns: int) -> None:
+        self._real = real
+        self._mtime_ns = mtime_ns
+        self._ctime_ns = ctime_ns
+
+    @property
+    def st_mtime_ns(self) -> int:
+        return self._mtime_ns
+
+    @property
+    def st_ctime_ns(self) -> int:
+        return self._ctime_ns
+
+    @property
+    def st_mtime(self) -> float:
+        return self._mtime_ns / 1_000_000_000
+
+    @property
+    def st_ctime(self) -> float:
+        return self._ctime_ns / 1_000_000_000
+
+    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+        return getattr(self._real, name)
+
+
+@contextmanager
+def same_tick_file_stat(*, match: Optional[str] = None) -> Iterator[dict]:
+    """Make every rewrite of a file land on ONE file-clock tick in ``Path.stat()``.
+
+    NTFS stamps a file's last-write time from the system clock, which moves in
+    ticks of about 1-16 ms, so two in-place rewrites inside one tick report the
+    same ``st_mtime_ns``. Windows ``st_ctime`` is the file's CREATION time, which
+    no rewrite moves, and an in-place truncate-and-write keeps ``st_ino``. A
+    cache keyed on those three alone cannot see the second rewrite. POSIX moves
+    both timestamps from a finer clock, so the tie never reproduces locally.
+
+    For each matching path the first ``stat()`` is remembered and every later
+    ``stat()`` reports that first ``st_mtime_ns``/``st_ctime_ns`` while ``st_size``,
+    ``st_ino`` and every other field stay live. *match*: if given, only paths
+    whose name equals it OR whose string contains it are pinned. Yields a
+    ``{"n": count}`` dict of pinned stats.
+    """
+    real_stat = pathlib.Path.stat
+    pinned: dict[str, tuple[int, int]] = {}
+    state = {"n": 0}
+
+    def _patched(self: pathlib.Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        real = real_stat(self, *args, **kwargs)
+        if match is not None and not (self.name == match or match in str(self)):
+            return real
+        state["n"] += 1
+        tick = pinned.setdefault(str(self), (real.st_mtime_ns, real.st_ctime_ns))
+        return _SameTickStat(real, *tick)
+
+    with mock.patch.object(pathlib.Path, "stat", _patched):
+        yield state
 
 
 # Real Windows uses 0x8000 for os.O_BINARY; reuse it so the simulated flag value

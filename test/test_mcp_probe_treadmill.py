@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,6 +65,7 @@ def _request(state) -> object:
 class _State:
     def __init__(self) -> None:
         self._background_tasks: set = set()
+        self.sessions = SimpleNamespace(final_drain_started=False)
 
 
 def _arrange(monkeypatch, tmp_path, servers, cache):

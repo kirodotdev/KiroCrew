@@ -52,7 +52,7 @@ describe('bounded initial fetch leaves older history reachable', () => {
     expect(chat.messages).toHaveLength(3)
     expect(shouldPaginateOlder({ loadingOlder: chat.loadingOlder, slotHasMore: chat.slotHasMore })).toBe(true)
 
-    // The click affordance's own mount condition in ChatPage, so the reader has a
+    // The click affordance's own mount condition in ChatTranscriptView, so the reader has a
     // path that does not depend on an intersection callback firing at all.
     expect(chat.slotHasMore && chat.slotCursorKey === chat.activeSlot).toBe(true)
     expect(chat.slotOldestIndex).toBe(240)

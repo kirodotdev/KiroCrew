@@ -11,7 +11,9 @@ repurposed -- it is part of the API surface, not a log string.
 
 from __future__ import annotations
 
-#: The requested crew log kind is neither ``crew`` nor ``session``.
+import errno
+
+#: The requested crew log kind is not ``crew``, ``session`` or ``member``.
 CODE_BAD_KIND = "bad_kind"
 #: The unit id is empty, carries a path separator or a NUL, or resolves outside
 #: its own root.
@@ -20,12 +22,14 @@ CODE_INVALID_ID = "invalid_id"
 CODE_ALREADY_EXISTS = "already_exists"
 #: Another process owns writes to this unit's crew log, so this one appended
 #: nothing. Distinct from every code above: the entry was well formed and the
-#: file is healthy -- this process is simply not the writer. A caller reports the
-#: loss rather than retrying, because ownership is held for the life of the
-#: owning process and every later entry for that unit would queue behind the one
-#: waiting for it.
+#: file is healthy -- this process is simply not the writer. What a caller does
+#: next follows its handle's ownership contract: the session emitter, whose handle
+#: may be long-lived, reports the loss and does not retry; the member-event adapter
+#: uses short-lived handles and its own bounded wait. A generic caller does not
+#: retry without such a contract. See docs/reference/crew-log/errors.md.
 CODE_ALREADY_OWNED = "already_owned"
-#: ``open`` was asked for a crew log whose file is not there.
+#: The unit has no content-bearing segment: ``open`` found none, or an append found
+#: the file empty. A zero-byte segment counts as absent.
 CODE_NO_LEDGER = "no_ledger"
 #: Line 1 is missing, unparseable, or describes a different unit than the one
 #: asked for. A crew log without a readable header is not one.
@@ -86,6 +90,13 @@ CODE_SEGMENT_GAP = "segment_gap"
 #: the protections established for the data home do not cover. The message names
 #: the directory so an operator can inspect what it points at.
 CODE_BAD_ROOT = "bad_root"
+#: A cut was refused because the unit's cut counter can neither be raised to say the
+#: cut is in flight nor retired to say it proves nothing. Cutting anyway would leave
+#: every reader holding the old count able to certify the very bytes being removed, and
+#: the slot savepoint records the same count, so the wrong fold would survive restarts.
+#: The message names the directory; leaving the file uncut is recoverable, since the
+#: next open repairs it again.
+CODE_CUT_UNACCOUNTED = "cut_unaccounted"
 
 
 class CrewLogError(Exception):
@@ -100,6 +111,39 @@ class CrewLogError(Exception):
         self.message = message
         self.code = code
         self.field = field
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.message
+
+
+class CutUnaccounted(OSError):
+    """A cut was refused because its counter could not be accounted for.
+
+    The store may remove committed bytes on two recovery paths, and it brackets every
+    such cut with the unit's cut counter so no reader can hold a count that certifies
+    the bytes being removed. When the counter can be neither raised to say the cut is in
+    flight nor retired to say it proves nothing, the cut does not happen. Nothing is
+    touched: the file is exactly as it was, and the next open repairs it again.
+
+    An ``OSError`` ON PURPOSE, and not a :class:`CrewLogError`. The cause is a storage
+    fault -- a full disk, a read-only remount, another process holding ``.cuts`` open --
+    so it is the kind of failure that CLEARS. A CrewLogError means the operation was
+    declined on its own merits and retrying it is pointless, which is why the write-behind
+    treats that type as permanent and drops the entry; reporting a transient lock that way
+    would throw away a valid event that a retry after the lock would have written. The
+    truncation is still refused either way -- what changes is only what the caller is told
+    about trying again.
+
+    ``errno`` is ``EBUSY``, which is what every ``except OSError`` on the repair paths
+    already expects to see. ``code`` is the stable identifier, spelled the same way
+    :class:`CrewLogError` spells it so a caller can read it without knowing which type it
+    caught.
+    """
+
+    def __init__(self, message: str, *, code: str = CODE_CUT_UNACCOUNTED) -> None:
+        super().__init__(errno.EBUSY, message)
+        self.message = message
+        self.code = code
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.message

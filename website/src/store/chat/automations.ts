@@ -2,7 +2,7 @@
  *  snapshots and upserted from live frames through one normalizer. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import { automationForSlot, type AutomationRecord } from '../../monitoring/automation'
+import { automationForSlot, isAutomationRunning, type AutomationRecord } from '../../monitoring/automation'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 
@@ -11,9 +11,7 @@ import { isUnsafeKey, safeKey } from './wire'
 export const selectSidebarAutomationRunningKeys = createSelector(
   [(state: RootState) => state.chat.automations],
   (automations) => Object.values(automations ?? {})
-    .filter(record => record.kind === 'legacy_goal_loop'
-      ? record.active
-      : record.active && !record.terminal)
+    .filter(isAutomationRunning)
     .map(record => record.slotKey),
 )
 

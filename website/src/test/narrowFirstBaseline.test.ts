@@ -214,8 +214,21 @@ describe('narrow-first layout baseline', () => {
     // `PageHeader`'s are one number -- asserted across the two files rather than as
     // two literals, because a drift here is invisible to every other check: both
     // sides still render, nothing overflows, and only the eye sees the step.
-    const chat = await readFile(join(SRC, 'pages', 'ChatPage.tsx'), 'utf8')
-    const row = chat.match(/className=\{`px-(\d+(?:\.\d+)?) mx-auto w-full py-1`\}/)
+    // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+    // the row pin reads the page and those owners.
+    const pagesDir = join(SRC, 'pages')
+    const ownerDir = join(pagesDir, 'chat', 'page')
+    const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+    const chatFiles = [
+      join(pagesDir, 'ChatPage.tsx'),
+      ...(await readdir(ownerDir)).filter(isSource).sort().map(f => join(ownerDir, f)),
+      ...(await readdir(pagesDir)).filter(f => /^useChatPage/.test(f) && isSource(f)).sort()
+        .map(f => join(pagesDir, f)),
+    ]
+    const chat = (await Promise.all(chatFiles.map(f => readFile(f, 'utf8')))).join('\n')
+    // `empty:hidden` lets a row whose content draws nothing (a merged edit run's
+    // follower) leave no spacer; the gutter is the px-N this test pins.
+    const row = chat.match(/className=\{`px-(\d+(?:\.\d+)?) mx-auto w-full py-1(?: empty:hidden)?`\}/)
     expect(row, 'ChatPage should render its message rows with an explicit gutter').toBeTruthy()
 
     const input = await readFile(join(SRC, 'components', 'ChatInput.tsx'), 'utf8')

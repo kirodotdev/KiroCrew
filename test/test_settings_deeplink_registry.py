@@ -40,7 +40,7 @@ _SCHEME_DOC_NAME = "settings-deeplink.md"
 _MIN_ENTRIES = 40
 
 _REQUIRED_FIELDS = ("id", "label", "tab", "route")
-_OPTIONAL_FIELDS = ("description", "configKey")
+_OPTIONAL_FIELDS = ("description", "hint", "configKey")
 
 
 def _load_registry() -> list[dict[str, str]]:
@@ -139,3 +139,30 @@ def test_both_packaging_lanes_ship_the_registry() -> None:
         patterns = parts[2:] if parts[0] == "recursive-exclude" else parts[1:]
         for pattern in patterns:
             assert not fnmatch(_REGISTRY_NAME, pattern), line
+
+
+def test_tip_prose_ships_apart_from_on_row_description() -> None:
+    """A row's info-tip text rides in `hint`, never in `description`.
+
+    `description` is what the row shows on screen, so a reader may quote it as
+    on-row copy; a tip folded into it would be quoted as text the row never
+    displays. The registry must carry tips somewhere, and no `description` may
+    start with its own row's tip (the shape of a tip folded into it).
+    """
+    entries = _load_registry()
+    assert any(e.get("hint") for e in entries)
+    for entry in entries:
+        hint, desc = entry.get("hint"), entry.get("description")
+        if hint and desc:
+            assert not desc.startswith(hint), entry["id"]
+
+
+def test_settings_search_reads_tip_and_on_row_help() -> None:
+    """Settings search keeps every tip word: `_help_text` joins tip then
+    description, so a query matches either one."""
+    from kiro_crew.dashboard.change_cards import _help_text
+
+    assert _help_text({"hint": "Tip.", "description": "Row."}) == "Tip. Row."
+    assert _help_text({"hint": "Tip."}) == "Tip."
+    assert _help_text({"description": "Row."}) == "Row."
+    assert _help_text({}) == ""

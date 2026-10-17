@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { canonicalChatHref, chatHrefSid, namesASession, sessionKeyFrom, sessionKeyFromChatHref, sessionKeyFromShort } from './sessionKeys'
+import { canonicalChatHref, chatHrefSid, classifyShortName, namesASession, sessionKeyFrom, sessionShortNameFrom, shortNameMatches, sessionKeyFromChatHref, sessionKeyFromShort } from './sessionKeys'
 import { sessionRefUrl } from './sessionRefs'
 import { buildShareableUrl } from './shareUrl'
 
@@ -284,6 +284,48 @@ describe('sessionKeyFromShort', () => {
   })
 })
 
+describe('classifyShortName', () => {
+  // The reason WHY a short name did not resolve, which a disabled-link tooltip
+  // needs to tell "the session is not open" (true) from "cannot pin which open
+  // slot it names" (would be a false claim of not-open).
+  const ROSTER = ['chat-1380-1789049480', 'chat-7-1699999999']
+  const WRITTEN = 1789049999
+
+  it('resolves to the one open slot answering to the name', () => {
+    expect(classifyShortName('chat-1380', ROSTER, WRITTEN)).toEqual({ kind: 'resolved', key: 'chat-1380-1789049480' })
+  })
+
+  it('reports no-match when no open slot carries the number', () => {
+    // This is the only short-name case that earns a "not open" tooltip.
+    expect(classifyShortName('chat-999', ROSTER, WRITTEN)).toEqual({ kind: 'no-match' })
+    expect(classifyShortName('chat-1380', [], WRITTEN)).toEqual({ kind: 'no-match' })
+  })
+
+  it('reports ambiguous when two open slots share the number', () => {
+    expect(classifyShortName('chat-1380', ['chat-1380-1789049480', 'chat-1380-1700000000'], WRITTEN))
+      .toEqual({ kind: 'ambiguous' })
+  })
+
+  it('reports no-timestamp when the write time is unknown', () => {
+    expect(classifyShortName('chat-1380', ROSTER, undefined)).toEqual({ kind: 'no-timestamp' })
+  })
+
+  it('reports not-short for a full key or a non-session span', () => {
+    expect(classifyShortName('chat-1380-1789049480', ROSTER, WRITTEN)).toEqual({ kind: 'not-short' })
+    expect(classifyShortName('not a session', ROSTER, WRITTEN)).toEqual({ kind: 'not-short' })
+  })
+
+  it('agrees with sessionKeyFromShort on which key resolves', () => {
+    // sessionKeyFromShort delegates to this, so a resolved key must match and
+    // every non-resolved outcome must fold to null.
+    for (const raw of ['chat-1380', 'chat-999', 'chat-1380-1789049480']) {
+      const outcome = classifyShortName(raw, ROSTER, WRITTEN)
+      const key = sessionKeyFromShort(raw, ROSTER, WRITTEN)
+      expect(key).toBe(outcome.kind === 'resolved' ? outcome.key : null)
+    }
+  })
+})
+
 describe('chatHrefSid', () => {
   it('returns the session parameter verbatim, unresolved', () => {
     // The caller decides which spellings name a session, so a short sid comes
@@ -370,5 +412,31 @@ describe('canonicalChatHref', () => {
 
   it('adds sid when the href carried none', () => {
     expect(canonicalChatHref('/chat', 'chat-1-1700000001')).toBe('/chat?sid=chat-1-1700000001')
+  })
+})
+
+describe('sessionShortNameFrom', () => {
+  it.each([['chat-7', 'chat-7'], [' dashboard_chat-7 ', 'chat-7'], ['chat-7-100', null], ['chat-', null], ['chat-7x', null]])(
+    '%s -> %s', (raw, want) => expect(sessionShortNameFrom(raw)).toBe(want),
+  )
+})
+
+describe('shortNameMatches', () => {
+  it('lists open and on-disk sessions once each, oldest first, open ones without a stem', () => {
+    const got = shortNameMatches(
+      'chat-7',
+      [{ key: 'chat-7-300', title: 'Open newer' }, { key: 'chat-70-100', title: 'Other number' }],
+      [{ key: 'dashboard_chat-7-300', title: 'Open newer' }, { key: 'dashboard_dashboard_chat-7-100', title: 'Closed older' },
+        { key: 'subagent_chat-7-50' }],
+    )
+    expect(got).toEqual([
+      { key: 'chat-7-100', title: 'Closed older', stem: 'dashboard_dashboard_chat-7-100', mintedAt: 100 },
+      { key: 'chat-7-300', title: 'Open newer', stem: null, mintedAt: 300 },
+    ])
+  })
+
+  it('titles an untitled row by its slot key, not its storage stem', () => {
+    expect(shortNameMatches('chat-7', [], [{ key: 'dashboard_chat-7-100', title: 'dashboard_chat-7-100' }])[0].title)
+      .toBe('chat-7-100')
   })
 })

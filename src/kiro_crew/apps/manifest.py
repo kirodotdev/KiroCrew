@@ -11,18 +11,23 @@ app-specific fields.
 
 from __future__ import annotations
 
+import enum
 import json
 import os
 import posixpath
 import re
 import sys
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.cron import is_valid_skip_date, is_valid_timezone
+from kiro_crew.cron_service.fields import validate_create_timeouts
 
 # ---------------------------------------------------------------------------
 # Nested manifest types
@@ -188,13 +193,87 @@ def _has_dotdot_segment(rel_path: str) -> bool:
     return ".." in PurePosixPath(rel_path).parts or ".." in PureWindowsPath(rel_path).parts
 
 
-def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
-    """Return True if ``rel_path`` is an unsafe app-resource path.
+class Containment(enum.Enum):
+    """Where a declared app-resource path lands, as the shared path screen sees it.
 
-    Unsafe = rooted (drive-qualified, POSIX-absolute, or UNC), or containing a
-    ``..`` segment, or — resolved against ``app_root`` — escaping ``app_root``
-    (canonical containment, matching the runtime checks in ``module_loader`` /
-    ``bridges``).
+    ``REFUSED`` is a lasting answer from the screen (the path or its link target
+    is one it never accepts); ``UNCHECKED`` is a screen check that did not
+    complete, which a later attempt may resolve.
+    """
+
+    INSIDE = "inside"
+    OUTSIDE = "outside"
+    REFUSED = "refused"
+    UNCHECKED = "unchecked"
+
+
+def screen_app_path(path: Path) -> str | Containment:
+    """``path`` canonicalised by :func:`kiro_crew.hooks.screen_file_path`.
+
+    The screen reads a link's own target before anything follows the link. A path
+    it declines comes back as :attr:`Containment.REFUSED` when the decline is
+    lasting and as :attr:`Containment.UNCHECKED` when one of its checks did not
+    complete. An ``OSError`` or ``ValueError`` from the screen is also
+    :attr:`Containment.UNCHECKED`: the path was not judged.
+    """
+    from kiro_crew import hooks
+
+    try:
+        screened = hooks.screen_file_path(str(path))
+    except (OSError, ValueError):
+        return Containment.UNCHECKED
+    if isinstance(screened, str):
+        return screened
+    if screened is hooks.PathDecline.UNCHECKED:
+        return Containment.UNCHECKED
+    return Containment.REFUSED
+
+
+def contained_in_screened_root(candidate: Path, screened_root: str | Containment) -> Containment:
+    """Whether ``candidate`` stays inside ``screened_root``, :func:`screen_app_path`'s root answer.
+
+    A caller checking several paths against one root screens the root once and
+    passes the answer here, so each path costs one screen call. A root the screen
+    declined gives every candidate that same answer.
+    """
+    if isinstance(screened_root, Containment):
+        return screened_root
+    resolved = screen_app_path(candidate)
+    if isinstance(resolved, Containment):
+        return resolved
+    if Path(resolved).is_relative_to(screened_root):
+        return Containment.INSIDE
+    return Containment.OUTSIDE
+
+
+def app_root_containment(candidate: Path, app_root: Path) -> Containment:
+    """:func:`contained_in_screened_root` for a single path, screening ``app_root`` too."""
+    return contained_in_screened_root(candidate, screen_app_path(app_root))
+
+
+#: Refusal wording for an app-resource path that leaves the app root.
+PATH_TRAVERSAL_REFUSAL = "contains path traversal"
+#: Refusal wording for an app-resource path the shared screen does not accept.
+PATH_SCREEN_REFUSAL = "is refused by the path screen"
+#: Refusal wording for an app-resource path the shared screen could not finish
+#: checking (a slow disk, a busy resolver, a link it could not read). Kept apart
+#: from the two refusals above because the manifest may be fine and a later
+#: attempt may pass.
+PATH_UNVERIFIED_REFUSAL = "could not be checked against the app root"
+
+
+def _app_path_refusal(
+    rel_path: str, app_root: Path | None, screened_root: str | Containment | None = None
+) -> str:
+    """Why ``rel_path`` is not an acceptable app-resource path, or ``""`` when it is.
+
+    Refused as :data:`PATH_TRAVERSAL_REFUSAL` when it is rooted (drive-qualified,
+    POSIX-absolute, or UNC), contains a ``..`` segment, or — canonicalised against
+    ``app_root`` — leaves ``app_root`` (canonical containment, matching the runtime
+    checks in ``module_loader`` / ``bridges``). Refused as
+    :data:`PATH_SCREEN_REFUSAL` when the shared screen does not accept it, and as
+    :data:`PATH_UNVERIFIED_REFUSAL` when the screen could not finish checking it.
+    ``screened_root`` is :func:`screen_app_path`'s answer for ``app_root``.
 
     The lexical checks run BEFORE the canonical one and regardless of whether
     ``app_root`` is known, so a manifest is judged identically on every host.
@@ -205,16 +284,141 @@ def _path_escapes_app_root(rel_path: str, app_root: Path | None) -> bool:
     symlink or reparse point inside the root whose target leaves it.
     """
     if not rel_path:
-        return False
+        return ""
     if _is_rooted_path(rel_path) or _has_dotdot_segment(rel_path):
-        return True
+        return PATH_TRAVERSAL_REFUSAL
     if app_root is not None:
-        try:
-            resolved = (app_root / rel_path).resolve()
-            return not resolved.is_relative_to(app_root.resolve())
-        except (OSError, ValueError):
-            return True
-    return False
+        if screened_root is None:
+            screened_root = screen_app_path(app_root)
+        contained = contained_in_screened_root(app_root / rel_path, screened_root)
+        if contained is Containment.UNCHECKED:
+            return PATH_UNVERIFIED_REFUSAL
+        if contained is Containment.REFUSED:
+            return PATH_SCREEN_REFUSAL
+        if contained is Containment.OUTSIDE:
+            return PATH_TRAVERSAL_REFUSAL
+    return ""
+
+
+#: ``bridges._TEMPLATE_PLACEHOLDER_RE``, duplicated because bridges imports this module.
+_AGENT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
+
+
+def _declared_agent_names(
+    agent_paths: list[str],
+    app_root: Path | None,
+    unchecked: list[str] | None = None,
+    *,
+    known_refusals: dict[str, str] | None = None,
+) -> set[str]:
+    """Names the app's own ``agents`` register under, for containing ``commands[].agent``.
+
+    The name a command can select: the agent JSON's explicit ``name``. A path
+    :func:`_app_path_refusal` does not accept contributes nothing: registration
+    skips it. That includes a path the screen could not check yet, which vouches
+    for no name on this listing; the next listing asks the screen again.
+
+    With ``app_root`` known, a spec that registration would also skip -- missing,
+    unreadable, malformed, or not a JSON object -- contributes nothing either. Its
+    stem would otherwise authorize a name the app never registers, which then
+    resolves to whatever HOST agent carries it. Without ``app_root`` only the stem is
+    known (a lexical, host-independent verdict); the app-root pass at listing time
+    re-checks it against the files.
+
+    ``unchecked``, when given, collects the paths the screen could not finish
+    checking, so a caller can tell "names no agent" from "not checked yet".
+    ``known_refusals`` maps each path to the :func:`_app_path_refusal` answer the
+    caller already has for it in this pass, so no path is screened twice.
+    """
+    names: set[str] = set()
+    known = known_refusals if known_refusals is not None else {}
+    screened_root: str | Containment | None = None
+    if app_root is not None and any(str(rel) not in known for rel in agent_paths):
+        screened_root = screen_app_path(app_root)
+    for rel in agent_paths:
+        rel = str(rel)
+        if not rel:
+            continue
+        refusal = known.get(rel)
+        if refusal is None:
+            refusal = _app_path_refusal(rel, app_root, screened_root)
+        if refusal:
+            if refusal == PATH_UNVERIFIED_REFUSAL and unchecked is not None:
+                unchecked.append(rel)
+            continue
+        name: Any = PurePosixPath(rel.replace("\\", "/")).stem
+        if app_root is not None:
+            # The hardened, audited reader: it authorizes the descriptor it actually
+            # reads, so a source spec swapped for a symlink to a credential file after
+            # the containment check is refused before a byte is consumed.
+            from kiro_crew.agent_discovery import _read_agent_spec
+
+            data = _read_agent_spec(
+                app_root / rel, operation="app_manifest_agent_names", source="unknown"
+            )
+            if not isinstance(data, dict):
+                continue
+            # A templated spec is rendered by the gateway and registers nothing when a
+            # placeholder cannot be resolved, so it vouches for no name here: fail
+            # closed rather than re-deriving which placeholders this host resolves.
+            if _AGENT_TEMPLATE_PLACEHOLDER_RE.search(json.dumps(data)):
+                continue
+            # Registration writes ``<app>--<name>.json`` keyed by the source's own
+            # ``name``; a spec without one registers under no name a command can
+            # select, so only an explicit string ``name`` vouches here.
+            name = data.get("name")
+        # The unsafe names `_register_agents` refuses, plus the reserved skill-view
+        # prefix: the spawn maps such a name to the HOST agent its view was built
+        # from, so it can never name one of the app's own agents.
+        if (
+            isinstance(name, str)
+            and name
+            and name not in (".", "..")
+            and not any(c in name for c in ("/", "\\", "\x00"))
+            and not name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+        ):
+            names.add(name)
+    return names
+
+
+def contain_command_agents(
+    manifest_data: dict[str, Any],
+    agent_paths: list[str],
+    app_root: Path,
+    is_registered: Callable[[str], bool] | None = None,
+) -> dict[str, Any]:
+    """Drop every ``contributes.commands[].agent`` that is not one of the app's own.
+
+    ``AppManifest.validate`` refuses such an agent at install, but a self-managed app
+    registers (and may later rewrite) its own ``app.json`` without passing through it.
+    This runs on the listing the launcher reads, against the files on disk, so no
+    unverified selection reaches it whatever path the manifest arrived by. The command
+    itself is kept and runs on the dashboard default. Mutates and returns
+    ``manifest_data``.
+
+    ``is_registered`` (when given) is the final word: an agent survives only if the
+    app actually REGISTERED it, judged from what registration wrote. The lexical pass
+    above mirrors registration's skip rules; this one does not depend on mirroring
+    them, so a skip reason nobody listed here still cannot authorize a name.
+    """
+    contributes = manifest_data.get("contributes")
+    commands = contributes.get("commands") if isinstance(contributes, dict) else None
+    if not isinstance(commands, list):
+        return manifest_data
+    own: set[str] | None = None
+    for cmd in commands:
+        if not isinstance(cmd, dict) or "agent" not in cmd:
+            continue
+        if own is None:
+            own = _declared_agent_names(agent_paths, app_root)
+        agent = cmd.get("agent")
+        if (
+            not isinstance(agent, str)
+            or agent not in own
+            or (is_registered is not None and not is_registered(agent))
+        ):
+            cmd.pop("agent", None)
+    return manifest_data
 
 
 # Expected JSON type per CronEntry field that from_dict type-gates; turns a
@@ -227,7 +431,31 @@ _CRON_FIELD_JSON_TYPES = {
     "script": "a string script path",
     "timezone": "a string IANA zone name",
     "skip_dates": "an array of YYYY-MM-DD strings",
+    "timeout": "a whole number of seconds",
+    "timeout_secs": "a whole number of seconds",
 }
+
+#: Refusal for a manifest that schedules ``crons`` without the ``permissions.cron``
+#: grant. A schedule runs agent prompts or commands unattended, so the
+#: ``permissions`` block an operator reads before installing must say so; the
+#: message carries the one-line fix because the install error is the channel an
+#: app author reads.
+CRON_PERMISSION_REQUIRED_ERROR = (
+    'crons is declared but permissions.cron is not: add "cron": true under '
+    '"permissions" in app.json'
+)
+
+
+def cron_permission_error(manifest: AppManifest) -> str:
+    """Return the missing-grant refusal for *manifest*, or ``""`` when it holds.
+
+    The rule applies wherever an app is admitted with a new manifest -- install,
+    update and self-registration -- and never at load time, so an app installed
+    before the rule keeps loading and firing its crons until its next update.
+    """
+    if manifest.crons and not manifest.permissions.cron:
+        return CRON_PERMISSION_REQUIRED_ERROR
+    return ""
 
 
 @dataclass
@@ -256,6 +484,13 @@ class CronEntry:
     # Calendar dates (YYYY-MM-DD, evaluated in ``timezone``) the job must not
     # fire on -- e.g. a publisher's own holiday list.
     skip_dates: list[str] = field(default_factory=list)
+    # Subprocess bound for a ``command``/``script`` job, in seconds. 0 = the
+    # scheduler default (30s script, 300s command).
+    timeout: int = 0
+    # Per-wake execution budget, in seconds (1..86400). 0 = the scheduler
+    # default. On a command/script job it must cover ``timeout`` plus cleanup;
+    # the same create-time check the cron SDK applies runs at validate().
+    timeout_secs: int = 0
     # Schedule-page folder NAME to file the job in (names, not ids: a manifest
     # is portable across installs, and folder ids are minted per-machine by the
     # dashboard). Resolved against existing folders at registration; a name
@@ -308,6 +543,13 @@ class CronEntry:
             d["skip_dates"] = self.skip_dates
         if self.folder:
             d["folder"] = self.folder
+        # Present only when set, like the calendar fields: signing_payload
+        # folds to_dict() into the signed body, so an unset value must not
+        # change an already-signed manifest's payload.
+        if self.timeout:
+            d["timeout"] = self.timeout
+        if self.timeout_secs:
+            d["timeout_secs"] = self.timeout_secs
         if not self.persistent_session:
             d["persistent_session"] = False
         if self.silent:
@@ -400,6 +642,8 @@ class CronEntry:
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
             folder=_str_or_empty(data.get("folder")),
+            timeout=_int_or_zero("timeout", data.get("timeout", 0)),
+            timeout_secs=_int_or_zero("timeout_secs", data.get("timeout_secs", 0)),
             persistent_session=bool(data.get("persistent_session", True)),
             silent=bool(data.get("silent", False)),
             # STRICT boolean: "enabled" gates whether a cron fires at all, so a
@@ -717,6 +961,10 @@ class BackendConfig:
     healthCheck: str = "/health"  # health check endpoint path  # noqa: N815
     routes: str = ""  # base route path, e.g. /api/apps/oncall-watchtower
     type: str = ""  # "python", "asgi", "node", "exec", or "" (auto-detect)
+    # Opt in to a request-bound principal claim from the gateway's reverse proxy.
+    # Only the literal JSON boolean true enables it: a string or a number keeps
+    # the default off, so a malformed manifest never widens what a backend trusts.
+    signedPrincipal: bool = False  # noqa: N815
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -731,6 +979,8 @@ class BackendConfig:
             d["routes"] = self.routes
         if self.type:
             d["type"] = self.type
+        if self.signedPrincipal:
+            d["signedPrincipal"] = True
         hooks_d = self.hooks.to_dict()
         if hooks_d:
             d["hooks"] = hooks_d
@@ -746,6 +996,7 @@ class BackendConfig:
             healthCheck=str(data.get("healthCheck", "/health")),  # noqa: N815
             routes=str(data.get("routes", "")),
             type=str(data.get("type", "")),
+            signedPrincipal=data.get("signedPrincipal") is True,  # noqa: N815
             hooks=hooks,
         )
 
@@ -863,6 +1114,11 @@ class SetupConfig:
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
     onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
+    # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
+    # on native Windows (no `/bin/bash`): the runner refuses them with an
+    # unsupported-platform reason before any spawn. (`onInstall` runs in the
+    # separate install transaction and is not covered by that refusal.) See
+    # docs/app-kit/manifest-reference.md ("setup — Lifecycle Scripts").
     onEnableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
     onDisableTimeout: int = 30  # seconds; configurable per-app  # noqa: N815
     configSchema: dict[str, Any] = field(default_factory=dict)  # noqa: N815
@@ -1081,6 +1337,10 @@ class PlatformConfig:
     _OS_TO_PLATFORM = {"macos": "darwin", "linux": "linux", "windows": "win32"}
     _PLATFORM_TO_OS = {"darwin": "macos", "linux": "linux", "win32": "windows"}
 
+    # The values ``installMode`` takes. Both install gates test ``== "client"``, so any
+    # other spelling is read as ``"server"``.
+    _INSTALL_MODES = ("server", "client")
+
     def supports_platform(self, sys_platform: str) -> bool:
         """Check if this platform config supports the given sys.platform value."""
         return sys_platform in {self._OS_TO_PLATFORM.get(o, o) for o in self.os}
@@ -1089,6 +1349,31 @@ class PlatformConfig:
     def current_os() -> str:
         """Return the user-friendly OS name for the current platform."""
         return PlatformConfig._PLATFORM_TO_OS.get(sys.platform, sys.platform)
+
+    def validate(self) -> list[str]:
+        """Return an error for each ``platform`` value no gate recognises.
+
+        ``supports_platform`` resolves an ``os`` name through ``_OS_TO_PLATFORM`` and passes a
+        name without a row through unchanged, so ``"Windows"``, ``"win"`` or ``"windows "``
+        equals no ``sys.platform`` and the gate answers no for the platform its author named.
+        The platform strings themselves (``"win32"``, ``"darwin"``) match only through that
+        pass-through and are refused too: a manifest names an OS by its row.
+        ``installMode`` has the same shape: ``"Client"`` is not ``"client"``, so the app
+        installs as a server app. The error names the accepted values.
+        """
+        errors: list[str] = []
+        for name in self.os:
+            if name not in self._OS_TO_PLATFORM:
+                errors.append(
+                    f"platform.os: unknown value {name!r} "
+                    f"(expected one of {', '.join(self._OS_TO_PLATFORM)})"
+                )
+        if self.installMode not in self._INSTALL_MODES:
+            errors.append(
+                f"platform.installMode: unknown value {self.installMode!r} "
+                f"(expected one of {', '.join(self._INSTALL_MODES)})"
+            )
+        return errors
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
@@ -1281,6 +1566,12 @@ class NotificationsConfig:
 # drift shape this contract has already been bitten by three times: the manifest
 # installs clean and the launcher then shows nothing, with no error the app author sees.
 _COMMAND_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+#: A contributed command's ``agent``: a bare config stem. Byte-for-byte the pattern
+#: `contributedCommands.ts` clamps against (used with ``fullmatch``, see the note
+#: above), so a value the launcher would drop is refused at install instead of
+#: silently running the command on the dashboard default.
+_COMMAND_AGENT_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
 
 #: Longest accepted argument host allowlist. The list is scanned per keystroke, and
 #: one longer than this is a manifest bug rather than a real allowlist.
@@ -1630,6 +1921,10 @@ class CommandContribution:
     keywords: list[str] = field(default_factory=list)
     prompt: str = ""
     autoSend: bool = False
+    #: Agent the seeded session is created with; empty means the dashboard default.
+    #: Must name one of this app's OWN ``agents`` (checked by ``AppManifest.validate``)
+    #: -- the prompt is app-authored, so it may not borrow a host agent's grants.
+    agent: str = ""
     argument: CommandArgument | None = None
     #: Whether the manifest's ``argument`` was present but not an object. Same shape as
     #: ``Contributes.bad_commands``, and the one place where erasing it also DIVERGES
@@ -1675,6 +1970,8 @@ class CommandContribution:
             d["keywords"] = list(self.keywords)
         if self.autoSend:
             d["autoSend"] = True
+        if self.agent:
+            d["agent"] = self.agent
         if self.argument is not None:
             arg_d = self.argument.to_dict()
             if arg_d:
@@ -1685,6 +1982,7 @@ class CommandContribution:
     def from_dict(cls, data: dict[str, Any]) -> CommandContribution:
         arg_raw = data.get("argument")
         keywords_raw = data.get("keywords", [])
+        agent_raw = data.get("agent")
         return cls(
             id=str(data.get("id", "")),
             title=str(data.get("title", "")),
@@ -1698,6 +1996,7 @@ class CommandContribution:
             # silently enabling the one capability that sends text on the reader's
             # behalf. Only the literal ``true`` turns it on.
             autoSend=data.get("autoSend") is True,
+            agent=agent_raw if isinstance(agent_raw, str) else "",
             argument=CommandArgument.from_dict(arg_raw) if isinstance(arg_raw, dict) else None,
             # A present-but-not-an-object ``argument`` would otherwise coerce to "no
             # argument declared", which is a DIFFERENT command rather than an invalid
@@ -1734,6 +2033,15 @@ class CommandContribution:
                     f"({_mirrored_len(kw)})"
                 )
                 break
+        if self.agent and not _COMMAND_AGENT_RE.fullmatch(self.agent):
+            # A bare config stem: no separator (which would escape the agents dir),
+            # and exactly the set `contributedCommands.ts` accepts. Whether it names
+            # one of THIS app's agents is checked by `AppManifest.validate`, which is
+            # where the app's own `agents` are known.
+            errors.append(
+                f"{where}: agent must match [A-Za-z0-9._-] and be 1-120 characters, "
+                f"got {self.agent!r}"
+            )
         if not self.title:
             errors.append(f"{where}: missing title")
         elif _mirrored_len(self.title) > _MAX_TITLE:
@@ -1933,7 +2241,7 @@ class PanelTabConfig:
                 got = _mirrored_len(value)
                 errors.append(f"{where}: {name} exceeds {_MAX_TITLE} characters ({got})")
         # `entry` traversal is checked in `AppManifest.validate`, which is the only
-        # scope that knows the app root -- see `_path_escapes_app_root` there.
+        # scope that knows the app root -- see `_app_path_refusal` there.
         return errors
 
 
@@ -2435,14 +2743,33 @@ class AppManifest:
     # Validation
     # -----------------------------------------------------------------
 
-    def validate(self, app_root: Path | None = None) -> list[str]:
+    def validate(
+        self, app_root: Path | None = None, *, unchecked: list[str] | None = None
+    ) -> list[str]:
         """Return list of validation errors (empty list means valid).
 
         When ``app_root`` is provided, resource paths are checked for canonical
-        containment (resolve + is_relative_to) against it; otherwise a lexical
-        check (reject absolute paths and ``..`` segments) is applied.
+        containment (screened canonicalisation + is_relative_to) against it;
+        otherwise a lexical check (reject absolute paths and ``..`` segments) is
+        applied.
+
+        When ``unchecked`` is a list, a resource path the shared screen did not
+        answer for (:data:`PATH_UNVERIFIED_REFUSAL`) is appended there instead of
+        to the returned errors, so a caller can tell "not checked" from "invalid"
+        without parsing messages.
         """
         errors: list[str] = []
+
+        screened_root = screen_app_path(app_root) if app_root is not None else None
+
+        def path_refusal(rel_path: str) -> str:
+            return _app_path_refusal(rel_path, app_root, screened_root)
+
+        def report_path(refusal: str, message: str) -> None:
+            if refusal == PATH_UNVERIFIED_REFUSAL and unchecked is not None:
+                unchecked.append(message)
+            else:
+                errors.append(message)
 
         # Required fields
         if not self.name:
@@ -2464,30 +2791,35 @@ class AppManifest:
             errors.append("missing required field: description")
 
         # Path containment check on all app-root-relative resource paths.
-        # Canonical (resolve + is_relative_to) when app_root is known; lexical
+        # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
         # (reject absolute + '..' segments) otherwise. Applied uniformly to
         # agents/skills/sops, ui.entry, ui.pages[].entryPoint AND
         # backend.entryPoint. (A module-style dotted backend.entryPoint such as
         # 'kiro_crew.apps.builtins.x.server' has no '..' and is not absolute, so
         # the helper never false-positives on it.)
+        agent_refusals: dict[str, str] = {}
         for path_list_name in ("agents", "skills", "sops"):
             for p in getattr(self, path_list_name):
-                if _path_escapes_app_root(str(p), app_root):
-                    errors.append(f"{path_list_name} path contains path traversal: {p!r}")
+                refusal = path_refusal(str(p))
+                if path_list_name == "agents":
+                    agent_refusals[str(p)] = refusal
+                if refusal:
+                    report_path(refusal, f"{path_list_name} path {refusal}: {p!r}")
 
-        if self.ui.entry and _path_escapes_app_root(self.ui.entry, app_root):
-            errors.append(f"ui.entry contains path traversal: {self.ui.entry!r}")
+        refusal = path_refusal(self.ui.entry)
+        if refusal:
+            report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
-        if self.backend.entryPoint and _path_escapes_app_root(self.backend.entryPoint, app_root):
-            errors.append(
-                f"backend.entryPoint contains path traversal: {self.backend.entryPoint!r}"
-            )
+        refusal = path_refusal(self.backend.entryPoint)
+        if refusal:
+            report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")
 
         # A panel-tab entry is mounted by the same ESM host as ui.pages, so it is
         # subject to the same path-containment check.
         for tab in self.contributes.panelTabs:
-            if tab.entry and _path_escapes_app_root(tab.entry, app_root):
-                errors.append(f"contributes.panelTabs entry contains path traversal: {tab.entry!r}")
+            refusal = path_refusal(tab.entry)
+            if refusal:
+                report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
 
         # UI page validation
         for page in self.ui.pages:
@@ -2495,8 +2827,9 @@ class AppManifest:
                 errors.append("ui page missing required field: route")
             if not page.label:
                 errors.append("ui page missing required field: label")
-            if page.entryPoint and _path_escapes_app_root(page.entryPoint, app_root):
-                errors.append(f"ui page entryPoint contains path traversal: {page.entryPoint!r}")
+            refusal = path_refusal(page.entryPoint)
+            if refusal:
+                report_path(refusal, f"ui page entryPoint {refusal}: {page.entryPoint!r}")
 
         # UI overlay validation
         seen_overlay_ids: set[str] = set()
@@ -2543,9 +2876,10 @@ class AppManifest:
                 errors.append(
                     f"session control contribution {ctl.id or '<unnamed>'} missing required field: entryPoint"
                 )
-            elif _path_escapes_app_root(ctl.entryPoint, app_root):
-                errors.append(
-                    f"session control contribution entryPoint contains path traversal: {ctl.entryPoint!r}"
+            elif refusal := path_refusal(ctl.entryPoint):
+                report_path(
+                    refusal,
+                    f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
             if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
                 ctl.statusPath
@@ -2594,6 +2928,15 @@ class AppManifest:
                         f"cron entry {cron.name!r}: invalid skip_date: {_skip!r} "
                         f"(expected zero-padded YYYY-MM-DD)"
                     )
+            # Same create-time rule build_job enforces, so a bad pair is
+            # reported at install/validate time instead of only as a logged
+            # per-job registration failure.
+            try:
+                validate_create_timeouts(
+                    cron.timeout, cron.timeout_secs, command=cron.command, script=cron.script
+                )
+            except ValueError as exc:
+                errors.append(f"cron entry {cron.name!r}: {exc}")
             if cron.enabled_type_invalid:
                 errors.append(
                     f"cron entry {cron.name!r}: 'enabled' must be a JSON boolean "
@@ -2606,9 +2949,15 @@ class AppManifest:
                     f"cron entry {cron.name!r}: must specify at least one of "
                     "'agent', 'agent_sequence', 'message', 'command', or 'script'"
                 )
+        cron_grant_error = cron_permission_error(self)
+        if cron_grant_error:
+            errors.append(cron_grant_error)
 
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
+
+        # Platform names the install and enable gates compare against
+        errors.extend(self.platform.validate())
 
         # Notification channel validation (RFC Phase 2: 8-channel cap, kebab ids)
         errors.extend(self.notifications.validate())
@@ -2617,6 +2966,34 @@ class AppManifest:
         # prompt/argument agreement, matcher kind, entry paths, and the file-menu
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
+
+        # A contributed command's `agent` is contained to the agents THIS app ships.
+        # The prompt is app-authored, so letting it name any host agent would let an
+        # app run its text under an agent carrying broader tool grants and
+        # auto-approvals than the default. Refused at install, where the app's own
+        # `agents` are known, rather than clamped later where nobody sees it.
+        commands_with_agent = [c for c in self.contributes.commands if c.agent]
+        if commands_with_agent:
+            unchecked_agents: list[str] = []
+            own = _declared_agent_names(
+                self.agents, app_root, unchecked_agents, known_refusals=agent_refusals
+            )
+            for cmd in commands_with_agent:
+                if cmd.agent in own:
+                    continue
+                if unchecked_agents:
+                    # An agent path the screen could not check may be the one that
+                    # declares this name, so the miss is not a verdict yet.
+                    report_path(
+                        PATH_UNVERIFIED_REFUSAL,
+                        f"contributes.commands[{cmd.id or '?'}]: agent {cmd.agent!r} "
+                        f"{PATH_UNVERIFIED_REFUSAL}: {', '.join(unchecked_agents)}",
+                    )
+                    continue
+                errors.append(
+                    f"contributes.commands[{cmd.id or '?'}]: agent {cmd.agent!r} is "
+                    "not one of this app's own agents (declared in `agents`)"
+                )
 
         # A contributed row's endpoint is checked against the app's OWN namespace here,
         # where the name is known -- refusing it at install is what keeps a declaration
@@ -2978,7 +3355,7 @@ class AppManifest:
     @classmethod
     def from_json_file(cls, path: Path) -> AppManifest:
         """Parse from an ``app.json`` file."""
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"app.json must be a JSON object, got {type(data).__name__}")
         return cls.from_dict(data)
@@ -3090,19 +3467,23 @@ def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:
     The spawn's own precondition (``backend.py::_start_app_backend_body``),
     spelled once: the entry must be a regular file under *app_root* whose
     resolution stays inside the root. Returns the spawn's reason -- ``"not
-    found"``, ``"escapes app root"``, ``"path resolution failed"`` -- so the
+    found"``, ``"escapes app root"``, ``"refused by the path screen"``, ``"path
+    resolution failed"`` (the screen could not finish checking it) -- so the
     spawn can log it and :func:`runtime_provisions_requirements` can treat any
     reason as "the backend provisioner never runs for this entry".
     """
     entry = app_root / entry_point
+    # Containment is asked of the shared screen before anything follows the
+    # entry's links, ``is_file`` included.
+    contained = app_root_containment(entry, app_root)
+    if contained is Containment.UNCHECKED:
+        return "path resolution failed"
+    if contained is Containment.REFUSED:
+        return "refused by the path screen"
+    if contained is Containment.OUTSIDE:
+        return "escapes app root"
     if not entry.is_file():
         return "not found"
-    try:
-        if not entry.resolve().is_relative_to(app_root.resolve()):
-            return "escapes app root"
-    except (OSError, ValueError, RuntimeError):
-        # RuntimeError: a symlink loop under Python 3.12 (ELOOP from 3.13 on).
-        return "path resolution failed"
     return ""
 
 

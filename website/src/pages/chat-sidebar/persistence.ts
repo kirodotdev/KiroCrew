@@ -4,6 +4,7 @@
  *  `SESSION_FILTERS` in ./filters. */
 import { DEFAULT_RECENT_WINDOW_MS } from '../recentWindow'
 import { DEFAULT_STALE_COLLAPSE_MS } from '../staleCollapse'
+import { safeSetItem } from '../../utils/safeStorage'
 import type { SidebarLane } from './types'
 
 // Recency window for the "Recent" filter: surfaces sessions whose last activity
@@ -51,6 +52,11 @@ export function readStoredStaleCollapse(): number {
 
 /** Whether the filter menu's Folders section is rolled up to its heading. */
 export const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
+// A status chip's HIDE state ('1' = drop its matching rows). One per chip that
+// can hide; referenced from that chip's `SESSION_FILTERS` entry in ./filters.
+export const UNREAD_HIDDEN_LS_KEY = 'mc-session-unread-hidden'
+export const RUNNING_HIDDEN_LS_KEY = 'mc-session-running-hidden'
+export const PINNED_HIDDEN_LS_KEY = 'mc-session-pinned-hidden'
 
 /** Read the persisted hidden-folder ids. Runs in a useState initializer during
  *  render, so a throwing localStorage (private mode / disabled storage) or a
@@ -91,6 +97,49 @@ export function readStoredTagFilter(): Set<string> {
   }
 }
 
+/** The model filter, as one JSON object under this key: `{"keys": [...],
+ *  "exclude": bool}`. Inclusive like the tag filter above, and for the same
+ *  reason: a model seen for the first time must not start narrowing the list.
+ *
+ *  ONE key for the selection and its direction, not two, so a read cannot see a
+ *  selection without its direction (or the reverse) and the two cannot disagree
+ *  after a partial write. `keys` hold `normalizeModelKey` output, so a session
+ *  pinned to an alias and one pinned to the canonical id fall under one key. */
+export const MODEL_FILTER_LS_KEY = 'mc-session-model-filter'
+
+export interface StoredModelFilter {
+  keys: Set<string>
+  /** Show every session EXCEPT the selected models. */
+  exclude: boolean
+}
+
+/** A fresh value per read, like `readStoredTagFilter`: a shared Set would let one
+ *  in-place mutation poison every later read. */
+const noModelFilter = (): StoredModelFilter => ({ keys: new Set(), exclude: false })
+
+/** Read the persisted model filter. Same contract as `readStoredTagFilter`: a
+ *  throwing localStorage or a hand-corrupted value reads as "no filter". */
+export function readStoredModelFilter(): StoredModelFilter {
+  try {
+    const raw = localStorage.getItem(MODEL_FILTER_LS_KEY)
+    if (!raw) return noModelFilter()
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return noModelFilter()
+    const { keys, exclude } = parsed as { keys?: unknown; exclude?: unknown }
+    if (!Array.isArray(keys)) return noModelFilter()
+    const stored = new Set(keys.filter((key): key is string => typeof key === 'string'))
+    // A direction with nothing to apply to is not a state this code writes, so a
+    // hand-edited one reads as off rather than inverting the next selection.
+    return { keys: stored, exclude: exclude === true && stored.size > 0 }
+  } catch {
+    return noModelFilter()
+  }
+}
+
+export function writeStoredModelFilter(filter: StoredModelFilter) {
+  safeSetItem(MODEL_FILTER_LS_KEY, JSON.stringify({ keys: [...filter.keys], exclude: filter.exclude }))
+}
+
 /** Flat view ("explode chats out of folders") persistence key.
  *
  *  LEGACY. Superseded by `SIDEBAR_LANE_LS_KEY`, and still read once at mount so a
@@ -107,10 +156,15 @@ export const SIDEBAR_LANE_LS_KEY = 'mc-sidebar-lane'
  *  default, so a crew this browser has never seen shows its rows. */
 export const CREW_COLLAPSED_LS_KEY = 'mc-sidebar-crew-collapsed'
 
+/** The collapsed spaces (a crew's own folders) inside crew groups, as
+ *  `crewSpaceId` strings. Separate from the crew ids: one crew's group and its
+ *  folders open and close on their own. */
+export const CREW_SPACE_COLLAPSED_LS_KEY = 'mc-sidebar-crew-space-collapsed'
+
 /** The collapsed crew ids, or an empty set when the value is unusable. */
-export function readCollapsedCrews(): Set<string> {
+export function readCollapsedCrews(key = CREW_COLLAPSED_LS_KEY): Set<string> {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(CREW_COLLAPSED_LS_KEY) ?? '[]')
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
     return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [])
   } catch {
     return new Set()

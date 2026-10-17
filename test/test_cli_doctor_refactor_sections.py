@@ -103,6 +103,9 @@ EXPECTED: dict[str, str] = {
         "  backend:     ⚠️  an outer sandbox already confines this process\n"
         "               Kiro Crew cannot nest its own sandbox inside it. Launch the gateway outside that\n"
         "               sandbox to hand isolation back to Kiro Crew's own profile.\n"
+        "               If you ran this from an agent's shell, that outer sandbox is the agent sandbox\n"
+        "               itself and nothing needs changing: run `kirocrew doctor` from your own terminal\n"
+        "               to check the gateway.\n"
     ),
     "backend:linux-refusal:False": ("  backend:     ❌ none — denied by policy\n"),
     "backend:linux-refusal:True": (

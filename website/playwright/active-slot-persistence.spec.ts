@@ -61,6 +61,12 @@ test.describe('Active slot persistence across surface switches', () => {
     // selected slot instead of falling back to the first row.
     await nav.getByText('Settings').click()
     await page.waitForURL('**/settings**')
+    // The address moves the moment the row is clicked; the chat page leaves the
+    // screen only when that route transition commits (react-router wraps it in
+    // startTransition). "Leaving /chat" means the sidebar is gone, so wait for
+    // that, not just the URL: a return clicked while chat is still mounted
+    // never unmounts the page and proves nothing about restoring the slot.
+    await expect(page.locator('.session-row')).toHaveCount(0, { timeout: 10000 })
 
     // Switch back to Sessions (the chat surface)
     await nav.getByText('Sessions').click()

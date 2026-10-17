@@ -939,7 +939,11 @@ class TestOwnerFolderCreatePersistsTheFiling:
         app["state"] = state
         app.router.add_post("/api/chat/slots", owner_handler)
         async with TestClient(TestServer(app)) as client:
-            resp = await client.post("/api/chat/slots", json={"folder_id": FOLDER_ID})
+            # The private crewmate is PICKED: an agent-less create is the default
+            # template on Global and publishes no private store.
+            resp = await client.post(
+                "/api/chat/slots", json={"folder_id": FOLDER_ID, "agent": "local-only-crew"}
+            )
             assert resp.status == 200, await resp.text()
             body = await resp.json()
         assert body["folder_id"] == FOLDER_ID

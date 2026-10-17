@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
+    IS_WINDOWS,
     first_linked_ancestor,
     is_link_or_junction,
     rmtree_force,
@@ -42,10 +43,10 @@ from kiro_crew.sandbox import (
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
+from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 #: Alias the ONE shared safe-config so this helper cannot drift from the others (the
-#: structural test in `test_dogfood_learnings` asserts identity). See `backend/commit.py`.
+#: structural test in `test_dogfood_learnings_clone` asserts identity). See `backend/commit.py`.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -957,6 +958,9 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
 #: added in one place if this app ever supports one.
 _ALLOWED_REMOTE_HOSTS = frozenset({"github.com"})
 
+#: A Windows drive-absolute path (`C:\x` or `C:/x`), which git on Windows reads as local.
+_WINDOWS_DRIVE_PATH = re.compile(r"[A-Za-z]:[\\/].*\S")
+
 
 def _is_allowed_remote(url: str) -> bool:
     """Whether a stored ``origin_url`` is safe to use as a push destination.
@@ -972,7 +976,8 @@ def _is_allowed_remote(url: str) -> bool:
 
     * A remote NETWORK url must be on the allowlist — exact host match, not ``endswith``, so
       ``evilgithub.com`` and ``github.com.attacker.net`` both fail.
-    * A LOCAL path (``/tmp/x.git``, ``file://``, or a relative path) is allowed: it cannot
+    * A LOCAL path (``/tmp/x.git``, ``file://``, a relative path, or on Windows a drive path
+      such as ``C:\\work\\repo.git``) is allowed: it cannot
       exfiltrate anywhere, it is what the app's own tests push to, and an operator pointing at
       a local bare repo is a legitimate offline setup.
     * The ``DISABLED_NO_PUSH`` sentinel is refused — it is a marker, not a destination.
@@ -984,6 +989,11 @@ def _is_allowed_remote(url: str) -> bool:
         # scp-like syntax: git@HOST:owner/repo(.git)
         host, sep, path = raw[len("git@") :].partition(":")
         return bool(sep) and host.lower() in _ALLOWED_REMOTE_HOSTS and bool(path.strip("/"))
+    if IS_WINDOWS and _WINDOWS_DRIVE_PATH.match(raw):
+        # `C:\work\repo.git`: urlparse reads the drive letter as a one-letter scheme, but git
+        # on Windows treats a drive prefix as a local path. Windows-only on purpose: git on
+        # POSIX parses `C:path` as scp-like ssh to a host named `C`, so it stays refused there.
+        return True
     parsed = urlparse(raw)
     if parsed.scheme in ("", "file"):
         # No network host to redirect to.
@@ -1200,6 +1210,7 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
                 where,
                 f"--work-tree={where}",
                 *_GIT_SAFE_CONFIG,
+                *hook_off_args(where, env=_git_env()),
                 *args,
             ],
             capture_output=True,

@@ -63,6 +63,14 @@ const ALLOWLIST: ReadonlyArray<{ file: string; classes: string; reason: string }
     classes: 'fixed left-0 right-0 z-[9999] flex items-start justify-center',
     reason: 'Same full-bleed backdrop as CommandPalette — the bar it centres carries no edge pin.',
   },
+  {
+    file: 'src/pages/members/MembersPage.tsx',
+    classes: 'fixed left-0 top-0 z-[60] pointer-events-none origin-top-left will-change-transform',
+    reason:
+      'The crewmate face in flight between the identity pill and the Profile card (CrewFaceFlight). '
+      + 'left-0 top-0 is only the transform origin: every frame translates it onto a viewport box '
+      + 'measured from a face that already sits inside the p-safe shell, so it never hugs an edge.',
+  },
 ]
 
 /**

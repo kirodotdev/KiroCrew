@@ -372,7 +372,27 @@ def test_spawn_supervised_oneshot_skips_the_supervisor_where_it_cannot_reap(
     with patch.object(kiro_prerequisite, "create_subprocess_limited", spawn):
         asyncio.run(kiro_prerequisite.spawn_supervised_oneshot(["/usr/bin/env", "x"]))
     assert list(spawn.await_args.args) == ["/usr/bin/env", "x"]
-    assert spawn.await_args.kwargs == {"start_new_session": True}
+    assert spawn.await_args.kwargs == {
+        "start_new_session": True,
+        "creationflags": platform_compat._SUBPROCESS_NO_WINDOW,
+    }
+
+
+def test_spawn_supervised_oneshot_opens_no_console_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The helper's three callers (--list-models, whoami, the /usage scrape) are
+    # background calls; on Windows each would otherwise get a console of its own.
+    monkeypatch.setattr(kiro_prerequisite, "_host_can_reap", lambda: False)
+    spawn = _spawn_capture()
+    with patch.object(kiro_prerequisite, "create_subprocess_limited", spawn):
+        asyncio.run(kiro_prerequisite.spawn_supervised_oneshot(["/usr/bin/env", "x"]))
+        assert spawn.await_args.kwargs["creationflags"] == platform_compat._SUBPROCESS_NO_WINDOW
+        # A caller's own flags are kept, not overridden.
+        asyncio.run(
+            kiro_prerequisite.spawn_supervised_oneshot(["/usr/bin/env", "x"], creationflags=0x10)
+        )
+        assert spawn.await_args.kwargs["creationflags"] == 0x10
 
 
 @posix_only
@@ -401,7 +421,11 @@ def test_spawn_supervised_oneshot_wraps_the_command_in_its_own_session() -> None
     assert args[:3] == [sys.executable, "-I", "-c"]
     assert args[3] == kiro_prerequisite._PROCESS_GROUP_SUPERVISOR_CODE
     assert args[4:] == ["--reap-survivors", "/usr/bin/env", "x"]
-    assert spawn.await_args.kwargs == {"start_new_session": True, "env": {}}
+    assert spawn.await_args.kwargs == {
+        "start_new_session": True,
+        "env": {},
+        "creationflags": platform_compat._SUBPROCESS_NO_WINDOW,
+    }
 
 
 @posix_only
@@ -484,3 +508,4 @@ def test_api_models_spawns_the_list_under_the_reaping_supervisor(tmp_path: Path)
     # The supervisor wraps the whole command, so the model list runs inside it.
     assert argv.index("/usr/bin/kiro-cli") > at
     assert spawn.await_args.kwargs["start_new_session"] is True
+    assert spawn.await_args.kwargs["creationflags"] == platform_compat._SUBPROCESS_NO_WINDOW

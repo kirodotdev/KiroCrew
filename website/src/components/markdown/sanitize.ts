@@ -1,4 +1,5 @@
 import { pairedCloseIndices, singleTagName } from '../../utils/htmlTagGrammar'
+import { isGuideMarkerAttr } from '../../guide/guideMarkers'
 
 /**
  * Rehype plugin: ALLOWLIST-based HTML sanitization of the HAST tree.
@@ -104,6 +105,9 @@ function isAllowedAttr(tag: string, key: string): boolean {
   // `data-message-edit`, `data-Message-Edit` and `dataMessageEdit` all reach
   // here as some casing of `datamessageedit`. Every other `data-*` stays admitted.
   if (k.replace(/-/g, '').startsWith('datamessage')) return false
+  // The guide's own markers (`data-ui-location`, `data-guide-pick`, ...): a
+  // message could otherwise draw a control a guide takes for the product's.
+  if (isGuideMarkerAttr(k)) return false
   if (k.startsWith('aria') || k.startsWith('data')) return true
   if (GLOBAL_ATTRS.has(k)) return true
   if (TAG_ATTRS[tag]?.has(k)) return true

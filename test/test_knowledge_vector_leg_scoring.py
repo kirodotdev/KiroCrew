@@ -17,6 +17,7 @@ import codecs
 import json
 import random
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,25 @@ class TestRankingParity:
         admitted = {ids[k] for k in ids if k.startswith(("json_", "binary_"))}
         assert ranked <= admitted
 
+    def test_numpy_that_fails_to_import_falls_back_to_python(self, store, monkeypatch):
+        """numpy found on disk but unloadable (broken wheel, missing BLAS):
+        the leg answers from the Python scorer instead of failing the search."""
+        pytest.importorskip("numpy")
+        rng = random.Random(8891)
+        _mixed_corpus(store, rng)
+        retriever = _retriever(store, _vec(rng))
+        monkeypatch.setattr(retrieval, "_HAS_NUMPY", False)
+        expected = retriever._vector_search("q", limit=50)
+
+        monkeypatch.setattr(retrieval, "_HAS_NUMPY", True)
+        # A None entry in sys.modules makes ``import numpy`` raise ImportError.
+        # Scoped to this block: conftest teardowns import numpy-backed modules.
+        with monkeypatch.context() as m:
+            m.setitem(sys.modules, "numpy", None)
+            degraded = retriever._vector_search("q", limit=50)
+        assert degraded == expected
+        assert expected
+
     def test_numpy_path_takes_the_matrix_route(self, store, monkeypatch):
         """The fast path really is taken: every packed row is viewed by ONE
         ``frombuffer`` over the joined blobs, not unpacked row by row."""
@@ -128,7 +148,7 @@ class TestRankingParity:
             calls.append(bytes(buf))
             return real_frombuffer(buf, *a, **kw)
 
-        monkeypatch.setattr(retrieval.np, "frombuffer", spy)
+        monkeypatch.setattr(np, "frombuffer", spy)
         retriever._vector_search("q", limit=50)
         assert len(calls) == 1
         assert len(calls[0]) == _PACKED_ROWS * _DIM * 4
@@ -299,7 +319,7 @@ class TestBatching:
             calls.append(len(buf))
             return real_frombuffer(buf, *a, **kw)
 
-        monkeypatch.setattr(retrieval.np, "frombuffer", spy)
+        monkeypatch.setattr(np, "frombuffer", spy)
         monkeypatch.setattr(retrieval, "_SCORE_BATCH_ROWS", 4)
         numpy_scored, _ = HybridRetriever._score_rows_numpy(rows, query_vec)
 

@@ -345,7 +345,7 @@ describe('reaction motions', () => {
   const tileRect = (tile: string) => `<rect width="1200" height="1200" fill="${tile}"/>`
 
   it('mirrors the backend vocabulary name for name', () => {
-    // `_AVATAR_MOTIONS` in `config/sections.py` validates against exactly these
+    // `_AVATAR_MOTIONS` in `config/sections_agent_fields.py` validates against exactly these
     // names, and a name only one side knows is a choice that cannot round-trip:
     // the backend would drop it, or this module would draw nothing for it.
     expect(MOTION_NAMES).toEqual({
@@ -363,11 +363,11 @@ describe('reaction motions', () => {
     // literals drift silently: a name added on one side is dropped by the other
     // with no test going red, and the user sees a motion that never plays.
     const sections = readFileSync(
-      join(__dirname, '../../../src/kiro_crew/config/sections.py'),
+      join(__dirname, '../../../src/kiro_crew/config/sections_agent_fields.py'),
       'utf8',
     )
     const block = /_AVATAR_MOTIONS: dict\[str, tuple\[str, \.\.\.\]\] = \{([\s\S]*?)\n\}/.exec(sections)
-    expect(block, '_AVATAR_MOTIONS literal not found in sections.py').not.toBeNull()
+    expect(block, '_AVATAR_MOTIONS literal not found in sections_agent_fields.py').not.toBeNull()
     const backend: Record<string, string[]> = {}
     for (const m of block![1].matchAll(/"(\w+)":\s*\(([^)]*)\)/g)) {
       backend[m[1]] = [...m[2].matchAll(/"([^"]+)"/g)].map(x => x[1])

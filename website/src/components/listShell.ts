@@ -1,7 +1,7 @@
 /**
  * The class recipes a conversation-list panel is made of, shared by the
  * Sessions sidebar (`pages/ChatSidebar.tsx`) and the Crew Members roster
- * (`pages/members/MembersPage.tsx`) so the two lists read as one surface:
+ * (`pages/members/MembersPageRoster.tsx`) so the two lists read as one surface:
  * same card, same header line, same row box, same type scale.
  *
  * They live here as whole class strings rather than as values copied between
@@ -37,7 +37,7 @@ export const LIST_TITLE_CLS = 'sessions-panel-title text-sm font-semibold text-t
 export const LIST_BODY_CLS = 'flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 pt-[var(--list-dock-h,0.5rem)] scroll-pt-[var(--list-dock-h,0.5rem)]'
 
 /** A row's box: the rounded hover/selection surface. */
-export const ROW_BOX_CLS = 'pl-2.5 pr-3 py-2 rounded-md'
+export const ROW_BOX_CLS = 'pl-3.5 pr-3 py-2 rounded-md'
 /** A row at rest, and the selected row. */
 export const ROW_IDLE_CLS = 'text-muted hover:text-text hover:bg-bg-hover'
 export const ROW_ACTIVE_CLS = 'text-text-strong bg-accent-subtle'

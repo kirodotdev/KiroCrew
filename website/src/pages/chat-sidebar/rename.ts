@@ -2,9 +2,10 @@
  *  plumbing that keeps a rename opened from a menu from being cancelled by the menu's
  *  own focus restore. */
 import { useState, useRef, useCallback, useEffect, type MutableRefObject } from 'react'
-import { useAutoGrowTextarea } from '../../hooks/useAutoGrowTextarea'
+import { measureAutoGrowTextarea, useAutoGrowTextarea } from '../../hooks/useAutoGrowTextarea'
 import { sseSlotTitle } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
+import { generateSlotTitle } from '../../hooks/slotTitleGeneration'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import type { AppDispatch, RootState } from '../../store'
@@ -179,11 +180,9 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         // save, reopening the same slot sets renameValue to the identical title,
         // so useAutoGrowTextarea's value-keyed effect never fires and the freshly
         // mounted textarea would otherwise sit at its 1-line resting height and
-        // clip a long name. Mirror the hook's measure here so every open shows
-        // the full name.
-        el.style.height = 'auto'
-        el.style.height = `${Math.min(el.scrollHeight, RENAME_MAX_H)}px`
-        el.style.overflowY = el.scrollHeight > RENAME_MAX_H ? 'auto' : 'hidden'
+        // clip a long name. Run the hook's own measure here so every open shows
+        // the full name, border included.
+        measureAutoGrowTextarea(el, RENAME_MAX_H)
       }
     })
     return () => cancelAnimationFrame(raf)
@@ -209,6 +208,26 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   }
+}
+
+/** "Regenerate title" from a session row's menu: the same endpoint and store
+ *  write as the chat header's hover-revealed button, reachable without making
+ *  the session active. A refusal lands in `autoTitleError`, rendered by the
+ *  sidebar-root ErrorNotice cluster beside the rename one; it names the session,
+ *  because the notice sits away from the row that was picked. */
+export function useSessionAutoTitle({ dispatch, store }: { dispatch: AppDispatch; store: Store<RootState> }) {
+  const [autoTitleError, setAutoTitleError] = useState('')
+  const onAutoTitle = useCallback((key: string) => {
+    const run = generateSlotTitle(key, dispatch)
+    if (!run) return
+    setAutoTitleError('')
+    run.catch(e => {
+      const title = store.getState().dashboard.slots.find(s => s.key === key)?.title || key
+      const reason = errMessage(e) || i18nT('pages.chatPage.unknown_error')
+      setAutoTitleError(`${title}: ${reason}`)
+    })
+  }, [dispatch, store])
+  return { autoTitleError, setAutoTitleError, onAutoTitle }
 }
 
 /** Folder rename state, scoped to the render instance being edited. */

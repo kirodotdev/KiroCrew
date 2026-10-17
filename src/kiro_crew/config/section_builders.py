@@ -129,9 +129,17 @@ from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
 
 def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     section = SectionReader(TaskRunnerConfig, taskrunner_data)
+    argv = section.get("test_command")
     return TaskRunnerConfig(
         max_parallel_steps=section.get("max_parallel_steps"),
         workspace_dir=str(section.get("workspace_dir")),
+        # All or nothing: dropping one bad element would run a different command.
+        test_command=(
+            list(argv)
+            if isinstance(argv, list) and all(isinstance(a, str) and a for a in argv)
+            else []
+        ),
+        require_verification=section.get("require_verification") is True,
     )
 
 
@@ -157,9 +165,10 @@ def _build_cron_history_config(cron_history_data: dict) -> CronHistoryConfig:
 
 
 def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> MonitoringConfig:
+    section = SectionReader(MonitoringConfig, data)
     return MonitoringConfig(
         prefer_structured_arming=prefer_structured_arming,
-        max_runtime_secs=coerce_runtime_ceiling(data.get("max_runtime_secs")),
+        max_runtime_secs=coerce_runtime_ceiling(section.get("max_runtime_secs")),
     )
 
 
@@ -192,6 +201,10 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # deliberate opt-in to the interactive pool.
         embedding_bulk_threads=section.read("embedding_bulk_threads", _safe_int, 0, 256),
         embedding_bulk_duty=section.read("embedding_bulk_duty", _safe_float, 0.05, 1.0),
+        # 0 is the documented "never unload" sentinel, so the floor is 0.
+        embedding_idle_evict_secs=section.read(
+            "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        ),
         embed_model_url=section.get("embed_model_url"),
         embed_model_path=section.get("embed_model_path"),
         embed_model_id=section.get("embed_model_id"),
@@ -220,6 +233,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         backup_enabled=section.read("backup_enabled", _safe_bool),
         backup_keep=section.read("backup_keep", _safe_int, 1, None),
         persistence_enabled=section.read("persistence_enabled", _safe_bool),
+        writes_enabled=section.read("writes_enabled", _safe_bool),
+        lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -295,7 +310,7 @@ def _build_skills_config(skills_data: dict) -> SkillsConfig:
         pending_ttl_days=section.read("pending_ttl_days", _safe_int),
         generate_scripts=section.read("generate_scripts", _safe_bool),
         judge_model=str(section.get("judge_model") or section.default("judge_model")),
-        extra_paths=[p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)],
+        extra_paths=[p for p in _safe_list(section.get("extra_paths")) if isinstance(p, str)],
         # Security off-switch: malformed values must not become truthy
         # through Python coercion (for example, the string "false").
         project_skills_enabled=section.get("project_skills_enabled") is True,
@@ -523,7 +538,7 @@ def _build_computer_use_config(computer_use_data: dict) -> ComputerUseConfig:
 def _build_slack_config(slack_data: dict) -> SlackConfig:
     section = SectionReader(SlackConfig, slack_data)
     return SlackConfig(
-        session_folder=_coerce_session_folder(slack_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         allowed_users=[
             u for u in section.get("allowed_users") if isinstance(u, dict) and u.get("slack_id")
         ],
@@ -533,9 +548,13 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         forward_to_agent_callback=str(
             section.get("forward_to_agent_callback") or section.default("forward_to_agent_callback")
         ).strip(),
-        trusted_bot_ids={
-            b for b in _safe_list(slack_data.get("trusted_bot_ids")) if isinstance(b, str)
-        },
+        # A set field that config.json stores as a list: an omitted key is the field
+        # default as built, and a stored value that is not a list trusts no bot.
+        trusted_bot_ids=(
+            {b for b in _safe_list(slack_data["trusted_bot_ids"]) if isinstance(b, str)}
+            if "trusted_bot_ids" in slack_data
+            else section.default("trusted_bot_ids")
+        ),
         trusted_bot_turn_limit=section.read("trusted_bot_turn_limit", _safe_int, lo=1),
         allowed_enterprise_ids=[
             e
@@ -544,7 +563,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         ],
         reactions={
             k: v
-            for k, v in _safe_dict(slack_data.get("reactions")).items()
+            for k, v in _safe_dict(section.get("reactions")).items()
             if isinstance(k, str) and (v is None or (isinstance(v, str) and v))
         },
         reactions_enabled=bool(section.get("reactions_enabled")),
@@ -562,10 +581,10 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
     section = SectionReader(TelegramConfig, telegram_data)
     return TelegramConfig(
-        session_folder=_coerce_session_folder(telegram_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
-        allowed_user_ids=_coerce_int_ids(telegram_data.get("allowed_user_ids")),
+        allowed_user_ids=_coerce_int_ids(section.get("allowed_user_ids")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         show_thinking=bool(section.get("show_thinking")),
         allow_forum=bool(section.get("allow_forum")),
@@ -573,21 +592,27 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
         forum_activation=_validate_telegram_activation(
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
-        allowed_forum_chat_ids=_coerce_int_ids(telegram_data.get("allowed_forum_chat_ids")),
-        accounts=_parse_telegram_accounts(telegram_data.get("accounts")),
+        allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        # The parser reads raw JSON entries, so it is handed only a stored value;
+        # an omitted key is the field default as built.
+        accounts=(
+            _parse_telegram_accounts(telegram_data["accounts"])
+            if "accounts" in telegram_data
+            else section.default("accounts")
+        ),
     )
 
 
 def _build_weixin_config(weixin_data: dict) -> WeixinConfig:
     section = SectionReader(WeixinConfig, weixin_data)
     return WeixinConfig(
-        session_folder=_coerce_session_folder(weixin_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         token=str(section.get("token")),
         account_id=str(section.get("account_id")),
         base_url=str(section.get("base_url") or section.default("base_url")),
         dm_policy=str(section.get("dm_policy") or section.default("dm_policy")),
-        allowed_user_ids=_coerce_opaque_str_ids(weixin_data.get("allowed_user_ids")),
+        allowed_user_ids=_coerce_opaque_str_ids(section.get("allowed_user_ids")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
     )
@@ -596,11 +621,11 @@ def _build_weixin_config(weixin_data: dict) -> WeixinConfig:
 def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
     section = SectionReader(WhatsAppConfig, whatsapp_data)
     return WhatsAppConfig(
-        session_folder=_coerce_session_folder(whatsapp_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         dm_policy=str(section.get("dm_policy") or section.default("dm_policy")),
-        allowed_wa_ids=_coerce_str_ids(whatsapp_data.get("allowed_wa_ids")),
-        groups=_coerce_whatsapp_groups(whatsapp_data.get("groups")),
+        allowed_wa_ids=_coerce_str_ids(section.get("allowed_wa_ids")),
+        groups=_coerce_whatsapp_groups(section.get("groups")),
         db_path=str(section.get("db_path")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
@@ -610,15 +635,15 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
 def _build_discord_config(discord_data: dict) -> DiscordConfig:
     section = SectionReader(DiscordConfig, discord_data)
     return DiscordConfig(
-        session_folder=_coerce_session_folder(discord_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
         # Discord user IDs are numeric snowflakes that exceed 2^53 —
         # keep them as strings (JSON round-trip safe, matches the
         # transport's string comparison).
-        allowed_user_ids=_coerce_str_ids(discord_data.get("allowed_user_ids")),
-        allowed_thread_ids=_coerce_str_ids(discord_data.get("allowed_thread_ids")),
-        allowed_channel_ids=_coerce_str_ids(discord_data.get("allowed_channel_ids")),
+        allowed_user_ids=_coerce_str_ids(section.get("allowed_user_ids")),
+        allowed_thread_ids=_coerce_str_ids(section.get("allowed_thread_ids")),
+        allowed_channel_ids=_coerce_str_ids(section.get("allowed_channel_ids")),
         auto_thread=bool(section.get("auto_thread")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         reactions_enabled=bool(section.get("reactions_enabled")),
@@ -629,7 +654,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
 def _build_webex_config(webex_data: dict) -> WebexConfig:
     section = SectionReader(WebexConfig, webex_data)
     return WebexConfig(
-        session_folder=_coerce_session_folder(webex_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
         allowed_emails=(
@@ -645,7 +670,7 @@ def _build_webex_config(webex_data: dict) -> WebexConfig:
         # the gateway answers nobody.
         allow_group_rooms=bool(section.get("allow_group_rooms")),
         allowed_room_ids=[
-            r for r in _safe_list(webex_data.get("allowed_room_ids")) if isinstance(r, str) and r
+            r for r in _safe_list(section.get("allowed_room_ids")) if isinstance(r, str) and r
         ],
         reply_in_thread=bool(section.get("reply_in_thread")),
         wdm_base=str(section.get("wdm_base") or section.default("wdm_base")),
@@ -657,11 +682,11 @@ def _build_webex_config(webex_data: dict) -> WebexConfig:
 def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
     section = SectionReader(IMessageConfig, imessage_data)
     return IMessageConfig(
-        session_folder=_coerce_session_folder(imessage_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         db_path=str(section.get("db_path")),
         allowed_handles=[
-            h for h in _safe_list(imessage_data.get("allowed_handles")) if isinstance(h, str) and h
+            h for h in _safe_list(section.get("allowed_handles")) if isinstance(h, str) and h
         ],
         service=str(section.get("service") or section.default("service")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
@@ -672,13 +697,13 @@ def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
 def _build_teams_config(teams_data: dict) -> TeamsConfig:
     section = SectionReader(TeamsConfig, teams_data)
     return TeamsConfig(
-        session_folder=_coerce_session_folder(teams_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
         app_id=str(section.get("app_id")),
         # Secret is env-only (MICROSOFT_APP_PASSWORD). Never sourced from
         # config.json, which the agent can read — keeps the Azure Bot
         # credential out of any agent-readable file.
-        app_password="",
+        app_password=section.default("app_password"),
         tenant_id=str(section.get("tenant_id")),
         allowed_emails=(
             [e for e in section.get("allowed_emails") if isinstance(e, str) and e]
@@ -693,7 +718,7 @@ def _build_teams_config(teams_data: dict) -> TeamsConfig:
 def _build_wecom_config(wecom_data: dict) -> WeComConfig:
     section = SectionReader(WeComConfig, wecom_data)
     return WeComConfig(
-        session_folder=_coerce_session_folder(wecom_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
         # _safe_bool, not bool(): `bool("false")` is True, so a JSON string
         # would read the operator's "off" as "on" -- enabling a channel,
         # or opening it to every org member, from a config value that says the
@@ -701,7 +726,7 @@ def _build_wecom_config(wecom_data: dict) -> WeComConfig:
         enabled=section.read("enabled", _safe_bool),
         allowed_users=[
             u
-            for u in _safe_list(wecom_data.get("allowed_users"))
+            for u in _safe_list(section.get("allowed_users"))
             if isinstance(u, dict) and u.get("userid")
         ],
         allow_all_users=section.read("allow_all_users", _safe_bool),
@@ -715,16 +740,16 @@ def _build_feishu_config(feishu_data: dict) -> FeishuConfig:
     section = SectionReader(FeishuConfig, feishu_data)
     return FeishuConfig(
         enabled=section.read("enabled", _safe_bool),
-        allowed_open_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_open_ids")),
+        allowed_open_ids=_coerce_opaque_str_ids(section.get("allowed_open_ids")),
         # Shape-safe coercion rather than bool() / a raw comprehension:
         # the schema type check already substitutes the default for a
         # wrong-typed value, and these helpers keep the guarantee local
         # to the parse (and dedupe + strip the opaque ou_/oc_ ids).
         allow_group=section.read("allow_group", _safe_bool),
-        allowed_group_ids=_coerce_opaque_str_ids(feishu_data.get("allowed_group_ids")),
+        allowed_group_ids=_coerce_opaque_str_ids(section.get("allowed_group_ids")),
         soft_threshold_pct=section.read("soft_threshold_pct", _safe_int),
         hard_threshold_pct=section.read("hard_threshold_pct", _safe_int),
-        session_folder=_coerce_session_folder(feishu_data.get("session_folder")),
+        session_folder=_coerce_session_folder(section.get("session_folder")),
     )
 
 
@@ -747,7 +772,15 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
     return SttConfig(
         enabled=section.read("enabled", _safe_bool),
         provider=_validated_stt_provider(section.get("provider")),
-        model=_validated_stt_model(section.get("model")),
+        model=_validated_stt_model(
+            section.get("model"),
+            custom_path=section.get("custom_model_path"),
+            custom_sha256=section.get("custom_model_sha256"),
+        ),
+        custom_model_path=_sections._validated_stt_custom_path(section.get("custom_model_path")),
+        custom_model_sha256=_sections._validated_stt_custom_sha256(
+            section.get("custom_model_sha256")
+        ),
         language_code=section.get("language_code"),
         # Reached through the module rather than re-exported: the loader facade's
         # import list from `sections` is a frozen pre-split snapshot
@@ -774,6 +807,9 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         transcribe_region=section.get("transcribe_region"),
         transcribe_profile=section.get("transcribe_profile"),
         transcribe_vocabulary=_sections._validated_transcribe_vocabulary(
-            stt_data.get("transcribe_vocabulary")
+            section.get("transcribe_vocabulary")
+        ),
+        transcribe_languages=_sections._validated_transcribe_languages(
+            section.get("transcribe_languages")
         ),
     )

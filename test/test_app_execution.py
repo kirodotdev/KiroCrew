@@ -184,6 +184,32 @@ class TestExecutionDecision:
             app_root=outside_root,
         )
 
+    def test_shipped_builtin_name_is_read_from_the_root_holding_a_path(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import kiro_crew.platform as platform_mod
+        from kiro_crew.apps import execution
+
+        source = tmp_path / "edition-builtins"
+        shipped_root = source / "edition_app"
+        (shipped_root / "skills" / "one").mkdir(parents=True)
+        (shipped_root / "app.json").write_text(
+            json.dumps({"name": "edition-app"}),
+            encoding="utf-8",
+        )
+        context = SimpleNamespace(
+            apps_loader=SimpleNamespace(manifest_sources=lambda: [source])
+        )
+        monkeypatch.setattr(platform_mod, "current_context", lambda: context)
+
+        root = shipped_root.resolve()
+        assert execution.shipped_builtin_app_root("edition-app") == root
+        assert execution.shipped_builtin_app_root("edition_app") is None
+        assert execution.shipped_builtin_app_name_at(root / "skills" / "one") == "edition-app"
+        assert execution.shipped_builtin_app_name_at(root) == "edition-app"
+        assert execution.shipped_builtin_app_name_at(source.resolve()) is None
+        assert execution.shipped_builtin_app_name_at(tmp_path.resolve() / "elsewhere") is None
+
     def test_builtin_app_names_requires_builtin_owned_install(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -596,6 +622,9 @@ class TestLaunchAndLifecycleBoundary:
             lifecycle_scripts, "wrap_argv", lambda argv, **kwargs: (argv, None)
         )
         monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
+        # Exercises the POSIX run path; pin IS_POSIX so the native-Windows guard
+        # does not short-circuit it on a Windows CI runner.
+        monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", True)
 
         class _Process:
             pid = 55

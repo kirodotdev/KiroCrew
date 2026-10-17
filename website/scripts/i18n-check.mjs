@@ -5,8 +5,8 @@
  * ## Why a runner and not `a && b && c`
  *
  * `package.json` used to chain six scripts with `&&`, which short-circuits: the first
- * failure hides the other ten checks, so an author fixes one, pushes, waits ~5
- * minutes for `frontend-lint`, and discovers the next. Eleven checks means up to eleven
+ * failure hides every later check in CHECKS, so an author fixes one, pushes, waits ~5
+ * minutes for `frontend-lint`, and discovers the next. N failing checks means up to N
  * rounds for one PR. They are independent measurements over the same tree; there is
  * no reason to learn them one at a time.
  *

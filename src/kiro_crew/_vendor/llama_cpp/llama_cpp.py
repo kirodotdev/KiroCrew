@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import ctypes
 import pathlib
+import sys
 import warnings
 
 from typing import (
@@ -33,7 +34,23 @@ if TYPE_CHECKING:
 
 # Specify the base name of the shared library to load
 _lib_base_name = "llama"
-_override_base_path = os.environ.get("LLAMA_CPP_LIB_PATH")
+# kiro_crew DIVERGENCE FROM UPSTREAM llama-cpp-python: the embedding host
+# (kiro_crew.embeddings._load_llama_class) names the bundled per-platform lib
+# directory through a process-local seam -- a module it registers in
+# sys.modules under the key below before importing this package -- and never
+# through the process environment. An environment variable set even for the
+# duration of this import is copied into every child process spawned in that
+# window (MCP servers, sessions, the gateway an in-app restart execs into), and
+# a child carrying its own llama-cpp bindings would then dlopen THIS install's
+# native libs against them. The seam is consulted before LLAMA_CPP_LIB_PATH
+# because the host applies the operator-override rule before registering it:
+# with an operator override in the environment it registers nothing, and the
+# upstream behaviour below is unchanged. Without the seam this module behaves
+# exactly as upstream.
+_kiro_crew_lib_path_seam = sys.modules.get("_kiro_crew_llama_cpp_lib_path")
+_override_base_path = getattr(_kiro_crew_lib_path_seam, "LIBS_DIR", None)
+if _override_base_path is None:
+    _override_base_path = os.environ.get("LLAMA_CPP_LIB_PATH")
 _base_path = (
     pathlib.Path(os.path.abspath(os.path.dirname(__file__))) / "lib"
     if _override_base_path is None

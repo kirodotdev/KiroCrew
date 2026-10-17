@@ -185,14 +185,21 @@ class TestCronCallbackDeferredResetPreservesActiveKey:
 
     def test_clear_not_called_in_deferred_branch_source(self):
         """Source-level invariant: the unconditional clear is gone."""
-        import inspect
+        from pathlib import Path
 
         from kiro_crew.slack import gateway
 
-        src = inspect.getsource(gateway)
+        slack_dir = Path(gateway.__file__).resolve().parent
+        src = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                slack_dir / "gateway.py",
+                *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+            ]
+        )
         # The buggy pattern was an indentation-dedented clear right after
-        # the if/else block. Pin that it is not present anymore.
-        buggy_pattern = "                # clear the active-session registration either way."
+        # the if/else block. Pin that it is not present anymore, at any depth.
+        buggy_pattern = "# clear the active-session registration either way."
         assert buggy_pattern not in src, (
             "Unconditional clear_active_session_key removed — it must only run "
             "on the non-deferred branch (else: after sessions.reset)."

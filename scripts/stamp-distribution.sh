@@ -37,6 +37,15 @@ if [ ! -d "$PKG_DIR" ]; then
   exit 1
 fi
 
+# git tree id of website/ in the tree being packaged. Baked alongside
+# DISTRIBUTION so the dashboard bundle-freshness guard can compare it against
+# the website/ tree the served dist was built from (see
+# src/kiro_crew/dashboard/stale_bundle_guard.py). A tree id, not HEAD: a
+# backend-only commit must not make a correct bundle look stale. Empty-safe:
+# git may be unavailable in some packaging sandboxes (a staged copy is not a
+# git repo), in which case WEBSITE_TREE stays "" and the guard skips silently.
+WEBSITE_TREE="$(git -C "$PKG_DIR" rev-parse HEAD:website 2>/dev/null || true)"
+
 cat > "$PKG_DIR/_build_info.py" <<EOF
 """Build-time provenance. GENERATED - do not edit and do not commit.
 
@@ -48,6 +57,7 @@ normal case and reports "source".
 from __future__ import annotations
 
 DISTRIBUTION = "$DIST"
+WEBSITE_TREE = "$WEBSITE_TREE"
 EOF
 
-echo "Stamped distribution=$DIST -> $PKG_DIR/_build_info.py"
+echo "Stamped distribution=$DIST website_tree=${WEBSITE_TREE:-<none>} -> $PKG_DIR/_build_info.py"

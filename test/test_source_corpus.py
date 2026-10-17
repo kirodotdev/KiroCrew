@@ -49,6 +49,7 @@ from source_corpus import (
     candidate_sources,
     iter_candidate_sources,
     iter_source_texts,
+    iter_statements,
     repo_files,
     repo_files_named,
     repo_root,
@@ -810,3 +811,70 @@ class TestNoGateEnumeratesTheCheckoutByWalking:
             "tmp-path": "def t(tmp_path):\n    return list(tmp_path.rglob('*'))\n",
         }.items():
             assert repo_root_scans(source) == [], label
+
+
+class TestTheStatementWalk:
+    """``iter_statements`` is the statement half of ``ast.walk``: the same statements,
+    in the same order, from a sixth of the visits."""
+
+    #: One of every block kind, nested, with a statement in each.
+    _SOURCE = (
+        "import a\n"
+        "try:\n"
+        "    import b\n"
+        "except ImportError as exc:\n"
+        "    c = 1\n"
+        "else:\n"
+        "    d = 2\n"
+        "finally:\n"
+        "    e = 3\n"
+        "class C:\n"
+        "    f: int = 4\n"
+        "    def m(self):\n"
+        "        with open(x) as fh:\n"
+        "            for i in y:\n"
+        "                while z:\n"
+        "                    if q:\n"
+        "                        g = 5\n"
+        "                    else:\n"
+        "                        h = 6\n"
+        "match v:\n"
+        "    case 1:\n"
+        "        j = 7\n"
+        "    case _:\n"
+        "        k = 8\n"
+        "async def af():\n"
+        "    async with a as b:\n"
+        "        async for c in d:\n"
+        "            n = [stmt for stmt in body]\n"
+        "    lam = lambda: (yield_ := 9)\n"
+    )
+
+    def test_it_yields_every_statement_in_walk_order(self):
+        tree = ast.parse(self._SOURCE)
+        expected = [node for node in ast.walk(tree) if isinstance(node, ast.stmt)]
+        assert list(iter_statements(tree)) == expected
+        assert len(expected) == 23
+
+    def test_it_never_enters_an_expression(self):
+        """The nodes it touches are the statements and the two block holders that are
+        not statements, so a module's names, calls and constants are never visited."""
+        tree = ast.parse(self._SOURCE)
+        kinds = {type(node).__name__ for node in iter_statements(tree)}
+        assert kinds == {
+            "Import",
+            "Try",
+            "Assign",
+            "ClassDef",
+            "AnnAssign",
+            "FunctionDef",
+            "With",
+            "For",
+            "While",
+            "If",
+            "Match",
+            "AsyncFunctionDef",
+            "AsyncWith",
+            "AsyncFor",
+        }
+        assert "Expr" not in kinds and "NamedExpr" not in kinds and "ListComp" not in kinds

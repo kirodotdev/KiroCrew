@@ -21,6 +21,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import type { RootState } from '../store'
+import type { ChatFolder } from '../types'
 
 // Render framer-motion elements as plain DOM because jsdom cannot run projection.
 vi.mock('framer-motion', async () => {
@@ -59,7 +60,7 @@ vi.mock('../pages/chat/ChatSettings', () => ({
 }))
 
 const mocks = vi.hoisted(() => ({
-  createChatSlot: vi.fn(), listInstances: vi.fn(),
+  createChatSlot: vi.fn(), listInstances: vi.fn(), chatFolders: vi.fn(),
   instancesCapabilities: vi.fn(), crewPeerPost: vi.fn(), dashboardConfig: vi.fn(),
 }))
 vi.mock('../api/client', () => ({
@@ -100,10 +101,12 @@ function LocationProbe() {
   return <div data-testid="location">{loc.pathname}{loc.search}</div>
 }
 
-function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void } = {}) {
+function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: string; onOpenPeerSession?: (id: string, key: string) => void; connected?: boolean; folders?: ChatFolder[] } = {}) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [], approvalMode: 'normal',
+      // The creators are gateway-gated, so a case asserting a create reaches the
+      // server needs a live gateway; the offline cases pass `connected: false`.
+      status: {}, connected: opts.connected ?? true, slots: [], approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -115,7 +118,10 @@ function renderSidebar(opts: { warm?: Record<string, unknown>; defaultAgent?: st
     ...(opts.warm ? { instances: { warm: opts.warm } as unknown as RootState['instances'] } : {}),
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  qc.setQueryData(['chat-folders'], [])
+  // Seeded AND mocked: the ['chat-folders'] query refetches on mount, so a seed
+  // alone is replaced by the Proxy's default [] mid-test.
+  mocks.chatFolders.mockResolvedValue(opts.folders ?? [])
+  qc.setQueryData(['chat-folders'], opts.folders ?? [])
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -424,14 +430,15 @@ describe('create-button caret menu', () => {
     expect(JSON.stringify(mocks.crewPeerPost.mock.calls.at(-1))).not.toContain('planner')
   })
 
-  it('still stamps the default agent on an ordinary local create', async () => {
-    // The contrast that makes the subtraction above a deliberate one rather than
-    // a dropped argument: the local entry DOES carry this machine's default.
+  it('sends no agent on an ordinary local create either', async () => {
+    // `defaultAgent` is the roster's default CREWMATE alias. A session created
+    // without picking a crewmate runs the default custom agent (a template),
+    // which the server stamps, so the local entry carries no agent at all.
     renderSidebar({ defaultAgent: 'planner' })
     openCreateMenu()
     fireEvent.click(await findCreateMenuItem('New chat'))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalled())
-    expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBe('planner')
+    expect(mocks.createChatSlot.mock.calls.at(-1)?.[1]).toBeUndefined()
   })
 
   // A crew create takes seconds (a version read, then the peer's own create),
@@ -468,5 +475,63 @@ describe('create-button caret menu', () => {
     await waitFor(() => expect(screen.queryByTestId('new-chat-on-crew-spinner-i-nobita')).toBeNull())
     expect(screen.queryByText(pendingText)).toBeNull()
     if (!ok) expect(await screen.findByTestId('new-chat-on-crew-error')).toBeTruthy()
+  })
+})
+
+describe('create-menu offline gating', () => {
+  // Listed INLINE at phone width, which is also the only width where jsdom can
+  // reach the folder rows: a Radix flyout needs PointerEvent support jsdom lacks.
+  const folders: ChatFolder[] = [{ id: 'f-alpha', name: 'Alpha', order: 0 } as ChatFolder]
+
+  it('offline a folder row dims, announces itself, and refuses the pick', async () => {
+    mobileViewport.value = true
+    renderSidebar({ connected: false, folders })
+    openCreateMenu()
+    // The offline accessible name REPLACES the folder name: finding it under
+    // 'Alpha' would mean the announcement never applied.
+    const row = await screen.findByRole('menuitem', { name: 'Alpha disabled \u2014 gateway offline' })
+    expect(row.className).toContain('opacity-40')
+    expect(row.className).toContain('text-muted')
+    expect(row.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(row)
+    // Radix closes a menu on onSelect, so a surviving menu is the refusal firing.
+    expect(screen.getByTestId('new-menu-offline-reason')).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Alpha disabled \u2014 gateway offline' })).toBeInTheDocument()
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('connected the same folder row keeps its name and carries no dim', async () => {
+    mobileViewport.value = true
+    renderSidebar({ connected: true, folders })
+    openCreateMenu()
+    const row = await screen.findByRole('menuitem', { name: 'Alpha' })
+    expect(row.className).not.toContain('opacity-40')
+    expect(screen.queryByTestId('new-menu-offline-reason')).toBeNull()
+  })
+
+  it('offline every create row is dimmed and the menu says why', async () => {
+    renderSidebar({ connected: false })
+    openCreateMenu()
+    const rows = [
+      await screen.findByTestId('new-plain-chat'),
+      screen.getByTestId('new-incognito-chat'),
+      screen.getByTestId('new-temporary-chat'),
+      screen.getByTestId('new-folder'),
+    ]
+    for (const row of rows) {
+      expect(row.getAttribute('aria-disabled')).toBe('true')
+      expect(row.getAttribute('title')).toMatch(/offline/i)
+      expect(row.className).toContain('opacity-40')
+    }
+    expect(screen.getByTestId('new-menu-offline-reason')).toBeInTheDocument()
+    fireEvent.click(rows[0])
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('offline the split button\'s primary segment refuses with a notice, not a failure', async () => {
+    renderSidebar({ connected: false })
+    fireEvent.click(screen.getByRole('button', { name: /new chat session disabled/i }))
+    expect(await screen.findByTestId('folder-action-offline')).toHaveTextContent(/reconnect to create sessions/i)
+    expect(mocks.createChatSlot).not.toHaveBeenCalled()
   })
 })

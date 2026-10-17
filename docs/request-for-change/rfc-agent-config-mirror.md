@@ -66,7 +66,7 @@ only in `providers.md` and two of which were documented nowhere as mirrors.
 |---|---|---|---|
 | kiro-cli | `providers/acp.py` `_write_cli_overlay`, `_write_tool_search_overlay` | a file the harness reads: `<work_dir>/.kiro/settings/cli.json` | model, effort, tool-search settings. The spec proper needs no mirror — kiro-cli is handed `--agent` and reads `~/.kiro/agents/<name>.json` itself |
 | KAS | `acp/kas_agents.py` + `acp/kas_permissions.py` | per-session wire params: `_meta.kiro.customAgents` on `session/new` | `prompt` (inlined from `file://`, since KAS will not read a URI), `tools` (always explicit — absent means *no* tools in KAS, so an ambiguous spec fails closed rather than guessing `*`), `mcpServers` minus broker stubs, `permissions` derived from `allowedTools` through KAS's own capability vocabulary |
-| Claude Code | `acp/session_mcp.py` + `acp/client.py` `_write_claude_local_settings` | both: per-session wire array (`mcpServers` on `session/new`) **and** a file (`<work_dir>/.claude/settings.local.json`) | MCP servers, `permissions.deny` from `disabledTools`, `availableModels`, `model` |
+| Claude Code | `acp/session_mcp.py` + `acp/client_claude_seed.py` `_write_claude_local_settings` | both: per-session wire array (`mcpServers` on `session/new`) **and** a file (`<work_dir>/.claude/settings.local.json`) | MCP servers, `permissions.deny` from `disabledTools`, `availableModels`, `model` |
 
 Two observations that decide the design:
 
@@ -294,7 +294,7 @@ These are routinely conflated and the plan is wrong if they are:
 
 - **Crew's own hooks** (`src/kiro_crew/hooks.py`, the `config.json` `hooks`
   section) fire on Crew's side of the wire, on ACP tool events, via
-  `fire_tool_hooks` / `get_global_hook_store` in `acp/client.py`. They are
+  `fire_tool_hooks` / `get_global_hook_store` in `acp/client_tool_events.py`. They are
   already backend-agnostic and already work everywhere. **This RFC does not
   touch them, and no gap here is about them.**
 - **The spec's `hooks` block** (written by `_kiro_hooks_only` +

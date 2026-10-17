@@ -11,6 +11,9 @@ import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesRespo
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { servedUploadMb } from '../../utils/fileTokens'
+import ErrorNotice from '../../components/ErrorNotice'
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -271,6 +274,14 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
 }) {
   const ime = useImeGuard()
   const queryClient = useQueryClient()
+  // The advertised per-file ceiling is the gateway's `knowledge_upload_max_mb`
+  // (the smaller of `dashboard.upload_max_mb` and `knowledge.max_ingest_file_mb`),
+  // the same value the ingest handler enforces (shared config query key). A
+  // failed read shows no figure at all, even a cached one beside the failure
+  // notice: the default is not what the gateway enforces when the operator
+  // changed it, so it is never presented as loaded.
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
   const [showAdd, setShowAdd] = useState(false)
   const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
   const [addUri, setAddUri] = useState('')
@@ -453,9 +464,15 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <IngestionProgress jobs={ingestionJobs} />
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
-                {' ' + i18nT('pages.knowledge.sourcesList.max_file_size')}
+                {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}
                 {acceptsNoExtension && ' ' + i18nT('pages.knowledge.sourcesList.files_with_no_extension_e_g_readme_are_ingested')}
               </div>
+              {/* No hand-off: the add-source panel holds the unsaved namespace choice and the folder name and path drafts. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-upload-limit-notice"
+                message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
+              />
             </>
           ) : (
             <>
@@ -559,6 +576,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
+                    : s.source_type === 'agent'
+                    // Like "auto" and "folder", the label names how the row updates,
+                    // so it comes from the row's type; "manual" would point at a Sync
+                    // button the gateway does not offer here.
+                    ? <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.updates_when_the_agent_adds_a_document')}>{i18nT('pages.knowledge.sourcesList.added_by_agent')}</span>
                     : <span className="inline-flex items-center gap-0.5 text-muted shrink-0" title={i18nT('pages.knowledge.sourcesList.use_sync_button_to_update')}>{i18nT('pages.knowledge.sourcesList.manual')}</span>}
                   {/* The count names a problem whose detail (which files, and why)
                       lives in the row's expanded view, so on folder rows it is the
@@ -625,7 +647,9 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   </button>
                 )
               )}
-              {!isFolderType && (
+              {/* The gateway marks a row it would refuse Sync on (the Auto-added
+                  source: its documents arrive only when the agent submits them). */}
+              {!isFolderType && s.syncable !== false && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
                   className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
                   {syncingIds.has(s.id)

@@ -75,8 +75,7 @@ def _bootable_types() -> tuple[str, ...]:
 
 def _self_attrs_assigned(func) -> set[str]:
     """Every ``self.<name>`` assigned (or annotated-assigned) in *func*."""
-    src = inspect.getsource(func)
-    tree = ast.parse(inspect.cleandoc(src) if src.startswith("def ") else _dedent(src))
+    tree = ast.parse(_dedent(inspect.getsource(func)))
     names: set[str] = set()
     for node in ast.walk(tree):
         targets: list[ast.expr] = []
@@ -109,9 +108,14 @@ def _orch_attrs_consumed(channel_type: str) -> set[str]:
     and a ``getattr(orch, "_x", default)`` with a literal name.
     """
     prefix = f"_{channel_type}_"
+    runtime = Path(gw.__file__).with_name("gateway_runtime")
     paths = [
         Path(gw.__file__).with_name("gateway.py").parent.parent / channel_type / "gateway.py",
         Path(gw.__file__),
+        # The constructor and the channel boot (hoists, transports) are composed
+        # into the facade from these owners.
+        runtime / "orchestrator_init.py",
+        runtime / "channel_boot.py",
     ]
     found: set[str] = set()
     for path in paths:
@@ -1052,6 +1056,7 @@ class TestSlackApplierReconciles:
         assert names == {
             "GatewayOrchestrator.channel_restart",
             "GatewayOrchestrator.slack",
+            "GatewayOrchestrator.default_agent",
         }
 
 

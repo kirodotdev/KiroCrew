@@ -121,6 +121,12 @@ from .http_routes.ai import (  # noqa: F401
     _run_oneshot_model,
     _ui_language,
 )
+from .http_routes.ci_runs import (  # noqa: F401
+    _CONCURRENCY,
+    CI_RUNS_MAX_REPOS,
+    _handle_ci_runs,
+    _repo_runs,
+)
 from .http_routes.deps import (  # noqa: F401
     _DEPS_REBUILD_LOCKS_APP_KEY,
     _DEPS_REFRESH_TASKS_APP_KEY,
@@ -135,6 +141,15 @@ from .http_routes.deps import (  # noqa: F401
     _rebuild_deps,
     _schedule_deps_refresh,
     _stop_deps_refreshes,
+)
+from .http_routes.gitlab_groups import (  # noqa: F401
+    _group_error,
+    _handle_add_gitlab_group,
+    _handle_gitlab_group_reviews,
+    _handle_gitlab_groups,
+    _handle_remove_gitlab_group,
+    _provider_error_response,
+    _query_group,
 )
 from .http_routes.investigation import (  # noqa: F401
     _handle_get_investigation,
@@ -730,6 +745,7 @@ def register_routes(app: web.Application) -> None:
         "/api/apps/issue-radar/pull/auto-merge", _require_enabled(_handle_pull_auto_merge)
     )
     app.router.add_get("/api/apps/issue-radar/pull/runs", _require_enabled(_handle_pull_runs))
+    app.router.add_get("/api/apps/issue-radar/ci-runs", _require_enabled(_handle_ci_runs))
     app.router.add_post("/api/apps/issue-radar/pull/run", _require_enabled(_handle_pull_run_action))
     app.router.add_post("/api/apps/issue-radar/pulls/bulk", _require_enabled(_handle_pulls_bulk))
     app.router.add_get(
@@ -751,6 +767,19 @@ def register_routes(app: web.Application) -> None:
     app.router.add_post("/api/apps/issue-radar/tagging", _require_enabled(_handle_generate_tagging))
     app.router.add_post(
         "/api/apps/issue-radar/labels/apply-bulk", _require_enabled(_handle_labels_apply_bulk)
+    )
+    app.router.add_get(
+        "/api/apps/issue-radar/gitlab-groups", _require_enabled(_handle_gitlab_groups)
+    )
+    app.router.add_post(
+        "/api/apps/issue-radar/gitlab-groups", _require_enabled(_handle_add_gitlab_group)
+    )
+    app.router.add_delete(
+        "/api/apps/issue-radar/gitlab-groups", _require_enabled(_handle_remove_gitlab_group)
+    )
+    app.router.add_get(
+        "/api/apps/issue-radar/gitlab-groups/review-requests",
+        _require_enabled(_handle_gitlab_group_reviews),
     )
 
     # Crews (the worker-agent surface) live in their own module but register HERE,

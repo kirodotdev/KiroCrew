@@ -1791,6 +1791,46 @@ class TestEnableRestartsSessions:
         assert body["enabled"] is True
         assert len(calls) == 1
         assert json.loads(state_file.read_text())[STATE_KEY_ENABLED] is True
+        assert body["agent_spec_rewritten"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("rebuild", "expected"),
+        [
+            pytest.param(
+                lambda **kw: (kw["_wrote_out"].append(True), Path("/dev/null"))[1],
+                True,
+                id="wrote",
+            ),
+            # The shared-home guard refused: the path comes back and nothing is written.
+            pytest.param(lambda **_: Path("/dev/null"), False, id="declined"),
+        ],
+    )
+    async def test_the_save_reports_whether_the_spec_was_rewritten(
+        self, state_file, monkeypatch, rebuild, expected
+    ):
+        import kiro_crew.agent as agent_mod
+
+        self._spy(monkeypatch)
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+            body = await resp.json()
+        assert resp.status == 200
+        assert body["enabled"] is True
+        assert body["agent_spec_rewritten"] is expected
+
+    @pytest.mark.asyncio
+    async def test_a_save_without_an_enable_change_reports_no_rebuild(
+        self, state_file, monkeypatch
+    ):
+        state_file.write_text(json.dumps({STATE_KEY_ENABLED: True}), encoding="utf-8")
+        self._spy(monkeypatch)
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+            body = await resp.json()
+        assert resp.status == 200
+        assert "agent_spec_rewritten" not in body
 
 
 class TestAMalformedKeystoneStillRendersSettings:

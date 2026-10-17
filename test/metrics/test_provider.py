@@ -4,10 +4,42 @@ import threading
 import time
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
+import kiro_crew.metrics.provider as _provider
 from kiro_crew.config.loader import KiroCrewConfig, TelemetryConfig
 from kiro_crew.metrics.provider import MetricsRecorder, get_recorder, reset_for_testing
 from kiro_crew.metrics.provider import shutdown as provider_shutdown
+from kiro_crew.testing.clock import ManualClock
+
+#: Taken at import, before any test installs a clock.
+_REAL_SLEEP = time.sleep
+
+
+class _SignalledPolls(ManualClock):
+    """The reset wait's poll clock: ``entered`` is set on every poll sleep.
+
+    Each poll also takes its real duration, because what the wait polls for is a
+    real worker thread clearing its flag. Installed on the provider module alone.
+    Its ``time`` IS the stdlib module, so a hook on ``provider.time.sleep`` would
+    also fire for every other thread's sleep in the worker and report a poll the
+    wait loop never made.
+    """
+
+    def __init__(self, entered: threading.Event) -> None:
+        super().__init__()
+        self._entered = entered
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        self._entered.set()
+        _REAL_SLEEP(seconds)
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    clock = ManualClock()
+    clock.install(monkeypatch, _provider)
+    assert_clock_is_private(clock, _provider)
 
 
 def _patch_config(monkeypatch, **tel_kwargs):
@@ -257,6 +289,60 @@ def test_otlp_reader_degrades_without_logging_endpoint(monkeypatch, caplog):
     assert endpoint not in caplog.text
     assert "super-secret" not in caplog.text
     assert "token=hidden" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "signal"),
+    [
+        ("https://cloud.langfuse.com/api/public/otel/v1/traces", "traces"),
+        ("http://localhost:4318/v1/traces/", "traces"),
+        ("http://localhost:4318/V1/TRACES", "traces"),
+        ("https://user:super-secret@example.test/v1/logs?token=hidden", "logs"),
+    ],
+)
+def test_otlp_reader_warns_on_another_signals_route(monkeypatch, caplog, endpoint, signal):
+    """Kiro Crew emits metrics only. An endpoint aimed at a tracing backend's
+    /v1/traces (e.g. Langfuse) gets every batch rejected and no trace ever
+    arrives, so the reader says so once at WARNING, by destination name only."""
+    import logging
+
+    from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.metrics import provider as provider_mod
+
+    monkeypatch.setattr(provider_mod, "_load_otel", lambda: False)
+    cfg = TelemetryConfig(enabled=True, otlp_endpoint=endpoint)
+    with caplog.at_level(logging.WARNING):
+        provider_mod._build_otlp_reader(_dest(endpoint, name="dest-x"), cfg)
+    hits = [r.getMessage() for r in caplog.records if "metrics only" in r.getMessage()]
+    assert len(hits) == 1, caplog.text
+    assert f"OTLP {signal} route" in hits[0]
+    assert "'dest-x'" in hits[0]
+    assert endpoint not in caplog.text
+    assert "super-secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://localhost:4318/v1/metrics",
+        "https://traces.example.test/v1/metrics",
+        "https://example.test/v1/metrics?route=/v1/traces",
+        "http://localhost:4318",
+        "not a url at all",
+    ],
+)
+def test_otlp_reader_does_not_warn_on_a_metrics_route(monkeypatch, caplog, endpoint):
+    """Host names and query strings mentioning traces are not a traces route."""
+    import logging
+
+    from kiro_crew.config.loader import TelemetryConfig
+    from kiro_crew.metrics import provider as provider_mod
+
+    monkeypatch.setattr(provider_mod, "_load_otel", lambda: False)
+    cfg = TelemetryConfig(enabled=True, otlp_endpoint=endpoint)
+    with caplog.at_level(logging.WARNING):
+        provider_mod._build_otlp_reader(_dest(endpoint), cfg)
+    assert "metrics only" not in caplog.text
 
 
 def test_otlp_constructor_failure_never_logs_endpoint(monkeypatch, caplog):
@@ -1054,8 +1140,8 @@ class TestResetForTestingWaitsOutInFlightWorker:
         The worker is a deliberately slow, event-gated fake build (never a
         wall-clock sleep) sitting inside the product's real
         ``_consent_worker``, so ``_check_in_flight`` is set and cleared by the
-        product code path, not by this test. A hook on the wait loop's
-        ``time.sleep`` call proves ``reset_for_testing`` actually entered its
+        product code path, not by this test. A hook on the wait loop's own
+        poll sleep (``_SignalledPolls``) proves ``reset_for_testing`` entered its
         wait loop, so the ordering is established by that signal rather than
         a guessed delay.
         """
@@ -1088,13 +1174,7 @@ class TestResetForTestingWaitsOutInFlightWorker:
             assert in_build.wait(timeout=10), "the worker never started its build"
 
             poll_entered = threading.Event()
-            real_sleep = time.sleep
-
-            def _tracking_sleep(seconds):
-                poll_entered.set()
-                real_sleep(seconds)
-
-            monkeypatch.setattr(provider_mod.time, "sleep", _tracking_sleep)
+            _SignalledPolls(poll_entered).install(monkeypatch, provider_mod)
 
             reset_done = threading.Event()
             reset_error = {}

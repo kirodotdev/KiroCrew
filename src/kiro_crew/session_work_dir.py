@@ -484,6 +484,113 @@ def _empty_directory_mtime_at(parent_fd: int, name: str) -> float | None:
         os.close(directory_fd)
 
 
+def _run_dir_holds_only_residue(work_dir: Path) -> bool:
+    """Whether *work_dir* holds only the residue the sweep would reclaim, read-only.
+
+    The census calls this on a marked directory whose marker the sweep's rule
+    permits, to tell the folders the sweep reclaims from the ones it keeps for
+    what they hold. It mirrors the keep/refuse structure of
+    :func:`reclaim_session_work_dir` and :func:`_reclaim_by_name` on the same
+    platform split, but unlinks and removes nothing, and ignores age and the
+    marker rule -- the census judges provenance separately and reports a floor,
+    not freshness. ``True`` means every name is Crew's own residue (so the sweep
+    would reclaim it); ``False`` means something else is present and the sweep
+    keeps the directory for it. A read or a link that cannot be resolved fails
+    closed to ``False``: a folder the probe cannot clear is one the operator
+    should still hear about.
+
+    The one platform difference matches the sweep's: on the by-name walk, where
+    no pin guards ``.kiro``, a tree holding kiro-cli's empty ``.kiro/agents`` is
+    kept, so the probe reports it as non-residue; the pinned walk removes that
+    folder and so counts it as residue.
+    """
+    if not pinned_fs.supports_pinned_walk():
+        return _by_name_holds_only_residue(work_dir)
+    try:
+        root_fd = pinned_fs.open_dir_pinned(work_dir, what="session work directory")
+    except (pinned_fs.PinnedPathRefusal, OSError):
+        return False
+    opened = [root_fd]
+    try:
+        fd = root_fd
+        for depth, child in enumerate(_RESIDUE_DIRS):
+            names = {entry.name for entry in os.scandir(fd)}
+            if depth == 0:
+                names.discard(RUN_DIR_MARKER)
+            if depth == 1 and _KIRO_CLI_AGENTS_DIR in names:
+                if _empty_directory_mtime_at(fd, _KIRO_CLI_AGENTS_DIR) is None:
+                    return False
+                names.discard(_KIRO_CLI_AGENTS_DIR)
+            if not names:
+                return True
+            if names != {child}:
+                return False
+            entry_info = pinned_fs.stat_at(fd, child)
+            if entry_info is None or not stat.S_ISDIR(entry_info.st_mode):
+                return False
+            try:
+                fd = os.open(child, pinned_fs.dir_flags(), dir_fd=fd)
+            except OSError:
+                return False
+            opened.append(fd)
+            if depth == len(_RESIDUE_DIRS) - 1:
+                for entry in os.scandir(fd):
+                    if entry.name not in _RESIDUE_FILES:
+                        return False
+                    info = pinned_fs.stat_at(fd, entry.name)
+                    if info is None or not stat.S_ISREG(info.st_mode):
+                        return False
+        return True
+    except (OSError, RecursionError, UnicodeError, ValueError):
+        return False
+    finally:
+        pinned_fs.close_all(opened)
+
+
+def _by_name_holds_only_residue(work_dir: Path) -> bool:
+    """The by-name form of :func:`_run_dir_holds_only_residue` (Windows).
+
+    Same rule and same refusals as :func:`_reclaim_by_name`, read-only: a tree
+    holding ``.kiro/agents`` is kept, because removing that folder by name would
+    follow a junction swapped in for ``.kiro`` after the check, so the probe
+    reports it as non-residue.
+    """
+    if platform_compat.is_link_or_junction(work_dir):
+        return False
+    info = pinned_fs.lstat_by_name(work_dir)
+    if info is None or not stat.S_ISDIR(info.st_mode):
+        return False
+    level = work_dir
+    try:
+        for depth, child in enumerate(_RESIDUE_DIRS):
+            names = set(os.listdir(level))
+            if depth == 0:
+                names.discard(RUN_DIR_MARKER)
+            if not names:
+                return True
+            if names != {child}:
+                return False
+            path = level / child
+            if platform_compat.is_link_or_junction(path):
+                return False
+            child_info = pinned_fs.lstat_by_name(path)
+            if child_info is None or not stat.S_ISDIR(child_info.st_mode):
+                return False
+            level = path
+            if depth == len(_RESIDUE_DIRS) - 1:
+                for name in os.listdir(path):
+                    if name not in _RESIDUE_FILES or platform_compat.is_link_or_junction(
+                        path / name
+                    ):
+                        return False
+                    file_info = pinned_fs.lstat_by_name(path / name)
+                    if file_info is None or not stat.S_ISREG(file_info.st_mode):
+                        return False
+        return True
+    except (OSError, RecursionError, UnicodeError, ValueError):
+        return False
+
+
 def reclaim_session_work_dir(
     work_dir: Path,
     *,
@@ -831,12 +938,17 @@ class RunDirCensus:
     *unmarked* directories carry no :data:`RUN_DIR_MARKER` (an older build's);
     *refused* ones carry a marker this data home's sweep cannot act on -- another
     home's, one that cannot be read, or one whose gateway the pid ledger still
-    retains entries for. The sweep touches neither. *floor* says the walk hit
-    its entry cap, so both counts are minimums.
+    retains entries for. *kept* ones carry a marker the sweep's rule DOES permit
+    yet the sweep keeps anyway, because the folder holds something beyond Crew's
+    own residue -- today a marked folder the by-name walk keeps for kiro-cli's
+    empty ``.kiro/agents``, and on any platform a marked folder that gained a
+    file some tool wrote. The sweep touches none of the three. *floor* says the
+    walk hit its entry cap, so every count is a minimum.
     """
 
     unmarked: int = 0
     refused: int = 0
+    kept: int = 0
     floor: bool = False
 
 
@@ -847,22 +959,29 @@ def count_run_dirs(
 
     Read-only, for ``kirocrew doctor``, and judged by the sweep's own rule
     (:func:`predecessor_marker_rule` over *retained_gateway_pids*): the
-    directories older builds left behind and the marked ones the rule refuses
-    are what the sweep's rule leaves, so the operator has to hear about them
-    somewhere. One walk over names matching :data:`DERIVED_NAME_RE`, two
+    directories older builds left behind, the marked ones the rule refuses, and
+    the marked ones the rule permits yet the sweep keeps for their contents are
+    what the sweep's rule leaves, so the operator has to hear about them
+    somewhere. One walk over names matching :data:`DERIVED_NAME_RE`, three
     counters; stops at *max_entries* names examined and says so, since a root
     this exists for can hold tens of thousands. On the by-name walk a memory
     consolidation folder is never marked, so it is counted with the unmarked
-    ones; counting deletes nothing. A marked folder the sweep keeps for what
-    it holds, such as one the by-name walk keeps for kiro-cli's
-    ``.kiro/agents``, is in neither figure: the census reads names and
-    markers, not the tree.
+    ones; counting deletes nothing.
+
+    A marked folder whose marker the rule permits is probed read-only with the
+    sweep's own residue test (:func:`_run_dir_holds_only_residue`): a folder the
+    sweep would reclaim is in no figure, but one it keeps for what it holds --
+    the by-name walk keeping kiro-cli's ``.kiro/agents``, or any marked folder
+    that gained a file -- is counted in *kept*. The probe is the one place the
+    census reads past names and markers into the tree, and only for a folder the
+    marker rule already permitted.
     """
     if platform_compat.is_link_or_junction(root):
         return RunDirCensus()
     permits = predecessor_marker_rule(retained_gateway_pids)
     unmarked = 0
     refused = 0
+    kept = 0
     examined = 0
     try:
         with os.scandir(root) as it:
@@ -871,7 +990,7 @@ def count_run_dirs(
                     continue
                 examined += 1
                 if examined > max_entries:
-                    return RunDirCensus(unmarked, refused, True)
+                    return RunDirCensus(unmarked, refused, kept, True)
                 try:
                     if not entry.is_dir(follow_symlinks=False):
                         continue
@@ -884,6 +1003,8 @@ def count_run_dirs(
                 record = _read_run_dir_marker(root / entry.name)
                 if record is None or not permits(record):
                     refused += 1
+                elif not _run_dir_holds_only_residue(root / entry.name):
+                    kept += 1
     except OSError:
-        return RunDirCensus(unmarked, refused, False)
-    return RunDirCensus(unmarked, refused, False)
+        return RunDirCensus(unmarked, refused, kept, False)
+    return RunDirCensus(unmarked, refused, kept, False)

@@ -10,6 +10,7 @@ tamper/degradation path.
 from __future__ import annotations
 
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
@@ -797,3 +798,45 @@ class TestSigningHealth:
         assert "signing_health" not in inspect.getsource(
             token_auth.warm_auth_singletons
         )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_the_mapping_reader_refuses_a_fifo_without_waiting_for_a_writer(tmp_path) -> None:
+    """A FIFO at a mapping path is refused at once, not opened blocking."""
+    fifo = tmp_path / "session_pid_1.txt"
+    os.mkfifo(fifo)
+
+    assert _read_without_hanging(lambda: session_pid_sig._read_regular_nofollow(fifo), fifo) == (
+        True,
+        None,
+    )
+
+
+def _read_without_hanging(read, fifo):
+    """Run *read* on a thread; return (finished, result) within a bounded wait.
+
+    A reader that blocks on the FIFO is released afterwards by opening the write
+    end, so a regression fails this assertion instead of hanging the suite.
+    """
+    import threading
+
+    box: dict[str, object] = {}
+    worker = threading.Thread(target=lambda: box.setdefault("result", read()), daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    finished = not worker.is_alive()
+    if not finished:
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(timeout=5)
+    return finished, box.get("result")
+
+
+def test_the_mapping_reader_refuses_a_file_other_than_the_expected_one(tmp_path) -> None:
+    """With *expected*, a different inode at the path reads as a refusal."""
+    vetted = tmp_path / "vetted.txt"
+    vetted.write_text("sess", encoding="utf-8")
+    other = tmp_path / "session_pid_1.txt"
+    other.write_text("sess", encoding="utf-8")
+
+    assert session_pid_sig._read_regular_nofollow(other, expected=os.lstat(vetted)) is None
+    assert session_pid_sig._read_regular_nofollow(vetted, expected=os.lstat(vetted)) == "sess"

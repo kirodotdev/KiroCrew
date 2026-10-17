@@ -51,6 +51,7 @@ import {
   fmtTimeNumeric,
   fmtDuration,
   fmtElapsed,
+  fmtLanguageName,
   fmtList,
   fmtNumber,
   fmtPercent,
@@ -445,6 +446,23 @@ describe('fmtElapsed', () => {
     expect(fmtElapsed(59_000)).toBe('59s')
   })
 
+  it('adds an hours band past an hour, so a long run never reads 67m 11s', () => {
+    // #19930: a subagent run of 4031s read `4031s` on the chip and `67m 11s`
+    // in the sidebar. The boundary steps 59m 59s -> 1h 0m 0s.
+    expect(fmtElapsed(4_031_000)).toBe('1h 7m 11s')
+    expect(fmtElapsed(3_599_000)).toBe('59m 59s')
+    expect(fmtElapsed(3_600_000)).toBe('1h 0m 0s')
+    expect(fmtElapsed(3_599_600)).toBe('1h 0m 0s')
+  })
+
+  it('drops the tenths band for a whole-second live counter', () => {
+    // A 1 Hz counter's input is already whole seconds; `4.0s` there is noise.
+    expect(fmtElapsed(4_000, { wholeSeconds: true })).toBe('4s')
+    expect(fmtElapsed(0, { wholeSeconds: true })).toBe('0s')
+    expect(fmtElapsed(37_000, { wholeSeconds: true })).toBe('37s')
+    expect(fmtElapsed(4_031_000, { wholeSeconds: true })).toBe('1h 7m 11s')
+  })
+
   it('formats in the app language, not the host default', async () => {
     // Derived, not golden: proves the wiring rather than pinning a zh literal.
     // zh joins unit lists with nothing, so a hardcoded space would leave a gap.
@@ -559,5 +577,23 @@ describe('collator / compareText', () => {
 
   it('exposes the raw collator for callers needing other options', () => {
     expect(collator({ sensitivity: 'variant' }).compare('apple', 'Apple')).not.toBe(0)
+  })
+})
+
+describe('fmtLanguageName', () => {
+  it('names a language in the active language', async () => {
+    expect(fmtLanguageName('vi')).toBe(
+      new Intl.DisplayNames('en', { type: 'language' }).of('vi'),
+    )
+    await withLanguage('de', () => {
+      // Derived from the language's own Intl data, so ICU updates cannot break it.
+      expect(fmtLanguageName('vi')).toBe(new Intl.DisplayNames('de', { type: 'language' }).of('vi'))
+      expect(fmtLanguageName('vi')).not.toBe(new Intl.DisplayNames('en', { type: 'language' }).of('vi'))
+    })
+  })
+
+  it('shows the code itself when Intl cannot name it', () => {
+    expect(fmtLanguageName('not a code')).toBe('not a code')
+    expect(fmtLanguageName('')).toBe('')
   })
 })

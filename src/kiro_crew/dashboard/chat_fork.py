@@ -16,6 +16,12 @@ from kiro_crew.dashboard.chat_persistence import (
     save_slot_off_loop,
     session_was_deleted,
 )
+from kiro_crew.dashboard.chat_title import (
+    _TITLE_ORIGIN_AUTO,
+    _TITLE_ORIGIN_USER,
+    FORK_TITLE_MARKER,
+    refresh_forked_title,
+)
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
     drained_to_thread,
@@ -25,8 +31,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_ownership import deny_app_slot_access
 from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
     DashboardState,
@@ -47,8 +55,6 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
 
 logger = logging.getLogger(__name__)
-
-_FORK_TITLE_MARKER = "↳ "
 
 # Fork direction: "head" copies messages up to and including the fork point
 # (the default); "tail" copies only the messages after it.
@@ -162,6 +168,43 @@ async def resolve_fork_source(
     which is the shape every refusal in this module has; callers that are not
     HTTP handlers translate it (``session_control.fork_session``).
     """
+    # A relay archive -- a slot bound to a peer crew (``executor == "remote"``)
+    # -- is READ-ONLY: there is no relay to run its turns on, and every send /
+    # turn-restarting path refuses it (see ``relay_archive``). Forking must
+    # refuse it too: ``fork_slot`` builds the child with ``get_or_create_slot``,
+    # which does not carry ``executor`` / ``instance_id`` / ``remote_slot``, so
+    # the child would be born LOCAL and runnable -- and then run the peer crew's
+    # agent on THIS machine, failing with ``agent "<peer default>" not found``
+    # because that agent is not configured here. Refuse the fork for the same
+    # reason the run paths do, with the same code, so the user is told to open
+    # the crew's own session instead. Earliest check and fail closed: a
+    # half-written binding is an archive too (``is_relay_archive`` keys on
+    # ``executor`` alone), and must never be laundered into a local run through
+    # a copy.
+    if is_relay_archive(slot):
+        sel().log_api_access(
+            caller=audit_caller,
+            operation=audit_operation,
+            outcome="denied",
+            source="dashboard",
+            resources=f"slot={slot.key},executor={getattr(slot, 'executor', '')!r}",
+            error="source slot is a read-only relay archive",
+        )
+        # Literal body (not ``RELAY_ARCHIVE_ERROR`` / ``RELAY_ARCHIVE_CODE``): the
+        # error-code contract scanner reads only a string-literal ``code``, and
+        # every refusal in this module is a literal for that reason. The literals
+        # mirror ``relay_archive`` and ``test_relay_archive`` asserts they match
+        # ``RELAY_ARCHIVE_CODE`` so the two cannot drift apart.
+        return web.json_response(
+            {
+                "error": (
+                    "this chat ran on a remote crew and is read-only now; "
+                    "open the crew's own session to keep going"
+                ),
+                "code": "relay_archive_read_only",
+            },
+            status=409,
+        )
     # The child inherits the parent's mode, so the parent's value is what the
     # slot constructor validates against ``VALID_MEMORY_MODES``. The API checks
     # the field on the way in, but rehydration copies the transcript header's
@@ -204,6 +247,28 @@ async def resolve_fork_source(
     except (OSError, ValueError) as exc:
         return _store_unavailable_response(source_memory_identity[2], exc)
     return ForkSource(slot=slot, execution=inherited_execution, identity=source_memory_identity)
+
+
+def _schedule_fork_title(state: DashboardState, child: "_ChatSlot") -> None:
+    """Start the child's one background title pass (``refresh_forked_title``).
+
+    Called once per acknowledged fork, after the child is saved and broadcast,
+    so the fork answers immediately and the new name arrives as an ordinary
+    ``slot_title`` push. Held in ``state._background_tasks`` like the other
+    titling tasks so the loop cannot drop it.
+    """
+    task = asyncio.create_task(refresh_forked_title(state, child))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _inherit_pin(parent: "_ChatSlot") -> "Callable[[_ChatSlot], None]":
+    """Return a ``fork_slot`` stamp that copies *parent*'s sidebar pin."""
+
+    def _stamp(child: "_ChatSlot") -> None:
+        child.pinned = bool(parent.pinned)
+
+    return _stamp
 
 
 async def api_chat_slot_fork(request: web.Request) -> web.Response:
@@ -359,6 +424,11 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
         # owner armed.
         jev_route_allowed=is_owner_dashboard_request(request),
         audit_caller=request_app or "dashboard",
+        # A person forking a pinned session gets a pinned fork, so it stays
+        # beside its parent in the pinned group. Set through ``stamp`` so the
+        # pin rides the child's birth save. Agent ``session_fork`` children
+        # never get it: pinned marks a session as human-owned.
+        stamp=_inherit_pin(source.slot),
     )
     if isinstance(result, web.Response):
         return result
@@ -370,6 +440,7 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             "messages": result.messages,
             "prompt": prompt,
             "folder_id": result.slot.folder_id or None,
+            "pinned": result.slot.pinned,
             "direction": result.direction,
             # The mode the child was born with (always the parent's), so the tab
             # can render the incognito/temporary badge before the slots refresh.
@@ -889,6 +960,22 @@ async def fork_slot(
     elif at_index is not None:
         visible = visible[: at_index + 1]
 
+    # The destination's append trims from the FRONT at capacity, and nothing has
+    # reached disk during the copy, so those evicted rows are unrecoverable.
+    if len(visible) > _MAX_SLOT_MESSAGES:
+        return web.json_response(
+            {
+                # No count and no ceiling: a row number is not an affordance in a
+                # transcript that numbers nothing, so the text names the ACTION.
+                "error": (
+                    "conversation too large to fork. Fork at a message "
+                    "(at_message_index or at_message_id) to copy a smaller slice."
+                ),
+                "code": "fork_corpus_too_large",
+            },
+            status=400,
+        )
+
     # A fork of a member DM thread is an ordinary chat, never a second "member"
     # slot: the fork mints a chat-* key, so member mode would make it invisible
     # everywhere (excluded from Sessions by surface mode, and absent from the
@@ -983,6 +1070,9 @@ async def fork_slot(
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
+    # Keep the app-owned agent binding with the agent it binds: the fork runs as
+    # the same app agent, so the per-turn shadow check must still apply to it.
+    new_slot.app_agent_owner = slot.app_agent_owner
     # Inherit the sidebar folder so the fork appears next to its parent in the UI.
     new_slot.folder_id = slot.folder_id
     # Inherit tags (copied, so later edits to either slot's list stay independent).
@@ -997,10 +1087,21 @@ async def fork_slot(
     parent_title, _ = redact_credentials(parent_title)
     # Strip a leading marker from the parent so it never compounds on a
     # fork-of-a-fork.
-    parent_title = parent_title.removeprefix(_FORK_TITLE_MARKER)
+    parent_title = parent_title.removeprefix(FORK_TITLE_MARKER)
     fork_word = "Tail of" if direction == _FORK_DIRECTION_TAIL else "Fork of"
-    new_slot.title = f"{_FORK_TITLE_MARKER}{fork_word} {parent_title}"
+    new_slot.title = f"{FORK_TITLE_MARKER}{fork_word} {parent_title}"
     new_slot._titled = True
+    # The fork name is derived, not typed: it stays inside the automatic title
+    # lifecycle (refreshable, and renamed below from the child's own question)
+    # unless the name it wraps is final. A parent with a manual name, or a
+    # legacy one, hands the child a final title too. Persisted by the birth
+    # save, so a reload keeps the provenance instead of treating the fork name
+    # as an untyped legacy title.
+    new_slot._title_origin = (
+        _TITLE_ORIGIN_USER
+        if slot._titled and slot._title_origin != _TITLE_ORIGIN_AUTO
+        else _TITLE_ORIGIN_AUTO
+    )
 
     try:
         if stamp is not None:
@@ -1128,4 +1229,5 @@ async def fork_slot(
     )
     _sync_dashboard_slots(state)
     state.push_slots_update()
+    _schedule_fork_title(state, new_slot)
     return ForkResult(slot=new_slot, messages=len(visible), direction=direction)

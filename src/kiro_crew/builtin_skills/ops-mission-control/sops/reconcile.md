@@ -1,7 +1,7 @@
 ---
 cron: ops-mission-control/reconcile
 schedule: "*/15 * * * *"
-tier: always
+tier: on_shift
 silent: true
 ---
 
@@ -136,4 +136,4 @@ is worth one line to the channel.
 - **Never resolve an incident whose source failed to poll.** See Pass 1 step 3 — this
   is the one rule in this SOP whose violation destroys real work rather than merely
   leaving the board untidy.
-- **If nothing changed, exit silently.** No "board is clean" message.
+- **If nothing changed, end the turn with a `@kirocrew-core/nothing_to_do` call, not a bare stop.** No "board is clean" message. A turn that stops silently right after its reads is a contract violation that keeps the empty-response recovery ladder (a continue nudge, then a give-up card); `nothing_to_do` is the only sanctioned silent exit.

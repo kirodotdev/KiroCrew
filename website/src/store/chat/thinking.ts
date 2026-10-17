@@ -38,32 +38,100 @@ const OUT_OF_BAND_ROLES = new Set(['permission', 'queued', 'error', 'mcp_oauth']
 export const isOutOfBandRow = (m: { role: string; kind?: string }): boolean =>
   OUT_OF_BAND_ROLES.has(m.role) || m.kind === 'stop_event'
 
-/** What a preserved reasoning block re-attaches to on the server-refreshed list:
- *  a tool call addressed by its server-minted id, or a run of answer text
- *  addressed by its content PLUS — when the anchor row carried them — its
- *  server `ts` and its row `mid`. Text alone is not an identity: two turns
- *  can produce byte-identical answers ("Done."), and a text-only match lets
- *  the OLDER block steal the newer answer row while the newer block is
- *  dropped as covered. A ts-carrying anchor therefore matches only the row
- *  with the same server `ts`; a ts-less anchor (a freshly streamed answer
- *  not yet reloaded) falls back to text-only matching — and is
- *  `confirmed=false` anyway, so a miss can never drop it. A recorded `mid`
- *  separates a regenerated answer from the text it superseded. */
+/** What a preserved reasoning block re-attaches to on the server-refreshed list.
+ *
+ *  An anchor with an ID names its row outright, and re-attachment is a lookup:
+ *  a tool call by its server-minted `tool_call_id`, an answer by its server-
+ *  minted row `mid`. Both ids are fixed for the row's lifetime while its text
+ *  is not -- switching an answer variant rewrites the row's text and `ts` under
+ *  the same `mid` -- so an id decides a match on its own, in both directions,
+ *  and no text, `ts`, ordinal or window rule applies to it.
+ *
+ *  Text is the fallback for an answer row that carries no `mid`: a live row the
+ *  server has not confirmed yet, or a row restored from a transcript written
+ *  before row ids existed. Text alone is not an identity: two turns can produce
+ *  byte-identical answers ("Done."), and a text-only match lets the OLDER block
+ *  steal the newer answer row while the newer block is dropped as covered. A
+ *  ts-carrying text anchor therefore matches only the row with the same server
+ *  `ts`; a ts-less one (a freshly streamed answer not yet reloaded) falls back
+ *  to text-only matching -- and is `confirmed=false` anyway, so a miss can
+ *  never drop it.
+ *
+ *  The third shape is an id with no text: the anchor a block recorded on itself
+ *  (`THINKING_ANCHOR_KEY`) when the row it names is no longer in the list the
+ *  block sits in, so there is no text to fall back on. */
 export type ThinkingAnchor =
   | { tool: string; text?: undefined; ts?: undefined; mid?: undefined }
   | { tool?: undefined; text: string; ts?: string; mid?: string }
+  | { tool?: undefined; text?: undefined; ts?: undefined; mid: string }
+
+/** The `meta` key under which a reasoning block carries the id of the row it
+ *  belongs above: `tool:<tool_call_id>` or `mid:<row mid>`.
+ *
+ *  Recorded the first time a merge sees the block ahead of an identified row,
+ *  and kept on every copy, park and re-seat after that, so the block keeps its
+ *  anchor when its POSITION stops naming it. A racing refresh (a WS reconnect)
+ *  can snapshot the server before the block's tool row landed: the block
+ *  survives at the tail and the row leaves the list, so the next forward scan
+ *  from the block meets a later turn's row or nothing at all. The recorded id
+ *  still finds the row when a page brings it back. */
+const THINKING_ANCHOR_KEY = 'thinkingAnchor'
 
 /** The server-minted row id, or undefined for a row the client minted locally. */
 const rowMid = (m: { meta?: Record<string, unknown> }): string | undefined =>
   typeof m.meta?.mid === 'string' && m.meta.mid ? m.meta.mid : undefined
 
-/** A regenerated answer repeats the superseded text at the same ordinal, so only the
- *  row id separates them -- but a locally-minted row has none, so a recorded id may
- *  refute a match and must never be required for one. */
-const anchorMidOk = (a: ThinkingAnchor, row: { meta?: Record<string, unknown> }): boolean => {
-  if (a.tool !== undefined || a.mid === undefined) return true
+/** The tool row's server-minted call id, or '' for any other row. */
+const toolCallId = (m: { role: string; meta?: Record<string, unknown> }): string => {
+  if (m.role !== 'tool') return ''
+  const id = m.meta?.tool_call_id
+  return typeof id === 'string' ? id : ''
+}
+
+const isTextRow = (m: { role: string }): boolean => m.role === 'assistant' || m.role === 'streaming'
+
+/** The id an anchor names, in the recorded form, or undefined for a text-only anchor. */
+const anchorKey = (a: ThinkingAnchor | null): string | undefined =>
+  a?.tool !== undefined ? `tool:${a.tool}` : a?.mid !== undefined ? `mid:${a.mid}` : undefined
+
+/** The id a row answers to, in the same form, or undefined for a row with none. */
+const rowKey = (m: { role: string; meta?: Record<string, unknown> }): string | undefined => {
+  const tid = toolCallId(m)
+  if (tid) return `tool:${tid}`
+  const mid = isTextRow(m) ? rowMid(m) : undefined
+  return mid !== undefined ? `mid:${mid}` : undefined
+}
+
+/** The anchor a block recorded on itself, or null when it has none (a block that
+ *  has not yet been seen ahead of an identified row) or an unreadable one. */
+const recordedAnchor = (m: { meta?: Record<string, unknown> }): ThinkingAnchor | null => {
+  const v = m.meta?.[THINKING_ANCHOR_KEY]
+  if (typeof v !== 'string') return null
+  if (v.startsWith('tool:') && v.length > 5) return { tool: v.slice(5) }
+  if (v.startsWith('mid:') && v.length > 4) return { mid: v.slice(4) }
+  return null
+}
+
+/** A copy of the block carrying its anchor's id. A text-only anchor records
+ *  nothing, and a block that already carries the same id keeps its meta. */
+const withRecordedAnchor = <M extends { meta?: Record<string, unknown> }>(msg: M, a: ThinkingAnchor | null): M => {
+  const key = anchorKey(a)
+  if (key === undefined || msg.meta?.[THINKING_ANCHOR_KEY] === key) return { ...msg }
+  return { ...msg, meta: { ...(msg.meta ?? {}), [THINKING_ANCHOR_KEY]: key } }
+}
+
+/** Whether `row` IS the anchor's row by id: true or false when ids decide it,
+ *  undefined when they cannot and only text is left -- the anchor names no id,
+ *  or names a `mid` while the row has none (a row the client minted locally,
+ *  e.g. a reply re-attached before its server copy arrived). Both re-attach
+ *  layers ask this one question first, so they cannot disagree about an id. */
+const idMatch = (a: ThinkingAnchor, row: { role: string; meta?: Record<string, unknown> }): boolean | undefined => {
+  if (a.tool !== undefined) return toolCallId(row) === a.tool
+  if (!isTextRow(row)) return false
+  if (a.mid === undefined) return undefined
   const m = rowMid(row)
-  return m === undefined || m === a.mid
+  if (m !== undefined) return m === a.mid
+  return a.text === undefined ? false : undefined
 }
 
 /** A reasoning block waiting for its anchor. `occ` is which occurrence of a repeated
@@ -78,6 +146,12 @@ export type ParkedThinking<M> = { msg: M; anchor: ThinkingAnchor; occ?: number; 
  *  turn finishes. Each preserved block is anchored to the first row that followed
  *  it in the old list and re-inserted just before that row again. Returns
  *  `incoming` unchanged (reference-equal) when there is nothing to preserve.
+ *
+ *  When that row carries a server id the block records it on itself
+ *  (`THINKING_ANCHOR_KEY`), and from then on the recorded id is the anchor: the
+ *  block is re-seated by looking that id up, not by re-reading its position or
+ *  the row's text. A block that has never been seen ahead of an identified row
+ *  carries no id and is anchored by the forward scan alone.
  *
  *  A block with NO recorded anchor because nothing followed it in the old list
  *  (the live turn's in-flight reasoning) is appended at the tail: the tail IS
@@ -147,11 +221,6 @@ export function mergePreservedThinking<M extends { role: string; content: string
   windowComplete = true,
   orphanSink?: Array<ParkedThinking<M>>,
 ): M[] {
-  const toolAnchorId = (m: M): string => {
-    if (m.role !== 'tool') return ''
-    const id = m.meta?.tool_call_id
-    return typeof id === 'string' ? id : ''
-  }
   // Conservative row identity for the coverage cut: the STRONGEST available
   // class only — tool id, else server-minted `mid`, else role+ts, else
   // role+trimmed text. Never stacked among those classes: a strong-identity
@@ -209,7 +278,7 @@ export function mergePreservedThinking<M extends { role: string; content: string
   countDupSendIds(existing)
   const coverageIds = (m: M): string[] => {
     const ids: string[] = []
-    const tid = toolAnchorId(m)
+    const tid = toolCallId(m)
     const mid = m.meta?.mid
     if (tid) ids.push(`tool:${tid}`)
     else if (typeof mid === 'string' && mid) ids.push(`mid:${mid}`)
@@ -251,6 +320,34 @@ export function mergePreservedThinking<M extends { role: string; content: string
     const t = m.content.trimEnd()
     existingTotal.set(t, (existingTotal.get(t) ?? 0) + 1)
   }
+  // Where each identified row sits in `existing`, so a block's recorded anchor
+  // resolves to a position for the coverage cut below. The FIRST row wins: an
+  // auto-approved call's two rows share one id, and the earlier one is the step.
+  const rowIdx = new Map<string, number>()
+  existing.forEach((row, k) => {
+    const key = rowKey(row)
+    if (key !== undefined && !rowIdx.has(key)) rowIdx.set(key, k)
+  })
+  type Preserved = { msg: M; anchor: ThinkingAnchor | null; anchorIdx: number; confirmed: boolean; boundaryIdx: number }
+  // A block's recorded anchor outranks what the forward scan found: the scan
+  // reads the block's POSITION, which a racing refresh can leave pointing at the
+  // wrong row or none. The scan's anchor is kept when it names the same row,
+  // because it also carries that row's text for a lookup against a copy with no
+  // `mid`. When the recorded row is not in `existing`, the scan's position stays
+  // the best evidence of where the block sits, so coverage still reads it.
+  const withRecorded = (p: Preserved): Preserved & { skip: number } => {
+    const recorded = recordedAnchor(p.msg)
+    const key = anchorKey(recorded)
+    let next = p
+    if (key !== undefined && anchorKey(p.anchor) !== key) {
+      const at = rowIdx.get(key)
+      next = at !== undefined
+        ? { ...p, anchor: recorded, anchorIdx: at, confirmed: true, boundaryIdx: -1 }
+        : { ...p, anchor: recorded }
+    }
+    const a = next.anchor
+    return { ...next, skip: a?.text !== undefined ? (priorText.get(a.text) ?? 0) : 0 }
+  }
   for (let i = 0; i < existing.length; i++) {
     const m = existing[i]
     if (m.role === 'assistant' || m.role === 'streaming') {
@@ -264,7 +361,7 @@ export function mergePreservedThinking<M extends { role: string; content: string
     let boundaryIdx = -1
     for (let j = i + 1; j < existing.length; j++) {
       const cand = existing[j]
-      const tid = toolAnchorId(cand)
+      const tid = toolCallId(cand)
       if (tid) { anchor = { tool: tid }; anchorIdx = j; confirmed = true; break }
       if (cand.role === 'assistant' || cand.role === 'streaming') {
         anchor = { text: cand.content.trimEnd(), ts: cand.role === 'assistant' ? cand.ts : undefined, mid: rowMid(cand) }
@@ -336,7 +433,7 @@ export function mergePreservedThinking<M extends { role: string; content: string
         break
       }
     }
-    preserved.push({ msg: m, anchor, anchorIdx, confirmed, boundaryIdx, skip: anchor?.text !== undefined ? (priorText.get(anchor.text) ?? 0) : 0 })
+    preserved.push(withRecorded({ msg: m, anchor, anchorIdx, confirmed, boundaryIdx }))
   }
   if (!preserved.length) return incoming
   // Coverage cut: index of the last `existing` row whose identity the PURE
@@ -377,8 +474,8 @@ export function mergePreservedThinking<M extends { role: string; content: string
   const result: M[] = []
   const seenText = new Map<string, number>()
   for (const item of incoming) {
-    const tid = toolAnchorId(item)
-    const isText = item.role === 'assistant' || item.role === 'streaming'
+    const tid = toolCallId(item)
+    const isText = isTextRow(item)
     if (tid || isText) {
       const c = isText ? item.content.trimEnd() : ''
       let occ = 0
@@ -387,23 +484,24 @@ export function mergePreservedThinking<M extends { role: string; content: string
         if (used.has(p)) continue
         const a = preserved[p].anchor
         if (!a) continue
-        // A text anchor that recorded a server `ts` matches only the row with
-        // that exact `ts` — text alone lets an OLDER duplicate-answer block
-        // ("Done.") steal the newer answer row while the newer block is
-        // dropped as covered. A ts-less anchor (freshly streamed, unreloaded)
-        // keeps text-only matching; it is unconfirmed, so a miss never drops.
-        // An identity key (`ts` or `mid`) names the row outright, so it licenses the match
-        // past the ambiguity and ordinal guards, which exist only because text cannot.
-        const midHit = isText && a.tool === undefined && a.mid !== undefined && rowMid(item) === a.mid
-        const tsHit = a.tool === undefined && a.ts !== undefined && a.ts === item.ts
-        if (!midHit && !tsHit && ambiguous(a)) continue
-        const textMatches = a.tool === undefined && a.text === c
-          && (a.ts === undefined || a.ts === item.ts)
-          && anchorMidOk(a, item)
-          && (midHit || tsHit || preserved[p].skip === occ)
-        if (tid ? a.tool === tid : textMatches) {
-          result.push({ ...preserved[p].msg }); used.add(p); break
+        // An id names the row outright and decides alone: the same id seats the
+        // block whatever the row's text now says, a different id never does.
+        const byId = idMatch(a, item)
+        if (byId === false) continue
+        if (byId === undefined) {
+          // Text is all that is left. A text anchor that recorded a server `ts`
+          // matches only the row with that exact `ts` -- text alone lets an
+          // OLDER duplicate-answer block ("Done.") steal the newer answer row
+          // while the newer block is dropped as covered. A ts-less anchor
+          // (freshly streamed, unreloaded) keeps text-only matching; it is
+          // unconfirmed, so a miss never drops. An exact `ts` licenses the match
+          // past the ambiguity and ordinal guards, which exist only because
+          // text cannot name a turn.
+          if (a.text === undefined || a.text !== c) continue
+          const tsHit = a.ts !== undefined && a.ts === item.ts
+          if (!tsHit && (ambiguous(a) || a.ts !== undefined || preserved[p].skip !== occ)) continue
         }
+        result.push(withRecordedAnchor(preserved[p].msg, a)); used.add(p); break
       }
     }
     result.push(item)
@@ -436,7 +534,10 @@ export function mergePreservedThinking<M extends { role: string; content: string
     //    simply predate it.
     if (used.has(p)) continue
     const { msg, anchor, anchorIdx, confirmed, boundaryIdx, skip } = preserved[p]
-    const posIdx = anchor !== null ? anchorIdx : boundaryIdx
+    // A block whose recorded anchor is not in `existing` has no anchor POSITION;
+    // it is placed by whatever ended its scan, exactly like an anchorless block,
+    // while still parking under its id below.
+    const posIdx = anchorIdx >= 0 ? anchorIdx : boundaryIdx
     const posRow = posIdx >= 0 ? existing[posIdx] : undefined
     const insideCoverage = posIdx >= 0 && posIdx <= coveredIdx
     // The eviction fallback compares the POSITION row's own `ts` against the
@@ -450,21 +551,22 @@ export function mergePreservedThinking<M extends { role: string; content: string
     // older than every page row and evict LIVE reasoning. So a boundary may
     // use the fallback only once it carries `mid`; without it, `insideCoverage`
     // is the only route to a drop, which is over-keep — the safe direction.
-    const posTsIsServer = anchor !== null || typeof posRow?.meta?.mid === 'string'
+    const posTsIsServer = anchorIdx >= 0 || typeof posRow?.meta?.mid === 'string'
     const posMs = posRow && posTsIsServer ? transcriptTsMs(posRow.ts) : null
     const evicted = coveredIdx < 0 && oldestPageMs !== null && posMs !== null && posMs < oldestPageMs
-    const droppable = (anchor !== null ? confirmed : boundaryIdx >= 0) && (insideCoverage || evicted)
+    const droppable = (anchorIdx >= 0 ? confirmed : boundaryIdx >= 0) && (insideCoverage || evicted)
     if (droppable) {
       // Parking retains what a later page can re-seat, so only an ANCHORED block earns
       // it: a #5815 boundary drop names no row to match and would never leave the sink.
+      // A block that recorded an id does name one, so it parks under that id.
       if (anchor !== null) {
         // The occurrence names which of two identical answers is this block's turn.
         const total = anchor.text !== undefined ? (existingTotal.get(anchor.text) ?? 0) : 0
-        orphanSink?.push({ msg, anchor, occ: skip, occTotal: total })
+        orphanSink?.push({ msg: withRecordedAnchor(msg, anchor), anchor, occ: skip, occTotal: total })
       }
       continue
     }
-    result.push({ ...msg })
+    result.push(withRecordedAnchor(msg, anchor))
   }
   return result
 }
@@ -476,13 +578,16 @@ export function mergePreservedThinking<M extends { role: string; content: string
  *  call site — the hazard `hydrateQueuedBubbles` records at the three near-identical
  *  slot-detail reducers.
  *
+ *  A record whose anchor carries an id (a tool call, or an answer's row `mid`) is
+ *  seated by lookup: the row with that id, wherever it sits and whatever its text
+ *  now says. Only an anchor with no id falls back to text.
+ *
  *  A TEXT-ONLY anchor needs a complete window: while it is incomplete the genuine
  *  anchor may sit above it, so the one loaded row carrying that text belongs to a
  *  different turn. Once complete, a REPEATED text is resolved by the occurrence
  *  recorded at park time, and a count that GREW invalidates that ordinal. An exact
- *  `mid` or server `ts` bypasses both: text AND ts is strictly more evidence than
- *  text AND ordinal, and withholding it hid the block permanently. Tool ids are
- *  1:1 with bursts (#4578) and need none of this. */
+ *  server `ts` bypasses both: text AND ts is strictly more evidence than text AND
+ *  ordinal, and withholding it hid the block permanently. */
 export function reinsertThinkingOrphans<M extends { role: string; content: string; ts?: string; meta?: Record<string, unknown> }>(
   list: M[],
   parked: Array<ParkedThinking<M>>,
@@ -499,8 +604,8 @@ export function reinsertThinkingOrphans<M extends { role: string; content: strin
   }
   const seenText = new Map<string, number>()
   for (const item of list) {
-    const tid = item.role === 'tool' && typeof item.meta?.tool_call_id === 'string' ? item.meta.tool_call_id : ''
-    const isText = item.role === 'assistant' || item.role === 'streaming'
+    const tid = toolCallId(item)
+    const isText = isTextRow(item)
     if (tid || isText) {
       const c = isText ? item.content.trimEnd() : ''
       let occ = 0
@@ -509,18 +614,24 @@ export function reinsertThinkingOrphans<M extends { role: string; content: strin
         if (used.has(p)) continue
         const rec = parked[p]
         const a = rec.anchor
-        // The guards below exist only because TEXT cannot name a turn; an exact row id or
-        // server `ts` can -- either must bypass them, or the block hides for good.
-        const midHit = isText && a.tool === undefined && a.mid !== undefined && rowMid(item) === a.mid
-        const tsHit = isText && a.tool === undefined && a.ts !== undefined && a.ts === item.ts
-        if (!midHit && !tsHit) {
-          if (!windowComplete && a.tool === undefined) continue
-          const freq = a.tool === undefined ? (textFreq.get(a.text) ?? 0) : 0
-          // A recorded occurrence identifies the turn at ANY count, so a set that shrank to one
-          // is still checked; only GROWTH invalidates it, since removals here are tail-only.
-          if (rec.occ !== undefined ? (freq > (rec.occTotal ?? 0) || rec.occ !== occ) : freq > 1) continue
+        // An id decides alone, as in the merge: no window or ordinal rule applies,
+        // because those exist only because TEXT cannot name a turn.
+        const byId = idMatch(a, item)
+        if (byId === false) continue
+        if (byId === undefined) {
+          if (a.text === undefined || a.text !== c) continue
+          // An exact server `ts` names the turn as well as an id does, so it too
+          // bypasses the guards -- withholding it hid the block permanently.
+          const tsHit = a.ts !== undefined && a.ts === item.ts
+          if (!tsHit) {
+            if (!windowComplete) continue
+            const freq = textFreq.get(a.text) ?? 0
+            // A recorded occurrence identifies the turn at ANY count, so a set that shrank to one
+            // is still checked; only GROWTH invalidates it, since removals here are tail-only.
+            if (rec.occ !== undefined ? (freq > (rec.occTotal ?? 0) || rec.occ !== occ) : freq > 1) continue
+          }
         }
-        if (tid ? a.tool === tid : a.tool === undefined && a.text === c && anchorMidOk(a, item)) { out.push({ ...rec.msg }); used.add(p); break }
+        out.push(withRecordedAnchor(rec.msg, a)); used.add(p); break
       }
     }
     out.push(item)

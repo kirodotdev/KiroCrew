@@ -436,21 +436,31 @@ class TestFactoryDropWarning:
         # Attribution: the session the drop happened for is in the line.
         assert "dashboard:1" in msgs[0]
 
-    def test_unresolved_model_warns_once_naming_auto(self, caplog, tmp_path):
-        # 'auto' collapses to "" through to_acp_id — nothing is pinned and the
-        # overlay cannot be keyed. The gate names it 'auto' (the DEFAULT_MODEL
-        # sentinel the backend resolves itself), matching the spawn-side
-        # effort_dropped verdict so one drop event reads as one event.
-        msgs = self._drop_warnings(
-            caplog,
-            tmp_path,
-            session_key="dashboard:1",
-            model_override="auto",
-            reasoning_effort_override="max",
-        )
-        assert len(msgs) == 1
-        assert "'auto'" in msgs[0]
-        assert "'max'" in msgs[0]
+    def test_unresolved_model_carries_the_level_without_a_factory_warning(self, caplog, tmp_path):
+        # 'auto' collapses to "" through to_acp_id: nothing is pinned, so no
+        # model id exists yet to key the level under. The factory carries it
+        # unkeyed and the provider judges it against the model the backend
+        # reports serving, so the factory itself has no drop to report.
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            factory = cfg.create_provider_factory()
+            with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+                factory(
+                    cwd=str(tmp_path),
+                    session_key="dashboard:1",
+                    model_override="auto",
+                    reasoning_effort_override="max",
+                )
+        kwargs = mock_provider.call_args.kwargs
+        assert kwargs["effort_per_model"] == {}
+        assert kwargs["unbound_effort"] == "max"
+        assert not [
+            r
+            for r in caplog.records
+            if r.name == self._LOGGER and "will not be applied" in r.getMessage()
+        ]
 
     def test_explicit_override_warns_every_time(self, caplog, tmp_path):
         # A caller's own request being dropped is the event this gate exists

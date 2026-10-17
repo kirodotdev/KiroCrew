@@ -30,11 +30,11 @@ from kiro_crew.mcp_apps_render import find_marker
 from kiro_crew.mcp_gateway.apps import append_marker
 from kiro_crew.validation import build_tool_response, strip_hidden_unicode
 
-DIRECTIVE_ARGS = {"questions": [{"question": "pick one"}]}
+DIRECTIVE_ARGS = {"items": [{"title": "pick one", "description": "d", "prompt": "p"}]}
 
 
 def _encoded() -> str:
-    return sd.encode("ask_question", DIRECTIVE_ARGS, "Question card requested.")
+    return sd.encode("suggest_followup", DIRECTIVE_ARGS, "Follow-up card requested.")
 
 
 def _mcp_envelope(text: str) -> dict[str, object]:
@@ -48,7 +48,7 @@ class TestSurvivesMcpResponseExit:
     def test_directive_survives_build_tool_response(self):
         out = build_tool_response(_encoded())
         text = out["content"][0]["text"]
-        assert sd.decode(text, "ask_question") == DIRECTIVE_ARGS
+        assert sd.decode(text, "suggest_followup") == DIRECTIVE_ARGS
 
     def test_sentinel_is_pure_ascii(self):
         # A machine-facing framing token must not depend on characters that
@@ -69,7 +69,7 @@ class TestSurvivesAcpResultParser:
         event = _build_tool_result_event(update)
         assert event is not None
         assert event.tool_final is True
-        assert sd.decode(event.tool_output, "ask_question") == DIRECTIVE_ARGS
+        assert sd.decode(event.tool_output, "suggest_followup") == DIRECTIVE_ARGS
 
     def test_codex_mcp_result_envelope_preserves_directive(self):
         event = _build_tool_result_event(
@@ -80,7 +80,7 @@ class TestSurvivesAcpResultParser:
             }
         )
         assert event is not None
-        assert sd.decode(event.tool_output, "ask_question") == DIRECTIVE_ARGS
+        assert sd.decode(event.tool_output, "suggest_followup") == DIRECTIVE_ARGS
 
     def test_directive_survives_content_block_path(self):
         update = {
@@ -90,7 +90,7 @@ class TestSurvivesAcpResultParser:
         }
         event = _build_tool_result_event(update)
         assert event is not None
-        assert sd.decode(event.tool_output, "ask_question") == DIRECTIVE_ARGS
+        assert sd.decode(event.tool_output, "suggest_followup") == DIRECTIVE_ARGS
 
     def test_full_chain_server_exit_then_acp_parser(self):
         # The exact production path: tool return -> MCP response exit ->
@@ -103,7 +103,7 @@ class TestSurvivesAcpResultParser:
         }
         event = _build_tool_result_event(update)
         assert event is not None
-        assert sd.decode(event.tool_output, "ask_question") == DIRECTIVE_ARGS
+        assert sd.decode(event.tool_output, "suggest_followup") == DIRECTIVE_ARGS
 
 
 class TestEnvelopeExtractorBoundaries:
@@ -163,7 +163,9 @@ class TestRefusalMarkerSurvivesTransport:
 
     def _refusal(self) -> str:
         huge = "x" * (sd.MAX_DIRECTIVE_CHARS + 500)
-        return sd.encode("ask_question", {"questions": [{"question": huge}]}, "asked")
+        return sd.encode(
+            "suggest_followup", {"items": [{"title": huge, "prompt": "p"}]}, "suggested"
+        )
 
     def test_refusal_marker_is_pure_ascii_and_survives_the_sanitizer(self):
         # The prose carries an em dash, but the framing TOKEN must stay ASCII —
@@ -174,7 +176,7 @@ class TestRefusalMarkerSurvivesTransport:
         assert strip_hidden_unicode(refusal) == refusal
         text = build_tool_response(refusal)["content"][0]["text"]
         assert sd.is_refusal(text)
-        assert sd.decode(text, "ask_question") is None
+        assert sd.decode(text, "suggest_followup") is None
 
     def test_refusal_survives_raw_output_json_envelope(self):
         update = {

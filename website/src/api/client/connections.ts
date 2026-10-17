@@ -52,6 +52,16 @@ export interface ConnectionStatus {
   /** True for a pre-registered provider whose operator has not entered a usable
    *  OAuth client; present only when true and never alongside a held grant. */
   needsClientConfig?: boolean
+  /** Other configured MCP entries backed by the SAME OAuth grant as this provider.
+   *  Present and non-empty only for a provider whose grant is present AND shared.
+   *  It lets the card show, proactively, that a local disconnect/reconnect keeps
+   *  the shared token rather than forcing fresh consent, without the user having
+   *  to attempt a Disconnect. Names only, never a credential. */
+  grantSharedWith?: string[]
+  /** True when the shared-grant census could not read every source, so an empty
+   *  `grantSharedWith` means "could not confirm sole ownership", not "unshared".
+   *  Present only when true and the grant is present. */
+  grantSharedUnconfirmed?: boolean
 }
 
 /** Where a client-record half came from; `null` means not set anywhere. */
@@ -90,13 +100,20 @@ export interface ConnectionTestResult {
   toolCount: number
 }
 
-export function createConnectionsEndpoints({ post, put, del, j }: ClientTransport) {
+export function createConnectionsEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const accounts = {
     // Connections approval-URL mint. POST starts one; GET is the card's feed for it.
     connectionsMint: (slug: string) =>
       post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
     connectionsMintState: (slug: string) =>
       fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+    // The same mint for a remote server the owner added outside the registry,
+    // named by its exact mcp.json key. The gateway reads its URL from the owner's
+    // own config, so the body carries only the name.
+    connectionsMintServer: (server: string) =>
+      post('/api/connections/mint', { server }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
+    connectionsMintServerState: (server: string) =>
+      fetch(`/api/connections/mint?server=${encodeURIComponent(server)}`).then(j) as Promise<ConnectionMintState>,
     // Warm every mintable provider's URL in one activation, so a later Connect
     // serves a URL the warm table already holds instead of paying a cold spawn.
     // Deliberately BODYLESS: what is mintable is a fact about the user's registry
@@ -132,7 +149,7 @@ export function createConnectionsEndpoints({ post, put, del, j }: ClientTranspor
     // whose URL could not be compared) names no file, and a gateway predating the
     // field sends none.
     connectionsDisconnect: (slug: string) =>
-      post('/api/connections/disconnect', { slug }).then(j) as Promise<{ ok: boolean; grantRemoved: boolean; grantSurviving: string[]; entryRemoved: boolean; grantSharedWith: string[]; grantCensusIncomplete: boolean; grantCensusUnreadable?: string[] }>,
+      post('/api/connections/disconnect', { slug }).then(j) as Promise<{ ok: boolean; grantRemoved: boolean; grantSurviving: string[]; entryRemoved: boolean; grantSharedWith: string[]; grantCensusIncomplete: boolean; grantCensusUnreadable?: string[]; agentSpecRewritten?: boolean }>,
     // Operator-registered OAuth clients for providers that refuse dynamic client
     // registration (Settings → OAuth Apps). The list is readable by any dashboard
     // user (it is what the gallery's "needs configuration" card is built from and
@@ -142,9 +159,9 @@ export function createConnectionsEndpoints({ post, put, del, j }: ClientTranspor
     // Omitted fields are left as they are, so the id can be saved without re-entering
     // a secret the panel never displays; `client_secret_clear` removes the stored one.
     connectionsOAuthClientSave: (slug: string, body: ConnectionOAuthClientSave) =>
-      put(`/api/connections/oauth-clients/${encodeURIComponent(slug)}`, body).then(j) as Promise<{ ok: boolean; client: ConnectionOAuthClient | null }>,
+      put(`/api/connections/oauth-clients/${encodeURIComponent(slug)}`, body).then(j) as Promise<{ ok: boolean; client: ConnectionOAuthClient | null; agent_spec_rewritten?: boolean }>,
     connectionsOAuthClientDelete: (slug: string) =>
-      del(`/api/connections/oauth-clients/${encodeURIComponent(slug)}`).then(j) as Promise<{ ok: boolean; client: ConnectionOAuthClient | null }>,
+      del(`/api/connections/oauth-clients/${encodeURIComponent(slug)}`).then(j) as Promise<{ ok: boolean; client: ConnectionOAuthClient | null; agent_spec_rewritten?: boolean }>,
   }
 
   return { accounts }

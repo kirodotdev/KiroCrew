@@ -28,8 +28,8 @@ import {
   sourceProjectHost,
   sourceProjectPath,
   sourceProviderDescriptor,
-  type PullRequestLink,
   type PullRequestProvider,
+  type SourceLinkRef,
   type SourceProviderCapabilities,
   type SourceProviderIcon,
 } from './pullRequestLinks'
@@ -76,16 +76,27 @@ const GITLAB_META: SourceProviderMeta = {
   numberLabel: n => `!${n}`,
   logo: 'gitlab',
   pullRequestWording: false,
-  // Checks and merge state are read for GitLab; the thread and comment WRITES
-  // are GitHub-only in the gateway, which is why `CommentThreads` renders its
-  // read-only notice for a merge request today. These flags encode that, so the
-  // panel keeps rendering exactly what it renders now.
-  capabilities: { checks: true, mergeState: true, resolveThreads: false, comment: false },
+  // Checks, merge state, and the thread and comment writes (resolve, reopen,
+  // reply, top-level comment) are all served for GitLab by the gateway.
+  capabilities: { checks: true, mergeState: true, resolveThreads: true, comment: true },
+}
+
+const BITBUCKET_SERVER_META: SourceProviderMeta = {
+  id: 'bitbucket_server',
+  displayName: 'Bitbucket Server',
+  refLabel: n => i18nT('components.pullRequestPanel.pr_number', { number: n }),
+  numberLabel: n => `#${n}`,
+  logo: null,
+  pullRequestWording: true,
+  // Read-only: the gateway serves the overview, files, comments and build
+  // status, and refuses every write for this provider.
+  capabilities: { checks: true, mergeState: false, resolveThreads: false, comment: false },
 }
 
 const BUILTIN_META: Readonly<Record<string, SourceProviderMeta>> = {
   github: GITHUB_META,
   gitlab: GITLAB_META,
+  bitbucket_server: BITBUCKET_SERVER_META,
 }
 
 /** Fail-closed defaults for a provider nothing has described: label it the way
@@ -175,9 +186,9 @@ export function sourceProviderCapabilities(
  *  different hosts count as distinct and engage qualification. The `MR`/`PR`
  *  word stays with `refLabel` and the i18n catalog; the prefix is an
  *  identifier, not prose, exactly like a provider `displayName`. */
-export function sourceTabQualifier(
-  sources: PullRequestLink[],
-): (link: PullRequestLink) => string | null {
+export function sourceTabQualifier<T extends SourceLinkRef>(
+  sources: T[],
+): (link: T) => string | null {
   const identities = new Set<string>()
   const hostsByPath = new Map<string, Set<string>>()
   for (const item of sources) {
@@ -190,7 +201,7 @@ export function sourceTabQualifier(
     hosts.add(host)
   }
   if (identities.size <= 1) return () => null
-  const fullQualifier = (link: PullRequestLink): string[] | null => {
+  const fullQualifier = (link: SourceLinkRef): string[] | null => {
     const path = sourceProjectPath(link)
     if (!path) return null
     const segments = path.split('/')

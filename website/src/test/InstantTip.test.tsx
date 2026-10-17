@@ -602,6 +602,60 @@ describe('InstantTip', () => {
     }
   })
 
+  describe('above bubbles at the viewport top', () => {
+    let bubbleHeight: number
+    beforeEach(() => {
+      bubbleHeight = 214
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(() => bubbleHeight)
+      vi.stubGlobal('innerHeight', 800)
+    })
+    afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+    function anchorAt(top: number) {
+      const anchor = screen.getByRole('button', { name: 'anchor' })
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(new DOMRect(60, top, 160, 20))
+      vi.spyOn(anchor, 'getClientRects').mockReturnValue([new DOMRect(120, top, 100, 20)] as unknown as DOMRectList)
+      return anchor
+    }
+
+    it.each([
+      { name: 'flips below when above crosses the top', anchorTop: 100, viewport: 800, side: 'below', top: 128, left: 60 },
+      { name: 'stays above when it fits', anchorTop: 300, viewport: 800, side: 'above', top: 292, left: 120 },
+      { name: 'stays above at the exact top inset', anchorTop: 230, viewport: 800, side: 'above', top: 222, left: 120 },
+      { name: 'clamps below when neither side fits and below has more room', anchorTop: 100, viewport: 320, side: 'below', top: 98, left: 60 },
+      { name: 'clamps above when neither side fits and above has more room', anchorTop: 190, viewport: 320, side: 'above', top: 222, left: 120 },
+      { name: 'keeps the start visible when taller than the viewport', anchorTop: 50, viewport: 180, side: 'below', top: 8, left: 60 },
+    ])('$name', ({ anchorTop, viewport, side, top, left }) => {
+      vi.stubGlobal('innerHeight', viewport)
+      render(<Harness />)
+      fireEvent.focus(anchorAt(anchorTop))
+      const tip = screen.getByRole('tooltip')
+      expect(tip).toHaveAttribute('data-placement', side)
+      expect(tip.classList.contains('-translate-y-full')).toBe(side === 'above')
+      expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([top, left])
+      const topEdge = parseFloat(tip.style.top) - (side === 'above' ? bubbleHeight : 0)
+      expect(topEdge).toBeGreaterThanOrEqual(8)
+      if (bubbleHeight <= viewport - 16) expect(topEdge + bubbleHeight).toBeLessThanOrEqual(viewport - 8)
+    })
+
+    it('re-fits a taller held outcome and restores above when its shorter hint returns', () => {
+      vi.stubGlobal('innerHeight', 400)
+      bubbleHeight = 100
+      render(<HoldHarness />)
+      fireEvent.focus(anchorAt(150))
+      expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'above')
+      expect(screen.getByRole('tooltip')).toHaveStyle({ top: '142px' })
+      bubbleHeight = 214
+      fireEvent.click(screen.getByRole('button', { name: 'outcome' }))
+      expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'below')
+      expect(screen.getByRole('tooltip')).toHaveStyle({ top: '178px' })
+      bubbleHeight = 100
+      fireEvent.click(screen.getByRole('button', { name: 'idle' }))
+      expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'above')
+      expect(screen.getByRole('tooltip')).toHaveStyle({ top: '142px' })
+    })
+  })
+
   it('a below bubble that does not fit under the anchor is clamped to the bottom edge (explicit below)', () => {
     // The top-bar pill's `below` has no above to go to; a bubble taller than
     // the room left under its anchor ends 8px inside the bottom edge instead

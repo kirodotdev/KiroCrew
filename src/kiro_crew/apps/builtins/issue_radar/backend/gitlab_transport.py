@@ -74,12 +74,8 @@ GLAB_AUTH_MARKERS = (
 )
 
 
-def parse_gitlab_repo_url(
-    link: str, *, allowed_hosts: frozenset[str] = frozenset()
-) -> tuple[str, str, str]:
-    """Parse a validated ``(host, namespace, project)`` from a GitLab URL."""
-    if not link or not isinstance(link, str):
-        raise RepoUrlError("repo link is empty")
+def _parse_https_link(link: str, *, allowed_hosts: frozenset[str]) -> tuple[str, str]:
+    """Return the authorized ``(host, raw path)`` of an https GitLab link."""
     try:
         parsed = urlparse(link.strip())
     except ValueError as exc:
@@ -109,8 +105,18 @@ def parse_gitlab_repo_url(
             f"not a supported GitLab host: {link!r} — gitlab.com is always accepted; "
             "a self-managed instance must be listed in the dashboard.gitlab_hosts config"
         )
+    return resolved_host, parsed.path or ""
 
-    path = (parsed.path or "").rstrip("/")
+
+def parse_gitlab_repo_url(
+    link: str, *, allowed_hosts: frozenset[str] = frozenset()
+) -> tuple[str, str, str]:
+    """Parse a validated ``(host, namespace, project)`` from a GitLab URL."""
+    if not link or not isinstance(link, str):
+        raise RepoUrlError("repo link is empty")
+    resolved_host, raw_path = _parse_https_link(link, allowed_hosts=allowed_hosts)
+
+    path = raw_path.rstrip("/")
     marker_index = path.find("/-/")
     if marker_index >= 0:
         path = path[:marker_index]
@@ -140,6 +146,65 @@ def parse_gitlab_repo_url(
 def project_path(owner: str, repo: str) -> str:
     """Encode a namespace/project as GitLab's single ``:id`` parameter."""
     return quote(f"{owner}/{repo}", safe="")
+
+
+def validate_group_path(path: str) -> str:
+    """Return ``path`` when it is a well-formed GitLab group path, else raise.
+
+    A group path is one to :data:`MAX_NAMESPACE_SEGMENTS` segments joined by a
+    slash (``acme`` or ``acme/platform/web``). Every segment passes the same shape
+    check as a project URL's segments, and GitLab's system paths are refused, so
+    the value can only ever address one group and never a different API route.
+    """
+    if not isinstance(path, str):
+        raise RepoUrlError("group path must be a string")
+    parts = path.split(_URL_PATH_SEPARATOR)
+    if not path or not all(parts):
+        raise RepoUrlError(f"not a GitLab group path: {path!r}")
+    if len(parts) > MAX_NAMESPACE_SEGMENTS:
+        raise RepoUrlError(
+            f"group path {path!r} is nested deeper than GitLab allows "
+            f"(at most {MAX_NAMESPACE_SEGMENTS} group levels)"
+        )
+    for segment in parts:
+        if segment in (".", "..") or not SEGMENT_RE.match(segment):
+            raise RepoUrlError(f"invalid group path segment in {path!r}")
+        if segment.lower() in GITLAB_RESERVED_SEGMENTS:
+            raise RepoUrlError(f"{path!r} is a GitLab system path, not a group")
+    return path
+
+
+def parse_gitlab_group(
+    value: str, *, allowed_hosts: frozenset[str] = frozenset()
+) -> tuple[str, str]:
+    """Parse a validated ``(host, group path)`` from a group link or a bare path.
+
+    A bare path such as ``acme/platform`` is a gitlab.com group. A pasted group
+    link (``https://gitlab.com/acme/platform``, with or without GitLab's legacy
+    ``/groups/`` prefix and any ``/-/…`` page suffix) names its own instance,
+    which must be gitlab.com or listed in ``dashboard.gitlab_hosts``.
+    """
+    if not value or not isinstance(value, str) or not value.strip():
+        raise RepoUrlError("group is empty")
+    text = value.strip()
+    if "://" in text:
+        resolved_host, raw_path = _parse_https_link(text, allowed_hosts=allowed_hosts)
+        marker_index = raw_path.find("/-/")
+        if marker_index >= 0:
+            raw_path = raw_path[:marker_index]
+        path = raw_path.strip(_URL_PATH_SEPARATOR)
+        legacy_prefix = "groups" + _URL_PATH_SEPARATOR
+        if path.startswith(legacy_prefix):
+            path = path[len(legacy_prefix) :]
+    else:
+        resolved_host = "gitlab.com"
+        path = text.strip(_URL_PATH_SEPARATOR)
+    return resolved_host, validate_group_path(path)
+
+
+def group_path(path: str) -> str:
+    """Validate and encode a group path as GitLab's single ``:id`` parameter."""
+    return quote(validate_group_path(path), safe="")
 
 
 def resolve_host(host: str, *, allowed_hosts: frozenset[str]) -> str:
@@ -188,6 +253,17 @@ def raise_if_auth_failure(stderr_tail: str, host: str, *, markers: tuple[str, ..
 def stderr_tail(proc: subprocess.CompletedProcess, *, sanitize: Callable[[str], str]) -> str:
     """Return the sanitized final three stderr lines."""
     return sanitize(" ".join((proc.stderr or "").strip().splitlines()[-3:]))
+
+
+def is_not_found(tail: str) -> bool:
+    """Whether stderr carries GitLab's 404 answer.
+
+    Both the status code and the phrase must appear. A group path or a username
+    can contain ``404`` but never a space, so a request URL echoed in the tail
+    cannot match on its own.
+    """
+    text = tail or ""
+    return bool(re.search(r"\b404\b", text)) and "not found" in text.lower()
 
 
 def is_forbidden(tail: str) -> bool:

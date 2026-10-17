@@ -6,7 +6,7 @@ import asyncio
 import time
 import uuid
 
-from kiro_crew.agent_discovery import _read_agent_spec, spec_str
+from kiro_crew.agent_discovery import _read_agent_spec, served_provider_label, spec_str
 from kiro_crew.agent_spec_format import is_agent_spec_name, is_markdown_spec, spec_stem
 from kiro_crew.config.loader import _session_work_dir
 from kiro_crew.config.paths import project_agents_dir
@@ -217,6 +217,7 @@ class MemberSessionRunner(SessionAgentRunner):
                 memory_store=execution.store.store_id,
                 member=name,
                 execution_context=execution,
+                provider_type=served_provider_label(provider),
                 request_prefix_context=kwargs["append_system"],
             )
             logged_prompt = await _io(redact_via_context, prompt)

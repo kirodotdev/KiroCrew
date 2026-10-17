@@ -156,6 +156,28 @@ class PrioritySemaphore:
         """Queued futures of *priority* that are still waiting."""
         return sum(1 for w in self._waiters[priority] if not w.done())
 
+    @property
+    def limit(self) -> int:
+        """Total permits, both priorities (the reserve included)."""
+        return self._limit
+
+    def widen_to(self, value: int) -> None:
+        """Grow to *value* total permits and hand the new ones on; never shrinks.
+
+        For a bound whose width is only known after the semaphore was built (a
+        host reading taken off the boot path). Every added permit is one
+        ``BACKGROUND`` may hold: the foreground reserve stays the same size. A
+        pending :meth:`drain` takes the new permits like any freed ones, and it
+        now waits for the larger total. Call on the loop that owns the waiters.
+        """
+        extra = int(value) - self._limit
+        if extra <= 0:
+            return
+        self._limit += extra
+        self._value += extra
+        self._background_cap += extra
+        self._dispatch()
+
     def locked(self, priority: StartPriority = StartPriority.BACKGROUND) -> bool:
         """True when an ``acquire(priority)`` now would wait."""
         return not self._may_take_now(priority)

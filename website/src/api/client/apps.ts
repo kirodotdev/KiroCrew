@@ -67,7 +67,7 @@ export interface FileMenuContext {
   root?: string
 }
 
-export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk, checkSessionExpired, removeAuthBanner }: ClientTransport) {
   const platform = {
     // --- Apps ---
     // Installed-app payloads are normalized HERE rather than in a queryFn. The
@@ -79,7 +79,8 @@ export function createAppsEndpoints({ get, post, put, del, j, sessionKeyHeader: 
     getApp: (name: string) => fetch('/api/apps/' + encodeURIComponent(name)).then(j).then(normalizeInstalledApp),
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
-    enableApp: (name: string, sessionApprovalConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', { sessionApprovalConsent }).then(j),
+    // grantsConsent names the staged entries the owner was shown; only those are approved.
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>

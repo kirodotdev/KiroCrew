@@ -111,8 +111,8 @@ caches -- do not claim the whole pipeline is local without checking.
 ## Step 0 -- dependencies
 
 ```bash
-$PY references/deps.py            # report, exit 1 if anything is missing
-$PY references/deps.py --install  # install what is installable
+$PY <skill>/references/deps.py            # report, exit 1 if anything is missing
+$PY <skill>/references/deps.py --install  # install what is installable
 ```
 
 Only user-level installs (pip `--user`, the Playwright browser cache, the npx
@@ -132,13 +132,13 @@ on disk is reused, not rebuilt.
 
 ## Step 1 -- write and measure the narration
 
-Copy `references/script.example.json`, write the lines, then:
+Copy `<skill>/references/script.example.json`, write the lines, then:
 
 ```bash
-$PY references/narrate.py script.json --out-dir assets/audio
-$PY references/narrate.py script.json --out-dir assets/audio --provider piper \
+$PY <skill>/references/narrate.py script.json --out-dir assets/audio
+$PY <skill>/references/narrate.py script.json --out-dir assets/audio --provider piper \
         --piper-model ~/.local/share/piper/en_US-amy-medium.onnx
-$PY references/narrate.py script.json --out-dir assets/audio --silent   # evidence clip
+$PY <skill>/references/narrate.py script.json --out-dir assets/audio --silent   # evidence clip
 ```
 
 `--provider auto` prefers piper, then polly, and stops if neither is available --
@@ -160,7 +160,7 @@ static frame is the intended look.
 
 ## Step 2 -- record, paced by the timeline
 
-Copy `references/record_template.py` and adapt only the beat blocks. The template
+Copy `<skill>/references/record_template.py` and adapt only the beat blocks. The template
 carries the parts that are easy to get wrong: absolute-target pacing, `preroll_s`
 capture, `beat` tagging, and cursor honesty.
 
@@ -192,7 +192,7 @@ FF=ffmpeg    # or the path deps.py printed for the ffmpeg row
 ## Step 4 -- compose and render
 
 ```bash
-$PY references/compose.py --brand brand.json   # -> index.html
+$PY <skill>/references/compose.py --brand brand.json   # -> index.html
 npm run check     # in a hyperframes project; fix everything it reports
                   # a private mirror answers E401 for public packages; pin
                   # --registry=https://registry.npmjs.org in package.json
@@ -206,7 +206,7 @@ which would otherwise have shipped.
 ## Step 5 -- verify, then deliver
 
 ```bash
-$PY references/verify_align.py renders/<file>.mp4
+$PY <skill>/references/verify_align.py renders/<file>.mp4
 ```
 
 Four checks, each for a failure that has actually shipped: per-beat **drift**
@@ -328,7 +328,7 @@ which is the level at which everyone shares it.
 - `references/_pathcheck.py` -- the shared path-safety gate every script reads and writes through (centralized sensitive-path check, fail-closed)
 - `references/deps.py` -- detect + user-level install + honest failure
 - `references/narrate.py` -- STEP 1: TTS, measure, emit the timeline (`--silent` supported)
-- `references/compose.py` -- STEP 3: narr.json + events.json -> `index.html`
+- `references/compose.py` -- STEP 4: narr.json + events.json -> `index.html`
 - `references/verify_align.py` -- STEP 5: drift / audio / picture / streams gate
 - `references/record_template.py` -- STEP 2: copy and adapt per video
 - `references/script.example.json` -- script format

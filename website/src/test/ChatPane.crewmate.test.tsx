@@ -7,8 +7,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import chatReducer, { setSlotStatusDetail, sseChatMessage, sseToolActivity, sseToolResult, syncSlotRunningFromServer } from '../store/chatSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
 /* A crewmate's chat (ChatPane with the `crewmate` prop, as the Members page
@@ -64,13 +64,13 @@ const MACHINERY = [
   { role: 'assistant', content: '\u200b', cls: '', ts: '2026-09-22T06:00:09Z' },
 ]
 
-function makeStore() {
+function makeStore(running = false) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: SLOT, messages: MACHINERY.length, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: SLOT, messages: MACHINERY.length, running, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         slotsLoaded: true,
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -79,10 +79,10 @@ function makeStore() {
   })
 }
 
-function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean } = { crewmate: true }) {
+function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean; running?: boolean } = { crewmate: true }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <Provider store={makeStore()}>
+    <Provider store={makeStore(opts.running)}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
@@ -109,6 +109,146 @@ describe("a crewmate's chat", () => {
     expect(view.queryByText(/Session ready/)).toBeNull()
     expect(view.queryByText(/gh issue list/)).toBeNull()
     expect(view.queryByText(/auto-nudge/)).toBeNull()
+  })
+
+  // The live status line reads the slot's live status record (`slotStatusDetail`)
+  // and tool log — the DM header pill's own seam — so these tests seed the
+  // store the way the WebSocket layer does rather than the transcript.
+  const liveStore = (status: Record<string, unknown> | null, toolLog: Record<string, unknown>[] = []) => {
+    const store = makeStore(true)
+    store.dispatch(syncSlotRunningFromServer({ slot: SLOT, running: true, stopping: false }))
+    if (status) store.dispatch(setSlotStatusDetail({ slot: SLOT, ts: Date.now(), ...status } as Parameters<typeof setSlotStatusDetail>[0]))
+    for (const e of toolLog) {
+      store.dispatch(sseToolActivity({ slot: SLOT, tool: String(e.tool), kind: 'other', purpose: '', input_preview: '', tool_call_id: String(e.tool_call_id), tool_name: e.tool_name as string | undefined, mcp_server: e.mcp_server as string | undefined }))
+      if (e.output !== undefined) store.dispatch(sseToolResult({ slot: SLOT, output: String(e.output), tool_call_id: String(e.tool_call_id) }))
+    }
+    return store
+  }
+  const renderLive = (store: ReturnType<typeof makeStore>) => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey={SLOT} crewmate={radar} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    )
+  }
+
+  it("while it works, the current step is the status line above the indicator; the patrol wake does not draw", async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: MACHINERY, running: true, has_more: false, total: MACHINERY.length,
+    })
+    const view = renderLive(liveStore({ kind: 'tool', purpose: 'Checking the triage queue', toolName: 'gh issue list', toolCallId: 'tc-1' }))
+    await view.findByText('Checking the triage queue')
+    const line = view.getByTestId('crewmate-live-activity')
+    expect(line.dataset.activity).toBe('tool')
+    expect(view.getAllByTestId('crewmate-live-activity')).toHaveLength(1)
+    expect(view.queryByText(/auto-nudge/)).toBeNull()
+    expect(view.queryByText(/gh issue list/)).toBeNull()
+    expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
+  })
+
+  it("rebinding the pane to another working crewmate shows THAT crewmate's step at once, never the held one", async () => {
+    // The Members page rebinds ONE ChatPane to the newly picked crewmate
+    // without remounting it. The status line holds each step briefly
+    // (useHeldActivity), so without a per-slot key B's chat would open on A's
+    // held tool title for up to 1.5s while B's header pill said Thinking.
+    const SLOT_B = 'member-sonar'
+    const store = liveStore({ kind: 'tool', purpose: 'Checking the triage queue', toolName: 'gh issue list', toolCallId: 'tc-1' })
+    // Both crewmates busy in the slots frame (the pane's liveness for a
+    // background slot is the frame's `running`, not a live chunk).
+    const busy = (key: string) => ({ key, messages: MACHINERY.length, running: true, mode: '', pending_approval: false, waiting_for_input: false })
+    store.dispatch(sseSlots([busy(SLOT), busy(SLOT_B)] as Parameters<typeof sseSlots>[0]))
+    store.dispatch(setSlotStatusDetail({ slot: SLOT_B, kind: 'thinking', ts: Date.now() }))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const pane = (slot: string, who: { name: string }) => (
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey={slot} crewmate={who} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>
+    )
+    const view = render(pane(SLOT, radar))
+    await view.findByText('Checking the triage queue')
+    view.rerender(pane(SLOT_B, { name: 'Sonar' }))
+    // Synchronous on purpose: "at once" means no timer has to run first.
+    const line = view.getByTestId('crewmate-live-activity')
+    expect(line).toHaveTextContent('Thinking…')
+    expect(line.dataset.activity).toBe('thinking')
+    expect(view.queryByText('Checking the triage queue')).toBeNull()
+  })
+
+  it('once the call has returned (its output is in the tool log) the line reads the plain "Thinking…"', async () => {
+    const view = renderLive(liveStore(
+      { kind: 'tool', purpose: 'Checking the triage queue', toolName: 'gh issue list', toolCallId: 'tc-1' },
+      [{ tool: 'gh issue list', tool_call_id: 'tc-1', output: 'no issues' }],
+    ))
+    const line = await view.findByTestId('crewmate-live-activity')
+    await view.findByText('Thinking…', { selector: '[data-testid="crewmate-live-activity"] span' })
+    expect(line.dataset.activity).toBe('thinking')
+    expect(view.queryByText('Checking the triage queue')).toBeNull()
+  })
+
+  it('a nothing_to_do call in flight never names itself: the line reads "Thinking…", same height', async () => {
+    const view = renderLive(liveStore(
+      { kind: 'tool', purpose: 'Nothing to report', toolName: '@kirocrew-core/nothing_to_do', toolCallId: 'tc-q' },
+      [{ tool: '@kirocrew-core/nothing_to_do', tool_call_id: 'tc-q', tool_name: 'nothing_to_do', mcp_server: 'kirocrew-core' }],
+    ))
+    const line = await view.findByTestId('crewmate-live-activity')
+    expect(line.dataset.activity).toBe('thinking')
+    expect(line).toHaveTextContent('Thinking…')
+    expect(view.queryByText(/Nothing to report/)).toBeNull()
+    expect(view.queryByTestId('crewmate-quiet-hint')).toBeNull()
+  })
+
+  it('the motion is the typing bubble — three dots in the crewmate\'s own bubble; the chat page\'s ghost carousel is not mounted beside it', async () => {
+    const view = renderLive(liveStore({ kind: 'thinking' }))
+    const line = await view.findByTestId('crewmate-live-activity')
+    const bubble = view.getByTestId('crewmate-typing-bubble')
+    expect(bubble.querySelector('.message-bubble.crewmate-bubble .typing-dots')?.children).toHaveLength(3)
+    expect(bubble.dataset.shown).toBe('true')
+    expect(line.querySelector('svg')).toBeNull()
+    expect(view.queryByTestId('chat-footer')).toBeNull()
+    expect(view.queryByTestId('loader-carousel')).toBeNull()
+  })
+
+  it('while compacting, the caption says so itself (no footer is mounted to say it) and keeps its height', async () => {
+    const store = liveStore({ kind: 'thinking' })
+    store.dispatch(sseChatMessage({ slot: SLOT, role: 'compacting', content: '' } as Parameters<typeof sseChatMessage>[0]))
+    const view = renderLive(store)
+    const line = await view.findByTestId('crewmate-live-activity')
+    expect(line.dataset.activity).toBe('compacting')
+    expect(line).toHaveTextContent('Compacting…')
+    expect(view.getAllByText(/Compacting/)).toHaveLength(1)
+  })
+
+  it('a Stop the slots frame reports (another tab, a background slot) reads "Stopping…" here too', async () => {
+    // The footer this caption replaced read the frame's `stopping` flag as
+    // well as the stream state; the caption must not lose that signal.
+    const store = liveStore({ kind: 'thinking' })
+    store.dispatch(sseSlots([
+      { key: SLOT, messages: MACHINERY.length, running: true, stopping: true, mode: '', pending_approval: false, waiting_for_input: false },
+    ] as Parameters<typeof sseSlots>[0]))
+    const view = renderLive(store)
+    const line = await view.findByTestId('crewmate-live-activity')
+    expect(line.dataset.activity).toBe('stopping')
+    expect(line).toHaveTextContent('Stopping…')
+  })
+
+  it('a long step shows its FULL label (the pill clamps; this column has the room) and carries it as title', async () => {
+    const long = 'Attempt an authenticated read of the SIM-T ticket through the alternate endpoint'
+    const view = renderLive(liveStore({ kind: 'tool', purpose: long, toolName: 'curl', toolCallId: 'tc-1' }))
+    await view.findByText(long)
+    expect(view.getByTestId('crewmate-live-activity').querySelector('[role="status"]')).toHaveAttribute('title', long)
   })
 
   it('a BOUNDED window with no speech in it is not proof: the pane reads the whole history first', async () => {

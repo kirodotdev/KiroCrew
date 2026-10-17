@@ -41,6 +41,16 @@ export interface AutoNudgeLoop {
    *  Carried by the frame beside `monitor_outcome`; the Done wording is chosen
    *  by the pair. `undefined` means the source did not carry it. */
   monitor_kind?: string
+  /** True while an ACTIVE loop holds because a cycle's approval went unanswered:
+   *  it fires nothing until a person answers an approval, sends a message or
+   *  fires it, then resumes by itself. Carried by the REST list (`asdict(loop)`)
+   *  and the `autonudge_state` frame; `undefined` reads as not held. */
+  approval_stalled?: boolean
+  /** True while an ACTIVE work-ledger watch holds because every open item waits
+   *  on a person and nothing moved since its last turn. It fires nothing until
+   *  the ledger changes. Carried by the REST list and the `autonudge_state`
+   *  frame; `undefined` reads as not held. */
+  waiting_on_person?: boolean
   /** Short stand-in for `message` in the visible transcript row; '' = none. */
   banner?: string
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
@@ -59,6 +69,12 @@ export interface AutoNudgeLoop {
    *  per-answer probability; those live in the decisions log, which is where the
    *  thresholds are meant to be tuned from. */
   judge_last_verdict?: { outcome?: string; evidence_items?: number; at?: number }
+  /** The opaque identity of the stored goal text, re-minted on every goal write
+   *  and on every gateway load. Carried by the REST reads and the arm/update
+   *  responses, NOT by the websocket frame, so a record that came through a frame
+   *  has none. The goal popover sends the value it read back as
+   *  `expect_fingerprint`, which makes a save over a goal saved elsewhere a 409. */
+  goal_token?: string
 }
 
 /** `GET /api/autonudge`: every loop record the service holds, active or stopped.

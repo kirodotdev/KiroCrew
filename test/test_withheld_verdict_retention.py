@@ -49,7 +49,7 @@ RETAIN_DIR = "withheld-review-verdict"
 ARTIFACT_PREFIX = "withheld-verdict-"
 
 # The list this discovery is checked against, kept in step with
-# test_ai_review_workflows.py's own `_VERDICT_PUBLISHING_LANES`. It is not what
+# test_ai_review_workflows_comment_writes.py's own `_VERDICT_PUBLISHING_LANES`. It is not what
 # drives the tests -- it is the CONTROL that proves the discovery predicate
 # still selects the lanes everyone already agrees publish a verdict. A predicate
 # that silently stopped matching would otherwise pass by measuring nothing.

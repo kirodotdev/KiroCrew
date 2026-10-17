@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import React from 'react'
 import TranscriptScrollShell from '../pages/chat/TranscriptScrollShell'
@@ -73,6 +73,28 @@ describe('TranscriptScrollShell DOM contract', () => {
     const order = [headerSpacer, above, topSentinel, topSpacer, rows, bottomSpacer, bottomSentinel, trailing].map(at)
     expect(order).toEqual([...order].sort((a, b) => a - b))
     expect(new Set(order).size).toBe(order.length)
+  })
+
+  it('renders the top spacer at a whole-pixel height within half a pixel of the virtualizer offset', () => {
+    // Chromium's scroll anchoring moves scrollTop only by whole pixels. A
+    // fractional top spacer lets each re-price of unmounted rows above a reader
+    // sitting still (a measure-farm batch) shift the visible text by the
+    // leftover fraction.
+    const scrollerRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), offsetBefore: 19479.75, offsetAfter: 0 }}
+        loadingOlder={false}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    const topSpacer = scrollerRef.current!.querySelector('.vc-spacer-skeleton') as HTMLElement
+    const height = Number.parseFloat(topSpacer.style.height)
+    expect(Number.isInteger(height)).toBe(true)
+    expect(Math.abs(height - 19479.75)).toBeLessThanOrEqual(0.5)
   })
 
   it('hands the trailing wrapper to the virtualizer through virt.trailingRef', () => {
@@ -151,7 +173,18 @@ describe('TranscriptScrollShell DOM contract', () => {
 })
 
 describe('ChatPage invocation: slot membership and prop threading', () => {
-  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+  // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+  const src = [
+    readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8'),
+    ...readdirSync(resolve(__dirname, '../pages/chat/page'))
+      .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+      .sort()
+      .map(f => readFileSync(resolve(__dirname, '../pages/chat/page', f), 'utf8')),
+    ...readdirSync(resolve(__dirname, '../pages'))
+      .filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f))
+      .sort()
+      .map(f => readFileSync(resolve(__dirname, '../pages', f), 'utf8')),
+  ].join('\n')
   const open = src.indexOf('<TranscriptScrollShell')
   const close = src.indexOf('</TranscriptScrollShell>')
   const inv = src.slice(open, close)

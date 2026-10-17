@@ -184,6 +184,30 @@ describe('board view: per-column folder collapse', () => {
     expect(queryByTestId(`folder-rail-${COL_A}-${emptyFolder}`)).toBeNull()
   })
 
+  it('pads the board folder body so the rail\'s hit strip never covers a row', () => {
+    // `.folder-rail` is an absolute 8px strip at left:-5px inside the body's
+    // padding box, so it spans x = -5..3 across the 1px border. A body with no
+    // left pad starts its rows at x = 0, and the strip's z-index puts it OVER
+    // the first 3px of every row: a click there folds the folder instead of
+    // opening the session. `pl-1` (4px) is the smallest Tailwind pad that clears
+    // the strip, and `ml-3` + border + `pl-1` keeps the rows at the x `ml-4` gave
+    // them. The list body carries the same pair (ChatSidebar.folderAlignment).
+    const slots = [{
+      key: 'foldered-slot', title: 'Foldered', running: false, messages: 1,
+      folder_id: FOLDER_ID, tags: [BLOCKED], created: '', last_ts: '',
+    } as ChatSlot]
+    const { getByTestId } = renderSidebar(
+      [{ id: FOLDER_ID, name: 'CDF', order: 0, collapsed: false }], slots,
+    )
+    const body = getByTestId(`folder-rail-${COL_A}-${FOLDER_ID}`).parentElement as HTMLElement
+    const cls = body.className.split(/\s+/)
+    expect(cls).toContain('relative')
+    expect(cls).toContain('border-l')
+    expect(cls).toContain('pl-1')
+    expect(cls).toContain('ml-3')
+    expect(cls).not.toContain('ml-4')
+  })
+
   it('a column without an override follows the server default', () => {
     // Server says collapsed; expanding in A must not expand B, whose state is
     // still the server flag.

@@ -96,6 +96,7 @@ export const Item = React.forwardRef<HTMLDivElement, any>(({ children, className
   )
 })
 export const Separator = React.forwardRef<HTMLDivElement, any>((props, ref) => <div ref={ref} role="separator" {...props} />)
+export const Label = React.forwardRef<HTMLDivElement, any>(({ children, ...props }, ref) => <div ref={ref} {...props}>{children}</div>)
 export const Group: React.FC<any> = ({ children }) => <>{children}</>
 
 // Submenu: stateful like Root — SubTrigger opens it, SubContent renders when open.
@@ -119,4 +120,16 @@ export const SubContent = React.forwardRef<HTMLDivElement, any>(({ children, cla
   if (!open) return null
   return <div ref={ref} role="menu" className={className} {...props}>{children}</div>
 })
-export const RadioGroup: React.FC<any> = ({ children }) => <>{children}</>
+// Radio rows: the group publishes its value and change handler, a RadioItem is
+// an Item announced as `menuitemradio` that reports its value on select.
+const RadioCtx = createContext<{ value?: string; onValueChange?: (v: string) => void }>({})
+export const RadioGroup: React.FC<any> = ({ children, value, onValueChange }) => (
+  <RadioCtx.Provider value={{ value, onValueChange }}>{children}</RadioCtx.Provider>
+)
+export const RadioItem = React.forwardRef<HTMLDivElement, any>(({ value, onSelect, ...props }, ref) => {
+  const group = useContext(RadioCtx)
+  return (
+    <Item ref={ref} role="menuitemradio" aria-checked={group.value === value} {...props}
+      onSelect={(e: any) => { onSelect?.(e); group.onValueChange?.(value) }} />
+  )
+})

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
@@ -24,7 +24,17 @@ import { resolve } from 'node:path'
  * does: the cap is a viewport unit jsdom cannot resolve into a height, and the
  * real invariant is the ORDER BETWEEN three z-values living in two files.
  */
-const CHAT_PAGE = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+// so the pins read the page and those owners.
+const PAGES_DIR = resolve(__dirname, '..', 'pages')
+const OWNER_DIR = resolve(PAGES_DIR, 'chat', 'page')
+const CHAT_PAGE = [
+  readFileSync(resolve(PAGES_DIR, 'ChatPage.tsx'), 'utf8'),
+  ...readdirSync(OWNER_DIR).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(resolve(OWNER_DIR, f), 'utf8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf8')),
+].join('\n')
 const SUBAGENT_BAR = readFileSync(resolve(__dirname, '../pages/chat/SubagentProgressBar.tsx'), 'utf8')
 const QUEUE_STACK = readFileSync(resolve(__dirname, '../components/QueueStack.tsx'), 'utf8')
 const INDEX_CSS = readFileSync(resolve(__dirname, '../index.css'), 'utf8')

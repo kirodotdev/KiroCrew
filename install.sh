@@ -11,6 +11,11 @@
 #
 # Options:
 #   --voice   Install optional voice extras (pip install -e .[voice])
+#   --kas     Download the KAS engine this release pins (kirocrew kas install)
+#             so the built-in engine route can be turned on later with no
+#             download. The switch (agent.kas_bundle) is NOT turned on: the
+#             route is in shadow testing on every platform, so the default
+#             stays kiro-cli until you flip it yourself.
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
 #             global mise config.
@@ -33,10 +38,12 @@ unset PYTHONPATH PYTHONHOME
 # ── Parse arguments ──
 USE_MISE=0
 WITH_VOICE=0
+WITH_KAS=0
 for _arg in "$@"; do
     case "$_arg" in
         --mise)  USE_MISE=1 ;;
         --voice) WITH_VOICE=1 ;;
+        --kas)   WITH_KAS=1 ;;
         *) echo "Error: unknown argument '$_arg'" >&2; exit 1 ;;
     esac
 done
@@ -418,8 +425,13 @@ else
     warn "npm not available — install the agent backend later:"
     detail "npm i -g $ACP_NPM_PKG"
 fi
-warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
-detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
+if [ "$WITH_KAS" -eq 1 ]; then
+    info "The built-in KAS engine will be downloaded (--kas); the switch stays off until you turn it on."
+else
+    warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
+    detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
+    detail "Or re-run with --kas to download the built-in engine instead (no kiro-cli)."
+fi
 
 # ══════════════════════════════════════════════════════════════════════
 # Step 3: Build
@@ -779,6 +791,19 @@ if [ -n "$_kirocrew" ]; then
     KIROCREW_PROJECT_DIR="$KIROCREW_APP_DIR" "$_kirocrew" setup --agent-only \
         && ok "Agent config installed" \
         || warn "kirocrew setup --agent-only failed (run manually after install)"
+    if [ "$WITH_KAS" -eq 1 ]; then
+        # The engine this release pins, fetched from the project's CDN and
+        # verified against the pin baked into this checkout. The switch is left
+        # alone on purpose: the route is in shadow testing, so turning it on is
+        # the user's own step (Settings → Agent Harness, or `kirocrew config set
+        # agent.kas_bundle true`), never the installer's.
+        info "Downloading the built-in KAS engine (kirocrew kas install)…"
+        if "$_kirocrew" kas install; then
+            ok "Built-in KAS engine installed (switch it on: kirocrew config set agent.kas_bundle true)"
+        else
+            warn "kirocrew kas install failed — run it again after install"
+        fi
+    fi
 fi
 
 ok "Run ${CYAN}kirocrew setup${RESET} to configure agent, workspace, and integrations"
@@ -810,6 +835,10 @@ echo ""
 echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected another ACP backend):"
 echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
 echo "       ${GREEN}kiro-cli login${RESET}"
+if [ "$WITH_KAS" -eq 1 ]; then
+echo "       To try the built-in KAS engine instead (shadow testing, off by default):"
+echo "       ${GREEN}kirocrew config set agent.kas_bundle true${RESET}  then sign in from the dashboard"
+fi
 echo ""
 echo "    ${CYAN}3.${RESET} Run the setup wizard:"
 echo "       ${GREEN}kirocrew setup${RESET}"

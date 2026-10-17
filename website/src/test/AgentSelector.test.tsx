@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
-import AgentSelector from '../components/AgentSelector'
+import AgentSelector, { crewDisplayName } from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 
 const agents: KiroCrewAgent[] = [
@@ -44,5 +44,19 @@ describe('AgentSelector', () => {
   it('uses defaultAgent when value is empty', () => {
     render(<AgentSelector agents={agents} defaultAgent="coding" value="" onChange={() => {}} />)
     expect(screen.getByText('coding')).toBeInTheDocument()
+  })
+})
+
+describe('crewDisplayName', () => {
+  it('names the first crewmate by its localized label on any template; default keeps its name', () => {
+    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Mate')
+    // A label of the user's own wins.
+    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew', display_name: 'Ada' })).toBe('Ada')
+    // The reserved default member is presented exactly as before.
+    expect(crewDisplayName({ name: 'default', kiro_agent: 'kirocrew' })).toBe('default')
+    expect(crewDisplayName({ name: 'default' })).toBe('default')
+    // The first crewmate is its key, whatever template it runs.
+    expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Mate')
+    expect(crewDisplayName({ name: 'helper', kiro_agent: 'kirocrew' })).toBe('helper')
   })
 })

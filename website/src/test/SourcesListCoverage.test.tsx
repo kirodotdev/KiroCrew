@@ -202,6 +202,25 @@ describe('SourcesList — row actions', () => {
     expect(callsTo('/sources/s1/sync', 'POST')).toHaveLength(1)
   })
 
+  it('offers no Sync on the aggregate Auto-added source, which has nothing to fetch', async () => {
+    handler = (path: string) => {
+      if (path === '/sources') {
+        return [src({ id: 'a1', name: 'Auto-added', source_type: 'agent', uri: 'agent://', sync_status: 'active', syncable: false })]
+      }
+      return { ok: true }
+    }
+    renderList()
+    await screen.findByText('Auto-added')
+    expect(screen.queryByLabelText('Sync source')).toBeNull()
+    // The "manual" hint tells the user to press Sync, so the row says how it
+    // does update instead, with the why in the tooltip.
+    expect(screen.queryByText(/manual/)).toBeNull()
+    const hint = screen.getByText(/added by agent/)
+    expect(hint.getAttribute('title')).toMatch(/nothing to sync/)
+
+    expect(screen.getByLabelText('Remove source')).toBeTruthy()
+  })
+
   it('offers Pause on a watching folder and Resume on a paused one', async () => {
     handler = (path: string) => {
       if (path === '/sources') return [

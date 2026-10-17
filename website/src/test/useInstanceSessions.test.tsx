@@ -181,20 +181,23 @@ describe('useInstanceSessions', () => {
     expect(result.current.rows[0].parent).toEqual({ slot: 'gone' })
   })
 
-  it('forwards the hub-stamped `hub_key` so a worker nests under the local row driving its creator', async () => {
-    // The hub rewrites a citation of a peer slot it drives to the LOCAL slot key
-    // (`hub_key`), the peer's own key for that creator never crossing the wire.
-    // A non-string half is dropped like the other two.
+  it('forwards ancestor, which is what tells the pair apart on a re-parented peer row', async () => {
+    // Without it the lane gets a key and a slot that disagree and no reason they do,
+    // so it reads the nesting as ordinary and drops the closed-creator glyph: a
+    // peer's crew looks like sessions the lead opened itself, and the cross-gateway
+    // lane answers differently from the local one about the same fact.
     instanceChatSlotsMock.mockResolvedValue([
-      { key: 'w1', parent: { slot: 'chat-7', hub_key: 'chat-7' } },
-      { key: 'w2', parent: { slot: 'chat-7', hub_key: 7 } },
+      { key: 'lead', title: 'Lead' },
+      { key: 'w1', title: 'Worker', parent: { slot: 'mid', key: 'lead', ancestor: true } },
+      // Not a literal `true`, so it does not survive the boundary.
+      { key: 'w2', title: 'Other', parent: { slot: 'mid', key: 'lead', ancestor: 'yes' } },
     ])
     const { result } = renderInstanceSessions(true, [CONNECTED])
 
-    await waitFor(() => expect(result.current.rows).toHaveLength(2))
+    await waitFor(() => expect(result.current.rows).toHaveLength(3))
     const byKey = new Map(result.current.rows.map(r => [r.key, r]))
-    expect(byKey.get('w1')?.parent).toEqual({ slot: 'chat-7', hub_key: 'chat-7' })
-    expect(byKey.get('w2')?.parent).toEqual({ slot: 'chat-7' })
+    expect(byKey.get('w1')?.parent).toEqual({ slot: 'mid', key: 'lead', ancestor: true })
+    expect(byKey.get('w2')?.parent).toEqual({ slot: 'mid', key: 'lead' })
   })
 
   it('preserves row identity across unrelated rerenders after query data settles', async () => {
@@ -302,6 +305,7 @@ describe('useInstanceSessions', () => {
         agent: 42 as unknown as string,
         created: ['nope'] as unknown as string,
         pending_approval: {} as unknown as boolean,
+        needs_input: 'yes' as unknown as boolean,
         last_turn_ts: '2026-08-31T14:00:00Z',
       },
     ])
@@ -312,8 +316,9 @@ describe('useInstanceSessions', () => {
     expect(row.title).toBeUndefined()
     expect(row.agent).toBeUndefined()
     expect(row.created).toBeUndefined()
-    // A truthy non-boolean must not raise a badge the peer never claimed.
+    // A truthy non-boolean must not raise a badge or a question the peer never claimed.
     expect(row.pending_approval).toBe(false)
+    expect(row.needs_input).toBe(false)
     // The one well-formed field still lands.
     expect(row.last_turn_ts).toBe('2026-08-31T14:00:00Z')
   })
@@ -342,7 +347,7 @@ describe('useInstanceSessions', () => {
   })
 
   it('keeps a crew\'s last rows after it disconnects, and stops asking it', async () => {
-    instanceChatSlotsMock.mockResolvedValue([{ key: 'chat-1', title: 'cached row', running: true, pending_approval: true }])
+    instanceChatSlotsMock.mockResolvedValue([{ key: 'chat-1', title: 'cached row', running: true, pending_approval: true, needs_input: true }])
     const { result, rerender } = renderHook(
       ({ list }: { list: unknown[] }) => useInstanceSessions(true, list as InstanceView[]),
       { wrapper, initialProps: { list: [CONNECTED] } },
@@ -351,12 +356,14 @@ describe('useInstanceSessions', () => {
     const calls = instanceChatSlotsMock.mock.calls.length
 
     expect(result.current.rows[0].running).toBe(true)
+    expect(result.current.rows[0].needs_input).toBe(true)
 
     rerender({ list: [{ ...CONNECTED, status: { state: 'disconnected' } }] })
     expect(result.current.rows.map(r => r.title)).toEqual(['cached row'])
     // A cached answer carries no live state.
     expect(result.current.rows[0].running).toBe(false)
     expect(result.current.rows[0].pending_approval).toBe(false)
+    expect(result.current.rows[0].needs_input).toBe(false)
     expect(result.current.failed).toEqual([])
     expect(instanceChatSlotsMock.mock.calls.length).toBe(calls)
   })
@@ -377,9 +384,16 @@ describe('crew groups', () => {
     expect(crewGroupsFor(list, []).map(g => g.id)).toEqual(['astro'])
     const relay = { executor: 'remote', instance_id: 'chick' }
     expect(crewGroupsFor(list, [relay])).toEqual([
-      { id: 'astro', name: 'astro', badge: 'online', offline: false },
-      { id: 'chick', name: 'chick', badge: 'offline', offline: true },
+      { id: 'astro', name: 'astro', badge: 'online', offline: false, disabled: false },
+      { id: 'chick', name: 'chick', badge: 'offline', offline: true, disabled: false },
     ])
     expect(crewGroupsFor([], [relay, { peer_id: 'astro' }])).toEqual([])
+  })
+
+  it('keeps a group for a disabled crew with no rows, badged disabled', () => {
+    const list = [{ ...OFFLINE, disabled: true }] as unknown as InstanceView[]
+    expect(crewGroupsFor(list, [])).toEqual([
+      { id: 'chick', name: 'chick', badge: 'disabled', offline: true, disabled: true },
+    ])
   })
 })

@@ -102,6 +102,17 @@ export const UNAVAILABLE_CODE_KEY: Record<string, string> = {
 }
 
 /**
+ * Refusals where the recogniser IS installed but could not be, or would not be, loaded.
+ * The Status badge shows "not working" for these, not "not installed".
+ */
+export const INSTALLED_BUT_REFUSED_CODES: ReadonlySet<string> = new Set([
+  'stt_import_failed',
+  'stt_unsupported_cpu',
+  'stt_load_crashed',
+  'stt_native_probe_crashed',
+])
+
+/**
  * Localised explanation for an availability refusal.
  *
  * Falls back to the backend's own `detail` for a code this build does not know:
@@ -123,8 +134,9 @@ export function unavailableMessage(code: string, detail = ''): string {
  * sentences point "above"/"below" at a control that lives only there:
  * `stt_disabled` ("Switch it on above"), `stt_provider_off` ("Pick another
  * provider from the Provider menu below"), `stt_unsupported_cpu` /
- * `stt_load_crashed` / `stt_native_probe_crashed` ("Turn speech-to-text off
- * above") and `stt_model_missing` ("Download it below"). Pointing the modal user
+ * `stt_load_crashed` / `stt_native_probe_crashed` ("pick another provider or
+ * Off from the Provider menu below") and `stt_model_missing` ("Download it
+ * below"). Pointing the modal user
  * at a control that is not on screen is the dead end this surface removes, so:
  *
  *   - a code whose sentence is self-contained (extra missing, no wheel, import
@@ -172,12 +184,44 @@ export function modalUnavailableMessage(code: string): string {
 export const STREAM_ERROR_CODE_KEY: Record<string, string> = {
   stt_decode_failed: 'lib.sttProviders.stream_error_decode_failed',
   stt_session_failed: 'lib.sttProviders.stream_error_session_failed',
+  stt_aws_access_denied: 'lib.sttProviders.stream_error_aws_access_denied',
   stt_max_duration_exceeded: 'lib.sttProviders.stream_error_max_duration',
   stt_model_missing: 'lib.sttProviders.stream_error_model_missing',
   stt_consent_required: 'lib.sttProviders.stream_error_consent_required',
   // Amazon Transcribe refused the chosen custom vocabulary. Retrying cannot help,
   // so the sentence names the setting that can.
   stt_transcribe_vocabulary_rejected: 'lib.sttProviders.stream_error_vocabulary_rejected',
+  // Mixed languages are picked but the gateway's amazon-transcribe package predates
+  // the parameters they need. Upgrading it, or picking one language, is the fix.
+  stt_transcribe_sdk_outdated: 'lib.sttProviders.stream_error_sdk_outdated',
+}
+
+/**
+ * The language part of a locale code: `vi` for `vi-VN`, `ckb` for `ckb-IQ`.
+ *
+ * Amazon Transcribe identifies at most one dialect per language in a stream, so
+ * this is the identity the mixed-language picker keeps unique.
+ */
+export function localeLanguage(code: string): string {
+  return code.split('-', 1)[0]
+}
+
+/**
+ * The mixed-language candidates after one option is ticked or unticked.
+ *
+ * Ticking a second dialect of a language replaces the first rather than joining
+ * it, because a stream may carry only one dialect per language (`en-US` beside
+ * `en-GB` fails it). The order is the order of ticking, which is also the order
+ * the backend stores and sends.
+ */
+export function nextTranscribeLanguages(
+  current: readonly string[],
+  code: string,
+  selected: boolean,
+): string[] {
+  const others = current.filter(c => c !== code)
+  if (!selected) return others
+  return [...others.filter(c => localeLanguage(c) !== localeLanguage(code)), code]
 }
 
 /**

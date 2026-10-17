@@ -93,21 +93,13 @@ on the way in. Windows has no Kiro Crew OS wrapper, so positively identified
 official Kiro CLI spawns delegate to the CLI's built-in sandbox; their environment
 is scrubbed by the parent before spawn. The parent gateway process is unaffected.
 
-**`agent.sandbox` defaults to `"auto"`, engaging OS-level isolation
-(namespace on Linux, sandbox-exec on macOS) at the `standard` tier.** The other
-values are `"strict"` and `"off"` (`config/sections.py`, `AgentConfig.sandbox`,
-`enum=["auto", "strict", "off"]`; the same three-value enum gates the dashboard
-config editor in `dashboard/handlers/core.py`, pinned equal by
-`test_sandbox_strict_selectable.py`). `"strict"` is the operator's opt-in to the
-tier that also masks `~/.aws`, `~/.ssh`, `~/.kube`, `~/.config/gh` and the
-credential files in `_CC_FILES`. `"off"` skips Kiro Crew's own sandbox but still
-delegates to `kiro-cli`'s internal agent sandbox on macOS when it is enabled,
-which cannot nest inside Kiro Crew's
-Seatbelt wrap (the macOS kernel returns EPERM even under an allow-all outer
-profile), so exactly one layer can own isolation per spawn. Setting `"auto"`
-re-enables Kiro Crew's own sandbox. A change to the key applies to sessions
-started after it; a running session keeps the tier it was spawned with (the
-lifecycle gap for a tightening flip is #5031).
+**`agent.sandbox` defaults to `"auto"`** (OS-level isolation at the `standard`
+tier); `"strict"` is the opt-in that also masks the workflow credential stores,
+and `"off"` defers isolation. The enum, its lifecycle and the per-tier masks are
+specified once in
+[security](../system-specs/modules/security.md#sandbox-modes). The rationale for
+the split: standard keeps git-over-SSH and `credential_process` working, strict
+trades that for hiding the stores from every subprocess.
 
 `wrap_argv`'s internal tier vocabulary is wider than the config enum: `standard`
 (what `auto` resolves to), `cc`, `strict` and `off`. `cc` and the `standard`
@@ -219,10 +211,11 @@ operator's credential tooling for the subset who want the fence, silently, on
 upgrade. The tier is the operator's to tighten (`agent.sandbox="strict"`), and
 this document names what the default leaves open so that choice is informed.
 
-`SSH_AUTH_SOCK` is scrubbed whenever a Kiro Crew sandbox tier is active, so
-ssh-agent forwarding is unavailable inside a confined spawn. Operators who depend
-on passphrase-protected keys or hardware tokens use key files directly or leave
-`agent.sandbox` at `off`.
+`SSH_AUTH_SOCK` is kept for an agent spawn whose tier leaves `~/.ssh` readable
+(`off`, `standard`, `cc`) and whose harness mask does not hide it, so the
+agent can use the operator's ssh-agent there, including a forwarded one. Under
+`strict`, or a harness mask over `~/.ssh`, it is scrubbed unless the operator
+records consent in the keystone leaf `ssh_auth_sock_consent.json`.
 
 ## Layer 1: Filesystem gate (`security/` package + `hooks.py`)
 
@@ -262,7 +255,9 @@ in place.
 The governance trust root (`security_policy.json`, `profiles/`,
 `admission_policy.json`), the denied-command opt-out state
 (`denied_commands.json`), the SEL HMAC key and event log, the dashboard token
-signing key, and the channel credential `.env` all sit on the read+write block.
+signing key, the App Kit registry trust grants (`registry_trust.json`, see
+[app-kit-platform](../system-specs/modules/app-kit-platform.md)), and the channel
+credential `.env` all sit on the read+write block.
 This is a single mechanism with an outsized consequence: it is what makes the
 enterprise ceiling **un-disableable from inside the agent**. An agent that could
 read these could forge tokens or impersonate internal callers; one that could
@@ -568,6 +563,24 @@ Dashboard tool approvals offer four decisions, in widening scope: `trust_command
 `ls *`, plus the bare binary, session-scoped), `trust_reads` (read-only bash for
 the slot), and `trust` (all tools for the slot). `yolo` is the global escalation.
 
+`trust_command` and `trust_base` can also be timed. The chat approval prompt
+offers each one for an hour or for the rest of the user's day, beside the grant
+that lasts for the chat. The request carries `ttl_seconds`, a whole number from 1
+to 86400; any other value, or a lifetime on any other decision, is refused with
+no grant recorded and the call still pending. A timed grant is kept on the chat's
+slot in its own store, apart from the chat-long patterns, so no other writer of
+those patterns can end or extend it. Its deadline is held on both the wall clock
+and the monotonic clock and checked at decision time: a grant is dropped before
+matching once either deadline passes, so neither a suspended host nor a clock
+set backwards stretches it, and the next matching call prompts again. An
+approval that rests on a timed grant carries that grant's deadline down to the
+transport, which checks it once more under its write lock, after its own
+security-floor check and right before it writes the answer: if the deadline has
+passed, nothing is written, the request stays pending, and the user is asked. An
+approval with no timed grant behind it carries no deadline and is answered as
+before. A timed grant stays on the chat
+that made it and, like every per-slot grant, is gone after a restart.
+
 The security-relevant property is what the pattern is derived from: the **actual
 command in `tool_input`**, not the model-authored display title. Trust patterns
 are per-slot fnmatch globs; a multi-command title yields one pattern per binary.
@@ -715,3 +728,31 @@ install-layout decision, and any such gate must default **off** — the
 `KIROCREW_PROVIDER_BIN_STRICT` precedent
 (`github_runner.py:validate_provider_executable`) records that requiring a
 root-owned copy made every stock package-manager install fail.
+
+**Cross-origin subresource DNS rebinding in the Design Critique capture browser
+is bounded, not fully closed (design track:
+[#17748](https://github.com/kirodotdev/KiroCrew/issues/17748)).** The URL-render
+capture path launches headless Chromium against untrusted external pages and
+defends SSRF / DNS rebinding with two shipped layers: the backend vets the typed
+base host and launches with a `--host-resolver-rules=MAP <host> <vetted-ip>` pin
+(`capture-site.mjs`, from `_resolve_vetted` in the backend), and
+`installSsrfGuard` (`ssrf-guard.mjs`) re-resolves every request host and aborts
+internal / private / loopback / CGNAT / metadata addresses. These close the base
+host and all same-host subresources. The residual is a **cross-origin
+subresource** loaded from a host other than the pinned base: the guard resolves
+the host as public and hands the request on with `route.continue()`, after which
+Chromium performs its own resolution to connect. `route.continue()` in
+`playwright-core` exposes no option that pins the connection to the IP the guard
+validated, so a name that answers public then private across those two
+resolutions is the window. It cannot be closed at the route layer without
+aborting **all** cross-origin subresources, which would drop legitimate CDN
+fonts and images from the rendered screenshot. **Status: ACCEPTED, bounded.**
+Reaching it requires an attacker to control both a critiqued page and a rebinding
+DNS name; the base-host and same-host vectors are already closed. The complete
+fix is below-the-browser egress filtering independent of Chromium's resolver — a
+network namespace or host firewall allowlist (the same mechanism named under *No
+network egress control by default*, above, scoped to the capture browser), or a
+userland forward proxy that validates the socket after connect. Choosing the
+mechanism is a per-platform infrastructure decision (macOS vs Linux vs CI, the
+privilege model, and fail-open vs fail-closed when the layer is unavailable), so
+it is tracked as a design item on #17748 rather than shipped here.

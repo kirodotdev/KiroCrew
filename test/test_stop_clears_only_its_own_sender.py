@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew.messaging.commands import stop_running_turn
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.messaging.queue_drain import (
     QUEUED_CHANNEL_KEY,
     QUEUED_OWNER_KEY,
@@ -431,7 +432,6 @@ class TestWhatTheBubbleSaysAfterAPartialStop:
         """
         receipt = QueueReceipt(
             msg_id=7,
-            opened_by=BOB,
             lines=[
                 ReceiptLine(owner=BOB, text="bob asked"),
                 ReceiptLine(owner=ALICE, text="alice secret"),
@@ -676,6 +676,9 @@ _STOP_HANDLERS = (
     ("teams", "transport_dispatch.py", "_handle_stop"),
     ("webex", "transport_dispatch.py", "_handle_stop"),
     ("slack", "events.py", "_route_message"),
+    ("slack", "interactions.py", "_handle_stop_confirm"),
+    ("slack", "interactions.py", "_handle_inline_stop"),
+    ("slack", "handler_runtime/commands.py", "_bang_stop"),
 )
 
 
@@ -707,6 +710,21 @@ class TestEveryStopHandlerNamesItsCaller:
     ) -> None:
         source = _handler_source(channel, module, name)
         assert "clear_queue(session_key)" not in source
+
+    @pytest.mark.parametrize(("channel", "module", "name"), _STOP_HANDLERS)
+    def test_every_stop_turn_call_scopes_or_keeps_the_queue(
+        self, channel: str, module: str, name: str
+    ) -> None:
+        """``stop_turn`` with neither argument is the whole-queue clear in disguise."""
+        tree = ast.parse(_handler_source(channel, module, name))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "stop_turn"
+            ):
+                named = {kw.arg for kw in node.keywords}
+                assert named & {"owned_by", "preserve_queue"}, ast.unparse(node)
 
 
 # ── Slack's inlined !stop ───────────────────────────────────────────────────
@@ -1491,7 +1509,6 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
             queue = ReceiptQueue()
             receipt = QueueReceipt(
                 msg_id=7,
-                opened_by=ALICE,
                 lines=[ReceiptLine(owner=ALICE, text="alice asked")],
             )
             receipt.terminalize(receipt_text(["alice asked"], answering=True))
@@ -1523,7 +1540,6 @@ class TestAnOwedRecordOnlyAddressesTheBubbleItBelongsTo:
         queue, alices_chat, _bobs_chat = asyncio.run(go())
         receipt = queue._receipts["s"]
         assert receipt.opened_on is alices_chat
-        assert receipt.opened_by == ALICE
 
     def test_a_whole_session_cancel_finalizes_through_the_bubbles_own_surface(self) -> None:
         """A clear that names no principal cannot assume its caller is the opener.
@@ -1715,7 +1731,6 @@ class TestATransitionForAnotherChatIsSilentHere:
             callers_chat = _Surface("bob")
             queue._receipts["s"] = QueueReceipt(
                 msg_id=7,
-                opened_by=ALICE,
                 lines=[ReceiptLine(owner=ALICE, text="alice asked", address="fake\x00alice")],
             )
             async with queue.lock:
@@ -1900,3 +1915,131 @@ class TestARefusedTransitionPublishesWithoutWaiting:
         assert chat.sent == [receipt_text(["first"])], "no record is announced for a grow"
         assert queue.has_receipt("s"), "and the bubble is still live"
         assert queue._receipts["s"].texts == ["first", "second"]
+
+
+# ── Slack's other Stop entry points ─────────────────────────────────────────
+
+
+def _real_manager_with_two_members_queued() -> tuple[Any, Any]:
+    """A REAL ``SessionManager`` queue holding one Alice and one Bob message.
+
+    The provider acks the cancel, so ``stop_turn`` takes its soft path and its own
+    queue clear is the only thing that touches the queue.
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.session import SessionManager, _Session
+
+    mgr = SessionManager.__new__(SessionManager)
+    mgr._sessions = {}
+    mgr._lock = asyncio.Lock()
+    mgr._background_tasks = set()
+    cfg = MagicMock()
+    cfg.agent.soft_stop_budget_secs = 5.0
+    mgr._cfg = cfg
+    # No dashboard link: the thread is its own session.
+    mgr._session_map = MagicMock()
+    mgr._session_map.get_session_for_thread.return_value = None
+    provider = AsyncMock()
+    provider.cancel = AsyncMock(return_value="acked")
+    session = _Session(provider=provider)
+    mgr._sessions[_THREAD] = session
+    for user, ts in (("U_ALICE", "101.0"), ("U_BOB", "102.0")):
+        mgr.enqueue(
+            _THREAD, ts, f"{user} asked", force=True, **slack_events._queue_tags(user, "C1")
+        )
+    return mgr, session
+
+
+def _press(handler: str, mgr: Any) -> tuple[list[str], list[int]]:
+    """Bob presses the Stop surface *handler* names, on the shared thread.
+
+    While the cancel is in flight the running turn ends, and its turn-end drain
+    (``_drain_slack_queue``, what ``_on_done`` runs) is tried. Returns the
+    timestamps dispatched once everything settled, and how many had been
+    dispatched by the time that mid-stop drain returned.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from kiro_crew.slack import handler as slack_handler
+    from kiro_crew.slack import interactions
+
+    orch = MagicMock()
+    orch.sessions = mgr
+    orch.slack = AsyncMock()
+    # The handler's ``!stop`` is itself the registered turn on the key; a button
+    # press arrives beside whatever turn is running.
+    orch._session_tasks = {_THREAD: _NeverDone()} if handler == "bang" else {}
+    orch._handler_tasks = set()
+    orch._pending_queue = {}
+    dispatched: list[str] = []
+    seen_mid_stop: list[int] = []
+
+    async def _dispatch(_orch: Any, key: str, ts: str, text: str, kwargs: dict) -> None:
+        dispatched.append(ts)
+
+    async def _turn_ends_during_cancel(**_kw: Any) -> str:
+        await slack_events._drain_slack_queue(orch, _THREAD)
+        # The session layer's wake names the canonical key.
+        await slack_events._drain_slack_queue(orch, canonical_key(_THREAD))
+        await _settle()
+        seen_mid_stop.append(len(dispatched))
+        return "acked"
+
+    mgr._sessions[_THREAD].provider.cancel = AsyncMock(side_effect=_turn_ends_during_cancel)
+
+    async def go() -> None:
+        with (
+            patch.object(interactions, "_orch", orch),
+            patch.object(interactions, "is_allowed_user", return_value=True),
+            patch.object(interactions, "is_owner", return_value=True),
+            patch.object(interactions, "sel", return_value=MagicMock()),
+            patch.object(slack_handler, "sel", return_value=MagicMock()),
+            patch.object(slack_events, "_dispatch_queued", new=_dispatch),
+        ):
+            if handler == "confirm":
+                payload = {"message": {"thread_ts": _THREAD}, "response_url": ""}
+                await interactions._handle_stop_confirm(payload, "C1", "m1", "U_BOB")
+            elif handler in ("inline", "inline-canonical"):
+                # The working message's button can carry ``slack:<ts>`` while
+                # the router keys the turn by the bare ts.
+                value = canonical_key(_THREAD) if handler == "inline-canonical" else _THREAD
+                action = {"value": value}
+                await interactions._handle_inline_stop({}, action, "C1", "m1", "U_BOB")
+            else:
+                await slack_handler._bang_stop(
+                    "!stop", orch.slack, mgr, "C1", _THREAD, "103.0", _THREAD, "U_BOB", None
+                )
+            await _settle()
+
+    asyncio.run(go())
+    return dispatched, seen_mid_stop
+
+
+class TestSlacksOtherStopSurfacesAreTheCallersToo:
+    """The Stop button, the inline Stop and the handler's ``!stop`` drop only Bob's."""
+
+    @pytest.mark.parametrize("handler", ["confirm", "inline"])
+    def test_bobs_button_stop_keeps_alices_message_and_it_runs_next(self, handler: str) -> None:
+        mgr, session = _real_manager_with_two_members_queued()
+        dispatched, _ = _press(handler, mgr)
+        assert dispatched == ["101.0"], "Alice's message runs; Bob's never does"
+        assert not session.queue
+        session.provider.cancel.assert_awaited_once()
+
+    def test_bobs_handler_stop_leaves_alices_message_queued(self) -> None:
+        """The handler's ``!stop`` runs as a registered turn, whose own end drains."""
+        mgr, session = _real_manager_with_two_members_queued()
+        _press("bang", mgr)
+        assert [item[1] for item in session.queue] == ["U_ALICE asked"]
+        session.provider.cancel.assert_awaited_once()
+
+    @pytest.mark.parametrize("handler", ["confirm", "inline", "inline-canonical"])
+    def test_a_turn_ending_mid_stop_starts_nothing_until_the_stop_settles(
+        self, handler: str
+    ) -> None:
+        """Started mid-stop, Alice's message would be aborted if the stop escalated."""
+        mgr, _ = _real_manager_with_two_members_queued()
+        dispatched, seen_mid_stop = _press(handler, mgr)
+        assert seen_mid_stop == [0], "the key reads busy while the stop is in flight"
+        assert dispatched == ["101.0"], "and the release drains it once"

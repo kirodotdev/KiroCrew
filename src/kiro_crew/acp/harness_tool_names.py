@@ -96,6 +96,37 @@ OPENCODE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
     "use_subagent": ("task",),
 }
 
+#: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
+#: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
+#: built-in that does the same job. It names that built-in on a permission event
+#: (``AcpEvent.harness_builtin_tool``) for the deny floor and the read-only proof.
+#: Not a :data:`HARNESS_TOOL_TABLES` row: that would also change which spec and
+#: Hooks-page hooks match a claude call.
+CLAUDE_READ_ONLY_BUILTINS: dict[str, str] = {
+    "Read": "fs_read",
+    "Grep": "grep",
+    "Glob": "glob",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
+#: goose's read-only built-ins a Side Chat session may run, keyed by the pair goose
+#: stamps on a ``tool_call`` frame: ``(_meta.goose.toolCall.extensionName, toolName)``
+#: as written, before any prefix is stripped. Mapped to the kiro-cli built-in that
+#: does the same job, named on the permission event as ``harness_builtin_tool``.
+#: The pair is the ownership proof. goose names an MCP or config extension's tool
+#: ``<extension>__<tool>``, so a server called ``developer`` that serves ``tree``
+#: arrives as ``("developer", "developer__tree")`` and matches nothing here (captured
+#: live on goose 1.50.1). Only the builtin ``developer`` extension Crew loads with
+#: ``--with-builtin`` states a bare name. ``analyze`` is not listed: goose serves it
+#: from an extension named ``analyze``, which the identity-drift refusal turns down
+#: on every goose session. No tool that returns a file's text is listed, because
+#: goose has none apart from its shell.
+GOOSE_READ_ONLY_BUILTINS: dict[tuple[str, str], str] = {
+    ("developer", "tree"): "fs_read",
+    ("developer", "read_image"): "fs_read",
+}
+
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,

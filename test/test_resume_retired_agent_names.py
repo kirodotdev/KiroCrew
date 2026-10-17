@@ -104,7 +104,9 @@ def view_sidecar(tmp_path, monkeypatch):
     from kiro_crew.acp import skill_projection as projection
 
     agents = tmp_path / "agents"
-    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    # The legacy records directory (a build before the side files moved): the
+    # resolver still reads it after this home's own.
+    metadata = projection._legacy_metadata_dir(agents)
     metadata.mkdir(parents=True)
     monkeypatch.setattr(projection, "_VIEW_SOURCES", {})
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: agents)
@@ -200,6 +202,9 @@ def published_view(tmp_path, monkeypatch):
     monkeypatch.setattr(projection.platform_compat, "path_volume_is_remote", lambda path: False)
     monkeypatch.setattr(projection.platform_compat, "first_linked_ancestor", lambda path: None)
     monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    # The pair must still be on disk after the projection is dropped: the drain
+    # under test retires it, not the eager prune a dropped projection runs.
+    monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
         lambda name: {"command": "test-core", "args": []},
@@ -226,7 +231,7 @@ def published_view(tmp_path, monkeypatch):
     view = prepared.agent(AGENT)
     del prepared
     gc.collect()  # the lease goes and no projection in this process holds the view
-    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     # A build that predates the ledger never wrote it; the sidecar is the
     # only record of which agent the view was built from.
     (metadata / projection._VIEW_LEDGER_NAME).unlink()
@@ -243,7 +248,7 @@ def test_a_view_the_real_boot_drain_retired_still_resumes(
 
     agents, view = published_view
     alias = agents / f"{view}.json"
-    sidecar = agents / projection._PROJECTION_METADATA_DIR_NAME / f"{view}.json"
+    sidecar = projection._projection_metadata_dir() / f"{view}.json"
     if before_drain == "alias-removed":
         # A cleanup outside the core (a distribution's boot cleanup, an operator)
         # took the alias and kept the sidecar: the drain's orphan sweep retires it.

@@ -53,6 +53,12 @@ export interface FollowUpDerivation {
    * fresh offer from a stale one after a single-write transcript hydration.
    */
   followUpSourceKey: string | null
+  /**
+   * The marker's select mode: `true` for `[OPTIONS:]` (several picks compose),
+   * `false` for `[OPTION:]` (a pick replaces the previous one). `true` when no
+   * options are on offer, so a caller that ignores it keeps multi-select.
+   */
+  followUpMulti: boolean
 }
 
 /**
@@ -99,8 +105,8 @@ const rowIdentity = (m: ChatMessage, i: number): string =>
  *    `kind="compaction"` (see `chat_utils._broadcast_compaction_result`). It
  *    carries no `[OPTIONS:]` marker, so without this skip it would shadow the
  *    real options-bearing turn it follows and the buttons would vanish after a
- *    compaction. The marker is read from `kind` (live websocket path) or
- *    `meta.kind` (history-reload path).
+ *    compaction. The marker rides in `meta.kind` on both the live websocket
+ *    frame and the history reload; a top-level `kind` is still honoured.
  *
  * A `user`/`queued` row is only a valid stop because it means "the user has
  * answered, so the question is closed". A `user` row whose turn FAILED answered
@@ -137,7 +143,7 @@ export function deriveFollowUpOptions(
   isStreaming: boolean,
   questionPending = false,
 ): FollowUpDerivation {
-  if (isStreaming || questionPending) return { followUpOptions: [], followUpSourceKey: null }
+  if (isStreaming || questionPending) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
   // Errors were already transparent here (no branch matched them); the flag is
   // what makes that transparency mean something.
   let sawError = false
@@ -145,15 +151,15 @@ export function deriveFollowUpOptions(
     const m = messages[i]
     // A deliberate Stop ENDS the turn rather than interrupting it, so the choice is closed
     // by the user's own cancellation — the error licence below must not reach back past it.
-    if (isStopEvent(m)) return { followUpOptions: [], followUpSourceKey: null }
+    if (isStopEvent(m)) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
     // Only a TERMINAL error licenses a crossing. A retry notice means the recovery is
     // already queued, so re-offering the pill would run the same choice a second time.
     if (m.role === 'error') { if (!isRetryNotice(m)) sawError = true; continue }
     // `queued` is an UNCONDITIONAL stop: its queue entry OUTLIVES the error (only a hard
     // kill clears the queue), so re-offering the pill would run the choice a second time.
-    if (m.role === 'queued') return { followUpOptions: [], followUpSourceKey: null }
+    if (m.role === 'queued') return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
     if (m.role === 'user') {
-      if (!sawError) return { followUpOptions: [], followUpSourceKey: null }
+      if (!sawError) return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
       // Cross this failed turn and keep looking. Re-armed only by another error,
       // so a SUCCESSFUL turn further back still stops the scan.
       sawError = false
@@ -167,19 +173,19 @@ export function deriveFollowUpOptions(
       if (parsed.options.length) {
         // A note row still gets an identity: the bar keys its render off it, and a note whose
         // options never re-key would let a later identical note reuse the earlier row's key.
-        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i) }
+        return { followUpOptions: parsed.options, followUpSourceKey: rowIdentity(m, i), followUpMulti: parsed.multi }
       }
       continue
     }
     if (m.role === 'assistant' && m.content) {
-      const { options } = parseOptions(m.content)
+      const { options, multi } = parseOptions(m.content)
       // A failed turn can flush the text it streamed as a real assistant row before the
       // error, and that option-less row shadowed the question exactly as the `user` row did.
       // Crossing does NOT consume the error licence: the `user` row below still needs it.
       if (!options.length && sawError) continue
       const followUpSourceKey = options.length > 0 ? rowIdentity(m, i) : null
-      return { followUpOptions: options, followUpSourceKey }
+      return { followUpOptions: options, followUpSourceKey, followUpMulti: options.length > 0 ? multi : true }
     }
   }
-  return { followUpOptions: [], followUpSourceKey: null }
+  return { followUpOptions: [], followUpSourceKey: null, followUpMulti: true }
 }

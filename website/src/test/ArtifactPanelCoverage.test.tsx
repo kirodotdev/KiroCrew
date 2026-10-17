@@ -57,6 +57,7 @@ interface LayerArgs {
   sidebarClassName?: string
   sidebarStyle?: CSSProperties
   confirmDiscardDraft?: () => Promise<boolean>
+  submitSentIds?: ReadonlySet<string>
 }
 const layerArgs: LayerArgs[] = []
 /** Which layer's composer received each submit (`stacked` / `full`), with the text. */
@@ -76,6 +77,7 @@ const draftSlotClears: string[] = []
 // sizing — so each renders a distinguishable marker.
 vi.mock('../components/FileArtifactComments', async () => {
   const { useState } = await import('react')
+  const { pendingSubmitComments } = await import('../lib/commentFilter')
   function useFileArtifactComments(args: LayerArgs) {
     layerArgs.push(args)
     const [sidebarOpen, setSidebarOpen] = useState(args.sidebarDefaultOpen ?? true)
@@ -101,6 +103,8 @@ vi.mock('../components/FileArtifactComments', async () => {
       sidebarOpen,
       commentCount: stubComments.length,
       comments: stubComments,
+      // The real hook's batch rule, so the panel's count runs it for real.
+      pendingSubmit: args.submitSentIds ? pendingSubmitComments(stubComments, args.submitSentIds) : [],
       activeCommentId: null,
       scrollNonce: 0,
       unreadRootIds: new Set<string>(),
@@ -319,9 +323,8 @@ describe('ArtifactPanel', () => {
 
     it('gives a json body a Copy-only toolbar and no composer, since no anchor resolver can map its selections', async () => {
       // The artifact page allows anchored comments on markdown and text only and
-      // the panel draws the same line — but the Copy row the panel shipped
-      // before the composer stays: on touch there is no Cmd/Ctrl+C, so without
-      // it a selection in a json or svg artifact would have no reachable copy.
+      // the panel draws the same line — but on a pointer device the Copy row
+      // the panel shipped before the composer stays.
       vi.mocked(api.artifact).mockResolvedValue(mkArtifact({ kind: 'json', content: '{"a":1}' }))
       renderPanel({ kind: 'json', content: '{"a":1}' })
       await screen.findByTestId('body-native')
@@ -330,6 +333,36 @@ describe('ArtifactPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'selection copy' }))
       expect(copyToClipboard).toHaveBeenCalledWith(SELECTED_TEXT)
       expect(screen.queryByRole('button', { name: 'composer submit' })).toBeNull()
+    })
+
+    describe('on a touch device', () => {
+      // The platform draws its own handles and Copy callout around a touch
+      // selection, so a copy-only row floated there would take their taps.
+      beforeEach(() => {
+        vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+          matches: query === '(pointer: coarse)' || query === '(hover: none)',
+          media: query, onchange: null,
+          addListener: () => {}, removeListener: () => {},
+          addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+        }) as MediaQueryList)
+      })
+      afterEach(() => { vi.mocked(window.matchMedia).mockRestore() })
+
+      it('mounts no copy-only toolbar over a json body, inline or fullscreen', async () => {
+        vi.mocked(api.artifact).mockResolvedValue(mkArtifact({ kind: 'json', content: '{"a":1}' }))
+        renderPanel({ kind: 'json', content: '{"a":1}' })
+        await screen.findByTestId('body-native')
+        expect(screen.queryByTestId('selection-toolbar')).toBeNull()
+        const dialog = await enterFullscreen()
+        expect(within(dialog).getAllByTestId('body-native').length).toBeGreaterThan(0)
+        expect(screen.queryByTestId('selection-toolbar')).toBeNull()
+      })
+
+      it('keeps the comment toolbar on a markdown body', async () => {
+        renderPanel()
+        await screen.findByTestId('body-native')
+        expect(screen.getByTestId('selection-toolbar').getAttribute('data-has-composer')).toBe('true')
+      })
     })
 
     it('renders the iframe body for a widget and keeps the toolbar for bridge selections', async () => {
@@ -660,6 +693,29 @@ describe('ArtifactPanel', () => {
       expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull()
     })
 
+    it('hands no sent-id set to the comment layers without a submit channel', async () => {
+      // No Submit bar means nothing for a row marker to answer to.
+      stubComments = [mkComment()]
+      renderPanel()
+      await screen.findByText(NAME)
+      expect(layerArgs.length).toBeGreaterThan(0)
+      expect(layerArgs.every(a => a.submitSentIds === undefined)).toBe(true)
+    })
+
+    it('hands both comment layers the sent-id set the count is filtered by', async () => {
+      // The layers mark rows from this set, so after a submit it must carry the
+      // batch: a row still marked after its comment went would contradict the bar.
+      const onSubmitComments = vi.fn()
+      stubComments = [mkComment()]
+      renderPanel({ onSubmitComments })
+      await screen.findByText(NAME)
+      const latest = () => layerArgs.slice(-2)
+      expect(latest().map(a => a.sidebarClassName ? 'stacked' : 'full').sort()).toEqual(['full', 'stacked'])
+      expect(latest().every(a => a.submitSentIds instanceof Set && a.submitSentIds.size === 0)).toBe(true)
+      fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+      await waitFor(() => expect(latest().every(a => a.submitSentIds?.has(mkComment().id))).toBe(true))
+    })
+
     it('hides the submit bar when every comment is agent-authored', async () => {
       stubComments = [mkComment({ id: 'a1', thread_id: 'a1', is_agent: true, author: 'kiro' })]
       renderPanel({ onSubmitComments: vi.fn() })
@@ -684,6 +740,9 @@ describe('ArtifactPanel', () => {
       expect(message).toContain(`${NAME} (${SLUG})`)
       expect(message).toContain('tighten this heading')
       expect(message).not.toContain('agent note')
+      // The count (second arg) is the number of human comments in the batch,
+      // so the "N comments sent" info banner can show the right number.
+      expect(onSubmitComments.mock.calls[0][1]).toBe(1)
 
       // The batch is marked sent, so the bar clears instead of re-offering the
       // same comments on the next Submit.

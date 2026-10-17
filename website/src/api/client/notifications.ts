@@ -5,7 +5,7 @@
 
 import type { ClientTransport } from './transport'
 
-export function createNotificationsEndpoints({ post, put, del, j }: ClientTransport) {
+export function createNotificationsEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const inbox = {
     // Notifications
     notifications: () => fetch('/api/notifications').then(j),

@@ -37,12 +37,12 @@ def _migrate(config_dir: Path, ep: Path, **kwargs):
         return migrate_env_secrets(**kwargs)
 
 
-# A migratable Jira token + a non-Jira credential (must NOT migrate) + an
-# unrecognized operator setting.
+# A migratable Jira token + a credential a child reads from its environment
+# (must NOT migrate) + an unrecognized operator setting.
 _ENV_BODY = (
     "# comment line\n"
     "JIRA_API_TOKEN=plaintext-token\n"
-    "SLACK_BOT_TOKEN=xoxb-123\n"
+    "KIRO_API_KEY=k-abc\n"
     "HTTP_PROXY=http://proxy.local:8080\n"
     "\n"
 )
@@ -85,27 +85,77 @@ def test_apply_writes_vault_and_rewrites_env(tmp_path: Path) -> None:
 
     text = ep.read_text()
     assert "JIRA_API_TOKEN=secret://JIRA_API_TOKEN" in text
-    # The Jira plaintext is gone; the non-Jira credential and unrecognized key
-    # are preserved verbatim (their consumers are not vault-aware yet).
+    # The Jira plaintext is gone; the child-read credential and unrecognized
+    # key are preserved verbatim (a child cannot resolve a reference).
     assert "plaintext-token" not in text
-    assert "SLACK_BOT_TOKEN=xoxb-123" in text
+    assert "KIRO_API_KEY=k-abc" in text
     assert "HTTP_PROXY=http://proxy.local:8080" in text
     assert "# comment line" in text
 
 
-def test_non_jira_credential_not_migrated(tmp_path: Path) -> None:
-    """A non-Jira credential key is left untouched (consumer not vault-aware)."""
+def test_child_read_credentials_and_identifiers_not_migrated(tmp_path: Path) -> None:
+    """A credential a child reads from its environment, and an identifier, stay put."""
     config_dir = tmp_path / "config"
-    ep = _write_env(tmp_path, "SLACK_BOT_TOKEN=xoxb-123\nKIRO_API_KEY=k-abc\n")
+    ep = _write_env(
+        tmp_path,
+        "KIRO_API_KEY=k-abc\nAZURE_DEVOPS_EXT_PAT=pat-placeholder\nKIROCREW_OWNER_ID=U0123ABC456\n",
+    )
 
     report = _migrate(config_dir, ep, dry_run=False)
 
     assert report.migrated == []
     assert SecretVault(config_dir).list_names() == []
     text = ep.read_text()
-    assert "SLACK_BOT_TOKEN=xoxb-123" in text
     assert "KIRO_API_KEY=k-abc" in text
+    assert "AZURE_DEVOPS_EXT_PAT=pat-placeholder" in text
+    assert "KIROCREW_OWNER_ID=U0123ABC456" in text
     assert "secret://" not in text
+
+
+def test_channel_secrets_migrate_and_identifiers_stay(tmp_path: Path, monkeypatch) -> None:
+    """A channel secret moves to the vault; its app id stays a plaintext line."""
+    for key in ("SLACK_BOT_TOKEN", "MICROSOFT_APP_PASSWORD", "MICROSOFT_APP_ID"):
+        monkeypatch.delenv(key, raising=False)
+    config_dir = tmp_path / "config"
+    ep = _write_env(
+        tmp_path,
+        "SLACK_BOT_TOKEN=xoxb-placeholder\n"
+        "MICROSOFT_APP_ID=app-placeholder\n"
+        "MICROSOFT_APP_PASSWORD=pw-placeholder\n",
+    )
+
+    report = _migrate(config_dir, ep, dry_run=False)
+
+    assert sorted(report.migrated) == ["MICROSOFT_APP_PASSWORD", "SLACK_BOT_TOKEN"]
+    vault = SecretVault(config_dir)
+    assert vault.get("SLACK_BOT_TOKEN").reveal() == "xoxb-placeholder"
+    assert vault.get("MICROSOFT_APP_PASSWORD").reveal() == "pw-placeholder"
+    text = ep.read_text()
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in text
+    assert "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in text
+    assert "MICROSOFT_APP_ID=app-placeholder" in text
+    assert "xoxb-placeholder" not in text and "pw-placeholder" not in text
+
+    # A second apply finds only references and changes nothing.
+    again = _migrate(config_dir, ep, dry_run=False)
+    assert again.migrated == []
+    assert sorted(again.already_referenced) == ["MICROSOFT_APP_PASSWORD", "SLACK_BOT_TOKEN"]
+    assert ep.read_text() == text
+
+
+def test_channel_secret_overridden_by_the_environment_is_skipped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A live environment value is the effective token, so the stale line stays."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "live-placeholder")
+    config_dir = tmp_path / "config"
+    ep = _write_env(tmp_path, "TELEGRAM_BOT_TOKEN=stale-placeholder\n")
+
+    report = _migrate(config_dir, ep, dry_run=False)
+
+    assert report.migrated == []
+    assert ep.read_text() == "TELEGRAM_BOT_TOKEN=stale-placeholder\n"
+    assert SecretVault(config_dir).list_names() == []
 
 
 def test_source_file_not_deleted(tmp_path: Path) -> None:
@@ -751,13 +801,13 @@ def test_vault_delete_during_held_lock_cannot_strand_plaintext(tmp_path: Path, m
         events.append("atomic_write")
         real_atomic(path, content, **kwargs)
 
-    import kiro_crew.atomic_write as _atomic_mod
+    import kiro_crew.hidden_leaf_staging as _staging_mod
     import kiro_crew.secrets.migrate as _migrate_mod
 
-    real_atomic = _atomic_mod.atomic_write
+    real_atomic = _staging_mod.publish_env
     monkeypatch.setattr(SecretVault, "hold_cross_process_lock", _tracking_hold)
     monkeypatch.setattr(SecretVault, "get", _tracking_get)
-    monkeypatch.setattr(_migrate_mod, "atomic_write", _tracking_atomic_write)
+    monkeypatch.setattr(_migrate_mod, "publish_env", _tracking_atomic_write)
 
     _migrate(config_dir, ep, dry_run=False)
 
@@ -821,7 +871,7 @@ def test_atomic_write_failure_rolls_back_vault_entries(tmp_path: Path, monkeypat
     def _boom(path, data, **kw):
         raise OSError("disk full")
 
-    monkeypatch.setattr("kiro_crew.secrets.migrate.atomic_write", _boom)
+    monkeypatch.setattr("kiro_crew.secrets.migrate.publish_env", _boom)
 
     with pytest.raises(OSError):
         _migrate(config_dir, ep, dry_run=False)
@@ -897,7 +947,7 @@ def test_rollback_does_not_delete_concurrently_overwritten_vault_entry(
     def _boom(path, data, **kw):
         raise OSError("disk full")
 
-    monkeypatch.setattr("kiro_crew.secrets.migrate.atomic_write", _boom)
+    monkeypatch.setattr("kiro_crew.secrets.migrate.publish_env", _boom)
 
     # Patch _compare_and_delete_sync to return False (simulating concurrent
     # overwrite detected: stored entry dict differs from expected_entry) and
@@ -1002,7 +1052,7 @@ def test_rollback_deletes_unchanged_vault_entry(
     def _boom(path, data, **kw):
         raise OSError("disk full")
 
-    monkeypatch.setattr("kiro_crew.secrets.migrate.atomic_write", _boom)
+    monkeypatch.setattr("kiro_crew.secrets.migrate.publish_env", _boom)
 
     with pytest.raises(OSError):
         _migrate(config_dir_path, ep, dry_run=False)
@@ -1034,7 +1084,7 @@ def test_rollback_no_deadlock_under_concurrent_flock(
     def _boom(path, data, **kw):
         raise OSError("disk full")
 
-    monkeypatch.setattr("kiro_crew.secrets.migrate.atomic_write", _boom)
+    monkeypatch.setattr("kiro_crew.secrets.migrate.publish_env", _boom)
 
     # Call the rollback path directly (no background worker): the fixed
     # _compare_and_delete_sync acquires the cross-process flock exactly once
@@ -1063,11 +1113,11 @@ def test_rollback_delete_failure_records_orphaned_key_and_propagates_error(
     ep = tmp_path / ".env"
     ep.write_text("JIRA_API_TOKEN=secret-val\n")
 
-    # Make atomic_write fail so the rollback path is exercised.
+    # Make the .env publish fail so the rollback path is exercised.
     def _boom(path, data, **kw):
         raise OSError("disk full")
 
-    monkeypatch.setattr("kiro_crew.secrets.migrate.atomic_write", _boom)
+    monkeypatch.setattr("kiro_crew.secrets.migrate.publish_env", _boom)
 
     # Make _compare_and_delete_sync raise to simulate ENOSPC / I/O error.
     def _raise_enospc(self, name, expected):

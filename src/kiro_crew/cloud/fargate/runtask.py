@@ -135,7 +135,23 @@ DERIVED_ENV: frozenset[str] = frozenset(
 #: a value that would defeat something the definition already asserts:
 #: ``SMC_BUNDLE_DIR`` redirects which bundle the crew-name check reads, and
 #: ``SMC_FRONT_PORT`` moves the listener away from the declared ``portMappings``.
-REFUSED_ENV: frozenset[str] = frozenset({"SMC_BUNDLE_DIR", "SMC_FRONT_PORT"} | set(CREDENTIAL_ENV))
+#: ``SMC_FRONT_BIND`` and ``SMC_REQUIRE_AUTH_ALL_ROUTES`` are refused on one
+#: ground: each decides how the crew's listener is reached, and on this lane the
+#: task's network placement -- the operator's own subnets behind their own security
+#: groups -- has already decided who can reach the port. A caller may not override
+#: either, in either direction: a supplied bind can leave the declared
+#: ``portMappings`` answering nothing, and a supplied auth posture can only
+#: disagree with the placement this request itself asserts. A lane that needs
+#: another answer sets it on the image it builds, where its placement is known.
+REFUSED_ENV: frozenset[str] = frozenset(
+    {
+        "SMC_BUNDLE_DIR",
+        "SMC_FRONT_PORT",
+        "SMC_FRONT_BIND",
+        "SMC_REQUIRE_AUTH_ALL_ROUTES",
+    }
+    | set(CREDENTIAL_ENV)
+)
 
 #: The closed set a caller may not name. Everything outside it is the caller's:
 #: a bucket, a route prefix, a log level, whatever the deploy track passes.

@@ -820,6 +820,143 @@ describe('InstancesViewport', () => {
     })
   })
 
+  describe('image copy for a pane (mc-clipboard-image, #14854)', () => {
+    // The pane's own async Clipboard API is refused by this document's
+    // `clipboard-write=(self)` header, and an image has no execCommand path, so
+    // this frame writes on the pane's behalf -- but only for the pane's own
+    // frame, only while it is on screen, and only right after a gesture INSIDE
+    // it (live activation + the host's focus on that iframe).
+    const nav = navigator as Navigator & { userActivation?: unknown }
+    let savedActivation: PropertyDescriptor | undefined
+    let write: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      savedActivation = Object.getOwnPropertyDescriptor(nav, 'userActivation')
+      Object.defineProperty(nav, 'userActivation', { configurable: true, value: { isActive: true } })
+      class FakeClipboardItem { constructor(public items: Record<string, unknown>) {} }
+      vi.stubGlobal('ClipboardItem', FakeClipboardItem)
+      write = vi.fn(async () => {})
+      Object.defineProperty(nav, 'clipboard', { configurable: true, value: { write } })
+    })
+    afterEach(() => {
+      if (savedActivation) Object.defineProperty(nav, 'userActivation', savedActivation)
+      else delete (nav as { userActivation?: unknown }).userActivation
+      delete (nav as { clipboard?: unknown }).clipboard
+      delete (document as { activeElement?: unknown }).activeElement
+      vi.unstubAllGlobals()
+    })
+
+    const frameFor = (port: number) =>
+      [...document.querySelectorAll('iframe')].find(f => f.src.includes(`:${port}`)) as HTMLIFrameElement
+    const send = (data: unknown, port: number, source: Window | null) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent('message', {
+          data, origin: `http://127.0.0.1:${port}`, source,
+        }))
+      })
+    // happy-dom never loads iframes or moves focus into one, so the host's
+    // focused element is set directly: under test is the gate, not focus.
+    const focusOn = (el: Element | null) =>
+      Object.defineProperty(document, 'activeElement', { configurable: true, get: () => el })
+    async function renderTwoPanes() {
+      mockConnectedCd1()
+      const store = createTestStore({
+        instances: {
+          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok2' } },
+          activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
+        },
+      })
+      renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(frameFor(7778)).toBeDefined())
+      await waitFor(() => expect(frameFor(7779)).toBeDefined())
+      const fakeWindow = (el: HTMLIFrameElement) => {
+        const w = { postMessage: vi.fn() } as unknown as Window
+        Object.defineProperty(el, 'contentWindow', { configurable: true, get: () => w })
+        return w
+      }
+      const w1 = fakeWindow(frameFor(7778))
+      const w2 = fakeWindow(frameFor(7779))
+      return { store, w1, w2, post1: vi.mocked(w1.postMessage), post2: vi.mocked(w2.postMessage) }
+    }
+    const pngBlob = () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })
+    const req = (id: string, over: Record<string, unknown> = {}) =>
+      ({ type: 'mc-clipboard-image', v: 1, id, png: pngBlob(), ...over })
+    const result = (id: string, ok: boolean) => ({ type: 'mc-clipboard-image-result', v: 1, id, ok })
+
+    it('advertises the relay in the model it sends each pane', async () => {
+      const { w1, post1 } = await renderTwoPanes()
+      await send({ type: 'mc-embedded-ready', v: 1 }, 7778, w1)
+      expect(post1).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mc-host-model', clipboardRelay: 1 }), 'http://localhost:7778',
+      )
+    })
+
+    it('writes the image for a gesture in the active pane and answers at its exact origin', async () => {
+      const { w1, post1 } = await renderTwoPanes()
+      focusOn(frameFor(7778))
+      await send(req('c-1', { text: 'caption' }), 7778, w1)
+      await waitFor(() => expect(post1).toHaveBeenCalledWith(result('c-1', true), 'http://127.0.0.1:7778'))
+      expect(write).toHaveBeenCalledOnce()
+      const item = (write.mock.calls[0][0] as Array<{ items: Record<string, unknown> }>)[0].items
+      expect(Object.keys(item).sort()).toEqual(['image/png', 'text/plain'])
+      for (const call of post1.mock.calls) expect(call[1]).not.toBe('*')
+    })
+
+    it('refuses without a gesture inside that pane, says so, and journals which check refused', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+      const { w1, post1 } = await renderTwoPanes()
+      // Activation without focus on the pane: the click was in the host itself
+      // (its composer, its tab bar), not in the pane asking.
+      focusOn(document.body)
+      await send(req('c-host-click'), 7778, w1)
+      // Focus on the pane but no live activation: the pane posting on its own,
+      // or an image render that outlived the click's activation window.
+      focusOn(frameFor(7778))
+      Object.defineProperty(nav, 'userActivation', { configurable: true, value: { isActive: false } })
+      await send(req('c-no-gesture'), 7778, w1)
+      expect(write).not.toHaveBeenCalled()
+      expect(post1).toHaveBeenCalledWith(result('c-host-click', false), 'http://127.0.0.1:7778')
+      expect(post1).toHaveBeenCalledWith(result('c-no-gesture', false), 'http://127.0.0.1:7778')
+      const journal = info.mock.calls.map(c => String(c[0])).filter(l => l.includes('clipboard-relay-refused'))
+      expect(journal).toEqual([
+        '[pane] clipboard-relay-refused id=cd-1 activePane=true activation=true focusOnPane=false',
+        '[pane] clipboard-relay-refused id=cd-1 activePane=true activation=false focusOnPane=true',
+      ])
+    })
+
+    it('answers false and journals it when the host write itself is refused', async () => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+      write.mockRejectedValue(new DOMException('no', 'NotAllowedError'))
+      const { w1, post1 } = await renderTwoPanes()
+      focusOn(frameFor(7778))
+      await send(req('c-write-refused'), 7778, w1)
+      await waitFor(() => expect(post1).toHaveBeenCalledWith(result('c-write-refused', false), 'http://127.0.0.1:7778'))
+      expect(info.mock.calls.map(c => String(c[0]))).toContain('[pane] clipboard-relay-write-failed id=cd-1')
+    })
+
+    it('refuses a background pane even with focus on its frame', async () => {
+      const { w2, post2 } = await renderTwoPanes()
+      focusOn(frameFor(7779))
+      await send(req('c-bg'), 7779, w2)
+      expect(write).not.toHaveBeenCalled()
+      expect(post2).toHaveBeenCalledWith(result('c-bg', false), 'http://127.0.0.1:7779')
+    })
+
+    it('ignores a request from the wrong frame, an unknown origin or a malformed payload', async () => {
+      const { w1, w2, post1, post2 } = await renderTwoPanes()
+      focusOn(frameFor(7778))
+      // cd-1's origin, but posted from another frame's window.
+      await send(req('c-spoof'), 7778, w2)
+      // A loopback port this host has no warm pane on.
+      await send(req('c-stranger'), 7790, w1)
+      // Right frame, but not a PNG / unknown version.
+      await send(req('c-text', { png: new Blob(['x'], { type: 'text/plain' }) }), 7778, w1)
+      await send(req('c-v2', { v: 2 }), 7778, w1)
+      expect(write).not.toHaveBeenCalled()
+      expect(post1).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-clipboard-image-result' }), expect.anything())
+      expect(post2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'mc-clipboard-image-result' }), expect.anything())
+    })
+  })
+
   it('applies the incoming pane\'s chrome state on switch instead of the outgoing one\'s', async () => {
     // A switch necessarily happens from a PEEKED header — the tab bar lives on
     // it — so the window store holds `true` at that moment. The incoming pane's
@@ -1779,5 +1916,89 @@ describe('InstancesViewport', () => {
       await waitFor(() => expect(store.getState().instances.warm['cd-2']?.port).toBe(50002))
       expect(store.getState().instances.warm['cd-2']?.token).toBe('new-tok')
     })
+  })
+})
+
+// #16009: a reconnect lands the pane on a new port, so its own origin-scoped
+// storage is empty. The hub keeps the pane's last chat and hands it back.
+describe('InstancesViewport last-chat hint (#16009)', () => {
+  beforeEach(() => { localStorage.clear() })
+
+  const paneSrc = () => (document.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src') ?? ''
+  const post = (data: unknown, origin: string) =>
+    act(async () => { window.dispatchEvent(new MessageEvent('message', { data, origin })) })
+  const renderWarm = () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: [{
+        id: 'cd-1', name: 'Cloud One', ssh_host: 'cd-1-alias', remote_port: 7777, local_port: 7778,
+        ttl: '20h', remote_bin: '',
+        status: { instance_id: 'cd-1', state: 'connected', local_port: 7778, remote_port: 7777 },
+      }],
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    return store
+  }
+
+  it('reopens the chat the pane last showed when the tunnel comes back on a new port', async () => {
+    const store = renderWarm()
+    await waitFor(() => expect(paneSrc()).toContain(':7778/'))
+    const before = paneSrc()
+    await post({ source: 'kirocrew', type: 'mc-pane-active-slot', key: 'chat-2' }, 'http://127.0.0.1:7778')
+    // Remembering must not reload the pane it came from.
+    expect(paneSrc()).toBe(before)
+    expect(before).not.toContain('lastSid')
+
+    await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50002, token: 'tok2' } })) })
+    await waitFor(() => expect(paneSrc()).toContain(':50002/'))
+    expect(paneSrc()).toContain('lastSid=chat-2')
+  })
+
+  it('keeps one last chat per crew when two panes report different chats', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      instances: ['cd-1', 'cd-2'].map((id, i) => ({
+        id, name: id, ssh_host: `${id}-alias`, remote_port: 7777, local_port: 7778 + i,
+        ttl: '20h', remote_bin: '',
+        status: { instance_id: id, state: 'connected', local_port: 7778 + i, remote_port: 7777 },
+      })),
+      warm_set_cap: 5,
+    })
+    const store = createTestStore({
+      instances: {
+        warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok' } },
+        activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
+      },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    const srcs = () => [...document.querySelectorAll('iframe')].map(f => f.getAttribute('src') ?? '')
+    await waitFor(() => expect(srcs().length).toBe(2))
+    await post({ type: 'mc-pane-active-slot', key: 'chat-a' }, 'http://127.0.0.1:7778')
+    await post({ type: 'mc-pane-active-slot', key: 'chat-b' }, 'http://127.0.0.1:7779')
+
+    await act(async () => {
+      store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50001, token: 't1' } }))
+      store.dispatch(setWarm({ id: 'cd-2', conn: { port: 50002, token: 't2' } }))
+    })
+    await waitFor(() => {
+      const s = srcs()
+      expect(s.find(x => x.includes(':50001/'))).toContain('lastSid=chat-a')
+      expect(s.find(x => x.includes(':50002/'))).toContain('lastSid=chat-b')
+    })
+  })
+
+  it('ignores the relay from an origin that is not a warm pane, and a malformed key', async () => {
+    const store = renderWarm()
+    await waitFor(() => expect(paneSrc()).toContain(':7778/'))
+    await post({ type: 'mc-pane-active-slot', key: 'chat-2' }, 'http://127.0.0.1:9999')
+    await post({ type: 'mc-pane-active-slot', key: 'chat-2' }, 'https://evil.example')
+    await post({ type: 'mc-pane-active-slot', key: 'a&token=x' }, 'http://127.0.0.1:7778')
+    await post({ type: 'mc-pane-active-slot', key: 42 }, 'http://127.0.0.1:7778')
+
+    await act(async () => { store.dispatch(setWarm({ id: 'cd-1', conn: { port: 50002, token: 'tok2' } })) })
+    await waitFor(() => expect(paneSrc()).toContain(':50002/'))
+    expect(paneSrc()).not.toContain('lastSid')
   })
 })

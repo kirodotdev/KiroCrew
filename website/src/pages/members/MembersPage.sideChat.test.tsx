@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
@@ -19,12 +18,17 @@ vi.mock('../../api/client', () => ({
     // The roster's team grouping reads the team list; "no teams" keeps the
     // list flat, which is the shape every case here was written against.
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
+    // The warm greeting's read of the crewmate's work ledger. No ledger is the
+    // state every case not about the greeting wants: the chat opens bare.
+    crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
+    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
     sessionCrewLogProjections: vi.fn(() => Promise.resolve({ folds: {}, resolved: true, writesDrained: true })),
-    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    autonudgeForSlot: vi.fn(() => Promise.resolve({ enabled: true, loop: null })),
+    monitorForSlot: vi.fn(() => Promise.resolve({ enabled: true, monitor: null })),
   },
 }))
 
@@ -106,8 +110,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   verdicts.length = 0
   localStorage.clear()
-  // The Dashboard tab is a Feature Preview; these cases pin the strip with it on.
-  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   __resetPanelTabs()
   setWindowWidth(WIDE_WINDOW)
 })

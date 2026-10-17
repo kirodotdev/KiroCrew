@@ -10,6 +10,14 @@ from pathlib import Path
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.config.loader as loader
+from kiro_crew.secrets import SecretVault
+
+
+def _vault_value(env: Path, key: str) -> str | None:
+    """The vault secret a channel save stored beside *env* under *key*."""
+    stored = SecretVault(env.parent).get(key)
+    return stored.reveal() if stored is not None else None
+
 
 BOT_ID = "wxb-1234567890abcdef"
 SECRET = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd"
@@ -89,10 +97,11 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     assert body["restart_required"] is True
     env_text = env.read_text(encoding="utf-8")
     assert f"WECOM_BOT_ID={BOT_ID}" in env_text
-    assert f"WECOM_SECRET={SECRET}" in env_text
+    assert "WECOM_SECRET=secret://WECOM_SECRET" in env_text
+    assert _vault_value(env, "WECOM_SECRET") == SECRET
     assert (env.stat().st_mode & 0o077) == 0
     assert os.environ["WECOM_BOT_ID"] == BOT_ID
-    assert os.environ["WECOM_SECRET"] == SECRET
+    assert os.environ["WECOM_SECRET"] == "secret://WECOM_SECRET"
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert cfg["wecom"]["enabled"] is True
     assert cfg["wecom"]["allowed_users"] == [
@@ -212,7 +221,8 @@ def test_env_line_paste_is_stripped(tmp_path: Path, monkeypatch) -> None:
     )
     status, _body = status_body
     assert status == 200
-    assert f"WECOM_SECRET={SECRET}\n" in env.read_text(encoding="utf-8")
+    assert "WECOM_SECRET=secret://WECOM_SECRET\n" in env.read_text(encoding="utf-8")
+    assert _vault_value(env, "WECOM_SECRET") == SECRET
     assert f"WECOM_SECRET=WECOM_SECRET={SECRET}" not in env.read_text(encoding="utf-8")
 
 
@@ -575,3 +585,20 @@ def test_set_config_write_failure_preserves_process_only_credential(
     assert SECRET not in env_text, ".env must not be written when config write fails (WECOM_SECRET)"
     monkeypatch.delenv("WECOM_BOT_ID", raising=False)
     monkeypatch.delenv("WECOM_SECRET", raising=False)
+
+
+def test_save_survives_wrong_typed_stored_allowed_users(tmp_path: Path, monkeypatch) -> None:
+    """A hand-edited non-list ``allowed_users`` in config.json degrades to
+    empty, so the saver's comprehension and ``list(...)`` comparison do not run
+    on a non-iterable and the save still applies."""
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"wecom": {"allowed_users": 123}}), encoding="utf-8")
+    (status_body, _env) = _client_put(
+        mod, monkeypatch, tmp_path, {"allowed_user_ids": ["zhangsan"]}
+    )
+    status, _ = status_body
+    assert status == 200
+    saved = json.loads(cfg.read_text(encoding="utf-8"))
+    assert saved["wecom"]["allowed_users"] == [{"userid": "zhangsan", "name": ""}]

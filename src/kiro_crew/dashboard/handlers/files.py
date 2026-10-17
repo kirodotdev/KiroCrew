@@ -4,7 +4,7 @@ Routes, the handlers package and tests import and patch every file handler throu
 this module. The handler families live in the ``file_api`` owners -- ``uploads``,
 ``workspaces``, ``pinned_io``, ``transfer``, ``office_preview``, ``sheet``,
 ``search``, ``path_complete``, ``grep``, ``browse``, ``project_dirs``,
-``git_panel``, ``project_tree`` and ``dashboard_config`` -- and ``file_api.compose``
+``git_panel``, ``project_tree`` and ``dashboard_config`` -- and ``_facade_compose.compose``
 runs them on this module's globals, so a patch of ``files.<name>`` reaches them.
 
 This module keeps the imports, constants and seams the owners read, the
@@ -39,6 +39,7 @@ import shutil  # noqa: F401
 import stat as _stat_mod  # noqa: F401
 import subprocess
 import sys
+import tempfile
 import threading  # noqa: F401
 import time
 import urllib.parse
@@ -53,6 +54,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
 from kiro_crew import executors, file_delivery_consent, pinned_fs, platform_compat  # noqa: F401
+from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
     open_access_control_source,
@@ -75,7 +77,6 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERNS_MAX,
     link_pattern_url_ok,
 )
-from kiro_crew.dashboard import file_api as _file_api
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
@@ -152,6 +153,7 @@ from kiro_crew.dashboard.file_api.path_complete import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _CheckedFile,
+    _classify_request_paths,
     _file_write_blocking,
     _open_checked,
     _open_checked_file,
@@ -162,6 +164,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _read_request_path,
     _resolve_project_relative,
     _TextRead,
+    api_file_kinds,
 )
 from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     _git_head_path,
@@ -183,9 +186,14 @@ from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
     _project_tree_git_layout,
     _project_tree_identity,
     _project_tree_is_link,
+    _project_tree_listing,
+    _project_tree_pin,
+    _project_tree_rebase,
     _project_tree_scandir,
     _project_tree_scandir_entries,
+    _project_tree_subdir,
     _project_tree_walk,
+    _project_tree_walk_pinned,
     _ProjectTreeFolderMoved,
     api_project_tree,
 )
@@ -214,6 +222,7 @@ from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
 from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
+    _log_upload_diagnostic,
     _resolve_raster_ext,
     _sniff_media_type,
     _stream_media_part,
@@ -237,13 +246,28 @@ from kiro_crew.dashboard.handlers._shared import (
 )
 from kiro_crew.dashboard.handlers.messaging import _resolve_session_target
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.session_folders import (  # noqa: F401
+    SESSION_FOLDER_ROOT_MAX_CHARS,
+    validate_session_folder_root,
+)
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import (  # noqa: F401
     VALID_MEMORY_MODES,
     DashboardState,
     append_and_surface,
+    load_window_off_loop,
+)
+from kiro_crew.dashboard.upload_limits import (  # noqa: F401
+    bytes_to_mb_figure,
+    knowledge_ceiling_bytes,
+    upload_max_bytes,
 )
 from kiro_crew.doc_blocks import extract_blocks  # noqa: F401
 from kiro_crew.doc_parser import extract_slides, extract_text, join_slides  # noqa: F401
+from kiro_crew.git_config_hooks import (  # noqa: F401
+    ConfigHookScanError,
+    config_hook_disable_args_sandboxed,
+)
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope  # noqa: F401
 from kiro_crew.github_runner import validate_provider_executable  # noqa: F401
 from kiro_crew.hooks import (  # noqa: F401
@@ -255,6 +279,7 @@ from kiro_crew.hooks import (  # noqa: F401
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+from kiro_crew.owner_only_files import ensure_directory  # noqa: F401 - owner: uploads
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments  # noqa: F401
 from kiro_crew.platform import binary_content_is_flagged
 from kiro_crew.platform import redact_via_context as redact
@@ -267,7 +292,11 @@ from kiro_crew.sandbox import (  # noqa: F401
     wrap_argv,
 )
 from kiro_crew.security import (  # noqa: F401
+    _CRED_CLASS,
+    _STREAM_HOLDBACK_JWT_MAX,
+    _STREAM_HOLDBACK_MAX,
     BINARY_MIME_ALLOWLIST,
+    is_sensitive_canonical_path,
     is_sensitive_path,
     is_sensitive_resolved_path,
     path_contains_sensitive,
@@ -280,6 +309,8 @@ from kiro_crew.security import (  # noqa: F401
 from kiro_crew.validation import (  # noqa: F401
     FILE_READ_SCHEMA,
     MODEL_ID_RE,
+    MODEL_PICKER_HIDDEN_MODEL_ID_RE,
+    MODEL_PICKER_HIDDEN_MODELS_MAX,
     ValidationError,
     validate_tool_args,
 )
@@ -772,10 +803,19 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     # webhook session that owns no chat, a closed tab); suppress the card rather
     # than surface it in an unrelated conversation.
     if not active and not session_key and state._slots:
+        # The summary rows, so picking the newest tab does not load every
+        # restored sidebar row's window to read one timestamp.
         active = max(
             state._slots.values(),
-            key=lambda s: s.messages[-1]["ts"] if s.messages else "",
+            key=lambda s: summary_rows(s)[-1]["ts"] if summary_rows(s) else "",
         )
+    if active is not None and getattr(active, "window_pending", False) is True:
+        # The card is appended to the destination's rows: a tab restored as a
+        # sidebar row loads its window first, with the read off the loop, and the
+        # destination is read again after the await.
+        await load_window_off_loop(active)
+        if state.get_slot(active.key) is not active:
+            active = None
     delivered = False
     if active is not None and (active.messages or header_targeted):
         delivered = True
@@ -814,6 +854,79 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         resources=f"filename={file_data['filename']} delivered={int(delivered)}",
     )
     return web.json_response({"ok": True})
+
+
+async def _owner_grant_releases_flagged(request: web.Request) -> bool:
+    """Whether the owner's ``owner_dashboard`` grant releases flagged bytes to THIS caller.
+
+    The one test every owner-facing download route applies to a file the scanner
+    flagged: ``GET /api/outbox/{filename}`` and ``GET /api/file-download`` serve the
+    same audience, so they share one gate rather than two copies of it. Call it only
+    inside a flagged-content branch, so a clean file never touches the store.
+
+    The store read goes through ``asyncio.to_thread``: ``is_granted`` ends in a
+    synchronous file read, and a coroutine that waits on storage stalls the whole
+    gateway event loop.
+
+    TWO conjuncts, and the second is not redundant. A route absent from every
+    ``token_auth`` bypass list needs AUTHENTICATION, which is not OWNER IDENTITY. A
+    Slack allow-listed non-owner running ``!dashboard`` authenticates with
+    ``app == ""`` and ``sub != owner_id``, so ordinary token auth admits them while
+    ``is_owner_dashboard_request`` does not. Without the owner conjunct the grant
+    would convert a clean 400-for-everyone into raw bytes for every authenticated
+    caller -- widening the audience as a side effect of a control meant to narrow
+    it. A route with its own front owner gate still asks here, so the grant's
+    audience never depends on each caller remembering that gate.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+        is_owner_dashboard_request,
+    )
+
+    granted = await asyncio.to_thread(
+        file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
+    )
+    return granted and is_owner_dashboard_request(request)
+
+
+def _audit_owner_grant_refusal(request: web.Request, *, name: str, what: str) -> None:
+    """Record a flagged download the grant gate refused, naming the conjunct that refused.
+
+    *what* names the scan that tripped (``"flagged content"`` or ``"flagged binary
+    content"``). The reason then says which conjunct stopped it.
+
+    Identity is the discriminator, not the grant. The conjunction short-circuits, so
+    in the default no-grant state a non-owner is refused before identity is ever
+    examined; an entry keyed off the grant would record a Slack allow-listed
+    non-owner reaching for a flagged file as an ordinary scanner hold-back,
+    byte-identical to the owner's own -- losing the attribution exactly in the
+    configuration almost every install runs. The identity read is pure attribute
+    reads, so unlike the grant it needs no thread.
+    """
+    from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
+        is_owner_dashboard_request,
+    )
+
+    cross_principal = not is_owner_dashboard_request(request)
+    file_delivery_consent.audit_refusal(
+        file_delivery_consent.CLASS_OWNER_DASHBOARD,
+        leg="download",
+        name=name,
+        reason=f"{what}, non-owner caller" if cross_principal else f"{what}, no grant",
+        caller=str(request.get("user") or "unknown") if cross_principal else "",
+    )
+
+
+def _audit_consented_download(name: str) -> None:
+    """Record that flagged bytes left for the owner's browser under the grant.
+
+    The refusal this replaces is self-evident in the 400, whereas a successful
+    consented download would otherwise leave no trace.
+    """
+    file_delivery_consent.audit_decision(
+        file_delivery_consent.CLASS_OWNER_DASHBOARD,
+        outcome="delivered",
+        detail=f"download: {name}",
+    )
 
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:
@@ -863,64 +976,6 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     except UnicodeDecodeError:
         is_text = False
 
-    def _grant_permits_this_handover(granted: bool) -> bool:
-        """Whether the owner's recorded grant releases flagged bytes to THIS caller.
-
-        This is where the flagged bytes actually leave for the owner's browser, so
-        a grant is honoured here AND the handover is audited -- the refusal it
-        replaces was self-evident in the 400, whereas a successful consented
-        download would otherwise leave no trace.
-
-        *granted* arrives already resolved because reading it ends in a
-        synchronous store read, and this closure is called from a coroutine: each
-        caller resolves the grant with ``asyncio.to_thread`` inside its own
-        flagged-content branch, which keeps the read off the gateway event loop
-        and keeps a clean file from touching the store at all. What stays here is
-        the in-memory half of the test.
-
-        TWO conjuncts, and the second is not redundant. This route is absent from
-        every ``token_auth`` bypass list, which establishes that it needs
-        AUTHENTICATION -- not that it needs OWNER IDENTITY. A Slack allow-listed
-        non-owner running ``!dashboard`` authenticates with ``app == ""`` and
-        ``sub != owner_id``, so ordinary token auth admits them while
-        ``is_owner_dashboard_request`` does not. Without the owner conjunct the
-        grant would convert a clean 400-for-everyone into raw bytes for every
-        authenticated caller -- widening the audience as a side effect of a control
-        meant to narrow it, and contradicting the "owner's own authenticated
-        browser" audience this class is scoped to.
-
-        One function for both content kinds on purpose: a text file and a media
-        file carrying the same credential reach the same audience through this
-        route, so a second copy of the test is a second thing to forget.
-        """
-        from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-            is_owner_dashboard_request,
-        )
-
-        return granted and is_owner_dashboard_request(request)
-
-    def _requester_is_not_the_owner() -> bool:
-        """Whether THIS caller is somebody other than the dashboard owner.
-
-        The refusal entry has to say which of the gate's two conjuncts stopped the
-        handover, and the grant cannot answer that: the conjunction short-circuits,
-        so in the default no-grant state a non-owner is refused before identity is
-        ever examined. Keying the entry off the grant would therefore record a Slack
-        allow-listed non-owner reaching for a flagged file as an ordinary scanner
-        hold-back, byte-identical to the owner's own -- losing the attribution
-        exactly in the configuration almost every install runs. Identity answers it
-        in every configuration, and a non-owner is refused here whether or not a
-        grant exists.
-
-        Pure attribute reads, so unlike the grant this needs no thread: it consults
-        the request's own claims and the in-memory owner id.
-        """
-        from kiro_crew.dashboard.handlers.source_providers import (  # lazy: import cycle
-            is_owner_dashboard_request,
-        )
-
-        return not is_owner_dashboard_request(request)
-
     def _audit_consented_handover() -> None:
         _sel().log_tool_invocation(
             session_key="api",
@@ -930,11 +985,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
             outcome="completed",
             error="sensitive_content_delivered_with_consent",
         )
-        file_delivery_consent.audit_decision(
-            file_delivery_consent.CLASS_OWNER_DASHBOARD,
-            outcome="delivered",
-            detail=f"download: {path.name}",
-        )
+        _audit_consented_download(path.name)
 
     if is_text:
         # Two passes on this branch, not one. ``redact`` reads the correctly
@@ -947,10 +998,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         redacted = redact(text)
         narrow_flagged = redacted != text
         if narrow_flagged or await asyncio.to_thread(wide_content_is_flagged, raw):
-            granted = await asyncio.to_thread(
-                file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
-            )
-            if not _grant_permits_this_handover(granted):
+            if not await _owner_grant_releases_flagged(request):
                 _sel().log_tool_invocation(
                     session_key="api",
                     source="api",
@@ -959,24 +1007,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                     outcome="denied",
                     error="content_redacted" if narrow_flagged else "wide_credential_detected",
                 )
-                # The two conjuncts fail for different events, so the entry must
-                # not read the same for both. Identity is the discriminator, not
-                # the grant: the conjunction short-circuits, so a non-owner in the
-                # default no-grant state never reaches the owner check, and an
-                # entry keyed off the grant would call that a scanner hold-back and
-                # name the other principal nowhere.
-                cross_principal = _requester_is_not_the_owner()
-                file_delivery_consent.audit_refusal(
-                    file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                    leg="download",
-                    name=path.name,
-                    reason=(
-                        "flagged content, non-owner caller"
-                        if cross_principal
-                        else "flagged content, no grant"
-                    ),
-                    caller=str(request.get("user") or "unknown") if cross_principal else "",
-                )
+                _audit_owner_grant_refusal(request, name=path.name, what="flagged content")
                 return web.json_response(
                     {"error": "file content was redacted; download aborted"}, status=400
                 )
@@ -1005,10 +1036,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
         # scanned, and off the event loop because the scan is CPU work over up to
         # the read cap and a media file is routinely far larger than a text one.
         if await asyncio.to_thread(binary_content_is_flagged, raw):
-            granted = await asyncio.to_thread(
-                file_delivery_consent.is_granted, file_delivery_consent.CLASS_OWNER_DASHBOARD
-            )
-            if not _grant_permits_this_handover(granted):
+            if not await _owner_grant_releases_flagged(request):
                 _sel().log_tool_invocation(
                     session_key="api",
                     source="api",
@@ -1017,21 +1045,7 @@ async def api_outbox_download(request: web.Request) -> web.StreamResponse:
                     outcome="denied",
                     error="binary_credential_detected",
                 )
-                # Same discriminator as the text branch above: identity, because the
-                # conjunction short-circuits before the owner check in the default
-                # no-grant state.
-                cross_principal = _requester_is_not_the_owner()
-                file_delivery_consent.audit_refusal(
-                    file_delivery_consent.CLASS_OWNER_DASHBOARD,
-                    leg="download",
-                    name=path.name,
-                    reason=(
-                        "flagged binary content, non-owner caller"
-                        if cross_principal
-                        else "flagged binary content, no grant"
-                    ),
-                    caller=str(request.get("user") or "unknown") if cross_principal else "",
-                )
+                _audit_owner_grant_refusal(request, name=path.name, what="flagged binary content")
                 return web.json_response(
                     {
                         "error": "binary file contains embedded credentials; download aborted",
@@ -1392,8 +1406,9 @@ async def api_channel_upload_file(request: web.Request) -> web.Response:
     session map entry — a request cannot name an arbitrary conversation, which is
     what keeps this endpoint from being a broadcast primitive. The oracle also
     resolves the delivery verb, since which channels have one is part of "can
-    this file land here": Telegram and Discord today, each via its own
-    purpose-built name-preserving ``send_document``; every other channel is a
+    this file land here": the channels in ``upload_destination.DOCUMENT_CHANNELS``
+    (Telegram, Discord, WeCom), each via its own purpose-built name-preserving
+    ``send_document``; every other channel is a
     skip until its transport grows that verb. The Slack counterpart above
     resolves through the same module, one rung table away.
 
@@ -1571,6 +1586,47 @@ _WALK_MAX_SCAN_SCOPED = 50_000
 _WALK_MAX_SCAN_UNSCOPED = 5_000
 _WALK_MAX_DIRS_VISITED = 20_000
 
+#: Wall-clock budget for ONE ``_walk_file_search`` pass. The scan/dirs ceilings
+#: above bound how MANY filesystem calls the walk makes, not how LONG each one
+#: takes. On local disk a ceiling-reaching walk measured 4.20s worst, so the
+#: client's own 15s deadline (``FILE_SEARCH_TIMEOUT_MS`` in ``api/client/files.ts``)
+#: has ~3.6x headroom there -- but that figure is local disk only. On an
+#: NFS/SSHFS-class mount each ``os.stat``/``scandir`` is a network round trip, so
+#: the same bounded number of calls can run many times longer and blow straight
+#: past the client's 15s; the client's Retry re-enters the same bound, so a
+#: healthy-but-slow store fails every attempt. This bounds the one term store
+#: speed inflates: when a per-directory or per-stride clock check finds the
+#: budget spent, the walk stops and returns the partial set it gathered, the
+#: same early stop the entry/dir ceilings already make for size, reached by
+#: elapsed time. The check is cooperative, so a single ``os.stat`` that blocks
+#: on a dead mount can overrun the budget before the next check runs; this
+#: shortens the common slow-but-alive case rather than guaranteeing a hard
+#: wall-clock cap. 10s is chosen to sit
+#: under the client's 15s on a store that
+#: answers each call, with room for admission and round trips.
+#: Module-level so a test can shrink it, exactly as ``_GREP_TIME_BUDGET_SECS``.
+_WALK_TIME_BUDGET_SECS = 10.0
+
+#: How many entries one ``_collect`` scans between wall-clock checks in
+#: ``_walk_file_search``. A single enormous directory could otherwise overrun the
+#: budget between the per-directory checks, so the entry loop re-reads the clock
+#: every stride -- the same trick, and for the same reason, as the grep path's
+#: ``_GREP_ROW_DEADLINE_STRIDE``. Module-level so a test can shrink it.
+_WALK_DEADLINE_STRIDE = 512
+
+
+#: The monotonic clock ``_walk_file_search`` reads for its wall-clock budget,
+#: named on the module (the facade every owner function resolves against) rather
+#: than called as ``time.monotonic`` inline. A deadline test drives the walk's
+#: clock deterministically by patching THIS name -- advancing it per yielded
+#: directory so the budget crosses on a chosen directory -- which touches only
+#: the walk and leaves the stdlib ``time`` module untouched for the event loop
+#: and every other test (tests-are-deterministic). ``time.monotonic`` is a
+#: facade name no owner captures, so the patch cannot silently miss a caller.
+def _walk_monotonic() -> float:
+    return time.monotonic()
+
+
 # Hard ceiling on the caller-supplied ``limit`` of /api/file-search. The walk
 # collects ``max_results * 10`` candidates per kind, so the limit multiplies real
 # filesystem work; a fixed server-side ceiling keeps a hostile ``?limit=`` from
@@ -1599,6 +1655,12 @@ _ALLOWED_TEXT_EXT = {
     ".csv",
     ".tsv",
     ".log",
+    # CNAB remittance (.rem) and return (.ret) files — the Brazilian banking
+    # (FEBRABAN) interchange format. Fixed-width ASCII/Latin-1 records, so they
+    # read as plain text; the read path and FileRenderers already treat an
+    # unknown extension as text, this just lets them past the upload boundary.
+    ".rem",
+    ".ret",
     ".py",
     ".js",
     ".ts",
@@ -1975,10 +2037,39 @@ def _probe_request_path(raw: str) -> _PathProbe:
     return _PathProbe(path, os.path.isfile(path), os.path.isdir(path))
 
 
+#: Most paths one ``POST /api/file-kinds`` request may name. A transcript view
+#: asks for a few dozen; the cap bounds how long one request holds its probe
+#: worker, and the client splits a larger set across requests.
+_FILE_KINDS_MAX_PATHS = 100
+
+
 #: How much of a file /api/file-read returns, in CHARACTERS -- the unit matters,
 #: because the decode is a text wrapper over a byte descriptor and a byte count
 #: here would mis-set ``X-Truncated`` on multi-byte content.
 _FILE_READ_CAP = 512_000
+
+#: One credential-class character (the streaming redactor's ``_CRED_CLASS``).
+#: Matched against the REVERSED read, so finding the trailing run is linear.
+_CRED_RUN_REVERSED_RE = re.compile("[" + "".join(re.escape(c) for c in sorted(_CRED_CLASS)) + "]*")
+
+
+def _read_safe_end(text: str, cap: int) -> int:
+    """An end for *text*, a read cut off at its bound, that severs no token.
+
+    A credential is a contiguous run of credential-class characters, so the
+    trailing run is the only one the read's own end may sever. A run that
+    starts at or past *cap* is dropped; nothing below the cap depends on it.
+    A run crossing *cap* that holds a JWT header (``eyJ``) is dropped whole,
+    whatever its length. One without it is cut a streaming holdback before the
+    end, the same bound the streaming redactor holds an anchorless run to.
+    """
+    run = _CRED_RUN_REVERSED_RE.match(text[::-1])
+    # A ``*`` pattern matches the empty string, so a match always exists.
+    assert run is not None
+    run_start = len(text) - run.end()
+    if run_start >= cap or "eyJ" in text[run_start:]:
+        return run_start
+    return len(text) - _STREAM_HOLDBACK_MAX
 
 
 #: How much of a file the binary sniff reads before deciding, in BYTES. 8 KiB is
@@ -2085,7 +2176,7 @@ async def api_file_read(request: web.Request) -> web.Response:
         outcome = await _run_path_probe(
             _read_request_path,
             raw_path,
-            0 if request.method == "HEAD" else read_cap + 1,
+            0 if request.method == "HEAD" else read_cap + _STREAM_HOLDBACK_JWT_MAX,
             transfer=request.method != "HEAD",
         )
     except _PathProbeBusy:
@@ -2144,7 +2235,6 @@ async def api_file_read(request: web.Request) -> web.Response:
             )
         content = outcome.content
         truncated = len(content) > read_cap
-        content = content[:read_cap]
         # OWNER-VIEW seam: when the requester IS the dashboard owner, the owner's
         # credential-redaction switch applies to this read of their own disk
         # (``security.redaction_switch``). A non-owner dashboard user (a Slack
@@ -2152,11 +2242,26 @@ async def api_file_read(request: web.Request) -> web.Response:
         # other opener in this module is ``api_file_diff``, which feeds the SAME
         # panel the ``original`` this buffer is compared against; the outbox
         # flagged-file check and the upload gates keep the unconditional ``redact``.
-        as_written = content
-        if await _owner_view_bypasses_credential_pass(request):
-            content = redact_owner_view_via_context(content)
-        else:
-            content = redact(content)
+        owner_view = await _owner_view_bypasses_credential_pass(request)
+
+        def redact_fn(text: str) -> str:
+            return redact_owner_view_via_context(text) if owner_view else redact(text)
+
+        # The read runs past the cap by the redactor's own longest-token bound,
+        # so a credential straddling the cap is matched whole there. The body
+        # keeps only what redacting the capped text and redacting the whole read
+        # agree on: it holds no prefix the capped pass alone left unmatched, and
+        # no raw text from past the cap that the shorter redacted output exposes.
+        # A read that stops short of its bound holds the whole file. A full one
+        # is first cut back to an end no token crosses (``_read_safe_end``), so
+        # the whole-read pass is one batch call that never sees a severed token.
+        as_written = content[:read_cap]
+        content = redact_fn(as_written)
+        if truncated:
+            whole = outcome.content
+            if len(whole) >= read_cap + _STREAM_HOLDBACK_JWT_MAX:
+                whole = whole[: _read_safe_end(whole, read_cap)]
+            content = os.path.commonprefix([content, redact_fn(whole)])
         _sel().log_tool_invocation(
             session_key="dashboard", tool_name="file_read", outcome="success", resources=path
         )
@@ -2170,7 +2275,7 @@ async def api_file_read(request: web.Request) -> web.Response:
         headers = {}
         if truncated:
             headers["X-Truncated"] = "true"
-        if content != as_written:
+        if not as_written.startswith(content):
             headers["X-Redacted"] = "true"
         if outcome.lossy:
             headers["X-Lossy-Decode"] = "true"
@@ -2663,6 +2768,10 @@ async def api_file_grep(request: web.Request) -> web.Response:
     })
 
 
+# Whole-text diff budget, independent of the file preview's smaller read cap.
+_FILE_DIFF_MAX_BYTES = 32 * 1024 * 1024
+
+
 async def api_file_diff(request: web.Request) -> web.Response:
     """GET /api/file-diff?path=... — returns git diff and HEAD content for a file."""
     owner_denied = await require_owner_dashboard_request(request, "file_diff")
@@ -2688,11 +2797,12 @@ async def api_file_diff(request: web.Request) -> web.Response:
 
     dirpath = os.path.dirname(raw_path)
 
+    # Disable textconv/filter drivers and fsmonitor to prevent code execution
+    # via .gitattributes or .git/config in untrusted repos.
+    _git = ["git", "-c", "diff.textconv=", "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor="]
+    _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+
     def _run() -> dict:
-        # Disable textconv/filter drivers and fsmonitor to prevent code execution
-        # via .gitattributes or .git/config in untrusted repos.
-        _git = ["git", "-c", "diff.textconv=", "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor="]
-        _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
         try:
             subprocess.run(
                 [*_git, "rev-parse", "--git-dir"],
@@ -2741,7 +2851,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
                         errors="replace", timeout=10, env=_env,
                     )
                     diff = r3.stdout if r3.stdout else ""
-                    return {"diff": diff, "original": "", "status": "untracked"}
+                    return {"diff": diff, "original": "", "status": "untracked", "_rel": rel}
             if r.returncode != 0:
                 # `git diff` failed and the untracked probe above did not claim
                 # the file. This must stay distinguishable from a genuinely
@@ -2754,9 +2864,47 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 # Still HTTP 200: the request succeeded, only the diff did not.
                 return {"diff": "", "original": original, "status": "error"}
             status = "modified" if diff else "clean"
-            return {"diff": diff, "original": original, "status": status}
+            return {"diff": diff, "original": original, "status": status, "_rel": rel}
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError, UnicodeDecodeError):
             return {"diff": "", "original": "", "status": "error"}
+
+    def _diff_redacted_bodies(old: str, new: str, rel: str, *, new_file: bool, redact_fn) -> str:
+        """Git's unified diff of two ALREADY-REDACTED bodies.
+
+        A patch shows lines out of their surrounding text, which is what the
+        redactor reads, so the pass runs on whole bodies and only masked text is
+        diffed. The temp files hold masked text only, in a private dir outside
+        any repo.
+        """
+        with tempfile.TemporaryDirectory(prefix="kc-file-diff-") as tmp:
+            a = os.path.join(tmp, "a")
+            b = os.path.join(tmp, "b")
+            with open(a, "w", encoding="utf-8", newline="") as fh:
+                fh.write(old)
+            with open(b, "w", encoding="utf-8", newline="") as fh:
+                fh.write(new)
+            r = subprocess.run(
+                [*_git, "diff", "--no-index", "--no-textconv", "--no-ext-diff", "--", a, b],
+                cwd=tmp, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10, env=_env,
+            )
+        # --no-index answers 1 for "differs"; anything else is a failure, and a
+        # failure must not fall back to the raw patch.
+        if r.returncode not in (0, 1):
+            raise subprocess.CalledProcessError(r.returncode, "git diff --no-index")
+        # "\n" only: splitlines() also cuts on form feed, U+2028 and other
+        # characters that sit inside a patch line.
+        lines = r.stdout.rstrip("\n").split("\n")
+        first = next((i for i, ln in enumerate(lines) if ln.startswith("@@")), None)
+        name = redact_fn(rel).replace("\n", " ")
+        header = [f"diff --git a/{name} b/{name}"]
+        if first is None:
+            # No hunks: no change, or git judged the text binary.
+            if not r.stdout.strip():
+                return ""
+            return "\n".join([*header, f"Binary files a/{name} and b/{name} differ"])
+        header += ["--- /dev/null" if new_file else f"--- a/{name}", f"+++ b/{name}"]
+        return "\n".join([*header, *lines[first:]])
 
     # Same verdict as ``api_file_read`` for the same caller: the panel compares
     # the buffer that read served against this ``original``, so the two MUST be
@@ -2770,20 +2918,54 @@ async def api_file_diff(request: web.Request) -> web.Response:
         # diff view compares that redacted buffer against this ``original``, so
         # leaving one side raw makes an unchanged credential line render as a
         # hunk, and serves a secret committed in HEAD that ``/api/file-read``
-        # masks. Redacting the assembled result covers every branch, including
-        # ones added later, and runs in this worker thread rather than on the
-        # event loop because the input is caller-sized.
+        # masks. This runs in this worker thread rather than on the event loop
+        # because the input is caller-sized.
         result = _run()
-        # Deliberately NOT truncated first: slicing before the pass can cut a
-        # credential's regex-required tail, and the surviving prefix is then
-        # served as real bytes. Redacting whole text costs an unbounded scan,
-        # which is why it runs here rather than on the event loop.
-        if bypass:
-            result["original"] = redact_owner_view_via_context(result.get("original", ""))
-            result["diff"] = redact_owner_view_via_context(result.get("diff", ""))
-        else:
-            result["original"] = redact(result.get("original", ""))
-            result["diff"] = redact(result.get("diff", ""))
+        rel = result.pop("_rel", None)
+
+        def redact_fn(text: str) -> str:
+            return redact_owner_view_via_context(text) if bypass else redact(text)
+
+        original = result.get("original", "")
+        raw_diff = result.get("diff", "")
+        # Git's patch of the raw file is never served: it is only the verdict
+        # that something changed. The served patch is the diff of the two
+        # WHOLE bodies, each masked before diffing.
+        result["diff"] = ""
+        lines = raw_diff.split("\n") if raw_diff else []
+        is_binary = not any(line.startswith("@@") for line in lines) and any(
+            line.startswith("Binary files ") and line.endswith(" differ") for line in lines
+        )
+        result["original"] = redact_fn(original)
+        if raw_diff and rel is not None:
+            if is_binary:
+                name = redact_fn(rel).replace("\n", " ")
+                result["diff"] = (
+                    f"diff --git a/{name} b/{name}\n"
+                    f"Binary files a/{name} and b/{name} differ"
+                )
+                return result
+            try:
+                # The same checked, no-follow open the file read uses, so a
+                # path swapped after the first check is refused, not read.
+                checked = _open_checked_file(raw_path, tool_name="file_diff", log_open_failure=False)
+                if isinstance(checked, _OpenDenied):
+                    raise OSError(checked.code)
+                with checked.file as fh:
+                    data = fh.read(_FILE_DIFF_MAX_BYTES + 1)
+                if len(data) > _FILE_DIFF_MAX_BYTES:
+                    result["status"] = "error"
+                    return result
+                # Universal newlines, as git's text-mode stdout gives HEAD, so
+                # a CRLF file does not diff as every line changed.
+                current = data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                result["diff"] = _diff_redacted_bodies(
+                    result["original"], redact_fn(current), rel,
+                    new_file=result.get("status") == "untracked", redact_fn=redact_fn,
+                )
+            except (OSError, subprocess.SubprocessError):
+                # Fail closed: no patch at all beats a raw one.
+                result["status"] = "error"
         return result
 
     result = await asyncio.to_thread(_run_redacted)
@@ -3013,7 +3195,7 @@ _HIDDEN_TOOL_DIRS = frozenset(d for d in _PROJECT_TREE_SKIP_DIRS if d.startswith
 # ``kiro_crew.dashboard.handlers.files.<name>`` reaches it wherever it lives;
 # see ``kiro_crew.dashboard.file_api``. Run once, after this body has bound every
 # name.
-_file_api.compose(
+_facade_compose(
     globals(),
     (
         _owner_uploads,

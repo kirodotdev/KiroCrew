@@ -28,6 +28,7 @@
  */
 
 import { mdImageDest } from '../../../utils/fileTokens'
+import { pathBasename } from '../../../utils/pathBasename'
 
 /**
  * A base64 screen-capture crop, as a File the upload route accepts.
@@ -185,8 +186,23 @@ export function attachmentsFrom(result: IngestResult): PendingAttachment[] {
   ]
 }
 
+/**
+ * Chip label for an uploaded path.
+ *
+ * The upload route returns `str(dest)`, which is a NATIVE path: on Windows that
+ * is `C:\...\uploads\pic.png`, carrying no forward slash to split on, so the
+ * whole absolute path became the label — and `PendingAttachments` renders this
+ * string as the chip's text, its tooltip, an image `alt`, and two aria-labels,
+ * so a screen reader read the path out in full.
+ *
+ * `pathBasename` is the one separator-aware basename rule the UI already uses
+ * (`FileChangeChips`, `ChatPanel`, `FilePreviewStrip`): it treats `\` as a
+ * separator only for a Windows-SHAPED path (drive letter or UNC), so a POSIX
+ * name containing a literal backslash (`weird\name.txt`) stays one name rather
+ * than splitting into a nonexistent directory.
+ */
 function basename(path: string): string {
-  return path.split('/').pop() || path
+  return pathBasename(path) || path
 }
 
 // ── Pending-attachment strip ──────────────────────────────────────

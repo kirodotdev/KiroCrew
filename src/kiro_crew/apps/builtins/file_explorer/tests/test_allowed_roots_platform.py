@@ -78,3 +78,49 @@ def test_no_configured_root_is_a_whole_volume():
     assert server.ALLOWED_ROOTS
     volume_roots = [p for p in server.ALLOWED_ROOTS if p == Path(p.anchor)]
     assert not volume_roots, volume_roots
+
+
+def test_posix_workplace_included_when_it_exists(monkeypatch, home_and_tmp, tmp_path):
+    """A ``/workplace`` that exists is included via the resolved convention path.
+
+    The real host usually has no ``/workplace``, so the exists() filter would
+    drop the literal path. Redirect ``Path.resolve`` for ``/workplace`` to an
+    existing stand-in to prove the convention is wired in and survives the
+    filter when the directory is present.
+    """
+    home, tmp = home_and_tmp
+    monkeypatch.setattr(server.platform_compat, "IS_POSIX", True)
+
+    workplace = tmp_path / "workplace_stub"
+    workplace.mkdir()
+
+    real_resolve = Path.resolve
+
+    def fake_resolve(self, *args, **kwargs):
+        # Match on the POSIX spelling so this works on Windows too, where
+        # ``str(Path("/workplace"))`` is ``\workplace`` rather than ``/workplace``.
+        if self.as_posix() == "/workplace":
+            return workplace
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fake_resolve)
+
+    roots = server._compute_allowed_roots(home, tmp)
+
+    assert workplace in roots
+
+
+def test_posix_workplace_dropped_when_absent(monkeypatch, home_and_tmp):
+    """A ``/workplace`` that does not exist is silently dropped, like /opt.
+
+    No convention root may equal its own anchor, and a host without the mount
+    must not gain a bogus root just because the convention is listed.
+    """
+    home, tmp = home_and_tmp
+    monkeypatch.setattr(server.platform_compat, "IS_POSIX", True)
+
+    roots = server._compute_allowed_roots(home, tmp)
+
+    # Whatever survives exists; none is a bare volume root.
+    assert all(p.exists() for p in roots)
+    assert not [p for p in roots if p == Path(p.anchor)]

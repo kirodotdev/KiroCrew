@@ -9,7 +9,7 @@
  * with nothing on screen to answer it.
  *
  * THE SCENE. The REAL `PendingQuestionCard`, driven by the REAL `chatSlice`
- * reducer, in the same wrapper `ChatPage` renders it in (`px-4 pb-2`, content
+ * reducer, in the same wrapper `ComposerDockView` renders it in (`px-4 pb-2`, content
  * width), above a static composer replica. One scene per `?scene=`:
  *
  *   ?scene=before   the OLD behaviour, replicated by dispatching the retirement
@@ -135,7 +135,7 @@ function Scene() {
           <div className="mb-1 opacity-70">↻ [auto-nudge cycle 1] check the PR and report</div>
           <div className="opacity-70">🤖 cycle 1: CI still red on the same lane.</div>
         </div>
-        {/* The wrapper ChatPage uses for this card, so the placement above the
+        {/* The wrapper ComposerDockView uses for this card, so the placement above the
             composer is the real one. */}
         <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
           <PendingQuestionCard slotKey={SLOT} onFallbackSend={() => {}} onDirectSend={() => {}} />

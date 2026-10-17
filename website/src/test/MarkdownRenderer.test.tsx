@@ -3,6 +3,7 @@ import { render, fireEvent, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLineRef } from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { kindsRequestCount, kindsRequestPaths, kindsResponse, probedPaths, stubPathKinds } from './pathKindStub'
 import { api } from '../api/client'
 
 // The chip's reveal hint is now gated on branding.directLocal: a remote session
@@ -290,6 +291,35 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('C:/Users/me/')).toBe(true) // drive-rooted, trailing forward slash
   })
 
+  it('rejects a command line that carries a path argument or a flag', () => {
+    // A space then a second root or a flag means several shell words, not one
+    // path; the probe could never confirm the whole span.
+    expect(isPathCandidate('sudo xcode-select -s /Applications/Xcode.app')).toBe(false)
+    expect(isPathCandidate('open ~/Downloads/report.pdf')).toBe(false)
+    expect(isPathCandidate('python ./scripts/run.py')).toBe(false)
+    expect(isPathCandidate('cp a.txt ../backup/a.txt')).toBe(false)
+    expect(isPathCandidate('type C:\\Users\\me\\notes.md')).toBe(false)
+    expect(isPathCandidate('tail --follow logs/app.log')).toBe(false)
+  })
+
+  it('still accepts paths whose names contain spaces and dashes', () => {
+    expect(isPathCandidate('/Users/me/Library/Application Support/x.json')).toBe(true)
+    expect(isPathCandidate('docs/Report - final.md')).toBe(true)
+    expect(isPathCandidate('My Docs/notes.md')).toBe(true)
+    expect(isPathCandidate('C:\\Program Files (x86)\\app.txt')).toBe(true)
+    // A dash glued to more of the name is not a flag: the word after it runs
+    // into a dot or a separator instead of ending at a space.
+    expect(isPathCandidate('docs/Report -final.md')).toBe(true)
+    expect(isPathCandidate('~/Music/Artist -Live.mp3')).toBe(true)
+    expect(isPathCandidate('Backup -old/x.md')).toBe(true)
+  })
+
+  it('refuses a name with a space right before a separator, by design', () => {
+    // A space then a root reads the same as a command and its path argument
+    // (`cat /draft.md`); losing the rare real name is the accepted cost.
+    expect(isPathCandidate('notes /draft.md')).toBe(false)
+  })
+
   it('a trailing separator does not rescue a non-path -- no widening (issue #9409)', () => {
     // The strip re-tests the same rules, so a trailing slash classifies only a
     // string whose slash-less form is already a candidate. These stay rejected
@@ -329,6 +359,20 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('/home/user/notes/cafe\u0301-menu\u0308')).toBe(true)
     expect(isPathCandidate('~/दस्तावेज़/रिपोर्ट.md')).toBe(true) // Devanagari (virama/matra/nukta)
   })
+  it('accepts emoji segments — pictographs, flags and ZWJ sequences', () => {
+    // Emoji are filename-legal but are neither \p{L}, \p{M} nor \p{N}.
+    // Escapes keep the exact code points visible in review.
+    expect(isPathCandidate('notes/\u{1F389} plan.md')).toBe(true) // pictograph, relative + ext
+    expect(isPathCandidate('~/trips/\u{1F1EF}\u{1F1F5} Japan')).toBe(true) // flag = two regional indicators
+    expect(isPathCandidate('/home/me/\u{1F469}\u200D\u{1F4BB} work/todo.txt')).toBe(true) // ZWJ sequence
+    expect(isPathCandidate('/home/me/party \u{1F389}')).toBe(true) // emoji as the LAST character
+    expect(isPathCandidate('C:\\Users\\me\\\u{1F389}\\plan.md')).toBe(true) // drive-rooted shape
+    // No root and no extension is still prose, emoji or not.
+    expect(isPathCandidate('\u{1F389}/\u{1F38A}')).toBe(false)
+    expect(isPathCandidate('party')).toBe(false)
+    expect(isPathCandidate('\u{1F389}')).toBe(false)
+  })
+
 
   it('accepts a bare relative path whose Unicode basename has an ASCII extension', () => {
     // The extension positive-signal must not require the whole basename to be
@@ -588,13 +632,9 @@ describe('splitLineRef — file:line references', () => {
 describe('MarkdownRenderer path chips — stat gate', () => {
   const realFetch = globalThis.fetch
 
-  /** Stub the HEAD probe with a real Headers instance, so header lookup behaves
-   *  exactly as it does against the live endpoint. */
-  function stubKind(kind: 'file' | 'dir' | null, ok = true) {
-    const headers = new Headers(kind ? { 'X-Path-Kind': kind } : {})
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve({ ok, status: ok ? 200 : 404, headers } as Response),
-    ) as unknown as typeof fetch
+  /** Answer the batched kind probe with `kind` for every path. */
+  function stubKind(kind: 'file' | 'dir' | null, _ok = true) {
+    stubPathKinds(() => kind)
   }
 
   beforeEach(() => { __resetPathKindCache() })
@@ -615,28 +655,26 @@ describe('MarkdownRenderer path chips — stat gate', () => {
   })
 
   it('opens a confirmed Markdown file link in the file viewer instead of navigating to the chat route', async () => {
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      const hit = asked === '/home/user/a.md'
-      return Promise.resolve({
-        ok: hit,
-        status: hit ? 200 : 404,
-        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+    const fn = stubPathKinds(asked => (asked === '/home/user/a.md' ? 'file' : null))
     const onFileOpen = vi.fn()
     const { container } = render(<MarkdownRenderer content={'[open file](/home/user/a.md:12)'} onFileOpen={onFileOpen} />)
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(probedPaths(fn)).toHaveLength(2))
 
     const anchor = container.querySelector('a[href="/home/user/a.md:12"]')
     expect(anchor).not.toBeNull()
-    fireEvent.click(anchor!)
-    expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md', { line: 12 })
+    await waitFor(() => {
+      fireEvent.click(anchor!)
+      expect(onFileOpen).toHaveBeenCalledWith('/home/user/a.md', { line: 12 })
+    })
   })
 
   it('swallows a plain Markdown file-link click while its path probe is pending', async () => {
     let resolveProbe: ((response: Response) => void) | undefined
-    globalThis.fetch = vi.fn(() => new Promise<Response>((resolve) => { resolveProbe = resolve })) as unknown as typeof fetch
+    let probeInit: RequestInit | undefined
+    globalThis.fetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      probeInit = init
+      return new Promise<Response>((resolve) => { resolveProbe = resolve })
+    }) as unknown as typeof fetch
     const onFileOpen = vi.fn()
     const { container } = render(<MarkdownRenderer content={'[open file](/home/user/a.md)'} onFileOpen={onFileOpen} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1))
@@ -646,7 +684,7 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     expect(fireEvent.click(anchor!)).toBe(false)
     expect(onFileOpen).not.toHaveBeenCalled()
 
-    resolveProbe?.({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response)
+    resolveProbe?.(kindsResponse(kindsRequestPaths(probeInit), () => 'file'))
   })
 
   it('does not probe a decoded root-relative UNC path', async () => {
@@ -659,23 +697,16 @@ describe('MarkdownRenderer path chips — stat gate', () => {
   })
 
   it('prefers a literal Markdown link filename over its line-reference sibling', async () => {
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      const hit = asked === '/tmp/report.md' || asked === '/tmp/report.md:12'
-      return Promise.resolve({
-        ok: hit,
-        status: hit ? 200 : 404,
-        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+    const fn = stubPathKinds(asked => (asked === '/tmp/report.md' || asked === '/tmp/report.md:12' ? 'file' : null))
     const onFileOpen = vi.fn()
     const { getByRole } = render(
       <MarkdownRenderer content={'[open](/tmp/report.md%3A12)'} onFileOpen={onFileOpen} />,
     )
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
-
-    fireEvent.click(getByRole('link', { name: 'open' }))
-    expect(onFileOpen).toHaveBeenCalledWith('/tmp/report.md:12')
+    await waitFor(() => expect(probedPaths(fn)).toHaveLength(2))
+    await waitFor(() => {
+      fireEvent.click(getByRole('link', { name: 'open' }))
+      expect(onFileOpen).toHaveBeenCalledWith('/tmp/report.md:12')
+    })
   })
 
   it('leaves an unconfirmed root-relative application link to navigate normally', async () => {
@@ -720,7 +751,7 @@ describe('MarkdownRenderer path chips — stat gate', () => {
   })
 
   it('leaves a path that is not on disk as plain text', async () => {
-    stubKind(null, false) // 404 + X-Path-Kind: missing (header absent here)
+    stubKind(null, false) // the batch answers `missing`
     const { container } = render(<MarkdownRenderer content={'`/home/user/ghost.md`'} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
     const code = container.querySelector('code')!
@@ -813,20 +844,19 @@ describe('MarkdownRenderer path chips — stat gate', () => {
   })
 
   it('probes each distinct path once however many chips mention it', async () => {
-    stubKind('file')
+    const fn = stubPathKinds(() => 'file')
     render(<MarkdownRenderer content={'`/home/user/a.md` and again `/home/user/a.md`'} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
-    expect((globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(1)
+    expect(kindsRequestCount(fn)).toBe(1)
+    expect(probedPaths(fn)).toEqual(['/home/user/a.md'])
   })
 })
 
 describe('MarkdownRenderer path chips — activation routing', () => {
   const realFetch = globalThis.fetch
 
-  function stubKind(kind: 'file' | 'dir', ok: boolean) {
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve({ ok, status: ok ? 200 : 404, headers: new Headers({ 'X-Path-Kind': kind }) } as Response),
-    ) as unknown as typeof fetch
+  function stubKind(kind: 'file' | 'dir', _ok: boolean) {
+    stubPathKinds(() => kind)
   }
 
   beforeEach(() => { __resetPathKindCache() })
@@ -927,15 +957,7 @@ describe('MarkdownRenderer path chips — file:line references', () => {
    *  Needed here because the whole point is that ONE of two candidate spellings
    *  resolves and the other does not. */
   function stubPaths(known: string[]) {
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      const hit = known.includes(asked)
-      return Promise.resolve({
-        ok: hit,
-        status: hit ? 200 : 404,
-        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+    return stubPathKinds(asked => (known.includes(asked) ? 'file' : null))
   }
 
   const chipOf = (container: HTMLElement) => waitFor(() => {
@@ -1014,15 +1036,7 @@ describe('MarkdownRenderer path chips — file:line references', () => {
     // hides the `.py`. Testing the raw text directly therefore left relative
     // citations — the majority form — with one probe and NO sibling precedence, so
     // this opened `src/report.py` even though `src/report.py:12` also exists.
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      const known = asked === 'src/report.py' || asked === 'src/report.py:12'
-      return Promise.resolve({
-        ok: known,
-        status: known ? 200 : 404,
-        headers: new Headers(known ? { 'X-Path-Kind': 'file' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+    stubPathKinds(asked => (asked === 'src/report.py' || asked === 'src/report.py:12' ? 'file' : null))
     const onFileOpen = vi.fn()
     const { container } = render(
       <MarkdownRenderer content={'`src/report.py:12`'} onFileOpen={onFileOpen} />,
@@ -1037,11 +1051,10 @@ describe('MarkdownRenderer path chips — file:line references', () => {
   it('charges the second probe only where there are two spellings to compare', async () => {
     // The extra request buys unambiguous precedence, so it must not be spent on a
     // chip that carries no line reference.
-    stubPaths(['/a/b.md'])
+    const fn = stubPaths(['/a/b.md'])
     const { container } = render(<MarkdownRenderer content={'`/a/b.md`'} />)
     await chipOf(container)
-    const calls = (globalThis.fetch as unknown as { mock: { calls: unknown[] } }).mock.calls
-    expect(calls).toHaveLength(1)
+    expect(probedPaths(fn)).toEqual(['/a/b.md'])
   })
 
   it('picks the per-extension glyph from the stripped path', async () => {
@@ -1074,16 +1087,7 @@ describe('MarkdownRenderer path chips — file:line references', () => {
     // `/tmp/report` at line 12 — in an editor, so a later save would write to a
     // file the reader never named. The literal text they clicked has to win, and
     // here that means the folder route, not the file route.
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      if (asked === '/tmp/report') {
-        return Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response)
-      }
-      if (asked === '/tmp/report:12') {
-        return Promise.resolve({ ok: false, status: 404, headers: new Headers({ 'X-Path-Kind': 'dir' }) } as Response)
-      }
-      return Promise.resolve({ ok: false, status: 404, headers: new Headers() } as Response)
-    }) as unknown as typeof fetch
+    stubPathKinds(asked => (asked === '/tmp/report' ? 'file' : asked === '/tmp/report:12' ? 'dir' : null))
     const onFileOpen = vi.fn()
     const onFolderOpen = vi.fn()
     const { container } = render(
@@ -1103,24 +1107,27 @@ describe('MarkdownRenderer path chips — file:line references', () => {
   })
 
   it('stays inert until every probe in flight has reported', async () => {
-    // Both probes are concurrent, and the split one can land first. Rendering the
-    // affordance on that verdict alone leaves a window where a click opens the
-    // split path even though the literal name exists.
+    // The split verdict can be known before the literal one: here an earlier
+    // mention already resolved the split path, so it answers from cache while the
+    // literal path's request is still out. Rendering the affordance on that
+    // verdict alone leaves a window where a click opens the split path even
+    // though the literal name exists.
+    stubPaths(['/tmp/report'])
+    const warm = render(<MarkdownRenderer content={'`/tmp/report`'} />)
+    await chipOf(warm.container)
+    warm.unmount()
     let releaseRaw: (() => void) | undefined
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      if (asked === '/tmp/report') {
-        return Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response)
-      }
-      // Hold the literal-path verdict open so the split one lands first.
+    globalThis.fetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      // Hold the literal-path verdict open.
       return new Promise<Response>(res => {
-        releaseRaw = () => res({ ok: false, status: 404, headers: new Headers() } as Response)
+        releaseRaw = () => res(kindsResponse(kindsRequestPaths(init), () => null))
       })
     }) as unknown as typeof fetch
     const { container } = render(<MarkdownRenderer content={'`/tmp/report:12`'} />)
-    // The split path has resolved as a file by now, but the chip must not offer
-    // itself while the literal path is unknown.
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(2))
+    // The split path is a known file, but the chip must not offer itself while
+    // the literal path is unknown.
+    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalledTimes(1))
+    expect(probedPaths(globalThis.fetch as unknown as { mock: { calls: unknown[][] } })).toEqual(['/tmp/report:12'])
     expect(container.querySelector('code[data-path-kind]')).toBeNull()
     await act(async () => { releaseRaw?.(); await Promise.resolve() })
     const chip = await chipOf(container)
@@ -1131,15 +1138,7 @@ describe('MarkdownRenderer path chips — file:line references', () => {
   it('drops the line when the target turns out to be a directory', async () => {
     // Only the split path exists, and it is a directory. `/Users/me/ws:12` is not
     // a real name here, so the literal probe misses and the split path is used.
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const asked = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
-      const isDir = asked === '/Users/me/ws'
-      return Promise.resolve({
-        ok: false,
-        status: 404,
-        headers: new Headers(isDir ? { 'X-Path-Kind': 'dir' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+    stubPathKinds(asked => (asked === '/Users/me/ws' ? 'dir' : null))
     const onFolderOpen = vi.fn()
     const onFileOpen = vi.fn()
     const { container } = render(
@@ -1198,16 +1197,10 @@ describe('MarkdownRenderer path chips — Windows paths', () => {
    *  pre-fix symptom, so the call list is itself an assertion target. */
   function stubPaths(known: string[]): string[] {
     const asked: string[] = []
-    globalThis.fetch = vi.fn((url: unknown) => {
-      const p = decodeURIComponent(new URL(String(url), 'http://x').searchParams.get('path') || '')
+    stubPathKinds(p => {
       asked.push(p)
-      const hit = known.includes(p)
-      return Promise.resolve({
-        ok: hit,
-        status: hit ? 200 : 404,
-        headers: new Headers(hit ? { 'X-Path-Kind': 'file' } : {}),
-      } as Response)
-    }) as unknown as typeof fetch
+      return known.includes(p) ? 'file' : null
+    })
     return asked
   }
 
@@ -1331,9 +1324,7 @@ describe('MarkdownRenderer path chips — forgery resistance', () => {
    * always opened what they saw).
    */
   it('ignores a chip forged via raw HTML with a hidden path', async () => {
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
-    ) as unknown as typeof fetch
+    stubPathKinds(() => 'file')
     const onFileOpen = vi.fn()
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({ ok: true } as never)
     const { container } = render(
@@ -1933,23 +1924,38 @@ describe('MarkdownRenderer LaTeX-native delimiters (#7803)', () => {
     // 6000 unclosed `<customblock>` openers before one math delimiter. Both the
     // renderer's verbatim-unknown-tags pass and the plugin's verbatim context
     // used to run a full-suffix close scan per opener -- O(n²): 3x the input
-    // cost 7.5x the time (1.1 s -> 8.0 s). With the shared single-pass pairing
-    // map, 3x the input costs ~2.5x. A scaling RATIO is asserted, not a
-    // wall-clock bound, so the guard reads the same on any runner. A warm-up
-    // render absorbs JIT and module-load cost from the first measurement, and
-    // the ratio is of medians over three interleaved samples per size.
-    const time = (n: number) => {
+    // cost 7.5x the time. With the shared single-pass pairing map it is linear.
+    //
+    // The guard compares the opener flood against an EQUAL-BYTE-SIZE flood of a
+    // plain word with no opener to pair, exactly as the empty-display-pair test
+    // above does: both inputs are the same length and pay the same remark parse,
+    // so machine speed and shard load scale BOTH measurements together and
+    // cancel in the ratio. What is left is the per-opener work. The current
+    // single-pass pairing keeps that at a stable ~3x of the no-opener baseline
+    // (both floods are 84 KB); a per-opener close scan would make only the
+    // opener side quadratic -- the no-opener baseline can never go quadratic --
+    // pushing the ratio into the tens. Asserting a ratio of equal-size inputs,
+    // not a size-scaling ratio and not a wall-clock bound, is why the earlier
+    // 6000-vs-2000 form read 5.24 against a limit of 5 on a loaded shard: at
+    // only 3x input the renderer's superlinear remark cost already drifts the
+    // "linear" ratio close to the limit, with no load headroom (issue #18623).
+    // '<customblock> ' and the baseline word are both 14 chars so the two
+    // floods match byte for byte. A warm-up render absorbs JIT and module-load
+    // cost; the ratio is of medians over three interleaved samples per shape.
+    const openerFlood = (n: number) => '<customblock> '.repeat(n) + '\\(x\\)'
+    const plainFlood = (n: number) => 'plainwordxyz. '.repeat(n) + '\\(x\\)'
+    const time = (s: string) => {
       const t0 = performance.now()
-      render(<MarkdownRenderer content={'<customblock> '.repeat(n) + '\\(x\\)'} />)
+      render(<MarkdownRenderer content={s} />)
       return performance.now() - t0
     }
-    time(2000)
+    time(openerFlood(6000))
     const ratio = medianRatio(
-      () => time(6000),
-      () => time(2000),
+      () => time(openerFlood(6000)),
+      () => time(plainFlood(6000)),
     )
-    expect(ratio).toBeLessThan(5)
-    const { container } = render(<MarkdownRenderer content={'<customblock> '.repeat(6000) + '\\(x\\)'} />)
+    expect(ratio).toBeLessThan(4.5)
+    const { container } = render(<MarkdownRenderer content={openerFlood(6000)} />)
     // Unclosed openers are lone tags shown as source; the math after them is prose math.
     expect(container.querySelectorAll('.katex').length).toBe(1)
     expect(container.textContent).toContain('<customblock>')

@@ -22,7 +22,7 @@
  * `EFFORT_HELP`. Those tables held real, shipped, untranslated English and the
  * gate reported them as clean:
  *
- *   - `pages/ChatSidebar.tsx` — the session filter and sort menus rendered
+ *   - `pages/chat-sidebar/SearchDock.tsx` — the session filter and sort menus rendered
  *     `Unread` / `In progress` / `Newest` / `Created (Newest)` in every locale.
  *   - `lib/effort.ts` — the reasoning-effort picker rendered `High` in every
  *     locale, under a translated `强度` heading.

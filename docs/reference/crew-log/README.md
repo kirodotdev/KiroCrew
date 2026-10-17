@@ -24,6 +24,7 @@ and frame that serve them, read
 |---|---|
 | [envelope.md](envelope.md) | File layout, header fields, the eight common entry fields, `ref` and `thread`. Kind-independent. |
 | [session-types.md](session-types.md) | Every session log entry type, one subsection each, with fields and an example. |
+| [fold-paths.md](fold-paths.md) | Every path each advertised session fold renders, with the type its empty state carries, derived by calling the folds themselves. |
 | [crew-types.md](crew-types.md) | The crew's log's type families and the two dispatch contracts. |
 | [member-event-log](../../system-specs/modules/member-event-log.md) | The canonical `member`-kind vocabulary, projections, migration, and multi-writer adapter. |
 | [reading-and-writing.md](reading-and-writing.md) | Reader API, writer rules, ownership, and the fail-soft emitter. |
@@ -157,8 +158,14 @@ directly and is unaffected.
 `KIROCREW_CREW_LOG` is set to a falsy value (`0`, `false`, `no` or `off`). A value it
 does not recognise (a typo such as `fasle`) also switches it off, and the gateway logs
 a warning naming the value. With the
-flag off it creates no `session` unit and no session emit path reaches storage. The
-`member` event log is independent of that flag and continues to use the same store.
+flag off it creates no `session` unit and no session emit path reaches storage, and
+the crew emitter writes no `crew/dispatch` or `crew/report` either. The `member`
+event log is independent of that flag and continues to use the same store.
+
+**Closed session units expire.** The archive-retention sweep deletes a whole closed
+`session` unit once it is older than `session.archive_retention_days`; a negative
+value turns the sweep off. Crew units are never aged. See
+[crew-log-core.md](../../system-specs/modules/crew-log-core.md).
 
 **The session vocabulary is past its freeze point.** Session emission is on by
 default, so installs hold session logs a later reader must still accept; see the

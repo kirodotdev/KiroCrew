@@ -512,6 +512,7 @@ async def test_send_bundle_remints_once_when_the_peer_rejects_the_credential():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "stale"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1102,6 +1103,7 @@ async def test_send_bundle_refuses_when_no_credential_is_held():
     mgr._tunnel_epoch = {}
     mgr._tokens = {}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1128,6 +1130,7 @@ async def test_send_bundle_reports_an_unreachable_peer_without_leaking_the_bundl
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "irrelevant-credential"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=1
@@ -1219,6 +1222,7 @@ async def test_send_bundle_names_an_older_peer_when_the_importer_is_missing(stat
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -1577,6 +1581,7 @@ def test_the_import_prefix_is_streamed_not_joined(tmp_path):
     reserved, on exactly the large imports it admits."""
     import tracemalloc
 
+    from kiro_crew.dashboard import chat_utils
     from kiro_crew.dashboard import session_transfer as st
 
     n, width = 4000, 2000
@@ -1590,6 +1595,10 @@ def test_the_import_prefix_is_streamed_not_joined(tmp_path):
         for i in range(n)
     ]
     path = tmp_path / "s" / "slot.jsonl"
+    # The display-redaction verdict store is a bounded process-wide cache that
+    # other tests fill; its table doubling when this write adds 4,000 verdicts is
+    # not a copy of the prefix, so start it empty to measure only the write.
+    chat_utils._clear_display_redaction_cache()
     tracemalloc.start()
     try:
         st._write_import_prefix(path, "2026-01-01T00:00:00Z", rows)
@@ -2407,6 +2416,7 @@ async def test_send_bundle_downgrades_to_v1_when_the_peer_refuses_v2():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2480,6 +2490,7 @@ async def test_send_bundle_downgrades_only_once():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2542,6 +2553,7 @@ def _size_refusing_peer(refusal_code: str):
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -2809,6 +2821,7 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
     mgr._tunnel_epoch = {}
     mgr._tokens = {"peer": "tok"}
     mgr._peer_sessions = {}
+    mgr._chained_far_end = {}
     mgr._exchange_link = _identity_exchange  # type: ignore[method-assign]
     mgr.status = lambda _id: TunnelStatus(  # type: ignore[method-assign]
         instance_id="peer", state=TunnelState.CONNECTED, local_port=7778
@@ -5577,20 +5590,34 @@ async def test_an_upload_the_peer_stops_reading_times_out(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_finished_upload_leaves_the_reply_wait_to_the_read_timeout(tmp_path, monkeypatch):
+async def test_a_finished_upload_leaves_the_reply_wait_to_the_read_timeout(tmp_path):
+    """The no-progress deadline is armed while chunks flow and cleared by the
+    last pull, so the wait for the peer's reply is the per-read timeout's alone.
+
+    The hand-off is read from the stall itself (``Timeout.when()``): a deadline
+    of ``None`` cannot lapse, however slow the reply. ``_TRANSFER_TIMEOUT`` stays
+    at its default, because each pull is a thread hop whose latency is the
+    runner's, and a deadline shorter than that hop times the UPLOAD out -- the
+    sibling test's case, not this one's.
+    """
     import kiro_crew.instances.ssh_tunnel_manager as mod
 
-    monkeypatch.setattr(mod, "_TRANSFER_TIMEOUT", 0.05)
     body = tmp_path / "body.json"
     body.write_bytes(b"{}")
 
+    armed: list[float | None] = []
     stall = asyncio.timeout(None)
     async with stall:
         with body.open("rb") as fh:
-            got = [c async for c in mod._upload_chunks(fh, stall)]
-        await asyncio.sleep(0.2)  # a slow reply after the whole body went up
+            got = []
+            async for chunk in mod._upload_chunks(fh, stall):
+                armed.append(stall.when())
+                got.append(chunk)
+        handed_off = stall.when()
 
     assert got == [b"{}"]
+    assert armed and all(when is not None for when in armed), armed
+    assert handed_off is None
 
 
 @pytest.mark.asyncio

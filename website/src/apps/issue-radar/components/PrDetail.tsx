@@ -89,7 +89,7 @@ function RelTime({ iso, className = '' }: { iso?: string | null; className?: str
       title={absolute}
       onClick={(e) => { e.stopPropagation(); setAbs((v) => !v) }}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setAbs((v) => !v) } }}
-      className={`cursor-pointer rounded-sm hover:text-accent transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 ${className}`}
+      className={`cursor-pointer rounded-sm hover:text-accent transition-colors focus-ring-accent ${className}`}
     >
       {abs ? absolute : relativeTimeOrDate(iso)}
     </span>
@@ -121,7 +121,7 @@ function StatePill({ state, draft, merged }: { state: string; draft?: boolean; m
     )
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-ok-subtle text-ok">
+    <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-full bg-ok-subtle text-ok-text">
       <GitPullRequest size={12} /> {i18nT('apps.issueRadar.components.prDetail.open')}
     </span>
   )

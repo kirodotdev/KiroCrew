@@ -94,6 +94,16 @@ class ProviderPermissionError(ProviderCliError):
     """
 
 
+class ProviderNotFoundError(ProviderCliError):
+    """Raised when the provider answered that the addressed resource does not
+    exist, or is not visible to the caller (GitLab answers 404 for both).
+
+    Raised only by reads that opt into it -- a followed GitLab group's checks --
+    where "no such group" is a user-correctable answer rather than an outage. A
+    subclass of :class:`ProviderCliError` so existing handlers still catch it.
+    """
+
+
 class ProviderInvalidInputError(ProviderCliError):
     """Raised when the provider REJECTED the request because a value in it is not
     acceptable -- as distinct from the caller lacking permission (403) or the

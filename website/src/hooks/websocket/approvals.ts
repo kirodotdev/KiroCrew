@@ -11,7 +11,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
 import { addNotification, removeNotificationByTs } from '../../store/notificationsSlice'
-import { resolveByApprovalId, sseActivityEvent, sseSubagentSpawn, sseSubagentDone } from '../../store/chatSlice'
+import { resolveByApprovalId, sseActivityEvent, sseSubagentSpawn, sseSubagentDone, markSubagentApprovalGone, reconcileGoneSubagent } from '../../store/chatSlice'
 import { dispatchMcNotification, dispatchLiveNotification, APPROVAL_KIND } from '../notificationEvent'
 import { loadUnreadOnAttention } from '../unreadOnAttention'
 import { approvalNotificationBody } from '../../lib/approvalNotificationBody'
@@ -112,6 +112,14 @@ export function useApprovalRegistry(dispatch: AppDispatch, queryClient: QueryCli
             approval_id: id,
             approval_type: resolvedType,
           }))
+        }
+        if (id.startsWith('spawn:') && !outcomeKnown) {
+          // Retired with no known outcome (a reconnect found it gone): the
+          // same gone verdict a refused press records, so no surface keeps
+          // asking for the decision, settled by the spawn inventory.
+          const agentId = id.replace('spawn:', '')
+          dispatch(markSubagentApprovalGone({ id: agentId, approval_id: id }))
+          void dispatch(reconcileGoneSubagent({ slot: targetSlot, id: agentId, approval_id: id }))
         }
         if (id.startsWith('spawn:') && outcomeKnown) {
           const agentId = id.replace('spawn:', '')

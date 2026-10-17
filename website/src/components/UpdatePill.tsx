@@ -98,8 +98,9 @@ export default function UpdatePill({ variant = 'pill' }: { variant?: 'pill' | 'm
       <Icon size={13} className="lucide-inline" />
       {/* The text label yields at narrow widths (the icon + aria-label carry
           the meaning) so the pill cannot push the notification control out of
-          a 320px top bar. */}
-      <span className="hidden sm:inline">{label}</span>
+          a 320px top bar. On desktop the actions group's last collapse rung
+          hides it for the same reason (`tb-drop-update-label`, index.css). */}
+      <span className="tb-drop-update-label hidden sm:inline">{label}</span>
     </button>
   )
 }

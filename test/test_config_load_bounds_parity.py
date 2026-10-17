@@ -53,6 +53,12 @@ def _bounded_numeric_fields() -> list[tuple[str, str, str, float, float]]:
 
 BOUNDED_FIELDS = _bounded_numeric_fields()
 
+#: Bounded fields whose loader rewrites PART of the write range on purpose, so the
+#: generic `lo + 1` probe below is a value the loader is meant to change. Each one has
+#: its own test stating what the loader does with that part.
+RAISED_INSIDE_THE_RANGE = frozenset({"dashboard.title_refresh_every_turns"})
+VERBATIM_FIELDS = [f for f in BOUNDED_FIELDS if f[0] not in RAISED_INSIDE_THE_RANGE]
+
 
 def test_the_field_inventory_is_not_silently_empty() -> None:
     """Guards the ratchet itself.
@@ -62,6 +68,9 @@ def test_the_field_inventory_is_not_silently_empty() -> None:
     the whole suite would pass while checking nothing.
     """
     assert len(BOUNDED_FIELDS) >= 15, f"only {len(BOUNDED_FIELDS)} bounded fields discovered"
+    # An exemption that names no bounded field is stale: the field was renamed or its
+    # range dropped, and the generic probe would silently take it back.
+    assert RAISED_INSIDE_THE_RANGE <= {f[0] for f in BOUNDED_FIELDS}
 
 
 @pytest.mark.parametrize("path_key,section,leaf,lo,hi", BOUNDED_FIELDS, ids=lambda v: str(v))
@@ -83,7 +92,7 @@ def test_a_value_above_the_write_ceiling_is_bounded_on_load(
     )
 
 
-@pytest.mark.parametrize("path_key,section,leaf,lo,hi", BOUNDED_FIELDS, ids=lambda v: str(v))
+@pytest.mark.parametrize("path_key,section,leaf,lo,hi", VERBATIM_FIELDS, ids=lambda v: str(v))
 def test_a_value_inside_the_range_is_stored_verbatim(
     path_key: str, section: str, leaf: str, lo: float, hi: float, tmp_path: Path
 ) -> None:
@@ -98,6 +107,35 @@ def test_a_value_inside_the_range_is_stored_verbatim(
     cfg = _loaded(tmp_path, {section: {leaf: inside}})
     got = getattr(getattr(cfg, section), leaf)
     assert got == inside, f"{path_key} rewrote a deliberate in-range {inside!r} to {got!r}"
+
+
+def test_the_title_refresh_cadence_loads_verbatim_except_for_the_gap_it_raises(
+    tmp_path: Path,
+) -> None:
+    """The one field in `RAISED_INSIDE_THE_RANGE`, and why it is there.
+
+    The write table admits the loader's whole domain, 0 (the built-in schedule) through
+    the ceiling, and the loader stores 0 and MIN..MAX verbatim. The gap 1..MIN-1 is inside
+    that range and rises to MIN on load, so a typo of 1 cannot spend an LLM call on every
+    turn. The PATCH gate stores the gap the same way `kirocrew config set` does, and the
+    Settings row reads back the LOADED value, so the cadence it shows is the one that runs.
+    """
+    from kiro_crew.config.sections import (
+        TITLE_REFRESH_EVERY_TURNS_MAX,
+        TITLE_REFRESH_EVERY_TURNS_MIN,
+    )
+
+    for verbatim in (
+        0,
+        TITLE_REFRESH_EVERY_TURNS_MIN,
+        TITLE_REFRESH_EVERY_TURNS_MIN + 1,
+        TITLE_REFRESH_EVERY_TURNS_MAX,
+    ):
+        cfg = _loaded(tmp_path, {"dashboard": {"title_refresh_every_turns": verbatim}})
+        assert cfg.dashboard.title_refresh_every_turns == verbatim
+    for raised in range(1, TITLE_REFRESH_EVERY_TURNS_MIN):
+        cfg = _loaded(tmp_path, {"dashboard": {"title_refresh_every_turns": raised}})
+        assert cfg.dashboard.title_refresh_every_turns == TITLE_REFRESH_EVERY_TURNS_MIN, raised
 
 
 def test_type_handling_stays_upstream_and_this_change_only_adds_range(tmp_path: Path) -> None:
@@ -162,6 +200,7 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
     re-hardcodes a literal in either place.
     """
     from kiro_crew.config import loader
+    from kiro_crew.config.sections import TITLE_REFRESH_EVERY_TURNS_MAX
 
     expected = {
         "agent.soft_stop_budget_secs": (loader.SOFT_STOP_BUDGET_MIN, loader.SOFT_STOP_BUDGET_MAX),
@@ -179,6 +218,10 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
             loader.RECENT_TINT_COUNT_MIN,
             loader.RECENT_TINT_COUNT_MAX,
         ),
+        # The loader's floor is 0, the built-in schedule (`_title_refresh_every_turns`
+        # clamps at 0 and raises 1-3 to TITLE_REFRESH_EVERY_TURNS_MIN itself), so the
+        # write table admits the same 0..MAX and leaves the raise to the loader.
+        "dashboard.title_refresh_every_turns": (0, TITLE_REFRESH_EVERY_TURNS_MAX),
     }
     for path_key, (lo, hi) in expected.items():
         spec = _EDITABLE_CONFIG[path_key]

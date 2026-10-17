@@ -26,7 +26,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { screen, waitFor, fireEvent, within, act, getConfig } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { Routes, Route, useNavigate } from 'react-router-dom'
 import RemoteArtifactDetailPage from '../pages/RemoteArtifactDetailPage'
@@ -125,28 +126,6 @@ function SwitchArtifact({ to, label = 'switch artifact' }: { to: string; label?:
 
 /** The comment-panel toggle (a `Btn` carrying `aria-pressed`). */
 const commentToggle = () => screen.getByRole('button', { name: /Comments/ })
-
-/**
- * A named lost-run ceiling for waitFor/findBy (website/docs/testing.md). A wait
- * that runs out fails BY NAME and says how long it really waited, so a starved
- * runner reads as "SIDEBAR_READY ran out after 5310 ms" rather than as a missing
- * element. Testing Library reads `timeout` once, as a wait starts, which is when
- * the elapsed time starts.
- */
-function namedCeiling(name: string, timeout: number) {
-  let startedAt = 0
-  return {
-    get timeout() {
-      startedAt = performance.now()
-      return timeout
-    },
-    onTimeout: (error: Error) =>
-      getConfig().getElementError(
-        `${name} (${timeout} ms) ran out after ${Math.round(performance.now() - startedAt)} ms: ${error.message}`,
-        document.body,
-      ),
-  }
-}
 
 /**
  * Ceiling for the comment sidebar's auto-reveal. The sidebar is not on the

@@ -278,10 +278,15 @@ class TestKnowledgeSearchToolDefinition:
 
 class TestKnowledgeSearchSourceFilter:
     def test_source_id_rejects_non_string(self):
-        from kiro_crew.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _validate_args
 
+        # At the MCP entry point: a genuinely wrong type (list) on a string
+        # field is still rejected, while a number is defensively converted to
+        # its string form (the re-typed-numeric-string repair).
         with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": "q", "source_id": 7})
+            _validate_args("local_knowledge_search", {"query": "q", "source_id": [7]})
+        coerced = _validate_args("local_knowledge_search", {"query": "q", "source_id": 7})
+        assert coerced["source_id"] == "7"
 
     def test_source_id_rejects_overlong_value(self):
         from kiro_crew.mcp_core import _call_tool_inner
@@ -309,10 +314,15 @@ class TestKnowledgeSearchSourceFilter:
         )
 
     def test_namespace_rejects_non_string(self):
-        from kiro_crew.mcp_core import _call_tool_inner
+        from kiro_crew.mcp_core import _validate_args
 
+        # At the MCP entry point: a genuinely wrong type (list) on a string
+        # field is still rejected, while a number is defensively converted to
+        # its string form (the re-typed-numeric-string repair).
         with pytest.raises(ValidationError):
-            _call_tool_inner("local_knowledge_search", {"query": "q", "namespace": 7})
+            _validate_args("local_knowledge_search", {"query": "q", "namespace": [7]})
+        coerced = _validate_args("local_knowledge_search", {"query": "q", "namespace": 7})
+        assert coerced["namespace"] == "7"
 
     def test_namespace_rejects_overlong_value(self):
         from kiro_crew.mcp_core import _call_tool_inner

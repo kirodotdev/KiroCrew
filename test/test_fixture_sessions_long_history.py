@@ -13,13 +13,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.chat_utils import _collapse_wire_rows
 from kiro_crew.history import ConversationLog
 from kiro_crew.testing.fixtures import seeded_home
 
 KEY = "dashboard_long-history"
 ROTATED_ROWS = 60
-LIVE_ROWS = 8
+LIVE_ROWS = 9
+LONG_REPLY_LINES = 60
+LONG_REPLY_SECTIONS = 4
 
 
 def _segments(sessions: Path) -> list[Path]:
@@ -95,3 +98,31 @@ def test_the_shipped_segment_matches_what_rotation_writes_today(tmp_path, monkey
     assert shipped_header["reason"] == produced_header["reason"] == "rotate"
     assert shipped_header["count"] == len(shipped_lines) - 1 == ROTATED_ROWS
     assert set(shipped_row) == set(produced_row)
+
+
+def test_sessions_long_history_turns_session_summaries_on() -> None:
+    """The chat right panel offers its Summary tab only when summaries are enabled.
+
+    ``SessionSummaryConfig.enabled`` defaults to off, so a seeded home whose
+    config says nothing about it never shows the tab.
+    """
+    with seeded_home("sessions-long-history"):
+        assert KiroCrewConfig.load().session_summary.enabled is True
+
+
+def test_sessions_long_history_ends_on_a_long_multi_section_reply() -> None:
+    """The newest live row is a reply that outlasts the viewport after a prompt.
+
+    The pinned-prompt banner has nothing to do until a reply taller than the
+    viewport scrolls past its prompt, so the seed ends on one.
+    """
+    with seeded_home("sessions-long-history") as home:
+        live = ConversationLog(base_dir=home / "sessions").read_messages(KEY)
+
+    reply = live[-1]
+    assert reply["role"] == "assistant"
+    # Same row shape as the rows before it, so it reads as writer output.
+    assert set(reply) == set(live[-2])
+    lines = reply["content"].splitlines()
+    assert len(lines) >= LONG_REPLY_LINES
+    assert sum(line.startswith("## ") for line in lines) >= LONG_REPLY_SECTIONS

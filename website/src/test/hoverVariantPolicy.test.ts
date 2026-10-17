@@ -207,8 +207,8 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
   })
 
   it.each([
-    ['pages/ChatSidebar.tsx', 'absolute top-1/2 -translate-y-1/2 right-1.5 p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
-    ['pages/ChatSidebar.tsx', 'has-[[data-state=open]]:opacity-100'],
+    ['pages/chat-sidebar/folderBlocks.tsx', 'absolute top-1/2 -translate-y-1/2 right-1.5 p-1 bg-card border border-border shadow-sm opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100'],
+    ['pages/chat-sidebar/folderBlocks.tsx', 'has-[[data-state=open]]:opacity-100'],
     ['components/ui.tsx', "'opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100"],
     ['components/chat-input/FilePreviewStrip.tsx', 'group-hover/preview:opacity-100 [@media(hover:none)]:opacity-100'],
     ['components/notifications/NotificationCard.tsx', 'group-hover:opacity-50 [@media(hover:none)]:opacity-60'],
@@ -224,11 +224,11 @@ describe('hidden-until-hover controls stay reachable on touch', () => {
     ['apps/code-review-sage/components/RunCard.tsx', "(onDelete ? ' [@media(hover:none)]:pb-7' : '')"],
     // Every notification dismiss rests at the same weight on touch.
     ['components/notifications/NotificationFeed.tsx', 'group-hover:opacity-40 [@media(hover:none)]:opacity-60'],
-    ['pages/ChatSidebar.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],
+    ['pages/chat-sidebar/HistoryPane.tsx', "${remoteInstanceId ? '' : '[@media(hover:none)]:pr-10 '}"],
     // A session row on any touch screen (an iPad too) gets the single ⋯ menu, not the overlay cluster.
-    ['pages/ChatSidebar.tsx', 'isMobile={isMobile || isTouchDevice}'],
+    ['pages/ChatSidebar.tsx', 'isMobile: isMobile || isTouchDevice'],
     // On touch a non-empty folder row's cluster sits inline, the shape an empty folder row already uses.
-    ['pages/ChatSidebar.tsx', '[@media(hover:none)]:opacity-100 [@media(hover:none)]:static [@media(hover:none)]:translate-y-0'],
+    ['pages/chat-sidebar/folderBlocks.tsx', '[@media(hover:none)]:opacity-100 [@media(hover:none)]:static [@media(hover:none)]:translate-y-0'],
     // The table view's folder row spans the whole sideways-scrolling table, so on touch its menu sits inline, not ml-auto past the viewport.
     ['components/library/LibraryTable.tsx', 'ml-auto [@media(hover:none)]:ml-0 opacity-0'],
   ])('%s carries its touch state', (file, snippet) => {

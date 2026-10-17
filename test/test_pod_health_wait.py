@@ -17,11 +17,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew.instances import run_marker
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.testing.clock import ManualClock
 
 
 @pytest.fixture(autouse=True)
@@ -187,25 +189,30 @@ class TestHealthWaitSecsResolver:
                 )
 
 
-class _Clock:
-    """Deterministic stand-in for the module's monotonic clock and sleep."""
+def _pin_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    """A clock only the wait reads, starting at 0.
 
-    def __init__(self) -> None:
-        self.now = 0.0
+    Installed on ``pod_cli``'s own ``time`` binding. That binding IS the stdlib
+    module, so patching ``pod_cli.time.sleep`` replaces ``time.sleep`` for every
+    thread in the worker: a thread an earlier test left running then returns from
+    its sleep at once and adds its duration to the wait's clock, and the budget
+    expires between two polls of a test that publishes its credential on poll 3.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, pod_cli)
+    return clock
 
-    def monotonic(self) -> float:
-        return self.now
 
-    def sleep(self, secs: float) -> None:
-        self.now += secs
+class TestTheWaitsClockIsItsOwn:
+    def test_another_thread_keeps_the_real_sleep_and_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert_clock_is_private(_pin_clock(monkeypatch), pod_cli)
 
 
 class TestWaitHealthyBudget:
-    def _pin_clock(self, monkeypatch: pytest.MonkeyPatch) -> _Clock:
-        clock = _Clock()
-        monkeypatch.setattr(pod_cli.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(pod_cli.time, "sleep", clock.sleep)
-        return clock
+    def _pin_clock(self, monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+        return _pin_clock(monkeypatch)
 
     def test_budget_is_wall_clock_with_fast_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``tries`` is the budget in seconds against a monotonic deadline.
@@ -220,7 +227,28 @@ class TestWaitHealthyBudget:
         cfg = PodConfig.load()
         assert pod_cli._wait_healthy(cfg, "x", 7999, tries=7) == 0
         assert len(calls) == 8
-        assert clock.now == 7.0
+        assert clock.monotonic() == 7.0
+
+    def test_the_last_sleep_never_overshoots_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A probe latency that leaves part of a second: the last sleep is cut to it.
+
+        Each probe costs 0.75 s, so after the first 1 s sleep only 0.5 s of the
+        3 s budget is left. Sleeping a full second there would poll past the
+        deadline instead of at it.
+        """
+        clock = self._pin_clock(monkeypatch)
+
+        def _slow_health(cfg: object, n: object, p: object) -> int:
+            clock.advance(0.75)
+            return 0
+
+        monkeypatch.setattr(rt, "health", _slow_health)
+        monkeypatch.setattr(rt, "unit_state", lambda cfg, n: ("activating", 0))
+        cfg = PodConfig.load()
+        assert pod_cli._wait_healthy(cfg, "x", 7999, tries=3) == 0
+        assert clock.sleeps == (1.0, 0.5)
 
     def test_slow_probes_shrink_the_sleeps_instead_of_stretching_the_budget(
         self, monkeypatch: pytest.MonkeyPatch
@@ -232,7 +260,7 @@ class TestWaitHealthyBudget:
 
         def _slow_health(cfg: object, n: object, p: object) -> int:
             calls.append(1)
-            clock.now += 3.0  # each probe burns its own 3s timeout
+            clock.advance(3.0)  # each probe burns its own 3s timeout
             return 0
 
         monkeypatch.setattr(rt, "health", _slow_health)
@@ -241,7 +269,7 @@ class TestWaitHealthyBudget:
         assert pod_cli._wait_healthy(cfg, "x", 7999, tries=7) == 0
         # Poll-count semantics would spend tries * 4s of wall clock; the
         # deadline caps the overrun at one probe past the budget.
-        assert clock.now <= 7.0 + 3.0
+        assert clock.monotonic() <= 7.0 + 3.0
         assert len(calls) == 2
 
     def test_a_gateway_that_served_errors_then_went_silent_is_not_a_slow_boot(
@@ -884,11 +912,8 @@ class TestWaitHealthyRequiresTheCredential:
     so only a test that controls the ordering can pin it on every platform.
     """
 
-    def _pin_clock(self, monkeypatch: pytest.MonkeyPatch) -> _Clock:
-        clock = _Clock()
-        monkeypatch.setattr(pod_cli.time, "monotonic", clock.monotonic)
-        monkeypatch.setattr(pod_cli.time, "sleep", clock.sleep)
-        return clock
+    def _pin_clock(self, monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+        return _pin_clock(monkeypatch)
 
     def _secret_path(self, cfg: PodConfig, name: str, port: int) -> Path:
         return cfg.home_dir(name) / run_marker.RUN_DIR_NAME / run_marker.secret_file_name(port)
@@ -1253,13 +1278,11 @@ class TestWaitHealthyRequiresTheCredential:
         healthy.
         """
         cfg = PodConfig.load()
-        clock = {"t": 0.0}
-        monkeypatch.setattr(pod_cli.time, "monotonic", lambda: clock["t"])
-        monkeypatch.setattr(pod_cli.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+        clock = _pin_clock(monkeypatch)
 
         def _slow_health(_cfg: object, _n: object, _p: object) -> int:
             # A single probe that takes longer than the whole span requirement.
-            clock["t"] += pod_cli._MIN_SERVING_SPAN_SECS + 2.0
+            clock.advance(pod_cli._MIN_SERVING_SPAN_SECS + 2.0)
             return 200
 
         monkeypatch.setattr(rt, "health", _slow_health)
@@ -1284,9 +1307,7 @@ class TestWaitHealthyRequiresTheCredential:
         the wrong cleanup branch.
         """
         cfg = PodConfig.load()
-        clock = {"t": 0.0}
-        monkeypatch.setattr(pod_cli.time, "monotonic", lambda: clock["t"])
-        monkeypatch.setattr(pod_cli.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+        _pin_clock(monkeypatch)
         seen: list[int] = []
 
         def _health(_cfg: object, _n: object, _p: object) -> int:

@@ -256,6 +256,7 @@ def test_importing_cli_bench_does_not_drag_the_vector_store_into_the_boot_path()
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
     )
     assert proc.returncode == 0, proc.stderr

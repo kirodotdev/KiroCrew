@@ -4,6 +4,7 @@ import { SquareTerminal, Check, ClipboardCheck, AlertCircle } from 'lucide-react
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 import RunInTerminalConfirm from './RunInTerminalConfirm'
+import { RunInTerminalScope } from './runInTerminalScope'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
@@ -15,8 +16,9 @@ function stripPromptChars(code: string): string {
 
 /**
  * "Run in terminal" button on shell code blocks. Dispatches a `mc:run-in-terminal`
- * request; ChatPage opens a fresh terminal tab in the current chat (starting in
- * that chat's working directory) and runs the command there, then echoes back a
+ * request; the host page that owns this chat (the `RunInTerminalScope` it
+ * provides) opens a fresh dock terminal tab starting in that chat's working
+ * directory and runs the command there, then echoes back a
  * `mc:run-in-terminal-result` so we can flash sent/failed. Correlated by reqId
  * so overlapping runs don't cross wires.
  *
@@ -67,6 +69,8 @@ function RunInTerminalBtnWithConfig({ code, lang }: { code: string; lang?: strin
 }
 
 function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: string; willCopy: boolean }) {
+  // The host page that renders this chat; only it answers the request.
+  const scope = useContext(RunInTerminalScope)
   const [status, setStatus] = useState<'idle' | 'sent' | 'copied' | 'error'>('idle')
   const [pending, setPending] = useState<{ command: string; warnReason: string } | null>(null)
   const flashTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -102,8 +106,9 @@ function RunInTerminalBtnInner({ code, lang, willCopy }: { code: string; lang?: 
       clearTimeout(resultTimerRef.current)
       resultUnsubRef.current = null
     }
-    window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: cleaned, reqId, lang } }))
-  }, [flash, lang])
+    const detail = scope == null ? { code: cleaned, reqId, lang } : { code: cleaned, reqId, lang, scope }
+    window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail }))
+  }, [flash, lang, scope])
 
   const askToRun = useCallback(() => {
     const cleaned = stripPromptChars(code)

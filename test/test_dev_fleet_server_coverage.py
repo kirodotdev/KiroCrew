@@ -39,6 +39,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 # The launchd label derivation imports the pod launchd module for its label
 # prefix; on a host where that optional module is unavailable the function
@@ -816,24 +817,36 @@ def allow_pod(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pod_up_refused_by_guard(monkeypatch):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value="nope"))
     assert await worktree_ops._pod_up("feat") == {"ok": False, "error": "nope"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_cli_failure_is_reported(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(1, "", "boom")))
     assert await worktree_ops._pod_up("feat") == {"ok": False, "error": "boom"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_non_json_output_still_ok(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, "not json", "")))
     assert await worktree_ops._pod_up("feat") == {"ok": True, "output": "not json"}
 
 
 @pytest.mark.asyncio
 async def test_pod_up_json_output_is_merged(monkeypatch, allow_pod):
+    monkeypatch.setattr(
+        repository, "_find_worktree", AsyncMock(return_value=({"path": "/w"}, None))
+    )
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, '{"port": 9999}', "")))
     assert await worktree_ops._pod_up("feat") == {"ok": True, "port": 9999}
 
@@ -1151,10 +1164,10 @@ async def test_disk_six_sequential_polls_run_one_aggregation(monkeypatch):
     monkeypatch.setattr(runtime, "_run_cmd", fake_run)
 
     assert (await fleet_state._disk())["status"] == "computing"
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     for _ in range(5):
         snap = await fleet_state._disk()
         assert snap == {"status": "done", "total_mb": 12, "per": {"wt-a": 12}}
@@ -1192,10 +1205,10 @@ async def test_disk_stale_cache_coalesces_one_refresh(monkeypatch):
     await asyncio.sleep(0)  # let the refresh task reach the discovery await
     assert started == 1
     release.set()
-    for _ in range(50):
-        if fleet_state._DISK["total_mb"] == 7:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["total_mb"] == 7,
+        describe=lambda: f'disk total_mb: {fleet_state._DISK.get("total_mb")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": 7, "per": {"wt-a": 7}}
     assert started == 1
 
@@ -1216,10 +1229,10 @@ async def test_disk_invalidate_forces_refresh_on_next_read(monkeypatch):
     fleet_state._disk_invalidate()
     # The stale numbers keep serving while the refresh runs behind them.
     assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
-    for _ in range(50):
-        if fleet_state._DISK["total_mb"] == 9:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["total_mb"] == 9,
+        describe=lambda: f'disk total_mb: {fleet_state._DISK.get("total_mb")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": 9, "per": {"wt-b": 9}}
 
 
@@ -1242,10 +1255,10 @@ async def test_disk_mid_flight_invalidation_leaves_result_stale(monkeypatch):
     await fleet_state._disk()  # starts the aggregation
     fleet_state._disk_invalidate()  # a mutation lands mid-flight
     release.set()
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     # The measurement is kept for display but left stale: the next read starts
     # a fresh aggregation instead of serving pre-mutation numbers for a TTL.
     assert fleet_state._DISK_COMPUTED_AT == 0.0
@@ -1270,10 +1283,10 @@ async def test_disk_idle_starts_background_aggregation(monkeypatch):
     monkeypatch.setattr(runtime, "_run_cmd", fake_run)
 
     assert await fleet_state._disk() == {"status": "computing", "total_mb": None, "per": {}}
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     assert fleet_state._DISK["per"] == {"wt-a": 12}
     assert fleet_state._DISK["total_mb"] == 12
 
@@ -1289,10 +1302,10 @@ async def test_disk_aggregation_failure_reports_unknown(monkeypatch):
     )
 
     await fleet_state._disk()
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": None, "per": {}}
 
 
@@ -1311,10 +1324,10 @@ async def test_disk_transient_failure_preserves_numbers_and_retries(monkeypatch)
 
     # Stale read starts the refresh, which fails behind the scenes.
     assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
-    for _ in range(50):
-        if not fleet_state._DISK_COMPUTING:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not fleet_state._DISK_COMPUTING,
+        describe=lambda: f"disk still computing: {fleet_state._DISK_COMPUTING}",
+    )
     # Good numbers survive the failure, and the stamp stays 0.0 so the next
     # read retries instead of serving the failure for a full TTL.
     assert fleet_state._DISK == {"status": "done", "total_mb": 42, "per": {"a": 42}}

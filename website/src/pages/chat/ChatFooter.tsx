@@ -316,16 +316,20 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
         ) : !regenerating && state === 'compacting' ? (
           <span className="text-muted text-[13px] font-mono animate-pulse"><Hourglass className="lucide-inline" /> {i18nT('pages.chat.chatFooter.compacting')}</span>
         ) : (
-          // The artwork is the visible indicator; the label is for screen readers,
-          // and only shows when the art cannot paint, so the row is never bare glyphs (#13779).
+          // The ghost poses animate; the "Thinking…" label sits beside them so a
+          // first-time (sighted) user reads what the row means instead of guessing
+          // at bare glyphs (#19377). `role=status` + aria-label keep a stable
+          // accessible name for assistive tech (the pose art is aria-hidden), so
+          // the label is now visible to everyone, not screen-reader-only (#13779).
           <div
             className="inline-flex items-center gap-2"
             role="status"
             aria-label={i18nT('pages.chat.chatFooter.thinking')}
           >
             {/* A throwing theme loader must not reach the route-level boundary and
-                blank the chat; it renders nothing, and the empty wrapper unhides the label. */}
-            {!artFailed && <span className="contents peer" onErrorCapture={() => setArtFailed(true)}>
+                blank the chat; it renders nothing (the label alone then carries
+                the indicator). */}
+            {!artFailed && <span className="contents" onErrorCapture={() => setArtFailed(true)}>
             <ErrorBoundary fallback={null}>
               {loader.kind === 'custom'
                 // The theme replaced the whole loader — it owns its size and motion.
@@ -347,7 +351,7 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                   : <SwapCarousel icons={loader.icons} />}
             </ErrorBoundary>
             </span>}
-            <span className={`text-muted text-[13px] font-mono${artFailed ? '' : ' sr-only peer-empty:not-sr-only'}`}>{i18nT('pages.chat.chatFooter.thinking')}</span>
+            <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>
           </div>
         )}
       </div>

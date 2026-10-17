@@ -260,7 +260,7 @@ class TestOrphanCloneSweep:
 
         src = inspect.getsource(W._delete_clone_if_unowned)
         lock_at = src.index("with reg._lock:")
-        rmtree_at = src.index("shutil.rmtree(")
+        rmtree_at = src.index("rmtree_force(")
         assert lock_at < rmtree_at, "the rmtree is not inside the held lock"
         # The rmtree must not be dedented back out of the `with` block: everything from the lock
         # to the rmtree stays in one block, so no `return`-then-delete-outside pattern.

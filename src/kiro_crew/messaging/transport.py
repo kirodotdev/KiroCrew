@@ -201,11 +201,12 @@ class TransportCapabilities:
     supports_session_resume: bool = False
     # Whether ``send_message`` returns a real message id. Most platforms answer a
     # send with one, so a caller can read an EMPTY id as "refused or exhausted" and
-    # not mistake a dropped message for a delivered one. Two platforms return no id
-    # at all (WeCom's proactive command, Feishu's reply), so for them an empty
-    # string is the SUCCESS value and failure raises — and a caller applying the
-    # empty-id test there reports a delivered message as lost, which for a cron
-    # result means the dedup hash never advances and the same result repeats.
+    # not mistake a dropped message for a delivered one. WeCom's proactive command
+    # and Feishu's reply return no id at all, and iMessage's bridge reports one only
+    # best-effort, so for them an empty string is the SUCCESS value and failure
+    # raises — and a caller applying the empty-id test there reports a delivered
+    # message as lost, which for a cron result means the dedup hash never advances
+    # and the same result repeats.
     # Default True because that is the majority contract and the conservative
     # direction: a transport that forgets to declare it is read strictly, which
     # over-reports failure rather than inventing success.
@@ -254,10 +255,11 @@ def delivery_confirmed(capabilities: TransportCapabilities, message_id: str) -> 
     delivery, and treating it as delivery is a silent loss with consequences
     downstream: cron stands its Slack fallback down and advances its dedup hash on a
     confirmed delivery, so one false success loses the result on every surface at
-    once. WeCom's proactive command and Feishu's reply carry no id at all, so for
-    them the empty string is the SUCCESS value and failure raises -- and applying the
-    empty-id test there turns every delivered cron result into a reported loss whose
-    dedup hash never advances, repeating the same result on every tick.
+    once. WeCom's proactive command and Feishu's reply carry no id at all, and
+    iMessage's bridge reports one only best-effort, so for them the empty string is
+    the SUCCESS value and failure raises -- and applying the empty-id test there
+    turns every delivered cron result into a reported loss whose dedup hash never
+    advances, repeating the same result on every tick.
 
     ``returns_message_id`` is each transport's own answer about which one it follows.
     This function exists so the three proactive-send call sites ask it the same way:

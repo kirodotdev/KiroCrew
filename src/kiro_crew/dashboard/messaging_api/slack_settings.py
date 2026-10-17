@@ -1,7 +1,9 @@
-"""The Slack settings API: ``GET``/``PUT /api/slack/config`` and the app manifest."""
+"""The Slack settings API: ``GET``/``PUT /api/slack/config`` and token validation."""
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import os
 import re
@@ -19,7 +21,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
-        _write_env_off_loop,
+        _write_env_or_roll_back,
         channel_restart_required,
         clean_session_folder,
         ensure_channel_folder,
@@ -69,7 +71,8 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
     )
 
     cfg = KiroCrewConfig.load()
-    creds = cfg.load_credentials()
+    # Off-loop: a secret:// reference is read and decrypted from the vault.
+    creds = await asyncio.to_thread(cfg.load_credentials)
     bot = creds.get(CRED_SLACK_BOT_TOKEN, "")
     app = creds.get(CRED_SLACK_APP_TOKEN, "")
     owner = creds.get(CRED_OWNER_ID, "")
@@ -305,27 +308,10 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             except ConfigReadError:
                 return _deny("config.json is corrupt", status=500)
         if env_updates:
-            # Off-loop: the .env write is blocking file IO (lock, temp write,
-            # owner-only lockdown, replace) and must not block the event loop.
-            try:
-                await _write_env_off_loop(env_updates)
-            except BaseException:
-                # Roll config back so a failed .env write cannot leave the NEW
-                # settings paired with the OLD credentials on disk.
-                if staged:
-                    await _cfg_write.rollback("Slack")
-                raise
-            # Keep the live process environment in sync with the new .env state.
-            # load_credentials() lets os.environ win over .env, so without this a
-            # replaced/cleared token would keep being reported as installed by
-            # GET until restart, and spawned children would inherit the stale
-            # value. The Slack socket connection itself still reconnects only on
-            # restart, which restart_required below surfaces to the UI.
-            for key, new_val in env_updates.items():
-                if new_val is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = new_val
+            # A failed .env write undoes the config commit above, so a refused
+            # save changes nothing (see _write_env_or_roll_back).
+            rollback = functools.partial(_cfg_write.rollback, "Slack") if staged else None
+            await _write_env_or_roll_back(env_updates, rollback)
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:

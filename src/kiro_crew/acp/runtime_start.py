@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.config import live
+from kiro_crew.session_start_sizing import effective_session_start_concurrency
 from kiro_crew.start_priority import PrioritySemaphore, StartPriority
 
 if TYPE_CHECKING:
@@ -85,15 +86,30 @@ _cold_start_admissions_lock = threading.Lock()
 
 
 def _cold_start_admission() -> _ColdStartAdmission:
+    """The current loop's admission, at the configured width.
+
+    The width is ``agent.runtime_spawn_concurrency`` as the process's session
+    manager published it (``cold_start_sizing.configured_runtime_spawn_width``),
+    else :data:`_COLD_START_MAX_CONCURRENT` for a caller that built none. The
+    published width can grow once the gateway's post-bind host reading lands, so
+    every lookup widens an existing admission to it (an int compare; it never
+    shrinks). A spawn that ran before the manager published is therefore not
+    stuck at the default for the loop's lifetime.
+    """
     from kiro_crew.acp.runtime import weakref
+    from kiro_crew.cold_start_sizing import configured_runtime_spawn_width
 
     loop = asyncio.get_running_loop()
+    published = configured_runtime_spawn_width()
+    width = _COLD_START_MAX_CONCURRENT if published is None else published
     with _cold_start_admissions_lock:
         admission_ref = _cold_start_admissions.get(loop)
         admission = admission_ref() if admission_ref is not None else None
         if admission is None:
-            admission = _ColdStartAdmission(_COLD_START_MAX_CONCURRENT)
+            admission = _ColdStartAdmission(width)
             _cold_start_admissions[loop] = weakref.ref(admission)
+        elif width > admission.semaphore.limit:
+            admission.semaphore.widen_to(width)
         return admission
 
 
@@ -111,7 +127,8 @@ def _cold_start_counts() -> tuple[int, int]:
 # burst of subagent starts every session/new competes for the same process,
 # each one gets slower, and the 90s budget is hit by requests that would have
 # completed in isolation -- a timeout that says nothing about the runtime's
-# health. The gate keeps at most ``agent.session_start_concurrency`` (default 2)
+# health. The gate keeps at most ``agent.session_start_concurrency`` (default
+# ``auto``: sized once per process from the host by ``session_start_sizing``)
 # session/new requests outstanding per event loop; waiters are ordered by
 # ``StartPriority`` (rule: ``kiro_crew.start_priority``).
 # It is a FIXED semaphore on purpose: the adaptive loop lives in the gatewayd
@@ -152,7 +169,10 @@ def _resolve_session_start_concurrency() -> int:
         from kiro_crew.config import KiroCrewConfig
 
         cfg = KiroCrewConfig.load()
-        return max(_SESSION_START_CONCURRENCY_FLOOR, int(cfg.agent.session_start_concurrency))
+        return max(
+            _SESSION_START_CONCURRENCY_FLOOR,
+            effective_session_start_concurrency(cfg.agent.session_start_concurrency),
+        )
     except Exception:
         logger.debug("session_start_concurrency unreadable -- using default", exc_info=True)
         return _SESSION_START_CONCURRENCY_DEFAULT
@@ -310,8 +330,11 @@ async def session_start_gate() -> SessionStartGate:
     snap = live.snapshot()
     limit: int | None = None
     if snap is not None:
+        # An explicit integer is used as is; "auto" needs the host probe (disk
+        # I/O), so it falls through to the off-loop resolver below.
         try:
-            limit = int(snap.agent.session_start_concurrency)
+            raw = snap.agent.session_start_concurrency
+            limit = None if isinstance(raw, str) else int(raw)
         except Exception:
             limit = None
     if limit is None:

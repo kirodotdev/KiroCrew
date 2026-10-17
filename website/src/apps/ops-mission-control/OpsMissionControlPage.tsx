@@ -75,7 +75,7 @@ const EMPTY_LEDGER: readonly LedgerEntry[] = Object.freeze([])
 
 /**
  * Catalog KEY per status, not the English word — same shape as `FILTER_LABEL_KEY` in
- * pages/ChatSidebar.tsx. An ALL-CAPS module constant is exempt from
+ * pages/chat-sidebar/SearchDock.tsx. An ALL-CAPS module constant is exempt from
  * `eslint-plugin-i18next` by default, so a literal table here renders untranslated in all
  * nine other languages with no gate to catch it; holding keys and resolving with `i18nT`
  * at the render site puts it back under the gate.

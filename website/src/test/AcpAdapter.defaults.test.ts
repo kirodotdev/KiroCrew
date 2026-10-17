@@ -36,6 +36,12 @@ describe('AcpAdapter.resolveModel — delegates to the backend resolver', () => 
     expect(agentResolvedModel).toHaveBeenCalledWith('oncall')
   })
 
+  it('passes the owning app through, so its own model setting is part of the answer', async () => {
+    agentResolvedModel.mockResolvedValue({ model: 'claude-haiku-5' })
+    expect(await new AcpAdapter().resolveModel('oncall', 'demo-app')).toBe('claude-haiku-5')
+    expect(agentResolvedModel).toHaveBeenCalledWith('oncall', 'demo-app')
+  })
+
   it('does NOT re-derive the precedence client-side', async () => {
     agentResolvedModel.mockResolvedValue({ model: 'claude-opus-5' })
     await new AcpAdapter().resolveModel('oncall')

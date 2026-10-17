@@ -890,7 +890,7 @@ class TestConsolidationOffsetAfterRotation:
         for i in range(6):
             log.append("k", "user", f"m{i}")
 
-        msgs, total, gen = log.snapshot_for_consolidation("k")
+        msgs, total, gen, _sub = log.snapshot_for_consolidation("k")
         assert total == 6
         assert len(msgs) == 6  # nothing consolidated yet
         assert gen == log.rotation_generation("k") == 0
@@ -944,7 +944,7 @@ class TestConsolidationOffsetAfterRotation:
         log2 = ConversationLog(base_dir=tmp_path / "other")
         for i in range(100):
             log2.append("k", "user", f"{i}:{body}")
-        _, total_s, gen_s = log2.snapshot_for_consolidation("k")
+        _, total_s, gen_s, _sub_s = log2.snapshot_for_consolidation("k")
         # The snapshot's generation matches the file state that produced total_s.
         assert gen_s == log2.rotation_generation("k")
         assert total_s == len(log2._read_messages("k"))

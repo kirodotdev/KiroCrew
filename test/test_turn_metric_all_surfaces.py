@@ -228,7 +228,12 @@ def test_the_emit_has_exactly_one_site_per_owner() -> None:
     ]
     assert len(emits) == 1, f"expected one emit in the persist path, found {len(emits)}"
 
-    runner_src = (SRC / "dashboard" / "chat_runner.py").read_text(encoding="utf-8")
+    runner_path = SRC / "dashboard" / "chat_runner.py"
+    runner_src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner_path.with_name("chat_turn").glob("*.py")), runner_path]
+        if turn_file.name != "__init__.py"
+    )
     runner = ast.parse(runner_src)
     calls = [
         n
@@ -325,7 +330,14 @@ def test_the_dashboard_emit_is_not_behind_the_billing_gate() -> None:
     simulating a zero-billing turn, because the property is "this call is not
     inside that branch", which is what a reader needs to keep true.
     """
-    runner = ast.parse((SRC / "dashboard" / "chat_runner.py").read_text(encoding="utf-8"))
+    runner_path = SRC / "dashboard" / "chat_runner.py"
+    runner = ast.parse(
+        "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(runner_path.with_name("chat_turn").glob("*.py")), runner_path]
+            if turn_file.name != "__init__.py"
+        )
+    )
     gated: list[str] = []
     for node in ast.walk(runner):
         if not isinstance(node, ast.If):

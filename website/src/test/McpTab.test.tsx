@@ -281,11 +281,11 @@ describe('McpTab needs_auth status', () => {
    * #6274: a row that needs a sign-in AND resolves to a curated Connections
    * provider (name === slug AND url === the registry mcp_url) can start the
    * sign-in in place, reusing the headless mint engine — but only while the
-   * Connections UI is on, which is now the default. A non-resolvable row, or an
-   * instance that pulled the `connections_ui: false` escape hatch, keeps the chat
-   * prose unchanged — minting is never offered for arbitrary URLs (parked
-   * maintainer decision #4286), and with no cards on screen chat is again the
-   * only authorize prompt.
+   * Connections UI is on, which is now the default. A row named like a registry
+   * provider whose URL is not the registry's, or an instance that pulled the
+   * `connections_ui: false` escape hatch, keeps the chat prose unchanged: the
+   * gateway keeps a registry name on the provider path, and with no cards on
+   * screen chat is again the only authorize prompt.
    */
   it('offers an in-place Sign in on a resolvable managed row when connections_ui is on', async () => {
     mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: true })
@@ -371,6 +371,67 @@ describe('McpTab needs_auth status', () => {
   })
 
   /**
+   * A remote server the owner added outside the registry signs in in place by its
+   * own name: the gateway reads its URL from the owner's config.
+   */
+  const userAdded = (overrides: Partial<McpServer>): McpServer => ({
+    ...remote('needs_auth'),
+    name: 'docs-internal',
+    url: 'https://docs.example.com/mcp',
+    authChallenge: true,
+    ownerSignIn: true,
+    ...overrides,
+  })
+
+  it('offers an in-place Sign in on a user-added remote server that needs one', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: /Go to chat/ })).not.toBeInTheDocument()
+  })
+
+  it('offers Sign in again on a user-added server that holds a grant', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: true })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Signed in')).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+    // The reason sits next to the button, so it does not read as a sign-out.
+    expect(screen.getByText(/No tools listed. Sign in again to check the sign-in/)).toBeInTheDocument()
+  })
+
+  it('offers Sign in again under an OAuth failure on a user-added server', async () => {
+    mockApi.mcpServers.mockResolvedValue([userAdded({ status: 'error', error: 'HTTP 401' })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText(/HTTP 401/)).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+  })
+
+  it('keeps the chat guidance on a remote server the owner did not add from the dashboard', async () => {
+    // An agent, a session or a hand edit can put a remote entry in the config;
+    // only the owner's dashboard add records it, so the row offers no mint.
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false, ownerSignIn: false })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  it('offers no in-place sign-in for a user-added server while connections_ui is off', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ connections_ui: false })
+    mockApi.mcpServers.mockResolvedValue([userAdded({ authGrantPresent: false })])
+    renderTab()
+
+    await waitFor(() => expect(screen.getByText('Sign-in required')).toBeInTheDocument())
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Sign in/ })).not.toBeInTheDocument()
+  })
+
+  /**
    * The guidance names the refresh control by the one string that control carries.
    * It renders no visible label, so without a hover title a reader cannot match the
    * instruction to the button it means.
@@ -443,12 +504,12 @@ describe('McpTab needs_auth status', () => {
     fireEvent.click(trigger)
     expect(await screen.findByText(/gateway started this server/i)).toBeInTheDocument()
 
-    for (const status of ['error', 'outdated', 'disabled'] as const) {
+    // `outdated` left this list in #15516: it now explains why the reading is
+    // stale and how to re-probe (see 'outdated status hint' below).
+    for (const status of ['error', 'disabled'] as const) {
       mockApi.mcpServers.mockResolvedValue([remote(status)])
       const { unmount } = renderTab()
-      const other = await screen.findByText(
-        status === 'error' ? 'Error' : status === 'outdated' ? 'Outdated' : 'Disabled',
-      )
+      const other = await screen.findByText(status === 'error' ? 'Error' : 'Disabled')
       expect(other).not.toHaveAttribute('title')
       expect(within(other.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
       unmount()
@@ -463,6 +524,85 @@ describe('McpTab needs_auth status', () => {
     expect(screen.getByText('Error').className).toContain('text-danger')
     expect(screen.getByText('HTTP 500')).toBeInTheDocument()
     expect(screen.queryByText('Not verified')).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * A `"type": "registry"` pointer has no local command; kiro-cli loads it
+ * from the organization's catalog. The row must not read "Error / no command".
+ */
+describe('McpTab registry pointer row', () => {
+  const pointer: McpServer = {
+    name: 'aws-iac-mcp', command: '', status: 'registry', source: 'mcp.json', enabled: true, tools: [],
+  }
+
+  it('renders the muted not-verified badge with a registry hint, never an error', async () => {
+    mockApi.mcpServers.mockResolvedValue([pointer])
+    renderTab()
+
+    const badge = await screen.findByText('Not verified')
+    expect(badge.className).toContain('text-[var(--muted)]')
+    expect(badge.className).not.toContain('text-danger')
+    expect(screen.queryByText('Error')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unknown')).not.toBeInTheDocument()
+    expect(screen.queryByText(/no command/)).not.toBeInTheDocument()
+
+    const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
+    const hint = trigger.getAttribute('title') || ''
+    expect(hint).toContain('aws-iac-mcp')
+    expect(hint).toMatch(/MCP registry/)
+    expect(hint).toContain('kiro-cli mcp list')
+  })
+})
+
+describe('outdated status hint (#15516)', () => {
+  // A row reads "Outdated" for two reasons that need different actions: the
+  // last result aged past the probe TTL (refresh re-probes it), or the server
+  // crossed the consecutive-failure threshold and every probe pass now skips it
+  // (refresh does nothing until Reset count; the Failing badge says so). The reporter of #15516 saw only
+  // "Outdated" and had to find agent.mcp_quarantine_after_failures by hand.
+  async function outdatedTip(row: McpServer): Promise<string> {
+    mockApi.mcpServers.mockResolvedValue([row])
+    renderTab()
+    const badge = await screen.findByText('Outdated')
+    expect(badge).not.toHaveAttribute('title')
+    fireEvent.click(within(badge.parentElement!).getByRole('button', { name: 'More information' }))
+    return (await screen.findByRole('tooltip')).textContent ?? ''
+  }
+
+  it('an aged reading points at the refresh button', async () => {
+    const text = await outdatedTip({ ...server('alpha'), status: 'outdated' })
+    expect(text).toMatch(/30 minutes/)
+    expect(text).toMatch(/refresh button/)
+    expect(text).not.toMatch(/Reset count/)
+  })
+
+  it('a quarantined row leaves the explanation to its Failing badge', async () => {
+    // The exact row shape probe_all returns for an excluded server: status
+    // outdated, no error, plus the quarantine annotation. The aged-reading hint
+    // would send the reader to a refresh that cannot work, and a second copy of
+    // the Failing tip would compete with it, so the Outdated badge has no tip.
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('airbnb'), status: 'outdated', error: '', probeFailures: 3, probeFailing: true },
+    ])
+    renderTab()
+    const badge = await screen.findByText('Outdated')
+    expect(within(badge.parentElement!).queryByRole('button', { name: 'More information' })).toBeNull()
+    expect(screen.getByText('Failing')).toBeInTheDocument()
+  })
+
+  it('the Failing note no longer claims nothing changed', async () => {
+    mockApi.mcpServers.mockResolvedValue([
+      { ...server('airbnb'), status: 'outdated', error: '', probeFailures: 3, probeFailing: true },
+    ])
+    renderTab()
+    const badge = await screen.findByText('Failing')
+    fireEvent.click(within(badge.parentElement!).getByRole('button', { name: 'More information' }))
+    const text = (await screen.findByRole('tooltip')).textContent ?? ''
+    expect(text).toContain('3 consecutive probes failed')
+    expect(text).toMatch(/stopped probing/)
+    expect(text).toMatch(/Reset count/)
+    expect(text).not.toMatch(/not a change/)
   })
 })
 
@@ -647,7 +787,7 @@ describe('McpTab disabled-in-config rows', () => {
     // (a separate decision), so the line says editing the file is the way and
     // that a switch is planned -- and hands over the one thing it can, the path,
     // as a chip that copies it.
-    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off.`)
     expect(where).not.toHaveTextContent('To turn it back on')
     const chip = within(where).getByTestId('mcp-disabled-in-config-path')
     expect(chip).toHaveTextContent(SHARED_FILE)
@@ -664,7 +804,7 @@ describe('McpTab disabled-in-config rows', () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
     const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
-    expect(where).toHaveTextContent('Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off. A switch is planned.')
+    expect(where).toHaveTextContent('Disabled in the shared MCP config. Editing that config lifts its disable; another config may still keep the server off.')
     expect(where).not.toHaveTextContent('~/')
     // No path to copy, so no chip.
     expect(within(where).queryByTestId('mcp-disabled-in-config-path')).not.toBeInTheDocument()
@@ -766,7 +906,7 @@ describe('McpTab disabled-in-config rows', () => {
     renderTab()
     await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
     const where = within(row('figma')).getByTestId('mcp-disabled-in-config-where')
-    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off. A switch is planned.`)
+    expect(where).toHaveTextContent(`Disabled in ${SHARED_FILE}. Editing this file lifts its disable; another config may still keep the server off.`)
     expect(where).not.toHaveTextContent('invalid')
     expect(where).not.toHaveAttribute('data-disabled-reason')
     expect(within(row('figma')).getByText('Disabled')).toBeInTheDocument()
@@ -796,6 +936,10 @@ describe('McpTab disabled-in-config rows', () => {
       const title = badge?.getAttribute('title') ?? ''
       expect(title).toBe(`${label}: off (disabled in the shared MCP config; change it there)`)
       expect(badge?.getAttribute('aria-label')).toBe(title)
+      // #13076: the switch state and glyph agree with the "off" name even
+      // though the row's presence still reads on for this scope.
+      expect(badge).toHaveAttribute('aria-checked', 'false')
+      expect(badge?.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'false')
       expect(title).not.toMatch(/pending uninstall/)
       names.push(title)
     }
@@ -939,5 +1083,68 @@ describe('McpTab badge hints are keyboard/AT-reachable (#8359)', () => {
     const trigger = within(badge.parentElement!).getByRole('button', { name: 'More information' })
     fireEvent.click(trigger)
     expect((await screen.findByRole('tooltip')).textContent).toContain('3')
+  })
+})
+
+/**
+ * #13076: the Kiro Crew badge IS the per-server enable/disable for Kiro Crew
+ * sessions, but a coloured word did not read as a control. Every scope badge
+ * is now a switch: it says its state to assistive tech (role + aria-checked),
+ * shows it with a glyph rather than colour alone, and its hover text names
+ * the Apply step in the active language instead of hardcoded English.
+ */
+describe('McpTab scope badges are on/off switches (#13076)', () => {
+  const row = (name: string): HTMLElement => {
+    const tr = screen.getByText(name, { selector: 'code' }).closest('tr')
+    if (!tr) throw new Error(`no row for ${name}`)
+    return tr
+  }
+  const switchFor = (name: string, scope: string) =>
+    row(name).querySelector<HTMLButtonElement>(`button[data-scope="${scope}"]`)!
+
+  it('reports on/off state as a switch and stages a pending change on click', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha')])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('alpha', { selector: 'code' })).toBeInTheDocument())
+    const kc = switchFor('alpha', 'kirocrew')
+    expect(kc).toHaveAttribute('role', 'switch')
+    expect(kc).toHaveAttribute('aria-checked', 'true')
+    expect(kc.getAttribute('title')).toBe('Kiro Crew: on (click to turn off, then Apply)')
+    expect(kc.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'true')
+    expect(within(row('alpha')).getByRole('switch', { name: /^Kiro Crew: on/ })).toBe(kc)
+
+    fireEvent.click(kc)
+    await waitFor(() => expect(switchFor('alpha', 'kirocrew')).toHaveAttribute('aria-checked', 'false'))
+    const off = switchFor('alpha', 'kirocrew')
+    expect(off.getAttribute('title')).toBe('Kiro Crew: turns off when you press Apply (click to revert)')
+    expect(off.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'false')
+    expect(screen.getByText(/1 pending change/)).toBeInTheDocument()
+  })
+
+  it('an off global scope reads as an unchecked switch', async () => {
+    mockApi.mcpServers.mockResolvedValue([server('alpha')])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('alpha', { selector: 'code' })).toBeInTheDocument())
+    const kiro = switchFor('alpha', 'kiroGlobal')
+    expect(kiro).toHaveAttribute('aria-checked', 'false')
+    expect(kiro.getAttribute('title')).toBe('Kiro: off (click to turn on, then Apply)')
+  })
+
+  it('a disabled-in-config row staged for uninstall still reads off', async () => {
+    mockApi.mcpServers.mockResolvedValue([{
+      ...server('figma'), status: 'disabled', enabled: false, kirocrewManaged: false,
+      disabledIn: 'shared', disabledInFile: '~/.kiro/settings/mcp.json', tools: [],
+      presence: { kirocrew: true, kiroGlobal: true },
+    }])
+    renderTab()
+    await waitFor(() => expect(screen.getByText('figma', { selector: 'code' })).toBeInTheDocument())
+    fireEvent.click(within(row('figma')).getByRole('button', { name: 'Uninstall' }))
+    await waitFor(() => expect(screen.getByText(/1 pending change/)).toBeInTheDocument())
+    for (const scope of ['kirocrew', 'kiroGlobal']) {
+      const sw = switchFor('figma', scope)
+      expect(sw).toBeDisabled()
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      expect(sw.querySelector('[data-testid="mcp-scope-switch-glyph"]')).toHaveAttribute('data-on', 'false')
+    }
   })
 })

@@ -1,5 +1,11 @@
 # Auto-Improvement — upstream port plan
 
+> Status: historical record of the port. Current behavior lives in the
+> [auto-improvement spec](../../../../../../docs/system-specs/modules/auto-improvement.md)
+> and the [user manual](MANUAL.md). The line counts, the layout tree and the
+> delete list below describe the port AS PLANNED, not the shipped tree: the
+> backend has gained and dropped modules since.
+
 Source: the upstream auto-improvement app (23,586 src lines + 14,000 test lines)
 Target: native Kiro Crew builtin app `auto-improvement`
 
@@ -25,7 +31,7 @@ not a code-writing system that happens to measure."*
 
 ## Port classification
 
-**Ports ~unchanged (the crown jewel).** `spine/` — 6,157 lines, audited
+**Ports ~unchanged (the crown jewel).** `spine/`, audited
 target-agnostic: no build-tool, auth, or host references at all. Only real
 coupling is 3 imports in `agent_runner.py` (the host config class and the host's
 ACP event-constant module, both repointed at `kiro_crew`). Kiro Crew's ACP event constants

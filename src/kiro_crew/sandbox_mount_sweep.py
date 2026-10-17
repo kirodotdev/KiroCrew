@@ -548,8 +548,8 @@ _SWEEP_BUDGET_CHECK_EVERY = 4096
 def _cleanup_stale_sandbox_mount_sources(*, roots: Sequence[str] | None = None) -> int:
     """Reclaim orphaned bind-mount sources staged by the namespace launcher.
 
-    The launcher stages one empty dir per SENSITIVE_DIRS entry, one empty file
-    per SENSITIVE_FILES entry, and (strict only) an SSH shadow dir holding a
+    The launcher stages one empty dir per sensitive_dirs entry, one empty file
+    per sensitive_files entry, and (strict only) an SSH shadow dir holding a
     known-hosts copy, all named ``kirocrew_sb_<pid>_*`` on a tmpfs root. The
     kernel pins each source while its bind-mount lives, so the launcher cannot
     remove them and they orphan when the sandboxed process exits. Left alone

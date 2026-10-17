@@ -1461,6 +1461,8 @@ describe('chatSlice steer frame placement', () => {
 
     expect(screen.queryByText(/\[STEERING/)).toBeNull()
     expect(screen.getByText('Steered')).toBeInTheDocument()
+    // The summary is folded behind the chip and shown once the reader opens it.
+    fireEvent.click(screen.getByTestId('steer-ack-toggle'))
     expect(screen.getByText('switched to the new question')).toBeInTheDocument()
   })
 
@@ -1484,7 +1486,7 @@ describe('chatSlice steer frame placement', () => {
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     // The danger treatment is the point: the same text in an assistant row proves nothing.
-    expect(screen.getByText('the backend refused')).toHaveClass('text-danger')
+    expect(screen.getByText('the backend refused')).toHaveClass('text-danger-text')
   })
 
   it('a card whose text this client never had can be neither edited nor cancelled', async () => {

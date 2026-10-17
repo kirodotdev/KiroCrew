@@ -11,15 +11,19 @@ from collections.abc import Collection, Mapping
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from kiro_crew import mcp_quarantine, platform_compat
 from kiro_crew.agent import (
+    AGENT_FILENAME,
+    SharedAgentHomeRefused,
     _atomic_json_write,
+    _declined_foreign_spec_write,
+    entry_as_enabled,
     kiro_agents_dir_path,
-    rebuild_agent_config,
+    rebuild_agent_config_reporting,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
@@ -32,8 +36,9 @@ from kiro_crew.config.loader import (
     read_config_text,
 )
 from kiro_crew.config.paths import data_home, kiro_agents_dir
+from kiro_crew.config.sections import MANAGED_STUB_FOLLOWERS
 from kiro_crew.dashboard.chat_utils import run_to_completion
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import AGENT_SPEC_NOT_REWRITTEN, read_bounded_json
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import emit_env
 from kiro_crew.loop_lock import LoopBoundLock
@@ -63,17 +68,27 @@ from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.mcp_hot_reload import live_sessions_hot_reload
-from kiro_crew.mcp_provenance import ABSENT, resolve_write, stamp
+from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,
     apply_kiro_oauth_hints,
     mcp_server_alias,
+    without_mcp_refs,
 )
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.user_json import loads_mcp_config, loads_user_json
+from kiro_crew.session import process_shutdown_requested
+from kiro_crew.user_json import (
+    has_json_comments,
+    loads_mcp_config,
+    loads_user_json,
+    loads_user_jsonc,
+)
+
+if TYPE_CHECKING:
+    from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +323,11 @@ def _get_apply_lock() -> LoopBoundLock:
 
 
 def _write_mcp_json(data: dict) -> None:
-    """Atomically write global mcp.json to prevent partial reads."""
+    """Atomically write global mcp.json to prevent partial reads.
+
+    Raises :class:`McpConfigHasComments` when the file on disk holds JSONC.
+    """
+    _refuse_commented_config(_GLOBAL_MCP_JSON)
     _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
     _atomic_json_write(_GLOBAL_MCP_JSON, data)
 
@@ -325,6 +344,63 @@ _mcp_probe_in_progress = False
 # is the joinable object that makes `_bg_mcp_probe` single-flight, which the flag
 # alone cannot do (a caller cannot await a bool).
 _mcp_probe_task: asyncio.Task[None] | None = None
+
+
+def _agent_home_not_owned_response(name: str) -> web.Response:
+    """409 for a sync this instance's data home is not allowed to write.
+
+    Mirrors ``api_agent_detail``'s arm. The spec write was refused, so whatever
+    the caller asked to change is still defined in the file its own sessions
+    load: answering ``ok`` would tell the operator a server was disabled or
+    deleted while the agent keeps it mounted with its ``autoApprove`` intact.
+    The remedy is the existing non-default-home one -- remove the stale
+    ``kirocrew*.json`` specs and restart -- and the gateway log names the
+    directory. Deliberately NOT ``KIRO_HOME``: see :func:`config.paths.kiro_home`'s
+    scope caveat, which is why the rebuild's own refusal suggests no remedy either.
+    """
+    return web.json_response(
+        {
+            "error": (
+                f"'{name}' was not applied: this agent config is owned by another "
+                "Kiro Crew data home, which this instance will not rewrite."
+            ),
+            "code": "agent_home_not_owned",
+        },
+        status=409,
+    )
+
+
+def _shared_agent_home_declined() -> bool:
+    """Whether this data home may NOT write the shared agent specs.
+
+    The one question the pre-mutation preflight asks, kept as its own function so
+    the preflight and the write cannot answer differently for reasons other than
+    time. Asked through ``_declined_foreign_spec_write`` against the very file
+    those writers write, which also warns and audits the decision.
+    """
+    return _declined_foreign_spec_write(kiro_agents_dir_path() / AGENT_FILENAME)
+
+
+def _agent_home_not_owned(name: str) -> web.Response | None:
+    """The same 409, decided BEFORE the first mutation; ``None`` to proceed.
+
+    The arms around each ``_atomic_json_write`` catch a refusal that has
+    already been reached, which is the right guard for the write itself but
+    arrives too late for a handler that mutates something else first. The
+    uninstall path is the clear case: it deletes the server from the data
+    home's registry, the user-level registry and every companion scope, and
+    only then writes the rendered spec -- so a refusal there leaves the server
+    gone from every source while the spec its own sessions load still mounts
+    it with its ``autoApprove``, and this instance's rebuild is refused too,
+    so nothing reconciles it.
+
+    Asked through ``_declined_foreign_spec_write`` against the very file these
+    handlers write, so the preflight and the write cannot disagree, and the
+    denial is warned and audited once here instead of once at the write.
+    """
+    if not _shared_agent_home_declined():
+        return None
+    return _agent_home_not_owned_response(name)
 
 
 def _sync_mcp_to_agent(name: str, enabled: bool, *, remove: bool = False) -> None:
@@ -365,7 +441,7 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         if alias not in mcp_servers:
             # Copy spec from global mcp.json (looked up by original name)
             try:
-                gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+                gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
                 spec = gdata.get("mcpServers", {}).get(name, {})
                 if isinstance(spec, dict) and spec:
                     entry = {k: v for k, v in spec.items() if k != "disabled"}
@@ -395,10 +471,16 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             _existing.pop("autoApprove", None)
             changed = True
         # A re-enable lifts the ``disabled`` the disable path below wrote onto
-        # this entry; the copy branch never carries one, so only an existing
-        # entry can hold it.
-        if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
-            changed = True
+        # this entry -- but not the mute the rebuild writes on a server whose
+        # ``secret://`` reference nothing here would resolve: lifting that one
+        # starts the server with the literal reference, and no rebuild runs after
+        # this write to put it back. ``entry_as_enabled`` takes the rebuild's own
+        # decision for the entry, so a freshly copied one is asked as well.
+        if isinstance(_existing, dict):
+            _enabled = entry_as_enabled(alias, _existing)
+            if _enabled != _existing:
+                mcp_servers[alias] = _enabled
+                changed = True
         # Ensure @server-name in tools, and in allowedTools only if the
         # governance ceiling has nothing to say about this server. `tools` MOUNTS
         # it; `allowedTools` additionally auto-approves it, and auto-approve is
@@ -413,10 +495,13 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
                 changed = True
         if "allowedTools" not in keys:
             stale = cfg.get("allowedTools")
-            if isinstance(stale, list) and tool_ref in stale:
-                # A grant written before the ceiling arrived must not survive it.
-                stale.remove(tool_ref)
-                changed = True
+            if isinstance(stale, list):
+                # A grant written before the ceiling arrived must not survive it,
+                # in either spelling.
+                kept = without_mcp_refs(stale, (alias,))
+                if len(kept) != len(stale):
+                    stale[:] = kept
+                    changed = True
         if not changed:
             return
         if "allowedTools" not in keys:
@@ -442,10 +527,12 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             )
     # On disable/remove, clean up any @server-name refs the user may have added
     if not enabled or remove:
-        stale_refs = {f"@{alias}", f"@{name}"}
+        stale_servers = (alias, name)
         tool_ref = f"@{alias}"
-        cfg["tools"] = [t for t in cfg.get("tools", []) if t not in stale_refs]
-        cfg["allowedTools"] = [t for t in cfg.get("allowedTools", []) if t not in stale_refs]
+        cfg["tools"] = without_mcp_refs(cfg.get("tools", []), stale_servers, per_tool=False)
+        # Per-tool grants go too: ``@server/tool`` in allowedTools auto-approves
+        # that tool just as the bare ref does for the whole server.
+        cfg["allowedTools"] = without_mcp_refs(cfg.get("allowedTools", []), stale_servers)
         sel().log_api_access(
             caller="system",
             operation="mcp_tools_removed",
@@ -468,6 +555,12 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         cfg.get("mcpServers", {}).pop(name, None)
     try:
         _atomic_json_write(path, cfg)
+    except SharedAgentHomeRefused:
+        # Not a transient write failure: the entry was already popped from the
+        # in-memory cfg, so swallowing this would report a removal (or a
+        # disable) the spec on disk never took, leaving the server mounted with
+        # whatever autoApprove it carried. The caller turns it into a 409.
+        raise
     except OSError as exc:
         logger.warning("Cannot write agent config %s: %s", path, exc)
 
@@ -478,6 +571,10 @@ def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
     A key may name the alias or the legacy slash form of one server; both are
     marked when both exist so neither spawns. Only a mapping entry can carry the
     flag — a string/null entry is left as-is. Returns True when anything changed.
+
+    The rebuild's withheld record goes too: once the user switches the server
+    off, the mute is theirs, and a record left beside it would let the rebuild
+    lift it as soon as the server is routed.
     """
     servers = cfg.get("mcpServers")
     if not isinstance(servers, dict):
@@ -485,7 +582,11 @@ def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
     changed = False
     for key in keys:
         entry = servers.get(key)
-        if isinstance(entry, dict) and entry.get("disabled") is not True:
+        if not isinstance(entry, dict):
+            continue
+        if entry.pop(WITHHELD_KEY, None) is not None:
+            changed = True
+        if entry.get("disabled") is not True:
             entry["disabled"] = True
             changed = True
     return changed
@@ -518,7 +619,7 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         # Ensure all servers exist in kirocrew.json mcpServers
         mcp_servers = cfg.setdefault("mcpServers", {})
         try:
-            gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            gdata = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
         except (FileNotFoundError, json.JSONDecodeError):
             gdata = {}
         granted_refs: list[str] = []
@@ -545,9 +646,13 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             ):
                 _existing.pop("autoApprove", None)
                 changed = True
-            # Lift the ``disabled`` a batch disable wrote — see the single-server path.
-            if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
-                changed = True
+            # Lift the ``disabled`` a batch disable wrote, keeping the rebuild's
+            # withheld mute -- see the single-server path.
+            if isinstance(_existing, dict):
+                _enabled = entry_as_enabled(alias, _existing)
+                if _enabled != _existing:
+                    mcp_servers[alias] = _enabled
+                    changed = True
             # Same split as the single-server path above: mount always,
             # auto-approve only when the ceiling is silent about this server.
             tool_ref = f"@{alias}"
@@ -563,9 +668,11 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
                     changed = True
             if "allowedTools" not in keys:
                 stale = cfg.get("allowedTools")
-                if isinstance(stale, list) and tool_ref in stale:
-                    stale.remove(tool_ref)
-                    changed = True
+                if isinstance(stale, list):
+                    kept = without_mcp_refs(stale, (alias,))
+                    if len(kept) != len(stale):
+                        stale[:] = kept
+                        changed = True
         if changed:
             if granted_refs:
                 sel().log_api_access(
@@ -594,13 +701,12 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         refs_to_remove = {f"@{name}" for name in names} | {
             f"@{mcp_server_alias(name)}" for name in names
         }
-        cfg["tools"] = [t for t in cfg.get("tools", []) if t not in refs_to_remove]
-        cfg["allowedTools"] = [t for t in cfg.get("allowedTools", []) if t not in refs_to_remove]
+        servers_to_remove = tuple(names) + tuple(mcp_server_alias(name) for name in names)
+        cfg["tools"] = without_mcp_refs(cfg.get("tools", []), servers_to_remove, per_tool=False)
+        cfg["allowedTools"] = without_mcp_refs(cfg.get("allowedTools", []), servers_to_remove)
         # Mark the entries too — a dropped ref alone does not stop a server that
         # a live session is already running (see the single-server path).
-        _mark_agent_entries_disabled(
-            cfg, tuple(names) + tuple(mcp_server_alias(name) for name in names)
-        )
+        _mark_agent_entries_disabled(cfg, servers_to_remove)
         changed = True
         sel().log_api_access(
             caller="system",
@@ -613,6 +719,10 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         return
     try:
         _atomic_json_write(path, cfg)
+    except SharedAgentHomeRefused:
+        # See the single-server sync: the batch already mutated cfg in memory,
+        # so a swallowed refusal reports every name in it as applied.
+        raise
     except OSError as exc:
         logger.warning("Cannot write agent config %s: %s", path, exc)
 
@@ -655,7 +765,7 @@ def _arm_reprobe(request: web.Request) -> None:
     actually prevents a second concurrent probe.
     """
     state: DashboardState = request.app["state"]
-    task = asyncio.create_task(_bg_mcp_probe())
+    task = asyncio.create_task(_bg_mcp_probe(state.sessions))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 
@@ -965,11 +1075,11 @@ def _invalid_flag_reason(entry: Any) -> str | None:
     return None if isinstance(flag, bool) else "invalid"
 
 
-async def _bg_mcp_probe() -> None:
+async def _bg_mcp_probe(sessions: SessionManager | None) -> None:
     """Populate the MCP probe cache — SINGLE-FLIGHT.
 
     Two independent boot paths reach this: ``dashboard/server.py`` fires it as a
-    background task once the port is bound, and ``slack/gateway.py`` awaits it
+    background task once the port is bound, and ``slack/gateway_runtime/service_boot.py`` awaits it
     before warming sessions (kiro-cli reads mcp.json at spawn time). Without a
     join, boot spawns and handshakes EVERY enabled MCP server twice — doubling
     the subprocess churn, doubling occupancy of probe_all()'s concurrency
@@ -994,12 +1104,12 @@ async def _bg_mcp_probe() -> None:
         await asyncio.shield(inflight)
         return
 
-    task = asyncio.ensure_future(_run_mcp_probe())
+    task = asyncio.ensure_future(_run_mcp_probe(sessions))
     _mcp_probe_task = task
     await asyncio.shield(task)
 
 
-async def _run_mcp_probe() -> None:
+async def _run_mcp_probe(sessions: SessionManager | None) -> None:
     """The probe fan-out itself. Reached only through `_bg_mcp_probe`."""
     global _mcp_probe_ts, _mcp_probe_in_progress
     _mcp_probe_in_progress = True
@@ -1012,7 +1122,7 @@ async def _run_mcp_probe() -> None:
 
         global_mcps: dict[str, Any] = {}
         try:
-            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+            data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
             global_mcps = data.get("mcpServers", {})
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -1023,6 +1133,7 @@ async def _run_mcp_probe() -> None:
         # unbounded gather here floods the loop's default executor during a
         # network blip and can starve the heartbeat into a watchdog _exit.
         probed = await probe_all()
+        overlapped_shutdown = process_shutdown_requested(sessions)
         result: list[dict[str, Any]] = []
         for s in probed:
             d = s.to_dict()
@@ -1032,7 +1143,8 @@ async def _run_mcp_probe() -> None:
                 d["disabledTools"] = spec["disabledTools"]
             result.append(d)
         if result:
-            await asyncio.to_thread(_record_probe_verdicts, result)
+            if not overlapped_shutdown:
+                await asyncio.to_thread(_record_probe_verdicts, result)
             await asyncio.to_thread(_annotate_quarantine, result)
         _mcp_probe_cache[:] = result
         _mcp_probe_ts = time.time()
@@ -1102,7 +1214,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # Read global mcp.json for disabled state
     global_mcps: dict[str, Any] = {}
     try:
-        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1152,6 +1264,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # both absent on the surface a user actually lands on.
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
     #
@@ -1234,7 +1347,7 @@ async def api_mcp_active(request: web.Request) -> web.Response:
 
     global_mcps: dict[str, Any] = {}
     try:
-        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1284,6 +1397,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     from kiro_crew.mcp_discovery import probe_all  # noqa: F811
 
     servers = await probe_all()
+    overlapped_shutdown = process_shutdown_requested(request.app["state"].sessions)
     # The operator just asked us to spawn every configured server, which is the
     # only moment the shareability pre-flight is affordable. Evaluate the ones
     # whose execution identity has no cached measurement; failures here must not
@@ -1295,7 +1409,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     # Read global mcp.json for enabled/disabledTools state
     global_mcps: dict[str, Any] = {}
     try:
-        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
+        data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"), jsonc=True)
         global_mcps = data.get("mcpServers", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
@@ -1309,8 +1423,10 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
             d["disabledTools"] = spec["disabledTools"]
         result.append(d)
     if result:
-        await asyncio.to_thread(_record_probe_verdicts, result)
+        if not overlapped_shutdown:
+            await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -1462,6 +1578,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     # to completion before this handler returns.
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
     edited = _edited_since_probe(servers)
@@ -1562,6 +1679,15 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
         kirocrew_managed_names,
         sync_discovered_servers,
     )
+
+    # Ownership BEFORE the first mutation: the discover pass below writes the
+    # agent config itself, so a refusal reached inside it would leave this
+    # request half applied.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, "servers")
+    if not_owned is not None:
+        return not_owned
+    # Refuse before ANY write: the global file is rewritten below as plain JSON.
+    await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
 
     # One serialized discover→write pass (agent config + CC sidecar), off the
     # event loop — the sync is blocking file I/O, and sync_discovered_servers'
@@ -1692,16 +1818,28 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
             _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
             _write_mcp_json(gdata)
 
-        # Ensure newly-synced servers are added to tools/allowedTools so
-        # the AI can actually use them (not just see them in mcpServers).
-        from kiro_crew.dashboard.handlers.agents import (
-            _get_config_lock,  # circular import: agents imports mcp
-        )
-
-        async with _get_config_lock():
-            await asyncio.to_thread(
-                _sync_mcp_to_agent_batch, [s.name for s in to_sync], enabled=True
+            # The registry write, the spec sync and the rollback all under the
+            # SAME mcp lock. The rollback rewrites the WHOLE registry file, so
+            # releasing the lock first would let another request commit into
+            # the window and have this stale snapshot erase that commit
+            # silently. Order matches the toggle paths: mcp lock outside,
+            # config lock in.
+            #
+            # Ensure newly-synced servers are added to tools/allowedTools so
+            # the AI can actually use them (not just see them in mcpServers).
+            from kiro_crew.dashboard.handlers.agents import (
+                _get_config_lock,  # circular import: agents imports mcp
             )
+
+            async with _get_config_lock():
+                try:
+                    await asyncio.to_thread(
+                        _sync_mcp_to_agent_batch, [s.name for s in to_sync], enabled=True
+                    )
+                except SharedAgentHomeRefused:
+                    return _agent_home_not_owned_response(
+                        ", ".join(s.name for s in to_sync) or "servers"
+                    )
 
     # The reset exists only to make kiro-cli re-read a file it may already
     # watch. Runs even with no new servers: an enable/disable toggle also wrote
@@ -1792,7 +1930,15 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
 
+    # Ownership BEFORE the first mutation: the disabled flag lands in the
+    # user-level registry ahead of the rendered spec, so a refusal found at
+    # that last write shows the row off while the spec still mounts it.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, name)
+    if not_owned is not None:
+        return not_owned
+
     async with _get_mcp_lock():
+        _refuse_commented_config(_GLOBAL_MCP_JSON)
         # 1. Update global mcp.json
         try:
             data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
@@ -1851,7 +1997,12 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
         async with _get_config_lock():
-            await asyncio.to_thread(_sync_mcp_to_agent, name, enabled)
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent, name, enabled)
+            except SharedAgentHomeRefused:
+                # Ownership flipped after the preflight, so the flag above
+                # landed in a registry whose spec will not follow it.
+                return _agent_home_not_owned_response(name)
 
     return web.json_response({"ok": True, "name": name, "enabled": enabled, "applied": True})
 
@@ -1885,6 +2036,7 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         return web.json_response({"error": "server and tool are required"}, status=400)
 
     async with _get_mcp_lock():
+        _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
             data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -1950,7 +2102,15 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
 
+    # Ownership BEFORE the first mutation: every flag lands in the user-level
+    # registry ahead of the rendered spec, so a refusal found at that last
+    # write shows every row flipped while the spec is unchanged.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, "servers")
+    if not_owned is not None:
+        return not_owned
+
     async with _get_mcp_lock():
+        _refuse_commented_config(_GLOBAL_MCP_JSON)
         try:
             data = loads_mcp_config(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -1978,9 +2138,62 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
         async with _get_config_lock():
-            await asyncio.to_thread(_sync_mcp_to_agent_batch, toggled, enabled)
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent_batch, toggled, enabled)
+            except SharedAgentHomeRefused:
+                # Ownership flipped after the preflight, so the registry
+                # change above landed with no spec change to match it.
+                return _agent_home_not_owned_response(", ".join(toggled) or "servers")
 
     return web.json_response({"ok": True, "enabled": enabled, "count": len(servers)})
+
+
+def _annotate_owner_sign_in(rows: list[dict]) -> None:
+    """Stamp ``ownerSignIn`` on each row the owner recorded for the dashboard sign-in.
+
+    True only when the row's URL equals the URL recorded for its name in the
+    sealed owner record (:mod:`kiro_crew.connections.owner_servers`). The mint
+    re-checks the same record against the agent spec, so this flag only decides
+    which rows the table offers the control on. Every row with a URL gets an
+    explicit boolean, so a row served from a cache never keeps a stale True. An
+    unreadable record clears any flag already on a row and stamps nothing, which
+    leaves every row on the chat guidance.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.owner_servers import is_owner_server, is_signable_name
+
+    for row in rows:
+        if "ownerSignIn" in row:
+            row["ownerSignIn"] = False
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- no record read means no row is offered
+        return
+    for row in rows:
+        name, url = row.get("name"), row.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        row["ownerSignIn"] = (
+            isinstance(name, str)
+            and is_signable_name(name)
+            and is_owner_server(config, name, {"url": url})
+        )
+
+
+async def _forget_owner_servers(names: list[str]) -> None:
+    """Drop the owner sign-in records for servers the owner removed.
+
+    Best effort, like the record on add: the removal already landed, and a stale
+    record only matters if an entry with the same name AND URL comes back.
+    """
+    from kiro_crew.config.loader import update_config_locked
+    from kiro_crew.connections.owner_servers import forget
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
+    try:
+        await run_config_write(update_config_locked, mutate=lambda cfg: forget(cfg, names))
+    except Exception:  # noqa: BLE001 -- the removal itself already landed
+        logger.warning("could not forget owner MCP servers %s", sorted(names), exc_info=True)
 
 
 async def api_mcp_remove(request: web.Request) -> web.Response:
@@ -2010,6 +2223,14 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
 
+    # Ownership BEFORE the first mutation: this handler writes the
+    # user-level registry (and, on remove, asks the companion package
+    # manager) ahead of the rendered spec, so a refusal found at that last
+    # write leaves the two disagreeing with no path back.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, name)
+    if not_owned is not None:
+        return not_owned
+
     logger.info("MCP remove: %s", name)
 
     # Optional capability-manager uninstall (best-effort). The edition's
@@ -2017,6 +2238,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
     # reports it available so the handler stays fully functional without it.
     from kiro_crew.dashboard.handlers._shared import _capability_manager
 
+    # Before the uninstall, so a refused global file leaves nothing half done.
+    await asyncio.to_thread(_refuse_commented_config, _GLOBAL_MCP_JSON)
     mgr = _capability_manager()
     if mgr.available():
         try:
@@ -2044,8 +2267,15 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
         async with _get_config_lock():
-            await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
+            try:
+                await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
+            except SharedAgentHomeRefused:
+                # Ownership flipped after the preflight: another process claimed
+                # the specs between that check and this write. Answered as the
+                # refusal it is, like every other write failure in this handler.
+                return _agent_home_not_owned_response(name)
 
+    await _forget_owner_servers([name])
     return web.json_response({"ok": True, "name": name, "removed": removed})
 
 
@@ -2098,9 +2328,20 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         return web.json_response({"error": "server name is required"}, status=400)
     name = name.strip()
 
+    # Ownership BEFORE the first mutation: this handler writes the
+    # user-level registry (and, on remove, asks the companion package
+    # manager) ahead of the rendered spec, so a refusal found at that last
+    # write leaves the two disagreeing with no path back.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, name)
+    if not_owned is not None:
+        return not_owned
+
     if request.method == "DELETE":
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
         # Remove from global mcp.json
         async with _get_mcp_lock():
+            _refuse_commented_config(_GLOBAL_MCP_JSON)
             try:
                 data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
             except (FileNotFoundError, json.JSONDecodeError):
@@ -2108,14 +2349,17 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             removed = data.get("mcpServers", {}).pop(name, None) is not None
             if removed:
                 _write_mcp_json(data)
-        from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
-        # Hold the config lock across the offloaded read-modify-write: the sync
-        # runs in a worker thread, so without the lock two concurrent DELETE/PUT
-        # requests would both read kirocrew.json and the last write would drop
-        # the other's change.
-        async with _get_config_lock():
-            await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
+            # Order matches the toggle paths: mcp lock outside, config lock in.
+            # Hold the config lock across the offloaded read-modify-write: the
+            # sync runs in a worker thread, so without the lock two concurrent
+            # DELETE/PUT requests would both read kirocrew.json and the last
+            # write would drop the other's change.
+            async with _get_config_lock():
+                try:
+                    await asyncio.to_thread(lambda: _sync_mcp_to_agent(name, False, remove=True))
+                except SharedAgentHomeRefused:
+                    return _agent_home_not_owned_response(name)
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_server_remove",
@@ -2175,6 +2419,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
             entry["env"] = body["env"]
 
     # Write to global mcp.json
+    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
     async with _get_mcp_lock():
         try:
             data = loads_user_json(_GLOBAL_MCP_JSON.read_text(encoding="utf-8"))
@@ -2184,12 +2430,14 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
         _GLOBAL_MCP_JSON.parent.mkdir(parents=True, exist_ok=True)
         _write_mcp_json(data)
 
-    # Sync to kirocrew.json (enable by default). Config lock across the offloaded
-    # write — see the DELETE branch above for why the thread hop needs it.
-    from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
-
-    async with _get_config_lock():
-        await asyncio.to_thread(_sync_mcp_to_agent, name, True)
+        # Order matches the toggle paths: mcp lock outside, config lock in.
+        # Config lock across the offloaded write -- see the DELETE branch
+        # above for why the thread hop needs it.
+        async with _get_config_lock():
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent, name, True)
+            except SharedAgentHomeRefused:
+                return _agent_home_not_owned_response(name)
 
     logger.info("MCP register via REST: %s command=%s", name, command)
     sel().log_api_access(
@@ -2248,6 +2496,69 @@ async def api_mcp_global_scopes(request: web.Request) -> web.Response:
     return web.json_response({"scopes": scopes})
 
 
+#: Error code for a write refused because the file holds JSONC (see below).
+MCP_CONFIG_HAS_COMMENTS = "mcp_config_has_comments"
+
+
+def _has_json_comments_on_disk(path: Path) -> bool:
+    """Whether *path* parses only as JSONC (comments or trailing commas).
+
+    Readers accept such a file (``loads_user_jsonc``), but every writer here
+    emits plain JSON, so writing it back would drop the user's comments and
+    commented-out servers. Writers refuse instead of rewriting it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return has_json_comments(text)
+
+
+class McpConfigHasComments(web.HTTPConflict):
+    """A write refused because its target file holds JSONC.
+
+    An HTTP 409 with a coded JSON body, so a handler that lets it propagate
+    answers the client directly.
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(
+            text=json.dumps(
+                {
+                    "error": (
+                        f"{path} has comments or trailing commas; saving would rewrite "
+                        "it as plain JSON and drop them. Remove them, or edit the file "
+                        "directly."
+                    ),
+                    "code": MCP_CONFIG_HAS_COMMENTS,
+                }
+            ),
+            content_type="application/json",
+        )
+        self.path = path
+
+
+def _user_mcp_config_paths() -> list[Path]:
+    """The MCP config files a person edits by hand, which may hold JSONC."""
+    return [
+        _kirocrew_mcp_json(),
+        _GLOBAL_MCP_JSON,
+        *(scope.global_json for scope in _extra_mcp_scopes()),
+    ]
+
+
+def _refuse_commented_config(*paths: Path) -> None:
+    """Raise :class:`McpConfigHasComments` when any of *paths* holds JSONC.
+
+    The write helpers call it, so no writer can rewrite such a file; a handler
+    with other side effects also calls it before the first of them, so its
+    work is refused whole instead of stopping part way.
+    """
+    for path in paths:
+        if _has_json_comments_on_disk(path):
+            raise McpConfigHasComments(path)
+
+
 def _load_json_or_empty(path: Path) -> dict[str, Any]:
     """Load JSON from a path; return empty dict on missing/malformed/unreadable.
 
@@ -2257,7 +2568,7 @@ def _load_json_or_empty(path: Path) -> dict[str, Any]:
     partially-applied changes without a rebuild.
     """
     try:
-        data = loads_user_json(path.read_text(encoding="utf-8"))
+        data = loads_user_jsonc(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
@@ -2321,7 +2632,12 @@ def _atomic_write(path: Path, data: dict) -> None:
     thread rather than call this on the event loop.  Other paths (the shared
     global file, agent files) keep the mode-preserving helper — their
     lifecycles are owned by other tools.
+
+    Raises :class:`McpConfigHasComments` when *path* is a hand-edited MCP config
+    (:func:`_user_mcp_config_paths`) and the file on disk holds JSONC.
     """
+    if path in _user_mcp_config_paths():
+        _refuse_commented_config(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path == _kirocrew_mcp_json():
         atomic_write(
@@ -3063,6 +3379,16 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     )
     change_keys: dict[str, PreflightKeys] = {}
     if change_names:
+        # Ownership first, because an apply's own ordering puts the companion
+        # package removal and every scope write ahead of the rendered spec: a
+        # refusal discovered at that last write would leave the server purged
+        # from all its sources and still mounted by the spec.
+        not_owned = await asyncio.to_thread(_agent_home_not_owned, ", ".join(change_names))
+        if not_owned is not None:
+            return not_owned
+        # A scope file holding JSONC cannot be written without dropping its
+        # comments, so the batch is refused before its first write.
+        await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
         change_keys, ambiguous = await asyncio.to_thread(_preflight_change_keys, change_names)
         if ambiguous:
             sel().log_api_access(
@@ -3170,12 +3496,26 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                     # ordering); _purge_server_config strips every scope + agent
                     # file idempotently -- exactly the entries Phase 0 pinned, so
                     # nothing is resolved (or refused) after the package is gone.
-                    outcome["actions"].update(
-                        await _offload_config_write(
-                            _purge_server_config, name, preferred=uninstall_keys.get(name, {})
+                    try:
+                        outcome["actions"].update(
+                            await _offload_config_write(
+                                _purge_server_config, name, preferred=uninstall_keys.get(name, {})
+                            )
                         )
-                    )
+                    except SharedAgentHomeRefused:
+                        # Ownership was claimed after Phase 0's preflight. The
+                        # purge strips the scopes FIRST and the rendered spec
+                        # last, so the sources are already gone while the spec
+                        # still mounts the server with its autoApprove -- and
+                        # nothing reconciles it, because this instance's own
+                        # rebuild is declined too. Recorded as purged so the
+                        # guaranteed-cleanup sweep does not re-attempt the same
+                        # refused write, then reported as the partial state it
+                        # is rather than surfacing as a 500.
+                        purged_names.add(name)
+                        return _agent_home_not_owned_response(name)
                     purged_names.add(name)
+                    await _forget_owner_servers([name])
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
                     if name in capability_results:
@@ -3344,8 +3684,12 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
     rebuild_ok = False
     rebuild_error: str | None = None
     try:
-        await asyncio.to_thread(rebuild_agent_config)
-        rebuild_ok = True
+        _spec_path, rebuild_ok = await asyncio.to_thread(rebuild_agent_config_reporting)
+        if not rebuild_ok:
+            # Declined, not failed: this instance may not write the shared agent
+            # home, so the saved change does not reach new sessions.
+            rebuild_error = AGENT_SPEC_NOT_REWRITTEN
+            logger.warning("agent spec was not rewritten after apply: %s", rebuild_error)
     except Exception as exc:
         # Rebuild failures can surface file paths, env var contents, or
         # credential fragments (e.g. JSON decode errors that echo file
@@ -3492,9 +3836,16 @@ def _record_stub_decisions(section: dict, names: list[str], stub: bool) -> None:
     produce a spurious diff.
     """
     roster = set(_resolve_stub_roster(section))
+    # A follower's default moves with the leader (``_resolve_stub_base``), so a
+    # decision that agrees with it today can disagree after the leader's next
+    # toggle -- including one later in this same call. Pruning it would let that
+    # toggle silently undo the operator's choice, so a follower decision is always
+    # stored. Everything else is pruned against the roster, as before.
     overrides = dict(_resolve_stub_overrides(section))
     for name in names:
-        if (name in roster) == stub:
+        if name in MANAGED_STUB_FOLLOWERS:
+            overrides[name] = stub
+        elif (name in roster) == stub:
             overrides.pop(name, None)
         else:
             overrides[name] = stub

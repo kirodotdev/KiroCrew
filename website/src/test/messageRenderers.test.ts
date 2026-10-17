@@ -71,6 +71,8 @@ describe('default registry reproduces the old role chain', () => {
       expect(entry?.id, role).toBe('undrawn')
       expect(entry!.render(msg(role), {} as never), role).toBeNull()
     }
+    // `file` draws a FileCard for a file_send record (messageRenderers.fileRow
+    // test); content that is not one still claims the role and draws nothing.
     const file = resolveRenderer(msg('file'), defaultMessageRenderers)
     expect(file?.id).toBe('file')
     expect(file!.render(msg('file'), {} as never)).toBeNull()

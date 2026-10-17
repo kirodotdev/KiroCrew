@@ -1018,6 +1018,22 @@ describe('slot-bound lazy paging guard', () => {
 
 // === Pinned jump page-load cap removal (regression: distant pins must not false-unavailable) ===
 
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+// so the pins read the page and those owners.
+async function readChatPageSource(): Promise<string> {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const pagesDir = path.resolve(__dirname, '../pages')
+  const ownerDir = path.join(pagesDir, 'chat', 'page')
+  const owners = fs.readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+  const siblings = fs.readdirSync(pagesDir).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
+  return [
+    fs.readFileSync(path.join(pagesDir, 'ChatPage.tsx'), 'utf8'),
+    ...owners.map(f => fs.readFileSync(path.join(ownerDir, f), 'utf8')),
+    ...siblings.map(f => fs.readFileSync(path.join(pagesDir, f), 'utf8')),
+  ].join('\n')
+}
+
 describe('pinned jump — no arbitrary page-load cap', () => {
   /**
    * The old constant MAX_PINNED_JUMP_PAGE_LOADS = 10 caused distant pins in
@@ -1028,12 +1044,7 @@ describe('pinned jump — no arbitrary page-load cap', () => {
    * does not exist in the source.
    */
   it('MAX_PINNED_JUMP_PAGE_LOADS constant does not exist in ChatPage source', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
-      'utf8',
-    )
+    const chatPageSrc = await readChatPageSource()
     // The constant must not be defined
     expect(chatPageSrc).not.toContain('MAX_PINNED_JUMP_PAGE_LOADS')
     // The condition that used it (>= cap check) must not be present
@@ -1041,23 +1052,13 @@ describe('pinned jump — no arbitrary page-load cap', () => {
   })
 
   it('pinnedJumpPageLoadsRef is still incremented (diagnostics preserved)', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
-      'utf8',
-    )
+    const chatPageSrc = await readChatPageSource()
     // The ref is still incremented for diagnostic/logging purposes
     expect(chatPageSrc).toContain('pinnedJumpPageLoadsRef.current += 1')
   })
 
   it('loop terminates on history exhaustion (!slotHasMore || slotOldestIndex <= 0)', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const chatPageSrc = fs.readFileSync(
-      path.resolve(__dirname, '../pages/ChatPage.tsx'),
-      'utf8',
-    )
+    const chatPageSrc = await readChatPageSource()
     // The exhaustion condition is the sole loop terminator
     expect(chatPageSrc).toContain('if (!slotHasMore || slotOldestIndex <= 0)')
   })

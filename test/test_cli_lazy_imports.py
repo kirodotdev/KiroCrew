@@ -15,8 +15,9 @@ The tests here keep it that way:
    next module-scope import silently undoes the win (the two historical
    ``# noqa: E402`` blocks show that already happened once).
 2. **Dispatch integrity** — every function-local ``from kiro_crew.* import``
-   inside ``main()`` must resolve.  A typo in a moved import is otherwise only
-   discovered at runtime by the user who runs that one subcommand.
+   inside ``main()`` and the ``cli_parser_*`` registrars it calls must resolve.
+   A typo in a moved import is otherwise only discovered at runtime by the user
+   who runs that one subcommand.
 3. **Stdio servers still serve** — ``mcp-core`` / ``mcp-cron`` answer
    ``initialize`` + ``tools/list`` over stdio end-to-end through the real CLI
    entry point.
@@ -48,6 +49,10 @@ from kiro_crew.platform import PlatformCompositionError
 
 _SRC = Path(__file__).resolve().parent.parent / "src"
 _CLI_PY = _SRC / "kiro_crew" / "cli.py"
+#: The modules holding the parser registrars ``main()`` calls before it parses.
+_CLI_PARSER_PYS = tuple(
+    _SRC / "kiro_crew" / f"cli_parser_{part}.py" for part in ("gateway", "agent", "admin")
+)
 
 #: Modules that must NOT load as a side effect of ``import kiro_crew.cli``.
 #: Each entry names a measured cost: cli_commands/cli_server are the two
@@ -98,20 +103,28 @@ def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
 
 
 def _local_imports_in_main() -> list[tuple[str, str]]:
-    """(module, name) for every function-local kiro_crew import inside main()."""
+    """(module, name) for every function-local kiro_crew import inside main()
+    and the ``cli_parser_*`` registrar functions it calls to build its parser."""
     tree = ast.parse(_CLI_PY.read_text(encoding="utf-8"))
     main_fn = next(
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "main"
     )
+    registrars = [
+        node
+        for path in _CLI_PARSER_PYS
+        for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+    ]
     found: list[tuple[str, str]] = []
-    for node in ast.walk(main_fn):
-        if isinstance(node, ast.ImportFrom) and node.module and (
-            node.module == "kiro_crew" or node.module.startswith("kiro_crew.")
-        ):
-            for alias in node.names:
-                found.append((node.module, alias.name))
+    for fn in [main_fn, *registrars]:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.ImportFrom) and node.module and (
+                node.module == "kiro_crew" or node.module.startswith("kiro_crew.")
+            ):
+                for alias in node.names:
+                    found.append((node.module, alias.name))
     return found
 
 
@@ -132,7 +145,7 @@ def test_main_contains_the_deferred_dispatch_imports() -> None:
     ids=lambda v: v if isinstance(v, str) else repr(v),
 )
 def test_every_deferred_dispatch_import_resolves(module: str, name: str) -> None:
-    """Each ``from <module> import <name>`` inside main() resolves.
+    """Each ``from <module> import <name>`` inside main() or a registrar it calls resolves.
 
     This is the compile-time check the deferral gave up: a typo in a moved
     import would otherwise surface only when a user runs that subcommand.

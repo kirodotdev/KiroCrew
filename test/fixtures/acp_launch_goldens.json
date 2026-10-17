@@ -22,6 +22,7 @@
     "env_added": {
       "CODEX_SQLITE_HOME": "<scratch>",
       "DISABLE_MCP_CONFIG_FILTERING": "true",
+      "KIROCREW_RUNTIME_AGENT": "kirocrew",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SCRATCH": "<scratch>",
       "KIROCREW_SPAWNED": "1",
@@ -137,6 +138,8 @@
     ],
     "env_added": {
       "KIROCREW_PI_GATE_SESSION": "<nonce>",
+      "KIROCREW_PI_MCP_HANDOFF": "/opt/run/kirocrew_pi_gate_mcp_handoff.json",
+      "KIROCREW_PI_MCP_KEY": "0000000000000000000000000000000000000000000000000000000000000000",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",

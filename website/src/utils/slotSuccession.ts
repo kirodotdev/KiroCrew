@@ -78,8 +78,8 @@ export function recordSlotSuccession(from: string, to: string): void {
 
 /**
  * The live slot for `slot`, following any recorded replacements. Absence passes through
- * unchanged so callers can hand the result straight to `fileLandingSlot`, which already
- * treats a missing slot as "drop".
+ * unchanged so callers can preserve the contract that work without an initiating slot
+ * has no destination.
  */
 export function resolveSlotSuccession(slot: string | null | undefined): string | null | undefined {
   if (!slot) return slot

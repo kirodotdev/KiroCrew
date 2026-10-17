@@ -30,7 +30,7 @@ import { ThemeProvider } from '../src/hooks/useTheme'
 import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
-import { appendSlotMessage, selectSlotMessages, sseChatMessage } from '../src/store/chatSlice'
+import { appendSlotMessage, selectSlotMessages, sseChatMessage, sseSideResult } from '../src/store/chatSlice'
 import { memberProjectionStore } from '../src/state/memberProjectionStore'
 import '../src/index.css'
 
@@ -52,6 +52,9 @@ window.addEventListener('capture:frame', (e) => {
     seq?: number
   }>).detail
   if (d.kind === 'busy') store.dispatch(busyFrame(d.slot))
+  // radar's turn has ended (the slots frame a stop delivers): the crewmate
+  // reads idle, for a frame whose action follows a stop.
+  if (d.kind === 'idle') store.dispatch(sseSlots([{ key: d.slot, title: 'Radar', messages: 4, running: false, mode: 'member', agent: 'radar' }]))
   // A pushed `member_projection` roster frame, the way the WebSocket delivers
   // one: this is how a crewmate's recency advances on the user's own send
   // without a roster refetch, so a recording of the Recent sort reordering has
@@ -63,6 +66,12 @@ window.addEventListener('capture:frame', (e) => {
       { name: d.slug, slug: d.slug, last_active_ts: d.ts ?? Date.now() / 1000 },
       d.seq ?? 5,
     )
+  }
+  // The side chat's result frames for a question asked by `/side`: the user
+  // row and the answer, the way the WebSocket delivers `side_result`.
+  if (d.kind === 'side-echo') {
+    store.dispatch(sseSideResult({ slot: d.slot, run_id: 'side-run-1', role: 'user', content: d.text ?? '' }))
+    store.dispatch(sseSideResult({ slot: d.slot, run_id: 'side-run-1', role: 'assistant', content: 'Two PRs merged since your last look: #4211 and #4213.', final: true }))
   }
   if (d.kind === 'steer-echo') {
     // The server echoes the sendId it received in the POST's meta; mirror that
@@ -87,6 +96,9 @@ const nav = params.get('nav') === '1'
 // member slot's stream state, which is what the pane's composer reads to
 // decide its busy affordance. Documents the steer-only composer.
 const busy = params.get('busy') === '1'
+// ?subagents=1 — radar's turn runs on the server with sub-agents out, but no
+// live frame has reached this tab yet: the stream state still reads idle.
+const subagents = params.get('subagents') === '1'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 // ThemeProvider reads its cache from storage; without these it would resolve
 // its own default and repaint over the ?theme= the frame asked for.
@@ -109,6 +121,7 @@ store.dispatch(
       title: 'Radar',
       messages: 4,
       running: true,
+      ...(subagents ? { subagents_running: true } : {}),
       mode: 'member',
       agent: 'radar',
     },
@@ -172,7 +185,7 @@ async function main() {
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>
-        {/* The drawer's CrewDashboardFrame reads useTheme(); without the
+        {/* The page reads useTheme(); without the
             provider the whole page throws on mount. */}
         <ThemeProvider>
         <MemoryRouter initialEntries={[route]}>

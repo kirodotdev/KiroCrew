@@ -1,10 +1,20 @@
 /**
  * Screenshot + 4px-grid style probe for capture/transcript-row-style.html.
  *
- * Two shells, from website/:
+ * One shell, from website/ (the form CI's E2E job runs): the script starts its
+ * own in-process Vite dev server on a loopback ephemeral port, because the
+ * production build does not emit capture pages:
+ *   node scripts/capture-transcript-row-style.mjs --serve ../temp-screenshots/row-style-audit
+ *
+ * Or against a dev server you already have running:
  *   npx vite --host 127.0.0.1 --port 6817 --strictPort
  *   node scripts/capture-transcript-row-style.mjs http://127.0.0.1:6817 \
  *     ../temp-screenshots/row-style-audit
+ *
+ * The exit code is the floor in `lib/transcript-grid-floor.mjs`: a frame with
+ * zero rows, a row off the column text edge, a row whose card padding is off the
+ * 4px grid, or a page error fails the run. Pitch and internal edges are printed
+ * as a report and never fail; that module says why.
  *
  * The probe is the deliverable, not the image. For every rendered transcript row
  * it reports, measured off the live DOM:
@@ -25,26 +35,41 @@
  *
  * HISTORY / WHY THE SELECTOR IS ASSERTED. This runner previously filtered host
  * row wrappers with `el.className.includes('px-5')`. The row gutter was unified
- * to `px-4` (ChatMessageList.tsx, ChatPage.tsx), so that filter matched nothing:
+ * to `px-4` (ChatMessageList.tsx, ChatTranscriptView.tsx), so that filter matched nothing:
  * the probe measured ZERO rows and every assertion in it passed vacuously. The
  * gutter class is now read from the DOM instead of hardcoded, and a zero-row
  * frame is a hard FAIL.
  */
 import { chromium } from 'playwright'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
-const BASE = process.argv[2] || 'http://127.0.0.1:6817'
-const OUT = process.argv[3] || '../temp-screenshots/row-style-audit'
+import { ROW_SELECTOR, fmt as n, isGrid, judgeFrame, offGrid } from './lib/transcript-grid-floor.mjs'
+
+const args = process.argv.slice(2)
+const SERVE = args.includes('--serve')
+const positional = args.filter(a => a !== '--serve')
+const OUT = (SERVE ? positional[0] : positional[1]) || '../temp-screenshots/row-style-audit'
 
 mkdirSync(OUT, { recursive: true })
 
-/** Off-grid amount for a value against the 4px grid, unrounded. */
-const offGrid = v => {
-  const m = Math.abs(v) % 4
-  return Math.min(m, 4 - m)
+// `--serve`: an in-process dev server rooted at website/, so the run needs no
+// second shell. With strictPort off, Vite moves past a taken port, and the URL it
+// reports is the one it bound.
+let devServer = null
+let BASE = positional[0] || 'http://127.0.0.1:6817'
+if (SERVE) {
+  const { createServer } = await import('vite')
+  devServer = await createServer({
+    root: fileURLToPath(new URL('..', import.meta.url)),
+    server: { host: '127.0.0.1', strictPort: false },
+    clearScreen: false,
+    logLevel: 'warn',
+  })
+  await devServer.listen()
+  BASE = devServer.resolvedUrls.local[0].replace(/\/$/, '')
+  console.log(`serving capture pages from ${BASE}`)
 }
-const isGrid = v => offGrid(v) < 1e-6
-const n = v => (Number.isInteger(v) ? String(v) : v.toFixed(3).replace(/0+$/, ''))
 
 const browser = await chromium.launch()
 let failed = 0
@@ -65,14 +90,14 @@ for (const theme of ['dark', 'light']) {
     await page.waitForSelector('[data-capture-root]', { timeout: 15000 })
     await page.waitForTimeout(900)
 
-    const probe = await page.evaluate(() => {
+    const probe = await page.evaluate(rowSelector => {
       const root = document.querySelector('[data-capture-root]')
       const rb = root.getBoundingClientRect()
 
       // Host row wrappers are the direct children of the list that carry the
       // column geometry. Read the gutter off the DOM rather than hardcoding it:
       // a hardcoded class is how this probe silently went to zero rows before.
-      const all = [...root.querySelectorAll('[style*="--mc-content-width"]')]
+      const all = [...root.querySelectorAll(rowSelector)]
       const gutters = {}
       for (const el of all) {
         const g = [...el.classList].find(c => /^px-[\d.]+$/.test(c))
@@ -191,34 +216,19 @@ for (const theme of ['dark', 'light']) {
         textEdgeRelRoot: textEdge === null ? null : textEdge - rb.x,
         rows: out,
       }
-    })
+    }, ROW_SELECTOR)
 
     await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/${theme}.png` })
 
     report[theme] = { ...probe, errors }
 
-    let frameFailed = 0
-    if (probe.rows.length === 0) {
-      frameFailed++
-      console.error(`FAIL ${theme}: probe found ZERO rows (gutter='${probe.gutterClass}', `
-        + `candidates=${probe.candidateCount}) — every assertion below would pass vacuously`)
-    }
-    for (const r of probe.rows) {
-      if (Math.abs(r.dx) > 1e-6) {
-        frameFailed++
-        console.error(`FAIL ${theme}: row ${r.testid || r.tag} box starts at ${n(r.dx)}px, `
-          + 'not on the column text edge')
-      }
-    }
-    if (errors.length) {
-      frameFailed++
-      console.error(`FAIL ${theme}: ${errors.length} page error(s)\n  ${errors.join('\n  ')}`)
-    }
-    failed += frameFailed
+    const frameFailures = judgeFrame(theme, probe, errors)
+    for (const f of frameFailures) console.error(`FAIL ${f}`)
+    failed += frameFailures.length
 
     // ---- 4px-grid report -------------------------------------------------
     console.log(`\n=== ${theme} — ${probe.rows.length} rows (gutter ${probe.gutterClass}, `
-      + `text edge +${n(probe.textEdgeRelRoot)}px) ===`)
+      + `text edge ${probe.textEdgeRelRoot === null ? 'none' : `+${n(probe.textEdgeRelRoot)}px`}) ===`)
     const head = 'row'.padEnd(30) + 'h'.padStart(8) + 'pitch'.padStart(8)
       + 'padT/R/B/L'.padStart(20) + 'radius'.padStart(8) + 'font/line'.padStart(12)
     console.log(head)
@@ -269,6 +279,7 @@ for (const theme of ['dark', 'light']) {
 }
 
 await browser.close()
+await devServer?.close()
 writeFileSync(`${OUT}/probe.json`, JSON.stringify(report, null, 2))
 console.log(`\nwrote ${OUT}/probe.json`)
 if (failed) {

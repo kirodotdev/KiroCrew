@@ -14,6 +14,13 @@ from aiohttp.test_utils import make_mocked_request
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
 from conftest import forget_env_at_teardown
+from kiro_crew.secrets import SecretVault
+
+
+def _vault_value(env: Path, key: str) -> str | None:
+    """The vault secret a channel save stored beside *env* under *key*."""
+    stored = SecretVault(env.parent).get(key)
+    return stored.reveal() if stored is not None else None
 
 
 @pytest.fixture(autouse=True)
@@ -90,13 +97,14 @@ class TestSave:
         payload = json.loads(resp.body)
         assert payload["ok"] is True
         assert payload["restart_required"] is True
-        assert "WEBEX_BOT_TOKEN=webex-tok-1234" in env.read_text(encoding="utf-8")
+        assert "WEBEX_BOT_TOKEN=secret://WEBEX_BOT_TOKEN" in env.read_text(encoding="utf-8")
+        assert _vault_value(env, "WEBEX_BOT_TOKEN") == "webex-tok-1234"
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["webex"] == {"enabled": True, "allowed_emails": ["kyle@example.com"]}
         # Live process env kept in sync so GET reflects the new token pre-restart.
         import os
 
-        assert os.environ.get("WEBEX_BOT_TOKEN") == "webex-tok-1234"
+        assert os.environ.get("WEBEX_BOT_TOKEN") == "secret://WEBEX_BOT_TOKEN"
 
     def test_rejected_token_blocks_save(self, monkeypatch, tmp_path: Path) -> None:
         resp, env, cfg_path = _save(
@@ -119,7 +127,8 @@ class TestSave:
         assert resp.status == 200
         payload = json.loads(resp.body)
         assert payload["verify_warning"]  # saved, but flagged unverified
-        assert "WEBEX_BOT_TOKEN=webex-tok-5678" in env.read_text(encoding="utf-8")
+        assert "WEBEX_BOT_TOKEN=secret://WEBEX_BOT_TOKEN" in env.read_text(encoding="utf-8")
+        assert _vault_value(env, "WEBEX_BOT_TOKEN") == "webex-tok-5678"
 
     def test_token_clear_removes_env_key(self, monkeypatch, tmp_path: Path) -> None:
         (tmp_path / ".env").write_text("WEBEX_BOT_TOKEN=old\n", encoding="utf-8")
@@ -176,7 +185,8 @@ class TestSave:
     def test_pasted_env_line_is_stripped(self, monkeypatch, tmp_path: Path) -> None:
         resp, env, _ = _save(monkeypatch, tmp_path, {"bot_token": "WEBEX_BOT_TOKEN=webex-tok-9"})
         assert resp.status == 200
-        assert "WEBEX_BOT_TOKEN=webex-tok-9" in env.read_text(encoding="utf-8")
+        assert "WEBEX_BOT_TOKEN=secret://WEBEX_BOT_TOKEN" in env.read_text(encoding="utf-8")
+        assert _vault_value(env, "WEBEX_BOT_TOKEN") == "webex-tok-9"
 
     def test_noop_save_requires_no_restart(self, monkeypatch, tmp_path: Path) -> None:
         resp, _, _ = _save(monkeypatch, tmp_path, {"enabled": False, "allowed_emails": []})
@@ -195,7 +205,8 @@ class TestSave:
         assert resp.status == 200
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["webex"]["bot_token"] == ""  # legacy copy gone
-        assert "WEBEX_BOT_TOKEN=webex-tok-new" in env.read_text(encoding="utf-8")
+        assert "WEBEX_BOT_TOKEN=secret://WEBEX_BOT_TOKEN" in env.read_text(encoding="utf-8")
+        assert _vault_value(env, "WEBEX_BOT_TOKEN") == "webex-tok-new"
 
     def test_token_clear_purges_legacy_config_token(self, monkeypatch, tmp_path: Path) -> None:
         (tmp_path / "config.json").write_text(

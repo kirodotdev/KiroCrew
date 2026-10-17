@@ -28,6 +28,7 @@ from kiro_crew.agent_scratch import SharedScratchJoinError
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
+    mark_identity_parked,
     pre_spawn_identity,
     spawn_pid,
     stamp_spawn_identity,
@@ -57,6 +58,8 @@ class _BackgroundSessionEntry(Protocol):
 
     provider: LLMProvider
     semaphore: asyncio.BoundedSemaphore
+    #: The task holding ``semaphore``, as ``_Session.turn_owner`` records it.
+    turn_owner: Any
     prompt_count: int
 
     def adopt_provider(self, provider: LLMProvider) -> None: ...
@@ -152,6 +155,10 @@ class BackgroundRuntimeState:
 
     runtime: _BackgroundRuntime | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: Single-flight guards for ``_ensure_background``, one per start priority,
+    #: so concurrent first users of ``_bg`` share one cold start.
+    ensure_foreground_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    ensure_background_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     draining: list[_BackgroundRuntime] = field(default_factory=list)
     #: The ``$KIROCREW_SCRATCH`` tree the sessions on the ``_bg`` runtime use,
     #: recorded from every runtime observed in the slot and handed to each
@@ -197,6 +204,24 @@ class BackgroundRuntimeDeps:
     session_closing_error: Callable[[str], BaseException]
 
 
+#: Attribute ``mark_context_overflowed`` leaves on a provider; read only by
+#: ``recycle_background`` and gone with the provider it recycles.
+_CONTEXT_OVERFLOWED_ATTR = "_kc_bg_context_overflowed"
+
+
+def mark_context_overflowed(provider: object) -> None:
+    """Record that ``provider``'s last turn was refused as too long for its window.
+
+    Best-effort: a provider that refuses the attribute simply keeps the
+    threshold criteria. Harmless on a provider that is not the ``_bg`` entry,
+    since nothing else reads it.
+    """
+    try:
+        setattr(provider, _CONTEXT_OVERFLOWED_ATTR, True)
+    except Exception:
+        pass
+
+
 class _ProviderBgSession:
     """``AcpSessionHandle``-compatible handle over the shared background entry.
 
@@ -204,6 +229,12 @@ class _ProviderBgSession:
     existing per-session semaphore.  The adapter is plumbing only: event parsing
     remains the provider's responsibility.
     """
+
+    #: Every turn through this handle is appended to the ONE persistent ``_bg``
+    #: conversation, so the caller must run ``recycle_background()`` after it or
+    #: that conversation grows for the whole gateway uptime. A runtime handle
+    #: owns an ephemeral session and carries no such marker.
+    shares_background_conversation = True
 
     def __init__(self, sess: _BackgroundSessionEntry) -> None:
         self._sess = sess
@@ -289,7 +320,36 @@ class BackgroundSessionRuntime:
 
         ``start_priority`` is the cold start's place in the queues: a caller a
         person is waiting on (``get_bg_session``) names its own.
+
+        Single-flight per priority: one cold start of each priority runs at a
+        time. A caller arriving while a start it may wait for is in flight
+        waits, then returns once the session is registered; it starts its own
+        only if that start failed. A ``BACKGROUND`` caller waits for an
+        in-flight start of either priority. A ``FOREGROUND`` caller waits only
+        for a ``FOREGROUND`` one: waiting behind a background start would queue
+        a person at background priority in ``_start_sem``. That is the one case
+        where two starts can overlap, and the loser is shut down at
+        registration.
         """
+        background_key = self._deps.background_key
+        async with self._owner._lock:
+            if self._owner._closing or background_key in self._owner._sessions:
+                return
+        foreground = self.state.ensure_foreground_lock
+        if start_priority is StartPriority.FOREGROUND:
+            async with foreground:
+                await self._ensure_background_single(start_priority=start_priority)
+            return
+        async with self.state.ensure_background_lock:
+            if foreground.locked():
+                # Wait out the in-flight foreground start without holding its
+                # lock across this caller's own start.
+                async with foreground:
+                    pass
+            await self._ensure_background_single(start_priority=start_priority)
+
+    async def _ensure_background_single(self, *, start_priority: StartPriority) -> None:
+        """Body of :meth:`_ensure_background`; caller holds its single-flight lock."""
         background_key = self._deps.background_key
         background_agent = self._deps.background_agent
         logger = self._deps.logger
@@ -419,9 +479,10 @@ class BackgroundSessionRuntime:
         stays parked for the next pass; a failed kill also stays parked so the
         process is retried rather than orphaned. ``kill()`` is called even on an
         already-dead runtime so it can release PID bookkeeping. A runtime the
-        spawn-identity gate parked additionally keeps a kill grace on top of
-        the busy probe (see ``identity_park_grace_remaining``); backend-switch
-        parks carry no mark and keep their original timing.
+        spawn-identity gate or an ``agent.env`` change parked additionally keeps
+        a kill grace on top of the busy probe (see
+        ``identity_park_grace_remaining``); backend-switch parks carry no mark
+        and keep their original timing.
         """
         logger = self._deps.logger
         now = time.monotonic()
@@ -605,6 +666,35 @@ class BackgroundSessionRuntime:
                 f"idle and stale by {stale_reason} (periodic sweep)",
                 park_only=True,
             )
+            return True
+
+    async def retire_for_agent_env_change(self) -> bool:
+        """Free the shared runtime's slot after an ``agent.env`` change.
+
+        The runtime is one long-lived process that every background and cron
+        session demuxes onto, and it carries the environment it was spawned with.
+        Left in its slot it would serve the old ``agent.env`` until it went
+        stale (up to the 6 h age ceiling). Freeing the slot makes the next
+        ``get_bg_session`` spawn a replacement that reads the new map.
+
+        The runtime is PARKED, busy or idle, never killed here: its in-flight
+        sessions finish on it, and the drain reap kills it once they have. It
+        carries the park grace, because ``get_bg_session`` pins the runtime under
+        the lock and only opens its init scope after releasing it, so an idle
+        reading taken in that window is wrong. Returns True when the slot was
+        freed.
+        """
+        async with self._bg_runtime_lock:
+            if self._owner._closing:
+                # Same gate as every other park: a shutdown has already swept
+                # past, so parking now would strand a shielded process.
+                return False
+            await self._owner._reap_drained_bg_runtimes_locked()
+            runtime = self._bg_runtime
+            if runtime is None:
+                return False
+            mark_identity_parked(runtime, time.monotonic())
+            await self._detach_bg_runtime_locked(runtime, "agent.env changed", park_only=True)
             return True
 
     async def _provider_backed_bg_session(
@@ -923,10 +1013,25 @@ class BackgroundSessionRuntime:
             return None
         return f"tree rss={rss}MB exceeds {ceiling}MB"
 
-    async def recycle_background(self) -> None:
-        """Recycle the persistent background provider when context is full."""
-        background_key = self._deps.background_key
-        background_agent = self._deps.background_agent
+    async def recycle_background(
+        self,
+        session_key: str | None = None,
+        *,
+        agent: str | None = None,
+        context_overflowed: bool = False,
+    ) -> None:
+        """Recycle the persistent background provider when context is full.
+
+        ``context_overflowed`` says the turn just taken was refused as too long
+        for the model's window (the caller saw it); a turn driven through
+        ``stream_and_collect`` leaves the same verdict on the provider instead
+        (``mark_context_overflowed``). Either forces the recycle on a
+        non-runtime backend: after a refusal the reported percentage is still the
+        last successful turn's, so the threshold below can keep a conversation
+        every later turn will be refused on, until the gateway restarts.
+        """
+        background_key = session_key or self._deps.background_key
+        background_agent = agent or self._deps.background_agent
         logger = self._deps.logger
         session = self._owner._sessions.get(background_key)
         if not session:
@@ -944,9 +1049,16 @@ class BackgroundSessionRuntime:
             # background entry, so count its completed turn here.
             session.prompt_count += 1
 
+            # Scoped to the shared-conversation path: runtime-capable backends
+            # keep exactly the criteria they had.
+            overflowed = (
+                context_overflowed or getattr(provider, _CONTEXT_OVERFLOWED_ATTR, False) is True
+            ) and not self._owner._bg_backend_supports_runtime()
             pct = provider.context_usage_pct()
             post_compaction = pct == 0.0 and self._deps.context_pct_is_unknown(provider)
-            if pct >= self._deps.bg_recycle_pct:
+            if overflowed:
+                reason = f"prompt too long for the model window (context reported at {pct:.0f}%)"
+            elif pct >= self._deps.bg_recycle_pct:
                 reason = f"context at {pct:.0f}%"
             elif post_compaction:
                 reason = "compacted in place (context size unknown)"
@@ -1036,6 +1148,9 @@ class BackgroundSessionRuntime:
                 )
         finally:
             session.semaphore.release()
+            # ``_reacquire_and_validate`` named this task the holder; the
+            # holding ends with this release.
+            session.turn_owner = None
 
     async def recycle_heartbeat(self) -> None:
         """Tear down the heartbeat session at the end of a cycle."""

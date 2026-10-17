@@ -63,6 +63,8 @@ def _mock_provider_factory():
 async def _started_manager(cfg):
     mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
     await mgr.start_pool()
+    # The background session starts on first use; these tests act on a live one.
+    await mgr._ensure_background()
     return mgr
 
 

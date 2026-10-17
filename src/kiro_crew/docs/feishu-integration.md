@@ -47,8 +47,9 @@ Lark).
    ```
 
 DM the bot in Feishu and it answers. The panel's badge tells you where you are:
-**Needs setup** until both credentials are stored, **Not connected** once they
-are but the receiver is not running, **Connected** when it is.
+**Needs setup** until both credentials are stored, the channel is turned on, and
+at least one `open_id` is on the allow-list; **Not connected** once all of that
+is in place but the receiver is not running; **Connected** when it is.
 
 <details>
 <summary>Prefer to edit the files directly?</summary>
@@ -83,9 +84,16 @@ Deny-by-default, in both directions:
 - **`allowed_open_ids` is the allow-list.** An empty list authorises **nobody** —
   the bot stays reachable on the Feishu side but rejects every message. This is
   deliberate: publishing an app must never mean an open door.
-- **Group chats need two switches.** A group message is served only when
-  `allow_group` is `true` **and** the group's `chat_id` is in
-  `allowed_group_ids`. Either one alone denies.
+- **Group chats need two switches and an @-mention.** A group message is
+  served only when `allow_group` is `true` **and** the group's `chat_id` is in
+  `allowed_group_ids`. Either one alone denies. Inside an allowed group, the
+  message must also @-mention **this** bot: the gateway checks the message's
+  mention list for the bot's own `open_id`, which it looks up from Feishu when
+  the channel starts. A plain message from an allow-listed sender is ignored,
+  even when the app holds a permission that delivers every group message.
+  Until the bot's `open_id` is known (the lookup failed, and the gateway logs
+  one warning and keeps retrying) every group message is ignored; direct
+  messages are unaffected.
 - **A group has its own conversation.** A group turn is keyed by the group's
   `chat_id` under a non-direct chat type, so an allow-listed user writing in a
   group never resumes their private DM session — their DM history cannot become
@@ -98,9 +106,13 @@ Deny-by-default, in both directions:
   never evaluated can never run a turn.
 - **Every denial is audited.** Rejected inbound messages write a SEL audit
   record with `source: feishu`, so an unexpected sender shows up in
-  `kirocrew security posture` rather than vanishing.
-- Feishu itself only delivers a group message to the bot when it is
-  **@-mentioned**, so a bot in a busy group does not see unrelated chatter.
+  `kirocrew security events` rather than vanishing. A group message that does
+  not mention the bot is chatter, not an access attempt, so it is ignored
+  without a record.
+- With only the `im:message.group_at_msg.include_bot:readonly` grant, Feishu
+  delivers just the group messages that **@-mention** the bot, so a bot in a
+  busy group does not see unrelated chatter. A broader grant delivers more,
+  and the gateway's own mention check still ignores it.
 - **Mentions reach the agent as names.** Feishu puts opaque placeholders
   (`@_user_1`) in the message text and the display names in a separate
   `mentions` list, so the two are rejoined before the agent sees the prompt:
@@ -130,7 +142,7 @@ Deny-by-default, in both directions:
 | `feishu.session_folder` | `""` | Sidebar folder for sessions that start here. Empty = unfiled. |
 
 Everything above except `hard_threshold_pct` is editable in **Settings →
-Channels → Feishu**; that one is file-only, because the panel exposes the soft
+Messaging Channels → Feishu**; that one is file-only, because the panel exposes the soft
 threshold as the single number worth tuning and keeps the hard ceiling as a
 safety net.
 
@@ -145,6 +157,7 @@ masked preview: a saved secret can be **replaced or cleared, never read back**.
 | --- | --- |
 | `/new` (or `/reset`) | Start a fresh session; the old context is dropped. |
 | `/compact` | Compact the current context in place. |
+| `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back. |
 
 Anything else is a prompt.
 
@@ -163,7 +176,8 @@ Known gaps, all follow-up work rather than defects:
 - **Text only.** Non-text messages (images, files, audio) are not read inbound.
   The bot answers with a short line saying so rather than staying silent, so a
   photo does not look like a dead bot — but only to a sender who is already on
-  the allow-list, and in a group only one that is allow-listed too.
+  the allow-list, and in a group only one that is allow-listed too and that
+  @-mentions the bot.
 - **Replies only.** The bot answers an inbound message and cannot start a
   conversation, so it is not a proactive-notification target.
 - **The panel configures the channel; it does not install it.** `lark-oapi` is an
@@ -199,7 +213,7 @@ channel uses.
 | --- | --- |
 | `feishu/client.py` | `lark-oapi` WebSocket receive + REST reply |
 | `feishu/transport.py` | Authorisation (deny-by-default) and normalisation |
-| `feishu/renderer.py` | Buffers the turn, sends one reply |
+| `feishu/renderer.py` | Buffers the turn, sends one reply, plus a best-effort notice reply when the answer was redacted |
 | `feishu/transport_dispatch.py` | Drives `TurnDriver`, handles `/new` `/compact` |
 | `feishu/gateway.py` | `maybe_start_feishu()` boot entry point |
 

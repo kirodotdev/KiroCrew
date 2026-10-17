@@ -62,6 +62,7 @@ import yaml  # type: ignore[import-untyped]
 from kiro_crew import platform_compat
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.yaml_safe import NoAliasSafeLoader
 
 if sys.platform == "win32":
     import _winapi
@@ -293,24 +294,13 @@ def _npm_workspaces(text: str) -> list[str]:
     return _string_list(declared, where="workspaces")
 
 
-class _NoAliasLoader(yaml.SafeLoader):
-    """SafeLoader that refuses YAML aliases.
+class _NoAliasLoader(NoAliasSafeLoader):
+    """The ``pnpm-workspace.yaml`` loader.
 
-    ``safe_load`` expands ``*alias`` references, so a small file can compose a
-    graph orders of magnitude larger than itself. A scan reads whatever
-    ``pnpm-workspace.yaml`` it finds in a tree the user merely pointed at, and no
-    real member list needs an alias, so the amplification vector is closed
-    outright instead of bounded. A lone anchor with nothing referencing it is
-    harmless and stays allowed.
+    A scan reads whatever declaration it finds in a tree the user merely pointed
+    at, and no real member list needs an alias, so the amplification vector is
+    closed outright instead of bounded.
     """
-
-    def compose_node(self, parent: object, index: object) -> object:
-        if self.check_event(yaml.events.AliasEvent):
-            event = self.get_event()
-            raise yaml.composer.ComposerError(
-                None, None, "found alias, which is not allowed", event.start_mark
-            )
-        return super().compose_node(parent, index)
 
 
 def _load_no_alias_yaml(text: str) -> object:

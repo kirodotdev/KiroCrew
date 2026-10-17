@@ -12,7 +12,7 @@
  * The list is explicit rather than a broad `svg` sweep because a row holds other
  * glyphs that are NOT the status marker: the flat-view folder chip, PR/issue
  * provider logos, the channel-provenance mark, the pin. Each entry below is a
- * marker one status branch owns (`ChatSidebar.tsx`, the `rowState` resolver), plus
+ * marker one status branch owns (`chat-sidebar/SessionRow.tsx`, the `rowState` resolver), plus
  * the unread dot, which is a `span` and has no lucide class at all.
  */
 export const MARKER_SELECTORS = [

@@ -105,7 +105,7 @@ empty, so the model request fails auth and keeps failing every
 the macOS keychain, or any store that keeps its material outside your home
 directory (or that you hand the helper explicitly). The exact directories the
 sandbox masks — and the stricter set under `strict`/`cc` mode — are listed
-beside `_STANDARD_DIRS` in `sandbox.py`; see
+beside `_STANDARD_DIRS` in `sandbox_tiers.py`; see
 [claude-code-provider.md](../system-specs/modules/claude-code-provider.md).
 
 Do **not** export `ANTHROPIC_AUTH_TOKEN` alongside this setup; an environment

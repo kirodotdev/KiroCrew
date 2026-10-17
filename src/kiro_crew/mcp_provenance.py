@@ -80,6 +80,20 @@ _MANAGED_FIELD = "managed"
 # deserialization rather than rejected.
 DERIVED_KEY = "x-kirocrew-derived"
 
+# A THIRD reserved key: the agent-spec rebuild wrote this entry's
+# ``disabled: true`` itself, because the entry's env holds a ``secret://``
+# reference and the server is not routed through the MCP gateway, the one place
+# the reference is resolved. It tells that mute apart from one the user wrote:
+# the rebuild lifts it once the server is routed, and readers that offer the
+# routing switch must not read it as the user turning the server off.
+WITHHELD_KEY = "x-kirocrew-withheld"
+
+
+def is_withheld_mute(entry: Any) -> bool:
+    """True when *entry*'s mute is the rebuild's :data:`WITHHELD_KEY` mute."""
+    return isinstance(entry, dict) and entry.get(WITHHELD_KEY) is True
+
+
 # Inside the record: what the field was derived FROM, and what we EMITTED. The
 # second is the ownership proof -- see :func:`source_view`.
 _FROM_FIELD = "from"

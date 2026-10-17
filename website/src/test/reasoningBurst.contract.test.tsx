@@ -173,6 +173,8 @@ describe('reasoning-burst gate→fold contract (#6406)', () => {
       ...await walk(CHAT_DIR),
       ...await walk(join(PAGES_DIR, '..', 'app-sdk')),
       join(PAGES_DIR, 'ChatPage.tsx'),
+      // The page composes owners under pages/chat/page/ (walked above) and its useChatPage* siblings, so the scan reads those siblings too.
+      ...(await readdir(PAGES_DIR)).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.(test|spec)\./.test(f)).sort().map(f => join(PAGES_DIR, f)),
     ]
     expect(files.length).toBeGreaterThan(10) // the walk really found the display layer
     for (const file of files) {

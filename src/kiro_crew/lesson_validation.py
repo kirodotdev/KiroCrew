@@ -6,6 +6,7 @@ import logging
 import re
 from collections.abc import Sequence
 
+from kiro_crew import context_omissions
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 
 _MODEL_ID_TOKEN_RE = rf"{MODEL_ID_LITERAL_PATTERN}" r"(?:\w|[.-](?=\w))*" r"(?!\w|[.-](?=\w))"
@@ -277,7 +278,9 @@ def any_request_overlap(entries: Sequence[tuple[object, str]], query_text: str) 
     return any(wanted & _relevance_tokens(text) for _, text in entries)
 
 
-def render_withheld_tier(total: int, *, header: str, footer: str, notice: str) -> str:
+def render_withheld_tier(
+    total: int, *, header: str, footer: str, notice: str, omission_kind: str = ""
+) -> str:
     """Render a tier's FRAME with no entries, for a tier withheld on relevance.
 
     Not the same event as an overflow, so it does not share that wording: nothing
@@ -286,9 +289,14 @@ def render_withheld_tier(total: int, *, header: str, footer: str, notice: str) -
     silently absent block is indistinguishable from "this user has no findings",
     and that is the reading that stops anyone from going to look. *notice* takes
     ``total``.
+
+    *omission_kind* names the tier in the composition's omission record
+    (:mod:`kiro_crew.context_omissions`); empty records nothing.
     """
     if total <= 0:
         return ""
+    if omission_kind:
+        context_omissions.record(omission_kind, "relevance", omitted=total, total=total)
     return header + "\n" + footer + "\n" + notice.format(total=total) + "\n\n"
 
 
@@ -299,12 +307,15 @@ def render_lesson_tier(
     header: str,
     footer: str,
     omission: str,
+    omission_kind: str = "",
 ) -> tuple[str, int]:
     """Render one lesson tier within *budget* characters.
 
     Returns ``(block, omitted_count)``. *entries* are ``(row, text)`` pairs in the
     order they should be kept; *omission* is a format string taking ``count``,
-    ``total`` and ``limit``.
+    ``total`` and ``limit``. *omission_kind* names the tier in the composition's
+    omission record (:mod:`kiro_crew.context_omissions`), written from the same
+    count the notice states; empty records nothing.
 
     ``budget`` of ``0`` is unbounded. An empty tier renders ``""`` rather than an
     empty labelled block, so a user with no lessons of a kind sees no header for
@@ -321,6 +332,16 @@ def render_lesson_tier(
         return "", 0
     total = len(entries)
 
+    def note(omitted: int) -> None:
+        if not omission_kind:
+            return
+        if omitted:
+            context_omissions.record(
+                omission_kind, "budget", omitted=omitted, total=total, budget_chars=budget
+            )
+        else:
+            context_omissions.clear(omission_kind)
+
     def render(rows: Sequence[tuple[object, str]], omitted: int) -> str:
         # Byte shape is the SHIPPED one and is load-bearing: the block ends with a
         # single newline after its footer, and an omission notice follows the
@@ -336,6 +357,7 @@ def render_lesson_tier(
 
     full = render(entries, 0)
     if not budget or len(full) <= budget:
+        note(0)
         return full, 0
     # Reserve room for the notice at its widest (every entry omitted), so one
     # pass over the rows decides which prefix fits.
@@ -356,4 +378,5 @@ def render_lesson_tier(
             continue
         room -= line
         kept.append(entry)
+    note(total - len(kept))
     return render(kept, total - len(kept)), total - len(kept)

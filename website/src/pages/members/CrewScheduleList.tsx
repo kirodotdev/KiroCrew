@@ -106,7 +106,7 @@ export default function CrewScheduleList({ jobs, loading, error = false, nowTs, 
                         className={cn(
                           'ml-auto shrink-0 text-[10.5px] font-semibold px-2 py-0.5 rounded-full',
                           state === 'running' && 'bg-accent-subtle text-accent',
-                          state === 'on' && 'bg-ok-subtle text-ok',
+                          state === 'on' && 'bg-ok-subtle text-ok-text',
                           state === 'paused' && 'bg-bg-hover text-muted',
                         )}
                         data-testid="crew-schedule-state"

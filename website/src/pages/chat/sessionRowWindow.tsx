@@ -50,7 +50,7 @@ export const SESSION_ROW_STUB_DEFAULT_PX = 76
  *  observer has reported anything, so the initial paint shows real rows. Per
  *  root, not per lane: every board column is its own root and scrolls on its
  *  own, so each column gets its own first two viewports of 64px rows. This is
- *  its own number: ChatSidebar's SIDEBAR_DISPLACEMENT_WINDOW bounds which rows
+ *  its own number: chat-sidebar/laneRows.tsx's SIDEBAR_DISPLACEMENT_WINDOW bounds which rows
  *  animate when the lane reorders, a separate concern that can change on its
  *  own without affecting this budget. */
 export const SESSION_ROW_INITIAL_MOUNT_BUDGET = 48
@@ -185,9 +185,20 @@ function WindowedSlot({ win, rowId, slotKey, navScope, holdContainer, title, kee
   const heightKey = JSON.stringify([navScope, rowId])
   // Mount-only: the first rows of each root's render pass start live so the
   // initial paint shows real rows; everything after waits for the observer.
-  const [near, setNear] = useState(() => win.claimInitialMount(heightKey))
+  const [near, setNearState] = useState(() => win.claimInitialMount(heightKey))
+  // The value of the LAST setNear call, which the next render will commit. The
+  // observer compares against this, not against the rendered `near`: two entries
+  // can arrive before React renders the first one (a busy main thread, a lane that
+  // jumps away and back within a frame or two). Compared against the rendered
+  // value, the second entry ("near again") matched the stale `near` and was
+  // dropped, the queued "far" then committed, and the row stayed a stub inside
+  // the viewport with no further entry coming, since it never crosses the margin
+  // again. Only setNear writes it, so a render cannot roll it back.
   const nearRef = useRef(near)
-  nearRef.current = near
+  const setNear = useCallback((value: boolean) => {
+    nearRef.current = value
+    setNearState(value)
+  }, [])
   // True after an observer says a state-holding row is outside the window.
   const heldOffWindowRef = useRef(false)
   // Set when keyboard navigation lands on a stub, so focus follows onto the
@@ -273,7 +284,7 @@ function WindowedSlot({ win, rowId, slotKey, navScope, holdContainer, title, kee
       stopReleaseWatch()
       unobserve()
     }
-  }, [win, heightKey])
+  }, [win, heightKey, setNear])
 
   const mounted = near || keepMounted
   // Read by the observer callback: only a LIVE row's box is a measurement; a
@@ -354,7 +365,7 @@ function WindowedSlot({ win, rowId, slotKey, navScope, holdContainer, title, kee
       stub.removeEventListener('keydown', onKeyDown)
       stub.removeEventListener('contextmenu', onMouseActivation)
     }
-  }, [mounted])
+  }, [mounted, setNear])
 
   useLayoutEffect(() => {
     if (!mounted) return

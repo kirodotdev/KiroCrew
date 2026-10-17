@@ -572,6 +572,9 @@ def _flag_boot(cfg, tmp_path, mp):
 
     mp.setattr(rt, "_boot_unguarded", _unguarded)
     mp.setattr(rt, "_refuse", _raiser("windows-branch"))
+    # The Windows branch claims a reservation before the body runs; without one it
+    # refuses on its own and the body's OSError is never raised.
+    rt.win_backend.runs.reserve(cfg, _POD)
     return _boot(cfg, tmp_path, mp)
 
 

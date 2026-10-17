@@ -520,6 +520,7 @@ class TestTheSpawnEndpointActuallyDelegates:
         guidance saying so is a leak the docs teach. The `select_crew` tool text
         is the copy that matters most: it is what the model reads at routing
         time now that the always-on conductor skill is gone."""
+        import re
         from pathlib import Path
 
         import kiro_crew
@@ -529,6 +530,17 @@ class TestTheSpawnEndpointActuallyDelegates:
             text = (root / rel).read_text()
             assert 'spawn_run(agent="<name>"' not in text, rel
             assert "spawn_run(agent=<crew>" not in text, rel
+        # Packaged prompts, skills and docs are guidance too: one that routes with
+        # `select_crew` / `route_crew` must not then hand the pick to `agent=`.
+        pages = sorted(root.rglob("*.md"))
+        assert root / "builtin_skills" / "goal-conductor" / "SKILL.md" in pages
+        routing = re.compile(r"\b(select_crew|route_crew)\b")
+        offenders = [
+            str(p.relative_to(root))
+            for p in pages
+            if routing.search(text := p.read_text(encoding="utf-8")) and "spawn_run(agent=" in text
+        ]
+        assert not offenders, offenders
 
 
 class TestASymlinkCannotAliasTwoCrewsOntoOneSilo:

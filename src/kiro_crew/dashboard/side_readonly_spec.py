@@ -51,6 +51,9 @@ import json
 import logging
 import os
 import re
+import stat
+import threading
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,6 +83,13 @@ OWNER_MARKER = "Kiro Crew derived read-only spec"
 #: must fail closed here, while ``denied*`` and ``available*`` keys — which only
 #: narrow or list — are kept.
 _TOOL_SETTING_GRANT_PREFIXES = ("allowed", "trusted", "auto")
+
+#: Serializes a publication against the reaper's delete of the same registry.
+#: Publication holds it from reading the base spec to writing the derived file;
+#: the reaper holds it while it re-checks the base and unlinks. So a base that
+#: comes back while a reap is deciding is either seen by that re-check, or the
+#: publication runs after the unlink and writes the file again.
+_SPEC_FILE_LOCK = threading.Lock()
 
 
 class ReadOnlySpecError(RuntimeError):
@@ -308,8 +318,13 @@ def derive_readonly_spec(
     spec = copy.deepcopy(base_spec)
     spec["name"] = derived_name
     base_description = spec.get("description")
+    # A project-scope variant records the checkout it was derived from: its name
+    # carries only a digest of that path, and the reaper needs the path itself to
+    # tell a removed checkout from a live one (see reap_orphaned_readonly_specs).
+    # JSON-quoted so any character a path can hold round-trips.
+    source = f" in project {json.dumps(source_id)}" if source_id is not None else ""
     spec["description"] = (
-        f"{OWNER_MARKER} of {base_name!r}; generated on every side turn, do not edit."
+        f"{OWNER_MARKER} of {base_name!r}{source}; generated on every side turn, do not edit."
         + (
             f" Base: {base_description}"
             if isinstance(base_description, str) and base_description
@@ -451,37 +466,42 @@ def publish_readonly_spec(base_name: str, project_dir: str | None = None) -> Pub
 
     Synchronous and I/O-bound: call it off the event loop
     (``asyncio.to_thread``). Raises :class:`ReadOnlySpecError` on every failure;
-    never returns a name whose file is not on disk.
+    never returns a name whose file is not on disk. Holds
+    :data:`_SPEC_FILE_LOCK` from the base read to the write, so the reaper
+    cannot delete the file between this resolving its base and returning.
     """
     from kiro_crew.agent import _atomic_json_write, kiro_agents_dir_path
 
-    base_spec, source_id = _read_base_spec(base_name, project_dir)
-    derived = derive_readonly_spec(base_spec, base_name=base_name, source_id=source_id)
-    derived_name = derived["name"]
-    agents_dir = kiro_agents_dir_path()
-    target = agents_dir / f"{derived_name}.json"
-    digest = spec_digest(derived)
-    try:
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink():
-            # We only ever write regular files, so a link here is not ours.
+    with _SPEC_FILE_LOCK:
+        base_spec, source_id = _read_base_spec(base_name, project_dir)
+        derived = derive_readonly_spec(base_spec, base_name=base_name, source_id=source_id)
+        derived_name = derived["name"]
+        agents_dir = kiro_agents_dir_path()
+        target = agents_dir / f"{derived_name}.json"
+        digest = spec_digest(derived)
+        try:
+            agents_dir.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink():
+                # We only ever write regular files, so a link here is not ours.
+                raise ReadOnlySpecError(
+                    "derived_path_foreign", f"{target} is a symlink; refusing to write through it"
+                )
+            current = _read_current(target)
+            if target.exists() and not is_owned_readonly_spec(current):
+                raise ReadOnlySpecError(
+                    "derived_path_foreign",
+                    f"{target} exists and does not carry the {OWNER_MARKER!r} owner marker; "
+                    "it is not overwritten",
+                )
+            _refuse_if_shadowed(derived_name, target, project_dir)
+            if current != derived:
+                _atomic_json_write(target, derived)
+                logger.info("Side turn: published read-only agent spec %s", target)
+                _refresh_materialized_snapshot()
+        except OSError as exc:
             raise ReadOnlySpecError(
-                "derived_path_foreign", f"{target} is a symlink; refusing to write through it"
-            )
-        current = _read_current(target)
-        if target.exists() and not is_owned_readonly_spec(current):
-            raise ReadOnlySpecError(
-                "derived_path_foreign",
-                f"{target} exists and does not carry the {OWNER_MARKER!r} owner marker; "
-                "it is not overwritten",
-            )
-        _refuse_if_shadowed(derived_name, target, project_dir)
-        if current != derived:
-            _atomic_json_write(target, derived)
-            logger.info("Side turn: published read-only agent spec %s", target)
-            _refresh_materialized_snapshot()
-    except OSError as exc:
-        raise ReadOnlySpecError("spec_write_failed", f"could not write {target}: {exc}") from exc
+                "spec_write_failed", f"could not write {target}: {exc}"
+            ) from exc
     return PublishedSpec(name=derived_name, digest=digest)
 
 
@@ -505,3 +525,254 @@ def _refresh_materialized_snapshot() -> None:
         refresh_materialized_agents()
     except Exception:  # noqa: BLE001 — the spec is on disk; the snapshot is a cache
         logger.debug("materialized-agent snapshot refresh failed", exc_info=True)
+
+
+#: The head :func:`derive_readonly_spec` writes into ``description``: the owner
+#: marker, the base name and, for a project-scope variant, the checkout as a JSON
+#: string. Matched at the start only; the base's own description follows the
+#: ``; generated`` clause and is never parsed.
+_DESCRIPTION_HEAD_RE = re.compile(
+    re.escape(OWNER_MARKER)
+    + r" of '(?P<base>[^']+)'(?: in project (?P<source>\"(?:[^\"\\]|\\.)*\"))?; generated "
+)
+
+
+@dataclass(frozen=True)
+class _ReapCandidate:
+    """One owned derived file, what it was derived from, and its ``lstat`` when read."""
+
+    path: Path
+    name: str
+    base: str
+    source: str | None
+    seen: os.stat_result
+
+
+def reap_orphaned_readonly_specs(in_use: Collection[str] = ()) -> list[str]:
+    """Remove the derived read-only specs whose base agent does not resolve.
+
+    Publication writes ``<agent>--readonly.json`` (or a project variant) on
+    every side turn and nothing else removes one, while kiro-cli lists every
+    file in the registry as a selectable agent: a deleted base agent or a
+    removed checkout would otherwise leave a stale read-only agent behind for
+    good. A file is removed only when ALL of these hold:
+
+    * it is a regular ``.json`` file directly in the registry. ``lstat``
+      decides, so a symlink, a directory or any other inode is never a
+      candidate and is never followed; the hardened spec reader then refuses a
+      hardlinked file.
+    * its declared ``name`` equals its filename stem and is the derived name of
+      the base its ``description`` names, and that ``description`` starts with
+      the owner marker. A user's own agent called ``<x>--readonly`` carries no
+      marker and is never touched.
+    * no live session runs under it: *in_use* holds the agent names the session
+      registry's providers were spawned with.
+    * its base does not resolve where the publisher looks for it. For a
+      user-scope ``<agent>--readonly``: no ``<agent>.json`` / ``<agent>.md``
+      entry of any kind (a symlink included) exists, and
+      :func:`kiro_crew.agent.agent_spec_path` finds no spec declaring the name
+      (a name two specs declare still resolves). For a project variant: the
+      checkout its ``description`` records is gone, or that checkout's
+      ``.kiro/agents`` holds no entry named or declaring the agent. A variant
+      whose checkout cannot be read, is a protected tree, is not recorded at
+      all, or is recorded as a relative path is kept, as is one whose checkout
+      or agents directory ``hooks.validate_file_path`` refuses (an untrusted
+      UNC share, or a link into one, is never followed), and one whose agents
+      directory holds a spec-named link (never followed either).
+
+    The base is judged again under :data:`_SPEC_FILE_LOCK`, with an ``lstat``
+    identity check, immediately before the unlink: a publication racing the
+    reap either lands first and keeps its file, or lands after the unlink and
+    writes it again. Nothing removed could have served a turn, because a side
+    turn whose base does not resolve is refused (``base_spec_missing``) before a
+    session exists, and a base that comes back regenerates its file on the next
+    side turn.
+
+    Blocking: one listing of the registry, one bounded read per name of a
+    derived shape, and a declared-name scan only for a base with no same-named
+    file. Run it off the event loop. Never raises; returns the names removed. A
+    removal clears the agent-listing caches, which moves the spec generation
+    every agents-dir memo revision carries, and refreshes the materialized-agent
+    snapshot.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path
+
+    agents_dir = kiro_agents_dir_path()
+    try:
+        with os.scandir(agents_dir) as it:
+            file_names = [entry.name for entry in it]
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.debug("read-only spec reap: could not list %s", agents_dir, exc_info=True)
+        return []
+    live = {name for name in in_use if isinstance(name, str)}
+    removed: list[str] = []
+    for file_name in file_names:
+        try:
+            candidate = _owned_candidate(agents_dir, file_name)
+            if candidate is None or candidate.name in live:
+                continue
+            if _orphan_reason(candidate, agents_dir) is None:
+                continue
+            with _SPEC_FILE_LOCK:
+                reason = _orphan_reason(candidate, agents_dir)
+                if reason is None or not _unlink_if_unchanged(candidate):
+                    continue
+        except Exception:  # noqa: BLE001 -- one file's failure keeps that file, not the sweep
+            logger.debug("read-only spec reap: skipped %r", file_name, exc_info=True)
+            continue
+        removed.append(candidate.name)
+        # ``%r``: the registry is shared with other tools, so a file name is untrusted.
+        logger.info("Side panel: removed read-only agent spec %r (%s)", file_name, reason)
+    if removed:
+        from kiro_crew.agent_discovery import clear_list_agents_cache
+
+        clear_list_agents_cache()
+        _refresh_materialized_snapshot()
+    return removed
+
+
+def _owned_candidate(agents_dir: Path, file_name: str) -> _ReapCandidate | None:
+    """The derived spec at *file_name*, or ``None`` unless it is provably this module's."""
+    if not file_name.endswith(".json"):
+        return None
+    name = file_name[: -len(".json")]
+    if readonly_base_name(name) is None:
+        return None
+    path = agents_dir / file_name
+    try:
+        seen = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISREG(seen.st_mode):
+        return None
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    # ``unknown``: the reap is the gateway's own maintenance, not any channel's request.
+    data = _read_agent_spec(path, operation="side_readonly_reap", source="unknown")
+    if not isinstance(data, dict) or not is_owned_readonly_spec(data) or data.get("name") != name:
+        return None
+    head = _DESCRIPTION_HEAD_RE.match(str(data["description"]))
+    if head is None:
+        return None
+    base = head.group("base")
+    source: str | None = None
+    if head.group("source") is not None:
+        try:
+            source = json.loads(head.group("source"))
+        except ValueError:
+            return None
+        if not isinstance(source, str) or not source:
+            return None
+    if not is_registered_agent_name(base) or readonly_agent_name(base, source) != name:
+        return None
+    return _ReapCandidate(path=path, name=name, base=base, source=source, seen=seen)
+
+
+def _orphan_reason(candidate: _ReapCandidate, agents_dir: Path) -> str | None:
+    """Why *candidate*'s base does not resolve, or ``None`` while it may."""
+    if candidate.source is None:
+        if _user_base_resolves(candidate.base, agents_dir):
+            return None
+        return "base agent removed"
+    return _project_orphan_reason(candidate.base, candidate.source)
+
+
+def _user_base_resolves(base: str, agents_dir: Path) -> bool:
+    """Whether a user-scope spec could still answer to *base*.
+
+    A same-named entry of any kind counts before anything is parsed: the
+    publisher's resolver skips a symlinked or unreadable file, but kiro-cli
+    may not, and a kept file costs nothing.
+    """
+    from kiro_crew.agent import agent_spec_path
+    from kiro_crew.agent_spec_format import agent_spec_candidates
+
+    if any(os.path.lexists(path) for path in agent_spec_candidates(agents_dir, base)):
+        return True
+    try:
+        return agent_spec_path(base, agents_dir=agents_dir) is not None
+    except ValueError:
+        return True
+
+
+def _project_orphan_reason(base: str, source: str) -> str | None:
+    """Why checkout *source* does not declare *base*, or ``None`` while it may.
+
+    Mirrors where :func:`_read_base_spec` looks (the checkout's
+    ``.kiro/agents``) and widens it: an entry whose stem is the agent counts
+    without being parsed, case-folded for a case-insensitive filesystem, and a
+    spec-named entry that is not a regular file (a link, a junction) counts
+    without being followed. Every failure other than "not there" keeps the file.
+    """
+    from kiro_crew import hooks
+    from kiro_crew.agent_discovery import _project_scope_denied, project_agent_name
+    from kiro_crew.agent_spec_format import is_agent_spec_name, spec_stem
+    from kiro_crew.config.paths import project_agents_dir
+
+    # The recorded checkout is text read from a file in a shared directory.
+    # Publication records only an absolute resolved path, so a relative one is
+    # not ours. The checkout and then its agents directory each pass
+    # ``hooks.validate_file_path`` before anything follows them: it refuses an
+    # untrusted UNC spelling and reads a Windows link's own target before the
+    # link is traversed, because on Windows following either is an SMB
+    # connection to the host it names. Only the canonical paths it returns are
+    # probed; a refusal keeps the file.
+    if not os.path.isabs(source):
+        return None
+    checkout = hooks.validate_file_path(source)
+    if checkout is None:
+        return None
+    if _project_scope_denied(checkout, operation="side_readonly_reap", source="unknown"):
+        return None
+    try:
+        info = os.stat(checkout)
+    except (FileNotFoundError, NotADirectoryError):
+        return "project removed"
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return "project removed"
+    screened = hooks.validate_file_path(str(project_agents_dir(checkout)))
+    if screened is None:
+        return None
+    agents = Path(screened)
+    try:
+        with os.scandir(agents) as it:
+            entries = [(entry.name, entry.is_file(follow_symlinks=False)) for entry in it]
+    except (FileNotFoundError, NotADirectoryError):
+        return "project does not declare the agent"
+    except OSError:
+        return None
+    folded = base.casefold()
+    for entry_name, regular in entries:
+        if not is_agent_spec_name(entry_name):
+            continue
+        if spec_stem(entry_name).casefold() == folded or not regular:
+            return None
+        if project_agent_name(agents / entry_name) == base:
+            return None
+    return "project does not declare the agent"
+
+
+def _unlink_if_unchanged(candidate: _ReapCandidate) -> bool:
+    """Unlink *candidate* only if its path still holds the regular file that was judged."""
+    try:
+        now = os.lstat(candidate.path)
+    except OSError:
+        return False
+    seen = candidate.seen
+    if not stat.S_ISREG(now.st_mode) or (
+        now.st_dev,
+        now.st_ino,
+        now.st_size,
+        now.st_mtime_ns,
+    ) != (seen.st_dev, seen.st_ino, seen.st_size, seen.st_mtime_ns):
+        return False
+    try:
+        os.unlink(candidate.path)
+    except OSError:
+        logger.debug("read-only spec reap: could not remove %r", candidate.path.name, exc_info=True)
+        return False
+    return True

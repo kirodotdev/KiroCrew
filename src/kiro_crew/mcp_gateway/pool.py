@@ -4,11 +4,10 @@ Two sessions sharing a single backend MUST produce the same answers as if
 each had its own backend. Every attribute that changes backend behavior
 MUST be in :class:`PoolKey`, or two sessions can see cross-tenant state.
 
-The 8 dimensions captured below are the spawn-time inputs that influence a
-Kiro MCP subprocess: identity (``server_name``, ``agent_name``), execution
+The 6 dimensions captured below are the spawn-time inputs that influence a
+Kiro MCP subprocess: identity (``server_name``), execution
 (``command_args_hash``, ``effective_env_hash``, ``work_dir``,
-``binary_version``), security (``os_uid``), and config drift
-(``config_snapshot_hash``).
+``binary_version``), and security (``os_uid``).
 
 The rule cuts both ways. An attribute that does NOT change backend
 behavior must stay OUT of the key: the hash is injective over every field,
@@ -42,10 +41,45 @@ and ``trust_all_tools``.
 enforced (the socket is ``0600`` and the daemon checks the peer uid), so the
 dimension costs nothing it does not also deliver.
 
-The four fields are still ACCEPTED on a register payload and simply ignored,
-the same wire-compat treatment ``user_identity`` and ``channel_id`` get: a
-stub and a daemon are upgraded separately, and a rejected register silently
-un-pools an install.
+Those four fields are still ACCEPTED on a register payload and simply
+ignored, the same wire-compat treatment ``user_identity`` and ``channel_id``
+get: a stub and a daemon are upgraded separately, and a rejected register
+silently un-pools an install.
+
+There is deliberately NO agent dimension. The agent name never reaches the
+backend process: the spawn is decided by ``command_args_hash``,
+``effective_env_hash``, ``work_dir`` and ``binary_version``, all of which
+already differ whenever two agents declare a server differently. Two agents
+that declare one server IDENTICALLY therefore asked for the same process,
+and giving each its own was pure duplication — on a host running several
+agents a common server ran up to five indistinguishable backends. What the
+name was still reached for is answered per call or per content instead:
+
+* The MCP Apps governance check reads the agent ``gatewayd`` stamped on the
+  render's own spool record at interception, taken from the producing stub's
+  Register frame (``app_call._agent_for_call``), and fails closed when the
+  record names none. So each call is governed by the agent that actually made
+  it rather than the producing registrant's, and the answer comes from a
+  record only ``gatewayd`` writes rather than from a store the governed agent
+  could edit.
+* The declared-env sidecar keeps its ``(agent, server)`` file name, and the
+  daemon reads the agent off the Register frame instead of off this key. That
+  file holds one declaration's full env, rotating secrets included, and
+  ``effective_env_hash`` deliberately excludes those keys -- so naming it from
+  this key would put two agents' different credentials on one file name. One
+  name per declaration keeps that substitution unrepresentable while leaving
+  pool identity agent-free: two agents declaring a server identically still
+  share one backend and read byte-identical copies of their own file.
+* The status page's metrics row drops its ``agent`` key rather than replacing
+  it. Nothing in ``src/kiro_crew`` read that key and the dashboard card
+  rendered no column for it, so a row that names the process it describes --
+  server, pid, stubs -- loses nothing an operator had.
+
+There is deliberately NO config-snapshot dimension either. A
+``config_snapshot_hash`` the stub still sends is ignored: its value is a
+constant run of 64 zero bytes, so it partitions nothing. Real config drift is
+carried by the execution-shape fields, which are recomputed from the spec the
+stub was launched with.
 
 There is deliberately NO channel dimension. A channel is not a trust
 boundary and never was a usable proxy for one:
@@ -186,7 +220,6 @@ class PoolKey:
 
     # Identity
     server_name: str
-    agent_name: str
 
     # Execution shape
     command_args_hash: str
@@ -197,9 +230,6 @@ class PoolKey:
     # Security boundary
     os_uid: int
 
-    # Config drift
-    config_snapshot_hash: str
-
     # --- Constructors ------------------------------------------------------
 
     @classmethod
@@ -207,10 +237,9 @@ class PoolKey:
         """Build a :class:`PoolKey` from a stub's ``Register`` payload.
 
         The caller is responsible for providing pre-computed content hashes
-        for the structured fields (command_args, env, config_snapshot).
-        This mirrors the Rust stub's ``build_pool_key``
-        helper: the stub has the raw inputs and knows how to hash them, the
-        gateway just validates and stores.
+        for the structured fields (command_args, env). This mirrors the Rust
+        stub's ``build_pool_key`` helper: the stub has the raw inputs and
+        knows how to hash them, the gateway just validates and stores.
 
         Raises :class:`ValueError` on missing or malformed fields.
         """
@@ -231,6 +260,16 @@ class PoolKey:
         # (``sandbox_mode``, ``autoapprove_set_hash``, ``approval_mode``,
         # ``trust_all_tools``): stubs send them, nothing here reads them, and
         # the module docstring records why none of them isolates anything.
+        #
+        # ``agent_name`` and ``config_snapshot_hash`` join that list. Both are
+        # still SENT (see ``stub.build_register_payload``), and ``agent_name``
+        # is still READ off this frame by ``daemon.connection``'s
+        # ``stub_agent`` — which names a private backend's declared-env sidecar
+        # and is stamped onto an app render's spool record — but gatewayd
+        # threads it nowhere near pool identity. Neither partitions the pool:
+        # the agent never reaches the backend process, and the snapshot hash is
+        # a constant run of zeros.
+        #
         # ``os_uid`` IS a dimension, so it is type-checked rather than coerced:
         # ``int()`` on a bool silently passes, and a stub sending a JSON string
         # or a bool could otherwise land in the wrong uid partition.
@@ -241,13 +280,11 @@ class PoolKey:
         try:
             return cls(
                 server_name=str(register["server_name"]),
-                agent_name=str(register["agent_name"]),
                 command_args_hash=str(register["command_args_hash"]),
                 effective_env_hash=str(register["effective_env_hash"]),
                 work_dir=str(register["work_dir"]),
                 binary_version=str(register["binary_version"]),
                 os_uid=os_uid,
-                config_snapshot_hash=str(register["config_snapshot_hash"]),
             )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Register payload has malformed field: {exc}") from exc
@@ -507,7 +544,10 @@ class BackendPool:
                 (
                     {
                         "server": b.pool_key.server_name,
-                        "agent": b.pool_key.agent_name,
+                        # No agent key. The agent is not a pool dimension, so a
+                        # row describes a process one or several agents share and
+                        # there is no single agent to name. Dropped rather than
+                        # replaced by a list: nothing read the old key.
                         "pid": b.pid,
                         "stubs": b.refcount,
                         "idle_s": round(max(0.0, now - b.last_used_at), 1),
@@ -551,26 +591,26 @@ class BackendPool:
         if self._breaker is not None:
             self._breaker.record_healthy(breaker_key)
 
-    def live_backend_pids(self) -> list[int]:
-        """PIDs of all currently-pooled backends **and draining backends**. Each
-        backend is spawned as a session leader (``start_new_session=True``), so
-        ``pid == pgid``. Persisted out-of-band so a supervising manager can
-        ``killpg`` these survivors if it has to SIGKILL a wedged gatewayd (which
-        then never runs :meth:`shutdown_all`).
+    def live_backend_identities(self) -> list[tuple[int, Optional[str]]]:
+        """``(pid, start_id)`` of every pooled, draining and connection-private
+        backend. Each is a session leader (``start_new_session=True``, so
+        ``pid == pgid``), and the heartbeat persists these out-of-band so a
+        supervising manager or the next daemon can reap survivors of a gatewayd
+        that died without running :meth:`shutdown_all`.
 
         Draining backends (blue-green cutover) keep running as live session
-        leaders for up to :data:`DRAIN_DEADLINE_SECS` after being removed from
-        the active index, so they MUST appear here too — otherwise a gatewayd
-        SIGKILLed during the drain window leaves them orphaned, the exact leak
-        this pidfile mechanism exists to prevent.
+        leaders for up to :data:`DRAIN_DEADLINE_SECS` after leaving the active
+        index, so they MUST appear here too, or a gatewayd SIGKILLed during the
+        drain window leaves them orphaned. The start id is the one each backend
+        captured at spawn (:attr:`Backend.start_id`), never re-read here.
         """
-        pids = [b.pid for b in self._backends.values() if b.pid is not None]
-        pids.extend(e.backend.pid for e in self._draining if e.backend.pid is not None)
+        backends = list(self._backends.values())
+        backends.extend(e.backend for e in self._draining)
         # Connection-private backends are ordinary child processes; being outside
         # the reuse index and the capacity budget does not make them any less
         # orphanable by a SIGKILLed gatewayd.
-        pids.extend(b.pid for b in self._exclusive.values() if b.pid is not None)
-        return pids
+        backends.extend(self._exclusive.values())
+        return [(b.pid, b.start_id) for b in backends if b.pid is not None]
 
     async def add(
         self,

@@ -67,6 +67,27 @@ describe('useDndSensors', () => {
     expect(sensorFor(on.result.current, KeyboardSensor)?.options)
       .toEqual({ coordinateGetter: sortableKeyboardCoordinates })
   })
+
+  it('returns the same descriptor array across renders until an input changes', () => {
+    // DndContext derives the activators every useDraggable reads from this
+    // array, so a fresh one per render re-renders every draggable on every
+    // render of the surface -- in the chat sidebar, every mounted session row
+    // rebuilding its menus on each sidebar commit.
+    const { result, rerender } = renderHook(
+      ({ distance, keyboard }) => useDndSensors({ distance, keyboard }),
+      { initialProps: { distance: 5, keyboard: true } },
+    )
+    const first = result.current
+    rerender({ distance: 5, keyboard: true })
+    expect(result.current).toBe(first)
+    rerender({ distance: 6, keyboard: true })
+    expect(result.current).not.toBe(first)
+    expect(sensorFor(result.current, MouseSensor)?.options).toEqual({ activationConstraint: { distance: 6 } })
+    const second = result.current
+    rerender({ distance: 6, keyboard: false })
+    expect(result.current).not.toBe(second)
+    expect(sensorFor(result.current, KeyboardSensor)).toBeUndefined()
+  })
 })
 
 /**

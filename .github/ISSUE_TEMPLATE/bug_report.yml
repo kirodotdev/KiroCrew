@@ -121,3 +121,10 @@ body:
         adds context. Do not paste credentials or session cookies.
     validations:
       required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Want to fix this yourself? Once the issue is triaged as `tier:T1` or
+        `tier:T2`, comment `/claim` on it so nobody else starts the same fix. See
+        [Claiming an issue](https://github.com/kirodotdev/KiroCrew/blob/main/CONTRIBUTING.md#claiming-an-issue).

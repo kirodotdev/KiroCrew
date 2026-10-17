@@ -95,7 +95,7 @@ def _fast_no_report_ceiling(monkeypatch):
 def _runtime(backend: str) -> AcpRuntime:
     """An initialized runtime on ``backend``, wired to a fake subprocess.
 
-    Mirrors ``test_acp_runtime._make_runtime`` but pins the backend so nothing
+    Mirrors ``acp_runtime_helpers._make_runtime`` but pins the backend so nothing
     reads the host filesystem.
     """
     rt = AcpRuntime(work_dir=_CWD, acp_backend=backend)

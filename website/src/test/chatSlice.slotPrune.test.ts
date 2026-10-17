@@ -178,6 +178,7 @@ describe('slot teardown parity', () => {
       stopPressedAt: Object.fromEntries(keys.map(k => [k, 999])),
       followups: Object.fromEntries(keys.map(k => [k, { items: [], ts: 1 }])),
       folderSuggestions: Object.fromEntries(keys.map(k => [k, { folderId: 'f', folderName: 'F', breadcrumb: 'F', ts: 1, turns: 0 }])),
+      restoredQuestionNotices: Object.fromEntries(keys.map(k => [k, `restored for ${k}`])),
       subagentQueued: Object.fromEntries(keys.map(k => [k, 2])),
       automations: Object.fromEntries(keys.map(k => [k, terminalMonitor(k)])),
       slotPaneHasMore: Object.fromEntries(keys.map(k => [k, true])),
@@ -189,8 +190,8 @@ describe('slot teardown parity', () => {
   const perSlotMaps = [
     'slotMessages', 'slotActivity', 'slotRun', 'slotHydrated', 'slotSide',
     'slotSideClosed', 'slotStatusDetail', 'slotContextPct', 'slotContextTokens',
-    'stopPressedAt', 'followups', 'folderSuggestions', 'subagentQueued',
-    'automations',
+    'stopPressedAt', 'followups', 'folderSuggestions', 'restoredQuestionNotices',
+    'subagentQueued', 'automations',
     'slotPaneHasMore', 'slotPaneBounded',
     // Client-only and unrecoverable, so a slot that leaves has to take it with it.
     'thinkingOrphans',

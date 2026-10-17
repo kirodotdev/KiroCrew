@@ -1,7 +1,7 @@
 """The ACP layer's reporting half of the unresolved-``@server``-ref detector.
 
-The question itself -- which of a spec's ``@server`` refs name nothing a session
-receives -- is provider-neutral plain data and lives in
+The question itself -- which of a spec's ``@server`` refs name nothing in Crew's
+projection for the session -- is provider-neutral plain data and lives in
 :mod:`kiro_crew.agent_sdk.mcp_refs`, which is what lets ``kirocrew doctor`` ask it
 without importing this layer. What lives HERE is the part that is genuinely ACP's:
 turning that answer into one structured log line at the point where a session's
@@ -15,10 +15,17 @@ finding differently.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.acp.mcp_session_report import NAME_CAP, sanitize_sink_text
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
+from kiro_crew.mcp_gateway.secret_uri import (
+    REMOTE_HEADER_ALTERNATIVE,
+    display_header_names,
+    header_secret_refs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +87,41 @@ def _log_safe(text: str) -> str:
     return "".join(out) or "?"
 
 
+def drop_gate_withheld(refs: list[str]) -> list[str]:
+    """*refs* without the ones whose managed server a closed ``spec_gate`` withholds.
+
+    A managed server with a closed gate (``kirocrew-computer`` on Linux, or with
+    Computer Use off) is omitted from every emitted spec ON PURPOSE, while its
+    ``@server`` ref stays in ``tools`` so the grant comes back when the gate
+    opens. Its absence from the wire is therefore the healthy state, not a
+    finding, and reporting it put "declared by the agent spec but not
+    configured" into every session's model-facing summary.
+    ``kirocrew doctor`` already skips the same case through
+    ``_spec_gate_closed()``.
+
+    Only a gate that ANSWERS closed drops its ref, through
+    ``agent._spec_gate_answers_closed``, the same predicate doctor's
+    ``_spec_gate_closed()`` calls. A gate that raises keeps the ref reported:
+    emission withholds such a server to stay safe, but a diagnostic that also
+    went quiet would hide the broken gate, and "closed" is exactly what silences
+    the finding. An unreadable registry drops nothing, for the same reason.
+    """
+    if not refs:
+        return refs
+    try:
+        from kiro_crew import agent as agent_mod
+
+        names = list(agent_mod._MANAGED_MCP_SERVERS)
+        answers_closed = agent_mod._spec_gate_answers_closed
+    except Exception:
+        logger.debug("managed MCP registry unreadable; dropping no refs", exc_info=True)
+        return refs
+    withheld = {name for name in names if answers_closed(name)}
+    if not withheld:
+        return refs
+    return [ref for ref in refs if ref.lstrip("@") not in withheld]
+
+
 def warn_unresolved_server_refs(
     spec: Any,
     wire_servers: Any,
@@ -113,7 +155,7 @@ def warn_unresolved_server_refs(
     channel is the projection. Reading the line without knowing which world it
     came from is what made this defect take three diagnoses.
     """
-    raw = unresolved_server_refs(spec, wire_servers, backend=backend)
+    raw = drop_gate_withheld(unresolved_server_refs(spec, wire_servers, backend=backend))
     if not raw:
         return []
     unresolved = [safe for safe in (sanitize_sink_text(ref, NAME_CAP) for ref in raw) if safe]
@@ -152,3 +194,77 @@ def warn_unresolved_server_refs(
         "on" if gateway_enabled else "off",
     )
     return unresolved
+
+
+def _remote_entries(spec: Any, wire_servers: Any, *, backend: str) -> list[tuple[str, Any]]:
+    """``(server name, headers)`` for every remote server this session is handed.
+
+    kiro-cli reads the spec's own servers from ``--agent``, headers included, so
+    it is judged on the spec's definitions; every other host only sees what the
+    array carries. KAS also mounts spec servers off the wire, but its projection
+    drops every declared header, so a reference there is never sent and is not
+    reported.
+    """
+    out: list[tuple[str, Any]] = []
+    if backend == ACP_BACKEND_KIRO:
+        servers = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                if isinstance(entry, Mapping) and entry.get("url"):
+                    out.append((str(name), entry.get("headers")))
+    for entry in wire_servers if isinstance(wire_servers, (list, tuple)) else ():
+        if isinstance(entry, Mapping) and entry.get("url") and isinstance(entry.get("name"), str):
+            out.append((entry["name"], entry.get("headers")))
+    return out
+
+
+def warn_remote_header_secret_refs(
+    spec: Any,
+    wire_servers: Any,
+    *,
+    backend: str,
+    agent: str,
+) -> tuple[list[str], int]:
+    """Log ONE line naming remote servers whose headers carry ``secret://``.
+
+    Only an MCP server's ``env`` is resolved against the vault; a remote server's
+    headers reach it as written. Without this line the only symptom is an
+    authorization failure from the server that names neither the header nor the
+    cause. Changes nothing about the session.
+
+    Returns ``(entries, omitted)``: one sanitized ``server (header, ...)`` entry
+    per affected server, at most :data:`_REPORT_CAP` of them, with the header
+    list bounded by :func:`display_header_names`; and how many affected servers
+    did not fit. The caller records both on the session's MCP report.
+    """
+    found: list[str] = []
+    logged: list[str] = []
+    seen: set[str] = set()
+    omitted = 0
+    for name, headers in _remote_entries(spec, wire_servers, backend=backend):
+        server = sanitize_sink_text(name, NAME_CAP)
+        cleaned = (sanitize_sink_text(h, NAME_CAP) for h in header_secret_refs(headers))
+        names = [h for h in cleaned if h]
+        if not names or not server or server in seen:
+            continue
+        seen.add(server)
+        if len(found) >= _REPORT_CAP:
+            omitted += 1
+            continue
+        found.append(f"{server} ({display_header_names(names)})")
+        logged.append(
+            f"{_log_safe(server)} ({display_header_names([_log_safe(h) for h in names])})"
+        )
+    if not found:
+        return [], 0
+    servers = "; ".join(logged) + (f" (+{omitted} more servers)" if omitted else "")
+    logger.warning(
+        "remote MCP server headers use a secret:// reference, which is not resolved: "
+        "backend=%r agent=%r servers=%s. Secret references are resolved only in a "
+        "stdio server's env, so these servers receive the reference as written. %s.",
+        backend,
+        _log_safe(sanitize_sink_text(agent, NAME_CAP)),
+        servers,
+        REMOTE_HEADER_ALTERNATIVE,
+    )
+    return found, omitted

@@ -145,3 +145,111 @@ describe('useArtifactLiveReload', () => {
     expect(invalidate).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * `SidePanel` keeps every artifact tab mounted and only toggles which one shows,
+ * so the side-panel surface passes its visibility: only the visible tab may hold
+ * a `/api/file-watch` connection, and a tab shown again must not render a file
+ * that changed while it was hidden.
+ */
+describe('useArtifactLiveReload in a side-panel tab', () => {
+  const SLUG = 'flow-report'
+  const PATH = '/repo/out/flow.html'
+  const openStreams = () => MockEventSource.instances.filter((es) => !es.closed)
+
+  // The hook's own debounce timer, advanced under a fake clock so no assertion
+  // here depends on how long a loaded runner takes to wake a real one.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  /** Run the hook's debounce out, and the refetch it arms. */
+  async function runDebounce(): Promise<void> {
+    await act(async () => { await vi.advanceTimersByTimeAsync(PAST_DEBOUNCE_MS) })
+  }
+
+  function renderTab(active: boolean) {
+    return renderHook(
+      ({ active: a }: { active: boolean }) => useArtifactLiveReload(SLUG, PATH, a),
+      { initialProps: { active } },
+    )
+  }
+
+  /** One frame on the newest stream, as `api_file_watch` writes it. */
+  function frame(content: string, mtime: number): void {
+    const es = MockEventSource.instances[MockEventSource.instances.length - 1]
+    act(() => {
+      es.onmessage?.({ data: JSON.stringify({ content, mtime }) })
+    })
+  }
+
+  it('refetches on a body-less frame, the signal a write past the watch cap sends', async () => {
+    renderTab(true)
+    frame('', 2)
+    await runDebounce()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', SLUG] })
+  })
+
+  it('holds no stream while hidden, and re-arms it when the tab is shown', () => {
+    const tab = renderTab(true)
+    expect(openStreams()).toHaveLength(1)
+
+    tab.rerender({ active: false })
+    expect(openStreams()).toHaveLength(0)
+
+    tab.rerender({ active: true })
+    expect(openStreams()).toHaveLength(1)
+    expect(openStreams()[0].url).toBe('/api/file-watch?path=' + encodeURIComponent(PATH))
+  })
+
+  it('a tab mounted hidden opens no stream and refetches nothing', async () => {
+    renderTab(false)
+    expect(MockEventSource.instances).toHaveLength(0)
+    await runDebounce()
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('refetches once when a hidden tab is shown again, without waiting on its stream', () => {
+    const tab = renderTab(false)
+    tab.rerender({ active: true })
+    // Synchronous with the switch: a saturated connection budget is exactly what
+    // would delay the re-armed stream's first frame.
+    expect(invalidate).toHaveBeenCalledTimes(1)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', SLUG] })
+
+    // Staying visible owes nothing more.
+    tab.rerender({ active: true })
+    expect(invalidate).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not refetch on mount: the artifact query is the read a mount owes', async () => {
+    renderTab(true)
+    await runDebounce()
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('the re-armed stream reloads a change made after the tab is shown again', async () => {
+    const tab = renderTab(true)
+    tab.rerender({ active: false })
+    tab.rerender({ active: true })
+    expect(invalidate).toHaveBeenCalledTimes(1) // the catch-up
+
+    frame('<h1>v2</h1>', 11)
+    await runDebounce()
+    expect(invalidate).toHaveBeenCalledTimes(2)
+  })
+
+  it('an artifact being edited keeps its baseline: showing the tab refetches nothing', async () => {
+    setArtifactEditing(SLUG, true)
+    const tab = renderTab(false)
+    tab.rerender({ active: true })
+    frame('<h1>rebaked</h1>', 20)
+    await runDebounce()
+    expect(invalidate).not.toHaveBeenCalled()
+
+    // Once the buffer closes, the next return catches up as usual.
+    setArtifactEditing(SLUG, false)
+    tab.rerender({ active: false })
+    tab.rerender({ active: true })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', SLUG] })
+  })
+})

@@ -9,9 +9,7 @@ the first prompt. Bounding only the Crew prompt cannot bound that native cost.
 from __future__ import annotations
 
 import asyncio
-import copy
 import errno
-import fnmatch
 import hashlib
 import json
 import logging
@@ -23,7 +21,7 @@ import threading
 import time
 import uuid
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,12 +29,24 @@ from typing import Any
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.acp import session_mcp
-from kiro_crew.agent_discovery import SCOPE_PROJECT, _read_agent_spec, list_agents
-from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+from kiro_crew.agent_discovery import (
+    SCOPE_PROJECT,
+    _read_agent_spec,
+    can_inherit_skills,
+    inherited_skill_globs,
+    list_agents,
+    skill_search_refusal,
+)
+from kiro_crew.agent_spec_format import (
+    NATIVE_SKILL_ALIAS_PREFIX,
+    SKILL_VIEW_PROJECTION_CEILING,
+    volatile_env_keys,
+)
 from kiro_crew.atomic_write import atomic_write, on_event_loop
 from kiro_crew.config.paths import data_home, kiro_agents_dir, kiro_home, project_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS
+from kiro_crew.user_json import copy_json_document
 from kiro_crew.validation import is_registered_agent_name
 from kiro_crew.workspace_cli_settings import workspace_cli_settings_lock
 
@@ -47,8 +57,22 @@ _INHERIT_SETTING = "chat.disableInheritingDefaultResources"
 _INHERIT_SOURCE = "kirocrew.skillDiscovery.inheritSource"
 _PREVIOUS_INHERITANCE = "kirocrew.skillDiscovery.previousInheritance"
 _SEARCH_TOOL = "@kirocrew-core/skill_search"
+# The projection's SIDE FILES -- the publication lock, the per-process lease
+# records and the ownership sidecars -- live under Kiro Crew's own data home,
+# NOT beside the views in the shared ``~/.kiro/agents/`` directory. Only the
+# views themselves must be there (kiro-cli resolves ``--agent <name>`` against
+# that directory by name and knows no other); everything else there is noise the
+# Kiro IDE lists in its agent drop-down as if it were an agent. The three names
+# below are the LEGACY locations, which builds before this layout wrote into the
+# agents directory: they are still READ for one release cycle (an older build
+# sharing the directory keeps publishing there) and migrated at boot
+# (:func:`_migrate_legacy_side_files`), but nothing is written there anymore.
 _PROJECTION_LOCK_NAME = ".kirocrew-skill-projection.lock"
 _PROJECTION_LEASE_DIR_NAME = ".kirocrew-skill-projection-leases"
+_PROJECTION_SIDE_DIR_NAME = "skill-projection"
+_PROJECTION_SIDE_LOCK_NAME = "publication.lock"
+_PROJECTION_SIDE_LEASE_DIR_NAME = "leases"
+_PROJECTION_SIDE_METADATA_DIR_NAME = "metadata"
 # A lease is a readable record plus an unread lock target. Windows file locks are
 # mandatory, so a lock on the record itself makes every reader's probe fail.
 _PROJECTION_LEASE_RECORD_SUFFIX = ".json"
@@ -129,6 +153,60 @@ _UNWRITABLE_ERRNOS: frozenset[int] = frozenset({errno.EACCES, errno.EPERM, errno
 # is milliseconds, and the real backlog is hours to days old.
 _LEGACY_RECLAIM_MIN_AGE_SECS = 600.0
 _PROJECTION_METADATA_DIR_NAME = ".kirocrew-skill-projection-metadata"
+
+
+#: The side directory a projection that is ending was prepared under, for the
+#: thread running its eager prune. A finalizer fires at an arbitrary later moment, so
+#: it must not ask the process which data home is current: it prunes the home it
+#: published into.
+_PINNED_SIDE_DIR = threading.local()
+
+
+def _projection_side_dir() -> Path:
+    """Where this data home keeps the projection's side files (never a view)."""
+    pinned = getattr(_PINNED_SIDE_DIR, "path", None)
+    return pinned if pinned is not None else data_home() / _PROJECTION_SIDE_DIR_NAME
+
+
+def _projection_lock_path() -> Path:
+    """The publication lock every publisher and pruner of THIS data home takes."""
+    return _projection_side_dir() / _PROJECTION_SIDE_LOCK_NAME
+
+
+def _projection_lease_dir() -> Path:
+    """Where this data home's processes publish their lease records."""
+    return _projection_side_dir() / _PROJECTION_SIDE_LEASE_DIR_NAME
+
+
+def _projection_metadata_dir() -> Path:
+    """Where this data home records which views it owns (sidecars and the ledger)."""
+    return _projection_side_dir() / _PROJECTION_SIDE_METADATA_DIR_NAME
+
+
+def _legacy_lock_path(directory: Path) -> Path:
+    """The publication lock a build before the side-file layout took in *directory*."""
+    return directory / _PROJECTION_LOCK_NAME
+
+
+def _legacy_lease_dir(directory: Path) -> Path:
+    """Where a build before the side-file layout published leases: in *directory*."""
+    return directory / _PROJECTION_LEASE_DIR_NAME
+
+
+def _legacy_metadata_dir(directory: Path) -> Path:
+    """Where a build before the side-file layout wrote ownership sidecars."""
+    return directory / _PROJECTION_METADATA_DIR_NAME
+
+
+def _metadata_dirs(directory: Path) -> tuple[Path, Path]:
+    """Ownership dirs in read order: this home's own, then the legacy one in *directory*.
+
+    Both are READ (an alias published by an older build has its record only in
+    the legacy one until the boot migration moves it); only the first is written.
+    """
+    return _projection_metadata_dir(), _legacy_metadata_dir(directory)
+
+
 # Publication plus pruning is normally sub-second. Two seconds absorbs scheduler
 # jitter and short Windows rename retries without inheriting the generic five-minute
 # lock ceiling on the native startup path.
@@ -141,6 +219,20 @@ _PROJECTION_LOCK_TIMEOUT_SECS = 2.0
 # wait is bounded well under the session/new budget; every caller runs off the
 # event loop.
 _IN_PROCESS_PROJECTION_WAIT_SECS = 30.0
+
+
+class InProcessProjectionWaitTimeout(OSError):
+    """The in-process queue for the alias lock timed out.
+
+    Another start in THIS process held the lock the whole wait; no other
+    process is involved, so a caller reporting it must not blame one.
+    """
+
+
+class CrossProcessProjectionLockTimeout(OSError):
+    """The alias file lock could not be taken: another process holds it."""
+
+
 _IN_PROCESS_PROJECTION_LOCKS: dict[str, threading.Lock] = {}
 _IN_PROCESS_PROJECTION_LOCKS_GUARD = threading.Lock()
 # Queued starts pay for each other's locked sections one after another, and the
@@ -182,6 +274,125 @@ _MANAGED_ALIAS_SHA256 = "x-kirocrew-alias-sha256"
 # alone does not. Sidecars written without this key carry only the byte digest
 # and are judged by it.
 _MANAGED_VIEW_SHA256 = "x-kirocrew-view-sha256"
+
+# The ``description`` every view carries. kiro-cli denies unknown spec fields,
+# so this display field is the ONE place a view can say what it is to a reader
+# that lists the agents directory as agents (the Kiro IDE drop-down): it names
+# the agent to pick instead. The eight-hex tag after the agent is a digest of
+# the publishing data home (:func:`_home_tag`). Two Kiro Crew homes share one
+# agents directory whenever they share ``~/.kiro``, and with the ownership
+# sidecars under each home's own data home a view of the OTHER home has no
+# sidecar this home can see -- which is exactly what a view from a build before
+# any sidecar looked like, and the legacy reclaim deletes those. The tag tells
+# the two apart: a sidecar-less view carrying another home's tag is that home's
+# live view and is left alone; one carrying no tag at all is the legacy case.
+_MANAGED_VIEW_DESCRIPTION_PREFIX = "Kiro Crew managed view of "
+_MANAGED_VIEW_DESCRIPTION_RE = re.compile(
+    re.escape(_MANAGED_VIEW_DESCRIPTION_PREFIX) + r"(?P<agent>\S+) \[(?P<home>[0-9a-f]{8})\]"
+)
+_MANAGED_VIEW_DESCRIPTION_TEMPLATE = (
+    "{prefix}{agent} [{home}]: auto-managed and auto-pruned by Kiro Crew; "
+    "do not pick it. Use {agent} instead."
+)
+_HOME_TAG_HEX_CHARS = 8
+
+
+def _home_tag(crew_home_id: str) -> str:
+    """A short digest of *crew_home_id*, resolved the way :func:`_same_crew_home` compares.
+
+    Hashed from the realpath on POSIX so the two spellings of one home (see
+    :func:`_same_crew_home`) carry one tag; the literal id on Windows, where that
+    resolution is deliberately not done.
+    """
+    resolved = crew_home_id
+    if not platform_compat.IS_WINDOWS:
+        try:
+            resolved = os.path.realpath(crew_home_id)
+        except (OSError, ValueError):
+            resolved = crew_home_id
+    return hashlib.sha256(resolved.encode("utf-8", "replace")).hexdigest()[:_HOME_TAG_HEX_CHARS]
+
+
+def _managed_view_description(agent_name: str, crew_home_id: str) -> str:
+    """The display text a view carries; see :data:`_MANAGED_VIEW_DESCRIPTION_PREFIX`.
+
+    Never longer than :data:`_ALIAS_DESCRIPTION_MAX_CHARS`, the bound every other
+    alias description is cut to: this one is written AFTER that cut, so it keeps
+    the bound itself. The agent's name is the only part that varies and a spec
+    on disk may carry one of any length, so a name that would push the text
+    over is shortened (with an ellipsis, still one whitespace-free token, which
+    is what :data:`_MANAGED_VIEW_DESCRIPTION_RE` matches); the home tag, which
+    the prune reads back, is never touched.
+    """
+    home = _home_tag(crew_home_id)
+    fixed = _MANAGED_VIEW_DESCRIPTION_TEMPLATE.format(
+        prefix=_MANAGED_VIEW_DESCRIPTION_PREFIX, agent="", home=home
+    )
+    room = (_ALIAS_DESCRIPTION_MAX_CHARS - len(fixed)) // 2  # the name appears twice
+    if len(agent_name) > room:
+        agent_name = agent_name[: room - 1] + "\u2026"
+    return _MANAGED_VIEW_DESCRIPTION_TEMPLATE.format(
+        prefix=_MANAGED_VIEW_DESCRIPTION_PREFIX, agent=agent_name, home=home
+    )
+
+
+def _view_home_tag(spec: object) -> str | None:
+    """The home tag a view's own description carries, or ``None`` for an untagged view."""
+    if not isinstance(spec, dict):
+        return None
+    description = spec.get("description")
+    if not isinstance(description, str):
+        return None
+    match = _MANAGED_VIEW_DESCRIPTION_RE.match(description)
+    return match.group("home") if match is not None else None
+
+
+def _same_crew_home(recorded: object, current: str) -> bool:
+    """Whether a sidecar's recorded data home is THIS process's own data home.
+
+    The ONE ownership-home comparison. The recorded value is the string a
+    publisher stored (``data_home().absolute().as_posix()``) and *current* is the
+    same string for this process; the stored value and the alias name hash are
+    never touched, so no file is renamed or re-hashed by this.
+
+    The strings are compared by their RESOLVED paths rather than literally, but
+    ONLY on POSIX. One data home reaches disk under more than one spelling there:
+    on a cloud desktop ``/home/<u>`` is a symlink to ``/local/home/<u>``, so a
+    launch that uses the other spelling, a pod sharing ``~/.kiro``, or a moved
+    home records ownership under one spelling and reads it under another. Compared
+    literally those look like two homes and neither reclaim nor prune nor drain
+    ever cleans up the other's views; compared by realpath they are the one home
+    they are. ``os.path.realpath`` is best-effort and does not raise for an absent
+    path, but a symlink loop can raise ``OSError`` (and ``ValueError`` for an
+    embedded NUL); on any such failure this falls back to the exact literal
+    comparison -- never widening what counts as this home.
+
+    On Windows the resolution is NOT done at all. The two-spelling problem is a
+    POSIX ``/home`` -> ``/local/home`` phenomenon that does not arise on Windows,
+    while *recorded* is untrusted sidecar content, and ``os.path.realpath`` on
+    Windows reaches the filesystem: an attacker-planted value that IS or RESOLVES
+    THROUGH a UNC/junction target (a bare ``\\\\host\\share``, or a local
+    ``C:\\link`` that is a directory junction to one) would make resolution open
+    the remote host and leak SMB credentials. Enumerating those spellings one at
+    a time does not converge -- the property that does is "never resolve the
+    untrusted path on Windows", so Windows keeps the pre-fix literal comparison,
+    which touched the filesystem for neither side. A legitimate Windows home is
+    recorded and read under one spelling, so this loses no real match.
+    """
+    if not isinstance(recorded, str):
+        return False
+    if recorded == current:
+        return True
+    if platform_compat.IS_WINDOWS:
+        # Resolution here would be filesystem I/O on an untrusted path; the
+        # literal comparison above already failed, so the home stays foreign.
+        return False
+    try:
+        return os.path.realpath(recorded) == os.path.realpath(current)
+    except (OSError, ValueError):
+        return False
+
+
 # Ownership sidecars one prune may reclaim when their alias is already gone.
 # Metadata only -- no kiro-cli cost rides on it -- so a modest ceiling that the
 # boot drain multiplies by its batch count is enough to retire a backlog.
@@ -418,6 +629,31 @@ def _sidecar_answers_for(metadata_dir: Path, alias: str, agent_name: str) -> boo
     return _managed_marker(record) and record.get(_MANAGED_AGENT) == agent_name
 
 
+def _import_legacy_ledger(metadata_dir: Path, legacy: dict[str, str]) -> None:
+    """Copy *legacy* ledger entries this home's ledger lacks, as its OLDEST entries.
+
+    The destination already holds what this home recorded or recovered, newest
+    last. An import that made the legacy names the newest would evict, past the
+    bound, the very mappings a sidecar-less recovery just wrote there. So only
+    names the destination does not hold are taken, ahead of its own entries, and
+    only as many as the bound leaves room for; the rest stay in the legacy file,
+    which is kept while it holds anything. Nothing is written when there is nothing
+    to add, so a boot that finds the ledger already imported leaves it untouched.
+    """
+    held = _read_view_ledger(metadata_dir)
+    room = _VIEW_SOURCES_MAX - len(held)
+    missing = [(alias, agent) for alias, agent in legacy.items() if alias not in held]
+    taken = missing[-room:] if room > 0 else []
+    if not taken:
+        return
+    merged = {**dict(taken), **held}
+    atomic_write(
+        metadata_dir / _VIEW_LEDGER_NAME,
+        json.dumps(merged, ensure_ascii=False, separators=(",", ":")),
+        restrict_to_owner=True,
+    )
+
+
 def _record_view_ledger_entries(metadata_dir: Path, views: dict[str, str]) -> dict[str, str]:
     """Add *views* (alias -> agent) to the ledger and return what it now holds.
 
@@ -503,7 +739,7 @@ class _ViewLedgerWrites:
     def __init__(self, directory: Path, crew_home_id: str) -> None:
         self._directory = directory
         self._crew_home_id = crew_home_id
-        self._metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+        self._metadata_dir = _projection_metadata_dir()
         self._entries: dict[str, str] | None = None
         self._ahead: list[Path] = []
         self._ahead_from = 0
@@ -571,7 +807,9 @@ class _ViewLedgerWrites:
         views: dict[str, str] = {}
         for candidate in window:
             record, _path, _identity = _sidecar_record(self._directory, candidate.stem)
-            if record is None or record.get(_MANAGED_CREW_HOME) != self._crew_home_id:
+            if record is None or not _same_crew_home(
+                record.get(_MANAGED_CREW_HOME), self._crew_home_id
+            ):
                 continue
             agent_name = record.get(_MANAGED_AGENT)
             if _admissible_source_agent(agent_name):
@@ -591,15 +829,23 @@ def _recorded_view_source(name: str) -> str | None:
     if not _LEGACY_ALIAS_NAME_RE.fullmatch(name):
         return None
     try:
-        metadata_dir = kiro_agents_dir() / _PROJECTION_METADATA_DIR_NAME
+        metadata_dirs = _metadata_dirs(kiro_agents_dir())
     except (OSError, ValueError, RuntimeError):
         return None
-    metadata = _read_json_regular_file(metadata_dir / f"{name}.json")
-    if _managed_marker(metadata):
-        agent_name = metadata.get(_MANAGED_AGENT)
-        if _admissible_source_agent(agent_name):
-            return str(agent_name)
-    return _read_view_ledger(metadata_dir).get(name)
+    # This home's own records first, then the legacy ones in the agents
+    # directory: a name stored before the side files moved may have its record
+    # only there until the boot migration carries it over.
+    for metadata_dir in metadata_dirs:
+        metadata = _read_json_regular_file(metadata_dir / f"{name}.json")
+        if _managed_marker(metadata):
+            agent_name = metadata.get(_MANAGED_AGENT)
+            if _admissible_source_agent(agent_name):
+                return str(agent_name)
+    for metadata_dir in metadata_dirs:
+        source = _read_view_ledger(metadata_dir).get(name)
+        if source is not None:
+            return source
+    return None
 
 
 def source_agent_name(name: str) -> str:
@@ -855,6 +1101,27 @@ class NativeSkillProjection:
 
         return visit(frame)
 
+    def release(self) -> None:
+        """End this projection's hold on its views: drop the lease, prune eagerly.
+
+        The views stay translatable (``aliases``, ``frame``) -- a frame still in
+        flight may name one -- but from here on nothing in this process claims
+        them on disk: the projection leaves the active set, its lease is
+        released, and this home's unleased views are pruned at once rather than
+        on the next spawn (see :func:`_end_projection`). Idempotent; blocking
+        (bounded by the publication lock's own ceiling), so an event-loop caller
+        offloads it. A projection that is simply dropped gets the same treatment
+        from its finalizer; this is the explicit form for a session end that
+        should not wait for garbage collection.
+        """
+        finalizer = self._lease_finalizer
+        self._lease_finalizer = None
+        with _ACTIVE_PROJECTIONS_LOCK:
+            _ACTIVE_PROJECTIONS.pop(id(self), None)
+        if finalizer is not None and finalizer.alive:
+            # Runs ``_end_projection`` once, now, and detaches it from GC.
+            finalizer()
+
 
 _ACTIVE_PROJECTIONS: weakref.WeakValueDictionary[int, NativeSkillProjection] = (
     weakref.WeakValueDictionary()
@@ -865,6 +1132,80 @@ _ACTIVE_PROJECTIONS_LOCK = threading.Lock()
 def _register_active_projection(projection: NativeSkillProjection) -> None:
     with _ACTIVE_PROJECTIONS_LOCK:
         _ACTIVE_PROJECTIONS[id(projection)] = projection
+
+
+def _eager_prune(directory: Path, crew_home_id: str) -> None:
+    """Prune this home's unleased views once, right after a projection ended.
+
+    The per-spawn prune reclaims a session's views only when the NEXT spawn
+    comes, so on a host that is winding down they sit in the agents directory
+    (and in the Kiro IDE's agent list) until then. This runs the same bounded
+    prune under the same lock as soon as the lease is gone. It never waits for
+    this process's own queue: a start that holds the in-process lock runs its own
+    prune, so a busy queue means the work is covered, not skipped. Every other
+    gate of the per-spawn prune holds: the cross-process lock ceiling, the lease
+    scan, the ``_per_spawn_prune_due`` spacing and the time budget. Never raises.
+    """
+    try:
+        with _projection_alias_lock(directory, in_process_wait=0.0):
+            if _per_spawn_prune_due(directory):
+                _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+    except OSError as exc:
+        logger.debug("skill projection: eager prune skipped; lock or I/O error: %s", exc)
+    except Exception:
+        logger.warning("skill projection: eager prune failed", exc_info=True)
+
+
+def _eager_prune_in(side_dir: Path, directory: Path, crew_home_id: str) -> None:
+    """:func:`_eager_prune` against *side_dir*, the side directory the projection used."""
+    _PINNED_SIDE_DIR.path = side_dir
+    try:
+        _eager_prune(directory, crew_home_id)
+    finally:
+        _PINNED_SIDE_DIR.path = None
+
+
+def _end_projection(
+    lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
+) -> None:
+    """The lease finalizer: release the lease, then prune eagerly.
+
+    Called by :meth:`NativeSkillProjection.release` (the client's shutdown path
+    calls that on the event-loop thread) or, for a projection that was merely
+    dropped, by garbage collection -- which can run on that thread too. Off the
+    loop the whole sequence runs inline. On the loop ALL of it goes to a daemon
+    thread: the prune waits on a file lock (up to the publication lock's
+    ceiling), and the lease release itself unlocks and closes the holder, then
+    stats, opens and unlinks two files -- blocking calls whose cost on a slow or
+    network-homed data home would stall every session the gateway serves. A
+    thread that cannot be started (interpreter shutdown) releases the lease
+    inline, the two unlinks the finalizer always did, and drops the prune: the
+    next spawn's prune covers it.
+    """
+    if on_event_loop():
+        try:
+            threading.Thread(
+                target=_end_projection_off_loop,
+                args=(lease_stack, side_dir, directory, crew_home_id),
+                name="kirocrew-skill-view-prune",
+                daemon=True,
+            ).start()
+            return
+        except RuntimeError:
+            logger.debug("skill projection: lease release thread not started", exc_info=True)
+        lease_stack.close()
+        return
+    _end_projection_off_loop(lease_stack, side_dir, directory, crew_home_id)
+
+
+def _end_projection_off_loop(
+    lease_stack: ExitStack, side_dir: Path, directory: Path, crew_home_id: str
+) -> None:
+    """:func:`_end_projection`'s work, on a thread that is not the event loop."""
+    try:
+        lease_stack.close()
+    finally:
+        _eager_prune_in(side_dir, directory, crew_home_id)
 
 
 def _active_aliases() -> set[str]:
@@ -894,23 +1235,41 @@ def _per_spawn_prune_due(directory: Path) -> bool:
     return True
 
 
-def _projection_alias_lock(directory: Path) -> ExitStack:
+def _ensure_real_directory(path: Path, what: str) -> Path:
+    """Create *path* and verify it is a real directory, not a link or junction."""
+    if platform_compat.is_link_or_junction(path):
+        raise OSError(f"skill projection {what} is a symlink or junction")
+    path.mkdir(parents=True, exist_ok=True)
+    info = pinned_fs.lstat_by_name(path)
+    if platform_compat.is_link_or_junction(path) or info is None or not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"skill projection {what} is not a real directory")
+    return path
+
+
+def _projection_alias_lock(directory: Path, *, in_process_wait: float | None = None) -> ExitStack:
     """Acquire the bounded cross-process lock for alias publication and pruning.
 
     Threads of this process first queue on :func:`_in_process_projection_lock`,
-    so only one of them at a time competes for the file lock.
+    so only one of them at a time competes for the file lock. *in_process_wait*
+    is how long to queue there (:data:`_IN_PROCESS_PROJECTION_WAIT_SECS` when
+    ``None``); ``0.0`` takes the lock only if it is free. The file lock itself
+    lives under this data home (:func:`_projection_lock_path`), not in
+    *directory*: it serialises the publishers and pruners of THIS home, which
+    are the only ones that write this home's views and side files.
     """
+    if in_process_wait is None:
+        in_process_wait = _IN_PROCESS_PROJECTION_WAIT_SECS
     stack = ExitStack()
     local = _in_process_projection_lock(directory)
-    if not local.acquire(timeout=_IN_PROCESS_PROJECTION_WAIT_SECS):
-        raise OSError(
-            "skill projection lock still busy inside this process after "
-            f"{_IN_PROCESS_PROJECTION_WAIT_SECS:g}s"
+    if not local.acquire(timeout=in_process_wait):
+        raise InProcessProjectionWaitTimeout(
+            "skill projection lock still busy inside this process after " f"{in_process_wait:g}s"
         )
     stack.callback(local.release)
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        lock_path = directory / _PROJECTION_LOCK_NAME
+        lock_path = _projection_lock_path()
+        _ensure_real_directory(lock_path.parent, "side directory")
         if platform_compat.is_link_or_junction(lock_path):
             raise OSError("skill projection lock is a symlink or junction")
         lock_fd = stack.enter_context(platform_compat.open_lock_file(lock_path))
@@ -924,11 +1283,18 @@ def _projection_alias_lock(directory: Path) -> ExitStack:
             or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
         ):
             raise OSError("skill projection lock changed while it was opened")
-        stack.enter_context(
-            platform_compat.file_lock(
-                lock_fd, exclusive=True, timeout=_PROJECTION_LOCK_TIMEOUT_SECS
+        try:
+            stack.enter_context(
+                platform_compat.file_lock(
+                    lock_fd, exclusive=True, timeout=_PROJECTION_LOCK_TIMEOUT_SECS
+                )
             )
-        )
+        except OSError as exc:
+            # file_lock reports its timed-out wait as an errno-less OSError; an
+            # errno (ENOLCK, EBADF) is about this fd, not another holder.
+            if exc.errno is not None:
+                raise
+            raise CrossProcessProjectionLockTimeout(str(exc)) from exc
         current = pinned_fs.lstat_by_name(lock_path)
         if (
             platform_compat.is_link_or_junction(lock_path)
@@ -936,26 +1302,17 @@ def _projection_alias_lock(directory: Path) -> ExitStack:
             or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
         ):
             raise OSError("skill projection lock changed while it was acquired")
-    except OSError:
+    except BaseException:
+        # Any failure, not only OSError: the stack holds the in-process lock, and
+        # a leaked one makes every later start in this process wait it out.
         stack.close()
         raise
     return stack
 
 
-def _ensure_projection_metadata_directory(directory: Path) -> Path:
-    """Create and verify the hidden directory that owns projection sidecars."""
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
-    if platform_compat.is_link_or_junction(metadata_dir):
-        raise OSError("skill projection metadata directory is a symlink or junction")
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    info = pinned_fs.lstat_by_name(metadata_dir)
-    if (
-        platform_compat.is_link_or_junction(metadata_dir)
-        or info is None
-        or not stat.S_ISDIR(info.st_mode)
-    ):
-        raise OSError("skill projection metadata directory is not a real directory")
-    return metadata_dir
+def _ensure_projection_metadata_directory() -> Path:
+    """Create and verify this data home's directory of ownership sidecars."""
+    return _ensure_real_directory(_projection_metadata_dir(), "metadata directory")
 
 
 def _unlink_projection_lease_if_unchanged(
@@ -1016,21 +1373,12 @@ def _acquire_projection_lease(directory: Path, aliases: set[str]) -> ExitStack:
     nothing was ever reclaimed on Windows while a single lease was held. Locking
     a file nobody reads keeps the OS liveness proof and leaves the record legible.
     """
+    del directory  # the lease lives under this data home, not beside the views
     stack = ExitStack()
     if not aliases:
         return stack
     try:
-        lease_dir = directory / _PROJECTION_LEASE_DIR_NAME
-        if platform_compat.is_link_or_junction(lease_dir):
-            raise OSError("skill projection lease directory is a symlink or junction")
-        lease_dir.mkdir(parents=True, exist_ok=True)
-        lease_info = pinned_fs.lstat_by_name(lease_dir)
-        if (
-            platform_compat.is_link_or_junction(lease_dir)
-            or lease_info is None
-            or not stat.S_ISDIR(lease_info.st_mode)
-        ):
-            raise OSError("skill projection lease directory is not a real directory")
+        lease_dir = _ensure_real_directory(_projection_lease_dir(), "lease directory")
         stem = f"{os.getpid()}-{uuid.uuid4().hex}"
         lease_path = lease_dir / f"{stem}{_PROJECTION_LEASE_RECORD_SUFFIX}"
         holder_path = lease_dir / f"{stem}{_PROJECTION_LEASE_HOLDER_SUFFIX}"
@@ -1235,7 +1583,9 @@ def _probe_orphan_projection_holder(holder_path: Path) -> tuple[int, int] | None
         stack.close()
 
 
-def _scan_projection_leases(directory: Path) -> tuple[set[str], bool]:
+def _scan_projection_leases(
+    directory: Path, *, legacy_locked: bool = False
+) -> tuple[set[str], bool]:
     """Scan the lease directory ONCE, returning ``(live_aliases, uncertain)``.
 
     The single lease-liveness scan, which a prune calls exactly once rather than
@@ -1267,8 +1617,100 @@ def _scan_projection_leases(directory: Path) -> tuple[set[str], bool]:
 
     The record is read WITHOUT taking any lock on it -- see
     :func:`_acquire_projection_lease` for why the lock lives on a separate file.
+
+    TWO directories are scanned under ONE deadline: this data home's own lease
+    directory, and the legacy one inside *directory* (the agents directory),
+    where a build before the side-file layout -- one that may still be running
+    against this same agents directory -- publishes its leases. A held lease in
+    either makes its aliases live; uncertainty in either makes the pass
+    uncertain. The legacy directory is usually absent (one ``lstat``).
+    *legacy_locked* says the caller already holds the older build's publication
+    lock (:func:`_hold_legacy_publication_lock`), so the legacy scan takes none.
     """
-    lease_dir = directory / _PROJECTION_LEASE_DIR_NAME
+    deadline = time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS
+    live_aliases: set[str] = set()
+    uncertain = False
+    for found, unsure in (
+        _scan_lease_dir(_projection_lease_dir(), deadline),
+        _scan_legacy_lease_dir(directory, deadline, locked=legacy_locked),
+    ):
+        live_aliases |= found
+        uncertain = uncertain or unsure
+    return live_aliases, uncertain
+
+
+def _hold_legacy_publication_lock(directory: Path, stack: ExitStack) -> bool:
+    """Take the older build's publication lock onto *stack*; ``False`` is uncertainty.
+
+    An older build -- one from before the side-file layout, which may still run
+    against this same agents directory during an upgrade -- publishes and prunes
+    under the lock it keeps IN *directory*. This build's own lock lives under its
+    data home, so the two do not exclude each other on their own. A prune that
+    held the older build's lock only for its lease scan would let that publisher
+    in between the scan and the reclaim: it reuses an alias the scan found
+    unleased (same name, same bytes, same inode, so the reclaim's revalidation
+    passes), writes its lease, and the reclaim then deletes a live view. So a
+    prune holds this lock from its scan through its last reclaim; the hold is
+    bounded by the prune's own budget, well inside the older build's lock
+    ceiling. A lock that cannot be taken in the lease scan's budget, or that is
+    not a plain file, is uncertainty: the caller deletes nothing this run.
+
+    With no legacy lock file there is no older publisher to exclude (one creates
+    it before its first lease), and none is created here: the point of the
+    side-file layout is to leave nothing of this build's in *directory*. An
+    older build's FIRST-EVER publication into this agents directory landing
+    between that ``lstat`` and the end of this prune is the residual; it needs
+    an older build that has never run here (or whose lock file this home's boot
+    drain already retired) to start exactly then.
+    """
+    lock_path = _legacy_lock_path(directory)
+    info = pinned_fs.lstat_by_name(lock_path)
+    if info is None:
+        return True
+    if platform_compat.is_link_or_junction(lock_path) or not stat.S_ISREG(info.st_mode):
+        return False
+    try:
+        lock_fd = stack.enter_context(platform_compat.open_lock_file(lock_path, create=False))
+        stack.enter_context(
+            platform_compat.file_lock(
+                lock_fd, exclusive=True, timeout=_PROJECTION_LEASE_SCAN_MAX_SECONDS
+            )
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _scan_legacy_lease_dir(
+    directory: Path, deadline: float, *, locked: bool = False
+) -> tuple[set[str], bool]:
+    """:func:`_scan_lease_dir` over the legacy lease directory, under the legacy lock.
+
+    An older build publishes its lease (record first, then holder) while holding
+    the publication lock it keeps in *directory*. This build holds a different one,
+    so a scan taken without that lock could catch the pair between the two writes,
+    find an unlocked holder it just created and reclaim the record of a live lease.
+    Taking the older build's lock for the scan excludes every older publisher for
+    its length; a lock that cannot be taken in the scan's own budget is uncertainty,
+    which keeps every alias. With no legacy lock file there is no older publisher
+    to exclude (one creates it before its first lease), and none is created here.
+    A caller that already holds that lock for longer than the scan -- a prune,
+    through :func:`_hold_legacy_publication_lock` -- passes *locked*; taking it
+    again here would wait on itself.
+    """
+    lease_dir = _legacy_lease_dir(directory)
+    if pinned_fs.lstat_by_name(lease_dir) is None:
+        return set(), False
+    if locked:
+        return _scan_lease_dir(lease_dir, deadline)
+    with ExitStack() as stack:
+        if not _hold_legacy_publication_lock(directory, stack):
+            return set(), True
+        return _scan_lease_dir(lease_dir, deadline)
+
+
+def _scan_lease_dir(lease_dir: Path, deadline: float) -> tuple[set[str], bool]:
+    """:func:`_scan_projection_leases` over ONE directory, stopping at *deadline*."""
     lease_info = pinned_fs.lstat_by_name(lease_dir)
     if lease_info is None:
         return set(), False
@@ -1280,7 +1722,6 @@ def _scan_projection_leases(directory: Path) -> tuple[set[str], bool]:
     scan_expired = False
     unreadable: str | None = None
     scanned = 0
-    deadline = time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS
     try:
         with os.scandir(lease_dir) as entries:
             for entry in entries:
@@ -1488,9 +1929,10 @@ def _inheritance_preference(
 def inherits_default_resources(work_dir: str | os.PathLike[str] | None) -> bool:
     """Whether a custom agent started in *work_dir* inherits kiro-cli's default resources.
 
-    Those defaults are global and workspace steering plus ``AGENTS.md``. This is
-    the read-only twin of the decision :func:`prepare_native_skill_projection`
-    makes, for callers that must mirror what the native agent loads. Settings
+    Those defaults are global and workspace steering, ``AGENTS.md`` and the
+    global and workspace skill trees. This is the read-only twin of the decision
+    :func:`prepare_native_skill_projection` makes, for callers that must mirror
+    what the native agent loads. Settings
     that cannot be read keep inheritance, which is how those callers behaved
     before they asked.
     """
@@ -1728,8 +2170,25 @@ def _is_legacy_projected_view(path: Path, alias_raw: bytes) -> bool:
 def _managed_metadata_for_alias(
     directory: Path, path: Path, alias_raw: bytes
 ) -> tuple[dict[str, Any], Path | None, tuple[int, int] | None, bytes | None] | None:
-    """Load ownership outside the Kiro agent spec, or one legacy in-spec record."""
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    """Load the ownership record bound to the alias at *path*, from either records dir.
+
+    This home's own metadata directory is consulted first, then the legacy one in
+    *directory* (:func:`_metadata_dirs`). A directory that HAS an entry by that
+    name decides: a record there that does not bind these bytes is ``None`` and
+    the legacy directory is not consulted, so a stale legacy record can never
+    stand in for a current one that failed to bind. Only an ABSENT entry falls
+    through to the next directory.
+    """
+    for metadata_dir in _metadata_dirs(directory):
+        if _path_exists(metadata_dir / f"{path.stem}.json"):
+            return _managed_metadata_in(metadata_dir, path, alias_raw)
+    return None
+
+
+def _managed_metadata_in(
+    metadata_dir: Path, path: Path, alias_raw: bytes
+) -> tuple[dict[str, Any], Path | None, tuple[int, int] | None, bytes | None] | None:
+    """:func:`_managed_metadata_for_alias` over ONE records directory."""
     directory_info = pinned_fs.lstat_by_name(metadata_dir)
     if directory_info is not None:
         if platform_compat.is_link_or_junction(metadata_dir) or not stat.S_ISDIR(
@@ -1790,8 +2249,23 @@ def _sidecar_record(
     this does not bind the record to alias bytes: it answers who wrote the
     record, for the two callers that need exactly that -- a pair whose alias
     bytes moved, and a sidecar whose alias is gone.
+
+    Reads this home's records directory first and the legacy one in *directory*
+    second (:func:`_metadata_dirs`); the first directory that has ANY entry by
+    that name answers, and the returned ``path`` is in that directory.
     """
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    for metadata_dir in _metadata_dirs(directory):
+        answer = _sidecar_record_in(metadata_dir, stem)
+        if answer[2] is not None:
+            return answer
+    # Absent everywhere: the path names where this home WOULD record it.
+    return None, _projection_metadata_dir() / f"{stem}.json", None
+
+
+def _sidecar_record_in(
+    metadata_dir: Path, stem: str
+) -> tuple[dict[str, Any] | None, Path, tuple[int, int] | None]:
+    """:func:`_sidecar_record` over ONE records directory."""
     path = metadata_dir / f"{stem}.json"
     directory_info = pinned_fs.lstat_by_name(metadata_dir)
     if directory_info is None:
@@ -1841,9 +2315,23 @@ def _sweep_orphan_sidecars(
     retire. Runs under the publication lock, so no publisher can be mid-pair.
     Bounded by the same entry-walk limit as the alias walk, a random start
     offset, :data:`_SIDECAR_SWEEP_MAX_PER_RUN` and *deadline*. Returns how many
-    it removed.
+    it removed, over this home's records directory and then the legacy one in
+    *directory* (:func:`_metadata_dirs`), each under the same bounds.
     """
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    removed = 0
+    for metadata_dir in _metadata_dirs(directory):
+        if time.monotonic() >= deadline:
+            break
+        removed += _sweep_orphan_sidecars_in(
+            directory, metadata_dir, crew_home_id, skip=skip, deadline=deadline
+        )
+    return removed
+
+
+def _sweep_orphan_sidecars_in(
+    directory: Path, metadata_dir: Path, crew_home_id: str, *, skip: set[str], deadline: float
+) -> int:
+    """:func:`_sweep_orphan_sidecars` over ONE records directory."""
     info = pinned_fs.lstat_by_name(metadata_dir)
     if (
         info is None
@@ -1874,8 +2362,12 @@ def _sweep_orphan_sidecars(
             break
         if _path_exists(directory / f"{stem}.json"):
             continue
-        record, path, identity = _sidecar_record(directory, stem)
-        if record is None or identity is None or record.get(_MANAGED_CREW_HOME) != crew_home_id:
+        record, path, identity = _sidecar_record_in(metadata_dir, stem)
+        if (
+            record is None
+            or identity is None
+            or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
+        ):
             continue
         doomed.append((stem, record, path, identity))
     # The sidecar is the last record of which agent a view with no alias was
@@ -2081,14 +2573,37 @@ def _prune_stale_managed_aliases(
     external rewriter left beside gone aliases (:func:`_sweep_orphan_alias_locks`);
     the boot drain sweeps on its own instead, so it can count them. Returns how
     many aliases it removed.
+
+    An older build sharing *directory* publishes under a lock of its own, in
+    *directory*; this prune holds that lock too, from the lease scan through the
+    last reclaim (:func:`_hold_legacy_publication_lock`), so no lease an older
+    build takes can slip in behind the scan. A lock it cannot take is
+    uncertainty, and the run removes nothing.
     """
+    with ExitStack() as exclusion:
+        if not _hold_legacy_publication_lock(directory, exclusion):
+            logger.debug(
+                "skill projection: an older build holds the publication lock in %s; "
+                "pruning nothing this run",
+                directory,
+            )
+            return 0
+        return _prune_excluding_older_publishers(
+            directory, crew_home_id, keep=keep, sweep_sidecars=sweep_sidecars
+        )
+
+
+def _prune_excluding_older_publishers(
+    directory: Path, crew_home_id: str, *, keep: set[str], sweep_sidecars: bool
+) -> int:
+    """:func:`_prune_stale_managed_aliases` with the older build's lock already held."""
     # ONE bounded lease scan per prune, under the held publication lock, rather
     # than one full scan per candidate (which multiplied the candidate cap by the
     # lease-scan cap). It also reclaims crash/finalizer lease residue as a side
     # effect. Any uncertainty is fail-closed: authorize no deletion this run and
     # let a later spawn re-scan, because a candidate whose covering lease the scan
     # could not read must be treated as live.
-    live_aliases, lease_uncertain = _scan_projection_leases(directory)
+    live_aliases, lease_uncertain = _scan_projection_leases(directory, legacy_locked=True)
     if lease_uncertain:
         return 0
     active = _active_aliases()
@@ -2145,6 +2660,169 @@ def _prune_stale_managed_aliases(
     return reclaimed
 
 
+def _move_sidecar(source: Path, identity: tuple[int, int], target: Path) -> bool:
+    """Move one ownership sidecar out of the legacy directory; ``True`` when *source* is gone.
+
+    A rename when the two directories share a filesystem; otherwise a copy of
+    the bytes already read and validated, then the identity-checked unlink the
+    prune uses. An existing *target* (this home already republished the view
+    under the new layout) is kept and the legacy copy only unlinked.
+    """
+    if _path_exists(target):
+        return _unlink_projection_lease_if_unchanged(source, identity, what="ownership sidecar")
+    try:
+        os.replace(source, target)
+        return True
+    except OSError:
+        pass
+    try:
+        fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(fd)
+            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+    if (opened.st_dev, opened.st_ino) != identity or len(raw) > _PROJECTION_LEASE_MAX_BYTES:
+        return False
+    try:
+        atomic_write(target, raw.decode("utf-8"), restrict_to_owner=True)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _unlink_projection_lease_if_unchanged(source, identity, what="ownership sidecar")
+
+
+def _migrate_legacy_side_files(directory: Path, crew_home_id: str) -> None:
+    """Carry this home's side files out of the agents directory, once, at boot.
+
+    Builds before the side-file layout wrote the ownership sidecars, the view
+    ledger, the lease records and the publication lock INTO *directory*, where
+    the Kiro IDE lists them as agents. This moves what is provably this home's
+    and leaves everything else:
+
+    * a sidecar in the legacy records directory whose record names THIS data
+      home moves to :func:`_projection_metadata_dir` (bounded per boot; the
+      rest moves next boot, and every reader consults both directories meanwhile);
+      another home's sidecar stays, it is that home's to move;
+    * the legacy view ledger's entries are merged into this home's ledger (they
+      are alias-to-agent names, harmless to copy); the legacy file itself is
+      shared by every home that published here and names no home, so it stays
+      while it holds any entry or cannot be read -- another home's stored view
+      names resolve through it until that home's own migration copies them --
+      and only an empty, readable one goes, and the directory only after it;
+    * lease records are never moved -- a live one is lock-held by its process and
+      a stale one is reclaimed by the lease scan -- the directory is removed only
+      once it is empty;
+    * the legacy lock file goes last, only when both legacy directories are gone
+      (no older build is publishing here) and nobody holds it.
+
+    Idempotent: every step checks what is on disk. Nothing is deleted whose name
+    and content do not prove this module wrote it. Runs under this home's
+    publication lock, so no publisher of this home is mid-pair.
+    """
+    legacy_metadata = _legacy_metadata_dir(directory)
+    info = pinned_fs.lstat_by_name(legacy_metadata)
+    if (
+        info is not None
+        and not platform_compat.is_link_or_junction(legacy_metadata)
+        and stat.S_ISDIR(info.st_mode)
+    ):
+        stems: list[str] = []
+        walked = 0
+        others = 0
+        with os.scandir(legacy_metadata) as entries:
+            for entry in entries:
+                if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
+                    others += 1  # unexamined: the directory is not empty either way
+                    break
+                walked += 1
+                if entry.name == _VIEW_LEDGER_NAME:
+                    continue
+                stem = entry.name[: -len(".json")] if entry.name.endswith(".json") else ""
+                if _LEGACY_ALIAS_NAME_RE.fullmatch(stem):
+                    stems.append(stem)
+                else:
+                    others += 1
+        moved = 0
+        if stems:
+            target_dir = _ensure_projection_metadata_directory()
+            for stem in stems:
+                record, source, identity = _sidecar_record_in(legacy_metadata, stem)
+                if (
+                    record is None
+                    or identity is None
+                    or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
+                ):
+                    others += 1
+                    continue
+                if _move_sidecar(source, identity, target_dir / f"{stem}.json"):
+                    moved += 1
+                else:
+                    others += 1
+        ledger_path = legacy_metadata / _VIEW_LEDGER_NAME
+        ledger_info = pinned_fs.lstat_by_name(ledger_path)
+        if ledger_info is not None:
+            legacy_ledger = _read_view_ledger(legacy_metadata)
+            if legacy_ledger:
+                try:
+                    _import_legacy_ledger(_ensure_projection_metadata_directory(), legacy_ledger)
+                except OSError:
+                    logger.debug("skill projection: legacy view ledger not merged", exc_info=True)
+            # The legacy ledger is SHARED: every home that ever published into
+            # this agents directory wrote its view names there, and an entry
+            # carries no home. Another home's stored view names resolve through
+            # it until THAT home's own migration copies them, so this home may
+            # not remove it while it holds any entry, or while it cannot be
+            # read; only an empty, readable ledger goes. The directory, and the
+            # lock after it, stay with it.
+            raw_ledger = _read_json_regular_file(ledger_path)
+            if (
+                not isinstance(raw_ledger, dict)
+                or raw_ledger
+                or not stat.S_ISREG(ledger_info.st_mode)
+            ):
+                others += 1
+            elif not others:
+                _unlink_projection_lease_if_unchanged(
+                    ledger_path, (ledger_info.st_dev, ledger_info.st_ino), what="view ledger"
+                )
+        if moved:
+            logger.info(
+                "skill projection: moved %d ownership sidecar(s) out of %s", moved, legacy_metadata
+            )
+        if not others:
+            try:
+                os.rmdir(legacy_metadata)
+            except OSError:
+                pass  # something arrived meanwhile; next boot looks again
+    legacy_leases = _legacy_lease_dir(directory)
+    lease_info = pinned_fs.lstat_by_name(legacy_leases)
+    if (
+        lease_info is not None
+        and not platform_compat.is_link_or_junction(legacy_leases)
+        and stat.S_ISDIR(lease_info.st_mode)
+    ):
+        # Reclaims crash residue the way every prune does; a live lease stays.
+        _scan_legacy_lease_dir(directory, time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS)
+        try:
+            os.rmdir(legacy_leases)
+        except OSError:
+            pass  # not empty: an older build still holds a lease here
+    if pinned_fs.lstat_by_name(legacy_metadata) is None and (
+        pinned_fs.lstat_by_name(legacy_leases) is None
+    ):
+        lock_path = _legacy_lock_path(directory)
+        lock_info = pinned_fs.lstat_by_name(lock_path)
+        if (
+            lock_info is not None
+            and not platform_compat.is_link_or_junction(lock_path)
+            and stat.S_ISREG(lock_info.st_mode)
+            and lock_info.st_size == 0
+        ):
+            _unlink_unheld_lock_file(lock_path, (lock_info.st_dev, lock_info.st_ino))
+
+
 def drain_stale_aliases() -> int:
     """Best-effort boot drain of unused aliases this data home owns; never raises.
 
@@ -2166,12 +2844,24 @@ def drain_stale_aliases() -> int:
     total = 0
     sidecars = 0
     idle_batches = 0
+    migrated = False
     for batch in range(_DRAIN_MAX_BATCHES):
         if batch:
             time.sleep(_DRAIN_BATCH_PAUSE_SECS)
         swept = 0
         try:
             with _projection_alias_lock(directory):
+                if not migrated:
+                    # Once per boot, under the first lock this drain takes: the
+                    # side files an older build left in the agents directory
+                    # come over to this home before anything is pruned by them.
+                    migrated = True
+                    try:
+                        _migrate_legacy_side_files(directory, crew_home_id)
+                    except OSError:
+                        logger.debug(
+                            "skill projection: legacy side-file migration skipped", exc_info=True
+                        )
                 reclaimed = _prune_stale_managed_aliases(
                     directory, crew_home_id, keep=set(), sweep_sidecars=False
                 )
@@ -2249,7 +2939,7 @@ def _reclaim_prune_candidate(
             # that is not provably ours) keeps the alias.
             if (
                 record is None
-                or record.get(_MANAGED_CREW_HOME) != crew_home_id
+                or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
                 or not _is_legacy_projected_view(path, raw)
             ):
                 return False
@@ -2273,11 +2963,20 @@ def _reclaim_prune_candidate(
                 logger.debug("skill projection: pruned re-serialized alias %s", path.name)
                 return True
             return False
-        # No ownership record at all. A pre-lifecycle build wrote this, so
+        # No ownership record at all. Either a pre-lifecycle build wrote this, so
         # the recorded-pair proof is unavailable and the re-preparation
-        # contract carries the removal instead (see _is_legacy_projected_view).
+        # contract carries the removal instead (see _is_legacy_projected_view);
+        # or ANOTHER data home sharing this agents directory wrote it, with its
+        # record under its own data home where this process cannot look. The
+        # view's own description tells the two apart (_view_home_tag): a tag
+        # that is not this home's is that home's live view and is left alone,
+        # exactly as a foreign sidecar is. A tag that IS this home's -- its
+        # record lost -- takes the legacy path below with every one of its gates.
         # Every gate the caller applied still holds: it is not in this run's set,
         # no live projection claims it, and no held lease names it.
+        home_tag = _view_home_tag(_parsed_spec(raw))
+        if home_tag is not None and home_tag != _home_tag(crew_home_id):
+            return False
         if _is_legacy_projected_view(path, raw):
             if time.time() - candidate.st_mtime < _LEGACY_RECLAIM_MIN_AGE_SECS:
                 # Possibly mid-publish by a build that holds no lease. A
@@ -2303,7 +3002,7 @@ def _reclaim_prune_candidate(
             logger.debug("skill projection: legacy alias changed before removal: %s", path)
         return False
     metadata, metadata_path, metadata_identity, metadata_raw = managed
-    if metadata.get(_MANAGED_CREW_HOME) != crew_home_id:
+    if not _same_crew_home(metadata.get(_MANAGED_CREW_HOME), crew_home_id):
         return False
 
     # Re-open and revalidate the exact alias and ownership sidecar at
@@ -2329,7 +3028,7 @@ def _reclaim_prune_candidate(
         or current_metadata_path != metadata_path
         or current_metadata_identity != metadata_identity
         or current_metadata_raw != metadata_raw
-        or current_metadata.get(_MANAGED_CREW_HOME) != crew_home_id
+        or not _same_crew_home(current_metadata.get(_MANAGED_CREW_HOME), crew_home_id)
     ):
         return False
     recorded = ledger.retain(path.stem, current_metadata)
@@ -2423,59 +3122,99 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         return counts
 
     named: set[str] = set()
-    lease_dir = directory / _PROJECTION_LEASE_DIR_NAME
-    lease_entries = 0
-    try:
-        with os.scandir(lease_dir) as entries:
-            for entry in entries:
-                # Charge EVERY entry against the reclaim scan's own ceiling
-                # before any suffix filter, exactly as _scan_projection_leases
-                # does: a directory that caps that scan (records plus their
-                # ``.hold`` sidecars and any padding) makes every prune defer,
-                # so the census must report truncated there, not promise a drain.
-                if lease_entries >= _PROJECTION_LEASE_SCAN_LIMIT:
-                    counts["truncated"] = 1
-                    break
-                lease_entries += 1
-                if not (
-                    entry.name.endswith(_PROJECTION_LEASE_RECORD_SUFFIX)
-                    and entry.is_file(follow_symlinks=False)
-                ):
-                    continue
-                listed = _read_lease_record(Path(entry.path))
-                if listed is None:
-                    counts["unreadable_leases"] += 1
-                    continue
-                # Only stems this census retained: bounded by the alias ceiling.
-                named.update(stems.intersection(listed))
-    except FileNotFoundError:
-        pass
-    except OSError:
-        counts["unreadable_leases"] += 1
+    # Both lease directories the reclaim scans (this home's own and the legacy
+    # one in the agents directory), each charged against the reclaim scan's
+    # per-directory ceiling.
+    for lease_dir in (_projection_lease_dir(), _legacy_lease_dir(directory)):
+        lease_entries = 0
+        try:
+            with os.scandir(lease_dir) as entries:
+                for entry in entries:
+                    # Charge EVERY entry against the reclaim scan's own ceiling
+                    # before any suffix filter, exactly as _scan_projection_leases
+                    # does: a directory that caps that scan (records plus their
+                    # ``.hold`` sidecars and any padding) makes every prune defer,
+                    # so the census must report truncated there, not promise a drain.
+                    if lease_entries >= _PROJECTION_LEASE_SCAN_LIMIT:
+                        counts["truncated"] = 1
+                        break
+                    lease_entries += 1
+                    if not (
+                        entry.name.endswith(_PROJECTION_LEASE_RECORD_SUFFIX)
+                        and entry.is_file(follow_symlinks=False)
+                    ):
+                        continue
+                    listed = _read_lease_record(Path(entry.path))
+                    if listed is None:
+                        counts["unreadable_leases"] += 1
+                        continue
+                    # Only stems this census retained: bounded by the alias ceiling.
+                    named.update(stems.intersection(listed))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            counts["unreadable_leases"] += 1
     counts["leased"] = len(named)
 
     # Plain bounded reads, like the lease records: the hardened reader audits
-    # every call, and a backlog is tens of thousands of sidecars.
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
+    # every call, and a backlog is tens of thousands of sidecars. The first
+    # records directory that has an entry for the stem answers for it.
+    metadata_dirs = _metadata_dirs(directory)
+    this_home_tag = _home_tag(crew_home_id)
     for stem in stems:
-        try:
-            fd = os.open(metadata_dir / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        metadata: Any = None
+        recorded = False
+        for metadata_dir in metadata_dirs:
             try:
-                raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
-            finally:
-                os.close(fd)
-            if len(raw) > _PROJECTION_LEASE_MAX_BYTES:
+                fd = os.open(
+                    metadata_dir / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                )
+            except FileNotFoundError:
                 continue
-            metadata = json.loads(raw)
-        except (OSError, ValueError, TypeError, RecursionError):
-            continue
+            except OSError:
+                recorded = True
+                break
+            recorded = True
+            try:
+                try:
+                    raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                finally:
+                    os.close(fd)
+                if len(raw) > _PROJECTION_LEASE_MAX_BYTES:
+                    break
+                metadata = json.loads(raw)
+            except (OSError, ValueError, TypeError, RecursionError):
+                pass
+            break
         if (
-            _managed_marker(metadata)
+            isinstance(metadata, dict)
+            and _managed_marker(metadata)
             and isinstance(metadata.get(_MANAGED_CREW_HOME), str)
-            and metadata[_MANAGED_CREW_HOME] != crew_home_id
+            and not _same_crew_home(metadata[_MANAGED_CREW_HOME], crew_home_id)
         ):
             counts["foreign_leased" if stem in named else "foreign_home"] += 1
+        elif not recorded:
+            # No record in either directory: a home that keeps its sidecars under
+            # its own data home leaves none here for another home's view, and the
+            # prune keeps such a view by the home tag in its description. Count it
+            # the way the prune treats it.
+            tag = _view_home_tag(_read_alias_spec_bounded(directory / f"{stem}.json"))
+            if tag is not None and tag != this_home_tag:
+                counts["foreign_leased" if stem in named else "foreign_home"] += 1
     return counts
+
+
+def _read_alias_spec_bounded(path: Path) -> dict[str, Any] | None:
+    """The parsed alias at *path* when it is a small regular file; ``None`` otherwise."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+    return _parsed_spec(raw) if len(raw) <= _PROJECTION_LEASE_MAX_BYTES else None
 
 
 def census_projection_residue(
@@ -2537,61 +3276,68 @@ def census_projection_residue(
             and name[: -len(_ALIAS_LOCK_SUFFIX)] not in aliases
         ):
             counts["alias_locks"] += 1
-    metadata_dir = directory / _PROJECTION_METADATA_DIR_NAME
-    try:
-        with os.scandir(metadata_dir) as entries:
-            for entry in entries:
-                if counts["sidecars"] >= _CENSUS_MAX_ALIASES:
-                    counts["truncated"] = 1
-                    break
-                if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
-                    continue
-                stem = entry.name[: -len(".json")]
-                if not _LEGACY_ALIAS_NAME_RE.fullmatch(stem):
-                    # Not a sidecar: the view ledger (_VIEW_LEDGER_NAME) lives here too.
-                    continue
-                counts["sidecars"] += 1
-                if stem not in aliases:
-                    if not counts["truncated"]:
-                        counts["orphan_sidecars"] += 1
-                    continue
-                try:
-                    fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    # Both records directories the prune reads: this home's own and the legacy
+    # one in the agents directory, under one retention bound.
+    for metadata_dir in _metadata_dirs(directory):
+        if counts["truncated"]:
+            break
+        try:
+            with os.scandir(metadata_dir) as entries:
+                for entry in entries:
+                    if counts["sidecars"] >= _CENSUS_MAX_ALIASES:
+                        counts["truncated"] = 1
+                        break
+                    if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
+                        continue
+                    stem = entry.name[: -len(".json")]
+                    if not _LEGACY_ALIAS_NAME_RE.fullmatch(stem):
+                        # Not a sidecar: the view ledger (_VIEW_LEDGER_NAME) lives here too.
+                        continue
+                    counts["sidecars"] += 1
+                    if stem not in aliases:
+                        if not counts["truncated"]:
+                            counts["orphan_sidecars"] += 1
+                        continue
                     try:
-                        raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
-                    finally:
-                        os.close(fd)
-                    alias_fd = os.open(
-                        directory / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                        fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                        try:
+                            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
+                        finally:
+                            os.close(fd)
+                        alias_fd = os.open(
+                            directory / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                        )
+                        try:
+                            alias_raw = os.read(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
+                        finally:
+                            os.close(alias_fd)
+                    except OSError:
+                        continue
+                    record = _parsed_spec(raw) if len(raw) <= _PROJECTION_LEASE_MAX_BYTES else None
+                    recorded = (
+                        record.get(_MANAGED_ALIAS_SHA256)
+                        if record is not None and _managed_marker(record)
+                        else None
                     )
-                    try:
-                        alias_raw = os.read(alias_fd, _CENSUS_ALIAS_MAX_BYTES + 1)
-                    finally:
-                        os.close(alias_fd)
-                except OSError:
-                    continue
-                record = _parsed_spec(raw) if len(raw) <= _PROJECTION_LEASE_MAX_BYTES else None
-                recorded = (
-                    record.get(_MANAGED_ALIAS_SHA256)
-                    if record is not None and _managed_marker(record)
-                    else None
-                )
-                if len(alias_raw) > _CENSUS_ALIAS_MAX_BYTES:
-                    # Not read whole, so its digest proves nothing either way.
-                    continue
-                if isinstance(recorded, str) and recorded != hashlib.sha256(alias_raw).hexdigest():
-                    counts["rewritten"] += 1
-                if record is not None and _managed_marker(record) and churning is not None:
-                    _note_env_values(
-                        churning,
-                        (
-                            str(record.get(_MANAGED_AGENT))[:_CHURNING_LABEL_MAX_CHARS],
-                            str(record.get(_MANAGED_SOURCE))[:_CHURNING_LABEL_MAX_CHARS],
-                        ),
-                        _parsed_spec(alias_raw),
-                    )
-    except OSError:
-        pass
+                    if len(alias_raw) > _CENSUS_ALIAS_MAX_BYTES:
+                        # Not read whole, so its digest proves nothing either way.
+                        continue
+                    if (
+                        isinstance(recorded, str)
+                        and recorded != hashlib.sha256(alias_raw).hexdigest()
+                    ):
+                        counts["rewritten"] += 1
+                    if record is not None and _managed_marker(record) and churning is not None:
+                        _note_env_values(
+                            churning,
+                            (
+                                str(record.get(_MANAGED_AGENT))[:_CHURNING_LABEL_MAX_CHARS],
+                                str(record.get(_MANAGED_SOURCE))[:_CHURNING_LABEL_MAX_CHARS],
+                            ),
+                            _parsed_spec(alias_raw),
+                        )
+        except OSError:
+            pass
     return counts
 
 
@@ -2680,7 +3426,7 @@ def _is_current_publication(
         if parsed is None or _canonical_json(parsed) != _canonical_json(json.loads(alias_raw)):
             return False
     managed = _managed_metadata_for_alias(directory, alias_path, existing)
-    return managed is not None and managed[0].get(_MANAGED_CREW_HOME) == crew_home_id
+    return managed is not None and _same_crew_home(managed[0].get(_MANAGED_CREW_HOME), crew_home_id)
 
 
 def _alias_identity(view: dict[str, Any]) -> dict[str, Any]:
@@ -2780,21 +3526,6 @@ def announce_alias(alias: str) -> None:
         _announce_publication(path, data)
 
 
-# MCP env keys whose VALUE a launcher re-stamps on every launch (a per-launch
-# nonce, not a credential the agent's grants depend on), so a changed value is no
-# change. Every other env value counts: a rotated credential is a different grant.
-# Extended, never narrowed, by ``KIROCREW_SKILL_VIEW_VOLATILE_ENV`` (comma-separated
-# key names), for a launcher this list does not know yet.
-_VOLATILE_ENV_KEYS_DEFAULT = frozenset({"AIM_CREDS_AGENT_INJECTION"})
-_VOLATILE_ENV_VAR = "KIROCREW_SKILL_VIEW_VOLATILE_ENV"
-
-
-def volatile_env_keys() -> frozenset[str]:
-    """The MCP env keys whose values identity digests ignore (see above)."""
-    extra = os.environ.get(_VOLATILE_ENV_VAR, "")
-    return _VOLATILE_ENV_KEYS_DEFAULT | {k.strip() for k in extra.split(",") if k.strip()}
-
-
 def _env_identity(env: dict[Any, Any], volatile: frozenset[str]) -> dict[str, str | None]:
     """*env* as identity: every key, and a digest of each value but the volatile ones."""
     return {
@@ -2807,8 +3538,98 @@ def _env_identity(env: dict[Any, Any], volatile: frozenset[str]) -> dict[str, st
     }
 
 
+# The alias count at or above which preparation stops minting new views and
+# falls back to the authored agent, the same path ``KIROCREW_NATIVE_SKILL_PROJECTION=0``
+# takes. This is the ONE constant the doctor's backlog warning
+# (``doctor_checks.resources._SKILL_VIEW_BACKLOG_WARN``) reads, so the ceiling
+# the projection enforces and the count the doctor flags are the same number: a
+# host the doctor warns about is a host whose next spawn already fell back. It is
+# a safety net for a regression that reopens the leak the root-cause fixes closed
+# (a per-launch env value that mints a view per spawn, or one unreadable lease
+# that keeps the reclaim from draining anything), NOT the mechanism that keeps a
+# healthy host bounded -- the boot drain and per-spawn reclaim do that, far below
+# this number. Deliberately well above a healthy host's authored-agents x
+# workspaces so normal use never trips it.
+#
+# Defined in the ``agent_spec_format`` leaf (beside the alias prefix) and
+# imported at the top of this module, so the doctor can share the number without
+# importing the ACP layer: the agent-SDK import boundary is shrink-only and the
+# doctor is a baselined consumer. The enforcement below reads it unqualified.
+
+# One warning per process when the ceiling is in effect, not one per spawn: the
+# fallback fires on every subsequent start until the backlog drains, and a line
+# per spawn would bury the one that matters. The flag is set the first time the
+# ceiling is tripped in this process and never reset.
+_CEILING_FALLBACK_WARNED = False
+_CEILING_FALLBACK_WARNED_LOCK = threading.Lock()
+
+
+def _count_projected_aliases(directory: Path) -> int:
+    """Count ``kirocrew-skill-view-*.json`` files in *directory*, up to the ceiling.
+
+    One bounded ``os.scandir``. Counts regular files by name only -- no read, no
+    lease probe, no sidecar -- because the ceiling asks only "how many views are
+    on disk", which is what kiro-cli pays for at startup. The scan STOPS as soon
+    as the count reaches :data:`SKILL_VIEW_PROJECTION_CEILING`: the only caller
+    tests ``>= ceiling``, so an exact count past it buys nothing and every extra
+    entry is wasted work on the spawn path. No result cache sits in front of it:
+    on a healthy host it lists a near-empty directory in microseconds, and the
+    ceiling only engages when the directory is already backlogged, where the scan
+    is dwarfed by kiro-cli reading every one of those files at startup. A scan
+    that cannot read the directory counts zero: an unreadable agents directory is
+    not a backlog, and the publication writes below would raise on it anyway.
+    """
+    count = 0
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if count >= SKILL_VIEW_PROJECTION_CEILING:
+                    break
+                if (
+                    entry.name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+                    and entry.name.endswith(".json")
+                    and entry.is_file(follow_symlinks=False)
+                ):
+                    count += 1
+    except OSError:
+        logger.debug(
+            "skill projection: cannot scan %s to count views for the ceiling",
+            directory,
+            exc_info=True,
+        )
+        count = 0
+    return count
+
+
+def _warn_ceiling_fallback_once(directory: Path, count: int) -> None:
+    """Warn, at most once per process, that the view ceiling is now in effect."""
+    global _CEILING_FALLBACK_WARNED
+    with _CEILING_FALLBACK_WARNED_LOCK:
+        if _CEILING_FALLBACK_WARNED:
+            return
+        _CEILING_FALLBACK_WARNED = True
+    logger.warning(
+        "skill projection: %d (cap %d reached) kirocrew-skill-view-*.json file(s) in %s; "
+        "new spawns no longer create skill views and fall back to authored agents until the "
+        "count drops (sessions already projecting keep refreshing their own view). The count "
+        "is every such file in the directory -- kiro-cli reads them "
+        "all at startup regardless of which Kiro Crew home wrote them -- so a backlog another "
+        "home leaked trips this too, and this gateway cannot drain that home's files. Run "
+        "`kirocrew doctor`: it names any foreign-home share and the remedy (stop every "
+        "gateway using this agents directory, then move the files out). A gateway restart "
+        "runs the boot drain for this home's own files.",
+        count,
+        SKILL_VIEW_PROJECTION_CEILING,
+        directory,
+    )
+
+
 def prepare_native_skill_projection(
-    work_dir: Path, *, enabled: bool | None = None, per_session_element: bool = True
+    work_dir: Path,
+    *,
+    enabled: bool | None = None,
+    per_session_element: bool = True,
+    on_lock_unavailable: Callable[[OSError], None] | None = None,
 ) -> NativeSkillProjection | None:
     """Prepare native views after spec freshness admission, before spawning.
 
@@ -2828,12 +3649,77 @@ def prepare_native_skill_projection(
     honoured by kiro-cli itself. No element replaces anything there, so a
     restriction on OTHER tools -- ``disabledTools: ["learn_add"]`` -- refuses
     nothing; only ``skill_search`` itself disabled or excluded still does.
+
+    ``on_lock_unavailable`` receives the error when the alias lock cannot be
+    taken and ``None`` is returned for it, so a caller can say WHY: an
+    :class:`InProcessProjectionWaitTimeout` is this process's own queue, a
+    :class:`CrossProcessProjectionLockTimeout` another process holding the file
+    lock, any other ``OSError`` a problem with the lock file itself.
     """
     directory = kiro_agents_dir()
     crew_home_id = data_home().absolute().as_posix()
+    # Set only when the ceiling (not the env disable) is what turned projection
+    # off: that path still runs the bounded per-spawn prune before falling back,
+    # so this home's own backlog can drain BACK under the ceiling across spawns
+    # without a gateway restart. Without it the safety net would switch off the
+    # very reclaim that recovers from it, and the count could only fall at the
+    # next boot drain.
+    ceiling_tripped = False
     if enabled is None:
         enabled = os.environ.get("KIROCREW_NATIVE_SKILL_PROJECTION", "1") != "0"
+        # The ceiling is a spawn-time admission decision, applied ONLY on this
+        # ``enabled is None`` path -- the one that chooses whether to project at
+        # all. An explicit ``enabled=True`` is NOT a request to re-decide: the
+        # shared runtime's warm set_mode refresh passes it to re-prepare a view a
+        # live session already runs under, and there a ``None`` return is fatal
+        # (the runtime raises ``AcpRuntimeError`` and refuses the start rather
+        # than activate an unverified view). Intercepting that explicit True with
+        # the ceiling would convert a bounded backlog into a session abort for
+        # every warm shared-runtime session -- the opposite of a graceful
+        # fallback. So the ceiling never touches an explicit caller; it only
+        # declines to START projecting when nothing asked for it specifically.
+        if enabled:
+            view_count = _count_projected_aliases(directory)
+            if view_count >= SKILL_VIEW_PROJECTION_CEILING:
+                # The safety net: the agents directory already holds at least the
+                # ceiling of views, so minting more would deepen a backlog
+                # kiro-cli reads in full on every start. Fall back to the authored
+                # agent by taking the exact path ``enabled=False`` takes below --
+                # the overlay is rolled back and no view is written -- rather than
+                # a path of its own, so the two cannot diverge. An agent that
+                # already has a valid view does NOT get to keep reusing it above
+                # the ceiling on this path: no projection is prepared at all, so
+                # every agent of this spawn runs under its authored name until the
+                # backlog drains. That is deliberate -- it matches
+                # ``enabled=False`` exactly and needs no per-agent accounting on
+                # the hot path -- and the recorded choice in the PR. A healthy
+                # host never reaches here; see the ceiling constant. The fallback
+                # still prunes below (``ceiling_tripped``) so the count can fall
+                # back under the ceiling without a restart.
+                _warn_ceiling_fallback_once(directory, view_count)
+                enabled = False
+                ceiling_tripped = True
     if not enabled:
+        if ceiling_tripped:
+            # Drain this home's own stale aliases before falling back, so a
+            # backlog this gateway owns can fall under the ceiling across spawns
+            # rather than waiting for a restart's boot drain. Best-effort and
+            # bounded exactly like the normal per-spawn prune: it takes the alias
+            # lock, is skipped when another prune ran too recently
+            # (``_per_spawn_prune_due``), and never raises into the spawn. keep is
+            # empty because this spawn publishes no alias. A foreign home's files
+            # are not reclaimed here (by design -- see the warning), so a foreign
+            # backlog still falls back every spawn, which is the intended safe
+            # degraded mode.
+            try:
+                with _projection_alias_lock(directory):
+                    if _per_spawn_prune_due(directory):
+                        _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
+            except OSError:
+                logger.debug(
+                    "skill projection: ceiling-fallback prune skipped; lock or I/O error",
+                    exc_info=True,
+                )
         if not (work_dir / ".kiro" / "settings" / "cli.json").exists():
             return None
         try:
@@ -2864,6 +3750,10 @@ def prepare_native_skill_projection(
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
     display_sizes: dict[str, tuple[int, str]] = {}
+    # The skill trees an unmapped custom agent inherits. Crew supplies them through
+    # its bounded directory, so such an agent needs the same search tool a mapped
+    # one gets -- see agent_discovery.inherited_skill_globs.
+    inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -2877,26 +3767,37 @@ def prepare_native_skill_projection(
             # between the two reads; skip it, exactly as an absent spec is skipped.
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
-        view = copy.deepcopy(spec)
+        # An iterative copy, not ``copy.deepcopy``: the reader admits a spec
+        # nested hundreds of levels deep, and a recursive copy of it would
+        # raise ``RecursionError`` out of the projection.
+        view = copy_json_document(spec)
         _strip_alias_display_text(view)
+        # The ONE display field a view carries, replacing the authored one: it
+        # tells a reader that lists the agents directory (the Kiro IDE) what the
+        # row is and which agent to pick instead, and it tags the publishing
+        # home for the prune (see _MANAGED_VIEW_DESCRIPTION_PREFIX). Short, so
+        # kiro-cli's per-session copy of it stays small.
+        view["description"] = _managed_view_description(agent.name, crew_home_id)
         resources = view.get("resources", [])
         resources = resources if isinstance(resources, list) else []
         view["resources"] = [
             r for r in resources if not (isinstance(r, str) and r.startswith("skill://"))
         ]
-        needs_search = agent.name == "kirocrew" or any(
-            isinstance(r, str) and r.startswith("skill://") for r in resources
+        mapped = any(isinstance(r, str) and r.startswith("skill://") for r in resources)
+        # An unmapped custom agent reaches the block below only through its
+        # inherited skill trees. Where the block would refuse a mapped agent, this
+        # one keeps the view it had and gets no search: it never relied on it, and
+        # it is not a search agent, so no session of it is refused either.
+        inherited_only = (
+            agent.name != "kirocrew"
+            and not mapped
+            and bool(inherited_globs)
+            and can_inherit_skills(spec)
         )
-        if needs_search:
-            excluded = view.get("excludedTools", [])
-            if isinstance(excluded, list) and any(
-                isinstance(t, str)
-                and (t == "@kirocrew-core" or fnmatch.fnmatchcase(_SEARCH_TOOL, t))
-                for t in excluded
-            ):
-                errors[agent.name] = (
-                    "skill_search is explicitly excluded; bounded skill discovery requires it"
-                )
+        if agent.name == "kirocrew" or mapped or inherited_only:
+            refusal = skill_search_refusal(view)
+            if refusal is not None:
+                errors[agent.name] = refusal
                 continue
             # The bounded directory must have a loading path even for a custom spec
             # whose authored resources rely on native skill activation. Expose
@@ -2904,27 +3805,7 @@ def prepare_native_skill_projection(
             # change the author's approval policy.
             from kiro_crew.agent import managed_mcp_spec_entry
 
-            servers = view.setdefault("mcpServers", {})
-            if not isinstance(servers, dict):
-                errors[agent.name] = "mcpServers must be an object"
-                continue
-            original_core = servers.get("kirocrew-core", {})
-            if not isinstance(original_core, dict):
-                errors[agent.name] = "kirocrew-core must be a server object"
-                continue
-            disabled = original_core.get("disabled", False)
-            disabled_tools = original_core.get("disabledTools", [])
-            if not isinstance(disabled, bool):
-                errors[agent.name] = "kirocrew-core.disabled must be a boolean"
-                continue
-            if not isinstance(disabled_tools, list) or any(
-                not isinstance(tool, str) for tool in disabled_tools
-            ):
-                errors[agent.name] = "kirocrew-core.disabledTools must be a list of strings"
-                continue
-            if disabled or "skill_search" in disabled_tools:
-                errors[agent.name] = "skill_search is disabled; bounded skill discovery requires it"
-                continue
+            original_core = view.get("mcpServers", {}).get("kirocrew-core", {})
             # The verdict the mount will reach for the spec's part, reached here
             # first, over the declaration AS AUTHORED. The managed replacement
             # built below carries only the keys a per-session element can
@@ -2953,24 +3834,31 @@ def prepare_native_skill_projection(
             # (the checks above already refused the view if it did not), so
             # withholding the view for it would refuse a supported customization
             # and abort the spawn over a restriction that reaches the session.
-            if per_session_element:
-                withheld = session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
-                if withheld is not None:
-                    errors[agent.name] = withheld.explain("skill search")
-                    continue
-            entry = managed_mcp_spec_entry("kirocrew-core")
+            withheld = (
+                session_mcp.native_mount_withholding("kirocrew-core", original_core, [])
+                if per_session_element
+                else None
+            )
+            entry = managed_mcp_spec_entry("kirocrew-core") if withheld is None else None
             if entry is None:
-                errors[agent.name] = "Crew's managed skill search server is unavailable"
-                continue
-            for key in ("autoApprove", "disabledTools", "timeout"):
-                if key in original_core:
-                    entry[key] = original_core[key]
-            servers["kirocrew-core"] = entry
-            tools = view.get("tools", [])
-            if tools != "*" and isinstance(tools, list):
-                if not any(t in tools for t in ("*", "@kirocrew-core", _SEARCH_TOOL)):
-                    view["tools"] = [*tools, _SEARCH_TOOL]
-            search_agents.add(agent.name)
+                if not inherited_only:
+                    errors[agent.name] = (
+                        withheld.explain("skill search")
+                        if withheld is not None
+                        else "Crew's managed skill search server is unavailable"
+                    )
+                    continue
+            else:
+                for key in ("autoApprove", "disabledTools", "timeout"):
+                    if key in original_core:
+                        entry[key] = original_core[key]
+                view.setdefault("mcpServers", {})["kirocrew-core"] = entry
+                tools = view.get("tools", [])
+                if tools != "*" and isinstance(tools, list):
+                    if not any(t in tools for t in ("*", "@kirocrew-core", _SEARCH_TOOL)):
+                        view["tools"] = [*tools, _SEARCH_TOOL]
+                if not inherited_only:
+                    search_agents.add(agent.name)
         prompt = view.get("prompt")
         if isinstance(prompt, str) and prompt.startswith("file://"):
             path = Path(prompt[7:]).expanduser()
@@ -2994,6 +3882,8 @@ def prepare_native_skill_projection(
             "using authored agents",
             exc,
         )
+        if on_lock_unavailable is not None:
+            on_lock_unavailable(exc)
         # `local` was read before agent enumeration and lock acquisition. A
         # concurrent projection can write a newer overlay or unrelated setting
         # while this process waits, so writing this stale snapshot would clobber
@@ -3071,7 +3961,7 @@ def prepare_native_skill_projection(
                         _MANAGED_SOURCE: sources[agent_name],
                     }
 
-                metadata_dir = _ensure_projection_metadata_directory(directory) if aliases else None
+                metadata_dir = _ensure_projection_metadata_directory() if aliases else None
                 lease_stack = _acquire_projection_lease(directory, set(aliases.values()))
                 try:
                     for agent_name, alias in aliases.items():
@@ -3113,7 +4003,17 @@ def prepare_native_skill_projection(
                         search_agents,
                     )
                     _remember_view_sources(aliases)
-                    prepared._lease_finalizer = weakref.finalize(prepared, lease_stack.close)
+                    # Releases the lease and prunes this home's unleased views
+                    # as soon as the projection ends -- explicitly through
+                    # ``release()`` at session end, or when it is dropped.
+                    prepared._lease_finalizer = weakref.finalize(
+                        prepared,
+                        _end_projection,
+                        lease_stack,
+                        directory,
+                        crew_home_id,
+                        _projection_side_dir(),
+                    )
                 except BaseException:
                     lease_stack.close()
                     raise

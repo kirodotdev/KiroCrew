@@ -38,13 +38,26 @@ def _info(**overrides) -> SubagentInfo:
     return info
 
 
-def _event(*, title="Running: sleep 600", is_shell=True, tool_input='{"command": "sleep 600"}'):
-    """Minimal stand-in for the AcpEvent the subagent loop receives."""
+def _event(
+    *,
+    title="Running: sleep 600",
+    is_shell=True,
+    tool_input='{"command": "sleep 600"}',
+    call_id="call-1",
+):
+    """Minimal stand-in for the AcpEvent the subagent loop receives.
+
+    Every frame names the same call unless *call_id* says otherwise, so a result
+    built here closes the dispatch built here.
+    """
     ev = MagicMock()
     ev.title = title
     ev.tool_input = tool_input
     ev.is_shell = is_shell
     ev.tool_name = "execute_bash" if is_shell else "some_mcp_tool"
+    ev.tool_call_id = call_id
+    ev.tool_status = ""
+    ev.sub_session_id = ""
     return ev
 
 
@@ -543,7 +556,12 @@ async def test_a_done_sibling_does_not_restore_the_fast_path():
 
 
 def _wait_event(
-    seconds: int = 270, *, title: str = "wait", trusted: bool = True, server="kirocrew-core"
+    seconds: int = 270,
+    *,
+    title: str = "wait",
+    trusted: bool = True,
+    server="kirocrew-core",
+    call_id: str = "call-1",
 ):
     """A dispatched ``kirocrew-core`` ``wait`` call, as the subagent loop sees it.
 
@@ -554,6 +572,7 @@ def _wait_event(
         title=title,
         is_shell=False,
         tool_input=f'{{"seconds": {seconds}, "reason": "waiting for CI"}}',
+        call_id=call_id,
     )
     ev.tool_name = "wait"
     ev.mcp_server_name = server
@@ -814,3 +833,133 @@ async def test_a_raw_harness_wait_frame_selects_the_contract(meta):
     SubagentManager._note_tool_dispatch(info, ev)
     verdict, evidence = await mgr._stall_verdict(info)
     assert verdict == VERDICT_WORKING, evidence
+
+
+# ── parallel calls finish in any order ───────────────────────────────
+
+
+def _result(call_id: str, *, status: str = "completed"):
+    """A terminal result frame for *call_id*."""
+    ev = MagicMock()
+    ev.tool_call_id = call_id
+    ev.tool_status = status
+    ev.tool_final = status == "completed"
+    return ev
+
+
+def _write_event(call_id: str = "write-1"):
+    """A file write: a non-shell call that returns in milliseconds."""
+    return _event(
+        title="Editing PLAN-a.md",
+        is_shell=False,
+        tool_input='{"path": "PLAN-a.md"}',
+        call_id=call_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_first", [True, False], ids=["write-first", "wait-first"])
+async def test_a_parallel_call_returning_first_leaves_the_wait_judged(write_first):
+    """The reported symptom: a subagent called a file write and ``wait(1800)``
+    in one turn. The write's result emptied the one in-flight slot, the reaper
+    then saw no tool in flight, and two sweeps later badged the agent stalled
+    while it sat inside its declared wait. Either dispatch order must hold."""
+    mgr = _make_manager(stall_idle_secs=120)
+    now = 1_000.0
+    info = _info(turns=1, _pid=4242, last_activity=now - 300)
+    calls = [_wait_event(1800, call_id="wait-1"), _write_event()]
+    for ev in reversed(calls) if write_first else calls:
+        SubagentManager._note_tool_dispatch(info, ev)
+    SubagentManager._note_tool_result(info, _result("write-1"))
+
+    assert info._inflight_tool is info._active_tool_calls["wait-1"]
+    _age_dispatch(info, 300)
+    with patch("kiro_crew.subagent.record_slow_command") as rec:
+        await mgr._maybe_flag_stall("a1b2c3d4", info, now)
+        await mgr._maybe_flag_stall("a1b2c3d4", info, now + 60)
+    assert info.stalled is False
+    mgr._fire_event.assert_not_called()
+    rec.assert_not_called()
+
+
+def test_the_slot_empties_only_when_every_call_has_returned():
+    """Handing the slot to the call still running is a new judged call, so it
+    retires the oracle; the last call returning leaves nothing in flight."""
+    info = _info()
+    SubagentManager._note_tool_dispatch(info, _wait_event(1800, call_id="wait-1"))
+    SubagentManager._note_tool_dispatch(info, _write_event())
+    gen = info._stall_gen
+
+    SubagentManager._note_tool_result(info, _result("write-1"))
+    assert info._inflight_tool is info._active_tool_calls["wait-1"]
+    assert info._stall_gen == gen + 1
+
+    SubagentManager._note_tool_result(info, _result("wait-1"))
+    assert info._inflight_tool is None
+    assert info._active_tool_calls == {}
+    assert info._stall_gen == gen + 2
+
+
+@pytest.mark.parametrize("call_id", ["write-1", "never-dispatched"])
+def test_a_result_for_a_call_not_being_judged_changes_nothing(call_id):
+    """The judged call and the baseline its oracle gathered survive another
+    call's result, including one for a call this agent never dispatched."""
+    info = _info()
+    SubagentManager._note_tool_dispatch(info, _write_event())
+    SubagentManager._note_tool_dispatch(info, _event(call_id="shell-1"))
+    oracle = _oracle(VERDICT_WORKING)
+    info._stall_oracle = oracle
+    judged, gen = info._inflight_tool, info._stall_gen
+
+    SubagentManager._note_tool_result(info, _result(call_id))
+    assert info._inflight_tool is judged
+    assert info._stall_gen == gen
+    oracle.fresh.assert_not_called()
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "refused"])
+def test_a_call_that_ends_without_completing_is_retired(status):
+    """``tool_final`` is true only for ``completed``, but a failed, cancelled or
+    refused call is over too. Kept in flight it would be handed the slot when a
+    later call returns, and a shell call whose child is gone reads DEAD, which
+    badges the agent at once."""
+    info = _info()
+    SubagentManager._note_tool_dispatch(info, _event(call_id="shell-1"))
+    SubagentManager._note_tool_result(info, _result("shell-1", status=status))
+    assert info._inflight_tool is None
+    assert info._active_tool_calls == {}
+
+
+def test_a_new_prompt_drops_calls_the_last_turn_left_open():
+    """A call the previous turn never closed must not be handed the slot when a
+    call from the next turn returns."""
+    info = _info()
+    SubagentManager._note_tool_dispatch(info, _event(call_id="stale-1"))
+    SubagentManager._clear_tool_dispatch(info)
+    SubagentManager._note_tool_dispatch(info, _write_event())
+    SubagentManager._note_tool_result(info, _result("write-1"))
+    assert info._inflight_tool is None
+    assert info._active_tool_calls == {}
+
+
+def test_a_native_child_call_is_judged_but_never_held_open():
+    """A native child's permission request names a command running in this
+    runtime, so it is judged, but its results go to the backend's own session
+    and never reach this loop. It gets no running-set entry, and this agent's
+    own next result moves the slot off it instead of leaving a finished child
+    command judged for the rest of the prompt."""
+    info = _info()
+    SubagentManager._note_tool_dispatch(info, _wait_event(1800, call_id="wait-1"))
+    SubagentManager._note_tool_dispatch(info, _event(call_id="shell-1"))
+    child = _event(call_id="child-1", tool_input='{"command": "make test"}')
+    child.sub_session_id = "child-session"
+    SubagentManager._note_tool_dispatch(info, child)
+    assert info._inflight_tool.command == '{"command": "make test"}'
+    assert "child-1" not in info._active_tool_calls
+
+    SubagentManager._note_tool_result(info, _result("shell-1"))
+    assert info._inflight_tool is info._active_tool_calls["wait-1"]
+
+    SubagentManager._note_tool_result(info, _result("wait-1"))
+    assert info._inflight_tool is None
+    assert info._active_tool_calls == {}

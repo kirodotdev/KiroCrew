@@ -27,6 +27,7 @@ import {
   Power,
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -239,10 +240,9 @@ export function InstancesPanel() {
   }, [])
 
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances() })
-  const disabled =
-    instancesQuery.error instanceof ApiError &&
-    instancesQuery.error.status === 403 &&
-    /disabled/i.test(instancesQuery.error.message)
+  // Keyed on the gateway's `instances_disabled` code, not the message text, so
+  // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
+  const disabled = isInstancesDisabledError(instancesQuery.error)
   const error =
     instancesQuery.error && !disabled
       ? instancesQuery.error instanceof ApiError
@@ -345,7 +345,7 @@ export function InstancesPanel() {
           {i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}
         </p>
         {restartPending && (
-          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
             <span>
               {i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
@@ -387,7 +387,7 @@ export function InstancesPanel() {
         </Btn>
       </div>
       {!active && (
-        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
           <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span>
             {i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
@@ -396,7 +396,7 @@ export function InstancesPanel() {
         </div>
       )}
       {connectedNote && (
-        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-ok/10 text-ok border border-ok/30">
+        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-ok/10 text-ok-text border border-ok/30">
           <Plug size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{connectedNote}</span>
           <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setConnectedNote(null)}><X size={12} /></button>
@@ -419,7 +419,7 @@ export function InstancesPanel() {
           className={
             'flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
             (diagNote.kind === 'ok'
-              ? 'bg-ok/10 text-ok border-ok/30'
+              ? 'bg-ok/10 text-ok-text border-ok/30'
               : 'bg-accent/10 text-accent border-accent/30')
           }
         >

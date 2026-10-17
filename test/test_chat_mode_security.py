@@ -407,7 +407,9 @@ async def test_app_on_its_own_slot_keeps_agent_and_theme_writes(state) -> None:
 #: turn (``memory_mode`` / ``mode`` apply only to a slot the send creates, and an
 #: app's send never creates a user slot). A settings-bearing field names a value
 #: the slot keeps; the sample is one that would change ``_user_slot``.
-_TURN_ONLY_BODY_KEYS = frozenset({"message", "slot", "meta", "steer", "memory_mode", "mode"})
+_TURN_ONLY_BODY_KEYS = frozenset(
+    {"message", "slot", "meta", "steer", "memory_mode", "mode", "responsive"}
+)
 _SETTINGS_BODY_KEYS: dict[str, object] = {
     "agent": "researcher",
     "color_theme": "custom-pack",
@@ -451,7 +453,7 @@ def test_every_api_chat_body_key_is_classified() -> None:
     """
     from kiro_crew.dashboard import chat_handlers
 
-    tree = ast.parse(inspect.getsource(chat_handlers))
+    tree = ast.parse(inspect.getsource(chat_handlers._owner_chat_send))
     functions = {
         node.name: node
         for node in tree.body

@@ -1,8 +1,9 @@
 // Configuring a remote crew from the pre-dashboard gateway-failure dialog.
 //
 // When the offer is coherent, and the validated store write it performs, live
-// here so both are unit-testable without an Electron runtime. The dialog markup
-// and the input window stay in the supervisor.
+// here so both are unit-testable without an Electron runtime. The failure-dialog
+// markup stays in the supervisor; the Add/Edit Remote Crew input window lives in
+// runtime/gateway/remote-crew-prompt.js.
 
 const { DEFAULT_REMOTE_BIN } = require("./remote-token");
 const { isSelectablePort, setRemoteHostConfig } = require("./host-config");

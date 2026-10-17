@@ -83,7 +83,7 @@ def _slot_state(request: web.Request, slot_key: str) -> dict[str, Any] | None:
         return None
 
     # `to_dict()` is the slot's PUBLIC serializer and it already derives `pending_approval`
-    # from the approval futures (state.py). Reading `slot._approval_futures` directly is
+    # from the approval futures (state_parts/slot_transcript.py). Reading `slot._approval_futures` directly is
     # wrong: a private attribute is not a contract, so a core refactor that renamed it
     # would silently turn "waiting on you" into "progressing" on this board, with nothing
     # failing anywhere. Asking the owner is the fix.
@@ -92,17 +92,23 @@ def _slot_state(request: web.Request, slot_key: str) -> dict[str, Any] | None:
     # the whole board, so it degrades rather than 500s. The fallback is deliberately NOT a
     # private reach-in — a narrower truth beats a fragile one.
     pending = bool(getattr(slot, "pending_approval", False))
+    waiting = bool(getattr(slot, "waiting_for_input", False))
     to_dict = getattr(slot, "to_dict", None)
     if callable(to_dict):
         try:
-            pending = bool(to_dict().get("pending_approval", pending))
+            public = to_dict()
+            pending = bool(public.get("pending_approval", pending))
+            # `needs_input` is the open-question flag. The serializer's own
+            # `waiting_for_input` is true for any idle assistant-last slot, i.e. every
+            # finished turn, so it would file each finished investigation as blocked.
+            waiting = bool(public.get("needs_input", waiting))
         except Exception:  # noqa: BLE001 — a slot serializer fault must not blank the board
             logger.exception("ops-mission-control: slot to_dict() failed for %r", slot_key)
 
     return {
         "running": bool(getattr(slot, "running", False)),
         "pending_approval": pending,
-        "waiting_for_input": bool(getattr(slot, "waiting_for_input", False)),
+        "waiting_for_input": waiting,
         "messages": [
             {"role": getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)}
             for m in (getattr(slot, "messages", None) or [])

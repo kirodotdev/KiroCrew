@@ -51,9 +51,9 @@ anything with an `~/.ssh/config` entry. It is the shorter path: if
 
 Choose **SSM** for anything in AWS you would rather not expose port 22 on, or
 where you want reachability to be a policy decision rather than a key someone
-holds. The [EC2 guide](../../../docs/guides/remote-crew-on-ec2.md) walks both
+holds. The [EC2 guide](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md) walks both
 ends of it, and
-[SSM vs SSH](../../../docs/guides/cloud-instance-ssm-vs-ssh.md) covers why a
+[SSM vs SSH](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/cloud-instance-ssm-vs-ssh.md) covers why a
 cloud-launched machine is registered with SSM.
 
 A third method, **Fargate**, is set for you when a crew container is launched as
@@ -120,46 +120,82 @@ reconnect because the token is re-minted and the remote dashboard boots again.
 Each row also carries badges read off its record: **SSM** or **SSH** for the
 transport, and **EC2** when the instance was provisioned by the cloud launcher.
 
+## Turning one crew off
+
+Each crew in **Settings → Remote Crew** has a switch beside its status that reads
+**Connections: On** or **Connections: Off**. Off closes that crew's tunnel and
+keeps it closed: no click, auto-connect or gateway restart opens it again. Its
+sidebar group reads **Off** with an **Enable** button, and an open pane for it
+shows offline. A crew reached through it stays closed too, and connecting one
+names the crew that is off. Turning it back on reconnects it. The crew's
+settings are kept the whole time. Only the owner can flip the switch.
+
+## Crews reached through another crew
+
+A remote pane is a full dashboard, so it can list remote crews of its own. When
+you connect one of those inside the pane, your dashboard adopts it as a
+top-level entry in your own switcher. You do not add it twice. The connection
+rides the crew that reaches it; your dashboard never dials that machine itself.
+
+A chain is at most two hops deep (you → B → C), and one crew can carry at most
+eight crews behind it. In Settings → Remote Crew such a row shows its host as
+**`<host>` (reported)**: it is the address that crew reports, not one you can
+reach. When a crew in the middle of a chain is down, the entries behind it read
+**unreachable — `<name>` is down**, naming the hop to fix.
+
+Removing a crew also removes every crew reached through it.
+
 ## A session that runs on another machine
 
-**New chat on crew** starts a session here whose turns execute over there. It is
-a feature preview: turn on **Settings → Developer → Feature Previews → Chat on
-a crew**, then pick it from the new-chat menu and choose one of your connected
-machines. Only connected ones are offered.
+**New chat on crew** creates a session ON a connected machine and opens it here in
+a crew window. It is a feature preview: turn on **Settings → Developer → Feature
+Previews → Chat on a crew**, then pick it from the new-chat menu and choose one of
+your connected machines. Only connected ones are offered, and creating one fails
+outright when the machine runs a Kiro Crew version too far from yours.
 
-What you get is a local session — a row in your own sidebar, a local transcript,
-local history and search — wearing a chip that names the machine running it. Its
-prompts, tools and model all run on the remote, against the remote's workspace
-and its agents.
+The window shows the remote's own transcript, running state and pending approval.
+Send, stop, approve, continue, regenerate and rewind call the remote's own routes,
+so its prompts, tools and model all run over there, against its agents and
+workspace. Nothing is stored on this machine, and every reply is redacted before
+it renders.
 
 Two things follow from the split:
 
 - **The remote's roster wins.** The session uses the remote machine's agents,
   models and workspaces, not this machine's. Your local default agent is not sent
   over; a name from your roster would mean nothing, or something else, over
-  there.
-- **The tunnel has to be up to send.** While it is down the session refuses a new
-  turn and says it is reconnecting. A turn already in flight keeps running on the
-  remote even if the hub restarts — when you come back, the transcript carries an
-  explicit note that a restart interrupted it rather than just stopping
-  mid-sentence.
+  there. Your default memory mode is sent, so a new session does not quietly run
+  in a different one.
+- **The remote owns the turn.** A turn already in flight keeps running on the
+  remote if you close the window or your browser goes away.
 
-Creating one fails outright when the machine is disconnected or running a Kiro
-Crew version too far from yours, rather than leaving you a session that cannot
-send.
+A chat an older version ran on a crew through the retired turn relay stays in your
+list as a **read-only archive**. You can read it, but every action that would run
+it answers `relay_archive_read_only`; open the crew's own session to keep going.
 
 ## Another machine's sessions in your list
 
-The opposite direction: sessions a connected machine **owns** can be merged into
-this dashboard's Sessions list. Turn on **Settings → Developer → Feature
-Previews → Remote crew sessions**. With it off, nothing is fetched at all.
+The opposite direction: sessions a connected machine **owns** are listed in
+this dashboard's Sessions list. The same switch holds both: **Settings →
+Developer → Feature Previews → Chat on a crew**. With it off, nothing is fetched
+at all.
 
-Peer rows are ordered with your local ones by recency and badged with the machine
-that owns them. Clicking one opens it **here**: the hub binds a fresh local
-session to that remote session and backfills its transcript, so you get a real
-local conversation whose turns keep running on the remote. The row keeps the
-identity it had, so it re-renders in place instead of appearing twice, and it
-drops out of the peer rows once adopted.
+With it on, the list is grouped per machine: **Local** first, then one
+collapsible group per crew, its header badged **online**, **reconnecting**,
+**error** or **offline** from the tunnel's state. A crew's group holds the
+sessions it owns and any read-only relay archive that ran on it. Inside the group
+the crew's own folders nest its rows, with unfiled rows last — a read-only
+mirror of the crew's folder tree, edited on the crew, each space keeping its own
+collapse state. A crew that
+disconnects keeps its last listed rows, dimmed and without live status, until
+you reload; nothing asks it again while it is down. Collapsing a group never
+changes which session is open. With no crew to group, the list has no group
+headers and looks as it always did. The board view groups nothing: it leaves
+peer rows out and says how many it left out.
+
+Clicking a crew's session opens it in a crew window, the same window **New
+chat on crew** opens: the remote machine's own transcript, running state and any
+pending approval, driven over the connection. Nothing is copied to this machine.
 
 A peer row deliberately does less than a local one, because the other machine —
 not this one — owns the session:
@@ -170,10 +206,6 @@ not this one — owns the session:
 | Folders and drag | Filing is local bookkeeping about local rows. |
 | The `⋯` group actions | Same reason: they act on sessions this machine owns. |
 | The board view | It stays local, and reports how many rows it filtered out. |
-
-A machine that cannot say which memory mode a session runs in is refused rather
-than guessed at, so an adopt never quietly crosses a privacy boundary you set
-over there.
 
 Only **live** sessions appear here. The other machine's closed ones are reachable
 through search.
@@ -257,13 +289,15 @@ reports the first broken link, which is usually the whole answer.
 | An SSH auth error on connect | Re-add your key to `ssh-agent`. Kiro Crew never prompts for a password, so a missing credential fails immediately — and the tunnel heals itself once the key is back. |
 | A blank or black pane | The embedded dashboard never announced itself. Use **Retry** on the error panel. |
 | "local port N was taken while connecting" | Something grabbed the port first. Retry, or move `instances.tunnel_base_port` somewhere quieter. |
-| A machine that keeps dropping | The tunnel already retried on its own for about two minutes before giving up, and then ran a diagnosis. Check the remote gateway and the link itself. |
+| A machine that keeps dropping | The tunnel already healed itself before giving up and running a diagnosis: about two minutes when the tunnel cannot be rebuilt, or roughly attempts × (probe window + backoff), about 16 minutes at the default 8 `instances.max_recovery_attempts`, when the forward re-binds but the far end stays dead. Check the remote gateway and the link itself. |
+| "the SSM session … was closed by AWS after a period with no activity" (or "AWS ended the SSM session") | AWS closed the SSM or Fargate forward. Open a new one with **Connect** on the crew's card in Settings. To allow longer idle periods, raise the Session Manager idle-timeout preference for that account and region. |
+| **unreachable — `<name>` is down** on a chained crew | The crew it is reached through is down. Fix that crew's row first; the chained one comes back with it. |
 | Every token mint fails on one machine, whose gateway is healthy | The remote's `kirocrew` on `PATH` probably points at an install that is not the one running. Reinstall it there. |
 
 ## Next
 
-- [Setting up Remote Crew on an EC2 instance](../../../docs/guides/remote-crew-on-ec2.md) — both transports end to end, plus the EC2 gotchas.
-- [Native SSM vs legacy SSH](../../../docs/guides/cloud-instance-ssm-vs-ssh.md) — how a cloud-launched machine is reached.
-- [Remote and mobile access](../../../docs/guides/remote-and-mobile.md) — installing and running a gateway on the far machine in the first place.
+- [Setting up Remote Crew on an EC2 instance](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md) — both transports end to end, plus the EC2 gotchas.
+- [Native SSM vs legacy SSH](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/cloud-instance-ssm-vs-ssh.md) — how a cloud-launched machine is reached.
+- [Remote and mobile access](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-and-mobile.md) — installing and running a gateway on the far machine in the first place.
 - [dashboard.md](dashboard.md) — the dashboard the switcher sits in.
 - [crew-members.md](crew-members.md) — crewmates, which are not machines.

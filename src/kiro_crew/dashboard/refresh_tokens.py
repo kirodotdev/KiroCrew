@@ -31,7 +31,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping
+from typing import Iterable, Mapping
 
 from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry
 from kiro_crew.config.loader import config_dir
@@ -41,9 +41,6 @@ from kiro_crew.dashboard.revocation_gen import (
     current_revocation_gen_or_none,
 )
 from kiro_crew.dashboard.token_secret import _get_secret, auth_store_staging_dir
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

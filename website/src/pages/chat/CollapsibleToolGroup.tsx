@@ -8,6 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { ApiError } from '../../api/client'
 import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { useRowDisclosure } from './rowDisclosure'
+import { useToolCallsStartExpanded } from '../../hooks/useToolCallsStartExpanded'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -57,6 +58,12 @@ interface CollapsibleToolGroupProps {
    * call prompts again (#5400 on the spawn card, #5434 on this row).
    */
   canTrust?: boolean
+  /**
+   * Offer the "Ask the agent" hand-off on the failed-decision notice. Default
+   * `true`. A host holding unsaved local state the hand-off's navigation would
+   * drop (ChatEmbed's composer draft) passes `false`.
+   */
+  askAgent?: boolean
   /** Callback to open the Activity Viewer. */
   onViewActivity?: () => void
   /** Whether the Activity Viewer is currently open. */
@@ -104,10 +111,15 @@ function derivedHeading(meta?: Record<string, unknown>): string {
   return d.derived ? d.title : ''
 }
 
-/** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+/** Collapsible row that wraps tool/thinking/permission messages — collapsed unless autoExpand or the
+ *  "Tool calls start expanded" chat setting is on. */
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, permissionMetas, pendingPermCount, onApprove, onApproveBatch, canTrust, askAgent = true, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
+  // The chat setting (#18254) raises the resting state from collapsed to
+  // expanded; liveness (autoExpand) can still open a row on top of it.
+  const startExpanded = useToolCallsStartExpanded()
+  const restingExpanded = !!autoExpand || startExpanded
+  const [expanded, setExpanded] = useRowDisclosure(disclosureKey, restingExpanded)
   const userToggled = useRef(false)
   const buttonsRef = useRef<HTMLDivElement | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -115,7 +127,14 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
   const [failure, setFailure] = useState<{ terminal: boolean; message: string; attempted: string } | null>(null)
   const needsAttention = !!hasPermission && !localResolved
 
-  useEffect(() => { if (!userToggled.current) setExpanded(!!autoExpand) }, [autoExpand, setExpanded])
+  // Skip the first run: on mount the disclosure already starts from
+  // `restingExpanded` (the fallback above), and writing it here would overwrite
+  // a choice the store kept for this row while it was virtualised out.
+  const restingMounted = useRef(false)
+  useEffect(() => {
+    if (!restingMounted.current) { restingMounted.current = true; return }
+    if (!userToggled.current) setExpanded(restingExpanded)
+  }, [restingExpanded, setExpanded])
 
   // Reset approval state when permission props change (new approval arrives)
   useEffect(() => {
@@ -124,12 +143,13 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
     setFailure(null)
   }, [hasPermission, pendingPermCount])
 
-  // Auto-collapse when tools finish running (unless user manually toggled)
+  // Return to the resting state when tools finish running (unless user manually
+  // toggled): collapsed by default, still open when the chat setting is on.
   const wasRunning = useRef(false)
   useEffect(() => {
-    if (wasRunning.current && !isRunning && !userToggled.current) setExpanded(false)
+    if (wasRunning.current && !isRunning && !userToggled.current) setExpanded(startExpanded)
     wasRunning.current = !!isRunning
-  }, [isRunning, setExpanded])
+  }, [isRunning, setExpanded, startExpanded])
 
   // The 'trust' entries are reachable only from a `canTrust` mount (see the
   // prop's contract above): a mount resolving through the one-shot
@@ -148,7 +168,6 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
     : needsAttention ? i18nT('pages.chat.collapsibleToolGroup.approval_needed') : isRunning ? i18nT('pages.chat.collapsibleToolGroup.running_tools') : i18nT('pages.chat.collapsibleToolGroup.tool_call', { count: count })
 
   const preview = needsAttention ? sanitizeLlmOutput(extractPreview(permissionMeta)) : ''
-  const truncated = preview.length > 150 ? preview.slice(0, 150) + '…' : preview
   // Heading over the single-call preview; '' when the command is already the
   // clearest statement of the call (nothing to add above the <pre>).
   const heading = needsAttention ? sanitizeLlmOutput(derivedHeading(permissionMeta)) : ''
@@ -247,7 +266,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
           gating this row on !expanded left the expanded pending group with no
           actionable buttons — a dead end exactly while the agent is parked
           waiting on the user (#5487). */}
-      {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!truncated) && (
+      {needsAttention && (onApprove || onApproveBatch) && (isBatch ? batchPreviews.length > 0 : !!preview) && (
         <div className="mt-1 ml-4 pl-3 shadow-[inset_2px_0_0_0_var(--color-amber-400)] forced-colors:border-l-2">
           {isBatch ? (
             <>
@@ -268,7 +287,12 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
           ) : (
             <>
               {heading && <div className="text-[12px] leading-5 text-muted mb-1" data-testid="approval-derived-title">{heading}</div>}
-              <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[4.5em] overflow-y-auto mb-2"><ToolInputText text={truncated} /></pre>
+              {/* The FULL command, for the same reason the batch rows are full: a
+                  cut preview can hide a destructive suffix behind a benign prefix
+                  at the one point the human vets what will run. The box is
+                  height-bounded and scrolls, so a long call cannot push the
+                  buttons below the fold. */}
+              <pre className="bg-bg-hover rounded-md px-3 py-2 text-[13px] leading-5 font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-[15em] overflow-y-auto mb-2"><ToolInputText text={preview} /></pre>
             </>
           )}
         </div>
@@ -282,11 +306,12 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       )}
 
       {failure !== null && (
-        // Hand-off on. The approval buttons hold no draft of their own, and the
-        // host composer's draft is persisted per slot (ChatPage saves it on slot
-        // switch) while the hand-off opens a FRESH slot rather than navigating
-        // away — so there is nothing here the navigation can destroy.
-        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent message={failure.terminal
+        // Hand-off on by default. The approval buttons hold no draft of their
+        // own, and the main chat's composer draft is persisted per slot (ChatPage
+        // saves it on slot switch) while the hand-off opens a FRESH slot.
+        // No hand-off when the host passes `askAgent={false}`: ChatEmbed's
+        // composer draft is unsaved local state the navigation would drop.
+        <ErrorNotice variant="inline" className="mt-1 ml-4 pl-3" askAgent={askAgent} message={failure.terminal
           ? i18nT('components.approvalCard.approval_no_longer_pending')
           : failure.message
             ? i18nT('components.approvalCard.decision_not_recorded_error', { error: failure.message })

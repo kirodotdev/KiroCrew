@@ -119,7 +119,20 @@ describe('ChatPanel — the feature-video cache readout', () => {
     expect(statusLine()).toHaveTextContent('3')
   })
 
-  it('names the clip being fetched while one is in flight', async () => {
+  it('names the clip being fetched by its title, not its id', async () => {
+    featureVideoStatusMock.mockResolvedValue({
+      ...BASE_STATUS, downloading: 'monitor-loops', downloading_title: 'Monitor loops',
+    })
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(statusLine()).toHaveTextContent(
+      i18nT('pages.settings.chatPanel.feature_videos_downloading', { title: 'Monitor loops' }),
+    ))
+    expect(statusLine()).not.toHaveTextContent('monitor-loops')
+  })
+
+  it('falls back to the id when the gateway sends no title', async () => {
+    // An older gateway carries no `downloading_title`; showing nothing there would
+    // hide which clip is moving.
     featureVideoStatusMock.mockResolvedValue({ ...BASE_STATUS, downloading: 'monitor-loops' })
     wrap(<ChatPanel />)
     await waitFor(() => expect(statusLine()).toHaveTextContent('monitor-loops'))
@@ -133,7 +146,7 @@ describe('ChatPanel — the feature-video cache readout', () => {
     wrap(<ChatPanel />)
     await waitFor(() => expect(statusLine()).toBeInTheDocument())
     expect(statusLine()).toHaveTextContent(
-      i18nT('pages.settings.chatPanel.feature_videos_downloading', { id: 'feature-tips' }),
+      i18nT('pages.settings.chatPanel.feature_videos_downloading', { title: 'feature-tips' }),
     )
   })
 

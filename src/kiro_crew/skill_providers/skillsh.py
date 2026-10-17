@@ -34,6 +34,14 @@ _USER_AGENT = _http.USER_AGENT
 # Maximum response body size (1 MiB). Rationale in ``_http.MAX_RESPONSE_BYTES``.
 _MAX_RESPONSE_BYTES = _http.MAX_RESPONSE_BYTES
 
+# Read ceiling for the install-bundle download only. The discover handler refuses
+# a bundle whose decoded files total over 5 MiB, but this ceiling counts the raw
+# JSON body, which JSON escaping makes larger than the files it carries, so it
+# sits above that guard: a bundle the handler would accept is read whole instead
+# of being cut short and reported as "not found or empty". Search and every
+# other fetch keep the 1 MiB default.
+_MAX_BUNDLE_RESPONSE_BYTES = 6 * 1024 * 1024
+
 # Per-chunk read size while draining a response body (64 KiB).
 _HTTP_READ_CHUNK_BYTES = _http.READ_CHUNK_BYTES
 
@@ -189,7 +197,7 @@ class SkillsShProvider:
             logger.debug("Rejecting malformed skill_id for download: %r", skill_id)
             return None
         url = f"{self._config.api_base}/download/{urllib.parse.quote(skill_id, safe='/')}"
-        data = await _fetch_json(url)
+        data = await _fetch_json(url, bundle=True)
         # skills.sh is untrusted external input: an error/maintenance payload (or
         # a CDN interposing its SPA HTML) can be valid JSON that is not an object,
         # so guard the shape before .get() — a bare data.get() on a list/str/number
@@ -227,23 +235,27 @@ class SkillsShProvider:
         return result if result else None
 
 
-async def _fetch_json(url: str) -> Any | None:
+async def _fetch_json(url: str, *, bundle: bool = False) -> Any | None:
     """Fetch JSON from a URL. Returns None on any failure.
 
     Calls the module-global ``_sync_fetch_json`` so a test may patch this
-    provider's fetch without reaching into ``_http``.
+    provider's fetch without reaching into ``_http``. ``bundle`` selects the
+    larger install-bundle read ceiling and is forwarded only when set, so a
+    fetch that is not a bundle download calls ``_sync_fetch_json(url)`` as before.
     """
+    if bundle:
+        return await _http.run_off_loop(lambda: _sync_fetch_json(url, bundle=True))
     return await _http.run_off_loop(lambda: _sync_fetch_json(url))
 
 
-def _sync_fetch_json(url: str) -> Any | None:
+def _sync_fetch_json(url: str, *, bundle: bool = False) -> Any | None:
     """Synchronous JSON fetch (for the executor), bounded and SSRF-screened."""
     return _http.sync_fetch_json(
         url,
         allowed_hosts=_ALLOWED_HOSTS,
         internal_check=_is_internal_url,
         headers={"User-Agent": _USER_AGENT},
-        max_bytes=_MAX_RESPONSE_BYTES,
+        max_bytes=_MAX_BUNDLE_RESPONSE_BYTES if bundle else _MAX_RESPONSE_BYTES,
     )
 
 

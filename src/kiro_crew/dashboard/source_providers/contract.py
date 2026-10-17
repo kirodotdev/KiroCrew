@@ -2,8 +2,8 @@
 
 The validated refs every entry point hands around, the full-change payload a
 provider returns, the protocol a downstream edition implements to add a provider,
-and the errors each layer raises. Only types and the URL bound live here, so
-every sibling can import this module and it imports none of them.
+and the errors each layer raises. Only types, the URL bound and a core provider id
+live here, so every sibling can import this module and it imports none of them.
 """
 
 from __future__ import annotations
@@ -24,13 +24,23 @@ logger = logging.getLogger("kiro_crew.dashboard.handlers.source_providers")
 
 _MAX_URL_LENGTH = 2048
 
+#: The provider id of Bitbucket Server / Data Center pull requests. A core
+#: provider served through the registered-provider dispatch (see ``plugins``),
+#: so it is named here where every layer that routes on it can read it.
+BITBUCKET_SERVER_PROVIDER = "bitbucket_server"
+
 
 class SourceProviderError(RuntimeError):
     """A provider CLI could not return the requested source data."""
 
-    def __init__(self, message: str, *, reason: str = "") -> None:
+    def __init__(self, message: str, *, reason: str = "", login_command: str = "") -> None:
         super().__init__(message)
         self.reason = reason
+        # The command that fixes this failure when it is an expired sign-in the
+        # message alone cannot name correctly (a self-managed GitLab host). The
+        # HTTP layer ships it as its own field, so the client never has to parse
+        # a command back out of provider-controlled text.
+        self.login_command = login_command
 
 
 class SourceCapacityError(SourceProviderError):

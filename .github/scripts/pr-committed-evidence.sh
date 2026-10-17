@@ -24,14 +24,16 @@
 # check the fork head out; the same-repo design lane has the files at HEAD.
 # Both source this script and both read blobs from the object store at
 # HEAD_SHA: the working tree is never consulted, so there is no "checkout
-# mode" and no second listing for it to drift from. A same-repo checkout
-# fetched with `fetch-depth: 0` holds every blob of its head, so the read is
-# the same read. (A lane that re-spelled this loop inline once listed by
+# mode" and no second listing for it to drift from. A same-repo checkout of
+# the merge ref at `fetch-depth: 2` holds every blob of its head, so the read
+# is the same read. (A lane that re-spelled this loop inline once listed by
 # inclusion, additions and modifications only, and lost a renamed screenshot;
 # that is the defect this rule exists to make unrepeatable.)
 #
 # Inputs, all environment variables:
 #   BASE_SHA, HEAD_SHA   revision range; every blob is read AT HEAD_SHA
+#   MERGE_BASE           merge-base of BASE_SHA and HEAD_SHA, already in the
+#                        object store; the listing is MERGE_BASE..HEAD_SHA
 #   FETCH_DIR            scratch dir for the bytes before they are typed
 #   DEST_DIR             where kept images land, as "$NAME_STEM-NN.<ext>"
 #   NAME_STEM            copy-name stem, shared with the attachment pass
@@ -146,7 +148,12 @@ committed_read="${fetched:-0}"
 # attachment script fails its step the same way when the description cannot
 # be read -- a red step the author can re-run, never a silent "nothing here".
 paths="$(mktemp "$FETCH_DIR/committed-paths.XXXXXX")"
-if ! git diff -z -M --name-status --diff-filter=d "$BASE_SHA...$HEAD_SHA" -- \
+# Two-dot from MERGE_BASE, not three-dot from BASE_SHA: the callers' clones
+# are shallow, so git cannot find a merge-base itself. The caller fetched the
+# merge-base GitHub named, and a two-dot diff of two trees needs no history.
+# An unset MERGE_BASE is the same failure as a failed diff.
+if [ -z "${MERGE_BASE:-}" ] \
+  || ! git diff -z -M --name-status --diff-filter=d "$MERGE_BASE..$HEAD_SHA" -- \
     temp-screenshots .github/screenshots > "$paths"; then
   echo "::error::Could not enumerate the media committed between $BASE_SHA and $HEAD_SHA (git diff failed, see above), so the committed evidence cannot be collected; re-run the workflow."
   # Record the lane's own failure before leaving, because `exit 1` from a

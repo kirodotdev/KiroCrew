@@ -64,7 +64,8 @@ can still surface a line from a day the dated read would have collapsed to a
 count.
 
 A new session carries none of these bodies either way. It carries a bounded index
-of the last three days' headings, and the body arrives only when `memory_recall`
+of excerpts from the last three days (headings, bullets and each paragraph's
+first line), and the body arrives only when `memory_recall`
 asks for it.
 
 ### Lessons
@@ -79,6 +80,44 @@ legacy `lessons.jsonl` fallback when vector memory is unavailable.
 Lessons have two scopes:
 - **Global** (default): shared across all workspaces
 - **Repository-scoped**: an optional `repo_scope` path fragment restricts a lesson to sessions whose active project is inside that repository tree
+
+Each lesson records its `source`, the writer that saved it: `user_explicit` for a
+lesson saved on purpose through `learn_add`, the dashboard or `kirocrew learn add`,
+`consolidation` for one extracted from a conversation. `learn_list` and the
+Lessons table on the Memory page show it.
+
+## How instructions rank
+
+Steering, preferences, lessons and memory reach a session as separate blocks, and
+each block states how much weight it carries. When two of them disagree, the
+order is:
+
+1. **The current user message.** Every stored block says that stored inferences
+   do not override the current user.
+2. **Steering files and the agent's own prompt.** The harness loads them as
+   standing instructions; see [Steering files](steering-and-hooks.md).
+3. **Preferences** (`preferences.md`). Injected as rules: "Preferences in the user
+   preference document remain rules."
+4. **Lessons.** Injected as retained rules, filtered to the session's repository
+   and capped by the context budget. Lessons tagged with `applies` rank ahead of
+   untagged ones; within that, ranking is by relevance, whatever the `source`.
+5. **Semantic memory, experience, the activity index and recent-session
+   snippets.** Reference data, not instructions.
+
+Switches that change what is written or injected:
+
+| Key | Writes | Injection |
+|-----|--------|-----------|
+| `memory.persistence_enabled: false` | No automatic writes | Stored memory and lessons withheld |
+| `memory.writes_enabled: false` | No automatic writes | Unchanged |
+| `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
+| `memory.inject_memory: false` | Unchanged | Stored memory block withheld |
+| `memory.inject_lessons: false` | Unchanged | Lessons and user-profile blocks withheld |
+
+Incognito sessions still read stored memory but write none, and Temporary
+sessions neither read nor write it, whatever these keys say. The keys apply to
+every surface (dashboard, channels, cron, sub-agents) at once, where a memory
+mode is chosen per session.
 
 ## Memory Modes
 
@@ -111,10 +150,11 @@ silently dropped, and no existing private conversation is forgotten to make room
 Conversations already private keep their mode and can still be tightened.
 
 Every dashboard mode keeps its chat history. An Incognito or Temporary dashboard
-chat is saved to History exactly like a Persistent one, so you can reopen it --
-before or after a gateway restart -- to look up a question you asked or a command
-you ran. Channel-origin Incognito and Temporary chats are still not written to
-History. What the two restricted modes withhold is learning FROM the chat: nothing
+chat is saved under Older Sessions (the footer at the bottom of the Sessions
+list) exactly like a Persistent one, so you can reopen it -- before or after a
+gateway restart -- to look up a question you asked or a command you ran.
+Channel-origin Incognito and Temporary chats are still not written to session
+history. What the two restricted modes withhold is learning FROM the chat: nothing
 in it is consolidated
 into memory, no lesson is written (including lesson deletion), no session summary
 is generated, and it is never written into a workflow or task snapshot. Incognito
@@ -157,7 +197,10 @@ start; the Memory tab shows download progress. Once downloaded, the model
 loads in the background too, so nothing ever waits on it. While the model is
 downloading or loading, memory falls back to keyword search and switches to
 semantic search as soon as the model is ready — no restart needed. Requires
-~610MB disk for the model and ~700MB RAM once the model is loaded.
+~610MB disk for the model and ~700MB RAM once the model is loaded. The model
+loads when something first needs a vector and unloads after 60 minutes without
+one (`memory.embedding_idle_evict_secs`, `0` keeps it loaded); the first search
+after that waits a few seconds for it to load again.
 
 The bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL; `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
 
@@ -189,36 +232,10 @@ an Incognito or Temporary session with a 403 no matter which session triggers it
 and the background paths skip those sessions — including a Slack or Telegram
 thread marked `!incognito` / `!temporary`, whose mode is recorded in the thread's
 own transcript header so it holds across restarts — so the mode table above holds
-for every route. The Memory tab's tally reports those refusals as skipped, not
-failed, names the mode when every skipped session shares one ("1 skipped:
-incognito session") and otherwise the category with each mode counted ("2
-private sessions skipped (1 temporary, 1 incognito)"), with a "?" beside the
-skip that says in one line what each mode promises, in the words the Default
-Memory Mode setting uses ("Temporary starts blank and saves no new memory.
-Incognito uses what it knows but saves no new memory."); when nothing failed it disappears after four
-seconds like every other tally, and a clean press says "Summarized N sessions"
--- the button's own verb, which every message on the tab uses. A failed count means a request genuinely
-failed: it is shown as an error notice carrying the count, a plain-words line
-of two sentences -- the server rejected a summarize request and its reply,
-which calls this operation "consolidation", is shown below, the other
-sessions were not affected; press Summarize now to retry (the reply carries any
-timing the server asks for, such as a
-backoff) -- the failed session named the way the sidebar names it -- its
-title, or its key when it has none (the first of them, with the count, when
-several failed) -- as a link that opens that chat, and that request's own reply
-as detail, labelled
-"Server's reply:" -- the server's words, not the tab's (the plain-words line
-says the server calls this operation "consolidation", so the two names are one
-thing); the skip tally,
-when there was one, stands beside the notice in its own success tone, not
-inside it. Both stay until you dismiss the notice -- there is no retry button;
-the button itself is the retry. If the server would not give the list of
-sessions at all (down, or answering with an error), that is reported through
-the same notice -- "Could not list the sessions to summarize", with the
-server's reply -- not as "no sessions to summarize", which is only said when
-the list came back empty. The
-line under the button says what it does: it writes summaries into memory and
-leaves your conversations untouched.
+for every route. Summarize now reports those sessions as skipped, not failed.
+A real failure shows as an error notice with the server's reply and a link to
+the affected session; press Summarize now again to retry. The button writes
+summaries into memory and leaves your conversations untouched.
 
 ## Reading Memory Programmatically
 

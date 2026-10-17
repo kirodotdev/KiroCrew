@@ -37,6 +37,11 @@ interface CloseHold {
   confirmedUntil: number | null
 }
 
+/** The two user-owned mute flags on a slot. */
+export type MuteFlag = 'mutes_opened' | 'muted'
+/** The `slotMuteFlagError` key for one flag on one slot. */
+export const muteFlagErrorKey = (flag: MuteFlag, slotKey: string) => `${flag}:${slotKey}`
+
 interface DashboardState {
   status: StatusData | null
   /** The ad-hoc auto-approve duration this tab last saved in Settings, or
@@ -49,8 +54,25 @@ interface DashboardState {
   slots: ChatSlot[]
   /** Increments for every accepted authoritative full-slot frame/reply. */
   slotsGeneration: number
+  /** Highest pinned-order revision (`pin_rev`) whose ranks the rows hold. A
+   *  frame or answer with a lower one was serialized before a write whose
+   *  ranks are already applied, so its ranks are ignored. */
+  pinOrderRev?: number
+  /** The latest reorder gesture while its write is queued or in flight. It
+   *  lives here, not in the sidebar, so a sidebar that remounts mid-write
+   *  derives the next gesture from it rather than from an earlier answer. */
+  pendingPinOrder?: string[] | null
+  /** Why the last pinned-order write failed, shown above the sidebar list
+   *  until dismissed or the next reorder; '' when there is nothing to show. */
+  pinOrderError?: string
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
+  /** Last failed mute toggle, one record for both user-owned mute flags
+   *  (`mutes_opened` and `muted`), keyed by `muteFlagErrorKey(flag, slot)`.
+   *  Kept so the menu can render it through ErrorNotice even after the kebab
+   *  closed and reopened. Set on the mutation's onError (after the optimistic
+   *  flip is rolled back), cleared when a later toggle of that flag starts. */
+  slotMuteFlagError: Record<string, string>
   /** Keys whose close is in flight, awaiting another close's outcome, or just
    *  confirmed. An ordinary in-flight key is held out of `slots`; an awaiting
    *  key also survives `CLOSE_CONFIRMED_GRACE_FRAMES` lists before a WebSocket
@@ -306,7 +328,11 @@ const initialState: DashboardState = {
   connected: false,
   slots: [],
   slotsGeneration: 0,
+  pinOrderRev: 0,
+  pendingPinOrder: null,
+  pinOrderError: '',
   slotPinGenerations: {},
+  slotMuteFlagError: {},
   closingSlots: {},
   durablyRemoved: {},
   slotFetchesInFlight: [],
@@ -349,8 +375,18 @@ export const changeApprovalMode = createAsyncThunk<
   { rejectValue: { code: string; message: string } }
 >(
   'dashboard/changeApprovalMode',
-  async ({ mode, slot }, { rejectWithValue }) => {
+  async ({ mode, slot }, { rejectWithValue, getState }) => {
     try {
+      // YOLO is one app-wide setting, and the gateway keeps it on when ONE slot
+      // asks for `trust` / `trust_reads` (an automation setting up a new session
+      // must not end the operator's YOLO). So a person moving this chat from
+      // YOLO to Trust or Reads would see YOLO come back on the next status
+      // frame. Send `normal` first: it is the documented way to turn YOLO off,
+      // and the chosen mode is then applied to this slot alone.
+      const current = (getState() as { dashboard?: DashboardState }).dashboard?.approvalMode
+      if (current === 'yolo' && slot && (mode === 'trust' || mode === 'trust_reads')) {
+        await api.chatMode('normal', slot)
+      }
       await api.chatMode(mode, slot)
     } catch (e) {
       const body = e instanceof ApiError ? e.body : ''
@@ -761,7 +797,26 @@ const membersOutranking = (state: DashboardState, requestId: string | undefined)
   return added
 }
 
-const applySlots = (state: DashboardState, incomingRows: ChatSlot[]): void => {
+/** *rows* with their pinned-order revision folded into `state.pinOrderRev`.
+ *  The revision is not kept on the rows (every row would change on every
+ *  reorder). Rows from a list older than the ranks already applied keep the
+ *  ranks they have. A list with no revision (a scoped stream) passes as is. */
+const gatePinOrder = (state: DashboardState, rows: ChatSlot[]): ChatSlot[] => {
+  let rev = -1
+  for (const row of rows) if (typeof row.pin_rev === 'number' && row.pin_rev > rev) rev = row.pin_rev
+  if (rev < 0) return rows
+  const stale = rev < (state.pinOrderRev ?? 0)
+  if (!stale) state.pinOrderRev = rev
+  const current = stale ? new Map((state.slots ?? []).map(s => [s.key, s])) : null
+  return rows.map(row => {
+    const { pin_rev: _rev, ...rest } = row
+    const existing = current?.get(row.key)
+    return existing ? { ...rest, pin_rank: existing.pin_rank ?? null } : rest
+  })
+}
+
+const applySlots = (state: DashboardState, rawRows: ChatSlot[]): void => {
+  const incomingRows = gatePinOrder(state, rawRows)
   // `durablyRemoved` is the durable fast path for browser-history rewrites: a
   // full list naming the key proves it is live again and clears that evidence.
   // This does not change slot-list visibility; the hold and frame budget below
@@ -993,7 +1048,13 @@ const dashboardSlice = createSlice({
       const { slots: rows, removed } = action.payload
       for (const row of rows ?? []) {
         if (!row || typeof row.key !== 'string') continue
-        const { key, ...fields } = row
+        const { key, pin_rev: rev, ...fields } = row as typeof row & { pin_rev?: number }
+        if (typeof rev === 'number') {
+          // One row's patch: a rank serialized before an applied write is
+          // dropped; a newer one moves the revision for the full list to follow.
+          if (rev < (state.pinOrderRev ?? 0)) delete (fields as { pin_rank?: unknown }).pin_rank
+          else state.pinOrderRev = rev
+        }
         patchSlotRow(state, key, slot => {
           if (Object.keys(fields).every(field => jsonEqual(
             slotPatchCurrent(slot as unknown as Record<string, unknown>, field),
@@ -1232,6 +1293,46 @@ const dashboardSlice = createSlice({
         state.slotPinGenerations[action.payload.key] = (state.slotPinGenerations[action.payload.key] ?? 0) + 1
       })
     },
+    /** Optimistic toggle of a user-owned mute flag: the "mute sessions it
+     *  opens" rule (`mutes_opened`) or the per-row mute (`muted`). Unlike pin
+     *  neither bears on sidebar ordering, so they need none of the pin
+     *  batch/order machinery -- just flip the row and let the authoritative
+     *  `slot_patch` frame reconcile. */
+    updateSlotMuteFlag(state, action: PayloadAction<{ key: string; flag: MuteFlag; value: boolean }>) {
+      const { key, flag, value } = action.payload
+      patchSlotRow(state, key, slot => {
+        slot[flag] = value
+      })
+      // A fresh attempt supersedes any prior failure for this flag on this row;
+      // onError re-sets it if this one also fails.
+      if (state.slotMuteFlagError) delete state.slotMuteFlagError[muteFlagErrorKey(flag, key)]
+    },
+    /** Record a mute toggle failure so the kebab menu can render it through
+     *  ErrorNotice. Set after the optimistic flip has been rolled back. */
+    setSlotMuteFlagError(state, action: PayloadAction<{ key: string; flag: MuteFlag; message: string }>) {
+      state.slotMuteFlagError ??= {}  // partial preloaded state
+      state.slotMuteFlagError[muteFlagErrorKey(action.payload.flag, action.payload.key)] = action.payload.message
+    },
+    /** Paint a pinned order. A bare list is the person's own gesture, shown
+     *  before the gateway answers; `{order, rev}` is the gateway's answer,
+     *  applied only if no newer revision has landed since. */
+    setPinRanks(state, action: PayloadAction<string[] | { order: string[]; rev: number }>) {
+      let order: string[]
+      if (Array.isArray(action.payload)) order = action.payload
+      else {
+        if (action.payload.rev < (state.pinOrderRev ?? 0)) return
+        state.pinOrderRev = action.payload.rev
+        order = action.payload.order
+      }
+      const rank = new Map(order.map((key, index) => [key, index]))
+      patchSlotRowsWhere(state, slot => {
+        const next = slot.pinned ? (rank.get(slot.key) ?? null) : null
+        if ((slot.pin_rank ?? null) === next) return false
+        slot.pin_rank = next
+      })
+    },
+    setPendingPinOrder(state, action: PayloadAction<string[] | null>) { state.pendingPinOrder = action.payload },
+    setPinOrderError(state, action: PayloadAction<string>) { state.pinOrderError = action.payload },
     triggerRefresh(state) { state.refreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
      *  MANUAL reminder: records the relay-immune sentinel; only a local read
@@ -1603,8 +1704,8 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
-  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks } = dashboardSlice.actions
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+  setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError } = dashboardSlice.actions
 
 /**
  * Resolve a slot's surface key. Backend emits `surface` (mirrors `mode` today
@@ -1616,15 +1717,15 @@ export function slotSurfaceKey(slot: { mode?: string; surface?: string }): strin
 }
 
 /**
- * True when a slot's turns run on a connected crew rather than THIS machine —
- * the single spelling of "crew-bound". Two client surfaces must agree with each
- * other and with the server on it: `selectContinuable` (which must not OFFER
- * Continue on a bound slot) and ChatPage's regenerate / edit-resend gates
- * (which must not offer those either). Mirrors `remote_bound_refusal` in
- * `src/kiro_crew/dashboard/remote_relay.py`, which REFUSES the same actions with
- * 409 `remote_action_unsupported`.
+ * True for a relay archive: a chat an older build ran on a connected crew,
+ * read-only now. Two client surfaces must agree with each other and with the
+ * server on it: `selectContinuable` (which must not OFFER Continue on one) and
+ * ChatPage's regenerate / edit-resend gates (which must not offer those
+ * either). Mirrors `relay_archive_refusal` in
+ * `src/kiro_crew/dashboard/relay_archive.py`, which REFUSES the same actions
+ * with 409 `relay_archive_read_only`.
  *
- * Keyed on `executor` (the binding INTENT), never `instance_id` or `is_remote`:
+ * Keyed on `executor` (the binding INTENT), never `instance_id`:
  * the server refuses a half-open binding (marker set, triple incomplete) too, so
  * an unbound `executor` must read as bound here exactly as it does there. An
  * absent slot is not bound — an older gateway ships `executor` on every slot, so

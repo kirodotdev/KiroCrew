@@ -1,6 +1,6 @@
 ---
 name: mochi-plan
-description: "INTERNAL pet queue — generates the pet's 30-minute behavior schedule (moves, moods, notifications). NOT for user task or calendar planning."
+description: "INTERNAL pet queue — generates the pet's upcoming-window behavior schedule (moves, moods, notifications). NOT for user task or calendar planning."
 always: false
 ---
 
@@ -29,7 +29,7 @@ Read ALL of these (in order):
    - **If no calendar tool is available**: SKIP the calendar step and plan without calendar awareness. Do not block on it and do not attempt any workaround.
 
 **IMPORTANT: Calendar times are in UTC (ISO format). Convert to the user's local timezone
-(from the ## Current Time section in your prompt) before comparing with "now" or presenting
+(from the `[CURRENT DATE]` line in your session context, which carries the zone) before comparing with "now" or presenting
 to the user. Never show UTC times to the user.**
 
 ### Step 1.5b: Update User Rhythm
@@ -56,7 +56,7 @@ How to compute:
 - `avg_response_mins`: average gap between consecutive chat messages
 
 If not enough data (only today's log, or a nearly empty one), use defaults: start 09:00, end 18:00, no focus hours, weekends quiet.
-Store in `planner_notes.user_rhythm` — it persists across plans.
+Store in `planner_notes.user_rhythm`. It persists only if you copy it: `full_replace` replaces `planner_notes` whole, so carry every existing key forward.
 
 ### Calendar → Watchlist Sync (Step 1.5)
 
@@ -70,7 +70,7 @@ For each meeting today:
 2. If exists with `status: 'cancelled'` → **SKIP. User explicitly dismissed this meeting. Do NOT re-add.**
 3. If exists with `status: 'watching'` → check if the calendar start time changed:
    - Compare the calendar start time against the item's `notes.meetingStart` field.
-   - If the start time differs by >1 min, update the item — preserve the user's lead time (`triggerAt` offset from `meetingStart`): `update_watchlist({ update: [{ id, triggerAt: '<same lead offset before new start ISO>', notes: { meetingStart: '<new start ISO>' } }] })`
+   - If the start time differs by >1 min, update the item — preserve the user's lead time (`triggerAt` offset from `meetingStart`): `update_watchlist({ update: [{ id, triggerAt: '<same lead offset before new start ISO>', notes: { ...<existing notes object>, meetingStart: '<new start ISO>' } }] })` — `notes` is replaced whole, so copy every existing key (the user's prep note included) and change only `meetingStart`
    - Otherwise **SKIP. Do NOT modify.** The user or chat agent may have customized triggerAt or notes (e.g. "remind me 30 min early to prep slides"). Never override their changes.
 4. If exists with `status: 'done'` → skip (already notified)
 5. If not found at all → `update_watchlist({ add: [{ label: '<title>', kind: 'meeting', target: '<title>', triggerAt: '<5 min before start ISO>', autoComplete: true, priority: 'high', notes: { meetingStart: '<start ISO>' } }] })`
@@ -194,8 +194,8 @@ that isn't in `planner_notes.skipped_tips`. Schedule it as a notify task. Add th
 - **mood**: Set expression based on context (playful when idle, curious when something changed, calm during meetings).
 - **freestyle**: Open-ended agent task for creative behavior. Use sparingly.
 
-Note: `check_watching` is no longer a queue task type. Watch checks are driven by the Electron
-WatchlistService timer based on each item's `nextCheckAfter`. Reminders are also handled by
+Note: `check_watching` is no longer a queue task type. Watch checks are driven by the queue
+poller based on each item's `nextCheckAfter`. Reminders are handled by
 WatchlistService's reminder timer.
 
 Use your judgment on quantity — it depends on context. A lazy Sunday afternoon might have lots of wandering. A busy meeting block might have zero moves and just reminders.
@@ -204,7 +204,7 @@ Use your judgment on quantity — it depends on context. A lazy Sunday afternoon
 
 Read the watchlist from Step 1 for situational awareness only. **Do NOT schedule check_watching tasks.**
 
-Watch item checks are driven by the Electron WatchlistService timer (1-min precision, based on `nextCheckAfter`).
+Watch item checks are driven by the queue poller (based on `nextCheckAfter`).
 The planning agent's role is limited to:
 - Reading watchlist status for the narrative and daily briefing
 - Syncing calendar meetings into the watchlist (Step 1.5) — respecting user cancellations
@@ -222,7 +222,6 @@ The planning agent's role is limited to:
 
 ### Timing
 - Space tasks apart for natural rhythm — don't cluster everything at the start
-- Meeting reminders: 5 minutes before meeting start
 - Don't schedule anything during active meetings
 
 ### Rhythm-Aware Scheduling
@@ -232,8 +231,6 @@ If `planner_notes.user_rhythm` exists, use it to adjust the plan:
 - Today is in `quiet_days` → lighter plan overall (fewer moves, fewer tips, only important notifications)
 - Space notifications at least `avg_response_mins` apart (don't send faster than the user reads)
 - If no rhythm data yet (first few days), use defaults and don't apply these rules
-- If current time > `typical_end - 30min` (approaching end of workday) → skip low/normal priority watch checks, only schedule high priority
-- If current time > `typical_end` (past end of workday) → skip all watch checks unless high priority. User is likely wrapping up or gone.
 
 ## Step 5: Submit the Plan
 
@@ -250,12 +247,16 @@ update_plan({
     planner_notes: {
       skipped_tips: ["<tips already given — accumulate across plans>"],
       watching_last_status: { "<item>": "<last known status>" },
-      user_pattern: "<observed user behavior pattern>"
+      user_pattern: "<observed user behavior pattern>",
+      user_rhythm: { ... },  // copy from the previous queue — full_replace replaces planner_notes whole
+      // ...and every other key the previous planner_notes carried (e.g. silent_until set by the chat agent)
     },
     tasks: [ ... ]
   }
 })
 ```
+
+Every task MUST carry a unique `id`, a `type` (`move` / `notify` / `mood` / `freestyle`), and an ISO `execute_after`. A task without a parseable `execute_after` is never executed, and one without an `id` cannot be marked done. Put the action fields (`summary`, `mood`, `x`/`y`, `pushToChat`, …) on the task or in `action`; a freestyle task's instruction goes in `action.prompt`.
 
 ## Important Rules
 - Do NOT *execute* pet actions — every move, bubble, and mood goes into the queue via `update_plan`. The one exception is `perform_pet_action({ action: "query" })` in Step 1, which only reads position.

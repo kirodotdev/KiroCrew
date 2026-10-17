@@ -23,7 +23,7 @@ name: Platform Tests
 # WHAT REPLACES IT ON THE PULL REQUEST PATH
 #   - macos-on-demand.yml -- THIS workflow, called against a pull request's own
 #     head when the diff touches a darwin-sensitive path, the PR carries the
-#     `ci:macos` label, or the head SHA falls in a 1-in-20 sample. Outside
+#     `ci:macos` label, or the head SHA falls in a 1-in-50 sample. Outside
 #     readiness' lane list, so it can never hold a merge.
 #   - ci.yml's `e2e-boot-matrix` still boots a real gateway on macos-15, on the
 #     push-to-main path.
@@ -105,6 +105,7 @@ jobs:
     #     that import twice over for tests it then threw away.
     timeout-minutes: 40
     strategy:
+      max-parallel: 4
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:

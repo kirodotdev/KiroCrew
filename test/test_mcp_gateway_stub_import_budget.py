@@ -192,7 +192,7 @@ def test_label_names_every_field_it_is_missing():
     from kiro_crew.mcp_gateway.hashing import format_pool_label
 
     with pytest.raises(ValueError) as caught:
-        format_pool_label({"agent_name": "a", "server_name": "s"})
+        format_pool_label({"server_name": "s"})
     message = str(caught.value)
     for field in ("os_uid", "effective_env_hash", "command_args_hash", "work_dir"):
         assert field in message, (field, message)

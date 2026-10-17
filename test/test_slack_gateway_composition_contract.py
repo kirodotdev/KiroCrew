@@ -1,9 +1,8 @@
 """The Slack gateway stays one namespace while its owners live in ``gateway_runtime``.
 
-``kiro_crew.slack.gateway`` keeps its import path, its patch surface and every
-construct a path-keyed repository guard reads in that file; the modules of
+``kiro_crew.slack.gateway`` keeps its import path and its patch surface; the modules of
 ``kiro_crew.slack.gateway_runtime`` hold the rest, one responsibility each, and
-``gateway_runtime.compose`` runs every function they define on the facade's
+``_facade_compose.compose`` runs every function they define on the facade's
 globals. These tests pin what that composition promises:
 
 * each owner function runs on the facade's globals, and every global it reads
@@ -14,8 +13,8 @@ globals. These tests pin what that composition promises:
   orchestrator, and an owner's classes keep their own module;
 * nothing but the facade imports an owner, and no owner imports another at
   runtime, so the facade is the only edge;
-* the guards that enumerate constructs in ``slack/gateway.py`` by path keep seeing
-  every construct they enumerate, because no owner holds one.
+* the guards that enumerate constructs by path keep seeing every construct they
+  enumerate, because each stays in exactly the files its guards read.
 """
 
 from __future__ import annotations
@@ -36,6 +35,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.slack.gateway as gateway
+from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.slack import gateway_runtime
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -142,6 +142,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ),
         ("_close_channel_locked", "async method", "(self, channel_type: 'str') -> 'None'"),
         ("_on_slack_config_change", "async method", "(self, change: 'ConfigChange') -> 'None'"),
+        ("_on_default_agent_config_change", "method", "(self, change: 'ConfigChange') -> 'None'"),
         (
             "_adopt_channel_sections_from_watcher",
             "async method",
@@ -289,11 +290,464 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("_READ_ONLY_TOOL_PREFIXES", "value", "'tuple'"),
         ("_WRITE_INDICATORS", "value", "'tuple'"),
         ("_is_read_only_tool", "function", "(event_title: 'str') -> 'bool'"),
-        ("HEARTBEAT_SAFE_TOOLS", "value", "'frozenset'"),
         ("_HEARTBEAT_STATUS_PREFIXES", "value", "'tuple'"),
-        ("_is_heartbeat_safe_tool", "function", "(event_title: 'str') -> 'bool'"),
+        ("_is_heartbeat_safe_tool", "function", "(event: 'LLMEvent') -> 'bool'"),
         ("_build_heartbeat_hooks", "function", "(user_hooks: 'HookManager') -> 'HookManager'"),
         ("_bare_tool_name", "function", "(title: 'str') -> 'str'"),
+    ),
+    "install_repair": (
+        ("_KIRO_CLI_RESOLVE_TIMEOUT_SECS", "value", "'float'"),
+        ("_pinned_kiro_cli", "async function", "(purpose: 'str') -> 'str | None'"),
+        (
+            "_kill_startup_child",
+            "async staticmethod",
+            "(proc: \"'asyncio.subprocess.Process'\") -> 'None'",
+        ),
+        (
+            "_reap_startup_child",
+            "async classmethod",
+            "(cls, proc: \"'asyncio.subprocess.Process'\") -> 'None'",
+        ),
+        ("_check_missing_deps", "async method", "(self) -> 'None'"),
+        ("_check_console_script", "async method", "(self) -> 'None'"),
+        ("_schedule_console_script_repair", "method", "(self) -> 'asyncio.Task[None]'"),
+        ("_warn_if_kiro_cli_outdated", "async method", "(self) -> 'None'"),
+    ),
+    "update_schedule": (
+        ("_UPDATE_STOP_GRACE_SECS", "value", "'float'"),
+        ("_in_flight_work_counts", "method", "(self) -> 'tuple[int, int]'"),
+        ("_count_in_flight_work", "method", "(self) -> 'int'"),
+        ("_live_update_handler_tasks", "method", "(self) -> 'list[asyncio.Task[Any]]'"),
+        (
+            "_drain_update_callback_work",
+            "async method",
+            "(self, *, timeout: 'float | None') -> 'bool'",
+        ),
+        (
+            "_prepare_auto_update_apply",
+            "async method",
+            "(self, *, mandatory: 'bool', mandatory_key: 'str' = '') -> 'bool'",
+        ),
+        ("_finish_auto_update_apply", "async method", "(self) -> 'None'"),
+        ("_wheel_apply_module", "staticmethod", "() -> 'Any'"),
+        ("_dashboard_policy_applies", "staticmethod", "() -> \"list['asyncio.Task[Any]']\""),
+        (
+            "_settle_update_work",
+            "async method",
+            "(self, update_task: \"'asyncio.Task[None] | None'\") -> 'None'",
+        ),
+        ("_run_update_checks", "async method", "(self) -> 'None'"),
+        ("_retry_pending_update_restart", "async method", "(self) -> 'None'"),
+        ("_check_for_updates", "async method", "(self) -> 'None'"),
+        (
+            "_auto_update_effect",
+            "async method",
+            "(self, provider: 'object | None') -> 'AutoUpdateEffect'",
+        ),
+        ("_publish_provider_update_state", "method", "(self, result: 'object') -> 'None'"),
+        ("_check_for_updates_via_provider", "async method", "(self, provider: 'object') -> 'None'"),
+        (
+            "_restart_after_update_claimed",
+            "async method",
+            "(self, launcher: 'str | None', exe: 'str | None') -> 'None'",
+        ),
+        ("_check_for_updates_legacy", "async method", "(self) -> 'None'"),
+        (
+            "_restart_after_update_body",
+            "async method",
+            "(self, respawn: 'Callable[[], str]') -> 'None'",
+        ),
+    ),
+    "update_apply": (
+        ("_auto_apply_update", "async method", "(self, *, mandatory: 'bool' = False) -> 'None'"),
+        (
+            "_auto_apply_wheel_update",
+            "async method",
+            "(self, channel: 'str', version: 'str', *, mandatory: 'bool' = False, mandatory_key: 'str' = '') -> 'None'",
+        ),
+        (
+            "_notice_wheel_update_once",
+            "method",
+            "(self, key: 'str', title: 'str', body: 'str') -> 'None'",
+        ),
+    ),
+    "nudge_wiring": (
+        ("_init_autonudge", "async method", "(self) -> 'None'"),
+        ("_notify_nudge_held", "method", "(self, loop: 'NudgeLoop') -> 'bool'"),
+        ("_notify_nudge_expired", "method", "(self, loop: 'NudgeLoop') -> 'bool'"),
+    ),
+    "nudge_dashboard_fire": (
+        (
+            "_fire_dashboard_nudge",
+            "async method",
+            "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
+        ),
+        (
+            "_work_ledger_wake_loop",
+            "method",
+            "(self, loop: 'NudgeLoop', wake_message: 'str | None') -> 'bool'",
+        ),
+        ("_work_ledger_wake_text", "async method", "(self, loop: 'NudgeLoop') -> 'str'"),
+        (
+            "_steer_work_ledger_wake",
+            "async method",
+            "(self, loop: 'NudgeLoop', slot: 'Any', text: 'str') -> 'bool'",
+        ),
+        (
+            "_dashboard_mode_admits",
+            "async staticmethod",
+            "(loop: 'NudgeLoop', slot: 'Any') -> 'bool'",
+        ),
+        ("_audit_fire_refused", "async staticmethod", "(loop: 'NudgeLoop', slot: 'Any') -> 'None'"),
+    ),
+    "nudge_channel_fire": (
+        ("_NUDGE_TURN_TIMEOUT", "value", "'float'"),
+        (
+            "_delivery_result",
+            "function",
+            "(wake_message: 'str | None', result: 'MonitorDispatchResult') -> 'bool | MonitorDispatchResult'",
+        ),
+        ("_DmDispatchAdapter", "class", ""),
+        (
+            "_fire_slack_nudge",
+            "async method",
+            "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
+        ),
+        (
+            "_fire_dm_nudge",
+            "async method",
+            "(self, loop: 'NudgeLoop', adapter: '_DmDispatchAdapter', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
+        ),
+        (
+            "_fire_discord_nudge",
+            "async method",
+            "(self, loop: 'NudgeLoop', wake_message: 'str | None' = None) -> 'bool | MonitorDispatchResult'",
+        ),
+        ("_fire_webex_nudge", "async method", "(self, loop: 'NudgeLoop') -> 'bool'"),
+        (
+            "_stop_message_loop_if_structural_terminal",
+            "async method",
+            "(self, loop: 'NudgeLoop', exc: 'BaseException', wake_message: 'str | None', fired_generation: 'int') -> 'bool'",
+        ),
+        (
+            "_monitor_completion_hook",
+            "method",
+            "(self, loop: 'NudgeLoop') -> 'MonitorCompletionHook | None'",
+        ),
+        (
+            "_report_monitor_completion",
+            "async method",
+            "(self, loop: 'NudgeLoop', disposition: 'MonitorActionDisposition', usage: 'AgentTurnUsage | None', *, hook: 'MonitorCompletionHook | None' = None) -> 'None'",
+        ),
+    ),
+    "turn_approvals": (
+        ("_dashboard_client_attached", "method", "(self) -> 'bool'"),
+        (
+            "_interactive_approval",
+            "method",
+            "(self, source: 'str', slot_resolver: 'Callable[[str], str] | None' = None, nudge_key: 'str' = '', *, raise_when_unreachable: 'bool' = False) -> 'ToolApprovalCallback'",
+        ),
+        (
+            "_heartbeat_approval",
+            "async method",
+            "(self, event: 'LLMEvent', _parent_session_key: 'str' = '') -> 'bool'",
+        ),
+    ),
+    "service_boot": (
+        ("_auto_open_dashboard", "async method", "(self, dashboard_url: 'str') -> 'None'"),
+        ("_init_services", "async method", "(self) -> 'None'"),
+        (
+            "_notify_consolidation_abandoned",
+            "method",
+            "(self, key: 'str', message_count: 'int', reason: 'str', char_count: 'int' = 0, last_slice: 'bool' = False, retired: 'bool' = False) -> 'None'",
+        ),
+        ("_schedule_session_start_sizing", "method", "(self) -> 'None'"),
+        ("_log_session_start_sizing", "async method", "(self) -> 'None'"),
+        ("_init_task_runner", "method", "(self) -> 'None'"),
+        ("_init_dashboard", "async method", "(self) -> 'None'"),
+        ("_init_api_server", "async method", "(self) -> 'None'"),
+        ("run", "async method", "(self) -> 'None'"),
+        ("_PROFILE_PROJECTION_POLL_S", "value", "'float'"),
+    ),
+    "heartbeat_turns": (
+        ("_init_heartbeat", "async method", "(self) -> 'None'"),
+        (
+            "_persist_turn_row",
+            "async function",
+            "(client: 'Any', session_key: 'str', *, provider: 'str', surface: 'str', agent_fallback: 'Callable[[], str]', t0: 'float', usage: 'AgentTurnUsage | None' = None) -> 'None'",
+        ),
+        ("_HEARTBEAT_KEEP_INJECTION", "value", "'str'"),
+    ),
+    "result_egress": (
+        (
+            "_deliver_cron_response",
+            "async method",
+            "(self, parent_key: 'str', text: 'str', *, silent: 'bool' = False) -> 'bool'",
+        ),
+        (
+            "_deliver_channel_reply",
+            "async method",
+            "(self, parent_key: 'str', text: 'str', *, resolved_link: 'tuple[ChannelLink, bool] | None' = None, caller: 'str' = 'subagent') -> 'bool'",
+        ),
+        ("_cron_outbound_thread", "method", "(self, parent_key: 'str') -> 'str | None'"),
+        ("_persist_slot_title", "async method", "(self, slot: \"'_ChatSlot'\") -> 'None'"),
+        ("_resolve_loaded_slot", "async method", "(self, slot_name: 'str') -> 'Any'"),
+        (
+            "_deliver_result",
+            "async method",
+            "(self, title: 'str', task_summary: 'str', result_text: 'str', deliver: 'str') -> 'None'",
+        ),
+        ("_heartbeat_slack_parts", "function", "(title: 'str', result_text: 'str') -> 'list[str]'"),
+    ),
+    "exit_path": (
+        ("_shutdown", "async method", "(self) -> 'None'"),
+        ("_write_marker_worker", "method", "(self, run_marker: 'Any', port: 'int') -> 'None'"),
+        ("_install_shutdown_signal_handlers", "method", "(self) -> 'None'"),
+        (
+            "_shutdown_and_exit",
+            "async method",
+            "(self, watchdog: 'asyncio.Future | None' = None) -> 'None'",
+        ),
+        ("_MARKER_WRITE_WAIT_SECS", "value", "'float'"),
+    ),
+    "process_entry": (
+        ("_live_session_work_dirs", "function", "(sessions: 'Any') -> 'list[str]'"),
+        ("_live_session_agents", "function", "(sessions: 'Any') -> 'set[str]'"),
+        (
+            "_sweep_predecessor_session_work_dirs",
+            "function",
+            "(live_work_dirs: 'list[str]') -> 'int'",
+        ),
+        (
+            "_run_signing_key_preflight_bounded",
+            "async function",
+            "(timeout: 'float | None' = None) -> 'None'",
+        ),
+        ("signing_key_preflight", "function", "() -> 'None'"),
+        ("_start_kas_cli_floor", "function", "(cfg: 'KiroCrewConfig') -> \"'asyncio.Task[None]'\""),
+        (
+            "run_gateway",
+            "async function",
+            "(cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, no_crons: 'bool' = False, no_tunnel: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False) -> 'None'",
+        ),
+        ("BOOT_RESTART_HINT", "value", "'str'"),
+        ("_SIGNING_KEY_PREFLIGHT_TIMEOUT_SECS", "value", "'float'"),
+    ),
+    # The cron decomposition: _init_cron and the four failure-alert helpers keep their
+    # BASE shapes; the other twelve are the phases cut out of _init_cron's closure.
+    "cron_fire": (
+        ("_init_cron", "async method", "(self, *, arm: 'bool' = True) -> 'None'"),
+        ("_cron_capture", "async method", "(self, job: 'CronJob') -> '_CronCapture'"),
+        (
+            "_resolve_cron_agent",
+            "method",
+            "(self, cron_execution: 'ExecutionContext', alias: 'str | None', *, template_namespace: 'bool' = False, sequence_step: 'bool' = False) -> \"'tuple[str | None, str | None, str | None]'\"",
+        ),
+        (
+            "_acquire_with_model_fallback",
+            "async method",
+            "(self, job: 'CronJob', cron_execution: 'ExecutionContext', key: 'str', agent_id: 'str | None', cwd: 'str | None' = None, crew_agent: 'str | None' = None, *, execution: 'ExecutionContext | None' = None, replace_execution: 'bool' = False) -> \"'tuple[LLMProvider, bool, bool, bool]'\"",
+        ),
+        (
+            "_retained_session_agent_mismatch",
+            "method",
+            "(self, job: 'CronJob', key: 'str', agent: 'str | None') -> 'str | None'",
+        ),
+        ("_announce_cron_quarantine", "method", "(self) -> 'None'"),
+        ("_start_cron_after_memory_ready", "async method", "(self) -> 'None'"),
+    ),
+    "cron_exec": (
+        ("_cron_run_command", "async method", "(self, job: 'CronJob') -> 'str | None'"),
+        (
+            "_deliver_script_result",
+            "async method",
+            "(self, job: 'CronJob', message: 'str', *, remove: 'bool' = False) -> 'None'",
+        ),
+        ("_cron_run_script", "async method", "(self, job: 'CronJob') -> 'str | None'"),
+        ("_live_internal_secret", "method", "(self) -> 'str'"),
+    ),
+    "cron_turn": (
+        (
+            "_cron_run_sequence",
+            "async method",
+            "(self, job: 'CronJob', cap: '_CronCapture') -> 'str | None'",
+        ),
+        (
+            "_cron_run_single",
+            "async method",
+            "(self, job: 'CronJob', cap: '_CronCapture', *, retry: 'Callable[[CronJob], Awaitable[str | None]]') -> 'str | None'",
+        ),
+    ),
+    "cron_delivery": (
+        (
+            "_deliver_cron_agent_result",
+            "async method",
+            "(self, job: 'CronJob', session_key: 'str', client: 'LLMProvider', result_text: 'str', rh: 'str', _ctx_reading: 'Any', _turn_stats: 'dict[str, Any] | None') -> 'str'",
+        ),
+        ("_CRON_MSG_LIMIT", "value", "'int'"),
+    ),
+    "cron_failure": (
+        (
+            "_failure_alert_is_duplicate",
+            "method",
+            "(self, job: 'CronJob', failure_hash: 'str') -> 'bool'",
+        ),
+        ("_slack_safe_fenced", "method", "(self, text: 'str') -> 'str'"),
+        (
+            "_deliver_failure_alert",
+            "async method",
+            "(self, job: 'CronJob', *, mrkdwn: 'str', plain: 'str', actor_key: 'str', silent: 'bool' = False) -> 'tuple[bool, bool, bool]'",
+        ),
+        (
+            "_advance_failure_dedup",
+            "method",
+            "(self, job: 'CronJob', failure_hash: 'str', *, channel_delivered: 'bool', slack_failed: 'bool') -> 'None'",
+        ),
+        (
+            "_alert_cron_failure",
+            "async method",
+            "(self, job: 'CronJob', detail: 'str', *, denied: 'bool' = False) -> 'None'",
+        ),
+        (
+            "_cron_single_failure",
+            "async method",
+            "(self, job: 'CronJob', exc: 'Exception', session_key: 'str', _gate_counted: 'bool', _job_owns_failure: 'bool', _hand_over_streak: 'bool') -> 'None'",
+        ),
+    ),
+    "orchestrator_init": (
+        (
+            "__init__",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', *, no_dashboard: 'bool' = False, no_crons: 'bool' = False, no_open: 'bool' = False, port_override: 'str | None' = None, json_ready: 'bool' = False, approval_mode: 'str | None' = None, test_mode: 'bool' = False, credentials: 'Mapping[str, str] | None' = None) -> 'None'",
+        ),
+    ),
+    "subagent_wiring": (
+        (
+            "_subagent_work_pending",
+            "async function",
+            "(manager: 'Any', parent_session_key: 'str') -> 'bool'",
+        ),
+        (
+            "_subagent_queued_count",
+            "async function",
+            "(manager: 'Any', parent_session_key: 'str') -> 'int'",
+        ),
+        (
+            "_subagent_batch_pending",
+            "async function",
+            "(manager: 'Any', batch_id: 'str') -> 'bool'",
+        ),
+        ("_WORKFLOW_STEP_PREFIXES", "value", "'tuple'"),
+        ("_spawn_parent_slot", "function", "(parent_key: 'str', workflow_service: 'Any') -> 'str'"),
+        ("_subagent_coalescer", "method", "(self) -> \"'SubagentEventCoalescer'\""),
+        ("_init_subagents", "method", "(self) -> 'None'"),
+    ),
+    "subagent_report": (
+        ("_digest_chunk_size", "function", "() -> 'int'"),
+        ("SUBAGENT_DIGEST_CHUNK_SIZE", "value", "'int'"),
+        ("_SubagentReport", "class", ""),
+        ("_WaveDigest", "class", ""),
+        (
+            "_compose_subagent_completion",
+            "function",
+            "(info: 'SubagentInfo', *, _flush_only: 'bool') -> '_SubagentReport'",
+        ),
+        (
+            "_subagent_wave_digest",
+            "method",
+            "(self, info: 'SubagentInfo', *, report: '_SubagentReport', _flush_only: 'bool', _batch_id: 'str', _batch_total: 'int', _no_batch_pending: 'bool', _injection_slot_name: 'str') -> '_WaveDigest | None'",
+        ),
+    ),
+    "subagent_injection": (
+        ("_MAX_INJECT_ATTEMPTS", "value", "'int'"),
+        ("_injection_slot_busy", "function", "(slot: 'Any') -> 'bool'"),
+        (
+            "_defer_queued_delivery",
+            "staticmethod",
+            "(slot: 'Any', announce: 'str', info: 'SubagentInfo', *, flush_only: 'bool') -> 'None'",
+        ),
+        (
+            "_route_subagent_to_tab",
+            "async method",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', sub_meta: 'dict[str, Any]', _flush_only: 'bool', _injection_slot: 'Any', _injection_slot_name: 'str', parent_key: 'str') -> 'None'",
+        ),
+        (
+            "_inject_subagent_into_channel_parent",
+            "async method",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', parent_key: 'str') -> 'None'",
+        ),
+        (
+            "_finish_subagent_cron_or_notify",
+            "async method",
+            "(self, info: 'SubagentInfo', *, announce: 'str', body: 'str', title: 'str', parent_key: 'str') -> 'None'",
+        ),
+    ),
+    "runtime_charge": (
+        ("_apply_gate_verdict", "function", "(job: 'CronJob', tally: '_GateTally') -> 'bool'"),
+        (
+            "_cron_failure_attribution",
+            "function",
+            "(job: 'CronJob', _run_provider: 'object | None') -> 'tuple[bool, bool]'",
+        ),
+        ("_charge_failure", "function", "(job: 'CronJob', _hand_over_streak: 'bool') -> 'None'"),
+        (
+            "_inject_with_retry",
+            "async method",
+            "(self, info: 'SubagentInfo', client, msg: 'str', parent_key: 'str', label: 'str') -> 'str | None'",
+        ),
+    ),
+    "channel_boot": (
+        (
+            "_hoist_wecom",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_telegram",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_weixin",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_whatsapp",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_feishu",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_discord",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_webex",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_imessage",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        (
+            "_hoist_teams",
+            "method",
+            "(self, cfg: 'KiroCrewConfig', creds: 'Mapping[str, str]') -> 'None'",
+        ),
+        ("_register_config_appliers", "method", "(self) -> 'None'"),
+        (
+            "_start_channel_transports",
+            "async method",
+            "(self, descriptors: \"'tuple[ChannelDescriptor, ...] | None'\" = None) -> 'None'",
+        ),
     ),
 }
 
@@ -454,7 +908,6 @@ def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     for name in (
-        "HEARTBEAT_SAFE_TOOLS",
         "CronClaimTimeDenied",
         "claim_vet_bound",
         "cron_job_env_without_reserved",
@@ -709,60 +1162,88 @@ def test_a_fresh_facade_import_loads_every_owner(tmp_path: Path) -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards enumerate in ``slack/gateway.py`` by path (usage-row
-#: persists, runtime-death attribution and streaks, spawn and exit sites, chat-turn
-#: dispatches, the nudge composer, the memory-store and transcript seams, the
-#: boot-order anchors, the event-log publish). An owner that grew one would move it
-#: out of such a guard's sight without failing it, so each stays in the facade.
-_FACADE_ONLY_TOKENS = (
-    "persist_token_record",
-    ".read_messages",
-    "begin_turn",
-    "os._exit",
-    "save_conversation_turn_off_loop",
-    "session_store_for_turn",
-    "create_subprocess_",
-    "isolated_python_argv",
-    "respawn_executable",
-    "reexec_python_module",
-    "_running_script_ids.add",
-    "caused_by_this_session",
-    "note_shared_death",
-    "clear_marker",
-    "init_socket_mode",
-    "build_message",
-    "VectorMemoryStore",
-    "configure_default_ladder",
-    "eventlog_hooks",
-    "autonudge_state",
-    "_run_chat",
-    "spawn_guarded_turn",
-    "compose_nudge_body",
-    "clear_shared_deaths",
-    "run_in_cron_pool(",
-    "consecutive_failures",
-    "_delivery_queued",
-    "_digest_held",
-    "_deliver_failure_alert",
-    "render_for_slack(",
-)
+#: Constructs repository guards enumerate by path (usage-row persists, runtime-death
+#: attribution and streaks, spawn and exit sites, chat-turn dispatches, the nudge
+#: composer, the memory-store and transcript seams, the boot-order anchors, the
+#: event-log publish), each mapped to the files that hold it -- the facade
+#: (``gateway``) or an owner -- which are the files those guards read. A holder that
+#: grew one, or lost one, would move it out of such a guard's sight without failing
+#: it, so each set is exact; a set changes in the commit that points the token's
+#: guards at its new home (``slack-gateway.md``, Composition).
+_GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
+    "persist_token_record": frozenset({"cron_turn", "gateway", "heartbeat_turns"}),
+    ".read_messages": frozenset({"cron_delivery", "nudge_wiring"}),
+    "begin_turn": frozenset({"nudge_channel_fire"}),
+    "os._exit": frozenset({"exit_path"}),
+    "save_conversation_turn_off_loop": frozenset(
+        {"gateway", "nudge_channel_fire", "subagent_injection"}
+    ),
+    "session_store_for_turn": frozenset(
+        {"gateway", "heartbeat_turns", "nudge_channel_fire", "subagent_injection"}
+    ),
+    "create_subprocess_": frozenset({"gateway", "install_repair", "update_apply"}),
+    "isolated_python_argv": frozenset({"install_repair", "update_apply"}),
+    "respawn_executable": frozenset({"update_apply", "update_schedule"}),
+    "reexec_python_module": frozenset({"update_schedule"}),
+    "_running_script_ids.add": frozenset({"cron_exec"}),
+    "caused_by_this_session": frozenset({"runtime_charge"}),
+    "note_shared_death": frozenset({"runtime_charge"}),
+    "clear_marker": frozenset({"exit_path"}),
+    "init_socket_mode": frozenset({"service_boot"}),
+    "build_message": frozenset(
+        {"cron_fire", "cron_turn", "heartbeat_turns", "nudge_channel_fire", "subagent_injection"}
+    ),
+    "VectorMemoryStore": frozenset({"gateway", "service_boot"}),
+    "configure_default_ladder": frozenset({"subagent_wiring"}),
+    "eventlog_hooks": frozenset({"exit_path", "nudge_wiring", "service_boot"}),
+    "autonudge_state": frozenset({"nudge_wiring"}),
+    "_run_chat": frozenset(
+        {
+            "cron_exec",
+            "cron_fire",
+            "gateway",
+            "nudge_dashboard_fire",
+            "result_egress",
+            "subagent_injection",
+            "subagent_wiring",
+        }
+    ),
+    "spawn_guarded_turn": frozenset({"cron_exec", "gateway", "nudge_dashboard_fire"}),
+    "compose_nudge_body": frozenset({"gateway", "nudge_channel_fire", "nudge_dashboard_fire"}),
+    "clear_shared_deaths": frozenset({"cron_exec", "runtime_charge"}),
+    "run_in_cron_pool(": frozenset({"cron_exec"}),
+    "consecutive_failures": frozenset({"cron_exec", "cron_failure", "cron_turn", "runtime_charge"}),
+    "_delivery_queued": frozenset({"subagent_injection"}),
+    "_digest_held": frozenset({"subagent_report"}),
+    "_deliver_failure_alert": frozenset({"cron_failure", "gateway"}),
+    "render_for_slack(": frozenset(
+        {"cron_delivery", "nudge_channel_fire", "result_egress", "subagent_injection"}
+    ),
+}
 
 
-@pytest.mark.parametrize("token", _FACADE_ONLY_TOKENS)
-def test_a_construct_the_facade_guards_count_stays_in_the_facade(token: str) -> None:
-    assert token in Path(gateway.__file__).read_text(encoding="utf-8")
-    holders = [
-        name
-        for name, _ in _owner_trees()
-        if token in (_RUNTIME_DIR / name).read_text(encoding="utf-8")
-    ]
-    assert holders == []
+def _holder_sources() -> dict[str, str]:
+    """The facade's and every owner's source, keyed by stem."""
+    return {
+        "gateway": Path(gateway.__file__).read_text(encoding="utf-8"),
+        **{
+            name.removesuffix(".py"): (_RUNTIME_DIR / name).read_text(encoding="utf-8")
+            for name, _ in _owner_trees()
+        },
+    }
+
+
+@pytest.mark.parametrize("token", sorted(_GUARDED_TOKEN_HOMES))
+def test_a_construct_a_guard_reads_stays_where_the_guard_reads_it(token: str) -> None:
+    holders = {stem for stem, source in _holder_sources().items() if token in source}
+    assert holders == _GUARDED_TOKEN_HOMES[token]
 
 
 def test_no_owner_reads_a_hoisted_channel_attribute() -> None:
     """``test_channel_boot_hot_reload`` checks every ``_<channel>_*`` attribute read in
-    ``slack/gateway.py`` against that channel's hoist; the reads stay there, so no
-    owner holds one."""
+    ``slack/gateway.py``, ``orchestrator_init.py`` and ``channel_boot.py`` against that
+    channel's hoist; the reads stay there, so no other owner holds one."""
+    read_by_the_parity_test = {"orchestrator_init.py", "channel_boot.py"}
     channels = (
         "wecom",
         "telegram",
@@ -777,6 +1258,7 @@ def test_no_owner_reads_a_hoisted_channel_attribute() -> None:
     offenders = [
         f"{name}:{node.lineno}:{node.attr}"
         for name, tree in _owner_trees()
+        if name not in read_by_the_parity_test
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and any(node.attr.startswith(f"_{c}_") for c in channels)
     ]
@@ -830,7 +1312,7 @@ def test_compose_rebinds_functions_methods_and_members(tmp_path: Path) -> None:
     Host.method = owner.method  # type: ignore[attr-defined]
     Host.static = staticmethod(owner.static)  # type: ignore[attr-defined]
     namespace["helper"] = owner.helper
-    gateway_runtime.compose(namespace, Host, (owner,))
+    facade_compose(namespace, (owner,), host=Host)
 
     assert namespace["helper"]() == "host" and owner.helper is namespace["helper"]
     assert Host().method()() == "host"  # type: ignore[attr-defined]

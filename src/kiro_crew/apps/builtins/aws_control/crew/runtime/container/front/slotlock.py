@@ -60,7 +60,3 @@ class SlotSerializer:
                 if self._waiters[slot_id] <= 0:
                     self._locks.pop(slot_id, None)
                     self._waiters.pop(slot_id, None)
-
-    def _live_slots(self) -> int:
-        """Number of slots currently tracked. For tests and diagnostics only."""
-        return len(self._locks)

@@ -7,7 +7,7 @@
 import type { CronJob } from '../../types'
 import type { ClientTransport } from './transport'
 
-export function createCronEndpoints({ post, put, del, j, sessionKeyHeader: _sk }: ClientTransport) {
+export function createCronEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
   const jobs = {
     // Crons
     crons: (): Promise<{ jobs?: CronJob[] }> => fetch('/api/crons').then(j),

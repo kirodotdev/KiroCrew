@@ -14,9 +14,10 @@ import importlib
 import inspect
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_json_body
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactFolderStore, ArtifactStore
@@ -309,7 +310,7 @@ def _request(
     req.match_info = match or {}
     req.query = query or {}
     raw = json.dumps(body).encode() if isinstance(body, dict) else (body or b"")
-    req.read = AsyncMock(return_value=raw)
+    attach_json_body(req, raw)
     state = MagicMock()
     state.get_slot.return_value = None
     req.app = {"state": state, "_r": restricted}
@@ -335,6 +336,7 @@ class TestHttpContract:
 
         detail = await art_handlers.api_artifact_detail(_request(match={"slug": "doc"}))
         assert detail.status == 200
+        # Create and current detail both serve the persisted stale-write token.
         assert list(_body(detail)) == [
             k for k in created if k not in ("slug_collided_with", "theme_contrast_warning")
         ]

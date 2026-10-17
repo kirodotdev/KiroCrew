@@ -16,16 +16,19 @@ import {
   LISTING_FAILURE_KEYS,
   namingRefresh,
   RETRYABLE_SEARCH_CAUSES,
+  SEARCH_FAILURE_KEYS,
   searchErrorCause,
   TREE_FAILURE_KEYS,
   type SearchErrorCause,
 } from '../../lib/searchErrorCause'
 import { PierreWorkspaceTree } from '../../pierre/tree'
 import { useTreeState, useTreeQuery } from './FileBrowserRail'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
+import { mergeTreeMatches } from '../../lib/treeSearchMatches'
 
 /** Last path segment, trailing slashes ignored. */
 function basename(p: string): string {
-  return p.replace(/\/+$/, '').split('/').pop() || p
+  return pathBasename(stripTrailingSeparators(p)) || p
 }
 
 /**
@@ -33,13 +36,6 @@ function basename(p: string): string {
  * folder rather than the project because the panel searches the folder tab's own cwd, while
  * `FilePickerMenu` searches the chat's project root -- the wording split is intentional.
  */
-
-const SEARCH_FAILURE_KEYS: Record<SearchErrorCause, string> = {
-  timed_out: 'pages.chat.folderPanel.search_timed_out',
-  failed: 'pages.chat.folderPanel.search_failed',
-  denied: 'pages.chat.folderPanel.search_denied',
-  root_missing: 'pages.chat.folderPanel.search_root_missing',
-}
 
 /**
  * Whether two absolute paths name the SAME directory.
@@ -78,53 +74,6 @@ function samePath(a: string | null | undefined, b: string | null | undefined, wi
   return norm(a) === norm(b)
 }
 
-/**
- * Directory part of `full` relative to `root`, or '' when the file sits directly
- * in `root`. Separator-agnostic: a Windows gateway returns backslash paths, and a
- * search result and the root it was searched under always agree on which.
- */
-function relativeDir(full: string, root: string): string {
-  const trimmed = root.replace(/[/\\]+$/, '')
-  const rel = full.startsWith(trimmed) ? full.slice(trimmed.length).replace(/^[/\\]+/, '') : full
-  const cut = Math.max(rel.lastIndexOf('/'), rel.lastIndexOf('\\'))
-  return cut === -1 ? '' : rel.slice(0, cut)
-}
-
-/** Merge the server's file matches with the paths a truncated tree already
- *  lists that contain *query*. The server search walks under its own scan
- *  budget, so on a large workspace it can miss a file the tree is showing; the
- *  tree's own paths are the matches the local filter found before the tree was
- *  capped. The server's ranked matches come first, a path both name is listed
- *  once (separators compared in one form, so a Windows backslash result and
- *  the tree's `/` join meet), and the list stops at *limit*, so the "showing
- *  first N" control still asks the server for the next tier. */
-function mergeTreeMatches(
-  server: Array<{ path: string; name: string }>,
-  serverRoot: string,
-  tree: { root: string; paths: string[] } | undefined,
-  query: string,
-  limit: number,
-): Array<{ path: string; name: string; sub: string }> {
-  const merged = server.map(m => ({ path: m.path, name: m.name, sub: relativeDir(m.path, serverRoot) }))
-  if (!tree) return merged.slice(0, limit)
-  const key = (path: string) => path.replace(/\\/g, '/')
-  const seen = new Set(merged.map(m => key(m.path)))
-  const needle = query.toLowerCase()
-  const root = tree.root.replace(/[/\\]+$/, '')
-  for (const rel of tree.paths) {
-    if (merged.length >= limit) break
-    if (!rel.toLowerCase().includes(needle)) continue
-    const path = `${root}/${rel}`
-    const k = key(path)
-    if (seen.has(k)) continue
-    seen.add(k)
-    // Tree paths are POSIX, so only `/` splits them (`relativeDir` would also
-    // split a `\` that a POSIX file name may hold).
-    const cut = rel.lastIndexOf('/')
-    merged.push({ path, name: rel.slice(cut + 1), sub: cut === -1 ? '' : rel.slice(0, cut) })
-  }
-  return merged.slice(0, limit)
-}
 
 /** The backend ignores a shorter query (`api_file_search` returns an empty result
  *  set under 2 characters), so dispatching one spends a walk that cannot match. */
@@ -279,6 +228,7 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
   const {
     data: searchData,
     isFetching: isSearching,
+    isPlaceholderData: isSearchPlaceholder,
     isError: isSearchError,
     error: searchError,
   } = useQuery({
@@ -580,9 +530,6 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                 />
               </div>
             )}
-            {!isSearchError && isSearching && matches.length === 0 && (
-              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
-            )}
             {!isSearchError && !isSearching && matches.length === 0 && (
               <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.no_files_match')}</div>
             )}
@@ -599,6 +546,15 @@ export default function FolderPanel({ path, projectDir, onClose, onFileOpen, onA
                 />
               )
             })}
+            {/* Below the rows, so the listed matches read as results and the status as
+                "more may come". Also while this query has no answer of its own yet and rows are already
+                listed (the tree's own matches, or the previous query's placeholder):
+                the list is about to change, so it is announced rather than changing
+                unannounced. Not while a wider page loads: the expand control already
+                spins for that. */}
+            {!isSearchError && isSearching && (matches.length === 0 || !searchData || (isSearchPlaceholder && !expanding)) && (
+              <div role="status" className="px-2 py-2 text-[12px] text-muted">{t('pages.chat.folderPanel.searching')}</div>
+            )}
             {(matches.length >= searchLimit || expanding) && (searchLimit < SEARCH_RESULT_LIMIT_MAX || expanding ? (
               // The notice IS the control: clicking "showing first N" is the
               // natural gesture (#5639), so the text itself requests the next

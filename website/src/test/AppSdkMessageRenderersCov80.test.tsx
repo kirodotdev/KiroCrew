@@ -90,6 +90,7 @@ function renderRow(m: ChatMessage, ctx: Partial<Parameters<
     key: ctx.key ?? 'zzq-key',
     onFileOpen,
     hideCardOwnedOAuth: ctx.hideCardOwnedOAuth ?? false,
+    handOff: ctx.handOff,
     autoDeniedIds: ctx.autoDeniedIds ?? new Set<string>(),
     renderTool: ctx.renderTool,
     wrapper: (children, isUser) => (
@@ -460,6 +461,37 @@ describe('ToolCallPill', () => {
     expect(document.querySelector('.animate-spin')).toBeNull()
   })
 
+  it('marks a call whose result landed on its own row done, even mid-run', () => {
+    // The backend writes the result onto the 🔧 row's meta.output instead of
+    // re-roling it, so a polled transcript only ever sees role 'tool'.
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq', meta: { output: 'zzq-out' } })} running
+    />)
+    expect(document.querySelector('.animate-spin')).toBeNull()
+    expect((screen.getByRole('button') as HTMLElement).className).toContain('text-ok')
+  })
+
+  it('marks an empty terminal output done too', () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq', meta: { output: '' } })} running
+    />)
+    expect((screen.getByRole('button') as HTMLElement).className).toContain('text-ok')
+  })
+
+  it('shows every call of an idle session as done, not as a frozen loader', () => {
+    render(<ToolCallPill message={msg({ role: 'tool', content: '🔧 zzq' })} running={false} />)
+    expect((screen.getByRole('button') as HTMLElement).className).toContain('text-ok')
+  })
+
+  it('labels a finished shell call without the live "Running:" verb', () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 Running: npx vite build', meta: { output: 'ok' } })} running
+    />)
+    const label = (screen.getByRole('button') as HTMLElement).textContent || ''
+    expect(label).not.toMatch(/^Running:/)
+    expect(label).toContain('vite')
+  })
+
   it('treats an auto-denied call as terminal, so it never spins', () => {
     render(<ToolCallPill
       message={msg({ role: 'tool', content: '🔧 zzq' })} running autoDenied
@@ -689,6 +721,36 @@ describe('ToolCallPill expanded output panel', () => {
     }
   })
 
+  it('drops the hand-off from a copy failure when the host turns askAgent off', async () => {
+    // A host with an unsaved composer draft (ChatEmbed) must not be navigated
+    // away from by a copy failure's hand-off.
+    mockedCopy.mockResolvedValue(false)
+    render(<ToolCallPill message={msg({ role: 'tool_result', content: LONG })} running={false} askAgent={false} />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(notice).toHaveTextContent('Copy failed')
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
+  it('passes the list\'s handOff=false through the tool row to the pill', async () => {
+    mockedCopy.mockResolvedValue(false)
+    renderRow(msg({ role: 'tool_result', content: LONG }), { handOff: false })
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(within(notice).queryByRole('button', { name: /ask the agent/i })).toBeNull()
+  })
+
+  it('keeps the hand-off on the tool row when the list leaves handOff unset', async () => {
+    mockedCopy.mockResolvedValue(false)
+    renderRow(msg({ role: 'tool_result', content: LONG }))
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    const notice = await waitFor(() => screen.getByTestId('tool-panel-copy-error'))
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
   it('keeps the toggle once expanded, instead of measuring it away mid-read', async () => {
     // Measuring the EXPANDED box would report "fits" at 500px and remove the
     // control, stranding the reader with no way back to the collapsed view.
@@ -719,5 +781,78 @@ describe('ToolCallPill expanded output panel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Copied!' })).toBeInTheDocument())
     expect(screen.queryByTestId('tool-panel-copy-error')).toBeNull()
+  })
+})
+
+/**
+ * The expanded row must show what the call DID, not the title again: the tool
+ * row's `content` is only "🔧 title", while the persisted `meta.input` /
+ * `meta.output` carry the command and its result.
+ */
+describe('ToolCallPill expanded details from persisted meta', () => {
+  async function expandPanel() {
+    await userEvent.click(screen.getAllByRole('button')[0])
+  }
+
+  it('shows the persisted output, not the repeated title', async () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-cmd --flag', output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    const panel = await screen.findByTestId('tool-pill-details')
+    expect(within(panel).getByText(/zzq-result-line/)).toBeInTheDocument()
+    expect(within(panel).queryByText(/^🔧/)).toBeNull()
+  })
+
+  it('reaches the persisted input through the Input tab', async () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-cmd --flag', output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    const panel = await screen.findByTestId('tool-pill-details')
+    await userEvent.click(within(panel).getByRole('radio', { name: 'Input' }))
+    await waitFor(() => expect(within(panel).getByText(/zzq-cmd --flag/)).toBeInTheDocument())
+  })
+
+  it('shows input alone for a call that has not returned yet', async () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-only-input' } } as Partial<ChatMessage>)}
+      running
+    />)
+    await expandPanel()
+    const panel = await screen.findByTestId('tool-pill-details')
+    expect(within(panel).getByText(/zzq-only-input/)).toBeInTheDocument()
+  })
+
+  it('keeps Copy on a payload row and copies both halves', async () => {
+    mockedCopy.mockResolvedValue(true)
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { input: 'zzq-cmd --flag', output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Copy input and output' }))
+    expect(mockedCopy).toHaveBeenCalledWith('zzq-cmd --flag\n\nzzq-result-line')
+  })
+
+  it('renders the payload at the full-form height, not the 160px compact cap', async () => {
+    render(<ToolCallPill
+      message={msg({ role: 'tool', content: '🔧 zzq-title', meta: { output: 'zzq-result-line' } } as Partial<ChatMessage>)}
+      running={false}
+    />)
+    await expandPanel()
+    const panel = await screen.findByTestId('tool-pill-details')
+    const box = within(panel).getByText(/zzq-result-line/).closest('pre')
+    expect(box?.className).toContain('max-h-[500px]')
+    expect(box?.className).not.toContain('max-h-[160px]')
+  })
+
+  it('falls back to the content panel when no payload was persisted', async () => {
+    render(<ToolCallPill message={msg({ role: 'tool', content: '🔧 zzq-legacy' })} running={false} />)
+    await expandPanel()
+    expect(screen.queryByTestId('tool-pill-details')).toBeNull()
+    expect(screen.getAllByText(/zzq-legacy/).length).toBeGreaterThan(1)
   })
 })

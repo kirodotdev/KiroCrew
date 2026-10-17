@@ -939,7 +939,7 @@ class TestChompingCannotFlipAnActivationFlag:
     """Real chomping must not silently change whether a skill is always-on.
 
     ``always`` and ``pinned`` are decided by an EXACT string comparison against
-    ``"true"`` (``skills.py``, ``skill_budget.py``). A fold ending in
+    ``"true"`` (``skills_selection.py``, ``skills_review.py``, ``skill_budget.py``). A fold ending in
     ``.strip()``, so ``always: |+`` followed by trailing blank lines read ``"true"`` and
     the skill was always-on. Honouring keep-chomping makes that same field read
     ``"true\\n\\n"``, which is not equal to ``"true"`` -- so without normalising at the
@@ -1076,7 +1076,11 @@ class TestChompingCannotFlipAnActivationFlag:
         # The defect was a PARTIAL sweep: two of the three call sites stripped and the
         # third consumed an unstripped row, so one document was scoped at one site and
         # unscoped at another. Pin every site that feeds the gate as normalised.
-        src = (Path(__file__).resolve().parents[1] / "src/kiro_crew/skills.py").read_text()
+        # The facade and every ``skills_*`` owner it binds members from, joined.
+        src_dir = Path(__file__).resolve().parents[1] / "src/kiro_crew"
+        src = "\n".join(
+            p.read_text() for p in [src_dir / "skills.py", *sorted(src_dir.glob("skills_*.py"))]
+        )
         reads = re.findall(r'"repo_scope":\s*meta\.get\("repo_scope"[^\n]*', src)
         reads += re.findall(r'scope\s*=\s*meta\.get\("repo_scope"[^\n]*', src)
         assert reads, "no repo_scope reads found -- the pattern moved, update this test"

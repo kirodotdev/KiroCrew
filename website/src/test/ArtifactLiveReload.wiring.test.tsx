@@ -10,6 +10,7 @@
  * must actively refetch, not merely mark the query stale.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useState } from 'react'
 import { act, screen, waitFor } from '@testing-library/react'
 import { Routes, Route } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
@@ -178,6 +179,50 @@ describe('ArtifactPanel live-reload', () => {
     )
     await waitFor(
       () => expect(screen.getByTestId('body-native')).toHaveTextContent(AFTER),
+      { timeout: WAIT_MS },
+    )
+  })
+
+  it('only the visible tab holds a watch stream, and a tab shown again repaints its rewritten file', async () => {
+    const OTHER = 'second-report'
+    const OTHER_PATH = '/repo/out/second.html'
+    const bodies: Record<string, string> = { [SLUG]: 'first before', [OTHER]: 'second before' }
+    vi.mocked(api).artifact = vi.fn().mockImplementation(async (slug: string) =>
+      mkArtifact({ slug, content: bodies[slug], source_path: slug === SLUG ? SOURCE_PATH : OTHER_PATH }),
+    )
+    // Two artifact tabs mounted side by side, as SidePanel keeps them: one shown.
+    function Tabs() {
+      const [shown, setShown] = useState(SLUG)
+      return (
+        <>
+          <button type="button" onClick={() => setShown(OTHER)}>show second</button>
+          {[SLUG, OTHER].map((slug) => (
+            <ArtifactPanel key={slug} embedded active={shown === slug} slug={slug} kind="markdown" content="" onClose={vi.fn()} />
+          ))}
+        </>
+      )
+    }
+    renderWithProviders(
+      <Routes>
+        <Route path="/" element={<Tabs />} />
+      </Routes>,
+    )
+    expect(await screen.findByText('first before')).toBeInTheDocument()
+    expect(await screen.findByText('second before')).toBeInTheDocument()
+    const openStreams = () => watchStreams().filter((es) => !es.closed).map((es) => es.url)
+    const urlFor = (path: string) => '/api/file-watch?path=' + encodeURIComponent(path)
+    await waitFor(() => expect(openStreams()).toEqual([urlFor(SOURCE_PATH)]))
+
+    // The hidden tab's file is rewritten while it holds no stream.
+    bodies[OTHER] = 'second after'
+    await act(async () => {
+      screen.getByRole('button', { name: 'show second' }).click()
+    })
+
+    await waitFor(() => expect(openStreams()).toEqual([urlFor(OTHER_PATH)]))
+    // No frame is sent: the switch itself catches the tab up.
+    await waitFor(
+      () => expect(screen.getByText('second after')).toBeInTheDocument(),
       { timeout: WAIT_MS },
     )
   })

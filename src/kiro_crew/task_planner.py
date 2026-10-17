@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type, _steer_host_deny
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
@@ -23,6 +23,7 @@ from kiro_crew.task_models import (
     Task,
     TaskStatus,
 )
+from kiro_crew.tool_gate_busy import hook_gate_busy
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -338,8 +339,10 @@ async def decompose(
                 # spec content could otherwise trigger dangerous tools (fs/exec)
                 # during the planning phase, bypassing the execution-phase gate.
                 if ctx is not None and getattr(ctx, "hooks", None) is not None:
-                    hook_result = ctx.hooks.on_tool_call(
+                    hook_result = await run_in_tool_gate_pool(
+                        ctx.hooks.on_tool_call,
                         event.title,
+                        on_queue_timeout=hook_gate_busy,
                         session_key=session_key,
                         agent=agent,
                         **hook_gate_kwargs(event),

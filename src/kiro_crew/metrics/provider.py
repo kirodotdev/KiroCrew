@@ -40,6 +40,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional
+from urllib.parse import urlsplit
 
 from kiro_crew import __version__, beacon
 from kiro_crew.config.loader import KiroCrewConfig
@@ -438,8 +439,8 @@ _provider: Optional["_MeterProviderT"] = None
 # counter and histogram, so the recheck is rate-limited: at most one re-resolve
 # per _CONSENT_RECHECK_SECS. That bounds how long an out-of-band change goes
 # unnoticed without charging the hot path, which sees only a monotonic compare.
-# A caller that must not wait (the dashboard's own PATCH route) calls shutdown()
-# instead and gets the rebuild on the very next metric.
+# A config write inside the gateway does not wait: the config-watcher applier
+# (``watch_config``) calls shutdown() and the next metric rebuilds.
 _CONSENT_RECHECK_SECS = 30.0
 # Consent the live recorder was built with, and when it was last verified.
 # ``None`` means "no live recorder", so the next call builds rather than compares.
@@ -909,6 +910,25 @@ def _otlp_destinations(cfg: "TelemetryConfig") -> "tuple[OtlpDestination, ...]":
     return _filter_metric_destinations(supplied)
 
 
+_FOREIGN_SIGNAL_ROUTES = (("/v1/traces", "traces"), ("/v1/logs", "logs"))
+
+
+def _foreign_signal_route(endpoint: str) -> Optional[str]:
+    """Name the non-metrics OTLP signal *endpoint*'s path addresses, else None.
+
+    Matches the standard OTLP/HTTP signal suffixes on the URL PATH only, so a
+    host name or query string containing ``traces`` is never mistaken for one.
+    """
+    try:
+        path = urlsplit(str(endpoint).strip()).path.rstrip("/").lower()
+    except ValueError:
+        return None
+    for suffix, signal in _FOREIGN_SIGNAL_ROUTES:
+        if path.endswith(suffix):
+            return signal
+    return None
+
+
 def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_ReaderT"]:
     """Build one OTLP/HTTP metric reader for *dest*, or None when unavailable.
 
@@ -933,6 +953,21 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     (:func:`kiro_crew.metrics.temporality.otlp_preference`).
     """
     endpoint = dest.endpoint
+    # This core emits the metrics signal only. An endpoint whose path is another
+    # signal's OTLP route (a tracing backend's /v1/traces, e.g. Langfuse) would
+    # otherwise fail silently: the collector rejects every metric batch and no
+    # trace ever arrives, which reads as broken rather than unsupported. Warn
+    # once, by destination NAME (the URL can carry credentials), and keep the
+    # reader -- the operator's configuration is not overridden.
+    foreign = _foreign_signal_route(endpoint)
+    if foreign is not None:
+        logger.warning(
+            "OTLP destination %r points at an OTLP %s route, but Kiro Crew exports "
+            "metrics only (no %s); use the collector's /v1/metrics URL",
+            dest.name,
+            foreign,
+            foreign,
+        )
     # Callable directly (not only via _build_recorder), so make sure the lazily
     # imported SDK symbols this needs are bound.
     if not _load_otel():
@@ -1108,12 +1143,13 @@ def get_recorder() -> MetricsRecorder:
 
     The recheck is eventual by design — up to ``_CONSENT_RECHECK_SECS`` — so the
     extra thread hop changes nothing an observer can distinguish. A caller that
-    changed the setting itself calls ``shutdown()`` to skip the wait.
+    changed the setting in-process reaches ``shutdown()`` through the config
+    watcher (``watch_config``) and skips the wait.
     """
     global _recorder, _initialized, _built_consent
     # Snapshot into a local: the guard below spans a Python call, so re-reading the
     # global to return it would race a concurrent shutdown() — which the config
-    # route runs on an asyncio.to_thread worker — and hand back None from a
+    # watcher runs on an asyncio.to_thread worker — and hand back None from a
     # non-Optional signature.
     rec = _recorder
     if _initialized and rec is not None and not _consent_recheck_due():
@@ -1215,7 +1251,7 @@ def shutdown() -> None:
     without waiting out the recheck window.
 
     The flush runs on the CALLER's thread (so process teardown and the config
-    route — which calls this via ``asyncio.to_thread`` — both get a completed
+    watcher — which calls this via ``asyncio.to_thread`` — both get a completed
     flush) but NOT under ``_lock``: holding it across the flush would stall any
     concurrent ``get_recorder()`` on the event loop for the whole 30s deadline.
     """

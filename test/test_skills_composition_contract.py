@@ -1,8 +1,8 @@
 """Composition contract between ``SkillsLoader`` and ``skill_runtime``.
 
-``kiro_crew.skills`` keeps the loader's state, its locks and the code repository
-guards pin to ``skills.py`` by path, and delegates the rest of its rules to the
-modules under ``kiro_crew.skill_runtime``. What this file pins is what callers of
+``kiro_crew.skills`` keeps the loader's state and its locks, binds the code repository
+guards pin by path from its ``skills_*`` owner modules, and delegates the rest of its
+rules to the modules under ``kiro_crew.skill_runtime``. What this file pins is what callers of
 the loader observe independently of where each rule lives:
 
 * the class keeps every member it had, with the same kind and signature, and the
@@ -16,7 +16,7 @@ the loader observe independently of where each rule lives:
   anchored on their own file;
 * the source-keyed guards stay satisfied by construction: no runtime module holds
   a link-screen site, a sensitive-resolved-path call or a redactor call, so the
-  registries naming ``skills.py`` still describe the code, and the ``repo_scope``
+  registries naming the ``skills_*`` owners still describe the code, and the ``repo_scope``
   normalisation rule is re-applied to the moved read sites;
 * the one-slug-space allocator, the descriptor-pinned pending read, the HTML
   body refusal and the usage-ledger alias fold behave as the facade documents them.
@@ -67,7 +67,7 @@ RUNTIME_MODULES = frozenset(
 #: Facade bindings that tests REBIND to change what the loader does, and which
 #: moved code consumes. Runtime code reads each through ``kiro_crew.skills`` at
 #: call time. ``os`` is rebound too, but only around ``installed_skill_currency``,
-#: which stays in the facade; runtime code reads ``os`` directly.
+#: which lives in ``skills_builtin_provenance``; runtime code reads ``os`` directly.
 FACADE_SEAMS = frozenset(
     {
         "PINNED_SKILL_BODIES_CAP",
@@ -133,7 +133,7 @@ _LOADER_MEMBERS = {
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
         _trusted_project_key _usage_fields _user_first _validate_and_redact_candidate
         _versions_root _vet_unconfined_path
-        approve_pending_skill approve_pending_skill_checked approve_pending_update
+        approve_pending_skill_checked
         approve_pending_update_checked archive_auto_skill catalog_project_skills
         catalog_status close confined_triggered create_auto_skill create_skill credit_skill_reads
         delete_skill dismiss_all_pending dismiss_pending_skill dismiss_pending_slugs
@@ -242,9 +242,7 @@ _LOADER_SIGNATURES = {
     "_vet_unconfined_path": "(self, path: 'Path') -> 'bool'",
     "_versions_root": "(self, target_slug: 'str') -> 'Path'",
     "_write_skill_md": "(skill_file: 'Path', content: 'str', *, dir_fd: 'int | None') -> 'bool'",
-    "approve_pending_skill": "(self, slug: 'str') -> 'str | None'",
     "approve_pending_skill_checked": "(self, slug: 'str') -> 'str'",
-    "approve_pending_update": "(self, slug: 'str') -> 'str | None'",
     "approve_pending_update_checked": "(self, slug: 'str') -> 'str'",
     "archive_auto_skill": "(self, name: 'str') -> 'bool'",
     "catalog_project_skills": "(self, project_dir: 'str | Path') -> 'list[dict]'",
@@ -314,8 +312,9 @@ _CRON_SOURCE_MAX_BYTES _DIR_FD_SUPPORTED _DISCOVERY_IN_PROGRESS_NOTICE
 _DOLLAR_SKILL_PATTERN _FAMILY_LINE_MAX_LABELS _FINGERPRINT_MAX_BYTES
 _FINGERPRINT_MAX_ENTRIES _ITER_CACHE_TTL_SECS _MAPPED_BLOCK_OVERHEAD_BYTES
 _MAX_DOLLAR_SKILLS _MIN_TRIGGER_OVERLAP _NEW_SKILL_BOOST_WINDOW_SECS
-_PENDING_CONSUMED_HOOK _PENDING_SCRIPT_MAX_DEPTH _PENDING_SCRIPT_MAX_ENTRIES
-_PENDING_STAGED_HOOK _PROJECT_DIR_OPEN_FLAGS _PROJECT_SKILL_MAX_DEPTH _PROVENANCE_FORMAT
+_PENDING_CONSUMED_HOOK _PENDING_DOCUMENT_MAX_BYTES _PENDING_SCRIPT_MAX_DEPTH
+_PENDING_SCRIPT_MAX_ENTRIES _PENDING_STAGED_HOOK _PROJECT_DIR_OPEN_FLAGS
+_PROJECT_SKILL_MAX_DEPTH _PROVENANCE_FORMAT
 _PROVENANCE_MARKER _RELOCATED_SKILLS _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
 _SHELL_READ_VERBS _SHELL_SEGMENT_RE _SHELL_SKILL_PATH_RE _SHORT_DESC_CHARS _SKILL_FILE
 _ScopedSkillEntry _TOOL_READ_PATH_KEYS _VALIDATION_REPORT_MAX_FINDINGS
@@ -917,7 +916,7 @@ def _repo_scope_violations(source: str) -> list[str]:
     """``test_frontmatter``'s repo_scope normalisation rule, applied to any source.
 
     Every read that feeds the gate strips the value, and every gate call passes one
-    of the normalised spellings. The read-only guard scans ``skills.py`` by path;
+    of the normalised spellings. The read-only guard scans the ``skills_*`` owners by path;
     this carries the same rule to the read sites that moved.
     """
     reads = re.findall(r'"repo_scope":\s*meta\.get\("repo_scope"[^\n]*', source)
@@ -930,10 +929,11 @@ def _repo_scope_violations(source: str) -> list[str]:
 
 
 class TestSourceKeyedGuards:
-    """Registries that name ``skills.py`` stay true because nothing they count moved."""
+    """Registries that name the ``skills_*`` owners stay true because no runtime module
+    holds what they count."""
 
     def test_no_runtime_module_screens_a_path_for_links(self) -> None:
-        """The link-screen baseline keys its sites to ``skills.py``; a screen in a
+        """The link-screen baseline keys its sites to the ``skills_*`` owners; a screen in a
         runtime module would be a site that baseline cannot name."""
         for stem, source in _runtime_sources().items():
             assert [name for _line, name in _called_names(source) if name in SCREENS] == [], stem
@@ -945,12 +945,12 @@ class TestSourceKeyedGuards:
         ]
 
     def test_no_runtime_module_calls_the_resolved_path_gate(self) -> None:
-        """The gate's reviewed caller list counts two calls in ``skills.py``."""
+        """The gate's reviewed caller list counts two calls in ``skills_discovery.py``."""
         for stem, source in _runtime_sources().items():
             assert "is_sensitive_resolved_path" not in [name for _l, name in _called_names(source)]
 
     def test_no_runtime_module_calls_a_redactor(self) -> None:
-        """Pending detail and promotion stay in ``skills.py``, the module the
+        """Pending detail and promotion live in ``skills_review.py``, the module the
         redaction-sink registry names; a redactor call here would be an unregistered
         sink, and even prose spelling one trips the registry's drift guard."""
         for stem, source in _runtime_sources().items():
@@ -1457,10 +1457,20 @@ class TestThePinnedPendingRead:
         assert detail is not None and detail["meta"] == {} and detail["kind"] == "new"
 
     def test_an_oversized_body_refuses_the_candidate(self, make_loader) -> None:
+        """The DOCUMENT cap bounds ``SKILL.md``, not the bundled-script cap.
+
+        A body over ``MAX_SCRIPT_BYTES`` is a document, not a script, and is served;
+        one over ``_PENDING_DOCUMENT_MAX_BYTES``, derived from the generator's
+        procedure limit, refuses the candidate whole.
+        """
         from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
 
         loader, pdir = self._candidate(make_loader)
-        (pdir / "SKILL.md").write_text("# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10), encoding="utf-8")
+        over_script_cap = "# pad\n" * (MAX_SCRIPT_BYTES // 6 + 10)
+        assert len(over_script_cap) > MAX_SCRIPT_BYTES
+        (pdir / "SKILL.md").write_text(over_script_cap, encoding="utf-8")
+        assert loader.get_pending_skill("cand") is not None, "a document was read as a script"
+        (pdir / "SKILL.md").write_text("x" * (sk._PENDING_DOCUMENT_MAX_BYTES + 1), encoding="utf-8")
         assert loader.get_pending_skill("cand") is None
 
     def test_staged_probe_only_names_a_candidate_by_its_safe_slug(self, make_loader) -> None:

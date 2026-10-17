@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
+import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead, sseSubagentStatus, sseSubagentText, type SubagentDetail } from '../store/dashboardSlice'
@@ -9,6 +10,9 @@ import {
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
+import { applyGuideUpdate } from '../api/guide'
+import { handleGuideObserveFrame } from '../guide/liveObservation'
+import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
 import { teamRoots } from '../pages/chat/command-center/model'
@@ -24,8 +28,6 @@ import {
 } from './websocket/contextTraceRefresh'
 import {
   fetchingAnyFoldQuery,
-  invalidateBelowFloor,
-  recordSlotProjectionFloor,
   resetSlotProjectionRevisions,
   seedFoldedProjection,
   takeFoldedSlotProjection,
@@ -44,15 +46,17 @@ import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
 import {
   handleArtifactUpdate,
   handleCredentialRedactionChanged,
+  handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
   handleSourceStatus,
   handleThreadReply,
   invalidateRefreshQueries,
 } from './websocket/serverState'
+import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
-import { attachFocusRelay } from './websocket/attention'
+import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
 
@@ -67,6 +71,12 @@ import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatch
    constants and thaw grace test/test_ws_status_cadence_contract.py reads
    from this file. Every export below keeps its original import path. */
 export { __resetRedactionHealForTests, healRedactionSwitchAfterReconnect } from './websocket/serverState'
+// The crewmate dashboard's cache prefix and its frame handler, reached through
+// this facade like every other owner binding. Both are named so a caller can
+// invalidate the same key the handler invalidates: a second spelling of that
+// prefix would let a refresh reach a different cache entry from the frame.
+export { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, handleDashboardMoved } from './websocket/serverState'
+export { DASHBOARD_FIELDS_FRAME, subscribeDashboardFields } from './websocket/dashboardFields'
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
@@ -89,13 +99,9 @@ export {
   resetContextTraceRefresh,
 } from './websocket/contextTraceRefresh'
 export {
-  baselineOrHeld,
   fetchingAnyFoldQuery,
-  invalidateBelowFloor,
-  recordSlotProjectionFloor,
   resetSlotProjectionRevisions,
   seedFoldedProjection,
-  slotProjectionFloor,
   takeFoldedSlotProjection,
 } from './websocket/slotProjection'
 
@@ -133,7 +139,7 @@ export function useWebSocket() {
   const cards = useComposerCards(dispatch)
   const syncWorkflowRuns = useWorkflowRunReconcile(dispatch, queryClient)
   const buffers = useStreamBuffers({ dispatch, socket, onActiveSlotFlushed: voice.speakStreamedDelta })
-  const slotList = useSlotListSync(dispatch, queryClient)
+  const slotList = useSlotListSync(dispatch, queryClient, buffers)
   const bundle = useBundleReload(dispatch)
   const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
@@ -190,6 +196,7 @@ export function useWebSocket() {
         syncPendingApprovals,
         syncPendingQuestions: cards.syncPendingQuestions,
         syncWorkflowRuns,
+        focusedSlot: focusedSlotForCurrentSurface,
       }
       if (socket.wasConnectedRef.current) {
         // No frame could arrive while the socket was down (a gateway restart is
@@ -208,6 +215,11 @@ export function useWebSocket() {
     // next frame routes normally.
     ws.onmessage = (e) => {
       if (socket.wsRef.current === ws) lastFrameAtRef.current = Date.now()
+      // The look-preview frame (utils/lookPreview.ts) is a still picture of the
+      // product drawn from fixtures: no live frame may repaint it with the
+      // user's real sessions, runs or notices. The socket stays open only so
+      // the frame never shows a disconnected state.
+      if (isLookPreviewFrame()) return
       try {
         const { type, data, msg } = decodeFrame(e.data)
         switch (type) {
@@ -227,6 +239,24 @@ export function useWebSocket() {
             // the panel's visibility depends on the pending count.
             queryClient.invalidateQueries({ queryKey: ['skills-pending'] })
             queryClient.invalidateQueries({ queryKey: ['skills'] })
+            break
+          }
+          case 'guide_update': {
+            // Owner-only frame; folded into the pending-guides cache, which
+            // is also re-read on reconnect (frames are one-shot).
+            applyGuideUpdate(queryClient, (data as { guide?: unknown }).guide)
+            break
+          }
+          case 'guide_observe': {
+            // Owner-only frame naming ONE tab; that tab answers with ids and
+            // enum states only, every other tab ignores it.
+            handleGuideObserveFrame(data)
+            break
+          }
+          case 'card_update': {
+            // Owner-only frame; folded into that slot's change-cards cache,
+            // which is also re-read on reconnect (frames are one-shot).
+            applyCardUpdate(queryClient, (data as { card?: unknown }).card)
             break
           }
           case 'todo_update': {
@@ -310,22 +340,33 @@ export function useWebSocket() {
             if (!reconnectingRef.current) dispatchLiveNotification(n)
             break
           }
-          case 'panel_published': {
-            // A crew replaced its webview. The drawer's query sets no finite
-            // staleTime (the client's default is Infinity, freshness by push), so
-            // without this the operator kept looking at the first snapshot read
-            // when the drawer opened -- and the "23m ago" chip froze with it.
-            //
-            // Invalidated by SLUG PREFIX, so it reaches the ['member-panel', slug,
-            // member] key without the frame having to carry the crew's name. The
-            // frame is slug-only on purpose: the ownership digest must not reach a
-            // client, and the refetch re-asks the server, which re-checks ownership.
-            const slug = String((data as { slug?: unknown }).slug || '')
-            if (slug) {
-              queryClient.invalidateQueries({ queryKey: ['member-panel', slug] })
-            }
+          case 'panel_published':
+            // A crew published new panel data, which its dashboard page may read,
+            // so the page re-reads. The frame is slug-only on purpose: the
+            // ownership digest must not reach a client, and the refetch re-asks
+            // the server, which re-checks ownership.
+            handleDashboardMoved(queryClient, data)
             break
-          }
+          case DASHBOARD_FIELDS_FRAME:
+            // The fields that MOVED, pushed rather than refetched. Handed to the
+            // dashboard showing that crewmate, which posts it into its iframe; a
+            // query invalidation would re-read the whole page and throw away the
+            // page's own state on every value change.
+            handleDashboardFields(data)
+            break
+          case 'dashboard_value_written':
+          case 'dashboard_instance_changed':
+            // A crewmate or a root session wrote one of its own dashboard fields, or
+            // changed its page, mid-turn. The frame carries only {slug} or {slot};
+            // the tab's refetch re-asks the server, which re-composes the page and
+            // re-checks ownership.
+            handleDashboardMoved(queryClient, data)
+            break
+          case 'dashboard_instance_changed':
+            // The crewmate's dashboard PAGE changed: a template applied or a
+            // version rolled back. Same {slug}-only frame, same re-read.
+            handleDashboardMoved(queryClient, data)
+            break
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break
@@ -409,6 +450,10 @@ export function useWebSocket() {
           }
           case 'member_projection':
             handleMemberProjection(data)
+            // A fold advanced. Every number on a crewmate's dashboard but its own
+            // agentic writes comes from a fold, so this is the other half of the
+            // tab's liveness -- see `handleDashboardMoved`.
+            handleDashboardMoved(queryClient, data)
             break
           case 'members_subscribed':
             handleMembersSubscribed(queryClient, data)
@@ -471,7 +516,7 @@ export function useWebSocket() {
             chatStream.onToolCall(data)
             break
           case 'tool_result':
-            dispatch(sseToolResult(data as { slot: string; output: string; tool_call_id?: string }))
+            dispatch(sseToolResult(data as { slot: string; output: string; tool_call_id?: string; final?: boolean }))
             break
           case 'mcp_app_render':
             // MCP App (SEP-1865) render payload from the gateway. Stored by
@@ -527,7 +572,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_spawn':
-            dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string }))
+            dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; batch_id?: string }))
             break
           case 'subagent_queued':
             // The count plus the gate's optional `reason` label (absent from an
@@ -541,7 +586,7 @@ export function useWebSocket() {
             break
           }
           case 'subagent_tool':
-            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number }))
+            dispatch(sseSubagentTool(data as { slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }))
             break
           case 'subagent_stalled':
             dispatch(sseSubagentStalled(data as { slot: string; id: string; stalled: boolean; idle_secs?: number }))
@@ -557,7 +602,7 @@ export function useWebSocket() {
             // Flush any buffered chunks before the done event, so the final
             // streaming text is visible before the agent transitions to done.
             buffers.flushSubagentChunks()
-            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; result?: string }))
+            dispatch(sseSubagentDone(data as { slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; batch_id?: string; result?: string }))
             break
           case 'app_reload':
             emitAppReload(data as { app: string })
@@ -565,7 +610,7 @@ export function useWebSocket() {
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.
-            const snapData = data as { id: string; slot: string; task: string; agent: string; model?: string; requested_model?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }
+            const snapData = data as { id: string; slot: string; task: string; agent: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }
             buffers.dropSubagentKey(snapData.slot, snapData.id)
             dispatch(sseSubagentSnapshot(snapData))
             break
@@ -629,12 +674,12 @@ export function useWebSocket() {
             break
           }
           case 'slot_projection/subscribed':
-            // The revision floor, sent before this tab issues any baseline read.
-            // It carries no values, but a read that completed before it arrived
-            // may hold a board below the new floor, and nothing else would move
-            // that board: so every such board is re-read.
-            recordSlotProjectionFloor(data)
-            invalidateBelowFloor(queryClient)
+            // The revisions this process has published per cell, carrying no
+            // values. Nothing acts on it: a revision this tab has not received
+            // the value for is not a floor it may judge a read or a frame by,
+            // and the catch-up it used to trigger is already covered -- a
+            // reconnect invalidates the whole `command-center` prefix, and the
+            // work board pulls on its own timer besides.
             break
           case 'slot_projection': {
             // A slot's crew log grew. A work board folds its conductor's units
@@ -889,6 +934,7 @@ export function useWebSocket() {
   useEffect(() => {
     socket.resume()
     connect()
+    const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
     const detachFocus = attachFocusRelay({
       socket,
@@ -900,10 +946,11 @@ export function useWebSocket() {
       buffers.flushForUnmount()
       socket.closeForUnmount()
       voice.dispose()
+      detachQuestionRetirements()
       detachVoice()
       detachFocus()
     }
-  }, [socket, connect, voice, buffers])
+  }, [socket, connect, voice, buffers, cards])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

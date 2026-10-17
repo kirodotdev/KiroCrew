@@ -116,6 +116,11 @@ export interface RootRow {
   status?: RowStatus
   /** `navigate` rows: the dashboard route. */
   route?: string
+  /**
+   * Reveal more rows in place; the bar stays open. Takes precedence over `kind`:
+   * a row that only widens the list it sits in neither enters a view nor closes.
+   */
+  expand?: () => void
   /** `view` rows: which scoped view to enter. */
   view?: string
   /** For `invoke` rows: the work to run. A rejection is surfaced, never swallowed. */
@@ -215,6 +220,21 @@ const FRECENCY_WEIGHT = 6
 
 /** Cap per group so no single group can push the others off the first page. */
 const PER_GROUP_LIMIT = 6
+
+/**
+ * How the `attention` group stays honest under the cap.
+ *
+ * A cap hides rows, and for every other group that is fine: the rest of the corpus
+ * is one `view` row away. A session waiting on the reader has no such view, so it
+ * must never be hidden without a trace (#12622). The caller supplies the row that
+ * counts what the cap held back, and lifts the cap once the reader asks for the rest.
+ */
+export interface RankOptions {
+  /** Show every `attention` row, past {@link PER_GROUP_LIMIT}. */
+  attentionExpanded?: boolean
+  /** The row that ends a capped `attention` group, given how many rows it hid. */
+  attentionOverflowRow?: (hidden: number) => RootRow
+}
 
 /**
  * Penalty applied to an `idleDemote` row while the query is empty.
@@ -351,6 +371,7 @@ export function rankRootRows(
   query: string,
   usage: UsageMap,
   now = Date.now(),
+  options: RankOptions = {},
 ): RankedRow[] {
   const q = query.trim()
   const ranked: RankedRow[] = []
@@ -409,6 +430,8 @@ export function rankRootRows(
   // Group caps are applied AFTER ranking so a row only loses its place to a
   // better row in its own group, never to the order the sources were listed in.
   const perGroup = new Map<RootGroup, number>()
+  // `attention` rows the cap held back, for the caller's overflow row.
+  let attentionHidden = 0
   // Settings carry a second, tighter tally for WEAK matches — see SETTINGS_WEAK_LIMIT.
   // A weak settings match is one that does not name the setting: an empty query (every
   // row is weak), or a typed query that is not a substring of the title and only
@@ -433,9 +456,22 @@ export function rankRootRows(
       }
     }
     const seen = perGroup.get(row.group) ?? 0
-    if (seen >= PER_GROUP_LIMIT) continue
+    if (seen >= PER_GROUP_LIMIT && !(row.group === 'attention' && options.attentionExpanded)) {
+      if (row.group === 'attention') attentionHidden += 1
+      continue
+    }
     perGroup.set(row.group, seen + 1)
     capped.push(row)
+  }
+  // The overflow row goes right after the last shown `attention` row, so it ends the
+  // group on the idle page and sits beside the rows it stands for under a query.
+  if (attentionHidden > 0 && options.attentionOverflowRow) {
+    const extra = options.attentionOverflowRow(attentionHidden)
+    let last = -1
+    capped.forEach((row, index) => {
+      if (row.group === 'attention') last = index
+    })
+    capped.splice(last + 1, 0, { ...extra, group: 'attention', score: 0, indices: [], matchField: 'title' })
   }
   // A QUERY is ranked; only the IDLE page is filed into blocks. Group order answers
   // "what does a launcher open on", which is a question about the page the user has

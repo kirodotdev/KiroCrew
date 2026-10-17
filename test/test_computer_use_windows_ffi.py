@@ -26,8 +26,16 @@ import inspect
 from contextlib import contextmanager
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew.computer_use import windows_ffi as ffi
+from kiro_crew.testing.clock import ManualClock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch) -> None:
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, ffi)
+    assert_clock_is_private(clock, ffi)
 
 
 @contextmanager
@@ -328,11 +336,13 @@ class TestWalkBoundedHonoursItsBudgets:
 
         Driven by a fake clock rather than a real sleep: a timing test that waits is
         both slow and flaky, and the property under test is "the deadline is
-        consulted and honoured", which a monotonic stub asserts exactly.
+        consulted and honoured", which a clock that jumps past the deadline after
+        its first read asserts exactly. Installed on the walker's own ``time``
+        binding, never the stdlib module every other thread in the worker reads.
         """
         self._tree(monkeypatch, fanout=4, depth_limit=99)
-        ticks = iter([0.0] + [ffi.MAX_WALK_SECS + 1.0] * 10_000)
-        monkeypatch.setattr(ffi.time, "monotonic", lambda: next(ticks))
+        clock = ManualClock(monotonic_start=0.0, tick=ffi.MAX_WALK_SECS + 1.0)
+        clock.install(monkeypatch, ffi)
         root = _FakeElement("root")
         result = ffi.walk_bounded(
             root, None, max_nodes=10_000, max_depth=64, max_children_per_node=512

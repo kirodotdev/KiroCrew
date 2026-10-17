@@ -32,7 +32,7 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.job_routes import register_job_routes
 from kiro_crew.apps.job_sdk import forget_sdk, get_sdk, reconcile_all, register_sdk
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
-from kiro_crew.apps.manager import app_dir, list_apps
+from kiro_crew.apps.manager import app_dir, approved_manifest_permissions, list_apps
 from kiro_crew.apps.module_loader import clear_all_shutdown_callables
 from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
@@ -78,8 +78,10 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
 
     Folds ONLY hook-relevant inputs so a metadata write that does not touch hook
     code never forces a reload: the app version, a digest of the declared hook
-    source files' (path, mtime, size), and the ``.app_secret`` mtime (a reinstall
-    rotates it, and the live module must pick up the new secret). Deliberately
+    source files' (path, mtime, size), the ``.app_secret`` mtime (a reinstall
+    rotates it, and the live module must pick up the new secret), and the
+    approved events in ``approvedGrants`` (approving them changes what the hook context's
+    event bus may publish, and the bus is built once per load). Deliberately
     EXCLUDES two things:
 
     * ``installed.json`` mtime -- a dashboard permissions/config edit rewrites
@@ -130,6 +132,21 @@ def hook_signature(app_info: dict[str, Any]) -> tuple[Any, ...]:
         str(app_info.get("version", "")),
         digest,
         secret_mtime,
+        # The approved event set the hook context's EventBus is built from: an
+        # owner approving held-back events (``installed.json`` only, no code
+        # change) must reload the hooks, or the bus keeps refusing them.
+        _approved_events_marker(app_info),
+    )
+
+
+def _approved_events_marker(app_info: dict[str, Any]) -> tuple[str, ...] | None:
+    """``None`` for a record without an approved set, else its events, sorted."""
+    record = app_info.get("approvedGrants")
+    if record is None:
+        return None
+    events = record.get("events") if isinstance(record, dict) else None
+    return (
+        tuple(sorted(e for e in events if isinstance(e, str))) if isinstance(events, list) else ()
     )
 
 
@@ -328,7 +345,7 @@ def _build_app_context_from_info(
     """Build an AppContext from app info dict — shared helper for consistent context."""
     name = app_info.get("name", "")
     manifest = app_info.get("manifest", {})
-    permissions = manifest.get("permissions", {})
+    permissions = approved_manifest_permissions(app_info)
     data_path = app_dir(name) / "data"
     data_path.mkdir(parents=True, exist_ok=True)
     # Only an app that declares a ``routes`` hook is handed the gateway's

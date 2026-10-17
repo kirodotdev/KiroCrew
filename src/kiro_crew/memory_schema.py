@@ -35,7 +35,8 @@ raises ``Cannot add a column to a view`` — loud, and before any write.
 The views are READ-ONLY, deliberately
 -------------------------------------
 ``semantic_memory`` and ``episodic_memories`` survive as views so the read statements in
-``vector_memory.py`` and ``vector_memory_runtime/`` run byte-identically, and so the four vector
+``vector_memory.py``, its ``vector_memory_*.py`` owners and ``vector_memory_runtime/`` run
+byte-identically, and so the four vector
 scorers stay partitioned by RELATION: episodic blobs are L2-normalized at write
 and semantic/lesson blobs are not, three scorers take a bare dot product, and one
 undivided ``embedding`` column would put un-normalized rows in front of them. The
@@ -67,6 +68,7 @@ from pathlib import Path
 from typing import Callable, Final
 
 from kiro_crew.memory_stores import named_store_of_db
+from kiro_crew.validation import clamp_query_offset
 
 logger = logging.getLogger(__name__)
 
@@ -755,9 +757,12 @@ def facet_page_query(
     """
     predicate, params = _facet_predicate(filters, kind)
     # Clamped HERE rather than at each surface, so the CLI and the HTTP route
-    # inherit one bound and neither can widen it.
+    # inherit one bound and neither can widen it. The offset ceiling is the
+    # shared one every SQLite-bound offset takes: the bind refuses an int past
+    # the signed 64-bit range, and past the live population every page is
+    # empty anyway.
     page = max(1, min(int(limit), MAX_FACET_PAGE))
-    skip = max(0, int(offset))
+    skip = clamp_query_offset(int(offset))
     sql = (
         f"SELECT {', '.join(FACET_PAGE_COLUMNS)} FROM memory_items "
         f"WHERE is_deleted = 0{predicate} "

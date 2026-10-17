@@ -18,7 +18,6 @@ if TYPE_CHECKING:
         PROVIDER_LABEL_DEFAULT,
         Any,
         SubagentInfo,
-        _cleanup_session_files_sync,
         _redact,
         _subagents_dir,
         agent_dir_for_display,
@@ -198,13 +197,15 @@ class ContinuationCoordinator(ManagerComponent):
             # report retryable failure so continue_conversation rolls it back.
             self._manager._sessions.mark_continuable(conv_key)
             self._manager._conversations[conv_key] = (
-                last_used if last_used is not None else time.time()
+                last_used if last_used is not None else time.monotonic()
             )
             return self._persistence.RetentionPromotionResult.RETRYABLE
         if result is not self._persistence.RetentionPromotionResult.PROMOTED:
             return result
         self._manager._sessions.mark_continuable(conv_key)
-        self._manager._conversations[conv_key] = last_used if last_used is not None else time.time()
+        self._manager._conversations[conv_key] = (
+            last_used if last_used is not None else time.monotonic()
+        )
         return result
 
     def _scan_keep_states_impl(self) -> list[tuple[str, str, str, str, str, float]]:
@@ -318,7 +319,12 @@ class ContinuationCoordinator(ManagerComponent):
             if not self._manager._sessions.resumable_sid(conv_key):
                 continue
             self._manager._sessions.mark_continuable(conv_key)
-            self._manager._conversations[conv_key] = last_used or time.time()
+            # The stored stamp is wall-clock and the registry is monotonic, so
+            # the conversation's AGE is carried across. A stamp in the future
+            # (the clock stepped back after it was written) reads as age 0: it
+            # can neither release the conversation early nor keep it past its TTL.
+            age = max(0.0, time.time() - last_used) if last_used else 0.0
+            self._manager._conversations[conv_key] = time.monotonic() - age
             seeded += 1
             # Cooperative yield: keep restart cold-start turns responsive
             # while a large keep batch seeds (one small file write each).
@@ -672,6 +678,26 @@ class ContinuationCoordinator(ManagerComponent):
             if _captured_state is ...
             else self._inherited_context_groups_impl(conv_id, state=_captured_state)
         )
+        # A continuation is another turn of the SAME run, so it keeps the model
+        # the caller pinned at spawn and the effort that went with it, unless the
+        # caller names a model. Only the caller's own pin is kept: a model the run
+        # took from ``agent.role_models['subagent']`` or from a ``model.route``
+        # tier is not one (``requested_model`` records the effective pin and holds
+        # both), so it resolves again, as it does for a run still in memory. After
+        # a gateway restart the run is gone from memory and state.json holds what
+        # the spawn recorded.
+        if original is not None:
+            run_model, run_effort = original.model or "", original.reasoning_effort
+        else:
+            recorded = (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
+            run_model = str(recorded.get("pinned_model") or "")
+            run_effort = str(recorded.get("reasoning_effort") or "")
+        # Effort follows the model (rfc-worker-model-inheritance, rule 4): the
+        # run's effort was chosen for the run's model, so a caller who names a
+        # model gets that model's own effort resolution instead.
+        named_model = bool(model)
+        if not named_model and run_model:
+            model = run_model
         delegation = (
             original.delegation
             if original is not None
@@ -679,6 +705,17 @@ class ContinuationCoordinator(ManagerComponent):
                 "delegation", {}
             )
         )
+        # The conversation lives on the harness its first run started on: a
+        # follow-up on another backend could not load it, and would start over.
+        backend = (
+            original.backend
+            if original is not None
+            else ((read_state(conv_id) or {}) if _captured_state is ... else _captured_state).get(
+                "backend"
+            )
+        )
+        if not isinstance(backend, str):
+            backend = None
         # A continuation has to run WHERE THE RUN RAN. `spawn` resolves an empty
         # cwd to the pool project before it validates the agent name, so a run
         # spawned against a project-local agent (defined under that project's
@@ -699,11 +736,13 @@ class ContinuationCoordinator(ManagerComponent):
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
+            reasoning_effort="" if named_model else run_effort,
             max_turns=max_turns,
             keep=True,
             cwd=cwd,
             conversation_key=conv_key,
             delegation=dict(delegation or {}),
+            backend=backend,
             include_memory=inc_memory,
             include_lessons=inc_lessons,
             include_project=inc_project,
@@ -970,12 +1009,21 @@ class ContinuationCoordinator(ManagerComponent):
         completion event through the normal ``_on_done`` path — the parent
         must not wait forever on an event that is not coming.
 
-        Hard-bounded and manager-owned: gives up at the manager's run timeout
+        Hard-bounded and manager-owned: gives up at the run's captured timeout
         plus a margin, and the task is registered in ``_followup_watchers`` so
         ``cancel_all()`` cancels it — a watcher must never dispatch a fresh
         run into a shutting-down gateway.
         """
-        deadline = time.monotonic() + self._manager._default_timeout + 300
+        # A follow-up can be queued before `_run_impl` captures this run's
+        # deadline, while spawn approval or a queued start still holds the run.
+        # Timing from the manager default at that point starts this clock ahead
+        # of the run's own and can expire the message while the run is still
+        # inside its deadline. Polling is already this watcher's ownership
+        # model; shutdown cancels the manager-owned task, and a terminal run
+        # needs no capture to dispatch.
+        while info.timeout_secs == 0 and not info.done and self._manager._default_timeout > 0:
+            await asyncio.sleep(self._manager._FOLLOWUP_POLL_SECS)
+        deadline = time.monotonic() + (info.timeout_secs or self._manager._default_timeout) + 300
         while time.monotonic() < deadline:
             if info.done and info.id not in self._manager._tasks:
                 break
@@ -1034,26 +1082,60 @@ class ContinuationCoordinator(ManagerComponent):
             # announce-and-drop for pending messages.
             return
         task = "\n\n---\n\n".join(messages)
-        # Finalization may hold the conversation for a beat after the task is
-        # popped (shielded report); retry a bounded number of times.
-        for _attempt in range(self._manager._FOLLOWUP_BUSY_RETRIES):
-            child = await self._manager.continue_conversation_async(
-                info.id,
-                task,
-                parent_session_key=info.parent_session_key,
-                agent=info.agent,
-                # The turn that asked for this follow-up, pinned when it was
-                # queued. This dispatch runs after the continued run finished, so
-                # the asking ordinal is not readable here. Several queued messages
-                # merge into one continuation, and the pin holds one turn, so for a
-                # merged dispatch this is the turn that asked LAST; each individual
-                # ask is recorded at its own turn as `subagent/steered`.
-                _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+        # A continuation run executes on its root conversation, so the follow-up is a
+        # continuation of the root: dispatched by the root id, it shares the root's busy
+        # check and claim instead of keying its own.
+        conversation_id = (
+            self._persistence.subagent_id_from_conversation_key(info.conversation_key or "")
+            or info.id
+        )
+        # By the root id the dispatch would not claim the run it follows up, and a
+        # dashboard retry of that run checks only that run's own claim (claim_retry).
+        # So the follow-up claims it as well, as a continuation by its id does, and
+        # settles it with the dispatch's outcome: a retry and a follow-up of one run
+        # stay mutually exclusive whichever comes first.
+        followed: SubagentInfo | None = None
+        child: SubagentInfo | None = None
+        err = ""
+        if conversation_id != info.id and self._manager._agents.get(info.id) is info:
+            followed, child = self._manager._claim_continuation(
+                info.id, task, info.parent_session_key
             )
-            err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
-            if not err.startswith("conversation_busy"):
-                break
-            await asyncio.sleep(self._manager._FOLLOWUP_BUSY_RETRY_SECS)
+            if child is not None:
+                followed = None  # refused: the claim belongs to whoever holds it
+                err = str(child.error or "")
+        attempts = self._manager._FOLLOWUP_BUSY_RETRIES if child is None else 0
+        # Only a dispatch in flight counts as a start of unknown outcome. A cancel in the
+        # sleep between busy attempts settles with the last refusal, which releases the
+        # claim, so a later retry of the followed-up run is not refused for nothing.
+        raised = False
+        try:
+            # Finalization may hold the conversation for a beat after the task is
+            # popped (shielded report); retry a bounded number of times.
+            for _attempt in range(attempts):
+                raised = True
+                child = await self._manager.continue_conversation_async(
+                    conversation_id,
+                    task,
+                    parent_session_key=info.parent_session_key,
+                    agent=info.agent,
+                    # The turn that asked for this follow-up, pinned when it was
+                    # queued. This dispatch runs after the continued run finished, so
+                    # the asking ordinal is not readable here. Several queued messages
+                    # merge into one continuation, and the pin holds one turn, so for
+                    # a merged dispatch this is the turn that asked LAST; each
+                    # individual ask is recorded at its own turn as `subagent/steered`.
+                    _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+                )
+                raised = False
+                err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
+                if not err.startswith("conversation_busy"):
+                    break
+                await asyncio.sleep(self._manager._FOLLOWUP_BUSY_RETRY_SECS)
+        finally:
+            if followed is not None:
+                # Held only when the claim above was granted; a refused claim is its holder's.
+                self._manager._settle_continuation(info.id, followed, child, raised=raised)
         if err:
             logger.warning("follow_up delivery for %s failed: %s", info.id, err.split(":", 1)[0])
             self._manager._audit_followup(info, "followup_failed")
@@ -1122,12 +1204,18 @@ class ContinuationCoordinator(ManagerComponent):
         except Exception:
             logger.debug("follow_up audit failed", exc_info=True)
 
-    def release_conversation_impl(self, conv_id: str) -> tuple[bool, str]:
-        """Release conversation *conv_id*: forget the sid and delete files.
+    def _release_prefix(self, conv_id: str) -> Any:
+        """The on-loop half of a release, shared by both entry points.
 
-        Refuses (``conversation_busy``) while a run is in flight. Returns
-        ``(ok, detail)``.
+        Returns ``(False, detail)`` when the release is refused, otherwise
+        ``(sid, provider_label, original)`` after the ``SessionMap`` and TTL
+        registry have forgotten the conversation. No await happens inside it, so
+        the busy check and ``forget_conversation`` commit together, BEFORE the disk
+        demote (the ``SessionMap`` must only be touched on the loop).
         """
+        # Not an ``_impl``, so it keeps this module's globals: import here.
+        from ..subagent import PROVIDER_LABEL_DEFAULT
+
         conv_key = f"subagent:{conv_id}"
         busy = self._manager._conversation_busy(conv_key)
         if busy is not None:
@@ -1142,36 +1230,124 @@ class ContinuationCoordinator(ManagerComponent):
         )
         sid = self._manager._sessions.forget_conversation(conv_key)
         self._manager._conversations.pop(conv_key, None)
-        # Demote the persisted source of truth too: with the disk
-        # fallback in place, a stale keep=True would re-warm the continuable
-        # cache after release and resurrect the conversation on the next
-        # restart's registry rebuild.
-        try:
-            update_state(conv_id, keep=False)
-        except Exception:
-            logger.debug("release: failed to demote state for %s", conv_id, exc_info=True)
         original = self._manager._agents.get(conv_id)
         if original is None:
             original = next(
                 (info for info in self._manager._report_owners.values() if info.id == conv_id),
                 None,
             )
+        return sid or "", provider_label, original
+
+    def _release_forget_live_state(self, conv_id: str, original: SubagentInfo | None) -> None:
+        # After the demote, never before: while a live-state entry exists
+        # ``update_state`` writes into it, so forgetting it first would send the
+        # demote to disk instead.
         if original is not None:
             self._manager._run_events._forget_finished_live_state(original)
         else:
             self._persistence.forget_live_run_state(conv_id)
+
+    @staticmethod
+    def _release_disk_sync(conv_id: str, sid: str, provider_label: str) -> None:
+        """The disk half of a release: demote ``keep``, then delete session files.
+
+        Demoting the persisted source of truth matters: with the disk fallback in
+        place, a stale ``keep=True`` would re-warm the continuable cache after
+        release and resurrect the conversation on the next restart's registry
+        rebuild. Each step is best-effort. On a worker thread (the event-loop
+        entry, :meth:`release_conversation_async_impl`) ``update_state`` takes the
+        per-agent state lock like every other pool writer.
+        """
+        # Not an ``_impl``, so it keeps this module's globals: import at call
+        # time, which also keeps ``patch.object(subagent, ...)`` effective.
+        from ..subagent import _cleanup_session_files_sync, logger, update_state
+
+        try:
+            update_state(conv_id, keep=False)
+        except Exception:
+            logger.debug("release: failed to demote state for %s", conv_id, exc_info=True)
         if not sid:
-            return False, "conversation_gone: nothing to release"
+            return
         try:
             _cleanup_session_files_sync(sid, provider_label)
         except Exception:
             logger.debug("release_conversation: file cleanup failed", exc_info=True)
+
+    def release_conversation_impl(self, conv_id: str) -> tuple[bool, str]:
+        """Release conversation *conv_id*: forget the sid and delete files.
+
+        Refuses (``conversation_busy``) while a run is in flight. Returns
+        ``(ok, detail)``. Runs its disk I/O on the CALLING thread, so event-loop
+        callers use :meth:`release_conversation_async_impl` instead.
+        """
+        prefix = self._release_prefix(conv_id)
+        if prefix[0] is False:
+            return prefix
+        sid, provider_label, original = prefix
+        self._release_disk_sync(conv_id, sid, provider_label)
+        self._release_forget_live_state(conv_id, original)
+        if not sid:
+            return False, "conversation_gone: nothing to release"
         return True, "released"
 
-    def _sweep_conversations_impl(self, now: float) -> None:
-        """Reaper hook: expire continuable conversations idle past TTL."""
-        for conv_key, last_used in list(self._manager._conversations.items()):
-            if now - last_used < _CONVERSATION_TTL_SECS:
+    async def release_conversation_async_impl(self, conv_id: str) -> tuple[bool, str]:
+        """:meth:`release_conversation_impl` for event-loop callers.
+
+        The on-loop half (:meth:`_release_prefix`) runs first; the ``keep``
+        demote and the session-file unlink loop then run on a worker thread.
+
+        The conversation is HELD until that worker lands, through the same
+        ``_abandoned_state_writers`` record a run's detached writers use: while it
+        is held, ``_conversation_busy`` answers ``conversation_busy`` (retryable).
+        Without the hold a continuation arriving mid-release would re-seed the sid
+        from ``state.json`` (still ``keep=True``), promote it, and then have its
+        session files deleted under it. The worker is shielded, so cancelling the
+        caller (an aiohttp client disconnect, reaper shutdown) neither stops nor
+        un-holds it: the release already committed on the loop, it finishes, and
+        the worker's own done-callback releases the hold.
+        """
+        prefix = self._release_prefix(conv_id)
+        if prefix[0] is False:
+            return prefix
+        sid, provider_label, original = prefix
+        worker: asyncio.Future[Any] = asyncio.ensure_future(
+            asyncio.to_thread(self._release_disk_sync, conv_id, sid, provider_label)
+        )
+        self._manager._abandoned_state_writers.setdefault(conv_id, set()).add(worker)
+
+        def _settled(fut: "asyncio.Future[Any]", _mgr: Any = self._manager) -> None:
+            writers = _mgr._abandoned_state_writers.get(conv_id)
+            if writers is not None:
+                writers.discard(fut)
+                if not writers:
+                    del _mgr._abandoned_state_writers[conv_id]
+            self._release_forget_live_state(conv_id, original)
+            # Retrieve it so a failure never surfaces as "exception was never
+            # retrieved"; the disk half already logs its own best-effort misses.
+            if not fut.cancelled() and fut.exception() is not None:
+                logger.debug("release: disk half failed for %s: %r", conv_id, fut.exception())
+
+        worker.add_done_callback(_settled)
+        await asyncio.shield(worker)
+        if not sid:
+            return False, "conversation_gone: nothing to release"
+        return True, "released"
+
+    async def _sweep_conversations_async_impl(self, now: float) -> None:
+        """Reaper hook: expire continuable conversations idle past TTL.
+
+        Each expired conversation is released through
+        :meth:`release_conversation_async_impl`, so its disk I/O is off-loop.
+
+        Every release awaits, and a conversation can be continued or released
+        while it does, so each entry's timestamp is re-read from the live
+        registry right before its expiry check rather than taken from a snapshot.
+        The reaper passes a ``time.monotonic()`` reading, the clock the registry
+        holds, so a wall-clock step cannot expire every conversation at once.
+        """
+        for conv_key in list(self._manager._conversations):
+            last_used = self._manager._conversations.get(conv_key)
+            if last_used is None or now - last_used < _CONVERSATION_TTL_SECS:
                 continue
             if self._manager._conversation_busy(conv_key) is not None:
                 self._manager._conversations[conv_key] = now  # active — refresh
@@ -1181,7 +1357,7 @@ class ContinuationCoordinator(ManagerComponent):
                 logger.warning("Dropping malformed conversation registry key %r", conv_key)
                 self._manager._conversations.pop(conv_key, None)
                 continue
-            _ok, detail = self._manager.release_conversation(conv_id)
+            _ok, detail = await self._manager.release_conversation_async(conv_id)
             logger.info(
                 "Conversation %s expired after %ds idle: %s",
                 conv_id,

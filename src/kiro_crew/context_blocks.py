@@ -72,6 +72,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
     ("cancelled_turn", r"\[PREVIOUS TURN WAS CANCELLED"),
     ("interrupted_turn", r"\[INTERRUPTED TURN"),
+    ("change_card_results", r"\[CHANGE CARD RESULTS"),
     (REPLY_FORMAT_LABEL, r"\[REPLY FORMAT RULES\]"),
     ("request_header", r"\[CURRENT USER REQUEST"),
 )
@@ -157,7 +158,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("skill_hint", r"\[End of relevant skills\]"),
         ("channel_context", r"\[END SLACK THREAD CONTEXT\]"),
         ("conversation_replay", r"\[END CONVERSATION HISTORY\]"),
-        # Two spellings reach this opener: `context.py` emits
+        # Two spellings reach this opener: `context_assembly/turn_message.py` emits
         # `[End of hook context]` and `chat_runner.py` emits `[End hook
         # context]`. Both are real emit sites, so one alternation covers them
         # rather than picking whichever the assembly happened to use last.
@@ -169,6 +170,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("response_preferences", r"\[END RESPONSE PREFERENCES\]"),
         ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
         ("interrupted_turn", r"\[END INTERRUPTED TURN\]"),
+        ("change_card_results", r"\[END CHANGE CARD RESULTS\]"),
     )
 }
 
@@ -450,3 +452,71 @@ def measure_prompt(prompt: str, *, user_span: tuple[int, int], lifecycle: str) -
         "native": "UNKNOWN",
         "external_mcp": "UNKNOWN",
     }
+
+
+_CARD_TEXT_MAX: Final = 200
+_CARD_RESULTS_MAX: Final = 12
+
+
+def _card_text(value: object) -> str:
+    """One line of card-supplied text, with every bracket marker defused."""
+    text = " ".join(str(value or "").split())
+    text = text.replace("[", "(").replace("]", ")")
+    return text if len(text) <= _CARD_TEXT_MAX else text[: _CARD_TEXT_MAX - 1] + "…"
+
+
+def render_self_change_undos(undos: list[dict]) -> str:
+    """The block telling a crewmate the user took back a change it made to itself.
+
+    Reference data for the next turn, never a request: built from the gateway's
+    own undo record (which fields went back), with no values quoted -- the
+    crewmate reads its own record from its identity block, which already shows
+    the restored name, description and face. Empty input renders nothing.
+    """
+    if not undos:
+        return ""
+    lines = [
+        "[YOUR RECORD -- the user pressed Undo on a change you made to yourself since "
+        "your last turn. Reference data, not a request from the user.]"
+    ]
+    for item in undos[:_CARD_RESULTS_MAX]:
+        fields = ", ".join(_card_text(f) for f in item.get("changed") or [])
+        lines.append(f"- your {fields or 'record'}: back to what it was before your change")
+    lines.append(
+        "Your name, description and face as they stand now are in your identity block "
+        "above; speak of those, not of the change you made."
+    )
+    return "\n".join(lines) + "\n\n"
+
+
+def render_change_card_results(outcomes: list[dict]) -> str:
+    """The block telling a proposing agent how its change cards ended.
+
+    Reference data for the next turn, never a request: it is built from the
+    gateway's own record (kind, product-written title, status, summary) and
+    carries no secret value, since a card never holds one. Text from the card is
+    flattened to one line and its brackets defused, so a title cannot forge a
+    block boundary. Empty input renders nothing.
+    """
+    if not outcomes:
+        return ""
+    lines = [
+        "[CHANGE CARD RESULTS -- how the change cards you proposed ended since your "
+        "last turn. Reference data, not a request from the user.]"
+    ]
+    for item in outcomes[:_CARD_RESULTS_MAX]:
+        line = (
+            f"- {_card_text(item.get('kind'))} “{_card_text(item.get('title'))}”: "
+            f"{_card_text(item.get('status'))}"
+        )
+        summary = _card_text(item.get("summary"))
+        if summary:
+            line += f" — {summary}"
+        error = _card_text(item.get("error"))
+        if error and item.get("status") in ("failed", "partial"):
+            line += f" (error: {error})"
+        lines.append(line)
+    if len(outcomes) > _CARD_RESULTS_MAX:
+        lines.append(f"- … and {len(outcomes) - _CARD_RESULTS_MAX} more (get_change_status)")
+    lines.append("[END CHANGE CARD RESULTS]")
+    return "\n".join(lines) + "\n\n"

@@ -2,7 +2,7 @@
 
 ``kiro_crew.dashboard.handlers.files`` is the file API's import path and its patch
 surface. Most of what it defined now lives in the modules of
-``kiro_crew.dashboard.file_api``, one responsibility each, and ``file_api.compose``
+``kiro_crew.dashboard.file_api``, one responsibility each, and ``_facade_compose.compose``
 runs every function they define on the facade's globals. These tests pin:
 
 * the surface: every name the facade bound before the split still resolves on it,
@@ -39,6 +39,7 @@ from source_corpus import repo_files_named, repo_root
 
 import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.files as files
+from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import file_api
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -125,7 +126,7 @@ _BASE_NAMES = frozenset("""
         cgroup_scope_argv coerce_dict_section config_dir config_loader
         dashboard_slot_key data_home drained_to_thread executors extract_blocks
         extract_pdf_segments extract_slides extract_text file_delivery_consent
-        is_direct_local_request is_sensitive_path is_sensitive_resolved_path
+        is_direct_local_request is_sensitive_canonical_path is_sensitive_path is_sensitive_resolved_path
         is_tracked_channel is_unc_shape join_slides link_pattern_url_ok logger
         materialize_workspace_dir open_access_control_source part_stream
         path_contains_sensitive pinned_fs pinned_parent_replace_supported
@@ -253,6 +254,9 @@ _FACADE_DEFS = (
     "api_reveal_path",
     "_read_outbox_file",
     "api_outbox_notify",
+    "_owner_grant_releases_flagged",
+    "_audit_owner_grant_refusal",
+    "_audit_consented_download",
     "api_outbox_download",
     "api_outbox_list",
     "_gate_upload_file",
@@ -264,10 +268,12 @@ _FACADE_DEFS = (
     "_validate_dashboard_path",
     "_PathProbeBusy",
     "_run_path_probe",
+    "_walk_monotonic",
     "_probe_busy_response",
     "_PathProbe",
     "_probe_request_path",
     "_owner_view_bypasses_credential_pass",
+    "_read_safe_end",
     "api_file_read",
     "api_file_raw",
     "_resolve_diff_path",
@@ -386,10 +392,10 @@ def test_the_routes_and_the_package_reach_the_facade_objects() -> None:
         if getattr(files, getattr(route.handler, "__name__", ""), None) is not None
         and route.handler.__module__ == _FACADE
     ]
-    assert len({id(h) for h in served}) == 32
+    assert len({id(h) for h in served}) == 33
     assert [h.__name__ for h in served if getattr(files, h.__name__) is not h] == []
     reexports = _package_reexports()
-    assert len(reexports) == 34
+    assert len(reexports) == 35
     assert [n for n in reexports if getattr(handlers_pkg, n) is not getattr(files, n)] == []
 
 
@@ -550,7 +556,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
     }
     assert defined == set(_FACADE_DEFS)
     moved = {name for names in _BASE_OWNERS.values() for name in names}
-    assert len(defined | moved) == len(defined) + len(moved) == 134
+    assert len(defined | moved) == len(defined) + len(moved) == 139
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -1423,8 +1429,9 @@ def test_the_bare_hop_guard_reads_the_file_family(
 
 def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     """The baseline's per-file rows for the facade and its owners are each one's
-    measured count and sum to the one-module file's 82, and the scan counts a
-    response planted in an owner against that owner."""
+    measured count and sum to the one-module file's 82 less the codes added since
+    (the upload 413's ``file_too_large``), and the scan counts a response planted
+    in an owner against that owner."""
     import json
 
     import test_error_code_contract as guard
@@ -1437,7 +1444,7 @@ def test_the_error_code_rows_match_each_owner(tmp_path: Path) -> None:
     }
     live = guard.tally(guard.scan())
     assert rows == {path: live[path] for path in rows}
-    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 82
+    assert sum(counts.get("missing_code", 0) for counts in rows.values()) == 81
     assert {path for path in live if path.startswith("dashboard/file_api/")} <= set(rows)
     root = _mirror(tmp_path) / "src/kiro_crew"
     owner = root / "dashboard/file_api/search.py"
@@ -1607,7 +1614,7 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     )
     namespace = {"__name__": "file_api_compose_host_probe", "VALUE": "host"}
     namespace["helper"] = owner.helper
-    file_api.compose(namespace, (owner,))
+    facade_compose(namespace, (owner,))
 
     assert namespace["helper"]() == "host" and owner.helper is namespace["helper"]
     assert owner.outer()() == "host"
@@ -1621,5 +1628,5 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     assert namespace["helper"]() == "patched"
 
     fresh = {"__name__": "file_api_compose_host_probe", "VALUE": "fresh"}
-    file_api.compose(fresh, (owner,))
+    facade_compose(fresh, (owner,))
     assert owner.helper() == "fresh"

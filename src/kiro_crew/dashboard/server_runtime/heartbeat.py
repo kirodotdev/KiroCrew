@@ -8,7 +8,6 @@ shutdown.
 from __future__ import annotations
 
 import asyncio
-import time
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -111,13 +110,15 @@ def _start_loop_heartbeat(
         # than exit_after. A 5s interval keeps that worst case at ~20s (vs ~15s
         # at 10s), so genuinely-recoverable 15-20s stalls are less likely to be
         # ended while still landing well under the Electron probe's kill window.
-        # The alarm pauses while the host sleeps and this loop's clock does not
-        # advance either, so a laptop resume is not silence to the watchdog.
+        # The alarm pauses while the host sleeps and the lag is read on
+        # ``platform_compat.awake_now``, which a sleep does not advance on any
+        # platform (Windows' ``time.monotonic`` counts one), so a laptop resume
+        # is neither silence to the watchdog nor lag here.
         interval = 5.0
         while True:
-            t0 = time.monotonic()
+            t0 = platform_compat.awake_now()
             await asyncio.sleep(interval)
-            lag = time.monotonic() - t0 - interval
+            lag = platform_compat.awake_now() - t0 - interval
             # Claimed before beat(): check() holds its own capture flag until a beat.
             capture_lag = _loop_watchdog.claim_lag_enrichment(lag)
             _loop_watchdog.beat()

@@ -13,6 +13,7 @@ into the testable engine modules (:mod:`cloud.ec2`, :mod:`cloud.iam`,
 from __future__ import annotations
 
 import dataclasses
+import os
 import secrets
 import threading
 import time
@@ -43,6 +44,9 @@ def _deploy_with_progress(
     region: str,
     subnet_id: str = "",
     disable_rollback: bool = False,
+    ami_id: str = "",
+    extra_packages: str = "",
+    ssm_kms_key_arn: str = "",
 ) -> ec2.DeployResult:
     """Run ``ec2.deploy`` while streaming live CloudFormation + bootstrap logs.
 
@@ -68,6 +72,9 @@ def _deploy_with_progress(
                 region=region,
                 subnet_id=subnet_id,
                 disable_rollback=disable_rollback,
+                ami_id=ami_id,
+                extra_packages=extra_packages,
+                ssm_kms_key_arn=ssm_kms_key_arn,
                 proc_sink=lambda p: deploy_proc.__setitem__("proc", p),
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced on join
@@ -329,6 +336,22 @@ class _ExistingLaunch:
     saved: bool = False
 
 
+def _credential_source(profile: str) -> str:
+    """Name where the aws CLI takes this launch's credentials from.
+
+    Env-var keys are scrubbed from the child env (see ``aws.run_aws``), so the
+    source is always a profile: ``--profile``, else ``AWS_PROFILE`` /
+    ``AWS_DEFAULT_PROFILE``, else the default profile.
+    """
+    if profile:
+        return f"profile {profile}"
+    for var in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return f"profile {value} from {var}"
+    return "the default profile"
+
+
 def _new_tag() -> str:
     """A short, unique discovery tag: ``kc-<6 hex>``."""
     return f"kc-{secrets.token_hex(3)}"
@@ -345,6 +368,9 @@ def launch(
     keep_on_failure: bool = False,
     hold_tunnel: bool = True,
     login_target: Optional[KiroLoginTarget] = None,
+    ami_id: str = "",
+    extra_packages: str = "",
+    ssm_kms_key_arn: str = "",
 ) -> int:
     """Run the full interactive launch flow. Returns a process exit code.
 
@@ -421,6 +447,8 @@ def launch(
         return 1
     who = reach["account"]
     ui.ok(f"account {who} · {region} · reachable")
+    if reach.get("arn"):
+        ui.detail(f"Signed in as {reach['arn']} ({_credential_source(profile)})")
     if not (
         reach["ec2_reachable"] and reach["cloudformation_reachable"] and reach["ssm_reachable"]
     ):
@@ -481,8 +509,17 @@ def launch(
             f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
         )
 
-        if not assume_yes and not size_key:
-            if not ui.confirm(f"Launch a {tier.label} instance in {region}?", default=True):
+        # The stack is created in whatever account the aws CLI resolves, which
+        # can be a different account than the user expects (a shell left
+        # federated into another account). Name it and ask before the first
+        # deploy, `--size` included; only `--yes` skips the question.
+        if not assume_yes:
+            if not ui.confirm(
+                f"Create the Kiro Crew stack in AWS account {who} "
+                f"({_credential_source(profile)}) and launch a {tier.label} "
+                f"instance in {region}?",
+                default=True,
+            ):
                 ui.info("Aborted — nothing was created.")
                 return 0
     else:
@@ -497,6 +534,25 @@ def launch(
                 return 1
             ui.warn("--subnet is ignored for an existing stack (its network is fixed).")
             ui.detail("Use `kirocrew cloud launch --new --subnet …` for a fresh instance.")
+        # Same rule for the image and package set: both are fixed when the
+        # instance is created.
+        fixed = [
+            f
+            for f, v in (
+                ("--ami", ami_id),
+                ("--extra-packages", extra_packages),
+                ("--ssm-kms-key", ssm_kms_key_arn),
+            )
+            if v
+        ]
+        if fixed:
+            names = " / ".join(fixed)
+            if assume_yes:
+                ui.fail(f"{names} cannot apply to the existing stack (set at creation).")
+                ui.detail(f"Use `kirocrew cloud launch --new {names} …` for a fresh instance.")
+                return 1
+            ui.warn(f"{names} ignored for an existing stack (set at creation).")
+            ui.detail(f"Use `kirocrew cloud launch --new {names} …` for a fresh instance.")
 
     # ── 4. Launch ─────────────────────────────────────────────────────────
     steps.step("Launching")
@@ -506,6 +562,12 @@ def launch(
         ui.info(f"CloudFormation stack: {ec2.stack_name(tag)}")
         if subnet_id:
             ui.info(f"Subnet: {subnet_id} (explicit --subnet; auto-discovery skipped)")
+        if ami_id:
+            ui.info(f"AMI: {ami_id} (explicit --ami)")
+        if extra_packages:
+            ui.info(f"Extra packages: {extra_packages}")
+        if ssm_kms_key_arn:
+            ui.info(f"Session Manager KMS key: {ssm_kms_key_arn} (explicit --ssm-kms-key)")
         # NB: do NOT persist last_tag yet. Saving it BEFORE the deploy succeeds
         # would leave the record pointing at a ROLLBACK_COMPLETE / no-instance
         # stack on a failed first launch, and the NEXT `launch` would then treat
@@ -529,6 +591,9 @@ def launch(
                 region=region,
                 subnet_id=subnet_id,
                 disable_rollback=keep_on_failure,
+                ami_id=ami_id,
+                extra_packages=extra_packages,
+                ssm_kms_key_arn=ssm_kms_key_arn,
             )
         except AWSError as exc:
             ui.fail(str(exc))

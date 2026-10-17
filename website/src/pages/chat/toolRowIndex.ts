@@ -106,6 +106,21 @@ export function lookupLogEntry(index: ToolRowIndex, toolCallId: string | undefin
 }
 
 /**
+ * Whether `ownMessage` is the newest 🔧 row for its tool_call_id. A reused id
+ * (reset, reconnect replay) leaves older rows sharing the id-wide log entry, so
+ * anything that must belong to one occurrence renders only on the newest row.
+ */
+export function isNewestOccurrence(index: ToolRowIndex, toolCallId: string | undefined, ownMessage: ChatMessage): boolean {
+  if (!toolCallId) return false
+  const siblings = index.toolMsgsById.get(toolCallId)
+  if (!siblings) return false
+  for (let j = siblings.length - 1; j >= 0; j--) {
+    if (siblings[j].content.startsWith('🔧')) return siblings[j] === ownMessage
+  }
+  return false
+}
+
+/**
  * The 🚫 deny-sibling for a pill: the newest tool message sharing the pill's
  * tool_call_id whose content starts with 🚫, looking only ABOVE the pill's own
  * message (the old scan walked from the end and stopped at the pill itself).

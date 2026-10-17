@@ -7,7 +7,12 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { classifyAuthBlock, defaultedPort, portIsSchemeDefault } = require("../gateway-auth-hint");
+const {
+  classifyAuthBlock,
+  defaultedPort,
+  portIsSchemeDefault,
+  appImageBundledCliPath,
+} = require("../gateway-auth-hint");
 
 test("our own local gateway points at THIS machine", () => {
   assert.equal(classifyAuthBlock({ localOwner: "kirocrew" }), "local");
@@ -154,4 +159,47 @@ test("no shell module keys anything off the raw URL.port property", () => {
     [],
     "read the port with defaultedPort(url) instead of new URL(url).port",
   );
+});
+
+// ── Packaged AppImage: resolve the bundled launcher the token page names ─────
+//
+// #16258: a packaged AppImage that adopts a local gateway it did not spawn
+// correctly refuses a silent token mint, and the token page then told the user
+// to run `kirocrew token`. But the AppImage installs no `kirocrew` on PATH, so
+// that instruction was unrunnable. The launcher ships inside the image;
+// appImageBundledCliPath resolves its absolute path, which the shell forwards
+// to token-prompt.html as ?cli= and the page names in the LOCAL recovery
+// command (see token-prompt.test.js for the rendered wording).
+
+test("appImageBundledCliPath returns the launcher only for an AppImage", () => {
+  const bundled = "/tmp/.mount_Kiro/resources/backend-dist/kirocrew-backend-x64/bin/kirocrew";
+  const resolveBundled = () => bundled;
+
+  // AppImage ($APPIMAGE set) with an absolute bundled launcher: forward it.
+  assert.equal(
+    appImageBundledCliPath({ APPIMAGE: "/home/u/Kiro Crew.AppImage" }, resolveBundled),
+    bundled,
+  );
+});
+
+test("appImageBundledCliPath declines when $APPIMAGE is absent (normal install)", () => {
+  const resolveBundled = () => "/opt/kirocrew/bin/kirocrew";
+  assert.equal(appImageBundledCliPath({}, resolveBundled), "");
+  assert.equal(appImageBundledCliPath({ APPIMAGE: "" }, resolveBundled), "");
+  assert.equal(appImageBundledCliPath({ APPIMAGE: "   " }, resolveBundled), "");
+  assert.equal(appImageBundledCliPath(undefined, resolveBundled), "");
+});
+
+test("appImageBundledCliPath declines a bare on-PATH launcher name", () => {
+  // When the resolver falls back to a bare `kirocrew`, forwarding it would
+  // reintroduce the very on-PATH assumption this fix removes.
+  assert.equal(appImageBundledCliPath({ APPIMAGE: "/home/u/Kiro.AppImage" }, () => "kirocrew"), "");
+});
+
+test("appImageBundledCliPath is defensive about the resolver", () => {
+  const env = { APPIMAGE: "/home/u/Kiro.AppImage" };
+  assert.equal(appImageBundledCliPath(env, undefined), "");
+  assert.equal(appImageBundledCliPath(env, () => { throw new Error("boom"); }), "");
+  assert.equal(appImageBundledCliPath(env, () => null), "");
+  assert.equal(appImageBundledCliPath(env, () => ""), "");
 });

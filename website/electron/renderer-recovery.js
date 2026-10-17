@@ -17,8 +17,9 @@
 // Why bounded rather than always-reload: a renderer that dies DURING startup
 // (bad build, integrity failure, immediate OOM) would otherwise reload forever,
 // spinning CPU and hiding the failure. After `maxAttempts` deaths inside
-// `windowMs`, this stops and reports, so a genuinely broken build surfaces as a
-// visible error instead of an invisible loop.
+// `windowMs`, this stops and reports through `onGiveUp`, so a genuinely broken
+// build surfaces as a visible error instead of an invisible loop. The error the
+// user sees at that point is renderer-exhausted-notice.js.
 //
 // Pure logic + injected dependencies: Electron main is not exercised by the unit
 // test runner, so the decision has to be testable without a live BrowserWindow

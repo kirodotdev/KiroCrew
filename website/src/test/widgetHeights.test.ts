@@ -16,6 +16,7 @@
  * produces the one-way drift the cache exists to remove.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { readPageFamily } from './pageFamily'
 
 const LS_KEY = 'mc-widget-heights'
 
@@ -121,7 +122,7 @@ describe('widgetHeights', () => {
     const read = (...p: string[]) => readFileSync(join(__dirname, '..', ...p), 'utf8')
     const util = read('utils', 'widgetHeights.ts')
     const frame = read('components', 'WidgetFrame.tsx')
-    const page = read('pages', 'ArtifactsPage.tsx')
+    const page = readPageFamily('ArtifactsPage')
     // WidgetThumb -- the gallery's consumer of this cache -- was extracted out of
     // ArtifactsPage into this shared module so a second page (the Drive library
     // gallery) renders identical previews. So the CONSUMER moved; the invariant

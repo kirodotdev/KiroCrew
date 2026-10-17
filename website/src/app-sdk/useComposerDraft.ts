@@ -49,6 +49,11 @@ import {
 } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { mergeIntoDraft as appendToDraft } from '../utils/chatDrafts'
+import {
+  removeFollowUpOption,
+  selectSingleFollowUpOption,
+  type OwnedSuffix,
+} from '../lib/followUpToggle'
 
 /** Max auto-grow height (px) before the box scrolls instead of growing. */
 const DEFAULT_MAX_HEIGHT = 240
@@ -101,6 +106,24 @@ export interface ComposerDraftOptions {
    * so an option that is no longer offered stops being a removable block.
    */
   followUpOptions?: readonly string[]
+  /**
+   * The offer's select mode — `deriveFollowUpOptions`' `followUpMulti`. `true`
+   * (the default) for `[OPTIONS:]`: several picks compose into a `, `-joined
+   * tail, read back off the draft against `followUpOptions`. `false` for
+   * `[OPTION:]`: a pick REPLACES the previous one, and ownership is tracked by a
+   * recorded span (`lib/followUpToggle`) rather than inferred from the text — so
+   * typed text that merely looks like a label is never taken for a chip pick and
+   * never deleted (#18013). A caller that omits this keeps multi-select.
+   */
+  multi?: boolean
+  /**
+   * Identity of the row the offer came from — `deriveFollowUpOptions`'
+   * `followUpSourceKey`. For a single-select offer the picked state and the
+   * owned span reset when this changes, so a newer reply repeating the same
+   * labels cannot replace text the user picked from the older offer. Ignored
+   * when `multi` is true (the label list is reset enough there).
+   */
+  sourceKey?: string | null
   /**
    * Size above which `exceedsByteLimit` reports true. Omitted or 0 = no limit.
    * The hook never blocks a send itself — the surface owns its own refusal and
@@ -170,6 +193,8 @@ export interface ComposerDraft {
 export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft {
   const {
     followUpOptions = [],
+    multi = true,
+    sourceKey = null,
     maxBytes = 0,
     maxHeight = DEFAULT_MAX_HEIGHT,
     initialDraft = '',
@@ -191,7 +216,7 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
   const onDraftChangeRef = useRef(onDraftChange)
   onDraftChangeRef.current = onDraftChange
 
-  const setDraft = useCallback<Dispatch<SetStateAction<string>>>(next => {
+  const writeDraft = useCallback<Dispatch<SetStateAction<string>>>(next => {
     if (!controlledRef.current) {
       // Passed through rather than resolved here, so React's own update queueing
       // still applies and two updaters in one tick compose instead of colliding.
@@ -201,6 +226,19 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     const value = typeof next === 'function' ? next(draftRef.current) : next
     onDraftChangeRef.current?.(value)
   }, [])
+
+  // Single-select chip ownership (declared below) is invalidated by any write that
+  // is NOT a chip pick — the user typing, a handed-back submit, a seeded quote. The
+  // public `setDraft` is the surface's own write path (its textarea `onChange`), so
+  // it clears that ownership; the chip-pick branch writes through `writeDraft`
+  // directly, so a pick does not clear its own ownership. Assigned after the
+  // ownership ref/state exist (hooks run top-to-bottom), via a ref so `setDraft`'s
+  // identity stays stable.
+  const clearSingleOwnershipRef = useRef<() => void>(() => {})
+  const setDraft = useCallback<Dispatch<SetStateAction<string>>>(next => {
+    clearSingleOwnershipRef.current()
+    writeDraft(next)
+  }, [writeDraft])
 
   // Auto-grow so a multi-line paste or a seeded quote is fully visible instead of
   // being clipped to the element's `rows` default, then scroll past `maxHeight`.
@@ -290,13 +328,43 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     setDraft(prev => appendToDraft(prev, incoming))
   }, [setDraft])
 
+  // --- Multi-select picked state ---------------------------------------------
   // What the last toggle wrote, the base it was built from, and the picks it wrote.
   // The picks are stored rather than re-read because the text does not determine them
   // uniquely: with overlapping options the re-derived set can differ from the real one,
   // and a base inferred from that wrong set eats the user's own prose.
   const lastJoinRef = useRef<{ produced: string; base: string; picks: readonly string[] } | null>(null)
 
+  // --- Single-select ownership (#18013) --------------------------------------
+  // `[OPTION:]` is a single choice: a pick REPLACES the previous one. The main
+  // chat already solved this with `lib/followUpToggle`'s recorded-span model, and
+  // the fix for this hook is to REUSE it rather than teach `pickedFromDraft` to
+  // tell a single-select pick from the user's own prose — which was the cause of
+  // the six #17948 review defects (any typed text equal to a label, or a composite
+  // `a, b` label, could be read back as a removable chip pick). Here only text a
+  // chip click wrote is owned, ownership ends on any other write (`setDraft`
+  // clears it below), and nothing is inferred from the draft's text.
+  const ownedRef = useRef<OwnedSuffix | null>(null)
+  const [singlePicked, setSinglePicked] = useState<ReadonlySet<string>>(() => new Set())
+  const singlePickedRef = useRef(singlePicked)
+  singlePickedRef.current = singlePicked
+
+  // A new single-select offer (its source row or its label list changes, or the
+  // mode flips) resets the picked state and the owned span: the previous pick is
+  // no longer the chips' text to replace, and the draft the user kept becomes an
+  // unowned base. Multi-select rows do not use this state, so flipping to multi
+  // just clears it. Keyed off the labels AND the source row because a newer reply
+  // can repeat the same labels (see `deriveFollowUpOptions`' `followUpSourceKey`).
+  const followUpOptionsKey = followUpOptions.join('\x00')
+  const singleSourceKey = multi ? null : sourceKey
+  useEffect(() => {
+    ownedRef.current = null
+    setSinglePicked(new Set())
+  }, [followUpOptionsKey, singleSourceKey, multi])
+
   const picked = useMemo<ReadonlySet<string>>(() => {
+    // Single-select highlight is the owned pick, not a text re-derivation.
+    if (!multi) return singlePicked
     // While the draft is still exactly what a toggle wrote, the memo KNOWS what was
     // picked and text re-derivation must not overrule it. Re-deriving is ambiguous
     // whenever one option is another plus the separator ("Run tests" vs
@@ -305,22 +373,58 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
     const memo = lastJoinRef.current
     if (memo && memo.produced === draft) return new Set(memo.picks)
     return new Set(pickedFromDraft(draft, followUpOptions))
-  }, [draft, followUpOptions])
+  }, [multi, singlePicked, draft, followUpOptions])
+
+  /**
+   * Any write the user makes (typing, a handed-back submit, a seeded quote)
+   * invalidates single-select chip OWNERSHIP: the recorded span describes a
+   * chip-produced draft, so once the text is something else the un-pick path must
+   * not reach into it. Only `ownedRef` is cleared, not the visual `singlePicked`
+   * highlight — mirroring the main chat's `composerUserEdit`: a click on a
+   * still-highlighted chip whose span is no longer owned un-highlights it and
+   * leaves the edited text untouched (`removeFollowUpOption` with `owned=null`).
+   * `toggleOption`'s single-select branch writes through `writeDraft`, bypassing
+   * this, so a chip pick does not clear its own ownership. Multi-select does not
+   * use `ownedRef`, so this is a no-op there.
+   */
+  const clearSingleOwnership = useCallback(() => {
+    if (ownedRef.current !== null) ownedRef.current = null
+  }, [])
+  clearSingleOwnershipRef.current = clearSingleOwnership
 
   /**
    * Picking edits the DRAFT rather than sending: the text in the composer is what gets
    * submitted, so a choice stays amendable.
    *
-   * The memo is authoritative while the draft still equals what it produced; once the user
-   * has typed, the picks are re-derived from the text and an option they have woven into
-   * their own sentence correctly stops being a removable block.
+   * SINGLE-select (`multi === false`): routed through `lib/followUpToggle`'s
+   * ownership model — a pick replaces the previous one, un-picking removes only the
+   * span the chips wrote, and user text that merely equals a label is never touched.
+   *
+   * MULTI-select: the picks compose into a `, `-joined tail. The memo is authoritative
+   * while the draft still equals what it produced; once the user has typed, the picks
+   * are re-derived from the text and an option they have woven into their own sentence
+   * correctly stops being a removable block.
    *
    * Computed OUTSIDE the state updater, against `draftRef`. A state updater must be pure:
-   * StrictMode invokes it twice, and the memo write below is exactly the kind of side
+   * StrictMode invokes it twice, and the ref writes below are exactly the kind of side
    * effect that makes the second pass see state the first pass already changed.
    */
   const toggleOption = useCallback((option: string) => {
     const prev = draftRef.current
+    if (!multi) {
+      // Single-select: ownership-based, mirroring the main chat (`followUpChips`).
+      const isPicked = singlePickedRef.current.has(option)
+      const r = isPicked
+        ? removeFollowUpOption(prev, ownedRef.current, option)
+        : selectSingleFollowUpOption(prev, ownedRef.current, option)
+      ownedRef.current = r.owned
+      const next = new Set<string>()
+      if (!isPicked) next.add(option)
+      singlePickedRef.current = next
+      setSinglePicked(next)
+      writeDraft(r.value)
+      return
+    }
     const memo = lastJoinRef.current
     const remembered = memo !== null && memo.produced === prev
     const current = remembered ? [...memo.picks] : pickedFromDraft(prev, followUpOptions)
@@ -355,7 +459,7 @@ export function useComposerDraft(opts: ComposerDraftOptions = {}): ComposerDraft
       : tail.endsWith(',') ? `${tail} ${newBlock}` : `${tail}, ${newBlock}`
     lastJoinRef.current = { produced, base, picks: next }
     setDraft(produced)
-  }, [followUpOptions, setDraft])
+  }, [multi, followUpOptions, setDraft, writeDraft])
 
   const exceedsByteLimit = useCallback(
     (text: string) => maxBytes > 0 && draftByteSize(text) > maxBytes,

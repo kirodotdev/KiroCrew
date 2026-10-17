@@ -14,6 +14,7 @@ import ctypes.util
 import enum
 import errno
 import functools
+import hashlib
 import importlib
 import io
 import ipaddress
@@ -37,7 +38,18 @@ import types
 from asyncio import subprocess as aio_subprocess
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Mapping, NamedTuple, Optional, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Iterator,
+    Mapping,
+    NamedTuple,
+    Optional,
+    Sequence,
+    TypeVar,
+)
 
 # Loaded with this module, so each owner is complete before the forwarding at the end of
 # this file is installed and before any reader can reach it (see ``_owner``).
@@ -285,10 +297,14 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
     wedged disk must delay this exit, never hold it" true of the wait and not only of
     the work.
 
-    The ``gateway.log`` tail is not spelled out again here.
-    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` is the shared async
-    hard-exit drain for that queue -- same pool, its own outer deadline, and it never
-    raises -- so every hard-exit path keeps one spelling and one ceiling for it.
+    The queued SEL audit tail is drained first, then the ``gateway.log`` tail --
+    the order :mod:`kiro_crew.slack.events` uses, so a SEL write failure's own log
+    line still reaches a live listener. Neither is spelled out again here:
+    :func:`kiro_crew.sel.flush_audit_queue_before_hard_exit` and
+    :func:`kiro_crew.cli.drain_log_queue_before_hard_exit` are the shared async
+    hard-exit drains for those two queues -- same pool, each its own outer
+    deadline, and neither raises -- so every hard-exit path keeps one spelling and
+    one ceiling for each.
     """
     logger.critical(
         "Gateway restart could not replace this process (target %r); exiting instead of "
@@ -298,6 +314,7 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
         exc_info=True,
     )
     from kiro_crew.cli import drain_log_queue_before_hard_exit
+    from kiro_crew.sel import flush_audit_queue_before_hard_exit
 
     try:
         await asyncio.wait_for(
@@ -310,6 +327,15 @@ async def exit_after_failed_restart_exec(target: str | None) -> None:
         # Also the deadline: TimeoutError is an Exception, and a fatal exit must never
         # be blocked by bookkeeping or logging.
         pass
+    # The queued SEL audit tail -- the restart's own security-of-record event among
+    # it -- dies with the os._exit below unless it is drained first. This is a gateway
+    # hard exit like the normal shutdown, so it drains SEL
+    # the same bounded way. Flush SEL BEFORE the gateway.log tail (the order
+    # ``slack/events.py`` already uses): a SEL write failure logs its "dropped N events"
+    # line, and draining gateway.log first would stop the listener that line needs, so
+    # the audit loss would leave no trace. The shared helper offloads to this pool under
+    # its own deadline and never raises.
+    await flush_audit_queue_before_hard_exit()
     # The gateway.log tail has its own async hard-exit drain, which already offloads to
     # this pool under its own deadline and already never raises. Calling it keeps one
     # spelling and one ceiling for that queue across every hard-exit path.
@@ -1260,6 +1286,46 @@ def proc_phys_footprint_bytes_for_pid(pid: int) -> int | None:
     if not IS_MACOS:
         return None
     return _darwin_process_phys_footprint_bytes(pid)
+
+
+def darwin_libproc_available() -> bool:
+    """True when ``libproc`` loads, so the macOS memory and tree probes can answer."""
+    return _darwin_libproc_handle() is not None
+
+
+def darwin_footprint_tree_mb(
+    pid: int, exclude_pids: "frozenset[int] | set[int]" = frozenset()
+) -> float | None:
+    """Footprint (MiB) of *pid* plus its live descendants on macOS; None elsewhere.
+
+    The session RSS ceiling's macOS reading. Each process is measured by
+    ``phys_footprint`` (see ``_darwin_process_phys_footprint_bytes``), the figure
+    the runtime ceilings judge by. Children come from the kernel's own
+    ``proc_listchildpids`` list of a live parent, so no stale parent field can
+    attach a stranger's subtree. A pid in *exclude_pids* is skipped with its
+    subtree, and a descendant whose footprint cannot be read adds nothing.
+
+    None when the root itself cannot be read: "unknown, do not judge", the
+    contract :func:`proc_rss_tree_mb_for_pid` keeps on Windows. In-process
+    libproc calls only, one or two per process; executor thread, never the loop.
+    """
+    if not IS_MACOS:
+        return None
+    if pid in exclude_pids:
+        return 0.0
+    total = _darwin_process_phys_footprint_bytes(pid)
+    if total is None:
+        return None
+    seen = {pid}
+    frontier = [pid]
+    while frontier:
+        for child in darwin_child_pids(frontier.pop()) or ():
+            if child in seen or child in exclude_pids:
+                continue
+            seen.add(child)
+            total += _darwin_process_phys_footprint_bytes(child) or 0
+            frontier.append(child)
+    return total / (1024 * 1024)
 
 
 def _darwin_process_start_microtime(pid: int) -> str | None:
@@ -2957,7 +3023,11 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     is asked over a superset of ``resolved.parents`` plus the target. Symlinks
     met on the way are deliberately absent: their mode is meaningless (0777 on
     Linux) and they cannot be edited in place, only replaced, which the directory
-    holding them — present in the result — already governs.
+    holding them — present in the result — governs, except in a sticky directory,
+    where an account that may write the directory replaces only the entries it
+    owns. A question that admits a sticky directory therefore also needs each
+    symlink's owner, and asks :func:`traversed_components_and_links`, the same
+    walk reporting the symlinks as well.
 
     POSIX path semantics (``os.sep``-rooted); Windows callers keep their own
     ACL-driven chains and must not route through here.
@@ -2966,6 +3036,25 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     :data:`_MAX_SYMLINK_HOPS` expansions. The fail direction is "could not
     enumerate", never a shorter list: a caller that treats ``None`` as anything
     but a refusal is answering a question it did not ask.
+    """
+    walk = traversed_components_and_links(path)
+    return None if walk is None else walk[0]
+
+
+def traversed_components_and_links(
+    path: str | os.PathLike[str],
+) -> tuple[list[Path], list[Path]] | None:
+    """:func:`traversed_components` together with every symlink that walk follows.
+
+    The first list is exactly what :func:`traversed_components` returns. The
+    second names each symlink the walk expands, in visit order and each once,
+    spelled as the directory the walk read it from joined with its name, so the
+    directory holding each link is in the first list. A trust question needs
+    these links when it admits a sticky directory: an account that may write one
+    replaces only the entries it owns there, so a symlink's owner, which neither
+    the directory's owner nor its mode reveals, decides who can retarget it.
+
+    ``None`` exactly when :func:`traversed_components` answers ``None``.
     """
     text = os.fspath(path)
     if not os.path.isabs(text):
@@ -2977,6 +3066,7 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
     resolved = os.sep
     hops = 0
     visited: dict[str, None] = {}
+    links: dict[str, None] = {}
     while pending:
         name = pending.pop()
         if name in ("", os.curdir):
@@ -2996,6 +3086,7 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
         if not is_link:
             resolved = candidate
             continue
+        links[candidate] = None
         hops += 1
         if hops > _MAX_SYMLINK_HOPS:
             return None
@@ -3007,7 +3098,148 @@ def traversed_components(path: str | os.PathLike[str]) -> list[Path] | None:
             resolved = os.sep
         pending.extend(reversed(target.split(os.sep)))
     visited[resolved] = None
-    return [Path(component) for component in visited]
+    return [Path(component) for component in visited], [Path(link) for link in links]
+
+
+def _group_shared_with_another_account(gid: int) -> Optional[str]:
+    """Why group ``gid`` admits an account other than this one, or ``None`` if it does not.
+
+    A group-writable directory is a foreign writer's door only when the GROUP holds
+    somebody else. A host with user-private groups leaves ordinary directories
+    group-writable to a group holding the operator alone, and refusing there would
+    reject a supported layout for no gain -- so the mode bit cannot decide this and
+    the membership has to.
+
+    Membership has two halves and BOTH are needed. ``gr_mem`` lists supplementary
+    members only: an account whose PRIMARY group this is never appears there, so a
+    thoroughly shared group can present an empty ``gr_mem`` and read as private.
+    The passwd database supplies the other half.
+
+    FAILS CLOSED, and that is the whole point of returning a reason rather than a
+    bool. Calling a group private takes a successful read of both databases, so a
+    lookup that raises, or a passwd database that will not enumerate -- SSSD and
+    other directory backends commonly refuse, and a directory host is exactly where
+    groups are shared -- leaves privacy UNPROVEN and refuses. The account's own
+    presence in the enumeration is the control: a passwd database that cannot see
+    this account cannot show that no other account shares the gid, however many
+    rows it returns.
+
+    ``getgrgid`` answers with ONE group entry, but a host may carry several entries
+    with the same gid, and each grants its members that gid as a supplementary
+    group. So the supplementary half reads every entry carrying the gid.
+    """
+    # Local import: neither module exists on Windows, which never reaches here --
+    # only the POSIX arm of the walk calls this; the Windows arm reads the ACL.
+    import grp
+    import pwd
+
+    try:
+        entry = grp.getgrgid(gid)
+    except (KeyError, OSError):
+        return f"a group (gid {gid}) this host cannot resolve"
+    try:
+        me = pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        return f"group {entry.gr_name!r}, which cannot be compared to this account"
+    try:
+        same_gid = [g for g in grp.getgrall() if g.gr_gid == gid]
+    except OSError:
+        return f"group {entry.gr_name!r}, whose entries this host will not enumerate"
+    members = {name for g in [entry, *same_gid] for name in g.gr_mem}
+    supplementary = sorted(members - {me})
+    if supplementary:
+        return f"group {entry.gr_name!r}, shared with {len(supplementary)} other account(s)"
+    try:
+        everyone = pwd.getpwall()
+    except OSError:
+        everyone = []
+    if not any(person.pw_name == me for person in everyone):
+        return f"group {entry.gr_name!r}, whose membership this host will not enumerate"
+    primary = sorted({p.pw_name for p in everyone if p.pw_gid == gid and p.pw_name != me})
+    if primary:
+        return f"group {entry.gr_name!r}, the primary group of {len(primary)} other account(s)"
+    return None
+
+
+_ACL_XATTR_VERSION = 2
+_ACL_USER = 0x02
+_ACL_GROUP = 0x08
+_ACL_MASK = 0x10
+_ACL_WRITE = 0o2
+# A filesystem or kernel that keeps no POSIX ACL answers with one of these.
+_NO_ACL_ERRNOS = frozenset(
+    e for e in (getattr(errno, n, None) for n in ("ENODATA", "ENOTSUP", "EOPNOTSUPP")) if e
+)
+
+
+def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
+    """Why ``node``'s POSIX access ACL lets another account write it, or ``None``.
+
+    With an extended ACL the mode's group bits show the ACL mask, so a named entry
+    can give a peer write access behind a group bit that looks private. Only an
+    EFFECTIVE write counts: a named entry's bits are ANDed with the mask. A named
+    user that is ``mine`` (this process's uid) or root is already trusted, and a named group gets
+    the same membership question as the owning group. The default ACL governs what
+    is created inside, not this directory, so it is not read.
+
+    No ACL API (macOS, BSD) or no ACL on this node leaves the mode bits as the test.
+    Any other read failure, or a value this parser does not recognise, fails closed.
+    """
+    getxattr = getattr(os, "getxattr", None)
+    if getxattr is None:
+        return None
+    try:
+        raw = getxattr(node, "system.posix_acl_access")
+    except OSError as exc:
+        if exc.errno in _NO_ACL_ERRNOS:
+            return None
+        return "an ACL this host cannot read"
+    if len(raw) < 4 or (len(raw) - 4) % 8 or struct.unpack_from("<I", raw)[0] != _ACL_XATTR_VERSION:
+        return "an ACL this host cannot read"
+    entries = [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
+    mask = next((perm for tag, perm, _ in entries if tag == _ACL_MASK), 0o7)
+    for tag, perm, ident in entries:
+        if not perm & mask & _ACL_WRITE:
+            continue
+        if tag == _ACL_USER and ident not in (mine, 0):
+            return f"an ACL entry for another account (uid {ident})"
+        if tag == _ACL_GROUP:
+            shared = _group_shared_with_another_account(ident)
+            if shared is not None:
+                return f"an ACL entry for {shared}"
+    return None
+
+
+def group_write_admits_another_account(path: Path, gid: int) -> Optional[str]:
+    """Whom the group write bit on *path* admits besides this account, or ``None``.
+
+    *gid* is the group *path* belongs to, its ``st_gid``. ``None`` means the bit
+    admits this account alone, so a trust question may count it as the owner's own
+    write bit. Any other answer is a noun phrase naming whom the bit may admit, for
+    an operator-facing message, and anything that cannot be read is such an answer.
+
+    Two questions decide it, the first answer winning:
+
+    * :func:`_acl_admits_another_account`: with an extended POSIX ACL the mode's
+      group bits are the ACL's mask, so an entry for another account or a shared
+      group can write behind a bit the owning group alone seems to hold.
+    * :func:`_group_shared_with_another_account`: whether group *gid* holds anyone
+      besides this account.
+
+    Holders neither database shows -- a group password, a service unit's
+    ``SupplementaryGroups=``, a subordinate gid range, a directory account whose ids
+    collide with a local group -- are an administrator's to create, and a trust
+    question that admits root's components already trusts the administrator.
+
+    Every check that credits a group write bit to its owner asks this, so one
+    directory gets one answer: :func:`kiro_crew.cloud.source._first_replaceable`
+    for the chain that holds a staged source tarball, and
+    :func:`kiro_crew.github_runner._who_can_change` for what a provider CLI link's
+    path reads. POSIX only: on Windows the staging walk reads the ACL instead, and
+    the link rule runs only on Linux.
+    """
+    mine = os.geteuid()
+    return _acl_admits_another_account(path, mine) or _group_shared_with_another_account(gid)
 
 
 def _is_root_owned_path(path: str) -> bool:
@@ -5393,6 +5625,44 @@ def process_argv_matches_exact(pid: int, expected_argv: Sequence[str]) -> bool:
     return False
 
 
+def process_argv_fingerprint(pid: int) -> str | None:
+    """Return a sha256 hex fingerprint of *pid*'s live argv, or None if unreadable.
+
+    The point is ONE basis for "recorded" and "observed": the caller takes the
+    fingerprint of its own child right after spawning it, and later takes it
+    again from whatever runs at the recorded pid. Equal fingerprints mean the
+    kernel reports the same command line both times, whatever the kernel did to
+    it (a shebang ``aws`` entrypoint shows up as ``<interpreter> /path/aws ...``
+    in both reads). Comparing a stored fingerprint never depends on rebuilding
+    the command line from settings that may have changed since.
+
+    Linux: ``/proc/<pid>/cmdline`` as the NUL-separated vector. macOS: the
+    ``KERN_PROCARGS2`` vector from :func:`darwin_process_argv`, NUL-joined.
+    Windows answers None, so a Windows record keeps the exact command-line
+    check, which never matches a ``.cmd``/``.bat`` shim. An empty, unreadable or
+    unsupported argv answers None, never a fingerprint of nothing.
+    """
+    if IS_WINDOWS or type(pid) is not int or pid <= 1:
+        return None
+    try:
+        if sys.platform == "linux":
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if raw.endswith(b"\0"):
+                raw = raw[:-1]  # trailing NUL terminator
+        elif sys.platform == "darwin":
+            argv = darwin_process_argv(pid)
+            if not argv:
+                return None
+            raw = b"\0".join(a.encode("utf-8", errors="surrogatepass") for a in argv)
+        else:
+            return None
+    except Exception:
+        return None
+    if not raw:
+        return None  # zombie / kernel thread: no argv to fingerprint
+    return hashlib.sha256(raw).hexdigest()
+
+
 def listening_pid_tool() -> str:
     """Return the external tool find_listening_pids relies on: 'lsof' / 'netstat'."""
     return "netstat" if IS_WINDOWS else "lsof"
@@ -5944,6 +6214,18 @@ def process_owner_uid(pid: int) -> int | None:
     return None
 
 
+def effective_uid() -> int | None:
+    """Return this process's effective uid, or ``None`` where there is no uid concept.
+
+    Windows has no ``os.geteuid``; a caller that formats a per-user path from the
+    uid (``/run/user/<uid>``) must treat ``None`` as "no such path on this
+    platform" rather than guess a number.
+    """
+    if not IS_POSIX:
+        return None
+    return os.geteuid()
+
+
 # Tri-state liveness results for pid_liveness().
 PID_DEAD = "dead"  # confirmed not running -> safe to prune
 PID_ALIVE = "alive"  # confirmed running
@@ -6258,7 +6540,9 @@ def process_start_time(pid: int) -> str | None:
     generations on the same host while the PID still names the same process
     object, and unequal once that PID has been recycled onto another. Units
     differ per platform and are deliberately not normalised -- nothing ever
-    compares one host's value against another's, and no caller parses it.
+    compares one host's value against another's. One caller parses the
+    Windows token: ``session_pid._pid_age_seconds`` turns that FILETIME into a
+    process age, so a change to the Windows encoding must change that parser too.
 
     Callers use it as a PID-reuse guard before signalling, so an unreadable
     value must fail SAFE: ``None`` means "identity unconfirmed", which every
@@ -6369,6 +6653,11 @@ def _own_identity_token(pid: int) -> str | None:
     return None
 
 
+def process_incarnation_id(pid: int) -> str | None:
+    """Read a reboot-unique process token without the caller-lifetime cache."""
+    return _own_identity_token(pid)
+
+
 def own_process_start_time() -> str | None:
     """This process's own start-time identity, read once and cached.
 
@@ -6437,7 +6726,7 @@ def flock_owner_pid(path: str | os.PathLike | os.stat_result) -> int | None:
     and no ``/proc`` surface names the inheritor: use
     :func:`pids_holding_file` for candidates and do not present them as owners.
 
-    Returns ``None`` on non-Linux, when ``/proc/locks`` is unreadable, or when no
+    Returns ``None`` on non-Linux, when ``/proc`` is unreadable, or when no
     ``FLOCK`` entry matches the file. Blocked waiters (``->`` rows) are skipped.
 
     Matching is on the full ``major:minor:inode`` triple that ``/proc/locks``
@@ -6449,6 +6738,22 @@ def flock_owner_pid(path: str | os.PathLike | os.stat_result) -> int | None:
     overlayfs use anonymous devices) the triple will not match and this returns
     ``None``. That is the safe direction to fail: the caller degrades to its
     "holder could not be identified" wording instead of naming a wrong process.
+
+    Two kernel surfaces are read, because the first is not a snapshot.
+    ``/proc/locks`` is a ``seq_file`` over a per-cpu list that the kernel hands
+    out one page (~65 rows) per ``read()`` and resumes BY ORDINAL INDEX: a lock
+    that any process on the host releases between two of those reads shifts
+    every later row down by one, and the row that lands on the resume index is
+    never printed. A lock that is held the whole time therefore goes missing
+    from one scan in a while -- measured at 7.7% of scans on a 32-cpu host with
+    four processes churning flocks beside a held one -- and a startup refusal
+    that names "a running gateway" instead of its pid, or a ``stop`` that
+    cannot say who holds the home, is the user-visible result. So a scan that
+    finds no row is corroborated by ``/proc/<pid>/fdinfo/<fd>`` of every
+    descriptor open on the inode (:func:`_descriptors_on`): its ``lock:`` rows
+    are one atomic record per descriptor, in the same format, matched on the
+    same triple. That walk costs one ``stat`` per open descriptor on the host
+    and reaches only processes of this user, so it runs on a miss, not first.
     """
     if sys.platform != "linux":
         return None
@@ -6456,24 +6761,70 @@ def flock_owner_pid(path: str | os.PathLike | os.stat_result) -> int | None:
     if info is None:
         return None
     want = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+    pid = _flock_acquirer_in_proc_locks(want)
+    if pid is None:
+        pid = _flock_acquirer_in_fdinfo(info, want)
+    return pid
+
+
+def _flock_acquirer_row(fields: list[str], want: tuple[int, int, int]) -> int | None:
+    """The acquirer pid of a ``/proc/locks``-format row on the *want* triple, else ``None``.
+
+    *fields* is the row split on whitespace, starting at its ordinal:
+    ``"23: FLOCK ADVISORY WRITE 39542 103:01:146872 0 EOF"``. A blocked waiter is
+    ``"23: -> FLOCK ..."`` and owns nothing; other lock types, short rows and
+    unparsable fields are skipped the same way.
+    """
+    if len(fields) < 6 or "->" in fields[:2] or fields[1] != "FLOCK":
+        return None
+    try:
+        pid = int(fields[4])
+        major, minor, ino = fields[5].split(":")
+        found = (int(major, 16), int(minor, 16), int(ino))
+    except (ValueError, IndexError):
+        return None
+    return pid if found == want else None
+
+
+def _flock_acquirer_in_proc_locks(want: tuple[int, int, int]) -> int | None:
+    """First ``FLOCK`` acquirer ``/proc/locks`` prints on *want*; ``None`` on a miss or an unreadable file."""
     try:
         # Streamed, not slurped: /proc/locks is unbounded (one row per lock
         # system-wide) and this runs on a startup failure path.
         with open("/proc/locks", encoding="utf-8") as handle:
             for row in handle:
-                fields = row.split()
-                # "23: FLOCK ADVISORY WRITE 39542 103:01:146872 0 EOF"; a blocked
-                # waiter is "23: -> FLOCK ..." and owns nothing.
-                if len(fields) < 6 or "->" in fields[:2] or fields[1] != "FLOCK":
-                    continue
-                try:
-                    pid = int(fields[4])
-                    major, minor, ino = fields[5].split(":")
-                    found = (int(major, 16), int(minor, 16), int(ino))
-                except (ValueError, IndexError):
-                    continue
-                if found == want:
+                pid = _flock_acquirer_row(row.split(), want)
+                if pid is not None:
                     return pid
+    except OSError:
+        return None
+    return None
+
+
+def _flock_acquirer_in_fdinfo(target: os.stat_result, want: tuple[int, int, int]) -> int | None:
+    """First ``FLOCK`` acquirer any ``/proc/<pid>/fdinfo/<fd>`` on *target*'s inode prints on *want*.
+
+    ``fdinfo`` prints the locks taken THROUGH that one open file description as
+    ``"lock:\t1: FLOCK ADVISORY WRITE 39542 103:01:146872 0 EOF"``, the
+    ``/proc/locks`` row behind a ``lock:`` tag, written in one record and so
+    immune to the page-boundary skip of the global list. The triple is still
+    checked: the descriptor can be closed and reused for another file between
+    the ``stat`` that selected it and the read. ``None`` when ``/proc`` cannot
+    be listed or no readable descriptor carries a matching row.
+    """
+    try:
+        for pid, fd_name in _descriptors_on(target):
+            try:
+                with open(f"/proc/{pid}/fdinfo/{fd_name}", encoding="utf-8") as handle:
+                    for row in handle:
+                        if not row.startswith("lock:"):
+                            continue
+                        acquirer = _flock_acquirer_row(row.split()[1:], want)
+                        if acquirer is not None:
+                            return acquirer
+            except OSError:
+                # Closed, or the process is gone, between the listing and here.
+                continue
     except OSError:
         return None
     return None
@@ -6515,21 +6866,38 @@ def pids_holding_file(path: str | os.PathLike | os.stat_result) -> list[int] | N
     target = _file_identity(path)
     if target is None:
         return None
-    key = (target.st_dev, target.st_ino)
     holders: list[int] = []
     try:
-        entries = os.listdir("/proc")
+        for pid, _fd_name in _descriptors_on(target):
+            # Descriptors arrive grouped by pid, so one pid is named once.
+            if not holders or holders[-1] != pid:
+                holders.append(pid)
     except OSError:
         return None
-    for entry in entries:
+    return holders
+
+
+def _descriptors_on(target: os.stat_result) -> Iterator[tuple[int, str]]:
+    """``(pid, fd)`` for every descriptor open on *target*'s inode, via ``/proc/*/fd``.
+
+    Yielded grouped by pid, in ``/proc`` order. Matching is by
+    ``(st_dev, st_ino)`` of the descriptor's link target, so a bind mount (a
+    jailed gateway sees a different path for the same inode) still resolves. A
+    pid whose ``fd`` directory cannot be read -- dead between the listing and
+    here, or another user's process -- is skipped, as is a descriptor that
+    closes under the ``stat``; raises ``OSError`` only when ``/proc`` itself
+    cannot be listed. ``/proc/<pid>/fd`` is enumerated by descriptor NUMBER,
+    not by ordinal, so a neighbouring close does not hide an open descriptor
+    the way a released lock hides a ``/proc/locks`` row.
+    """
+    key = (target.st_dev, target.st_ino)
+    for entry in os.listdir("/proc"):
         if not entry.isdigit():
             continue
-        pid = int(entry)
         fd_dir = f"/proc/{entry}/fd"
         try:
             fds = os.listdir(fd_dir)
         except OSError:
-            # Dead between listdir and here, or another user's process.
             continue
         for fd_name in fds:
             try:
@@ -6537,9 +6905,7 @@ def pids_holding_file(path: str | os.PathLike | os.stat_result) -> list[int] | N
             except OSError:
                 continue
             if (st.st_dev, st.st_ino) == key:
-                holders.append(pid)
-                break
-    return holders
+                yield int(entry), fd_name
 
 
 def _raise_taskkill_error(pid: int, rc: int, stderr: bytes) -> None:
@@ -7071,7 +7437,9 @@ def terminate_and_reap_sync(
     stdio use the async helper, which drains them; this one is for a child
     writing to the caller's own terminal. Otherwise (Windows, a child already
     reaped, or one that does not lead its own group) it is killed outright the
-    way :func:`kill_and_reap` kills: its tree, unless it shares our group.
+    way :func:`kill_and_reap` kills: its tree, unless it shares our group or
+    has already been reaped -- a reaped child's pid may belong to another
+    process by now.
 
     A Ctrl-C landing mid-stop does not abandon it: KeyboardInterrupt is held
     until the stop has finished, then re-raised once.
@@ -7106,7 +7474,14 @@ def terminate_and_reap_sync(
             with contextlib.suppress(Exception):
                 kill_process_group(pgid, SIGKILL)
     else:
-        if type(proc.pid) is int and not _shares_own_process_group(proc.pid):
+        # ``poll()`` reaps an exited child, which frees its pid for reuse, so a
+        # pid-addressed tree kill is only safe while it still answers ``None``:
+        # a child exiting after that stays an unreaped zombie holding its pid.
+        if (
+            type(proc.pid) is int
+            and proc.poll() is None
+            and not _shares_own_process_group(proc.pid)
+        ):
             with contextlib.suppress(Exception):
                 kill_process_tree(proc.pid, SIGKILL)
     if proc.poll() is None:
@@ -7318,7 +7693,10 @@ def lstat_is_name_surrogate(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_reparse_tag", 0) & _IO_REPARSE_TAG_NAME_SURROGATE)
 
 
-def strip_extended_length_prefix(path: Path) -> Path:
+_StrOrPath = TypeVar("_StrOrPath", str, Path)
+
+
+def strip_extended_length_prefix(path: _StrOrPath) -> _StrOrPath:
     r"""*path* without Windows' extended-length prefix; unchanged elsewhere.
 
     ``Path.resolve()`` on a file that another thread is replacing at that exact
@@ -7413,6 +7791,15 @@ def unlink_link_or_junction(path: str | os.PathLike) -> None:
 _WIN_GENERIC_READ = 0x80000000
 _WIN_GENERIC_WRITE = 0x40000000
 _WIN_FILE_SHARE_READ_WRITE = 0x00000001 | 0x00000002
+#: ``FILE_SHARE_READ`` alone. Omitting ``FILE_SHARE_WRITE`` as well makes Windows
+#: refuse any OTHER process's attempt to open the object for writing while this
+#: descriptor lives, which is the one thing a descriptor cannot do on POSIX: there
+#: a held descriptor fixes WHICH inode a name reaches and says nothing about that
+#: inode's contents, so a same-UID process can still rewrite the bytes in place.
+#: Callers that hand a filename to a child and need the bytes to be the bytes they
+#: checked ask for this; a read by the child is still allowed, which is what makes
+#: it usable for exactly that case.
+_WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_EXISTING = 3
 _WIN_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WIN_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
@@ -7779,13 +8166,21 @@ def pinned_directory(path: str | os.PathLike) -> PinnedDirectory:
     return PinnedDirectory(pin_directory(target), target)
 
 
-def _win_open_without_following(path: str | os.PathLike) -> int:
+def _win_open_without_following(path: str | os.PathLike, *, deny_write: bool = False) -> int:
     """``CreateFileW`` *path* for reading, opening a reparse point INSTEAD of following it.
 
     Shared by :func:`pin_directory` and :func:`open_file_no_reparse` so the two do
     not carry separate copies of the same security-critical flags. What each of
     them then asserts about the descriptor differs; how the object is reached must
     not.
+
+    *deny_write* drops ``FILE_SHARE_WRITE`` from the share mode as well, so no other
+    process may open the object for writing while this descriptor lives. A caller
+    that must hand a child process a FILENAME needs it: the child re-resolves the
+    name, and a descriptor alone fixes only which inode that name reaches, so
+    without this a same-UID process rewrites the bytes in place and the child sends
+    them. Reads by the child are still permitted. Not the default, because for a
+    DIRECTORY handle it would also refuse other processes' writes into it.
 
     ``OPEN_REPARSE_POINT`` is the whole point: a junction or symlink at the name is
     opened AS ITSELF, so the caller sees what is really there and the target is
@@ -7822,7 +8217,7 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
     handle = kernel32.CreateFileW(
         os.fspath(path),
         _WIN_GENERIC_READ,
-        _WIN_FILE_SHARE_READ_WRITE,
+        _WIN_FILE_SHARE_READ if deny_write else _WIN_FILE_SHARE_READ_WRITE,
         None,
         _WIN_OPEN_EXISTING,
         _WIN_FILE_FLAG_BACKUP_SEMANTICS | _WIN_FILE_FLAG_OPEN_REPARSE_POINT,
@@ -7836,7 +8231,11 @@ def _win_open_without_following(path: str | os.PathLike) -> int:
 
 
 def open_file_no_reparse(
-    path: str | os.PathLike, *, nonblocking: bool = False, links_only: bool = False
+    path: str | os.PathLike,
+    *,
+    nonblocking: bool = False,
+    links_only: bool = False,
+    deny_write: bool = False,
 ) -> int:
     """Open a regular FILE for reading, refusing a reparse point at the final name.
 
@@ -7867,6 +8266,14 @@ def open_file_no_reparse(
     another name (:func:`win_fd_is_link`), so a regular file carrying a
     cloud-files or dedup tag opens as the file it is. POSIX is unaffected: a
     link is the only thing ``O_NOFOLLOW`` refuses there.
+
+    ``deny_write`` asks that no other process be able to open the file for writing
+    while this descriptor lives. It is honoured on WINDOWS ONLY, and the asymmetry
+    is the point rather than an omission: POSIX has no mandatory locking, so the
+    request cannot be expressed there and is silently not made. A caller whose
+    safety depends on it must therefore not treat a POSIX descriptor as carrying
+    it -- on POSIX the equivalent protection comes from removing the writer, not
+    from refusing its open.
     """
     if IS_POSIX:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -7874,7 +8281,7 @@ def open_file_no_reparse(
             flags |= getattr(os, "O_NONBLOCK", 0)
         return os.open(os.fspath(path), flags)
 
-    fd = _win_open_without_following(path)
+    fd = _win_open_without_following(path, deny_write=deny_write)
     try:
         attrs = getattr(os.fstat(fd), "st_file_attributes", 0)
         if _win_reparse_refused(fd, attrs, links_only=links_only):
@@ -7889,9 +8296,9 @@ def open_file_no_reparse(
 
 #: ``CreateFileW`` arguments only :func:`win_open_no_reparse` uses. A directory is
 #: opened for ``LIST_DIRECTORY`` (data access, so it takes part in sharing) with
-#: read-only sharing; a file read-write, open-or-create, sharing read and write.
+#: read-only sharing (``_WIN_FILE_SHARE_READ``, defined above); a file read-write,
+#: open-or-create, sharing read and write.
 _WIN_FILE_LIST_DIRECTORY = 0x00000001
-_WIN_FILE_SHARE_READ = 0x00000001
 _WIN_OPEN_ALWAYS = 4
 #: ``FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo``.
 _WIN_FILE_ATTRIBUTE_TAG_INFO = 9
@@ -8569,6 +8976,114 @@ def _malloc_trim() -> bool:
         return False
 
 
+# glibc's ``M_ARENA_MAX`` mallopt parameter (malloc.h). Glibc otherwise creates
+# up to 8 x cores per-thread arenas, each reserving 64 MiB heaps that keep freed
+# memory per thread: on a 32-core host a pod gateway under dashboard load grew
+# ~90 such heaps holding ~2.2 GB. A/B on paired seeded pods:
+# a cap of 4 cut peak RSS ~4.0 -> ~3.1 GB and heap RSS ~2.2 -> ~1.1 GB with no
+# throughput or p95 regression; a cap of 2 saved slightly more but cost ~3%
+# throughput and +5-7% p95 on /api/sessions under saturation, so 4 is the default.
+_M_ARENA_MAX = -8
+GATEWAY_MALLOC_ARENA_MAX = 4
+#: Operator override for the gateway's arena cap: a positive integer replaces the
+#: default, ``0`` (or any non-positive value) leaves glibc's own default alone.
+MALLOC_ARENA_MAX_ENV = "KIROCREW_MALLOC_ARENA_MAX"
+
+
+def _glibc_mallopt() -> Callable[[int, int], int] | None:
+    """glibc's ``mallopt``, or ``None`` on musl / non-glibc / no libc."""
+    try:
+        libc = ctypes.CDLL(None)
+        libc.gnu_get_libc_version  # noqa: B018 - glibc probe; musl lacks it
+        fn = libc.mallopt
+        fn.argtypes = [ctypes.c_int, ctypes.c_int]
+        fn.restype = ctypes.c_int
+        return fn
+    except (AttributeError, OSError):
+        return None
+
+
+class MallocArenaCap(NamedTuple):
+    """What :func:`limit_malloc_arenas` did.
+
+    ``applied`` is the cap known to be in force, else 0. ``requested`` is the
+    cap handed to ``mallopt`` (0 when none was), and ``threads`` the OS thread
+    count just before that call. ``requested`` without ``applied`` means glibc
+    accepted the value but it may not hold: see :func:`limit_malloc_arenas`.
+    """
+
+    applied: int = 0
+    requested: int = 0
+    threads: int | None = None
+
+
+def limit_malloc_arenas(
+    *,
+    environ: Mapping[str, str] | None = None,
+    mallopt: Callable[[int, int], int] | None = None,
+    thread_count: Callable[[], int | None] | None = None,
+) -> MallocArenaCap:
+    """Cap glibc malloc arenas for THIS process.
+
+    Called first thing in the gateway command, so it holds for every launcher
+    (systemd unit, pod, detached start, Dev Fleet re-exec) without depending on
+    each one exporting ``MALLOC_ARENA_MAX`` before exec. ``mallopt`` is used
+    rather than the env var because glibc reads that variable once, at its first
+    allocation -- long before any Python code runs.
+
+    glibc fixes its arena limit for good the first time a thread needs a new
+    arena while more than 8 exist; ``mallopt(M_ARENA_MAX)`` after that still
+    returns success but changes nothing. A single-threaded process has only the
+    main arena, so the cap is reported as ``applied`` only when this process
+    had exactly one OS thread at the call. With more threads (or an unreadable
+    count) the value is still handed to glibc, but reported as ``requested``
+    only, because whether it holds cannot be seen.
+
+    An operator's own ``MALLOC_ARENA_MAX`` or ``glibc.malloc.arena_max`` tunable
+    already took effect at process start and wins: nothing is changed. No-op on
+    every non-Linux platform and on a non-glibc libc. Never raises.
+    """
+    if not IS_LINUX:
+        return MallocArenaCap()
+    env = os.environ if environ is None else environ
+    if env.get("MALLOC_ARENA_MAX", "").strip():
+        return MallocArenaCap()
+    if "glibc.malloc.arena_max" in env.get("GLIBC_TUNABLES", ""):
+        return MallocArenaCap()
+    value = GATEWAY_MALLOC_ARENA_MAX
+    raw = env.get(MALLOC_ARENA_MAX_ENV, "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = GATEWAY_MALLOC_ARENA_MAX
+    if value <= 0:
+        return MallocArenaCap()
+    try:
+        fn = mallopt or _glibc_mallopt()
+        if fn is None:
+            return MallocArenaCap()
+        threads = thread_count() if thread_count else process_thread_count(os.getpid())
+        if fn(_M_ARENA_MAX, value) != 1:
+            return MallocArenaCap(threads=threads)
+        return MallocArenaCap(value if threads == 1 else 0, value, threads)
+    except Exception:  # noqa: BLE001 - an allocator hint must never stop the boot
+        return MallocArenaCap()
+
+
+def log_malloc_arena_cap(result: MallocArenaCap) -> None:
+    """Log *result* once logging is configured; silent when nothing was asked."""
+    if result.applied:
+        logger.info("glibc malloc arenas capped at %d", result.applied)
+    elif result.requested:
+        logger.warning(
+            "glibc malloc arena cap %d may not hold: %s OS threads were already "
+            "running when it was set",
+            result.requested,
+            "an unknown number of" if result.threads is None else result.threads,
+        )
+
+
 def trim_heap_if_needed(
     *,
     rss_reader: Callable[[], int | None] | None = None,
@@ -8867,6 +9382,7 @@ class ProcStat(NamedTuple):
     session: int | None = None
     start_ticks: int | None = None
     rss_pages: int | None = None
+    cpu_ticks: int | None = None
 
 
 def _linux_proc_root(proc_root: "Path | None") -> "Path | None":
@@ -8888,7 +9404,9 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
     same read, so a caller needing several never mixes two processes behind a
     recycled pid. ``start_ticks`` is in clock ticks since boot;
     :func:`process_age_secs` turns it into an age. ``rss_pages`` is in pages of
-    ``SC_PAGE_SIZE``.
+    ``SC_PAGE_SIZE``. ``cpu_ticks`` is utime plus stime in clock ticks, so a
+    caller differencing two reads gets a CPU rate whose identity check
+    (``start_ticks``) came from the same read; it is None unless both are present.
 
     None when the file cannot be read (gone, permission, no ``/proc``) or the
     line has no ``)``; otherwise a :class:`ProcStat` whose fields may each be
@@ -8904,6 +9422,7 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
     tokens = _stat_tokens(raw)
     if tokens is None:
         return None
+    utime, stime = _stat_token_int(tokens, 11), _stat_token_int(tokens, 12)
     return ProcStat(
         state=tokens[0].decode("ascii", "replace") if tokens else None,
         ppid=_stat_token_int(tokens, 1),
@@ -8911,6 +9430,7 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
         session=_stat_token_int(tokens, 3),
         start_ticks=_stat_token_int(tokens, 19),
         rss_pages=_stat_token_int(tokens, 21),
+        cpu_ticks=None if utime is None or stime is None else utime + stime,
     )
 
 
@@ -9863,6 +10383,28 @@ def boottime_now() -> float | None:
         return None
 
 
+def awake_now() -> float:
+    """Now, in seconds, on a clock that stands still while the host is suspended.
+
+    ``time.monotonic()`` is that clock on Linux (``CLOCK_MONOTONIC``) and macOS
+    (the mach timebase). On Windows it counts a sleep, so there this reads the
+    unbiased interrupt time (``QueryUnbiasedInterruptTime``, in 100 ns units,
+    which leaves out sleep and hibernation) and falls back to
+    ``time.monotonic()`` only if that call fails. Liveness checks measure
+    silence on it, so a resume does not read as the whole sleep having passed
+    without a heartbeat.
+    """
+    if IS_WINDOWS:
+        ticks = ctypes.c_ulonglong(0)
+        try:
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            if kernel32.QueryUnbiasedInterruptTime(ctypes.byref(ticks)):
+                return ticks.value / 10_000_000
+        except (AttributeError, OSError):
+            pass
+    return time.monotonic()
+
+
 def process_start_boot_secs(starttime_ticks: float) -> float | None:
     """A process's ``starttime`` ticks as seconds on the :func:`boottime_now` clock.
 
@@ -10537,6 +11079,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "current_user_sid",
         "make_owner_only_dir",
         "local_user_id",
+        "stat_owned_by_current_user",
         "stat_writable_by_current_user",
         "path_writable_by_current_user",
         "restrict_to_owner",
@@ -10672,5 +11215,6 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         process_owner_sid,
         restrict_dir_to_owner,
         restrict_to_owner,
+        stat_owned_by_current_user,
         stat_writable_by_current_user,
     )

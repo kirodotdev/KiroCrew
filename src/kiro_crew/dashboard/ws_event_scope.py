@@ -97,7 +97,7 @@ from typing import TYPE_CHECKING, Any
 # which the current import order satisfies (state.py imports us lazily inside
 # broadcast_ws, and ws.py imports us before apps.manager). Kept top-level per
 # the top-level-imports guideline.
-from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
+from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, staged_app_grants
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -240,9 +240,10 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "approval", "approval_resolved", "question_card",
     # Subagent lifecycle. Every one of these is fired through
     # ``SubagentManager._fire_event`` and reaches the wire via
-    # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (slack/gateway.py's
-    # ``_subagent_event``), so a guard that scans broadcast call sites for string
-    # literals cannot see them -- ``TestFireEventNamesAreClassified`` reads the
+    # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``
+    # closure in slack/gateway_runtime/subagent_wiring.py), so a guard that scans
+    # broadcast call sites for string literals cannot see them --
+    # ``TestFireEventNamesAreClassified`` reads the
     # emitter's own literals instead. Each payload carries id + slot.
     "subagent_spawn", "subagent_done", "subagent_tool", "subagent_chunk",
     "subagent_snapshot", "subagent_status", "subagent_queued",
@@ -303,6 +304,23 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # Per-row slot metadata edits. Sent only to dashboard-user sockets that
     # declared the capability; an app token gets its filtered full list.
     "slot_patch",
+    # UI-guide state (``handlers/guide.py``, ``deliver_ws_owners``). The guide is
+    # the operator's own dashboard being steered; no app token may watch it.
+    "guide_update",
+    # A live-observation request to one owner tab (``handlers/guide.py``): ids
+    # only, but which controls the agent is asking about is the operator's own.
+    "guide_observe",
+    # One crewmate's dashboard field values
+    # (``handlers/member_dashboard_fields.FIELD_FRAME``). Sent through
+    # ``broadcast_ws_owners``, so an app token is already outside the socket set
+    # it reaches, and the classification guard does not scan that fan-out --
+    # classified anyway, for the reason the comment above this set gives: the
+    # frame carries work-ledger and crew-log values, which is what the whole
+    # ``/api/members`` surface withholds from an app, so the denial should be the
+    # intentional one with its own audit reason rather than the unknown-event
+    # floor, and a later literal broadcast of this name must not silently start
+    # reaching an app token.
+    "dashboard_fields",
 })
 
 
@@ -412,6 +430,21 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # (the ownership digest is withheld), and a client that acts on it re-reads
     # through the panel route, which re-applies the ownership check.
     "panel_published": "panels",
+    # Metadata only ({slug}) and no slot, and it rides `panels` for exactly the
+    # reason `panel_published` above does: the slug names a crewmate's own
+    # dashboard, so an app has no business learning that roster from a refresh
+    # ping. The frame says a value moved and nothing about the value; a client
+    # that acts on it re-reads through the panel route, which re-applies the
+    # ownership check.
+    "dashboard_value_written": "panels",
+    # Metadata only ({slug}) and no slot, on `panels` for its sibling's reasons
+    # above. It says a crewmate's PAGE changed -- a template applied or a version
+    # rolled back -- and nothing about which page or what is on it, so a client that
+    # acts on it re-reads through the dashboard route, which is owner-gated and
+    # re-applies that check. Declared rather than left to a tier for the same
+    # reason: an app has no business learning the crewmate roster from a refresh
+    # ping, and an unclassified event silently never reaches an app token at all.
+    "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
     "browser_event": "browser",
@@ -1180,10 +1213,14 @@ def _read_declared_events(app: str) -> tuple[bool, frozenset[str]]:
     if not enabled:
         return (False, frozenset())
     try:
-        manifest = get_app_manifest(app)
-        if manifest is None:
-            return (True, frozenset())
-        return (True, build_allowed_event_set(list(manifest.permissions.events)))
+
+        def _declared() -> list[str] | None:
+            manifest = get_app_manifest(app)
+            return None if manifest is None else list(manifest.permissions.events)
+
+        # An update's added entries stay out until the owner approves them.
+        approved = staged_app_grants(app, "events", _declared)
+        return (True, build_allowed_event_set(approved))
     except Exception:
         logger.debug("ws_event_scope: could not reload declarations for %r", app)
         return (True, frozenset())
@@ -1371,7 +1408,7 @@ def filter_slots_for_app(
         if slot is None:
             continue
         if _slot_visible(slot, app, allowed_events, state):
-            result.append(_strip_source_link_status(slot_dict))
+            result.append(_strip_pin_rank(_strip_source_link_status(slot_dict)))
             _audit_allow(app, "slots_item")
         else:
             _audit_deny(app, "slots_item", "slot_scope_denied")
@@ -1384,6 +1421,20 @@ def filter_slots_for_app(
 # not the operator's credential-backed view of a repository. Stripped here so
 # widening the general list for dashboard users cannot leak into an app frame.
 _SOURCE_LINK_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
+
+
+def _strip_pin_rank(slot_dict: dict[str, Any]) -> dict[str, Any]:
+    """Return *slot_dict* without its pinned-order fields.
+
+    A rank is a position in the person's whole pinned order, so in a filtered
+    view the gaps between the ranks left would count the pinned sessions the
+    caller cannot see. The order is the person's; scoped callers get none of it.
+    """
+    from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+    if PIN_ORDER_FIELDS.isdisjoint(slot_dict):
+        return slot_dict
+    return {k: v for k, v in slot_dict.items() if k not in PIN_ORDER_FIELDS}
 
 
 def _strip_source_link_status(slot_dict: dict[str, Any]) -> dict[str, Any]:

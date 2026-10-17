@@ -44,3 +44,19 @@ export function filterCommentsForForward(comments: ArtifactComment[]): ArtifactC
 
   return comments.filter(c => rootOf(c).status !== 'resolved')
 }
+
+/**
+ * The batch a comment Submit sends: forwarding-eligible AND human-authored AND
+ * not already submitted. The three filters answer different questions and all
+ * three are needed: `filterCommentsForForward` drops resolved threads,
+ * `!is_agent` drops agent-authored comments, and `!sentIds.has` stops an
+ * already-submitted batch being re-sent.
+ *
+ * One function for the bar's count AND the sidebar's per-row marker, so the
+ * rows a reader sees marked are exactly the ones the count is made of.
+ */
+export function pendingSubmitComments(
+  comments: ArtifactComment[], sentIds: ReadonlySet<string>,
+): ArtifactComment[] {
+  return filterCommentsForForward(comments).filter(c => !c.is_agent && !sentIds.has(c.id))
+}

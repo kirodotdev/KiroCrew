@@ -84,6 +84,8 @@ def test_every_unguarded_str_field_is_in_the_masked_set():
 
     shape_guarded = {
         "reasoning_effort",  # coerce_effort: unknown level collapses to ""
+        "worker_reasoning_effort",  # coerce_effort, same guard as reasoning_effort
+        "approval_mode",  # coerce_member_approval_mode: one of three modes or ""
         "session_color",  # _safe_color: pinned to #rrggbb or ""
     }
     str_fields = {f.name for f in dataclasses.fields(KiroCrewAgentConfig) if f.type in ("str", str)}

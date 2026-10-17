@@ -59,7 +59,7 @@ async def test_two_concurrent_callers_produce_one_fan_out(monkeypatch, probe_env
     calls: list[int] = []
     _install_probe_all(monkeypatch, delay=0.05, calls=calls)
 
-    await asyncio.gather(mcp_mod._bg_mcp_probe(), mcp_mod._bg_mcp_probe())
+    await asyncio.gather(mcp_mod._bg_mcp_probe(None), mcp_mod._bg_mcp_probe(None))
 
     assert len(calls) == 1, f"probe fanned out {len(calls)}× for one boot"
     # Both callers must still observe a populated cache — joining is only
@@ -75,12 +75,12 @@ async def test_second_caller_waits_rather_than_returning_early(monkeypatch, prob
     calls: list[int] = []
     _install_probe_all(monkeypatch, delay=0.05, calls=calls)
 
-    first = asyncio.ensure_future(mcp_mod._bg_mcp_probe())
+    first = asyncio.ensure_future(mcp_mod._bg_mcp_probe(None))
     await asyncio.sleep(0)  # let the first caller register the in-flight task
 
     # Joining caller: the cache is still empty at this point.
     assert mcp_mod._mcp_probe_cache == []
-    await mcp_mod._bg_mcp_probe()
+    await mcp_mod._bg_mcp_probe(None)
     assert mcp_mod._mcp_probe_cache != [], "joined caller returned before the probe landed"
 
     await first
@@ -98,8 +98,8 @@ async def test_probe_runs_again_after_the_previous_one_completed(monkeypatch, pr
     calls: list[int] = []
     _install_probe_all(monkeypatch, delay=0, calls=calls)
 
-    await mcp_mod._bg_mcp_probe()
-    await mcp_mod._bg_mcp_probe()
+    await mcp_mod._bg_mcp_probe(None)
+    await mcp_mod._bg_mcp_probe(None)
 
     assert len(calls) == 2
 
@@ -117,7 +117,7 @@ async def test_caller_timing_out_does_not_cancel_the_probe(monkeypatch, probe_en
     _install_probe_all(monkeypatch, delay=0.1, calls=calls)
 
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(mcp_mod._bg_mcp_probe(), timeout=0.01)
+        await asyncio.wait_for(mcp_mod._bg_mcp_probe(None), timeout=0.01)
 
     inflight = mcp_mod._mcp_probe_task
     assert inflight is not None
@@ -139,11 +139,11 @@ async def test_joining_caller_timing_out_does_not_cancel_the_probe(monkeypatch, 
     calls: list[int] = []
     _install_probe_all(monkeypatch, delay=0.1, calls=calls)
 
-    owner = asyncio.ensure_future(mcp_mod._bg_mcp_probe())
+    owner = asyncio.ensure_future(mcp_mod._bg_mcp_probe(None))
     await asyncio.sleep(0)  # owner registers the in-flight task
 
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(mcp_mod._bg_mcp_probe(), timeout=0.01)
+        await asyncio.wait_for(mcp_mod._bg_mcp_probe(None), timeout=0.01)
 
     inflight = mcp_mod._mcp_probe_task
     assert inflight is not None
@@ -164,7 +164,7 @@ async def test_in_progress_flag_is_cleared_when_the_probe_finishes(monkeypatch, 
     calls: list[int] = []
     _install_probe_all(monkeypatch, delay=0, calls=calls)
 
-    await mcp_mod._bg_mcp_probe()
+    await mcp_mod._bg_mcp_probe(None)
 
     assert mcp_mod._mcp_probe_in_progress is False
 
@@ -181,10 +181,10 @@ async def test_a_failing_probe_does_not_wedge_later_probes(monkeypatch, probe_en
     monkeypatch.setattr("kiro_crew.mcp_discovery.probe_all", _boom)
 
     # _run_mcp_probe swallows and logs — a boot path must not die on this.
-    await mcp_mod._bg_mcp_probe()
+    await mcp_mod._bg_mcp_probe(None)
     assert mcp_mod._mcp_probe_in_progress is False
 
     _install_probe_all(monkeypatch, delay=0, calls=calls)
-    await mcp_mod._bg_mcp_probe()
+    await mcp_mod._bg_mcp_probe(None)
     assert len(calls) == 2
     assert mcp_mod._mcp_probe_cache != []

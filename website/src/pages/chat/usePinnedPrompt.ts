@@ -20,6 +20,26 @@ import { attachUserScrollIntent } from '../../utils/searchScroll'
 import { glideDurationMs, runConvergingGlide } from '../../utils/convergingGlide'
 
 /**
+ * Whether `node` is one of the transcript's own row wrappers. Rows are never
+ * nested, so a `data-display-index` node inside another row came from message
+ * content (the markdown sanitizer admits arbitrary `data-*`). Every row read in
+ * this hook goes through here so a message cannot forge the index it reads, and
+ * so does the turn stepper's (useTurnStepper).
+ */
+export function isTranscriptRow(node: Element, scroller: Element): boolean {
+  const owner = node.parentElement?.closest('[data-display-index]')
+  return !(owner && scroller.contains(owner))
+}
+
+/** The transcript row wrapper for `idx`, skipping any forged copy in message content. */
+function findTranscriptRow(scroller: Element, idx: number): HTMLElement | null {
+  for (const node of scroller.querySelectorAll(`[data-display-index="${idx}"]`)) {
+    if (isTranscriptRow(node, scroller)) return node as HTMLElement
+  }
+  return null
+}
+
+/**
  * The identity of a pin candidate: the prompt's transcript index AND its `ts`.
  *
  * Two readers key on it and must agree on what counts as a change, so there is
@@ -129,19 +149,48 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // a mounted row above the boundary.
     let handoffIdx = -1
     let first = true
+    let lastMountedIdx = -1
     for (const item of items) {
       const htmlItem = item as HTMLElement
+      // Only the transcript's own row wrappers count (see isTranscriptRow).
+      if (!isTranscriptRow(htmlItem, el)) continue
       const rect = htmlItem.getBoundingClientRect()
+      const rowIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
       if (rect.top > handoffY) {
         if (requiresMountedHandoff && first) { setPinned(null); return }
-        handoffIdx = parseInt(htmlItem.getAttribute('data-display-index') || '0', 10)
+        handoffIdx = rowIdx
         break
       }
+      lastMountedIdx = rowIdx
       first = false
+    }
+    const list = displayItemsRef.current
+    // Every mounted row has reached the line. When the last of them is the END of
+    // the list, the reader is inside the final row — typically a reply taller than
+    // the viewport — and no row is left below the line. Without a hand-off index
+    // the loop found nothing and the banner vanished exactly while the reader
+    // scrolled through the last answer, then reappeared the moment its top
+    // dropped back under the fold.
+    //
+    // The final row itself is treated as the row straddling the line: it stays
+    // readable and is never swapped for the banner, and the prompt BEFORE it is
+    // pinned. One PAST the end would make the final row pinnable, and a tall
+    // final prompt (just sent, reply not streamed yet) would then pin ITSELF —
+    // its row becomes the hidden stand-in and the folding card shows only its
+    // head, so the prompt's own tail could no longer be read. Naming the row
+    // before it instead costs nothing when the final row is a reply (that reply's
+    // prompt is exactly what the banner should hold — the point of this branch),
+    // and when the final row is a prompt it is also the INCOMING prompt, already
+    // past the fold, so the push below drops the card and the prompt has the band
+    // to itself.
+    //
+    // A last mounted row short of the list end means unmounted rows lie below, so
+    // the boundary is unknown and nothing is pinned, as before.
+    if (handoffIdx < 0 && lastMountedIdx >= 0 && lastMountedIdx === list.length - 1) {
+      handoffIdx = list.length - 1
     }
 
     if (!pinEnabledRef.current || handoffIdx < 0) { setPinned(null); return }
-    const list = displayItemsRef.current
     const pinIdx = findPinnedPromptIdx(list, handoffIdx)
     const pinItem = pinIdx >= 0 ? list[pinIdx] : undefined
     if (!pinItem || pinItem.kind !== 'single') { setPinned(null); return }
@@ -169,11 +218,9 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // line than the hand-off, so a tall prompt shoves the card fully out while it
     // scrolls in, and only takes the pin once its own bottom clears the band.
     const nextIdx = findNextPromptIdx(list, pinIdx)
-    const nextEl = nextIdx >= 0
-      ? el.querySelector(`[data-display-index="${nextIdx}"]`) as HTMLElement | null
-      : null
+    const nextEl = nextIdx >= 0 ? findTranscriptRow(el, nextIdx) : null
     const nextTop = nextEl ? nextEl.getBoundingClientRect().top : null
-    const pinEl = el.querySelector(`[data-display-index="${pinIdx}"]`) as HTMLElement | null
+    const pinEl = findTranscriptRow(el, pinIdx)
     // The pinned row is `visibility: hidden` while the card stands in for it, so
     // it keeps its layout box and stays measurable — which is what makes the
     // progressive fold possible.
@@ -471,8 +518,10 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     // jumpAnchorIdx.
     const anchor = jumpAnchorIdx(displayItemsRef.current, target)
     steer.mountIndex(anchor, { unionOnly: true })
-    const rowEl = (): HTMLElement | null =>
-      scrollerRef.current?.querySelector(`[data-display-index="${anchor}"]`) as HTMLElement | null
+    const rowEl = (): HTMLElement | null => {
+      const sc = scrollerRef.current
+      return sc ? findTranscriptRow(sc, anchor) : null
+    }
     const goal = (): number | null => {
       const sc = scrollerRef.current
       if (!sc) return null

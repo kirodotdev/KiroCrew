@@ -91,7 +91,7 @@ export const SESSION_LANES: readonly SessionLaneDef[] = [
 
 /** Which lane a session belongs to.
  *
- *  Precedence mirrors the row status chain in `ChatSidebar`: an owed decision
+ *  Precedence mirrors the row status chain in `chat-sidebar/SessionRow.tsx`: an owed decision
  *  outranks every "working" signal, because a blocking approval or question
  *  card leaves `running` true while nothing can actually advance. Ranking
  *  `working` first would file those sessions under a spinner and bury the very

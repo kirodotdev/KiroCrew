@@ -285,8 +285,53 @@ async function mintLocalToken({ backendUrl, resolveHome, path, fs, http }) {
   return "";
 }
 
+/**
+ * The secret to send as `X-Internal-Secret` to `gatewayUrl`, or "" to send none.
+ *
+ * The same coverage test as the token mint (`listenerSecretsFor`): a secret
+ * goes out only when the gateway that published it holds every loopback family
+ * the dialed host can reach. The home-wide `.local_secret` is never a fallback,
+ * for the same reason it is not one for the mint.
+ *
+ * One value, not a walk: the header rides on every request of a long-lived
+ * channel, which has no retry. When several candidates pass, a crashed
+ * generation's entry can sit beside the live one (a restart that bound a
+ * different address never overwrites it), so the pick is the candidate whose
+ * entry file was written last: every start writes its entries fresh. A file
+ * whose time cannot be read ranks oldest, and ties keep the walk's order.
+ *
+ * @returns {string}
+ */
+function internalSecretFor({ gatewayUrl, home, path, fs }) {
+  const target = dialTarget(gatewayUrl);
+  if (!target) return "";
+  const secrets = listenerSecretsFor({ target, home, path, fs });
+  if (!secrets) return "";
+  if (secrets.length === 1) return secrets[0];
+  const newest = new Map(secrets.map((secret) => [secret, -Infinity]));
+  for (const family of target.families) {
+    for (const bindAddress of LOOPBACK_FAMILY_BINDS[family]) {
+      const file = listenerSecretPath(home, target.port, bindAddress, path);
+      try {
+        const secret = fs.readFileSync(file, "utf8").trim();
+        if (!newest.has(secret)) continue;
+        const mtime = fs.statSync(file).mtimeMs;
+        if (mtime > newest.get(secret)) newest.set(secret, mtime);
+      } catch {
+        // Unreadable or unstattable: it does not move this candidate's rank.
+      }
+    }
+  }
+  let pick = secrets[0];
+  for (const secret of secrets) {
+    if (newest.get(secret) > newest.get(pick)) pick = secret;
+  }
+  return pick;
+}
+
 module.exports = {
   mintLocalToken,
+  internalSecretFor,
   encodeBindAddress,
   listenerSecretPath,
   dialTarget,

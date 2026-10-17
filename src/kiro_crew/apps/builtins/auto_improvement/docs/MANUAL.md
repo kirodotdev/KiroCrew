@@ -127,7 +127,10 @@ repository it came from.
 
 ## 3. Calibrate the ruler (do this first)
 
-Click **Calibrate** before your first run.
+A run takes the **bug track** by default; it needs no ruler (see the end of this
+section). The **perf track** runs only when `config.json` sets `track` to `"perf"` by
+hand — `track` is not settable through the config API or the UI. For a perf run, click
+**Calibrate** before your first run.
 
 Calibration measures your suite repeatedly to learn two things:
 
@@ -145,9 +148,12 @@ app exists to refuse. The bug track is unaffected — it skips ruler pre-flight 
 because its RED→GREEN regression gate is the verdict and it has no noise band.
 
 > A repository whose suite runs in about the time its own collection takes cannot prove a
-> perf win this way. Point `benchmarkCommand` at a real workload instead, use the app for
-> the bug track only, or set `canaryAdvisory` to warn-and-continue if you accept that the
-> resulting perf numbers come from an instrument that was never proven on this repo.
+> perf win this way. Use the app for the bug track only, or set `canaryAdvisory` to
+> warn-and-continue if you accept that the resulting perf numbers come from an instrument
+> that was never proven on this repo. A custom `benchmarkCommand` (set by editing
+> `config.json`; the config API does not accept it) is never canary-certified, so with the
+> default strict canary a perf run that uses it halts; it is usable only together with
+> `canaryAdvisory: true`.
 
 ---
 
@@ -164,7 +170,9 @@ Click **Run**. Each cycle:
 4. **Keep** — only a real transition is accepted.
 5. **Draft a PR** (or commit — §6).
 
-A run ends on any of: the cycle cap, the time budget, the cost ceiling, **quiescence**
+A run ends on any of: the cycle cap, the time budget, the cost ceiling (only on a
+backend that reports USD cost — on Kiro, which reports credits, it never trips, so
+`maxHours` and `maxCycles` are the real bounds), **quiescence**
 (3 consecutive cycles with no keep — "this region is mined out"), or **Stop**. Stop lands
 between candidates, not mid-measurement, so it can take up to one gate cycle.
 
@@ -230,15 +238,21 @@ at least one check actually run**, no unresolved comments.
 |---|---|---|
 | `maxCycles` | 25 | Deliberately generous. Let **time** and quiescence end a run — a low cycle cap leaves discovered findings at `seen`, never tried. |
 | `maxHours` | 2.0 | The real bound on a run. |
-| `maxCostUsd` | 5.0 | Ceiling on agent spend. |
+| `maxCostUsd` | 5.0 | Ceiling on agent spend, counted only from backends that report USD cost; it never trips on Kiro (credits). |
 | `quiesceAfter` | 3 | No-keep cycles before declaring the region mined out. |
 | `editAllowlist` | *(whole repo)* | **The blast-radius control.** Glob-confine edits to a subtree. Also focuses discovery *and* the gate's suite on that region — the single most useful setting on a large repo. |
 | `directCommit` | off | Autocommit instead of draft PRs (§6). |
 | `proposerWide` / `proposerDeep` | 1 / 1 | Candidates authored per cycle. Each is a real agent call. |
 | `scopeDiffBase` | unset | Restrict attention to what a branch changed. |
 | `canaryAdvisory` | off | A failed canary halts a perf run. On downgrades it to a warning — accepting perf numbers from an unproven ruler. |
+| `autoPublish` | off | Mark a fully green draft ready for review (§6). |
+| `watcherAutoStart` | off | Let the app start watchers for filed PRs whose checks went red (§8). |
+| `watcherAcceptEgressRisk` | off | Acknowledge a watcher's residual network-egress risk; no watcher runs without it (§8). |
+| `acceptUnsandboxedAgentRisk` | off | The explicit risk decision for unattended assignments outside a `strict` sandbox (§1). |
 
-Some keys are deliberately **not** settable through the config API — `clone` and
+The UI sets the repository, branch and a few run controls; most keys in this table are
+set through `PUT /api/apps/auto-improvement/config`. Some keys are deliberately **not**
+settable through the config API — `clone` and
 `target_url` decide which repository the agent is turned loose on, so they move only
 through Connect. Rejected keys are echoed back rather than silently dropped.
 
@@ -265,9 +279,12 @@ attempt them. Raise `maxHours`; `maxCycles` is already generous.
 deduplicates by fingerprint, so a subtree it has already worked gets quieter over time.
 Point `editAllowlist` somewhere new.
 
-**A PR's CI goes red after the run finished.** The app periodically re-drives filed PRs
-whose checks fail, bounded by a concurrency cap. Over-cap findings are deferred, never
-dropped.
+**A PR's CI goes red after the run finished.** Re-driving it is opt-in. Automatic
+promotion of a watcher for a filed PR whose checks went red needs `watcherAutoStart: true`
+(default off), and no watcher runner is built at all until `watcherAcceptEgressRisk: true`
+(default off) acknowledges its network-egress risk — a manually started watcher needs that
+consent too. Once enabled, watchers are bounded by a concurrency cap; over-cap findings are
+deferred, never dropped.
 
 ---
 

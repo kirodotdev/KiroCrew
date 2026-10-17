@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, waitFor } from '@testing-library/react'
 import MarkdownRenderer, { artifactSlugFromHref } from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 // The agent emits `[<name>](/artifacts/<slug>)` markdown links;
 // the renderer must intercept clicks on those anchors and route the slug to
@@ -67,11 +68,7 @@ describe('MarkdownRenderer artifact link interception', () => {
   })
 
   it('does not also open the file panel when artifact and path handlers are wired', async () => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({
-      ok: true,
-      status: 200,
-      headers: new Headers({ 'X-Path-Kind': 'file' }),
-    } as Response)) as unknown as typeof fetch
+    stubPathKinds(() => 'file')
     const onArtifactOpen = vi.fn()
     const onFileOpen = vi.fn()
     const { container } = render(

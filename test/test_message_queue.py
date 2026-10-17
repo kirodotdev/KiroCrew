@@ -665,6 +665,34 @@ class TestStopTurnPreserveQueue:
         await mgr.stop_turn("slot1", preserve_queue=True)
         assert sess.prev_turn_cancelled is True
 
+    @pytest.mark.asyncio
+    async def test_stop_turn_owned_by_clears_only_the_selected_entries(self):
+        """The presser's entries go; another member's stay queued, in order."""
+        mgr, sess = self._make_mgr_with_cfg()
+        mgr.enqueue("slot1", "ts1", "alice", force=True, who="alice")
+        mgr.enqueue("slot1", "ts2", "bob", force=True, who="bob")
+        mgr.enqueue("slot1", "ts3", "alice2", force=True, who="alice")
+        outcome = await mgr.stop_turn("slot1", owned_by=lambda kw: kw.get("who") == "bob")
+        assert outcome == "soft"
+        assert [item[1] for item in sess.queue] == ["alice", "alice2"]
+        sess.provider.cancel.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_turn_owned_by_runs_before_the_cancel(self):
+        """Cleared before the cancel is awaited, so a drain the cancel lets run
+        can never start a message this Stop was aimed at."""
+        mgr, sess = self._make_mgr_with_cfg()
+        mgr.enqueue("slot1", "ts1", "bob", force=True, who="bob")
+        seen: list[list[str]] = []
+
+        async def _cancel(**_kw):
+            seen.append([item[1] for item in sess.queue])
+            return "acked"
+
+        sess.provider.cancel = AsyncMock(side_effect=_cancel)
+        await mgr.stop_turn("slot1", owned_by=lambda kw: kw.get("who") == "bob")
+        assert seen == [[]]
+
 
 class TestQueuedMessageImagePaths:
     """A message with image attachments that arrives while the session is busy

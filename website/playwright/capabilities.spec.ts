@@ -96,7 +96,9 @@ test.describe('Capabilities Page — /capabilities', () => {
       // from" defaults to the built-in kirocrew template, so no pick is needed;
       // everything else sits behind the Advanced fold and keeps its defaults.
       await createSheet.getByPlaceholder('e.g. Radar or Dr. Eggbot').fill(agentName)
-      await createSheet.getByRole('button', { name: 'Create crewmate', exact: true }).click()
+      // This page opens the card with Advanced settings unfolded, so it ends
+      // with a second Create; both submit the same form. Press the first.
+      await createSheet.getByTestId('crewmate-create-submit').click()
 
       // A successful create closes the dialog and refetches the roster; the page
       // stays on /capabilities (config mode: no navigation).

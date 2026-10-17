@@ -89,6 +89,20 @@ describe('SideChat oversize-question refusal', () => {
     expect(screen.queryByText(/bytes?/i)).toBeNull()
   })
 
+  it('renders the refusal as a validation hint (status), not as an ErrorNotice alert, and clears it on edit', async () => {
+    // Nothing failed — the send was never attempted — so the hint must not be
+    // dressed as a failed operation (AUTOSDE errors-use-error-notice).
+    const box = render('a'.repeat(32_769))
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await settle()
+    const hint = screen.getByText('Question too long — reduce to under ~32,768 characters (yours: 32,769)')
+    expect(hint).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
+    // The user acting on the hint (any edit) retires it.
+    await act(async () => { fireEvent.change(box, { target: { value: 'short' } }) })
+    expect(screen.queryByText(/Question too long/)).toBeNull()
+  })
+
   it('refuses an ASCII question with the full byte budget as the character target', async () => {
     // ASCII costs exactly 1 UTF-8 byte per character, so the density-derived target
     // for a pure-ASCII overflow is the full byte budget — unlike the old fixed

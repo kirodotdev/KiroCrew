@@ -23,7 +23,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createRef, forwardRef, useImperativeHandle, useState } from 'react'
-import { act, fireEvent, getConfig, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { namedCeiling } from './namedCeiling'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
@@ -117,28 +118,6 @@ class StubEventSource {
 const openStreams = () => StubEventSource.instances.filter(s => !s.closed)
 const watchedPath = (s: StubEventSource) =>
   decodeURIComponent(new URL(s.url, 'http://gateway').searchParams.get('path') ?? '')
-
-/**
- * A named lost-run ceiling for waitFor/findBy (website/docs/testing.md). A wait
- * that runs out fails BY NAME and says how long it really waited, so a starved
- * runner reads as "GONE_FILE_RETRY_READY ran out after 7612 ms" rather than as
- * a missing element. Testing Library reads `timeout` once, as a wait starts,
- * which is when the elapsed time starts.
- */
-function namedCeiling(name: string, timeout: number) {
-  let startedAt = 0
-  return {
-    get timeout() {
-      startedAt = performance.now()
-      return timeout
-    },
-    onTimeout: (error: Error) =>
-      getConfig().getElementError(
-        `${name} (${timeout} ms) ran out after ${Math.round(performance.now() - startedAt)} ms: ${error.message}`,
-        document.body,
-      ),
-  }
-}
 
 /** Ceiling for the gone-file retry, on the REAL clock, to find a file that is
  *  back (cases that can hold the 404 step the retry on a fake clock instead:

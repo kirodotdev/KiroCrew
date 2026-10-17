@@ -40,6 +40,26 @@ function Harness({ items, scrollerRef, tailChrome = 0 }: {
 const ROW = 100
 const CLIENT = 400
 
+/** Every row reports ROW from its first render, as a laid-out row does in a
+ *  browser. The test DOM's own `offsetHeight` (happy-dom) is 0, and a row that
+ *  reads 0 at mount is not recorded, so the tree keeps pricing it at the
+ *  default estimate; hence this is installed before the render. The returned
+ *  function puts the prototype's own descriptor back. */
+function installRowHeights(): () => void {
+  const proto = HTMLElement.prototype
+  const original = Object.getOwnPropertyDescriptor(proto, 'offsetHeight')
+  Object.defineProperty(proto, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.getAttribute('data-index') !== null ? ROW : 0
+    },
+  })
+  return () => {
+    if (original) Object.defineProperty(proto, 'offsetHeight', original)
+    else Reflect.deleteProperty(proto, 'offsetHeight')
+  }
+}
+
 function installFakeLayout(scroller: HTMLElement) {
   const proto = HTMLElement.prototype
   const origRect = proto.getBoundingClientRect
@@ -62,12 +82,6 @@ function installFakeLayout(scroller: HTMLElement) {
     }
     return origRect.call(this)
   }
-  Object.defineProperty(proto, 'offsetHeight', {
-    configurable: true,
-    get(this: HTMLElement) {
-      return this.getAttribute('data-index') !== null ? ROW : 0
-    },
-  })
   Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => CLIENT })
   Object.defineProperty(scroller, 'scrollHeight', {
     configurable: true,
@@ -80,12 +94,16 @@ function installFakeLayout(scroller: HTMLElement) {
 
 describe('viewport-coverage watchdog', () => {
   let restore: (() => void) | null = null
+  let restoreRowHeights: (() => void) | null = null
   beforeEach(() => {
     vi.useFakeTimers()
+    restoreRowHeights = installRowHeights()
   })
   afterEach(() => {
     restore?.()
     restore = null
+    restoreRowHeights?.()
+    restoreRowHeights = null
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -165,12 +183,14 @@ describe('viewport-coverage watchdog', () => {
     const view = render(<Harness items={items} scrollerRef={scrollerRef as RefObject<HTMLDivElement | null>} />)
     const el = scrollerRef.current as HTMLDivElement
     restore = installFakeLayout(el)
-    // Settle at the bottom, then a REAL upward scroll (wheel = hard input)
-    // releases follow — the reader owns their position from here.
+    // Settle at the bottom long enough for the adaptive estimate to converge
+    // (the debounced flush reprices the tree, as in the FOLLOWING case), then a
+    // REAL upward scroll (wheel = hard input) releases follow — the reader owns
+    // their position from here.
     await act(async () => {
       el.scrollTop = 200 * ROW - CLIENT
       el.dispatchEvent(new Event('scroll'))
-      await vi.advanceTimersByTimeAsync(50)
+      await vi.advanceTimersByTimeAsync(600)
       el.dispatchEvent(new Event('wheel'))
       el.scrollTop = 100 * ROW
       el.dispatchEvent(new Event('scroll'))

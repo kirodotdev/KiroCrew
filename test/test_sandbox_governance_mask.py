@@ -11,34 +11,40 @@ fenced only by the first one. These tests pin the reconciliation between them:
 
 The third is the one worth failing loudly: an entry that quietly moves from "masked" to
 "exception" is a ceiling the agent can rewrite again.
+
+The Linux side is read from the spawn's :class:`~kiro_crew.sandbox_plan.ConfinementPlan`
+(``sandbox._spawn_plan``), whose mask, seal and file lists are what the namespace
+launcher is handed, and the launcher's own seal stage is driven with a recording libc.
+The macOS side is read from the rendered Seatbelt profile.
+
+The loaders' own refusals of a linked or aliased model file are in
+``test_sandbox_governance_mask_model_loaders.py``.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 
 import pytest
+from sandbox_governance_mask_helpers import _no_host_ssh_probe  # noqa: F401
+from sandbox_governance_mask_helpers import _POSIX_ONLY
+from test_sandbox_launcher_program import RecordingLibc, launch, refusal
 
-from kiro_crew import sandbox, sandbox_plan, security
+from kiro_crew import sandbox, sandbox_launcher_program, sandbox_plan, security
 
-_POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX launcher only")
+#: The launcher program pins its targets as ``/proc/self/fd/<n>``, which only Linux has.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+)
 
 _MODES = ("standard", "cc", "strict")
 _CREW_PREFIXES = (".kiro/crew", ".kirocrew")
 
-
-@pytest.fixture(autouse=True)
-def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
-
-    The mask lists read out of the launcher do not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
-    about. Pinned so no binary runs.
-    """
-    monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+_MS_BIND = 4096
+_MS_REMOUNT = 32
+_MS_RDONLY = 1
 
 
 def _home() -> str:
@@ -46,26 +52,25 @@ def _home() -> str:
 
 
 def _crew_path(prefix: str, leaf: str) -> str:
-    """Spell a crew-home target the way the production builders do.
+    """Spell a crew-home target the way the production planner does.
 
-    They join a SINGLE relative string onto the home, so the forward slashes inside it
+    It joins a SINGLE relative string onto the home, so the forward slashes inside it
     survive and Windows gains exactly one native separator. Joining prefix and leaf as
     separate components instead adds a second one, and the resulting mixed-separator
-    string matches nothing the builders emit.
+    string matches nothing the plan carries.
     """
     return os.path.join(_home(), f"{prefix}/{leaf}")
 
 
 def _launcher_sets(mode: str) -> tuple[set[str], set[str], set[str]]:
-    """``(hidden_dirs, readonly, hidden_files)`` as the generated launcher declares them."""
-    script = sandbox._build_launcher_script(mode)
+    """``(hidden_dirs, readonly, hidden_files)`` the namespace launcher is handed.
 
-    def _grab(name: str) -> set[str]:
-        match = re.search(rf"{name} = (\[.*?\])\n", script, re.S)
-        assert match, f"{name} missing from the launcher"
-        return set(json.loads(match.group(1)))
-
-    return _grab("SENSITIVE_DIRS"), _grab("READONLY_DIRS"), _grab("SENSITIVE_FILES")
+    The plan's ``sensitive_dirs`` are the trees the launcher bind-masks, ``readonly``
+    the paths it seals read-only, and ``sensitive_files`` every path its file loop is
+    offered.
+    """
+    plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+    return set(plan.sensitive_dirs), set(plan.readonly), set(plan.sensitive_files)
 
 
 def _crew_sensitive_paths() -> list[str]:
@@ -200,6 +205,11 @@ class TestKeystonesAreSealedInEveryMode:
         # this list asserts makes "the owner chooses the image, never the agent" true
         # rather than intended.
         "cloud.json",
+        # Downloaded model weights and the speech decoder. Each loader checks a pinned
+        # digest and then reopens the file by name, so a sandboxed shell able to write
+        # here could swap the bytes in between. The file-edit gate refuses the edit;
+        # only the kernel denial asserted here refuses the shell's.
+        "models",
     )
 
     @_POSIX_ONLY
@@ -229,22 +239,87 @@ class TestKeystonesAreSealedInEveryMode:
         assert f'(deny file-link (subpath "{target}"))' in profile
         assert f'(deny file-read* (subpath "{target}"))' not in profile
 
+    def test_the_model_weights_seal_has_a_target_on_a_fresh_install(self) -> None:
+        """Linux binds only a path that exists, and ``models`` is absent until the first
+        download finishes, so without pre-creation the seal above would be skipped for
+        every sandbox started before then -- the window it exists to close.
+        """
+        assert "models" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+
     @_POSIX_ONLY
+    def test_a_symlinked_models_leaf_refuses_the_spawn(self, tmp_path, monkeypatch):
+        target = tmp_path / "models"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target.symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(target)], []))
+
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+        assert target.is_symlink(), "the operator must replace the refused link"
+
+    def test_a_real_models_directory_is_accepted(self, tmp_path, monkeypatch):
+        target = tmp_path / "models"
+        target.mkdir()
+        weights = target / "weights.gguf"
+        weights.write_bytes(b"gateway-owned weights")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(target)], []))
+
+        assert sandbox._materialize_sealable_ceilings() == []
+        assert weights.read_bytes() == b"gateway-owned weights"
+
+    @pytest.mark.parametrize("platform", ("darwin", "win32"))
+    def test_delegated_models_overlap_uses_its_named_reason(self, tmp_path, monkeypatch, platform):
+        home = tmp_path / "crew"
+        target = home / "models"
+        target.mkdir(parents=True)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox, "_resolved_kiro_agents_targets", lambda: [])
+        monkeypatch.setattr(sandbox, "kiro_internal_sandbox_enabled", lambda: True)
+        monkeypatch.setattr(sandbox.sys, "platform", platform)
+
+        assert "models" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert "models" in sandbox._DELEGATED_OVERLAP_LEAF_REASONS
+        reason = sandbox.delegated_workspace_exposes_sealed_target(str(target))
+        assert reason is not None
+        assert "sealed model weights" in reason
+        assert "digest-pinned loader" in reason
+        assert sandbox.delegated_workspace_exposes_sealed_target(str(tmp_path / "project")) is None
+
+    @_LINUX_ONLY
     @pytest.mark.parametrize("mode", _MODES)
-    def test_the_seal_survives_a_file_shaped_ceiling(self, mode: str) -> None:
-        """The read-only loop must not require a directory.
+    def test_the_seal_survives_a_file_shaped_ceiling(
+        self, mode: str, tmp_path, monkeypatch
+    ) -> None:
+        """The read-only stage must not require a directory.
 
         ``security_policy.json`` is a plain file. Requiring a directory skips it
-        silently -- no error, and the ceiling stays writable. The loop pins its
-        target by descriptor and accepts ANY kind of object there, which is what
-        ``_any_kind`` names.
+        silently -- no error, and the ceiling stays writable. The stage pins its
+        target by descriptor and accepts ANY kind of object there, so the mode's own
+        plan, handed to the launcher's seal stage, binds the FILE over itself and then
+        remounts that bind read-only.
         """
-        script = sandbox._build_launcher_script(mode)
-        loop = script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
+        monkeypatch.setenv("HOME", str(tmp_path))
+        ceiling = tmp_path / ".kiro" / "crew" / "security_policy.json"
+        ceiling.parent.mkdir(parents=True)
+        ceiling.write_text("{}", encoding="utf-8")
+        plan = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, mode)
+        assert str(ceiling) in plan.readonly
+        libc = RecordingLibc()
+        run = launch(tmp_path, sandbox_plan.namespace_payload(plan), libc=libc)
 
-        assert "_pin_mount_path(target, _any_kind)" in loop
-        assert "stat.S_ISDIR" not in loop
-        assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
+        assert refusal(sandbox_launcher_program.seal_readonly, run) is None
+        on_ceiling = [c for c in libc.calls if c.target_path == os.path.realpath(ceiling)]
+        assert len(on_ceiling) == 2, "the ceiling file was not bound and sealed"
+        bind, seal = on_ceiling
+        # Pinned by descriptor: the mount names the object the pin classified, never
+        # the path a second lookup would reach.
+        assert bind.target.startswith(b"/proc/self/fd/")
+        assert bind.flags == _MS_BIND
+        assert bind.source_id == bind.target_id == (ceiling.stat().st_dev, ceiling.stat().st_ino)
+        sealing = _MS_REMOUNT | _MS_BIND | _MS_RDONLY
+        assert seal.flags & sealing == sealing
 
 
 class TestAbsentRegistryTrustIsSealedByPrecreation:
@@ -344,11 +419,20 @@ class TestSecretsAreMaskedInEveryMode:
     @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
     @pytest.mark.parametrize("leaf", MASKED)
     def test_macos_denies_reads(self, mode: str, prefix: str, leaf: str) -> None:
+        """Both the subpath and the literal spelling deny read and hardlink.
+
+        A subpath rule covers the entry when it is a directory; the literal spelling
+        covers it when it is a plain file. Whether subpath alone reaches a plain-file
+        anchor is not exercised here, so the leaf carries both spellings in every
+        direction -- matching the write deny, which already emits both.
+        """
         profile = sandbox._build_seatbelt_profile(mode)
         target = _crew_path(prefix, leaf)
 
         assert f'(deny file-read* (subpath "{target}"))' in profile
         assert f'(deny file-link (subpath "{target}"))' in profile
+        assert f'(deny file-read* (literal "{target}"))' in profile
+        assert f'(deny file-link (literal "{target}"))' in profile
 
     @pytest.mark.parametrize("mode", _MODES)
     @pytest.mark.parametrize("prefix", _CREW_PREFIXES)
@@ -358,9 +442,10 @@ class TestSecretsAreMaskedInEveryMode:
 
         The Linux launcher binds an empty dir/file over the target, which blocks both
         directions in one rule. Seatbelt does not, and forging ``token_signing.key``
-        needs no read at all — so the read deny on its own is not the control it looks
-        like. Both spellings, because a leaf may be a plain file and no subpath rule
-        addresses one.
+        needs no read at all -- so the read deny on its own is not the control it looks
+        like. Both spellings, because whether a subpath rule alone reaches a plain-file
+        anchor is not checked against the kernel here: the literal is redundant if
+        subpath covers files and load-bearing if it does not.
         """
         profile = sandbox._build_seatbelt_profile(mode)
         target = _crew_path(prefix, leaf)
@@ -661,12 +746,12 @@ class TestAppBackendOwnedLeaves:
 
     @_POSIX_ONLY
     def test_linux_unhides_the_owned_leaves_for_this_spawn(self) -> None:
-        script = sandbox._build_launcher_script(
-            "standard", extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook")
+        plan = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE,
+            "standard",
+            extra_visible_dirs=sandbox.app_backend_visible_targets("md-notebook"),
         )
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        hidden = set(json.loads(match.group(1)))
+        hidden = set(plan.sensitive_dirs)
 
         for prefix in _CREW_PREFIXES:
             for leaf in self.LEAVES:
@@ -1023,6 +1108,8 @@ class TestForeignMaskShadowGuard:
         assert "carveout_shadowed_by_foreign_mask(_cache_target)" in src
 
 
+#: Both renderers, each planned against this host. A namespace plan reads the process's
+#: uid and gid, which Windows does not have; the Seatbelt plan runs everywhere.
 _BACKENDS = (
     pytest.param(sandbox_plan.BACKEND_NAMESPACE, marks=_POSIX_ONLY, id="namespace"),
     pytest.param(sandbox_plan.BACKEND_SEATBELT, id="seatbelt"),
@@ -1203,3 +1290,71 @@ class TestAPodChildsRemappedHomeIsMasked:
             target = os.path.normpath(os.path.join(pod, ".aws", "config"))
             profile = sandbox._build_seatbelt_profile("strict")
             assert f'(deny file-read* (subpath "{target}"))' in profile
+
+
+class TestTheModelsSealRefusesAWritableCarveout:
+    """``models`` is READONLY, so no spawn may carve a writable window under it.
+
+    The seal's whole point is that a sandboxed spawn needing a writable directory
+    of its own cannot get one beneath this leaf -- a private window
+    (``extra_private_dirs``) opens only inside a HIDDEN tree, and
+    ``extra_writable_dirs`` may punch through the runtime parent's seal and
+    nothing else. The local decision runtime is the caller that learned this: its
+    work root moved to ``run/decisions/<id>`` (``local_runtime.WORK_SUBDIR``)
+    because ``models/decisions/<id>`` met ``EROFS`` under this seal. These two
+    cases pin both halves of that answer, so a future move back is caught here
+    rather than by a model that silently stops activating.
+    """
+
+    def _relocated_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        return home
+
+    @staticmethod
+    def _carved(profile: str, path) -> bool:
+        lexical = os.path.normpath(str(path))
+        spellings = dict.fromkeys((lexical, os.path.realpath(lexical)))
+        return all(f'(allow file-write* (subpath "{s}"))' in profile for s in spellings)
+
+    def test_the_decision_work_dir_under_run_is_approved(self, monkeypatch, tmp_path) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        own = home / "run" / "decisions" / "laya"
+        own.mkdir(parents=True)
+
+        profile = sandbox._build_seatbelt_profile("strict", extra_writable_dirs=(str(own),))
+
+        assert self._carved(profile, own)
+
+    def test_the_same_dir_under_the_models_seal_is_refused(self, monkeypatch, tmp_path) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        under_models = home / "models" / "decisions" / "laya"
+        under_models.mkdir(parents=True)
+
+        profile = sandbox._build_seatbelt_profile(
+            "strict", extra_writable_dirs=(str(under_models),)
+        )
+
+        assert not self._carved(profile, under_models)
+        # Nothing else gained a window either: the validator skips the candidate
+        # rather than degrading it to a narrower carve-out.
+        assert "(allow file-write*" not in profile
+
+    @_POSIX_ONLY
+    @pytest.mark.parametrize(
+        ("leaf", "approved"),
+        [(os.path.join("run", "decisions"), True), (os.path.join("models", "decisions"), False)],
+    )
+    def test_the_linux_launcher_agrees_with_seatbelt(
+        self, monkeypatch, tmp_path, leaf: str, approved: bool
+    ) -> None:
+        home = self._relocated_home(monkeypatch, tmp_path)
+        own = home / leaf / "laya"
+        own.mkdir(parents=True)
+
+        plan = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "strict", extra_writable_dirs=(str(own),)
+        )
+
+        assert (os.path.normpath(str(own)) in plan.writable) is approved

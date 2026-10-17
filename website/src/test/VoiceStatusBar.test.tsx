@@ -119,4 +119,54 @@ describe('VoiceStatusBar', () => {
     expect(screen.queryByRole('button')).toBeNull()
     expect(screen.getByTestId('voice-status-notice')).toHaveTextContent('Microphone in use in another chat')
   })
+
+  it('offers Retry plus one menu holding Save recording and Discard, with Discard as the dismissal', () => {
+    const kept = { retryable: true, retry: vi.fn(), save: vi.fn(), discard: vi.fn() }
+    const onDismissError = vi.fn()
+    render(<VoiceStatusBar recording={false} level={0} error="Transcription request failed." onDismissError={onDismissError} keptRecording={kept} onSelectDevice={vi.fn()} />)
+    expect(screen.getByTestId('voice-status-error')).toHaveTextContent('Transcription request failed.')
+    // Two controls in the row: Retry and the overflow trigger. The plain ✕
+    // would close the notice without saying the recording goes too.
+    const row = screen.getByTestId('voice-kept-recording')
+    expect(row.querySelectorAll('button')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(kept.retry).toHaveBeenCalledTimes(1)
+
+    const more = () => screen.getByRole('button', { name: 'More actions for this recording' })
+    fireEvent.keyDown(more(), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Save recording' }))
+    expect(kept.save).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(more(), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Discard recording' }))
+    expect(kept.discard).toHaveBeenCalledTimes(1)
+    expect(onDismissError).not.toHaveBeenCalled()
+  })
+
+  it('shows Retry disabled while the microphone is held for another capture', () => {
+    const kept = { retryable: true, retryDisabled: true, retry: vi.fn(), save: vi.fn(), discard: vi.fn() }
+    render(<VoiceStatusBar recording={false} level={0} error="Transcription request failed." keptRecording={kept} onSelectDevice={vi.fn()} />)
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'More actions for this recording' })).toBeEnabled()
+  })
+
+  it('offers Save recording and Discard as the row when the gateway refused the audio', () => {
+    const kept = { retryable: false, retry: vi.fn(), save: vi.fn(), discard: vi.fn() }
+    render(<VoiceStatusBar recording={false} level={0} error="Transcription request failed." keptRecording={kept} onSelectDevice={vi.fn()} />)
+    expect(screen.queryByTestId('voice-kept-retry')).toBeNull()
+    expect(screen.queryByTestId('voice-kept-more')).toBeNull()
+    expect(screen.getByTestId('voice-kept-recording').querySelectorAll('button')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Save recording' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard recording' }))
+    expect(kept.save).toHaveBeenCalledTimes(1)
+    expect(kept.discard).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the plain dismiss for an error with no recording behind it', () => {
+    const onDismissError = vi.fn()
+    render(<VoiceStatusBar recording={false} level={0} error="Microphone access was denied." onDismissError={onDismissError} onSelectDevice={vi.fn()} />)
+    expect(screen.queryByTestId('voice-kept-recording')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
+    expect(onDismissError).toHaveBeenCalledTimes(1)
+  })
 })

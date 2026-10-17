@@ -385,10 +385,10 @@ export function reuseCurrentTab(): string | null {
   if (!current) return null
   // A tab restored from persistence is a hydration SUSPECT until a live probe
   // confirms it (see reconcileRestoredTabs). Reusing one before it settles
-  // would copy the command against a tab that reconciliation may then drop,
-  // leaving no terminal and no fresh-tab fallback. While hydration is unsettled
-  // and the chosen tab is such a suspect, return null so the caller mints a
-  // fresh tab, which it owns outright.
+  // would focus a tab that reconciliation may then drop and fence-transform the
+  // command for a shell that may not exist. While hydration is unsettled and
+  // the chosen tab is such a suspect, return null so the caller skips the focus
+  // step and copies the command verbatim; it never mints or runs a tab here.
   if (ruling.isPending() && restoredIds.has(current.id)) return null
   set({ ...state, open: true, activeId: current.id })
   return current.id

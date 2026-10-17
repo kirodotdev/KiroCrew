@@ -212,12 +212,51 @@ describe('UpdateModal', () => {
       expect(
         screen.getByText(i18nT('components.updateModal.install_failed_body')),
       ).toBeInTheDocument()
+      // The failure is an error, so it renders through ErrorNotice with the
+      // agent hand-off.
+      expect(screen.getByTestId('update-modal-install-failed').textContent)
+        .toContain(i18nT('components.updateModal.install_failed_body'))
+      expect(screen.getByRole('button', { name: new RegExp(i18nT('components.askAgent.ask_the_agent'), 'i') })).toBeInTheDocument()
       // The failure state IS dismissable (unlike the busy state): the main
       // process restores the gateway, so the dashboard behind is usable.
       fireEvent.click(
         screen.getByRole('button', { name: i18nT('components.updateModal.back_to_dashboard') }),
       )
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('an install refused because the gateway kept running names the command that stops it', async () => {
+      const { push } = await mount(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({
+        state: 'error',
+        phase: 'install',
+        code: 'gateway-still-running',
+        stopCommand: 'kirocrew stop --port 5476',
+        version: '9.9.9',
+      })
+      expect(
+        await screen.findByText(i18nT('pages.settings.aboutPanel.update_error_gateway_still_running')),
+      ).toBeInTheDocument()
+      // The generic body says "retry from Settings > About", which this
+      // refusal repeats until the gateway is stopped, so it must not render.
+      expect(screen.queryByText(i18nT('components.updateModal.install_failed_body'))).not.toBeInTheDocument()
+      // The refusal is an error, so it renders through ErrorNotice with the
+      // agent hand-off; nothing on this overlay is unsaved input.
+      const notice = screen.getByTestId('update-modal-gateway-refusal')
+      expect(notice.textContent).toContain(i18nT('pages.settings.aboutPanel.update_error_gateway_still_running'))
+      expect(screen.getByRole('button', { name: new RegExp(i18nT('components.askAgent.ask_the_agent'), 'i') })).toBeInTheDocument()
+      expect(screen.getByTestId('update-modal-gateway-stop-command').textContent).toBe('kirocrew stop --port 5476')
+    })
+
+    it('a gateway-still-running refusal without a command keeps the generic failure body', async () => {
+      const { push } = await mount(installing)
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+      await push({ state: 'error', phase: 'install', code: 'gateway-still-running', version: '9.9.9' })
+      expect(
+        await screen.findByText(i18nT('components.updateModal.install_failed_body')),
+      ).toBeInTheDocument()
+      expect(screen.queryByTestId('update-modal-gateway-stop-command')).not.toBeInTheDocument()
     })
 
     it('a non-install error does not hijack the screen with the failure overlay', async () => {

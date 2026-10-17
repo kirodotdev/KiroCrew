@@ -240,6 +240,23 @@ class TestAcpSessionProviderStream:
         assert collected[2].kind == EVENT_COMPLETE
 
     @pytest.mark.asyncio
+    async def test_stream_forwards_explicit_transport_timeout(self):
+        handle = _make_handle()
+        seen: list[tuple[str, float | None]] = []
+
+        async def mock_prompt(message, timeout=None):
+            seen.append((message, timeout))
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
+
+        handle.prompt = mock_prompt
+        provider = AcpSessionProvider(handle, _make_runtime())
+
+        events = [event async for event in provider.stream("long run", timeout=21660.0)]
+
+        assert [event.kind for event in events] == [EVENT_COMPLETE]
+        assert seen == [("long run", 21660.0)]
+
+    @pytest.mark.asyncio
     async def test_stream_command_routes_through_handle_stream_command(self):
         """Slash commands go through the handle's NATIVE commands/execute path,
         never through prompt() — a prompt round-trip would hand the command to
@@ -447,6 +464,17 @@ class TestAcpSessionProviderErrorPropagation:
 
         provider.touch_activity()
         assert runtime._last_activity > 0.0
+
+    def test_touch_activity_stamps_its_own_handle(self):
+        """The keepalive also reaches this session's handle, the clock the
+        tool-stall watchdog reads (the runtime clock is process-wide)."""
+        handle = _make_handle()
+        runtime = _make_runtime()
+        provider = AcpSessionProvider(handle, runtime)
+
+        provider.touch_activity()
+
+        handle.note_keepalive.assert_called_once_with()
 
 
 class TestAcpSessionProviderClientCompat:
@@ -1299,7 +1327,8 @@ class TestLivePathModelEntitlement:
         # so a stale-snapshot refusal stands. Tests exercising the heal path
         # override this with a side_effect that also updates available_models.
         handle.refresh_available_models = AsyncMock(return_value=[])
-        return AcpSessionProvider(handle, MagicMock()), handle
+        # A kiro runtime: the refusal wording, sign-in hint included, is kiro's.
+        return AcpSessionProvider(handle, _make_runtime()), handle
 
     @pytest.mark.asyncio
     async def test_explicit_switch_refused_on_live_path(self):

@@ -3,7 +3,7 @@
  *
  * Three module-level tables rendered untranslated copy in every locale because
  * `eslint-plugin-i18next` exempts ALL-CAPS declarators, so no gate ever counted
- * them: the session filter rows and sort menu in `ChatSidebar`, and the
+ * them: the session filter rows and sort menu in `chat-sidebar/SearchDock.tsx`, and the
  * reasoning-effort levels in `lib/effort.ts` (the `强度 High` in the bug report).
  *
  * The Overview status tiles (`UPTIME` / `SESSIONS` / … above the big numbers) had a

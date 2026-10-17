@@ -25,7 +25,6 @@ import logging
 import ntpath
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -273,6 +272,9 @@ _settings_lock = LoopBoundLock()
 
 # Upper bound on the Untitled-N search when creating a note.
 MAX_UNTITLED = 1000
+# How long after a fetch a HEAD-behind-the-tip reading may still be a `git pull`
+# mid-merge rather than a vault ahead of its remote (see record_external_sync).
+FETCH_SETTLE_MS = 60_000
 # Native folder picker.
 PICK_FOLDER_TIMEOUT_SEC = 120
 # Revealing a folder in the OS file manager. Absolute paths, never resolved from
@@ -652,19 +654,104 @@ def synced_cleanly(result: dict[str, Any]) -> bool:
     return not result.get("conflicts")
 
 
-async def record_last_sync(vault_id: str) -> int:
-    """Stamp *vault_id*'s last conflict-free sync and return it (epoch ms).
+async def record_last_sync(vault_id: str, at: Optional[int] = None) -> int:
+    """Stamp *vault_id*'s last conflict-free sync and return the stored stamp (epoch ms).
 
-    The backend is the ONLY writer of ``lastSync``, for both the manual and the
-    background trigger, so a client cannot claim a sync happened and the two
-    paths cannot disagree about when one did.
+    The backend is the ONLY writer of ``lastSync``, for the manual, the
+    background and the external-pull trigger, so a client cannot claim a sync
+    happened and the paths cannot disagree about when one did.
+
+    ``at`` is the moment the sync was observed when that is not now: a pull
+    made outside the app is stamped with its fetch time. It is clamped to now,
+    because it comes from an mtime (``.git`` is agent-writable, and a clock
+    can run ahead) and a future stamp would read "just now" forever. A stamp
+    never moves backwards, so a fetch time that predates a sync the app itself
+    completed meanwhile leaves the newer stamp in place.
     """
     now = int(time.time() * 1000)
+    stamp = now if at is None else min(at, now)
     async with _settings_lock:
         settings = await read_settings()
-        settings["lastSync"][vault_id] = now
+        stamp = max(stamp, settings["lastSync"].get(vault_id, -1))
+        settings["lastSync"][vault_id] = stamp
         await asyncio.to_thread(_write_settings_sync, settings)
-    return now
+    return stamp
+
+
+async def record_external_sync(vault: dict[str, Any]) -> None:
+    """Count a pull made outside the app as this vault's last sync, if it was one.
+
+    Auto sync can be unavailable (an SSH remote the sandbox cannot reach), so a
+    user keeps the vault current with ``git pull`` by hand. Only the app's own
+    sync paths stamp ``lastSync``, so the "Synced N ago" label kept reading
+    from the last time the app pulled -- a week stale over a vault that was
+    current. What is stamped here is the observation the app's own sync earns
+    its stamp with: a fetch newer than the stamp, with origin still the trusted
+    remote, that left HEAD at the checked-out branch's remote-tracking ref with
+    nothing pending in the vault's scope. A fetch that left local commits
+    unpushed, or edits uncommitted, is not a sync: those notes are still only
+    on this machine, so the label must not say they are backed up.
+
+    The tracking ref is what the vault knows of its remote, not proof of what
+    the remote holds: a fetch of some other branch alone, on a vault already
+    level with its tracking ref, earns a stamp at that fetch time too, and
+    ``.git`` is agent-writable. The stamp is a label the user reads, never an
+    authorization.
+
+    Runs on every external-change poll, so the per-tick cost is one stat of
+    the recorded git dir's ``FETCH_HEAD``. Each fetch is examined until it
+    is decided, then never again, so a vault that is mid-edit, refuses git
+    reads, or has long sat ahead of its remote does not re-run git every
+    tick; the next fetch is examined afresh. One outcome stays open for a
+    while: ``git pull`` writes ``FETCH_HEAD`` before it merges, so a poll that
+    lands between the two sees HEAD behind the fetched tip. That mismatch is
+    re-examined on later polls until the fetch is ``FETCH_SETTLE_MS`` old;
+    after that it means a vault ahead of its remote and is final. The
+    ``.git`` pointer is confirmed against the recorded git dir before any git
+    command runs in the checkout. A fetch that earns a stamp is consumed only
+    once the stamp is written: a failed settings write leaves it for the next
+    poll rather than losing the pull.
+    """
+    if vault.get("localOnly"):
+        return
+    trusted_gitdir, trusted_remote = vault.get("gitDir"), vault.get("remoteUrl")
+    if not trusted_gitdir or not trusted_remote:
+        return
+    real_gitdir = await asyncio.to_thread(os.path.realpath, trusted_gitdir)
+    fetched = await asyncio.to_thread(git_ops.fetch_head_mtime_ms, real_gitdir)
+    state = watch_state(vault)
+    if fetched is None or fetched == state["fetchSeen"]:
+        return
+    if fetched <= (await read_settings())["lastSync"].get(vault["id"], -1):
+        state["fetchSeen"] = fetched
+        return
+    path = vault["localPath"]
+    try:
+        if not await git_ops.gitdir_is_trusted(path, trusted_gitdir):
+            state["fetchSeen"] = fetched
+            return
+        if not await git_ops.remote_is_trusted(path, trusted_remote):
+            state["fetchSeen"] = fetched
+            return
+        if not await git_ops.head_is_fetched_tip(path):
+            # Possibly a pull still merging; decided once the fetch has aged.
+            if time.time() * 1000 - fetched > FETCH_SETTLE_MS:
+                state["fetchSeen"] = fetched
+            return
+        if await git_ops.status(path, vault.get("subfolder")):
+            state["fetchSeen"] = fetched
+            return
+    except git_ops.GitError as exc:
+        state["fetchSeen"] = fetched
+        logger.debug("md-notebook: external sync check failed for %s: %s", path, exc)
+        return
+    try:
+        await record_last_sync(vault["id"], at=fetched)
+    except OSError as exc:
+        # Not consumed: the stamp did not land, so the next poll tries again.
+        logger.warning("md-notebook: could not record external sync for %s: %s", path, exc)
+        return
+    state["fetchSeen"] = fetched
 
 
 # ---------------------------------------------------------------------------
@@ -1260,7 +1347,7 @@ def _snapshot_sync(root: Path) -> dict[str, float]:
 def watch_state(vault: dict[str, Any]) -> dict[str, Any]:
     state = _watches.get(vault["id"])
     if state is None:
-        state = {"rev": 0, "paths": set(), "snapshot": None}
+        state = {"rev": 0, "paths": set(), "snapshot": None, "fetchSeen": None}
         _watches[vault["id"]] = state
     return state
 
@@ -1625,7 +1712,7 @@ async def api_vault_clone(request: web.Request) -> web.Response:
     try:
         await vault_path(vault)
     except ApiError:
-        await asyncio.to_thread(shutil.rmtree, str(clone_dir), True)
+        await asyncio.to_thread(platform_compat.rmtree_force, str(clone_dir))
         raise
     # The clone succeeded with this token — now it is safe to persist it.
     if submitted_pat:
@@ -1850,9 +1937,15 @@ async def api_pat(request: web.Request) -> web.Response:
 
 
 async def api_changes(request: web.Request) -> web.Response:
-    """External-change poll: the current revision plus paths touched since."""
+    """External-change poll: the current revision plus paths touched since.
+
+    A pull made outside the app is an external change too: the poll is where
+    :func:`record_external_sync` stamps it. The stamp reaches the page through
+    the settings it already refetches, so the reply itself is unchanged.
+    """
     vault = await require_vault(request)
     state = await scan_changes(vault)
+    await record_external_sync(vault)
     try:
         since = int(request.query.get("since", "0"))
     except ValueError:

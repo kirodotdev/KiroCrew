@@ -8,9 +8,11 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.pod import _windows_job as jobs
+from kiro_crew.testing.clock import ManualClock
 
 
 class Kernel:
@@ -172,20 +174,47 @@ def test_invalid_process_handle_is_rejected(kernel, handle):
     assert not any(call[0] == "assign" for call in kernel.calls)
 
 
+def _pin_clock(monkeypatch):
+    """A clock only the drain reads, starting at 0.
+
+    Installed on the module's own ``time`` binding. That binding IS the stdlib
+    module, so patching ``jobs.time.sleep`` would replace ``time.sleep`` for every
+    thread in the worker, and another thread's sleep would move the drain's
+    deadline.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, jobs)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    assert_clock_is_private(_pin_clock(monkeypatch), jobs)
+
+
 def test_drain_waits_for_kernel_zero_not_termination_return(kernel, monkeypatch):
-    clock = SimpleNamespace(now=0.0)
-    monkeypatch.setattr(jobs.time, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(
-        jobs.time, "sleep", lambda seconds: setattr(clock, "now", clock.now + seconds)
-    )
+    clock = _pin_clock(monkeypatch)
     with jobs.PodJob.create() as job:
         kernel.counts = [2, 1, 0]
         job.terminate_and_wait(timeout=1)
-        assert clock.now == pytest.approx(2 * jobs._POLL_SECONDS)
+        assert clock.monotonic() == pytest.approx(2 * jobs._POLL_SECONDS)
         kernel.counts = [1]
         with pytest.raises(TimeoutError):
             job.terminate_and_wait(timeout=0.1)
-        assert clock.now == pytest.approx(0.2)
+        assert clock.monotonic() == pytest.approx(0.2)
+
+
+def test_drain_never_sleeps_past_its_deadline(kernel, monkeypatch):
+    # A budget that is not a whole number of polls: the last sleep is cut to what
+    # is left, so the drain gives up at its deadline and not one poll after it.
+    clock = _pin_clock(monkeypatch)
+    with jobs.PodJob.create() as job:
+        kernel.counts = [1]
+        with pytest.raises(TimeoutError):
+            job.terminate_and_wait(timeout=2.5 * jobs._POLL_SECONDS)
+    assert clock.sleeps == pytest.approx(
+        (jobs._POLL_SECONDS, jobs._POLL_SECONDS, 0.5 * jobs._POLL_SECONDS)
+    )
+    assert clock.monotonic() == pytest.approx(2.5 * jobs._POLL_SECONDS)
 
 
 @pytest.mark.parametrize("failure", ["terminate", "query", "short"])
@@ -495,3 +524,63 @@ def test_retirement_requires_a_signaled_exact_handle(kernel, monkeypatch, outcom
             jobs.retire_identity(9100, timeout=0)
     else:
         jobs.retire_identity(9100, timeout=0)
+
+
+@pytest.mark.parametrize("outcome", ["exited", "live", "error"])
+def test_wait_identity_reports_only_a_signaled_object_and_never_terminates(
+    kernel, monkeypatch, outcome
+):
+    """The producer wait used by `stop` on an unspawned run: observe, never kill."""
+    code = {"exited": 0, "live": 258, "error": 0xFFFFFFFF}[outcome]
+    monkeypatch.setattr(kernel, "WaitForSingleObject", lambda *_a: code, raising=False)
+    monkeypatch.setattr(
+        kernel, "TerminateProcess", lambda *_a: pytest.fail("must not terminate"), raising=False
+    )
+    if outcome == "error":
+        with pytest.raises(OSError):
+            jobs.wait_identity(9100, timeout=0)
+    else:
+        assert jobs.wait_identity(9100, timeout=0) is (outcome == "exited")
+    with pytest.raises(ValueError):
+        jobs.wait_identity(9100, timeout=float("nan"))
+
+
+@pytest.mark.skipif(not pc.IS_WINDOWS, reason="requires native Windows process objects")
+def test_native_producer_identity_distinguishes_live_exited_and_replaced():
+    """Pin a real process by pid + creation time, then watch it exit.
+
+    A live object answers `wait_identity` False; a terminated one answers True
+    through the same pinned handle, which is the proof `stop` spends before it
+    removes an unspawned generation's sidecars. A different creation time is
+    positively another process, which `open_identity` reports as gone.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        token = pc.process_start_time(proc.pid)
+        assert token
+        handle = jobs.open_identity(proc.pid, token)
+        assert handle is not None
+        try:
+            assert jobs.wait_identity(handle, timeout=0) is False
+            proc.kill()
+            assert jobs.wait_identity(handle, timeout=10) is True
+        finally:
+            jobs.close_identity(handle)
+        # A creation time that is not this process's is positively another process.
+        assert jobs.open_identity(proc.pid, str(int(token) + 1)) is None
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+    # The Popen still holds the object, so the pid may still open; the exact
+    # handle then reports the exit, which is the only reading `stop` accepts.
+    late = jobs.open_identity(proc.pid, token)
+    if late is not None:
+        try:
+            assert jobs.wait_identity(late, timeout=0) is True
+        finally:
+            jobs.close_identity(late)

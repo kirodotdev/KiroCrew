@@ -40,7 +40,7 @@ function tickFailureDetail(e: unknown): string | null {
       return i18nT('pages.chat.taskProgressBar.fail_task_gone')
     case 'caller_unattributable':
       return i18nT('pages.chat.taskProgressBar.fail_session_gone')
-    case 'remote_action_unsupported':
+    case 'relay_archive_read_only':
       return i18nT('pages.chat.taskProgressBar.fail_remote')
     default:
       return null
@@ -74,7 +74,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
   const todo = useAppSelector(s =>
     (s.dashboard.slots ?? []).find(x => x.key === slot)?.todo ?? null
   ) as TodoList | null
-  // A remote-bound session's checklist is a relay of the peer's: the local slot
+  // An `executor: 'remote'` slot is a read-only relay archive: the local slot
   // holds no list to write, so the PATCH would 404. Rows stay read-only there.
   const editable = useAppSelector(s =>
     (s.dashboard.slots ?? []).find(x => x.key === slot)?.executor !== 'remote'
@@ -221,7 +221,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
           aria-label={expanded
             ? i18nT('pages.chat.taskProgressBar.aria_collapse_task_list', { done, total })
             : i18nT('pages.chat.taskProgressBar.aria_expand_task_list', { done, total })}
-          className={`flex items-center gap-2 py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent ${
+          className={`flex items-center gap-2 py-1.5 text-[13px] font-mono bg-transparent border-none cursor-pointer hover:bg-accent/5 transition-colors focus-ring-accent-inset ${
             expanded ? 'w-full px-3' : 'px-3 min-w-0'
           }`}
         >
@@ -310,7 +310,7 @@ const TaskProgressBar = memo(function TaskProgressBar({ slot, disclosureKey }: {
                     disabled={pendingIds.has(id)}
                     onClick={() => enqueue(id, t.text || '', !t.completed)}
                     data-testid="todo-row-toggle"
-                    className="flex w-full items-start gap-1.5 text-left bg-transparent border-none px-1 py-0.5 -mx-1 cursor-pointer rounded-sm hover:bg-accent/10 disabled:cursor-default disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+                    className="flex w-full items-start gap-1.5 text-left bg-transparent border-none px-1 py-0.5 -mx-1 cursor-pointer rounded-sm hover:bg-accent/10 disabled:cursor-default disabled:opacity-60 focus-ring-accent"
                   >
                     {/* A held row keeps its glyph, dimmed in place (the button's
                         disabled opacity): a spinner here read as the AGENT

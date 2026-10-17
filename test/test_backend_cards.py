@@ -8,7 +8,7 @@ Four properties, and each one is a cost the card exists to avoid paying again:
    than a claim: ``test_a_new_backend_renders_a_complete_card_with_no_card_edit``
    injects a synthetic id and reads its card back.
 2. **Completeness under a new capability set.** Every ``ACP_BACKENDS_*`` set the
-   vocabulary module defines has to be classified -- user-facing, security note,
+   vocabulary module defines has to be classified -- core, detail, security note,
    operator note, off-card, or the membership floor. A set in none of them is a set
    nobody decided about, which is the same failure the disposition-row test in
    ``test_agent_sdk_capabilities`` catches one layer down.
@@ -69,6 +69,7 @@ STRANGER = "a-harness-nobody-registered"
 #: Every line the card carries, in every bucket.
 ALL_SPECS: Tuple[cards_mod._LineSpec, ...] = (
     *cards_mod.USER_FACING_LINES,
+    *cards_mod.DETAIL_LINES,
     *cards_mod.SECURITY_LINES,
     *cards_mod.OPERATOR_LINES,
 )
@@ -104,10 +105,12 @@ def test_every_known_backend_renders_a_complete_card() -> None:
     and would have no way to tell.
     """
     expected = tuple(spec.id for spec in cards_mod.USER_FACING_LINES)
+    expected_details = tuple(spec.id for spec in cards_mod.DETAIL_LINES)
     produced = {card.backend for card in _every_card()}
     assert produced == set(sdk_backends.ACP_BACKENDS_KNOWN)
     for card in _every_card():
         assert tuple(line.id for line in card.capabilities) == expected, card.backend
+        assert tuple(line.id for line in card.details) == expected_details, card.backend
         assert card.tool_approval, card.backend
 
 
@@ -152,6 +155,10 @@ def test_a_new_backend_renders_a_complete_card_with_no_card_edit(
     )
     available = {line.id for line in card.capabilities if line.available}
     assert available == {cards_mod.LINE_MID_TURN_STEER}
+    assert tuple(line.id for line in card.details) == tuple(
+        spec.id for spec in cards_mod.DETAIL_LINES
+    )
+    assert not any(line.available for line in card.details)
     assert cards_mod.NOTE_CREW_SANDBOX_STANDS_DOWN in card.security_notes
     # The onboarding order is Stage 1 (this membership) then Stage 5 (the auth
     # declaration), so a card served in between must not claim where a harness
@@ -172,6 +179,7 @@ def test_an_unknown_backend_is_withheld_every_capability() -> None:
     """
     card = cards_mod.card_for(STRANGER)
     assert [line.available for line in card.capabilities] == [False] * len(card.capabilities)
+    assert [line.available for line in card.details] == [False] * len(card.details)
     assert card.tool_approval == Routing.UNVERIFIED.value
     assert card.offered_by_build is False
     assert card.security_notes == ()
@@ -198,7 +206,8 @@ def test_every_capability_set_is_classified_by_the_card() -> None:
     assert not missing, (
         f"these capability sets are not classified in agent_sdk/backend_cards.py: "
         f"{missing}. Put each in USER_FACING_LINES (its absence is a loss the reader "
-        f"can act on), SECURITY_LINES (it moves a confinement or credential "
+        f"picks a harness by), DETAIL_LINES (a loss, but not one a harness is picked "
+        f"by), SECURITY_LINES (it moves a confinement or credential "
         f"boundary), OPERATOR_LINES (it says where something lives, and both states "
         f"are correct behaviour), or OFF_CARD_SETS with the reason it reaches no card."
     )
@@ -314,20 +323,53 @@ def test_the_kiro_family_lines_read_the_marker_not_the_runtime_set() -> None:
 # ── 5. the lines say what the memberships say ──────────────────────────────
 
 
-def test_the_default_harness_reads_as_the_most_capable() -> None:
+def test_the_core_card_is_the_approved_seven() -> None:
+    """The curated core is a product decision, so its membership is pinned.
+
+    Seven lines a reader can hold in their head: does Crew work here, what can a
+    chat do, what can be tuned. A line joining or leaving this set changes every
+    harness's "supports N of M", so it has to be a deliberate edit here.
+    """
+    assert tuple(spec.id for spec in cards_mod.USER_FACING_LINES) == (
+        cards_mod.LINE_CREW_TOOLS,
+        cards_mod.LINE_MEMBER_THREAD_TOOLS,
+        cards_mod.LINE_SIDE_CHAT_TOOLS,
+        cards_mod.LINE_MID_TURN_STEER,
+        cards_mod.LINE_MANUAL_COMPACT,
+        cards_mod.LINE_REASONING_EFFORT,
+        cards_mod.LINE_MODEL_SWITCH,
+    )
+    assert tuple(spec.id for spec in cards_mod.DETAIL_LINES) == (
+        cards_mod.LINE_MEMBER_SAVED_AGENT,
+        cards_mod.LINE_SUBAGENT_CONTINUATION,
+        cards_mod.LINE_MARKDOWN_AGENTS,
+    )
+
+
+def test_core_counts_per_harness_are_pinned() -> None:
     """A coherence check on the whole projection, not on one line.
 
-    kiro-cli is the harness every capability set was written against, so a card
-    that did not show it ahead of every adapter would mean a line was inverted --
-    the failure mode a two-level card is most exposed to.
+    The measured core count of every known harness. A count moving is either a
+    membership change -- re-pin it here in the same change -- or an inverted line,
+    the failure a two-level card is most exposed to. KAS, the core-supported
+    harness, carries every core line; kiro-cli has no member dispatch (its
+    template is read from disk at spawn and no wire channel mounts session control).
     """
     counts = {
-        card.backend: sum(1 for line in card.capabilities if line.available)
+        card.policy_id: sum(1 for line in card.capabilities if line.available)
         for card in _every_card()
     }
-    best = max(counts.values())
-    assert counts[ACP_BACKEND_KIRO] == best
-    assert counts[ACP_BACKEND_KIRO] > counts[ACP_BACKEND_KAS]
+    assert counts == {
+        "claude": 7,
+        "codex": 6,
+        "deepseek": 5,
+        "goose": 7,
+        "kas": 7,
+        "kiro": 6,
+        "opencode": 6,
+        "pi": 5,
+    }
+    assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 
 
 def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> None:
@@ -335,8 +377,10 @@ def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> No
 
     The kiro family loads Crew's agent spec itself and the array members are
     handed the server list per session; a harness in neither has none of Crew's
-    tools, which is the line this card exists to make visible. Pi is that harness
-    today: it ACCEPTS the array and never forwards it.
+    tools, which is the line this card exists to make visible. pi is an array
+    member whose adapter drops the array; its servers arrive through Crew's gate
+    extension, which is why it reads available. No known harness is in neither, so
+    that side is held by an id this build does not know.
     """
 
     def crew_tools(backend: str) -> bool:
@@ -346,7 +390,8 @@ def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> No
 
     assert crew_tools(ACP_BACKEND_KIRO) is True
     assert crew_tools(ACP_BACKEND_DEEPSEEK) is True
-    assert crew_tools(ACP_BACKEND_PI) is False
+    assert crew_tools(ACP_BACKEND_PI) is True
+    assert crew_tools("not-a-known-harness") is False
 
 
 def test_effort_reads_available_on_the_harness_that_uses_a_slash_command() -> None:
@@ -453,6 +498,8 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
     payload = cards_mod.card_payload(ACP_BACKEND_KIRO)
     assert set(payload) == {
         "capabilities",
+        # The folded detail lines, same entry shape, outside the card's count.
+        "details",
         "security_notes",
         "operator_notes",
         "tool_approval",
@@ -474,6 +521,13 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
     assert [entry["id"] for entry in capabilities] == [
         spec.id for spec in cards_mod.USER_FACING_LINES
     ]
+    assert [entry["id"] for entry in payload["details"]] == [
+        spec.id for spec in cards_mod.DETAIL_LINES
+    ]
+    assert all(
+        set(entry) == {"id", "available", "measured", "unmeasured_reason"}
+        for entry in payload["details"]
+    )
     # The routing value itself. A record around one string would be a shape no
     # reader needs, and a shipped gateway cannot take a wire field back.
     assert payload["tool_approval"] == Routing.AGENT_SPEC.value
@@ -528,7 +582,9 @@ def test_every_declared_unmeasured_entry_names_a_real_cell() -> None:
     for (harness_name, line_id), entry in cards_mod.DECLARED_UNMEASURED.items():
         harness = getattr(sdk_backends, harness_name)
         assert harness in sdk_backends.ACP_BACKENDS_KNOWN, harness_name
-        assert line_id in {spec.id for spec in cards_mod.USER_FACING_LINES}, line_id
+        assert line_id in {
+            spec.id for spec in (*cards_mod.USER_FACING_LINES, *cards_mod.DETAIL_LINES)
+        }, line_id
         assert entry.reason, (harness_name, line_id)
         assert entry.declared_by in vars(sdk_backends), entry.declared_by
         # The citation is the admissibility evidence, so a label is not one.
@@ -566,11 +622,11 @@ def test_no_declared_unmeasured_entry_names_a_member() -> None:
     withdrawing a measured fact. Checked against the line's own union rather than
     against one set, because a union line is available on ANY of its inputs.
     """
-    by_id = {spec.id: spec for spec in cards_mod.USER_FACING_LINES}
+    by_id = {spec.id: spec for spec in (*cards_mod.USER_FACING_LINES, *cards_mod.DETAIL_LINES)}
     for (harness_name, line_id), _entry in cards_mod.DECLARED_UNMEASURED.items():
         harness = getattr(sdk_backends, harness_name)
         line = cards_mod.card_for(harness)
-        rendered = next(item for item in line.capabilities if item.id == line_id)
+        rendered = next(item for item in (*line.capabilities, *line.details) if item.id == line_id)
         assert rendered.available is False, (
             f"{harness_name} is a member of one of {by_id[line_id].sets}, so this cell "
             "is measured and the entry is stale"
@@ -578,26 +634,25 @@ def test_no_declared_unmeasured_entry_names_a_member() -> None:
         assert rendered.measured is False
 
 
-def test_the_compact_capture_gap_is_the_only_unmeasured_thing_on_any_card() -> None:
-    """The one cell, named, and every other cell on every card measured.
+def test_every_cell_on_every_card_is_measured() -> None:
+    """No cell on any card is unmeasured, and the two compaction answers stay apart.
 
-    pi dispatches ``/compact`` before a model turn in its own source and has not
-    been driven, which ``ACP_BACKENDS_COMPACT`` records as "unclassified". goose was
-    driven, so its cell is measured. A plain cross means something else: deepseek has no compaction on
-    its ACP surface at all -- in the set's own words it emits no
+    pi was driven through ``/compact`` (``test/fixtures/acp_frames/pi/compact-live.jsonl``),
+    so its cell is measured and available. A plain cross means something else: deepseek
+    has no compaction on its ACP surface at all -- in the set's own words it emits no
     ``available_commands_update`` and answers ``session/load`` with "Method not
-    found". Those two answers are not the same answer, and this test is where the
-    difference is pinned.
+    found".
     """
     unmeasured = {
         (card.backend, line.id)
         for card in _every_card()
-        for line in card.capabilities
+        for line in (*card.capabilities, *card.details)
         if not line.measured
     }
-    assert unmeasured == {
-        (ACP_BACKEND_PI, cards_mod.LINE_MANUAL_COMPACT),
-    }
+    assert unmeasured == set()
+    pi = cards_mod.card_for(ACP_BACKEND_PI)
+    pi_compact = next(line for line in pi.capabilities if line.id == cards_mod.LINE_MANUAL_COMPACT)
+    assert (pi_compact.available, pi_compact.measured) == (True, True)
     # The harness with no compaction surface keeps the cross: its answer is known.
     deepseek = cards_mod.card_for(ACP_BACKEND_DEEPSEEK)
     compact = next(
@@ -616,7 +671,8 @@ def test_an_unmeasured_line_is_never_counted_as_available() -> None:
     anything predating ``measured`` all answer not-available.
     """
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
-        for entry in cards_mod.card_payload(backend)["capabilities"]:
+        payload = cards_mod.card_payload(backend)
+        for entry in (*payload["capabilities"], *payload["details"]):
             assert isinstance(entry["available"], bool)
             if not entry["measured"]:
                 assert entry["available"] is False, (backend, entry)

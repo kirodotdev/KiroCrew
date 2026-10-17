@@ -12,7 +12,7 @@
  */
 import type { BaseCodeOptions, BaseDiffOptions, HunkSeparators, ThemesType, ThemeTypes } from '@pierre/diffs'
 
-import { STATE_ROW_ICON } from './treeStateRows'
+import { STATE_ROW_ACTION_ICON, STATE_ROW_ICON } from './treeStateRows'
 
 /** Diff options as our surfaces use them: the deprecated `custom` hunk
  *  separator (a function renderer) is excluded so the shape stays assignable
@@ -140,13 +140,27 @@ export const PIERRE_EDIT_CARET_ALIGN_CSS = `
  *  Deliberately NOT italic: Pierre paints a label as two `overflow: hidden`
  *  spans around its middle-truncation point, and an oblique glyph's overhang is
  *  clipped at each span's edge -- "file" rendered as "tile" in the capture. */
+// The last rule is the row badge's truncation. Pierre lays a decoration's text
+// out as an end-aligned inline-flex span, which cannot ellipsize, so a narrow
+// row (a folded "packages / core" chain) cut the badge from its START
+// ("me items not shown"). As a block it ends in an ellipsis instead.
 const STATE_ROW_ICON_SVG = `[data-item-section="decoration"] [data-icon-name="${STATE_ROW_ICON}"]`
 const STATE_ROW = `[data-type="item"]:has(${STATE_ROW_ICON_SVG})`
+// The `truncated` row a host can act on (open that folder in a folder tab): styled as a link
+// in the accent colour, not the muted status tone, and it takes the pointer,
+// because activating it IS its job.
+const STATE_ROW_ACTION_ICON_SVG = `[data-item-section="decoration"] [data-icon-name="${STATE_ROW_ACTION_ICON}"]`
+const STATE_ACTION_ROW = `[data-type="item"]:has(${STATE_ROW_ACTION_ICON_SVG})`
 export const PIERRE_TREE_STATE_ROW_CSS = `
 ${STATE_ROW}{pointer-events:none;color:var(--trees-fg-muted)}
 ${STATE_ROW} [data-item-section="icon"]{visibility:hidden}
 ${STATE_ROW} [data-item-section="action"]{display:none}
 ${STATE_ROW_ICON_SVG}{display:none}
+${STATE_ACTION_ROW}{cursor:pointer;color:var(--trees-accent);text-decoration:underline;text-underline-offset:2px}
+${STATE_ACTION_ROW} [data-item-section="icon"]{visibility:hidden}
+${STATE_ACTION_ROW} [data-item-section="action"]{display:none}
+${STATE_ROW_ACTION_ICON_SVG}{display:none}
+[data-item-section="decoration"] > span{display:block}
 `
 
 /** Highlighting worker pool size. Each worker is spawned eagerly at pool

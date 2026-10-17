@@ -20,6 +20,9 @@ name: Docker Smoke Test
 
 on:
   pull_request:
+    # The default types plus `ready_for_review`: jobs below skip while the PR
+    # is a draft, so leaving draft must start a fresh run on the same head.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "docker/**"
       - ".dockerignore"
@@ -45,6 +48,9 @@ concurrency:
 jobs:
   smoke:
     name: Build image + host-reachability probe
+    # Skip while the PR is a draft; `ready_for_review` above runs it once the
+    # PR is ready. Non-PR events have no pull_request, so they always run.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -198,6 +204,9 @@ jobs:
   # surface on the PR instead of at publish time. Parallel to the smoke job.
   arm64-build:
     name: Build image (arm64 cross-build)
+    # Skip while the PR is a draft; `ready_for_review` above runs it once the
+    # PR is ready. Non-PR events have no pull_request, so they always run.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

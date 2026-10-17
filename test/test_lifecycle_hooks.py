@@ -17,10 +17,21 @@ from hypothesis import strategies as st
 
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manifest import app_name_error
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _thread_event_set(event: threading.Event, what: str) -> bool:
+    """Wait on the loop for a worker thread's ``threading.Event``, holding no thread.
+
+    The hook workers these tests start run on the loop's default executor and block
+    there until released. A waiter that also went through ``to_thread`` would queue
+    behind them on a busy pool, so the wait polls the event from the loop instead.
+    """
+    return await async_wait_until(event.is_set, describe=lambda: f"{what} is still clear")
 
 
 def _make_app_info(name: str, *, on_startup: str = "", on_shutdown: str = "") -> dict[str, Any]:
@@ -321,8 +332,9 @@ class TestLifecycleHookTimeout:
         assert await dispatcher.dispatch_startup([app]) == []
         assert events == ["startup-start"]
         release.set()
-        assert await asyncio.wait_for(
-            dispatcher.stop_detached_startup_hooks("ordered-app"), timeout=1
+        assert await await_until(
+            asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("ordered-app")),
+            what="the ordered-app detached startup hook stopping",
         )
 
         assert await dispatcher.dispatch_shutdown([app]) == ["ordered-app"]
@@ -363,15 +375,21 @@ class TestLifecycleHookTimeout:
 
         assert await dispatcher.dispatch_startup([app]) == []
         try:
-            assert await asyncio.wait_for(
-                dispatcher.dispatch_shutdown([app]), timeout=0.25
-            ) == []
+            assert (
+                await await_until(
+                    asyncio.ensure_future(dispatcher.dispatch_shutdown([app])),
+                    what="the shutdown dispatch returning while startup is owned",
+                )
+                == []
+            )
             assert shutdown_called is False
         finally:
             release.set()
-            await asyncio.wait_for(
-                dispatcher.stop_detached_startup_hooks("still-starting-app"),
-                timeout=1,
+            await await_until(
+                asyncio.ensure_future(
+                    dispatcher.stop_detached_startup_hooks("still-starting-app")
+                ),
+                what="the still-starting-app detached startup hook stopping",
             )
 
     @pytest.mark.asyncio
@@ -398,7 +416,7 @@ class TestLifecycleHookTimeout:
             started.add(app_name)
             if len(started) == 2:
                 all_started.set()
-            await asyncio.wait_for(all_started.wait(), timeout=0.2)
+            await await_until(all_started, what="both apps started")
             return True
 
         async def invoke(
@@ -413,9 +431,13 @@ class TestLifecycleHookTimeout:
         hookless = _make_app_info("a-hookless")
         with_hook = _make_app_info("b-hook", on_shutdown="hooks:on_shutdown")
 
-        assert await asyncio.wait_for(
-            dispatcher.dispatch_shutdown([hookless, with_hook]), timeout=0.3
-        ) == ["b-hook"]
+        assert (
+            await await_until(
+                asyncio.ensure_future(dispatcher.dispatch_shutdown([hookless, with_hook])),
+                what="the gateway shutdown sweep finishing",
+            )
+            == ["b-hook"]
+        )
         assert started == {"a-hookless", "b-hook"}
         assert invoked == ["b-hook"]
 
@@ -448,8 +470,9 @@ class TestLifecycleHookTimeout:
         assert any("timed out" in issue for issue in ctx.health.to_dict()["issues"])
 
         release.set()
-        assert await asyncio.wait_for(
-            dispatcher.stop_detached_startup_hooks("hang-app"), timeout=1
+        assert await await_until(
+            asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("hang-app")),
+            what="the hang-app detached startup hook stopping",
         )
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
@@ -489,9 +512,10 @@ class TestLifecycleHookTimeout:
         assert saw_cancel is False
         assert "cleanup-app" in lifecycle_mod._DETACHED_HOOK_TASKS
         release.set()
-        await asyncio.wait_for(finished.wait(), timeout=1)
-        assert await asyncio.wait_for(
-            dispatcher.stop_detached_startup_hooks("cleanup-app"), timeout=1
+        await await_until(finished, what="the hook finishing")
+        assert await await_until(
+            asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("cleanup-app")),
+            what="the cleanup-app detached startup hook stopping",
         )
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
@@ -540,8 +564,9 @@ class TestLifecycleHookTimeout:
             )
         finally:
             release.set()
-            await asyncio.wait_for(
-                dispatcher.stop_detached_startup_hooks("retry-app"), timeout=1
+            await await_until(
+                asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("retry-app")),
+                what="the retry-app detached startup hook stopping",
             )
             await asyncio.sleep(0)
 
@@ -579,7 +604,10 @@ class TestLifecycleHookTimeout:
             )
 
             assert ok is False
-            assert started.is_set()
+            # The 50 ms hook deadline can expire before the pool thread is scheduled
+            # on a loaded runner. The worker is already submitted, so wait for it to
+            # start instead of betting it started inside the deadline.
+            assert await _thread_event_set(started, "the hook's worker start")
             assert not finished.is_set()
             assert "thread-app" in lifecycle_mod._DETACHED_HOOK_TASKS
             assert await dispatcher.stop_detached_startup_hooks(
@@ -589,9 +617,10 @@ class TestLifecycleHookTimeout:
         finally:
             release.set()
             if started.is_set():
-                await asyncio.to_thread(finished.wait, 1)
-            await asyncio.wait_for(
-                dispatcher.stop_detached_startup_hooks("thread-app"), timeout=1
+                await asyncio.to_thread(finished.wait, 30)
+            await await_until(
+                asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("thread-app")),
+                what="the thread-app detached startup hook stopping",
             )
             await asyncio.sleep(0)
 
@@ -606,23 +635,26 @@ class TestLifecycleHookTimeout:
 
         import kiro_crew.apps.lifecycle as lifecycle_mod
 
-        monkeypatch.setattr(lifecycle_mod, "_HOOK_TIMEOUT_SEC", 1.0)
+        monkeypatch.setattr(lifecycle_mod, "_HOOK_TIMEOUT_SEC", 30.0)
         app_name = "early-cancel-app"
         lifecycle_mod._DETACHED_HOOK_RESIDUALS.discard(app_name)
         worker_started = threading.Event()
         worker_release = threading.Event()
         worker_finished = threading.Event()
 
-        def worker() -> None:
+        def worker(cancel_hook: Any) -> None:
             worker_started.set()
+            # Posted from the running worker: a cancel that reached the hook while
+            # its call still sat in the pool's queue would cancel the call unrun.
+            cancel_hook()
             worker_release.wait()
             worker_finished.set()
 
         async def self_cancelling_hook(_ctx: Any) -> None:
             task = asyncio.current_task()
             assert task is not None
-            asyncio.get_running_loop().call_soon(task.cancel)
-            await asyncio.to_thread(worker)
+            loop = asyncio.get_running_loop()
+            await asyncio.to_thread(worker, lambda: loop.call_soon_threadsafe(task.cancel))
 
         dispatcher = LifecycleDispatcher()
         monkeypatch.setattr(
@@ -631,10 +663,12 @@ class TestLifecycleHookTimeout:
         ctx = dispatcher._build_context(self._app_info(app_name), phase="startup")
 
         try:
+            # The deadline is far past the cancel, so the cancel decides the outcome
+            # however late the pool starts the worker.
             assert await dispatcher._invoke(
                 app_name, "backend.hooks:on_startup", ctx, phase="startup"
             ) is False
-            assert await asyncio.to_thread(worker_started.wait, 1)
+            assert worker_started.is_set()
             await asyncio.sleep(0)
             assert app_name in lifecycle_mod._DETACHED_HOOK_RESIDUALS
             assert app_name not in lifecycle_mod._DETACHED_HOOK_TASKS
@@ -644,7 +678,7 @@ class TestLifecycleHookTimeout:
             ) is False
         finally:
             worker_release.set()
-            await asyncio.to_thread(worker_finished.wait, 1)
+            await asyncio.to_thread(worker_finished.wait, 30)
             lifecycle_mod._DETACHED_HOOK_TASKS.pop(app_name, None)
             lifecycle_mod._DETACHED_HOOK_RESIDUALS.discard(app_name)
 
@@ -657,7 +691,7 @@ class TestLifecycleHookTimeout:
 
         import kiro_crew.apps.lifecycle as lifecycle_mod
 
-        monkeypatch.setattr(lifecycle_mod, "_HOOK_TIMEOUT_SEC", 1.0)
+        monkeypatch.setattr(lifecycle_mod, "_HOOK_TIMEOUT_SEC", 30.0)
         app_name = "parent-cancel-app"
         worker_started = threading.Event()
         worker_release = threading.Event()
@@ -683,7 +717,9 @@ class TestLifecycleHookTimeout:
         )
 
         try:
-            assert await asyncio.to_thread(worker_started.wait, 1)
+            # The deadline is far past the parent's cancel, so a late worker start
+            # cannot let the deadline end the invoke first.
+            assert await _thread_event_set(worker_started, "the hook's worker start")
             assert app_name in lifecycle_mod._DETACHED_HOOK_TASKS
             invoke_task.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -695,9 +731,10 @@ class TestLifecycleHookTimeout:
             ) is False
         finally:
             worker_release.set()
-            await asyncio.to_thread(worker_finished.wait, 1)
-            await asyncio.wait_for(
-                dispatcher.stop_detached_startup_hooks(app_name), timeout=1
+            await asyncio.to_thread(worker_finished.wait, 30)
+            await await_until(
+                asyncio.ensure_future(dispatcher.stop_detached_startup_hooks(app_name)),
+                what="the detached startup hook stopping",
             )
             lifecycle_mod._DETACHED_HOOK_TASKS.pop(app_name, None)
             lifecycle_mod._DETACHED_HOOK_RESIDUALS.discard(app_name)
@@ -719,8 +756,11 @@ class TestLifecycleHookTimeout:
         worker_release = threading.Event()
         worker_finished = threading.Event()
 
-        def worker() -> None:
+        def worker(cancel_hook: Any) -> None:
             worker_started.set()
+            # Posted from the running worker: a cancel that reached the hook while
+            # its call still sat in the pool's queue would cancel the call unrun.
+            cancel_hook()
             worker_release.wait()
             worker_finished.set()
 
@@ -728,8 +768,8 @@ class TestLifecycleHookTimeout:
             task = asyncio.current_task()
             assert task is not None
             await arm_cancel.wait()
-            asyncio.get_running_loop().call_soon(task.cancel)
-            await asyncio.to_thread(worker)
+            loop = asyncio.get_running_loop()
+            await asyncio.to_thread(worker, lambda: loop.call_soon_threadsafe(task.cancel))
 
         dispatcher = LifecycleDispatcher()
         monkeypatch.setattr(
@@ -744,11 +784,11 @@ class TestLifecycleHookTimeout:
             assert app_name in lifecycle_mod._DETACHED_HOOK_TASKS
 
             arm_cancel.set()
-            assert await asyncio.to_thread(worker_started.wait, 1)
-            for _ in range(10):
-                await asyncio.sleep(0)
-                if app_name in lifecycle_mod._DETACHED_HOOK_RESIDUALS:
-                    break
+            assert await _thread_event_set(worker_started, "the hook's worker start")
+            await async_wait_until(
+                lambda: app_name in lifecycle_mod._DETACHED_HOOK_RESIDUALS,
+                describe=lambda: "the cancelled hook has left no residual marker",
+            )
 
             assert app_name in lifecycle_mod._DETACHED_HOOK_RESIDUALS
             assert app_name not in lifecycle_mod._DETACHED_HOOK_TASKS
@@ -758,13 +798,13 @@ class TestLifecycleHookTimeout:
             ) is False
 
             worker_release.set()
-            assert await asyncio.to_thread(worker_finished.wait, 1)
+            assert await _thread_event_set(worker_finished, "the hook's worker finish")
             # Actual worker completion cannot be inferred from the cancelled
             # asyncio wrapper, so ownership remains fail-closed.
             assert await dispatcher.stop_detached_startup_hooks(app_name) is False
         finally:
             worker_release.set()
-            await asyncio.to_thread(worker_finished.wait, 1)
+            await asyncio.to_thread(worker_finished.wait, 30)
             lifecycle_mod._DETACHED_HOOK_TASKS.pop(app_name, None)
             lifecycle_mod._DETACHED_HOOK_RESIDUALS.discard(app_name)
 
@@ -787,11 +827,13 @@ class TestLifecycleHookTimeout:
         monkeypatch.setattr(dispatcher, "_resolve_hook", lambda *_a, **_k: waits_for_release)
         ctx = dispatcher._build_context(self._app_info("stubborn-app"), phase="startup")
 
-        ok = await asyncio.wait_for(
-            dispatcher._invoke(
-                "stubborn-app", "backend.hooks:on_startup", ctx, phase="startup"
+        ok = await await_until(
+            asyncio.ensure_future(
+                dispatcher._invoke(
+                    "stubborn-app", "backend.hooks:on_startup", ctx, phase="startup"
+                )
             ),
-            timeout=0.25,
+            what="the stubborn-app startup invocation returning",
         )
 
         assert ok is False
@@ -810,8 +852,8 @@ class TestLifecycleHookTimeout:
         assert not ordinary_stop.done(), "ordinary disable must wait for terminal cleanup"
 
         release.set()
-        assert await asyncio.wait_for(ordinary_stop, timeout=1) is True
-        await asyncio.wait_for(finished.wait(), timeout=1)
+        assert await await_until(ordinary_stop, what="the ordinary disable finishing") is True
+        await await_until(finished, what="the hook finishing")
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
 
@@ -839,13 +881,13 @@ class TestLifecycleHookTimeout:
             )
         )
 
-        await asyncio.wait_for(started.wait(), timeout=1)
+        await await_until(started, what="the shutdown hook starting")
         await asyncio.sleep(0.05)  # well beyond the startup-only deadline
         assert not invocation.done()
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
 
         release.set()
-        assert await asyncio.wait_for(invocation, timeout=1) is True
+        assert await await_until(invocation, what="the shutdown invocation finishing") is True
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
 
     @pytest.mark.asyncio
@@ -1023,8 +1065,9 @@ class TestLifecycleHookTimeout:
         assert invoked_names == ["a-hang", "b-ok"], "both hooks were attempted, in order"
         assert succeeded == ["b-ok"], "the hung app is excluded; the healthy one starts"
         release.set()
-        assert await asyncio.wait_for(
-            dispatcher.stop_detached_startup_hooks("a-hang"), timeout=1
+        assert await await_until(
+            asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("a-hang")),
+            what="the a-hang detached startup hook stopping",
         )
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
@@ -1062,8 +1105,9 @@ class TestLifecycleHookTimeout:
         assert record["caller"] == "app:sel-app"
         assert record["resources"] == "backend.hooks:on_startup"
         release.set()
-        assert await asyncio.wait_for(
-            dispatcher.stop_detached_startup_hooks("sel-app"), timeout=1
+        assert await await_until(
+            asyncio.ensure_future(dispatcher.stop_detached_startup_hooks("sel-app")),
+            what="the sel-app detached startup hook stopping",
         )
         await asyncio.sleep(0)
         assert not lifecycle_mod._DETACHED_HOOK_TASKS
@@ -1205,7 +1249,7 @@ class TestGatewayShutdownBackendSweep:
         release = threading.Event()
 
         def wedged_stop(name: str) -> bool:
-            release.wait(timeout=5.0)
+            release.wait()
             return True
 
         monkeypatch.setattr(integration, "_BACKEND_STOP_BUDGET_SECS", 0.05)
@@ -1215,7 +1259,14 @@ class TestGatewayShutdownBackendSweep:
         monkeypatch.setattr(integration, "stop_app_backend", wedged_stop)
 
         try:
-            await asyncio.wait_for(integration.on_gateway_shutdown(), timeout=2.0)
+            # The bound here IS the property under test: the sweep must return
+            # within _BACKEND_STOP_BUDGET_SECS even while a backend stop is wedged
+            # (never released on this path), so a regression that waits for the
+            # wedged stop fails fast here rather than at await_until's ~minute
+            # lost-run ceiling. That is why this keeps a short bound, flake-ok.
+            await asyncio.wait_for(  # flake-ok: backend-stop budget is the thing under test
+                integration.on_gateway_shutdown(), timeout=2.0
+            )
         finally:
             # Unblock the executor thread so it does not outlive the test.
             release.set()
@@ -1262,10 +1313,10 @@ class TestGatewayShutdownBackendSweep:
 
         monkeypatch.setattr(integration, "_lifecycle_dispatcher", _HangingDispatcher())
         task = asyncio.ensure_future(integration.on_gateway_shutdown())
-        await asyncio.wait_for(hook_started.wait(), timeout=2.0)
+        await await_until(hook_started, what="the hanging hook starting")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=2.0)
+            await await_until(task, what="the cancelled shutdown finishing")
         assert stopped == ["app-a"]
 
     @pytest.mark.asyncio
@@ -1288,7 +1339,7 @@ class TestGatewayShutdownBackendSweep:
 
         def fake_stop(name: str) -> bool:
             if name == "a-wedged":
-                release.wait(timeout=5.0)
+                release.wait()
             ran.append(name)
             if name == "b-queued":
                 queued_ran.set()
@@ -1306,7 +1357,14 @@ class TestGatewayShutdownBackendSweep:
         try:
             # The single-worker pool holds "a-wedged" running and "b-queued"
             # queued when the 0.05s budget fires; the sweep must return anyway.
-            await asyncio.wait_for(integration.on_gateway_shutdown(), timeout=2.0)
+            # The bound here IS the property under test: the sweep must return
+            # within _BACKEND_STOP_BUDGET_SECS even while a backend stop is wedged
+            # (never released on this path), so a regression that waits for the
+            # wedged stop fails fast here rather than at await_until's ~minute
+            # lost-run ceiling. That is why this keeps a short bound, flake-ok.
+            await asyncio.wait_for(  # flake-ok: backend-stop budget is the thing under test
+                integration.on_gateway_shutdown(), timeout=2.0
+            )
             release.set()
             assert queued_ran.wait(timeout=2.0), (
                 "the sweep timeout cancelled a queued stop; that backend would "

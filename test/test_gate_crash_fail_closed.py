@@ -2,7 +2,7 @@
 
 The gate parses untrusted command text. When a parser raised on input nobody
 anticipated (a NUL byte once made the inline-payload lexer raise
-``SystemError``), the exception escaped ``HookManager.on_tool_call`` and each
+``SystemError``), the exception escaped the gate and each
 caller handled it its own way; on the dashboard the refused call was reported
 as aborted by the user. These tests pin the one shared outcome: a security
 deny whose reason names the crash.
@@ -66,8 +66,9 @@ def test_a_composition_error_still_propagates(monkeypatch: pytest.MonkeyPatch) -
         HookManager().on_tool_call("Running: ls", command="ls", is_shell=True)
 
 
-def test_the_wrapper_keeps_the_gate_signature_and_source_visible() -> None:
-    # The parameter-parity and source-shape tests read these through inspect.
+def test_the_wrapper_keeps_the_gate_signature_visible() -> None:
+    # ``functools.wraps`` keeps the judged call's signature readable through the
+    # wrapper, so ``inspect`` and the type checker see the real parameters.
+    assert list(inspect.signature(HookManager.judge).parameters)[:2] == ["self", "call"]
     params = inspect.signature(HookManager.on_tool_call).parameters
     assert "command" in params and "classifier_only" in params
-    assert "def on_tool_call(" in inspect.getsource(HookManager.on_tool_call)

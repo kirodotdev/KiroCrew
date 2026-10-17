@@ -154,7 +154,7 @@ async def test_dismiss(loader):
 
 @pytest.mark.asyncio
 async def test_pin_roundtrip(loader):
-    name = loader.approve_pending_skill("deploy-helper")
+    name = loader.approve_pending_skill_checked("deploy-helper")
     assert name == "auto/deploy-helper"
     resp = await H.api_skill_pin(_Req(loader, body={"name": name, "pinned": True}))
     assert resp.status == 200 and _payload(resp)["pinned"] is True
@@ -164,7 +164,7 @@ async def test_pin_roundtrip(loader):
 
 @pytest.mark.asyncio
 async def test_pin_rejects_non_bool_pinned(loader):
-    name = loader.approve_pending_skill("deploy-helper")
+    name = loader.approve_pending_skill_checked("deploy-helper")
     assert name == "auto/deploy-helper"
     # JSON string "false" must be rejected, not coerced to truthy (which would
     # pin instead of unpin) — GPT MEDIUM.
@@ -292,8 +292,8 @@ async def test_new_detail_has_no_live_body(loader):
 
 
 @pytest.mark.asyncio
-async def test_approve_routes_update_to_approve_pending_update(loader, monkeypatch):
-    """kind=='update' → approve_pending_update; approve_pending_skill untouched."""
+async def test_approve_routes_update_to_approve_pending_update_checked(loader, monkeypatch):
+    """kind=='update' → approve_pending_update_checked; approve_pending_skill_checked untouched."""
     monkeypatch.setattr(
         loader,
         "get_pending_skill",
@@ -320,8 +320,8 @@ async def test_approve_routes_update_to_approve_pending_update(loader, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_approve_routes_new_to_approve_pending_skill(loader, monkeypatch):
-    """A candidate without kind=='update' promotes via approve_pending_skill."""
+async def test_approve_routes_new_to_approve_pending_skill_checked(loader, monkeypatch):
+    """A candidate without kind=='update' promotes via approve_pending_skill_checked."""
     called: dict = {}
 
     def _upd(slug):
@@ -477,11 +477,17 @@ async def test_pending_list_carries_script_validation_verdict(flagged_loader, mo
     assert "evil.py" in entry["script_validation"]["report"]
 
 
-def test_none_wrapper_contract_preserved(flagged_loader):
-    """Existing callers of the un-checked approve still get None, no raise."""
-    assert flagged_loader.approve_pending_skill("evil-helper") is None
-    assert flagged_loader.approve_pending_skill("does-not-exist") is None
-    assert flagged_loader.approve_pending_update("does-not-exist") is None
+def test_checked_approve_refusals_leave_candidate_untouched(flagged_loader):
+    """Each approve variant refuses with a typed reason and mutates nothing."""
+    with pytest.raises(PendingApprovalRefused) as refused:
+        flagged_loader.approve_pending_skill_checked("evil-helper")
+    assert refused.value.reason == "script_validation_failed"
+    with pytest.raises(PendingApprovalRefused) as refused:
+        flagged_loader.approve_pending_skill_checked("does-not-exist")
+    assert refused.value.reason == "not_found"
+    with pytest.raises(PendingApprovalRefused) as refused:
+        flagged_loader.approve_pending_update_checked("does-not-exist")
+    assert refused.value.reason == "not_found"
     # The candidate is still pending and its script bytes are untouched.
     pdir = flagged_loader._pending_root() / "evil-helper"
     assert (pdir / "scripts" / "evil.py").read_text(encoding="utf-8") == _EVIL_SCRIPT

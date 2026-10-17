@@ -14,6 +14,8 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
+        _REOPEN_REREAD_EXTRA_ATTEMPTS,
+        _REOPEN_REREAD_RETRY_SECS,
         _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
         durable_row_count,
         effective_session_key,
         is_channel_session_key,
+        load_window_off_loop,
         logger,
         members_mod,
         note_crew_log_class,
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
         read_bounded_json,
         redact_credentials,
         redact_exfiltration_urls,
+        remember_unknown_row_fields,
         sel,
         slot_history_key,
         slot_transcript_key,
@@ -172,6 +176,7 @@ async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> No
             mint_mid=False,
         )
         carry_provenance(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot, msg)
         _attach_variants(slot, msg)
     # The appended rows came from the file, so drain the replay frames and
     # mark the window as persisted (not dirty) — the next save must not
@@ -250,6 +255,10 @@ async def _live_slot_for_resume(
 
 async def _live_slot_resume_payload(state, existing) -> dict:
     """The resume endpoint's dedup body: the already-open slot's live window."""
+    # The live slot a resume resolves to can be a restored sidebar row, under a
+    # name the per-slot route's own lookup did not match (``dashboard:<key>``):
+    # its window loads here, with the read off the loop, before anything reads it.
+    await load_window_off_loop(existing)
     await _reconcile_slot_window(state, existing)
     window = _collapse_wire_rows(existing.messages)
     total = len(window)
@@ -397,9 +406,9 @@ def _materialise_slot_from_history(
     transcript rows. It reads nothing from the request, and — this is the
     load-bearing constraint of the fold (RFC section 7.1b) — it applies exactly
     the metadata field set resume applies and DOES NOT apply
-    ``executor`` / ``instance_id`` / ``remote_slot``. A session bound to a remote
-    instance therefore comes back LOCAL when materialised here, which is the
-    behaviour to preserve: rehydrating the remote binding is the startup restore
+    ``executor`` / ``instance_id`` / ``remote_slot``. A relay archive therefore
+    comes back LOCAL when materialised here, which is the behaviour to
+    preserve: rehydrating the archive marker is the startup restore
     path's job (``_rehydrate_slot_from_history`` in chat_persistence), not this
     one. Do not add remote-binding application here "for consistency" — that is
     the prohibited change, and it is pinned by a test.
@@ -621,7 +630,8 @@ def _hydrate_slot_from_history(
     slot._disk_older_count = max(0, disk_total - len(messages))
     # Durable-only view of the same prefix, recomputed from the on-disk rows —
     # the base absolute message positions are built over. ``islice`` avoids
-    # copying the whole prefix on the event loop. See _ChatSlot.__init__.
+    # copying the whole prefix on the event loop. See ``init_transcript_fields`` in
+    # dashboard/state_parts/slot_transcript.py.
     slot._disk_older_durable_count = durable_row_count(islice(all_messages, slot._disk_older_count))
     # Synchronous construction: rows arrive already content-redacted from the
     # caller's pre-construction pass (resume redacts its window, import redacts
@@ -656,6 +666,7 @@ def _hydrate_slot_from_history(
         # See the equivalent call in _rehydrate_slot_from_history: resume loads
         # the window that the next save re-serializes.
         carry_provenance(slot.messages[-1], m)
+        remember_unknown_row_fields(slot, m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
@@ -1520,6 +1531,33 @@ async def resume_slot_from_history(
                 )
             return None
 
+        async def _status_riding_transient(log: Any, key: str) -> tuple[dict, bool]:
+            """``get_metadata_status`` off the loop, waiting out a transient lock.
+
+            The two re-reads below read a session file this resume JUST rewrote
+            (the ``clear_closed`` atomic rename, or the clear plus the publish-side
+            activity around it). On Windows that file is briefly unopenable while
+            an indexer or AV scanner holds it, and on a loaded runner the hold can
+            outlast ``get_metadata_status``'s own bounded retry, which then reports
+            ``readable=False``. An unreadable read must stay fail-closed -- the
+            caller refuses on it, because the in-process witnesses cannot see a
+            cross-process delete/recreate while the file is unopenable -- so the
+            cure is to let the read SUCCEED, not to publish without it: re-read a
+            few more times, pausing off the loop, so the brief hold clears and the
+            real identity + marker checks run on a readable line. A line that is
+            genuinely gone or corrupt stays unreadable across the extra tries and
+            the caller still refuses, exactly as it would without them -- this only
+            widens the window a transient lock has to clear, it never accepts an
+            unreadable line.
+            """
+            meta, readable = await asyncio.to_thread(log.get_metadata_status, key)
+            attempt = 0
+            while not readable and attempt < _REOPEN_REREAD_EXTRA_ATTEMPTS:
+                await asyncio.sleep(_REOPEN_REREAD_RETRY_SECS)
+                attempt += 1
+                meta, readable = await asyncio.to_thread(log.get_metadata_status, key)
+            return meta, readable
+
         # ONE arm for every await between the retraction and the publish. A
         # cancellation (the task torn down mid-resume) is a ``BaseException``,
         # and an ``except Exception`` on any of these awaits would let it skip
@@ -1578,9 +1616,7 @@ async def resume_slot_from_history(
                     await asyncio.to_thread(
                         log.clear_closed, history_key, only_if_closed_before=resume_started_at
                     )
-                    _after, _readable = await asyncio.to_thread(
-                        log.get_metadata_status, history_key
-                    )
+                    _after, _readable = await _status_riding_transient(log, history_key)
                 except Exception:
                     logger.warning("Failed to clear closed flag for %s", history_key, exc_info=True)
                     return ResumeOutcome(
@@ -1631,9 +1667,7 @@ async def resume_slot_from_history(
             # EITHER await.
             last_cache_gen = log._cache_gen(history_key)
             try:
-                _last, _last_readable = await asyncio.to_thread(
-                    log.get_metadata_status, history_key
-                )
+                _last, _last_readable = await _status_riding_transient(log, history_key)
             except Exception:
                 _last, _last_readable = {}, False
             refusal = _identity_refusal(_last, _last_readable)

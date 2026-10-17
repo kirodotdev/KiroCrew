@@ -30,8 +30,8 @@ vi.mock('../components/ChatInput', async () => {
   }
 })
 vi.mock('../components/PendingQuestionCard', () => ({
-  default: ({ onFallbackSend }: { onFallbackSend: (text: string) => void }) => (
-    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only')}>
+  default: ({ onFallbackSend }: { onFallbackSend: (text: string, questions?: { question: string }[]) => void }) => (
+    <button aria-label="send stale question fallback" onClick={() => onFallbackSend('Public only', [{ question: 'Trust model' }])}>
       Send fallback
     </button>
   ),
@@ -100,6 +100,7 @@ function renderChatPage(
   slots: ChatSlot[],
   chatOverrides: Partial<RootState['chat']> = {},
   connected = false,
+  entry = '/chat',
 ) {
   const store = createTestStore({
     dashboard: {
@@ -123,7 +124,7 @@ function renderChatPage(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter initialEntries={['/chat']}>
+          <MemoryRouter initialEntries={[entry]}>
             <ChatPage mode={mode} />
           </MemoryRouter>
         </ThemeProvider>
@@ -187,7 +188,7 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'chat-2': 'existing draft' }))
     localStorage.setItem('mc-chat-drafts-ts', JSON.stringify({ 'chat-2': Date.now() }))
 
-    renderChatPage(undefined, 'chat-2', allSlots, {
+    const { store } = renderChatPage(undefined, 'chat-2', allSlots, {
       pendingQuestions: {
         'chat-2': {
           slot: 'chat-2',
@@ -198,6 +199,11 @@ describe('ChatPage unmount slot persistence (real component)', () => {
     }, true)
 
     fireEvent.click(screen.getByRole('button', { name: 'send stale question fallback' }))
+    const { messages, slotMessages } = store.getState().chat
+    const rows = [...messages, ...(slotMessages['chat-2'] ?? [])]
+    // The row names the question it hands back, not "this question", and it is an
+    // error row: the submit was rejected (errors-use-error-notice).
+    expect(rows.some((m) => m.role === 'error' && /stopped waiting for "Trust model"/.test(m.content))).toBe(true)
 
     await waitFor(() => {
       expect(screen.getByLabelText('test chat input')).toHaveValue('existing draft\nPublic only')
@@ -273,5 +279,57 @@ describe('ChatPage crash-recovery reload (#12907)', () => {
     await act(async () => { store.dispatch(setActiveSlot('chat-2')) })
     await act(async () => { store.dispatch(setActiveSlot(null)) })
     await waitFor(() => expect(store.getState().chat.activeSlot).not.toBeNull())
+  })
+})
+
+// #16009: a remote-crew pane reloaded on a new port has empty storage; the hub
+// hands back the last chat as ?lastSid=.
+describe('ChatPage last-chat hint from the hub (#16009)', () => {
+  it('opens the hinted chat instead of the first one', async () => {
+    const { store } = renderChatPage(undefined, null, allSlots, {}, false, '/chat?lastSid=chat-2')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+  })
+
+  it('falls back quietly when the hinted chat is gone', async () => {
+    localStorage.setItem('mc-active-slot-chat', 'chat-2')
+    vi.mocked(api.chatSlotDetail).mockClear()
+    const { store } = renderChatPage(undefined, null, allSlots, {}, false, '/chat?lastSid=chat-gone')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    // The gone key is never switched to, not even briefly.
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.map(c => c[0])).not.toContain('chat-gone')
+  })
+
+  it('tells the hub which chat the pane shows, at the hub origin only', async () => {
+    const parent = { postMessage: vi.fn() }
+    const spies = [
+      vi.spyOn(window, 'parent', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(window, 'top', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(document, 'referrer', 'get').mockReturnValue('http://127.0.0.1:7777/chat'),
+    ]
+    try {
+      renderChatPage(undefined, 'chat-2', allSlots)
+      await waitFor(() => expect(parent.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mc-pane-active-slot', key: 'chat-2' }), 'http://127.0.0.1:7777'))
+    } finally {
+      spies.forEach(s => s.mockRestore())
+    }
+  })
+
+  it('sends nothing when the hub origin is unknown', async () => {
+    const parent = { postMessage: vi.fn() }
+    const spies = [
+      vi.spyOn(window, 'parent', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(window, 'top', 'get').mockReturnValue(parent as unknown as Window),
+      vi.spyOn(document, 'referrer', 'get').mockReturnValue(''),
+    ]
+    try {
+      const { store } = renderChatPage(undefined, 'chat-2', allSlots)
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+      await act(async () => {})
+      expect(parent.postMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'mc-pane-active-slot' }), expect.anything())
+    } finally {
+      spies.forEach(s => s.mockRestore())
+    }
   })
 })

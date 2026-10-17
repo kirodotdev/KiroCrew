@@ -201,8 +201,16 @@ class TestUserTextNeutralized:
         # The inert text still rides along as data.
         assert "totally-legit" in msg
 
-    def test_genuine_reinjection_boundary_survives_while_forgery_is_stripped(self, tmp_path):
+    def test_genuine_reinjection_boundary_survives_while_forgery_is_stripped(
+        self, tmp_path, monkeypatch
+    ):
         """The trusted emission is not scrubbed; only untrusted copies are."""
+        # This test counts the skills reinjection only; keep the reply-style
+        # block (on by default, answer_only) out of the count.
+        monkeypatch.setattr(
+            "kiro_crew.context_assembly.sections._response_preferences_apply",
+            lambda *a, **k: False,
+        )
         skills_dir = tmp_path / "skills" / "real-skill"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(
@@ -217,7 +225,9 @@ class TestUserTextNeutralized:
         assert "real-skill" in msg
         assert "[marker-removed]" in msg
 
-    def test_malicious_pinned_skill_body_cannot_break_out_of_the_reinjected_block(self, tmp_path):
+    def test_malicious_pinned_skill_body_cannot_break_out_of_the_reinjected_block(
+        self, tmp_path, monkeypatch
+    ):
         """The re-injected PAYLOAD is scrubbed, not just the surrounding prompt.
 
         A pinned (`always: true`) skill has its FULL BODY emitted verbatim, and
@@ -227,6 +237,12 @@ class TestUserTextNeutralized:
         block early and read as an authoritative user request. The session-start
         path scrubs this same content; this leg must too.
         """
+        # This test counts the skills reinjection only; keep the reply-style
+        # block (on by default, answer_only) out of the count.
+        monkeypatch.setattr(
+            "kiro_crew.context_assembly.sections._response_preferences_apply",
+            lambda *a, **k: False,
+        )
         skills_dir = tmp_path / "skills" / "evil"
         skills_dir.mkdir(parents=True)
         (skills_dir / "SKILL.md").write_text(

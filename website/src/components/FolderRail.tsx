@@ -33,7 +33,8 @@ export function FolderRail({ name, id, onToggle }: {
   name: string
   /** Test id suffix: the folder id, or a column-qualified one in the board view. */
   id: string
-  onToggle: () => void
+  /** Receives the click, so a caller can measure from the pressed rail. */
+  onToggle: (e: React.MouseEvent<HTMLButtonElement>) => void
 }) {
   const label = i18nT('pages.chatSidebar.collapse_folder_name', { name })
   return (
@@ -48,7 +49,7 @@ export function FolderRail({ name, id, onToggle }: {
         // The body sits inside the folder's drop target and, for nested folders,
         // inside the parent's body; the toggle belongs to THIS folder only.
         e.stopPropagation()
-        onToggle()
+        onToggle(e)
       }}
       className="folder-rail"
     >

@@ -12,6 +12,7 @@ import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import context as context_module
+from kiro_crew import member_essential_context as _mec
 from kiro_crew import pinned_fs
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
@@ -1201,6 +1202,160 @@ def test_glob_leaf_link_cannot_silently_drop_a_declared_guide(env):
         )
 
 
+def _link_global_steering(env, tmp_path) -> Path:
+    """Make ``~/.kiro/steering/context/style.md`` a link into an outside repo."""
+    repo = tmp_path / "steering-repo"
+    repo.mkdir()
+    (repo / "style.md").write_text("LINKED_STEERING_BODY", encoding="utf-8")
+    context = Path.home() / ".kiro" / "steering" / "context"
+    context.mkdir(parents=True, exist_ok=True)
+    (Path.home() / ".kiro" / "steering" / "plain.md").write_text(
+        "PLAIN_STEERING_BODY", encoding="utf-8"
+    )
+    link = context / "style.md"
+    link.symlink_to(repo / "style.md")
+    return link
+
+
+@requires_symlinks
+def test_linked_global_steering_file_is_named_instead_of_refusing_the_turn(env, tmp_path):
+    """A steering link left out of the snapshot does not stop the member.
+
+    Global steering is read because it exists, like a project's ``AGENTS.md``,
+    so a link there is left out unread and named in-band; the regular steering
+    file beside it still loads.
+    """
+    link = _link_global_steering(env, tmp_path)
+    message = _member_message(env)
+    assert "LINKED_STEERING_BODY" not in message
+    assert "PLAIN_STEERING_BODY" in message
+    assert f"[Essential source: {_mec.ESSENTIAL_LINKED_SKIP_SOURCE}]" in message
+    assert str(link) in message
+    # kiro-cli may load the link natively, so the note must not tell the model to
+    # disregard it or ask the user to restructure a working setup.
+    assert "may still load linked steering natively" in message
+    note = _mec._skipped_linked_note([link])
+    assert note is not None and "Do not assume" not in note[1]
+
+
+@requires_symlinks
+def test_linked_global_steering_directory_is_named_not_enumerated(env, tmp_path):
+    repo = tmp_path / "steering-repo"
+    repo.mkdir()
+    (repo / "inner.md").write_text("LINKED_DIR_BODY", encoding="utf-8")
+    steering = Path.home() / ".kiro" / "steering"
+    steering.mkdir(parents=True, exist_ok=True)
+    make_dir_link(steering / "shared", repo)
+    message = _member_message(env)
+    assert "LINKED_DIR_BODY" not in message
+    assert str(steering / "shared") in message
+
+
+@requires_symlinks
+def test_linked_non_steering_entry_is_not_named(env, tmp_path):
+    """A link the glob would never have read (not ``*.md``) is not reported."""
+    steering = Path.home() / ".kiro" / "steering"
+    steering.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "notes.txt"
+    target.write_text("NOT_STEERING", encoding="utf-8")
+    (steering / "README.txt").symlink_to(target)
+    linked: list[Path] = []
+    _mec._matches(Path.home(), ".kiro/steering/**/*.md", linked=linked)
+    assert linked == []
+
+
+@requires_symlinks
+def test_linked_steering_entry_is_screened_before_its_target_is_probed(env, tmp_path, monkeypatch):
+    """A link whose target the path gate refuses is named without a following probe.
+
+    ``entry.is_dir()`` follows the link; on Windows a UNC target would be an
+    outbound SMB probe, so the gate must run first and short-circuit it.
+    """
+    from kiro_crew import member_essential_context as mec
+
+    steering = Path.home() / ".kiro" / "steering"
+    steering.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "remote-share"
+    target.mkdir()
+    link = steering / "shared"
+    link.symlink_to(target, target_is_directory=True)
+    real_validate = mec.validate_file_path
+    monkeypatch.setattr(
+        mec,
+        "validate_file_path",
+        lambda p, *a, **k: None if Path(p) == link else real_validate(p, *a, **k),
+    )
+    probed: list[str] = []
+    real_is_dir = os.DirEntry.is_dir
+
+    def _spy(entry, *, follow_symlinks=True):
+        if follow_symlinks and Path(entry.path) == link:
+            probed.append(entry.path)
+        return real_is_dir(entry, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(mec.os, "scandir", _wrap_scandir(os.scandir, _spy))
+    linked: list[Path] = []
+    mec._matches(Path.home(), ".kiro/steering/**/*.md", linked=linked)
+    assert linked == [link]
+    assert probed == []
+
+
+def _wrap_scandir(real_scandir, is_dir):
+    """``os.scandir`` whose entries route ``is_dir`` through *is_dir*."""
+
+    class _Entry:
+        def __init__(self, entry):
+            self._entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_dir(self, *, follow_symlinks=True):
+            return is_dir(self._entry, follow_symlinks=follow_symlinks)
+
+        def __getattr__(self, attr):
+            return getattr(self._entry, attr)
+
+    class _Iter:
+        """Usable as a context manager and as a plain iterator, like ``os.scandir``."""
+
+        def __init__(self, path):
+            self._it = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._it.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return _Entry(next(self._it))
+
+        def close(self):
+            self._it.close()
+
+    return _Iter
+
+
+@requires_symlinks
+def test_kiro_launch_documents_leaves_a_linked_global_steering_file_out(env, tmp_path):
+    """The spawn-time native list must not refuse the session start either."""
+    link = _link_global_steering(env, tmp_path)
+    sources = dict(_mec.kiro_launch_documents("writer-template", str(env.project)))
+    assert str(link) not in sources
+    assert "PLAIN_STEERING_BODY" in sources.values()
+
+
+@requires_symlinks
+def test_walk_without_a_collector_still_refuses_a_linked_steering_file(env, tmp_path):
+    """A walk handed no ``linked`` collector refuses a link instead of leaving it out."""
+    _link_global_steering(env, tmp_path)
+    with pytest.raises(MemberEssentialContextError, match="linked document"):
+        _mec._matches(Path.home(), ".kiro/steering/**/*.md")
+
+
 @pytest.mark.parametrize("field, value", [("prompt", 42), ("resources", "file://guide.md")])
 def test_malformed_declared_template_fields_refuse_explicitly(env, field, value):
     spec = env.project / ".kiro" / "agents" / "writer-template.json"
@@ -1387,14 +1542,17 @@ def test_custom_persona_is_not_classified_by_template_name(env, template, source
     cfg = KiroCrewConfig.load()
     cfg.agents["writer"].kiro_agent = template
     cfg.save()
-    persona = env.project / "prompt.md"
+    spec = env.project / ".kiro" / "agents" / f"{template}.json"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    # A relative file:// prompt resolves against the agent file's own directory,
+    # so the persona for that case lives beside the spec, not at the root.
+    persona = spec.parent / "prompt.md"
     persona.write_text("CUSTOM_OWNER_PERSONA", encoding="utf-8")
     prompts = {
         "inline": "CUSTOM_OWNER_PERSONA",
         "relative": "file://prompt.md",
         "absolute": f"file://{persona}",
     }
-    spec = env.project / ".kiro" / "agents" / f"{template}.json"
     spec.write_text(json.dumps({"name": template, "prompt": prompts[source]}), encoding="utf-8")
 
     message, _ = env.builder.build_message(
@@ -1581,6 +1739,161 @@ def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypat
     assert "WORKSPACE_CHILD_GUIDE" in message
     assert "MANAGED_CONTENT_MUST_NOT_LOAD" not in message
     assert "You are writer." in message
+    # The prune stays; it names only a prefix collision, never the real store.
+    note_label = "[Essential source: essential-context#managed-skipped:writer-template]"
+    if leaf == "memory_index":
+        assert note_label in message
+        assert str(managed) in message
+    else:
+        assert note_label not in message
+        assert str(managed) not in message
+
+
+def test_plain_workspace_glob_over_real_managed_store_adds_no_note(env, caplog):
+    """A broad glob walking past the workspace's own memory/lessons store is
+    routine: no note, no warning, only a debug line."""
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MANAGED_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    project = config_dir() / "workspace"
+    for name in ("memory", "lessons", ".lessons"):
+        (project / name).mkdir(parents=True, exist_ok=True)
+        (project / name / "AGENTS.md").write_text("MANAGED", encoding="utf-8")
+    for name in ("memory.db", "memory.db-wal", "memory_index.db-shm", "lessons.jsonl"):
+        (project / name).write_text("", encoding="utf-8")
+    (project / "guides").mkdir(exist_ok=True)
+    (project / "guides" / "AGENTS.md").write_text("WORKSPACE_CHILD_GUIDE", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://*/AGENTS.md", "file://*", "file://**/*.md"])
+    with caplog.at_level("DEBUG", logger="kiro_crew.member_essential_context"):
+        documents = documents_for_member("writer-template", str(project))
+    assert not any(s.startswith(ESSENTIAL_MANAGED_SKIP_SOURCE) for s, _ in documents)
+    assert "WORKSPACE_CHILD_GUIDE" in "\n".join(body for _, body in documents)
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("pruned" in r.getMessage() for r in caplog.records if r.levelname == "DEBUG")
+
+
+def _write_template(agents: Path, name: str, resources: list[str]) -> None:
+    (agents / f"{name}.json").write_text(
+        json.dumps({"name": name, "resources": resources}), encoding="utf-8"
+    )
+
+
+def test_two_templates_skipping_different_entries_still_build(env):
+    """An owner and an execution template whose globs skip different
+    prefix-colliding entries each get their own note, so merging them
+    does not trip the changed-during-preparation guard."""
+    from kiro_crew.config import config_dir
+
+    project = config_dir() / "workspace"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "memory-notes.md").write_text("PREFIX_A", encoding="utf-8")
+    (project / "lessons-notes.md").write_text("PREFIX_B", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://memory*.md"])
+    _write_template(agents, "runner-template", ["file://lessons*.md"])
+    message = env.builder._build_v2_essentials(
+        env.store,
+        member=env.member,
+        project=str(project),
+        execution_template="runner-template",
+    )
+    assert "essential-context#managed-skipped:writer-template" in message
+    assert "essential-context#managed-skipped:runner-template" in message
+    assert str(project / "memory-notes.md") in message
+    assert str(project / "lessons-notes.md") in message
+    assert "PREFIX_A" not in message
+    assert "PREFIX_B" not in message
+
+
+def test_native_reads_carry_no_skip_note(env):
+    """The note is not a host-native source: a native-only read and the
+    launch documents leave it out, so wire dedup cannot strip its body."""
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MANAGED_SKIP_SOURCE,
+        documents_for_member,
+        kiro_launch_documents,
+    )
+
+    project = config_dir() / "workspace"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "memory-notes.md").write_text("PREFIX_A", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://*.md"])
+    for documents in (
+        documents_for_member("writer-template", str(project), native_only=True),
+        kiro_launch_documents("writer-template", str(project)),
+    ):
+        assert not any(s.startswith(ESSENTIAL_MANAGED_SKIP_SOURCE) for s, _ in documents)
+    full = dict(documents_for_member("writer-template", str(project)))
+    assert f"{ESSENTIAL_MANAGED_SKIP_SOURCE}:writer-template" in full
+
+
+def test_workspace_glob_names_each_prefix_colliding_entry_it_skips(env, caplog):
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MANAGED_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    project = config_dir() / "workspace"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "memory-notes").mkdir()
+    (project / "memory-notes" / "guide.md").write_text("PREFIX_DIR_CONTENT", encoding="utf-8")
+    (project / "lessons-archive.md").write_text("PREFIX_FILE_CONTENT", encoding="utf-8")
+    (project / "plain.md").write_text("PLAIN_GUIDE", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": ["file://*.md", "file://*/guide.md"]}),
+        encoding="utf-8",
+    )
+    core: set[str] = set()
+    with caplog.at_level("WARNING", logger="kiro_crew.member_essential_context"):
+        documents = documents_for_member("writer-template", str(project), core_sources_out=core)
+    bodies = dict(documents)
+    joined = "\n".join(bodies.values())
+    assert "PLAIN_GUIDE" in joined
+    assert "PREFIX_DIR_CONTENT" not in joined
+    assert "PREFIX_FILE_CONTENT" not in joined
+    note = bodies[f"{ESSENTIAL_MANAGED_SKIP_SOURCE}:writer-template"]
+    assert "entries matched a declared resource pattern" in note
+    assert str(project / "memory-notes") in note
+    assert str(project / "lessons-archive.md") in note
+    # A size-limited envelope must not drop the note silently.
+    assert f"{ESSENTIAL_MANAGED_SKIP_SOURCE}:writer-template" in core
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("memory-notes" in line for line in logged)
+    assert any("lessons-archive.md" in line for line in logged)
+
+
+def test_workspace_glob_without_prefix_collision_adds_no_skip_note(env):
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MANAGED_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    project = config_dir() / "workspace"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "plain.md").write_text("PLAIN_GUIDE", encoding="utf-8")
+    # A managed-named file the pattern could never return is not reported.
+    (project / "memory_index.db").write_text("", encoding="utf-8")
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": ["file://*/AGENTS.md"]}),
+        encoding="utf-8",
+    )
+    documents = documents_for_member("writer-template", str(project))
+    assert not any(s.startswith(ESSENTIAL_MANAGED_SKIP_SOURCE) for s, _ in documents)
 
 
 @pytest.mark.parametrize("resource", ["memory/AGENTS.md", "memory/*.md", "memory/**/AGENTS.md"])
@@ -1640,6 +1953,173 @@ def test_document_cap_ignores_on_demand_resource_schemes(env):
         {"id": "writer-template", "resources": resources}, str(env.project)
     )
     assert list(projected.values()) == ["Declared guide: examples must be reproducible."]
+
+
+def test_declared_file_size_does_not_stat_a_rejected_path(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    stat_calls = []
+    real_stat = os.stat
+
+    def recording_stat(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == guide:
+            stat_calls.append(path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "validate_file_path", lambda _path: None)
+    monkeypatch.setattr(module.os, "stat", recording_stat)
+
+    with pytest.raises(MemberEssentialContextError, match="outside admitted path screen"):
+        module._declared_file_size(guide)
+
+    assert stat_calls == []
+
+
+def test_declared_file_size_stats_the_admitted_path(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    admitted = env.project / "admitted-guide.md"
+    admitted.write_text("admitted", encoding="utf-8")
+    stat_calls = []
+    real_stat = os.stat
+
+    def recording_stat(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) in (guide, admitted):
+            stat_calls.append((path, kwargs))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "validate_file_path", lambda _path: str(admitted))
+    monkeypatch.setattr(module.os, "stat", recording_stat)
+
+    size = module._declared_file_size(guide)
+
+    assert size == real_stat(admitted, follow_symlinks=False).st_size
+    assert stat_calls == [(str(admitted), {"follow_symlinks": False})]
+
+
+def test_projected_launch_paths_name_the_declared_guides_without_reading_them(env, monkeypatch):
+    """kiro-cli re-reads a declared guide for every request, so the launch record
+    needs its path only; the body is never read."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    read = Mock(side_effect=AssertionError("the launch record must not read a guide"))
+    monkeypatch.setattr(module, "_read", read)
+
+    paths = module.projected_launch_paths(definition, str(env.project))
+
+    assert paths == [str(guide)]
+    read.assert_not_called()
+
+
+def test_projected_launch_paths_match_the_documents_the_launch_reader_reads(env):
+    """The folder skips the record by path, so the record must spell each guide
+    exactly as the launch reader does."""
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+
+    paths = module.projected_launch_paths(definition, str(env.project))
+
+    assert paths == list(module.projected_resource_documents(definition, str(env.project)))
+
+
+def test_projected_launch_paths_record_nothing_past_the_size_bound(env, monkeypatch):
+    """kiro-cli drops whole resources past its budget, so a launch whose declared
+    files exceed the bound records nothing and the folder sends every guide."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", guide.stat().st_size)
+    assert module.projected_launch_paths(definition, str(env.project)) == [str(guide)]
+
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", guide.stat().st_size - 1)
+    assert module.projected_launch_paths(definition, str(env.project)) == []
+
+
+def test_projected_launch_size_bound_counts_every_declared_file(env, monkeypatch):
+    """kiro-cli budgets every declared file it loads, so a declared file the
+    launch record never names counts, and so does the sum of files that each
+    fit the bound alone."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    reference = env.project / "reference.json"
+    reference.write_text("r" * 480, encoding="utf-8")
+    assert reference.stat().st_size < 500 < guide.stat().st_size + reference.stat().st_size
+    monkeypatch.setattr(module, "_LAUNCH_RECORD_MAX_BYTES", 500)
+
+    guide_only = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    assert module.projected_launch_paths(guide_only, str(env.project)) == [str(guide)]
+    with_reference = {
+        "id": "writer-template",
+        "resources": ["file://declared-guide.md", "file://reference.json"],
+    }
+    assert module.projected_launch_paths(with_reference, str(env.project)) == []
+
+
+@pytest.mark.parametrize(
+    "extra_resources",
+    [
+        pytest.param(["file://missing.json"], id="missing-literal-file"),
+        pytest.param(["file://data-a/*.json", "file://data-b/*.json"], id="many-non-markdown"),
+    ],
+)
+def test_projected_launch_size_check_refuses_no_view_the_record_names(
+    env, monkeypatch, extra_resources
+):
+    """A declared file that does not exist adds no bytes, and non-markdown
+    matches do not count against the reader's document limit."""
+    from kiro_crew import member_essential_context as module
+
+    guide = env.project / "declared-guide.md"
+    for directory in ("data-a", "data-b"):
+        (env.project / directory).mkdir()
+        for index in range(40):
+            (env.project / directory / f"{index}.json").write_text("d", encoding="utf-8")
+    definition = {
+        "id": "writer-template",
+        "resources": ["file://declared-guide.md", *extra_resources],
+    }
+
+    assert module.projected_launch_paths(definition, str(env.project)) == [str(guide)]
+
+
+def test_projected_launch_paths_stat_failure_is_a_record_failure(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    real_stat = os.stat
+
+    def failing_stat(path, *args, **kwargs):
+        if Path(path).name == "declared-guide.md":
+            raise PermissionError("stat denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "stat", failing_stat)
+
+    with pytest.raises(MemberEssentialContextError, match="declared-guide.md: .*stat denied"):
+        module.projected_launch_paths(definition, str(env.project))
+
+
+def test_declared_files_fit_counts_an_unmeasurable_file_as_too_large(env, monkeypatch):
+    from kiro_crew import member_essential_context as module
+
+    definition = {"id": "writer-template", "resources": ["file://declared-guide.md"]}
+    assert module._declared_files_fit(definition, str(env.project)) is True
+
+    def denied(path):
+        raise MemberEssentialContextError(f"Essential source {path}: stat denied") from (
+            PermissionError("stat denied")
+        )
+
+    monkeypatch.setattr(module, "_declared_file_size", denied)
+    assert module._declared_files_fit(definition, str(env.project)) is False
 
 
 def test_document_cap_still_bounds_declared_file_resources(env):
@@ -1831,8 +2311,9 @@ def _snapshot_bodies(env, provider_type: str = PROVIDER_ACP) -> str:
 
     The builder is where the harness is known, so it is the builder that decides
     whether kiro-cli's opt-out applies; :func:`documents_for_member` only takes
-    that verdict. kiro-cli is the default because it is the harness the setting
-    belongs to.
+    that verdict. This helper names kiro-cli explicitly because it is the harness
+    the setting belongs to; the builder's own default is "harness not known to
+    be kiro-cli", which never reads the opt-out.
     """
     return env.builder._build_v2_essentials(
         env.store, member=env.member, project=str(env.project), provider_type=provider_type
@@ -1868,6 +2349,242 @@ def test_opt_out_still_loads_steering_the_template_declares(operator_steering):
     bodies = _snapshot_bodies(env)
     assert "Always guide: explain assumptions." in bodies
     assert _OPERATOR_RULE not in bodies
+
+
+def _declare_steering_glob_only(env) -> None:
+    """Declare just the steering glob and opt the workspace out of the implicit scan.
+
+    With the opt-out the declared glob is the only walk that can meet a link, so a
+    refusal or a note can only come from it.
+    """
+    (env.project / ".kiro" / "agents" / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "resources": ["file://.kiro/steering/**/*.md"]}),
+        encoding="utf-8",
+    )
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+
+
+def _steering_link_target(env, tmp_path, *, inside: bool) -> Path:
+    """A Markdown file a steering link can point at: in the project, or beside it."""
+    base = env.project / "docs" if inside else tmp_path / "outside"
+    base.mkdir(exist_ok=True)
+    target = base / "shared-style.md"
+    target.write_text("LINKED_TARGET_BODY", encoding="utf-8")
+    return target
+
+
+@requires_symlinks
+def test_declared_steering_glob_names_a_link_inside_the_project_instead_of_refusing(env, tmp_path):
+    """The shipped steering glob treats an in-project link as the implicit scan does.
+
+    The link is left out unread and named in-band; the regular steering beside it
+    still loads.
+    """
+    _declare_steering_glob_only(env)
+    link = env.project / ".kiro" / "steering" / "linked.md"
+    link.symlink_to(_steering_link_target(env, tmp_path, inside=True))
+    bodies = _snapshot_bodies(env)
+    assert "LINKED_TARGET_BODY" not in bodies
+    assert "Always guide: explain assumptions." in bodies
+    assert f"[Essential source: {_mec.ESSENTIAL_LINKED_SKIP_SOURCE}]" in bodies
+    assert str(link) in bodies
+
+
+@requires_symlinks
+def test_declared_steering_glob_names_a_linked_directory_inside_the_project_unread(env, tmp_path):
+    _declare_steering_glob_only(env)
+    inner = env.project / "docs" / "team-steering"
+    inner.mkdir(parents=True)
+    (inner / "inner.md").write_text("LINKED_DIR_BODY", encoding="utf-8")
+    shared = env.project / ".kiro" / "steering" / "shared"
+    make_dir_link(shared, inner)
+    bodies = _snapshot_bodies(env)
+    assert "LINKED_DIR_BODY" not in bodies
+    assert str(shared) in bodies
+
+
+@requires_symlinks
+def test_declared_steering_glob_names_a_linked_steering_root_inside_the_project(env):
+    """A linked ``.kiro/steering`` puts the whole tree behind the link: named, nothing read."""
+    _declare_steering_glob_only(env)
+    steering = env.project / ".kiro" / "steering"
+    real = env.project / "docs" / "steering-tree"
+    real.parent.mkdir()
+    steering.rename(real)
+    make_dir_link(steering, real)
+    bodies = _snapshot_bodies(env)
+    assert "Always guide: explain assumptions." not in bodies
+    assert str(steering) in bodies
+
+
+@requires_symlinks
+def test_declared_steering_glob_does_not_name_an_inside_link_it_would_never_read(env, tmp_path):
+    """As in the implicit scan, only a link the glob could have used is reported."""
+    _declare_steering_glob_only(env)
+    notes = env.project / "docs" / "notes.txt"
+    notes.parent.mkdir()
+    notes.write_text("NOT_STEERING", encoding="utf-8")
+    (env.project / ".kiro" / "steering" / "README.txt").symlink_to(notes)
+    bodies = _snapshot_bodies(env)
+    assert "Always guide: explain assumptions." in bodies
+    assert _mec.ESSENTIAL_LINKED_SKIP_SOURCE not in bodies
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "shape", ["file", "directory", "dangling", "unrelated-name", "steering-root"]
+)
+def test_declared_steering_glob_still_refuses_a_link_that_leaves_the_project(env, tmp_path, shape):
+    """Only a link that resolves inside the project may be left out; any other refuses."""
+    _declare_steering_glob_only(env)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
+    steering = env.project / ".kiro" / "steering"
+    if shape == "file":
+        (steering / "linked.md").symlink_to(outside / "secret.md")
+    elif shape == "directory":
+        make_dir_link(steering / "shared", outside)
+    elif shape == "dangling":
+        (steering / "linked.md").symlink_to(outside / "gone.md")
+    elif shape == "unrelated-name":
+        (outside / "notes.txt").write_text("NOT_STEERING", encoding="utf-8")
+        (steering / "README.txt").symlink_to(outside / "notes.txt")
+    else:
+        for child in steering.iterdir():
+            child.rename(outside / child.name)
+        steering.rmdir()
+        make_dir_link(steering, outside)
+    with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
+        _snapshot_bodies(env)
+
+
+@requires_symlinks
+def test_projected_steering_glob_leaves_a_link_inside_the_project_out(env, tmp_path):
+    """The KAS document reader meets the same link and must not stop the session either."""
+    link = env.project / ".kiro" / "steering" / "linked.md"
+    link.symlink_to(_steering_link_target(env, tmp_path, inside=True))
+    definition = {"id": "worker", "resources": ["file://.kiro/steering/**/*.md"]}
+    documents = _mec.projected_resource_documents(definition, str(env.project))
+    assert "Always guide: explain assumptions." in documents.values()
+    assert not any("LINKED_TARGET_BODY" in body for body in documents.values())
+
+
+@requires_symlinks
+def test_projected_global_steering_glob_leaves_a_link_inside_home_out(operator_steering):
+    """A projected global steering glob is rooted at home, so a link into home passes."""
+    env = operator_steering
+    steering = Path.home() / ".kiro" / "steering"
+    dotfiles = Path.home() / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "style.md").write_text("LINKED_DOTFILE_BODY", encoding="utf-8")
+    (steering / "style.md").symlink_to(dotfiles / "style.md")
+    definition = {"id": "worker", "resources": [f"file://{steering.as_posix()}/**/*.md"]}
+    documents = _mec.projected_resource_documents(definition, str(env.project))
+    assert _OPERATOR_RULE in documents.values()
+    assert not any("LINKED_DOTFILE_BODY" in body for body in documents.values())
+
+
+@requires_symlinks
+def test_projected_steering_glob_still_refuses_a_link_outside_the_project(env, tmp_path):
+    (env.project / ".kiro" / "steering" / "linked.md").symlink_to(
+        _steering_link_target(env, tmp_path, inside=False)
+    )
+    definition = {"id": "worker", "resources": ["file://.kiro/steering/**/*.md"]}
+    with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
+        _mec.projected_resource_documents(definition, str(env.project))
+
+
+@requires_symlinks
+def test_launch_record_stays_withheld_while_a_steering_glob_reaches_a_link(env, tmp_path):
+    """The record measures what kiro-cli loads, and a link cannot be measured unfollowed."""
+    definition = {"resources": ["file://.kiro/steering/**/*.md"]}
+    assert _mec._declared_files_fit(definition, str(env.project)) is True
+    assert _mec.projected_launch_paths(definition, str(env.project))
+    (env.project / ".kiro" / "steering" / "linked.md").symlink_to(
+        _steering_link_target(env, tmp_path, inside=True)
+    )
+    assert _mec._declared_files_fit(definition, str(env.project)) is False
+    with pytest.raises(MemberEssentialContextError, match="linked document or directory"):
+        _mec.projected_launch_paths(definition, str(env.project))
+
+
+def test_a_caller_that_names_no_harness_keeps_inheriting_under_the_opt_out(
+    operator_steering, monkeypatch
+):
+    """The opt-out is kiro-cli's; a build that does not say kiro-cli serves the
+    session never reads it, so the global steering stays in the snapshot. A
+    future caller that omits ``provider_type`` on another harness therefore
+    cannot drop rules nothing else would deliver."""
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    bodies = env.builder._build_v2_essentials(
+        env.store, member=env.member, project=str(env.project)
+    )
+
+    assert _OPERATOR_RULE in bodies
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide in bodies
+    assert reads == []
+    assert _OPERATOR_RULE not in _snapshot_bodies(env), "the kiro-cli build still opts out"
+
+
+def _entry_point_prompt(env, entry_point: str, **kwargs) -> str:
+    """A member's session start built through one of the two prompt entry points.
+
+    ``provider_type`` is forwarded only when the test names it, so an omitted
+    harness exercises each entry point's own default.
+    """
+    common = dict(memory_store=env.store, member=env.member, project=str(env.project))
+    if entry_point == "build_message":
+        message, _ = env.builder.build_message(
+            "Continue", True, "dashboard:member", **common, **kwargs
+        )
+        return message
+    return env.builder.build_session_context(**common, **kwargs)
+
+
+_ENTRY_POINTS = pytest.mark.parametrize("entry_point", ["build_message", "build_session_context"])
+
+
+@_ENTRY_POINTS
+def test_an_entry_point_given_no_harness_keeps_inheriting_under_the_opt_out(
+    operator_steering, monkeypatch, entry_point
+):
+    """``build_message`` and ``build_session_context`` hand the essentials builder
+    only the harness their caller (or its context provider) named. A caller that
+    names none reaches the builder as an unknown harness, so the opt-out is not
+    read and the operator's global steering stays in the envelope."""
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    prompt = _entry_point_prompt(env, entry_point)
+
+    assert _OPERATOR_RULE in prompt
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide in prompt
+    assert reads == []
+    env.forbidden.assert_not_called()
+
+
+@_ENTRY_POINTS
+def test_an_entry_point_naming_kiro_cli_reads_the_opt_out(
+    operator_steering, monkeypatch, entry_point
+):
+    env = operator_steering
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    reads = _count_setting_reads(monkeypatch)
+
+    prompt = _entry_point_prompt(env, entry_point, provider_type=PROVIDER_ACP)
+
+    assert _OPERATOR_RULE not in prompt
+    for guide in _INHERITED_PROJECT_GUIDES:
+        assert guide not in prompt
+    assert "Declared guide: examples must be reproducible." in prompt
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize(
@@ -1961,8 +2678,16 @@ def test_launch_documents_follow_the_workspace_opt_out(operator_steering):
     assert "Declared guide: examples must be reproducible." in bodies
 
 
-def _envelope_with_folder_steering_trees(env, provider_type: str = PROVIDER_ACP) -> str:
-    """A member turn in a folder that declares both ``.kiro/steering`` trees."""
+_OMIT_HARNESS = object()
+
+
+def _envelope_with_folder_steering_trees(env, provider_type: object = PROVIDER_ACP) -> str:
+    """A member turn in a folder that declares both ``.kiro/steering`` trees.
+
+    ``provider_type=_OMIT_HARNESS`` leaves the argument out so the turn runs on
+    :meth:`ContextBuilder.build_message`'s own default.
+    """
+    harness = {} if provider_type is _OMIT_HARNESS else {"provider_type": provider_type}
     message, _ = env.builder.build_message(
         "Continue",
         True,
@@ -1970,7 +2695,7 @@ def _envelope_with_folder_steering_trees(env, provider_type: str = PROVIDER_ACP)
         memory_store=env.store,
         member=env.member,
         project=str(env.project),
-        provider_type=provider_type,
+        **harness,
         steering_dirs=(
             str(env.project / ".kiro" / "steering"),
             str(Path.home() / ".kiro" / "steering"),
@@ -2030,6 +2755,7 @@ def test_profile_validation_measures_inheriting_envelope_without_reading_setting
         member=env.member,
         project=str(env.project),
         profile_overrides={"preferences.md": "Candidate preference."},
+        provider_type=PROVIDER_ACP,
     )
 
     assert "Candidate preference." in validation
@@ -2202,6 +2928,21 @@ def test_folder_declared_steering_trees_reach_an_inheriting_member_once(operator
 
 
 @_needs_pinned_walk
+def test_folder_declared_trees_reach_an_inheriting_member_once_when_no_harness_is_named(
+    operator_steering,
+):
+    """An unnamed harness leaves a private member inheriting, so its essentials
+    envelope carries both trees; the folder section is not rendered on a member
+    turn, and each guide arrives exactly once."""
+    env = operator_steering
+    _declare_project_steering_in_template(env)
+    message = _envelope_with_folder_steering_trees(env, provider_type=_OMIT_HARNESS)
+    assert message.count(_OPERATOR_RULE) == 1
+    assert message.count("Always guide: explain assumptions.") == 1
+    assert message.count("Project rules: run the review checks.") == 1
+
+
+@_needs_pinned_walk
 @_OTHER_HARNESSES
 def test_folder_declared_steering_trees_reach_an_opted_out_member_once_on_another_harness(
     operator_steering, provider_type
@@ -2326,6 +3067,7 @@ def test_a_refused_declared_source_still_refuses_when_the_envelope_is_over_budge
     """Budget fitting never turns a source the reader refuses into an omission."""
     (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
     (env.project / "declared-guide.md").unlink()
+    (env.project / "declared-guide.md").mkdir()
     with pytest.raises(MemberEssentialContextError, match="declared-guide"):
         _member_message(env)
 
@@ -2360,3 +3102,263 @@ def test_a_guide_too_large_to_fit_does_not_take_the_smaller_guides_after_it_out(
     assert "Declared guide: examples must be reproducible." in message
     assert "Always guide: explain assumptions." in message
     assert len(_envelope(message)) <= 64_000
+
+
+def _declare(env, resources: list[str]) -> None:
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    spec.write_text(
+        json.dumps({"name": "writer-template", "prompt": "Bound Soul.", "resources": resources}),
+        encoding="utf-8",
+    )
+
+
+def test_absent_declared_literal_resource_is_skipped_with_a_note(env):
+    """kiro-cli skips a declared file that is not there; the session must still start.
+
+    AIM templates declare ``file://AGENTS.md`` and a subagent starts in an empty
+    folder, so the absent file is the ordinary case, not an attack.
+    """
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MISSING_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    (env.project / "AGENTS.md").unlink()
+    _declare(env, ["file://AGENTS.md", "file://notes/README.md", "file://declared-guide.md"])
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+    )
+    assert "Declared guide: examples must be reproducible." in message
+    assert f"[Essential source: {ESSENTIAL_MISSING_SKIP_SOURCE}:writer-template]" in message
+    assert "DECLARED RESOURCES NOT FOUND. 2 files" in message
+    assert str(env.project.resolve() / "AGENTS.md") in message
+    assert str(env.project.resolve() / "notes" / "README.md") in message
+    core: set[str] = set()
+    documents = documents_for_member("writer-template", str(env.project), core_sources_out=core)
+    assert f"{ESSENTIAL_MISSING_SKIP_SOURCE}:writer-template" in core
+    native = documents_for_member("writer-template", str(env.project), native_only=True)
+    assert not any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in native)
+    assert any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in documents)
+
+
+def test_present_declared_resources_add_no_missing_note(env):
+    from kiro_crew.member_essential_context import (
+        ESSENTIAL_MISSING_SKIP_SOURCE,
+        documents_for_member,
+    )
+
+    documents = documents_for_member("writer-template", str(env.project))
+    assert not any(s.startswith(ESSENTIAL_MISSING_SKIP_SOURCE) for s, _ in documents)
+
+
+def test_projected_resources_skip_an_absent_file_in_an_empty_cwd(env, tmp_path):
+    """A subagent's empty working folder has no README.md; KAS loads nothing for it."""
+    from kiro_crew.member_essential_context import projected_resource_documents
+
+    cwd = tmp_path / "subagent_0001"
+    cwd.mkdir()
+    definition = {"id": "worker", "resources": ["file://README.md", "file://AGENTS.md"]}
+    assert projected_resource_documents(definition, str(cwd)) == {}
+    (cwd / "README.md").write_text("PRESENT_README", encoding="utf-8")
+    assert projected_resource_documents(definition, str(cwd)) == {
+        str(cwd.resolve() / "README.md"): "PRESENT_README"
+    }
+
+
+@requires_symlinks
+@pytest.mark.parametrize("shape", ["dangling-leaf", "leaf-to-outside", "dangling-parent"])
+def test_declared_literal_link_still_refuses(env, tmp_path, shape):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "GUIDE.md").write_text("OUTSIDE_SECRET", encoding="utf-8")
+    if shape == "dangling-leaf":
+        (env.project / "GUIDE.md").symlink_to(outside / "gone.md")
+        declared = "file://GUIDE.md"
+    elif shape == "leaf-to-outside":
+        (env.project / "GUIDE.md").symlink_to(outside / "GUIDE.md")
+        declared = "file://GUIDE.md"
+    else:
+        (env.project / "notes").symlink_to(tmp_path / "gone-dir", target_is_directory=True)
+        declared = "file://notes/GUIDE.md"
+    _declare(env, [declared])
+    with pytest.raises(MemberEssentialContextError, match="GUIDE.md"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
+def test_declared_literal_outside_the_root_still_refuses_when_absent(env):
+    _declare(env, ["file://../never-created.md"])
+    with pytest.raises(MemberEssentialContextError, match="outside"):
+        env.builder.build_message(
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
+        )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission bits; root reads mode-000 files",
+)
+def test_declared_literal_unreadable_file_still_refuses(env):
+    guide = env.project / "declared-guide.md"
+    guide.chmod(0)
+    try:
+        with pytest.raises(MemberEssentialContextError, match="declared-guide.md"):
+            env.builder.build_message(
+                "Continue",
+                False,
+                memory_store=env.store,
+                member=env.member,
+                project=str(env.project),
+            )
+    finally:
+        guide.chmod(0o644)
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="POSIX permission bits; root ignores a missing search bit",
+)
+def test_declared_literal_under_an_unsearchable_directory_still_refuses(env):
+    """An lstat that fails for permission is not absence: the source stays refused."""
+    locked = env.project / "locked"
+    locked.mkdir()
+    (locked / "GUIDE.md").write_text("LOCKED_GUIDE", encoding="utf-8")
+    locked.chmod(0o600)
+    _declare(env, ["file://locked/GUIDE.md"])
+    try:
+        with pytest.raises(MemberEssentialContextError, match="GUIDE.md"):
+            env.builder.build_message(
+                "Continue",
+                False,
+                memory_store=env.store,
+                member=env.member,
+                project=str(env.project),
+            )
+    finally:
+        locked.chmod(0o755)
+
+
+def test_absent_managed_literal_resource_still_refuses(env):
+    """A missing managed-state path keeps its refusal rather than becoming a skip."""
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    project = config_dir() / "workspace"
+    agents = project / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    _write_template(agents, "writer-template", ["file://memory/never-written.md"])
+    with pytest.raises(MemberEssentialContextError, match="managed"):
+        documents_for_member("writer-template", str(project))
+
+
+def _hard_link_from_store(tmp_path: Path, name: str, body: str, dest: Path) -> Path:
+    """Place *dest* as a second hard link to a file in an installer-owned store.
+
+    The shape an installer leaves when it cannot create symbolic links: the
+    steering name is a regular file whose inode has another name elsewhere.
+    """
+    store = tmp_path / "installer-store"
+    store.mkdir(exist_ok=True)
+    original = store / name
+    original.write_text(body, encoding="utf-8")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    os.link(original, dest)
+    assert os.stat(dest).st_nlink == 2
+    return dest
+
+
+def test_declared_steering_glob_names_a_hard_linked_file_instead_of_refusing(env, tmp_path):
+    """A hard-linked steering file under the declared glob does not stop the member.
+
+    The no-follow read still refuses the second name, so the file stays unread;
+    it is named in-band and the regular steering beside it loads.
+    """
+    _declare_steering_glob_only(env)
+    linked = _hard_link_from_store(
+        tmp_path,
+        "style.md",
+        "HARDLINKED_STEERING_BODY",
+        env.project / ".kiro" / "steering" / "vendor-style.md",
+    )
+    bodies = _snapshot_bodies(env)
+    assert "HARDLINKED_STEERING_BODY" not in bodies
+    assert "Always guide: explain assumptions." in bodies
+    assert f"[Essential source: {_mec.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:writer-template]" in bodies
+    assert str(linked) in bodies
+
+
+def test_two_templates_leaving_out_different_hard_links_still_build(env, tmp_path):
+    """Each template's unreadable-steering note carries its own label.
+
+    Merging an owner and an execution template that each leave out a
+    different hard-linked steering file must not trip the
+    changed-during-preparation guard.
+    """
+    steering = env.project / ".kiro" / "steering"
+    first = _hard_link_from_store(tmp_path, "a.md", "HARDLINK_A", steering / "a" / "a.md")
+    second = _hard_link_from_store(tmp_path, "b.md", "HARDLINK_B", steering / "b" / "b.md")
+    agents = env.project / ".kiro" / "agents"
+    _write_template(agents, "writer-template", ["file://.kiro/steering/a/*.md"])
+    _write_template(agents, "runner-template", ["file://.kiro/steering/b/*.md"])
+    _write_kiro_settings(env.project / ".kiro", {"chat.disableInheritingDefaultResources": True})
+    message = env.builder._build_v2_essentials(
+        env.store,
+        member=env.member,
+        project=str(env.project),
+        provider_type=PROVIDER_ACP,
+        execution_template="runner-template",
+    )
+    assert f"{_mec.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:writer-template" in message
+    assert f"{_mec.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:runner-template" in message
+    assert str(first) in message and str(second) in message
+    assert "HARDLINK_A" not in message and "HARDLINK_B" not in message
+
+
+def test_implicit_global_steering_names_a_hard_linked_file_instead_of_refusing(env, tmp_path):
+    steering = Path.home() / ".kiro" / "steering"
+    steering.mkdir(parents=True, exist_ok=True)
+    (steering / "plain.md").write_text("PLAIN_STEERING_BODY", encoding="utf-8")
+    linked = _hard_link_from_store(
+        tmp_path, "rules.md", "HARDLINKED_GLOBAL_BODY", steering / "vendor" / "rules.md"
+    )
+    message = _member_message(env)
+    assert "HARDLINKED_GLOBAL_BODY" not in message
+    assert "PLAIN_STEERING_BODY" in message
+    assert str(linked) in message
+    sources = dict(_mec.kiro_launch_documents("writer-template", str(env.project)))
+    assert str(linked) not in sources
+    assert "PLAIN_STEERING_BODY" in sources.values()
+
+
+def test_projected_steering_glob_leaves_a_hard_linked_file_out(env, tmp_path):
+    _hard_link_from_store(
+        tmp_path,
+        "style.md",
+        "HARDLINKED_STEERING_BODY",
+        env.project / ".kiro" / "steering" / "vendor-style.md",
+    )
+    definition = {"id": "worker", "resources": ["file://.kiro/steering/**/*.md"]}
+    documents = _mec.projected_resource_documents(definition, str(env.project))
+    assert "Always guide: explain assumptions." in documents.values()
+    assert not any("HARDLINKED_STEERING_BODY" in body for body in documents.values())
+
+
+def test_declared_non_steering_hard_link_still_refuses(env, tmp_path):
+    """Only steering is left out; any other declared source the read refuses still refuses."""
+    _hard_link_from_store(
+        tmp_path, "guide.md", "HARDLINKED_GUIDE", env.project / "notes" / "guide.md"
+    )
+    _declare(env, ["file://notes/guide.md"])
+    with pytest.raises(MemberEssentialContextError, match="missing, unreadable"):
+        _snapshot_bodies(env)
+
+
+def test_unreadable_steering_note_names_each_file_once():
+    first, second = Path("a.md"), Path("b.md")
+    assert _mec._skipped_unreadable_note([], "t") is None
+    note = _mec._skipped_unreadable_note([first, second, first], "t")
+    assert note is not None
+    source, body = note
+    assert source == f"{_mec.ESSENTIAL_UNREADABLE_SKIP_SOURCE}:t"
+    assert body.count(str(first)) == 1 and "2 steering files" in body

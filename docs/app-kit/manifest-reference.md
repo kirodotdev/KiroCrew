@@ -89,6 +89,13 @@ installed against:
 - The host CLI name `kirocrew` is pinned to the running gateway before any of
   the above applies.
 
+A stdio entry's `env` values are passed through as declared. A
+`secret://<name>` value is **not** resolved for app servers when kiro-cli
+spawns them: the server receives the literal reference text. Registration logs
+a warning naming the app, server and env key when it sees one. How an app may
+receive a vault secret is undecided
+([#10641](https://github.com/kirodotdev/KiroCrew/issues/10641)).
+
 ## Scheduling
 
 ### `crons` — Cron Job Definitions
@@ -134,7 +141,40 @@ installed against:
 | `folder` | string | Existing Schedule-folder name; an unknown name leaves the job ungrouped until a later enable finds it |
 | `timezone` | string | IANA zone name the schedule and `skip_dates` are evaluated in, e.g. `America/New_York`. Optional, but an empty value falls back to the gateway config's timezone and then to **UTC** — so `"cron_expr": "0 6 * * *"` without it fires at 06:00 UTC, the wrong calendar day for most users. An unknown zone is rejected at manifest validation. A per-**user** zone is not manifest data: pass `timezone=` to `ctx.cron.add_job` instead |
 | `skip_dates` | string[] | Calendar dates the job must not fire on, evaluated in `timezone`. Must be zero-padded `YYYY-MM-DD` — `2026-1-1` parses but never matches the padded fire-time rendering, so it is rejected at manifest validation rather than silently skipping nothing |
+| `timeout` | number | Seconds a `command` or `script` subprocess may run. `0` or omitted uses the scheduler default: 30s for a script, 300s for a command |
+| `timeout_secs` | number | Seconds one run may take in total, within 1..86400. `0` or omitted uses the scheduler default. On a `command` or `script` cron it must cover `timeout` (or that default) plus 5s of cleanup, so a script that runs 40s needs both, e.g. `"timeout": 60, "timeout_secs": 65`. A value the cron SDK would refuse is rejected at manifest validation |
 | `enabled` | boolean | Default `true`. Must be a JSON boolean — any other type is rejected at manifest validation. When `false` the cron is registered **paused** (visible in the Schedule view, resumable) instead of firing on install/enable — for jobs that need user configuration first |
+
+A manifest that declares any `crons` must also declare `"cron": true` under
+[`permissions`](#permissions--declared-capabilities): a schedule runs unattended, so
+the permissions an operator reviews before installing name it. Install, update
+and self-registration refuse a manifest without it, with an error that names the
+fix. An app installed before it declared the grant keeps loading and firing its
+crons; it meets the rule on its next update.
+
+**Changing a cron after install.** Each registered job remembers, field by
+field, the manifest entry it was built from. When the app's crons are registered
+again -- an app update, a gateway start, an enable -- each field in the table
+above whose manifest value changed is re-applied to the job; `enabled` is the
+exception, being the initial pause state only. A field the author did not change
+is left exactly as it is, including any edit the user made to it on the Schedule
+page, and so is a job whose entry did not change at all. The precedence is
+**manifest over hand edit** for a field the author changed, **hand edit over
+manifest** for a field the author did not, and **the user's pause state over the
+manifest** always: a paused job gets the new values and stays paused. Settings the manifest does not own -- a delivery channel, a model, chat
+visibility, a secret grant -- are never touched. A change to `command`, `script`,
+`agent_sequence` or `env` is the exception: the scheduler accepts those fields at
+creation only, so the change is logged (and audited as
+`app_cron_resync_pending_reenable`) on every registration until the app is
+disabled and enabled again, which is when it reaches the job; the entry's other
+changed fields still land at once. A `message` cleared to empty is reported the
+same way, because the scheduler keeps the stored prompt on an empty value. A job registered
+by a build that did not yet record its entry is brought up to the manifest once,
+on the next registration: nothing recorded which entry it came from, so the
+manifest is applied even if the author changed nothing, and an edit the user
+made to one of its manifest-owned fields is replaced. The gateway log names
+each replaced field with its old and new value (a WARNING line ending in
+"job predates the manifest stamp") so the user can put the edit back.
 
 > **Caveat:** disabling an app deletes its registered cron jobs when a cron
 > service is reachable, and re-enabling the app re-registers them from the
@@ -187,7 +227,7 @@ installed against:
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
-| `contributes.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package` and `Cat` are rendered; any other name falls back to `Package` |
+| `contributes.sessionControls[].icon` | string | | Icon name. Only `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines` and `Mic` are rendered; any other name falls back to `Package`. Use `AudioLines` for a control that starts a voice conversation and `Mic` only for voice input: the composer's own dictation button already draws `Mic`, so a conversation chip with that glyph reads as a second dictation button |
 | `contributes.sessionControls[].statusPath` | string | | Optional backend route reporting per-session chip state (see below) |
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
@@ -272,6 +312,7 @@ process — a manifest, plus whatever skill its prompt names.
 | `keywords` | no | hidden match aliases |
 | `argument` | no | the ONE value the command collects before it runs; must be an object |
 | `autoSend` | no | send the seeded prompt instead of leaving it in the composer |
+| `agent` | no | the agent the new session runs as; must be the JSON `name` one of THIS app's own `agents` declares, matching `[A-Za-z0-9._-]{1,120}`. Omitted means the dashboard default |
 
 Every entry of `commands` must be an object, and every length above is counted in UTF-16
 code units -- what the launcher itself counts. Both matter for the same reason: the host
@@ -322,6 +363,20 @@ taxonomy.
 Declaring an argument the prompt never interpolates is an error — the reader would be
 asked for a value the command then ignores. A command whose prompt needs no value
 simply omits `argument`; activating it is the whole action.
+
+**`agent` is contained to your own agents.** The prompt is app-authored, so a command
+may not name a host agent -- one that may carry broader tool grants or auto-approvals
+than the default would otherwise run your text with that reach. Install refuses an
+`agent` that is not one of the agents this manifest ships, and refuses a value outside
+the pattern above rather than letting the launcher drop it to the default later.
+The app listing re-checks every command's `agent` against the agent files on disk (a
+self-managed app's `app.json` never passes install validation), drops one that is not
+yours, and the session selects it as a template, so a host crew member sharing the
+name cannot take it over. The session also remembers that it runs your app's agent,
+and each turn is refused (with an error in the chat) if that name would resolve to
+any other spec, such as an agent in the session's project `.kiro/agents` that declares
+the name or is a file of that name. A session with no project is checked against every
+folder it can start in instead.
 
 **What the reader sees with `autoSend`.** The host shows the resolved prompt — the
 template with the reader's value already spliced in — in the argument field before
@@ -421,6 +476,11 @@ before any request rather than sanitized -- so a control with an invalid
 `statusPath` is simply never polled. Polling fails closed: an app that is down is
 not retried, and an unrecognized payload is treated as `none`.
 
+**When the status is re-asked.** Once when the chat opens, again when the user
+closes the control's popover, and again each time a turn in that chat finishes.
+A change the app makes between turns (a cron job, another session) shows on the
+next of those moments, not before: there is no polling interval.
+
 The route base follows how the app serves its backend, and the dashboard derives
 it -- an app declaring `backend.entryPoint` runs its own process and is
 reverse-proxied at `/apps/<app>/api/`, while one declaring only
@@ -459,7 +519,7 @@ installed at runtime.
 |-------|------|---------|
 | `id` | string | Stable, app-owned row id (lowercase kebab slug, `[a-z0-9][a-z0-9-]*`), unique within the app |
 | `label` | string | Row label, max 120 characters (an app-owned literal — not a core i18n key) |
-| `icon` | string | Host glyph name: one of `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`. Any other name falls back to `Package` |
+| `icon` | string | Host glyph name: one of `Shield`, `Bot`, `Search`, `Tag`, `Users`, `Zap`, `Star`, `Package`, `Cat`, `AudioLines`, `Mic`. Any other name falls back to `Package` |
 | `endpoint` | string | App route core POSTs to; **must** sit under `/api/apps/<your-app>/` (in-gateway, for a `backend.hooks.routes` app) or `/apps/<your-app>/api/` (the reverse proxy, for a `backend.entryPoint` app). Core refuses to follow a redirect out of it, so the route must answer directly rather than forward |
 | `surfaces` | string[] | Any of `file-overflow`, `tree-context`, `folder-row` |
 | `when.extensions` | string[] | Match these file extensions (lowercase, no dot; empty = any) |
@@ -586,9 +646,9 @@ app page.
 Lucide catalog, because resolving an arbitrary name would mean bundling every
 icon; an unrecognised or absent name renders a generic panel glyph.
 
-`Activity`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
+`Activity`, `AudioLines`, `Bell`, `BookOpen`, `Bot`, `Boxes`, `Bug`, `Cloud`, `Code`,
 `Database`, `FileText`, `Files`, `Folder`, `FolderTree`, `GitBranch`, `Globe`,
-`Inbox`, `Layers`, `Link`, `ListTodo`, `MessageSquare`, `Package`, `PanelRight`,
+`Inbox`, `Layers`, `Link`, `ListTodo`, `Mic`, `MessageSquare`, `Package`, `PanelRight`,
 `Pin`, `Search`, `Settings`, `Shield`, `Sparkles`, `Star`, `Table`, `Tag`,
 `Terminal`, `Users`, `Wrench`, `Zap`
 
@@ -614,6 +674,7 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 | `backend.healthCheck` | string | `"/health"` | Absolute health-check path beginning with `/`; unsafe or ambiguous paths are refused. Polled until it answers at startup, then re-polled for the life of the backend — keep the handler cheap and dependency-free. A backend that stops answering it is dropped from the reverse proxy and its MCP servers are deregistered until it answers again. **The route must answer an UNSIGNED loopback GET directly with a 2xx** — the probe sends no proxy credential and follows no redirect, so a path behind the backend's own auth (401/403) and a path that redirects (3xx) both fail forever and the app never becomes reachable (the gateway then returns `app '<name>' has no reachable backend`). The gateway log names the observed status. |
 | `backend.routes` | string | | Base route path for the backend |
 | `backend.type` | string | `""` | Backend runtime: `"python"`, `"asgi"`, `"node"`, `"exec"` (execute the entry point file as-is), or `""` (auto-detect from `entryPoint` — a `.sh` file or an extensionless executable with a non-Python shebang is treated as a shell launcher) |
+| `backend.signedPrincipal` | boolean | `false` | Add a signed `X-KiroCrew-Principal` claim to every request the reverse proxy forwards to this backend. Only the JSON boolean `true` turns it on. The claim says whether the gateway authenticated an `owner-session`, an `app-token`, an `agent-tool` call, or `none`. |
 
 > **Note:** the shell-launcher auto-detect reads the entry point's shebang
 > line, so a compiled/binary launcher (e.g. an ELF executable) cannot be
@@ -623,6 +684,14 @@ icon; an unrecognised or absent name renders a generic panel glyph.
 
 App backends are accessible through the Gateway's reverse proxy at
 `/apps/{name}/api/{path}`, which avoids CORS issues for dashboard UI pages.
+
+`backend.signedPrincipal` grants the app no new access. It passes on an identity
+the gateway already authenticated. Only a request that a dashboard session cookie
+authenticated for the dashboard owner receives `owner-session` and an owner id.
+App tokens, internal agent and MCP tool calls, crons and `?token=` link exchanges
+never receive that kind. The header format and the verification steps are in the
+API reference under
+[Signed principal claim](api-reference.md#signed-principal-claim).
 
 #### `backend.hooks` — In-Gateway Python Entry Points
 
@@ -681,7 +750,7 @@ absolute imports are for built-in apps only.
 
 **Python dependencies.** Runtime `requirements.txt` provisioning — the
 `data/.kirocrew-deps/` tree described in the stdio `command`-resolution passage
-above (see #7878 / #7901 for the mechanism) — runs only where app code executes
+above — runs only where app code executes
 as its own process: the `backend.entryPoint` spawn path (a real file entry
 point in the app's own tree) and stdio MCP server registration. Hook code gets
 nothing from it: the tree reaches processes **spawned on the app's behalf** —
@@ -829,7 +898,7 @@ packages at all.
 | `permissions.events` | string[] | Allowed WebSocket event types |
 | `permissions.mcpTools` | string[] | Allowed MCP tool names |
 | `permissions.storage` | boolean | Can use app-scoped storage |
-| `permissions.cron` | boolean | Can create cron jobs |
+| `permissions.cron` | boolean | Can create cron jobs at runtime (`ctx.cron`). Required when `crons` is non-empty |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
@@ -869,8 +938,9 @@ API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 > whatever `permissions.api` prefix it holds. Mode changes must name a live allowed slot and are
 > limited to Normal, Reads and Trust; YOLO is a process-global override and stays
 > dashboard-only. An update that newly adds the flag disables the app until the user
-> enables it again from the detail page, which shows why (this re-gate is specific
-> to `sessionApproval`; see issue #11212 for the other live-enforced fields).
+> enables it again from the detail page, which shows why. An update that adds an
+> entry to `permissions.api` or `permissions.events` keeps the app enabled but
+> withholds the new entries until the user approves them on the detail page.
 > Official catalog entries mirror this flag so users see it before
 > install even when the store skips fetching the app manifest. Install-time path
 > traversal is blocked separately by
@@ -943,8 +1013,15 @@ the endpoint; it does not import provider code.
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
 stays disabled and any registered resources are deregistered. `onDisable`
 failures are logged as warnings but do not block the disable operation. Local-path
-installs do not run `onInstall`; build first, then install. Lifecycle scripts always
-invoke `/bin/bash`; on native Windows without that executable they fail cleanly.
+installs do not run `onInstall`; build first, then install. The `onEnable`,
+`onDisable` and `onUninstall` hooks always invoke `/bin/bash`, so they are
+**not run on native Windows** (which has no `/bin/bash`): the runner refuses the
+hook before any process is started and reports a failure whose message names the
+unsupported platform, rather than letting the spawn fail opaquely and look like
+your script breaking. `onInstall` also runs through `/bin/bash`, without that
+up-front refusal, so a registry install of an app that declares it fails on a
+native-Windows host. Write hooks for POSIX shells; do not rely on them running
+on a native-Windows host.
 
 **Exception — `platform.installMode: "client"` apps.** For a client app the
 script is **advisory**: a failure is reported on the response as
@@ -1037,10 +1114,10 @@ Control how Kiro Crew manages the app:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms. Valid names: `macos`, `linux`, `windows`. **The default excludes `windows`** — see below |
+| `platform.os` | string[] | `["macos", "linux"]` | Supported platforms. Valid names: `macos`, `linux`, `windows`; any other value is rejected at validation. **The default excludes `windows`** — see below |
 | `platform.arch` | string[] | `[]` (any) | Supported architectures |
 | `platform.requiresDesktopApp` | boolean | `false` | App's own UI needs the Electron desktop shell |
-| `platform.installMode` | string | `"server"` | `"server"` or `"client"` |
+| `platform.installMode` | string | `"server"` | `"server"` or `"client"`; any other value is rejected at validation |
 | `platform.clientInstall.shell` | string | | One-liner for local install |
 | `platform.clientInstall.postInstall` | string | | Command to run after install |
 
@@ -1175,9 +1252,18 @@ gateway has them: `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
   and are not path-checked.
 - All required fields must be non-empty strings
 - Each cron entry must specify either `every` or `cron_expr`
+- A non-empty `crons` requires `"cron": true` under `permissions`. Install,
+  update and self-registration refuse the manifest otherwise; an app already
+  installed keeps loading and firing its crons until its next update
 - Each UI page must have `route` and `label`
 - Each UI overlay must have `id` and `replaces`; both must be kebab-case, and `id`
   must be unique within the manifest
+- Each `platform.os` entry must be exactly `macos`, `linux` or `windows`. Spelling and
+  case matter: `Windows`, `win` and `windows ` match no platform, so the platform gate
+  would answer no for the platform the manifest names. The platform strings `darwin` and
+  `win32` are refused too
+- `platform.installMode` must be exactly `server` or `client`; the install gates test
+  for `client` alone, so a spelling such as `Client` would install as a server app
 
 ## Full Example
 
@@ -1213,7 +1299,8 @@ gateway has them: `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
   },
   "permissions": {
     "api": ["/api/crons", "/api/status"],
-    "events": ["notification"]
+    "events": ["notification"],
+    "cron": true
   },
   "platform": {
     "os": ["macos", "linux"]

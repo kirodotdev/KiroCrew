@@ -121,4 +121,43 @@ describe('SettingsStepper readout', () => {
       expect(screen.queryByRole('spinbutton')).toBeNull()
     })
   })
+
+  describe('reserveWidthFor (locale-proof readout width)', () => {
+    // The bug this locks: a word readout ("Default") is wider than a short
+    // number ("4"), so the readout box grew and shrank between them and the +
+    // button shifted. A fixed `ch` floor fits one language's word and still
+    // shifts for a longer translation ("Predeterminado"), so the readout
+    // instead stacks an invisible, aria-hidden copy of each value it must fit
+    // in the same grid cell as the shown value: the cell is as wide as the
+    // widest copy in whatever locale and font the reader has.
+    // MUTATION-VERIFIED: making StepperReadoutText return the bare text
+    // whatever `reserve` holds (`if (true || !reserve?.length)`) fails the
+    // first test: `getByText('4')` is then the readout box itself, with no
+    // grid-cell class, and no hidden copy exists for `getByText('Default')`.
+    it('stacks an invisible, aria-hidden copy of each reserved value in the cell of the shown value', () => {
+      render(<SettingsStepper label="Cadence" value={4} reserveWidthFor={['Default', 1000]} onIncrement={() => {}} onDecrement={() => {}} />)
+      const shown = screen.getByText('4')
+      expect(shown.closest('[aria-hidden="true"]')).toBeNull()
+      expect(shown.className).not.toMatch(/\binvisible\b/)
+      expect(shown.className).toMatch(/\bcol-start-1 row-start-1\b/)
+      expect(shown.parentElement?.className).toMatch(/\bgrid\b/)
+      for (const reserved of ['Default', '1000']) {
+        const copy = screen.getByText(reserved)
+        expect(copy).toHaveAttribute('aria-hidden', 'true')
+        expect(copy.className).toMatch(/\binvisible\b/)
+        // The same grid cell as the shown value, so the cell is as wide as the widest.
+        expect(copy.className).toMatch(/\bcol-start-1 row-start-1\b/)
+        expect(copy.parentElement).toBe(shown.parentElement)
+      }
+    })
+
+    it('renders the bare value, with no hidden copies, when the prop is absent', () => {
+      render(<SettingsStepper label="Retries" value={3} suffix="x" onIncrement={() => {}} onDecrement={() => {}} />)
+      const readout = screen.getByText('3x')
+      // The text sits in the readout box itself: no wrapper, no copies.
+      expect(readout.className).toMatch(/\bcursor-default\b/)
+      expect(readout.children).toHaveLength(0)
+      expect(document.querySelectorAll('[aria-hidden="true"]')).toHaveLength(0)
+    })
+  })
 })

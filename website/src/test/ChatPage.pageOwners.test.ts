@@ -33,6 +33,9 @@ const OWNER_DIR = join(SRC, 'pages/chat/page')
 const PAGE = join(SRC, 'pages/ChatPage.tsx')
 
 const owners = readdirSync(OWNER_DIR).filter(f => /\.(ts|tsx)$/.test(f) && !/\.test\./.test(f))
+// The page's own slot-switching flows live beside it in pages/useChatPage*.ts, outside pages/chat/page/.
+const siblings = readdirSync(join(SRC, 'pages')).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f))
+  .map(f => join(SRC, 'pages', f))
 const read = (p: string) => readFileSync(p, 'utf8')
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -81,12 +84,12 @@ describe('pages/chat/page owners', () => {
     // unique to them. The signed-token intake strips the WHOLE query string, so
     // the `?prefill=` read in usePendingInputIntake has to run before it.
     // (No `<ComposerDraftSync` anchor: a child's effects run before the page's.)
-    const INLINE = [
-      { name: '(inline) signed-token intake effect', re: /tokenConsumingRef is initialized true when a token/g },
-    ]
+    // The signed-token intake is useSignedLinkAnchor (pages/useChatPageSlotSwitches.ts), so no inline
+    // page effect is left to anchor; the list stays for the next one that is.
+    const INLINE: { name: string; re: RegExp }[] = []
     for (const a of INLINE) expect([...page.matchAll(a.re)], a.name).toHaveLength(1)
     const ownerHooks = new Set(
-      owners.flatMap(f => [...read(join(OWNER_DIR, f)).matchAll(/^export function (use[A-Z][A-Za-z]+)/gm)].map(m => m[1])),
+      [...owners.map(f => join(OWNER_DIR, f)), ...siblings].flatMap(p => [...read(p).matchAll(/^export function (use[A-Z][A-Za-z]+)/gm)].map(m => m[1])),
     )
     // useFileMentionTokens is composed inside useComposerStaging, not by the page.
     ownerHooks.delete('useFileMentionTokens')
@@ -95,31 +98,60 @@ describe('pages/chat/page owners', () => {
       ...INLINE.map(a => ({ at: [...page.matchAll(a.re)][0].index, name: a.name })),
     ].sort((x, y) => x.at - y.at).map(e => e.name)
     expect(sequence).toEqual([
+      'useChatPageEnvironment',
+      'useActiveSlotState',
       'useComposerDraftStores',
+      'useComposerDraftState',
       'useWelcomeState',
       'useSessionRosters',
+      'useModelPickerModels',
+      'useNewSessionPicks',
+      'useSteerDelivery',
       'useSessionAutomation',
+      'useTranscriptScrollRefs',
+      'useComposerIntakeRefs',
       'useErrorHandoffIntake',
       'usePendingInputIntake',
-      '(inline) signed-token intake effect',
+      'useMainComposerHandoff',
+      'useSignedLinkAnchor',
       'useComposerStaging',
       'useComposerDraftLifecycle',
       'useStagedFolderRefs',
       'useStagedDraftPersistence',
+      'useComposerVoiceHost',
+      'useRunInTerminalConfig',
+      'useForkSession',
       'useAppLaunchIntake',
       'useFollowUpChips',
+      'usePageFlags',
+      'useRefusedPress',
+      'useComposerSend',
       'useAutoSendIntake',
+      'useSessionChoices',
       'useComposerSessionControls',
+      'useAppPanelReveal',
       'useFileMentionActions',
+      'useFollowupCardActions',
+      'useOpenFollowupSession',
+      'useFollowupStarts',
       'useChatEventBridges',
       'useColdFileTabHydration',
       'useComposerChips',
+      'usePaneLayoutState',
+      'useRegenerate',
       'useTurnRecovery',
-      'useComposerDockMetrics',
+      'usePageSelectionActions',
+      'useOpenSideChatForPane',
+      'useMessageActions',
       'useTranscriptRows',
       'useStableRowKeys',
+      'useTranscriptPaging',
       'useBusyTurnControls',
+      'useTranscriptPins',
       'useTranscriptJumps',
+      'useTranscriptRendering',
+      'useSessionsDrawer',
+      'usePanelLayout',
       'useComposerAboveBand',
       'useSessionControlChips',
     ])

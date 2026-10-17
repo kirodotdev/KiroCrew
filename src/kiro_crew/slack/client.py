@@ -14,6 +14,10 @@ from typing import Any
 
 import aiohttp
 from slack_sdk.errors import SlackClientError
+from slack_sdk.http_retry.async_handler import AsyncRetryHandler
+from slack_sdk.http_retry.request import HttpRequest
+from slack_sdk.http_retry.response import HttpResponse
+from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
 logger = logging.getLogger(__name__)
@@ -302,11 +306,67 @@ class SlackClientOps(ABC):
         raise NotImplementedError
 
 
+# slack_sdk 3.45.0 installs ``AsyncConnectionErrorRetryHandler`` by default,
+# which retries once on ``ServerConnectionError``, ``ServerDisconnectedError``
+# and ``ClientOSError`` for every method. Those three are raised when the
+# connection drops, which can happen AFTER Slack has read the request, so the
+# retry resends a non-idempotent call such as ``chat.postMessage`` and the
+# message is posted twice. aiohttp raises ``ClientConnectorError`` (a
+# ``ClientOSError`` subclass) only when the TCP connection could not be
+# established, before any request bytes leave the client, so retrying that one
+# cannot duplicate a request Slack already received. This handler keeps exactly
+# that retry and drops the rest.
+_SLACK_CONNECT_RETRY_COUNT = 1
+
+
+class _ConnectSetupRetryHandler(AsyncRetryHandler):
+    """Retry once, and only when the connection never reached Slack.
+
+    ``ClientConnectorError`` means the connection could not be established, so
+    the request was never sent and resending it is safe. Every other
+    connection error can arrive after Slack has read the request, so a resend
+    of a non-idempotent call would double it.
+
+    It overrides ``can_retry_async``, the public method slack_sdk's client calls
+    on every response and every error, and not only the private hook
+    ``_can_retry_async`` that slack_sdk's own handlers implement. setup.cfg allows
+    slack-sdk >=3.27,<4, and a release that renamed that hook would otherwise
+    leave this handler unconsulted, with the base's renamed hook raising
+    ``NotImplementedError`` on every call. The private hook is kept as well, for
+    a release that renames the public method instead.
+    """
+
+    async def can_retry_async(
+        self,
+        *,
+        state: RetryState,
+        request: HttpRequest,
+        response: HttpResponse | None = None,
+        error: Exception | None = None,
+    ) -> bool:
+        if state.current_attempt >= self.max_retry_count:
+            return False
+        return isinstance(error, aiohttp.ClientConnectorError)
+
+    async def _can_retry_async(
+        self,
+        *,
+        state: RetryState,
+        request: HttpRequest,
+        response: HttpResponse | None = None,
+        error: Exception | None = None,
+    ) -> bool:
+        return isinstance(error, aiohttp.ClientConnectorError)
+
+
 class RealSlackClient(SlackClientOps):
     """Slack Web API client backed by slack_sdk."""
 
     def __init__(self, bot_token: str):
-        self._web = AsyncWebClient(token=bot_token)
+        self._web = AsyncWebClient(
+            token=bot_token,
+            retry_handlers=[_ConnectSetupRetryHandler(max_retry_count=_SLACK_CONNECT_RETRY_COUNT)],
+        )
         # Channel→workspace team_id cache. Populated ONLY from
         # conversations_info()'s home-workspace answer by
         # ensure_channel_team(), and used to auto-inject team_id into

@@ -4,7 +4,7 @@
  * connected peer's federated session search, capabilities and live slots.
  */
 
-import type { RemoteCrewCapabilities } from '../../hooks/useRemoteCapabilities'
+import type { InstanceVersions, RemoteCrewApprovalState, RemoteCrewCapabilities, RemoteUpdateJob } from '../../types'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -77,6 +77,8 @@ export interface InstanceView {
   via_remote_port?: number
   via_remote_id?: string
   was_connected: boolean
+  /** The owner turned this crew off: no tunnel is opened for it until enabled. */
+  disabled?: boolean
   status: InstanceTunnelStatus
 }
 
@@ -104,6 +106,8 @@ export interface AddInstanceBody {
   via_remote_port?: number
   via_remote_id?: string
   id?: string
+  /** PATCH only. True tears the tunnel down and blocks reconnects. */
+  disabled?: boolean
 }
 
 /**
@@ -137,7 +141,7 @@ export function crewPeerUrl(instanceId: string, path: string): string {
   return '/api/instances/' + encodeURIComponent(instanceId) + '/proxy/' + path
 }
 
-export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesDisabled, sessionKeyHeader: _sk }: ClientTransport) {
+export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fetch, jInstancesDisabled, sessionKeyHeader: _sk }: ClientTransport) {
   const registryAndTransfer = {
     // Instances (multi-instance management) — owner-only, gated by instances.enabled.
     // listInstances throws ApiError(403) when the feature is disabled; callers
@@ -180,25 +184,46 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
         ok: boolean
         message: string
       }>,
+    /** Start the crew's own `kirocrew update` (then a restart) as a background
+     *  job. Sends no body: the remote command is a fixed literal. A chained or
+     *  headless crew, and a crew already updating, are refused 409. */
+    updateRemoteInstance: (id: string) =>
+      post('/api/instances/' + encodeURIComponent(id) + '/update').then(j) as Promise<{
+        ok: boolean
+        job: RemoteUpdateJob
+      }>,
+    /** The latest update job for this crew; `job: null` when none has run. */
+    remoteUpdateStatus: (id: string) =>
+      get('/api/instances/' + encodeURIComponent(id) + '/update').then(j) as Promise<{
+        job: RemoteUpdateJob | null
+      }>,
     // Copies a session to another instance. The local session is left untouched:
     // the peer allocates its own key, so this is a copy and never a move.
-    /** Download one session as a single gzipped file.
+    /** Download one session as a single file.
      *
      *  Fetches rather than navigating, so a refusal (an incognito session, an
      *  empty one) raises here and the menu row can report it, instead of replacing
      *  the dashboard with a raw JSON error body. The saved filename comes from the
      *  endpoint's own Content-Disposition, whose slug is built from the REDACTED
      *  title — the frontend must not reconstruct a name from `slot.title`, which
-     *  is the unredacted copy. */
-    exportSession: async (slot: string) => {
-      const r = await get('/api/chat/slots/' + encodeURIComponent(slot) + '/export')
+     *  is the unredacted copy.
+     *
+     *  `format` picks the rendering: the default gzipped JSON bundle, which is the
+     *  one an Install reads back, or `'md'` for the human-readable Markdown
+     *  transcript. The fallback filename follows it, and is only ever used when a
+     *  proxy strips the header. */
+    exportSession: async (slot: string, format?: 'json' | 'md') => {
+      const markdown = format === 'md'
+      const r = await get(
+        '/api/chat/slots/' + encodeURIComponent(slot) + '/export' + (markdown ? '?format=md' : ''),
+      )
       if (!r.ok) {
         throw await toApiError(r)
       }
       const blob = await r.blob()
       const filename = filenameFromDisposition(
         r.headers.get('Content-Disposition') || '',
-        `${slot}.kcsession.json.gz`,
+        `${slot}.kcsession.${markdown ? 'md' : 'json.gz'}`,
       )
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -258,12 +283,22 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jInstancesD
      *  must offer the peer's options, since picking a crew or model that only exists
      *  here would fail on the first send.
      *
-     *  `version_match` is the gate the backend enforces on every dispatch, surfaced
-     *  so the UI can explain a refusal before the user types rather than after.
+     *  `version_match` is the dashboard's own gate: the backend reports it and the
+     *  UI refuses a mismatched peer before the user types rather than after.
      *  `unavailable` names the reads that failed, per field, so one unreachable
      *  roster disables exactly its own control instead of blanking the shelf. */
     instancesCapabilities: (instanceId: string) =>
       fetch('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities').then(j) as Promise<RemoteCrewCapabilities>,
+    /** A connected peer's YOLO flag, for the crew window's approval-mode
+     *  picker. `yolo` is null when unread. */
+    instancesApprovalState: (instanceId: string) =>
+      fetch('/api/instances/' + encodeURIComponent(instanceId) + '/approval-state').then(j) as Promise<RemoteCrewApprovalState>,
+    /** Every CONNECTED crew's version beside this machine's, in one read, with
+     *  `behind` set where the crew runs an older build. Same deny-by-default
+     *  parser as `listInstances`: the 403 is the routine answer on an install
+     *  that has not turned remote crews on, so it is not journaled. */
+    instancesVersions: () =>
+      get('/api/instances/versions').then(jInstancesDisabled) as Promise<InstanceVersions>,
 
     // A CONNECTED remote instance's LIVE sessions, read through an owner-only,
     // GET-only hub route. NOT the generic instance proxy, which this first used: the

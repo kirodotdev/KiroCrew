@@ -3,13 +3,14 @@
 These renderers produce the deterministic blocks every session carries whatever its
 memory holds -- the critical-rules contract, the runtime identity, the user profile,
 the reply-style preferences, the workspace identity, the runtime refresh a follow-up
-turn needs and the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves
-to. Each takes its inputs as arguments and reads no transcript, store or file, so a
-render is a pure function of config and the trusted dispatcher metadata.
+turn needs, the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to and
+the section its ``{{COMPUTER_USE_BLOCK}}`` resolves to. Each takes its inputs as
+arguments and reads no transcript, store or file, so a render is a pure function of
+config and the trusted dispatcher metadata.
 
-The critical-rules contract and the UI-language renderers stay on
-:mod:`kiro_crew.context`: the contract's text is pinned in place there, and the
-UI-language catalog mirror is where its drift test names it.
+The critical-rules contract and the UI-language renderers live in
+:mod:`kiro_crew.context_assembly.output_contract`, the output contract a session
+starts with.
 
 New conduct blocks belong here; a block that reads memory or a transcript does not.
 """
@@ -239,50 +240,11 @@ def _reply_style_rules(level: str) -> str:
 
     ``""`` for ``default`` and for any value the enum does not know, so a
     config edited by hand to an unrecognised level injects nothing rather
-    than a half-formed block.
+    than a half-formed block. A retired level is read as its replacement.
     """
-    if level == "ultra":
-        return (
-            "## Reply style: Ultra-Brief (ADHD reader)\n\n"
-            "Before responding, simulate the reader: they will read the "
-            "first 2 sentences, scan for bold text and code blocks, then "
-            "close the tab. Anything they won't reach is wasted tokens. "
-            "Structure for THAT reader, not an attentive one.\n\n"
-            "You have a strong bias toward completeness. Override it. The "
-            "reader's time costs more than your thoroughness. An answer "
-            "that's 80% complete in 2 lines beats 100% complete in 20 "
-            "lines. Missing a caveat is acceptable. Missing an edge case "
-            "is acceptable.\n\n"
-            "Rules:\n"
-            "- Open with THE answer in 1–2 sentences. Bold the single most "
-            "critical point.\n"
-            "- Supporting bullets only if the reader would be STUCK without "
-            "them. Max 3. Each bullet is one short sentence.\n"
-            '- Take a position. Name your pick. Resolve "it depends" '
-            "immediately.\n"
-            "- Do NOT add: tables, headers, numbered lists > 3 items, "
-            '"common pitfalls", "also consider", multi-section layouts, '
-            'or any content that fails the test: "would the reader be '
-            'stuck without this line?"\n'
-            "- Code blocks and commands are the answer — never cut them.\n"
-            "- Stakes change what you must not omit, never the length: "
-            "security warnings and irreversible-action confirmations "
-            "always appear, each as one line naming the call, the risk, "
-            "and whether it can be undone; the mechanism and the failure "
-            "modes are not required. Ordered multi-step instructions "
-            "where a dropped step causes a mistake stay complete, and "
-            "code, commands, paths, identifiers and error strings stay "
-            "verbatim.\n"
-            "- When the user ASKS for something long (design doc, tutorial, "
-            "full implementation), ignore these constraints and deliver "
-            "what was asked.\n"
-            "- Required output formats are sacred and never cut: "
-            "[OPTIONS:] lines, diff blocks for file changes, full PR/MR "
-            "URLs, and any format the rendering surface "
-            "needs. These go in their required position regardless of "
-            "brevity.\n"
-            "- Preserve the user's language."
-        )
+    from kiro_crew.config.sections import normalize_verbosity
+
+    level = normalize_verbosity(level)
     if level == "concise":
         return (
             "## Reply style: Concise\n\n"
@@ -365,7 +327,7 @@ def _response_preferences_apply(session_key: str, runtime_source: str | None = N
     every session whose final message a person reads — dashboard, every
     messaging channel, a cron digest. A ``subagent:`` session is the one kind
     whose final message is read by its PARENT agent instead: the parent needs
-    the caveats and edge cases the ``ultra`` and ``answer_only`` levels tell
+    the caveats and edge cases the ``answer_only`` level tells
     the writer to drop, so the block is withheld there. Resolved through the
     same runtime-source seam as ``[RUNTIME]``, so a sub-agent is recognised the
     way every other transport is.
@@ -384,16 +346,16 @@ def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
     ``build_message`` must mint this trusted frame only after it scrubs session
     context. Both frame markers are structural markers, so placing the genuine
     frame inside the scrubbed context would neutralize it along with forgeries.
-    The earlier ``{{VERBOSITY_BLOCK}}`` token reached 7 of the 84 agent specs on
-    one real install; the 77 others ran with the setting silently ignored.
+    It is built here rather than substituted for a ``{{VERBOSITY_BLOCK}}`` token
+    in the agent prompt, because a token reaches only the specs that carry it;
+    every other spec would run with the setting silently ignored.
 
     The wrapper is deliberately loud (a bracketed MANDATORY header, an explicit
     precedence sentence) because the block competes with a long agent prompt
     that carries its own style guidance; a bare ``##`` heading in the middle of
     the context would have no stated rank against it.
 
-    Returns ``""`` when the level is ``default`` or unrecognised, so installs
-    that never touched the setting see byte-identical context.
+    Returns ``""`` when the level is ``default`` or unrecognised.
     """
     level = getattr(getattr(cfg, "dashboard", None), "verbosity", "default")
     rules = _reply_style_rules(level if isinstance(level, str) else "default")
@@ -527,3 +489,85 @@ def widget_block(density: str) -> str:
         "`@kirocrew-core/artifact_save` one you rendered. Load the "
         "`artifacts` skill to save other content, iterate or list."
     )
+
+
+# What an agent prompt's ``{{COMPUTER_USE_BLOCK}}`` resolves to while the session's
+# agent spec mounts ``kirocrew-computer``: the section ``config/prompt.md`` carried
+# inline before the slot existed, plus one sentence for a session that stays open
+# across a disable: disabling resets every session, a reset session resumes its own
+# transcript with this text still in it, and its new backend mounts no
+# ``computer_*`` tool (the mirror of the pointer's last sentence below). It still
+# counts against that file's byte budget, ``PROMPT_BYTE_CEILINGS`` in
+# ``test/test_prompt_compact_contract.py``, which measures the prompt with this
+# text in the slot.
+_COMPUTER_USE_SECTION = (
+    "## Computer Use (native desktop apps)\n"
+    "\n"
+    "`computer_*` MCP tools read and drive the user's **real desktop applications**\n"
+    "through the accessibility layer — for work that lives outside a web page. It is\n"
+    "**opt-in and off by default** (the user enables it in Settings → Computer Use).\n"
+    "macOS and Windows both support the full tool set. They differ in ONE way you must\n"
+    "relay to the user: on Windows there is no per-process input, so a keystroke takes\n"
+    "their keyboard focus and a coordinate click moves their real cursor — the result\n"
+    "text says so, and you should pass that on rather than silently succeeding. Do not\n"
+    "assume the platform from your own knowledge — CALL the tool and act on what it\n"
+    'returns: a "disabled" or "not supported" refusal is final (relay it and stop),\n'
+    "while a refusal that names an alternative (an `element_index` instead of\n"
+    'coordinates, `click_method: "global"` to accept the cursor move) is telling you\n'
+    "the next call to make. If no `computer_*` tool is in your tool list, Computer Use\n"
+    "was turned off after this session started: tell the user, point them to\n"
+    "Settings → Computer Use, and do not call one.\n"
+    "\n"
+    "**Tree first, always.** Call `computer_get_state(app=...)` before any action — it\n"
+    "returns the window as a numbered element outline, and prefer addressing an element\n"
+    "by its `element_index`: that is the only form the target can be checked against (a\n"
+    "password field is refused by its index, not by its pixels). `computer_click` and\n"
+    "`computer_drag` also accept `x`/`y` screen coordinates for the canvases, sliders and\n"
+    "custom-drawn UI that expose no usable element. By default a coordinate gesture is\n"
+    "delivered to the target app alone and **the user's real pointer does not move**;\n"
+    '`click_method: "global"` is the one path that moves it — you must ask for it BY NAME\n'
+    "(`auto` never picks it), so name it only when a click has to be physically real, and\n"
+    "tell the user before you do: their cursor will jump out from under their hand.\n"
+    'When the app has no window yet, `computer_launch_app(app="Paint")` opens it and\n'
+    "returns the new window's tree, so no separate `computer_get_state` call is\n"
+    "needed — give the OS's own app NAME, never a path or a command line, and never\n"
+    "call it twice for one app (a cold start can take ten seconds). It is refused when\n"
+    "the app already has a window; snapshot that instead of opening a second copy.\n"
+    "`computer_list_apps()` lists what currently has an on-screen window when you do\n"
+    "not know how the user names an app.\n"
+    "Each action returns a refreshed tree, so you do not need to re-snapshot just to\n"
+    "re-read indices. Call `computer_end_turn()` when you are done\n"
+    "with the app. When a screenshot is attached you get a **file path**, not an image —\n"
+    "open it with the file-read tool only when the outline genuinely cannot answer the\n"
+    "question (it costs ~8K tokens). Password fields render as `<secure>` and their\n"
+    "window is never captured. Kiro Crew's own dashboard is refused, for reading as well\n"
+    "as typing, because driving it would let you change your own security settings.\n"
+    "Read the `computer-use` skill before your first call."
+)
+
+# The same slot while the spec withholds the server (the feature is off, or the OS
+# has no driver), so the session has no ``computer_*`` tool. It keeps a user who
+# asks to drive a desktop app pointed at the setting. Its last sentence covers a
+# session that stays open across the switch: enabling Computer Use resets every
+# session, a reset session resumes its own transcript, and the agent prompt is not
+# re-sent on a resume, so this text is what such a session holds once the tools
+# arrive.
+_COMPUTER_USE_UNAVAILABLE = (
+    "## Computer Use (native desktop apps)\n"
+    "\n"
+    "Not available in this session: Computer Use is off or this OS has no driver, so\n"
+    "no `computer_*` tools are mounted. If the user asks you to drive a desktop app,\n"
+    "point them to Settings → Computer Use. If `computer_*` tools are in your tool list\n"
+    "anyway, it was turned on after this session started: read the `computer-use` skill\n"
+    "before your first call."
+)
+
+
+def computer_use_block(mounted: bool) -> str:
+    """What an agent prompt's ``{{COMPUTER_USE_BLOCK}}`` resolves to.
+
+    ``mounted`` is the session's reading of the spec gate that decides whether
+    ``kirocrew-computer`` is in its agent spec: the full section when it is, the
+    short pointer when it is not.
+    """
+    return _COMPUTER_USE_SECTION if mounted else _COMPUTER_USE_UNAVAILABLE

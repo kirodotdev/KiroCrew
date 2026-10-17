@@ -27,10 +27,12 @@ from kiro_crew.crew_main_contract import (
     CrewMainReads,
     build_crew_main,
     card_data_payload,
+    crew_main_phrases,
     merge_crew_main,
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.dynamic_cards import (
+    MAX_HTML_BYTES,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_BYTES,
     RESTORED,
@@ -38,6 +40,7 @@ from kiro_crew.dashboard.dynamic_cards import (
     CardPublisher,
     normalize_card,
 )
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard_templates.parity import filled_fields
 from kiro_crew.history import TranscriptBusy, TranscriptWithheld, is_incognito_transcript
 from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
@@ -74,7 +77,8 @@ class _CardReads(CrewMainReads, total=False):
 
 
 _ROOT_PROMPT = f"""Create this session's concise status card.
-Write lede, you and notes in ONE language, the one "language" names: when it has
+Write lede, you, notes and every label the HTML shows in ONE language, the one
+"language" names: when it has
 "tag", the language of that BCP-47 tag, which the dashboard around the card is shown
 in; otherwise the language of "user_wrote", text the user typed. Never take the
 language from facts, previous, assistant or automation rows, or from any other
@@ -113,7 +117,7 @@ notes: one sentence of caveat, or "".
 At most {JUDGMENT_TEXT_LIMIT} characters each. The only names data-dashboard-field may use
 are the fact names and lede, you, notes.
 You design the HTML/CSS layout freely. No scripts, remote resources, forms or
-navigation. At most 8192 UTF-8 bytes of HTML. Use readable names, responsive layout
+navigation. At most {MAX_HTML_BYTES} UTF-8 bytes of HTML. Use readable names, responsive layout
 down to 320px and theme variables such as var(--bg), var(--text), var(--muted) and
 var(--accent). No fixed-width canvas.
 When previous has html that still fits, or previous lists only fields, OMIT html and
@@ -123,7 +127,7 @@ This is a bounded recent-window update, not an authoritative full-history summar
 A message with role "automation" was injected by a scheduler or another agent, not
 typed by the user; never present it as the user's request or decision.
 """
-"""The prompt for every automatic card, which is now a ROOT session's card.
+"""The prompt for every automatic card (a root session's card).
 
 The numbers reach the model as facts it can bind but not write: the layout names a fact
 by its field and the host fills the value from the fold, after the model has returned.
@@ -527,22 +531,25 @@ def _read_card_tools(slot_key: str, reads: _CardReads) -> Any:
     in a conversation that never made one. One unit list then answers both the names
     and whether they are whole.
 
-    ``units_whole`` is added to the render: true only when the chain reached a unit with
-    no predecessor (:data:`~kiro_crew.crew_log.session_tree.CHAIN_END_FIRST`) whose own
-    announce STATES it starts the slot's chain
-    (:data:`~kiro_crew.crew_log.session_tree.EDGE_NONE`), in a scan that saw the whole
-    store, or when the slot has no unit at all. A unit that cites nothing because its
-    writer could not name the predecessor, or that predates the edge keys, is a gap. Any other end -- a
-    unit retention took, another slot's unit, a loop, the cap -- leaves it false, and a
-    list that is not whole must never license a "never called" claim. A fold that
-    cannot be read, or units the store cannot rank, are ``FOLD_UNREADABLE``.
+    ``units_whole`` is added to the render: true only when the chain reached a unit
+    that STATES it starts the slot's chain
+    (:data:`~kiro_crew.crew_log.session_tree.CHAIN_END_FIRST`, which the walk now
+    reports only for an :data:`~kiro_crew.crew_log.session_tree.EDGE_NONE` oldest
+    log), in a scan that saw the whole store, or when the slot has no unit at all. A
+    unit that cites nothing because its writer could not name the predecessor, or
+    that predates the edge keys, ends the walk at
+    :data:`~kiro_crew.crew_log.session_tree.CHAIN_END_GAP` and is not whole. Any
+    other end -- a unit retention took, another slot's unit, a loop, the cap --
+    leaves it false too, and a list that is not whole must never license a "never
+    called" claim. A fold that cannot be read, or units the store cannot rank, are
+    ``FOLD_UNREADABLE``.
 
     Called on the prompt path only: the refresh path binds numbers and has no use for
     tool names.
     """
     from kiro_crew.crew_log import projection as projections
     from kiro_crew.crew_log.read import slot_chain
-    from kiro_crew.crew_log.session_tree import CHAIN_END_FIRST, EDGE_NONE
+    from kiro_crew.crew_log.session_tree import CHAIN_END_FIRST
 
     unit = reads.get("unit", "")
     if not unit:
@@ -557,11 +564,7 @@ def _read_card_tools(slot_key: str, reads: _CardReads) -> Any:
         return FOLD_UNREADABLE
     if not isinstance(render, dict):
         return FOLD_UNREADABLE
-    whole = (
-        reading.chain.ended == CHAIN_END_FIRST
-        and reading.chain.root_edge == EDGE_NONE
-        and not reading.incomplete
-    )
+    whole = reading.chain.ended == CHAIN_END_FIRST and not reading.incomplete
     return {**render, "units_whole": whole}
 
 
@@ -702,7 +705,9 @@ def _layout_hides_a_fact(html: str) -> bool:
     return not DERIVED_FIELDS <= filled_fields(html)
 
 
-def _root_card_output(text: str, previous: dict | None, derived: CrewMainDerived) -> dict | None:
+def _root_card_output(
+    text: str, previous: dict | None, derived: CrewMainDerived, phrases: str
+) -> dict | None:
     """The model's reply as a published root card, or ``None`` when it is refused.
 
     The model owns the layout and the three sentences. The host owns every other field:
@@ -710,7 +715,8 @@ def _root_card_output(text: str, previous: dict | None, derived: CrewMainDerived
     card is refused, never merged. What survives is redacted by the same path the
     free-form card used, checked for digits, and only then merged with the folded
     numbers by :func:`~kiro_crew.crew_main_contract.merge_crew_main`, which names every
-    field so a sentence can never land on a number.
+    field so a sentence can never land on a number. *phrases* are those numbers as the
+    dashboard renders them in its own language, from the same reads as *derived*.
     """
     raw = _extract_json_of_type(text, dict)
     if not isinstance(raw, dict) or not isinstance(raw.get("data"), dict):
@@ -763,7 +769,10 @@ def _root_card_output(text: str, previous: dict | None, derived: CrewMainDerived
         "CrewMainJudgment", {f: own["data"][f][:JUDGMENT_TEXT_LIMIT] for f in JUDGMENT_FIELDS}
     )
     return normalize_card(
-        {"html": own["html"], "data": card_data_payload(merge_crew_main(derived, judgment))}
+        {
+            "html": own["html"],
+            "data": card_data_payload(merge_crew_main(derived, judgment), phrases),
+        }
     )
 
 
@@ -817,8 +826,7 @@ def _derived_allowed(slot: Any) -> bool:
     definition and cannot be redirected that way.
     """
     return not (
-        getattr(slot, "is_remote", False)
-        or getattr(slot, "executor", "") == "remote"
+        getattr(slot, "executor", "") == "remote"
         or is_incognito_transcript(getattr(slot, "memory_mode", ""))
     )
 
@@ -968,7 +976,10 @@ class CardLifecycle:
         # browsing, not activity, and queues no model work.
         if slot.key in getattr(self.state, "_slots_under_construction", ()):
             return
-        if not slot.messages or not self._eligible(slot):
+        # The summary rows, not ``messages``: the post-restore seed asks this of
+        # every slot, and a restored sidebar row answers from its tail without
+        # loading its whole window on the loop.
+        if not summary_rows(slot) or not self._eligible(slot):
             self.publisher.forget(slot.key)
             return
         self.publisher.notify(
@@ -1082,7 +1093,9 @@ class CardLifecycle:
         payload = normalize_card(
             {
                 "html": entry.payload["html"],
-                "data": card_data_payload(merge_crew_main(build_crew_main(reads), judgment)),
+                "data": card_data_payload(
+                    merge_crew_main(build_crew_main(reads), judgment), crew_main_phrases(reads)
+                ),
             }
         )
         if payload is None or payload == entry.payload:
@@ -1213,7 +1226,10 @@ class CardLifecycle:
         # work, so it runs off the gateway loop with the fold read.
         def finish() -> tuple[dict | None, frozenset[str]]:
             reads = _read_card_folds(entry.key)
-            return _root_card_output(text, previous, build_crew_main(reads)), _bound_workers(reads)
+            return (
+                _root_card_output(text, previous, build_crew_main(reads), crew_main_phrases(reads)),
+                _bound_workers(reads),
+            )
 
         payload, workers = await asyncio.to_thread(finish)
         if payload is None or not self._valid(entry):

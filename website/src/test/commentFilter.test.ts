@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { filterCommentsForForward } from '../lib/commentFilter'
+import { filterCommentsForForward, pendingSubmitComments } from '../lib/commentFilter'
 import type { ArtifactComment } from '../types'
 
 /** Helper to build a minimal ArtifactComment for testing. */
@@ -112,5 +112,18 @@ describe('filterCommentsForForward', () => {
 
   it('returns an empty array for empty input', () => {
     expect(filterCommentsForForward([])).toEqual([])
+  })
+})
+
+describe('pendingSubmitComments', () => {
+  it('keeps only open, human-authored comments nobody has submitted', () => {
+    const comments = [
+      mkComment({ id: 'h1' }),
+      mkComment({ id: 'a1', is_agent: true }),
+      mkComment({ id: 's1' }),
+      mkComment({ id: 'r1', status: 'resolved' }),
+      mkComment({ id: 'r1a', parent_id: 'r1', thread_id: 'r1' }),
+    ]
+    expect(pendingSubmitComments(comments, new Set(['s1'])).map(c => c.id)).toEqual(['h1'])
   })
 })

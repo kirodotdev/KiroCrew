@@ -8,7 +8,7 @@
  *
  * WHAT IS FAITHFUL is the COLUMN GEOMETRY, since that is the whole claim. Rows
  * are wrapped in the literal host wrapper (`px-5 mx-auto w-full py-1` under
- * `--mc-content-width`, ChatPage.tsx:6522 / ChatMessageList.tsx:152), and the
+ * `--mc-content-width`, ChatTranscriptView.tsx / ChatMessageList.tsx:152), and the
  * components are the real ones.
  *
  * The `before` scene adds a SECOND wrapper of exactly that shape around each

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 
 from kiro_crew.cloud import aws, iam
@@ -265,9 +266,13 @@ class TestPolicyDocument:
         assert st["Action"] == ["iam:CreateRole"]
         assert "StringEquals" not in st["Condition"], "must be ArnLike, not StringEquals"
         cond = st["Condition"]["ArnLike"]["iam:PermissionsBoundary"]
-        # The exact fixed boundary name, no trailing wildcard on the policy name.
-        assert cond == f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}"
-        assert cond.startswith("arn:aws:iam::")
+        # The exact fixed boundary names, no trailing wildcard on a policy name:
+        # the default boundary and the opt-in KMS-session one.
+        assert cond == [
+            f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}",
+            f"arn:aws:iam::*:policy/{iam.KMS_BOUNDARY_NAME}",
+        ]
+        assert all(c.startswith("arn:aws:iam::") for c in cond)
 
     def test_put_role_policy_scoped_no_dead_boundary_condition(self):
         # PutRolePolicy is a SEPARATE statement scoped to the role ARN prefix. It
@@ -304,8 +309,8 @@ class TestPolicyDocument:
 
     def test_boundary_create_once_is_immutable(self):
         # The launcher CODE creates the shared boundary once (not per-launch CFN).
-        # The generated policy must grant ONLY CreatePolicy + GetPolicy on the
-        # EXACT boundary ARN — and NEVER the version/delete verbs, because those
+        # The generated policy must grant ONLY CreatePolicy + the two read verbs on
+        # the EXACT boundary ARN — and NEVER the version/delete verbs, because those
         # would let a leaked launcher credential mutate/replace an existing
         # boundary's content (the whole vulnerability). CreatePolicy on a fixed
         # name fails EntityAlreadyExists once it exists, so it can't be made
@@ -329,10 +334,23 @@ class TestPolicyDocument:
         resources = st["Resource"]
         assert isinstance(resources, list), resources
         assert f"arn:aws:iam::*:policy/{iam.BOUNDARY_NAME}" in resources
-        # No trailing wildcard on ANY name in the grant (would let CreatePolicy
-        # target other, e.g. permissive, boundary-prefixed names).
+        # No glob character anywhere in the policy NAME of ANY resource in the grant
+        # (a `*`, `kirocrew-*` or `kirocrew-ec2-*` name would let CreatePolicy target
+        # other, e.g. permissive, boundary-prefixed names). The account segment may
+        # be `*`; only what follows `policy/` is the name.
         for resource in resources:
-            assert not resource.endswith("*"), f"prefix wildcard in the grant: {resource}"
+            name = resource.split(":policy/", 1)[1]
+            assert not set(name) & set("*?"), f"glob in the grant's policy name: {resource}"
+        # And nothing else in the policy can reach a create verb on a policy by a
+        # wildcard spelling (`iam:Create*`, `iam:*Policy*`, `NotAction`).
+        for other in iam.policy_document()["Statement"]:
+            assert "NotAction" not in other, other["Sid"]
+            if other["Sid"] == "IamInstanceBoundaryCreateOnce":
+                continue
+            for action in other["Action"]:
+                assert not fnmatch.fnmatchcase(
+                    "iam:CreatePolicy", action
+                ), f"{other['Sid']} reaches iam:CreatePolicy via {action}"
 
     def test_no_boundary_mutation_verbs_anywhere(self):
         # Guard: the mutating boundary verbs must not reappear ANYWHERE in the
@@ -621,16 +639,16 @@ class TestPolicyDocument:
             f"launcher policy is {len(compact)} chars — over IAM's 6,144 managed-policy "
             "limit; merge equivalent statements or split the policy"
         )
-        # Headroom gate BELOW the hard cap so growth is caught well before it hits
-        # the platform limit. Sized to sit above where the next feature (EC2 Spot,
-        # ~+152 chars -> ~5,970) lands so that feature is not tripped by the very
-        # reserve meant to admit it, while still leaving ~100 chars of margin under
-        # the 6,144 cap. If a feature legitimately needs more, raise this in the
-        # same change and say why — do not let the policy drift up to the cap.
-        assert len(compact) <= 6044, (
-            f"launcher policy is {len(compact)} chars — over the 6,044 headroom gate "
-            "(100 chars under IAM's 6,144 cap). Merge equivalent statements or, if a "
-            "feature genuinely needs the room, raise this gate deliberately."
+        # Headroom gate BELOW the hard cap so growth is caught before it hits the
+        # platform limit.
+        # The gate sits only 34 chars under the cap: the opt-in KMS-session
+        # boundary needs its exact name in CreateRole and a read-only statement,
+        # and no remaining statement merge is permission-neutral. The next growth
+        # needs a split policy rather than a higher gate.
+        assert len(compact) <= 6110, (
+            f"launcher policy is {len(compact)} chars — over the 6,110 headroom gate "
+            "(34 chars under IAM's 6,144 cap). Merge equivalent statements or, if a "
+            "feature genuinely needs the room, split the policy."
         )
 
     def test_shrink_preserved_the_permission_set_byte_for_byte(self):
@@ -696,6 +714,17 @@ _TAG_COND = json.dumps({"StringEquals": {"aws:ResourceTag/kirocrew:managed": "tr
 _BOUNDARY_COND = json.dumps(
     {"ArnLike": {"iam:PermissionsBoundary": "arn:aws:iam::*:policy/kirocrew-ec2-boundary"}}
 )
+_BOUNDARY_OR_KMS_COND = json.dumps(
+    {
+        "ArnLike": {
+            "iam:PermissionsBoundary": [
+                "arn:aws:iam::*:policy/kirocrew-ec2-boundary",
+                "arn:aws:iam::*:policy/kirocrew-ec2-kms-boundary",
+            ]
+        }
+    }
+)
+_KMS_BOUNDARY_POLICY = "arn:aws:iam::*:policy/kirocrew-ec2-kms-boundary"
 _SSM_CORE_COND = json.dumps(
     {"ArnEquals": {"iam:PolicyARN": "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"}}
 )
@@ -737,6 +766,8 @@ _ROLE_MGMT_VERBS = (
 #    handler's two SSM association reads are added, all on "*".
 #  * Role management and the SSM-core attach/detach gain ROLE_PATH beside the
 #    root-path prefix, which stays so pre-path stacks can still be destroyed.
+#  * CreateRole accepts exactly two boundary names, and the launcher may read
+#    (never create) the opt-in kirocrew-ec2-kms-boundary.
 EXPECTED_PERMISSION_DELTA_REMOVED = {
     *(("Allow", a, "Resource", "*", "null") for a in _EC2_DESCRIBES_REPLACED),
     ("Allow", "iam:CreateRole", "Resource", _ROOT_ROLE, _BOUNDARY_COND),
@@ -774,7 +805,11 @@ EXPECTED_PERMISSION_DELTA_ADDED = {
     ("Deny", "ec2:DescribeSpot*Requests", "Resource", "*", "null"),
     ("Deny", "ec2:DescribeTags", "Resource", "*", "null"),
     ("Deny", "ec2:DescribeVpnConnections", "Resource", "*", "null"),
-    ("Allow", "iam:CreateRole", "Resource", _PATH_ROLE, _BOUNDARY_COND),
+    # CreateRole also accepts the opt-in KMS-session boundary, which the
+    # launcher may read (never create) by its exact name.
+    ("Allow", "iam:CreateRole", "Resource", _PATH_ROLE, _BOUNDARY_OR_KMS_COND),
+    ("Allow", "iam:GetPolicy", "Resource", _KMS_BOUNDARY_POLICY, "null"),
+    ("Allow", "iam:GetPolicyVersion", "Resource", _KMS_BOUNDARY_POLICY, "null"),
     ("Allow", "iam:PutRolePolicy", "Resource", _PATH_ROLE, _TAG_COND),
     ("Allow", "iam:TagRole", "Resource", _PATH_ROLE, _TAG_COND),
     (
@@ -798,6 +833,39 @@ class TestReachabilityCheck:
         assert r["reachable"] is False
         assert "did not resolve" in r["note"]
         assert "Unable to locate credentials" in r["detail"]
+        assert r["credential_helper_missing"] == ""
+
+    def test_a_credential_helper_missing_from_path_is_named(self, monkeypatch):
+        # The AWS CLI's own words when the profile's credential_process command is
+        # not on the PATH a GUI-launched gateway hands it.
+        err = "\naws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'\n"
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", err))
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("work")
+        assert r["reachable"] is False
+        assert r["credential_helper_missing"] == "sso-cred-helper"
+        assert "credential_process" in r["note"]
+        assert "/full/path/to/sso-cred-helper" in r["note"]
+        assert "aws configure sso" not in r["note"]
+        assert "sso-cred-helper" in r["detail"]
+
+    def test_a_missing_absolute_path_is_not_reported_as_a_path_lookup(self, monkeypatch):
+        # A path with a separator was never searched on PATH, so the PATH advice
+        # would be wrong for it; the generic note stands.
+        err = "aws: [ERROR]: [Errno 2] No such file or directory: '/opt/x/helper'"
+        monkeypatch.setattr(aws, "run_aws", lambda *a, **k: (255, "", err))
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+        r = iam.reachability_check("p")
+        assert r["credential_helper_missing"] == ""
+        assert "did not resolve" in r["note"]
+
+    def test_missing_credential_helper_reads_both_quote_styles(self):
+        assert iam.missing_credential_helper('[Errno 2] No such file or directory: "ada"') == "ada"
+        assert iam.missing_credential_helper("[Errno 2] No such file or directory: 'ada'") == "ada"
+        assert iam.missing_credential_helper("") == ""
+        assert iam.missing_credential_helper("AccessDenied") == ""
 
     def test_all_reachable(self, monkeypatch):
         def fake_run(args, profile="", region="", *, timeout=aws.DEFAULT_TIMEOUT):
@@ -1214,7 +1282,8 @@ class TestCrewPermissionsBoundary:
         ``policy/kirocrew-*`` would let a leaked launcher credential author any
         policy whose name began that way and attach it, which is the escalation
         this statement's shape exists to prevent. Only the three create-once verbs,
-        so an existing boundary's content cannot be replaced.
+        so an existing boundary's content cannot be replaced. The opt-in
+        KMS-session boundary is deliberately absent: the launcher only reads it.
         """
         statement = next(
             s

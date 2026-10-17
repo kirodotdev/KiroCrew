@@ -14,6 +14,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import CrewAvatarBuilder from '../components/CrewAvatarBuilder'
 import type { CrewAvatarOverride } from '../components/CrewAvatar'
 import { ACCESSORIES, BROWS, BRAND_PURPLE, EYES, MOUTHS, PROPS, TILES } from '../lib/kiroGhostAvatar'
+import { POSE_IDS, seedIconPose } from '../lib/avatarPoses'
 
 vi.mock('framer-motion', async () => {
   const React = await import('react')
@@ -73,6 +74,26 @@ async function pickAxis(label: string) {
 async function switchToPicture() {
   fireEvent.click(screen.getByRole('radio', { name: 'Picture' }))
   await screen.findByTestId('avatar-upload-pane')
+}
+
+/** The builder no longer offers the Ghost face tab for a non-ghost crew — a
+ *  new or edited crew cannot author a ghost (issue #18616). An EXISTING ghost
+ *  crew still opens straight on the "捏脸" face pane, so a ghost-tier test mounts
+ *  FROM a stored ghost record rather than switching to a tab that is gone. */
+async function switchToFace() {
+  await screen.findByTestId('avatar-builder-preview')
+}
+
+/** A minimal stored ghost override — "this crew already wears a ghost face" —
+ *  so the builder opens on the face pane for the pre-existing-ghost edit tests. */
+const EXISTING_GHOST: Ghost = { kind: 'ghost', traits: {} }
+
+/** Mount already on the Ghost face pane via a stored ghost record — the only
+ *  way the face pane is reached now that a new ghost cannot be authored. */
+async function mountFace(value: CrewAvatarOverride | null = EXISTING_GHOST) {
+  const utils = mount(value)
+  await switchToFace()
+  return utils
 }
 
 /* ────────────── canvas + image doubles for the picture tier ────────────── */
@@ -149,8 +170,8 @@ afterEach(() => {
 /* ──────────────────────────── ghost tier ──────────────────────────── */
 
 describe('CrewAvatarBuilder — ghost tier', () => {
-  it('randomize draws every axis from the shipped vocabulary and Apply hands it over', () => {
-    const { onSave } = mount()
+  it('randomize draws every axis from the shipped vocabulary and Apply hands it over', async () => {
+    const { onSave } = await mountFace()
     fireEvent.click(screen.getByTestId('avatar-builder-randomize'))
     apply()
     const saved = lastSaved(onSave) as Ghost
@@ -167,7 +188,7 @@ describe('CrewAvatarBuilder — ghost tier', () => {
   })
 
   it('the Blush axis is a two-option tab: off first, then on', async () => {
-    const { onSave } = mount()
+    const { onSave } = await mountFace()
     await pickAxis('Blush')
     fireEvent.click(screen.getByTestId('avatar-opt-blush'))
     apply()
@@ -178,7 +199,7 @@ describe('CrewAvatarBuilder — ghost tier', () => {
   })
 
   it('the Background axis pins the tile and labels swatches with color names, not hex', async () => {
-    const { onSave } = mount()
+    const { onSave } = await mountFace()
     await pickAxis('Background')
     const steel = screen.getByTestId('avatar-opt-25679d')
     expect(steel).toHaveAttribute('aria-label', 'Steel blue')
@@ -187,8 +208,8 @@ describe('CrewAvatarBuilder — ghost tier', () => {
     expect((lastSaved(onSave) as Ghost).traits.tile).toBe('#25679d')
   })
 
-  it('the mirror toggle flips the face relative to the seeded default', () => {
-    const { onSave } = mount()
+  it('the mirror toggle flips the face relative to the seeded default', async () => {
+    const { onSave } = await mountFace()
     const sw = screen.getByRole('switch', { name: 'Flip direction' })
     const before = sw.getAttribute('aria-checked') === 'true'
     fireEvent.click(sw)
@@ -202,6 +223,81 @@ describe('CrewAvatarBuilder — ghost tier', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(onCancel).toHaveBeenCalledTimes(1)
     expect(onSave).not.toHaveBeenCalled()
+  })
+})
+
+/* ──────────────────────────── icon tier ──────────────────────────── */
+
+describe('CrewAvatarBuilder — icon tier', () => {
+  it('is the default pane for a crew with no override', () => {
+    mount()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('avatar-icon-preview')).toBeInTheDocument()
+  })
+
+  it('a stored ghost crew still opens on the Ghost face pane', () => {
+    mount({ kind: 'ghost', traits: { eyes: 'wink', brows: 'none', mouth: 'smile', accessory: 'none', prop: 'none', blush: false, flip: false, tile: BRAND_PURPLE } })
+    expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument()
+    expect(screen.queryByTestId('avatar-icon-pane')).not.toBeInTheDocument()
+  })
+
+  it('offers no Ghost face tab for a non-ghost crew (new ghosts are not authorable)', () => {
+    mount(null)
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).not.toBeInTheDocument()
+    // Icon, Picture and Library remain the authorable tiers.
+    expect(screen.getByRole('radio', { name: 'Icon' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Picture' })).toBeInTheDocument()
+  })
+
+  it('still offers the Ghost face tab for a crew that already wears one', () => {
+    mount({ kind: 'ghost', traits: {} })
+    expect(screen.getByRole('radio', { name: 'Ghost face' })).toBeInTheDocument()
+  })
+
+  it('picking a pose and Apply hands over an icon override', () => {
+    const { onSave } = mount()
+    fireEvent.click(screen.getByTestId('avatar-icon-pose-pose-3'))
+    apply()
+    const saved = lastSaved(onSave)
+    expect(saved?.kind).toBe('icon')
+    expect(saved).toMatchObject({ kind: 'icon', pose: 'pose-3' })
+    expect((saved as { bg: string }).bg).toMatch(/^#[0-9a-f]{6}$/)
+  })
+
+  it('a fresh draft applies the name-seeded default pose without any pick', () => {
+    const { onSave } = mount()
+    apply()
+    // The builder mounts with name="radar"; a fresh icon draft seeds its pose
+    // from the name (parity with the ghost's name-seeded default), so it is the
+    // seeded pose rather than the static first one.
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', pose: seedIconPose('radar') })
+  })
+
+  it('every shipped pose is offered as a swatch', () => {
+    mount()
+    for (const pose of POSE_IDS) {
+      expect(screen.getByTestId(`avatar-icon-pose-${pose}`)).toBeInTheDocument()
+    }
+  })
+
+  it('a background swatch pins the colour the override carries', () => {
+    const { onSave } = mount()
+    fireEvent.click(screen.getByTestId('avatar-icon-bg-25679d'))
+    apply()
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon', bg: '#25679d' })
+  })
+
+  it('a stored icon crew reopens on its pose and colour', () => {
+    mount({ kind: 'icon', pose: 'pose-5', bg: '#25679d' })
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.getByTestId('avatar-icon-pose-pose-5')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('avatar-icon-bg-25679d')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('the icon tier offers no Reactions tab — a pose is static', () => {
+    mount()
+    expect(screen.getByTestId('avatar-icon-pane')).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Reactions' })).not.toBeInTheDocument()
   })
 })
 
@@ -344,7 +440,7 @@ describe('CrewAvatarBuilder — picture tier', () => {
       return ev.defaultPrevented
     }
     const { unmount } = mount()
-    // Ghost face tab: nothing intercepts, the browser default stands.
+    // Icon pane (the default): nothing intercepts, the browser default stands.
     expect(dropOnBody()).toBe(false)
     await switchToPicture()
     // Picture tab: a stray drop must not navigate the SPA to the file.
@@ -352,8 +448,8 @@ describe('CrewAvatarBuilder — picture tier', () => {
     const over = new Event('dragover', { bubbles: true, cancelable: true })
     document.body.dispatchEvent(over)
     expect(over.defaultPrevented).toBe(true)
-    // Back on the face tab the listeners are gone again.
-    fireEvent.click(screen.getByRole('radio', { name: 'Ghost face' }))
+    // Back on the Icon pane the listeners are gone again.
+    fireEvent.click(screen.getByRole('radio', { name: 'Icon' }))
     await waitFor(() => expect(dropOnBody()).toBe(false))
     unmount()
     expect(dropOnBody()).toBe(false)
@@ -369,15 +465,35 @@ describe('CrewAvatarBuilder — picture tier', () => {
     expect(lastSaved(onSave)).toBe(stored)
   })
 
-  it('Reset drops both the ghost draft and the pending picture and returns to the face tab', async () => {
+  it('Reset drops the pending picture and returns a non-ghost crew to the icon tier', async () => {
     const { onSave } = mount()
     await switchToPicture()
     chooseFile(pngFile())
     await decode()
     await screen.findByTestId('avatar-upload-preview')
     fireEvent.click(screen.getByTestId('avatar-builder-reset'))
-    expect(screen.getByTestId('avatar-builder-preview')).toBeInTheDocument()
+    // A crew that wears no ghost returns to the icon tier, not the ghost
+    // builder — Reset is not a path to author a new ghost (#18616).
+    expect(await screen.findByTestId('avatar-icon-pane')).toBeInTheDocument()
     apply()
-    expect(lastSaved(onSave)).toBeNull()
+    // Reset on a crew that does NOT wear a ghost commits the name-seeded icon
+    // default it previews — NOT `null`. `null` renders the name's ghost, and a
+    // crew that never chose a ghost must never reset INTO one (#18616).
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'icon' })
+  })
+
+  it('returning to the Picture tier after Reset keeps the stored image, not null', async () => {
+    // Regression: Reset sets the undress sentinel, but navigating back to a
+    // tier is the user building again, so the sentinel must clear — otherwise
+    // Apply would discard the stored image the user came back to keep.
+    const { onSave } = mount({ kind: 'image', v: 7 })
+    fireEvent.click(screen.getByTestId('avatar-builder-reset'))
+    // Reset lands a non-ghost crew on the icon tier; switch back to Picture.
+    await screen.findByTestId('avatar-icon-pane')
+    await switchToPicture()
+    apply()
+    // The sentinel cleared on the tier switch, so Apply falls back to the
+    // stored image rather than committing the undress null.
+    expect(lastSaved(onSave)).toMatchObject({ kind: 'image', v: 7 })
   })
 })

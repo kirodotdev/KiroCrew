@@ -89,9 +89,11 @@ class TestLocalTokenTransportAdmission:
 
     @staticmethod
     def _allow_owner_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.member_memory_auth import LocalOwnerProvenance
+
         monkeypatch.setattr(
-            "kiro_crew.member_memory_auth.local_owner_bootstrap_allowed",
-            lambda _request: True,
+            "kiro_crew.member_memory_auth.local_owner_bootstrap_provenance",
+            lambda _request: LocalOwnerProvenance(),
         )
         monkeypatch.setattr("kiro_crew.dashboard.handlers.sel", lambda: MagicMock())
 
@@ -581,7 +583,7 @@ class TestApiServerAuth:
         #  - server.py binds ``from kiro_crew.config import data_home`` at module
         #    scope (its own name) — used for the .local_secret write.
         #  - state.py binds ``from kiro_crew.config.loader import config_dir``.
-        #  - token_auth.py imports ``config_dir`` LAZILY inside functions from
+        #  - token_auth_tokens.py imports ``config_dir`` LAZILY inside functions from
         #    kiro_crew.config.loader, so patch the real ``loader.config_dir``.
         # All three are REAL module attributes (loader has no __getattr__), so
         # monkeypatch restores them cleanly. Do NOT patch
@@ -660,6 +662,23 @@ class TestApiServerAuth:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(f"{base}/api/lessons", json={"text": "injected"}) as resp:
+                    assert resp.status == 403
+        finally:
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_get_lessons_denied_without_secret(self, tmp_path, monkeypatch):
+        # The all-workspaces lesson union is served on the operator's own BROWSER
+        # branch of GET /api/lessons (no X-Internal-Secret). That branch is only
+        # ever reached AFTER the token-auth middleware authenticates the request:
+        # an anonymous GET is 403'd before the handler runs, so the union is not
+        # reachable without dashboard operator auth.
+        import aiohttp
+
+        runner, _state, base = await self._start(tmp_path, monkeypatch)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{base}/api/lessons") as resp:
                     assert resp.status == 403
         finally:
             await runner.cleanup()

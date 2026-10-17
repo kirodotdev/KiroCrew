@@ -18,7 +18,7 @@ mismatch is a cache miss, refetch from the forge — does NOT transfer here: a c
 record has no upstream to refetch from, so readers coerce forward on read and a
 real migration is required if the shape ever changes incompatibly.
 
-Locking. ``store.py``'s per-record lock is the model for the crew record. The
+Locking. ``store_issues.py``'s per-record lock is the model for the crew record. The
 ledger takes no lock of its own: an append to a crew log is serialised by the
 crew log's writer, and every invariant the old three-file transaction held under
 three locks -- a phase never moves without its logged reason, an issue is never
@@ -60,6 +60,7 @@ from kiro_crew.crew_log.entry_types import (
     RADAR_TTL_ACTIVE_PHASES,
 )
 from kiro_crew.crew_log.store import log_exception_text
+from kiro_crew.validation import MODEL_PICKER_HIDDEN_MODEL_ID_RE
 
 from . import store
 
@@ -175,6 +176,14 @@ _DEFAULT_CREW: dict[str, Any] = {
     "max_open": 3,
     "agent": "kirocrew",
     "model": "",
+    # The model for turns that only check the queue (see ``crew_model``). Empty
+    # means the crew runs every turn on ``model``.
+    "triage_model": "",
+    # Written by the runtime when a person picked the model of the crew's session
+    # by hand, so the crew stops switching it. A patch may only clear it ("Resume
+    # switching"); an edit that changes ``model`` or ``triage_model`` clears it too
+    # (see :func:`update_crew`).
+    "model_held": False,
     "extra_prompt": "",
     "worktree_root": "",
     "enabled": True,
@@ -255,6 +264,22 @@ def _validated_max_open(value: Any) -> int | None:
     if number is None or not (MIN_MAX_OPEN <= number <= MAX_MAX_OPEN):
         return None
     return number
+
+
+def _validated_model_id(value: Any) -> str | None:
+    """A crew's triage model id, ``""`` for unset, or ``None`` for "not a model id".
+
+    The shape rule is the dashboard's own model-id grammar
+    (``MODEL_PICKER_HIDDEN_MODEL_ID_RE``), so an id the model picker would refuse
+    is refused here too. Whether the account can RUN the id is a question only a
+    live session answers; ``crew_model`` asks it and falls back when it cannot.
+    """
+    if not isinstance(value, str):
+        return None
+    model = value.strip()
+    if not model:
+        return ""
+    return model if MODEL_PICKER_HIDDEN_MODEL_ID_RE.fullmatch(model) else None
 
 
 def _validated_ttl_hours(value: Any) -> int | None:
@@ -541,6 +566,11 @@ def _coerce_crew(rec: dict[str, Any]) -> dict[str, Any]:
     max_open = _validated_max_open(out.get("max_open"))
     out["max_open"] = max_open if max_open is not None else _DEFAULT_CREW["max_open"]
     out["avatar_variant"] = _finite_int(out.get("avatar_variant"))
+    # Same read-side discipline for the triage model: a hand-edited id the write
+    # path would have refused reads as unset, so the crew runs on its work model.
+    triage = _validated_model_id(out.get("triage_model"))
+    out["triage_model"] = triage if triage is not None else ""
+    out["model_held"] = out.get("model_held") is True
     # The avatar seed is stored separately from the name on purpose: renaming a
     # crew must not change its face.
     if not out.get("avatar_seed"):
@@ -707,6 +737,15 @@ def _validated_crew_patch(patch: dict[str, Any]) -> dict[str, Any]:
     for key in ("agent", "model", "extra_prompt", "worktree_root", "paused_reason"):
         if key in patch and isinstance(patch[key], str):
             out[key] = patch[key]
+    if "triage_model" in patch:
+        triage = _validated_model_id(patch["triage_model"])
+        if triage is not None:
+            out["triage_model"] = triage
+    if patch.get("model_held") is False:
+        # "Switch back to triage model" on the crew page. A patch may RELEASE a
+        # hand-picked model hold but never set one: only the runtime, seeing the
+        # pick, does.
+        out["model_held"] = False
     for key in ("auto_resolve_conflicts", "auto_merge", "unattended", "enabled"):
         if key in patch and isinstance(patch[key], bool):
             out[key] = patch[key]
@@ -746,10 +785,86 @@ def update_crew(
                 if new_name in taken_names(owner, repo, root):
                     raise CrewStoreError(f"crew name {new_name!r} is already taken")
                 record["name"] = new_name
-            record.update(_validated_crew_patch(patch))
+            settings_before = model_settings(record)
+            validated = _validated_crew_patch(patch)
+            record.update(validated)
+            released = validated.get("model_held") is False
+            if model_settings(record) != settings_before:
+                # Changing which models the crew runs on hands its session's model
+                # back to the crew: a person's hand pick held it until now.
+                record["model_held"] = False
+                released = True
             record["schema"] = CREW_SCHEMA
             atomic_write(crew_path(owner, repo, crew_id, root), json.dumps(record, indent=2))
+            if released:
+                # After the write, under the same lock the hold write checks it in.
+                _hold_releases[crew_id] = _hold_releases.get(crew_id, 0) + 1
     return _coerce_crew(record)
+
+
+#: crew id -> how many times this process has released a hand-picked model hold on
+#: the crew's record (:func:`update_crew`: an explicit ``model_held: false`` or a
+#: change to either model). A hold write carries the count it was SEEN under and is
+#: refused once a release has moved it (:func:`set_crew_model_held`), so a write
+#: queued before a release cannot land after it and undo it. Process memory covers
+#: every case it orders: the only hold writer is this process's runtime, and a
+#: queued write does not outlive the process, so a restart has none to refuse. Crew
+#: ids are unique across the data home (:func:`_mint_crew_id`), so the id is the key.
+_hold_releases: dict[str, int] = {}
+
+
+def hold_releases(crew_id: str) -> int:
+    """How many hold releases :data:`_hold_releases` has counted for *crew_id*."""
+    return _hold_releases.get(crew_id, 0)
+
+
+def model_settings(crew: Mapping[str, Any]) -> tuple[str, str]:
+    """The two settings a hand-picked model hold is released by changing.
+
+    Read the way ``crew_model.work_model`` and ``crew_model.triage_model`` read
+    them, so the runtime's compare-and-set below names the same pair.
+    """
+    model, triage = crew.get("model"), crew.get("triage_model")
+    return (
+        model if isinstance(model, str) else "",
+        triage.strip() if isinstance(triage, str) else "",
+    )
+
+
+def set_crew_model_held(
+    owner: str,
+    repo: str,
+    crew_id: str,
+    *,
+    model: str,
+    triage_model: str,
+    seen_releases: int,
+    root: Path | None = None,
+) -> bool:
+    """Record that a person picked the crew session's model by hand. Returns whether it wrote.
+
+    COMPARE-AND-SET on what the hold was seen under: the two model settings, and
+    the crew's release count (:func:`hold_releases`) at that moment. Any release
+    since -- an edit that changed either model, or an explicit ``model_held:
+    false`` from "Switch back to triage model" -- moved one of them, and a hold seen
+    before it must not come back after it, however long the write sat queued. Not
+    a patch field, so a request body cannot set it.
+    """
+    lock_path = _records_lock_path(owner, repo, root)
+    lock_path.touch(exist_ok=True)
+    with open(lock_path, "r+") as fd:
+        with platform_compat.file_lock(fd.fileno(), exclusive=True):
+            if hold_releases(crew_id) != seen_releases:
+                return False
+            record = read_crew(owner, repo, crew_id, root)
+            if record is None or model_settings(record) != (model, triage_model):
+                return False
+            if record.get("model_held") is True:
+                return False
+            record["model_held"] = True
+            record["schema"] = CREW_SCHEMA
+            atomic_write(crew_path(owner, repo, crew_id, root), json.dumps(record, indent=2))
+    return True
 
 
 def set_crew_paused(

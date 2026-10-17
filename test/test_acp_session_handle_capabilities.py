@@ -317,6 +317,8 @@ async def test_kiro_still_uses_the_set_model_request():
     handle = _make_handle(ACP_BACKEND_KIRO)
     writes = _Writes()
     handle.set_config_option = writes  # type: ignore[method-assign]
+    # The request is awaited, so the double answers it the way kiro-cli does.
+    handle._queue.put_nowait(JsonRpcMessage(id=1, result={}))
 
     await handle.set_model("some-model")
 

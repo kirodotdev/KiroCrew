@@ -29,8 +29,9 @@ const STAMP_KEY = 'kc-stale-shell-heal-at'
 
 /** The hashed entry-script URL in an index.html document (absolute). */
 export function extractEntryScript(html: string, origin: string): string | null {
-  const m = html.match(/<script[^>]+type="module"[^>]+src="(\/assets\/[^"]+\.js)"/)
-    ?? html.match(/src="(\/assets\/index-[^"]+\.js)"/)
+  // `(?:\/[\w.~-]+)*` admits a build base (`/proxy/kc/assets/...`).
+  const m = html.match(/<script[^>]+type="module"[^>]+src="((?:\/[\w.~-]+)*\/assets\/[^"]+\.js)"/)
+    ?? html.match(/src="((?:\/[\w.~-]+)*\/assets\/index-[^"]+\.js)"/)
   if (!m) return null
   try {
     return new URL(m[1], origin).href

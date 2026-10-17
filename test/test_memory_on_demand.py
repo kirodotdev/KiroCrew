@@ -155,3 +155,34 @@ def test_v1_new_session_bounds_pref_rows_at_the_startup_cap(tmp_path, opened):
     assert "preference facts above the" in block
     assert f"{_PREFS_STARTUP_CAP}-character startup budget" in block
     assert 0 < block.count("\npref.rule_") < 60
+
+
+def test_v1_new_session_records_the_pref_cut_beside_its_notice(tmp_path, opened):
+    """The usage record states the same cut the startup notice states, gathered
+    through the real build rather than recomputed."""
+    import re
+
+    from kiro_crew import context_omissions
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    vectors = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+    vectors.init()
+    for i in range(60):
+        vectors.set_semantic(f"pref.rule_{i:02d}", f"standing rule {i} " * 25, 0.9, "user_explicit")
+    memory = MemoryStore(workspace=tmp_path / "workspace", vector_store=vectors)
+    builder = ContextBuilder(
+        memory=memory,
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+        lessons=LessonStore(base_dir=tmp_path),
+    )
+    with context_omissions.collect() as cut:
+        first, _ = builder.build_message("plan the deploy", True, "session")
+    stated = re.search(r"omitted (\d+) of (\d+) preference facts above the (\d+)-character", first)
+    assert stated
+    omitted, total, limit = (int(g) for g in stated.groups())
+    assert cut[context_omissions.PREFERENCE_FACTS] == {
+        "reason": "budget",
+        "omitted": omitted,
+        "total": total,
+        "budget_chars": limit,
+    }

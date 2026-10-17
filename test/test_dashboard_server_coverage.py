@@ -34,8 +34,32 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.dashboard import server as srv
 from kiro_crew.platform_compat import unlink_link_or_junction
+from kiro_crew.testing.wait import async_wait_until
 
 # ── helpers ─────────────────────────────────────────────────────────────
+
+
+async def _sweep_once_released(path: Path, *, timeout: float | None = None) -> None:
+    """Remove ``path`` once the server has let go of the file it served from it.
+
+    ``web.FileResponse`` closes its file on an executor thread after the client
+    already holds the body, and Windows refuses to unlink a file any handle still
+    holds (``[WinError 32]``). So the sweep retries on ``PermissionError`` under a
+    bounded deadline, off the loop so the server's close can run, and fails by name,
+    chained to the last ``PermissionError``, if the handle is never released.
+    """
+
+    def _swept() -> bool:
+        shutil.rmtree(path)
+        return True
+
+    await async_wait_until(
+        _swept,
+        timeout=timeout,
+        ignoring=(PermissionError,),
+        off_loop=True,
+        describe=lambda: f"{path} exists={path.exists()}",
+    )
 
 
 class _FakeInhibitor:
@@ -233,10 +257,54 @@ class TestWindowEntryHandler:
             assert await (await client.get("/w.html")).text() == "<h1>old</h1>"
             unlink_link_or_junction(served)
             make_dir_link(served, tmp_path / "new")
-            shutil.rmtree(tmp_path / "old")
+            await _sweep_once_released(tmp_path / "old")
             resp = await client.get("/w.html")
             assert resp.status == 200
             assert await resp.text() == "<h1>new</h1>"
+
+    @pytest.mark.asyncio
+    async def test_sweep_waits_out_a_handle_released_late(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A sharing violation that clears is retried until the tree is gone."""
+        old = tmp_path / "old"
+        (old / "sub").mkdir(parents=True)
+        (old / "sub" / "board.html").write_text("x", encoding="utf-8")
+        real_rmtree = shutil.rmtree
+        calls: list[Path] = []
+
+        def held_twice(path, *args, **kwargs):
+            calls.append(Path(path))
+            if len(calls) <= 2:
+                raise PermissionError(32, "being used by another process")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", held_twice)
+
+        await _sweep_once_released(old)
+
+        assert not old.exists()
+        assert calls == [old, old, old]
+
+    @pytest.mark.asyncio
+    async def test_sweep_fails_by_name_when_the_handle_is_never_released(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A handle that never closes is a leak: the sweep must not swallow it."""
+        old = tmp_path / "old"
+        old.mkdir()
+
+        def always_held(path, *args, ignore_errors=False, **kwargs):
+            if not ignore_errors:
+                raise PermissionError(32, "being used by another process")
+
+        monkeypatch.setattr(shutil, "rmtree", always_held)
+
+        with pytest.raises(AssertionError, match="still false") as excinfo:
+            await _sweep_once_released(old, timeout=0.2)
+
+        assert isinstance(excinfo.value.__cause__, PermissionError)
+        assert old.exists()
 
     @pytest.mark.asyncio
     async def test_app_window_entries_are_registered_as_get_routes(
@@ -437,9 +505,9 @@ class TestReviveIntendedInstances:
         registry = MagicMock(
             list=MagicMock(
                 return_value=[
-                    SimpleNamespace(id="boom", was_connected=True),
-                    SimpleNamespace(id="degraded", was_connected=True),
-                    SimpleNamespace(id="ok", was_connected=True),
+                    SimpleNamespace(id="boom", was_connected=True, disabled=False),
+                    SimpleNamespace(id="degraded", was_connected=True, disabled=False),
+                    SimpleNamespace(id="ok", was_connected=True, disabled=False),
                 ]
             )
         )

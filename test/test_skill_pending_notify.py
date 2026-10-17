@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import skills as S
-from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+from kiro_crew.skills import AutoSkillProvenance, PendingApprovalRefused, SkillsLoader
 
 
 @pytest.fixture()
@@ -160,7 +160,7 @@ def test_consumed_hook_fires_on_approve(loader):
     _stage(loader, "cand-approve")
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
-    assert loader.approve_pending_skill("cand-approve") == "auto/cand-approve"
+    assert loader.approve_pending_skill_checked("cand-approve") == "auto/cand-approve"
     assert _payloads_sans_stamp(seen) == [
         {"slug": "cand-approve", "outcome": "approved", "name": "auto/cand-approve"}
     ]
@@ -168,21 +168,21 @@ def test_consumed_hook_fires_on_approve(loader):
 
 def test_consumed_hook_fires_on_update_approve(loader):
     _stage(loader, "cand-upd")
-    assert loader.approve_pending_skill("cand-upd") == "auto/cand-upd"
+    assert loader.approve_pending_skill_checked("cand-upd") == "auto/cand-upd"
     _stage(loader, "cand-upd", kind="update", target="auto/cand-upd", base_version=1)
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
-    assert loader.approve_pending_update("cand-upd") == "auto/cand-upd"
+    assert loader.approve_pending_update_checked("cand-upd") == "auto/cand-upd"
     assert _payloads_sans_stamp(seen) == [{"slug": "cand-upd", "outcome": "approved", "name": "auto/cand-upd"}]
 
 
 def test_consumed_hook_not_fired_when_update_cleanup_leaves_candidate(loader, monkeypatch):
-    # approve_pending_update deletes the candidate with ignore_errors=True
+    # approve_pending_update_checked deletes the candidate with ignore_errors=True
     # (a Windows file lock can silently defeat it). A surviving candidate is
     # still an actionable review in the pending queue, so its notification
     # must NOT be retired.
     _stage(loader, "cand-locked")
-    assert loader.approve_pending_skill("cand-locked") == "auto/cand-locked"
+    assert loader.approve_pending_skill_checked("cand-locked") == "auto/cand-locked"
     _stage(loader, "cand-locked", kind="update", target="auto/cand-locked", base_version=1)
     pending_dir = loader._pending_root() / "cand-locked"
     real_rmtree = shutil.rmtree
@@ -195,7 +195,7 @@ def test_consumed_hook_not_fired_when_update_cleanup_leaves_candidate(loader, mo
     monkeypatch.setattr("kiro_crew.skills.shutil.rmtree", _locked_rmtree)
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
-    assert loader.approve_pending_update("cand-locked") == "auto/cand-locked"
+    assert loader.approve_pending_update_checked("cand-locked") == "auto/cand-locked"
     assert pending_dir.is_dir()  # cleanup really was defeated
     assert seen == []
 
@@ -222,7 +222,9 @@ def test_consumed_hook_fires_on_ttl_prune(loader):
 def test_consumed_hook_not_fired_when_nothing_consumed(loader):
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
-    assert loader.approve_pending_skill("no-such-slug") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("no-such-slug")
+    assert refused.value.reason == "not_found"
     assert loader.dismiss_pending_skill("no-such-slug") is False
     assert seen == []
 
@@ -242,5 +244,5 @@ def test_consumed_hook_failure_never_breaks_consumption(loader):
     _stage(loader, "cand-boom2")
     # The candidate is gone from disk before the hook runs; a broken observer
     # must not turn that into a failure.
-    assert loader.approve_pending_skill("cand-boom2") == "auto/cand-boom2"
+    assert loader.approve_pending_skill_checked("cand-boom2") == "auto/cand-boom2"
     assert loader.list_pending_skills() == []

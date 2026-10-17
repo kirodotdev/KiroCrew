@@ -22,7 +22,13 @@ from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config import live
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home, read_config_text
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    coerce_config_field,
+    config_dir,
+    data_home,
+    read_config_text,
+)
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -33,10 +39,11 @@ from kiro_crew.dashboard.handlers.files import (
     _content_matches_ext,
 )
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.knowledge.agent_fetch import fetch_url_content
-from kiro_crew.knowledge.agent_source import add_agent_document
-from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
+from kiro_crew.knowledge.agent_source import AGENT_SOURCE_URI, add_agent_document
+from kiro_crew.knowledge.artifact_ingest import ARTIFACT_SOURCE_URI, ArtifactKnowledgeSync
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
@@ -73,6 +80,7 @@ from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.validation import clamp_query_offset
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger(__name__)
@@ -637,7 +645,10 @@ async def list_items(request: web.Request) -> web.Response:
             where.append("i.source_id = ?")
             params.append(source_id)
         where_clause = ' AND '.join(where)
-        offset = (page - 1) * limit
+        # The derived offset is bound as a SQLite parameter below, so it takes
+        # the same ceiling every offset-binding route applies; the search branch
+        # above slices a Python list and needs none.
+        offset = clamp_query_offset((page - 1) * limit)
         total, items = await asyncio.to_thread(
             _items_page, store, where_clause, params, limit, offset)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
@@ -1228,7 +1239,16 @@ async def list_sources(request: web.Request) -> web.Response:
     spend = await asyncio.to_thread(source_spend, store, sources)
     for source in sources:
         source["spend"] = spend.get(source["id"], {})
+        # Whether POST /sources/{id}/sync can do anything for this row. The
+        # Sources list offers Sync from this flag, so the button and the 409
+        # source_not_syncable refusal in _sync_source_body share one rule.
+        source["syncable"] = _is_syncable(source)
     return web.json_response(sources)
+
+
+def _is_syncable(source) -> bool:  # type: ignore[no-untyped-def]
+    """False for the aggregate Auto-added source, whose uri is a control uri."""
+    return source["uri"] != AGENT_SOURCE_URI
 
 
 # Max wall-clock the native folder dialog may stay open before we give up.
@@ -1512,6 +1532,47 @@ async def add_source(request: web.Request) -> web.Response:
     return web.json_response({"id": sid, "status": "created"}, status=201)
 
 
+async def _claim_sync_for_task(  # type: ignore[no-untyped-def]
+    store, source_id: str, claim_settled: asyncio.Event | None
+) -> bool:
+    """Take a source's 'syncing' claim from a background sync task.
+
+    Returns whether THIS task won the claim. ``False`` also covers a claim that
+    could not be taken at all, which leaves the row's status untouched.
+    *claim_settled* is set once the answer is known either way, which is what
+    ``_hand_off_under_gate`` waits on.
+    """
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
+    try:
+        try:
+            return bool(await asyncio.shield(claim))
+        except asyncio.CancelledError:
+            # A cancel here does not stop the worker: the thread runs to
+            # completion and can still commit 'syncing' after this task is
+            # gone -- the same strand the work sites in the sync tasks close.
+            # Wait for the thread's answer and finalize only a claim THIS task
+            # won; a lost claim is a sibling sync's row. Everything is
+            # suppressed because a finalizer must never replace the
+            # cancellation.
+            with contextlib.suppress(BaseException):
+                if await claim:
+                    await _finalize_sync_status(store, source_id, "error")
+            raise
+        except Exception:
+            # Failing to TAKE the work is not the work failing. 'error' is terminal --
+            # sync_all skips an errored row on every sweep -- so stamping it for a
+            # transient writer-lock timeout would quiesce a healthy source until
+            # someone re-syncs by hand. Leave the row as it was and let the next sweep
+            # retry it. Caught rather than left to propagate: these tasks carry
+            # `add_done_callback(set.discard)`, which never retrieves an exception.
+            logger.exception(
+                "Could not claim sync for source %s; leaving its status untouched", source_id)
+            return False
+    finally:
+        if claim_settled is not None:
+            claim_settled.set()
+
+
 async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
     pipeline, store, path: str, source_id: str, *, claim_settled: asyncio.Event | None = None
 ) -> None:
@@ -1533,35 +1594,7 @@ async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
     (``sync_source``) waits on it, so the orphan sweep cannot take an itemless
     row in a terminal status between that caller's read and the claim here.
     """
-    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
-    try:
-        try:
-            claimed = await asyncio.shield(claim)
-        except asyncio.CancelledError:
-            # A cancel here does not stop the worker: the thread runs to
-            # completion and can still commit 'syncing' after this task is
-            # gone -- the same strand the work sites below close. Wait for the
-            # thread's answer and finalize only a claim THIS task won; a lost
-            # claim is a sibling sync's row. Everything is suppressed because
-            # a finalizer must never replace the cancellation.
-            with contextlib.suppress(BaseException):
-                if await claim:
-                    await _finalize_sync_status(store, source_id, "error")
-            raise
-        except Exception:
-            # Failing to TAKE the work is not the work failing. 'error' is terminal --
-            # sync_all skips an errored row on every sweep -- so stamping it for a
-            # transient writer-lock timeout would quiesce a healthy source until
-            # someone re-syncs by hand. Leave the row as it was and let the next sweep
-            # retry it. Caught rather than left to propagate: these tasks carry
-            # `add_done_callback(set.discard)`, which never retrieves an exception.
-            logger.exception(
-                "Could not claim sync for source %s; leaving its status untouched", source_id)
-            return
-    finally:
-        if claim_settled is not None:
-            claim_settled.set()
-    if not claimed:
+    if not await _claim_sync_for_task(store, source_id, claim_settled):
         return
     try:
         if is_sensitive_path(str(Path(path).resolve())):
@@ -1660,6 +1693,26 @@ async def _sync_source_body(request: web.Request) -> web.Response:
             _sel_log("source.sync", source_id=source_id)
             return web.json_response(result)
 
+    # The aggregate Artifacts source is kept in step with the artifact store by
+    # ArtifactKnowledgeSync, not fetched from its uri: 'artifact://' is not a
+    # URL, and the agent URL-fetch fallback below can only fail on it.
+    if source["uri"] == ARTIFACT_SOURCE_URI:
+        return await _sync_artifact_source(request, store, source)
+
+    # The aggregate Auto-added source has nothing to fetch: its documents arrive
+    # only when the agent submits text through knowledge_add_document. 'agent://'
+    # is a control uri, so the URL-fetch fallback below could only fail and leave
+    # the row in a sticky 'error'. Refuse, and leave the status as it is.
+    if not _is_syncable(source):
+        return web.json_response(
+            {
+                "error": "this source has nothing to sync",
+                "code": "source_not_syncable",
+                "source_id": source_id,
+            },
+            status=409,
+        )
+
     # local_file sources carry a filesystem path, not a URL -- re-ingest the file
     # directly through the FileReader pipeline (same path as add_source), never the
     # agent URL-fetch fallback below (which would hand the path to ReadInternalWebsites
@@ -1717,6 +1770,75 @@ async def _sync_source_body(request: web.Request) -> web.Response:
     return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
 
+async def _sync_artifact_source(request: web.Request, store, source) -> web.Response:  # type: ignore[no-untyped-def]
+    """Manual Sync on the aggregate Artifacts source: run its reconcile pass.
+
+    The pass is the repair that runs at every gateway start (ingest what the
+    artifact store has and the Library lacks, drop what is gone), run here in
+    the background under the sync's own lock. The row survives
+    ``knowledge.auto_ingest_artifacts`` being switched off, and then no sync
+    object is running to do the pass, so the request is refused with the row's
+    status left as it is.
+    """
+    source_id = source["id"]
+    sync = request.app.get("artifact_knowledge_sync")
+    if sync is None:
+        return web.json_response(
+            {
+                "error": "artifact auto-ingest is disabled",
+                "code": "artifact_auto_ingest_disabled",
+                "source_id": source_id,
+            },
+            status=409,
+        )
+    if source["sync_status"] == "syncing":
+        return web.json_response(
+            {"error": "sync already in progress", "code": "sync_in_progress", "source_id": source_id},
+            status=409,
+        )
+    pipeline = _pipeline(request)
+    if not pipeline:
+        return web.json_response(
+            {"error": "pipeline not configured", "code": "pipeline_unavailable"}, status=503)
+    await _hand_off_under_gate(
+        request, pipeline,
+        lambda settled: _reconcile_artifact_source_task(
+            sync, store, source_id, claim_settled=settled),
+    )
+    _sel_log("source.sync.artifact", source_id=source_id)
+    return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
+
+
+async def _reconcile_artifact_source_task(  # type: ignore[no-untyped-def]
+    sync: ArtifactKnowledgeSync, store, source_id: str,
+    *, claim_settled: asyncio.Event | None = None,
+) -> None:
+    """Background task: reconcile the aggregate Artifacts source, then stamp it.
+
+    Claims 'syncing' first, for the reason ``_ingest_local_file_task`` documents.
+    Each artifact the pass ingests stamps the row itself as it lands, so the
+    closing 'synced' is a compare-and-set over a row still 'syncing': a
+    terminal state one of those ingests wrote is left as it is. A failure of the
+    pass itself, or a cancel, ends in 'error'.
+    """
+    if not await _claim_sync_for_task(store, source_id, claim_settled):
+        return
+    try:
+        await sync.reconcile_now(source_id)
+        await asyncio.to_thread(_finalize_sync_status_write, store, source_id, "synced")
+    except BaseException as exc:
+        # ``except BaseException`` for the reason _ingest_local_file_task
+        # documents: a cancel must not strand the row at 'syncing'.
+        is_cancel = isinstance(exc, asyncio.CancelledError)
+        if is_cancel:
+            logger.debug("Artifact source reconcile cancelled: source=%s", source_id)
+        else:
+            logger.exception("Artifact source reconcile failed: source=%s", source_id)
+        await _finalize_sync_status(store, source_id, "error")
+        if is_cancel:
+            raise
+
+
 async def _background_agent_sync(  # type: ignore[no-untyped-def]
     source_id: str, url: str, name: str, store, pipeline, pool: LLMPool,
     *, claim_settled: asyncio.Event | None = None,
@@ -1727,35 +1849,7 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
     the claim is atomic and the task owns both ends of the row's lifecycle.
     *claim_settled* is set once the claim is decided (see that task).
     """
-    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
-    try:
-        try:
-            claimed = await asyncio.shield(claim)
-        except asyncio.CancelledError:
-            # A cancel here does not stop the worker: the thread runs to
-            # completion and can still commit 'syncing' after this task is
-            # gone -- the same strand the work sites below close. Wait for the
-            # thread's answer and finalize only a claim THIS task won; a lost
-            # claim is a sibling sync's row. Everything is suppressed because
-            # a finalizer must never replace the cancellation.
-            with contextlib.suppress(BaseException):
-                if await claim:
-                    await _finalize_sync_status(store, source_id, "error")
-            raise
-        except Exception:
-            # Failing to TAKE the work is not the work failing. 'error' is terminal --
-            # sync_all skips an errored row on every sweep -- so stamping it for a
-            # transient writer-lock timeout would quiesce a healthy source until
-            # someone re-syncs by hand. Leave the row as it was and let the next sweep
-            # retry it. Caught rather than left to propagate: these tasks carry
-            # `add_done_callback(set.discard)`, which never retrieves an exception.
-            logger.exception(
-                "Could not claim sync for source %s; leaving its status untouched", source_id)
-            return
-    finally:
-        if claim_settled is not None:
-            claim_settled.set()
-    if not claimed:
+    if not await _claim_sync_for_task(store, source_id, claim_settled):
         return
     try:
         content = await fetch_url_content(url, pool)
@@ -2207,7 +2301,10 @@ async def get_stats(request: web.Request) -> web.Response:
 # ---------- Ingestion ----------
 
 
-_MAX_INGEST_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+# The per-file ingest ceiling is ``upload_limits.knowledge_upload_max_bytes``
+# (read per request): the smaller of ``dashboard.upload_max_mb`` and
+# ``knowledge.max_ingest_file_mb``, the same figure the Knowledge page shows. An
+# ingest upload streams to a staged file, so the ceiling bounds disk, not memory.
 # Decompression-bomb bounds for zip-container uploads (.docx/.xlsx/.pptx/...).
 # A valid PK signature passes the magic-byte gate but the archive can still be
 # a bomb whose members expand unbounded once a parser (python-docx) opens it
@@ -2277,6 +2374,7 @@ async def ingest_file(request: web.Request) -> web.Response:
     suffix = Path(filename).suffix
     ext = suffix.lower()
     staged = Path(tempfile.gettempdir()) / f"kn_{uuid.uuid4().hex}{suffix}"
+    max_ingest_bytes = await asyncio.to_thread(knowledge_upload_max_bytes)
     try:
         # The signature gate (CWE-434) and the byte ceiling are both enforced by
         # the shared streaming path, which judges the leading bytes while they
@@ -2286,12 +2384,12 @@ async def ingest_file(request: web.Request) -> web.Response:
         await part_stream.stream_part_to_file(
             field,  # type: ignore[arg-type]
             staged,
-            max_bytes=_MAX_INGEST_FILE_SIZE,
+            max_bytes=max_ingest_bytes,
             accepts=lambda head: _content_matches_ext(ext, head),
         )
     except part_stream.PartTooLarge:
         return web.json_response(
-            {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"},
+            {"error": f"file too large (max {bytes_to_mb_figure(max_ingest_bytes)} MB)"},
             status=413,
         )
     except part_stream.PartContentMismatch:
@@ -2947,8 +3045,14 @@ async def search_for_context(request: web.Request) -> web.Response:
     knowledge_cfg = cfg.get("knowledge")
     if not isinstance(knowledge_cfg, dict):
         knowledge_cfg = {}
-    top_n = knowledge_cfg.get("fetch_top_n", KNOWLEDGE_FETCH_TOP_N)
-    max_tokens = knowledge_cfg.get("fetch_max_tokens", KNOWLEDGE_FETCH_MAX_TOKENS)
+    # A hand-edited config.json can carry a wrong-typed fetch_top_n/
+    # fetch_max_tokens; coerce them the way the validated loader degrades a
+    # mistyped field, so a non-numeric value falls back to the default instead
+    # of reaching int() (TypeError) on this read-only GET.
+    top_n = coerce_config_field(knowledge_cfg, "fetch_top_n", int, KNOWLEDGE_FETCH_TOP_N)
+    max_tokens = coerce_config_field(
+        knowledge_cfg, "fetch_max_tokens", int, KNOWLEDGE_FETCH_MAX_TOKENS
+    )
 
     try:
         limit = min(100, max(1, int(request.query.get("limit", top_n))))

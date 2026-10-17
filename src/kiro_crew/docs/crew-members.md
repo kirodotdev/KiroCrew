@@ -1,12 +1,12 @@
-# Crew Members
+# Crewmates
 
 A **crewmate** is a named assistant you keep. It binds a workspace folder, a
 memory store, an agent template and a default model. Creating one gives it a
 memory store of its own, which is what keeps one crewmate learning your incident
 runbook out of another one's notes. The other three are named bindings it points
 at, so two crewmates can share a workspace or a template — and an older crewmate
-can share a store too, which the crew manager says on the field. The **Crew
-Members** page is where you see all of them and talk to each one in a standing
+can share a store too, which the crew manager says on the field. The
+**Crewmates** page is where you see all of them and talk to each one in a standing
 thread.
 
 Crewmates are the same objects the rest of Kiro Crew calls *crews* or *agents*:
@@ -16,8 +16,8 @@ markdown specs a crewmate boots from.
 
 ## Turning the page on
 
-Crew Members is a feature preview. Enable **Settings → Developer → Feature
-Previews → Crew Members** and the **Crew Members** row appears in the left rail
+Crewmates is a feature preview. Enable **Settings → Developer → Feature
+Previews → Crewmates** and the **Crewmates** row appears in the left rail
 at `/members`. The same card has a "See what it looks like" button that shows the
 page before you switch it on.
 
@@ -56,7 +56,10 @@ carries:
   schedule). Picking two shows a crewmate in either state.
 
 Each row shows the crewmate's face, the last message in its thread, and a
-**Stopped** chip when you stopped that turn yourself.
+**Stopped** chip when you stopped that turn yourself. A crewmate whose own
+thread has a live monitor or goal loop running shows an **on watch** mark — a
+faint accent ring with one dot orbiting its avatar, and the word beside it —
+until the loop stops.
 
 ## The standing thread
 
@@ -66,60 +69,81 @@ every time: closing it, restarting the gateway, or coming back a week later
 reopens the same conversation with its history. That is the point of a crewmate
 over an ordinary session — the context you built up with it is where you left it.
 
-Member threads are deliberately kept out of the Sessions list; the Crew Members
-page is their only home. The right-hand panel is the same one the chat page
-docks, so Files, Artifacts, Terminal and Browser all work against the thread,
-and it opens on three crewmate tabs: **Notes** (what it learned — its own
-standing notes, read-only here), **Work log** (what it did) and **Dashboard**
-(the page it publishes itself). Setup — template, wake sources, memory, cloud —
-lives on the crewmate's detail page, not in the panel.
+Opening a thread that is new, or idle for six hours or more, with no goal in
+flight shows a welcome card above the chat: goals the crewmate left open (in
+this thread or a recent session of its own), then its recent sessions, and a
+prompt to pick one up. It is read from the session ledgers and the session list,
+with no model call and no chat turn, and shows once per idle stretch.
+
+Member threads are deliberately kept out of the Sessions list; the Crewmates
+page is their only home. The right-hand side panel is the chat page's panel with
+two standing tabs: **Dashboard** (the page the crewmate publishes itself) and
+**Files** (its workspace). Artifacts is not offered here; Terminal, Browser and
+the other views open from the panel's **+** menu.
+
+The identity pill in the thread header opens the crewmate's **Profile** card,
+with four tabs: **Profile**, **Schedules**, **Sessions** (the ones it is driving)
+and **Goals**. **Notes** — what it learned, its own standing notes — opens from
+the Profile tab as a read-only page pushed over the card.
 
 A few situations make Kiro Crew refuse to open a thread rather than guess:
 
 | What you see | What happened |
 |---|---|
-| bound to a crew the registry no longer names | The crewmate was renamed or deleted while its thread survived. Restore the name, or delete the thread from History. |
+| bound to a crew the registry no longer names | The crewmate was renamed or deleted while its thread survived. Restore the name, or delete the thread from Older Sessions in the Sessions list. |
 | this thread's history exists but its binding is gone | The transcript is on disk with nothing claiming it. Handing it to whoever holds the name now would show one crewmate another's conversation. |
-| shares its short name with … | Two crewmates fold to the same short name and therefore the same thread. A crewmate cannot be renamed, so delete one and create it again under a name that folds differently. |
-
-## Detail drawer
-
-The drawer beside a crewmate shows only what was actually recorded:
-
-- **Today** and **Past 7 days** counts, per day, split into *Chat* (you opened a
-  session with it) and *auto-picked* (the orchestrator routed a task to it).
-- The projects it worked in that day.
-- **Wake sources** — the schedules, inbound webhooks and auto-patrol loops that
-  can start a turn without you. "Nothing wakes this member automatically" is a
-  real answer, not a loading state.
-- **Sessions it's driving** right now.
-
-Only the most recent events are loaded, so once the window is full the counts
-render as floors (`12+ chats`) instead of asserting a total.
+| shares its short name with … | Two crewmates fold to the same short name and therefore the same thread. Renaming changes only the name a crewmate shows, never its short name, so delete the crewmate that shows this notice, not the one it names, and create it again under a name that folds differently. Deleting the named one leaves its thread bound to a crewmate that is gone, and the other is refused instead. |
 
 ## Creating and editing
 
 **New crewmate** — the hero button on an empty roster, or the **+** menu in the
-roster header once one exists (its rows are **New crewmate** and **New team**)
-— opens an in-page dialog on the Crew Members page. It asks for a **Name** and what the crewmate is **Built from** (the
-starting setup it copies), plus an optional line on **what it looks after**;
-**Advanced** unfolds the workspace, model, triggers and session color. Creating
-opens the new crewmate's chat with a first greeting seeded for you. The name is
+roster header once one exists (its one row is **New crewmate**)
+— opens an in-page form on the Crewmates page. It asks for a **Name** and
+shows the crewmate's picture (press its pencil to pick an icon and a colour);
+press
+**Create** and the crewmate is made at once. Below the avatar, **Advanced
+settings** unfolds the rest of the form in the same card: what the crewmate is
+**Built from** (the starting setup it copies; `kirocrew` unless you pick
+another), an optional line on **what it looks after**, and the workspace,
+model, triggers and session color. Folding it again keeps whatever you set
+there. When a crewmate suggests a new crewmate, its link opens this same form
+with the suggested name and goal already filled in; nothing is created until
+you press **Create**. Creating opens the new crewmate's chat, and the crewmate
+starts it by introducing itself and asking what you would like it to do (or
+confirming the job you wrote); that opening question comes from Kiro Crew, so no
+message appears as if you had typed it. Once you tell it the goal (or confirm
+the one you wrote), it puts the goal on a card for you to press, and after the
+goal is saved it suggests its check-ins. The name is
 free-form display text — spaces, punctuation, any script, emoji (`Dr. Eggbot 🥚`
 is a name) — and the dialog only refuses a blank name or one already on the
 roster before the request leaves the browser; the server owns every other rule
 (a credential-shaped name, hidden characters, the length cap) and its answer is
 shown in the dialog. The stable member id, path-safe slug and slot key are
 derived by the server and stay bounded identifiers, as does the **Built from**
-template id. Two crewmates whose names share a slug (`on_call` and `on-call`,
-say) are allowed: the server gives the second its own identity, so each keeps
-its own chat and memory.
+template id. A free-form name is kept as the crewmate's `display_name`, the label
+the dashboard shows, on a config key the server derives from it; an id-shaped
+name is used as the key itself. Creating is refused when that key is taken, or
+when another crewmate already shows the same name. Two crewmates whose names
+share a slug (`on_call` and `on-call`, say) are allowed: the server gives the
+second its own identity, so each keeps its own chat and memory.
 
-Beyond that, the only crewmate *configuration* the page writes is the star on a
-row, a roster preference stored on the crewmate. (Opening a member writes too,
-but only its own thread binding.) Both **Edit** affordances still navigate to
-the crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
-which remains the editor for an existing crewmate's name, template, model,
+### Teams
+
+Teams group the roster: a team's crewmates are listed under its header, and
+opening the team shows the team view. Creating a team is not offered on the
+page for now (the **+** menu has no **New team** row); an existing team is
+renamed, re-membered or deleted from its view's **Edit team**. When a
+crewmate there asks a question, an answer option drafts a reply in that
+crewmate's chat; nothing is sent until you send it. Deleting a team keeps its
+crewmates' chats.
+
+### Editing
+
+Beyond creating, the page edits crewmates in place. The Profile card's pencil,
+**Permissions** and **Model** controls open the shared crew editor dialog on the
+Crewmates page itself, and every configuration write goes through that dialog.
+The crew manager — **Customize → Crewmates** (`/capabilities?tab=crews`) —
+remains an alternative editor for an existing crewmate's name, template, model,
 reasoning effort, workspace, triggers, avatar and session color.
 
 From the CLI:
@@ -127,9 +151,78 @@ From the CLI:
 ```bash
 kirocrew agent list
 kirocrew agent create --name oncall --kiro-agent kirocrew --workspace default
+kirocrew agent create --name oncall-2 --display-name "On-call 2" --kiro-agent kirocrew
 kirocrew agent update oncall --workspace incidents
+kirocrew agent update oncall --display-name "On-call"
 kirocrew agent delete oncall
 ```
+
+Renaming changes only the name a crewmate shows: its agent name, short name,
+chat, schedules and memory stay where they are, and `--display-name ""` goes
+back to showing the agent name. A name another crewmate already shows is
+refused, as is one with line breaks or hidden characters. A crewmate can also
+take a new name itself: tell it in its own chat what to call it, and it renames
+itself with the `update_self` tool, under the same rules. The same tool lets it
+change its description and its ghost face when you ask it to ("wear a cap",
+"describe yourself as the build watcher"): the change is applied at once and the
+chat shows one line saying what changed, with an **Undo** that puts the old
+value back. The undo is yours alone; the crewmate has no tool for it, and it
+lasts as long as the gateway runs. A crewmate wearing an uploaded picture or an
+appearance pack keeps that face; only the crew editor changes those. It cannot
+change another crewmate, and nothing but a message you send in the dashboard
+can make it change itself.
+
+Everything else about a crewmate stays yours to grant. In its own chat a
+crewmate can ask for a different model or reasoning effort (`set_model`), a
+different approval mode for that chat (`set_approval_mode`), or a change to its
+tools, MCP servers and skills (`request_capabilities`); each ask is a change
+card with a button, and nothing changes until you press it. Its workspace,
+memory store and template are not the crewmate's to ask for.
+
+### Goals
+
+A crewmate's **Goals** tab (Profile card) holds what it works toward:
+
+- **Goals.** As many as you like, each one paragraph, numbered and coloured on
+  the tab. Add one with **+**, open one to edit or remove it, or confirm one the
+  crewmate proposes (`set_goal` puts a card in its chat). The crewmate is
+  encouraged to keep the list short and to suggest merging goals that overlap;
+  you decide.
+- **Milestones.** Key results that show how far it is from its goals, one
+  shared set, each showing the numbers of the goals it serves. The crewmate
+  works them out, links each to its goals, and proposes them on one card
+  (`set_key_results`); after you confirm, it records readings itself
+  (`key_result_progress`). A reading is a number or a short note of up to 120
+  characters. A goal that cannot be measured has none. You can edit or remove
+  any of them; a removal can be undone right after, readings included.
+- **Check-ins.** Three switches, each off by default and only available once a
+  goal is set, sharing one time of day: **Daily Goal Reminder** (the crewmate
+  takes fresh readings, then carries on with its next task), **Weekly report** (on
+  a weekday you pick) and **Monthly review** (on a day of the month you pick).
+  These check-ins do not appear on the Schedule page or the crewmate's Schedules
+  tab; the switches are their only control.
+  The weekly report and the monthly review cover the readings and the tasks the
+  crewmate finished in the period, and are saved as reports under
+  `Crewmates/<name>/Reports` in Artifacts, with a notification linking each.
+- **Track something in chat.** Sends "I'd like you to track something for me."
+  to the crewmate's chat as your own message. Tell it what to track there; it
+  keeps that item up to date on its task list, which the Crew board shows. Tracked
+  items do not appear on the Goals tab.
+- **Reports.** The newest weekly reports and monthly reviews, each linking its
+  artifact.
+  When the monthly review finds the goal or its key results no longer fit the
+  work, it puts a card in the chat proposing new ones; nothing changes until you
+  press it.
+
+The goal is stored in the crewmate's goal record,
+`trust/member-goals/<slug>.json` in Kiro Crew's data folder, apart from its
+rules, with the same protection as its rules: the crewmate's file-editing tools
+are refused there, so it changes the goal or its key results only through a card
+you press (a shell command it runs can still reach the folder, as with its
+rules). A crewmate made from chat on a **Create crewmate** card starts with the
+card's goal as its goal; its description stays empty until it or you write one.
+What the crewmate is working on right now is its task list on the Crew board,
+not part of the goal.
 
 Creating a crewmate allocates its memory store for it. That store cannot later
 be pointed somewhere else or shared with another crewmate — `kirocrew agent
@@ -151,7 +244,7 @@ restore treat it.
 | | What it is |
 |---|---|
 | Crewmate | A named assistant of yours: template + workspace + memory + model. Picking one runs work as that crewmate, on its memory. |
-| Agent template | A shared spec in `~/.kiro/agents/`. Picking a template runs the shared template on the shared default memory and creates no crewmate. The chat agent picker groups the two separately for exactly this reason. |
+| Agent template | A shared spec in `~/.kiro/agents/`. Picking a template runs it on your default crewmate's workspace and memory and creates nothing new. The chat agent picker lists templates separately, under **Custom agents**, for exactly this reason. |
 | Remote crew | Another Kiro Crew gateway this dashboard can reach, under **Settings → Remote Crew**. A different machine, not a different assistant. |
 
 ## Where you can pick a crewmate
@@ -174,7 +267,9 @@ same roster and answer different questions.
 
 `select_crew` with no argument returns the roster: every crewmate with non-empty
 triggers except the configured `default_agent`, each with its triggers, plus that
-`default_agent` name as a top-level field. The omission is of that one configured
+`default_agent` name as a top-level field. A roster entry, a `route_crew` match
+and an `unavailable` row also carry `display_name` when the crewmate's dashboard
+label differs from its key. Pass the key, not the label, to `crew=`. The omission is of that one configured
 name, not of whoever is calling — a crewmate with triggers can see itself in
 the list, so check the name you picked against your own. You judge the fit.
 

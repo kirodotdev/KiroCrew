@@ -59,7 +59,7 @@ export function buildErrorPrompt(report: ErrorReport | { message: string }, lead
   const lines: string[] = []
   if (r.route) lines.push(`- Route: ${r.route}`)
   if (r.endpoint) {
-    lines.push(`- Request: ${r.endpoint}${r.status ? ` -> HTTP ${r.status}` : ''}`)
+    lines.push(`- Request: ${r.method ? `${r.method} ` : ''}${r.endpoint}${r.status ? ` -> HTTP ${r.status}` : ''}`)
   } else if (r.status) {
     lines.push(`- Status: HTTP ${r.status}`)
   }

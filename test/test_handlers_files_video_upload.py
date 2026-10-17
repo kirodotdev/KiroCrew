@@ -113,7 +113,7 @@ async def test_video_is_exempt_from_the_document_cap(
     test fast while still proving which ceiling the video branch consults — the
     whole point of the separate constant.
     """
-    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._MAX_UPLOAD_BYTES", 64)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files.upload_max_bytes", lambda: 64)
     payload = MOV_HEADER + b"\x00" * 4096
     status, body = await _post(payload, "long.mov", "video/quicktime")
     assert status == 200, body
@@ -371,6 +371,11 @@ def test_video_ceiling_stays_above_the_document_cap() -> None:
     client copy: the client does not read either one.
     """
     assert files_mod._MAX_VIDEO_UPLOAD_BYTES > files_mod._MAX_UPLOAD_BYTES
+    # The composer's document cap is the configurable ``dashboard.upload_max_mb``;
+    # its loader bound must not let it pass the video ceiling either.
+    from kiro_crew.config.sections import UPLOAD_MAX_MB_MAX
+
+    assert files_mod._MAX_VIDEO_UPLOAD_BYTES >= UPLOAD_MAX_MB_MAX * 1024 * 1024
 
 
 def test_client_video_regex_matches_the_server_extension_set() -> None:

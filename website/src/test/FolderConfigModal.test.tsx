@@ -8,6 +8,7 @@ vi.mock('../api/client', () => ({
   api: {
     // ProjectPicker fetches these on open; the modal itself never calls them.
     recentProjects: vi.fn().mockResolvedValue({ dirs: [] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/', parent: '', dirs: [] }),
   },
 }))
@@ -36,37 +37,41 @@ function open(props: Partial<React.ComponentProps<typeof FolderConfigModal>> = {
   return { onSubmit, onClose, ...utils }
 }
 
-/* The agent picker is a Radix Select (SimpleSelect), not a native <select>, so
- * it is addressed by its accessible name — the `aria-label` that carries the
- * "Default agent" heading's key, since a <button> cannot be reached by an
- * external <label htmlFor>. Its options live in a portal that only exists while
- * the popup is open, so any assertion about them has to open it first.
+/* The agent picker is a SearchableSelect (Radix Popover), not a native
+ * <select>, so it is addressed by its accessible name — the `aria-label` that
+ * carries the "Default agent" heading's key, since a <button> cannot be reached
+ * by an external <label htmlFor>. Its options live in a portal that only exists
+ * while the popup is open, so any assertion about them has to open it first.
  *
- * NOTE ON THE HARNESS: a Radix Select nested in a Radix Dialog cannot be driven
- * in jsdom (Radix's flushSync inside Testing Library's act() throws "Should not
- * already be working"), which is why CrewEditorSelect.test.tsx and
- * WorkspaceModal.test.tsx stub SimpleSelect out. That does NOT apply here:
  * `Modal` is hand-rolled (createPortal + framer-motion), so there is no Radix
- * layer above the select and the real component is driven directly. Keep it
+ * layer above the picker and the real component is driven directly. Keep it
  * that way — a stub here would stop testing the shipped dropdown. */
 function agentTrigger() {
-  return screen.getByRole('combobox', { name: 'Default agent' })
+  return screen.getByRole('button', { name: 'Default agent' })
+}
+
+/** Open the agent popup and return its filter box. The modal focuses its name
+ *  field one animation frame after opening, and that focus move dismisses a
+ *  popup already open, so wait it out first: a user cannot click inside it. */
+async function openAgentPopup(): Promise<HTMLElement> {
+  // Queued after the modal's own rAF, so this resolves once that focus has run.
+  await new Promise(resolve => requestAnimationFrame(resolve))
+  fireEvent.click(agentTrigger())
+  return screen.findByPlaceholderText('Type to filter…')
 }
 
 /** Open the agent popup and return its option labels in render order. */
 async function openAgents(): Promise<string[]> {
-  fireEvent.click(agentTrigger())
+  await openAgentPopup()
   // findAllByRole, not findByRole: the latter throws on more than one match, and
   // every case here has at least the inherit/None row plus an agent.
   const opts = await screen.findAllByRole('option')
   return opts.map(o => o.textContent ?? '')
 }
 
-/** Pick an agent by its visible label, then wait for the popup to unmount —
- *  Radix marks the rest of the page inert while it is up, so a later click on
- *  Submit would be swallowed. */
+/** Pick an agent by its visible label, then wait for the popup to unmount. */
 async function pickAgent(label: string | RegExp) {
-  fireEvent.click(agentTrigger())
+  await openAgentPopup()
   fireEvent.click(await screen.findByRole('option', { name: label }))
   await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
 }
@@ -78,7 +83,7 @@ describe('FolderConfigModal', () => {
     open({ parentId: '' })
     // A picker for the parent would let the user contradict where they clicked.
     // The only dropdown in the modal is the agent picker.
-    expect(screen.getAllByRole('combobox')).toHaveLength(1)
+    expect(document.querySelectorAll('[aria-haspopup="listbox"]')).toHaveLength(1)
     expect(agentTrigger()).toBeTruthy()
   })
 
@@ -224,10 +229,9 @@ describe('FolderConfigModal', () => {
   })
 
   it('clearing the agent back to inherit submits an empty string', async () => {
-    // SimpleSelect routes '' through an internal sentinel because Radix reserves
-    // '' for "no selection". '' is a real instruction here — it restores the
-    // fall-back to the global default — so it has to survive the round trip
-    // rather than arriving as the sentinel or as undefined.
+    // '' is a real instruction here — it restores the fall-back to the global
+    // default — so it has to survive the round trip rather than arriving as
+    // undefined.
     const f = folder('f1', { name: 'Payments', default_agent: 'kirocrew-dev' })
     const { onSubmit } = open({ mode: 'edit', folder: f, folders: [f], globalDefaultAgent: 'kirocrew' })
     // With a global default the top row names it, so the user can see what
@@ -263,6 +267,48 @@ describe('FolderConfigModal', () => {
     const self = folder('b', { name: 'Backend', parent_id: 'a', default_agent: 'kirocrew' })
     open({ mode: 'edit', folder: self, folders: [parent, self], globalDefaultAgent: 'kirocrew' })
     expect(await openAgents()).toEqual(['Inherit (kirocrew-dev)', 'kirocrew', 'kirocrew-dev'])
+  })
+
+  describe('agent filter box', () => {
+    // A long agent roster is unscannable in a plain list, so the popup carries the
+    // same "Type to filter…" box as the composer's agent picker.
+    const MANY = [
+      { name: 'kirocrew' },
+      { name: 'kirocrew-dev' },
+      { name: 'gpu-autosde-analyzer' },
+    ]
+
+    it('narrows the list to the agents matching the typed text', async () => {
+      open({ installedAgents: MANY })
+      fireEvent.change(await openAgentPopup(), { target: { value: 'dev' } })
+      const names = screen.getAllByRole('option').map(o => o.textContent)
+      expect(names).toEqual(['kirocrew-dev'])
+    })
+
+    it('commits the top match on Enter and submits it', async () => {
+      const { onSubmit } = open({ installedAgents: MANY })
+      const box = await openAgentPopup()
+      fireEvent.change(box, { target: { value: 'gpu' } })
+      fireEvent.keyDown(box, { key: 'Enter' })
+      await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+      expect(agentTrigger()).toHaveTextContent('gpu-autosde-analyzer')
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'gpu-autosde-analyzer' }))
+    })
+  })
+
+  it('Enter on a typed agent name picks that agent, not the inherit row naming it', async () => {
+    // "Inherit (kirocrew)" sits first and contains "kirocrew", so a top-row
+    // commit would save '' (inherit) when the user typed the agent to pin.
+    const { onSubmit } = open({ globalDefaultAgent: 'kirocrew' })
+    const box = await openAgentPopup()
+    fireEvent.change(box, { target: { value: 'kirocrew' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull())
+    fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+    fireEvent.click(screen.getByTestId('folder-config-submit'))
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'kirocrew' }))
   })
 
   it('labels the inherited directory as inherited, not as a value', () => {

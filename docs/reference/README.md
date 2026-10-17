@@ -16,6 +16,7 @@ writing both marks, not editing the page and leaving the rule to look broken.
 | [kiro-cli/](kiro-cli/README.md) | The `kiro-cli` documentation, mirrored from the current 3.0 information architecture, with version-specific measurements called out in place. kiro-cli is Kiro Crew's default agent backend, so its ACP surface, agent-spec schema, and MCP config shape are load-bearing here. |
 | [ledger-conductor-sequence.md](ledger-conductor-sequence.md) | **Named exception — local page, no upstream.** Kiro Crew's own end-to-end sequence for the work-ledger dispatch lifecycle. Preserve it across a re-fetch. |
 | [crew-log/](crew-log/README.md) | **Named exception — local pages, no upstream.** API-style reference for the append-only crew log: envelope, session and crew entry types, member-log linkage, the reader and writer surface, and the error codes. Preserve it across a re-fetch. |
+| [debug/](debug/README.md) | **Named exception — local page, no upstream.** Kiro Crew's own reference for the `kirocrew-debug` MCP server and its five read-only tools. Preserve it across a re-fetch. |
 
 Where Kiro Crew's own behavior differs from a mirrored page, Kiro Crew's docs win.
 These pages document the `kiro-cli` backend; Kiro Crew also supports other ACP

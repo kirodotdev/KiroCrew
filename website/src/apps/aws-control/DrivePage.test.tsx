@@ -2407,6 +2407,222 @@ describe('DrivePage sections: backup, access, CLI drawer', () => {
     expect(await screen.findByTestId('backup-restored')).toHaveTextContent('/home/u/.kiro/restore/2026-08-24')
   })
 
+  it('distinguishes "no run recorded here" from "no archive kept" when archives are remembered', async () => {
+    // #13566 item 2: a row with no run record but a nonzero recorded count showed
+    // "Not backed up yet" beside "Archives this install has recorded: N", which
+    // reads as a contradiction -- the ledger keeps one run record per kind and
+    // holds only this install's, so a record can age out while archives stay on
+    // the drive. The meta line must then say which kind of "none" it means.
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      runs: {},
+      rememberedArchives: { snapshot: 3 },
+    })
+
+    await renderDrive('backup')
+
+    const meta = await screen.findByTestId('backup-last-snapshot')
+    expect(meta.textContent ?? '').toContain('No run recorded here')
+    expect(meta.textContent ?? '').not.toContain('Not backed up yet')
+    // The count line still invites the reader to the list that says what is there.
+    expect(await screen.findByTestId('backup-remembered-snapshot')).toBeTruthy()
+    // A kind with nothing recorded keeps the plain line -- the clause is only for
+    // the contradiction.
+    expect((screen.getByTestId('backup-last-sessions').textContent ?? '')).toContain('Not backed up yet')
+  })
+
+  it('scrolls the stored-archive disclosure into view when the recorded-count line is clicked', async () => {
+    // #13566 item 3: clicking the count line opened the disclosure but left it
+    // off-screen on a long pane, so the reader asked to see the archives and the
+    // view did not move. jsdom has no scrollIntoView; install one for the
+    // assertion and restore it so nothing leaks into the next test.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    // requestAnimationFrame drives the deferred scroll; run it synchronously.
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    onTestFinished(() => raf.mockRestore())
+
+    vi.mocked(awsControlApi.backup).mockResolvedValue({
+      ...emptyBackup,
+      runs: {},
+      rememberedArchives: { snapshot: 2 },
+    })
+
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-remembered-snapshot'))
+    // The disclosure opened AND it was scrolled to.
+    expect(await screen.findByTestId('backup-archive')).toBeTruthy()
+    expect(scrolled).toHaveBeenCalled()
+  })
+
+  it('re-scrolls to the archive list once the remote rows arrive after the click', async () => {
+    // #13566 item 3, the reviewer's path: on the FIRST open `setShowRemote(true)`
+    // changes the query key and `placeholderData` keeps the prior response, which
+    // has no `remote`, so the reveal scroll runs against skeleton height and the
+    // rows that load afterwards grow below the viewport. The fix re-scrolls once
+    // `data.remote` resolves while a reveal is pending. Simulated here by a first
+    // response with no remote rows and a second (the `remote: true` refetch) that
+    // carries them: scrollIntoView must fire again after the rows land.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    onTestFinished(() => raf.mockRestore())
+
+    vi.mocked(awsControlApi.backup)
+      // First load: remembered count is known, but the remote half is not fetched
+      // yet (it is opt-in behind the disclosure), so `remote` is null.
+      .mockResolvedValueOnce({
+        ...emptyBackup,
+        runs: {},
+        remote: null,
+        rememberedArchives: { snapshot: 2 },
+      })
+      // After the click flips `showRemote`, the refetch returns the rows.
+      .mockResolvedValue({
+        ...emptyBackup,
+        runs: {},
+        remote: { ...emptyRemote, snapshot: [{ key: 'snap-1', size: 1024, modified: '2026-08-20T00:00:00Z', install: INSTALL_ID, origin: 'self' }] },
+        rememberedArchives: { snapshot: 2 },
+      })
+
+    await renderDrive('backup')
+
+    fireEvent.click(await screen.findByTestId('backup-remembered-snapshot'))
+    // The rows arrive on the refetch; the effect must re-scroll once they do.
+    await screen.findByTestId('backup-archive')
+    await waitFor(() => expect(scrolled.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('does not scroll on a later refetch when the list was already open before the count-line click', async () => {
+    // Ray's blocking review on #17702: `revealRemote` used to set the pending
+    // flag unconditionally. If the reader opened the list with the disclosure
+    // toggle (so `data.remote` is already loaded) and THEN clicked the count
+    // line, the `[data?.remote]` effect never ran -- `data.remote` had not
+    // changed -- so the flag stayed set. The next refetch that changed
+    // `data.remote` by reference (a poll, an `invalidate`, or flipping the
+    // co-tenant toggle) then scrolled the pane into view unasked. The fix sets
+    // the flag only when the rows are not loaded yet, so this path leaves it
+    // unset and the later refetch does not scroll.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    onTestFinished(() => raf.mockRestore())
+
+    // Every call returns a FRESH `remote` object so the refetch triggered by the
+    // co-tenant toggle changes `data.remote` by reference -- exactly the fact the
+    // clearing effect keys on. The rows are present from the first load, so when
+    // the count line is clicked the list is already open.
+    const row = { key: 'snap-1', size: 1024, modified: '2026-08-20T00:00:00Z', install: INSTALL_ID, origin: 'self' as const }
+    vi.mocked(awsControlApi.backup).mockImplementation(async () => ({
+      ...emptyBackup,
+      runs: {},
+      remote: { ...emptyRemote, snapshot: [{ ...row }] },
+      rememberedArchives: { snapshot: 2 },
+    }))
+
+    await renderDrive('backup')
+
+    // Open the list with the DISCLOSURE TOGGLE (not the count line). The toggle
+    // does not call `revealRemote`, so nothing has scrolled yet.
+    fireEvent.click(await screen.findByTestId('backup-remote-toggle'))
+    await screen.findByTestId('backup-archive')
+    await waitFor(() => expect(screen.getByTestId('backup-archive-row')).toBeTruthy())
+    expect(scrolled).not.toHaveBeenCalled()
+
+    // Click the count line while the list is already open: one immediate scroll,
+    // and -- the point of the fix -- the pending flag is NOT set.
+    fireEvent.click(screen.getByTestId('backup-remembered-snapshot'))
+    await waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1))
+
+    // A later refetch changes `data.remote` by reference. If the flag had leaked,
+    // the clearing effect would fire a second scroll here.
+    vi.mocked(awsControlApi.backup).mockClear()
+    const toggle = within(screen.getByTestId('backup-others-toggle')).getByRole('switch')
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(awsControlApi.backup).toHaveBeenCalledWith(ACCOUNT_ID, { remote: true, others: true }),
+    )
+    // The refetch has landed a new `remote` object; give the effect a chance to
+    // run, then assert it did not scroll.
+    await waitFor(() => expect(within(screen.getByTestId('backup-others-toggle')).getByRole('switch')).toBeTruthy())
+    expect(scrolled).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not scroll on a later successful poll when the reveal fetch failed', async () => {
+    // #17702 open sub-case: the reader clicks the count line while the list is
+    // not loaded, so `revealRemote` sets the pending flag. The `remote: true`
+    // refetch then FAILS -- the backend returns `remote: null` with the reason
+    // in `remoteError` -- so the clearing effect's old `if (!data?.remote)
+    // return` left the flag set. A later successful poll/invalidate (rows now
+    // present) fired the deferred scroll long after the click, yanking the pane
+    // into a list the reader never saw. The fix clears the pending flag when the
+    // response resolves to a failure, so this later success does not scroll.
+    const scrolled = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrolled
+    onTestFinished(() => { Element.prototype.scrollIntoView = original })
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { cb(0); return 0 })
+    onTestFinished(() => raf.mockRestore())
+
+    const row = { key: 'snap-1', size: 1024, modified: '2026-08-20T00:00:00Z', install: INSTALL_ID, origin: 'self' as const }
+    vi.mocked(awsControlApi.backup)
+      // First load: remembered count known, remote half not fetched yet.
+      .mockResolvedValueOnce({
+        ...emptyBackup,
+        runs: {},
+        remote: null,
+        rememberedArchives: { snapshot: 2 },
+      })
+      // The `remote: true` refetch the count-line click triggers FAILS: no rows,
+      // only the error reason. This is the response that must cancel the pending
+      // reveal.
+      .mockResolvedValueOnce({
+        ...emptyBackup,
+        runs: {},
+        remote: null,
+        remoteError: 'AccessDenied: s3:ListBucket on backup/',
+        rememberedArchives: { snapshot: 2 },
+      })
+      // A later refetch (here forced by flipping the co-tenant toggle, standing
+      // in for a poll/invalidate) finally returns the rows. If the flag had
+      // leaked past the failure, the clearing effect would scroll here.
+      .mockResolvedValue({
+        ...emptyBackup,
+        runs: {},
+        remote: { ...emptyRemote, snapshot: [{ ...row }] },
+        rememberedArchives: { snapshot: 2 },
+      })
+
+    await renderDrive('backup')
+
+    // Click the count line while the list is not open: `revealRemote` sets the
+    // pending flag because `data.remote` is not loaded yet. The reveal scroll
+    // fires once immediately against skeleton height.
+    fireEvent.click(await screen.findByTestId('backup-remembered-snapshot'))
+    await waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1))
+
+    // The failed refetch lands: the error note appears, and the clearing effect
+    // drops the pending flag because the response resolved to a failure.
+    await screen.findByTestId('backup-remote-error')
+    expect(scrolled).toHaveBeenCalledTimes(1)
+
+    // Force a later successful refetch by flipping the co-tenant toggle (a stand
+    // -in for a poll/invalidate). The rows arrive and change `data.remote` by
+    // reference -- exactly what the clearing effect keys on. Before the fix the
+    // leaked flag fired a second scroll here; now it must not.
+    const toggle = within(screen.getByTestId('backup-others-toggle')).getByRole('switch')
+    fireEvent.click(toggle)
+    await screen.findByTestId('backup-archive-row')
+    expect(scrolled).toHaveBeenCalledTimes(1)
+  })
+
   it('shows the backup remote-error note when the archive could not be read', async () => {
     stubDrivePresent()
     vi.mocked(awsControlApi.backup).mockResolvedValue({

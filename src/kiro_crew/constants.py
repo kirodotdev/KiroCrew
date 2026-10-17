@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 from collections.abc import Iterator
 
@@ -31,6 +32,13 @@ KIROCREW_SPAWN_INSTANCE_ENV = "KIROCREW_SPAWN_INSTANCE"
 # this is what tells this install's runtime from a sibling install's on the same
 # uid. Read only to WITHHOLD a kill: absent or different means not ours.
 KIROCREW_SPAWN_HOME_ENV = "KIROCREW_SPAWN_HOME"
+# The authored agent an ``AcpRuntime`` child is spawned for, set beside the
+# instance and inherited the same way. A host that takes its agent on the command
+# line shows it in argv; a host that binds the agent over the wire (the KAS relay)
+# shows nothing there, so this is the one carrier that names the agent for every
+# runtime regardless of host. Read back out of ``/proc/<pid>/environ`` by the
+# process-leak gate to tell the gateway's own background runtime from a session's.
+KIROCREW_RUNTIME_AGENT_ENV = "KIROCREW_RUNTIME_AGENT"
 # Set on every tree spawned through ``sandbox.sandboxed_spawn_argv`` -- a build, an
 # ``npx`` install, a ``git``/``gh`` read, a provisioning run -- and inherited by that
 # whole tree exactly as KIROCREW_SPAWNED is. It says what KIROCREW_SPAWNED does not:
@@ -51,6 +59,14 @@ KIROCREW_SPAWN_HOME_ENV = "KIROCREW_SPAWN_HOME"
 # weaken the ownership test to express itself.
 KIROCREW_SANDBOX_TOOL_ENV = "KIROCREW_SANDBOX_TOOL"
 KIROCREW_SANDBOX_TOOL_VALUE = "1"
+
+#: The desktop app's staged KAS engine root, exported by the Electron shell when
+#: the build staged the pinned engine for this architecture
+#: (``website/electron/gateway-env.js``, ``bundledKasEnvironment``). Lives here
+#: rather than in ``acp.kas_bundle`` because ``sandbox`` seals the directory it
+#: names (:func:`sandbox_tiers._resolved_install_root_targets`) and must not import the
+#: ACP tree to learn the env name.
+BUNDLED_KAS_DIR_ENV = "KIROCREW_BUNDLED_KAS_DIR"
 
 # Canonical truthy set for boolean environment variables (KIROCREW_NO_JAIL,
 # KIROCREW_DEV_MODE, …).  Use ``env_flag_enabled`` rather than ``bool(os.environ
@@ -103,13 +119,114 @@ def node_version_meets_floor(
     return tuple(version) >= tuple(floor)
 
 
+# Minimum glibc the OFFICIAL Node.js >= 18 Linux binaries (nodejs.org and the
+# prebuilt tarballs nvm/mise fetch) are linked against. Amazon Linux 2 ships
+# glibc 2.26, so those binaries are present on PATH but fail to LOAD with
+# "GLIBC_2.28 not found" -- which means the usual "install from nodejs.org / nvm
+# install" advice sends an AL2 user in a circle. ``ensure-node.sh`` already
+# resolves this by unpacking the nodejs "unofficial-builds" glibc-217 variant
+# (compiled against glibc 2.17); the message below points there instead on a
+# host whose glibc is below this floor.
+_OFFICIAL_NODE_GLIBC_FLOOR: tuple[int, int] = (2, 28)
+
+
+def _host_glibc_version() -> tuple[int, int] | None:
+    """This host's glibc (major, minor), or ``None`` when it cannot be read.
+
+    ``None`` on any non-glibc or unreadable host (macOS, Windows, musl, or an
+    unparseable version string) so the caller stays with the default remedy
+    rather than guessing. Uses ``platform.libc_ver`` -- the same reader
+    ``wheel_engine._no_wheel_message`` relies on -- and never raises.
+    """
+    if platform.system() != "Linux":
+        return None
+    try:
+        name, ver = platform.libc_ver()
+    except Exception:
+        return None
+    if name != "glibc" or not ver:
+        return None
+    m = re.match(r"^(\d+)\.(\d+)", ver)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def _glibc217_ensure_node_path() -> str | None:
+    """Path to the bundled ``ensure-node.sh`` when it ships here, else ``None``.
+
+    Returns ``None`` on a pip/wheel install, which ships no shell script
+    (``env._ensure_node_script`` returns ``None`` there). Independent of CPU --
+    the caller gates the x86_64 requirement separately -- so a path here means
+    "the auto-provisioner is available", not "it will succeed". Never raises.
+    """
+    try:
+        from kiro_crew.env import _ensure_node_script
+
+        script = _ensure_node_script()
+    except Exception:
+        return None
+    return str(script) if script is not None else None
+
+
 def node_too_old_message(
     version: tuple[int, int, int], floor: tuple[int, int, int] = MIN_NODE_VERSION
 ) -> str:
-    """User-facing line naming the found version, the exact floor, and the fix."""
-    return (
+    """User-facing line naming the found version, the exact floor, and the fix.
+
+    On a host whose glibc is older than the official Node binaries' floor
+    (Amazon Linux 2 ships glibc 2.26), the usual nodejs.org / nvm advice fails
+    to LOAD -- the binaries exist but raise "GLIBC_2.28 not found". The remedy
+    then depends on the host, and the action is stated FIRST:
+
+    * x86_64 with the bundled script -> ``bash <path>`` auto-installs the
+      glibc-2.17 Node build.
+    * x86_64 without the script (pip/wheel install) -> that same glibc-2.17
+      build DOES run here, so install it from unofficial-builds.nodejs.org (or
+      move to a newer base image).
+    * aarch64/Graviton -> no glibc-2.17 build is published for ARM, so move to a
+      newer base image (Amazon Linux 2023, Ubuntu 22.04+) or build from source.
+    """
+    base = (
         f"Node.js v{format_node_version(version)} is too old: Kiro Crew needs "
-        f"v{format_node_version(floor)} or newer. Update Node.js: install 24 LTS "
+        f"v{format_node_version(floor)} or newer."
+    )
+    glibc = _host_glibc_version()
+    if glibc is not None and glibc < _OFFICIAL_NODE_GLIBC_FLOOR:
+        # Official Node binaries will not load here. The remedy is per-host, and
+        # the ACTION comes first; the glibc explanation trails it.
+        why = (
+            f"This host's glibc ({glibc[0]}.{glibc[1]}) is older than the official "
+            f"Node.js builds require (glibc {_OFFICIAL_NODE_GLIBC_FLOOR[0]}."
+            f"{_OFFICIAL_NODE_GLIBC_FLOOR[1]}+), so a nodejs.org / nvm install "
+            'would fail to run with "GLIBC_... not found".'
+        )
+        if platform.machine() == "x86_64":
+            script = _glibc217_ensure_node_path()
+            if script is not None:
+                action = (
+                    f"Run `bash {script}` to install the glibc-2.17 Node build "
+                    "that runs here, or move to a newer base image "
+                    "(Amazon Linux 2023, Ubuntu 22.04+)."
+                )
+            else:
+                # pip/wheel install: no bundled script, but the x64 glibc-2.17
+                # build still runs -- point at it directly, not a migration.
+                action = (
+                    "Install the glibc-2.17 Node build from "
+                    "https://unofficial-builds.nodejs.org, or move to a newer "
+                    "base image (Amazon Linux 2023, Ubuntu 22.04+)."
+                )
+        else:
+            # aarch64/Graviton: upstream publishes no arm64 glibc-2.17 build.
+            action = (
+                "No glibc-2.17 Node build is published for this CPU; move to a "
+                "newer base image (Amazon Linux 2023, Ubuntu 22.04+) or build "
+                "Node from source."
+            )
+        return f"{base} {action} ({why})"
+    return (
+        f"{base} Update Node.js: install 24 LTS "
         "from https://nodejs.org, or run `nvm install 24` / `mise use -g node@24`."
     )
 
@@ -171,13 +288,13 @@ def crew_log_enabled() -> bool:
 # Outer wall-clock cap on a single ``_run_chat`` invocation (any dispatch site:
 # primary user turn, queue-drain, cron injection, subagent injection, Slack first
 # turn). Sized to match the inner ACP ``_DEFAULT_PROMPT_TIMEOUT`` (14400s) in
-# ``acp/client.py`` so the dashboard layer doesn't bound below the transport.
+# ``acp/client_timeouts.py`` so the dashboard layer doesn't bound below the transport.
 # Four hours is the longest single turn the shipped budgets can legitimately
 # produce (the task runner's 90-minute test command plus a fix and a re-run, or a
 # blocking subagent wave at its 2h wait cap plus synthesis); work that outlives
 # it belongs to the loop mechanisms, which end the turn between cycles.
 # Wedged-session detection is handled by ``_STALE_TURN_TIMEOUT`` (90s, also in
-# ``acp/client.py``); this cap is the upper safety ceiling for genuinely runaway
+# ``acp/client_timeouts.py``); this cap is the upper safety ceiling for genuinely runaway
 # work, not a "this turn took too long" guard.
 CHAT_TURN_TIMEOUT = 14400.0
 
@@ -236,7 +353,7 @@ DEFAULT_SPAWN_MIN_MEMORY_GB = 2.0
 
 # Default of ``agent.subagent_queue_max_wait_secs``: how long a spawn the memory
 # floor keeps deferring (durable or in memory) may wait before it ends with the
-# delivered terminal ``never started: waiting for memory``. Finite by owner
+# delivered terminal ``QUEUED_WAIT_EXPIRED_TEXT``. Finite by owner
 # decision (a memory wait is never unbounded); one number for the config default,
 # the loader fallback and the manager's boot value.
 DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS = 1800
@@ -1368,6 +1485,22 @@ def md_link_destination(char_class: str) -> str:
 # a `startswith` written against one silently misses the other.
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
+
+#: What a parent is told beside the result of a sub-agent run that completed
+#: without making a single tool call. Such a run wrote no file, ran no command
+#: and made no commit, yet it can still answer a task that asked for one by
+#: narrating the steps as though it had taken them -- the usual shape for a
+#: reasoning-only agent (``"tools": []``) handed write work, and possible for any
+#: agent that answered from memory. The signal is the run's own observed tool
+#: activity (``SubagentInfo.made_no_tool_calls``), so the note needs no reading
+#: of specs or backends. The dispatch is not refused, because whether a task needs writes is
+#: not decidable from its prose; the parent is told instead to treat any reported
+#: change as a claim and check it. Prefixed with the agent's label by each caller.
+NO_TOOL_CALLS_NOTE = (
+    "made no tool calls in this run, so it did not itself write a file, run a "
+    "command or make a commit. Treat any such change it reports as a claim: check "
+    "it on disk before relying on it."
+)
 
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the

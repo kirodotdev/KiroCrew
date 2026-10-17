@@ -26,7 +26,7 @@ import type { CustomThemeData } from './useTheme'
 
 // Allowlist of allowed CSS custom property names for themes.
 // Only these variables will be injected — unknown keys are silently dropped.
-const ALLOWED_CSS_VARS = new Set([
+export const ALLOWED_CSS_VARS = new Set([
   '--bg', '--bg-accent', '--bg-elevated', '--bg-hover',
   '--card', '--card-fg', '--card-hl',
   '--panel', '--panel-strong', '--chrome',

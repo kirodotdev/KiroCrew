@@ -99,6 +99,11 @@ test.describe('Floating search dock: controls hit, opaque shelf inert', () => {
   test('Crew Members roster: every dock control hit-tests to itself', async ({ page }) => {
     await primeBrowser(page)
     await page.goto('/members')
+    // A desktop /members opens a crewmate and folds the roster beside it, from
+    // the first frame on. The roster column (and its dock) comes back through
+    // the switcher's "Show the full roster" pin.
+    await page.getByTestId('crewmate-switcher').click({ timeout: 15000 })
+    await page.getByTestId('crewmate-switcher-roster').click()
     const dock = page.locator('#main-content [data-testid="list-dock"]').first()
     await expect(dock).toBeVisible({ timeout: 15000 })
     await expect(page.locator('#main-content [data-testid="search-field-glass"]').first()).toBeVisible()

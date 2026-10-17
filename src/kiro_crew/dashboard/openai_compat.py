@@ -25,9 +25,15 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
+from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
-from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
+from kiro_crew.dashboard.relay_archive import (
+    RELAY_ARCHIVE_CODE,
+    RELAY_ARCHIVE_ERROR,
+    is_relay_archive,
+)
+from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key, load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -324,6 +330,11 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
     completion_id = _make_id()
 
     if slot_id:
+        # A thread restored as a sidebar row loads its window here, with the
+        # read off the loop, before the turn below appends to it; the slot is
+        # looked up again after the await.
+        if (_pending := state._slots.get(_normalize_slot_key(slot_id))) is not None:
+            await load_window_off_loop(_pending)
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.
@@ -348,37 +359,28 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 },
                 status=409,
             )
-        # A remote-bound slot runs its turn on a connected peer and streams the
-        # reply over the dashboard WebSocket; this endpoint has no such channel —
-        # its collectors read only local `chunk`/`assistant` rows. Reaching the
-        # local dispatch chokepoint (`_run_chat`, keyed on `executor == "remote"`)
-        # would append the prompt and emit a WS-only `chat_done`, leaving this HTTP
-        # caller waiting forever on a turn the peer never received and history
-        # holding an unsent turn. Refuse BEFORE any mutation — keyed on
-        # `executor` (not `is_remote`) so a half-open binding is refused too,
-        # matching the chokepoint and the `api_chat` incomplete-binding guard. A
-        # freshly-created slot is always local, so this only rejects an existing
-        # remote-bound target.
-        if getattr(slot, "executor", "") == "remote":
+        # A relay archive is read-only. Reaching the local dispatch chokepoint
+        # (`_run_chat`) would append the prompt and emit a WS-only `chat_done`,
+        # leaving this HTTP caller waiting on a turn that never runs. Refuse
+        # BEFORE any mutation. A freshly-created slot is always local, so this
+        # only rejects an existing archive.
+        if is_relay_archive(slot):
             sel().log_api_access(
                 caller=request.remote or "",
                 operation="openai_compat.chat",
                 outcome="denied",
                 source="openai_compat",
                 resources=f"slot={slot_id}",
-                error="remote-bound slot not supported on OpenAI-compat endpoint",
+                error="relay archive is read-only",
             )
             return web.json_response(
                 {
                     "error": {
-                        "message": (
-                            "this session is bound to a remote crew; the "
-                            "OpenAI-compatible endpoint cannot relay remote turns"
-                        ),
+                        "message": RELAY_ARCHIVE_ERROR,
                         "type": "invalid_request_error",
-                        "code": "remote_slot_unsupported",
+                        "code": RELAY_ARCHIVE_CODE,
                     },
-                    "code": "remote_slot_unsupported",
+                    "code": RELAY_ARCHIVE_CODE,
                 },
                 status=409,
             )
@@ -653,10 +655,12 @@ def _turn_failed(msg: dict[str, Any]) -> bool:
     return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
 
 
-async def _stream_server_error(resp: web.StreamResponse) -> web.StreamResponse:
+async def _stream_server_error(
+    request: web.Request, resp: web.StreamResponse
+) -> web.StreamResponse:
     """End an SSE completion with the server-error frame and ``[DONE]``."""
-    await resp.write(f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
-    await resp.write(b"data: [DONE]\n\n")
+    await write_sse_or_abort(request, resp, f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
+    await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
     return resp
 
 
@@ -685,7 +689,7 @@ async def _stream_response(
             for msg in pending:
                 failed = failed or _turn_failed(msg)
                 if msg.get("cls") == "done" and failed:
-                    return await _stream_server_error(resp)
+                    return await _stream_server_error(request, resp)
                 if msg.get("cls") == "done":
                     # Flush remaining buffer
                     if _redact_buffer:
@@ -705,7 +709,9 @@ async def _stream_response(
                                     }
                                 ],
                             }
-                            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                            await write_sse_or_abort(
+                                request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
+                            )
                     chunk = {
                         "id": completion_id,
                         "object": _OPENAI_OBJECT_CHUNK,
@@ -713,8 +719,10 @@ async def _stream_response(
                         "model": model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     }
-                    await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
-                    await resp.write(b"data: [DONE]\n\n")
+                    await write_sse_or_abort(
+                        request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
+                    )
+                    await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
                     return resp
 
                 # Stream assistant and chunk roles (token-level streaming)
@@ -746,7 +754,7 @@ async def _stream_response(
                         }
                     ],
                 }
-                await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                await write_sse_or_abort(request, resp, f"data: {json.dumps(chunk)}\n\n".encode())
 
             # Detect task failure — prevents infinite loop
             if slot.task and slot.task.done():
@@ -754,12 +762,12 @@ async def _stream_response(
                     slot.task.result()
                 except BaseException as exc:
                     logger.warning("chat task failed: %s", exc)
-                    return await _stream_server_error(resp)
+                    return await _stream_server_error(request, resp)
 
             try:
                 await asyncio.wait_for(slot.event.wait(), timeout=30)
             except asyncio.TimeoutError:
-                await resp.write(b": keepalive\n\n")
+                await write_sse_or_abort(request, resp, b": keepalive\n\n")
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:

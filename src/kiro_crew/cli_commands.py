@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,6 +98,7 @@ from kiro_crew.cron import (
     is_valid_timezone,
     lookup_cron_folder_id,
     parse_time_string,
+    validate_managed_by,
 )
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import trigger_cron_job
@@ -112,6 +114,7 @@ from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.external_text import external_text_requires_redaction
+from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
@@ -122,7 +125,17 @@ from kiro_crew.mcp_cron import (
     _vet_shell_command,
 )
 from kiro_crew.member_memory_auth import require_member_memory_creation
-from kiro_crew.members import MemberNameError, key_new_crew, validate_member_name
+from kiro_crew.member_workspace import (
+    MemberWorkspaceUnavailable,
+    provision_member_workspace,
+    retire_unpublished_workspace,
+)
+from kiro_crew.members import (
+    MemberNameError,
+    check_crew_label,
+    key_new_crew,
+    validate_member_name,
+)
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
@@ -331,6 +344,17 @@ def _internal_secret(port: int) -> str:
     return read_local_secret(port, dial_host="127.0.0.1")
 
 
+def _spawn_row_text(row: dict[str, object]) -> str:
+    """A ``spawn list`` row's id and task, as one terminal line.
+
+    Both are agent-authored, so neither may carry a live control sequence or a
+    newline that forges another row.
+    """
+    row_id = safe_terminal_line(str(row["id"]))
+    task = safe_terminal_line(str(row.get("task") or ""))[:60]
+    return f"{row_id}  {task}"
+
+
 def _spawn(args: argparse.Namespace) -> None:
     """Dispatch spawn subcommands: run, list."""
     base = f"http://127.0.0.1:{args.port}"
@@ -364,9 +388,7 @@ def _spawn(args: argparse.Namespace) -> None:
             # Accepted, no run yet (or waiting to resume one): a distinct icon,
             # so this is never read as a run in progress.
             tag = "resuming" if q.get("resuming") is True else "queued, not started"
-            print(
-                f"  🕒 {q['id']}  {str(q.get('task') or '')[:60]}  — {tag}: {queued_wait_text(q)}"
-            )
+            print(f"  🕒 {_spawn_row_text(q)}  — {tag}: {queued_wait_text(q)}")
         if partial:
             print("  (the queued list is partial; more spawns may be queued)")
         for a in agents:
@@ -378,7 +400,7 @@ def _spawn(args: argparse.Namespace) -> None:
                 status, note = "🔐", "  — waiting for spawn approval"
             else:
                 status, note = "⏳", ""
-            print(f"  {status} {a['id']}  {a.get('task', '')[:60]}{note}")
+            print(f"  {status} {_spawn_row_text(a)}{note}")
         return
 
     if action == "run":
@@ -389,8 +411,24 @@ def _spawn(args: argparse.Namespace) -> None:
 
 
 def _spawn_run(args: argparse.Namespace, base: str) -> None:
-    """Spawn a subagent via the dashboard API."""
-    data = json.dumps({"task": args.task}).encode()
+    """Spawn a subagent via the dashboard API.
+
+    ``--agent`` and ``--crew`` travel as the request's ``agent`` and ``crew``
+    fields, the ones the native ``spawn_run`` tool sends, so the gateway's
+    admission resolves and refuses them for both callers alike. A blank name
+    is refused here: the gateway reads an empty field as "no pin", which would
+    run the default the caller did not ask for.
+    """
+    body: dict[str, str] = {"task": args.task}
+    for flag in ("agent", "crew"):
+        name = getattr(args, flag, None)
+        if name is None:
+            continue
+        if not name.strip():
+            print(f"Error: --{flag} needs a name")
+            sys.exit(1)
+        body[flag] = name
+    data = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{base}/api/spawn",
         data=data,
@@ -845,21 +883,48 @@ def _run_app_action_through_gateway(
     action: str, app_name: str, *, payload: dict[str, object] | None = None
 ) -> bool:
     """Return true when a live gateway handled an app lifecycle request."""
+    return _apply_through_gateway(
+        action,
+        app_name,
+        lambda: app_lifecycle_client.toggle_app(app_name, action, payload=payload),
+        hint="Toggle the app in the dashboard instead.",
+    )
+
+
+def _install_app_through_gateway(source: str) -> bool:
+    """Return true when a live gateway installed the app directory *source*."""
+    return _apply_through_gateway(
+        "install",
+        source,
+        lambda: app_lifecycle_client.install_app(source),
+        # The dashboard's install calls the same route, so pointing there would not
+        # help; the gateway opens the directory and its app.json as its own user.
+        hint="Nothing was installed; the gateway reads the app directory as its own user.",
+    )
+
+
+def _apply_through_gateway(
+    action: str,
+    subject: str,
+    send: Callable[[], dict[str, object] | None],
+    *,
+    hint: str,
+) -> bool:
+    """Run one gateway lifecycle request and render its outcome for the CLI."""
     try:
-        result = app_lifecycle_client.toggle_app(app_name, action, payload=payload)
+        result = send()
     except app_lifecycle_client.AppGatewayTimeout as exc:
         # The outcome is unknown, not negative: the gateway may still be applying
         # the action, so this is neither a refusal nor an invitation to retry.
         print(f"⏳ {exc}", file=sys.stderr)
         sys.exit(1)
     except app_lifecycle_client.AppGatewayError as exc:
-        print(
-            f"❌ gateway refused: {exc}. Toggle the app in the dashboard instead.",
-            file=sys.stderr,
-        )
+        print(f"❌ gateway refused: {exc}. {hint}", file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False
+    name = result.get("name")
+    app_name = name if action == "install" and isinstance(name, str) and name else subject
     app_lifecycle_client.print_result(action, app_name, result)
     return True
 
@@ -1193,6 +1258,12 @@ def _handle_app(args: argparse.Namespace) -> None:
         return
 
     if action == "install":
+        # Ask a running gateway first, as enable, disable and uninstall do. Only
+        # the gateway can start the new app's backend and publish it to the
+        # dashboard it is serving; installing from files alone leaves a running
+        # gateway unaware of the app until it restarts.
+        if _install_app_through_gateway(args.source):
+            return
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
@@ -1447,6 +1518,21 @@ def _finding_store_suffix(finding: dict) -> str:
     return f" (store {name})" if name else ""
 
 
+def _agent_list_label(label: str) -> str:
+    """*label* as one ``kirocrew agent list`` cell.
+
+    The label is written by the dashboard, the CLI and a crewmate's own
+    ``update_self``, so it is printed confined to one line with no live
+    terminal controls, and a credential-shaped one is masked the way the
+    dashboard roster masks it.
+    """
+    if not label:
+        return ""
+    if external_text_requires_redaction(label):
+        return "(hidden: credential-shaped)"
+    return safe_terminal_line(label)
+
+
 def _handle_agent(args: argparse.Namespace) -> None:
     """Dispatch agent subcommands: list, create, update, delete."""
 
@@ -1457,14 +1543,21 @@ def _handle_agent(args: argparse.Namespace) -> None:
         default = cfg.default_agent
         print(
             f"{'NAME':<20} {'KIRO_AGENT':<20} {'WORKSPACE':<15} "
-            f"{'MEMORY_STORE':<15} {'SOURCE':<12}"
+            f"{'MEMORY_STORE':<15} {'SOURCE':<12} DISPLAY_NAME"
         )
         for name, agent in cfg.agents.items():
             marker = " *" if name == default else ""
+            # The loader keeps a malformed ``memory_store`` binding as written
+            # (pinning it to the default would attach the member to the shared
+            # store), so show the defect here instead of failing the listing.
+            memory_store = agent.memory_store
+            if not isinstance(memory_store, str):
+                memory_store = f"(invalid: {type(memory_store).__name__})"
             print(
                 f"{name + marker:<20} {agent.kiro_agent:<20} "
-                f"{agent.workspace:<15} {agent.memory_store:<15} "
-                f"{getattr(agent, 'source', 'kirocrew'):<12}"
+                f"{agent.workspace:<15} {memory_store:<15} "
+                f"{getattr(agent, 'source', 'kirocrew'):<12} "
+                f"{_agent_list_label(agent.display_name)}".rstrip()
             )
 
     elif action == "create":
@@ -1507,11 +1600,17 @@ def _handle_agent(args: argparse.Namespace) -> None:
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
+        previous_workspace = cfg.agents[args.name].workspace
+        new_workspace = ""
         try:
             require_member_memory_creation(args.name)
             provision_member_memory(cfg, args.name)
-            persist_member_config(cfg, args.name, create=True)
+            new_workspace = provision_member_workspace(cfg, args.name)
+            persist_member_config(cfg, args.name, create=True, new_workspace=new_workspace)
         except BaseException as exc:
+            retire_unpublished_workspace(
+                cfg, args.name, new_workspace, previous_workspace=previous_workspace
+            )
             allocated = cfg.agents[args.name].memory_store
             if allocated != previous_store:
                 retire_unpublished_allocation(
@@ -1530,14 +1629,20 @@ def _handle_agent(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            if not isinstance(exc, (OSError, UnknownMemoryStore)):
+            if not isinstance(exc, (OSError, UnknownMemoryStore, MemberWorkspaceUnavailable)):
                 raise
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
+        created = cfg.agents[args.name]
         if display_name:
             print(f"Created agent: {args.name} (display name: {display_name})")
         else:
             print(f"Created agent: {args.name}")
+        print(f"Workspace: {created.workspace}")
+        from kiro_crew.member_mate_tools import GRANTED, grant_mate_tools_to_new_member
+
+        if grant_mate_tools_to_new_member(args.name) == GRANTED:
+            print("Added the crewmate's own tools (kirocrew-mate) to its private copy")
 
     elif action == "update":
         if args.name not in cfg.agents:
@@ -1555,10 +1660,17 @@ def _handle_agent(args: argparse.Namespace) -> None:
             agent.kiro_agent = args.kiro_agent
         if args.workspace is not None:
             agent.workspace = args.workspace
+        new_label = getattr(args, "display_name", None)
+        if new_label is not None:
+            try:
+                agent.display_name = check_crew_label(args.name, new_label.strip(), cfg.agents)
+            except MemberNameError as exc:
+                print(f"Error: invalid display name ({exc})", file=sys.stderr)
+                sys.exit(1)
         try:
             changed_fields = {
                 field
-                for field in ("kiro_agent", "workspace")
+                for field in ("kiro_agent", "workspace", "display_name")
                 if getattr(args, field, None) is not None
             }
             if agent.memory_store != prior_memory_store:
@@ -1574,7 +1686,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 raise
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(f"Updated agent: {args.name}")
+        if new_label is not None:
+            shown = agent.display_name or args.name
+            print(f"Updated agent: {args.name} (display name: {shown})")
+        else:
+            print(f"Updated agent: {args.name}")
 
     elif action == "delete":
         if args.name not in cfg.agents:
@@ -1765,7 +1881,21 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     timeout = getattr(args, "timeout", None)
     timeout_secs = getattr(args, "timeout_secs", None)
     folder_ref = (getattr(args, "folder", "") or "").strip()
+    # None means the flag was not given; an explicit "" is a refusal, never
+    # "unmanaged": an installer whose $KEY is unset would otherwise store a
+    # keyless job on every run that its `remove --managed-by ""` can't find.
+    managed_by = getattr(args, "managed_by", None)
     message = args.message or ""
+
+    # ── Installer ownership key ──
+    # Not stripped: the key is compared on bytes with the one the installer
+    # recomputes, so a padded key is refused by the shape check below rather
+    # than silently becoming a different key than the one it will look up.
+    if managed_by is not None:
+        try:
+            validate_managed_by(managed_by)
+        except ValueError as e:
+            _cron_add_fail(str(e))
 
     # ── Job kind: exactly one of agent / script / command ──
     if script and command:
@@ -1777,6 +1907,14 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
         _cron_add_fail("message is required for an agent job (only --script/--command may omit it)")
     if agent and not _AGENT_NAME_RE.match(agent):
         _cron_add_fail("invalid agent name (alphanumeric, hyphens, underscores; 1-64 chars)")
+    # ``--agent`` is the CLI's only field for naming either a provider template or
+    # a crew member. Resolve the split the same way every create surface does, so
+    # a member name is captured as a member selection (``member_id``) instead of a
+    # bare template id the cron chat's reply path cannot resolve. ``agent_id`` stays
+    # a pure template field, as the record contract requires.
+    from kiro_crew.cron_service.identity import split_cron_agent_member
+
+    agent, member_id = split_cron_agent_member(agent, "")
     if timeout is not None:
         if not zero_token:
             _cron_add_fail("--timeout applies only to a --script or --command job")
@@ -1936,7 +2074,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     minimal_context = bool(getattr(args, "minimal_context", False))
 
     try:
-        job = svc.add_job(
+        fields = dict(
             name=args.name,
             message=message,
             every_secs=every,
@@ -1961,6 +2099,16 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             timeout=int(timeout) if timeout else 0,
             timeout_secs=int(timeout_secs) if timeout_secs else 0,
         )
+        # ``member_id`` rides in the call ONLY when ``--agent`` resolved to a
+        # crew member; a non-member (template or default) agent keeps the exact
+        # add_job call shape the create contract pins, so no member kwarg leaks
+        # into the common path.
+        if member_id:
+            fields["member_id"] = member_id
+        if managed_by is not None:
+            job = svc.add_managed_job(managed_by, **fields)
+        else:
+            job = svc.add_job(**fields)
     except CronStoreBusy:
         # The store lock stayed contended past its timeout (another writer --
         # the gateway, a dashboard create -- holds it). Nothing was written;
@@ -1987,6 +2135,7 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
             resources=(
                 f"job_id={job.id} kind={kind} approval_mode={approval_mode or 'default'} "
                 f"agent={agent or 'default'} silent={silent}"
+                + (f" managed_by={managed_by}" if managed_by else "")
             ),
         )
     except Exception:
@@ -2046,6 +2195,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
                 detail = "owner: none (manage from CLI or the dashboard Schedule page)"
             if provenance:
                 detail += f"  created by: {provenance}"
+            if j.managed_by:
+                detail += f"  managed by: {j.managed_by}"
             print(f"      {detail}")
 
     elif action == "adopt":
@@ -2210,11 +2361,37 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             print(f"Job not found: {args.job_id}")
 
     elif action == "remove":
-        removed = svc.remove_job(args.job_id, actor="cli", source="cli")
+        job_id = getattr(args, "job_id", None)
+        managed_by = getattr(args, "managed_by", None)
+        if managed_by is not None:
+            # An empty or malformed key must never reach the match below: every
+            # unmanaged job carries managed_by == "", so `--managed-by ""` (an
+            # installer whose $KEY is unset) would otherwise delete all of them.
+            try:
+                validate_managed_by(managed_by)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            # Read-decide-write: an unreadable store reads as empty, which would
+            # report "nothing to remove" over a corrupt file an installer then
+            # believes is clean. Probe first so that case refuses instead.
+            svc.raise_if_store_unreadable()
+            jobs = svc.list_jobs(include_disabled=True)
+            owned = [j.id for j in jobs if j.managed_by == managed_by]
+            if not owned:
+                print(f"No job is managed by: {managed_by}")
+                return
+            # Removed by the ids just read: a re-install that lands in between
+            # mints a fresh id, which this removal cannot touch.
+            for jid in owned:
+                if svc.remove_job(jid, actor="cli", source="cli"):
+                    print(f"Removed job: {jid} (managed by {managed_by})")
+            return
+        removed = svc.remove_job(job_id, actor="cli", source="cli")
         if removed:
-            print(f"Removed job: {args.job_id}")
+            print(f"Removed job: {job_id}")
         else:
-            print(f"Job not found: {args.job_id}")
+            print(f"Job not found: {job_id}")
 
     elif action == "pause":
         if svc.enable_job(args.job_id, enabled=False):
@@ -3032,6 +3209,7 @@ def _lesson_scope_suffix(scope: str | None) -> str:
 
 def _learn(args: argparse.Namespace) -> None:
     """Save, list, or remove learned corrections."""
+    from kiro_crew.config.memory_sections import memory_writes_off_key
 
     jsonl_store = LessonStore()
     cfg = KiroCrewConfig.load()
@@ -3041,12 +3219,14 @@ def _learn(args: argparse.Namespace) -> None:
     # POST /api/lessons refusal. Refused ahead of the vector store because
     # constructing and init-ing it creates or migrates memory.db, which a
     # refused write must not do; list and remove still need that store, so the
-    # check is scoped to the add action.
-    if action == "add" and not cfg.memory.persistence_enabled:
+    # check is scoped to the add action. memory.writes_enabled is refused the
+    # same way.
+    writes_off = memory_writes_off_key(cfg.memory)
+    if action == "add" and writes_off is not None:
         print(
-            "Lesson NOT saved: persistent memory is disabled "
-            "(memory.persistence_enabled is false). Re-enable with: "
-            "kirocrew config set memory.persistence_enabled true"
+            "Lesson NOT saved: persistent memory writes are disabled "
+            f"({writes_off} is false). Re-enable with: "
+            f"kirocrew config set {writes_off} true"
         )
         return
     vs = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim, config=cfg)
@@ -3435,10 +3615,10 @@ def _memory_search_embedding(store: VectorMemoryStore, query: str) -> list[float
     if store_embedding_space_is_stale(store):
         print(_SEARCH_KEYWORD_ONLY_STALE_SPACE, file=sys.stderr)
         return None
-    # BLOCK once, here. The callable from make_sync_embed_fn() never waits on the
-    # model load — it kicks the background load and returns None — so binding it
-    # alone leaves the very invocation the user typed on keyword search. A
-    # one-shot read is exactly the sync context wait_ready() exists for.
+    # BLOCK once, here. The callable from make_sync_embed_fn() waits at most
+    # _COLD_LOAD_WAIT_SECS for the model load, which a slow host can exceed, so
+    # binding it alone could leave the very invocation the user typed on keyword
+    # search. A one-shot read is exactly the sync context wait_ready() exists for.
     # wait_ready is the llama.cpp backend's seam and NOT on the EmbeddingBackend
     # ABC, so probe for it, same as the dashboard and the re-embed sweep.
     embedder = get_shared_embedder()
@@ -3779,6 +3959,101 @@ def _settle_created_database(
         )
 
 
+def _memory_create_store(args: argparse.Namespace) -> None:
+    """``kirocrew memory create-store <name>``: create a declared V1 store's directory.
+
+    Use never creates a store's directory (a deleted store must stay a visible
+    loss), so this explicit step is how a declared store becomes usable. A
+    refusal raises ``UnknownMemoryStore`` (a ``ValueError``), which
+    :func:`_memory_cmd` prints as one line with exit 1.
+    """
+    from kiro_crew.memory_stores import create_declared_store
+
+    name = args.name
+    path, created = create_declared_store(name)
+    safe = _TERMINAL_CTRL_RE.sub("", name)
+    if created:
+        print(f"Created memory store {safe!r} at {path}.")
+    else:
+        print(f"Memory store {safe!r} already exists at {path}; nothing changed.")
+
+
+def _interactive_terminal() -> bool:
+    """Whether both stdin and stdout are a terminal a person can answer at."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _refuse_forget_outside_owner_terminal() -> None:
+    """Refuse ``memory forget`` from an agent session's shell or with no terminal.
+
+    These are the CLI's own refusals, checked before any store opens. They keep an
+    agent from running the verb; they are not what authorizes the delete. That is
+    the gateway's owner gate on the dashboard delete route, which the verb calls
+    (``memory_forget_client``), so an empty answer here grants nothing by itself.
+    """
+    from kiro_crew.mcp_caller import resolve_own_identity
+
+    identity = resolve_own_identity()
+    if identity.session_key or identity.failed:
+        raise ValueError(
+            "`kirocrew memory forget` does not run from an agent session's shell; "
+            "nothing was forgotten. Run it in your own terminal, or delete the key "
+            "from the dashboard Memory page."
+        )
+    if not _interactive_terminal():
+        raise ValueError(
+            "`kirocrew memory forget` asks you to confirm, so it needs an interactive "
+            "terminal; nothing was forgotten."
+        )
+
+
+def _memory_forget(store: VectorMemoryStore, args: argparse.Namespace) -> None:
+    """Show one semantic key, ask the person at the terminal, then delete it
+    through the gateway's owner-gated route. Exits 1 when the key is absent."""
+    from kiro_crew.memory_forget_client import AlreadyAbsent, forget_via_gateway
+
+    key = str(args.key)
+    winner = getattr(args, "superseded_by", None)
+    shown_key = _TERMINAL_CTRL_RE.sub("", key)
+    if winner is not None and winner == key:
+        raise ValueError("--superseded-by names the key being forgotten; nothing was forgotten.")
+    row = store.get_semantic(key)
+    if row is None:
+        print(f"Already absent: {shown_key}", file=sys.stderr)
+        sys.exit(1)
+    if winner is not None and store.get_semantic(winner) is None:
+        raise ValueError(
+            f"--superseded-by {_TERMINAL_CTRL_RE.sub('', winner)!r} is not a live key; "
+            "nothing was forgotten."
+        )
+    try:
+        value = json.loads(row["value_json"])
+    except (TypeError, ValueError):
+        value = row["value_json"]
+    if key.startswith("lesson."):
+        value = _lesson_display_text(value) or value
+    print(f"  {shown_key}: {_TERMINAL_CTRL_RE.sub('', str(value))}")
+    try:
+        typed = input("Type the key again to forget it: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        typed = ""
+    if typed.strip() != key:
+        print("Not confirmed; nothing was forgotten.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        # Compare-and-delete against the value just shown, so a write landing
+        # after it was shown is never removed unseen.
+        forget_via_gateway(key, expect_value_json=row["value_json"], superseded_by=winner)
+    except AlreadyAbsent:
+        print(f"Already absent: {shown_key}", file=sys.stderr)
+        sys.exit(1)
+    if winner is not None:
+        print(f"Forgotten; superseded by {_TERMINAL_CTRL_RE.sub('', winner)}.")
+    else:
+        print("Forgotten.")
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -3801,6 +4076,9 @@ def _memory_cmd(args: argparse.Namespace) -> None:
 def _memory_verb(args: argparse.Namespace) -> None:
     """Run one ``kirocrew memory`` verb; :func:`_memory_cmd` owns its refusals."""
     action = getattr(args, "mem_action", None)
+    # Checked before ANY store opens, so a refused call touches nothing.
+    if action == "forget":
+        _refuse_forget_outside_owner_terminal()
     # "show" reads only the markdown layer — don't open (or create) the
     # vector store for it.
     if action == "show":
@@ -3825,6 +4103,11 @@ def _memory_verb(args: argparse.Namespace) -> None:
     # store dispatches before anything opens one.
     if action == "carve":
         _memory_carve(args)
+        return
+    # "create-store" makes a declared store's directory, so it must run before any
+    # store is opened -- the store it names is the one that does not exist yet.
+    if action == "create-store":
+        _memory_create_store(args)
         return
     cfg = KiroCrewConfig.load()
     # `export` and `import` are the only verbs reaching this shared open that name a
@@ -4118,15 +4401,11 @@ def _memory_verb(args: argparse.Namespace) -> None:
 
             elif action == "export":
                 if getattr(args, "include_markdown", False) and named_store_or_empty(store_name):
-                    # REFUSED rather than shipped empty. A named store's markdown tree sits
-                    # under `memory_stores/`, a keystone leaf in
-                    # `security._CREW_SECRET_LEAVES`, and `markdown_snapshot` reaches a
-                    # NON-private store through the fenced reader
-                    # (`hooks.safe_read_file_bytes_nolink`), which refuses that subtree and
-                    # answers None. `_guarded_entry` then shapes the refusal exactly like a
-                    # missing file, so this combination would report `content: ""` for a
-                    # store whose preferences.md is on disk and non-empty -- and an operator
-                    # moving a store would read that as "there was no markdown to carry".
+                    # REFUSED, a conservative contract: a named store's markdown tree is
+                    # not part of this verb's payload. Named V1 stores read their markdown
+                    # through the descriptor-pinned reader (`MemoryFiles._read_entry_bytes`),
+                    # so this is not a fence that would answer empty; the refusal keeps an
+                    # operator moving a store from reading a partial payload as complete.
                     # The rows are unaffected and still export on their own.
                     print(
                         f"Error: the markdown layer of memory store {store_name!r} cannot be "
@@ -4190,6 +4469,9 @@ def _memory_verb(args: argparse.Namespace) -> None:
                         print(f"  {row['id']}  superseded by {row['superseded_by']}")
                         print(f"    {row['text'][:120]}")
 
+            elif action == "forget":
+                _memory_forget(store, args)
+
             elif action == "import":
                 # Validated and parsed above, before this store was opened, so nothing
                 # here can be the reason an empty database exists.
@@ -4243,7 +4525,10 @@ def _memory_verb(args: argparse.Namespace) -> None:
                     )
 
             else:
-                print("Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|import}")
+                print(
+                    "Usage: kirocrew memory "
+                    "{list|search|show|stats|audit|export|migrate|forget|import}"
+                )
         finally:
             try:
                 store.close()
@@ -4495,7 +4780,7 @@ def _container_valued_sections() -> dict[str, type]:
 
     Read off ``KiroCrewConfig``'s own fields rather than hardcoded, so most
     sections added later are covered without an edit here. Which branch does that
-    reading is worth knowing, because it bounds the "most": ``config/loader.py``
+    reading is worth knowing, because it bounds the "most": ``config/loader_config.py``
     carries ``from __future__ import annotations``, so every ``field.type``
     arrives as a STRING and the string branch is the one that runs. It matches on
     the annotation's TEXT — a ``list`` prefix, a ``dict`` prefix, a ``Config``
@@ -4503,7 +4788,7 @@ def _container_valued_sections() -> dict[str, type]:
     (``Optional[list[...]]``, ``Mapping[str, str]``, a nested dataclass not named
     ``*Config``) is not recognised and gets no guard. A new section in one of
     those spellings needs a look here. So does dropping that future import from
-    ``config/loader.py``: ``field.type`` would then arrive as a resolved object,
+    ``config/loader_config.py``: ``field.type`` would then arrive as a resolved object,
     the ``isinstance`` guard would skip every field, and this map would come back
     empty — which stops the model-derived half of the guard below, though not the
     hardcoded ``dashboard.tailscale`` check after it. That is not a silent loss:
@@ -4946,7 +5231,9 @@ def _handle_secrets(args: argparse.Namespace) -> None:
         # nonzero exit — never an uncaught traceback.
         try:
             report = migrate_env_secrets(dry_run=not args.apply)
-        except MigrationConflictError as exc:
+        except (MigrationConflictError, EnvStagingRefused) as exc:
+            # EnvStagingRefused is an OSError, so it is caught first: the vault is
+            # fine and the message names the staging directory and its fix.
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
         except (OSError, ValueError) as exc:

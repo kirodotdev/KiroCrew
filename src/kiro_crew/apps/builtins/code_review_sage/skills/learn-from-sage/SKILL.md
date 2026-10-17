@@ -87,31 +87,41 @@ review** (not a separate pass):
    or drop it. When in doubt, prefer fewer, broader rules over many narrow ones.
 4. **Stage** it (cheap, no model merge yet):
    ```bash
-   <python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py stage \
-       --file /tmp/pattern.json --source fix_introduce [--namespace <name>]
+   <python> sage_lib/learning.py stage \
+       --file data/tmp/pattern.json --source fix_introduce [--namespace <name>]
    ```
+   Write the pattern JSON to `data/tmp/pattern.json` yourself first: `data/tmp/`
+   is created by `store.py --ensure` and exists on every platform, unlike `/tmp/`.
    The pattern JSON carries: `title, scope (common), dimension, impact, guidance`.
+   Only `title`, `scope`, `impact` and `guidance` (plus an `added` timestamp the
+   store sets) are written to disk; `dimension` guides your gate but is not
+   persisted.
    The `guidance` is the entire durable heuristic — code-agnostic and self-contained.
    This **appends to the candidate file** — it does not touch the live ruleset.
    Omit `--namespace` to stage into the default namespace.
 
 ## Consolidate (human-triggered — the one-shot AI merge)
 
-When the human asks to consolidate (or the app's "Consolidate" button routes here):
+Follow these steps when the human asks to consolidate in chat. The app's
+"Consolidate" button does NOT route here: it dispatches its own merge task, which
+names the exact file to write. In that task write ONLY that file and never run
+`learning.py consolidate` yourself; the app applies it after checking the merge
+finished.
 
-1. Read both files:
-   ```bash
-   cat ~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.md
-   cat ~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.candidate.md
-   ```
+1. Read both files (with your file-read tool; for a non-default namespace they
+   live under `data/learnings/namespaces/<name>/` instead of `common/`):
+   - `data/learnings/common/learned-patterns.md`
+   - `data/learnings/common/learned-patterns.candidate.md`
 2. In **one pass**, produce the merged ruleset. The goal is a **lean, high-level,
    code-agnostic** rulebook a reviewer can skim in seconds — not an exhaustive log:
    - **Merge near-duplicates** aggressively into one sharpened rule. **Compress**:
      rewrite verbose guidance down to 1–2 high-level sentences and strip any code
      snippets, identifiers, file/function names, or CR numbers — a pattern is
      guidance-only, so that detail is simply dropped, not relocated.
-   - **Drop low-value or stale one-offs.** A rule that only ever applied to a single
-     bug and names no reusable defect *class* does not earn a slot.
+   - **Keep every current pattern unless a candidate genuinely supersedes it.**
+     This file is the reviewer's memory, so dropping a rule loses a lesson for
+     good; deleting one needs a reason you could defend. A *new candidate* that
+     only fits a single bug and names no reusable defect *class* may be left out.
    - **Resolve conflicts** so safety-/posture-preserving guidance wins; never
      silently drop a distinct safety/correctness guard.
    - Keep the on-disk pattern format: `### title <!-- scope: --> <!-- impact: -->`
@@ -121,26 +131,28 @@ When the human asks to consolidate (or the app's "Consolidate" button routes her
 3. Write the merged markdown to a temp file and apply it atomically — this
    replaces `learned-patterns.md` and clears the candidate:
    ```bash
-   <python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py consolidate \
-       --merged-file /tmp/merged-learned-patterns.md
+   <python> sage_lib/learning.py consolidate \
+       --merged-file data/tmp/merged-learned-patterns.md [--namespace <name>]
    ```
-   `consolidate` refuses empty content (never wipes the ruleset) and records a
-   `consolidations.jsonl` audit entry.
+   `consolidate` refuses empty content and content with no parseable pattern
+   (never wipes the ruleset) and records a `consolidations.jsonl` audit entry.
+   A refusal still exits 0: read the printed JSON and treat `"ok": false` as a
+   failed consolidation.
 4. **Human gate via the file viewer.** Before consolidating, the human may open
    and edit the candidate directly:
-   `~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.candidate.md`
+   `data/learnings/common/learned-patterns.candidate.md`
    After consolidating, show the updated
-   `~/.kiro/crew/apps/code-review-sage/data/learnings/common/learned-patterns.md`
+   `data/learnings/common/learned-patterns.md`
    so they can review/edit the result (the dashboard opens these paths in the
    file viewer).
 
 Inspect staging anytime:
 ```bash
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-candidate [--namespace <name>]
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-patterns [--namespace <name>]
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py clear-candidate [--namespace <name>]
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-namespaces
-<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-for-review  # union of active namespaces
+<python> sage_lib/learning.py list-candidate [--namespace <name>]
+<python> sage_lib/learning.py list-patterns [--namespace <name>]
+<python> sage_lib/learning.py clear-candidate [--namespace <name>]
+<python> sage_lib/learning.py list-namespaces
+<python> sage_lib/learning.py list-for-review  # union of active namespaces
 ```
 
 > Namespaces are supported: learnings are grouped by namespace. The `default`

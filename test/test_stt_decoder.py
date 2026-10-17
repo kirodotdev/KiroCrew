@@ -98,7 +98,7 @@ class TestPlatformSelection:
     Parametrised over the reported ``system``/``machine`` because the SAME
     hardware reports different strings per OS — Windows says ``AMD64`` and macOS
     ``arm64`` where Linux says ``x86_64`` and ``aarch64`` — so matching on the raw
-    value would leave two of the five shipped platforms unable to find their pin.
+    value would leave the Windows and macOS pins unreachable on their own hosts.
     """
 
     @pytest.mark.parametrize(
@@ -109,7 +109,6 @@ class TestPlatformSelection:
             ("Linux", "aarch64", "ffmpeg-linux-aarch64-v7.0.2"),
             ("Linux", "arm64", "ffmpeg-linux-aarch64-v7.0.2"),
             ("Darwin", "arm64", "ffmpeg-macos-aarch64-v7.1"),
-            ("Darwin", "x86_64", "ffmpeg-macos-x86_64-v7.1"),
             ("Windows", "AMD64", "ffmpeg-win-x86_64-v7.1.exe"),
             ("Windows", "x86_64", "ffmpeg-win-x86_64-v7.1.exe"),
         ],
@@ -126,6 +125,7 @@ class TestPlatformSelection:
             ("Linux", "s390x"),
             ("Windows", "ARM64"),  # no win-arm64 artifact upstream
             ("Windows", "i686"),  # win32 is deliberately not shipped
+            ("Darwin", "x86_64"),  # the Intel backend ships no decoder
             ("FreeBSD", "x86_64"),
             ("Darwin", "ppc"),
         ],
@@ -137,6 +137,52 @@ class TestPlatformSelection:
         makes the settings page offer the manual route instead of a retry.
         """
         assert decoder.artifact_for(system, machine) is None
+
+    def test_the_intel_mac_executable_is_never_pinned(self):
+        """No table may offer upstream's macOS Intel executable.
+
+        The Intel backend ships no decoder. A pin for it would let the store fetch
+        it onto a host and, through the shared table, re-admit it as a desktop
+        payload.
+        """
+        intel = "ffmpeg-macos-x86_64-v7.1"
+        assert decoder.DECODERLESS_BUNDLE_PLATFORM == "macos-x86_64"
+        assert "macos-x86_64" not in {a.platform_key for a in decoder.ARTIFACTS}
+        assert intel not in decoder.PACKAGED_FFMPEG_ARTIFACTS
+        assert "macos-x86_64" not in transcribe._SHIPPED_FFMPEG_PLATFORMS
+        assert intel not in transcribe._SIGNER_REWRITTEN_FFMPEG_ARTIFACTS
+
+
+class TestBundleCarriesDecoder:
+    """The one answer to "does this desktop release own its decoder"."""
+
+    @pytest.mark.parametrize(
+        ("bundled", "system", "machine", "expected"),
+        [
+            (True, "Darwin", "arm64", True),
+            (True, "Linux", "x86_64", True),
+            (True, "Windows", "AMD64", True),
+            # The x64 Windows release on an ARM64 PC: Python reports the physical
+            # CPU there, and no pin exists for it, yet the release carries its
+            # x64 decoder and must keep using it.
+            (True, "Windows", "ARM64", True),
+            # The Intel half of the universal app ships no decoder, so it must not
+            # be told its payload is damaged or be kept from a system FFmpeg.
+            (True, "Darwin", "x86_64", False),
+            # A source install never owns a packaged decoder, pinned platform or not.
+            (False, "Darwin", "arm64", False),
+            (False, "Darwin", "x86_64", False),
+        ],
+    )
+    def test_true_for_every_release_but_the_intel_mac_backend(
+        self, monkeypatch, bundled, system, machine, expected
+    ):
+        real_platform_key = decoder.platform_key
+        monkeypatch.setattr(decoder.platform_compat, "is_bundled_interpreter", lambda: bundled)
+        monkeypatch.setattr(
+            decoder, "platform_key", lambda *_a, **_k: real_platform_key(system, machine)
+        )
+        assert decoder.bundle_carries_decoder() is expected
 
     def test_every_pinned_artifact_is_a_shipped_desktop_platform(self):
         """The store may not offer a platform the desktop matrix does not ship.

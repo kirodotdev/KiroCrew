@@ -14,6 +14,9 @@ import contextlib
 import json
 import logging
 import os
+import subprocess
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -34,13 +37,16 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import STRICT_PROVIDER_BIN_ENV as _STRICT_PROVIDER_BIN_ENV
 from kiro_crew.github_runner import (
+    apply_session_bus_address,
     gitlab_ambient_token_allowed,
     provider_executable_candidates,
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
 from kiro_crew.sandbox import (
+    RLIMIT_PROFILE_TOOL,
     create_subprocess_limited,
+    popen_limited,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
 )
@@ -103,6 +109,12 @@ _PROVIDER_AUTH_ENV_KEYS = {
     "gh": frozenset(_GH_ENV_PASSTHROUGH) - {"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"},
     "glab": frozenset({"GLAB_CONFIG_DIR", "GITLAB_TOKEN"}),
 }
+# The github.com credentials gh reads from the environment. A GitHub Enterprise
+# target never receives them: gh would also send them to a ``*.ghe.com`` tenant,
+# and the operator listed an Enterprise host to reach that host with its own
+# ``gh auth login --hostname`` entry, not with the github.com token.
+_GH_PUBLIC_TOKEN_ENV_KEYS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
+_GITHUB_PUBLIC_HOSTS = frozenset({"github.com", "www.github.com"})
 _provider_semaphore = asyncio.Semaphore(_PROVIDER_CONCURRENCY)
 _PROVIDER_TOOL_NAME = "source_provider_cli"
 
@@ -282,21 +294,227 @@ async def _collect_process_output(
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def _provider_failure_message(executable: str, stderr: bytes) -> str:
-    """Redacted provider stderr, with the login hint appended for auth failures."""
+async def _run_oneshot_off_loop(
+    wrapped_argv: "list[str]",
+    env: "dict[str, str]",
+    max_output_bytes: int,
+) -> "tuple[int, bytes, bytes]":
+    """Run one provider CLI off the event loop and return (rc, stdout, stderr).
+
+    Windows only. On the Proactor loop ``asyncio.create_subprocess_exec`` builds
+    the ``Popen`` -- and so runs ``CreateProcess`` -- SYNCHRONOUSLY on the loop
+    thread inside the subprocess transport's constructor, before its first
+    ``await``. When process creation on the host is slow (a large binary's first
+    launch, an endpoint-protection filter driver) that holds the gateway loop for
+    seconds and the loop-stall watchdog kills the gateway. A provider read is
+    one-shot -- spawn, read both pipes, wait for exit, nothing streamed -- so it
+    does not need a loop-bound ``Process``: it runs the whole bounded spawn-and-
+    drain on a worker thread via ``asyncio.to_thread``, so the ``CreateProcess``
+    happens off the gateway loop. POSIX keeps the async path, where a fork is
+    cheap and the loop was never held.
+
+    The guarantees match :func:`_collect_process_output`: the per-stream byte
+    caps are enforced WHILE the pipes drain (not after a full buffer), an overflow
+    or a run past ``_COMMAND_TIMEOUT_SECS`` kills and reaps the whole process tree,
+    and a cancellation of this await also kills and reaps it. All of that --
+    including the reap on cancellation -- happens on the worker thread, never on
+    the gateway loop: a worker ``to_thread`` cannot be cancelled, so instead this
+    coroutine sets a cancel flag and then awaits the SAME worker (shielded) to run
+    its own teardown. The worker checks that flag the instant the spawn returns,
+    so a cancellation landing during the multi-second ``CreateProcess`` -- the
+    window this change exists for -- still reaps the child rather than orphaning
+    it.
+    """
+    handle: dict[str, Any] = {"cancel": threading.Event()}
+    worker = asyncio.ensure_future(
+        asyncio.to_thread(_oneshot_drain_limited, wrapped_argv, env, max_output_bytes, handle)
+    )
+    try:
+        returncode, stdout, stderr = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Signal the worker and let IT reap on its own thread; awaiting the
+        # shielded worker keeps the gateway loop free and guarantees the child
+        # is reaped (even if the spawn was still in flight) before we propagate.
+        handle["cancel"].set()
+        with contextlib.suppress(BaseException):
+            await asyncio.shield(worker)
+        raise
+    except _ProviderOutputTooLarge as exc:
+        raise SourceProviderError(str(exc)) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SourceProviderError("provider timed out reading the pull request") from exc
+    except OSError as exc:
+        raise SourceProviderError("provider could not start") from exc
+    return returncode, stdout, stderr
+
+
+def _reap_oneshot_handle(handle: "dict[str, Any]") -> None:
+    """Kill and reap the worker's child tree, best effort. Safe to call twice.
+
+    Reaping goes through ``platform_compat.terminate_and_reap_sync`` -- the
+    sanctioned sync tree teardown -- rather than a bare kill primitive, so the
+    kill stays attributed and inside the primitive's own module. Only ever called
+    on the worker thread, so the kill-and-wait never runs on the gateway loop. The
+    reader threads keep draining the pipes, so a killed child blocked on a full
+    pipe cannot wedge the reap.
+    """
+    proc = handle.get("proc")
+    if proc is None or proc.returncode is not None:
+        return
+    with contextlib.suppress(Exception):
+        platform_compat.terminate_and_reap_sync(proc, grace=0.0)
+
+
+def _drain_stream_limited(stream: Any, limit: int, label: str) -> bytes:
+    """Read one subprocess pipe to EOF while enforcing a hard byte limit."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(min(64 * 1024, limit - total + 1))
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            raise _ProviderOutputTooLarge(f"provider {label} was too large")
+        chunks.append(chunk)
+
+
+def _oneshot_drain_limited(
+    wrapped_argv: "list[str]",
+    env: "dict[str, str]",
+    max_output_bytes: int,
+    handle: "dict[str, Any]",
+) -> "tuple[int, bytes, bytes]":
+    """Blocking one-shot provider spawn + bounded drain, run on a worker thread.
+
+    ``wrapped_argv`` arrives already OS-isolated and env-scrubbed by its only
+    caller, :func:`_run_provider`; this adds only the resource-limit shim via
+    ``popen_limited`` (the sync, post-exec counterpart to
+    ``create_subprocess_limited``) and drains the pipes under the same per-stream
+    caps the async collector applies, killing and reaping the whole tree on
+    overflow or timeout. ``handle['proc']`` is published the instant the child
+    exists, and ``handle['cancel']`` is checked immediately after, so a
+    cancellation that lands during the spawn still reaps the child rather than
+    orphaning it. Listed in ``test_spawn_audit``'s pre-wrapped-spawn allowlist,
+    the same category as ``spawn_supervised_oneshot``.
+    """
+    cancel: threading.Event = handle["cancel"]
+    proc = popen_limited(
+        wrapped_argv,
+        profile=RLIMIT_PROFILE_TOOL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+    handle["proc"] = proc
+    if cancel.is_set():
+        # Cancellation landed while the spawn was in flight: reap the child we
+        # just created rather than leaving it running unsupervised.
+        _reap_oneshot_handle(handle)
+        raise asyncio.CancelledError
+    stdout_box: dict[str, Any] = {}
+    stderr_box: dict[str, Any] = {}
+    deadline = time.monotonic() + _COMMAND_TIMEOUT_SECS
+
+    def _read(stream: Any, limit: int, label: str, box: "dict[str, Any]") -> None:
+        try:
+            box["data"] = _drain_stream_limited(stream, limit, label)
+        except BaseException as exc:  # noqa: BLE001 - surfaced to the caller below
+            box["error"] = exc
+            # Overflow (or a read error): kill the tree so a child still writing
+            # into a full pipe cannot wedge the other reader or ``wait`` below.
+            _reap_oneshot_handle(handle)
+
+    readers = [
+        threading.Thread(
+            target=_read, args=(proc.stdout, max_output_bytes, "response", stdout_box)
+        ),
+        threading.Thread(
+            target=_read, args=(proc.stderr, _MAX_ERROR_BYTES, "error output", stderr_box)
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    # Readers reach EOF when the child closes its pipes, i.e. when it exits (or
+    # when overflow above kills it), so joining them first cannot outlast the
+    # process. A cancel from the awaiting coroutine, or the timeout, both reap the
+    # tree -- which closes the pipes and ends the readers.
+    while any(reader.is_alive() for reader in readers):
+        if cancel.is_set():
+            _reap_oneshot_handle(handle)
+            for reader in readers:
+                reader.join(timeout=1)
+            raise asyncio.CancelledError
+        if time.monotonic() >= deadline:
+            _reap_oneshot_handle(handle)
+            for reader in readers:
+                reader.join(timeout=1)
+            raise subprocess.TimeoutExpired(wrapped_argv, _COMMAND_TIMEOUT_SECS)
+        for reader in readers:
+            reader.join(timeout=0.1)
+    if "error" in stdout_box:
+        raise stdout_box["error"]
+    if "error" in stderr_box:
+        raise stderr_box["error"]
+    try:
+        returncode = proc.wait(timeout=max(1.0, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        # Pipes closed but the child has not exited within the budget: reap the
+        # tree, like every earlier exit path, before surfacing the timeout.
+        _reap_oneshot_handle(handle)
+        raise
+    return returncode, stdout_box.get("data", b""), stderr_box.get("data", b"")
+
+
+_AUTH_FAILURE_MARKERS = (
+    "unauthenticated",
+    "not logged in",
+    "authentication",
+)
+# GitLab's own wording for an expired sign-in. Scoped to glab so `gh` keeps the
+# exact markers it had.
+_GLAB_AUTH_FAILURE_MARKERS = _AUTH_FAILURE_MARKERS + ("401 unauthorized", "http 401")
+
+
+def _provider_failure(executable: str, stderr: bytes, host: str = "") -> SourceProviderError:
+    """The error for a failed provider call: redacted stderr plus a sign-in hint.
+
+    For a self-managed GitLab or a GitHub Enterprise host the hint names the
+    host: a bare ``glab auth login`` / ``gh auth login`` signs in to the public
+    instance by default, so it sends the user to the wrong server.
+    ``<cli> auth login --hostname <host>`` signs in to the right one. That command
+    also rides on the error as ``login_command``, built only from the allowlisted
+    host, so the dashboard shows it without parsing provider-controlled text.
+    """
     message = sanitize._safe_error(stderr)
     lowered = message.lower()
-    if "unauthenticated" in lowered or "not logged in" in lowered or "authentication" in lowered:
-        message = f"{message} Run `{executable} auth login`, then retry."
-    return message
+    markers = _GLAB_AUTH_FAILURE_MARKERS if executable == "glab" else _AUTH_FAILURE_MARKERS
+    if not any(marker in lowered for marker in markers):
+        return SourceProviderError(message)
+    if host and (
+        (executable == "glab" and host.casefold() != "gitlab.com")
+        or (executable == "gh" and host.casefold() not in _GITHUB_PUBLIC_HOSTS)
+    ):
+        login_command = f"{executable} auth login --hostname {host}"
+        return SourceProviderError(
+            f"{message} Run `{login_command}`, then retry.",
+            login_command=login_command,
+        )
+    return SourceProviderError(f"{message} Run `{executable} auth login`, then retry.")
 
 
-def _parse_json_success(executable: str) -> Callable[[int, bytes, bytes], Any]:
+def _provider_failure_message(executable: str, stderr: bytes, host: str = "") -> str:
+    """The message of :func:`_provider_failure`, for callers that need only the text."""
+    return str(_provider_failure(executable, stderr, host))
+
+
+def _parse_json_success(executable: str, host: str = "") -> Callable[[int, bytes, bytes], Any]:
     """The ordinary provider contract: exit 0 and a JSON body, anything else fails."""
 
     def parse(returncode: int, stdout: bytes, stderr: bytes) -> Any:
         if returncode != 0:
-            raise SourceProviderError(_provider_failure_message(executable, stderr))
+            raise _provider_failure(executable, stderr, host)
         try:
             return json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -339,7 +557,7 @@ def _parse_conditional_get(executable: str) -> Callable[[int, bytes, bytes], _Co
         except (IndexError, ValueError):
             status = 0
         if status not in (200, 304):
-            raise SourceProviderError(_provider_failure_message(executable, stderr))
+            raise _provider_failure(executable, stderr)
         etag = ""
         for line in lines[1:]:
             name, colon, value = line.partition(":")
@@ -365,7 +583,7 @@ async def _run_json(
         *argv,
         max_output_bytes=max_output_bytes,
         host=host,
-        parse=_parse_json_success(argv[0] if argv else ""),
+        parse=_parse_json_success(argv[0] if argv else "", host),
     )
 
 
@@ -386,6 +604,11 @@ async def _run_provider(
     :func:`parse_source_url`; it is re-checked here so a caller cannot reach an
     unauthorized instance even if a future code path forgets to validate, and an
     omitted host is refused rather than silently resolved to gitlab.com.
+
+    For ``gh`` an omitted host (or ``github.com``) is github.com. Any other host
+    must be in ``dashboard.github_hosts``; the child is then pinned to it through
+    ``GH_HOST`` and, for ``gh api``, an explicit ``--hostname`` that only this
+    function adds, and it does not receive the github.com tokens.
     """
     executable = argv[0] if argv else ""
     if max_output_bytes <= 0 or max_output_bytes > _DIFF_OUTPUT_BYTES:
@@ -395,6 +618,21 @@ async def _run_provider(
         _audit_provider_cli(executable, "denied", "unsupported_provider")
         raise SourceProviderError("unsupported provider command")
     gitlab_host = "gitlab.com"
+    github_host = "github.com"
+    if executable == "gh":
+        # The host is pinned below from the validated ``host`` alone, so a
+        # caller-supplied flag could only disagree with it.
+        if any(arg == "--hostname" or arg.startswith("--hostname=") for arg in argv[1:]):
+            _audit_provider_cli(executable, "denied", "hostname_in_argv")
+            raise SourceProviderError("the GitHub host is set by the runner, not the caller")
+        if host and host.casefold() not in _GITHUB_PUBLIC_HOSTS:
+            # gh cannot address a GitHub host on a non-default port (it rejects a
+            # port in --hostname and drops it from a URL), so a ported host would
+            # reach a different origin than the one authorized.
+            if ":" in host or host not in hosts._allowed_github_hosts():
+                _audit_provider_cli(executable, "denied", "host_not_allowlisted")
+                raise SourceProviderError("GitHub host is not allowlisted")
+            github_host = host
     if executable == "glab":
         # Required, not defaulted: a call site that forgets `host` would
         # otherwise silently target gitlab.com, so an allowlisted self-managed MR
@@ -414,7 +652,7 @@ async def _run_provider(
     # ``sandboxed_spawn_argv`` below owns that policy (fail closed unless the
     # operator set ``agent.sandbox_allow_unsandboxed_exec``). Every other bound
     # is platform-independent and still applies: the allowlisted executable, the
-    # validated resolved path, the strict env allowlist with a pinned PATH, the
+    # validated launch path, the strict env allowlist with a pinned PATH, the
     # output cap, the timeout and the SEL audit.
     try:
         # Off the loop: resolution walks every candidate dir and stats the whole
@@ -434,6 +672,8 @@ async def _run_provider(
         raise
 
     allowed_env_keys = _PROVIDER_BASE_ENV_KEYS | _PROVIDER_AUTH_ENV_KEYS[executable]
+    if executable == "gh" and github_host != "github.com":
+        allowed_env_keys = allowed_env_keys - _GH_PUBLIC_TOKEN_ENV_KEYS
     if executable == "glab" and not gitlab_ambient_token_allowed(gitlab_host):
         # GITLAB_TOKEN is a single ambient credential with no host binding, so
         # forwarding it while GITLAB_HOST points at a self-managed instance would
@@ -458,10 +698,17 @@ async def _run_provider(
             "PATH": _PROVIDER_SYSTEM_PATH,
         }
     )
+    # The chip refresh runs one probe per open PR/MR on a timer; a child left to
+    # find the session bus by itself autolaunches a private dbus-daemon and
+    # keyring daemon per call where no user bus exists. The parent resolves the
+    # bus once, explicitly (see github_runner.session_bus_address). A pinned
+    # value, not an allowlist key.
+    apply_session_bus_address(base_env)
     if executable == "gh":
-        # All accepted GitHub URLs normalize to github.com. Pin bare API paths
-        # to the same host instead of honoring a configured enterprise default.
-        base_env["GH_HOST"] = "github.com"
+        # Pin bare API paths to the host parse_source_url authorized (github.com
+        # unless the ref is on a listed Enterprise host) instead of honoring a
+        # configured default in gh's own config.
+        base_env["GH_HOST"] = github_host
     else:
         # Pin the CLI to the host parse_source_url authorized for this URL, so a
         # self-managed default in glab config can't redirect the bare API paths
@@ -472,9 +719,12 @@ async def _run_provider(
     invoked = False
     try:
         async with _provider_semaphore:
+            child_args = list(argv[1:])
+            if executable == "gh" and github_host != "github.com" and child_args[:1] == ["api"]:
+                child_args[1:1] = ["--hostname", github_host]
             try:
                 wrapped_argv, env, cleanup_path = await sandboxed_spawn_argv_async(
-                    [resolved_executable, *argv[1:]],
+                    [resolved_executable, *child_args],
                     mode="standard",
                     env=base_env,
                     _prepare=sandboxed_spawn_argv,
@@ -508,19 +758,28 @@ async def _run_provider(
             except Exception as exc:
                 raise SourceProviderError("provider audit unavailable") from exc
             invoked = True
-            try:
-                proc = await create_subprocess_limited(
-                    *wrapped_argv,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                    start_new_session=platform_compat.IS_POSIX,
-                    creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+            if platform_compat.IS_WINDOWS:
+                # The async spawn would run CreateProcess on the gateway loop
+                # thread here; a provider read is one-shot, so run it off the loop
+                # instead. POSIX stays on the async streaming path below.
+                returncode, stdout, stderr = await _run_oneshot_off_loop(
+                    wrapped_argv, env, max_output_bytes
                 )
-            except OSError as exc:
-                raise SourceProviderError(f"{executable} could not start") from exc
-            stdout, stderr = await _collect_process_output(proc, executable, max_output_bytes)
-        result = parse(proc.returncode if proc.returncode is not None else -1, stdout, stderr)
+            else:
+                try:
+                    proc = await create_subprocess_limited(
+                        *wrapped_argv,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                        start_new_session=platform_compat.IS_POSIX,
+                        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+                    )
+                except OSError as exc:
+                    raise SourceProviderError(f"{executable} could not start") from exc
+                stdout, stderr = await _collect_process_output(proc, executable, max_output_bytes)
+                returncode = proc.returncode if proc.returncode is not None else -1
+        result = parse(returncode, stdout, stderr)
     except asyncio.CancelledError:
         if invoked:
             _audit_provider_cli(executable, "failed", "request_cancelled")

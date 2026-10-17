@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -24,6 +25,11 @@ from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
+from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    STOP_REASON_STALE_RECOVER,
+    STOP_REASON_TIMEOUT,
+    AcpTimeoutError,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import (
     DENY_CAUSE_INVALID_NAME,
@@ -32,16 +38,20 @@ from kiro_crew.constants import (
 )
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.deny_notice import steer_refusal_notice
+from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
     _normalize_tool_name,
     fire_tool_hooks,
     get_global_hook_store,
     hook_gate_kwargs,
+    title_is_trusted_mcp_identity,
+    untruncated_shell_title,
 )
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS as _WRITE_PLANE_KINDS
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -61,6 +71,7 @@ from kiro_crew.providers.base import (
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     is_denied,
+    is_denied_synthesized_target,
     is_sensitive_bash_command,
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
@@ -68,8 +79,10 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
     sensitive_path_refusal,
 )
+from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.sel import sel as _sel
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.tool_gate_busy import hook_gate_busy
 
 _PROMPT_BUSY_RETRIES = 2
 _PROMPT_BUSY_DELAY = 1.5  # seconds between retries
@@ -181,6 +194,28 @@ _TRANSIENT_MARKERS = (
     "could not reach the model backend",
 )
 
+# The members of _TRANSIENT_MARKERS that name the network path rather than a
+# provider answer. Read only for an error raised without the structured
+# ``connection_failure`` verdict, and only when no other transient marker is
+# present, so a frame that also carries a provider answer keeps the fixed count.
+_CONNECTION_MARKERS = (
+    "connection reset",
+    "connectionreset",
+    "dispatch failure",
+    "dispatchfailure",
+    "econnrefused",
+    "econnreset",
+    "econnaborted",
+    "etimedout",
+    "epipe",
+    "ehostunreach",
+    "eai_again",
+    "socket hang up",
+    "fetch failed",
+    "could not reach the model backend",
+)
+_PROVIDER_ANSWER_MARKERS = tuple(m for m in _TRANSIENT_MARKERS if m not in _CONNECTION_MARKERS)
+
 
 def _is_transient_acp_error(msg: str) -> bool:
     """True iff an AcpError message looks like a retryable transient backend
@@ -244,6 +279,37 @@ def is_prompt_busy(exc: BaseException) -> bool:
     )
 
 
+# The provider's refusal of a request larger than the model's window, in the
+# spellings the ACP backends answer with: kiro's typed "context window
+# overflowed", the claude adapter's "Prompt is too long", and the OpenAI-style
+# "maximum context length" a compatible endpoint returns through it.
+_RE_CONTEXT_OVERFLOW_TEXT = re.compile(
+    r"prompt is too long|context window overflowed|maximum context length",
+    re.IGNORECASE,
+)
+
+
+def is_context_overflow_error(exc: BaseException) -> bool:
+    """True when *exc* is a turn refused as too long for the model's window.
+
+    Structural first: the raise-time classifier's ``context_overflow`` tag, which
+    owns the claude adapter's ``message``-borne refusal through the anchored
+    ``_RE_ADAPTER_INPUT_TOO_LONG`` in ``acp/transport_errors.py``. The text match
+    is the fallback for a frame that classifier cannot read (a non-dict error,
+    formatted ``Prompt error: <raw>``), for an ``AcpError`` built from text, and for the
+    OpenAI-style "maximum context length", which no captured frame places yet, so
+    it stays untagged rather than risk a false terminal on an echo. Scoped to
+    ``AcpError`` so an unrelated exception mentioning a long prompt never counts.
+    The only consumer forces a ``_bg`` recycle, so a false positive costs one
+    provider respawn.
+    """
+    if not isinstance(exc, AcpError):
+        return False
+    return getattr(exc, "context_overflow", False) is True or bool(
+        _RE_CONTEXT_OVERFLOW_TEXT.search(str(exc))
+    )
+
+
 def acp_error_is_transient(exc: BaseException) -> bool:
     """Authoritative retry-eligibility decider for an ACP error.
 
@@ -264,19 +330,85 @@ def acp_error_is_transient(exc: BaseException) -> bool:
 
 
 def acp_error_is_session_not_found(exc: BaseException) -> bool:
-    """True when a live backend says it holds no session under the id it was sent.
+    """True when the live backend cannot serve this chat and only a fresh process can.
 
-    The process answered, so nothing marks it dead and the dead-provider
-    eviction never fires; the binding keeps naming a session the backend has
-    dropped, and every later prompt draws the same answer. The backend
-    session's transcript is usually intact, so the remedy is a fresh process
-    that re-loads the SAME id -- not a retry on this one.
+    Two raw answers share that remedy, so both read True here:
+
+    - A live backend holds no session under the id it was sent (the phrase is
+      the adapter's own answer to a prompt). The process answered, so nothing
+      marks it dead and the dead-provider eviction never fires; the binding
+      keeps naming a session the backend has dropped, and every later prompt
+      draws the same answer. The backend session's transcript is usually
+      intact, so the remedy is a fresh process that re-loads the SAME id --
+      not a retry on this one.
+    - The frame names ``cloud_credential_error`` (``AcpError.credential_reload``,
+      set from the structured ``data.errorKind`` in
+      ``acp.transport_errors._raise_acp_error``): the process cached
+      credentials it cannot re-load, so a retry on THIS process
+      re-draws the answer while a chat started fresh in the same window works.
+      The remedy is the same fresh process, so the tag rides this same
+      reset-and-reload-once path with its one-retry budget and the
+      no-replay-after-tool-activity rule intact.
 
     Scoped to ``AcpError``: the phrase is the adapter's own answer to a prompt,
     and an unrelated exception that mentions a missing session elsewhere (an
     HTTP 404 body, a dashboard lookup) must never reset a chat.
     """
-    return isinstance(exc, AcpError) and "session not found" in str(exc).lower()
+    if not isinstance(exc, AcpError):
+        return False
+    if "session not found" in str(exc).lower():
+        return True
+    return acp_error_needs_fresh_credentials(exc)
+
+
+def acp_error_needs_fresh_credentials(exc: BaseException) -> bool:
+    """True when *exc* is the provider's ``cloud_credential_error`` answer.
+
+    The cause half of :func:`acp_error_is_session_not_found`: a surface that
+    recycles the process reads this to word its notices for credentials, not
+    for a lost session, and to hand the provider's own remedy to the user.
+    """
+    return isinstance(exc, AcpError) and getattr(exc, "credential_reload", False) is True
+
+
+def credential_give_up_text(exc: BaseException | str) -> str:
+    """The dead end of a credential failure that the fresh process drew too.
+
+    The helper itself is broken (an expired SSO login, a revoked role), so no
+    restart or new chat can fix it: the provider's own instruction is the only
+    actionable line, and it is carried verbatim. Each surface appends its own
+    next step.
+    """
+    return (
+        "The agent still could not load its cloud credentials after a restart. "
+        f"Fix them first. The provider said: {exc}"
+    )
+
+
+#: Set by :func:`stream_and_collect` on an ``AcpError`` it propagates: True when a
+#: tool call fired during the turn, so re-sending the prompt could repeat it.
+TOOL_ACTIVITY_ATTR = "turn_tool_activity"
+
+
+def acp_error_after_tool_activity(exc: BaseException) -> bool:
+    """True when *exc* ended a turn in which a tool call had already fired."""
+    return getattr(exc, TOOL_ACTIVITY_ATTR, False) is True
+
+
+#: Shown once by a surface that re-loads a lost session and retries the turn.
+SESSION_NOT_FOUND_RETRY_NOTICE = "⟳ The agent lost its session — reconnecting…"
+#: The same one retry, when the cause is credentials the process could not load.
+CREDENTIAL_RELOAD_RETRY_NOTICE = (
+    "⟳ The agent could not load its cloud credentials — restarting it to load them again…"
+)
+#: The error a surface ends on when the one reconnect did not give it a usable session.
+SESSION_NOT_FOUND_GIVE_UP_TEXT = "Could not reconnect the agent's session."
+#: A session lost after the turn started working: replaced, but not replayed,
+#: since a tool may already have run.
+SESSION_NOT_FOUND_NOT_REPLAYED_TEXT = (
+    "The agent lost its session after it had started working. It reconnects on the "
+    "next message; this one was not re-run, so its tools do not run twice."
+)
 
 
 def transient_retry_delay(attempt: int) -> float:
@@ -287,6 +419,66 @@ def transient_retry_delay(attempt: int) -> float:
     backs off on the identical curve and co-located peers don't retry in
     lockstep (see ``_JITTER_RNG``)."""
     base = _TRANSIENT_DELAY * (2 ** (attempt - 1))
+    return base + _JITTER_RNG.random() * 0.25 * base
+
+
+# ── Network-drop recovery window (interactive turns) ──
+#
+# A dropped network path (Wi-Fi off and on, a VPN reconnect, a laptop waking up)
+# usually lasts tens of seconds to a couple of minutes, longer than the ~14s the
+# fixed TRANSIENT_RETRIES ladder backs off for. A connection failure therefore
+# keeps re-prompting past that count until CONNECTION_RECOVERY_WINDOW_SECS have
+# passed since the ladder's first retry, with the backoff capped at
+# CONNECTION_RETRY_MAX_DELAY so the turn resumes soon after the network does.
+# Provider answers (5xx, throttle, capacity) keep the fixed count unchanged: a
+# provider that is answering with errors is not helped by waiting longer.
+CONNECTION_RECOVERY_WINDOW_SECS = 300.0
+CONNECTION_RETRY_MAX_DELAY = 30.0
+
+
+def acp_error_is_connection_failure(exc: BaseException) -> bool:
+    """True when *exc* is a transient failure of the network path itself.
+
+    Prefers the structured ``AcpError.connection_failure`` verdict taken from
+    the raw frame at raise time, and falls back to the message text for an
+    exception raised without it. Never true for an error the transient
+    classifier rejects, so a terminal error cannot enter the recovery window.
+    """
+    if not acp_error_is_transient(exc):
+        return False
+    flag = getattr(exc, "connection_failure", None)
+    if isinstance(flag, bool):
+        return flag
+    low = str(exc).lower()
+    return any(m in low for m in _CONNECTION_MARKERS) and not any(
+        m in low for m in _PROVIDER_ANSWER_MARKERS
+    )
+
+
+def connection_recovery_open(
+    exc: BaseException, ladder_started_at: float, *, now: float | None = None
+) -> bool:
+    """True while a connection failure may keep retrying past TRANSIENT_RETRIES.
+
+    *ladder_started_at* is the ``time.monotonic()`` reading taken when the
+    current retry ladder made its first retry; ``0.0`` (no ladder) is never
+    open. The window is measured from that first retry, so one outage gets one
+    window however many attempts it takes.
+    """
+    if ladder_started_at <= 0.0 or not acp_error_is_connection_failure(exc):
+        return False
+    current = time.monotonic() if now is None else now
+    return (current - ladder_started_at) < CONNECTION_RECOVERY_WINDOW_SECS
+
+
+def connection_retry_delay(attempt: int) -> float:
+    """Backoff delay (seconds) for the *attempt*-th retry of a connection failure.
+
+    The same curve as :func:`transient_retry_delay`, capped at
+    :data:`CONNECTION_RETRY_MAX_DELAY` (plus the same proportional jitter) so a
+    long outage is probed every half minute rather than at a doubling interval.
+    """
+    base = min(_TRANSIENT_DELAY * (2 ** (min(attempt, 32) - 1)), CONNECTION_RETRY_MAX_DELAY)
     return base + _JITTER_RNG.random() * 0.25 * base
 
 
@@ -489,10 +681,11 @@ def provider_model_pin_refused(provider: LLMProvider) -> bool:
     """True when *provider*'s adapter refused its pinned model at startup.
 
     A config-option backend applies a pin non-strictly: a refusal leaves the
-    session on the backend default and raises nothing. The session records the
-    refused id as ``model_pin_refused``. Callers treat a True here exactly as a
-    caught model-unavailable error: annotate the downgrade and blank the
-    explicit pin on the usage row.
+    session on the backend default and raises nothing. A kiro session withholds
+    a startup pin the account does not serve, with the same result. The session
+    records the refused or withheld id as ``model_pin_refused``. Callers treat a
+    True here exactly as a caught model-unavailable error: annotate the
+    downgrade and blank the explicit pin on the usage row.
     """
     # Declared on LLMProvider. The str check keeps a test double's auto-made
     # attribute from reading as a refusal.
@@ -771,6 +964,47 @@ def pick_epoch_host(provider: Any) -> Any:
         if inner is not None and not callable(inner):
             return inner
     return provider
+
+
+# Attribute on a session's pick-epoch host carrying the model it runs with
+# ``model.route`` routing OFF, as ``(session id, model, pick epoch)``. ONE spelling
+# and one validator (:func:`route_baseline_latch`) for both readers: the chat
+# runner, which latches it before a session's first routed turn, and the
+# sub-agent start, which prices its tiers against it.
+ROUTE_BASELINE_ATTR = "_jev_route_baseline"
+
+
+def _latch_identity(host: Any) -> tuple[str, int]:
+    """``(session id, pick epoch)`` of *host*, the two facts a latch is valid for."""
+    epoch = getattr(host, "_explicit_pick_epoch", 0)
+    epoch = epoch if isinstance(epoch, int) else 0
+    sid = str(getattr(host, "_session_id", "") or getattr(host, "session_id", "") or "")
+    return sid, epoch
+
+
+def route_baseline_latch(host: Any) -> str | None:
+    """The latched pre-route model on *host*, or ``None`` when no record holds.
+
+    A record holds while it names *host*'s current session and pick epoch: a
+    moved epoch is an explicit pick, a different id is a pooled host serving a
+    new session. ``""`` is a real latch -- the backend named no model.
+    """
+    latched = getattr(host, ROUTE_BASELINE_ATTR, None)
+    sid, epoch = _latch_identity(host)
+    if (
+        isinstance(latched, tuple)
+        and len(latched) == 3
+        and latched[0] == sid
+        and latched[2] == epoch
+    ):
+        return str(latched[1] or "")
+    return None
+
+
+def latch_route_baseline(host: Any, baseline: str) -> None:
+    """Record *baseline* on *host* for its current session and pick epoch."""
+    sid, epoch = _latch_identity(host)
+    setattr(host, ROUTE_BASELINE_ATTR, (sid, baseline, epoch))
 
 
 _slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
@@ -1255,6 +1489,8 @@ def _title_denial(
     denied_regexes: list[str] | None,
     *,
     exempt_command: str | None = None,
+    identity_exempt: bool = False,
+    bash_subject: str | None = None,
 ) -> tuple[str, str] | None:
     """Return the always-enforced denial for the tool *title*, or ``None``.
 
@@ -1266,6 +1502,11 @@ def _title_denial(
     a hop that offloaded only the tool_input strings left the crash path in
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
+
+    *bash_subject*, when given, is what the bash tier scans instead of *title*:
+    a title rebuilt around the whole command (``untruncated_shell_title``) is
+    scanned there without its display prefix, so the prefix cannot carry a
+    command that fits the size ceiling past it.
     """
     # The path tier reads a PATH. A shell tool's recovered COMMAND is command text,
     # which the gate deliberately does not match paths in (``hooks.on_tool_call``
@@ -1274,8 +1515,15 @@ def _title_denial(
     # stall, refused the command as a sensitive path. ``exempt_command`` is
     # :func:`_path_tier_exempt`'s answer -- the one string that is that text; a
     # title that is not the command stays gated.
+    #
+    # ``identity_exempt`` is the same reasoning for a tool NAME: the caller sets
+    # it only when the title is exactly the call's own verified ``@server/tool``
+    # identity (``title_is_trusted_mcp_identity``), which names a tool, not a
+    # file. The bash and regex tiers below still read it.
     path_refusal = (
-        None if _is_exempt_command_text(title, exempt_command) else sensitive_path_refusal(title)
+        None
+        if identity_exempt or _is_exempt_command_text(title, exempt_command)
+        else sensitive_path_refusal(title)
     )
     if path_refusal:
         # A stall is passed through as worded (recognised by its fixed prefix, which
@@ -1283,7 +1531,7 @@ def _title_denial(
         if is_unverifiable_path_refusal(path_refusal):
             return ("path", path_refusal)
         return ("path", f"Blocked: sensitive path: {title}")
-    bash_reason = is_sensitive_bash_command(title)
+    bash_reason = is_sensitive_bash_command(title if bash_subject is None else bash_subject)
     if bash_reason:
         return ("bash", bash_reason)
     deny_reason = is_denied(title, denied_regexes=denied_regexes)
@@ -1293,7 +1541,7 @@ def _title_denial(
 
 
 def _edit_target_denial(
-    raw_params: dict | None, diff_path: str = ""
+    raw_params: dict | None, diff_path: str = "", tool_kind: str = ""
 ) -> tuple[str, str, str] | None:
     """The always-enforced denial for a file-EDIT tool call, or ``None``.
 
@@ -1332,7 +1580,7 @@ def _edit_target_denial(
     a call with neither trusted params nor a diff block never gets here and
     keeps the document scan.
     """
-    candidates = edit_target_candidates(raw_params, diff_path)
+    candidates = edit_target_candidates(raw_params, diff_path, tool_kind=tool_kind)
     if candidates.truncated:
         return (
             "path",
@@ -1574,6 +1822,34 @@ def _orphan_reject_done(task: asyncio.Task[Any]) -> None:
 # ── Stream and Collect ──
 
 
+def _raise_if_unfinished(event: object, text: str) -> None:
+    """Raise when the backend never finished the turn, so its text is cut off.
+
+    The session handle ends a turn its backend did not finish within the turn
+    ceiling with ``STOP_REASON_TIMEOUT``, and one its stale watchdog gave up on with
+    ``STOP_REASON_STALE_RECOVER``. Both arrive as an ordinary ``EVENT_COMPLETE``, so
+    a one-liner would return the partial text as its answer. Raising runs the
+    caller's failure path instead. The error is the prompt-timeout error, carrying
+    the partial text, and it is not transient: a retry would wait out the same
+    stalled backend again.
+    """
+    from kiro_crew.agent_sdk.drivers.acp_vocab import (
+        STOP_REASON_STALE_RECOVER,
+        STOP_REASON_TIMEOUT,
+        AcpTimeoutError,
+    )
+
+    stop_reason = str(getattr(event, "stop_reason", "") or "")
+    if stop_reason not in (STOP_REASON_TIMEOUT, STOP_REASON_STALE_RECOVER):
+        return
+    error = AcpTimeoutError(
+        text,
+        message=f"background one-liner: the backend did not finish the turn ({stop_reason})",
+    )
+    error.transient = False
+    raise error
+
+
 async def run_bg_oneliner(
     sessions: Any,
     prompt: str,
@@ -1753,6 +2029,7 @@ async def run_bg_oneliner(
                     source=sel_source or "bg_oneliner",
                 )
             elif event.kind == EVENT_COMPLETE:
+                _raise_if_unfinished(event, text)
                 break
         return text
 
@@ -1761,6 +2038,10 @@ async def run_bg_oneliner(
             return await asyncio.wait_for(_drive(model_to_use), timeout)
         return await _drive(model_to_use)
 
+    # Set when this turn (or its one fallback retry) was refused as too long for
+    # the model's window; the recycle in the teardown below then forces a fresh
+    # provider instead of trusting the reported percentage.
+    overflowed = False
     try:
         try:
             return await _run(model)
@@ -1786,6 +2067,9 @@ async def run_bg_oneliner(
                 "bg oneliner: model %r rejected; retrying once with %r", rejected, fallback
             )
             return await _run(fallback)
+    except BaseException as exc:
+        overflowed = is_context_overflow_error(exc)
+        raise
     finally:
         # Account BEFORE destroy(): the turn's billing lives on the session this
         # tears down. Every caller of this helper — titles, link labels, folder
@@ -1847,6 +2131,16 @@ async def run_bg_oneliner(
                 logger.debug("bg oneliner accounting failed source=%s", sel_source, exc_info=True)
         finally:
             await session.destroy()
+            # A provider-backed handle appended this turn to the ONE shared ``_bg``
+            # conversation; ``destroy()`` only released its semaphore. Without the
+            # recycle no criterion bounds that conversation for one-liner traffic,
+            # so it grows until the provider refuses it as too long. A runtime
+            # handle's session was ephemeral and carries no marker: unchanged.
+            if getattr(session, "shares_background_conversation", False) is True:
+                try:
+                    await sessions.recycle_background(context_overflowed=overflowed)
+                except Exception:
+                    logger.debug("bg oneliner recycle failed source=%s", sel_source, exc_info=True)
 
 
 def _background_crew_log_owner(sessions: Any, crew_log_session_key: str, crew_log_kind: str) -> str:
@@ -2208,11 +2502,12 @@ async def background_turn(
     memory_store: str = "",
     crew_log_kind: str = "",
     crew_log_session_key: str = "",
+    session_key: str | None = None,
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
     Every background caller needs the same three steps around its prompt: acquire
-    the shared session (which takes its per-session semaphore), release that
+    its persistent session (which takes its per-session semaphore), release that
     semaphore in a ``finally`` or the next caller deadlocks on it, and recycle the
     session afterwards. Callers that hand-rolled those steps had no reason to also
     record what the turn cost, so background spend reached the provider's bill
@@ -2239,7 +2534,7 @@ async def background_turn(
     """
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
-    key = BACKGROUND_KEY
+    key = session_key or BACKGROUND_KEY
     # Pinned before the first suspension point for the same reason the other
     # background helper does it: the owning slot can be reset or recycled while
     # this turn runs, and its successor is a different ledger unit. Everything the
@@ -2345,10 +2640,44 @@ async def background_turn(
             try:
                 if memory_store:
                     await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-                else:
+                elif key == BACKGROUND_KEY:
                     await sessions.recycle_background()
+                else:
+                    await sessions.recycle_background(
+                        session_key=key, agent=agent or BACKGROUND_AGENT
+                    )
             except Exception:
                 logger.debug("background recycle failed task=%s", task, exc_info=True)
+
+
+#: Terminal stop reasons that mean the backend never finished the turn: the
+#: session handle ends a turn its backend did not answer within the turn ceiling
+#: as ``STOP_REASON_TIMEOUT``, and an unrecovered stale turn as
+#: ``STOP_REASON_STALE_RECOVER``. A user-requested stop (``"cancelled"``) is not
+#: one: its partial text is what the caller asked to keep.
+_UNFINISHED_TURN_STOP_REASONS = frozenset({STOP_REASON_TIMEOUT, STOP_REASON_STALE_RECOVER})
+
+
+def unfinished_turn_error(event: LLMEvent, partial_output: str) -> AcpTimeoutError | None:
+    """The prompt-timeout error for a turn the backend never finished, else ``None``.
+
+    Raised, not returned as an answer, so the caller's failure path runs: the text
+    collected so far is not a result. It is the same error the per-process
+    client raises when a prompt times out, carrying the partial text, and it is
+    never transient: a retry would re-send the prompt to a backend that stopped
+    answering and wait out the ceiling again. A collector that ends a turn on
+    ``EVENT_COMPLETE`` asks this function rather than listing the unfinished
+    stop reasons itself.
+    """
+    stop_reason = str(getattr(event, "stop_reason", "") or "")
+    if stop_reason not in _UNFINISHED_TURN_STOP_REASONS:
+        return None
+    error = AcpTimeoutError(
+        partial_output,
+        message=f"ACP prompt timed out: the backend did not finish the turn ({stop_reason})",
+    )
+    error.transient = False
+    return error
 
 
 async def stream_and_collect(
@@ -2585,10 +2914,21 @@ async def stream_and_collect(
                             on_complete(event)
                         except Exception:
                             logger.debug("on_complete callback failed", exc_info=True)
+                    unfinished = unfinished_turn_error(event, result_text)
+                    if unfinished is not None:
+                        raise unfinished
                     break
             return result_text
         except AcpError as exc:
             msg = str(exc)
+            if is_context_overflow_error(exc):
+                # Left on the provider for ``recycle_background``: a caller that
+                # swallows this error (history consolidation does) still has its
+                # shared ``_bg`` conversation replaced rather than kept at a size
+                # every later turn is refused on.
+                from kiro_crew.session_background import mark_context_overflowed
+
+                mark_context_overflowed(provider)
             # See is_prompt_busy for why this is structural rather than a
             # substring test. Both arms below (cancel+retry and
             # PromptBusyExhaustedError) hang off it, and the unattended callers
@@ -2771,6 +3111,9 @@ async def stream_and_collect(
                     continue
 
             # ── Case 3: fatal (auth, validation, exhausted retries) — propagate. ──
+            # Say whether a tool fired this turn, so a caller that re-runs the
+            # prompt on a fresh session can refuse to repeat a side effect.
+            setattr(exc, TOOL_ACTIVITY_ATTR, _turn_tool_activity)
             raise
         finally:
             # Runs before the value reaches the caller on success, and before the exception
@@ -2916,6 +3259,16 @@ async def _resolve_permission(
     # These run even for AUTO_APPROVE callers (workflows, crons, etc.)
     # to ensure BUILTIN_DENY_PATTERNS and sensitive-path protection cannot
     # be bypassed by callers that skip HookManager wiring.
+    # The empty-title guard, the deny-regex/bash tiers and the reported title
+    # all read the RAW title, exactly as the hook side does: its deny tier runs
+    # over BOTH ``GateFacts.normalized`` AND the raw ``call.title``
+    # (``deny_targets``), and a deny rule such as ``^Running: ...`` is written
+    # against the prefixed title, so stripping it here would stop that rule
+    # matching and let a denied tool through. Only the IDENTITY exemption below
+    # reads the normalized title, matching ``GateFacts.exempt_identity`` (which
+    # uses ``self.normalized``): that is the one check the two sides must agree
+    # on -- ``Running: @server/tool`` and ``@server/tool`` name the same
+    # verified identity, so both must be exempt.
     normalized = event.title or ""
     if not normalized:
         _log("denied", error="Blocked: missing tool title", metadata={"mechanism": "always_deny"})
@@ -2924,6 +3277,33 @@ async def _resolve_permission(
         )
         await provider.reject_tool(event.request_id)
         return False
+    # The frame named an MCP server or tool longer than Crew's own tool surface
+    # admits (``mcp_identity_unreadable``): not a call that names no tool but one
+    # whose exact per-tool deny cannot be checked, so it is refused here on every
+    # surface -- the same as the handle and the client do before this tier -- and
+    # never judged by its title under an empty identity.
+    if getattr(event, "mcp_identity_unreadable", False):
+        _log(
+            "denied",
+            error="Blocked: MCP tool identity is unreadable (name over the tool-surface bound)",
+            metadata={"mechanism": "always_deny"},
+        )
+        await _steer_host_deny(
+            provider,
+            event,
+            "the tool call named an MCP server or tool longer than the tool surface admits",
+            cause=DENY_CAUSE_INVALID_NAME,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+    # The title tier judges a shell title in kiro-cli's cut shape (a leading
+    # slice of the recovered command plus ``...``) in its uncut form,
+    # exactly as ``hooks.on_tool_call`` does (``untruncated_shell_title``); any
+    # other title is judged verbatim.
+    _shell_command = getattr(event, "shell_command", None)
+    judged_title = untruncated_shell_title(
+        normalized, _shell_command if isinstance(_shell_command, str) else None
+    )
     # Honor the user's Settings>Security opt-out + governance pins on this
     # surface too (cron / Slack / workflow / heartbeat). Without threading the
     # effective set, is_denied() fails closed to ALL built-ins here, which would
@@ -2995,7 +3375,32 @@ async def _resolve_permission(
     # tightening: that call keeps its document scan below AND gains the
     # target gate). Suppressing the document scan stays keyed on the fully
     # trusted edit reroute (``_edit_params is not None``) alone.
-    _edit_target_gated = _edit_params is not None or bool(event.diff_path and not event.is_shell)
+    #
+    # A DELETE (KAS ``delete_file``, ACP kind ``delete``) is on the write plane
+    # too -- the file is gone -- and carries no document body, so it gains the
+    # target gate under the same trusted-provenance conditions as an edit and
+    # keeps its scan. Same predicate the hook tier and governance route on
+    # (``tool_paths.is_edit_call`` / ``WRITE_PLANE_KINDS``), so the three cannot
+    # disagree on which kinds a config-protecting hard deny applies to.
+    _trusted_delete = (
+        isinstance(event.tool_kind, str)
+        and event.tool_kind in _WRITE_PLANE_KINDS
+        and event.tool_kind != _EDIT_TOOL_KIND
+        and event.shell_classified
+        and not event.is_shell
+        and event.raw_params_trusted
+        and isinstance(event.raw_tool_params, dict)
+    )
+    _edit_target_gated = (
+        _edit_params is not None or _trusted_delete or bool(event.diff_path and not event.is_shell)
+    )
+    # The params the target gate judges: an edit's (rerouted) or a trusted
+    # delete's; a diff-only route passes None and is judged by ``diff_path``.
+    _gated_params = (
+        _edit_params
+        if _edit_params is not None
+        else (event.raw_tool_params if _trusted_delete else None)
+    )
     # Every OTHER non-shell tool with client-established provenance gets a
     # FIELD-SCOPED scan: the same three predicates, over every string in the
     # trusted params except a document body (``platform.tool_paths.
@@ -3089,12 +3494,37 @@ async def _resolve_permission(
         # the strings. Title first, so a request denied on its title
         # reports the title-tier reason and mechanism exactly as before.
         title_hit = _title_denial(
-            normalized, _denied_regexes, exempt_command=_path_tier_exempt(event)
+            judged_title,
+            _denied_regexes,
+            exempt_command=_path_tier_exempt(event),
+            identity_exempt=title_is_trusted_mcp_identity(
+                _normalize_tool_name(normalized),
+                getattr(event, "mcp_server_name", "") or "",
+                getattr(event, "tool_name", "") or "",
+                mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
+            ),
+            bash_subject=(
+                _normalize_tool_name(judged_title) if judged_title != normalized else None
+            ),
         )
         if title_hit is not None:
-            return (title_hit[0], title_hit[1], normalized, "always_deny")
+            return (title_hit[0], title_hit[1], judged_title, "always_deny")
+        if judged_title != normalized and hooks is not None:
+            # The operator's own regexes judge the title as SENT when it was
+            # rebuilt, as ``hooks.on_tool_call`` does and through the same
+            # floor-free tier, whole string and per segment: a rule written
+            # against the cut text kiro-cli displayed keeps firing, including one
+            # anchored to a single chained command, and no shipped rule sees that
+            # text. Without a HookManager no operator rule is known.
+            operator_regexes = hooks.operator_denied_regexes()
+            if operator_regexes:
+                shown_reason = is_denied_synthesized_target(
+                    normalized, operator_regexes, segments=True
+                )
+                if shown_reason:
+                    return ("regex", shown_reason, normalized, "always_deny")
         if _edit_target_gated:
-            edit_hit = _edit_target_denial(_edit_params, event.diff_path)
+            edit_hit = _edit_target_denial(_gated_params, event.diff_path, event.tool_kind)
             if edit_hit is not None:
                 return (*edit_hit, "always_deny_input")
         if _scoped_truncated:
@@ -3129,6 +3559,21 @@ async def _resolve_permission(
             },
         )
         await _steer_host_deny(provider, event, _reason, cause=DENY_CAUSE_POLICY)
+        await provider.reject_tool(event.request_id)
+        return False
+
+    if policy == ToolApprovalPolicy.READ_ONLY and event.deepseek_read_only_issue:
+        # A DeepSeek Harness session whose launch did not prove stock dsh owns its
+        # read tools: any plugin it composes may register a tool under a read name,
+        # so no call is provable read-only and the turn is REJECT_ALL.
+        _log("rejected", metadata={"reason": "read_only_policy_unproven_composition"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface is read-only and the harness composes a plugin Kiro Crew "
+            "cannot vouch for, so every tool call is refused",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
         await provider.reject_tool(event.request_id)
         return False
 
@@ -3170,8 +3615,10 @@ async def _resolve_permission(
             return False
 
     if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
-        tool_result = hooks.on_tool_call(
+        tool_result = await run_in_tool_gate_pool(
+            hooks.on_tool_call,
             event.title,
+            on_queue_timeout=hook_gate_busy,
             session_key=session_key,
             agent=agent,
             app=app,
@@ -3292,6 +3739,26 @@ async def _resolve_permission(
         )
         await provider.reject_tool(event.request_id)
         return False
+
+    # A git read the gate's read-only tier declined (git reads `.git/config`,
+    # whose `core.fsmonitor` / `core.hooksPath` name a program no text
+    # classifier sees) falls through to the surface's approver. With no
+    # approver on a hook-based surface (a Meetings dispatch), the default
+    # below would run it unchecked -- not even the name-grant check the
+    # read-only approve ran -- so it is refused instead.
+    if policy == ToolApprovalPolicy.HOOK_BASED and hooks and on_tool_approval is None:
+        _git_command = name_grant.shell_command_for_event(event)
+        if _git_command and command_invokes_git(_git_command) and is_read_only_bash(_git_command):
+            _log("rejected", metadata={"reason": "git_read_headless_reject"})
+            await _steer_host_deny(
+                provider,
+                event,
+                "a git command is never auto-approved as a read (git runs programs "
+                "its repository config names) and this surface has no approver",
+                cause=DENY_CAUSE_SURFACE_POLICY,
+            )
+            await provider.reject_tool(event.request_id)
+            return False
 
     # Interactive approval if callback provided
     if on_tool_approval:

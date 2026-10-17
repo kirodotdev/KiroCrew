@@ -150,7 +150,7 @@ def test_the_argv_builder_has_exactly_the_two_known_callers():
     """
     assert _call_census("build_port_forward_argv") == {
         ("cloud/ssm.py", "open_port_forward"),
-        ("instances/ssh_tunnel_manager.py", "_build_ssm_tunnel_argv"),
+        ("instances/ssh_tunnel_manager_child_text.py", "_build_ssm_tunnel_argv"),
     }
 
 
@@ -235,7 +235,7 @@ def test_the_instances_layer_keeps_the_one_fargate_forward():
     Without this, deleting the ``fargate`` transport would leave every check
     above passing and no way at all to reach a Fargate crew.
     """
-    functions = _functions_of("instances/ssh_tunnel_manager.py")
+    functions = _functions_of("instances/ssh_tunnel_manager_transport.py")
 
     resolve = functions.get("_resolve_transport")
     assert resolve is not None, "the transport resolver is gone"

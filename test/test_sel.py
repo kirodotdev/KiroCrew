@@ -727,7 +727,7 @@ log.flush()
     ):
         """The agent must not be able to CREATE the condition that switches targets.
 
-        ``sel_hmac.key`` is a sandbox read-write leaf (``sandbox.py``'s
+        ``sel_hmac.key`` is a sandbox read-write leaf (``sandbox_leaves.py``'s
         ``_CREW_SANDBOX_VISIBLE_LEAVES``, alongside ``trust``), so the audited
         agent can drop a file at the legacy key path on an install whose trust
         dir is perfectly healthy -- and the lock path never reads its bytes, so
@@ -1448,6 +1448,8 @@ class TestInferSource:
         ("subagent:abc", "subagent"),
         ("taskrunner:spec1", "taskrunner"),
         ("_bg", "background"),
+        ("_consolidate", "background"),
+        ("_consolidate:other", "slack"),
         ("cli_chat", "cli"),
         # Namespaced messaging channels are attributed to their transport,
         # matching context._runtime_display_name's set — via ``{ns}:`` …

@@ -1,6 +1,6 @@
 """The layering: what is the envelope, what belongs to one kind, who may write it.
 
-``test_crew_log_core.py`` covers the format. This file covers the SPLIT -- the
+``test_crew_log_core*.py`` cover the format. This file covers the SPLIT -- the
 matrix of which ``src`` each kind accepts, the guest rules that authorization
 hangs off ``src``, and the two crew contracts' envelope half. It is a matrix
 rather than a set of examples because the hole it closes is a shared source list

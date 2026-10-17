@@ -7,9 +7,11 @@ import { InstancesPanel, humanizeSecs } from '../pages/settings/InstancesPanel'
 vi.mock('../api/client', () => {
   class ApiError extends Error {
     status: number
-    constructor(status: number, message: string) {
+    body: string
+    constructor(status: number, message: string, body = '') {
       super(message)
       this.status = status
+      this.body = body
     }
   }
   return {
@@ -37,7 +39,7 @@ beforeEach(() => vi.clearAllMocks())
 describe('InstancesPanel', () => {
   it('shows an Enable toggle when the feature is disabled (403) and calls patchConfig', async () => {
     ;vi.mocked(api.listInstances).mockRejectedValue(
-      new ApiError(403, 'instances feature is disabled (set instances.enabled=true)'),
+      new ApiError(403, 'instances feature is disabled (set instances.enabled=true)', JSON.stringify({ error: 'instances feature is disabled (set instances.enabled=true)', code: 'instances_disabled' })),
     )
     ;vi.mocked(api.patchConfig).mockResolvedValue({})
     const u = userEvent.setup()
@@ -45,6 +47,15 @@ describe('InstancesPanel', () => {
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
     await u.click(screen.getByRole('button', { name: /Enable remote crew management/i }))
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('instances.enabled', true))
+  })
+
+  it('keys the Enable toggle on the instances_disabled code, not on the message text', async () => {
+    // A 403 that says "disabled" without the gateway's code is a load error,
+    // not the feature gate, so the panel must not offer to enable anything.
+    ;vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'account disabled by policy'))
+    renderWithProviders(<InstancesPanel />)
+    expect(await screen.findByText('account disabled by policy')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
   })
 
   it('shows a restart-required banner + Disable toggle when enabled but not active', async () => {
@@ -69,7 +80,7 @@ describe('InstancesPanel', () => {
     renderWithProviders(<InstancesPanel />)
 
     await screen.findByText(/No remote crews configured yet/i)
-    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('Crew 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.type(
       screen.getByPlaceholderText(/leave blank for standard installs/i),
@@ -99,7 +110,7 @@ describe('InstancesPanel', () => {
     const first = renderWithProviders(<InstancesPanel />)
 
     await screen.findByText(/No remote crews configured yet/i)
-    await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Nimbus')
+    await u.type(screen.getByPlaceholderText('Crew 1'), 'Nimbus')
     await u.type(screen.getByPlaceholderText('host-1-alias'), 'nimbus-alias')
     await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
 
@@ -111,7 +122,7 @@ describe('InstancesPanel', () => {
     // navigation is — a fresh one would model a full page reload instead.
     renderWithProviders(<InstancesPanel />, { store: first.store })
     await waitFor(() =>
-      expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue('Nimbus'),
+      expect(screen.getByPlaceholderText('Crew 1')).toHaveValue('Nimbus'),
     )
     expect(screen.getByPlaceholderText('host-1-alias')).toHaveValue('nimbus-alias')
 
@@ -120,7 +131,7 @@ describe('InstancesPanel', () => {
     ;vi.mocked(api.addInstance).mockResolvedValue({})
     await u.click(screen.getByRole('button', { name: 'Add remote crew' }))
     await waitFor(() => expect(api.addInstance).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue(''))
+    await waitFor(() => expect(screen.getByPlaceholderText('Crew 1')).toHaveValue(''))
   })
 
 

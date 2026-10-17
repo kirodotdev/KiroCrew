@@ -506,13 +506,24 @@ def _owner_still_running(pid: object, start_id: object) -> bool:
     population this instrument exists to report.
 
     **Liveness comes from ``pid_exists``, identity only refines it.**
-    ``get_process_start_id`` returns None on Windows and on any process it may not
-    introspect, and its own contract says a None must NOT be read as a mismatch --
-    so using it as the liveness test would judge every owner dead on an entire
-    platform and reap live sibling sessions there. It is used only to catch pid
+    ``get_process_start_id`` returns None on any process it may not introspect, and
+    its own contract says a None must NOT be read as a mismatch --
+    so using it as the liveness test would judge dead every owner it cannot
+    introspect and reap live sibling sessions. It is used only to catch pid
     REUSE, and only when both sides of the comparison are actually available --
     including reuse of THIS process's own pid, which a container restart turns
     from a freak collision into the normal case.
+
+    One live, identity-matching owner is NOT running its sessions: the supervisor
+    an in-app restart through a supervising launcher leaves behind. The restart
+    ``os.execv``s the launcher, which runs the new gateway as a supervised child,
+    so the old pid stays alive with its start identity unchanged -- now running the
+    launcher, with every session the old image held gone. A crumb it wrote is a
+    casualty, not a live session, and reading the supervisor as its owner would
+    keep it on disk for as long as the supervisor lives. That supervisor is a live
+    ancestor whose image is not a Python interpreter
+    (``platform_compat.is_exec_supervisor_of_this_process``); a live gateway
+    ancestor still runs Python and keeps its crumbs.
     """
     if not isinstance(pid, int) or pid <= 0:
         # A crumb from before ownership was recorded. It cannot be attributed, so
@@ -537,6 +548,10 @@ def _owner_still_running(pid: object, start_id: object) -> bool:
 
         if not platform_compat.pid_exists(pid):
             return False  # definitively gone: a casualty to be reported
+        if platform_compat.is_exec_supervisor_of_this_process(pid):
+            # This gateway's own previous image, exec-ed into the launcher that
+            # supervises this process: its sessions ended with the exec.
+            return False
         live_start_id = platform_compat.get_process_start_id(pid)
     except Exception:
         return True

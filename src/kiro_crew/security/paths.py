@@ -147,7 +147,7 @@ _SENSITIVE_HOME_DIRS: list[str] = [
     # covered too. Agent file tools must not read them through the shared gate.
     # The internal reader opens the DB read-only + SEL-audited (NOT via
     # is_sensitive_path), so it still works; the sandbox bind-mount list
-    # (sandbox.py) is SEPARATE, so kiro-cli's own auth is unaffected.
+    # (sandbox_tiers.py) is SEPARATE, so kiro-cli's own auth is unaffected.
     # The identity-store directories come from the single canonical table
     # (``identity_stores.IDENTITY_STORE_ROOTS``) so this fence and the five other
     # readers cannot drift apart. The splice emits all eight in table
@@ -411,6 +411,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # run it; file tools must not inspect or replace the executable the
     # unsandboxed gateway later uses for startup cleanup and owner launches.
     "playwright-cli",
+    # KAS engine bundles the gateway installs then executes (``acp.kas_bundle``);
+    # same class as ``playwright-cli``: READONLY in-sandbox, fenced from file tools.
+    "engines",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
@@ -532,6 +535,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
     # gateway opens the path.
     "tag-grants",
+    "pinned-order",  # person-only sidebar order; mirror: sandbox._CREW_HIDDEN_LEAVES
     # Crewmate teams (``crew_teams.py``): the owner's grouping of the roster. Not
     # a secret, but it decides which team view a crewmate's questions and work
     # roll up into, and a crewmate must not be able to move itself or a sibling.
@@ -786,7 +790,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # dashboard render/relay) open it directly in-process.
     "mcp-apps",
     # Runtime exec dir. ``run/`` holds paths the gateway executes OUTSIDE the
-    # agent sandbox: the sandbox launcher scripts (``sandbox.py`` execs
+    # agent sandbox: the sandbox launcher scripts (``sandbox_argv.py`` execs
     # ``python <home>/run/kirocrew_sandbox_*.py``) and the remote-instance
     # run-marker ``gateway-<port>.bin`` (``instances/run_marker.py``), whose
     # contents the SSH token-mint reads and ``exec``s on the remote host. A
@@ -1015,15 +1019,16 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
-    # MCP launch approval and resolved launcher artifacts. gatewayd spawns a
-    # stubbed server's backend OUTSIDE the sandbox, as the user. The approval
-    # directory records which launch each name may run; ``mcp/resolved`` supplies
-    # an executable substituted for an approved npm launcher. Every writer runs
-    # in the gateway. Reading either path decides nothing inside the sandbox.
+    # Gateway-written inputs to decisions made outside the sandbox. gatewayd spawns a stubbed
+    # server's backend as the user: ``mcp-launch-approvals`` records which launch each name may
+    # run and ``mcp/resolved`` supplies the substituted executable. ``gateway_id`` is the id the
+    # Remote Crew cycle guard compares; a write would choose whether a loop is detected. All
+    # are written by the gateway, and reading them decides nothing inside the sandbox.
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
-    for leaf in ("mcp-launch-approvals", "mcp/resolved")
+    for leaf in ("mcp-launch-approvals", "mcp/resolved", "gateway_id", "skill-projection")
 ]
+
 _WRITE_PROTECTED_HOME_PATHS += [
     # The cloud launcher's LAUNCH RECORD (``cloud/launch_state.py``): the profile, region
     # and tag the last launch decided. WRITE-protected on the same footing as
@@ -1037,6 +1042,16 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # and sealing it against reads would break them all. The gateway and the CLI write it
     # outside the agent's file-edit gate, so the launch path is unaffected.
     f"{prefix}/cloud_launch_state.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The microvm lane's CREW RECORDS (``cloud/microvm/record.py``): the launch record's
+    # reason above without the confirmation step it still has. Each row carries a
+    # ``microvm_id`` that ``teardown`` passes straight to ``launcher.terminate``, so an
+    # agent able to write this file could point one crew's row at another crew's VM and
+    # have the owner's next delete destroy that one instead. Readable like the paths
+    # above, and the gateway writes it outside the agent's file-edit gate.
+    f"{prefix}/microvm_crews.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
@@ -1931,6 +1946,22 @@ def _mark_stalled(prefix: str, budget: float) -> None:
 _UNC_PREFIX_RE = re.compile(r"^[\\/]{2}[^\\/]")
 _ON_WINDOWS = os.name == "nt"
 
+#: Local-drive namespace prefixes and default-stream suffixes: Windows opens each
+#: spelling as the plain drive path. UNC, volume GUID and named streams stay as written.
+_WIN_LOCAL_NS_RE = re.compile(r"^(?:[\\/]{2}[?.]|\\\?\?)[\\/](?=[A-Za-z]:(?:[\\/]|$))")
+_WIN_DEFAULT_STREAM_RE = re.compile(
+    r"(?:::\$DATA|::\$INDEX_ALLOCATION|:\$I30:\$INDEX_ALLOCATION)$", re.IGNORECASE
+)
+
+
+def _fold_windows_alias(path: str) -> str:
+    """Lexically fold a Windows alias of a local path to its plain spelling; identity off Windows."""
+    if not _ON_WINDOWS:
+        return path
+    folded = _WIN_LOCAL_NS_RE.sub("", path, count=1)
+    folded += "\\" if folded != path and len(folded) == 2 else ""  # bare volume -> drive root
+    return _WIN_DEFAULT_STREAM_RE.sub("", folded)
+
 
 def _is_unc_path(expanded: str) -> bool:
     """``\\\\server\\share\\...`` in either separator spelling.
@@ -2212,7 +2243,10 @@ def _candidate_forms(
     :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
     """
     # Expand ~ and $HOME
-    expanded = os.path.expanduser(os.path.expandvars(path_str))
+    raw = os.path.expanduser(os.path.expandvars(path_str))
+    # Fold before resolving (a ``\\?\`` spelling would skip resolution as UNC-shaped);
+    # the raw spelling stays a lexical candidate, so folding only adds candidates.
+    expanded = _fold_windows_alias(raw)
 
     # Anchor a relative input against the supplied workspace dir so it resolves
     # to the real file rather than the gateway's CWD.  Absolutize base_dir
@@ -2233,6 +2267,8 @@ def _candidate_forms(
     candidates: set[str] = set() if pre_resolved else _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
+    if raw != expanded:
+        candidates.update((os.path.normpath(raw), raw))
     return candidates
 
 
@@ -2685,14 +2721,9 @@ _TTL_COST_RATIO_MIN = 0.0
 _TTL_COST_RATIO_MAX = 1000.0
 _TTL_MAX_SECS_ENV = "KIROCREW_PATH_GATE_TTL_MAX_SECS"
 _TTL_MAX_SECS_DEFAULT = 30.0
-#: The ceiling an operator may raise the ceiling TO. The measurement justifies
-#: nothing above about a minute -- that is the longest expiry the default ratio
-#: asks for at the heaviest load the gate can still serve, and past that load no
-#: expiry helps at all -- so 300s leaves generous headroom while refusing a value
-#: that could only widen the stale window. The floor is the shipped floor: a
-#: ceiling below it would invert the clamp.
+#: Floor on the ceiling: a ceiling below the expiry floor would invert the clamp.
 _TTL_MAX_SECS_MIN = 0.1
-_TTL_MAX_SECS_MAX = 300.0
+_TTL_MAX_SECS_MAX = 60.0
 
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
@@ -2740,14 +2771,18 @@ _HOME_TARGETS_TTL_COST_RATIO = _env_float(
     _TTL_COST_RATIO_ENV, _TTL_COST_RATIO_DEFAULT, _TTL_COST_RATIO_MIN, _TTL_COST_RATIO_MAX
 )
 
-#: Hard ceiling on the expiry, and therefore THE WORST-CASE STALE WINDOW for the
-#: deeper-leaf residual described above: 30 seconds, and never longer by any
-#: path through this module. Deliberately NOT derived from the ratio: at high
-#: contention the ratio asks for minutes (a 7.5s rebuild wants 375s), and this
-#: gives up the 2% share there rather than give up the freshness bound. Sized to
-#: cover what the load levels the gate can still SERVE actually ask for -- a 0.4s
-#: rebuild under two contending threads asks for 20s -- so the clamp binds only
-#: where a single cold rebuild is already at its own budget and no expiry helps.
+#: Hard ceiling on the EXPIRY, bounding the deeper-leaf residual stale window
+#: described above. The worst-case data age served is this ceiling PLUS the
+#: rebuild that measured the entry (expiry starts at the clock read AFTER the
+#: build), not the ceiling alone. A BOUNDED rebuild (pooled ``mc-pathres``) can
+#: run its full 12s deadline -- the 8s ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS`` budget
+#: plus its ``min(budget*1.5, 4.0)`` = 4s grace -- so the worst case is ~42s for
+#: the shipped default, not 30s; an INLINE rebuild
+#: (``_cached_home_dir_targets(inline=True)`` off the loop) has no such deadline,
+#: so a slow one adds its own unbounded duration -- the ceiling bounds the expiry,
+#: not that build's wall time. The two ceilings are separate: DEFAULT 30s
+#: (``_TTL_MAX_SECS_DEFAULT``), operator max 60s (``_TTL_MAX_SECS_MAX``); NOT
+#: derived from the ratio, which asks for minutes (375s for a 7.5s rebuild).
 _HOME_TARGETS_TTL_MAX_SECS = _env_float(
     _TTL_MAX_SECS_ENV, _TTL_MAX_SECS_DEFAULT, _TTL_MAX_SECS_MIN, _TTL_MAX_SECS_MAX
 )
@@ -3269,7 +3304,7 @@ def _path_in_home_dirs(
     implementation means the symlink/casefold hardening below cannot drift
     between the two gates.
 
-    ── Symlink robustness (pentest AWS-345 / AWS-62) ──
+    ── Symlink robustness ──
     A workspace symlink pointing at ``~/.aws/credentials`` (absolute OR relative
     ``../../.aws/credentials`` traversal) must NOT be readable through the link.
     We therefore check MULTIPLE candidate forms of the input and return True if
@@ -3446,7 +3481,7 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     same mount would. Nothing is admitted while it blocks.
     """
     return _path_in_home_dirs(resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True) or (
-        resolved.casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
+        _fold_windows_alias(resolved).casefold().endswith(_KEYSTONE_ARTIFACT_SUFFIXES)
         and _is_keystone_publish_artifact(resolved, pre_resolved=True)
     )
 

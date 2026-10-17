@@ -2,7 +2,7 @@
 
 A single asyncio background loop, started from ``register_routes(app)`` via
 ``app.on_startup`` and cancelled on ``app.on_cleanup``. Every
-:data:`POLL_INTERVAL_SEC` seconds it makes two passes over the connected repos:
+:data:`POLL_INTERVAL_SEC` seconds it makes up to three passes over the connected repos:
 
   1. **new-item notification** — each repo that has opted in (per-repo setting
      ``notify_on_new_issue``) is checked for tracked items (GitHub/GitLab issues,
@@ -11,7 +11,12 @@ A single asyncio background loop, started from ``register_routes(app)`` via
      the notification history) when new ones appear;
   2. **crew sweep** (:func:`crew_runtime.sweep_repo`) — every repo with a live crew
      has its crews' open work items compared against the six unblock signals, and
-     the owning crew is woken when one moves.
+     the owning crew is woken when one moves;
+  3. **CI-failure alerts** (:func:`ci_watch.poll_ci_failures`) — the GitHub repos
+     that opted in (per-repo setting ``notify_on_own_pr_ci_failure``) have the
+     Actions runs on the signed-in user's own open PRs read, and a failed run
+     raises a notification on the app's ``ci-failure`` channel. No repo opted in
+     means no call at all.
 
 THIS IS THE ONLY ALWAYS-ON LOOP IN THE APP, which is why the crew sweep lives here
 rather than in the route layer. Everything else — including ``routes.py``'s
@@ -52,7 +57,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime, provider, store
+from kiro_crew.apps.builtins.issue_radar.backend import ci_watch, crew_runtime, provider, store
 from kiro_crew.apps.manager import is_app_enabled
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -192,6 +197,7 @@ async def _poll_once(app: web.Application) -> None:
         return
     _crews_suspended = False
     repos = await asyncio.to_thread(store.list_connected_repos)
+    ci_keys: list[provider.RepoKey] = []
     for entry in repos:
         owner = entry.get("owner")
         repo = entry.get("repo")
@@ -217,6 +223,8 @@ async def _poll_once(app: web.Application) -> None:
                 logger.warning(
                     "issue-radar watch failed for %s/%s", owner, repo, exc_info=True
                 )
+        if ci_watch.opted_in(settings, key):
+            ci_keys.append(key)
         try:
             await crew_runtime.sweep_repo(app, key)
         except Exception:
@@ -225,6 +233,11 @@ async def _poll_once(app: web.Application) -> None:
             logger.warning(
                 "issue-radar crew sweep failed for %s/%s", owner, repo, exc_info=True
             )
+    if ci_keys:
+        try:
+            await ci_watch.poll_ci_failures(app, ci_keys)
+        except Exception:
+            logger.warning("issue-radar CI watch failed", exc_info=True)
 
 
 async def _poll_repo(app: web.Application, key: provider.RepoKey) -> None:

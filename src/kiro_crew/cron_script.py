@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import sanitize_spec_env
@@ -461,7 +462,7 @@ def _write_grant_epochs(path: Path, data: dict[str, Any]) -> None:
             fh.write(json.dumps(data))
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_name, path)
+        replace_with_retry(tmp_name, path)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -1214,6 +1215,7 @@ class ScriptContext:
             key: value
             for key, value in (
                 ("name", redact(name)),
+                ("title", redact(name)),
                 ("folder_id", folder_id),
                 ("agent", agent),
                 ("model", model),
@@ -1355,23 +1357,56 @@ class ScriptContext:
 
         An HTTP refusal keeps the gateway's own reason, redacted, because
         ``HTTP Error 403: Forbidden`` alone hides the remedy the gateway names
-        in its body.
+        in its body. It also carries ``status_code`` and, when the body names
+        one, the gateway's ``code``, so a script that calls ``_post`` itself can
+        tell a refused identity (409 ``member_identity_unavailable``) from a job
+        that is already running (409 with no ``code``) without parsing the
+        ``error`` text. A transport failure has neither and stays
+        ``{"error": str(exc)}``.
         """
         where = f"{req.get_method()} {req.selector}"
         try:
             with loopback_urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
+            body = ""
             detail = ""
             try:
-                detail = redact(exc.read().decode("utf-8", "replace"))[:500]
+                body = exc.read().decode("utf-8", "replace")
+                detail = redact(body)[:500]
             except Exception:
                 pass
             logger.warning("ScriptContext %s refused: HTTP %s", where, exc.code)
-            return {"error": f"HTTP {exc.code}: {detail or exc.reason}"}
+            refusal: dict[str, Any] = {
+                "error": f"HTTP {exc.code}: {detail or exc.reason}",
+                "status_code": exc.code,
+            }
+            code = _refusal_code(body)
+            if code:
+                refusal["code"] = code
+            return refusal
         except Exception as exc:
             logger.warning("ScriptContext %s failed: %s", where, exc)
             return {"error": str(exc)}
+
+
+_REFUSAL_CODE = re.compile(r"[a-z0-9_.-]{1,64}")
+
+
+def _refusal_code(body: str) -> str:
+    """The gateway's machine-readable ``code`` from a refusal body, or ``""``.
+
+    The body is text this process did not write, so a code survives only as a
+    short identifier; anything else, and any body that does not parse as a
+    JSON object (:func:`parse_json_object_line` answers ``None`` for text that
+    is not JSON, for a scalar or a list, and for a body nested past the
+    parser's limit), yields no code.
+    """
+    parsed = parse_json_object_line(body)
+    code = parsed.get("code") if parsed is not None else None
+    if isinstance(code, str) and _REFUSAL_CODE.fullmatch(code):
+        return code
+    return ""
 
 
 # ── MCP Tool Bridge ──
@@ -1850,7 +1885,7 @@ def _bundle_relative_spec(module_part: str, app_root: Path) -> str:
     judged by containment rather than silently re-rooted.
 
     A ``..`` segment is refused LEXICALLY, before any join, in the same order and
-    for the same reason as ``apps.manifest._path_escapes_app_root``: the verdict
+    for the same reason as ``apps.manifest._app_path_refusal``: the verdict
     is then identical on every host, where deferring to ``resolve()`` would make
     it host-dependent (on POSIX ``..\\evil.py`` is one odd filename that stays
     inside the root; on Windows it escapes). Canonical containment in the caller

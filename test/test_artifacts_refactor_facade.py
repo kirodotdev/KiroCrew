@@ -28,6 +28,11 @@ from kiro_crew import artifacts as art_mod
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _FACADE_SOURCE = Path(inspect.getfile(art_mod))
+#: The facade and the ``artifacts_*`` owners its ``ArtifactStore`` binds members from.
+_STORE_SOURCES = (
+    _FACADE_SOURCE,
+    *(Path(inspect.getfile(importlib.import_module(name))) for name in art_mod._OWNERS),
+)
 _FORWARDED = sorted(art_mod._EXPORTS.items())
 _FORWARDED_IDS = [name for name, _owner in _FORWARDED]
 
@@ -59,7 +64,8 @@ def test_no_owner_import_binds_a_copy_only_the_owners_read() -> None:
     }
     read_here = {
         node.id
-        for node in ast.walk(tree)
+        for source in _STORE_SOURCES
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
     }
     owner_reads: set[str] = set()
@@ -177,7 +183,9 @@ def _bare_loads(source: str) -> list[tuple[int, str]]:
 def test_the_facade_reads_no_forwarded_name_as_a_bare_global() -> None:
     """A function defined here resolves a bare global through this module's own
     namespace, which ``__getattr__`` never answers, so it reads ``_rules.<name>``."""
-    assert _bare_loads(_FACADE_SOURCE.read_text(encoding="utf-8")) == []
+    assert [
+        hit for source in _STORE_SOURCES for hit in _bare_loads(source.read_text(encoding="utf-8"))
+    ] == []
 
 
 def test_the_bare_read_check_can_fail() -> None:

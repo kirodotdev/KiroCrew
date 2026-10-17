@@ -4,8 +4,8 @@ status: accepted
 revision: 4
 author: zezhexu
 created: 2026-08-09
-last-audited: 2026-09-28
-audited-at: 631f8e6dc
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 2328
 implementation-prs: [11582]
 tracking-issues: []
@@ -16,7 +16,9 @@ superseded-by: []
 
 - Status: accepted — the product decision is the owner-controlled Perpetual
   mode in §Accepted decision. Its implementation is tracked in
-  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582).
+  [#11582](https://github.com/kirodotdev/KiroCrew/pull/11582). Line numbers
+  and file sizes in the research sections below are as read at the commits this
+  document names for them, not live pointers.
 - **Revision 4 (2026-09-28): accepted one narrow product shape.** An owner may
   keep one crewmate's auto-nudge loop active without cycle or elapsed-time caps
   until the owner turns it off. The larger self-scheduled cron design below is
@@ -166,8 +168,9 @@ firing:
 None of the four can host a perpetual agent as-is:
 
 - **Cron** can express "wake at an absolute time" (`CronSchedule(kind="at")`,
-  `cron.py:201`) and already stores it durably, but `_execute` hard-disables an
-  `at` job the moment it fires (`cron.py:2407`):
+  `cron_service/model.py`) and already stores it durably, but `_execute` hard-disables an
+  `at` job the moment it fires (the one-shot park at the tail of `CronService._execute`,
+  `cron_service/service/run_execution.py`):
 
   ```python
   # One-shot "at" jobs without delete_after_run: disable instead of delete
@@ -186,7 +189,7 @@ None of the four can host a perpetual agent as-is:
   missed by a gateway restart at 02:59 is silently pushed out by a full
   interval. For a 5-minute babysit loop that is invisible; for an agent whose
   cadence is hours to days it is a lost day. Cron's `_is_due` compares `now`
-  against the stored deadline (`cron.py:2332`), so the same restart fires
+  against the stored deadline (`is_due` in `cron_service/schedule.py`), so the same restart fires
   immediately on recovery. Separately, `binding_key_for` explicitly refuses
   `cron:` / `hook:` / `subagent:` session keys (`autonudge.py`), so an
   autonudge loop cannot be bound to a cron-hosted session anyway.
@@ -258,7 +261,8 @@ Revision 2 flagged four of these five as **predicted**. Phase 0 ran (two agents,
    6 cycles — anything that reports only *changes* silently hides the largest
    static item.
 3. **Continuity across wakes** without keeping a process resident
-   (**verified** — `persistent_session` provides exactly this, `cron.py:321`;
+   (**verified** — `persistent_session` provides exactly this, `build_cron_session_context`
+   in `cron_service/identity.py`;
    Phase 0 confirmed it load-bearing: every cross-cycle chain rode on it).
 4. **A cadence discipline** — **has data, and the priority is inverted.**
    Revision 2's requirement ("must not wake more often than it has work for")
@@ -327,17 +331,17 @@ Touch points, all of which already switch on `schedule.kind`:
 
 | Site | Change |
 |---|---|
-| `cron.py:510 compute_next_run_ts` | `self` → return `at_ts` (unlike `at`, a past `at_ts` returns `now`, so a missed wake is due immediately) |
-| `cron.py:2332 _is_due` | `self` → `now >= at_ts` |
-| `cron.py:2058 _next_wake_secs` | `self` → same delay math as `at` (`:2070`) |
-| `cron.py:2407 _execute` tail | `self` → do **not** disable; apply the fallback if no wake was set (§4) |
-| `cron.py:321 build_cron_session_context` | `self` → assemble the perpetual-agent prompt (§7) |
-| `cron.py:418 format_schedule` | `self` → "self-scheduled · next <ts>" |
+| `compute_next_run_ts` in `cron_service/schedule.py` | `self` → return `at_ts` (unlike `at`, a past `at_ts` returns `now`, so a missed wake is due immediately) |
+| `is_due` in `cron_service/schedule.py` | `self` → `now >= at_ts` |
+| `next_wake_secs` in `cron_service/schedule.py` | `self` → same delay math as `at` |
+| `CronService._execute` tail in `cron_service/service/run_execution.py` | `self` → do **not** disable; apply the fallback if no wake was set (§4) |
+| `build_cron_session_context` in `cron_service/identity.py` | `self` → assemble the perpetual-agent prompt (§7) |
+| `format_schedule` in `cron_service/schedule.py` | `self` → "self-scheduled · next <ts>" |
 | `handlers/cron.py`, `cron_add` MCP tool | accept and validate the new kind |
 
 `persistent_session` is forced `True` for `self` jobs: the stable
 `cron:{job.id}` session key and the `last_result` prepend
-(`cron.py:321`–`:357`) are exactly the continuity requirement, and a perpetual
+(`build_cron_session_context`) are exactly the continuity requirement, and a perpetual
 agent with a fresh session each wake has no life at all.
 
 New `CronJob` fields, all defaulted so existing stores load unchanged:
@@ -375,7 +379,7 @@ This is the opposite of `wait` in every dimension that matters:
 | | `wait` (`mcp_core.py:758`, dispatch `:4517`) | `agent_sleep` |
 |---|---|---|
 | Turn | stays open — the tool call blocks | ends |
-| Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every 60s (`:4530`) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |
+| Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every `WAIT_PING_SECS` (5s) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |
 | Resident cost | full session + agent subprocess held for the whole duration | zero |
 | Ceiling | 1800s, clamped (`:4521`) | days (operator ceiling) |
 | Host restart | wait dies with the process; the turn is lost | deadline is on disk; fires on recovery |
@@ -389,7 +393,7 @@ that is 3 days of resident process, and any restart loses it.
 
 Guards on `next_wake`:
 
-- Floor `_MIN_INTERVAL_SECS = 60` (`cron.py:111`), ceiling 7 days.
+- Floor `_MIN_INTERVAL_SECS = 60` (`cron_service/fields.py`), ceiling 7 days.
 - Raised to the backoff floor when the previous cycles were no-ops (§4). The
   agent is told the effective time, so its journal records what actually
   happened rather than what it asked for.
@@ -400,7 +404,7 @@ Guards on `next_wake`:
   (`cron:{job.id}`) and may mutate **only that job**. It is refused outright
   from any non-`cron:` session, and from a subagent, using the strict env-only
   resolution `monitor_start` already uses for the same reason
-  (`mcp_tools/control.py` (`monitor_start`), resolving via `mcp_core.py`
+  (`mcp_tools/control.py` (`monitor_start`), resolving via `mcp_core_parts/identity.py`
   (`_resolve_session_key_strict`)) — a child process must not be able to
   PID-walk into its parent's identity and reschedule it.
 
@@ -523,7 +527,7 @@ a security boundary.
 The existing `ask_question` tool is **not** reusable here. It blocks the caller
 on an open HTTP request until the human clicks
 (`dashboard/handlers/ask_question.py:127`; see the note at
-`dashboard/chat_handlers.py:1917` — "ask_question holds an MCP worker on a
+`dashboard/chat_handlers.py` (`_reset_slot_session`) — "ask_question holds an MCP worker on a
 blocked HTTP request"). Correct for a dashboard user who is looking at the
 screen; wrong for an agent whose next reasonable act is to sleep for six hours.
 
@@ -570,7 +574,7 @@ next cycle with no restart.
 
 ### §7 Prompt assembly
 
-Extended in `build_cron_session_context` (`cron.py:321`) — the one place that
+Extended in `build_cron_session_context` (`cron_service/identity.py`) — the one place that
 already owns cron prompt composition — for `kind == "self"`:
 
 ```
@@ -593,7 +597,7 @@ Revision 1's gate implied that, and telling a model "you will be refused if you
 produce nothing" is precisely the instruction that produces invented work.
 
 Context growth is bounded by truncating the journal tail and reusing the
-existing `minimal_context` truncation of `last_result` (`cron.py:345`). A
+existing `minimal_context` truncation of `last_result` (in `build_cron_session_context`). A
 perpetual agent runs indefinitely, so nothing in the prompt may grow without a
 cap.
 
@@ -604,7 +608,7 @@ Two independent ceilings, both operator-owned:
 - `wake_budget_daily` — rolling 24h wake count, enforced in `agent_sleep` (§3)
   and again at dispatch, so a wake armed before the budget was lowered is still
   refused.
-- `timeout_secs` — already per-job (`cron.py`, default `_JOB_TIMEOUT_SECS`
+- `timeout_secs` — already per-job (`cron_service/model.py`, default `_JOB_TIMEOUT_SECS`
   = 1800), bounding a single cycle.
 
 Governance gets one new `SCOPE_CATALOG` row. Per `platform/governance.py`
@@ -626,9 +630,9 @@ discovered in production.
 
 | Inherited behaviour | Default for a task cron | Decision for `kind="self"` |
 |---|---|---|
-| **Auto-pause** — `_AUTO_PAUSE_THRESHOLD = 5` consecutive failures sets `enabled = False` (`cron.py:114`, `record_failure` `:291`) | Correct: a job failing five times is broken | **Raise and split.** Five failed wakes is an ordinary Tuesday for an agent mid-investigation, and silent death by auto-pause is the exact failure this RFC says it wants to avoid. `self` jobs get a separate, higher threshold, and hitting it **notifies** before it pauses. A perpetual agent must never die quietly. |
-| **Jitter** — `_JITTER_HOURLY_MAX` / `_JITTER_DAILY_MAX` spread scheduled fires (`cron.py:193`–`:194`) | Correct: avoids thundering herds on shared schedules | **Off.** The deadline is agent-chosen and often tied to an external event it reasoned about; adding up to 59 minutes of noise to "check the deploy at 14:05" corrupts the decision. `strict_schedule` already expresses this and is forced on. |
-| **`skip_dates`** — suppresses fires on listed local dates (`cron.py:2351`) | Correct: skip holidays for a report | **Honoured, but it consumes the wake.** A suppressed fire must still advance the deadline, or the job sits permanently due and re-evaluates every `_TIMER_POLL_SECS`. |
+| **Auto-pause** — `_AUTO_PAUSE_THRESHOLD = 5` consecutive failures sets `enabled = False` (`cron_service/model.py`, `CronJob.record_failure`) | Correct: a job failing five times is broken | **Raise and split.** Five failed wakes is an ordinary Tuesday for an agent mid-investigation, and silent death by auto-pause is the exact failure this RFC says it wants to avoid. `self` jobs get a separate, higher threshold, and hitting it **notifies** before it pauses. A perpetual agent must never die quietly. |
+| **Jitter** — `_JITTER_HOURLY_MAX` / `_JITTER_DAILY_MAX` spread scheduled fires (`cron_service/schedule.py`) | Correct: avoids thundering herds on shared schedules | **Off.** The deadline is agent-chosen and often tied to an external event it reasoned about; adding up to 59 minutes of noise to "check the deploy at 14:05" corrupts the decision. `strict_schedule` already expresses this and is forced on. |
+| **`skip_dates`** — suppresses fires on listed local dates (`is_due` / `compute_next_run_ts` in `cron_service/schedule.py`) | Correct: skip holidays for a report | **Honoured, but it consumes the wake.** A suppressed fire must still advance the deadline, or the job sits permanently due and re-evaluates every `_TIMER_POLL_SECS`. |
 | **`delete_after_run`** | One-shot semantics | **Refused at validation.** Mutually exclusive with `self`. |
 | **Slack result dedup** — `last_posted_hash`, `consecutive_dupes` | Correct: don't repost identical digests | **Harmless but misleading.** A perpetual agent's cycles legitimately repeat; dedup counters will climb. Left as-is, excluded from any health signal. |
 | **`timeout_secs`** (default 1800) | Bounds one run | **Kept as-is.** It bounds one cycle, which is what we want. |
@@ -687,6 +691,12 @@ What the probe found that this document did not predict, compressed:
   wakes into one line.
 
 ### Phase 1 — a perpetual agent that lives
+
+Current state: #3148 made `timeout_secs` reachable through `update_job` and the
+`cron_add` / `cron_update` tools, and added a pre-dispatch transient retry on the
+cron path. So item 2 is met for cron jobs (`kind="self"` does not exist), and
+item 3 has its knob half only (no `agent_sleep` checkpoint). Items 1, 4 and 5 are
+not built. The Phase 0 text above stays as the record of what the probe found.
 
 **Rescoped by Phase 0's findings, in evidence order.** The floor is now:
 
@@ -856,7 +866,7 @@ Two smaller pieces of this idea are worth keeping:
 
 - **Unify delivery, not timers.** Cron and autonudge both end in "deliver a
   prompt into a session and keep continuity", by two independent code paths
-  (`cron_inject.inject_cron_result_to_dashboard` vs autonudge's slot
+  (`inject_cron_result_to_dashboard` in `dashboard/cron_inject.py` vs autonudge's slot
   injection). One shared delivery primitive with three wake sources — clock,
   idle, self — is a real simplification and is the shape this RFC leaves room
   for. It is not a prerequisite.
@@ -904,7 +914,7 @@ believed everything was stopped.
 - **Self-rescheduling is self-scoped.** `agent_sleep` resolves its target from
   `KIROCREW_SESSION_KEY` and may write only that job. Strict env-only
   resolution (no PID walk) prevents a subagent from assuming its parent's
-  identity, matching the reasoning already recorded at `mcp_core.py`
+  identity, matching the reasoning already recorded at `mcp_core_parts/identity.py`
   (`_resolve_session_key_strict`).
 - **The goal is not agent-writable.** Writes to `LIFE.md` are refused, so an
   agent cannot widen its own mandate. Boundaries live in the same file.
@@ -917,11 +927,12 @@ believed everything was stopped.
   already-armed wake.
 - **Escalation content is untrusted.** A supervisor answer is replayed into the
   next prompt, so it passes the same redaction the cron result path already
-  applies (`cron_inject.py`, `redact_credentials` / `redact_exfiltration_urls`)
+  applies (`dashboard/cron_inject.py`, using `redact_credentials` from
+  `security/redaction.py` and `redact_exfiltration_urls` from `security/exfil.py`)
   and is rendered as data, not instruction.
 - **Audit.** Wake decisions, budget refusals, liveness refusals, escalations
   and dormancy transitions are SEL-logged, the same way cron auto-pause already
-  logs a permission transition (`cron.py:271 _audit_pause_change`).
+  logs a permission transition (`CronJob._audit_pause_change` in `cron_service/model.py`).
 
 ## Open questions
 

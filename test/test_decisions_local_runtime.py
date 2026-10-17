@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -20,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew import sandbox, sandbox_plan
 from kiro_crew.decisions import local_models
 from kiro_crew.decisions import local_runtime as lr
 
@@ -460,6 +462,17 @@ class TestStop:
         assert rt.remove(_model()) is True
         assert not (tmp_path / "laya").exists() and (tmp_path / "plumb-4b").exists()
 
+    def test_remove_also_frees_an_environment_under_models(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lr, "data_home", lambda: tmp_path)
+        rt = lr.LocalModelRuntime()
+        _RUNTIMES.append(rt)
+        stale = tmp_path / lr.STALE_WORK_SUBDIR / "laya" / "env"
+        stale.mkdir(parents=True)
+        (tmp_path / lr.STALE_WORK_SUBDIR / "plumb-4b").mkdir()
+        assert rt.remove(_model()) is True
+        assert not stale.parent.exists()
+        assert (tmp_path / lr.STALE_WORK_SUBDIR / "plumb-4b").exists()
+
     def test_a_server_is_ready_only_once_it_echoes_this_launchs_secret(
         self, tmp_path, free_port, linux
     ):
@@ -763,3 +776,94 @@ class TestInstallStop:
         )
         code, out = lr._sandboxed_run([sys.executable, "-c", "print('ok')"], 60, tmp_path)
         assert (code, out) == (0, "ok")
+
+
+class TestTheWorkRootSurvivesTheRealSandboxGuards:
+    """``work_root()`` must be a directory the runtime's own spawns can write.
+
+    Nothing is monkeypatched at the spawn seam here: the sandbox's own profile
+    builders are called, so the guard sets are the ones a real spawn is validated
+    against. A unit test that fakes ``sandboxed_spawn_argv`` cannot see this: a
+    work root under ``models`` would pass it and still give uv and the model
+    server a read-only directory on a real host, because ``models`` is a READONLY
+    crew-home leaf and ``extra_writable_dirs`` may only punch through the ``run``
+    seal.
+    """
+
+    def _relocated_home(self, monkeypatch, tmp_path) -> Path:
+        """One data home for both the runtime's paths and the sandbox's seals."""
+        home = tmp_path / "crew-home"
+        home.mkdir()
+        monkeypatch.setattr(lr, "data_home", lambda: home)
+        monkeypatch.setattr(sandbox, "config_dir", lambda: home)
+        return home
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the namespace plan reads POSIX ids")
+    def test_the_decision_work_root_is_writable_under_the_real_launcher_guards(
+        self, monkeypatch, tmp_path
+    ):
+        home = self._relocated_home(monkeypatch, tmp_path)
+        own = lr.work_root() / _LAYA.id
+        own.mkdir(parents=True)
+
+        approved = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "strict", extra_writable_dirs=(str(own),)
+        ).writable
+
+        # Fails on any work root outside ``run``: the carve-out may punch through
+        # the runtime parent's seal and no other, so the validator skips a
+        # candidate it cannot place there and the directory stays read-only.
+        assert os.path.normpath(str(own)) in approved
+        assert str(own).startswith(str(home / "run") + os.sep)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the namespace plan reads POSIX ids")
+    def test_a_work_root_under_the_models_seal_would_not_be(self, monkeypatch, tmp_path):
+        """The negative control for the test above: a work root under ``models``.
+
+        ``models`` is outside every carveable runtime parent, so the validator
+        skips the candidate and the spawn keeps the seal -- an ``EROFS`` the
+        runtime reports as a failed install, not as a sandbox refusal.
+        """
+        self._relocated_home(monkeypatch, tmp_path)
+        monkeypatch.setattr(lr, "WORK_SUBDIR", Path("models") / "decisions")
+        own = lr.work_root() / _LAYA.id
+        own.mkdir(parents=True)
+
+        approved = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "strict", extra_writable_dirs=(str(own),)
+        ).writable
+
+        assert os.path.normpath(str(own)) not in approved
+
+    def test_both_call_sites_pass_the_dir_as_a_writable_carveout(self):
+        """``extra_private_dirs`` is the wrong parameter here and must not return.
+
+        A private window opens only inside a HIDDEN tree; ``run`` is sealed
+        READONLY and visible, so the private form is silently inert there.
+        """
+        import inspect
+
+        for fn in (lr._sandboxed_run, lr._sandboxed_spawn):
+            src = inspect.getsource(fn)
+            assert "extra_writable_dirs=(str(own_dir),)" in src, fn.__name__
+            assert "extra_private_dirs" not in src, fn.__name__
+
+    def test_the_spawn_creates_the_dir_before_it_is_validated(self):
+        """The validator refuses a candidate that is not an existing real
+        directory, so the ``mkdir`` must precede the wrap call."""
+        import inspect
+
+        src = inspect.getsource(lr._sandboxed_spawn)
+        assert src.index("log_path.parent.mkdir(") < src.index("sandboxed_spawn_argv(")
+
+    def test_the_run_artifact_sweep_cannot_reclaim_the_work_root(self):
+        """``<data home>/run`` is swept for stale launcher and gate artifacts.
+
+        The sweep matches a prefix AND a suffix from a fixed family table, so a
+        ``decisions`` directory is never a candidate. Pinned because the work root
+        now lives in that swept directory.
+        """
+        families = sandbox._RUN_DIR_ARTIFACTS
+        entry = str(lr.WORK_SUBDIR).split(os.sep)[-1]
+        assert entry == "decisions"
+        assert not any(entry.startswith(prefix) for prefix in families)

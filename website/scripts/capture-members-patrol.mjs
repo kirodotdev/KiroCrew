@@ -199,9 +199,8 @@ async function openMembers(theme, { record = false } = {}) {
 async function expectBadges(page, want) {
   await page.waitForFunction(
     (w) => {
-      const all = Array.from(document.querySelectorAll('[data-testid="member-patrol-dot"]'))
-      const active = all.filter((b) => b.getAttribute('data-state') === 'active').length
-      return all.length === w.active && active === w.active
+      const all = Array.from(document.querySelectorAll('[data-testid="member-loop-indicator"]'))
+      return all.length === w.active
     },
     want,
     { timeout: 15000 },

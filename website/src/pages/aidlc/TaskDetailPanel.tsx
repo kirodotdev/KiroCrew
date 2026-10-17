@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Wrench, Shield, Save, Check, X as XIcon } from 'lucide-react';
 import { SendBtn, Badge } from '../../components/ui';
 import DetailPanel from '../../components/DetailPanel';
+import ErrorNotice from '../../components/ErrorNotice';
 import type { TaskDetail } from '../../types';
 
 import { i18nT } from '../../i18n/t'
@@ -143,9 +144,8 @@ export default function TaskDetailPanel({ task, allTasks = [], onClose, onRetry,
           <div className="text-[13px] leading-relaxed whitespace-pre-wrap">{task.description}</div>
         )}
 
-        {task.error && (
-          <div className="p-2.5 bg-danger/10 border border-danger/20 rounded-md text-[12px] text-danger">{task.error}</div>
-        )}
+        {/* No hand-off: this panel's title, description and dependency edits, and the page's pendingEdits for other tasks, are local until Save. */}
+        <ErrorNotice message={task.error} />
         {task.result && (
           <div className="p-2.5 bg-bg-elevated border rounded-md text-[12px] text-text whitespace-pre-wrap max-h-[300px] overflow-auto" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>{task.result}</div>
         )}

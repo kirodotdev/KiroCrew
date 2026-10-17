@@ -602,3 +602,163 @@ async def test_cancel_endpoint_reports_not_dropped_without_a_live_mint(monkeypat
     finally:
         await client.close()
     assert body == {"ok": True, "slug": "notion", "dropped": False}
+
+
+# ── shared-grant axis ──
+#
+# For a provider whose grant is PRESENT, the status feed reports whether the same
+# OAuth grant artifacts are configured by another entry, so the card can state
+# that a local disconnect/reconnect keeps the shared token rather than forcing
+# fresh consent.
+
+from kiro_crew.connections import ownership  # noqa: E402
+
+
+def test_sharers_from_specs_names_a_cross_entry_grant_sharer():
+    # notion's registry pair is also configured by an entry named 'atlassian' at
+    # the same endpoint -> atlassian is a sharer; notion's own entry is not.
+    specs = {
+        "kirocrew": {
+            "notion": {"url": _NOTION["mcp_url"]},
+            "atlassian": {"url": _NOTION["mcp_url"]},
+        }
+    }
+    result = ownership._sharers_from_specs("notion", _NOTION["mcp_url"], specs, False)
+    assert result.shared_with == ("atlassian",)
+    assert result.census_incomplete is False
+
+
+def test_sharers_from_specs_excludes_the_owner_and_its_mirror():
+    specs = {
+        "kirocrew": {"notion": {"url": _NOTION["mcp_url"]}},
+        # The rendered agent file mirrors the owner's own entry; it must not count
+        # as the grant being "shared with" its own reflection.
+        f"{ownership._MIRROR_PREFIX}kirocrew.json": {"notion": {"url": _NOTION["mcp_url"]}},
+    }
+    result = ownership._sharers_from_specs("notion", _NOTION["mcp_url"], specs, False)
+    assert result.shared_with == ()
+    assert result.census_incomplete is False
+
+
+def test_sharers_from_specs_reports_unconfirmed_on_an_unreadable_source():
+    # No sharer found, but a source could not be read: an empty sharer set must
+    # not read as proven sole ownership.
+    specs = {"kirocrew": {"notion": {"url": _NOTION["mcp_url"]}}}
+    result = ownership._sharers_from_specs("notion", _NOTION["mcp_url"], specs, True)
+    assert result.shared_with == ()
+    assert result.census_incomplete is True
+
+
+@pytest.mark.asyncio
+async def test_status_feed_surfaces_a_shared_grant_proactively(isolated_status, monkeypatch):
+    # notion holds a grant, and its endpoint is also configured by 'atlassian'.
+    _set_facts(granted={_NOTION["mcp_url"]})
+
+    def _fake_census(project_dirs):
+        return (
+            {
+                "kirocrew": {
+                    "notion": {"url": _NOTION["mcp_url"]},
+                    "atlassian": {"url": _NOTION["mcp_url"]},
+                }
+            },
+            (),
+        )
+
+    monkeypatch.setattr(ownership, "spec_census", _fake_census)
+
+    statuses = _by_slug(await status.collect_connection_statuses())
+
+    assert statuses["notion"]["status"] == status.STATUS_CONNECTED
+    assert statuses["notion"].get("grantSharedWith") == ["atlassian"]
+    assert "grantSharedUnconfirmed" not in statuses["notion"]
+    # linear has no grant, so the shared axis is never computed for it.
+    assert "grantSharedWith" not in statuses["linear"]
+    assert "grantSharedUnconfirmed" not in statuses["linear"]
+
+
+@pytest.mark.asyncio
+async def test_status_feed_hedges_when_the_census_is_incomplete(isolated_status, monkeypatch):
+    _set_facts(granted={_NOTION["mcp_url"]})
+
+    def _fake_census(project_dirs):
+        # No sharer, but one source could not be read.
+        return ({"kirocrew": {"notion": {"url": _NOTION["mcp_url"]}}}, ("agent:custom.json",))
+
+    monkeypatch.setattr(ownership, "spec_census", _fake_census)
+
+    statuses = _by_slug(await status.collect_connection_statuses())
+
+    assert "grantSharedWith" not in statuses["notion"]
+    assert statuses["notion"].get("grantSharedUnconfirmed") is True
+
+
+@pytest.mark.asyncio
+async def test_status_feed_omits_the_shared_axis_when_the_grant_is_absent(
+    isolated_status, monkeypatch
+):
+    # No grant present anywhere -> grant_sharers_map is never called, so a census
+    # that would name a sharer is irrelevant: nothing to share.
+    _set_facts()
+    called = False
+
+    def _fake_census(project_dirs):
+        nonlocal called
+        called = True
+        return ({"kirocrew": {"notion": {"url": _NOTION["mcp_url"]}}}, ())
+
+    monkeypatch.setattr(ownership, "spec_census", _fake_census)
+
+    statuses = _by_slug(await status.collect_connection_statuses())
+
+    assert called is False
+    assert "grantSharedWith" not in statuses["notion"]
+
+
+@pytest.mark.asyncio
+async def test_status_feed_served_without_shared_fields_when_the_census_raises(
+    isolated_status, monkeypatch
+):
+    # The shared-grant axis is fail-soft: if the census read raises, the feed is
+    # still served (200) with its authorization verdicts, just without the
+    # optional grantSharedWith / grantSharedUnconfirmed hints -- never a 500.
+    _set_facts(granted={_NOTION["mcp_url"]})
+
+    def _boom(project_dirs):
+        raise RuntimeError("stalled mount")
+
+    monkeypatch.setattr(ownership, "spec_census", _boom)
+
+    client = await _client()
+    try:
+        resp = await client.get("/api/connections/status")
+        assert resp.status == 200
+        body = await resp.json()
+    finally:
+        await client.close()
+    by_slug = {e["slug"]: e for e in body["connections"]}
+    # The authorization verdict still rendered; only the optional hint dropped.
+    assert by_slug["notion"]["status"] == status.STATUS_CONNECTED
+    assert "grantSharedWith" not in by_slug["notion"]
+    assert "grantSharedUnconfirmed" not in by_slug["notion"]
+
+
+def test_sharers_from_specs_hedges_only_the_entry_whose_own_url_cannot_be_keyed(
+    monkeypatch,
+):
+    # If grant_key raises on THIS provider's own registry URL, the hint is hedged
+    # for this entry alone (census_incomplete) rather than letting the exception
+    # escape and drop the shared-grant hint for every provider in the feed.
+    from kiro_crew.connections import ownership as ownership_mod
+
+    def _raise_for_notion(url):
+        if url == _NOTION["mcp_url"]:
+            raise ValueError("malformed URL")
+        return mcp_grant.grant_key(url)
+
+    monkeypatch.setattr("kiro_crew.mcp_grant.grant_key", _raise_for_notion)
+
+    specs = {"kirocrew": {"notion": {"url": _NOTION["mcp_url"]}}}
+    result = ownership_mod._sharers_from_specs("notion", _NOTION["mcp_url"], specs, False)
+    assert result.shared_with == ()
+    assert result.census_incomplete is True

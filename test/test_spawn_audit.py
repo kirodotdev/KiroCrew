@@ -74,17 +74,24 @@ from __future__ import annotations
 import ast
 import functools
 import textwrap
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from source_corpus import candidate_sources, parsed_candidates
+from source_corpus import (
+    candidate_sources,
+    iter_candidate_sources,
+    iter_statements,
+    parsed_candidates,
+)
 
 _SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
-# One xdist worker for the whole module: every test here derives from ONE module-cached
-# scan of src/ (rglob + ast.parse, ~30s). Under `--dist loadgroup` an unmarked module is
-# spread across workers and each worker re-pays that scan -- measured at 5 workers x 40-75s
-# per full run for this file alone. Grouping keeps the cache single-copy per run.
+# One xdist worker for the whole module: every audit test here reads the module-cached
+# spawn census (``_spawn_functions_in``, one cached scan per census part). Under
+# `--dist loadgroup` an unmarked module is spread across workers and each worker re-pays
+# the scan of every part it touches. Grouping keeps each part's cache single-copy per run.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_test_spawn_audit")
 
 
@@ -96,6 +103,8 @@ def _is_bundled_skill_asset(path: Path) -> bool:
     * ``builtin_skills/**`` -- the top-level bundled skills.
     * ``apps/builtins/<app>/skills/**`` -- skills an app ships with itself
       (dev-fleet's recording and pod-e2e scripts).
+    * ``dashboard_templates/builtin/<id>/helpers/**`` -- a Dashboard template's upkeep
+      helpers, which ``dashboard_upkeep`` copies into the crewmate's upkeep skill.
 
     Both are scripts the AGENT runs in the USER's repo/shell, not code the
     gateway imports or spawns; they ship under the package only for packaging,
@@ -107,6 +116,10 @@ def _is_bundled_skill_asset(path: Path) -> bool:
     """
     parts = path.relative_to(_SRC_ROOT).parts
     if "builtin_skills" in parts:
+        return True
+    if parts[:2] == ("dashboard_templates", "builtin") and parts[3:4] == ("helpers",):
+        # A Dashboard template's upkeep helper: copied into the crewmate's upkeep
+        # skill and run by the agent in its shell, exactly like a skill script.
         return True
     return parts[:2] == ("apps", "builtins") and "skills" in parts[2:]
 
@@ -224,7 +237,7 @@ PREEXEC_EXEMPT: frozenset[str] = frozenset(
         # time is unreleasable there, and a child so wedged deadlocked in a
         # futex, never exec'd, never exited, and pinned every fd it inherited --
         # including gateway.lock and the dashboard listener.
-        "kiro_prerequisite.py::_run_process",
+        "kiro_prerequisite_process.py::_run_process",
         # Spawns NOTHING. It PATCHES `sandboxed_spawn_argv` and raises from the
         # replacement, so the argv is captured at the boundary and no child is ever
         # created -- but the name appears in the function body, which is what this scan
@@ -251,7 +264,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # before handing it over; this function only prefixes the immutable
         # process-group supervisor and spawns through create_subprocess_limited
         # in a new session. Nothing agent-influenced reaches the argv here.
-        "kiro_prerequisite.py::spawn_supervised_oneshot",
+        "kiro_prerequisite_process.py::spawn_supervised_oneshot",
+        # The Windows off-loop one-shot for provider CLI reads. Its only caller,
+        # dashboard/source_providers/runner.py::_run_provider, has already
+        # OS-isolated and env-scrubbed the argv (through its own routed sandbox
+        # spawn-prep) before handing it over; this function only adds the
+        # resource-limit shim via popen_limited and drains the bounded spawn on a
+        # worker thread so CreateProcess leaves the gateway loop. Same pre-wrapped
+        # rationale as spawn_supervised_oneshot above.
+        "dashboard/source_providers/runner.py::_oneshot_drain_limited",
         # Eight pre-existing spawns in one app's own test module, invisible to this
         # audit until receivers were derived from each file's imports: they are
         # reached through a function-local ``import subprocess as sp``. Every one is
@@ -263,14 +284,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the fixture, and routing them through the agent sandbox would sandbox the
         # fixture rather than the thing under test. Same class as the Ops Mission
         # Control ledger-sync tests below.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run_in_a_linked_worktree",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_pre_commit_hook_does_not_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_repointed_worktree_gitdir_is_refused",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_clone_setup_checkout_pins_the_attributes",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_refuses_a_symlink_and_fails_closed",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_survives_a_normal_repo",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_clean_filter_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_clean_filter_does_not_run_in_a_linked_worktree",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_pre_commit_hook_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_repointed_worktree_gitdir_is_refused",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_clone_setup_checkout_pins_the_attributes",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_refuses_a_symlink_and_fails_closed",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_survives_a_normal_repo",
         # Four pre-existing spawns in ``acp/client.py`` and
         # ``acp/runtime_process_tree.py`` that the scan could not see until receivers
         # were derived from each file's imports (``acp/client.py`` binds the module
@@ -294,7 +315,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # session work dir rather than anything the agent names in a turn. The only
         # variable input is the child's ``OPENCODE_CONFIG_CONTENT``, which this core
         # composes from its own permission-setting table (see
-        # ``AcpClient._opencode_routing_config``); the agent supplies nothing to it.
+        # ``acp/harness/opencode.py::_opencode_routing_config``); the agent supplies
+        # nothing to it.
         # Stdout is read and nothing else: the JSON document is parsed for one key,
         # the harness's resolved ``permission``, which decides whether the session
         # may start at all.
@@ -311,7 +333,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Called from a worker thread, never the event loop --
         # ``test_the_routing_read_back_runs_off_the_event_loop`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
-        "acp/client.py::_verify_opencode_routing",
+        "acp/harness/opencode.py::_verify_opencode_routing",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three
@@ -328,22 +350,22 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # is the agent itself loading extensions out of the operator's own
         # directories. Called from a worker thread, never the event loop --
         # ``test/test_acp_pi_backend.py`` pins that.
-        "acp/client.py::_verify_pi_gate",
+        "acp/harness/pi.py::_verify_pi_gate",
         # The DeepSeek Harness gate read-back, the same shape as the pi one above:
         # the argv is the SESSION'S own argv already wrapped by ``wrap_argv_async``
-        # before it reaches this method, so the sandbox and credential mask are
+        # before it reaches this function, so the sandbox and credential mask are
         # applied by the caller rather than here. Nothing in it is agent-influenced
         # -- the harness binary comes from its ``ACP_BACKEND_LAUNCH`` row, the sealed
         # plugin and its patch from the owner-only gate-artifact directory, and the
-        # marker path from the probe's OWN private scratch window (allocated in the
-        # arm, passed as ``extra_private_dirs``, removed in its ``finally``) -- the
+        # marker path from the probe's OWN private scratch window (allocated by the
+        # adapter, passed as ``extra_private_dirs``, removed in its ``finally``) -- the
         # one argument the child writes, and it lands nowhere the child could plant
         # something a later session loads. stdin is a pipe that carries nothing and
         # is closed once the plugin publishes its marker (EOF is the profile's own
         # shutdown). The env adds only the operator's configured key NAMES under
         # canary values, never the key. Called from a worker thread, never the
         # event loop.
-        "acp/client.py::_verify_deepseek_gate",
+        "acp/harness/deepseek.py::_verify_deepseek_gate",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -400,7 +422,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # child does two unshare() calls against its own fresh process and exits;
         # it executes nothing else (the shim dlopens the already-loaded libc
         # rather than letting ctypes.util.find_library exec ldconfig/gcc).
-        "sandbox.py::_probe_unshare_via_spawn",
+        "sandbox_probe.py::_probe_unshare_via_spawn",
         # The speech-runtime preflight child: `sys.executable -I -S -c <module-level
         # string constant> <extension path>`, no shell, a bounded timeout, cwd
         # pinned to the interpreter prefix, `-I` keeping the working directory
@@ -558,9 +580,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # process is created — the test's provider is a local stub with no argv at all.
         # Same classification as the ``asyncio.run`` sites above
         # (cli_commands.py::_cleanup_app_crons_from_scheduler, cli_doctor.py::_doctor).
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_approval_is_logged_then_granted",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_audit_failure_denies_instead_of_approving",
         # Offline clone-setup regressions use only fixed Git argv against pytest
         # tmp_path repositories; no agent/model input reaches command or cwd.
@@ -575,7 +597,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # whether a second module ended up in `sys.modules`; a clean interpreter is the
         # point, since measuring "does the boot path pull the profile tree?" inside the test
         # session would read whatever pytest already imported.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py"
         "::test_importing_the_backend_does_not_pull_the_profile_tree",
         "apps/builtins/auto_improvement/backend/commit.py::_git",
         # `git apply --index` on the QUEUED diff, literal argv against the configured clone.
@@ -615,10 +637,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # here; it only edits FILES inside the worktree, and executing those files is
         # routed separately (profiles/github_repo/profile.py::_run).
         "apps/builtins/auto_improvement/spine/agent_discovery.py::_git",
-        "apps/builtins/auto_improvement/spine/driver.py::_apply",
-        "apps/builtins/auto_improvement/spine/driver.py::_stage_winner",
-        "apps/builtins/auto_improvement/spine/driver.py::_git",
-        "apps/builtins/auto_improvement/spine/driver.py::_push_with_rebase",
+        "apps/builtins/auto_improvement/spine/driver_commit.py::_apply",
+        "apps/builtins/auto_improvement/spine/driver_commit.py::_stage_winner",
+        "apps/builtins/auto_improvement/spine/driver_git.py::_git",
+        "apps/builtins/auto_improvement/spine/driver_publish.py::_push_with_rebase",
         "apps/builtins/auto_improvement/spine/gate.py::_changed_paths",
         "apps/builtins/auto_improvement/spine/gate.py::_changed_status_paths",
         "apps/builtins/auto_improvement/spine/gate.py::_head_sha",
@@ -681,19 +703,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "::test_push_refuses_before_git_when_repository_safety_changed",
         # Same basis: a fixed `git init/add/commit` against a tmp_path, asserting a diff
         # that cannot apply is refused BEFORE the pipeline drafts.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_diff_that_does_not_apply_never_reaches_the_pipeline",
         # Same basis: literal `git config/add/commit/cat-file/diff` against a tmp_path clone,
         # proving a credential planted in the COMMITTER IDENTITY is refused. Real git is
         # required rather than a stub: the point is which bytes git itself puts in the commit
         # object, which canned output cannot demonstrate. Nothing is agent-influenced -- the
         # argv is literal and the cwd is the test's own tmp_path.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_credential_in_the_committer_identity_refuses_to_publish",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr ``run`` on
         # base ``asyncio``) driving the async ``_approve`` coroutine so a REAL SEL
         # write can be read back off disk. No child process is created.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_a_real_sel_write_produces_a_readable_event",
         # Same basis: a fixed `git init --bare` + clone + push against a tmp_path, driving
         # one-click commit end to end in a clone whose origin is neutralized exactly as
@@ -701,11 +723,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # cwd is the test's own tmp_path, and the "remote" is a local bare repo. This is
         # the test that proves `commit_finding` can still fetch its base after
         # `_disable_push`; the bug it pins was invisible to every mocked test.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_git",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_upstream_and_clone",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tracks.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
+        "::_upstream_and_clone",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_stale_local_ref_is_not_used_when_a_url_is_configured",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_the_queued_diff_is_committed_and_pushed",
         # Same basis: a fixed bare-repo + clone against a tmp_path, asserting that a
         # non-default branch is really checked out inside a push-disabled clone (the run
@@ -713,89 +739,90 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Only the functions that CONTAIN a spawn are listed: the detector keys by the
         # enclosing function, so a test that merely calls these helpers is not a spawn
         # site and the staleness check rejects it as a masking entry.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py"
         "::test_a_remote_only_branch_is_checked_out_without_a_fetch",
         # Multi-cycle staging test: literal `git` argv against a tmp_path bare repo,
         # asserting cycle-2's checkout does not orphan cycle-1's kept commit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_staging_stays_on_the_local_branch_across_cycles",
         # Its inner `git` helper: literal argv against the tmp_path bare repo above.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::git",
         # The provisional-commit fail-closed test spawns `git rev-parse HEAD` inline (not
         # via a helper) to assert HEAD did not move; literal argv against a tmp_path repo.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_failing_commit_returns_false_not_true",
         # Same basis: `git status --porcelain` inline against a tmp_path repo, asserting a
         # REJECTED provisional commit left nothing staged for the next candidate to inherit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_rejected_commit_leaves_no_diff_staged_for_the_next_candidate",
         # Same basis: literal `git show`/`ls-tree` against a tmp_path bare repo + clone,
         # asserting a manual draft stages ITS queued diff instead of publishing whatever a
         # later cycle left at HEAD.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_drafting_an_older_finding_does_not_publish_a_later_one",
         # Same basis: literal `git rev-parse`/`status` against a tmp_path clone, asserting a
         # failed draft's rollback restores the branch to the base it was fetched at.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_rollback_restores_the_branch_to_its_fetched_base",
         # Same basis: literal `git rev-parse` against a tmp_path clone, asserting a REJECTED
         # push leaves no commit on the branch for the next run to adopt as its baseline.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_failed_push_leaves_no_commit_behind",
         # Same basis: literal `git clone`/`log`/`show` against a tmp_path bare repo, asserting
         # two concurrent operator commits never merge into one commit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_two_concurrent_commits_do_not_merge_into_one",
         # Its inner `_repo` helper: fixed `git init/clone/commit/push` argv against a tmp_path
         # bare repo, building the local-vs-remote base case for the credential-scan self-diff.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_repo",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_repo",
         # The direct-push HEAD-identity tests. `::run` is a stub pre-push reviewer that
         # amends the test's OWN tmp_path clone to reproduce the race; the test function spawns
         # `git rev-parse --short HEAD` inline to assert that amend really landed before it
         # asserts the refusal. Both are fixed `git` argv against a per-test tmp_path repo with
         # no remote -- nothing in the argv, the cwd or the resolved binary is agent-influenced,
         # and the enclosing `::git` helper above already covers the repo builder.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_reviewer_amend_between_commit_and_push_refuses_to_publish",
         # Same basis: the shadow-ref variant additionally spawns `git branch <short-sha> HEAD`
         # and two `git rev-list -1` reads, all literal argv with cwd and `-C` pinned to the
         # same per-test tmp_path clone, asserting the injection applied before the refusal.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_ref_named_the_abbreviation_cannot_shadow_the_committed_object",
         # The time-of-check/time-of-use pair, same basis again: `::_scan_then_amend` stands in
         # for a background amend landing while the credential scan runs, and the two test
         # functions read HEAD back with `git rev-list -1` to prove the injection applied and
         # to pin the published revision to a full object id.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_scan_then_amend",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_scan_then_amend",
         # `::_gate_then_swap_head` is the same injection one step earlier -- it moves HEAD
         # right after the pre-scan gate returns, to prove the scan is bound to the object id
         # rather than to `HEAD`.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_gate_then_swap_head",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
+        "::_gate_then_swap_head",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_the_credential_scan_reads_the_committed_object_not_head",
         # Same basis: this one additionally spawns `git replace` and a `git show` control, to
         # prove a replacement ref cannot substitute what the credential scan reads.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_replacement_ref_cannot_substitute_what_the_scan_reads",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_move_after_the_scan_cannot_change_what_is_published",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_an_unmoved_head_still_publishes",
         # Same basis: literal `git rev-parse`/`diff`/`reset` against a tmp_path repo, showing a
         # left-behind provisional commit lands in the NEXT bug PR's range.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_chained_head_would_contaminate_the_next_branch",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_disabled_clone",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py" "::_disabled_clone",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py"
         "::_remote_with_two_branches",
         # Same basis: a fixed `git init/add/commit` + an uncommitted edit against a tmp_path
         # repo, proving `_export_is_durable` retains a clone that holds UNCOMMITTED work (an
         # empty committed diff over a dirty tree is not "no work"). Literal argv, test-owned
         # cwd, dead origin — nothing agent-influenced. `_run` is the test's inline git helper;
         # the test function itself also spawns `git init/add/commit` directly.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py::_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py"
         "::test_end_to_end_uncommitted_work_survives_teardown",
         # Same basis: fixed bare-repo + clone + push against a tmp_path, asserting the
         # CONTENT that reached the remote branch (a committed fix does, a staged one does
@@ -811,6 +838,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "apps/builtins/auto_improvement/tests/test_profile_capture.py::_git",
         "apps/builtins/auto_improvement/tests/test_runner.py::_git",
         "apps/builtins/auto_improvement/tests/test_runner.py::_tiny_repo",
+        # Stand-in for a run's writer: fixed command and argv, cwd=tmp_path, not agent-influenced.
+        "apps/builtins/auto_improvement/tests/test_runner.py"
+        "::test_a_run_another_live_process_wrote_reads_as_running_until_that_process_exits",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). This is a TEST helper that drives one
         # in-process aiohttp handler coroutine to completion so the PR-action routes
@@ -993,7 +1023,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # PYTHONPATH/CWD answer for the interpreter under test.
         "dep_sync.py::_probe_interpreter",
         # The stale-asset watchdog's relaunch probe: `<python> -X utf8 -c "import
-        # kiro_crew.cli"` from `/`, a fixed literal. The interpreter is the one
+        # kiro_crew.cli, kiro_crew.cli_server"` from `/`, a fixed literal. The interpreter is the one
         # the service manager's own loaded command names, run under that unit's
         # environment, which the supervisor's relaunch would execute anyway; it
         # is unisolated on purpose, because the relaunch is.
@@ -1131,9 +1161,31 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # runs them as ordinary shell tool calls through the standard approval
         # path.
         "browser_cli/install.py::_run",
+        # The KAS engine installer (`kirocrew kas install`, operator terminal, outside
+        # the sandbox). `_open_tar` runs the host's `zstd -d -c` on an archive whose
+        # name the manifest validated as a bare object name and whose bytes were
+        # sha256-pinned before extraction; `_probe_node` runs the just-extracted Node
+        # with `--version` from the gateway-owned staging directory. No agent input
+        # reaches either argv.
+        "acp/kas_bundle.py::_open_tar",
+        "acp/kas_bundle.py::_probe_node",
         "browser_cli/launcher.py::_run_cli",
         "browser_cli/view.py::_spawn",
-        "cli.py::_consolidate_cmd",
+        # The offline run of an authored dashboard page (``dashboard_verify``). The argv
+        # is fixed: a system Python and a browser path, each from a fixed list of system
+        # locations and each past the strict provider-executable check (root-owned, not a
+        # link, not writable by this account, so nothing the agent can write is ever
+        # run), a launcher stub that moves the DevTools pipe onto descriptors 3 and 4,
+        # and flags that are constants of ours plus a throwaway profile directory we
+        # created. The page is DATA sent over the pipe; it reaches no flag, path or
+        # environment variable.
+        # Not routed through the sandbox chokepoint, on purpose: Chromium's own sandbox
+        # is the containment and it must create namespaces, which the chokepoint's mount
+        # namespace would deny; the process runs on a scrubbed environment, with every
+        # request but the page refused, no listening port, and its process group killed
+        # at the end.
+        "dashboard_verify.py::_spawn",
+        "cli_knowledge.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
         "cli.py::main",
@@ -1226,7 +1278,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Crew mints no KAS token anywhere; the relay resolves tokens
         # from kiro-cli's own store (see ``acp/kas_transport.py``), so the former
         # ``chat _ get-kas-token`` spawn is gone rather than moved.
-        "cli_doctor.py::_kas_relay_help",
+        "kiro_cli.py::kas_relay_help",
         # ``<kiro-cli> whoami`` sign-in probe for the declaration-driven auth row:
         # fixed argv (the binary name is a module constant and the subcommand is a
         # literal), 10s-capped, no shell, no agent-influenced argument. It reads only
@@ -1361,6 +1413,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
         "dashboard/handlers/files.py::_run",
+        # The file panel diff: fixed list-argv `git diff --no-index -- a b`
+        # (no shell) with the same textconv/attributes/fsmonitor hardening as
+        # `_run`, over two files the gateway itself wrote into a fresh private
+        # temp dir. No argument, path or cwd comes from the request.
+        "dashboard/handlers/files.py::_diff_redacted_bodies",
         "dashboard/handlers/files.py::api_screenshot",
         "dashboard/handlers/files.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
@@ -1389,6 +1446,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "dashboard/handlers_system.py::_scan_mcp_processes",
         "dashboard/handlers_system.py::_get_static_system_info",
         "dashboard/port_reclaim.py::_listeners_on_port",
+        # Bundle-freshness startup probe: fixed `git rev-parse HEAD:website`
+        # list-argv (no shell=True) with git PINNED via trusted_git_bin (fixed
+        # system dirs, never PATH; absent trusted git → skip, no spawn) under
+        # code_fingerprint.hardened_git_env (no planted config). `-C` is the
+        # package's OWN install directory, never a request- or agent-supplied
+        # path. Runs once at dashboard startup, only in a source checkout where
+        # the baked _build_info WEBSITE_TREE is absent, and its output is
+        # compared (read-only) against the dist's website/ tree stamp to log a
+        # staleness warning. No agent input reaches command, args, or cwd.
+        "dashboard/stale_bundle_guard.py::_backend_website_tree",
         "env.py::_run",
         "env.py::activate_mise",
         # Node bootstrap: runs the bundled ``ensure-node.sh`` (a fixed `bash
@@ -1433,7 +1500,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "git_divergence.py::count_divergence_sync",
         "instances/diagnostics.py::_run_ok",
         "instances/diagnostics.py::_run_stdout",
-        "instances/ssh_tunnel_manager.py::start",
+        "instances/ssh_tunnel_manager_child.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` in the
@@ -1458,7 +1525,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # exchanges two frames with a daemon that is already running; no child
         # process is created and there is no argv to sandbox. Same classification
         # as the other ``asyncio.run`` sites in this list.
-        "mcp_gateway/daemon_control.py::_ping",
+        "mcp_gateway/daemon_control.py::_ping_detailed",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
@@ -1564,12 +1631,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Windows interpreter discovery for the worktree venv, the same class as
         # platform_compat.py::find_python_interpreter above. Fixed argv: the `py`
         # launcher plus `-<version>` and a literal `-I -X utf8 -c` probe that
-        # prints sys.executable. The only variable is the version string, which is
-        # this module's own "3.12" default or a caller-supplied literal -- never
-        # agent input -- and it is a later argv element, never the command. No
-        # shell, no cwd, bounded timeout, stderr discarded, and the result is used
-        # only after it is confirmed to name a real file.
+        # prints sys.executable. The only variable is the version string, built
+        # by _python_candidates from this module's own MIN_PYTHON/_NAMED_MINORS
+        # constants and sys.version_info -- never agent input -- and it is a later
+        # argv element, never the command. No shell, no cwd, bounded timeout,
+        # stderr discarded, and the result is used only after it is confirmed to
+        # name a real file.
         "pod/provision.py::_find_python_via_launcher",
+        # Interpreter probe for the worktree venv: runs a candidate interpreter
+        # with a literal `-I -m venv --without-pip <tempdir>`, then that temp
+        # venv's own python with a literal `-I -c` snippet built from the
+        # MIN_PYTHON constant. Candidates are this process's own interpreter and
+        # names resolved from fixed install dirs / PATH -- the same interpreters
+        # `_run` then builds the venv with, unsandboxed, today. No shell, no
+        # cwd, no worktree code runs, bounded timeout, stdin closed.
+        "pod/provision.py::_probe_python",
+        # `uv python find --no-python-downloads '>=<MIN_PYTHON>'`: a fixed argv
+        # from resolve_uv() (the wheel's own locator, then an absolute PATH hit)
+        # and a module constant. Read-only lookup, never a download, bounded
+        # timeout, stdin closed, stderr discarded.
+        "pod/provision.py::_uv_found_python",
         "pod/provision.py::_run",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",
@@ -1589,8 +1670,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the first instruction. It IS the product, not an agent subprocess; the
         # agent-facing spawns inside it go through the normal chokepoints.
         "pod/windows.py::supervise_gateway",
-        "sandbox.py::_probe_sandbox_exec",
-        "sandbox.py::_ssh_supports_accept_new",
+        "sandbox_probe.py::_probe_sandbox_exec",
+        "sandbox_argv.py::_ssh_supports_accept_new",
         # The aggregate slice-ceiling apply: `systemctl --user set-property
         # --runtime kirocrew-agents.slice MemoryMax=<N>M MemorySwapMax=0
         # TasksMax=<N>`. Argv is a fixed verb plus module-constant unit name;
@@ -1599,23 +1680,23 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Runs once at gateway startup, not from an agent turn. Sandboxing it
         # would be circular: it constructs the cgroup boundary agent spawns
         # are confined by.
-        "sandbox.py::ensure_agents_slice_limits",
+        "sandbox_slice.py::ensure_agents_slice_limits",
         # The agent-slice MemoryHigh reconciler. Fixed argv: `systemctl --user
         # set-property --runtime kirocrew-agents.slice MemoryHigh=<value>`, where
         # the binary is resolved with shutil.which (never a caller-supplied PATH)
         # and <value> is derived from host RAM, never from agent input.
         # Sandboxing it would also be circular: it CONFIGURES the cgroup
         # containment that agent spawns are wrapped in.
-        "sandbox.py::_ensure_agent_slice_memory_high",
+        "sandbox_slice.py::_ensure_agent_slice_memory_high",
         # The chokepoint wrapper itself. It spawns whatever argv it is handed, so
         # it cannot route on its own behalf — its CALLERS are the ones this audit
         # holds to sandboxed_spawn_argv / wrap_argv, and they still appear here
         # individually because _SPAWN_NAMES collects bare-name calls to it.
-        "sandbox.py::create_subprocess_limited",
+        "sandbox_rlimit.py::create_subprocess_limited",
         # The synchronous siblings of the above, same reasoning: they wrap an argv
         # they are handed and cannot route on its behalf.
-        "sandbox.py::run_limited",
-        "sandbox.py::popen_limited",
+        "sandbox_rlimit.py::run_limited",
+        "sandbox_rlimit.py::popen_limited",
         # The AppArmor profile installer. All three spawn FIXED, operator-facing
         # tooling with no agent-influenced input: `apparmor_parser --version`,
         # `apparmor_parser -Q --skip-cache <temp profile this module generated>`.
@@ -1629,7 +1710,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "service/apparmor.py::parser_version",
         "service/apparmor.py::validate",
         "service/linux.py::_current_group",
-        # Read-only diagnostic: `loginctl show-user <user> -p Linger --value`, a
+        # Read-only diagnostic: `loginctl show-user <user> -p Linger`, with
+        # `Linger=` parsed from the Key=value output (no `--value`), a
         # fixed argv whose only variable is the service account name taken from
         # $USER/$LOGNAME (never agent-supplied). Same class as
         # service/linux.py::_current_group — an identity/state query the install
@@ -1659,7 +1741,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # platform_compat.trusted_system_bin("systemctl"); a miss is inconclusive
         # and spawns nothing, so neither PATH nor an agent can choose it.
         "gateway_restart.py::_systemd_show",
-        "slack/gateway.py::_auto_apply_update",
+        "slack/gateway_runtime/update_apply.py::_auto_apply_update",
         # Pluggable update provider: CommandProvider runs operator-configured
         # shell commands from security_policy.json or config.json (sensitive
         # home dirs the agent cannot write). The check command probes for a
@@ -1668,11 +1750,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the command must reach the host's package manager / registry.
         "platform/update_provider.py::check",
         "platform/update_provider.py::apply",
-        "slack/gateway.py::_check_missing_deps",
+        "slack/gateway_runtime/install_repair.py::_check_missing_deps",
         # The kiro-cli version probe. Fixed argv ("kiro-cli --version"), no
         # agent-influenced input; sandboxing the probe would be circular for the
         # same reason as the other boot-time self-checks above.
-        "slack/gateway.py::_warn_if_kiro_cli_outdated",
+        "slack/gateway_runtime/install_repair.py::_warn_if_kiro_cli_outdated",
         # Only spawn_feature_gateway calls this helper, for initial boot and
         # restart. It fixes sys.executable -m kiro_crew gateway --test-mode;
         # no executable/argv parameter exists. Home/env come from the isolated
@@ -1716,7 +1798,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # can only name a bad input, not a second command. `_SPAWN_NAMES` propagates
         # this audit through the generic helper, so each caller remains independently
         # reviewed and a future caller fails the gate until it is classified.
-        "transcribe.py::_create_ffmpeg_subprocess",
+        "transcribe_ffmpeg.py::_create_ffmpeg_subprocess",
         # The macOS authenticity oracle for the bundled ffmpeg: spawns the
         # absolute /usr/bin/codesign (never PATH) with constant flags and a
         # requirement string built from a module-level team-ID constant. The
@@ -1726,7 +1808,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # over command, args, cwd, or env. It cannot route through
         # sandboxed_spawn_argv: codesign must read the system trust store and
         # evaluate the Apple certificate chain, which the OS sandbox denies.
-        "transcribe.py::_macos_developer_id_authentic",
+        "transcribe_ffmpeg.py::_macos_developer_id_authentic",
         # `_pcm_via_ffmpeg` decodes a container the stdlib cannot read (a Slack
         # voice memo's ogg/Opus, an uploaded m4a) down to the 16 kHz mono PCM the
         # recogniser takes. Fixed argv, ffmpeg only; the sole variable part is a
@@ -1740,7 +1822,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # file at all (`-f null -`), and the only variable argv element a
         # positional path that `_vet_audio_file` validated and the route then
         # snapshot-copied via `pinned_fs` into its own 0700 directory.)
-        "transcribe.py::_pcm_via_ffmpeg",
+        "transcribe_local.py::_pcm_via_ffmpeg",
         "transcribe.py::audio_exceeds_secs",
         # The two spawns that split an over-cap recording for the meetings import
         # route, both ffmpeg-only through `_create_ffmpeg_subprocess` above, so
@@ -1756,13 +1838,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # not agent input.
         "transcribe.py::_detect_silence_ends",
         "transcribe.py::_extract_segment",
-        "transcribe.py::_transcribe_aws",
+        "transcribe_aws.py::_transcribe_aws",
         # The build probe executes the same authenticated image with the single
         # fixed `-version` argument; it accepts no external input at all. Both
         # streams are CAPTURED rather than discarded, so a refusal can name itself
         # in the build log, and are decoded with errors="replace" because a loader
         # complaint arrives in the host's console encoding.
-        "transcribe.py::_packaged_ffmpeg_version_probe",
+        "transcribe_ffmpeg.py::_packaged_ffmpeg_version_probe",
         # JSON-Schema ``pattern`` validation for MCP app→gateway tool-call args
         # (validate_mcp_tool_arguments). The spawn's command surface is FULLY
         # fixed and NOT agent-selectable: binary is our own ``sys.executable``,
@@ -1888,8 +1970,8 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     Like the sibling scans in this file, ``**kwargs`` indirection is out of
     scope (an aliased spawn already hid from the spawn detector once); the
     PR-review gates cover deliberately obfuscated passes.
-    ``sandbox.py`` is excluded by design: it OWNS the parameter (``wrap_argv``
-    defines it; ``sandboxed_spawn_argv`` threads it through), so its internal
+    ``sandbox_spawn.py`` is excluded by design: it threads the parameter that
+    ``wrap_argv`` (``sandbox_wrap.py``) defines through ``sandboxed_spawn_argv``, so its internal
     forwarding is the mechanism under audit, not a spawn site.
 
     Parses only files whose text already contains ``first_party_fixed_argv``
@@ -1902,7 +1984,11 @@ def _collect_first_party_flag_sites() -> frozenset[str]:
     out: set[str] = set()
     for path, source in candidate_sources(require_all=(_FIRST_PARTY_KWARG,)):
         rel = path.relative_to(_SRC_ROOT).as_posix()
-        if rel == "sandbox.py" or _is_bundled_skill_asset(path) or _is_container_image_asset(path):
+        if (
+            rel == "sandbox_spawn.py"
+            or _is_bundled_skill_asset(path)
+            or _is_container_image_asset(path)
+        ):
             continue
         tree = ast.parse(source, str(path))
         funcs = [
@@ -1965,10 +2051,11 @@ def _spawn_module_bindings(tree: ast.Module) -> set[str]:
     import futures`` binds neither.
 
     The canonical names are always included, so a file that imports nothing under an
-    alias is scanned exactly as before.
+    alias is scanned exactly as before. An import is a statement, so the walk reads
+    statement bodies only and skips the expressions that make up most of a module.
     """
     bound = set(_SPAWN_MODULES)
-    for node in ast.walk(tree):
+    for node in iter_statements(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             # ``from x import subprocess as y`` is rare but binds a name that
             # spawns, and skipping it would leave the same shape of hole this
@@ -2021,93 +2108,159 @@ def test_an_unrelated_import_binds_no_spawn_receiver() -> None:
     assert "pool" not in bound
 
 
-@functools.lru_cache(maxsize=1)
-def _collect_spawn_functions() -> dict[str, str]:
-    """Map ``<relpath>::<func>`` -> the enclosing function's source, for every
-    function containing a subprocess spawn. ``<module>`` marks a module-level
-    spawn (no enclosing function).
+#: How many parts the spawn census is read in. The per-test timeout bounds ONE test, and
+#: the whole census -- every candidate file parsed and walked, under coverage, on a shared
+#: runner -- is more than one test's budget. Each part is one test of each per-part audit,
+#: so the budget bounds a quarter of the tree; the parts hold about the same amount of
+#: source, and the sum of the work does not change.
+CENSUS_PARTS = 4
 
-    Cached: all six audit tests derive from this one scan, so re-scanning per
-    test multiplies pure duplicated wall-clock. The source tree cannot change
-    mid-run and callers only read the mapping, so a shared instance is safe.
-    Parses only files whose text already contains one of the spawn attribute
-    or bare-name tokens (``test/source_corpus.py``'s shared, narrowed read)
-    instead of a private ``rglob`` + ``read_text`` of the whole tree: the
-    matched ``ast.Call`` always spells one of these tokens verbatim in the
-    source, so narrowing cannot drop a real spawn site. Released with the rest
-    of the corpus by ``test/conftest.py::_release_source_corpus_after_module``
-    at module end.
+#: Nodes with no call inside and no binding: a name, a constant, an expression context.
+_LEAVES = frozenset({ast.Name, ast.Constant, ast.Load, ast.Store, ast.Del})
+_FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+@functools.lru_cache(maxsize=1)
+def _spawn_census_parts() -> tuple[tuple[Path, ...], ...]:
+    """The files the spawn census parses, dealt into ``CENSUS_PARTS`` parts of about
+    equal source size: each file, largest first, joins the lightest part so far.
+
+    Only files whose text already contains one of the spawn attribute or bare-name
+    tokens are candidates (``test/source_corpus.py``'s shared, narrowed read): the
+    matched ``ast.Call`` always spells one of these tokens verbatim in the source, so
+    narrowing cannot drop a real spawn site. A skill's own helper scripts and a
+    container image's own source are not gateway runtime code paths -- see
+    ``_is_bundled_skill_asset`` and ``_is_container_image_asset`` for why they are out
+    of scope. Only the paths are kept; the text is read again by the part that parses
+    it, so nothing here retains the tree's source for the process lifetime.
     """
-    out: dict[str, str] = {}
     needles = tuple(_SPAWN_ATTRS | _SPAWN_NAMES)
-    for path, source in candidate_sources(require_any=needles):
-        # A skill's own helper scripts are not gateway runtime code paths --
-        # see ``_is_bundled_skill_asset`` for why they are out of scope. A container
-        # image's own source is the same kind of exclusion for a different shape.
+    sizes: list[tuple[int, Path]] = []
+    for path, source in iter_candidate_sources(require_any=needles):
         if _is_bundled_skill_asset(path) or _is_container_image_asset(path):
             continue
-        tree = ast.parse(source, str(path))
-        spawn_bases = _spawn_module_bindings(tree)
-        funcs = [
-            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        lines = source.splitlines()
-        rel = path.relative_to(_SRC_ROOT).as_posix()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if isinstance(node.func, ast.Name):
-                if node.func.id not in _SPAWN_NAMES:
-                    continue
-            elif isinstance(node.func, ast.Attribute):
-                if node.func.attr in _SPAWN_NAMES:
-                    pass  # e.g. sandbox.create_subprocess_limited(...)
-                elif node.func.attr in _SPAWN_ATTRS:
-                    base = node.func.value
-                    base_name = (
-                        base.id
-                        if isinstance(base, ast.Name)
-                        else base.attr if isinstance(base, ast.Attribute) else ""
-                    )
-                    if base_name not in spawn_bases:
-                        continue
-                else:
-                    continue
+        sizes.append((len(source), path))
+    parts: list[list[Path]] = [[] for _ in range(CENSUS_PARTS)]
+    loads = [0] * CENSUS_PARTS
+    for size, path in sorted(sizes, key=lambda item: (-item[0], item[1])):
+        lightest = loads.index(min(loads))
+        parts[lightest].append(path)
+        loads[lightest] += size
+    return tuple(tuple(sorted(part)) for part in parts)
+
+
+def _spawn_functions_in_file(path: Path, source: str) -> dict[str, str]:
+    """Map ``<relpath>::<func>`` -> the enclosing function's source, for every function
+    in one file that contains a subprocess spawn. ``<module>`` marks a module-level
+    spawn (no enclosing function), with an empty source.
+
+    One walk of the tree, in ``ast.walk``'s own order, carrying the innermost enclosing
+    ``def`` down to each call. A decorator belongs to the scope that holds the ``def``,
+    not to the function it decorates; every other child of a ``def`` -- its parameters
+    and their defaults, its annotations, its body -- belongs to that function. A lambda
+    opens no scope. Names, constants and expression contexts hold no call and are not
+    entered: they are most of a module's nodes, and this walk runs over every candidate
+    file in the tree.
+    """
+    tree = ast.parse(source, str(path))
+    spawn_bases = _spawn_module_bindings(tree)
+    lines = source.splitlines()
+    rel = path.relative_to(_SRC_ROOT).as_posix()
+    out: dict[str, str] = {}
+    pending: deque[tuple[ast.AST, ast.FunctionDef | ast.AsyncFunctionDef | None]] = deque(
+        [(tree, None)]
+    )
+    while pending:
+        node, enclosing = pending.popleft()
+        if isinstance(node, ast.Call) and _is_spawn_site(node, spawn_bases):
+            if enclosing is None:
+                out[f"{rel}::<module>"] = ""
             else:
-                continue
-            enc = "<module>"
-            enc_node: ast.AST | None = None
-            best = -1
-            for f in funcs:
-                if f.lineno <= node.lineno <= (f.end_lineno or f.lineno) and f.lineno > best:
-                    best = f.lineno
-                    enc = f.name
-                    enc_node = f
-            fsrc = (
-                "\n".join(lines[enc_node.lineno - 1 : (enc_node.end_lineno or enc_node.lineno)])
-                if enc_node is not None
-                else ""
-            )
-            out[f"{rel}::{enc}"] = fsrc
+                start, end = enclosing.lineno - 1, enclosing.end_lineno or enclosing.lineno
+                out[f"{rel}::{enclosing.name}"] = "\n".join(lines[start:end])
+        inner = node if isinstance(node, _FUNCTIONS) else enclosing
+        for field in node._fields:
+            child = getattr(node, field, None)
+            scope = enclosing if field == "decorator_list" else inner
+            if isinstance(child, ast.AST):
+                if type(child) not in _LEAVES:
+                    pending.append((child, scope))
+            elif isinstance(child, list):
+                pending.extend(
+                    (item, scope)
+                    for item in child
+                    if isinstance(item, ast.AST) and type(item) not in _LEAVES
+                )
     return out
 
 
-def _collect_unrouted_spawns() -> set[str]:
+def _is_spawn_site(node: ast.Call, spawn_bases: set[str]) -> bool:
+    """Whether *node* calls a spawn helper by bare name, or a spawn attribute of a
+    receiver the file binds to a spawn-capable module (``subprocess.run``,
+    ``sp.Popen``, ``asyncio.create_subprocess_exec``); ``proc.communicate`` and
+    ``pool.run`` are not."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id in _SPAWN_NAMES
+    if not isinstance(func, ast.Attribute):
+        return False
+    if func.attr in _SPAWN_NAMES:
+        return True  # e.g. sandbox.create_subprocess_limited(...)
+    if func.attr not in _SPAWN_ATTRS:
+        return False
+    base = func.value
+    base_name = (
+        base.id
+        if isinstance(base, ast.Name)
+        else base.attr if isinstance(base, ast.Attribute) else ""
+    )
+    return base_name in spawn_bases
+
+
+@functools.lru_cache(maxsize=CENSUS_PARTS)
+def _spawn_functions_in(part: int) -> dict[str, str]:
+    """Map ``<relpath>::<func>`` -> the enclosing function's source, for every
+    function containing a subprocess spawn in the files of census part *part*.
+
+    Cached: every audit test derives from these scans, so re-scanning per test
+    multiplies pure duplicated wall-clock. The source tree cannot change mid-run
+    and callers only read the mapping, so a shared instance is safe. The mapping
+    holds the spawning functions' source only, never a whole file's.
+    """
+    out: dict[str, str] = {}
+    for path in _spawn_census_parts()[part]:
+        out.update(_spawn_functions_in_file(path, path.read_text(encoding="utf-8")))
+    return out
+
+
+def _collect_spawn_functions(part: int | None = None) -> dict[str, str]:
+    """The spawn census of part *part*, or of the whole tree: the union of the parts,
+    each read on its first use. A key names one function of one file, so the parts
+    hold disjoint keys and the union is order-free."""
+    parts = range(CENSUS_PARTS) if part is None else (part,)
+    out: dict[str, str] = {}
+    for index in parts:
+        out.update(_spawn_functions_in(index))
+    return out
+
+
+def _collect_unrouted_spawns(part: int | None = None) -> set[str]:
     """Return ``<relpath>::<func>`` for every spawn whose enclosing function
-    does NOT reference the sandbox chokepoint."""
+    does NOT reference the sandbox chokepoint, in census part *part* or the whole."""
     return {
         key
-        for key, fsrc in _collect_spawn_functions().items()
+        for key, fsrc in _collect_spawn_functions(part).items()
         if not any(tok in fsrc for tok in _ROUTED_TOKENS)
     }
 
 
-def _collect_routed_spawns_without_preexec() -> set[str]:
+def _collect_routed_spawns_without_preexec(part: int | None = None) -> set[str]:
     """Return ``<relpath>::<func>`` for every sandbox-routed spawn function that
-    does NOT also apply the resource-limit ``preexec_fn``."""
+    does NOT also apply the resource-limit ``preexec_fn``, in census part *part* or
+    the whole."""
     return {
         key
-        for key, fsrc in _collect_spawn_functions().items()
+        for key, fsrc in _collect_spawn_functions(part).items()
         if any(tok in fsrc for tok in _ROUTED_TOKENS)
         and not any(tok in fsrc for tok in _PREEXEC_TOKENS)
     }
@@ -2123,20 +2276,65 @@ _CGROUP_TOKENS = (
 )
 
 
-def _collect_routed_spawns_without_cgroup() -> set[str]:
+def _collect_routed_spawns_without_cgroup(part: int | None = None) -> set[str]:
     """Return ``<relpath>::<func>`` for every sandbox-routed spawn function that
-    does NOT also apply the cgroup v2 scope (pids.max / memory.max)."""
+    does NOT also apply the cgroup v2 scope (pids.max / memory.max), in census part
+    *part* or the whole."""
     return {
         key
-        for key, fsrc in _collect_spawn_functions().items()
+        for key, fsrc in _collect_spawn_functions(part).items()
         if any(tok in fsrc for tok in _ROUTED_TOKENS)
         and not any(tok in fsrc for tok in _CGROUP_TOKENS)
     }
 
 
-def test_every_spawn_is_routed_or_allowlisted():
-    """No spawn may be unrouted-and-unlisted (security-review 92e24570 tripwire)."""
-    unrouted = _collect_unrouted_spawns()
+def test_the_scoped_walk_attributes_a_call_the_way_the_line_ranges_do() -> None:
+    """A spawn is keyed by the innermost ``def`` whose lines hold it: a decorator's
+    spawn belongs to the scope around the ``def``, a default argument's and a nested
+    function's to the ``def`` itself, a lambda's to the function holding the lambda,
+    a method's to the method, and a module-level one to ``<module>``."""
+    source = textwrap.dedent("""
+        import subprocess as sp
+        subprocess.run(["top"])
+        @decorate(sp.run(["deco"]))
+        def outer(arg=sp.call(["default"])):
+            sp.check_call(["body"])
+            handler = lambda: sp.Popen(["lam"])
+            def inner():
+                return sp.check_output(["nested"])
+        class C:
+            def method(self):
+                return sp.run(["method"])
+        """)
+    tree = ast.parse(source)
+    assert _spawn_module_bindings(tree) == {"subprocess", "asyncio", "sp"}
+    path = _SRC_ROOT / "planted.py"
+    found = _spawn_functions_in_file(path, source)
+    assert set(found) == {
+        "planted.py::<module>",
+        "planted.py::outer",
+        "planted.py::inner",
+        "planted.py::method",
+    }
+    assert found["planted.py::<module>"] == ""
+    assert found["planted.py::outer"].startswith("def outer(")
+    assert found["planted.py::outer"].endswith('["nested"])')
+    assert (
+        found["planted.py::inner"].strip()
+        == 'def inner():\n        return sp.check_output(["nested"])'
+    )
+    assert (
+        found["planted.py::method"].strip()
+        == 'def method(self):\n        return sp.run(["method"])'
+    )
+
+
+@pytest.mark.parametrize("part", range(CENSUS_PARTS))
+def test_every_spawn_is_routed_or_allowlisted(part: int):
+    """No spawn may be unrouted-and-unlisted (security-review 92e24570 tripwire). One
+    census part per test keeps each test's work a bounded share of the tree; a new
+    unrouted spawn is visible in the part that holds its file."""
+    unrouted = _collect_unrouted_spawns(part)
     unexpected = unrouted - BENIGN_SPAWNS
     assert not unexpected, (
         "New unrouted subprocess spawn(s) found in src/kiro_crew:\n  "
@@ -2159,7 +2357,7 @@ def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
     owner, and the owner must still take the work off the loop.
     """
 
-    path = _SRC_ROOT / "kiro_prerequisite.py"
+    path = _SRC_ROOT / "kiro_prerequisite_process.py"
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, str(path))
     adapter = next(
@@ -2171,7 +2369,7 @@ def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
     assert "shielded_prepare_off_loop" in adapter_source
     assert "sandboxed_spawn_argv" in adapter_source
 
-    sandbox_path = _SRC_ROOT / "sandbox.py"
+    sandbox_path = _SRC_ROOT / "sandbox_spawn.py"
     sandbox_source = sandbox_path.read_text(encoding="utf-8")
     sandbox_tree = ast.parse(sandbox_source, str(sandbox_path))
     owner = next(
@@ -2186,7 +2384,8 @@ def test_prerequisite_async_adapter_keeps_sandbox_chokepoint():
 def test_benign_allowlist_has_no_stale_entries():
     """Every BENIGN_SPAWNS entry must still name a real unrouted spawn, so the
     allowlist cannot silently accumulate dead exemptions (e.g. after a spawn is
-    later routed through the chokepoint)."""
+    later routed through the chokepoint). A stale entry is visible only to the whole
+    census, read here from the parts' caches."""
     unrouted = _collect_unrouted_spawns()
     stale = BENIGN_SPAWNS - unrouted
     assert not stale, (
@@ -2211,8 +2410,10 @@ def test_agent_influenced_sites_are_routed():
         )
 
 
-def test_every_routed_spawn_applies_resource_limits():
-    """Every sandbox-routed spawn must ALSO cap the child's resources.
+@pytest.mark.parametrize("part", range(CENSUS_PARTS))
+def test_every_routed_spawn_applies_resource_limits(part: int):
+    """Every sandbox-routed spawn must ALSO cap the child's resources, checked one
+    census part per test.
 
     The sandbox chokepoint gives a child filesystem + credential isolation; a
     ``preexec_fn`` from ``resource_limit_preexec()`` gives it a kernel-enforced
@@ -2224,7 +2425,7 @@ def test_every_routed_spawn_applies_resource_limits():
     fixed-argv internal probe with no agent-influenced child, add its
     ``file::function`` key to ``PREEXEC_EXEMPT`` with a justification.
     """
-    missing = _collect_routed_spawns_without_preexec() - PREEXEC_EXEMPT
+    missing = _collect_routed_spawns_without_preexec(part) - PREEXEC_EXEMPT
     assert not missing, (
         "Sandbox-routed spawn(s) missing a resource-limit preexec_fn:\n  "
         + "\n  ".join(sorted(missing))
@@ -2238,7 +2439,7 @@ def test_every_routed_spawn_applies_resource_limits():
 def test_preexec_exempt_has_no_stale_entries():
     """Every PREEXEC_EXEMPT entry must still name a routed spawn function that
     lacks the preexec token, so the exemption list cannot accumulate dead
-    entries that would mask a future regression."""
+    entries that would mask a future regression. Read from the whole census."""
     routed_missing = _collect_routed_spawns_without_preexec()
     stale = PREEXEC_EXEMPT - routed_missing
     assert not stale, (
@@ -2247,8 +2448,10 @@ def test_preexec_exempt_has_no_stale_entries():
     )
 
 
-def test_every_routed_spawn_applies_cgroup_scope():
-    """Every sandbox-routed spawn must ALSO be placed in a cgroup v2 scope.
+@pytest.mark.parametrize("part", range(CENSUS_PARTS))
+def test_every_routed_spawn_applies_cgroup_scope(part: int):
+    """Every sandbox-routed spawn must ALSO be placed in a cgroup v2 scope, checked
+    one census part per test.
 
     The RLIMIT preexec caps a single process's FDs; the cgroup scope
     (``cgroup_scope_argv`` → pids.max + memory.max) is the actual default-on
@@ -2258,7 +2461,7 @@ def test_every_routed_spawn_applies_cgroup_scope():
     scope internally). The ``PREEXEC_EXEMPT`` fixed-argv internal probes are
     also exempt here — same rationale (no agent-influenced child to bound).
     """
-    missing = _collect_routed_spawns_without_cgroup() - PREEXEC_EXEMPT
+    missing = _collect_routed_spawns_without_cgroup(part) - PREEXEC_EXEMPT
     assert not missing, (
         "Sandbox-routed spawn(s) missing a cgroup v2 scope:\n  "
         + "\n  ".join(sorted(missing))
@@ -2267,6 +2470,57 @@ def test_every_routed_spawn_applies_cgroup_scope():
         "spawn through sandboxed_spawn_argv which applies it. "
         "See security-review finding bdf0d7e5."
     )
+
+
+def test_the_census_reads_enough_of_the_tree() -> None:
+    """The narrowed read still parses a real share of the package, and the census
+    saw enough spawn sites to have measured anything: a prefilter that dropped the
+    tree, or a walk that stopped recording, would otherwise pass every audit green.
+    In file order this follows the per-part audits and reads their cached parts."""
+    parts = _spawn_census_parts()
+    assert sum(len(part) for part in parts) > 500, "the census parses too few files"
+    assert all(parts), "an empty census part parses nothing and so cannot fail"
+    assert len(_collect_spawn_functions()) > 100, "the census saw too few spawn sites"
+
+
+@functools.lru_cache(maxsize=1)
+def _import_sites() -> tuple[tuple[Path, str, tuple[tuple[int, str], ...]], ...]:
+    """``(path, relpath, ((line, module), ...))`` per file in the package, listing every
+    absolute import: each name of an ``import a.b`` and the module of a ``from a.b
+    import x``; a relative import names nothing this audit lists. One parse of the
+    tree, read from statements only (an import is a statement), shared by the two
+    asset-import tests below so the tree is parsed once per run rather than once per
+    test; a file that does not parse is a hole in both tests' coverage and raises
+    rather than being skipped."""
+    files: list[tuple[Path, str, tuple[tuple[int, str], ...]]] = []
+    for path, _source, tree in parsed_candidates(skip_syntax_errors=False):
+        sites: list[tuple[int, str]] = []
+        for node in iter_statements(tree):
+            if isinstance(node, ast.Import):
+                sites.extend((node.lineno, alias.name) for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                sites.append((node.lineno, node.module))
+        files.append((path, path.relative_to(_SRC_ROOT).as_posix(), tuple(sites)))
+    return tuple(files)
+
+
+def _asset_imports(assets: list[Path], exempt: Callable[[Path], bool]) -> list[str]:
+    """``<relpath>:<line> imports <module>`` for every import, outside the files *exempt*
+    names, of one of *assets* or of a package holding one."""
+    asset_modules = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
+        for p in assets
+    }
+    asset_packages = {
+        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
+    }
+    return [
+        f"{rel}:{line} imports {name}"
+        for path, rel, sites in _import_sites()
+        if not exempt(path)
+        for line, name in sites
+        if name in asset_modules or name in asset_packages
+    ]
 
 
 def test_bundled_skill_assets_are_not_imported():
@@ -2293,29 +2547,7 @@ def test_bundled_skill_assets_are_not_imported():
     app_bundled = [p for p in assets if "builtin_skills" not in p.relative_to(_SRC_ROOT).parts]
     assert app_bundled, "app-bundled skill assets (apps/builtins/*/skills/**) not matched"
 
-    asset_modules = {
-        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
-        for p in assets
-    }
-    asset_packages = {
-        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
-    }
-
-    offenders: list[str] = []
-    for path, _source, tree in parsed_candidates():
-        if _is_bundled_skill_asset(path):
-            continue
-        rel = path.relative_to(_SRC_ROOT).as_posix()
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                names = [node.module]
-            for name in names:
-                if name in asset_modules or name in asset_packages:
-                    offenders.append(f"{rel}:{node.lineno} imports {name}")
-
+    offenders = _asset_imports(assets, _is_bundled_skill_asset)
     assert not offenders, (
         "Gateway code imports a bundled skill asset, which the spawn audit "
         "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nEither move the "
@@ -2345,30 +2577,7 @@ def test_container_image_assets_are_not_imported():
     # nothing, and would mean the exemption itself is dead.
     assert assets, "no container image assets found -- the exemption matches nothing"
 
-    asset_modules = {
-        "kiro_crew." + p.relative_to(_SRC_ROOT).with_suffix("").as_posix().replace("/", ".")
-        for p in assets
-    }
-    asset_packages = {
-        "kiro_crew." + p.relative_to(_SRC_ROOT).parent.as_posix().replace("/", ".") for p in assets
-    }
-
-    offenders: list[str] = []
-    for path in _SRC_ROOT.rglob("*.py"):
-        if _is_container_image_asset(path):
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
-        rel = path.relative_to(_SRC_ROOT).as_posix()
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                names = [node.module]
-            for name in names:
-                if name in asset_modules or name in asset_packages:
-                    offenders.append(f"{rel}:{node.lineno} imports {name}")
-
+    offenders = _asset_imports(assets, _is_container_image_asset)
     assert not offenders, (
         "Gateway code imports a container image asset, which the spawn audit "
         "exempts:\n  " + "\n  ".join(sorted(offenders)) + "\n\nThat tree runs inside a "
@@ -2390,7 +2599,7 @@ def test_container_image_assets_are_not_imported():
 # the same treatment.
 # ═══════════════════════════════════════════════════════════════════════════
 
-_GATEWAY_REL = "slack/gateway.py"
+_GATEWAY_REL = "slack/gateway.py + slack/gateway_runtime/*.py"
 
 #: Functions that own the kill-the-tree + bounded-reap contract. The shared
 #: helper is `platform_compat.kill_and_reap` (`_kill_and_reap` is its delegate
@@ -2401,8 +2610,9 @@ _TREE_KILL_FUNCS = frozenset({"kill_and_reap", "_kill_and_reap", "_kill_startup_
 
 @functools.cache
 def _gateway_tree() -> ast.Module:
-    path = _SRC_ROOT / "slack" / "gateway.py"
-    return ast.parse(path.read_text(encoding="utf-8"), str(path))
+    facade = _SRC_ROOT / "slack" / "gateway.py"
+    paths = (facade, *sorted((_SRC_ROOT / "slack" / "gateway_runtime").glob("*.py")))
+    return ast.parse("\n".join(p.read_text(encoding="utf-8") for p in paths), str(facade))
 
 
 def _is_spawn_call(node: ast.AST) -> bool:

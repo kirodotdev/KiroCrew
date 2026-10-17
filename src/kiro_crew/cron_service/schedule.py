@@ -532,6 +532,28 @@ def compute_jitter(job: CronJob) -> float:
     return 0.0
 
 
+# Two runs of a cron job this close together that belong to one occurrence are
+# one run fired twice (see ``is_due``); adjacent minutes are at most 120 s apart.
+_SAME_OCCURRENCE_SECS = 120
+
+
+def _cron_occurrence_ts(expr: str, ts: float, tz: ZoneInfo) -> float | None:
+    """Return the occurrence of ``expr`` that ``ts`` belongs to, or ``None``.
+
+    That is the latest occurrence at or before the end of ``ts``'s minute in
+    ``tz``, as a UTC epoch. ``None`` when croniter cannot answer, so a caller
+    never treats two unknowns as the same occurrence.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    try:
+        end_of_minute = seams.datetime.fromtimestamp((int(ts) // 60 + 1) * 60, tz=tz)
+        occurrence = croniter(expr, end_of_minute).get_prev(float)
+    except Exception:  # bad expression, or a timestamp out of datetime range
+        return None
+    return occurrence if isinstance(occurrence, float) else None
+
+
 def is_due(job: CronJob, now: float) -> bool:
     """Whether ``job`` is due at ``now``: its schedule has arrived and ``now`` is not a skip date."""
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
@@ -551,6 +573,16 @@ def is_due(job: CronJob, now: float) -> bool:
         # Don't re-fire within the same UTC minute (immune to DST ambiguity)
         if job.last_run_ts and int(job.last_run_ts) // 60 == int(now) // 60:
             return False
+        # Nor in the next minute when both instants are one occurrence: on a
+        # spring-forward day croniter matches a skipped wall time (02:30) in two
+        # adjacent UTC minutes. The time bound keeps an occurrence that matches
+        # again much later (the repeated fall-back hour) due.
+        if job.last_run_ts and now - job.last_run_ts < _SAME_OCCURRENCE_SECS:
+            occurrence = _cron_occurrence_ts(job.schedule.cron_expr, now, tz)
+            if occurrence is not None and occurrence == _cron_occurrence_ts(
+                job.schedule.cron_expr, job.last_run_ts, tz
+            ):
+                return False
     else:
         return False
     # Skip dates check (evaluated in job's local timezone, applies to all schedule types)
@@ -559,6 +591,29 @@ def is_due(job: CronJob, now: float) -> bool:
         if local_date in job.skip_dates:
             return False
     return True
+
+
+#: How long an enabled one-shot waits after an attempt whose fire never started.
+#: Such a job stays enabled past its ``at_ts`` so it runs once dispatch opens;
+#: keyed on ``at_ts`` alone its wake would be zero for as long as the refusal
+#: lasts, and the timer would re-fire it on every pass.
+_AT_RETRY_FLOOR_SECS = _TIMER_POLL_SECS
+
+
+def _at_next_attempt_ts(job: CronJob) -> float:
+    """When the timer should next attempt the one-shot ``job``.
+
+    Its ``at_ts``, unless an attempt already ran at or after that time. A
+    one-shot that fires, fails or is denied is parked or removed, so an enabled
+    one with such an attempt is one whose fire never started, and it is next
+    attempted one floor after that attempt. Only the wake moves: ``is_due`` is
+    unchanged, so a tick that runs for another job may still attempt it.
+    """
+    at_ts = job.schedule.at_ts or 0.0
+    last = job.last_run_ts
+    if last is not None and last >= at_ts:
+        return max(at_ts, last + _AT_RETRY_FLOOR_SECS)
+    return at_ts
 
 
 def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float) -> float | None:
@@ -577,7 +632,7 @@ def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float)
             next_run = last + job.schedule.every_secs
             delays.append(max(0.0, next_run - now))
         elif job.schedule.kind == "at" and job.schedule.at_ts:
-            delays.append(max(0.0, job.schedule.at_ts - now))
+            delays.append(max(0.0, _at_next_attempt_ts(job) - now))
         elif job.schedule.kind == "cron":
             # Wake ON the next cron boundary (as `at`/`every` do), not on a
             # flat poll whose phase is unrelated to the schedule -- a phase

@@ -8,7 +8,7 @@ one. The two kiro engines make the loader available differently, so the setting
 takes a different road to each:
 
 - **kiro-cli's Rust engine** reads it from the workspace ``cli.json`` overlay
-  (``toolSearch.*`` keys, written by ``providers.acp._write_tool_search_overlay``)
+  (``toolSearch.*`` keys, written by ``providers.acp_cli_overlay._write_tool_search_overlay``)
   and activates deferral only when the agent's ``tools`` also grants
   ``tool_search``. The engine keeps the invariant itself.
 - **KAS** reads it from the ACP ``initialize`` request --
@@ -141,7 +141,7 @@ def resume_takes_tool_search_replay(
     without Tool Search's activated schemas, so the next inference cannot invoke
     a tool the loader reports as loaded. The provider rebuilds that registry in a
     fresh native session and preserves the Kiro Crew conversation with a replay
-    instead (``providers.acp._start_kiro_runtime_impl``). A linked channel
+    instead (``providers.acp_runtime_start._start_kiro_runtime_impl``). A linked channel
     identity (``channel_id``) and every non-dashboard key keep native resume.
 
     This is the ONE definition of that decision, and it is pure on purpose: the

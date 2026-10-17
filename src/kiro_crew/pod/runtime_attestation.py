@@ -57,8 +57,11 @@ OWNER_POD = "pod"
 OWNER_FOREIGN = "foreign"
 
 
-#: Not decidable on this host — no listener-lookup tool, or the service manager
-#: could not be asked. Callers keep their pre-identity behaviour.
+#: Not proven: the gateway pid record and the service manager's MainPID could
+#: not be attested as the same live process. A missing listener-lookup tool does
+#: not cause this on its own (the record verdict is returned as-is); and
+#: :func:`kiro_crew.pod.runtime_client.mint_token` refuses with
+#: ``PodOwnershipUnproven`` rather than falling back.
 OWNER_UNPROVEN = "unproven"
 
 
@@ -173,7 +176,7 @@ def port_owner(cfg: PodConfig, name: str, port: int) -> str:
     starts the interpreter as a child and waits, so ``supervise_gateway`` records
     the stub while that child binds the port, and the gateway's own pid sidecar
     names that child. The Windows leg therefore reads the stub's descendants once
-    (:func:`kiro_crew.platform_compat.process_descendants`) and accepts them in
+    (:func:`kiro_crew.platform_compat.attributed_descendants`) and accepts them in
     both places the proof compares pids: the sidecar's pid attests when it is the
     stub or one of its descendants, and a listener inside that tree corroborates.
     That widens the accepted set DOWNWARD only: a sidecar or a listener outside
@@ -185,8 +188,8 @@ def port_owner(cfg: PodConfig, name: str, port: int) -> str:
     to the stub, processes the stub never spawned are listed beneath it — and a
     FOREIGN listener inside such a phantom subtree would be read as this pod
     holding its own port, which is the single question this function answers.
-    :func:`kiro_crew.pod.windows.created_after` is the rule, shared with
-    ``windows.stop`` so the two call sites cannot drift apart, and a candidate
+    :func:`kiro_crew.platform_compat.attributed_descendants` applies that rule
+    (``created_after``) to every edge, not just the root, and a candidate
     whose creation time cannot be read is dropped as unattributable — failing
     toward ``OWNER_FOREIGN`` / ``OWNER_UNPROVEN`` rather than toward a false claim
     of ownership.

@@ -15,6 +15,7 @@ import datetime
 import logging
 import math
 import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # [[Target]] or [[Target|alias]] — target may not contain ] [ | or newline.
 WIKILINK_RE = re.compile(r"\[\[([^\]\[|\n]+?)(?:\|([^\]\n]+?))?\]\]")
 # Inline #tag at a word boundary: must start with alphanumeric, in any script.
+# The tail continues past what `\w` covers -- see `_tag_end`.
 TAG_RE = re.compile(r"(?:^|[\s(])#([^\W_][\w/-]*)", re.MULTILINE)
 # YAML frontmatter fenced by --- at the very top of the file.
 FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.DOTALL)
@@ -154,11 +156,37 @@ def extract_wikilinks(content: str, notes: Iterable[NoteRef] = ()) -> list[dict[
     return links
 
 
+def _tag_end(text: str, pos: int) -> int:
+    """Index just past the tag whose ``TAG_RE`` match ends at *pos*.
+
+    ``TAG_RE``'s tail is ``\\w``, and Python's ``\\w`` has no combining marks
+    (Unicode category M): it stops at the first vowel sign, virama or pointing.
+    So a tag in Devanagari, Bengali, Tamil, Thai, or vowel-pointed Hebrew or
+    Arabic registered as its FIRST LETTER -- ``#हिन्दी`` as ``ह`` -- a different
+    tag from the one the user typed. Continuing through marks (and the word
+    characters after them) keeps the whole word. Format characters such as a
+    zero-width space or a bidi override are not marks and still end a tag.
+    """
+    end = len(text)
+    while pos < end:
+        char = text[pos]
+        if not (char.isalnum() or char in "_/-" or unicodedata.category(char)[0] == "M"):
+            break
+        pos += 1
+    return pos
+
+
 def extract_tags(content: str) -> list[str]:
-    """Extract inline #tags, de-duplicated, in first-seen order."""
+    """Extract inline #tags, de-duplicated, in first-seen order.
+
+    NFC first, so a tag typed with a decomposed accent (``e`` + U+0301, the form
+    some keyboards and pasted text produce) is the SAME tag as its composed
+    spelling rather than a visually identical second one.
+    """
+    text = unicodedata.normalize("NFC", mask_code(content))
     seen: dict[str, None] = {}
-    for m in TAG_RE.finditer(mask_code(content)):
-        seen.setdefault(m.group(1), None)
+    for m in TAG_RE.finditer(text):
+        seen.setdefault(text[m.start(1) : _tag_end(text, m.end(1))], None)
     return list(seen)
 
 
@@ -181,7 +209,12 @@ def parse_note(path: str, content: str, notes: Iterable[NoteRef] = ()) -> dict[s
     """Parse one note into frontmatter, tags and links."""
     data, body = parse_frontmatter(content)
     raw_tags = data.get("tags")
-    fm_tags = [str(t) for t in raw_tags] if isinstance(raw_tags, list) else []
+    # NFC, like `extract_tags`, so a frontmatter tag and the same inline tag merge.
+    fm_tags = (
+        [unicodedata.normalize("NFC", str(t)) for t in raw_tags]
+        if isinstance(raw_tags, list)
+        else []
+    )
     merged: dict[str, None] = {}
     for t in [*fm_tags, *extract_tags(body)]:
         merged.setdefault(t, None)

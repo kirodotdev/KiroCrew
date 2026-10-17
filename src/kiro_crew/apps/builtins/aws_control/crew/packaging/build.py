@@ -191,6 +191,7 @@ _EXPORTS: dict[str, str] = {
     "_walk_no_reparse": "pipeline.pinned",
     # destination
     "_is_plain_file_no_follow": "pipeline.destination",
+    "_mkdir_guarded": "pipeline.destination",
     "_refuse_unc_out": "pipeline.destination",
     "_refuse_unusable_parent": "pipeline.destination",
     "_write_bytes_nofollow": "pipeline.destination",
@@ -344,6 +345,7 @@ if _typing.TYPE_CHECKING:  # pragma: no cover - read by the type checker, never 
     )
     from .pipeline.destination import (  # noqa: F401
         _is_plain_file_no_follow,
+        _mkdir_guarded,
         _refuse_unc_out,
         _refuse_unusable_parent,
         _write_bytes_nofollow,

@@ -128,3 +128,25 @@ export interface TasksSummary {
   counts: Record<string, number>
   stall_after_secs: number | null
 }
+
+/**
+ * The chat header's reading of the adaptive controller
+ * (`handlers/spawn_resume.py::throttle_view`). `cut` is true while a cap sits
+ * below the value a fresh process starts it at: the execution cap below its
+ * configured value, or the spawn gate paused or below its initial capacity.
+ * Only `cut` is present when no controller runs, it is disabled, or it is in
+ * fixed mode.
+ */
+export interface ThrottleView {
+  cut: boolean
+  exec?: { cap: number | null; configured: number | null; cut: boolean }
+  gate?: { cap: number | null; configured: number | null; cut: boolean; paused: boolean }
+  /** Work the controller's last sample saw waiting for an execution slot. */
+  queued?: number
+}
+
+/** `GET /api/spawn/adaptive`. `throttle` is absent from an older gateway. */
+export interface SpawnAdaptiveResponse {
+  adaptive: Record<string, unknown>
+  throttle?: ThrottleView
+}

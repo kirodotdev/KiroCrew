@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 HOT_KEYS_FILENAME = "hot-keys.json"
 
 #: Cap on distinct keys retained in the store / persisted file. Bounds
-#: both memory and file size; far above any real (agent x server x channel)
+#: both memory and file size; far above any real (agent x server x config)
 #: working set, so it only ever clips pathological churn.
 _MAX_TRACKED_KEYS = 512
 
@@ -92,7 +92,7 @@ class HotKeyStore:
     persistence to disk.
 
     Keyed by :meth:`PoolKey.stable_hash` so the same logical backend
-    (same agent x server x channel x config) accumulates across new-chats.
+    (same agent x server x config) accumulates across new-chats.
     :meth:`record` / :meth:`record_outcome` are touched from the event loop
     and do no IO; :meth:`flush` / :meth:`load` do the IO and run via
     ``asyncio.to_thread`` (a thread-pool thread). Because those two sides run

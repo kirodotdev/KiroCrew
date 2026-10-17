@@ -173,6 +173,64 @@ export interface PullsResponse {
   limit?: number
 }
 
+/** A GitLab group followed for review requests: an instance host and a group
+ * path, nothing else. Its projects are never listed or stored. */
+export interface GitLabGroup {
+  host: string
+  path: string
+}
+
+export interface GitLabGroupsResponse {
+  groups: GitLabGroup[]
+}
+
+/** One merge request in a group's review list. Every field is bounded by the
+ * server; `truncated_fields` names any it shortened (an over-long `url` is
+ * dropped to `''` instead). */
+export interface GitLabGroupReview {
+  number: number | null
+  title: string
+  url: string
+  /** Full path of the project the merge request belongs to, e.g. `acme/web/api`. */
+  project: string
+  author: string | null
+  updated_at: string | null
+  truncated_fields: string[]
+}
+
+export interface GitLabGroupReviewsResponse extends GitLabGroup {
+  /** The GitLab username the search ran as (the signed-in `glab` user). */
+  login: string
+  pulls: GitLabGroupReview[]
+  /** More matches exist than the `limit` newest shown. */
+  truncated: boolean
+  limit: number
+}
+
+/** A failed GitLab-group request, carrying the server's `code` so the UI can say
+ * what to do (`group_not_found`, `setup_required`, …) instead of echoing the
+ * provider's raw message. */
+export class GitLabGroupError extends Error {
+  readonly code: string
+
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'GitLabGroupError'
+    this.code = code
+  }
+}
+
+async function gitlabGroupError(r: Response): Promise<GitLabGroupError> {
+  let body: { error?: unknown; code?: unknown } = {}
+  try {
+    body = (await r.json()) as typeof body
+  } catch {
+    // A non-JSON body still yields an error with the status as its message.
+  }
+  const message = typeof body.error === 'string' && body.error ? body.error : `HTTP ${r.status}`
+  return new GitLabGroupError(message, typeof body.code === 'string' ? body.code : '')
+}
+
 /** The full single-PR payload the detail pane renders — a superset of the list
  * `PullRequest` (adds diff stats, review/comment counts, mergeability, full
  * label objects, milestone). */
@@ -542,6 +600,42 @@ export interface PrRunsResponse {
   runs: PrWorkflowRun[]
 }
 
+/** One GitHub Actions run on the CI runs dashboard. */
+export interface CiRun {
+  id: number
+  name: string
+  status: string
+  conclusion: string | null
+  url: string | null
+  branch: string | null
+  /** PR numbers GitHub links to the run; empty for a run from a fork. */
+  pull_requests: number[]
+  created_at: string | null
+  started_at: string | null
+  updated_at: string | null
+  /** Seconds from start to last update; null until the run has started. */
+  duration_sec: number | null
+}
+
+/** One connected GitHub repo's recent runs. `error` is a fixed code when the
+ * read failed (`provider_error`, `gh_setup`), never the provider's own text. */
+export interface CiRepoRuns {
+  owner: string
+  repo: string
+  provider: string
+  host: string
+  /** Whether CI-failure alerts are on for this repo. */
+  alerts: boolean
+  runs: CiRun[]
+  error: string | null
+}
+
+export interface CiRunsResponse {
+  repos: CiRepoRuns[]
+  /** More GitHub repos are connected than one response lists. */
+  truncated: boolean
+}
+
 export interface PrRunActionResponse {
   owner: string
   repo: string
@@ -617,6 +711,10 @@ export interface RepoSettings {
   /** Watch this repo in the background and push a KiroCrew notification when a
    * new issue is opened. Opt-in (default false). */
   notify_on_new_issue: boolean
+  /** Push a Kiro Crew notification when a GitHub Actions run fails on an open
+   * pull request the signed-in `gh` user authored. GitHub only; opt-in
+   * (default false). */
+  notify_on_own_pr_ci_failure: boolean
   /** Local absolute path to this repo's working copy. Empty string means "use
    * the default cwd". Local-only, never written back to the source host. The
    * Investigate action opens its chat session with this as the working
@@ -636,6 +734,7 @@ export const DEFAULT_REPO_SETTINGS: RepoSettings = {
   unlabeled_is_untriaged: true,
   good_first_issue_labels: [],
   notify_on_new_issue: false,
+  notify_on_own_pr_ci_failure: false,
   workspace_path: '',
   revision: 0,
 }
@@ -1082,6 +1181,13 @@ export interface Crew {
   avatar_variant: number | null
   agent: string
   model: string
+  /** The model for turns that only check the queue; `''` = off, every turn on
+   *  `model`. Optional because a gateway that predates it omits the field. */
+  triage_model?: string
+  /** True once a person picked the model of the crew's session by hand: the crew
+   *  stops switching it until switching is resumed or a model is changed.
+   *  Optional because a gateway that predates it omits the field. */
+  model_held?: boolean
   extra_prompt: string
   labels: string[]
   auto_resolve_conflicts: boolean
@@ -1174,6 +1280,7 @@ export interface CrewPatch {
   avatar_variant?: number | null
   agent?: string
   model?: string
+  triage_model?: string
   extra_prompt?: string
   worktree_root?: string
   labels?: string[]
@@ -1250,6 +1357,14 @@ export interface CrewDetailResponse {
    * client-side: the page renders a filtered slice of `items`, so a client tally
    * would follow the filter. */
   counts: { open: number }
+  /** The crew's triage model when the account cannot run it, so every turn is on
+   *  the work model instead; `''` (or absent on an older gateway) otherwise. */
+  triage_model_unavailable?: string
+  /** A person's hand pick holds the crew's session model, so the crew no longer
+   *  switches to its triage model. Absent on an older gateway. */
+  model_held?: boolean
+  /** The held model, when the gateway holds the crew's session; `''` otherwise. */
+  held_model?: string
 }
 
 /** `event` is null when the write carried no progress line. */
@@ -1590,6 +1705,14 @@ export const issueRadarApi = {
     return r.json()
   },
 
+  /** Recent GitHub Actions runs across every connected GitHub repo, for the CI
+   * runs dashboard. Read on demand only. */
+  ciRuns: async (): Promise<CiRunsResponse> => {
+    const r = await fetch(`${API}/ci-runs`, { credentials: 'same-origin' })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
   /** Cancel or re-run one CI run on a PR. `failedOnly` re-runs just the failed
    * jobs (the common intent after a flake). */
   pullRunAction: async (
@@ -1714,6 +1837,44 @@ export const issueRadarApi = {
     const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/repos?${q.toString()}`, { method: 'DELETE', credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** The GitLab groups the user follows for review requests. A local read: the
+   * server answers from its config without calling GitLab. */
+  gitlabGroups: async (): Promise<GitLabGroupsResponse> => {
+    const r = await fetch(`${API}/gitlab-groups`, { credentials: 'same-origin' })
+    if (!r.ok) throw await gitlabGroupError(r)
+    return r.json()
+  },
+
+  /** Follow a GitLab group. `group` is a bare path such as `acme/platform` (a
+   * gitlab.com group) or a pasted group link, which names its own instance. */
+  addGitlabGroup: async (group: string): Promise<GitLabGroup> => {
+    const r = await fetch(`${API}/gitlab-groups`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group }),
+    })
+    if (!r.ok) throw await gitlabGroupError(r)
+    return r.json()
+  },
+
+  /** Stop following a GitLab group. Local only: nothing on GitLab changes. */
+  removeGitlabGroup: async (group: GitLabGroup): Promise<GitLabGroup> => {
+    const q = new URLSearchParams({ host: group.host, path: group.path })
+    const r = await fetch(`${API}/gitlab-groups?${q.toString()}`, { method: 'DELETE', credentials: 'same-origin' })
+    if (!r.ok) throw await gitlabGroupError(r)
+    return r.json()
+  },
+
+  /** Open merge requests across the group and every subgroup where the signed-in
+   * `glab` user is a requested reviewer. Capped like `searchPulls`. */
+  gitlabGroupReviews: async (group: GitLabGroup): Promise<GitLabGroupReviewsResponse> => {
+    const q = new URLSearchParams({ host: group.host, path: group.path })
+    const r = await fetch(`${API}/gitlab-groups/review-requests?${q.toString()}`, { credentials: 'same-origin' })
+    if (!r.ok) throw await gitlabGroupError(r)
     return r.json()
   },
 
@@ -1987,6 +2148,20 @@ export const issueRadarApi = {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...repoBody(ref), id, paused, reason: reason ?? '' }),
+    })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** "Switch back to triage model": release a model picked in the crew's chat, so
+   * the crew switches between its triage and work models again. The one
+   * `model_held` value a patch may carry; only the runtime sets the hold. */
+  resumeCrewModelSwitching: async (ref: RepoRef, id: string): Promise<CrewResponse> => {
+    const r = await fetch(`${API}/crew`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...repoBody(ref), id, model_held: false }),
     })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()

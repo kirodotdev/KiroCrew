@@ -11,7 +11,7 @@
  * and ArtifactsPageCoverage.test.tsx (small fixture makers, `within` for
  * anything that appears more than once).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -23,6 +23,7 @@ vi.mock('../api/client', () => ({
     spawnStatus: vi.fn().mockResolvedValue({ result: '' }),
     spawnDelete: vi.fn().mockResolvedValue({}),
     spawnRetry: vi.fn().mockResolvedValue({}),
+    spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     resolveApproval: vi.fn().mockResolvedValue({}),
     approveChatSlot: vi.fn().mockResolvedValue({}),
     fileDiff: vi.fn().mockResolvedValue({ diff: '' }),
@@ -51,11 +52,12 @@ import ActivityViewer from '../pages/chat/ActivityViewer'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { api } from '../api/client'
 import { createTestStore } from './helpers'
-import { openActivityToTab, selectSubagent } from '../store/chatSlice'
+import { openActivityToTab, selectSubagent, selectSlotPendingSpawnApprovals, markSubagentApprovalGone } from '../store/chatSlice'
 import { __resetPanelTabs } from '../hooks/usePanelTabs'
 import type { SubagentActivity, ToolActivity, Artifact } from '../types'
 import type { ExtractedLink } from '../utils/extractChatLinks'
 import { i18nT } from '../i18n/t'
+import { consumeChatHandoff, setGatewayConnected } from '../utils/errorReport'
 
 const SLOT = 'test-slot'
 
@@ -247,6 +249,68 @@ describe('ActivityViewer — subagent transcript loading', () => {
     expect(screen.queryByRole('button', { name: 'Load output from disk' })).not.toBeInTheDocument()
   })
 
+  it('offers no disk read on a card whose run never started', () => {
+    const { container } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'error', error: 'never started: waiting for memory (not enough memory freed up in time); retry once memory frees up' }) }}
+      />,
+    )
+    fireEvent.click(cardHeader(container))
+    expect(screen.getByText('(no output: it never started)')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Load output from disk' })).not.toBeInTheDocument()
+    expect(api.spawnStatus).not.toHaveBeenCalled()
+  })
+
+  it('says a low-memory expiry never started and names the Retry failed control', () => {
+    const { container } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'error', error: 'never started: waiting for memory (not enough memory freed up in time); retry once memory frees up' }) }}
+      />,
+    )
+    fireEvent.click(cardHeader(container))
+    expect(screen.getByText('Never started')).toBeInTheDocument()
+    expect(screen.queryByText('Error')).not.toBeInTheDocument()
+    expect(screen.getByText('Not enough memory freed up in time; free up memory, then use “Retry failed”')).toBeInTheDocument()
+    expect(screen.queryByText(/retry once memory frees up/)).not.toBeInTheDocument()
+    // Still retryable: the control the notice names is the one that does it.
+    expect(screen.getByText(/Retry failed \(1\)/)).toBeInTheDocument()
+  })
+
+  it('names the macOS pressure reason only for a run the pressure hold ended', () => {
+    const { container } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'error', error: 'never started: waiting for memory (macOS memory pressure did not ease in time); retry once it eases or a running agent finishes' }) }}
+      />,
+    )
+    fireEvent.click(cardHeader(container))
+    expect(screen.getByText('Never started')).toBeInTheDocument()
+    expect(screen.getByText('macOS memory pressure did not ease in time; once it eases or a running agent finishes, use “Retry failed”')).toBeInTheDocument()
+  })
+
+  it('hands the agent the backend terminal, not the reworded notice', () => {
+    const terminal = 'never started: waiting for memory (not enough memory freed up in time); retry once memory frees up'
+    setGatewayConnected(true)
+    const { container } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'error', error: terminal }) }}
+      />,
+    )
+    fireEvent.click(cardHeader(container))
+    const notice = screen.getByText('Not enough memory freed up in time; free up memory, then use “Retry failed”').closest('[role="alert"]') as HTMLElement
+    fireEvent.click(within(notice).getByRole('button', { name: /Ask the agent/ }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain(`- Message: ${terminal}`)
+    expect(prompt).not.toContain('then use “Retry failed”')
+  })
+
   it('waits for output on a running agent instead of reading from disk', () => {
     renderPanel(
       <ActivityViewer
@@ -311,7 +375,7 @@ describe('ActivityViewer — subagent card controls', () => {
     // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
     vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
     const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
-    renderPanel(
+    const { store, rerender } = renderPanel(
       <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
       storeTracking(pending),
     )
@@ -324,6 +388,129 @@ describe('ActivityViewer — subagent card controls', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       i18nT('components.approvalCard.approval_no_longer_pending'),
     )
+    // This card sent the refused request, so it keeps reporting it once the
+    // store carries the verdict too: the one surface that owns the sentence.
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.approvalGone).toBe('ap-1'))
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('a terminal refusal here withdraws the composer banner copy of the same approval', async () => {
+    // The composer's spawn banner resolves the same id from the store, not
+    // from this pane, so the verdict must land where that banner reads it.
+    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(selectSlotPendingSpawnApprovals(store.getState(), SLOT)).toEqual([])
+    })
+    // The authoritative list is empty, so the unresolved card retires.
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.status).toBe('stopped'))
+  })
+
+  it('withholds the buttons for an approval the composer found gone', () => {
+    const gone = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approvalGone: 'ap-1' })
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: gone }} />,
+      storeTracking(gone),
+    )
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    // Still open: whether it started. "No record" is reserved for a retired card.
+    expect(screen.getByText('Checking whether it started…')).toBeInTheDocument()
+    expect(screen.queryByText('No record')).not.toBeInTheDocument()
+    // The composer that sent the refused request already said why; this card
+    // repeats no red copy of it, only its neutral status.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText(i18nT('components.approvalCard.approval_no_longer_pending'))).not.toBeInTheDocument()
+  })
+
+  it('renders an absent reconciled approval as resolved without fake runtime output', () => {
+    const retired = mkAgent('p1', {
+      status: 'stopped', approval_id: 'ap-1', approvalGone: 'ap-1', approvalRetired: true,
+    })
+    renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: retired }} />,
+      storeTracking(retired),
+    )
+    // The inventory holds no row for it. That is all the card claims: an absent
+    // row can also be a finished run the gateway no longer retains.
+    expect(screen.getByText('No record')).toBeInTheDocument()
+    expect(screen.queryByText('Never started')).not.toBeInTheDocument()
+    expect(screen.queryByText('Pending Approval')).not.toBeInTheDocument()
+    expect(screen.queryByText('Load output from disk')).not.toBeInTheDocument()
+    expect(screen.queryByText('0s')).not.toBeInTheDocument()
+    // Expanded too: a never-launched card shows no run usage either.
+    fireEvent.click(screen.getByText('No record').closest('[aria-expanded]')!)
+    expect(screen.queryByTestId('subagent-credit-usage')).not.toBeInTheDocument()
+  })
+
+  it('a terminal verdict from the store supersedes an older transient failure here', async () => {
+    // First press fails transiently: the card keeps its buttons and says retry.
+    vi.mocked(api.resolveApproval).mockRejectedValue(new Error('boom'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store, rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    const retry = i18nT('components.approvalCard.decision_not_recorded_error', { error: 'boom' })
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(retry))
+
+    // Then the composer finds the SAME approval gone and records it in the
+    // store; SidePanel feeds the pane from that store (selectSlotSubagents).
+    act(() => { store.dispatch(markSubagentApprovalGone({ id: 'p1', approval_id: 'ap-1' })) })
+    const fromStore = store.getState().chat.subagents.p1!
+    expect(fromStore.approvalGone).toBe('ap-1')
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: fromStore }} />)
+
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
+    // Its retry advice is false now, and the refusal is the composer's to
+    // report: the card drops the stale notice and adds no copy of its own.
+    expect(screen.queryByText(retry)).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByText('Checking whether it started…')).toBeInTheDocument()
+  })
+
+  it('keeps re-reading liveness while the progress bar is hidden, and reports a failed read', async () => {
+    // With this tab open SubagentProgressBar is unmounted, so its 30s
+    // reconciliation cannot settle a gone approval; the card must, and a
+    // failed inventory read must not leave the composer silently busy.
+    // Restored by onTestFinished, not a finally: this section awaits waitFor,
+    // and a test that times out never reaches its finally, which would leave
+    // every later test in the file on the fake clock.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    vi.mocked(api.spawnList).mockResolvedValue({ agents: [] })
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new Error('offline'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const { store, rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.approvalGone).toBe('ap-1'))
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
+
+    const failed = i18nT('pages.chat.subagentProgressBar.liveness_check_failed')
+    await waitFor(() => expect(screen.getByText(failed)).toBeInTheDocument())
+    expect(store.getState().chat.subagents.p1?.status).toBe('pending')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    await waitFor(() => expect(store.getState().chat.subagents.p1?.status).toBe('stopped'))
+    rerender(<ActivityViewer {...baseProps} view="subagents" subagents={{ p1: store.getState().chat.subagents.p1! }} />)
+    expect(screen.queryByText(failed)).not.toBeInTheDocument()
   })
 
   it('re-offers the buttons when the pane gets a NEW approval id (#11180)', async () => {
@@ -742,6 +929,28 @@ describe('ActivityViewer — panel behaviour', () => {
     expect(store.getState().chat.selectedSubagentId).toBeNull()
   })
 
+  it('clears a retired never-launched card locally, with no DELETE', async () => {
+    const { store } = renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          d1: mkAgent('d1', { status: 'done' }),
+          gone: mkAgent('gone', { status: 'stopped', approvalRetired: true, approval_id: 'spawn:gone', approvalGone: 'spawn:gone' }),
+        }}
+      />,
+    )
+    const btn = screen.getByTestId('dismiss-done-btn')
+    expect(btn).toHaveTextContent('Dismiss done (2)')
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(api.spawnDelete).toHaveBeenCalledTimes(1))
+    expect(api.spawnDelete).toHaveBeenCalledWith('d1')
+    expect(api.spawnDelete).not.toHaveBeenCalledWith('gone')
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.dismiss_failed'))).not.toBeInTheDocument()
+    expect(store.getState().chat.selectedSubagentId).toBeNull()
+  })
+
   it('caps the rendered pile and reveals the rest on request', () => {
     const many: Record<string, SubagentActivity> = {}
     for (let i = 0; i < 31; i++) {
@@ -1002,7 +1211,53 @@ describe('ActivityViewer — live model downgrade flag (#5326)', () => {
   })
 })
 
-/* ── Subagent card: markdown panes (#12734) ─────────────────────────────────*/
+/* ── Subagent card: wave membership chip (#759 item 4) ──────────────────────*/
+
+describe('ActivityViewer — wave membership chip (#759)', () => {
+  it('renders a batch chip carrying the wave id when the run is part of a wave', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'running', batchId: 'wave-abc123' }) }}
+      />,
+    )
+    const chip = screen.getByTestId('subagent-batch')
+    expect(chip.getAttribute('data-batch')).toBe('wave-abc123')
+    // Short, stable tag — the last 6 chars, not the full id, so a card never
+    // implies the whole id is addressable.
+    expect(chip.textContent).toContain('abc123')
+  })
+
+  it('renders no batch chip for a solo spawn', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'running' }) }}
+      />,
+    )
+    expect(screen.queryByTestId('subagent-batch')).toBeNull()
+  })
+
+  it('two siblings of one wave carry the same batch id, so the card can group them', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{
+          s1: mkAgent('s1', { status: 'running', batchId: 'wave-xyz789' }),
+          s2: mkAgent('s2', { status: 'tool', batchId: 'wave-xyz789' }),
+        }}
+      />,
+    )
+    const chips = screen.getAllByTestId('subagent-batch')
+    expect(chips).toHaveLength(2)
+    expect(new Set(chips.map(c => c.getAttribute('data-batch')))).toEqual(new Set(['wave-xyz789']))
+  })
+})
+
+
 
 describe('ActivityViewer — subagent panes render markdown', () => {
   const md = '- one\n- two\n\n```py\nprint(1)\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n'
@@ -1025,5 +1280,107 @@ describe('ActivityViewer — subagent panes render markdown', () => {
       <ActivityViewer {...baseProps} view="subagents" subagents={{ s1: mkAgent('s1', { status: 'running', streaming: 'Result:\n```ts\nconst x =' }) }} />,
     )
     expect(screen.getByTestId('subagent-output-body').textContent).toContain('Result:')
+  })
+})
+
+/* ── Subagent card: tool-call timeline (#13628) ─────────────────────────────*/
+
+describe('ActivityViewer — subagent tool-call timeline', () => {
+  it('lists each tool call and says how many it leaves out', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', lastTool: 'Running: npm test', toolCount: 5,
+          toolCalls: [{ tool: 'Reading src/a.ts' }, { tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    const list = screen.getByTestId('subagent-tool-calls')
+    // The count (5 counted, 2 listed) sits in the heading, outside the
+    // scrolling list, so following the newest call never scrolls it away.
+    const unlisted = within(list).getByTestId('subagent-tool-calls-unlisted')
+    expect(unlisted).toHaveTextContent('3 earlier calls not shown')
+    expect(unlisted.closest('ol')).toBeNull()
+    // Same tone as the rows, not the heading's faint label tone.
+    expect(unlisted).toHaveClass('text-muted/70')
+    const items = within(list).getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('Reading src/a.ts')
+    expect(items[1].textContent?.trim()).toBe('npm test')
+    expect(items[1]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('drops the "Running:" prefix from every row, the live one marked by aria-current instead', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', lastTool: 'Running: npm test', toolCount: 2,
+          toolCalls: [{ tool: 'Running: git status' }, { tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    const items = within(screen.getByTestId('subagent-tool-calls')).getAllByRole('listitem')
+    expect(items[0].textContent?.trim()).toBe('git status')
+    expect(items[0]).toHaveAttribute('title', 'git status')
+    expect(items[1].textContent?.trim()).toBe('npm test')
+    expect(items[1]).toHaveAttribute('aria-current', 'step')
+  })
+
+  it('a finished card shows no row as still running', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'done', result: 'ok', toolCount: 1,
+          toolCalls: [{ tool: 'Running: npm test' }],
+        }) }}
+      />,
+    )
+    // A finished card starts collapsed; open it.
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    const items = within(screen.getByTestId('subagent-tool-calls')).getAllByRole('listitem')
+    expect(items[0].textContent?.trim()).toBe('npm test')
+    expect(items[0]).not.toHaveAttribute('aria-current')
+  })
+
+  it('fades the top edge once rows sit above the scroll box', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', {
+          status: 'tool', streaming: 'x', toolCount: 2,
+          toolCalls: [{ tool: 'a' }, { tool: 'b' }],
+        }) }}
+      />,
+    )
+    const ol = within(screen.getByTestId('subagent-tool-calls')).getByRole('list')
+    expect(ol).not.toHaveAttribute('data-fade-top')
+    // The mask sits on the bare scroller; the solid box around it stays solid.
+    expect(ol).not.toHaveClass('bg-bg')
+    expect(ol.parentElement).toHaveClass('bg-bg')
+    ol.scrollTop = 40
+    fireEvent.scroll(ol)
+    expect(ol).toHaveAttribute('data-fade-top')
+    ol.scrollTop = 0
+    fireEvent.scroll(ol)
+    expect(ol).not.toHaveAttribute('data-fade-top')
+  })
+
+  it('keeps the single last-tool line when no timeline was recorded', () => {
+    renderPanel(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ s1: mkAgent('s1', { status: 'tool', streaming: 'x', lastTool: 'Terminal' }) }}
+      />,
+    )
+    expect(screen.queryByTestId('subagent-tool-calls')).toBeNull()
+    expect(screen.getByTestId('subagent-output-body')).toHaveTextContent('Terminal')
   })
 })

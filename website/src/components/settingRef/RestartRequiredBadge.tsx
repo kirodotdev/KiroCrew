@@ -30,7 +30,7 @@ export function schemaRequiresRestart(
 export function RestartRequiredBadge() {
   return (
     <span
-      className="inline-flex items-center gap-1 text-[10px] text-warn bg-warn-subtle px-1.5 py-0.5 rounded"
+      className="inline-flex items-center gap-1 text-[10px] text-warn-text bg-warn-subtle px-1.5 py-0.5 rounded"
       title={i18nT('components.restartRequiredBadge.tooltip')}
       data-testid="restart-required-badge"
     >

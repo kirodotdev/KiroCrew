@@ -62,7 +62,7 @@ def sandboxed_caller(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: peer["pid"])
     monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda _pid: "start-id")
     monkeypatch.setattr(auth, "_verified_host_process", lambda _pid: False)
-    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda _pid: False)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda _pid: None)
 
     def ask(pid: int) -> bool:
         peer["pid"] = pid

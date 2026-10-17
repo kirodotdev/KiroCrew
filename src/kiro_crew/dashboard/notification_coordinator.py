@@ -8,6 +8,35 @@ from collections.abc import Callable
 from concurrent.futures import Executor
 from typing import Any
 
+from kiro_crew.notifications.settings import PROTECTED_CHANNELS
+
+
+def session_is_muted(state: Any, session_key: str) -> bool:
+    """Whether *session_key*'s attention is muted, as the dashboard reads it.
+
+    Mirrors ``isSlotMuted`` (``website/src/hooks/sessionMute.ts``): the session's
+    own ``muted`` flag, or ``mutes_opened`` on a session up its ``_created_by``
+    chain, walking from its creator. A missing creator or a cycle ends it unmuted.
+    """
+    from kiro_crew.dashboard.session_control import caller_slot_key
+
+    slot = state.get_slot(caller_slot_key(state, session_key))
+    if slot is None:
+        return False
+    if slot.muted:
+        return True
+    seen = {slot.key}
+    key = slot._created_by
+    while key and key not in seen:
+        creator = state.get_slot(key)
+        if creator is None:
+            return False
+        if creator.mutes_opened:
+            return True
+        seen.add(key)
+        key = creator._created_by
+    return False
+
 
 class NotificationCoordinator:
     """Coordinate notification state while the DashboardState facade owns it."""
@@ -46,6 +75,8 @@ class NotificationCoordinator:
         url: str | None,
         actions: list[dict[str, Any]] | None,
         channel: str | None = None,
+        member: dict[str, str] | None = None,
+        publisher_session: str | None = None,
     ) -> None:
         """Validate a legacy notification and deliver it through the bus."""
         try:
@@ -57,6 +88,8 @@ class NotificationCoordinator:
                 url=url,
                 actions=actions,
                 channel=channel,
+                member=member,
+                publisher_session=publisher_session,
             )
             state.notification_bus.push(payload)
         except self._validation_error:
@@ -68,10 +101,19 @@ class NotificationCoordinator:
 
     def deliver(self, state: Any, note: dict[str, Any]) -> None:
         """Apply settings, fan out, and queue durable notification storage."""
+        # Delivery-only metadata: read here, so it is never redacted, stored or sent.
+        publisher = note.pop("publisher_session", None)
+        # Urgency is what the producer asked for, read before the user's channel
+        # settings reshape it: a blanket channel override must not exempt a mute.
+        urgent = note.get("priority") == "critical" or note.get("channel") in PROTECTED_CHANNELS
         for key, value in note.items():
             if key != "ts":
                 note[key] = self._redact_value(value)
         state.notification_channel_settings.apply(note)
+        # Applied last, so a channel priority override cannot undo the mute.
+        if publisher and not urgent and session_is_muted(state, publisher):
+            note["silenced"] = True
+            note["priority"] = "passive"
         self._sweep_expired(state._notification_log)
         state._notification_log.append(note)
         if len(state._notification_log) > self._max_persisted:

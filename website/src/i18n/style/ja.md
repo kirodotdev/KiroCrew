@@ -55,9 +55,12 @@ digits, no leading/trailing or doubled space).
 ### §1.1 Spacing at a script boundary
 
 Put a half-width space between a Latin run and adjacent Japanese
-(`Kiro Crew を起動`), except where the Latin run is the head of a compound the
-language has absorbed (`MCPサーバー`). This one is **review-only**: the boundary
-is a judgement call and a mechanical rule would fire on every absorbed compound.
+(`Kiro Crew を起動`, `MCP サーバー`), except where a Latin run that is NOT a
+do-not-translate term is the head of a compound the language has absorbed
+(`APIキー`). A do-not-translate term always takes the space: `i18n-translate.mjs
+verify` reads `MCPサーバー` as a dropped `MCP` and refuses the shard. Beyond that,
+this one is **review-only**: the boundary is a judgement call and a mechanical
+rule would fire on every absorbed compound.
 
 ---
 

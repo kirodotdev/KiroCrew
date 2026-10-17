@@ -31,11 +31,13 @@ test("withGatewayAuth delivers a cookie-sourced credential as a Cookie header, n
     "must branch on how the credential was sourced",
   );
   assert.ok(
-    /headers: \{ Cookie: `mc_token_\$\{port\}=\$\{auth\.value\}` \}/.test(body),
+    /headers: cookie \? \{ Cookie: cookie \} : \{\}/.test(body),
     "a viaCookie credential must be sent as an mc_token_<port> Cookie header",
   );
+  // sessionCookieHeader is the one builder of that header; its raw-port rule is
+  // unit-tested beside the Crew Companion credential tests.
   assert.ok(
-    /const port = new URL\(url\)\.port/.test(body),
+    /const cookie = sessionCookieHeader\(url, auth\.value\)/.test(body),
     "the cookie's port must be the one the URL STATES: the gateway names "
       + "mc_token_<port> after its own listen port when the Host header carries "
       + "none, so resolving a scheme default here would name another gateway's "

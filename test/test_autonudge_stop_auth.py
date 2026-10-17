@@ -706,7 +706,11 @@ def test_applier_monitor_update_budget_stopped_denial_names_the_budget(monkeypat
         )
     )
     assert not update_calls
-    assert "wall-clock" in result and "max_runtime_secs" in result
+    assert (
+        "runtime budget (awake time while the gateway runs; a restart counts the time "
+        "since created_ts on the wall clock)"
+    ) in result
+    assert "wall-clock" not in result and "max_runtime_secs" in result
     assert "max_cycles" not in result
 
 

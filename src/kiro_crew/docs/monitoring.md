@@ -42,7 +42,7 @@ Unless you choose different limits, the monitor uses:
 |---|---:|
 | Probe interval | 5 minutes |
 | Runtime | 4 hours |
-| Completed agent turns | 8 |
+| Completed agent turns | 0 (no limit) |
 | Reported aggregate input and output tokens | 250,000 |
 | Consecutive provider errors | 3 |
 

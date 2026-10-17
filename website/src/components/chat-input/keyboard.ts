@@ -11,6 +11,7 @@ import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
+import type { MentionKeyMods } from './props'
 import { applyTextareaListBreak } from './listContinuation'
 
 /* The composer's keyboard and focus: autofocus on a session switch, the
@@ -103,16 +104,18 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
   }, [typedCommandMenus, composerCollapsed, expandComposer, composerControl])
 }
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
   handleTokenKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
+  onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
   promptOptimizer: boolean
   connected: boolean
   optimizePrompt: () => void
   sendOnEnter: SendMode
   onChange: (v: string) => void
+  valueFromUserRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
   fireComposer: (alternate?: unknown) => void
   ime: ReturnType<typeof useImeGuard>
@@ -140,6 +143,39 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Enter/history, so edits on or around a token never reach the default
     // textarea handling.
     if (handleTokenKey(e)) return
+    // Atomic file-mention handling: Backspace/Delete on or next to a staged
+    // `@mention` removes the whole mention as one unit, so an edit never
+    // leaves a half-reference whose chip then silently unstages (#14675). Runs
+    // in the same slot as the paste-token atom, before Enter/history, so the
+    // mention never reaches the default one-character edit. Skipped while the
+    // optimizer runs: the textarea is readOnly then, so a Backspace next to a
+    // mention must not unstage its chip and make the optimizer discard its
+    // result on the now-shorter draft (crew-pr-reviewer).
+    if (onMentionKey && !ime.isComposing(e) && !optimizingRef.current) {
+      const ta = e.currentTarget
+      const mods = { meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }
+      const edit = onMentionKey(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.key, mods)
+      if (edit) {
+        e.preventDefault()
+        // Give the atomic delete its own undo entry: a short mention removed
+        // within the typing burst would otherwise fold into it, so Ctrl+Z
+        // would jump past the text typed before it instead of restoring just
+        // the mention (matches applyTextareaListBreak / removeFileEndingUndoBurst).
+        endUndoBurst()
+        // Mark this as a real user edit, not a parent-driven draft restore, so
+        // useUndoHistory records an undo entry for it. Without this, switching
+        // between two slots whose drafts are byte-identical leaves the history
+        // "settling" flag set (the value never changed, so that effect does not
+        // re-run to clear it), and this unmarked onChange would reseed history
+        // at the post-delete value — Ctrl+Z could then not restore the removed
+        // mention or its attachment (GPT 6.1 review). Matches the paste-token
+        // atom, which sets the same ref before its onChange.
+        valueFromUserRef.current = true
+        onChange(edit.value)
+        requestAnimationFrame(() => inputRef.current?.setSelectionRange(edit.caret, edit.caret))
+        return
+      }
+    }
 
     // Cmd+Shift+Enter (or Ctrl+Shift+Enter) → optimize prompt.
     // Gated on `promptOptimizer` like the Optimize button and plus-menu row:
@@ -221,7 +257,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
     promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
 }
 
 /** The editor's change handlers. Both mark the edit as the user's (the undo

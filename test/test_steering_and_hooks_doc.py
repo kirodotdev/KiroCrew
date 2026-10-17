@@ -33,6 +33,7 @@ from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
     HOOK_EVENT_PRE_TOOL_USE,
     HOOK_EVENTS,
+    HOOK_MATCHER_MODES,
     HOOK_TIMEOUT_MAX,
     HOOK_TIMEOUT_MIN,
     ScriptHook,
@@ -41,7 +42,6 @@ from kiro_crew.validation import REGISTER_HOOK_SCHEMA
 
 REPO = Path(__file__).resolve().parent.parent
 DOC = REPO / "src" / "kiro_crew" / "docs" / "steering-and-hooks.md"
-HOOKS_PAGE = REPO / "website" / "src" / "pages" / "HooksPage.tsx"
 
 
 @pytest.fixture(scope="module")
@@ -120,15 +120,8 @@ class TestHookFields:
         )
 
     def test_matcher_modes_match_the_authoring_vocabulary(self, doc_text: str) -> None:
-        """The three modes the hook form offers.
-
-        The closed set lives in the form (``MATCHER_MODES``) — the backend
-        dispatches on the string and falls through to glob — so the form is what
-        the doc is describing and what it is pinned against.
-        """
-        declared = re.search(r"const MATCHER_MODES = \[([^\]]*)\]", HOOKS_PAGE.read_text("utf-8"))
-        assert declared, "MATCHER_MODES no longer declared in HooksPage.tsx"
-        modes = set(re.findall(r"'([^']+)'", declared.group(1)))
+        """The modes ``hooks.HOOK_MATCHER_MODES`` accepts, which the form offers."""
+        modes = set(HOOK_MATCHER_MODES)
         row = next(
             ln
             for ln in _section(doc_text, "### What a hook runs").splitlines()
@@ -136,8 +129,8 @@ class TestHookFields:
         )
         assert set(_backticked(row)[1:]) == modes, (
             f"matcher_mode row names {set(_backticked(row)[1:])}; "
-            f"MATCHER_MODES in {HOOKS_PAGE.name} offers {modes}. "
-            "Changing the form's modes means updating the matcher_mode row "
+            f"hooks.HOOK_MATCHER_MODES accepts {modes}. "
+            "Changing the modes means updating the matcher_mode row "
             "in src/kiro_crew/docs/steering-and-hooks.md."
         )
 

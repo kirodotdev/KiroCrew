@@ -108,8 +108,9 @@ const PapyrusEditor = forwardRef<PapyrusEditorHandle, PapyrusEditorProps>(functi
 
   // Contents track the live buffer; the seed `cacheKey` stays stable so it is the
   // editing SESSION identity (Pierre keeps the caret across keystrokes) and the
-  // React remount key below. PierreEditorImpl re-derives the content-tracking key
-  // Pierre's line cache needs from these contents, so this caller does not.
+  // React remount key below. PierreEditorImpl owns Pierre's `file` contract: it
+  // keeps a seed key that moves only on an outside change and one session file
+  // object whose contents it mirrors on edit, so this caller does not.
   const liveFile = useMemo(
     () => {
       const seed = initialRef.current!.file

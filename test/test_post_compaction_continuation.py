@@ -384,13 +384,18 @@ def test_the_runner_gates_continuation_on_completed_not_on_any_terminal() -> Non
     turn function, which cannot be driven in a unit test -- the wiring is the whole
     risk, so the wiring is what is pinned.
     """
-    src = (
+    runner = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
         / "kiro_crew"
         / "dashboard"
         / "chat_runner.py"
-    ).read_text(encoding="utf-8")
+    )
+    src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    )
 
     assert "compaction_settled=_compaction_completed," in src, (
         "the continuation gate must read the COMPLETED-only flag; "
@@ -423,10 +428,11 @@ def test_the_dispatch_path_flags_the_notice_chunk_it_forwards() -> None:
     Pinned in source because the yield sits inside a very long async generator,
     and the regression is exactly the flag going missing from the call.
     """
-    src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp" / "client.py"
-    ).read_text(encoding="utf-8")
-    assert "yield AcpEvent(kind=kind, text=chunk, control_notice=_notice_chunk)" in src
+    acp_dir = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
+    src = "".join(p.read_text(encoding="utf-8") for p in sorted(acp_dir.glob("client*.py")))
+    assert re.search(
+        r"yield AcpEvent\(\s*kind=kind,\s*text=chunk,\s*control_notice=_notice_chunk\b", src
+    ), "the forwarded chunk must carry the notice flag"
     assert re.search(
         r"if _compaction_event is not None:\s*\n"
         r"\s*yield _compaction_event\s*\n"
@@ -441,13 +447,18 @@ def _runner_source() -> str:
     The terminal branch chain lives inside a ~5000-line async generator that no
     unit test can drive, so the shape of the decision is what gets pinned.
     """
-    return (
+    runner = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
         / "kiro_crew"
         / "dashboard"
         / "chat_runner.py"
-    ).read_text(encoding="utf-8")
+    )
+    return "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    )
 
 
 def test_a_notice_is_recorded_without_touching_the_text_path() -> None:
@@ -462,7 +473,7 @@ def test_a_notice_is_recorded_without_touching_the_text_path() -> None:
     """
     src = _runner_source()
     assert re.search(
-        r"\n\s*assistant_text \+= safe_chunk\n"
+        r"\n\s*(?:turn\.)?assistant_text \+= safe_chunk\n"
         r"\s*if event\.control_notice:\n"
         r"(?:\s*#[^\n]*\n)*"
         r"\s*_compaction_notice_chunks\.append\(safe_chunk\)",
@@ -481,7 +492,7 @@ def test_the_answer_branch_tests_the_answer_not_the_raw_segment() -> None:
     src = _runner_source()
     assert re.search(
         r"\n\s*_answer_text = _answer_text_only\(\s*\n?"
-        r"\s*assistant_text, _compaction_notice_chunks\s*\n?\s*\)\n",
+        r"\s*(?:turn\.)?assistant_text, _compaction_notice_chunks\s*\n?\s*\)\n",
         src,
     ), "the answer text must be derived once, before the terminal chain"
     chain_head = src.index("\n        if _answer_text:\n")
@@ -508,9 +519,9 @@ def test_a_notice_only_turn_is_still_flushed() -> None:
     """
     src = _runner_source()
     match = re.search(
-        r"\n\s*if assistant_text and not _answer_text:\n"
+        r"\n\s*if (?:turn\.)?assistant_text and not _answer_text:\n"
         r"\s*_flush_text_stream\(\)\n"
-        r"\s*_flush_segment\(state, slot, assistant_text, broadcast=False\)\n",
+        r"\s*_flush_segment\(state, slot, (?:turn\.)?assistant_text, broadcast=False\)\n",
         src,
     )
     assert match, "a notice-only turn must flush its text in its own block"
@@ -569,9 +580,8 @@ def test_no_chunk_path_drops_the_text_on_a_notice() -> None:
     pinned. Skipping the chunk means a misclassified line is discarded rather than
     discounted, and nothing downstream can recover it.
     """
-    src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp" / "client.py"
-    ).read_text(encoding="utf-8")
+    acp = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp"
+    src = "".join(p.read_text(encoding="utf-8") for p in sorted(acp.glob("client*.py")))
     lines = src.splitlines()
     calls = [i for i, ln in enumerate(lines) if "_claude_compaction_event(chunk)" in ln]
     assert len(calls) == 3, f"expected the three chunk paths, found {len(calls)}"
@@ -599,18 +609,27 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
     between the guard and the reset still fails, which is what keeps this from
     degrading into "the two lines appear somewhere in the file".
     """
-    src = (
+    runner = (
         pathlib.Path(__file__).resolve().parents[1]
         / "src"
         / "kiro_crew"
         / "dashboard"
         / "chat_runner.py"
-    ).read_text(encoding="utf-8")
+    )
+    src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    )
     # A comment line, or a line of the boundary scan (its call is wrapped across
     # three lines by the formatter, so each shape is named).
-    filler = r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|assistant_text|\))\n)*"
+    filler = (
+        r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|(?:turn\.)?assistant_text|\))\n)*"
+    )
     assert re.search(
-        r"if not event\.synthesized:[ \t]*\n" + filler + r'[ \t]*assistant_text = ""[ \t]*\n'
+        r"if not event\.synthesized:[ \t]*\n"
+        + filler
+        + r'[ \t]*(?:turn\.)?assistant_text = (?:""|_cleared_segment_text\(slot\))[ \t]*\n'
         r"[ \t]*_wsred\.reset\(\)",
         src,
     ), "the compaction-terminal text reset must be guarded by `not event.synthesized`"

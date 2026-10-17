@@ -71,6 +71,13 @@ def save(path, payload):
     os.replace(tmp, path)
     os.chmod(path, 0o600)
 """,
+    "temp write, retried publish, then chmod the published path": """
+def save(path, payload):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    replace_with_retry(tmp, path)
+    os.chmod(path, 0o600)
+""",
     "open(file=...) keyword path, then chmod the published path": """
 def persist(final, secret):
     with open(file=final, mode="w", encoding="utf-8") as handle:
@@ -269,6 +276,13 @@ def save(path, payload):
     tmp.write_text(payload, encoding="utf-8")
     platform_compat.restrict_to_owner(tmp)
     os.replace(tmp, path)
+""",
+    "restrict the temp, then replace_with_retry it into place": """
+def save(path, payload):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    platform_compat.restrict_to_owner(tmp)
+    atomic_write.replace_with_retry(tmp, path)
 """,
     "restrict the temp, then Path.rename it into place (#5317 shape)": """
 def snapshot(outfile, stage):

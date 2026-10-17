@@ -163,11 +163,13 @@ OSS-CLEAN: opentelemetry (Apache-2.0) + stdlib + first-party helpers only.
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 
+# The knowledge store holds knowledge.db open in this process through the shim; a
+# probe on a second SQLite library would drop that store's locks when it closes.
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.metrics.schema import validate_name
 
 if TYPE_CHECKING:  # annotation-only; never imported at runtime
@@ -580,7 +582,10 @@ def read_knowledge_documents() -> Optional[int]:
 
 
 def read_lessons() -> Optional[int]:
-    """Count of saved lessons.
+    """Count of lessons in the global (V1) lesson store.
+
+    Private Memory V2 crew-member lessons live only in each member's own
+    database and are not counted here.
 
     Uncached here on purpose: the store already caches by file mtime, so a
     repeated read on an unchanged file is one ``stat``. A second cache would only
@@ -784,7 +789,7 @@ def register_inventory_gauges(meter: "Meter") -> None:
             GAUGE_LESSONS,
             callbacks=[_observations(PROBE_LESSONS, read_lessons)],
             unit="1",
-            description="Lessons this install has saved",
+            description="Lessons saved in the global (V1) lesson store",
         )
         meter.create_observable_gauge(
             GAUGE_MCP_SERVERS,

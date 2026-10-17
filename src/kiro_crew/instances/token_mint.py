@@ -27,7 +27,12 @@ import shutil
 
 from kiro_crew.config.paths import CONFIG_DIR_NAME, LEGACY_CONFIG_DIR_NAME
 from kiro_crew.deploy.engine import tool_spawn_env
-from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS, TTL_PATTERN
+from kiro_crew.instances.constants import (
+    DEFAULT_MINT_TIMEOUT_SECS,
+    DEFAULT_SSM_MINT_TIMEOUT_SECS,
+    MINT_TIMEOUT_CEILING_SECS,
+    TTL_PATTERN,
+)
 from kiro_crew.platform_compat import kill_and_reap
 from kiro_crew.security import redact
 
@@ -38,10 +43,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_REMOTE_BIN = "$HOME/.local/bin/kirocrew"
 
 # Non-interactive SSH shells don't source ~/.zshrc, so PATH may be minimal. Each
-# candidate is a full path the remote shell can exec directly.
+# candidate is a full path the remote shell can exec directly. The third entry
+# is the managed-launcher directory :data:`kiro_crew.env._EXTRA_PATH_DIRS`
+# already searches locally: a remote provisioned by such an installer has its
+# ``kirocrew`` there and in neither of the first two; without this entry every
+# mint on such a remote exits 127 and only ``remote_bin`` gets it past that.
 REMOTE_BIN_CANDIDATES: tuple[str, ...] = (
     "$HOME/.local/bin/kirocrew",  # install.sh / source install
     "$HOME/.kirocrew-app/.venv/bin/kirocrew",  # one-liner installer venv
+    "$HOME/.toolbox/bin/kirocrew",  # managed launcher dir (see env._EXTRA_PATH_DIRS)
+)
+
+# Printed on the exit-127 path after the per-candidate diagnosis. The ladder
+# can never be complete, and the escape hatch exists -- the instance's
+# ``remote_bin`` field -- but an error that only lists what was tried leaves
+# the operator to find that field on their own. The example is in ``~/`` form
+# because that is the spelling the validator accepts (``$`` is refused).
+REMOTE_BIN_HINT = (
+    "if kirocrew is installed elsewhere on this host, set the instance's "
+    "remote_bin setting to its path, e.g. ~/.local/bin/kirocrew"
 )
 
 # ttl accepted by `kirocrew token --ttl`: a positive integer with an h/m suffix
@@ -56,7 +76,7 @@ _TOKEN_RE = re.compile(r"[?&]token=([^\s&]+)")
 # outside a URL before a stdout tail is put into an exception message.
 #
 # The segment count is `{1,4}` REPEATED, not a fixed `head.payload.sig` triple:
-# `generate_token` (dashboard/token_auth.py) mints `payload.signature` — only
+# `generate_token` (dashboard/token_auth_tokens.py) mints `payload.signature` — only
 # TWO segments — so a three-segment pattern would never match the shape this app
 # actually produces, leaving the scrub layer inert against its own tokens. The
 # upper bound covers a compact JWE (five segments) so a partial match cannot
@@ -99,6 +119,29 @@ _CLIPPED_MARKER = "<clipped>"
 # Canonical default lives in instances.constants (user-tunable via
 # ``instances.mint_timeout_secs``); aliased here for the local call sites.
 _DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_MINT_TIMEOUT_SECS
+
+
+def _mint_timeout_advice(timeout_secs: float) -> str:
+    """Name the setting that budgets a mint, for the end of a timeout message.
+
+    Both transports share it so the next step reads the same over SSH and SSM.
+    A budget already at ``MINT_TIMEOUT_CEILING_SECS`` cannot be raised (the
+    config loader clamps it), so that case points at the host instead. The one
+    setting overrides the mint budget of BOTH transports, so the advice says so:
+    a value picked for a slow SSH host could otherwise lower every SSM crew's
+    budget below its own default.
+    """
+    if timeout_secs >= MINT_TIMEOUT_CEILING_SECS:
+        return (
+            "This budget is already at its maximum, so check that the host is "
+            "reachable rather than raising it."
+        )
+    return (
+        "If the host is reachable but slow to answer, raise the budget with "
+        "`kirocrew config set instances.mint_timeout_secs <value>` and connect again. "
+        "The setting applies to SSH and SSM mints alike, so keep it at or above "
+        f"{DEFAULT_SSM_MINT_TIMEOUT_SECS:g}s if any crew connects over SSM."
+    )
 
 
 class TokenMintError(Exception):
@@ -245,6 +288,7 @@ def build_candidate_command(
             "      ;;",
             "  esac;",
             "done;",
+            f'echo "{REMOTE_BIN_HINT}" >&2;',
             "exit 127",
         ]
     )
@@ -564,7 +608,12 @@ async def mint_remote_token(
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
     except asyncio.TimeoutError as e:
         await kill_and_reap(proc)
-        raise TokenMintError(f"timed out minting token on {ssh_host} after {timeout_secs}s") from e
+        raise TokenMintError(
+            f"timed out minting token on {ssh_host} after {timeout_secs}s; ssh had not "
+            f"returned the token when the budget ran out. If the host is reached "
+            f"through a jump host or proxy, the mint pays that handshake again; "
+            f"otherwise the host may not be answering. {_mint_timeout_advice(timeout_secs)}"
+        ) from e
 
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace").strip()
@@ -608,6 +657,7 @@ async def run_remote_kirocrew(
     marker_port: int | None = None,
     timeout_secs: float = 60.0,
     connect_timeout_secs: float = 10.0,
+    stdout_tail: bool = False,
 ) -> tuple[int, str]:
     """Run ``kirocrew <subcommand>`` on *ssh_host* over SSH.
 
@@ -631,6 +681,11 @@ async def run_remote_kirocrew(
     tunable for exactly this. Independent of *timeout_secs* (the overall
     wait_for budget): the outer wait_for is still the ultimate bound
     regardless of what ``ConnectTimeout`` allows internally.
+
+    *stdout_tail* — on a non-zero exit, append a redacted tail of the remote's
+    stdout to the message. For a subcommand such as ``update``, which prints
+    its failure reasons to stdout; off by default, so ``restart`` keeps its
+    stderr-only message.
     """
     remote_command = build_remote_command(
         remote_bin, subcommand, marker_port=_validate_port(marker_port)
@@ -650,7 +705,7 @@ async def run_remote_kirocrew(
     except OSError as e:
         return -1, f"failed to spawn ssh: {e}"
     try:
-        _out, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
     except asyncio.TimeoutError:
         await kill_and_reap(proc)
         return -1, f"timed out after {timeout_secs}s"
@@ -658,4 +713,8 @@ async def run_remote_kirocrew(
     # Proxy-controlled stderr (e.g. a WSSH banner) can carry credential-looking
     # text or exfil URLs; redact before returning since callers surface this tail.
     safe_err = redact(err) if err else ""
-    return (proc.returncode if proc.returncode is not None else -1), safe_err[:300]
+    rc = proc.returncode if proc.returncode is not None else -1
+    if stdout_tail and rc != 0:
+        safe_out = _redacted_output_tail(out_b.decode("utf-8", "replace"))
+        return rc, _with_stdout_tail(safe_err[:300], safe_out)
+    return rc, safe_err[:300]

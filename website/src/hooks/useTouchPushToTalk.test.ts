@@ -19,7 +19,7 @@ function makeVoice(overrides: Partial<VoiceControls> = {}) {
   return v
 }
 
-const HYBRID: PttConfig = { mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }
+const HYBRID: PttConfig = { enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }
 const ORIGIN_Y = 400
 
 let target: HTMLButtonElement

@@ -57,7 +57,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -161,12 +161,13 @@ def pid_start_token(pid: int) -> str:
       inside the same second would reproduce an identical token there and the
       guard would silently pass.
     - :func:`kiro_crew.platform_compat.process_start_time` is the fallback, and
-      it is what keeps **Windows** working: it reads the process creation
-      ``FILETIME`` (100-ns units) through a query-only handle, while
-      ``get_process_start_id`` implements Linux and macOS only and answers
-      ``None`` everywhere else. Without this leg the token is empty on every
-      Windows host, so a pod there could never prove ownership at all — an
-      unsatisfiable requirement rather than a strict one.
+      on **Windows** it is what ``get_process_start_id`` dispatches to: it reads
+      the process creation ``FILETIME`` (100-ns units) through a query-only
+      handle. ``get_process_start_id`` implements all three platforms and answers
+      ``None`` only on an unrecognised host or a failed read. Without the Windows
+      leg the token would be empty on every Windows host, so a pod there could
+      never prove ownership at all — an unsatisfiable requirement rather than a
+      strict one.
 
     The fallback's value is whitespace-collapsed because the macOS ``ps``
     spelling is space-padded and the reader requires a single token; Windows
@@ -243,11 +244,27 @@ def _read_sidecar(port: int, suffix: str) -> str:
     still resolves, and creates, the data home itself.) An unreadable or absent
     file is indistinguishable from an empty one here; each reader decides what
     "" means for its own value.
+
+    The read goes through :func:`kiro_crew.atomic_write.read_bytes_with_retry`,
+    the read-side twin of the ``mkstemp`` + ``os.replace`` publish these sidecars
+    use (:func:`write_marker`). On Windows a reader that lands in the writer's
+    ``os.replace`` window raises ``PermissionError`` (``WinError 32``); a plain
+    ``read_text`` folded that transient into ``""`` -- indistinguishable from a
+    genuinely absent marker, so a caller checking whether a gateway runs on a
+    port got a silent false negative. The helper retries that bounded window
+    before giving up. A genuinely absent file raises ``FileNotFoundError``, which
+    the helper does NOT retry and this ``except`` folds to ``""`` exactly as
+    before, so real absence is unchanged; on POSIX the helper is a plain read, so
+    the no-contention path is byte-for-byte the prior behaviour with no added
+    latency. The helper also skips the sleep-based retry when a running event
+    loop is on the calling thread, so a caller reached from the gateway loop
+    (``read_pid`` / ``read_secret`` / ``read_launcher`` on the dispatcher) keeps
+    the prior single-attempt semantics unless it offloads the read.
     """
     try:
         return (
-            (config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{suffix}")
-            .read_text(encoding="utf-8")
+            read_bytes_with_retry(config_dir() / "run" / f"{_MARKER_PREFIX}{int(port)}{suffix}")
+            .decode("utf-8")
             .strip()
         )
     except (OSError, ValueError):
@@ -431,11 +448,23 @@ def _read_listener_sidecar(port: int, host: str) -> str:
     :func:`listener_secret_path` so a reader that merely looks for a gateway does
     not MATERIALISE ``run/`` (:func:`listener_secret_path` goes through
     :func:`_run_dir`). An unreadable or absent file reads as ``""``.
+
+    Reads through :func:`kiro_crew.atomic_write.read_bytes_with_retry` for the
+    same reason :func:`_read_sidecar` does: these credentials are published with
+    ``mkstemp`` + ``os.replace``, so on Windows a read landing in the replace
+    window raises ``PermissionError`` that a plain ``read_text`` would fold to
+    ``""``. Here that false ``""`` matters doubly -- the credential coverage test
+    in :func:`read_listener_secret` is an intersection over present entries, and
+    a transiently-unreadable entry dropping out could flip a safe dial into a
+    refusal. Retrying the bounded window keeps a correct concurrent write from
+    reading as absence; a genuinely absent file still folds to ``""``.
     """
     try:
         return (
-            (config_dir() / RUN_DIR_NAME / listener_secret_file_name(int(port), host))
-            .read_text(encoding="utf-8")
+            read_bytes_with_retry(
+                config_dir() / RUN_DIR_NAME / listener_secret_file_name(int(port), host)
+            )
+            .decode("utf-8")
             .strip()
         )
     except (OSError, ValueError):
@@ -498,10 +527,18 @@ def _read_start_token(pid_path: Path) -> str:
     normalisation this module performs. The read never creates the file or any
     parent directory. The token is compared VERBATIM against a freshly probed
     one, so a malformed file cannot accidentally agree with anything.
+
+    Reads through :func:`kiro_crew.atomic_write.read_bytes_with_retry` (bounded by
+    ``max_bytes``) so a Windows reader landing in the ``.start`` sidecar's
+    ``os.replace`` publish window retries rather than folding the transient
+    ``PermissionError`` into ``""`` = unproven. A genuinely absent file raises
+    ``FileNotFoundError``, which the helper does not retry and this folds to
+    ``""``, so real absence stays distinct from a concurrent write.
     """
     try:
-        with _start_path_for(pid_path).open("rb") as stream:
-            blob = stream.read(_MAX_START_TOKEN_BYTES + 1)
+        blob = read_bytes_with_retry(
+            _start_path_for(pid_path), max_bytes=_MAX_START_TOKEN_BYTES + 1
+        )
     except (OSError, ValueError):
         return ""
     if len(blob) > _MAX_START_TOKEN_BYTES:
@@ -539,10 +576,18 @@ def read_pid_record_path(path: Path) -> tuple[int, str] | None:
     read its own. It is NOT a wildcard: a caller that needs to know the pid
     still names the same process must treat an empty token as unproven, because
     the whole point of the token is that a recycled pid cannot reproduce it.
+
+    The pid read goes through
+    :func:`kiro_crew.atomic_write.read_bytes_with_retry` (bounded by
+    ``max_bytes``) so :func:`read_pid` -- the identity claim a client checks
+    before trusting a port -- retries a Windows ``os.replace``-window
+    ``PermissionError`` rather than folding it into ``None`` = "no record". A
+    genuinely absent file raises ``FileNotFoundError``, which the helper does not
+    retry and this folds to ``None``, keeping real absence distinct from a
+    concurrent write.
     """
     try:
-        with path.open("rb") as stream:
-            blob = stream.read(_MAX_PID_FILE_BYTES + 1)
+        blob = read_bytes_with_retry(path, max_bytes=_MAX_PID_FILE_BYTES + 1)
     except (OSError, ValueError):
         return None
     if len(blob) > _MAX_PID_FILE_BYTES:

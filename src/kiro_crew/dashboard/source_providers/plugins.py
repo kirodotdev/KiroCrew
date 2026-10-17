@@ -15,7 +15,7 @@ import re
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
-from kiro_crew.dashboard.source_providers import LOGGER_NAME, contract, sanitize
+from kiro_crew.dashboard.source_providers import LOGGER_NAME, contract, hosts, sanitize
 from kiro_crew.dashboard.source_providers.contract import (
     ConfirmationRequired,
     SourceCapacityError,
@@ -68,9 +68,24 @@ _PROVIDER_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 # Ids the core owns. A plugin may not claim one: `parse_source_url` checks the
 # built-in hosts first, so a shadowing plugin would be dead for parsing yet live
 # for fetching -- two layers disagreeing about one provider.
-_BUILTIN_PROVIDER_IDS = frozenset({"github", "gitlab", "jira"})
+_BUILTIN_PROVIDER_IDS = frozenset({"github", "gitlab", "jira", contract.BITBUCKET_SERVER_PROVIDER})
 
 _SOURCE_PROVIDER_PLUGINS: dict[str, SourceProviderPlugin] = {}
+
+# Core providers dispatched through this seam rather than through a built-in
+# branch: each implements the plugin protocol, so it is served from inside the
+# same cache, redaction, byte-cap and setup-error layers, and every write it does
+# not implement is refused by `_require_plugin_hook`. Installed by the owning
+# module when it is imported (the handler imports every owner at load), and never
+# cleared by `reset_source_providers_for_tests`, which only drops registrations.
+_CORE_SEAM_PROVIDERS: dict[str, SourceProviderPlugin] = {}
+
+
+def _install_core_seam_provider(plugin: SourceProviderPlugin) -> None:
+    """Install a core provider served through this seam. Idempotent per id."""
+    if plugin.id not in _BUILTIN_PROVIDER_IDS:
+        raise ValueError(f"core source provider {plugin.id!r} is not a built-in id")
+    _CORE_SEAM_PROVIDERS[plugin.id] = plugin
 
 
 def register_source_provider(plugin: SourceProviderPlugin) -> None:
@@ -180,6 +195,11 @@ def source_link_path_markers() -> tuple[str, ...]:
     prefilter it exists to be.
     """
     markers = ["/pull/", "/merge_requests/", "/issues/", "/browse/"]
+    # Bitbucket Server pull requests live under ``/pull-requests/``, which no
+    # other marker covers. Offered only while a Server host is listed, so a
+    # transcript scan with no such host does exactly the work it always did.
+    if hosts._allowed_bitbucket_server_hosts():
+        markers.append("/pull-requests/")
     for plugin in _SOURCE_PROVIDER_PLUGINS.values():
         hook = getattr(plugin, "path_markers", None)
         if not callable(hook):
@@ -265,8 +285,16 @@ def source_ref_label(ref: SourceRef) -> str:
 
 
 def _plugin_for_change(ref: SourceRef) -> SourceProviderPlugin | None:
-    """The plugin owning this ref, or None when a built-in path should run."""
-    return _SOURCE_PROVIDER_PLUGINS.get(ref.provider)
+    """The plugin owning this ref, or None when a built-in path should run.
+
+    A core seam provider's ref never falls through to a built-in branch: when its
+    owner has not been imported yet the read fails closed instead of reaching a
+    GitHub or GitLab code path with a foreign host.
+    """
+    plugin = _SOURCE_PROVIDER_PLUGINS.get(ref.provider) or _CORE_SEAM_PROVIDERS.get(ref.provider)
+    if plugin is None and ref.provider == contract.BITBUCKET_SERVER_PROVIDER:
+        raise SourceProviderError(f"the {ref.provider} source provider is not loaded")
+    return plugin
 
 
 def _plugin_setup_error(

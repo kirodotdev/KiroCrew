@@ -80,12 +80,26 @@ def render_seatbelt_profile(plan: ConfinementPlan) -> str:
             # refreshes a cached token.
             rules.append(f'(deny file-write* (subpath "{escaped}"))')
             if mask.literal_write_sealed:
-                # A leaf may be a plain file, which no subpath rule addresses.
+                # A leaf may be a plain file; whether a subpath rule alone reaches a
+                # plain-file anchor is not checked against the kernel, so emit the literal
+                # too -- redundant if subpath covers files, load-bearing if it does not.
                 rules.append(f'(deny file-write* (literal "{escaped}"))')
         # Deny creating a HARDLINK whose target is under this dir: ``file-read*`` is
         # path-based, so a hardlink at a non-denied path would read the same inode past
         # the deny. ``file-link`` fires on the link TARGET.
         rules.append(f'(deny file-link (subpath "{escaped}"))')
+        # A file-shaped leaf also takes the LITERAL read and hardlink denies, matching the
+        # literal write deny above and the ``file-read*``/``file-link`` literal forms the
+        # caller-origin masks below already emit. Whether a subpath rule alone covers a
+        # plain-file anchor has never been checked against the kernel, so the three
+        # directions emit the same pair of spellings rather than trusting subpath to reach
+        # the leaf for read and link but not write: the literal is redundant if subpath
+        # covers files and load-bearing if it does not. Only when there is no read
+        # carve-out (a crew-secret leaf has none), so the literal cannot re-open an exposed
+        # file the subpath require-all above deliberately spared.
+        if mask.literal_write_sealed and not mask.exposed:
+            rules.append(f'(deny file-read* (literal "{escaped}"))')
+            rules.append(f'(deny file-link (literal "{escaped}"))')
 
     # The voice image lives below ``run``. That parent stays readable (the launcher is
     # stored there), but every write through both spellings is denied, and literal

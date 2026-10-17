@@ -340,9 +340,10 @@ interface MountOpts {
   onClose?: () => void
   onContentChange?: (c: string) => void
   onDiffModeChange?: (d: boolean) => void
-  onSubmitComments?: (m: string) => void
+  onSubmitComments?: (m: string) => void | boolean | Promise<void | boolean>
   /** Omit the key entirely to let the auto-diff heuristic decide. */
   initialDiffMode?: boolean
+  readOnly?: boolean
 }
 
 function mountPanel(opts: MountOpts = {}) {
@@ -357,6 +358,7 @@ function mountPanel(opts: MountOpts = {}) {
     onSubmitComments: opts.onSubmitComments,
     savedBaseline: opts.savedBaseline,
     initialDiffMode: 'initialDiffMode' in opts ? opts.initialDiffMode : false,
+    readOnly: opts.readOnly,
   }
   const utils = render(<MarkdownPanel embedded {...props} />, { wrapper })
   return { ...utils, props }
@@ -749,14 +751,24 @@ describe('MarkdownPanel — diff chrome', () => {
 
   it('surfaces a git failure instead of presenting it as a clean file', async () => {
     // status error is a failed `git diff`, which the backend keeps distinct
-    // from clean so a failure is never read as "no changes".
+    // from clean so a failure is never read as "no changes". A real failure
+    // must reach the shared ErrorNotice (with its agent hand-off), not the
+    // muted ZeroDiffNotice text the no-change / no-baseline states use
+    // (errors-use-error-notice).
     vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'error' } as never)
     mountPanel({ content: 'same\n', initialDiffMode: undefined })
     await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
     fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
-    expect(await screen.findByText("Couldn't compute the diff — git failed for this file")).toBeInTheDocument()
+    // Rendered through ErrorNotice (carrying the message + agent hand-off),
+    // NOT the muted ZeroDiffNotice.
+    const notice = await screen.findByTestId('markdown-panel-diff-compute-error')
+    expect(notice).toBeInTheDocument()
+    expect(within(notice).getByText("Couldn't compute the diff — git failed for this file")).toBeInTheDocument()
     expect(screen.queryByTestId('pierre-diff')).toBeNull()
     expect(screen.queryByText('No changes in this file')).toBeNull()
+    // The no-change / no-baseline escape hatch ("Show full file") belongs to
+    // ZeroDiffNotice, not this error surface.
+    expect(screen.queryByText('Show full file')).toBeNull()
   })
 
   it('offers split/unified as a menu row only once a diff is on screen', async () => {
@@ -1264,6 +1276,180 @@ describe('MarkdownPanel — knowledge library toggle', () => {
   })
 })
 
+describe('MarkdownPanel — Submit All keeps comments until the send is delivered', () => {
+  const FILE = '/tmp/notes.md'
+  const BODY = 'alpha beta gamma\n'
+
+  function seedDraft() {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+    }))
+  }
+
+  function storedComments(): unknown {
+    return JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')[FILE]
+  }
+
+  it('keeps the batch when the send resolves false', async () => {
+    seedDraft()
+    const onSubmitComments = vi.fn(async () => false)
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(onSubmitComments).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    expect(storedComments()).toHaveLength(1)
+  })
+
+  it('keeps the batch when the send rejects', async () => {
+    seedDraft()
+    const onSubmitComments = vi.fn(async () => { throw new Error('refused') })
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    expect(storedComments()).toHaveLength(1)
+  })
+
+  it('does not clear while the send is still pending, then clears on delivery', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(screen.getByText('needs a citation')).toBeInTheDocument()
+    // A second click while the first send is pending does not send twice.
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    expect(onSubmitComments).toHaveBeenCalledTimes(1)
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    expect(storedComments()).toBeUndefined()
+  })
+
+  it('keeps a comment edited while the send was pending', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    const row = (await screen.findByText('needs a citation')).closest('[data-comment-id]') as HTMLElement
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    fireEvent.click(within(row).getByLabelText('Edit'))
+    const input = within(row).getByDisplayValue('needs a citation')
+    fireEvent.change(input, { target: { value: 'needs two citations' } })
+    fireEvent.click(within(row).getByLabelText('Save'))
+    await screen.findByText('needs two citations')
+    await act(async () => { deliver(true) })
+    expect(screen.getByText('needs two citations')).toBeInTheDocument()
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c1', text: 'needs two citations' })])
+  })
+
+  it('drops delivered comments that arrive after the panel moved to another file', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { rerender, props } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    rerender(<MarkdownPanel embedded {...props} filePath="/tmp/b.md" />)
+    await act(async () => { deliver(true) })
+    rerender(<MarkdownPanel embedded {...props} filePath={FILE} />)
+    await waitFor(() => expect(storedComments()).toBeUndefined())
+    expect(screen.queryByText('needs a citation')).not.toBeInTheDocument()
+  })
+
+  it('keeps another panel\'s saved draft when a delivery lands', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    // Another open panel saves a comment on a different file meanwhile.
+    const stored = JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')
+    stored['/tmp/other.md'] = [{ id: 'o1', anchor: 'x', text: 'other file note' }]
+    localStorage.setItem('mc-comment-drafts', JSON.stringify(stored))
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    const after = JSON.parse(localStorage.getItem('mc-comment-drafts') ?? '{}')
+    expect(after['/tmp/other.md']).toEqual([expect.objectContaining({ id: 'o1', text: 'other file note' })])
+    expect(after[FILE]).toBeUndefined()
+  })
+
+  it('clears saved drafts for a delivery that lands after the panel closed', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { unmount } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    unmount()
+    await act(async () => { deliver(true) })
+    expect(storedComments()).toBeUndefined()
+  })
+
+  it('keeps a comment whose edit is still open when the send is delivered', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    const row = (await screen.findByText('needs a citation')).closest('[data-comment-id]') as HTMLElement
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    fireEvent.click(within(row).getByLabelText('Edit'))
+    fireEvent.change(within(row).getByDisplayValue('needs a citation'), { target: { value: 'still typing' } })
+    await act(async () => { deliver(true) })
+    expect(screen.getByDisplayValue('still typing')).toBeInTheDocument()
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c1' })])
+  })
+
+  it('keeps a newer draft saved by a reopened panel when the old send is delivered', async () => {
+    seedDraft()
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { unmount } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    unmount()
+    // The file is reopened and a new comment is saved while the send is pending.
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [
+        { id: 'c1', anchor: 'beta', text: 'needs a citation' },
+        { id: 'c2', anchor: 'gamma', text: 'added after reopening' },
+      ],
+    }))
+    await act(async () => { deliver(true) })
+    expect(storedComments()).toEqual([expect.objectContaining({ id: 'c2', text: 'added after reopening' })])
+  })
+
+  it('keeps drafts held only in memory when storage lost them', async () => {
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+      '/tmp/b.md': [{ id: 'b1', anchor: 'alpha', text: 'only in memory' }],
+    }))
+    let deliver!: (ok: boolean) => void
+    const onSubmitComments = vi.fn(() => new Promise<boolean>(resolve => { deliver = resolve }))
+    const { rerender, props } = mountPanel({ filePath: FILE, content: BODY, onSubmitComments })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    // A write that never landed: storage no longer holds file B's draft.
+    localStorage.setItem('mc-comment-drafts', JSON.stringify({
+      [FILE]: [{ id: 'c1', anchor: 'beta', text: 'needs a citation' }],
+    }))
+    await act(async () => { deliver(true) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+    rerender(<MarkdownPanel embedded {...props} filePath="/tmp/b.md" />)
+    expect(await screen.findByText('only in memory')).toBeInTheDocument()
+  })
+
+  it('clears the batch for a host that returns no verdict', async () => {
+    seedDraft()
+    mountPanel({ filePath: FILE, content: BODY, onSubmitComments: vi.fn() })
+    await screen.findByText('needs a citation')
+    await act(async () => { fireEvent.click(screen.getByText(/Submit All/)) })
+    await waitFor(() => expect(screen.queryByText('needs a citation')).not.toBeInTheDocument())
+  })
+})
+
 describe('MarkdownPanel — authoring an inline comment', () => {
   const BODY = '# Title\n\nalpha beta gamma\n'
 
@@ -1595,5 +1781,177 @@ describe('MarkdownPanel — comment hint banner', () => {
   it('stays away when the panel has nowhere to submit comments', () => {
     mountPanel()
     expect(screen.queryByText('Got it')).toBeNull()
+  })
+})
+
+describe('MarkdownPanel — read-only working-tree diff (#9695)', () => {
+  it('renders a text diff for a JSON working-tree diff instead of a blank pane', async () => {
+    // JSON has a rich viewer, but it is text: the locked-diff tab must diff it.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '{"a": 1}\n', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n', readOnly: true, initialDiffMode: true })
+    const view = await screen.findByTestId('pierre-diff')
+    expect(view.getAttribute('data-old')).toBe('{"a": 1}\n')
+    expect(view.getAttribute('data-new')).toBe('{"a": 2}\n')
+    // Locked to its diff, the read-only tab offers no way out of it.
+    expect(screen.queryByTestId('markdown-panel-diff-chip')).toBeNull()
+  })
+
+  it('opens a modified JSON file tab on its viewer, not a text diff', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '{"a": 1}\n', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"enableThinking": true}\n', initialDiffMode: undefined })
+    // The viewer has rendered, and the baseline is never requested, so no
+    // later diff response can switch the tab into diff mode.
+    await screen.findByText(/enableThinking/)
+    expect(api.fileDiff).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('pierre-diff')).toBeNull()
+    expect(screen.queryByLabelText('Toggle diff view')).toBeNull()
+  })
+
+  it('offers a JSON file tab its diff from the overflow menu', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '{"a": 1}\n', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n' })
+    openPanelMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Show changes' }))
+    const view = await screen.findByTestId('pierre-diff')
+    expect(view.getAttribute('data-old')).toBe('{"a": 1}\n')
+  })
+
+  it('shows a Diff view chip while a JSON tab is on its diff, and the chip returns it to the viewer', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '{"a": 1}\n', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n' })
+    // On the viewer: no chip.
+    expect(screen.queryByTestId('markdown-panel-diff-chip')).toBeNull()
+    openPanelMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Show changes' }))
+    await screen.findByTestId('pierre-diff')
+    const chip = screen.getByRole('button', { name: 'Close diff view' })
+    expect(chip).toHaveTextContent('Diff view')
+    fireEvent.click(chip)
+    await waitFor(() => expect(screen.queryByTestId('pierre-diff')).toBeNull())
+    expect(screen.queryByTestId('markdown-panel-diff-chip')).toBeNull()
+  })
+
+  it('offers the same diff row in the fullscreen menu of a JSON file tab', async () => {
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n' })
+    openPanelMenu()
+    fireEvent.click(screen.getByText('Full screen'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByTestId('markdown-panel-more-options'))
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Show changes' })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('holds the fullscreen JSON diff until its baseline arrives, never showing the whole file as added', async () => {
+    let resolveDiff: (v: unknown) => void = () => {}
+    vi.mocked(api.fileDiff).mockReturnValue(new Promise(r => { resolveDiff = r }) as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n' })
+    openPanelMenu()
+    fireEvent.click(screen.getByText('Full screen'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByTestId('markdown-panel-more-options'))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Show changes' }))
+    // The baseline request is in flight: no diff may render against an empty original.
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    expect(within(dialog).queryByTestId('pierre-diff')).toBeNull()
+    resolveDiff({ diff: 'x', original: '{"a": 1}\n', status: 'modified' })
+    const view = await within(dialog).findByTestId('pierre-diff')
+    expect(view.getAttribute('data-old')).toBe('{"a": 1}\n')
+    // The fullscreen header carries the same chip, which leaves the diff.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close diff view' }))
+    await waitFor(() => expect(within(dialog).queryByTestId('pierre-diff')).toBeNull())
+  })
+
+  it('keeps the fullscreen diff on screen while its baseline is refetched', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '{"a": 1}\n', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/settings/cli.json', content: '{"a": 2}\n', initialDiffMode: true })
+    openPanelMenu()
+    fireEvent.click(screen.getByText('Full screen'))
+    const dialog = await screen.findByRole('dialog')
+    const view = await within(dialog).findByTestId('pierre-diff')
+    // A background refetch (window refocus, save) must not unmount the diff.
+    let resolveDiff: (v: unknown) => void = () => {}
+    vi.mocked(api.fileDiff).mockReturnValue(new Promise(r => { resolveDiff = r }) as never)
+    void qc.invalidateQueries({ queryKey: ['file-diff', '/tmp/settings/cli.json'] })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalledTimes(2))
+    expect(within(dialog).getByTestId('pierre-diff')).toBe(view)
+    resolveDiff({ diff: 'x', original: '{"a": 1}\n', status: 'modified' })
+  })
+
+  it('keeps an image working-tree diff on its viewer, never a blank diff pane', async () => {
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: '', status: 'modified' } as never)
+    mountPanel({ filePath: '/tmp/logo.png', content: '', readOnly: true, initialDiffMode: true })
+    await waitFor(() => expect(screen.queryByTestId('pierre-diff')).toBeNull())
+    expect(screen.queryByText('No changes in this file')).toBeNull()
+  })
+  it('locks a code file read-only: no editor, no Edit/Preview/Save, no diff toggle', async () => {
+    // A .py file would normally open straight in the editor; readOnly must keep
+    // it a non-editable view, so the wtdiff tab is never a second editable buffer.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'a = 1\n', status: 'clean' } as never)
+    mountPanel({ filePath: '/tmp/mod.py', content: 'a = 2\n', savedBaseline: 'a = 1\n', readOnly: true })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    // No editable surface and no affordance that could open one or save.
+    expect(screen.queryByTestId('pierre-editor')).toBeNull()
+    expect(screen.queryByText('Edit')).toBeNull()
+    expect(screen.queryByText('Preview')).toBeNull()
+    // The unsaved-changes banner (its Save/Cancel stay mounted) is not shown:
+    // a read-only diff view is never dirty, so the banner never reveals.
+    expect(bannerShown()).toBe(false)
+    expect(screen.queryByLabelText('Toggle diff view')).toBeNull()
+    // The stripped toolbar reads as intentional: a muted "Read-only" label
+    // stands where the Edit button would be.
+    expect(screen.getAllByText('Read-only').length).toBeGreaterThan(0)
+  })
+
+  it('never calls onSave — there is no edit or save surface to reach it', async () => {
+    const onSave = vi.fn(async () => {})
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'a = 1\n', status: 'clean' } as never)
+    mountPanel({ filePath: '/tmp/mod.py', content: 'a = 2\n', savedBaseline: 'a = 1\n', readOnly: true, onSave })
+    await screen.findByTestId('pierre-diff')
+    // Ctrl/Cmd+S is gated on `editing`, which read-only forces off.
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('carries no comment drafts: leaves the path\'s stored comments untouched (#9695)', async () => {
+    // The file tab already has a pending comment draft for this path. A read-only
+    // wtdiff panel on the SAME path must not hydrate or rewrite that entry — it is
+    // the file tab's alone, so two coexisting panels cannot overwrite each other.
+    const FILE = '/tmp/mod.py'
+    const fileTabDraft = { [FILE]: [{ id: 'file-1', anchor: 'a = 1', text: 'from the file tab' }] }
+    localStorage.setItem('mc-comment-drafts', JSON.stringify(fileTabDraft))
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: 'x', original: 'a = 1\n', status: 'clean' } as never)
+    // onSubmitComments IS passed, to prove it is the readOnly flag — not a missing
+    // callback — that keeps this panel out of the comment store.
+    mountPanel({ filePath: FILE, content: 'a = 2\n', savedBaseline: 'a = 1\n', readOnly: true, onSubmitComments: vi.fn() })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    // Read-only confirmed by its label; the stored draft is exactly as the file
+    // tab left it — not cleared, not rewritten by the read-only panel.
+    expect(screen.getAllByText('Read-only').length).toBeGreaterThan(0)
+    expect(JSON.parse(localStorage.getItem('mc-comment-drafts')!)).toEqual(fileTabDraft)
+  })
+
+  it('shows no dead "Show full file" button when a read-only diff has no changes (#9695)', async () => {
+    // A wtdiff tab whose file is identical to its baseline (after a commit or
+    // revert, or on reload) hits the zero-diff notice. In a NORMAL tab that
+    // notice offers "Show full file" to leave diff mode — but a read-only tab
+    // is locked to diff (toggleDiffMode returns early when readOnly), so that
+    // button would be dead and leave the tab showing nothing. It must be hidden.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'clean' } as never)
+    mountPanel({ filePath: '/tmp/same.ts', content: 'same\n', savedBaseline: 'same\n', readOnly: true, initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    // The notice is shown…
+    expect(await screen.findByText('No changes in this file')).toBeInTheDocument()
+    // …but with no escape-hatch button, because there is nothing to escape to.
+    expect(screen.queryByText('Show full file')).toBeNull()
+  })
+
+  it('still offers "Show full file" in a NORMAL (editable) zero-diff tab (#9695)', async () => {
+    // The read-only hiding must not regress the editable case: a normal tab's
+    // zero-diff notice keeps its escape hatch out of diff mode.
+    vi.mocked(api.fileDiff).mockResolvedValue({ diff: '', original: 'same\n', status: 'clean' } as never)
+    mountPanel({ filePath: '/tmp/same.ts', content: 'same\n', initialDiffMode: undefined })
+    await waitFor(() => expect(api.fileDiff).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByLabelText('Toggle diff view')[0])
+    expect(await screen.findByText('No changes in this file')).toBeInTheDocument()
+    expect(screen.getByText('Show full file')).toBeInTheDocument()
   })
 })

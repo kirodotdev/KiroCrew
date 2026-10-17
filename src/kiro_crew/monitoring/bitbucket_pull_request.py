@@ -171,7 +171,7 @@ class BitbucketPullRequestProvider:
         email = credentials.get("BITBUCKET_EMAIL", "")
         token = credentials.get("BITBUCKET_API_TOKEN", "")
         if bool(email) != bool(token):
-            _audit_bitbucket("denied")
+            _audit_bitbucket("denied", reason="credentials_incomplete")
             raise PermissionError("Bitbucket credentials are incomplete")
         if email and token:
             encoded = base64.b64encode(f"{email}:{token}".encode("utf-8")).decode("ascii")
@@ -187,11 +187,16 @@ class BitbucketPullRequestProvider:
                 timeout=_TIMEOUT_SECS,
             ) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
-        except Exception:
-            _audit_bitbucket("failed")
+        except Exception as exc:
+            # urllib raises a socket timeout bare once connected and wraps one
+            # raised while connecting in URLError.reason.
+            timed_out = isinstance(exc, TimeoutError) or isinstance(
+                getattr(exc, "reason", None), TimeoutError
+            )
+            _audit_bitbucket("failed", reason="timeout" if timed_out else "provider_error")
             raise
         if len(raw) > _MAX_RESPONSE_BYTES:
-            _audit_bitbucket("failed")
+            _audit_bitbucket("failed", reason="output_too_large")
             raise ValueError("Bitbucket response exceeds the monitor bound")
         decoded = json.loads(raw.decode("utf-8"))
         _audit_bitbucket("completed")
@@ -287,8 +292,8 @@ def _page(value: object) -> tuple[list[object], bool]:
     return raw, not bool(page.get("next"))
 
 
-def _audit_bitbucket(outcome: str, *, critical: bool = False) -> None:
-    """Record a credential-free fixed-host request lifecycle."""
+def _audit_bitbucket(outcome: str, *, reason: str = "", critical: bool = False) -> None:
+    """Record a credential-free fixed-host request lifecycle and a fixed reason word."""
     try:
         sel().log_api_access(
             caller="core:monitor",
@@ -296,6 +301,7 @@ def _audit_bitbucket(outcome: str, *, critical: bool = False) -> None:
             outcome=outcome,
             source="builtin-app",
             resources="bitbucket",
+            error=reason,
             critical=critical,
         )
     except Exception:

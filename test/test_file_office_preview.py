@@ -5,7 +5,9 @@ Pins the endpoint's security envelope on the enforcing side (sensitive-path
 _resolve_project_relative helper) plus the response contract the frontend
 relies on (text/truncated, no format/supported/empty fields) and the
 aggregate extraction budget (a many-slide deck cannot accumulate unbounded
-text — doc_parser stops at the caller's cap).
+text — doc_parser stops at the caller's cap), including a credential that
+straddles _OFFICE_PREVIEW_CAP: extraction is whole-paragraph / whole-slide and
+redaction runs before the cut, so no prefix of it is ever served.
 
 ``format=blocks`` is covered here too: that the default stays byte-identical
 text, that an unknown format is refused rather than silently answered with text,
@@ -16,6 +18,7 @@ envelope. The block EXTRACTION itself is test_doc_blocks.py's subject.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import threading
@@ -426,6 +429,201 @@ async def test_redaction_runs_before_truncation(tmp_path, mock_sel):
     # Neither the full secret nor its cap-cut prefix may appear.
     assert secret not in body["text"]
     assert secret[:10] not in body["text"]
+
+
+# --- A credential straddling _OFFICE_PREVIEW_CAP ---
+#
+# The preview is safe at the cap because of TWO facts together, and these tests
+# pin both from the endpoint's side (test_doc_parser.py pins the first at its
+# source):
+#
+# 1. doc_parser's ``max_chars`` is a WHOLE-UNIT soft budget: extraction stops
+#    after the paragraph (.docx) or slide (.pptx) that meets it, never inside
+#    one. So the text ``redact`` sees never ends mid-token, unlike a raw byte
+#    read (api_file_read), which cuts wherever the cap falls.
+# 2. ``redact`` runs over that whole extraction, and ``_OFFICE_PREVIEW_CAP`` cuts
+#    the REDACTED text. When a long token above the cap shrinks to a placeholder,
+#    the cut reaches further into the extraction, but only into text redaction
+#    already saw whole.
+#
+# Each case puts a credential across the cap in a shape that leaks when either
+# fact stops holding: the secret's prefix is then served as real text.
+
+_JWT_HEADER = '{"alg":"HS256","typ":"JWT"}'
+
+
+def _b64url(raw: str) -> str:
+    return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+
+
+def _jwt(payload_chars: int) -> str:
+    return _b64url(_JWT_HEADER) + "." + _b64url("x" * payload_chars) + "." + "s" * 43
+
+
+async def _preview(path) -> dict[str, Any]:
+    with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=str(path)):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-office-preview?path={path}")
+            assert resp.status == 200
+            return await resp.json()
+
+
+def _slides_text(body: dict[str, Any]) -> str:
+    return "".join(s["text"] for s in body["slides"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before_cap", [4, 16])
+async def test_docx_credential_straddling_the_cap_near_either_edge_is_masked(
+    tmp_path, mock_sel, before_cap
+):
+    """The token is never cut at the cap, however little or much of it sits before it.
+
+    test_redaction_runs_before_truncation covers the middle. A character-granular
+    budget would serve the ``AKIA`` prefix at both of these offsets; 4 is the
+    shortest prefix that still names the key family, 16 leaves only the last
+    four characters past the cap.
+    """
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    f = tmp_path / "edge.docx"
+    _write_docx(str(f), ["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail", "next"])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert "AKIA" not in body["text"]
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+async def test_docx_credential_in_the_paragraph_that_meets_the_budget_is_masked(tmp_path, mock_sel):
+    """The paragraph the budget stops at is extracted whole, so its secret is seen whole."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    f = tmp_path / "own-paragraph.docx"
+    _write_docx(str(f), ["x" * (_OFFICE_PREVIEW_CAP - 10), secret, "next"])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert "AKIA" not in body["text"]
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+async def test_docx_redaction_shrink_above_the_cap_pulls_no_unmasked_text_under_it(
+    tmp_path, mock_sel
+):
+    """Tokens near the top shrink by thousands of characters when masked.
+
+    The cut at the cap then reaches further into the extraction. Everything it
+    reaches was redacted whole, and the secret that sits one redactor window past
+    the cap is masked or never extracted, never served as a prefix.
+    """
+    jwt = _jwt(3000)
+    head = [jwt] * 4
+    used = sum(len(p) + 1 for p in head)
+    margin = files_mod._STREAM_HOLDBACK_JWT_MAX
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    f = tmp_path / "shrink.docx"
+    _write_docx(str(f), [*head, "a" * (_OFFICE_PREVIEW_CAP + margin - 6 - used) + secret, "keep"])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert jwt not in body["text"]
+    assert "AKIA" not in body["text"]
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before_cap", [4999, 8000])
+async def test_docx_jwt_longer_than_the_redactor_window_across_the_cap_is_masked(
+    tmp_path, mock_sel, before_cap
+):
+    """A token longer than 2x _STREAM_HOLDBACK_JWT_MAX is masked wherever it crosses the cap.
+
+    Its header sits more than one window before the cap, so a read that extends
+    the cap by one window would still sever it; whole-paragraph extraction does not.
+    """
+    jwt = _jwt(8500)
+    assert len(jwt) > 2 * files_mod._STREAM_HOLDBACK_JWT_MAX
+    f = tmp_path / "long-jwt.docx"
+    _write_docx(str(f), ["a" * (_OFFICE_PREVIEW_CAP - before_cap) + " " + jwt, "keep"])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert jwt[:40] not in body["text"]
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+async def test_docx_private_key_one_line_per_paragraph_across_the_cap_is_masked(tmp_path, mock_sel):
+    """A PEM block is the one secret that spans paragraph boundaries.
+
+    Extraction stops on a base64 line inside the block, before its footer; the
+    redactor's truncated-key branch (header plus base64 continuation lines) masks
+    the body without the footer.
+    """
+    line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7" + "x" * 12
+    # Assembled so this test's own text carries no key marker.
+    header = "-----BEGIN " + "PRIVATE KEY-----"
+    footer = "-----END " + "PRIVATE KEY-----"
+    f = tmp_path / "pem.docx"
+    _write_docx(
+        str(f), ["a" * (_OFFICE_PREVIEW_CAP - 200), header, *([line] * 100), footer, "after"]
+    )
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert line[:20] not in body["text"]
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("before_cap", [4, 16])
+async def test_pptx_credential_straddling_the_cap_is_masked_in_slides_and_text(
+    tmp_path, mock_sel, before_cap
+):
+    """The slide the budget stops at is extracted whole; both payloads mask the secret.
+
+    test_pptx_slides_are_redacted_before_the_cap covers the middle; these offsets
+    are the ones a character-granular budget would leak (see the .docx twin).
+    """
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    f = tmp_path / "edge.pptx"
+    _write_pptx(str(f), [["x" * (_OFFICE_PREVIEW_CAP - before_cap) + secret + " tail"], ["next"]])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert "AKIA" not in _slides_text(body)
+    assert "AKIA" not in body["text"]
+    assert sum(len(s["text"]) for s in body["slides"]) <= _OFFICE_PREVIEW_CAP
+    assert len(body["text"]) <= _OFFICE_PREVIEW_CAP
+
+
+@pytest.mark.asyncio
+async def test_pptx_redaction_shrink_in_one_slide_frees_no_unmasked_text_in_the_next(
+    tmp_path, mock_sel
+):
+    """_cap_slides spends one budget over REDACTED slide text.
+
+    A slide that shrinks when masked leaves budget for later slides; each of
+    those is itself redacted whole before its cut, so the freed budget never
+    carries a raw secret.
+    """
+    jwt = _jwt(3000)
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    filler = "a" * (_OFFICE_PREVIEW_CAP - 6 - 4 * (len(jwt) + 1))
+    f = tmp_path / "shrink.pptx"
+    _write_pptx(str(f), [[jwt] * 4, [filler], [secret + " more"], ["keep"]])
+    body = await _preview(f)
+    assert body["truncated"] is True
+    assert jwt not in _slides_text(body)
+    assert "AKIA" not in _slides_text(body)
+    assert "AKIA" not in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_pptx_jwt_longer_than_the_redactor_window_across_the_cap_is_masked(
+    tmp_path, mock_sel
+):
+    jwt = _jwt(8500)
+    f = tmp_path / "long-jwt.pptx"
+    _write_pptx(str(f), [["a" * (_OFFICE_PREVIEW_CAP - 5000) + " " + jwt], ["keep"]])
+    body = await _preview(f)
+    assert jwt[:40] not in _slides_text(body)
+    assert jwt[:40] not in body["text"]
 
 
 # --- format=blocks: the structured preview ---

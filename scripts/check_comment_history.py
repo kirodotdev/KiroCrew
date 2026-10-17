@@ -95,7 +95,7 @@ PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bwe now\b", re.IGNORECASE),
     # Review-round and finding markers: the review's bookkeeping, not the code's.
     re.compile(r"\bGPT round\b", re.IGNORECASE),
-    re.compile(r"\breview round\b", re.IGNORECASE),
+    re.compile(r"\breview rounds?\b", re.IGNORECASE),
     re.compile(r"\bround \d+\b", re.IGNORECASE),
     # A task-log status line. The code IS the status.
     re.compile(r"Status:\s*implemented", re.IGNORECASE),
@@ -390,6 +390,7 @@ def _self_test() -> int:
         "we now": "g = 10  # we now resolve the path first\n",
         "GPT round": "h = 11  # GPT round 2 asked for this\n",
         "review round": "i = 12  # review round three finding\n",
+        "review rounds": "i2 = 12  # two review rounds asked for this\n",
         "round N": "j = 13  # round 4 rework\n",
         "status line": "k = 14  # Status: implemented\n",
         "hotfix": "m = 15  # hotfix for the launch\n",

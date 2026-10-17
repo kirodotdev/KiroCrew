@@ -39,7 +39,10 @@ UNREADABLE_ERRORS = frozenset({"missing_scope", "channel_not_found"})
 _REINSTALL_HINT = (
     "the Slack app install likely predates the current OAuth scopes "
     "(groups:history / message.groups) — reinstall the Slack app from the "
-    "bundled manifest to restore private-channel message delivery."
+    "bundled manifest to restore private-channel message delivery. A manifest "
+    "from `kirocrew manifest` renames the slash command to /kirocrew-<alias>; "
+    "run the `kirocrew config set slack.command` line it prints, then restart "
+    "the gateway."
 )
 
 

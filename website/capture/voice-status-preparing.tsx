@@ -8,11 +8,14 @@
  *
  * Scene from the query string:
  *   ?scene=recording-preparing|released-preparing|released-downloading
- *   &theme=dark|light&lang=en|zh-CN
+ *          |released-expired|audio-module-failed|audio-start-failed
+ *   &theme=dark|light&lang=en|zh-CN&width=<composer px, default 760>
  *
  * `released-*` is the scene the mic no longer holds: capture has ended, the
  * retained audio is waiting on the model, and the strip is the only thing on
- * screen that says so.
+ * screen that says so. `audio-*-failed` are the two audio start-up failures,
+ * each with its own message, carrying the dismiss control the composer gives
+ * every error on this strip.
  */
 import { createRoot } from 'react-dom/client'
 
@@ -26,6 +29,7 @@ const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
 const scene = params.get('scene') || 'released-preparing'
 const lang = params.get('lang') || 'en'
+const width = Number(params.get('width')) || 760
 
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
@@ -47,6 +51,20 @@ const scenes: Record<string, { recording: boolean; level: number; download: SttM
     download: null,
     error: i18nT('hooks.useStreamingStt.stt_model_still_loading'),
   },
+  // The capture module failed to download, so the start ends before capture.
+  'audio-module-failed': {
+    recording: false,
+    level: 0,
+    download: null,
+    error: i18nT('hooks.useStreamingStt.audio_module_load_failed'),
+  },
+  // The module loaded and the browser refused to start the audio context.
+  'audio-start-failed': {
+    recording: false,
+    level: 0,
+    download: null,
+    error: i18nT('hooks.useStreamingStt.audio_start_failed'),
+  },
 }
 const chosen = scenes[scene] || scenes['released-preparing']
 
@@ -54,8 +72,8 @@ createRoot(document.getElementById('root')!).render(
   // Composer width, and a body below the strip, because the thing under review
   // is whether this line is visible and legible where it actually sits rather
   // than how it looks alone on a page.
-  <div className="min-h-screen bg-canvas p-8">
-    <div className="mx-auto w-[760px] rounded-lg border border-border overflow-hidden bg-chrome">
+  <div className="min-h-screen bg-canvas p-4">
+    <div className="mx-auto rounded-lg border border-border overflow-hidden bg-chrome" style={{ width }}>
       <VoiceStatusBar
         recording={chosen.recording}
         level={chosen.level}
@@ -63,6 +81,7 @@ createRoot(document.getElementById('root')!).render(
         deviceId="default"
         download={chosen.download}
         error={chosen.error}
+        onDismissError={chosen.error ? () => {} : undefined}
         onSelectDevice={() => {}}
       />
       <div className="px-3 py-6 text-[13px] text-muted">

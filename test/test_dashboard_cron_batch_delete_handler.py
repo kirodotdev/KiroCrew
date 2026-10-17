@@ -1,6 +1,6 @@
 """Tests for api_cron_batch_delete HTTP handler (DELETE /api/crons).
 
-Mirrors the single-delete contract (remove_job + delete_job_history) but over a
+Mirrors the single-delete contract (the service deletes the history) but over a
 list of ids, with per-id failure isolation and a single refresh push. Audit
 attribution is delegated to the CronService batch mutation seam.
 """
@@ -71,7 +71,7 @@ class TestApiCronBatchDelete:
         state.crons.remove_jobs.assert_called_once_with(
             ["a", "b", "c"], actor="dashboard", source="api_cron_batch_delete"
         )
-        assert state.crons.get_history().delete_job_history.await_count == 3
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         # One refresh for the whole batch, not one per id.
         state.push_refresh.assert_called_once_with("crons")
 
@@ -84,8 +84,8 @@ class TestApiCronBatchDelete:
             data = await resp.json()
             assert data["deleted"] == ["a"]
             assert data["failed"] == ["ghost"]
-        # history only purged for the one that was actually removed
-        assert state.crons.get_history().delete_job_history.await_count == 1
+        # remove_jobs deletes the history; the route does not repeat it.
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         state.push_refresh.assert_called_once_with("crons")
 
     @pytest.mark.asyncio
@@ -156,24 +156,20 @@ class TestApiCronBatchDelete:
             assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_history_cleanup_failure_still_counts_as_deleted(self):
-        # If remove_jobs succeeds but delete_job_history raises, the job is
-        # already gone -> it MUST be reported as deleted (not failed), the batch
-        # must continue, and the refresh must still fire.
+    async def test_route_does_not_touch_the_history_store(self):
+        # remove_jobs owns the history cleanup and absorbs its failures, so a
+        # failing history store cannot reclassify a completed delete.
         state = _make_state(["a", "b"])
-
-        def flaky_history(job_id):
-            if job_id == "a":
-                raise RuntimeError("history store blip")
-            return None
-
-        state.crons.get_history.return_value.delete_job_history.side_effect = flaky_history
+        state.crons.get_history.return_value.delete_job_history.side_effect = RuntimeError(
+            "history store blip"
+        )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons", json={"ids": ["a", "b"]})
             assert resp.status == 200
             data = await resp.json()
             assert sorted(data["deleted"]) == ["a", "b"]
             assert data["failed"] == []
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         state.crons.remove_jobs.assert_called_once()
         state.push_refresh.assert_called_once_with("crons")
 

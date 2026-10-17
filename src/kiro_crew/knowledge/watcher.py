@@ -13,7 +13,7 @@ from kiro_crew.embeddings import PRIORITY_BULK
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
-from .dedup import dedup_sweep
+from .dedup import SCHEDULED_FUZZY_BUCKET_CAP, dedup_sweep
 from .embedder import embedder_signature
 from .folder_watcher import FolderWatcher, folder_chunk_budget
 from .ingestion import (
@@ -34,6 +34,9 @@ FOLDER_SOURCE_TYPES = {"local_folder", "obsidian_vault"}
 # signature change invalidated the whole corpus, and the ensuing full re-embed
 # can run for a long time on a big knowledge base.
 _LARGE_REBUILD_WARN_THRESHOLD = 1000
+# Sweeps the stale-embedding count waits for its covering index before falling
+# back to a full-table count (the post-bind build normally makes it at boot).
+_EMBED_INDEX_GRACE_SWEEPS = 3
 
 
 class KnowledgeWatcher:
@@ -52,6 +55,9 @@ class KnowledgeWatcher:
         # False until a scheduled dedup pass has actually applied deletes; the
         # first scheduled pass previews instead.
         self._dedup_applied_once = False
+        # Self-heal sweeps that found the stale-count index missing.
+        self._embed_index_missing_sweeps = 0
+        self._embed_index_missing_warned = False
 
     async def start(self):
         logger.info("Source watcher started: interval=%ds", self.interval)
@@ -492,7 +498,8 @@ class KnowledgeWatcher:
             # not judgements. Fuzzy candidates are still found and reported, for
             # the user to apply deliberately via the CLI or the dedup tool.
             results = await asyncio.to_thread(
-                dedup_sweep, self.store, apply=not preview, certain_only=True)
+                dedup_sweep, self.store, apply=not preview, certain_only=True,
+                max_fuzzy_bucket=SCHEDULED_FUZZY_BUCKET_CAP)
         except Exception:
             logger.warning("Scheduled knowledge dedup sweep failed", exc_info=True)
             return
@@ -522,7 +529,10 @@ class KnowledgeWatcher:
         embedder = getattr(self.pipeline, "embedder", None)
         if not embedder:
             return
-        if not await embedder.is_available_async():
+        # Strict residency check: a bulk self-heal never waits for a model load,
+        # so a loadable-but-unloaded model must not start one.
+        resident = getattr(embedder, "model_resident_async", None)
+        if not await (resident() if callable(resident) else embedder.is_available_async()):
             return
         if self._reembed_task and not self._reembed_task.done():
             return
@@ -534,6 +544,21 @@ class KnowledgeWatcher:
         # embedder it can stall for tens of seconds, and an inline call would
         # block the event loop past the loop-watchdog threshold and crash-loop
         # the gateway (observed on a ~1.3GB KB after an embedder-sig change).
+        # Only from the covering index. Until the post-bind build has made it
+        # (the first boot after an upgrade) the count would read every item row,
+        # the read that slowed memory preparation at boot; a later sweep has it.
+        # If the build failed, the index never comes: after a few sweeps, warn
+        # once and count from the table so stale vectors still get re-embedded.
+        if not await asyncio.to_thread(self.store.has_embed_state_index):
+            self._embed_index_missing_sweeps += 1
+            if self._embed_index_missing_sweeps <= _EMBED_INDEX_GRACE_SWEEPS:
+                return
+            if not self._embed_index_missing_warned:
+                self._embed_index_missing_warned = True
+                logger.warning(
+                    "Watcher self-heal: knowledge index idx_items_embed_state is "
+                    "missing; counting stale embeddings from the full table"
+                )
         stale = await asyncio.to_thread(count_stale_items, self.store, sig)
         if not stale:
             return

@@ -42,6 +42,7 @@ from kiro_crew.dashboard.handlers._shared import (
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.slot_queue_repository import MAX_LIVE_QUEUE_ENTRIES
+from kiro_crew.dashboard.state import load_window_off_loop
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.mcp_apps_render import load_spool
 from kiro_crew.mcp_gateway import transport
@@ -321,7 +322,7 @@ async def api_mcp_apps_call(request: web.Request) -> web.Response:
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
 #: enqueue time); the banner exists for the MODEL and the transcript reader,
 #: so the turn's text says who authored it. Mirrors ``CRON_NOTIFY_PREFIX``.
-#: Provenance banner constants live in ``chat_utils`` beside
+#: Provenance banner constants live in ``chat_utils_injected_rows`` beside
 #: ``MCP_APP_MESSAGE_KIND`` (the drain reads them too); re-exported here for
 #: the endpoint's tests and callers.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402
@@ -632,6 +633,12 @@ async def api_mcp_apps_message(request: web.Request) -> web.Response:
         slot = state.get_slot(slot_key)
         if slot is None:
             slot = await rehydrate_slot_from_history_async(state, slot_key)
+        elif getattr(slot, "window_pending", False) is True:
+            # A tab restored as a sidebar row loads its window before the
+            # delivery below appends to it, with the read off the loop; the tab
+            # is read again after the await, as the rehydrate above is.
+            await load_window_off_loop(slot)
+            slot = state.get_slot(slot_key)
         if slot is None:
             _audit_denied("mcp-apps.message", caller_session, f"session_gone spool_id={spool_id}")
             return web.json_response(

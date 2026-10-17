@@ -542,16 +542,18 @@ class TestConcurrentWritesCannotRestoreAStaleCeiling(unittest.TestCase):
         policy_store.set_ceiling(mode=pair_a[0], rules=pair_a[1])
 
         published: list[tuple] = []
-        real_atomic_write = policy_store.atomic_write
+        real_publish = policy_store.publish_through_auth_store_staging
 
         def _observe_each_publish(path, content, **kwargs):
-            real_atomic_write(path, content, **kwargs)
+            real_publish(path, content, **kwargs)
             # Read the FILE, not `content`: what a reader can see is whatever is at
             # `policy_path()` once the rename has landed, which is the state under test.
             data = json.loads(policy_store.policy_path().read_text(encoding="utf-8"))
             published.append((data.get("mode"), data.get("autonomy_rules")))
 
-        with mock.patch.object(policy_store, "atomic_write", _observe_each_publish):
+        with mock.patch.object(
+            policy_store, "publish_through_auth_store_staging", _observe_each_publish
+        ):
             policy_store.set_ceiling(mode=pair_b[0], rules=pair_b[1])
 
         # An empty list is a hook that never ran, not a ceiling that published nothing:

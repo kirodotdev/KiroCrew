@@ -47,6 +47,7 @@ from kiro_crew.acp._dispatch import (
     BACKGROUND_LAUNCH_LABELS_MAX,
     BackgroundLaunchRecord,
     parse_background_launch,
+    unrecognised_background_launch,
 )
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, JsonRpcMessage
@@ -270,6 +271,94 @@ class TestTheRecord:
 
 
 # --------------------------------------------------------------------------- #
+# The drift tripwire: a launch-shaped response the parse does not recognise
+# --------------------------------------------------------------------------- #
+
+
+def _claude_update(response: dict[str, Any], tool: str = "Bash") -> dict[str, Any]:
+    return {
+        "sessionUpdate": "tool_call_update",
+        "_meta": {"claudeCode": {"toolResponse": response, "toolName": tool}},
+    }
+
+
+class TestDriftTripwire:
+    @pytest.mark.parametrize(
+        "update",
+        [
+            CAPTURED_BASH_LAUNCH,
+            CAPTURED_WORKFLOW_LAUNCH,
+            CAPTURED_BASH_TERMINAL,
+            FOREGROUND_BASH,
+            ASYNC_AGENT_LAUNCH,
+            _claude_update(
+                {"status": "async_launched", "taskId": "t1", "isAsync": True}, tool="Task"
+            ),
+            {**CAPTURED_BASH_LAUNCH, "sessionUpdate": "tool_call"},
+        ],
+        ids=[
+            "bash",
+            "workflow",
+            "prose-result",
+            "foreground",
+            "held-agent",
+            "held-task",
+            "not-an-update",
+        ],
+    )
+    def test_silent_on_every_frame_the_parse_already_handles(self, update: dict[str, Any]) -> None:
+        assert unrecognised_background_launch(update) is None
+
+    @pytest.mark.parametrize(
+        ("response", "expected"),
+        [
+            ({"stdout": "", "background_task_id": "b1"}, "keys background_task_id; tool Bash"),
+            ({"status": "asyncLaunched", "taskId": "w1"}, 'status "asyncLaunched"; tool Bash'),
+            ({"status": "async_launched", "task_id": "w1"}, 'status "async_launched"; tool Bash'),
+            ({"backgroundTaskId": "  "}, "keys backgroundTaskId; tool Bash"),
+            ({"BackgroundJob": {"id": "j"}}, "keys BackgroundJob; tool Bash"),
+        ],
+        ids=[
+            "renamed-bash-key",
+            "renamed-status",
+            "renamed-task-id",
+            "blank-id",
+            "reshaped-nested",
+        ],
+    )
+    def test_fires_on_a_renamed_or_reshaped_launch(
+        self, response: dict[str, Any], expected: str
+    ) -> None:
+        update = _claude_update(response)
+        assert parse_background_launch(update) is None
+        assert unrecognised_background_launch(update) == expected
+
+    def test_a_rename_without_either_word_is_not_caught(self) -> None:
+        """Residual: a rename that drops both words (``bgTaskId``) slips past.
+
+        The tripwire is a word match by design; a closed list of every future
+        spelling does not exist. Pinned so whoever widens it sees this flip.
+        """
+        assert unrecognised_background_launch(_claude_update({"bgTaskId": "b1"})) is None
+
+    def test_adapter_authored_names_are_folded_and_bounded(self) -> None:
+        key = "background\x1b[31m\nforged" + "x" * 100
+        drift = unrecognised_background_launch(_claude_update({key: "b1"}, tool="Ba\u202esh"))
+        assert drift is not None
+        assert not any(unicodedata.category(c) in ("Cc", "Cf") for c in drift)
+        assert len(drift) < 120
+
+    def test_the_record_hands_out_drift_once(self) -> None:
+        record = BackgroundLaunchRecord()
+        renamed = _claude_update({"background_task_id": "b1"})
+        assert not record.note(renamed, now=1.0)
+        assert record.take_drift() == "keys background_task_id; tool Bash"
+        assert not record.note(_claude_update({"status": "asyncLaunched"}), now=2.0)
+        assert record.take_drift() is None
+        assert record.age(10.0) is None
+
+
+# --------------------------------------------------------------------------- #
 # The transport that serves the stamping harness records it
 # --------------------------------------------------------------------------- #
 
@@ -301,6 +390,27 @@ class TestTheDedicatedClientRecordsIt:
     def test_a_turn_frame_that_is_not_a_launch_records_nothing(self) -> None:
         client = _bare_client()
         client._note_background_launch(_update_msg(CAPTURED_BASH_TERMINAL))
+        assert client.background_launch() is None
+
+    def test_a_drifted_shape_is_logged_once_per_session(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        client = _bare_client()
+        renamed = _claude_update({"background_task_id": "b1"})
+        with caplog.at_level("INFO", logger="kiro_crew.acp.client"):
+            client._note_background_launch(_update_msg(renamed))
+            client._note_background_launch(_update_msg(renamed))
+            client._note_background_launch(_update_msg(FOREGROUND_BASH))
+        lines = [
+            r.getMessage()
+            for r in caplog.records
+            if "recognised claude-agent-acp shape" in r.getMessage()
+        ]
+        assert lines == [
+            "ACP: a tool response looks like a background launch but matches no recognised "
+            "claude-agent-acp shape (keys background_task_id; tool Bash); the watchdog will "
+            "not hold this session for it. Logged once per session."
+        ]
         assert client.background_launch() is None
 
     @pytest.mark.parametrize(

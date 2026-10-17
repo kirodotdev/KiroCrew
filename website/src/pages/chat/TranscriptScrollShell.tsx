@@ -233,8 +233,14 @@ export default function TranscriptScrollShell({
           `vc-spacer-skeleton` paints placeholder bars at the transcript's own
           column width: an unmounted region used to read as a blank void,
           which looks like content that vanished rather than content not yet
-          drawn. */}
-      <div aria-hidden className="vc-spacer-skeleton mx-auto w-full" style={{ height: virt.offsetBefore, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />
+          drawn.
+          Its height is rounded to a whole pixel. The measure farm re-prices
+          unmounted rows above a reader who is sitting still, and
+          Chromium's scroll anchoring moves scrollTop only by whole pixels, so
+          a fractional change would leave the text shifted by the remainder,
+          each line snapping to its own pixel row. The bottom spacer needs no
+          rounding: a change below the reader moves nothing on screen. */}
+      <div aria-hidden className="vc-spacer-skeleton mx-auto w-full" style={{ height: Math.round(virt.offsetBefore), maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />
       {children}
       {/* Bottom spacer — reserves the height of all items below the
           mounted window. overflow-anchor:none (see top spacer). */}

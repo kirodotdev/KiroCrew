@@ -35,7 +35,10 @@ _NO_BASH_REASON = "no working bash on PATH (the stamping script only runs on bui
 
 def _run_stamp(dist: str, pkg_dir) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(
-        ["bash", str(_STAMP_SCRIPT), dist, str(pkg_dir)], capture_output=True, text=True
+        ["bash", str(_STAMP_SCRIPT), dist, str(pkg_dir)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 

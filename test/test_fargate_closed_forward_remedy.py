@@ -306,3 +306,55 @@ class TestMonitorPath:
         t = asyncio.run(_drive())
         assert "idle-timeout preference" in t.status.error
         assert t.status.state.value == "error"
+
+
+class TestDeliberateStopSkipsTheDrain:
+    """A stop() we initiate must not pay the stdout drain's timeout.
+
+    The drain exists to classify why AWS closed a forward. On a teardown WE
+    initiate there is no such cause to name, so stop() retires the drain with
+    ``_finish_stdout_drain(timeout=0)`` — cancel without awaiting EOF — otherwise
+    every deliberate stop waits up to the drain timeout for a notice nothing will
+    read.
+    """
+
+    def test_zero_timeout_cancels_without_awaiting_eof(self):
+        async def _drive() -> None:
+            t = _tunnel()
+            started = asyncio.Event()
+
+            async def _never_eof() -> None:
+                started.set()
+                # A grandchild can hold the write end open forever; the drain
+                # would block on EOF here. timeout=0 must not wait for it. A
+                # never-set event blocks with no timing bet (the enclosing
+                # wait_for bounds the test, not this blocker).
+                await asyncio.Event().wait()
+
+            t._stdout_task = asyncio.create_task(_never_eof())
+            await started.wait()
+            await asyncio.wait_for(t._finish_stdout_drain(timeout=0), timeout=1.0)
+            assert t._stdout_task is None
+
+        asyncio.run(_drive())
+
+    def test_stop_does_not_block_on_a_hung_drain(self):
+        """stop() returns promptly even when the drain would never reach EOF."""
+
+        async def _drive() -> None:
+            t = _tunnel()
+            t.status.state = __import__(
+                "kiro_crew.instances.ssh_tunnel_manager", fromlist=["TunnelState"]
+            ).TunnelState.CONNECTED
+
+            async def _never_eof() -> None:
+                await asyncio.Event().wait()
+
+            t._stdout_task = asyncio.create_task(_never_eof())
+            # No child process: _terminate is a near no-op, so if stop() returns
+            # promptly it proves it did not await the hung drain.
+            t._proc = None
+            await asyncio.wait_for(t.stop(), timeout=1.0)
+            assert t._stdout_task is None
+
+        asyncio.run(_drive())

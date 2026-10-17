@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { SettingsToggle } from '../components/settings'
+import { SettingsSelect, SettingsToggle } from '../components/settings'
 import { HOVER_LEAVE_GRACE_MS, HOVER_OPEN_DELAY_MS } from '../components/InfoTip'
 
 describe('InfoTip in a settings row', () => {
@@ -70,6 +70,64 @@ describe('InfoTip in a settings row', () => {
     fireEvent.click(btn)
     const tip = screen.getByRole('tooltip')
     expect(tip.style.top).toBe('')
-    expect(parseFloat(tip.style.bottom)).toBe(900 - 400 + 6)
+    expect(parseFloat(tip.style.bottom)).toBe(900 - 400 + 10)
+  })
+
+  it('a select row tip points at its own glyph, so the row it explains stays clear', () => {
+    // The bubble lies over the row above; its pointer is what ties it to the
+    // glyph that opened it. It sits on the bubble's lower edge, centred on the
+    // glyph, and stays out of the accessibility tree and the pointer's way.
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true })
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true })
+    render(<SettingsSelect label="Conversation handoffs" hint="Help text" value="a" options={['a', 'b']} onChange={() => {}} />)
+    const btn = screen.getByRole('button', { name: /more information/i })
+    btn.getBoundingClientRect = () => ({ left: 200, top: 400, right: 216, bottom: 416, width: 16, height: 16, x: 200, y: 400, toJSON: () => ({}) }) as DOMRect
+    fireEvent.focus(btn)
+    const tip = screen.getByRole('tooltip')
+    expect(btn).toHaveAttribute('aria-describedby', tip.id)
+    expect(tip.style.maxWidth).toBe('300px')
+    // The bubble starts just left of the glyph, not centred over it, so
+    // the row above keeps its label in view.
+    expect(parseFloat(tip.style.left)).toBe(208 - 20)
+    const pointer = document.querySelector<HTMLElement>('[data-infotip-pointer]')!
+    expect(pointer).not.toBeNull()
+    expect(pointer).toHaveAttribute('aria-hidden', 'true')
+    expect(pointer.className).toContain('pointer-events-none')
+    expect(parseFloat(pointer.style.left) + parseFloat(pointer.style.width) / 2).toBe(208)
+    expect(parseFloat(pointer.style.bottom) + parseFloat(pointer.style.height) / 2).toBe(parseFloat(tip.style.bottom))
+    fireEvent.keyDown(btn, { key: 'Escape' })
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-infotip-pointer]')).toBeNull()
+  })
+
+  it('a clamped tip keeps its pointer on the glyph at a phone width', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
+    render(<SettingsSelect label="Conversation handoffs" hint="Help text" value="a" options={['a', 'b']} onChange={() => {}} />)
+    const btn = screen.getByRole('button', { name: /more information/i })
+    btn.getBoundingClientRect = () => ({ left: 300, top: 400, right: 316, bottom: 416, width: 16, height: 16, x: 300, y: 400, toJSON: () => ({}) }) as DOMRect
+    fireEvent.focus(btn)
+    const tip = screen.getByRole('tooltip')
+    // Too little room right of the glyph even for the narrowest bubble: it
+    // narrows to 200px, moves left to the 8px margin, and the pointer still
+    // marks the glyph.
+    expect(tip.style.maxWidth).toBe('200px')
+    expect(parseFloat(tip.style.left)).toBe(390 - 200 - 8)
+    const pointer = document.querySelector<HTMLElement>('[data-infotip-pointer]')!
+    expect(parseFloat(pointer.style.left) + parseFloat(pointer.style.width) / 2).toBe(308)
+  })
+
+  it('a phone-width tip narrows to the room right of its glyph instead of sliding over the row above', () => {
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true })
+    Object.defineProperty(window, 'innerWidth', { value: 390, configurable: true })
+    render(<SettingsSelect label="Conversation handoffs" hint="Help text" value="a" options={['a', 'b']} onChange={() => {}} />)
+    const btn = screen.getByRole('button', { name: /more information/i })
+    btn.getBoundingClientRect = () => ({ left: 160, top: 400, right: 176, bottom: 416, width: 16, height: 16, x: 160, y: 400, toJSON: () => ({}) }) as DOMRect
+    fireEvent.focus(btn)
+    const tip = screen.getByRole('tooltip')
+    expect(parseFloat(tip.style.left)).toBe(168 - 20)
+    expect(tip.style.maxWidth).toBe(`${390 - 8 - 148}px`)
+    const pointer = document.querySelector<HTMLElement>('[data-infotip-pointer]')!
+    expect(parseFloat(pointer.style.left) + parseFloat(pointer.style.width) / 2).toBe(168)
   })
 })

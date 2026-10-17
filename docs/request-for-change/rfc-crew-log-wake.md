@@ -1,12 +1,12 @@
 ---
 title: Crew log wake -- a worker's write pulls the conductor's tick forward
-status: in-progress
+status: implemented
 author: Raymond Chen, with kirocrew-lead
 created: 2026-10-01
-last-audited: 2026-10-01
-audited-at: 321fd996a2
+last-audited: 2026-10-06
+audited-at: ea7e91c8e6
 doc-pr: null
-implementation-prs: [15691]
+implementation-prs: [15691, 12781]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew log wake -- a worker's write pulls the conductor's tick forward
 
-- Status: in-progress. This document ships INSIDE its implementing pull request:
+- Status: implemented. [#15691](https://github.com/kirodotdev/KiroCrew/pull/15691) merged on the [#12781](https://github.com/kirodotdev/KiroCrew/pull/12781) wake gate. This document shipped INSIDE its implementing pull request:
   the repository takes no standalone RFC pull requests, so `doc-pr` is null and
   the implementation is the one named in `implementation-prs`.
 - Builds on [`rfc-conductor-work-ledger`](rfc-conductor-work-ledger.md) Phase 3
@@ -88,7 +88,7 @@ Non-goals:
                                   v
                       bus.publish(FoldAdvanced(slot, <conductor board>, "work", value))
                                   |  conductor_wake is one subscriber; the WS exporter another
-                                  |  diff value.items[].last_report_at against the last board seen
+                                  |  diff each item's report stamp (_report_stamp) against the last board seen
                                   |  -> the items whose worker reported; none -> a conductor's own
                                   |     write, no push
 (2) worker session closed --> chat_handlers.close_slot, after the slot is gone
@@ -123,9 +123,13 @@ conductor, exactly as it names no dashboard.
 
 The event's `key` is the conductor's own board slot, because a worker's
 `work/recorded` entry carries the conductor's board in its `slot` field and the
-fold binds on it. So the subscriber reads no binding file and is not an importer of
-the work-ledger store. What the event does not say is WHICH item moved, so the
-subscriber keeps the previous board's `last_report_at` per item and diffs: an item
+fold binds on it. So this bus-side path reads no binding file. The module as a
+whole still reads bindings: triggers two and three call `_read_binding`, which is why
+`conductor_wake.py` is a permitted importer of the work-ledger store. What the event
+does not say is WHICH item moved, so the subscriber keeps the previous board's report
+stamp per item and diffs. The stamp is `_report_stamp`: `last_report_at` plus a digest
+of the report fields (`status`, `summary`, `artifacts`, `pr`) and the newest report
+event's id, because `last_report_at` alone has whole-second resolution. An item
 whose stamp changed is a worker that reported, and `fire_now` is called for its
 conductor's armed `work-ledger` loop, with that item id for the pull-forward cap
 (3.5). A board whose stamps are all unchanged moved on a conductor's own write
@@ -327,16 +331,54 @@ the tick is for silence, and silence is measured in hours.
 ### 3.4 Coalescing
 
 Several workers reporting inside one cadence produce several `fire_now` calls
-on the same loop. `_arm_timer` cancels the previous timer and arms a new one at
-delay zero, so the loop ticks once and the probe reads every item's newest
-event in that one tick; this is the coalescing the draft asked for, obtained
-from the existing timer rather than from a queue of envelopes. A `fire_now`
-that arrives while the loop is in `_run_fire_cycle` is refused, and the
-re-arm at the end of that cycle covers the report that caused it.
+on the same loop. The loop ticks ONCE for all of them and the probe reads every
+item's newest event in that one tick; this is the coalescing the draft asked
+for, obtained from the existing timer rather than from a queue of envelopes. A
+`fire_now` that arrives while the loop is in `_run_fire_cycle` is refused, and
+the re-arm at the end of that cycle covers the report that caused it.
+
+**A SHORT HOLDING WINDOW IS ADOPTED, replacing the delay-zero arm this section
+first specified.** The original rule was that each `fire_now` cancels the
+previous timer and arms a new one at delay zero. It coalesced only the reports
+that happened to land inside one tick's own execution, so reports seconds or
+tens of seconds apart each armed and ran their own tick: a burst of N reports
+cost the conductor N turns, each one re-reading the whole board for one item's
+news. One conductor was woken 8 times in 13 minutes during a burst of `done`
+reports, one item per wake.
+
+So the first waking report now arms its tick one WINDOW ahead
+(`conductor_wake.DEFAULT_WAKE_BATCH_SECS`), and a report arriving while that
+window is open rides the tick already armed instead of arming a second one. The
+tick reads the ledger when it RUNS, so it observes every report that reached it,
+and the zero kernel window below then folds all of them into one delivered wake.
+N reports close together therefore cost ONE turn naming all N items.
+
+The window is **10 s, a starting value with no measured basis** -- no
+distribution of inter-report gaps has been measured. It is deliberately kept at
+seconds scale so the §4 latency promise still holds: an isolated `question`
+reaches its conductor in seconds, not in a cadence and not in a minute. It is
+tunable through `KIROCREW_WORK_LEDGER_WAKE_BATCH_SECS`, and `0` restores the
+delay-zero arm exactly.
+
+Three rules keep the window from costing news. It is clamped to the loop's own
+deadline, so a push still only ever moves a fire EARLIER -- an arm replaces the
+armed timer, and an unclamped window on a loop about to fire anyway would push
+its scheduled tick out. A report inside an open window arms NOTHING rather than
+re-arming, or a steady stream would restart the window for as long as it lasted
+and the batch would never be delivered. And the window counts as open only while
+the armed timer is still live, so a report arriving after a cancel (a user
+message in the watched session cancels the timer without clearing the push mark)
+arms a window of its own instead of joining one nothing will close.
+
+Reports that land while the conductor is already mid-turn are NOT this window's
+to carry: they are covered by the steer in #17582, which folds them into the
+running turn.
 
 A pulled-forward tick is extra, and two rules keep it from costing more than
-the news it carries. It never spends the post-wake follow-up tick: that free
-second turn belongs to the loop's own cadence, so a push landing right after a
+the news it carries. It never spends a free follow-up tick, and a work-ledger
+wake grants none: the next news is a worker's report, which pulls the loop
+forward by itself, and the only retry is the one the gate gives when the woken
+turn failed. So a push landing right after a
 wake (a worker's close after its `done` report, or the reports that arrived
 while the woken turn ran) goes through the probe and wakes only for an
 observation the delivered turn did not already carry. And a pulled-forward tick
@@ -376,8 +418,9 @@ the loop and resets on restart.
 | | Phase 3 alone | with this RFC |
 |---|---|---|
 | conductor turns per worker report | gate decides | gate decides (unchanged) |
-| delay from `question` to conductor turn | up to `idle_secs` | seconds |
-| delay from worker close to conductor turn | `idle_secs` + staleness window | seconds |
+| conductor turns for N reports arriving inside one window | one per report | ONE, naming all N (3.4) |
+| delay from `question` to conductor turn | up to `idle_secs` | seconds (the batching window, 10 s by default) |
+| delay from worker close to conductor turn | `idle_secs` + staleness window | seconds (same window) |
 | delay from a worker turn that never reported | `idle_secs` + staleness window | staleness window |
 | patrol cadence the skill can set | minutes | hours |
 | new timers, stores, maps | none | no timer and no store; five in-memory structures on the service, all per loop, released with the loop and lost on restart: three loop-id sets (`_pulled_forward`, a deferred pull-forward for an in-flight cycle; `_pushed_ticks`, an armed tick a push set; `_pushed_running`, a running tick a push set) and the pull-forward cap's `_pull_forward_counts` (item -> times in the last hour) and `_pull_forward_capped` (pairs already logged) (3.2c, 3.5) |

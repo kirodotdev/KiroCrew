@@ -33,6 +33,7 @@ import asyncio
 import errno
 import inspect
 import json
+import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,7 @@ from unittest import mock
 
 import pytest
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.dashboard.handlers as _HANDLERS_PKG
@@ -1045,6 +1047,28 @@ class TestExecutorPools:
 
 
 class TestFileWatch:
+    @pytest.mark.asyncio
+    async def test_a_client_disconnect_during_prepare_is_quiet(
+        self,
+        a_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        async def _disconnect(self, request):  # noqa: ANN001 - stub mirrors aiohttp
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+        monkeypatch.setattr(web.StreamResponse, "prepare", _disconnect)
+
+        with caplog.at_level(logging.ERROR, logger=f.logger.name):
+            resp = await f.api_file_watch(_req("/api/file-watch", f"path={a_file}"))
+
+        assert isinstance(resp, web.StreamResponse)
+        assert not [
+            record
+            for record in caplog.records
+            if record.name == f.logger.name and record.levelno >= logging.ERROR
+        ]
+
     @pytest.mark.asyncio
     async def test_a_refused_path_is_still_refused(self, a_file: Path):
         with mock.patch.object(f, "_validate_dashboard_path", return_value=None):

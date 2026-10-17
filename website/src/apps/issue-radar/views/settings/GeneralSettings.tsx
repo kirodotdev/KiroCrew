@@ -13,6 +13,7 @@ import {
 } from '../../lib/format'
 import { activeLocale, fmtUnit } from '../../../../i18n/format'
 import { languageLabel } from '../../../../i18n/languages'
+import GitLabGroupsSection from './GitLabGroupsSection'
 
 import { i18nT } from '../../../../i18n/t'
 /** General (app-wide) settings — full width. The GitHub identity and the list
@@ -28,9 +29,10 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
   const terms = providerTerms(active)
   const accountRef = useRef<HTMLElement>(null)
   const reposRef = useRef<HTMLElement>(null)
+  const gitlabGroupsRef = useRef<HTMLElement>(null)
 
   useEffect(() => {
-    const ref = anchor === 'repos' ? reposRef : accountRef
+    const ref = anchor === 'repos' ? reposRef : anchor === 'gitlabGroups' ? gitlabGroupsRef : accountRef
     ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [anchor])
 
@@ -187,6 +189,8 @@ export default function GeneralSettings({ anchor }: { anchor: GeneralAnchor }) {
           </button>
         </div>
       </section>
+
+      <GitLabGroupsSection sectionRef={gitlabGroupsRef} />
     </div>
   )
 }

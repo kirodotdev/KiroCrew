@@ -2,7 +2,8 @@
 
 Owns the DTOs and defaults for ``mcp`` and ``mcp_gateway`` (including the MCP stub
 roster readers the gateway seed shares), ``instances``, ``tunnel``, ``publish``,
-``computer_use`` and the external app ``registries``. The computer-use and
+``computer_use``, ``aws``, the external app ``registries`` and the per-app user
+settings ``apps``. The computer-use and
 instance bounds come from ``computer_use.types`` and ``instances.constants``.
 ``config.sections`` re-exports every name; this module never imports it, the
 loader, schema or validation.
@@ -21,7 +22,7 @@ from kiro_crew.computer_use.types import (
 )
 from kiro_crew.computer_use.types import DEFAULT_SCREENSHOT_MAX_PX as _CU_DEFAULT_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import DEFAULT_TEXT_LIMIT as _CU_DEFAULT_TEXT_LIMIT
-from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list
+from kiro_crew.config.fields import _meta, _safe_bool, _safe_dict, _safe_list, field_default
 from kiro_crew.instances.constants import CONNECT_TIMEOUT_CEILING_SECS as _CONNECT_TIMEOUT_CEILING
 from kiro_crew.instances.constants import DEFAULT_MAX_RECOVERY_ATTEMPTS as _DEFAULT_MAX_RECOVERY
 from kiro_crew.instances.constants import DEFAULT_PROBE_FAILURE_THRESHOLD as _DEFAULT_PROBE_FAILS
@@ -96,7 +97,9 @@ def _resolve_stub_overrides(mcp_gateway_data: dict) -> dict[str, bool]:
     be an operator's typo, and guessing which way they meant it is worse than
     leaving that server on the roster's answer.
     """
-    raw = _safe_dict(mcp_gateway_data.get("stub_overrides"))
+    raw = _safe_dict(
+        mcp_gateway_data.get("stub_overrides", field_default(McpGatewayConfig, "stub_overrides"))
+    )
     return {
         name: value
         for name, value in raw.items()
@@ -104,11 +107,72 @@ def _resolve_stub_overrides(mcp_gateway_data: dict) -> dict[str, bool]:
     }
 
 
+#: The managed server whose stub decision the followers below inherit.
+MANAGED_STUB_LEADER = "kirocrew-core"
+
+#: Kiro Crew's own managed servers that are stubbed whenever
+#: :data:`MANAGED_STUB_LEADER` is, unless an operator override says otherwise.
+#:
+#: Each one is launched from Kiro Crew's own install (so its launch needs no
+#: operator approval, see ``rewriter._is_managed_launch``), is handed the
+#: per-session token by gatewayd (``daemon.control_plane.CONTROL_PLANE_BACKENDS``)
+#: and advertises ``kirocrew.caller-identity``, refusing a caller the gateway
+#: cannot name. That is the same footing ``kirocrew-core`` stands on, so an
+#: install that stubs it has already accepted everything sharing these costs.
+#: Leaving them out cost a full Python process per session for each one a spec
+#: declares (``kirocrew-guide`` is in every default spec).
+#:
+#: Being in the stub set mounts nothing: the rewriter wraps only servers a spec
+#: already declares, so an opt-in server still reaches only the agents granted it.
+#:
+#: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
+#: ``kirocrew-computer`` and ``kirocrew-cron``. It is spelled out rather than
+#: derived because this module may import only ``config.fields`` (the config
+#: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
+#: executor. A ratchet test pins the equality, so a new caller-aware server fails
+#: it until it is placed here or in the test's exclusions with a reason.
+#:
+#: ``kirocrew-computer`` drives the desktop and pools only behind a
+#: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
+#: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
+#: hazard: it is simply outside what this layer was measured on, and stays one
+#: operator toggle away like any other server.
+MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
+    "kirocrew-guide",
+    "kirocrew-mate",
+    "kirocrew-panel",
+    "kirocrew-dashboard",
+    "kirocrew-work",
+    "kirocrew-crew-log",
+    "kirocrew-debug",
+)
+
+
+def _resolve_stub_base(mcp_gateway_data: dict) -> list[str]:
+    """The roster plus the managed servers that follow the control plane.
+
+    This is the answer an operator who has said nothing about a server gets: the
+    layer :func:`_resolve_stub_overrides` deviates FROM. It differs from
+    :func:`_resolve_stub_roster` only by :data:`MANAGED_STUB_FOLLOWERS`, appended
+    when the leader is stubbed by the roster or by an override. Writers persist the
+    roster, never this. The seed asks this whether a name is already stubbed. The
+    dashboard writer never prunes a follower decision at all (see
+    ``_record_stub_decisions``), because this base moves with the leader.
+    """
+    roster = _resolve_stub_roster(mcp_gateway_data)
+    overrides = _resolve_stub_overrides(mcp_gateway_data)
+    if not overrides.get(MANAGED_STUB_LEADER, MANAGED_STUB_LEADER in roster):
+        return roster
+    present = set(roster)
+    return roster + [name for name in MANAGED_STUB_FOLLOWERS if name not in present]
+
+
 def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
     """Which MCP servers are given a stub, roster and operator decisions together.
 
-    The set in EFFECT: :func:`_resolve_stub_roster` supplies the configured base
-    and :func:`_resolve_stub_overrides` the operator's deviations from it, so a
+    The set in EFFECT: :func:`_resolve_stub_base` supplies the configured base
+    (the roster, plus :data:`MANAGED_STUB_FOLLOWERS` when the leader is
+    stubbed) and :func:`_resolve_stub_overrides` the operator's deviations from it, so a
     distribution can grow the roster without overwriting a choice the operator
     made, and the operator can turn any single server off without pinning
     themselves to today's roster.
@@ -118,7 +182,7 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
     write); servers added by an override are appended in sorted order, because
     they have no position in the file to preserve.
     """
-    roster = _resolve_stub_roster(mcp_gateway_data)
+    roster = _resolve_stub_base(mcp_gateway_data)
     overrides = _resolve_stub_overrides(mcp_gateway_data)
     if not overrides:
         return roster
@@ -158,8 +222,8 @@ class PublishConfig:
         ),
     )
     #: Extra filesystem roots (beyond the user's home dir) that an artifact may
-    #: be relocated to point at (``artifact_relocate`` / the ``artifact_move`` MCP
-    #: tool). Relocate is confined to the user home by default so an agent cannot
+    #: be relocated to point at (the dashboard's
+    #: ``PATCH /api/artifacts/{slug}/relocate`` route). Relocate is confined to the user home by default so an agent cannot
     #: aim an artifact at ``/etc/passwd`` or another user's files and exfiltrate
     #: them via a later artifact GET; each entry here widens the allowed set to an
     #: additional absolute root (e.g. a shared project dir). Paths are expanded +
@@ -174,6 +238,25 @@ class PublishConfig:
             "The sensitive-path denylist (~/.aws, ~/.ssh, ~/.kiro/crew, …) still "
             "applies inside every allowed root.",
             tags=["artifacts"],
+        ),
+    )
+
+
+@dataclass
+class AppSettingsConfig:
+    """The user's own settings for one installed app, ``apps.<name>``."""
+
+    model: str = field(
+        default="",
+        metadata=_meta(
+            "Model",
+            "Model this app's sessions and background agents start on when nothing "
+            "more specific picks one. Empty inherits, so the app runs exactly as it "
+            "would without this setting. A model picked for the session, the app's "
+            "own pick (a Research campaign, the Spec Builder default), and a model "
+            "pinned on the agent or crew all win over it; it wins over the global "
+            "default. A model this account cannot run is withheld like any other "
+            "pin.",
         ),
     )
 
@@ -234,9 +317,11 @@ class ExternalRegistryConfig:
             "so a hostile entry cannot read a private sibling repo with this machine's "
             "git identity. 'owner' means the index is under change control the build "
             "owns, so its apps may clone with this machine's credentials. Setting it "
-            "HERE has no effect: the trusted tier is honoured only for registries the "
-            "build supplies, because this file is agent-writable and a tier read from "
-            "it would not be your assertion. A value other than 'index' on a "
+            "HERE has no effect: the row's own value is ignored, because this file is "
+            "agent-writable and a tier read from it would not be your assertion. "
+            "'owner' is honoured only for registries the build supplies, or for a "
+            "row whose repository you granted in Settings > Security (stored in the "
+            "keystone registry_trust.json). A value other than 'index' on a "
             "configured registry is read as 'index'.",
         ),
     )
@@ -320,7 +405,9 @@ class McpGatewayConfig:
             "Let sessions with an identical server configuration share one MCP "
             "server process instead of each getting its own. Off, every session "
             "gets its own backend — the same process topology as running without "
-            "the broker. Either this or MCP Apps starts the broker; see "
+            "the broker. This switch does not start the broker: the broker starts "
+            "iff some server is stubbed, and this chooses whether stubbed servers "
+            "share one backend or get one per session; see "
             "docs/architecture/design-notes/mcp-stub-decoupling.md. "
             "Default False — opt-in.",
         ),
@@ -481,7 +568,10 @@ class McpGatewayConfig:
             "initialize once the session sends it. A backend that stays silent is "
             "failed and reaped so its slot frees; the broker holds the spawn "
             "permit for this same window. Raise it for servers whose startup is "
-            "legitimately slow (large runtimes, remote resolution).",
+            "legitimately slow (large runtimes, remote resolution). On "
+            "Windows the effective deadline is floored at 30 seconds (a "
+            "cold-start floor): a configured value below it is lifted, a "
+            "value above it is used as is.",
             restart=True,
         ),
     )
@@ -535,7 +625,7 @@ class McpGatewayConfig:
         metadata=_meta(
             "Poolable Servers (deprecated)",
             "DEPRECATED alias for stub_servers. Read only when stub_servers "
-            "is absent, so a config written before the stub became the per-server "
+            "is absent AND mcp_gateway.enabled is true, so a config written before the stub became the per-server "
             "decision keeps working: a server that was pooled already had a stub, "
             "so migrating it to the stub set preserves its behaviour. There is no "
             "per-server sharing switch any more — sharing is global over the "
@@ -614,14 +704,14 @@ class McpGatewayConfig:
         default=0,
         metadata=_meta(
             "Prewarm Count",
-            "Number of hottest observed (agent x server x channel) MCP backends "
+            "Number of MCP backends, by hottest observed pool key (agent x server), "
             "to spawn at gateway startup, before the first session connects. "
             "Removes the cold-start latency on the first new-chat after a "
             "gateway restart or after all backends have idled out — the steady "
             "state already reuses warm backends within the idle timeout. The "
             "hot set is learned from prior registers and persisted beside the "
-            "socket; channel_id is a stable id, so a prewarmed backend is "
-            "reused by every later new-chat in that channel. 0 (default) "
+            "socket. A pool key has no channel dimension, so a prewarmed backend "
+            "is reused by every later matching new-chat on any channel. 0 (default) "
             "disables prewarming — no hot-key file is read or written.",
             restart=True,
         ),
@@ -641,7 +731,7 @@ class McpGatewayConfig:
         metadata=_meta(
             "Response Spill Threshold",
             "Tool-call responses larger than this (bytes) have their text content "
-            "written to ~/.kiro/crew/mcp_spill/ and truncated inline to 16 KiB + "
+            "written to $KIROCREW_HOME/mcp_spill/ and truncated inline to 16 KiB + "
             "a file path marker. Default 256 KiB. Set 0 to disable spilling. "
             "Env override: KIROCREW_MCP_SPILL_THRESHOLD. Read by the MCP broker "
             "when it starts, like every other field of this section.",
@@ -785,7 +875,9 @@ class InstancesConfig:
             "ProxyCommand or jump host routinely need longer (the proxy handshake "
             "runs before ssh begins the forward). Raise this if connecting a "
             "remote instance times out while the same ssh forward succeeds by hand. "
-            "An explicit value applies to both transports. Clamped to [1, 120].",
+            "An explicit value applies to both transports. A value below 1 is "
+            "discarded (the transport default is used, with a warning); a value "
+            "above 120 is clamped to 120.",
         ),
     )
     mint_timeout_secs: float | None = field(
@@ -845,18 +937,21 @@ class InstancesConfig:
             )
             object.__setattr__(self, "warm_set_cap", _WARM_SET_CAP_AUTO)
         if not (1 <= self.tunnel_base_port <= 65535):
+            port = field_default(InstancesConfig, "tunnel_base_port")
             logger.warning(
                 "instances.tunnel_base_port %d out of range [1, 65535], using %d",
                 self.tunnel_base_port,
-                _DEFAULT_TUNNEL_BASE_PORT,
+                port,
             )
-            object.__setattr__(self, "tunnel_base_port", _DEFAULT_TUNNEL_BASE_PORT)
+            object.__setattr__(self, "tunnel_base_port", port)
         if self.connect_timeout_secs is not None and self.connect_timeout_secs < 1.0:
             logger.warning(
                 "instances.connect_timeout_secs %s < 1, using the transport default",
                 self.connect_timeout_secs,
             )
-            object.__setattr__(self, "connect_timeout_secs", None)
+            object.__setattr__(
+                self, "connect_timeout_secs", field_default(InstancesConfig, "connect_timeout_secs")
+            )
         elif (
             self.connect_timeout_secs is not None
             and self.connect_timeout_secs > _CONNECT_TIMEOUT_CEILING
@@ -874,7 +969,9 @@ class InstancesConfig:
                 self.mint_timeout_secs,
                 _MINT_TIMEOUT_FLOOR,
             )
-            object.__setattr__(self, "mint_timeout_secs", None)
+            object.__setattr__(
+                self, "mint_timeout_secs", field_default(InstancesConfig, "mint_timeout_secs")
+            )
         elif self.mint_timeout_secs is not None and self.mint_timeout_secs > _MINT_TIMEOUT_CEILING:
             logger.warning(
                 "instances.mint_timeout_secs %s > %s, clamping to %s",
@@ -884,12 +981,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "mint_timeout_secs", _MINT_TIMEOUT_CEILING)
         if self.max_recovery_attempts < 1:
+            attempts = field_default(InstancesConfig, "max_recovery_attempts")
             logger.warning(
                 "instances.max_recovery_attempts %d < 1, using %d",
                 self.max_recovery_attempts,
-                _DEFAULT_MAX_RECOVERY,
+                attempts,
             )
-            object.__setattr__(self, "max_recovery_attempts", _DEFAULT_MAX_RECOVERY)
+            object.__setattr__(self, "max_recovery_attempts", attempts)
         elif self.max_recovery_attempts > _MAX_RECOVERY_CEILING:
             logger.warning(
                 "instances.max_recovery_attempts %d > %d, clamping to %d "
@@ -900,12 +998,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "max_recovery_attempts", _MAX_RECOVERY_CEILING)
         if self.recover_backoff_max_secs <= 0:
+            backoff = field_default(InstancesConfig, "recover_backoff_max_secs")
             logger.warning(
                 "instances.recover_backoff_max_secs %s <= 0, using %s",
                 self.recover_backoff_max_secs,
-                _DEFAULT_BACKOFF_MAX,
+                backoff,
             )
-            object.__setattr__(self, "recover_backoff_max_secs", _DEFAULT_BACKOFF_MAX)
+            object.__setattr__(self, "recover_backoff_max_secs", backoff)
         elif self.recover_backoff_max_secs > _RECOVER_BACKOFF_CEILING:
             logger.warning(
                 "instances.recover_backoff_max_secs %s > %s, clamping to %s "
@@ -916,12 +1015,13 @@ class InstancesConfig:
             )
             object.__setattr__(self, "recover_backoff_max_secs", _RECOVER_BACKOFF_CEILING)
         if self.probe_failure_threshold < 1:
+            threshold = field_default(InstancesConfig, "probe_failure_threshold")
             logger.warning(
                 "instances.probe_failure_threshold %d < 1, using %d",
                 self.probe_failure_threshold,
-                _DEFAULT_PROBE_FAILS,
+                threshold,
             )
-            object.__setattr__(self, "probe_failure_threshold", _DEFAULT_PROBE_FAILS)
+            object.__setattr__(self, "probe_failure_threshold", threshold)
 
 
 @dataclass
@@ -949,5 +1049,42 @@ class TunnelConfig:
             "Explicit tunnel name (overrides name_mode). "
             "Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo').",
             restart=True,
+        ),
+    )
+
+
+@dataclass
+class AwsConfig:
+    """AWS settings for the agent sessions Kiro Crew starts.
+
+    ``project_profiles`` is the operator's directory -> named-profile map; the
+    rules that read it live in :mod:`kiro_crew.aws_project_profiles`.
+    """
+
+    project_profiles: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Project AWS Profiles",
+            "Binds an AWS named profile to a project directory, so the agent in a "
+            "session working there starts with AWS_PROFILE and AWS_DEFAULT_PROFILE "
+            "set to it and an AWS "
+            "command reaches the intended account without --profile. Keys are "
+            "absolute directory paths, values are profile names from your own AWS "
+            "config (IAM or SSO), e.g. "
+            '{"/home/me/src/billing": "billing-prod", "/home/me/src/sandbox": "dev"}. '
+            "A session whose working directory is a key or lies under one gets that "
+            "profile; when several keys contain it the deepest wins, and a sibling "
+            "whose name merely starts the same (/a/proj and /a/project2) does not "
+            "match. A directory under no key keeps the default credential chain. A "
+            "profile a caller sets itself (a scheduled job's env, a workflow) wins "
+            "over this map. A profile name must be 1 to 128 letters, digits, '_', "
+            "'.', '+' or '-', not starting with '-'; an entry that breaks that rule "
+            "or has a relative key is refused when saved and ignored with a warning "
+            "if a hand edit puts it in config.json. Only the profile NAME is stored "
+            "and passed on: no credential is read or copied, and the binding is "
+            "never taken from a file inside the project. This picks the account a "
+            "command goes to by default; it is not isolation, and the agent can "
+            "still name another profile. Takes effect for sessions started after "
+            "the change; a running session keeps the environment it started with.",
         ),
     )

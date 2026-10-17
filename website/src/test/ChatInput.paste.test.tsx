@@ -265,7 +265,7 @@ describe('ChatInput paste: showFullPastes', () => {
       <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={onPasteBlocksChange} />,
     )
     pasteText(screen.getByRole('textbox'), big)
-    expect(onChange).toHaveBeenCalledWith('[ Paste #1 · 4 lines ]')
+    expect(onChange).toHaveBeenCalledWith(expect.stringMatching(/^\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]$/))
     expect(onPasteBlocksChange).toHaveBeenCalledWith([expect.objectContaining({ seq: 1, lines: 4, content: big })])
   })
 

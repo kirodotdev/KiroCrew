@@ -11,7 +11,9 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
+import warnings
 import zipfile
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
@@ -1925,6 +1927,8 @@ def test_a_malformed_crons_store_is_replaced_not_installed(tmp_path, payload):
     svc._last_mtime_ns = 0
     svc._last_size = 0
     svc._last_digest = b""
+    svc._held_run_records = {}
+    svc._held_run_records_guard = threading.Lock()
     svc._reset_fingerprint = lambda: None
     svc._load()
     assert svc._jobs == []
@@ -2052,6 +2056,8 @@ def test_a_malformed_job_cannot_reach_the_cron_loader(tmp_path):
     svc._last_mtime_ns = 0
     svc._last_size = 0
     svc._last_digest = b""
+    svc._held_run_records = {}
+    svc._held_run_records_guard = threading.Lock()
     svc._reset_fingerprint = lambda: None
     svc._load()
     assert [j.name for j in svc._jobs] == ["survivor"]
@@ -2703,3 +2709,517 @@ def test_oversized_imported_command_is_dropped_without_scanning_it(tmp_path):
     names = {job.get("name") for job in remaining}
     assert "oversized" not in names, "the dropped job must be gone from the rewritten store"
     assert "ordinary" in names, "the restore must keep the job it did not reject"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink and hardlink fixtures")
+class TestTheCronSanitizerResolvesTheStoreOnce:
+    """The staged ``crons.json`` is read through one descriptor and replaced, never written through.
+
+    A by-name read followed by a by-name rewrite is two resolutions of one path. A
+    link or hardlink alias swapped in between had the rewrite follow it, so the
+    sanitized store landed in whatever file the alias named. The swap is driven
+    from ``_vet_shell_command``, which runs after the read and before the rewrite.
+    """
+
+    VICTIM = b"victim bytes the import was never pointed at\n"
+
+    @staticmethod
+    def _store_with_command() -> str:
+        # Rule 3 pauses this job, so the sanitizer must rewrite the store.
+        return json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "j1",
+                        "name": "nightly",
+                        "message": "x",
+                        "command": "df -h",
+                        "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                    }
+                ]
+            }
+        )
+
+    def _swap_during_vet(self, monkeypatch, store: Path, victim: Path, how: str) -> None:
+        real_vet = portability._vet_shell_command
+
+        def vet_then_swap(command: str):
+            store.unlink()
+            if how == "symlink":
+                store.symlink_to(victim)
+            else:
+                os.link(victim, store)
+            return real_vet(command)
+
+        monkeypatch.setattr(portability, "_vet_shell_command", vet_then_swap)
+
+    @pytest.mark.parametrize("how", ["symlink", "hardlink"])
+    def test_an_alias_swapped_in_before_the_rewrite_is_replaced_not_written_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+    ) -> None:
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        store = staged / "crons.json"
+        store.write_text(self._store_with_command(), encoding="utf-8")
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(self.VICTIM)
+        self._swap_during_vet(monkeypatch, store, victim, how)
+
+        dropped, paused = portability._sanitize_imported_crons(store)
+
+        assert dropped == [] and paused == ["nightly"]
+        assert victim.read_bytes() == self.VICTIM, f"the rewrite followed the {how}"
+        assert not store.is_symlink() and store.stat().st_nlink == 1
+        written = json.loads(store.read_text(encoding="utf-8"))
+        assert written["jobs"][0]["user_paused"] is True
+
+    @pytest.mark.parametrize("how", ["symlink", "hardlink"])
+    def test_an_alias_at_read_time_is_refused_and_replaced_with_an_empty_store(
+        self, tmp_path: Path, how: str
+    ) -> None:
+        # The alias's target is a well-formed store, so a reader that follows it
+        # would vet and pause its job and then rewrite the target in place.
+        staged = tmp_path / "staged"
+        staged.mkdir()
+        store = staged / "crons.json"
+        victim = tmp_path / "victim.json"
+        original = self._store_with_command().encode("utf-8")
+        victim.write_bytes(original)
+        if how == "symlink":
+            store.symlink_to(victim)
+        else:
+            os.link(victim, store)
+
+        dropped, paused = portability._sanitize_imported_crons(store)
+
+        assert dropped == [portability._UNREADABLE_STORE] and paused == []
+        assert victim.read_bytes() == original, f"the {how} target was modified"
+        assert not store.is_symlink() and store.stat().st_nlink == 1
+        assert json.loads(store.read_text(encoding="utf-8")) == {"jobs": []}
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+    def test_a_fifo_at_the_name_does_not_hang_the_import(self, tmp_path: Path) -> None:
+        store = tmp_path / "crons.json"
+        os.mkfifo(store)
+
+        dropped, paused = portability._sanitize_imported_crons(store)
+
+        assert dropped == [portability._UNREADABLE_STORE] and paused == []
+        assert json.loads(store.read_text(encoding="utf-8")) == {"jobs": []}
+
+    def test_a_missing_store_is_left_alone(self, tmp_path: Path) -> None:
+        store = tmp_path / "crons.json"
+        assert portability._sanitize_imported_crons(store) == ([], [])
+        assert not store.exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink and hardlink fixtures")
+@pytest.mark.parametrize("how", ["symlink", "hardlink"])
+def test_the_staged_notification_settings_are_replaced_not_written_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    """The same staged directory's ``notification_settings.json`` is rewritten by replace.
+
+    The swap runs inside ``parse_imported_settings``, after the read and before the
+    rewrite, so a by-name ``write_text`` would truncate the victim.
+    """
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    staged = snap / "notification_settings.json"
+    staged.write_text(json.dumps({"channel_settings": {}}), encoding="utf-8")
+    victim = tmp_path / "victim.txt"
+    victim_bytes = b"victim bytes the import was never pointed at\n"
+    victim.write_bytes(victim_bytes)
+    real_parse = portability.parse_imported_settings
+
+    def parse_then_swap(text: str):
+        staged.unlink()
+        if how == "symlink":
+            staged.symlink_to(victim)
+        else:
+            os.link(victim, staged)
+        return real_parse(text)
+
+    monkeypatch.setattr(portability, "parse_imported_settings", parse_then_swap)
+
+    portability._vet_archive_settings(snap, {})
+
+    assert victim.read_bytes() == victim_bytes, f"the rewrite followed the {how}"
+    assert not staged.is_symlink() and staged.stat().st_nlink == 1
+    assert "channel_settings" in json.loads(staged.read_text(encoding="utf-8"))
+
+
+# ── Memory-only export and import ──
+
+
+def _rest_names(zip_bytes: bytes) -> set[str]:
+    """Archive member names below the export prefix."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        return {"/".join(PurePosixPath(n).parts[1:]) for n in zf.namelist() if not n.endswith("/")}
+
+
+class TestMemoryOnly:
+    def test_memory_only_export_carries_memory_and_nothing_else(self, patched_config_dir):
+        zip_bytes, manifest = create_export_zip(memory_only=True, include_sessions=True)
+        names = _rest_names(zip_bytes)
+
+        assert manifest["components"] == ["memory"]
+        assert {"memory.db", "memory_index.db", "MANIFEST.json"} <= names
+        assert "workspace/memory/preferences.md" in names
+        assert "workspace/memory/history/2026-05-17.md" in names
+        for other in ("config.json", "hooks.json", "crons.json", "notifications.jsonl"):
+            assert other not in names
+        assert not any(n.startswith(("skills/", "plan_memory/", "sessions/")) for n in names)
+        assert "session_count" not in manifest["contents"]
+        assert manifest["contents"]["workspace_files"] == 4
+
+    def test_memory_only_export_leaves_other_workspace_files_out(self, patched_config_dir):
+        (patched_config_dir / "workspace" / "notes.md").write_text("not memory")
+        knowledge = patched_config_dir / "workspace" / "knowledge"
+        knowledge.mkdir()
+        (knowledge / "doc.md").write_text("a knowledge file")
+
+        names = _rest_names(create_export_zip(memory_only=True)[0])
+
+        assert "workspace/knowledge/doc.md" in names
+        assert "workspace/notes.md" not in names
+
+    def test_full_export_declares_no_components(self, patched_config_dir):
+        _, manifest = create_export_zip()
+        assert "components" not in manifest
+
+    def test_a_memory_bundle_is_outside_the_whole_install_version_range(
+        self, patched_config_dir, tmp_path
+    ):
+        """A reader that only knows whole-install archives refuses a memory bundle."""
+        zip_bytes, manifest = create_export_zip(memory_only=True)
+        assert manifest["version"] == portability.MEMORY_EXPORT_MANIFEST_VERSION
+        assert manifest["version"] > snapshot.EXPORT_MANIFEST_VERSION
+
+        bundle = tmp_path / "mem.zip"
+        bundle.write_bytes(zip_bytes)
+        ok, error, read = validate_import_zip(bundle)
+        assert ok, error
+        assert read["components"] == ["memory"]
+
+    def test_the_memory_bundle_version_without_the_declaration_is_refused(self, tmp_path):
+        bundle = tmp_path / "odd.zip"
+        with zipfile.ZipFile(bundle, "w") as zf:
+            version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": version}))
+        ok, error, _ = validate_import_zip(bundle)
+        assert not ok
+        assert "Unsupported manifest version" in error
+
+    def test_a_deeply_nested_manifest_reads_as_unparsable(self, tmp_path):
+        bundle = tmp_path / "deep.zip"
+        with zipfile.ZipFile(bundle, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", "[" * 100_000 + "]" * 100_000)
+        with zipfile.ZipFile(bundle) as zf:
+            assert portability._read_member_json(zf, "snap/MANIFEST.json") is None
+
+    def test_memory_only_import_merges_memory_and_nothing_else(self, patched_config_dir, tmp_path):
+        """A full archive imported memory-only leaves config, crons, hooks and skills alone."""
+        zip_path = tmp_path / "full.zip"
+        zip_path.write_bytes(create_export_zip()[0])
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = apply_import_zip(zip_path, mode="merge", memory_only=True)
+
+        assert summary["components"] == ["memory"]
+        assert (target / "memory.db").is_file()
+        assert (target / "workspace" / "memory" / "preferences.md").is_file()
+        for other in ("config.json", "hooks.json", "crons.json", "notifications.jsonl"):
+            assert not (target / other).exists(), other
+        assert not (target / "skills").exists()
+        assert not (target / "plan_memory").exists()
+
+    def test_an_archive_declaring_memory_only_imports_only_memory(
+        self, patched_config_dir, tmp_path
+    ):
+        """The manifest's own declaration is honoured even without the flag."""
+        zip_path = tmp_path / "mem.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2, "components": ["memory"]}))
+            zf.writestr("snap/workspace/memory/preferences.md", "memory")
+            zf.writestr("snap/crons.json", json.dumps({"jobs": []}))
+            zf.writestr("snap/workspace/notes.md", "not memory")
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = apply_import_zip(zip_path, mode="merge")
+
+        assert summary["components"] == ["memory"]
+        assert (target / "workspace" / "memory" / "preferences.md").read_text() == "memory"
+        assert not (target / "crons.json").exists()
+        assert not (target / "workspace" / "notes.md").exists()
+
+    def test_only_a_nested_manifest_is_no_manifest(self, patched_config_dir, tmp_path):
+        """A MANIFEST.json below the top is content: the validator finds no manifest."""
+        zip_path = tmp_path / "nested.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+            manifest = {"version": version, "components": ["memory"]}
+            zf.writestr("snap/meta/MANIFEST.json", json.dumps(manifest))
+            zf.writestr("snap/hooks.json", json.dumps({"hooks": []}))
+            zf.writestr("snap/workspace/memory/preferences.md", "memory")
+        ok, error, _ = validate_import_zip(zip_path)
+        assert not ok
+        assert "No MANIFEST.json" in error
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = apply_import_zip(zip_path, mode="merge")
+
+        # The nested file declares nothing for the import, which stays whole-install.
+        assert "components" not in summary
+        assert (target / "hooks.json").is_file()
+
+    @pytest.mark.parametrize("flag", [True, False])
+    def test_memory_only_refuses_replace(self, patched_config_dir, tmp_path, flag):
+        """Refused by the flag, and by a memory bundle's own manifest when the flag is off."""
+        zip_path = tmp_path / "mem.zip"
+        zip_path.write_bytes(create_export_zip(memory_only=True)[0])
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "config.json").write_text("{}")
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                with pytest.raises(ValueError, match="merge only"):
+                    apply_import_zip(zip_path, mode="replace", memory_only=flag)
+
+        assert (target / "config.json").read_text() == "{}"
+
+    @pytest.mark.parametrize("name", ["C:/MANIFEST.json", "c:snap/hooks.json", "/snap/x", "snap/../x"])
+    def test_the_validator_refuses_names_an_extractor_can_move(self, tmp_path, name):
+        bundle = tmp_path / "odd.zip"
+        with zipfile.ZipFile(bundle, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+            zf.writestr(name, "x")
+        ok, error, _ = validate_import_zip(bundle)
+        assert not ok
+        assert "Rejected path traversal" in error
+
+    @pytest.mark.parametrize(
+        ("name", "separates", "unsafe"),
+        [
+            ("snap\\..\\hooks.json", True, True),
+            ("C:\\snap\\x", True, True),
+            ("\\snap\\x", True, True),
+            ("snap/a\\b.md", True, False),
+            ("snap\\..\\hooks.json", False, False),
+            ("snap/a\\b.md", False, False),
+        ],
+    )
+    def test_a_backslash_is_a_separator_only_where_the_host_says_so(self, name, separates, unsafe):
+        assert portability._unsafe_member_name(name, backslash_separates=separates) is unsafe
+
+    @pytest.mark.skipif(os.sep == "\\", reason="a backslash is a separator on Windows")
+    def test_an_own_backup_with_a_backslash_file_name_still_validates(self, tmp_path):
+        bundle = tmp_path / "own.zip"
+        with zipfile.ZipFile(bundle, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+            zf.writestr("snap/workspace/a\\b.md", "x")
+        ok, error, _ = validate_import_zip(bundle)
+        assert ok, error
+
+    def test_the_validator_refuses_an_oversized_manifest(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(portability, "_MAX_SETTINGS_DOCUMENT_BYTES", 64)
+        bundle = tmp_path / "big.zip"
+        with zipfile.ZipFile(bundle, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2, "pad": "x" * 100}))
+        ok, error, _ = validate_import_zip(bundle)
+        assert not ok
+        assert "too large" in error
+
+    @pytest.mark.parametrize("nested", ["large", "declares-memory"])
+    def test_a_workspace_file_named_manifest_is_ordinary_content(
+        self, patched_config_dir, tmp_path, monkeypatch, nested
+    ):
+        """A whole-install backup still imports in full whatever a nested MANIFEST.json says."""
+        monkeypatch.setattr(portability, "_MAX_SETTINGS_DOCUMENT_BYTES", 256)
+        if nested == "large":
+            body = "[" + "1," * 500 + "1]"
+        else:
+            version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+            body = json.dumps({"version": version, "components": ["memory"]})
+        zip_path = tmp_path / "nested.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+            zf.writestr("snap/workspace/proj/MANIFEST.json", body)
+            zf.writestr("snap/workspace/notes.md", "not memory")
+            zf.writestr("snap/workspace/memory/preferences.md", "memory")
+        ok, error, _ = validate_import_zip(zip_path)
+        assert ok, error
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                summary = apply_import_zip(zip_path, mode="merge")
+
+        assert "components" not in summary
+        assert (target / "workspace" / "notes.md").read_text() == "not memory"
+        assert (target / "workspace" / "proj" / "MANIFEST.json").read_text() == body
+
+    def test_a_manifest_within_the_export_budget_still_imports(self, patched_config_dir, tmp_path):
+        """A many-chat backup's manifest runs past 1 MiB; the reader shares the export's budget."""
+        times = {f"snap/sessions/chat-{i:06d}.jsonl": 1.7e9 + i for i in range(40_000)}
+        manifest = {"version": 2, "session_mtimes": times}
+        raw = json.dumps(manifest, indent=2).encode()
+        assert 1024 * 1024 < len(raw) < portability._MAX_SETTINGS_DOCUMENT_BYTES
+        bundle = tmp_path / "many-chats.zip"
+        with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("snap/MANIFEST.json", raw)
+            zf.writestr("snap/workspace/memory/preferences.md", "memory")
+        ok, error, _ = validate_import_zip(bundle)
+        assert ok, error
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                apply_import_zip(bundle, mode="merge")
+
+        assert (target / "workspace" / "memory" / "preferences.md").is_file()
+
+    def test_two_top_manifests_are_refused(self, patched_config_dir, tmp_path):
+        """With two at the top no single manifest describes the archive."""
+        zip_path = tmp_path / "dupes.zip"
+        version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # zipfile warns on a duplicate name
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("snap/MANIFEST.json", json.dumps({"version": version, "components": ["memory"]}))
+                zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+                zf.writestr("snap/hooks.json", json.dumps({"hooks": []}))
+        ok, error, _ = validate_import_zip(zip_path)
+        assert not ok
+        assert "More than one" in error
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                with pytest.raises(ValueError, match="More than one"):
+                    apply_import_zip(zip_path, mode="merge")
+
+        assert not (target / "hooks.json").exists()
+
+    def test_nested_manifest_names_are_never_read(self, patched_config_dir, tmp_path, monkeypatch):
+        """Many nested copies of the name cost nothing: only the top manifest is read."""
+        zip_path = tmp_path / "many.zip"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("snap/MANIFEST.json", json.dumps({"version": 2}))
+                for _ in range(20):
+                    zf.writestr("snap/workspace/x/MANIFEST.json", json.dumps({"version": 2}))
+        reads: list[str] = []
+        real_read = zipfile.ZipFile.read
+
+        def counting_read(self, member, pwd=None):
+            info = member if isinstance(member, zipfile.ZipInfo) else self.getinfo(member)
+            reads.append(info.filename)
+            return real_read(self, member, pwd)
+
+        monkeypatch.setattr(zipfile.ZipFile, "read", counting_read)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                apply_import_zip(zip_path, mode="merge")
+
+        assert "snap/workspace/x/MANIFEST.json" not in reads
+
+    @staticmethod
+    def _drive_bundle(path: Path) -> None:
+        """A memory bundle whose names carry a drive, as Windows zipfile would strip it."""
+        with zipfile.ZipFile(path, "w") as zf:
+            version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+            manifest = {"version": version, "components": ["memory"]}
+            zf.writestr("C:/MANIFEST.json", json.dumps(manifest))
+            hooks = {"hooks": [{"event": "prompt", "command": "echo pwned"}]}
+            zf.writestr("C:/memory_stores/hooks.json", json.dumps(hooks))
+
+    def test_a_drive_prefixed_member_never_lands_outside_memory(
+        self, patched_config_dir, tmp_path, monkeypatch
+    ):
+        """On Windows extraction drops ``C:``; the hook must still not be installed."""
+        import ntpath
+
+        monkeypatch.setattr(zipfile.os.path, "splitdrive", ntpath.splitdrive)
+        zip_path = tmp_path / "drive.zip"
+        self._drive_bundle(zip_path)
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                with pytest.raises(ValueError):
+                    apply_import_zip(zip_path, mode="merge")
+
+        assert not (target / "hooks.json").exists()
+
+    def test_a_member_moved_out_of_its_prefix_is_refused_after_extraction(
+        self, patched_config_dir, tmp_path, monkeypatch
+    ):
+        """The post-extract check holds even for a name form the lexical check misses."""
+        real_extract = zipfile.ZipFile.extract
+
+        def extract_dropping_prefix(self, member, path=None, pwd=None):
+            # Stands in for any extractor that strips a name's first part.
+            info = self.getinfo(member) if isinstance(member, str) else member
+            rest = "/".join(PurePosixPath(info.filename).parts[1:])
+            if not rest:
+                return real_extract(self, member, path, pwd)
+            dest = Path(path) / rest
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(self.read(info))
+            return str(dest)
+
+        monkeypatch.setattr(zipfile.ZipFile, "extract", extract_dropping_prefix)
+        zip_path = tmp_path / "moved.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            version = portability.MEMORY_EXPORT_MANIFEST_VERSION
+            manifest = {"version": version, "components": ["memory"]}
+            zf.writestr("snap/MANIFEST.json", json.dumps(manifest))
+            zf.writestr("snap/memory_stores/hooks.json", json.dumps({"hooks": []}))
+        target = tmp_path / "target"
+        target.mkdir()
+
+        with patch("kiro_crew.portability.config_dir", return_value=target):
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(target)}):
+                with pytest.raises(ValueError, match="left its archive prefix"):
+                    apply_import_zip(zip_path, mode="merge")
+
+        assert not (target / "hooks.json").exists()
+
+    @pytest.mark.parametrize(
+        ("rest", "kept"),
+        [
+            ((), True),
+            (("MANIFEST.json",), True),
+            (("memory.db",), True),
+            (("memory_index.db",), True),
+            (("workspace", "memory", "a.md"), True),
+            (("workspace", "knowledge", "b.md"), True),
+            (("memory_stores", "acme", "memory.db"), True),
+            (("config.json",), False),
+            (("workspace", "notes.md"), False),
+            (("workspace", "memoryx", "a.md"), False),
+            (("skills", "x", "SKILL.md"), False),
+            (("sessions", "chat.jsonl"), False),
+        ],
+    )
+    def test_is_memory_member(self, rest, kept):
+        assert portability._is_memory_member(rest) is kept

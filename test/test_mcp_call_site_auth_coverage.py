@@ -106,11 +106,14 @@ _UNKNOWN = "{X}"
 # than listed so a new tool module is scanned the day it is added.
 _SOURCES = (
     _CORE,
+    *sorted((_SRC / "mcp_core_parts").glob("*.py")),
     _SRC / "mcp_shared.py",
     _SRC / "mcp_work.py",
     _SRC / "mcp_crew_log.py",
     _SRC / "mcp_debug.py",
     _SRC / "mcp_panel.py",
+    _SRC / "mcp_guide.py",
+    _SRC / "mcp_mate.py",
     _SRC / "mcp_computer.py",
     _SRC / "mcp_cron.py",
     _SRC / "cli_commands.py",
@@ -119,6 +122,7 @@ _SOURCES = (
     _SRC / "cron_trigger.py",
     _SRC / "apps/builtins/code_review_sage/sage_lib/review_driver.py",
     _SRC / "computer_use/screencast.py",
+    _SRC / "doctor_checks/workload.py",
     *sorted((_SRC / "mcp_tools").glob("*.py")),
 )
 
@@ -563,7 +567,18 @@ def _scan() -> tuple[dict[str, set[str]], set[str]]:
                                 cands = []
                             for cand in cands:
                                 norm = _normalise(cand)
-                                at = norm.find("/api/")
+                                # A transport call normally addresses the gateway
+                                # API surface at ``/api/...``, so the resolved path
+                                # is anchored at its first ``/api/``. One shape is
+                                # NOT ``/api``-rooted: the dashboard app reverse
+                                # proxy ``/apps/{name}/api/{path}`` (handle_app_api_proxy),
+                                # which an internal-secret MCP caller
+                                # (design_tweak_update_thread) now reaches. Slicing
+                                # that at its inner ``/api/`` would check a fragment
+                                # (``/api/thread``) instead of the real admitted
+                                # path, so a ``/apps/`` route is kept whole and must
+                                # itself appear in an internal allowlist.
+                                at = 0 if norm.startswith("/apps/") else norm.find("/api/")
                                 if at >= 0:
                                     method = _call_method(child, called)
                                     paths.setdefault(norm[at:], set()).add(

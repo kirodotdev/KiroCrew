@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kiro_crew.crew_log.errors import CODE_ALREADY_OWNED, CrewLogError
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.platform_compat import file_lock
 
 #: The lease file's name inside a unit's crew log directory. Distinct from the
@@ -100,7 +101,7 @@ def _take(path: Path) -> "contextlib.ExitStack | None":
         # lock documents: ``msvcrt.locking`` needs a writable handle, while a
         # truncating open of a file another process holds locked raises a sharing
         # violation on Windows instead of reporting contention.
-        path.touch(exist_ok=True)
+        path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
         stack = contextlib.ExitStack()
         try:
             handle = stack.enter_context(path.open("r+"))

@@ -27,7 +27,7 @@ interface DetailPanelProps {
    * siblings (e.g. the session sidebar + a usable chat-pane minimum) so the
    * panel never grows past its flex row and overflows the `overflow-hidden`
    * container. Callers in a shared, shrinkable row (the chat surface) pass a
-   * live, sidebar-aware value (see `panelReserve` in ChatPage). When omitted,
+   * live, sidebar-aware value (see `panelReserve` in chat/page/paneLayout.tsx). When omitted,
    * the cap stays the viewport-only bound — no row measurement — so callers in
    * other layouts keep their behavior unchanged. */
   reserveWidth?: number

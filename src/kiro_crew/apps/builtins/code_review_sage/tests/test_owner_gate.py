@@ -40,6 +40,7 @@ _MUTATING = [
     ("POST", "/review", "_handle_review", {}),
     ("POST", "/review-repo", "_handle_review_repo", {}),
     ("POST", f"/runs/{_UNKNOWN_RUN}/post", "_handle_run_post", {}),
+    ("POST", f"/runs/{_UNKNOWN_RUN}/dismiss", "_handle_run_dismiss", {}),
     ("POST", f"/runs/{_UNKNOWN_RUN}/cancel", "_handle_run_cancel", {}),
     ("POST", f"/runs/{_UNKNOWN_RUN}/archive", "_handle_run_archive", {}),
     ("DELETE", f"/runs/{_UNKNOWN_RUN}", "_handle_run_delete", {}),

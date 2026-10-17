@@ -23,6 +23,7 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import { pathKindsFetch } from './pathKindStub'
 
 const state = vi.hoisted(() => ({
   /** Pierre's highlight workers, so a test can fail the pool AFTER paint. */
@@ -220,8 +221,8 @@ beforeEach(() => {
   vi.resetModules()
   vi.stubGlobal('Worker', FakeWorker)
   vi.stubGlobal('ResizeObserver', FakeResizeObserver)
-  // The Open affordance is offered once a HEAD probe says the file exists.
-  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true })))
+  // The Open affordance is offered once the kind probe says the file exists.
+  vi.stubGlobal('fetch', pathKindsFetch(() => 'file'))
   stubScrollHeight()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})

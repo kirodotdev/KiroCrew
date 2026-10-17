@@ -13,10 +13,10 @@ if TYPE_CHECKING:
         _is_turn_inject,
         local_turn_prompt_within_bounds,
         logger,
+        process_shutdown_requested,
         register_guarded_history_write,
         run_to_completion,
         save_slot_off_loop,
-        shutdown_event,
         slot_history_key,
     )
 
@@ -248,4 +248,4 @@ def _gateway_shutdown_requested(state: DashboardState) -> bool:
     restart and update apply) never does: it drains with ``close_all()`` and
     re-execs. Both end turns because the process is ending, so both count.
     """
-    return shutdown_event.is_set() or state.sessions.final_drain_started is True
+    return process_shutdown_requested(state.sessions)

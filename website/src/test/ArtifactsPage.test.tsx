@@ -4,9 +4,19 @@ import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
-import { renderWithProviders } from './helpers'
+import { renderWithProviders, createTestStore } from './helpers'
+import { sseConnected } from '../store/dashboardSlice'
+
+/** The row's star and delete are gateway-gated, so this fixture connects. */
+function connectedStore() {
+  const s = createTestStore()
+  s.dispatch(sseConnected())
+  return s
+}
 import { api } from '../api/client'
 import type { Artifact } from '../types'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 // The thumbnail frame mints a gateway document instead of building a blob. The
 // automock resolves every api method to `undefined`, which it cannot await.
@@ -16,6 +26,14 @@ beforeEach(() => {
 
 
 vi.mock('../api/client')
+
+// `directLocal` gates the session-document path's open-in-editor launch; every
+// other test runs with the context default (false).
+const brandingEnv = vi.hoisted(() => ({ directLocal: false }))
+vi.mock('../hooks/useBranding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useBranding')>()),
+  useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: brandingEnv.directLocal }),
+}))
 
 // VirtuosoMasonry virtualizes against real layout, which jsdom lacks, so it
 // renders zero items in tests. Mock it to a plain map through ItemContent so
@@ -246,7 +264,7 @@ describe('ArtifactsPage', () => {
     vi.mocked(api).artifacts = vi.fn().mockResolvedValue({
       artifacts: [mkArtifact('cr-queue', { pinned: true })],
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const starBtn = screen.getByLabelText('Remove star from artifact')
     expect(starBtn).toBeInTheDocument()
@@ -324,10 +342,43 @@ describe('ArtifactsPage', () => {
     vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
       docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
     expect(screen.getByText(/From your chats/i)).toBeInTheDocument()
     expect(screen.getByLabelText('Star document')).toBeInTheDocument()
+  })
+
+  it('opens a session document path from the gallery in the editor without opening the preview', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    ;(window as { fileOpenAPI?: unknown }).fileOpenAPI = { open }
+    brandingEnv.directLocal = true
+    const realFetch = globalThis.fetch
+    __resetPathKindCache()
+    stubPathKinds(() => 'file')
+    try {
+      vi.mocked(api).artifacts = vi.fn().mockResolvedValue({ artifacts: [] })
+      vi.mocked(api).artifactSessionDocs = vi.fn().mockResolvedValue({
+        docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
+      })
+      renderWithProviders(<ArtifactsPage />)
+      // Chained wait: the session-docs query resolves, the row mounts, its path
+      // is sent in the /api/file-kinds batch, and the probe's reply turns the
+      // path into a button.
+      const pathButton = await screen.findByRole(
+        'button', { name: 'Open /ws/research/FINDINGS.md in editor' }, { timeout: 5000 },
+      )
+      fireEvent.click(pathButton)
+      await waitFor(() => expect(open).toHaveBeenCalledWith('/ws/research/FINDINGS.md'), { timeout: 5000 })
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      // The rest of the row keeps its own gesture: it opens the preview, a
+      // modal mounted from the row click's state update.
+      fireEvent.click(screen.getByText('FINDINGS.md'))
+      expect(await screen.findByRole('dialog', {}, { timeout: 5000 })).toBeInTheDocument()
+    } finally {
+      delete (window as { fileOpenAPI?: unknown }).fileOpenAPI
+      brandingEnv.directLocal = false
+      globalThis.fetch = realFetch
+    }
   })
 
   it('shows session documents in the gallery even when the library is empty', async () => {
@@ -424,7 +475,7 @@ describe('ArtifactsPage', () => {
     })
     const materializeSpy = vi.fn().mockResolvedValue({})
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -504,7 +555,7 @@ describe('ArtifactsPage', () => {
       })
       vi.mocked(api).materializeArtifact = vi.fn().mockResolvedValue({})
       stubFileRead('# Findings headline')
-      renderWithProviders(<ArtifactsPage />)
+      renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
       await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
       // The star sits inside the clickable row: saving must not ALSO open the
@@ -599,7 +650,7 @@ describe('ArtifactsPage', () => {
       const materializeSpy = vi.fn().mockResolvedValue({})
       vi.mocked(api).materializeArtifact = materializeSpy
       stubFileRead('# Findings headline')
-      renderWithProviders(<ArtifactsPage />)
+      renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
       await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
       // Keyboard-activate the star first: materializes, no preview.
@@ -728,7 +779,7 @@ describe('ArtifactsPage', () => {
       docs: [mkDoc('/ws/research/FINDINGS.md', 'FINDINGS.md')],
     })
     vi.mocked(api).materializeArtifact = vi.fn().mockRejectedValue(new Error('materialize blew up'))
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -750,7 +801,7 @@ describe('ArtifactsPage', () => {
       slug: 'findings-md-2',
       slug_collided_with: 'findings-md',
     })
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -781,7 +832,7 @@ describe('ArtifactsPage', () => {
     })
     const materializeSpy = vi.fn().mockResolvedValue({ slug: 'findings-md', slug_collided_with: '' })
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     await user.click(screen.getByLabelText('Star document'))
@@ -809,7 +860,7 @@ describe('ArtifactsPage', () => {
         slug: 'findings-md-2',
         slug_collided_with: 'findings-md',
       })
-      renderWithProviders(<ArtifactsPage />)
+      renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
       await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
       await user.click(screen.getByLabelText('Star document'))
@@ -836,7 +887,7 @@ describe('ArtifactsPage', () => {
       .mockResolvedValueOnce({ slug: 'findings-md-2', slug_collided_with: 'findings-md' })
       .mockResolvedValueOnce({ slug: 'notes-md', slug_collided_with: '' })
     vi.mocked(api).materializeArtifact = materializeSpy
-    renderWithProviders(<ArtifactsPage />)
+    renderWithProviders(<ArtifactsPage />, { store: connectedStore() })
     await waitFor(() => expect(screen.getByText('FINDINGS.md')).toBeInTheDocument())
 
     const stars = screen.getAllByLabelText('Star document')

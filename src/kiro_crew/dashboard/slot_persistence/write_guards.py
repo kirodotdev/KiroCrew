@@ -75,9 +75,11 @@ def _keep_owed_after_refusal(slot: _ChatSlot) -> None:
     Marking the slot dirty here is exactly the concurrent mark that comparison
     exists for: the flag stays true and the generation advances past the one the
     flush captured, so the next pass re-decides against the state that exists.
-    Scoped to the refusals this change introduces; the pre-existing declines
-    (delete-won, routing moved) keep their own semantics, so nothing has to tell
-    a retryable refusal from a permanent one.
+    Called by the retryable refusals: a stale queued-prompt snapshot, a slot
+    replaced before the write committed, and a queue that moved during every
+    window snapshot. The permanent declines (delete-won, routing moved) do not
+    call it and keep their own semantics, so nothing has to tell a retryable
+    refusal from a permanent one.
     """
     slot._dirty = True
 
@@ -296,6 +298,18 @@ def register_guarded_history_write(slot: _ChatSlot, save: "asyncio.Future[bool]"
     save.add_done_callback(writes.discard)
 
 
+def _loaded_window(slot: _ChatSlot) -> list[dict]:
+    """The window in memory, without loading a pending one.
+
+    A restored row whose window was never loaded holds no row that is not
+    already on disk, so its save takes the metadata-only merge and leaves the
+    transcript as it is. Loading the window here instead would read a whole
+    transcript in the flush thread for a save that writes none of it.
+    """
+    loaded = getattr(slot, "loaded_messages", None)
+    return loaded() if callable(loaded) else slot.messages
+
+
 def paired_window_snapshot(
     slot: _ChatSlot,
     messages: list[dict] | None,
@@ -355,7 +369,7 @@ def paired_window_snapshot(
         for _ in range(_FLUSH_SNAPSHOT_RETRIES):
             disk_older = slot._disk_older_count
             queue_snapshot, queue_candidates = slot.durable_queue_view()
-            window = list(slot.messages)
+            window = list(_loaded_window(slot))
             if (
                 slot._disk_older_count == disk_older
                 and slot.durable_queue_entries() == queue_snapshot
@@ -364,7 +378,7 @@ def paired_window_snapshot(
         else:
             disk_older = slot._disk_older_count
             queue_snapshot, queue_candidates = slot.durable_queue_view()
-            window = list(slot.messages)
+            window = list(_loaded_window(slot))
             if slot.durable_queue_entries() != queue_snapshot:
                 # The pair could not be proven inside the retry budget. Refuse
                 # rather than commit a file that may show neither the entry nor
@@ -415,7 +429,7 @@ def drop_notes_authorized_elsewhere(
     dropped_notes = len(window) - len(kept)
     window = kept
     if dropped_notes:
-        # Count-gated exactly like the drain's own denial at state.py:2320. This is
+        # Count-gated exactly like the drain's own denial (`_ChatSlot.drain`, state_parts/slot_turns.py). This is
         # the PERIODIC save path, so an ungated emit would record a denial on every
         # save of every slot, and the same row would re-emit on each one until the
         # loop-side drain removes it from slot.messages. ``critical`` stays default
@@ -534,11 +548,9 @@ def delete_won(
     # resurrecting the conversation in Older Sessions. A missing
     # file alone is NOT that signal: a brand-new slot's first save
     # also starts with no file. The abort therefore requires
-    # evidence that this slot's session HAS been on disk before —
-    # it was resumed from history (``_resumed_count``), its window
-    # has older lines on disk (``disk_older``), or one of this
-    # slot's own saves already committed (``_disk_window_len``).
-    # A fresh slot has none of these and proceeds with a normal
+    # evidence that this slot has OBSERVED its session file on disk
+    # (``_disk_meta_created_at`` or ``_disk_meta_observed``, see
+    # below). A fresh slot has neither and proceeds with a normal
     # first create. (``path`` is resolved after the delete, so for a
     # legacy-aliased Slack key it may name the canonical file rather
     # than the legacy one the delete unlinked — both are gone, so

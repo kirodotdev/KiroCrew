@@ -53,13 +53,14 @@ vi.mock('../pages/chat/ChatSettings', () => ({
   saveChatConfig: vi.fn(),
 }))
 
-const mocks = vi.hoisted(() => ({ folders: [] as unknown[] }))
+const mocks = vi.hoisted(() => ({ folders: [] as unknown[], config: undefined as unknown }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, p: string) => {
       if (p === 'chatFolders') return vi.fn().mockImplementation(() => Promise.resolve(mocks.folders))
+      if (p === 'kirocrewConfig') return vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? []))
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -99,6 +100,8 @@ function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = []) {
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], folders)
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   const tree = (s: ChatSlot[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -122,6 +125,7 @@ function renderSidebar(slots: ChatSlot[] = SLOTS, folders: ChatFolder[] = []) {
 // ChatSidebar.staleCollapse.test.tsx).
 beforeEach(() => {
   localStorage.clear()
+  mocks.config = undefined
   localStorage.setItem('mc-session-stale-collapse-ms', '0')
 })
 afterEach(() => vi.clearAllMocks())
@@ -133,7 +137,7 @@ describe('chat sidebar — published shortcut order', () => {
   })
 
   it('republishes when the sort flips to oldest-first', () => {
-    localStorage.setItem('mc-session-sort', 'date-asc')
+    mocks.config = { dashboard: { session_sort: 'date-asc' } }
     const { store } = renderSidebar()
     expect(store.getState().dashboard.sidebarOrder).toEqual(['k-oldest', 'k-middle', 'k-newest'])
   })

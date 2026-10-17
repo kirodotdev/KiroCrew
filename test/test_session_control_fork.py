@@ -287,6 +287,18 @@ def test_without_a_folder_the_child_inherits_the_sources_folder(tmp_path):
     assert state.get_slot(result["target"]).folder_id == folder_id
 
 
+def test_an_agent_fork_of_a_pinned_session_is_not_pinned(tmp_path):
+    """Pinned marks a session as human-owned; the agent's child is the agent's.
+    The human Fork button inherits the pin (``test_chat_fork_inherits_pin.py``)."""
+    state = _make_state(tmp_path)
+    caller = _seed(state, "chat-1")
+    caller.pinned = True
+
+    result = _fork(state, caller)
+
+    assert state.get_slot(result["target"]).pinned is False
+
+
 def test_an_unknown_folder_refuses_the_whole_fork(tmp_path):
     state = _make_state(tmp_path)
     caller = _seed(state, "chat-1")
@@ -620,6 +632,7 @@ def test_the_human_fork_route_still_reports_its_full_body(tmp_path, monkeypatch)
         "messages",
         "prompt",
         "folder_id",
+        "pinned",
         "direction",
         "memory_mode",
     }

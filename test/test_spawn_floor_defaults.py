@@ -40,6 +40,7 @@ from kiro_crew.subagent import (
     _startup_memory_reserve_gb,
     check_memory_available,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # Each scenario patches the reader ON TOP; this satisfies the host-pin ratchet.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -51,7 +52,9 @@ COST = 0.5
 DEDICATED = _UNLEARNED_DEDICATED_START_GB
 SHARED = DEDICATED - _SHARED_START_SAVING_GB
 _KIB_PER_GIB = 1024 * 1024
-_WAIT_SECS = 5.0  # lost-run guard, never the barrier
+# A generous bound for a worker-thread release and for the test-set off-loop read
+# ceiling below; never an on-loop barrier (those wait on signals via await_until).
+_WAIT_SECS = 5.0
 
 
 class _Host:
@@ -110,11 +113,7 @@ async def _manager(monkeypatch, *, eligible: bool):
 
 
 async def _until(pred, what: str) -> None:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _WAIT_SECS
-    while not pred():
-        assert loop.time() < deadline, what
-        await asyncio.sleep(0.01)
+    await async_wait_until(pred, describe=lambda: what)
 
 
 async def _teardown(mgr) -> None:
@@ -122,7 +121,9 @@ async def _teardown(mgr) -> None:
     tasks = [t for t in mgr._tasks.values() if not t.done()]
     for t in tasks:
         t.cancel()
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), _WAIT_SECS)
+    await await_until(
+        asyncio.gather(*tasks, return_exceptions=True), what="the awaited tasks to finish"
+    )
     mgr._taskq.close()
 
 
@@ -441,7 +442,10 @@ async def test_a_start_admitted_shared_is_repriced_dedicated_before_its_process(
     mgr._agents[info.id] = info
     mgr._running_count = 1
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         assert info._start_price_gb == pytest.approx(DEDICATED)
         # The re-check charges this row at the dedicated price, no next start.
         assert host.gated() == [pytest.approx(FLOOR + DEDICATED)]
@@ -482,7 +486,10 @@ async def test_the_top_up_waits_on_the_kernel_pressure_hold(
     mgr._agents[info.id] = info
     mgr._running_count = 2
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         seen = [c.kwargs["outcome"] for c in audit.return_value.log_tool_invocation.mock_calls]
         assert seen == outcomes
         assert info._start_priced_shared is False
@@ -504,7 +511,10 @@ async def test_below_the_floor_it_waits_then_starts_and_says_so(monkeypatch, tmp
     mgr._agents[info.id] = info
     mgr._running_count = 1
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         outcomes = [c.kwargs["outcome"] for c in audit.return_value.log_tool_invocation.mock_calls]
         assert outcomes == ["dedicated_start_below_floor"]
         # The start clock was paused for the wait instead of charging it.
@@ -532,7 +542,10 @@ async def test_the_wait_reads_memory_off_the_event_loop(monkeypatch, tmp_path) -
     info = _row(id="b3", _start_price_gb=SHARED, _start_priced_shared=True)
     mgr._agents[info.id] = info
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         assert seen and loop_thread not in seen
     finally:
         await _teardown(mgr)
@@ -769,7 +782,7 @@ async def test_a_non_durable_row_is_held_from_its_pop_through_the_pass_grants(
         host.set(4.5)
         mgr._queue.append({"_resume_id": "resident", "parent_session_key": PARENT})
         mgr._drain_queue()
-        await asyncio.wait_for(entered.wait(), _WAIT_SECS)
+        await await_until(entered, what="entered to be set")
         assert mgr._queue == [] and mgr._undurable_in_dispatch == {info.id: row}
         if grant == "a-stop-lands":
             try:
@@ -1019,12 +1032,12 @@ async def test_governance_tightened_during_the_read_still_refuses(
                 _memory_mode="persistent" if mode == "no-store" else mode,
             )
         )
-        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        await await_until(read.entered, what="entered to be set")
         monkeypatch.setattr(
             subagent_mod, "_vet_spawn_governance", lambda *_a, **_k: "spawning is off"
         )
         read.release()
-        info = await asyncio.wait_for(pending, _WAIT_SECS)
+        info = await await_until(asyncio.ensure_future(pending), what="the pending to resolve")
         assert info.done and "spawn refused by governance" in info.error
         if mode == "persistent":
             await _until(
@@ -1061,7 +1074,7 @@ async def test_governance_tightened_during_a_drain_read_fails_the_row(
         # No await since the defer: the pump's wake has not run yet.
         read.held = True
         host.set(8.0)
-        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        await await_until(read.entered, what="entered to be set")
         monkeypatch.setattr(
             subagent_mod, "_vet_spawn_governance", lambda *_a, **_k: "spawning is off"
         )
@@ -1090,10 +1103,10 @@ async def test_admission_closing_during_the_read_fails_the_committed_row(
     read.held = True
     try:
         pending = asyncio.ensure_future(mgr.spawn_async("one", parent_session_key=PARENT))
-        await asyncio.wait_for(read.entered.wait(), _WAIT_SECS)
+        await await_until(read.entered, what="entered to be set")
         mgr._sessions.admission_closed = True
         read.release()
-        info = await asyncio.wait_for(pending, _WAIT_SECS)
+        info = await await_until(asyncio.ensure_future(pending), what="the pending to resolve")
         assert info.done and info.error == "spawn refused: gateway admission is closed"
         await _until(
             lambda: mgr._taskq.state_of(info.id) == _taskq.FAILED,
@@ -1230,7 +1243,7 @@ async def test_an_unanswered_top_up_read_keeps_waiting_and_never_reads_on_the_lo
             assert len(submitted) > 1  # a refused start leaves nothing in flight
         answering = True
         recovered.set()
-        await asyncio.wait_for(task, _WAIT_SECS)
+        await await_until(asyncio.ensure_future(task), what="the task to resolve")
         assert info._start_priced_shared is False
         assert audit.return_value.log_tool_invocation.mock_calls == []
         assert on_loop == []
@@ -1272,7 +1285,7 @@ async def test_callers_with_different_bars_share_one_in_flight_host_read(
         assert submitted == [FLOOR + SHARED] and not low.done() and not high.done()
     finally:
         held.set()
-    first, second = await asyncio.wait_for(asyncio.gather(low, high), _WAIT_SECS)
+    first, second = await await_until(asyncio.gather(low, high), what="the awaited tasks to finish")
     assert first == second and first[0] == pytest.approx(3.0)
     assert submitted == [FLOOR + SHARED]
     assert subagent_mod._host_read_in_flight is None
@@ -1303,7 +1316,10 @@ async def test_a_top_up_that_never_got_an_answer_starts_and_says_headroom_unknow
     info = _row(id="b3", _start_price_gb=SHARED, _start_priced_shared=True)
     mgr._agents[info.id] = info
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         (call,) = audit.return_value.log_tool_invocation.mock_calls
         assert call.kwargs["outcome"] == "dedicated_start_below_floor"
         assert call.kwargs["metadata"]["cause"] == subagent_mod.MEMORY_CAUSE_READ_UNANSWERED
@@ -1332,7 +1348,7 @@ async def test_memory_that_frees_during_the_wait_lets_it_start(monkeypatch, tmp_
         await asyncio.sleep(0.1)
         assert not task.done(), "it must be waiting, not started"
         host.set(4.0)
-        await asyncio.wait_for(task, _WAIT_SECS)
+        await await_until(asyncio.ensure_future(task), what="the task to resolve")
         assert audit.return_value.log_tool_invocation.mock_calls == []
         assert _DEDICATED_TOPUP_WAIT_SECS > 0.05
     finally:
@@ -1352,7 +1368,10 @@ async def test_a_raised_projection_never_re_checks_a_dedicated_admission(
     info = _row(id="b3", _start_price_gb=DEDICATED)
     mgr._agents[info.id] = info
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         assert host.gated() == [] and info._start_price_gb == DEDICATED
     finally:
         await _teardown(mgr)
@@ -1380,14 +1399,14 @@ async def test_two_fallbacks_that_fit_one_at_a_time_both_start_in_turn(
         second = asyncio.ensure_future(mgr._ensure_dedicated_start_priced(b))
         await _until(lambda: b._topup_waiting, "b never queued behind a")
         host.set(3.6)  # room for exactly one dedicated start
-        await asyncio.wait_for(first, _WAIT_SECS)
+        await await_until(asyncio.ensure_future(first), what="the first to resolve")
         # a passed at the bar for itself alone (b, queued, launched nothing)...
         assert pytest.approx(FLOOR + DEDICATED) in host.gated(), "a counted b"
         # ...and b now counts a, which has not settled.
         await _until(lambda: host.gated()[-1] == pytest.approx(FLOOR + 2 * DEDICATED), "b")
         assert not second.done()
         a._rss_samples = 2  # a's process is up and inside the reading
-        await asyncio.wait_for(second, _WAIT_SECS)
+        await await_until(asyncio.ensure_future(second), what="the second to resolve")
         assert host.gated()[-1] == pytest.approx(FLOOR + DEDICATED)
         assert audit.return_value.log_tool_invocation.mock_calls == []
     finally:
@@ -1416,7 +1435,7 @@ async def test_a_cancel_during_the_wait_leaves_no_frozen_start_clock(monkeypatch
         await _until(lambda: info._gate_wait_started is not None, "never waited")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, _WAIT_SECS)
+            await await_until(asyncio.ensure_future(task), what="the task to resolve")
         assert info._gate_wait_started is None and not info._topup_waiting
         assert not mgr._dedicated_topup_lock.locked()
     finally:
@@ -1439,7 +1458,10 @@ async def test_no_recheck_when_nothing_was_underpriced_or_the_floor_is_off(
     info = _row(id="b3", _start_price_gb=price, _start_priced_shared=price == SHARED)
     mgr._agents[info.id] = info
     try:
-        await asyncio.wait_for(mgr._ensure_dedicated_start_priced(info), _WAIT_SECS)
+        await await_until(
+            asyncio.ensure_future(mgr._ensure_dedicated_start_priced(info)),
+            what="_ensure_dedicated_start_priced to resolve",
+        )
         assert host.gated() == []
         if price == SHARED:
             assert info._start_price_gb == pytest.approx(DEDICATED), "still topped up"

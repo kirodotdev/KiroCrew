@@ -148,3 +148,14 @@ export function reloadCrewWindowForTest() {
   current = read()
   listeners.forEach(l => l())
 }
+
+/** The per-field capability failures that can clear on their own. */
+const TRANSIENT_CAPS = new Set(['capability_unreachable', 'capability_peer_revalidating'])
+
+/** How long until a crew's capabilities are asked again: until the versions
+ *  match, and after that only while some read failed for a passing reason, so a
+ *  missing agent list comes back on its own and a lasting failure is not polled. */
+export function capsRetryInterval(caps: { version_match?: boolean; unavailable?: Record<string, string> } | undefined, retryMs: number): number | false {
+  if (caps?.version_match !== true) return retryMs
+  return Object.values(caps.unavailable ?? {}).some(c => TRANSIENT_CAPS.has(c)) ? retryMs : false
+}

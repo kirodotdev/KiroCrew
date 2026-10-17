@@ -626,6 +626,14 @@ handlers.push(
     new HttpResponse(null, { status: 404, headers: { 'X-Path-Kind': 'missing' } })),
 )
 
+// Pending guides (`GuideProvider`): the provider is mounted app-wide and reads
+// this on mount and focus, so any test that renders the App shell would otherwise
+// hit the 501 below and paint the guide layer's read-failure notice. The default
+// answer is "no guide"; a guide test overrides it with `server.use`.
+handlers.push(
+  http.get('/api/guide/pending', () => HttpResponse.json({ guides: [] })),
+)
+
 // Vendor script paths that happy-dom eager-loads when buildSrcdoc /
 // buildSketchSrcdoc append a <script src="..."> to a detached document.
 // Explicit handlers (not just the catch-all) because:

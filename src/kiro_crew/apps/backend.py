@@ -49,6 +49,9 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
 )
+from kiro_crew.env import nvm_dirs as _nvm_dirs
+from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
+from kiro_crew.owner_only_files import owner_only_opener_for as _owner_only_opener_for
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -132,8 +135,12 @@ _BUILD_CAPABLE_APPS = frozenset({"dev-fleet"})
 def _resolve_nvm_path(binary_name: str) -> str | None:
     """Resolve a binary via nvm, returning its full path or None.
 
-    Sources ~/.nvm/nvm.sh to find the nvm-managed node path, then resolves
-    the requested binary relative to that directory.
+    Sources ``nvm.sh`` to find the nvm-managed node path, then resolves the
+    requested binary relative to that directory. ``nvm.sh`` is read from
+    ``$NVM_DIR`` when it is set and non-empty, and only from there. Otherwise
+    it is read from the first of :func:`kiro_crew.env.nvm_dirs` that holds one:
+    ``~/.nvm``, then the XDG root nvm's installer picks when ``XDG_CONFIG_HOME``
+    is set.
 
     POSIX only. nvm (nvm-sh) is a POSIX-shell tool, so on Windows this returns
     None before touching the filesystem or spawning anything: the bare name
@@ -146,19 +153,22 @@ def _resolve_nvm_path(binary_name: str) -> str | None:
     """
     if platform_compat.IS_WINDOWS:
         return None
-    nvm_dir = os.environ.get("NVM_DIR", os.path.expanduser("~/.nvm"))
-    nvm_sh = os.path.join(nvm_dir, "nvm.sh")
-    # This resolver sources a POSIX shell script (nvm.sh). On Windows the branch
-    # normally never runs — nvm.sh is absent, so it exits at the guard below —
-    # and nothing in the log said whether it was reached or which arm it took.
-    # Each outcome now names itself so a Windows log shows the branch was skipped
-    # rather than leaving its absence to inference.
-    if not os.path.isfile(nvm_sh):
-        logger.debug("nvm resolver: no nvm.sh at %r; skipping nvm branch", nvm_sh)
+    explicit = os.environ.get("NVM_DIR")
+    candidates = [os.path.join(d, "nvm.sh") for d in ((explicit,) if explicit else _nvm_dirs())]
+    nvm_sh = next((path for path in candidates if os.path.isfile(path)), None)
+    # Only POSIX reaches this point: Windows returned above. Each outcome below
+    # logs which arm it took, so a debug log shows whether nvm was found and used.
+    if nvm_sh is None:
+        logger.debug("nvm resolver: no nvm.sh at %r; skipping nvm branch", candidates)
         return None
     try:
         result = subprocess.run(
-            ["bash", "-c", f'source "{nvm_sh}" --no-use && nvm which current'],
+            # The path travels as "$1", never inside the script text: a root
+            # holding `$(...)`, a backtick or `$HOME` (NVM_DIR, HOME and
+            # XDG_CONFIG_HOME are all inputs) reaches `source` as a literal.
+            # `--` ends option parsing, so a relative NVM_DIR such as `-x`
+            # (path `-x/nvm.sh`) is a file, not a `source` option.
+            ["bash", "-c", 'source -- "$1" --no-use && nvm which current', "bash", nvm_sh],
             capture_output=True,
             timeout=10,
             **UTF8_TEXT,
@@ -185,7 +195,7 @@ def _find_node_binary() -> str | None:
     """Find a usable node binary.
 
     Search order:
-    1. nvm-managed node (via ~/.nvm/nvm.sh)
+    1. nvm-managed node (via nvm.sh, :func:`_resolve_nvm_path`)
     2. System PATH
     """
     nvm_path = _resolve_nvm_path("node")
@@ -499,7 +509,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
 
     # Prepare log directory (needed early for adopt path)
     log_dir = root / "data" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(log_dir)  # 0700 inside the data home
     log_path = log_dir / "backend.log"
 
     # Check if the port is already in use by a healthy instance
@@ -1201,7 +1211,13 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # why provisioning failed. ``errors="replace"`` keeps the write total
         # for any codepoint; the child's own output is appended as raw bytes
         # through the inherited fd and is not affected by this wrapper.
-        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+        log_fh = open(
+            log_path,
+            "w",
+            encoding="utf-8",
+            errors="replace",
+            opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
+        )
         if provision_error:
             # Put the real cause at the top of the backend's own (user-visible)
             # log: the import error missing deps produce reads as an app bug,
@@ -1503,6 +1519,7 @@ if _typing.TYPE_CHECKING:
         _port_is_listening,
         _spawn_owns_listener,
         recorded_backend_port,
+        spawned_backend_owner,
         spawned_backend_owns_pid,
         unstopped_backend_port,
     )

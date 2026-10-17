@@ -91,8 +91,11 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_data_filter",
         "_dir_flags_nofollow",
         "_escape_one",
+        "_hold_reader_lock",
+        "_immutable_read_may_stand_in",
         "_manifest_components",
         "_print_manifest",
+        "_refuse_if_changed_since",
         "_refuse_oversized_archive",
         "_refuse_unsound_required_capture",
         "_rejection_recording_filter",
@@ -141,6 +144,9 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_TERMINATORS",
         "_copy_locked",
         "_copy_tree_no_overwrite",
+        "_core_file_not_installed",
+        "_cron_rewrite_in_place",
+        "_install_core_file_if_absent",
         "_install_notifications",
         "_merge_crons",
         "_merge_memory",
@@ -148,16 +154,19 @@ OWNERS: dict[str, tuple[str, ...]] = {
         "_merge_notifications",
         "_notification_key",
         "_open_notification_file",
+        "_read_cron_store_once",
         "_report_unmerged_databases",
         "_serialise_with_notification_writes",
         "_usable_cron_shape",
         "_validate_identifier",
+        "_write_merged_crons",
     ),
     # What the facade itself defines: the two commands, the outbound redaction seam
     # (every redaction call name stays in this one module), the manifest writer, the
     # merge-mode driver, and the notification copy whose docstring records the ruling
     # for platforms without O_NOFOLLOW.
     "kiro_crew.snapshot": (
+        "EXIT_INCOMPLETE",
         "RedactionFailed",
         "_DASHBOARD_PORT",
         "_audit",

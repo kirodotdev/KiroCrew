@@ -77,6 +77,7 @@
 import { i18nT } from '../i18n/t'
 
 import { classifyShellCommand, hostOf } from './shellCommandParse'
+import { decodePathForDisplay } from './pathBasename'
 import type { ToolAction } from './toolAction'
 import declaredMcpToolTitles from '../../../src/kiro_crew/data/mcp_tool_titles.json'
 
@@ -121,6 +122,8 @@ export type DerivedToolTitle = {
   kind: string
   /** The verbatim command / incoming title, for tooltips and the expanded header. */
   rawTitle: string
+  /** True when `rawTitle` carries a shell command, independent of the icon kind. */
+  shell: boolean
   /** True when `title` substitutes for `rawTitle` — a template applied, or the
    *  backend sent its own description of the call; false when `title` is the
    *  (formatted) raw title. */
@@ -241,7 +244,8 @@ function classifyNative(inp: ToolCallTitleInput): ClassifiedToolCall | null {
   const kind = inp.kind || ''
   const tool = inp.toolName || ''
   const args = parseToolArgs(inp.rawInput)
-  const rel = (p: string) => relDisplayPath(p, inp.cwd)
+  // Decoded for the title only; the raw spelling stays in `rawTitle`.
+  const rel = (p: string) => relDisplayPath(decodePathForDisplay(p), inp.cwd)
   const title = inp.title || ''
 
   // -- read ---------------------------------------------------------------
@@ -637,11 +641,11 @@ export function deriveToolCallTitle(inp: ToolCallTitleInput): DerivedToolTitle {
   // still refines the icon kind (a described `cat` is still a read).
   const description = backendShellDescription(inp)
   if (description !== undefined) {
-    return { title: description, kind: classified?.kind ?? 'execute', rawTitle, derived: true }
+    return { title: description, kind: classified?.kind ?? 'execute', rawTitle, shell: cmd !== undefined, derived: true }
   }
   if (classified) {
-    return { title: renderDerivedTitle(classified.action, classified.more), kind: classified.kind, rawTitle, derived: true, action: classified.action, more: classified.more }
+    return { title: renderDerivedTitle(classified.action, classified.more), kind: classified.kind, rawTitle, shell, derived: true, action: classified.action, more: classified.more }
   }
-  if (shell && cmd) return { title: formatRawCommand(cmd), kind: 'execute', rawTitle, derived: false }
-  return { title: incoming, kind: kindIn, rawTitle, derived: false }
+  if (shell && cmd) return { title: formatRawCommand(cmd), kind: 'execute', rawTitle, shell, derived: false }
+  return { title: incoming, kind: kindIn, rawTitle, shell: false, derived: false }
 }

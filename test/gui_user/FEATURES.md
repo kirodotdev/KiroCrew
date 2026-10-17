@@ -26,16 +26,16 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 270 | 42 | 167 | 12 | 27 | 22 |
+| **All features** | 270 | 42 | 166 | 12 | 27 | 23 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
-| Sessions sidebar & folders (`sidebar`) | 16 | 5 | 10 | 0 | 1 | 0 |
+| Sessions sidebar & folders (`sidebar`) | 16 | 5 | 9 | 0 | 1 | 1 |
 | Routing & redirects (`navigation`) | 10 | 0 | 10 | 0 | 0 | 0 |
 | Top bar (`topbar`) | 3 | 0 | 3 | 0 | 0 | 0 |
 | Search everywhere & command palette (`search`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Crew Members (`members`) | 4 | 0 | 4 | 0 | 0 | 0 |
-| Agent capabilities (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`) | 14 | 2 | 12 | 0 | 0 | 0 |
+| Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`) | 14 | 2 | 12 | 0 | 0 | 0 |
 | Connections (MCP servers & services) (`connections`) | 2 | 1 | 0 | 0 | 1 | 0 |
 | Memory, lessons & usage (`memory`) | 6 | 1 | 4 | 0 | 1 | 0 |
 | Knowledge library (`knowledge`) | 7 | 1 | 5 | 0 | 0 | 1 |
@@ -63,7 +63,7 @@ under `scenarios/` says how the lane checks it.
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
 | Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 161 · P3 62. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -113,7 +113,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P0 | `sidebar-folders-history-and-archive` | As a returning user, I want folders, pinned sessions and a History panel, so that I can find past work quickly. | `/chat` | rich | smoke | 3 |
+| P0 | `sidebar-folders-history-and-archive` | As a returning user, I want folders, pinned sessions and an Older Sessions pane, so that I can find past work quickly. | `/chat` | rich | smoke | 3 |
 | P1 | `chat-older-sessions` | As a user, I want a searchable history pane of closed sessions with per-session and bulk delete, so that I can revisit or prune past work. | `/chat` | sessions-long-history | smoke | 4 |
 | P1 | `chat-sessions-page` | As a dashboard user, I want a bookmarkable session chooser with search, filter chips and recency groups, so that I can pick a session without one being auto-selected or auto-created. | `/sessions` | sessions-a-few | smoke | 3 |
 | P1 | `sidebar-rail-collapse-expand` | As a user, I want to collapse the rail to icons, so that I have more room for content. | `/chat` | minimal | smoke | 2 |
@@ -127,7 +127,6 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
 | P2 | `sidebar-mobile-drawer-swipe` | As a phone user, I want a drawer for navigation, so that the rail does not consume the screen. | `/chat` | minimal | nightly | 3 |
 | P2 | `sidebar-report-issue-diagnostics` | As a user hitting a bug, I want to report it with logs attached, so that triage has evidence. | `/chat` | minimal | nightly | 2 |
 | P2 | `sidebar-session-states-pinned-open-closed-archived` | As a user, I want each session state to appear where I expect (slots, History, archive), so that nothing looks lost. | `/sessions` | sessions-a-few | nightly | 4 |
-| P2 | `sidebar-workspace-switcher-three-workspaces` | As a user with several projects, I want to switch workspace, so that memory and sessions scoped to it are what I see. | `/chat` | multi-workspace | nightly | 4 |
 
 ## Routing & redirects (`navigation`)
 
@@ -162,12 +161,12 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P0 | `members-crew-members` | As a crew operator, I want a durable DM thread per member with a docked side panel (Crew summary, activity by day, worker sessions, auto-patrol status) and a filterable roster, so that I can supervise each crew in one place. | `/members` | rich | nightly | 6 |
+| P0 | `members-crew-members` | As a crew operator, I want a durable DM thread per member with a docked side panel led by the crew's Dashboard tab, an auto-patrol badge on each roster row, and a filterable roster, so that I can supervise each crew in one place. | `/members` | rich | nightly | 6 |
 | P1 | `crewmate-reply-thread` | As a user talking to a crewmate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the crewmate's findings up the main chat. | `/settings` | rich | nightly | 8 |
 | P1 | `members-private-memory-keeps-thread` | As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost. | `/settings` | rich | nightly | 8 |
-| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Crew Members menu entry to open the page or the setting that enables it, so that I can find the feature either way. | `/chat` | minimal | nightly | 3 |
+| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Crewmates menu entry to open the page or the setting that enables it, so that I can find the feature either way. | `/chat` | minimal | nightly | 3 |
 
-## Agent capabilities (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`)
+## Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`)
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
@@ -348,7 +347,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
 
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
-| P0 | `kas-auth-sign-in-card-signed-out` | As an operator, I want to see whether Kiro Crew holds a Kiro identity and how to sign in, so that I can fix a session that cannot start. | `/settings/overview` | minimal | smoke | 2 |
+| P0 | `kas-auth-sign-in-card-signed-out` | As an operator, I want to see whether Kiro Crew holds a Kiro identity and how to sign in, so that I can fix a session that cannot start. | `/settings/agent` | minimal | smoke | 2 |
 | P1 | `dashboard-token-login-gate` | As an operator, I want the dashboard to refuse unauthenticated visitors and accept my one-time token link, so that only I can drive the gateway. | `/` | minimal | smoke | 3 |
 
 ## Onboarding (`onboarding`)
@@ -436,13 +435,13 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 61. Deduped from 387 raw records.
 | P2 | `developer-config` | As a developer, I want raw Kiro Crew and agent config editors, so that I can fix a setting no panel exposes. | `/developer` | minimal | nightly | 3 |
 | P2 | `developer-debug-tools` | As a developer, I want diagnostic overlays such as the chat scroll inspector, so that I can debug layout issues. | `/developer` | sessions-a-few | nightly | 3 |
 | P2 | `developer-logs` | As a developer, I want a live gateway log stream with level control, so that I can debug in real time. | `/developer` | minimal | nightly | 3 |
-| P2 | `developer-mcp-pool` | As a developer, I want MCP connection pool state and a probe, so that I can diagnose tool outages. | `/developer` | connections-two | nightly | 3 |
+| P2 | `developer-mcp-pool` | As a developer, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/developer` | connections-two | nightly | 3 |
 | P2 | `developer-memory-graph` | As a developer, I want an entity/relation visualiser over the memory store plus every memory layer and saved lesson, so that I can debug and audit what the agent remembers. | `/developer` | memory-populated | nightly | 3 |
-| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, agent backend, debug tools, and archive in one place, so that I can diagnose the gateway. | `/developer` | rich | nightly | 5 |
+| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway. | `/developer` | rich | nightly | 5 |
 | P2 | `developer-storage` | As a developer, I want a raw localStorage inspector, so that I can debug client preferences. | `/developer` | minimal | nightly | 2 |
 | P2 | `developer-system` | As a developer, I want host runtime, services, sessions and performance views, so that I can spot resource problems and reclaim session storage. | `/developer` | sessions-long-history | nightly | 3 |
 | P2 | `developer-telemetry` | As a developer, I want startup timings and context traces, so that I can find slow paths. | `/developer` | minimal | nightly | 2 |
-| P2 | `standalone-logs` | As an operator, I want a full-page log viewer, so that I can watch the gateway without dashboard chrome distraction. | `/logs` | minimal | nightly | 2 |
+| P2 | `standalone-logs` | As an operator, I want a full-page log viewer at a stable URL, so that I can watch the gateway logs from one bookmark. | `/logs` | minimal | nightly | 2 |
 
 ## Not generated
 
@@ -491,6 +490,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | needs-secret | `themes-install-pack-from-github` | themes | Install a theme pack from a github.com URL | Needs outbound network to github.com (and a sandbox backend), unavailable on the target. |
 | excluded | `chat-mcp-app-inline-render` | chat | An MCP App renders inline in chat as a sandboxed iframe with a live bridge | Not reachable on the fake backend/no-network target. |
 | excluded | `chat-workflow-launch-and-completion-cards` | chat | workflow_run shows a launch card and later a completion card in chat | Depends on real MCP tool execution by a model, absent on the fake ACP target. |
+| excluded | `sidebar-workspace-switcher-three-workspaces` | sidebar | Switch between default, review and research workspaces and see distinct memory and pinned sessions | Excluded: no workspace switcher exists on main. Named workspaces are edited in Developer > Config and picked per crewmate; the sidebar has no control that changes the active workspace. |
 | excluded | `knowledge-fetch-url-source` | knowledge | Add a URL source that is fetched and ingested | No external account is involved, the blocker is outbound network, which the target does not have, so the fetch fails by construction and the flow is unobservable here. |
 | excluded | `artifacts-widget-auto-registration-from-chat` | artifacts | A chat-rendered mcwidget is auto-registered as an artifact | Not reachable on the fake backend; requires a model that emits widget markup. |
 | excluded | `browser-panel-load-dev-server-preview` | browser-panel | Load a locally served dev-server URL into the Browser tab iframe | The target's managed browser policy (URLBlocklist * with only the gateway origin allowed) makes any dev-server iframe fail by construction, so the behaviour cannot be observed on this harness; it is web-capable elsewher… |

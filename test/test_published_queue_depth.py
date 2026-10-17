@@ -136,6 +136,47 @@ async def test_the_real_emit_path_records_what_it_publishes() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    ("reason", "bound", "expected"),
+    [
+        ("low_memory", 1800, 1800),
+        ("memory_pressure", 90, 90),
+        ("low_memory", 0, 0),
+        ("concurrency_limit", 1800, None),
+    ],
+)
+async def test_a_memory_wait_frame_carries_the_live_bound(
+    reason: str, bound: int, expected: int | None
+) -> None:
+    """A memory wait's frame names ``agent.subagent_queue_max_wait_secs`` as it
+    stands when the frame is sent, so the chip can say when the wait gives up;
+    a concurrency wait never gives up for memory and carries no bound."""
+    frames: list[dict] = []
+
+    async def on_event(etype: str, info: SubagentInfo, extra: dict) -> None:
+        if etype == "subagent_queued" and info.parent_session_key == PARENT:
+            frames.append(dict(extra))
+
+    mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), on_event=on_event)
+    try:
+        await wait_taskq_open(mgr)
+        mgr._subagent_queue_max_wait_secs = 7
+        mgr._queue.append({"parent_session_key": PARENT, "_preassigned_id": "q1"})
+        mgr._emit_queue_depth(PARENT, wait={"reason": reason})
+        await asyncio.wait_for(_until(lambda: len(frames) == 1), 30)
+        # A reload between frames shows on the next one: read at send time.
+        mgr._subagent_queue_max_wait_secs = bound
+        mgr._emit_queue_depth(PARENT)
+        await asyncio.wait_for(_until(lambda: len(frames) == 2), 30)
+        assert frames[-1]["queued"] == 1 and frames[-1]["reason"] == reason
+        assert frames[-1].get("max_wait_secs") == expected
+    finally:
+        mgr._queue.clear()
+        await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_a_parent_end_forgets_its_published_depth() -> None:
     """A parent that ended advertises nothing waiting on its slot: its entry
     goes at the teardown, even when no 0 frame was ever published."""

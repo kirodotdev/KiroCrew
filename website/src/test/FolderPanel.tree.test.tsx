@@ -439,7 +439,7 @@ describe('FolderPanel — project-root workspace tree', () => {
     expect(tree()).not.toBeVisible()
     // The takeover says why the results replaced the tree.
     expect(screen.getByTestId('folder-search-beyond-tree')).toHaveTextContent(
-      'Too many items to filter here, so the search also covers items not listed',
+      'Results can include files past the 10,000-item limit',
     )
     fireEvent.change(screen.getByLabelText('Search files'), { target: { value: '' } })
     await waitFor(() => expect(tree().getAttribute('data-query')).toBe(''))
@@ -476,6 +476,32 @@ describe('FolderPanel — project-root workspace tree', () => {
     fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'main_ent' } })
     await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.getAllByText('main_entry.py')).toHaveLength(1))
+  })
+
+  it('announces the search still running while the truncated tree already lists matches', async () => {
+    // The tree's own matches show at once; the server's join them when it answers.
+    // Until then the list is about to grow, so the status row says so (#16743).
+    vi.spyOn(api, 'projectTree').mockResolvedValue(
+      { root: ROOT, paths: ['README.md'], directories: [], repo: false, truncated: true } as never,
+    )
+    let answer: (v: unknown) => void = () => {}
+    vi.spyOn(api, 'fileSearch').mockImplementation(() => new Promise(resolve => { answer = resolve }) as never)
+    renderPanel({ path: ROOT, projectDir: ROOT })
+    await waitFor(() => expect(tree()).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'read' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
+    expect(screen.getByRole('status')).toHaveTextContent('Searching')
+    answer({ root: ROOT, results: [{ path: `${ROOT}/deep/readme.txt`, name: 'readme.txt' }] })
+    await waitFor(() => expect(screen.getByText('readme.txt')).toBeTruthy())
+    expect(screen.queryByRole('status')).toBeNull()
+    // A refined query starts with the previous answer as placeholder rows: it has
+    // no answer of its own yet, so the status is back until it lands.
+    fireEvent.change(screen.getByLabelText('Search files'), { target: { value: 'readme' } })
+    await waitFor(() => expect(api.fileSearch).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('status')).toHaveTextContent('Searching')
+    answer({ root: ROOT, results: [{ path: `${ROOT}/deep/readme.txt`, name: 'readme.txt' }] })
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
   })
 
   it('keeps the truncated tree mounted behind the search, so its expansion survives clearing it', async () => {

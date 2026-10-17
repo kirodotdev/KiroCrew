@@ -458,7 +458,8 @@ const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
 const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
 // Channels with a WINDOWS publish lane. publish-windows.yml is wired into
 // nightly.yml and both of release.yml's channels: insider publishes a fresh
-// signed build, and stable republishes the promotion bundle's installer. That is
+// signed build, and stable rebuilds by default (or, in promote mode set by
+// vars.STABLE_PROMOTE_BYTES, republishes the promotion bundle's installer). That is
 // every channel in KNOWN_CHANNELS, so Windows carries no channel restriction of
 // its own and channelHasLane needs no win32 arm -- a separate set here would be a
 // comment claiming a restriction that does not exist.
@@ -532,13 +533,14 @@ function channelForVersion(version) {
  *   mid-cycle (insider 0.2.0-insider.1 -> stable 0.1.0), which is why
  *   allowDowngrade is enabled in configureUpdater.
  *
- * Why the unset default is stable rather than the stamp: a stable release is
- * PROMOTED, meaning the exact notarized candidate bytes are re-pointed at the
- * stable channel without a rebuild, so the stable download and the insider
- * download of a promoted version are the SAME FILE and carry the same
- * prerelease stamp (`0.3.0-insider.13`). The channel therefore cannot be a
- * property of the bytes, and reading it out of the version string sends every
- * promoted-stable install to the insider feed. It is a default plus an opt-in,
+ * Why the unset default is stable rather than the stamp: a stable release
+ * rebuilds under the bare version by default, but in promote mode
+ * (vars.STABLE_PROMOTE_BYTES names the base version) the exact notarized
+ * candidate bytes are re-pointed at the stable channel without a rebuild, so
+ * the stable download and the insider download of a promoted version are the
+ * SAME FILE and carry the same prerelease stamp (`0.3.0-insider.13`). The
+ * channel therefore cannot be a property of the bytes, and reading it out of
+ * the version string sends every promoted-stable install to the insider feed. It is a default plus an opt-in,
  * which is what this function's own contract above already describes.
  *
  * `channelForVersion` deliberately keeps classifying the BYTES (it is what the

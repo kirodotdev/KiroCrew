@@ -97,6 +97,7 @@ interface FollowupProps {
   items: FollowupItem[]
   onAddToSession: (item: FollowupItem) => void
   onStartInWorktree: (item: FollowupItem) => Promise<void>
+  onStartInNewChat: (item: FollowupItem) => Promise<void>
   onSkip: (index: number) => void
 }
 let followupProps: FollowupProps | null = null
@@ -201,6 +202,7 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
       getFollow: () => true,
       scrollToBottom: vi.fn(),
       mountIndex: vi.fn(() => false),
+      retainRange: vi.fn(),
       farmIsMeasured: () => true,
       farmRecord: vi.fn(() => true),
       measureRef: () => () => {},
@@ -282,7 +284,7 @@ interface RenderOpts {
   /** Server-side queue for the active slot. The mount fetch is authoritative —
    *  `hydrateQueuedBubbles` rebuilds the queued rows from THIS list and drops
    *  any pre-seeded ones, so a preloaded `queued` message never survives. */
-  queue?: { id: string; content: string }[]
+  queue?: { id: string; content: string; meta?: Record<string, unknown> }[]
 }
 
 function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
@@ -768,6 +770,66 @@ describe('ChatPage — queued message actions', () => {
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
   })
 
+  it('cancelling a foreign card with an inline mention restores a readable mention and a live chip (#14617)', async () => {
+    // A reload empties the stash, so the row's own list is all the parser
+    // has. The inline marker comes back as `@a.txt`, never raw wire text,
+    // and the file is staged again. The alias is recorded too, so deleting
+    // the restored mention by hand unstages the chip, as for a picked file.
+    const serialized = prepareSendPayload('check @a.txt, please', ['/repo/a.txt']).txt
+    expect(serialized).toContain('[attached_file 1] /repo/a.txt')
+    await renderWithQueue([
+      { id: 'q1', content: serialized, meta: { files: ['/repo/a.txt'] } },
+      { id: 'q2', content: 'then deploy' },
+    ])
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('check @a.txt, please'))
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual(['/repo/a.txt']))
+    act(() => { inputProps!.onChange('check please') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([]))
+  })
+
+  it('two cancelled cards naming same-named files each send their own file afterwards (#14617)', async () => {
+    // Both restores merge into one composer. The second mention must not
+    // come back as `@a.txt` too, or the next send binds both to the first
+    // file and the second reference silently points at the wrong one.
+    const x = '/repo/x/a.txt'
+    const y = '/repo/y/a.txt'
+    await renderWithQueue([
+      { id: 'q1', content: prepareSendPayload('compare @x/a.txt', [x]).txt, meta: { files: [x] } },
+      { id: 'q2', content: prepareSendPayload('against @y/a.txt', [y]).txt, meta: { files: [y] } },
+    ])
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([x]))
+    act(() => { queueProps!.onCancel('q2') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([x, y]))
+    expect(inputProps!.value).toContain('compare @a.txt')
+    expect(inputProps!.value).toContain('against @y/a.txt')
+    // What the next send serializes from this composer state.
+    const next = prepareSendPayload(inputProps!.value, inputProps!.pendingFiles!).txt
+    expect(next).toContain(`compare [attached_file 1] ${x}`)
+    expect(next).toContain(`against [attached_file 2] ${y}`)
+  })
+
+  it('a restored mention of a project file survives delete and undo with its chip (#14617)', async () => {
+    // The composer revives a chip only for the project-relative spelling it
+    // writes itself, so a file at src/a.ts in the project must come back as
+    // `@src/a.ts`. Restored as the shortest suffix `@a.ts`, an undo after
+    // deleting the mention left the chip gone and the next send without it.
+    const p = '/repo/main/src/a.ts'
+    await renderWithQueue([
+      { id: 'q1', content: prepareSendPayload('check @src/a.ts, please', [p]).txt, meta: { files: [p] } },
+      { id: 'q2', content: 'then deploy' },
+    ])
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('check @src/a.ts, please'))
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([p]))
+    act(() => { inputProps!.onChange('check please') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([]))
+    act(() => { inputProps!.onChange('check @src/a.ts, please') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([p]))
+    expect(prepareSendPayload(inputProps!.value, inputProps!.pendingFiles!).txt).toContain(`check [attached_file 1] ${p}`)
+  })
+
   it('cancelling two cards in a row keeps both drafts instead of overwriting the first', async () => {
     // The restore MERGES. Assigning was the older spelling on this surface and it
     // destroyed text: the second cancel overwrote the first card's restored draft,
@@ -955,6 +1017,52 @@ describe('ChatPage — follow-up "start in worktree"', () => {
     // The switch resolves, but the committed active slot never becomes chat-2 —
     // prefilling here would drop the prompt into an unrelated conversation.
     await expect(followupProps!.onStartInWorktree(ITEM)).rejects.toThrow(/is not in focus/)
+  })
+
+  describe('the new-chat route (no repository to branch)', () => {
+    it('opens a chat in the origin project without git, hands the prompt over, and clears the card', async () => {
+      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
+      const { store } = await renderWithFollowup()
+      commitActiveSlot('chat-2')
+      await act(async () => { await followupProps!.onStartInNewChat(ITEM) })
+      expect(apiSpy('createWorktree')).not.toHaveBeenCalled()
+      // Scoped to the spawning session's own project directory.
+      expect(apiMocks.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo/main')
+      expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY) || '{}')).toMatchObject({
+        slotKey: 'chat-2', prompt: 'add the retry guard',
+      })
+      expect(store.getState().chat.followups?.['chat-1']).toBeUndefined()
+    })
+
+    it('reports a chat that could not be created, and keeps the card', async () => {
+      apiSpy('createChatSlot').mockRejectedValue(new Error('slot service down'))
+      const { store } = await renderWithFollowup()
+      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/new chat could not be opened/)
+      expect(apiSpy('createWorktree')).not.toHaveBeenCalled()
+      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
+    })
+
+    it('fails closed rather than prefilling the wrong session when no key came back', async () => {
+      apiSpy('createChatSlot').mockResolvedValue({})
+      await renderWithFollowup()
+      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/new chat could not be opened/)
+      expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+    })
+
+    it('points at the sidebar when the created chat could not be switched to', async () => {
+      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
+      const { store } = await renderWithFollowup()
+      detailFailsFor('chat-2')
+      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/Switch to it in the sidebar/)
+      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
+    })
+
+    it('refuses to prefill when the switch resolved but the chat never took focus', async () => {
+      apiSpy('createChatSlot').mockResolvedValue({ key: 'chat-2' })
+      const { store } = await renderWithFollowup()
+      await expect(followupProps!.onStartInNewChat(ITEM)).rejects.toThrow(/could not be brought into focus/)
+      expect(store.getState().chat.followups?.['chat-1']).toBeDefined()
+    })
   })
 
   it('adding to the session merges into the composer draft and clears the card', async () => {

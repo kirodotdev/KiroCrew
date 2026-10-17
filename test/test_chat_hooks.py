@@ -128,7 +128,14 @@ class TestCanonicalNameExemption:
         """
         from pathlib import Path
 
-        source = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        source = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
         calls = re.findall(r"_validate_tool_name\([^)]*\)", source)
         assert len(calls) >= 6, f"expected the known permission paths, found {len(calls)}"
         missing = [c for c in calls if "canonical_name=event.tool_name" not in c]

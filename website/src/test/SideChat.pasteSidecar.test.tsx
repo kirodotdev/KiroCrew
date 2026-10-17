@@ -43,7 +43,7 @@ import SideChat from '../pages/chat/SideChat'
 
 const SLOT = 'paste-slot'
 const PASTED = 'alpha\nbeta\ngamma\ndelta\nepsilon' // >= PASTE_THRESHOLD_LINES
-const TOKEN = /\[ Paste #1 · 5 lines \]/
+const TOKEN = /\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/
 
 const initial = reducer(undefined, { type: '@@INIT' })
 
@@ -157,12 +157,12 @@ describe('SideChat paste sidecar', () => {
     mount()
     fireEvent.change(box(), { target: { value: 'x ' } })
     await pasteInto(box(), Array.from({ length: 33 }, () => 'a'.repeat(1_000)).join('\n'))
-    await waitFor(() => expect(box().value).toMatch(/\[ Paste #1 · 33 lines \]/))
+    await waitFor(() => expect(box().value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 33 lines \]/))
     fireEvent.keyDown(box(), { key: 'Enter' })
     await waitFor(() => expect(screen.getByText(/Question too long — reduce to under ~32,768 characters \(yours: 33,03\d, counting the collapsed paste\)/)).toBeInTheDocument())
     expect(sideTurn).not.toHaveBeenCalled()
     // Nothing was consumed: the pill is still there for the user to remove.
-    expect(box().value).toMatch(/\[ Paste #1 · 33 lines \]/)
+    expect(box().value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 33 lines \]/)
     // A validation hint beside the composer (role=status), not an ErrorNotice:
     // nothing failed, the question was never sent. Editing the draft clears it.
     expect(screen.getByTestId('side-chat-length-hint')).toHaveAttribute('role', 'status')
@@ -226,7 +226,7 @@ describe('SideChat paste sidecar', () => {
     // The block went with its token: a fresh paste numbers from #1 again (a
     // surviving block would make it #2), and the send carries only this one.
     await pasteInto(box(), 'one\ntwo\nthree\nfour')
-    await waitFor(() => expect(box().value).toMatch(/\[ Paste #1 · 4 lines \]/))
+    await waitFor(() => expect(box().value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/))
     fireEvent.keyDown(box(), { key: 'Enter' })
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
     expect(sideTurn.mock.calls[0][1]).toBe('typed over it \none\ntwo\nthree\nfour')

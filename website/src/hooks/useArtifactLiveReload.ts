@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useFileWatch } from './useFileWatch'
+import { useVisibleTabCatchUp, settleCatchUp, type CatchUpLatch } from './useVisibleTabCatchUp'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
 
 /**
@@ -46,29 +46,46 @@ const RELOAD_DEBOUNCE_MS = 400
  *    when editing ends, which is where a withheld update is picked up.
  *  * **No retry, no reconnect of our own.** `useFileWatch` closes the stream
  *    and settles into `'error'` on failure (404 for a missing/moved file, or a
- *    dropped connection), which leaves the hook inert and the surface back on
- *    today's manual-reload behavior. Passing a null `slug`/`sourcePath` — i.e.
- *    every artifact that is not file-backed — opens no stream at all.
+ *    dropped connection), which leaves the hook inert until the stream is
+ *    re-armed -- in the side panel, when a hidden tab is shown again -- and the
+ *    surface back on today's manual-reload behavior. Passing a null
+ *    `slug`/`sourcePath` — i.e. every artifact that is not file-backed — opens
+ *    no stream at all.
  *
  * Two known limits, both inherited from the endpoint rather than introduced here:
  *
- *  * `api_file_watch` only emits when the redacted **first 512,000 bytes**
- *    change, so a rewrite touching only bytes past that cap produces no signal
- *    and no reload.
- *  * One EventSource per mounted surface, and each artifact popout is its own
+ *  * `api_file_watch` reads only the redacted **first 512,000 characters**. For
+ *    a file within that cap it emits only when they change; for a file that
+ *    fills it, every write emits a body-less frame, so a rewrite past the cap
+ *    still reloads (debounced as above).
+ *  * One EventSource per visible surface, and each artifact popout is its own
  *    window with its own JS context. The gateway is HTTP/1.1, so popouts plus
  *    `MarkdownPanel` share the browser's ~6-connections-per
  *    -origin budget — which is why nothing is watched unless the artifact is
- *    actually file-backed.
+ *    actually file-backed and on screen.
+ *
+ * `active` is the side panel's visibility term. `SidePanel` keeps every tab
+ * mounted, so a hidden artifact tab holds no stream ({@link useVisibleTabCatchUp})
+ * and refetches once when it becomes the visible tab again, under the same edit
+ * guard as a frame. A surface that is always on screen leaves it `true`. A mount
+ * owes no catch-up: the artifact query fetches on its own when the surface mounts,
+ * so the latch starts `done` and only hiding the tab makes a read due. The
+ * re-armed stream's first frame carries the whole body (`api_file_watch`
+ * compares against an initial empty string), so a return also runs one
+ * debounced refetch behind the catch-up; for an unchanged file it answers the
+ * same artifact, which the query cache shares structurally, so nothing repaints.
  */
 export function useArtifactLiveReload(
   slug: string | null | undefined,
   sourcePath: string | null | undefined,
+  active = true,
 ): void {
   const queryClient = useQueryClient()
   const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  const latchRef = useRef<CatchUpLatch>('done')
+  const watchPath = slug && sourcePath ? sourcePath : null
 
-  const onChange = useCallback(() => {
+  const onFrame = useCallback(() => {
     if (!slug) return
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
@@ -84,8 +101,29 @@ export function useArtifactLiveReload(
     }, RELOAD_DEBOUNCE_MS)
   }, [queryClient, slug])
 
+  const catchUp = useCallback(() => {
+    if (!slug) return
+    // An open edit buffer keeps its baseline here exactly as it does for a
+    // frame; the latch stays due, and the editor's own refetch when editing
+    // ends picks the change up.
+    if (isArtifactEditing(slug)) { latchRef.current = 'due'; return }
+    // The catch-up supersedes a frame refetch still waiting out its debounce.
+    clearTimeout(timerRef.current)
+    void queryClient.invalidateQueries({ queryKey: ['artifact', slug] })
+      .then(() => settleCatchUp(latchRef))
+  }, [queryClient, slug])
+
   // Cancel a pending refetch on unmount so it cannot fire into a torn-down tree.
   useEffect(() => () => clearTimeout(timerRef.current), [])
 
-  useFileWatch(slug && sourcePath ? sourcePath : null, onChange)
+  useVisibleTabCatchUp({
+    path: watchPath,
+    active,
+    watchArmable: true,
+    catchUpArmable: !!watchPath,
+    editing: false,
+    latch: latchRef,
+    catchUp,
+    onFrame,
+  })
 }

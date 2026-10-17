@@ -415,6 +415,12 @@ def test_import_rejects_a_disallowed_extension(store):
     assert pack_transfer.import_bundle(store, _bundle(files={"run.sh": "x"}))["ok"] is False
 
 
+def test_import_rejects_a_file_utf8_cannot_encode(store):
+    bundle = _bundle(files={"idle.svg": "\ud800"})
+    assert pack_transfer.import_bundle(store, bundle)["ok"] is False
+    assert not store.pack_exists("imported")
+
+
 def test_import_rejects_an_oversized_file(store):
     huge = "x" * (pack_transfer.MAX_FILE_BYTES + 1)
     assert pack_transfer.import_bundle(store, _bundle(files={"idle.svg": huge}))["ok"] is False

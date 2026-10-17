@@ -41,6 +41,7 @@ import type {
 import AgentSelector, { type KiroCrewAgent } from '../components/AgentSelector'
 import ErrorNotice from '../components/ErrorNotice'
 import { copyToClipboard, copyCode } from '../utils/clipboard'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import Tablist, { type TablistTab } from '../components/Tablist'
 import { TABS_RAIL_ROW_CLASS } from '../components/ui/tabsPill'
 import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skeleton } from '../components/ui'
@@ -270,6 +271,8 @@ function Kv({ rows }: { rows: [string, React.ReactNode][] }) {
 
 function CopyField({ value, label, mask }: { value: string; label: string; mask?: boolean }) {
   const [copied, setCopied] = useState(false)
+  const [attachEdges, edges, remeasure] = useScrollEdges<HTMLSpanElement>()
+  useEffect(() => { remeasure() }, [value, mask, remeasure])
   const handleCopy = async () => {
     if (await copyToClipboard(value)) {
       setCopied(true)
@@ -278,9 +281,19 @@ function CopyField({ value, label, mask }: { value: string; label: string; mask?
   }
   return (
     <div className="flex items-center gap-2 bg-bg-elevated border border-border rounded-md pl-3 pr-1.5 py-1.5">
-      <span className={`flex-1 min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none ${mask ? 'text-muted' : 'text-card-fg'}`}>
-        {value}
-      </span>
+      {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
+          parent, not the scrolled span. from-bg-elevated matches the field. */}
+      <div className="relative flex-1 min-w-0">
+        <span ref={attachEdges} className={`block min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none ${mask ? 'text-muted' : 'text-card-fg'}`}>
+          {value}
+        </span>
+        {edges.left && (
+          <div aria-hidden="true" data-testid="webhook-copyfield-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-0 w-4 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+        )}
+        {edges.right && (
+          <div aria-hidden="true" data-testid="webhook-copyfield-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-4 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+        )}
+      </div>
       <IconButton aria-label={label} onClick={handleCopy} title={label}>
         {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
       </IconButton>

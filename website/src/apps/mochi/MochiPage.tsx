@@ -399,14 +399,14 @@ function Pager({
  *  throwing. `sleep`/`wake` used to be listed here and are not kinds the backend
  *  ever writes — `budget`/`spawn`/`system` are. */
 const ACTIVITY_TONES: Record<string, string> = {
-  budget: 'bg-warn-subtle text-warn',
+  budget: 'bg-warn-subtle text-warn-text',
   memory: 'bg-aim-subtle text-aim',
   notification: 'bg-accent-subtle text-accent',
   plan: 'bg-accent-subtle text-accent',
   presence: 'bg-bg-elevated text-muted',
-  sleep: 'bg-warn-subtle text-warn',
+  sleep: 'bg-warn-subtle text-warn-text',
   spawn: 'bg-accent-subtle text-accent',
-  system: 'bg-warn-subtle text-warn',
+  system: 'bg-warn-subtle text-warn-text',
 }
 
 function ActivityList({ rows }: { rows: ReturnType<typeof formatActivity> }) {

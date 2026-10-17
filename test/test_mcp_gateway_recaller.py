@@ -96,7 +96,7 @@ class _FakeBackend:
         self.callers: list[Any] = []
         self._pending_requests: dict = {}
 
-    async def attach_stub(self, _uuid: str) -> "asyncio.Queue[bytes]":
+    async def attach_stub(self, _uuid: str, *, agent: str = "") -> "asyncio.Queue[bytes]":
         return asyncio.Queue()
 
     async def detach_stub(self, _uuid: str) -> int:

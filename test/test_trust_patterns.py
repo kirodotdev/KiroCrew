@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import platform_compat
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.trust_patterns import (
     approval_command,
     approval_display_command,
+    base_trust_patterns,
     canonical_non_shell_tool,
     canonical_non_shell_trust_key,
     exact_trust_pattern,
@@ -22,6 +24,10 @@ from kiro_crew.trust_patterns import (
 from kiro_crew.trust_patterns import extract_base_command as _canonical_extract_base_command
 from kiro_crew.trust_patterns import extract_full_command as _canonical_extract_full_command
 from kiro_crew.trust_patterns import matches_trusted_pattern as _canonical_matches_trusted_pattern
+from kiro_crew.trust_patterns import (
+    redirect_outside_grant,
+)
+from kiro_crew.trust_patterns import split_command_segments as _canonical_split_command_segments
 
 
 def _legacy_title_command(value: str) -> str:
@@ -1454,6 +1460,265 @@ class TestApproveHandlerTrustCommand:
         set_policy.assert_not_called()
 
 
+class TestRedirectOutsideGrant:
+    """A grant for a program does not cover the files the shell opens for it."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr view 42 > /tmp/x",
+            "gh pr view 42 >/tmp/x",
+            "gh pr view 42 >> /tmp/x",
+            "gh pr view 42 &> /tmp/x",
+            "gh pr view 42 &>> /tmp/x",
+            "gh pr view 42 2>/tmp/err",
+            "gh pr view 42 >&2x",
+            "gh pr view 42 >&2\u00a0report",
+            "gh api user <> /tmp/x",
+            "gh pr view 42 2>&1 > /tmp/x",
+        ],
+    )
+    def test_a_base_grant_does_not_cover_a_write_redirect(self, command):
+        patterns = base_trust_patterns("gh")
+        assert _canonical_matches_trusted_pattern(command, patterns) is not None
+        assert redirect_outside_grant(command, patterns) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr view 42",
+            "gh pr view 42 > /dev/null",
+            "gh pr view 42 2>/dev/null",
+            "gh pr view 42 &>/dev/null",
+            "gh pr view 42 2>&1",
+            "gh pr view 42 1>&2",
+            "gh pr view 42 < /tmp/in",
+        ],
+    )
+    def test_a_discard_or_no_redirect_stays_covered(self, command):
+        patterns = base_trust_patterns("gh")
+        assert _canonical_matches_trusted_pattern(command, patterns) is not None
+        assert redirect_outside_grant(command, patterns) is False
+
+    def test_an_exact_grant_for_the_line_covers_its_redirect(self):
+        command = "gh pr view 42 > /tmp/x"
+        patterns = {exact_trust_pattern(command)}
+        assert _canonical_matches_trusted_pattern(command, patterns) is not None
+        assert redirect_outside_grant(command, patterns) is False
+
+    def test_an_exact_grant_for_one_target_does_not_cover_another(self):
+        patterns = {exact_trust_pattern("gh pr view 42 > /tmp/x"), *base_trust_patterns("gh")}
+        assert redirect_outside_grant("gh pr view 42 > /tmp/y", patterns) is True
+
+    def test_a_pattern_that_spells_the_redirect_covers_it(self):
+        patterns = {"make * > build.log"}
+        assert _canonical_matches_trusted_pattern("make all > build.log", patterns) is not None
+        assert redirect_outside_grant("make all > build.log", patterns) is False
+        # The redirect the pattern spells, not any redirect at all.
+        assert redirect_outside_grant("make all > other.log", {"make *", *patterns}) is True
+
+    def test_a_pattern_spelling_only_a_discard_does_not_cover_a_write(self):
+        patterns = {"gh * 2>&1"}
+        command = "gh pr view 42 > /tmp/x 2>&1"
+        assert _canonical_matches_trusted_pattern(command, patterns) is not None
+        assert redirect_outside_grant(command, patterns) is True
+
+    def test_the_broad_star_grant_keeps_covering_everything(self):
+        assert redirect_outside_grant("gh pr view 42 > /tmp/x", {"*"}) is False
+
+    def test_each_segment_is_judged_on_its_own(self):
+        patterns = base_trust_patterns("gh") | base_trust_patterns("ls")
+        assert redirect_outside_grant("ls /tmp && gh pr view 42 > /tmp/x", patterns) is True
+        assert redirect_outside_grant("ls /tmp > /tmp/l; gh pr view 42", patterns) is True
+        assert redirect_outside_grant("ls /tmp 2>/dev/null | gh pr view 42", patterns) is False
+
+    @pytest.mark.parametrize("glue", ["\u00a0", "\r", "\v", "\f", "\u2003"])
+    def test_a_segment_keeps_what_bash_reads_as_part_of_a_word(self, glue):
+        """Only space and tab are blanks beside a separator; the rest stays.
+
+        bash opens ``2<glue>`` for ``ls >&2<glue>; ls``, so the segment must
+        still end in ``<glue>`` for the redirect to read as a write.
+        """
+        command = f"ls >&2{glue}; ls"
+        split = _canonical_split_command_segments(command)
+        assert split is not None
+        assert split[1] == [f"ls >&2{glue}", "ls"]
+        assert redirect_outside_grant(command, base_trust_patterns("ls")) is True
+        # A blank bash does split on is still dropped around the separator.
+        assert _canonical_split_command_segments("ls >&2 \t; \tls")[1] == ["ls >&2", "ls"]
+
+    def test_an_unsegmentable_command_is_left_to_the_matcher(self):
+        patterns = base_trust_patterns("gh")
+        command = "gh pr view $(id) > /tmp/x"
+        assert _canonical_matches_trusted_pattern(command, patterns) is None
+        assert redirect_outside_grant(command, patterns) is False
+
+
+def _base_grants(*programs: str) -> set[str]:
+    return set().union(*(base_trust_patterns(program) for program in programs))
+
+
+class TestQuotedRedirectIsText:
+    """A ``>`` bash reads as part of a word is not a redirect the grant must cover."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git log --format='%h -> %s'",
+            "gh api repos/o/r/pulls --jq 'select(.n > 1)'",
+            'grep -E "a>b" file.txt',
+            'echo "a > b"',
+            "echo a \\> b",
+            'echo "a \\" > b"',
+            "echo 'a'\\''b > c'",
+            "echo 'a\\' 'b > c'",
+            "echo hi 2'>'file",
+            "echo '>' 2>/dev/null",
+            "echo '>|' x",
+            "ls && grep 'a > b' f",
+            'echo "a\\>&b"',
+        ],
+    )
+    def test_a_quoted_or_escaped_gt_stays_covered(self, command):
+        patterns = _base_grants("git", "gh", "grep", "echo", "ls")
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert _canonical_matches_trusted_pattern(command, patterns) is not None
+            assert redirect_outside_grant(command, patterns) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo 'a' > b",
+            'echo "a > b" > c',
+            "echo hi > out.txt",
+            "echo hi >> out.txt",
+            "echo hi &> out.txt",
+            "echo hi 2>&1 > out.txt",
+            "echo hi 2> err.txt",
+            "echo hi >| out.txt",
+            'echo \\"a > out\\"',
+            "echo \\'a > out\\'",
+            "echo 'a\\' > out",
+            'echo "it\'s" > out',
+            "ls && echo '>' > out",
+            "ls; echo '>' > out",
+            # A quote left open: bash refuses the line, and nothing here guesses.
+            "echo 'a > b",
+            'echo "a > b',
+            # bash writes `out` for each of these, while a plain quote walk sees the
+            # `>` inside quotes: a heredoc body, a comment, ANSI-C `$'\''` and a
+            # quote inside `${...}` each read quotes differently.
+            "cat <<EOF\n'\nEOF\nls > out '\n'",
+            "cat <<EOF\nls '\nEOF\nls > out '\\'",
+            "ls # '\nls > out # '",
+            "echo $'\\'' > out \\'",
+            "echo \"${x#'\"'}\" > out \\'",
+            "echo \"${x:-'\"'}\" > out \\'",
+        ],
+    )
+    def test_a_redirect_bash_runs_still_needs_a_grant_that_spells_it(self, command):
+        assert redirect_outside_grant(command, _base_grants("echo", "ls", "cat")) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo \"x\\|ls '\" > out '\\'",
+            "echo \"x\\;ls '\" > out '\\'",
+            "echo \"x\\&ls '\" > out '\\'",
+            "echo \"x\\\nls '\" > out '\\'",
+        ],
+    )
+    def test_a_cut_inside_double_quotes_does_not_hide_a_redirect(self, command):
+        """bash writes ``out``: the escaped separator is text inside the double quotes.
+
+        The splitter cuts there all the same, so the second segment starts inside
+        the double quotes the first one opened, and its ``>`` is outside them.
+        """
+        patterns = _base_grants("echo", "ls")
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert _canonical_matches_trusted_pattern(command, patterns) is not None
+            assert redirect_outside_grant(command, patterns) is True
+
+    @pytest.mark.parametrize(
+        ("command", "segments"),
+        [
+            ("echo a \\>&2", ["echo a \\>", "2"]),
+            ("echo 1\\>&2", ["echo 1\\>", "2"]),
+            ("echo a \\>& touch out", ["echo a \\>", "touch out"]),
+            ("echo a \\>&touch out", ["echo a \\>", "touch out"]),
+        ],
+    )
+    def test_an_escaped_gt_is_text_for_the_splitter_too(self, command, segments):
+        """bash reads ``\\>`` as text, so the ``&`` after it separates commands."""
+        patterns = _base_grants("echo")
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert _canonical_split_command_segments(command) == (command, segments)
+            assert _canonical_matches_trusted_pattern(command, patterns) is None
+            assert redirect_outside_grant(command, patterns) is False
+
+    @pytest.mark.parametrize(
+        ("command", "writes"),
+        [
+            ("echo a 2>&1", False),
+            ("echo a >&2", False),
+            ("echo a &>out", True),
+            ("echo a 2>/dev/null", False),
+            # An escaped backslash: the `>` after it is unescaped, so `>&2` is a redirect.
+            ("echo a \\\\>&2", False),
+        ],
+    )
+    def test_an_unescaped_redirect_operator_stays_one_segment(self, command, writes):
+        patterns = _base_grants("echo")
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert _canonical_split_command_segments(command) == (command, [command])
+            assert _canonical_matches_trusted_pattern(command, patterns) == "echo *"
+            assert redirect_outside_grant(command, patterns) is writes
+
+    @pytest.mark.parametrize(
+        "command", ["echo 'x | cat > out' | cat > out", 'echo "x | cat > out" | cat > out']
+    )
+    def test_a_segment_is_read_where_it_is_cut(self, command):
+        """The second segment's text also sits inside the first one's quotes."""
+        from kiro_crew.trust_patterns import _segment_writes
+
+        first = command.rsplit(" | ", 1)[0]
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            split = _canonical_split_command_segments(command)
+            assert split is not None
+            assert _segment_writes(*split) == [(first, False), ("cat > out", True)]
+            assert redirect_outside_grant(command, _base_grants("echo", "cat")) is True
+
+    def test_a_segment_not_cut_verbatim_reads_every_gt(self):
+        from kiro_crew.trust_patterns import _segment_writes
+
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert _segment_writes("echo '>'; ls", ["echo '>'", "ls"]) == [
+                ("echo '>'", False),
+                ("ls", False),
+            ]
+            assert _segment_writes("echo '>'; ls", ["echo  '>'", "ls"]) == [
+                ("echo  '>'", True),
+                ("ls", False),
+            ]
+
+    def test_a_redirect_inside_a_substitution_matches_no_grant(self):
+        command = "echo $(echo '>' > out)"
+        assert _canonical_matches_trusted_pattern(command, base_trust_patterns("echo")) is None
+
+    def test_on_windows_every_gt_counts(self):
+        """PowerShell runs the command there, and a backslash escapes nothing in it."""
+        patterns = _base_grants("git", "echo")
+        with patch.object(platform_compat, "IS_WINDOWS", True):
+            assert redirect_outside_grant("git log --format='%h -> %s'", patterns) is True
+            assert redirect_outside_grant('echo "a\\" > out \\""', patterns) is True
+
+    def test_a_quoted_gt_in_a_pattern_does_not_spell_a_write(self):
+        command = "jq '.a > 1' x > out"
+        with patch.object(platform_compat, "IS_WINDOWS", False):
+            assert redirect_outside_grant(command, {"jq '.a > 1' *"}) is True
+            assert redirect_outside_grant(command, {"jq '.a > 1' * > out"}) is False
+
+
 class TestMatchesTrustedPatternPiped:
     """Piped commands: each segment checked independently, ALL must match."""
 
@@ -1571,9 +1836,15 @@ class TestMatchesTrustedPatternPiped:
         assert _matches_trusted_pattern(cmd, patterns) == "ls *"
 
     def test_redirect_append_both_not_split(self):
+        """``&>>`` stays inside its segment, and that segment writes a file.
+
+        The matcher still reads the line as one ``ls`` segment; the write it
+        carries is what the grant does not cover.
+        """
         patterns = {"ls *"}
         cmd = "Running: ls /tmp &>> /var/log/out"
         assert _matches_trusted_pattern(cmd, patterns) == "ls *"
+        assert redirect_outside_grant(_legacy_title_command(cmd), patterns) is True
 
     def test_newline_split(self):
         patterns = {"ls *"}

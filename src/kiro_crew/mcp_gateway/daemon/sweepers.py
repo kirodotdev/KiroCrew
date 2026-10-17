@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from kiro_crew.mcp_gateway import hazards
+from kiro_crew.mcp_gateway import backend_record, hazards, lifecycle_log
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.pool import BackendPool
 
@@ -295,9 +295,15 @@ async def _heartbeat_sweeper(
                             with contextlib.suppress(Exception):
                                 await evicted.shutdown(timeout=2.0)
                         logger.warning(
-                            "heartbeat recycled %s backend pool=%s",
+                            "heartbeat recycled %s backend pool=%s %s",
                             state,
                             key.human_readable(),
+                            backend.lifecycle_fields(
+                                "backend_gone",
+                                lifecycle_log.heartbeat_recycle_reason(
+                                    state, backend.process.returncode
+                                ),
+                            ),
                         )
                     elif state == "alive":
                         pool.note_backend_healthy(key.stable_hash())
@@ -320,9 +326,12 @@ async def _heartbeat_sweeper(
                     # open+write+close on the event loop (every other write in
                     # the daemon — _write_diagnostic, hot_keys.flush, socket
                     # probes — is offloaded via to_thread for the same reason).
-                    pids = "\n".join(str(p) for p in pool.live_backend_pids())
+                    # Each pid carries the start id its backend captured at
+                    # spawn, so a reap from this record cannot signal a
+                    # recycled pid (backend_record).
+                    record = backend_record.render(pool.live_backend_identities())
                     with contextlib.suppress(OSError):
-                        await asyncio.to_thread(backends_pidfile.write_text, pids)
+                        await asyncio.to_thread(backends_pidfile.write_text, record)
                 # Persist any per-client behaviour observed since the last
                 # sweep. Offloaded for the same reason as the pidfile write,
                 # and cheap when nothing was observed (the flush is a no-op

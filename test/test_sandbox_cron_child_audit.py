@@ -1,6 +1,7 @@
 """``wrap_argv``'s synchronous SEL degrades must refuse inside a cron child.
 
-Every "SEL audit failed ... proceeding unaudited" site in ``sandbox.py`` is a
+Every "SEL audit failed ... proceeding unaudited" site in ``sandbox_wrap.py``,
+``sandbox_delegation.py`` and ``sandbox_unavailable.py`` is a
 deliberate availability-over-audit choice: refusing a spawn on an audit hiccup
 would brick built-in tooling, in-sandbox MCP calls and every agent subprocess on
 a backend-less host. That is right for the gateway and wrong for a detached cron
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import importlib
 import logging
 import os
 from pathlib import Path
@@ -146,7 +148,8 @@ _REFUSES_INSTEAD_OF_DEGRADING = "refusing unaudited delegation"
 
 
 def _sel_failure_handlers(*, critical_only: bool) -> dict[str, ast.ExceptHandler]:
-    """SEL-failure ``except`` handlers in ``sandbox.py``, keyed by message text.
+    """SEL-failure ``except`` handlers in ``sandbox.py`` and the owners carved out of it,
+    keyed by message text.
 
     ``critical_only`` keeps those whose audit write passes ``critical=True``.
     Those are the writes ``sel.log`` performs SYNCHRONOUSLY and raises on; the
@@ -155,7 +158,9 @@ def _sel_failure_handlers(*, critical_only: bool) -> dict[str, ast.ExceptHandler
     """
     # encoding pinned: the module carries non-ASCII prose and the Windows locale
     # codec (cp1252) cannot decode it.
-    source = Path(sandbox_mod.__file__).read_text(encoding="utf-8")
+    # The module and the owners carved out of it.
+    modules = (sandbox_mod, *map(importlib.import_module, sandbox_mod._CARVED_OWNERS))
+    source = "\n".join(Path(m.__file__).read_text(encoding="utf-8") for m in modules)
     found: dict[str, ast.ExceptHandler] = {}
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Try):
@@ -235,7 +240,7 @@ class TestNoReachableSiteIsLeftBehind:
             for path in src.rglob("*.py")
             if "refuse_unaudited_on_dead_fs(" in path.read_text(encoding="utf-8", errors="replace")
         ]
-        assert "sandbox.py" in callers
+        assert "sandbox_wrap.py" in callers
 
 
 def test_the_cron_marker_is_not_set_in_this_process():

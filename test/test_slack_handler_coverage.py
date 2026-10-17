@@ -288,7 +288,7 @@ class TestStopCommand:
     async def test_soft_stop_posts_stopped(self, slack, sessions, owner):
         sessions.has_session.return_value = True
 
-        async def _stop(key, *, force=False, on_soft=None, on_hard=None):
+        async def _stop(key, *, force=False, owned_by=None, on_soft=None, on_hard=None):
             await on_soft()
             return "soft"
 
@@ -301,7 +301,7 @@ class TestStopCommand:
     async def test_hard_stop_reports_session_reset(self, slack, sessions, owner):
         sessions.has_session.return_value = True
 
-        async def _stop(key, *, force=False, on_soft=None, on_hard=None):
+        async def _stop(key, *, force=False, owned_by=None, on_soft=None, on_hard=None):
             await on_hard()
             return "hard"
 
@@ -1177,6 +1177,17 @@ class TestAgentResolution:
 # ──────────────────────────────────────────────────────────────────────
 # thread-override hydration
 # ──────────────────────────────────────────────────────────────────────
+def _metadata_log(read) -> MagicMock:
+    """A conversation-log mock whose metadata line is *read(key)*, reported readable.
+
+    Hydration reads through ``get_metadata_status``, which the real log answers with the
+    metadata and whether the line could be read.
+    """
+    log = MagicMock()
+    log.get_metadata_status.side_effect = lambda key: (read(key), True)
+    return log
+
+
 class TestThreadOverrideHydration:
     @pytest.mark.asyncio
     async def test_execution_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
@@ -1206,10 +1217,10 @@ class TestThreadOverrideHydration:
                 "project": "/srv/app",
             }
 
-        log = MagicMock(get_metadata=MagicMock(side_effect=read_metadata))
+        log = _metadata_log(read_metadata)
         await h._hydrate_thread_overrides("t1", log)
         await h._hydrate_thread_overrides("t1", log)
-        log.get_metadata.assert_called_once_with("t1")
+        log.get_metadata_status.assert_called_once_with("t1")
         assert h._thread_agents["t1"] == "kirocrew"
         assert h._thread_projects["t1"] == "/srv/app"
         assert "t1" in h._hydrated_sessions
@@ -1229,7 +1240,9 @@ class TestThreadOverrideHydration:
             return "saved-agent", "saved-project"
 
         monkeypatch.setattr(h, "_read_thread_overrides", read)
-        task = asyncio.create_task(h._hydrate_thread_overrides("t1", MagicMock()))
+        task = asyncio.create_task(
+            h._hydrate_thread_overrides("t1", _metadata_log(lambda _key: {}))
+        )
         try:
             await asyncio.wait_for(started.wait(), 5)
             assert "t1" not in h._hydrated_sessions
@@ -1247,11 +1260,10 @@ class TestThreadOverrideHydration:
 
     @pytest.mark.asyncio
     async def test_second_call_is_a_no_op(self):
-        log = MagicMock()
-        log.get_metadata.return_value = {}
+        log = _metadata_log(lambda _key: {})
         await h._hydrate_thread_overrides("t1", log)
         await h._hydrate_thread_overrides("t1", log)
-        log.get_metadata.assert_called_once()
+        log.get_metadata_status.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_without_log_only_marks_hydrated(self):
@@ -1261,14 +1273,13 @@ class TestThreadOverrideHydration:
     @pytest.mark.asyncio
     async def test_metadata_failure_is_swallowed(self):
         log = MagicMock()
-        log.get_metadata.side_effect = OSError("corrupt")
+        log.get_metadata_status.side_effect = OSError("corrupt")
         await h._hydrate_thread_overrides("t1", log)
         assert "t1" not in h._thread_agents
 
     @pytest.mark.asyncio
     async def test_agent_and_project_hydrated(self):
-        log = MagicMock()
-        log.get_metadata.return_value = {"agent": "demo", "project": "/srv/app"}
+        log = _metadata_log(lambda _key: {"agent": "demo", "project": "/srv/app"})
         await h._hydrate_thread_overrides("t1", log)
         assert h._thread_agents["t1"] == "demo"
         assert h._thread_projects["t1"] == "/srv/app"
@@ -1278,6 +1289,7 @@ class TestThreadOverrideHydration:
         monkeypatch.setattr(h, "is_sensitive_path", lambda p: True)
         log = MagicMock()
         log.get_metadata.return_value = {"project": "/home/u/.aws"}
+        log.get_metadata_status.side_effect = lambda key: (log.get_metadata(key), True)
         await h._hydrate_thread_overrides("t1", log)
         assert "t1" not in h._thread_projects
 

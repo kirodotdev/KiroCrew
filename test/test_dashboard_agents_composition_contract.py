@@ -3,7 +3,7 @@
 ``kiro_crew.dashboard.handlers.agents`` is the agents handlers' import path and their
 patch surface. Most of what it defined now lives in the modules of
 ``kiro_crew.dashboard.agent_admin``, one responsibility each, and
-``agent_admin.compose`` runs every function they define on the facade's globals.
+``_facade_compose.compose`` runs every function they define on the facade's globals.
 These tests pin:
 
 * the surface: every name the facade bound before the split still resolves on it,
@@ -44,6 +44,7 @@ from source_corpus import repo_files_named, repo_root
 
 import kiro_crew.dashboard.handlers as handlers_pkg
 import kiro_crew.dashboard.handlers.agents as agents
+from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import agent_admin
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
@@ -71,7 +72,7 @@ _BASE_NAMES = frozenset("""
         TEMPLATE_DEFINITION_KEYS TEMPLATE_NAME_RE UnknownMemoryStore
         _AVATAR_CONTENT_TYPES _AVATAR_FILE_PIN_RE _AVATAR_GHOST_BOOL_TRAITS
         _AVATAR_GHOST_STR_TRAITS _AVATAR_IMAGE_EXTS _AVATAR_MAX_BYTES
-        _AmbiguousDefaultTarget _AmbiguousTemplateName _AppRegisteredTemplate
+        _AmbiguousTemplateName _AppRegisteredTemplate _BackgroundOnlyTemplate
         _BLOCKED_SLASH_COMMANDS _CAPABILITY_UNAVAILABLE
         _CATALOG_CACHE_MAX_FIELDS_PER_ROW _CONFIG_SCHEMA_ACP_BACKEND _CatalogCache
         _CatalogUnavailable _ForeignPrivateCopy _ForkBookkeepingFailed
@@ -81,11 +82,11 @@ _BASE_NAMES = frozenset("""
         _SLASH_COMMANDS _StaleBinding _UnverifiableLineage
         _VALID_CAPABILITY_PACKAGE_RE _WINDOWS_RESERVED_NAMES
         _advertised_backend_models _advertised_cc_models _agent_detail_candidates
-        _agent_file_lock _agent_roster_row _alias_binding_template
+        _agent_file_lock _agent_roster_row
         _app_declared_server_names _app_or_host_owned _atomic_json_write
         _audit_capability _avatar_stem _avatar_variant_paths _avatars_dir
-        _binds_template _bounded_catalog _capability_manager _carries_mask
-        _carry_motions_through_motionless_save _carry_pack_through_faceless_save
+        _bounded_catalog _capability_manager _carries_mask
+        _carry_motions_through_motionless_save
         _catalog_cache _cc_models _commit_agent_config _commit_agent_config_locked
         _commit_promoted_avatar _config_lock _consume_refresh_exception
         _crew_effort_rejected _crew_memory_store_rejected _discard_pending_avatar
@@ -162,9 +163,8 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _commit_agent_config _commit_agent_config_locked api_agent_config
         """.split()),
     "default_agent": tuple("""
-        _AmbiguousDefaultTarget _binds_template _alias_binding_template
-        _AppRegisteredTemplate _is_app_registered _installed_template_alias
-        api_default_agent
+        _AppRegisteredTemplate _BackgroundOnlyTemplate _is_app_registered _installed_template_alias
+        _set_default_template _spec_lock_or_unlocked_read api_default_agent
         """.split()),
     "capabilities": tuple("""
         _is_valid_capability_package _audit_capability api_capability_mcp_list
@@ -202,7 +202,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _prune_private_copy_of_deleted_crew api_kirocrew_agent_delete
         """.split()),
     "avatars": tuple("""
-        _carry_pack_through_faceless_save _carry_motions_through_motionless_save
+        _carry_motions_through_motionless_save
         _is_ghost_shaped _avatars_dir _avatar_stem _avatar_variant_paths
         _pending_avatar_path _remove_avatar_files _discard_pending_avatar
         _read_avatar_file _staging_token _promote_pending_avatar _commit_promoted_avatar
@@ -214,7 +214,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every name in
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there.
-_BASE_SHAPE_DIGEST = "54f616ae7fbc7dbee618439bb16204802f68596743729e9b02f8d74e083abde8"
+_BASE_SHAPE_DIGEST = "1d2f5b6b10210205011f445d98f0eee05d1d88a2a0cf74a0afbc53e5cb3555b8"
 
 #: Definitions that stay in the facade file. The seams every owner reads; the
 #: config schema route; the model and picker reads with the crew model-pin checks,
@@ -314,7 +314,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Routes, the handlers package, sibling handlers and tests read private names
     off the facade as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) == 274
+    assert len(_BASE_NAMES) == 271
     assert sorted(name for name in _BASE_NAMES if not hasattr(agents, name)) == []
 
 
@@ -489,12 +489,12 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 94
+    assert len(names) == len(set(names)) == 93
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
     lines = sorted(f"{name} {_shape(getattr(agents, name))}" for name in _MOVED)
-    assert len(lines) == 94
+    assert len(lines) == 93
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -540,7 +540,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 121
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 120
 
 
 def test_the_owners_log_as_the_facade() -> None:
@@ -628,15 +628,20 @@ def test_a_moved_function_reads_its_source_from_its_owner() -> None:
     assert inspect.getsourcefile(agents.api_agent_fork) == _owner("fork_publish").__file__
 
 
-def test_the_compose_copy_matches_its_siblings() -> None:
-    """The three dashboard compositions share one technique; each package keeps its
-    own copy so no package imports another's, and the copies stay identical."""
-
-    def body(package: str) -> str:
-        text = (_SRC / "kiro_crew/dashboard" / package / "__init__.py").read_text(encoding="utf-8")
-        return text[text.index("def compose(") :]
-
-    assert body("agent_admin") == body("file_api") == body("messaging_api")
+def test_the_facade_composes_through_the_shared_helper() -> None:
+    """The facade composes its owners with the one shared helper,
+    ``kiro_crew._facade_compose.compose``, calling it exactly once, and the owner
+    package keeps no copy of its own: its ``__init__`` defines no function."""
+    assert agents._facade_compose is facade_compose
+    source = Path(agents.__file__).read_text(encoding="utf-8")
+    assert source.count("\n_facade_compose(\n") == 1
+    package = ast.parse(Path(agent_admin.__file__).read_text(encoding="utf-8"))
+    defined = [
+        node.name
+        for node in package.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    assert defined == []
 
 
 # ── one edge ──────────────────────────────────────────────────────────────────
@@ -1631,7 +1636,7 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     )
     namespace = {"__name__": "agent_admin_compose_host_probe", "VALUE": "host"}
     namespace["helper"] = owner.helper
-    agent_admin.compose(namespace, (owner,))
+    facade_compose(namespace, (owner,))
 
     assert namespace["helper"]() == "host" and owner.helper is namespace["helper"]
     assert owner.outer()() == "host"
@@ -1645,7 +1650,7 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     assert namespace["helper"]() == "patched"
 
     fresh = {"__name__": "agent_admin_compose_host_probe", "VALUE": "fresh"}
-    agent_admin.compose(fresh, (owner,))
+    facade_compose(fresh, (owner,))
     assert owner.helper() == "fresh"
 
 
@@ -1697,15 +1702,52 @@ async def test_a_skill_package_mutation_rebuilds_the_agent_config(
     manager = _FakeManager()
     monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
     monkeypatch.setattr(agents, "_capability_manager", lambda: manager)
-    rebuild = MagicMock()
-    monkeypatch.setattr(agents, "install_agent", rebuild)
+    # The handler now reports the rebuild VERDICT: a confirmed rewrite returns
+    # True, which rides back as ``agent_spec_rewritten`` so the UI can tell the
+    # user the package actually reached the agent spec.
+    rebuild = MagicMock(return_value=True)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
     request = _post({"package": " pkg-1 "})
     response = await getattr(agents, handler)(request)
     assert response.status == 200
-    assert json.loads(response.body) == {"ok": True, "package": "pkg-1"}
+    assert json.loads(response.body) == {
+        "ok": True,
+        "package": "pkg-1",
+        "agent_spec_rewritten": True,
+    }
     assert manager.calls == [(op, "pkg-1")]
-    rebuild.assert_called_once_with()
+    rebuild.assert_called_once()
     request.app["state"].push_refresh.assert_called_once_with("agents")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "op"),
+    [
+        ("api_capability_skills_install", "install_skill"),
+        ("api_capability_skills_uninstall", "uninstall_skill"),
+    ],
+)
+async def test_a_skill_package_mutation_reports_a_declined_rewrite(
+    handler: str, op: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A declined rewrite is reported, not hidden: when the skill package op
+    succeeds but the shared-home guard declines to rewrite the spec, the response
+    says ``agent_spec_rewritten: False`` with a 200 — the package landed, the spec
+    did not — rather than an unqualified success."""
+    manager = _FakeManager()
+    monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(agents, "_capability_manager", lambda: manager)
+    rebuild = MagicMock(return_value=False)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
+    response = await getattr(agents, handler)(_post({"package": "pkg-1"}))
+    assert response.status == 200
+    assert json.loads(response.body) == {
+        "ok": True,
+        "package": "pkg-1",
+        "agent_spec_rewritten": False,
+    }
+    assert manager.calls == [(op, "pkg-1")]
 
 
 @pytest.mark.asyncio
@@ -1716,8 +1758,8 @@ async def test_a_skill_package_mutation_refuses_before_and_after_the_seam(
     handler: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agents, "_require_owner", AsyncMock(return_value=None))
-    rebuild = MagicMock()
-    monkeypatch.setattr(agents, "install_agent", rebuild)
+    rebuild = MagicMock(return_value=True)
+    monkeypatch.setattr(agents, "rebuild_agent_spec", rebuild)
     route = getattr(agents, handler)
 
     missing = await route(_post({"package": "  "}))
@@ -1756,6 +1798,20 @@ async def test_the_installed_listing_puts_kirocrew_first(monkeypatch: pytest.Mon
     monkeypatch.setattr(agents, "list_agents", lambda: iter(rows))
     response = await agents.api_agents_installed(make_mocked_request("GET", "/x"))
     assert [row["name"] for row in json.loads(response.body)] == ["kirocrew", "a", "b", "k"]
+
+
+@pytest.mark.asyncio
+async def test_the_installed_listing_withholds_markdown_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The flag means something only beside a harness, which this global listing lacks."""
+    from kiro_crew.agent_discovery import AgentInfo
+
+    row = AgentInfo(name="md", filename="md.md", description="", model="", markdown_only=True)
+    monkeypatch.setattr(agents, "list_agents", lambda: iter([row]))
+    response = await agents.api_agents_installed(make_mocked_request("GET", "/x"))
+    [body] = json.loads(response.body)
+    assert body["name"] == "md" and "markdown_only" not in body
 
 
 def _sync_config() -> Any:

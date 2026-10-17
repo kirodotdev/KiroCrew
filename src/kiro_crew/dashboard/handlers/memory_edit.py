@@ -9,6 +9,7 @@ from aiohttp import web
 
 from kiro_crew import memory_edit
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.validation import LESSON_LIST_OFFSET_MAX
 
 from ._shared import (
     _admin_store,
@@ -110,9 +111,12 @@ async def api_memory_record_history(request: web.Request) -> web.Response:
         if tier is None:
             return _store_unavailable(name)
         try:
-            limit, offset = int(request.query.get("limit", "25")), int(
-                request.query.get("offset", "0")
-            )
+            limit = int(request.query.get("limit", "25"))
+            # Ceiling only, before ``record_history`` binds it as a SQLite
+            # parameter (see ``clamp_query_offset``). The floor stays with the
+            # library: it refuses a negative offset with a 400 of its own, and
+            # this body echoes no offset, so folding one to 0 would hide it.
+            offset = min(int(request.query.get("offset", "0")), LESSON_LIST_OFFSET_MAX)
         except ValueError:
             raise memory_edit.MemoryEditError("Page size and offset must be integers.") from None
         result = await asyncio.to_thread(

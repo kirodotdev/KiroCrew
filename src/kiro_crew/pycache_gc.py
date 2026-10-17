@@ -59,7 +59,7 @@ PYCACHE_MAX_AGE_DAYS = 30
 # it is leftover foreign-interpreter residue, evicted oldest-first.
 PYCACHE_MAX_TOTAL_BYTES = 1 * 1024**3
 
-# Cadence for the periodic-sweep hook in ``session.py``. The prune walks the
+# Cadence for the periodic-sweep hook in ``session_parts/sweeps.py``. The prune walks the
 # whole cache tree (hundreds of thousands of files on a bloated install), far
 # too heavy for the sweep's ~5-minute tick.
 PYCACHE_GC_INTERVAL_SECS = 24 * 3600

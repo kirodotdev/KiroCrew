@@ -39,17 +39,44 @@ describe('defaults', () => {
     expect(DEFAULT_PANEL_TOGGLE_BINDINGS['left-sidebar']).toBeNull()
   })
 
-  /* The terminal ships unbound for a reason specific to it, not merely to be
-     conservative: PANEL_TOGGLES_SKIPPING_SHELL takes its chord from the PTY by
-     design, so ANY default spends one of the user's shell keystrokes. The obvious
-     pick, Cmd/Ctrl+J (VS Code's Toggle Panel), is ^J on Windows/Linux — readline's
-     accept-line — so a default would close the panel under anyone who pressed it
-     instead of Enter. This assertion is the guard: adding a default here means
-     choosing which shell keystroke to spend for every user, and should be a
-     deliberate, reviewed act rather than a one-line edit. */
-  it('ships the terminal unbound by default (opt-in), spending no shell keystroke', () => {
-    expect(DEFAULT_PANEL_TOGGLE_BINDINGS['terminal']).toBeNull()
+  /* The terminal commands ship VS Code's chords, literal Control on every
+     platform: Ctrl+` toggles, Ctrl+Shift+` adds a terminal. Each spends one shell
+     keystroke (both skip the shell by design), so this assertion pins WHICH ones:
+     changing them should be a deliberate, reviewed act. Cmd/Ctrl+J was rejected
+     because it is ^J (accept-line) off macOS; ⌘` / ⌘⇧` are the macOS window
+     cyclers. */
+  it('ships the terminal commands on VS Code\'s Ctrl+` / Ctrl+Shift+` chords, skipping the shell', () => {
+    expect(DEFAULT_PANEL_TOGGLE_BINDINGS['terminal']).toEqual({ key: '`', ctrl: true })
+    expect(DEFAULT_PANEL_TOGGLE_BINDINGS['terminal-new']).toEqual({ key: '`', ctrl: true, shift: true })
     expect(PANEL_TOGGLES_SKIPPING_SHELL.has('terminal')).toBe(true)
+    expect(PANEL_TOGGLES_SKIPPING_SHELL.has('terminal-new')).toBe(true)
+  })
+
+  it('routes Ctrl+` to the toggle and Ctrl+Shift+` (key "~") to new-terminal, on both platforms', () => {
+    const toggle = { code: 'Backquote', key: '`', ctrlKey: true }
+    const add = { code: 'Backquote', key: '~', ctrlKey: true, shiftKey: true }
+    for (const mac of [true, false]) {
+      expect(matchPanelToggleEvent(ke(toggle), {}, mac)).toBe('terminal')
+      expect(matchPanelToggleEvent(ke(add), {}, mac)).toBe('terminal-new')
+    }
+    // ⌘` / ⌘⇧` on a Mac are the window cyclers, not these bindings.
+    expect(matchPanelToggleEvent(ke({ ...toggle, ctrlKey: false, metaKey: true }), {}, true)).toBeNull()
+    expect(matchPanelToggleEvent(ke({ ...add, ctrlKey: false, metaKey: true }), {}, true)).toBeNull()
+  })
+
+  it('lets the user clear either terminal default to unbound', () => {
+    setPanelToggleBinding('terminal', null)
+    setPanelToggleBinding('terminal-new', null)
+    const overrides = loadPanelToggleOverrides()
+    expect(matchPanelToggleEvent(ke({ code: 'Backquote', key: '`', ctrlKey: true }), overrides, true)).toBeNull()
+    expect(matchPanelToggleEvent(ke({ code: 'Backquote', key: '~', ctrlKey: true, shiftKey: true }), overrides, true)).toBeNull()
+  })
+
+  it('keeps a chord stored with the shifted glyph ("~") matching', () => {
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ 'side-panel': { key: '~', mod: true, shift: true } }))
+    const overrides = loadPanelToggleOverrides()
+    expect(overrides['side-panel']).toEqual({ key: '`', mod: true, shift: true })
+    expect(matchPanelToggleEvent(ke({ code: 'Backquote', key: '~', metaKey: true, shiftKey: true }), overrides, true)).toBe('side-panel')
   })
 
   it('keeps the bound defaults collision-free against each other', () => {
@@ -60,18 +87,19 @@ describe('defaults', () => {
     expect(new Set(bound).size).toBe(bound.length)
   })
 
-  it('covers exactly the four known panel ids', () => {
-    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'terminal'])
+  it('covers exactly the known panel command ids', () => {
+    expect([...PANEL_TOGGLE_IDS].sort()).toEqual(['left-sidebar', 'session-panel', 'side-panel', 'terminal', 'terminal-new'])
   })
 
   /* Mirrors VS Code's `terminal.integrated.commandsToSkipShell`: only the commands
      that must survive terminal focus are listed, and everything else is conceded
      to the PTY. The terminal toggle qualifies because opening that panel focuses
-     its own shell — conceding there makes the chord one-way. */
-  it('lets ONLY the terminal toggle skip the shell', () => {
-    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal'])
+     its own shell — conceding there makes the chord one-way; new-terminal is
+     pressed from inside a shell to get a second one. */
+  it('lets ONLY the two terminal commands skip the shell', () => {
+    expect([...PANEL_TOGGLES_SKIPPING_SHELL]).toEqual(['terminal', 'terminal-new'])
     for (const id of PANEL_TOGGLE_IDS) {
-      if (id !== 'terminal') expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
+      if (!id.startsWith('terminal')) expect(PANEL_TOGGLES_SKIPPING_SHELL.has(id)).toBe(false)
     }
   })
 })

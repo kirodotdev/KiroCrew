@@ -7,20 +7,26 @@ import getpass
 import json
 import logging
 import math
+import os
 import re
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
+from kiro_crew.constants import crew_log_enabled, env_file_display
 from kiro_crew.context_blocks import USER_LABEL
-from kiro_crew.hooks import validate_file_path
+from kiro_crew.hooks import (
+    FileTooLargeError,
+    safe_read_file_bytes_nolink,
+    validate_file_path,
+)
 from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import telemetry_channel_of
@@ -30,6 +36,7 @@ from kiro_crew.metrics.turns import (
     emit_turn_usage,
     turn_outcome,
 )
+from kiro_crew.owner_only_files import owner_only_opener_for
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +113,11 @@ def _shard_path_for(ts: datetime) -> Path:
     return _token_usage_dir() / f"{ts.astimezone().strftime('%Y-%m-%d')}.jsonl"
 
 
-def _shards_in_window(days: int) -> list[Path]:
+def _shards_in_window(days: float, until: float | None = None) -> list[Path]:
     """Return shards whose date falls inside the last ``days`` days.
+
+    ``until`` (an epoch) anchors the window's END instead of now, so a range
+    that ended in the past also drops the shards written after it.
 
     The directory listing is cheap (≤31 entries) and we filter by filename
     rather than statting each file, so this stays well under a millisecond
@@ -123,7 +133,14 @@ def _shards_in_window(days: int) -> list[Path]:
     shard_dir = _token_usage_dir()
     if not shard_dir.exists():
         return paths
-    cutoff_date = (datetime.now().astimezone() - timedelta(days=days)).date()
+    end = (
+        datetime.now().astimezone() if until is None else datetime.fromtimestamp(until).astimezone()
+    )
+    # Subtract in epoch seconds, then convert: ``end - timedelta`` would keep
+    # END's UTC offset, so a window whose start sits on the other side of a DST
+    # change lands on the wrong local day and drops that day's shard.
+    cutoff_date = datetime.fromtimestamp(end.timestamp() - days * 86400).astimezone().date()
+    last_date = end.date()
     try:
         entries = list(shard_dir.iterdir())
     except OSError as exc:
@@ -136,16 +153,125 @@ def _shards_in_window(days: int) -> list[Path]:
             shard_date = datetime.strptime(p.stem, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if shard_date >= cutoff_date:
+        if cutoff_date <= shard_date and (until is None or shard_date <= last_date):
             paths.append(p)
     return paths
 
 
-#: Window (in days) that the spend tab and the sessions table both sum over.
-#: This is the single source of truth: ``cost_breakdown`` defaults to it, and
-#: ``slot_spend`` uses it, so the two surfaces are arithmetically incapable of
-#: reporting different totals for the same session.
+#: Default window (in days) for a spend request that names no window, and the
+#: fixed window ``slot_spend`` sums for the Sessions table. The Telemetry panel's
+#: range control can now ask ``cost_breakdown`` for any other window, so the
+#: Spend card and the Sessions table agree only while the panel shows this
+#: default; with another range picked they may legitimately differ.
 SPEND_WINDOW_DAYS = 7
+
+#: The shortest rolling (``days``) window. Fractions above it are honoured.
+_MIN_ROLLING_DAYS = 1.0
+
+#: The widest window the Telemetry panel's range control may ask for. Wider
+#: requests are clamped to it rather than refused. The per-turn shards are never
+#: pruned, so this is a read-cost ceiling, not a retention fact: the spend view
+#: reads TWICE the window (for its preceding-period comparison), and 180 daily
+#: shards is the most one 5s poll should open.
+MAX_WINDOW_DAYS = 90
+
+
+class TimeWindow(NamedTuple):
+    """An effective ``[start, end)`` reporting window, in epoch seconds.
+
+    ``rolling`` means the end tracks "now": the window was asked for as a length
+    (``days``), not as a fixed range. Readers keep passing ``until=None`` for a
+    rolling window so their caches key on the LENGTH, not on a ``now`` that
+    changes every request and would never hit.
+    """
+
+    start: float
+    end: float
+    rolling: bool
+
+    @property
+    def days(self) -> float:
+        return (self.end - self.start) / 86400
+
+    @property
+    def until(self) -> float | None:
+        """The ``until`` readers take: ``None`` for a rolling window."""
+        return None if self.rolling else self.end
+
+
+def _parse_bound(raw: str) -> float | None:
+    """One ``since``/``until`` query value as epoch seconds, or ``None`` if unusable.
+
+    Epoch seconds only: the panel sends its local-midnight bounds that way so the
+    browser's timezone decides what a calendar day is.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def resolve_window(
+    *,
+    days: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    default_days: float,
+    now: float | None = None,
+) -> TimeWindow:
+    """Turn the raw ``days`` / ``since`` / ``until`` query values into a window.
+
+    Never refuses: anything out of range is CLAMPED, because a range control
+    that errors on an over-wide pick leaves the panel blank. The end is capped
+    at now (rounded up to the minute), the start at ``MAX_WINDOW_DAYS`` before now,
+    an inverted range is swapped, and a range that collapses to nothing
+    becomes the day before its end, or the oldest legal day when its end
+    sits at the start clamp.
+
+    ``since`` or ``until`` makes the window fixed. ``days`` alone, or nothing,
+    is rolling. Unparseable values fall back as if they were absent.
+    """
+    now = time.time() if now is None else now
+    floor = now - MAX_WINDOW_DAYS * 86400
+    # A fixed range's end is capped at the next minute boundary rather than at
+    # the instant: a range that runs to "today" would otherwise carry a new
+    # ``until`` on every 5s poll and miss every reader's cache. No row is
+    # written in the future, so the extra seconds hold nothing.
+    ceiling = math.ceil(now / 60) * 60
+    start = _parse_bound(since) if since else None
+    end = _parse_bound(until) if until else None
+    if start is None and end is None:
+        try:
+            length = float(days) if days else float(default_days)
+        except ValueError:
+            length = float(default_days)
+        if not math.isfinite(length):
+            length = float(default_days)
+        # One day is the shortest rolling window, as it was before ``days``
+        # took fractions: a sub-day length would report minutes as "0.0 days".
+        # A finite length at or below zero clamps up to it too, as main's
+        # ``max(1, days)`` did; only a missing or unusable value takes the default.
+        length = max(_MIN_ROLLING_DAYS, min(length, float(MAX_WINDOW_DAYS)))
+        return TimeWindow(now - length * 86400, now, True)
+    if end is None or end > ceiling:
+        end = ceiling
+    if start is None:
+        start = end - float(default_days) * 86400
+    if start > end:
+        start, end = end, start
+    end = min(max(end, floor), ceiling)
+    start = max(start, floor)
+    if end - start <= 0:
+        start = max(end - 86400, floor)
+    if end - start <= 0:
+        # Both ends sat at the floor; the oldest legal day is all that is left.
+        start, end = floor, floor + 86400
+    return TimeWindow(start, end, False)
+
 
 # Bare dashboard slot key: chat-<seq>-<epoch>. The shard's ``slot`` field uses
 # this shape (without a ``dashboard:`` prefix), while the session manager keys
@@ -371,6 +497,7 @@ _BACKGROUND_CHANNELS = frozenset(
         # concept across two rows.
         "workflow",
         "background",
+        "consolidation",
         "secretary",
     }
 )
@@ -429,7 +556,7 @@ _COMPACTION_PCT = 90.0
 _COMPACTION_DROP_PCT = 1.0
 
 
-def context_occupancy(days: int = 14) -> dict[str, Any]:
+def context_occupancy(days: float = 14, until: float | None = None) -> dict[str, Any]:
     """Aggregate per-turn context-window occupancy from the token row store.
 
     ``persist_token_record`` writes ``context_used`` / ``context_window`` on
@@ -445,15 +572,20 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
     Rows predating the field, or any row whose window is missing/zero, are
     skipped — an unknown window cannot yield a ratio, and defaulting one would
     invent a number.
+
+    ``until`` ends the window at that epoch instead of now (see
+    :class:`TimeWindow`).
     """
     per_session: dict[str, dict[str, Any]] = {}
     pcts: list[float] = []
-    cutoff = time.time() - (days * 86400)
+    cutoff = (time.time() if until is None else until) - (days * 86400)
+    upper = math.inf if until is None else until
 
-    shard_paths = _shards_in_window(days)
+    shard_paths = _shards_in_window(days, until)
     try:
         cache_key: tuple[Any, ...] | None = (
             days,
+            until,
             tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
         )
     except OSError:
@@ -483,7 +615,7 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                         continue
                     ts_raw = str(obj.get("ts") or "")
                     ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < cutoff:
+                    if ts_epoch is None or ts_epoch < cutoff or ts_epoch >= upper:
                         continue
                     slot = str(obj.get("slot") or "unknown")
                     # Before the percentile sample, not after: the spread and the
@@ -653,7 +785,11 @@ def _usage_number(value: Any) -> int | float | None:
 
 
 def slot_turn_usage(
-    slot: str, days: int = SPEND_WINDOW_DAYS, *, app: str | None = None
+    slot: str,
+    days: float = SPEND_WINDOW_DAYS,
+    *,
+    app: str | None = None,
+    until: float | None = None,
 ) -> list[dict[str, Any]]:
     """Per-turn usage rows for ONE session, oldest first.
 
@@ -681,11 +817,13 @@ def slot_turn_usage(
     The window is enforced per ROW, not only per shard file: the oldest shard
     in the window covers a whole day, so without a row-level cutoff a request
     for N days returns rows up to a day older than asked — wrong in the one
-    place this API exists for, accounting.
+    place this API exists for, accounting. ``until`` ends the window at that
+    epoch instead of now (see :class:`TimeWindow`).
     """
     turns: list[dict[str, Any]] = []
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-    for shard_path in _shards_in_window(days):
+    cutoff = (time.time() if until is None else until) - days * 86400
+    upper = math.inf if until is None else until
+    for shard_path in _shards_in_window(days, until):
         try:
             with shard_path.open("rb") as fh:
                 for line in bounded_records(fh, shard_path, label="usage"):
@@ -700,7 +838,7 @@ def slot_turn_usage(
                     if app is not None and str(obj.get("app") or "") != app:
                         continue
                     ts = _parse_row_ts(str(obj.get("ts") or ""))
-                    if ts is None or ts < cutoff:
+                    if ts is None or ts < cutoff or ts >= upper:
                         # An unparseable timestamp cannot prove it is inside the
                         # window; accounting excludes what it cannot date.
                         continue
@@ -858,6 +996,9 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
                 # count to an array index would corrupt it, because the index counts only
                 # the rows still present AND inside the window.
                 "ordinal": _coerce_int(row.get("ordinal")),
+                # The fold's mark for the session's real start, so the panel labels
+                # only that row "session start" and any later one a rebuild.
+                "first_start": row.get("first_start") is True,
             }
         )
         # The peak INSIDE the requested window, with the window that same reading was
@@ -886,7 +1027,8 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
                 peak_window = row_used_window
                 peak_seen = True
 
-    return {
+    recording = crew_log_enabled()
+    payload: dict[str, Any] = {
         "slot": slot,
         "turns": turns,
         "totals": totals,
@@ -898,7 +1040,18 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
         # still be told.
         "context_window": peak_window if peak_seen else _coerce_int(context.get("window")),
         "window_days": days,
+        # Whether the gateway is recording at all. An empty list cannot say, and the
+        # two cases want different words: a session whose next turn will fill the
+        # panel, and a gateway whose ``KIROCREW_CREW_LOG`` switched recording off, for
+        # which nothing will ever arrive. Same field, same reading, as the crew-log
+        # fold read's own ``recording``.
+        "recording": recording,
     }
+    if not recording:
+        # The ``.env`` the gateway reads, so the empty state names the file to edit,
+        # as the Crew Log panel's off state does.
+        payload["env_file"] = env_file_display()
+    return payload
 
 
 def _row_iso(raw: Any) -> tuple[float, str] | None:
@@ -919,7 +1072,7 @@ def _row_iso(raw: Any) -> tuple[float, str] | None:
         return None
 
 
-def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
+def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) -> dict[str, Any]:
     """Aggregate per-turn spend from the token row store into a cost view.
 
     Answers "what did the last *days* cost, compared with the *days* before it,
@@ -941,15 +1094,22 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
     * Context bands are absolute token counts rather than occupancy ratios:
       spend tracks how many tokens get re-sent, and window sizes differ per
       model, so a ratio would average incomparable populations.
+
+    ``until`` ends the window at that epoch instead of now (see
+    :class:`TimeWindow`). The comparison period is always the equal-length
+    stretch immediately before the window, whichever way it is anchored.
     """
     now = time.time()
-    cutoff = now - (days * 86400)
-    prior_cutoff = now - (2 * days * 86400)
+    anchor = now if until is None else until
+    upper = math.inf if until is None else until
+    cutoff = anchor - (days * 86400)
+    prior_cutoff = anchor - (2 * days * 86400)
 
-    shard_paths = _shards_in_window(2 * days)
+    shard_paths = _shards_in_window(2 * days, until)
     try:
         cache_key: tuple[Any, ...] | None = (
             days,
+            until,
             tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
         )
     except OSError:
@@ -988,7 +1148,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
                         continue
                     ts_raw = str(obj.get("ts") or "")
                     ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < prior_cutoff:
+                    if ts_epoch is None or ts_epoch < prior_cutoff or ts_epoch >= upper:
                         continue
 
                     credits = float(obj.get("credits") or 0.0)
@@ -1294,7 +1454,7 @@ def read_effective_agent(source: object) -> str:
     :2408 passes the result into ``get_or_create``), so a slot set to ``default``
     can be served by ``kirocrew``. Recording the alias would attribute the turn
     to an agent that never ran. ``AcpClient`` stores what it was constructed with
-    on ``_agent`` (``acp/client.py:1270``), which is that resolved value — the
+    on ``_agent`` (``acp/client_class.py``, ``__init__``), which is that resolved value — the
     same "what actually ran" precedence used for the model. Never raises.
     """
     try:
@@ -1610,7 +1770,7 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
             ",".join(non_finite),
         )
         line = json.dumps(_finite_only(record), allow_nan=False)
-    with open(shard_path, "a", encoding="utf-8") as f:
+    with open(shard_path, "a", encoding="utf-8", opener=owner_only_opener_for(shard_path)) as f:
         f.write(line + "\n")
 
 
@@ -2026,6 +2186,224 @@ def _parse_token_history() -> dict[str, Any]:
     return result
 
 
+#: A kiro-cli session's metadata document (``<id>.json`` beside its ``.jsonl``
+#: transcript) is read whole, so it is bounded. Real documents stay near 2 MB at
+#: most; a larger file is counted as unreadable instead of loaded.
+_CLI_SESSION_JSON_MAX_BYTES = 8 * 1024 * 1024
+
+#: Characters per token for the output estimate: kiro-cli records each reply's
+#: length in characters and no token count.
+_EST_CHARS_PER_TOKEN = 4
+
+#: Ceiling on every count read from a session document. Real counts sit far
+#: below it, and the bound keeps each product and sum built from them a finite
+#: float, so a corrupt document cannot raise ``OverflowError`` on this read path.
+_EST_COUNT_MAX = 10**12
+
+
+def _est_count(value: Any) -> int | None:
+    """A non-negative whole count from a session document, or ``None``."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= _EST_COUNT_MAX else None
+
+
+def _est_percent(value: Any) -> float | None:
+    """A context-usage percentage in ``[0, 100]``, or ``None``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return float(value) if 0 <= value <= 100 else None
+    if isinstance(value, float) and math.isfinite(value) and 0.0 <= value <= 100.0:
+        return value
+    return None
+
+
+def _turn_window(model: str, session_model: str, session_window: int | None) -> int | None:
+    """The context window, in tokens, that a turn's usage percentage is a share of.
+
+    kiro-cli stores only the percentage, measured against the window of the model
+    that served the turn. The session document names one model and its window
+    (the session's current model), so that window applies to turns served by
+    that model or by ``auto``. Any other model's window comes from the model
+    registry; ``None`` means no source supplies a usable window.
+    """
+    if session_window and (not model or model == "auto" or model == session_model):
+        return session_window
+    return _est_count(model_registry.model_window(model)) if model else None
+
+
+def _estimate_cli_tokens(
+    listing: list[os.DirEntry[str]],
+    *,
+    root: Path,
+    since_day: str,
+    since_epoch: float,
+    until_day: str,
+) -> dict[str, Any]:
+    """Estimated Kiro CLI token use per local day, from the session documents.
+
+    kiro-cli writes zero into every token field of its per-turn metadata, so real
+    counts are not on disk. Each turn does record how many model requests it
+    made, its context-window usage at the end as a percentage, and its reply
+    length in characters. Every request re-sends the context, so a turn's input
+    is its request count times the context size averaged between the previous
+    turn's end and its own end. Output is the reply length divided by
+    :data:`_EST_CHARS_PER_TOKEN` as an approximation. That length leaves out
+    tool-call arguments and reasoning, and characters per token vary, so the
+    estimate is not a bound in either direction.
+
+    A turn with no usable context reading (it ended in an error before kiro-cli
+    recorded one, or its model's window is unknown) is taken to have kept the
+    context it started with. A session's first turn starts from zero.
+
+    Returns ``{"by_day": {day: {"input", "output", "requests"}}, "unreadable": n}``
+    for turns that ended on a day from *since_day* through *until_day* (both
+    inclusive, local ``YYYY-MM-DD``). A turn stamped after *until_day* (clock
+    skew, an imported session) is left out, so a caller passing today never
+    receives a future day. *listing* is the sessions directory's
+    :func:`os.scandir` entries. Each JSON document is validated first, and its
+    mtime then comes from its listing entry: on Windows the listing already
+    holds it, and on POSIX the entry stats its own path without following a
+    link. A validated document untouched since before *since_epoch* is skipped
+    before the no-link reader runs. A document inside the window whose listing
+    entry is a link, whatever its target, counts as unreadable before the reader
+    runs: :func:`validate_file_path` resolves a link, so the reader would open
+    the target, and a link to another document in the directory would count
+    that document's turns twice. The link check reads the type the directory
+    listing reports for the entry.
+    ``unreadable`` counts every document that :func:`validate_file_path` refuses
+    before the mtime check, whatever its age, because the estimator does not
+    inspect an unvalidated path. It also counts validated documents whose mtime
+    cannot be read, documents inside the window that are links, and documents
+    inside the window that the no-link reader refuses because its path
+    validation fails, a link is planted at the resolved name after validation,
+    the inode has a second hard link, the inode is not a regular file, the opened
+    file is outside *root*, the file cannot be read, or the file exceeds the size
+    bound. It also counts documents that are nested too deeply, are not JSON, are
+    not shaped like a session document (an object whose ``session_state`` object
+    holds the ``conversation_metadata.user_turn_metadatas`` list), or whose
+    non-empty turn list has no turn with an ``end_timestamp`` that
+    :func:`_parse_row_day` can read; a non-zero count makes the totals a lower
+    bound. kiro-cli writes only session documents here, so a renamed key in its
+    format raises that warning instead of reading as a session with nothing to
+    count. An empty turn list is a session with nothing to count yet, not an
+    unreadable one.
+    """
+    by_day: dict[str, dict[str, float]] = {}
+    unreadable = 0
+    for entry in listing:
+        f = Path(entry.path)
+        if f.suffix != ".json":
+            continue
+        if validate_file_path(str(f)) is None:
+            unreadable += 1
+            continue
+        try:
+            # The mtime comes from the listing entry, after validation. On
+            # Windows the listing already holds it, so this check opens no
+            # path: a junction swapped into an ancestor of the sessions
+            # directory after validation cannot turn it into an SMB probe. On
+            # POSIX the entry stats its own path without following a link. The
+            # skip keeps the reader from running on every document the
+            # directory has ever held.
+            if entry.stat(follow_symlinks=False).st_mtime < since_epoch:
+                continue
+        except OSError:
+            unreadable += 1
+            continue
+        if entry.is_symlink():
+            # The validator resolves a link, so the reader would open the
+            # target and pass containment for a link to another document in
+            # this directory, counting that document's turns a second time.
+            # The entry answers from the type the directory listing reports
+            # (on Windows always; on POSIX unless the filesystem reports no
+            # type, when it falls back to an lstat that does not follow the
+            # link).
+            unreadable += 1
+            continue
+        try:
+            raw = safe_read_file_bytes_nolink(
+                str(f), str(root), max_bytes=_CLI_SESSION_JSON_MAX_BYTES
+            )
+        except FileTooLargeError:
+            unreadable += 1
+            continue
+        if raw is None:
+            unreadable += 1
+            continue
+        try:
+            doc = json.loads(raw)
+        except (ValueError, RecursionError):  # Invalid text/JSON or excessive nesting
+            unreadable += 1
+            continue
+        state = doc.get("session_state") if isinstance(doc, dict) else None
+        meta = state.get("conversation_metadata") if isinstance(state, dict) else None
+        turns = meta.get("user_turn_metadatas") if isinstance(meta, dict) else None
+        if not isinstance(turns, list):
+            # Not shaped like a session document. kiro-cli writes nothing else
+            # here, so a renamed key in its format raises the unreadable-sessions
+            # warning instead of reading as a session with nothing to count.
+            unreadable += 1
+            continue
+        rts = state.get("rts_model_state") if isinstance(state, dict) else None
+        info = rts.get("model_info") if isinstance(rts, dict) else None
+        if not isinstance(info, dict):
+            info = {}
+        model_id = info.get("model_id")
+        session_model = model_id if isinstance(model_id, str) else ""
+        session_window = _est_count(info.get("context_window_tokens")) or None
+        prev_context = 0.0
+        dated = False
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            turn_model = turn.get("model")
+            model = turn_model if isinstance(turn_model, str) else ""
+            pct = _est_percent(turn.get("final_context_usage_percentage"))
+            if pct is None:
+                pct = _est_percent(turn.get("context_usage_percentage"))
+            window = _turn_window(model, session_model, session_window)
+            requests = _est_count(turn.get("total_request_count")) or 0
+            reply_chars = _est_count(turn.get("assistant_response_length")) or 0
+            context = pct / 100.0 * window if pct is not None and window else prev_context
+            input_tokens = requests * (prev_context + context) / 2.0
+            # A turn outside the window still seeds the next turn's start.
+            prev_context = context
+            day = _parse_row_day(turn.get("end_timestamp"))
+            if day is not None:
+                dated = True
+            if day is None or day < since_day or day > until_day:
+                continue
+            bucket = by_day.setdefault(day, {"input": 0.0, "output": 0.0, "requests": 0.0})
+            bucket["input"] += input_tokens
+            bucket["output"] += reply_chars / _EST_CHARS_PER_TOKEN
+            bucket["requests"] += requests
+        if turns and not dated:
+            # Turns that cannot be placed on any day (a renamed stamp key) are a
+            # session the estimate cannot read, so it feeds the warning. An empty
+            # turn list is a session with nothing to count yet, and does not.
+            unreadable += 1
+    return {
+        "by_day": {
+            day: {k: int(round(v)) for k, v in counts.items()} for day, counts in by_day.items()
+        },
+        "unreadable": unreadable,
+    }
+
+
+def _sum_estimate(
+    by_day: dict[str, dict[str, int]], first_day: str, end_day: str | None
+) -> dict[str, int]:
+    """Sum :func:`_estimate_cli_tokens` days in ``[first_day, end_day)``; no end when ``None``."""
+    total = {"input": 0, "output": 0, "requests": 0}
+    for day, counts in by_day.items():
+        if day >= first_day and (end_day is None or day < end_day):
+            for key in total:
+                total[key] += counts[key]
+    return total
+
+
 def _parse_sessions() -> dict:
     """Parse local kiro session files for usage analytics."""
     sessions_dir = _sessions_dir()
@@ -2052,20 +2430,24 @@ def _parse_sessions() -> dict:
     # degraded answer, it is a differently-shaped one.
     read_error: dict[str, str] = {}
     try:
-        entries = list(sessions_dir.iterdir())
+        # One listing feeds both scans. The token estimate reads each document's
+        # mtime from its entry (see _estimate_cli_tokens).
+        with os.scandir(sessions_dir) as scan:
+            listing = list(scan)
     except FileNotFoundError:
         # First-run homes have no transcript directory yet; use the same
         # complete zero statistics as an existing, empty directory.
-        entries = []
+        listing = []
     except OSError as exc:
         # The OSError carries a filesystem path; keep it server-side and report a
         # generic message (the ``error`` field is rendered verbatim in the UI).
         logger.warning("usage: cannot read sessions directory: %s", exc)
-        entries = []
+        listing = []
         read_error = {
             "error": "cannot read sessions directory",
             "code": "sessions_dir_unreadable",
         }
+    entries = [Path(e.path) for e in listing]
 
     for f in entries:
         if f.suffix != ".jsonl":
@@ -2152,9 +2534,32 @@ def _parse_sessions() -> dict:
     # zero sessions, so that spend is shown rather than dropped. Counter lookups
     # on those days read 0 without inserting a key.
     credits_by_day = daily_credits(_SESSIONS_HISTORY_DAYS)
-    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()))
+    # The estimate feeds two readers with different windows: the card shows the
+    # whole previous month, the history rows below keep their 30-day window. The
+    # scan starts at the earlier of the two starts and stops at today, and each
+    # reader then takes its own days from the result.
+    month_start_dt = now_dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_month_start_dt = (month_start_dt - timedelta(days=1)).replace(day=1)
+    history_start_dt = datetime.fromtimestamp(cutoff).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    scan_start_dt = min(last_month_start_dt, history_start_dt)
+    month_start = month_start_dt.strftime("%Y-%m-%d")
+    last_month_start = last_month_start_dt.strftime("%Y-%m-%d")
+    history_start = history_start_dt.strftime("%Y-%m-%d")
+    estimate = _estimate_cli_tokens(
+        listing,
+        root=sessions_dir,
+        since_day=scan_start_dt.strftime("%Y-%m-%d"),
+        since_epoch=scan_start_dt.timestamp(),
+        until_day=today_str,
+    )
+    tokens_by_day: dict[str, dict[str, int]] = estimate["by_day"]
+    token_days = {d for d in tokens_by_day if d >= history_start}
+    all_days = sorted(set(daily.keys()) | set(credits_by_day.keys()) | token_days)
     history: list[dict[str, Any]] = []
     for d in all_days:
+        day_tokens = tokens_by_day.get(d)
         history.append(
             {
                 "date": d,
@@ -2162,12 +2567,12 @@ def _parse_sessions() -> dict:
                 "messages": daily_msgs[d],
                 "tool_calls": daily_tools[d],
                 "credits": round(credits_by_day.get(d, 0.0), 2),
+                "est_tokens": day_tokens["input"] + day_tokens["output"] if day_tokens else 0,
             }
         )
 
     # Compute period summaries
     week_start = (now_dt - timedelta(days=now_dt.weekday())).strftime("%Y-%m-%d")
-    month_start = now_dt.strftime("%Y-%m-01")
 
     today = [h for h in history if h["date"] == today_str]
     week = [h for h in history if h["date"] >= week_start]
@@ -2203,6 +2608,15 @@ def _parse_sessions() -> dict:
         # session count with a positive refusal count is the exact silent
         # failure this field makes visible.
         "refused_transcripts": refused_transcripts,
+        # Kiro CLI token use estimated from the session documents (see
+        # _estimate_cli_tokens): calendar month to date and the whole previous
+        # month. A non-zero count beside them means the sums leave those session
+        # documents out.
+        "estimated_tokens": {
+            "this_month": _sum_estimate(tokens_by_day, month_start, None),
+            "last_month": _sum_estimate(tokens_by_day, last_month_start, month_start),
+            "unreadable_sessions": estimate["unreadable"],
+        },
         # Present only when the directory read itself failed. ``api_kiro_usage``
         # keys its no-cache decision on this, and the zeros above are then a
         # SHAPE, not a measurement -- which is why the message has to travel with
@@ -2263,6 +2677,11 @@ def _empty_session_summary() -> dict[str, Any]:
         "avg_msgs_per_session": 0.0,
         "avg_tools_per_session": 0.0,
         "refused_transcripts": 0,
+        "estimated_tokens": {
+            "this_month": {"input": 0, "output": 0, "requests": 0},
+            "last_month": {"input": 0, "output": 0, "requests": 0},
+            "unreadable_sessions": 0,
+        },
     }
 
 

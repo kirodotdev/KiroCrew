@@ -440,6 +440,7 @@ class FeatureVideoCache:
         self.status: dict[str, object] = {
             "download_state": STATE_IDLE,
             "downloading": None,
+            "downloading_title": None,
             "error": "",
         }
 
@@ -538,7 +539,9 @@ class FeatureVideoCache:
                     logger.info("feature-video download stopped: the ceiling now denies it")
                     self._set_state(STATE_DENIED)
                     return False
-                self._set_state(STATE_DOWNLOADING, downloading=entry.id)
+                self._set_state(
+                    STATE_DOWNLOADING, downloading=entry.id, downloading_title=entry.title
+                )
                 ok, err = await asyncio.to_thread(self._download_entry, entry, current, rate)
                 if err == DENIED_MID_ENTRY:
                     logger.info("feature-video download stopped: the ceiling now denies it")
@@ -642,8 +645,24 @@ class FeatureVideoCache:
             return False, RECEIPT_FAILED
         return True, ""
 
-    def _set_state(self, state: str, *, downloading: str | None = None, error: str = "") -> None:
-        self.status = {"download_state": state, "downloading": downloading, "error": error}
+    def _set_state(
+        self,
+        state: str,
+        *,
+        downloading: str | None = None,
+        downloading_title: str | None = None,
+        error: str = "",
+    ) -> None:
+        # The title is taken from the SAME entry as the id, in the same
+        # assignment, so the status route can never pair one clip's id with
+        # another clip's title. An empty manifest title is reported as None, so
+        # the client has one "no title" value to test rather than two.
+        self.status = {
+            "download_state": state,
+            "downloading": downloading,
+            "downloading_title": (downloading_title or None) if downloading else None,
+            "error": error,
+        }
 
     def note_denied(self) -> None:
         """Record that the ceiling refused a transfer, for the status endpoint."""

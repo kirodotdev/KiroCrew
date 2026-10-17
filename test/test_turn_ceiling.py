@@ -930,8 +930,7 @@ GATED = {
     "messaging/dispatch.py",
     "slack/transport_dispatch.py",
     "slack/handler.py",
-    "telegram/transport_dispatch.py",
-    "discord/transport_dispatch.py",
+    "telegram/dispatch/turn_engine.py",
 }
 
 #: Turn sites that must NOT compose the ceiling, each with the reason. A reason
@@ -940,12 +939,14 @@ EXEMPT = {
     "dashboard/chat_runner.py": (
         "dashboard turns are driven by a human watching and clicking through them"
     ),
-    "slack/gateway.py": (
+    "slack/gateway_runtime/nudge_channel_fire.py": (
         "generates nudge turns rather than receiving them, and dispatches each "
         "through a channel's own gated dispatcher inside "
         "turn_ceiling.generated_turn, which is where the exemption is decided"
     ),
-    "session.py": "forwards to the gate's definition rather than opening a channel turn",
+    "session_parts/claims.py": (
+        "forwards to the gate's definition rather than opening a channel turn"
+    ),
 }
 
 
@@ -1062,7 +1063,7 @@ def test_every_exemption_states_a_reason() -> None:
 #:
 #: Slack is absent on purpose: its dispatcher builds its own driver and never
 #: consults ``delivery_is_muted``, so it has no substitute to miss.
-MUTE_AWARE = ("messaging/dispatch.py", "telegram/transport_dispatch.py")
+MUTE_AWARE = ("messaging/dispatch.py", "telegram/dispatch/turn_engine.py")
 
 
 def _muted_renderer_name(tree: ast.Module) -> str:

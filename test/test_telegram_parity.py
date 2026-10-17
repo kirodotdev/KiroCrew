@@ -24,7 +24,7 @@ import pytest
 from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _origin, _prime_live
 
 from conftest import host_abs
-from kiro_crew.acp.types import EVENT_COMPLETE
+from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.telegram.client import (
     REACTION_EMOJI,
@@ -1323,7 +1323,7 @@ class TestAgentSwitchSafety:
         outcome = await dispatcher._apply_agent(route, "alpha")
         assert "Still working" in outcome
         assert dispatcher._session_key(route) == before
-        assert route not in dispatcher._agent_pref
+        assert dispatcher._agent_picks.get(route) == ""
 
 
 class TestSessionsCommand:
@@ -1446,9 +1446,9 @@ class TestAgentPicker:
         assert sessions.has_session(before)  # a live conversation to warn about
         outcome = await dispatcher._apply_agent(route, "alpha")
         after = dispatcher._session_key(route)
-        # The agent is part of the key, so a pick necessarily opens a fresh one.
+        # The agent is part of the key, so a pick necessarily leaves this one.
         assert after != before and "alpha" in after
-        assert "fresh conversation" in outcome
+        assert "leaves the current conversation" in outcome
 
     @pytest.mark.asyncio
     async def test_picking_the_default_row_clears_the_preference(self) -> None:
@@ -1457,8 +1457,65 @@ class TestAgentPicker:
         await dispatcher._apply_agent(route, "alpha")
         assert dispatcher._resolve_agent(route) == "alpha"
         await dispatcher._apply_agent(route, "")
-        assert route not in dispatcher._agent_pref
+        assert dispatcher._agent_picks.get(route) == ""
         assert dispatcher._resolve_agent(route) == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_a_pick_follows_the_new_agents_own_generations(self) -> None:
+        # After a restart nothing is in memory: the route's counter was seeded
+        # from the default agent's bucket (gen 0) while alpha's bucket already
+        # holds gen 1 and 2 on disk. The pick must land on alpha's latest (gen
+        # 2) so /new goes to gen 3, never back onto alpha's gen 1 or 2.
+        dispatcher, client, sessions = _dispatcher({1})
+        route = ("direct", "1")
+        sessions._has = False
+        persisted = {"kirocrew": 0, "alpha": 2}
+        sessions.max_generation = lambda bucket: persisted[bucket.split(":")[1]]
+        reserved: list[str] = []
+        sessions.reserve_generation = reserved.append
+        assert dispatcher._conv.current_gen(route) == 0
+        assert dispatcher._session_key(route) == "telegram:kirocrew:direct:1"
+
+        assert await dispatcher._apply_agent(route, "alpha") == "✅ Agent set to alpha."
+        assert dispatcher._session_key(route) == "telegram:alpha:direct:1:gen2"
+
+        await dispatcher.handle_message(_msg("/new"))
+        assert client.sent[-1][0] == "✅ New conversation started."
+        assert dispatcher._session_key(route) == "telegram:alpha:direct:1:gen3"
+        assert reserved == ["telegram:alpha:direct:1:gen3"]
+
+        # Back to the default row: its own latest again, not alpha's counter.
+        assert await dispatcher._apply_agent(route, "") == "✅ Agent set to Default (kirocrew)."
+        assert dispatcher._session_key(route) == "telegram:kirocrew:direct:1"
+
+    @pytest.mark.asyncio
+    async def test_pressing_the_current_row_is_not_a_switch(self) -> None:
+        # The in-memory generation can be AHEAD of disk (a /new whose save
+        # failed, a rotation). Pressing the row already marked "•" must not
+        # reseed from disk, or the next message would resume the conversation
+        # the user had already left and a pending compact prompt would be lost.
+        dispatcher, _, sessions = _dispatcher({1})
+        route = ("direct", "1")
+        sessions.max_generation = lambda bucket: 2
+        await dispatcher._apply_agent(route, "alpha")
+        dispatcher._conv.bump_gen(route)  # a /new that never reached disk
+        dispatcher._conv.set_awaiting(route)
+        key = dispatcher._session_key(route)
+        assert key == "telegram:alpha:direct:1:gen3"
+
+        assert await dispatcher._apply_agent(route, "alpha") == "ℹ️ Already using alpha."
+        assert dispatcher._session_key(route) == key
+        assert dispatcher._conv.is_awaiting(route)
+
+        # The Default row with no pick is the same no-op, compared as the agent
+        # each side RUNS rather than as the raw pick.
+        await dispatcher._apply_agent(route, "")
+        dispatcher._conv.bump_gen(route)
+        key = dispatcher._session_key(route)
+        assert await dispatcher._apply_agent(route, "") == "ℹ️ Already using Default (kirocrew)."
+        assert dispatcher._session_key(route) == key
+        assert await dispatcher._apply_agent(route, "kirocrew") == ("ℹ️ Already using kirocrew.")
+        assert dispatcher._session_key(route) == key
 
     @pytest.mark.asyncio
     async def test_a_double_press_applies_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3147,7 +3204,10 @@ class TestARestrictedSessionWritesNothingAtAll:
         root = Path(kiro_crew_pkg.__file__).parent
         found: dict[str, list[str]] = {}
         for path in sorted(root.glob("*/transport_dispatch.py")):
-            source = path.read_text(encoding="utf-8")
+            source = "\n".join(
+                module.read_text(encoding="utf-8")
+                for module in TestARestrictedSessionWritesNothingAtAll._dispatch_sources(path)
+            )
             if "privacy_mode" not in source:
                 continue
             for module in TestARestrictedSessionWritesNothingAtAll._dispatch_sources(path):
@@ -3166,7 +3226,11 @@ class TestARestrictedSessionWritesNothingAtAll:
         A title write in an owner module is one the dispatcher makes, so it is read
         with the facade rather than left outside the scan.
         """
-        return [facade, *sorted((facade.parent / "dispatch").glob("*.py"))]
+        return [
+            facade,
+            *sorted((facade.parent / "dispatch").glob("*.py")),
+            *sorted(facade.parent.glob("transport_dispatch_*.py")),
+        ]
 
     def test_the_scan_finds_the_writes_it_is_meant_to_guard(self) -> None:
         """A scan that matched nothing would make the next test vacuous."""
@@ -3897,6 +3961,50 @@ class TestCompactionReinjection:
         assert sess.failures and not sess.successes
         assert ledger["marks"] == 1 and ledger["armed"] is True
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    async def test_a_backend_compaction_arms_the_flag_for_the_next_turn(
+        self, status: str, marks: int
+    ) -> None:
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though this turn landed, so the next turn must send it.
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+        ledger["armed"] = False
+
+        class _Compacting(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_TEXT_CHUNK, text="hi")
+                yield _Ev(EVENT_COMPACTION_STATUS, text=status)
+                yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _compacting(key: str, **kw: Any) -> Any:
+            return _Compacting(), False, False
+
+        sess.get_or_create = _compacting  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
+        assert sess.successes, "the turn landed"
+        assert ledger["marks"] == marks and ledger["armed"] is bool(marks)
+
+    @pytest.mark.asyncio
+    async def test_a_backend_compaction_arms_the_flag_when_the_turn_then_dies(self) -> None:
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+        ledger["armed"] = False
+
+        class _CompactThenDie(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_COMPACTION_STATUS, text="completed")
+                raise RuntimeError("provider fell over after compacting")
+
+        async def _dying(key: str, **kw: Any) -> Any:
+            return _CompactThenDie(), False, False
+
+        sess.get_or_create = _dying  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
+        assert sess.failures and not sess.successes
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
 
 class TestPrivacyModeEnforcement:
     """The three halves of a privacy mode that marking alone does not deliver.
@@ -3925,8 +4033,11 @@ class TestPrivacyModeEnforcement:
         assert d.ctx_builder.build_calls[-1]["blocks_reads"] is True
 
         privacy_mode.reset()
-        d2, _, _ = _dispatcher({7})
-        await d2.handle_message(_dm("/incognito summarise this"))
+        # A second conversation: the first one's transcript header records
+        # temporary, and the inbound restore reads it, so an incognito there
+        # still blocks reads.
+        d2, _, _ = _dispatcher({8})
+        await d2.handle_message(_dm("/incognito summarise this", uid="8"))
         assert d2.ctx_builder.build_calls[-1]["blocks_reads"] is False
 
     @pytest.mark.asyncio
@@ -5692,7 +5803,7 @@ class TestAgentPickerCharacterization:
             "/agent takes no argument — pick from the list.\n\n"
             f"Current agent: {self._DEFAULT}\nPick one:"
         )
-        d._agent_pref[("direct", "7")] = "ghost"
+        d._agent_picks.set(("direct", "7"), "ghost")
         asyncio.run(d.handle_message(_dm("/agent")))
         assert client.sent[-1][0] == "Current agent: ghost\nPick one:"
 
@@ -5726,8 +5837,8 @@ class TestAgentPickerCharacterization:
         from test_telegram import _press
 
         rotated = (
-            "✅ Agent set to {} — this starts a fresh conversation. "
-            "Switch back to return to the previous one."
+            "✅ Agent set to {} — this leaves the current conversation. "
+            "Switch back to return to it."
         )
         d, client, sess = _dispatcher({7})
         self._with_names(monkeypatch, d, ["alpha"])
@@ -5737,22 +5848,30 @@ class TestAgentPickerCharacterization:
         asyncio.run(d.handle_message(_dm("/agent")))
         asyncio.run(d.on_callback(_press("g:0", message_id=102)))
         assert client.edits[-1][1] == rotated.format(self._DEFAULT)
-        assert ("direct", "7") not in d._agent_pref
+        assert d._agent_picks.get(("direct", "7")) == ""
 
         d, client, sess = _dispatcher({7})
         sess._has = False
         assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "✅ Agent set to alpha."
+        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == "ℹ️ Already using alpha."
         sess._busy = True
-        assert asyncio.run(d._apply_agent(("direct", "7"), "alpha")) == (
+        assert asyncio.run(d._apply_agent(("direct", "7"), "beta")) == (
             "⏳ Still working on your last message — send /agent again once it finishes "
-            "to switch to alpha."
+            "to switch to beta."
         )
+        # The Default row's label names the configured agent; with no pick it
+        # is the row already in use, so each check switches away first.
         d, _client, sess = _dispatcher({7}, default_agent="research")
         sess._has = False
+        assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
+            "ℹ️ Already using Default (research)."
+        )
+        asyncio.run(d._apply_agent(("direct", "7"), "alpha"))
         assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
             "✅ Agent set to Default (research)."
         )
         d.agent = "override"
+        asyncio.run(d._apply_agent(("direct", "7"), "alpha"))
         assert asyncio.run(d._apply_agent(("direct", "7"), "")) == (
             "✅ Agent set to Default (override)."
         )

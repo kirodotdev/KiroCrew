@@ -195,6 +195,8 @@ export interface ComputerUseConfigData {
    *  Only ever non-zero on a save that FLIPPED `enabled` (see the handler);
    *  absent on GET. */
   sessions_reset?: number
+  /** Present when the enable changed; false when the agent spec was not rewritten. */
+  agent_spec_rewritten?: boolean
 }
 
 /** Writable computer-use fields sent to PUT /api/computer-use/config. */

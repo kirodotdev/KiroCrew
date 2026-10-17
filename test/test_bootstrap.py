@@ -106,6 +106,49 @@ def test_still_missing_after_heal_exits_without_looping(monkeypatch, capsys):
     assert "still failing" in capsys.readouterr().err
 
 
+def test_slim_mcp_start_heals_a_missing_dep_and_retries(monkeypatch):
+    """A stdio MCP server's slim start heals a stale install like the CLI does:
+    the import fails before the server reads stdin, so one heal and a retry
+    start it without ever importing the CLI."""
+    from kiro_crew import mcp_entry
+
+    calls: list[str] = []
+    ran: list[str] = []
+    monkeypatch.setattr(_bootstrap.sys, "argv", ["kirocrew", "mcp-guide"])
+    load = _fail_then_succeed(calls, lambda: ran.append("server"))
+    monkeypatch.setattr(mcp_entry, "slim_server", lambda argv: load())
+    monkeypatch.setattr(
+        _bootstrap, "_self_heal", lambda missing: calls.append(f"heal:{missing}") or True
+    )
+    monkeypatch.setattr(_bootstrap, "_import_cli", lambda: pytest.fail("CLI must not load"))
+    _bootstrap.main()
+    assert calls == ["import", "heal:defusedxml", "import"]
+    assert ran == ["server"]
+
+
+def test_slim_mcp_start_heal_failure_exits_with_guidance(monkeypatch, capsys):
+    from kiro_crew import mcp_entry
+
+    def _always_fail(argv):
+        raise ModuleNotFoundError("No module named 'defusedxml'", name="defusedxml")
+
+    monkeypatch.setattr(_bootstrap.sys, "argv", ["kirocrew", "mcp-guide"])
+    monkeypatch.setattr(mcp_entry, "slim_server", _always_fail)
+    monkeypatch.setattr(_bootstrap, "_self_heal", lambda missing: False)
+    with pytest.raises(SystemExit) as exc_info:
+        _bootstrap.main()
+    assert exc_info.value.code == 1
+    assert "pip install -e" in capsys.readouterr().err
+
+
+def test_non_mcp_argv_takes_the_cli_path(monkeypatch):
+    ran: list[str] = []
+    monkeypatch.setattr(_bootstrap.sys, "argv", ["kirocrew", "gateway"])
+    monkeypatch.setattr(_bootstrap, "_import_cli", lambda: lambda: ran.append("cli"))
+    _bootstrap.main()
+    assert ran == ["cli"]
+
+
 # ── _self_heal ──
 
 

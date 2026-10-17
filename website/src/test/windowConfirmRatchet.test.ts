@@ -27,6 +27,12 @@ describe('window.confirm ratchet (converted files)', () => {
   it.each([
     'components/ConfirmDialog.tsx',
     'components/MarkdownPanel.tsx',
+    'components/MarkdownPanelBody.tsx',
+    'components/MarkdownPanelHeader.tsx',
+    'components/markdownPanelSourcePos.ts',
+    'components/useMarkdownPanelDisk.ts',
+    'components/useMarkdownPanelFileState.ts',
+    'components/useMarkdownPanelFind.ts',
     'pages/ArtifactDeployPage.tsx',
   ])('%s never calls window.confirm', rel => {
     expect(count(rel)).toBe(0)

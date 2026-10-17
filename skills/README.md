@@ -46,7 +46,7 @@ Instructions for the LLM agent...
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Repository convention for the display name; the runtime falls back to the relative directory key if omitted |
-| `description` | yes | One-line summary — the LLM sees this to decide relevance |
+| `description` | yes | Repository convention for the one-line summary the LLM sees to decide relevance; the runtime falls back to the name if omitted |
 | `always` | no | `true` to inject into every session (default: `false`) |
 | `triggers` | no | Comma-separated phrases used by opt-in trigger matching (`skills.max_triggered > 0`). Prefix with `!` for negative triggers (e.g. `!test` excludes when "test" appears) |
 | `repo_scope` | no | Relative path (e.g. `src/kiro_crew`) that must exist in the session's active project directory, or an ancestor of it, for the skill to be eligible. Mechanically suppresses repo-specific skills outside their repo — use for skills whose instructions would be wrong or destructive elsewhere. Fails closed: a session that names no project, and one whose project cannot be resolved, get neither the skill's body nor its index entry. The process working directory is never consulted. |
@@ -75,5 +75,8 @@ for the canonical discovery, precedence, trust, and loading contract.
 
 ## No Rebuild Required
 
-Skills in this directory are read at runtime. Edit, add, or remove skills
-without rebuilding the package — changes take effect on the next session.
+Skills in this directory are read at runtime, so editing, adding, or removing
+one needs no package rebuild. They reach sessions through the copy under
+`~/.kiro/crew/skills/`, which the skill sync refreshes — at gateway startup
+in the normal case — so a change takes effect after the next sync (normally a
+gateway restart), not at the next session.

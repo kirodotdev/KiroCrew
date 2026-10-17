@@ -2,10 +2,15 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 
 export type WatchStatus = 'idle' | 'connecting' | 'open' | 'error'
 
+/** What a frame says besides its text. `initial` marks the stream's first
+ *  frame: the backend's connect-time read, which reports the file as it is
+ *  rather than a change to it. Every later frame follows a write. */
+export interface FileWatchFrame { initial: boolean }
+
 /** Subscribe to SSE file-change events at GET /api/file-watch?path=... */
 export function useFileWatch(
   filePath: string | null,
-  onContent: (content: string) => void,
+  onContent: (content: string, frame: FileWatchFrame) => void,
 ) {
   const cbRef = useRef(onContent)
   cbRef.current = onContent
@@ -26,10 +31,15 @@ export function useFileWatch(
     esRef.current = es
 
     es.onopen = () => setStatus('open')
+    let initial = true
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data)
-        if (data.content != null) cbRef.current(data.content)
+        if (data.content != null) {
+          const frame = { initial }
+          initial = false
+          cbRef.current(data.content, frame)
+        }
       } catch { /* ignore parse errors */ }
     }
     es.onerror = () => {

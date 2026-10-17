@@ -14,6 +14,10 @@ import { useSelectionComposerAnchor } from '../hooks/useSelectionComposerAnchor'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { i18nT } from '../i18n/t'
+import { pendingSubmitComments } from '../lib/commentFilter'
+
+/** Stable empty batch, so a host without a Submit gets one identity every render. */
+const NO_COMMENTS: ArtifactComment[] = []
 
 /** The selection an open composer annotates, resolved while it was still live. */
 interface PendingAnchor {
@@ -51,7 +55,7 @@ interface PendingAnchor {
  */
 export function useFileArtifactComments({
   slug, previewRef, scrollRef, usesIframe = false, sidebarClassName, sidebarStyle,
-  sidebarDefaultOpen = true, confirmDiscardDraft,
+  sidebarDefaultOpen = true, confirmDiscardDraft, submitSentIds,
 }: {
   slug: string | null
   previewRef: React.RefObject<HTMLDivElement | null>
@@ -70,6 +74,10 @@ export function useFileArtifactComments({
    *  discard. The host owns the dialog so the wording matches its other
    *  discard prompts. Omit to discard without asking. */
   confirmDiscardDraft?: () => Promise<boolean>
+  /** The host's already-submitted comment ids (`mc-cmt-sent:<slug>`), when it
+   *  has a batch Submit. The sidebar then marks each row that Submit would
+   *  send. Omit when the host offers no Submit: no rows are marked. */
+  submitSentIds?: ReadonlySet<string>
 }): {
   overlay: ReactNode
   popovers: ReactNode
@@ -95,6 +103,10 @@ export function useFileArtifactComments({
    *  multi-kind side-panel Artifacts tab) and the building-block state the
    *  body needs to position overlays / sync the active thread. */
   comments: ArtifactComment[]
+  /** The batch the host's Submit would send (`pendingSubmitComments` over
+   *  `submitSentIds`); empty when no `submitSentIds` was given. The sidebar's
+   *  row marks come from this same list. */
+  pendingSubmit: ArtifactComment[]
   activeCommentId: string | null
   scrollNonce: number
   unreadRootIds: Set<string>
@@ -124,6 +136,17 @@ export function useFileArtifactComments({
     [slug, commentsQuery.data?.comments],
   )
   const remoteSyncError = commentsQuery.data?.remote_sync_error ?? null
+  // The host's Submit batch, worked out once here from the comments this layer
+  // already holds: the host's count reads `pendingSubmit` and the sidebar marks
+  // `pendingSubmitIds`, so the two cannot disagree.
+  const pendingSubmit = useMemo(
+    () => (submitSentIds ? pendingSubmitComments(durableComments, submitSentIds) : NO_COMMENTS),
+    [durableComments, submitSentIds],
+  )
+  const pendingSubmitIds = useMemo(
+    () => (submitSentIds ? new Set(pendingSubmit.map(c => c.id)) : undefined),
+    [pendingSubmit, submitSentIds],
+  )
   const invalidate = useCallback(() => {
     if (slug) qc.invalidateQueries({ queryKey: ['artifact-comments', slug] })
   }, [qc, slug])
@@ -374,6 +397,7 @@ export function useFileArtifactComments({
       activeCommentId={activeCommentId}
       containerClassName={sidebarClassName}
       containerStyle={sidebarStyle}
+      pendingSubmitIds={pendingSubmitIds}
     />
   ) : null
 
@@ -381,6 +405,7 @@ export function useFileArtifactComments({
     overlay, popovers, sidebar, selectionComposer, isComposerOpen, guardCommentDraft, iframeSelection, toggleSidebar, sidebarOpen,
     commentCount: durableComments.length,
     comments: durableComments,
+    pendingSubmit,
     activeCommentId,
     scrollNonce: bodyScrollNonce,
     unreadRootIds,

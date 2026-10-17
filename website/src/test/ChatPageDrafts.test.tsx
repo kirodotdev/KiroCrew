@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -423,6 +423,16 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
 // someone reorders the effects or moves the advance up. All three persist
 // writes are asserted (not just text) because the advance now guards all three.
 describe('ChatPage composerSlotRef effect ordering', () => {
+  // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+  // so the pins read the page and those owners; `skip` drops an owner a test reads alone.
+  const pageAndOwners = (here: string, skip: readonly string[] = []): string => {
+    const pagesDir = resolve(here, '../pages')
+    const ownerDir = resolve(pagesDir, 'chat/page')
+    const read = (dir: string, name: RegExp) => readdirSync(dir)
+      .filter(f => name.test(f) && !/\.test\./.test(f) && !skip.includes(f)).sort()
+      .map(f => readFileSync(resolve(dir, f), 'utf8'))
+    return [readFileSync(resolve(pagesDir, 'ChatPage.tsx'), 'utf8'), ...read(ownerDir, /\.tsx?$/), ...read(pagesDir, /^useChatPage.*\.tsx?$/)].join('\n')
+  }
   it('declares all three composer-persist effects before advancing composerSlotRef', () => {
     // Deliberately brittle: this matches exact code substrings from ChatPage.tsx
     // and its draft owner (pages/chat/page/composerDrafts.ts) to lock a
@@ -430,7 +440,8 @@ describe('ChatPage composerSlotRef effect ordering', () => {
     // trip it. The fix is to UPDATE the substrings below to the new form, never
     // to delete the guard (the ordering invariant it protects is real).
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    // composerDrafts.ts defines both hooks and holds the one advance, so it is read alone as `owner`.
+    const src = pageAndOwners(here, ['composerDrafts.ts'])
     const owner = readFileSync(resolve(here, '../pages/chat/page/composerDrafts.ts'), 'utf8')
     // The text draft persists from `onComposerDraftCommit`, which the
     // `ComposerDraftSync` CHILD calls from its effect: a child's effects run
@@ -477,7 +488,7 @@ describe('ChatPage composerSlotRef effect ordering', () => {
     // Same brittle-by-design string match: if the send-target lines are renamed,
     // UPDATE the substrings to the new form; do not delete this guard.
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    const src = pageAndOwners(here)
     expect(src, 'uiSlot must be read from the activeSlot ref').toContain('const uiSlot = activeSlotRef.current')
     expect(src, 'send target must resolve from uiSlot').toContain('let slot = targetSlot ?? uiSlot')
     expect(src, 'send target must NOT fall back to the stale closure activeSlot').not.toContain('let slot = targetSlot ?? activeSlot')
@@ -735,16 +746,25 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     // Switch to slot-b while the upload is still pending.
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
 
-    // Now resolve the upload — the file must be diverted to slot-a.
+    // Now resolve the upload — the file must wait for slot-a, persisted.
     await act(async () => {
       resolveUpload({ paths: ['/tmp/uploaded.png'] })
       await deferred
     })
 
     await waitFor(() => {
+      const waiting = JSON.parse(sessionStorage.getItem('mc-composer-arrivals') || '{}')
+      expect(waiting['slot-a']).toEqual(['/tmp/uploaded.png'])
+      expect(waiting['slot-b']).toBeUndefined()
+      const saved = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
+      expect(saved['slot-b']).toBeUndefined()
+    })
+
+    // Back on slot-a, its composer takes the file.
+    act(() => { store.dispatch(setActiveSlot('slot-a')) })
+    await waitFor(() => {
       const saved = JSON.parse(sessionStorage.getItem('mc-chat-file-drafts') || '{}')
       expect(saved['slot-a']).toEqual(['/tmp/uploaded.png'])
-      expect(saved['slot-b']).toBeUndefined()
     })
   })
 
@@ -769,14 +789,14 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
       })
     })
     // The textarea now holds the token, not the raw content.
-    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/))
 
     // Switch away and back WITHOUT sending.
     act(() => { store.dispatch(setActiveSlot('slot-b')) })
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
 
     // Token text is restored AND still backed by its block.
-    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toMatch(/\[ Paste #1 · 5 lines \]/))
+    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/))
 
     // Send — the LLM must receive the EXPANDED content, never the literal token.
     await act(async () => { fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' }) })
@@ -784,7 +804,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     const llmText = vi.mocked(api.sendChat).mock.calls[0][0] as string
     expect(llmText).toContain('line1\nline2\nline3\nline4\nline5')
-    expect(llmText).not.toContain('[ Paste #1 · 5 lines ]')
+    expect(llmText).not.toMatch(/\[ Paste #/)
   })
 
   it('restores paste blocks to the active slot on connection error', async () => {
@@ -803,7 +823,7 @@ describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
         clipboardData: { items: [], getData: (t: string) => (t === 'text' ? pasted : '') },
       })
     })
-    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1 · 4 lines \]/))
+    await waitFor(() => expect(input.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/))
 
     await act(async () => { fireEvent.keyDown(input, { key: 'Enter' }) })
 

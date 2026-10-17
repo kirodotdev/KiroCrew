@@ -39,7 +39,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.pptx_maker.backend import engine_source, paths
-from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -230,8 +230,10 @@ def _spawn(argv: list[str], *, cwd: str, timeout: int) -> EngineResult:
     # from the rendered agent config — so the managed tool dir belongs on THAT
     # process's PATH (`provision.mcp_tools_path`), and putting it here would only
     # look like a fix.
+    # The chokepoint already applies the cgroup scope as its outermost layer.
+    # Wrapping again nests a second ``systemd-run --scope`` that inherits the
+    # first one's PID and collides on its auto-named unit.
     wrapped, env, cleanup = sandboxed_spawn_argv(argv, mode="strict", strip_python_env=True)
-    wrapped = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
     try:
         proc = run_limited(  # noqa: S603 - fixed argv, contained paths only
             wrapped,

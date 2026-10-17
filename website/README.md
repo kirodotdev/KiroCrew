@@ -17,6 +17,10 @@ npm run dev          # Vite dev server on http://localhost:3000 (proxies API to 
 npm run build        # tsc -p tsconfig.app.json && vite build  → dist/
 ```
 
+To serve the dashboard under a URL prefix, build with
+`KIROCREW_BASE_PATH=/your/prefix npm run build`. It is read at build time only;
+see [Behind a reverse proxy at a sub-path](../docs/guides/remote-and-mobile.md#behind-a-reverse-proxy-at-a-sub-path).
+
 Every Vite build except `--watch` or one into a mount-point `dist/` writes a
 scratch sibling of `dist/` and swaps it in only when it succeeds
 (`scripts/publish-dist.mjs`), so `dist/` is never empty or half-written; those

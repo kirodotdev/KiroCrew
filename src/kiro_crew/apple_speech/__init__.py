@@ -463,7 +463,7 @@ def _build_helper(name: str, source: str, *, build: bool = True) -> str | None:
         return None
 
     cache = _cache_dir()
-    # 0o700, matching the other two `run/` writers (`sandbox.py::_ensure_run_dir`).
+    # 0o700, matching the other two `run/` writers (`sandbox_argv.py::_ensure_run_dir`).
     # BEFORE the cache-hit early return on purpose: placed after it, the repair
     # would never run in the steady state — the directory holding an executable
     # the gateway runs would stay at whatever the umask gave it. `exist_ok` does

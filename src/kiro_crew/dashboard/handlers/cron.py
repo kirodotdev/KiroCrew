@@ -9,6 +9,8 @@ import logging
 import math
 import os
 import re
+import sys
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -19,8 +21,10 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.memory_sections import memory_writes_off_key
 from kiro_crew.context import ContextBuilder
 from kiro_crew.cron import (
+    CronPauseNotSaved,
     CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
@@ -39,11 +43,13 @@ from kiro_crew.cron_script import (
 )
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
+    apply_cron_turn_timeout,
     chat_folder_exists,
     hydrate_slot_from_history,
     inject_cron_result_to_dashboard,
     move_cron_job_tab,
     prefetch_cron_dismissed,
+    restore_cron_turn_timeout,
 )
 from kiro_crew.dashboard.handlers._shared import (
     _owner_denial_response,
@@ -84,13 +90,13 @@ from kiro_crew.validation import (
     LEARN_ADD_SCHEMA,
     LESSON_LIST_LIMIT,
     LESSON_LIST_LIMIT_MAX,
-    LESSON_LIST_OFFSET_MAX,
     MAX_CRON_MESSAGE,
     MAX_SHORT_STRING,
     SLACK_THREAD_TS_RE,
     WORKSPACE_NAME_RE,
     FieldSpec,
     ValidationError,
+    clamp_query_offset,
     normalize_lesson_category,
     validate_string_field,
     validate_tool_args,
@@ -247,6 +253,39 @@ _CONTRADICTION_MODEL = "auto"  # inherit the governed default; a hardcoded id 40
 # fire-and-forget after the lesson is already persisted, so this bounds a hung
 # model call rather than gating the write path.
 _CONTRADICTION_TIMEOUT = 60.0
+# Budget for embedding a submitted lesson rule before it is written. The shared
+# inference thread serves one job at a time and cannot preempt a running one, so
+# a short rule can wait behind a long prompt embed for longer than the embedder's
+# own default wait -- which equals the MCP client's read timeout
+# (``mcp_core._post``), so the write was never reached. Well under that timeout,
+# so an expired embed still leaves time to write the row with a NULL vector for
+# the standing repair sweep to fill.
+_LESSON_EMBED_DEADLINE_SECS = 5.0
+
+
+def _embed_lesson_bounded(vs: Any, rule: str) -> list[float] | None:
+    """Embed *rule* for a lesson write within ``_LESSON_EMBED_DEADLINE_SECS``.
+
+    Synchronous; run it via ``asyncio.to_thread``. Returns ``None`` when the
+    embed could not finish in time, the same value as any other unavailable
+    embedding, so the caller writes the lesson without a vector.
+    """
+    from kiro_crew.embeddings import PRIORITY_NORMAL, EmbeddingWork, embedding_work
+
+    inherited = embedding_work.get()
+    deadline = time.monotonic() + _LESSON_EMBED_DEADLINE_SECS
+    if inherited is not None:
+        deadline = min(deadline, inherited.deadline)
+    work = EmbeddingWork(
+        deadline=deadline,
+        cancelled=inherited.cancelled if inherited is not None else threading.Event(),
+        priority=PRIORITY_NORMAL,
+    )
+    token = embedding_work.set(work)
+    try:
+        return vs.embed_lesson(rule)
+    finally:
+        embedding_work.reset(token)
 
 
 async def _classify_contradiction(state: DashboardState, prompt: str) -> str:
@@ -917,6 +956,17 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # mutating the returned job and calling a bare, unlocked `_save()`) closes
     # the data-loss race: two concurrent creates could interleave at the
     # `await`, and the unlocked save could overwrite the other request's job.
+    # The UI resolves a member pick to ``member_id`` client-side, but a scripted
+    # POST can still send a member NAME in ``agent``; resolve the split here so
+    # that path records a member selection too, not a template id the cron chat's
+    # reply path cannot bind. An explicit ``member_id`` is left as the caller set it.
+    # The split reads the member roster from the configuration on disk, so it runs
+    # on a worker thread and never holds the event loop.
+    from kiro_crew.cron_service.identity import split_cron_agent_member
+
+    agent_id, member_id = await asyncio.to_thread(
+        split_cron_agent_member, agent_id or "", member_id or ""
+    )
     add_kwargs: dict[str, Any] = {
         "channel": channel,
         "agent_id": (agent_id or ""),
@@ -1014,14 +1064,42 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.delete")
     if app_denied is not None:
         return app_denied
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_UNDO_CRON_EXPECT
+
+    expected_revision = request.get(REQ_CARD_UNDO_CRON_EXPECT)
     try:
-        ok = await state.crons.remove_job_async(job_id, actor="dashboard", source="api_cron_delete")
+        if isinstance(expected_revision, str):
+            # Card Undo of a schedule it created: delete only while the job
+            # still fingerprints to what the card left, compared under the
+            # cron store lock so an edit another tab landed after the Undo's
+            # snapshot check cannot be clobbered.
+            from kiro_crew.dashboard.change_cards import cron_job_revision
+
+            outcome = await state.crons.remove_job_if_async(
+                job_id,
+                expected_revision=expected_revision,
+                revision_of=cron_job_revision,
+                actor="dashboard",
+                source="api_cron_delete",
+            )
+            if outcome == "changed":
+                return web.json_response(
+                    {
+                        "error": "this changed after the card was applied; undo refused",
+                        "code": "changed_since_apply",
+                    },
+                    status=409,
+                )
+            ok = outcome == "removed"
+        else:
+            ok = await state.crons.remove_job_async(
+                job_id, actor="dashboard", source="api_cron_delete"
+            )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
         return _cron_unreadable_response(exc)
     if ok:
-        await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
     return web.json_response({"ok": ok})
 
@@ -1081,19 +1159,6 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         logger.warning("Batch delete failed", exc_info=True)
         failed = unique_ids
         deleted = []
-    for job_id in deleted:
-        # The job is gone now, so it is unconditionally a successful delete.
-        # History cleanup is best-effort: a failure there must NOT reclassify a
-        # completed delete as "failed" — that would make the UI offer a retry
-        # that can never succeed (the job no longer exists).
-        try:
-            await state.crons.get_history().delete_job_history(job_id)
-        except Exception:
-            logger.warning(
-                "History cleanup failed for cron %s (job already removed)",
-                job_id,
-                exc_info=True,
-            )
     if deleted:
         state.push_refresh("crons")
     # ok reflects whether anything was actually deleted — consistent with the
@@ -2025,7 +2090,15 @@ async def api_cron_cancel(request: web.Request) -> web.Response:
     job = next((j for j in jobs if j.id == job_id), None)
     if not job:
         return web.json_response({"error": "job not found"}, status=404)
-    cancelled = await state.crons.cancel(job_id)
+    try:
+        cancelled = await state.crons.cancel(job_id)
+    except CronPauseNotSaved as exc:
+        # The run is cancelled; only the one-shot's pause did not reach the store.
+        state.push_refresh("crons")
+        return web.json_response(
+            {"error": str(exc), "code": "cron_pause_not_saved", "retryable": False},
+            status=409,
+        )
     if not cancelled:
         return web.json_response({"error": "job is not running"}, status=409)
     state.push_refresh("crons")
@@ -2039,6 +2112,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.to_chat")
+    if app_denied is not None:
+        return app_denied
     slot_name = f"cron-{job_id}"
     # The job's tab key is held by an app's slot: it is not adopted (see
     # slot_ownership.app_holds_gateway_key), so there is no tab to open.
@@ -2068,6 +2144,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             dismissed=await prefetch_cron_dismissed(state, job.id),
             include_prompt=False,
         )
+        await restore_cron_turn_timeout(state, job.id)
     else:
         # Job deleted (one-shot with delete_after_run). Create slot from history or notification.
         session_key = f"cron:{job_id}"
@@ -2104,6 +2181,10 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                 slot._dismissed_source_links = set()
                 slot.invalidate_source_links()
                 slot._dismissed_hydrated = False
+                # The tab's own turn time limit is unread for the same reason:
+                # its saves carry the on-disk value until the read below lands.
+                slot.turn_timeout_secs = None
+                slot._turn_timeout_hydrated = False
                 if state.conversation_log is not None:
                     try:
                         _meta, _readable = await asyncio.to_thread(
@@ -2113,6 +2194,11 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
                         _meta, _readable = {}, False
                     if _readable:
                         _restore_dismissed_source_links(slot, _meta.get("dismissed_source_links"))
+                        # The read is a rebind window: a limit the user set while
+                        # it ran wins over the older line, and a tab now bound to
+                        # another transcript takes nothing from this one.
+                        if slot.linked_session_key == session_key:
+                            apply_cron_turn_timeout(slot, _meta)
         else:
             # No session log — fall back to notification body.
             notif = next(
@@ -2212,6 +2298,9 @@ async def api_cron_history(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.history")
+    if app_denied is not None:
+        return app_denied
     try:
         limit = int(request.query.get("limit", "20"))
     except (ValueError, TypeError):
@@ -2239,6 +2328,9 @@ async def api_cron_history_detail(request: web.Request) -> web.Response:
     run_id = request.match_info["run_id"]
     if (_e := _invalid_path_id_response(run_id, "run_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.history_detail")
+    if app_denied is not None:
+        return app_denied
     detail = await state.crons.get_history().get_run_detail(job_id, run_id)
     if not detail:
         return web.json_response({"error": "run not found"}, status=404)
@@ -2398,6 +2490,9 @@ async def api_cron_script_source(request: web.Request) -> web.Response:
     job_id = request.match_info["job_id"]
     if (_e := _invalid_path_id_response(job_id, "job_id")) is not None:
         return _e
+    app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.script_source")
+    if app_denied is not None:
+        return app_denied
     # Freshness-guaranteed lookup, same rationale as api_cron_run: the job may
     # have been minted by another process and not yet be in the cache snapshot.
     job = await state.crons.get_job_async(job_id)
@@ -2449,9 +2544,36 @@ async def api_cron_history_all(request: web.Request) -> web.Response:
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         offset = 0
-    runs, total = await state.crons.get_history().get_all_history(
-        job_id=job_id, limit=limit, offset=offset
-    )
+    app = _app_caller(request)
+    if app:
+        # An app sees only the runs of jobs it owns, judged by the same
+        # ``created_by`` stamp ``_refuse_foreign_app_job`` reads. The filter
+        # runs before pagination so ``total`` counts the app's own runs; the
+        # index is capped by ``cron_max_index_records``, so the full read is
+        # bounded. Function-local import for the reason ``api_crons`` gives.
+        from kiro_crew.apps.cron_sdk import app_owner_name
+
+        owned = {
+            j.id
+            for j in state.crons.list_jobs(include_disabled=True)
+            if app_owner_name(j.created_by) == app
+        }
+        rows, _ = await state.crons.get_history().get_all_history(
+            job_id=job_id, limit=sys.maxsize, offset=0
+        )
+        rows = [row for row in rows if row.get("job_id") in owned]
+        total = len(rows)
+        runs = rows[offset : offset + limit]
+        # Record the ownership scoping decision: this branch applies an
+        # access-control filter to an app token's read, and token-auth events
+        # log only authentication while dashboard GET auditing is excluded, so
+        # without this SEL row no event records that the app was confined to its
+        # own runs. One row per request on this on-demand (not polled) route.
+        _audit_app_cron(app, "crons.history_all", "allowed", f"rows={total}")
+    else:
+        runs, total = await state.crons.get_history().get_all_history(
+            job_id=job_id, limit=limit, offset=offset
+        )
     # Enrich with job_name
     jobs_by_id = {j.id: j for j in state.crons.list_jobs(include_disabled=True)}
     for run in runs:
@@ -2568,6 +2690,11 @@ async def _recognize_session(
     # Private proof/store authorization and restricted-mode gates stay separate.
     sessions = getattr(state, "sessions", None)
     subagents = getattr(state, "subagents", None)
+    # ``wf-scope:`` is absent on purpose, although ``resolve_session_memory_mode``
+    # lists it: that prefix names a workflow run's memory anchor (``WorkflowScope.anchor``),
+    # and no session is created under it, so there is no live owner to find. Such a key
+    # is recognised only the way any key outside this tuple is: a slot, a restricted
+    # key, a channel namespace, or a persisted transcript.
     in_live_session = (
         sk.startswith(("subagent:", "wf:", "wf-pool:", "wf-unpooled:", "wf-worker:", "wf-author:"))
         and sessions is not None
@@ -2715,24 +2842,33 @@ def _lesson_jsonl_store(
     silo: str,
     scope: str = "global",
     workspace: str | None = None,
+    session_key: str = "",
 ) -> LessonStore:
     """Return only a V1 JSONL learning tier using the recorded store binding.
 
     Member V2 callers use their SQLite handle even when it contains no lessons.
     Workspace selection applies only to Global V1, preserving its existing
-    global/workspace fallback and list union.
+    global/workspace fallback and list union. A workspace-scoped write that
+    names no workspace resolves to the REQUESTING session's workspace
+    (*session_key*), never to another session's.
     """
     if silo:
         return ContextBuilder.get_lessons_for(memory_store=silo)
     if scope == "workspace":
-        return _get_lessons(state, workspace)
+        return _get_lessons(state, workspace, session_key=session_key)
     return state.lessons
+
+
+def _load_workspace_lessons(state: DashboardState, workspace: str) -> list[Lesson]:
+    """Every row in *workspace*'s JSONL lessons file."""
+    return _get_lessons(state, workspace).load_all()
 
 
 async def _prepare_member_lesson_store(store: str) -> web.Response | None:
     """Prepare V2 before synchronous lesson readers can borrow a handle."""
-    import sqlite3
-
+    # The member database is opened through the shim, so its errors are the shim's
+    # classes; the stdlib ``sqlite3.Error`` would let them escape as a 500.
+    from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.memory_stores import memory_store_version
 
     try:
@@ -2779,27 +2915,34 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             {"error": "Memory writes are not allowed in this session mode."},
             status=403,
         )
-    # Global persistence switch (memory.persistence_enabled).
+    # Global persistence switch (memory.persistence_enabled) and the
+    # writes-only switch (memory.writes_enabled).
     # Enforced on the route rather than in the learn_add MCP handler so every
     # transport that posts here (MCP tool, dashboard, direct HTTP) is covered
     # by the one check. Reads and deletions stay available — the right to
     # forget survives the switch.
-    if not KiroCrewConfig.load().memory.persistence_enabled:
+    writes_off = memory_writes_off_key(KiroCrewConfig.load().memory)
+    if writes_off is not None:
+        code = (
+            "persistence_disabled"
+            if writes_off == "memory.persistence_enabled"
+            else "writes_disabled"
+        )
         _sel().log_api_access(
             caller=sk,
             operation="learn_add",
             outcome="denied",
             source="dashboard",
-            resources="persistence_disabled",
-            error="Persistent memory is disabled (memory.persistence_enabled).",
+            resources=code,
+            error=f"Persistent memory writes are disabled ({writes_off}).",
         )
         return web.json_response(
             {
-                "error": "Lesson was NOT saved: persistent memory is disabled "
-                "(memory.persistence_enabled is false). Re-enable it with "
-                "`kirocrew config set memory.persistence_enabled true` to save "
+                "error": "Lesson was NOT saved: persistent memory writes are disabled "
+                f"({writes_off} is false). Re-enable them with "
+                f"`kirocrew config set {writes_off} true` to save "
                 "lessons again.",
-                "code": "persistence_disabled",
+                "code": code,
             },
             status=403,
         )
@@ -2866,7 +3009,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # space of a vector computed out here, and a model swap landing between this
         # embed and the write would otherwise commit it into the wrong space.
         rule_emb_generation = vs.space_generation
-        rule_emb = await asyncio.to_thread(vs.embed_lesson, rule)
+        # Bounded: a saturated inference queue yields None here rather than holding
+        # the request past the client timeout, and the lesson still lands below.
+        rule_emb = await asyncio.to_thread(_embed_lesson_bounded, vs, rule)
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
         # running it inline would exceed the MCP client's 30s timeout while the
@@ -2884,6 +3029,18 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule_emb_generation,
             repo_scope,
             applies=applies,
+            # The embed above was attempted; a None from it must not trigger a
+            # second, unbounded embed of the same text inside the write.
+            rule_emb_resolved=True,
+            # Stored lessons that still lack a vector are the standing repair
+            # sweep's to fill. Embedding them here is PRIORITY_BULK work with no
+            # deadline, queued behind every other bulk job, so it can hold this
+            # request past the MCP client's read timeout (``mcp_core._post``) while
+            # the write still lands later. Until the sweep fills such a row, both
+            # semantic checks (dedup here, the contradiction scan below) pass it
+            # over; the exact-rule, substring and keyword-overlap rules still apply
+            # to it.
+            defer_backfills=True,
         )
         # Sweep ONLY when the lesson actually landed. The write declines for a value
         # its preflight refuses (reachable because ``negative`` is forwarded here) and
@@ -2905,9 +3062,23 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # Redacting HERE covers both readers: the dashboard and the ``learn_add`` tool
         # each see only what this route sends.
         superseded = _redact_memory_field(list(result.superseded))
+        # The stored lesson a ``deduped`` write lost to, redacted on the same chain
+        # for the same reason: it is stored user text leaving the process. Naming it
+        # lets a caller act on the winner directly instead of paging the list route.
+        winner = _redact_memory_field(result.winner) if result.winner else None
+        # The scope goes out as the ``DELETE /api/lessons`` selector that names the
+        # winner's row: ``""`` for a global row, the fragment for a scoped one, and
+        # ``None`` when the fragment is unusable or carries a credential shape, so a
+        # stored scope never leaves this route unredacted.
+        winner_repo_scope = (
+            _lesson_scope_selector(result.winner_repo_scope) if result.winner else None
+        )
         # Avoid even scanning or scheduling the model-based sweep for V2;
         # explicit corrections remain available through the owner review flow.
-        if result.wrote and getattr(vs, "algorithm_version", "v1") != "v2":
+        # Skipped without a rule vector too: the scan would embed the rule again
+        # on the embedder's default wait, behind the same full queue, and hold
+        # this request past the client timeout. That lesson gets no sweep.
+        if result.wrote and rule_emb is not None and getattr(vs, "algorithm_version", "v1") != "v2":
             candidates = await asyncio.to_thread(
                 vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb, repo_scope
             )
@@ -2946,6 +3117,26 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 state._background_tasks.add(task)
                 task.add_done_callback(state._background_tasks.discard)
     else:
+        # A workspace-scoped write that names no workspace takes the requesting
+        # session's. When that resolves to "default" -- no key, or a key with no
+        # live slot -- the write would land in the GLOBAL file, which every
+        # workspace reads. Refuse it, like the delete route refuses
+        # scope='workspace' without a name, rather than widen its reach.
+        if (
+            not _lesson_silo
+            and scope == "workspace"
+            and not cleaned.get("workspace")
+            and _get_active_workspace(state, sk) == "default"
+        ):
+            return web.json_response(
+                {
+                    "error": "scope='workspace' requires a workspace name: this "
+                    "session has no workspace of its own; use scope='global' or "
+                    "name the workspace",
+                    "code": "workspace_required",
+                },
+                status=400,
+            )
         lesson = Lesson(
             rule=rule,
             category=category,
@@ -2954,7 +3145,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             applies=applies,
             ts=datetime.now(timezone.utc).isoformat(),
         )
-        store = _lesson_jsonl_store(state, _lesson_silo, scope, cleaned.get("workspace"))
+        store = _lesson_jsonl_store(
+            state, _lesson_silo, scope, cleaned.get("workspace"), session_key=sk
+        )
         # save_or_enrich, not save: a re-submit of a stored rule carrying a new
         # NOT-clause has to attach it rather than be skipped as a duplicate.
         # Off the loop because it reads the file and rewrites it whole -- the
@@ -2989,6 +3182,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # oldest record to the ``_MAX_LESSONS_TOTAL`` cap, but that is an eviction,
         # not this write superseding a rule it overlaps.)
         superseded = []
+        # This store never answers ``deduped``, so there is no winner to name.
+        winner = None
+        winner_repo_scope = None
     # Refreshed unconditionally, and deliberately so. An earlier revision of this
     # change gated the push on the write having landed, which is wrong: a DECLINING
     # outcome can still have mutated the store. ``write_lesson``'s second pass
@@ -3013,9 +3209,18 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # so a client that re-reads /api/lessons after this response cannot see what it
     # lost. Always present, empty when nothing was superseded, so a client does not
     # have to tell "no deletions" from "this gateway is too old to say".
-    return web.json_response(
-        {"ok": stored, "outcome": outcome, "reason": reason, "superseded": superseded}
-    )
+    response: dict[str, Any] = {
+        "ok": stored,
+        "outcome": outcome,
+        "reason": reason,
+        "superseded": superseded,
+    }
+    # ``winner`` is additive too, and sent only on the outcome that has one: the
+    # stored lesson a ``deduped`` write lost to, with that row's own scope.
+    if winner:
+        response["winner"] = winner
+        response["winner_repo_scope"] = winner_repo_scope
+    return web.json_response(response)
 
 
 async def api_lessons_delete(request: web.Request) -> web.Response:
@@ -3171,7 +3376,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "exact must be a boolean", "code": "exact_not_bool"}, status=400
         )
-    # Delete from vector store if active, else JSONL
+    # Delete from the vector store if active; fall through to JSONL (V1) below.
     # THE CALLER'S silo, not the global store. This is the agent's only durable
     # memory-write surface, so writing globally let a crew bound to one silo steer
     # every other crew's turns -- and, in the other direction, the crew's own
@@ -3194,9 +3399,14 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # `vs and` rather than `vs_lessons` alone: the rows do not narrow the store,
     # and the store is a real union now that it is resolved per caller instead of
     # arriving untyped from the global getter.
+    ok = False
     if vs and (vs_lessons or vs.algorithm_version == "v2"):
         ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope, exact=exact)
-    else:
+    # V1 only: when the vector store matched nothing, try the JSONL tier, as
+    # ``kirocrew learn remove`` does. Injection falls back to that file when every
+    # vector row is withheld, so a lesson active in every turn must stay
+    # removable. A V2 member's database is its only lesson store, so it stops here.
+    if not ok and not (vs is not None and vs.algorithm_version == "v2"):
         store = _lesson_jsonl_store(state, _lesson_silo, scope, workspace)
         # Off the loop. remove() now takes the store's shared lock, which a worker
         # thread can be holding across file I/O for a concurrent save_or_enrich --
@@ -3224,6 +3434,30 @@ async def api_crons(request: web.Request) -> web.Response:
     # loop with the store read/hash. The hot per-connection status push and the
     # other mutation handlers keep using the cache-only list_jobs().
     jobs = await state.crons.list_jobs_async(include_disabled=True)
+    # An app token reaches this list route, but like every per-job cron route
+    # it sees only the jobs it created, judged by the same host-written
+    # ``created_by`` ``app:<name>`` stamp ``_refuse_foreign_app_job`` reads.
+    # Without this the dashboard's polling endpoint would hand an app every
+    # job's ``message``, ``last_result``, ``last_error``, ``command`` and
+    # ``script`` -- exactly the run data the per-job gates on this PR protect --
+    # leaving the trust boundary open on the one route that returns it in bulk.
+    # Filtered here so every field below is already scoped. The app-only branch
+    # writes one SEL row recording the ownership scoping decision: token-auth
+    # events log only authentication and dashboard GET auditing is excluded, so
+    # this is the only record that the app was confined to its own jobs. The
+    # row is written ONLY on the app path -- the owner, dashboard and
+    # internal-secret callers (``app == ""``) skip the filter and the audit, so
+    # the owner-view poll stays unaudited and unaffected, as before.
+    app = _app_caller(request)
+    if app:
+        jobs = [j for j in jobs if app_owner_name(j.created_by) == app]
+        _audit_app_cron(app, "crons.list", "allowed", f"jobs={len(jobs)}")
+    # A crewmate's goal check-ins are controlled only by its Goals tab switches,
+    # so neither the Schedule page nor a crewmate's Schedules tab lists them;
+    # the store still runs them. Only those: every other managed job stays.
+    from kiro_crew.dashboard.goal_reminder import is_reminder_job
+
+    jobs = [j for j in jobs if not is_reminder_job(j)]
     now = time.time()
     tz_name, _ = get_local_tz()
     # Secret-grant metadata is owner-view only (see the field comment below).
@@ -3494,10 +3728,10 @@ async def api_cron_folders_delete(request: web.Request) -> web.Response:
 def _lesson_list_page(query: Mapping[str, str]) -> tuple[int, int] | web.Response:
     """``(limit, offset)`` from the ``GET /api/lessons`` query, or the 400.
 
-    ``limit`` is clamped into ``[1, LESSON_LIST_LIMIT_MAX]`` and ``offset`` into
-    ``[0, LESSON_LIST_OFFSET_MAX]`` rather than refused, because the body echoes
-    both effective values back and the clamp is therefore never silent. The
-    offset ceiling matters: the vector tier binds the offset as a SQLite
+    ``limit`` is clamped into ``[1, LESSON_LIST_LIMIT_MAX]`` and ``offset`` by
+    the shared ``clamp_query_offset`` rather than refused, because the body
+    echoes both effective values back and the clamp is therefore never silent.
+    The offset ceiling matters: the vector tier binds the offset as a SQLite
     parameter, and a value past the 64-bit range raises there instead of
     yielding an empty page. A non-integer is refused: the caller asked for a
     page it did not get, and defaulting would return the first page under a
@@ -3510,10 +3744,7 @@ def _lesson_list_page(query: Mapping[str, str]) -> tuple[int, int] | web.Respons
         return web.json_response(
             {"error": "limit/offset must be integers", "code": "invalid_pagination"}, status=400
         )
-    return (
-        max(1, min(limit, LESSON_LIST_LIMIT_MAX)),
-        max(0, min(offset, LESSON_LIST_OFFSET_MAX)),
-    )
+    return (max(1, min(limit, LESSON_LIST_LIMIT_MAX)), clamp_query_offset(offset))
 
 
 def _lesson_scope_selector(stored: object) -> str | None:
@@ -3634,8 +3865,15 @@ async def api_lessons(request: web.Request) -> web.Response:
         *,
         tier: tuple[str, str | None] | None = None,
         applies: object = None,
+        source: object = None,
     ) -> dict:
         """One sanitization chokepoint for every branch of this endpoint.
+
+        *source* is the row's write origin (``user_explicit`` for a lesson saved
+        on purpose through ``learn_add``, the dashboard or the CLI,
+        ``consolidation`` for one extracted from chat history, and so on). It is
+        reported only when the store recorded one, so a reader can tell a lesson
+        saved on purpose from one the extractor inferred.
 
         *tier* names the JSONL file a row was read from -- ``("global", None)``
         or ``("workspace", <name>)`` -- and is emitted as the ``scope`` /
@@ -3680,6 +3918,8 @@ async def api_lessons(request: web.Request) -> web.Response:
         authored_applies = _authored_lesson_applies(applies)
         if authored_applies is not None:
             result["applies"] = authored_applies
+        if isinstance(source, str) and source.strip():
+            result["source"] = _redact_memory_field(source.strip())[:64]
         if contains_volatile_lesson_fact(rule, negative):
             result["withheld_reason"] = "volatile_session_fact"
         return result
@@ -3758,6 +3998,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 negative,
                 raw_scope,
                 applies=raw_applies,
+                source=e.get("source"),
             )
         )
     # The population is measured by the rows THIS list renders: everything
@@ -3786,13 +4027,41 @@ async def api_lessons(request: web.Request) -> web.Response:
             (le, ("global", None)) for le in rows
         ]
         if not _lesson_silo:
-            # Merge global + workspace-scoped lessons
-            ws = workspace or _get_active_workspace(state)
-            if ws != "default":
+            # Merge global + workspace-scoped lessons. A named workspace wins; a
+            # session sees only its own slot's workspace. The all-workspaces
+            # union -- every configured workspace's rows, so each one stays
+            # visible and deletable from the operator's Memory tab -- is for the
+            # operator's own BROWSER surface ONLY: no key (or the shared
+            # ``dashboard:ui`` key, which names no slot) AND positively
+            # authenticated as the dashboard user.
+            #
+            # ``is_dashboard_user`` is set by the token-auth middleware to
+            # ``not app`` on every path that reaches a mixed-internal route
+            # like this one, so it is ``True`` only for a pure cookie/session
+            # browser caller (the operator) and ``False`` for an app token.
+            # Gating on it (rather than on ``internal_auth is not True``) means
+            # a keyless APP TOKEN -- which carries no ``internal_auth`` but is
+            # not the operator either -- falls through to the per-session branch
+            # and, with no resolvable slot, sees the global rows only. A keyless
+            # internal-secret agent (``internal_auth`` set) likewise never
+            # reaches the union. That is the cross-workspace data-isolation harm
+            # this PR removes: only the operator's own browser sees every
+            # workspace.
+            sk = request.headers.get("X-Session-Key", "")
+            if workspace:
+                union = [workspace]
+            elif sk in ("", "dashboard:ui") and request.get("is_dashboard_user") is True:
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                union = sorted(cfg.workspaces)
+            else:
+                union = [_get_active_workspace(state, sk)]
+            for ws in union:
+                if ws == "default":
+                    continue
                 # Every workspace row is listed, a same-text global row
                 # notwithstanding: the tier fields tell the two apart, and a row
                 # this list hides is a row the UI can never delete.
-                ws_lessons = await asyncio.to_thread(lambda: _get_lessons(state, ws).load_all())
+                ws_lessons = await asyncio.to_thread(_load_workspace_lessons, state, ws)
                 tiered.extend((le, ("workspace", ws)) for le in ws_lessons)
         total = len(tiered)
         # ``load_all()`` is file append order, so the newest rows are at the
@@ -3814,6 +4083,7 @@ async def api_lessons(request: web.Request) -> web.Response:
                 # row written before the field existed is in -- the same policy
                 # the rule/scope reads above already apply to a malformed row.
                 applies=getattr(le, "applies", None),
+                source=getattr(le, "source", None),
             )
             for le, tier in tiered[max(0, end - limit) : end]
         ]

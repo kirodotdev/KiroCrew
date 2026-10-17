@@ -25,7 +25,7 @@ import filecmp
 import importlib
 import json
 import os
-import shutil
+import shutil  # noqa: F401 - facade re-exports (tests patch snapshot.shutil)
 import socket
 import stat as _stat
 import sys
@@ -53,6 +53,7 @@ from kiro_crew.member_memory_backup import (  # noqa: F401 - facade re-exports
 from kiro_crew.memory_stores import (  # noqa: F401 - facade re-exports
     MEMBER_BACKUPS_DIR_NAME,
     MEMORY_STORES_DIR_NAME,
+    UnknownMemoryStore,
     is_host_local_store_state,
     memory_store_namespace_lock,
     named_store_product_file,
@@ -81,8 +82,11 @@ from kiro_crew.snapshot_archive import (  # noqa: F401 - facade re-exports
     _data_filter,
     _dir_flags_nofollow,
     _escape_one,
+    _hold_reader_lock,
+    _immutable_read_may_stand_in,
     _manifest_components,
     _print_manifest,
+    _refuse_if_changed_since,
     _refuse_oversized_archive,
     _refuse_unsound_required_capture,
     _rejection_recording_filter,
@@ -139,6 +143,9 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     NotificationCopyUnsupported,
     _copy_locked,
     _copy_tree_no_overwrite,
+    _core_file_not_installed,
+    _cron_rewrite_in_place,
+    _install_core_file_if_absent,
     _install_notifications,
     _merge_crons,
     _merge_memory,
@@ -146,10 +153,12 @@ from kiro_crew.snapshot_merge import (  # noqa: F401 - facade re-exports
     _merge_notifications,
     _notification_key,
     _open_notification_file,
+    _read_cron_store_once,
     _report_unmerged_databases,
     _serialise_with_notification_writes,
     _usable_cron_shape,
     _validate_identifier,
+    _write_merged_crons,
 )
 from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _OWNER_ONLY_SETTINGS_FILES,
@@ -975,6 +984,13 @@ def _build_snapshot(
     return outfile
 
 
+#: Exit status of `kirocrew snapshot --strict` when the bundle was written but omits
+#: entries it was asked to carry. Distinct from 1 (no usable bundle) so a caller can
+#: tell "written but incomplete" apart from "failed". Without `--strict` such a run
+#: still exits 0, because existing callers treat any non-zero exit as a failed backup.
+EXIT_INCOMPLETE = 3
+
+
 def snapshot_main(
     argv: list[str] | None = None, *, parsed: argparse.Namespace | None = None
 ) -> int:
@@ -999,6 +1015,14 @@ def snapshot_main(
         )
         p.add_argument("--components", default=None)
         p.add_argument("--purpose", default=Purpose.BACKUP.value)
+        p.add_argument(
+            "--strict",
+            action="store_true",
+            help=(
+                "Exit 3 instead of 0 when the bundle was written but omits entries it "
+                "was asked to carry (see MANIFEST.json 'skipped'). The bundle is kept."
+            ),
+        )
         p.add_argument("--to", default=None, help=argparse.SUPPRESS)
         parsed = p.parse_args(argv)
     args = parsed
@@ -1165,6 +1189,15 @@ def snapshot_main(
         print(f"❌ {e}")
         print("   No bundle was written. Stop the gateway and re-run.")
         return 1
+    except UnknownMemoryStore as e:
+        # A memory store refused the read, most often through its locks: one is redirected
+        # or not a private regular file, or the stores changed while they were read without
+        # the namespace lock. The detail names the cause. Raised before the archive was
+        # published, so it is a refusal and reads as one.
+        _audit("snapshot_rejected", f"reason=memory_store_refused detail={e}")
+        print(f"❌ {e}")
+        print("   No bundle was written.")
+        return 1
 
     sz = outfile.stat().st_size
     human = f"{sz // 1024}K" if sz < 1024 * 1024 else f"{sz / 1024 / 1024:.1f}M"
@@ -1240,6 +1273,11 @@ def snapshot_main(
 
     remaining = len(list(out.glob("kirocrew-snapshot-*.tar.gz")))
     print(f"📦 Snapshots in {out}: {remaining} (keep={args.keep})")
+    # Opt-in only. The same predicate that held the prune decides the exit, so a caller
+    # never has to re-classify `skipped` reasons itself.
+    if omitted and getattr(args, "strict", False):
+        print(f"⚠️  --strict: exiting {EXIT_INCOMPLETE} because this bundle is incomplete.")
+        return EXIT_INCOMPLETE
     return 0
 
 
@@ -1345,14 +1383,26 @@ def _do_merge(
     print("🔀 Merge mode — importing...")
 
     if _want(components, "memory") and (snap / "memory.db").is_file():
+        memory_ok = True
         if not (mc / "memory.db").is_file():
-            shutil.copy2(str(snap / "memory.db"), str(mc / "memory.db"))
-            if (snap / "memory_index.db").is_file():
-                shutil.copy2(str(snap / "memory_index.db"), str(mc / "memory_index.db"))
-            print("  Memory: copied (no existing memory.db)")
+            # Pinned, not copy2: see `_install_core_file_if_absent`. The index is
+            # only installed beside a memory.db this call installed.
+            if _install_core_file_if_absent(snap / "memory.db", mc / "memory.db"):
+                if (snap / "memory_index.db").is_file() and not _install_core_file_if_absent(
+                    snap / "memory_index.db", mc / "memory_index.db"
+                ):
+                    # The index is never overwritten, so a leftover one does not
+                    # match the memory.db just installed: search misses its rows
+                    # until the index is rebuilt.
+                    print(f"  ↩️  {_core_file_not_installed(mc / 'memory_index.db', index=True)}")
+                print("  Memory: copied (no existing memory.db)")
+            else:
+                print(f"  ↩️  {_core_file_not_installed(mc / 'memory.db')}")
+                memory_ok = False
         else:
             _merge_memory(snap / "memory.db", mc / "memory.db")
-        print("  ✅ memory")
+        if memory_ok:
+            print("  ✅ memory")
 
     # The markdown half of memory (preferences, projects, history, knowledge). Named
     # by the memory component so restoring memory does not require the whole
@@ -1401,9 +1451,11 @@ def _do_merge(
         if sc.is_file():
             if dc.is_file():
                 crons_ok = _merge_crons(sc, dc)
-            else:
-                shutil.copy2(str(sc), str(dc))
+            elif _install_core_file_if_absent(sc, dc):
                 print("  Crons: copied (no existing crons)")
+            else:
+                print(f"  ↩️  {_core_file_not_installed(dc)}")
+                crons_ok = False
         if crons_ok:
             print("  ✅ crons")
         else:

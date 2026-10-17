@@ -36,7 +36,7 @@ import { type PasteBlock, expandAll } from './pasteTokens'
 
 /**
  * Vertical padding around the bubble inside a row (`py-1` on both the transcript
- * message row in ChatPage and the pinned band in PinnedPrompt). Single-sourced
+ * message row in ChatTranscriptView and the pinned band in PinnedPrompt). Single-sourced
  * here because the hand-off line is derived from it.
  */
 export const ROW_PAD_Y = 4

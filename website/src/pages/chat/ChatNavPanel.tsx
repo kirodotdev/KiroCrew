@@ -16,11 +16,11 @@ const TYPE_COLORS: Record<string, string> = {
   taskei: 'bg-blue-500/15 text-blue-400',
   quip: 'bg-purple-500/15 text-purple-400',
   tt: 'bg-orange-500/15 text-orange-400',
-  mcm: 'bg-danger/15 text-danger',
+  mcm: 'bg-danger/15 text-danger-text',
   wiki: 'bg-green-500/15 text-green-400',
   sim: 'bg-yellow-500/15 text-yellow-400',
   cr: 'bg-cyan-500/15 text-cyan-400',
-  issue: 'bg-ok/15 text-ok',
+  issue: 'bg-ok/15 text-ok-text',
   other: 'bg-muted/15 text-muted',
 }
 

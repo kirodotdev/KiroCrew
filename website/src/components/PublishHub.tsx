@@ -8,10 +8,11 @@
 // Webapp artifacts have their own deploy flow (Artifact Deploy page).
 
 import { useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { AlertCircle, AlertTriangle, Check, ExternalLink, Globe, Settings, Upload, X } from 'lucide-react'
-import { api, type AppPublishProvider } from '../api/client'
+import { api, type AppPublishProvider, type DeploySitesResponse } from '../api/client'
+import type { Site } from '../hooks/useDirectDeploy'
 import { Card, Btn, ContentSkeleton } from './ui'
 import PublicPublishAckModal from './PublicPublishAckModal'
 import ErrorDetails from './ErrorDetails'
@@ -21,6 +22,7 @@ import type { Artifact, PublishProviderDescriptor } from '../types'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
+import { errMessage } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 interface UnifiedProvider {
@@ -64,6 +66,42 @@ function iconFor(name: string): typeof Globe {
 export function isPublicWebDeploy(p: { id: string; app?: { endpoint?: string } }): boolean {
   if (p.id === 'deploy-web') return true
   return (p.app?.endpoint ?? '').startsWith('/api/deploy/')
+}
+
+/** The longest site id the public-web deploy stores. */
+const SITE_ID_MAX = 64
+
+/**
+ * The site id the public-web deploy stores for an artifact slug.
+ *
+ * The panel sends `site_id: artifact.slug`, and the deploy route normalizes it
+ * (`_safe_site_id` in the deploy handlers): lowercased, every character other
+ * than a letter, digit, `-` or `_` replaced by `-`, leading and trailing `-`/`_`
+ * stripped, then cut to 64 characters. A slug longer than that is stored
+ * truncated, so comparing the raw slug would miss its site.
+ */
+export function deploySiteIdFor(slug: string): string {
+  const normalized = Array.from(slug.trim().toLowerCase(), c => (/[\p{L}\p{N}_-]/u.test(c) ? c : '-')).join('')
+  return Array.from(normalized.replace(/^[-_]+|[-_]+$/g, '')).slice(0, SITE_ID_MAX).join('')
+}
+
+/**
+ * The live public-web site this artifact already has, or `null`.
+ *
+ * Reads the deploy's own listing, which comes from the AWS account's resource
+ * tags. A site removed by teardown, by the expiry reaper, or outside the
+ * dashboard is not listed, so the answer cannot go stale the way a stored copy
+ * of the link would. No listing, an unconfigured deploy, and no site under this
+ * artifact's id all answer `null`, which leaves the panel on its destination list.
+ */
+export function findLiveSite(
+  resp: DeploySitesResponse | null | undefined,
+  slug: string,
+): Site | null {
+  if (!resp || resp.configured === false || !Array.isArray(resp.sites)) return null
+  const id = deploySiteIdFor(slug)
+  if (!id) return null
+  return resp.sites.find(s => !!s && s.site_id === id) ?? null
 }
 
 /**
@@ -187,6 +225,64 @@ export function effectiveTtlHours(
   return ttlSelectableFor(selected) && ttlChoice === TTL_72 ? 72 : 0
 }
 
+export type PublishVisibility = 'PRIVATE' | 'PUBLIC'
+/** What a publication can already carry. The panel never offers SHARED, but a re-publish keeps it. */
+export type StoredVisibility = PublishVisibility | 'SHARED'
+
+/**
+ * The visibilities the panel offers for this row, or `[]` when there is nothing to choose.
+ *
+ * Only a core row describes its sharing model, and the choice is offered only when that
+ * model supports BOTH private and public publications. Shared is left out: it needs a
+ * list of people, which this panel does not collect.
+ *
+ * Only a FIRST publish gets the choice. The panel's copy of an existing publication can
+ * be stale, so a re-publish keeps the publication's own visibility instead (see
+ * `effectiveVisibility`); the publish engine orders a narrowing re-publish sharing-first.
+ */
+export function visibilityOptionsFor(
+  selected: UnifiedProvider | undefined,
+  alreadyPublished: boolean,
+): PublishVisibility[] {
+  if (alreadyPublished) return []
+  const sm = selected?.core?.sharing_model
+  if (!sm) return []
+  const out: PublishVisibility[] = []
+  if (sm.supports_private) out.push('PRIVATE')
+  if (sm.supports_public) out.push('PUBLIC')
+  return out.length > 1 ? out : []
+}
+
+/**
+ * The visibility the publish request actually carries for the current selection.
+ *
+ * Derived the same way as the TTL: the choice is one piece of state shared by every row,
+ * so a "private" picked on one row must not ride along onto a row that offers no choice.
+ * A re-publish keeps the publication's own visibility, so it neither widens a private
+ * copy nor narrows a public one. Anything else the row cannot honour reads as public,
+ * which is the request the panel has always sent.
+ */
+export function effectiveVisibility(
+  choice: PublishVisibility,
+  selected: UnifiedProvider | undefined,
+  existing: string | null | undefined,
+): StoredVisibility {
+  // Only a core row publishes through the artifact's own publication. Any other row
+  // (the public-web deploy surface) is public whatever the artifact's record says.
+  if (!selected?.core) return 'PUBLIC'
+  if (existing != null) {
+    return existing === 'PRIVATE' || existing === 'SHARED' ? existing : 'PUBLIC'
+  }
+  return visibilityOptionsFor(selected, false).includes(choice) ? choice : 'PUBLIC'
+}
+
+/** The label for a visibility, shared by the choice and the confirm step so they read the same. */
+function visibilityLabel(v: PublishVisibility): string {
+  return v === 'PRIVATE'
+    ? i18nT('components.publishHub.visibility_private')
+    : i18nT('components.publishHub.visibility_public')
+}
+
 export function buildProviderList(
   appProviders: AppPublishProvider[],
   kind: string,
@@ -266,6 +362,57 @@ export function PublishHub({
   const deployPreview = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const unified = buildProviderList(appProviders, artifact.kind, coreProviders)
     .filter(p => deployPreview || !isPublicWebDeploy(p))
+  const queryClient = useQueryClient()
+  // An artifact already on the public web keeps its link in the AWS account, not
+  // on the artifact, so the panel asks the deploy for it. Only when the public-web
+  // row is offered AND set up: with no registered profile there is no account to
+  // list. Shares the Artifact Deploy page's cache entry, which reads the same route.
+  const publicWebRow = unified.find(p => isPublicWebDeploy(p))
+  const lookupLiveSite = !!publicWebRow?.configured
+  const sitesQuery = useQuery({
+    queryKey: ['deploy-web', 'sites'],
+    queryFn: () => api.deploySites(),
+    enabled: lookupLiveSite,
+    staleTime: 30_000,
+    // A failed lookup leaves the panel exactly as it is without one, so a retry
+    // would only hold the "checking" line on screen longer.
+    retry: false,
+  })
+  const liveSite = lookupLiveSite ? findLiveSite(sitesQuery.data, artifact.slug) : null
+  // The listing comes from resource tags, which take a minute or two to show a
+  // site a deploy just created, so a publish writes its own result into the
+  // cached list (as the Artifact Deploy page's deploy does): the next open of the
+  // panel shows the link at once. A row the listing already has is left as is.
+  const seedPublishedSite = (url: string) => {
+    const siteId = deploySiteIdFor(artifact.slug)
+    if (!siteId) return
+    queryClient.setQueryData<DeploySitesResponse>(['deploy-web', 'sites'], prev => {
+      const sites = prev?.sites ?? []
+      if (sites.some(s => s.site_id === siteId)) return prev
+      const seeded: Site = {
+        site_id: siteId,
+        url,
+        profile: deployProfile || previewIdentity.profile,
+        // CloudFront may still be spreading the site, so it is not called live yet.
+        status: 'deploying',
+      }
+      return { ...(prev ?? { configured: true }), sites: [...sites, seeded] }
+    })
+  }
+  const liveUrl = liveSite?.url ? safeHttpUrl(liveSite.url) : null
+  // A lookup that could not read every account says so, beside a link shown from
+  // an earlier read too: with no card on screen the panel otherwise looks like an
+  // unpublished artifact's, and a publish from it may not update a page that
+  // already exists in an account it could not read. A listing that could not run
+  // here at all answers HTTP 200 with its reason in `error`, so that reason
+  // counts as a failure as well.
+  const listingErrors = [sitesQuery.data?.error, ...(sitesQuery.data?.profile_errors ?? [])]
+    .filter((e): e is string => !!e)
+  const lookupFailure = !lookupLiveSite
+    ? ''
+    : sitesQuery.error
+      ? (errMessage(sitesQuery.error) || i18nT('components.errorBoundary.something_went_wrong'))
+      : listingErrors.join('; ')
 
   const [selectedId, setSelectedId] = useState<string>('')
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
@@ -290,6 +437,15 @@ export function PublishHub({
   const onTtlChange = (v: string) => { setTtlHours(v); setPreview(null) }
 
   const selected = unified.find(p => p.id === selectedId)
+  // Updating the live site deploys with the profile whose account holds it. The
+  // deploy reuses the site it finds by tag in the account it runs against, so the
+  // default profile, pointed at a different account, would create a second site
+  // under a new URL instead of updating this one.
+  const updatingLiveSite = !!liveSite && !!selected && selected.id === publicWebRow?.id
+  const deployProfile = updatingLiveSite ? (liveSite?.profile ?? '') : ''
+  const busyPublishingLabel = updatingLiveSite
+    ? i18nT('components.publishHub.updating_in_progress')
+    : i18nT('components.publishHub.publishing_2')
   // Whether a TTL may be chosen for the CURRENT selection. One condition, read by
   // both the control's visibility and the value everything downstream uses, because
   // the bug here was those two disagreeing: `ttlHours` is a single piece of state
@@ -300,6 +456,15 @@ export function PublishHub({
   // selection means no ordering or missed reset can bring the promise back.
   const ttlSelectable = ttlSelectableFor(selected)
   const selectedTtlHours = () => effectiveTtlHours(ttlHours, selected)
+  const [visibilityChoice, setVisibilityChoice] = useState<PublishVisibility>('PUBLIC')
+  const existingVisibility = artifact.publication ? (artifact.publication.visibility ?? 'PUBLIC') : null
+  const alreadyPublished = existingVisibility != null
+  const visibilityOptions = visibilityOptionsFor(selected, alreadyPublished)
+  const selectedVisibility = effectiveVisibility(visibilityChoice, selected, existingVisibility)
+  // The exposure warning and the acknowledgment describe a public link, so both need a
+  // destination that serves without login AND a request that asks for public.
+  const exposesPublicly = selected?.publicReachable !== false
+    && (!selected?.core || selectedVisibility === 'PUBLIC')
   // A core row can be SELECTED while unconfigured (its remedy is its own hint, so
   // it is selected rather than routed away — see the provider-list onClick). But an
   // unconfigured destination cannot publish, so the confirm step must NOT offer a
@@ -324,7 +489,9 @@ export function PublishHub({
         setPreview({ requires_confirm: true, core: true })
         return
       }
-      const resp = await api.publishToProvider(artifact.slug, selected.id, selected.app, selectedTtlHours())
+      const resp = await api.publishToProvider(
+        artifact.slug, selected.id, selected.app, selectedTtlHours(), deployProfile || undefined,
+      )
       const outcome = readPublishOutcome(resp)
       if (resp?.requires_confirm) {
         setPreview(resp)
@@ -349,6 +516,7 @@ export function PublishHub({
         // Immediate success (already deployed / no confirm needed), or a
         // persisted push failure the route reported with a 200.
         setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url, notice: outcome.notice, notice_code: outcome.notice_code })
+        if (!('error' in outcome) && isPublicWebDeploy(selected)) seedPublishedSite(outcome.url)
       } else {
         setResult({ error: i18nT('components.publishHub.unexpected_response') })
       }
@@ -380,7 +548,12 @@ export function PublishHub({
         // go through the deploy endpoint below: with no app endpoint that path falls back
         // to `/api/deploy/deploy`, the per-artifact deploy machinery this destination
         // exists to replace.
-        const resp = await api.publishArtifactToCoreProvider(artifact.slug, selected.id)
+        const resp = await api.publishArtifactToCoreProvider(
+          artifact.slug,
+          selected.id,
+          selectedVisibility,
+          selectedVisibility === 'SHARED' ? (artifact.publication?.shared_with ?? []) : [],
+        )
         const outcome = readPublishOutcome(resp)
         if (!outcome) {
           // Same condition, same wording as the app path below: the response carried
@@ -400,6 +573,7 @@ export function PublishHub({
         ttl_hours: selectedTtlHours(),
       }
       if (contentDigest) payload.expected_content_digest = contentDigest
+      if (deployProfile) payload.profile = deployProfile
       // Bind the previewed identity -- backend 409s (stale_preview) if
       // the resolved profile/region drifted between preview and confirm.
       if (previewIdentity.profile) payload.expected_profile = previewIdentity.profile
@@ -438,6 +612,7 @@ export function PublishHub({
         // generic warning -- the one case whose whole point is telling the user how to
         // re-enable. Every site that reads an outcome must copy BOTH fields.
         setResult('error' in outcome ? { error: outcome.error } : { url: outcome.url, notice: outcome.notice, notice_code: outcome.notice_code })
+        if (!('error' in outcome) && isPublicWebDeploy(selected)) seedPublishedSite(outcome.url)
       } else {
         // An unrecognized shape is a failure we cannot describe — say so.
         // Reporting it as `{url: ''}` (the previous shape) rendered the error
@@ -461,7 +636,7 @@ export function PublishHub({
    *  the same `scanBlocked` reset the acknowledgment performs is done here so the
    *  override path settles identically whichever way it went. */
   const commitPublish = (overrideScan: boolean) => {
-    if (selected?.publicReachable !== false) {
+    if (exposesPublicly) {
       setAck({ overrideScan })
       return
     }
@@ -507,7 +682,62 @@ export function PublishHub({
       {/* Provider list */}
       {!selectedId && (
         <div className="space-y-2">
-          {unified.map(p => {
+          {/* The lookup never holds the list back: the destinations stay usable
+              while it runs, and a failed lookup leaves them as they are. */}
+          {lookupLiveSite && sitesQuery.isLoading && (
+            <p role="status" className="text-[12px] text-muted">
+              {i18nT('components.publishHub.checking_for_existing_public_link')}
+            </p>
+          )}
+          {/* No hand-off: this panel sits on the artifact page beside an editable
+              buffer, and the hand-off navigates away from unsaved edits. Check
+              again re-reads the listing in place, and the destinations below
+              stay usable. */}
+          <ErrorNotice
+            title={i18nT('components.publishHub.existing_link_check_failed')}
+            message={lookupFailure || null}
+            messagePlacement="below"
+            footer={lookupFailure && (
+              <div className="space-y-2">
+                {/* With a link on screen the update already targets that page. */}
+                {!liveSite && <p>{i18nT('components.publishHub.existing_link_check_failed_hint')}</p>}
+                <Btn onClick={() => { void sitesQuery.refetch() }} disabled={sitesQuery.isFetching}>
+                  {i18nT('components.publishHub.check_again')}
+                </Btn>
+              </div>
+            )}
+          />
+          {/* An artifact already on the public web shows its link, and the
+              public-web row becomes an update of that same site. Same tone and
+              wording as the detail page's published-copy line. */}
+          {liveSite && publicWebRow && (
+            <div className="px-3 py-2.5 rounded-md border border-info/40 bg-info-subtle space-y-2">
+              <div className="flex items-center gap-2 text-sm font-medium text-text">
+                <Globe size={16} className="text-info shrink-0" />
+                {i18nT('components.publishHub.published_on_public_web')}
+              </div>
+              {liveUrl && (
+                <div className="text-[12px] font-mono text-text break-all">{liveUrl}</div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {liveUrl && (
+                  <a
+                    href={liveUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border text-[13px] text-text hover:border-border-strong hover:bg-bg-hover"
+                  >
+                    <ExternalLink size={12} /> {i18nT('components.publishHub.open_published_page')}
+                  </a>
+                )}
+                <Btn primary onClick={() => setSelectedId(publicWebRow.id)}>
+                  <Upload size={12} /> {i18nT('components.publishHub.update_same_url')}
+                </Btn>
+              </div>
+              <p className="text-[12px] text-muted">{i18nT('components.publishHub.update_reviewed_first')}</p>
+            </div>
+          )}
+          {unified.filter(p => !(liveSite && p.id === publicWebRow?.id)).map(p => {
             const Icon = p.icon
             return (
               <button
@@ -551,23 +781,39 @@ export function PublishHub({
       {selected && preview && !result && !scanBlocked && (
         <div className="space-y-3">
           <div className="text-sm text-muted">
-            {i18nT('components.publishHub.publishing')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
+            {updatingLiveSite
+              ? i18nT('components.publishHub.ready_to_update')
+              : i18nT('components.publishHub.publishing')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
             <span className="font-semibold text-text">{selected.label}</span>
           </div>
           <div className="text-[12px] text-muted space-y-1">
-            {typeof preview.message === 'string' && <p>{preview.message}</p>}
+            {/* The deploy's own preview line speaks of a first publish; an update
+                restates what it replaces instead. */}
+            {updatingLiveSite
+              ? <p className="text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
+              : typeof preview.message === 'string' && <p>{preview.message}</p>}
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
+            {selected.core && (visibilityOptions.length > 0 || alreadyPublished) && selectedVisibility !== 'SHARED' && (
+              <p>
+                {i18nT('components.publishHub.visibility')}:{' '}
+                <span className="font-semibold text-text">{visibilityLabel(selectedVisibility)}</span>
+              </p>
+            )}
           </div>
-          {selected.publicReachable && (
-            <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+          {exposesPublicly && (
+            <div className="flex items-start gap-2 text-[12px] text-warn-text p-2 rounded border border-warn/30 bg-warn-subtle">
               <AlertTriangle className="lucide-inline shrink-0" />
               <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
             </div>
           )}
           <div className="flex gap-2">
             <Btn primary onClick={() => commitPublish(false)} disabled={busy}>
-              {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
+              {busy ? busyPublishingLabel : <><Upload size={12} /> {updatingLiveSite
+                ? i18nT('components.publishHub.confirm_update')
+                : selected.core && selectedVisibility === 'PRIVATE'
+                  ? i18nT('components.publishHub.confirm_publish_private')
+                  : i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
           </div>
@@ -597,15 +843,15 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
-              {selected.publicReachable && (
-                <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+              {exposesPublicly && (
+                <div className="flex items-start gap-2 text-[12px] text-warn-text p-2 rounded border border-warn/30 bg-warn-subtle">
                   <AlertTriangle className="lucide-inline shrink-0" />
                   <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
                 </div>
               )}
               <div className="flex gap-2">
                 <Btn danger onClick={() => commitPublish(true)} disabled={busy}>
-                  {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}
+                  {busy ? busyPublishingLabel : i18nT('components.publishHub.override_publish_anyway')}
                 </Btn>
                 <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
               </div>
@@ -618,9 +864,14 @@ export function PublishHub({
       {selected && !preview && !result && !scanBlocked && (
         <div className="space-y-3">
           <div className="text-sm text-muted">
-            {i18nT('components.publishHub.publish')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
+            {updatingLiveSite
+              ? i18nT('components.publishHub.update_question_lead')
+              : i18nT('components.publishHub.publish')} <span className="font-mono font-semibold text-text">{artifact.slug}</span> {i18nT('components.publishHub.via')}{' '}
             <span className="font-semibold text-text">{selected.label}</span>?
           </div>
+          {updatingLiveSite && (
+            <p className="text-[12px] text-text">{i18nT('components.publishHub.update_replaces_published_page')}</p>
+          )}
           {/* Unconfigured core destination: no live Publish. Offering one here lets the
               user pass the acknowledgment and only THEN hit a failure. Show the remedy
               (the provider's own hint) plus a link to set it up, and no Publish CTA. */}
@@ -645,6 +896,29 @@ export function PublishHub({
               "72 hours" would hand back a persistent public link while the user believed the
               exposure was time-boxed. Same `ttlSelectable` the value derives from, so a
               hidden control can never leave a live choice behind it. */}
+          {visibilityOptions.length > 0 && (
+          <fieldset>
+            <legend className="text-[11px] text-muted mb-1">{i18nT('components.publishHub.visibility')}</legend>
+            <div className="flex gap-4">
+              {visibilityOptions.map(v => {
+                const label = visibilityLabel(v)
+                return (
+                <label key={v} className="flex items-center gap-1.5 text-sm text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="publish-visibility"
+                    value={v}
+                    aria-label={label}
+                    checked={selectedVisibility === v}
+                    onChange={() => setVisibilityChoice(v)}
+                  />
+                  {label}
+                </label>
+                )
+              })}
+            </div>
+          </fieldset>
+          )}
           {ttlSelectable && (
           <div>
             <label className="text-[11px] text-muted block mb-1">{i18nT('components.publishHub.ttl_time_to_live')}</label>
@@ -654,11 +928,18 @@ export function PublishHub({
               onChange={onTtlChange}
               aria-label={i18nT('components.publishHub.ttl_time_to_live')}
             />
+            {/* An update re-arms the expiry for the page that already exists, so
+                a time limit chosen here can delete a page that is persistent today. */}
+            {updatingLiveSite && (
+              <p className="mt-1 text-[11px] text-muted">{i18nT('components.publishHub.update_ttl_applies_to_page')}</p>
+            )}
           </div>
           )}
           <div className="flex gap-2">
             <Btn primary onClick={requestPreview} disabled={busy}>
-              {busy ? i18nT('components.publishHub.checking') : <><Upload size={12} /> {i18nT('components.publishHub.publish')}</>}
+              {busy ? i18nT('components.publishHub.checking') : <><Upload size={12} /> {updatingLiveSite
+                ? i18nT('components.publishHub.review_update')
+                : i18nT('components.publishHub.publish')}</>}
             </Btn>
             <Btn onClick={() => setSelectedId('')}>{i18nT('components.publishHub.back')}</Btn>
           </div>

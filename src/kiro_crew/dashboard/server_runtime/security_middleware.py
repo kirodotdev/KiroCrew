@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _VIA_PROXY_SUFFIX,
         AUDIT_CLAIMED_KEY,
         PROBE_PATHS,
+        bind_request_forwarded,
         check_host,
         check_origin,
         current_context,
@@ -60,6 +61,12 @@ def audit_actor(request: web.Request, caller: str) -> str:
     header with no proxy in the path is reported as forwarded). For an audit
     label, over-warning is the safe direction: it never files a forwarded action
     as the person's own.
+
+    The suffix is the older of two spellings of the same fact. The uniform one
+    is ``metadata["forwarded"]``, recorded from the same predicate on every
+    request-bound row, handlers' own included; see ``_VIA_PROXY_SUFFIX`` for
+    what a missing key means. The suffix stays so the readers already keyed on
+    it keep working.
 
     Its known limit is the same one :func:`origin.is_direct_local_request`
     documents: a forwarder that strips every forwarding header is invisible
@@ -127,6 +134,7 @@ async def _audit_denied(caller: str, request: web.Request, error: str) -> None:
     def _write() -> None:
         sel().log_api_access(
             caller=actor,
+            forwarded=is_proxied_request(request),
             operation=f"{request.method} {request.path}",
             outcome="denied",
             resources=request.path,
@@ -202,6 +210,13 @@ def _make_deny_audit_middleware(caller: str) -> Callable:
         request: web.Request,
         handler: object,
     ) -> web.StreamResponse:
+        # Bound for the whole request, every method and path, so a handler's own
+        # ``log_api_access`` row records the same ``forwarded`` verdict the audit
+        # layers pass explicitly (see ``sel_request_provenance``).
+        with bind_request_forwarded(is_proxied_request(request)):
+            return await _audited(request, handler)
+
+    async def _audited(request: web.Request, handler: object) -> web.StreamResponse:
         try:
             return await handler(request)  # type: ignore[operator]
         except web.HTTPException as exc:

@@ -426,3 +426,27 @@ class TokenStore:
             if token is not None:
                 return token
         return None
+
+    def holds_no_identity(self) -> bool:
+        """Whether the vault was read and stores no identity entry at all.
+
+        :meth:`resolve` reports a vault it cannot read or decrypt as empty, so status
+        never fails on one. This reads only the entry map and RAISES when that cannot be
+        read (an unreadable or corrupt ``secrets.enc``, a linked directory), so True means
+        nothing is stored. An entry that would not decrypt or parse still counts as stored.
+        Only a missing ``secrets.enc`` is an empty vault: the vault's own read also takes
+        one it may not look at for missing on CPython 3.14, whose ``Path.exists`` answers
+        False there.
+        """
+        self._assert_unlinked()
+        try:
+            # The vault's own attribute, not the filename spelled out again here, so
+            # a rename inside SecretVault can never point this at a missing file
+            # (renaming the attribute fails closed: the caller treats a raise as no
+            # proof). Read rather than exposed, since the secrets package is a
+            # sensitive path this check does not need to change.
+            os.stat(self._vault._store_path)
+        except FileNotFoundError:
+            return True
+        stored = set(self._vault.list_names())
+        return not any(identity in stored for identity in _PRIORITY)

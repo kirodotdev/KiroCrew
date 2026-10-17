@@ -29,6 +29,10 @@ import pytest
 
 import kiro_crew.sandbox as sb
 
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
 _EAGAIN_REASON = "fork failed with errno 11 (EAGAIN)"
 # The probe now mirrors the launcher's SPLIT sequence and names the failing
 # step, so a permanent denial reads as the NEWNS call rather than a combined

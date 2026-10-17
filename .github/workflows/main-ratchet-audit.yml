@@ -51,9 +51,9 @@ name: Main Ratchet Audit
 # stale copy here that grants slack the PR gate does not.
 #
 # The one thing this lane changes about the gates is their SCOPE, and it has to.
-# Four of the backend gates (black, subprocess-encoding, agent-SDK boundary,
-# sync-IO-in-async) scope their verdict to the files the change in front of them
-# touches, via scripts/ratchet_scope.py. On a push to main that diff is EMPTY --
+# Five of the backend gates (black, subprocess-encoding, agent-SDK boundary,
+# sync-IO-in-async, file line cap) scope their verdict to the files the change in
+# front of them touches, via scripts/ratchet_scope.py. On a push to main that diff is EMPTY --
 # the checkout leaves HEAD, `main` and `origin/main` all at the pushed commit --
 # so an unscoped-by-accident run would judge zero files and report green
 # whatever the tree holds. RATCHET_SCOPE_WHOLE_TREE makes the question explicit:
@@ -92,7 +92,12 @@ jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'merge_group') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 25
+    # Whole-tree black through the one-file-per-worker wrapper alone takes
+    # 18-19 minutes on the CodeBuild runner, and a green run of this job takes
+    # about 24.5 minutes end to end. A 25-minute cap therefore cancels the census
+    # step on an ordinary push, and a cancelled gate renders as drift on main.
+    # Keep at least 1.5x the measured green duration here.
+    timeout-minutes: 40
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
       # a push to main has no diff to scope to, so the diff-scoped gates would
@@ -153,6 +158,15 @@ jobs:
       - name: Check formatting (black, baselined)
         if: ${{ !cancelled() }}
         run: python3 scripts/check_black_formatting.py
+
+      # Whole tree (RATCHET_SCOPE_WHOLE_TREE above): a file main itself pushed
+      # over the 2,000-line cap, or a stale baseline row, is main drift that a
+      # PR's scoped verdict only warns about. This is where it turns red.
+      - name: Check file line cap (whole tree, baselined)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/check_file_line_cap.py --test
+          python3 scripts/check_file_line_cap.py
 
       - name: Check subprocess text-mode encoding (gate, baselined)
         if: ${{ !cancelled() }}
@@ -380,7 +394,7 @@ jobs:
           # via printf so the body is a proper list.
           FAILED=""
           if [ "$RATCHET_RESULT" != "success" ]; then
-            FAILED="$(printf '%s\n- `ratchet-gates` (backend black/subprocess/agent-sdk/sync-io/lockdown/cwd-reads + census & config-baseline): **%s**' "$FAILED" "$RATCHET_RESULT")"
+            FAILED="$(printf '%s\n- `ratchet-gates` (backend black/subprocess/agent-sdk/sync-io/lockdown/cwd-reads/line-cap + census & config-baseline): **%s**' "$FAILED" "$RATCHET_RESULT")"
           fi
           if [ "$FRONTEND_RESULT" != "success" ]; then
             FAILED="$(printf '%s\n- `frontend-ceiling` (eslint warning ceiling): **%s**' "$FAILED" "$FRONTEND_RESULT")"

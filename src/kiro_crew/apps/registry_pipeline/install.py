@@ -54,6 +54,7 @@ from kiro_crew.apps.registry_pipeline.catalog import (
     SOURCE_REGISTRY_PREFIX,
     _is_catalog_row,
     _resolve_install_entry,
+    resolve_installed_trust_repository,
 )
 from kiro_crew.apps.registry_pipeline.checkout import (
     _COMMIT_SHA_RE,
@@ -61,6 +62,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _git_clone_or_pull,
     _kill_process_group,
     _resolved_clone_commit,
+    _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _entry_git_url,
@@ -446,18 +448,12 @@ async def _unpoison_rejected_checkout(
     the manifest path.
     """
     if not checkout_preexisted:
-        await asyncio.to_thread(shutil.rmtree, pkg_dir, ignore_errors=True)
-        if restore_from is not None:
-            try:
-                await asyncio.to_thread(restore_from.rename, pkg_dir)
-                log_lines.append(
-                    "Restored the previous checkout after rejecting the replacement clone"
-                )
-            except OSError as exc:
-                log_lines.append(
-                    f"WARNING: could not restore the previous checkout from "
-                    f"{restore_from.name}: {exc}; it is retained there for manual recovery"
-                )
+        # The rejected tree is a git checkout, so `rmtree_force`: `ignore_errors` leaves
+        # its read-only packs on Windows. `_restore_moved_aside` then sets aside whatever
+        # still survives (a file another process holds open) before it renames, so the
+        # previous checkout lands instead of colliding with it (WinError 183).
+        await _rmtree_force_settled(pkg_dir)
+        _restore_moved_aside(restore_from, pkg_dir, log_lines, "rejecting the replacement clone")
         return
 
     async def _run_git(argv: list[str]) -> int:
@@ -797,7 +793,7 @@ async def _clone_build_app_locked(
                 )
                 continue
             if stale_path.exists():
-                await asyncio.to_thread(shutil.rmtree, pkg_dir, True)
+                await _rmtree_force_settled(pkg_dir)
                 try:
                     await asyncio.to_thread(stale_path.rename, pkg_dir)
                     log_lines.append(
@@ -1483,6 +1479,27 @@ async def _retained_startup_refusal(name: str, log_lines: list[str]) -> dict[str
     }
 
 
+def _trust_grant_would_stay_local(name: str) -> bool:
+    """Whether re-granting trust for *name* would record a local source again.
+
+    The trust grant endpoint binds to the INSTALLED app's provenance. When that
+    provenance is positively local, the dialog can only ever record a local
+    grant, which never covers a registry clone. Any failure to tell answers
+    False, which keeps the existing consent-dialog behaviour.
+    """
+    try:
+        installed = get_app(name)
+        if installed is None:
+            return False
+        resolved, repository = resolve_installed_trust_repository(
+            installed, allow_registry_lookup=False
+        )
+    except Exception:  # noqa: BLE001 - unknown provenance keeps the old path
+        logger.warning("installed app trust provenance could not be resolved")
+        return False
+    return resolved and not repository
+
+
 async def install_from_registry(
     name: str,
     log_lines: list[str] | None = None,
@@ -1588,6 +1605,20 @@ async def install_from_registry(
         # needs the normal consent dialog, whose stable trigger is the execution
         # denial code. Keep both existing wire behaviours explicit.
         code = "app_trust_repository_mismatch" if granted_repository else "app_execution_denied"
+        # An unbound grant over an app still installed from a local folder is
+        # the one case the consent dialog cannot fix: the grant endpoint binds to
+        # the INSTALLED source, so granting again re-records a local grant and
+        # this refusal repeats forever. Answer it with its own code, so the
+        # dialog does not open, and name the route that records a repository.
+        if not granted_repository and _trust_grant_would_stay_local(name):
+            code = "app_trust_local_only"
+            reason = (
+                "this app is trusted for its local source only, and granting trust "
+                "again keeps it local-only, so it cannot be updated from a "
+                "repository. To switch to the repository version, uninstall the "
+                "app (its data is kept) and install it from the App Store, which "
+                "asks you to trust that repository"
+            )
         audit_operation = (
             "trust_repository_mismatch"
             if granted_repository
@@ -2455,12 +2486,6 @@ async def install_from_registry(
 
             display = manifest_data.get("displayName", name)
             version = manifest_data.get("version", "0.0.0")
-            # Set BEFORE any of the fallible bookkeeping below, because this branch
-            # returns ok=True regardless of how the registration and provenance writes
-            # go: the clone is in place and the app will register itself on next
-            # launch. Leaving it False would report success to the caller while the
-            # `finally` rolled the source checkout back underneath it.
-            durable_success = True
             reg_result = register_external_app(
                 name=name,
                 version=version,
@@ -2470,15 +2495,33 @@ async def install_from_registry(
                 origin="registry",
                 source_repository=persisted_git_url,
             )
-            if reg_result.ok:
-                set_app_provenance(
-                    name,
-                    source=f"{SOURCE_REGISTRY_PREFIX}{name}",
-                    url=persisted_git_url,
-                    registry=source_registry,
-                    commit=source_commit,
-                    signer=source_signer,
-                )
+            if not reg_result.ok:
+                # A refused registration leaves the prior record as it was, so the
+                # install fails with the refusal and `durable_success` stays False:
+                # the `finally` puts the previous checkout back beside that record,
+                # and the caller sees the error that names the fix.
+                log_lines.append(reg_result.error or "registration failed")
+                outcome = {
+                    "ok": False,
+                    "name": name,
+                    "message": "",
+                    "error": reg_result.error or "registration failed",
+                }
+                return outcome
+            # Set BEFORE the provenance bookkeeping below, because the registration
+            # has landed: the clone is in place and the app updates its own
+            # registration on next launch. Leaving it False would report success to
+            # the caller while the `finally` rolled the source checkout back
+            # underneath it.
+            durable_success = True
+            set_app_provenance(
+                name,
+                source=f"{SOURCE_REGISTRY_PREFIX}{name}",
+                url=persisted_git_url,
+                registry=source_registry,
+                commit=source_commit,
+                signer=source_signer,
+            )
 
             log_lines.append("Pre-registered from cloned manifest (self-managed)")
             log_lines.append("App will update its own registration on next launch")

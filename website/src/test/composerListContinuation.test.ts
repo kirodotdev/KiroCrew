@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { listLineBreakEdit, type ListLineBreakEdit } from '../components/composerListContinuation'
+import { applyListEdit, listLineBreakEdit, listMarkerBackspaceEdit, type ListLineBreakEdit } from '../components/composerListContinuation'
 
 function apply(value: string, caret: number, edit: ListLineBreakEdit | null): string {
   if (!edit) return `${value.slice(0, caret)}\n${value.slice(caret)}`
-  return value.slice(0, edit.start) + edit.insert + value.slice(edit.end)
+  return applyListEdit(value, edit)
 }
 
 // Break at the `|` in `marked`, the way the composer would.
@@ -67,7 +67,7 @@ describe('listLineBreakEdit', () => {
 
   it('splits an item mid-line, moving the tail to the next item', () => {
     expect(breakAt('- alpha |beta')).toBe('- alpha \n- beta')
-    expect(breakAt('2. alpha |beta\n3. gamma')).toBe('2. alpha \n3. beta\n3. gamma')
+    expect(breakAt('2. alpha |beta\n3. gamma')).toBe('2. alpha \n3. beta\n4. gamma')
   })
 
   it.each([
@@ -145,6 +145,71 @@ describe('listLineBreakEdit', () => {
   })
 })
 
+describe('listLineBreakEdit renumbers the items below a new one', () => {
+  it.each([
+    // The reported case: Return between the marker and the text.
+    ['1. |foo\n2. bar', '1. \n2. foo\n3. bar'],
+    ['1. foo|\n2. bar', '1. foo\n2. \n3. bar'],
+    ['1. a|\n2. b\n3. c\n4. d', '1. a\n2. \n3. b\n4. c\n5. d'],
+    ['3) a|\n4) b', '3) a\n4) \n5) b'],
+    ['09. a|\n10. b', '09. a\n10. \n11. b'],
+    ['8. a|\n9. b', '8. a\n9. \n10. b'],
+    ['  1. a|\n  2. b', '  1. a\n  2. \n  3. b'],
+    ['1. [x] a|\n2. [ ] b', '1. [x] a\n2. [ ] \n3. [ ] b'],
+  ])('%j', (input, expected) => {
+    expect(breakAt(input)).toBe(expected)
+  })
+
+  it.each([
+    // Nested items and wrapped text are passed over, siblings after them move.
+    ['1. a|\n   - sub\n   more\n2. b', '1. a\n2. \n   - sub\n   more\n3. b'],
+    ['1. a|\n   1. sub\n   2. sub\n2. b', '1. a\n2. \n   1. sub\n   2. sub\n3. b'],
+  ])('passes over deeper lines %j', (input, expected) => {
+    expect(breakAt(input)).toBe(expected)
+  })
+
+  it.each([
+    // A `1.` / `1.` list is numbered by the renderer, not the user: leave it.
+    ['1. a|\n1. b\n1. c', '1. a\n2. \n1. b\n1. c'],
+    // A deliberate jump ends the run.
+    ['1. a|\n2. b\n7. c', '1. a\n2. \n3. b\n7. c'],
+    // A blank line, a shallower line, another delimiter or a bullet ends it.
+    ['1. a|\n2. b\n\n3. c', '1. a\n2. \n3. b\n\n3. c'],
+    ['1. a|\ntext\n2. b', '1. a\n2. \ntext\n2. b'],
+    ['1. a|\n2) b', '1. a\n2. \n2) b'],
+    ['1. a|\n- b\n2. c', '1. a\n2. \n- b\n2. c'],
+    ['  1. a|\n2. b', '  1. a\n  2. \n2. b'],
+  ])('stops at the end of the counted run %j', (input, expected) => {
+    expect(breakAt(input)).toBe(expected)
+  })
+
+  it('does not renumber bullets or the lines above the caret', () => {
+    expect(breakAt('- a|\n- b')).toBe('- a\n- \n- b')
+    expect(breakAt('1. x\n2. y\n3. a|\n4. b')).toBe('1. x\n2. y\n3. a\n4. \n5. b')
+  })
+
+  it('reports each number write as a digit span of the original value', () => {
+    expect(listLineBreakEdit('1. a\n2. b\n3. c', 4)).toEqual({
+      start: 4, end: 4, insert: '\n2. ',
+      renumber: [{ start: 5, end: 6, insert: '3' }, { start: 10, end: 11, insert: '4' }],
+    })
+    expect(listLineBreakEdit('1. a\n- b', 4)).toEqual({ start: 4, end: 4, insert: '\n2. ' })
+  })
+
+  it('stops before a number inside a protected chip range', () => {
+    const value = '1. a\n2. b\n3. c'
+    expect(listLineBreakEdit(value, 4, [{ start: 10, end: 14 }])?.renumber).toEqual([
+      { start: 5, end: 6, insert: '3' },
+    ])
+  })
+
+  it('moves the items below up when Enter ends an empty item mid-list', () => {
+    expect(breakAt('1. a\n2. |\n3. b\n4. c')).toBe('1. a\n\n2. b\n3. c')
+    expect(breakAt('1. a\n2. |\n7. b')).toBe('1. a\n\n7. b')
+    expect(breakAt('- a\n- |\n- b')).toBe('- a\n\n- b')
+  })
+})
+
 describe('ordinal increment', () => {
   it.each([
     ['1', '2'],
@@ -157,5 +222,106 @@ describe('ordinal increment', () => {
     ['99999999999999999999', '99999999999999999999'],
   ])('%s. -> %s.', (input, expected) => {
     expect(breakAt(`${input}. x|`)).toBe(`${input}. x\n${expected}. `)
+  })
+})
+
+// Backspace at the `|` in `marked`, the way the composer would; returns the
+// value and the caret after it.
+function backspaceAt(marked: string): [string, number] {
+  const caret = marked.indexOf('|')
+  const value = marked.replace('|', '')
+  const edit = listMarkerBackspaceEdit(value, caret)
+  if (!edit) return [value.slice(0, caret - 1) + value.slice(caret), caret - 1]
+  return [applyListEdit(value, edit), edit.start + edit.insert.length]
+}
+
+describe('listMarkerBackspaceEdit', () => {
+  // Every marker the Enter key continues is cleared by ONE Backspace.
+  it.each([
+    ['1. a\n2. |', '1. a\n'],
+    ['9) a\n10) |', '9) a\n'],
+    ['09. a\n10. |', '09. a\n'],
+    ['- a\n- |', '- a\n'],
+    ['* a\n* |', '* a\n'],
+    ['+ a\n+ |', '+ a\n'],
+    ['- [x] a\n- [ ] |', '- [x] a\n'],
+    ['1. [ ] a\n2. [ ] |', '1. [ ] a\n'],
+    ['  - a\n  - |', '  - a\n'],
+    ['\t1. a\n\t2. |', '\t1. a\n'],
+    ['-   a\n-   |', '-   a\n'],
+    ['- [ ]|', ''],
+  ])('clears the empty item %j in one press', (input, expected) => {
+    const [value, caret] = backspaceAt(input)
+    expect(value).toBe(expected)
+    expect(caret).toBe(expected.length)
+  })
+
+  it('keeps the text after the caret on an empty item line', () => {
+    expect(backspaceAt('1. a\n2. |\nnext')).toEqual(['1. a\n\nnext', 5])
+  })
+
+  it.each([
+    ['2. |text', 'text', 0],
+    ['- [ ] |todo', 'todo', 0],
+    ['  10) |deep', '  deep', 2],
+    ['intro\n- |item\nend', 'intro\nitem\nend', 6],
+  ])('removes only the marker of %j and keeps indent and text', (input, expected, caret) => {
+    expect(backspaceAt(input)).toEqual([expected, caret])
+  })
+
+  it.each([
+    ['2.| '],
+    ['2|. '],
+    ['- t|ext'],
+    ['plain|'],
+    ['2024.|'],
+    ['|- a'],
+    [' |- a'],
+  ])('deletes one character for %j', input => {
+    const caret = input.indexOf('|')
+    expect(listMarkerBackspaceEdit(input.replace('|', ''), caret)).toBeNull()
+  })
+
+  it('does not act with the caret inside a protected chip range', () => {
+    expect(listMarkerBackspaceEdit('- abc', 2, [{ start: 1, end: 4 }])).toBeNull()
+  })
+
+  it('rejects an out-of-range caret', () => {
+    expect(listMarkerBackspaceEdit('- ', 0)).toBeNull()
+    expect(listMarkerBackspaceEdit('- ', 3)).toBeNull()
+  })
+
+  it.each([
+    ['1. a\n2. |\n3. b\n4. c', '1. a\n\n2. b\n3. c', 5],
+    ['09. a\n10. |\n11. b', '09. a\n\n10. b', 6],
+    ['  1. a\n  2. |\n  3. b', '  1. a\n\n  2. b', 7],
+    // Off-count, other delimiter and bullets are left alone, as on Enter.
+    ['1. a\n2. |\n7. b', '1. a\n\n7. b', 5],
+    ['1. a\n2. |\n3) b', '1. a\n\n3) b', 5],
+  ])('moves the items below up when clearing the empty item %j', (input, expected, caret) => {
+    expect(backspaceAt(input)).toEqual([expected, caret])
+  })
+
+  it('leaves the numbers below when the marker of an item with text goes', () => {
+    expect(backspaceAt('1. a\n2. |text\n3. b')).toEqual(['1. a\ntext\n3. b', 5])
+  })
+})
+
+describe('Enter then Backspace', () => {
+  // The two keys cancel out: an accidental Return, cleared, leaves the list as it was.
+  it.each([
+    ['1. foo|\n2. bar', '1. foo\n2. bar'],
+    ['1. a|\n2. b\n3. c', '1. a\n2. b\n3. c'],
+    ['8. a|\n9. b', '8. a\n9. b'],
+  ])('%j', (input, expected) => {
+    const caret = input.indexOf('|')
+    const value = input.replace('|', '')
+    const edit = listLineBreakEdit(value, caret)!
+    const broken = applyListEdit(value, edit)
+    const after = edit.start + edit.insert.length
+    const [cleared, clearedCaret] = backspaceAt(`${broken.slice(0, after)}|${broken.slice(after)}`)
+    // The second Backspace joins the blank line to the item above.
+    const joined = cleared.slice(0, clearedCaret - 1) + cleared.slice(clearedCaret)
+    expect(joined).toBe(expected)
   })
 })

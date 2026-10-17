@@ -1,5 +1,4 @@
 {
-  "voice": "en-US-AndrewMultilingualNeural",
   "gap": 0.4,
   "_note": "role=intro is a designed slide, role=footage is spoken over the capture, role=outro closes. The number of footage lines IS the number of beats the recorder must mark. `say` is spoken, `cap` is the on-screen subtitle -- keep them separate: a glyph like the command key reads badly aloud, and a subtitle should be shorter than a sentence.",
 

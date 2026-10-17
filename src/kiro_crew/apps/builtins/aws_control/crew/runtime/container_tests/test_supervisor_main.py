@@ -1,10 +1,10 @@
 """Tests for ``container.supervisor.__main__`` -- the startup ORDER and the drained
 teardown order.
 
-The backup subsystem was extracted from this PR, so there is no restore phase and no
-sidecar: the supervisor gates the environment, installs the bundle, starts the backend,
-waits for readiness, starts the front, and drains front then backend at teardown. The seams
-are stubbed; the point here is the ordering guarantees, proven by the recorded call sequence.
+The supervisor gates the environment, installs the bundle, restores the authority files,
+starts the backend, waits for readiness, starts the front, starts the backup sidecar, and
+drains front, backend then sidecar at teardown. The seams are stubbed; the point here is the
+ordering guarantees, proven by the recorded call sequence.
 """
 
 from __future__ import annotations
@@ -41,12 +41,14 @@ IDENTITY_JSON = json.dumps(
 )
 
 
-def make_settings(tmp_path: Path, *, bucket: str | None = "smc-test-bucket") -> Settings:
-    """Settings for the supervise phase.
+def make_settings(tmp_path: Path, *, bucket: str | None = None) -> Settings:
+    """Settings for the supervise phase, with durability NOT configured.
 
-    ``bucket`` still exists because the front's on-demand transcript fetch reads it; it no
-    longer gates a sidecar (there is none). It defaults to a value so the transcript-read
-    configuration is exercised; pass ``bucket=None`` for the no-bucket case.
+    ``bucket`` defaults to ``None`` because that is what this module is about: process
+    order, draining and exit codes, none of which involve a bucket. A bucket makes the
+    boot restore the authority files for real, against a store these tests neither have
+    nor want, and the startup order with a bucket is pinned by
+    ``test_supervisor_startup_order`` instead. Pass a name where a bucket is the subject.
     """
     data_home = tmp_path / "data"
     return Settings(

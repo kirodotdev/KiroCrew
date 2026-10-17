@@ -37,6 +37,7 @@ from kiro_crew.env import (
     denied_spec_env_keys,
     describe_search_path,
     emit_env,
+    expand_spec_args,
     mcp_search_path,
     resolved_command_casing,
     sanitize_spec_env,
@@ -49,11 +50,13 @@ from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
     warn_invalid_disabled,
 )
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.secret_uri import remote_header_secret_ref_error
 from kiro_crew.mcp_grant import grant_observed
-from kiro_crew.mcp_provenance import ABSENT, resolve_write
+from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, is_withheld_mute, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -67,7 +70,7 @@ from kiro_crew.sandbox import (
     sandboxed_spawn_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.user_json import loads_user_json
+from kiro_crew.user_json import has_json_comments, loads_user_json, loads_user_jsonc
 
 logger = logging.getLogger(__name__)
 
@@ -845,7 +848,8 @@ class McpServerInfo:
     # a client — it only refuses to lose these fields while syncing.
     scopes: list[str] = field(default_factory=list)
     client_id: str = ""
-    status: str = "unknown"  # unknown | ok | error | probing | outdated | disabled | needs_auth
+    # unknown | ok | error | probing | outdated | disabled | needs_auth | registry
+    status: str = "unknown"
     tools: list[str] = field(default_factory=list)
     error: str = ""
     source: str = "agent"  # agent | mcp.json | discovered  (legacy field, prefer presence)
@@ -867,6 +871,11 @@ class McpServerInfo:
     # itself, so setting this flag is sufficient no matter which entry point does
     # the probing.
     disabled: bool = False
+    # True for a commandless, urlless ``"type": "registry"`` pointer: an entry
+    # kiro-cli resolves by map key against the admin's catalog, which only
+    # kiro-cli can read. Such a row is never spawned and reports ``registry``
+    # rather than "no command" -- there is no local process to check.
+    registry_pointer: bool = False
     # ``"invalid"`` when the row is disabled by NOTHING but non-boolean
     # ``disabled`` values (``"false"``, ``1``, ``null``) -- no source carries a
     # literal ``true``. The table then says "invalid value in <file>" rather than
@@ -1085,7 +1094,7 @@ def _mcp_names_from_file(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     try:
-        data = loads_user_json(safe_read_file(str(path)))
+        data = loads_user_jsonc(safe_read_file(str(path)))
     except (json.JSONDecodeError, OSError, TypeError):
         return set()
     servers = data.get("mcpServers") if isinstance(data, dict) else None
@@ -1150,7 +1159,9 @@ def _load_mcp_json_by_source() -> dict[str, dict[str, Any]]:
         if not p.is_file():
             continue
         try:
-            data = loads_user_json(safe_read_file(str(p)))
+            # JSONC-tolerant: Kiro itself reads these files with comments, so a
+            # commented-out server must not drop every other server in the file.
+            data = loads_user_jsonc(safe_read_file(str(p)))
         except (json.JSONDecodeError, OSError) as exc:
             # PermissionError (subclass of OSError) is raised by
             # safe_read_file when is_sensitive_path() blocks the read.
@@ -1260,6 +1271,9 @@ def _server_from_spec(name: str, spec: dict, source: str) -> McpServerInfo:
         scopes=_spec_scopes(spec),
         client_id=_spec_client_id(spec),
         source=source,
+        registry_pointer=(
+            mcp_entry_is_registry_governed(spec) and not spec.get("command") and not spec.get("url")
+        ),
     )
 
 
@@ -1273,6 +1287,8 @@ _MANAGED_SERVER_SUBCOMMANDS = {
     "kirocrew-crew-log": "mcp-crew-log",
     "kirocrew-debug": "mcp-debug",
     "kirocrew-panel": "mcp-panel",
+    "kirocrew-guide": "mcp-guide",
+    "kirocrew-mate": "mcp-mate",
 }
 _MANAGED_SERVER_NAMES = set(_MANAGED_SERVER_SUBCOMMANDS)
 
@@ -1288,6 +1304,8 @@ _MANAGED_SERVER_TOOL_MODULES = {
     "kirocrew-crew-log": "kiro_crew.mcp_crew_log",
     "kirocrew-debug": "kiro_crew.mcp_debug",
     "kirocrew-panel": "kiro_crew.mcp_panel",
+    "kirocrew-guide": "kiro_crew.mcp_guide",
+    "kirocrew-mate": "kiro_crew.mcp_mate",
 }
 
 
@@ -1331,6 +1349,8 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
         "kirocrew-crew-log",
         "kirocrew-debug",
         "kirocrew-panel",
+        "kirocrew-guide",
+        "kirocrew-mate",
     }
 )
 
@@ -1400,10 +1420,20 @@ def _managed_tools_in_process(name: str) -> list[str] | None:
     ``agent.sandbox_allow_unsandboxed_exec`` opt-in for a read-only listing, or
     exempt an agent-writable package from the sandbox. This needs neither.
 
+    This caller keeps only NAMES, so it prefers a module's ``_list_tool_names()``
+    when it offers one: a names-only read that never assembles descriptions, so a
+    description reaching for a live value (a directory scan, a config read) never
+    runs here. That is what replaced the per-builder ``get_running_loop`` skips —
+    the names-only path simply does not reach those reads, rather than each
+    builder detecting this caller and opting out. A module without the names-only
+    entry point falls back to extracting names from its full ``_list_tools()``;
+    among the managed set only ``kirocrew-core`` carries live-valued
+    descriptions, and it provides ``_list_tool_names()``.
+
     Imported lazily: these modules pull in the validation/artifacts graph, which
-    cannot be imported at this module's import time (circular). ``_list_tools`` is
-    a pure read of schemas plus config — no I/O of its own, no side effects, and
-    cheap enough for a discovery cycle.
+    cannot be imported at this module's import time (circular). The names-only
+    read is a pure read of the static tool set — no I/O of its own, no side
+    effects, and cheap enough for a discovery cycle.
 
     Returns ``None`` when *name* is not managed or the read fails, so the caller
     falls back to the ordinary spawn-and-handshake path rather than reporting a
@@ -1416,6 +1446,12 @@ def _managed_tools_in_process(name: str) -> list[str] | None:
         return None
     try:
         module = importlib.import_module(module_name)
+        names_only = getattr(module, "_list_tool_names", None)
+        if callable(names_only):
+            tool_names = names_only()
+            if isinstance(tool_names, list):
+                return [n for n in tool_names if isinstance(n, str) and n]
+            return None
         tools = module._list_tools()
     except Exception:
         logger.debug("in-process tool read failed for %s; will probe", name, exc_info=True)
@@ -1584,9 +1620,14 @@ def list_servers() -> list[McpServerInfo]:
     agent_cfg = _load_agent_config()
     for name, spec in agent_cfg.get("mcpServers", {}).items():
         if isinstance(spec, dict):
-            if mcp_entry_is_muted(spec):
+            # The rebuild's own withheld mute is not the user switching the
+            # server off: it lifts once the server is routed, and routing is
+            # turned on from this table, so the row is listed as declared.
+            if mcp_entry_is_muted(spec) and not is_withheld_mute(spec):
                 disabled_in_agent.add(name)
             else:
+                if is_withheld_mute(spec):
+                    spec = {k: v for k, v in spec.items() if k not in (WITHHELD_KEY, "disabled")}
                 # Re-resolve stale managed MCP server paths at runtime
                 _fix_stale_managed_command(name, spec)
                 servers[name] = _server_from_spec(name, spec, "agent")
@@ -1802,6 +1843,12 @@ def list_servers() -> list[McpServerInfo]:
             s.auth_challenge = cached.auth_challenge
             s.auth_grant_present = cached.auth_grant_present
             s.temp_refusals = [dict(r) for r in cached.temp_refusals]
+        # A registry pointer never has a probe result of its own, so without this
+        # it reads "unknown" until the first probe pass -- the same row the probe
+        # reports, stated without waiting for one. See ``probe_server``.
+        if s.registry_pointer and not s.command and not s.disabled:
+            s.status = "registry"
+            s.error = ""
 
     return list(servers.values())
 
@@ -2018,6 +2065,16 @@ async def _probe_remote(
     # required" for a server that never asked for one.
     server.auth_challenge = False
     server.auth_grant_present = None
+    refusal = remote_header_secret_ref_error(server.headers)
+    if refusal:
+        # Not contacted: the header would reach the server as the literal
+        # reference, and the authorization error that comes back names neither
+        # the header nor the cause.
+        server.sent_headers, server.resolved_header_values = None, []
+        server.status = "error"
+        server.error = refusal
+        _cache_probe(server)
+        return server
     try:
         init_body = {
             "jsonrpc": "2.0",
@@ -2356,10 +2413,39 @@ async def probe_server(
     if server.is_remote:
         return await _probe_remote(server)
 
+    if server.registry_pointer and not server.command:
+        # Nothing local to spawn: kiro-cli resolves this pointer from the admin's
+        # catalog, which Kiro Crew never reads. Reported as ``registry`` -- no
+        # verdict, so not cached (a stored tool list survives) and not counted
+        # toward quarantine -- instead of an "Error / no command" the user cannot
+        # act on. ``kiro-cli mcp list`` is where it is verified.
+        _drop_temp_refusals(server)
+        server.status = "registry"
+        server.error = ""
+        return server
+
     if not server.command:
         server.status = "error"
         server.error = "no command"
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
+        return server
+
+    # A direct probe runs outside the MCP gateway, the one place a ``secret://``
+    # env value is resolved, so it would start the server with the literal
+    # reference as its credential. Refused before any spawn, and not cached, so
+    # a real probe's stored tool list survives; only the env KEYS are named. The
+    # status is ``outdated``, which carries no probe verdict: no handshake was
+    # attempted, so the refusal must not count toward the failure quarantine.
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    secret_keys = secret_reference_keys(server.env)
+    if secret_keys:
+        _drop_temp_refusals(server)
+        server.status = "outdated"
+        server.error = (
+            f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
+            "which is resolved only when the MCP gateway starts the server"
+        )
         return server
 
     if not _on_private_loop:
@@ -2555,8 +2641,12 @@ async def probe_server(
 
                     await asyncio.to_thread(sweep_backend_tmp, probe_tmp)
                     probe_tmp = None
+        # Expanded the way the emitted agent spec is (see expand_spec_args), so
+        # a ``${HOME}/...`` launch path the session can start is not probed
+        # literally, failed and quarantined.
+        _spawn_args = expand_spec_args(server.args or [], server=server.name)
         wrapped_argv, env, sandbox_cleanup = await sandboxed_spawn_argv_async(
-            [resolved, *(server.args or [])],
+            [resolved, *_spawn_args],
             mode="standard",
             env=env,
             strip_python_env=True,
@@ -2989,7 +3079,21 @@ async def probe_server(
                     await asyncio.to_thread(
                         platform_compat.kill_process_tree, probe_pid, platform_compat.SIGKILL
                     )
-                except (ProcessLookupError, OSError):
+                except ProcessLookupError:
+                    # The probe already exited before this post-probe reap, so
+                    # ``taskkill /T /F`` returned rc=128 and kill_process_tree
+                    # mapped it to ProcessLookupError (the Windows analog of the
+                    # POSIX ESRCH silently absorbed above). Nothing leaked — a
+                    # traceback here makes a routine cleanup race look identical
+                    # to a genuine reap failure, so log it without one.
+                    logger.debug(
+                        "Probe tree already gone for %s (pid %s)",
+                        server.name,
+                        probe_pid,
+                    )
+                except OSError:
+                    # A genuine cleanup failure (taskkill access-denied,
+                    # spawn error, etc.) keeps its traceback-bearing diagnostic.
                     logger.debug(
                         "Probe tree reap failed for %s (pid %s)",
                         server.name,
@@ -3438,11 +3542,14 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
         if name not in agent_names:
             out.append(info)
         else:
-            # Args divergence is intentionally excluded because
-            # ``_SOURCE_OWNED_MCP_KEYS`` omits ``args``: it depends on
-            # ``command``, which the merge will not reconcile without a scope
-            # that declares one. Firing on an args-only difference would offer
-            # the operator a sync that reconciles nothing.
+            # Args divergence is intentionally excluded. The merge now adopts a
+            # source's ``args`` together with its ``env`` onto an entry running
+            # the same program (``mcp_sources._merge_command_unit``), but the
+            # emitted args are ``${VAR}``-expanded (``expand_spec_args``) while
+            # the source holds the raw form, so a raw comparison would re-offer
+            # a sync on every poll for a server whose args name a variable. An
+            # args-only edit lands on the next rebuild instead; the ``env``
+            # comparison below is the one the merge converges on.
             existing = agent_mcp[name]
             if not isinstance(existing, dict):
                 continue
@@ -3597,8 +3704,19 @@ def register_servers_for_cc(
     existing: dict = {}
     if mcp_json_path.is_file():
         try:
-            existing = loads_user_json(mcp_json_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            text = mcp_json_path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if has_json_comments(text):
+            # Written back as plain JSON below, which would drop the comments.
+            logger.warning(
+                "Not registering MCP servers in %s: it has comments or trailing commas",
+                mcp_json_path,
+            )
+            return False
+        try:
+            existing = loads_user_json(text)
+        except json.JSONDecodeError:
             existing = {}
 
     mcp = existing.setdefault("mcpServers", {})

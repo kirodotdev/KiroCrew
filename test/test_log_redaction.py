@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 import sys
 
@@ -145,7 +146,7 @@ class TestInstallLogRedaction:
         assert "sk-secret-key-12345" not in record.msg
         assert "[REDACTED]" in record.msg
 
-    def test_install_survives_a_module_reload(self) -> None:
+    def test_install_survives_a_module_reload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A reload must not orphan the installed wrapper or make it call itself.
 
         ``importlib.reload`` re-executes this module in the SAME namespace, so every
@@ -154,13 +155,26 @@ class TestInstallLogRedaction:
         through one of those names would either recurse (the wrapper becomes its own
         base — process-wide, so ALL logging dies, not just redaction) or silently stop
         redacting. The wrapper carries both on itself, so a reload cannot reach them.
-        """
-        import kiro_crew.log_redaction as mod
 
-        install_log_redaction(["sk-secret-key-12345"])
+        The reload runs on a private copy of the module, re-executed in its own
+        namespace the way ``importlib.reload`` does. Reloading the shared
+        ``kiro_crew.log_redaction`` would rebind its classes for the rest of the
+        worker, and every later ``isinstance`` against the ``SecretRedactionFilter``
+        imported above would then fail.
+        """
+        import kiro_crew.log_redaction as shared
+
+        name = "_kirocrew_test_log_redaction_reload_copy"
+        spec = importlib.util.spec_from_file_location(name, shared.__file__)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, name, mod)
+        spec.loader.exec_module(mod)
+
+        mod.install_log_redaction(["sk-secret-key-12345"])
         installed = logging.getLogRecordFactory()
         try:
-            importlib.reload(mod)
+            spec.loader.exec_module(mod)  # the reload: same module object, same namespace
             assert logging.getLogRecordFactory() is installed
             assert "sk-secret-key-12345" not in _make_record("k=sk-secret-key-12345").msg
 

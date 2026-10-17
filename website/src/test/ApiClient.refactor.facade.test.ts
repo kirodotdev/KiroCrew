@@ -5,7 +5,7 @@
  * with `{ ...mod.api, name: vi.fn() }` inside `vi.mock` factories. Both only
  * work while every member is an own, enumerable, writable DATA property of a
  * plain object: a getter, a frozen segment, or a class instance would break
- * them silently. `teams` and `appearances` are the two nested namespaces.
+ * them silently. `teams`, `memberGoals` and `appearances` are the nested namespaces.
  */
 import { describe, it, expect, vi } from 'vitest'
 import * as client from '../api/client'
@@ -21,6 +21,7 @@ vi.mock('../api/apiTransport', async (importOriginal) => {
 const members = Object.keys(api) as (keyof typeof api)[]
 const NESTED: Record<string, string[]> = {
   teams: ['list', 'create', 'update', 'remove'],
+  memberGoals: ['get', 'setGoal', 'removeGoal', 'restoreGoal', 'setKeyResults', 'removeKeyResult', 'restoreKeyResult', 'setSchedules'],
   appearances: ['list', 'detail', 'importBundle', 'remove'],
 }
 
@@ -42,7 +43,7 @@ describe('api singleton shape', () => {
     }
   })
 
-  it('holds functions, except the two nested namespaces', () => {
+  it('holds functions, except the nested namespaces', () => {
     const nonFunctions = members.filter((name) => typeof api[name] !== 'function')
     expect(nonFunctions.sort()).toEqual(Object.keys(NESTED).sort())
     for (const [ns, keys] of Object.entries(NESTED)) {

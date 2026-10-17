@@ -44,8 +44,10 @@ mutation is either atomic by construction (no await in it) or its cleanup is a `
 it (:func:`_absorb_warm_requests`), and a process whose teardown did not finish stays
 PARKED with a drain armed rather than losing its only reference
 (:meth:`_WarmMintRuntime._park_or_kill_locked`, ``_sweep_retiring_locked``,
-``_retire_locked``, ``_abandon_spawn_locked``). Pinned by an AST guard in
-``test/test_connections_warm.py``, not merely described here.
+``_retire_locked``, ``_abandon_spawn_locked``). Pinned by AST guards in
+``test/test_connections_warm.py`` (every awaited window is protected) and
+``test/test_connections_warm_activation.py`` (the claim loop holds no await), not merely
+described here.
 
 SESSION OWNERSHIP is explicit at every transfer, because the handle is the ONLY way to
 terminate a backend session and the loopback callback children it owns. One rule covers
@@ -91,8 +93,8 @@ directly. The spec helpers read the user's config, private generation tree, glob
 dir, or kiro-cli's OAuth cache, and the credential gate reads the operator's OAuth-endpoint
 extension -- any of which can sit on a network mount where a stat is unbounded -- so they are
 synchronous, and a coroutine reaches them through ``asyncio.to_thread``. Enforced by a
-fixed-point drift guard in ``test/test_connections_warm.py`` that reads this module and its
-owners as one call graph, not merely described here.
+fixed-point drift guard in ``test/test_connections_warm_off_loop.py`` that reads this module
+and its owners as one call graph, not merely described here.
 
 REQUEST PATH: :func:`warm_mint_all` is driven by ``POST /api/connections/premint``, which the
 Connections page fires once on mount. It scans the candidates and hands them over, so the slugs

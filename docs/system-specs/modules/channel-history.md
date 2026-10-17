@@ -72,8 +72,10 @@ cross-thread contamination on follow-up messages.
 ### Context Builder (`context.py`)
 
 `build_message(text, is_new_session, session_key, channel_id=channel, thread_ts=thread_ts)` —
-calls `context_for(channel_id, thread_ts=thread_ts)` and injects result.
-Also injects lightweight thread reminder on non-new sessions.
+calls `context_for(channel_id, thread_ts=thread_ts)` and injects the result. In a
+thread whose fenced thread-replies block is present, that block replaces this
+channel-history leg, so the same messages are not shown twice. The thread-context
+block is emitted whenever `channel_id` and `thread_ts` are both set.
 
 ### Handler (`slack/handler.py`)
 
@@ -111,10 +113,10 @@ populated by `slack/events.py` which resolves sender display names via
 
 ## Thread Metadata Injection
 
-On a new, non-resumed, non-compressed thread session, the handler first uses
-`fetch_message(channel, thread_ts)` to retrieve the thread parent. If that is
-unavailable, it falls back to `fetch_thread_replies(limit=1)` for parent text
-and reply count; missing `channels:history` or `groups:history` scope degrades to
+On a new, non-resumed, non-compressed thread session, the handler reads the
+thread parent through `slack/thread_parent.py` `fetch_thread_parent`, which calls
+`fetch_message_detail(channel, thread_ts)`. If that is unavailable, it falls back to
+`fetch_thread_replies(limit=1)` for parent text and reply count; missing `channels:history` or `groups:history` scope degrades to
 bare thread identifiers. Parent text and fallback metadata are treated as
 untrusted input: prompt-injection matches are withheld and audited, and accepted
 text is structurally neutralized before injection. `HistoryEntry.msg_ts` lets the
@@ -126,7 +128,9 @@ in-memory window identify a top-level message as the parent of a later thread.
 the bot auto-responds in threads where it has an active session. When set
 to `false`, the bot requires an explicit @-mention for every message, even
 in threads it previously responded in. Useful for helpline/support channels
-where continued thread engagement is undesirable.
+where continued thread engagement is undesirable. A followed-thread reply that
+@-mentions only other users, not the bot, is skipped; the canonical admission rule
+is in [slack-gateway.md](slack-gateway.md).
 
 ## Related: A2A exchange budget
 

@@ -350,7 +350,7 @@ class TestExplicitPickRefusal:
         assert model_is_unusable("claude-opus-4.8", _FREE_TIER) is True
 
     def test_model_unavailable_error_is_terminal_and_names_alternatives(self):
-        err = AcpModelUnavailable("claude-opus-4.8", _FREE_TIER)
+        err = AcpModelUnavailable("claude-opus-4.8", _FREE_TIER, backend=ACP_BACKEND_KIRO)
         assert err.model_id == "claude-opus-4.8"
         assert err.advertised == _FREE_TIER
         assert err.transient is False  # no retry earns an entitlement
@@ -358,7 +358,7 @@ class TestExplicitPickRefusal:
         assert "claude-sonnet-4.6" in str(err)  # advertised alternatives surfaced
 
     def test_model_unavailable_error_without_advertised_says_none(self):
-        err = AcpModelUnavailable("claude-opus-4.8")
+        err = AcpModelUnavailable("claude-opus-4.8", backend=ACP_BACKEND_KIRO)
         assert err.advertised == []
         assert "none advertised" in str(err)
 

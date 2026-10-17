@@ -34,15 +34,28 @@ PERCENT = f"%{PROBE}%"
 
 # base64url payload plus the flag spelling and its ``=`` joiner.
 SHELL_INERT = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_=")
-_STUB_PYTHON_PREFIX = ["-s", "-m", rewriter._STUB_MODULE]
+_STUB_PYTHON_PREFIX = ["-s", "-P", "-m", rewriter._STUB_MODULE]
 
 
 def _stub_flags_argv(entry: dict) -> list[str]:
     args = entry["args"]
-    if args[:3] == _STUB_PYTHON_PREFIX:
-        return args[3:]
+    # An overlay opens with ``[-s] -P -m <stub>``; the legacy shape without
+    # ``-P`` opens with ``[-s] -m <stub>`` and still parses.
+    for prefix in (
+        _STUB_PYTHON_PREFIX,
+        _STUB_PYTHON_PREFIX[1:],
+        ["-s", "-m", rewriter._STUB_MODULE],
+    ):
+        if args[: len(prefix)] == prefix:
+            return args[len(prefix) :]
     assert args[:2] == ["-m", rewriter._STUB_MODULE]
     return args[2:]
+
+
+def _interpreter_prefix(entry: dict) -> list[str]:
+    """The launch line up to and including ``-m <stub module>``."""
+    args = entry["args"]
+    return args[: args.index(rewriter._STUB_MODULE) + 1]
 
 
 def _entry(
@@ -120,7 +133,7 @@ def test_bad_payload_rejected_without_echo(payload):
 
 def test_generated_metadata_tokens_are_shell_inert(tmp_path, nonbundled_python_without_user_site):
     entry = _percent_entry(tmp_path)
-    assert entry["args"][:3] == _STUB_PYTHON_PREFIX
+    assert entry["args"][: len(_STUB_PYTHON_PREFIX)] == _STUB_PYTHON_PREFIX
     for token in _stub_flags_argv(entry):
         assert set(token) <= SHELL_INERT, token
     # The envelope is the only carrier; nothing raw rides beside it.
@@ -155,7 +168,9 @@ def test_plain_flag_overlay_parses_to_identical_payload(
 ):
     """An overlay written before the envelope keeps its meaning and its hashes."""
     entry = _percent_entry(tmp_path)
-    plain = dict(entry, args=entry["args"][:3] + hashing.expand_stub_flags(_stub_flags_argv(entry)))
+    plain = dict(
+        entry, args=_interpreter_prefix(entry) + hashing.expand_stub_flags(_stub_flags_argv(entry))
+    )
     assert not any(t.startswith(hashing.STUB_FLAGS_FLAG) for t in plain["args"])
     assert vars(_parsed(plain)) == vars(_parsed(entry))
     from_plain = stub.build_register_payload(_parsed(plain))
@@ -222,7 +237,7 @@ def test_session_skips_a_stub_with_an_unreadable_envelope(tmp_path, caplog, chan
     """An overlay entry whose envelope cannot be decoded is left out of the
     session, like a command-less one; the session itself still starts."""
     entry = _percent_entry(tmp_path)
-    broken = dict(entry, args=entry["args"][:3] + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
+    broken = dict(entry, args=_interpreter_prefix(entry) + [f"{hashing.STUB_FLAGS_FLAG}=!!!!"])
     assert session_servers._acp_server_entry("probe", broken, channel_id) is None
     assert any("unreadable flag envelope" in r.message for r in caplog.records)
     overlay = tmp_path / "overlay"
@@ -283,7 +298,7 @@ def test_legacy_separator_and_flag_spelling(tmp_path, sep, equals):
 
 def _plain_flags(entry: dict) -> list[str]:
     """Rewrite an emitted entry into the pre-envelope plain-flag overlay shape."""
-    return entry["args"][:3] + hashing.expand_stub_flags(_stub_flags_argv(entry))
+    return _interpreter_prefix(entry) + hashing.expand_stub_flags(_stub_flags_argv(entry))
 
 
 @pytest.mark.parametrize("equals", [True, False])

@@ -19,6 +19,9 @@
     }
   },
   "default_workspace": "default",
+  "instances": {
+    "enabled": true
+  },
   "dashboard": {
     "host": "127.0.0.1",
     "theme_mode": "dark",

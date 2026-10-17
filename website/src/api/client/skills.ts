@@ -25,7 +25,7 @@ export interface SkillScriptValidation {
   report: Record<string, string[]>
 }
 
-export function createSkillsEndpoints({ get, post, put, del, j }: ClientTransport) {
+export function createSkillsEndpoints({ get, post, put, del, j, jfetch: fetch }: ClientTransport) {
   const library = {
     // Prompts (Agent SOPs)
     prompts: () => fetch('/api/prompts').then(j),
@@ -70,7 +70,9 @@ export function createSkillsEndpoints({ get, post, put, del, j }: ClientTranspor
     revokeSkillTrust: (path?: string, sessionKey?: string) =>
       del('/api/skills/-/trust' + (path ? '?path=' + encodeURIComponent(path) : ''),
           undefined, sessionKey).then(j),
-    skill: (name: string) => fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
+    /** `hash` is the sha256 of `content`, the edit base `updateSkill` sends. */
+    skill: (name: string): Promise<{ name: string; content: string; hash: string }> =>
+      fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
     /** List the file tree under a skill's directory.  The ``/-/`` separator
      *  disambiguates from a nested skill whose last segment is ``tree``. */
     skillTree: (name: string) => fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/') + '/-/tree').then(j),
@@ -79,7 +81,12 @@ export function createSkillsEndpoints({ get, post, put, del, j }: ClientTranspor
       fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/') +
             '/-/file?path=' + encodeURIComponent(relPath)).then(j),
     createSkill: (name: string, content: string) => post('/api/skills', { name, content }).then(j),
-    updateSkill: (name: string, content: string) => put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
+    /** `baseHash` is the `hash` of the SKILL.md the edit was seeded from. The
+     *  server refuses with 409 `content_conflict` if the file on disk differs
+     *  from that base, instead of overwriting it. */
+    updateSkill: (name: string, content: string, baseHash: string) =>
+      put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'),
+          { content, base_hash: baseHash }).then(j),
     deleteSkill: (name: string) => del('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
   }
 

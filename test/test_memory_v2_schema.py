@@ -867,9 +867,25 @@ class TestFacetsAreUnreachableFromEveryRanker:
         The walk cannot see a column list assembled at runtime (one statement builds
         one), which is precisely why the views, and not this test, are the barrier.
         """
+        import importlib
+
+        # The facade and every owner it composes: the owners beside it and the
+        # vector_memory_runtime modules it imports.
+        owners = [
+            importlib.import_module(name)
+            for name in sorted(
+                f"{node.module}.{alias.name}"
+                for node in ast.parse(inspect.getsource(vector_memory)).body
+                if isinstance(node, ast.ImportFrom)
+                and node.module in ("kiro_crew", "kiro_crew.vector_memory_runtime")
+                for alias in node.names
+                if node.module != "kiro_crew" or alias.name.startswith("vector_memory_")
+            )
+        ]
         through_a_view = [
             statement
-            for statement in _sql_statements(vector_memory)
+            for module in (vector_memory, *owners)
+            for statement in _sql_statements(module)
             if any(relation in statement for relation in _V1_RELATIONS)
         ]
 

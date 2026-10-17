@@ -22,7 +22,7 @@ const CAP = 'max-w-[min(420px,calc(100vw-2rem))]'
 
 const HOSTS: Array<[string, string]> = [
   ['the folder-row overflow menu', read('apps', 'fileMenuContributions.tsx')],
-  ['the MarkdownPanel overflow menu', read('components', 'MarkdownPanel.tsx')],
+  ['the MarkdownPanel overflow menu', read('components', 'MarkdownPanelHeader.tsx')],
   ['the Pierre tree context menu', read('pierre', 'PierreWorkspaceTreeImpl.tsx')],
 ]
 
@@ -51,7 +51,7 @@ describe('contributed menu rows fit a narrow viewport', () => {
   })
 
   it('lets a capped MarkdownPanel row clip rather than spill', () => {
-    const src = read('components', 'MarkdownPanel.tsx')
+    const src = read('components', 'MarkdownPanelHeader.tsx')
     const row = /const menuRowCls = '([^']*)'/.exec(src)
     expect(row, 'menuRowCls not found').not.toBeNull()
     expect(row![1]).toContain('min-w-0')

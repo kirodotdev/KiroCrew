@@ -24,6 +24,9 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import platform
+import re
+import shlex
 import stat
 import threading
 import time
@@ -37,26 +40,168 @@ logger = logging.getLogger(__name__)
 _SECRET_KEY_FILE = "token_signing.key"
 _MIN_KEY_BYTES = 32
 
-#: Directory (a direct child of the crew data home) both gateway auth stores stage their
-#: temp files in: this module's ``token_signing.key`` and ``refresh_tokens``'
-#: ``refresh_chains.json``. Spelled as a literal rather than imported from
-#: ``kiro_crew.sandbox`` to keep this module off that import chain, exactly as
-#: ``service/live_target.py`` spells ``live-target-staging``; the equality is pinned by a
-#: test instead.
-#:
-#: Staging beside either leaf is what this exists to avoid. Both are masked in an agent
-#: sandbox as individual FILES, and a mask covers a PATH rather than an inode, so a temp
-#: beside one of them sits in the data-home root -- visible in every sandbox, and
-#: ``link(2)``-able by a same-uid agent for as long as the write takes. The temp carries
-#: the FULL key or chain state, so a link taken in that window keeps reading the bytes
-#: after the publish, and a crash between write and publish leaves the same unmasked file
-#: on disk. The spawn-time hard-link refusal cannot close this: it runs BEFORE a spawn,
-#: while this window opens during one.
-#:
-#: The sandbox launcher masks this directory in every namespace and precreates it, and
-#: ``security.paths`` fences it, both as a whole DIRECTORY -- so every temp name inside it,
-#: present and future, is covered without a second entry to remember.
-_AUTH_STORE_STAGING_LEAF = "auth-store-staging"
+
+def signing_key_remedy(key_path: "Path", restart: str) -> "list[str]":
+    """The manual steps an operator follows when :func:`signing_key_health` answers ``"short"``.
+
+    Steps, not a command. Any printed one-liner that checks the file and then
+    removes it has a gap between the two, and a restore landing in that gap loses
+    the restored key. The steps close the gap at its source instead: the gateway
+    and whatever restores the key are stopped FIRST, so nothing can write the file
+    while a person checks its length and removes it. The file is removed, not moved
+    aside: a copy at any other name sits outside the agent sandbox's exact-leaf
+    mask over ``token_signing.key``, so a truncated key's remaining bytes (31 of 32
+    leave one byte to guess) would become readable by every agent. A truncated key
+    signs nothing, so removing it loses nothing, and the next boot publishes a
+    fresh key through the single-creator election.
+
+    The path in each command goes through :func:`shlex.quote` (PowerShell: a
+    single-quoted literal with embedded quotes doubled) because the commands are
+    printed for pasting and the data home is operator-controlled
+    (``KIROCREW_HOME``): a name carrying a quote, a space or a ``$(...)`` must land
+    in the shell as one literal argument, never as syntax.
+
+    *restart* is the caller's service-aware restart command
+    (``service.common.restart_command_hint``), which picks the system unit, the
+    per-user unit or ``kirocrew restart`` from what is installed; each of those
+    also starts a stopped gateway. A fixed command here would name the wrong
+    manager for a per-user or foreground gateway. It is passed in rather than
+    imported because ``service.common`` imports ``config.loader``, the same
+    circular chain the local import below avoids.
+    """
+    if platform.system() == "Windows":
+        # PowerShell ends a single-quoted string on the ASCII quote AND on the
+        # curly single quotes U+2018..U+201B; each is escaped by doubling it.
+        ps_path = "'" + re.sub("['\u2018\u2019\u201a\u201b]", r"\g<0>\g<0>", str(key_path)) + "'"
+        check = f"(Get-Item -LiteralPath {ps_path}).Length"
+        remove = f"Remove-Item -LiteralPath {ps_path}"
+    else:
+        quoted = shlex.quote(str(key_path))
+        check = f"wc -c < {quoted}"
+        remove = f"rm {quoted}"
+    # Each command ends its line after "Run: ", unwrapped, so a path carrying a
+    # backtick or a quote reaches the terminal exactly as the shell quoting built it.
+    return [
+        "1. Stop the gateway, and anything that may be restoring this file "
+        "(a backup job, a copy from another host).",
+        f"2. Check it is still short. It must print less than {_MIN_KEY_BYTES}, and a "
+        f"result of {_MIN_KEY_BYTES} or more means a restore finished, so skip to step 4. "
+        f"Run: {check}",
+        f"3. Delete it by hand. Run: {remove}",
+        f"4. Start the gateway. Run: {restart}",
+    ]
+
+
+def signing_key_health(
+    key_path: "Path | None" = None, *, confined: bool = False
+) -> "tuple[str, Path]":
+    """Read-only look at the persisted signing key: ``(state, path)``.
+
+    ``state`` is one of:
+
+    * ``"ok"``: a regular file holding at least :data:`_MIN_KEY_BYTES` bytes;
+    * ``"absent"``: no file; the next boot publishes one, nothing is wrong;
+    * ``"short"``: a regular file SHORTER than a key. No boot accepts it, and the
+      loader's fallback for it is an ephemeral secret that a restart cannot
+      reproduce, so every restart logs every dashboard session out and drops every
+      HMAC-certified grant. The gateway refuses to start on it and names
+      :func:`signing_key_remedy`; how it got that way (a killed in-place create, a
+      partial migration copy, a truncated restore) is an operator-visible event;
+    * ``"other"``: present but not a regular file (a symlink, a directory);
+      reported, never repaired here;
+    * ``"unstatable"``: the ``lstat`` itself failed with something other than
+      "no such file" (EIO, ESTALE on a network mount, EACCES on the directory).
+      Whether a key is there is unknown, so the boot preflight still runs the
+      real load and refuses only when that load answers ``"short"``; an
+      ephemeral fallback boots on the loader's WARNING and doctor reports it;
+    * ``"masked"``: this process runs inside a Kiro Crew agent sandbox, where the
+      launcher bind-mounts an EMPTY file over the key (on macOS, denies the
+      ``lstat``), so the size seen here says nothing about the real file. Reading
+      the mask as ``"short"`` would hand an operator a remedy that deletes a
+      healthy key by hand, so the answer is keyed on evidence that the PROCESS
+      is confined, never on the file's shape alone: on Linux the process's cgroup is under
+      ``kirocrew-agents.slice``, and the caller may pass *confined* for evidence
+      this module does not probe itself (``kirocrew doctor`` passes the macOS
+      kernel's Seatbelt verdict from ``sandbox.agent_confinement_evidence``). The
+      launcher's ``KIROCREW_SANDBOX_ACTIVE`` marker counts too, but only as an
+      extra: ``cli.main()`` pops it before any subcommand runs. A file on another
+      device from its directory is NOT evidence on its own: an operator can mount
+      a filesystem at the key leaf on a host, and reading that as a mask would
+      withhold the refusal from a truncated key there.
+
+    Never creates, moves or reads the key bytes: ``lstat`` only, so asking the
+    question from ``doctor`` or a boot preflight has no side effect.
+    """
+    if key_path is None:
+        # Local import for the same reason _load_or_create_secret has one:
+        # config.loader pulls in modules that import token_auth, which re-exports
+        # this module, so a top-level import would be circular.
+        from kiro_crew.config.loader import config_dir
+
+        key_path = config_dir() / _SECRET_KEY_FILE
+    if confined or _inside_agent_sandbox():
+        return "masked", key_path
+    try:
+        info = os.lstat(key_path)
+    except FileNotFoundError:
+        return "absent", key_path
+    except OSError:
+        return "unstatable", key_path
+    if not stat.S_ISREG(info.st_mode):
+        return "other", key_path
+    if info.st_size < _MIN_KEY_BYTES:
+        return "short", key_path
+    return "ok", key_path
+
+
+def open_is_denied(key_path: Path) -> bool:
+    """Whether this process is refused a read-only open of *key_path*.
+
+    The agent sandbox's mask over the key is a mode-0 stand-in, so inside a
+    sandbox the scrubbed environment and the cgroup probe can both miss while an
+    open is still refused; an operator's truncated 0600 key opens. ``doctor``
+    asks this before it prints a removal step for a ``"short"`` key. The open
+    reads no bytes and does not follow a symlink.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(key_path, flags)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    os.close(fd)
+    return False
+
+
+def _inside_agent_sandbox(cgroup_path: str = "/proc/self/cgroup") -> bool:
+    """Confinement evidence that survives an environment scrub.
+
+    The launcher-only ``KIROCREW_SANDBOX_ACTIVE`` marker is checked first because
+    it is cheap and, in the direction of refusal, harmless when forged (an
+    over-answer of ``"masked"`` withholds a remedy, never hands one out). It is
+    not sufficient: ``cli.main()`` removes it before dispatch. On Linux every
+    agent process is placed under ``kirocrew-agents.slice`` by the sandbox
+    launcher, and ``/proc/self/cgroup`` cannot be edited from inside, so that
+    membership is the durable signal.
+    """
+    if os.environ.get("KIROCREW_SANDBOX_ACTIVE"):
+        return True
+    try:
+        with open(cgroup_path, encoding="utf-8") as fh:
+            return "kirocrew-agents.slice" in fh.read()
+    except OSError:
+        return False
+
+
+# The staging directory and its validator live in ``kiro_crew.hidden_leaf_staging`` so
+# writers that only need them do not import this signing-key module; re-exported here for
+# this module's own publish and for ``refresh_tokens``.
+from kiro_crew.hidden_leaf_staging import (  # noqa: E402,F401
+    _AUTH_STORE_STAGING_LEAF,
+    AuthStoreStagingRefused,
+    auth_store_staging_dir,
+)
 
 # Bounded retry budget for the create-then-read interleaving window. The SOLE
 # creator opens the key file with O_EXCL, then writes 32 bytes; a racing reader
@@ -97,28 +242,6 @@ _LINK_UNSUPPORTED_ERRNOS = frozenset(
 _LINK_UNSUPPORTED_WINERRORS = frozenset({1, 50})
 
 
-class AuthStoreStagingRefused(OSError):
-    """The staging directory is REFUSED because another account could write it.
-
-    Raised for the two permission refusals only -- a POSIX mode that keeps a group or world
-    write bit, and a Windows directory that could not be locked to its owner. A home that
-    simply cannot stage (a non-directory occupying the name) raises a plain ``OSError``,
-    because the two need opposite answers.
-
-    An ``OSError`` subclass so every existing caller keeps its handler: the refresh store
-    marks itself degraded on either kind and does not need to tell them apart.
-
-    The signing key does. Its publish loop treats a plain failure as "this home cannot
-    stage", which unlocks :func:`_create_key_in_place` -- and that writer creates the
-    destination EMPTY before writing, which is the truncation window the staged publish
-    exists to remove. Buying that window is worth it where no key would be persisted
-    otherwise. It is not worth it here: the refusal is a one-``chmod`` misconfiguration this
-    module reports in full, and an in-place publish answers nothing about it, so the key
-    degrades to an ephemeral secret with the stored file untouched rather than leaving a host
-    that published atomically yesterday with a zero-byte key today.
-    """
-
-
 def _is_link_unsupported(exc: OSError) -> bool:
     """Whether *exc* says this filesystem cannot hard-link at all.
 
@@ -129,118 +252,6 @@ def _is_link_unsupported(exc: OSError) -> bool:
     if exc.errno in _LINK_UNSUPPORTED_ERRNOS:
         return True
     return getattr(exc, "winerror", None) in _LINK_UNSUPPORTED_WINERRORS
-
-
-def auth_store_staging_dir(home: Path) -> Path:
-    """Return the auth-store staging directory under *home*, creating it if absent.
-
-    Shared by this module's signing-key publish and ``refresh_tokens``' state publish so
-    the two cannot drift onto different staging policies. The directory is validated
-    rather than trusted, on the same grounds ``service.live_target._publish_pointer``
-    validates its own: the name sits in the data-home root, so a directory found there is
-    not necessarily one this process created.
-
-    Refuses the two shapes that defeat the mask, and repairs the one that does not:
-
-    * not a directory (a symlink included, via ``lstat``) -- REFUSED. Following it would
-      stage the full key or chain state wherever it points, outside both the mask and the
-      fence, which is the exposure this directory exists to close.
-    * cannot be locked to its owner ON WINDOWS -- REFUSED. There
-      :func:`platform_compat.restrict_dir_to_owner` writes an inheriting owner-only DACL,
-      which no POSIX mode test can express, so a directory a foreign principal can write
-      would otherwise pass unexamined and that principal could replace a staged file
-      between the write and the publish.
-    * group- or world-WRITABLE on POSIX where the narrowing does not stick -- REFUSED.
-      Another local account can replace the staged file between ``atomic_write`` and the
-      publish ``os.link``, which installs a signing key it chose. Nothing downstream would
-      notice: the publishing process returns its own bytes while every later boot reads the
-      substituted file as authoritative. A mount that cannot express modes can still
-      hard-link, so "the mode did not stick" does not imply the publish will fail.
-    * group- or world-READABLE or executable on POSIX -- narrowed, and WARNED when the
-      narrowing does not stick. A wider read bit lets another local account enumerate the
-      temps' names, so it is worth closing, but it moves no byte and grants no
-      substitution. This is the ``dir_mode=0755`` class of mount (CIFS, vfat, exFAT),
-      which is a real configuration rather than a hostile one.
-
-    Refusing drops no persisted record, because each caller reaching a refusal answers it
-    rather than returning silently. Both answers are DEGRADATIONS that leave the stored file
-    untouched, raised as :class:`AuthStoreStagingRefused` so a caller can tell a refusal from
-    a home that merely could not be staged in. The signing key degrades to an ephemeral
-    secret for this process, which costs a re-login after a restart and keeps the persisted
-    key byte-for-byte as it was -- it does NOT take the in-place writer, whose empty-create
-    would trade a one-``chmod`` misconfiguration for a zero-byte key on a host that was
-    publishing atomically. The refresh store marks itself degraded, and its own reader fails
-    closed on that mark, so a spent or revoked token is REFUSED rather than accepted -- it
-    does not publish a full copy of the chain state through the state file's own
-    sandbox-visible directory, which is the exposure this staging directory exists to close.
-
-    ``EXDEV`` is not a concern for the caller that publishes with ``os.link``: this is a
-    subdirectory of the key's own parent, so the staged file and its destination are
-    always on one filesystem.
-    """
-    staging = home / _AUTH_STORE_STAGING_LEAF
-    try:
-        st = os.lstat(staging)
-    except FileNotFoundError:
-        home.mkdir(parents=True, exist_ok=True)
-        # exist_ok: the sandbox materialiser precreates the same directory, and the two
-        # auth stores publish concurrently.
-        staging.mkdir(mode=0o700, exist_ok=True)
-        st = os.lstat(staging)
-    if not stat.S_ISDIR(st.st_mode):
-        # NOT AuthStoreStagingRefused: this says the home cannot stage at all, not that
-        # another account could substitute the staged file. The key's publish loop is meant to
-        # reach its in-place writer here, because the alternative is no persisted key on any
-        # boot while a working path to one exists.
-        raise OSError(
-            errno.ENOTDIR,
-            f"{staging} is not a directory; refusing to stage a gateway auth store through it",
-        )
-    # Owner-only on BOTH platforms, through the directory-shaped helper. Its Windows
-    # arm writes an inheriting owner-only DACL, which no mode test can express, so a
-    # POSIX-only check would leave a Windows staging directory a foreign principal can
-    # write -- and that principal could then replace a staged file between the write
-    # and the publish. Its POSIX arm is the same owner-only narrowing the mode split
-    # below measures. The helper is fail-loud, and on Windows it writes only when the
-    # directory's own descriptor does not already match, so the ordinary publish pays
-    # nothing.
-    try:
-        platform_compat.restrict_dir_to_owner(staging)
-    except OSError as exc:
-        if os.name == "nt":
-            raise AuthStoreStagingRefused(
-                errno.EPERM,
-                f"{staging} could not be locked to its owner ({exc}); refusing to stage a "
-                "gateway auth store through it. Another account that can write this "
-                "directory can replace the staged file between the write and the publish "
-                "link, which installs a signing key or refresh state it chose. Grant only "
-                "this account access to it, or remove it, then restart the gateway.",
-            ) from exc
-        # POSIX falls through: the mode test below can SEE what survived, and it
-        # separates the bit that permits substitution from the bit that only leaks
-        # names. Refusing on the read bit too would fail an ordinary mount.
-    else:
-        st = os.lstat(staging)
-    if os.name != "nt" and st.st_mode & 0o022:
-        raise AuthStoreStagingRefused(
-            errno.EPERM,
-            f"{staging} is group- or world-WRITABLE (mode {stat.S_IMODE(st.st_mode):o}) and "
-            "the mode could not be narrowed; refusing to stage a gateway auth store through "
-            "it. Another local account can replace the staged file between the write and the "
-            "publish link, which installs a signing key it chose as the one that signs every "
-            "dashboard token. chmod 700 it or remove it, then restart the gateway.",
-        )
-    if os.name != "nt" and st.st_mode & 0o055:
-        logger.warning(
-            "gateway auth-store staging directory %s is readable beyond its owner (mode %o) "
-            "and could not be narrowed; other local accounts can list the publish temps' "
-            "names. The bytes stay owner-only and the directory is still masked in every "
-            "agent namespace and fenced from the file tools. chmod 700 it to close the "
-            "listing.",
-            staging,
-            stat.S_IMODE(st.st_mode),
-        )
-    return staging
 
 
 def _enforce_owner_only(key_path: Path) -> None:
@@ -304,10 +315,7 @@ def _unlink_if_same_file(key_path: Path, created_stat: os.stat_result) -> None:
         # Already gone (a sibling cleaned it up, or it never landed) — nothing
         # of ours to remove.
         return
-    if (
-        on_disk.st_dev == created_stat.st_dev
-        and on_disk.st_ino == created_stat.st_ino
-    ):
+    if on_disk.st_dev == created_stat.st_dev and on_disk.st_ino == created_stat.st_ino:
         try:
             os.unlink(key_path)
         except OSError:
@@ -394,9 +402,7 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
         while mv:
             n = os.write(fd, mv)
             if n == 0:
-                raise OSError(
-                    "short write persisting token signing key (wrote 0 bytes)"
-                )
+                raise OSError("short write persisting token signing key (wrote 0 bytes)")
             mv = mv[n:]
         # Cross-restart persistence is the entire reason this file
         # exists, so flush the bytes to stable storage before we treat
@@ -425,8 +431,13 @@ def _create_key_in_place(key_path: Path) -> bytes | None:
     return key
 
 
-def _load_or_create_secret() -> bytes:
+def _load_or_create_secret(outcome: "list[str] | None" = None) -> bytes:
     """Return the HMAC signing secret, persisted across restarts.
+
+    *outcome*, when given, receives ``"ephemeral"`` whenever the secret is an
+    ephemeral fallback rather than a persisted key, and also ``"short"`` if the key
+    file was still truncated at the moment of falling back;
+    :func:`load_boot_secret` reads it. Every other caller passes nothing.
 
     See module docstring for the persistence rationale. Falls back to an
     ephemeral secret if the key file is unwritable — tokens still work within
@@ -744,6 +755,18 @@ def _load_or_create_secret() -> bytes:
         # (works this session, not across restart), matching the
         # unwritable-file fallback below. An operator can remove the stale file
         # to let a fresh key be created cleanly.
+        #
+        # One last read before giving up, and the verdict comes from THAT read.
+        # A sibling's in-place writer can finish between the loop's final read
+        # and this point; a separate lstat taken here would then see a full key
+        # and approve the ephemeral secret this process is about to sign with.
+        # Reading once through one descriptor either returns the finished key
+        # (the same >= _MIN_KEY_BYTES rule every read above applies) or reports
+        # the shortness it actually observed.
+        final, observed_short = _final_key_read(key_path)
+        if final is not None:
+            _enforce_owner_only(key_path)
+            return final
         # Logs only the key PATH (key_path) and an attempt count, never the key
         # bytes; the Semgrep rule fires on the credential-adjacent wording in
         # the static message string, not on any secret value.
@@ -753,15 +776,81 @@ def _load_or_create_secret() -> bytes:
             key_path,
             _CREATE_MAX_ATTEMPTS,
         )
+        if outcome is not None:
+            outcome.append("ephemeral")
+            if observed_short:
+                outcome.append("short")
         return os.urandom(_MIN_KEY_BYTES)
     except OSError:
         # Fall back to an ephemeral secret if the key file is unwritable.
         logger.warning("token signing key not persisted; using ephemeral secret", exc_info=True)
+        if outcome is not None:
+            outcome.append("ephemeral")
         return os.urandom(_MIN_KEY_BYTES)
+
+
+def _final_key_read(key_path: Path) -> tuple[bytes | None, bool]:
+    """Read *key_path* once through one no-follow descriptor.
+
+    Returns ``(key, False)`` when the file holds a full key, ``(None, True)``
+    when it is a regular file under a key's length, and ``(None, False)`` for
+    anything else (absent, not a regular file, a symlink, unreadable). The
+    type check and the bytes come from the same descriptor, so the verdict
+    describes exactly what this read saw.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(key_path, flags)
+    except OSError:
+        return None, False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, False
+        chunks: list[bytes] = []
+        while chunk := os.read(fd, 4096):
+            chunks.append(chunk)
+    except OSError:
+        return None, False
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if len(data) >= _MIN_KEY_BYTES:
+        return data, False
+    return None, True
 
 
 _SECRET: bytes | None = None
 _SECRET_LOCK = threading.Lock()
+
+
+def load_boot_secret() -> str:
+    """Load and memoize this process's signing secret now, and say how it went.
+
+    Returns ``"short"`` when the loader's own read found a truncated key file and
+    it fell back to an ephemeral secret, ``"ephemeral"`` when it fell back for any
+    other reason (an unreadable or unwritable key, whose shape the loader could not
+    confirm), ``"loaded"`` only when the secret is a persisted key (read or
+    first-boot published), and ``"already-loaded"`` when an earlier caller
+    memoized the secret first.
+
+    This is the boot preflight's AUTHORITATIVE check. An ``lstat`` taken before
+    the load can go stale: an in-place rewrite that starts after it and stays
+    under 32 bytes through the loader's retry budget would still end in the
+    ephemeral fallback. Judging the same call whose result is memoized closes
+    that gap, because the bytes the gateway will sign with are the bytes this
+    verdict describes. The loader's degrade-to-ephemeral contract is unchanged
+    for every other caller: only the boot, which can still refuse to bind, acts
+    on the answer.
+    """
+    global _SECRET
+    with _SECRET_LOCK:
+        if _SECRET is not None:
+            return "already-loaded"
+        outcome: list[str] = []
+        _SECRET = _load_or_create_secret(outcome)
+    if "short" in outcome:
+        return "short"
+    return "ephemeral" if "ephemeral" in outcome else "loaded"
 
 
 def _get_secret() -> bytes:

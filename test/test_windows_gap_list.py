@@ -202,12 +202,12 @@ def test_no_entry_is_a_test_that_only_runs_on_windows() -> None:
         # and one that runs everywhere, so a lookup that silently starts answering
         # "not found" or "never Windows-only" stops passing vacuously.
         (
-            "test/test_platform_compat.py::TestRestrictToOwner"
+            "test/test_platform_compat_owner_only.py::TestRestrictToOwner"
             "::test_applies_owner_only_dacl_on_windows",
             True,
         ),
         (
-            "test/test_platform_compat.py::TestRestrictToOwner"
+            "test/test_platform_compat_owner_only.py::TestRestrictToOwner"
             "::test_applies_owner_only_mode_on_posix",
             False,
         ),

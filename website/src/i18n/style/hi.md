@@ -21,7 +21,7 @@ Devanagari has its own sentence-ending punctuation:
 | `!` | — | exclamation is shared |
 | `:` `;` | — | same as Latin |
 
-- **No full stop on buttons or labels.** A button reading `डाउनलोड करें` needs no trailing
+- **No full stop on buttons or labels.** A button reading `डाउनलोड करो` needs no trailing
   `।`.
 - Quotation marks: use `"…"` (double) then `'…'` (single). Hindi does not have its own
   quotation mark convention distinct from Latin.
@@ -33,7 +33,7 @@ Devanagari has its own sentence-ending punctuation:
 Devanagari uses a shirorekha (headline stroke) that visually connects characters within a
 word. At a Latin/Devanagari word boundary, use normal Hindi word spacing.
 
-Write `Kiro Crew से कनेक्ट करें`: keep one space before the postposition. Do not glue it as
+Write `Kiro Crew से कनेक्ट करो`: keep one space before the postposition. Do not glue it as
 `Kiro Crewसे`, and do not double-space.
 
 **Font fallback**: ensure CSS `font-family` lists a Devanagari font (Noto Sans Devanagari)

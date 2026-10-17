@@ -71,6 +71,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg-synthetic-a",
         "text": "The tool `crew_probe_echo` returned the following text:\n\n\"crew-stdio-mount-proved\"\n\nThis output indicates that the crew has mounted standard input."
       }
     ],

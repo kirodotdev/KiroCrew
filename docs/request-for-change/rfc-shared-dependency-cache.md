@@ -4,8 +4,8 @@ status: draft
 kind: change
 author: Pearce Kieser (Pearcekieser)
 created: 2026-09-11
-last-audited: 2026-09-30
-audited-at: ac0c8bbf1b
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 12937
 implementation-prs: [10259]
 tracking-issues: [10258]
@@ -27,6 +27,11 @@ build a different venv than they build today. The First Principles review lane
 requires such a change to trace to a document with a non-`draft` status on the
 **base** branch, so this document lands on its own and the flip follows in a PR
 that rebases onto it. The opt-in path needs no such record and ships first.
+
+Status: draft (no maintainer acceptance recorded). Phase 1, the opt-in, is on main
+([#10259](https://github.com/kirodotdev/KiroCrew/pull/10259)): `resolve_uv` in
+`src/kiro_crew/env.py` and `KIROCREW_PROVISION_USE_UV` in
+`src/kiro_crew/pod/provision.py`. Phases 2–4 are proposals.
 
 ## Problem
 
@@ -56,7 +61,7 @@ reason `pod up` auto-builds the venv but not the dist.
 
 - A worktree's Python venv costs seconds and near-zero unique disk when the
   host can share; the same command produces the same venv when it cannot.
-- No new dependency: `uv` is already declared in `setup.cfg` (`uv>=0.5,<1`,
+- No new dependency: `uv` is already declared in `setup.cfg` (`uv>=0.6.7,<1`,
   shipped as a wheel and located with `uv.find_uv_bin()`), so a stock install
   has it; an install repackaged without the binary gets exactly today's
   behaviour.
@@ -77,7 +82,7 @@ reason `pod up` auto-builds the venv but not the dist.
 
 ## Design
 
-### Phase 1 — `uv` for pod provisioning, opt-in ([#10259](https://github.com/kirodotdev/KiroCrew/pull/10259))
+### Phase 1 — `uv` for pod provisioning, opt-in ([#10259](https://github.com/kirodotdev/KiroCrew/pull/10259), merged)
 
 `pod/provision.py::ensure_venv` keeps `python -m venv` + pip as its default.
 When `KIROCREW_PROVISION_USE_UV` is truthy (`1`/`true`/`yes`/`on`, read through

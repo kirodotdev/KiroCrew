@@ -15,9 +15,11 @@ from kiro_crew.dashboard import (
     handlers,
     handlers_channel,
     handlers_cloud,
+    handlers_crew_turn,
     handlers_instances,
     handlers_project,
 )
+from kiro_crew.dashboard.handlers import external_terminal
 from kiro_crew.dashboard.handlers.auth_mobile import api_auth_mobile_link
 from kiro_crew.dashboard.handlers.auth_refresh import (
     api_auth_logout,
@@ -49,6 +51,12 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/terminal/redact", handlers.api_terminal_redact)
     app.router.add_post("/api/terminal/complete", handlers.api_terminal_complete)
     app.router.add_delete("/api/terminal/sessions/{session_id}", handlers.api_terminal_delete)
+    # External terminal app: the owner's approval, then the desktop shell's
+    # machine-only redemption (see handlers/external_terminal.py).
+    app.router.add_post("/api/terminal/external", external_terminal.api_terminal_external)
+    app.router.add_post(
+        "/api/terminal/external-grant", external_terminal.api_terminal_external_grant
+    )
     app.router.add_get("/api/taskrunner/refine", handlers.api_taskrunner_refine_status)
     app.router.add_post("/api/taskrunner/refine", handlers.api_taskrunner_refine)
     app.router.add_post("/api/taskrunner/refine/cancel", handlers.api_taskrunner_refine_cancel)
@@ -106,6 +114,7 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/instances/search-sessions", handlers_instances.api_instances_search_sessions
     )
+    app.router.add_get("/api/instances/versions", handlers_instances.api_instances_versions)
     app.router.add_post("/api/instances", handlers_instances.api_instances_add)
     app.router.add_patch("/api/instances/{id}", handlers_instances.api_instances_update)
     app.router.add_delete("/api/instances/{id}", handlers_instances.api_instances_remove)
@@ -125,15 +134,36 @@ def register(app: web.Application) -> None:
         "/api/instances/{id}/disconnect", handlers_instances.api_instances_disconnect
     )
     app.router.add_post("/api/instances/{id}/restart", handlers_instances.api_instances_restart)
+    # Explicit "Update remote": runs the crew's own `kirocrew update`, then a
+    # restart, as a background job polled on the same path.
+    app.router.add_post(
+        "/api/instances/{id}/update", handlers_instances.api_instances_update_remote
+    )
+    app.router.add_get(
+        "/api/instances/{id}/update", handlers_instances.api_instances_update_remote_status
+    )
     app.router.add_post(
         "/api/instances/{id}/send-session", handlers_instances.api_instances_send_session
     )
+    # One turn against a HEADLESS remote crew (Fargate or MicroVM), which has no
+    # dashboard to embed and serves only a turn route. The gateway is the client
+    # because the crew's control secret must not reach the browser. Registered
+    # BEFORE the catch-all proxy route so `{path:.*}` cannot swallow it, and NOT
+    # through that proxy: it is fenced to the `api/chat` prefixes and a widening
+    # that reached the turn route would reach the crew's control surface too.
+    app.router.add_post("/api/instances/{id}/crew-turn", handlers_crew_turn.api_crew_turn)
     # Peer capability read — the per-instance counterpart to the local
     # /api/agents, /api/models, /api/effort-levels and /api/workspaces, for a
     # session whose turns run on that peer. Registered BEFORE the catch-all
     # proxy route so `{path:.*}` cannot swallow it.
     app.router.add_get(
         "/api/instances/{id}/capabilities", handlers_instances.api_instances_capabilities
+    )
+    # The peer's YOLO flag only, for the crew window's
+    # approval-mode picker. Its own route so the window's poll reads one peer
+    # endpoint, not the whole roster. Also BEFORE the catch-all.
+    app.router.add_get(
+        "/api/instances/{id}/approval-state", handlers_instances.api_instances_approval_state
     )
     # Peer live-session read for the merged-sessions sidebar. A dedicated route
     # rather than a bare proxy hop because the peer's reply needs a hub-side

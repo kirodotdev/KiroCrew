@@ -235,7 +235,7 @@ export default function GitPanel({ projectDir, onFileOpen, onClose }: GitPanelPr
 
           {/* Uncommitted / clean pill */}
           {!noRepository && !statusError && (
-            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${hasNoChanges ? 'bg-ok/15 text-ok' : 'bg-warn/15 text-warn'}`}>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0 ${hasNoChanges ? 'bg-ok/15 text-ok-text' : 'bg-warn/15 text-warn-text'}`}>
               {statusLoading
                 ? '...'
                 : hasNoChanges

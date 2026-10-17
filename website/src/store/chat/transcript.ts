@@ -5,6 +5,7 @@
  *  every slot-detail reducer cuts and merges by. Nothing here touches chat
  *  state; callers pass the arrays in. */
 import type { ChatMessage } from '../../types'
+import { isStopEvent } from '../../lib/stopEvent'
 import { jsonEqual } from '../../utils/structuralEqual'
 import { secureRandomId } from '../../utils/secureId'
 
@@ -123,6 +124,132 @@ export function deduplicateByMid(msgs: ChatMessage[]): ChatMessage[] {
   return result
 }
 
+/** Carry a settled `mcp_oauth` banner forward over a stale snapshot copy that
+ *  would revive its retired Authorize link (#20833).
+ *
+ *  The backend upserts an `mcp_oauth` banner in place by its server `meta.mid`,
+ *  keeping the same `role` and `ts`: a newer request supersedes it
+ *  (`_supersede_open_mcp_oauth_banners` drops `oauth_url`, sets `superseded`),
+ *  and the read-time gate expires a dead-child one (`oauth_url: ""`, `expired`).
+ *  A reconnect / slot switch then fetches a BOUNDED snapshot taken BEFORE that
+ *  transition, still carrying the OPEN copy (a live `oauth_url`, no terminal
+ *  flag) under the SAME `(mid, role, ts)`. The slot-detail merge appends that
+ *  stale page copy AFTER the live settled row, so `deduplicateByMid` — which
+ *  keeps the LAST occurrence — revives the dead Authorize button, which walks
+ *  the user to a loopback callback port that can redeem nothing.
+ *
+ *  This carries each settled prior banner's content/cls/meta forward onto any
+ *  merged copy of the same mid that is still open, BEFORE `deduplicateByMid`
+ *  collapses the pair, so the surviving row keeps the terminal state the user
+ *  already saw. Keyed by `mid` only — the backend's own upsert key.
+ *
+ *  A sibling of `#20818`'s stop-event rule applied at the same two merge sites
+ *  (`slotRefresh.ts`, `slotSwitch.ts`); deliberately scoped to `mcp_oauth` and
+ *  independent of it. Returns `merged` unchanged (same reference) when nothing
+ *  is carried, so a caller can skip the write.
+ */
+export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
+  const oauthMid = (m: ChatMessage): string | undefined => {
+    if (m.role !== 'mcp_oauth') return undefined
+    const mid = m.meta?.mid
+    return typeof mid === 'string' && mid ? mid : undefined
+  }
+  // Terminal states the backend stamps on a retired banner. An open banner
+  // carries none of them (and still carries a live `oauth_url`).
+  const isSettled = (m: ChatMessage): boolean => {
+    const meta = m.meta as { superseded?: unknown; expired?: unknown; completed?: unknown; failed?: unknown } | undefined
+    return !!(meta?.superseded || meta?.expired || meta?.completed || meta?.failed)
+  }
+
+  const settledPrior = new Map<string, ChatMessage>()
+  for (const m of existing) {
+    const id = oauthMid(m)
+    if (id && isSettled(m)) settledPrior.set(id, m)
+  }
+  if (!settledPrior.size) return merged
+
+  let changed = false
+  const result: ChatMessage[] = []
+  for (const m of merged) {
+    const id = oauthMid(m)
+    if (id !== undefined && !isSettled(m) && settledPrior.has(id)) {
+      // Carry the settled prior row's rendered state forward in place. The
+      // prior meta is AUTHORITATIVE, not merged under the open copy's: the
+      // supersede/expire transition DROPS `oauth_url`, so spreading the open
+      // copy's meta on top would keep its dead link and only add the terminal
+      // flag — a hybrid row that still renders the revived Authorize button.
+      // Identity (`mid`, `role`, `ts`) already matches, so replacing content /
+      // cls / meta wholesale keeps the row the same row for `deduplicateByMid`.
+      const prior = settledPrior.get(id)!
+      result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(prior.meta || {}) } })
+      changed = true
+      continue
+    }
+    result.push(m)
+  }
+  return changed ? result : merged
+}
+
+/** Keep a merged transcript's stop_event cards from REGRESSING to `stopping`.
+ *
+ *  The backend upserts a stop card BY `meta.id`: the press opens it at
+ *  `stopping`, then the same id is re-broadcast settled (`stopped`,
+ *  `stop_failed_reset`, `stop_declined_compacting`). The live frame appliers
+ *  (`applyActiveFrame`) honour that by replacing in place on id — but the
+ *  switch/refresh MERGE does not. It rebuilds the transcript from the server
+ *  snapshot (`mergePreservedClientTs` returns the incoming rows as the base)
+ *  and dedups only by `meta.mid`, while a server snapshot's stop_event row
+ *  carries no `mid` (`_prepare_messages` keeps `mid` for permission rows only).
+ *  So a snapshot captured while the stop was still `stopping`, landing after
+ *  the tab already settled the card, replaces the settled live row with its
+ *  stale `stopping` copy — leaving the card stuck pulsing at `stopping` until a
+ *  reload (#20728).
+ *
+ *  The transition is monotonic (a stop never un-settles), so the SETTLED state
+ *  always wins. For each merged stop_event row still at `stopping`, look up the
+ *  same `meta.id` in the PRIOR transcript (`existing`, the live state the tab
+ *  already held): if that copy is settled, carry its settled `meta`/content
+ *  onto the merged row. A row with no settled prior copy, and every non-stop
+ *  row, pass through untouched.
+ *
+ *  Scope is deliberately the stale-snapshot regression only: a backend that
+ *  recorded two SEPARATE rows for one stop id is a backend-writer concern, not
+ *  one this merge pass papers over. */
+export function preserveSettledStopState(existing: ChatMessage[], merged: ChatMessage[]): ChatMessage[] {
+  // Reuse the one stop-event predicate (`lib/stopEvent.ts`) rather than
+  // re-checking half of it; the id is the backend's upsert key.
+  const stopId = (m: ChatMessage): string | undefined => {
+    if (!isStopEvent(m)) return undefined
+    const id = (m.meta as { id?: unknown } | undefined)?.id
+    return typeof id === 'string' && id ? id : undefined
+  }
+  const isStopping = (m: ChatMessage): boolean =>
+    (m.meta as { state?: string } | undefined)?.state === 'stopping'
+
+  // The settled prior row for each stop id the tab already held.
+  const settledPrior = new Map<string, ChatMessage>()
+  for (const m of existing) {
+    const id = stopId(m)
+    if (id && !isStopping(m)) settledPrior.set(id, m)
+  }
+  if (!settledPrior.size) return merged
+
+  let changed = false
+  const result: ChatMessage[] = []
+  for (const m of merged) {
+    const id = stopId(m)
+    if (id !== undefined && isStopping(m) && settledPrior.has(id)) {
+      // Carry the settled prior row's state forward in place.
+      const prior = settledPrior.get(id)!
+      result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(m.meta || {}), ...(prior.meta || {}) } })
+      changed = true
+      continue
+    }
+    result.push(m)
+  }
+  return changed ? result : merged
+}
+
 /** Tail window (rows) for a backward `sendId` scan. Shared by the echo
  *  reconcile and the response-confirm path so the two cannot drift into
  *  disagreeing about which bubbles are still addressable by their send id. */
@@ -155,6 +282,19 @@ export function reconcileOptimisticEcho(
   const reconcileFloor = Math.max(0, msgs.length - RECONCILE_WINDOW)
   for (let i = msgs.length - 1; i >= reconcileFloor; i--) {
     const m = msgs[i]
+    if (m.role === 'queued' && m.meta?.responsiveSend && m.meta?.sendId === echoSendId) {
+      // A crewmate send that waits behind a running turn has its row written
+      // at send time (responsive_chat.write_row_at_send), after its queue entry
+      // already took the bubble's place. The row takes that same place and key,
+      // so the message neither moves nor is re-keyed; its queue entry, still
+      // listed until the drain, draws nothing beside it (withQueuedAsBubbles).
+      const { optimistic: _o, deliveryUnconfirmed: _d, responsiveSend: _r, queueId: _q, ...kept } = m.meta
+      msgs[i] = {
+        role: 'user', content: m.content, cls: 'msg msg-u', ts: ts ?? m.ts,
+        meta: { ...kept, ...meta, clientTs: (m.meta.clientTs as string | undefined) || m.ts },
+      }
+      return true
+    }
     if (m.role !== 'user') continue
     if (m.meta?.sendId === echoSendId) {
       // Keep the rendered row's identity when the server supplies its timestamp.
@@ -191,20 +331,48 @@ export function reconcileOptimisticEcho(
  *  card — the "streaming marker stuck at the steer point" bug. Freezing first
  *  means pre-steer text stays above the bubble and the next chunk opens a
  *  fresh streaming message below it. */
+const finalizeStreamingAt = (msgs: ChatMessage[], index: number) => {
+  const raw = msgs[index].content
+  const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
+  if (isPlaceholder) {
+    msgs.splice(index, 1)
+  } else {
+    msgs[index].role = 'assistant'
+    msgs[index].rawText = msgs[index].content
+  }
+}
+
 export const finalizeTrailingStreaming = (msgs: ChatMessage[]) => {
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role === 'streaming') {
-      const raw = msgs[i].content
-      const isPlaceholder = !raw || (/^[\s.\-…·•–—]{2,}$/.test(raw) && /[.\-…·•–—]/.test(raw)) || raw === '…'
-      if (isPlaceholder) {
-        msgs.splice(i, 1)
-      } else {
-        msgs[i].role = 'assistant'
-        msgs[i].rawText = msgs[i].content
-      }
+      finalizeStreamingAt(msgs, i)
       break
     }
   }
+}
+
+/** Finalize every live segment in a copied stale history page. A stop card can
+ * split one reply into multiple folded streaming rows, and none may remain as
+ * an append target for a successor turn. */
+export const finalizeAllStreaming = (msgs: ChatMessage[]) => {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'streaming') finalizeStreamingAt(msgs, i)
+  }
+}
+
+/** Finalize the live segments a stale history page contributed to `merged`
+ * (the page's own row objects), each on a copy, and leave every other row as
+ * it is: a newer local reply the merge kept beside the page is not the page's
+ * to finalize. Returns a new array; `page` and its rows are not written. */
+export const finalizePageStreaming = (merged: ChatMessage[], page: readonly ChatMessage[]): ChatMessage[] => {
+  const fromPage = new Set(page)
+  const out = merged.slice()
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].role !== 'streaming' || !fromPage.has(out[i])) continue
+    out[i] = { ...out[i] }
+    finalizeStreamingAt(out, i)
+  }
+  return out
 }
 
 /** Field-for-field equality over every `ChatMessage` field a consumer can render. */

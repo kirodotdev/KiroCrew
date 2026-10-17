@@ -66,6 +66,17 @@ describe('buildMcpAppCsp', () => {
     expect(csp.endsWith(';')).toBe(true)
   })
 
+  it('allows blob: Web Workers and nothing remote', () => {
+    // Absent worker-src falls back to script-src, which has no blob:.
+    const directive = (csp: string) =>
+      csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('worker-src'))
+    expect(directive(buildMcpAppCsp(null))).toBe("worker-src 'self' blob:")
+    // Declared resource origins widen script-src, never worker-src.
+    expect(directive(buildMcpAppCsp({ resourceDomains: ['https://cdn.example.com'] }))).toBe(
+      "worker-src 'self' blob:",
+    )
+  })
+
   it('widens resource directives with resourceDomains', () => {
     const csp = buildMcpAppCsp({ resourceDomains: ['https://esm.sh'] })
     expect(csp).toContain("script-src 'self' 'unsafe-inline' https://esm.sh")

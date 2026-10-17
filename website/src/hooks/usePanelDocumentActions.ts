@@ -1,12 +1,14 @@
 import { useCallback } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 
-import { api } from '../api/client'
+import { api, type MemberRosterRow } from '../api/client'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
+import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
 
@@ -97,7 +99,40 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     }
   }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
 
-  // Open an artifact as a side-panel tab — the artifact twin of openFile, and
+  // Open a file's WORKING-TREE DIFF as its OWN panel tab (keyed `wtdiff:<path>`),
+  // coexisting with the plain file tab rather than flipping it into diff mode
+  // (#9695). The file twin of openFile: same seed read (body + binary verdict)
+  // and same diff prefetch, so the panel paints its diff immediately; only the
+  // tab identity and initial mode differ. Honours the IntelliJ file-bridge the
+  // same way openFile does.
+  const openWorkingTreeDiff = useCallback(async (filePath: string, opts?: { slot?: string | null }) => {
+    try { window.dispatchEvent(new CustomEvent('kirocrew-file-open', { detail: { path: filePath } })) } catch { /* ignore */ }
+    if ((window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles) return
+    const slot = opts?.slot !== undefined ? opts.slot : (slotRef.current ?? null)
+    try {
+      const [read] = await Promise.all([
+        queryClient.fetchQuery({
+          queryKey: fileReadQueryKey(filePath),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          staleTime: FILE_READ_STALE_MS,
+        }),
+        queryClient.prefetchQuery({
+          queryKey: ['file-diff', filePath],
+          queryFn: () => api.fileDiff(filePath),
+        }),
+      ])
+      const { text, ok, status, binary } = read
+      if (!ok && status !== 404) {
+        showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: i18nT('pages.chatPage.http_status', { status }) }))
+        return
+      }
+      const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      onOpened?.()
+    } catch (e) {
+      showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+    }
+  }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
   // the single entry point every in-panel artifact affordance routes through
   // (the Artifacts tab's rows and `/artifacts/<slug>` links inside messages).
   // Rendering inline here instead of hard-navigating to the standalone detail
@@ -105,6 +140,36 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
   const openArtifact = useCallback(async (slug: string) => {
     if (!slug) return
     const slot = slotRef.current ?? null
+    // A STAGED dashboard (`dashboardPreviewRef`), a crewmate's or a root session's,
+    // not an artifact: no artifact read and no involvement breadcrumb, because there
+    // is no artifact. The tab body renders the staged page (SidePanel's artifact branch).
+    const preview = dashboardPreviewTargetFromRef(slug)
+    if (preview) {
+      // Every open re-reads the staged page. Staging sends no frame and the link
+      // never changes, so a cached read could show page A while B is what
+      // `dashboard_apply` would install.
+      let name: string
+      if (preview.kind === 'member') {
+        void queryClient.invalidateQueries({ queryKey: ['member-dashboard', preview.slug] })
+        // The roster's own name when it is cached and unambiguous; the slug otherwise.
+        const named = (queryClient.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY) ?? []).filter(r => r.slug === preview.slug)
+        name = named.length === 1 ? named[0].name : preview.slug
+      } else if (preview.kind === 'member-name') {
+        // The page link names the crew, not the slug: no slug to key on, so every
+        // open crewmate read is re-read. The panel resolves the slug from the roster.
+        void queryClient.invalidateQueries({ queryKey: ['member-dashboard'] })
+        name = preview.member
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ['session-dashboard', preview.slot] })
+        name = i18nT('commandCenter.title')
+      }
+      tabsCtl.openArtifact({ slug, kind: 'html', title: i18nT('pages.chat.dashboardPreviewPanel.tab_title', { name }) }, '', slot)
+      // A panel already open on this reference may have handed its last preview
+      // over to the live page; this puts it back on the staged one.
+      announceDashboardPreviewOpened(dashboardPreviewRef(preview))
+      onOpened?.()
+      return
+    }
     // Opening an artifact is an act of session involvement: record the
     // `referenced` breadcrumb so a merely-read (or merely-linked) artifact
     // joins "This session" instead of sitting in the library section forever.
@@ -164,10 +229,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       if (res.status === 401) noteStaleOwnerResponse(res.status, await res.text().catch(() => ''))
       throw new Error(`Save failed: ${res.status}`)
     }
-    // The saved bytes become the tab's dirty baseline, so a later re-open of
-    // the same path refreshes the buffer instead of (needlessly) preserving it
-    // as if it still held unsaved work. Best-effort: a tab that is not open
-    // right now is simply not found by id.
+    // The saved bytes become the file tab's dirty baseline, so a later re-open
+    // of the same path refreshes the buffer instead of (needlessly) preserving
+    // it as if it still held unsaved work. The `file:` tab is the ONLY editable
+    // buffer for a path — the coexisting `wtdiff:` tab (#9695) is a read-only
+    // working-tree diff, so there is no second editor to reconcile and no
+    // sibling save to race. Best-effort: a tab not open right now is not found.
     tabsCtl.patchTab(`file:${filePath}`, { savedContent: content })
     // Reconcile the inline-preview draft for the SAVING slot (drafts are
     // slot+path keyed). Clear it ONLY if it still equals what we just saved -
@@ -176,5 +243,5 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     if (getInlineDraft(requestSlot, filePath) === content) clearInlineDraft(requestSlot, filePath)
   }, [tabsCtl, slotRef])
 
-  return { openFile, openArtifact, saveFile }
+  return { openFile, openWorkingTreeDiff, openArtifact, saveFile }
 }

@@ -62,6 +62,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Check, Copy, ExternalLink } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { ApiError, api, type InstanceView, type LaunchJob } from '../../api/client'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import CrewAvatar from '../../components/CrewAvatar'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
@@ -390,12 +391,13 @@ export default function DeployMyCrewDialog({
     retry: (count, err) => !(err instanceof ApiError && err.status === 403) && count < 2,
   })
   const registry: RegistryRows = inst.data?.instances
-  // A 403 is a capability answer (the Instances feature is off), so the
-  // liveness it leaves unknown is the honest state. Any other failure of the
+  // The `instances_disabled` 403 is a capability answer (the Instances feature
+  // is off), so the liveness it leaves unknown is the honest state. Any other
+  // failure, an owner-only or Slack-origin 403 included, of the
   // registry read is an error like a failed launch read, and is reported as
   // one: not rendered as the unknown sentence, which would say "this page
   // cannot tell" where the truth is "this read failed".
-  const registryFailed = inst.isError && !(inst.error instanceof ApiError && inst.error.status === 403)
+  const registryFailed = inst.isError && !isInstancesDisabledError(inst.error)
   const view = useMemo(() => deployView(jobs, registry), [jobs, registry])
   const earlier = useMemo(() => earlierReachableLaunch(jobs, registry), [jobs, registry])
   const ordered = useMemo(() => [...jobs].sort((a, b) => b.created_at - a.created_at), [jobs])

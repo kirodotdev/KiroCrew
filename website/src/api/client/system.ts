@@ -6,7 +6,7 @@
  */
 
 import type { SessionStorageReport, SessionStorageCleanup, SessionStorageEmptyJob, SessionInventoryList, SessionInventoryDetail, SessionTrashResult } from '../../types'
-import type { TasksSummary, TasksListResponse, TaskDetailResponse } from '../tasks'
+import type { SpawnAdaptiveResponse, TasksSummary, TasksListResponse, TaskDetailResponse } from '../tasks'
 import type { ClientTransport } from './transport'
 
 /** Tunnel status surfaced by GET /api/tunnel/status (backend TunnelManager).
@@ -41,7 +41,7 @@ export interface LeakedRuntimesReclaim {
   refused: { pid: number; reason: string }[]
 }
 
-export function createSystemEndpoints({ get, post, j }: ClientTransport) {
+export function createSystemEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const statusAndStorage = {
     status: () => fetch('/api/status').then(j),
     tunnelStatus: () => fetch('/api/tunnel/status').then(j) as Promise<TunnelStatus>,
@@ -78,6 +78,8 @@ export function createSystemEndpoints({ get, post, j }: ClientTransport) {
     sessionsHealth: () => fetch('/api/sessions/health').then(j),
     // Durable task queue + capacity view (System > Services "Tasks & capacity").
     tasksSummary: () => fetch('/api/tasks/summary').then(j) as Promise<TasksSummary>,
+    // The adaptive controller's snapshot and the chat header's cut reading.
+    spawnAdaptive: () => fetch('/api/spawn/adaptive').then(j) as Promise<SpawnAdaptiveResponse>,
     tasksList: (params: { state?: string; lane?: string; limit?: number } = {}) => {
       const q = new URLSearchParams()
       if (params.state) q.set('state', params.state)

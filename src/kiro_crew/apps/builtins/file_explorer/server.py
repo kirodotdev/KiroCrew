@@ -16,8 +16,13 @@ the root since KiroCrew strips the prefix):
   GET  /complete?path=<p>&kind=<dir|all>&limit=<n> → {"parent","prefix","entries":[...]}
 
 Path safety: callers may only access paths under the user's home dir or the
-system temp dir on any OS, plus ``/home/`` and ``/opt/`` on POSIX (after
-symlink resolution).  Paths outside the allow-list return 403.
+system temp dir on any OS, plus ``/home/``, ``/opt/`` and ``/workplace/`` on
+POSIX (after symlink resolution).  Paths outside the allow-list return 403.
+
+``/workplace`` is a top-level workspace mount present on some hosts; it is
+included only when it exists and is subject to the same guarantees as every
+other root — ``_is_sensitive`` still runs on every resolved path, and a symlink
+must still resolve INTO an allowed root ("symlinks out are refused").
 
 Size / depth caps are tunable via env vars but have safe defaults.
 """
@@ -46,7 +51,12 @@ from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.hooks import safe_read_file_bytes
 from kiro_crew.platform import boot_platform
-from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
+from kiro_crew.sandbox import (
+    SandboxUnavailableError,
+    cgroup_scope_argv,
+    run_limited,
+    wrap_argv,
+)
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -90,10 +100,16 @@ def _compute_allowed_roots(home: Path, tmp: Path) -> list[Path]:
     """
     roots = [home, tmp]
     if platform_compat.IS_POSIX:
-        # /home and /opt are POSIX-only conventions; on Windows they resolve
-        # to nonexistent C:\home / C:\opt and would be dropped by the
-        # exists() filter.
-        roots += [Path("/home").resolve(), Path("/opt").resolve()]
+        # /home, /opt and /workplace are POSIX-only conventions; on Windows they
+        # resolve to nonexistent C:\home / C:\opt / C:\workplace and would be
+        # dropped by the exists() filter. /workplace is a top-level workspace
+        # mount present on some hosts — included where it exists, dropped
+        # elsewhere.
+        roots += [
+            Path("/home").resolve(),
+            Path("/opt").resolve(),
+            Path("/workplace").resolve(),
+        ]
     # De-dupe and only keep ones that exist
     return list(dict.fromkeys(p for p in roots if p.exists()))
 
@@ -830,7 +846,13 @@ def _search_rg(root: Path, query: str, include: str, exclude: str) -> list[dict]
             timeout=SEARCH_TIMEOUT_SEC,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.TimeoutExpired, SandboxUnavailableError) as exc:
+        # SandboxUnavailableError lands here when the host has no sandbox
+        # backend at all (wrap_argv fail-closed before the spawn) — the same
+        # "cannot wrap, so do not spawn" verdict as a spawn-time OSError, and
+        # the python fallback needs no subprocess, so the same degradation
+        # applies. Left uncaught (it subclasses RuntimeError) it escaped and
+        # 500'd the route.
         logger.warning("rg failed: %s — falling back to python", exc)
         return _search_python(root, query, include, exclude)
     out: list[dict] = []
@@ -1176,7 +1198,35 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
             return self._json(200, {"repoRoot": "", "branch": "", "statuses": {}})
         if not any(_is_within(repo, root) for root in ALLOWED_ROOTS):
             raise PathError(f"git repo root not allowed: {repo}", 403)
-        return self._json(200, _git_status(repo))
+        try:
+            payload = _git_status(repo)
+        except SandboxUnavailableError as exc:
+            # wrap_argv fail-closed BEFORE the spawn: this host has no sandbox
+            # backend and allow_unsandboxed_exec is unset. SandboxUnavailableError
+            # subclasses RuntimeError, so _git_status's
+            # ``except (OSError, subprocess.TimeoutExpired)`` clauses let it
+            # escape and the route answered aiohttp's bare 500 — the Files
+            # view's "Failed to load". Like the chat path
+            # (dashboard/handlers/agents.py api_models), answer the typed 503:
+            # a machine-readable code plus the probe detail and remedy the
+            # exception itself carries, since no retry clears this.
+            logger.warning(
+                "file-explorer git_status: sandbox refused the git spawn "
+                "(kind=%s, detail=%s); returning 503. Retrying will not clear this.",
+                exc.kind,
+                exc.detail,
+            )
+            return self._json(
+                503,
+                {
+                    "error": "git status unavailable: no sandbox backend on this host",
+                    "code": "sandbox_unavailable",
+                    "kind": exc.kind,
+                    "detail": exc.detail,
+                    "remedy": exc.remedy,
+                },
+            )
+        return self._json(200, payload)
 
     def _h_complete(self, qs: dict[str, list[str]]) -> None:
         """Path autocomplete.

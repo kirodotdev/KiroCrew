@@ -547,16 +547,58 @@ def boot(cfg: PodConfig, name: str) -> int:
         # there is no pod this could be a refusal FOR.
         print(f"FATAL: {exc}")
         return EXIT_PROVISIONING
+    claimed = None
+    if runtime.IS_WINDOWS:
+        # Claim the scheduled generation BEFORE any provisioning check, so every
+        # refusal below is written by a process the run record can name. Without
+        # the claim a refused boot left an anonymous `reserved` record that
+        # neither `down` nor `up` could retire. An absent or already-claimed
+        # reservation refuses here: this process owns no generation to boot, so
+        # it records NOTHING -- not the result and not the refusal note. Both are
+        # shared per-name sidecars, and the generation they would describe may
+        # belong to another producer that is still booting: a second `pod _run`
+        # that wrote `.winresult` here would make `unit_state` report a failure
+        # and `pod up` abandon the legitimate boot before its gateway launched.
+        # A scheduled boot whose own claim fails therefore leaves `pod up` to its
+        # health budget; that boot never had an identity, which is the manual
+        # procedure's case either way.
+        try:
+            claimed = win_backend.runs.claim(cfg, name)
+        except OSError as exc:
+            print(f"FATAL: {exc}")
+            return EXIT_REFUSED_UNRECOVERABLE
+    # Non-zero until a normal return decides otherwise: an exception that escapes
+    # the guards below ends the process with Python's own exit status, and the
+    # recorded result has to carry that same failure for `pod up` to stop waiting.
+    code = 1
+    certify = False
     try:
-        return _boot_unguarded(cfg, name)
-    except OSError as exc:
-        if not runtime.IS_WINDOWS:
-            raise
-        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
-    except PodError as exc:
-        # Already-recorded refusals return through _refuse and never arrive here;
-        # this is the escape hatch closing, so record and give it a terminal code.
-        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+        try:
+            code = _boot_unguarded(cfg, name)
+            certify = True
+        except win_backend.DrainUnproven as exc:
+            # The supervisor could not prove its Job empty, so the producer may
+            # not certify that no child survives it; the record stays `preparing`.
+            code = _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+        except OSError as exc:
+            if not runtime.IS_WINDOWS:
+                raise
+            code = _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+            certify = True
+        except PodError as exc:
+            # Already-recorded refusals return through _refuse and never arrive
+            # here; this is the escape hatch closing, so record and give it a
+            # terminal code.
+            code = _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
+            certify = True
+    finally:
+        if claimed is not None:
+            # The producer's final writes on EVERY exit, including an escaping
+            # exception: its result, then -- only if the boot ended in a way it
+            # can vouch for and spawned no gateway -- the completion receipt
+            # `stop` needs to retire this generation.
+            win_backend.finish_boot(cfg, name, claimed, code, certify=certify)
+    return code
 
 
 def _boot_unguarded(cfg: PodConfig, name: str) -> int:
@@ -594,7 +636,7 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
         # unknown value can still reach here. Do NOT merely drop it: omitting
         # --approval does not mean "interactive". The gateway leaves
         # ``approval_mode`` unset, and slack/events.py falls through to
-        # ``cfg.agent.approval_mode``, which config/loader.py defaults to
+        # ``cfg.agent.approval_mode``, which config/loader_builders.py defaults to
         # "auto" -- auto-approve every tool. Dropping would therefore be the
         # LEAST restrictive outcome. Pin interactive explicitly instead.
         print(

@@ -197,7 +197,8 @@ describe('MarkdownPanel comment/copy flow', () => {
 
     await user.click(screen.getByRole('button', { name: /submit all/i }))
     expect(defaultProps.onSubmitComments).toHaveBeenCalledWith(
-      expect.stringContaining('test paragraph')
+      expect.stringContaining('test paragraph'),
+      1  // count: 1 comment in the batch
     )
   })
 

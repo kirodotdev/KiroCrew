@@ -697,7 +697,7 @@ async def test_cli_local_secret_endpoints_bypass_auth(path: str) -> None:
     assert resp.status == 200, (
         f"{path} was denied by the auth middleware; the CLI sends no dashboard "
         f"token, so the handler's own loopback + local-secret check never runs. "
-        f"Add {path!r} to _BYPASS_EXACT in token_auth.py."
+        f"Add {path!r} to _BYPASS_EXACT in token_auth_paths.py."
     )
 
 
@@ -731,7 +731,7 @@ async def test_update_revalidate_post_bypasses_auth() -> None:
         "POST /api/update/revalidate was denied by the auth middleware; the CLI "
         "sends no dashboard token, so the handler's own loopback + local-secret "
         "check never runs and the post-update badge poke can never succeed. Add "
-        "the path to _BYPASS_EXACT_METHODS (POST) in token_auth.py."
+        "the path to _BYPASS_EXACT_METHODS (POST) in token_auth_paths.py."
     )
 
 
@@ -974,7 +974,7 @@ def test_apps_server_routes_are_excluded_from_shell() -> None:
     assert not offenders, (
         f"/apps/ route(s) with a real handler are NOT excluded from the SPA "
         f"shell and would be shadowed by index.html: {offenders}. Extend "
-        f"_APPS_SPA_EXCLUDED_RE in token_auth.py to cover their sub-namespace."
+        f"_APPS_SPA_EXCLUDED_RE in token_auth_paths.py to cover their sub-namespace."
     )
 
 
@@ -1051,6 +1051,26 @@ async def test_internal_path_non_loopback_cookie_auth_when_not_local_only() -> N
     req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
     resp = await mw(req, _ok_handler)
     assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_internal_path_non_loopback_cookie_marks_the_cookie_credential() -> None:
+    """A session cookie on the mixed non-loopback branch records a cookie credential.
+
+    The off-loopback mixed branch (DCV/SSH-forwarded browsers) must set
+    ``auth_from_query_token`` the same way the loopback branch does, so the proxy
+    sees the owner's cookie as an owner session rather than failing closed to
+    ``none``.
+    """
+    token = generate_token("owner", ttl_seconds=300)
+    mw = token_auth_middleware(
+        internal_paths=frozenset({"/api/spawn"}), internal_secret="s", local_only=False
+    )
+    req = _make_request(path="/api/spawn", remote="10.0.0.1", cookies={"mc_token_5476": token})
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 200
+    marks = {call.args[0]: call.args[1] for call in req.__setitem__.call_args_list}
+    assert marks["auth_from_query_token"] is False
 
 
 @pytest.mark.asyncio
@@ -1362,7 +1382,7 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     # Owner-only permissions. POSIX enforces this via chmod 0o600; Windows applies
     # an owner DACL that does not surface in st_mode (files report
     # 0o666), so the POSIX-bit assertion is only meaningful off Windows (the
-    # Windows DACL path is covered by test_platform_compat::TestRestrictToOwner).
+    # Windows DACL path is covered by test_platform_compat_owner_only::TestRestrictToOwner).
     if os.name != "nt":
         assert (key_file.stat().st_mode & 0o777) == 0o600
     # Second load returns the SAME secret (persistence).
@@ -1426,7 +1446,7 @@ def test_signing_secret_concurrent_first_init_converges(tmp_path, monkeypatch) -
     # this via chmod 0o600; Windows applies an owner-only DACL that does
     # NOT surface in st_mode (files report 0o666), so the POSIX-bit assertion is
     # only meaningful off Windows — the Windows DACL path has direct coverage in
-    # test_platform_compat::TestRestrictToOwner.
+    # test_platform_compat_owner_only::TestRestrictToOwner.
     if os.name != "nt":
         assert (key_file.stat().st_mode & 0o777) == 0o600
 
@@ -2611,7 +2631,7 @@ def test_no_get_route_outside_shell_exclusions() -> None:
         f"GET route(s) outside the shell-exclusion set would be served the SPA "
         f"shell unauthenticated: {offenders}. Add their namespace to "
         f"SPA_FALLBACK_EXCLUDED_PREFIXES (or _APPS_SPA_EXCLUDED_RE for /apps/ "
-        f"sub-paths) in token_auth.py."
+        f"sub-paths) in token_auth_paths.py."
     )
 
 
@@ -2654,7 +2674,7 @@ def test_apps_routes_get_paths_are_matched_by_the_apps_spa_regex() -> None:
         f"/apps/ GET route(s) in apps/routes.py that _APPS_SPA_EXCLUDED_RE does not "
         f"match: {unmatched}. The middleware will answer these with the SPA shell "
         f"instead of the handler — add the sub-namespace verb to the regex in "
-        f"token_auth.py."
+        f"token_auth_paths.py."
     )
 
 
@@ -3124,7 +3144,7 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     if platform_compat.IS_POSIX:
         # Windows locks the file down via an owner DACL, which does not surface
         # in st_mode (files report 0o666) — that path is covered by
-        # test_platform_compat::TestRestrictToOwner.
+        # test_platform_compat_owner_only::TestRestrictToOwner.
         assert (state_path.stat().st_mode & 0o777) == 0o600
 
 

@@ -143,6 +143,9 @@ def orch_fixture(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     from kiro_crew.slack import interactions
 
     orch = _make_orch()
+    # Empty queues: a Stop's release drain finds nothing to start.
+    orch.sessions.dequeue = MagicMock(return_value=None)
+    orch._pending_queue = {}
     monkeypatch.setattr(interactions, "_orch", orch)
     return orch
 

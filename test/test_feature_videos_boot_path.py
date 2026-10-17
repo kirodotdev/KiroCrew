@@ -64,7 +64,15 @@ class TestNoWorkOnTheBootPath:
         """A module-scope import runs on every boot, including a default-off one."""
         from kiro_crew.slack import gateway as gw
 
-        for line in inspect.getsource(gw).splitlines():
+        slack_dir = Path(gw.__file__).resolve().parent
+        for line in [
+            line
+            for path in [
+                slack_dir / "gateway.py",
+                *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+            ]
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]:
             # Column 0 only. An INDENTED import is the deferred one inside the
             # flag test, which is the shape this fix wants -- flagging it would
             # make the test contradict the change it exists to protect.
@@ -76,9 +84,9 @@ class TestNoWorkOnTheBootPath:
 
     def test_the_start_site_is_gated_on_the_kill_switch(self) -> None:
         """Off by default, so an install that never wanted this pays nothing for it."""
-        from kiro_crew.slack import gateway as gw
+        from kiro_crew.slack.gateway_runtime import service_boot
 
-        src = inspect.getsource(gw)
+        src = inspect.getsource(service_boot)
         marker = "if self._cfg.dashboard.feature_videos_enabled:"
         assert marker in src, "the start site is not gated on the feature flag"
         gated = src.split(marker, 1)[1][:600]
@@ -98,17 +106,37 @@ class TestNoWorkOnTheBootPath:
 
 class TestTheTaskIsHeldAndCancelled:
     def test_the_task_attribute_exists_before_anything_starts_it(self) -> None:
-        """Declared in __init__, so a reader that runs first is not an AttributeError."""
+        """Set in __init__, so a reader that runs first is not an AttributeError.
+
+        ``__init__`` is composed from ``gateway_runtime/orchestrator_init.py``, where an
+        inline annotation on ``self`` is a type error, so the class declares the field
+        and the constructor assigns it.
+        """
+        import ast
+        from pathlib import Path
+
+        from kiro_crew.slack import gateway
         from kiro_crew.slack.gateway import GatewayOrchestrator
 
         src = inspect.getsource(GatewayOrchestrator.__init__)
-        assert 'self._feature_video_task: "asyncio.Task[bool] | None" = None' in src
+        assert "self._feature_video_task = None" in src
+        cls = next(
+            node
+            for node in ast.parse(Path(gateway.__file__).read_text(encoding="utf-8")).body
+            if isinstance(node, ast.ClassDef) and node.name == "GatewayOrchestrator"
+        )
+        declared = {
+            node.target.id: ast.unparse(node.annotation)
+            for node in cls.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        assert declared.get("_feature_video_task") == "'asyncio.Task[bool] | None'"
 
     def test_shutdown_cancels_it_beside_its_sibling(self) -> None:
         """A pending transfer must not outlive the process it was started for."""
-        from kiro_crew.slack import gateway as gw
+        from kiro_crew.slack.gateway_runtime import exit_path
 
-        src = inspect.getsource(gw)
+        src = inspect.getsource(exit_path)
         assert (
             "if self._feature_video_task is not None and not self._feature_video_task.done():"
             in src

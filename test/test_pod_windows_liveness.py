@@ -95,6 +95,7 @@ def supervisor(model, monkeypatch, tmp_path):
     monkeypatch.setattr(win, "CREATE_SUSPENDED", 0x4)
     monkeypatch.setattr(win, "CREATE_NEW_PROCESS_GROUP", 0x200)
     runs.reserve(cfg, "demo")
+    runs.claim(cfg, "demo")  # The boot claims before provisioning; the supervisor checks it.
     alive = {4242}
     tokens = {4242: "100", 4300: "200", 4400: "300", 4500: "400"}
     state.alive, state.tokens, state.recorded = alive, tokens, []
@@ -263,18 +264,27 @@ def test_launcher_anchor_uses_dead_gateway_sidecar(supervisor, monkeypatch):
     assert anchors == [(4300, "200")]
 
 
-@pytest.mark.parametrize("state_name", ["reserved", "preparing"])
+@pytest.mark.parametrize("state_name", ["reserved", "preparing_live"])
 def test_interrupted_boot_publication_preserves_evidence_and_rejects_retry(
     model, monkeypatch, state_name
 ):
+    """An unclaimed reservation and a live provisioner are both preserved.
+
+    `reserved` names no producer, so nothing can be proven gone. `preparing` with a
+    publisher whose process object is still live is a boot in progress; it is
+    waited for, never terminated, and refused when the wait runs out.
+    """
     cfg, state = model
     runs.reserve(cfg, "demo")
-    if state_name == "preparing":
-        runs.claim(cfg, "demo")
+    if state_name == "preparing_live":
+        record = runs.claim(cfg, "demo")
+        record["publisher"] = [777, "100"]  # A different, live producer.
+        runs.publish(cfg, "demo", record)
+        monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: 8100)
+        monkeypatch.setattr(win.jobs, "wait_identity", lambda *_a, **_kw: False)
+    else:
+        monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
     before = runs.path(cfg, "demo").read_bytes()
-    monkeypatch.setattr(
-        win.jobs, "open_identity", lambda *_a: None
-    )  # Publisher gone is not containment.
     assert win.stop(cfg, "demo", timeout=0).returncode == 1
     assert win.start(cfg, "demo").returncode == 1
     assert runs.path(cfg, "demo").read_bytes() == before
@@ -287,15 +297,18 @@ def test_claim_and_publication_failures_never_spawn_an_unreserved_gateway(
     cfg, _state = model
     runs.reserve(cfg, "demo")
     monkeypatch.setattr(
-        runs, "publish", lambda *_a: (_ for _ in ()).throw(OSError("publish failed"))
-    )
-    monkeypatch.setattr(
         win.subprocess, "Popen", lambda *_a, **_kw: pytest.fail("no claimed publisher")
     )
-    with pytest.raises(OSError, match="publish failed"):
+    # The supervisor never claims for itself: a reservation nobody claimed refuses.
+    with pytest.raises(OSError, match="own claimed run"):
         win.supervise_gateway(
             cfg, "demo", tmp_path / "gateway", [], {}, gateway_pid_record=tmp_path / "gw.pid"
         )
+    monkeypatch.setattr(
+        runs, "publish", lambda *_a: (_ for _ in ()).throw(OSError("publish failed"))
+    )
+    with pytest.raises(OSError, match="publish failed"):
+        runs.claim(cfg, "demo")
     assert runs.read(cfg, "demo")["state"] == "reserved"
 
 

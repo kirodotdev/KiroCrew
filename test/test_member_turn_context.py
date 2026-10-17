@@ -233,7 +233,7 @@ class TestChokepointWiring:
     def test_build_message_delivery_routes_through_chokepoint(self):
         """Every member-section injection in build_message is guarded by the
         chokepoint's ``deliver_section`` verdict."""
-        import kiro_crew.context as context_mod
+        import kiro_crew.context_assembly.turn_message as context_mod
 
         tree = ast.parse(inspect.getsource(context_mod))
         build_message = _find_function(tree, "build_message")
@@ -252,7 +252,7 @@ class TestChokepointWiring:
     def test_build_message_rules_gate_routes_through_chokepoint(self):
         """The standalone fail-closed rules read runs iff the chokepoint says
         ``enforce_rules_gate`` — not under a hand-written lifecycle test."""
-        import kiro_crew.context as context_mod
+        import kiro_crew.context_assembly.turn_message as context_mod
 
         tree = ast.parse(inspect.getsource(context_mod))
         build_message = _find_function(tree, "build_message")
@@ -269,7 +269,7 @@ class TestChokepointWiring:
         """The lifecycle handed to the chokepoint comes from member_lifecycle
         with build_message's real branch inputs, so the chokepoint and the
         surrounding branch structure cannot disagree on the turn's state."""
-        import kiro_crew.context as context_mod
+        import kiro_crew.context_assembly.turn_message as context_mod
 
         tree = ast.parse(inspect.getsource(context_mod))
         build_message = _find_function(tree, "build_message")
@@ -280,7 +280,7 @@ class TestChokepointWiring:
 
     def test_build_session_context_delivery_routes_through_chokepoint(self):
         """The fresh-session injection (FRESH leg) consults the chokepoint."""
-        import kiro_crew.context as context_mod
+        import kiro_crew.context_assembly.session_start as context_mod
 
         tree = ast.parse(inspect.getsource(context_mod))
         build_session_context = _find_function(tree, "build_session_context")
@@ -299,9 +299,20 @@ class TestChokepointWiring:
         is_new test. Mode-keyed rather than name-keyed: the member NAME is
         resolved later, at the context build, and delivery is at stake from
         the moment the session client exists."""
+        from pathlib import Path
+
         import kiro_crew.dashboard.chat_runner as chat_runner_mod
 
-        tree = ast.parse(inspect.getsource(chat_runner_mod))
+        tree = ast.parse(
+            "\n".join(
+                turn_file.read_text(encoding="utf-8")
+                for turn_file in [
+                    *sorted(Path(chat_runner_mod.__file__).with_name("chat_turn").glob("*.py")),
+                    Path(chat_runner_mod.__file__),
+                ]
+                if turn_file.name != "__init__.py"
+            )
+        )
         assigns = [
             node
             for node in ast.walk(tree)
@@ -365,7 +376,7 @@ class TestChokepointWiring:
         spellings of one predicate can drift, and the divergence that matters
         (branch true, lifecycle not SLIM_RESUME) would leave a resumed
         member session on a stale [PERMANENT RULES] snapshot silently."""
-        import kiro_crew.context as context_mod
+        import kiro_crew.context_assembly.turn_message as context_mod
 
         tree = ast.parse(inspect.getsource(context_mod))
         build_message = _find_function(tree, "build_message")

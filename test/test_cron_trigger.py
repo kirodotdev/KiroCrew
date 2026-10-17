@@ -97,7 +97,9 @@ class TestTriggerCronJob:
     def test_sends_secret_header(self, mock_dashboard):
         port, cfg_dir = mock_dashboard
         trigger_cron_job("abc12345", port, cfg_dir / ".local_secret")
-        assert _MockDashboardHandler.last_request_headers.get("X-Internal-Secret") == "test-secret-123"
+        assert (
+            _MockDashboardHandler.last_request_headers.get("X-Internal-Secret") == "test-secret-123"
+        )
 
     def test_wrong_secret_returns_403(self, mock_dashboard, tmp_path):
         port, _ = mock_dashboard
@@ -256,10 +258,10 @@ class TestCronTriggerMCP:
             every_secs=120,
             session_key="dashboard:conftest-slot",
         )
-        with patch.object(mcp_cron, "config_dir", return_value=cfg_dir), \
-             patch.object(
-                 mcp_cron, "resolve_serving_port", lambda: port
-             ):
+        with (
+            patch.object(mcp_cron, "config_dir", return_value=cfg_dir),
+            patch.object(mcp_cron, "resolve_serving_port", lambda: port),
+        ):
             result = _call_tool_inner("cron_trigger", {"job_id": job.id})
         assert "test-job-name" in result
         assert job.id in result
@@ -269,6 +271,7 @@ class TestCronTriggerMCP:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew import mcp_cron
         from kiro_crew.config import loader
+
         orig_port = loader.DASHBOARD_PORT
         loader.DASHBOARD_PORT = 19999
         try:
@@ -287,18 +290,20 @@ class TestCronTriggerCLI:
 
     def test_cli_subcommand_registered(self, tmp_path):
         """kirocrew cron trigger is a recognized subcommand with job_id argument."""
-        # Verify the handler accepts "trigger" action without crashing
         import argparse
 
         from kiro_crew.cli_commands import _cron
+
         args = argparse.Namespace(cron_action="trigger", job_id="abc12345")
-        # Will fail with connection error (no gateway) but proves the action is recognized
         from unittest.mock import patch as _patch
-        with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path / "nonexistent"), \
-             pytest.raises(SystemExit) as exc:
+
+        with _patch(
+            "kiro_crew.cli_commands.trigger_cron_job",
+            return_value=(True, "Triggered job: test-job (abc12345)"),
+        ) as mock_trigger:
             _cron(args)
-        assert exc.value.code == 1
-        # If we get here without "Usage:" being printed, the action was recognized
+        mock_trigger.assert_called_once()
+        assert mock_trigger.call_args[0][0] == "abc12345"
 
     def test_cli_trigger_success(self, mock_dashboard, capsys):
         """CLI trigger prints success message."""
@@ -311,11 +316,13 @@ class TestCronTriggerCLI:
 
         from unittest.mock import patch as _patch
 
-        with _patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir), \
-             _patch(
-                 "kiro_crew.cli_commands.resolve_client_port_ex",
-                 lambda _cli: (port, True),
-             ):
+        with (
+            _patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir),
+            _patch(
+                "kiro_crew.cli_commands.resolve_client_port_ex",
+                lambda _cli: (port, True),
+            ),
+        ):
             _cron(args)
 
         captured = capsys.readouterr()
@@ -331,11 +338,13 @@ class TestCronTriggerCLI:
         port, cfg_dir = mock_dashboard
         args = argparse.Namespace(cron_action="trigger", job_id="aabbccddee")
 
-        with patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir), \
-             patch(
-                 "kiro_crew.cli_commands.resolve_client_port_ex",
-                 lambda _cli: (port, True),
-             ):
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=cfg_dir),
+            patch(
+                "kiro_crew.cli_commands.resolve_client_port_ex",
+                lambda _cli: (port, True),
+            ),
+        ):
             with pytest.raises(SystemExit) as exc:
                 _cron(args)
         assert exc.value.code == 1
@@ -356,8 +365,10 @@ class TestCronTriggerCLI:
         orig_port = loader.DASHBOARD_PORT
         loader.DASHBOARD_PORT = 19999
         try:
-            with _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path), \
-                 pytest.raises(SystemExit) as exc:
+            with (
+                _patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+                pytest.raises(SystemExit) as exc,
+            ):
                 _cron(args)
         finally:
             loader.DASHBOARD_PORT = orig_port
@@ -375,8 +386,10 @@ class TestCronTriggerCLI:
 
         args = argparse.Namespace(cron_action=action, job_id="abc12345")
 
-        with patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path), \
-             pytest.raises(SystemExit) as exc:
+        with (
+            patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            pytest.raises(SystemExit) as exc,
+        ):
             _cron(args)
         assert exc.value.code == 1
         assert "Job not found: abc12345" in capsys.readouterr().out
@@ -390,12 +403,14 @@ class TestCronTriggerToolDefinition:
 
     def test_tool_listed(self):
         from kiro_crew.mcp_cron import _list_tools
+
         tools = _list_tools()
         names = [t["name"] for t in tools]
         assert "cron_trigger" in names
 
     def test_tool_schema(self):
         from kiro_crew.mcp_cron import _list_tools
+
         tools = _list_tools()
         trigger = next(t for t in tools if t["name"] == "cron_trigger")
         assert "job_id" in trigger["inputSchema"]["properties"]

@@ -6,13 +6,14 @@ standalone CLI and test fakes pass a plain ``(task, timeout)`` callable.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-from sage_lib import results
 from sage_lib import review_driver as D
 from sage_lib import store
 
@@ -28,6 +29,14 @@ def _record(cid: str = "CR-1") -> dict:
         "deep_reviewed": True, "title": cid,
         "files_covered": ["f"], "coverage_complete": True,
     }
+
+
+def _response(task: str, record: dict) -> str:
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({"schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+                       "capability": capability.group(1), "change_id": record["change_id"],
+                       "record": record})
 
 
 class TestActivityRelay(unittest.TestCase):
@@ -54,8 +63,7 @@ class TestActivityRelay(unittest.TestCase):
             if on_activity is not None:
                 on_activity("execute_bash", 1)
                 on_activity("fs_read", 2)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": _response(task, _record()), "error": ""}
 
         D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
                      root=self.root, run_id="run-a", progress=self._progress)
@@ -72,8 +80,7 @@ class TestActivityRelay(unittest.TestCase):
 
         def dispatch(task, timeout=0):
             calls.append(task)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": _response(task, _record()), "error": ""}
 
         out = D.run_review(["CR-1"], dispatch=dispatch, generate_report=False,
                            root=self.root, run_id="run-a",
@@ -95,8 +102,7 @@ class TestActivityRelay(unittest.TestCase):
             # itself, not rely on the pool's guard being the only net.
             if on_activity is not None:
                 on_activity("execute_bash", 1)
-            results.write_result(_record(), self.root)
-            return {"ok": True, "output": "done", "error": ""}
+            return {"ok": True, "output": _response(task, _record()), "error": ""}
 
         def boom(cid, phase, extra=None):
             if extra and "activity" in extra:

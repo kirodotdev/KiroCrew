@@ -12,13 +12,15 @@ What a bundle RECORDS is composed by the snapshot command itself
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import shutil
 import stat as _stat
 import tarfile
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
@@ -351,7 +353,10 @@ def _copy_database_consistently(
     hash) and unlinked the 836 KB ``-wal``; ``mode=ro`` left both byte-identical and
     captured exactly the same rows. So a backup command was rewriting the data it was
     asked to read, and in the window before SQLite's own open a swapped-in database was
-    handed a writable handle. ``mode=ro`` refuses the write outright.
+    handed a writable handle. ``mode=ro`` refuses the write outright. When that open is
+    refused because the view cannot hold a closed WAL database's index, the database is
+    read ``immutable=1`` as well, and checked for a concurrent writer afterwards
+    (:func:`_immutable_read_may_stand_in`) under the lock an ordinary reader holds.
 
     **"Not a database" is told apart from "cannot read this database".** They are
     distinguished by probing readability separately from copying, not by matching the
@@ -392,9 +397,18 @@ def _copy_database_consistently(
             )
         return DB_UNSAFE_SOURCE
     ro_uri = f"{src.absolute().as_uri()}?mode=ro"
+    immutable_for: Exception | None = None
     try:
-        with closing(_facade().sqlite3.connect(ro_uri, uri=True)) as probe:
-            probe.execute("PRAGMA schema_version").fetchone()
+        try:
+            with closing(_facade().sqlite3.connect(ro_uri, uri=True)) as probe:
+                probe.execute("PRAGMA schema_version").fetchone()
+        except _facade().sqlite3.DatabaseError as refused:
+            if not _immutable_read_may_stand_in(src, refused):
+                raise
+            immutable_for = refused
+            ro_uri += "&immutable=1"
+            with closing(_facade().sqlite3.connect(ro_uri, uri=True)) as probe:
+                probe.execute("PRAGMA schema_version").fetchone()
     except _facade().sqlite3.DatabaseError as e:
         # `sqlite_errorname` is read defensively for 3.10 and the message is the
         # documented fallback. Either way the DEFAULT is to raise: an error this code
@@ -436,18 +450,144 @@ def _copy_database_consistently(
         with (
             closing(_facade().sqlite3.connect(ro_uri, uri=True)) as src_conn,
             closing(_facade().sqlite3.connect(str(dst))) as dst_conn,
+            ExitStack() as reader_lock,
         ):
+            # An immutable read takes no lock, so the reader lock is held from before the
+            # copy until after the check that follows it, and the source connection stays
+            # open across both: closing any descriptor on the file releases that lock.
+            immutable_from = (
+                None
+                if immutable_for is None
+                else reader_lock.enter_context(_hold_reader_lock(src, immutable_for))
+            )
             # The file is a readable database, so a failure here means the consistent copy
             # did not happen. Absorbing it would leave the caller's byte copy -- taken
             # WITHOUT the `-wal` this module excludes -- passing for a whole database, so
             # it is raised, but typed and naming the file so the command boundary reports
             # which database failed instead of exiting on a traceback.
             src_conn.backup(dst_conn)
+            if immutable_from is not None:
+                _refuse_if_changed_since(src, immutable_from, dst)
     except _facade().sqlite3.Error as e:
         raise DatabaseCopyFailed(src, e) from e
     if require_database:
         _refuse_unsound_required_capture(src, dst)
     return DB_COPIED
+
+
+def _refuse_if_changed_since(src: Path, before: os.stat_result, dst: Path) -> None:
+    """Raise unless *src* still has the identity its immutable copy started from.
+
+    Runs while :func:`_hold_reader_lock` is still held. A writer that opened the
+    database through another view during the copy leaves a ``-wal`` or a ``-journal``
+    beside the file, and that lock keeps its last close from removing either, so the
+    sidecar check finds it whatever the file's timestamps show. A checkpoint into the
+    main file also changes its size, mtime or ctime, and the staged copy *dst* must
+    pass SQLite's ``quick_check``. Rows such a writer left only in its ``-wal`` were
+    committed after the copy began and are not owed to it.
+    """
+
+    def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    try:
+        unchanged = identity(os.lstat(src)) == identity(before) and not any(
+            os.path.lexists(f"{src}{sidecar}") for sidecar in ("-wal", "-journal")
+        )
+    except OSError as e:
+        raise DatabaseCopyFailed(src, e) from e
+    changed = OSError("the database changed while it was being copied; run it again")
+    if not unchanged:
+        raise DatabaseCopyFailed(src, changed)
+    try:
+        with closing(_facade().sqlite3.connect(str(dst))) as check:
+            verdict = check.execute("PRAGMA quick_check").fetchone()[0]
+    except _facade().sqlite3.Error as e:
+        raise DatabaseCopyFailed(src, e) from e
+    if verdict != "ok":
+        raise DatabaseCopyFailed(src, changed)
+
+
+def _immutable_read_may_stand_in(src: Path, refused: Exception) -> bool:
+    """Whether an immutable read of *src* may stand in for the refused ordinary one.
+
+    ``mode=ro`` is not enough where this process's view refuses writes beside the file,
+    such as the read-only ``memory_stores/`` a script cron's sandbox binds. Opening a WAL
+    database needs its ``-shm`` index, which SQLite creates beside the file, so a WAL
+    database no other connection holds open refuses even a read-only open there. The
+    decision rests on that open's own result code, not on a prediction of the view's
+    writability: SQLite answers ``SQLITE_READONLY`` (its extended code names the cause),
+    ``SQLITE_CANTOPEN`` or ``SQLITE_PERM``, and every other refusal keeps its error.
+    With neither a ``-wal`` nor a ``-journal`` beside it, the main file alone holds every
+    committed row, and ``immutable=1`` reads it without the index. A ``-wal`` holds rows
+    the main file lacks and a ``-journal`` is a rollback in progress, so either keeps
+    the refusal. The copy itself also needs :func:`_hold_reader_lock`.
+    """
+    driver = _facade().sqlite3
+    code = getattr(refused, "sqlite_errorcode", None)
+    if not isinstance(code, int):
+        return False
+    if code & 0xFF not in (driver.SQLITE_READONLY, driver.SQLITE_CANTOPEN, driver.SQLITE_PERM):
+        return False
+    return not any(os.path.lexists(f"{src}{sidecar}") for sidecar in ("-wal", "-journal"))
+
+
+@contextmanager
+def _hold_reader_lock(src: Path, refused: Exception) -> Iterator[os.stat_result]:
+    """Hold on *src* the lock an ordinary SQLite reader holds, and yield its identity.
+
+    An ``immutable=1`` read takes no lock of its own, so this one is held for it from
+    before the copy until after :func:`_refuse_if_changed_since`. While it is held a
+    rollback-journal writer cannot change the file, and a WAL writer's last close
+    cannot remove its ``-wal``, so a write during the copy leaves that ``-wal`` for the
+    check to find. A writer already holding a lock that conflicts refuses the copy.
+    Where the lock cannot be taken at all -- no POSIX record locks on this platform or
+    this filesystem -- the copy has no writer exclusion, so *refused*, the ordinary
+    open's own error, stands. The identity yielded is read under the lock, after the
+    sidecar check, and is what the copy is checked against.
+
+    The lock belongs to this process and the file's inode, so closing ANY descriptor
+    this process holds on *src* releases it. The caller keeps its SQLite connection to
+    *src* open until the check has run, and opens no other.
+    """
+    if not platform_compat.IS_POSIX:
+        raise DatabaseCopyFailed(src, refused)
+    # SQLite's unix VFS locks a database with POSIX record locks on these bytes of the
+    # file. A reader read-locks the pending byte, then the shared range, then drops the
+    # pending byte; a writer write-locks the shared range before it changes the file, and
+    # a WAL connection's last close write-locks it before it removes its `-wal`.
+    pending_byte = 0x40000000
+    shared_first, shared_size = pending_byte + 2, 510
+    fcntl = platform_compat.fcntl
+    try:
+        fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        raise DatabaseCopyFailed(src, e) from e
+    try:
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_SH | fcntl.LOCK_NB, 1, pending_byte)
+            fcntl.lockf(fd, fcntl.LOCK_SH | fcntl.LOCK_NB, shared_size, shared_first)
+            fcntl.lockf(fd, fcntl.LOCK_UN, 1, pending_byte)
+        except OSError as e:
+            if e.errno in (errno.EACCES, errno.EAGAIN):
+                busy = OSError(e.errno, "a writer holds the database; run it again")
+                raise DatabaseCopyFailed(src, busy) from e
+            raise DatabaseCopyFailed(src, refused) from e
+        try:
+            held, named = os.fstat(fd), os.lstat(src)
+        except OSError as e:
+            raise DatabaseCopyFailed(src, e) from e
+        if not _stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != (
+            named.st_dev,
+            named.st_ino,
+        ):
+            moved = OSError("the database changed while it was being copied; run it again")
+            raise DatabaseCopyFailed(src, moved)
+        if any(os.path.lexists(f"{src}{sidecar}") for sidecar in ("-wal", "-journal")):
+            raise DatabaseCopyFailed(src, refused)
+        yield named
+    finally:
+        os.close(fd)
 
 
 def _refuse_unsound_required_capture(src: Path, dst: Path) -> None:

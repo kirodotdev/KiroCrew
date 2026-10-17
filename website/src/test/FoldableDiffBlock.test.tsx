@@ -100,6 +100,28 @@ describe('FoldableDiffBlock', () => {
     expect(other.container.querySelector('.diff-block')).toBeNull()
   })
 
+  it('keeps a warned chip folded across a re-mount once the user folds it', async () => {
+    const first = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-4:1" warning="broke" />)
+    await waitFor(() => expect(chip(first.container)?.getAttribute('aria-expanded')).toBe('true'))
+    fireEvent.click(chip(first.container)!)
+    await waitFor(() => expect(chip(first.container)?.getAttribute('aria-expanded')).toBe('false'))
+    first.unmount()
+
+    const again = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-4:1" warning="broke" />)
+    expect(chip(again.container)?.getAttribute('aria-expanded')).toBe('false')
+    expect(again.container.querySelector('.diff-block')).toBeNull()
+  })
+
+  it('does not re-open a folded warned chip when the warning text changes language', async () => {
+    const view = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-5:1" warning="broke" />)
+    await waitFor(() => expect(chip(view.container)?.getAttribute('aria-expanded')).toBe('true'))
+    fireEvent.click(chip(view.container)!)
+    await waitFor(() => expect(chip(view.container)?.getAttribute('aria-expanded')).toBe('false'))
+
+    view.rerender(<FoldableDiffBlock code={PATCH} complete foldKey="msg-5:1" warning="cassé" />)
+    expect(chip(view.container)?.getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('the chip stays mounted while open and a second click on it folds the patch', async () => {
     const { container } = render(<FoldableDiffBlock code={PATCH} complete foldKey="msg-3:1" />)
     expect(chip(container)!.getAttribute('aria-expanded')).toBe('false')

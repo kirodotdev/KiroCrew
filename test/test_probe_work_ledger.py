@@ -377,7 +377,7 @@ class TestLivenessIsNotReimplemented:
         """
         assert callable(work_ledger.is_stale)
         assert callable(work_ledger._worker_owns_next_move)
-        assert work_ledger.STALE_ELIGIBLE_STATUSES == {"progress", "blocked", "question"}
+        assert work_ledger.STALE_ELIGIBLE_STATUSES == {"progress"}
 
     def test_a_done_item_is_not_stale_eligible_on_its_own(self):
         """After ``done`` the move is the conductor's, so silence there is expected."""
@@ -544,6 +544,61 @@ def test_the_epoch_moves_when_an_item_reports_and_holds_when_nothing_does():
     assert _observe(_probe(), _ctx()).epoch != first
 
 
+def test_the_probe_publishes_a_worker_report_revision_and_none_when_it_read_nothing():
+    # The AutoNudge gate compares this value across delivered turns to stretch a
+    # quiet floor, so a blind read must leave it unset rather than empty.
+    probe = _probe()
+    _observe(probe, _ctx())
+    assert probe.revision is None
+
+    _open_ledger()
+    item = _create()
+    _observe(probe, _ctx())
+    no_reports = probe.revision
+    assert no_reports, "a read board with no report yet still gets a token"
+
+    _report(item, "progress")
+    _observe(probe, _ctx())
+    reported = probe.revision
+    assert reported and reported != no_reports, "a worker report moves it"
+
+
+def test_the_conductors_own_writes_do_not_move_the_floor_revision():
+    # A verdict or a new item is something the conductor already knows. Counting
+    # it would spend the next floor turn reading the conductor's own write back.
+    _open_ledger()
+    item = _create()
+    _report(item, "progress")
+    probe = _probe()
+    before = _observe(probe, _ctx())
+    revision = probe.revision
+    work_ledger.apply_conductor_action(CONDUCTOR, "verdict", item_id=item, verdict="fail", fails=1)
+    _create("a second item")
+    after = _observe(probe, _ctx())
+    assert probe.revision == revision
+    assert after.epoch != before.epoch, "the kernel epoch still moves on every event"
+
+
+def test_a_report_evicted_from_the_event_tail_does_not_move_the_floor_revision(monkeypatch):
+    # The probe reads only a short event tail, so enough conductor writes push the
+    # last worker report out of it. A revision built from that tail would move with
+    # no worker saying anything; the item's worker-owned fields do not.
+    _open_ledger()
+    item = _create()
+    _report(item, "progress")
+    probe = _probe()
+    _observe(probe, _ctx())
+    revision = probe.revision
+    real_read = work_ledger.read_events
+
+    def _tail_without_reports(*args, **kwargs):
+        return [event for event in real_read(*args, **kwargs) if event.kind != "report"]
+
+    monkeypatch.setattr(work_ledger, "read_events", _tail_without_reports)
+    _observe(probe, _ctx())
+    assert probe.revision == revision
+
+
 def test_each_waking_status_produces_one_observation():
     from kiro_crew import irq
 
@@ -592,6 +647,230 @@ def test_two_reports_in_one_tick_deliver_once_and_mask_both():
         irq.run(_ctx(), _probe())
 
 
+def _ticks_across(monkeypatch, *, hours: float, every_secs: float, stall_after: float | None):
+    """Drive ``irq.run`` on a fake clock and return the text of every delivered wake.
+
+    The kernel forgets a sticky key once it is ``realert_secs`` old, so a span past
+    that window is what separates "the probe says it once" from "the kernel masked it
+    for a while". *stall_after* makes the item read stale that many seconds in.
+    """
+    from kiro_crew import irq
+    from kiro_crew.cron_script import Report, Skip
+    from kiro_crew.testing.clock import ManualClock
+
+    clock = ManualClock()
+    clock.install(monkeypatch, irq)
+    clock.install(monkeypatch, lw)
+    start = clock.time()
+    monkeypatch.setattr(
+        work_ledger,
+        "is_stale",
+        lambda _item, **_kw: stall_after is not None and clock.time() - start >= stall_after,
+    )
+    delivered: list[str] = []
+    steps = int(hours * 3600 // every_secs) + 1
+    for step in range(steps):
+        if step:
+            clock.advance(every_secs)
+        try:
+            irq.run(_ctx(), _probe())
+        except Report as report:
+            delivered.append(str(report))
+        except Skip:
+            pass
+    return delivered, clock
+
+
+def test_one_blocked_report_wakes_once_across_the_kernels_realert_window(monkeypatch):
+    """The kernel masks a sticky key for ``irq.DEFAULT_REALERT_SECS`` only.
+
+    So the probe itself must not re-report an event or a silence it already woke for:
+    an open ``blocked`` item otherwise re-wakes its conductor every six hours for a
+    report it read long ago, and its stall token re-fires on the same cycle.
+    """
+    from kiro_crew import irq
+
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    hours = irq.DEFAULT_REALERT_SECS / 3600 + 1.5
+    delivered, _clock = _ticks_across(monkeypatch, hours=hours, every_secs=1800, stall_after=1800)
+
+    reports = [text for text in delivered if f"item={item} status=blocked" in text]
+    stalls = [text for text in delivered if f"item={item} reason=stall" in text]
+    assert len(reports) == 1, delivered
+    assert len(stalls) == 1, delivered
+
+
+def test_a_new_report_on_an_already_woken_item_still_wakes(monkeypatch):
+    from kiro_crew import irq
+
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    hours = irq.DEFAULT_REALERT_SECS / 3600 + 1
+    first, clock = _ticks_across(monkeypatch, hours=hours, every_secs=1800, stall_after=None)
+    assert len(first) == 1
+
+    _report(item, "blocked", summary="stuck again, on something else")
+    from kiro_crew.cron_script import Report
+
+    clock.advance(1800)
+    with pytest.raises(Report) as again:
+        irq.run(_ctx(), _probe())
+    assert f"item={item} status=blocked" in str(again.value)
+
+
+def test_many_stalls_cannot_evict_a_report_still_in_the_tail(monkeypatch):
+    """Progress reports coalesce, so a ``blocked`` event stays in the tail while each
+    one moves ``last_report_at`` and mints a new stall token. Only the newest stall
+    token can recur, so older ones must not crowd the report's token out."""
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    monkeypatch.setattr(work_ledger, "is_stale", lambda _item, **_kw: True)
+    # The probe is observed directly, without the kernel, because the kernel's own
+    # mask would hide a repeat and the probe's answer is what is under test.
+    # An hour per step, so the hourly budget never refuses a stall and hides the
+    # eviction behind a rate limit.
+    from kiro_crew.testing.clock import ManualClock
+
+    clock = ManualClock()
+    clock.install(monkeypatch, lw)
+    # ``last_report_at`` has one-second resolution, so the store reads the same
+    # clock: each step's report then mints a distinct stall token.
+    clock.install(monkeypatch, work_ledger, time=False, datetime=True)
+    briefs: list[str] = []
+    for index in range(lw._MAX_REMEMBERED_TOKENS + 4):
+        if index:
+            clock.advance(lw._RATE_WINDOW_SECS)
+            _report(item, "progress", summary=f"step {index}")
+        briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+    assert sum(f"item={item} status=blocked" in brief for brief in briefs) == 1
+    assert sum(f"item={item} reason=stall" in brief for brief in briefs) == (
+        lw._MAX_REMEMBERED_TOKENS + 4
+    )
+
+
+def test_a_driver_that_discards_its_verdict_cannot_spend_another_drivers_wake():
+    """Two drivers on one ledger keep separate seen sets.
+
+    A second driver -- the gate's terminal recheck polls under its own identity and
+    throws the verdict away -- must not mark a report as delivered for the main tick,
+    or that report never wakes the conductor at all.
+    """
+    import json
+
+    from kiro_crew import irq
+    from kiro_crew.cron_script import Report
+
+    _open_ledger()
+    item = _create()
+    _report(item, "blocked", summary="stuck")
+    discarded = irq.poll("loop-1:recheck", json.dumps({"conductor": CONDUCTOR}), _probe())
+    assert discarded.outcome is not irq.Outcome.TERMINAL
+
+    with pytest.raises(Report) as delivered:
+        irq.run(_ctx(), _probe())
+    assert f"item={item} status=blocked" in str(delivered.value)
+
+
+def test_a_dropped_delivery_falls_back_to_the_shipped_quiet_floor():
+    """A wake lost after the tick is not retried by the probe; the timer brings it back.
+
+    The probe marks a token seen when it emits it. What surfaces a report whose turn
+    never landed is the gate's quiet floor: it stretches only while the ledger reads
+    the revision the last DELIVERED turn saw, and the report moved that revision, so
+    an undelivered report keeps the loop on its shipped floor and a plain patrol turn
+    reads the board.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew import irq, probes
+    from kiro_crew.autonudge_service import gate
+    from kiro_crew.cron_script import Report, Skip
+
+    _open_ledger()
+    item = _create()
+    probe = _probe()
+    with pytest.raises(Skip):
+        irq.run(_ctx(), probe)
+    monitor = SimpleNamespace(
+        kind=probes.WORK_LEDGER, ledger_revision="", ledger_delivered_revision=""
+    )
+    loop = SimpleNamespace(consecutive_start_failures=0, consecutive_failed_cycles=0)
+    gate._note_ledger_revision(monitor, probe)
+    gate._record_delivered_revision(monitor)
+    assert gate._ledger_is_idle(loop, monitor), "a delivered, unchanged board is idle"
+
+    _report(item, "blocked", summary="stuck")
+    with pytest.raises(Report):
+        irq.run(_ctx(), probe)
+    # The delivery is dropped here: nothing records the revision as delivered.
+    with pytest.raises(Skip):
+        irq.run(_ctx(), probe)
+    gate._note_ledger_revision(monitor, probe)
+    assert not gate._ledger_is_idle(loop, monitor)
+
+
+def test_a_parked_items_seen_set_outlives_closed_items_under_the_tracked_cap(monkeypatch):
+    """The tracked-item cap evicts the item whose newest wake is oldest.
+
+    A long-parked open item is exactly that item, so closed items charged after it
+    would push its seen set out and its report would wake the conductor again.
+    Dropping closed items' entries keeps the cap for the items still open.
+    """
+    monkeypatch.setattr(lw, "_MAX_TRACKED_ITEMS", 2)
+    _open_ledger()
+    parked = _create(title="parked")
+    _report(parked, "blocked", summary="waiting on a person")
+    briefs = [o.brief for o in _observe(_probe(), _ctx()).observations]
+    for index in range(3):
+        finished = _create(title=f"finished {index}")
+        _report(finished, "done", summary="shipped")
+        briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+        work_ledger.apply_conductor_action(
+            CONDUCTOR, "close", item_id=finished, state="accepted", decision="verified"
+        )
+        briefs.extend(o.brief for o in _observe(_probe(), _ctx()).observations)
+    assert sum(f"item={parked} status=blocked" in brief for brief in briefs) == 1
+
+
+def test_the_oldest_written_watcher_set_is_the_one_evicted():
+    order = ["b", "c", "d", "a"]
+    for index, watcher in enumerate(order[: lw._MAX_WATCHERS_PER_ITEM]):
+        lw.note_wake(CONDUCTOR, ITEM, token=f"t{index}", watcher=watcher, now=1000.0 + index)
+    lw.note_wake(CONDUCTOR, ITEM, token="t-new", watcher="e", now=2000.0)
+    kept = set(lw._read_rate(CONDUCTOR)[ITEM]["seen"])
+    assert kept == set(order[1 : lw._MAX_WATCHERS_PER_ITEM]) | {"e"}
+
+
+def test_a_closed_items_seen_tokens_are_dropped(monkeypatch):
+    from kiro_crew.cron_script import Report
+
+    _open_ledger()
+    done = _create(title="finished")
+    still_open = _create(title="still open")
+    _report(done, "done", summary="shipped")
+    with pytest.raises(Report):
+        _run_once()
+    assert done in lw._read_rate(CONDUCTOR)
+
+    work_ledger.apply_conductor_action(
+        CONDUCTOR, "close", item_id=done, state="accepted", decision="verified"
+    )
+    _observe(_probe(), _ctx())
+    remembered = lw._read_rate(CONDUCTOR)
+    assert done not in remembered
+    assert still_open not in remembered
+
+
+def _run_once():
+    from kiro_crew import irq
+
+    return irq.run(_ctx(), _probe())
+
+
 def test_a_progress_report_advances_the_epoch_without_waking():
     _open_ledger()
     item = _create()
@@ -629,6 +908,178 @@ def test_a_silent_worker_wakes_only_while_its_session_is_not_running(monkeypatch
     # The probe asks with the RESOLVER's answer rather than deciding liveness
     # itself; the conjunction stays the store's.
     assert seen == [False, True]
+
+
+def test_the_probe_hands_the_looping_resolvers_answer_to_is_stale(monkeypatch):
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    asked: list[str] = []
+    seen: list[bool] = []
+
+    def _looping(key: str) -> bool:
+        asked.append(key)
+        return True
+
+    def _stale(_item, *, worker_looping=False, **_kw):
+        seen.append(worker_looping)
+        return not worker_looping
+
+    monkeypatch.setattr(work_ledger, "is_stale", _stale)
+    looping = _observe(WorkLedgerProbe(worker_looping=_looping), _ctx())
+    assert "reason=stall" not in _briefs(looping)
+    # The default resolver answers "not looping", so an unwired probe still flags.
+    unwired = _observe(_probe(), _ctx())
+    assert "reason=stall" in _briefs(unwired)
+    assert item in _briefs(unwired)
+    assert seen == [True, False]
+    assert asked == [""]
+
+
+def test_a_quiet_progress_item_whose_worker_is_looping_raises_no_stall(monkeypatch):
+    """The real rule end to end: past the window, not running, but its loop is active."""
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    _open_ledger()
+    item = _create()
+    _report(item, "progress", summary="waiting on CI")
+    real_list = work_ledger.list_work_items
+
+    def _aged(key):
+        rows = real_list(key)
+        for row in rows:
+            row.last_report_at = "2000-01-01T00:00:00+00:00"
+        return rows
+
+    monkeypatch.setattr(work_ledger, "list_work_items", _aged)
+    looping = _observe(WorkLedgerProbe(worker_looping=lambda _k: True), _ctx())
+    idle = _observe(WorkLedgerProbe(worker_looping=lambda _k: False), _ctx())
+    assert "reason=stall" not in _briefs(looping)
+    assert "reason=stall" in _briefs(idle)
+    assert item in _briefs(idle)
+
+
+class _Loop:
+    def __init__(self, slot_key: str, **fields) -> None:
+        self.slot_key = slot_key
+        self.active = fields.pop("active", True)
+        self.max_cycles = fields.pop("max_cycles", 24)
+        self.cycle_count = fields.pop("cycle_count", 0)
+        self.max_runtime_secs = fields.pop("max_runtime_secs", 0)
+        self.created_ts = fields.pop("created_ts", 0.0)
+        self.approval_stalled = fields.pop("approval_stalled", False)
+        assert not fields
+
+
+class _Service:
+    def __init__(self, *loops: _Loop) -> None:
+        self._loops = {loop.slot_key: loop for loop in loops}
+
+    def get_by_slot(self, slot_key: str):
+        return self._loops.get(slot_key)
+
+
+def test_build_passes_the_looping_resolver_to_the_work_ledger_probe():
+    from kiro_crew import probes
+    from kiro_crew.probes.work_ledger import WorkLedgerProbe
+
+    probe = probes.build(probes.WORK_LEDGER, worker_looping=lambda _k: True)
+    assert probe is not None
+    assert probe._worker_looping("chat-1") is True
+    assert WorkLedgerProbe()._worker_looping("chat-1") is False
+
+
+def test_the_service_answers_looping_from_its_own_loops():
+    """The service owns the loop table, so it answers without an injected resolver."""
+    import time
+
+    from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+
+    svc = AutoNudgeService.__new__(AutoNudgeService)
+    svc._loops = {
+        "a": NudgeLoop(
+            id="a", slot_key="chat-live", message="m", max_cycles=24, created_ts=time.time()
+        ),
+        "b": NudgeLoop(id="b", slot_key="chat-stopped", message="m", active=False),
+    }
+    assert svc._worker_looping("chat-live") is True
+    assert svc._worker_looping("chat-stopped") is False
+    assert svc._worker_looping("chat-none") is False
+    assert svc._worker_looping("") is False
+
+
+class TestWorkerLooping:
+    """``ledger_wake.worker_looping``: an ACTIVE loop on the worker's own session."""
+
+    def test_an_active_loop_on_the_worker_session_is_alive(self):
+        assert lw.worker_looping(_Service(_Loop("chat-1")), "chat-1") is True
+
+    def test_the_dashboard_prefixed_spelling_finds_the_same_loop(self):
+        assert lw.worker_looping(_Service(_Loop("chat-1")), "dashboard_chat-1") is True
+
+    def test_a_stopped_loop_is_not_alive(self):
+        assert lw.worker_looping(_Service(_Loop("chat-1", active=False)), "chat-1") is False
+
+    def test_a_loop_past_its_runtime_budget_is_not_alive(self):
+        import time
+
+        spent = _Loop("chat-1", max_runtime_secs=60, created_ts=time.time() - 3600)
+        assert lw.worker_looping(_Service(spent), "chat-1") is False
+        fresh = _Loop("chat-1", max_runtime_secs=3600, created_ts=time.time() - 60)
+        assert lw.worker_looping(_Service(fresh), "chat-1") is True
+
+    def test_a_loop_at_its_cycle_cap_is_not_alive(self):
+        capped = _Loop("chat-1", max_cycles=5, cycle_count=5)
+        assert lw.worker_looping(_Service(capped), "chat-1") is False
+
+    def test_a_loop_held_on_an_approval_is_not_alive(self):
+        held = _Loop("chat-1", approval_stalled=True)
+        assert lw.worker_looping(_Service(held), "chat-1") is False
+
+    def test_a_stopped_loop_under_one_spelling_does_not_hide_an_active_one(self):
+        svc = _Service(_Loop("dashboard_chat-1", active=False), _Loop("chat-1"))
+        assert lw.worker_looping(svc, "dashboard_chat-1") is True
+
+    def test_an_unbounded_loop_is_not_alive(self):
+        """A loop with no cycle cap and no runtime budget would hide a stall for as
+        long as it exists, so it does not count; either bound alone is enough."""
+        import time
+
+        unbounded = _Loop("chat-1", max_cycles=0, max_runtime_secs=0)
+        assert lw.worker_looping(_Service(unbounded), "chat-1") is False
+        budget_only = _Loop("chat-1", max_cycles=0, max_runtime_secs=3600, created_ts=time.time())
+        assert lw.worker_looping(_Service(budget_only), "chat-1") is True
+
+    def test_an_aged_progress_item_with_an_unbounded_loop_goes_stale(self):
+        _open_ledger()
+        item_id = _create()
+        _report(item_id, "progress", summary="waiting on CI")
+        item = work_ledger.read_work_item(CONDUCTOR, item_id)
+        assert item is not None
+        item.last_report_at = "2000-01-01T00:00:00+00:00"
+        unbounded = _Service(_Loop("chat-1", max_cycles=0, max_runtime_secs=0))
+        bounded = _Service(_Loop("chat-1"))
+        looping = lw.worker_looping(unbounded, "chat-1")
+        assert work_ledger.is_stale(item, worker_running=False, worker_looping=looping) is True
+        looping = lw.worker_looping(bounded, "chat-1")
+        assert work_ledger.is_stale(item, worker_running=False, worker_looping=looping) is False
+
+    def test_the_ledger_key_fold_finds_a_colon_prefixed_spelling(self):
+        assert lw.worker_looping(_Service(_Loop("chat-1")), "dashboard:chat-1") is True
+
+    def test_another_sessions_loop_does_not_count(self):
+        assert lw.worker_looping(_Service(_Loop("chat-2")), "chat-1") is False
+
+    def test_unknown_reads_as_not_alive(self):
+        class _Broken:
+            def get_by_slot(self, _key):
+                raise RuntimeError("store unreadable")
+
+        assert lw.worker_looping(None, "chat-1") is False
+        assert lw.worker_looping(_Service(_Loop("chat-1")), "") is False
+        assert lw.worker_looping(object(), "chat-1") is False
+        assert lw.worker_looping(_Broken(), "chat-1") is False
 
 
 def test_every_item_closed_is_terminal_but_an_empty_ledger_is_not():
@@ -816,7 +1267,9 @@ def test_the_remembered_token_bound_covers_what_one_window_can_charge():
     from kiro_crew.probes import work_ledger as probe_module
 
     assert lw._MAX_REMEMBERED_TOKENS >= lw.MAX_WAKES_PER_ITEM_PER_HOUR
-    assert lw._MAX_REMEMBERED_TOKENS >= probe_module._EVENT_TAIL
+    # The seen set must hold every token the probe can still re-read: one per report
+    # in the tail, plus the newest silence.
+    assert lw._MAX_REMEMBERED_TOKENS >= probe_module._EVENT_TAIL + 1
 
 
 def test_an_unreadable_item_cannot_terminate_the_watch():
@@ -877,13 +1330,14 @@ def test_a_wake_whose_charge_cannot_be_recorded_is_refused(monkeypatch):
 
 def test_the_budget_counts_distinct_wakes_rather_than_re_reads():
     for index in range(lw.MAX_WAKES_PER_ITEM_PER_HOUR):
-        assert lw.within_rate_limit(CONDUCTOR, ITEM, token=f"e{index}") is True
+        assert lw.within_rate_limit(CONDUCTOR, ITEM) is True
         lw.note_wake(CONDUCTOR, ITEM, token=f"e{index}")
     # Budget spent: a NEW wake folds forward.
-    assert lw.within_rate_limit(CONDUCTOR, ITEM, token="fresh") is False
-    # The wake already charged is still allowed, because a probe re-reports an
-    # unchanged condition every tick and those re-reads must not spend anything.
+    assert lw.within_rate_limit(CONDUCTOR, ITEM) is False
+    # A wake already charged is answered by the seen set, before the budget is asked,
+    # so a re-read of an unchanged condition spends nothing.
     last = f"e{lw.MAX_WAKES_PER_ITEM_PER_HOUR - 1}"
-    assert lw.within_rate_limit(CONDUCTOR, ITEM, token=last) is True
+    assert lw.already_woke(CONDUCTOR, ITEM, last) is True
+    assert lw.already_woke(CONDUCTOR, ITEM, "fresh") is False
     # A different item has its own budget.
-    assert lw.within_rate_limit(CONDUCTOR, OTHER_ITEM, token="e0") is True
+    assert lw.within_rate_limit(CONDUCTOR, OTHER_ITEM) is True

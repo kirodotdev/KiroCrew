@@ -257,7 +257,7 @@ reads the provider, and `subagent_manager/run.py` reads that.
 
 Change 4 is a second, independent membership, and the request does not work
 without it. KAS sits outside `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, which puts it
-on the kiro-family arm of Crew's resume path in `acp/client.py`: that arm gates a
+on the kiro-family arm of Crew's resume path in `acp/client_start.py`: that arm gates a
 `session/load` on a **kiro-cli** transcript file under `kiro_sessions_dir()` and
 sends a `_kiro.dev/session_file` naming it. For a host that keeps its own store,
 that file is not there and the load is skipped in favour of a fresh session. So

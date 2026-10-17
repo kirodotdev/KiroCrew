@@ -40,7 +40,7 @@ const SHORT = 'lead 用issue radar'
 
 const render = (c: string) => <MarkdownRenderer content={c} softBreaks />
 
-/** The literal ChatPage per-row wrapper + user-row chain (ChatPage.tsx). */
+/** The literal ChatPage per-row wrapper + user-row chain (ChatTranscriptView.tsx, transcriptRendering.tsx). */
 function Row({ children }: { children: React.ReactNode }) {
   return (
     <div className="px-4 mx-auto w-full py-1" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>

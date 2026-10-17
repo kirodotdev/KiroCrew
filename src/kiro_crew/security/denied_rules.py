@@ -114,6 +114,19 @@ _AWS_VAR_SELECTOR = (
     rf"|_{_AWS_SECRET_VAR_NAMES}"
     rf"|_(?:{_AWS_SECRET_WORD_PREFIXES})(?![A-Za-z0-9_]))"
 )
+# grep reads its operand as a plain regex, so ``AWS-`` before a name character is
+# a literal, which no secret-bearing name or credential value contains
+# (``aws-account-id=``); its selector lets that shape pass, while any other hyphen
+# can take a quantifier (``AWS-?``) and still ends the prefix. Only grep gets this.
+# Where grep ignores that text instead (a PCRE comment, an optional group, a
+# bracket), the rest of the pattern is judged as main judges it with a plain word.
+# awk EVALUATES ``AWS-x`` as code on the variable ``AWS``, and sed lets ANY
+# character delimit a regex address or an ``s`` command (``\-AWS-p`` is the regex
+# ``AWS``), so a ``-`` in sed text cannot be read as a literal; both keep the
+# boundary above.
+_AWS_TEXT_VAR_SELECTOR = _AWS_VAR_SELECTOR.replace(
+    r"AWS(?:(?![A-Za-z0-9_])", r"AWS(?:(?![A-Za-z0-9_]|-[A-Za-z0-9_])", 1
+)
 
 # Spellings that DUMP the environment. ``environ`` is one because
 # ``/proc/<pid>/environ`` IS the process environment under a path, and ``typeset``
@@ -138,24 +151,24 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 #   ``src/environment`` and ``settings.py`` are not dumps. A ``.`` or ``/`` before
 #   the verb is deliberately allowed: ``/usr/bin/env``, ``/bin/printenv`` and
 #   ``/proc/self/environ`` are the same dumps under a path and are the most
-#   ordinary spelling of the command. The filter word is bounded on its right the
-#   same way, so a quoted filter (``env | 'grep' AWS_SECRET``) still counts while
-#   ``grepfoo`` does not;
+#   ordinary spelling of the command. The filter word is bounded on BOTH sides, so
+#   ``'grep'`` and ``/usr/bin/grep`` count while ``grepfoo`` and the ``sed`` in ``used``
+#   do not; the prefixed spellings (``egrep``, ``gawk``, ``gsed``) are listed for it;
 # * the selector must be a name whose selection can PRINT a credential
 #   (``_AWS_VAR_SELECTOR``) -- ``env | grep AWS_REGION`` cannot, and is allowed.
 # A ``|`` must appear between the dump and the filter, which is what keeps ``env``
 # as a wrapper (``env FOO=1 cmd``), ``set -e; grep AWS_ file.txt`` and
 # ``cat .env; grep AWS_ config.py`` out.
 #
-# The gaps are deliberately plain ``.*`` -- ordered existence within one LINE, with
-# no attempt to confine the match to a single shell statement or pipeline stage.
+# The gaps are deliberately plain ``.*`` -- ordered existence across the text (the
+# matcher crosses line breaks), with no statement or pipeline-stage scoping.
 # A statement-scoped span has to treat ``;`` and ``&`` as separators, and a regex
 # cannot tell a separator from the identical character inside a quoted argument:
 # ``env | sed 's/;/x/' | grep AWS_SECRET_ACCESS_KEY`` and
 # ``env | grep -E 'a&b|AWS_SECRET'`` are ordinary credential dumps whose only
 # unusual feature is a quoted separator, and a span that stops there fails OPEN.
 # Guessing the other way costs an over-block instead: a ``set …`` earlier in the
-# line makes any later ``… | grep AWS_`` in the same line a match. That is the
+# text makes any later ``… | grep AWS_`` a match. That is the
 # residual, it is the safe direction, and it is the reason the gaps are not spans.
 #
 # What this rule does NOT cover, on purpose: a dump REDIRECTED to a file and read
@@ -169,7 +182,14 @@ _ENV_DUMP_VERBS = r"(?:environ|printenv|typeset|export\s+-p|env|set)"
 _ENV_DUMP_GREP_AWS_PATTERN = (
     rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
     + r".*\|.*"
-    + r"(?:grep|awk|sed)(?!\w)"
+    + r"(?<![\w-])[a-z0-9]{0,5}grep(?!\w)"
+    + r".*"
+    + _AWS_TEXT_VAR_SELECTOR
+)
+_ENV_DUMP_AWK_SED_AWS_PATTERN = (
+    rf"(?<![\w-]){_ENV_DUMP_VERBS}(?!\w)"
+    + r".*\|.*"
+    + r"(?<![\w-])(?:[gmn]?awk|g?sed|ssed)(?!\w)"
     + r".*"
     + _AWS_VAR_SELECTOR
 )
@@ -208,8 +228,8 @@ _PRINTENV_AWS_SECRET_PATTERN = r"(?<![\w-])printenv(?!\w).*AWS_" + _AWS_SECRET_V
 _NETCAT_EXEC_PATTERN = r"(?<![\w.-])(?<!\w=)nc\s+-e"
 
 # ``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` hold a PATH, not a
-# secret, so neither is scrubbed from an agent child's environment -- the AWS CLI
-# and every SDK read them directly.
+# secret, so the global secret scrub leaves both in an agent child's environment (the AWS CLI
+# and SDKs read them); ``acp.client._apply_pod_home_remap`` drops both for a pod child.
 #
 # Two rules are deliberately ABSENT here, and the reasoning is worth keeping
 # because it generalizes to any future "deny the variable name" proposal: a
@@ -398,10 +418,11 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "Blocks an interpreter payload that spawns the `kirocrew token` credential mint "
             "through a library call rather than as a shell command -- the CLI name and the "
             "token verb as adjacent QUOTED arguments, as in "
-            "`python -c \"subprocess.run(['kirocrew','token'])\"`. Scoped to the argv-literal "
-            "shape so a regex literal or prose mentioning both words is not a mint; a "
-            "single-string spelling is out of reach of command-text matching and is covered by "
-            "the sensitive-path floor over the signing key instead."
+            "`python -c \"subprocess.run(['kirocrew','token'])\"`, or both words in one quoted "
+            'string handed to a call that executes it (an `os.system` call given "kirocrew '
+            'token"). A quoted string with no executing call (a regex literal, prose) is not '
+            "matched; a name assembled at runtime is out of reach of command-text matching and "
+            "is covered by the sensitive-path floor over the signing key instead."
         ),
     ),
     DeniedCommandRule(
@@ -414,9 +435,8 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         #
         # SINK-QUALIFIED on purpose: the two words are matched inside ONE quoted string
         # only when that string is the argument of a call that EXECUTES it.  The sink
-        # prefix is what keeps this from becoming the co-occurrence rule this PR
-        # removed -- prose, a commit message and a regex literal have no sink, so they
-        # stay allowed.
+        # prefix is what keeps this from being a bare co-occurrence match -- prose, a
+        # commit message and a regex literal have no sink, so they stay allowed.
         pattern=(
             "(?:"
             # --- sink-qualified: a shell command handed to a call that EXECUTES it ---
@@ -458,10 +478,22 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         category="credential-exfil",
         description=(
             "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, "
-            "`typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare "
+            "`typeset`, `/proc/<pid>/environ`) through grep for the bare "
             "`AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one "
             "such as `AWS_S`, which leaks any credentials stored there. Selecting a named "
             "non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+        ),
+    ),
+    DeniedCommandRule(
+        id="credential-exfil-env-awk-sed-aws",
+        pattern=_ENV_DUMP_AWK_SED_AWS_PATTERN,
+        category="credential-exfil",
+        description=(
+            "Blocks piping an environment dump through awk (including gawk/mawk/nawk) "
+            "or sed with the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or "
+            "a truncation such as `AWS_S`. Awk evaluates code and sed lets any character "
+            "delimit an address (`\\-AWS-p`), so `AWS-x` keeps the bare `AWS` boundary "
+            "rather than counting as a harmless hyphenated text selector."
         ),
     ),
     DeniedCommandRule(
@@ -1150,7 +1182,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         category="sql",
         description=(
             "Blocks SQL DROP DATABASE statements, which irreversibly delete an entire database "
-            "and all its tables and data."
+            "and all its tables and data. Matches the statement's text anywhere on the command "
+            "line, quoted text and heredoc bodies included; prose that mentions it is written "
+            "with the file-editing tool and passed by path."
         ),
     ),
     DeniedCommandRule(
@@ -1159,7 +1193,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         category="sql",
         description=(
             "Blocks SQL DROP TABLE statements, which permanently delete a table and every row "
-            "it contains."
+            "it contains. Matches the statement's text anywhere on the command line, quoted "
+            "text and heredoc bodies included; prose that mentions it is written with the "
+            "file-editing tool and passed by path."
         ),
     ),
     DeniedCommandRule(
@@ -1347,7 +1383,9 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         category="sql",
         description=(
             "Blocks SQL TRUNCATE TABLE statements, which delete all rows in a table in one "
-            "unrecoverable operation."
+            "unrecoverable operation. Matches the statement's text anywhere on the command "
+            "line, quoted text and heredoc bodies included; prose that mentions it is written "
+            "with the file-editing tool and passed by path."
         ),
     ),
     DeniedCommandRule(
@@ -1359,13 +1397,11 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "code with no chance to inspect the script first."
         ),
     ),
-    # The ``restart`` / ``update`` / ``cloud <lifecycle>`` / ``gateway restart``
-    # self-management commands have NO catalog row.  Their regex rows opened with
-    # an unbounded any-run before the product name, so the name in a worktree
-    # path plus the verb word anywhere later was a match (``ls
-    # ~/kirocrew-wt/restart.log``); a row that fires on the product's name
-    # appearing anywhere protects nothing the structural floor does not, and was
-    # deleted rather than narrowed.  Enforcement is the argv floor alone
+    # The ``restart`` / ``update`` / ``file-delivery approve`` / ``cloud <lifecycle>`` /
+    # ``gateway restart`` self-management commands have NO catalog row.  A regex row opening
+    # with an unbounded any-run before the product name matches the name in a worktree path
+    # plus the verb word later (``ls ~/kirocrew-wt/restart.log``), and protects nothing the
+    # structural floor does not.  Enforcement is the argv floor alone
     # (``argv_floor._is_self_restart`` and siblings, ungated -- see
     # ``_SELF_PROTECTION_UNGATED_FLOOR_IDS``), which requires the product to be
     # the argv's own PROGRAM and the action its leading subcommand.
@@ -1500,10 +1536,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "$(hostname), or this host's own name/addresses), which re-enters the host OUTSIDE "
             "the agent sandbox: a command run through `ssh localhost` bypasses every other "
             "control here, and passwordless sudo on the far side completes a full escape. "
-            "Connections to other hosts stay allowed, with one declared exception: a "
-            "first-seen DOTTED hostname in HOST position is refused once, per process, "
-            "while an off-loop DNS check rules out a loopback alias, then cached; a "
-            "dotless name is answered from the hosts file same-call, without a refusal."
+            "Other hosts stay allowed once classified remote; an unclassified target is refused "
+            "briefly: a first-seen DOTTED hostname in HOST position, once per process, while an "
+            "off-loop DNS check rules out a loopback alias (then cached); on Linux a "
+            "non-loopback IP until this machine's address list loads; outside Windows a dotless "
+            "name while a hosts file over 64 KiB is read (a smaller one answers same-call). "
+            "Never allowed: a name that does not resolve, an IP while the address list cannot be "
+            "read, a dotless name on Windows when the hosts file is over 64 KiB."
         ),
     ),
 ]
@@ -1516,9 +1555,11 @@ _RULE_ID_BY_PATTERN: dict[str, str] = {r.pattern: r.id for r in BUILTIN_DENIED_R
 
 # ── Git-publish rule patterns are NOT evaluated in the Python regex tier ──
 # The ``git-publish`` category rules exist in the catalog for UI display /
-# opt-out parity, but git-publish enforcement is done UNCONDITIONALLY by the
-# verb-anchored ``_is_git_publish`` / ``_is_push_to_protected_branch`` floor
-# (evaluated BEFORE the tiers below).  Their patterns were authored for
+# opt-out parity, but git-publish enforcement is done by the verb-anchored ``_is_git_publish``
+# / ``_is_push_to_protected_branch`` floor (evaluated BEFORE the tiers below), gated per catalog
+# row: a disabled row stays disabled.  Only the ungated anti-obfuscation branch
+# (``_GIT_PUBLISH_UNGATED``, reported as ``git-publish-push-brace-expansion-refspec``) ignores
+# opt-out.  Their patterns were authored for
 # kiro-cli's linear-time (RE2-style) engine; under Python's backtracking
 # ``re`` the nested ``(?:...)*`` quantifiers are catastrophic (ReDoS) on
 # pathological flag-spam input, so they must never reach ``re.search``.  The
@@ -1539,9 +1580,8 @@ _GIT_PUBLISH_RULE_PATTERNS: frozenset[str] = frozenset(r.pattern for r in _GIT_P
 _GIT_PUBLISH_UNGATED = "\x00git-publish-unverifiable"
 
 # ``id -> pattern`` for the git-publish rules, so a floor denial can report the
-# rule's own pattern (as the regex tier does) instead of an opaque label. Before
-# this, a git-publish denial reported the human string "git push" and mapped back
-# to NO rule id in the SEL audit trail.
+# rule's own pattern (as the regex tier does) instead of an opaque label: the
+# human string "git push" would map back to NO rule id in the SEL audit trail.
 _GIT_PUBLISH_FLOOR_BY_ID: dict[str, str] = {r.id: r.pattern for r in _GIT_PUBLISH_RULES}
 
 # Why a git-publish floor denial happened, in words. Same role as
@@ -1589,9 +1629,10 @@ _GIT_PUBLISH_UNGATED_RULE_IDS: frozenset[str] = frozenset(
     {"git-publish-push-brace-expansion-refspec"}
 )
 
-# Catalog rules whose ENFORCEMENT is an always-on floor rather than the
-# configurable regex tier.  Derived from the category (never a hand-maintained
-# id list) so a future git-publish rule is covered automatically.
+# Catalog rules whose ENFORCEMENT is an always-on floor that no opt-out reaches.
+# This is the one explicit id in ``_GIT_PUBLISH_UNGATED_RULE_IDS``, NOT the whole
+# git-publish category: every other git-publish row is gated per row by the floor
+# and stays opt-out-able.
 _FLOOR_ENFORCED_RULE_IDS: frozenset[str] = _GIT_PUBLISH_UNGATED_RULE_IDS
 
 
@@ -1599,16 +1640,16 @@ def floor_enforced_builtin_command_ids() -> frozenset[str]:
     """Built-in rule ids enforced by an always-on floor (not opt-out-able).
 
     These rules exist in the catalog for display parity, but their enforcement
-    is the unconditional verb-anchored git-publish floor (``_is_git_publish`` /
-    ``_is_push_to_protected_branch``) evaluated before the configurable tiers,
-    which consults no opt-out state.  Persisting one of these ids into
-    ``disabled_ids`` therefore changes nothing — the Settings surface must
-    render them locked/forced-on and the toggle API must reject a disable, or
+    is the ungated anti-obfuscation branch of the verb-anchored git-publish floor
+    (``_is_git_publish`` / ``_is_push_to_protected_branch``), evaluated before the configurable
+    tiers, which consults no opt-out state (the floor's other git-publish rows are gated per
+    row).  Persisting one of these ids into ``disabled_ids`` changes nothing — the Settings
+    surface must render them locked/forced-on and the toggle API must reject a disable, or
     the opt-out is a silent no-op (UI reports success, the floor still denies).
 
     DISPLAY/API accessor only: nothing in the enforcement path reads it, so it
-    cannot weaken the floor.  Pure and deterministic (module-scope derivation
-    from the catalog category), safe to call from any thread.
+    cannot weaken the floor.  Pure and deterministic (a module-scope constant
+    naming the ungated rule id), safe to call from any thread.
     """
     return _FLOOR_ENFORCED_RULE_IDS
 
@@ -1639,19 +1680,16 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
-# The four self-management SUBCOMMAND floors -- restart, update, gateway restart,
-# cloud <destructive> -- have NO catalog row and NO opt-out.  Their regex rows
-# (``.*kiro.?crew ... restart.*`` and siblings) opened with an unbounded any-run,
-# so the product name in a worktree path plus the verb word anywhere later
-# matched: ``ls ~/kirocrew-wt/restart.log`` was a denial.  A row that fires on
-# the product's name appearing anywhere adds nothing to the structural predicate,
-# which requires the product to be the argv's own PROGRAM (console script or
-# ``python -m kiro_crew``) and the action its LEADING subcommand, so the rows were
-# deleted and the floor now carries the whole of enforcement -- ungated, like the
-# git-publish anti-obfuscation branches: with no row there is no toggle, and a
-# floor that consulted an opt-out state no row can express would be a silent
-# allow the moment the row went away (``is_denied`` used to ``continue`` past a
-# predicate whose id resolved to no pattern).  These ids are what a refusal and
+# The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
+# approve, gateway restart, cloud <destructive> -- have NO catalog row and NO opt-out.  A regex
+# row (``.*kiro.?crew ... restart.*`` and siblings) opening with an unbounded any-run would
+# match the product name in a worktree path plus the verb word later, denying
+# ``ls ~/kirocrew-wt/restart.log``, and adds nothing to the structural predicate, which requires
+# the product to be the argv's own PROGRAM (console script or ``python -m kiro_crew``) and the
+# action its LEADING subcommand.  So the floor carries the whole of enforcement -- ungated, like
+# the git-publish anti-obfuscation branches: with no row there is no toggle, and a floor that
+# consulted an opt-out no row can express would be a silent allow (an ``is_denied`` skipping a
+# predicate whose id resolved to no pattern would never fire it).  These ids are what a refusal and
 # its SEL event report; they are deliberately NOT catalog ids, and the two sets
 # are pinned disjoint so a re-added row cannot silently gate a floor again.
 _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
@@ -1681,7 +1719,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
 # ``RecoveryCard.tsx`` extracts the pattern with a per-line end-anchored regex
 # and the suite's ``_denied_by`` partitions on the first line's separator.
 #
-# The four ``_SELF_PROTECTION_UNGATED_FLOOR_IDS`` entries are the same shape, but
+# The ``_SELF_PROTECTION_UNGATED_FLOOR_IDS`` entries are the same shape, but
 # for them the first line reports the ID itself (there is no catalog pattern to
 # report), the way the gated git-publish floor does.  The opening phrase is the
 # anchor ``deny_guidance`` classifies a self-protection refusal by, so every entry
@@ -2199,6 +2237,29 @@ def _exception_eligible(view: str) -> bool:
     behaviour changes.
     """
     return not _SHELL_ACTIVE_CHARS.intersection(view)
+
+
+#: kiro-cli's display prefix on a shell call's title, lowercased like the views.
+_SHELL_TITLE_PREFIX = "running: "
+
+
+def _exception_applies(view: str, exceptions: list[str]) -> bool:
+    """Whether one of *exceptions* exonerates the lowercased *view*.
+
+    The view must be eligible (:func:`_exception_eligible`), and the globs are
+    matched against the command behind ONE exact leading ``running: ``. kiro-cli
+    titles a shell call ``Running: <command>`` and the deny tiers judge that
+    title as a subject of its own, so a verb-anchored glob would otherwise never
+    match it and the title would be refused for a command that is exonerated.
+    Reading through the prefix keeps condition 1 above intact: the glob still
+    has to start at the command's first word, and the title gets the verdict of
+    the command it displays, never a weaker one.
+    """
+    if not exceptions or not _exception_eligible(view):
+        return False
+    if view.startswith(_SHELL_TITLE_PREFIX):
+        view = view[len(_SHELL_TITLE_PREFIX) :]
+    return any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
 
 
 # Maps a deny pattern to the globs that exonerate it.  When an input matches
@@ -3111,6 +3172,7 @@ _ENV_CRED_PATTERNS: list[re.Pattern[str]] = [
 # cannot be switched off was the weaker of the two).
 _ENV_CRED_SHARED_RULE_IDS: tuple[str, ...] = (
     "credential-exfil-env-grep-aws",
+    "credential-exfil-env-awk-sed-aws",
     "credential-exfil-printenv-aws",
 )
 

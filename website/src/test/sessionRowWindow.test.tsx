@@ -130,6 +130,25 @@ describe('WindowedSessionRow', () => {
     expect(screen.getByTestId('real-b')).toBeTruthy()
   })
 
+  it('acts on the last of two entries that arrive before React renders the first', () => {
+    // A lane that jumps away and back while the main thread is busy delivers
+    // "far" then "near" for the same row before React commits the first
+    // update. The row must end in the state of the LAST entry: the observer
+    // never sends another one while the row stays inside the window, so a
+    // dropped "near" leaves a title-only stub on screen until a reload.
+    render(<Lane ids={['a', 'b']} initial={1} />)
+    const deliver = (el: Element, ...seq: boolean[]) => {
+      const o = observers.find(r => r.els.has(el))!
+      act(() => { for (const near of seq) o.cb([{ target: el, isIntersecting: near, boundingClientRect: { height: 64 } as DOMRectReadOnly }]) })
+    }
+    deliver(slotEl('a'), false, true)
+    expect(screen.getByTestId('real-a')).toBeTruthy()
+    // The mirror case: a stub told "near" then "far" must end as a stub, not
+    // stay mounted far from the viewport.
+    deliver(slotEl('b'), true, false)
+    expect(screen.queryByTestId('real-b')).toBeNull()
+  })
+
   it('stubs a row that leaves the window at the height it last measured', () => {
     render(<Lane ids={['a']} initial={1} />)
     fire(slotEl('a'), false, 91)

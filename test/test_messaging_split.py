@@ -952,6 +952,21 @@ def test_terminates_on_a_long_backtick_run():
     assert "".join(chunks) == text
 
 
+def test_a_bare_backtick_run_is_cut_two_characters_at_a_time():
+    """Pins a known cost, not a wanted shape.
+
+    Any prefix of three or more backticks reads as a fence opener, so the only
+    cut that invents no fence is one or two characters wide. A bare run longer
+    than the limit therefore becomes about ``len / 2`` chunks -- one message
+    each on a channel that sends chunks separately -- instead of about
+    ``len / limit``. Whoever changes this should replace the assertion with
+    the chunk count they intend.
+    """
+    chunks = split_markdown_safe("`" * 500, 100)
+    assert len(chunks) == 201
+    assert {len(c) for c in chunks[:-1]} == {2}
+
+
 @pytest.mark.timeout(20)
 def test_terminates_when_the_budget_cannot_hold_the_fence_scaffolding():
     text = "```a-very-long-info-string-indeed\n" + "code\n" * 20

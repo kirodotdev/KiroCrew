@@ -5,14 +5,14 @@ Crew offers a manual `/compact` on a backend at all. A harness joins that set on
 DRIVEN capture, never on its source: the bar opencode and goose met is a live session
 whose `usage_update.used` was seen to fall below its pre-compact peak.
 
-pi is outside the set today, and not because it lacks the feature. It finishes a
-compaction inline according to its own code — pi-acp intercepts the command in
-`prompt()` — and it has never been driven: it answered `Authentication required` on the
-host where the note was written. Source says what the code WOULD do. A capture says what the harness DID, and for a
+Source says what the code WOULD do. A capture says what the harness DID, and for a
 membership whose wrong answer makes `wait_for_compaction` report a completion that
-never happened, only the second counts.
+never happened, only the second counts. pi joined the set on a capture taken with the
+script below (`test/fixtures/acp_frames/pi/compact-live.jsonl`); its source had said
+inline all along, and the drive confirmed it.
 
-This guide is how anyone holding a credential closes that gap in one command.
+This guide is how anyone with a harness that can reach a model takes that capture in one
+command.
 
 ```
 python3 scripts/capture_acp_compaction.py --harness pi
@@ -153,8 +153,9 @@ a file whose growth turns were trimmed.
 
 ## Landing the evidence
 
-A `COMPACTED` capture for pi changes one membership and the several places that
-record its absence. Work through them in order; the tests are what stop a half-done
+A `COMPACTED` capture for a harness changes one membership and the several places that
+record its absence. The steps below name pi, the harness they were written for and
+first applied to. Work through them in order; the tests are what stop a half-done
 move.
 
 **1. The fixture.** Move the reviewed capture in and generate its snapshot:
@@ -189,8 +190,7 @@ the frame classes, the section names what the `used` series shows.
 **4. The backend card's unmeasured cell.** The Settings > Agent Harness card renders
 three marks per line — available, not available, and NOT MEASURED — and the third one is
 the only per-harness table in `src/kiro_crew/agent_sdk/backend_cards.py`:
-`DECLARED_UNMEASURED`. It holds one entry, pi's `manual_compact` cell, citing
-`ACP_BACKENDS_COMPACT`'s own words. A capture is what that cell was waiting for, so
+`DECLARED_UNMEASURED`. An entry there cites the deciding set's own words. A capture is what that cell was waiting for, so
 delete the entry for the harness you drove.
 
 Three tests in `test/test_backend_cards.py` hold this together, and each fails for a
@@ -200,9 +200,8 @@ different half-done move:
   the table may soften a negative, never overrule a membership;
 - every entry must be supported by the deciding set's comment, which names the harness
   and says the gap is evidence;
-- one test asserts the unmeasured cells are exactly the declared ones. pi's cell is the
-  only one, so removing it means editing that assertion, and the card then has no
-  unmeasured cell.
+- one test asserts the unmeasured cells are exactly the declared ones, so removing an
+  entry means editing that assertion.
 
 `website/scripts/capture-agent-backend-unmeasured.mjs` captures the screenshots that show
 the three marks side by side, and its header names pi as the unmeasured cell and keeps

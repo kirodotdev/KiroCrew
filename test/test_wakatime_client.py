@@ -78,6 +78,31 @@ async def test_auth_header_is_basic_base64_of_the_key() -> None:
     assert sent == f"Basic {expected}"
 
 
+async def test_auth_header_is_bearer_when_oauth_token_configured() -> None:
+    session = _FakeSession([_FakeResp(200, {"data": []})])
+    client = WakaTimeClient(api_key=_FAKE_KEY, oauth_access_token="waka_tok_read")
+    client._session = session  # type: ignore[assignment]
+    await client.get_summaries("2026-09-01", "2026-09-03")
+    assert session.calls[0]["headers"]["Authorization"] == "Bearer waka_tok_read"
+
+
+async def test_auth_header_falls_back_to_basic_when_oauth_token_is_empty() -> None:
+    session = _FakeSession([_FakeResp(200, {"data": []})])
+    client = WakaTimeClient(api_key=_FAKE_KEY, oauth_access_token="")
+    client._session = session  # type: ignore[assignment]
+    await client.get_summaries("2026-09-01", "2026-09-03")
+    expected = base64.b64encode(f"{_FAKE_KEY}:".encode()).decode("ascii")
+    assert session.calls[0]["headers"]["Authorization"] == f"Basic {expected}"
+
+
+async def test_send_heartbeats_uses_bearer_when_oauth_token_configured() -> None:
+    session = _FakeSession([_FakeResp(200, {"responses": [[{}, 201]]})])
+    client = WakaTimeClient(api_key=_FAKE_KEY, oauth_access_token="waka_tok_read")
+    client._session = session  # type: ignore[assignment]
+    await client.send_heartbeats([{"entity": "a.py", "type": "file", "time": 1}])
+    assert session.calls[0]["headers"]["Authorization"] == "Bearer waka_tok_read"
+
+
 async def test_get_summaries_returns_the_data_list() -> None:
     session = _FakeSession([_FakeResp(200, {"data": [{"grand_total": {"hours": 3}}]})])
     client = _client_with(session)
@@ -190,6 +215,51 @@ async def test_fetch_stats_raises_when_response_has_no_data_dict() -> None:
     client = _client_with(session)
     with pytest.raises(WakaTimeUnavailableError):
         await client.fetch_stats("last_7_days")
+
+
+async def test_fetch_stats_today_uses_summaries_not_stats() -> None:
+    # The stats endpoint answers 400 for "today", so the client must ask the
+    # summaries endpoint instead and fold the day into the stats shape.
+    day = {
+        "grand_total": {"total_seconds": 5400},
+        "languages": [
+            {"name": "Other", "total_seconds": 1800},
+            {"name": "Python", "total_seconds": 3600},
+        ],
+        "projects": [{"name": "oneka", "total_seconds": 5400}],
+    }
+    session = _FakeSession([_FakeResp(200, {"data": [day]})])
+    client = _client_with(session)
+    result = await client.fetch_stats("today")
+    assert session.calls[0]["url"].endswith("/users/current/summaries")
+    assert session.calls[0]["params"] == {"range": "Today"}
+    assert result == {
+        "total_seconds": 3600.0,
+        "total_seconds_including_other_language": 5400.0,
+        "daily_average": 3600.0,
+        "daily_average_including_other_language": 5400.0,
+        "languages": [
+            {"name": "Python", "total_seconds": 3600.0},
+            {"name": "Other", "total_seconds": 1800.0},
+        ],
+        "projects": [{"name": "oneka", "total_seconds": 5400.0}],
+    }
+
+
+async def test_fetch_stats_yesterday_maps_to_summaries_range() -> None:
+    session = _FakeSession([_FakeResp(200, {"data": []})])
+    client = _client_with(session)
+    result = await client.fetch_stats("yesterday")
+    assert session.calls[0]["params"] == {"range": "Yesterday"}
+    assert result["total_seconds"] == 0.0
+    assert result["languages"] == [] and result["projects"] == []
+
+
+async def test_fetch_stats_today_raises_on_server_error() -> None:
+    session = _FakeSession([_FakeResp(500)])
+    client = _client_with(session)
+    with pytest.raises(WakaTimeUnavailableError):
+        await client.fetch_stats("today")
 
 
 async def test_verify_raises_on_rejected_key() -> None:

@@ -2180,7 +2180,7 @@ describe('Kiro credits pill — edge cases', () => {
     // is the kiro id, the empty string): kiro-cli holds no reading yet, and the
     // modal this dash opens is where the user refreshes. Hiding it here would hide
     // the one recovery path; on any other harness there is nothing to refresh.
-    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: '' } } as never)
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
     vi.mocked(api.sessionsUsage).mockResolvedValue({ usage: { available: false } } as never)
     renderWithProviders(<App />, { route: '/chat' })
     const pill = await screen.findByTitle('Kiro credit usage — no balance reading yet; open to refresh')
@@ -2252,7 +2252,7 @@ describe('Kiro credits pill — edge cases', () => {
     // modal it opens is where Refresh lives -- closing it would take the one
     // recovery path away at the moment it is needed.
     const { api } = await import('../api/client')
-    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: '' } } as never)
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'kiro' } } as never)
     let resolveUsage: (v: unknown) => void = () => {}
     vi.mocked(api.sessionsUsage).mockReturnValue(new Promise(r => { resolveUsage = r }) as never)
     renderWithProviders(<App />, { route: '/chat' })

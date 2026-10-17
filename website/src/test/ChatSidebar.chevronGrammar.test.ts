@@ -28,14 +28,17 @@ import { describe, it, expect } from 'vitest'
  */
 
 const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
+/** The component's home: the one owner module that declares it. */
+const HOME = join(__dirname, '..', 'pages', 'chat-sidebar', 'chrome.tsx')
 
 // Flattened FIRST (same hardening as filterInputFont.test.tsx): a line-by-line
 // scan misses an offending element the moment a reformat splits it across
 // lines. Flattening makes every element a single matchable run.
 const flat = readFileSync(SRC, 'utf8').replace(/\s+/g, ' ')
+const homeFlat = readFileSync(HOME, 'utf8').replace(/\s+/g, ' ')
 
 /** The owner modules under pages/chat-sidebar/, flattened the same way. The grammar
- *  covers the whole sidebar, not only the facade that declares the component. */
+ *  covers the whole sidebar, not only the module that declares the component. */
 function ownerSources(): Array<[string, string]> {
   const out: Array<[string, string]> = []
   const walk = (dir: string) => {
@@ -52,7 +55,7 @@ const owners = ownerSources()
 
 describe('sidebar disclosure-chevron grammar (#2887)', () => {
   it('the shared DisclosureChevron carries the canonical shape', () => {
-    const decl = flat.match(/function DisclosureChevron\b.*?<ChevronRight\b[^>]*\/>/)?.[0]
+    const decl = homeFlat.match(/function DisclosureChevron\b.*?<ChevronRight\b[^>]*\/>/)?.[0]
     expect(decl).toBeDefined()
     // ChevronRight, animated at the one shared duration, rotated 90° only
     // when open, never counter-rotated, never via inline style.
@@ -63,14 +66,15 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
     expect(decl).not.toMatch(/style=\{\{/)
   })
 
-  it('all seven disclosure sites render DisclosureChevron', () => {
+  it('all eight disclosure sites render DisclosureChevron', () => {
     const uses = [flat, ...owners.map(([, text]) => text)].flatMap(text => [...text.matchAll(/<DisclosureChevron\b/g)])
     // Older Sessions header, history group headers, hidden-folders reveal,
     // folders filter row, per-container stale-session expander, and the
     // conductor lane's expander on a card that opened other sessions, and the
-    // per-crew group header. Adding an eighth disclosure is fine — bump this count in the same commit so the
-    // addition is a decision, not drift.
-    expect(uses).toHaveLength(7)
+    // per-crew group header, and the broadcast panel's custom-criteria toggle.
+    // Adding a ninth disclosure is fine — bump this count in the same commit so
+    // the addition is a decision, not drift.
+    expect(uses).toHaveLength(8)
   })
 
   it('no second rotation grammar appears beside the component', () => {
@@ -87,8 +91,10 @@ describe('sidebar disclosure-chevron grammar (#2887)', () => {
     for (const el of flat.matchAll(/<Chevron(?:Right|Down)\b[^>]*\/>/g)) {
       expect(el[0]).not.toMatch(/style=\{\{[^}]*rotate/)
     }
-    // The same three bans in every owner module, which declares no chevron of its own.
-    for (const [file, text] of owners) {
+    // The same three bans in every owner module. Only the component's home declares
+    // it, and there the bans apply to everything outside that declaration.
+    for (const [file, raw] of owners) {
+      const text = file === HOME ? raw.replace(/function DisclosureChevron\b.*?\/> }/, '') : raw
       expect(text, file).not.toMatch(/function DisclosureChevron\b/)
       expect(text, file).not.toContain('rotate-90')
       expect(text, file).not.toMatch(/\?\s*<Chevron(?:Right|Down)\b[^>]*\/>\s*:\s*<Chevron(?:Right|Down)\b/)

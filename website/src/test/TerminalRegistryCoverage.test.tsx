@@ -26,6 +26,7 @@ import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import ChatInput from '../components/ChatInput'
 import { expandAll, formatToken } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import {
   setTerminalEnabledFlag,
   isTerminalEnabled,
@@ -136,6 +137,12 @@ function openSocket(sessionId: string): MockWebSocket {
   registerTerminalWs(sessionId, ws as unknown as WebSocket)
   return ws
 }
+
+/** The Lexical editor sits behind ChatInput's React.lazy boundary
+ *  (components/chat-input/engine.tsx). A cold import of that chunk on a
+ *  loaded shard outlasts waitFor's 1 s default, so the wait for the editor
+ *  gets a named ceiling. */
+const LAZY_COMPOSER_MOUNT = namedCeiling('LAZY_COMPOSER_MOUNT', 5000)
 
 describe('terminalRegistry', () => {
   beforeEach(() => {
@@ -1091,7 +1098,7 @@ describe('terminalRegistry', () => {
         if (lexicalComposer) expect(element).toHaveAttribute('contenteditable', 'true')
         else expect(element.tagName).toBe('TEXTAREA')
         return element
-      })
+      }, LAZY_COMPOSER_MOUNT)
       fireEvent.click(screen.getByRole('button', { name: 'Review terminal command' }))
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^Run(?: anyway)?$/ }))
       // The socket accepts the bytes locally but delivers nothing to a shell.

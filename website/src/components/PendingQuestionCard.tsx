@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import QuestionCard from './QuestionCard'
 import ErrorNotice from './ErrorNotice'
+import StatusNotice from './StatusNotice'
 import { i18nT } from '../i18n/t'
-import { useAppDispatch, useAppSelector } from '../store'
-import { clearQuestionCard, pendingQuestionFor, resolveQuestionCard, setQuestionDraft } from '../store/chatSlice'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
+import { appendSlotMessage, clearQuestionCard, isAnsweredQuestionEnding, markQuestionSettled, pendingQuestionFor, resolveQuestionCard, setQuestionDraft, setQuestionRequestInFlight } from '../store/chatSlice'
 import { api, ApiError } from '../api/client'
+import { answerFailureKey, answerRejectedMessage, answerRejectionReason, answersAsText } from '../utils/questionAnswers'
 
 interface PendingQuestionCardProps {
   /** Slot this card belongs to. Cards are keyed per slot, so the single-chat
@@ -12,8 +14,9 @@ interface PendingQuestionCardProps {
   slotKey: string | null
   /** Send the answer as an ordinary chat message. Used for legacy cards (no
    *  `ask_id`, nothing is blocked on them) and when the wait has provably
-   *  expired, so the user's input is not silently dropped. */
-  onFallbackSend: (text: string) => void
+   *  expired, so the user's input is not silently dropped. The card's questions
+   *  ride along so the caller's notice can name what the answer was for. */
+  onFallbackSend: (text: string, questions?: { question: string }[]) => void
   /**
    * Send the answer as a message IMMEDIATELY (no composer round-trip).
    *
@@ -39,9 +42,30 @@ interface PendingQuestionCardProps {
  */
 export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectSend }: PendingQuestionCardProps) {
   const dispatch = useAppDispatch()
+  const chatStore = useAppStore()
   // Optional-chained: existing tests build partial preloaded chat state without
   // the pendingQuestions key.
   const pending = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
+  const questionNotice = useAppSelector((s) => {
+    const notices = s.chat.restoredQuestionNotices
+    return slotKey && notices && Object.prototype.hasOwnProperty.call(notices, slotKey) ? notices[slotKey] : null
+  })
+  const durableNotice = questionNotice && slotKey ? questionNotice.kind === 'release_failed' ? (
+    /* No hand-off: the open card preserves the user's selected answers. */
+    <ErrorNotice
+      className="mb-2"
+      message={questionNotice.message}
+      testId="pending-question-notice"
+      onDismiss={() => dispatch(clearQuestionCard({ slot: slotKey, restored_notice: true }))}
+    />
+  ) : (
+    <StatusNotice
+      className="mb-2"
+      message={questionNotice.message}
+      testId="pending-question-notice"
+      onDismiss={() => dispatch(clearQuestionCard({ slot: slotKey, restored_notice: true }))}
+    />
+  ) : null
   /* Which ask the in-flight request belongs to, NOT a bare boolean.
      One submission at a time: without a guard a double-click fires two
      answerQuestion calls -- the first resolves the wait, the second 404s, and the
@@ -65,7 +89,7 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
   // on screen: a request for card A that rejects after card B has replaced it
   // in the slot must not paint A's failure under B.
   const [failure, setFailure] = useState<{ id: string; message: string } | null>(null)
-  if (!pending) return null
+  if (!pending) return durableNotice
 
   const cardSlot = pending.slot
   const askId = pending.ask_id
@@ -87,54 +111,67 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
      One question is the exception, and the common case: the agent asked a single
      thing, so the answer alone already says what it settled, and wrapping it
      would quote the whole question back at the user in their own chat bubble. */
-  const asText = (answers: Record<string, string>) => {
-    const pairs = Object.entries(answers)
-    if (pairs.length === 1) return pairs[0][1]
-    return pairs
-      .map(([question, answer]) =>
-        i18nT('components.pendingQuestionCard.qa_pair', { question, answer }),
-      )
-      .join('\n\n')
-  }
+  const asText = answersAsText
 
   /* Clearing by ask_id, never by slot: a slow response for ask A must not erase
      a newer ask B that already replaced it in the same slot, which would leave
      B on screen-less and blocked until its own timeout. */
-  const clearThisCard = () => {
-    if (askId) dispatch(resolveQuestionCard({ ask_id: askId }))
-    else dispatch(clearQuestionCard({ slot: cardSlot }))
+  const clearThisCard = (settled = true) => {
+    if (askId) {
+      if (settled) dispatch(markQuestionSettled({ ask_id: askId }))
+      dispatch(resolveQuestionCard({ ask_id: askId, ...(settled ? { settled: true } : {}) }))
+    } else dispatch(clearQuestionCard({ slot: cardSlot }))
   }
 
   const resolve = (answers: Record<string, string> | undefined) => {
     if (!askId || busy) return
     setBusyFor(askId)
     setFailure(null)
+    dispatch(setQuestionRequestInFlight({ ask_id: askId, inFlight: true }))
     const failureId = lockKey
     api
       .answerQuestion(askId, answers)
       .then(() => clearThisCard())
       .catch((err) => {
-        // 404 is the only proof the wait is gone (already answered, dismissed,
-        // timed out, or its slot was reset) — then the answer is still worth
-        // keeping as a message.
+        const retiredElsewhere = () => !Object.values(chatStore.getState().chat.pendingQuestions ?? {})
+          .some((card) => card.ask_id === askId)
+        const typed = answers && asText(answers).trim() ? answers : undefined
+        // A 404 closes the card; restore only when its recorded ending did not deliver the draft.
         if (err instanceof ApiError && err.status === 404) {
-          clearThisCard()
-          if (answers) {
-            const text = asText(answers)
-            if (text.trim()) onFallbackSend(text)
+          const answered = isAnsweredQuestionEnding(answerRejectionReason(err))
+          const retired = retiredElsewhere()
+          clearThisCard(answered)
+          if (!answered && !retired && typed) {
+            onFallbackSend(asText(typed), pending.questions)
+          } else if (!answered && retired && typed) {
+            // The card retired (e.g. expired) while this POST was in flight. Its
+            // retirement already handed the draft back, so only the rejection is
+            // left to record -- as an error row, since a submit failed.
+            dispatch(appendSlotMessage({ slot: cardSlot, message: answerRejectedMessage(pending.questions) }))
+          }
+          return
+        }
+        if (typed && retiredElsewhere()) {
+          // Same race on a retryable failure: the card is gone, so an inline
+          // failure would never render. Record the rejected submit instead,
+          // unless the ask was answered elsewhere and nothing was lost.
+          if (!chatStore.getState().chat.questionsSettled?.[askId]) {
+            dispatch(appendSlotMessage({ slot: cardSlot, message: answerRejectedMessage(pending.questions) }))
           }
           return
         }
         // Anything else (offline, 5xx, tunnel throttle) is retryable and the
         // agent is almost certainly STILL blocked. Keep the card so the user can
         // retry: clearing it would strand the tool call and start a second turn
-        // it could never join — and SAY so, or the retry never happens.
-        setFailure({ id: failureId, message: i18nT('components.pendingQuestionCard.answer_failed') })
+        // it could never join — and SAY so, or the retry never happens. The one
+        // refusal the user can act on by editing gets its own wording.
+        setFailure({ id: failureId, message: i18nT(answerFailureKey(err)) })
       })
       // Released on EVERY path, success included. The success path clears the
       // card, but this component stays mounted in a grid pane, so a lock left
       // set here would disable the pane's next card too.
       .finally(() => {
+        dispatch(setQuestionRequestInFlight({ ask_id: askId, inFlight: false }))
         // A prior ask may settle after this pane has already submitted a newer
         // card. Release only this request's lock; clearing unconditionally would
         // unlock the newer request and permit a duplicate submission.
@@ -197,11 +234,10 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       // pane would inherit the previous one's picks.
       key={askId ?? cardSlot}
       questions={pending.questions}
+      askId={askId}
+      draftAnswers={pending.draftAnswers}
       busy={busy}
-      // Draft protection: while a custom answer is non-empty, the store
-      // refuses to auto-retire this card (dropStaleStatelessQuestion), so a
-      // nudge frame landing mid-typing cannot destroy the user's work.
-      onDraftChange={(active) => dispatch(setQuestionDraft({ slot: cardSlot, active }))}
+      onDraftChange={(answers) => dispatch(setQuestionDraft({ slot: cardSlot, answers }))}
       // Always offered. A blocked card resolves the wait with no answer; a
       // legacy card blocks nothing, so dismiss only has its needs_input status
       // to retire — withholding the control left a card that could ONLY be
@@ -229,6 +265,8 @@ export default function PendingQuestionCard({ slotKey, onFallbackSend, onDirectS
       onDismiss={() => setFailure(null)}
       testId="pending-question-error"
     />
+    {/* Below the card, like the failure above: the dock's status strip covers anything placed over it. */}
+    {durableNotice ? <div className="mt-2">{durableNotice}</div> : null}
     </>
   )
 }

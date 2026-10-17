@@ -372,6 +372,9 @@ class GitHubPullRequestProvider:
         try:
             gh = self._resolver()
         except (SetupError, FileNotFoundError, OSError) as exc:
+            # The resolver is the same trust decision the glab and az paths
+            # audit as `denied`, so its refusal leaves the same evidence.
+            audit_provider_cli_denied("gh", reason=_resolver_refusal_reason(exc))
             results.update(_group_error(members, _exception_failure(exc)))
             return results
         for chunk in _chunked(members, _MAX_SUBJECTS_PER_QUERY):
@@ -1853,6 +1856,15 @@ def _provider_exception_kind(error: BaseException) -> ProviderErrorKind:
 def _classified_failure(kind: ProviderErrorKind) -> _Failure:
     """Pair a classified kind with the reason code it is reported under."""
     return kind, _PROVIDER_ERROR_REASONS[kind]
+
+
+def _resolver_refusal_reason(error: BaseException) -> str:
+    """Name a gh resolver refusal with one fixed, credential-free audit word."""
+    if isinstance(error, SetupError):
+        return error.reason or "executable_untrusted"
+    if isinstance(error, FileNotFoundError):
+        return "executable_not_found"
+    return "executable_untrusted"
 
 
 def _exception_failure(error: BaseException) -> _Failure:

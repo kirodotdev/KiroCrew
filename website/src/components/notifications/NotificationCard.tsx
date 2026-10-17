@@ -5,6 +5,7 @@ import Clickable from '../Clickable'
 import Glass from '../Glass'
 import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, notePriority, stripMd, fmtRelativeMinute, MAC_ACTION_BTN_CLASS } from './notifMeta'
+import { CrewmateNoteFace, CrewmateNoteName, noteMember } from './CrewmateNoteFace'
 
 /** Corner radius of every notification pane (the card, a deck shell, the
  *  feed's controls card): Tailwind's `rounded-2xl`, in px for `Glass`. */
@@ -61,7 +62,9 @@ export interface NotificationCardProps extends Omit<HTMLAttributes<HTMLDivElemen
 /**
  * The one notification card both mac-style surfaces render — the bell
  * popover's rows and the in-app banner — so a note never has two look-alike
- * renderings that drift apart. Layout is fixed: kind-tinted 26 px icon square,
+ * renderings that drift apart. Layout is fixed: kind-tinted 26 px icon square
+ * (the publishing crewmate's avatar instead, with its name above the title,
+ * when the note carries `member` — see `CrewmateNoteFace`),
  * title (13 px semibold, one line), body (12 px muted, two-line clamp, markdown
  * stripped and capped at 140 chars -- unless the host passes `body`, which the
  * feed does for an approval so the command beside Approve/Reject is whole),
@@ -88,11 +91,14 @@ export default function NotificationCard({
 }: NotificationCardProps) {
   const km = KIND_META[n.kind] || DEFAULT_META
   const prio = notePriority(n)
+  const member = noteMember(n)
   const dim = muted ? 'opacity-50' : (n.acked && !active) || prio === 'passive' ? 'opacity-55' : ''
+  const kindIcon = <span className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center shrink-0 text-[13px] ${km.color}`}>{km.icon}</span>
   const body = (
     <>
-      <span className={`w-[26px] h-[26px] rounded-[8px] flex items-center justify-center shrink-0 text-[13px] ${km.color}`}>{km.icon}</span>
+      {member ? <CrewmateNoteFace member={member} size={26} fallback={kindIcon} /> : kindIcon}
       <div className="flex-1 min-w-0">
+        {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight mb-0.5" />}
         <div className={`text-[13px] font-semibold truncate leading-tight ${muted ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
         {bodyOverride !== undefined
           ? bodyOverride

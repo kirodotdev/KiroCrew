@@ -40,7 +40,8 @@
  * The host carries the stable `liquid-glass` class so index.css can solidify it
  * under prefers-reduced-transparency / prefers-contrast / no backdrop-filter;
  * `glass-accent` / `glass-warn` / `glass-hover` (index.css) swap `--glass-tint`
- * on the host for a hue-mixed step, so a picked chip or a pending approval
+ * on the host for a hue-mixed step (the hue ones swap `--glass-band` too, so the
+ * lit edges carry the hue), so a picked chip or a pending approval
  * stays the same material. Which tint and which `frost` a pane gets is the
  * thickness ladder in components/Glass.tsx (`glass-<step>` on the host picks the
  * tint, `frost` carries the matching blur); this primitive only paints what it
@@ -77,6 +78,15 @@ export interface LiquidGlassOwnProps {
   /** Strength of the bevel shading and of the top / bottom light bands (25 =
    *  the theme's full `--glass-band`). 0–100. */
   lightIntensity: number;
+  /**
+   * The smaller side, in px, the rim is sized from. The bevel and the lit rim
+   * are a slice of the pane's smaller side (`bandFor`), so a pane whose height
+   * changes while it is on screen — the composer growing from one row to two —
+   * would wear a rim that widens and narrows with it. Naming the side here
+   * pins the rim to one width across every height the pane takes. Omitted,
+   * the measured size is used.
+   */
+  rimSize?: number;
 }
 
 type HostAttributes<T extends GlassHostTag> = Omit<
@@ -297,6 +307,7 @@ function LiquidGlassImpl(
     cornerRadius,
     frost,
     lightIntensity,
+    rimSize,
     className,
     style,
     ...rest
@@ -352,14 +363,18 @@ function LiquidGlassImpl(
 
   const { width, height } = size;
   const measured = width > 1 && height > 1;
-  const band = bandFor(size);
+  // A pinned rim stands in for the measured smaller side, for the layers AND
+  // the displacement map, so the bend at the edge and the lit bevel agree.
+  const rimOf = (s: Size) => (rimSize ? bandFor({ width: rimSize, height: rimSize }) : bandFor(s));
+  const band = rimOf(size);
 
   const map = useMemo(
     () =>
       mapSize.width > 1 && mapSize.height > 1
-        ? displacementMapFor(mapSize.width, mapSize.height, cornerRadius, bandFor(mapSize))
+        ? displacementMapFor(mapSize.width, mapSize.height, cornerRadius, rimOf(mapSize))
         : "",
-    [mapSize, cornerRadius]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rimOf closes over rimSize only
+    [mapSize, cornerRadius, rimSize]
   );
 
   const ready = measured && map !== "";

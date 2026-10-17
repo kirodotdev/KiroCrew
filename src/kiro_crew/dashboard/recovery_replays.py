@@ -50,6 +50,9 @@ class ReplayFamily(enum.Enum):
     #: The backend rejected an image retained in native history; the conversation
     #: is discarded and the turn replayed without it.
     IMAGE_HISTORY = "image_history"
+    #: Preserved thinking was bound to another conversation prefix; the native
+    #: conversation is discarded and the turn replayed once from the transcript.
+    THINKING_BINDING = "thinking_binding"
     #: The content filter declined the turn; it is retried once on the fallback model.
     CONTENT_FILTER = "content_filter"
     #: The runner's own continuation prompts: a promise-only ending, a stall after
@@ -141,6 +144,11 @@ class ReplayPolicy:
     consume_refunds: tuple[tuple[str, Any], ...] = ()
     #: The allowances re-armed when the drain finds the record's entry gone.
     sweep_refunds: tuple[tuple[str, Any], ...] = ()
+    #: A cancellation at the drain or the consume seam also refunds the
+    #: poisoned-conversation discard one-shot the recovery spent. Its owner,
+    #: ``PoisonedConversationEscalation``, performs the refund, so no table here
+    #: names that cell.
+    refunds_discard_one_shot: bool = False
     #: Where the drain forgets a record whose entry left the queue: once, at its
     #: head (``"head"``, :meth:`RecoveryReplays.sweep`), or in the family's own step.
     swept_at: Literal["head", "step"] = "step"
@@ -161,6 +169,7 @@ class ReplayPolicy:
 
 SESSION_NOT_FOUND_CANCELLED_TEXT = "ℹ️ Session reconnect cancelled — nothing was run."
 IMAGE_RECOVERY_CANCELLED_TEXT = "ℹ️ Image-history recovery cancelled — nothing was run."
+THINKING_BINDING_CANCELLED_TEXT = "ℹ️ Model-session recovery cancelled — nothing was run."
 
 POLICIES: dict[ReplayFamily, ReplayPolicy] = {
     ReplayFamily.MODEL_ACCESS: ReplayPolicy(
@@ -199,10 +208,18 @@ POLICIES: dict[ReplayFamily, ReplayPolicy] = {
         # The conversation discard is not unwound -- a cold start on the next turn
         # is the safe direction -- but its one-shot, shared with the poisoned-
         # conversation canary, is refunded.
-        drain_refunds=(("_poisoned_reset_used", False),),
-        consume_refunds=(("_poisoned_reset_used", False),),
+        refunds_discard_one_shot=True,
         drain_log="Dropped unsupported-image recovery before dispatch for slot %s (%s)",
         consume_log="Unsupported-image recovery aborted at consume for slot %s (%s)",
+    ),
+    ReplayFamily.THINKING_BINDING: ReplayPolicy(
+        consume_phase="before_allowances",
+        notice=THINKING_BINDING_CANCELLED_TEXT,
+        # Same shape as the image-history recovery: the discard is not unwound,
+        # and the shared poisoned-conversation one-shot is refunded.
+        refunds_discard_one_shot=True,
+        drain_log="Dropped thinking-binding recovery before dispatch for slot %s (%s)",
+        consume_log="Thinking-binding recovery aborted at consume for slot %s (%s)",
     ),
     ReplayFamily.CONTENT_FILTER: ReplayPolicy(
         consume_phase="after_allowances",

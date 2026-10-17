@@ -20,8 +20,11 @@ import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
+import { OptionalSdkCard } from './OptionalSdkCard'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "WhatsApp"
+/** Distribution name -- do-not-translate, like the brand name above. */
+const SDK_PACKAGE = "neonize"
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/whatsapp-integration.md'
 
@@ -154,6 +157,16 @@ function statusBadge(config: WhatsAppConfigData): { text: string; textCls: strin
 const FAILED_STATES = new Set(['error', 'banned', 'logged_out'])
 
 /**
+ * `connect_error`, minus the gateway's missing-dependency hint. When the SDK is
+ * absent the gateway writes a log-oriented `pip install ...` line there, which
+ * can name the wrong interpreter; the {@link OptionalSdkCard} explains the gap
+ * with the gateway's own command instead, so the raw line is never shown.
+ */
+function gatewayError(config: WhatsAppConfigData): string {
+  return config.sdk_installed === false ? '' : config.connect_error || ''
+}
+
+/**
  * The gateway's connection failure, kept apart from {@link connectionHint}: it
  * is the outcome of something that FAILED, so it renders through `ErrorNotice`,
  * while the hint describes a state that has not gone wrong yet. A populated
@@ -163,16 +176,17 @@ const FAILED_STATES = new Set(['error', 'banned', 'logged_out'])
  * way, and neither is a lifecycle state.
  */
 function connectError(config: WhatsAppConfigData): string {
-  if (config.connected || !config.connect_error) return ''
+  const error = gatewayError(config)
+  if (config.connected || !error) return ''
   // The prefix is read as well as `state`: the two come from different
   // snapshots (the error string is written by the state callback, `state` by
   // the config read), so "error: dial tcp timeout" is a failure even if the
   // config read still says `unpaired`.
-  const prefix = /^([a-z_]+): /.exec(config.connect_error)?.[1]
+  const prefix = /^([a-z_]+): /.exec(error)?.[1]
   const failed = FAILED_STATES.has(config.state ?? '') || (prefix ? FAILED_STATES.has(prefix) : true)
   if (!failed) return ''
   return i18nT('pages.settings.whatsAppPanel.whatsapp_did_not_connect', {
-    error: config.connect_error,
+    error,
   })
 }
 
@@ -180,16 +194,20 @@ function connectError(config: WhatsAppConfigData): string {
  *  Webex, iMessage and bot-channel panels use. While pairing, the gateway's
  *  detail IS the scan instruction, which is still the accurate answer. */
 function connectionHint(config: WhatsAppConfigData): string {
+  const error = gatewayError(config)
   if (config.connected) return ''
+  // A missing SDK is explained by the install card below; "restart the
+  // gateway" would be a dead end until the package is installed.
+  if (config.sdk_installed === false) return ''
   // A genuine failure is shown by `connectError`; "enabled but not running"
   // would only repeat it underneath.
   if (connectError(config)) return ''
   // A non-failure lifecycle detail ("pairing: scan the QR code from your
   // phone", "unpaired: …") is the status the gateway wants shown — the same
   // warn hint it was before the failure branch was split out.
-  if (config.connect_error) {
+  if (error) {
     return i18nT('pages.settings.whatsAppPanel.whatsapp_did_not_connect', {
-      error: config.connect_error,
+      error,
     })
   }
   if (config.enabled) {
@@ -405,6 +423,16 @@ export function WhatsAppPanel() {
     if (qrStatus.state === 'logged_out' || qrStatus.state === 'error') {
       setErrMsg(qrStatus.detail || '')
       setPhase('error')
+      setQrImg('')
+      return
+    }
+    // The server withholds a code once WhatsApp would reject it. Without this
+    // arm the previous image stays rendered,
+    // since the line below only ever REPLACES it, and the operator scans a dead
+    // code under a spinner that never ends.
+    if (qrStatus.qr_expired) {
+      setErrMsg(qrStatus.detail || '')
+      setPhase('expired')
       setQrImg('')
       return
     }
@@ -667,8 +695,8 @@ export function WhatsAppPanel() {
               )}
               <span className={`text-[12.5px] font-medium ${badge.textCls}`}>{badge.text}</span>
             </span>
-            {/* The gateway's own failure (`connect_error`): a missing dependency
-                extra, a refused pairing, a dropped socket. askAgent ON for the
+            {/* The gateway's own failure (`connect_error`): a refused pairing,
+                a dropped socket (a missing dependency is the SDK card below). askAgent ON for the
                 same onBlur reason as the read failure above — the folder name is
                 the only draft and the click commits it. */}
             <ErrorNotice
@@ -693,6 +721,10 @@ export function WhatsAppPanel() {
           </>
         )}
       </div>
+
+      {data && (
+        <OptionalSdkCard channel={CHANNEL_NAME} packageLabel={SDK_PACKAGE} status={data} />
+      )}
 
       {/* pairing */}
       <div className="rounded-lg border border-border bg-card p-3.5">
@@ -795,8 +827,11 @@ export function WhatsAppPanel() {
         )}
 
         {phase === 'expired' && (
-          <div className="mt-3 flex items-center gap-1.5 text-[12.5px] text-warn" data-testid="whatsapp-expired">
-            <TriangleAlert size={13} /> {i18nT('pages.settings.whatsAppPanel.the_code_expired_try_again')}
+          <div className="mt-3 text-[12.5px] text-warn" data-testid="whatsapp-expired">
+            <div className="flex items-center gap-1.5">
+              <TriangleAlert size={13} /> {i18nT('pages.settings.whatsAppPanel.the_code_expired_try_again')}
+            </div>
+            {errMsg && <div className="mt-1" data-testid="whatsapp-expired-detail">{errMsg}</div>}
           </div>
         )}
 

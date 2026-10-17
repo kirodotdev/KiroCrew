@@ -332,7 +332,7 @@ describe('TaskProgressBar row ticking', () => {
     ['caller_unattributable', 403, /session expired/],
     ['todo_task_stale', 409, /different task now/],
     ['todo_task_not_found', 404, /not in the list any more/],
-    ['remote_action_unsupported', 409, /remote machine running this session/],
+    ['relay_archive_read_only', 409, /remote machine running this session/],
   ])('renders the gateway refusal %s in plain words, server text on the tooltip', async (code, status, plain) => {
     const serverText = `server said ${code}`
     vi.mocked(api.setTodoTask).mockRejectedValue(

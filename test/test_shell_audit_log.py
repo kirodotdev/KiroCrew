@@ -31,10 +31,11 @@ from kiro_crew.shell_audit_log import (
     shell_audit_log_path,
 )
 
-# One record in the shape the bundled hook writes: a UTC stamp line, the
-# hook-event payload kiro-cli hands the hook on stdin, a blank separator. The
-# payload bytes stand in for that JSON; only the size matters to the sweep.
-_RECORD = b"1970-01-01T00:00:00Z BASH:\nls -la\n\n"
+# One record in the shape the bundled hook writes: a single line -- a UTC stamp,
+# then " BASH: ", then the hook-event payload kiro-cli hands the hook on stdin
+# with every CR and LF stripped. The payload bytes stand in for that JSON; only
+# the size matters to the sweep.
+_RECORD = b"1970-01-01T00:00:00Z BASH: ls -la\n"
 
 
 def _fill(path: Path, size: int) -> bytes:

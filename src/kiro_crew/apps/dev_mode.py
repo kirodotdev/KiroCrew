@@ -116,8 +116,10 @@ def _sentinel_lock() -> Iterator[None]:
     the read → mutate → write → cache-update sequence closes that race.
     """
     lock_path = apps_dir() / (_DEV_SENTINEL + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as fh:
+    from kiro_crew.owner_only_files import ensure_directory, owner_only_opener
+
+    ensure_directory(lock_path.parent)
+    with open(lock_path, "a+", encoding="utf-8", opener=owner_only_opener) as fh:
         with platform_compat.file_lock(fh.fileno(), exclusive=True):
             yield
 

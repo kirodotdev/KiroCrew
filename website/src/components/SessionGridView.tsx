@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
-import { api } from '../api/client'
+import ErrorNotice from './ErrorNotice'
+import { api, ApiError } from '../api/client'
 import SessionGridLayout from './SessionGridLayout'
 import ChatPane, { type PaneLeading } from './ChatPane'
 import { useSessionGrid, type GridLeaf } from '../hooks/useSessionGrid'
@@ -11,6 +12,9 @@ import PaneDim from './PaneDim'
 import { byRecentActivity } from '../utils/slotRecency'
 
 import { i18nT } from '../i18n/t'
+import { forkFailureNoticeOffsite } from '../utils/forkFailure'
+import type { ForkFailureNotice } from '../utils/forkFailure'
+import { errMessage } from '../utils/thunkError'
 type Slot = {
   key: string
   title?: string
@@ -239,7 +243,9 @@ function PlaceholderPane({
   leading?: PaneLeading
 }) {
   const [search, setSearch] = useState('')
+  const [forkError, setForkError] = useState<ForkFailureNotice | null>(null)
   const queryClient = useQueryClient()
+  // Same key and shape the transcript path reads, so the two share one cache entry
   const createSession = useMutation({
     mutationFn: () => api.createChatSlot(),
     onSuccess: (r: { key?: string }) => {
@@ -250,8 +256,25 @@ function PlaceholderPane({
   const forkSession = useMutation({
     mutationFn: () => api.forkChatSlot(forkSourceSlot as string),
     onSuccess: (r: { ok?: boolean; key?: string }) => {
+      // The refused condition is over. The cell usually unmounts with the new pane, so
+      // this matters for the case where it does not: a success that opens no tab.
+      setForkError(null)
       queryClient.invalidateQueries({ queryKey: ['session-grid-slots'] })
       if (r?.ok && r.key) onPick(r.key)
+    },
+    // A refused fork must not read as a no-op: the only other signal is the spinner
+    // stopping, which is indistinguishable from success that opened no tab.
+    onError: (err) => {
+      setForkError(
+        forkFailureNoticeOffsite(
+          err instanceof ApiError ? err.body : '',
+          errMessage(err),
+          false,
+          // Several panes can be visible and the source is the focused one, so the copy
+          // names it. Same fallback as the Fork button's own tooltip above.
+          forkSourceTitle || forkSourceSlot,
+        ),
+      )
     },
   })
 
@@ -311,7 +334,7 @@ function PlaceholderPane({
           onClick={onCancel}
           title={i18nT('components.sessionGridView.close_cell')}
           aria-label={i18nT('components.sessionGridView.close_cell')}
-          className="shrink-0 p-1 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
+          className="shrink-0 p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
         >
           <X size={14} />
         </button>
@@ -319,6 +342,17 @@ function PlaceholderPane({
       {/* After the header so the header stays the first child (tests locate it
           that way); absolute, so order does not change what paints where. */}
       <PaneDim dimmed={!focused} />
+
+      {/* Below the pane's own chrome, so a refusal reads as being about this cell's
+          content rather than about the toolbar it would otherwise displace. */}
+      <ErrorNotice
+        message={forkError?.message}
+        report={forkError?.report}
+        onDismiss={() => setForkError(null)}
+        askAgent
+        className="mx-2 mt-2 mb-0"
+        testId="grid-fork-error"
+      />
 
       {/* Three creation entry points (Terminal arrives in Phase 2). */}
       <div className="flex gap-1.5 p-2 border-b border-border">

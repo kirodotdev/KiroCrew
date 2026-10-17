@@ -102,11 +102,11 @@ def test_every_declared_extra_is_covered() -> None:
 
 # ── The pins embedded in the UI catalogs ──
 #
-# The Feishu guide and the Teams notice spell a command out inside their
-# translated prose, so those specifiers are a SECOND copy of the pin that no
-# Python caller reads. Without this test, bumping setup.cfg leaves the same
-# panel showing two different commands -- the generated one and a stale
-# hand-written one -- across 13 locale files.
+# The Feishu guide spells a command out inside its translated prose, so that
+# specifier is a SECOND copy of the pin that no Python caller reads. Without
+# this test, bumping setup.cfg leaves the same panel showing two different
+# commands -- the generated one and a stale hand-written one -- across 13
+# locale files.
 
 
 def _embedded_specs(text: str, package: str) -> set[str]:
@@ -126,7 +126,7 @@ def _embedded_specs(text: str, package: str) -> set[str]:
 
 @pytest.mark.parametrize(
     ("extra", "package"),
-    [("feishu", "lark-oapi"), ("teams", "PyJWT")],
+    [("feishu", "lark-oapi")],
 )
 def test_locale_catalogs_carry_the_declared_pin(extra: str, package: str) -> None:
     expected = extras.REQUIREMENTS[extra][0]
@@ -138,6 +138,16 @@ def test_locale_catalogs_carry_the_declared_pin(extra: str, package: str) -> Non
         }, f"{path.name} embeds {sorted(found - {expected})}, expected {expected}"
         seen_anywhere = seen_anywhere or bool(found)
     assert seen_anywhere, f"no locale embeds a {package} pin; did the key move?"
+
+
+@pytest.mark.parametrize("package", ["PyJWT", "neonize"])
+def test_locale_catalogs_embed_no_pin_for_card_channels(package: str) -> None:
+    """Teams and WhatsApp take their install command from the gateway's
+    optional-SDK card, which names the gateway's interpreter. A pin spelled out
+    in catalog prose would be a bare ``pip install`` beside it."""
+    for path in sorted(LOCALES.glob("*.json")):
+        found = _embedded_specs(path.read_text(encoding="utf-8"), package)
+        assert not found, f"{path.name} embeds {sorted(found)}"
 
 
 def test_locale_catalogs_are_valid_json() -> None:

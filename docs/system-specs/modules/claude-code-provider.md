@@ -6,11 +6,12 @@
 `KiroCrewConfig.create_provider_factory()` constructs `AcpProvider`. Harness
 choice is a separate field, `agent.acp_backend`. The public baseline currently
 selects kiro-cli (`ACP_BACKEND_KIRO`, the empty string), Claude, KAS, Codex,
-OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek was
-the one exception until Crew's gate plugin routed its tool calls through the host
-permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`);
+OpenCode, Pi, goose and DeepSeek -- every id in `ACP_BACKENDS_KNOWN`. DeepSeek is
+selectable because Crew's gate plugin routes its tool calls through the host
+permission gate (`Routing.VERIFIED_GATE_EXTENSION`, `agent_sdk/backends.py`).
 `test_baseline_ships_every_known_backend` pins the baseline as
-`ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, and that allowlist is empty again.
+`ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE`, where `NOT_SHIPPED_SELECTABLE` is a
+test-side set of known-but-unshipped ids, not a product allowlist; it is empty.
 
 `DefaultProviderRegistry` registers no extra backend. The protocol hook remains
 for editions, but `register_selectable_backend` accepts only a core-known harness
@@ -29,7 +30,7 @@ hand-edited value from becoming a startup failure.
 `TestConfigRoundTrip.test_unselectable_values_degrade_to_the_default` exercises
 that path, and `test_harness_parity.test_unselectable_backend_degrades_to_kiro`
 asserts the outcome against the live registry rather than a hardcoded verdict —
-which is why `claude` now *survives* that gate instead of degrading.
+which is why `claude` *survives* that gate instead of degrading.
 
 Selectable is not the same as usable, and it is not the same as permitted.
 Whether a *deployment* may pick a registered harness is answered by the
@@ -39,17 +40,19 @@ Whether a *machine* can run it is answered by `agent_sdk.probe_backend`.
 
 ## The Claude harness
 
-`acp/client.py` owns the whole Claude spawn path, and it is a live path on a
+`acp/harness/claude.py` owns the whole Claude launch, and it is a live path on a
 plain public build:
 
 - `AcpClient._is_claude` recognizes `ACP_BACKEND_CLAUDE`, and `AcpClient._spawn`
-  takes the adapter branch for it.
+  hands the launch to that host's adapter, `ClaudeLaunch`
+  (`acp.harness.process_adapter_for`).
 - `_resolve_claude_acp_bin()` finds the `claude-agent-acp` Node entry script and
   returns `(argv, searched_path)`; the result is memoized process-wide in
   `_claude_acp_argv_cache`, so the search runs once and the "not found" message
   names exactly the directories that were searched.
-- `_resolve_claude_code_executable()` finds the `claude` CLI and `_spawn` exports
-  it as `CLAUDE_CODE_EXECUTABLE` when the caller has not set one. The adapter
+- `_resolve_claude_code_executable()` finds the `claude` CLI and the adapter's
+  `apply_spawn_env` exports it as `CLAUDE_CODE_EXECUTABLE` when the caller has not
+  set one. The adapter
   forwards it to `@anthropic-ai/claude-agent-sdk` as
   `pathToClaudeCodeExecutable`; without it the SDK fails `session/new` with
   "Claude native binary not found", because it does not search `PATH` for
@@ -78,8 +81,19 @@ Both operator-facing surfaces read that one verdict:
   kept visible. A rendered-but-disabled row therefore always names something the
   user can act on: install a binary, or restart the gateway. Covered by
   `hides a backend the deployment may not select, rather than dimming it`,
-  `keeps the selected backend visible even if it reads as unselectable` and
+  `keeps the current backend listed even if it reads as unselectable` and
   `saves the Claude Code selection the shipped build offers`.
+
+### Stale cloud credentials
+
+When the adapter answers a prompt with `data.errorKind: cloud_credential_error`
+(Bedrock credentials the process cached can no longer be loaded), every turn
+surface recycles the process once and replays the turn, the same way it
+recovers a lost session; if the fresh process fails too, the give-up line shows
+the provider's own remedy. See the Lost backend session entry in
+[error handling](../common/error-handling.md). The trigger is the provider's
+`errorKind`, not a harness check, so any backend that emits that kind is
+recycled the same way.
 
 ### What Crew gates on this harness, and what a pre-approval skips
 
@@ -112,15 +126,16 @@ settings file" below). What Crew does write is a session-scoped
 bytes it wrote; that seed carries deny rules translated from the spec's
 `disabledTools` and never merges into a foreign project settings file.
 
-A session can now OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
+A session can OPEN it further, and only on purpose. `KIROCREW_CC_PERMISSION_MODE=auto`
 resolves through `agent_sdk.backends.resolve_cc_permission_mode` and is seeded as
 `permissions.defaultMode`, which puts Claude's own classifier in charge of approving
 tool calls: an approved call asks nothing, so it reaches no `hooks.on_tool_call` and
 writes no SEL record, exactly as a project allow rule does. Only the literal value
 `auto` resolves, a backend that seeds no settings file resolves to nothing, and with
-no opt-in no `defaultMode` is written at all. An explicitly requested
-`bypassPermissions` mode pre-approves by design. The audit half of that trade is
-tracked in #12744.
+no opt-in no `defaultMode` is written at all. Crew never seeds `bypassPermissions`:
+`resolve_cc_permission_mode` resolves only `auto` and warns on anything else. That mode
+can only arrive from a foreign project settings file, which is the disclosed
+inherited-settings gap below. The audit half of the `auto` trade is tracked in #12744.
 
 This is documented, intended Claude Code behaviour, not a defect introduced by making
 the harness selectable — the harness was already implemented and reachable by any
@@ -251,8 +266,8 @@ branch — and the array is ordered by server name so the two are comparable.
 
 Those call sites are **synchronous**, and that is a harness-parity constraint
 rather than a style choice. The translation reads disk, but it runs once per
-spawn in `_resolve_session_mcp_servers` (off the loop, from the adapter-only
-branch of `_spawn`) and lands in `_session_mcp_cache`; `_session_mcp_servers` only
+spawn in `_resolve_session_mcp_servers` (off the loop, from the claude adapter's
+own launch, `ClaudeLaunch.resolve_spawn`) and lands in `_session_mcp_cache`; `_session_mcp_servers` only
 hands the cached list out. Awaiting an executor hop at the shared site would put a
 new scheduling and failure point on **every** backend's construction path,
 kiro-cli included — and the kiro path is not allowed to change in service of an
@@ -304,27 +319,63 @@ one shielded worker-thread transaction. If revocation or deletion cannot complet
 the old seed is restored or re-recorded so a later session can repair it rather
 than leaving an unowned permission mode on disk.
 
-**One relaxation: a byte-identical sibling seed is SHARED, not refused.** Two
-sessions of the same agent in the same `work_dir` render the same payload, and
-refusing the second one bought nothing — it ran with the whole `mcpServers` array
+That transaction runs from `shutdown`, and not every provider is torn down through
+`shutdown`. A provider the session layer abandons — a start that was cancelled or
+refused after the spawn, a warm-pool claim that failed, a `shutdown` that hung past
+its bound — reaches `session_pid._sync_kill_provider` through `_dispatch_hard_kill`
+and its client object is dropped afterwards. That path hands the client's
+registrations back itself (`AcpClient.release_settings_seed_claim`), once the kill
+gate has said what stands behind the pid: released when the teardown is
+authorized, when there is no pid, or when the recorded root is known to be gone or
+recycled; kept while a lease or tenancy still holds the runtime and while the
+root's identity cannot be read, so a successor never re-seeds the permission file
+under a runtime that may still be running (the conditions are the funnel's spec,
+[runtime-ownership.md](runtime-ownership.md) § *The one kill gate*). The hand-back
+withdraws the owner claim through `seed_provenance.release` and a reader lease
+through `seed_provenance.unshare`, composed as `seed_provenance.release_held` and
+gated on what the client's own token holds, so a client that holds nothing — every
+kiro-backend client — performs no sidecar I/O. The release is the durable one, not
+the in-memory `release_local`: the persisted owner holder carries this process's
+live identity and `claim` re-reads it under the cross-process lock, so an in-memory
+drop alone leaves the next client refused. The file and its record stay — this is
+the recorded-orphan shape, which the next session on that `work_dir` adopts,
+re-seeds for itself and removes on its own teardown. Without the hand-back a stale
+live claim outlives its client for the rest of the gateway process: a resumed chat
+whose first provider is torn down as leaked keeps every later provider on that
+`work_dir` out of its own seed, and one whose payload the stale seed cannot be
+shared with runs with the whole `mcpServers` array withheld
+(`test_seed_claim_released_on_teardown.py`, which also pins the kept claim under a
+live tenancy: the successor cannot re-write the file).
+
+**One relaxation: a sibling seed that governs this session is SHARED, not refused.**
+Two sessions of the same agent in the same `work_dir` render the same permissions,
+and refusing the second one bought nothing — it ran with the whole `mcpServers` array
 withheld, so only one session per project directory ever had Crew's tools
 (`spawn_run`, `cron_*`, `session_checkpoint`). When the file on disk is a live
-sibling's seed whose bytes equal BOTH Crew's durable record
-(`seed_provenance.share`, checked ignoring the live holder) AND the exact
-payload this client would have written, the client takes a shared-reader state
+sibling's seed whose bytes are the ones Crew's durable record names
+(`seed_provenance.share`, checked ignoring the live holder) and that carries this
+session's permission keys, the client takes a shared-reader state
 (`_claude_settings_shared`): the permission surface counts as governed
 (`_permission_surface_governed`), so the array is delivered — but the client takes
 no live claim, records nothing, and `_claude_settings_authored` stays false, so its
 teardown neither unlinks the file the owning session is still running against nor
-pops that owner's live slot. A payload that differs in any byte — another
-permission mode, another agent's deny rules, another allowlist — fails the digest
-half and is refused exactly as before. The hazard the live-holder rule exists for
-only arises when the payloads differ, so byte-equality is the precise boundary of
-the relaxation. The boundary deliberately includes the model keys: the file pins
-model resolution for every session that reads it, so sharing across a model
-difference would silently override the sibling's own pick. Every refusal logs the
-same quiet informational message (`_log_declined_share`) naming what the session
-runs without.
+pops that owner's live slot.
+
+Only the model half (`availableModels`, `model`) may differ from the payload this
+client would have written (`_share_sibling_settings_seed`). It grants no permission,
+and each session's own model reaches the adapter live: `_apply_startup_model` pushes
+it over `session/set_config_option`, which claude-agent-acp accepts only for an
+`availableModels` entry. So the seed must list this session's `model`, or name none
+when this session pins none. A pinned session then runs its own pin, and an
+unpinned one starts on the adapter's default rather than the owner's pin. The seed's
+bytes are read only when they match the durable record, through the same bounded,
+no-follow, non-blocking read the ownership check uses (`_settings_path_bytes`), and
+the share validates exactly those bytes. A seed that differs in a permission key —
+another permission mode, another agent's deny rules — or that would keep this
+session off its own model is refused exactly as before. The hazard the live-holder
+rule exists for only arises when the permissions differ, so they are the boundary
+of the relaxation. Every refusal logs the same quiet informational message
+(`_log_declined_share`) naming what the session runs without.
 
 The sharer's stake is a live registration (`seed_provenance.share`, taken BEFORE
 the byte checks so the owner's teardown cannot validate-race it; withdrawn on the
@@ -344,8 +395,9 @@ during an upgrade is the pre-existing digest-only exposure, not a regression
 this mechanism can close. On a host that cannot prove a process start id, the
 sidecar persists the
 digest with empty holder groups: cross-process live-holder distinction degrades
-to digest-only adoption, while `_LIVE` and `_SHARERS` continue to arbitrate
-same-process siblings. While any sharer is registered, the file's future is pinned for
+to digest-only adoption. `share()` then declines every new reader lease, so
+same-process siblings do not share either and take the declined-share path; only
+`_LIVE` still arbitrates owners. While any sharer is registered, the file's future is pinned for
 it: the owner's teardown leaves the file and the durable record in place (the
 recorded-orphan shape a `kill -9` already produces, which the next session adopts
 and repairs once the sharers are gone), `seed_provenance.claim` refuses new
@@ -412,9 +464,9 @@ the session can do:
 
 - A project that already has its own `settings.local.json` gets no seed file.
   The file is left exactly as it is.
-- An inherited `bypassPermissions` in such a file is **not** stripped. Crew used to
-  strip it; stripping required rewriting the user's file, which is exactly the
-  machinery this rule removes. Such a file is left out of the session instead (see
+- An inherited `bypassPermissions` in such a file is **not** stripped: stripping
+  would require rewriting the user's file, which is exactly the machinery this rule
+  removes. Such a file is left out of the session instead (see
   below): whatever starting mode the adapter picks from it is read back and pinned.
 
 #### A project-owned settings file
@@ -497,9 +549,10 @@ pre-approved) is kept as the session started it, so an operator's stricter postu
 never widened. A pin that fails stops the harness,
 so a session never runs with Crew's tools under a mode that approves on its own.
 
-The pin runs only on this path. A session whose file Crew authored is not pinned: a
-user `~/.claude` mode reaching it is the inherited-config gap below (W2-1), which this
-path does not widen. The exclusion is never taken below
+The pin runs only on this path and on a Side Chat session (below). Any other session
+whose file Crew authored is not pinned: a
+user `~/.claude` mode reaching it is the inherited-config gap below ("Known gap: the
+user's global `~/.claude` is inherited"), which this path does not widen. The exclusion is never taken below
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
 neither case reaches the pin.
 
@@ -515,7 +568,7 @@ The array stays withheld when the session asked for a permission mode of its own
 since the pin sets only `default`, when a project file's deny rules cannot be read
 (above), when the adapter is below the `settingSources` floor or reports no version,
 and when the path is a link (below). The floor is decided before the array exists: the
-claude spawn arm reads the installed version (`_claude_adapter_installed_version`)
+claude adapter's launch reads the installed version (`_claude_adapter_installed_version`)
 before the settings writer runs and before the array is warmed off the loop, so nothing
 re-resolves the array after the handshake. A re-seed after the handshake uses the
 reported version. A handshake that reports a version below the floor on a session that
@@ -542,7 +595,8 @@ project does not own. A repository can ship
 input. Refusing costs that session the seed, which the caller logs as a warning
 naming what is lost.
 
-`_spawn` also merges `extra_env` into the child environment, which is how a
+The launch tail (`acp.launch.launch`) also merges `extra_env` into the child
+environment, which is how a
 caller-supplied `CLAUDE_CONFIG_DIR` reaches the adapter
 (`test_spawn_forwards_claude_config_dir_from_extra_env`). The gateway contract is
 to forward inherited `ANTHROPIC_*` and `CLAUDE_CODE_*` variables to the harness
@@ -552,6 +606,23 @@ Crew-owned directory from the user's `~/.claude`, keeping credentials and models
 while stripping inherited `permissions` that would pre-approve past Crew's gate)
 is **not implemented here** — see the known gap below.
 
+### A Side Chat session
+
+A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which
+has no approver behind it, so it cannot inherit the gap below. It is started with
+only the read built-ins (`tools`: Read, Grep, Glob, WebFetch, WebSearch), an empty
+`mcpServers` array and `strictMcpConfig`, inline settings that add `permissions.ask`
+rules for the two web tools, deny the read tools every host sensitive path
+(`security.sandbox_credential_targets()`, as `Read(//<target>)` and
+`Read(//<target>/**)`) and set `disableAllHooks`, and bypass off; it is pinned
+like the exclusion path above, and refused below the same version floor. Its setting
+sources are not narrowed, because the user tier carries the provider routing and
+model ids the session needs: an allow rule or `additionalDirectories` entry there can
+now pre-approve only a read, and never one of a sensitive path, since a deny rule
+outranks an allow rule from any source. A launch that cannot build the deny rules
+does not start the session.
+Detail: [side.md](side.md), "On claude the confinement is the session's own options".
+
 ### Known gap: the user's global `~/.claude` is inherited
 
 With no `CLAUDE_CONFIG_DIR` set by the core, the adapter and the SDK read the
@@ -560,8 +631,8 @@ user's real `~/.claude`. Project-scope `settings.local.json` outranks it for
 overridden — so a user whose global settings pre-approve a tool family gets those
 calls auto-approved by Claude's own engine, which never calls `canUseTool` and so
 never reaches Crew's gate. A project's own `settings.local.json` is not part of
-this gap: a session that carries Crew's tools either authored that file or left it
-out of its setting sources. Its checked-in `.claude/settings.json` is part of the
+this gap: a session that carries Crew's tools either governs a Crew seed (authored or
+shared) or excludes the project tier from its setting sources. Its checked-in `.claude/settings.json` is part of the
 gap only for a session whose file Crew authored. Both are the same hazard the "no gate on pre-approved calls"
 section above describes, arriving through inherited config. Closing it means an
 isolated config root, which is a separate change: it has to carry credentials

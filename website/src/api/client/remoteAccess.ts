@@ -42,9 +42,11 @@ export interface TailnetStatusData {
  * re-computed here — one owner for the state machine.
  *
  * - `pinned` — an administrator's policy forbids tailnet access. Dead end.
- * - `install` / `start_daemon` / `sign_in` / `enable_magicdns` — the four ways
- *   there is no usable tailnet name, kept apart because each is a different
- *   errand for the operator.
+ * - `untrusted_cli` / `install` / `start_daemon` / `sign_in` / `enable_magicdns`
+ *   — the ways there is no usable tailnet name, kept apart because each is a
+ *   different errand for the operator. `untrusted_cli` means Tailscale IS
+ *   installed, at a path the gateway refuses to run (user-writable), so the
+ *   remedy is `dashboard.url` rather than a download.
  * - `enable_https` — the tailnet has not granted certificate provisioning for
  *   that name; this requires one-time tailnet administrator consent.
  * - `trust_off` — a name exists but the gateway will not accept it as an origin
@@ -58,6 +60,7 @@ export interface TailnetStatusData {
  */
 export type TailnetMobileStep =
   | 'pinned'
+  | 'untrusted_cli'
   | 'install'
   | 'start_daemon'
   | 'sign_in'
@@ -88,6 +91,12 @@ export interface TailnetMobileData {
   keep_awake: boolean
   /** Verbatim daemon/serve text. Shown as-is; never rephrased client-side. */
   detail: string
+  /** On `untrusted_cli`, the path of the Tailscale CLI the gateway refuses to
+   *  run. Optional because an older gateway does not send it. */
+  refused_cli?: string
+  /** On `untrusted_cli`, the `tailscale serve` command that publishes this
+   *  dashboard by hand. Optional because an older gateway does not send it. */
+  serve_command?: string
   download_url: string
 }
 

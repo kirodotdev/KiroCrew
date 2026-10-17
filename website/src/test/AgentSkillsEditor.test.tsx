@@ -371,6 +371,22 @@ describe('disambiguating colliding package copies', () => {
 })
 
 describe('an unresolved mapping', () => {
+  it('resolves a mapping saved under a twin key the catalog lists as an alias', async () => {
+    // /api/skills lists one row per file; the dropped kiro-user/ key rides along
+    // as an alias, so a mapping saved under it is neither dead nor re-offered.
+    mockApi.skills.mockResolvedValue([
+      { key: 'tracker', name: 'tracker', source: 'kirocrew', aliases: ['kiro-user/tracker'] },
+      { key: 'widgets', name: 'widgets', source: 'kirocrew' },
+    ])
+    renderEditor({ skills: ['kiro-user/tracker'] })
+
+    await waitFor(() => expect(screen.getByText('tracker')).toBeInTheDocument())
+    expect(screen.queryByText(/no longer matches an installed copy/i)).not.toBeInTheDocument()
+    await openAddMenu()
+    await waitFor(() => expect(screen.getByRole('option', { name: /widgets/i })).toBeInTheDocument())
+    expect(screen.queryByRole('option', { name: /tracker/i })).not.toBeInTheDocument()
+  })
+
   it('marks a NON-package mapping with no installed copy as unresolved and counts it', async () => {
     // A non-package key the catalog no longer lists is a genuine dead mapping (its source
     // does not silently degrade to empty), so it gets the warn style plus a count line.

@@ -30,6 +30,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.builtins.dev_fleet import gateway_routes, live, pointer_broker, server
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.asyncio
 
@@ -49,7 +50,7 @@ class TestRegistration:
         expected = {(r.method, r.resource.canonical) for r in direct.router.routes()}
         assert expected <= mounted, sorted(expected - mounted)
 
-    def test_register_routes_mounts_exactly_the_six(self) -> None:
+    def test_register_routes_mounts_exactly_the_seven(self) -> None:
         app = web.Application()
         gateway_routes.register_routes(app)
         mounted = sorted(
@@ -60,6 +61,7 @@ class TestRegistration:
             ("GET", "/api/apps/dev-fleet/live-target"),
             ("POST", "/api/apps/dev-fleet/live-target/removal-lease"),
             ("POST", "/api/apps/dev-fleet/make-live"),
+            ("POST", "/api/apps/dev-fleet/pod-token"),
             ("POST", "/api/apps/dev-fleet/restart-gateway"),
             ("PUT", "/api/apps/dev-fleet/live-target/removal-lease"),
         ]
@@ -339,6 +341,104 @@ class TestTheWriteRoutesAreOwnerOnly:
             await client.close()
 
 
+class TestThePodTokenRoute:
+    """``POST pod-token`` mints in the gateway, for the dashboard owner only.
+
+    The pod's ``/api/token/local`` refuses a caller outside the gateway's own
+    namespaces, so the sandboxed backend can never mint; and the backend's app
+    token is readable by its build children, so it must buy no mint here either.
+    """
+
+    @pytest.fixture
+    def minted(self, monkeypatch, enabled, recorded):
+        from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+        calls: list[str] = []
+
+        async def _pod_token(name):
+            calls.append(name)
+            return {"ok": True, "token": "SECRET", "url": "http://127.0.0.1:9/?token=SECRET"}
+
+        monkeypatch.setattr(worktree_ops, "_pod_token", _pod_token)
+        return calls
+
+    async def test_owner_human_gets_the_token(self, minted, recorded) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["ok"] is True and body["url"].endswith("?token=SECRET")
+            assert minted == ["feat"]
+            assert recorded["discovered"] is True, "the gateway must discover the repo first"
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize("principal", ["dev-fleet", "md-notebook"])
+    async def test_any_app_token_is_refused(self, minted, principal) -> None:
+        client = await _client(_make_app(principal_app=principal))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 403
+            assert minted == []
+        finally:
+            await client.close()
+
+    async def test_a_non_owner_human_is_refused(self, minted) -> None:
+        client = await _client(_make_app(principal_app="", user="guest", owner_id="owner"))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status in (401, 403)
+            assert minted == []
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize("bad", ["", "a\x00b", 7, "x" * 201])
+    async def test_a_malformed_name_is_refused_before_the_mint(self, minted, bad) -> None:
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": bad})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_name"
+            assert minted == []
+        finally:
+            await client.close()
+
+    async def test_the_audit_row_never_carries_the_token(self, minted, monkeypatch) -> None:
+        rows: list[dict] = []
+
+        class _Sel:
+            def log_api_access(self, **kw):
+                rows.append(kw)
+
+        monkeypatch.setattr(gateway_routes, "sel", lambda: _Sel())
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 200
+        finally:
+            await client.close()
+        assert [(r["operation"], r["outcome"]) for r in rows] == [
+            ("dev_fleet_pod_token", "success")
+        ]
+        assert "SECRET" not in json.dumps(rows)
+
+    async def test_an_unconfigured_checkout_is_a_409(self, enabled, recorded, monkeypatch) -> None:
+        from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+        async def _raise(name):
+            raise gateway_routes.repository.RepoNotConfigured("no checkout configured")
+
+        monkeypatch.setattr(worktree_ops, "_pod_token", _raise)
+        client = await _client(_make_app(principal_app=""))
+        try:
+            resp = await client.post("/api/apps/dev-fleet/pod-token", json={"name": "feat"})
+            assert resp.status == 409
+            assert (await resp.json())["code"] == "repo_not_configured"
+        finally:
+            await client.close()
+
+
 class TestTheReadBroker:
     async def test_dev_fleets_token_may_read(self, enabled, recorded) -> None:
         client = await _client(_make_app(principal_app="dev-fleet"))
@@ -351,6 +451,7 @@ class TestTheReadBroker:
                 "staged": "/wt/staged",
                 "staged_cancel_available": True,
                 "previous": "/wt/previous",
+                "live_verified": True,
             }
             assert recorded["state_fresh"] is True
         finally:
@@ -469,6 +570,22 @@ class TestTheBackendClient:
         with pytest.raises(live.PointerUnavailable, match="no port"):
             await provider(False)
 
+    async def test_live_verified_crosses_the_broker(self) -> None:
+        """A pointer-only live row must reach the backend as unverified, or the
+        fleet view would badge it "live" as if the gateway ran from it."""
+        state = pointer_broker._parse_state(
+            {"live": "/wt/live", "staged": None, "live_verified": False}
+        )
+        assert state.live == "/wt/live"
+        assert state.live_verified is False
+
+    async def test_live_verified_defaults_to_true_when_absent(self) -> None:
+        assert pointer_broker._parse_state({"live": "/wt/live"}).live_verified is True
+
+    async def test_a_non_bool_live_verified_is_an_outage(self) -> None:
+        with pytest.raises(live.PointerUnavailable, match="live_verified"):
+            pointer_broker._parse_state({"live": "/wt/live", "live_verified": "no"})
+
 
 class TestLiveModuleSeam:
     """``live`` answers locally in the gateway and through the provider in the backend."""
@@ -520,6 +637,7 @@ def test_pointer_state_payload_is_json_shaped() -> None:
         "staged": None,
         "staged_cancel_available": False,
         "previous": None,
+        "live_verified": True,
     }
 
 
@@ -682,6 +800,10 @@ class TestRemovalLeasesInTheGateway:
 
 
 class TestRemovalLeasesFromTheBackend:
+    """The heartbeat is driven by a real 20 ms interval, so these tests wait for the
+    renewals or the loss they assert on, never for a fixed span of wall clock: a loaded
+    runner (or Windows' coarse timer) fits fewer ticks into any span."""
+
     @staticmethod
     def _install(acquire, renew, release):
         live.install_removal_lease_client((acquire, renew, release))
@@ -714,12 +836,15 @@ class TestRemovalLeasesFromTheBackend:
     ) -> None:
         monkeypatch.setattr(live, "_REMOVAL_LEASE_RENEW_SECS", 0.02)
         renewals: list[str] = []
+        third_renewal = asyncio.Event()
 
         async def acquire(path: str) -> str | None:
             return "cap-hb"
 
         async def renew(token: str) -> bool:
             renewals.append(token)
+            if len(renewals) >= 3:
+                third_renewal.set()
             return True
 
         async def release(token: str) -> None:
@@ -729,7 +854,7 @@ class TestRemovalLeasesFromTheBackend:
         try:
             async with live.removal_lease("/wt/a") as granted:
                 assert granted
-                await asyncio.sleep(0.15)
+                await await_until(third_renewal, what="the third lease renewal")
                 assert live.removal_lease_lost("/wt/a") is False
         finally:
             live.install_removal_lease_client(None)
@@ -748,15 +873,14 @@ class TestRemovalLeasesFromTheBackend:
         async def release(token: str) -> None:
             pass
 
+        def lease_lost() -> bool:
+            return live.removal_lease_lost("/wt/a")
+
         self._install(acquire, renew, release)
         try:
             async with live.removal_lease("/wt/a") as granted:
                 assert granted
-                for _ in range(50):
-                    if live.removal_lease_lost("/wt/a"):
-                        break
-                    await asyncio.sleep(0.01)
-                assert live.removal_lease_lost("/wt/a") is True
+                await async_wait_until(lease_lost)
         finally:
             live.install_removal_lease_client(None)
 
@@ -764,12 +888,19 @@ class TestRemovalLeasesFromTheBackend:
         self, clean_leases, monkeypatch
     ) -> None:
         monkeypatch.setattr(live, "_REMOVAL_LEASE_RENEW_SECS", 0.02)
+        failures: list[str] = []
 
         async def acquire(path: str) -> str | None:
             return "cap-flaky"
 
         async def renew(token: str) -> bool:
+            failures.append(token)
             raise live.PointerUnavailable("blip")
+
+        def third_failure_or_loss() -> bool:
+            # Stop at whichever comes first: a regression that loses the lease on the
+            # first failure then fails fast at the assertion below, not at the bound.
+            return len(failures) >= 3 or live.removal_lease_lost("/wt/a")
 
         async def release(token: str) -> None:
             pass
@@ -778,7 +909,9 @@ class TestRemovalLeasesFromTheBackend:
         try:
             async with live.removal_lease("/wt/a") as granted:
                 assert granted
-                await asyncio.sleep(0.1)
+                await async_wait_until(
+                    third_failure_or_loss, describe=lambda: f"{len(failures)} failed renewals"
+                )
                 assert live.removal_lease_lost("/wt/a") is False
         finally:
             live.install_removal_lease_client(None)
@@ -1132,14 +1265,13 @@ class TestThePreSpawnGate:
         async def release(token: str) -> None:
             pass
 
+        def lease_lost() -> bool:
+            return live.removal_lease_lost("/wt/a")
+
         live.install_removal_lease_client((acquire, renew, release))
         try:
             async with live.removal_lease("/wt/a"):
-                for _ in range(60):
-                    if live.removal_lease_lost("/wt/a"):
-                        break
-                    await asyncio.sleep(0.01)
-                assert live.removal_lease_lost("/wt/a") is True
+                await async_wait_until(lease_lost)
         finally:
             live.install_removal_lease_client(None)
 

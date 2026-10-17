@@ -10,6 +10,7 @@ import pytest
 
 import kiro_crew.subagent as subagent_module
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -85,14 +86,14 @@ async def test_real_run_force_reap_race_reports_once_and_releases_slot_once(
     report_tasks: list[asyncio.Task] = []
 
     try:
-        await asyncio.wait_for(run_entered.wait(), timeout=2)
+        await await_until(run_entered, what="the run entering")
         reap_task = asyncio.create_task(
             manager._force_reap(info.id, info, elapsed=5.0, reason="deadline")
         )
-        await asyncio.wait_for(sessions.reset_entered.wait(), timeout=2)
+        await await_until(sessions.reset_entered, what="the reset entering")
 
         sessions.allow_reset.set()
-        await asyncio.wait_for(report_entered.wait(), timeout=2)
+        await await_until(report_entered, what="the report entering")
         report_tasks = list(manager._report_tasks)
         assert len(report_tasks) == 1
 
@@ -103,9 +104,9 @@ async def test_real_run_force_reap_race_reports_once_and_releases_slot_once(
         assert not report_tasks[0].done()
 
         allow_report.set()
-        await asyncio.wait_for(
+        await await_until(
             asyncio.gather(run_task, *report_tasks, return_exceptions=True),
-            timeout=2,
+            what="the run and its reports finishing",
         )
 
         done_events = [

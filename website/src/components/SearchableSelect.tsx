@@ -83,6 +83,19 @@ export interface SearchableSelectProps {
   className?: string
   style?: React.CSSProperties
   'aria-label'?: string
+  /** Set on the trigger, so a note about the current value is read with the field. */
+  'aria-describedby'?: string
+  /**
+   * Pass true when this selector renders INSIDE a Radix modal dialog (e.g. the
+   * crew-capabilities editor). The popup then mounts its own react-remove-scroll
+   * instance, which takes over the wheel lock from the host dialog's — without it
+   * the host lock cancels wheel events over this portal (outside the dialog's
+   * lock container and shards) and the list cannot scroll. Deliberately opt-in:
+   * on an ordinary page a modal popup would lock page scroll, swallow the first
+   * click on a neighbouring field, and aria-hide the rest of the page —
+   * regressions, not protections, when there is no host dialog to coexist with.
+   */
+  modal?: boolean
 }
 
 /** Row text style, from the option's font stack — the only styling a row exposes. */
@@ -112,6 +125,8 @@ export default function SearchableSelect({
   className,
   style,
   'aria-label': ariaLabel,
+  'aria-describedby': ariaDescribedBy,
+  modal = false,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -157,7 +172,7 @@ export default function SearchableSelect({
     // combobox convention commits the top match whenever the user has NARROWED
     // the list: typing "los ang" and pressing Enter should not sit silent just
     // because two rows still match. Reporting 1 whenever anything matches routes
-    // Enter here, and `choose(filtered[0])` picks the row the user is looking at.
+    // Enter here, and `onEnterSingleMatch` picks the row the user is looking at.
     //
     // Gated on a non-empty filter, because on an UNFILTERED list `filtered[0]` is
     // merely the first row, not a match for anything the user expressed. Opening
@@ -165,7 +180,17 @@ export default function SearchableSelect({
     // saved value — with a "default" row at the top, that silently discards the
     // user's choice.
     filteredCount: filter.trim() && filtered.length > 0 ? 1 : 0,
-    onEnterSingleMatch: () => { const o = filtered[0]; if (o) choose(o) },
+    // An exact value or label match wins over the top row: a row whose label
+    // merely CONTAINS the typed text (e.g. "Inherit (kirocrew)") must not shadow
+    // the option the user typed in full. Only real options qualify: the
+    // free-text row's value IS the typed text and stays an offer, not a default.
+    onEnterSingleMatch: () => {
+      const typed = filter.trim().toLowerCase()
+      const exact = filtered.find(r => options.includes(r)
+        && (r.value.toLowerCase() === typed || r.label.toLowerCase() === typed))
+      const o = exact ?? filtered[0]
+      if (o) choose(o)
+    },
     closeToTrigger,
   })
 
@@ -173,12 +198,14 @@ export default function SearchableSelect({
     <Popover
       open={open}
       onOpenChange={o => { setOpen(o); if (!o) setFilter('') }}
+      modal={modal}
     >
       <PopoverTrigger
         ref={triggerRef}
         id={id}
         disabled={disabled}
         aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         aria-haspopup="listbox"
         className={cn(
           'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
@@ -202,9 +229,18 @@ export default function SearchableSelect({
         // keydown reaches window-level Escape handlers and closes the host
         // surface too — the fix mirrors ui/select.tsx's SelectContent.
         onEscapeKeyDown={e => e.stopPropagation()}
+        // Modal only: the focus trap is still live when closeToTrigger runs,
+        // so the deterministic focus return must happen at FocusScope teardown.
+        // Non-modal keeps Radix's own semantics — its hasInteractedOutside guard
+        // does NOT reclaim focus after an outside click, so the field the user
+        // clicked keeps the caret; overriding it in non-modal mode would yank
+        // focus back one macrotask after the click landed.
+        onCloseAutoFocus={modal ? e => { e.preventDefault(); triggerRef.current?.focus() } : undefined}
         // Exactly the trigger's width — see the note in ui/select.tsx's
         // SelectContent. No `min-w` floor: it would overhang the trigger.
-        className="w-[var(--radix-popover-trigger-width)] max-h-[300px] p-0 flex flex-col overflow-hidden"
+        // `min()` caps at the Radix-provided available height so the popup
+        // never overflows a short viewport (small phone, tight bottom-sheet).
+        className="w-[var(--radix-popover-trigger-width)] max-h-[min(300px,var(--radix-popover-content-available-height))] p-0 flex flex-col overflow-hidden"
       >
         <div className="p-2 border-b border-border flex items-center gap-2">
           <Search size={13} className="text-muted shrink-0" aria-hidden />
@@ -239,7 +275,7 @@ export default function SearchableSelect({
           // programmatically focusable so the interactive role is reachable.
           tabIndex={-1}
           onKeyDown={onListKeyDown}
-          className="flex-1 min-h-0 overflow-y-auto p-1"
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1"
         >
           {action && (
             // Inside the list, but a `button` rather than an `option`: it commits

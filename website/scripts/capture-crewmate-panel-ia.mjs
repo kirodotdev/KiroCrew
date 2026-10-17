@@ -13,7 +13,7 @@
  * Usage: node scripts/capture-crewmate-panel-ia.mjs [outDir]
  */
 import { chromium } from 'playwright'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { json } from './lib/boot-api.mjs'
@@ -21,6 +21,7 @@ import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems } from './lib/stub-dashboard-api.mjs'
 
 const OUT = process.argv[2] || join(process.env.KIROCREW_SCRATCH || '/tmp', 'crewmate-panel-ia')
+const PROFILE_ONLY = process.env.KIROCREW_PROFILE_ONLY === '1'
 mkdirSync(OUT, { recursive: true })
 
 const now = Math.floor(Date.now() / 1000)
@@ -76,6 +77,39 @@ const JOBS = [
   { id: 'cron-babysit', name: 'PR babysit', message: 'Watch the open PR.', enabled: false, schedule: 'every 5m', agent: 'kirocrew', member_id: 'kiro', last_run_ts: now - 540000, last_status: 'ok' },
 ]
 
+const MONITORS = [{
+  id: 'monitor-kiro', slot_key: 'member-kiro', message: '', idle_secs: 300,
+  max_cycles: 0, cycle_count: 0, active: true, last_fire_ts: 0,
+  next_due_ts: now + 180, stopped_reason: '',
+  monitor: {
+    version: 1, config_generation: 1, kind: 'github_pull_request',
+    target: 'https://github.com/kirodotdev/KiroCrew/pull/20026', objective: 'review_ready',
+    created_ts: now - 3600, cadence_secs: 300, wake_instructions: '',
+    budgets: { max_runtime_secs: 14_400, max_agent_turns: 8, max_tokens: 250_000, max_provider_errors: 3 },
+    last_observation_status: 'pending', last_observation_reason_code: 'checks_pending',
+    last_observed_at: now - 20, last_fingerprint: 'capture', last_wake_fingerprint: '',
+    wake_in_flight: false, wake_delivery: null, wake_count: 1,
+    completion_evidence_deadline: 0, last_completion_fingerprint: '',
+    last_completion_disposition: null, last_completed_at: 0, token_usage_known: true,
+    agent_turns: 1, input_tokens: 120, output_tokens: 20, probe_count: 7,
+    provider_error_count: 0, consecutive_provider_errors: 0, last_probe_at: now - 20,
+    last_decision: 'no_change', last_provider_error: null, next_probe_at: now + 180,
+    outcome: null, stopped_reason: '', stopped_at: 0,
+  },
+}]
+
+const STOPPED_LOOP = {
+  id: 'ledger-kiro', slot_key: 'member-kiro', message: '', created_ts: now - 1200,
+  idle_secs: 600, max_cycles: 300, cycle_count: 300, active: false,
+  last_fire_ts: now - 600, next_due_ts: 0, max_runtime_secs: 86_400,
+  stopped_reason: 'cycle_cap', monitor_outcome: '', monitor_kind: 'work-ledger',
+}
+const FAILED_LOOP = {
+  ...STOPPED_LOOP,
+  id: 'failed-kiro', cycle_count: 2, stopped_reason: 'session_start_failures',
+}
+let monitorFrame = 'active'
+
 const seenTreeDirs = []
 const { srv, base } = await serveDist()
 const browser = await chromium.launch()
@@ -99,6 +133,7 @@ const extra = async (path, route) => {
     return true
   }
   if (/^\/api\/members\/[^/]+\/activity$/.test(path)) { await json(route, { slug: '', member: '', capped: false, entries: [] }); return true }
+  if (/^\/api\/members\/[^/]+\/goals$/.test(path)) { await json(route, { goals: [] }); return true }
   if (/^\/api\/members\/[^/]+\/briefing$/.test(path)) {
     await json(route, { slug: '', member: '', supported: true, text: '# Briefing\n\n- Hold the push until the CI round is terminal.\n- PR screenshots go under .github/screenshots.\n- Max two buttons per row; the rest in a menu.\n', updated_ts: now - 3600, redacted: false, truncated: false })
     return true
@@ -123,7 +158,21 @@ const extra = async (path, route) => {
     await json(route, { url: 'data:text/html;base64,' + Buffer.from(String(body.html || ''), 'utf8').toString('base64') })
     return true
   }
-  if (path === '/api/autonudge') { await json(route, { enabled: true, loops: [] }); return true }
+  if (path === '/api/autonudge') {
+    const loop = monitorFrame === 'stopped' ? STOPPED_LOOP : monitorFrame === 'failed-stop' ? FAILED_LOOP : null
+    await json(route, { enabled: true, loops: loop ? [loop] : [] }); return true
+  }
+  if (path === '/api/autonudge/slot/member-kiro') {
+    const loop = monitorFrame === 'stopped' ? STOPPED_LOOP : monitorFrame === 'failed-stop' ? FAILED_LOOP : null
+    await json(route, { enabled: true, loop }); return true
+  }
+  if (path === '/api/monitors') { await json(route, { enabled: true, monitors: monitorFrame === 'active' ? MONITORS : [] }); return true }
+  if (path === '/api/monitors/slot/member-kiro') {
+    if (monitorFrame === 'loading') return true
+    if (monitorFrame === 'unavailable') await json(route, { error: 'monitor unavailable' }, 503)
+    else await json(route, { enabled: true, monitor: monitorFrame === 'active' ? MONITORS[0] : null })
+    return true
+  }
   if (path === '/api/teams') { await json(route, { teams: [] }); return true }
   return false
 }
@@ -146,14 +195,62 @@ const stripTabs = (page) => page.getByTestId('side-panel-root').locator('.side-p
 const rail = (page) => page.getByTestId('crew-profile-tabs')
 const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll('[role="tab"] span:not(.sr-only)')].map(x => x.textContent.trim()).filter(Boolean).join(' '))
 
+async function captureProfileVariant(frame, file, expected) {
+  monitorFrame = frame
+  const { context, page } = await open('light', 'kiro')
+  await page.getByTestId('member-identity-pill').click()
+  const card = page.getByTestId('crew-profile-card')
+  await card.waitFor({ state: 'visible', timeout: 10000 })
+  await rail(page).getByRole('tab', { name: 'Profile' }).click()
+  const details = page.getByTestId('crew-profile-monitor')
+  await details.waitFor({ state: 'visible', timeout: 10000 })
+  // A failed read settles only after React Query's retries; wait for its notice.
+  if (frame === 'unavailable' || frame === 'failed-stop') await page.getByTestId('crew-profile-monitor-error').waitFor({ state: 'visible', timeout: 30000 })
+  const text = (await details.innerText()).replace(/\s+/g, ' ').trim()
+  for (const fragment of expected) check(`${frame} Profile shows ${fragment}`, text.includes(fragment), text)
+  check(`${frame} Profile avatar has no active mark`, (await page.getByTestId('crew-profile-loop-indicator').count()) === 0)
+  await card.screenshot({ path: join(OUT, file) })
+  await context.close()
+}
+
+async function captureMonitorTransition() {
+  monitorFrame = 'active'
+  const videoDir = join(OUT, 'profile-video')
+  mkdirSync(videoDir, { recursive: true })
+  const context = await browser.newContext({
+    viewport: { width: 970, height: 890 }, deviceScaleFactor: 1, colorScheme: 'light',
+    recordVideo: { dir: videoDir, size: { width: 970, height: 890 } },
+  })
+  const page = await context.newPage()
+  await stubDashboardApi(page, { theme: 'light', extra, slots: SLOTS, localStorageEntries: STORAGE })
+  await page.goto(`${base}/members?member=kiro`, { waitUntil: 'domcontentloaded' })
+  const pill = page.getByTestId('member-identity-pill')
+  await pill.waitFor({ state: 'visible', timeout: 30000 })
+  await pill.click()
+  await rail(page).getByRole('tab', { name: 'Profile' }).click()
+  await page.getByTestId('crew-profile-loop-indicator').waitFor({ state: 'visible', timeout: 10000 })
+  await page.waitForTimeout(4200)
+  monitorFrame = 'stopped'
+  await page.getByTestId('crew-profile-close').click()
+  await pill.waitFor({ state: 'visible', timeout: 10000 })
+  await pill.click()
+  await rail(page).getByRole('tab', { name: 'Profile' }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="crew-profile-monitor"]')?.getAttribute('data-monitor-active') === 'false')
+  await page.waitForTimeout(1600)
+  const video = page.video()
+  await context.close()
+  if (video) renameSync(await video.path(), join(OUT, 'profile-monitor-transition.webm'))
+}
+
 /** Stills, light, desktop. The flow starts from the chat alone. */
 {
   const { context, page } = await open('light', 'kiro')
   const pill = page.getByTestId('member-identity-pill')
   const panel = page.getByTestId('side-panel-root')
   check('roster column is gone while a thread is open', !(await page.getByTestId('member-roster').isVisible()))
+  check('the active monitor marks the header avatar', (await page.getByTestId('member-pill-loop-indicator').count()) === 1)
   check('the page opens on the chat alone (side panel closed)', (await panel.count()) === 0 || !(await panel.isVisible()))
-  check('switcher chip shows the count', (await page.getByTestId('crewmate-switcher-count').innerText()).trim() === '6')
+  check('switcher chip carries no count (issue #19045)', (await page.getByTestId('crewmate-switcher-count').count()) === 0)
   const threadBefore = (await page.getByTestId('member-thread-header').boundingBox()).width
   await page.mouse.move(5, 5)
   await page.screenshot({ path: join(OUT, '01-chat-only-light.png') })
@@ -169,11 +266,51 @@ const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll
   check('exactly one face is on screen (the card head)', (await page.getByTestId('crew-profile-face').count()) === 1)
   check('card names the crewmate', (await page.getByTestId('crew-profile-name').innerText()).trim() === 'Kiro')
   check('card has four tabs', (await rail(page).locator('[role="tab"]').count()) === 4)
-  check('only the selected tab shows its word', (await visibleWords(page)) === 'Profile', await visibleWords(page))
+  check('the card opens on Sessions', (await visibleWords(page)) === 'Sessions', await visibleWords(page))
+  check('the Profile avatar carries the same active monitor mark', (await page.getByTestId('crew-profile-loop-indicator').count()) === 1)
   const cb = await card.boundingBox()
   check(`card is a third of the row (${Math.round(cb.width)}px of 1500)`, cb.width >= 360 && cb.width <= 560)
+  await rail(page).getByRole('tab', { name: 'Profile' }).click()
+  check('only the selected tab shows its word', (await visibleWords(page)) === 'Profile', await visibleWords(page))
+  const monitor = page.getByTestId('crew-profile-monitor')
+  await monitor.waitFor({ state: 'visible', timeout: 10000 })
+  const monitorText = (await monitor.innerText()).replace(/\s+/g, ' ').trim()
+  check('Profile shows active state', /State Active/.test(monitorText), monitorText)
+  check('Profile shows exact monitor type', /Type Pull request/.test(monitorText), monitorText)
+  check('Profile shows exact monitor subject', monitorText.includes('Subject https://github.com/kirodotdev/KiroCrew/pull/20026'), monitorText)
+  check('Profile shows exact frequency', /Every 5m/.test(monitorText), monitorText)
+  check('Profile shows exact check values', /Checks 7 \/ No limit/.test(monitorText), monitorText)
+  check('Profile shows exact time-used values', /Time used 1h \/ 4h/.test(monitorText), monitorText)
+  check('Profile shows a real runtime start', !/Runtime started —/.test(monitorText), monitorText)
+  check('Profile shows a real next check', !/Next check —/.test(monitorText), monitorText)
+  check('Profile monitor section is read-only', (await monitor.locator('button, input, select, textarea, a').count()) === 0)
   await page.screenshot({ path: join(OUT, '02-profile-card-light.png') })
   await card.screenshot({ path: join(OUT, '02b-card-profile-light.png') })
+  if (PROFILE_ONLY) {
+    await context.close()
+    await captureProfileVariant('stopped', '02c-card-profile-stopped-light.png', [
+      'State Stopped', 'Type Task list', 'Subject —',
+      'Every 10m', 'Checks 300 / 300', 'Time used Unknown / 24h',
+      'Stopped because Check limit reached',
+    ])
+    await captureProfileVariant('none', '02d-card-profile-none-light.png', [
+      'State Not watching anything',
+    ])
+    await captureProfileVariant('loading', '02e-card-profile-loading-light.png', [
+      'State Checking monitor status…',
+    ])
+    await captureProfileVariant('unavailable', '02f-card-profile-unavailable-light.png', [
+      'State Monitor status unavailable',
+    ])
+    await captureProfileVariant('failed-stop', '02g-card-profile-failed-stop-light.png', [
+      'State Stopped', 'Type Task list', 'Checks 2 / 300',
+      'Stopped because The session could not start',
+    ])
+    await captureMonitorTransition()
+    await browser.close()
+    await new Promise((resolve) => srv.close(resolve))
+    process.exit(failed ? 1 : 0)
+  }
 
   // 02c: Read more → the pushed About page (full description + Edit crewmate).
   await page.getByTestId('crew-profile-read-more').click()
@@ -235,7 +372,6 @@ const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll
   const stripText = (await panel.locator('.side-panel-strip').innerText()).replace(/\s+/g, ' ')
   check('side panel strip has no Notes / Work log / Schedules', !/Notes|Work log|Schedules/.test(stripText), stripText)
   check('the dashboard report iframe rendered bare', (await page.getByTestId('crew-dashboard-iframe').count()) === 1)
-  check('no drawer chrome around the report', (await page.getByTestId('crew-webview-summary').count()) === 0 && (await page.getByTestId('crew-webview-expand').count()) === 0)
   const fb = await page.getByTestId('crew-dashboard-iframe').boundingBox()
   const pb = await page.getByTestId('member-dashboard').boundingBox()
   check(`the report fills the tab (frame ${Math.round(fb.width)}x${Math.round(fb.height)}, tab ${Math.round(pb.width)}x${Math.round(pb.height)})`, Math.abs(fb.width - pb.width) <= 2 && Math.abs(fb.height - pb.height) <= 2)
@@ -298,15 +434,6 @@ const visibleWords = (page) => rail(page).evaluate(el => [...el.querySelectorAll
   await page.waitForFunction(() => document.querySelector('[data-testid="member-title-row"]')?.textContent?.includes('Atlas'), null, { timeout: 15000 })
   check('switching lands on Atlas', (await page.getByTestId('member-title-row').innerText()).includes('Atlas'))
 
-  // 12: Atlas has published nothing → the Dashboard tab says so and points at the chat.
-  if ((await page.getByTestId('member-side-panel').count()) === 0 || !(await page.getByTestId('member-dashboard').isVisible().catch(() => false))) {
-    await page.getByTestId('member-panel-toggle').click()
-  }
-  await page.getByTestId('crew-webview-empty').waitFor({ state: 'visible', timeout: 15000 })
-  await page.waitForTimeout(600)
-  check('unpublished Dashboard points at the chat with no button', (await page.getByTestId('crew-webview-setup').count()) === 0)
-  await page.mouse.move(5, 5)
-  await page.screenshot({ path: join(OUT, '12-dashboard-empty-light.png') })
   await context.close()
 }
 

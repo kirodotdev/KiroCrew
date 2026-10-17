@@ -6,10 +6,10 @@ import { changeApprovalMode, updateSlot } from '../../store/dashboardSlice'
 import { createSlot, setAgentSwitchNotice } from '../../store/chatSlice'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
-import { queryComposerOrExpand } from '../../pages/chat/composerFocus'
+import { focusComposerElement, queryComposerOrExpand } from '../../pages/chat/composerFocus'
 import { agentSwitchFailureMessage } from '../../utils/agentSwitchFeedback'
 import { api } from '../../api/client'
-import { toggleTerminalByChord } from '../../lib/terminalChordFocus'
+import { newTerminalByChord, toggleTerminalByChord } from '../../lib/terminalChordFocus'
 import { focusPopout as focusTerminalPopout } from '../../utils/terminalPopout'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
 import { useInstanceShortcuts } from '../../hooks/useInstanceShortcuts'
@@ -17,6 +17,8 @@ import { useAutoConnectInstances } from '../../hooks/useAutoConnectInstances'
 import { useCommandPalette } from '../../hooks/useCommandPalette'
 import { useProvider } from '../../providers/context'
 import { useAgents } from '../../hooks/useAgents'
+import { i18nT } from '../../i18n/t'
+import { SESSION_FOLDER_UNAVAILABLE_EVENT } from '../../lib/sessionFolderNotice'
 
 const REASONING_EFFORT_LEVELS = ['', 'low', 'medium', 'high', 'xhigh', 'max']
 // Approval-mode DISCRIMINANTS in escalating order, cycled by keyboard shortcut.
@@ -60,7 +62,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // left collapsed is asked back instead of swallowing the caret: creating a
       // session IS a typing intent, and the alternative is a new chat whose
       // first keystroke goes nowhere.
-      requestAnimationFrame(() => queryComposerOrExpand(ta => ta.focus()))
+      requestAnimationFrame(() => queryComposerOrExpand(focusComposerElement))
     },
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
@@ -72,6 +74,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
   }, [agentSwitchNotice, dispatch])
+  // A new chat that could not get its own session folder opened on the default
+  // project; the API client announces it for every create path (see
+  // lib/sessionFolderNotice), and it shares this transient notice.
+  useEffect(() => {
+    const onFolderUnavailable = () => dispatch(setAgentSwitchNotice(i18nT('store.chatSlice.session_folder_unavailable')))
+    window.addEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
+    return () => window.removeEventListener(SESSION_FOLDER_UNAVAILABLE_EVENT, onFolderUnavailable)
+  }, [dispatch])
   const switchActiveSlotAgent = useCallback(async (slot: string, agent: string) => {
     dispatch(setAgentSwitchNotice(null))
     try {
@@ -258,6 +268,12 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
     // the key.
     onToggleTerminal: terminalEnabled && !isPopout && !isEmbed
       ? () => { if (terminalPoppedOut) focusTerminalPopout(); else toggleTerminalByChord(activeSlotProject) }
+      : undefined,
+    // VS Code's Create New Terminal: open the docked panel if needed and add a
+    // tab in the active session's project. Same gating as the toggle above, and
+    // a popped-out panel is focused rather than grown from out of sight.
+    onNewTerminal: terminalEnabled && !isPopout && !isEmbed
+      ? () => { if (terminalPoppedOut) focusTerminalPopout(); else newTerminalByChord(activeSlotProject) }
       : undefined,
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

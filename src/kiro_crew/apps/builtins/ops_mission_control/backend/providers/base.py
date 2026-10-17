@@ -300,8 +300,9 @@ class ActionSink(Protocol):
     async def execute(self, signal: Signal, action: str, payload: dict[str, Any]) -> ActionResult:
         """Perform ``action`` for ``signal``.
 
-        A sink does not police its own authority (spec §5.3). The autonomy gate is resolved
-        before this is reached, and that is enforced structurally rather than by convention:
+        A sink does not police its own authority (spec: Autonomy gate). The autonomy
+        gate is resolved before this is reached, and that is enforced structurally rather
+        than by convention:
         ``routes._execute_authorized`` is the only caller, and it requires an
         ``_Authorized`` permit that only ``routes._authorize`` can mint. A new caller
         therefore cannot reach a provider write without passing the gate — review flagged

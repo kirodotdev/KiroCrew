@@ -24,6 +24,15 @@ The ladder, in order:
 5. a held hit is approved; otherwise the first attended responder asks the
    person; otherwise the unattended refusal answers.
 
+A policy with :attr:`Policy.stopping` reads it live before the first stage,
+before a person is asked, and at the commit point of an approval, with nothing
+awaited between that last read and the wire. The wire is handed it as well: an
+ACP transport reads it again after the security floor's thread hop and under
+its write lock right before the approval is written, and writes nothing once it
+holds. A stop seen at any of these reads bails the request as ``stopped``: a
+run that is being stopped abandons its requests, so no grant, gate hit or
+person approves one, whichever await the stop landed in.
+
 Invariants (``test/test_tool_permission.py`` pins each through this interface):
 
 * every :func:`settle` / :func:`bail` that returns has answered the wire exactly
@@ -62,9 +71,11 @@ from typing import Any, ClassVar, Literal, Protocol
 
 from kiro_crew import name_grant
 from kiro_crew.constants import DENY_CAUSE_POLICY
+from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, identity_grant_covers_child
 from kiro_crew.llm_helpers import _steer_host_deny
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR, ApprovalWithdrawn
+from kiro_crew.tool_gate_busy import TOOL_GATE_BUSY_REASON
 
 #: An empty, read-only mapping: the default for every ``meta``.
 EMPTY: Mapping[str, object] = MappingProxyType({})
@@ -162,8 +173,9 @@ class Answer:
 
 Outcome = Literal["approved", "auto_approved", "refused", "rejected", "floor_refused", "bailed"]
 
-#: The limits a run abandons a request at (:func:`bail`); each is a refusal rung.
-BailReason = Literal["turn_limit", "child_escalation_limit"]
+#: Why a run abandons a request (:func:`bail`): one of its limits, or a stop in
+#: progress; each is a refusal rung.
+BailReason = Literal["turn_limit", "child_escalation_limit", "stopped"]
 
 
 @dataclass(frozen=True)
@@ -221,8 +233,13 @@ class Ask:
 class Wire(Protocol):
     """Where the request is answered."""
 
-    async def allow(self, ask: Ask) -> bool:
-        """Approve; False when the transport floor turned the approval into a rejection."""
+    async def allow(self, ask: Ask, stopping: Callable[[], bool] | None = None) -> bool:
+        """Approve; False when the transport floor turned the approval into a rejection.
+
+        *stopping* is read again after each of the transport's own awaits, the
+        last time right before the approval is written; once it holds, nothing is
+        written and ``permission_floor.ApprovalWithdrawn`` is raised.
+        """
         ...
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
@@ -367,6 +384,9 @@ class Policy:
     responders: tuple[Responder, ...] = ()
     child: ChildRule = field(default_factory=ChildRule.ignore)
     narrator: Narrator = SILENT
+    #: Whether the run is being stopped, read live by :func:`settle` and handed
+    #: to the wire with each approval; None for a surface with no stop of its own.
+    stopping: Callable[[], bool] | None = None
 
     def __post_init__(self) -> None:
         if sum(grant is GATE_GRANT for grant in self.grants) != 1:
@@ -380,13 +400,23 @@ class Policy:
 # ── The ladder ───────────────────────────────────────────────────────────────
 
 
+def _gate_unjudged(waited: float) -> Refusal:
+    """The gate's answer for a call no tool-gate worker ran: a hook-deny refusal."""
+    return Refusal.host("hook_deny", TOOL_GATE_BUSY_REASON, DENY_CAUSE_POLICY)
+
+
 async def settle(ask: Ask, policy: Policy) -> Settled:
     """Decide, audit and answer *ask* under *policy*; see the module docstring."""
+    if _stopping(policy):
+        return await bail(ask, policy, "stopped")
     for floor in policy.floors:
         refusal = await floor.refuse(ask)
         if refusal is not None:
             return await _refuse(ask, policy, refusal)
-    verdict = policy.gate.judge(ask)
+    # The gate's path tier waits on the mc-pathres resolver on the calling
+    # thread; run it on the tool-gate pool so a slow resolution parks a gate
+    # worker, not the event loop. A call no worker ran is refused unjudged.
+    verdict = await run_in_tool_gate_pool(policy.gate.judge, ask, on_queue_timeout=_gate_unjudged)
     if isinstance(verdict, Refusal):
         return await _refuse(ask, policy, verdict)
     low = _low_fidelity(ask, policy)
@@ -404,6 +434,8 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
         return await _allow(ask, policy, held.reason, "auto_approved", "rule")
     responder = policy.child.responder if low else _first_attended(policy.responders)
     if responder is not None and responder.attended:
+        if _stopping(policy):
+            return await bail(ask, policy, "stopped")
         if low and policy.child.annotate is not None:
             ask.event.title = policy.child.annotate(ask.event.title)
         answer = await responder.ask(ask)
@@ -417,7 +449,8 @@ async def settle(ask: Ask, policy: Policy) -> Settled:
 
 
 async def bail(ask: Ask, policy: Policy, why: BailReason) -> Settled:
-    """Answer *ask* for a run that abandons it at a limit (*why* names the limit).
+    """Answer *ask* for a run that abandons it: at a limit, or because the run is
+    being stopped (*why* names which).
 
     Audited and rejected bare: the run's turn ends here, so there is no continuing
     turn for a deny notice to correct.
@@ -427,6 +460,10 @@ async def bail(ask: Ask, policy: Policy, why: BailReason) -> Settled:
 
 def _low_fidelity(ask: Ask, policy: Policy) -> bool:
     return policy.child.enforced and ask.low_fidelity
+
+
+def _stopping(policy: Policy) -> bool:
+    return policy.stopping is not None and policy.stopping()
 
 
 def _first_attended(responders: tuple[Responder, ...]) -> Responder | None:
@@ -476,7 +513,17 @@ async def _allow(
     outcome: Literal["approved", "auto_approved"],
     by: Literal["rule", "person"],
 ) -> Settled:
-    sent = await ask.wire.allow(ask)
+    # The commit point of every approval (a grant, the gate's hit, a person's
+    # yes): the stop is read here with no await before the wire, and the wire
+    # reads it again after each of its own awaits, the last time right before
+    # the approval is written. A stop that landed in any await of the ladder,
+    # its caller or the transport bails the request.
+    if _stopping(policy):
+        return await bail(ask, policy, "stopped")
+    try:
+        sent = await ask.wire.allow(ask, policy.stopping)
+    except ApprovalWithdrawn:
+        return await bail(ask, policy, "stopped")
     policy.narrator.allowed(ask, sent)
     settled = Settled(outcome if sent else "floor_refused", rung, by)
     policy.audit.approved(ask, settled)
@@ -499,8 +546,12 @@ class AcpWire:
     def __init__(self, client: Any) -> None:
         self.client = client
 
-    async def allow(self, ask: Ask) -> bool:
-        sent = await self.client.approve_tool(ask.request_id)
+    async def allow(self, ask: Ask, stopping: Callable[[], bool] | None = None) -> bool:
+        # The keyword reaches only a provider whose TYPE declares it takes it.
+        withdrawal: dict[str, Callable[[], bool]] = {}
+        if stopping is not None and getattr(type(self.client), "approval_withdrawable", False):
+            withdrawal["withdraw_if"] = stopping
+        sent = await self.client.approve_tool(ask.request_id, **withdrawal)
         return sent is not False
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
@@ -746,6 +797,7 @@ _SUBAGENT_REFUSALS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "headless": ("", "no_policy_deny_default"),
         "turn_limit": ("turn_limit", ""),
         "child_escalation_limit": ("child_escalation_limit", ""),
+        "stopped": ("stopped", ""),
     }
 )
 

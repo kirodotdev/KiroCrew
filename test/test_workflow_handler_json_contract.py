@@ -104,6 +104,70 @@ async def test_mutation_handlers_keep_valid_object_path(
     method.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("route", "path", "handler", "service_method", "payload", "code"),
+    [
+        (
+            "/api/workflows/author",
+            "/api/workflows/author",
+            api_workflow_author,
+            "author",
+            {"intent": "ship it"},
+            "workflow_author_failed",
+        ),
+        (
+            "/api/workflows/run",
+            "/api/workflows/run",
+            api_workflow_run,
+            "start",
+            {"source": "print('ok')"},
+            "workflow_run_failed",
+        ),
+        (
+            "/api/workflows/run_intent",
+            "/api/workflows/run_intent",
+            api_workflow_run_intent,
+            "start_from_intent",
+            {"intent": "ship it"},
+            "workflow_run_intent_failed",
+        ),
+        (
+            "/api/workflows/runs/{run_id}/rerun",
+            "/api/workflows/runs/wf_1/rerun",
+            api_workflow_run_rerun,
+            "rerun_subtree",
+            {"from_index": 0},
+            "workflow_rerun_failed",
+        ),
+    ],
+)
+async def test_mutation_handlers_return_structured_500_on_service_error(
+    route, path, handler, service_method, payload, code
+) -> None:
+    """A service-layer exception becomes a diagnosable JSON 500, not an opaque one.
+
+    Without the handler-level try/except, a deterministic failure such as the
+    glibc < 2.28 ``NotImplementedError("atomic no-replace rename is
+    unavailable")`` raised deep in the service propagates as a bare aiohttp 500
+    with no body, so a caller cannot tell a deterministic fault from a transient
+    one. The handler must catch it and return ``{"error", "code"}`` with the
+    handler's own stable code.
+    """
+    method = AsyncMock(side_effect=NotImplementedError("atomic no-replace rename is unavailable"))
+    app = web.Application()
+    app["state"] = SimpleNamespace(workflow_service=SimpleNamespace(**{service_method: method}))
+    app.router.add_post(route, handler)
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(path, json=payload)
+        body = await response.json()
+
+    assert response.status == 500
+    assert body["code"] == code
+    assert isinstance(body["error"], str) and body["error"]
+    method.assert_awaited_once()
+
+
 async def test_runs_list_is_compact_and_detail_carries_result() -> None:
     """GET /api/workflows/runs ships no result payloads; the detail does.
 

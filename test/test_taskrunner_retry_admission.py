@@ -13,6 +13,7 @@ from test_workflows_snapshot_commit import world as _world
 
 from kiro_crew import atomic_write as atomic
 from kiro_crew.task_models import Task, TaskStatus
+from kiro_crew.testing.wait import await_until, finished
 from kiro_crew.workflow_memory import TaskSnapshotError
 
 world = _world
@@ -140,7 +141,7 @@ async def test_cancelled_retry_drains_writer_then_restores_and_releases(
         patch.setattr(atomic, "_write_all", held_failure)
         pending = asyncio.create_task(runner.retry_from_task(run.task_id, 2, agent="new-agent"))
         try:
-            await asyncio.wait_for(entered.wait(), 3)
+            await await_until(entered)
             pending.cancel()
             await asyncio.sleep(0)
             pending.cancel()
@@ -150,7 +151,7 @@ async def test_cancelled_retry_drains_writer_then_restores_and_releases(
         finally:
             release.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, 3)
+                await await_until(pending)
     assert waits == [True]
     _assert_retained(runner, run, before, tasks)
     restored = await asyncio.to_thread(_runner, world, runner._work_dir)
@@ -180,17 +181,17 @@ async def test_retry_reserves_before_history_await_and_releases_on_cancel(
     monkeypatch.setattr(runner, "_bound_history_key", held_history)
     pending = asyncio.create_task(runner.retry_from_task(run.task_id, 2))
     try:
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered)
         assert asdict(run) == before
         with pytest.raises(ValueError, match="already starting"):
             if competitor == "retry":
-                await asyncio.wait_for(runner.retry_from_task(run.name, 2), 3)
+                await finished(runner.retry_from_task(run.name, 2), "retry competitor")
             else:
-                await asyncio.wait_for(runner.execute_plan(run.task_id), 3)
+                await finished(runner.execute_plan(run.task_id), "execute competitor")
     finally:
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(pending, 3)
+            await await_until(pending)
     _assert_retained(runner, run, before, tasks)
     monkeypatch.setattr(runner, "_bound_history_key", real_history)
     await _assert_success(runner, run, monkeypatch, tasks)
@@ -216,7 +217,7 @@ async def _assert_success(runner, run, monkeypatch, tasks):
             "",
             0,
         )
-    await asyncio.wait_for(runner._tasks[task_id], 3)
+    await await_until(runner._tasks[task_id])
     execute.assert_awaited_once()
     assert run.status == "completed"
     assert runner._tasks == {}

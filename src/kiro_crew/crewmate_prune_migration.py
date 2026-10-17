@@ -834,7 +834,7 @@ def _write_marker(report: PruneReport) -> None:
     }
     marker = marker_path()
     marker.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(os.fspath(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    fd = os.open(os.fspath(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fd = -1

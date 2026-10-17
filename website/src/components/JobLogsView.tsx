@@ -8,7 +8,7 @@ import LogEntry, { type LogEntryData } from './LogEntry'
 import { i18nT } from '../i18n/t'
 const PAGE_SIZE = 10
 
-export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, cancelError }: { jobId: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void; cancelError?: string | null }) {
+export default function JobLogsView({ jobId, jobName, isRunning, runningSince, onCancel, cancelError }: { jobId: string; jobName?: string; isRunning?: boolean; runningSince?: number | null; onCancel?: () => void; cancelError?: string | null }) {
   const [page, setPage] = useState(0)
   const [elapsed, setElapsed] = useState(0)
 
@@ -59,7 +59,7 @@ export default function JobLogsView({ jobId, isRunning, runningSince, onCancel, 
       ) : (
         <>
           <div className="border border-border rounded-lg overflow-hidden">
-            {entries.map(e => <LogEntry key={e.run_id} entry={e} jobId={jobId} />)}
+            {entries.map(e => <LogEntry key={e.run_id} entry={e} jobId={jobId} jobName={jobName} />)}
           </div>
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-1">

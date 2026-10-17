@@ -22,7 +22,7 @@ from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew import pinned_fs
+from kiro_crew import context_omissions, pinned_fs
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, workspace_dir_from_entry
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG, DEGRADED_WORKSPACES
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
@@ -647,7 +647,8 @@ def collect_folder_steering(
         # warning names the repair.
         logger.warning(
             "folder steering skipped: %s, so the memory-store fence is incomplete; "
-            "%d declared steering root(s) were not read (repair config.json to restore)",
+            "%d declared steering root(s) were not read (repair config.json, and restart "
+            "the gateway if the whole file was unreadable, to restore)",
             fence.degraded,
             len(steering_dirs),
         )
@@ -804,7 +805,8 @@ def render_omission_notice(omission: SteeringOmission) -> str:
             f"[FOLDER STEERING OMISSION: {omission.count} declared steering root(s) were "
             f"not read -- the configuration's workspace table could not be read, so the "
             f"memory-store fence is incomplete and no folder steering is loaded until "
-            f"config.json is repaired.]"
+            f"config.json is repaired (an unreadable config.json also needs a gateway "
+            f"restart).]"
         )
     root = _notice_path(omission.root)
     if omission.kind == "files":
@@ -880,6 +882,11 @@ def render_folder_steering(
         ]
     if not documents and not omissions:
         return ""
+    if omissions:
+        # A collection ceiling fired. Its counts are in mixed units (roots, files,
+        # directories), so the record says only that the section is incomplete; a
+        # size cut below replaces it with document counts.
+        context_omissions.record(context_omissions.FOLDER_STEERING, "cap")
     notices = [render_omission_notice(omission) for omission in omissions]
     if max_chars is None:
         return _assemble_section(
@@ -943,6 +950,18 @@ def _fit_notices(notices: list[str], max_chars: int) -> list[str] | None:
     return None
 
 
+def _record_size_cut(omitted: int, total: int, max_chars: int) -> None:
+    """Record documents the section's character cap kept from loading whole."""
+    if omitted:
+        context_omissions.record(
+            context_omissions.FOLDER_STEERING,
+            "budget",
+            omitted=omitted,
+            total=total,
+            budget_chars=max_chars,
+        )
+
+
 def _render_bounded(documents: list[tuple[str, str]], notices: list[str], max_chars: int) -> str:
     """The bounded arm of :func:`render_folder_steering`; see its docstring.
 
@@ -961,6 +980,7 @@ def _render_bounded(documents: list[tuple[str, str]], notices: list[str], max_ch
             "folder steering section cap %d cannot hold the section frame; nothing rendered",
             max_chars,
         )
+        _record_size_cut(len(documents), len(documents), max_chars)
         return ""
     notices = fitted
     # The budget notice is one more line the frame must have room for when
@@ -976,6 +996,9 @@ def _render_bounded(documents: list[tuple[str, str]], notices: list[str], max_ch
         return _assemble_section([*kept, *notices])
     while True:
         remaining = len(documents) - len(kept)
+        # Every pass that gives back a document records again, so the count the
+        # record keeps is the one for the pass that returns.
+        _record_size_cut(remaining, len(documents), max_chars)
         # Try to keep the head of the straddling document under a cut marker,
         # with the budget notice already counting it as cut.
         path, body = documents[len(kept)]

@@ -20,7 +20,9 @@ The `AppContext` capability permissions (`permissions.cron`,
 currently has no runtime call site and must not be treated as an execution
 boundary. Neither mechanism restricts imports, filesystem, network, or
 subprocess use by the loaded module. There is currently **no process-level
-sandbox** around app code itself.
+sandbox** around in-process app code (hooks and route handlers). An app's
+separate backend process is launched under the OS sandbox's `standard` mode
+where a sandbox backend applies, which does not bound the in-process modules.
 
 > **Admitting and enabling an app is therefore equivalent to running that code with the same privileges as Kiro Crew itself.** Only trust apps you trust.
 
@@ -105,7 +107,7 @@ sandbox** around app code itself.
 
 App tokens (minted via the `X-App-Secret` exchange at `POST /api/apps/<name>/token`)
 are **deny-by-default** confined by the dashboard auth middleware
-(`token_auth.py` `_enforce_app_scope` / `app_token_path_allowed` / `_app_owns_path` /
+(`token_auth_app_scope.py` `_enforce_app_scope` / `app_token_path_allowed` / `_app_owns_path` /
 `_app_api_allowlist`) to the app's own namespace (`/apps/<name>/*` and
 `/api/apps/<name>/*`) plus the API path prefixes the app declares in its manifest
 `permissions.api` allowlist. Every other path returns `403`, and the
@@ -167,11 +169,14 @@ The consent surface is the **detail page**: the update notice and the Permission
 card. The trust dialog opens only when repo trust is missing, so re-enabling an
 already-trusted app from a store card shows no dialog. At first install the
 dialog's session row comes from the catalog or registry projection, not from the
-cloned manifest, so a projection that omits the flag under-discloses. Two sibling
-grants are also live-enforced and are not re-gated on update today
-(`permissions.api`, `permissions.events`). A generic widened-permission check
-across install, update and enable, and a structured enable-route refusal that
-drives the dialog, are tracked in issue #11212.
+cloned manifest, so a projection that omits the flag under-discloses. The two
+sibling grants that are live-enforced, `permissions.api` and
+`permissions.events`, are held back on update instead of disabling the app: the
+app stores the set the owner approved in its own `approved-grants.json`, every enforcement point grants
+only declared entries in that set, and the owner approves added entries from
+the detail page (App Kit platform contracts §13). The first-install disclosure of those
+two lists, and a structured enable-route refusal that drives the dialog, are
+not covered.
 
 A `permissions.api` entry is a prefix match, so declaring `/api/approvals` or
 `/api/sessions` would otherwise reach every session on the instance. The
@@ -188,6 +193,7 @@ internal-secret caller whose calling session belongs to an app) by ownership:
   autonudge, subagents or the task runner are never resolvable by an app, and
   `GET /api/approvals`, which lists only those, is empty for an app.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`,
+  `GET /api/sessions/{key}/meta`,
   `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only
   transcripts whose metadata records the calling app as owner. A delete is also
   refused when the live slot it would close is not the app's, because the slot

@@ -5,7 +5,7 @@
  *  bucket, so every aggregate skips the active key there. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import type { SubagentActivity } from '../../types'
+import type { SubagentActivity, SubagentInfo } from '../../types'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
@@ -97,29 +97,100 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
   })
 }
 
+/** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
+ *  the front; the card states how many it is not listing, from `toolCount`. */
+export const SUBAGENT_TOOL_CALLS_CAP = 50
+
+/** Record one `subagent_tool` frame in the card's tool-call timeline (#13628).
+ *
+ *  `lastTool` alone is overwritten by every frame, so a long run showed one
+ *  tool name and nothing else. This keeps the recent calls in order.
+ *
+ *  One gated call sends TWO frames: the tool_call update (which bumps
+ *  `tool_count`) and then its permission request. Both carry the call's
+ *  `tool_call_id`, so a frame naming the newest entry's id updates that entry
+ *  instead of listing the call again, and a frame with a DIFFERENT id is a new
+ *  call even when `tool_count` did not move -- a backend child's permission
+ *  request is counted only at approval, so its count stays put. A frame with no
+ *  id (an older gateway) falls back to the count: an unmoved count is the
+ *  second frame of the newest call. A frame with neither id nor count (native
+ *  kiro-cli cards, which `_native_subagent_sync` re-sends on every
+ *  `list_update`) is not listed again when its title equals the newest entry.
+ *
+ *  Above the coalescing threshold the backend merges frames (latest wins), so
+ *  intermediate calls never reach the client; `toolCount` still counts them,
+ *  and the card reports the difference rather than implying a complete list.
+ *  A reconnect clears running cards (`clearSubagentsForSnapshot`), so the
+ *  timeline restarts there too.
+ *  Must run BEFORE the caller stores the frame's `tool_count`. */
+function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined) {
+  const calls = (a.toolCalls ??= [])
+  const newest = calls[calls.length - 1]
+  const id = callId || undefined
+  let same: boolean
+  if (id && newest?.id) same = newest.id === id
+  // A replay seeds its one row without an id, so an id-bearing frame after it
+  // is a call of its own: the count cannot tell it apart, because a child's
+  // permission request does not move `tool_count`.
+  else if (id && newest) same = false
+  else if (typeof toolCount === 'number') same = !!newest && toolCount === a.toolCount
+  else same = newest?.tool === tool
+  if (same && newest) {
+    newest.tool = tool
+    if (id) newest.id = id
+    return
+  }
+  calls.push(id ? { tool, id } : { tool })
+  if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+}
+
+/**
+ * The decision identified by this pending spawn is no longer actionable.
+ * `approvalGone` describes the PENDING phase only: a real `subagent_spawn` or
+ * tool frame moves the card to running/tool without clearing it, and a stale
+ * marker must not keep a live agent classified as unresolved.
+ */
+export const isSpawnApprovalGone = (a: SubagentActivity) =>
+  a.status === 'pending' && !!a.approval_id && a.approvalGone === a.approval_id
+
+/** Reconciliation found no process for a gone approval and retired the card.
+ *  Terminal-only, for the same reason: a later tool frame proves a launch. */
+export const isSpawnApprovalRetired = (a: SubagentActivity) =>
+  a.status === 'stopped' && !!a.approvalRetired
+
+/**
+ * Shared process-liveness semantics for busy state, rail/sidebar counts, and
+ * renderers. A terminal approval refusal settles ACTIONABILITY, not liveness:
+ * another surface may already have approved and launched the agent. Keep that
+ * short unresolved window conservative until the authoritative spawn list
+ * converts the card to running/terminal.
+ */
+export const isActiveSubagent = (a: SubagentActivity) =>
+  a.status === 'running' || a.status === 'tool' || a.status === 'pending'
+
 /**
  * Live "sub-agents running" signal for a slot, derived from the
  * subagent_spawn/tool/done WS events (the only real-time source — see the
  * ChatSidebar countActive note: dashboardSlice fields only refresh on a full
- * slots push). Counts pending/running/tool as active, mirroring ChatSidebar.
+ * slots push). Uses the same active predicate as every aggregate count.
  */
 export const selectSlotSubagentsActive = (state: RootState, slot: string): boolean => {
   const subs = getSlotSubs(state.chat, slot)
   if (!subs) return false
   for (const a of Object.values(subs)) {
-    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') return true
+    if (isActiveSubagent(a)) return true
   }
   return false
 }
 
 // Shared subagent-counting helpers — single implementations for both sidebar and aggregate selectors.
 
-/** Counts active subagents (running + tool + pending) in a subagent map. */
+/** Counts active subagents in a subagent map. */
 const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
   if (!m) return 0
   let n = 0
   for (const a of Object.values(m)) {
-    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
+    if (isActiveSubagent(a)) n++
   }
   return n
 }
@@ -133,9 +204,27 @@ const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
  * `approval_id` is the load-bearing half — `sseSubagentPending` is the only
  * writer of `'pending'` and always sets it, so its absence means a card built
  * some other way and must not be claimed as blocked on the user.
+ *
+ * A gone approval (`markSubagentApprovalGone`) is excluded: once a resolve has
+ * proved it decided or expired, no surface can take the decision, so none may
+ * say the user owes it. That verdict does not prove whether another surface
+ * launched the run, so liveness readers keep it conservative until the spawn
+ * inventory reconciles it.
  */
 export const isAwaitingSpawnApproval = (a: SubagentActivity) =>
-  a.status === 'pending' && !!a.approval_id
+  a.status === 'pending' && !!a.approval_id && !isSpawnApprovalGone(a)
+
+/**
+ * Canonical terminal classification of a finished run: `outcome` is the single
+ * source (spec: docs/system-specs/modules/subagent.md). The `stopped`/`error`
+ * derivation is kept ONLY as a fallback for records that predate the field
+ * (reconnect replays from a pre-upgrade gateway).
+ */
+const terminalStatus = (r: { outcome?: 'completed' | 'failed' | 'stopped'; stopped?: boolean; error?: string }): 'stopped' | 'error' | 'done' =>
+  r.outcome === 'stopped' ? 'stopped'
+    : r.outcome === 'failed' ? 'error'
+      : r.outcome === 'completed' ? 'done'
+        : r.stopped ? 'stopped' : (r.error ? 'error' : 'done')
 
 /** Counts subagents pending spawn approval in a subagent map. */
 const countPendingApprovals = (m?: Record<string, SubagentActivity>) => {
@@ -365,7 +454,85 @@ export const subagentReducers = {
       if (b) { b.approving = action.payload.approving; return }
     }
   },
-  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string }>) {
+  /** One owner for a terminal refusal, so the side panel and the composer
+   *  banner, which resolve the same id, both withdraw it (#11180). */
+  markSubagentApprovalGone(state: ChatState, action: PayloadAction<{ id: string; approval_id: string }>) {
+    if (isUnsafeKey(action.payload.id)) return
+    const mark = (a: SubagentActivity | undefined) => {
+      if (!a) return false
+      // Only the approval that was refused: a newer one on this card stays live.
+      if (a.approval_id === action.payload.approval_id) {
+        a.approving = false
+        a.approvalGone = action.payload.approval_id
+      }
+      return true
+    }
+    if (mark(state.subagents[action.payload.id])) return
+    for (const sa of Object.values(state.slotActivity)) {
+      if (mark(sa.subagents[action.payload.id])) return
+    }
+  },
+  /**
+   * Apply the authoritative spawn inventory after a terminal approval
+   * refusal. Compare all three identities before mutating: a spawn frame or a
+   * fresh approval id may have arrived while the GET was in flight.
+   */
+  reconcileSubagentApprovalGone(state: ChatState, action: PayloadAction<{
+    slot: string
+    id: string
+    approval_id: string
+    agent: SubagentInfo | null
+  }>) {
+    const { slot, id, approval_id, agent } = action.payload
+    if (isUnsafeKey(slot) || isUnsafeKey(id)) return
+    const current = getSlotSub(state, slot, id)
+    if (current?.status !== 'pending'
+      || current.approval_id !== approval_id
+      || current.approvalGone !== approval_id) return
+
+    // Matched by run id alone: ids are unique, and a row's `parent` is not the
+    // tab key for a nested, cron- or channel-born run.
+    if (agent && agent.id === id) {
+      // The approval future can disappear just before the manager publishes
+      // the terminal outcome. Its inventory row explicitly says it is still
+      // parked and therefore is not proof of a launched process; leave the
+      // conservative unresolved state for the next reconciliation tick.
+      if (agent.awaiting_approval && !agent.done) return
+      current.approving = false
+      current.approvalGone = undefined
+      current.approvalRetired = undefined
+      current.approval_id = undefined
+      if (agent.task) current.task = agent.task
+      if (agent.agent) current.agent = agent.agent
+      if (typeof agent.started === 'number' && agent.started > 0) {
+        current.startedAt = agent.started * 1000
+        current.startedAtAssumed = undefined
+        // A finished row carries no elapsed of its own, and "now - started" is
+        // wall time since registration, not the run's duration.
+        current.elapsed = agent.done ? 0 : Math.max(0, Math.round(Date.now() / 1000 - agent.started))
+      }
+      current.lastTool = agent.last_tool || ''
+      if (agent.done) {
+        current.status = terminalStatus(agent)
+        current.error = agent.error || undefined
+      } else {
+        current.status = agent.last_tool ? 'tool' : 'running'
+        current.error = undefined
+      }
+      return
+    }
+
+    // No backend record with this id: it never launched, or it is no longer
+    // retained, and the card claims only the absent record. Retire the card
+    // instead of preserving a reconnect-proof pending zombie. Keep the scoped
+    // approval verdict so no surface re-offers the dead decision; a later
+    // sseSubagentPending overwrites the whole entry and re-arms a fresh id.
+    current.status = 'stopped'
+    current.approving = false
+    current.approvalRetired = true
+    current.elapsed = 0
+  },
+  sseSubagentSpawn(state: ChatState, action: PayloadAction<{ slot: string; id: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -380,6 +547,9 @@ export const subagentReducers = {
       // Same guard for requestedModel: only set when the frame carries a value.
       if (action.payload.requested_model) existing.requestedModel = action.payload.requested_model
       if (action.payload.child_session) existing.childSession = action.payload.child_session
+      // Same guard for the wave id: only set when the frame names a wave, so a
+      // later frame that omits it cannot blank a known batch.
+      if (action.payload.batch_id) existing.batchId = action.payload.batch_id
       // The spawn event carries the authoritative task text (the pending
       // card's task is derived from the approval title, which may be empty
       // or just "spawn_run") — always prefer the spawn payload's task.
@@ -391,6 +561,7 @@ export const subagentReducers = {
       model: action.payload.model || '',
       requestedModel: action.payload.requested_model || existing?.requestedModel || undefined,
       childSession: action.payload.child_session || undefined,
+      batchId: action.payload.batch_id || existing?.batchId || undefined,
       status: 'running', streaming: existing?.streaming || '', lastTool: '', startedAt: existing?.startedAt || Date.now(), elapsed: 0,
       // Reusing an entry's start time inherits whether that time was ASSUMED.
       // Rebuilding the entry without this would silently promote an assumption
@@ -400,13 +571,17 @@ export const subagentReducers = {
       toolCount: 0, stalled: false,
     }
   },
-  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
+  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }>) {
     const { slot, id } = action.payload
     // Prototype-pollution guard is centralized in upsertSlotSub, which also
     // creates the entry when this is the first frame naming the agent.
     const a = upsertSlotSub(state, slot, id)
     if (a) {
+      if (action.payload.tool) recordToolCall(a, action.payload.tool, action.payload.tool_count, action.payload.tool_call_id)
       a.lastTool = action.payload.tool; a.status = 'tool'
+      // A tool frame proves the run launched: a retired verdict must not
+      // resurrect when the run later ends `stopped`.
+      a.approvalRetired = undefined
       if (typeof action.payload.tool_count === 'number') a.toolCount = action.payload.tool_count
       a.stalled = false
       a.idleSecs = undefined
@@ -443,14 +618,14 @@ export const subagentReducers = {
   /** One coalesced ~1s frame carrying the latest delta per agent (scale
    *  plumbing — replaces per-event tool/stalled/retrying frames when many
    *  agents run). Field presence decides what to apply; latest wins. */
-  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
+  sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
     for (const u of action.payload.updates || []) {
       const a = upsertSlotSub(state, u.slot, u.id)
       if (!a) continue
       // Order matters: retrying (attempt) applies FIRST so a tool field in
       // the same merged entry — meaning work resumed — clears it last.
       if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
-      if (typeof u.tool === 'string' && u.tool) { a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+      if (typeof u.tool === 'string' && u.tool) { recordToolCall(a, u.tool, u.tool_count, u.tool_call_id); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
@@ -491,7 +666,7 @@ export const subagentReducers = {
       if (st === 'done' || st === 'error' || st === 'stopped') delete subs[id]
     }
   },
-  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; child_session?: string; result?: string }>) {
+  sseSubagentDone(state: ChatState, action: PayloadAction<{ slot: string; id: string; elapsed: number; credits?: number; error?: string; stopped?: boolean; outcome?: 'completed' | 'failed' | 'stopped'; task?: string; agent?: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; result?: string }>) {
     if (isUnsafeKey(action.payload.slot) || isUnsafeKey(action.payload.id)) return
     const subs = action.payload.slot !== state.activeSlot
       ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).subagents
@@ -510,15 +685,7 @@ export const subagentReducers = {
     const credits = typeof action.payload.credits === 'number' && Number.isFinite(action.payload.credits)
       ? Math.max(0, action.payload.credits)
       : undefined
-    // Canonical terminal classification: `outcome` is the single source
-    // (spec: docs/system-specs/modules/subagent.md). `stopped`/`error`
-    // derivation is kept ONLY as a fallback for old payloads that predate
-    // the field (reconnect replays from a pre-upgrade gateway).
-    const doneStatus: 'stopped' | 'error' | 'done' =
-      action.payload.outcome === 'stopped' ? 'stopped'
-        : action.payload.outcome === 'failed' ? 'error'
-          : action.payload.outcome === 'completed' ? 'done'
-            : action.payload.stopped ? 'stopped' : (action.payload.error ? 'error' : 'done')
+    const doneStatus = terminalStatus(action.payload)
     if (a) {
       a.status = doneStatus
       a.retrying = false
@@ -537,6 +704,9 @@ export const subagentReducers = {
       // keeps the live-downgrade amber chip. Never clobber a known value to ''.
       if (action.payload.requested_model) a.requestedModel = action.payload.requested_model
       if (action.payload.child_session && !a.childSession) a.childSession = action.payload.child_session
+      // Carry the wave id so a reconnect that rehydrates a completed card keeps
+      // its batch chip. Never clobber a known value to ''.
+      if (action.payload.batch_id && !a.batchId) a.batchId = action.payload.batch_id
       if (isNative && action.payload.result !== undefined) a.result = action.payload.result
       // A done frame carries authoritative `elapsed`, which reconstructs the
       // real start for an entry whose start was only ASSUMED -- the same
@@ -556,6 +726,7 @@ export const subagentReducers = {
         model: action.payload.model || '',
         requestedModel: action.payload.requested_model || undefined,
         childSession: action.payload.child_session || undefined,
+        batchId: action.payload.batch_id || undefined,
         status: doneStatus,
         streaming: '',
         lastTool: '',
@@ -567,7 +738,7 @@ export const subagentReducers = {
       }
     }
   },
-  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
+  sseSubagentSnapshot(state: ChatState, action: PayloadAction<{ id: string; slot: string; task: string; agent: string; model?: string; requested_model?: string; child_session?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean; idle_secs?: number }>) {
     const d = action.payload
     // A snapshot without an owning slot is an orphan, not evidence that it
     // belongs to whichever chat this browser happens to show. Popout windows
@@ -592,7 +763,12 @@ export const subagentReducers = {
       // Same guard for requestedModel: prefer frame value, fall back to existing.
       requestedModel: d.requested_model || existing?.requestedModel || undefined,
       childSession: d.child_session || existing?.childSession || undefined,
+      batchId: d.batch_id || existing?.batchId || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
+      // A replay carries only the latest tool. On a real reconnect
+      // `clearSubagentsForSnapshot` has already dropped the running card, so the
+      // timeline restarts from that tool; an entry that survived keeps its list.
+      toolCalls: existing?.toolCalls?.length ? existing.toolCalls : (d.last_tool ? [{ tool: d.last_tool }] : undefined),
       startedAt: d.started * 1000, elapsed: 0,
       toolCount: d.tool_count ?? 0, stalled,
       // Same pairing rule as sseSubagentStalled: the idle span lives and dies

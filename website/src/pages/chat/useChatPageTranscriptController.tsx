@@ -373,6 +373,7 @@ export function useChatPageTranscriptEarlyController({
     scrollTranscriptBy,
     updatePinnedPrompt,
     onScrollPin,
+    pinnedJumpChrome,
     scrollToPinnedPrompt,
   }
 }

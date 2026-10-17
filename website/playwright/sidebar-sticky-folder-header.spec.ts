@@ -2,7 +2,7 @@ import { test, expect, Page, APIRequestContext } from '@playwright/test'
 
 /**
  * Folder headers in the Sessions lane pin to the top while their folder is
- * scrolled (ChatSidebar renderFolderHeader, `.folder-row-sticky` in index.css).
+ * scrolled (chat-sidebar/folderBlocks.tsx renderFolderHeader, `.folder-row-sticky` in index.css).
  *
  * jsdom has no layout engine, so `position: sticky` can only be proven in a real
  * browser. The measured claims:

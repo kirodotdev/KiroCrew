@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { GitBranch, Lightbulb, Plus, X } from 'lucide-react'
+import { GitBranch, Lightbulb, MessageSquarePlus, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 import ErrorNotice from './ErrorNotice'
 
@@ -15,13 +15,29 @@ export interface FollowUpCardProps {
    * exists, not a git repo, git unavailable) which the card renders inline.
    */
   onStartInWorktree: (item: FollowupItem) => Promise<void>
+  /**
+   * Open a new session in this session's project directory (where a new chat
+   * starts by default when it has none) and pre-fill its composer, with no git
+   * involved. The primary action when there is no repository to branch from.
+   * Rejects with a user-facing message on failure, rendered inline like the
+   * worktree route's.
+   */
+  onStartInNewChat: (item: FollowupItem) => Promise<void>
   /** Drop this single suggestion; siblings stay. */
   onSkip: (index: number) => void
   /**
-   * Absent when the active session has no project directory. The worktree
-   * button is disabled in that case — there is no repo to branch from.
+   * Absent when the active session has no project directory. The primary
+   * action is then a plain new chat — there is no repo to branch from.
    */
   projectDir?: string
+  /**
+   * Result of the project's git probe: `false` when the project directory is
+   * known NOT to be a git repo, so a worktree cannot be branched from it and
+   * the primary action is a plain new chat instead. `undefined` while the
+   * probe is pending or failed: the worktree action stays offered and the
+   * server's own repo check remains the backstop.
+   */
+  projectIsRepo?: boolean
 }
 
 /**
@@ -41,28 +57,36 @@ function FollowUpCard({
   items,
   onAddToSession,
   onStartInWorktree,
+  onStartInNewChat,
   onSkip,
   projectDir,
+  projectIsRepo,
 }: FollowUpCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
-  // Index of the item whose worktree is being created, so only that row shows
-  // a pending state and double-clicks cannot fire two `worktree add` calls.
+  // Index of the item whose session is being opened, so only that row shows a
+  // pending state and double-clicks cannot fire two `worktree add` calls or
+  // open two chats.
   const [busyIndex, setBusyIndex] = useState<number | null>(null)
   const [errors, setErrors] = useState<Record<number, string>>({})
+  // A project that is not a git repo is the same dead end for a worktree as no
+  // project: the server can only refuse it with "Not a git repository". Both
+  // cases swap the worktree action for a plain new chat.
+  const notRepo = !!projectDir && projectIsRepo === false
+  const canWorktree = !!projectDir && !notRepo
 
   // Errors are keyed by array index, and Skip REMOVES an item — which shifts
   // every later index down. Without this, skipping a failed item would re-render
   // its neighbour under the failed item's message, misattributing the failure to
   // an unrelated suggestion. Any change to `items` drops the stale errors.
   //
-  // `itemsGen` closes the other half of the same hazard: a worktree request that
-  // REJECTS after `items` changed would otherwise write its error against the new
+  // `itemsGen` closes the other half of the same hazard: a request that REJECTS
+  // after `items` changed would otherwise write its error against the new
   // list's index. Each request captures the generation it started in and its
   // completion is ignored if that no longer matches.
   const itemsGen = useRef(0)
   useEffect(() => { itemsGen.current += 1; setErrors({}) }, [items])
 
-  const startWorktree = async (item: FollowupItem, index: number) => {
+  const startSession = async (item: FollowupItem, index: number) => {
     if (busyIndex !== null) return
     const gen = itemsGen.current
     setBusyIndex(index)
@@ -72,14 +96,17 @@ function FollowUpCard({
       return next
     })
     try {
-      await onStartInWorktree(item)
+      await (canWorktree ? onStartInWorktree(item) : onStartInNewChat(item))
     } catch (err) {
       // Drop the error if the card's items changed under us: `index` no longer
       // refers to the item this request was for.
       if (itemsGen.current === gen) {
+        const fallback = canWorktree
+          ? i18nT('components.followUpCard.failed_to_create_worktree')
+          : i18nT('components.followUpCard.failed_to_open_new_chat')
         setErrors(prev => ({
           ...prev,
-          [index]: err instanceof Error ? err.message : i18nT('components.followUpCard.failed_to_create_worktree'),
+          [index]: err instanceof Error ? err.message : fallback,
         }))
       }
     } finally {
@@ -109,30 +136,33 @@ function FollowUpCard({
               <div className="text-[12px] text-muted mt-1 leading-relaxed">{item.description}</div>
             )}
             <div className="flex flex-wrap items-center gap-2 mt-2.5">
-              <button
-                onClick={() => startWorktree(item, index)}
-                disabled={busy || busyIndex !== null || !projectDir}
-                title={
-                  projectDir
-                    ? i18nT('components.followUpCard.create_worktree_and_open_session', { path: projectDir })
-                    : i18nT('components.followUpCard.this_session_has_no_project_directory_so_there_i')
-                }
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                  // Accent (primary-CTA) styling ONLY when the action can work.
-                  // An unscoped session disables this button permanently, and a
-                  // dimmed accent button still reads as "the main action" on a
-                  // dark theme — users click it, meet a not-allowed cursor, and
-                  // report it as a dead button. Demote it to the secondary
-                  // look so "Add to this session" is the visual default, and let
-                  // the footer (below) say WHY instead of hiding the feature.
-                  projectDir
-                    ? 'bg-accent text-accent-fg hover:bg-accent-hover border-none'
-                    : 'border border-border text-muted bg-bg'
-                }`}
-              >
-                <GitBranch size={13} aria-hidden="true" />
-                {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
-              </button>
+              {canWorktree ? (
+                <button
+                  onClick={() => startSession(item, index)}
+                  disabled={busy || busyIndex !== null}
+                  title={i18nT('components.followUpCard.create_worktree_and_open_session', { path: projectDir })}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
+                >
+                  <GitBranch size={13} aria-hidden="true" />
+                  {busy ? i18nT('components.followUpCard.creating_worktree') : i18nT('components.followUpCard.start_in_new_worktree')}
+                </button>
+              ) : (
+                // No repository to branch from, so the spawn route is a plain new
+                // chat: same project directory and folder, no git call.
+                <button
+                  onClick={() => startSession(item, index)}
+                  disabled={busy || busyIndex !== null}
+                  title={
+                    notRepo
+                      ? i18nT('components.followUpCard.open_new_chat_in_project', { path: projectDir })
+                      : i18nT('components.followUpCard.open_new_chat')
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-accent text-accent-fg hover:bg-accent-hover border-none"
+                >
+                  <MessageSquarePlus size={13} aria-hidden="true" />
+                  {busy ? i18nT('components.followUpCard.opening_new_chat') : i18nT('components.followUpCard.start_in_new_chat')}
+                </button>
+              )}
               <button
                 onClick={() => onAddToSession(item)}
                 disabled={busyIndex !== null}
@@ -166,13 +196,13 @@ function FollowUpCard({
         )
       })}
       <div className="px-4 pb-3 text-[11px] text-muted">
-        {projectDir
+        {/* The standard footer covers a session with no project directory.
+            With one, the footer also says where the new chat opens; why no
+            worktree is created lives in the tooltip, so the always-visible
+            line stays in session terms. */}
+        {canWorktree || !notRepo
           ? i18nT('components.followUpCard.both_actions_pre_fill_the_composer_nothing_is_se')
-          // The unscoped variant must not claim "both actions": the worktree
-          // button is disabled above, and this line is where the user learns
-          // why — the tooltip alone hides behind a hover the not-allowed
-          // cursor has already soured.
-          : i18nT('components.followUpCard.worktree_disabled_no_project_directory')}
+          : i18nT('components.followUpCard.new_chat_footer_same_project_directory')}
       </div>
     </div>
   )

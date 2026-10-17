@@ -16,7 +16,7 @@ changes what the run claims to have published.
 
 Every publishing lane is covered together because these reads sit inside
 ``retry_comment_write`` and ``guarded_comment_upsert``, which
-test_ai_review_workflows.py holds byte-identical across the lanes.
+test_ai_review_workflows_comment_writes.py holds byte-identical across the lanes.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # Every lane whose comment reads this change covers. The set is not a choice:
 # `retry_comment_write` and `guarded_comment_upsert` are held byte-identical
 # across the publishing lanes by their own invariants in
-# test_ai_review_workflows.py, and both guarded reads live inside those two
+# test_ai_review_workflows_comment_writes.py, and both guarded reads live inside those two
 # functions, so a subset would fail those invariants rather than ship a partial
 # improvement.
 COVERED_LANES = (

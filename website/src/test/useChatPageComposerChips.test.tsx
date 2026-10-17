@@ -45,7 +45,6 @@ function harness() {
     codexPairModels: false,
     selectionCapabilities: undefined,
     selectionCapabilitiesQ: { isError: false },
-    remoteCrew: { isRemote: false } as never,
     dispatch: vi.fn() as never,
     queryClient,
     showActionError: vi.fn(),
@@ -102,5 +101,21 @@ describe('effort control gate on the capability read', () => {
     const peerDown = Object.assign(new Error('peer unavailable'), { status: 503 })
     hook.rerender({ ...base, selectionCapabilitiesQ: { isError: true, error: peerDown } })
     expect(hook.result.current.effortSupported).toBe(false)
+  })
+})
+
+describe('the inherited model a slot shows', () => {
+  it('asks for the owning app, so an app session names its own model setting', async () => {
+    const { opts, hook } = harness()
+    const provider = opts.provider as unknown as { resolveModel: ReturnType<typeof vi.fn> }
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-b', agent: '', app: 'demo-app' } as ChatSlot })
+    await waitFor(() => expect(provider.resolveModel).toHaveBeenCalledWith('default', 'demo-app'))
+  })
+
+  it('asks for no app on a slot no app owns', async () => {
+    const { opts, hook } = harness()
+    const provider = opts.provider as unknown as { resolveModel: ReturnType<typeof vi.fn> }
+    hook.rerender({ ...opts, currentSlot: { key: 'slot-c', agent: 'builder' } as ChatSlot })
+    await waitFor(() => expect(provider.resolveModel).toHaveBeenCalledWith('builder', undefined))
   })
 })

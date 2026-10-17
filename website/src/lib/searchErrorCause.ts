@@ -62,6 +62,17 @@ export const TREE_FAILURE_KEYS: Record<SearchErrorCause, string> = {
 }
 
 /**
+ * Copy for a failed file-name search (`/api/file-search`). The folder panel and the file rail
+ * run the same search with the same causes, so they read this one map.
+ */
+export const SEARCH_FAILURE_KEYS: Record<SearchErrorCause, string> = {
+  timed_out: 'pages.chat.folderPanel.search_timed_out',
+  failed: 'pages.chat.folderPanel.search_failed',
+  denied: 'pages.chat.folderPanel.search_denied',
+  root_missing: 'pages.chat.folderPanel.search_root_missing',
+}
+
+/**
  * `named`, pointing at the surface's header Refresh as its remedy. One spelling for every
  * arm that Refresh can repair.
  *

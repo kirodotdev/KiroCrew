@@ -28,6 +28,8 @@ def _governance_denial(
     diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: tuple[str, ...] = (),
+    alias_groups: tuple[tuple[str, ...], ...] = (),
+    deny_aliases: tuple[str, ...] = (),
     spawn_target: str = "",
 ) -> str | None:
     """Return a denial reason if governance forbids *tool_name*, else None.
@@ -82,6 +84,8 @@ def _governance_denial(
             diff_path=diff_path,
             mcp_ref=mcp_ref,
             extra_titles=extra_titles,
+            alias_groups=alias_groups,
+            deny_aliases=deny_aliases,
         )
         if not decision.permitted:
             # The denied identity when the decision names one -- with the title,

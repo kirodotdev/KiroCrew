@@ -9,7 +9,8 @@
 # Error 73 on unsigned DMGs).
 #
 # Mirrors sign.sh's proven flow (package -> upload -> submit -> poll ->
-# download) with a `type: dmg` manifest instead of the app manifest.
+# download) with the DMG as the signed artifact -- the manifest is still
+# `type: "app"` (see the submit step; CDSigner rejects a `type: dmg`).
 # Manifest syntax per StoreGenVector docs/build/signing-runbook.md and
 # the CDSigner API guide; flow per AIWQuilloWord code-signing-guide.md.
 #

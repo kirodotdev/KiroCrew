@@ -51,7 +51,14 @@ describe('highlight.js barrel is not in the eager bundle', () => {
     // MarkdownRenderer is the only module left that pulls the core wrapper in.
     const src = readFileSync(join(WEBSITE_ROOT, 'src/components/MarkdownRenderer.tsx'), 'utf-8')
     expect(src).toMatch(/import '\.\.\/utils\/hljs'/)
-    for (const rel of ['src/components/ArtifactBody.tsx', 'src/components/MarkdownPanel.tsx']) {
+    for (const rel of ['src/components/ArtifactBody.tsx', 'src/components/MarkdownPanel.tsx',
+      'src/components/MarkdownPanelBody.tsx',
+      'src/components/MarkdownPanelHeader.tsx',
+      'src/components/markdownPanelSourcePos.ts',
+      'src/components/useMarkdownPanelDisk.ts',
+      'src/components/useMarkdownPanelFileState.ts',
+      'src/components/useMarkdownPanelFind.ts',
+    ]) {
       expect(readFileSync(join(WEBSITE_ROOT, rel), 'utf-8'), rel).not.toMatch(/utils\/hljs/)
     }
   })

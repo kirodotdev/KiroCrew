@@ -14,10 +14,13 @@ listed above it:
 * :mod:`~kiro_crew.cron_service.fields` -- what a valid job and a valid update are;
 * :mod:`~kiro_crew.cron_service.readers` -- read-only views of the store with no
   scheduler running;
-* :mod:`~kiro_crew.cron_service.folders` -- cron folder definitions.
+* :mod:`~kiro_crew.cron_service.folders` -- cron folder definitions;
+* :mod:`~kiro_crew.cron_service.service` -- the ``CronService`` members the class
+  binds by name, one module per responsibility.
 
-:mod:`kiro_crew.cron` stays the import and patch surface: every name these modules
-hold is re-exported there as the same object, and a name tests patch there is read
+:mod:`kiro_crew.cron` stays the import and patch surface: every name the flat modules
+above hold is re-exported there as the same object (the ``service`` modules hold
+``CronService`` members, bound on the class instead), and a name tests patch there is read
 by these modules through it on each call (a function-local import, so the module
 graph stays acyclic at import time).
 """

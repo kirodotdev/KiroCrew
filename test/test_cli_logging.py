@@ -171,6 +171,114 @@ class TestRedirectFdsTo:
         assert self._read(old) == b"still-old\n"
 
 
+def _open_fds_on(path: Path) -> list[str]:
+    """Descriptors of THIS process whose target is *path* (Linux ``/proc``)."""
+    fd_dir = Path("/proc/self/fd")
+    held = []
+    for entry in fd_dir.iterdir():
+        try:
+            if os.readlink(entry) == str(path):
+                held.append(entry.name)
+        except OSError:
+            continue  # the fd closed while we listed it
+    return held
+
+
+class TestAppendOnlyLogFileHandler:
+    """A process that is not the gateway must not keep ``gateway.log`` open.
+
+    Windows refuses to rename a file another process holds open, so an MCP
+    server that kept its own handle made every gateway rollover fail and the
+    gateway's file log dropped every later record until restart.
+    """
+
+    def test_no_handle_held_after_construction_or_emit(self, tmp_path):
+        log = tmp_path / "gateway.log"
+        handler = cli_mod._AppendOnlyLogFileHandler(log, encoding="utf-8")
+        try:
+            assert handler.stream is None
+            record = logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "one", None, None)
+            handler.handle(record)
+            handler.handle(record)
+            assert handler.stream is None
+            assert log.read_text(encoding="utf-8") == "one\none\n"
+        finally:
+            handler.close()
+
+    def test_never_rotates(self, tmp_path):
+        log = tmp_path / "gateway.log"
+        log.write_text("x" * (3 * 1024 * 1024), encoding="utf-8")
+        handler = cli_mod._AppendOnlyLogFileHandler(log, encoding="utf-8")
+        try:
+            handler.handle(
+                logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "tail", None, None)
+            )
+        finally:
+            handler.close()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["gateway.log"]
+        assert log.read_text(encoding="utf-8").endswith("tail\n")
+
+    def test_unopenable_path_raises_at_construction(self, tmp_path):
+        # A sandbox deny must surface at setup, where the caller falls back to
+        # console-only logging, rather than as one traceback per record.
+        with pytest.raises(OSError):
+            cli_mod._AppendOnlyLogFileHandler(tmp_path / "missing-dir" / "gateway.log")
+
+    def test_failed_open_on_emit_is_reported_not_raised(self, tmp_path, monkeypatch):
+        log = tmp_path / "gateway.log"
+        handler = cli_mod._AppendOnlyLogFileHandler(log, encoding="utf-8")
+        reported = []
+        monkeypatch.setattr(handler, "handleError", reported.append)
+
+        def _deny():
+            raise PermissionError(errno.EACCES, "denied")
+
+        monkeypatch.setattr(handler, "_open", _deny)
+        record = logging.LogRecord("kiro_crew.t", logging.WARNING, "", 0, "lost", None, None)
+        handler.handle(record)  # must not raise into the caller
+        assert reported == [record]
+        handler.close()
+
+    @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+    @pytest.mark.parametrize("command", ["mcp-core", "mcp-cron", "chat", "status"])
+    def test_non_gateway_command_holds_no_handle_on_gateway_log(self, command, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        log_file = config_dir() / "gateway.log"
+        _setup_cli_logging(command, 1)
+        logging.getLogger("kiro_crew.holder").warning("from-%s", command)
+        _stop_log_queue_listener()  # chat writes through the listener thread
+        assert f"from-{command}" in log_file.read_text(encoding="utf-8")
+        assert _open_fds_on(log_file) == []
+
+    @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+    def test_gateway_is_the_only_holder(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        _setup_cli_logging("gateway", 1)
+        logging.getLogger("kiro_crew.holder").warning("gateway-record")
+        listener = cli_mod._LOG_QUEUE_LISTENER
+        assert listener is not None
+        (fh,) = listener.handlers
+        assert isinstance(fh, RotatingFileHandler)
+        assert fh.maxBytes == 2 * 1024 * 1024
+
+
+class TestBootRotationFailureIsReported:
+    def test_failed_boot_rotation_logs_a_warning(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("previous run\n", encoding="utf-8")
+
+        def _held(self, target):
+            raise PermissionError(errno.EACCES, "held by another process")
+
+        monkeypatch.setattr(Path, "replace", _held)
+        _setup_cli_logging("gateway", 1)
+        _stop_log_queue_listener()
+        text = log_file.read_text(encoding="utf-8")
+        assert text.startswith("previous run\n")
+        assert "could not move" in text and "held by another process" in text
+
+
 class TestFdTrackingRotatingFileHandler:
     @pytest.mark.skipif(
         os.name == "nt",
@@ -495,7 +603,7 @@ class TestSetupCliLoggingDetached:
         def _deny(*_a, **_k):
             raise PermissionError(1, "Operation not permitted")
 
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         with pytest.raises(PermissionError):
             _setup_cli_logging("gateway", 1)
@@ -526,9 +634,9 @@ class TestSetupCliLoggingForeground:
         for logger in (logging.getLogger(), logging.getLogger("kiro_crew")):
             assert not any(isinstance(h, RotatingFileHandler) for h in logger.handlers)
         (fh,) = cli_mod._LOG_QUEUE_LISTENER.handlers
-        # Foreground keeps the plain handler: no fds were redirected, so
-        # there is nothing to re-point on rollover.
-        assert type(fh) is RotatingFileHandler
+        # Foreground keeps the plain (owner-only) handler: no fds were redirected,
+        # so there is nothing to re-point on rollover.
+        assert type(fh) is cli_mod._OwnerOnlyRotatingFileHandler
         assert fh.level == logging.NOTSET
 
     def test_record_written_once_to_file(self):
@@ -559,12 +667,11 @@ class TestSetupCliLoggingForeground:
         def _deny(*_a, **_k):
             raise PermissionError(1, "Operation not permitted")
 
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
-        monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._AppendOnlyLogFileHandler", _deny)
         _setup_cli_logging("mcp-core", 0)  # must not raise
         assert cli_mod._LOG_QUEUE_LISTENER is None
         assert not any(
-            isinstance(h, RotatingFileHandler) for h in logging.getLogger("kiro_crew").handlers
+            isinstance(h, logging.FileHandler) for h in logging.getLogger("kiro_crew").handlers
         )
 
     def test_unwritable_gateway_log_still_redacts_for_long_lived(self, monkeypatch):
@@ -574,7 +681,7 @@ class TestSetupCliLoggingForeground:
             raise PermissionError(1, "Operation not permitted")
 
         redaction = MagicMock()
-        monkeypatch.setattr("kiro_crew.cli.RotatingFileHandler", _deny)
+        monkeypatch.setattr("kiro_crew.cli._OwnerOnlyRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli._FdTrackingRotatingFileHandler", _deny)
         monkeypatch.setattr("kiro_crew.cli.install_log_redaction", redaction)
         _setup_cli_logging("gateway", 1)  # must not raise
@@ -755,7 +862,7 @@ class TestQueueOffLoop:
         assert cli_mod._LOG_QUEUE_LISTENER is None
         kc = logging.getLogger("kiro_crew")
         assert not any(isinstance(h, _CliLogQueueHandler) for h in kc.handlers)
-        sync_fhs = [h for h in kc.handlers if isinstance(h, RotatingFileHandler)]
+        sync_fhs = [h for h in kc.handlers if isinstance(h, logging.FileHandler)]
         assert len(sync_fhs) == 1
         logging.getLogger("kiro_crew.short").warning("short-lived-record")
         for h in kc.handlers:
@@ -893,7 +1000,7 @@ class TestDrainBeforeHardExit:
 
 class TestEveryGatewayHardExitDrainsTheQueue:
     """Ratchet: the queue only helps if EVERY hard exit in the gateway process
-    drains it. ``src/kiro_crew/slack/gateway.py`` and ``.../events.py`` are the
+    drains it. ``src/kiro_crew/slack/gateway_runtime/exit_path.py`` and ``slack/events.py`` are the
     two modules that call ``os._exit`` from inside the long-lived gateway
     process - the other ``os._exit`` sites in the tree (``sandbox.py``,
     ``_process_group_supervisor.py``) run in forked/pre-exec children that
@@ -904,6 +1011,11 @@ class TestEveryGatewayHardExitDrainsTheQueue:
 
     _MODULES = (
         Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway.py",
+        *sorted(
+            (Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/gateway_runtime").glob(
+                "*.py"
+            )
+        ),
         Path(__file__).resolve().parents[1] / "src/kiro_crew/slack/events.py",
     )
     _DRAINS = {"_stop_log_queue_listener", "drain_log_queue_before_hard_exit"}

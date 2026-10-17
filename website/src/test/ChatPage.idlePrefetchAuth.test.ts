@@ -24,11 +24,17 @@ import { join } from 'node:path'
  * Source-scanned because these gates live in interval bodies and callbacks with
  * no exported seam.
  */
-const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
-// ChatPage's owners (pages/chat/page/): the retired latch must not return through one of them.
-const OWNER_SRCS = readdirSync(join(__dirname, '..', 'pages', 'chat', 'page'))
-  .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
-  .map(f => readFileSync(join(__dirname, '..', 'pages', 'chat', 'page', f), 'utf8'))
+const PAGES_DIR = join(__dirname, '..', 'pages')
+const OWNER_DIR = join(PAGES_DIR, 'chat', 'page')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and
+// those owners, and the retired latch must not return through one of them.
+const OWNER_SRCS = [
+  ...readdirSync(OWNER_DIR).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(join(OWNER_DIR, f), 'utf8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(join(PAGES_DIR, f), 'utf8')),
+]
+const SRC = [readFileSync(join(PAGES_DIR, 'ChatPage.tsx'), 'utf8'), ...OWNER_SRCS].join('\n')
 
 describe('real-gesture authorization', () => {
   it('refreshes the gesture stamp from gestures only, not from scroll', () => {

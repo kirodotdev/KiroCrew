@@ -1,12 +1,8 @@
 import { useState } from 'react'
 import { useQuery, type QueryClient } from '@tanstack/react-query'
 
-import { api } from '../../../api/client'
-import {
-  isFullLegacyAutomationRecord,
-  normalizeAutomationRecord,
-  type AutomationRecord,
-} from '../../../monitoring/automation'
+import { type AutomationRecord } from '../../../monitoring/automation'
+import { readSessionAutomationSnapshot } from '../../../monitoring/sessionAutomationSnapshot'
 import { useAppSelector, type AppDispatch } from '../../../store'
 import { selectAutomationForSlot, sseAutomation } from '../../../store/chatSlice'
 
@@ -28,33 +24,7 @@ export function useSessionAutomation({ activeSlot, queryClient, dispatch }: {
   const automationSnapshot = useQuery({
     queryKey: ['session-automation', activeSlot],
     enabled: !!activeSlot,
-    queryFn: async () => {
-      const slot = activeSlot!
-      const [legacy, structured] = await Promise.all([
-        api.autonudgeForSlot(slot),
-        api.monitorForSlot(slot),
-      ])
-      const hasFullLegacyRecord = legacy.loop !== null
-        && isFullLegacyAutomationRecord(legacy.loop)
-      const legacySnapshot = !hasFullLegacyRecord
-        ? null
-        : normalizeAutomationRecord(legacy.loop)
-      const structuredRecord = structured.monitor === null
-        ? null
-        : normalizeAutomationRecord(structured.monitor)
-      if ((hasFullLegacyRecord && !legacySnapshot)
-        || (structured.monitor !== null
-          && structuredRecord?.kind !== 'structured_monitor')) {
-        throw new Error('Invalid session automation snapshot')
-      }
-      const legacyRecord = legacySnapshot?.kind === 'legacy_goal_loop'
-        ? legacySnapshot
-        : null
-      if (legacyRecord && structuredRecord) {
-        throw new Error('Conflicting session automation snapshot')
-      }
-      return structuredRecord ?? legacyRecord
-    },
+    queryFn: () => readSessionAutomationSnapshot(activeSlot!),
     staleTime: 0,
   })
   // Redux is the live/list projection; this query is the authoritative cold

@@ -121,6 +121,7 @@ class TestCommandSpec:
             "new",
             "compact",
             "model",
+            "agent",
             "status",
             "sessions",
             "link",
@@ -167,9 +168,9 @@ class TestApplicationCommandPayload:
 
     def test_options_only_where_an_argument_is_taken(self) -> None:
         rows = _rows_by_name()
-        assert {name for name, row in rows.items() if row.get("options")} == {"sessions"}
+        assert {name for name, row in rows.items() if row.get("options")} == {"sessions", "agent"}
 
-    @pytest.mark.parametrize("name,option", [("sessions", "query")])
+    @pytest.mark.parametrize("name,option", [("sessions", "query"), ("agent", "name")])
     def test_free_text_options(self, name: str, option: str) -> None:
         (opt,) = _rows_by_name()[name]["options"]
         assert opt["name"] == option

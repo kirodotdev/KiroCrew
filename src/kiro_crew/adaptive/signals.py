@@ -14,11 +14,18 @@ Three things the classifier deliberately keeps apart:
   execution cap and the spawn gate, and only when two distinct signals
   corroborate each other (:attr:`PressureReport.exec_corroborated`).
 * **Host-only evidence** (:data:`HOST_ONLY_SIGNALS`: the gateway's own loop
-  lag and free memory) shapes the spawn gate alone. The execution cap never
-  reads it: free memory is the per-start spawn floor's to judge
-  (``agent.spawn_min_memory_gb``), and the gateway's loop lag says nothing
-  about whether a subagent's own process is healthy. A lag spike that halved
-  the execution cap throttled every chat's subagents at once.
+  lag and free memory) is never read by the execution cap: free memory is the
+  per-start spawn floor's to judge (``agent.spawn_min_memory_gb``), and the
+  gateway's loop lag says nothing about whether a subagent's own process is
+  healthy. A lag spike that halved the execution cap throttled every chat's
+  subagents at once.
+* **The spawn gate's evidence** (:attr:`PressureReport.gate_signals`) is every
+  signal EXCEPT the gateway's loop lag, plus the daemon's own slow inits
+  (:data:`SIGNAL_GATE_SLOW_INITS`). The gate bounds forks in the MCP daemon, a
+  separate process: the dashboard gateway's lag is not evidence about it, and
+  cutting on it pins the gate at its floor on an idle host whose backends
+  never fail. Memory at the critical line, gate init
+  failures and slow inits are each sufficient alone.
 * **Provider throttling** (per-provider 429s) is scoped to that provider's
   dependency channel. It is reported, never counted as a host signal: one
   provider's rate limit must not halve the concurrency every other provider
@@ -45,6 +52,7 @@ SIGNAL_TIMEOUTS = "timeouts"
 SIGNAL_COMPLETION = "completion_rate"
 SIGNAL_SLOW_KEYS = "slow_keys"
 SIGNAL_GATE_FAILURES = "gate_failures"
+SIGNAL_GATE_SLOW_INITS = "gate_slow_inits"
 
 #: Signals the EXECUTION cap never reads: the gateway's own event loop and the
 #: host's free memory. They shape the spawn gate only; the per-start memory
@@ -56,6 +64,14 @@ HOST_ONLY_SIGNALS = frozenset({SIGNAL_LOOP_LAG, SIGNAL_MEMORY})
 #: sufficient alone for the execution cap: it needs two distinct work signals
 #: (:attr:`PressureReport.exec_corroborated`).
 SUFFICIENT_ALONE = HOST_ONLY_SIGNALS
+
+#: Signals the SPAWN GATE never reads: the dashboard gateway's own event loop,
+#: which is not the process the gate admits forks into.
+GATE_IGNORED_SIGNALS = frozenset({SIGNAL_LOOP_LAG})
+
+#: Signals individually sufficient for a spawn-gate decrease: critical memory
+#: and the daemon's own evidence that its backend starts are failing or slow.
+GATE_SUFFICIENT_ALONE = frozenset({SIGNAL_MEMORY, SIGNAL_GATE_FAILURES, SIGNAL_GATE_SLOW_INITS})
 
 
 @dataclass(frozen=True)
@@ -93,6 +109,11 @@ class Thresholds:
     #: Length of that window: the daemon reports lifetime counters, so the
     #: policy counts the failures that landed in the last this-many seconds.
     gate_failure_window_secs: float = 60.0
+    #: Slow successful backend inits in the daemon's window (each took >= 80%
+    #: of its own ``initialize_timeout_secs``) that count as the gate's starts
+    #: being slow. Two, so one slow but healthy server is not enough. 0
+    #: disables.
+    gate_slow_inits: int = 2
     #: Consecutive severe samples before dispatch pauses.
     severe_samples: int = 2
 
@@ -112,6 +133,9 @@ class SpawnGateStats:
     successes: int = 0
     failures: int = 0
     neutral: int = 0
+    #: Slow successful inits over the daemon's recent window (see
+    #: ``admission.SLOW_INIT_FRACTION``). 0 from a daemon that does not report it.
+    slow_inits: int = 0
 
     @classmethod
     def from_snapshot(cls, snap: Mapping[str, object] | None) -> "SpawnGateStats":
@@ -128,6 +152,7 @@ class SpawnGateStats:
             successes=_as_int(out.get("success")),
             failures=_as_int(out.get("failure")),
             neutral=_as_int(out.get("neutral")),
+            slow_inits=_as_int(snap.get("slow_inits")),
         )
 
 
@@ -225,6 +250,9 @@ class PressureReport:
     clear_for_increase: bool
     #: Provider scopes throttled in this sample. Reported, not a host signal.
     throttled_providers: frozenset[str]
+    #: The spawn gate's increase test: none of ITS signals fired and memory is
+    #: above the pressure line. Loop lag plays no part.
+    gate_clear_for_increase: bool = False
 
     @property
     def any(self) -> bool:
@@ -239,6 +267,22 @@ class PressureReport:
     def exec_corroborated(self) -> bool:
         """Enough evidence to decrease the EXECUTION cap: >= 2 distinct work signals."""
         return len(self.exec_signals) >= 2
+
+    @property
+    def gate_signals(self) -> frozenset[str]:
+        """The signals the spawn gate reads: everything but GATE_IGNORED_SIGNALS."""
+        return self.signals - GATE_IGNORED_SIGNALS
+
+    @property
+    def gate_corroborated(self) -> bool:
+        """Enough evidence to decrease the SPAWN GATE."""
+        gs = self.gate_signals
+        return bool(gs & GATE_SUFFICIENT_ALONE) or len(gs) >= 2
+
+    @property
+    def gate_severe(self) -> bool:
+        """Severe for the gate: memory at the critical line. Loop lag never is."""
+        return SIGNAL_MEMORY in self.signals
 
 
 def classify(sample: Sample, th: Thresholds) -> PressureReport:
@@ -276,6 +320,8 @@ def classify(sample: Sample, th: Thresholds) -> PressureReport:
         signals.add(SIGNAL_SLOW_KEYS)
     if sample.gate_failures_in_window >= th.gate_failures > 0:
         signals.add(SIGNAL_GATE_FAILURES)
+    if sample.spawn_gate.slow_inits >= th.gate_slow_inits > 0:
+        signals.add(SIGNAL_GATE_SLOW_INITS)
 
     corroborated = bool(signals & SUFFICIENT_ALONE) or len(signals) >= 2
 
@@ -285,6 +331,7 @@ def classify(sample: Sample, th: Thresholds) -> PressureReport:
         or (sample.free_mem_mb >= th.mem_pressure_mb)
     )
     clear = not signals and sample.loop_lag_ms < th.lag_increase_ms and mem_ok
+    gate_clear = not (signals - GATE_IGNORED_SIGNALS) and mem_ok
 
     throttled = frozenset(
         str(scope) for scope, count in sample.per_provider_429.items() if _as_int(count) > 0
@@ -295,6 +342,7 @@ def classify(sample: Sample, th: Thresholds) -> PressureReport:
         severe=severe,
         clear_for_increase=clear,
         throttled_providers=throttled,
+        gate_clear_for_increase=gate_clear,
     )
 
 

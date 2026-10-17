@@ -127,6 +127,17 @@ def _cloud_launch(args: argparse.Namespace) -> int:
     except LoginTargetError as exc:
         ui.fail(f"Kiro identity target rejected: {exc}")
         return 2
+    ami_id = getattr(args, "ami", "") or ""
+    try:
+        if ami_id:
+            ami_id = ec2.validate_ami_id(ami_id)
+        extra_packages = ec2.normalize_extra_packages(getattr(args, "extra_packages", "") or "")
+        ssm_kms_key_arn = getattr(args, "ssm_kms_key", "") or ""
+        if ssm_kms_key_arn:
+            ssm_kms_key_arn = ec2.validate_ssm_kms_key_arn(ssm_kms_key_arn)
+    except ValidationError as exc:
+        ui.fail(f"Invalid launch option: {exc}")
+        return 2
     return wizard.launch(
         profile=profile,
         region=region,
@@ -137,6 +148,9 @@ def _cloud_launch(args: argparse.Namespace) -> int:
         keep_on_failure=getattr(args, "keep_on_failure", False),
         hold_tunnel=getattr(args, "hold_tunnel", True),
         login_target=login_target,
+        ami_id=ami_id,
+        extra_packages=extra_packages,
+        ssm_kms_key_arn=ssm_kms_key_arn,
     )
 
 
@@ -465,30 +479,74 @@ def _cloud_iam_policy(_args: argparse.Namespace) -> int:
 
 
 def _cloud_iam_boundary(args: argparse.Namespace) -> int:
-    """Pre-create the shared, immutable instance permissions boundary (admin step).
+    """Pre-create the shared, immutable permissions boundaries (admin step).
 
-    Normally the first ``launch`` auto-creates this (the launcher policy grants
-    only ``iam:CreatePolicy`` on the fixed boundary name). Operators who want to
-    eliminate the first-write race entirely run this ONCE as an admin, then drop
-    the ``IamInstanceBoundaryCreateOnce`` statement from the applied launcher
-    policy — the launcher then only *references* the boundary ARN, never creates
-    it. Idempotent: an existing boundary is left untouched (immutability).
+    Creates all three boundaries the launcher policy's
+    ``IamInstanceBoundaryCreateOnce`` statement names: the EC2 instance ceiling
+    (``kirocrew-ec2-boundary``) and the two Fargate crew ceilings
+    (``kirocrew-crew-boundary`` for the task role, ``kirocrew-crew-exec-boundary``
+    for the execution role). Normally a launch auto-creates the boundary it needs
+    (the statement grants ``iam:CreatePolicy`` plus the two read verbs,
+    ``iam:GetPolicy`` and ``iam:GetPolicyVersion``, on those exact names).
+    Operators who want to eliminate the first-write race entirely run this ONCE as
+    an admin, then remove the ``iam:CreatePolicy`` action from that statement —
+    the launcher then only *references* the boundary ARNs, never creates them.
+    That removal is safe only once ALL three exist, because the one statement
+    covers all three names; a boundary still missing when the action goes would
+    have no principal left that may create it. The statement's ``iam:GetPolicy``
+    and ``iam:GetPolicyVersion`` grants stay: every launch reads its boundary to
+    verify the content before reusing it.
+
+    Each boundary goes through the same create-once-and-verify sequence a launch
+    uses, so the step is idempotent (an existing boundary whose content matches is
+    left untouched, never re-versioned) and refuses a drifted one the same way. The
+    three are attempted independently, so one refusal still reports the state of
+    the other two; the exit status is non-zero when any of them is not ready.
     """
     from kiro_crew.cloud import source as source_mod
 
     profile, region = _resolve(args)
-    try:
-        arn = source_mod.ensure_instance_boundary(profile, region)
-    except AWSError as exc:
-        ui.fail(str(exc))
-        if exc.missing_action:
-            ui.detail(f"Grant `{exc.missing_action}` and retry.")
+    boundaries = [
+        ("Instance permissions boundary", source_mod.ensure_instance_boundary),
+        ("Fargate crew task-role boundary", source_mod.ensure_crew_boundary),
+        ("Fargate crew execution-role boundary", source_mod.ensure_crew_exec_boundary),
+    ]
+    # Opt-in only: without --ssm-kms this step creates exactly the three
+    # boundaries above. This admin step is the one caller that may create the
+    # KMS-session boundary; a launch only verifies it.
+    if getattr(args, "ssm_kms", False):
+
+        def _ensure_kms(profile: str = "", region: str = "") -> str:
+            return source_mod.ensure_instance_kms_boundary(profile, region, create=True)
+
+        boundaries.append(("KMS-session instance boundary", _ensure_kms))
+    failed = False
+    for label, ensure in boundaries:
+        try:
+            arn = ensure(profile, region)
+        except AWSError as exc:
+            failed = True
+            ui.fail(str(exc))
+            if exc.missing_action:
+                ui.detail(f"Grant `{exc.missing_action}` and retry.")
+            # Every boundary ARN embeds the account id, so a failure to resolve it
+            # fails the remaining boundaries identically; say it once.
+            if exc.action == "sts:GetCallerIdentity":
+                break
+            continue
+        ui.ok(f"{label} ready: {arn}")
+    if failed:
+        ui.detail(
+            "Keep the iam:CreatePolicy action in the IamInstanceBoundaryCreateOnce "
+            "statement until every boundary above is ready, then re-run this step."
+        )
         return 1
-    ui.ok(f"Instance permissions boundary ready: {arn}")
     ui.detail(
-        "It is immutable and shared by every launch. To fully close the "
-        "first-write race, remove the IamInstanceBoundaryCreateOnce statement "
-        "from the applied launcher policy now that the boundary exists."
+        "They are immutable and shared by every launch. To fully close the "
+        "first-write race, remove the iam:CreatePolicy action from the "
+        "IamInstanceBoundaryCreateOnce statement in the applied launcher policy "
+        "now that all three boundaries exist. Keep the statement's read verbs — "
+        "every launch reads its boundary to verify it."
     )
     return 0
 
@@ -509,6 +567,20 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
+    elif (refusal := ssm.session_manager_plugin_refusal()) is not None:
+        ui.warn(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
+        if refusal.remedy_command:
+            # Making the tree root-owned turns whatever binary is in it into an
+            # accepted credential receiver, so the user confirms it is AWS's first.
+            ui.detail(
+                "If you did not install it from AWS yourself, or are not sure, reinstall "
+                "it from AWS first."
+            )
+            ui.detail(
+                f"Then make its install directory root-owned and rerun: {refusal.remedy_command}"
+            )
+        else:
+            ui.detail("Fix the file's ownership or permissions so the check passes, then rerun.")
     else:
         ui.warn("session-manager-plugin not found — needed to connect over SSM")
         ui.detail(ssm.session_manager_plugin_install_hint())
@@ -581,7 +653,7 @@ def handle_cloud(args: argparse.Namespace) -> int:
         ui.detail("stop|start  Pause / resume (save cost)")
         ui.detail("destroy     Remove everything from AWS")
         ui.detail("iam-policy  Print the least-privilege IAM policy to apply")
-        ui.detail("iam-boundary Pre-create the immutable instance permissions boundary (admin)")
+        ui.detail("iam-boundary Pre-create the EC2 + Fargate permissions boundaries (admin)")
         ui.detail("doctor      Check cloud prerequisites + AWS reachability")
         return 0
     fn = _DISPATCH.get(action)

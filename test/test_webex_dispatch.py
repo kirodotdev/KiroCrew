@@ -1287,12 +1287,12 @@ class TestApprovals:
         key = d._session_key(_EMAIL)
 
         task = asyncio.create_task(
-            webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=1))
+            webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
         await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
         await d.handle_message(_inbound("1"))
 
-        assert await task is True
+        assert (await task)[0] is True
         assert provider.steered == []
         assert "Approved" in client.sent[-1][1]
 
@@ -1306,12 +1306,12 @@ class TestApprovals:
         key = d._session_key(_EMAIL)
 
         task = asyncio.create_task(
-            webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=1))
+            webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
         await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
         await d.handle_message(_inbound("2"))
 
-        assert await task is False
+        assert (await task)[0] is False
         assert "Denied" in client.sent[-1][1]
 
     @pytest.mark.asyncio
@@ -1330,7 +1330,7 @@ class TestApprovals:
         key = d._session_key(_EMAIL)
 
         task = asyncio.create_task(
-            webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=1))
+            webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
         )
         await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
         await d.handle_message(_inbound("actually use ripgrep"))
@@ -1400,14 +1400,14 @@ class TestApprovals:
             new=mock.AsyncMock(return_value=False),
         ):
             approve_task = asyncio.create_task(
-                webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=1))
+                webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
             )
             await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
             await d.handle_message(_inbound("1"))
             assert approve_task.done() is False  # approve dropped
 
             await d.handle_message(_inbound("2"))
-            assert await approve_task is False  # deny got through
+            assert (await approve_task)[0] is False  # deny got through
 
     @pytest.mark.asyncio
     async def test_unified_scope_does_not_let_one_user_answer_anothers_prompt(self) -> None:
@@ -1430,7 +1430,7 @@ class TestApprovals:
         assert d._approval_key(email_b) != key_a
 
         task = asyncio.create_task(
-            webex_dispatch._APPROVALS.decide(key_a, SimpleNamespace(request_id=1))
+            webex_dispatch._APPROVALS.decide_with_cause(key_a, SimpleNamespace(request_id=1))
         )
         await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key_a))
 
@@ -1440,7 +1440,7 @@ class TestApprovals:
 
         # User A's own "1" resolves it.
         await d.handle_message(_inbound("1", email=email_a))
-        assert await task is True
+        assert (await task)[0] is True
 
 
 # ------------------------------------------------------------------
@@ -2306,7 +2306,7 @@ class TestApprovalCardPress:
     @staticmethod
     async def _pending(d: WebexDispatcher, key: str, request_id: int = 1):
         task = asyncio.create_task(
-            webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=request_id))
+            webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=request_id))
         )
         await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
         return task
@@ -2321,7 +2321,7 @@ class TestApprovalCardPress:
 
         await d.handle_message(_approval_press("approve", nonce))
 
-        assert await task is True
+        assert (await task)[0] is True
         assert "Approved" in client.sent[-1][1]
 
     @pytest.mark.asyncio
@@ -2343,7 +2343,7 @@ class TestApprovalCardPress:
         assert webex_dispatch._APPROVALS.has_pending(key)
         assert "no longer current" in client.sent[-1][1]
         assert webex_dispatch._APPROVALS.resolve(key, False) is True
-        assert await task is False
+        assert (await task)[0] is False
 
     @pytest.mark.asyncio
     async def test_a_press_carrying_no_nonce_fails_closed(self) -> None:
@@ -2360,7 +2360,7 @@ class TestApprovalCardPress:
 
         assert webex_dispatch._APPROVALS.has_pending(key)
         webex_dispatch._APPROVALS.resolve(key, False)
-        assert await task is False
+        assert (await task)[0] is False
 
     @pytest.mark.asyncio
     async def test_a_second_press_reports_neutrally_rather_than_denied(self) -> None:
@@ -2376,7 +2376,7 @@ class TestApprovalCardPress:
         nonce = webex_dispatch._APPROVALS.reserve(key, "1")
 
         await d.handle_message(_approval_press("approve", nonce))
-        assert await task is True
+        assert (await task)[0] is True
         await d.handle_message(_approval_press("approve", nonce))
 
         assert "already answered or timed out" in client.sent[-1][1]
@@ -2395,7 +2395,7 @@ class TestApprovalCardPress:
             await d.handle_message(_approval_press("deny", "FORGED"))
             await d.handle_message(_approval_press("deny", nonce))
 
-        assert await task is False
+        assert (await task)[0] is False
         operations = [
             c.kwargs["operation"] for c in fake_sel.return_value.log_api_access.mock_calls
         ]
@@ -2422,7 +2422,7 @@ class TestApprovalCardPress:
             assert webex_dispatch._APPROVALS.has_pending(key)
             await d.handle_message(_approval_press("approve", nonce))
 
-        assert await task is True
+        assert (await task)[0] is True
         outcomes = [
             c.kwargs["outcome"]
             for c in fake_sel.return_value.log_api_access.mock_calls
@@ -2448,7 +2448,7 @@ class TestApprovalCardPress:
             assert webex_dispatch._APPROVALS.has_pending(key)
             await d.handle_message(_approval_press("deny", nonce))
 
-        assert await task is False
+        assert (await task)[0] is False
 
 
 # ------------------------------------------------------------------
@@ -2553,12 +2553,12 @@ class TestGroupSpaceRouting:
         with mock.patch.object(type(d), "_bot_name", lambda self: "Kiro"):
             key = d._session_key(webex_dispatch._route_of(_space()))
             task = asyncio.create_task(
-                webex_dispatch._APPROVALS.decide(key, SimpleNamespace(request_id=1))
+                webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=1))
             )
             await _spin(lambda: webex_dispatch._APPROVALS.has_pending(key))
             await d.handle_message(_space("Kiro 1"))
 
-        assert await task is True
+        assert (await task)[0] is True
         assert provider.steered == []
 
     @pytest.mark.asyncio
@@ -3437,3 +3437,85 @@ class TestGovernanceOnPresses:
             await d.handle_message(_options_press("0", "N1"))
 
         assert client.sent == []
+
+
+# ------------------------------------------------------------------
+# Tests: /agent (show and switch the conversation's agent)
+# ------------------------------------------------------------------
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @pytest.mark.asyncio
+    async def test_agent_name_switches_the_next_turn(self) -> None:
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent beta"))
+        assert "Agent set to `beta`" in client.sent[-1][1]
+        assert sessions.successes == []  # a command, not a turn
+        assert "beta" in d._session_key(_EMAIL)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_bare_agent_lists_only_pickable_agents(self) -> None:
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), client)
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent"))
+        reply = client.sent[-1][1]
+        assert "currently `default (kirocrew)`" in reply
+        assert "`beta`" in reply
+        assert "kirocrew-worker" not in reply
+
+    @pytest.mark.asyncio
+    async def test_internal_or_unknown_agent_is_refused(self) -> None:
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent kirocrew-worker"))
+            await d.handle_message(_inbound("/agent nope"))
+        assert all("No agent named" in m for _, m in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "kirocrew"
+
+    def test_agent_is_in_the_help_card(self) -> None:
+        assert parse_command("/agent beta") == "agent"
+        assert "/agent" in build_help_text()
+
+
+class TestAgentSwitchGenerations:
+    @pytest.mark.asyncio
+    async def test_new_after_a_switch_never_resumes_the_new_agents_old_conversation(self) -> None:
+        # Restart shape: nothing in memory, beta's bucket already holds gen 1-2.
+        from kiro_crew.messaging.link import build_dm_session_key
+
+        sessions = FakeSessions(FakeProvider([]))
+        for gen in (1, 2):
+            sessions.reserved_generations.add(
+                build_dm_session_key("webex", "beta", _EMAIL, gen=gen, dm_scope="per-channel-peer")
+            )
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        with mock.patch("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster):
+            await d.handle_message(_inbound("/agent beta"))
+        assert d._session_key(_EMAIL).endswith(":gen2")
+        await d.handle_message(_inbound("/new"))
+        assert d._session_key(_EMAIL).endswith(":gen3")

@@ -26,9 +26,15 @@ OTHER_VIEW = "kirocrew-skill-view-" + "b" * 24
 
 @pytest.fixture(autouse=True)
 def _fresh_view_memory(monkeypatch, tmp_path):
-    # No test reads this host's own agents directory for a sidecar.
+    # No test reads this host's own agents directory, or its own data home's
+    # projection records, for a sidecar.
     monkeypatch.setattr(projection, "_VIEW_SOURCES", {})
     monkeypatch.setattr(projection, "kiro_agents_dir", lambda: tmp_path / "no-agents")
+    monkeypatch.setattr(projection, "data_home", lambda: tmp_path / "crew", raising=False)
+    # These tests build pre-ledger backlogs by dropping projections; the eager
+    # prune a dropped projection runs would retire them before the drain under
+    # test does. Pinned by test_native_skill_projection_rewrites.
+    monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
 
 
 @pytest.fixture
@@ -78,7 +84,7 @@ def test_a_view_resolves_after_the_boot_drain_removed_alias_and_sidecar(native_t
     # A gateway restart: nothing in memory, and the drain took both files.
     projection._VIEW_SOURCES.clear()
     (agents / f"{stored}.json").unlink()
-    (agents / projection._PROJECTION_METADATA_DIR_NAME / f"{stored}.json").unlink()
+    (projection._projection_metadata_dir() / f"{stored}.json").unlink()
     assert projection.source_agent_name(stored) == "custom"
 
 
@@ -90,13 +96,13 @@ def _pre_ledger_backlog(agents, project, count, spec=None):
     """
     held = []
     for n in range(count):
-        version = {**(spec or {"name": "custom"}), "description": f"v{n}"}
+        version = {**(spec or {"name": "custom"}), "prompt": f"v{n}"}
         (agents / "custom.json").write_text(json.dumps(version), encoding="utf-8")
         held.append(projection.prepare_native_skill_projection(project))
     views = [prepared.agent("custom") for prepared in held]
     del held
     gc.collect()
-    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     (metadata / projection._VIEW_LEDGER_NAME).unlink()
     projection._VIEW_SOURCES.clear()
     return views, metadata
@@ -152,7 +158,7 @@ def test_a_sidecar_the_ledger_cannot_take_is_kept_and_its_alias_goes(
 
 def test_a_ledger_that_already_holds_the_views_is_not_rewritten(tmp_path, monkeypatch):
     agents = tmp_path / "agents"
-    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     metadata.mkdir(parents=True)
     projection._record_view_ledger_entries(metadata, {VIEW: "custom"})
     writes = []
@@ -167,7 +173,7 @@ def test_a_ledger_that_already_holds_the_views_is_not_rewritten(tmp_path, monkey
 
 def test_the_look_ahead_records_only_this_homes_views(tmp_path):
     agents = tmp_path / "agents"
-    metadata = agents / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     metadata.mkdir(parents=True)
     names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
     homes = ["mine", "theirs", "mine"]
@@ -238,7 +244,7 @@ def test_the_bound_drops_redundant_entries_then_the_oldest_retired_ones(
 def test_a_batch_rewrites_its_held_pairs_so_the_bound_cannot_evict_them(tmp_path, monkeypatch):
     monkeypatch.setattr(projection, "_VIEW_SOURCES_MAX", 2)
     names = ["kirocrew-skill-view-" + f"{n:024x}" for n in range(3)]
-    metadata = tmp_path / "agents" / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     metadata.mkdir(parents=True)
     projection._record_view_ledger_entries(metadata, {names[0]: "a", names[1]: "b"})
     ledger = projection._ViewLedgerWrites(tmp_path / "agents", "home")
@@ -255,7 +261,7 @@ def test_a_batch_rewrites_its_held_pairs_so_the_bound_cannot_evict_them(tmp_path
 
 
 def test_a_refused_write_is_not_retried_for_every_candidate(tmp_path, monkeypatch):
-    metadata = tmp_path / "agents" / projection._PROJECTION_METADATA_DIR_NAME
+    metadata = projection._projection_metadata_dir()
     metadata.mkdir(parents=True)
     calls = []
 
@@ -335,7 +341,7 @@ def test_set_mode_never_sends_a_stale_view_name(native_tree):
     stale = first.agent("custom")
     del first
     gc.collect()
-    (agents / "custom.json").write_text('{"name":"custom","description":"v2"}', encoding="utf-8")
+    (agents / "custom.json").write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
     current = projection.prepare_native_skill_projection(project)
     assert current.agent("custom") != stale
     sent = current.request("session/set_mode", {"sessionId": "s", "modeId": stale})

@@ -892,3 +892,114 @@ class TestAnnotation:
         proven = [{"name": "srv", "status": "ok", "error": "", "probeMode": "handshake"}]
         mcp_quarantine.record_verdicts(mcp_mod._quarantine_verdicts(proven))
         assert mcp_quarantine.state_for("srv") is None
+
+
+class TestShutdownRounds:
+    @pytest.fixture
+    def probe_env(self, store, monkeypatch, tmp_path):
+        from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_ts", 0.0)
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_in_progress", False)
+        monkeypatch.setattr(mcp_mod, "_mcp_probe_task", None)
+        monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "absent" / "mcp.json")
+        monkeypatch.setattr(
+            "kiro_crew.session.shutdown_event", SimpleNamespace(is_set=lambda: False)
+        )
+        for _ in range(2):
+            mcp_quarantine.record_verdicts(_fail("srv", "error", "timeout"))
+        return mcp_mod
+
+    @staticmethod
+    def _install_round(monkeypatch, status: str, on_round=None):
+        class _Row:
+            name = "srv"
+
+            def to_dict(self):
+                return {
+                    "name": "srv",
+                    "status": status,
+                    "error": "" if status == "ok" else "timeout",
+                }
+
+        async def _probe_all():
+            if on_round is not None:
+                on_round()
+            return [_Row()]
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery.probe_all", _probe_all)
+
+    @staticmethod
+    def _sessions():
+        return SimpleNamespace(final_drain_started=False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["error", "ok"])
+    async def test_a_background_round_that_overlaps_the_final_drain_leaves_the_count(
+        self, probe_env, monkeypatch, status
+    ):
+        sessions = self._sessions()
+
+        def _drain_starts():
+            sessions.final_drain_started = True
+
+        self._install_round(monkeypatch, status, on_round=_drain_starts)
+        await probe_env._bg_mcp_probe(sessions)
+
+        assert mcp_quarantine.state_for("srv")["fails"] == 2
+        assert _failing() == set()
+        assert [row["name"] for row in probe_env._mcp_probe_cache] == ["srv"]
+
+    @pytest.mark.asyncio
+    async def test_a_round_during_a_signal_shutdown_with_no_sessions_leaves_the_count(
+        self, probe_env, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "kiro_crew.session.shutdown_event", SimpleNamespace(is_set=lambda: True)
+        )
+
+        self._install_round(monkeypatch, "error")
+        await probe_env._bg_mcp_probe(None)
+
+        assert mcp_quarantine.state_for("srv")["fails"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_round_with_no_shutdown_still_counts(self, probe_env, monkeypatch):
+        self._install_round(monkeypatch, "error")
+        await probe_env._bg_mcp_probe(self._sessions())
+
+        assert _failing() == {"srv"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("drain_during_round", "expected_fails"), [(True, 2), (False, None)])
+    async def test_the_probe_endpoint_judges_the_round_when_the_probe_returns(
+        self, probe_env, monkeypatch, drain_during_round, expected_fails
+    ):
+        sessions = self._sessions()
+
+        def _drain_starts():
+            sessions.final_drain_started = True
+
+        async def _drain_after_the_round(_servers):
+            sessions.final_drain_started = True
+
+        self._install_round(
+            monkeypatch, "ok", on_round=_drain_starts if drain_during_round else None
+        )
+        monkeypatch.setattr(probe_env, "_evaluate_shareability", _drain_after_the_round)
+        monkeypatch.setattr(probe_env, "_annotate_owner_sign_in", lambda _rows: None)
+
+        app = web.Application()
+        app["state"] = SimpleNamespace(owner_id="", sessions=sessions)
+        app.router.add_post("/api/mcp/probe", probe_env.api_mcp_probe)
+        client = TestClient(TestServer(as_owner(app)))
+        await client.start_server()
+        try:
+            resp = await client.post("/api/mcp/probe")
+            assert resp.status == 200
+        finally:
+            await client.close()
+
+        state = mcp_quarantine.state_for("srv")
+        assert (state["fails"] if state else None) == expected_fails

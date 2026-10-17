@@ -10,6 +10,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from conftest import plant_day_link
+from kiro_crew.config.loader import config_path
 from kiro_crew.context import ContextBuilder, _neutralize_structural_markers
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig
 from kiro_crew.learn import LessonStore
@@ -272,12 +273,11 @@ class TestContextBuilder:
             "done", is_new_session=False, interactive=True, session_key="dashboard:chat-1"
         )
         assert "ask_question" in dash, "dashboard session must get the question nudge"
-        # Pin the CONTRACT, not a keyword. The wording this replaces ("BEFORE you
-        # can continue the current turn") described a blocking round-trip the tool
-        # does not perform, so the nudge has to say the card does not block, that
-        # the agent ends its turn, and that [OPTIONS:] is the end-of-turn choice.
-        assert "END YOUR TURN" in dash
-        assert "NON-BLOCKING" in dash
+        # The nudge must say ask_question blocks and returns the answers as its result.
+        assert "BLOCKS until the" in dash
+        assert "tool result" in dash
+        assert "END YOUR TURN" not in dash
+        assert "NON-BLOCKING" not in dash
         assert "[OPTIONS:]" in dash
         # A card is an interruption, so the nudge must also carry the restraint
         # contract: silence is the default and only a human-only decision that
@@ -724,6 +724,38 @@ class TestContextBuilder:
         assert _NATIVE_PROMPT_STUB not in reinjected
         assert reinjected == contract(fresh)
 
+    def test_minimal_reinjection_withholds_operator_context(self, tmp_path):
+        """A minimal warm turn restores the contract without private discovery blocks."""
+        builder = self._reinject_builder(tmp_path)
+        builder.memory.write_projects("# Active Projects\n\n- Private project marker\n")
+        config = config_path()
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text('{"dashboard":{"user_role":"developer"}}', encoding="utf-8")
+        full, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            session_key="dashboard:full-reinjection",
+        )
+        minimal, _ = builder.build_message(
+            "carry on",
+            is_new_session=False,
+            needs_reinjection=True,
+            minimal_context=True,
+            session_key="dashboard:minimal-reinjection",
+        )
+
+        for message in (full, minimal):
+            assert message.count("[AGENT SYSTEM PROMPT]\n") == 1
+            assert self._contract(message).strip()
+        for private_block in (
+            "[Memory activity index -- reference data",
+            "[Memory tools]",
+            "[REINJECTED AFTER COMPACTION -- skills index",
+        ):
+            assert private_block in full
+            assert private_block not in minimal
+
     @staticmethod
     def _contract(m: str) -> str:
         """The text inside the ``[AGENT SYSTEM PROMPT]`` block."""
@@ -885,13 +917,19 @@ class TestContextBuilder:
         msg, _ = builder.build_message("first turn", is_new_session=True, needs_reinjection=True)
         assert "[REINJECTED AFTER COMPACTION" not in msg
 
-    def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path):
+    def test_no_reinjection_for_an_unmapped_custom_agent(self, tmp_path, monkeypatch):
         """Mirrors the session-start gate (`inject_skills = ... not is_custom`).
 
         A custom agent's session-start context deliberately carries no skills
         block, so re-injecting one would ADD context rather than restore what
         compaction dropped.
         """
+        # This test counts the skills reinjection only; keep the reply-style
+        # block (on by default, answer_only) out of the count.
+        monkeypatch.setattr(
+            "kiro_crew.context_assembly.sections._response_preferences_apply",
+            lambda *a, **k: False,
+        )
         builder = self._reinject_builder(tmp_path)
         msg, _ = builder.build_message(
             "carry on",
@@ -1666,7 +1704,7 @@ class TestLoadSteeringResources:
 
     def test_steering_injected_for_cc_but_not_acp(self, tmp_path):
         """kiro-cli loads an agent's ``resources`` natively when spawned with
-        ``--agent`` (acp/client.py ``_spawn``), so build_session_context must
+        ``--agent`` (acp/client_start.py ``_spawn``), so build_session_context must
         NOT re-inject steering on the ACP backend — that would duplicate what
         kiro already loaded. The CC backend (claude-agent-acp) does not read
         agent ``resources``, so it still needs the explicit load.

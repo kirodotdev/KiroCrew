@@ -140,6 +140,19 @@ def test_spawn_deferral_says_usage_is_unreadable(kernel) -> None:
     assert meta["cause"] == sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
 
 
+def test_unreadable_usage_wait_label_names_the_cause_not_zero_available(kernel) -> None:
+    """The ``subagent_queued`` label the chip renders carries the cause and no
+    ``available_gb``: the 0 an unreadable usage file contributes is not an amount."""
+    kernel[f"{ROOT}/memory.max"] = 8 * GIB
+    mgr = _mgr()
+    info, _log = _spawn(mgr)
+    assert info is not None and info.queued is True
+    wait = mgr._queue_wait["sess-1"]
+    assert wait["reason"] == sa.QUEUED_REASON_LOW_MEMORY
+    assert wait["cause"] == sa.MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
+    assert "available_gb" not in wait and wait["required_gb"] > 0
+
+
 def test_spawn_deferral_for_measured_low_memory_is_unchanged(kernel) -> None:
     kernel[f"{ROOT}/memory.max"] = 8 * GIB
     kernel[f"{ROOT}/memory.current"] = 7 * GIB
@@ -148,6 +161,8 @@ def test_spawn_deferral_for_measured_low_memory_is_unchanged(kernel) -> None:
     assert info is not None and info.queued is True
     assert _deferral_reason(mgr, info).startswith("low memory: 1.0 GB available")
     assert "cause" not in log.call_args[1]["metadata"]
+    wait = mgr._queue_wait["sess-1"]
+    assert wait["available_gb"] == 1.0 and "cause" not in wait
 
 
 def test_stale_cause_does_not_leak_into_a_mocked_check(kernel, monkeypatch) -> None:

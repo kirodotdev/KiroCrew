@@ -7,9 +7,12 @@ branch itself, which is verifiable from any host, rather than the shard outcome.
 """
 
 import ast
+import functools
 import os
 import shutil
 import tempfile
+import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -95,6 +98,105 @@ class TestShortTmpBase:
             shutil.rmtree(base, ignore_errors=True)
 
 
+# --- the predicates the ratchets share -------------------------------------------------
+
+
+def _carries_shared_prefix(call: ast.Call) -> bool:
+    """Whether a `mkdtemp` call's `prefix=` is built from `SHORT_TMP_PREFIX`.
+
+    `SHORT_TMP_PREFIX + "label"` and the bare name both qualify; anything else, a
+    literal of its own or no `prefix=` at all, does not.
+    """
+    prefix = next((kw.value for kw in call.keywords if kw.arg == "prefix"), None)
+    if isinstance(prefix, ast.BinOp):
+        return getattr(prefix.left, "id", None) == "SHORT_TMP_PREFIX"
+    return getattr(prefix, "id", None) == "SHORT_TMP_PREFIX"
+
+
+def _short_rooted_calls(tree: ast.AST) -> list[ast.Call]:
+    """Calls that place a temp dir in the shared short root, either way of asking:
+    `dir=short_tmp_base()` or a hardcoded `dir="/tmp"`."""
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "dir":
+                continue
+            via_helper = (
+                isinstance(kw.value, ast.Call)
+                and getattr(kw.value.func, "id", None) == "short_tmp_base"
+            )
+            hardcoded = isinstance(kw.value, ast.Constant) and kw.value.value == "/tmp"
+            if via_helper or hardcoded:
+                out.append(node)
+                break
+    return out
+
+
+# The two spellings `_short_rooted_calls` matches on, as they appear in source text. A
+# file whose text has neither cannot hold a short-rooted call, so it is read but never
+# parsed. The identifier is matched on the NFKC-normalised text because CPython folds
+# identifiers at parse time: a compatibility homoglyph of `short_tmp_base` IS
+# `short_tmp_base` in the tree but not in the bytes (the same gate
+# `test/source_corpus.py` applies to the package-tree ratchets). The literal is matched
+# as written; an escaped spelling of the string (`"\x2ftmp"`) is not an accident a
+# fixture author makes, and accidents are what the ratchet is for.
+_SHORT_ROOT_SPELLINGS = ("short_tmp_base", "/tmp")
+
+
+def _can_hold_short_rooted_call(source: str) -> bool:
+    text = source if source.isascii() else unicodedata.normalize("NFKC", source)
+    return any(spelling in text for spelling in _SHORT_ROOT_SPELLINGS)
+
+
+@dataclass(frozen=True)
+class _Finding:
+    file: str
+    lineno: int
+    shared_prefix: bool
+
+
+@dataclass(frozen=True)
+class _Scan:
+    files: int  # every `*.py` the glob resolved to
+    parsed: int  # the subset whose text could hold a short-rooted call
+    findings: tuple[_Finding, ...]  # every short-rooted call, prefixed or not
+
+
+def _scan_tree(root: Path) -> _Scan:
+    """Read every `*.py` directly under `root` once; parse only the candidates.
+
+    Uncached so a test can point it at a fixture tree. Nothing but the findings is
+    retained: trees are dropped as soon as they are walked, so the scan leaves no source
+    text or AST behind on the worker.
+    """
+    files = parsed = 0
+    findings: list[_Finding] = []
+    for path in sorted(root.glob("*.py")):
+        files += 1
+        source = path.read_text(encoding="utf-8")
+        if not _can_hold_short_rooted_call(source):
+            continue
+        parsed += 1
+        tree = ast.parse(source, filename=str(path))
+        for call in _short_rooted_calls(tree):
+            findings.append(_Finding(path.name, call.lineno, _carries_shared_prefix(call)))
+    return _Scan(files, parsed, tuple(findings))
+
+
+@functools.lru_cache(maxsize=1)
+def _scan() -> _Scan:
+    """The test tree's reading. Cached: both ratchets below read the same one.
+
+    The tree is ~3700 files / ~120 MB of Python. Parsing all of it is ~18 s on an idle
+    core; two tests each doing so independently, on a loaded shard that is also running
+    the other tree-scan ratchets, is what overran the 120 s per-test timeout. One read,
+    and a parse of only the ~500 files whose text can hold a site, is ~6 s shared.
+    """
+    return _scan_tree(Path(__file__).parent)
+
+
 class TestEveryShortRootedFixtureIsNamed:
     """A short-rooted dir sits outside the per-test root the floor pins, so a hygiene probe
     can only tell it from a host leak by its name.
@@ -116,42 +218,7 @@ class TestEveryShortRootedFixtureIsNamed:
         assert SHORT_TMP_PREFIX not in ("", "tmp", "tmp-")
         assert SHORT_TMP_PREFIX.endswith("-")
 
-    # --- the predicate the two ratchets below share -------------------------------------
-
-    @staticmethod
-    def _carries_shared_prefix(call: ast.Call) -> bool:
-        """Whether a `mkdtemp` call's `prefix=` is built from `SHORT_TMP_PREFIX`.
-
-        `SHORT_TMP_PREFIX + "label"` and the bare name both qualify; anything else, a
-        literal of its own or no `prefix=` at all, does not.
-        """
-        prefix = next((kw.value for kw in call.keywords if kw.arg == "prefix"), None)
-        if isinstance(prefix, ast.BinOp):
-            return getattr(prefix.left, "id", None) == "SHORT_TMP_PREFIX"
-        return getattr(prefix, "id", None) == "SHORT_TMP_PREFIX"
-
-    @staticmethod
-    def _short_rooted_calls(tree: ast.AST) -> list[ast.Call]:
-        """Calls that place a temp dir in the shared short root, either way of asking:
-        `dir=short_tmp_base()` or a hardcoded `dir="/tmp"`."""
-        out = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            for kw in node.keywords:
-                if kw.arg != "dir":
-                    continue
-                via_helper = (
-                    isinstance(kw.value, ast.Call)
-                    and getattr(kw.value.func, "id", None) == "short_tmp_base"
-                )
-                hardcoded = isinstance(kw.value, ast.Constant) and kw.value.value == "/tmp"
-                if via_helper or hardcoded:
-                    out.append(node)
-                    break
-        return out
-
-    # --- the predicate's own pins: a ratchet loosened here passes over a real offender ---
+    # --- the predicates' own pins: a ratchet loosened here passes over a real offender ---
 
     @pytest.mark.parametrize(
         "src, shared",
@@ -168,7 +235,7 @@ class TestEveryShortRootedFixtureIsNamed:
         """Relaxing `_carries_shared_prefix` to `prefix is not None`, or to any string
         literal, turns both ratchets below green while the offending fixture ships."""
         call = ast.parse(src).body[0].value
-        assert self._carries_shared_prefix(call) is shared
+        assert _carries_shared_prefix(call) is shared
 
     @pytest.mark.parametrize(
         "src, found",
@@ -184,29 +251,63 @@ class TestEveryShortRootedFixtureIsNamed:
         """Widening `_short_rooted_calls` to every `mkdtemp` would demand a prefix from
         fixtures that correctly use the pinned root; narrowing it to one spelling lets the
         other spelling through unchecked."""
-        assert len(self._short_rooted_calls(ast.parse(src))) == found
+        assert len(_short_rooted_calls(ast.parse(src))) == found
+        # The pre-filter must keep every file the scanner can find a call in: a spelling
+        # the scanner matches but the filter drops would be skipped unparsed, green and blind.
+        if found:
+            assert _can_hold_short_rooted_call(src)
+
+    def test_the_prefilter_skips_only_files_that_cannot_hold_a_call(self, tmp_path):
+        """The scan reads every file but parses only the candidates, so the filter is the
+        one place a site could hide for free. Exercised end to end against a fixture tree:
+        both spellings are found, a homoglyph identifier is found (CPython folds it to the
+        ASCII name at parse time, and the filter normalises the same way), and a file with
+        neither spelling is read, counted, and never parsed -- which is why its deliberate
+        syntax error does not raise."""
+        (tmp_path / "offender.py").write_text(
+            'x = mkdtemp(prefix="pw-", dir=short_tmp_base())\n', encoding="utf-8"
+        )
+        (tmp_path / "clean.py").write_text(
+            "\n".join(
+                [
+                    "import os",
+                    'a = mkdtemp(prefix=SHORT_TMP_PREFIX, dir="/tmp")',
+                    'b = mkdtemp(prefix=SHORT_TMP_PREFIX + "x-", dir=\uff53hort_tmp_base())',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "pinned.py").write_text("y = mkdtemp(dir=tmp_path)\n", encoding="utf-8")
+        (tmp_path / "prose.py").write_text("this is not python (\n", encoding="utf-8")
+        (tmp_path / "ignored.txt").write_text('mkdtemp(dir="/tmp")\n', encoding="utf-8")
+
+        scan = _scan_tree(tmp_path)
+
+        assert scan.files == 4
+        assert scan.parsed == 2
+        assert scan.findings == (
+            _Finding("clean.py", 2, True),
+            _Finding("clean.py", 3, True),
+            _Finding("offender.py", 1, False),
+        )
 
     # --- the ratchets ------------------------------------------------------------------
 
     def test_every_short_rooted_fixture_passes_the_shared_prefix(self):
         """Ratchet. A new fixture in the shared root without the shared prefix fails here
         rather than surfacing later as an unexplained `host_write` cluster."""
-        offenders = []
-        for path in sorted(Path(__file__).parent.glob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for call in self._short_rooted_calls(tree):
-                if not self._carries_shared_prefix(call):
-                    offenders.append(f"{path.name}:{call.lineno}")
+        offenders = [f"{f.file}:{f.lineno}" for f in _scan().findings if not f.shared_prefix]
         assert (
             offenders == []
         ), "temp dir in the shared short root without SHORT_TMP_PREFIX: " + ", ".join(offenders)
 
     def test_the_ratchet_scans_more_than_one_file(self):
-        """The healthy side. A glob that resolved to nothing, or a parse that raised into a
-        swallowed except, would report zero offenders over zero files -- green, and blind."""
-        scanned = [
-            path
-            for path in sorted(Path(__file__).parent.glob("*.py"))
-            if self._short_rooted_calls(ast.parse(path.read_text(encoding="utf-8")))
-        ]
-        assert len(scanned) >= 8, f"only scanned {[p.name for p in scanned]}"
+        """The healthy side. A glob that resolved to nothing, a parse that raised into a
+        swallowed except, or a pre-filter that dropped the whole tree would report zero
+        offenders over zero files -- green, and blind."""
+        scan = _scan()
+        scanned = sorted({f.file for f in scan.findings})
+        assert len(scanned) >= 8, f"only scanned {scanned}"
+        assert scan.files >= scan.parsed >= len(scanned)
+        assert scan.parsed < scan.files, "the pre-filter kept every file; it filters nothing"

@@ -39,6 +39,9 @@ rows, ``chat_persistence._build_message_entry`` for the dashboard slot save):
 * **Bounded per message.** Both writers copy while holding the per-session lock,
   so one row's work has a ceiling on count and on total bytes -- see
   :data:`MAX_IMAGES_PER_MESSAGE`.
+* **Bounded per session.** A copy that would take the session's attachments past
+  :data:`MAX_ATTACHMENT_BYTES_PER_SESSION` is skipped, fail-open like any image
+  that cannot be preserved; nothing already stored is removed to make room.
 * **Local only.** ``http(s)``, ``data:`` and protocol-relative destinations are
   never touched -- they are already durable and are not ours to copy.
 
@@ -70,12 +73,11 @@ Reclamation is DELETE-ONLY, deliberately. Transcript rotation moves old rows to
 their attachments, so rotation orphans nothing and must not sweep -- a sweep
 against the live transcript alone would break exactly the references the archive
 keeps. An attachment becomes genuinely unreferenced only when archive retention
-expires its last row. The ceilings here are PER MESSAGE; across messages a
-session grows with every distinct image until it is deleted (a per-session
-ceiling or a retention-coupled sweep is a tracked follow-up). Session delete
-takes the directory in three all-or-nothing steps -- rename it aside, unlink the
-transcript, purge the staged copy -- so a retained transcript never points at
-pictures already gone (see :func:`stage_attachments_removal`).
+expires its last row, so growth is bounded at the write: per message by the copy
+budgets, per session by the ceiling. Session delete takes the directory in three
+all-or-nothing steps -- rename it aside, unlink the transcript, purge the staged
+copy -- so a retained transcript never points at pictures already gone (see
+:func:`stage_attachments_removal`).
 
 Everything here is blocking file I/O; callers on the event loop must offload it.
 """
@@ -134,6 +136,18 @@ MAX_IMAGE_OPENERS_PER_MESSAGE = 256
 _STAGED_SUFFIX = "trash"
 MAX_BYTES_PER_MESSAGE = 64 * 1024 * 1024
 
+#: Per-SESSION ceiling on the attachments directory. Reclamation is delete-only
+#: (see the module docstring), so this is what bounds a long-lived channel or cron
+#: session that posts a stream of distinct pictures. 1 GiB holds thousands of
+#: ordinary screenshots, or forty images at the per-image ceiling.
+MAX_ATTACHMENT_BYTES_PER_SESSION = 1024 * 1024 * 1024
+
+#: Attachments directories this process has already reported full. A session at
+#: its ceiling meets it again on every row naming a new picture, so it is logged
+#: once; capped, and clearing it costs one repeated line.
+_FULL_REPORTED: set[str] = set()
+_FULL_REPORTED_CAP = 1024
+
 #: Extensions we preserve, matching the set ``/api/file-raw`` will actually serve
 #: (``files._ALLOWED_IMAGE_EXT``). Copying bytes the viewer would then refuse
 #: would spend the disk and still show a broken image.
@@ -188,6 +202,10 @@ class ImageBudget:
     copies_left: int = field(default_factory=lambda: MAX_IMAGES_PER_MESSAGE)
     bytes_left: int = field(default_factory=lambda: MAX_BYTES_PER_MESSAGE)
     seen: dict[str, tuple[str, int] | None] = field(default_factory=dict)
+    #: What the session's directory may still grow by. Read when the row first has
+    #: bytes to write, so a row scans the directory once at most, and a row whose
+    #: pictures are all stored already -- the slot save re-flushing it -- not at all.
+    session_room: int | None = None
 
 
 def persist_inline_images(
@@ -250,7 +268,7 @@ def persist_inline_images(
         # budget bounds disk, so only a copy that wrote bytes is charged there.
         budget.copies_left -= 1
         try:
-            result = _store_one(ref.dest, target_dir, budget.bytes_left)
+            result = _store_one(ref.dest, target_dir, budget)
         except Exception:
             logger.debug("chat-attachments: could not preserve an image reference", exc_info=True)
             seen[ref.dest] = None
@@ -410,7 +428,7 @@ def purge_staged_attachments(staged: Path) -> bool:
     return False
 
 
-def _store_one(raw_dest: str, target_dir: Path, budget_bytes: int) -> tuple[str, int] | None:
+def _store_one(raw_dest: str, target_dir: Path, budget: ImageBudget) -> tuple[str, int] | None:
     """Copy the image *raw_dest* names into *target_dir*.
 
     Returns its new path and the bytes that copy consumed of the message budget --
@@ -419,10 +437,10 @@ def _store_one(raw_dest: str, target_dir: Path, budget_bytes: int) -> tuple[str,
 
     ``None`` means "leave the reference alone", for every reason: not a local
     absolute path, not an image extension, not a regular file, larger than the
-    remaining message budget, or refused by the read chokepoint (unreadable,
-    hardlinked, non-regular, sensitive, or over the per-image ceiling). An
-    over-budget image is SKIPPED rather than ending the row, so one large picture
-    does not cost the smaller ones after it their durability.
+    remaining message budget or session room, or refused by the read chokepoint
+    (unreadable, hardlinked, non-regular, sensitive, or over the per-image
+    ceiling). An over-budget image is SKIPPED rather than ending the row, so one
+    large picture does not cost the smaller ones after it their durability.
 
     An ALREADY-STORED destination returns its own path at zero cost rather than
     ``None``: the bytes need no copy, but the destination still has to be re-
@@ -473,11 +491,55 @@ def _store_one(raw_dest: str, target_dir: Path, budget_bytes: int) -> tuple[str,
     if dest.exists():
         # Content-addressed: a file already under this name holds these bytes.
         return str(dest), 0
-    if len(data) > budget_bytes:
+    if len(data) > budget.bytes_left:
+        return None
+    # Only a copy that would write bytes pays for the scan, and only the row's
+    # first: both writers copy under the session lock, so no other copy lands
+    # while this row runs, and the row's own copies are subtracted as they land.
+    if budget.session_room is None:
+        budget.session_room = MAX_ATTACHMENT_BYTES_PER_SESSION - _stored_bytes(target_dir)
+    if len(data) > budget.session_room:
+        _report_full(target_dir)
         return None
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write(dest, data)
+    budget.session_room -= len(data)
     return str(dest), len(data)
+
+
+def _stored_bytes(target_dir: Path) -> int:
+    """Bytes held by the regular files directly inside *target_dir*; 0 when absent.
+
+    Links are not followed and subdirectories are not entered: what this module
+    stores there is regular files, one level deep.
+    """
+    total = 0
+    try:
+        with os.scandir(target_dir) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue  # removed between the listing and the stat
+    except FileNotFoundError:
+        return 0
+    return total
+
+
+def _report_full(target_dir: Path) -> None:
+    """Log that *target_dir* is at its ceiling, once per directory per process."""
+    key = str(target_dir)
+    if key in _FULL_REPORTED:
+        return
+    if len(_FULL_REPORTED) >= _FULL_REPORTED_CAP:
+        _FULL_REPORTED.clear()
+    _FULL_REPORTED.add(key)
+    logger.warning(
+        "chat-attachments: %r is at its %d-byte ceiling; new images keep their original path",
+        key,
+        MAX_ATTACHMENT_BYTES_PER_SESSION,
+    )
 
 
 def _same_dir(left: Path, right: Path) -> bool:

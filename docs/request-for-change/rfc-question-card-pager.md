@@ -3,8 +3,8 @@ title: Question Card Pager — one question on screen, and answers that carry th
 status: accepted
 author: tilakputta
 created: 2026-09-24
-last-audited: 2026-09-30
-audited-at: f4df23e53
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [13196, 15250]
 tracking-issues: []
@@ -182,6 +182,12 @@ named test.
 
 ### 3.6 `ask_question` blocks, and the answers are its tool result
 
+> **Implemented.** This section landed in
+> [#15250](https://github.com/kirodotdev/KiroCrew/pull/15250). `ask_question` now
+> blocks and returns the answers as its tool result, the `/api/agent-ask/*` routes
+> live in `src/kiro_crew/dashboard/handlers/ask_question.py`, and the tests named
+> below ship with it in `test/test_ask_question_blocking.py`.
+
 This closes §1.2. The tool no longer returns at once. It opens the card on the calling
 session's own attested dashboard tab and waits, and the call's result is how the card ended.
 Nothing it produces is ever sent as a user message.
@@ -195,8 +201,8 @@ answers up by position:
 
 ```
 User has answered your questions:
-"Which region?"="eu-west-1"
-"Which tier?"="Pro"
+"Which region?" -> "eu-west-1"
+"Which tier?" -> "Pro"
 ```
 
 The transcript folds it into a card headed "N questions answered" (pluralized per locale),
@@ -206,7 +212,7 @@ opening to each question and its answer. It is part of the tool row, so it survi
 
 | Ending | Tool result | Pinned by |
 |---|---|---|
-| Answered | `User has answered your questions:` plus one `"<question>"="<answer>"` line each | `test_answers_come_back_as_the_tool_result`; `reads each question and answer from an answered result` |
+| Answered | `User has answered your questions:` plus one `"<question>" -> "<answer>"` line each | `test_answers_come_back_as_the_tool_result`; `reads each question and answer from an answered result` |
 | Dismissed | `The user dismissed the question card without answering.` | `test_each_ending_is_told_apart` |
 | User typed in the composer instead | `The user replied in chat instead of answering the question card. Their message follows as the next user message …` The typed text arrives as the user's own words, and the card is dismissed, never submitted with that text | `test_answer_endpoint_marks_a_composer_reply`; `dismisses rather than submitting the typed text as the answer`; `resolves a QUEUED send too, so the two cannot deadlock` |
 | Not answered in time (default 30 min, at most 1 h) | `The user did not answer the question card in time, so it was withdrawn …` | `test_coordinator_expires_at_the_deadline_and_retires_the_card` |
@@ -238,6 +244,7 @@ The three retired catalog keys are removed from all 12 catalogs in the same chan
 locale renders a key that no longer exists and none renders the new controls in English.
 
 §3.6 does change a contract: the one between `ask_question` and every agent that calls it.
+It landed in #15250, so the steps below describe what shipped:
 
 - The tool description, `prompt.md` and the per-turn nudge drop "END YOUR TURN after
   calling" and say the call returns the answers. An agent following the old text still

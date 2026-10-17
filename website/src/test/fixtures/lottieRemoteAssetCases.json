@@ -1,0 +1,1039 @@
+{
+  "_comment": "Lottie documents and whether the player refuses them for fetching. Run through referencesRemoteAsset (website/src/test/lottieSafety.test.ts) and references_remote_asset (test/test_appearance_packs_lottie_safety.py); the two must agree on every case.",
+  "cases": [
+    {
+      "name": "pure vector document",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": []
+      },
+      "remote": false
+    },
+    {
+      "name": "empty assets array",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": []
+      },
+      "remote": false
+    },
+    {
+      "name": "embedded image",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "w": 8,
+            "h": 8,
+            "e": 1,
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": false
+    },
+    {
+      "name": "precomp asset",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "comp_0",
+            "layers": [
+              {
+                "ty": 4
+              }
+            ]
+          }
+        ]
+      },
+      "remote": false
+    },
+    {
+      "name": "font the document only names",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fName": "Arial",
+              "origin": 0
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 0",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial"
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 1",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fOrigin": "n"
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 2",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fOrigin": ""
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 3",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fOrigin": "n",
+              "origin": 0
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 4",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fPath": ""
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font shape 5",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "origin": 0
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "local font with null origins",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fOrigin": null,
+              "origin": null,
+              "fPath": null
+            }
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "embedded image whose e is written 1.0",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 1.0,
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": false
+    },
+    {
+      "name": "external image asset",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "w": 1,
+            "h": 1,
+            "u": "https://attacker.example/",
+            "p": "pixel.png",
+            "e": 0
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "relative path asset",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "u": "images/",
+            "p": "img_0.png"
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "claims embedded but carries a path",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 1,
+            "p": "img_0.png"
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "no embedded marker",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "e is true rather than 1",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": true,
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "u prefix with a data URI",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 1,
+            "u": "https://attacker.example/",
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "p is null",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 1,
+            "p": null
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "webfont by path",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": "https://attacker.example/f.woff"
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "webfont by non-local origin",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": 3
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "numeric remote origin 1",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": 1
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "numeric remote origin 2",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": 2
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "numeric remote origin 3",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": 3
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 0",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": {}
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 1",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": [
+                "x"
+              ]
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 2",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": 1
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 3",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": true
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 4",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": []
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "non-string truthy fPath 5",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": {
+                "toString": "x"
+              }
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "CSS breakout entry",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "\") } </style><style>body{display:none}",
+              "fOrigin": "p",
+              "fPath": {}
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "fOrigin g with empty fPath",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": "g",
+              "fPath": ""
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "fOrigin t",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": "t"
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "fOrigin p",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": "p"
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 0",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": "z"
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 1",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": 3
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 2",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": {}
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 3",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": []
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 4",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": true
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 5",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": "p"
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 6",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": {}
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 7",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": true
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 8",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": false
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "unplaceable origin 9",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fOrigin": false
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "one of several fonts remote",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "Arial",
+              "fOrigin": "n"
+            },
+            {
+              "fFamily": "X",
+              "fOrigin": "p",
+              "fPath": [
+                "x"
+              ]
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "one of several assets remote",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 1,
+            "p": "data:image/png;base64,iVBORw0="
+          },
+          {
+            "id": "comp_0",
+            "layers": []
+          },
+          {
+            "id": "i1",
+            "u": "https://attacker.example/",
+            "p": "beacon.png"
+          }
+        ]
+      },
+      "remote": true
+    },
+    {
+      "name": "junk 0",
+      "doc": null,
+      "remote": false
+    },
+    {
+      "name": "junk 1",
+      "doc": 42,
+      "remote": false
+    },
+    {
+      "name": "junk 2",
+      "doc": "nope",
+      "remote": false
+    },
+    {
+      "name": "junk 3",
+      "doc": [],
+      "remote": false
+    },
+    {
+      "name": "junk 4",
+      "doc": {
+        "assets": "nope"
+      },
+      "remote": false
+    },
+    {
+      "name": "junk 5",
+      "doc": {
+        "fonts": "nope"
+      },
+      "remote": false
+    },
+    {
+      "name": "junk 6",
+      "doc": false,
+      "remote": false
+    },
+    {
+      "name": "junk 7",
+      "doc": 0,
+      "remote": false
+    },
+    {
+      "name": "non-object asset entries",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          null,
+          "nope",
+          7
+        ]
+      },
+      "remote": false
+    },
+    {
+      "name": "non-object font entries",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            null,
+            "nope",
+            7
+          ]
+        }
+      },
+      "remote": false
+    },
+    {
+      "name": "integer fPath past the float range",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "fPath": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "integer origin past the float range",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "fonts": {
+          "list": [
+            {
+              "fFamily": "X",
+              "origin": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            }
+          ]
+        }
+      },
+      "remote": true
+    },
+    {
+      "name": "integer e past the float range",
+      "doc": {
+        "v": "5.7.4",
+        "fr": 24,
+        "ip": 0,
+        "op": 48,
+        "layers": [],
+        "assets": [
+          {
+            "id": "i0",
+            "e": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+            "p": "data:image/png;base64,iVBORw0="
+          }
+        ]
+      },
+      "remote": true
+    }
+  ]
+}

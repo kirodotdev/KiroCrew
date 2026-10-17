@@ -192,6 +192,8 @@ export const QUOTED_OPERAND_CONFIRM_KEYS = [
   'components.agentTemplateDetail.reset_confirm_title',
   'components.agentTemplateDetail.switch_confirm_body',
   'components.agentTemplateDetail.switch_confirm_title',
+  'components.remoteUpdate.confirm', // crew-name operand of the Update remote confirmation, quoted per locale
+  'components.remoteUpdate.confirm_hint', // same operand on the confirmation's explanation line
   // The code-execution grant's title AND body. #5725 quoted only the title, which left
   // the scope sentence one line under it reading as prose about every app (#6016).
   'components.appstore.trustAppModal.failed', // bare {{app}} #6016

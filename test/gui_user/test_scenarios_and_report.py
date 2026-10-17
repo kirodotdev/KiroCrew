@@ -63,7 +63,6 @@ SHIPPED = SHIPPED_SMOKE | {
     "crewmate-create-first",
     "crewmate-panel-tabs",
     "crewmate-reply-thread",
-    "crewmate-team-view",
     "customize-tabs",
     "knowledge-add-folder-source-and-scan",
     "members-dm-hello",
@@ -218,6 +217,27 @@ class TestShippedScenarios:
         # The catalog fields describe the scenario to people, not to the model.
         assert sc.user_story not in prompt
 
+    def test_a_retry_creates_a_new_name_not_the_first_attempts(self) -> None:
+        # The target boots once per run, so attempt 2 finds the crewmate attempt 1
+        # made. Asking it for the same name is refused as a duplicate and leaves
+        # a dirty "New crewmate" form for the next scenario (Leave site?).
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-create-first.yaml")
+        first, second = sc.task_prompt(1), sc.task_prompt(2)
+        assert scenarios.ATTEMPT_SUFFIX not in first + second
+        assert 'type exactly "Radar" in the "Name" field' in first
+        assert 'type exactly "Radar 2" in the "Name" field' in second
+        assert '"Radar 2" is visible' in second
+        assert sc.task_prompt() == first
+
+    def test_attempt_suffix(self) -> None:
+        assert [scenarios.attempt_suffix(n) for n in (0, 1, 2, 3)] == ["", "", " 2", " 3"]
+
+    def test_report_summary_carries_no_placeholder(self) -> None:
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-create-first.yaml")
+        res = harness.ScenarioResult.for_scenario(sc, "SKIPPED")
+        assert scenarios.ATTEMPT_SUFFIX not in res.summary
+        assert "named Radar with a job" in res.summary
+
     def test_every_shipped_scenario_is_classified(self) -> None:
         for sc in scenarios.load_all(SCENARIOS_DIR):
             assert sc.feature in scenarios.FEATURES
@@ -247,7 +267,6 @@ class TestShippedScenarios:
                 "crewmate-create-first",
                 "crewmate-panel-tabs",
                 "crewmate-reply-thread",
-                "crewmate-team-view",
                 "members-dm-hello",
                 "members-private-memory-keeps-thread",
             ],
@@ -332,6 +351,71 @@ class TestShippedScenarios:
             for step in card_steps:
                 assert 'may read "nova-sky"' in step, (name, step)
             assert not any('named "Nova Sky"' in s for s in sc.steps), name
+
+    def test_crewmates_scenarios_name_the_current_preview_and_rail_label(self) -> None:
+        """Every scenario that turns on the Crewmates preview leads with today's card title and rail label."""
+        checked = 0
+        for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
+            sc = scenarios.load_scenario(path)
+            preview_steps = [
+                s for s in sc.steps if "turn on the preview" in s.lower() and "Crew" in s
+            ]
+            for step in preview_steps:
+                checked += 1
+                assert 'starts with "Crewmates"' in step, (path.name, step)
+            rail_steps = [s for s in sc.steps if "item appears in the left rail" in s]
+            for step in rail_steps:
+                assert '"Crewmates" item appears in the left rail' in step, (path.name, step)
+        assert checked >= 5
+
+    def test_created_crewmate_speaks_first_with_no_user_greeting_bubble(self) -> None:
+        """A new crewmate's first turn is a hidden kickoff, so the only bubble is its reply.
+
+        The create sends ``first_greeting`` and the server starts the
+        crewmate's first turn from a kickoff that is never written to the
+        transcript (``mate_welcome``). No user bubble is drawn, so an
+        expectation that asks for one fails on every nightly.
+        """
+        sc = scenarios.load_scenario(SCENARIOS_DIR / "crewmate-create-first.yaml")
+        expectations = " ".join(sc.expectations)
+        assert "welcome to the team" not in expectations
+        assert "on your behalf" not in expectations
+        from kiro_crew.testing.fake_acp_backend import REPLY_TEXT
+
+        assert f'"{REPLY_TEXT}"' in expectations
+        assert "no bubble from you" in expectations
+
+    def test_scenarios_name_the_dormant_row_by_its_shipped_sentence(self) -> None:
+        """The sleeping-session expander row is named by its shipped sentence.
+
+        A step or expectation naming the row must quote the exact en.json
+        sentence for a count of one so the tester looks for the right words.
+        """
+        en = json.loads(
+            (Path(__file__).resolve().parents[2] / "website/src/i18n/locales/en.json").read_text(
+                encoding="utf-8"
+            )
+        )["pages"]["chatSidebar"]
+        allowed = {
+            en[f"stale_collapse_row_{state}_one"].replace("{{count}}", "1")
+            for state in ("hidden", "shown")
+        }
+        # Derive the key adjective from the allowed set, e.g. "sleeping".
+        # Skip short words and generic ones shared across many labels.
+        generic = {"show", "hide", "count", "session", "sessions", "1"}
+        row_adj = {
+            w for label in allowed for w in label.lower().split() if w not in generic and len(w) > 3
+        }
+        checked = 0
+        for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
+            sc = scenarios.load_scenario(path)
+            for text in [*sc.steps, *sc.expectations]:
+                assert "Dormant sessions" not in text, (path.name, text)
+                for quoted in text.split('"')[1::2]:
+                    if any(w in quoted.lower() for w in row_adj):
+                        checked += 1
+                        assert quoted in allowed, (path.name, quoted)
+        assert checked >= 3
 
 
 def _write(tmp_path: Path, name: str, doc: dict) -> Path:
@@ -665,7 +749,7 @@ class TestReport:
         md = report.render_features(catalog, _summary(), run_url="https://x/run")
         assert md.startswith("# GUI user-test feature catalog\n")
         assert (
-            f"_18 of {len(scenarios.FEATURES)} features covered · 41 scenarios (32 smoke / 9 nightly)._"
+            f"_18 of {len(scenarios.FEATURES)} features covered · 40 scenarios (32 smoke / 8 nightly)._"
             in md
         )
         assert (

@@ -91,8 +91,9 @@ RECEIPT_MAX_PUBLISH_ATTEMPTS = 2 * RECEIPT_MAX_OWED
 #: transition ON ITS OWN KEY, so a key that stops being addressed -- a session key
 #: rotates its ``:gen{N}`` suffix on reset -- leaves a debt nothing will ever visit
 #: again, and per-debt attempts cannot expire what is never attempted. This is the bound
-#: that reaches those: past it the LEAST RECENTLY retained debt is released, which is
-#: the one whose key has been silent longest and so the one most likely to be orphaned.
+#: that reaches those: past it the LEAST RECENTLY ATTEMPTED debt is released (every
+#: attempt moves its entry to the back), which is the one whose key has been silent
+#: longest and so the one most likely to be orphaned.
 #: What it releases is COUNTED, for the same reason the body cap counts what it drops.
 RECEIPT_MAX_DEBTS = 64
 
@@ -244,11 +245,6 @@ class QueueReceipt:
     """
 
     msg_id: Any
-    #: Who opened the bubble, as the queue's own owner token. Recorded so the queue
-    #: side can say whose bubble this is; no write rule tests it, because a principal
-    #: cannot tell a shared conversation from a shared session key -- :attr:`address`
-    #: is what the rules compare.
-    opened_by: str = ""
     #: The surface the bubble was OPENED on -- the one conversation ``msg_id`` is
     #: valid in, and the only surface an owed record is written or posted through.
     #: ``None`` only for an entry built without one, which is written to not at all
@@ -631,7 +627,7 @@ class ReceiptQueue:
             msg_id = await surface.send_receipt(receipt_text([display_text]))
             if msg_id is not None:
                 self._receipts[session_key] = QueueReceipt(
-                    msg_id=msg_id, opened_by=owner, opened_on=surface, lines=[line]
+                    msg_id=msg_id, opened_on=surface, lines=[line]
                 )
             return
         receipt.lines.append(line)

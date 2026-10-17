@@ -309,7 +309,7 @@ SESSION_TRANSFER_REPLY_MAX_BYTES: int = 256 * 1024
 
 # Timeout (secs) for one federated session-search request over an already-open
 # tunnel (GET the peer's /api/sessions/search — no SSH spawn). Sized between the
-# token probe (2s, a bare status ping) and the transfer (30s, a ~20 MB bundle):
+# token probe (2s, a bare status ping) and the transfer (30s per connect/read):
 # a search reply is a small JSON page but the peer does real scanning work
 # (bounded by its own _SEARCH_SCAN_WINDOW), so the probe budget would produce
 # false "unreachable" verdicts on a loaded peer, while anything transfer-sized
@@ -344,7 +344,7 @@ DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS: float = 8.0
 # other four reads answer from state the peer already holds, but the model list
 # is the one read whose COLD path runs real subprocess work on the peer: up to
 # 5s of sandbox-backend detection (_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS in
-# sandbox.py) plus up to 10s of `kiro-cli chat --list-models`
+# sandbox_probe.py) plus up to 10s of `kiro-cli chat --list-models`
 # (_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS in dashboard/handlers/agents.py), plus
 # up to 3s of entitlement revalidation
 # (_READ_PATH_PROBE_DEADLINE_SECS in acp/session_handle.py, bounding the

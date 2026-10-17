@@ -33,8 +33,14 @@ class _FakeClientBuilder:
     def log_level(self, v: Any) -> "_FakeClientBuilder":
         return self
 
+    def timeout(self, v: float) -> "_FakeClientBuilder":
+        self._timeout = v
+        return self
+
     def build(self) -> "_FakeRestClient":
-        return _FakeRestClient()
+        client = _FakeRestClient()
+        client.timeout = getattr(self, "_timeout", None)
+        return client
 
 
 class _FakeImReply:
@@ -74,15 +80,92 @@ class _FakeIm:
         self.v1 = _FakeV1()
 
 
+class _FakeRawResponse:
+    def __init__(self, content: bytes | None) -> None:
+        self.content = content
+
+
+class _FakeBaseResponse:
+    def __init__(self, content: bytes | None) -> None:
+        self.raw = _FakeRawResponse(content)
+
+
+class _FakeBotInfo:
+    """Scripted answers for the bot-info probe, shared by every fake client.
+
+    Each probe pops the next entry: bytes is the response body, an exception
+    instance is raised. The last entry repeats once the script runs out.
+    """
+
+    script: list[Any] = []
+    requests: list[Any] = []
+    timeouts: list[Any] = []
+
+    @classmethod
+    def reset(cls, *entries: Any) -> None:
+        cls.script = list(entries) or [
+            json.dumps({"code": 0, "bot": {"open_id": "ou_bot"}}).encode()
+        ]
+        cls.requests = []
+        cls.timeouts = []
+
+    @classmethod
+    def answer(cls) -> Any:
+        return cls.script.pop(0) if len(cls.script) > 1 else cls.script[0]
+
+
 class _FakeRestClient:
     """Stub for lark.Client -- records reply calls via .im.v1.message.reply."""
 
     def __init__(self) -> None:
         self.im = _FakeIm()
+        self.timeout: float | None = None
 
     @classmethod
     def builder(cls) -> _FakeClientBuilder:
         return _FakeClientBuilder()
+
+    def request(self, req: Any) -> _FakeBaseResponse:
+        _FakeBotInfo.requests.append(req)
+        _FakeBotInfo.timeouts.append(self.timeout)
+        entry = _FakeBotInfo.answer()
+        if isinstance(entry, BaseException):
+            raise entry
+        return _FakeBaseResponse(entry)
+
+
+class _FakeBaseRequestBuilder:
+    def __init__(self) -> None:
+        self.fields: dict[str, Any] = {}
+
+    def http_method(self, v: Any) -> "_FakeBaseRequestBuilder":
+        self.fields["http_method"] = v
+        return self
+
+    def uri(self, v: str) -> "_FakeBaseRequestBuilder":
+        self.fields["uri"] = v
+        return self
+
+    def token_types(self, v: Any) -> "_FakeBaseRequestBuilder":
+        self.fields["token_types"] = v
+        return self
+
+    def build(self) -> dict[str, Any]:
+        return dict(self.fields)
+
+
+class _FakeBaseRequest:
+    @staticmethod
+    def builder() -> _FakeBaseRequestBuilder:
+        return _FakeBaseRequestBuilder()
+
+
+class _FakeHttpMethod:
+    GET = "GET"
+
+
+class _FakeAccessTokenType:
+    TENANT = "TENANT"
 
 
 class _FakeEventDispatcherHandlerBuilder:
@@ -245,6 +328,10 @@ def _fake_lark_sdk():
     lark_mod.Client = _FakeRestClient  # type: ignore[attr-defined]
     lark_mod.LogLevel = _FakeLogLevel  # type: ignore[attr-defined]
     lark_mod.EventDispatcherHandler = _FakeEventDispatcherHandler  # type: ignore[attr-defined]
+    lark_mod.BaseRequest = _FakeBaseRequest  # type: ignore[attr-defined]
+    lark_mod.HttpMethod = _FakeHttpMethod  # type: ignore[attr-defined]
+    lark_mod.AccessTokenType = _FakeAccessTokenType  # type: ignore[attr-defined]
+    _FakeBotInfo.reset()
 
     ws_mod = types.ModuleType("lark_oapi.ws")
     ws_mod.Client = _FakeWSClient  # type: ignore[attr-defined]
@@ -308,7 +395,7 @@ def _make_event(
     open_id: str = "ou_abc123",
     chat_type: str = "p2p",
     chat_id: str = "",
-    mentions: list[tuple[str, str]] | None = None,
+    mentions: list[tuple[str, ...]] | None = None,
 ) -> Any:
     """Build a fake P2ImMessageReceiveV1 data object matching lark-oapi shape."""
     if content is None:
@@ -345,11 +432,19 @@ def _make_event(
     class Mention:
         pass
 
+    class MentionId:
+        pass
+
     mention_objs = []
-    for key, name in mentions or []:
+    for entry in mentions or []:
+        key, name = entry[0], entry[1]
         m = Mention()
         m.key = key  # type: ignore[attr-defined]
         m.name = name  # type: ignore[attr-defined]
+        if len(entry) > 2:
+            ident = MentionId()
+            ident.open_id = entry[2]  # type: ignore[attr-defined]
+            m.id = ident  # type: ignore[attr-defined]
         mention_objs.append(m)
     msg.mentions = mention_objs or None  # type: ignore[attr-defined]
 
@@ -1430,3 +1525,313 @@ class TestMentionResolution:
         await asyncio.sleep(0.05)
 
         assert seen == ["do the thing"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: the group @-mention gate (bot identity + bot_mentioned)
+# ---------------------------------------------------------------------------
+
+
+def _parse_one(client: Any, data: Any) -> Any:
+    """Run one frame through ``_handle_receive_v1`` and return the delivery."""
+    seen: list[Any] = []
+    client._deliver = seen.append  # type: ignore[method-assign]
+    client._handle_receive_v1(data)
+    assert len(seen) == 1, f"expected one delivery, got {seen!r}"
+    return seen[0]
+
+
+class TestBotMentionedFlag:
+    """``bot_mentioned`` is true only when the mention list names THIS bot's id."""
+
+    @staticmethod
+    def _client(bot_open_id: str = "ou_bot") -> Any:
+        from kiro_crew.feishu.client import LarkClient
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._bot_open_id = bot_open_id
+        return client
+
+    def test_a_mention_of_the_bot_sets_the_flag(self) -> None:
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                content=json.dumps({"text": "@_user_1 status?"}),
+                mentions=[("@_user_1", "FeishuBot", "ou_bot")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+        )
+        assert inbound.bot_mentioned is True
+
+    def test_no_mentions_leaves_it_false(self) -> None:
+        inbound = _parse_one(
+            self._client(), _make_event(chat_type="group", chat_id="oc_grp", mentions=[])
+        )
+        assert inbound.bot_mentioned is False
+
+    def test_a_mention_of_someone_else_leaves_it_false(self) -> None:
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                content=json.dumps({"text": "@_user_1 lunch?"}),
+                mentions=[("@_user_1", "Alice", "ou_alice")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+        )
+        assert inbound.bot_mentioned is False
+
+    def test_a_member_named_like_the_bot_is_not_the_bot(self) -> None:
+        """Display names are not unique; only the open_id identifies the app."""
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                content=json.dumps({"text": "@_user_1 hi"}),
+                mentions=[("@_user_1", "FeishuBot", "ou_impostor")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+        )
+        assert inbound.bot_mentioned is False
+
+    def test_an_unresolved_bot_id_never_matches_an_id_less_mention(self) -> None:
+        inbound = _parse_one(
+            self._client(bot_open_id=""),
+            _make_event(
+                content=json.dumps({"text": "@_user_1 hi"}),
+                mentions=[("@_user_1", "FeishuBot", "")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+        )
+        assert inbound.bot_mentioned is False
+
+    def test_an_unreadable_message_carries_the_flag_too(self) -> None:
+        inbound = _parse_one(
+            self._client(),
+            _make_event(
+                message_type="post",
+                mentions=[("@_user_1", "FeishuBot", "ou_bot")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+        )
+        assert inbound.unsupported_type == "post"
+        assert inbound.bot_mentioned is True
+
+
+class TestGroupMentionGateEndToEnd:
+    """A frame parsed by the client and gated by the transport, as in production."""
+
+    @staticmethod
+    async def _run(data: Any, *, bot_open_id: str = "ou_bot") -> list[Any]:
+        from unittest.mock import patch
+
+        from kiro_crew.feishu.client import LarkClient
+        from kiro_crew.feishu.transport import FeishuTransport
+        from kiro_crew.testing.wait import await_until
+
+        dispatched: list[Any] = []
+
+        async def dispatch(inbound: Any) -> None:
+            dispatched.append(inbound)
+
+        client = LarkClient(app_id="a", app_secret="s")
+        client._bot_open_id = bot_open_id
+        transport = FeishuTransport(
+            client,
+            allowed_open_ids=["ou_member"],
+            allow_group=True,
+            allowed_group_ids=["oc_grp"],
+            dispatch=dispatch,
+        )
+        handled = asyncio.Event()
+
+        async def handler(inbound: Any) -> None:
+            try:
+                await transport.receive(inbound)
+            finally:
+                handled.set()
+
+        client.set_message_handler(handler)
+        client._loop = asyncio.get_running_loop()
+        with patch("kiro_crew.feishu.transport.sel"):
+            client._handle_receive_v1(data)
+            await await_until(handled, what="transport.receive finished")
+        return dispatched
+
+    @pytest.mark.asyncio
+    async def test_plain_group_message_from_allowed_sender_is_dropped(self) -> None:
+        dispatched = await self._run(
+            _make_event(
+                open_id="ou_member",
+                content=json.dumps({"text": "牛逼"}),
+                chat_type="group",
+                chat_id="oc_grp",
+            )
+        )
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_group_message_mentioning_only_another_user_is_dropped(self) -> None:
+        dispatched = await self._run(
+            _make_event(
+                open_id="ou_member",
+                content=json.dumps({"text": "@_user_1 thanks"}),
+                mentions=[("@_user_1", "Alice", "ou_alice")],
+                chat_type="group",
+                chat_id="oc_grp",
+            )
+        )
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_group_message_mentioning_the_bot_starts_a_turn(self) -> None:
+        dispatched = await self._run(
+            _make_event(
+                open_id="ou_member",
+                content=json.dumps({"text": "@_user_1 summarise this thread"}),
+                mentions=[("@_user_1", "FeishuBot", "ou_bot")],
+                chat_type="group",
+                chat_id="oc_grp",
+            )
+        )
+        assert len(dispatched) == 1
+        assert dispatched[0].text == "@FeishuBot summarise this thread"
+        assert dispatched[0].person_origin is True
+
+    @pytest.mark.asyncio
+    async def test_dm_without_a_mention_is_served(self) -> None:
+        dispatched = await self._run(
+            _make_event(open_id="ou_member", content=json.dumps({"text": "hello"}))
+        )
+        assert len(dispatched) == 1
+
+    @pytest.mark.asyncio
+    async def test_unresolved_bot_id_refuses_groups_but_serves_dms(self) -> None:
+        group = await self._run(
+            _make_event(
+                open_id="ou_member",
+                message_id="g1",
+                content=json.dumps({"text": "@_user_1 hi"}),
+                mentions=[("@_user_1", "FeishuBot", "ou_bot")],
+                chat_type="group",
+                chat_id="oc_grp",
+            ),
+            bot_open_id="",
+        )
+        dm = await self._run(
+            _make_event(open_id="ou_member", message_id="d1", content=json.dumps({"text": "hi"})),
+            bot_open_id="",
+        )
+        assert group == []
+        assert len(dm) == 1
+
+
+class TestBotIdentity:
+    """The bot's open_id is resolved after start() and retried until it is."""
+
+    @pytest.mark.asyncio
+    async def test_start_resolves_the_bot_open_id(self) -> None:
+        from kiro_crew.feishu import client as client_mod
+        from kiro_crew.testing.wait import async_wait_until
+
+        client = client_mod.LarkClient(app_id="a", app_secret="s")
+        await client.start()
+        try:
+            await async_wait_until(lambda: client._bot_open_id == "ou_bot")
+        finally:
+            await client.close()
+            client._thread.join(timeout=5.0)
+
+        req = _FakeBotInfo.requests[0]
+        assert req["uri"] == "/open-apis/bot/v3/info"
+        assert req["http_method"] == "GET"
+        assert req["token_types"] == {"TENANT"}
+        # The probe client carries a request timeout so a stalled endpoint
+        # cannot pin an executor thread.
+        assert _FakeBotInfo.timeouts[0] == client_mod._BOT_INFO_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_a_failed_probe_warns_once_and_retries_until_resolved(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+        from unittest.mock import patch
+
+        from kiro_crew.feishu import client as client_mod
+        from kiro_crew.testing.wait import async_wait_until
+
+        _FakeBotInfo.reset(
+            json.dumps({"code": 99991672, "msg": "no permission"}).encode(),
+            OSError("network down"),
+            json.dumps({"code": 0, "bot": {"open_id": "ou_bot"}}).encode(),
+        )
+        client = client_mod.LarkClient(app_id="a", app_secret="s")
+        with (
+            patch.object(client_mod, "_BOT_INFO_RETRY_FIRST_SECS", 0.0),
+            caplog.at_level(logging.INFO, logger="kiro_crew.feishu.client"),
+        ):
+            await client.start()
+            try:
+                await async_wait_until(lambda: client._bot_open_id == "ou_bot")
+            finally:
+                await client.close()
+                client._thread.join(timeout=5.0)
+
+        assert len(_FakeBotInfo.requests) == 3
+        warnings = [
+            r for r in caplog.records if r.levelno == logging.WARNING and "open_id" in r.message
+        ]
+        assert len(warnings) == 1
+        assert "group messages are refused" in warnings[0].message
+        assert any("resolved after a failure" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_close_stops_a_probe_that_never_succeeds(self) -> None:
+        from unittest.mock import patch
+
+        from kiro_crew.feishu import client as client_mod
+        from kiro_crew.testing.wait import async_wait_until
+
+        _FakeBotInfo.reset(json.dumps({"code": 1, "msg": "refused"}).encode())
+        client = client_mod.LarkClient(app_id="a", app_secret="s")
+        with patch.object(client_mod, "_BOT_INFO_RETRY_FIRST_SECS", 0.0):
+            await client.start()
+            task = client._bot_identity_task
+            assert task is not None
+            await async_wait_until(lambda: len(_FakeBotInfo.requests) >= 2)
+            await client.close()
+            client._thread.join(timeout=5.0)
+            await async_wait_until(task.done)
+
+        assert client._bot_open_id == ""
+
+
+class TestParseBotOpenId:
+    def test_reads_the_open_id(self) -> None:
+        from kiro_crew.feishu.client import _parse_bot_open_id
+
+        body = json.dumps({"code": 0, "bot": {"open_id": " ou_bot "}}).encode()
+        assert _parse_bot_open_id(body) == "ou_bot"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            None,
+            b"",
+            b"not json",
+            b"[]",
+            json.dumps({"code": 99991663, "msg": "token invalid"}).encode(),
+            json.dumps({"code": 0}).encode(),
+            json.dumps({"code": 0, "bot": {"open_id": "  "}}).encode(),
+            json.dumps({"code": 0, "bot": {"open_id": 7}}).encode(),
+            json.dumps({"code": "0", "bot": {"open_id": "ou_bot"}}).encode(),
+        ],
+    )
+    def test_refuses_anything_that_is_not_an_identity(self, body: Any) -> None:
+        from kiro_crew.feishu.client import _parse_bot_open_id
+
+        with pytest.raises(ValueError):
+            _parse_bot_open_id(body)

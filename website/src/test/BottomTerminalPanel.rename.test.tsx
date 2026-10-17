@@ -21,6 +21,7 @@ vi.mock('../components/CliPanel', () => ({
 }))
 vi.mock('../utils/terminalRegistry', () => ({
   useTerminalTitle: () => terminal.title,
+  getTerminalTitle: () => terminal.title,
   disposeTerminalConnection: vi.fn(),
 }))
 vi.mock('../utils/terminalPopout', () => ({

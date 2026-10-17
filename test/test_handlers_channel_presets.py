@@ -82,3 +82,21 @@ class TestChannelPresets:
         resp = await api_channel_presets(request)
         body = json.loads(resp.body)
         assert body["presets"] == _DEFAULT_PRESETS
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_defaults_on_wrong_typed_presets(
+        self, tmp_path, monkeypatch
+    ):
+        """A wrong-typed ``channel_presets`` (not a list) degrades to defaults.
+
+        The reader guards the document root; a non-list ``channel_presets`` is a
+        nested value it must also coerce, so it falls back to the built-in
+        defaults rather than serving the wrong-typed value to the client.
+        """
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"channel_presets": "not-a-list"}), encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.dashboard.handlers_channel.config_path", lambda: cfg)
+        request = MagicMock()
+        resp = await api_channel_presets(request)
+        body = json.loads(resp.body)
+        assert body["presets"] == _DEFAULT_PRESETS

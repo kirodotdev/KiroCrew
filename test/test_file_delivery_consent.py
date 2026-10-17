@@ -296,9 +296,16 @@ class TestKeystoneFencing:
         caller could take): it reads the armed nonce from the keystone file and
         POSTs it to the approve endpoint, so it authorizes nothing on its own.
         """
-        from kiro_crew import cli, cli_server
+        from kiro_crew import (
+            cli,
+            cli_parser_admin,
+            cli_parser_agent,
+            cli_parser_gateway,
+            cli_server,
+        )
 
-        cli_src = inspect.getsource(cli)
+        parser_modules = (cli, cli_parser_gateway, cli_parser_agent, cli_parser_admin)
+        cli_src = "\n".join(inspect.getsource(module) for module in parser_modules)
         assert '"file-delivery"' in cli_src
         assert "_file_delivery_approve" in cli_src
 
@@ -335,9 +342,14 @@ class TestConsentedDownloadRequiresOwnerIdentity:
     def test_the_download_gate_requires_both_conjuncts(self):
         import inspect
 
+        from kiro_crew.dashboard.file_api import transfer
         from kiro_crew.dashboard.handlers import files as files_handlers
 
-        src = inspect.getsource(files_handlers.api_outbox_download)
+        # Both owner-facing download routes reach the grant through ONE helper, so
+        # the conjunct cannot be present on one route and forgotten on the other.
+        for route in (files_handlers.api_outbox_download, transfer.api_file_download):
+            assert "await _owner_grant_releases_flagged(request)" in inspect.getsource(route)
+        src = inspect.getsource(files_handlers._owner_grant_releases_flagged)
         assert "is_granted" in src
         # Asserted on source because the alternative is an aiohttp request fixture
         # carrying a forged non-owner identity, which would pin the harness rather
@@ -350,10 +362,10 @@ class TestConsentedDownloadRequiresOwnerIdentity:
 
         from kiro_crew.dashboard.handlers import files as files_handlers
 
-        src = inspect.getsource(files_handlers.api_outbox_download)
+        src = inspect.getsource(files_handlers._owner_grant_releases_flagged)
         # Anchored on the conjunction itself rather than on the store read: the
-        # grant is resolved off the event loop at each call site, so the
-        # conjunction lives in the closure and not in the store-read expression.
+        # grant is resolved off the event loop first, so the conjunction is its
+        # own statement and not part of the store-read expression.
         window = src[src.index("return granted") : src.index("return granted") + 200]
         assert " and is_owner_dashboard_request(request)" in window
         assert " or is_owner_dashboard_request(request)" not in window
@@ -371,7 +383,11 @@ class TestConsentedDownloadRequiresOwnerIdentity:
 
         from kiro_crew.dashboard.handlers import files as files_handlers
 
-        for fn in (files_handlers.api_outbox_download, files_handlers.api_outbox_notify):
+        for fn in (
+            files_handlers.api_outbox_download,
+            files_handlers.api_outbox_notify,
+            files_handlers._owner_grant_releases_flagged,
+        ):
             src = inspect.getsource(fn)
             for idx, line in enumerate(src.splitlines()):
                 if "is_granted" not in line or line.lstrip().startswith("#"):
@@ -422,22 +438,24 @@ class TestConsentedDownloadRequiresOwnerIdentity:
         """
         import inspect
 
+        from kiro_crew.dashboard.file_api import transfer
         from kiro_crew.dashboard.handlers import files as files_handlers
 
-        src = inspect.getsource(files_handlers.api_outbox_download)
-        assert '"flagged content, non-owner caller"' in src
-        assert '"flagged content, no grant"' in src
-        assert '"flagged binary content, non-owner caller"' in src
-        assert '"flagged binary content, no grant"' in src
-        assert src.count("cross_principal = _requester_is_not_the_owner()") == 2
+        outbox = inspect.getsource(files_handlers.api_outbox_download)
+        assert 'what="flagged content"' in outbox
+        assert 'what="flagged binary content"' in outbox
+        assert outbox.count("_audit_owner_grant_refusal(request, ") == 2
+        assert 'what="flagged content"' in inspect.getsource(transfer.api_file_download)
+
+        src = inspect.getsource(files_handlers._audit_owner_grant_refusal)
+        assert 'f"{what}, non-owner caller"' in src
+        assert 'f"{what}, no grant"' in src
+        assert "cross_principal = not is_owner_dashboard_request(request)" in src
         # The grant must NOT be the discriminator: it cannot answer which conjunct
         # refused, because the conjunction never evaluates the second one when the
         # first is false.
         assert "cross_principal = granted" not in src
-        assert (
-            src.count('caller=str(request.get("user") or "unknown") if cross_principal else ""')
-            == 2
-        )
+        assert 'caller=str(request.get("user") or "unknown") if cross_principal else ""' in src
 
 
 def _consent_request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1", query=None):
@@ -531,6 +549,16 @@ class TestGrantRequiresAHostStepUp:
         self._real_unconfined_live_agent_pid = sandbox.unconfined_live_agent_pid
         monkeypatch.setattr(sandbox, "spawn_delegates_masking", lambda **k: False, raising=True)
         monkeypatch.setattr(sandbox, "unconfined_live_agent_pid", lambda pids: None, raising=True)
+        # Pin the approve handler's platform to a non-win32 default so the suite
+        # exercises the generic (Linux/macOS) refusal and success paths the same
+        # way on every runner. The approve handler now gives the mask-not-applied
+        # refusal a Windows-specific honest message, keyed off ``sys.platform``;
+        # on a Windows CI runner that keying would otherwise rewrite the code and
+        # message of every generic-path test here. The two tests that are ABOUT
+        # the Windows wording set ``platform`` to ``"win32"`` locally.
+        from kiro_crew.dashboard.handlers import file_delivery_consent as _handler
+
+        monkeypatch.setattr(_handler.sys, "platform", "linux", raising=False)
 
     def test_arming_records_no_grant_and_leaks_no_nonce(self):
         pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
@@ -619,6 +647,53 @@ class TestGrantRequiresAHostStepUp:
         resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
         assert resp.status == 403
         assert json.loads(resp.text)["code"] == "file_delivery_approve_unsandboxed"
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_is_refused_on_native_windows_with_an_honest_message(self, monkeypatch):
+        # Native Windows has no Crew sandbox backend, so the nonce-hiding mask
+        # can never apply (credential_mask_applies is False) and the host
+        # step-up cannot prove a human is present -- the request fails the
+        # sandbox-mask gate no matter what agent.sandbox is set to. On that
+        # platform the refusal must say so plainly (a Windows-specific code and
+        # message) rather than pointing at agent.sandbox, which cannot help
+        # here. Record nothing, same as every other refusal leg.
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(handler.sys, "platform", "win32", raising=False)
+        # The real no-backend Windows condition: the mask does not apply.
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: False, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        payload = json.loads(resp.text)
+        assert payload["code"] == "file_delivery_approve_unsupported_platform"
+        # The remediation must NOT be the misleading "set agent.sandbox" one.
+        assert "not available on native" in payload["error"].lower()
+        assert "set agent.sandbox" not in payload["error"]
+        assert (
+            file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
+        )
+
+    def test_approve_mask_refusal_keeps_the_generic_message_off_windows(self, monkeypatch):
+        # Off Windows the same mask-not-applied refusal keeps its generic
+        # message and code: the Windows wording is win32-only, so a backend-less
+        # Linux/macOS host still gets the actionable "set agent.sandbox" message.
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard.handlers import file_delivery_consent as handler
+
+        monkeypatch.setattr(handler.sys, "platform", "linux", raising=False)
+        monkeypatch.setattr(sandbox, "credential_mask_applies", lambda mode: False, raising=True)
+        pending = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
+        req = _local_approve_request(nonce=pending.nonce, local=True)
+        resp = asyncio.run(handler.api_file_delivery_consent_approve(req))
+        assert resp.status == 403
+        payload = json.loads(resp.text)
+        assert payload["code"] == "file_delivery_approve_unsandboxed"
+        assert "set agent.sandbox" in payload["error"]
         assert (
             file_delivery_consent.is_granted(file_delivery_consent.CLASS_OWNER_DASHBOARD) is False
         )
@@ -1691,6 +1766,7 @@ class TestEveryScannerRefusalRecordsTheName:
 
     @staticmethod
     def _sources():
+        from kiro_crew.dashboard.file_api import transfer as transfer_mod
         from kiro_crew.dashboard.handlers import files as files_mod
         from kiro_crew.mcp_tools import messaging as messaging_mod
 
@@ -1698,6 +1774,7 @@ class TestEveryScannerRefusalRecordsTheName:
             "file_send": inspect.getsource(messaging_mod.file_send),
             "notify": inspect.getsource(files_mod.api_outbox_notify),
             "download": inspect.getsource(files_mod.api_outbox_download),
+            "file-download": inspect.getsource(transfer_mod.api_file_download),
             "upload gate": inspect.getsource(files_mod._gate_upload_file),
         }
 
@@ -1709,17 +1786,24 @@ class TestEveryScannerRefusalRecordsTheName:
         # cannot see. The shared upload gate scans the name, binary content, text
         # content and wide-encoded content, and records through its OWN audit helper
         # rather than the consent module, so its entries are counted by the name they
-        # carry.
+        # carry. The two download routes record through the shared
+        # ``_audit_owner_grant_refusal``, whose name ends in the same call shape;
+        # file-download decodes binary bytes for its one scan, so it refuses once.
         sources = self._sources()
-        counted = {
-            leg: (
-                src.count("{filename}") + src.count("{redact(filename)}")
-                if leg == "upload gate"
-                else src.count("audit_refusal(")
-            )
-            for leg, src in sources.items()
+
+        def _entries(leg: str, src: str) -> int:
+            if leg == "upload gate":
+                return src.count("{filename}") + src.count("{redact(filename)}")
+            return src.count("audit_refusal(") + src.count("_audit_owner_grant_refusal(")
+
+        counted = {leg: _entries(leg, src) for leg, src in sources.items()}
+        assert counted == {
+            "file_send": 2,
+            "notify": 3,
+            "download": 2,
+            "file-download": 1,
+            "upload gate": 4,
         }
-        assert counted == {"file_send": 2, "notify": 3, "download": 2, "upload gate": 4}
 
     def test_only_the_gate_scanner_refusals_name_the_file(self):
         # A shape refusal flags no file, so naming one would claim the scanner

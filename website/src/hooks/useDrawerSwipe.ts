@@ -162,7 +162,7 @@ const CLICK_SWALLOW_MS = 350
  * curve did quiet it — but the real fault was that the drawer's travel was the
  * VIEWPORT width while the panel is narrower than that, so it left the screen at
  * ~90% of the slide and the deceleration played with nothing on it. With the
- * travel matched to the panel's own width (`DRAWER_UNCOVERED_PX` in ChatPage),
+ * travel matched to the panel's own width (`DRAWER_UNCOVERED_PX` in chat/page/sessionsDrawer.ts),
  * this curve stops snapping and the gentler one turns out to be the thing that
  * feels wrong: it decelerates 18x across its span where this one does ~100x, and
  * that contrast between a quick departure and a long glide into the edge IS the

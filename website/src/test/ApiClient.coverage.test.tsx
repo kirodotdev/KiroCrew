@@ -25,6 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   api,
+  AcceptedBodyUnreadable,
   ApiError,
   friendlyErrText,
   checkSessionExpired,
@@ -38,7 +39,8 @@ import {
 } from '../api/client'
 import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
 import { queryClient } from '../api/queryClient'
-import { recentErrors, reportForError, __resetErrorJournalForTests } from '../utils/errorReport'
+import { recentErrors, reportForError, findReport, recordError, __resetErrorJournalForTests, TRANSPORT_REJECTION_COOLDOWN_MS, TRANSPORT_REJECTION_WINDOW_CAP } from '../utils/errorReport'
+import { buildErrorPrompt } from '../utils/errorReport.prompt'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
 import { hasPendingArtifactWrite, __resetArtifactWrites } from '../lib/artifactWrites'
@@ -397,6 +399,188 @@ describe('client response handling', () => {
   it('jNullable still rejects with ApiError on a real failure', async () => {
     fetchMock.mockResolvedValue(res(500, 'boom'))
     await expect(api.tipsNext()).rejects.toBeInstanceOf(ApiError)
+  })
+})
+
+/* ───────────────── transport rejection (no HTTP Response) journaling ───────────────── */
+
+describe('transport rejection journaling', () => {
+  // #9579 / #12433: a fetch that rejects at the network layer never produces a
+  // Response, so `apiFailure` (which takes one) never runs and the failure was
+  // journaled nowhere — the "ask the agent" hand-off degraded to a bare
+  // "Failed to fetch" with no endpoint. The five helpers and the raw-fetch
+  // family both route through `jfetch`, which journals the rejection.
+
+  it('journals a network rejection on a five-helper (GET) call with endpoint and method, no status', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await expect(api.securityStats()).rejects.toThrow('Failed to fetch')
+    const [report] = recentErrors()
+    expect(report).toMatchObject({
+      source: 'api',
+      message: 'Failed to fetch',
+      endpoint: '/api/security/stats',
+      method: 'GET',
+      code: 'network',
+    })
+    // No response arrived: a synthetic status would mis-route a reader to the server.
+    expect(report.status).toBeUndefined()
+    // The method renders in the hand-off prompt alongside the endpoint.
+    expect(buildErrorPrompt(report, 'lead')).toContain('- Request: GET /api/security/stats')
+  })
+
+  it('journals a network rejection on a raw-fetch-family method too', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await expect(api.sessionsMemory()).rejects.toThrow('Failed to fetch')
+    expect(recentErrors()[0]).toMatchObject({
+      source: 'api',
+      message: 'Failed to fetch',
+      endpoint: '/api/sessions/memory',
+    })
+  })
+
+  it('records the rejection message VERBATIM so findReport/ask-agent can resolve it', async () => {
+    // findReport matches on exact message; rewording here would orphan the entry.
+    fetchMock.mockRejectedValue(new TypeError('Load failed')) // Safari's wording
+    const err = await api.securityStats().catch((e: unknown) => e)
+    expect(recentErrors()[0].message).toBe('Load failed')
+    // The report is pinned to the rejection, so the notice resolves THIS endpoint.
+    expect(reportForError(err)?.endpoint).toBe('/api/security/stats')
+  })
+
+  it('does NOT journal a deliberate AbortError (unmount / superseded react-query key)', async () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError')
+    fetchMock.mockRejectedValue(abort)
+    await expect(api.securityStats()).rejects.toBe(abort)
+    expect(recentErrors()).toHaveLength(0)
+  })
+
+  it('DOES journal a withDeadline TimeoutError (a genuine failure, not an abort)', async () => {
+    const timeout = new Error('deadline exceeded')
+    timeout.name = 'TimeoutError'
+    fetchMock.mockRejectedValue(timeout)
+    await expect(api.securityStats()).rejects.toThrow('deadline exceeded')
+    expect(recentErrors()[0]).toMatchObject({
+      source: 'api',
+      message: 'deadline exceeded',
+      code: 'timeout',
+      endpoint: '/api/security/stats',
+    })
+  })
+
+  it('burst-caps repeats per endpoint so offline polling cannot flush the 20-deep ring', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    // Same endpoint rejected many times in a tight burst -> one entry, not many.
+    for (let i = 0; i < 25; i++) await api.securityStats().catch(() => {})
+    const sameEndpoint = recentErrors().filter(r => r.endpoint === '/api/security/stats')
+    expect(sameEndpoint).toHaveLength(1)
+  })
+
+  it('still records a DIFFERENT endpoint on its own first miss during the burst', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await api.securityStats().catch(() => {})
+    await api.sessionsMemory().catch(() => {})
+    const endpoints = recentErrors().map(r => r.endpoint).sort()
+    expect(endpoints).toEqual(['/api/security/stats', '/api/sessions/memory'])
+  })
+
+  it('records the same endpoint again once the cooldown window has elapsed', async () => {
+    vi.useFakeTimers()
+    try {
+      fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+      await api.securityStats().catch(() => {})
+      await api.securityStats().catch(() => {})
+      expect(recentErrors().filter(r => r.endpoint === '/api/security/stats')).toHaveLength(1)
+      vi.advanceTimersByTime(TRANSPORT_REJECTION_COOLDOWN_MS + 1)
+      await api.securityStats().catch(() => {})
+      expect(recentErrors().filter(r => r.endpoint === '/api/security/stats')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // ── review (#17378, iamwhatever): the wrong endpoint must not reach the hand-off ──
+
+  it('two endpoints failing with the SAME network message each resolve their OWN endpoint', async () => {
+    // The blocker: every network drop carries one message ("Failed to fetch"),
+    // and the message-only `findReport` returns whichever journaled LAST, so a
+    // notice during an outage named another poll's endpoint. The report is
+    // pinned to each rejection, so `reportForError` resolves THIS request's.
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const first = await api.securityStats().catch((e: unknown) => e)
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const second = await api.sessionsMemory().catch((e: unknown) => e)
+
+    // Both journaled under the one message, newest first — exactly the ambiguity.
+    expect(recentErrors().map(r => r.message)).toEqual(['Failed to fetch', 'Failed to fetch'])
+    expect(recentErrors()[0].endpoint).toBe('/api/sessions/memory')
+
+    // The pin disambiguates: each error resolves its own request's endpoint.
+    expect(reportForError(first)?.endpoint).toBe('/api/security/stats')
+    expect(reportForError(second)?.endpoint).toBe('/api/sessions/memory')
+  })
+
+  it('findReport (message-only lookup) refuses a transport rejection, so no surface picks up the wrong endpoint', async () => {
+    // The message-only sites (AskAgentButton, lifecycle.ts, …) call findReport(e.message).
+    // A transport rejection shares its message with every other drop, so it must
+    // NOT be findable that way; it is reachable only through the pinned report.
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await api.securityStats().catch(() => {})
+    expect(findReport('Failed to fetch')).toBeUndefined()
+  })
+
+  it('findReport still resolves an ANSWERED failure that shares the message of a later rejection', async () => {
+    // A real HTTP failure (status, endpoint) stays findable by message. Only the
+    // transport rejections are skipped, so the message-only path keeps working
+    // for the answered failures it was built for.
+    recordError({ source: 'api', message: 'Load failed', status: 502, endpoint: '/api/answered' })
+    fetchMock.mockRejectedValue(new TypeError('Load failed')) // Safari wording, same text
+    await api.securityStats().catch(() => {})
+    // The newest "Load failed" is the rejection, but findReport skips it and
+    // returns the answered failure's own report.
+    expect(findReport('Load failed')?.endpoint).toBe('/api/answered')
+    expect(findReport('Load failed')?.status).toBe(502)
+  })
+
+  it('keys the burst cap on method + endpoint, so a POST and a GET on one path do not share a bucket', async () => {
+    // GET /api/workspaces (a poll) and POST /api/workspaces (a user write) are
+    // different requests. Sharing a bucket suppressed the POST and left its
+    // notice resolving the GET's method; separate buckets keep each honest.
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await api.workspaces().catch(() => {}) // GET
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const post = await api.createWorkspace({ name: 'w' }).catch((e: unknown) => e) // POST
+
+    const workspaceEntries = recentErrors().filter(r => r.endpoint === '/api/workspaces')
+    expect(workspaceEntries.map(r => r.method).sort()).toEqual(['GET', 'POST'])
+    // The POST's notice resolves its own method, not the earlier GET poll's.
+    expect(reportForError(post)?.method).toBe('POST')
+  })
+
+  it('a suppressed repeat still resolves THIS endpoint through the stored report, not a message fallback', async () => {
+    // A second rejection of one endpoint inside the cooldown records nothing new,
+    // but the error still carries the first miss's report (pinned), so a notice
+    // resolves this endpoint rather than falling through to a wrong message match.
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    await api.securityStats().catch(() => {}) // first miss records
+    const repeat = await api.securityStats().catch((e: unknown) => e) // suppressed
+    expect(recentErrors().filter(r => r.endpoint === '/api/security/stats')).toHaveLength(1)
+    expect(reportForError(repeat)?.endpoint).toBe('/api/security/stats')
+  })
+
+  it('a wide outage cannot flush the ring: answered failures recorded before it survive', async () => {
+    // The per-endpoint cap alone did not bound the TOTAL, so 20+ distinct polling
+    // endpoints each recording once still emptied the 20-deep ring of real
+    // reports. The window ceiling caps distinct rejection keys per window.
+    const answered = recordError({ source: 'api', message: 'denied', status: 403, endpoint: '/api/answered-before' })
+    // Far more distinct endpoints fail than the ceiling admits.
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'))
+    for (let i = 0; i < TRANSPORT_REJECTION_WINDOW_CAP + 10; i++) {
+      await api.artifact(`art-${i}`).catch(() => {}) // GET /api/artifacts/<slug> — distinct endpoints
+    }
+    const rejectionCount = recentErrors().filter(r => r.code === 'network').length
+    expect(rejectionCount).toBeLessThanOrEqual(TRANSPORT_REJECTION_WINDOW_CAP)
+    // The answered failure from before the outage is still in the journal.
+    expect(recentErrors().some(r => r.id === answered.id)).toBe(true)
   })
 })
 
@@ -1147,9 +1331,9 @@ describe('path encoding', () => {
     expect(call(3).url).toBe('/api/prompts/team/sop%20x')
     await api.steeringFile('project/a b.md')
     expect(call(4).url).toBe('/api/steering/project/a%20b.md')
-    await api.updateSkill('auto/s', '# hi')
+    await api.updateSkill('auto/s', '# hi', 'abc123')
     expect(call(5).url).toBe('/api/skills/auto/s')
-    expect(call(5).body).toEqual({ content: '# hi' })
+    expect(call(5).body).toEqual({ content: '# hi', base_hash: 'abc123' })
   })
 
   it('builds the versioned artifact paths', async () => {
@@ -1207,33 +1391,13 @@ describe('request bodies with conditionally-omitted keys', () => {
     })
   })
 
-  it('createChatSlot carries adopt_remote_slot and resolves NO default memory mode for it', async () => {
-    // THE ADOPT WIRE FORMAT. `adopt_remote_slot` is the peer session's own slot
-    // key, and it rides the SAME create route beside `instance_id` — the contract
-    // deliberately adds no second endpoint, because the local slot is created the
-    // same way either way and only what it binds to changes.
+  it('createChatSlot sends agent_kind beside an agent and never a crew binding', async () => {
     await api.createChatSlot(
-      undefined, undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, 'inst-a', 'chat-9',
+      undefined, 'a', undefined, undefined, 'persistent', undefined,
+      undefined, undefined, 'member',
     )
     expect(call().url).toBe('/api/chat/slots')
-    expect(call().body).toEqual({ instance_id: 'inst-a', adopt_remote_slot: 'chat-9' })
-    // No `/api/dashboard/config` read at all: an adopt inherits the PEER
-    // session's `memory_mode`, so resolving this machine's default would send a
-    // value the server has to ignore — and if it ever stopped ignoring it, an
-    // incognito peer session would land here as a persistent transcript. That is
-    // why `memory_mode` is ABSENT above rather than defaulted, and why exactly
-    // one request went out.
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    // An explicit mode still wins: a caller that names one means it.
-    await api.createChatSlot(
-      undefined, undefined, undefined, undefined, 'incognito', undefined,
-      undefined, undefined, 'inst-a', 'chat-9',
-    )
-    expect(call(1).body).toEqual({
-      memory_mode: 'incognito', instance_id: 'inst-a', adopt_remote_slot: 'chat-9',
-    })
+    expect(call().body).toEqual({ agent: 'a', agent_kind: 'member', memory_mode: 'persistent' })
   })
 
   it('sessionStorageRestore adds the uid list only for a partial restore', async () => {
@@ -2025,6 +2189,8 @@ describe('every api method issues one well-formed /api request', () => {
     'browseDirs',
     'browseDrives',
     'recentProjects',
+    'favoriteProjects',
+    'projectAwsProfile',
     'projectTree',
   ])
   const CALLER_SIGNAL = new AbortController().signal
@@ -2069,6 +2235,7 @@ describe('every api method issues one well-formed /api request', () => {
       'browseFiles',
       'browseDirs',
       'recentProjects',
+      'favoriteProjects',
     ]))
   })
 
@@ -2098,5 +2265,46 @@ describe('every api method issues one well-formed /api request', () => {
     if (init?.body !== undefined) {
       expect(['POST', 'PUT', 'PATCH', 'DELETE']).toContain(init.method)
     }
+  })
+})
+
+describe('api.sideTurn keeps the response phases distinguishable', () => {
+  // `/side/turn` 2xx is an acceptance receipt: the turn is already running. A
+  // body-read failure after it must not look like a request that never left
+  // (both are `TypeError`s), or the caller would offer a retry that runs the
+  // turn twice.
+  it('a 2xx whose body read fails rejects with AcceptedBodyUnreadable carrying the cause', async () => {
+    const cause = new TypeError('network error')
+    fetchMock.mockResolvedValueOnce({
+      ...okJson(),
+      json: async () => { throw cause },
+    } as unknown as Response)
+    await expect(api.sideTurn('s1', 'q')).rejects.toSatisfy(
+      (e: unknown) => e instanceof AcceptedBodyUnreadable && e.reason === cause,
+    )
+  })
+
+  it('a request that never left rejects with the raw TypeError', async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await expect(api.sideTurn('s1', 'q')).rejects.toBeInstanceOf(TypeError)
+  })
+
+  it('a non-2xx still rejects with ApiError (auth handling and friendly text unchanged)', async () => {
+    fetchMock.mockResolvedValueOnce(res(409, { error: 'side turn already in flight' }))
+    await expect(api.sideTurn('s1', 'q')).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it('a non-2xx whose body read fails STILL rejects with ApiError (status is the verdict; the body was only its explanation)', async () => {
+    // A refusal must never degrade into a raw network rejection: the
+    // acceptance-receipt wires treat those as indeterminate ("delivery
+    // unconfirmed"), which would hide a real refusal from the error surface.
+    fetchMock.mockResolvedValueOnce({
+      ...res(409, ''),
+      statusText: 'Conflict',
+      text: async () => { throw new TypeError('body stream cut') },
+    } as unknown as Response)
+    await expect(api.sideTurn('s1', 'q')).rejects.toSatisfy(
+      (e: unknown) => e instanceof ApiError && e.status === 409,
+    )
   })
 })

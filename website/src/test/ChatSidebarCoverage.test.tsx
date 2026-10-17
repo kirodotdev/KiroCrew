@@ -328,6 +328,26 @@ describe('ChatSidebar — Switch All Sessions panel', () => {
     expect(skip).toBeChecked()
   })
 
+  it('says the conversation is kept and warns only once running sessions will switch', async () => {
+    renderSidebar({ slots: SLOTS })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.getByText(/The conversation is kept and continues on the new model\./)).toBeTruthy()
+    expect(screen.queryByText(/resets its conversation/)).toBeNull()
+    // Skip is ticked by default, so nothing running is at risk and no caveat shows.
+    expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox'))
+    const caveat = screen.getByTestId('bulk-model-running-caveat')
+    expect(caveat.textContent).toBe('Running sessions switch too, and their current reply is stopped.')
+    expect(caveat.className).toContain('text-danger')
+  })
+
+  it('omits the running-reply caveat when no session is running', async () => {
+    renderSidebar({ slots: SLOTS.map(s => ({ ...s, running: false })) })
+    await openHeaderPanel('Switch all to model…')
+    expect(screen.getByText(/The conversation is kept/)).toBeTruthy()
+    expect(screen.queryByTestId('bulk-model-running-caveat')).toBeNull()
+  })
+
   it('reports a partial failure and keeps the panel open', async () => {
     mocks.chatSlotsModel.mockResolvedValue({ ok: true, failed: ['k-a'] })
     renderSidebar({ slots: SLOTS })
@@ -651,10 +671,29 @@ describe('ChatSidebar — Older Sessions pane', () => {
 
   it('clears all closed sessions behind a confirmation', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    renderSidebar({ history: HISTORY })
+    const { store } = renderSidebar({ history: HISTORY })
     openHistory()
     fireEvent.click(screen.getByText('Delete all'))
     await waitFor(() => expect(mocks.clearSessions).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.sessions).toHaveBeenCalled())
+    expect(store.getState().chat.undeletableHistory).toBeNull()
+    confirmSpy.mockRestore()
+  })
+
+  // The gateway answers a partial clear with 200 and `ok: false`. A handler
+  // that only awaits the call reads that as success; the shortfall must reach
+  // the shared refused-delete notice.
+  it('reports a Delete all that left sessions behind', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocks.clearSessions.mockResolvedValueOnce({
+      ok: false, cleared: 1, skipped: 0, failed: 2, undeletable: [],
+    })
+    const { store } = renderSidebar({ history: HISTORY })
+    openHistory()
+    fireEvent.click(screen.getByText('Delete all'))
+    await waitFor(() => expect(store.getState().chat.undeletableHistory).toEqual({
+      key: '', title: '', code: '', bulk: { left: 2, cleared: 1, rows: [] },
+    }))
     confirmSpy.mockRestore()
   })
 

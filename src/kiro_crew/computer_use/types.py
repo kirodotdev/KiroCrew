@@ -302,20 +302,15 @@ POST_ACTION_SETTLE_SECS = 0.15
 # and ``gate.permitted_observation_channels`` now returns all of these
 # unconditionally. Retained as the shared names the renderers and the screenshot
 # relay agree on, and as the seam an edition would narrow.
-# What a result MAY carry. Queried one channel at a time and enforced at RESPONSE
-# SHAPING (``gate.apply_observation_ceiling``), not only against the caller's
-# request flag — an implementation that attaches a screenshot unconditionally
-# must still not leak past a deny.
+# ``gate.apply_observation_ceiling`` is a pass-through today.
 OBS_A11Y_TREE = "a11y_tree"
 OBS_SCREENSHOT = "screenshot"
 OBS_OCR = "ocr"
 OBS_WINDOW_TITLES = "window_titles"
 OBS_FILE_PATHS = "file_paths"
 OBS_ELEMENT_VALUES = "element_values"
-# Every channel the enforcer knows. An operator's ``deny`` list may name a
-# channel outside this tuple (open set, forward-compatible); the tuple is what
-# the Settings snapshot enumerates and what ``apply_observation_ceiling``
-# iterates.
+# Every channel name; what ``permitted_observation_channels`` returns and what
+# the Settings snapshot enumerates.
 ALL_OBSERVATION_CHANNELS: tuple[str, ...] = (
     OBS_A11Y_TREE,
     OBS_SCREENSHOT,
@@ -325,10 +320,10 @@ ALL_OBSERVATION_CHANNELS: tuple[str, ...] = (
     OBS_ELEMENT_VALUES,
 )
 
-# Why a suppressed screenshot is ANNOUNCED rather than silently dropped: a model
-# that asked for pixels and got none retries in a loop unless it is told the
-# omission was deliberate. Mirrors ``SECURE_WINDOW_NOTE``'s reasoning for the
-# always-on floor.
+# Seam text, unreachable today: ``permitted_observation_channels`` returns every
+# channel, so no screenshot is suppressed and this note is never emitted. Kept so
+# an edition that narrows observations again announces the omission (a model
+# that asked for pixels and got none retries in a loop unless told why).
 OBS_SUPPRESSED_KEY = "screenshot_suppressed_by"
 OBS_SUPPRESSED_BY_POLICY = "policy"
 OBS_SUPPRESSED_NOTE = (
@@ -346,16 +341,6 @@ STATE_FILE_NAME = "computer_use.json"
 STATE_KEY_ENABLED = "enabled"
 STATE_KEY_ALLOWED_APPS = "allowed_apps"
 STATE_KEY_EXTRA_DENIED_APPS = "extra_denied_apps"
-# The REAL-POINTER opt-in. On the keystone rather than in ``config.json`` for the
-# same reason ``enabled`` is: taking over the operator's physical mouse is a
-# security ceiling, and ``config.json`` is writable by an auto-approved agent
-# shell (``is_sensitive_bash_command`` does NOT block ``echo … > config.json``),
-# so an opt-in stored there could be flipped by prompt injection. Read with the
-# Keystone opt-in for the ``kirocrew computer apps`` / ``call`` diagnostics. Those
-# two run desktop tools from a process whose caller CANNOT be authenticated unless
-# the gateway injected a signed identity — an env var is writable by any shell the
-# agent controls and a TTY can be allocated, so neither is evidence. The operator
-# therefore consents once, in the keystone the agent cannot write, and an
 
 # ── Snapshot / tree budgets ──
 # Defaults are the shipped config.json values; the ``*_LIMIT`` ceilings are the

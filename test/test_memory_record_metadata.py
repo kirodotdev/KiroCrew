@@ -124,6 +124,39 @@ def test_metadata_backfill_and_older_writer_reconciliation(store):
     assert meta.get_record_metadata(store.db, "key:user.work_email")["revision"] == 2
 
 
+def test_store_opens_when_legacy_rows_have_no_id_or_key(tmp_path, caplog):
+    # SQLite lets a TEXT PRIMARY KEY hold NULL; old imports left such rows behind.
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    tier.db.execute(
+        "INSERT INTO episodic_memories (id, text, created_at) VALUES (NULL, 'a', '2026-01-01')"
+    )
+    tier.db.execute(
+        "INSERT INTO episodic_memories (id, text, created_at) VALUES ('', 'b', '2026-01-01')"
+    )
+    tier.db.execute(
+        "INSERT INTO episodic_memories (id, text, created_at) VALUES ('ep-good', 'c', '2026-01-01')"
+    )
+    tier.db.execute(
+        "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
+        "VALUES (NULL, '1', 'user_explicit', '2026-01-01', '2026-01-01')"
+    )
+    tier.db.commit()
+    tier.close()
+
+    with caplog.at_level("WARNING", logger=meta.__name__):
+        tier.init()
+    try:
+        # The good row still gets its metadata; the bad rows stay on disk untouched.
+        assert meta.get_record_metadata(tier.db, "ep-good")["revision"] == 1
+        assert tier.db.execute("SELECT COUNT(*) FROM episodic_memories").fetchone()[0] == 3
+        assert tier.db.execute("SELECT COUNT(*) FROM semantic_memory").fetchone()[0] == 1
+        assert "skipped 2 episodic_memories row(s) with no id" in caplog.text
+        assert "skipped 1 semantic_memory row(s) with no key" in caplog.text
+    finally:
+        tier.close()
+
+
 def test_exact_identity_reuses_key_without_cross_entity_merge(store):
     identity = {"subject": " Alice ", "predicate": "Work_Email", "scope": "ACME"}
     fact(store, metadata=identity)

@@ -13,7 +13,9 @@ App ownership is read from the manifests that mint the keys
 
 from __future__ import annotations
 
+import functools
 import itertools
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -21,23 +23,34 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, mcp_aliases
-from kiro_crew.env import MCP_PATH_HINT, dedup_path, describe_search_path, emit_env
+from kiro_crew.env import (
+    MCP_PATH_HINT,
+    dedup_path,
+    describe_search_path,
+    emit_env,
+    expand_spec_args,
+)
 from kiro_crew.mcp_cleanup import (
     invalid_disabled_flag,
     mcp_entries_muted,
     mcp_entry_is_muted,
+    mcp_entry_is_registry_governed,
     warn_invalid_disabled,
 )
+from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
+    WITHHELD_KEY,
     command_is_ours,
+    is_withheld_mute,
     record_derived,
     recorded_source,
     source_view,
     without_marker,
 )
-from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias
+from kiro_crew.mcp_utils import kiro_oauth_wire_entry, mcp_server_alias, without_mcp_refs
 from kiro_crew.platform import safe_context_call
 
 
@@ -145,20 +158,8 @@ def _collect_app_mcp_servers(*, audit: bool = True) -> dict[str, Any]:
     return servers
 
 
-class _AppOwnership(NamedTuple):
-    """What the app manifests claim, and whether this read saw every claim."""
-
-    #: Base alias -> whether every app claiming it is switched on.
-    owned: dict[str, bool]
-    #: False when ANY app's claim went unread -- an unreadable manifest, an
-    #: unreadable enablement, a record ``list_apps`` skipped. An alias missing from
-    #: ``owned`` then carries no information, so it cannot be read either as "no app
-    #: owns this name" or as positive removal.
-    fully_read: bool
-
-
-def _app_owned_mcp_keys() -> _AppOwnership:
-    """Every ALIAS an INSTALLED app declares mapped to its enablement, and whether that is complete.
+def _app_owned_mcp_keys() -> dict[str, bool]:
+    """Every ALIAS an INSTALLED app declares mapped to its enablement.
 
     Read from the manifests that mint the keys, because a colon prefix is not
     ownership. ``mcp_server_alias`` returns a slash-free name unchanged, so a
@@ -188,16 +189,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     for the SPEC, because this needs only the names and a disabled app has no live
     registration to read.
 
-    ``fully_read`` is False whenever ANY claim went unread: an unreadable manifest,
-    an unreadable enablement, or a record ``list_apps`` skipped. None of those is the
-    answer "no app owns this name". A previous rebuild wrote that app's server into
-    the rendered config and :func:`_load_existing_config` carries the entry forward,
-    so the name still holds a grant after its owner stops being readable.
-    ``get_app_manifest`` returns None for an absent file, a parse failure and a
-    permission error alike, and ``list_apps`` drops an app whose installed record
-    does not read without raising, so these are the ORDINARY shapes of the failure
-    rather than exotic ones.
-
     Enablement is read through :func:`app_enabled_state`, not
     :func:`is_app_enabled`. That function exists to keep "unreadable" apart from
     "switched off", and this caller needs them apart for the reason its docstring
@@ -207,7 +198,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
     Never raises.
     """
     owned: dict[str, bool] = {}
-    fully_read = True
     try:
         # Imported lazily for the reason _collect_app_mcp_servers documents:
         # kiro_crew.apps imports back into agent/security, so a module-level
@@ -215,24 +205,14 @@ def _app_owned_mcp_keys() -> _AppOwnership:
         from kiro_crew.apps.manager import (
             app_enabled_state,
             get_app_manifest,
-            list_apps_with_skips,
+            list_apps,
         )
     except Exception:  # noqa: BLE001 — apps subsystem unavailable
-        return _AppOwnership(owned, False)
+        return owned
     try:
-        # ``list_apps`` drops an app whose installed record does not read, and drops
-        # it SILENTLY rather than raising, so the returned list on its own cannot
-        # separate "no such app" from "that app's claim went missing".
-        # ``list_apps_with_skips`` answers the second case, and it lives in
-        # ``apps.manager`` because the rules it applies -- the installed-record
-        # filename, which root entries the listing skips, how presence is judged
-        # without resolving a path -- all belong to that module. Reconstructing them
-        # here would go stale silently the first time the listing changed.
-        apps, _claims_complete = list_apps_with_skips()
+        apps = list_apps()
     except Exception:  # noqa: BLE001 — an unreadable registry claims nothing KNOWABLE
-        return _AppOwnership(owned, False)
-    if not _claims_complete:
-        fully_read = False
+        return owned
     for app in apps:
         name = app.get("name") if isinstance(app, dict) else None
         if not name:
@@ -249,7 +229,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
             # None is "could not read", NOT "disabled": the two are exactly what
             # app_enabled_state was written to keep apart. Its claim is unread, so
             # it names no owner here rather than naming a switched-off one.
-            fully_read = False
             continue
         enabled = _state
         try:
@@ -257,7 +236,6 @@ def _app_owned_mcp_keys() -> _AppOwnership:
         except Exception:  # noqa: BLE001 — same answer as the None return below
             manifest = None
         if manifest is None:
-            fully_read = False
             continue
         for server_name in manifest.mcpServers or {}:
             _alias = mcp_server_alias(f"{name}:{server_name}")
@@ -268,7 +246,7 @@ def _app_owned_mcp_keys() -> _AppOwnership:
             # the family is treated as switched on only while every app claiming
             # the base is -- the direction that denies rather than grants.
             owned[_alias] = enabled and owned.get(_alias, True)
-    return _AppOwnership(owned, fully_read)
+    return owned
 
 
 # Keys a scope global AUTHORS that are also TRANSPORT-INDEPENDENT, so one the
@@ -276,10 +254,65 @@ def _app_owned_mcp_keys() -> _AppOwnership:
 # the user's (``autoApprove``, ``disabledTools``, fields we do not model) and
 # survives by being ABSENT here, so one invented later defaults to surviving.
 # ``command``/``url`` are absent (a transport needs a scope that declares one;
-# ``test_mcp_rebuild_reconsumption`` owns that), so their dependants are too --
-# reconciling ``headers`` without its ``url`` would pair this source's credential
-# with the entry's old endpoint. mcp.md calls this adopting as a unit.
+# ``test_mcp_rebuild_reconsumption`` owns that). ``headers`` is absent too --
+# reconciling it without its ``url`` would pair this source's credential with the
+# entry's old endpoint. mcp.md calls this adopting as a unit. ``args`` and ``env``
+# are the command's dependants and are reconciled by :func:`_merge_command_unit`
+# under that rule, not here: they land only onto an entry whose command is the
+# one the source declares.
 _SOURCE_OWNED_MCP_KEYS = ("timeout", "disabled")
+
+# The keys that belong WITH a stdio ``command``: a server's arguments and its
+# environment are written for one program. The agent entry carries that program as
+# the RESOLVED absolute path the previous pass wrote (``npx`` ->
+# ``/opt/node/bin/npx``), so the pairing test is the discovery module's "same
+# program" comparison, not string equality.
+_COMMAND_UNIT_KEYS = ("args", "env")
+
+
+def _merge_command_unit(existing: dict, spec: dict) -> None:
+    """Project *spec*'s ``args``/``env`` onto *existing* when they belong with its command.
+
+    The entry's ``command`` is not reconciled (see ``_SOURCE_OWNED_MCP_KEYS``), so a
+    source whose command is UNCHANGED kept the entry's first-pass ``env`` and ``args``
+    forever: a variable the user added to ``~/.kiro/settings/mcp.json`` after the
+    first rebuild would never reach the spawned server. The as-a-unit rule the
+    merge documents forbids pairing one source's args/env with another source's
+    command, and that is exactly the case where the two commands name DIFFERENT
+    programs -- so the unit is adopted only when the source's command names the
+    same program the entry already runs. A source that switched programs keeps the
+    entry's old pairing intact, as it did before; the command rewrite is the
+    separate change ``test_a_changed_command_is_rewritten`` tracks.
+
+    Adopting the unit means projecting it: a key the source dropped goes too,
+    because an ``env`` the first pass froze is the defect, not a user field.
+    """
+    source_cmd = spec.get("command")
+    entry_cmd = existing.get("command")
+    if not (isinstance(source_cmd, str) and source_cmd):
+        return
+    if not (isinstance(entry_cmd, str) and entry_cmd):
+        return
+    # Lazy: mcp_discovery is the dashboard's module and imports back into agent
+    # at call time; a module-level import here would close that cycle. The
+    # comparison is the one the dashboard's sync trigger uses, so the merge
+    # reconciles exactly the env divergence the dashboard offers to sync.
+    from kiro_crew.mcp_discovery import _commands_diverged
+
+    if _commands_diverged(source_cmd, entry_cmd):
+        return
+    for key in _COMMAND_UNIT_KEYS:
+        if key in spec:
+            value = spec[key]
+            # Copies, for the reason merge_mcp_sources gives: the entry is
+            # mutated by later passes and must never alias the source's objects.
+            if isinstance(value, dict):
+                value = dict(value)
+            elif isinstance(value, list):
+                value = list(value)
+            existing[key] = value
+        else:
+            existing.pop(key, None)
 
 
 def _merge_source_owned(mcps: dict, name: str, spec: dict, *, stale: set[str]) -> None:
@@ -303,6 +336,7 @@ def _merge_source_owned(mcps: dict, name: str, spec: dict, *, stale: set[str]) -
             existing[key] = spec[key]
         else:
             existing.pop(key, None)
+    _merge_command_unit(existing, spec)
 
 
 class McpSources(NamedTuple):
@@ -451,6 +485,184 @@ def merge_mcp_sources(config: dict) -> McpSources:
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names)
 
 
+def _mute_withheld(entry: dict) -> dict:
+    """*entry* muted in place, with the record that this rebuild muted it.
+
+    Used for a server declared ONLY in the agent spec: this file is its one copy,
+    so dropping it would lose the declaration, while emitting it live would start
+    it with the literal reference. A user-written ``disabled`` is left as found
+    and gains no record, so it is never lifted.
+    """
+    if mcp_entry_is_muted(entry) and WITHHELD_KEY not in entry:
+        return entry
+    muted = dict(entry)
+    muted["disabled"] = True
+    muted[WITHHELD_KEY] = True
+    return muted
+
+
+def _lift_withheld_mute(entry: dict) -> dict:
+    """*entry* without a mute :func:`_mute_withheld` wrote; unchanged otherwise."""
+    if WITHHELD_KEY not in entry:
+        return entry
+    lifted = {k: v for k, v in entry.items() if k != WITHHELD_KEY}
+    if lifted.get("disabled") is True:
+        lifted.pop("disabled")
+    return lifted
+
+
+def _gateway_routed_names() -> frozenset[str]:
+    """The servers the running MCP gateway starts for this agent; empty on any failure.
+
+    Routed means BOTH: the saved routing lists the server
+    (``mcp_gateway.stub_servers``), AND the overlay the running gateway built at
+    its start holds a stub for it that a session is handed
+    (:func:`~kiro_crew.mcp_gateway.session_servers.injection_server_names`). The
+    saved list alone is only intent: the routing switch records it and asks for
+    a restart (``mcp_broker._apply_mcp_stub``), and until that restart the
+    overlay has no stub, so a session launches the agent spec's own entry --
+    which would start the server with the literal reference. The overlay alone
+    is not enough either: routing turned off still leaves a stale stub there
+    until the next start.
+
+    Empty is the fail-closed answer for :func:`_unrouted_secret_reference`: a
+    config or overlay that cannot be read routes nothing, so a server with a
+    vault reference is withheld rather than launched with the reference
+    unresolved.
+    """
+    try:
+        # Deferred: the config loader is heavy and only a server that carries a
+        # ``secret://`` reference needs it, so most rebuilds never import it here.
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.mcp_gateway import is_gateway_supported
+        from kiro_crew.mcp_gateway.rewriter import resolve_overlay_dir
+        from kiro_crew.mcp_gateway.session_servers import injection_server_names
+
+        if not is_gateway_supported():
+            # No gateway runs here, so nothing listed is ever served by one.
+            return frozenset()
+        gateway = KiroCrewConfig.load().mcp_gateway
+        saved = frozenset(gateway.stub_servers)
+        if not saved:
+            return frozenset()
+        # ``work_dir=None``: the rebuild writes the USER-level agent spec, so the
+        # user-level overlay is the one a session running it is handed stubs from.
+        served = injection_server_names(
+            resolve_overlay_dir(gateway.overlay_dir), Path(AGENT_FILENAME).stem, work_dir=None
+        )
+        return frozenset(n for n in served if routed_for_secret_reference(n, saved))
+    except Exception:  # noqa: BLE001 -- any failure means "cannot prove routed"
+        agent_mod.logger.warning(
+            "Could not read the MCP gateway routing; treating every server as "
+            "unrouted for secret:// references",
+            exc_info=True,
+        )
+        return frozenset()
+
+
+def _unrouted_secret_reference(
+    name: str,
+    chosen: dict,
+    routed: Callable[[], frozenset[str]],
+    app_owned: Callable[[], dict[str, bool]],
+) -> bool:
+    """True when *name* must be withheld: it names a vault secret nothing will resolve.
+
+    A ``secret://NAME`` env value is resolved from the vault only when the MCP
+    gateway starts the server (``mcp_gateway/secret_uri.py``). A server that is
+    not routed through the gateway is started by the session from the spec this
+    rebuild writes, and that path cannot read the vault -- so the server came up
+    with the literal reference as its credential. Withholding it is the documented
+    behaviour for a reference that cannot be resolved: the server does not start.
+
+    An app-registered server is exempt. Its env is the app's declaration, and
+    whether an installed app may name a vault secret at all is a separate,
+    open question this rebuild does not answer; the app registration path warns
+    about such a value on its own.
+
+    Names only env KEYS in the warning, never a value or a secret name.
+    """
+    keys = secret_reference_keys(chosen.get("env"))
+    if not keys:
+        return False
+    # The same helper the overlay rewriter asks before it wraps the server, so
+    # the two cannot disagree about which servers the gateway starts.
+    if routed_for_secret_reference(name, routed()):
+        return False
+    if mcp_server_alias(name) in app_owned():
+        return False
+    from kiro_crew.mcp_gateway import is_gateway_supported  # deferred, like the routing read
+
+    if is_gateway_supported():
+        remedy = (
+            "Turn on routing for the server in MCP Management, approve its launch "
+            "there and restart, so the gateway starts it and resolves the reference "
+            "from the vault."
+        )
+    else:
+        # Routing cannot help here: the gateway does not run on this platform.
+        remedy = (
+            "The MCP gateway does not run on this platform, so no reference can be "
+            "resolved here: put the credential in the env directly, or remove the "
+            "server."
+        )
+    agent_mod.logger.warning(
+        "Not starting MCP server %r: env %s holds a secret:// reference, which is "
+        "resolved only when the MCP gateway starts the server. %s",
+        name,
+        ", ".join(repr(k) for k in keys),
+        remedy,
+    )
+    return True
+
+
+def entry_as_enabled(name: str, entry: dict) -> dict:
+    """*entry* as the dashboard's enable switch may write it into the agent spec.
+
+    The switch lifts ``disabled``. For a server this rebuild withholds -- a
+    stdio command whose env holds a ``secret://`` reference, not started by the
+    running gateway -- lifting it hands kiro-cli a live entry with the literal
+    reference, and the switch runs no rebuild that would put the mute back. So
+    the rebuild's own decision is taken here too, on the same predicate: such an
+    entry comes back muted with :data:`WITHHELD_KEY`, which the first pass after
+    the server is routed lifts as usual. Any other entry comes back without
+    ``disabled`` and without a stale record.
+    """
+    live = {k: v for k, v in entry.items() if k not in ("disabled", WITHHELD_KEY)}
+    if "command" in live and _unrouted_secret_reference(
+        name, live, _gateway_routed_names, _app_owned_mcp_keys
+    ):
+        return _mute_withheld(live)
+    return live
+
+
+def withheld_servers_now_routed() -> bool:
+    """True when the agent spec withholds a server the running gateway now starts.
+
+    The boot rebuild runs BEFORE the gateway writes its overlay, so the first
+    start after a server is routed still reads the previous start's overlay and
+    keeps the server withheld, with its ``tools`` refs stripped. The session is
+    handed the gateway's stub all the same (a stub outranks the spec's entry),
+    but without the refs it exposes none of the server's tools. The gateway asks
+    this once its overlay is written; True means one more rebuild is due. Any
+    read failure answers False: the mute stays, which is the safe side.
+    """
+    try:
+        spec = json.loads(
+            (agent_mod.kiro_agents_dir_path() / AGENT_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+    if not isinstance(servers, dict):
+        return False
+    withheld = [n for n, e in servers.items() if isinstance(n, str) and is_withheld_mute(e)]
+    if not withheld:
+        return False
+    routed = _gateway_routed_names()
+    return any(routed_for_secret_reference(n, routed) for n in withheld)
+
+
 def resolve_mcp_servers(
     config: dict,
     sources: McpSources,
@@ -496,6 +708,9 @@ def resolve_mcp_servers(
     # resolution candidate list. The probe's correctness is "this is the value the
     # chain would have resolved", so two separate spellings could drift apart.
     _scopes: tuple[tuple[str, dict], ...] = sources.scopes
+    # Read at most once per pass, and only when some server carries a reference.
+    _routed = functools.cache(_gateway_routed_names)
+    _app_owned = functools.cache(_app_owned_mcp_keys)
     for name, spec in _cfg_servers.items():
         if not isinstance(spec, dict):
             continue
@@ -652,6 +867,9 @@ def resolve_mcp_servers(
             # secret snapshotted here could be retired by the time it is written.
             _oauth_client_targets[name] = _store_entry is not None
             continue
+        # A mute this rebuild wrote on an earlier pass is lifted before anything
+        # reads the entry, so the decision below is taken afresh every pass.
+        spec = _lift_withheld_mute(spec)
         # Build candidate specs in priority order: the merged winner first,
         # then the same server from each source as a resolution fallback.
         candidates: list[tuple[str, dict]] = [("winner", spec)]
@@ -678,6 +896,14 @@ def resolve_mcp_servers(
                 chosen = cand
                 break
 
+        # Kept and muted in place rather than dropped, whichever file declares
+        # it: the entry this rebuild writes carries the user's spec-only fields
+        # (``disabledTools``, ``autoApprove``), and an agent-only declaration has
+        # no other copy. The mute lifts on the first pass after the server is
+        # routed; see _mute_withheld.
+        _mute_here = bool(resolved) and _unrouted_secret_reference(
+            name, chosen, _routed, _app_owned
+        )
         if resolved:
             # Start from the merged winner so user-set NON-command fields
             # (autoApprove, disabled, ...) are preserved.  When we fall back to
@@ -694,6 +920,11 @@ def resolve_mcp_servers(
                     merged["args"] = chosen["args"]
                 if "env" in chosen:
                     merged["env"] = chosen["env"]
+            # kiro-cli expands ``${VAR}`` in ``env`` but never in ``args``, and
+            # the gateway's pooled spawn reads these same args, so a
+            # ``${HOME}/...`` launch path is resolved here or not at all.
+            if "args" in merged:
+                merged["args"] = expand_spec_args(merged["args"], server=name)
             # A declared env.PATH replaces the child's PATH rather than
             # extending it, so emit the full effective one via the shared
             # normalization point (see emit_env / spec_env_path). emit_env
@@ -728,6 +959,20 @@ def resolve_mcp_servers(
                 if isinstance(_cmd_source, str) and _cmd_source:
                     _derived = (_cmd_source, resolved)
             valid_servers[name] = record_derived(merged, _derived)
+            if _mute_here:
+                valid_servers[name] = _mute_withheld(valid_servers[name])
+        elif not had_any_command and mcp_entry_is_registry_governed(spec):
+            # A registry pointer (``{"type": "registry"}`` and no command anywhere)
+            # is not a broken local entry: kiro-cli wrote it and resolves it by map
+            # key against the admin's catalog, which only kiro-cli can read. The
+            # spec pins ``includeMcpJson: false``, so this copy is the only way the
+            # pointer reaches the session; dropping it would remove every governed
+            # server with nothing to explain it. Carried verbatim -- there
+            # is no local command to resolve or vouch for, and the catalog decides
+            # what launches. Its refs then go through the same shared-server sync
+            # and auto-approve gate as any other server. The Claude/KAS projections
+            # and the gateway still withhold marked entries on their own.
+            valid_servers[name] = dict(spec)
         elif not had_any_command:
             # No candidate defined a command at all — distinct from a command
             # that was defined but couldn't be resolved.
@@ -885,7 +1130,6 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
         # mount with no recovery lever. This is the same deny-may-be-loose,
         # never-destroy-a-mount asymmetry used by the final reconcile. The ``/``
         # boundary still protects a prefix-sharing server such as ``@aliasx``.
-        _owned = f"{ref}/"
 
         def _strip_owned_refs(key: str, *, strip_per_tool: bool) -> bool:
             """Drop the bare ref and, when requested, every owned per-tool ref.
@@ -896,11 +1140,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             lst = config.get(key)
             if not isinstance(lst, list):
                 return False
-            kept = [
-                t
-                for t in lst
-                if t != ref and not (strip_per_tool and isinstance(t, str) and t.startswith(_owned))
-            ]
+            kept = without_mcp_refs(lst, (alias,), per_tool=strip_per_tool)
             if len(kept) == len(lst):
                 return False
             lst[:] = kept
@@ -920,7 +1160,13 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 ),
             )
         )
-        if muted_here or alias in _disabled_mounted_aliases:
+        rendered_entry = valid_servers.get(alias)
+        withheld_here = isinstance(rendered_entry, dict) and WITHHELD_KEY in rendered_entry
+        # A source scope muting the server makes the mute the user's: the
+        # withheld record is dropped, or the rewriter would lift the mute the
+        # moment the server is routed and start a server the user switched off.
+        source_muted = muted_here or alias in _disabled_mounted_aliases
+        if source_muted or withheld_here:
             # The rendered entry says ``true`` whenever the server is muted --
             # over a merged ``false`` from a higher-priority scope as much as over
             # a raw ``null``/``0``/``"false"``. The file kiro-cli parses must
@@ -929,9 +1175,15 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             rendered = valid_servers.get(alias)
             if isinstance(rendered, dict):
                 rendered["disabled"] = True
+                if source_muted:
+                    rendered.pop(WITHHELD_KEY, None)
+            # A withheld mute alone strips only the bare refs: ``disabled``
+            # already keeps the server from starting, and a per-tool grant the
+            # user wrote cannot be re-derived once it is gone, while the mute
+            # lifts on its own once the server is routed.
             for key in ("tools", "allowedTools"):
                 if (
-                    _strip_owned_refs(key, strip_per_tool=key == "allowedTools")
+                    _strip_owned_refs(key, strip_per_tool=key == "allowedTools" and source_muted)
                     and ref not in _shared_removed
                 ):
                     _shared_removed.append(ref)

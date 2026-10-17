@@ -1505,6 +1505,10 @@ class WorkflowService:
         rerun. Editing the script can shift call indices, so the prefix-replay cache
         is NOT reused for an edited rerun (it runs fresh, ``replay_before=0``); the
         edited source is validated first and rejected with errors if invalid.
+
+        The new run's ``author`` and ``session_key`` are the prior run's origin only
+        when ``owner`` is true; otherwise they are ``caller_session``, so a rerun's
+        spawns borrow the Trust of the session that asked.
         """
         prior = self.registry.get(run_id)
         if prior is None:
@@ -1540,6 +1544,13 @@ class WorkflowService:
             return {"error": "gateway admission is closed"}
         new_id = await self._new_run_id()
         origin = prior_scope.origin if prior_scope is not None else prior.session_key
+        # The new run's session_key decides whose Trust its spawns borrow
+        # (``slack.gateway._spawn_parent_slot``). Only the dashboard owner may
+        # relaunch under the prior run's origin; any other caller's rerun belongs
+        # to the session that asked, exactly as a fresh run from that session
+        # would. Memory still follows the prior run's execution record below.
+        if not owner:
+            origin = caller_session
         inherited_modes: tuple[str, ...] = ()
         if prior_scope is not None:
             prior_mode = prior_scope.memory_mode
@@ -1573,6 +1584,7 @@ class WorkflowService:
         # so force a fresh run; an unedited rerun keeps the replay cache.
         replay_before = 0 if edited else max(0, from_index)
         replay_results = {} if edited else dict(prior.agent_results)
+        replay_fingerprints = {} if edited else dict(prior.agent_fingerprints)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
         started = await self._runner(
             new_id,
@@ -1594,6 +1606,7 @@ class WorkflowService:
             session_key=origin,
             replay_results=replay_results,
             replay_before=replay_before,
+            replay_fingerprints=replay_fingerprints,
             source_is_original=edited or prior.source_is_original,
             workflow_id="" if edited else prior.workflow_id,
             workflow_slug="" if edited else prior.workflow_slug,

@@ -42,7 +42,7 @@ AUDIT_TOOL = "dashboard_config_social_share"
 #: classifying by it would let a request carrying ``slack:x`` dodge a profile bound
 #: to the ``dashboard`` surface. Same pin, same rationale, as
 #: ``handlers/mobile_connect.py``; the literal is the id the dashboard sends for
-#: itself (``api/client.ts``), which ``_shared.py`` and ``token_auth.py`` also match.
+#: itself (``api/client.ts``), which ``_shared.py`` and ``token_auth_callers.py`` also match.
 DASHBOARD_SURFACE_KEY = "dashboard:ui"
 
 _UNEVALUABLE_REASON = "governance unavailable (fail-closed)"

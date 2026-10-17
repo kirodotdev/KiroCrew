@@ -64,8 +64,7 @@ def _write_guarded(
         os.close(dir_fd)
         _destination._write_nofollow(path, text, staging_fd=staging_fd, rel=rel)
         return
-    _destination._refuse_unusable_parent(path, what=f"{origin}")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _destination._mkdir_guarded(path, what=f"{origin}")
     # Write through the no-follow primitive, not a plain ``write_text``. The staging tree lives
     # beside ``--out`` in a directory this build does not own, so a leaf path is exactly the
     # mkdir->write window an adversary can plant a symlink into; a following write would then

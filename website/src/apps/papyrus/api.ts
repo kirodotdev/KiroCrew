@@ -97,18 +97,26 @@ export class PapyrusApiError extends Error {
   status: number
   /** Raw git/compiler output, when the endpoint returned any. */
   output: string
+  /** The backend's machine-readable `code`, or '' when it sent none. */
+  code: string
+  /** For `invalid_project_name`: the refused character, or '' when none was named. */
+  char: string
 
-  constructor(message: string, status: number, output = '') {
+  constructor(message: string, status: number, output = '', code = '', char = '') {
     super(message)
     this.name = 'PapyrusApiError'
     this.status = status
     this.output = output
+    this.code = code
+    this.char = char
   }
 }
 
 interface ErrorBody {
   error?: string
   output?: string
+  code?: string
+  char?: string
 }
 
 /** Prefer the backend's own `{error}`/`reason` over a bare "HTTP 500". */
@@ -123,6 +131,8 @@ async function toError(r: Response): Promise<PapyrusApiError> {
     body?.error || r.statusText || `HTTP ${r.status}`,
     r.status,
     body?.output || '',
+    typeof body?.code === 'string' ? body.code : '',
+    typeof body?.char === 'string' ? body.char : '',
   )
 }
 

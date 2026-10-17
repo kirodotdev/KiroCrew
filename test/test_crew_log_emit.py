@@ -34,6 +34,28 @@ from kiro_crew.platform_compat import file_lock
 
 SESSION = "acp-sess-0001"
 
+#: Lost-run ceiling for a shutdown drain that has to release a batch parked behind a
+#: long backoff. The drain clamps that backoff to its first pacing slice, which is
+#: ``timeout / DEFAULT_LIMITS.max_write_attempts`` after the call, so a passing run waits
+#: one slice and then does its real store writes. Measured on the Windows shards at a 3 s
+#: window: 0.56-0.59 s per call, of which 0.5 s is that slice, and one loaded runner
+#: still held a batch in flight past 3 s. At 20 s the slice costs 3.3 s and the writes get
+#: about 16.7 s, far beyond any passing run measured, and the ceiling stays under half of
+#: the suite's ``--timeout=120``. It ends a wedged drain; it never decides a passing one.
+SHUTDOWN_DRAIN_CEILING_SECS = 20.0
+
+
+def _assert_drained_for_shutdown(what: str) -> None:
+    """Drain under the lost-run ceiling and name what was still owed if it expires."""
+    started = time.monotonic()
+    drained = emit.drain_for_shutdown(timeout=SHUTDOWN_DRAIN_CEILING_SECS)
+    elapsed = time.monotonic() - started
+    assert drained, (
+        f"{what}: the shutdown drain was not complete after {elapsed:.1f}s "
+        f"(ceiling {SHUTDOWN_DRAIN_CEILING_SECS:.0f}s); "
+        f"{emit.buffered_writes()} append(s) still buffered, {emit.dropped_writes()} dropped"
+    )
+
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
@@ -640,7 +662,7 @@ def test_an_app_authored_send_is_not_dispatched_as_a_person():
 
     from kiro_crew.dashboard import chat_handlers
 
-    tree = ast.parse(inspect.getsource(chat_handlers))
+    tree = ast.parse(inspect.getsource(chat_handlers.api_chat))
     kwargs_writes = [
         node
         for node in ast.walk(tree)
@@ -798,8 +820,24 @@ def test_chat_runner_records_the_input_and_refusal_on_a_blocked_expansion():
 
     from kiro_crew.dashboard import chat_runner
 
-    tree = ast.parse(inspect.getsource(chat_runner))
-    src = inspect.getsource(chat_runner)
+    tree = ast.parse(
+        "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
+    )
+    src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(chat_runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     assert "🔒 Prompt blocked" in src
 
     def _emit_attr(node, name):
@@ -1254,6 +1292,28 @@ def test_no_blocks_writes_nothing():
     emit.on_context_composed(SESSION, 1, blocks=None)
     assert emit.flush()
     assert len(_body()) == before
+
+
+def test_budget_cuts_ride_beside_the_blocks_and_pass_the_declaration():
+    # The entry is validated against its declaration on write; an undeclared member
+    # would refuse the WHOLE entry and lose the block sizes too.
+    _open_session()
+    cut = {
+        "lesson_rules": {"reason": "budget", "omitted": 23, "total": 92, "budget_chars": 37000},
+        "background": {"reason": "budget", "sections": ["skills"]},
+    }
+    emit.on_context_composed(SESSION, 1, blocks={"lessons": 400}, omitted=cut)
+    assert emit.flush()
+    data = _body()[-1]["data"]
+    assert data["sources"] == [{"kind": "lessons", "chars": 400, "tokens": 100}]
+    assert data["omitted"] == cut
+
+
+def test_a_composition_that_cut_nothing_carries_no_omitted_field():
+    _open_session()
+    emit.on_context_composed(SESSION, 1, blocks={"lessons": 400}, omitted={})
+    assert emit.flush()
+    assert "omitted" not in _body()[-1]["data"]
 
 
 # --- model-call steps -----------------------------------------------------
@@ -1902,7 +1962,7 @@ def test_every_gateway_mode_drains_the_log_before_a_hard_exit():
     import importlib
     import inspect
 
-    gateway_module = importlib.import_module("kiro_crew.slack.gateway")
+    gateway_module = importlib.import_module("kiro_crew.slack.gateway_runtime.exit_path")
     tree = ast.parse(inspect.getsource(gateway_module))
     fn = next(
         node
@@ -2837,11 +2897,19 @@ def test_a_nested_prompt_turn_keeps_the_author_of_the_turn_that_carried_it():
     making, one frame deeper.
     """
     import ast
-    import inspect
 
     from kiro_crew.dashboard import chat_runner
 
-    tree = ast.parse(inspect.getsource(chat_runner))
+    tree = ast.parse(
+        "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
+    )
     reentries = [
         node
         for node in ast.walk(tree)
@@ -3171,7 +3239,16 @@ def test_chat_runner_forwards_the_full_result_measurement_to_the_emitter():
 
     from kiro_crew.dashboard import chat_runner
 
-    tree = ast.parse(inspect.getsource(chat_runner))
+    tree = ast.parse(
+        "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
+    )
     calls = [
         node
         for node in ast.walk(tree)
@@ -4433,7 +4510,7 @@ def test_retryable_terminal_failure_keeps_the_turn_pinned(monkeypatch):
     assert failures["left"] == 0, "the closer was never attempted"
     assert emit.live_turn(SESSION) == 1, "a retryable terminal failure released the turn pin"
 
-    assert emit.drain_for_shutdown(timeout=3.0)
+    _assert_drained_for_shutdown("the retained closer")
     assert [e["type"] for e in _body()][-1] == "turn/completed"
     assert emit.live_turn(SESSION) == 0
 
@@ -5413,7 +5490,7 @@ def test_the_repair_is_queued_under_the_predecessor_not_the_successor(monkeypatc
     # waiting on it for an inline turn.
     asyncio.run(_open_successor_on_a_loop())
     delays["secs"] = 0.0
-    assert emit.drain_for_shutdown(timeout=3.0)
+    _assert_drained_for_shutdown("the retained outcome and the stood-down repair")
 
     stops = [closer["data"]["stop_reason"] for closer in _closers(SESSION)]
     assert stops == ["end_turn"], f"the repair ran ahead of the outcome still owed: {stops}"
@@ -5500,6 +5577,277 @@ def test_the_recovery_reads_this_logs_own_edge_not_the_callers(caplog):
     assert not any("recovered the superseded crew log" in r.message for r in caplog.records)
 
 
+# --------------------------------------------------------------------------- #
+# A superseded crew log: walking the whole predecessor chain
+# --------------------------------------------------------------------------- #
+
+
+def _open_on_chat_7(session_id: str, **kwargs) -> None:
+    """Open *session_id* on the slot ``_open_session`` uses."""
+    emit.on_session_opened(
+        session_id,
+        agent="kirocrew",
+        slot="chat-7",
+        model="claude-opus-5",
+        cwd="/home/dev/project",
+        owner="default",
+        **kwargs,
+    )
+
+
+def _lose_the_repair():
+    """The supersede's follow-on repair, lost exactly as a crash loses it.
+
+    The opening entry carrying ``previous.sid`` still lands durably; only the job
+    queued behind it never runs.
+    """
+    return unittest.mock.patch.object(emit, "_queue_tail_repair", lambda *_a, **_k: None)
+
+
+def _chain_of_open_tails(sids: "list[str]") -> None:
+    """Build one slot's chain ``sids[0] -> sids[1] -> ...``, every tail left OPEN.
+
+    Each log after the first supersedes the one before it with the repair lost, and
+    each process is gone before the next one starts (``reset_caches``), so no live
+    record of any turn survives: a crash loop that never got as far as one repair.
+    """
+    for index, sid in enumerate(sids):
+        if index == 0:
+            _open_on_chat_7(sid)
+        else:
+            with _lose_the_repair():
+                _open_on_chat_7(sid, previous_sid=sids[index - 1])
+        emit.on_turn_started(sid, 1, "user")
+        assert emit.flush()
+        emit.reset_caches()
+    for sid in sids:
+        assert _closers(sid) == [], f"{sid} was closed while building the chain"
+
+
+def test_a_cold_start_closes_a_tail_two_hops_back_in_the_chain():
+    """A to B to C, and a crash after B named A but before A was repaired.
+
+    The repair of A is a job on the in-memory write buffer and the edge naming A is
+    a durable append, so a crash between them loses only the repair. B is never
+    resumed after it is superseded, so the re-attach recovery never re-queues it,
+    and C's supersede repaired B alone: A's ``turn/started`` stayed open for the life
+    of a file nothing rewrites.
+
+    B's own turn ENDS normally here, so B's tail needs nothing. That is the case a
+    walk that stops at the first hop with nothing to close would get wrong: a hop's
+    tail being closed says nothing about whether the repair of the hop BEFORE it ran.
+
+    Mutation guard: dropping the walk from `_repair_superseded` (closing only the hop
+    it was queued for) leaves A's closer count at 0.
+    """
+    third = "acp-sess-0003"
+    _dangling_predecessor()
+    emit.reset_caches()
+    with _lose_the_repair():
+        _open_successor(previous_sid=SESSION)
+        emit.on_turn_started(SUCCESSOR, 1, "user")
+        emit.on_turn_completed(SUCCESSOR, 1, stop_reason="end_turn")
+        assert emit.flush()
+    emit.reset_caches()
+    assert _closers(SESSION) == [], "A's repair was not actually lost, so this proves nothing"
+
+    _open_on_chat_7(third, previous_sid=SUCCESSOR)
+    assert emit.flush()
+
+    closers = _closers(SESSION)
+    assert len(closers) == 1, "the tail two hops back stayed open after the cold start"
+    assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+    results = [e for e in _body(SESSION) if e["type"] == "tool/completed"]
+    assert [r["data"]["status"] for r in results] == ["unknown"]
+    # B's one real outcome is left as it is: no second outcome for one turn.
+    assert [c["data"]["stop_reason"] for c in _closers(SUCCESSOR)] == ["end_turn"]
+
+
+def test_a_cold_start_closes_every_open_tail_of_the_chain():
+    """The whole durable chain, not a fixed depth: three open tails, one cold start.
+
+    Mutation guard: walking a fixed number of extra hops instead of following each
+    log's own ``previous`` to the chain's start leaves the oldest tail open.
+    """
+    chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003", "acp-sess-0004"]
+    _chain_of_open_tails(chain[:3])
+
+    _open_on_chat_7(chain[3], previous_sid=chain[2])
+    assert emit.flush()
+
+    for sid in chain[:3]:
+        closers = _closers(sid)
+        assert len(closers) == 1, f"{sid}'s tail was not closed exactly once"
+        assert closers[0]["data"] == {"turn": 1, "stop_reason": "interrupted"}
+    assert _closers(chain[3]) == [], "the newest log's own turn never started"
+
+
+def test_a_reattach_recovery_walks_the_chain_too():
+    """The re-attach recovery queues the same repair, so it walks the same chain.
+
+    A crash loop: A's repair and B's are both lost, then C re-attaches. C's own
+    opening entry names B, the recovery closes B, and the walk goes on to A.
+
+    Mutation guard: walking only from the supersede site, not from inside the
+    repair every caller queues, leaves A open here.
+    """
+    chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003"]
+    _chain_of_open_tails(chain)
+
+    _open_on_chat_7(chain[2], resumed=True)
+    assert emit.flush()
+
+    assert len(_closers(chain[1])) == 1, "the recovered hop was not closed"
+    assert len(_closers(chain[0])) == 1, "the recovery did not walk past the first hop"
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        pytest.param({"acp-sess-0001": "acp-sess-0001"}, id="self-loop"),
+        pytest.param(
+            {"acp-sess-0001": "acp-sess-0002", "acp-sess-0002": "acp-sess-0001"},
+            id="two-log-loop",
+        ),
+    ],
+)
+def test_a_cyclic_predecessor_pointer_ends_the_walk_with_a_logged_stop(edges, monkeypatch, caplog):
+    """A looping ``previous`` ends the walk, says so, and closes each tail once.
+
+    The emitter refuses to WRITE such an edge, but the walk reads files written by
+    any earlier build, and a damaged or hand-edited opening entry can name anything.
+    Each log of the loop is a real log of this slot, so the same-slot check passes
+    every step and only the walk's own guard can stop it.
+
+    Mutation guard: removing the already-walked check stops the walk only at the
+    process's repair memo (silently, so the warning below is missing) or at the hop
+    bound (after closing nothing more, but logging the wrong reason).
+    """
+    for sid in sorted(set(edges) | set(edges.values())):
+        _open_on_chat_7(sid)
+        emit.on_turn_started(sid, 1, "user")
+        assert emit.flush()
+    emit.reset_caches()
+    monkeypatch.setattr(emit, "_durable_previous", lambda sid: edges.get(sid, ""))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
+        emit._queue_tail_repair("acp-sess-0001", "chat-7")
+        assert emit.flush(), "the walk did not terminate"
+
+    for sid in edges:
+        assert len(_closers(sid)) == 1, f"{sid}'s tail was not closed exactly once"
+    stops = [r.message for r in caplog.records if "loops back on itself" in r.message]
+    assert len(stops) == 1, f"the cycle stop was not logged exactly once: {stops}"
+
+
+def test_the_walk_stops_at_its_hop_bound_with_a_logged_stop(monkeypatch, caplog):
+    """A chain longer than the bound is walked to the bound and no further.
+
+    Each hop opens and scans a whole crew log on the writer thread, so the bound is
+    what keeps one repair walk's cost finite whatever the chain holds, and stopping
+    at it is logged with the log it stopped before.
+
+    Mutation guard: removing the bound check closes all four tails here.
+    """
+    chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003", "acp-sess-0004"]
+    _chain_of_open_tails(chain)
+    monkeypatch.setattr(emit, "_REPAIR_WALK_HOPS", 2)
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
+        emit._queue_tail_repair(chain[3], "chat-7")
+        assert emit.flush()
+
+    assert [len(_closers(sid)) for sid in chain] == [0, 0, 1, 1]
+    stops = [r.message for r in caplog.records if "the walk's bound" in r.message]
+    assert len(stops) == 1, f"the bound stop was not logged exactly once: {stops}"
+    assert chain[1] in stops[0], "the stop did not name the log it stopped before"
+
+
+def test_a_walk_that_reaches_a_log_retention_removed_ends_quietly(caplog):
+    """The ordinary end of an old chain is not reported as damage.
+
+    Retention removes a long-lived slot's oldest crew logs, so the walk reaching a
+    log that is gone is how most chains end, on every restart. The walk reads the
+    hop's header before queueing it and stops there; queueing it anyway would have
+    the repair warn that it is not closing a log that is already gone.
+
+    Mutation guard: removing the header read before the hop is queued brings back
+    the repair's "NOT closing" warning for the removed log.
+    """
+    chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003"]
+    _chain_of_open_tails(chain[:2])
+    _remove_as_retention_does(lambda: shutil.rmtree(_log_path(chain[0]).parent))
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
+        _open_on_chat_7(chain[2], previous_sid=chain[1])
+        assert emit.flush()
+
+    assert len(_closers(chain[1])) == 1, "the hop that still exists was not closed"
+    warned = [r.getMessage() for r in caplog.records if chain[0] in r.getMessage()]
+    assert warned == [], f"the removed log was reported as damage: {warned}"
+
+
+def test_a_walk_does_not_follow_an_edge_to_another_slots_log(monkeypatch, caplog):
+    """A hop whose own header names another slot ends the walk, and says so.
+
+    The emitter refuses to write such an edge, but a damaged or older entry can
+    carry one, and following it would author an outcome into another slot's log.
+
+    Mutation guard: queueing the hop without reading its header leaves the other
+    slot's log unclosed as well (the repair refuses it), but the walk's own warning
+    naming the edge is missing.
+    """
+    foreign = "acp-sess-0009"
+    emit.on_session_opened(foreign, agent="kirocrew", slot="chat-8", owner="default")
+    emit.on_turn_started(foreign, 1, "user")
+    assert emit.flush()
+    _chain_of_open_tails(["acp-sess-0001"])
+    monkeypatch.setattr(
+        emit, "_durable_previous", lambda sid: foreign if sid == "acp-sess-0001" else ""
+    )
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
+        emit._queue_tail_repair("acp-sess-0001", "chat-7")
+        assert emit.flush()
+
+    assert len(_closers("acp-sess-0001")) == 1
+    assert _closers(foreign) == [], "another slot's log was closed"
+    stops = [r.getMessage() for r in caplog.records if "names another slot" in r.getMessage()]
+    assert len(stops) == 1, f"the foreign edge was not reported exactly once: {stops}"
+
+
+def test_a_second_supersede_in_one_process_does_not_rewalk_the_chain(monkeypatch):
+    """Each crew log is walked once per process, not once per supersede.
+
+    A slot gets a new log on every compaction, reset or model switch, so its chain
+    grows for as long as it lives, and every hop is a whole-file scan on the writer
+    thread. Re-walking the whole chain on each supersede would make each one cost
+    the slot's whole history. Within one process a log already queued for repair
+    needs no second walk: a superseded log is never resumed, so nothing reopens a
+    tail this process has closed.
+
+    Mutation guard: dropping the already-queued check makes the second supersede
+    repair B and A again, so their counts below read 2.
+    """
+    chain = ["acp-sess-0001", "acp-sess-0002", "acp-sess-0003", "acp-sess-0004"]
+    _chain_of_open_tails(chain[:2])
+    repaired: "list[str]" = []
+    real_repair = emit._repair_superseded
+
+    def _spy(previous_sid: str, slot: str, **kwargs) -> None:
+        repaired.append(previous_sid)
+        real_repair(previous_sid, slot, **kwargs)
+
+    monkeypatch.setattr(emit, "_repair_superseded", _spy)
+    _open_on_chat_7(chain[2], previous_sid=chain[1])
+    assert emit.flush()
+    _open_on_chat_7(chain[3], previous_sid=chain[2])
+    assert emit.flush()
+
+    assert sorted(repaired) == sorted(chain[:3]), f"a log was walked twice: {repaired}"
+    assert [len(_closers(sid)) for sid in chain[:2]] == [1, 1]
+
+
 def test_a_superseded_repair_survives_the_pending_ceiling():
     """Refusing only the FOLLOW-ON leaves the tail open with nothing to re-queue it.
 
@@ -5571,7 +5919,7 @@ def test_a_repair_dropped_with_the_batch_it_waited_in_comes_back(monkeypatch):
     emit._submit(_fail, "the predecessor's owed append", SESSION, 23)
     asyncio.run(_open_successor_on_a_loop())
     delays["secs"] = 0.0
-    assert emit.drain_for_shutdown(timeout=3.0)
+    _assert_drained_for_shutdown("the dropped batch and its re-queued repair")
 
     assert emit.dropped_writes() == 1, "the budget was not spent, or the repair was counted"
     closers = _closers(SESSION)
@@ -5860,7 +6208,11 @@ def test_every_slot_allocation_site_latches_the_predecessor_first():
     reds this.
     """
     runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
-    lines = runner.read_text(encoding="utf-8").splitlines()
+    lines = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    ).splitlines()
     allocations = [i for i, line in enumerate(lines) if "get_or_create(" in line]
     assert len(allocations) == 2, (
         "chat_runner now allocates a slot's session at a different number of sites; "
@@ -5900,7 +6252,11 @@ def test_the_turn_path_reads_the_predecessor_through_the_non_pruning_accessor():
     resolver's own fallback to `resumable_sid`, reds this.
     """
     runner = Path(__file__).parent.parent / "src" / "kiro_crew" / "dashboard" / "chat_runner.py"
-    source = runner.read_text(encoding="utf-8")
+    source = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    )
     # Joined because the call can be wrapped across lines; the whole expression is
     # what this pins, so a line-at-a-time read could not see it.
     flat = " ".join(source.split())

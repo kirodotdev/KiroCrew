@@ -99,8 +99,8 @@ class AppProcess:
     # Deliberately absent from to_dict(): internal bookkeeping.
     admitted_builtin: bool = False
     # True only when this gateway placed a FORKING sandbox launcher between its Popen
-    # handle and the real server: on Linux ``wrap_argv`` inserts
-    # ``sandbox_launcher`` (sandbox.py), whose ``main()`` does one ``os.fork()`` so the
+    # handle and the real server: on Linux ``wrap_argv`` inserts the namespace launcher,
+    # whose ``sandbox_launcher_program.main`` does one ``os.fork()`` so the
     # Popen root (the launcher parent) waits for the child's whole life while the child
     # execs the real server. Both pids sit in the agent slice, but the handle names only
     # the root, so the server stays unowned unless the root's DIRECT children are claimed
@@ -276,7 +276,8 @@ def running_spawned_backend_pids() -> set[int]:
 
     Each qualifying record contributes its Popen ROOT pid, and -- for a record whose
     ``forking_sandbox_launcher`` is set -- that root's DIRECT children too. On Linux
-    the gateway's own wrap inserts ``sandbox_launcher``, which forks: the root this
+    the gateway's own wrap inserts the namespace launcher, whose
+    ``sandbox_launcher_program.main`` forks: the root this
     handle names is the launcher parent, and the real server is its forked child,
     sitting in the same agent slice yet claimed by nothing. Claiming the root's direct
     children covers exactly that server. The scope is DIRECT children only: a process

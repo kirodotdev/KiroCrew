@@ -1259,7 +1259,12 @@ class TestDerivedRoster(unittest.TestCase):
 
 
 class TestGetCurrentLogin(AzureReadTestCase):
-    """``get_current_login`` answers ``None`` rather than raising -- gitlab's contract."""
+    """``get_current_login`` answers ``None`` rather than raising.
+
+    Azure's own contract: its route readers treat ``None`` as "no login". GitHub
+    and GitLab re-raise a host-setup failure instead so the picker can show
+    setup steps.
+    """
 
     GUID = "11111111-2222-3333-4444-555555555555"
 

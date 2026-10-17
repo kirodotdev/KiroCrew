@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew._sqlite_compat import fts5_available
-from kiro_crew.history_index import SessionSearchIndex, cjk_inventory
+from kiro_crew.history_index import _INDEX_VERSION, SessionSearchIndex, cjk_inventory
 from kiro_crew.history_search import parse_search_query
 
 pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built without FTS5")
@@ -37,6 +37,12 @@ CJK_DOG_SENTENCE = "\u72d7\u5728\u9662\u5b50\u91cc"
 
 def _index(tmp_path, *, opened) -> SessionSearchIndex:
     return opened(SessionSearchIndex(tmp_path / "session_index.db"))
+
+
+def _raw_texts(index: SessionSearchIndex, key: str, st) -> list[str] | None:
+    """Every stored text of *key*, or ``None`` when no fresh row vouches for *st*."""
+    texts = index.iter_raw_texts(key, st)
+    return None if texts is None else list(texts)
 
 
 def _synthetic_stat(*, dev: int, ino: int) -> SimpleNamespace:
@@ -189,7 +195,7 @@ def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino, op
 
     fresh = index.fresh_keys({"wide": same})
     assert set(fresh) == {"wide"}
-    assert index.raw_texts("wide", same) == ["wide identity"]
+    assert _raw_texts(index, "wide", same) == ["wide identity"]
 
     stored = (
         index._ensure_open()
@@ -209,11 +215,17 @@ def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino, op
         _synthetic_stat(dev=dev, ino=ino + 1),
     ):
         assert index.fresh_keys({"wide": changed}) == {}
-        assert index.raw_texts("wide", changed) is None
+        assert _raw_texts(index, "wide", changed) is None
 
 
 def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path, opened):
-    """Opening an existing version-2 row must not require a schema migration."""
+    """Reopening a row this build wrote must not trigger a schema migration.
+
+    The version is read from ``_INDEX_VERSION`` rather than written out as a
+    literal: the subject here is the dev/ino storage class and the round-trip,
+    and a hardcoded number turns every legitimate version bump into a failure
+    in this test instead of in one that is about versioning.
+    """
     index = _index(tmp_path, opened=opened)
     index.sync(
         "legacy",
@@ -235,8 +247,10 @@ def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path, opened)
     try:
         st = _synthetic_stat(dev=23, ino=29)
         assert set(reopened.fresh_keys({"legacy": st})) == {"legacy"}
-        assert reopened.raw_texts("legacy", st) == ["legacy row"]
-        assert reopened._ensure_open().execute("PRAGMA user_version").fetchone()[0] == 2
+        assert _raw_texts(reopened, "legacy", st) == ["legacy row"]
+        assert (
+            reopened._ensure_open().execute("PRAGMA user_version").fetchone()[0] == _INDEX_VERSION
+        )
     finally:
         reopened.close()
 
@@ -269,7 +283,7 @@ def test_document_returns_the_indexed_text(tmp_path, opened):
 def test_raw_texts_returns_the_original_unfolded_text(tmp_path, opened):
     index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "Ack Contention")
-    assert index.raw_texts("a", st) == ["Ack Contention"]
+    assert _raw_texts(index, "a", st) == ["Ack Contention"]
 
 
 def test_raw_texts_refuses_a_stale_row(tmp_path, opened):
@@ -279,13 +293,13 @@ def test_raw_texts_refuses_a_stale_row(tmp_path, opened):
     st = _sync(index, tmp_path, "a", "the original text")
     path.write_text("replaced with something longer", encoding="utf-8")
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
-    assert index.raw_texts("a", path.stat()) is None
+    assert _raw_texts(index, "a", path.stat()) is None
 
 
 def test_raw_texts_is_none_for_an_unknown_key(tmp_path, opened):
     index = _index(tmp_path, opened=opened)
     st = _sync(index, tmp_path, "a", "text")
-    assert index.raw_texts("nope", st) is None
+    assert _raw_texts(index, "nope", st) is None
 
 
 def test_shortlist_answers_both_questions_from_one_snapshot(tmp_path, opened):
@@ -464,7 +478,7 @@ def test_a_replaced_inode_is_not_vouched_for(tmp_path, opened):
     assert after.st_ino != st.st_ino, "the rewrite did not change the inode"
 
     assert index.fresh_keys({"a": after}) == {}
-    assert index.raw_texts("a", after) is None
+    assert _raw_texts(index, "a", after) is None
 
 
 def test_optimize_reclaims_the_pages_a_delete_left(tmp_path, opened):

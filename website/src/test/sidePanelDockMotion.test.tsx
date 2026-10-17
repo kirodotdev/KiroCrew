@@ -3,7 +3,7 @@ import { render } from '@testing-library/react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { sidePanelDockMotion } from '../pages/chat/sidePanelMount'
 
-/** The dock wrapper as ChatPage renders it: ONE stable key across a dock flip,
+/** The dock wrapper as ChatSidePanels renders it: ONE stable key across a dock flip,
  *  so framer-motion re-renders the same DOM node instead of remounting it. The
  *  size classes are the ones the flip swaps between. */
 function DockWrapper({ dock }: { dock: 'right' | 'bottom' }) {

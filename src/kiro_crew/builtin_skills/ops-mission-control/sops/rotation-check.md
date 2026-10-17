@@ -42,13 +42,16 @@ as the tool takes them.
    match. Returns `changed` (the crons it actually moved, `[]` when the live state was
    already correct) and `tiers`.
 
-   **You do not choose which crons to pause, and you no longer hold `cron_pause` at
-   all.** That is the point: off shift the armed set still contains
-   `ops-mission-control/rotation-check` — this job — and pausing it strands the instance
+   **You do not choose which crons to pause, and you must not call `cron_pause` or
+   `cron_resume` for this app's jobs.** The app manifest does not declare them, but
+   that list is declarative, not a runtime gate. That is the point: off shift the
+   armed set still contains `ops-mission-control/rotation-check` — this job — and
+   pausing it strands the instance
    with no way to re-arm itself, silently ending the team's incident response until a
    human notices. That used to be prevented only by this SOP telling you not to, which
-   is not an enforcement mechanism. The route now refuses to pause an always-tier job
-   unconditionally, so one misread turn cannot cause it.
+   is not an enforcement mechanism. The enforcement is the route: `POST /rotation/arm`
+   computes the tier map and refuses to pause an always-tier job unconditionally, so
+   arming through the route cannot strand the instance.
 
 2. If `changed` is empty, **exit silently** — nothing moved.
 

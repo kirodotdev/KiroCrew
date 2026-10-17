@@ -60,7 +60,8 @@ CLI_BIN = "playwright-cli"
 # printed ``Listening on http://127.0.0.1:45613`` and
 # ``Listening on http://127.0.0.1:42963``, respectively. Each line was read only
 # after its listener had bound. ``@latest`` may change that wording; the parser
-# then fails closed and reports the installed version for diagnosis.
+# then fails closed and reports the installed version for diagnosis, and the
+# daily ``playwright-cli-banner.yml`` workflow catches the drift first.
 NPM_SPEC = "@playwright/cli@latest"
 
 # ``install --skills`` writes the command reference where an agent can read it.
@@ -110,9 +111,21 @@ def cli_env() -> dict[str, str]:
     This PATH is execution support only. :func:`cli_path` does not consume it:
     gateway execution resolves the sandbox-sealed managed entrypoint or a fixed,
     non-writable system candidate by absolute path.
+
+    ``NODE_USE_SYSTEM_CA=1`` makes these Node children trust the OS certificate
+    store (macOS Keychain, Windows Certificate Store, OpenSSL defaults on Linux)
+    in addition to Node's bundled roots. Behind a TLS-intercepting corporate
+    proxy the browser download otherwise fails ``UNABLE_TO_GET_ISSUER_CERT_LOCALLY``
+    even though the OS trusts the proxy's CA, and a GUI-launched gateway has no
+    shell profile through which the user could set the variable. The gateway's
+    own Python side already verifies through the OS store (``_ssl_compat``).
+    The variable is used instead of ``--use-system-ca`` in ``NODE_OPTIONS``
+    because a Node that predates the feature ignores an unknown variable but
+    refuses to start on an unknown flag. A value the user already set is kept.
     """
     env = dict(os.environ)
     env["PATH"] = node_augmented_path(augmented_path(env.get("PATH", "")))
+    env.setdefault("NODE_USE_SYSTEM_CA", "1")
     return env
 
 
@@ -460,6 +473,33 @@ def _agent_writable_roots() -> tuple[Path, ...]:
     return github_runner.agent_writable_roots()
 
 
+def agent_writable_root_over_data_home(data_home: Path | None = None) -> Path | None:
+    """The agent-writable root that contains the data home, or ``None``.
+
+    The managed launcher lives under the data home, so a workspace root or
+    project directory at the data home or above it (``$HOME`` is the usual
+    case) puts every launcher the installer writes inside the fence.
+    """
+    try:
+        data_home = (data_home or config_dir()).resolve(strict=False)
+        roots = _agent_writable_roots()
+    except (OSError, RuntimeError):
+        return None
+    for root in roots:
+        if _under(data_home, root):
+            return root
+    return None
+
+
+def _data_home_overlap_remedy(root: Path) -> str:
+    return (
+        f"the workspace root or project directory {root} contains the Kiro Crew data "
+        f"home ({config_dir()}), so a launcher installed there is inside the "
+        "agent-writable tree and would be refused. Point it at a directory outside "
+        "the data home and restart the gateway"
+    )
+
+
 def _under(path: Path, root: Path) -> bool:
     try:
         return path == root or root in path.parents
@@ -481,39 +521,80 @@ def _resolve_executable(candidate: Path) -> tuple[Path | None, str | None]:
     return resolved, None
 
 
-def _common_candidate_rejection(resolved: Path) -> str | None:
-    """Reject roots the agent can write independently of candidate provenance."""
+def _common_candidate_rejection(resolved: Path) -> tuple[str, str] | None:
+    """Reject roots the agent can write independently of candidate provenance.
+
+    Returns ``(reason, kind)`` for a rejected location or ``None`` when the
+    location clears. ``kind`` is :data:`_REFUSAL_LEGACY` only for the user's own
+    ``~/.local`` install (a one-time managed reinstall is the remedy); an
+    agent-writable tree is a planted shim and a boundary that cannot be verified
+    is an anomaly, so both are :data:`_REFUSAL_UNTRUSTED` -- a reinstall does not
+    address either.
+    """
     try:
         agent_roots = _agent_writable_roots()
     except Exception:
-        return "the agent-writable roots could not be verified"
+        return "the agent-writable roots could not be verified", _REFUSAL_UNTRUSTED
     for root in agent_roots:
         if _under(resolved, root):
-            return f"the resolved executable is inside the agent-writable tree {root}"
+            return (
+                f"the resolved executable is inside the agent-writable tree {root}",
+                _REFUSAL_UNTRUSTED,
+            )
     try:
         user_local = (Path.home() / ".local").resolve(strict=False)
     except (OSError, RuntimeError):
-        return "the user-local boundary could not be verified"
+        return "the user-local boundary could not be verified", _REFUSAL_UNTRUSTED
     if _under(resolved, user_local):
-        return f"the resolved executable is under the user-local tree {user_local}"
+        return (
+            f"the resolved executable is under the user-local tree {user_local}",
+            _REFUSAL_LEGACY,
+        )
     return None
 
 
-def _managed_candidate(candidate: Path) -> tuple[Path | None, str | None]:
-    """Validate an entrypoint inside the sandbox-sealed managed prefix."""
+def _managed_candidate(candidate: Path) -> tuple[Path | None, str | None, str | None]:
+    """Validate an entrypoint inside the sandbox-sealed managed prefix.
+
+    Returns ``(resolved, reason, kind)``. Every managed-prefix refusal is an
+    anomaly -- a symlinked boundary, an entrypoint outside the sealed prefix, or
+    an agent-writable component -- never a plain user install, so the kind is
+    always :data:`_REFUSAL_UNTRUSTED`.
+    """
     root = _managed_cli_root()
     if root.is_symlink():
-        return None, f"the managed tools boundary is a symlink ({root})"
+        return None, f"the managed tools boundary is a symlink ({root})", _REFUSAL_UNTRUSTED
     resolved, reason = _resolve_executable(candidate)
     if resolved is None:
-        return None, reason
+        return None, reason, _REFUSAL_UNTRUSTED
     try:
         resolved_root = root.resolve(strict=True)
     except OSError as exc:
-        return None, f"the managed tools boundary could not be resolved ({exc})"
+        return None, f"the managed tools boundary could not be resolved ({exc})", _REFUSAL_UNTRUSTED
     if not _under(resolved, resolved_root):
-        return None, f"the entrypoint resolves outside the managed tools boundary {resolved_root}"
-    return (None, common) if (common := _common_candidate_rejection(resolved)) else (resolved, None)
+        return (
+            None,
+            f"the entrypoint resolves outside the managed tools boundary {resolved_root}",
+            _REFUSAL_UNTRUSTED,
+        )
+    rejection = _common_candidate_rejection(resolved)
+    if rejection is not None:
+        return None, rejection[0], _REFUSAL_UNTRUSTED
+    return resolved, None, None
+
+
+def _managed_leaf_unresolved_reason() -> str:
+    """Why the managed leaf yields no launcher, worded for the install step.
+
+    An entrypoint that is on disk but refused is a different failure from one
+    that is absent: the refusal names the boundary, and an agent-writable root
+    that contains the data home is a configuration the user can change.
+    """
+    resolved, refusal = _resolve_managed_cli()
+    if resolved is not None or refusal is None:
+        return f"{CLI_BIN} was not found in the managed tools leaf after a successful install"
+    candidate, reason, _kind = refusal
+    return redact_install_output(f"{CLI_BIN} was installed at {candidate} but refused: {reason}")
 
 
 def _gateway_writable_component(candidate: Path, resolved: Path) -> Path | None:
@@ -548,16 +629,83 @@ def _gateway_writable_component(candidate: Path, resolved: Path) -> Path | None:
     return None
 
 
-def _system_candidate(candidate: Path) -> tuple[Path | None, str | None]:
-    """Validate a fixed system candidate with the tailnet planted-binary floor."""
+def bootstrap_tool_provenance(path: str) -> dict[str, object]:
+    """Describe a resolved bootstrap ``npm``/``node``: where it lands, who can replace it.
+
+    Returns ``{"path", "real_path", "writable_at", "own_toolchain",
+    "shared_write"}``. ``writable_at`` is the first component of the
+    executable's hierarchy the gateway user can write, from the SAME predicate
+    the CLI resolver refuses on (:func:`_gateway_writable_component`), or ``""``
+    when there is none.
+
+    Who else can write that component is what separates the expected case from
+    the alarming one. ``shared_write`` means its group or other write bit is set,
+    so another account can replace the binary. ``own_toolchain`` means it is
+    owned by the gateway's own account and carries no such bit -- which is how
+    nvm, fnm, volta and mise lay out ``$HOME``, and how Homebrew's installer
+    creates ``/opt/homebrew`` (``install -m 0755 -o $USER``; the ``g+rwx`` it
+    applies to ``bin``/``Cellar`` sits below the prefix, which the walk reaches
+    first): only this account, which already runs the gateway, can replace it.
+    A legacy root-owned ``/usr/local`` over a ``g+rwx`` ``bin`` is
+    ``shared_write``: every other ``admin`` account can write it.
+
+    Reporting only: the bootstrap never refuses on this answer. ``writable_at``
+    is ``None`` -- not checked -- on Windows, where ``os.access`` reads only the
+    read-only attribute and not the ACL. A gateway running as root gets the
+    resolver's own answer: every component is writable by it.
+    """
+    real = os.path.realpath(path)
+    writable_at: str | None
+    own_toolchain = False
+    shared_write = False
+    if platform_compat.IS_WINDOWS:
+        writable_at = None
+    else:
+        component = _gateway_writable_component(Path(path), Path(real))
+        writable_at = "" if component is None else str(component)
+        if component is not None:
+            try:
+                st = component.stat()
+            except OSError:
+                st = None
+            if st is not None:
+                shared_write = bool(st.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+                me = platform_compat.process_owner_uid(os.getpid())
+                own_toolchain = not shared_write and me is not None and st.st_uid == me
+    return {
+        "path": path,
+        "real_path": real,
+        "writable_at": writable_at,
+        "own_toolchain": own_toolchain,
+        "shared_write": shared_write,
+    }
+
+
+def _system_candidate(candidate: Path) -> tuple[Path | None, str | None, str | None]:
+    """Validate a fixed system candidate with the tailnet planted-binary floor.
+
+    Returns ``(resolved, reason, kind)``. A system candidate refused as writable
+    by the gateway user is the common user-owned machine install -- a Homebrew
+    ``/opt/homebrew/bin`` or an npm-global ``/usr/local/bin`` launcher the user
+    put there themselves -- so it is :data:`_REFUSAL_LEGACY` and earns the
+    one-time managed reinstall copy. A ``~/.local`` hit inherits its
+    :data:`_REFUSAL_LEGACY` from :func:`_common_candidate_rejection`; an
+    agent-writable tree, an unverifiable boundary, and a candidate that will not
+    resolve are :data:`_REFUSAL_UNTRUSTED`.
+    """
     resolved, reason = _resolve_executable(candidate)
     if resolved is None:
-        return None, reason
-    if common := _common_candidate_rejection(resolved):
-        return None, common
+        return None, reason, _REFUSAL_UNTRUSTED
+    rejection = _common_candidate_rejection(resolved)
+    if rejection is not None:
+        return None, rejection[0], rejection[1]
     if writable := _gateway_writable_component(candidate, resolved):
-        return None, f"the executable hierarchy is writable by the gateway user at {writable}"
-    return resolved, None
+        return (
+            None,
+            f"the executable hierarchy is writable by the gateway user at {writable}",
+            _REFUSAL_LEGACY,
+        )
+    return resolved, None, None
 
 
 _warned_cli_refusals: set[tuple[str, str]] = set()
@@ -579,6 +727,131 @@ def _warn_cli_refusal(candidate: Path, reason: str) -> None:
     )
 
 
+def _resolve_managed_cli() -> tuple[Path | None, tuple[Path, str, str] | None]:
+    """The first vetted managed entrypoint, and the first managed refusal seen.
+
+    The refusal is ``(candidate, reason, kind)``; every managed-prefix refusal is
+    an anomaly, so its ``kind`` is always :data:`_REFUSAL_UNTRUSTED`.
+    """
+    first_refusal: tuple[Path, str, str] | None = None
+    for candidate in _managed_cli_candidates():
+        if not os.path.lexists(candidate):
+            continue
+        resolved, reason, kind = _managed_candidate(candidate)
+        if resolved is not None:
+            return resolved, first_refusal
+        if reason is not None and first_refusal is None:
+            first_refusal = (candidate, reason, kind or _REFUSAL_UNTRUSTED)
+    return None, first_refusal
+
+
+def _resolve_system_cli() -> tuple[Path | None, tuple[Path, str, str] | None]:
+    """The first vetted fixed-system entrypoint, and the first system refusal seen.
+
+    The refusal is ``(candidate, reason, kind)``; a system candidate refused as
+    writable by the gateway user is the common user-owned machine install, so its
+    ``kind`` is :data:`_REFUSAL_LEGACY`.
+    """
+    first_refusal: tuple[Path, str, str] | None = None
+    for candidate in _system_cli_candidates():
+        if not os.path.lexists(candidate):
+            continue
+        resolved, reason, kind = _system_candidate(candidate)
+        if resolved is not None:
+            return resolved, first_refusal
+        if reason is not None and first_refusal is None:
+            first_refusal = (candidate, reason, kind or _REFUSAL_UNTRUSTED)
+    return None, first_refusal
+
+
+#: A launcher the user installed themselves outside the managed prefix -- a
+#: ``~/.local/bin`` or version-manager binary on ``PATH``, or a machine install
+#: such as Homebrew ``/opt/homebrew/bin`` or npm-global ``/usr/local/bin`` refused
+#: as writable by the gateway user. The one-time managed reinstall is the right
+#: remedy, so this is the refusal that earns the reinstall copy.
+_REFUSAL_LEGACY = "legacy"
+
+#: A candidate refused as an untrusted source a reinstall would not change -- a
+#: managed-prefix anomaly, a candidate that will not resolve, or a planted shim in
+#: an agent-writable tree or an unverifiable boundary. The plain refusal message
+#: stands for this case.
+_REFUSAL_UNTRUSTED = "untrusted"
+
+#: Reason surfaced when no ``playwright-cli`` launcher is present at all. Shared by
+#: every surface that reports the browser tools as unavailable, so they stay
+#: identical.
+CLI_NOT_INSTALLED_REASON = "playwright-cli is not installed"
+
+#: Reason surfaced when a launcher IS present but was declined as a source the
+#: user installed themselves outside the managed prefix -- a ``~/.local`` or
+#: version-manager launcher on ``PATH``, or a machine install such as Homebrew or
+#: npm-global. It explains that the one-time managed reinstall is needed, so the
+#: user is not told "not installed" when they do have an install. Surfaced
+#: verbatim, so it must stay plain and complete. Shown only when
+#: :func:`legacy_launcher_refused` is true.
+CLI_LEGACY_UNTRUSTED_REASON = (
+    "playwright-cli needs a one-time reinstall. An existing install outside the "
+    "managed location (for example on your PATH under ~/.local/bin, a version "
+    "manager such as nvm, mise, or Volta, or a machine install under a Homebrew "
+    "prefix or an npm-global prefix) is no longer run for safety; reinstall the "
+    "browser tools from the dashboard to use the managed copy."
+)
+
+
+def _resolve_cli_candidate() -> tuple[Path | None, tuple[Path, str, str] | None]:
+    """Resolve the trusted launcher and the first refused candidate, if any.
+
+    Returns ``(resolved, first_refusal)``. ``resolved`` is the canonical trusted
+    path or ``None``; ``first_refusal`` is ``(candidate, reason, kind)`` for the
+    first candidate that existed on disk or ``PATH`` but was declined as an
+    untrusted source, or ``None`` when no launcher spelling was present at all.
+    The managed leaf is searched first, then the fixed system directories, then
+    ``PATH`` -- the same order and the same :func:`_resolve_managed_cli` /
+    :func:`_resolve_system_cli` scans :func:`cli_path` uses, so the two can never
+    disagree about what resolves. ``kind`` is :data:`_REFUSAL_LEGACY` for a
+    launcher the user installed themselves -- a ``PATH`` / ``~/.local`` hit, or a
+    system candidate (Homebrew ``/opt/homebrew/bin``, npm-global
+    ``/usr/local/bin``) refused as writable by the gateway user -- and
+    :data:`_REFUSAL_UNTRUSTED` for every other refusal (a managed/system anomaly,
+    or a planted shim in an agent-writable tree or an unverifiable boundary). Each
+    helper returns its own typed kind, so the classification never depends on
+    parsing a reason string. Detection is identity-only -- the same
+    ``os.path.lexists`` / ``shutil.which`` probing and reason computation
+    :func:`cli_path` performs -- so no launcher is executed, copied, or trusted
+    here.
+    """
+    managed, first_refusal = _resolve_managed_cli()
+    if managed is not None:
+        return managed, first_refusal
+    system, system_refusal = _resolve_system_cli()
+    if first_refusal is None:
+        first_refusal = system_refusal
+    if system is not None:
+        return system, first_refusal
+
+    if first_refusal is None:
+        found = shutil.which(CLI_BIN, path=os.environ.get("PATH", ""))
+        if found:
+            candidate = Path(found)
+            resolved, reason = _resolve_executable(candidate)
+            kind = _REFUSAL_LEGACY
+            if resolved is not None:
+                rejection = _common_candidate_rejection(resolved)
+                candidate = resolved
+                # A plain PATH hit outside every vetted tree is the user's own
+                # install (legacy); the kind for a rejected one comes straight
+                # from the typed classification -- ``~/.local`` legacy, an
+                # agent-writable tree or unverifiable boundary untrusted.
+                if rejection is not None:
+                    reason, kind = rejection
+            first_refusal = (
+                candidate,
+                reason or "the candidate came from PATH, which is not a trusted launcher source",
+                kind,
+            )
+    return None, first_refusal
+
+
 def cli_path() -> str | None:
     """Canonical trusted ``playwright-cli`` path, or ``None``.
 
@@ -588,43 +861,30 @@ def cli_path() -> str | None:
     hit is inspected only after every vetted location misses, so the refusal can
     name the planted shim without ever running it.
     """
-    first_refusal: tuple[Path, str] | None = None
-    for candidate in _managed_cli_candidates():
-        if not os.path.lexists(candidate):
-            continue
-        resolved, reason = _managed_candidate(candidate)
-        if resolved is not None:
-            if first_refusal is not None:
-                _warn_cli_refusal(*first_refusal)
-            return str(resolved)
-        if reason is not None and first_refusal is None:
-            first_refusal = (candidate, reason)
-    for candidate in _system_cli_candidates():
-        if not os.path.lexists(candidate):
-            continue
-        resolved, reason = _system_candidate(candidate)
-        if resolved is not None:
-            if first_refusal is not None:
-                _warn_cli_refusal(*first_refusal)
-            return str(resolved)
-        if reason is not None and first_refusal is None:
-            first_refusal = (candidate, reason)
-
-    if first_refusal is None:
-        found = shutil.which(CLI_BIN, path=os.environ.get("PATH", ""))
-        if found:
-            candidate = Path(found)
-            resolved, reason = _resolve_executable(candidate)
-            if resolved is not None:
-                reason = _common_candidate_rejection(resolved)
-                candidate = resolved
-            first_refusal = (
-                candidate,
-                reason or "the candidate came from PATH, which is not a trusted launcher source",
-            )
+    resolved, first_refusal = _resolve_cli_candidate()
     if first_refusal is not None:
-        _warn_cli_refusal(*first_refusal)
-    return None
+        candidate, reason, _kind = first_refusal
+        _warn_cli_refusal(candidate, reason)
+    return str(resolved) if resolved is not None else None
+
+
+def legacy_launcher_refused() -> bool:
+    """Whether a user-installed ``playwright-cli`` launcher is present but declined.
+
+    ``True`` only when a launcher the user installed themselves outside the
+    managed prefix -- a ``~/.local/bin`` or version-manager binary on ``PATH``, or
+    a machine install (Homebrew ``/opt/homebrew/bin``, npm-global
+    ``/usr/local/bin``) refused as writable by the gateway user -- exists yet is
+    intentionally not run. That is the state a host is in after the managed-install
+    migration, and the one a one-time managed reinstall fixes. The check is
+    identity-only (:func:`_resolve_cli_candidate`): it never executes, copies, or
+    trusts the detected launcher. ``False`` when a trusted launcher resolves, when
+    nothing is installed at all, and when the only refused candidate is a planted
+    shim in an agent-writable tree or an unverifiable boundary (which a reinstall
+    does not address), so that case keeps the plain refusal message.
+    """
+    resolved, first_refusal = _resolve_cli_candidate()
+    return resolved is None and first_refusal is not None and first_refusal[2] == _REFUSAL_LEGACY
 
 
 def _first_version(text: str) -> str | None:
@@ -899,8 +1159,8 @@ def _regular_file_within(candidate: Path, root: Path) -> tuple[Path | None, str 
         return None, "the direct launcher target is not a regular file"
     if not _under(resolved, resolved_root):
         return None, f"the direct launcher target resolves outside {resolved_root}"
-    if common := _common_candidate_rejection(resolved):
-        return None, common
+    if rejection := _common_candidate_rejection(resolved):
+        return None, rejection[0]
     return resolved, None
 
 
@@ -943,7 +1203,7 @@ def _system_node_for_launcher(launcher: Path, package: Path) -> tuple[Path | Non
     for candidate in _system_node_candidates(launcher, package):
         if not os.path.lexists(candidate):
             continue
-        resolved, reason = _system_candidate(candidate)
+        resolved, reason, _kind = _system_candidate(candidate)
         if resolved is not None:
             return resolved, None
         if reason is not None and first_refusal is None:
@@ -974,7 +1234,7 @@ def _direct_cli_command(cli: str) -> tuple[list[str] | None, str | None]:
         except OSError:
             managed_root = None
     if managed_root is not None and _under(launcher_resolved, managed_root):
-        node, reason = _managed_candidate(_managed_node_path())
+        node, reason, _node_kind = _managed_candidate(_managed_node_path())
         entry_resolved, entry_reason = _regular_file_within(entry, managed_root)
     else:
         node, reason = _system_node_for_launcher(launcher_resolved, package)
@@ -995,8 +1255,8 @@ def _resolve_executable_file_for_system(candidate: Path) -> tuple[Path | None, s
         return None, f"the direct launcher file could not be resolved ({exc})"
     if not stat.S_ISREG(mode):
         return None, "the direct launcher target is not a regular file"
-    if common := _common_candidate_rejection(resolved):
-        return None, common
+    if rejection := _common_candidate_rejection(resolved):
+        return None, rejection[0]
     if writable := _gateway_writable_component(candidate, resolved):
         return None, f"the direct launcher hierarchy is writable by the gateway user at {writable}"
     return resolved, None
@@ -1127,7 +1387,7 @@ def cli_lifecycle_env_support() -> tuple[SeamSupport, str]:
     daemon turns a future rename/removal into a loud fail-back instead of
     silently putting sockets under scratch again.
 
-    Three-valued on purpose. ``UNSUPPORTED`` means both bundles were read and a
+    Three-valued on purpose. ``UNSUPPORTED`` means a bundle was read and its
     hook is gone -- a real capability gap upstream. ``UNVERIFIED`` means the
     serving tree could not be attributed to the resolved launcher, or a bundle
     could not be read, and comes with the detail a caller needs to say so.
@@ -1690,6 +1950,7 @@ def _step(
     timeout: float,
     hint: str = "",
     failure_signal: Callable[[str], bool] | None = None,
+    hint_requires_signal: bool = False,
 ) -> dict[str, Any]:
     """Run one install step and describe its outcome.
 
@@ -1710,14 +1971,18 @@ def _step(
 
     *hint* is our own trusted remediation line, appended AFTER the cap so a long
     stderr cannot push the actionable part out of the operator's view. It is not
-    redacted because it is a constant composed here, never external output.
+    redacted because it is a constant composed here, never external output. A
+    remedy rides on every ordinary failure; with *hint_requires_signal* it rides
+    only on a failure *failure_signal* recognized, which is the rule for a verdict
+    about the host (the engine cannot run here): the missing-library report is
+    its only evidence, and a download that failed for another reason must keep
+    its own error rather than be dressed as a platform limit.
     """
     rc, out, err = _run(argv, timeout)
-    ok = rc == 0
     # Both streams: the diagnostic is on stderr today, and a step that starts
     # printing it to stdout must not silently reopen the bug this guards.
-    if ok and failure_signal is not None and failure_signal(f"{err}\n{out}"):
-        ok = False
+    signalled = failure_signal is not None and failure_signal(f"{err}\n{out}")
+    ok = rc == 0 and not signalled
     # Redact BEFORE truncating: a credential straddling the truncation
     # boundary does not match its regex (e.g. the trailing ``@`` in a
     # ``://user:pass@host`` URL is past the cap), so truncating first can
@@ -1731,7 +1996,8 @@ def _step(
     # ran out of time did not fail for that reason, so it carries no hint; the
     # job layer reads the same return codes to report interrupted / timeout.
     ordinary_failure = not ok and rc not in (INTERRUPTED_RC, TIMEOUT_RC)
-    step_hint = hint if ordinary_failure else ""
+    hint_applies = ordinary_failure and (signalled or not hint_requires_signal)
+    step_hint = hint if hint_applies else ""
     if not ok:
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
         if step_hint:
@@ -1791,6 +2057,12 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     # downloads name their engine so outcomes remain distinguishable.
     suffix = f"-{engine}" if engine else ""
     hint = os_deps.missing_deps_hint(selected_engine)
+    # A remedy ("install these, then retry") rides on any ordinary failure. The
+    # verdict that this host cannot run the engine does not: its only evidence is
+    # Playwright's own report of the missing libraries, so a WebKit download that
+    # fails for another reason on such a host is reported as that failure, not as
+    # a platform limit.
+    verdict = os_deps.engine_unsupported_here(selected_engine)
 
     def attempt(step_name: str, argv: list[str], with_hint: bool) -> dict[str, Any]:
         return _step(
@@ -1799,6 +2071,7 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
             _BROWSER_INSTALL_TIMEOUT_S,
             hint=hint if with_hint else "",
             failure_signal=os_deps.host_deps_unsatisfied,
+            hint_requires_signal=verdict,
         )
 
     if not os_deps.with_deps_supported():
@@ -1808,6 +2081,32 @@ def _download_browser(command: list[str], engine: str | None = None) -> list[dic
     if first["ok"]:
         return [first]
     return [first, attempt(f"install-browser{suffix}-no-deps", base, True)]
+
+
+def _log_bootstrap_tools(npm: str | None, node: str | None) -> None:
+    """Log which npm and Node the install bootstrap is about to run.
+
+    These come from the gateway's PATH and version-manager directories, the one
+    place the browser install still reads that environment, so the resolved
+    paths -- and whether the gateway user could have replaced them -- are
+    recorded for whoever later asks what ran. ``kirocrew doctor`` reports the
+    same answer.
+    """
+    for name, path in (("npm", npm), ("node", node)):
+        if path is None:
+            logger.info("browser install bootstrap: %s not found", name)
+            continue
+        info = bootstrap_tool_provenance(path)
+        logger.info(
+            "browser install bootstrap: %s=%s (real %s, user-writable at=%s, "
+            "own toolchain=%s, group/other-writable=%s)",
+            name,
+            path,
+            info["real_path"],
+            info["writable_at"] if info["writable_at"] is not None else "not checked",
+            info["own_toolchain"],
+            info["shared_write"],
+        )
 
 
 def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
@@ -1824,7 +2123,26 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
     steps: list[dict[str, Any]] = []
     _emit_stage(on_stage, STAGE_INSTALLING_CLI)
 
+    overlap = agent_writable_root_over_data_home()
+    if overlap is not None and _resolve_system_cli()[0] is None:
+        steps.append(
+            {
+                "name": "check-install-boundary",
+                "ok": False,
+                "returncode": 1,
+                "stderr": redact_install_output(
+                    f"refusing to install {CLI_BIN}: {_data_home_overlap_remedy(overlap)}"
+                ),
+            }
+        )
+        return {"ok": False, "steps": steps}
+
+    # Both bootstrap tools are resolved ONCE, here, and the same answers are
+    # what runs: the gateway PATH and version-manager dirs are not re-read
+    # between the npm step and the Node staging step.
     npm = find_node_tool("npm")
+    node = find_node_tool("node")
+    _log_bootstrap_tools(npm, node)
     if npm is None:
         steps.append(
             {
@@ -1865,10 +2183,9 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
     if not steps[-1]["ok"]:
         return {"ok": False, "steps": steps}
 
-    node = find_node_tool("node")
     try:
         if node is None:
-            raise OSError("node not found after npm install")
+            raise OSError("node not found on the gateway PATH or version-manager dirs")
         runtime_node = _node_runtime_executable(node)
         if runtime_node is None:
             raise OSError("Node did not report an executable process.execPath")
@@ -1902,10 +2219,7 @@ def install(on_stage: StageCallback | None = None) -> dict[str, Any]:
                 "name": "resolve-binary",
                 "ok": False,
                 "returncode": 127,
-                "stderr": (
-                    f"{CLI_BIN} was not found in the managed tools leaf after "
-                    "a successful install"
-                ),
+                "stderr": _managed_leaf_unresolved_reason(),
             }
         )
         return {"ok": False, "steps": steps}

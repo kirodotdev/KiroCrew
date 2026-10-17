@@ -25,6 +25,7 @@ from kiro_crew.taskrunner import (
     TaskRunner,
     WorkingMemory,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -53,6 +54,34 @@ def _non_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> 
     work = tmp_path / name
     work.mkdir()
     return work
+
+
+class _SteppedClock:
+    """Stands in for the ``time`` module: seconds pass only when a test says so.
+
+    ``monotonic()`` follows the real passage of time the test scripts;
+    ``time()`` follows it too, plus any wall-clock step on top. Every other
+    name is the real module's.
+    """
+
+    def __init__(self) -> None:
+        self._wall = 1_800_000_000.0
+        self._mono = 5_000.0
+
+    def time(self) -> float:
+        return self._wall
+
+    def monotonic(self) -> float:
+        return self._mono
+
+    def advance(self, passed: float, *, step: float = 0.0) -> None:
+        self._mono += passed
+        self._wall += passed + step
+
+    def __getattr__(self, name: str) -> Any:
+        import time as _time
+
+        return getattr(_time, name)
 
 
 def _make_mock_sessions() -> MagicMock:
@@ -299,12 +328,12 @@ class TestWorkflowRunIntegration:
         async with _at_workflow_checkpoint(
             runner, runner.start_background(spec_path), persistence_release
         ) as starting:
-            await asyncio.wait_for(persistence_started.wait(), timeout=1)
+            await await_until(persistence_started)
             starting.cancel()
             persistence_release.set()
 
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(asyncio.shield(starting), timeout=10)
+                await await_until(starting)
 
         assert persist_calls == 2
 
@@ -344,11 +373,11 @@ class TestWorkflowRunIntegration:
         async with _at_workflow_checkpoint(
             runner, runner.plan("implement the feature"), publication_release
         ) as planning:
-            await asyncio.wait_for(publication_started.wait(), timeout=1)
+            await await_until(publication_started)
             planning.cancel()
 
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(asyncio.shield(planning), timeout=10)
+                await await_until(planning)
 
         assert runner._runs == {}
         assert workflows.list_runs() == []
@@ -463,10 +492,10 @@ class TestWorkflowRunIntegration:
             persist_release,
             checkpoint="_workflow_rebind",
         ) as task:
-            await asyncio.wait_for(persist_started.wait(), timeout=1)
+            await await_until(persist_started)
             task.cancel()
 
-            run = await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            run = await await_until(task)
 
         assert run.status == "cancelled"
         assert runner._runs[run.task_id].status == "cancelled"
@@ -1556,7 +1585,7 @@ class TestResourceManagement:
         runner.cancel("cancel1")
 
         # Wait for the task to fully complete (cancel + finally block)
-        await asyncio.wait_for(task, timeout=5.0)
+        await await_until(task)
 
         # Verify: task is cancelled, sessions were cleaned up
         assert run.status == "cancelled"
@@ -1609,12 +1638,10 @@ class TestResourceManagement:
         await started.wait()
         runner.cancel("cancel2")
         # Allow cancellation to fully propagate — CI machines may be slower
-        for _ in range(20):
-            await asyncio.sleep(0.1)
-            if run.status == "cancelled":
-                break
-        else:
-            pytest.fail(f"Cancellation did not propagate within 2s; status={run.status}")
+        await async_wait_until(
+            lambda: run.status == "cancelled",
+            describe=lambda: f"cancellation did not propagate; status={run.status}",
+        )
 
         assert run.status == "cancelled"
         # All 3 sessions should have been targeted by cleanup
@@ -1679,10 +1706,9 @@ class TestResourceManagement:
         # CPython 3.10 build worker exceeded under parallel xdist load, leaving the
         # state at 'cancelling' when asserted -- a flaky, worker-speed-dependent
         # failure. Polling the observable end-state is order/speed-independent.
-        for _ in range(200):  # up to ~10s
-            if run.status == "cancelled" and len(reset_completed) >= 3:
-                break
-            await asyncio.sleep(0.05)
+        await async_wait_until(
+            lambda: run.status == "cancelled" and len(reset_completed) >= 3,
+        )
 
         assert run.status == "cancelled"
         # Without shield, slow_reset would be interrupted and reset_completed would be empty
@@ -2756,6 +2782,58 @@ class TestWatchdog:
         assert any("stalled" in t.lower() for t, _ in notifications)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("passed", "step", "cancelled"),
+        [
+            (5.0, 0.0, False),
+            (5.0, 2 * 3600.0 + 60, False),
+            (_STALL_CANCEL_TIMEOUT + 60.0, 0.0, True),
+            (_STALL_CANCEL_TIMEOUT + 60.0, -3600.0, True),
+        ],
+        ids=["progressing", "progressing_forward_step", "stalled", "stalled_backward_step"],
+    )
+    async def test_watchdog_measures_stalls_on_the_monotonic_clock(
+        self, monkeypatch: pytest.MonkeyPatch, passed: float, step: float, cancelled: bool
+    ) -> None:
+        """A wall-clock step neither cancels a progressing task nor spares a stalled one.
+
+        *passed* seconds really pass after the last progress stamp, and the wall
+        clock also steps by *step*. Before the fix the watchdog read the age from
+        the wall clock: the forward step reset a task that progressed 5 s ago,
+        and the backward step left a task stalled past the cancel timeout alone.
+        """
+        clock = _SteppedClock()
+        monkeypatch.setattr(taskrunner_module, "time", clock)
+        sessions = _make_mock_sessions()
+        sessions.is_provider_alive = AsyncMock(return_value=True)
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
+        run.current_task = 1
+        run.started_at = run.last_task_time = clock.time()
+        ticks = [lambda: clock.advance(passed, step=step)]
+
+        async def _tick(_secs: float) -> None:
+            if not ticks:
+                raise asyncio.CancelledError()
+            ticks.pop(0)()
+
+        class _AsyncioWithSleep:
+            """The watchdog's own ``asyncio`` with a scripted ``sleep``; the rest is real."""
+
+            sleep = staticmethod(_tick)
+
+            def __getattr__(self, name: str):
+                return getattr(asyncio, name)
+
+        monkeypatch.setattr(taskrunner_module, "asyncio", _AsyncioWithSleep())
+        await runner._watchdog_loop(run)
+
+        assert sessions.reset.await_count == (1 if cancelled else 0), (
+            f"{passed:.0f} s after the last progress, with a {step:+.0f} s wall-clock step, "
+            f"the watchdog reset the step's session {sessions.reset.await_count} time(s)"
+        )
+
+    @pytest.mark.asyncio
     async def test_watchdog_exits_when_not_running(self) -> None:
         """Watchdog exits when run status changes from running."""
         sessions = _make_mock_sessions()
@@ -2841,6 +2919,125 @@ class TestWatchdog:
         # If watchdog read runner._last_task_time (0.0), it would stall-notify.
         # It should read run.last_task_time (recent) and NOT notify.
         assert not any("stalled" in t.lower() for t, _ in notifications)
+
+
+class TestGlobalTimeoutClock:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("passed", "step", "timed_out"),
+        [
+            (5.0, 0.0, False),
+            (5.0, 2 * 3600.0, False),
+            (2 * 3600.0, 0.0, True),
+            (2 * 3600.0, -3 * 3600.0, True),
+        ],
+        ids=["healthy", "healthy_forward_step", "over", "over_backward_step"],
+    )
+    async def test_executor_measures_the_global_timeout_on_the_monotonic_clock(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        passed: float,
+        step: float,
+        timed_out: bool,
+    ) -> None:
+        """A wall-clock step neither fails a run inside its global timeout nor spares one past it.
+
+        The first step really takes *passed* seconds, and the wall clock also steps by
+        *step*. The executor checks the 1 h timeout before the second step. Read as
+        ``time.time() - started_at``, the forward step failed a run 5 s old with "Global
+        timeout exceeded", and the backward step let a run 2 h old start another step.
+        """
+        clock = _SteppedClock()
+        monkeypatch.setattr(taskrunner_module, "time", clock)
+        runner = TaskRunner(
+            sessions=_make_mock_sessions(),
+            auto_test=False,
+            work_dir=tmp_path,
+            global_timeout=3600.0,
+        )
+        runner._notify = AsyncMock()
+        executed: list[int] = []
+
+        async def _execute(run, task, hk="", session_key=""):
+            executed.append(task.index)
+            if task.index == 1:
+                clock.advance(passed, step=step)
+            task.status = StepStatus.PASSED
+            return True
+
+        runner._execute_single_task = _execute
+        run = TaskRun(task_id="gt", spec_path="", spec_content="s", status="running")
+        run.started_at = run.last_task_time = clock.time()
+        run.tasks = [
+            Step(index=1, title="A", description="d"),
+            Step(index=2, title="B", description="d", depends_on=[1]),
+        ]
+
+        await runner._execute_tasks(run, "hk")
+
+        assert executed == ([1] if timed_out else [1, 2]), (
+            f"{passed:.0f} s into the run, with a {step:+.0f} s wall-clock step, "
+            f"the executor ran steps {executed} ({run.status}: {run.error!r})"
+        )
+        assert (run.status == "failed" and "Global timeout" in run.error) is timed_out
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("passed", "step", "timed_out"),
+        [
+            (5.0, 0.0, False),
+            (5.0, 2 * 3600.0, False),
+            (2 * 3600.0, -3 * 3600.0, True),
+        ],
+        ids=["no_step", "forward_step", "over_backward_step"],
+    )
+    async def test_the_global_timeout_counts_from_the_run_start_stamp(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        passed: float,
+        step: float,
+        timed_out: bool,
+    ) -> None:
+        """The age is taken where ``execute_plan`` stamps the start, not at the executor's entry.
+
+        The clock moves after the start is stamped and before the executor's first
+        check: *passed* seconds pass and the wall clock steps by *step*. An age read
+        from the wall clock there failed a run 5 s old, or let a run 2 h old run.
+        """
+        clock = _SteppedClock()
+        monkeypatch.setattr(taskrunner_module, "time", clock)
+        runner = TaskRunner(
+            sessions=_make_mock_sessions(),
+            auto_test=False,
+            work_dir=tmp_path,
+            global_timeout=3600.0,
+        )
+        runner._decompose = AsyncMock(
+            return_value=[Step(index=1, title="Implement", description="make the change")]
+        )
+        run = await runner.plan("implement the feature")
+        execute_tasks = runner._execute_tasks
+
+        async def _after_the_stamp(project, history_key):
+            clock.advance(passed, step=step)
+            await execute_tasks(project, history_key)
+
+        async def _execute(project, task, hk="", session_key=""):
+            task.status = StepStatus.PASSED
+            return True
+
+        runner._execute_tasks = _after_the_stamp
+        runner._execute_single_task = _execute
+
+        await runner.execute_plan(run.task_id)
+        await asyncio.wait_for(runner._tasks[run.task_id], timeout=_GENEROUS_DEADLINE)
+
+        assert (run.status == "failed" and "Global timeout" in run.error) is timed_out, (
+            f"{passed:.0f} s after the start stamp, with a {step:+.0f} s wall-clock step, "
+            f"the run ended {run.status} ({run.error!r})"
+        )
 
 
 # ── Phase 12.2: Working Memory ──
@@ -5082,6 +5279,173 @@ class TestGitCoord:
         run.commit_hashes = []
 
         await git_coord.revert_step(run)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_revert_success_pops_one_and_reverts_worktree(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """Baseline unchanged: a successful reset reverts the tree, pops exactly
+        one commit hash, and emits no log line at default (non-debug) levels."""
+        import logging
+
+        from kiro_crew import git_coord
+
+        work_dir = tmp_path / "repo"
+        work_dir.mkdir()
+        await git_coord._git(str(work_dir), "init")
+        tracked = work_dir / "tracked.txt"
+        tracked.write_text("v1")
+        await git_coord._git(str(work_dir), "add", "-A")
+        await git_coord._git(str(work_dir), "commit", "-m", "init")
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.task_id = "revert_ok"
+        run.work_dir = str(work_dir)
+        await git_coord.init_workspace(run)
+
+        # Commit a second version of the tracked file through commit_step.
+        (Path(run.work_dir) / "tracked.txt").write_text("v2")
+        step = Step(index=1, title="change", description="d")
+        sha = await git_coord.commit_step(run, step)
+        assert sha
+        assert run.commit_hashes == [sha]
+        assert (Path(run.work_dir) / "tracked.txt").read_text() == "v2"
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
+            await git_coord.revert_step(run)
+
+        assert run.commit_hashes == []  # exactly one popped
+        assert (Path(run.work_dir) / "tracked.txt").read_text() == "v1"  # reverted
+        assert caplog.records == []  # silent at default levels
+
+        await git_coord.finalize(run)
+
+    @pytest.mark.asyncio
+    async def test_revert_retries_a_windows_sharing_violation_then_succeeds(
+        self, monkeypatch, caplog
+    ) -> None:
+        """On Windows a held-handle unlink failure is transient; revert_step
+        retries the bounded window and, once the handle clears, pops normally."""
+        import logging
+
+        from kiro_crew import git_coord
+
+        monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())  # no real delay
+
+        calls = {"n": 0}
+
+        async def _flaky_git(work_dir, *args):
+            if args[:2] == ("reset", "--hard"):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise RuntimeError(
+                        "git reset --hard HEAD~1 failed: error: unable to unlink old "
+                        "'tracked.txt': Invalid argument\nfatal: Could not reset index "
+                        "file to revision 'HEAD~1'."
+                    )
+                return ""
+            return ""
+
+        monkeypatch.setattr(git_coord, "_git", _flaky_git)
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.git_enabled = True
+        run.work_dir = "/w"
+        run.worktree_path = "/w"
+        run.commit_hashes = ["aaa", "bbb"]
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
+            await git_coord.revert_step(run)
+
+        assert calls["n"] == 3  # two contended attempts, third succeeds
+        assert run.commit_hashes == ["aaa"]  # exactly one popped after success
+        # No WARNING because the revert ultimately succeeded.
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_revert_exhausts_retries_warns_and_does_not_pop(
+        self, monkeypatch, caplog
+    ) -> None:
+        """A sharing violation that never clears: after the bounded retries the
+        failure surfaces at WARNING and commit_hashes is left untouched so it
+        stays consistent with the un-reverted worktree."""
+        import logging
+
+        from kiro_crew import git_coord
+
+        monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(git_coord.asyncio, "sleep", AsyncMock())
+
+        calls = {"n": 0}
+
+        async def _always_locked(work_dir, *args):
+            if args[:2] == ("reset", "--hard"):
+                calls["n"] += 1
+                raise RuntimeError(
+                    "git reset --hard HEAD~1 failed: error: unable to unlink old "
+                    "'tracked.txt': Invalid argument"
+                )
+            return ""
+
+        monkeypatch.setattr(git_coord, "_git", _always_locked)
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.git_enabled = True
+        run.work_dir = "/w"
+        run.worktree_path = "/w"
+        run.commit_hashes = ["aaa", "bbb"]
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
+            await git_coord.revert_step(run)
+
+        assert calls["n"] == git_coord._REVERT_MAX_ATTEMPTS  # tried the whole budget
+        assert run.commit_hashes == ["aaa", "bbb"]  # NOT popped — stays consistent
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "git revert failed" in warnings[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_revert_non_sharing_violation_failure_warns_without_retry(
+        self, monkeypatch, caplog
+    ) -> None:
+        """A failure that is not a transient Windows sharing violation (e.g. on
+        POSIX, or an unrelated git error) is NOT retried into a false success:
+        it surfaces at WARNING on the first attempt and does not pop."""
+        import logging
+
+        from kiro_crew import git_coord
+
+        # POSIX: a reset failure is a genuine fault — no retry window.
+        monkeypatch.setattr(git_coord.platform_compat, "IS_WINDOWS", False)
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr(git_coord.asyncio, "sleep", sleep_mock)
+
+        calls = {"n": 0}
+
+        async def _hard_fail(work_dir, *args):
+            if args[:2] == ("reset", "--hard"):
+                calls["n"] += 1
+                raise RuntimeError("git reset --hard HEAD~1 failed: fatal: bad revision")
+            return ""
+
+        monkeypatch.setattr(git_coord, "_git", _hard_fail)
+
+        run = TaskRun(spec_path="/t.md", spec_content="s")
+        run.git_enabled = True
+        run.work_dir = "/w"
+        run.worktree_path = "/w"
+        run.commit_hashes = ["aaa"]
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
+            await git_coord.revert_step(run)
+
+        assert calls["n"] == 1  # no retry
+        sleep_mock.assert_not_awaited()
+        assert run.commit_hashes == ["aaa"]  # not popped
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "git revert failed" in warnings[0].getMessage()
 
 
 class TestTaskNaming:

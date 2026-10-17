@@ -2565,6 +2565,7 @@ class TestControlPostedAfterTheWindowIsSpent:
         record gets filed under one index and cleared under another.
         """
         import inspect
+        import sys
 
         from kiro_crew.dashboard import chat_utils
         from kiro_crew.dashboard import state as state_mod
@@ -2572,7 +2573,9 @@ class TestControlPostedAfterTheWindowIsSpent:
         assert "_slack_options_posted" not in inspect.getsource(state_mod), (
             "the slot-held OPTIONS field must be gone, not shadowed by a fallback"
         )
-        utils_src = inspect.getsource(chat_utils)
+        # The facade and the owner modules it serves the moved code from.
+        family = (chat_utils.__name__, *chat_utils._OWNERS)
+        utils_src = "\n".join(inspect.getsource(sys.modules[name]) for name in family)
         assert "_slack_options_by_key" in utils_src
         assert "_slack_options_posted" not in utils_src, (
             "every accessor must go through the keyed store"

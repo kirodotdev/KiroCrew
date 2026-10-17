@@ -17,10 +17,11 @@ import { stubDashboardApi, json } from './stub-dashboard-api.mjs'
  * @param opts.layout       mc-split-layouts object to persist
  * @param opts.extra        optional (path, route) handler tried FIRST,
  *                          for harness-specific routes (e.g. POST intercepts)
+ * @param opts.theme        theme mode the dashboard boots in ('dark' by default)
  */
-export async function stubSplitPanes(page, { slots, transcripts, layout, extra = null }) {
+export async function stubSplitPanes(page, { slots, transcripts, layout, extra = null, theme = 'dark' }) {
   await stubDashboardApi(page, {
-    folders: [], slots,
+    folders: [], slots, theme,
     extra: async (path, route) => {
       if (extra && (await extra(path, route))) return true
       if (path === '/api/dashboard/config') {

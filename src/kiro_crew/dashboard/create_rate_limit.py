@@ -67,12 +67,18 @@ SESSION_CREATE = "session_create"
 FOLDER_CREATE = "folder_create"
 TAG_CREATE = "tag_create"
 TAG_COLUMN_CREATE = "tag_column_create"
+#: ``session_generate_title`` spends one titling-model call per admission, so it
+#: gets one per window. Its key is the TARGET slot, not the caller: the budget
+#: bounds what one session's title can cost, whoever asks.
+GENERATE_TITLE = "generate_title"
+MAX_TITLE_GENERATIONS_PER_WINDOW = 1
 
 _BUDGETS = {
     SESSION_CREATE: MAX_SESSION_CREATES_PER_WINDOW,
     FOLDER_CREATE: MAX_FOLDER_CREATES_PER_WINDOW,
     TAG_CREATE: MAX_TAG_CREATES_PER_WINDOW,
     TAG_COLUMN_CREATE: MAX_TAG_COLUMN_CREATES_PER_WINDOW,
+    GENERATE_TITLE: MAX_TITLE_GENERATIONS_PER_WINDOW,
 }
 
 

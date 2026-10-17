@@ -3,12 +3,12 @@
  *
  * Reproduces the gui-user-test friction shape exactly: one expanded "Demos"
  * folder whose header badge says 2, one fresh session visible inside it, and
- * the second session dormant — so the row under it must account for the
- * missing one ("1 dormant session hidden") instead of reading as a category.
+ * the second session sleeping — so the row under it must account for the
+ * missing one ("Show 1 sleeping session") instead of reading as a category.
  *
  * Serves the REAL built SPA (website/dist) with /api/** stubbed. Captures the
  * sidebar in the collapsed state (light + dark), the tooltip-bearing hover,
- * and the expanded state where the same row flips to "1 dormant session shown".
+ * and the expanded state where the same row flips to "Hide 1 sleeping session".
  * Every shot asserts that no dialog is open first: first-run gates render on
  * top of every frame while DOM assertions still pass behind them.
  *
@@ -84,7 +84,7 @@ async function main() {
       const headerText = await header.innerText()
       if (!/\b2\b/.test(headerText)) throw new Error(`folder header does not show 2: ${JSON.stringify(headerText)}`)
       const label = (await expander.innerText()).trim()
-      if (!label.startsWith('1 dormant session hidden')) throw new Error(`unexpected expander text: ${JSON.stringify(label)}`)
+      if (!label.startsWith('Show 1 sleeping session')) throw new Error(`unexpected expander text: ${JSON.stringify(label)}`)
       const title = await expander.getAttribute('title')
       if (title !== 'Not used in over 7d. Click to show.') throw new Error(`unexpected title: ${JSON.stringify(title)}`)
 
@@ -98,7 +98,7 @@ async function main() {
         await expander.click()
         await page.getByText('Sidebar folder drag & drop').waitFor({ state: 'visible', timeout: 5_000 })
         const shown = (await expander.innerText()).trim()
-        if (!shown.startsWith('1 dormant session shown')) throw new Error(`unexpected expanded text: ${JSON.stringify(shown)}`)
+        if (!shown.startsWith('Hide 1 sleeping session')) throw new Error(`unexpected expanded text: ${JSON.stringify(shown)}`)
         await shoot(page, header, `03-${theme}-expanded`)
       }
       await context.close()

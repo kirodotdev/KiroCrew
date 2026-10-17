@@ -126,6 +126,9 @@ _OUTSIDE_THE_GATE = frozenset(
         # The pressure hold's bound ended a start it kept, after its caller was
         # told it was queued: the terminal of a wait, not a refusal.
         "never_started_memory_pressure",
+        # The parent-spec read found no user-level spec and no project dir to
+        # look in: an audit of what the gate could not see, not a verdict.
+        "parent_spec_unresolved",
     }
 )
 
@@ -194,7 +197,11 @@ def test_every_outcome_on_the_spawn_path_is_accounted_for() -> None:
     release and the wave bookkeeping write ``spawn_run`` outcomes too."""
     root = pathlib.Path(subagent_mod.__file__).parent
     outcomes: set[str] = set()
-    for path in [*sorted((root / "subagent_manager").rglob("*.py")), root / "subagent.py"]:
+    for path in [
+        *sorted((root / "subagent_manager").rglob("*.py")),
+        root / "subagent.py",
+        *sorted((root / "subagent_parts").glob("*.py")),
+    ]:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call):
                 continue
@@ -210,7 +217,10 @@ def test_no_capacity_outcome_is_a_refusal() -> None:
     """The capacity outcomes are deferrals by name, and none of the memory or
     posture refusals an older gate wrote can come back."""
     assert all(o.startswith("deferred_") for o in _CAPACITY_OUTCOMES)
-    gate = (_ADMISSION / "gate.py").read_text(encoding="utf-8")
+    gate = "".join(
+        path.read_text(encoding="utf-8")
+        for path in [_ADMISSION / "gate.py", *sorted(_ADMISSION.glob("gate_*.py"))]
+    )
     for retired in ("refused_low_memory", "refused_memory_critical", "deferred_memory_critical"):
         assert retired not in gate, retired
 
@@ -245,7 +255,9 @@ def test_the_spawn_gate_does_not_read_the_posture_tier() -> None:
     }
     assert not {"cached_admission_check", "admission_check"} & names
     assert not hasattr(subagent_mod, "cached_admission_check")
-    cron = pathlib.Path(subagent_mod.__file__).with_name("cron.py").read_text(encoding="utf-8")
+    cron = (
+        pathlib.Path(subagent_mod.__file__).parent / "cron_service/service" / "wake_timer.py"
+    ).read_text(encoding="utf-8")
     assert "admission_check" in cron
 
 

@@ -27,7 +27,13 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.dashboard.turn_dispatch import format_approval_no_budget_card
 from kiro_crew.history import ConversationLog
-from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult, ToolHookResult
+from kiro_crew.hooks import (
+    HOOK_EVENT_PRE_TOOL_USE,
+    TOOL_AUTO_APPROVE,
+    ScriptHookResult,
+    ToolHookResult,
+)
+from kiro_crew.name_grant import SHADOWED, Refusal
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -792,6 +798,56 @@ class TestApprovalModes:
         ), f"Empty hook results should not reject: {msgs}"
         client.approve_tool.assert_called_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "mode, expect_note", [("normal", True), ("trust", False), ("yolo", False)]
+    )
+    async def test_shadow_note_shown_only_when_a_card_asks(self, tmp_path, mode, expect_note):
+        """A refused hook grant's "Approve this command explicitly" note needs a card.
+
+        Under session trust or YOLO the unconditional rung approves with no card,
+        so the note would ask for an approval nobody is asked for. Normal mode
+        reaches the card and still shows it, ahead of the card.
+        """
+        cb = _context_builder(ToolHookResult(action=TOOL_AUTO_APPROVE))
+        state, client = _make_state(tmp_path, context_builder=cb)
+        if mode == "yolo":
+            state.enable_yolo()
+        slot = _make_slot(trust=(mode == "trust"))
+        _set_stream(client, [_permission_event(), _complete_event()])
+
+        # Only normal mode parks on an approval future; an answerer started for
+        # trust/YOLO would wait on a future that never registers.
+        approver = None
+        if mode == "normal":
+
+            async def _approve() -> None:
+                await _answer_approval(slot, "req-1", "approved")
+
+            approver = asyncio.get_running_loop().create_task(_approve())
+
+        shadow = Refusal(code=SHADOWED, detail="python3 resolves to /shims/python3")
+        refusal_check = AsyncMock(return_value=shadow)
+        try:
+            with (
+                _patch_stats(),
+                patch.object(chat_runner, "_name_grant_refusal_for", refusal_check),
+            ):
+                await _run_chat(state, slot, "hello")
+        finally:
+            if approver is not None:
+                await _drain(approver)
+
+        # The hook rung really declined; otherwise a missing note proves nothing.
+        refusal_check.assert_awaited_once()
+        shown = [
+            m.get("role")
+            for m in slot.messages
+            if m.get("role") == "permission" or "Auto-approve not applied" in m.get("content", "")
+        ]
+        assert shown == (["system", "permission"] if expect_note else []), slot.messages
+        client.approve_tool.assert_called_once()
+
 
 class TestTrustYoloPropagation:
     """Trust/YOLO mode propagates approval policy to session manager."""
@@ -1358,7 +1414,7 @@ class TestDenyOnce:
 
         async def _call(action: str):
             request = MagicMock()
-            request.get = {}.get  # the dashboard user: no app claim
+            request.get = {"app": ""}.get  # the dashboard user: an empty app claim
             request.app = {"state": state}
             request.match_info = {"id": "req-9", "action": action}
             return await api_approval_resolve(request)
@@ -2282,7 +2338,14 @@ class TestPreToolUseHookBlockRecovery:
         change fixes -- the model stalls with no idea what it did wrong, while every
         other assertion still passes. One helper makes that omission unrepresentable.
         """
-        source = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        source = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
         deny_branches = source.count("if _pre_tool_hooks_should_block(pre_hook_results):")
         helper_calls = source.count("await _reject_hook_blocked(")
 
@@ -2534,7 +2597,7 @@ class TestDenyRowTitleRedaction:
         # the tier outright, the request falls through to the interactive card, and
         # the `trust_reads` deny asserted below never happens. Patching the ONE
         # off-loop entry point every tier goes through is the same seam
-        # `test_chat_runner_coverage.py` uses; the check itself is covered directly
+        # `test_chat_runner_coverage_approval.py` uses; the check itself is covered directly
         # in `test/test_name_grant.py`.
         _no_refusal = patch.object(
             chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
@@ -2616,7 +2679,14 @@ class TestDenyRowTitleRedaction:
         passes. Rendering each deny shape in exactly one place (its helper)
         makes that omission unrepresentable.
         """
-        source = Path(chat_runner.__file__).read_text(encoding="utf-8")
+        source = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
         assert source.count("🚫 {event.title}") == 0, (
             "a transcript row interpolates the raw model-authored title -- "
             "route the deny through _reject_invalid_tool/_reject_hook_error"

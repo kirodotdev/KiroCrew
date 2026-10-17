@@ -303,6 +303,19 @@ describe('App SDK chat launch intent', () => {
     expect(createChatSlot).not.toHaveBeenCalled()
   })
 
+  it('shows a restored-answer notice on the session page after its question is gone', async () => {
+    const slot = 'chat-old'
+    const store = await renderAt(`/chat?sid=${slot}`)
+    await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+    const questions = [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }]
+    await act(async () => {
+      store.dispatch(setQuestionCard({ slot, questions, ask_id: 'ask-gone' }))
+      store.dispatch(resolveQuestionCard({ ask_id: 'ask-gone', restored_notice: 'Your answers were not sent.' }))
+    })
+    expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toBeNull()
+    expect(await screen.findByText('Your answers were not sent.')).toBeInTheDocument()
+  })
+
   it.each([
     { kind: 'blocking', queued: false },
     { kind: 'blocking', queued: true },
@@ -317,7 +330,7 @@ describe('App SDK chat launch intent', () => {
     await act(async () => {
       store.dispatch(setQuestionCard({ slot, questions, ...(kind === 'blocking' ? { ask_id: 'ask-human' } : { card_id: 'card-human' }) }))
       store.dispatch(setFolderSuggestion({ slot, folderId: 'folder-notes', folderName: 'Notes', breadcrumb: 'Notes', ts: 100 }))
-      if (kind === 'stateless-draft') store.dispatch(setQuestionDraft({ slot, active: true }))
+      if (kind === 'stateless-draft') store.dispatch(setQuestionDraft({ slot, answers: { 'Which?': 'draft' } }))
     })
     const card = pendingQuestionFor(store.getState().chat.pendingQuestions, slot)
     const folder = store.getState().chat.folderSuggestions[slot]
@@ -336,7 +349,7 @@ describe('App SDK chat launch intent', () => {
       expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toEqual(card)
       expect(store.getState().chat.folderSuggestions[slot]).toEqual(folder)
     } else if (kind === 'blocking') {
-      expect(answerQuestion).toHaveBeenCalledWith('ask-human')
+      expect(answerQuestion).toHaveBeenCalledWith('ask-human', undefined, queued ? 'queued' : 'composer')
       expect(pendingQuestionFor(store.getState().chat.pendingQuestions, slot)).toBeNull()
       expect(store.getState().chat.folderSuggestions[slot]?.turns).toBe(queued ? 0 : 1)
     } else {

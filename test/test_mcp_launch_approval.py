@@ -451,6 +451,40 @@ def test_approval_store_is_inside_the_sealed_directory(tmp_path):
     assert mod.approvals_path(tmp_path) == tmp_path / "mcp-launch-approvals" / "approvals.json"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode bits")
+def test_the_first_write_creates_the_sealed_directory_owner_only_under_any_umask(tmp_path):
+    """The store's directory is born ``0700`` even under a permissive umask.
+
+    The directory is the store's seal, and on a host that has not spawned a
+    sandboxed process yet the first ``approve``/``save_pass`` is what creates
+    it, so its mode cannot be left to the umask or to the sandbox's precreate.
+    """
+    import stat
+
+    mod = _approval_module()
+    assert mod is not None
+    store = tmp_path / "home" / "mcp-launch-approvals" / "approvals.json"
+    launches = {
+        "srv": [
+            mod.ResolvedLaunch(
+                mod.launch_fingerprint(_APPROVED_CMD, []),
+                _APPROVED_CMD,
+                (),
+                frozenset({mod.env_fingerprint({})}),
+            )
+        ]
+    }
+    previous = os.umask(0o022)
+    try:
+        mod.approve(launches, path=store)
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(store.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.parent.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.stat().st_mode) == 0o600
+
+
 @pytest.mark.parametrize(
     "leaf",
     [
@@ -2228,12 +2262,11 @@ async def test_re_approving_a_running_server_keeps_its_declared_env_forwarded(
     key = type(key)(
         **{
             **{f: getattr(key, f) for f in inspect.signature(type(key)).parameters},
-            "agent_name": "a",
             "effective_env_hash": hash_effective_env(declared, identity_keys=identity_keys),
         }
     )
     assert (
-        gatewayd._declared_env_pairs(key, identity_keys) == declared
+        gatewayd._declared_env_pairs(key, identity_keys, declaring_agent="a") == declared
     ), "the next cold spawn after the toggle would start the backend without its declared env"
 
 

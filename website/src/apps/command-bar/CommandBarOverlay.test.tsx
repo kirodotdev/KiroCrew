@@ -232,7 +232,7 @@ describe('CommandBarOverlay rows', () => {
   })
 
   it('marks a settings row matched by its description in its subtitle', () => {
-    // In the description only: "Enterprise Grid org IDs to allow (starts with E or T). ..."
+    // In the description only: "Enterprise Grid org or workspace IDs to allow (starts with E or T). ..."
     mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'starts with E or T' } })
     const option = screen.getAllByRole('option').find(o => o.textContent?.includes('Allowed enterprise orgs'))!
@@ -920,6 +920,33 @@ describe('CommandBarOverlay rows', () => {
     expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true })
   })
 
+  it('never drops a blocked session: past the cap a final row counts the rest and reveals them', () => {
+    // Eight sessions wait on the reader. The section keeps its cap of six so it stays
+    // a glance, but the seventh and eighth must not vanish from both groups: a row at
+    // the end says how many more are waiting, and pressing it shows every one.
+    storeState.dashboard.slots = Array.from({ length: 8 }, (_, i) => ({
+      key: `slot-${i}`,
+      title: `Blocked ${i}`,
+      pending_approval: true,
+      messages: 2,
+    }))
+    const onClose = mount()
+    const blockedTitles = () =>
+      screen.getAllByRole('option').map(r => r.textContent ?? '').filter(t => /Blocked \d/.test(t))
+    expect(blockedTitles()).toHaveLength(6)
+    const more = rowByText('+2 more blocked')
+    expect(more).toBeTruthy()
+    // It ends the section: the row right after it is no longer a blocked session.
+    const rows = screen.getAllByRole('option')
+    expect(rows.indexOf(more)).toBe(6)
+    fireEvent.mouseDown(more)
+    expect(blockedTitles()).toHaveLength(8)
+    expect(screen.queryByText('+2 more blocked')).toBeNull()
+    // Revealing is in place: the bar stays open and no session was switched to.
+    expect(onClose).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
   it('shows no attention section when nothing is waiting on the user', () => {
     // A section that is always present is a section the user learns to skip; the whole
     // value of this one is that its presence means something. A RUNNING session is not
@@ -1356,7 +1383,7 @@ describe('CommandBarOverlay contributed commands', () => {
     enterCommand(/Write my standup/)
     expect(dispatch).toHaveBeenCalledWith({
       type: 'createSlot',
-      arg: { activate: false, memory_mode: 'persistent' },
+      arg: { activate: false, sessionFolder: false, memory_mode: 'persistent' },
     })
   })
 
@@ -1411,6 +1438,21 @@ describe('CommandBarOverlay contributed commands', () => {
     })
     expect(dispatch).not.toHaveBeenCalledWith({ type: 'setPendingInput', text: STANDUP.prompt })
     expect(fileSessionInCommandFolder).not.toHaveBeenCalled()
+  })
+
+  it('creates the seeded session as the agent the command names', () => {
+    // Always as a TEMPLATE: a host crew member with the same alias must not win
+    // resolution and run the app's prompt with its template and private memory.
+    // `createSlot` already accepted `agent`; the row only selects WHICH tool-enabled
+    // agent receives the app-authored prompt. '' / absent both mean the dashboard
+    // default, which the no-agent test above pins (undefined agent === no key).
+    dispatch.mockReturnValue({ unwrap: () => Promise.resolve({ key: 'slot-new' }) })
+    mountWithApps([appWith([{ ...STANDUP, agent: 'ticket-analyst' }])])
+    enterCommand(/Write my standup/)
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'createSlot',
+      arg: { activate: false, agent: 'ticket-analyst', agent_kind: 'template', appAgentOwner: 'pr-bulk-ops', sessionFolder: false, memory_mode: 'persistent' },
+    })
   })
 
   it("refuses a value the app's own pattern rejects, creating nothing", async () => {

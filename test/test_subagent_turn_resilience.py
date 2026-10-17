@@ -24,7 +24,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from overload_fakes import wait_taskq_open
 
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import (
@@ -32,44 +34,31 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
+
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers) -> None:
+    """Every manager built here opens tasks.db; close it at teardown, not at GC."""
+
+
 # Subagent-registry isolation is provided globally by the autouse
 # ``_isolate_subagents_dir`` fixture in ``conftest.py``.
 
-# Two kinds of number live here and they must not be merged.
-#
-# POSITIVE WAITS (_START_TIMEOUT, _RESPAWN_TIMEOUT) bound how long the harness waits
-# for the event loop to schedule something. Every ordering guarantee around them is
-# asserted separately, and the fixed ``asyncio.sleep`` windows that prove a respawn
-# has NOT fired yet are deliberately left alone -- those are negative assertions,
-# where the duration IS the test. Raising a positive wait cannot weaken an assertion;
-# it only stops the harness giving up before the awaited thing was ever given a
-# chance to run. 5.0s was too tight on a loaded runner: shard 4 of the Windows
-# backend job runs ~950s wall with individual tests over 38s, and
-# ``test_cancel_recovery_waits_for_slow_teardown`` timed out there while the other
-# 17,258 tests in the same shard passed.
-#
-# _RESPAWN_TIMEOUT stays BELOW the production give-up it can outlive on the FAILURE
-# path (``subagent._RECOVERY_SLOT_WAIT_SECS`` = 60.0). A passing run never reaches
-# that give-up -- ``test_cancel_recovery_waits_for_free_slot`` frees the slot while
-# the poll is still young, and every other caller finds capacity already free, so
-# the bounded wait exits on its next tick. The bound is about what a FAILING run
-# reports: if the poll outlived 60.0s, the code would have already raised "no free
-# slot for recovery respawn", ``task2`` would never appear, and the failure would
-# read as "recovery never happened" rather than naming the real cause.
-#
-# Ceiling for both: ``setup.cfg`` sets a global ``--timeout=120``. The heaviest test
-# serializes two start waits plus one respawn poll, so the failure path must stay
-# under that or a real hang surfaces as an opaque pytest-timeout kill instead of the
-# named deadline that explains it.
-_START_TIMEOUT = 30.0  # the mocked stream reaching its first yield
-_RESPAWN_TIMEOUT = 20.0  # a cancelled run's replacement task appearing in _tasks
+# POSITIVE WAITS here -- the mocked stream reaching its first yield, a cancelled run's
+# replacement task appearing in ``_tasks``, a recovery task ending -- ride on the
+# event, task or state the code emits (``await_until`` / ``async_wait_until``), under
+# the helpers' lost-run bound: half the suite's ``--timeout=120``, so a real hang
+# fails by name instead of as an opaque pytest-timeout kill, quoting the tasks the
+# manager holds and ``info.error``. The fixed ``asyncio.sleep`` windows that prove a
+# respawn has NOT fired yet are deliberately left alone -- those are negative
+# assertions, where the duration IS the test.
 
-# An UPPER BOUND, not a positive wait -- do not raise it with the two above.
+# An UPPER BOUND, not a positive wait -- not a lost-run bound to widen.
 # ``test_cancel_recovery_failure_emits_done_and_delivers`` patches the production
 # give-up (``subagent._RECOVERY_SLOT_WAIT_SECS``, normally 60.0) down to 0.4s, and
 # this bound is what asserts the patch actually took effect: the recovery must fail
@@ -77,6 +66,24 @@ _RESPAWN_TIMEOUT = 20.0  # a cancelled run's replacement task appearing in _task
 # global -- inlining the literal, moving it onto the instance, renaming it -- leaves
 # every terminal assertion still passing, for the wrong reason.
 _GIVE_UP_BOUND = 10.0
+
+
+async def _respawned_task(mgr: SubagentManager, info: SubagentInfo, original: asyncio.Task):
+    """The replacement task registered under the run's id, once it is not *original*.
+
+    A recovery that never respawns fails here by name, quoting the tasks the manager
+    holds and the run's error.
+    """
+
+    # A truth value, not the task: the helper awaits an awaitable a predicate returns.
+    def respawned() -> bool:
+        task = mgr._tasks.get(info.id)
+        return task is not None and task is not original
+
+    await async_wait_until(
+        respawned, describe=lambda: f"tasks={sorted(mgr._tasks)}; error={info.error!r}"
+    )
+    return mgr._tasks[info.id]
 
 
 class _TransientError(Exception):
@@ -96,6 +103,40 @@ def _context_overflow_error():
     error.structural_terminal = True
     error.context_overflow = True
     return error
+
+
+class _TimeoutCapableProvider:
+    """Provider double whose type explicitly opts into captured prompt timeouts."""
+
+    def __init__(self, stream_factory) -> None:
+        self._stream_factory = stream_factory
+        self.backend = ""
+        self.cwd = ""
+        self.last_infra_error = None
+        self.session_id = ""
+        self.served_model = ""
+        self._model = ""
+        self.approve_tool = AsyncMock()
+        self.reject_tool = AsyncMock()
+        self.set_model = AsyncMock()
+        self.available_models = MagicMock(return_value=[])
+
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        from kiro_crew.acp.client import resolve_prompt_timeout_for_deadline
+
+        return resolve_prompt_timeout_for_deadline(deadline)
+
+    def stream(self, message: str, timeout: float | None = None):
+        return self._stream_factory(message, timeout=timeout)
+
+    def context_usage_pct(self) -> float:
+        return 0.0
+
+    def context_window_tokens(self) -> int:
+        return 0
+
+    def context_used_tokens(self) -> int:
+        return 0
 
 
 def _text_event(text: str) -> SimpleNamespace:
@@ -322,6 +363,439 @@ async def test_transient_error_posttoken_sends_continue_prompt():
 
 
 @pytest.mark.asyncio
+async def test_captured_timeout_survives_config_cut_across_all_recovery_prompts(monkeypatch):
+    from kiro_crew.acp.client import _PROMPT_TIMEOUT_MARGIN_SECS, resolve_prompt_timeout
+    from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.providers.base import LLMEvent
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 21600
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            if len(calls) == 1:
+                raise _TransientError("backend 500")
+            if len(calls) == 2:
+                cfg.agent.subagent_timeout_secs = 10800
+                yield _text_event("partial ")
+                yield LLMEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason=STOP_REASON_TOOL_STALL,
+                    text="verdict=unknown; redirected_output=run.log",
+                )
+                return
+            yield _text_event("finished")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 21600
+    with patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0):
+        info = await _spawn_and_wait(mgr)
+
+    expected = 21600.0 + _PROMPT_TIMEOUT_MARGIN_SECS
+    assert info.error == ""
+    assert [timeout for _, timeout in calls] == [expected, expected, expected]
+    assert calls[0][0] == calls[1][0] == "built_message"
+    assert calls[2][0] != "built_message"
+    assert resolve_prompt_timeout() < expected
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_preserves_captured_timeout_after_config_cut(monkeypatch):
+    from kiro_crew.acp.client import _PROMPT_TIMEOUT_MARGIN_SECS, resolve_prompt_timeout
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 21600
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+    first_started = asyncio.Event()
+    recovery_started = asyncio.Event()
+    finish_recovery = asyncio.Event()
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            if len(calls) == 1:
+                yield _text_event("partial ")
+                first_started.set()
+                await asyncio.Event().wait()
+            recovery_started.set()
+            await finish_recovery.wait()
+            yield _text_event("finished")
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 21600
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("resumable six-hour job")
+        assert info is not None
+        assert info.timeout_secs == 0
+        await await_until(first_started, what="the first run streaming")
+        assert info.timeout_secs == 21600
+        assert info.streaming_text and info.tool_count == 0
+
+        # Live configuration affects genuinely fresh runs, never the immutable
+        # deadline already captured by this same-info recovery.
+        cfg.agent.subagent_timeout_secs = 10800
+        mgr._default_timeout = 10800
+
+        task1 = mgr._tasks[info.id]
+        task1.cancel()
+        await asyncio.gather(task1, return_exceptions=True)
+        await await_until(recovery_started, what="the recovery run streaming")
+        task2 = mgr._tasks[info.id]
+
+        expected = 21600.0 + _PROMPT_TIMEOUT_MARGIN_SECS
+        assert task2 is not task1
+        assert info.timeout_secs == 21600
+        assert [timeout for _, timeout in calls] == [expected, expected]
+        assert resolve_prompt_timeout() < expected
+
+        finish_recovery.set()
+        await task2
+
+    assert info.error == ""
+    assert info.done is True
+    assert mgr._running_count == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_run_captures_current_lowered_timeout(monkeypatch):
+    from kiro_crew.acp.client import resolve_prompt_timeout_for_deadline
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig()
+    cfg.agent.chat_turn_timeout_secs = 3600
+    cfg.agent.subagent_timeout_secs = 10800
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+
+    calls: list[tuple[str, float | None]] = []
+
+    def stream_factory(message: str, *args, **kwargs):
+        calls.append((message, kwargs.get("timeout")))
+
+        async def _gen():
+            yield _complete_event()
+
+        return _gen()
+
+    sessions = _mock_sessions(stream_factory)
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
+    mgr = _manager(sessions)
+    mgr._default_timeout = 10800
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("fresh lowered-deadline job")
+        assert info is not None
+        assert info.timeout_secs == 0
+        await mgr._tasks[info.id]
+
+    expected = resolve_prompt_timeout_for_deadline(10800.0)
+    assert info.timeout_secs == 10800
+    assert [timeout for _, timeout in calls] == [expected]
+    assert info.done is True
+    assert mgr._running_count == 0
+
+
+class _SweepDone(BaseException):
+    """Ends ``_reaper_loop`` after exactly one full sweep.
+
+    A ``BaseException`` so the loop's own ``except Exception`` guards let it out.
+    """
+
+
+async def _one_reaper_sweep(monkeypatch, mgr: SubagentManager) -> list[str]:
+    """Run exactly one real ``_reaper_loop`` sweep and return the ids it reaped.
+
+    ``_force_reap`` is a recorder that only marks the run done, and the sweep's
+    unrelated passes are stubbed, so the wall-clock check is what decides.
+    """
+    import kiro_crew.subagent as subagent_mod
+
+    reaped: list[str] = []
+
+    async def _force_reap(agent_id, info, _elapsed, *, reason=""):
+        reaped.append(agent_id)
+        info.done = True
+
+    compactions: list[int] = []
+
+    def _compact() -> None:
+        # Call 1 is the startup trim and call 2 opens the first sweep, so call
+        # 3 can only come after that sweep finished.
+        compactions.append(1)
+        if len(compactions) == 3:
+            raise _SweepDone
+
+    monkeypatch.setattr(mgr, "_force_reap", _force_reap)
+    monkeypatch.setattr(mgr, "_rebuild_conversation_registry", AsyncMock())
+    monkeypatch.setattr(mgr, "_sample_live_costs", MagicMock())
+    monkeypatch.setattr(mgr, "_refresh_learned_settled", MagicMock())
+    monkeypatch.setattr(mgr, "_sweep_stuck_waves_async", AsyncMock())
+    monkeypatch.setattr(mgr, "_sweep_digest_holds_async", AsyncMock())
+    monkeypatch.setattr(mgr, "_sweep_conversations_async", AsyncMock())
+    monkeypatch.setattr(mgr, "_taskq_pump", MagicMock())
+    monkeypatch.setattr(mgr, "_maybe_flag_stall", AsyncMock())
+    monkeypatch.setattr(subagent_mod, "_REAPER_INTERVAL", 0)
+    monkeypatch.setattr(subagent_mod, "compact_cost_log", _compact)
+    monkeypatch.setattr(subagent_mod, "prune_stale_tombstones", lambda *a, **k: 0)
+
+    with pytest.raises(_SweepDone):
+        await mgr._reaper_loop()
+    return reaped
+
+
+@pytest.mark.asyncio
+async def test_reaper_enforces_the_captured_deadline_from_execution_start(monkeypatch):
+    """One real sweep: the reaper measures each run's captured deadline from
+    ``_exec_started_mono``, on the monotonic clock. A run inside its captured hour is left alone although a
+    reload cut the manager default to one minute, a run past its captured hour
+    is reaped, and a run that has not started executing keeps the bound it had
+    before the capture existed: its registration age against the live default,
+    so a long-parked start is reaped and a fresh one is not. A run between two
+    recovery attempts (``_exec_started_mono`` cleared, deadline already captured) is
+    measured on the same registration age against its captured deadline, not
+    the cut default: inside it, it is left alone; past it, it is reaped."""
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), default_timeout=60)
+    now = time.time()
+    mono_now = time.monotonic()
+
+    def _register(
+        agent_id: str,
+        exec_started_ago: float | None,
+        timeout_secs: int,
+        *,
+        registered_ago: float = 4000.0,
+    ) -> SubagentInfo:
+        # The reaper reads the monotonic clock (``_started_mono``,
+        # ``_exec_started_mono``); the wall-clock twins are set the same way for
+        # the readers that still report them.
+        info = SubagentInfo(
+            id=agent_id,
+            task="t",
+            started=now - registered_ago,
+            timeout_secs=timeout_secs,
+            turns=1,
+            _pid=123,
+        )
+        info._started_mono = mono_now - registered_ago
+        if exec_started_ago is None:
+            info._exec_started = None
+            info._exec_started_mono = None
+        else:
+            info._exec_started = now - exec_started_ago
+            info._exec_started_mono = mono_now - exec_started_ago
+        info.last_activity = now
+        mgr._agents[agent_id] = info
+        return info
+
+    inside = _register("inside", 120.0, 3600)
+    past = _register("past", 4000.0, 3600)
+    waiting = _register("waiting", None, 0)
+    fresh = _register("fresh", None, 0, registered_ago=30.0)
+    between = _register("between", None, 7200)
+    between_past = _register("between-past", None, 3600)
+
+    reaped = await _one_reaper_sweep(monkeypatch, mgr)
+
+    assert reaped == ["past", "waiting", "between-past"]
+    assert past.done is True
+    assert waiting.done is True
+    assert between_past.done is True
+    assert inside.done is False
+    assert fresh.done is False
+    assert between.done is False
+
+
+@pytest.mark.asyncio
+async def test_reload_during_the_recovery_capacity_wait_keeps_the_captured_deadline(monkeypatch):
+    """A context-overflow cancel recovery clears ``_exec_started`` before its
+    replacement waits for capacity. A reload that cuts the manager default
+    during that wait must not let a reaper sweep end the run on the cut
+    default: the run keeps the deadline it captured, and the replacement runs
+    on that same deadline once a slot frees."""
+    sessions = _mock_sessions(lambda _msg: None)
+    mgr = _manager(sessions)
+    mgr._default_timeout = 21600
+    # Shared for the first attempt, dedicated once the one-shot forces it.
+    mgr._should_use_session_sharing = MagicMock(side_effect=lambda info: not info._force_dedicated)
+    provider = sessions._provider
+    provider.session_id = ""
+    provider.cwd = ""
+    provider.set_keep_transcript = MagicMock()
+    replacement_started = asyncio.Event()
+    release_replacement = asyncio.Event()
+
+    async def create_shared_session(info: SubagentInfo, _session_key: str, _agent: str):
+        provider.session_id = "rejected-sid"
+        info._session_sharing = True
+        info._shared_provider = provider
+        return provider
+
+    async def get_or_create(_session_key: str, **_kwargs):
+        provider.session_id = "recovered-sid"
+        return provider, True, False
+
+    def stream_factory(_message: str, *_args, **_kwargs):
+        sid = provider.session_id
+
+        async def stream():
+            if sid == "rejected-sid":
+                raise _context_overflow_error()
+            replacement_started.set()
+            await release_replacement.wait()
+            yield _text_event("recovered on the captured deadline")
+            yield _complete_event()
+
+        return stream()
+
+    mgr._create_shared_session = AsyncMock(side_effect=create_shared_session)
+    sessions.get_or_create = AsyncMock(side_effect=get_or_create)
+    sessions.forget_conversation_if_sid = MagicMock(return_value=(True, "rejected-sid"))
+    provider.stream = MagicMock(side_effect=stream_factory)
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("evaluate bounded evidence")
+        assert info is not None
+        first = mgr._tasks[info.id]
+        await first
+        # The freed slot is taken before the recovery re-checks capacity, so
+        # the replacement waits in ``_RECOVERY_SLOT_WAIT_SECS``'s poll.
+        mgr._max_concurrent = 1
+        mgr._running_count = 1
+        await async_wait_until(
+            lambda: info._exec_started is None,
+            describe=lambda: f"tasks={sorted(mgr._tasks)}; error={info.error!r}",
+        )
+        assert info._exec_started is None
+        assert info._recovering is True
+        assert mgr._tasks.get(info.id) is None
+        assert f"{info.id}:recovery" in mgr._tasks
+        assert info.timeout_secs == 21600
+
+        # A reload cuts the default to one minute while the run's registration
+        # age is past it and inside its captured six hours.
+        mgr._default_timeout = 60
+        info.started = time.time() - 4000.0
+        reaped = await _one_reaper_sweep(monkeypatch, mgr)
+        assert reaped == []
+        assert info.done is False
+
+        mgr._running_count = 0
+        await await_until(replacement_started, what="the replacement run streaming")
+        replacement = mgr._tasks.get(info.id)
+        assert replacement is not None and replacement is not first
+        assert info.timeout_secs == 21600
+        release_replacement.set()
+        await replacement
+
+    assert info.error == ""
+    assert info.result == "recovered on the captured deadline"
+    assert info.done is True
+
+
+@pytest.mark.parametrize(
+    ("run_timeout", "named_deadline"),
+    [
+        pytest.param(10800, 10800, id="captured deadline after the default moved"),
+        pytest.param(0, 16200, id="run that never captured one"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_reap_record_names_the_deadline_the_reaper_enforced(run_timeout, named_deadline):
+    """The reaper fires on ``info.timeout_secs or _default_timeout``; the record
+    names that same deadline. A reload moves the manager default without moving
+    a running run's captured deadline, so naming the default would claim 16200s
+    for a run reaped at 10800s."""
+    sessions = MagicMock()
+    sessions.get_pid = MagicMock(return_value=None)
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock(return_value=True)
+    sessions.tearing_down = MagicMock(return_value=[])
+    sessions._sessions = {}
+    manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock(), default_timeout=16200)
+    now = time.time()
+    info = SubagentInfo(
+        id="reaped-at-its-own-deadline",
+        task="test",
+        started=now - 10870,
+        timeout_secs=run_timeout,
+    )
+    info._exec_started = now - 10870
+    manager._agents[info.id] = info
+    manager._running_count = 1
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        await manager._force_reap(info.id, info, 10870.0)
+
+    assert info.done and info.reaped
+    assert info.error.startswith(f"Reaped after 10870s (exceeded {named_deadline}s deadline)")
+
+
+@pytest.mark.asyncio
+async def test_timeout_record_names_the_runs_captured_deadline():
+    """``Timed out after`` names the deadline ``wait_for`` enforced: the run's
+    captured hour, not the one-minute default a reload installed since."""
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock(), default_timeout=60)
+    manager._run_inner = AsyncMock(side_effect=asyncio.TimeoutError)
+    manager._claim_finalize = MagicMock(return_value=False)
+    manager._teardown_run_session = AsyncMock()
+    manager._release_slot = MagicMock(return_value=False)
+    info = SubagentInfo(id="captured-hour", task="test", timeout_secs=3600)
+
+    with patch("kiro_crew.subagent.Stats"):
+        await manager._run(info)
+
+    assert info.timeout_secs == 3600
+    assert info.error.startswith("Timed out after 60 minutes")
+
+
+@pytest.mark.asyncio
+async def test_legacy_duck_provider_stream_keeps_one_argument():
+    calls: list[str] = []
+    sessions = _mock_sessions(lambda *_args, **_kwargs: None)
+    provider = sessions._provider
+
+    async def legacy_stream(message: str):
+        calls.append(message)
+        yield _complete_event()
+
+    provider.stream = legacy_stream
+    mgr = _manager(sessions)
+
+    info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert calls == ["built_message"]
+
+
+@pytest.mark.asyncio
 async def test_transient_budget_exhausted_propagates():
     """Persistent transient errors fail after TRANSIENT_RETRIES attempts."""
     calls: list[str] = []
@@ -356,9 +830,11 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
     prompt is replayed, and the delivered result carries the visible
     fallback warning (never silent)."""
     calls: list[str] = []
+    timeouts: list[float | None] = []
 
     def stream_factory(msg: str, *a, **kw):
         calls.append(msg)
+        timeouts.append(kw.get("timeout"))
 
         async def _gen():
             if len(calls) <= 1 + TRANSIENT_RETRIES:
@@ -369,7 +845,9 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
         return _gen()
 
     sessions = _mock_sessions(stream_factory)
-    provider = sessions._provider
+    provider = _TimeoutCapableProvider(stream_factory)
+    sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
+    sessions._provider = provider
     provider.available_models = MagicMock(return_value=[{"modelId": "fb-1"}])
     provider.served_model = "primary-model"
     provider._model = "primary-model"
@@ -393,6 +871,8 @@ async def test_throttle_fallback_chain_swaps_model_and_annotates():
     provider.set_model.assert_awaited_once_with("fb-1")
     # Zero activity by construction — the ORIGINAL prompt is replayed.
     assert calls == ["built_message"] * (2 + TRANSIENT_RETRIES)
+    assert timeouts[0] is not None
+    assert timeouts == [timeouts[0]] * len(calls)
     # Visibility: the delivered result is prefixed with the fallback warning.
     assert "fb result" in info.result
     assert "throttled" in info.result and "fb-1" in info.result
@@ -554,6 +1034,153 @@ async def test_non_transient_error_fails_immediately():
     assert len(calls) == 1  # no retry
 
 
+# ── 1b. Provider throttle with a durable task queue open ─────────────
+
+_THROTTLE_TEXT = (
+    "Bedrock is throttling requests. Try: (1) wait a few seconds and retry, or (2) "
+    "switch to a different model in the picker (e.g. sonnet)."
+)
+
+
+def _throttle_first_prompt() -> tuple[list[str], object]:
+    """A backend that answers the first prompt with a throttle, before any text or
+    tool call, and the second prompt normally."""
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                raise AcpError(_THROTTLE_TEXT, transient=True)
+            yield _text_event("finished after the throttle")
+            yield _complete_event()
+
+        return _gen()
+
+    return calls, stream_factory
+
+
+async def _queued_manager(stream_factory) -> tuple[SubagentManager, list[object]]:
+    """A manager with its durable task queue open, recording each dependency park."""
+    mgr = _manager(_mock_sessions(stream_factory))
+    await wait_taskq_open(mgr)
+    assert await mgr.dependency_coordinator_async() is not None, "premise: a coordinator"
+    parks: list[object] = []
+    real_yield = mgr._yield_for_dependency
+
+    async def _spy(info, signal):
+        outcome = await real_yield(info, signal)
+        parks.append(outcome)
+        return outcome
+
+    mgr._yield_for_dependency = _spy
+    return mgr, parks
+
+
+async def _spawn_with_queue(mgr: SubagentManager, **spawn_kw) -> SubagentInfo:
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+    ):
+        info = mgr.spawn("do work", **spawn_kw)
+        assert info is not None
+        await await_until(mgr._tasks[info.id], what="the run finishing")
+    return mgr._agents.get(info.id, info)
+
+
+@pytest.mark.asyncio
+async def test_throttle_on_a_run_with_no_task_row_retries_in_turn():
+    """A run whose memory mode keeps no durable row cannot wait on the dependency
+    coordinator (its wait has nowhere to be recorded), so the throttle takes the
+    in-turn ladder instead of failing the run. The throttle answered the prompt
+    before any text or tool call, so the same prompt is sent again."""
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    info = await _spawn_with_queue(mgr, _memory_mode="temporary")
+
+    assert len(parks) == 1, "the coordinator was not consulted"
+    assert info.error == "", info.error
+    assert "finished after the throttle" in info.result
+    assert calls == ["built_message", "built_message"]
+
+
+@pytest.mark.asyncio
+async def test_throttle_on_a_run_with_a_task_row_waits_on_the_coordinator():
+    """A persistent run still parks on the coordinator's schedule and resumes from it."""
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    info = await _spawn_with_queue(mgr)
+
+    assert parks == [True], parks
+    assert info.error == "", info.error
+    assert "finished after the throttle" in info.result
+    assert calls == ["built_message", "built_message"]
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_give_up_still_fails_the_run():
+    """When the coordinator ends the scope (its deadline or attempts cap), the row is
+    already failed, so the run fails with the throttle and is not retried in turn."""
+    from kiro_crew.taskq.dependency import OUTCOME_DEADLINE, Verdict
+
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    async def _gave_up(self, coordinator, info, signal):
+        return Verdict(
+            outcome=OUTCOME_DEADLINE,
+            state="failed",
+            scope=signal.dependency_scope,
+            attempts=5,
+            reason=f"dependency {signal.dependency_scope} unavailable after 5 attempts",
+        )
+
+    with patch.object(type(mgr._run_events), "_dependency_verdict", _gave_up):
+        info = await _spawn_with_queue(mgr)
+
+    assert parks == [False], parks
+    assert "throttling" in info.error
+    assert calls == ["built_message"]  # no in-turn retry
+
+
+@pytest.mark.asyncio
+async def test_a_throttle_on_a_row_that_already_ended_stops_the_run():
+    """The run's row is cancelled under it (a Stop that landed while the prompt was
+    out) before the throttle arrives. The coordinator's wait writes carry the run's
+    generation, so they are refused and the row is found ended: the run stops with
+    the error and never retries work that is not its own any more."""
+    calls: list[str] = []
+    mgr_box: dict[str, SubagentManager] = {}
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                mgr = mgr_box["mgr"]
+                (run_id,) = [i for i, a in mgr._agents.items() if not a.done]
+                assert mgr._taskq.cancel(run_id, reason="stopped by the user") is not None
+                raise AcpError(_THROTTLE_TEXT, transient=True)
+            yield _text_event("finished after the throttle")
+            yield _complete_event()
+
+        return _gen()
+
+    mgr, parks = await _queued_manager(stream_factory)
+    mgr_box["mgr"] = mgr
+
+    info = await _spawn_with_queue(mgr)
+
+    assert parks == [False], parks
+    assert "throttling" in info.error
+    assert calls == ["built_message"]  # no in-turn retry
+    assert mgr._taskq.state_of(info.id) == "cancelled"
+
+
 def test_context_overflow_marker_forces_a_dedicated_runtime():
     sessions = MagicMock()
     sessions.is_session_sharing_eligible = MagicMock(return_value=True)
@@ -672,14 +1299,14 @@ async def test_first_turn_context_overflow_retries_once_on_a_dedicated_runtime()
         first = mgr._tasks[info.id]
         await first
 
-        await asyncio.wait_for(flush_entered.wait(), timeout=_RESPAWN_TIMEOUT)
+        await await_until(flush_entered, what="the flush being entered")
         assert timeline == ["teardown", "delete", "aflush"]
         assert capacity_wait_entered.is_set() is False
         assert replacement_started.is_set() is False
         assert [etype for etype, _extra in events].count("subagent_recovering") == 0
 
         release_flush.set()
-        await asyncio.wait_for(capacity_wait_entered.wait(), timeout=_RESPAWN_TIMEOUT)
+        await await_until(capacity_wait_entered, what="the capacity wait being entered")
         assert info._session_sharing is False
         assert info._shared_provider is None
         assert info._pid is None
@@ -702,7 +1329,7 @@ async def test_first_turn_context_overflow_retries_once_on_a_dedicated_runtime()
 
         mgr._max_concurrent = 1
         release_capacity_wait.set()
-        await asyncio.wait_for(replacement_started.wait(), timeout=_RESPAWN_TIMEOUT)
+        await await_until(replacement_started, what="the replacement starting")
         replacement = mgr._tasks.get(info.id)
         assert replacement is not None and replacement is not first
         release_replacement.set()
@@ -862,7 +1489,7 @@ async def test_first_turn_context_overflow_forgets_rejected_sid_before_fresh_rec
         first = mgr._tasks[info.id]
         await first
 
-        await asyncio.wait_for(replacement_started.wait(), timeout=_RESPAWN_TIMEOUT)
+        await await_until(replacement_started, what="the replacement starting")
         replacement = mgr._tasks.get(info.id)
         assert replacement is not None and replacement is not first
         release_replacement.set()
@@ -919,8 +1546,8 @@ async def test_context_overflow_recovery_preserves_a_successor_sid_and_fails_clo
         await first
         recovery = mgr._tasks.get(f"{info.id}:recovery")
         assert recovery is not None
-        await asyncio.wait_for(
-            asyncio.gather(recovery, return_exceptions=True), timeout=_RESPAWN_TIMEOUT
+        await await_until(
+            asyncio.gather(recovery, return_exceptions=True), what="the recovery ending"
         )
 
     assert attempts == 1
@@ -978,9 +1605,8 @@ async def test_context_overflow_recovery_flush_failure_is_terminal_before_replac
         await first
         recovery = mgr._tasks.get(f"{info.id}:recovery")
         assert recovery is not None
-        await asyncio.wait_for(
-            asyncio.gather(recovery, return_exceptions=True),
-            timeout=_RESPAWN_TIMEOUT,
+        await await_until(
+            asyncio.gather(recovery, return_exceptions=True), what="the recovery ending"
         )
         replacement = mgr._tasks.get(info.id)
         if replacement is not None:
@@ -1074,8 +1700,8 @@ async def test_context_overflow_recovery_without_a_rejected_sid_fails_closed():
         assert info._context_overflow_retry_used is True
         recovery = mgr._tasks.get(f"{info.id}:recovery")
         assert recovery is not None
-        await asyncio.wait_for(
-            asyncio.gather(recovery, return_exceptions=True), timeout=_RESPAWN_TIMEOUT
+        await await_until(
+            asyncio.gather(recovery, return_exceptions=True), what="the recovery ending"
         )
 
     # Fail-closed BEFORE the capacity wait and before any replacement.
@@ -1173,7 +1799,7 @@ async def test_dedicated_context_overflow_is_terminal_without_a_retry_loop():
         first = mgr._tasks[info.id]
         await first
 
-        await asyncio.wait_for(replacement_started.wait(), timeout=_RESPAWN_TIMEOUT)
+        await await_until(replacement_started, what="the replacement starting")
         replacement = mgr._tasks.get(info.id)
         assert replacement is not None and replacement is not first
         release_replacement.set()
@@ -1277,7 +1903,7 @@ async def test_user_cancel_is_neutral_stopped_with_partial():
     with patch("kiro_crew.subagent.Stats") as stats, patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("long job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         cancelled = await mgr.cancel(info.id)
         await asyncio.gather(*mgr._tasks.values(), return_exceptions=True)
 
@@ -1309,7 +1935,7 @@ async def test_unexpected_cancel_auto_continues_once():
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("interruptible job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task1 = mgr._tasks[info.id]
         task1.cancel()  # UNEXPECTED cancel (not via mgr.cancel, not shutdown)
         await asyncio.gather(task1, return_exceptions=True)
@@ -1321,23 +1947,47 @@ async def test_unexpected_cancel_auto_continues_once():
         # Recovery respawns on a fresh task AFTER the original task's
         # teardown fully completes (explicit handshake, not a timed sleep).
         started.clear()
-        task2 = None
-        deadline = asyncio.get_event_loop().time() + _RESPAWN_TIMEOUT
-        while asyncio.get_event_loop().time() < deadline:
-            task2 = mgr._tasks.get(info.id)
-            if task2 is not None and task2 is not task1:
-                break
-            await asyncio.sleep(0.05)
-        assert task2 is not None and task2 is not task1
+        task2 = await _respawned_task(mgr, info, task1)
         assert task1.done()  # respawn never races the original teardown
 
         # Second unexpected cancel → terminal (budget spent).
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task2.cancel()
         await asyncio.gather(task2, return_exceptions=True)
 
     assert info.done is True
     assert info.error == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_cancel_hand_off_is_visible_to_a_wait_for_waiter():
+    """A waiter whose ``wait_for`` deadline cancels the run must see
+    ``TimeoutError``, and the original task must end cancelled, because the run
+    has moved to the ``:recovery`` task and has not finished. A task that
+    swallowed the cancel made ``wait_for`` return normally instead."""
+    started = asyncio.Event()
+    mgr = _manager(_mock_sessions(_hanging_stream_factory(started)))
+
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("interruptible job")
+        assert info is not None
+        await await_until(started, what="the stream's first yield")
+        task1 = mgr._tasks[info.id]
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(task1, timeout=0.05)
+
+        assert task1.cancelled()
+        assert info.done is False
+        assert info._cancel_retry_used is True
+
+        # The continuation still happens on a fresh task.
+        started.clear()
+        await await_until(started, what="the continuation's first yield")
+        task2 = mgr._tasks.get(info.id)
+        assert task2 is not None and task2 is not task1
+        await mgr.cancel_all()
+
+    assert info.done is True
 
 
 @pytest.mark.asyncio
@@ -1374,7 +2024,7 @@ async def test_unexpected_cancel_after_tool_activity_finalizes_without_respawn()
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("side-effecting job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         assert info.tool_count > 0 and info.streaming_text == ""
         task1 = mgr._tasks[info.id]
         task1.cancel()  # UNEXPECTED cancel after tool ran
@@ -1411,17 +2061,17 @@ async def test_cancel_recovery_text_only_respawn_gets_resume_preamble():
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("resumable job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         assert info.streaming_text and info.tool_count == 0
         task1 = mgr._tasks[info.id]
         task1.cancel()  # UNEXPECTED cancel after text, no tools
         await asyncio.gather(task1, return_exceptions=True)
 
-        # Wait for the respawn's build_message call (second entry).
-        deadline = asyncio.get_event_loop().time() + _RESPAWN_TIMEOUT
-        while len(build_msgs) < 2 and asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(0.05)
-        assert len(build_msgs) >= 2
+        # The respawn's build_message call is the second entry.
+        await async_wait_until(
+            lambda: len(build_msgs) >= 2,
+            describe=lambda: f"{len(build_msgs)} build_message call(s); error={info.error!r}",
+        )
 
         # First attempt: bare prompt. Respawn: preamble present.
         assert not build_msgs[0].startswith(_CANCEL_RESUME_PREFIX)
@@ -1442,7 +2092,7 @@ async def test_shutdown_cancel_does_not_auto_continue():
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("job at shutdown")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         await mgr.cancel_all()
 
     assert mgr._shutting_down is True
@@ -1558,20 +2208,13 @@ async def test_cancel_recovery_waits_for_slow_teardown():
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("slow teardown job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task1 = mgr._tasks[info.id]
         task1.cancel()
         await asyncio.gather(task1, return_exceptions=True)
 
         # Poll for the respawn; when it appears, teardown MUST already be done.
-        task2 = None
-        deadline = asyncio.get_event_loop().time() + _RESPAWN_TIMEOUT
-        while asyncio.get_event_loop().time() < deadline:
-            task2 = mgr._tasks.get(info.id)
-            if task2 is not None and task2 is not task1:
-                break
-            await asyncio.sleep(0.05)
-        assert task2 is not None and task2 is not task1
+        task2 = await _respawned_task(mgr, info, task1)
         assert reset_done.is_set()  # respawn strictly after the slow reset
         assert task1.done()
         # The new task is tracked — a user Stop can still find and cancel it.
@@ -1589,7 +2232,7 @@ async def test_cancel_recovery_waits_for_free_slot():
     with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
         info = mgr.spawn("capacity job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task1 = mgr._tasks[info.id]
 
         # Simulate the freed slot being immediately taken by a queued spawn.
@@ -1610,14 +2253,7 @@ async def test_cancel_recovery_waits_for_free_slot():
 
         # Free the slot — recovery proceeds and count never exceeds the cap.
         mgr._running_count = 0
-        task2 = None
-        deadline = asyncio.get_event_loop().time() + _RESPAWN_TIMEOUT
-        while asyncio.get_event_loop().time() < deadline:
-            task2 = mgr._tasks.get(info.id)
-            if task2 is not None and task2 is not task1:
-                break
-            await asyncio.sleep(0.05)
-        assert task2 is not None and task2 is not task1
+        task2 = await _respawned_task(mgr, info, task1)
         assert mgr._running_count <= mgr._max_concurrent
         task2.cancel()
         await asyncio.gather(task2, return_exceptions=True)
@@ -1649,7 +2285,7 @@ async def test_cancel_recovery_failure_emits_done_and_delivers():
     ):
         info = mgr.spawn("doomed recovery job")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task1 = mgr._tasks[info.id]
         task1.cancel()
         await asyncio.gather(task1, return_exceptions=True)
@@ -1663,7 +2299,9 @@ async def test_cancel_recovery_failure_emits_done_and_delivers():
         # failure path's subagent_done emit and on_done delivery run.
         rec = mgr._tasks.get(f"{info.id}:recovery")
         assert rec is not None, "pending recovery must be registered in _tasks"
-        await asyncio.wait_for(asyncio.gather(rec, return_exceptions=True), timeout=_GIVE_UP_BOUND)
+        await asyncio.wait_for(  # flake-ok: _GIVE_UP_BOUND asserts the patched give-up took effect
+            asyncio.gather(rec, return_exceptions=True), timeout=_GIVE_UP_BOUND
+        )
 
     assert info.done is True
     assert info.error == "cancelled (recovery failed)"
@@ -1671,6 +2309,127 @@ async def test_cancel_recovery_failure_emits_done_and_delivers():
     assert done_events, "recovery failure must emit subagent_done"
     assert done_events[-1][1].get("error")
     on_done.assert_awaited_once_with(info)
+
+
+class _WallSteppedClock:
+    """The ``time`` module with its wall clock offset and its monotonic clock real.
+
+    ``reads`` counts the clock reads made through it: the slot wait reads the clock
+    on every poll, so a test waits for its next polls instead of sleeping.
+    """
+
+    def __init__(self) -> None:
+        self.wall = 0.0
+        self.reads = 0
+
+    def time(self) -> float:
+        self.reads += 1
+        return time.time() + self.wall
+
+    def monotonic(self) -> float:
+        self.reads += 1
+        return time.monotonic()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_slot_wait_survives_a_forward_wall_clock_step():
+    """The slot wait is measured on the monotonic clock: a wall-clock step forward
+    (an NTP step, a manual change, a resume from suspend) does not end it early and
+    fail the run as "cancelled (recovery failed)"."""
+    started = asyncio.Event()
+    mgr = _manager(_mock_sessions(_hanging_stream_factory(started)))
+    clock = _WallSteppedClock()
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.time", clock),
+    ):
+        info = mgr.spawn("recovery under a wall-clock step")
+        assert info is not None
+        await await_until(started, what="the stream's first yield")
+        task1 = mgr._tasks[info.id]
+        task1.cancel()
+        # Waited on directly, under the helpers' lost-run bound: the test must resume
+        # right after the run ends, before the recovery's first capacity check, and
+        # ``await_until`` adds a loop turn (its waiter on a ``gather``) that let the
+        # recovery respawn first.
+        done, _ = await asyncio.wait({task1}, timeout=default_timeout())
+        assert task1 in done, "the cancelled run never ended"
+
+        # Keep the pool full so the recovery waits for a slot.
+        mgr._max_concurrent = 1
+        mgr._running_count = 1
+        rec = mgr._tasks.get(f"{info.id}:recovery")
+        assert rec is not None, "pending recovery must be registered in _tasks"
+        polled = clock.reads
+        await async_wait_until(lambda: clock.reads >= polled + 2 or info.done)
+        assert not info.done
+
+        # Two minutes forward on the wall clock, none on the monotonic one: a
+        # recovery measured on the wall clock gives up on its next 0.25 s poll.
+        clock.wall = 120.0
+        polled = clock.reads
+        await async_wait_until(lambda: clock.reads >= polled + 2 or info.done)
+        assert not info.done, f"the slot wait ended on a wall-clock step: {info.error!r}"
+
+        # Free the slot: the recovery respawns the run.
+        mgr._running_count = 0
+        await await_until(asyncio.gather(rec, return_exceptions=True), what="the recovery ending")
+        task2 = mgr._tasks.get(info.id)
+        assert task2 is not None and task2 is not task1
+        task2.cancel()
+        await await_until(
+            asyncio.gather(task2, return_exceptions=True), what="the cancelled replacement ending"
+        )
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_slot_wait_without_a_clock_step_gives_up_at_its_deadline():
+    """Control for the test above: with no clock step, a slot wait on a pool that
+    stays full still ends at its deadline, now read on the monotonic clock, and the
+    run fails as "cancelled (recovery failed)", as before."""
+    started = asyncio.Event()
+    mgr = _manager(_mock_sessions(_hanging_stream_factory(started)))
+    clock = _WallSteppedClock()
+    give_up = 0.4
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.time", clock),
+        patch("kiro_crew.subagent._RECOVERY_SLOT_WAIT_SECS", give_up),
+    ):
+        info = mgr.spawn("recovery that never finds a slot")
+        assert info is not None
+        await await_until(started, what="the stream's first yield")
+        task1 = mgr._tasks[info.id]
+        # Taken before the cancel, so it precedes the deadline the recovery sets.
+        t0 = time.monotonic()
+        task1.cancel()
+        # Waited on directly, under the helpers' lost-run bound: the test must resume
+        # right after the run ends, before the recovery's first capacity check, and
+        # ``await_until`` adds a loop turn (its waiter on a ``gather``) that let the
+        # recovery respawn first.
+        done, _ = await asyncio.wait({task1}, timeout=default_timeout())
+        assert task1 in done, "the cancelled run never ended"
+
+        # Keep the pool permanently full so the slot wait reaches its deadline.
+        mgr._max_concurrent = 1
+        mgr._running_count = 1
+        rec = mgr._tasks.get(f"{info.id}:recovery")
+        assert rec is not None, "pending recovery must be registered in _tasks"
+        await asyncio.wait_for(  # flake-ok: _GIVE_UP_BOUND asserts the patched give-up took effect
+            asyncio.gather(rec, return_exceptions=True), timeout=_GIVE_UP_BOUND
+        )
+        waited = time.monotonic() - t0
+
+    assert info.done is True
+    assert info.error == "cancelled (recovery failed)"
+    assert waited >= give_up, f"gave up after {waited:.2f} s, before its {give_up} s deadline"
 
 
 @pytest.mark.asyncio
@@ -1692,7 +2451,7 @@ async def test_cancel_all_reaches_pending_recovery_and_finalizes():
     ):
         info = mgr.spawn("job interrupted by shutdown")
         assert info is not None
-        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        await await_until(started, what="the stream's first yield")
         task1 = mgr._tasks[info.id]
         task1.cancel()
         await asyncio.gather(task1, return_exceptions=True)
@@ -1795,6 +2554,7 @@ def test_no_raw_cancel_outside_chokepoint():
     source_root = Path(subagent_mod.__file__).resolve().parent
     source_paths = [Path(subagent_mod.__file__).resolve()]
     source_paths.extend(sorted((source_root / "subagent_manager").glob("*.py")))
+    source_paths.extend(sorted((source_root / "subagent_parts").glob("*.py")))
     raw_sites = [
         (path.relative_to(source_root).as_posix(), i + 1, line.strip())
         for path in source_paths
@@ -2015,3 +2775,47 @@ async def test_control_tag_only_output_still_fails():
 
     assert info.outcome == "failed"
     assert info.error
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_frames_carry_the_tool_call_id():
+    """Both ``subagent_tool`` fire sites send the call's ``tool_call_id``.
+
+    The Subagents card lists each call once by matching that id: a gated call's
+    ``EVENT_TOOL_CALL`` frame and its permission-request frame share it and the
+    same ``tool_count``, while a backend child's permission request has its own
+    id but an unchanged count. Without the id on the wire the card can only
+    compare counts, and the child's request overwrites the parent's last call.
+    """
+    from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TOOL_CALL, LLMEvent
+
+    async def stream(*_args, **_kwargs):
+        yield LLMEvent(
+            kind=EVENT_TOOL_CALL, title="Terminal", tool_call_id="call-1", tool_kind="execute"
+        )
+        yield LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title="Running: git status",
+            request_id=1,
+            tool_call_id="call-1",
+            tool_kind="execute",
+        )
+        yield _text_event("done")
+        yield _complete_event()
+
+    mgr = _manager(_mock_sessions(stream))
+    frames: list[dict] = []
+    _orig_fire = mgr._fire_event
+
+    async def _spy(etype, info, extra=None):
+        if etype == "subagent_tool":
+            frames.append(dict(extra or {}))
+        await _orig_fire(etype, info, extra)
+
+    mgr._fire_event = _spy
+    info = await _spawn_and_wait(mgr)
+
+    assert info.error == ""
+    assert [f.get("tool_call_id") for f in frames] == ["call-1", "call-1"]
+    # Same call, same count: the second frame must not look like a new call.
+    assert frames[0]["tool_count"] == frames[1]["tool_count"] == 1

@@ -67,25 +67,34 @@ Checked by `qa.test.ts` → `fullwidth-alphanumeric` (gates outright at zero).
 
 ## §2 Terminology
 
-Preferred renderings for product concepts. These are conventions, not CI gates —
-a reviewer should check consistency but context may require variation.
+Preferred renderings for product concepts. Rows marked † are gated by
+`zhStyle.test.ts` wherever the English carries the term; the rest are
+conventions a reviewer checks, and context may require variation.
 
 | English | Preferred | Avoid |
 |---|---|---|
 | session | 会话 | 进程, 对话 |
-| workspace | 工作区 | 工作空间, 工作台 |
+| workspace † | 工作区 | 工作空间, 工作台 |
 | artifact | 产物 | 工件, 制品 |
-| agent / subagent | 代理 / 子代理 | 智能体, 子智能体 |
+| agent / subagent † | 代理 / 子代理 | 智能体, 子智能体 |
 | skill | 技能 | 技巧 |
 | cron job / scheduled job | 定时任务 | 计划任务 |
-| thread | 话题 | 线程 (reads as OS thread) |
-| turn | 轮次 | 回合 |
+| thread † | 话题 | 线程 (reads as OS thread) |
+| turn † | 轮次 | 回合 |
 | message | 消息 | 信息 |
-| dashboard | 仪表板 | 仪表盘, 控制台 |
-| sidebar | 侧边栏 | 侧栏 |
+| dashboard † | 仪表板 | 仪表盘, 控制台 |
+| sidebar † | 侧边栏 | 侧栏 |
 | preferences | 偏好设置 | 偏好 |
-| pinned | 已置顶 | 已固定 |
-| resolved | 已解决 | 已处理 |
+| pinned † | 已置顶 | 已固定 |
+| resolved † | 已解决 | 已处理 |
+| usage † | 用量 | 使用量 |
+| effort (reasoning) † | 强度 | 投入度 |
+| reject † | 拒绝 | 驳回 |
+| WeCom † | 企业微信 | WeCom |
+
+† gates one Avoid rendering per row, the one `zhStyle.test.ts` `BANNED` lists (for
+example `工作空间`, `子智能体`, `仪表盘`); the other Avoid entries in those rows
+(`工作台`, `智能体`, `控制台`) are review conventions.
 
 **Sense splits** (context-dependent, both are correct):
 

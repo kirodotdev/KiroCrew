@@ -2689,9 +2689,9 @@ async def api_trusted_registry_grant(request: web.Request) -> web.Response:
             data = read_registry_trust_strict()
         except RegistryTrustCorruptError as exc:
             raise ConfigCorruptError(str(exc)) from exc
-        # Version 2 stores ``owner_trusted`` as a deduped LIST of repo URLs; the
-        # grant is the value itself, since SEL timestamps each grant and no reader
-        # consumes a per-repo body. The revoke handler mirrors this exact shape —
+        # The version-1 record stores ``owner_trusted`` as a deduped LIST of repo
+        # URLs; the grant is the value itself, since SEL timestamps each grant and
+        # no reader consumes a per-repo body. The revoke handler mirrors this exact shape —
         # strict read, mutate the record, publish through the shared writer.
         add_owner_grant(data, repo)
         _write_registry_trust_record(data)

@@ -20,7 +20,7 @@ each guard owns a ``ContextVar``, and CPython never collects a ``ContextVar``
 that any ``Context`` has seen, so building guards per short-lived object
 would leak them.
 
-``history.py`` keeps its own guard rather than adopting this one. Its
+``history_offload.py`` keeps its own guard rather than adopting this one. Its
 :class:`~kiro_crew.history.OnLoopPersistError` subclasses ``AssertionError``,
 a semantic this module deliberately does not reproduce (see
 :class:`OnLoopStoreError`), and that must not change. History's
@@ -55,7 +55,7 @@ from kiro_crew.constants import ENV_TRUTHY
 
 logger = logging.getLogger(__name__)
 
-#: The shared switch, read by ``history.py``'s own guard and the default here.
+#: The shared switch, read by ``history_offload.py``'s own guard and the default here.
 #: Already exported by the e2e harness, so it means "history's surface is
 #: offloaded" and nothing more.
 STRICT_ENV = "KIROCREW_STRICT_ON_LOOP_PERSIST"
@@ -148,7 +148,7 @@ class OnLoopDBGuard:
             own name) so that arming another surface's discipline does not raise
             on its tracked backlog -- see the module docstring.
         :param dev_mode_arms_strict: whether ``KIROCREW_DEV_MODE`` alone turns
-            this guard strict. Default True, matching ``history.py``. A store
+            this guard strict. Default True, matching ``history_offload.py``. A store
             with a known backlog passes False for the same reason: raising on
             tracked work reports it as if it were a regression, and the
             developer's rational response is to stop exporting

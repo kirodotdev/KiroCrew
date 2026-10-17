@@ -251,6 +251,37 @@ class TestListAndDetail:
         assert body["animations"]["idle"]["content"] == "<svg id='idle.svg'/>"
 
     @pytest.mark.asyncio
+    async def test_a_meta_read_is_the_detail_without_any_bytes(self):
+        """``?meta=1`` tells a client each slot's format without the pack body.
+
+        Everything else in the answer is unchanged. An empty file is left out,
+        because a client drops a slot with empty content from the full answer.
+        """
+        states = {"idle": "idle.png", "working": "working.json", "done": "done.svg"}
+        pack = _seed_pack(shared.library_dir(), "aurora", states={**states, "error": "error.svg"})
+        (pack / "error.svg").write_text("", "utf-8")
+        (pack / "sheet.png").write_text(_b64(_PNG), "utf-8")
+        manifest = json.loads((pack / "manifest.json").read_text("utf-8"))
+        manifest["sprite"] = {"frameWidth": 16, "frameHeight": 16, "fps": 4, "source": "sheet.png"}
+        (pack / "manifest.json").write_text(json.dumps(manifest), "utf-8")
+        async with TestClient(TestServer(_app())) as client:
+            full = await (await client.get("/api/appearances/aurora")).json()
+            resp = await client.get("/api/appearances/aurora?meta=1")
+            assert resp.status == 200
+            meta = await resp.json()
+        assert meta["animations"] == {
+            "idle": {"format": "sprite"},
+            "working": {"format": "lottie"},
+            "done": {"format": "svg"},
+        }
+        assert full["animations"]["error"]["content"] == ""
+        assert "sourceImage" in full and "sourceImage" not in meta
+        assert meta["sprite"] == full["sprite"] == manifest["sprite"]
+        for key in full.keys() - {"animations", "sourceImage"}:
+            assert meta[key] == full[key], key
+        assert "<svg" not in json.dumps(meta) and _b64(_PNG) not in json.dumps(meta)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("ident", ["gone", "dots.are.out", "x" * 70])
     async def test_a_miss_or_a_bad_id_is_the_same_404(self, ident):
         """Telling the two apart would hand a caller probing for traversal a
@@ -867,6 +898,101 @@ class TestImport:
             assert (await client.post("/api/appearances/import", data=b"not json")).status == 400
 
 
+class TestImportNamesALottieThePlayerWillRefuse:
+    """The player refuses a clip that names a remote image or font and draws the
+    ghost; the import answer is where the person who picked the file reads why.
+    A warning, never a refusal."""
+
+    @staticmethod
+    def _lottie(**over) -> str:
+        return json.dumps({"v": "5.7.4", "fr": 24, "ip": 0, "op": 48, "layers": [], **over})
+
+    @staticmethod
+    def _bundle(ident: str, clip: str, **extra_files) -> dict:
+        return {
+            "kind": "crew-companion-pack",
+            "version": 1,
+            "id": ident,
+            "manifest": {"meta": {"id": ident, "name": ident}, "states": {"idle": "idle.json"}},
+            "files": {"idle.json": clip, **extra_files},
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_https_image_imports_with_a_warning_naming_the_file(self):
+        clip = self._lottie(
+            assets=[{"id": "i0", "u": "https://attacker.example/", "p": "pixel.png", "e": 0}]
+        )
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("remote", clip)}
+            )
+            assert resp.status == 200, await resp.json()
+            body = await resp.json()
+        assert body["ok"] is True
+        assert len(body["warnings"]) == 1
+        assert "idle.json" in body["warnings"][0]
+        assert "ghost" in body["warnings"][0]
+        assert shared.get_appearance_store().pack_exists("remote")
+
+    @pytest.mark.asyncio
+    async def test_inline_data_uris_import_with_no_warning(self):
+        clip = self._lottie(assets=[{"id": "i0", "e": 1, "p": "data:image/png;base64,iVBORw0="}])
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("inline", clip)}
+            )
+            assert resp.status == 200, await resp.json()
+            assert "warnings" not in await resp.json()
+
+    @pytest.mark.asyncio
+    async def test_an_integer_past_the_float_range_warns_rather_than_failing(self):
+        """JSON integers are unbounded in Python; ``math.isnan`` on one past the
+        float range overflows. The import must still answer 200 with the warning."""
+        clip = (
+            '{"v": "5.7.4", "fr": 24, "ip": 0, "op": 48, "layers": [], "fonts": {"list": [{"fFamily": "X", "fPath": 1'
+            + "0" * 400
+            + "}]}}"
+        )
+        async with TestClient(TestServer(_app())) as client:
+            resp = await client.post(
+                "/api/appearances/import", json={"bundle": self._bundle("huge", clip)}
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+        assert len(body["warnings"]) == 1
+        assert "idle.json" in body["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_the_warning_is_judged_before_the_pack_is_written(self, monkeypatch):
+        """A failure inside the check must leave nothing installed, so a retry is
+        not refused by the id guard for a pack the caller was told failed."""
+
+        def boom(_payload):
+            raise RuntimeError("check failed")
+
+        monkeypatch.setattr(shared, "bundle_remote_asset_warnings", boom)
+        clip = self._lottie()
+        with pytest.raises(RuntimeError):
+            await shared.import_pack(self._bundle("never", clip))
+        assert not shared.get_appearance_store().pack_exists("never")
+
+    def test_only_referenced_lottie_clips_are_judged_once_each(self):
+        """A carried clip no slot names is never played, so it says nothing; a clip
+        many slots name is one warning, not one per slot."""
+        remote = self._lottie(fonts={"list": [{"fFamily": "X", "fOrigin": "p"}]})
+        bundle = self._bundle("many", remote, **{"unused.json": remote})
+        bundle["manifest"]["moods"] = {"happy": "idle.json", "sad": "idle.json"}
+        warnings = shared.bundle_remote_asset_warnings(bundle)
+        assert len(warnings) == 1
+        assert "idle.json" in warnings[0]
+
+    def test_a_clip_the_player_cannot_parse_is_not_called_remote(self):
+        """``JSON.parse`` refuses ``NaN``; Python's parser would accept it. The
+        player refuses such a clip for not parsing, not for fetching."""
+        clip = '{"v": "5.7.4", "fr": NaN, "assets": [{"id": "i0", "u": "https://x.example/", "p": "a.png"}]}'
+        assert shared.bundle_remote_asset_warnings(self._bundle("nan", clip)) == []
+
+
 class TestDelete:
     @pytest.fixture()
     def worn(self):
@@ -966,6 +1092,7 @@ class TestOwnerGate:
         [
             ("get", "/api/appearances"),
             ("get", "/api/appearances/aurora"),
+            ("get", "/api/appearances/aurora?meta=1"),
             ("get", "/api/appearances/aurora/slot/idle"),
             ("get", "/api/appearances/aurora/sound/done"),
             ("post", "/api/appearances/import"),
@@ -984,7 +1111,7 @@ class TestPetdexRoute:
     @pytest.mark.asyncio
     async def test_a_hit_is_handed_back(self, monkeypatch):
         monkeypatch.setattr(
-            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
+            "kiro_crew.dashboard.handlers.appearances.fetch_petdex_pet",
             lambda raw: {"ok": True, "slug": "kirby", "spriteBase64": _b64(_PNG)},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -999,7 +1126,7 @@ class TestPetdexRoute:
         """A miss or an unreachable registry is what the import dialog shows,
         not a client error — the same contract the app's own route has."""
         monkeypatch.setattr(
-            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
+            "kiro_crew.dashboard.handlers.appearances.fetch_petdex_pet",
             lambda raw: {"ok": False, "error": "Could not reach PetDex"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -1011,7 +1138,7 @@ class TestPetdexRoute:
     async def test_a_body_that_is_not_an_object_is_treated_as_empty(self, monkeypatch):
         seen: list[object] = []
         monkeypatch.setattr(
-            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
+            "kiro_crew.dashboard.handlers.appearances.fetch_petdex_pet",
             lambda raw: seen.append(raw) or {"ok": False, "error": "no"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -1472,7 +1599,7 @@ class TestAnAuditNeverDecidesTheOperation:
     @pytest.mark.asyncio
     async def test_a_petdex_fetch_still_answers(self, sel_is_down, monkeypatch):
         monkeypatch.setattr(
-            "kiro_crew.appearance_packs.transfer.fetch_petdex_pet",
+            "kiro_crew.dashboard.handlers.appearances.fetch_petdex_pet",
             lambda raw: {"ok": False, "error": "no"},
         )
         async with TestClient(TestServer(_app())) as client:
@@ -1562,18 +1689,12 @@ class TestLibraryMutationsAreSerialized:
         assert isinstance(shared._library_lock(), LoopBoundLock)
 
 
-class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
-    """This module and its handler defer `appearance_packs.transfer` to call time.
+class TestTheDashboardImportsNoAppPackage:
+    """Neither this module nor its handler imports the Crew Companion app package.
 
-    `transfer` builds a urllib opener at module scope, and the dashboard route
-    table imports the handler module before the socket binds, so neither
-    dashboard module may import it at module scope. `appearance_packs.store`
-    may: it does no module-scope work, which is why it is a normal top-level
-    import here.
-
-    Neither may import the Crew Companion app package at all. That app is
-    optional (`defaultEnabled: false`), so a crew's face must be drawn by code
-    that does not live inside it: the appearance library imports no app.
+    That app is optional (`defaultEnabled: false`), so a crew's face must be
+    drawn by code that does not live inside it: the appearance library imports
+    no app.
     """
 
     @pytest.mark.parametrize(
@@ -1591,23 +1712,7 @@ class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
         ]
         assert offenders == [], offenders
 
-    @pytest.mark.parametrize(
-        "module",
-        ["kiro_crew.dashboard.appearances", "kiro_crew.dashboard.handlers.appearances"],
-    )
-    def test_no_module_scope_transfer_import(self, module):
-        """The opener is what must not be built at import time."""
-        import importlib
-
-        source = Path(importlib.import_module(module).__file__).read_text(encoding="utf-8")
-        offenders = [
-            line
-            for line in source.splitlines()
-            if line.startswith(("from ", "import ")) and "appearance_packs.transfer" in line
-        ]
-        assert offenders == [], offenders
-
-    def test_importing_the_dashboard_modules_loads_neither_the_app_nor_the_opener(self):
+    def test_importing_the_dashboard_modules_does_not_load_the_app(self):
         """Proved in a fresh interpreter, not by reading source.
 
         A `TYPE_CHECKING` guard or a function-local import that is wrong in
@@ -1622,7 +1727,6 @@ class TestTheDashboardAddsNoBootPathImportOfPackTransfer:
             "import kiro_crew.dashboard.appearances\n"
             "import kiro_crew.dashboard.handlers.appearances\n"
             "bad = [m for m in sys.modules if 'crew_companion' in m]\n"
-            "bad += [m for m in sys.modules if m.endswith('appearance_packs.transfer')]\n"
             "print(sorted(bad))\n"
         )
         out = subprocess.run(

@@ -157,8 +157,10 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     const aria = btn.getAttribute('aria-label') ?? ''
     // Explains WHAT the marker means, not just "Agent: kirocrew".
     expect(title).toContain('follows the default')
-    // Reachable without a mouse: the same explanation is in the accessible name.
-    expect(aria).toBe(title)
+    // Reachable without a mouse: the same explanation is the accessible name.
+    // The tooltip may carry a second line teaching the agent-cycle chords,
+    // which reach assistive tech through aria-keyshortcuts instead.
+    expect(title.split('\n')[0]).toBe(aria)
   })
 
   it('does not put the explanation on a pinned chip', () => {

@@ -93,6 +93,7 @@ the tail is re-indexed — the next step, not this one.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -100,9 +101,10 @@ import threading
 import time
 import zlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
 
 from kiro_crew._sqlite_compat import fts5_available, is_cjk_char, sqlite3
+from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.history_search import SearchNeedle
@@ -112,10 +114,77 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: scoring pass (which still applies them in full) rather than used as filters.
 _MIN_TRIGRAM_CHARS = 3
 
+#: Separator joining one session's message texts into the single folded blob
+#: that both the FTS column and the scoring pass read.
+#:
+#: It must satisfy two constraints at once, and the obvious choice fails the
+#: second. A user cannot type it, so it keeps a match from spanning two
+#: messages; and it must not END the text for SQLite. ``\x00`` does: FTS5's
+#: tokenizers walk the blob as a NUL-terminated C string, so everything after
+#: the first separator went UNTOKENIZED while the column still stored it in
+#: full. Every session was therefore searchable by its FIRST MESSAGE only, and
+#: because ``_index_shortlist`` reads a vouched-for session's empty postings as
+#: proof it cannot match, the scan that would have found the hit was skipped
+#: too — the session became unfindable rather than merely slow to find.
+#: This depends on the SQLite build: the trigram tokenizer stops at a NUL on
+#: 3.40.0 and 3.45.1, but tokenizes past it on 3.53.1.
+#:
+#: ``\x1f`` (ASCII UNIT SEPARATOR) keeps the first property and drops the
+#: terminator behaviour. Both producers below MUST use this constant: the
+#: scorer reads whichever blob is cheaper to obtain and must not be able to
+#: tell which one it got.
+FOLD_SEPARATOR = "\x1f"
+
+
+def fold_texts(texts: Sequence[str]) -> str:
+    """Return the folded blob for one session's message *texts*.
+
+    A NUL inside a message's own content would end the text for SQLite exactly
+    as the old separator did, so it is replaced with ``FOLD_SEPARATOR`` first;
+    the length is unchanged, so ``doc_chars`` still counts original characters.
+    Both producers call this so their blobs cannot drift apart.
+    """
+    return FOLD_SEPARATOR.join(t.replace("\x00", FOLD_SEPARATOR) for t in texts).casefold()
+
+
+def content_digest(texts: Sequence[str]) -> bytes:
+    """Content digest of one session's message *texts*.
+
+    The fold, every count the scorer takes, and every snippet are pure functions
+    of the message list and the query, so a digest of the list is a memo key
+    that never needs invalidating: a changed session gets a different digest.
+    The list is hashed in its JSON form so message boundaries are part of the
+    identity; ``surrogatepass`` keeps a lone surrogate from raising.
+    """
+    payload = json.dumps(list(texts), ensure_ascii=False).encode("utf-8", "surrogatepass")
+    return hashlib.blake2b(payload, digest_size=16).digest()
+
+
+class IndexRow(NamedTuple):
+    """What the search path needs to know about one vouched-for row."""
+
+    rowid: int
+    doc_chars: int
+    #: :func:`content_digest` of the row's texts, as 32 hex characters.
+    digest: str
+
+
 #: Version of the stored term representation. A bump makes existing rows
 #: unreadable rather than subtly mismatched: the store drops and rebuilds
 #: instead of serving rows indexed under different tokenization rules.
-_INDEX_VERSION = 2
+#:
+#: 3: ``FOLD_SEPARATOR`` replaced ``\x00``, and a NUL inside a message is
+#: replaced too (see :func:`fold_texts`). Rows written under 2 hold a blob
+#: whose postings stop at the first message, so they must be rebuilt, not read.
+#:
+#: 4: the raw texts live in ``session_text`` as compressed chunks of whole
+#: messages, so a snippet decompresses only as far as its match; the entry
+#: carries a digest of the folded document that keys the search memos.
+_INDEX_VERSION = 4
+
+#: Uncompressed characters a ``session_text`` chunk collects before it is closed.
+#: A message is never split, so one longer message forms its own chunk.
+_TEXT_CHUNK_CHARS = 32 * 1024
 
 _BUSY_TIMEOUT_MS = 10_000
 _CONNECT_TIMEOUT_SECS = 30
@@ -226,7 +295,9 @@ class SessionSearchIndex:
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             return conn
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only from creation: the index holds a copy of every message.
+        mkdirs_owner_only(self._db_path.parent)
+        prepare_owner_only_sqlite(self._db_path)
         conn = sqlite3.connect(
             str(self._db_path),
             timeout=_CONNECT_TIMEOUT_SECS,
@@ -257,7 +328,7 @@ class SessionSearchIndex:
         """
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version and version != _INDEX_VERSION:
-            for table in ("session_fts", "session_cjk", "session_entry"):
+            for table in ("session_fts", "session_cjk", "session_entry", "session_text"):
                 conn.execute(f"DROP TABLE IF EXISTS {table}")
             version = 0
         conn.execute(
@@ -277,7 +348,16 @@ class SessionSearchIndex:
             " dev         INTEGER NOT NULL,"
             " ino         INTEGER NOT NULL,"
             " doc_chars   INTEGER NOT NULL,"
-            " raw_texts   BLOB    NOT NULL)"
+            " digest      BLOB    NOT NULL)"
+        )
+        # One row per chunk of whole messages: ``first_msg`` is the position of
+        # the chunk's first message, ``texts`` a zlib-compressed JSON list.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS session_text("
+            " fts_rowid INTEGER NOT NULL,"
+            " first_msg INTEGER NOT NULL,"
+            " texts     BLOB    NOT NULL,"
+            " PRIMARY KEY (fts_rowid, first_msg)) WITHOUT ROWID"
         )
         if not version:
             conn.execute(f"PRAGMA user_version={_INDEX_VERSION}")
@@ -298,18 +378,22 @@ class SessionSearchIndex:
         if not self.available or not stats:
             return {}
         try:
-            return self._fresh_from(self._ensure_open(), stats)
+            rows = self._fresh_from(self._ensure_open(), stats)
         except Exception:
             return {}
+        return {key: row.rowid for key, row in rows.items()}
 
     @staticmethod
-    def _fresh_from(conn: sqlite3.Connection, stats: dict[str, os.stat_result]) -> dict[str, int]:
+    def _fresh_from(
+        conn: sqlite3.Connection, stats: dict[str, os.stat_result]
+    ) -> dict[str, IndexRow]:
         """Freshness for *stats*, read through an already-open connection."""
         rows = conn.execute(
-            "SELECT session_key, fts_rowid, mtime_ns, size, dev, ino FROM session_entry"
+            "SELECT session_key, fts_rowid, mtime_ns, size, dev, ino, doc_chars, digest"
+            " FROM session_entry"
         ).fetchall()
-        fresh: dict[str, int] = {}
-        for key, rowid, mtime_ns, size, dev, ino in rows:
+        fresh: dict[str, IndexRow] = {}
+        for key, rowid, mtime_ns, size, dev, ino, doc_chars, digest in rows:
             st = stats.get(key)
             if st is None:
                 continue
@@ -319,7 +403,7 @@ class SessionSearchIndex:
                 and _sqlite_stat_identity(st.st_dev) == dev
                 and _sqlite_stat_identity(st.st_ino) == ino
             ):
-                fresh[key] = rowid
+                fresh[key] = IndexRow(rowid, int(doc_chars), bytes(digest).hex())
         return fresh
 
     def sync(
@@ -336,23 +420,25 @@ class SessionSearchIndex:
 
         Both projections the search path needs are derived here rather than by
         the caller, so the folded document can never drift from the raw texts it
-        came from: the fold is ``"\\x00".join(texts).casefold()`` and
+        came from: the fold is :func:`fold_texts` and
         ``doc_chars`` counts the ORIGINAL characters, matching
         ``SessionCatalogProjection._build_folded`` exactly. The scorer must not be
         able to tell which source its text came from.
 
-        The raw texts are stored compressed and unindexed: they exist only so
-        snippet building stops re-reading and re-parsing the JSONL, which
-        measured as 858 ms of a 947 ms query once matching itself was indexed.
+        The raw texts are stored compressed and unindexed, in chunks of whole
+        messages (see :meth:`message_texts`): they exist only so snippet building
+        stops re-reading and re-parsing the JSONL, and chunking lets a snippet
+        decompress the one chunk holding its match instead of the whole session.
 
         Everything moves in one transaction. A half-written session would
         otherwise be vouched for by the entry while its text was missing.
         """
         if not self.available:
             return
-        folded = "\x00".join(texts).casefold()
+        folded = fold_texts(texts)
         doc_chars = sum(len(t) for t in texts)
-        blob = zlib.compress(json.dumps(list(texts), ensure_ascii=False).encode("utf-8"), 6)
+        chunks = _chunk_texts(texts)
+        digest = content_digest(texts)
         stored_dev = _sqlite_stat_identity(dev)
         stored_ino = _sqlite_stat_identity(ino)
         try:
@@ -365,6 +451,7 @@ class SessionSearchIndex:
                 if old is not None:
                     conn.execute("DELETE FROM session_fts WHERE rowid=?", (old[0],))
                     conn.execute("DELETE FROM session_cjk WHERE rowid=?", (old[0],))
+                    conn.execute("DELETE FROM session_text WHERE fts_rowid=?", (old[0],))
                 cur = conn.execute("INSERT INTO session_fts(folded) VALUES (?)", (folded,))
                 rowid = cur.lastrowid
                 # Same rowid in both FTS tables so one entry addresses both.
@@ -372,17 +459,22 @@ class SessionSearchIndex:
                     "INSERT INTO session_cjk(rowid, chars) VALUES (?,?)",
                     (rowid, cjk_inventory(folded)),
                 )
+                # A freed rowid can be reused; clear anything a crash left behind.
+                conn.execute("DELETE FROM session_text WHERE fts_rowid=?", (rowid,))
+                conn.executemany(
+                    "INSERT INTO session_text(fts_rowid, first_msg, texts) VALUES (?,?,?)",
+                    [(rowid, first, blob) for first, blob in chunks],
+                )
                 conn.execute(
                     "INSERT INTO session_entry("
                     " session_key, fts_rowid, mtime_ns, size, dev, ino,"
-                    " doc_chars, raw_texts)"
+                    " doc_chars, digest)"
                     " VALUES (?,?,?,?,?,?,?,?)"
                     " ON CONFLICT(session_key) DO UPDATE SET"
                     "  fts_rowid=excluded.fts_rowid, mtime_ns=excluded.mtime_ns,"
                     "  size=excluded.size, dev=excluded.dev, ino=excluded.ino,"
-                    "  doc_chars=excluded.doc_chars,"
-                    "  raw_texts=excluded.raw_texts",
-                    (key, rowid, mtime_ns, size, stored_dev, stored_ino, doc_chars, blob),
+                    "  doc_chars=excluded.doc_chars, digest=excluded.digest",
+                    (key, rowid, mtime_ns, size, stored_dev, stored_ino, doc_chars, digest),
                 )
         except Exception:
             # Losing one row costs one scanned file on the next query, so this must
@@ -399,21 +491,38 @@ class SessionSearchIndex:
                     exc_info=True,
                 )
 
-    def raw_texts(self, key: str, st: os.stat_result) -> list[str] | None:
+    def iter_raw_texts(
+        self, key: str, st: os.stat_result, digest: str | None = None
+    ) -> Iterator[str] | None:
         """*key*'s original message texts, but only if the row matches *st*.
 
         Freshness is re-checked here rather than trusted from the caller because
         the snippet pass runs after the scoring pass, without the lock the fold
         took — so the file may have moved on in between. A stale answer would
         show a preview line absent from the session's current text.
+
+        The compressed chunks are fetched in one read transaction, so freshness
+        and text describe the same row; only the decompression is deferred, which
+        is what lets a caller that stops at its first match skip the rest. A
+        chunk that fails to decode raises :class:`ChunkDecodeError`.
+
+        With *digest*, the row must also still carry that content digest, so a
+        caller memoizing under it reads exactly the text it names.
         """
+        chunks = self._fresh_chunks(key, st, digest)
+        if chunks is None:
+            return None
+        return _iter_chunks(chunks)
+
+    def fresh_digest(self, key: str, st: os.stat_result) -> str | None:
+        """*key*'s content digest in hex, but only if its row matches *st*."""
         if not self.available:
             return None
         try:
             row = (
                 self._ensure_open()
                 .execute(
-                    "SELECT mtime_ns, size, dev, ino, raw_texts FROM session_entry"
+                    "SELECT mtime_ns, size, dev, ino, digest FROM session_entry"
                     " WHERE session_key=?",
                     (key,),
                 )
@@ -421,20 +530,52 @@ class SessionSearchIndex:
             )
         except Exception:
             return None
-        if row is None:
-            return None
         if (
-            row[0] != st.st_mtime_ns
+            row is None
+            or row[0] != st.st_mtime_ns
             or row[1] != st.st_size
             or row[2] != _sqlite_stat_identity(st.st_dev)
             or row[3] != _sqlite_stat_identity(st.st_ino)
         ):
             return None
+        return bytes(row[4]).hex()
+
+    def _fresh_chunks(
+        self, key: str, st: os.stat_result, digest: str | None = None
+    ) -> list[bytes] | None:
+        """Compressed text chunks of *key* in message order, if its row matches *st*
+        (and, given *digest*, still carries that content digest)."""
+        if not self.available:
+            return None
         try:
-            texts = json.loads(zlib.decompress(row[4]).decode("utf-8"))
+            conn = self._ensure_open()
+            conn.execute("BEGIN")
+            try:
+                row = conn.execute(
+                    "SELECT mtime_ns, size, dev, ino, fts_rowid, digest FROM session_entry"
+                    " WHERE session_key=?",
+                    (key,),
+                ).fetchone()
+                if row is None:
+                    return None
+                if (
+                    row[0] != st.st_mtime_ns
+                    or row[1] != st.st_size
+                    or row[2] != _sqlite_stat_identity(st.st_dev)
+                    or row[3] != _sqlite_stat_identity(st.st_ino)
+                ):
+                    return None
+                if digest is not None and bytes(row[5]).hex() != digest:
+                    return None
+                blobs = conn.execute(
+                    "SELECT texts FROM session_text WHERE fts_rowid=? ORDER BY first_msg",
+                    (row[4],),
+                ).fetchall()
+            finally:
+                conn.execute("COMMIT")
         except Exception:
             return None
-        return texts if isinstance(texts, list) else None
+        return [b[0] for b in blobs]
 
     def drop(self, keys: Iterable[str]) -> bool:
         """Remove *keys*, reporting whether the removal is known to have happened.
@@ -469,6 +610,7 @@ class SessionSearchIndex:
                         continue
                     conn.execute("DELETE FROM session_fts WHERE rowid=?", (row[0],))
                     conn.execute("DELETE FROM session_cjk WHERE rowid=?", (row[0],))
+                    conn.execute("DELETE FROM session_text WHERE fts_rowid=?", (row[0],))
                     conn.execute("DELETE FROM session_entry WHERE session_key=?", (key,))
             # Outside the transaction: a checkpoint cannot run inside one.
             return self._truncate_wal(conn)
@@ -565,7 +707,7 @@ class SessionSearchIndex:
 
     def shortlist(
         self, stats: dict[str, os.stat_result], needles: Sequence["SearchNeedle"]
-    ) -> tuple[dict[str, int], dict[int, set[str]] | None]:
+    ) -> tuple[dict[str, IndexRow], dict[int, set[str]] | None]:
         """Freshness and candidates, read from ONE database snapshot.
 
         Reading them separately races the backfill, and the race silently drops a
@@ -601,7 +743,9 @@ class SessionSearchIndex:
         except Exception:
             return ({}, None)
 
-    def document(self, rowid: int, session_key: str) -> tuple[int, str] | None:
+    def document(
+        self, rowid: int, session_key: str, digest: str | None = None
+    ) -> tuple[int, str] | None:
         """Return ``(doc_chars, folded)`` for *rowid*, but only if it is still *session_key*'s.
 
         The rowid alone is not an identity. SQLite reuses a freed rowid, and the
@@ -613,9 +757,13 @@ class SessionSearchIndex:
         path returns, which is exactly the equivalence guarantee this index exists
         to preserve.
 
-        So the key is part of the lookup, matching the guard :meth:`raw_texts`
+        So the key is part of the lookup, matching the guard :meth:`iter_raw_texts`
         already applies on the snippet path. A mismatch answers ``None``, which
         sends the caller back to reading the transcript.
+
+        With *digest*, the row must also still carry that content digest, read
+        in the same statement as the text, so a caller memoizing results under
+        the digest never files them against text the digest does not name.
         """
         if not self.available:
             return None
@@ -623,7 +771,7 @@ class SessionSearchIndex:
             row = (
                 self._ensure_open()
                 .execute(
-                    "SELECT e.doc_chars, f.folded FROM session_fts f"
+                    "SELECT e.doc_chars, f.folded, e.digest FROM session_fts f"
                     " JOIN session_entry e ON e.fts_rowid = f.rowid"
                     " WHERE f.rowid=? AND e.session_key=?",
                     (rowid, session_key),
@@ -633,6 +781,8 @@ class SessionSearchIndex:
         except Exception:
             return None
         if row is None:
+            return None
+        if digest is not None and bytes(row[2]).hex() != digest:
             return None
         return (int(row[0]), row[1] or "")
 
@@ -701,3 +851,47 @@ def _or_group(spellings: Sequence[str]) -> str:
     """FTS5 MATCH expression satisfied by any one of *spellings*."""
     quoted = " OR ".join('"' + s.replace('"', '""') + '"' for s in spellings)
     return f"({quoted})"
+
+
+class ChunkDecodeError(ValueError):
+    """A stored text chunk could not be decoded back into message texts."""
+
+
+def _chunk_texts(texts: Sequence[str]) -> list[tuple[int, bytes]]:
+    """``(first message position, compressed JSON list)`` for each chunk of *texts*.
+
+    Chunks hold whole messages and close once they reach ``_TEXT_CHUNK_CHARS``
+    characters, so their concatenation in ``first_msg`` order is *texts*.
+    """
+    out: list[tuple[int, bytes]] = []
+    start = 0
+    size = 0
+    for pos, text in enumerate(texts):
+        size += len(text)
+        if size >= _TEXT_CHUNK_CHARS:
+            out.append((start, _encode_chunk(texts[start : pos + 1])))
+            start = pos + 1
+            size = 0
+    if start < len(texts) or not texts:
+        out.append((start, _encode_chunk(texts[start:])))
+    return out
+
+
+def _encode_chunk(texts: Sequence[str]) -> bytes:
+    return zlib.compress(json.dumps(list(texts), ensure_ascii=False).encode("utf-8"), 6)
+
+
+def _decode_chunk(blob: bytes) -> list[str] | None:
+    try:
+        texts = json.loads(zlib.decompress(blob).decode("utf-8"))
+    except Exception:
+        return None
+    return texts if isinstance(texts, list) else None
+
+
+def _iter_chunks(blobs: list[bytes]) -> Iterator[str]:
+    for blob in blobs:
+        part = _decode_chunk(blob)
+        if part is None:
+            raise ChunkDecodeError("undecodable session_text chunk")
+        yield from part

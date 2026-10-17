@@ -90,6 +90,10 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # 'false' only on a fork pull request that touches nothing Windows-shaped
+      # (see "Decide the fork Windows scope"). Every other run reads 'true', and
+      # an absent output (this job failed) reads as "run", never as a skip.
+      windows_tests: ${{ steps.windows-scope.outputs.windows_tests }}
       # Central runner labels: eligible repository/event/actor combinations
       # use CodeBuild; all other runs use the corresponding hosted OS.
       # Linux consumers retain a fallback when this job never reports:
@@ -178,10 +182,38 @@ jobs:
               # The update lanes auto-update.js composes; the feed lane picks
               # the per-format feed directory a Linux package install reads.
               - 'website/electron/runtime/update/**'
+              # Loaded by both update lanes: the pre-swap stop's refusal code.
+              - 'website/electron/gateway-stop.js'
+              # gateway-stop.js loads it to pick the shutdown secret.
+              - 'website/electron/local-token.js'
               - 'website/electron/bundle-location.js'
               - 'packaging/build-desktop.sh'
               - 'scripts/stamp-distribution.sh'
               - '.github/workflows/build-desktop.yml'
+            # Independent of the buckets above. Read only for a FORK pull
+            # request, to decide whether its Backend Tests (Windows) run: the
+            # files that are Windows code by name, the shared platform shims,
+            # the PowerShell entry points Windows tests drive, and the inputs
+            # that shape every Windows shard (dependencies, every conftest, the
+            # setup action, the shard plugins, this workflow).
+            windows:
+              - '**/*windows*'
+              - '**/*win32*'
+              # `**/*windows*` stops at one path segment, so the action's own
+              # files (action.yml, probe.py) need their directory listed.
+              - '.github/actions/setup-windows-tests/**'
+              - '**/*.ps1'
+              - 'src/kiro_crew/flock_compat.py'
+              - 'src/kiro_crew/platform_compat.py'
+              - 'src/kiro_crew/platform_lock_compat.py'
+              - 'src/kiro_crew/platform_owner_compat.py'
+              - 'src/kiro_crew/platform_log_append.py'
+              - 'pyproject.toml'
+              - 'setup.cfg'
+              - '**/conftest.py'
+              # The shard and progress plugins every Windows shard loads.
+              - 'scripts/ci_*.py'
+              - '.github/workflows/ci.yml'
             # Independent of the buckets above, like linux_packaging: the files
             # that declare what `pip install` resolves for the installers, plus
             # the script that reads them.
@@ -277,6 +309,70 @@ jobs:
       # the same list admits it. Missing CODEBUILD_ACTOR_IDS fails toward
       # hosted, never a queued fleet job the webhook cannot accept. The webhook
       # remains an independent fence.
+      # A fork pull request runs Backend Tests (Windows) -- eight hosted Windows
+      # shards, about two hours of runner time a head -- only when the diff could
+      # change a Windows result: a Windows path above, an added or removed *.py
+      # line that branches on Windows, the `ci:windows` label, or `ci-full-run`. Fork jobs
+      # cannot use the CodeBuild fleet, so this suite was the largest single
+      # spend of fork heads on the shared hosted pool. main's own CI (the push,
+      # or the merge group when the queue is on) still runs the full Windows
+      # suite, so a break that slips past lands red there rather than unseen.
+      # Same-repository PRs, pushes and
+      # merge groups always run it. Like `ci-full-run`, the label takes effect
+      # on the next push: this workflow does not listen for `labeled`.
+      - name: Decide the fork Windows scope
+        id: windows-scope
+        env:
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          PATHS_HIT: ${{ steps.filter.outputs.windows }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:windows') }}
+          FULL_RUN: ${{ contains(github.event.pull_request.labels.*.name, 'ci-full-run') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # An added OR removed line that branches on Windows, wherever the file
+          # lives: the path list cannot foresee a shared module growing (or
+          # losing) a Windows arm. Names: `[_]IS_WINDOWS`, the Windows-only
+          # modules, ctypes' Windows loaders, the Windows-only subprocess and
+          # signal flags, `*WindowsPath`. Idioms: `os.name ==/!= 'nt'`,
+          # `.startswith('win')`, `platform.system()`.
+          # POSIX ERE, not `grep -P`: the step must judge the same on any grep.
+          WINDOWS_PRIMITIVES: '(^|[^A-Za-z0-9_])(win32|_?IS_WINDOWS|msvcrt|winreg|_winapi|windll|WinDLL|WINFUNCTYPE|CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW|DETACHED_PROCESS|CTRL_BREAK_EVENT|[A-Za-z]*WindowsPath)([^A-Za-z0-9_]|$)|os\.name[[:space:]]*[!=]=[[:space:]]*.nt.|startswith\(.win|platform\.system\(\)'
+        run: |
+          set -uo pipefail
+          run=true
+          reason=""
+          if [ "$FORK" = "true" ]; then
+            if [ "$FULL_RUN" = "true" ]; then reason="ci-full-run"
+            elif [ "$LABELLED" = "true" ]; then reason="label"
+            elif [ "$PATHS_HIT" = "true" ]; then reason="paths"
+            elif [ -z "${BASE_SHA:-}" ] \
+                || ! diff="$(git diff -U0 --no-color "${BASE_SHA}...HEAD" -- '*.py')"; then
+              # An unreadable diff fails toward running the suite.
+              reason="unreadable-diff"
+            else
+              # Added AND removed lines: deleting a Windows arm changes Windows
+              # behaviour as much as adding one. Drop only the file headers.
+              lines="$(printf '%s\n' "$diff" | grep -E '^[+-]' \
+                | grep -vE '^(\+\+\+|---) (a/|b/|/dev/null)' || true)"
+              rc=1
+              # A here-string, not a pipe: nothing upstream can be SIGPIPEd.
+              if [ -n "$lines" ]; then
+                rc=0; grep -qE "$WINDOWS_PRIMITIVES" <<<"$lines" || rc=$?
+              fi
+              case "$rc" in
+                0) reason="content" ;;
+                1) run=false ;;
+                # grep itself failed: fail toward running the suite.
+                *) reason="unreadable-diff" ;;
+              esac
+            fi
+          fi
+          echo "windows_tests=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = "true" ]; then
+            echo "Backend Tests (Windows) run${reason:+ on this fork head: $reason}."
+          else
+            echo "::notice::Backend Tests (Windows) skipped on this fork head: no Windows path or Windows-branching line changed. Add the ci:windows label and push to run it; main runs it after merge."
+          fi
+
       - name: Pick the Linux runner label
         id: runner
         env:
@@ -362,6 +458,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      max-parallel: 4
       fail-fast: false
       matrix:
         machine: [x86_64, aarch64]
@@ -401,6 +498,15 @@ jobs:
   # way, so it is polled as pending. A barrier that passed when it could
   # not read its subject would be worse than no barrier, because the matrix would
   # run anyway and the log would claim it was cleared to.
+  #
+  # One cancelled gate is not a verdict: on a push to main, a Fast Gate run
+  # evicted from its concurrency group before it started (another run entered
+  # the group) judged nothing. When the script proves that from the run's jobs
+  # and the group's listing, it waits while cancel-superseded-run (below)
+  # cancels THIS run, which then concludes `cancelled` like a CI run evicted
+  # from its own group, instead of `failure`. This job only reads; it never
+  # releases the matrix on that path, and any read or proof that fails, or a
+  # cancel that does not land, leaves the run failing closed.
   await-fast-gate:
     name: Await Fast Gate
     # Skipped on a push to main only while MERGE_QUEUE_ENABLED is 'true': the
@@ -464,6 +570,55 @@ jobs:
         # commit under test reaches it through the env above and nothing else.
         run: bash .github/scripts/await-fast-gate.sh
 
+  # ── Cancel a superseded push run (see cancel-superseded-run.sh) ──────
+  # The one write the evicted-gate case needs, held apart from the barrier so
+  # that only a push to main ever gets it. It is the only job in this workflow
+  # with actions:write: pull requests (same-repo or fork) and merge groups never
+  # start it, so their CI tokens stay read-only, and a push to main runs only
+  # scripts that are already on main.
+  #
+  # It runs the barrier's script as a probe, so it decides "superseded" by the
+  # barrier's own code and reads, and cancels THIS run only on that proof. It
+  # runs beside await-fast-gate, not behind it: behind it, it could start only
+  # after the barrier had already failed, and that failed check would stay red
+  # on the commit. Nothing needs this job, so it cannot release the matrix; its
+  # only write is the cancel, so it cannot make a run green. Anything other than
+  # a proven supersession cancels nothing and leaves the verdict to the barrier.
+  cancel-superseded-run:
+    name: Cancel Superseded Run
+    # A push to main, and only while the merge queue is off -- the same push
+    # runs on which await-fast-gate runs. `push` is listed for main alone, and
+    # the ref is restated so a later trigger on another branch cannot reach it.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.MERGE_QUEUE_ENABLED != 'true'
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    permissions:
+      # actions:write is what lets this cancel its own run (it also covers the
+      # probe's reads). Job-level permissions REPLACE the top-level grant, so
+      # contents:read is restated for the checkout.
+      actions: write
+      contents: read
+    steps:
+      # Sparse, shallow and credential-free, like the barrier's checkout: only
+      # .github/scripts is needed, and the gh calls authenticate with GH_TOKEN.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Cancel this run if its Fast Gate run was superseded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          HEAD_REPO: ${{ github.repository }}
+          # This run's own id, the only run the script ever cancels.
+          RUN_ID: ${{ github.run_id }}
+        run: bash .github/scripts/cancel-superseded-run.sh
+
   backend-lint:
     name: Backend Lint & Type Check
     needs: [changes, await-fast-gate]
@@ -481,6 +636,7 @@ jobs:
     # and bundle-size already run on, and leaves headroom for runner variance.
     timeout-minutes: 25
     strategy:
+      max-parallel: 4
       matrix:
         python-version: ["3.12"]
     steps:
@@ -561,6 +717,16 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
+      # No hand-written code file over 2,000 lines (AGENTS.md), behind the
+      # shrink-only .github/file-line-cap-baseline.txt. The verdict is scoped to
+      # this change through scripts/ratchet_scope.py, which needs the full
+      # history checked out above: a file the change does not touch is reported
+      # as main drift, never failed. Self-test first, same reason as above.
+      - name: Check file line cap (gate, baselined)
+        run: |
+          python3 scripts/check_file_line_cap.py --test
+          python3 scripts/check_file_line_cap.py
+
       # A committed ACP frame fixture carries what the WIRE carried. The class that
       # gets through a credential scrub is an ENUMERATION -- a provider catalog, a
       # command inventory -- because it reads as product data while describing what
@@ -633,6 +799,7 @@ jobs:
     # 120 seconds. File sharding reduces repeated collection, not test coverage.
     timeout-minutes: 60
     strategy:
+      max-parallel: 4
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
@@ -648,6 +815,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Depth 2 keeps the merge commit's parents (a push or merge-queue
+          # commit's parent), which is all test_flake_pattern_ratchet.py needs to
+          # compare a change with its base. At depth 1 it compares nothing.
+          fetch-depth: 2
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -862,11 +1033,15 @@ jobs:
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [changes, await-fast-gate]
+    # Skipped only on a fork head the `changes` job judged Windows-neutral;
+    # `!= 'false'` keeps an absent output running the suite.
+    if: needs.changes.outputs.windows_tests != 'false'
     # All eight shards share the actor-gated large label; absent output is hosted.
     runs-on: ${{ needs.changes.outputs.windows_runner || 'windows-latest' }}
     # Retain the existing Windows budget and coverage-free run.
     timeout-minutes: 60
     strategy:
+      max-parallel: 4
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
@@ -981,6 +1156,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
+      max-parallel: 4
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -1021,7 +1197,7 @@ jobs:
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
-              test/test_meetings_providers.py test/test_platform_compat.py
+              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py
             python - <<'PY'
           import os
           from pathlib import Path
@@ -1559,9 +1735,18 @@ jobs:
           pytest -q --timeout=180 --no-cov \
             test/test_script_hooks.py \
             test/test_cron_script.py \
+            test/test_snapshot_read_only_real_view.py \
+            test/test_pinned_order_real_sandbox.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_credentials.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_tracks.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \
@@ -1620,7 +1805,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           CHANGED="$(git diff --name-only HEAD^1 HEAD)"
-          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings\.py|context\.py|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings\.py|context\.py|context_assembly/.*|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
             echo "selected=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -1914,7 +2099,9 @@ jobs:
           pytest -v -n0 --no-cov --timeout=1200 -m real_adapter \
             --junitxml="$RUNNER_TEMP/real-adapter-results.xml" \
             test/test_codex_session_mcp.py \
-            test/test_opencode_session_mcp.py
+            test/test_opencode_session_mcp.py \
+            test/test_per_tool_mcp_deny_single_binary.py \
+            test/test_pi_gate_extension_mcp.py
 
       # The second half of the no-silent-skip rule, and the half that does not trust
       # the first. KIROCREW_E2E_REQUIRE turns an absent adapter into a failure; this
@@ -1930,7 +2117,7 @@ jobs:
       - name: Require every contract test to have executed
         if: always()
         env:
-          MEASURED_CONTRACT_FLOOR: "4"
+          MEASURED_CONTRACT_FLOOR: "11"
         run: |
           python3 - <<'PY'
           import os
@@ -2330,7 +2517,11 @@ jobs:
     steps:
       # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
       # against the same remote, through the shared diff-base resolver script.
+      # Full history so the file line cap below can compute THIS change's scope:
+      # Backend Lint, its other home, is skipped on a frontend-only diff.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       # CodeBuild images have no tool cache, so setup-node would resolve the
       # major through a GitHub API manifest call on every run; seed the cache
@@ -2462,6 +2653,67 @@ jobs:
             "$I18N_BASE_REF" 'the new-key i18n gate')" || exit 1
           export I18N_BASE_REF
           npm run i18n:check
+
+      # The Python goldens that run the REAL generator (test_find_ui_auto.py's
+      # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
+      # skip wherever node or website/node_modules is missing, which is every
+      # backend lane. This job has both, so they run here; the env var turns
+      # their skip into a failure, so a broken toolchain cannot pass green.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # No uv.lock in this repo; key the cache on the dependency files.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # The same file line cap gate as Backend Lint, which a frontend-only diff
+      # skips. Stdlib only, so it needs no install; scoped to this change through
+      # the full-history checkout above.
+      - name: Check file line cap (gate, baselined)
+        run: |
+          python3 scripts/check_file_line_cap.py --test
+          python3 scripts/check_file_line_cap.py
+
+      - name: Check the find_ui location index is fresh
+        # The packaged index the guide server's find_ui reads is generated from
+        # the dashboard source (surfaces, Settings tabs, the settings extraction,
+        # registered uiLocation() markers and the 12 catalogs). A stale index
+        # answers "where is X?" with a path the dashboard no longer draws, and
+        # nothing else notices. Regenerates in memory and byte-compares; writes
+        # nothing.
+        #
+        # It fails a PR only when the PR CAUSED the staleness: when the merge
+        # ref is stale the script also checks the base (`base.sha`, the commit
+        # the merge ref was computed against) and only warns when that base is
+        # already stale. A PR is fresh at its own head and can still merge onto
+        # a main that moved, so main goes stale between regen commits; a
+        # whole-tree check here failed every open PR for it. On a push to main
+        # it only warns. `npm run build` WARNS too (`--warn-if-stale`); only
+        # release.yml's build lanes are strict (`ui_index_strict` ->
+        # KC_UI_INDEX_STRICT=1), so a release cannot ship an index that
+        # disagrees with its own bundle. See docs/ci/ci-and-reviews.md.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+        run: python3 "$GITHUB_WORKSPACE/.github/scripts/ui_index_freshness.py"
+
+      - name: Run the find_ui goldens that need the real generator
+        env:
+          KIROCREW_UI_GENERATOR_REQUIRED: "1"
+        run: |
+          uv pip install --system -e . --group dev
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q -rs --no-cov \
+            test/test_find_ui_auto.py::test_the_generated_auto_tier_is_well_formed \
+            test/test_find_ui_auto.py::test_a_generated_shell_only_control_is_on_every_page
 
       - name: Check the color utilities this change touches name real tokens
         # A Tailwind utility naming a token the theme never declared is not an
@@ -2698,6 +2950,7 @@ jobs:
     # ways each shard is well under this, and a hung shard fails fast.
     timeout-minutes: 25
     strategy:
+      max-parallel: 4
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
@@ -2990,6 +3243,111 @@ jobs:
         # with every other gate green, which is what this closes.
         run: node scripts/check-chunk-cycles.mjs
 
+  # The i18n render-time gate (phase 5 of the i18n plan). Every other i18n gate
+  # reads SOURCE or CATALOG JSON, so three defect classes are invisible to all
+  # of them: a string that was never extracted (ordinary TypeScript to a
+  # scanner), a sentence assembled from several keys (several correct lookups),
+  # and English in a title/aria-label (never in the text flow). This renders
+  # the real SPA under the en-XA pseudolocale and reads them off the DOM.
+  #
+  # Its own job, not a lane of `e2e`. It needs no gateway, no token and no
+  # backend: the script serves its build over loopback and answers every
+  # /api/** call from fixtures, like the capture-*.mjs harnesses. What it does
+  # need is ~13 minutes of CPU on a hosted runner -- two Vite DEV builds (en-XA
+  # is DEV-only; a production build tree-shakes the catalog out entirely) and a
+  # Chromium render of every surface for HEAD and for the base commit -- and
+  # that is what the E2E job cannot spare: a fork PR runs `e2e` on a hosted
+  # 4-vCPU runner, and sharing it with the Playwright suite pushed the suite
+  # past its own 1020 s ceiling on 27% of fork runs (2.5% on the fleet's large
+  # instance). The Chromium this job installs is a ~7 s cached download, so a
+  # separate runner costs one toolchain setup and buys the suite its CPU back.
+  #
+  # Two runs, one per tree: [vs-base] renders the BASE commit with the same
+  # scanner and fails on any per-surface increase, reading no committed number.
+  # It is the ONLY thing that fails; the debt record in
+  # `src/i18n/render-baseline.json` is printed and never enforced, because a
+  # stored total is written by whichever branch measured it last and two
+  # branches that never touch the same file can combine into a number neither
+  # produced -- red on main with no diff anyone could fix. A push to main
+  # therefore gets a base too (the commit it replaced), which is what keeps
+  # that interaction enforced somewhere.
+  #
+  # A backend-only diff cannot change what the SPA renders, so it has nothing
+  # to measure there; meta diffs (.github/**, scripts/**) leave both surface
+  # flags false and still run it -- this job's own config lives in that bucket.
+  i18n-render:
+    name: i18n Render Gate (en-XA, head vs base)
+    needs: [changes, await-fast-gate]
+    if: needs.changes.outputs.only_backend != 'true'
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      # persist-credentials retained: the base-ref resolver below runs
+      # `git fetch origin` against the same remote, and the script exports the
+      # base tree with `git archive`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # CodeBuild images have no tool cache, so setup-node would resolve the
+      # major through a GitHub API manifest call on every run; seed the cache
+      # first (.github/actions/seed-node-tool-cache). No-op on hosted runners.
+      - uses: ./.github/actions/seed-node-tool-cache
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: website
+        run: npm ci --no-audit --no-fund
+
+      # Same browser provisioning as `e2e`: exact version key (a restore-key
+      # prefix could hand the job a different Chromium revision than
+      # @playwright/test expects), no `--with-deps` (every shared library
+      # Chromium needs is on the image; the apt mirror stall it risks is
+      # documented on the E2E job), unconditional install (a ~2 s no-op on a
+      # cache hit, and a partially written entry cannot become a missing
+      # browser inside the render).
+      - name: Resolve Playwright version
+        id: playwright-version
+        working-directory: website
+        run: |
+          version="$(node -p \
+            "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
+
+      - name: Install Playwright browser (Chromium)
+        timeout-minutes: 6
+        working-directory: website
+        run: npx playwright install chromium
+
+      - name: Resolve base for the i18n render-time gate
+        # The base must be fetched first because this checkout is shallow; the
+        # script EXITS NON-ZERO if a configured ref cannot be resolved rather
+        # than skipping itself green, for the reason the frontend-lint job
+        # documents.
+        working-directory: website
+        env:
+          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+        run: |
+          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
+            "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
+          printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
+
+      - name: Render every surface under en-XA, head vs base
+        # The same command the `kirocrew-prepare-pr` profile runs locally.
+        # It builds its OWN DEV bundle (website/dist-dev) and a temporary base
+        # tree; it reads no production build.
+        working-directory: website
+        run: npm run i18n:render
+
   # The browser gate runs on the CodeBuild fleet. The one step that needed a
   # user namespace -- the real private-workflow MCP run -- moved to
   # `e2e-private-namespace` below, the only piece of this lane the fleet cannot
@@ -3131,47 +3489,9 @@ jobs:
         working-directory: website
         run: node scripts/capture-mcp-app-message-rows.mjs "$RUNNER_TEMP/mcp-app-message-rows"
 
-      - name: Resolve base for the parallel i18n render-time gate
-        # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
-        # JSON, so three defect classes are invisible to all of them: a string that
-        # was never extracted (ordinary TypeScript to a scanner), a sentence
-        # assembled from several keys (several correct lookups), and English in a
-        # title/aria-label (never in the text flow). This renders the real SPA under
-        # the en-XA pseudolocale and reads them off the DOM.
-        #
-        # It lives in this job to reuse the Chromium install on the step above --
-        # its own job would re-download the browser for a ~5min script. It needs no
-        # gateway, no token and no backend: the script serves the build over
-        # loopback and answers every /api/** call from fixtures, like the
-        # capture-*.mjs harnesses. It builds its OWN bundle rather than reusing
-        # `npm run build` above, because en-XA is DEV-only and a production build
-        # tree-shakes the catalog out entirely.
-        #
-        # Two runs, one per tree: [vs-base] renders the BASE commit with the same
-        # scanner and fails on any per-surface increase, reading no committed number.
-        # It is the ONLY thing that fails; the debt record in
-        # `src/i18n/render-baseline.json` is printed and never enforced, because a
-        # stored total is written by whichever branch measured it last and two branches
-        # that never touch the same file can combine into a number neither produced --
-        # `projects.latent 16 -> 24` from #1107 + #985, red on main with no diff anyone
-        # could fix. A push to main therefore gets a base too (the commit it replaced),
-        # which is what keeps that interaction enforced somewhere. It costs a second
-        # bundle build on merges, the same ~5min every PR already pays.
-        # The base must be fetched first because this checkout is shallow; the script
-        # EXITS NON-ZERO if a configured ref cannot be resolved rather than skipping
-        # itself green, for the reason the frontend-lint job documents.
-        shell: bash
-        working-directory: website
-        env:
-          I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
-        run: |
-          I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
-            "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
-          printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
-
       # Every step below runs as `runner` through ci-shell (the job default).
-      # Nothing after this point writes a GitHub file command; the i18n base ref
-      # above is the last one.
+      # Nothing after this point writes a GitHub file command; the Playwright
+      # version step above is the last one.
       - uses: ./.github/actions/run-as-runner
 
       # The SkillForm block-scalar parity guard (issue #7763). It runs the REAL
@@ -3214,14 +3534,35 @@ jobs:
             exit 1
           }
 
+      - name: Transcript rows hold the 4px grid floor (asserting harness)
+        # Renders every transcript row kind through the real ChatMessageList and
+        # fails when a frame matches ZERO rows (the selector drifted and every
+        # check below it would pass vacuously), when a row's card padding is off
+        # the 4px grid, when a row leaves the column text edge, or on a page
+        # error. Pitch and internal edges are printed, not enforced; the floor's
+        # module (website/scripts/lib/transcript-grid-floor.mjs) says why. The
+        # capture page is not part of the production build, so the script serves
+        # it from an in-process Vite dev server on loopback: no gateway, no token,
+        # no network. Here for the Chromium install above; runs in seconds. Not
+        # path-filtered: the grid also moves with the shared CSS (theme tokens,
+        # index.css, the Tailwind config), not only with transcript components.
+        timeout-minutes: 5
+        working-directory: website
+        run: node scripts/capture-transcript-row-style.mjs --serve "$RUNNER_TEMP/transcript-row-style"
+
       - name: Run E2E and dedicated memory UI evidence in parallel
-        # Smoke and UI read the staged production bundle; i18n builds a separate
-        # dist-dev and a temporary base tree. All three share only read-only
-        # dependency/browser installs, with separate homes, ports and outputs.
-        # The helper awaits ALL outcomes even if one fails, preserves the UI's
-        # 12-minute cap, and drains adopted gateway/browser children on cancel.
-        # Overlap head+base i18n rendering rather than consume ~8 minutes of the
-        # fixed 25-minute job budget before the ordinary E2E lane can start.
+        # Smoke and UI both read the staged production bundle and share only the
+        # read-only dependency/browser installs, with separate homes, ports and
+        # outputs. The helper awaits BOTH outcomes even if one fails, preserves
+        # the UI's 12-minute cap, and drains adopted gateway/browser children on
+        # cancel. The i18n render gate is NOT a lane here: it is `i18n-render`
+        # below, on its own runner. Two Vite builds plus a Chromium render of
+        # every surface twice is ~13 minutes of CPU on a hosted 4-vCPU runner
+        # (the one a fork PR gets), and alongside the 330-spec suite it pushed
+        # that suite past its 1020 s ceiling on 27% of fork runs while the same
+        # overlap fit on the fleet's large instance (fork 991-1104 s vs fleet
+        # 663-847 s for this step). The suite's budget is sized for this step to
+        # hold two browser lanes, not three.
         # KIROCREW_E2E=1 is set by setup.py for smoke and only in the UI child
         # for evidence; REQUIRE turns missing prerequisites into hard failures.
         env:
@@ -3423,6 +3764,7 @@ jobs:
           || (needs.changes.result == 'success'
               && needs.await-fast-gate.result == 'success')) }}
     strategy:
+      max-parallel: 4
       # Each OS is its own verdict. A Windows-only regression must not hide
       # behind a cancelled macOS leg, which is exactly the shape of the escape
       # this job exists for.
@@ -3475,6 +3817,22 @@ jobs:
             pyproject.toml
             setup.cfg
 
+      # A supported Node on PATH before any gateway boots. Without it the
+      # gateway's boot-time Node repair (`_ensure_node`, run when `node` is
+      # below the supported major) sees the image's Node 18 and runs
+      # ensure-node.sh, which downloads mise and a Node release INSIDE the
+      # 60 s readiness window; a slow download then times the boot out with
+      # the progress bar as the stderr tail. Installing it here keeps the
+      # network fetch out of the timed boot. Windows already gets Node 24
+      # from setup-windows-tests.
+      - uses: ./.github/actions/seed-node-tool-cache
+        if: runner.os != 'Windows'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: runner.os != 'Windows'
+        with:
+          node-version: 24
+          package-manager-cache: false
+
       - name: Install dependencies
         shell: bash
         run: uv pip install --system -e ".[voice,desktop]" --group dev
@@ -3486,6 +3844,28 @@ jobs:
         if: runner.os == 'Windows' && runner.environment == 'self-hosted'
         shell: bash
         run: python .github/actions/setup-windows-tests/probe.py
+
+      - name: Pre-compile kiro_crew source to warm the .pyc cache
+        # Placed AFTER run-as-runner so this step runs as the same user (and
+        # with the same HOME) as the pytest session.  conftest._redirect_bytecode_cache
+        # sets PYTHONPYCACHEPREFIX to "${XDG_CACHE_HOME:-~/.cache}/kirocrew/pycache";
+        # the gateway child inherits that env var, so it only reads bytecode from
+        # that prefix tree -- NOT from __pycache__/.  Without the matching prefix
+        # this step warms the wrong cache and the first boot is still cold.
+        #
+        # Evidence of root cause (run 38339527809, job 115116247097):
+        #   boot1 (cold, no .pyc): 62.3 s -> 60 s timeout (FAILED)
+        #   boot2 (warm, .pyc in page cache): 19.5 s (PASSED)
+        #   delta = 42.8 s -- pure .pyc compilation on first subprocess import
+        run: |
+          python -c "
+          import os, subprocess, sys
+          cache = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+          prefix = os.path.join(cache, 'kirocrew', 'pycache')
+          os.makedirs(prefix, exist_ok=True)
+          env = {**os.environ, 'PYTHONPYCACHEPREFIX': prefix}
+          sys.exit(subprocess.run([sys.executable, '-m', 'compileall', '-q', 'src/kiro_crew'], env=env).returncode)
+          "
 
       - name: Boot a gateway end to end and assert the pass count
         # Linux uses the same non-root boundary as the backend shards.

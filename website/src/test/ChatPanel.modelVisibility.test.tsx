@@ -23,6 +23,8 @@ vi.mock('../api/client', () => ({
     agentResolvedModel: () => Promise.resolve({ model: '', pinned: false }),
     models: modelsMock,
     patchConfig: () => Promise.resolve({}),
+    // The Model page's Apps group reads the installed apps; none here.
+    listApps: () => Promise.resolve([]),
     tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),
     tipsFeedback: () => Promise.resolve({ ok: true }),
     featureVideoStatus: () => Promise.resolve({ enabled: false }),

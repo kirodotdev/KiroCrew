@@ -190,6 +190,23 @@ def _run(specs: dict, log, **kw):
 
 
 class TestThePass:
+    def test_never_removes_the_first_crewmate(self, old_style_config, bindings_dir, log):
+        # The row the installer writes for the first crewmate is bound to the
+        # ordinary template under a different key, so it is never a sync row.
+        from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents[ASSISTANT_MEMBER_NAME] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", source="builtin"
+        )
+        cfg.save()
+
+        report = _run(old_style_config, log)
+
+        assert ASSISTANT_MEMBER_NAME not in report.removed
+        assert ASSISTANT_MEMBER_NAME in KiroCrewConfig.load().agents
+        assert "scout" in report.removed
+
     def test_removes_never_chatted_keeps_chatted_leaves_hand_made(
         self, old_style_config, bindings_dir, log
     ):

@@ -15,19 +15,25 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
+import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from './AgentSpecNotRewrittenNotice'
 import { Btn } from './ui'
 import type { McpCustomSpec } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { guideAnchor, maybe } from '../uiLocations/targetRegistry'
 interface Props {
   open: boolean
   onClose: () => void
   /** When set, the modal edits this installed server instead of adding. */
   editName?: string | null
+  /** Whether the not-applied notice may offer the agent hand-off; the host turns it
+   *  off while it holds unsaved state the hand-off's navigation would discard. */
+  askAgent?: boolean
 }
 
 /** Result of client-side parsing of the pasted JSON. */
@@ -111,13 +117,15 @@ const PLACEHOLDER = JSON.stringify(
   2,
 )
 
-export default function McpCustomServerModal({ open, onClose, editName }: Props) {
+export default function McpCustomServerModal({ open, onClose, editName, askAgent = true }: Props) {
   const queryClient = useQueryClient()
   const editing = !!editName
   const [text, setText] = useState('')
   const [bareName, setBareName] = useState('')
   const [enableNow, setEnableNow] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // The save landed but the agent spec did not follow: stay open to say so.
+  const [notApplied, setNotApplied] = useState(false)
 
   // Reset per open so a reopened modal never carries stale state.
   useEffect(() => {
@@ -126,6 +134,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
       setBareName('')
       setEnableNow(false)
       setSubmitError(null)
+      setNotApplied(false)
     }
   }, [open, editName])
 
@@ -167,9 +176,10 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
 
   const addMutation = useMutation({
     mutationFn: () => api.mcpCustomAdd(parsed!.ok ? parsed!.servers : {}, enableNow),
-    onSuccess: () => {
+    onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      onClose()
+      if (agentSpecNotRewritten(r)) setNotApplied(true)
+      else onClose()
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
@@ -182,9 +192,10 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
 
   const updateMutation = useMutation({
     mutationFn: () => api.mcpCustomUpdate(editName!, parsed!.ok ? parsed!.servers[editName!] : {}),
-    onSuccess: () => {
+    onSuccess: (r) => {
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
-      onClose()
+      if (agentSpecNotRewritten(r)) setNotApplied(true)
+      else onClose()
     },
     onError: (err) => setSubmitError(err instanceof Error ? err.message : String(err)),
   })
@@ -192,7 +203,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
   const busy = addMutation.isPending || updateMutation.isPending
   const submit = () => {
     setSubmitError(null)
-    if (!canSubmit || busy) return
+    if (!canSubmit || busy || notApplied) return
     if (editing) updateMutation.mutate()
     else addMutation.mutate()
   }
@@ -206,7 +217,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         : i18nT('components.mcpCustomServerModal.add_custom_server')}
       maxWidth={640}
     >
-      <div className="flex flex-col gap-3 p-1">
+      <div className="flex flex-col gap-3 p-1" {...maybe(editing ? undefined : 'mcp.custom-form', guideAnchor)}>
         {!editing && (
           <p className="text-xs text-muted m-0">
             {i18nT('components.mcpCustomServerModal.paste_an')} <code>{i18nT('components.mcpCustomServerModal.mcpservers')}</code> {i18nT('components.mcpCustomServerModal.block_from_a_readme_a')}{' '}
@@ -231,7 +242,13 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
         )}
         {editing && !!specQuery.data && Object.keys(specQuery.data.spec.headers ?? {}).length > 0 && (
           <p className="text-xs text-text m-0" role="note">
-            {i18nT('components.mcpCustomServerModal.stored_header_values_are_hidden_and_read_only')}
+            <Trans
+              i18nKey="components.mcpCustomServerModal.stored_header_values_are_hidden"
+              // The value the read put in place of every stored header value:
+              // a save that sends it back unchanged keeps the stored value.
+              values={{ marker: Object.values(specQuery.data.spec.headers ?? {})[0] }}
+              components={{ marker: <code className="font-mono" /> }}
+            />
           </p>
         )}
 
@@ -241,7 +258,8 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           placeholder={editing ? '' : PLACEHOLDER}
           spellCheck={false}
           aria-label={editing ? i18nT('components.mcpCustomServerModal.server_spec_json') : i18nT('components.mcpCustomServerModal.servers_json')}
-          className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent resize-y`}
+          {...maybe(editing ? undefined : 'mcp.custom-json', guideAnchor)}
+          className={`w-full ${editing ? 'min-h-[220px]' : 'min-h-[400px]'} rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] text-text focus-ring-accent resize-y`}
         />
 
         {parsed && !parsed.ok && (
@@ -259,7 +277,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             onChange={(e) => setBareName(e.target.value)}
             placeholder={i18nT('components.mcpCustomServerModal.server_name')}
             aria-label={i18nT('components.mcpCustomServerModal.server_name_2')}
-            className="w-60 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[12px] text-text focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+            className="w-60 rounded-md border border-border bg-bg px-3 py-1.5 font-mono text-[12px] text-text focus-ring-accent"
           />
         )}
 
@@ -286,6 +304,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
           message={submitError}
           testId="mcp-custom-submit-error"
         />
+        {notApplied && <AgentSpecNotRewrittenNotice askAgent={askAgent} />}
 
         <div className="flex items-center justify-between gap-3 pt-1">
           {!editing ? (
@@ -308,7 +327,12 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
             <span className="text-xs text-muted">{i18nT('components.mcpCustomServerModal.saving_keeps_the_server_s_enabled_disabled_state')}</span>
           )}
           <div className="flex items-center gap-2 shrink-0">
-            <Btn onClick={onClose}>{i18nT('components.mcpCustomServerModal.cancel')}</Btn>
+            {/* After a save that landed, "Cancel" would read as discarding it. */}
+            <Btn onClick={onClose}>
+              {notApplied ? i18nT('app.close') : i18nT('components.mcpCustomServerModal.cancel')}
+            </Btn>
+            {/* Once the save landed, Close is the only action left. */}
+            {!notApplied && (
             <Btn primary onClick={submit} disabled={!canSubmit || busy}>
               {busy ? (
                 <Loader2 size={14} className="animate-spin" aria-hidden="true" />
@@ -317,6 +341,7 @@ export default function McpCustomServerModal({ open, onClose, editName }: Props)
               )}
               {editing ? i18nT('components.mcpCustomServerModal.save') : `Add${previewNames.length > 1 ? ` ${previewNames.length} servers` : ''}`}
             </Btn>
+            )}
           </div>
         </div>
       </div>

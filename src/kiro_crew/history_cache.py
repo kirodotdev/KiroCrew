@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable, Container
 from typing import TYPE_CHECKING, Generic, NamedTuple, TypeVar
@@ -27,6 +29,46 @@ logger = logging.getLogger(__name__)
 #: This bound does not cover the METADATA cache, which is sized separately by
 #: ``_METADATA_CACHE_MAX`` below for the reasons documented there.
 _TRANSCRIPT_CACHE_MAX = 256
+
+#: Parsed transcripts unread this long are dropped from the message caches. A
+#: boot scan or a restore parses hundreds of transcripts once; holding them all
+#: for the life of the gateway was ~150 MB on an idle copy of a real data home.
+#: A dropped entry is re-parsed on its next read, as on a cold cache.
+_TRANSCRIPT_CACHE_IDLE_TTL = 600.0
+_IDLE_SWEEP_SECS = 60.0
+
+_idle_caches: "weakref.WeakSet[_LRUCache]" = weakref.WeakSet()
+_idle_sweeper_lock = threading.Lock()
+_idle_sweeper: threading.Thread | None = None
+
+
+def _register_idle_cache(cache: "_LRUCache") -> None:
+    """Track a cache for the idle sweep and start the sweeper once per process."""
+    global _idle_sweeper
+    with _idle_sweeper_lock:
+        _idle_caches.add(cache)
+        if _idle_sweeper is None or not _idle_sweeper.is_alive():
+            _idle_sweeper = threading.Thread(
+                target=_idle_sweep_loop, name="kc-history-cache-sweep", daemon=True
+            )
+            _idle_sweeper.start()
+
+
+def sweep_idle_caches(now: float | None = None) -> int:
+    """Drop idle entries from every registered cache. Returns how many."""
+    with _idle_sweeper_lock:
+        caches = list(_idle_caches)
+    return sum(cache.drop_idle(now) for cache in caches)
+
+
+def _idle_sweep_loop() -> None:
+    while True:
+        time.sleep(_IDLE_SWEEP_SECS)
+        try:
+            sweep_idle_caches()
+        except Exception:  # noqa: BLE001 - a cache sweep must never kill its thread
+            logger.debug("transcript cache idle sweep failed", exc_info=True)
+
 
 #: Upper bound for ``ConversationLog._meta_cache`` specifically, kept separate
 #: from ``_TRANSCRIPT_CACHE_MAX`` above.
@@ -113,10 +155,36 @@ class _LRUCache(Generic[_V]):
     another locked method, so the lock is never re-entered.
     """
 
-    def __init__(self, maxsize: int = _TRANSCRIPT_CACHE_MAX) -> None:
+    def __init__(self, maxsize: int = _TRANSCRIPT_CACHE_MAX, *, idle_ttl: float = 0.0) -> None:
         self._maxsize = maxsize
         self._data: "OrderedDict[str, _V]" = OrderedDict()
         self._lock = threading.Lock()
+        #: Seconds an entry may sit unread before the idle sweeper drops it;
+        #: 0 keeps entries until LRU pressure evicts them. Stamps are kept in
+        #: the same LRU order as ``_data``, so the oldest entry is always first.
+        self._idle_ttl = idle_ttl
+        self._stamps: dict[str, float] = {}
+        if idle_ttl > 0:
+            _register_idle_cache(self)
+
+    def _touch(self, key: str) -> None:
+        if self._idle_ttl > 0:
+            self._stamps[key] = time.monotonic()
+
+    def drop_idle(self, now: float | None = None) -> int:
+        """Drop entries unread for ``idle_ttl`` seconds. Returns how many."""
+        if self._idle_ttl <= 0:
+            return 0
+        cutoff = (time.monotonic() if now is None else now) - self._idle_ttl
+        dropped = 0
+        with self._lock:
+            for key in list(self._data):
+                if self._stamps.get(key, 0.0) > cutoff:
+                    break  # LRU order: everything after this is newer
+                del self._data[key]
+                self._stamps.pop(key, None)
+                dropped += 1
+        return dropped
 
     def get(self, key: str, default: _V | None = None) -> _V | None:
         with self._lock:
@@ -124,24 +192,29 @@ class _LRUCache(Generic[_V]):
                 self._data.move_to_end(key)
             except KeyError:
                 return default
+            self._touch(key)
             return self._data[key]
 
     def __getitem__(self, key: str) -> _V:
         with self._lock:
             self._data.move_to_end(key)
+            self._touch(key)
             return self._data[key]
 
     def __setitem__(self, key: str, value: _V) -> None:
         with self._lock:
             self._data[key] = value
             self._data.move_to_end(key)
+            self._touch(key)
             # Evict least-recently-used entries until within the bound.
             if self._maxsize > 0:
                 while len(self._data) > self._maxsize:
-                    self._data.popitem(last=False)
+                    old, _ = self._data.popitem(last=False)
+                    self._stamps.pop(old, None)
 
     def pop(self, key: str, default: _V | None = None) -> _V | None:
         with self._lock:
+            self._stamps.pop(key, None)
             return self._data.pop(key, default)
 
     def pop_prefix(self, prefix: str) -> None:
@@ -155,6 +228,7 @@ class _LRUCache(Generic[_V]):
             doomed = [k for k in self._data if isinstance(k, str) and k.startswith(prefix)]
             for key in doomed:
                 del self._data[key]
+                self._stamps.pop(key, None)
 
     def __contains__(self, key: object) -> bool:
         with self._lock:
@@ -167,6 +241,7 @@ class _LRUCache(Generic[_V]):
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
+            self._stamps.clear()
 
 
 class _SearchTextCache(Generic[_V]):
@@ -199,7 +274,14 @@ class _SearchTextCache(Generic[_V]):
     method calls another locked method.
     """
 
-    def __init__(self, max_bytes: int, sizer: Callable[[_V], int], label: str = "") -> None:
+    def __init__(
+        self,
+        max_bytes: int,
+        sizer: Callable[[_V], int],
+        label: str = "",
+        *,
+        warn_on_refusal: bool = True,
+    ) -> None:
         self._max_bytes = max_bytes
         self._sizer = sizer
         self._label = label
@@ -208,7 +290,9 @@ class _SearchTextCache(Generic[_V]):
         self._admitted = 0
         self._refused = 0
         self._refused_since_prune = 0
-        self._warned = False
+        # A memo whose refusals cost only recomputation, never a file read,
+        # turns the warning off: reaching its ceiling is its normal state.
+        self._warned = not warn_on_refusal
         self._lock = threading.Lock()
 
     def get(self, key: str, default: _V | None = None) -> _V | None:
@@ -407,6 +491,7 @@ class HistoryCacheCoordinator:
             self._log._msg_cache.pop(ident, None)
             self._log._page_index_cache.pop(ident, None)
             self._log._meta_cache.pop(ident, None)
+            self._log._title_scan_cache.pop(ident, None)
             self._log._file_change_cache.pop(ident, None)
             self._log._tab_id_by_key.pop(ident, None)
             self._log._folded_cache.pop(ident, None)

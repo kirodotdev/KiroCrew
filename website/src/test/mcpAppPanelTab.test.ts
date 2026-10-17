@@ -9,7 +9,7 @@
  * Two ways that could happen, both covered here:
  *   1. registering `app` as a ViewKind — SidePanel unmounts category views on
  *      tab switch (`if (!isActive) return null`);
- *   2. the `activityOpen` gate in ChatPage unmounting the whole SidePanel
+ *   2. the `activityOpen` gate in ChatSidePanels unmounting the whole SidePanel
  *      subtree when the panel is closed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'

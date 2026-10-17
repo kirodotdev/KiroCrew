@@ -113,6 +113,9 @@ def schemas() -> list[dict[str, Any]]:
                 "spec, RFC, runbook, or wiki page that explains intent, a "
                 "decision, or how something works, and that you would want to "
                 "find again in a future session.\n\n"
+                "It works only when the operator turned on "
+                "knowledge.auto_add_documents (off by default). A refusal naming "
+                "that key means it is off: tell the user, do not retry.\n\n"
                 "Pass the document TEXT you already have as `content` -- this tool "
                 "never opens files, so read the document with your own tools first, "
                 "then hand over the text. Also pass where it came from as "
@@ -193,6 +196,12 @@ def schemas() -> list[dict[str, Any]]:
 # Appended when the embedding model cannot serve this search, so the caller
 # knows meaning-based (and CJK) matches were not tried.
 _KEYWORD_ONLY_NOTE = " (vector path unavailable; keyword results only)"
+
+#: Bound on the ``knowledge_add_document`` ingest POST: chunking, extraction and
+#: embedding of one document. A synchronous call on the pooled backend's worker,
+#: so it stays well under ``mcp_gateway.backend.PROGRESS_WEDGE_CEILING_SECS``
+#: (``test_mcp_gateway_inflight_report.py`` pins the relation).
+_ADD_DOCUMENT_TIMEOUT_SECS = 180.0
 
 
 def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
@@ -345,7 +354,7 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
             "reason": args.get("reason", ""),
             "source_uri": args.get("source_uri", ""),
         },
-        timeout=180,
+        timeout=_ADD_DOCUMENT_TIMEOUT_SECS,
     )
     # The title arrives straight from the tool call, so it reaches the audit
     # log before the server-side redaction the document body gets. SEL is

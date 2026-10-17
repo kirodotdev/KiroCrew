@@ -7,8 +7,8 @@ than being trimmed. A trusted project's ``always: true`` bodies have their own
 budget and are skipped with a warning instead, so a repository cannot fail a session.
 ``split_triggered`` and ``trigger_hint`` decide how a trigger match is
 delivered: a body by default, a one-line pointer for an unconfined skill that
-opted out. Matching itself (``SkillsLoader.get_triggered_skills``) stays in the
-facade.
+opted out. Matching itself (``SkillsLoader.get_triggered_skills``) lives in
+``kiro_crew.skills_selection``.
 """
 
 from __future__ import annotations

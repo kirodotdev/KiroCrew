@@ -251,6 +251,82 @@ def agent_tag_change_refusal(
     return None
 
 
+def slot_tag_write_principal(
+    request: web.Request, request_app: str, *, what: str
+) -> tuple[bool, str, str, str]:
+    """Classify a slot tag write's caller: ``(non_person, source, caller, member)``.
+
+    Shared by the two routes that write a session's tags on a caller's behalf,
+    ``PUT /api/chat/slots/{slot}/tags`` and ``POST /api/chat/slots/{slot}/drop``,
+    so both decide "is this the person?" from one enumeration. Deny-by-default on
+    identity: a caller is gated unless POSITIVELY confirmed to be the person.
+    Three non-person signals, any one of which gates — the transport alone is
+    not enough, because an app token declaring ``/api/chat/*`` reaches these
+    routes over the browser transport with NO ``X-Internal-Secret`` yet is still
+    an agent:
+
+    * ``request_origin`` source != ``"dashboard"`` — the internal-secret
+      (managed MCP) transport, whose secret the token-auth middleware has
+      already verified;
+    * a resolved app claim (``request_app``) — an app token acting as a
+      non-person principal;
+    * an admitted crew-member principal (``member:<store>``).
+
+    The mint path's positive predicate (``is_owner_dashboard_request``) is
+    deliberately NOT used: it also requires an owner ``user`` claim, which is
+    only reliably present once ``KIROCREW_OWNER_ID`` is configured, so keying the
+    gate on it would gate the person on a no-owner install. The enumeration is
+    the accepted contract, pinned per route by
+    ``test_non_person_signal_enumeration_each_leg_gates`` and its drop twin; a
+    NEW principal representation added to the auth layer must be added here
+    (and to those tests) deliberately.
+    """
+    origin_source, origin_caller = request_origin(request, what=what, log=logger)
+    member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
+    non_person = (
+        origin_source != "dashboard" or bool(request_app) or member_principal.startswith("member:")
+    )
+    return non_person, origin_source, origin_caller, member_principal
+
+
+def agent_slot_tags_refusal(
+    state: DashboardState,
+    current_ids: list[str],
+    new_ids: list[str],
+    snapshot: GrantsSnapshot,
+) -> tuple[str, str] | None:
+    """Grants-policy verdict for a non-person caller replacing a slot's tags.
+
+    Turns the wholesale ``current_ids`` -> ``new_ids`` replace into the add /
+    remove / result diff :func:`agent_tag_change_refusal` judges, against the
+    live vocabulary, so ``PUT /tags`` and the board drop hold an agent to the
+    same rules: a drop is the same diff an agent could send to ``PUT /tags``.
+    Call under the tags write lock, with ``current_ids`` read fresh there.
+
+    Fails closed on a REMOVAL it cannot resolve. An id on the slot that is being
+    dropped but is absent from the live vocabulary cannot be checked for a
+    reservation — and when the vocabulary is NON-AUTHORITATIVE (``tags.json``
+    was unreadable at boot, so ``state._tags`` is empty while protected rows
+    persist), a tag the owner reserved sits exactly there. Refuse
+    ``tag_grants_unavailable`` rather than strip a reservation nobody can see.
+    When the vocabulary IS authoritative, an absent id is a dangling reference
+    to a deleted tag — benign to drop.
+    """
+    by_id = {
+        t.get("id"): t for t in state._tags if isinstance(t, dict) and isinstance(t.get("id"), str)
+    }
+    current_set = set(current_ids)
+    new_set = set(new_ids)
+    if not getattr(state, "_tags_authoritative", True):
+        unresolved = [i for i in current_ids if i not in new_set and i not in by_id]
+        if unresolved:
+            return ("tag_grants_unavailable", unresolved[0])
+    added = [by_id[i] for i in new_ids if i not in current_set and i in by_id]
+    removed = [by_id[i] for i in current_ids if i not in new_set and i in by_id]
+    result = [by_id[i] for i in new_ids if i in by_id]
+    return agent_tag_change_refusal(added, removed, result, snapshot)
+
+
 def resolve_board_tags(
     slot_tag_ids: list[str], vocabulary: list[dict[str, Any]]
 ) -> list[tuple[str, str]]:
@@ -1405,37 +1481,12 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
     # store exists to constrain what an AGENT may do to a session's tags, not
     # the owner. ``chat_tag`` ``set_state`` enforces it, and this
     # wholesale-replace route (which ``chat_tag_assign`` reaches) must too, or
-    # the policy is bypassable here. Deny-by-default on identity: an agent is
-    # gated unless POSITIVELY confirmed to be the person. Three non-person
-    # signals, any one of which gates — the transport alone is not enough,
-    # because an app token declaring ``/api/chat/*`` reaches this route over the
-    # browser transport with NO ``X-Internal-Secret`` yet is still an agent:
-    #   * ``request_origin`` source != ``"dashboard"`` — the internal-secret
-    #     (managed MCP) transport, whose secret the token-auth middleware has
-    #     already verified;
-    #   * a resolved app claim (``effective_request_app`` / ``request_app``) —
-    #     an app token acting as a non-person principal;
-    #   * an admitted crew-member principal (``member:<store>``).
-    origin_source, origin_caller = request_origin(request, what="slot tags", log=logger)
-    member_principal = str(request.get(MEMBER_CHAT_PRINCIPAL_KEY) or "")
-    is_internal_caller = (
-        origin_source != "dashboard" or bool(request_app) or member_principal.startswith("member:")
+    # the policy is bypassable here. Who counts as the person is decided by
+    # ``slot_tag_write_principal`` (the three non-person signals), shared with
+    # the board drop so the two writes cannot classify a caller differently.
+    is_internal_caller, _source, origin_caller, member_principal = slot_tag_write_principal(
+        request, request_app, what="slot tags"
     )
-    # These three are the non-person principal representations the auth layer
-    # produces for this route: the internal-secret transport, a resolved app
-    # claim, and an admitted member principal. The gate decides "person" by
-    # their ABSENCE. The mint path's positive predicate
-    # (``is_owner_dashboard_request``) is deliberately NOT used here: it also
-    # requires an owner ``user`` claim, which only becomes reliably present once
-    # ``KIROCREW_OWNER_ID`` is configured, so keying the gate on it would GATE
-    # THE PERSON on a no-owner / local install — a regression with no security
-    # value, since the person is who the store exists to leave unconstrained.
-    # The enumeration is the accepted contract, matching the three
-    # representations the sibling ``member_slot_write_refused`` and
-    # app-isolation fences key on; it is guarded by convention plus the
-    # co-located pin test ``test_non_person_signal_enumeration_each_leg_gates``,
-    # NOT by an automatic tripwire — a NEW principal representation added to the
-    # auth layer must be added to this enumeration (and that test) deliberately.
     # Pull the grants store read+parse off the event loop ONCE, BEFORE the lock,
     # so the atomic snapshot captured in-lock below serves the installed
     # in-memory cache (the snapshot is cache-only and touches no filesystem).
@@ -1508,48 +1559,10 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
         if is_internal_caller:
             snapshot = await asyncio.to_thread(capture_grants_snapshot)
             current_ids = list(getattr(slot, "tags", None) or [])
-            by_id = {
-                t.get("id"): t
-                for t in state._tags
-                if isinstance(t, dict) and isinstance(t.get("id"), str)
-            }
-            current_set = set(current_ids)
-            new_set = set(new_tags)
-            # Fail closed on a REMOVAL we cannot resolve. An id on the slot that
-            # is being dropped (in current, not in new) but is absent from the
-            # live vocabulary cannot be checked for a reservation — and when the
-            # vocabulary is NON-AUTHORITATIVE (``tags.json`` was unreadable at
-            # boot, so ``state._tags`` is empty while protected rows persist), a
-            # tag the owner reserved sits exactly here: on the slot, out of
-            # ``by_id``. ``new_tags`` is already filtered to the (empty)
-            # vocabulary so the tag can never be re-listed, and a diff built only
-            # from ``by_id`` would silently omit the removal and persist it with
-            # no grants check. Refuse rather than strip a reservation we cannot
-            # see. When the vocabulary IS authoritative, an absent current id is
-            # a dangling reference to a deleted tag — benign to drop.
-            vocab_authoritative = getattr(state, "_tags_authoritative", True)
-            if not vocab_authoritative:
-                unresolved_removed = [i for i in current_ids if i not in new_set and i not in by_id]
-                if unresolved_removed:
-                    sel().log_api_access(
-                        caller=request_app or member_principal or origin_caller,
-                        operation="chat.slot_tags",
-                        outcome="denied",
-                        source="app_isolation",
-                        resources=f"slot={slot.key} tag={unresolved_removed[0]}",
-                        error="tag_grants_unavailable",
-                    )
-                    return web.json_response(
-                        {
-                            "error": f"tag_grants_unavailable:{unresolved_removed[0]}",
-                            "code": "tag_grants_unavailable",
-                        },
-                        status=403,
-                    )
-            added = [by_id[i] for i in new_tags if i not in current_set and i in by_id]
-            removed = [by_id[i] for i in current_ids if i not in new_set and i in by_id]
-            result = [by_id[i] for i in new_tags if i in by_id]
-            refusal = agent_tag_change_refusal(added, removed, result, snapshot)
+            # ``new_tags`` is already filtered to the vocabulary, so an
+            # unresolvable removal on a non-authoritative vocabulary is caught
+            # by the helper, not silently persisted.
+            refusal = agent_slot_tags_refusal(state, current_ids, new_tags, snapshot)
             if refusal is not None:
                 code, tag_id = refusal
                 sel().log_api_access(
@@ -2045,33 +2058,90 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     can have filter-only columns without accidental data loss. A derived state
     lane is refused outright — its membership follows the session's runtime
     state and no tag write can place a card there.
+
+    The browser drag is one caller; the ``session_move_to_column`` MCP tool is
+    the other. So the route applies the caller fences ``PUT /tags`` applies
+    (unattributable caller, crew-member ownership, app ownership of the slot
+    and its transcript), and a non-person caller is held to the same agent
+    tag-grants policy, judged over the same diff: a drop is exactly the tag
+    replace that caller could send to ``PUT /tags``. On top of that verdict the
+    target must pass the ``chat_tag`` ``set_state`` rule — a row-backed
+    workflow state with ``add-remove`` policy — so an agent never moves a card
+    into a state it cannot move it out of. An optional ``base_tags_revision``
+    makes the write compare-and-set, as on ``PUT /tags``. The person is never
+    gated.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    # The three ownership fences ``api_chat_slot_tags`` applies, in the same
+    # order and with the same indistinguishable 404. A caller whose tab closed
+    # mid-call is refused first: its derived app would be "" and read as the
+    # person. Lazy import for the same module-load cycle PUT /tags avoids.
+    refused = refuse_unattributable_caller(state, request, "chat.slot_drop")
+    if refused is not None:
+        return refused
+    from kiro_crew.dashboard.chat_folders import member_slot_write_refused
+
+    refused = member_slot_write_refused(state, request, slot, "chat.slot_drop")
+    if refused is not None:
+        return refused
+    request_app = effective_request_app(state, request)
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_drop")) is not None:
+        return denied
     # Capture the transcript key the lookup above just covered, BEFORE the
     # body-parse await — the same rebind window PUT /tags documents. The
     # re-check below and the save's expected_history_key pin together keep
     # this request's write on the transcript it was authorized against.
     authorized_history_key = slot_history_key(slot)
+    if not app_owns_transcript(state._slots, request_app, authorized_history_key):
+        audit_app_slot_denial(
+            request_app, "chat.slot_drop", slot.key, "app does not own this slot's transcript"
+        )
+        return slot_not_found()
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     column_id = str(body.get("column_id") or "")
+    # Optional slot generation, the token ``PATCH /pin`` reads: the MCP tool
+    # resolves the slot from an earlier ``/api/chat/slots`` read, and the key
+    # can be recreated for another conversation before this POST arrives. The
+    # board sends none and keeps its behaviour.
+    expected_created = str(body.get("expected_created") or "")
+    # Optional compare-and-set precondition, the one ``PUT /tags`` reads: the
+    # tags revision the caller saw when it resolved the slot. The drop strips
+    # every status tag and keeps the rest, so a tag the person toggled after
+    # that read would be judged and written on a list the caller never saw.
+    # The board sends none and keeps its behaviour.
+    raw_base = body.get("base_tags_revision")
+    if raw_base is not None and not isinstance(raw_base, str):
+        return web.json_response(
+            {"error": "base_tags_revision must be a string", "code": "base_not_string"},
+            status=400,
+        )
+    base_tags_revision: str | None = raw_base or None
+    is_agent, origin_source, origin_caller, member_principal = slot_tag_write_principal(
+        request, request_app, what="slot drop"
+    )
+    audit_caller = request_app or member_principal or origin_caller
+    if is_agent:
+        # Read the grants store off the event loop once, before the lock, so
+        # the snapshot captured in-lock serves the installed cache.
+        await asyncio.to_thread(refresh_cache)
 
-    def _rejected(reason: str) -> web.Response:
+    def _rejected(reason: str, code: str) -> web.Response:
         sel().log_api_access(
-            caller="dashboard",
+            caller=audit_caller,
             operation="chat.slot_drop",
             outcome="rejected",
-            source="dashboard",
+            source=origin_source,
             resources=f"{name}->{column_id}",
             error=reason,
         )
-        return web.json_response({"ok": False, "reason": reason, "tags": slot.tags})
+        return web.json_response({"ok": False, "reason": reason, "code": code, "tags": slot.tags})
 
     # Serialize the whole resolve/re-check/mutate/persist/rollback span under
     # the same lock every other tags writer holds (PUT /tags, the tag-delete
@@ -2085,6 +2155,10 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
     # resurrected — the stale target id would be re-added and persisted onto
     # the slot after the vocabulary commit removed it.
     async with _tags_write_lock(state):
+        # The one grants snapshot an agent drop is judged on, read FIRST so
+        # the re-authorization below is the last thing before the write with
+        # no await in between.
+        snapshot = await asyncio.to_thread(capture_grants_snapshot) if is_agent else None
         column = next((c for c in state._tag_boards if c.get("id") == column_id), None)
         if not column:
             return web.json_response(
@@ -2096,7 +2170,7 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # runtime state, so there is nothing to write that would move the
             # card there — only the agent reaching that state moves it. Refuse
             # rather than silently reassigning tags the lane does not filter by.
-            return _rejected("column is a derived state lane")
+            return _rejected("column is a derived state lane", "state_lane")
         col_tags = [tag_index[t] for t in column.get("tag_ids") or [] if t in tag_index]
         status_tags = [t for t in col_tags if t.get("status")]
         if len(status_tags) != 1:
@@ -2105,18 +2179,75 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # (covers the unfiltered, multi-status, and target-tag-deleted
             # cases alike; tag_index was built under the lock, so a tag
             # deleted while this request waited is already absent here).
-            return _rejected("column is not a status lane")
+            return _rejected("column is not a status lane", "not_status_lane")
         target_id = status_tags[0]["id"]
         # Re-authorize after the awaits above (body parse, lock acquisition):
         # same slot OBJECT still registered under the name, routing still on
-        # the transcript captured before the first await. No await between
-        # this check and the save dispatch; the persist window itself is
-        # covered by the save's pin.
-        if state._slots.get(name) is not slot or slot_history_key(slot) != authorized_history_key:
-            return _rejected("session was deleted or rebound")
+        # the transcript captured before the first await, the slot generation
+        # the caller resolved, and transcript ownership re-asked. No await
+        # between this check and the save dispatch; the persist window itself
+        # is covered by the save's pin.
+        if (
+            state._slots.get(name) is not slot
+            or slot_history_key(slot) != authorized_history_key
+            or (expected_created and slot.created_at != expected_created)
+            or not app_owns_transcript(state._slots, request_app, authorized_history_key)
+        ):
+            return _rejected("session was deleted or rebound", "session_gone")
+        if base_tags_revision is not None and base_tags_revision != slot.tags_revision:
+            # Decided under the lock every tags writer holds, like PUT /tags:
+            # nothing is written and the caller re-reads the session's tags.
+            sel().log_api_access(
+                caller=audit_caller,
+                operation="chat.slot_drop",
+                outcome="rejected",
+                source=origin_source,
+                resources=f"{name}->{column_id}",
+                error="stale base revision",
+            )
+            return web.json_response(
+                {
+                    "error": "tags changed since the session was read",
+                    "code": "stale_base",
+                    "base_tags_revision": base_tags_revision,
+                    "tags_revision": slot.tags_revision,
+                    "tags": slot.tags,
+                },
+                status=409,
+            )
         kept = [t for t in slot.tags if t in tag_index and not tag_index[t].get("status")]
         prior_tags = slot.tags
         written_tags = kept + [target_id]
+        if snapshot is not None:
+            # The same verdict PUT /tags gives this caller for the same diff,
+            # over the one grants snapshot read above. A refusal writes nothing.
+            refusal = agent_slot_tags_refusal(state, list(prior_tags), written_tags, snapshot)
+            if refusal is None:
+                # Then the ``chat_tag`` ``set_state`` rule on the target: a
+                # drop moves a card INTO a workflow state, and an agent may only
+                # enter a state it can also leave. ``PUT /tags`` admits an
+                # ``add-only`` target, which would park the card where no agent
+                # move can take it out again. Status and policy both come from
+                # the protected row, never from the agent-writable vocabulary.
+                target_policy, target_is_status = snapshot.grant(target_id)
+                if not target_is_status:
+                    refusal = ("not_a_status_tag", target_id)
+                elif target_policy != "add-remove":
+                    refusal = ("tag_policy_denied", target_id)
+            if refusal is not None:
+                code, tag_id = refusal
+                sel().log_api_access(
+                    caller=audit_caller,
+                    operation="chat.slot_drop",
+                    outcome="denied",
+                    source="app_isolation",
+                    resources=f"slot={slot.key}" + (f" tag={tag_id}" if tag_id else ""),
+                    error=code,
+                )
+                return web.json_response(
+                    {"error": f"{code}:{tag_id}" if tag_id else code, "code": code},
+                    status=403,
+                )
         slot.tags = written_tags
         written_tags_revision = _bump_slot_tags_revision(slot)
         if not await save_slot_off_loop(
@@ -2140,13 +2271,13 @@ async def api_chat_slot_drop(request: web.Request) -> web.Response:
             # next flush reconverges the durable record to the live state.
             slot._dirty = True
             state.push_slots_update()
-            return _rejected("session was deleted or rebound")
+            return _rejected("session was deleted or rebound", "session_gone")
     state.push_slots_update()
     sel().log_api_access(
-        caller="dashboard",
+        caller=audit_caller,
         operation="chat.slot_drop",
         outcome="allowed",
-        source="dashboard",
+        source=origin_source,
         resources=f"{name}->{column_id}",
     )
     return web.json_response({"ok": True, "tags": slot.tags})

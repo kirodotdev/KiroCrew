@@ -98,10 +98,13 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
  * Sharing one key would release or hold both at once, which is the same
  * half-ship failure a per-feature flag exists to prevent.
  *
- * Held because the LANDING is unfinished, not the dispatch: the session really is
- * created on the peer, but there is no native remote chat view yet, so it opens
- * by switching to that crew's pane, and the local session list does not show
- * live remote sessions — so the session is hard to return to afterwards.
+ * ONE flag for the whole feature: it also merges each connected crew's live
+ * sessions into the Sessions list, grouped per crew. It used to share that half
+ * with {@link PREVIEW_INSTANCE_SESSIONS}, and a user with one switch on and the
+ * other off could open a chat on a crew and then find no crew group to return
+ * to it from. Read it through `useRemoteCrewChat` and write it through
+ * {@link setRemoteCrewChat}, never as a bare flag, so the retired key keeps
+ * counting.
  *
  * Its toggle lives in Settings > Developer > Feature Previews, alongside every other
  * unreleased surface, and NOT on Settings > Remote Crew where it started: a
@@ -117,12 +120,11 @@ export const PREVIEW_CREW = `${PREVIEW_FLAG_PREFIX}crew`
 export const PREVIEW_REMOTE_CREW_CHAT = `${PREVIEW_FLAG_PREFIX}remote-crew-chat`
 
 /**
- * A connected remote instance's live sessions, merged into the Sessions list.
- *
- * Gates a surface INSIDE `ChatSidebar`, which every dashboard user renders — so
- * unlike a route-level gate, this flag is also what keeps the per-instance slot
- * queries off the wire for anyone who has not opted in. Read it in the sidebar
- * and skip the fetch, rather than fetching and hiding the rows.
+ * RETIRED: the old "Remote crew sessions" switch, folded into
+ * {@link PREVIEW_REMOTE_CREW_CHAT}. Kept only so a device that turned it on
+ * still has the feature on: `useRemoteCrewChat` reads either key as ON,
+ * and {@link setRemoteCrewChat} clears it when the feature is turned off. Never
+ * gate anything on it directly.
  */
 export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-sessions`
 
@@ -142,23 +144,29 @@ export const PREVIEW_INSTANCE_SESSIONS = `${PREVIEW_FLAG_PREFIX}instance-session
 export const PREVIEW_LAYOUT_HARNESS = `${PREVIEW_FLAG_PREFIX}layout-harness`
 
 /**
- * The Dynamic Dashboard: the status dock above the composer, the side panel's
- * Dashboard view, the Crewmates page's Dashboard tab, and the "All dashboards"
- * page (`/session-dashboards`).
+ * A sidebar folder drawn around the session that conducts it: that card pinned
+ * first inside the folder, with an accent bar down its left edge and a
+ * `conductor` tag beside its agent name.
  *
- * Held because the surface is still being designed — what the panel shows,
- * what the agent's published page is asked to carry, and where the automatic
- * card belongs are all moving — so it is not something to put in front of a
- * user yet. A developer turns it on here to work on it.
+ * Held because it changes the SHAPE of a list tens of thousands of people read
+ * every day, by default, for every folder whose sessions were opened by one of
+ * them. The pin is not a new door that a reader can decline to walk through, so
+ * the usual ingress-only argument for shipping a preview unflagged does not
+ * apply here: there is nothing to decline. First Principles review asked for
+ * either a flag or an accepted RFC, and a per-device flag is the cheaper of the
+ * two to retire.
  *
- * Gating the INGRESS only, like every flag here. `/session-dashboards` stays
- * routable, the dashboard-card and work-projection APIs are untouched, and a
- * published view an agent already authored stays an ordinary artifact. The
- * flag decides whether the dock, the menu entries and the tabs are OFFERED; a
- * persisted `command-center` tab is withheld from the strip while it is off
- * and returns when it is on, exactly as a host withdrawal does.
+ * Default OFF, and OFF is byte-for-byte the list on `main`: the folder's rows
+ * are handed on as the same array in the same order and the body is the same
+ * element, so nothing about an ordinary render is conditional on this key.
+ *
+ * It does NOT gate the two ways to REACH that session -- the folder row's chat
+ * button and the same action in the folder's menus. Those are ingresses a reader
+ * can decline, they move nothing on the resting list, and gating them here would
+ * leave a conducted folder with no way to the conversation it is drawn around.
+ * This key holds the layout and nothing else.
  */
-export const PREVIEW_DASHBOARD = `${PREVIEW_FLAG_PREFIX}dashboard`
+export const PREVIEW_FOLDER_CONDUCTOR = `${PREVIEW_FLAG_PREFIX}folder-conductor`
 
 /**
  * Read a preview flag. Absent, unparseable, or storage-denied all mean OFF —
@@ -167,6 +175,16 @@ export const PREVIEW_DASHBOARD = `${PREVIEW_FLAG_PREFIX}dashboard`
  */
 export function readPreviewFlag(flag: string): boolean {
   return safeGetItem(flag) === '1'
+}
+
+/**
+ * Turn "Chat on a crew" on or off. Off also clears the retired key, or that key
+ * would keep the feature on behind a switch that reads off.
+ */
+export function setRemoteCrewChat(on: boolean): boolean {
+  if (!setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, on)) return false
+  if (!on && readPreviewFlag(PREVIEW_INSTANCE_SESSIONS)) return setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, false)
+  return true
 }
 
 /**

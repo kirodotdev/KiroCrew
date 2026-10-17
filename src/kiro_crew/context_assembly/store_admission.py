@@ -9,7 +9,8 @@ vectors and never Global in their place, otherwise the workspace's V1 store; for
 lessons the member's vectors, a populated vector store, a named store's JSONL or the
 global JSONL, keyed on POPULATION rather than on what a render returned. It also
 owns the per-message lessons block and the in-memory record of what a session was
-already shown.
+already shown; the builder keeps one such record per session through
+:mod:`kiro_crew.context_assembly.delivery_records`.
 
 New memory or lesson sections, and the rule for which store answers them, belong
 here; new store handles belong in :mod:`kiro_crew.context`.
@@ -251,6 +252,15 @@ def session_memory_parts(
                         "keeping the head",
                         len(memory_ctx),
                         room,
+                    )
+                    # Imported at call time, like every Kiro Crew name an owner reads.
+                    from kiro_crew import context_omissions
+
+                    context_omissions.record(
+                        context_omissions.PREFERENCES_FILE,
+                        "cap",
+                        omitted_chars=omitted_chars,
+                        budget_chars=max(0, room),
                     )
                     memory_ctx = memory_ctx[: max(0, room - len(notice))] + notice
                 append_required(memory_ctx)

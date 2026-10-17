@@ -88,7 +88,7 @@ function run(agentName: string, stripEffort = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children)
-  return renderHook(() => useSettingsDefaultModel(agentName, false, stripEffort), { wrapper })
+  return renderHook(() => useSettingsDefaultModel(agentName, stripEffort), { wrapper })
 }
 
 afterEach(() => vi.restoreAllMocks())

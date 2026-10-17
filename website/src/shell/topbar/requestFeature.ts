@@ -16,7 +16,7 @@ export function useRequestFeature(colorTheme: string) {
   // the module-level singleton would bypass a test-injected store.
   const appStore = useAppStore()
   const requestFeature = useCallback(async () => {
-    const result = await dispatch(createSlot(undefined)).unwrap()
+    const result = await dispatch(createSlot({ sessionFolder: false })).unwrap()
     const slot = result.key
     // This flow is an agent turn by design (the skill drafts and files the
     // request), so it consumes metered inference and a spent plan allowance

@@ -1707,3 +1707,121 @@ class TestAsyncRestoreRecentSessionsOffLoop:
         assert not (
             tmp_path / "dashboard_vanished.jsonl"
         ).exists(), "the deleted transcript came back"
+
+    @pytest.mark.asyncio
+    async def test_restore_drains_its_tab_id_backfills_before_returning(
+        self, tmp_path, monkeypatch
+    ):
+        """A tab-id backfill is an ``os.replace`` of a session file. If restore
+        leaves it in flight (the fire-and-forget off-loop helper), it can still
+        be mid-replace when a caller reads the same transcript on the loop right
+        after restore — on Windows that ``open()`` is a sharing violation
+        (``PermissionError``) the on-loop read cannot wait out, so it re-raises.
+        The async recent-session driver must COMMIT its own backfills before it
+        returns, the way the open-slot driver does.
+
+        The seeded transcripts carry no ``tab_id``, so every restored tab mints
+        one and schedules a backfill. This asserts the driver's contract: it
+        does NOT hand those backfills to the fire-and-forget off-loop helper, and
+        once it RETURNS the backfilled ``tab_id`` is already durable on every
+        restored tab — nothing left mid-replace to race a reader.
+
+        Fails on the base: there the backfill goes through
+        ``update_metadata_off_loop`` and is still in flight at return.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async
+
+        keys = ("dashboard_drain1", "dashboard_drain2")
+        for name in keys:
+            _write_session(
+                tmp_path,
+                name,
+                [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+                meta={"title": name},
+            )
+            (tmp_path / f"{name}.jsonl").touch()
+
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+
+        # The fire-and-forget helper must not be the one carrying a restore
+        # backfill: that is the path whose os.replace outlives the driver's
+        # return and races the next on-loop reader.
+        fire_and_forget: list[tuple[str, dict]] = []
+        real_off_loop = chat_persistence.update_metadata_off_loop
+
+        def _record_off_loop(conv_log, key, fields):
+            fire_and_forget.append((key, dict(fields)))
+            return real_off_loop(conv_log, key, fields)
+
+        monkeypatch.setattr(chat_persistence, "update_metadata_off_loop", _record_off_loop)
+
+        restored = await restore_recent_sessions_async(state, window_minutes=60)
+
+        assert restored == 2
+        # The async driver drained the backfills itself rather than firing them
+        # off: nothing was handed to the fire-and-forget helper.
+        assert fire_and_forget == [], (
+            "a recent-session tab-id backfill was fired off the loop; its "
+            "os.replace outlives restore and can race a reader on Windows"
+        )
+        # And every restored tab's backfilled tab_id is already durable on disk
+        # the moment restore returned — no replace still in flight.
+        for name in keys:
+            assert log.get_metadata(name).get("tab_id"), name
+        # An immediate on-loop read of a restored transcript still returns it.
+        assert log.read_messages_chained(keys[0])
+
+    @pytest.mark.asyncio
+    async def test_drained_backfill_does_not_recreate_a_session_deleted_mid_restore(
+        self, tmp_path, monkeypatch
+    ):
+        """Deferring the tab-id backfills to the end of the restore pass widens
+        the window in which a ``DELETE /api/sessions/{key}`` can land. The drain
+        must go through ``update_metadata_if(require_existing=True)``, which
+        re-checks existence UNDER the write lock, so a session unlinked during
+        that window is left deleted instead of being resurrected as a
+        metadata-only transcript the next recent-session restore would reopen as
+        an empty tab.
+
+        We model the delete by unlinking one restored transcript as its slot is
+        applied — after it is queued for backfill but before the end-of-loop
+        drain runs. The drained backfill for that key must NOT recreate the file.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        from kiro_crew.dashboard import chat_persistence
+        from kiro_crew.dashboard.chat_persistence import restore_recent_sessions_async
+
+        keys = ("dashboard_live", "dashboard_victim")
+        for name in keys:
+            _write_session(
+                tmp_path,
+                name,
+                [{"role": "user", "content": "hi", "ts": "2026-03-23T10:00:00"}],
+                meta={"title": name},
+            )
+            (tmp_path / f"{name}.jsonl").touch()
+
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        victim_path = tmp_path / "dashboard_victim.jsonl"
+        real_apply = chat_persistence._apply_recent_session
+
+        def _apply_then_maybe_delete(state_, key, *args, **kwargs):
+            result = real_apply(state_, key, *args, **kwargs)
+            # The delete lands after the victim's backfill is queued but before
+            # the end-of-loop drain commits it.
+            if key == "dashboard_victim" and victim_path.exists():
+                victim_path.unlink()
+            return result
+
+        monkeypatch.setattr(chat_persistence, "_apply_recent_session", _apply_then_maybe_delete)
+
+        await restore_recent_sessions_async(state, window_minutes=60)
+
+        # The deleted transcript was NOT recreated by the drained backfill.
+        assert not victim_path.exists(), "a deleted session was resurrected by its backfill"
+        # The surviving tab still got its tab_id.
+        assert log.get_metadata("dashboard_live").get("tab_id")

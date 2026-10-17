@@ -3,7 +3,7 @@
  * and backend-error surfacing.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import McpCustomServerModal, { parseCustomJson } from '../components/McpCustomServerModal'
@@ -198,7 +198,7 @@ describe('add mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('edit mode', () => {
-  it('shows the read-only note when the loaded spec carries redacted headers', async () => {
+  it('shows the stored-headers note when the loaded spec carries redacted headers', async () => {
     mockedApi.mcpCustomGet.mockResolvedValue({
       name: 'remote',
       spec: { url: 'https://mcp.example.com/sse', headers: { Authorization: '[REDACTED: credential]' } },
@@ -206,9 +206,12 @@ describe('edit mode', () => {
     })
     renderModal({ editName: 'remote' })
 
-    // The note appears BEFORE the user invests edits — stored values are
-    // preserve-only and a modified save would 400.
-    expect(await screen.findByRole('note')).toHaveTextContent(/hidden and read-only/)
+    // The note appears BEFORE the user invests edits: it names the exact value
+    // to leave in place, and warns what a remove + re-add costs.
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent('Headers that still show [REDACTED: credential] keep their saved value.')
+    expect(within(note).getByText('[REDACTED: credential]').tagName).toBe('CODE')
+    expect(note).toHaveTextContent(/comes back disabled and without its tool restrictions/)
   })
 
   it('shows no read-only note when the spec has no stored headers', async () => {

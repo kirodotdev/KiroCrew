@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import statistics
 import tempfile
@@ -32,6 +33,15 @@ _DEFAULT_AGENT = "kirocrew"  # key for unnamed/default-agent runs (§4.3 keying)
 _DEFAULT_WINDOW = 50  # samples retained + considered per agent
 _DEFAULT_MIN_SAMPLES = 3  # before trusting learned over the configured fallback
 _DEFAULT_PERCENTILE = 0.90
+# How long a bucket's learned settled figure lasts after its NEWEST reading. A
+# bucket priced out of admission runs no dedicated starts and so records no new
+# readings, so a figure learned under a heavier roster (MCP servers since
+# removed, another backend) would otherwise hold its starts back for good. Once
+# the newest reading is older than this, the whole bucket stops counting and is
+# priced at the measured unlearned default again until it relearns from its next
+# runs. A bucket that recorded any reading inside the horizon keeps its whole
+# window, so an agent that runs only now and then keeps an accurate figure.
+SETTLED_SAMPLE_MAX_AGE_SECS = 7 * 24 * 3600
 # Bounds on what the agent-writable log can put into memory. While PARSING, a
 # bucket key longer than an agent name can be is dropped, each bucket holds at
 # most ``window`` values (a bounded deque) and at most _PARSE_BUCKET_CEILING
@@ -191,6 +201,8 @@ def _group_by_agent(
     *,
     window: int = _DEFAULT_WINDOW,
     dedicated_only: bool = False,
+    not_before: float | None = None,
+    not_after: float | None = None,
 ) -> dict[str, list[float]]:
     """Bucket the values of *key* by agent, bounded WHILE streaming.
 
@@ -201,8 +213,14 @@ def _group_by_agent(
     a further bucket is counted and dropped, and one WARNING names the overflow.
     ``dedicated_only`` skips records marked ``shared``: a shared run's reading is
     a share of a runtime other sessions also used, not one process's size.
+    ``not_before`` (epoch seconds) drops every bucket whose newest record was
+    written before it. A record whose ``ts`` is not a finite number, or is later
+    than ``not_after`` (the log is agent-writable, and a future stamp would keep
+    a bucket recent for good), counts as a value but cannot show the bucket is
+    recent.
     """
     by_agent: dict[str, deque[float]] = {}
+    newest: dict[str, float] = {}
     overflow = 0
     for rec in samples:
         if dedicated_only and rec.get("shared") is True:
@@ -220,6 +238,19 @@ def _group_by_agent(
                 continue
             vals = by_agent[agent] = deque(maxlen=max(1, window))
         vals.append(float(v))
+        if not_before is not None:
+            ts = rec.get("ts")
+            # Compared as given, never coerced: an agent-written integer too large
+            # for a float must not raise here.
+            if (
+                (type(ts) is int or (type(ts) is float and math.isfinite(ts)))
+                and (not_after is None or ts <= not_after)
+                and ts > newest.get(agent, not_before - 1)
+            ):
+                newest[agent] = ts
+    if not_before is not None:
+        for agent in [a for a in by_agent if newest.get(a, not_before - 1) < not_before]:
+            del by_agent[agent]
     if overflow:
         logger.warning(
             "cost log holds more than %d distinct buckets; %d record(s) beyond the ceiling "
@@ -237,6 +268,8 @@ def read_learned_costs_checked(
     window: int = _DEFAULT_WINDOW,
     min_samples: int = _DEFAULT_MIN_SAMPLES,
     percentile: float = _DEFAULT_PERCENTILE,
+    max_age_secs: float | None = None,
+    now: float | None = None,
 ) -> tuple[dict[str, float], bool]:
     """Per-agent p90 of the last ``window`` samples for *key*, plus completeness.
 
@@ -246,11 +279,22 @@ def read_learned_costs_checked(
     (:class:`_ReadStatus`'s ``complete``) saying so. ``dedicated_only`` skips
     shared runs' records. ``settled_gb`` read this way is the per-bucket settled
     runtime size the admission gate prices a dedicated start at; ``mem_gb`` is
-    the whole-run peak that sizes the sub-agent cap.
+    the whole-run peak that sizes the sub-agent cap. ``max_age_secs`` leaves
+    out every bucket whose newest sample is older than that before *now*
+    (default: the wall clock); a bucket with any recent sample keeps its window.
     """
     status = _ReadStatus()
+    not_before = not_after = None
+    if max_age_secs is not None:
+        not_after = time.time() if now is None else now
+        not_before = not_after - max(0.0, max_age_secs)
     by_agent = _group_by_agent(
-        _iter_samples(status), key, window=window, dedicated_only=dedicated_only
+        _iter_samples(status),
+        key,
+        window=window,
+        dedicated_only=dedicated_only,
+        not_before=not_before,
+        not_after=not_after,
     )
     out = {
         agent: _percentile(vals, percentile)

@@ -19,6 +19,7 @@ function makeDeps(overrides = {}) {
     zoomOut: record("zoomOut"),
     alwaysOnTop: false,
     toggleAlwaysOnTop: record("toggleAlwaysOnTop"),
+    toggleFocusMode: record("toggleFocusMode"),
     openNewSessionWindow: record("openNewSessionWindow"),
     openNewConnectionWindow: record("openNewConnectionWindow"),
     renameCurrentWindow: record("renameCurrentWindow"),
@@ -248,6 +249,19 @@ for (const isMac of [true, false]) {
     const { deps, calls } = makeDeps({ isMac });
     findItem(buildMenuTemplate(deps), (i) => i.label === "Keep on Top").click();
     assert.deepStrictEqual(calls, ["toggleAlwaysOnTop"]);
+  });
+
+  test(`${os}: View carries Toggle Focus Mode, with no accelerator, wired to the injected toggle`, () => {
+    const { deps, calls } = makeDeps({ isMac });
+    const view = buildMenuTemplate(deps).find((i) => i.label === "View");
+    const item = view.submenu.find((i) => i.label === "Toggle Focus Mode");
+    assert.ok(item, "Toggle Focus Mode present in the View submenu");
+    assert.strictEqual(item.id, "focus-mode-toggle");
+    assert.strictEqual(item.type, undefined, "plain item: the state lives in the renderer");
+    assert.strictEqual(item.accelerator, undefined, "the chord stays with the renderer's registry");
+    assert.notStrictEqual(item.visible, false);
+    item.click();
+    assert.deepStrictEqual(calls, ["toggleFocusMode"]);
   });
 
   test(`${os}: Settings… and About clicks invoke the injected actions`, () => {

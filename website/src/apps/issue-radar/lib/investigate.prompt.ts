@@ -66,9 +66,9 @@ import { issueViewCommand, providerTerms, recordIdentityJson } from './links'
  *
  * The findings write goes through the `issue_radar_record_investigation` MCP
  * tool, NOT a raw PUT. An agent session has no dashboard credential (httpOnly
- * cookie, internal secret stripped from its env, `.local_secret` on the
- * sensitive-path denylist), so a raw PUT is refused with 403 and no
- * investigation could store its findings. */
+ * cookie, an internal secret the gateway mints in-process and never puts in an
+ * agent's env, `.local_secret` on the sensitive-path denylist), so a raw PUT is
+ * refused with 403 and no investigation could store its findings. */
 export function buildInvestigationPrompt(
   repoRef: RepoRef,
   owner: string,
@@ -105,8 +105,8 @@ ${issue.url}`
  * are functional payload the agent ACTS on, so a translated copy would change
  * behaviour, while the language of the prose it writes back is what the user
  * actually asked to control. The verbatim list is not politeness — `suggested_labels`
- * values are matched against the repo's real labels downstream, so a translated
- * label name silently stops matching and the suggestion is dropped.
+ * values are label NAMES a person may apply to the issue as written, so a
+ * translated name would not be a label the repo has.
  */
 function languageDirective(aiLanguage: string): string {
   if (!aiLanguage) return ''

@@ -391,14 +391,26 @@ describe("first-download installer design contract", () => {
       /LangString KiroCliPrerequisiteLink 1033 "Open the Kiro CLI setup guide"/,
     );
 
+    // The fresh-install default is KAS, which still launches through Kiro CLI's
+    // own ACP relay and accepts its `kiro-cli login`. The copy above stays true
+    // only while that default is a Kiro CLI–hosted agent, so pin it here.
+    const backends = fs.readFileSync(
+      path.join(REPO_ROOT, "src", "kiro_crew", "agent_sdk", "backends.py"),
+      "utf8",
+    );
+    assert.match(
+      backends,
+      /^DEFAULT_ACP_BACKEND = ACP_BACKEND_(KAS|KIRO)$/m,
+      "installer copy must change if a fresh configuration stops defaulting to a Kiro CLI-hosted agent",
+    );
     const configSections = fs.readFileSync(
-      path.join(REPO_ROOT, "src", "kiro_crew", "config", "sections.py"),
+      path.join(REPO_ROOT, "src", "kiro_crew", "config", "sections_agent.py"),
       "utf8",
     );
     assert.match(
       configSections,
-      /acp_backend: str = field\(\s*default=""/,
-      "installer copy must change if a fresh configuration stops defaulting to Kiro",
+      /acp_backend: str = field\(\s*default=DEFAULT_ACP_BACKEND/,
+      "the field default must read DEFAULT_ACP_BACKEND, the value pinned above",
     );
 
     const updateLocales = [

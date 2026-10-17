@@ -3,10 +3,10 @@ title: Jev task executor — closed browser and desktop subtasks without an LLM 
 status: accepted
 author: Ray Xu
 created: 2026-09-28
-last-audited: 2026-09-29
-audited-at: df0ea7909c
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 14839
-implementation-prs: []
+implementation-prs: [16014]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -25,8 +25,9 @@ that sets this status. The acceptance answers §7 questions 1 and 2 as proposed:
 the executor sits below the tenet 8 line as a trust-boundary component, and the
 browser surface waits on its own driver design section (§3.6), with desktop as
 the phase 1 surface. §7 records both decisions; question 3 stays open and gates
-step 5, and question 4 is deferred with no rollout step. Nothing of this design
-is on main. Code references were read at `699083f906` and re-read at `df0ea7909c`.
+step 5, and question 4 is deferred with no rollout step. Rollout step 2, the
+`Noul` and `Score` wire types, shipped in #16014; nothing else of this design is
+on main. Code references were read at `699083f906` and re-read at `df0ea7909c`.
 
 ## 1. Problem
 
@@ -131,8 +132,8 @@ for the seam.
 
 The loop asks `noul` questions (is this page off the path, did the last move
 work, is this line the value asked for) and `score` questions (QA thresholds)
-as well as `Choice`. `decisions/types.py` declares `Choice` alone, and
-`impl_jev._to_wire` refuses anything else. On the base commit `rfc-wake-judge`
+as well as `Choice`. When this RFC was written, `decisions/types.py` declared
+`Choice` alone, and `impl_jev._to_wire` refused anything else. On the base commit `rfc-wake-judge`
 §3.1 assigned the widening to its own PR D, whose rollout entry does not list
 it; this commit re-points §3.1 here, so this RFC owns the widening. It adds `Noul` and `Score` dataclasses, their wire mapping
 in `impl_jev.py` and the LLM lane, and tests for a malformed or partial answer.
@@ -142,7 +143,10 @@ a string value drawn from `question.options` and runs outside `decide`'s
 probability in [0, 1] and a `Score` answer a number inside its declared range,
 and a type with no `options` never reaches the `Choice` branch. A malformed
 answer of either type yields `None`, never an exception. The wake judge can use
-them as soon as they land.
+them as soon as they land. This widening shipped in #16014: `decisions/types.py`
+defines `Choice`, `Noul` and `Score` under the `Question` union, `impl_jev.py`
+and `impl_llm.py` map all three, and `gate._value_in_domain` holds the per-type
+domain check that `gate._answers_are_valid` applies.
 
 ### 3.3 Enabling: the preview row is the consent
 
@@ -479,7 +483,7 @@ Each property names where it is enforced. All of them are in core.
    (steps 3 to 7) opens, a maintainer accepts it and a separate base commit changes `status` to
    `accepted`. An implementation PR points at that record and never accepts the
    RFC in its own diff.
-2. **Wire types.** `Noul` and `Score` in `decisions/types.py`, Jev and LLM wire
+2. **Wire types** (shipped in #16014). `Noul` and `Score` in `decisions/types.py`, Jev and LLM wire
    mapping, a per-type branch in `gate._answers_are_valid`, malformed and
    partial-answer tests (including one proving a malformed answer returns
    `None` rather than raising), and `decisions.md` updated. This step is

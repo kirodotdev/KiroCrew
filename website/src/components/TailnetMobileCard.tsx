@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import {
   AlertTriangle,
   Check,
@@ -14,6 +15,7 @@ import {
   QrCode,
   RefreshCw,
   Share2,
+  ShieldAlert,
   ShieldCheck,
   ShieldOff,
   Smartphone,
@@ -26,6 +28,7 @@ import {
 } from '../api/client'
 import { Badge, Btn, Card, CardTitle } from './ui'
 import Clickable from './Clickable'
+import { SettingRef } from './settingRef/SettingRef'
 import { i18nT } from '../i18n/t'
 import { copyToClipboard } from '../utils/clipboard'
 import { useAppSelector } from '../store'
@@ -69,6 +72,7 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
  *  rendering fault rather than as emphasis. */
 const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   pinned: ShieldOff,
+  untrusted_cli: ShieldAlert,
   install: Download,
   start_daemon: Play,
   sign_in: LogIn,
@@ -86,6 +90,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
  *  be verified and the strict gate rejects it). */
 const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   pinned: 'components.tailnetMobile.pinned_title',
+  untrusted_cli: 'components.tailnetMobile.untrusted_cli_title',
   install: 'components.tailnetMobile.install_title',
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
@@ -100,6 +105,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
 
 const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   pinned: 'components.tailnetMobile.pinned_body',
+  untrusted_cli: 'components.tailnetMobile.untrusted_cli_body',
   install: 'components.tailnetMobile.install_body',
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
@@ -114,7 +120,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
 
 /** Which steps are a normal part of setting mobile access up (neutral framing)
  *  versus a state that needs attention. Drives the badge only. */
-const ATTENTION_STEPS = new Set<TailnetMobileStep>(['occupied', 'pinned'])
+const ATTENTION_STEPS = new Set<TailnetMobileStep>(['occupied', 'pinned', 'untrusted_cli'])
 
 /** Steps whose `detail` is ABOUT that step, so surfacing the daemon's verbatim
  *  text helps rather than confuses.
@@ -406,7 +412,19 @@ export function TailnetMobileCard() {
   // want this should not have to re-decide on every page load. It stores
   // expanded-ness only, not a permanent dismissal — the row returns collapsed on a
   // fresh load, which is the cheap approximation and is called out in the PR.
-  if (step === 'install' && !inviteExpanded) {
+  //
+  // `untrusted_cli` shares the row. Tailscale is present there, but nothing this
+  // card can probe changes once the operator has taken the `dashboard.url`
+  // route, so a full card would stay on Overview for good after the fix it asks
+  // for. Its row carries the card's own title, so opening it reads as the same
+  // thing growing, and the hint says Tailscale was found, so it is not mistaken
+  // for an install prompt.
+  const collapsible = step === 'install' || step === 'untrusted_cli'
+  const rowLabel =
+    step === 'install'
+      ? i18nT('components.tailnetMobile.install_teaser')
+      : i18nT('components.tailnetMobile.card_title')
+  if (collapsible && !inviteExpanded) {
     return (
       <Clickable
         onClick={() => {
@@ -417,12 +435,16 @@ export function TailnetMobileCard() {
           // and the card has already re-read the daemon.
           invalidate()
         }}
-        aria-label={i18nT('components.tailnetMobile.install_teaser')}
+        aria-label={rowLabel}
         className="flex items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 text-muted hover:text-text"
       >
         <Smartphone className="lucide-inline shrink-0" />
-        <span className="text-text">{i18nT('components.tailnetMobile.install_teaser')}</span>
-        <span>{i18nT('components.tailnetMobile.install_teaser_hint')}</span>
+        <span className="text-text">{rowLabel}</span>
+        <span>
+          {step === 'install'
+            ? i18nT('components.tailnetMobile.install_teaser_hint')
+            : i18nT('components.tailnetMobile.untrusted_cli_teaser_hint')}
+        </span>
         <ChevronRight className="lucide-inline ml-auto shrink-0" />
       </Clickable>
     )
@@ -451,7 +473,32 @@ export function TailnetMobileCard() {
         <Icon className="lucide-inline mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="font-medium">{i18nT(STEP_TITLE_KEY[step])}</div>
-          <p className="mt-1 text-muted">{i18nT(STEP_BODY_KEY[step])}</p>
+          <p className="mt-1 text-muted">
+            {/* The one body whose remedy is a setting, so it links to it. */}
+            {step === 'untrusted_cli' ? (
+              <Trans
+                i18nKey="components.tailnetMobile.untrusted_cli_body"
+                components={{ settingRef: <SettingRef configKey="dashboard.url" /> }}
+              />
+            ) : (
+              i18nT(STEP_BODY_KEY[step])
+            )}
+          </p>
+
+          {/* The publish the gateway will not run here, for the operator to run
+              by hand; the body's "the command below" points at it. */}
+          {step === 'untrusted_cli' && data.serve_command ? (
+            <p className="mt-2 text-muted">
+              <code className="select-all break-words min-w-0">{data.serve_command}</code>
+            </p>
+          ) : null}
+
+          {/* Only the refused binary's path: the body already says why. */}
+          {step === 'untrusted_cli' && data.refused_cli ? (
+            <p className="mt-2 text-muted">
+              <code className="select-all break-all min-w-0">{data.refused_cli}</code>
+            </p>
+          ) : null}
 
           {/* The daemon's own words, never rephrased — the only part that stays
               correct if Tailscale rewords its errors. Shown only where it is
@@ -531,6 +578,12 @@ export function TailnetMobileCard() {
                   {i18nT('components.tailnetMobile.hide_qr')}
                 </Btn>
               </>
+            ) : null}
+
+            {step === 'untrusted_cli' ? (
+              <Btn onClick={() => setInvite(false)}>
+                {i18nT('components.tailnetMobile.hide_qr')}
+              </Btn>
             ) : null}
 
             {ONE_CLICK_SETUP_STEPS.has(step) ? (

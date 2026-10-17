@@ -260,7 +260,7 @@ class TestCatalogDriftGate:
     def test_backend_set_matches_the_frontend_registry(self):
         """_UI_LANGUAGE_CATALOGS == SUPPORTED_LANGUAGES minus devOnly, exactly.
 
-        On failure: edit _UI_LANGUAGE_CATALOGS in src/kiro_crew/context.py to
+        On failure: edit _UI_LANGUAGE_CATALOGS in src/kiro_crew/context_assembly/output_contract.py to
         match website/src/i18n/languages.ts — that file stays the single source
         of truth; the Python set is the derived copy.
         """
@@ -270,7 +270,7 @@ class TestCatalogDriftGate:
             "backend catalog set drifted from the frontend registry.\n"
             f"  missing from backend: {sorted(shipped - _UI_LANGUAGE_CATALOGS)}\n"
             f"  stale in backend:     {sorted(_UI_LANGUAGE_CATALOGS - shipped)}\n"
-            "Update _UI_LANGUAGE_CATALOGS in src/kiro_crew/context.py."
+            "Update _UI_LANGUAGE_CATALOGS in src/kiro_crew/context_assembly/output_contract.py."
         )
 
     def test_dev_only_pseudolocale_stays_excluded(self):

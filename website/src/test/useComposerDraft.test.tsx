@@ -82,12 +82,13 @@ describe('SideChat consumes the SDK draft behaviour', () => {
     expect(src).not.toMatch(/e\.key === 'Enter' && !e\.shiftKey/)
   })
 
-  it('resolves the composer textarea for the Select-to-Ask seed through its own wrapper', () => {
-    // The seed handler places the caret by querying the native composer's
-    // textarea inside SideChat's own wrapper — no dedicated ref prop on
-    // ChatInput. Without this the side-seed event prefills a draft the user
-    // cannot see focused.
-    expect(src).toContain("composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')")
+  it('resolves the composer for the Select-to-Ask seed through its own wrapper', () => {
+    // The seed handler places the caret by querying the native composer inside
+    // SideChat's own wrapper — no dedicated ref prop on ChatInput. Without this
+    // the side-seed event prefills a draft the user cannot see focused. The
+    // selector is element-agnostic so it also finds the Lexical composer's
+    // contenteditable div (Style Markdown While Typing).
+    expect(src).toContain("composerWrapRef.current?.querySelector<HTMLElement>('[data-composer-input]')")
   })
 })
 
@@ -573,6 +574,127 @@ describe('useComposerDraft', () => {
         act(() => result.current.submitOnEnter(keyEvent(), submit))
         expect(submit).not.toHaveBeenCalled()
       })
+    })
+  })
+
+  /**
+   * Single-select `[OPTION:]` (#18013). The side chat and embedded chat drive the
+   * hook with `multi: false`; a pick REPLACES the previous one, and ownership is a
+   * recorded span (`lib/followUpToggle`) rather than inferred from the draft text,
+   * so typed text that merely looks like a label is never taken for a chip pick.
+   * These cover the issue's acceptance plus the six #17948 review cases.
+   */
+  describe('single-select [OPTION:]', () => {
+    const single = (followUpOptions: string[], sourceKey = 'row-1') =>
+      renderHook(
+        ({ options, key }: { options: string[]; key: string | null }) =>
+          useComposerDraft({ followUpOptions: options, multi: false, sourceKey: key }),
+        { initialProps: { options: followUpOptions, key: sourceKey } },
+      )
+
+    it('replaces the previous pick instead of joining it (acceptance)', () => {
+      const { result } = single(['Go', 'Go All', 'Cancel'])
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('Go')
+      expect([...result.current.picked]).toEqual(['Go'])
+      act(() => result.current.toggleOption('Cancel'))
+      expect(result.current.draft).toBe('Cancel')
+      expect([...result.current.picked]).toEqual(['Cancel'])
+    })
+
+    it('un-picks the current pick back to empty', () => {
+      const { result } = single(['Go', 'Cancel'])
+      act(() => result.current.toggleOption('Go'))
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('')
+      expect([...result.current.picked]).toEqual([])
+    })
+
+    it('keeps the user prose and appends the pick after it', () => {
+      const { result } = single(['Go', 'Cancel'])
+      act(() => result.current.setDraft('please '))
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('please, Go')
+      act(() => result.current.toggleOption('Cancel'))
+      expect(result.current.draft).toBe('please, Cancel')
+    })
+
+    // #17948 F1: typed text EQUAL to a label is not a chip pick and must survive.
+    it('never removes typed text that merely equals a label', () => {
+      const { result } = single(['Go', 'Cancel'])
+      act(() => result.current.setDraft('Go'))        // the user typed it
+      // No chip is owned, so picking Cancel appends, it does not replace "Go".
+      act(() => result.current.toggleOption('Cancel'))
+      expect(result.current.draft).toBe('Go, Cancel')
+    })
+
+    // #17948 F2/F3: a composite label containing ", " is one unit, never split.
+    it('treats a composite label as one unit and replaces it whole', () => {
+      const opts = ['Run tests', 'Check CI, Run tests']
+      const { result } = single(opts)
+      act(() => result.current.toggleOption('Check CI, Run tests'))
+      expect(result.current.draft).toBe('Check CI, Run tests')
+      expect([...result.current.picked]).toEqual(['Check CI, Run tests'])
+      act(() => result.current.toggleOption('Run tests'))
+      // The whole composite is replaced, not partially peeled.
+      expect(result.current.draft).toBe('Run tests')
+      expect([...result.current.picked]).toEqual(['Run tests'])
+    })
+
+    // #17948 F4: a typed prefix that itself contains ", " plus a composite label.
+    it('keeps a typed prefix containing a separator intact across a replace', () => {
+      const opts = ['Run tests', 'Check CI, Run tests']
+      const { result } = single(opts)
+      act(() => result.current.setDraft('a, b '))
+      act(() => result.current.toggleOption('Run tests'))
+      expect(result.current.draft).toBe('a, b, Run tests')
+      act(() => result.current.toggleOption('Check CI, Run tests'))
+      expect(result.current.draft).toBe('a, b, Check CI, Run tests')
+    })
+
+    // #17948 F5: a direct edit after a pick ends ownership — the next pick appends.
+    it('stops owning the pick once the user edits the draft', () => {
+      const { result } = single(['Go', 'Cancel'])
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('Go')
+      act(() => result.current.setDraft('Go and then some'))  // user edits
+      act(() => result.current.toggleOption('Cancel'))
+      // Ownership gone, so Cancel appends and the edited text is untouched.
+      expect(result.current.draft).toBe('Go and then some, Cancel')
+    })
+
+    // #17948 F6: a new offer (source row changes) resets ownership, so a pick from
+    // the new offer never reaches back into text picked from the old one.
+    it('resets ownership when the offer row changes', () => {
+      const { result, rerender } = single(['Go', 'Cancel'], 'row-1')
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('Go')
+      // A newer reply repeats the same labels but is a different row.
+      rerender({ options: ['Go', 'Cancel'], key: 'row-2' })
+      expect([...result.current.picked]).toEqual([])
+      act(() => result.current.toggleOption('Cancel'))
+      // Appends to the kept text rather than replacing the earlier "Go".
+      expect(result.current.draft).toBe('Go, Cancel')
+    })
+
+    it('leaves text alone when un-picking a chip the user has since edited', () => {
+      const { result } = single(['Go'])
+      act(() => result.current.toggleOption('Go'))
+      act(() => result.current.setDraft('Go now'))   // user edits the owned span
+      // The chip un-highlights but the edited text is not touched.
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('Go now')
+    })
+
+    it('is robust under StrictMode double-invocation', () => {
+      const { result } = renderHook(
+        () => useComposerDraft({ followUpOptions: ['Go', 'Cancel'], multi: false, sourceKey: 'r' }),
+        { wrapper: StrictMode },
+      )
+      act(() => result.current.toggleOption('Go'))
+      expect(result.current.draft).toBe('Go')
+      act(() => result.current.toggleOption('Cancel'))
+      expect(result.current.draft).toBe('Cancel')
     })
   })
 })

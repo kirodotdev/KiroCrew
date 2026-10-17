@@ -32,8 +32,11 @@ export const fileExplorerApi = {
   gitStatus: (path: string) =>
     get<{ repoRoot: string; branch?: string; statuses: Record<string, string> } | null>(`${API_BASE}/git-status?path=${encodeURIComponent(path)}`),
 
+  // `path` is the backend's RESOLVED spelling (symlinks followed, `~` expanded):
+  // the one its tree nodes carry, so a caller that keys state by path must use
+  // it rather than the string it asked about.
   resolve: (path: string) =>
-    get<{ exists: boolean; type: string }>(`${API_BASE}/resolve?path=${encodeURIComponent(path)}`),
+    get<{ exists: boolean; type: string; path?: string }>(`${API_BASE}/resolve?path=${encodeURIComponent(path)}`),
 
   complete: (path: string, kind = 'dir', limit = 30) => {
     const q = new URLSearchParams({ path, kind, limit: String(limit) })

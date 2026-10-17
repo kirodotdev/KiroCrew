@@ -167,14 +167,16 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('slot-new', '/work/repo'))
   })
 
-  it('an unfiled session creates an unfiled sibling on the global default agent', async () => {
+  it('an unfiled session creates an unfiled, agent-less sibling (the server stamps the default custom agent)', async () => {
     renderChat({ key: 'slot-0', title: 'Session 0' })
     const item = await newSessionItem()
     expect(item.textContent).toContain('New chat')
     fireEvent.click(item)
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(1))
     const args = createCall()
-    expect(args[1]).toBe('global-agent')
+    // Never the default CREWMATE alias ('global-agent'): a plain chat runs the
+    // default custom agent, a template the server resolves.
+    expect(args[1]).toBeUndefined()
     expect(args[7]).toBeUndefined()
     expect(api.chatSlotProject).not.toHaveBeenCalled()
   })
@@ -222,7 +224,7 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     await waitFor(() => expect(isDisabled(screen.getByTestId('mobile-new-session-here'))).toBe(false))
     fireEvent.click(item)
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
-    expect(createCall()[1]).toBe('global-agent')
+    expect(createCall()[1]).toBeUndefined()
     expect(createCall()[7]).toBeFalsy()
   })
 

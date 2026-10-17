@@ -19,6 +19,7 @@ from aiohttp import streams, web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import memory_stores
+from kiro_crew.atomic_write import on_event_loop
 from kiro_crew.config import loader
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers import cron
@@ -110,10 +111,28 @@ def env(tmp_path, monkeypatch):
     history = ConversationLog()
 
     def bind_session(key, store):
+        """Record *key*'s vouched execution and its ``memory_store`` metadata on disk.
+
+        Both writes end in a tmp-file-plus-rename whose Windows sharing-violation
+        retry (``atomic_write.replace_with_retry``) is a single attempt on the
+        event-loop thread, so a bind issued from an ``async def`` test loses to any
+        handle a scanner holds for a few milliseconds. This synchronous form is for
+        the fixture body and synchronous tests; a coroutine awaits
+        ``bind_session_async`` so the writes run on a worker thread, where the
+        retry applies.
+        """
+        if on_event_loop():
+            raise RuntimeError(
+                "bind_session called on the event loop: "
+                "an async test must `await env.bind_session_async(key, store)`"
+            )
         row = {"memory_store": store}
         bind_private_session_store(key, store)
         history.update_metadata(key, row)
         metadata[key] = row
+
+    async def bind_session_async(key, store):
+        await asyncio.to_thread(bind_session, key, store)
 
     bind_session("dashboard:alice", "member-alice")
     conversation_log = SimpleNamespace(
@@ -149,6 +168,7 @@ def env(tmp_path, monkeypatch):
             metadata=metadata,
             history=history,
             bind_session=bind_session,
+            bind_session_async=bind_session_async,
             home=tmp_path,
         )
     finally:

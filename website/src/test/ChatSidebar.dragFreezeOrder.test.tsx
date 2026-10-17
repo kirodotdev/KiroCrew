@@ -12,7 +12,7 @@
  * with a bumped timestamp. That exercises the hold rather than the gesture.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, act, fireEvent } from '@testing-library/react'
+import { render, screen, act, fireEvent, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -48,6 +48,8 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
   }
 })
 
+const mocks = vi.hoisted(() => ({ config: undefined as unknown }))
+
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return {
@@ -61,7 +63,9 @@ vi.mock('../api/client', async (importOriginal) => {
         ].map(k => [k, vi.fn().mockResolvedValue({})]),
       ),
       chatFolders: vi.fn().mockResolvedValue([]),
+      kirocrewConfig: vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? {})),
       sessionsSearch: vi.fn().mockResolvedValue({ sessions: [] }),
+      setPinnedOrder: vi.fn(async (keys: string[]) => ({ ok: true, order: keys })),
     },
   }
 })
@@ -77,6 +81,7 @@ Object.defineProperty(window, 'matchMedia', {
 globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as unknown as typeof fetch
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { api } from '../api/client'
 import type { ChatSlot } from '../types'
 import type { RootState } from '../store'
 
@@ -125,6 +130,8 @@ function renderSidebar(slots: ChatSlot[]) {
     } as unknown as RootState['chat'],
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   const tree = (s: ChatSlot[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -145,7 +152,12 @@ function renderSidebar(slots: ChatSlot[]) {
     </QueryClientProvider>
   )
   const { rerender } = render(tree(slots))
-  return { rerender: (s: ChatSlot[]) => rerender(tree(s)) }
+  return {
+    rerender: (s: ChatSlot[]) => rerender(tree(s)),
+    // The app feeds the sidebar from the store, so a drag's optimistic ranks
+    // show on the next render with the store's rows.
+    rerenderFromStore: () => rerender(tree(store.getState().dashboard.slots)),
+  }
 }
 
 /** Rendered order of the three fixture rows, top to bottom. */
@@ -159,7 +171,9 @@ function renderedOrder(): string[] {
 describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () => {
   beforeEach(() => {
     localStorage.clear()
+    vi.mocked(api.setPinnedOrder).mockClear()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
+    mocks.config = undefined
     dnd.handlers = {}
     dnd.overId = null
     dnd.active = null
@@ -220,7 +234,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     // the gesture never come back after the search is cleared, and the
     // pinned/unpinned divider is drawn at every pinned→unpinned step of the
     // stale, search-ordered projection instead of once.
-    localStorage.setItem('mc-session-sort', 'created-desc')
+    mocks.config = { dashboard: { session_sort: 'created-desc' } }
     const slots = [
       slot('chat-a', TITLE_A, '2026-04-01T00:00:00Z', true),
       slot('chat-b', TITLE_B, '2026-03-01T00:00:00Z'),
@@ -260,14 +274,14 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     expect(order(SLOTS_REORDERED)).toEqual(['chat-c', 'chat-a', 'chat-b'])
   })
 
-  it('reorders only pinned rows and keeps that order under Created: newest', () => {
-    localStorage.setItem('mc-session-sort', 'created-desc')
+  it('reorders only pinned rows and keeps that order under Created: newest', async () => {
+    mocks.config = { dashboard: { session_sort: 'created-desc' } }
     const pinnedSlots = [
       slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
       slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),
       slot('chat-c', TITLE_C, '2026-04-01T00:00:00Z'),
     ]
-    renderSidebar(pinnedSlots)
+    const { rerenderFromStore } = renderSidebar(pinnedSlots)
 
     expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
     expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
@@ -284,8 +298,9 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
       })
     })
 
+    await waitFor(() => expect(vi.mocked(api.setPinnedOrder).mock.calls.at(-1)?.slice(0, 2)).toEqual([['chat-b', 'chat-a'], false]))
+    rerenderFromStore()
     expect(renderedOrder()).toEqual([TITLE_B, TITLE_A, TITLE_C])
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!)).toEqual(['chat-b', 'chat-a'])
     expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
   })
 
@@ -305,8 +320,8 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     expect(screen.getByTestId('pinned-session-insertion')).toBeTruthy()
   })
 
-  it('moves a focused pinned row with Alt+ArrowUp and leaves unpinned rows automatic', () => {
-    renderSidebar([
+  it('moves a focused pinned row with Alt+ArrowUp and leaves unpinned rows automatic', async () => {
+    const { rerenderFromStore } = renderSidebar([
       slot('chat-a', TITLE_A, '2026-03-01T00:00:00Z', true),
       slot('chat-b', TITLE_B, '2026-02-01T00:00:00Z', true),
       slot('chat-c', TITLE_C, '2026-04-01T00:00:00Z'),
@@ -314,8 +329,9 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     const row = screen.getByText(TITLE_B).closest('[data-session-row]') as HTMLElement
     expect(row.getAttribute('aria-keyshortcuts')).toBe('Alt+ArrowUp Alt+ArrowDown')
     fireEvent.keyDown(row, { key: 'ArrowUp', altKey: true })
+    await waitFor(() => expect(vi.mocked(api.setPinnedOrder).mock.calls.at(-1)?.slice(0, 2)).toEqual([['chat-b', 'chat-a'], false]))
+    rerenderFromStore()
     expect(renderedOrder()).toEqual([TITLE_B, TITLE_A, TITLE_C])
-    expect(JSON.parse(localStorage.getItem('mc-pinned-session-order')!)).toEqual(['chat-b', 'chat-a'])
   })
 
 })

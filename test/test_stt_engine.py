@@ -10,12 +10,15 @@ on an xdist worker.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
+import gc
 import hashlib
 import os
 import threading
 import time
 import urllib.error
+import weakref
 
 import numpy as np
 import pytest
@@ -23,6 +26,7 @@ import pytest
 from conftest import requires_symlinks
 from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── Test doubles ──
 
@@ -522,14 +526,14 @@ async def test_the_digest_is_read_once_per_load_not_once_per_session(monkeypatch
     (tmp_path / model.filename).write_bytes(payload)
 
     hashes = 0
-    real = models._sha256_file
+    real = models._sha256_verified_file
 
     def _counting(path):
         nonlocal hashes
         hashes += 1
         return real(path)
 
-    monkeypatch.setattr(models, "_sha256_file", _counting)
+    monkeypatch.setattr(models, "_sha256_verified_file", _counting)
     monkeypatch.setattr(models, "store", lambda: models.ModelStore())
     monkeypatch.setattr(
         engine_mod.WhisperEngine, "_build_model", staticmethod(lambda key: _FakeModel())
@@ -793,6 +797,362 @@ def test_thread_count_is_bounded_and_positive(monkeypatch):
     assert engine_mod.thread_count() == 8
 
 
+# ── Encoder window ──
+
+
+class _WindowBinding(_FakeBinding):
+    """Records the encoder window each native decode ran with."""
+
+    def __init__(self, raises: Exception | None = None, **kw) -> None:
+        super().__init__(**kw)
+        self.windows: list[int] = []
+        self._raises = raises
+
+    def whisper_full(self, _ctx, params, _pcm, _n) -> int:
+        self.windows.append(params.audio_ctx)
+        if self._raises is not None:
+            raise self._raises
+        return super().whisper_full(_ctx, params, _pcm, _n)
+
+
+def _native_with_window(monkeypatch, fake: _FakeModel, binding: _FakeBinding) -> None:
+    monkeypatch.setattr(engine_mod, "_whisper_binding", lambda: binding)
+    _make_native(monkeypatch, fake)
+    fake._params = type("Params", (), {"audio_ctx": 0})()
+
+
+def _secs(n: float) -> int:
+    return int(n * engine_mod.SAMPLE_RATE_HZ)
+
+
+@pytest.mark.parametrize(
+    "secs, frames",
+    [
+        (0.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        (1.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        # The longest phrase a partial decodes still fits the floor with its margin.
+        (8.0, engine_mod.PREVIEW_AUDIO_CTX_FLOOR),
+        (9.0, 576),
+        (27.0, 1472),
+        # Within a step of the full window: sizing would save nothing.
+        (28.0, 0),
+        (30.0, 0),
+    ],
+)
+def test_a_preview_window_has_a_floor_a_margin_and_yields_to_the_full_one(secs, frames):
+    assert engine_mod.preview_audio_ctx(_secs(secs)) == frames
+
+
+@pytest.mark.parametrize("secs", [0.5, 1.0, 2.5, 8.0, 20.0, 27.9])
+def test_a_preview_window_always_holds_the_whole_clip(secs):
+    """A window shorter than the audio truncates it, which is how a decode loops."""
+    frames = engine_mod.preview_audio_ctx(_secs(secs)) or engine_mod.FULL_AUDIO_CTX
+    assert frames >= secs * 50
+
+
+@pytest.mark.asyncio
+async def test_a_sized_decode_narrows_the_window_for_that_call_only(fake_engine, monkeypatch):
+    """The params object is shared, so the final after a partial must get it back."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    binding = _WindowBinding()
+    _native_with_window(monkeypatch, fake, binding)
+    audio = np.zeros(_secs(2.0), dtype=np.float32)
+
+    await eng.decode(audio, superseding=True, sized_window=True)
+    await eng.decode(audio)
+
+    assert binding.windows == [engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 0]
+    assert fake._params.audio_ctx == 0
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_restored_when_the_native_call_raises(fake_engine, monkeypatch):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    _native_with_window(monkeypatch, fake, _WindowBinding(raises=RuntimeError("boom")))
+
+    with pytest.raises(engine_mod.DecodeFailed):
+        await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), sized_window=True)
+    assert fake._params.audio_ctx == 0
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_path_decodes_at_the_full_window(fake_engine, monkeypatch):
+    """``Model.transcribe`` keeps any parameter it is given, so none is passed."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    seen: list[dict] = []
+    original = fake.transcribe
+
+    def transcribe(pcm, abort_callback=None, **kw):
+        seen.append(kw)
+        return original(pcm, abort_callback=abort_callback, **kw)
+
+    monkeypatch.setattr(fake, "transcribe", transcribe)
+    text = await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), sized_window=True)
+    assert text == "hello world"
+    assert seen == [{}]
+
+
+@pytest.mark.asyncio
+async def test_a_binding_without_a_window_parameter_still_decodes_previews(
+    fake_engine, monkeypatch
+):
+    """Params with no ``audio_ctx`` decode at the full window instead of failing."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    monkeypatch.setattr(engine_mod, "_whisper_binding", lambda: _FakeBinding())
+    _make_native(monkeypatch, fake)
+    assert not hasattr(fake._params, "audio_ctx")
+
+    text = await eng.decode(
+        np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True
+    )
+
+    assert text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_slow_sized_decodes_in_a_row_restore_the_full_window(fake_engine, monkeypatch):
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    binding = _WindowBinding()
+    _native_with_window(monkeypatch, fake, binding)
+    audio = np.zeros(_secs(1.0), dtype=np.float32)
+    await eng.decode(audio)  # binds the window state to this model
+
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    await eng.decode(audio, superseding=True, sized_window=True)
+
+    assert binding.windows[-1] == 0
+
+
+def test_one_fast_sized_decode_clears_the_strikes():
+    """The first sized decode after a final re-reserves the graph and is slow once."""
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES - 1):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 150.0)
+    eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert not eng._sized_window_off
+
+
+def test_a_busy_host_does_not_turn_sizing_off():
+    """Previews somewhat slower than a quick prewarm are load, not a looping decode.
+
+    The prewarm decodes a second of silence, so it is a fast reference, and a host
+    busy with other work slows every preview a little. A strict comparison against it
+    turned sizing off for good in a live meeting.
+    """
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 387.0)
+    for wall_ms in (300.0, 420.0, 450.0, 390.0, 440.0, 430.0, 410.0) * 3:
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, wall_ms)
+    assert not eng._sized_window_off
+    assert eng._sized_window_strikes == 0
+
+
+def test_exactly_the_slowdown_threshold_is_not_a_strike():
+    eng = engine_mod.WhisperEngine()
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(
+            engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 400.0 * engine_mod.PREVIEW_WINDOW_SLOWDOWN
+        )
+    assert not eng._sized_window_off
+
+
+def test_a_sized_decode_with_no_full_reference_counts_no_strike():
+    eng = engine_mod.WhisperEngine()
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES + 1):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert not eng._sized_window_off
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_decode_sets_no_full_window_reference(fake_engine, monkeypatch):
+    """An abort unwinds early; its short time would make every sized decode look slow."""
+    eng, fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    stop = threading.Event()
+    _native_with_window(monkeypatch, fake, _WindowBinding(status=-6, on_full=stop.set))
+
+    assert (
+        await eng.decode(
+            np.zeros(_secs(1.0), dtype=np.float32), superseding=True, abort_if=stop.is_set
+        )
+        == ""
+    )
+    assert eng._full_window_ms is None
+
+
+@pytest.mark.asyncio
+async def test_a_reloaded_model_gets_a_fresh_window_verdict(fake_engine, monkeypatch):
+    eng, _fake = fake_engine
+    built: list[_FakeModel] = []
+    binding = _WindowBinding()
+
+    def build(_key):
+        model = _FakeModel()
+        _native_with_window(monkeypatch, model, binding)
+        built.append(model)
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    audio = np.zeros(_secs(1.0), dtype=np.float32)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(audio)
+    eng._note_window_cost(0, 400.0)
+    for _ in range(engine_mod.PREVIEW_WINDOW_MAX_STRIKES):
+        eng._note_window_cost(engine_mod.PREVIEW_AUDIO_CTX_FLOOR, 900.0)
+    assert eng._sized_window_off
+
+    await eng.close()
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(audio, superseding=True, sized_window=True)
+
+    assert len(built) == 2
+    assert binding.windows[-1] == engine_mod.PREVIEW_AUDIO_CTX_FLOOR
+
+
+class _LingeringPool(concurrent.futures.Executor):
+    """A pool whose worker keeps each finished work item until the test lets go.
+
+    ``ThreadPoolExecutor`` delivers a result inside ``_WorkItem.run`` and drops the
+    item -- callable, arguments and the future holding the result -- only after
+    ``run`` returns, so a worker descheduled between the two still references all
+    three while the event loop is already running the caller's next line. On a
+    loaded CI runner that gap is where ``close()`` found a model still alive. This
+    pool makes the gap last for the whole test: the engine passes only when nothing
+    it hands the pool keeps the model, so the race is a fail rather than a flake.
+    """
+
+    def __init__(self) -> None:
+        self._let_go = threading.Event()
+        self._threads: list[threading.Thread] = []
+
+    def submit(self, fn, /, *args, **kwargs):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+
+        def run() -> None:
+            future.set_running_or_notify_cancel()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
+            # `fn`, `args` and `future` stay referenced by this frame until the test
+            # releases them: exactly what the real worker holds before `del work_item`.
+            self._let_go.wait()
+
+        thread = threading.Thread(target=run, name="mc-stt-lingering", daemon=True)
+        self._threads.append(thread)
+        thread.start()
+        return future
+
+    def release(self) -> None:
+        self._let_go.set()
+        for thread in self._threads:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive(), "a lingering pool worker did not let go"
+
+
+@pytest.fixture
+def lingering_pool(monkeypatch):
+    """The engine's STT pool, replaced by a :class:`_LingeringPool` for one test."""
+    pool = _LingeringPool()
+    monkeypatch.setattr(engine_mod, "stt_executor", lambda: pool)
+    yield pool
+    pool.release()
+
+
+def _track_built_models(monkeypatch) -> list[weakref.ReferenceType]:
+    """Build a fresh fake per load and keep only WEAK references to them.
+
+    The real binding frees its native context in ``Model.__del__``, so a model is
+    released exactly when its last strong reference goes. Holding these weakly is
+    what lets a test see that, rather than ``loaded`` merely reading False.
+    """
+    refs: list[weakref.ReferenceType] = []
+
+    def build(_key):
+        model = _FakeModel()
+        refs.append(weakref.ref(model))
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    return refs
+
+
+@pytest.mark.asyncio
+async def test_close_frees_a_model_that_ran_a_sized_decode(
+    fake_engine, monkeypatch, lingering_pool
+):
+    """Under a pool that never lets a finished work item go: the load's result and
+    the decode's argument must both have been handed over, not kept."""
+    eng, _fake = fake_engine
+    refs = _track_built_models(monkeypatch)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+
+    await eng.close()
+    gc.collect()
+
+    assert not eng.loaded
+    assert refs[0]() is None, "the window verdict must not keep unloaded weights alive"
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_frees_a_model_that_ran_a_sized_decode(
+    monkeypatch, tmp_path, lingering_pool
+):
+    monkeypatch.setattr(engine_mod, "_engine", None)
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    stub = tmp_path / "ggml-base.bin"
+    stub.write_bytes(b"not a real model")
+
+    async def _ensure(_model):
+        return stub
+
+    monkeypatch.setattr(models, "store", lambda: type("S", (), {"ensure": staticmethod(_ensure)})())
+    refs = _track_built_models(monkeypatch)
+    eng = engine_mod.WhisperEngine(idle_evict_secs=0)
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+
+    assert await eng.maybe_evict()
+    gc.collect()
+
+    assert refs[0]() is None
+
+
+@pytest.mark.asyncio
+async def test_a_model_switch_frees_the_old_weights_before_building_the_new(
+    fake_engine, monkeypatch, lingering_pool
+):
+    """One model's worth of memory, not two, across a language or model change."""
+    eng, _fake = fake_engine
+    refs: list[weakref.ReferenceType] = []
+    alive_at_build: list[bool] = []
+
+    def build(_key):
+        gc.collect()
+        alive_at_build.append(any(ref() is not None for ref in refs))
+        model = _FakeModel()
+        refs.append(weakref.ref(model))
+        return model
+
+    monkeypatch.setattr(engine_mod.WhisperEngine, "_build_model", staticmethod(build))
+    await eng.ensure_loaded("base", "en")
+    await eng.decode(np.zeros(_secs(1.0), dtype=np.float32), superseding=True, sized_window=True)
+    await eng.ensure_loaded("base", "fr")
+
+    assert alive_at_build == [False, False]
+
+
 # ── Engine lifecycle ──
 
 
@@ -852,6 +1212,33 @@ async def test_a_missing_model_reports_its_code_rather_than_raising(monkeypatch,
     result = await eng.ensure_loaded("base", "en")
     assert not result.ok
     assert result.code == engine_mod.CODE_MODEL_MISSING
+    assert not eng.loaded
+
+
+@pytest.mark.asyncio
+async def test_a_refused_model_reports_the_refusal_not_a_missing_download(monkeypatch):
+    # A hard-linked weights file is refused at load. The bytes are present and pinned,
+    # so "not downloaded" would send the operator to a download that cannot help.
+    monkeypatch.setattr(engine_mod, "probe", lambda: engine_mod.Availability(True))
+    refusal = "the verified model file /x/ggml-base.bin has 2 hardlinks"
+
+    async def _ensure(_model):
+        return None
+
+    store = type(
+        "S",
+        (),
+        {
+            "ensure": staticmethod(_ensure),
+            "status": {"step": "failed", "model": "base", "error": refusal, "refused": True},
+        },
+    )()
+    monkeypatch.setattr(models, "store", lambda: store)
+    eng = engine_mod.WhisperEngine()
+    result = await eng.ensure_loaded("base", "en")
+    assert not result.ok
+    assert result.code != engine_mod.CODE_MODEL_MISSING
+    assert result.detail == refusal
     assert not eng.loaded
 
 
@@ -1121,6 +1508,76 @@ async def test_prewarm_does_not_repeat_inference_until_the_model_is_reloaded(fak
 
 
 @pytest.mark.asyncio
+async def test_a_prewarm_does_not_count_as_use_for_the_boot_gate(
+    fake_engine, monkeypatch, tmp_path
+):
+    """The boot prewarm is gated on recent use; its own decode must not feed that gate."""
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "_last_usage_stamp", None)
+    eng, fake = fake_engine
+    assert (await eng.prewarm("base", "en")).ok
+    assert fake.decoded_samples
+    assert not models.usage_marker_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_a_real_decode_stamps_use_for_the_boot_gate(fake_engine, monkeypatch, tmp_path):
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "_last_usage_stamp", None)
+    eng, _fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    audio = np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)
+    assert await eng.decode(audio) == "hello world"
+    await asyncio.gather(*eng._stamp_tasks)
+    assert models.used_within(60)
+
+
+@pytest.mark.asyncio
+async def test_the_usage_stamp_write_runs_off_the_event_loop(fake_engine, monkeypatch, tmp_path):
+    """A stalled filesystem must not freeze the gateway's loop on the first dictation."""
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "_last_usage_stamp", None)
+    writers: list[int] = []
+    monkeypatch.setattr(models, "write_usage_marker", lambda: writers.append(threading.get_ident()))
+    eng, _fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    audio = np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)
+    assert await eng.decode(audio) == "hello world"
+    assert await eng.decode(audio) == "hello world"  # inside the interval: no second write
+    await asyncio.gather(*eng._stamp_tasks)
+    assert len(writers) == 1
+    assert writers[0] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_usage_stamp_does_not_hold_the_transcript(
+    fake_engine, monkeypatch, tmp_path
+):
+    """The final's deadline would cancel a decode still waiting on the marker write."""
+    monkeypatch.setattr(models, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(models, "_last_usage_stamp", None)
+    release = threading.Event()
+    written = threading.Event()
+
+    def _stalled_write() -> None:
+        release.wait(60)
+        written.set()
+
+    monkeypatch.setattr(models, "write_usage_marker", _stalled_write)
+    eng, _fake = fake_engine
+    await eng.ensure_loaded("base", "en")
+    audio = np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)
+    try:
+        # The ceiling only names a hang; the verdict is the line after it.
+        assert await asyncio.wait_for(eng.decode(audio), timeout=30) == "hello world"
+        assert not written.is_set(), "the transcript must not wait for the marker write"
+        assert eng._stamp_tasks, "the write is still in flight, held by the engine"
+    finally:
+        release.set()
+        await asyncio.gather(*eng._stamp_tasks)
+
+
+@pytest.mark.asyncio
 async def test_a_session_stop_aborts_its_partial_but_never_its_final(fake_engine):
     eng, fake = fake_engine
     await eng.ensure_loaded("base", "en")
@@ -1157,12 +1614,13 @@ async def test_real_audio_supersedes_an_inflight_cold_prewarm(fake_engine, monke
     monkeypatch.setattr(fake, "transcribe", transcribe)
     prewarm = asyncio.create_task(eng.prewarm("base", "en"))
     try:
-        await asyncio.wait_for(warming.wait(), timeout=5)
-        transcript = await asyncio.wait_for(
-            eng.decode(np.ones(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)), timeout=5
+        await await_until(warming, what="the prewarm decode starting")
+        transcript = await await_until(
+            asyncio.ensure_future(eng.decode(np.ones(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32))),
+            what="the real decode",
         )
         assert transcript == "hello world"
-        assert (await asyncio.wait_for(prewarm, timeout=5)).ok
+        assert (await await_until(prewarm, what="the prewarm")).ok
         assert order == ["warm", "warm aborted", "real audio"]
     finally:
         release.set()
@@ -1226,10 +1684,9 @@ async def test_the_idle_sweep_releases_a_model_the_decode_paths_never_could(
 
     task = asyncio.create_task(engine_mod.idle_sweep_loop())
     try:
-        for _ in range(200):
-            await asyncio.sleep(0.01)
-            if not eng.loaded:
-                break
+        await async_wait_until(
+            lambda: not eng.loaded, describe=lambda: "the idle sweep never released the model"
+        )
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -1342,14 +1799,14 @@ async def test_cancelling_a_decode_aborts_native_work_before_releasing_the_conte
     monkeypatch.setattr(fake, "transcribe", transcribe)
     task = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered, what="the native call starting")
         task.cancel()
-        await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
+        await await_until(cancellation_seen, what="the worker seeing the abort")
         assert not task.done(), "the native context was released before its worker finished"
         assert eng._decode_lock.locked()
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="the cancelled decode ending")
         assert done.is_set()
         assert eng.loaded
     finally:
@@ -1382,16 +1839,18 @@ async def test_a_cancelled_worker_cannot_trigger_a_second_model_allocation(
     monkeypatch.setattr(fake, "transcribe", transcribe)
     task = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
     try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered, what="the native call starting")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="the cancelled decode ending")
         assert not done.is_set(), "the fake must still be holding its native context"
         assert not eng.loaded
-        refused = await asyncio.wait_for(eng.ensure_loaded("base", "en"), timeout=5)
+        refused = await await_until(
+            asyncio.ensure_future(eng.ensure_loaded("base", "en")), what="the refused reload"
+        )
         assert refused.code == engine_mod.CODE_DECODE_FAILED
         release.set()
-        await asyncio.wait_for(asyncio.shield(eng._retired_decode), timeout=5)
+        await await_until(asyncio.shield(eng._retired_decode), what="the retired decode finishing")
         assert (await eng.ensure_loaded("base", "en")).ok
     finally:
         release.set()
@@ -1443,11 +1902,7 @@ async def test_a_timed_out_decode_waits_for_the_native_call_before_releasing(mon
     eng._timeout_secs = 0  # the caller's wait expires immediately
 
     task = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if entered.is_set():
-            break
-    assert entered.is_set(), "the native call never started"
+    await async_wait_until(entered.is_set, describe=lambda: "the native call never started")
     await asyncio.sleep(0.2)
     assert not task.done(), "decode() returned while the native call was still running"
 
@@ -1644,11 +2099,7 @@ async def test_idle_eviction_cannot_retire_a_context_a_decode_is_using(monkeypat
 
     eng._model = _SlowModel()
     decode = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if in_decode.is_set():
-            break
-    assert in_decode.is_set(), "the decode never started"
+    await async_wait_until(in_decode.is_set, describe=lambda: "the decode never started")
 
     evict = asyncio.create_task(eng.maybe_evict())
     await asyncio.sleep(0.15)
@@ -1685,11 +2136,7 @@ async def test_replacing_the_model_waits_for_an_active_decode(monkeypatch, fake_
 
     eng._model = _SlowModel()
     decode = asyncio.create_task(eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32)))
-    for _ in range(200):
-        await asyncio.sleep(0.01)
-        if in_decode.is_set():
-            break
-    assert in_decode.is_set(), "the decode never started"
+    await async_wait_until(in_decode.is_set, describe=lambda: "the decode never started")
 
     # A different LANGUAGE is enough to change the key, so this is a real replacement.
     swap = asyncio.create_task(eng.ensure_loaded("base", "fr"))
@@ -1745,18 +2192,20 @@ async def test_a_download_does_not_hold_the_decode_lock(monkeypatch, tmp_path):
     # A second session naming a model that is not on disk yet: the only path that
     # reaches a real transfer.
     fetch = asyncio.create_task(eng.ensure_loaded("small", "en"))
-    await asyncio.wait_for(fetching.wait(), timeout=10.0)
+    await await_until(fetching, what="the transfer starting")
 
     _, decode_lock = eng._locks()
     assert not decode_lock.locked(), "the decode lock is held for the length of a download"
     # And the observable consequence, so this does not reduce to an assertion about an
     # internal: the session that was already streaming still gets its transcript.
-    text = await asyncio.wait_for(
-        eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32), expect=resident),
-        timeout=10.0,
+    text = await await_until(
+        asyncio.ensure_future(
+            eng.decode(np.zeros(engine_mod.SAMPLE_RATE_HZ, dtype=np.float32), expect=resident)
+        ),
+        what="the resident session's transcript",
     )
     assert text == "hello world"
 
     finish_fetch.set()
-    assert (await asyncio.wait_for(fetch, timeout=10.0)).ok
+    assert (await await_until(fetch, what="the fetch")).ok
     await eng.close()

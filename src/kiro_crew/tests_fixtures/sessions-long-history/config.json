@@ -18,5 +18,8 @@
     "theme_mode": "dark",
     "onboarded": true
   },
+  "session_summary": {
+    "enabled": true
+  },
   "timezone": "UTC"
 }

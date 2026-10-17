@@ -2,18 +2,18 @@
  * Screenshot harness for how the automation popover renders an UNLIMITED wake
  * budget.
  *
- * `max_agent_turns` reads 0 as unlimited when a caller passes it (the default
- * stays a finite 8), so the number under the "Maximum agent turns" label is no
- * longer the whole reading: a bare 0 there says the opposite of what it means.
+ * `max_agent_turns` reads 0 as unlimited (the contract default is 0), so the
+ * number under the "Maximum agent turns" label is not the whole reading: a bare
+ * 0 there says the opposite of what it means.
  * Three states carry the surface:
  *
  *  - `unlimited-monitor`: an armed watch with `max_agent_turns: 0`. The budget
  *    row must read the localized word, not `0`.
  *  - `finite-monitor`: the same watch with an explicit 6, proving the word
  *    replaces only the sentinel and a real ceiling still renders as its number.
- *  - `create-form`: the arm form, whose input prefills the finite default and
+ *  - `create-form`: the arm form, whose input prefills the contract default and
  *    carries the hint that says what entering 0 means, with the control's
- *    `min` / `max` read from the contract (0 and 8).
+ *    `min` / `max` read from the contract.
  *
  * It ASSERTS as well as photographs, against the REAL built SPA in
  * website/dist: a regression that puts the digit back, or drops the hint, or
@@ -259,7 +259,7 @@ async function main() {
   }
 
   // The arm form discloses what entering 0 means, and the control's bounds
-  // match the contract (0..8).
+  // match contract.json's maxAgentTurns limits.
   const formCheck = async page => {
     const input = page.getByRole('spinbutton', { name: TURNS_LABEL }).first()
     const present = await input.count().then(n => n > 0).catch(() => false)

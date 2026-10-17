@@ -103,6 +103,7 @@ export default function ProjectSkillsTrustDialog({
       open={open}
       onClose={onClose}
       maxWidth={560}
+      guideTrustRoot
       title={i18nT('components.projectSkillsTrust.title')}
       footer={
         <>

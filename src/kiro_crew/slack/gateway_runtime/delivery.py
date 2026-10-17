@@ -7,11 +7,12 @@ conversation, the dedup anchor a confirmed delivery advances, the OPTIONS
 bookkeeping for a posted control, the bounded DM open, and whether a job is
 silent.
 
-Every delivery leg that renders or redacts a result before it leaves the process
-stays in the facade (``_deliver_channel_reply``, ``_deliver_cron_response``,
-``_deliver_result`` with the heartbeat Slack rendering, the failure alerts):
-``security_posture`` names ``slack/gateway.py`` as the sink for cron and
-notification posts.
+The delivery legs that render or redact a result before it leaves the process live
+in ``result_egress.py`` (``_deliver_channel_reply``, ``_deliver_cron_response``,
+``_deliver_result`` with the heartbeat Slack rendering), the cron agent result's
+in ``cron_delivery.py`` and the failure alerts in ``cron_failure.py``:
+``security_posture`` names ``subagent_injection.py`` as the sink for cron and
+notification posts and lists the other redacting owners composed into the facade.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -144,12 +145,30 @@ def _channel_reply_link(
     namespace = channel_namespace_of(parent_key)
     if not namespace or namespace == SLACK_NAMESPACE or self.sessions is None:
         return None
-    for getter in (self.sessions.get_origin_link, self.sessions.get_mirror_link):
+    for from_origin, getter in (
+        (True, self.sessions.get_origin_link),
+        (False, self.sessions.get_mirror_link),
+    ):
         try:
             link = getter(parent_key)
         except Exception:
             link = None
         if link is not None and link.channel_id and link.channel_type != SLACK_NAMESPACE:
+            if from_origin:
+                # The gateway's in-memory origin record, signed for *parent_key*
+                # HERE: callers snapshot this link before an injection retry whose
+                # ``sessions.reset()`` evicts the record, and the send ladder admits a
+                # key-named link only under a valid admission or as the live origin
+                # record (``mirror_admission``). Unsigned on a signing failure:
+                # refused at send, fail-closed.
+                from dataclasses import replace
+
+                from kiro_crew.mirror_admission import sign_mirror_admission
+
+                try:
+                    link = replace(link, admission=sign_mirror_admission(parent_key, link) or None)
+                except Exception:
+                    logger.debug("origin link for %s left unsigned", parent_key, exc_info=True)
             return link, False
     try:
         stored = self.sessions.get_channel(parent_key)

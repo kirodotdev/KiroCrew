@@ -27,7 +27,7 @@ import { i18nT } from '../../i18n/t'
  * listings were vetted; it is display-only and says nothing about whether the
  * apps clone with the user's credentials.
  */
-export type SourceRow = { name: string; label: string; count: number; builtin: boolean; review?: string }
+export type SourceRow = { name: string; label: string; count: number; builtin: boolean; review?: string; trust?: string }
 
 /**
  * Hover text for a source row: the review claim, or nothing.

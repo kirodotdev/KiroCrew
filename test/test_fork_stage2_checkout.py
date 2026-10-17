@@ -150,8 +150,8 @@ def _audit(paths: list[pathlib.Path]) -> tuple[list[str], int]:
                 checked += 1
                 ref = str(with_.get("ref") or "")
                 depth = with_.get("fetch-depth")
-                # The EXACT expression, not a substring: `test_ai_review_workflows.py`
-                # pins the same literal for the review lanes, and two spellings of one
+                # The EXACT expression, not a substring: `test_ai_review_workflows*.py`
+                # pin the same literal for the review lanes, and two spellings of one
                 # invariant drift apart. Pinning the canonical forms here keeps this
                 # structural check the stricter of the two rather than a looser
                 # restatement that would quietly permit a variant.

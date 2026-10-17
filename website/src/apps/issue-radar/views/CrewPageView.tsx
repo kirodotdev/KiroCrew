@@ -44,10 +44,11 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText } from 'lucide-react'
+import { CirclePlus, Inbox, ListChecks, Pause, Pencil, Play, ScrollText, Undo2 } from 'lucide-react'
 
 import { Badge, Btn, Card, CardTitle, EmptyState, StatCard } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
+import StatusNotice from '../../../components/StatusNotice'
 import { fmtDate, fmtDateFields, fmtDateTime, fmtNumber, fmtRelative, toDate } from '../../../i18n/format'
 import { useAppDispatch } from '../../../store'
 import { switchSlot } from '../../../store/chatSlice'
@@ -242,6 +243,9 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
   const items = useMemo(() => detail.data?.items ?? [], [detail.data])
   const events = useMemo(() => detail.data?.events ?? [], [detail.data])
   const counts = detail.data?.counts ?? { open: 0 }
+  const triageUnavailable = detail.data?.triage_model_unavailable ?? ''
+  const modelHeld = detail.data?.model_held === true
+  const heldModel = detail.data?.held_model ?? ''
 
   const pause = useMutation({
     mutationFn: (paused: boolean) => issueRadarApi.setCrewPaused(active, crewId, paused),
@@ -253,6 +257,18 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
       void qc.invalidateQueries({ queryKey })
     },
   })
+
+  // "Switch back to triage model": release a model picked in the crew's chat. The
+  // notice clears on the poll that follows, once the page payload reports it gone.
+  const resumeSwitching = useMutation({
+    mutationFn: () => issueRadarApi.resumeCrewModelSwitching(active, crewId),
+    onSuccess: (res) => {
+      qc.setQueryData(queryKey, (prev: typeof detail.data) =>
+        prev ? { ...prev, crew: res.crew, model_held: false, held_model: '' } : prev)
+      void qc.invalidateQueries({ queryKey })
+    },
+  })
+  const resumeFailReason = resumeSwitching.error instanceof Error ? resumeSwitching.error.message.trim() : ''
 
   // ── open work items ──
   // `countsTowardOpen` is the same predicate `counts.open` is measured with, so
@@ -380,6 +396,72 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
               {t('apps.issueRadar.views.crews.page.paused_reason', { reason: crew.paused_reason })}
             </div>
           )}
+          {/* Nothing failed: the crew keeps working, on its work model. Shown so a
+              triage model the account cannot run is never a silent no-op, with
+              the way to change it under it. */}
+          {triageUnavailable !== '' && (
+            <div className="mt-1.5 flex flex-col items-start gap-1.5">
+              <StatusNotice
+                message={t('apps.issueRadar.views.crews.page.triage_model_unavailable', {
+                  model: triageUnavailable,
+                  workModel: crew.model || t('apps.issueRadar.views.crews.editor.model_auto'),
+                })}
+                className="w-full"
+                testId="crew-triage-model-unavailable"
+              />
+              {onEdit && (
+                <Btn onClick={() => { onEdit(crew) }} data-testid="crew-triage-model-change">
+                  <Pencil className="lucide-inline" />
+                  {t('apps.issueRadar.views.crews.page.triage_model_change')}
+                </Btn>
+              )}
+            </div>
+          )}
+          {/* A person's pick in the crew's session holds its model, so the crew no
+              longer triages on the cheaper model. Shown so the hold is never
+              silent, with the way out under it. */}
+          {modelHeld && (
+            <div className="mt-1.5 flex flex-col items-start gap-1.5">
+              <StatusNotice
+                message={heldModel !== ''
+                  ? t('apps.issueRadar.views.crews.page.model_held', {
+                    model: heldModel,
+                    triageModel: crew.triage_model ?? '',
+                    workModel: crew.model || t('apps.issueRadar.views.crews.editor.model_auto'),
+                  })
+                  : t('apps.issueRadar.views.crews.page.model_held_unnamed', {
+                    triageModel: crew.triage_model ?? '',
+                    workModel: crew.model || t('apps.issueRadar.views.crews.editor.model_auto'),
+                  })}
+                className="w-full"
+                testId="crew-model-held"
+              />
+              <Btn
+                onClick={() => { resumeSwitching.mutate() }}
+                disabled={resumeSwitching.isPending}
+                data-testid="crew-model-held-resume"
+              >
+                <Undo2 className="lucide-inline" />
+                {t('apps.issueRadar.views.crews.page.model_held_resume')}
+              </Btn>
+            </div>
+          )}
+          {/* The gateway's reason goes in `message` (the journal lookup key), with
+              the plain failure as the bold lead; with no reason the plain failure
+              is the message. */}
+          <ErrorNotice
+            title={resumeSwitching.isError && resumeFailReason !== ''
+              ? t('apps.issueRadar.views.crews.page.model_held_resume_failed')
+              : undefined}
+            message={resumeSwitching.isError
+              ? resumeFailReason || t('apps.issueRadar.views.crews.page.model_held_resume_failed')
+              : null}
+            messagePlacement="below"
+            variant="inline"
+            askAgent
+            className="mt-1.5"
+            testId="crew-model-held-resume-error"
+          />
           {/* Opening the crew's session acts on a persisted slot; no draft here. */}
           <ErrorNotice
             message={sessionError}

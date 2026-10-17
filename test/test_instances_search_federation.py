@@ -345,6 +345,7 @@ class TestSearchSessionsRemote:
         mgr._tunnel_epoch = {}
         mgr._tokens = {"peer": "tok-1"}
         mgr._peer_sessions = {}
+        mgr._chained_far_end = {}
 
         async def _identity_exchange(url, link, cookie_name):
             return link

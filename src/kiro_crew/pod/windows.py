@@ -120,6 +120,14 @@ TASK_FOLDER_ROOT = r"\KiroCrew\pods"
 # Shared bound for publisher retirement and contained-Job draining.
 STOP_TIMEOUT_SECS = 15.0
 
+#: The one sentence the CLI appends when it names `pod down` on Windows, where
+#: `down` itself can refuse. Owned here, beside the refusals it speaks for, and
+#: printed by the CLI alone so it appears exactly once per message.
+MANUAL_RETIREMENT_POINTER = (
+    "If `kirocrew pod down` refuses, the remaining state is not proven safe to "
+    "delete: follow 'Retiring a legacy Windows pod' in src/kiro_crew/pod/README.md."
+)
+
 #: Margin used by the producer's handoff-marker refresh.
 _HANDOFF_FRESHNESS_MARGIN_SECS = 5.0
 
@@ -400,13 +408,19 @@ def render_task_script(cfg: PodConfig, name: str) -> str:
     * ``setlocal DisableDelayedExpansion`` keeps a ``!`` in a path literal.
     * The pod plane, from the shared :func:`environment_vars` selection. This is
       the whole reason the wrapper exists (module docstring, point 1).
-    * A stale result file is cleared BEFORE the boot, so ``unit_state`` cannot
-      read the previous run's failure as this one's.
     * stdout/stderr append to the pod's own log files, and the gateway child
       inherits those handles — that is what gives ``pod logs`` content on a
       platform with no journal.
-    * The exit code is captured into ``RC`` before anything else runs, then
-      recorded and re-raised as the task's own result.
+    * The boot's exit code is re-raised as the task's own result.
+
+    The wrapper writes NO pod sidecar. The boot result lives in ``.winresult``,
+    written by the ``pod _run`` process itself (:func:`record_result`) because
+    that process is the one whose identity the run record carries: ``stop`` can
+    prove it gone, while a write by the surrounding ``cmd.exe`` after Python
+    returned would have no identity to retire and could land after teardown had
+    already removed the sidecars. ``start`` clears a stale result before
+    scheduling, so ``unit_state`` cannot read the previous run's failure as this
+    one's.
     """
     out_log, err_log = log_paths(cfg, name)
     lines = [
@@ -420,7 +434,6 @@ def render_task_script(cfg: PodConfig, name: str) -> str:
     log_dir = _cmd_quote(str(out_log.parent))
     lines += [
         f"if not exist {log_dir} mkdir {log_dir}",
-        f"del /q {_cmd_quote(str(result_path(cfg, name)))} 2>nul",
         " ".join(
             [
                 *(_cmd_quote(a) for a in _shared_kirocrew_argv()),
@@ -431,9 +444,7 @@ def render_task_script(cfg: PodConfig, name: str) -> str:
                 f"2>> {_cmd_quote(str(err_log))}",
             ]
         ),
-        'set "RC=%ERRORLEVEL%"',
-        f"> {_cmd_quote(str(result_path(cfg, name)))} echo %RC%",
-        "exit /b %RC%",
+        "exit /b %ERRORLEVEL%",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -605,6 +616,56 @@ def last_result(cfg: PodConfig, name: str) -> int | None:
     return int(raw) if raw.lstrip("-").isdigit() else None
 
 
+def record_result(cfg: PodConfig, name: str, code: int) -> None:
+    """Record the boot's exit code; written by the claimed producer itself."""
+    target = result_path(cfg, name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{int(code)}\n", encoding="utf-8")
+
+
+class DrainUnproven(OSError):
+    """The supervisor could not prove its gateway Job empty on the way out.
+
+    Raised out of :func:`supervise_gateway` so :func:`finish_boot` withholds the
+    `finished` receipt: a producer that cannot vouch for its own Job
+    must leave the record `preparing`, which `stop` refuses while any evidence of
+    a gateway remains.
+    """
+
+
+def finish_boot(cfg: PodConfig, name: str, record: dict, code: int, *, certify: bool) -> None:
+    """The producer's final writes: the result, then the `finished` receipt.
+
+    The result is written on every exit of a claimed boot, so ``unit_state`` can
+    report the failure ``pod up`` is waiting on. The receipt certifies that this
+    boot spawned no gateway; it does not cover a descendant of a process the boot
+    started before any lifetime Job existed (the child-viability probe), the same
+    residual the ready path's Job proof accepts. The receipt is published only
+    over this producer's own still-`preparing` record and only with *certify*: a
+    boot that reached `ready` has a `drained` or `ready` record and gets none, a
+    supervisor whose drain is unproven and an exception that escaped the boot
+    both leave `preparing` in place. Failures here are reported, not raised: the
+    exit code the service manager sees is already decided.
+    """
+    try:
+        record_result(cfg, name, code)
+    except OSError as exc:
+        print(f"FATAL: Windows pod boot result could not be recorded: {exc}")
+    if not certify:
+        return
+    try:
+        current = runs.read(cfg, name)
+        if (
+            current is not None
+            and current["state"] == "preparing"
+            and current["generation"] == record["generation"]
+            and current["publisher"] == record["publisher"]
+        ):
+            runs.finished(cfg, name, current, code)
+    except (OSError, ValueError) as exc:
+        print(f"FATAL: Windows pod completion receipt could not be published: {exc}")
+
+
 # ------------------------------------------------------------------------- #
 # Lifecycle
 # ------------------------------------------------------------------------- #
@@ -629,7 +690,10 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         if prior is not None and prior["state"] == "cancelled":
             _rollback_start(cfg, name, prior)
         if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
-            raise OSError("prior Windows pod state must be retired before starting again")
+            raise OSError(
+                "prior Windows pod state must be retired before starting again: run "
+                f"`kirocrew pod down {name}` first"
+            )
         reservation = runs.reserve(cfg, name)
     except (OSError, ValueError, subprocess.SubprocessError, WindowsTaskError) as exc:
         return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=str(exc))
@@ -770,8 +834,19 @@ def stop(
         if record is None:
             if _stop_state_path(cfg, name) is not None or task_exists(cfg, name):
                 raise OSError("legacy or unrecorded runtime has no boot-contained Job proof")
-        elif record["state"] not in {"ready", "drained"}:
-            raise OSError("boot publication is incomplete; its runtime cannot be reclaimed")
+        elif record["state"] in {"reserved", "cancelled"}:
+            # Nothing has claimed the generation, so there is no producer identity
+            # to retire: the scheduled boot may not have launched Python yet, or
+            # never will. Absence of a claim at this instant proves neither.
+            raise OSError(
+                "no scheduled boot has claimed this run yet, so there is no producer "
+                "identity to retire; if Task Scheduler shows the task is not running, "
+                "follow the manual retirement procedure"
+            )
+        elif record["state"] in runs.UNSPAWNED_STATES:
+            _retire_unspawned(cfg, name, record, timeout=timeout)
+        elif record["state"] == "retired":
+            pass  # The producer is already proven gone; only cleanup remains.
         else:
             publisher_pid, publisher_token = record["publisher"]
             if publisher_pid == os.getpid():
@@ -818,6 +893,94 @@ def stop(
             stderr=f"pod {name!r}: {exc}. HOME and remaining task/run evidence were "
             "preserved; this pod is NOT proven zero-residue.",
         )
+
+
+def _evidence_present(path: Path) -> bool:
+    """Whether *path* exists or cannot be inspected; only a clean ENOENT is absence."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _retire_unspawned(cfg: PodConfig, name: str, record: dict, *, timeout: float) -> None:
+    """Prove the producer of a never-contained generation gone, then record it.
+
+    The record names the one process that writes this generation's sidecars: the
+    ``pod _run`` producer, pinned by pid plus creation time. A `finished` producer
+    has published its receipt and is exiting, but the receipt is only its last
+    write to the record: the boot's failure audit is logged after ``boot``
+    returns and flushed on interpreter exit. So it is given the stop budget to
+    exit on its own and is terminated only when it outlives that budget. A
+    `preparing` producer may still be provisioning, so it is only waited for,
+    never terminated: either it exits, or it moves the record on, or this refuses.
+    With the producer gone, any gateway evidence (a supervised pid record, a
+    handoff marker) means a spawn this record cannot vouch for, and a HOME left by
+    a producer that died without its receipt may hold an unreaped child's writes;
+    both refuse. The result is a `retired` receipt that ``finish`` consumes after
+    HOME reclamation, so a cleanup failure stays retryable.
+    """
+    publisher_pid, publisher_token = record["publisher"]
+    if publisher_pid == os.getpid():
+        raise OSError("refusing to retire the calling process as a pod publisher")
+    with contextlib.ExitStack() as stack:
+        # None proves the pid gone or recycled to another process; access and
+        # query errors raise and refuse. A handle pins the producer's object.
+        handle = jobs.open_identity(publisher_pid, publisher_token)
+        if handle is not None:
+            stack.callback(jobs.close_identity, handle)
+            if record["state"] == "preparing":
+                deadline = time.monotonic() + timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if jobs.wait_identity(handle, timeout=max(0.0, min(remaining, 0.25))):
+                        break
+                    if runs.read(cfg, name) != record:
+                        break  # The producer moved the record on; judge the new state.
+                    if remaining <= 0:
+                        raise OSError(
+                            f"the boot is still in progress (producer pid {publisher_pid} is "
+                            "alive); wait for it to finish or fail, then retry"
+                        )
+        current = runs.read(cfg, name)
+        if (
+            current is None
+            or current["generation"] != record["generation"]
+            or current.get("publisher") != record["publisher"]
+        ):
+            raise OSError("run identity changed while retiring its producer")
+        if current["state"] not in runs.UNSPAWNED_STATES:
+            raise OSError(
+                f"the boot published its gateway ({current['state']}) while being waited "
+                "for; retry to drain it"
+            )
+        if handle is not None:
+            if current["state"] == "finished":
+                # The receipt is the producer's last write to THIS RECORD, not its
+                # last act: the boot's audit event is logged after `boot` returns
+                # and flushed as the interpreter exits. Let that exit happen on its
+                # own; end the process only once it has outlived the stop budget.
+                if not jobs.wait_identity(handle, timeout=timeout):
+                    jobs.retire_identity(handle, timeout=timeout)
+            elif not jobs.wait_identity(handle, timeout=0):
+                raise OSError("the boot is still in progress; retry")
+    # The producer is gone. Ending the task only stops a wrapper still unwinding.
+    schtasks("/End", "/TN", task_name(cfg, name))
+    for evidence in (pid_record_path(cfg, name), handoff_marker_path(cfg, name)):
+        if _evidence_present(evidence):
+            raise OSError(
+                f"gateway evidence at {evidence} belongs to a run that never published "
+                "containment; it cannot be reclaimed automatically"
+            )
+    if current["state"] == "preparing" and _evidence_present(cfg.home_dir(name)):
+        raise OSError(
+            "the producer died mid-provision and left a HOME whose writers are unproven; "
+            "it cannot be reclaimed automatically"
+        )
+    runs.retired(cfg, name, current)
 
 
 def _live_children_of(pid: int, token: str) -> list[int]:
@@ -955,14 +1118,17 @@ def supervise_gateway(
 ) -> int:
     """Contain the suspended gateway before publishing and resuming it.
 
-    The CLI reservation is claimed once, independently of the CLI name mutex.
-    All restart descendants inherit the lifetime Job, including branches whose
-    intermediaries disappear before either supervisor or stop can observe them.
-    Gateway sidecars still select the serving gateway; they never certify drain.
-    The terminal receipt is published only after the final kernel-zero proof,
-    with no further gateway spawn/resume possible from this invocation.
+    The CLI reservation was claimed by this process at the top of the boot
+    (``runs.claim`` in ``runtime_boot.boot``), independently of the CLI name
+    mutex; this only checks
+    the claim is its own. All restart descendants inherit the lifetime Job,
+    including branches whose intermediaries disappear before either supervisor
+    or stop can observe them. Gateway sidecars still select the serving gateway;
+    they never certify drain. The terminal receipt is published only after the
+    final kernel-zero proof, with no further gateway spawn/resume possible from
+    this invocation.
     """
-    record = runs.claim(cfg, name)
+    record = runs.own_claim(cfg, name)
     with jobs.PodJob.create() as job:
         proc = None
         try:
@@ -1029,9 +1195,10 @@ def supervise_gateway(
                     runs.drained(cfg, name, record)
             except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
                 # Keep the run descriptor: a consumer can retry the exact Job,
-                # but must never infer completion from this publisher's exit.
+                # but must never infer completion from this publisher's exit, and
+                # the boot must not publish a `finished` receipt over it.
                 print(f"FATAL: Windows pod drain remains unproven: {exc}")
-                raise
+                raise DrainUnproven(str(exc)) from exc
 
 
 # ------------------------------------------------------------------------- #

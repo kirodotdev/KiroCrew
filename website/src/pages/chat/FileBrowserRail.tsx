@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useDebouncedValue } from '../../apps/file-explorer/hooks'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Files, Diff, Search, X, RefreshCw, FileText } from 'lucide-react'
+import { Files, Diff, Search, X, RefreshCw, FileText, Folder } from 'lucide-react'
 import { api } from '../../api/client'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -16,12 +16,14 @@ import Clickable from '../../components/Clickable'
 import {
   failureMessage,
   RETRYABLE_SEARCH_CAUSES,
+  SEARCH_FAILURE_KEYS,
   searchErrorCause,
   TREE_FAILURE_KEYS,
 } from '../../lib/searchErrorCause'
 import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
-import { PierreWorkspaceTree } from '../../pierre/tree'
+import { PierreWorkspaceTree, type TreeReveal } from '../../pierre/tree'
+import { mergeTreeMatches } from '../../lib/treeSearchMatches'
 import { findReport, reportForError } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 
@@ -54,6 +56,16 @@ const CONTENT_MIN_CHARS = 2
  *  filter is local and instant; a content search is a bounded walk on the
  *  gateway, so it waits for the typing to settle. */
 const CONTENT_DEBOUNCE_MS = 250
+
+/** Shortest name query the filename search answers (`api_file_search`). */
+const NAME_SEARCH_MIN_CHARS = 2
+
+/** Keystroke debounce before a filename search past the tree's cap leaves the browser. */
+const NAME_SEARCH_DEBOUNCE_MS = 200
+
+/** Rows one filename search past the cap asks for: enough to find a folder by a
+ *  partial name, and well under the server's own ceiling. */
+const NAME_SEARCH_LIMIT = 50
 
 /** Filter text for the current page session, keyed by project directory.
  *  Module-level like `sessionChangedMode` (and deliberately NOT localStorage:
@@ -317,6 +329,122 @@ function ContentResults({ query, projectDir, onOpen }: {
 }
 
 /**
+ * Filename search past the tree's row cap. The tree's own filter can
+ * only find the rows the tree holds, and a truncated tree does not hold every
+ * folder, so while the payload is cut the query goes to `/api/file-search`,
+ * which walks the project under its own budget. A folder hit reveals that
+ * folder in the tree (loading its own listing when it is past the cap); a file
+ * hit opens the file.
+ */
+function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealFolder }: {
+  query: string
+  /** The files the (cut) tree already holds. The search walks under its own
+   *  budget and can miss one of them, so they join its hits (`mergeTreeMatches`). */
+  treeRows: { paths: readonly string[] }
+  /** Absolute project root: what the search walks, and what hits are made relative to. */
+  projectRoot: string
+  onOpenFile: (absPath: string) => void
+  onRevealFolder: (relPath: string) => void
+}) {
+  const { t } = useTranslation()
+  const settled = useDebouncedValue(query, NAME_SEARCH_DEBOUNCE_MS).trim()
+  const enabled = settled.length >= NAME_SEARCH_MIN_CHARS
+  const { data, isFetching, error } = useQuery({
+    queryKey: ['rail-name-search', projectRoot, settled],
+    queryFn: ({ signal }) => api.fileSearch(settled, projectRoot, signal, undefined, NAME_SEARCH_LIMIT),
+    enabled,
+    retry: false,
+    staleTime: 10_000,
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey?.[1] === projectRoot ? previous : undefined,
+  })
+  // The server's hits joined by the cut tree's own matching files, the same
+  // merge the folder tab runs (`mergeTreeMatches`). Run even when the search
+  // has not answered or failed: the tree's own rows are still on the client.
+  const serverHits = data?.results ?? []
+  const kinds = new Map(serverHits.map(hit => [hit.path.replace(/\\/g, '/'), hit.kind]))
+  const results = !enabled ? [] : mergeTreeMatches(
+    serverHits,
+    data?.root || projectRoot,
+    { root: projectRoot, paths: [...treeRows.paths] },
+    settled,
+    NAME_SEARCH_LIMIT,
+  ).map(hit => ({ path: hit.path, kind: kinds.get(hit.path.replace(/\\/g, '/')) }))
+  // A hit's project-relative path, from the search's own root when the
+  // server resolved one (it answers with the real path it walked).
+  const relative = (path: string): string | null => {
+    // Separators compared in one form: a Windows gateway answers backslash paths.
+    const hit = path.replace(/\\/g, '/')
+    for (const root of [projectRoot, data?.root]) {
+      const base = root ? root.replace(/\\/g, '/').replace(/\/+$/, '') : ''
+      if (base && hit.startsWith(`${base}/`)) return hit.slice(base.length + 1)
+    }
+    return null
+  }
+  return (
+    <div className="flex flex-col min-h-0 flex-1" data-testid="rail-name-search">
+      <div className="px-2 pb-1 text-[10.5px] text-muted shrink-0">
+        {t('pages.chat.folderPanel.search_beyond_tree')}
+      </div>
+      {error && (
+        <div className="px-2 pb-1.5 shrink-0">
+          <ErrorNotice
+            variant="inline"
+            className="whitespace-normal"
+            message={failureMessage(t, SEARCH_FAILURE_KEYS, searchErrorCause(error))}
+            report={reportForError(error)}
+            askAgent
+            testId="rail-name-search-error"
+          />
+        </div>
+      )}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {/* In flight with rows already shown (the tree's own matches land first):
+            say the search is still running, so the list does not read as final. */}
+        {enabled && isFetching && results.length > 0 && (
+          <div role="status" className="px-2 pb-1 text-[10.5px] text-muted" data-testid="rail-name-search-running">
+            {t('pages.chat.folderPanel.searching')}
+          </div>
+        )}
+        {!enabled || (isFetching && results.length === 0) ? (
+          <div role="status" className="px-2 py-2 text-[11.5px] text-muted">
+            {t('pages.chat.folderPanel.searching')}
+          </div>
+        ) : !error && results.length === 0 ? (
+          <EmptyState icon={<Search size={20} />} title={t('pages.chat.fileBrowserRail.content_no_matches')} />
+        ) : (
+          results.map(hit => {
+            const rel = relative(hit.path)
+            const isDir = hit.kind === 'dir'
+            return (
+              <Clickable
+                key={hit.path}
+                className="flex items-center gap-1 w-full text-left px-2 py-1 rounded-md hover:bg-bg-hover cursor-pointer text-[11.5px] text-text"
+                title={hit.path}
+                onClick={() => {
+                  if (!isDir) onOpenFile(hit.path)
+                  else if (rel) onRevealFolder(rel)
+                }}
+              >
+                {isDir
+                  ? <Folder size={11} className="shrink-0 opacity-60" />
+                  : <FileText size={11} className="shrink-0 opacity-60" />}
+                <span className="truncate">{rel ?? hit.path}</span>
+              </Clickable>
+            )
+          })
+        )}
+        {results.length >= NAME_SEARCH_LIMIT && (
+          <div className="px-2 py-1.5 text-[10.5px] text-muted/80">
+            {t('pages.chat.folderPanel.showing_first_matches', { shown: NAME_SEARCH_LIMIT })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
  * The file-browser rail: resize grip + tree column, headed by ONE row — an
  * icons-only All/Changed segment (tooltips carry the labels, Changed shows a
  * live count) with an always-open search field filling the rest — and a
@@ -330,7 +458,7 @@ function ContentResults({ query, projectDir, onOpen }: {
  * Both tree modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true, fill = false }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath, active = true, fill = false, onOpenFolder }: {
   projectDir: string
   /** Take the host's full width instead of a resizable side column. The
    *  pinned Files tab has no preview pane beside the tree, so a fixed-width
@@ -346,6 +474,11 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   /** False while the rail is kept mounted but hidden: its tree state survives
    *  and the git-status poll pauses. */
   active?: boolean
+  /** Open an ABSOLUTE folder path in its own folder tab. When the host wires
+   *  it, the limit row under a folder the cap still cuts becomes "Open in
+   *  folder tab": that tab lists the folder on its own and searches it by name
+   *  with a page that grows, which the rail's project-wide search cannot. */
+  onOpenFolder?: (absPath: string) => void
 }) {
   const { t } = useTranslation()
   const [changedMode, _setChangedMode] = useState(() => sessionChangedMode)
@@ -371,6 +504,13 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   const setQuery = (v: string) => {
     rememberQuery(projectDir, v)
     _setQuery(v)
+  }
+  // The folder a search hit asked the tree to reveal, for this project only.
+  const [reveal, setReveal] = useState<TreeReveal | null>(null)
+  const [revealDir, setRevealDir] = useState(projectDir)
+  if (revealDir !== projectDir) {
+    setRevealDir(projectDir)
+    setReveal(null)
   }
 
   const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir)
@@ -445,6 +585,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
        on ? 'bg-bg text-text shadow-[0_0_0_1px_var(--border)]' : 'bg-transparent text-muted hover:text-text')
 
   const contentMode = searchMode === 'content'
+  // The tree filter finds only what the tree holds. Past its cap the name query
+  // goes to the filename search instead.
+  const treeTruncated = treeData?.truncated === true
+  const nameSearch = !contentMode && !changedMode && treeTruncated
+    && query.trim().length >= NAME_SEARCH_MIN_CHARS
+  const projectRoot = (treeData?.root ?? projectDir).replace(/[/\\]+$/, '')
   // The tree notice belongs only to the body the `['project-tree']` read backs. Changed
   // mode lists `['git-status']` (PierreWorkspaceTreeImpl: `ready = mode === 'changed'
   // ? status != null : tree != null`) and Content mode lists grep hits, so a failed
@@ -673,15 +819,36 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             // header Refresh refetches the same key, and a success clears `treeError`.
             null
           ) : (
-            <PierreWorkspaceTree
-              mode={changedMode ? 'changed' : 'all'}
-              projectDir={projectDir}
-              persistExpansion
-              onFileOpen={(abs) => onFileOpen(abs, changedMode)}
-              onAddToContext={onAddToContext}
-              searchQuery={query || null}
-              selectedPath={selectedPath ?? null}
-            />
+            <>
+              {nameSearch && (
+                <NameSearchResults
+                  query={query}
+                  projectRoot={projectRoot}
+                  treeRows={{ paths: treeData?.paths ?? [] }}
+                  onOpenFile={abs => onFileOpen(abs, false)}
+                  onRevealFolder={rel => {
+                    setQuery('')
+                    setReveal(prev => ({ path: rel, nonce: (prev?.nonce ?? 0) + 1 }))
+                  }}
+                />
+              )}
+              {/* Kept mounted behind the search: its model holds the folders the
+                  user expanded and the folder listings it loaded past the cap. */}
+              <div className={cn('flex-1 min-h-0 flex flex-col', nameSearch && 'hidden')}>
+                <PierreWorkspaceTree
+                  mode={changedMode ? 'changed' : 'all'}
+                  projectDir={projectDir}
+                  persistExpansion
+                  onFileOpen={(abs) => onFileOpen(abs, changedMode)}
+                  onAddToContext={onAddToContext}
+                  searchQuery={nameSearch ? null : query || null}
+                  selectedPath={selectedPath ?? null}
+                  onOpenFolder={onOpenFolder ? folder => onOpenFolder(`${projectRoot}/${folder}`) : undefined}
+                  reveal={reveal}
+                  onRevealed={() => setReveal(null)}
+                />
+              </div>
+            </>
           )}
         </div>
       </div>

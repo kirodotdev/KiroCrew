@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   buildTree, countDiagnostics, countWords, DEFAULT_PDF_WIDTH, defaultPdfWidth,
   flattenTree, gitBranchLabel, isArtifact,
-  loadLastProject, loadSlot, MAX_PDF_WIDTH, maxPdfWidth, MIN_PDF_WIDTH, pruneSlots,
+  loadLastProject, loadSlot, MAX_PDF_WIDTH, maxPdfWidth, MIN_PDF_WIDTH, projectErrorText, pruneSlots,
   saveLastProject, saveSlot, SLOT_KEY_PREFIX, sourceFiles, texFiles,
   DEFAULT_CHAT_WIDTH, MAX_CHAT_WIDTH, maxChatWidth, MIN_CHAT_WIDTH,
   DEFAULT_TREE_WIDTH, MIN_EDITOR_WIDTH,
 } from '../apps/papyrus/lib'
-import type { Diagnostic } from '../apps/papyrus/api'
+import { PapyrusApiError, type Diagnostic } from '../apps/papyrus/api'
+import { i18next } from '../i18n'
+import '../i18n/all'
 
 // Papyrus's pure helpers. These carry the behaviour that is otherwise only
 // observable by staring at the rendered tree — the file-tree shape, the
@@ -405,5 +407,66 @@ describe('maxChatWidth', () => {
 
   it('falls back to the flat ceiling when the window cannot be measured', () => {
     expect(maxChatWidth(0, DEFAULT_TREE_WIDTH, DEFAULT_PDF_WIDTH)).toBe(MAX_CHAT_WIDTH)
+  })
+})
+
+// A refused paper name: the name is the paper's folder, so the rule stays a
+// lowercase Latin slug, and what the user gets is that rule in the app's own
+// language, naming the character the server refused.
+describe('projectErrorText', () => {
+  it('names a refused letter with its script and code point, then the one-clause rule', () => {
+    const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', '论')
+    const text = projectErrorText(err)
+    expect(text).toBe('“论” (character, U+8BBA) can’t be used in a paper name. Use lowercase a–z, 0–9, .\u00a0-\u2060\u00a0_')
+    expect(text).not.toContain('invalid project name')
+  })
+
+  it('names the script of a capital that renders like the Latin one the rule allows', () => {
+    // Cyrillic capital O: drawn exactly like Latin "O".
+    const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', 'О')
+    expect(projectErrorText(err)).toMatch(/^“О” \(Cyrillic letter, U\+041E\) can’t be used in a paper name\./)
+  })
+
+  it('tells a Greek capital and an accented Latin letter apart by script', () => {
+    const greek = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', 'Ο')
+    expect(projectErrorText(greek)).toContain('(Greek letter, U+039F)')
+    const accented = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', 'é')
+    expect(projectErrorText(accented)).toContain('(Latin letter, U+00E9)')
+  })
+
+  it('writes the code point of a letter outside the Basic Multilingual Plane in full', () => {
+    // MATHEMATICAL BOLD CAPITAL A: one letter, two UTF-16 code units.
+    const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', '𝐀')
+    expect(projectErrorText(err)).toContain('U+1D400')
+  })
+
+  it('names a refused non-letter without a script or code point', () => {
+    for (const char of ['/', 'U+202E']) {
+      const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', char)
+      expect(projectErrorText(err)).toBe(`“${char}” can’t be used in a paper name. Use lowercase a–z, 0–9, .\u00a0-\u2060\u00a0_`)
+    }
+  })
+
+  it('states the rule alone when no single character is to blame', () => {
+    // A leading dot or an over-long name fails on position or length, not on a character.
+    const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', '')
+    expect(projectErrorText(err)).toMatch(/^Paper names become folder names/)
+  })
+
+  it('renders in the app language rather than the server English', async () => {
+    const err = new PapyrusApiError('invalid project name', 400, '', 'invalid_project_name', 'Ä')
+    await i18next.changeLanguage('ja')
+    try {
+      const text = projectErrorText(err)
+      expect(text).toContain('「Ä」')
+      expect(text).not.toMatch(/[A-Za-z]{4,}/)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  it('keeps the server text for every other failure', () => {
+    expect(projectErrorText(new PapyrusApiError('project already exists', 409))).toBe('project already exists')
+    expect(projectErrorText(new Error('network down'))).toBe('network down')
   })
 })

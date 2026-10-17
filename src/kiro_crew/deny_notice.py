@@ -122,12 +122,11 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "it cannot be split, say so and stop with the reason.",
     ),
     DENY_CAUSE_AUDIT_UNAVAILABLE: (
-        "was refused because the host could not write the audit record its "
-        "unattended approval requires",
-        "treat this as a host fault, not a verdict on the action: nothing judged "
-        "the call itself, and the surface refused it rather than run it "
-        "unrecorded. Retrying the identical call is reasonable once; if it is "
-        "refused again, say what happened rather than working around it silently.",
+        "was refused because the host could not write the audit record its approval requires",
+        "treat this as a host fault, not a verdict against the action: it was "
+        "approved, and the surface refused to run it unrecorded. Retrying the "
+        "identical call is reasonable once; if it is refused again, say what "
+        "happened rather than working around it silently.",
     ),
 }
 

@@ -162,10 +162,11 @@ the version selector (channel tags track their channel; version tags pin).
   2. **Static assets** — the SPA shell, `/assets/`, `/vendor/`, and
      similar non-secret static files are served without a token (standard
      SPA bootstrap; the app is useless without a token once loaded).
-  3. **Local bootstrap** — `/api/token/local` and `/api/shutdown` require
-     a same-machine peer (a loopback address, or for the token endpoint the
-     dashboard's kernel-verified unix socket) **plus** a filesystem secret,
-     so they are unreachable through the published port by construction.
+  3. **Local bootstrap** — `/api/token/local`, `/api/shutdown`,
+     `/api/logout` and `/api/update/revalidate` require a same-machine peer
+     (a loopback address, or a same-user peer on the dashboard's
+     kernel-verified unix socket) **plus** a filesystem secret, so they are
+     unreachable through the published port by construction.
   CSRF origin checks apply to all state-changing requests, and the
   DNS-rebinding Host barrier applies to every request except the three
   probe paths.

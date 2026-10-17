@@ -14,12 +14,16 @@ import { api } from '../../api/client'
 // do not export ApiError, and an `instanceof` against a missing mock export
 // throws inside the reconnect heal's own catch.
 import { ApiError } from '../../api/apiError'
+import { refreshDashboardReads } from '../../api/dashboardRefresh'
 import { forgetUnobservedMemberThreads, MEMBERS_ROSTER_QUERY_KEY, MEMBER_PROJECTIONS_QUERY_PREFIX } from '../../api/membersQuery'
 import { memberProjectionStore } from '../../state/memberProjectionStore'
 import { threadLiveStore, type ThreadReplyFrame } from '../../state/threadLiveStore'
 import { threadQueryKey, threadsQueryKey } from '../../api/threads'
 import { applyStatusDelta, parseStatusDelta } from '../../utils/pullRequestStatusDelta'
+import { GUIDE_PENDING_QUERY_KEY } from '../../api/guide'
+import { CHANGE_CARDS_QUERY_PREFIX } from '../../api/cards'
 import { slotChangeUrls } from '../../utils/pullRequestLinks'
+import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY } from '../useSessionControls'
 import type { ChatSlot, PullRequestStatusBatch } from '../../types'
 import { emitArtifactDeleted } from './browserEvents'
 import type { FrameData } from './frames'
@@ -87,6 +91,10 @@ export function invalidateRefreshQueries(qc: QueryClient): void {
   // (api/membersQuery.ts) and refreshes with the registry.
   qc.invalidateQueries({ queryKey: ['kirocrew-agents'] })
   qc.invalidateQueries({ queryKey: ['default-agent'] })
+  // A default-template write is pushed as an "agents" refresh, so the roster
+  // re-reads its "Default custom agent" row marker. Exact on the roster: a
+  // template's detail carries no such marker and need not refetch on every frame.
+  qc.invalidateQueries({ queryKey: ['agent-templates'], exact: true })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
   // These answers derive from the config AND, for an `auto` default, the
@@ -157,6 +165,10 @@ export function refreshServerStateAfterReconnect(queryClient: QueryClient): void
   threadLiveStore.reset()
   queryClient.invalidateQueries({ queryKey: ['chat-thread'] })
   queryClient.invalidateQueries({ queryKey: ['chat-threads'] })
+  // A guide frame missed while the socket was down is recovered by re-reading.
+  queryClient.invalidateQueries({ queryKey: GUIDE_PENDING_QUERY_KEY })
+  // Same for a change-card frame: every slot's cards are re-read.
+  queryClient.invalidateQueries({ queryKey: CHANGE_CARDS_QUERY_PREFIX })
   // A dropped socket is the one client-visible sign the gateway may have
   // restarted — and a restart drops an unmessaged member slot while its
   // binding survives. The Crew Members page mounts a cached thread key
@@ -239,6 +251,45 @@ export function handleMemberProjection(data: FrameData): void {
   const pf = (data ?? {}) as { slug?: unknown; key?: unknown; seq?: unknown; value?: unknown }
   if (typeof pf.slug === 'string' && pf.slug && typeof pf.key === 'string' && pf.key && typeof pf.seq === 'number') {
     memberProjectionStore.apply(pf.slug, pf.key, pf.value, pf.seq)
+  }
+}
+
+/** The query key prefix every open Dashboard tab reads under. Slug-only, so a
+ *  frame carrying no crew name still reaches `['member-dashboard', slug, member]`
+ *  -- the refetch re-asks the server, which re-checks ownership. */
+export const MEMBER_DASHBOARD_QUERY_PREFIX = 'member-dashboard'
+
+/** The query key prefix a root session's Dashboard Overview reads under. */
+export const SESSION_DASHBOARD_QUERY_PREFIX = 'session-dashboard'
+
+/** A crewmate's dashboard moved, so an open tab must re-read it.
+ *
+ *  Two frames reach here and both mean the same thing to this tab. A
+ *  `dashboard_value_written` is the crewmate filling one of its own agentic
+ *  fields. A `member_projection` is a FOLD advancing, which is where every other
+ *  number on the page comes from. The tab's read sets no finite staleTime (the
+ *  client's default is freshness-by-push), so without this a dashboard opened at
+ *  the start of a long turn still shows the numbers it had then -- which is the
+ *  one thing a live project report must not do.
+ *
+ *  Invalidate rather than write a value in: the page is composed server-side with
+ *  its data island, its agentic marks and its stale band already decided, so there
+ *  is no client-side shape to patch. */
+export function handleDashboardMoved(queryClient: QueryClient, data: FrameData): void {
+  const frame = (data ?? {}) as { slug?: unknown; slot?: unknown }
+  const slug = String(frame.slug || '')
+  // A busy crewmate sends these faster than one read takes, so the re-read goes
+  // through `refreshDashboardReads`, which keeps one read per open dashboard out at
+  // a time. A read per frame would pile up on the gateway, each one computed in full
+  // whether or not anyone still waits for it.
+  if (slug) {
+    refreshDashboardReads(queryClient, [MEMBER_DASHBOARD_QUERY_PREFIX, slug])
+  }
+  // A ROOT session's own page is named by its slot: its store key is a digest no
+  // client can match, so the gateway's frame carries the slot instead.
+  const slot = String(frame.slot || '')
+  if (slot) {
+    refreshDashboardReads(queryClient, [SESSION_DASHBOARD_QUERY_PREFIX, slot])
   }
 }
 
@@ -339,6 +390,22 @@ export function handleSourceStatus(dispatch: AppDispatch, queryClient: QueryClie
   // delta), so there is no feedback loop.
   queryClient.invalidateQueries({ queryKey: ['pull-request-source', delta.url] })
   queryClient.invalidateQueries({ queryKey: ['pull-request-checks', delta.url] })
+}
+
+/** A finished turn re-asks the session's app-contributed control statuses.
+ *  The agent most often changes what a chip reports during a turn, and the
+ *  probes otherwise re-ask only when a control's popover closes (#10909).
+ *  Only probes of THIS session match. The composer shows the active chat
+ *  only, so the ACTIVE slot refetches its mounted probes now; a background
+ *  slot's are just marked stale, to be re-asked when the user switches to it
+ *  (the same split `refreshPullRequestsAfterTurn` below makes). */
+export function refreshSessionControlStatusesAfterTurn(queryClient: QueryClient, slot: string, isActive: boolean): void {
+  const sessionKey = dashboardSessionKey(slot)
+  if (!sessionKey) return
+  void queryClient.invalidateQueries({
+    queryKey: [SESSION_CONTROL_STATUS_KEY, sessionKey],
+    refetchType: isActive ? 'active' : 'none',
+  })
 }
 
 /** Turn boundary: the finished turn is the likeliest moment for this

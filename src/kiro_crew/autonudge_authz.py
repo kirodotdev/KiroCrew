@@ -36,7 +36,7 @@ from kiro_crew.autonudge import (
     is_channel_key,
     scrub_loop_text,
 )
-from kiro_crew.autonudge_selfarm import forget_self_arm, record_self_arm
+from kiro_crew.autonudge_selfarm import WAKE_RESET_AGENTS, forget_self_arm, record_self_arm
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.monitoring.limits import validate_runtime_secs
 from kiro_crew.monitoring.models import (
@@ -54,6 +54,16 @@ from kiro_crew.security import (
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+#: The refusal ``authorize_and_update_nudge`` answers when the caller's goal baseline
+#: differs from the stored one. Named so the HTTP route can attach a machine code
+#: to exactly this 409. It must not claim another window: the token is re-minted on
+#: every load, so the first save after a gateway restart is refused with no other
+#: writer anywhere.
+STALE_GOAL_BASELINE_ERROR = (
+    "Not saved: the goal was changed or reloaded since you opened it. Your text is kept. "
+    "Send the same save again to replace the stored goal with your text."
+)
 
 # Dashboard slot modes that refuse automation turns armed from OUTSIDE the
 # session. A crew-mode slot is driven by its orchestrator and a member-mode
@@ -89,6 +99,25 @@ def external_arm_refusal(mode: str) -> str:
         f"{mode}-mode sessions do not accept direct automation turns armed from "
         "outside the session (only the session's own turn may arm a loop on itself)"
     )
+
+
+#: Why a dashboard slot in a non-persistent memory mode cannot host a loop. The
+#: authorizer denies with this text, and the arming MCP tools quote it back in
+#: band (through :func:`loop_hosting_refusal` on the session-monitor reading), so
+#: the agent sees the same reason in its arming turn that the turn boundary uses.
+LOOP_HOSTING_REFUSED_ERROR = "incognito and temporary sessions cannot host automation loops"
+
+
+def loop_hosting_refusal(slot: Any) -> str:
+    """Return why ``slot`` cannot host an automation loop, or ``""`` if it can.
+
+    The ONE predicate for the memory-mode rule. Every authorizer path and the
+    in-band preflight call it, so the check that refuses an arm and the reading
+    that warns about the refusal cannot disagree.
+    """
+    if str(getattr(slot, "memory_mode", "persistent")) != "persistent":
+        return LOOP_HOSTING_REFUSED_ERROR
+    return ""
 
 
 @runtime_checkable
@@ -176,10 +205,10 @@ async def authorize_and_update_monitor(
             # grant would be an unaudited relaxation of the ceiling.
             if not await _audit("self_armed"):
                 return None, "audit log unavailable — monitor not updated", 503
-        if str(getattr(current, "memory_mode", "persistent")) != "persistent":
-            error = "incognito and temporary sessions cannot host automation loops"
-            await _audit("denied", error)
-            return None, error, 403
+        hosting_refusal = loop_hosting_refusal(current)
+        if hosting_refusal:
+            await _audit("denied", hosting_refusal)
+            return None, hosting_refusal, 403
     prior_loop = None
     credential_update_needs_rollback = grant_owner_provider_credentials or "target" in safe_patch
     if credential_update_needs_rollback:
@@ -794,12 +823,7 @@ async def authorize_and_update_nudge(
         # Refused under the store's own lock, so the newer goal is still there. 409 rather
         # than a silent success: last-write-wins would destroy a change never seen.
         _audit("denied", "stale baseline — nudge loop not updated")
-        return (
-            None,
-            "The goal changed in another window. Your text is kept — save again to compare "
-            "and choose.",
-            409,
-        )
+        return None, STALE_GOAL_BASELINE_ERROR, 409
     except ValueError as exc:
         return _deny(str(exc), 400)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
@@ -861,6 +885,9 @@ async def authorize_and_add_nudge(
     initiator_slot_key: str = "",
     creation_surface: MonitorCreationSurface = MonitorCreationSurface.DASHBOARD,
     grant_owner_provider_credentials: bool = False,
+    #: Arm the gateway's default conductor patrol (``NudgeLoop.default_patrol``):
+    #: set by ``conductor_patrol`` alone, and only on a prompt loop.
+    default_patrol: bool = False,
 ) -> tuple[Any | None, str | None, int]:
     """Validate + authorize + arm a nudge loop; return ``(loop, error, status)``.
 
@@ -957,6 +984,11 @@ async def authorize_and_add_nudge(
     # Set only on the dashboard branch, when a crew/member slot is armed by its
     # own turn; channel-bound loops have no slot mode and stay False.
     self_armed = False
+    # Whether the keystone-gated self-arm record is written for this loop: a
+    # crew/member self-arm, or a conductor slot armed by its own turn -- the
+    # record is what lets that loop's wake reset the conversation
+    # (``session_directive_apply``). The ``self_armed`` bit's meaning is unchanged.
+    self_recorded = False
     if is_channel_key(slot_key):
         # Channel-bound loop (Slack / Discord ...). Validate the session is
         # routable so a nudge fired later has somewhere to reply.
@@ -1071,8 +1103,13 @@ async def authorize_and_add_nudge(
                 return _deny(external_arm_refusal(slot_mode), 409)
             self_armed = True
             _audit("self_armed")
-        if str(getattr(authorized_slot, "memory_mode", "persistent")) != "persistent":
-            return _deny("incognito and temporary sessions cannot host automation loops", 403)
+        self_recorded = self_armed or (
+            str(getattr(authorized_slot, "agent", "") or "") in WAKE_RESET_AGENTS
+            and is_self_arm(slot_key, initiator_slot_key)
+        )
+        hosting_refusal = loop_hosting_refusal(authorized_slot)
+        if hosting_refusal:
+            return _deny(hosting_refusal, 403)
 
         def _dashboard_admission() -> bool:
             current = state._slots.get(slot_key)
@@ -1090,7 +1127,7 @@ async def authorize_and_add_nudge(
                 current is authorized_slot
                 and mode_ok
                 and not bool(getattr(authorized_slot, "is_closing", False))
-                and str(getattr(current, "memory_mode", "persistent")) == "persistent"
+                and not loop_hosting_refusal(current)
             )
 
         admission_check = _dashboard_admission
@@ -1100,7 +1137,19 @@ async def authorize_and_add_nudge(
         get_by_slot = getattr(svc, "get_by_slot", None)
         existing = get_by_slot(slot_key) if callable(get_by_slot) else None
         existing_monitor = getattr(existing, "monitor", None)
-        if isinstance(existing_monitor, MonitorState) and existing_monitor.wake_in_flight:
+        # The service lets a non-default arm replace an ACTIVE default patrol even
+        # mid-wake (``mutations._add_unserialized``); refusing here first would
+        # turn that replacement back into a 409.
+        displaces_default = bool(
+            getattr(existing, "default_patrol", False) is True
+            and getattr(existing, "active", False)
+            and not default_patrol
+        )
+        if (
+            isinstance(existing_monitor, MonitorState)
+            and existing_monitor.wake_in_flight
+            and not displaces_default
+        ):
             return _deny(
                 "existing monitor cannot be replaced while a wake is in flight",
                 409,
@@ -1219,7 +1268,7 @@ async def authorize_and_add_nudge(
     ):
         return _deny("monitor authorization requires a rollback-capable loop store", 503)
     reserved_loop_id: str | None = None
-    if self_armed or owner_credentials_grant:
+    if self_recorded or owner_credentials_grant:
         # Reserve a COLLISION-FREE id before touching the trust record. The
         # record is an upsert keyed by loop id, so an id already held by a live
         # loop would overwrite that loop's entry -- and the add's conflict
@@ -1238,13 +1287,18 @@ async def authorize_and_add_nudge(
                 break
         if reserved_loop_id is None:
             return _deny("could not reserve a loop id — loop not armed", 503)
-    if self_armed:
+    if self_recorded:
         try:
             assert reserved_loop_id is not None
             await asyncio.to_thread(record_self_arm, reserved_loop_id, slot_key)
         except OSError:
-            logger.error("self-arm record unavailable; loop not armed", exc_info=True)
-            return _deny("self-arm record unavailable — loop not armed", 503)
+            if self_armed:
+                logger.error("self-arm record unavailable; loop not armed", exc_info=True)
+                return _deny("self-arm record unavailable — loop not armed", 503)
+            # An ordinary slot needs no record to be armed: without one, its
+            # wakes are simply refused a conversation reset (fail closed there).
+            logger.warning("self-arm record unavailable; loop armed unrecorded", exc_info=True)
+            self_recorded = False
 
     if owner_credentials_grant:
         assert monitor is not None and reserved_loop_id is not None
@@ -1257,7 +1311,7 @@ async def authorize_and_add_nudge(
                 monitor.target,
             )
         except OSError:
-            if self_armed:
+            if self_recorded:
                 await asyncio.to_thread(forget_self_arm, reserved_loop_id)
             logger.error("monitor credential provenance unavailable; loop not armed", exc_info=True)
             return _deny("monitor credential authorization unavailable — loop not armed", 503)
@@ -1265,7 +1319,7 @@ async def authorize_and_add_nudge(
     def _forget_orphaned_trust() -> None:
         if reserved_loop_id is None:
             return
-        if self_armed:
+        if self_recorded:
             forget_self_arm(reserved_loop_id)  # never raises
         if owner_credentials_grant:
             autonudge_provider_trust.forget_monitor_owner_credentials(reserved_loop_id)
@@ -1303,6 +1357,10 @@ async def authorize_and_add_nudge(
                 add_kwargs["self_armed"] = True
             if reserved_loop_id is not None:
                 add_kwargs["loop_id"] = reserved_loop_id
+            if default_patrol:
+                # Conditional, like ``self_armed``: the contract tests compare this
+                # dict by equality, so every other caller's kwargs stay as they were.
+                add_kwargs["default_patrol"] = True
             loop = await svc.add(
                 **add_kwargs,
             )

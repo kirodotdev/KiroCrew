@@ -48,6 +48,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _own_ledger,
     _refuse_if_dirty,
     _slot_closed,
+    _slot_looping,
     _slot_open,
     _slot_running,
     _tail_events,
@@ -231,6 +232,52 @@ def _redact_deep(value: Any) -> Any:
     return value
 
 
+def task_records(
+    slot_key: str,
+) -> tuple[work_ledger.ConductorRecord | None, list[work_ledger.WorkItem]]:
+    """Return this slot's conductor and work items for gateway-owned readers.
+
+    The slot comes from server state, never caller input. Keeping this read on the
+    existing dashboard seam preserves the store's identity boundary.
+    """
+    return work_ledger.read_conductor(slot_key), work_ledger.list_work_items(slot_key)
+
+
+def work_item_is_terminal(state: object) -> bool:
+    """Whether a stored work-item state is terminal."""
+    return state in work_ledger.TERMINAL_ITEM_STATES
+
+
+def closed_items(slot_key: str) -> list[dict[str, Any]]:
+    """The closed items on thread *slot_key*'s own ledger, as this board reads them.
+
+    The gateway-side reader behind a crewmate's weekly and monthly goal reports:
+    the slot comes from the crewmate's own goal binding, never from a request, so
+    no caller names a ledger here. Each row is ``{closed_at, title, state,
+    summary}`` with ``closed_at`` parsed (rows without one are dropped) and every
+    string through the same egress redactor as the board payload. A thread that
+    owns no ledger, or whose key does not fold, has closed nothing. Blocking file IO.
+    """
+    try:
+        items = work_ledger.list_work_items(session_ledger.ledger_key(slot_key))
+    except (work_ledger.WorkLedgerError, OSError):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        if not item.is_terminal:
+            continue
+        closed = work_ledger.parse_stamp(item.closed_at or "")
+        if closed is None:
+            continue
+        rows.append(
+            {
+                "closed_at": closed,
+                **_redact_deep({"title": item.title, "state": item.state, "summary": item.summary}),
+            }
+        )
+    return rows
+
+
 def _alive_of(state: DashboardState, worker_key: str) -> str:
     """``running`` / ``idle`` / ``closed`` for a worker session key.
 
@@ -325,6 +372,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             item,
             worker_running=_slot_running(state, item.worker_session_key or ""),
             worker_closed=_slot_closed(state, item.worker_session_key or ""),
+            worker_looping=_slot_looping(item.worker_session_key or ""),
         )
         row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
         row["events"] = _mask_events([event.to_dict() for event in event_tails[item.item_id]])
@@ -342,7 +390,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
         "conductor_alive": "idle" if conductor_alive else "closed",
         "items": rows,
         # The ONE capability the page actually reads, because it changes what the
-        # page renders: the take-over button is disabled while this is false.
+        # page renders: no take-over button is rendered while this is false.
         #
         # Deliberately not accompanied by `stop_available`, `channels_available` or
         # a reason code. Those were sent so Phase 5 and a future take-over could

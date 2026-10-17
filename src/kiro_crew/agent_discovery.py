@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import fnmatch
 import functools
+import hashlib
 import logging
 import os
+import stat
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -44,8 +47,10 @@ from kiro_crew.dashboard.side_readonly_spec import is_readonly_spec_description
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, is_unc_shape, unc_probe_allowed
 from kiro_crew.pinned_fs import open_fenced_for_read
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import sel as _sel
+from kiro_crew.user_json import strict_json_equal
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +205,12 @@ class AgentInfo:
     # standalone template deserving its own agent.
     forked_from: str = ""
     private_to: str = ""
+    # True when the row is a markdown spec AND no JSON spec claims its name in
+    # any scope kiro-cli resolves (``agent.markdown_spec_for_agent``'s rule).
+    # Hosts outside ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS`` cannot load it, so a
+    # picker can say so before a spawn is refused. Display-only: no spawn path
+    # reads it.
+    markdown_only: bool = False
 
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
@@ -247,6 +258,7 @@ class AgentInfo:
         # The out-of-tree edition seam passes this through from a raw row, and a
         # truthy non-bool would render as a provenance claim nothing verified.
         self.kirocrew_owned = self.kirocrew_owned is True
+        self.markdown_only = self.markdown_only is True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -282,6 +294,8 @@ def is_internal_agent_spec(info: object) -> bool:
 
 
 SKILL_URI_PREFIX = "skill://"
+#: The Crew tool that loads a skill a bounded directory lists.
+_SKILL_SEARCH_TOOL = "@kirocrew-core/skill_search"
 
 # Kiro Crew-only spec convention, predating ``.kiro/agents/`` and still used by
 # projects driven from Slack. kiro-cli does NOT read this location, so a name
@@ -591,16 +605,50 @@ def plain_markdown_document(path: Path) -> bool:
     Every failure is ``False``: a file that cannot even be probed is unknown,
     not ignorable, so the caller keeps raising.
     """
-    if _unc_refused(str(path)):
+    probed = _probe_spec_head(path)
+    if probed is None:
         return False
+    head, truncated = probed
+    return markdown_head_is_fenceless(head, complete=not truncated)
+
+
+#: The magic numbers that open an AppleDouble and an AppleSingle file (RFC 1740).
+_APPLE_DOUBLE_MAGICS = (b"\x00\x05\x16\x07", b"\x00\x05\x16\x00")
+
+
+def apple_double_sidecar(path: Path) -> bool:
+    """Whether *path* is a macOS AppleDouble sidecar, judged by its name AND its bytes.
+
+    A macOS archive leaves a ``._<name>`` sidecar beside every file it carries.
+    The name alone does not settle what the file is: kiro-cli applies no
+    filename filter, so a ``._x.json`` that holds a spec is loaded under the
+    name it declares. A file that opens with the AppleDouble or AppleSingle
+    magic starts with a NUL byte, which neither spec form can start with, so
+    no spec reader loads it. The head is read exactly as
+    :func:`plain_markdown_document` reads it, through the strict reader's gates
+    and bounded at ``_FENCE_PROBE_BYTES``. Every failure is ``False``.
+    """
+    if not path.name.startswith("._"):
+        return False
+    probed = _probe_spec_head(path)
+    return probed is not None and probed[0].startswith(_APPLE_DOUBLE_MAGICS)
+
+
+def _probe_spec_head(path: Path) -> tuple[bytes, bool] | None:
+    """The head of *path* and whether the file runs past it, or ``None`` when refused.
+
+    The gates and the bound :func:`plain_markdown_document` documents.
+    """
+    if _unc_refused(str(path)):
+        return None
     try:
         real = path.resolve(strict=True)
     except (OSError, RuntimeError):
         # RuntimeError: pathlib's signal for a symlink loop on the Pythons
         # that raise it as such.
-        return False
+        return None
     if _unc_refused(str(real)) or _fence_refuses(real):
-        return False
+        return None
     try:
         fd = open_fenced_for_read(
             real,
@@ -608,23 +656,28 @@ def plain_markdown_document(path: Path) -> bool:
             refusal=_SpecReadRefused,
         )
     except OSError:
-        return False
+        return None
     try:
-        head, truncated = _read_head(fd, _FENCE_PROBE_BYTES)
+        return _read_head(fd, _FENCE_PROBE_BYTES)
     except OSError:
-        return False
+        return None
     finally:
         os.close(fd)
-    return markdown_head_is_fenceless(head, complete=not truncated)
 
 
 class AmbiguousAgentSpecError(ValueError):
-    """More than one spec in one directory declares the same ``name``.
+    """More than one spec in one directory declares the same ``name``, and they
+    differ.
 
     Which of them is live is undefined, so a resolver that picked one would
     hand the caller an agent the operator did not name, with that agent's tools
     and prompt. Every declared-name resolver refuses instead; the message names
-    each file so the operator can remove or rename one.
+    each file so the operator can remove or rename one. A reader of parsed
+    content (:func:`spec_by_declared_name`) raises this only when the
+    claimants' content differs: identical files answer the same question
+    whichever is live, so it hands back that one answer instead. A writer
+    (:func:`kiro_crew.agent.agent_spec_path`) must pick a file to write and
+    refuses the pair whatever its content.
 
     ``paths`` carries the same files as data, for a caller that must name them
     WITHOUT their directory -- the tool-policy endpoint's 409 ``reason``
@@ -671,16 +724,28 @@ def spec_by_declared_name(
     can be repointed at a sensitive file, which would then be read with no
     denial and no SEL audit entry.
 
-    Raises :class:`AmbiguousAgentSpecError` when two specs declare *agent_id*,
-    the refusal :func:`kiro_crew.agent.agent_spec_path` makes on the same
-    ambiguity. Propagates ``OSError`` from the directory walk itself; the
-    per-file reads never raise.
+    Raises :class:`AmbiguousAgentSpecError` when two specs declare *agent_id*
+    with DIFFERENT content, the refusal :func:`kiro_crew.agent.agent_spec_path`
+    makes on the same names. Claimants whose parsed content is equal are not
+    refused: every caller of this scan reads the parse and never writes the
+    file, and an identical pair gives the same parse whichever of them the
+    backend runs, so the question the caller asks (this agent's policy, this
+    agent's projection) has one answer and that answer is returned, with a
+    warning naming each file so the operator can tidy the directory. A package
+    installer that flattens dependencies writes exactly such twins for an agent
+    two packages vend; refusing them denied the agent its policy and its KAS
+    session with no lasting repair. Equality is of the whole parse, not of the
+    fields one caller reads: a pair that agrees on ``managedToolPolicy`` but
+    differs elsewhere is still two agents, and stays refused. Propagates
+    ``OSError`` from the directory walk itself; the per-file reads never raise.
 
-    Only the first matching spec is held; a later match keeps its path and its
-    parse is dropped at once. The reader caps each file, so the parsed-spec
-    memory this scan holds at its peak is one capped parse, not one per
-    same-name file; the paths themselves, one per candidate, are what the
-    refusal message needs and are all the scan keeps of the rest.
+    Only the first matching spec is held; a later match is compared with it,
+    keeps its path, and its parse is dropped when the loop moves on. The reader
+    caps each file, so the parsed-spec memory this scan holds at its peak is a
+    constant few capped parses (the first match, the loop's last parse and the
+    one being read), not one per same-name file; the paths themselves, one per
+    candidate, are what the refusal message and the warning need and are all
+    the scan keeps of the rest.
 
     This is a fresh walk rather than a filter over :func:`parsed_agent_specs`,
     and the difference is the labels, not the loop. That cache serves catalog
@@ -693,20 +758,36 @@ def spec_by_declared_name(
     """
     match: dict[str, Any] | None = None
     match_paths: list[Path] = []
+    divergent = False
     for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(path, operation=operation, source=source)
         if isinstance(spec, dict) and spec.get("name") == agent_id:
             if match is None:
                 match = spec
+            elif not strict_json_equal(spec, match):
+                divergent = True
             match_paths.append(path)
     if len(match_paths) > 1:
         # Paths are repr'd: a filename in this user-writable, tool-shared
-        # directory is untrusted input, and this message reaches a terminal.
-        raise AmbiguousAgentSpecError(
-            f"{len(match_paths)} specs declare the name {agent_id!r}: "
-            f"{', '.join(repr(str(path)) for path in match_paths)}. Which one is live is "
-            f"undefined -- remove or rename one.",
-            paths=match_paths,
+        # directory is untrusted input, and both texts reach a terminal.
+        names = ", ".join(repr(str(path)) for path in match_paths)
+        if divergent:
+            raise AmbiguousAgentSpecError(
+                f"{len(match_paths)} specs declare the name {agent_id!r} with differing "
+                f"content: {names}. Which one is live is undefined -- remove or rename one.",
+                paths=match_paths,
+            )
+        # The name and the filenames are untrusted input from a user-writable
+        # directory and this line persists in gateway.log: the same log-egress
+        # redaction every other operational line carrying foreign text applies
+        # (``redact_log_via_context``, the non-raising spelling for a log site),
+        # so a credential-shaped name is scrubbed before it is written.
+        logger.warning(
+            "%d identical specs declare the name %s: %s. Whichever is live, the spec "
+            "is the same, so it is used; remove or rename one to tidy the directory.",
+            len(match_paths),
+            redact_log_via_context(repr(agent_id)),
+            redact_log_via_context(names),
         )
     return match
 
@@ -838,13 +919,13 @@ def project_agent_files(
     Returns the kiro-cli-native ``<project>/.kiro/agents/*.json`` and the markdown
     ``*.md`` form beside it — the only project location the backends resolve
     ``--agent`` against, and therefore the only one whose names are dispatchable.
-    Dispatchable by the kiro-cli backend, which reads the checkout itself: the
-    KAS projection (:func:`kiro_crew.acp.kas_agents.load_agent_spec`) reads the
-    user-level directory only, for either form, so a project-only agent selected
-    on a KAS session is refused at session start there. Whether a checkout's
-    spec may be projected at all is a governance question (a checkout can
-    shadow a managed agent), not a question of which form is scanned, and the
-    two forms are treated alike here.
+    Dispatchable by the kiro-cli backend, which reads the checkout itself, and by
+    the KAS projection (:func:`kiro_crew.acp.harness.kas.resolve_projected_spec`),
+    which projects a project-only agent's prompt and visible tools and nothing it
+    could grant, and reads the user-level spec for a name both levels declare.
+    Whether a checkout's spec may be projected at all is a governance question (a
+    checkout can shadow a managed agent), not a question of which form is
+    scanned, and the two forms are treated alike here.
 
     *include_legacy* additionally returns ``<project>/.kiro/*.agent-spec.json``, Kiro
     Crew's own older convention. It defaults to ``False`` because every dispatch
@@ -1262,6 +1343,32 @@ def expand_skill_uri(
     return str(base / raw)
 
 
+def skill_uri_for_path(skill_md: Path) -> str:
+    """Render a ``SKILL.md`` path as a ``skill://`` resource URI.
+
+    The forward direction of :func:`expand_skill_uri`, and the one renderer both
+    writers that MINT a mapping call -- the Agent Templates editor
+    (``dashboard.handlers._shared.skill_uri_for_key``) and the builtin-agent
+    installers (``agent_materialization.skill_resources``) -- so a mapping written
+    by either expands back to the same path.
+
+    A path under ``$HOME`` is emitted in ``~/`` form: kiro-cli expands it, and it
+    keeps the written spec portable across machines and home directories. Anything
+    else is emitted absolute, the form :func:`expand_skill_uri` returns unchanged.
+
+    ``agent._relocated_skill_uri`` renders a ``skill://`` URI too and deliberately
+    does NOT come here: it REPOINTS an existing mapping at a relocated skill and
+    keeps whichever form that mapping was already written in, so a ``~/`` entry a
+    person authored stays portable instead of being rewritten absolute. Minting and
+    repointing are different rules, which is why there are two.
+    """
+    try:
+        rel_home = skill_md.relative_to(Path.home())
+    except ValueError:
+        return f"{SKILL_URI_PREFIX}{skill_md.as_posix()}"
+    return f"{SKILL_URI_PREFIX}~/{rel_home.as_posix()}"
+
+
 def parsed_agent_specs(
     agents_dir: Path | None = None,
     *,
@@ -1411,12 +1518,104 @@ class SkillScopeResolutionError(ValueError):
     """The bound agent has an unavailable skill scope."""
 
 
+def skill_search_refusal(spec: dict[str, Any]) -> str | None:
+    """Why *spec* withholds Crew's ``skill_search``, or ``None`` when it allows it.
+
+    THE one spelling of the check. The skill projection refuses a mapped agent's
+    view with this reason, and :func:`can_inherit_skills` reads it to decide
+    whether an unmapped agent can take its inherited skill trees.
+    """
+    excluded = spec.get("excludedTools", [])
+    if isinstance(excluded, list) and any(
+        isinstance(t, str) and (t == "@kirocrew-core" or fnmatch.fnmatchcase(_SKILL_SEARCH_TOOL, t))
+        for t in excluded
+    ):
+        return "skill_search is explicitly excluded; bounded skill discovery requires it"
+    servers = spec.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return "mcpServers must be an object"
+    core = servers.get("kirocrew-core", {})
+    if not isinstance(core, dict):
+        return "kirocrew-core must be a server object"
+    disabled = core.get("disabled", False)
+    disabled_tools = core.get("disabledTools", [])
+    if not isinstance(disabled, bool):
+        return "kirocrew-core.disabled must be a boolean"
+    if not isinstance(disabled_tools, list) or any(
+        not isinstance(tool, str) for tool in disabled_tools
+    ):
+        return "kirocrew-core.disabledTools must be a list of strings"
+    if disabled or "skill_search" in disabled_tools:
+        return "skill_search is disabled; bounded skill discovery requires it"
+    return None
+
+
+def can_inherit_skills(spec: dict[str, Any]) -> bool:
+    """Whether an unmapped custom agent's spec can take its inherited skill trees.
+
+    Crew delivers inherited skills through ``skill_search``, so a spec that
+    declares ``tools: []`` (the zero-tool contract) or withholds that tool
+    (:func:`skill_search_refusal`) gets none, and so does one with no
+    ``kirocrew-core`` entry whose tools are missing or ``"*"``: wiring search
+    there would grant every Crew tool. Each would change what its author allowed;
+    such an agent keeps the spawn it had and simply gets no skills.
+    """
+    tools = spec.get("tools")
+    if isinstance(tools, list) and not tools:
+        return False
+    if skill_search_refusal(spec) is not None:
+        return False
+    servers = spec.get("mcpServers", {})
+    if isinstance(servers, dict) and "kirocrew-core" in servers:
+        return True
+    # Without its own kirocrew-core entry the view gains one. Only an explicit
+    # tool list keeps that to skill_search: a missing list or a "*" would hand
+    # the agent every kirocrew-core tool its author never asked for.
+    return isinstance(tools, list) and "*" not in tools
+
+
+def inherited_skill_globs(
+    project_dir: str | Path | None, *, kiro_home_dir: Path | None = None
+) -> list[str]:
+    """The skills a custom agent inherits from kiro-cli's default resources.
+
+    Since kiro-cli 2.7 a custom agent inherits the default skill trees,
+    ``~/.kiro/skills`` and the workspace's ``.kiro/skills``, unless
+    ``chat.disableInheritingDefaultResources`` turns that off. Native launches
+    turn it off to bound the startup catalog (``acp/skill_projection.py``), so an
+    agent with no ``skill://`` entry of its own would get no skills at all. Crew
+    supplies those trees instead, through the same bounded directory and
+    ``skill_search`` a mapped agent uses. Returns ``[]`` when the workspace opted
+    out of inheritance. *kiro_home_dir* is the kiro-cli home the caller already
+    resolved; it defaults to :func:`kiro_crew.config.paths.kiro_home`.
+
+    A tree that does not exist is left out. The workspace tree is
+    workspace-controlled (a link to a network share, for one), so it is asked
+    through :func:`kiro_crew.skills.project_skill_tree_present`: trust first,
+    then the no-follow traversal, never a path-following probe.
+    """
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+    from kiro_crew.config import paths
+
+    if not acp_driver.inherits_default_resources(project_dir):
+        return []
+    home = kiro_home_dir if kiro_home_dir is not None else paths.kiro_home()
+    global_tree = home / "skills"
+    globs = [str(global_tree / "*" / "SKILL.md")] if global_tree.is_dir() else []
+    from kiro_crew.skills import project_skill_tree_present
+
+    if project_dir and project_skill_tree_present(project_dir):
+        globs.append(str(Path(project_dir) / ".kiro" / "skills" / "*" / "SKILL.md"))
+    return globs
+
+
 def agent_skill_globs(
     agent: str,
     agents_dir: Path | None = None,
     *,
     project_dir: str | Path | None = None,
     strict: bool = False,
+    inherit_defaults: bool = False,
 ) -> list[str]:
     """Return fnmatch globs for the skills mapped to *agent*, or ``[]``.
 
@@ -1425,6 +1624,9 @@ def agent_skill_globs(
     Listing callers are best-effort: an unreadable, invalid, or sensitive-path
     agent file yields ``[]``. Session callers use ``strict=True`` so a missing
     custom template cannot silently widen its scope to the global catalog.
+    Session callers also pass ``inherit_defaults=True``: a custom agent whose
+    spec resolves with no ``skill://`` entry then gets
+    :func:`inherited_skill_globs` rather than ``[]``.
     Resolved from the :func:`parsed_agent_specs` snapshot when no project is supplied.
     """
     if not agent:
@@ -1446,33 +1648,81 @@ def agent_skill_globs(
         data = _read_agent_spec(path, operation="agent_skill_globs", source="unknown")
         if strict and data is None:
             raise SkillScopeResolutionError(f"Cannot read skill scope for agent {agent!r}")
-        return [
+        globs = [
             g
             for uri in skill_resource_uris(data or {})
             if (g := expand_skill_uri(uri, path, project_dir=project_dir))
         ]
+        if (
+            not globs
+            and inherit_defaults
+            and agent != "kirocrew"
+            and data is not None
+            and can_inherit_skills(data)
+        ):
+            return inherited_skill_globs(project_dir)
+        return globs
     # ``f`` is the ORIGINAL path: ``f.stem`` and ``expand_skill_uri`` below
     # must see it so a symlinked spec's relative globs stay anchored where
     # the symlink lives.
     for data, f in parsed_agent_specs(agents_dir, operation="agent_skill_globs", source="unknown"):
         if data.get("name") != agent and f.stem != agent:
             continue
-        return [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
+        globs = [g for uri in skill_resource_uris(data) if (g := expand_skill_uri(uri, f))]
+        if not globs and inherit_defaults and agent != "kirocrew" and can_inherit_skills(data):
+            return inherited_skill_globs(project_dir)
+        return globs
     if strict and agent != "kirocrew":
         raise SkillScopeResolutionError(f"Cannot resolve skill scope for agent {agent!r}")
     return []
 
 
+def served_provider_label(provider: object) -> str | None:
+    """The label of the harness a live *provider* serves, or ``None`` without one.
+
+    The same value ``context._skills_injection_plan`` is handed for a session
+    (``context_provider_type``): ``"acp"`` for kiro-cli, ``"kas"``, ``"claude_code"``,
+    ``"codex"`` and so on. ``None`` (no live session) is not kiro-cli.
+    """
+    from kiro_crew.agent_sdk import context_provider_of
+
+    context_provider = context_provider_of(provider)
+    if context_provider is None:
+        return None
+    try:
+        return context_provider.context_provider_type
+    except Exception:  # noqa: BLE001 -- an unreadable label is "unknown", not kiro-cli
+        logger.debug("served_provider_label: label unreadable", exc_info=True)
+        return None
+
+
 # This is called on the discovery/expansion worker, never on the event loop.
 def session_skill_globs(
-    session_key: str, fallback_agent: str, *, project_dir: str | Path | None = None
+    session_key: str,
+    fallback_agent: str,
+    *,
+    project_dir: str | Path | None = None,
+    provider_type: str | None = None,
 ) -> list[str] | None:
-    """Use a member's bound template, not its dashboard display alias."""
+    """Use a member's bound template, not its dashboard display alias.
+
+    An unmapped custom agent's inherited skill trees count only when
+    *provider_type* names kiro-cli, the same rule as
+    ``context._skills_injection_plan``. Callers pass the served harness
+    (:func:`served_provider_label`); ``None`` grants no inherited trees.
+    """
     from kiro_crew.execution_context import read_session_execution
 
     execution = read_session_execution(session_key) if session_key else None
     template = execution.template_id if execution and execution.template_id else fallback_agent
-    mapped = agent_skill_globs(template, project_dir=project_dir, strict=True)
+    from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP
+
+    mapped = agent_skill_globs(
+        template,
+        project_dir=project_dir,
+        strict=True,
+        inherit_defaults=provider_type == PROVIDER_ACP,
+    )
     return None if template == "kirocrew" and not mapped else mapped
 
 
@@ -1629,63 +1879,126 @@ def _dir_signature(d: Path) -> _ListAgentsSig:
     return tuple(sorted(entries))
 
 
-_SpecStatRevision = tuple[str, int, int, int, int, int, int]
-AgentsDirRevision = tuple[int, tuple[_SpecStatRevision, ...], int]
+# name, mtime, ctime, size, inode, device, mode, link count, content digest.
+_SpecStatRevision = tuple[str, int, int, int, int, int, int, int, bytes]
+AgentsDirRevision = tuple[tuple[_SpecStatRevision, ...], int]
 # ``st_ctime_ns`` is creation time on Windows, so entry metadata cannot prove
 # that an in-place rewrite did not happen; the revision is unavailable there.
 AGENTS_DIR_MEMO_ENABLED = not _WINDOWS
-# Above this many spec entries no revision is taken, and a read costs what it costs.
-_AGENTS_DIR_REVISION_MAX_ENTRIES = 4096
-# Follow the racy-git precedent: metadata younger than this window is untrusted.
+# Follow the racy-git precedent: metadata younger than this window is untrusted,
+# so an entry that young is pinned on a digest of its bytes as well.
 _AGENTS_DIR_RACY_WINDOW_NS = 2_000_000_000
+# How many young entries, and how many of their bytes, one revision may digest.
+# A bulk write past either reads uncached until it is a window old.
+_AGENTS_DIR_RACY_MAX_DIGESTS = 64
+_AGENTS_DIR_RACY_MAX_DIGEST_BYTES = 8 * 1024 * 1024
 # An answer set that reaches this many keys is cleared whole, so a churn of names cannot grow it.
 _AGENTS_DIR_MEMO_MAX_KEYS = 256
-_AGENTS_DIR_REVISION_LOCK = threading.Lock()
-_AGENTS_DIR_REVISION_OVERFLOW_WARNED: set[str] = set()  # Guarded by the lock above.
+# The digest slot of an entry old enough for its metadata alone to pin it.
+_NO_DIGEST = b""
+_DIGEST_CHUNK_BYTES = 64 * 1024
+
+
+def _young_entry_digest(path: str, st: os.stat_result, limit: int) -> tuple[bytes, int] | None:
+    """SHA-256 of the regular file at *path* and the bytes read, or ``None``.
+
+    ``None`` when the entry is not a regular file, cannot be opened or read, is
+    not the inode *st* describes, or holds more than *limit* bytes: bytes
+    the revision cannot hash are bytes it cannot vouch for. The open is the
+    hardened reader's own (:func:`pinned_fs.open_fenced_for_read`), so a link
+    at the final component, a hardlinked or non-regular inode and a sensitive
+    kernel path are refused here exactly as the spec read refuses them.
+    """
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    try:
+        fd = open_fenced_for_read(
+            path,
+            fence=lambda fd_real: _fence_refuses(Path(fd_real)),
+            refusal=_SpecReadRefused,
+        )
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_ino, opened.st_dev) != (st.st_ino, st.st_dev):
+            return None
+        digest = hashlib.sha256()
+        total = 0
+        while True:
+            chunk = os.read(fd, _DIGEST_CHUNK_BYTES)
+            if not chunk:
+                return digest.digest(), total
+            total += len(chunk)
+            if total > limit:
+                return None
+            digest.update(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
-    """Stat-only fingerprint of *agents_dir* strong enough to pin a read answer to.
+    """Fingerprint of *agents_dir* strong enough to pin a read answer to.
 
     ``None`` means "cannot prove freshness; do not memoize". Where
     :func:`_dir_signature` answers every call with a tuple because the catalog
-    caches it serves tolerate a same-tick edit, this refuses whenever entry
-    metadata could miss a rewrite: no spec is opened or parsed either way.
+    caches it serves tolerate a same-tick edit, this never lets entry metadata
+    miss a rewrite, and it parses no spec either way.
 
-    The directory's own mtime catches an entry added, removed, renamed or
-    re-linked; each spec entry's name, timestamps, size, identity and mode catch
-    ordinary in-place edits and metadata changes. The in-process spec
-    generation (:func:`spec_cache_generation`) is part of the tuple, so
-    :func:`clear_list_agents_cache` -- which the in-process spec writers call --
-    moves every revision at once, closing the sub-tick window. An entry whose
-    mtime or ctime is within the last two seconds gives ``None``, so a
-    same-size rewrite that lands in the same filesystem timestamp tick as the
-    previous one cannot be served stale (the racy-git rule).
+    Each spec entry contributes its name, timestamps, size, identity, mode and
+    link count, so an entry added, removed, renamed or re-linked and every
+    ordinary in-place edit or metadata change moves the revision; the link
+    count and the mode are what the hardened reader judges a file by besides
+    its bytes. The in-process spec generation (:func:`spec_cache_generation`)
+    is part of the tuple, so :func:`clear_list_agents_cache` -- which the
+    in-process spec writers call -- moves every revision at once.
+
+    An entry whose mtime or ctime is within :data:`_AGENTS_DIR_RACY_WINDOW_NS`
+    of the walk is pinned on a SHA-256 of its bytes as well (the racy-git rule:
+    git re-compares the content of an entry whose stat is too young to trust).
+    A same-size rewrite that lands in the same filesystem timestamp tick as the
+    previous write leaves the metadata unchanged but not the bytes, so it is
+    never served stale, and one fresh write does not withdraw the pin from
+    the whole directory: a directory written continuously is pinned between
+    writes. An older entry's metadata is enough on its own: any later write
+    stamps a ctime no POSIX call can set back, which lands past the window the
+    entry was outside of. A walk with more than
+    :data:`_AGENTS_DIR_RACY_MAX_DIGESTS` young entries, or more than
+    :data:`_AGENTS_DIR_RACY_MAX_DIGEST_BYTES` of them, gives ``None``, and so
+    does a young entry whose bytes cannot be hashed (not a regular file,
+    unreadable, or replaced while it was read).
 
     A symlinked spec gives ``None``: its entry metadata cannot see edits to its
     target. On Windows the answer is always ``None``: ``st_ctime_ns`` is
     creation time there, so entry metadata cannot prove an in-place rewrite did
-    not happen. A directory past :data:`_AGENTS_DIR_REVISION_MAX_ENTRIES` gives
-    ``None`` and logs one warning per directory.
+    not happen. There is no cap on the number of entries: the walk is one
+    ``stat`` per spec where the reads it saves are one parse per spec, and
+    :class:`AgentsDirMemo` retains a fixed-size digest of the revision, never
+    the tuple.
 
     Only the entries :func:`_iter_spec_entries` yields -- a recognised spec
     suffix, not a skill-view alias -- are fingerprinted; that is a superset of
-    what the spec scans parse (a Markdown spec shadowed by its JSON twin is still
+    what the spec scans read (a Markdown spec shadowed by its JSON twin is still
     fingerprinted; an alias is left out by scan and fingerprint alike), so the
-    revision can only be more sensitive than the scan, never less. Adding or
-    removing a stray file -- an alias included -- still invalidates through the
-    directory mtime, but the stray file itself is omitted from the entry tuples
-    and from the entry cap. A ``stat`` that fails records zeros: the entry is
-    still named, so its appearance and disappearance are revisions. An entry
-    whose kind cannot be determined gives ``None``, and so does a directory that
-    cannot be listed: an unlistable directory is not an empty one.
+    revision can only be more sensitive than the scan, never less. The
+    directory's own mtime is not part of it: every file a scan reads is named
+    in the tuple, so a stray file or an alias written beside the specs neither
+    moves the revision nor withdraws the pin. Nothing read from an alias is
+    pinned to it either: :class:`AgentsDirMemo` never stores an answer under
+    an alias name. A ``stat`` that fails records
+    zeros: the entry is still named, so its appearance and disappearance are
+    revisions. An entry whose kind cannot be determined gives ``None``, and so
+    does a directory that cannot be listed: an unlistable directory is not an
+    empty one.
     """
     if not AGENTS_DIR_MEMO_ENABLED:
         return None
-    try:
-        dir_mtime = agents_dir.stat().st_mtime_ns
-    except OSError:
-        dir_mtime = 0
+    # Taken before the walk, so an entry written while it runs is young.
+    cutoff = time.time_ns() - _AGENTS_DIR_RACY_WINDOW_NS
+    digests = 0
+    digest_bytes = 0
     entries: list[_SpecStatRevision] = []
     try:
         for entry in _iter_spec_entries(agents_dir):
@@ -1696,38 +2009,49 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
                 return None
             try:
                 st = entry.stat(follow_symlinks=False)
-                entries.append(
-                    (
-                        entry.name,
-                        st.st_mtime_ns,
-                        st.st_ctime_ns,
-                        st.st_size,
-                        st.st_ino,
-                        st.st_dev,
-                        st.st_mode,
-                    )
-                )
             except OSError:
-                entries.append((entry.name, 0, 0, 0, 0, 0, 0))
-            if len(entries) > _AGENTS_DIR_REVISION_MAX_ENTRIES:
-                key = str(agents_dir)
-                with _AGENTS_DIR_REVISION_LOCK:
-                    should_warn = key not in _AGENTS_DIR_REVISION_OVERFLOW_WARNED
-                    _AGENTS_DIR_REVISION_OVERFLOW_WARNED.add(key)
-                if should_warn:
-                    logger.warning(
-                        "agents-dir memo disabled for %s: %d spec entries exceed %d",
-                        agents_dir,
-                        len(entries),
-                        _AGENTS_DIR_REVISION_MAX_ENTRIES,
-                    )
-                return None
+                entries.append((entry.name, 0, 0, 0, 0, 0, 0, 0, _NO_DIGEST))
+                continue
+            digest = _NO_DIGEST
+            if st.st_mtime_ns > cutoff or st.st_ctime_ns > cutoff:
+                digests += 1
+                if digests > _AGENTS_DIR_RACY_MAX_DIGESTS:
+                    return None
+                hashed = _young_entry_digest(
+                    os.path.join(agents_dir, entry.name),
+                    st,
+                    _AGENTS_DIR_RACY_MAX_DIGEST_BYTES - digest_bytes,
+                )
+                if hashed is None:
+                    return None
+                digest, read = hashed
+                digest_bytes += read
+            entries.append(
+                (
+                    entry.name,
+                    st.st_mtime_ns,
+                    st.st_ctime_ns,
+                    st.st_size,
+                    st.st_ino,
+                    st.st_dev,
+                    st.st_mode,
+                    st.st_nlink,
+                    digest,
+                )
+            )
     except OSError:
         return None
-    cutoff = time.time_ns() - _AGENTS_DIR_RACY_WINDOW_NS
-    if dir_mtime > cutoff or any(entry[1] > cutoff or entry[2] > cutoff for entry in entries):
-        return None
-    return dir_mtime, tuple(sorted(entries)), spec_cache_generation()
+    return tuple(sorted(entries)), spec_cache_generation()
+
+
+def _revision_pin(revision: AgentsDirRevision) -> bytes:
+    """A fixed-size digest of *revision*, the form :class:`AgentsDirMemo` retains.
+
+    ``repr`` of a tuple of strings, integers and bytes is deterministic, so two
+    equal revisions pin equal; SHA-256 makes two different ones collide only by
+    a collision of the hash.
+    """
+    return hashlib.sha256(repr(revision).encode("utf-8", "backslashreplace")).digest()
 
 
 T = TypeVar("T")
@@ -1747,7 +2071,13 @@ class AgentsDirMemo(Generic[T]):
     - an exception from ``compute`` propagates and nothing is stored;
     - one answer set per directory, replaced whole on a new revision and
       cleared when it reaches :data:`_AGENTS_DIR_MEMO_MAX_KEYS`, so a churn of
-      keys cannot grow it.
+      keys cannot grow it;
+    - the revision an answer set is pinned to is retained as its fixed-size
+      digest (:func:`_revision_pin`), so what the memo holds per directory does
+      not grow with the number of specs in it;
+    - a key that is a skill-view alias name is computed on every call and never
+      stored, because the revision leaves aliases out and a caller's
+      direct-filename fallback would read ``<alias>.json``.
 
     An in-process spec write that calls :func:`clear_list_agents_cache` moves
     the spec generation, which is part of every revision, so the stored answers
@@ -1763,25 +2093,34 @@ class AgentsDirMemo(Generic[T]):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._answers: dict[str, tuple[AgentsDirRevision, dict[str, T]]] = {}
+        self._answers: dict[str, tuple[bytes, dict[str, T]]] = {}
 
     def get(self, agents_dir: Path, key: str, compute: Callable[[], T]) -> T:
-        """Return the memoized answer for *key* under *agents_dir*, or ``compute()``."""
+        """Return the memoized answer for *key* under *agents_dir*, or ``compute()``.
+
+        A *key* that is a skill-view alias name is always computed: every reader
+        keyed here is keyed by agent name and may read ``<key>.json`` by
+        filename, and the revision does not fingerprint aliases, so an answer
+        read from one could outlive the alias it was read from.
+        """
+        if is_native_skill_alias_name(key):
+            return compute()
         dir_key = str(agents_dir)
         revision = agents_dir_revision(agents_dir)
         if revision is None:
             return compute()
+        pin = _revision_pin(revision)
         with self._lock:
             cached = self._answers.get(dir_key)
-            if cached is not None and cached[0] == revision and key in cached[1]:
+            if cached is not None and cached[0] == pin and key in cached[1]:
                 return cached[1][key]
         answer = compute()
         if agents_dir_revision(agents_dir) != revision:
             return answer
         with self._lock:
             cached = self._answers.get(dir_key)
-            if cached is None or cached[0] != revision:
-                cached = (revision, {})
+            if cached is None or cached[0] != pin:
+                cached = (pin, {})
                 self._answers[dir_key] = cached
             answers = cached[1]
             if len(answers) >= _AGENTS_DIR_MEMO_MAX_KEYS:
@@ -2077,6 +2416,18 @@ def list_agents(
                     existing.package,
                 )
 
+    # Markdown-only is decided across BOTH scopes, by the rule
+    # ``agent.markdown_spec_for_agent`` applies on the refusal branch: kiro-cli
+    # sees JSON alone, so a markdown row it can still run (a JSON spec for the
+    # name in the other scope, or a differently named JSON file declaring it)
+    # is not markdown-only. Names come off rows already parsed, so no extra
+    # read. A global row that survives has no project row of its name, so the
+    # user-level JSON names decide it here; project rows are marked after their
+    # scan, once that scope's JSON names are known too.
+    json_names = {a.name for a in agents if not is_markdown_spec(a.filename)}
+    for a in seen.values():
+        a.markdown_only = is_markdown_spec(a.filename) and a.name not in json_names
+
     # Project scope LAST so it shadows: kiro-cli resolves --agent against its cwd
     # before the user-level dir, and Kiro Crew spawns it with the session's project
     # dir as cwd, so the project entry is what would actually run. The warning
@@ -2084,6 +2435,7 @@ def list_agents(
     # shadowing is not, because the two configs can differ in tools and permissions.
     project_candidates = 0
     project_parsed = 0
+    project_rows: list[AgentInfo] = []
     for pf in project_files:
         if not pf.name.startswith("._"):
             project_candidates += 1
@@ -2092,6 +2444,7 @@ def list_agents(
             if data is None:
                 continue
             info = _project_agent_info(pf, data)
+            project_rows.append(info)
             shadowed = seen.get(info.name)
             if shadowed is not None and shadowed.scope == SCOPE_GLOBAL:
                 logger.warning(
@@ -2109,6 +2462,9 @@ def list_agents(
         _warn_on_systematic_scan_failure(
             project_agents_dir(scope), project_candidates, project_parsed
         )
+    json_names |= {p.name for p in project_rows if not is_markdown_spec(p.filename)}
+    for p in project_rows:
+        p.markdown_only = is_markdown_spec(p.filename) and p.name not in json_names
 
     result = list(seen.values())
     _LIST_AGENTS_CACHE[cache_key] = (signature, result)

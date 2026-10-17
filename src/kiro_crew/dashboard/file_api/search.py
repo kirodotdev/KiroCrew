@@ -12,15 +12,18 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _SEARCH_LIMIT_CEILING,
+        _WALK_DEADLINE_STRIDE,
         _WALK_MAX_DIRS_VISITED,
         _WALK_MAX_SCAN_SCOPED,
         _WALK_MAX_SCAN_UNSCOPED,
         _WALK_SKIP_DIRS,
+        _WALK_TIME_BUDGET_SECS,
         DashboardState,
         _PathProbeBusy,
         _probe_busy_response,
         _run_path_probe,
         _sel,
+        _walk_monotonic,
         data_home,
         logger,
         platform_compat,
@@ -151,8 +154,12 @@ async def api_file_search(request: web.Request) -> web.Response:
     """
     # Re-imported at call time (not reused from the module-level binding) so a
     # test that stubs ``kiro_crew.security.is_sensitive_path`` is observed by the
-    # project-root rejection below.
-    from kiro_crew.security import is_sensitive_path  # noqa: F811
+    # project-root rejection below, and one that stubs
+    # ``is_sensitive_canonical_path`` by the walk's per-entry check.
+    from kiro_crew.security import (  # noqa: F811
+        is_sensitive_canonical_path,
+        is_sensitive_path,
+    )
 
     owner_denied = await require_owner_dashboard_request(request, "file_search")
     if owner_denied is not None:
@@ -308,8 +315,24 @@ async def api_file_search(request: web.Request) -> web.Response:
     max_scan = _WALK_MAX_SCAN_SCOPED if scoped else _WALK_MAX_SCAN_UNSCOPED
     max_collect = max_results * 10  # collect enough candidates for good scoring, then stop
 
+    # Wall-clock budget for the walk, read on the loop and frozen into a monotonic
+    # deadline the blocking thread checks. The entry/dir ceilings above bound how
+    # many filesystem calls the walk makes; this bounds how long they are allowed
+    # to take, which is the term a slow network mount inflates.
+    # ``_WALK_DEADLINE_STRIDE`` is how many entries one ``_collect`` scans between
+    # clock reads -- a single huge directory could otherwise overrun the budget
+    # between the per-directory checks, exactly as the grep path strides its own
+    # row loop (``_GREP_ROW_DEADLINE_STRIDE``).
+    walk_budget_secs = _WALK_TIME_BUDGET_SECS
+
     def _walk_file_search() -> list[dict]:
         """Blocking file-system walk — offloaded via asyncio.to_thread.
+
+        Returns the collected entries. The walk stops EARLY when its wall-clock
+        budget runs out, so a healthy-but-slow store returns the partial set it
+        gathered before the deadline instead of outrunning the client's own 15s
+        bound on every attempt; the entry/dir ceilings stop it early for size.
+        Either way the caller gets whatever was scored so far.
 
         Files and directories are collected into SEPARATE candidate lists, each
         with its own ``max_collect`` allowance. A shared list would let a burst
@@ -321,12 +344,20 @@ async def api_file_search(request: web.Request) -> web.Response:
 
         An independent ``_WALK_MAX_DIRS_VISITED`` ceiling bounds how many
         directories the walk descends into, so no request can traverse a whole
-        large tree.
+        large tree. The wall-clock budget bounds how long that bounded traversal
+        may take, so a healthy-but-slow store returns a partial answer at the
+        deadline instead of outrunning the client's own 15s bound on every
+        attempt.
         """
         found: dict[str, list[dict]] = {"file": [], "dir": []}
         walked: dict[str, int] = {"file": 0, "dir": 0}
         dirs_visited = 0
         wanted = {"file": want_files, "dir": want_dirs}
+        deadline = _walk_monotonic() + walk_budget_secs
+        timed_out = False
+
+        def _over_deadline() -> bool:
+            return _walk_monotonic() >= deadline
 
         def _done(kind: str) -> bool:
             return not wanted[kind] or walked[kind] >= max_scan or len(found[kind]) >= max_collect
@@ -336,10 +367,18 @@ async def api_file_search(request: web.Request) -> web.Response:
 
         def _collect(kind: str, dirpath: str, names: list[str], root_dir: str) -> None:
             """Score and collect one kind of entry from a single directory level."""
+            nonlocal timed_out
             for name in names:
                 if _done(kind):
                     return
                 walked[kind] += 1
+                # Re-check the clock every _WALK_DEADLINE_STRIDE entries so one
+                # enormous directory cannot overrun the budget between the
+                # per-directory checks below. The stride keeps the clock read off
+                # the hot path for the overwhelming common case (small dirs).
+                if walked[kind] % _WALK_DEADLINE_STRIDE == 0 and _over_deadline():
+                    timed_out = True
+                    return
                 if kind == "file" and name.startswith("."):
                     continue
                 full = os.path.join(dirpath, name)
@@ -347,8 +386,11 @@ async def api_file_search(request: web.Request) -> web.Response:
                 if score <= 0:
                     continue
                 # Resolve symlinks before the sensitivity check so a link into a
-                # sensitive tree cannot slip through.
-                if is_sensitive_path(os.path.realpath(full)):
+                # sensitive tree cannot slip through. The canonical gate matches
+                # inline on this worker thread instead of submitting one more
+                # resolution per entry to the ``mc-pathres`` pool, whose queue
+                # the event loop's own bounded checks wait behind.
+                if is_sensitive_canonical_path(os.path.realpath(full)):
                     continue
                 try:
                     st = os.stat(full)
@@ -366,7 +408,7 @@ async def api_file_search(request: web.Request) -> web.Response:
                 )
 
         for root_dir in safe_roots:
-            if _full():
+            if _full() or timed_out:
                 break
             # macOS: prune the TCC-gated folders. Reaching into them would pop
             # one consent modal PER folder. ``scoped`` means the user NAMED
@@ -376,6 +418,13 @@ async def api_file_search(request: web.Request) -> web.Response:
                 # Bounds the traversal; the per-kind counters stop advancing once
                 # their kind is done.
                 dirs_visited += 1
+                # Stop descending once the wall-clock budget is spent, before
+                # paying another directory's worth of per-entry stats on a slow
+                # store. Checked per directory (os.walk yields one at a time), and
+                # per-entry inside _collect for a single oversized directory.
+                if _over_deadline():
+                    timed_out = True
+                    break
                 # A dot-prefixed directory (.github, .kiro, .claude) should be
                 # OFFERED as a candidate even though we must not DESCEND into it.
                 #
@@ -400,7 +449,7 @@ async def api_file_search(request: web.Request) -> web.Response:
                 # the ones that survive.
                 _collect("file", dirpath, filenames, root_dir)
                 _collect("dir", dirpath, candidate_dirs, root_dir)
-                if _full():
+                if _full() or timed_out:
                     break
         return found["file"] + found["dir"]
 

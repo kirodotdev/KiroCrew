@@ -423,7 +423,7 @@ command installed on `PATH`.
 Optional extras. Kiro Crew is not on PyPI, so `pip install "kirocrew[voice]"`
 cannot resolve — install an extra's own distributions into the environment that
 runs the gateway instead (e.g. `pip install 'boto3>=1.34,<2'
-'amazon-transcribe>=0.6,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
+'amazon-transcribe>=0.6.3,<1' 'pywhispercpp>=1.5,<2'` for `voice`). The dashboard
 prints the exact command, already pointed at the right interpreter.
 
 | Extra | Adds | For |
@@ -574,6 +574,17 @@ The desktop app bundles its own kiro-cli by default (`BUNDLE_KIRO_CLI=1` at
 build time). That copy is not on your shell `PATH`, so the **Set up Kiro** page
 serves the login command with the bundled binary's absolute path; run that
 command instead of a bare `kiro-cli login`.
+
+The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
+shadow testing: the switch is off by default on every platform and nothing turns
+it on for you. From a source install, `bash install.sh --kas` downloads the
+engine version this release pins; after any other install, `kirocrew kas
+install` does the same. The desktop app ships that engine inside the app
+(`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
+route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
+Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
+then sign in from the **Kiro sign-in** card on Settings → Agent Harness → KAS, and
+`kiro-cli login` is not used.
 
 Then start Kiro Crew:
 
@@ -846,6 +857,32 @@ preferring user units at install time. Installing kirocrew onto a system-labelle
 path such as `/usr/local/bin` also avoids the problem.
 
 [#10813]: https://github.com/kirodotdev/KiroCrew/issues/10813
+
+### SELinux labels on files the service writes
+
+On an SELinux host (enforcing or permissive) the system unit can carry a
+`SELinuxContext=` line set to the context of the shell that ran
+`kirocrew service install`, for example
+`unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023`. A new file takes its
+SELinux user from the process that creates it, so without that line the gateway
+runs as `system_u` and every cache it writes under your home (`~/.npm/_cacache`,
+`~/.gradle`, `~/.cache/pip`) is labelled `system_u`. Your own shell is then
+refused hardlinks inside it, which npm reports as `EPERM` / `syscall link` and
+"root-owned files" even though ownership is correct.
+
+The line is written only when the loaded policy says the unit still starts with
+it: PID 1 may switch into that context, and the context may start the kirocrew
+binary (and the interpreter its shebang names). Otherwise it is left out and the
+unit runs exactly as before (the reason is logged at INFO). On
+AL2023's targeted policy, for example, a kirocrew under
+`/usr/local/bin` (`bin_t`) gets the line, while one under `~/.local/bin`
+(`home_bin_t`) does not and keeps the `system_u` caches; the per-user unit above
+avoids them there. The line is also left out when SELinux is off, when the
+context cannot be read, and when the installing shell is itself `system_u`.
+
+A unit installed by an earlier build has no such line: re-run
+`kirocrew service install`, then fix an already-poisoned cache with
+`restorecon -RF ~/.npm` (or delete it).
 
 ### Setting the service port
 

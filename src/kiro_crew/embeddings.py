@@ -30,6 +30,7 @@ import abc
 import asyncio
 import ctypes
 import ctypes.util
+import errno
 import functools
 import hashlib
 import heapq
@@ -47,6 +48,7 @@ import threading
 import time
 import types
 import urllib.parse
+import weakref
 from collections import OrderedDict
 from contextlib import AbstractContextManager
 from contextvars import ContextVar
@@ -55,6 +57,13 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, NamedTuple, Protocol
 
 from kiro_crew import asset_downloader
+from kiro_crew._llama_lib_path import (  # noqa: F401
+    _LIB_PATH_ENV,
+    _LIBS_DIR_NAME,
+    _REQUIRED_VENDORED_LIBS,
+    consume_dropped_inherited_lib_path,
+    operator_lib_path_override,
+)
 from kiro_crew.config.loader import config_path, read_config_text
 from kiro_crew.config.paths import config_dir
 from kiro_crew.cpu_affinity import affinity_cpu_count
@@ -219,6 +228,18 @@ _LLM_LOAD_RETRY_SECS = 300.0  # re-attempt a failed model load after this long
 # exit. Bounded so an unload never wedges a shutdown; the thread is a daemon, so
 # a straggler cannot hold the interpreter open either.
 _INFER_STOP_TIMEOUT_SECS = 30.0
+# Idle eviction. The loaded model is the largest single cost of an idle gateway:
+# the GGUF mapping (~600 MB resident) plus llama.cpp's context buffers (~400 MB),
+# held for the process lifetime once anything embedded. After this many seconds
+# with no embed the model is unloaded; the next embed loads it again. 0 keeps it
+# resident forever. Overridable as memory.embedding_idle_evict_secs.
+_DEFAULT_IDLE_EVICT_SECS = 3600.0
+# Longest the evictor sleeps between checks, so a config change is seen promptly.
+_EVICT_POLL_MAX_SECS = 60.0
+# How long a caller that can wait (an interactive or normal embed, off the event
+# loop) blocks for a load it triggered, instead of getting None and falling back
+# to keyword search. Bounded again by the caller's own EmbeddingWork deadline.
+_COLD_LOAD_WAIT_SECS = 30.0
 # llama.cpp sizes its compute pools from the HOST CPU COUNT when the caller does
 # not pass them: n_threads = cpu//2 and n_threads_batch = cpu (see the vendored
 # llama.py). Embedding is prompt processing, so it runs on the BATCH pool — on a
@@ -336,11 +357,19 @@ _PROGRESS_EVERY_BYTES = 16 << 20
 # ── Vendored runtime loading ──
 
 _VENDOR_DIR = Path(__file__).resolve().parent / "_vendor"
-_LIBS_DIR_NAME = "llama_cpp_libs"
-# Upstream-supported override naming the directory ctypes loads the native libs
-# from (see _vendor/llama_cpp/llama_cpp.py). An operator-set value wins, which
-# is the escape hatch for a GPU build or a hand-assembled lib dir.
-_LIB_PATH_ENV = "LLAMA_CPP_LIB_PATH"
+# The process-local channel to the vendored loader: a module registered in
+# ``sys.modules`` under this key, carrying ``LIBS_DIR`` (see
+# _publish_lib_path_for_import). ``_vendor/llama_cpp/llama_cpp.py`` reads it
+# before ``LLAMA_CPP_LIB_PATH`` (its ``kiro_crew DIVERGENCE FROM UPSTREAM``).
+# Entry preludes remove inherited bundled or empty values before any thread or
+# child exists. A process that bypasses those preludes may still carry one; the
+# loader classifies and ignores it without writing the environment. The bundled
+# directory travels only through ``sys.modules``, which children do not inherit.
+# On Windows the upstream loader still prepends the directory to ``PATH`` for
+# its dependent DLLs (unchanged here, and it did so before the seam); that is a
+# search hint a successor's own prepend outranks, not an instruction to load
+# from a named directory.
+_LIB_PATH_SEAM = "_kiro_crew_llama_cpp_lib_path"
 # The upstream Linux x86_64 CPU wheel is built with these code-generation
 # switches enabled. Its startup path executes the corresponding instructions
 # before llama.cpp can make a runtime dispatch decision, so loading it on a
@@ -369,66 +398,6 @@ _WINDOWS_MSVC_RUNTIME_DLLS = (
     "VCRUNTIME140_1.dll",
     "VCOMP140.DLL",
 )
-
-# The native-library closure every supported platform MUST ship, keyed by the
-# `llama_cpp_libs/<dir>` name. `libllama` is the entry point ctypes opens by
-# base name; the `libggml*` files are its NEEDED/@rpath dependencies, so a
-# missing one fails the SAME way as a missing libllama — an unusable runtime.
-#
-# This is the single source of truth for "is the vendored payload complete",
-# consumed by `verify_vendored_libs()` and asserted per packaging lane. It is
-# deliberately CODE rather than a build-time glob: a glob over whatever is on
-# disk can only prove the files present are shippable, never that a file that
-# should exist was silently dropped by a packaging rule — which is exactly the
-# failure mode `MANIFEST.in`'s `global-exclude *.so` produced (it stripped
-# precisely `libllama.so`, since every other Linux lib ends `.so.0` and the
-# macOS/Windows libs are `.dylib`/`.dll`). `python -m build` builds the wheel
-# FROM the sdist, so that one glob shipped a Linux wheel whose vendored
-# llama_cpp could not load its own shared library, silently degrading vector
-# memory to keyword search on every pip-installed Linux host.
-#
-# No BLAS entry on Linux is intentional, not an omission: upstream publishes no
-# BLAS backend in its Linux CPU wheels (macOS gets `libggml-blas` only because
-# it links the system Accelerate framework). The Linux `libggml-cpu` carries the
-# optimized GEMM/repack kernels instead, so the CPU path is complete without it.
-_REQUIRED_VENDORED_LIBS: dict[str, tuple[str, ...]] = {
-    "linux_x86_64": (
-        "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
-        "libgomp-a34b3233.so.1.0.0",
-    ),
-    "linux_aarch64": (
-        "libllama.so",
-        "libggml.so.0",
-        "libggml-base.so.0",
-        "libggml-cpu.so.0",
-        "libgomp-d22c30c5.so.1.0.0",
-    ),
-    "macos_arm64": (
-        "libllama.dylib",
-        "libggml.0.dylib",
-        "libggml-base.0.dylib",
-        "libggml-blas.0.dylib",
-        "libggml-cpu.0.dylib",
-        "libggml-metal.0.dylib",
-    ),
-    "macos_x86_64": (
-        "libllama.dylib",
-        "libggml.0.dylib",
-        "libggml-base.0.dylib",
-        "libggml-blas.0.dylib",
-        "libggml-cpu.0.dylib",
-        "libggml-metal.0.dylib",
-    ),
-    "win_amd64": (
-        "llama.dll",
-        "ggml.dll",
-        "ggml-base.dll",
-        "ggml-cpu.dll",
-    ),
-}
 
 
 def _platform_libs_dirname() -> str | None:
@@ -559,6 +528,10 @@ def _macos_x86_64_missing_cpu_flags() -> list[str] | None:
 def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
     """Report vendored native libs that :data:`_REQUIRED_VENDORED_LIBS` expects but are absent.
 
+    The closure is declared in :mod:`kiro_crew._llama_lib_path` and re-exported
+    here; this module is where it is CHECKED, which is why the report lives
+    beside the loader that acts on it.
+
     Returns a mapping of platform dir -> sorted missing filenames; an empty
     mapping means the payload is complete for EVERY platform, not just the
     running one. ``root`` defaults to the installed ``_vendor`` directory, so
@@ -578,6 +551,37 @@ def verify_vendored_libs(root: Path | None = None) -> dict[str, list[str]]:
         if absent:
             missing[plat] = absent
     return missing
+
+
+def _publish_lib_path_for_import(libs_dir: Path | None) -> None:
+    """Hand *libs_dir* to the vendored loader through the process-local seam.
+
+    Registers a module under :data:`_LIB_PATH_SEAM` in ``sys.modules`` carrying
+    ``LIBS_DIR``; ``_vendor/llama_cpp/llama_cpp.py`` reads it when it is first
+    imported, before it consults ``LLAMA_CPP_LIB_PATH``. ``None`` removes the
+    seam, so an operator override in the environment is what the loader sees.
+
+    Deliberately not the environment variable, not even for the duration of
+    the import: the import runs on the embedder's loader thread while the
+    event loop keeps spawning children, and a child spawned in that window
+    snapshots ``os.environ`` -- an MCP server, a session, the gateway an in-app
+    restart execs into. One carrying its own llama-cpp bindings would dlopen
+    this install's native libs against them; a Kiro Crew successor would read
+    the PREVIOUS install's directory as an operator override, skip the
+    completeness and CPU gates, and load that install's libs -- or none, once
+    an upgrade has removed it, which surfaces as the upstream loader's bare
+    "Shared library with base name 'llama' not found" while vector memory
+    silently falls back to keyword search. ``sys.modules`` is not inherited.
+    """
+    if libs_dir is None:
+        sys.modules.pop(_LIB_PATH_SEAM, None)
+        return
+    seam = types.ModuleType(
+        _LIB_PATH_SEAM,
+        "Process-local seam: the bundled llama.cpp lib directory for the vendored loader.",
+    )
+    seam.LIBS_DIR = str(libs_dir)  # type: ignore[attr-defined]
+    sys.modules[_LIB_PATH_SEAM] = seam
 
 
 def _install_diskcache_stub() -> None:
@@ -623,16 +627,73 @@ def _harden_llama_null_streams() -> None:
             reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
+def _log_dropped_inherited_lib_path() -> None:
+    """Emit the one INFO line for a value an entry prelude removed at startup.
+
+    The preludes remove a bundled-shaped or empty inherited value before any
+    thread or child exists, which is before logging is configured, so they only
+    record it. This runs on the loader path -- the first point that reads the
+    record with logging in place -- and
+    :func:`consume_dropped_inherited_lib_path` hands the value over once per
+    process, so a repeated loader call or a cleared ``lru_cache`` cannot repeat
+    the line. ``dropped_inherited_lib_path()`` still names the value for
+    ``kirocrew doctor`` afterwards.
+    """
+    removed = consume_dropped_inherited_lib_path()
+    if removed is None:
+        return
+    if removed:
+        logger.info(
+            "Ignoring %s=%s inherited from another Kiro Crew process; "
+            "this install resolves its own bundled llama.cpp libs",
+            _LIB_PATH_ENV,
+            removed,
+        )
+    else:
+        logger.info(
+            "Ignoring empty %s; this install resolves its own bundled llama.cpp libs",
+            _LIB_PATH_ENV,
+        )
+
+
 @functools.lru_cache(maxsize=1)
 def _load_llama_class():
     """Import the vendored llama-cpp-python runtime. Returns the Llama class or None.
 
-    Points ``LLAMA_CPP_LIB_PATH`` at the per-platform native libs (an
-    upstream-supported override — see ``_vendor/llama_cpp/llama_cpp.py``)
-    and prepends ``_vendor`` to ``sys.path`` so ``import llama_cpp``
-    resolves to the vendored copy. Never raises — unsupported platforms and
-    import failures degrade to keyword-only memory search.
+    Hands the per-platform native libs directory to the vendored loader through
+    the process-local seam (:func:`_publish_lib_path_for_import`, read by
+    ``_vendor/llama_cpp/llama_cpp.py``) -- never through ``LLAMA_CPP_LIB_PATH``,
+    which a child spawned during the import would inherit -- and prepends
+    ``_vendor`` to ``sys.path`` so ``import llama_cpp`` resolves to the vendored
+    copy. A value already in the environment is honoured as an operator override
+    unless it is a bundled directory inherited from another Kiro Crew process,
+    which is ignored without mutating the environment. Never raises -- unsupported
+    platforms and import failures degrade to keyword-only memory search.
     """
+    # Report what the prelude removed at startup, before anything about this
+    # process's own resolution: the prelude could not log it, and this is the
+    # first site that can.
+    _log_dropped_inherited_lib_path()
+    # Skipped when the operator set LLAMA_CPP_LIB_PATH: the libs then load from
+    # THEIR directory, so the bundled tree's contents do not decide whether
+    # the runtime works, and refusing on it would disable the documented escape
+    # hatch (a GPU build, or a hand-restored lib dir) for precisely the users an
+    # incomplete wheel stranded. Their directory is the loader's to validate.
+    #
+    # Entry preludes remove bundled-shaped and empty inherited values before any
+    # thread or child exists. A loader reached without a prelude still ignores
+    # such a value and publishes this install's directory through the process-local
+    # seam, but never removes or otherwise writes the environment.
+    override = operator_lib_path_override()
+    if override is None:
+        inherited = os.environ.get(_LIB_PATH_ENV)
+        if inherited is not None:
+            logger.info(
+                "Ignoring %s=%s left in the environment; this install resolves "
+                "its own bundled llama.cpp libs (entry preludes remove it at startup)",
+                _LIB_PATH_ENV,
+                inherited,
+            )
     libs_dirname = _platform_libs_dirname()
     if libs_dirname is None:
         logger.warning(
@@ -651,13 +712,7 @@ def _load_llama_class():
     # incomplete install and sent the real-world diagnosis of this bug chasing
     # a Graviton/architecture problem instead of the packaging rule that
     # dropped the file on every architecture.
-    #
-    # Skipped when the operator set LLAMA_CPP_LIB_PATH: the libs then load from
-    # THEIR directory, so the bundled tree's contents no longer decide whether
-    # the runtime works, and refusing on it would disable the documented escape
-    # hatch (a GPU build, or a hand-restored lib dir) for precisely the users an
-    # incomplete wheel stranded. Their directory is the loader's to validate.
-    if _LIB_PATH_ENV not in os.environ:
+    if override is None:
         absent = [
             name
             for name in _REQUIRED_VENDORED_LIBS.get(libs_dirname, ())
@@ -668,7 +723,9 @@ def _load_llama_class():
                 "Vendored llama.cpp install for %s is incomplete — missing %s in %s. "
                 "This is a packaging defect, not an unsupported platform; reinstall "
                 "Kiro Crew from a current release, or point %s at a complete lib "
-                "directory. Memory falls back to keyword search.",
+                "directory of your own (a path ending kiro_crew/_vendor/llama_cpp_libs/"
+                "<platform> is read as another install's and ignored). Memory "
+                "falls back to keyword search.",
                 libs_dirname,
                 ", ".join(absent),
                 libs_dir,
@@ -744,8 +801,10 @@ def _load_llama_class():
                     _LIB_PATH_ENV,
                 )
                 return None
-    # setdefault so an operator-provided override (e.g. a GPU build) wins.
-    os.environ.setdefault(_LIB_PATH_ENV, str(libs_dir))
+    # The bundled directory reaches the vendored loader through the process-local
+    # seam; an operator-provided override (e.g. a GPU build) is left in the
+    # environment as they set it, and the seam is absent so the loader reads it.
+    _publish_lib_path_for_import(None if override is not None else libs_dir)
     _install_diskcache_stub()
     vendor_str = str(_VENDOR_DIR)
     if vendor_str not in sys.path:
@@ -1004,6 +1063,38 @@ def _read_memory_config() -> dict:
     return {}
 
 
+def embedding_idle_evict_secs() -> float:
+    """Seconds without an embed before the model is unloaded; 0 means never.
+
+    Raw ``memory`` section, like the thread counts: read by the evictor thread,
+    which must not pull in the config dataclass graph. A missing, negative or
+    non-numeric value is the default.
+    """
+    raw = _read_memory_config().get("embedding_idle_evict_secs")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 0:
+        return float(raw)
+    return _DEFAULT_IDLE_EVICT_SECS
+
+
+def _trim_native_heap() -> None:
+    """Return freed heap pages to the OS after an unload. Best effort, no-op off glibc."""
+    try:
+        from kiro_crew.platform_compat import _malloc_trim
+
+        _malloc_trim()
+    except Exception:  # noqa: BLE001 - trimming is an optimisation only
+        logger.debug("malloc_trim after the embedding unload failed", exc_info=True)
+
+
+def _caller_may_wait_for_load() -> bool:
+    """Whether this thread may block on a model load: never on an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+    return False
+
+
 def _embed_threads() -> int:
     """Thread count for llama.cpp's embedding compute pools.
 
@@ -1038,6 +1129,51 @@ def _embed_threads() -> int:
     if cores is None:
         return _DEFAULT_EMBED_THREADS
     return max(1, min(_DEFAULT_EMBED_THREADS, cores - 1))
+
+
+def _install_metadata_kv_clear(llm: object) -> bool:
+    """Make the loaded context's KV clear reset cell metadata without zeroing.
+
+    ``Llama.embed`` clears the KV cache before every decode and again after it,
+    and the binding's ``kv_cache_clear`` passes ``data=True``, which memsets the
+    whole KV buffer (224 MiB for the shipped model at 2,048 context tokens) each
+    time. Embedding never reads a cell that the current decode did not write:
+    clearing with ``data=False`` drops every cell's position and sequence ids,
+    so the attention mask excludes all stale cells, and the stale contents are
+    finite values a previous decode produced. The vectors are byte-identical;
+    only the two memsets go. The buffer is zero-filled once when llama.cpp
+    allocates it, so the first decode sees no uninitialised memory either.
+
+    Installed on the context instance (the vendored binding stays upstream's),
+    and only when the native symbol resolves. The context is held weakly so the
+    override does not keep a freed context alive through a reference cycle, and
+    a closed context (``ctx`` cleared, ``memory`` left dangling) is a no-op.
+    Returns True when the override was installed.
+    """
+    ctx = getattr(llm, "_ctx", None)
+    if ctx is None or not callable(getattr(ctx, "kv_cache_clear", None)):
+        return False
+    try:
+        from llama_cpp import llama_cpp as native  # vendored copy, already imported
+    except Exception:  # noqa: BLE001 - keep the binding's own clear
+        return False
+    memory_clear = getattr(native, "llama_memory_clear", None)
+    if not callable(memory_clear):
+        return False
+    ctx_ref = weakref.ref(ctx)
+
+    def kv_cache_clear() -> None:
+        live = ctx_ref()
+        if live is None or getattr(live, "ctx", None) is None:
+            return
+        memory = getattr(live, "memory", None)
+        if memory is None:
+            # Cache-less (non-causal) contexts allocate no KV memory.
+            return
+        memory_clear(memory, False)
+
+    ctx.kv_cache_clear = kv_cache_clear
+    return True
 
 
 def _free_llama(llm: object) -> None:
@@ -1324,6 +1460,56 @@ def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
 def _model_file_stamp(path: Path) -> tuple[int, ...]:
     stat = path.stat()
     return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _model_file_stamp_unaliased(path: Path) -> tuple[int, ...] | None:
+    """:func:`_model_file_stamp` for a load, judged on one descriptor. ``None`` refuses it.
+
+    The bundled GGUF has no digest at load, so a second hard link sitting in a tree the
+    sandbox can write is a writable handle onto the weights the next load maps. For a file
+    under the live :func:`models_dir`, ``sandbox.require_real_model_path`` first refuses a
+    symlink or junction at any name from ``models`` down to the file; the file is then
+    opened ``O_NOFOLLOW`` and ``sandbox.require_unaliased_model_file`` judges that
+    descriptor; the stamp comes from the same ``fstat``, so the comparison after the
+    constructor proves llama.cpp mapped the inode judged here. A link or a second hard
+    link refuses this LOAD, never a spawn. A custom model outside ``models_dir`` is the
+    operator's own file, outside the seal, and keeps the plain stamp.
+    """
+    models_root = os.path.abspath(models_dir())
+    try:
+        inside = os.path.commonpath([os.path.abspath(path), models_root]) == models_root
+    except ValueError:  # different Windows drives: not under the models tree
+        inside = False
+    if not inside:
+        return _model_file_stamp(path)
+    # Lazy: keeps the sandbox module out of this module's import graph, the same
+    # direction sandbox itself uses when it reads _GGUF_FILENAME.
+    from kiro_crew import sandbox
+
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        sandbox.require_real_model_path(str(path), models_root=models_root)
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            if exc.errno not in (errno.ELOOP, errno.EMLINK) and not os.path.islink(path):
+                raise
+            shown = sandbox.safe_terminal_line(str(path))
+            raise sandbox.SandboxCeilingUnsealable(
+                f"the embedding model file {shown} is a SYMLINK. The seal covers paths, so "
+                "its target could remain writable outside the model tree. Keep the weights "
+                "as real files under models/; to put them on another disk, relocate the "
+                "whole data home (KIROCREW_HOME), so the seal covers them."
+            ) from exc
+        try:
+            sandbox.require_unaliased_model_file(str(path), fd=fd)
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+    except sandbox.SandboxCeilingUnsealable as exc:
+        logger.error("Refusing to load the embedding model: %s", exc)
+        return None
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
 def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:
@@ -1909,6 +2095,13 @@ class EmbeddingBackend(abc.ABC):
     def is_ready(self) -> bool:
         """True when the backend can produce vectors right now (model loaded)."""
 
+    def prefetch(self) -> None:
+        """Start loading the model if an embed is about to need it. Never blocks.
+
+        A hint, not a request: the default does nothing, and an implementation
+        must not change what a later ``embed`` returns, only when it can start.
+        """
+
     @abc.abstractmethod
     def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> "list[float] | None":
         """Embed one text, or None when unavailable.
@@ -1993,6 +2186,11 @@ class LlamaCppEmbedder(EmbeddingBackend):
         # embed_batch() (which would otherwise kick a fresh background load).
         self._closed = False
         self._load_failed_at: float = 0.0
+        # File stamp of the first published load. A reload after an idle unload
+        # must map the same weights: model_id (the vector-space identity) was
+        # fixed when this backend was built, so different weights at the same
+        # path would store vectors under the wrong identity. Never cleared.
+        self._published_stamp: tuple[int, ...] | None = None
         self._lock = threading.Lock()  # serializes inference (Llama is not thread-safe)
         self._load_lock = threading.Lock()  # guards loader-thread spawn state
         self._load_thread: threading.Thread | None = None
@@ -2026,6 +2224,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
         # a join, or a model load.
         self._dispatch_lock = threading.Lock()
         self._infer_thread: threading.Thread | None = None
+        # Idle eviction (see _DEFAULT_IDLE_EVICT_SECS). ``_last_used`` is stamped
+        # at the START of every embed and at publish, so a long job or a model
+        # that just loaded is never mistaken for an idle one.
+        self._last_used = time.monotonic()
+        self._evict_thread: threading.Thread | None = None
+        self._evict_wake = threading.Event()
 
     def _next_seq(self) -> int:
         with self._seq_lock:
@@ -2063,6 +2267,20 @@ class LlamaCppEmbedder(EmbeddingBackend):
         out can never be compared against un-reconciled old-model vectors.
         """
         self._serving = True
+
+    def prefetch(self) -> None:
+        """Kick the background load an ``embed`` would kick, a little earlier.
+
+        Same gates as ``embed``: nothing when closed or not serving (a candidate
+        mid-swap), and ``_kick_background_load`` keeps its own (already loaded,
+        loading, failed-load cooldown, file missing, protected path). So a load
+        that would fail or never start behaves exactly as before; one that
+        succeeds is published with ``_last_used`` stamped, which starts the idle
+        clock the evictor reads, as any load does.
+        """
+        if self._closed or not self._serving or self._llm is not None:
+            return
+        self._kick_background_load()
 
     def _kick_background_load(self) -> None:
         """Start loading the model on a daemon thread. Idempotent, returns fast.
@@ -2125,7 +2343,25 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # the path a second time, so a file replaced in between would get a
             # context sized from the previous header (decoder sizes on an
             # encoder are the >512-token abort the policy exists to prevent).
-            stamp = _model_file_stamp(self._model_path)
+            # Judged on one descriptor too: a second name on the bundled GGUF refuses
+            # this load (logged, retried on the usual cooldown), never a spawn.
+            stamp = _model_file_stamp_unaliased(self._model_path)
+            if stamp is None:
+                self._load_failed_at = time.monotonic()
+                return
+            if self._published_stamp is not None and stamp != self._published_stamp:
+                # Reload after an idle unload, but the file is not the one this
+                # backend first loaded (replaced or rewritten in place). Its
+                # vectors would be stored under the old model_id, so refuse:
+                # search stays keyword-only until a restart or a model change
+                # re-verifies the file and reconciles stored vectors.
+                logger.error(
+                    "Embedding model %s changed on disk since it was first loaded; "
+                    "refusing to reload it. Restart the gateway to use the new file.",
+                    self._model_path.name,
+                )
+                self._load_failed_at = time.monotonic()
+                return
             policy = _model_context_policy(self._model_path)
             if policy.n_ctx < _N_CTX:
                 # Once per model load, not per embed call: the binding truncates
@@ -2168,6 +2404,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_threads_batch=threads,
                 verbose=False,
             )
+            _install_metadata_kv_clear(llm)
             try:
                 unchanged = _model_file_stamp(self._model_path) == stamp
             except OSError:
@@ -2254,7 +2491,11 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # worker; both are single plain-attribute accesses (GIL-atomic), and
             # the only cost of racing is one redundant set_n_threads call.
             self._applied_threads = None
+            self._last_used = time.monotonic()
+            if self._published_stamp is None:
+                self._published_stamp = stamp
             self._llm = llm  # atomic publish (GIL)
+            self._start_evictor()
         except Exception:
             logger.warning("Failed to load embedding model %s", self._model_path, exc_info=True)
             self._load_failed_at = time.monotonic()
@@ -2503,10 +2744,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
     ) -> list[list[float]] | None:
         """Embed multiple texts. Returns None on any failure (incl. model not loaded yet).
 
-        Never blocks on the model load: when the model isn't in memory yet this
-        kicks a background load and returns ``None`` immediately. Inference is
-        serialized onto one owned thread; *priority* decides the order that
-        single model serves competing callers (see ``PRIORITY_*``).
+        When the model isn't in memory this kicks a background load. Bulk work
+        and event-loop callers get ``None`` immediately; an interactive or normal
+        caller on a worker thread waits for that load (bounded, see
+        :meth:`_wait_for_cold_load`), so the first query after an idle unload
+        still gets vectors. Inference is serialized onto one owned thread;
+        *priority* decides the order that single model serves competing callers
+        (see ``PRIORITY_*``).
         """
         if not texts or not any(t.strip() for t in texts):
             return None
@@ -2524,10 +2768,13 @@ class LlamaCppEmbedder(EmbeddingBackend):
             # Closed: terminal, never reload. Not serving: a candidate mid-swap,
             # whose vectors would be in a space the store has not reconciled to.
             return None
+        self._last_used = time.monotonic()
         llm = self._llm
         if llm is None:
             self._kick_background_load()
-            return None
+            llm = self._wait_for_cold_load(priority)
+            if llm is None:
+                return None
         clipped: list[str] = []
         for t in texts:
             if len(t) > _MAX_EMBED_CHARS:
@@ -2573,6 +2820,121 @@ class LlamaCppEmbedder(EmbeddingBackend):
             return None
         return vectors
 
+    def can_load_on_demand(self) -> bool:
+        """True when an embed would load the model now and then produce vectors.
+
+        Lets an availability check answer yes for a model that is merely not in
+        memory (never loaded yet, or unloaded when idle), so a search uses
+        semantic results and pays the load once instead of silently falling
+        back to keyword search. False once a load has failed (a dim mismatch,
+        a corrupt file, missing native libs, a model changed on disk), even
+        after its retry cooldown: such a model would never yield vectors, so
+        it must not be reported as available. ``close()`` clears the failure,
+        so a later unload-and-reload starts fresh. Also False when the file is
+        missing, or once the backend is closed or not serving.
+        """
+        if self._closed or not self._serving:
+            return False
+        if self._load_failed_at:
+            return False
+        if _is_sensitive_model_path(self._model_path):
+            return False
+        return model_file_present(self._model_path)
+
+    def _wait_for_cold_load(self, priority: int) -> object | None:
+        """Wait for a load this call kicked, when the caller can afford to.
+
+        Only an interactive or normal embed off the event loop waits; bulk work
+        and loop threads keep the old non-blocking answer (``None``, so the
+        caller degrades to keyword search and retries later). The wait is
+        bounded by ``_COLD_LOAD_WAIT_SECS`` and by the caller's own deadline.
+        This is what keeps idle eviction from costing a query its semantic
+        results: the first query after an unload pays the load time once.
+        """
+        if priority >= PRIORITY_BULK or not _caller_may_wait_for_load():
+            return None
+        work = embedding_work.get()
+        give_up = time.monotonic() + _COLD_LOAD_WAIT_SECS
+        while True:
+            llm = self._llm
+            if llm is not None:
+                return llm
+            with self._load_lock:
+                thread = self._load_thread
+            if thread is None or not thread.is_alive():
+                # Nothing loading (no file yet, failed load in cooldown): the
+                # result is decided, so do not sleep on it.
+                return self._llm
+            if time.monotonic() >= give_up or (work is not None and work.expired()):
+                return None
+            thread.join(0.05)
+
+    def _start_evictor(self) -> None:
+        """Start the idle evictor for the model just published. Idempotent."""
+        with self._load_lock:
+            if self._evict_thread is not None and self._evict_thread.is_alive():
+                return
+            self._evict_wake = threading.Event()
+            self._evict_thread = threading.Thread(
+                target=self._evict_loop, name="kc-embed-evict", daemon=True
+            )
+            self._evict_thread.start()
+
+    def _evict_loop(self) -> None:
+        """Unload the model once it has gone unused for the configured time.
+
+        Exits after an unload (the next load starts a fresh evictor) or when the
+        backend is closed or unloaded by someone else.
+        """
+        while True:
+            secs = embedding_idle_evict_secs()
+            self._evict_wake.wait(
+                min(_EVICT_POLL_MAX_SECS, max(1.0, secs / 4)) if secs > 0 else _EVICT_POLL_MAX_SECS
+            )
+            if self._closed or self._llm is None or self._evict_wake.is_set():
+                return
+            if secs <= 0 or time.monotonic() - self._last_used < secs:
+                continue
+            if self.evict_if_idle(secs):
+                return
+
+    def evict_if_idle(self, idle_secs: float) -> bool:
+        """Unload the model when nothing used it for ``idle_secs``. Returns True if unloaded.
+
+        Refuses while work is queued or running, so an eviction never fails a job;
+        an embed racing the unload is refused by the dispatch check and degrades
+        exactly as any embed before the first load does.
+        """
+        llm = self._llm
+        if llm is None or self._closed:
+            return False
+        if time.monotonic() - self._last_used < idle_secs or self._jobs.qsize():
+            return False
+        if not self._lock.acquire(blocking=False):
+            return False  # inference running right now
+        self._lock.release()
+        with self._load_lock:
+            if self._load_thread is not None and self._load_thread.is_alive():
+                return False
+        # Decide on the model and worker close() actually retired, not a snapshot
+        # taken before it: a first embed can start the worker between the two,
+        # and a concurrent close/retire can take the model and its (possibly
+        # still running) worker first. Freeing the context under a job is a
+        # native use-after-free, so free only what THIS close retired.
+        retired, thread = self._close_retiring_worker()
+        if retired is llm and (thread is None or not thread.is_alive()):
+            # The worker that could still touch the native context has exited,
+            # so free it now rather than whenever the last reference is dropped.
+            _free_llama(llm)
+        # Otherwise the last reference (a job's ``llm``) frees it on drop.
+        del llm, retired
+        _trim_native_heap()
+        logger.info(
+            "Unloaded the embedding model after %.0f s idle; the next embed reloads it",
+            idle_secs,
+        )
+        return True
+
     def wait_ready(self, timeout: float | None = None) -> bool:
         """Block until the model is loaded (or the load fails/times out).
 
@@ -2608,8 +2970,21 @@ class LlamaCppEmbedder(EmbeddingBackend):
         Also stops the inference thread: llama.cpp's compute pool is owned by
         that thread, so it is only released when the thread exits.
         """
+        self._close_retiring_worker()  # result only matters to the evictor
+
+    def _close_retiring_worker(self) -> tuple[object | None, threading.Thread | None]:
+        """:meth:`close`, returning the model and inference worker it actually retired.
+
+        Both are read and cleared in one critical section (the worker under
+        ``_dispatch_lock``, the lock every dispatch takes), so the returned thread
+        is the only one that can still hold a job on the returned model. A caller
+        that frees the native context (the idle evictor) must decide on THIS pair,
+        never on a snapshot taken before ``close()``: a first embed can start the
+        worker in between, and a concurrent close/retire can take the model and
+        its worker first, leaving this call nothing to free.
+        """
         with self._lock, self._load_lock:
-            self._llm = None
+            llm, self._llm = self._llm, None
             self._load_failed_at = 0.0
             self._load_thread = None
             # Same lock the submitters use, so a retirement can never interleave
@@ -2632,6 +3007,14 @@ class LlamaCppEmbedder(EmbeddingBackend):
         # just before the sentinel until the timeout expired.
         if thread is not None and thread.is_alive():
             thread.join(_INFER_STOP_TIMEOUT_SECS)
+        # Stop the idle evictor too: nothing is loaded for it to watch, and the
+        # next load starts a fresh one. Not joined from the evictor itself, which
+        # is the caller when the unload IS the eviction.
+        self._evict_wake.set()
+        evictor = self._evict_thread
+        if evictor is not None and evictor is not threading.current_thread() and evictor.is_alive():
+            evictor.join(_INFER_STOP_TIMEOUT_SECS)
+        return llm, thread
 
 
 _shared_embedder: EmbeddingBackend | None = None

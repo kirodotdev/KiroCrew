@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { releaseComposerForKeyboardSwitch } from '../pages/chat/composerFocus'
 import { safeSetItem } from '../utils/safeStorage'
@@ -63,6 +63,14 @@ describe('ChatInput', () => {
     it('shows Stopping placeholder when disabled', () => {
       renderWithProviders(<ChatInput {...defaultProps} disabled />)
       expect(screen.getByPlaceholderText('Stopping…')).toBeInTheDocument()
+    })
+
+    it('keeps Stopping over a caller placeholder, and shows lockedPlaceholder instead when given', () => {
+      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} disabled placeholder="Type here…" />)
+      expect(screen.getByPlaceholderText('Stopping…')).toBeInTheDocument()
+      unmount()
+      renderWithProviders(<ChatInput {...defaultProps} disabled placeholder="Type here…" lockedPlaceholder="Locked for now" />)
+      expect(screen.getByPlaceholderText('Locked for now')).toBeInTheDocument()
     })
 
     it('shows offline placeholder when connected=false', () => {
@@ -153,13 +161,16 @@ describe('ChatInput', () => {
 
     it('disables Optimize button when connected=false even with text', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hello" connected={false} />)
-      const btn = screen.getByRole('button', { name: /Optimize disabled/ })
+      // "Optimize prompt", not "Optimize": the offline name now reuses this
+      // control's own online accessible name instead of a second raw literal, so
+      // the two agree. It was the only offline name here that disagreed.
+      const btn = screen.getByRole('button', { name: /Optimize prompt disabled/ })
       expect(btn).toBeDisabled()
     })
 
     it('exposes offline-aware aria-label and tooltip on Optimize button', () => {
       renderWithProviders(<ChatInput {...defaultProps} value="hi" connected={false} />)
-      const btn = screen.getByLabelText('Optimize disabled — gateway offline')
+      const btn = screen.getByLabelText('Optimize prompt disabled — gateway offline')
       expect(btn).toHaveAttribute('title', 'Gateway offline — reconnect to optimize')
     })
 
@@ -432,6 +443,108 @@ describe('ChatInput', () => {
       renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={onCancelUpload} uploading />)
       fireEvent.click(screen.getByRole('button', { name: 'Cancel upload' }))
       expect(onCancelUpload).toHaveBeenCalledTimes(1)
+    })
+
+    /* #13071: one press aborts every upload in flight, so with two or more the
+     * label says how many stop rather than claiming a single one. */
+    it('names the count on the cancel control only when more than one upload is live', () => {
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={1} />)
+      const single = screen.getByRole('button', { name: 'Cancel upload' })
+      expect(single).toHaveAttribute('title', 'Cancel upload')
+
+      rerender(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={2} />)
+      const counted = screen.getByRole('button', { name: 'Cancel 2 uploads' })
+      expect(counted).toHaveAttribute('title', 'Cancel 2 uploads')
+      expect(screen.queryByRole('button', { name: 'Cancel upload' })).not.toBeInTheDocument()
+
+      rerender(<ChatInput {...defaultProps} onUploadFiles={vi.fn()} onCancelUpload={vi.fn()} uploading uploadCount={1} />)
+      expect(screen.getByRole('button', { name: 'Cancel upload' })).toBeInTheDocument()
+    })
+
+    /* A send fired mid-upload left without the file, and the file then landed
+     * in the emptied composer as a stray attachment for the next message. */
+    it('holds Send and Enter while an attachment is on its way', () => {
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="look at this" onSend={onSend} onUploadFiles={vi.fn()} uploading holdSend />)
+      const send = screen.getByRole('button', { name: 'Send' })
+      expect(send).toBeDisabled()
+      expect(send).toHaveAttribute('title', 'Waiting for the attachment to finish')
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it('holds the busy steer/queue send while an attachment is on its way', () => {
+      const onSend = vi.fn()
+      const onSteer = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} value="look at this" onSend={onSend} onSteer={onSteer} canSteer isRunning onStop={vi.fn()} onUploadFiles={vi.fn()} uploading holdSend />,
+      )
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(onSteer).not.toHaveBeenCalled()
+      expect(onSend).not.toHaveBeenCalled()
+      // The split button's fire half says why it is dimmed, like the other sends.
+      const held = screen.getByTestId('busy-send-button')
+      expect(held).toHaveAttribute('title', 'Steer — Waiting for the attachment to finish')
+      expect(held).toBeDisabled()
+    })
+
+    it('keeps Queue message in the held queue tooltip before the wait reason', () => {
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          value="look at this"
+          isRunning
+          onStop={vi.fn()}
+          onUploadFiles={vi.fn()}
+          uploading
+          holdSend
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Queue message' })).toHaveAttribute(
+        'title',
+        'Queue message — Waiting for the attachment to finish',
+      )
+    })
+
+    it('says in words why a held draft is waiting', () => {
+      // The Send tooltip reaches no touch or screen-reader user, and a held
+      // Enter would otherwise do nothing visible.
+      const { unmount } = renderWithProviders(<ChatInput {...defaultProps} value="look at this" onUploadFiles={vi.fn()} uploading holdSend />)
+      expect(screen.getByTestId('composer-send-held')).toHaveTextContent('Waiting for the attachment to finish')
+      expect(screen.getByTestId('composer-send-held')).toHaveAttribute('role', 'status')
+      unmount()
+      // No draft: the upload spinner already says enough.
+      const empty = renderWithProviders(<ChatInput {...defaultProps} value="" onUploadFiles={vi.fn()} uploading holdSend />)
+      expect(screen.queryByTestId('composer-send-held')).not.toBeInTheDocument()
+      empty.unmount()
+      renderWithProviders(<ChatInput {...defaultProps} value="hi" onUploadFiles={vi.fn()} uploading />)
+      expect(screen.queryByTestId('composer-send-held')).not.toBeInTheDocument()
+    })
+
+    it('says why a refs-only composer is waiting', () => {
+      // The idle Send counts a staged session ref as a payload, so it dims for
+      // the hold; the row explaining it must not go by the text-or-files draft.
+      renderWithProviders(
+        <ChatInput
+          {...defaultProps}
+          value=""
+          pendingSessions={[{ key: 'chat-9', title: 'Release notes', messages: 12 }]}
+          onUploadFiles={vi.fn()}
+          uploading
+          holdSend
+        />,
+      )
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+      expect(screen.getByTestId('composer-send-held')).toHaveTextContent('Waiting for the attachment to finish')
+    })
+
+    it('keeps Send live when the upload belongs to another composer', () => {
+      // `uploading` alone only drives the attach controls: an upload started in
+      // another slot lands in that slot's draft and must not hold this send.
+      const onSend = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} value="hi" onSend={onSend} onUploadFiles={vi.fn()} uploading />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter' })
+      expect(onSend).toHaveBeenCalled()
     })
   })
 
@@ -828,6 +941,36 @@ describe('ChatInput', () => {
       expect(onChange).not.toHaveBeenCalled()
     })
 
+    it('ignores an auto-repeat ArrowUp that reaches the start of a typed draft', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="my long draft" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp', repeat: true })
+      expect(onChange).not.toHaveBeenCalled()
+      // Letting go and pressing again is a deliberate recall.
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      expect(onChange).toHaveBeenLastCalledWith('third')
+    })
+
+    it('keeps walking history on auto-repeat once a prompt is recalled', () => {
+      const onChange = vi.fn()
+      const { rerender } = renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
+      const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+      fireEvent.keyDown(ta, { key: 'ArrowUp' })
+      rerender(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="third" />)
+      ta.setSelectionRange(0, 0)
+      fireEvent.keyDown(ta, { key: 'ArrowUp', repeat: true })
+      expect(onChange).toHaveBeenLastCalledWith('second')
+    })
+
+    it('recalls on an auto-repeat ArrowUp from an empty composer', () => {
+      const onChange = vi.fn()
+      renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} value="" />)
+      fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'ArrowUp', repeat: true })
+      expect(onChange).toHaveBeenLastCalledWith('third')
+    })
+
     it('ArrowDown is ignored when not in history mode', () => {
       const onChange = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} onChange={onChange} sentMessages={sent} />)
@@ -932,7 +1075,7 @@ describe('ChatInput', () => {
       expect(screen.getByText('High')).toBeInTheDocument()
     })
 
-    it('renders Default label when effort is empty', () => {
+    it('leaves the level out when effort is empty', () => {
       renderWithProviders(
         <ChatInput {...defaultProps}
           providerId="acp"
@@ -942,7 +1085,7 @@ describe('ChatInput', () => {
           onModelClick={vi.fn()}
         />
       )
-      expect(screen.getByText('Default')).toBeInTheDocument()
+      expect(screen.getByTestId('composer-model-chip')).toHaveTextContent(/^claude-opus-4\.7$/)
     })
 
     it('shown when hasEffort is set regardless of providerId', () => {
@@ -1059,6 +1202,42 @@ describe('ChatInput', () => {
       // First arg should be a DOMRect-like object
       expect(onModelClick.mock.calls[0][0]).toBeTruthy()
     })
+
+    it('opens the model and agent pickers on the mouse press, once per press', () => {
+      const onModelClick = vi.fn()
+      const onAgentClick = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps}
+          providerId="acp"
+          modelName="claude-opus-4.7"
+          onModelClick={onModelClick}
+          agentName="kirocrew"
+          onAgentClick={onAgentClick}
+        />
+      )
+      const model = screen.getByTestId('composer-model-chip')
+      fireEvent.pointerDown(model, { pointerType: 'mouse', button: 0 })
+      expect(onModelClick).toHaveBeenCalledOnce()
+      fireEvent.click(model, { detail: 1 })
+      expect(onModelClick).toHaveBeenCalledOnce()
+
+      const agent = screen.getByRole('button', { name: 'Agent: kirocrew' })
+      fireEvent.pointerDown(agent, { pointerType: 'mouse', button: 0 })
+      expect(onAgentClick).toHaveBeenCalledOnce()
+      fireEvent.click(agent, { detail: 1 })
+      expect(onAgentClick).toHaveBeenCalledOnce()
+    })
+
+    it('reports composer focus captured at the press, before focus moves to the chip', () => {
+      const onModelClick = vi.fn()
+      renderWithProviders(
+        <ChatInput {...defaultProps} providerId="acp" modelName="claude-opus-4.7" onModelClick={onModelClick} />
+      )
+      const editor = screen.getByRole('textbox')
+      editor.focus()
+      fireEvent.pointerDown(screen.getByTestId('composer-model-chip'), { pointerType: 'mouse', button: 0 })
+      expect(onModelClick.mock.calls[0][2]).toBe(true)
+    })
   })
 
   describe('prompt optimizer (slot binding)', () => {
@@ -1100,6 +1279,37 @@ describe('ChatInput', () => {
           <ChatInput {...defaultProps} {...props} />
         </SlotProvider>,
       )
+
+    it('starts no optimize while the composer is locked, from the button or the chord', async () => {
+      // A memory-mode switch locks the composer (disabled) while it moves the
+      // draft; an optimize started then would write into the deleted slot.
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() => new Promise<Response>(() => {}))
+      const optimizeCalls = () => fetchSpy.mock.calls.filter(c => String(c[0]).includes('optimize'))
+      // The same settle step for both halves: the unlocked half proves an
+      // optimize reaches fetch within it, so the locked half's empty list is
+      // an absence and not a request that had not got there yet.
+      const settle = async () => { for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve() }) }
+      const chord = () => fireEvent.keyDown(screen.getByLabelText('Message input'), { key: 'Enter', metaKey: true, shiftKey: true })
+      try {
+        const onChange = vi.fn()
+        const { rerender } = renderInSlot('slot-A', { value: 'fix bug', onChange, disabled: true })
+        const btn = screen.getByRole('button', { name: 'Optimize prompt' })
+        expect(btn).toBeDisabled()
+        await act(async () => {
+          fireEvent.click(btn)
+          chord()
+        })
+        await settle()
+        expect(optimizeCalls()).toEqual([])
+
+        rerenderInSlot(rerender, 'slot-A', { value: 'fix bug', onChange, disabled: false })
+        await act(async () => { chord() })
+        await settle()
+        expect(optimizeCalls()).toHaveLength(1)
+      } finally {
+        fetchSpy.mockRestore()
+      }
+    })
 
     it('routes optimize result to the originating session when the user switched away', async () => {
       // The originating session (slot A) starts an optimize, then the user
@@ -1402,7 +1612,8 @@ describe('ChatInput', () => {
       const onSelect = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} followUpOptions={['Go']} followUpPicked={new Set()} onFollowUpSelect={onSelect} quickSend={true} />)
       fireEvent.click(screen.getByRole('button', { name: 'Go' }))
-      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object))
+      // Fourth arg: the composer's chip send, which the host's quick-send uses.
+      expect(onSelect).toHaveBeenCalledWith('Go', expect.any(Object), undefined, expect.any(Function))
     })
   })
 

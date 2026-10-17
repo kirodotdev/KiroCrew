@@ -1147,3 +1147,49 @@ describe('PierreEditorImpl imperative handle', () => {
     expect(editor.of('setSelections')).toHaveLength(0)
   })
 })
+
+describe('PierreEditorImpl live-diff baseline line ending', () => {
+  // The file panel hands the editor HEAD read with universal newlines, so the
+  // baseline has LF line endings only. Against a CRLF document such a baseline
+  // marks every line changed, so the seam draws it in the line ending most of
+  // the opening text uses.
+  const doc = (contents: string): FileContents => ({ name: 'game.js', contents, cacheKey: 'game.js:0' })
+  const baseline = () => lastSurface().props.oldFile as FileContents
+
+  it.each([
+    ['a CRLF', '\r\n'],
+    ['a lone-CR', '\r'],
+  ])('draws an LF baseline in %s document’s line ending', (_name, eol) => {
+    mount({ file: doc(['a', 'b', 'c', ''].join(eol)), diffBase: 'a\nb\n' })
+
+    expect(lastSurface().kind).toBe('diff')
+    expect(baseline().contents).toBe(['a', 'b', ''].join(eol))
+  })
+
+  it('takes the line ending most lines use, not the first line’s', () => {
+    // An LF-writing tool rewrote the first line of a CRLF file.
+    mount({ file: doc('header\nb\r\nc\r\nd\r\n'), diffBase: 'b\nc\nd\n' })
+
+    expect(baseline().contents).toBe('b\r\nc\r\nd\r\n')
+  })
+
+  it('leaves the baseline as given for an LF document', () => {
+    mount({ file: doc('a\nb\nc\n'), diffBase: 'a\nb\n' })
+
+    expect(baseline().contents).toBe('a\nb\n')
+  })
+
+  it('keeps the baseline while an edit removes every line break', () => {
+    // A new baseline makes Pierre rebuild the document from the opening text,
+    // so a baseline that followed the buffer would throw this edit away.
+    const { rerender } = mount({ file: doc('a\r\nb\r\nc\r\n'), diffBase: 'a\nb\n' })
+    const before = baseline()
+    const announceChange = attachEditor().options.onChange as (file: FileContents) => void
+
+    act(() => announceChange({ name: 'game.js', contents: 'abc' }))
+    rerender({ file: doc('abc'), diffBase: 'a\nb\n' })
+
+    expect(baseline()).toBe(before)
+    expect(before.contents).toBe('a\r\nb\r\n')
+  })
+})

@@ -97,12 +97,12 @@ const LIVE_ROSTER = [
 /** The adapter's own cache slot: a good list from an earlier live fetch. */
 const MODELS_CACHE_KEY = 'kc.acp.models.v1'
 
-function renderSidebar() {
+function renderSidebar(slots: Record<string, unknown>[] = SLOTS) {
   const defaults = createTestStore().getState()
   const store = createTestStore({
     dashboard: {
       ...defaults.dashboard,
-      status: {}, connected: true, slots: SLOTS, approvalMode: 'normal',
+      status: {}, connected: true, slots, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
@@ -124,7 +124,7 @@ function renderSidebar() {
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={SLOTS} activeSlot={null} unreadSlots={[]}
+              slots={slots as typeof SLOTS} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false}
               defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
             />
@@ -266,5 +266,73 @@ describe('ChatSidebar — Switch All Sessions roster failure', () => {
     // Block variant: the boxed banner, not the inline-flex span.
     expect(notice.tagName).toBe('DIV')
     expect(notice.className).not.toMatch(/\binline-flex\b/)
+  })
+})
+
+describe('ChatSidebar — Switch All Sessions already-on-target line (#11103)', () => {
+  const switchBtn = () => screen.getByRole('button', { name: /^Switch \d+ sessions?$/ })
+
+  it('names the sessions the count leaves out because they already use the pick', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar([
+      { key: 'k-a', title: 'A', running: false, messages: 1, model: 'opus-4.8' },
+      { key: 'k-b', title: 'B', running: false, messages: 1, model: 'sonnet-4.7' },
+      { key: 'k-c', title: 'C', running: false, messages: 1, model: 'opus-4.8' },
+    ])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    // No pick yet: nothing to account for.
+    expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(switchBtn().textContent).toBe('Switch 1 session')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    expect(switchBtn().textContent).toBe('Switch 2 sessions')
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model')
+  })
+
+  it('explains a disabled Switch 0 when every session is already on the pick', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar([
+      { key: 'k-a', title: 'A', running: false, messages: 1, model: 'sonnet-4.7' },
+      { key: 'k-b', title: 'B', running: true, messages: 1, model: 'sonnet-4.7' },
+    ])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    expect(switchBtn().textContent).toBe('Switch 0 sessions')
+    expect(switchBtn()).toBeDisabled()
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    // The running session is already on the pick, so it is not ALSO counted
+    // by the skip checkbox: the panel's numbers add up to the 2 rows.
+    expect(screen.queryByRole('checkbox', { name: /running session/ })).toBeNull()
+  })
+
+  it('counts a running session once, in the skip line or the on-target line', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar([
+      { key: 'k-a', title: 'A', running: true, messages: 1, model: 'sonnet-4.7' },
+      { key: 'k-b', title: 'B', running: true, messages: 1, model: 'opus-4.8' },
+      { key: 'k-c', title: 'C', running: false, messages: 1, model: 'opus-4.8' },
+    ])
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    // Before a pick, every running session is skippable.
+    expect(screen.getByRole('checkbox', { name: 'Skip 2 running sessions' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('option', { name: /sonnet-4\.7/ }))
+    // 1 already on sonnet (running) + 1 running skipped + 1 to switch = 3 rows.
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('1 session already uses this model')
+    expect(screen.getByRole('checkbox', { name: 'Skip 1 running session' })).toBeTruthy()
+    expect(switchBtn().textContent).toBe('Switch 1 session')
+  })
+
+  it('shows no line when no session is on the pick', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar()
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    expect(switchBtn().textContent).toBe('Switch 2 sessions')
+    expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
   })
 })

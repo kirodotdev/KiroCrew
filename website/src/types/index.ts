@@ -504,6 +504,9 @@ export interface Lesson {
    *  where the delete reaches the store whatever `scope` says. */
   scope?: 'global' | 'workspace'
   workspace?: string
+  /** Where the lesson came from (`user_explicit`, `consolidation`, ...), as the
+   *  store recorded it. Absent or empty when the row carries no source. */
+  source?: string
 }
 
 /** One row of `GET /api/memory/stores` — a declared memory store.
@@ -824,6 +827,8 @@ export interface McpDiscoverInstallResult {
   method: string
   /** False when the entry was written disabled (required env unset). Absent for capability installs. */
   enabled?: boolean
+  /** False when the install was saved but the agent spec was not rewritten. */
+  agent_spec_rewritten?: boolean
 }
 
 /** A raw mcp.json server spec (stdio command/args/env OR remote url). */
@@ -879,6 +884,10 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** The owner added this remote server from the dashboard, at this url, so the
+   *  table may offer the in-place sign-in on it. Absent or false for a server
+   *  an agent, a session or a hand edit added. */
+  ownerSignIn?: boolean
   /** Spec-declared temp keys the probe refused (path already redacted); the
    *  probe ran with the managed temp instead. Absent when nothing was refused. */
   tempRefusals?: McpTempRefusal[]
@@ -987,6 +996,14 @@ export interface McpSessionReport {
    * gateway from before the guard shipped sends no such key.
    */
   unresolved_refs?: string[]
+  /**
+   * Servers that started but gave this session no tools — usually a tool name
+   * that clashes with another server's, so the backend kept only one. Optional
+   * because an older gateway sends no such key.
+   */
+  no_tools?: string[]
+  /** How many more such servers there were than `no_tools` lists (bucket cap). */
+  no_tools_omitted?: number
   /** Reported initialized. */
   ready: string[]
   /** Reported a startup failure. */
@@ -995,6 +1012,12 @@ export interface McpSessionReport {
   awaiting_auth: string[]
   /** Server name -> its redacted failure reason, when one was reported. */
   failures: Record<string, string>
+  /**
+   * Failed servers whose reason reads as a credential they did not have when
+   * they started: a new session loads them once the credential exists.
+   * Optional because an older gateway sends no such key.
+   */
+  restart_to_load?: string[]
 }
 
 export interface SessionLink {
@@ -1073,6 +1096,12 @@ export interface ConfiguredChannelTarget {
  * by the picker and then fail on the first send, which is worse than not offering
  * it at all.
  */
+/** `GET /api/instances/{id}/approval-state`: one field of the peer's status. */
+export interface RemoteCrewApprovalState {
+  /** Whether the peer's machine-wide YOLO is on; null when its status could not be read. */
+  yolo: boolean | null
+}
+
 export interface RemoteCrewCapabilities {
   instance_id: string
   /** The peer's gateway version, or "" when it could not be read. */
@@ -1081,6 +1110,9 @@ export interface RemoteCrewCapabilities {
   /** The equality gate the backend enforces on every dispatch. False also covers
    *  "could not be read": an unknown version cannot be proven equal. */
   version_match: boolean
+  /** The peer runs a strictly older build than this machine (exact version,
+   *  so a patch skew counts). Absent from a gateway that predates the field. */
+  behind?: boolean
   agents: { name: string; description: string; scope: string; model: string }[]
   /** The agent the PEER falls back to when the session has picked none. "" when
    *  the roster read failed — never substitute this machine's default, which
@@ -1095,7 +1127,61 @@ export interface RemoteCrewCapabilities {
   unavailable: Record<string, string>
 }
 
-export interface ChatSlot {
+/** One CONNECTED crew's version beside this machine's (`GET /api/instances/versions`). */
+export interface InstanceVersionRow {
+  id: string
+  name: string
+  /** The peer's gateway version, or "" when it did not answer. */
+  version: string
+  /** Strictly older than `local_version`; never true for an unknown version. */
+  behind: boolean
+  /** This dashboard can run the crew's updater: false for a chained crew
+   *  (no shell from here) and a fargate or headless one (no gateway). */
+  updatable: boolean
+  /** Why the crew's version could not be read (the carrier's code), or "" when
+   *  it answered. A crew with an error is never `behind`: its version is unknown. */
+  error?: string
+}
+
+export interface InstanceVersions {
+  local_version: string
+  instances: InstanceVersionRow[]
+}
+
+/** The latest "Update remote" job for one crew (`GET /api/instances/{id}/update`). */
+export interface RemoteUpdateJob {
+  /** `succeeded`: the crew came back on a different version. `unchanged`: both
+   *  commands exited 0 but it came back on the same version (its updater
+   *  installed nothing). `unverified`: it did not answer with a version in time. */
+  state: 'running' | 'succeeded' | 'unchanged' | 'unverified' | 'failed'
+  /** Where the job is, or where it failed: the remote `kirocrew update`, then
+   *  `kirocrew restart`, then reading the crew's version back. */
+  phase: 'updating' | 'restarting' | 'verifying' | 'done'
+  started_at: number
+  finished_at: number | null
+  elapsed_secs: number
+  /** The remote's redacted error tail on a failure, else "". */
+  error: string
+  /** The crew's version before the update and after its restart; "" when it
+   *  did not answer. */
+  version_before: string
+  version_after: string
+}
+
+/** Turn identity is monotonic only within one gateway process generation. */
+export interface TurnIdentityFields {
+  turn?: number
+  turn_gen?: string
+}
+
+/** Terminal WebSocket payload; identity is optional for older gateways. */
+export interface ChatDonePayload extends TurnIdentityFields {
+  slot: string
+  continuing?: boolean
+  needs_input?: boolean
+}
+
+export interface ChatSlot extends TurnIdentityFields {
   /** Which namespace `agent` was chosen in: a configured member, a shared
    *  provider template, or "" when the choice was made by name alone or came
    *  back from history. Display provenance for the picker's selected row; the
@@ -1157,19 +1243,43 @@ export interface ChatSlot {
   linked_session_key?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
    * task-runner slot, or an app/cron-minted session (which can share the
    * `chat-<n>-<ts>` key shape) never triggers it. */
   origin?: string
+  /** The installed app that owns this session, or null/absent for a person's own
+   *  chat. Lets the model chip ask for that app's own model setting. */
+  app?: string | null
   /** Slot key of the session that asked for this one via the session-control
    * create verb; "" / absent for a person's own tab, a fork, a restore. Durable
    * (written at birth, rehydrated), so it is the one link from a crew member's
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
   created_by?: string
+  /** Whether THIS gateway process stamped `created_by` at mint, rather than
+   * rehydrating it from the transcript. `created_by` is restored from a metadata
+   * line an agent's file tools can edit, so on its own it is a claim; this says
+   * whether it is the gateway's own witness. `_attach_slot_parents` requires it
+   * before nesting a row that has no session-tree node yet — a child between
+   * `session_create` and its first turn, which has no crew log to fold. */
+  lineage_minted?: boolean
+  /** The user-owned "mute sessions it opens" rule. When true on a creating
+   * session, every session it opens -- and anything those open, down the
+   * `created_by` chain -- is muted for attention: no turn-done chime,
+   * background-finished toast or unread badge, from the first turn. The
+   * creator keeps all of its own signals, and a tool-approval prompt from a
+   * muted session still surfaces. Set only by the user (never an agent);
+   * durable, so it survives a gateway restart. */
+  mutes_opened?: boolean
+  /** The user-owned per-row mute of THIS session, set from its own kebab menu.
+   * When true: no turn-done chime, background-finished toast or unread badge.
+   * A completion that pauses
+   * for the user, a terminal error and a tool-approval prompt still surface.
+   * Durable, like `pinned`. */
+  muted?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS
@@ -1179,8 +1289,13 @@ export interface ChatSlot {
    * Distinct from `created_by`, and both are needed to know whether a slot is a
    * root: `created_by` is the birth-time edge, written once, while this one
    * carries the edge an adopt or release moves later. An adopted session has an
-   * empty `created_by` and a parent here. */
-  parent?: { slot: string; key: string | null } | null
+   * empty `created_by` and a parent here.
+   *
+   * `ancestor` is present and true only when `key` names an open ANCESTOR instead of
+   * the creator in `slot`, which the backend resolves when the creator itself has
+   * closed: the row nests where the run is owned and keeps citing its closed
+   * creator. */
+  parent?: { slot: string; key: string | null; ancestor?: boolean } | null
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */
@@ -1204,6 +1319,11 @@ export interface ChatSlot {
    * button. Always false while `running`. Lets the sidebar stop rendering a
    * goal-loop session as actively working when it is actually stalled. */
   interrupted?: boolean
+  /** A loop wake is opening the running turn and its row is not in the
+   * transcript yet (a structured monitor writes it only once the runner
+   * accepts the turn). Only ever true while `running`; absent from an older
+   * gateway. */
+  wake_starting?: boolean
   // Soft-stop state machine
   stop_state?: 'idle' | 'soft_pending' | 'killing'
   /** An automatic context compaction holds the session right now. Not a turn,
@@ -1473,8 +1593,28 @@ export interface ChatMessage {
   decisions_tool_risk?: unknown
 }
 
+/** GET /api/chat/slots/{slot}; identity is optional for older gateways. */
+export interface ChatSlotDetailResponse extends TurnIdentityFields {
+  key: string
+  title?: string
+  running: boolean
+  stopping?: boolean
+  messages: ChatMessage[]
+  queue?: unknown[]
+  total: number
+  has_more: boolean
+  next_before: number
+  context_pct?: number
+  context_used_tokens?: number
+  context_window_tokens?: number
+}
+
 export interface SubagentActivity {
   id: string; task: string; agent: string
+  /** The wave this agent belongs to, absent for a solo spawn. Folded from the
+   *  `batch_id` the gateway stamps on every spawn/done/snapshot frame; shown as
+   *  a short batch chip in the Subagents panel so wave siblings group (#759). */
+  batchId?: string
   /** Model the live session actually resolved to serve, '' when unknown. Folded
    *  from the `model` field on the `subagent_spawn`/`subagent_done`/snapshot WS
    *  frames; shown beside the agent pill in the Subagents panel so a model-pinned
@@ -1504,6 +1644,12 @@ export interface SubagentActivity {
    *  `started`, and `subagent_done` carries `elapsed`. */
   startedAtAssumed?: boolean
   toolCount?: number      // observed tool calls (incl. auto-approved) — running-card progress
+  /** Recent tool calls in arrival order, newest last, capped at
+   *  `SUBAGENT_TOOL_CALLS_CAP` (#13628). Live frames only: a card restored from
+   *  disk after its run has no timeline. `toolCount` may exceed its length when
+   *  the cap dropped old calls or the scale coalescer merged frames. */
+  /** `id` is the call's `tool_call_id` when the frame carried one. */
+  toolCalls?: { tool: string; id?: string }[]
   stalled?: boolean       // reaper flagged this subagent as idle/stalled
   /** Seconds of no stream activity measured when the reaper raised `stalled`
    *  (the `idle_secs` the backend already sends with `subagent_stalled`).
@@ -1518,6 +1664,14 @@ export interface SubagentActivity {
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
   approving?: boolean
+  /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
+   *  decided or expired where this client could not see it. Scoped by id so a
+   *  fresh approval on the same card is decidable again; the card itself stays
+   *  pending, since no outcome is known. */
+  approvalGone?: string
+  /** The authoritative spawn inventory found no process for a gone approval.
+   *  Distinguishes a never-launched retired card from a user-stopped run. */
+  approvalRetired?: boolean
   /** Inline terminal output for native (`native:*`) cards only. Native cards
    *  cannot lazy-load from disk (no SubagentManager record), so the bounded
    *  done-event result is stored here. Managed cards leave this unset and use
@@ -1544,6 +1698,9 @@ export interface ToolActivity {
   output?: string       // tool output (stdout, results, etc.)
   input_cut?: ToolPayloadCut   // set only when `input` was clamped
   output_cut?: ToolPayloadCut  // set only when `output` was clamped
+  /** True while `output` holds only a MID-STREAM frame (a shell's streamed
+   *  stdout): the call is still running. Cleared by its terminal result. */
+  output_partial?: boolean
   ts: number
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
@@ -1566,6 +1723,9 @@ export interface ContentBlock {
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number
+  /** Set on a finalized fence whose closing delimiter never appeared. Its
+   * content may include the rest of the reply, so it must stay visible. */
+  unclosed?: boolean
   /** Artifact slug (widget blocks only) — when present, the widget is
    * already saved as an artifact in the user's library. The dashboard uses
    * this to render the bookmark filled, link the title to /artifacts/<slug>,
@@ -1582,6 +1742,10 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** The crewmate that published the note, stamped by the gateway from the
+   *  publishing session. Persisted rows are untrusted: read it through
+   *  `noteMember`, which checks the shape. */
+  member?: { slug: string; name: string }
 }
 
 /** One row from GET /api/notifications/channels. */
@@ -1606,6 +1770,14 @@ export interface PendingApproval {
 
 export interface SubagentInfo {
   id: string; task: string; done: boolean; error?: string; result?: string
+  parent?: string
+  /** The terminal-state contract for a finished run (`SubagentInfo.outcome`). */
+  outcome?: 'completed' | 'failed' | 'stopped'
+  agent?: string
+  started?: number
+  last_tool?: string
+  stopped?: boolean
+  awaiting_approval?: boolean
 }
 
 export interface SessionInfo {
@@ -1767,7 +1939,14 @@ export interface RemoteArtifact {
 export interface Artifact {
   slug: string
   name: string
-  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image'
+  /** `dashboard` is a CREWMATE'S DASHBOARD PACKAGE -- the `bound_to`, `model`,
+   *  `view` and `theme` document `artifact_store/dashboard_package.py` validates.
+   *  It is in this union because the Artifacts library lists and versions it like
+   *  any other record, which is where its history and its revert come from, and
+   *  deliberately NOT in any picker: the backend keeps it out of
+   *  `USER_SELECTABLE_KINDS` so nobody can mint one by hand, and a kind offered in
+   *  the UI that the server refuses is a dead menu entry. */
+  kind: 'widget' | 'html' | 'markdown' | 'svg' | 'json' | 'text' | 'webapp' | 'image' | 'dashboard'
   /** Provenance/origin bucket. Carries either a legacy bucket
    * (chat|cron|subagent|manual|import) or the actual session origin
    * (dashboard|slack|cli|task-runner|unknown), so treated as an open string. */
@@ -1783,6 +1962,9 @@ export interface Artifact {
   created_at: string
   updated_at: string
   content?: string
+  /** Opaque optimistic-concurrency token for `content`; echo it back as
+   * `expected_token` on a content save. Absent for live file-backed artifacts. */
+  content_token?: string
   /** Original source path for file-backed artifacts (live pointer). */
   source_path?: string
   /** True when the live state differs from the latest numbered snapshot.

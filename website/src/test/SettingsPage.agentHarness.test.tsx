@@ -42,6 +42,12 @@ vi.mock('../pages/developer/AgentBackendTab', () => ({
   },
 }))
 
+// Subagent Settings + Warm Pool: their editors are pinned in CfgTabCoverage.test.tsx;
+// only their placement on this tab is tested here.
+vi.mock('../pages/overview/KiroCrewCfgTab', () => ({
+  AgentRunSettings: () => <div data-testid="agent-run-settings" />,
+}))
+
 // Settings panels: heavy and irrelevant here.
 vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div data-testid="overview-panel" /> }))
 vi.mock('../pages/settings/ChatPanel', () => ({ ChatPanel: () => <div data-testid="chat-panel" /> }))
@@ -125,6 +131,14 @@ describe('Settings > Agent Harness', () => {
     renderAt('/settings/agent')
     expect(await screen.findByTestId('agent-backend-tab')).toBeInTheDocument()
     expect(screen.getAllByText('Agent Harness').length).toBeGreaterThan(0)
+  })
+
+  it('hosts the Subagent Settings and Warm Pool cards beside the switch', async () => {
+    renderAt('/settings/agent')
+    // Two independent lazy imports behind two Suspense boundaries: either may
+    // settle first, so wait for each on its own.
+    expect(await screen.findByTestId('agent-run-settings', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(await screen.findByTestId('agent-backend-tab', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
   it('the chat sign-in link opens the tab and rings the Kiro sign-in card once it mounts', async () => {

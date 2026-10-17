@@ -233,6 +233,79 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     expect(h.result.current.pinned).toBeNull()
   })
 
+  // The last turn's reply is taller than the viewport: once its top passes the
+  // fold no row is left below the line. The banner must keep the prompt that reply
+  // answers, not vanish while the reader is inside it.
+  it.each([false, true])('keeps the prompt pinned while reading a final reply taller than the viewport (requiresMountedHandoff=%s)', (requiresMountedHandoff) => {
+    const h = renderPin(requiresMountedHandoff)
+    const g = mountGeometry(2)
+    setRect(g.rows[0], -400, 380)
+    setRect(g.rows[1], 60, 1800)
+    wire(h, g, [single(0, 'user', 'long prompt'), single(1, 'assistant', 'long reply')])
+    expect(h.result.current.pinned?.idx).toBe(0)
+  })
+
+  // Message HTML can carry `data-display-index` (the sanitizer admits arbitrary
+  // `data-*`). A forged index inside the last MOUNTED row must not pass for the
+  // list end: rows 2 and 3 are unmounted below, so the boundary is unknown and
+  // nothing may be pinned. Counting the forged node would read the tail as the
+  // end of the list and pin the unmounted prompt at idx 2.
+  it.each([false, true])('ignores a data-display-index forged inside message content (requiresMountedHandoff=%s)', (requiresMountedHandoff) => {
+    const h = renderPin(requiresMountedHandoff)
+    const g = mountGeometry(2)
+    setRect(g.rows[0], -400, 380)
+    setRect(g.rows[1], 60, 1800)
+    const forged = document.createElement('span')
+    forged.dataset.displayIndex = '3'
+    setRect(forged, 80, 20)
+    g.rows[1].append(forged)
+    wire(h, g, [
+      single(0, 'user', 'first prompt'),
+      single(1, 'assistant', 'reply with forged attribute'),
+      single(2, 'user', 'later prompt'),
+      single(3, 'assistant', 'later reply'),
+    ])
+    expect(h.result.current.pinned).toBeNull()
+  })
+
+  // The last display row is a PROMPT taller than the space below the fold — just
+  // sent, no reply streamed yet. It must never become its own stand-in: the card
+  // would fold down to its head and the prompt's tail could not be read.
+  //
+  // With the final row treated as the straddling hand-off row, the candidate is
+  // the EARLIER prompt (idx 0) — and that card is then fully pushed out by the
+  // incoming prompt, whose top has already risen past the fold
+  // (`push >= pinPushTravel`), so nothing is pinned and the whole prompt stays
+  // on screen. The defect to pin here is the alternative: treating the index as
+  // one past the end makes the final row itself pinnable and reports idx 2.
+  it.each([false, true])('never pins a tall final prompt as its own stand-in (requiresMountedHandoff=%s)', (requiresMountedHandoff) => {
+    const h = renderPin(requiresMountedHandoff)
+    const g = mountGeometry(3)
+    setRect(g.rows[0], -900, 380)
+    setRect(g.rows[1], -500, 500)
+    setRect(g.rows[2], 40, 1200)
+    wire(h, g, [
+      single(0, 'user', 'first prompt'),
+      single(1, 'assistant', 'first reply'),
+      single(2, 'user', 'tall last prompt'),
+    ])
+    expect(h.result.current.pinned?.idx).not.toBe(2)
+    expect(h.result.current.pinned).toBeNull()
+  })
+
+  it('pins nothing when every mounted row is above the line but rows below are unmounted', () => {
+    const h = renderPin(true)
+    const g = mountGeometry(2)
+    setRect(g.rows[0], -400, 380)
+    setRect(g.rows[1], 60, 1800)
+    // Two more rows exist in the list but are not mounted: the boundary is unknown.
+    wire(h, g, [
+      single(0, 'user', 'long prompt'), single(1, 'assistant', 'long reply'),
+      single(2, 'user', 'later prompt'), single(3, 'assistant', 'later reply'),
+    ])
+    expect(h.result.current.pinned).toBeNull()
+  })
+
   it('glides the in-place jump to the target row minus the banner chrome, then converges', () => {
     const h = renderPin()
     const g = mountGeometry(5)
@@ -346,6 +419,21 @@ describe('usePinnedPrompt push geometry is resting-height-derived', () => {
     setRect(g.rows[4], 140, 40)
     wire(h, g)
     expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 24, bannerH: 60 })
+  })
+
+  // The incoming-prompt lookup goes by index too. A forged `data-display-index`
+  // in an EARLIER row's message content comes first in document order, so a
+  // plain querySelector would measure it instead of the real row 4 (300px, clear
+  // of the travel) and push the card out by 24px.
+  it('measures the real incoming row, not a forged index earlier in the DOM', () => {
+    const h = renderPin()
+    const g = mountGeometry(5)
+    const forged = document.createElement('span')
+    forged.dataset.displayIndex = '4'
+    setRect(forged, 140, 40)
+    g.rows[1].append(forged)
+    wire(h, g)
+    expect(h.result.current.pinned).toMatchObject({ idx: 2, push: 0, bannerH: 60 })
   })
 })
 
@@ -670,7 +758,7 @@ describe('usePinnedPrompt caps the card at the transcript floor', () => {
     const h = renderPin()
     const g = mountGeometry(5)
     mountTallFold(g)
-    // ChatPage writes `paddingBottom: dockH + DOCK_CLEARANCE_PX` on the scroller;
+    // ChatTranscriptView writes `paddingBottom: dockH + DOCK_CLEARANCE_PX` on the scroller;
     // here a 120px dock plus 16px clearance.
     g.scroller.style.paddingBottom = '136px'
     wire(h, g)

@@ -1,6 +1,6 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
@@ -382,7 +382,7 @@ describe('ChatInput paste: caret lands after the inserted content', () => {
     // Long enough to collapse into a "[ Paste #1 · N lines ]" chip.
     pasteText(ta, Array.from({ length: 12 }, (_, i) => `payload line ${i}`).join('\n'))
     expect(onBlocks).toHaveBeenCalledTimes(1)
-    expect(ta.value).toMatch(/^\[ Paste #1 · 12 lines \]$/)
+    expect(ta.value).toMatch(/^\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
     await nextFrame()
     expect(ta.selectionStart).toBe(ta.value.length)
   })
@@ -406,7 +406,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(2, 2)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('> [ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^> \[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
     await nextFrame()
     expect(ta.selectionStart).toBe(ta.value.length)
   })
@@ -416,7 +416,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(4, 4)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('> > [ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^> > \[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
   })
 
   it('a quote prefix on a LATER line flows too (earlier lines untouched)', () => {
@@ -425,7 +425,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(initial.length, initial.length)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('as discussed:\n> [ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^as discussed:\n> \[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
   })
 
   it('an indented quote prefix ("  > ") flows', () => {
@@ -433,7 +433,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(4, 4)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('  > [ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^  > \[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
   })
 
   it('ordinary text before the caret still pushes the chip to its own line', () => {
@@ -443,7 +443,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(5, 5)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('see: \n[ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^see: \n\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
   })
 
   it('a line of only whitespace (no ">") still pushes the chip to its own line', () => {
@@ -453,7 +453,7 @@ describe('ChatInput paste tokens: blockquote prefix keeps the chip on the quote 
     ta.focus()
     ta.setSelectionRange(3, 3)
     pasteText(ta, bigPaste)
-    expect(ta.value).toBe('   \n[ Paste #1 · 12 lines ]')
+    expect(ta.value).toMatch(/^   \n\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 12 lines \]$/)
   })
 })
 
@@ -651,6 +651,8 @@ describe('ChatInput dictation: Escape cancels from anywhere', () => {
   })
 })
 
+const AGENT_SOURCE = 'Set per agent in config.json (agents.orchestrator.autocompact_pct). Moving the slider overrides it for this session.'
+
 describe('ChatInput context-usage popover', () => {
   // The context chip lives on the shelf row, which only mounts when the host
   // supplies at least one shelf control — onProjectClick is the cheapest.
@@ -724,6 +726,40 @@ describe('ChatInput context-usage popover', () => {
     expect(await screen.findByText('Following global (70%)')).toBeInTheDocument()
     expect(screen.getByText('70%')).toBeInTheDocument()
     expect(screen.queryByText(/Reset to global/)).toBeNull()
+  })
+
+  it('shows the agent default and a note naming the agent when it declares one', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: null, global_pct: 70, agent_pct: 45, agent: 'orchestrator', min: 5, max: 90 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    // The tooltip says where the number is set; the note names the agent in mono.
+    const note = await screen.findByTitle(AGENT_SOURCE)
+    expect(note.textContent).toBe("Following the orchestrator agent's default (45%)")
+    expect(within(note).getByText('orchestrator').className).toContain('font-mono')
+    expect(screen.getByText('45%')).toBeInTheDocument()
+    expect(screen.queryByText(/Following global/)).toBeNull()
+  })
+
+  it('offers a reset to the agent default when an override sits on top of it', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: 85, global_pct: 70, agent_pct: 45, agent: 'orchestrator', min: 5, max: 90 })
+    const post = vi.spyOn(api, 'setChatSlotAutocompact').mockResolvedValue({ ok: true, pct: null, global_pct: 70, agent_pct: 45, agent: 'orchestrator' })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    expect(await screen.findByText('85%')).toBeInTheDocument()
+    expect(screen.queryByText(/Reset to global/)).toBeNull()
+    const reset = screen.getByRole('button', { name: "Reset to the orchestrator agent's default (45%)" })
+    expect(reset.getAttribute('title')).toBe(AGENT_SOURCE)
+    fireEvent.click(reset)
+    await waitFor(() => expect(post).toHaveBeenCalledWith('test-slot', null), { timeout: 1500 })
+    expect((await screen.findByTitle(AGENT_SOURCE)).textContent).toBe("Following the orchestrator agent's default (45%)")
+  })
+
+  it('gives the global notes no agent tooltip', async () => {
+    vi.spyOn(api, 'chatSlotAutocompact').mockResolvedValue({ pct: null, global_pct: 70, agent_pct: null, agent: null, min: 5, max: 90 })
+    renderWithSlot(<ChatInput {...base} contextPct={42} contextWindowTokens={200_000} />)
+    fireEvent.click(screen.getByLabelText('Context usage'))
+    const note = await screen.findByText('Following global (70%)')
+    expect(note.getAttribute('title')).toBeNull()
   })
 
   it('explains a failed threshold fetch instead of silently omitting the section', async () => {

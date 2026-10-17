@@ -10,6 +10,7 @@ import threading
 
 import pytest
 
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflows.registry import RunHandle, RunRegistry
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.service import WorkflowService
@@ -91,7 +92,7 @@ async def test_background_slow_persistence_keeps_loop_responsive(phase):
 
     task = asyncio.create_task(drive())
     try:
-        await asyncio.wait_for(store.started.wait(), 4)
+        await await_until(store.started, what="the store's first write starting")
         await asyncio.sleep(0)
         assert not any(store.on_loop), "store I/O ran on the owning loop"
         assert not task.done(), "the driver detached its outstanding write"
@@ -118,7 +119,7 @@ async def test_host_registration_eviction_is_off_loop():
         service.begin_host_run(name="plan", source_format="task-plan", driver="taskrunner")
     )
     try:
-        await asyncio.wait_for(store.started.wait(), 4)
+        await await_until(store.started, what="the store's first write starting")
         assert not any(store.on_loop)
         assert not task.done()
     finally:
@@ -136,7 +137,7 @@ async def test_cancelled_registration_drains_repeated_cancels_and_removes_partia
         runner.run_background(SCRIPT, registry=registry, run_id="new", now=NOW)
     )
     try:
-        await asyncio.wait_for(store.started.wait(), 4)
+        await await_until(store.started, what="the store's first write starting")
         assert not any(store.on_loop)
         for _ in range(3):
             task.cancel()
@@ -159,7 +160,7 @@ async def test_repeated_cancel_cannot_detach_checkpoint_or_let_delete_overtake()
     registry = RunRegistry(store=store)
     registry.register(RunHandle("new", "new"), persist=False)
     write = asyncio.create_task(registry.persist_async("new"))
-    await asyncio.wait_for(store.started.wait(), 4)
+    await await_until(store.started, what="the store's first write starting")
     delete = asyncio.create_task(registry.delete_async("new"))
     await asyncio.sleep(0)
     try:
@@ -185,7 +186,7 @@ async def test_terminal_flush_cancellation_keeps_committed_result():
     rid = await runner.run_background(SCRIPT, registry=registry, run_id="new", now=NOW)
     task = registry.get(rid).task
     try:
-        await asyncio.wait_for(store.started.wait(), 4)
+        await await_until(store.started, what="the store's first write starting")
         assert await registry.cancel(rid) is False
         for _ in range(3):
             task.cancel()
@@ -236,7 +237,7 @@ async def test_admission_closed_during_registration_never_launches(entry):
         call = service.rerun_subtree(original, 0)
     task = asyncio.create_task(call)
     try:
-        await asyncio.wait_for(store.started.wait(), 4)
+        await await_until(store.started, what="the store's first write starting")
         sessions.admission_closed = True
     finally:
         store.release.set()

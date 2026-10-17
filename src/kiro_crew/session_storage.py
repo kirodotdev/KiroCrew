@@ -1206,8 +1206,17 @@ def _unit_paths(
             found.append((path, f"{STAGE_CLI_LEAF}/{path.name}"))
     for stem in stems:
         transcript = _crew_sessions_dir() / f"{stem}{_TRANSCRIPT_SUFFIX}"
-        if transcript.is_file():
-            found.append((transcript, f"{STAGE_CREW_LEAF}/{transcript.name}"))
+        # os.lstat + S_ISREG, never Path.is_file(): the latter follows a symlink,
+        # so a link planted at the transcript's name between a scan and the move it
+        # feeds would be owned and the move would relocate the link (or read through
+        # it) instead of the file. This matches the scans and the sidecar handling
+        # below, which answer only to regular files. lstat rather than is_file(
+        # follow_symlinks=False) because that argument only exists on Python 3.13+.
+        try:
+            if stat.S_ISREG(os.lstat(transcript).st_mode):
+                found.append((transcript, f"{STAGE_CREW_LEAF}/{transcript.name}"))
+        except FileNotFoundError:
+            pass
         segments = (
             archives.get(stem, []) if archives is not None else _archive_index().get(stem, [])
         )

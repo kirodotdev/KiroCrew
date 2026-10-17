@@ -522,6 +522,65 @@ class TestKasTracksKiro:
         assert calls == [1]
 
 
+class TestKasBundleRouteAnswersFromTheInstalledEngine:
+    """With ``agent.kas_bundle`` on, KAS runs Crew's own engine and never kiro-cli.
+
+    The row then has to say what THAT route is missing. A host with no kiro-cli
+    is INSTALLED once the engine is; a host with kiro-cli but no engine is
+    MISSING the bundle, named with the command that lays it down -- and kiro's
+    resolver is not consulted either way, since nothing on this route spawns it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bundle_route(self, _floor_monkeypatch):
+        # The floor stack, not the test's own: a case that calls ``monkeypatch.undo()``
+        # must not lift the route pin from under its own assertions.
+        _floor_monkeypatch.setattr(probe, "_kas_bundle_route", lambda: True)
+
+    @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
+    def test_installed_engine_is_installed_whatever_kiro_cli_says(self, monkeypatch, kiro_bin):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        _stub_resolvers(monkeypatch, kiro=kiro_bin)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: object())
+        kas = probe.probe_backend(ACP_BACKEND_KAS)
+        assert kas.installed == probe.INSTALLED
+        assert kas.missing_components == ()
+        assert kas.policy_id == "kas"
+
+    @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
+    def test_no_engine_is_missing_the_bundle_not_kiro_cli(self, monkeypatch, kiro_bin):
+        from kiro_crew.agent_sdk import kas_bundle
+
+        _stub_resolvers(monkeypatch, kiro=kiro_bin)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: None)
+        kas = probe.probe_backend(ACP_BACKEND_KAS)
+        assert kas.installed == probe.MISSING
+        assert kas.missing_components == (probe.COMPONENT_KAS_BUNDLE,)
+        assert kas.install_command == probe.KAS_BUNDLE_INSTALL_COMMAND
+        assert probe.COMPONENT_KIRO_CLI not in kas.missing_components
+
+    def test_kiro_resolver_is_not_consulted_on_the_bundle_route(self, monkeypatch):
+        from kiro_crew.acp import client
+        from kiro_crew.agent_sdk import kas_bundle
+
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: object())
+        monkeypatch.setattr(
+            client,
+            "_resolve_kiro_bin",
+            lambda **_kw: (_ for _ in ()).throw(AssertionError("kiro resolver consulted")),
+        )
+        assert probe.probe_backend(ACP_BACKEND_KAS).installed == probe.INSTALLED
+
+    def test_the_relay_route_is_unchanged(self, monkeypatch):
+        # The default (switch off) keeps kas as a copy of kiro's verdict.
+        monkeypatch.setattr(probe, "_kas_bundle_route", lambda: False)
+        _stub_resolvers(monkeypatch, kiro=None)
+        kas = probe.probe_backend(ACP_BACKEND_KAS)
+        assert kas.installed == probe.MISSING
+        assert kas.missing_components == (probe.COMPONENT_KIRO_CLI,)
+
+
 class TestUnknownIsNeverMissing:
     """A failed CHECK is its own state; collapsing it produces bad advice."""
 
@@ -882,6 +941,7 @@ class TestEndpointPayloadShape:
                 # line MEANS is pinned in ``test_backend_cards``; this file pins
                 # that the row carries them.
                 "capabilities",
+                "details",
                 "security_notes",
                 "operator_notes",
                 "tool_approval",
@@ -909,11 +969,15 @@ class TestEndpointPayloadShape:
             assert [entry["id"] for entry in row["capabilities"]] == [
                 spec.id for spec in backend_cards.USER_FACING_LINES
             ]
+            assert [entry["id"] for entry in row["details"]] == [
+                spec.id for spec in backend_cards.DETAIL_LINES
+            ]
             assert isinstance(row["tool_approval"], str) and row["tool_approval"]
 
         by_policy = {r["policy_id"]: r for r in rows}
         assert by_policy["kiro"] == {
-            "id": "",
+            # The config-file spelling, which is what the panel PATCHes.
+            "id": "kiro",
             "policy_id": "kiro",
             "selectable": True,
             "independent_setup": False,
@@ -1489,6 +1553,24 @@ class TestRecheckEndpoint:
         assert response.status == 200
         assert seen == [ACP_BACKEND_KIRO]
         assert json.loads(response.text or "{}")["backend"]["id"] == ACP_BACKEND_KIRO
+
+    def test_the_row_id_kiro_rechecks_the_kiro_cli_backend(self, monkeypatch):
+        """The panel re-checks by row id, and the Kiro CLI row id is "kiro"."""
+        from kiro_crew.dashboard.handlers import acp_backend_status as handler
+
+        monkeypatch.setattr(handler, "sel", lambda: MagicMock())
+        seen: list[str] = []
+
+        def _recheck(backend: str):
+            seen.append(backend)
+            return {"id": "kiro", "installed": "installed"}
+
+        monkeypatch.setattr(handler, "_recheck", _recheck)
+        response = asyncio.run(
+            handler.api_acp_backend_recheck(_request(json_body={"backend": "kiro"}))
+        )
+        assert response.status == 200
+        assert seen == [ACP_BACKEND_KIRO]
 
     def test_it_answers_one_row_in_the_shape_the_list_sends(self, monkeypatch):
         """Same builder as the GET, so a field cannot go missing from one verb.

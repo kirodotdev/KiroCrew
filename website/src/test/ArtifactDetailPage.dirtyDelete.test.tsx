@@ -73,7 +73,7 @@ describe('ArtifactDetailPage remote deletion vs unsaved edits', () => {
   async function enterEditMode() {
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Toggle agent chat')).toBeInTheDocument())
-    fireEvent.click(screen.getByTitle(/edit content/i))
+    fireEvent.click(screen.getByRole('button', { description: /edit content/i }))
     return screen.findByLabelText('editor')
   }
 
@@ -96,7 +96,7 @@ describe('ArtifactDetailPage remote deletion vs unsaved edits', () => {
     await enterEditMode()
     expect(isArtifactEditing('cr-queue')).toBe(true)
     const before = vi.mocked(api).artifact.mock.calls.length
-    fireEvent.click(screen.getByTitle(/cancel/i))
+    fireEvent.click(screen.getByRole('button', { description: /cancel/i }))
     await waitFor(() => expect(isArtifactEditing('cr-queue')).toBe(false))
     await waitFor(() =>
       expect(vi.mocked(api).artifact.mock.calls.length).toBeGreaterThan(before))

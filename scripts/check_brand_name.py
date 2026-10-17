@@ -260,8 +260,9 @@ SKIP_PATHS = (
 # The locale catalogs are machine-translated and carry ~85 joined spellings each;
 # `tips_catalog.json` is derived from `src/kiro_crew/docs/*.md`, and
 # `settings-registry.generated.json` from `website/src/pages/settings/**` via
-# `npm run gen:settings`. All are JSON, so none offers a line the `brand-ok` comment
-# could sit on, and all re-emit their lines wholesale when regenerated or re-indented
+# `npm run gen:settings`, and `ui-index.generated.json` from the dashboard source
+# and those catalogs via `npm run gen:ui`. All are JSON, so none offers a line the
+# `brand-ok` comment could sit on, and all re-emit their lines wholesale when regenerated or re-indented
 # — which would fail a PR on text its author neither wrote nor can correct where the
 # error points. Their sources stay enforced (`en.json`, `en.manual.json`, the docs,
 # and the settings panels), so coverage is unchanged and a fix there is what reaches
@@ -270,6 +271,7 @@ GENERATED_PATHS = (
     re.compile(r"^website/src/i18n/locales/(?!en\.json$|en\.manual\.json$)[\w-]+\.json$"),
     re.compile(r"^src/kiro_crew/data/tips_catalog\.json$"),
     re.compile(r"^src/kiro_crew/docs/settings-registry\.generated\.json$"),
+    re.compile(r"^src/kiro_crew/docs/ui-index\.generated\.json$"),
 )
 
 

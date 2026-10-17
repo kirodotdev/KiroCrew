@@ -3,8 +3,10 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { sseMcpReportUpdate, sseSlots } from '../store/dashboardSlice'
 import McpToolsPanel, { DOT_CLASS, SESSION_DOT_CLASS } from '../pages/chat/McpToolsPanel'
 import {
+  mcpSessionExtraNoTools,
   mcpSessionExtraServers,
   mcpSessionFailureReason,
+  mcpSessionGaveNoTools,
   mcpSessionHasReport,
   mcpSessionServerState,
 } from '../lib/mcpSessionReport'
@@ -209,6 +211,53 @@ describe('McpToolsPanel session report', () => {
     render(<McpToolsPanel {...base} sessionReport={report({ awaiting_auth: ['github-mcp'] })} />)
     expect(screen.getByTitle('Waiting for authorization')).toBeInTheDocument()
     expect(screen.queryByTitle('Started in this session')).not.toBeInTheDocument()
+  })
+
+  it('warns in text when a started server gave this session no tools', () => {
+    // A tool-name clash: both servers start, the backend keeps one server's
+    // tools and drops the other's. The ring still says started; the text says
+    // what went wrong without needing a hover.
+    render(
+      <McpToolsPanel
+        {...base}
+        sessionReport={report({ ready: ['kirocrew-core', 'slack-mcp'], no_tools: ['slack-mcp'] })}
+      />,
+    )
+    const warning = screen.getByRole('status')
+    expect(warning).toHaveTextContent(/got none of its tools.*toolAliases/)
+    expect(warning.className).toContain('text-warn')
+    expect(screen.getAllByTitle('Started in this session')).toHaveLength(2)
+    // The ring keeps "started", so the problem also gets a mark on the name a
+    // row-scanning reader sees; the healthy row has none.
+    const name = screen.getByText('slack-mcp')
+    expect(name.parentElement?.querySelector('svg.text-warn')).not.toBeNull()
+    expect(screen.getByText('kirocrew-core').parentElement?.querySelector('svg.text-warn')).toBeNull()
+  })
+
+  it('names a no-tools server the configured list does not show', () => {
+    render(<McpToolsPanel {...base} sessionReport={report({ no_tools: ['dup-beta'] })} />)
+    expect(screen.getByRole('status')).toHaveTextContent(/none of their tools.*: dup-beta/)
+  })
+
+  it('counts no-tools servers past the report cap', () => {
+    render(<McpToolsPanel {...base} sessionReport={report({ no_tools: ['dup-beta'], no_tools_omitted: 3 })} />)
+    expect(screen.getByRole('status')).toHaveTextContent(/: dup-beta, \+3$/)
+  })
+
+  it('shows no warning when every server gave tools', () => {
+    render(<McpToolsPanel {...base} sessionReport={report({ ready: ['kirocrew-core'] })} />)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+})
+
+describe('mcpSessionGaveNoTools / mcpSessionExtraNoTools', () => {
+  it('reads the no_tools bucket, tolerating an older report without it', () => {
+    const r = report({ no_tools: ['a', 'b', 'b'] })
+    expect(mcpSessionGaveNoTools('a', r)).toBe(true)
+    expect(mcpSessionGaveNoTools('c', r)).toBe(false)
+    expect(mcpSessionGaveNoTools('a', report())).toBe(false)
+    expect(mcpSessionExtraNoTools(['a'], r)).toEqual(['b'])
+    expect(mcpSessionExtraNoTools(['a'], null)).toEqual([])
   })
 })
 

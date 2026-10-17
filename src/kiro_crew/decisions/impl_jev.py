@@ -1,9 +1,10 @@
 """Jev questions over HTTP, using https://docs.typesafe.ai/api.
 
-Each question type maps to the provider's own: a ``Choice`` sends its options as
-nullable rubric text in ``criteria``, a ``Noul`` sends its optional yes/no rubric
-as ``criteria.true`` / ``criteria.false``, and a ``Score`` sends its levels as
-the ordered ``criteria`` array. Every answer must carry the type of the question
+Each question type maps to the provider's own: a ``Choice`` sends a ``criteria``
+map keyed by every option, each value its optional rubric text or ``null`` when
+none is authored, a ``Noul`` sends its optional yes/no rubric as
+``criteria.true`` / ``criteria.false``, and a ``Score`` sends its levels as the
+ordered ``criteria`` array. Every answer must carry the type of the question
 it answers and that type's own fields, finite and in range; anything else is a
 protocol error. The gate validates answer domains again before anything is
 consumed. Transport and protocol failures raise; the gate supplies fallback, not
@@ -73,6 +74,13 @@ _RESPONSE_CHUNK_BYTES = 64 * 1024
 _DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 _DEFAULT_MODEL = DECISION_PROVIDER_MODEL_DEFAULT
 _SECRET_PREFIX = "secret://"
+#: The response header carrying the provider's request id. Support asks for this
+#: value; the vendor documents it under this name.
+_REQUEST_ID_HEADER = "x-typesafe-request-id"
+#: Longest ``model``/``request_id`` string kept on the metadata. Both are
+#: provider-stamped, so this is far past any real value; it is the bound that
+#: keeps a misbehaving provider from writing an unbounded field onto the row.
+_META_STR_MAX = 128
 #: The ONE vault entry this module will read. ``provider.api_key`` lives in the
 #: agent-writable ``config.json``, so a reference that named any entry would let
 #: a prompt-injected shell pick which of the operator's secrets is sent as the
@@ -154,10 +162,16 @@ def _to_wire(state: dict | str, model: str, questions: list[Question]) -> dict[s
 def _question_to_wire(q: object) -> dict[str, Any]:
     """One question in the provider's shape, or raise for a class it has none for."""
     if isinstance(q, Choice):
+        # The map stays keyed by EVERY option, as the provider reads it: an option
+        # with no authored rubric carries ``None`` -- today's shape -- so a point
+        # that supplies nothing sends exactly what it sent before. A ``criteria``
+        # entry for a name that is not a declared option is ignored, never sent,
+        # so a stale key cannot smuggle text past the option domain.
+        criteria = q.criteria or {}
         return {
             "type": "choice",
             "instructions": q.prompt,
-            "criteria": {opt: None for opt in q.options},
+            "criteria": {opt: criteria.get(opt) for opt in q.options},
         }
     if isinstance(q, Noul):
         wire: dict[str, Any] = {"type": "noul", "instructions": q.prompt}
@@ -264,6 +278,58 @@ def _as_float_or_none(raw: Any) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _as_int_or_none(raw: Any) -> int | None:
+    """*raw* as a non-negative int, or ``None``. A bool, a float or a string is not one.
+
+    Token counts are whole and non-negative; anything else the provider puts in
+    the field is dropped rather than written onto a row, so one malformed reply
+    cannot plant a type a reader has to defend against.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw if raw >= 0 else None
+
+
+def _as_bounded_str_or_none(raw: Any) -> str | None:
+    """*raw* as a clipped string, or ``None`` when it is not a non-empty string.
+
+    ``model`` and ``request_id`` are provider-stamped text; this bounds them at
+    the source so the row never carries an unbounded provider field even before
+    the log's own clip.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    return raw[:_META_STR_MAX]
+
+
+def _response_meta(parsed: Any, request_id: Any) -> dict[str, Any] | None:
+    """The three provider-stamped fields worth a row, each bounded, or ``None``.
+
+    ``model`` (``jev-latest`` is an alias that can move under a caller), the token
+    ``usage`` the provider reports, and the ``x-typesafe-request-id`` header. Only
+    the fields actually present are returned, and ``None`` when none are, so a row
+    carries metadata only where the provider supplied some. Reads only these keys:
+    it never touches ``answers`` or ``state``, so no conversation text can reach it.
+    """
+    meta: dict[str, Any] = {}
+    body = parsed if isinstance(parsed, dict) else {}
+    model = _as_bounded_str_or_none(body.get("model"))
+    if model is not None:
+        meta["provider_model"] = model
+    usage = body.get("usage")
+    if isinstance(usage, dict):
+        input_tokens = _as_int_or_none(usage.get("input_tokens"))
+        if input_tokens is not None:
+            meta["input_tokens"] = input_tokens
+        output_tokens = _as_int_or_none(usage.get("output_tokens"))
+        if output_tokens is not None:
+            meta["output_tokens"] = output_tokens
+    rid = _as_bounded_str_or_none(request_id)
+    if rid is not None:
+        meta["request_id"] = rid
+    return meta or None
+
+
 class JevOracle:
     """Ask Jev for the typed answers consumed by the decision gate."""
 
@@ -272,6 +338,14 @@ class JevOracle:
         self._model = str(getattr(provider, "model", "") or _DEFAULT_MODEL)
         self._api_key_setting = str(getattr(provider, "api_key", "") or "")
         self._timeout_ms = getattr(provider, "timeout_ms", 1000)
+        #: Bounded metadata read off the LAST successful response: the ``model``
+        #: the provider actually answered with (``jev-latest`` is an alias that can
+        #: move under a caller), its token ``usage``, and the ``x-typesafe-request-id``
+        #: header support asks for. ``None`` until a call succeeds; the gate reads it
+        #: after ``ask`` returns and writes it onto the decision row, so a row can say
+        #: which model version produced an answer or a near-miss. It never carries
+        #: conversation text -- only the three provider-stamped fields.
+        self.last_response_meta: dict[str, Any] | None = None
 
     async def ask(self, state: dict | str, questions: list[Question]) -> Answers:
         """POST one request carrying every question. Raises on any failure.
@@ -311,6 +385,9 @@ class JevOracle:
             ) as resp:
                 if resp.status < 200 or resp.status >= 300:
                     raise JevHttpError(f"HTTP {resp.status}")
+                # Read inside the response context, before the body: the header is
+                # the one piece of metadata that does not live in the parsed body.
+                request_id = resp.headers.get(_REQUEST_ID_HEADER)
                 # Bounded and chunked: `resp.text()` reads to EOF, and a single
                 # `read(n)` may return short while more is coming, so only a
                 # running total refuses on the real size instead of truncating.
@@ -328,4 +405,9 @@ class JevOracle:
                     parsed = json.loads(text)
                 except ValueError:
                     raise JevProtocolError("response is not JSON") from None
-        return _from_wire(parsed, questions)
+        answers = _from_wire(parsed, questions)
+        # Only after a fully-valid parse: a row never carries metadata for a
+        # response the gate is about to treat as an error. Built from the parsed
+        # body plus the header, every value bounded, no conversation text.
+        self.last_response_meta = _response_meta(parsed, request_id)
+        return answers

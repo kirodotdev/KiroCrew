@@ -170,6 +170,8 @@ class _ConptyBackend(Protocol):
 
     def isalive(self) -> bool: ...
 
+    def exitstatus(self) -> int | None: ...
+
     def terminate(self, force: bool = True) -> None: ...
 
 
@@ -677,11 +679,21 @@ def _resolve_cwd(cfg: dict, requested: str | None) -> str:
     """Resolve the PTY working directory.
 
     A client-requested dir (the chat's project dir, passed as ?cwd=) must exist.
-    Without one, use the configured cwd, else $HOME. This is the user's own
-    interactive shell (auth is enforced at the WS handshake), so there is no
-    root restriction beyond isdir.
+    Without one, use the configured cwd, else the user's home directory. The
+    home is resolved with ``os.path.expanduser("~")``, which honours
+    ``USERPROFILE`` on Windows (where ``HOME`` is unset for cmd/PowerShell) and
+    ``HOME`` on POSIX, so each platform resolves to its own home. Reading
+    ``HOME`` directly would yield ``"/"`` on a Windows shell with ``HOME`` unset,
+    and ``os.path.abspath`` resolves ``"/"`` to the current drive root. The
+    ``"/"`` last resort applies only when no home resolves at all (``expanduser``
+    then returns the literal ``"~"``). This is the user's own interactive shell
+    (auth is enforced at the WS handshake), so there is no root restriction
+    beyond isdir.
     """
-    default = cfg.get("cwd") or os.environ.get("HOME") or "/"
+    home = os.path.expanduser("~")
+    if home == "~":
+        home = ""
+    default = cfg.get("cwd") or home or "/"
     if requested:
         candidate = os.path.abspath(os.path.expanduser(requested))
         if os.path.isdir(candidate):
@@ -1169,8 +1181,8 @@ async def _child_exit_status(sess: _TerminalSession) -> int | None:
     """Wait, bounded, for the session's child to go; return its exit status.
 
     ``None`` when the status is unavailable: the child outlived
-    ``_CHILD_REAP_TIMEOUT_S``, or it ran under ConPTY, whose wrapper reports
-    liveness but no exit code. Callers tell those apart with ``_sess_alive``.
+    ``_CHILD_REAP_TIMEOUT_S``, or the binding could not report one. Callers
+    tell a child still running from an unavailable code with ``_sess_alive``.
     """
     wp = sess.winpty
     if wp is not None:
@@ -1182,7 +1194,7 @@ async def _child_exit_status(sess: _TerminalSession) -> int | None:
             if loop.time() >= deadline:
                 return None
             await asyncio.sleep(_CONPTY_STATUS_POLL_S)
-        return None
+        return wp.exitstatus()
     proc = sess.proc
     if proc is None:
         return None
@@ -1838,6 +1850,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 placeholder = False
                 # WS already prepared — send error over WS then close. A timed-out
                 # descriptor close carries no text of its own.
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="terminal.ws.open",
+                    outcome="error",
+                    source="dashboard",
+                    resources=f"pty_spawn_failed={exc}",
+                )
                 if not ws.closed:
                     message = str(exc) or f"Failed to start terminal: {type(exc).__name__}"
                     await ws.send_str(json.dumps({"type": "error", "message": message}))
@@ -2081,11 +2100,25 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         if not isinstance(text, str):
             raise TypeError
     except Exception:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources="invalid_body",
+        )
         return web.json_response(
             {"error": "expected JSON body {text: string}", "code": "terminal_invalid_body"},
             status=400,
         )
     if len(text.encode("utf-8", errors="replace")) > _REDACT_MAX_BYTES:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="denied",
+            source="dashboard",
+            resources="selection_too_large",
+        )
         return web.json_response(
             {"error": "selection too large", "code": "terminal_selection_too_large"},
             status=413,
@@ -2108,10 +2141,24 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.selection.redact",
+            outcome="error",
+            source="dashboard",
+            resources="redaction_failed",
+        )
         return web.json_response(
             {"error": "redaction failed", "code": "terminal_redaction_failed"},
             status=500,
         )
+    _sel().log_api_access(
+        caller=caller,
+        operation="terminal.selection.redact",
+        outcome="ok",
+        source="dashboard",
+        resources="ok",
+    )
     return web.json_response({"text": redacted})
 
 
@@ -2667,6 +2714,13 @@ async def api_terminal_delete(request: web.Request) -> web.Response:
 
     registry = _get_registry(request)
     if session_id not in registry:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.session.delete",
+            outcome="denied",
+            source="dashboard",
+            resources="unknown_session",
+        )
         return web.Response(status=404, text="Session not found")
     sess = registry[session_id]
     if sess is None:

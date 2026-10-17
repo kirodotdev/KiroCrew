@@ -14,6 +14,7 @@ const {
 const {
   buildGatewayEnvironment,
   bundledKiroCliEnvironment,
+  bundledKasEnvironment,
   gatewayBytecodeEnvironment,
 } = require("./gateway-env");
 const {
@@ -21,12 +22,14 @@ const {
   describeIncompleteBundle,
   nextInstallingDialogState,
   INSTALLING_DIALOG_TITLE,
+  PRUNED_BACKEND_MESSAGE,
+  PRUNED_DIALOG_TITLE,
   shouldReclassifyAsInstalling,
   currentAttemptLog,
   SPAWN_MARKER,
 } = require("./bundle-integrity");
 const { isPathFallback } = require("./find-bin");
-const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
+const { classifyAuthBlock, defaultedPort, appImageBundledCliPath } = require("./gateway-auth-hint");
 const {
   shouldRetryLocalTokenMint,
   tokenMintRetryDelayMs,
@@ -34,8 +37,10 @@ const {
 } = require("./token-acquire");
 const {
   stopGatewayGracefully: stopGatewayProcessGracefully,
+  postShutdown,
   classifyPortOwner,
   probePortBinding,
+  gatewayStillRunningError,
 } = require("./gateway-stop");
 const {
   windowsGatewayExecutablePaths,
@@ -54,6 +59,11 @@ const {
   classifyAdoptedGateway,
   revealWindowForConnect,
   waitForServiceRebind,
+  snapshotIncumbentForRespawn,
+  recoverIncumbentWithBackoff,
+  waitForProcessExit,
+  INCUMBENT_RETRY_STATUS,
+  gatewayCliInvocation,
   unrecoverableGatewayDialog,
   shouldReresolveBackend,
   isStaleBundleSignal,
@@ -87,6 +97,10 @@ const { createRemoteCrewPrompt } = require("./runtime/gateway/remote-crew-prompt
 const DEFAULT_THEME_ACCENT = "#8E48FF";
 const THEME_ACCENT_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const INSTALLING_STATUS = "Finishing installation…";
+// The splash line behind the pruned-backend dialog: nothing is installing, so
+// it must not say so, and it points at the dialog's Quit, the control that
+// carries the action.
+const PRUNED_STATUS = "Some app files are missing. Use Quit in the dialog, then reopen Kiro Crew.";
 const RESTARTING_STATUS = "Restarting Kiro Crew to finish the update…";
 // The same handoff serves a caller that is not updating anything, and the splash
 // is the only surface the user is looking at while it runs, so the reason is the
@@ -110,6 +124,10 @@ const STUCK_GATEWAY_GRACE_MS = 15_000;
 const STUCK_GATEWAY_POLL_MS = 1_000;
 // `kirocrew stop --port` sends SIGTERM and waits for the port itself.
 const STUCK_GATEWAY_STOP_TIMEOUT_MS = 30_000;
+// How long the pre-update stop waits for an adopted gateway to release the port
+// once it accepted the stop. The backend's own shutdown finishes inside an 18s
+// hard deadline, so this covers a full graceful stop with margin.
+const ADOPTED_UPDATE_STOP_TIMEOUT_MS = 30_000;
 // loadFile query that tells loading.html it is being painted by a reconnect
 // path rather than a cold boot, so it can offer its exit control at once
 // (loading.html reads `reconnect=1`). A query, not an IPC send: the splash
@@ -250,6 +268,12 @@ function createGatewaySupervisor({
   // whenever one reaches handoff, and whenever a monitored backend answers
   // again, so each incident gets its own budget.
   let reresolveAttempts = 0;
+  // Set when a packaged Windows app refuses the PATH fallback after a
+  // stale-bundle incident: the backend tree it ran from was removed, so the
+  // dialog says to quit and reopen rather than to wait for an install. Kept
+  // across a Retry (which resets reresolveAttempts) and cleared once a launcher
+  // resolves to a real backend again.
+  let backendPruned = false;
   // Executables the CURRENT child was actually spawned from. findKirocrewBin
   // re-probes on every call, so after a Toolbox `current` junction is repointed
   // at a newer version it names a backend this shell never started; the child
@@ -372,6 +396,8 @@ function createGatewaySupervisor({
     sendStatus,
     snapshotGatewayPortPids,
     getGatewayProcess: () => gatewayProcess,
+    psPpid,
+    holdsHomeGatewayLock,
   });
   const { promptRemoteCrew } = createRemoteCrewPrompt({ BrowserWindow, nativeTheme, isWindows: IS_WIN });
 
@@ -651,7 +677,13 @@ function createGatewaySupervisor({
   }
 
   function sendStatus(message) {
-    mainWindow()?.webContents?.send("status", message);
+    // A WebContents can exist and still be destroyed -- that is the state of
+    // the main window while its renderer is in a crash loop -- and `send` on
+    // it throws. Several callers reach here from async paths with no catch, so
+    // without this guard that throw surfaced as an unhandledRejection (#14524).
+    const contents = mainWindow()?.webContents;
+    if (!contents || contents.isDestroyed()) return;
+    contents.send("status", message);
   }
 
   function currentThemeAccent() {
@@ -832,31 +864,37 @@ function createGatewaySupervisor({
     return response === 1 ? "quit" : "continue";
   }
 
-  // The single LISTEN pid on PORT when it holds this app's own data folder,
-  // else 0. Two facts, both required: gateway.lock names that pid, and that
-  // pid has gateway.lock open right now. The recorded pid alone survives its
-  // writer, so a reused pid serving another home would match it; the open
-  // descriptor is what ties the listener to THIS home. lsof reports the
-  // kernel-resolved path, so a symlinked home is compared by its real path.
-  // POSIX only: Windows has no lsof, and an unproven holder keeps today's
-  // spawn path.
-  async function sameHomeGatewayPid() {
-    if (IS_WIN) return 0;
-    const pids = await snapshotGatewayPortPids(PORT);
-    if (pids?.length !== 1) return 0;
+  // Whether `pid` holds this app's own data folder. Two facts, both required:
+  // gateway.lock names that pid, and that pid has gateway.lock open right now.
+  // The recorded pid alone survives its writer, so a reused pid serving another
+  // home would match it; the open descriptor is what ties the process to THIS
+  // home. lsof reports the kernel-resolved path, so a symlinked home is
+  // compared by its real path. POSIX only: Windows has no lsof, so nothing is
+  // ever proven there.
+  async function holdsHomeGatewayLock(pid) {
+    if (IS_WIN) return false;
     const lockFile = path.join(KIROCREW_HOME, "gateway.lock");
     let recorded = NaN;
     try {
       recorded = parseInt(String(fs.readFileSync(lockFile, "utf8")).trim(), 10);
     } catch {
-      return 0;
+      return false;
     }
-    if (!Number.isInteger(recorded) || recorded !== pids[0]) return 0;
+    if (!Number.isInteger(recorded) || recorded !== pid) return false;
     let realLock = lockFile;
     try { realLock = fs.realpathSync(lockFile); } catch { /* compare the literal path */ }
-    const held = await lsofHoldsFile(pids[0], lockFile)
-      || (realLock !== lockFile && await lsofHoldsFile(pids[0], realLock));
-    return held ? pids[0] : 0;
+    return await lsofHoldsFile(pid, lockFile)
+      || (realLock !== lockFile && await lsofHoldsFile(pid, realLock));
+  }
+
+  // The single LISTEN pid on PORT when it holds this app's own data folder
+  // (`holdsHomeGatewayLock`), else 0. An unproven holder keeps today's spawn
+  // path.
+  async function sameHomeGatewayPid() {
+    if (IS_WIN) return 0;
+    const pids = await snapshotGatewayPortPids(PORT);
+    if (pids?.length !== 1) return 0;
+    return await holdsHomeGatewayLock(pids[0]) ? pids[0] : 0;
   }
 
   // Run the CLI's own stop for PORT, pinned to the pid this app proved. With
@@ -866,16 +904,117 @@ function createGatewaySupervisor({
   // only: its one caller is behind sameHomeGatewayPid.
   function runGatewayStop(pid) {
     const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    // The stop runs the same bundled binary the launch path spawns, so it must
+    // inherit the same scrubbed environment: a bundled Python left with an
+    // inherited PYTHONPATH/PYTHONHOME from a dev shell would import checkout
+    // code instead of its packaged tree. Route it through the one helper that
+    // strips those for a bundled binary (gateway-env.js), detecting bundled the
+    // same way the spawn does (resolveGatewayBin lands under backend-dist).
+    const bin = resolveGatewayBin();
+    const bundled = bin.includes("backend-dist");
     return new Promise((resolve) => {
-      execFile(resolveGatewayBin(), ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
+      execFile(bin, ["stop", "--port", String(PORT), "--expect-pid", String(pid)], {
         timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
         windowsHide: true,
-        env: { ...cleanEnv, KIROCREW_HOME },
+        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
       }, (error, stdout, stderr) => {
         const output = `${stdout || ""}${stderr || ""}`.trim();
         if (error) glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` failed: ${error.message}${output ? ` — ${output.slice(0, 200)}` : ""}`);
         else glog(`stuck gateway: \`kirocrew stop --port ${PORT}\` finished${output ? ` — ${output.slice(0, 200)}` : ""}`);
         resolve(!error);
+      });
+    });
+  }
+
+  /**
+   * Ask the CLI who holds this home's `gateway.lock`, SOCKET-INDEPENDENTLY.
+   *
+   * `kirocrew gateway-pid` resolves the incumbent through the backend's
+   * `lock_holder` oracle — the same one `stop --expect-pid`/`restart` use — so
+   * it names a draining gateway that has already released its LISTEN socket but
+   * still holds the lock. That is the identity `snapshotGatewayPortPids` (lsof /
+   * netstat, LISTEN owners only) cannot see: when the socket snapshot names
+   * nothing, recovery would otherwise refuse to respawn and leave the desktop
+   * with no gateway. Cross-platform, so it answers on a Windows host too, where
+   * the POSIX lock-file check does not run.
+   *
+   * The command prints one line of JSON and exits 0 for a resolvable lock
+   * (holder=process, holder=nobody, or holder=held) or 2 for a truly
+   * indeterminate one (holder=indeterminate) — exit 2 surfaces as an execFile
+   * error, but the JSON is still on stdout, so the body is parsed regardless of
+   * exit code. holder=held means the lock is POSITIVELY held but its owner
+   * cannot be named (a draining gateway whose pid is unreadable under a Windows
+   * mandatory lock): a gateway is alive, so the caller waits for the lock to be
+   * released rather than giving up.
+   *
+   * Two outcomes differ by whether time can change them. A probe that timed
+   * out (execFile killed it at the timeout, or reported ETIMEDOUT) is
+   * `unverified`: a slow interpreter start answers on a later attempt, so the
+   * caller backs off and asks again, never spawning blind. Everything else that
+   * yields no answer gets the same result on every attempt and is `refused`,
+   * so the caller ends on its terminal error: a probe the OS could not start
+   * (a spawn error code such as ENOENT or EACCES, e.g. the bundled interpreter
+   * is missing), a probe that ran to completion without printing JSON (a
+   * backend that fails on import), an answer that names no known holder
+   * (holder=indeterminate), and a packaged app's refusal to run a
+   * PATH-fallback `kirocrew`.
+   *
+   * @returns {Promise<{verdict:"captured"|"released"|"held"|"unverified"|"refused", pid:number|null}>}
+   */
+  function probeLockHolderPid() {
+    const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    const bin = resolveGatewayBin();
+    // The same refusal spawnGateway applies: a packaged Windows app with no
+    // backend at a probed path does not run whatever `kirocrew` PATH names.
+    // Refused, not a guess: every later attempt resolves the same PATH entry.
+    if (IS_WIN && app.isPackaged && isPathFallback(bin)) {
+      glog(`liveness: lock probe REFUSED: no bundled backend — a packaged app does not run ${bin} from PATH`);
+      return Promise.resolve({ verdict: "refused", pid: null });
+    }
+    const bundled = bin.includes("backend-dist");
+    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(bin, ["gateway-pid"], path);
+    return new Promise((resolve) => {
+      execFile(probeBin, probeArgs, {
+        timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
+        windowsHide: true,
+        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
+      }, (error, stdout) => {
+        let payload = null;
+        try { payload = JSON.parse(String(stdout || "").trim()); }
+        catch { payload = null; }
+        if (!payload || typeof payload !== "object") {
+          // Only a timeout can answer differently next time. A spawn error
+          // (string code) or a finished run with no JSON (numeric exit code,
+          // or no error at all) repeats on every attempt.
+          const timedOut = Boolean(error) && (error.killed === true || error.code === "ETIMEDOUT");
+          if (timedOut) {
+            glog(`liveness: \`kirocrew gateway-pid\` gave no usable answer (timed out: ${error.message}) — cannot name the incumbent via the lock this time`);
+            resolve({ verdict: "unverified", pid: null });
+            return;
+          }
+          glog(`liveness: lock probe REFUSED: \`kirocrew gateway-pid\` gave no usable answer${error ? ` (${error.message})` : " (exit 0, no JSON)"} — retrying cannot change that, surfacing the error`);
+          resolve({ verdict: "refused", pid: null });
+          return;
+        }
+        if (payload.holder === "nobody") {
+          glog(`liveness: lock probe says :${PORT}'s gateway.lock is free — the incumbent has exited`);
+          resolve({ verdict: "released", pid: null });
+          return;
+        }
+        if (payload.holder === "process" && Number.isInteger(payload.pid) && payload.pid > 0) {
+          glog(`liveness: lock probe named the incumbent (pid ${payload.pid}, source ${payload.source || "?"}) — waiting for it to exit`);
+          resolve({ verdict: "captured", pid: payload.pid });
+          return;
+        }
+        if (payload.holder === "held") {
+          // A live gateway holds the lock but cannot be named (Windows mandatory
+          // lock hides the pid). Wait for the lock to be released, not forever.
+          glog(`liveness: lock probe says :${PORT}'s gateway.lock is held but its owner is unnameable (likely a draining gateway) — waiting for it to release`);
+          resolve({ verdict: "held", pid: null });
+          return;
+        }
+        glog(`liveness: lock probe is indeterminate (${payload.reason || payload.holder || "unnamed"}) — refusing an automatic respawn that could race gateway.lock, and surfacing the error`);
+        resolve({ verdict: "refused", pid: null });
       });
     });
   }
@@ -1034,11 +1173,36 @@ function createGatewaySupervisor({
       if (readiness === "shutting-down") {
         glog(`gateway on :${PORT} answers but /api/ready reports shutting-down — refusing to adopt a draining gateway`);
         sendStatus("Waiting for the previous gateway to exit…");
-        const drainingPids = await snapshotGatewayPortPids(PORT);
-        if (unverifiedIncumbent(drainingPids)) {
-          glog(`drain: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+        // Same drain race as the liveness path: a socket lookup can name no PID
+        // while the gateway sheds its socket, and a gateway that has released
+        // its socket but still holds the lock is never named by a socket probe
+        // at all. Take one lookup, then fall back to the CLI's socket-
+        // independent lock-holder probe instead of refusing on the miss.
+        // An incumbent that stays unnameable is retried on the same capped
+        // backoff as the liveness path, never spawned over blind; a probe that
+        // refuses ends the launch on the probe-failed error instead.
+        const drainCapture = await recoverIncumbentWithBackoff({
+          capture: () => snapshotIncumbentForRespawn({
+            snapshot: () => snapshotGatewayPortPids(PORT),
+            blocksRespawn: (pids) => unverifiedIncumbent(pids),
+            sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+            lockHolderProbe: () => probeLockHolderPid(),
+            log: (message) => glog(`drain: ${message}`),
+          }),
+          sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+          cancelled: () => quitting() || Boolean(mainWindow()?.isDestroyed()),
+          onWaiting: () => sendStatus(INCUMBENT_RETRY_STATUS),
+          log: (message) => glog(`drain: ${message}`),
+        });
+        if (drainCapture.verdict === "cancelled") return "abort";
+        if (drainCapture.verdict === "refused") {
+          glog(`drain: could not verify the incumbent on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
           return "probe-failed";
         }
+        sendStatus("Waiting for the previous gateway to exit…");
+        // "released" = the lock is released (incumbent gone), nothing to outwait;
+        // "captured" names the pid to wait on before spawning.
+        const drainingPids = drainCapture.verdict === "released" ? null : drainCapture.pids;
         if (await waitForPortFree()) {
           if (localOwner === "service") {
             // A service may be between release and manager rebind. Orphans also
@@ -1175,6 +1339,10 @@ function createGatewaySupervisor({
           resolve(false);
           return;
         }
+        // Two producers: the drain path when the lock probe refuses, and the
+        // manual takeover (runtime/gateway/family-takeover.js) when it cannot
+        // capture the incumbent. Falling through would spawn into a lock that
+        // may still be held.
         if (outcome === "probe-failed") {
           gatewayStartFailure = {
             error: `could not verify the previous gateway process on port ${PORT}`,
@@ -1261,16 +1429,21 @@ function createGatewaySupervisor({
     // is back at a probed path. Unpackaged (source checkout) launches keep the
     // PATH fallback, which is how a developer's own install is found.
     if (IS_WIN && app.isPackaged && isPathFallback(bin)) {
+      if (reresolveAttempts >= 1) backendPruned = true;
       userError(`spawn REFUSED: no bundled backend under ${processObj.resourcesPath || "(no resourcesPath)"} — a packaged app does not fall back to ${bin} on PATH`);
       gatewayStartFailure = {
-        error: describeIncompleteBundle([], { autoRetry: true }),
+        error: backendPruned
+          ? PRUNED_BACKEND_MESSAGE
+          : describeIncompleteBundle([], { autoRetry: true }),
         incompleteBundle: true,
         bundled: true,
+        backendPruned,
       };
-      sendStatus(INSTALLING_STATUS);
+      sendStatus(backendPruned ? PRUNED_STATUS : INSTALLING_STATUS);
       resolve(false);
       return;
     }
+    backendPruned = false;
 
     // The Windows installer writes backend-dist incrementally. Refusing an
     // incomplete interpreter is preventive but cannot see package siblings that
@@ -1313,18 +1486,17 @@ function createGatewaySupervisor({
     glog(SPAWN_MARKER);
     gatewayStartFailure = null;
 
-    let spawnBin = bin;
-    let spawnArgs = ["gateway", "--no-open", "--port", String(PORT)];
-    // Node refuses .cmd/.bat without shell:true. Use the relocatable bundled
-    // Python directly instead of opening the command-injection-prone shell path.
-    // `-P` mirrors the shim this replaces (bin/kirocrew.cmd): it keeps the spawn
-    // cwd off sys.path, so a stdlib-named directory there cannot shadow the
-    // interpreter's own standard library.
+    // Node refuses .cmd/.bat without shell:true, so gatewayCliInvocation runs the
+    // relocatable bundled Python directly instead of opening the
+    // command-injection-prone shell path. Its `-P` mirrors the launcher shim it
+    // replaces: it keeps the spawn cwd off sys.path, so a stdlib-named
+    // directory there cannot shadow the interpreter's own standard library.
     // The refusal above already required python.exe beside a .cmd shim.
-    if (bin.endsWith("kirocrew.cmd")) {
-      spawnBin = path.resolve(path.dirname(bin), "..", "python.exe");
-      spawnArgs = ["-s", "-P", "-m", "kiro_crew", ...spawnArgs];
-    }
+    const { bin: spawnBin, args: spawnArgs } = gatewayCliInvocation(
+      bin,
+      ["gateway", "--no-open", "--port", String(PORT)],
+      path,
+    );
 
     const child = spawn(spawnBin, spawnArgs, {
       stdio: ["ignore", childOut, childOut],
@@ -1346,12 +1518,19 @@ function createGatewaySupervisor({
           env: cleanEnv,
           log: glog,
         }),
+        // The KAS engine bundle staged beside it (BUNDLE_KAS): spread only when
+        // it shipped for this architecture. Nothing is run at boot; the route
+        // is off by default (see gateway-env.js).
+        ...bundledKasEnvironment(fs, path, processObj.resourcesPath, {
+          arch: processObj.arch,
+          log: glog,
+        }),
         ...gatewayBytecodeEnvironment(
           processObj.platform,
           path.join(kirocrewDir, "cache", "pycache"),
           app.isPackaged,
         ),
-      }),
+      }, { bundled, platform: processObj.platform }),
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";
@@ -1451,9 +1630,19 @@ function createGatewaySupervisor({
     resolve(true);
   }
 
+  // The command a refused update names for stopping the adopted gateway by
+  // hand. A service-managed gateway is stopped through its service (the CLI's
+  // `stop` without --port stops the service first), because a signal to the
+  // process alone lets the service manager start it again. Any other adopted
+  // gateway gets the same lock-checked command the stale/stuck dialogs name.
+  function adoptedGatewayStopCommand() {
+    return gatewayOwnership === "reused-service" ? "kirocrew stop" : `kirocrew stop --port ${PORT}`;
+  }
+
   /**
    * POST /api/shutdown, then POSIX SIGTERM -> SIGKILL or the bounded Windows
-   * tree kill. The updater awaits this method before swapping bundle bytes.
+   * tree kill, for the child this app spawned. Quit runs it, and the pre-update
+   * stop (stopGatewayForUpdate) awaits it before swapping bundle bytes.
    * Ownership intentionally remains "spawned" after stop: if an update install
    * fails, the recovery hook must know it is allowed to respawn the child that
    * the updater deliberately stopped.
@@ -1466,22 +1655,13 @@ function createGatewaySupervisor({
       return;
     }
     glog("Stopping gateway gracefully...");
-    // Resolve secrets at call time. The gateway accepts only the secret for its
-    // current boot; trying every readable candidate prevents a stale copy from
-    // forcing the hard-signal path and skipping session/memory/cron flushes.
-    const candidates = secretCandidates();
-    const currentHome = path.dirname(candidates[0]);
-    const secrets = [];
-    for (const candidate of candidates) {
-      try {
-        const value = fs.readFileSync(candidate, "utf8").trim();
-        if (value) secrets.push(value);
-      } catch { /* absent or unreadable */ }
-    }
+    // Resolve the home at call time: the gateway publishes its listener entries
+    // there. postShutdown sends only the entry for the listener BACKEND_URL
+    // dials, never the home-wide `.local_secret`.
+    const currentHome = path.dirname(secretCandidates()[0]);
     await stopGatewayProcessGracefully(gateway, {
       backendUrl: BACKEND_URL,
       kirocrewHome: currentHome,
-      secrets,
       timeoutMs,
       // 3s PowerShell + 2s WMIC + 5s taskkill fits inside the 18s hard
       // shutdown deadline. The tree sweep is awaited because taskkill can emit
@@ -1495,6 +1675,89 @@ function createGatewaySupervisor({
     });
     gatewayProcess = null;
     spawnedExecutablePaths = [];
+  }
+
+  /**
+   * The stop both update lanes await before they replace the app's files.
+   *
+   * The child this app spawned is stopped exactly as on quit. A gateway the app
+   * ADOPTED (found already serving and reused) is stopped too when it runs from
+   * this app's own backend-dist: it loads modules lazily from those files, so a
+   * swap under it leaves the old process importing new code into old in-memory
+   * modules, and every chat call fails until it is restarted. Any other holder
+   * (a tunnel, a separate CLI or service install) runs from files the update
+   * does not touch and is left alone.
+   *
+   * The adopted gateway is asked to stop through POST /api/shutdown with this
+   * home's secret, so it flushes and exits itself. When it does not accept that,
+   * Linux falls back to the CLI's pid-pinned stop, exactly as the stuck-gateway
+   * "Stop and restart" does, and only for the pid proven to hold this home's
+   * gateway.lock. Elsewhere there is no pidfd to pin a signal to the checked
+   * process, so nothing is signalled.
+   *
+   * Rejects with GATEWAY_STILL_RUNNING (gateway-stop.js) when a gateway from
+   * this bundle is still running afterwards: still holding the port, released
+   * it but not exited, or started again by a service manager. The lane then
+   * refuses the swap instead of running it.
+   */
+  async function stopGatewayForUpdate({
+    timeoutMs = 15000,
+    adoptedTimeoutMs = ADOPTED_UPDATE_STOP_TIMEOUT_MS,
+  } = {}) {
+    await stopGatewayGracefully({ timeoutMs });
+    if (!runLocalGateway) return;
+    if (gatewayOwnership !== "reused-local" && gatewayOwnership !== "reused-service") return;
+    if (!(await isCurrentBundleGateway())) return;
+    const incumbentPids = await snapshotGatewayPortPids(PORT);
+    const pid = incumbentPids?.length === 1 ? incumbentPids[0] : 0;
+    glog(`update: the adopted gateway on :${PORT} (pid ${pid || "?"}) runs from this app's bundle — stopping it before the update`);
+    // postShutdown sends only the entry this gateway published for the
+    // listener BACKEND_URL dials, never the home-wide `.local_secret`.
+    let accepted = await postShutdown({
+      backendUrl: BACKEND_URL,
+      kirocrewHome: path.dirname(secretCandidates()[0]),
+      httpMod: http,
+      fsMod: fs,
+      pathMod: path,
+    });
+    if (!accepted && pid && processObj.platform === "linux" && (await sameHomeGatewayPid()) === pid) {
+      glog(`update: :${PORT} did not accept /api/shutdown — using the pid-pinned stop for pid ${pid}`);
+      accepted = await runGatewayStop(pid);
+    }
+    if (!accepted) {
+      glog(`update: the adopted gateway on :${PORT} did not accept a stop`);
+    } else if (await waitForPortFree(adoptedTimeoutMs)) {
+      // A graceful stop releases the port before the process exits, and the
+      // draining process still loads code from these files, so the swap waits
+      // for the exit itself.
+      const exit = await waitForProcessExit({
+        pids: incumbentPids,
+        isAlive: (probePid) => {
+          try { processObj.kill(probePid, 0); return true; }
+          catch (error) { return Boolean(error && error.code === "EPERM"); }
+        },
+        sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+        timeoutMs: adoptedTimeoutMs,
+      });
+      if (exit !== "exited") {
+        glog(`update: pid ${pid} released :${PORT} but is still running — refusing to replace its files`);
+        throw gatewayStillRunningError(PORT, adoptedGatewayStopCommand());
+      }
+      if (gatewayOwnership === "reused-service") {
+        // A service manager can start the gateway again from the same files.
+        // Give it the same bounded rebind grace the launch paths do, so a
+        // restarted gateway is seen before the swap rather than during it.
+        await waitForServiceRebind({
+          isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",
+          sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+        });
+      }
+    }
+    if (await isCurrentBundleGateway()) {
+      glog(`update: a gateway from this app's bundle still holds :${PORT} — refusing to replace its files`);
+      throw gatewayStillRunningError(PORT, adoptedGatewayStopCommand());
+    }
+    glog(`update: no gateway from this app's bundle holds :${PORT}`);
   }
 
   function killGatewayTreeOnWindowsBounded(pid) {
@@ -1646,6 +1909,9 @@ function createGatewaySupervisor({
       // gateway while it swaps the bundle, and a retry then would relaunch what
       // it is replacing.
       autoRetryProbe,
+      // The refusal followed a stale-bundle incident: an unresolvable launcher
+      // means the backend was removed, and the probe's copy says so.
+      backendPruned: prunedBackend = false,
     } = options;
     const showQuitButton = configuredShowQuitButton ?? !noRetry;
     // The installing dialog opens on what the bundle looks like NOW, not on the
@@ -1654,7 +1920,7 @@ function createGatewaySupervisor({
     // again after the probe had already shown it falling.
     const opening = typeof autoRetryProbe === "function"
       ? (() => {
-        try { return nextInstallingDialogState(autoRetryProbe()); }
+        try { return nextInstallingDialogState(autoRetryProbe(), { pruned: prunedBackend }); }
         catch { return null; }
       })()
       : null;
@@ -1698,8 +1964,10 @@ function createGatewaySupervisor({
       // Only the Enter key binding reads this: the row builds each button's own
       // label below, so a separate primary label would be a second place for the
       // rendered text to drift from the action it fires.
+      // A pruned dialog accents Quit, so Enter presses Quit too: the keyboard
+      // default is the highlighted button.
       const primaryAction = configuredPrimaryAction
-        || (noRetry ? "quit" : (portConflict ? "force-retry" : "retry"));
+        || (noRetry || prunedBackend ? "quit" : (portConflict ? "force-retry" : "retry"));
       // Client-only mode cannot reach dashboard Settings to reverse the choice,
       // so this pre-dashboard UI carries the only in-app way back. The spawn
       // binds THIS port: on a crew's port a gateway started in place would
@@ -1807,11 +2075,13 @@ function createGatewaySupervisor({
           function act(a){ document.title = 'mc-action:' + a; window.close(); }
           // Enter presses the primary BUTTON rather than calling act() directly,
           // so a button the completion paint has disabled stays disabled for the
-          // keyboard too; Escape maps to Quit, which is never disabled.
+          // keyboard too; Escape maps to Quit, which is never disabled. The
+          // completion paint reassigns primaryAct when it moves the accent.
+          var primaryAct = "act('${primaryAction}')";
           document.addEventListener('keydown', e => {
             if (e.key === 'Enter') {
               for (const b of document.querySelectorAll('button')) {
-                if (b.getAttribute('onclick') !== "act('${primaryAction}')") continue;
+                if (b.getAttribute('onclick') !== primaryAct) continue;
                 if (!b.disabled) b.click();
                 break;
               }
@@ -1837,7 +2107,7 @@ function createGatewaySupervisor({
           }
           let state;
           try {
-            state = nextInstallingDialogState(autoRetryProbe());
+            state = nextInstallingDialogState(autoRetryProbe(), { pruned: prunedBackend });
           } catch (probeError) {
             glog(`install probe failed (${probeError && probeError.message}); will probe again`);
             return;
@@ -1869,7 +2139,13 @@ function createGatewaySupervisor({
                 `document.querySelector(".title").textContent = ${JSON.stringify(state.title)};`
                 + " for (const b of document.querySelectorAll('button')) {"
                 + " if (b.getAttribute('onclick') === \"act('retry')\") { b.disabled = true; b.textContent = 'Starting…'; }"
-                + " if (b.getAttribute('onclick') === \"act('quit')\") b.textContent = 'Quit anyway'; }",
+                + " if (b.getAttribute('onclick') === \"act('quit')\") b.textContent = 'Quit anyway';"
+                // A pruned dialog opened with Quit accented; the finished frame
+                // puts the accent back on the busy Retry, so "Quit anyway" never
+                // reads as the recommended action.
+                + " if (b.getAttribute('onclick') === \"act('retry')\") b.className = 'ok';"
+                + " if (b.getAttribute('onclick') === \"act('quit')\") b.className = 'cancel'; }"
+                + " primaryAct = \"act('retry')\";",
               )
               .catch(() => { /* window closing under the paint */ });
             setTimeoutFn(() => {
@@ -2047,11 +2323,43 @@ function createGatewaySupervisor({
     if (!window || window.isDestroyed() || quitting()) return;
     glog(`liveness: adopted local gateway did not recover within ${ADOPTED_RECOVERY_WAIT_MS}ms — waiting for :${PORT} to clear, then spawning our own backend`);
     sendStatus("Waiting for the previous gateway to exit…");
-    const incumbentPids = await snapshotGatewayPortPids(PORT);
-    if (unverifiedIncumbent(incumbentPids)) {
-      glog(`liveness: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+    // The incumbent may be draining: a socket lookup can name no PID while the
+    // gateway sheds its socket, and once it has released the socket but still
+    // holds gateway.lock a socket probe can never name it. Take one lookup;
+    // when it names no one, fall back to the CLI's lock-holder probe, which
+    // reads the incumbent from the lock file and outlives the socket. Then wait
+    // for that process to exit (releasing the lock) before spawning. When the
+    // incumbent stays unnameable for a transient reason (lock held past the
+    // wait, or a probe that timed out), recovery never spawns blind and
+    // never stops: it tries again on a capped backoff behind the reconnect
+    // splash, whose close control and the tray's Quit stay available
+    // throughout. When the probe refuses (no bundled backend, a probe that
+    // cannot start or exits without an answer, or an indeterminate lock),
+    // time cannot fix it, so recovery ends on the probe-failed dialog, which
+    // tells the user what to do.
+    const capture = await recoverIncumbentWithBackoff({
+      capture: () => snapshotIncumbentForRespawn({
+        snapshot: () => snapshotGatewayPortPids(PORT),
+        blocksRespawn: (pids) => unverifiedIncumbent(pids),
+        sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+        lockHolderProbe: () => probeLockHolderPid(),
+        log: (message) => glog(`liveness: ${message}`),
+      }),
+      sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+      cancelled: () => !window || window.isDestroyed() || quitting(),
+      onWaiting: () => sendStatus(INCUMBENT_RETRY_STATUS),
+      log: (message) => glog(`liveness: ${message}`),
+    });
+    if (capture.verdict === "cancelled" || !window || window.isDestroyed() || quitting()) return;
+    if (capture.verdict === "refused") {
+      glog(`liveness: could not verify the incumbent on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
       return showUnrecoverableGatewayError(window, PORT, { probeFailed: true });
     }
+    sendStatus("Waiting for the previous gateway to exit…");
+    // "released" means the lock itself is released (incumbent fully exited), so
+    // there is no pid to wait on; "captured" names the pid to outwait. Both
+    // then confirm the socket is free before spawning.
+    const incumbentPids = capture.verdict === "released" ? null : capture.pids;
     if (!(await waitForPortFree())) {
       glog(`liveness: :${PORT} still held by a process we did not spawn — surfacing port-held instead of waiting forever`);
       return showUnrecoverableGatewayError(window, PORT, "held");
@@ -2240,8 +2548,24 @@ function createGatewaySupervisor({
         // a pending fullscreen-exit tray hide cannot re-hide the prompt.
         revealForUserDecision(window);
         leaveImmersiveModes(window);
+        // A packaged AppImage installs no `kirocrew` on PATH, so the page's
+        // "run kirocrew token" instruction is unrunnable for an AppImage-only
+        // user (#16258). The launcher ships inside the image, and
+        // resolveGatewayBin() resolves its absolute path; pass it so the page
+        // can name a command the user can actually run. Only for an AppImage
+        // ($APPIMAGE set) with an absolute, bundled launcher path — a normal
+        // install keeps the on-PATH wording, and a bare "kirocrew" fallback is
+        // not forwarded. The bundled CLI mints only against OUR gateway's own
+        // secret, so this changes the LOCAL recovery wording only and does not
+        // touch the refusal of a silent mint against an adopted gateway.
+        const bundledCliPath = appImageBundledCliPath(processObj.env, resolveGatewayBin);
         webContents.loadFile(path.join(dirname, "token-prompt.html"), {
-          query: { port: promptPort, kind, host: remoteHost },
+          query: {
+            port: promptPort,
+            kind,
+            host: remoteHost,
+            ...(bundledCliPath ? { cli: bundledCliPath } : {}),
+          },
         });
         return;
       }
@@ -2305,7 +2629,7 @@ function createGatewaySupervisor({
       let title;
       let message;
       if (failureKind === "installing") {
-        title = INSTALLING_DIALOG_TITLE;
+        title = failureRecord?.backendPruned ? PRUNED_DIALOG_TITLE : INSTALLING_DIALOG_TITLE;
         message = refusedBeforeSpawn
           ? error.message
           : describeIncompleteBundle([]);
@@ -2356,6 +2680,9 @@ function createGatewaySupervisor({
           // not run, so both action buttons reach the same check and quitting and
           // reopening is the route that recovers.
           ...(gatewayStartFailure?.localStartUnverifiable ? { accentQuit: true } : {}),
+          // The pruned-backend paragraph asks for Quit first, so the accent
+          // follows it.
+          ...(failureRecord?.backendPruned ? { accentQuit: true, backendPruned: true } : {}),
           // Retry reaches the crew in every one of these states, so it says which
           // crew in every one of them. Labelling it only where the accent moves
           // made the same control read as two: "Retry" in one opening of a dialog
@@ -2595,7 +2922,7 @@ function createGatewaySupervisor({
     fetchRemoteToken,
     entryUrl: dashboardEntryUrl,
     probePrimaryPortOwner,
-    stopGracefully: stopGatewayGracefully,
+    stopForUpdate: stopGatewayForUpdate,
     stopOnQuit: stopGatewayOnQuit,
     // After sleep the old forward can look alive while carrying nothing, so a
     // wake rebuilds it at once instead of waiting out ssh's keepalive.

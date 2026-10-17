@@ -2,7 +2,7 @@
 
 The deployed unit is Kiro Crew's own backend, run in *dashboard mode*, on
 loopback, with no interface served (`docs/system-specs/modules/aws-control.md`,
-"Three processes, one task"). Dashboard mode is
+"Four processes, one task"). Dashboard mode is
 required and `--no-dashboard` is wrong: the smaller ``_init_api_server`` it
 starts has neither the chat endpoints nor the slot registry this design calls,
 and it quiets nothing, so headless here means "no interface exposed", not
@@ -99,9 +99,10 @@ APPROVAL_MODE: str = "yolo"
 # vault stores.
 ENV_KIRO_IDENTITY: str = "KIRO_IDENTITY"
 
-# kiro-cli's own API-key credential (loader.py:366 CRED_KIRO_API_KEY). Nothing
-# delivers it and the backend must not receive it: it is re-injected into the
-# kiro-cli child (loader.py:1167/1182) and is not denied by the sandbox env filter
+# kiro-cli's own API-key credential (``config/loader_credentials.py``
+# ``CRED_KIRO_API_KEY``). Nothing delivers it and the backend must not receive it:
+# it is re-injected into the kiro-cli child (``config/loader_credentials.py``
+# ``inject_kiro_cli_api_key``) and is not denied by the sandbox env filter
 # (runtime.py:1251), so a value arriving here by any route would land in the
 # auto-approved worker's environment. It is withheld explicitly (below) rather than
 # left to the absence of a delivery path, because the backend env starts as a
@@ -135,6 +136,15 @@ ENV_TELEMETRY_DISABLED: str = "KIROCREW_TELEMETRY_DISABLED"
 #: The front's control-plane secret. Named here so the strip below is a named
 #: constant rather than a bare string, and so a reader can find every use of it.
 ENV_CONTROL_SECRET: str = "SMC_CONTROL_SECRET"
+
+#: Set to ``"1"`` on the backend's environment when the task restored its
+#: authority pair from a remote committed snapshot. The transcripts are NOT
+#: restored with it (they load lazily, per turn), so the backend's open-slot
+#: restore keeps a listed slot whose transcript is absent from local disk as a
+#: reopen seed rather than pruning it -- see
+#: ``dashboard.chat_persistence._transcripts_may_be_remote_only``. Unset on an
+#: ordinary (non-container) boot, where an absent transcript is a genuine answer.
+ENV_AUTHORITY_RESTORED: str = "KIROCREW_CONTAINER_AUTHORITY_RESTORED"
 
 #: Every messaging transport the gateway can start, by the name of its config
 #: section. ``write_backend_config`` turns each one OFF in a file the container owns.
@@ -383,7 +393,7 @@ def write_backend_config(settings: Settings) -> Path:
     a transport it starts there is already connected by the time anything else could
     object.
 
-    ``config_dir`` equals ``data_home`` (see the spec's "Three processes, one task").
+    ``config_dir`` equals ``data_home`` (see the spec's "Four processes, one task").
 
     Written through a sibling temp and one atomic replace, because the failure this
     file has is in the FUTURE: nothing reads it during this write, and a truncated

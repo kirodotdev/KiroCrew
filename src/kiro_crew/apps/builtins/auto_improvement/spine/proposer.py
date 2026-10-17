@@ -30,7 +30,7 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from . import ledger as L
 from .contracts import TRACK_BUG, Candidate, Proposal, TargetProfile
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 # Module logger — Phase B is where the "no diff produced" outcome (a top effectiveness
 # killer: the agent investigated and authored nothing) originates. Logging every
@@ -50,7 +50,9 @@ _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     require_pinned(cwd)
     return subprocess.run(
-        ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG] + args, capture_output=True, **UTF8_TEXT
+        ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG, *hook_off_args(cwd)] + args,
+        capture_output=True,
+        **UTF8_TEXT,
     )
 
 
@@ -105,7 +107,7 @@ class Proposer:
         # the RED stage of the test to stage at base). ``git add -A`` then a diff of the
         # index against base captures adds + modifications + deletions.
         subprocess.run(
-            ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, "add", "-A"],
+            ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, *hook_off_args(worktree), "add", "-A"],
             capture_output=True,
             **UTF8_TEXT,
         )
@@ -121,6 +123,7 @@ class Proposer:
                 "-C",
                 str(worktree),
                 *_GIT_SAFE_CONFIG,
+                *hook_off_args(worktree),
                 "diff",
                 "--cached",
                 base_sha,

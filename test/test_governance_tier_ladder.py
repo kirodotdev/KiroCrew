@@ -343,6 +343,59 @@ class TestASubordinateMayOnlyTighten:
         )
         assert not resolve(ceiling, None, "tools", "execute_bash").permitted
 
+    @staticmethod
+    def _channels(**posture: dict) -> dict:
+        """A ``channels`` scope admitting ``slack`` with the given ``slack`` posture."""
+        body: dict = {"members": {"mode": "allow", "allow": ["slack"]}}
+        if posture:
+            body["posture"] = {"slack": posture}
+        return {"channels": body}
+
+    def test_a_subordinate_posture_folds_as_an_intersection(self, monkeypatch, tmp_path, central):
+        ceiling = self._compose(
+            monkeypatch,
+            tmp_path,
+            central,
+            authority=self._channels(
+                allowed_enterprise_ids={"mode": "allow", "allow": ["E1", "E2"]}
+            ),
+            subordinate=self._channels(
+                allowed_enterprise_ids={"mode": "allow", "allow": ["E1"]},
+                allowed_team_ids={"mode": "allow", "allow": ["T1"]},
+            ),
+        )
+        # A leaf both tiers set: an id must be allowed by both.
+        assert resolve(ceiling, None, "channels", "slack/allowed_enterprise_ids:E1").permitted
+        assert not resolve(ceiling, None, "channels", "slack/allowed_enterprise_ids:E2").permitted
+        # A leaf only the subordinate sets is added as a further restriction.
+        assert resolve(ceiling, None, "channels", "slack/allowed_team_ids:T1").permitted
+        assert not resolve(ceiling, None, "channels", "slack/allowed_team_ids:T2").permitted
+
+    def test_a_subordinate_posture_cannot_widen_the_authority(self, monkeypatch, tmp_path, central):
+        ceiling = self._compose(
+            monkeypatch,
+            tmp_path,
+            central,
+            authority=self._channels(allowed_enterprise_ids={"mode": "allow", "allow": ["E1"]}),
+            subordinate=self._channels(
+                allowed_enterprise_ids={"mode": "allow", "allow": ["E1", "E2"]}
+            ),
+        )
+        assert resolve(ceiling, None, "channels", "slack/allowed_enterprise_ids:E1").permitted
+        assert not resolve(ceiling, None, "channels", "slack/allowed_enterprise_ids:E2").permitted
+
+    def test_a_subordinate_cannot_repeal_the_authority_posture_by_omission(
+        self, monkeypatch, tmp_path, central
+    ):
+        ceiling = self._compose(
+            monkeypatch,
+            tmp_path,
+            central,
+            authority=self._channels(allowed_enterprise_ids={"mode": "allow", "allow": ["E1"]}),
+            subordinate=self._channels(),
+        )
+        assert not resolve(ceiling, None, "channels", "slack/allowed_enterprise_ids:E2").permitted
+
     def test_composition_is_the_same_for_the_env_tier(self, monkeypatch, tmp_path, central):
         # The subordinate's identity does not change the algebra: whichever of
         # tiers 2-4 is present composes the same way.

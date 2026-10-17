@@ -71,8 +71,8 @@ this channel is unavailable and Settings says so.
 **Replies reach the investigation.** Once an incident has a chat slot, its board thread is
 registered with Kiro Crew's session map, so answering in the thread steers the running
 agent. `POST /incident/transition` reports `slack_thread_replyable` so you can tell
-whether that link is live rather than assuming it — before this the ts was recorded only
-on the app's own record, and a reply resolved to no session and was dropped in silence.
+whether that link is live rather than assuming it: a ts recorded only on the app's own
+record would leave a reply resolving to no session, dropped in silence.
 
 ## The knowledge ledger
 
@@ -96,8 +96,8 @@ four of `verified`, `high`, at least two uses, and no recorded failure. Anything
 still handed to the agent in full, just framed as a hypothesis to test. A knowledge base
 that overstates itself does harm.
 
-`verified` and `high` alone were not enough because both are hand-settable: an entry could
-claim them having never been applied to anything. And the record moves DOWN as well as up —
+`verified` and `high` alone do not qualify an entry because both are hand-settable: an
+entry could claim them having never been applied to anything. And the record moves DOWN as well as up —
 when an action this app took is followed by the signal still firing, every entry it cited
 gets a `miss_count`. Any miss immediately removes the entry from the fast path; the nightly
 hygiene pass also demotes confidence one step once misses reach at least half its uses. The
@@ -159,6 +159,10 @@ Rules that will not bend:
 ```
 app.json                  manifest: crons, permissions, store listing
 backend/
+  routes.py               composition root: route registration, the enable gate,
+                          audit and the redaction floor
+  http_routes/            the handler bodies, one module per slice (detail in
+                          docs/system-specs/modules/ops-mission-control.md)
   models.py               Signal, Incident, LedgerEntry, the status grammar
   registry.py             ADD-only adapter registry + fan-out
   companion.py            entry-point discovery for out-of-tree packages

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Info } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
+import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
  * Small info glyph that reveals a help tip.
@@ -41,11 +42,22 @@ export const HOVER_LEAVE_GRACE_MS = 150
  * that then intercepts the click. Mirrors the leave grace.
  */
 export const HOVER_OPEN_DELAY_MS = 150
+/** Side of the square, turned 45 degrees, that forms the bubble's pointer. */
+const POINTER = 12
+/** Gap between the glyph and a bubble placed above or below it. Half the
+ *  pointer's diagonal (about 8.5px) fits inside it, so the tip of the pointer
+ *  stops just short of the glyph. */
+const POINTER_GAP = 10
+/** Narrowest a 'top' bubble gets when it narrows to stay off the row above. */
+const MIN_W = 200
+/** How far the bubble starts left of the glyph's centre. */
+const POINTER_INSET = 20
 
 export default function InfoTip({ text, placement = 'auto' }: {
   text: string
   placement?: 'auto' | 'top'
 }) {
+  const trustRoot = useGuideTrustRootAttrs()
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -53,7 +65,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
   const tipRef = useRef<HTMLDivElement>(null)
   // Hover ends after a short grace rather than on the leave event itself, so a
   // pointer that skims off the glyph and back does not flicker the tip, and
-  // the bubble stays hovered across the 6px gap between glyph and bubble.
+  // the bubble stays hovered across the gap between glyph and bubble.
   // Entering either element cancels the pending close.
   const leaveTimer = useRef<number | null>(null)
   const cancelLeave = () => {
@@ -159,8 +171,8 @@ export default function InfoTip({ text, placement = 'auto' }: {
    * `position: fixed` element that ran past the viewport edge could never be
    * scrolled to, which is what this prevents.
    */
-  const pos = (): CSSProperties => {
-    if (!btnRef.current) return { top: 0, left: 0 }
+  const place = (): { bubble: CSSProperties; pointer?: CSSProperties } => {
+    if (!btnRef.current) return { bubble: { top: 0, left: 0 } }
     const r = btnRef.current.getBoundingClientRect()
     const tipW = 300
     const vh = window.innerHeight
@@ -168,17 +180,44 @@ export default function InfoTip({ text, placement = 'auto' }: {
     // more than the space on the chosen side less the 8px margin.
     const cap = Math.min(480, Math.round(vh * 0.6))
     if (placement === 'top') {
-      // Centered above the button, bottom-anchored so height doesn't matter.
-      let left = r.left + r.width / 2 - tipW / 2
-      left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8))
-      const above = r.top - 6 - 8
-      const below = vh - r.bottom - 6 - 8
+      // Above the glyph, bottom-anchored so height doesn't matter, and
+      // started just left of the glyph rather than centred on it. On stacked
+      // settings rows the bubble lies over the row above; starting at the
+      // glyph leaves that row's label (and the start of its value) in view
+      // whenever the caption reaches past it, and the pointer below ties the
+      // bubble to the glyph that opened it. Where the room right of that
+      // start is under 300px (a phone), the bubble narrows to fit it rather
+      // than sliding left over the row above, down to MIN_W; only a glyph
+      // with less room than that is moved left. The width stays the text's
+      // own up to that limit, with a floor that keeps the pointer inside.
+      const cx = r.left + r.width / 2
+      const start = cx - POINTER_INSET
+      const room = window.innerWidth - 8 - start
+      const full = Math.max(0, Math.min(tipW, window.innerWidth - 16))
+      const w = room >= full ? full : Math.min(full, Math.max(MIN_W, room))
+      const left = Math.max(8, Math.min(start, window.innerWidth - w - 8))
+      const minWidth = Math.min(w, cx - left + 16)
+      const above = r.top - POINTER_GAP - 8
+      const below = vh - r.bottom - POINTER_GAP - 8
       const MIN_ROOM = 120 // enough for ~5 lines of the 300px-wide tip
+      // The pointer: a small notch on the bubble's edge aimed at the glyph's
+      // centre, kept inside the bubble's rounded corners when it is clamped.
+      const pointerLeft = Math.max(left + 12, Math.min(cx, left + w - 12)) - POINTER / 2
       // The caller asked for above (the bubble is moved off the content below
       // the glyph on purpose); fall below only when above cannot fit a
       // readable bubble AND below has more room.
-      if (above >= MIN_ROOM || above >= below) return { bottom: vh - r.top + 6, left, maxHeight: Math.min(cap, above) }
-      return { top: r.bottom + 6, left, maxHeight: Math.min(cap, below) }
+      if (above >= MIN_ROOM || above >= below) {
+        const bottom = vh - r.top + POINTER_GAP
+        return {
+          bubble: { bottom, left, maxWidth: w, minWidth, maxHeight: Math.min(cap, above) },
+          pointer: { bottom: bottom - POINTER / 2, left: pointerLeft, borderWidth: '0 1px 1px 0' },
+        }
+      }
+      const top = r.bottom + POINTER_GAP
+      return {
+        bubble: { top, left, maxWidth: w, minWidth, maxHeight: Math.min(cap, below) },
+        pointer: { top: top - POINTER / 2, left: pointerLeft, borderWidth: '1px 0 0 1px' },
+      }
     }
     let left = r.right + 6
     if (left + tipW > window.innerWidth) left = r.left - tipW - 6
@@ -189,11 +228,12 @@ export default function InfoTip({ text, placement = 'auto' }: {
     // Beside the glyph: top-aligned with it when the space below reaches the
     // cap, otherwise bottom-aligned with it so a tall bubble grows upward.
     const below = vh - r.top - 8
-    if (below >= cap) return { top: r.top, left, maxHeight: cap }
+    if (below >= cap) return { bubble: { top: r.top, left, maxHeight: cap } }
     const above = r.bottom - 8
-    if (above > below) return { bottom: Math.max(8, vh - r.bottom), left, maxHeight: Math.min(cap, above) }
-    return { top: r.top, left, maxHeight: Math.max(0, below) }
+    if (above > below) return { bubble: { bottom: Math.max(8, vh - r.bottom), left, maxHeight: Math.min(cap, above) } }
+    return { bubble: { top: r.top, left, maxHeight: Math.max(0, below) } }
   }
+  const at = open ? place() : null
 
   return (
     <>
@@ -247,14 +287,18 @@ export default function InfoTip({ text, placement = 'auto' }: {
              the glyph and end the focus reveal). So while the tip is open the
              scroll keys act on the bubble from the glyph: arrows by a line,
              Page keys by a view, Home / End to either end. Closed, the keys
-             fall through to the page as usual. `scrollTop` is assigned rather
-             than `scrollBy` called, so the step works wherever the element is
-             scrollable at all. */
+             fall through to the page as usual, and so do they when the open
+             bubble has nothing to scroll (it fits its cap): claiming a key
+             that would do nothing strands a keyboard reader on the glyph,
+             unable to scroll the page until the tip closes. `scrollTop` is
+             assigned rather than `scrollBy` called, so the step works
+             wherever the element is scrollable at all. */
           const tip = tipRef.current
           if (!tip) return
           const LINE = 24
           const view = tip.clientHeight
           const max = tip.scrollHeight - view
+          if (max <= 0) return
           let next: number | null = null
           switch (e.key) {
             case 'ArrowDown': next = tip.scrollTop + LINE; break
@@ -272,7 +316,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
       >
         <Info size={14} aria-hidden="true" />
       </button>
-      {open && createPortal(
+      {at && createPortal(
         // Swallow clicks inside the bubble so they never reach the owning row
         // through React's portal ancestry (SettingsToggle). Selecting and
         // copying text must not close the tip, and the bubble asserts that
@@ -286,6 +330,7 @@ export default function InfoTip({ text, placement = 'auto' }: {
           ref={tipRef}
           id={tipId}
           role="tooltip"
+          {...trustRoot}
           onClick={(e) => e.stopPropagation()}
           onPointerDown={() => setPinned(true)}
           /* The bubble is part of the hover target, pinned or not: entering it
@@ -299,10 +344,23 @@ export default function InfoTip({ text, placement = 'auto' }: {
           onPointerEnter={(e) => { if (e.pointerType === 'mouse') { cancelLeave(); cancelReleaseClose(); setHovered(true) } }}
           onPointerLeave={(e) => { if (e.buttons === 0) scheduleLeave(); else scheduleLeaveOnRelease() }}
           className="fixed z-[9999] rounded-lg border border-border p-2.5 text-[12px] text-muted leading-relaxed max-w-[300px] max-h-[min(60vh,480px)] overflow-y-auto whitespace-normal"
-          style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}
+          style={{ ...at.bubble, backgroundColor: 'var(--card)', boxShadow: '0 4px 24px rgba(0,0,0,0.5)' }}
         >
           {text}
         </div>,
+        document.body
+      )}
+      {/* The bubble's pointer, drawn outside the bubble because the bubble
+          scrolls and would clip it. Decoration only: hidden from assistive
+          technology, and it takes no pointer events, so a pointer crossing it
+          between glyph and bubble lands on whatever lies beneath. */}
+      {at?.pointer && createPortal(
+        <div
+          aria-hidden="true"
+          data-infotip-pointer=""
+          className="fixed z-[10000] pointer-events-none border-solid"
+          style={{ ...at.pointer, width: POINTER, height: POINTER, transform: 'rotate(45deg)', backgroundColor: 'var(--card)', borderColor: 'var(--border)' }}
+        />,
         document.body
       )}
     </>

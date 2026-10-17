@@ -454,6 +454,17 @@ describe('SubagentProgressBar — why the queued agents wait', () => {
     expect(screen.getByTestId('subagent-queued-count').getAttribute('title')).toBe(line.textContent)
   })
 
+  it('says free memory is unknown, not "0 free", when the cgroup usage is unreadable', () => {
+    const store = makeStore(['a1'])
+    store.dispatch(sseSubagentQueued({
+      slot: SLOT, queued: 1, reason: 'low_memory', required_gb: 4.5, cause: 'cgroup_usage_unreadable',
+    }))
+    renderBar(store)
+    const line = screen.getByTestId('subagent-wait-reason')
+    expect(line.textContent).toContain('free memory is unknown')
+    expect(line.textContent).not.toMatch(/free now|not enough free memory/)
+  })
+
   it('renders no extra line for a bare count (older gateway) or the capacity wait', () => {
     const store = makeStore(['a1'])
     store.dispatch(sseSubagentQueued({ slot: SLOT, queued: 2 }))
@@ -485,5 +496,28 @@ describe('SubagentProgressBar — expand renders no empty body', () => {
   it('still renders the rows body when there is a running agent to show', () => {
     renderBar(makeStore(['a1']))
     expect(screen.getAllByTestId('subagent-row')).toHaveLength(1)
+  })
+})
+
+describe('SubagentProgressBar — elapsed figure (#19930)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it.each([
+    [4_000, '4s'],
+    [909_000, '15m 9s'],
+    [4_031_000, '1h 7m 11s'],
+  ])('renders %i ms of runtime as %s, not raw seconds', (runMs, shown) => {
+    const t0 = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
+    try {
+      const store = makeStore(['a1'])
+      now.mockReturnValue(t0 + runMs)
+      renderBar(store)
+      const row = screen.getByTestId('subagent-row')
+      expect(row.textContent).toContain(shown)
+      if (runMs >= 60_000) expect(row.textContent).not.toContain(`${Math.round(runMs / 1000)}s`)
+    } finally {
+      now.mockRestore()
+    }
   })
 })

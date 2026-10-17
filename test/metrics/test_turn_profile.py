@@ -475,7 +475,16 @@ class TestServedBackendAttribution:
 
         from kiro_crew.dashboard import chat_runner
 
-        tree = ast.parse(Path(chat_runner.__file__).read_text(encoding="utf-8"))
+        tree = ast.parse(
+            "\n".join(
+                turn_file.read_text(encoding="utf-8")
+                for turn_file in [
+                    *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                    Path(chat_runner.__file__),
+                ]
+                if turn_file.name != "__init__.py"
+            )
+        )
         imported: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):

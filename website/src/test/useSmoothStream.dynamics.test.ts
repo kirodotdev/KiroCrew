@@ -222,4 +222,28 @@ describe('useSmoothStream constant-latency dynamics', () => {
     rerender({ c: variant, s: false })
     expect(result.current).toBe(variant)
   })
+
+  it('wakes the parked loop when streaming resumes, so the reveal never freezes', () => {
+    // A liveness flag derived from content growth can drop for one render and
+    // come back. The loop parks while it is down; without a wake-up the next
+    // text never reveals, and the snap path stands aside because the message
+    // is mid-stream again -- the trace sticks at its first words.
+    let content = 'To count'
+    const { result, rerender } = renderHook(
+      ({ c, s }) => useSmoothStream(c, s, true, 1),
+      { initialProps: { c: '', s: true } },
+    )
+    rerender({ c: content, s: true })
+    for (let i = 0; i < 100 && result.current.length < content.length; i++) frame()
+    expect(result.current).toBe(content)
+
+    rerender({ c: content, s: false })
+    frame()
+    expect(rafQueue.size).toBe(0) // parked
+
+    content += ' the four-digit numbers with digits summing to twelve'
+    rerender({ c: content, s: true })
+    for (let i = 0; i < 200 && result.current.length < content.length; i++) frame()
+    expect(result.current).toBe(content)
+  })
 })

@@ -58,6 +58,23 @@ async def _network_errors(request: Any) -> AsyncIterator[aiohttp.ClientResponse]
         raise KiroCrewError(ErrorCode.NETWORK_ERROR, str(exc)) from exc
 
 
+async def _error_body(resp: aiohttp.ClientResponse) -> Any:
+    """Read an error response body as a dict when it is JSON, else as text.
+
+    ``http_error`` reads ``body["code"]`` to tell ``context_not_queued`` apart
+    from a transient 429, so an error body must reach it parsed, not as a raw
+    string. A non-JSON or unparseable body falls back to its text.
+    """
+    text = await resp.text()
+    ct = resp.headers.get("content-type", "")
+    if "application/json" in ct and text:
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return text
+    return text or None
+
+
 def _list_field(result: Any, key: str) -> list[dict[str, Any]]:
     """Read a list the Gateway returns bare or wrapped as ``{key: [...]}``."""
     if isinstance(result, dict):
@@ -190,6 +207,7 @@ class KiroCrewClient:
         self._session: aiohttp.ClientSession | None = None
         self._pending_buffer: list[ContextEntry] = []
         self._default_slot: str | None = None
+        self._last_flush_dropped = 0
 
         # Auto-token: if app_name is set and no explicit auth, read secret
         self._app_secret = ""
@@ -301,12 +319,16 @@ class KiroCrewClient:
 
                     # Non-retryable 4xx (except 429)
                     if 400 <= resp.status < 500 and resp.status != 429:
-                        text = await resp.text()
-                        raise http_error(resp.status, text or None)
+                        raise http_error(resp.status, await _error_body(resp))
 
-                    # Retryable
-                    text = await resp.text()
-                    last_error = http_error(resp.status, text or None)
+                    # Retryable — except a full-queue 429, which no backoff can
+                    # clear (only a turn drains the queue, and the client cannot
+                    # send one while it is sleeping on retries). Carve it out so
+                    # it fails fast with its own code instead of RATE_LIMITED.
+                    err = http_error(resp.status, await _error_body(resp))
+                    if err.code == ErrorCode.CONTEXT_NOT_QUEUED:
+                        raise err
+                    last_error = err
 
                     if resp.status != 429 and method not in _RETRYABLE_METHODS:
                         raise last_error
@@ -489,6 +511,20 @@ class KiroCrewClient:
             )
 
     async def send_message(self, slot_id: str, message: str) -> None:
+        """Send *message* as a turn on *slot_id*.
+
+        When *slot_id* is the default slot, buffered context is flushed to it
+        first. An entry the Gateway refuses for good (``context_not_queued`` or
+        ``context_secret_shaped``) is dropped so it cannot block this send, and
+        the send still goes through. Read ``last_flush_dropped`` after the call
+        to learn how many entries this send dropped; it is 0 when nothing was
+        dropped or nothing was buffered. That attribute is shared by the whole
+        client, so it describes this send only while sends on one client do not
+        overlap. A caller that sends concurrently awaits
+        ``flush_pending_context(slot_id)`` itself before the send and reads the
+        count it returns, which belongs to that call alone.
+        """
+        self._last_flush_dropped = 0
         if len(message) > self.message_length_limit:
             raise KiroCrewError(
                 ErrorCode.VALIDATION_ERROR,
@@ -876,13 +912,30 @@ class KiroCrewClient:
             },
         )
 
-    async def flush_pending_context(self, slot_id: str) -> None:
+    async def flush_pending_context(self, slot_id: str) -> int:
+        """Post every buffered context entry to *slot_id*.
+
+        Returns the number of entries the Gateway refused for good and this call
+        dropped. A ``context_not_queued`` refusal is not transient — only a turn
+        drains the queue, and ``send_message`` calls this right before sending
+        that turn — so re-queuing such an entry and raising would block every
+        later send behind a queue only the blocked send could drain. A
+        ``context_secret_shaped`` refusal is permanent for those bytes. Both are
+        dropped (with a warning) and the call returns rather than
+        raising. A transient failure (network, auth, 5xx) is different: the entry
+        is put back and the first such error is raised, so a retry can resend it.
+
+        The dropped count is also stored in ``last_flush_dropped``, including
+        when the call raises, so entries dropped before a transient failure are
+        still reported.
+        """
         now = time.time()
         to_flush = [
             e for e in self._pending_buffer if e.max_age is None or e.injected_at + e.max_age >= now
         ]
         self._pending_buffer.clear()
-        failed: list[Any] = []
+        requeue: list[Any] = []
+        dropped = 0
         last_exc: Exception | None = None
         for entry in to_flush:
             try:
@@ -895,12 +948,38 @@ class KiroCrewClient:
                         "maxAge": entry.max_age,
                     },
                 )
+            except KiroCrewError as exc:
+                if exc.code == ErrorCode.CONTEXT_NOT_QUEUED:
+                    # The queue is full; this entry cannot be seated now and no
+                    # retry here can change that. Drop it so the pending send is
+                    # not blocked, and warn so the loss is visible.
+                    dropped += 1
+                    logger.warning(
+                        "Dropped a pending context entry for slot %s: the "
+                        "Gateway's context queue is full (context_not_queued)",
+                        slot_id,
+                    )
+                    continue
+                if exc.code == ErrorCode.CONTEXT_SECRET_SHAPED:
+                    # The Gateway refuses these bytes on every attempt, so a
+                    # re-buffered entry would fail every later send. Drop it.
+                    dropped += 1
+                    logger.warning(
+                        "Dropped a pending context entry for slot %s: the "
+                        "Gateway refused it as credential-shaped (context_secret_shaped)",
+                        slot_id,
+                    )
+                    continue
+                last_exc = exc
+                requeue.append(entry)
             except Exception as exc:
                 last_exc = exc
-                failed.append(entry)
-        self._pending_buffer.extend(failed)
+                requeue.append(entry)
+        self._pending_buffer.extend(requeue)
+        self._last_flush_dropped = dropped
         if last_exc:
             raise last_exc
+        return dropped
 
     def set_default_slot(self, slot_id: str) -> None:
         self._default_slot = slot_id
@@ -908,3 +987,17 @@ class KiroCrewClient:
     @property
     def pending_context_count(self) -> int:
         return len(self._pending_buffer)
+
+    @property
+    def last_flush_dropped(self) -> int:
+        """Buffered context entries the most recent flush dropped for good.
+
+        ``send_message`` resets this to 0 before it sends, so after a send it
+        counts only what that send's flush dropped (0 when nothing was
+        buffered). A direct ``flush_pending_context`` call sets it too.
+
+        The value is per client, not per call: when two sends or flushes on one
+        client overlap, the later one overwrites it. Concurrent callers read the
+        count ``flush_pending_context`` returns instead.
+        """
+        return self._last_flush_dropped

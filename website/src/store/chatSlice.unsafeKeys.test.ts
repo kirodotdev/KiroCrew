@@ -83,7 +83,7 @@ const FRAMES: Array<[string, (k: string) => UnknownAction]> = [
   ['hydrateSlotMessages', k => hydrateSlotMessages({ slot: k, messages: [{ role: 'user', content: 'x', cls: '' }], hasMore: false })],
   ['clearSlotCache', k => clearSlotCache(k)],
   ['setQuestionCard', k => setQuestionCard({ slot: k, card_id: 'c1', questions: [{ question: 'q', options: [] }] })],
-  ['setQuestionDraft', k => setQuestionDraft({ slot: k, active: true })],
+  ['setQuestionDraft', k => setQuestionDraft({ slot: k, answers: { q: 'draft' } })],
   ['clearQuestionCard', k => clearQuestionCard({ slot: k })],
   ['setFollowupCard', k => setFollowupCard({ slot: k, items: [{ title: 't', description: 'd', prompt: 'p' }] })],
   ['dismissFollowupItem', k => dismissFollowupItem({ slot: k, index: 0 })],

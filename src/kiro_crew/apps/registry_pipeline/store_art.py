@@ -1117,7 +1117,9 @@ async def _fetch_owner_tier_store_assets(entry: dict[str, Any], registry_name: s
         # Owner posture: the same pair the install path grants after
         # ``_owner_tier_confirmed`` -- owner credentials plus the context sandbox
         # mode -- and the same audit record, under this path's own operation name
-        # so the two grants stay distinguishable in the SEL.
+        # so the two grants stay distinguishable in the SEL. The ssh-agent socket
+        # goes with them (``wrap_argv`` re-judges it against the tier), as it does
+        # for the install clone.
         clone_env = await asyncio.to_thread(minimal_env)
         sandbox_mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
         await asyncio.to_thread(_sel_credential_grant, "prewarm_store_art_owner_tier", git_url)
@@ -1138,6 +1140,7 @@ async def _fetch_owner_tier_store_assets(entry: dict[str, Any], registry_name: s
             clone_env=clone_env,
             sandbox_mode=sandbox_mode,
             mask_local_git_config=True,
+            forward_ssh_auth_sock=True,
         )
         if err is not None:
             logger.info(

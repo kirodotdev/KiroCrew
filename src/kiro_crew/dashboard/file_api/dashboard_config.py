@@ -12,13 +12,18 @@ if TYPE_CHECKING:
         LINK_PATTERN_PATTERN_MAX_LEN,
         LINK_PATTERN_URL_MAX_LEN,
         LINK_PATTERNS_MAX,
-        MODEL_ID_RE,
+        MODEL_PICKER_HIDDEN_MODEL_ID_RE,
+        MODEL_PICKER_HIDDEN_MODELS_MAX,
+        SESSION_FOLDER_ROOT_MAX_CHARS,
         VALID_MEMORY_MODES,
         _body_err_code,
         _sel,
+        bytes_to_mb_figure,
+        knowledge_ceiling_bytes,
         link_pattern_url_ok,
         logger,
         read_bounded_json,
+        validate_session_folder_root,
     )
 
 
@@ -87,7 +92,9 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "mcp_app_panel",
             "auto_open_git_panel",
             "folder_suggestions_enabled",
+            "topic_tags_enabled",
             "session_card_source_links",
+            "session_folder_root",
             "model_picker_hidden_models_add",
             "model_picker_hidden_models_remove",
         }
@@ -101,10 +108,14 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         read_only_ignored_keys = {
             "gitlab_hosts",
             "jira_hosts",
+            "github_hosts",
+            "bitbucket_server_hosts",
             "social_share_enabled",
             "decisions_enabled",
             "model_picker_hidden_models",
             "model_picker_configured",
+            "upload_max_mb",
+            "knowledge_upload_max_mb",
         }
         body = {
             k: v
@@ -127,13 +138,16 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # mypy checks this owner before the handlers module, defers the
             # function, and loses the outer narrowing of ``body`` here.
             val = body[field]  # type: ignore[index]
-            if not isinstance(val, list) or len(val) > 128:
+            if not isinstance(val, list) or len(val) > MODEL_PICKER_HIDDEN_MODELS_MAX:
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return None, web.json_response(
                     {
-                        "error": f"{field} must be an array of at most 128 model IDs",
+                        "error": (
+                            f"{field} must be an array of at most "
+                            f"{MODEL_PICKER_HIDDEN_MODELS_MAX} model IDs"
+                        ),
                         "code": "invalid_model_picker_hidden_models",
                     },
                     status=400,
@@ -157,7 +171,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 model = raw_model.strip()
                 if not model or model == "auto":
                     continue
-                if not MODEL_ID_RE.fullmatch(model):
+                if not MODEL_PICKER_HIDDEN_MODEL_ID_RE.fullmatch(model):
                     _sel().log_tool_invocation(
                         session_key="dashboard",
                         tool_name="dashboard_config_write",
@@ -312,17 +326,19 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                 )
             updates["use_builtin_browser"] = val
         if "verbosity" in body:
+            # An older client may still send the retired ``ultra``; store
+            # what it now means instead of rejecting the write. Spelled out
+            # here (mirrors config.sections.LEGACY_VERBOSITY_ALIASES) because a
+            # file_api owner may not import project modules at runtime.
             val = body["verbosity"]
-            if val not in ("default", "concise", "ultra", "answer_only"):
+            if val == "ultra":
+                val = "answer_only"
+            if val not in ("default", "concise", "answer_only"):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {
-                        "error": (
-                            "verbosity must be 'default', 'concise', 'ultra' " "or 'answer_only'"
-                        )
-                    },
+                    {"error": "verbosity must be 'default', 'concise' or 'answer_only'"},
                     status=400,
                 )
             updates["verbosity"] = val
@@ -350,6 +366,20 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["folder_suggestions_enabled"] = val
+        if "topic_tags_enabled" in body:
+            val = body["topic_tags_enabled"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "topic_tags_enabled must be a boolean",
+                        "code": "invalid_topic_tags_enabled",
+                    },
+                    status=400,
+                )
+            updates["topic_tags_enabled"] = val
         if "link_previews" in body:
             val = body["link_previews"]
             if not isinstance(val, bool):
@@ -422,6 +452,40 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["session_card_source_links"] = val
+        if "session_folder_root" in body:
+            val = body["session_folder_root"]
+            if not isinstance(val, str) or len(val) > SESSION_FOLDER_ROOT_MAX_CHARS:
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            "session_folder_root must be a path of at most "
+                            f"{SESSION_FOLDER_ROOT_MAX_CHARS} characters"
+                        ),
+                        "code": "invalid_session_folder_root",
+                    },
+                    status=400,
+                )
+            # Every save sends the whole settings document back, so an unchanged
+            # value is a round trip, not a choice: it is neither re-validated nor
+            # rewritten, and a root that has since gone missing cannot block an
+            # unrelated toggle. Creation re-validates it on every use anyway.
+            if val.strip() != cfg.dashboard.session_folder_root:
+                resolved, root_err = await asyncio.to_thread(validate_session_folder_root, val)
+                if root_err:
+                    _sel().log_tool_invocation(
+                        session_key="dashboard",
+                        tool_name="dashboard_config_write",
+                        outcome="failure",
+                        error="invalid_session_folder_root",
+                    )
+                    return web.json_response(
+                        {"error": root_err, "code": "invalid_session_folder_root"},
+                        status=400,
+                    )
+                updates["session_folder_root"] = resolved
         if "model_picker_hidden_models_add" in body:
             hidden_model_add, error_response = _validated_hidden_model_list(
                 "model_picker_hidden_models_add"
@@ -594,9 +658,11 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "mcp_app_panel": cfg.dashboard.mcp_app_panel,
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
+            "session_folder_root": cfg.dashboard.session_folder_root,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,
             "link_previews": cfg.dashboard.link_previews,
             "folder_suggestions_enabled": cfg.dashboard.folder_suggestions_enabled,
+            "topic_tags_enabled": cfg.dashboard.topic_tags_enabled,
             "model_picker_hidden_models": list(cfg.dashboard.model_picker_hidden_models),
             "model_picker_configured": cfg.dashboard.model_picker_configured,
             # Read-only here (absent from the PUT allowlist above): authorizing a
@@ -607,6 +673,23 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # Same discipline for Jira: Atlassian Cloud (*.atlassian.net) is
             # auto-recognized; self-hosted instances need explicit allowlisting.
             "jira_hosts": list(cfg.dashboard.jira_hosts),
+            # And for GitHub Enterprise: github.com is always recognized, any
+            # other GitHub host only when the operator listed it.
+            "github_hosts": list(cfg.dashboard.github_hosts),
+            # And for Bitbucket Server, which has no public default host at all.
+            "bitbucket_server_hosts": list(cfg.dashboard.bitbucket_server_hosts),
+            # Read-only: the per-file upload ceiling (`dashboard.upload_max_mb`).
+            # Both composers pre-check against it and name it in their refusal;
+            # the upload handlers enforce it again server-side.
+            "upload_max_mb": cfg.dashboard.upload_max_mb,
+            # Read-only: the Knowledge upload ceiling, which ingestion's own
+            # `knowledge.max_ingest_file_mb` also bounds. The Knowledge page
+            # shows it; the ingest handler enforces the same figure.
+            "knowledge_upload_max_mb": bytes_to_mb_figure(
+                knowledge_ceiling_bytes(
+                    cfg.dashboard.upload_max_mb, float(cfg.knowledge.max_ingest_file_mb)
+                )
+            ),
             # Read-only: the `capabilities.social_share` governance answer. False
             # withdraws the "Share as image" menu entry; there is no toggle behind
             # it, so nothing here is writable.

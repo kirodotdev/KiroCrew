@@ -6,6 +6,7 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { IMG_EXT, buildFileLabels } from '../../utils/fileTokens'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { i18nT } from '../../i18n/t'
+import { pathBasename, backslashIsSeparator } from '../../utils/pathBasename'
 
 /** Accent pill under a downscaled attachment chip. Hover (or focus) shows a
  *  styled tooltip with the resize details through the shared `InstantTip`
@@ -55,7 +56,19 @@ const NO_DIRS: string[] = []
  *  The name also tells the per-tile controls apart: their labels are bare verbs
  *  ("Remove", "Remove folder"), so with several files staged a screen reader
  *  announces each one inside its own file's group instead of a row of identical
- *  buttons. */
+ *  buttons.
+ *
+ *  A SIGHTED, KEYBOARD-ONLY user (no pointer, no screen reader) is served by
+ *  neither route: `title` opens on pointer hover only, and the `aria-label` is
+ *  silent without assistive tech. So a visible label of just the basename
+ *  leaves two same-basename files from different directories indistinguishable
+ *  -- on focus and at rest alike. The fix is the one this file already uses for
+ *  folder chips: `buildFileLabels` renders each tile's VISIBLE label
+ *  basename-first and widens it by parent segments only until it is unique
+ *  among the staged tiles (`report.txt` -> `src/report.txt` vs
+ *  `docs/report.txt`). That disambiguates the visible text for EVERY user --
+ *  pointer, keyboard and screen-reader -- with no focus-gated overlay, and the
+ *  full path stays in `title`/`aria-label` as before. */
 export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemoveDir, rootRef }: { files: string[]; dirs?: string[]; resizedInfo?: Record<string, ResizeInfo>; onRemove?: (path: string) => void; onRemoveDir?: (path: string) => void; rootRef?: (node: HTMLDivElement | null) => void }) {
   const [attachScroller, edges, remeasure] = useScrollEdges<HTMLDivElement>()
   // Chips are added and removed while the strip stays mounted (a paste, a
@@ -65,6 +78,30 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
   useEffect(() => { remeasure() }, [files, dirs, remeasure])
   const imgs = files.filter(p => IMG_EXT.test(p))
   const nonImgs = files.filter(p => !IMG_EXT.test(p))
+  // One label map over ALL staged files, images and non-images together, so a
+  // pasted `report.txt` image and an attached `report.txt` file widen against
+  // each other too. Basename-first, widened by parent segments only until
+  // unique (same rule the folder chips below use via buildFileLabels). `title`
+  // and `aria-label` keep the full original path.
+  //
+  // buildFileLabels splits on `/` only, so a Windows-shaped path's `\`
+  // separators are converted to `/` for the label computation -- but ONLY when
+  // `\` actually IS a separator in that path (drive-rooted or UNC). On POSIX a
+  // `\` is a legal file-name character (`/tmp/we\ird.md` is ONE name), so an
+  // unconditional replace would wrongly split it; `backslashIsSeparator` is the
+  // same predicate `pathBasename` uses to get that right.
+  const normFile = (p: string) => (backslashIsSeparator(p) ? p.replace(/\\/g, '/') : p)
+  const fileLabels = buildFileLabels(files.map(normFile))
+  // Fall back to pathBasename (Windows-aware) when a path is somehow absent
+  // from the map; this is also what a sole, un-widened tile resolves to.
+  const labelOf = (p: string) => fileLabels.get(normFile(p)) || pathBasename(p)
+  // An image tile shows a caption ONLY when its name collides with another
+  // staged file -- i.e. buildFileLabels had to widen it past the bare basename.
+  // A unique image (the common case: one pasted screenshot with a long
+  // generated name) stays caption-free, so the strip is not a row of
+  // near-identical truncated captions. A non-image chip always shows its label
+  // (it is the chip's only text), so this gating is image-only.
+  const isWidened = (p: string) => labelOf(p) !== pathBasename(p)
   if (!imgs.length && !nonImgs.length && !dirs.length) return null
   return (
     // The wrapper exists for the edge cues: absolutely-positioned children of
@@ -89,7 +126,7 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
             <span className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-accent text-accent-fg text-[10px] font-bold flex items-center justify-center z-10">{i + 1}</span>
             <button
               type="button"
-              aria-label={i18nT('components.chatInput.open_preview_of', { name: path.split('/').pop() })}
+              aria-label={i18nT('components.chatInput.open_preview_of', { name: pathBasename(path) })}
               className="block cursor-pointer"
               onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
             >
@@ -112,21 +149,36 @@ export function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove,
                 // no scroll lands, so this load signal still refreshes the cue.
                 onLoad={remeasure} />
             </button>
+            {/* Hidden at rest on a hover-capable device, so it must also be
+                revealed on keyboard focus: focus anywhere in the chip (its
+                preview button or this button) shows it, and the house focus
+                ring marks it. Touch devices always show it via the hover:none
+                rule. */}
             {onRemove && (
               <button
                 aria-label={i18nT('components.chatInput.remove')}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white text-[12px] flex items-center justify-center opacity-0 group-hover/preview:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity cursor-pointer"
+                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-danger text-white text-[12px] flex items-center justify-center opacity-0 group-hover/preview:opacity-100 [@media(hover:none)]:opacity-100 group-focus-within/preview:opacity-100 focus-ring-accent transition-opacity cursor-pointer"
                 onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')}
               ><X className="lucide-inline" /></button>
             )}
             </div>
+            {/* Visible label for the thumbnail: an image tile shows no text of
+                its own, so two same-basename pastes look identical. Shown ONLY
+                when the name collides with another staged file (the label was
+                widened past its basename) -- a lone pasted screenshot keeps a
+                clean caption-free tile. The widened label (src/a.png vs
+                docs/a.png) is clamped to the 64px tile and truncates with an
+                ellipsis; the full path stays in the group's title/aria-label. */}
+            {isWidened(path) && (
+              <span className="w-16 text-[10px] leading-tight text-muted truncate" title={path}>{labelOf(path)}</span>
+            )}
             {resize && <ResizeBadge resize={resize} />}
           </div>
         )
       })}
       {nonImgs.map(path => (
         <div key={path} role="group" aria-label={path} title={path} className="relative group/preview shrink-0 flex items-center gap-1.5 px-2 py-1 rounded border border-border bg-bg-hover text-[12px] text-text">
-          <span>{path.split('/').pop()}</span>
+          <span>{labelOf(path)}</span>
           {onRemove && (
             <button className="text-muted hover:text-danger cursor-pointer bg-transparent border-none p-0" onClick={() => onRemove(path)} title={i18nT('components.chatInput.remove')} aria-label={i18nT('components.chatInput.remove')}><X size={12} /></button>
           )}

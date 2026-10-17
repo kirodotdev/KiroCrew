@@ -191,6 +191,71 @@ def test_provider_failures_never_buy_a_model_turn(
 
 
 @pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (ProviderErrorKind.TRANSIENT, MonitorDecision.RETRY_PROVIDER),
+        (ProviderErrorKind.RATE_LIMITED, MonitorDecision.RETRY_PROVIDER),
+        (ProviderErrorKind.AUTHENTICATION, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.AUTHORIZATION, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.NOT_FOUND, MonitorDecision.STOP_BLOCKED),
+        (ProviderErrorKind.SETUP, MonitorDecision.STOP_BLOCKED),
+    ],
+)
+@pytest.mark.parametrize("site", ["settled", "masked_actionable"])
+def test_supplemental_error_kind_gates_retry(
+    error: ProviderErrorKind,
+    expected: MonitorDecision,
+    site: str,
+) -> None:
+    """A permanent secondary failure stops instead of burning the error budget.
+
+    Both callers are covered: a settled (non-actionable) tick, and an actionable
+    tick whose every condition is still inside its re-alert interval.
+    """
+    if site == "settled":
+        observation = MonitorObservation(
+            "pending-a",
+            MonitorObservationStatus.PENDING,
+            supplemental_provider_error=error,
+        )
+        state = _state(
+            last_fingerprint="pending-a",
+            budgets=MonitorBudgets(max_provider_errors=3),
+        )
+    else:
+        observation = MonitorObservation(
+            "dup",
+            MonitorObservationStatus.ACTIONABLE,
+            supplemental_provider_error=error,
+        )
+        state = _state(
+            last_fingerprint="dup",
+            last_wake_fingerprint="dup",
+            coalesce_alerted={"dup": 1_000.0},
+            budgets=MonitorBudgets(max_provider_errors=3),
+        )
+    assert decide_monitor(state, observation, now=1_100.0).decision is expected
+
+
+@pytest.mark.parametrize("error", [ProviderErrorKind.TRANSIENT, ProviderErrorKind.RATE_LIMITED])
+def test_supplemental_retryable_error_still_stops_at_budget(
+    error: ProviderErrorKind,
+) -> None:
+    """The retryable gate does not lift the budget: the last retry still stops."""
+    observation = MonitorObservation(
+        "pending-a",
+        MonitorObservationStatus.PENDING,
+        supplemental_provider_error=error,
+    )
+    state = _state(
+        last_fingerprint="pending-a",
+        consecutive_provider_errors=2,
+        budgets=MonitorBudgets(max_provider_errors=3),
+    )
+    assert decide_monitor(state, observation, now=1_100.0).decision is MonitorDecision.STOP_BLOCKED
+
+
+@pytest.mark.parametrize(
     ("state", "now"),
     [
         (_state(budgets=MonitorBudgets(max_runtime_secs=100)), 1_100.0),

@@ -203,18 +203,18 @@ def test_a_turn_during_a_picker_switch_keeps_the_pick_pending(tmp_path):
     assert target.model == out["model"]
 
 
-def test_the_model_check_uses_the_targets_provider_seam(tmp_path, monkeypatch):
-    """A Claude-backend target takes canonical keys as wire ids, so the check
-    must not reject them under a global ACP provider."""
+def test_the_model_check_uses_the_targets_backend(tmp_path, monkeypatch):
+    """A Claude-backend target takes canonical keys as wire ids, so the check is
+    judged on the TARGET's backend, not the global ACP provider."""
     from types import SimpleNamespace
 
     from kiro_crew.dashboard import chat_handlers
 
     seen: list[str | None] = []
 
-    def _reason(_model, provider=None):
-        seen.append(provider)
-        return None if provider == "claude-seam" else "rejected"
+    def _reason(_model, backend=None):
+        seen.append(backend)
+        return None if backend == "claude-backend" else "rejected"
 
     monkeypatch.setattr(chat_handlers, "_model_rejected_reason", _reason)
     monkeypatch.setattr(sc, "is_claude_code", lambda p: p == "claude-seam")
@@ -230,7 +230,7 @@ def test_the_model_check_uses_the_targets_provider_seam(tmp_path, monkeypatch):
 
     out = _set_model(state, caller, "chat-2", "fable-5-1m")
 
-    assert seen == ["claude-seam"]
+    assert seen == ["claude-backend"]
     assert out["model"] == "fable-5-1m"
 
 
@@ -376,17 +376,58 @@ def test_a_pick_equal_to_the_pin_still_resets_while_a_fallback_serves(tmp_path):
 
 
 def test_the_turn_arms_the_reset_for_a_live_or_spawning_session_only():
-    """Source pin: the reset is armed when a session is registered or an eager
-    spawn is in flight, and not otherwise, so a cold start on the new model is
-    not torn down at turn end."""
+    """Source pin: a committed pick arms the reset through the shared helper,
+    whose behaviour is pinned below."""
     import kiro_crew.dashboard.chat_runner as runner
 
-    source = Path(runner.__file__).read_text(encoding="utf-8")
+    source = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     body = source[source.index("if apply_pending_model_pick(state, slot):") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
-    assert "_pending_reset_history_key" in body
-    assert "get_provider(" in body
-    assert "_eager_spawn_task" in body
+    assert "arm_model_switch_reset(state, slot)" in body
+
+
+def test_the_reset_is_armed_for_a_live_or_spawning_session_only(tmp_path):
+    """A registered session or an eager spawn in flight can still be on the old
+    model, so the reset is armed; with neither, the next turn cold-starts on the
+    new model and an armed reset would tear that session down for nothing."""
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    key = sc.effective_session_key(slot)
+
+    sc.arm_model_switch_reset(state, slot)
+    assert slot._pending_reset_history_key is None
+
+    spawning = MagicMock()
+    spawning.done.return_value = False
+    slot._eager_spawn_task = spawning
+    sc.arm_model_switch_reset(state, slot)
+    assert slot._pending_reset_history_key == key
+
+    slot._pending_reset_history_key = None
+    slot._eager_spawn_task = None
+    state.sessions.get_provider = MagicMock(return_value=object())
+    sc.arm_model_switch_reset(state, slot)
+    assert slot._pending_reset_history_key == key
+    state.sessions.get_provider.assert_called_with(key)
+
+
+def test_a_switch_waits_for_a_picker_transaction_in_flight(tmp_path):
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    assert sc.model_switch_deferred(state, slot) == ""
+
+    async def held() -> str:
+        async with slot._model_pick_lock:
+            return sc.model_switch_deferred(state, slot)
+
+    assert asyncio.run(held()) == "picker in flight"
 
 
 def test_the_turn_persists_a_committed_pick_before_it_acquires_a_session():
@@ -395,7 +436,14 @@ def test_the_turn_persists_a_committed_pick_before_it_acquires_a_session():
     refused save leaves the slot dirty for the periodic flush."""
     import kiro_crew.dashboard.chat_runner as runner
 
-    source = Path(runner.__file__).read_text(encoding="utf-8")
+    source = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     body = source[source.index("if apply_pending_model_pick(state, slot):") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
     assert "await save_slot_off_loop(" in body
@@ -413,7 +461,14 @@ def test_the_turn_applies_the_pick_before_it_acquires_a_session():
     reset is consumed and before get_or_create reads ``slot.model``."""
     import kiro_crew.dashboard.chat_runner as runner
 
-    source = Path(runner.__file__).read_text(encoding="utf-8")
+    source = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     body = source[source.index("async def _run_chat(") :]
     apply_at = body.index("apply_pending_model_pick(state, slot)")
     assert apply_at < body.index("await _consume_pending_reset(state, slot)")
@@ -573,7 +628,7 @@ def test_a_remote_crew_target_is_refused(tmp_path):
     with pytest.raises(sc.SessionControlError) as exc:
         _set_model(state, caller, "chat-2", "sonnet")
 
-    assert exc.value.code == "remote_target_unsupported"
+    assert exc.value.code == "relay_archive_read_only"
     assert target._pending_model_pick is None
 
 

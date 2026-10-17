@@ -16,14 +16,28 @@
 // files together go red for every meaningful line mutation in the region.
 
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+const PAGE_FILES = [
+  '../pages/ChatPage.tsx',
+  ...readdirSync(resolve(__dirname, '../pages/chat/page'))
+    .filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+    .sort()
+    .map((f) => `../pages/chat/page/${f}`),
+  ...readdirSync(resolve(__dirname, '../pages'))
+    .filter((f) => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f))
+    .sort()
+    .map((f) => `../pages/${f}`),
+]
+const PAGE = PAGE_FILES.map((f) => readFileSync(resolve(__dirname, f), 'utf8')).join('\n')
 
 // The shell's source may live inline in ChatPage or in extracted components —
 // the net follows the CODE, not the file: assertions are identical either way,
 // and a migration retargets nothing here.
 const SHELL_FILES = [
-  '../pages/ChatPage.tsx',
+  ...PAGE_FILES,
   '../pages/chat/TranscriptScrollShell.tsx', // post-extraction home (absent pre-extraction)
   '../app-sdk/ChatScrollChrome.tsx',
 ]
@@ -58,6 +72,23 @@ describe('scroll shell: header fade', () => {
     // header. The gradient recipe itself is pinned in ChatScrollChrome's
     // consumer suites; what belongs to THIS page is the anchored mount.
     expect(SRC).toContain('<EdgeFade side="top" anchor="below" />')
+  })
+
+  it('mounts the phone fade at the fold sentinel, behind the pinned card', () => {
+    // On phones (titleInTopbar) the fade must not hang from the bottom of the
+    // pinned band: its opaque edge would sit under a one-line card and mask
+    // the transcript line below it. It overlays from the fold sentinel in a
+    // zero-height relative wrapper, and the pinned card paints above it.
+    const page = PAGE
+    expect(page).not.toContain('{titleInTopbar && <EdgeFade side="top" anchor="below" />}')
+    const fold = page.indexOf('<div ref={pinFoldRef} aria-hidden className="h-0" />')
+    expect(fold, 'fold sentinel not found').toBeGreaterThanOrEqual(0)
+    const afterFold = page.slice(fold)
+    const pinnedCard = afterFold.indexOf('<PinnedPrompt')
+    expect(pinnedCard, 'pinned card mount not found after the fold').toBeGreaterThan(0)
+    expect(afterFold.slice(0, pinnedCard)).toMatch(
+      /\{titleInTopbar && \(\s*<div className="relative h-0">\s*<EdgeFade side="top" \/>\s*<\/div>\s*\)\}/,
+    )
   })
 })
 
@@ -125,7 +156,7 @@ describe('scroll shell: element order inside the scroller', () => {
       '<div className="h-16" />',
       'ref={virt.topSentinelRef}',
       'data-testid="older-messages-loading"',
-      'height: virt.offsetBefore',
+      'height: Math.round(virt.offsetBefore)',
       'height: virt.offsetAfter',
       'ref={virt.bottomSentinelRef}',
     ]
@@ -154,7 +185,12 @@ describe('scroll shell: element order inside the scroller', () => {
     // They also carry the skeleton class and the transcript's own column
     // width: an unmounted region rendered as a blank void reads as content
     // that vanished rather than content not yet drawn.
-    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetBefore, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
+    // The top spacer renders at a whole pixel: Chromium's scroll anchoring
+    // moves scrollTop only by whole pixels, so a fractional re-price above a
+    // reader sitting still (the measure farm's sweep) would shift the text by
+    // the remainder. Below the reader nothing on screen moves, so the bottom
+    // one stays exact.
+    expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: Math.round(virt.offsetBefore), maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
     expect(SHELL).toContain("<div aria-hidden className=\"vc-spacer-skeleton mx-auto w-full\" style={{ height: virt.offsetAfter, maxWidth: 'var(--mc-content-width, 900px)', overflowAnchor: 'none' }} />")
   })
 
@@ -212,7 +248,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   // accepts a shell that ignores a prop — but the transcript then breaks at
   // runtime (no rows, no follow, no paging). The pins make every seam a test.
   it('shell renders all three slots in skeleton order and spreads host geometry', () => {
-    const shellOrder = ['{aboveRows}', 'height: virt.offsetBefore', '{children}', 'height: virt.offsetAfter', '{belowRows}']
+    const shellOrder = ['{aboveRows}', 'height: Math.round(virt.offsetBefore)', '{children}', 'height: virt.offsetAfter', '{belowRows}']
     let cursor = -1
     for (const a of shellOrder) {
       const idx = SHELL.indexOf(a, cursor + 1)
@@ -231,7 +267,8 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   it('page threads the controller wiring onto the shell call', () => {
     // The import IS the extraction: its deletion is the "silently undone"
     // mutation, and a collection failure alone names no pin.
-    expect(SRC).toContain("import TranscriptScrollShell, { useTranscriptWidth } from './chat/TranscriptScrollShell'")
+    expect(SRC).toContain("import TranscriptScrollShell from '../TranscriptScrollShell'")
+    expect(SRC).toContain("import { useTranscriptWidth } from './chat/TranscriptScrollShell'")
     expect(SRC).toContain('scrollerRef={scrollerRef}')
     expect(SRC).toContain('virt={virt}')
     // Two consumers thread loadingOlder (the pinned-banner row props and the
@@ -252,7 +289,7 @@ describe('scroll shell: floating dock and jump pill', () => {
     // No bottom fade under the floating dock: the transcript reads through the
     // glass. Scoped to the page — the shared <EdgeFade side="bottom"> in
     // ChatScrollChrome stays for its other consumers (ChatPane).
-    const page = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const page = PAGE
     expect(page).not.toContain('<EdgeFade side="bottom"')
     expect(page).not.toContain('bg-gradient-to-t from-bg')
   })

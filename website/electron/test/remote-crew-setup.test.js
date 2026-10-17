@@ -313,6 +313,7 @@ function captureDialogHtml(storeData, actions = ["mc-action:quit"]) {
     destroy() { this.destroyed = true; },
     on() {}, once() {}, removeListener() {},
     webContents: {
+      isDestroyed() { return false; },
       loadFile() {}, loadURL() {}, send() {},
       on() {}, once() {}, removeListener() {},
     },
@@ -582,4 +583,34 @@ test("the dashboard prompt refuses a crew on a port the lookup cannot key", asyn
 
   assert.strictEqual(store.data.remoteHosts, undefined, "nothing is stored");
   assert.strictEqual(messageBoxes.at(-1).title, "Invalid Input");
+});
+
+test("the Developer panel's local-gateway help names the tunnel option verbatim in every catalog (#3810)", () => {
+  // The Settings row tells a client-only user to switch this option on, and
+  // the form label is English-only, so a rename here must not leave every
+  // locale pointing at a control that no longer exists. en-XA is the
+  // generated pseudolocale and mangles it by design.
+  const { TUNNEL_OPTION_LABEL } = require("../remote-crew-setup");
+  const menuSource = fs.readFileSync(path.join(__dirname, "..", "app-menu.js"), "utf8");
+  const MENU_LABEL = /label: "(Set Remote Host…)"/.exec(menuSource)?.[1];
+  assert.ok(MENU_LABEL, "app-menu.js no longer has a Set Remote Host… item");
+  const dir = path.join(__dirname, "..", "..", "src", "i18n", "locales");
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "en-XA.json" && f !== "en.manual.json")) {
+    const catalog = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+    const text = catalog.pages.settings.developerPanel.turn_it_off_only_when_a_gateway_already_answers;
+    assert.ok(text.includes(TUNNEL_OPTION_LABEL), `${file} does not quote "${TUNNEL_OPTION_LABEL}"`);
+    // The menu item the copy sends the user to; read from the menu source so
+    // renaming it there fails here.
+    assert.ok(text.includes(MENU_LABEL), `${file} does not quote "${MENU_LABEL}"`);
+  }
+});
+
+test("the local-gateway guide link targets a heading that exists in the remote guide (#3810)", () => {
+  const panel = fs.readFileSync(path.join(__dirname, "..", "..", "src", "pages", "settings", "DeveloperPanel.tsx"), "utf8");
+  const anchor = /LOCAL_GATEWAY_TUNNEL_GUIDE = '[^'#]*remote-and-mobile\.md#([a-z0-9-]+)'/.exec(panel)[1];
+  const guide = fs.readFileSync(path.join(__dirname, "..", "..", "..", "docs", "guides", "remote-and-mobile.md"), "utf8");
+  // GitHub's slug: lowercase, drop punctuation except hyphens, spaces to hyphens.
+  const slugs = guide.split("\n").filter((l) => /^#{1,6} /.test(l))
+    .map((l) => l.replace(/^#+ /, "").toLowerCase().replace(/[^\p{L}\p{N} -]/gu, "").replace(/ /g, "-"));
+  assert.ok(slugs.includes(anchor), `no heading in remote-and-mobile.md slugs to #${anchor}`);
 });

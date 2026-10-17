@@ -7,7 +7,7 @@ import { fmtDateFields, toDate } from '../../i18n/format'
  * a user reads in practice. It was noise on a line whose job is to say *when in
  * this conversation* a turn happened — the conversation itself never spans the
  * year boundary, so "2026" repeated under every single message carried no
- * information. This is the same rule `sessionOrder.ts` and `ChatSidebar.tsx`
+ * information. This is the same rule `sessionOrder.ts` and `chat-sidebar/chrome.tsx`
  * already apply to session dates, so the chat surface is now internally
  * consistent rather than having the message footer be the one place that always
  * spells the year out.

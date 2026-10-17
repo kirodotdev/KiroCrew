@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Clock, FolderX } from 'lucide-react'
 import { api } from '../../api/client'
+import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
@@ -45,7 +46,10 @@ export default function FolderCleanupPanel({ folders, onClose }: { folders: Chat
   const cleanup = useMutation({
     mutationFn: () => api.cleanupChatFolders({ includeTopLevel, ids: previewIds ?? [] }),
     onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
+      // Through the idle gate, not a direct invalidate: this refetch of the
+      // folder tree would otherwise land inside a still-pending optimistic
+      // folder write in the sidebar and snap it back (see CHAT_FOLDERS_WRITE_KEY).
+      invalidateFoldersWhenIdle(queryClient)
       queryClient.invalidateQueries({ queryKey: ['folder-cleanup-preview'] })
       // The server keeps any previewed folder that gained a session or a new
       // subfolder after the preview. Closing then would look as if they went

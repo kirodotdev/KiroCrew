@@ -796,7 +796,7 @@ class TestDurableModelVersionReferences:
         assert "selected object is a concrete model ID" in description
         assert "at the end of its clause" in description
         assert "other backend IDs are not lesson-refused" in description
-        assert "not new regex branches" in description
+        assert "do not disguise either refused class" in description
         assert "A model version mentioned by itself is allowed" in description
 
 
@@ -884,6 +884,49 @@ class TestWriteLessonOutcomes:
             assert result.outcome is LessonWriteOutcome.DEDUPED
             assert result.reason == "substring_covered"
             assert result.stored is False
+        finally:
+            store.close()
+
+    def test_a_deduped_write_names_the_stored_lesson_it_lost_to(self, tmp_path):
+        """The decline names the winner verbatim, NOT-clause included, with its scope.
+
+        Without it the caller knows only that "an existing lesson covers it" and has
+        to page the list route to find which one before it can replace it.
+        """
+        store = _store(tmp_path)
+        try:
+            store.write_lesson(
+                "always run the linter before pushing a branch",
+                "tool",
+                "for a docs-only change",
+                repo_scope="src/pkg",
+            )
+            result = store.write_lesson("run the linter", "tool", repo_scope="src/pkg")
+            assert result.outcome is LessonWriteOutcome.DEDUPED
+            assert result.winner is not None
+            assert result.winner.startswith("always run the linter before pushing a branch")
+            assert "for a docs-only change" in result.winner
+            assert result.winner_repo_scope == "src/pkg"
+        finally:
+            store.close()
+
+    def test_a_global_winner_reports_no_scope(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            store.write_lesson("always run the linter before pushing a branch", "tool")
+            result = store.write_lesson("run the linter", "tool")
+            assert result.winner == "always run the linter before pushing a branch"
+            assert result.winner_repo_scope is None
+        finally:
+            store.close()
+
+    def test_a_write_that_lands_names_no_winner(self, tmp_path):
+        store = _store(tmp_path)
+        try:
+            result = store.write_lesson("always run the linter before pushing a branch", "tool")
+            assert result.wrote
+            assert result.winner is None
+            assert result.winner_repo_scope is None
         finally:
             store.close()
 
@@ -1192,6 +1235,56 @@ class TestLessonsRouteReportsTheOutcome:
             }
             assert store.get_lessons() == []
             state.push_refresh.assert_called_once_with("lessons")
+        finally:
+            store.close()
+
+    async def test_the_save_leaves_unembedded_lessons_to_the_repair_sweep(self, tmp_path) -> None:
+        """One save must not run bulk inference on the request path.
+
+        Embedding a stored lesson that still lacks a vector is PRIORITY_BULK work
+        with no deadline, queued behind every other bulk job, so doing it inside
+        the request holds it past the MCP client's read timeout while the write
+        still lands later. The row must stay NULL for the repair sweep instead.
+        """
+        import json as _json
+
+        from kiro_crew.dashboard.handlers import cron
+        from kiro_crew.embeddings import PRIORITY_BULK
+
+        legacy_rule = "prefer tabs over spaces in makefiles"
+        store = _store(tmp_path)
+        try:
+            # Written with no embedder bound, so the row has no vector: the state a
+            # consolidation pass leaves when it defers embedding to the sweep.
+            store.write_lesson(legacy_rule)
+            assert [row["embedding"] for row in store.get_lessons()] == [None]
+
+            priorities: list[int] = []
+
+            def embed(text: str, priority: int = -1) -> list[float]:
+                priorities.append(priority)
+                # Orthogonal vectors, so no semantic match can retire the legacy row.
+                return [1.0, 0.0, 0.0, 0.0] if text.startswith("pin") else [0.0, 1.0, 0.0, 0.0]
+
+            embed.accepts_priority = True  # type: ignore[attr-defined]
+            store.embed_fn = embed
+
+            request, state = self._request("pin every dependency to an exact version")
+            with (
+                patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
+                patch.object(cron, "_is_restricted_session", return_value=False),
+                patch.object(cron, "_sel"),
+                patch.object(cron, "_resolve_and_supersede", new=AsyncMock()),
+            ):
+                resp = await cron.api_lessons_create(request)
+            for task in list(state._background_tasks):
+                await task
+
+            assert _json.loads(resp.text)["outcome"] == "inserted"
+            assert PRIORITY_BULK not in priorities, f"bulk embed on the request path: {priorities}"
+            legacy = [row for row in store.get_lessons() if _rule_of(row) == legacy_rule]
+            assert len(legacy) == 1
+            assert legacy[0]["embedding"] is None, "the sweep owns this row's vector"
         finally:
             store.close()
 
@@ -1547,6 +1640,74 @@ class TestLessonsRouteReportsTheOutcome:
             "superseded": [],
         }
 
+    async def test_a_deduped_response_names_the_winner_and_its_scope(self):
+        resp, _state = await self._post(
+            LessonWriteResult(
+                LessonWriteOutcome.DEDUPED,
+                "substring_covered",
+                winner="always run the linter before pushing a branch",
+                winner_repo_scope="src/pkg",
+            )
+        )
+        import json as _json
+
+        body = _json.loads(resp.text)
+        assert body["outcome"] == "deduped"
+        assert body["winner"] == "always run the linter before pushing a branch"
+        assert body["winner_repo_scope"] == "src/pkg"
+
+    async def test_a_global_winner_is_sent_as_the_explicit_global_selector(self):
+        """``""`` is the delete selector that names only the global row."""
+        resp, _state = await self._post(
+            LessonWriteResult(
+                LessonWriteOutcome.DEDUPED, "substring_covered", winner="a global rule"
+            )
+        )
+        import json as _json
+
+        assert _json.loads(resp.text)["winner_repo_scope"] == ""
+
+    async def test_a_credential_shaped_winner_scope_is_withheld(self):
+        """A stored scope the redaction chain would alter never leaves the route."""
+        token = "ghp_" + "C" * 36
+        resp, _state = await self._post(
+            LessonWriteResult(
+                LessonWriteOutcome.DEDUPED,
+                "substring_covered",
+                winner="a scoped rule",
+                winner_repo_scope=f"repos/{token}",
+            )
+        )
+        assert token not in resp.text
+        import json as _json
+
+        assert _json.loads(resp.text)["winner_repo_scope"] is None
+
+    async def test_the_winner_is_redacted_before_it_leaves_the_process(self):
+        """The winner is stored user text, so it rides the same redaction chain."""
+        from kiro_crew.dashboard.handlers import cron
+
+        with patch.object(
+            cron, "_redact_memory_field", side_effect=lambda v: "[REDACTED]" if v else v
+        ):
+            resp, _state = await self._post(
+                LessonWriteResult(
+                    LessonWriteOutcome.DEDUPED, "substring_covered", winner="a secret rule"
+                )
+            )
+        import json as _json
+
+        body = _json.loads(resp.text)
+        assert body["winner"] == "[REDACTED]"
+
+    async def test_a_response_with_no_winner_omits_the_field(self):
+        resp, _state = await self._post(LessonWriteResult(LessonWriteOutcome.INSERTED))
+        import json as _json
+
+        body = _json.loads(resp.text)
+        assert "winner" not in body
+        assert "winner_repo_scope" not in body
+
 
 class TestLearnAddVolatileSessionFactBoundary:
     """``learn_add`` must not turn one session's runtime identity into policy."""
@@ -1678,6 +1839,76 @@ class TestLearnAddToolReportsTheOutcome:
         assert "NOT the stored lesson" in text
         assert "learn_remove" not in text
 
+    def test_dedup_names_the_winning_stored_lesson_verbatim(self):
+        """With the winner named, the reply points at it instead of the list."""
+        winner = "always run the linter before pushing a branch -- NOT: for docs"
+        text = self._call(
+            {
+                "ok": False,
+                "outcome": "deduped",
+                "reason": "substring_covered",
+                "winner": winner,
+                "winner_repo_scope": "src/pkg",
+            }
+        )
+        assert "NOT saved" in text
+        assert f"The stored lesson that covers it (applies only in src/pkg): {winner}" in text
+        assert 'learn_remove with that stored text as query and repo_scope="src/pkg"' in text
+        assert "learn_list" not in text
+
+    def test_a_global_winner_points_learn_remove_at_the_global_row_only(self):
+        """An unscoped remove would reach every scope; ``""`` names only the global row."""
+        text = self._call(
+            {
+                "ok": False,
+                "outcome": "deduped",
+                "reason": "substring_covered",
+                "winner": "a global rule",
+                "winner_repo_scope": "",
+            }
+        )
+        assert "The stored lesson that covers it: a global rule" in text
+        assert 'repo_scope=""' in text
+
+    def test_a_withheld_winner_scope_names_the_winner_but_keeps_the_list_path(self):
+        """Without a selector a remove cannot be scoped, so it is not coached."""
+        text = self._call(
+            {
+                "ok": False,
+                "outcome": "deduped",
+                "reason": "substring_covered",
+                "winner": "a scoped rule",
+                "winner_repo_scope": None,
+            }
+        )
+        assert "The stored lesson that covers it: a scoped rule" in text
+        assert "repo_scope=" not in text
+        assert "learn_list" in text
+
+    def test_semantic_dedup_names_the_winner_and_still_protects_it(self):
+        text = self._call(
+            {
+                "ok": False,
+                "outcome": "deduped",
+                "reason": "semantic_similarity",
+                "winner": "the user's own rule",
+                "winner_repo_scope": None,
+            }
+        )
+        assert "The stored lesson that covers it: the user's own rule" in text
+        assert "higher authority" in text
+        assert "learn_remove" not in text
+
+    @pytest.mark.parametrize("winner", [None, "", "   ", 7, ["x"]])
+    def test_a_missing_or_malformed_winner_keeps_the_list_recovery(self, winner):
+        """An older gateway sends no winner; a bad value is not rendered as one."""
+        response = {"ok": False, "outcome": "deduped", "reason": "substring_covered"}
+        if winner is not None:
+            response["winner"] = winner
+        text = self._call(response)
+        assert "The stored lesson that covers it" not in text
+        assert "learn_list" in text
+
     def test_no_op_says_already_stored_without_claiming_an_exact_match(self):
         """``unchanged`` does not mean the stored row equals the submission.
 
@@ -1711,6 +1942,25 @@ class TestLearnAddToolReportsTheOutcome:
         """Version skew during an update must not turn a real save into a scare."""
         text = self._call({"ok": True})
         assert text == "Saved lesson: a rule"
+
+    def test_a_read_timeout_reports_an_unknown_outcome_not_a_failure(self):
+        """The client stops waiting at its read timeout; the route can still finish the save.
+
+        A bare ``Error: timed out`` reads as a failed save, so the model retries a
+        write already in flight and tells the user the lesson was lost. The payload
+        is what ``mcp_core._post`` returns for a socket read timeout
+        (``test_mcp_core_coverage.py`` pins that classification).
+        """
+        text = self._call({"error": "timed out", "transport_error": True})
+        assert text.startswith("Error: timed out.")
+        assert "outcome is unknown" in text
+        assert "learn_list" in text
+        assert "NOT saved" not in text
+
+    def test_a_refused_connection_stays_a_plain_error(self):
+        """Nothing reached the gateway, so nothing can still be saving."""
+        text = self._call({"error": "gateway not reachable", "refused": True})
+        assert text == "Error: gateway not reachable"
 
 
 class TestASupersedingWriteNamesWhatItRemoved:

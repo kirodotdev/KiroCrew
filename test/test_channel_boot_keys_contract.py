@@ -9,7 +9,7 @@ transport", and nothing in the code ties them together:
   (``GatewayOrchestrator._on_channel_config_change`` -> ``restart_channel``);
 * the UI path -- ``dashboard.channel_folders.channel_restart_required`` answers a
   channel save's ``restart_required`` from ``config.schema.requires_restart``, the
-  ``restart=True`` marks in ``config/sections.py``.
+  ``restart=True`` marks in ``config/sections_*.py``.
 
 They are DELIBERATELY different sets, because they mean different things
 (docs/system-specs/modules/messaging.md, "Connection fields restart ONE channel,

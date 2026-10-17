@@ -549,7 +549,8 @@ class TestEnvelopeClassifiersFollowTheRealWriters:
 
     def test_subagent_completion_meta_stamp_as_written_is_not_speech(self) -> None:
         # The gateway stamps SUBAGENT_COMPLETION_META_KEY with these fields
-        # (slack/gateway.py, "Structured header facts for the dashboard card");
+        # (slack/gateway_runtime/subagent_report.py, "Structured header facts for
+        # the dashboard card");
         # the classifier keys on the stamp before any header regex.
         from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY, SUBAGENT_COMPLETION_PREFIX
 

@@ -281,6 +281,32 @@ class TestRound2Fixes:
         assert "Access-Control-Allow-Origin" not in resp.headers
 
     @pytest.mark.asyncio
+    async def test_csp_blocks_js_eval_but_allows_wasm(self, env) -> None:
+        """eval()/new Function are gated by 'unsafe-eval' alone, which must
+        be absent. WebAssembly.compile/instantiate are gated by
+        'unsafe-eval' OR 'wasm-unsafe-eval', so the narrower token must be
+        present or the .wasm this channel serves cannot run. Pins the exact
+        egress directive so a later edit cannot quietly widen it."""
+        store, app_dir = env
+        token = _mint(store, app_dir, slug="eval-app")
+        resp = await wp.serve_artifact_app_file(
+            _req({"slug": "eval-app", "token": token, "path": ""}))
+        csp = resp.headers["Content-Security-Policy"]
+        directives = [d.strip() for d in csp.split(";") if d.strip()]
+        sources = directives[1].split()
+        # JS eval / new Function: blocked.
+        assert "'unsafe-eval'" not in sources
+        assert "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", "")
+        # WebAssembly.compile: allowed.
+        assert "'wasm-unsafe-eval'" in sources
+        assert directives[:2] == [
+            "sandbox allow-scripts",
+            "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data: blob:",
+        ]
+        # No script-src override that could re-grant or drop either token.
+        assert not any(d.startswith("script-src") for d in directives)
+
+    @pytest.mark.asyncio
     async def test_frame_ancestors_uses_self_plus_embedding_ancestors(self, env) -> None:
         """``'self'`` names the serving origin; extras name what it cannot.
 

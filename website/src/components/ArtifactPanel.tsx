@@ -6,13 +6,13 @@ import { useNavigate } from 'react-router-dom'
 import DetailPanel from './DetailPanel'
 import Clickable from './Clickable'
 import SelectionToolbar, { type SelectionAction } from './SelectionToolbar'
+import { isTouchDevice } from '../utils/isTouchDevice'
 import { SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from './ArtifactBody'
 import { useFileArtifactComments } from './FileArtifactComments'
 import { useConfirm } from './ConfirmDialog'
 import { formatArtifactCommentsMessage } from './CommentOverlay'
-import { filterCommentsForForward } from '../lib/commentFilter'
 import { copyToClipboard } from '../utils/clipboard'
 import { safeSetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
@@ -43,7 +43,7 @@ interface Props {
    *  an optional delivery verdict: an explicit `false` (or a promise of one)
    *  means the message was NOT delivered, so the batch must stay pending; any
    *  other return counts as delivered. */
-  onSubmitComments?: (message: string) => void | boolean | Promise<void | boolean>
+  onSubmitComments?: (message: string, count?: number) => void | boolean | Promise<void | boolean>
   /** Gateway connection flag. Gates the submit-to-chat affordance (mirrors
    *  ChatInput's Send gating) so a batch submit can't fire while the chat
    *  send path would silently refuse it. Defaults true for embeddings
@@ -168,8 +168,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const artifact = detailQuery.data
   // File-backed artifacts: an agent rewriting the backing file never passes
   // through a handler, so the artifact_update WS event does not fire for it.
-  // Watch the live pointer and refetch through the shared cache instead.
-  useArtifactLiveReload(slug, artifact?.source_path)
+  // Watch the live pointer while this tab is the visible one and refetch
+  // through the shared cache; a hidden tab holds no stream and catches up
+  // when it is shown again.
+  useArtifactLiveReload(slug, artifact?.source_path, visible)
   const effectiveKind = artifact?.kind ?? kind
   const effectiveContent = artifact?.content ?? content
   const name = artifact?.name ?? slug
@@ -200,41 +202,6 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     layer: 'top',
   }), [confirm])
 
-  // Two instances (non-fullscreen body / fullscreen body) read the SAME durable
-  // comments via the shared query cache; only local UI state (sidebar open,
-  // active thread) is per-instance.
-  const fa = useFileArtifactComments({
-    slug, previewRef, scrollRef, usesIframe,
-    sidebarDefaultOpen: false,
-    sidebarClassName: STACKED_SIDEBAR_CLASS,
-    sidebarStyle: STACKED_SIDEBAR_STYLE,
-    confirmDiscardDraft,
-  })
-  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft })
-  // The active comment layer for the visible surface.
-  const active = fullscreen ? faFull : fa
-  /** Run `proceed` unless the visible layer's comment draft would be lost, in
-   *  which case ask first (the layer's own guard: it knows the passage whose
-   *  persisted copy a confirmed discard must drop). */
-  const guardDraft = active.guardCommentDraft
-  const enterFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(true)) }, [guardDraft])
-  const exitFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(false)) }, [guardDraft])
-  const requestClose = useCallback(() => { void guardDraft(onClose) }, [guardDraft, onClose])
-
-  // Selecting text opens the layer's type-first comment composer (see
-  // `useFileArtifactComments().selectionComposer`). No row action beside it:
-  // the box already carries Add comment and Close, and a third control would
-  // break the two-per-row cap. Copying the selection is the composer's own
-  // Cmd/Ctrl+C while its input is empty.
-  const selectionActions: SelectionAction[] = useMemo(() => [], [])
-  // The kinds no anchor resolver can map (json, svg, …) get no composer — but
-  // they keep the Copy row the panel shipped before it: on touch there is no
-  // Cmd/Ctrl+C, so without a control a selection there has no reachable copy.
-  // One control, so the row is inside the two-per-row cap on its own.
-  const copyOnlyActions: SelectionAction[] = useMemo(() => [
-    { id: 'copy', icon: <Copy size={12} />, label: i18nT('components.selectionToolbar.copy'), onClick: (text: string) => copyToClipboard(text) },
-  ], [])
-
   // ── submitted-to-chat tracking ──
   // Durable artifact comments survive a chat submission (unlike the local-file
   // pending list, which the submit clears), so without per-id tracking every
@@ -252,16 +219,56 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const [sentIds, setSentIds] = useState<Set<string>>(() => readSentIds(sentKey))
   // Re-read when the panel is reused for a different artifact.
   useEffect(() => { setSentIds(readSentIds(sentKey)) }, [sentKey])
-  // Pending = forwarding-eligible AND human-authored AND not yet submitted.
-  // The three filters answer different questions and all three are needed:
-  // filterCommentsForForward drops threads already resolved, `!is_agent` drops
-  // agent-authored comments (also filtered defensively inside
-  // formatArtifactCommentsMessage, hardened esc()), and `!sentIds.has` stops an
-  // already-submitted batch being re-sent.
-  const pendingComments = useMemo(
-    () => filterCommentsForForward(fa.comments).filter(c => !c.is_agent && !sentIds.has(c.id)),
-    [fa.comments, sentIds],
-  )
+  // Handed to the comment layers so each sidebar row the Submit bar counts is
+  // marked; only when this host has a Submit, since otherwise there is no bar
+  // for a marker to answer to.
+  const submitSentIds = onSubmitComments ? sentIds : undefined
+
+  // Two instances (non-fullscreen body / fullscreen body) read the SAME durable
+  // comments via the shared query cache; only local UI state (sidebar open,
+  // active thread) is per-instance.
+  const fa = useFileArtifactComments({
+    slug, previewRef, scrollRef, usesIframe,
+    sidebarDefaultOpen: false,
+    sidebarClassName: STACKED_SIDEBAR_CLASS,
+    sidebarStyle: STACKED_SIDEBAR_STYLE,
+    confirmDiscardDraft,
+    submitSentIds,
+  })
+  const faFull = useFileArtifactComments({ slug, previewRef: fsPreviewRef, scrollRef: fsScrollRef, usesIframe, confirmDiscardDraft, submitSentIds })
+  // The active comment layer for the visible surface.
+  const active = fullscreen ? faFull : fa
+  /** Run `proceed` unless the visible layer's comment draft would be lost, in
+   *  which case ask first (the layer's own guard: it knows the passage whose
+   *  persisted copy a confirmed discard must drop). */
+  const guardDraft = active.guardCommentDraft
+  const enterFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(true)) }, [guardDraft])
+  const exitFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(false)) }, [guardDraft])
+  const requestClose = useCallback(() => { void guardDraft(onClose) }, [guardDraft, onClose])
+
+  // Selecting text opens the layer's type-first comment composer (see
+  // `useFileArtifactComments().selectionComposer`). No row action beside it:
+  // the box already carries Add comment and Close, and a third control would
+  // break the two-per-row cap. Copying the selection is the composer's own
+  // Cmd/Ctrl+C while its input is empty.
+  const selectionActions: SelectionAction[] = useMemo(() => [], [])
+  // The kinds no anchor resolver can map (json, svg, …) get no composer — but
+  // a pointer device keeps the Copy row the panel shipped before it. One
+  // control, so the row is inside the two-per-row cap on its own.
+  const copyOnlyActions: SelectionAction[] = useMemo(() => [
+    { id: 'copy', icon: <Copy size={12} />, label: i18nT('components.selectionToolbar.copy'), onClick: (text: string) => copyToClipboard(text) },
+  ], [])
+  // On a touch device the platform draws its own handles and Copy callout
+  // around the selection, and a row floated there took the taps meant for the
+  // handles. Copy is the callout's job there, so the copy-only row is not
+  // mounted at all (the same call the chat reply makes for its Copy).
+  const showCopyOnlyToolbar = !canAnchorComments && !isTouchDevice()
+
+  // Pending = forwarding-eligible AND human-authored AND not yet submitted,
+  // as the comment layer worked it out from `submitSentIds` (the same list its
+  // sidebar marks). Agent comments are also filtered defensively inside
+  // formatArtifactCommentsMessage (hardened esc()).
+  const pendingComments = fa.pendingSubmit
   const [submitting, setSubmitting] = useState(false)
   // Tracks the "submitting" reset timer so it can be cancelled on unmount —
   // otherwise a late firing calls setSubmitting on an unmounted component,
@@ -284,7 +291,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     // clear-on-submit behavior).
     let verdict: void | boolean | Promise<void | boolean>
     try {
-      verdict = onSubmitComments(formatArtifactCommentsMessage(slug, name, batch, extraPrompt))
+      verdict = onSubmitComments(formatArtifactCommentsMessage(slug, name, batch, extraPrompt), batch.length)
     } catch {
       verdict = false
     }
@@ -490,7 +497,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           selection open the box over the comments sidebar. Suspended with the
           tab so a hidden panel's open box does not stay on screen. */}
       {!fullscreen && canAnchorComments && <SelectionToolbar containerRef={usesIframe ? scrollRef : previewRef} actions={selectionActions} composer={fa.selectionComposer} externalSelection={fa.iframeSelection} externalOnly={usesIframe} suspended={!visible} />}
-      {!fullscreen && !canAnchorComments && <SelectionToolbar containerRef={scrollRef} actions={copyOnlyActions} suspended={!visible} />}
+      {!fullscreen && showCopyOnlyToolbar && <SelectionToolbar containerRef={scrollRef} actions={copyOnlyActions} suspended={!visible} />}
       {!fullscreen && fa.popovers}
     </DetailPanel>
     {fullscreen && createPortal(
@@ -545,7 +552,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           </div>
         </div>
         {canAnchorComments && <SelectionToolbar containerRef={usesIframe ? fsScrollRef : fsPreviewRef} actions={selectionActions} composer={faFull.selectionComposer} externalSelection={faFull.iframeSelection} externalOnly={usesIframe} suspended={!visible} />}
-        {!canAnchorComments && <SelectionToolbar containerRef={fsScrollRef} actions={copyOnlyActions} suspended={!visible} />}
+        {showCopyOnlyToolbar && <SelectionToolbar containerRef={fsScrollRef} actions={copyOnlyActions} suspended={!visible} />}
         {faFull.popovers}
         {showSubmitBar && (
           <div className="shrink-0 px-16 pb-3">

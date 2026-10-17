@@ -77,6 +77,26 @@ def _refuse_unusable_parent(path: Path, *, what: str) -> None:
             return
 
 
+def _mkdir_guarded(path: Path, *, what: str) -> None:
+    """Shape-check the parent, then create directories, converting any failure.
+
+    Combines ``_refuse_unusable_parent`` and ``mkdir(parents=True, exist_ok=True)`` into one
+    call so that an ``OSError`` from the mkdir (``PermissionError``, ``ENOSPC``, a race that
+    swaps a component for a file between the shape check and the create) becomes an
+    ``ExportRefused`` naming the path and the flag at fault, instead of escaping as a
+    traceback that strands the build outside the refusal-keyed cleanup.
+    """
+    _refuse_unusable_parent(path, what=what)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ExportRefused(
+            f"cannot create the directory for {what}: {path.parent} is not writable or a "
+            f"component changed between the shape check and the mkdir ({exc}). The path is "
+            f"derived from --out; point --out at a directory this build can write to."
+        ) from exc
+
+
 def _is_plain_file_no_follow(parent_fd: int, name: str) -> bool:
     """True only if *name* under *parent_fd* is a regular file, judged without following.
 

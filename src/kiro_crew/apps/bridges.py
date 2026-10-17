@@ -12,11 +12,13 @@ between apps.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import stat
 import sys
 import zipfile
 from contextlib import ExitStack, contextmanager
@@ -25,7 +27,8 @@ from pathlib import Path
 from typing import Any, Callable, Container, Iterable, Iterator, Optional
 from urllib.parse import urlparse, urlunparse
 
-from kiro_crew import platform_compat
+from kiro_crew import cron as cron_seams
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.apps import deps_boot as _deps_boot_module
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.execution import (
@@ -47,8 +50,11 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.manifest import (
     AppManifest,
+    Containment,
+    contained_in_screened_root,
     has_stdio_mcp_server,
     is_module_style_entry_point,
+    screen_app_path,
 )
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
@@ -57,12 +63,18 @@ from kiro_crew.config.loader import (
     schedule_materialized_agents_refresh,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, lookup_cron_folder_id
+from kiro_crew.cron import (
+    CronPendingMismatch,
+    CronStoreBusy,
+    CronStoreUnreadable,
+    lookup_cron_folder_id,
+)
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.env import emit_env
 from kiro_crew.executors import maintenance_executor
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError, LockFileError
 from kiro_crew.history import ConversationLog
+from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -539,8 +551,8 @@ def _apply_agent_mcp_policy(
             "disabled": True,
             "disabledTools": list(disabled) if isinstance(disabled, list) else [],
         }
-        tools = [t for t in tools if t != f"@{name}"]
-        allowed = [t for t in allowed if t != f"@{name}"]
+        tools = without_mcp_refs(tools, (name,), per_tool=False)
+        allowed = without_mcp_refs(allowed, (name,))
 
     agent_data["mcpServers"] = servers
     agent_data["tools"] = tools
@@ -983,10 +995,23 @@ def _register_agents(
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
 
+        screened_root = screen_app_path(app_root) if manifest.agents else Containment.UNCHECKED
         for agent_path_str in manifest.agents:
             agent_path = app_root / agent_path_str
             # Path containment check — reject paths that escape the app root
-            if not agent_path.resolve().is_relative_to(app_root.resolve()):
+            contained = contained_in_screened_root(agent_path, screened_root)
+            if contained is Containment.UNCHECKED:
+                # Unverified is not refused: report it as retryable.
+                logger.warning("App %s: agent path could not be checked: %s", app_name, agent_path)
+                if io_failures is not None:
+                    io_failures.append(str(agent_path))
+                continue
+            if contained is Containment.REFUSED:
+                logger.warning(
+                    "App %s: agent path is refused by the path screen: %s", app_name, agent_path
+                )
+                continue
+            if contained is Containment.OUTSIDE:
                 logger.warning("App %s: agent path escapes app root: %s", app_name, agent_path)
                 continue
             if not agent_path.is_file():
@@ -1109,7 +1134,20 @@ def _register_agents(
                         agent_name,
                         ", ".join(dangling),
                     )
-                atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                # The ownership decision and the write share one critical section,
+                # the agent-spec lock every spec writer of this directory holds: an
+                # instance on a data home that does not own the shared agents
+                # directory leaves the owner's copy in place rather than stamping its
+                # own launcher and data home into a spec the owner's sessions load. A
+                # refusal is permanent until ownership changes, so it is not an I/O
+                # failure a retry could clear. Imported here, like every other read of
+                # the agent facade in this module.
+                from kiro_crew import agent as _agent
+
+                with _agent.agents_spec_lock(agents_dir):
+                    if _agent._declined_foreign_spec_write(link_path):
+                        continue
+                    atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
                 # `name` field, so the namespaced filename stem is not a name it
@@ -1169,6 +1207,114 @@ def _deregister_agents(app_name: str) -> int:
     return removed
 
 
+def _unlink_unheld_app_lock(path: Path, identity: tuple[int, int]) -> bool:
+    """Remove the lock file at *path* only while nobody holds it, and only that inode.
+
+    A launcher may still hold an old ``<stem>.lock``; unlinking it then would let
+    the next launcher lock a fresh inode while the first still holds the old one.
+    So the file is opened without following links (with delete-sharing on
+    Windows, so our own handle does not block the unlink), its identity and
+    emptiness checked, and an exclusive lock taken without waiting: a held lock is
+    left alone, and the identity-verified unlink happens while ours is held.
+
+    Local to the apps package rather than reused from ``kiro_crew.acp``: the
+    agent-SDK import boundary (``scripts/check_agent_sdk_boundary.py``) forbids
+    application code from importing the ACP backend directly.
+    """
+    try:
+        fd = platform_compat.open_lock_file_for_sweep(path)
+    except OSError:
+        return False
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != identity or opened.st_size != 0:
+            return False
+        if not platform_compat.try_acquire_lock(fd, exclusive=True):
+            return False
+        return pinned_fs.unlink_verified_by_name(path.parent, path.name, identity)
+    except OSError:
+        return False
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def purge_uninstalled_agent_residue(app_name: str) -> None:
+    """Remove the per-agent files an uninstalled app's agents left behind.
+
+    :func:`_deregister_agents` unlinks ``<app>--<agent>.json`` from the agents
+    directory, but two files derived from that same name outlive it:
+
+    * ``~/.kiro/agents/<app>--<agent>.lock`` -- the empty per-spec lock a
+      launcher takes beside each spec it rewrites.
+    * ``<mcp_gateway.overlay_dir>/<app>--<agent>.json`` -- the MCP gateway's
+      rewritten copy of the spec. The rewriter prunes it only on its next pass
+      (broker start), so until then a session asking for the agent by its bare
+      name -- including one of a DIFFERENT app reinstalled under this name --
+      would be handed stubs for servers the removed app declared.
+
+    Called at uninstall only, never on disable: a disabled app's overlay is still
+    the one its re-enable would want. Both names are derived exactly as
+    registration derives them (the ``<app>--`` namespace; kebab app names cannot
+    contain ``--``, so the prefix never matches another app), and each is left
+    alone while its source spec still exists. A lock goes through
+    :func:`_unlink_unheld_app_lock`, which removes only a regular, empty, unheld
+    file and unlinks it while holding its lock, so a launcher that still holds it
+    is never raced. Best-effort: a missing file or an unreadable
+    directory is not an error.
+    """
+    prefix = _safe_link_name(app_name + "/")
+    agents_dir = _kiro_agents_dir()
+    removed: list[str] = []
+
+    def _spec_present(stem: str) -> bool:
+        return (agents_dir / f"{stem}.json").exists()
+
+    try:
+        locks = list(agents_dir.glob(f"{prefix}*.lock"))
+    except OSError:
+        locks = []
+    for lock in locks:
+        if _spec_present(lock.stem):
+            continue
+        try:
+            info = os.lstat(lock)
+        except OSError:
+            continue
+        # lstat: a link or junction at the name is not S_ISREG, so it is refused
+        # outright and never followed.
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if _unlink_unheld_app_lock(lock, (info.st_dev, info.st_ino)):
+            removed.append(str(lock))
+
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.mcp_gateway.rewriter import resolve_overlay_dir
+
+        overlay_dir = resolve_overlay_dir(KiroCrewConfig.load().mcp_gateway.overlay_dir)
+        overlays = list(overlay_dir.glob(f"{prefix}*.json"))
+    except Exception:  # noqa: BLE001 - best-effort cleanup must not fail an uninstall
+        logger.debug("could not list MCP gateway overlays for %s", app_name, exc_info=True)
+        overlays = []
+    for overlay in overlays:
+        if _spec_present(overlay.stem):
+            continue
+        try:
+            # lstat, so a link at the name is refused rather than followed.
+            if not stat.S_ISREG(os.lstat(overlay).st_mode):
+                continue
+            overlay.unlink()
+            removed.append(str(overlay))
+        except OSError:
+            pass
+
+    if removed:
+        logger.info("Removed %d leftover agent file(s) for app %s", len(removed), app_name)
+
+
 # ---------------------------------------------------------------------------
 # Skill registration
 # ---------------------------------------------------------------------------
@@ -1176,12 +1322,20 @@ def _deregister_agents(app_name: str) -> int:
 _RESERVED_SKILL_DIRS = {"auto"}
 
 
-def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> list[str]:
+def _register_skills(
+    app_name: str,
+    manifest: AppManifest,
+    app_root: Path,
+    io_failures: list[str] | None = None,
+) -> list[str]:
     """Symlink app skill directories into ~/.kiro/crew/skills/.
 
     Creates both a namespaced link (``skills/{app_name}/{skill_name}``) and a
     flat link (``skills/{skill_name}``) so the skill scanner finds the skill
     regardless of whether it walks subdirectories or only checks the top level.
+
+    ``io_failures``, when supplied, collects the skills skipped because the path
+    screen could not check them, which a later registration can still link.
 
     Returns list of registered skill names (namespaced).
     """
@@ -1201,9 +1355,22 @@ def _register_skills(app_name: str, manifest: AppManifest, app_root: Path) -> li
     app_skills_dir = skills_root / app_name
     app_skills_dir.mkdir(parents=True, exist_ok=True)
 
+    screened_root = screen_app_path(app_root)
     for skill_path_str in manifest.skills:
         skill_path = app_root / skill_path_str
-        if not skill_path.resolve().is_relative_to(app_root.resolve()):
+        contained = contained_in_screened_root(skill_path, screened_root)
+        if contained is Containment.UNCHECKED:
+            # Unverified is not refused: report it as retryable.
+            logger.warning("App %s: skill path could not be checked: %s", app_name, skill_path)
+            if io_failures is not None:
+                io_failures.append(str(skill_path))
+            continue
+        if contained is Containment.REFUSED:
+            logger.warning(
+                "App %s: skill path is refused by the path screen: %s", app_name, skill_path
+            )
+            continue
+        if contained is Containment.OUTSIDE:
             logger.warning("App %s: skill path escapes app root: %s", app_name, skill_path)
             continue
         if not skill_path.is_dir():
@@ -1460,6 +1627,8 @@ def _cron_defs_from_manifest(
                 "timezone": cron.timezone,
                 "skip_dates": cron.skip_dates,
                 "folder": cron.folder,
+                "timeout": cron.timeout,
+                "timeout_secs": cron.timeout_secs,
             }
         )
         registered.append(namespaced)
@@ -1481,7 +1650,9 @@ def _register_crons(app_name: str, manifest: AppManifest) -> list[str]:
 
     path = _app_crons_path(app_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cron_defs, indent=2), encoding="utf-8")
+    # Atomic: the scheduler reads this file at every start, so a write cut off
+    # part way must leave the previous definitions in place, not a torn file.
+    atomic_write(path, json.dumps(cron_defs, indent=2))
     logger.info("Wrote %d cron definition(s) for app %s", len(cron_defs), app_name)
     return registered
 
@@ -1523,7 +1694,16 @@ def load_app_cron_defs(app_name: str) -> list[dict[str, Any]]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        # A manifest that exists but cannot be read (for example one left torn by
+        # an interrupted write) is logged at WARNING and treated as no crons, so
+        # none of the app's scheduled jobs from it are registered.
+        logger.warning(
+            "App %s: cron manifest %s could not be read (%s); ignoring it",
+            app_name,
+            path,
+            type(exc).__name__,
+        )
         return []
     if not isinstance(data, list):
         logger.warning(
@@ -1572,6 +1752,424 @@ def _resolve_and_vet_app_script(
     return file_path, func_name, vet_script_file(file_path)
 
 
+#: The ``app-crons.json`` keys an app's manifest OWNS on its registered job --
+#: the ones :func:`register_app_crons_with_service` re-applies, one by one, when
+#: the entry's value for that key changes. ``name`` and ``app`` are the job's
+#: identity, not its content. ``enabled`` is deliberately absent: the manifest
+#: value is the INITIAL pause state only, and whether the job is paused afterwards
+#: belongs to the person (``user_paused``) and to the failure auto-pause, so an
+#: author flipping it does not count as a change and never overrides either.
+#:
+#: The stamp (:func:`app_cron_manifest_digest`) is KEYED, one ``key=digest`` per
+#: entry here, so a key added later is simply missing from older stamps and
+#: counts as changed on its own; the other keys keep their per-field history.
+_MANIFEST_OWNED_CRON_KEYS: tuple[str, ...] = (
+    "every",
+    "cron_expr",
+    "agent",
+    "message",
+    "command",
+    "script",
+    "agent_sequence",
+    "env",
+    "persistent_session",
+    "silent",
+    "timezone",
+    "skip_dates",
+    "folder",
+    "timeout",
+    "timeout_secs",
+)
+
+#: Hex characters kept of each per-key sha256. 12 (48 bits) tells "the author
+#: changed this field" from "did not" on one job's own history, which is the
+#: only comparison ever made; the whole keyed stamp (~330 chars) then fits the
+#: general short-string cap with room for the keys above to grow.
+_FIELD_DIGEST_CHARS = 12
+
+
+def _field_digest(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:_FIELD_DIGEST_CHARS]
+
+
+def app_cron_manifest_digest(cron_def: dict[str, Any]) -> str:
+    """The stamp :func:`register_app_crons_with_service` leaves on an app job.
+
+    One ``key=digest`` (a short sha256 of the key's canonical JSON value) per
+    manifest-owned key, joined with ``,`` -- so two definitions that spell the
+    same thing stamp the same, and a later entry can be compared with the stamp
+    FIELD BY FIELD: only the keys whose manifest value changed are re-applied,
+    and a person's edit to a key the author never touched stays. Keyed rather
+    than positional so a key added to ``_MANIFEST_OWNED_CRON_KEYS`` later is
+    the only one an older stamp counts as changed. Computed over the
+    DEFINITION, not the job: the job holds the resolved script path and the
+    resolved folder id, which can differ between hosts for the same manifest.
+    """
+    return _join_stamp(_stamp_digests(cron_def))
+
+
+def _stamp_digests(cron_def: dict[str, Any]) -> dict[str, str]:
+    return {key: _field_digest(cron_def.get(key)) for key in _MANIFEST_OWNED_CRON_KEYS}
+
+
+def _join_stamp(digests: dict[str, str]) -> str:
+    return ",".join(f"{key}={digests[key]}" for key in _MANIFEST_OWNED_CRON_KEYS)
+
+
+def _stamp_fields(stamp: str) -> dict[str, str] | None:
+    """The per-key digests a stored stamp holds, or None for a stamp this build
+    cannot read (empty, or not ``key=digest`` pairs). A key this build knows
+    that the stamp lacks is simply absent from the result, and so compares as
+    changed; a key the stamp has that this build does not know is dropped."""
+    if not stamp:
+        return None
+    fields: dict[str, str] = {}
+    for part in stamp.split(","):
+        key, sep, value = part.partition("=")
+        if not sep or not value:
+            return None
+        if key in _MANIFEST_OWNED_CRON_KEYS:
+            fields[key] = value
+    return fields
+
+
+def _manifest_job_fields(
+    cron_def: dict[str, Any],
+    *,
+    command: str,
+    script: str,
+    folder_id: str,
+    digest: str,
+) -> dict[str, Any]:
+    """The ``CronSDK`` keyword arguments one definition maps to, minus ``name``.
+
+    One mapping for both the create and the re-apply path so the two cannot
+    drift: a key carried on create but not on re-apply would be exactly the bug
+    this exists to close. ``command``/``script`` are the vetted (and, for a
+    script, resolved) values, ``folder_id`` the resolved Schedule-page folder.
+    ``enabled`` is not here: see ``_MANIFEST_OWNED_CRON_KEYS``.
+    """
+    return dict(
+        message=cron_def.get("message", ""),
+        every_secs=cron_def.get("every"),  # JSON "every" -> Python "every_secs"
+        cron_expr=cron_def.get("cron_expr"),
+        agent=cron_def.get("agent") or "",
+        command=command,
+        script=script,
+        agent_sequence=cron_def.get("agent_sequence") or None,
+        env=cron_def.get("env") or None,
+        persistent_session=bool(cron_def.get("persistent_session", False)),
+        silent=bool(cron_def.get("silent", False)),
+        # An empty timezone resolves to the config zone and then to UTC at fire
+        # time, so a manifest that pins an hour meaningful only in one zone must
+        # have it threaded here, not corrected by a second write.
+        timezone=cron_def.get("timezone") or "",
+        skip_dates=cron_def.get("skip_dates") or None,
+        # 0 (or a def written before these keys existed) = the scheduler
+        # default; CronService validates the pair.
+        timeout=cron_def.get("timeout") or 0,
+        timeout_secs=cron_def.get("timeout_secs") or 0,
+        folder_id=folder_id,
+        app_manifest_digest=digest,
+    )
+
+
+#: The definition keys ``CronService.update_job`` has no branch for. They are the
+#: fields the fire-time vet and a secret grant's pin bind to, so the scheduler
+#: accepts them at creation only; a manifest change to one of them reaches the
+#: job the way the app-kit manifest reference says it does, through a disable
+#: and enable of the app (which deletes and recreates its jobs).
+_CREATE_ONLY_CRON_KEYS: tuple[str, ...] = ("command", "script", "agent_sequence", "env")
+
+#: Manifest key -> the ``CronSDK.update_job_async`` keyword(s) it is applied
+#: through. ``every`` and ``cron_expr`` are one schedule, so a change to either
+#: sends both (the gate reads ``cron_expr`` first and falls back to ``every_secs``).
+_UPDATE_KWARGS_FOR_KEY: dict[str, tuple[str, ...]] = {
+    "every": ("every_secs", "cron_expr"),
+    "cron_expr": ("every_secs", "cron_expr"),
+    "agent": ("agent_id",),
+    "message": ("message",),
+    "persistent_session": ("persistent_session",),
+    "silent": ("silent",),
+    "timezone": ("timezone",),
+    "skip_dates": ("skip_dates",),
+    "folder": ("folder_id",),
+    "timeout": ("timeout",),
+    "timeout_secs": ("timeout_secs",),
+}
+
+
+async def _resync_app_cron(
+    sdk: CronSDK,
+    job: Any,
+    cron_def: dict[str, Any],
+    *,
+    digest: str,
+    command: str,
+    script: str,
+    folder_id: str,
+) -> str:
+    """Bring an already-registered app job up to its changed manifest entry.
+
+    Precedence, per field: the manifest wins for a manifest-owned field whose
+    MANIFEST value changed since the stamp (the author moved it), a person's
+    edit wins for every other field (the author did not touch it, so the stamp
+    and the entry agree there and nothing is sent), and the job's pause state
+    (``enabled``/``user_paused``/``auto_paused``) is kept always -- it is the
+    person's, or the failure auto-pause's, never the manifest's. A job whose
+    stamp this build cannot read (none, or not ``key=digest`` pairs) has no
+    per-field history, so every manifest-owned field counts as changed once; a
+    stamp that merely lacks a key this build knows counts that key alone.
+
+    In place, through ``CronSDK.update_job_async``, so the job keeps its id, run
+    history, chat tab and every setting the manifest does not own (delivery
+    channel, model, chat visibility, a secret grant). The job is never removed
+    and recreated: a remove-then-add would lose it when the create gate refuses
+    the replacement, and would reset those settings on every pass.
+
+    Two kinds of change cannot be applied in place and are REPORTED instead,
+    every pass, until the app is disabled and enabled (which rebuilds the job
+    from the manifest): a key in ``_CREATE_ONLY_CRON_KEYS``, and a ``message``
+    cleared to empty (the update gate keeps the stored prompt on an empty value,
+    so stamping it as applied would hide a job still running obsolete
+    instructions). The stamp written holds, for each such key, the digest of
+    what the job ACTUALLY carries, never the entry's -- so the drift stays
+    visible: every later pass sees the stamp differ, finds the same pending
+    keys and reports them again. When that is ALL that differs, nothing is
+    written, so a person's edits made in the meantime are not rewritten pass
+    after pass.
+
+    Returns ``"updated"``, ``"partial"`` (updated; a change is pending a
+    re-enable), ``"pending"`` (nothing new to apply; a pending change was
+    reported again), ``"stale"`` (another registrar re-stamped the job between
+    this pass's snapshot and its locked write; nothing written) or
+    ``"vanished"`` (gone before the locked write).
+    """
+    fields = _manifest_job_fields(
+        cron_def, command=command, script=script, folder_id=folder_id, digest=digest
+    )
+    wanted = {key: cron_def.get(key) for key in _MANIFEST_OWNED_CRON_KEYS}
+    # The create-only keys as the JOB carries them, in manifest spelling where
+    # the two coincide. ``script`` is the exception: the job holds the resolved
+    # path, which no manifest spelling equals, so once it drifts it stays
+    # visibly drifted until a disable/enable rebuilds the job.
+    carried = {
+        "command": job.command or "",
+        "script": job.script or "",
+        "agent_sequence": list(job.agent_sequence or []),
+        "env": dict(job.env or {}),
+    }
+    vetted = {
+        "command": command or "",
+        "script": script or "",
+        "agent_sequence": list(cron_def.get("agent_sequence") or []),
+        "env": dict(cron_def.get("env") or {}),
+    }
+
+    stored = _stamp_fields(job.app_manifest_digest)
+    current = _stamp_digests(cron_def)
+    if stored is None:
+        changed = list(_MANIFEST_OWNED_CRON_KEYS)
+    else:
+        changed = [key for key in _MANIFEST_OWNED_CRON_KEYS if stored.get(key) != current[key]]
+
+    pending: list[str] = []
+    applied = dict(current)
+    for key in changed:
+        if key in _CREATE_ONLY_CRON_KEYS and carried[key] != vetted[key]:
+            pending.append(key)
+            applied[key] = _field_digest(carried[key])
+        elif key == "message" and not wanted["message"] and job.message:
+            pending.append(key)
+            applied[key] = _field_digest(job.message)
+    applied_stamp = _join_stamp(applied)
+    if pending and job.app_manifest_digest == applied_stamp:
+        _report_pending_reenable(sdk.app_name, job.name, pending)
+        return "pending"
+
+    # The create-path fields in the update gate's spelling: ``agent`` is
+    # ``agent_id`` there (the SDK's create path renames it on the way down).
+    source = dict(fields)
+    source["agent_id"] = source.pop("agent")
+    update_kwargs: dict[str, Any] = {"app_manifest_digest": applied_stamp}
+    for key in changed:
+        if key in pending:
+            continue
+        for kwarg in _UPDATE_KWARGS_FOR_KEY.get(key, ()):
+            update_kwargs[kwarg] = source[kwarg]
+    # Spelled for the update gate, which differs from the create gate in three
+    # more places: the create-only keys are never sent; a 0 wake budget is refused rather than read as the default, so
+    # it becomes the explicit default build_job would store; and a short
+    # interval is refused rather than raised to the floor, so it is clamped as
+    # build_job clamps it, with cron_expr winning over every as build_job has it
+    # win.
+    if "timeout_secs" in update_kwargs:
+        update_kwargs["timeout_secs"] = int(
+            update_kwargs["timeout_secs"] or cron_seams._JOB_TIMEOUT_SECS
+        )
+    if "cron_expr" in update_kwargs:
+        if update_kwargs["cron_expr"]:
+            update_kwargs["every_secs"] = None
+        elif update_kwargs["every_secs"]:
+            update_kwargs["every_secs"] = max(
+                int(update_kwargs["every_secs"]), cron_seams._MIN_INTERVAL_SECS
+            )
+
+    overwritten = _overwritten_fields(job, update_kwargs)
+    # Read BEFORE the write: ``job`` is the store's own object, and the locked
+    # update mutates it in place, so afterwards it carries the new stamp.
+    had_stamp = stored is not None
+    stamp_read = job.app_manifest_digest
+    try:
+        # Compare-and-swap on the stamp this pass computed its fields from: the
+        # snapshot was taken several awaited steps ago (vetting, folder lookup),
+        # and a CLI enable or another registrar may have applied a manifest to
+        # this job -- and a person may have edited it -- in between. Fields
+        # computed against the old stamp would then overwrite those writes, so
+        # the locked update refuses, and the next registration pass recomputes
+        # from the record as it then stands.
+        updated = await sdk.update_job_async(
+            job.id, expect_app_manifest_digest=stamp_read, **update_kwargs
+        )
+    except CronPendingMismatch:
+        logger.info(
+            "App %s: cron %r was re-stamped by another registrar during this pass; "
+            "left for the next registration to reconcile",
+            sdk.app_name,
+            job.name,
+        )
+        return "stale"
+    if updated is None:
+        # Gone between the snapshot and the locked write (a disable raced us):
+        # nothing to bring up to date, and nothing to recreate here -- the
+        # registrar that removed it owns what happens next.
+        return "vanished"
+    if overwritten:
+        # Each replaced value, old and new, so a person whose Schedule-page edit
+        # the manifest just overrode can see what moved and put it back. At
+        # WARNING for a job with no readable stamp: that job may carry edits
+        # made under the old rule (nothing recorded which manifest it came
+        # from, so the whole entry is applied once) and this line is the only
+        # record of what they were.
+        logger.log(
+            logging.INFO if had_stamp else logging.WARNING,
+            "App %s: cron %r re-applied from its manifest%s: %s",
+            sdk.app_name,
+            job.name,
+            "" if had_stamp else " (job predates the manifest stamp)",
+            "; ".join(f"{key}: {old!r} -> {new!r}" for key, old, new in overwritten),
+        )
+    if pending:
+        _report_pending_reenable(sdk.app_name, job.name, pending)
+        return "partial"
+    return "updated"
+
+
+#: The longest a single old or new value is quoted in the re-apply log line. A
+#: ``message`` may run to thousands of characters; the line is for a person
+#: looking for what moved, not a backup of the field.
+_OVERWRITE_LOG_VALUE_CHARS = 120
+
+
+def _overwritten_fields(job: Any, update_kwargs: dict[str, Any]) -> list[tuple[str, Any, Any]]:
+    """``(field, old, new)`` for each update-gate field whose value this pass changes.
+
+    Read against the job as it stands BEFORE the locked write, in the spelling
+    the update gate stores (``every_secs``/``cron_expr`` live on the schedule;
+    ``skip_dates`` None means ``[]``). The stamp itself is not a field a person
+    edits and is left out.
+    """
+    schedule = job.schedule
+    current: dict[str, Any] = {
+        "message": job.message,
+        "every_secs": schedule.every_secs if schedule.kind == "every" else None,
+        "cron_expr": schedule.cron_expr if schedule.kind == "cron" else None,
+        "agent_id": job.agent_id or "",
+        "persistent_session": bool(job.persistent_session),
+        "silent": bool(job.silent),
+        "timezone": job.timezone or "",
+        "skip_dates": list(job.skip_dates or []),
+        "timeout": int(job.timeout or 0),
+        "timeout_secs": int(job.timeout_secs),
+        "folder_id": job.folder_id or "",
+    }
+    changed: list[tuple[str, Any, Any]] = []
+    for key, old in current.items():
+        if key not in update_kwargs:
+            continue
+        new = update_kwargs[key]
+        if key == "skip_dates":
+            new = list(new or [])
+        elif key == "every_secs":
+            # The update gate leaves an existing schedule alone on a falsy value
+            # (a cron_expr entry sends None here), so None is "no change".
+            if not new:
+                continue
+        elif key == "cron_expr" and not new:
+            continue
+        elif key == "message" and not new:
+            # The gate skips an empty message (a command/script job has none).
+            continue
+        if old != new:
+            changed.append((key, _clip(old), _clip(new)))
+    return changed
+
+
+def _clip(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > _OVERWRITE_LOG_VALUE_CHARS:
+        return value[:_OVERWRITE_LOG_VALUE_CHARS] + "..."
+    return value
+
+
+def _report_pending_reenable(app_name: str, job_name: str, pending: list[str]) -> None:
+    """Say, in the log and the SEL trail, that a manifest change is waiting on a re-enable.
+
+    Emitted on EVERY registration pass while the drift stands, not once: a
+    single line at one gateway start is the silent-mismatch shape this re-sync
+    exists to remove.
+    """
+    logger.warning(
+        "App %s: cron %r changed %s in its manifest; the scheduler cannot apply "
+        "these to an existing job (accepted at creation only, or an empty value "
+        "it does not store), so the job keeps its current value(s) until the app "
+        "is disabled and enabled again",
+        app_name,
+        job_name,
+        ", ".join(pending),
+    )
+    sel().log_api_access(
+        caller="app_bridge",
+        operation="app_cron_resync_pending_reenable",
+        outcome="denied",
+        resources=f"app={app_name} cron={job_name} fields={','.join(pending)}",
+    )
+
+
+def _admitted_app_cron_defs(app_name: str) -> tuple[list[dict[str, Any]], Path]:
+    """The cron definitions the central execution decision admits for *app_name*,
+    with the bundle root their ``script`` specs resolve against.
+
+    Synchronous filesystem work (provenance lookup, the admission decision, the
+    manifest or ``app-crons.json`` read), kept in one function so the registrar
+    can hand all of it to a worker thread in one hop. No definitions when the
+    app is denied, has no manifest, or declares no crons.
+    """
+    manifest, app_root = _registration_source(app_name)
+    if _registration_denied(
+        app_name,
+        action="cron_register",
+        app_root=app_root,
+    ):
+        return [], app_root
+    if shipped_builtin_app_root(app_name) is not None:
+        if manifest is None:
+            return [], app_root
+        defs, _ = _cron_defs_from_manifest(app_name, manifest)
+        return defs, app_root
+    return load_app_cron_defs(app_name), app_root
+
+
 async def register_app_crons_with_service(app_name: str, cron_service: Any) -> list[str]:
     """Promote admitted app cron definitions into the running CronService.
 
@@ -1585,38 +2183,52 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
     loop (no ``asyncio.to_thread`` wrapper, no caller-side timer re-arm) without
     parking the loop. Timer arming is owned by CronService.
 
-    Idempotent — jobs already present (by name) are skipped.
+    Idempotent for an unchanged manifest, and the path a CHANGED manifest
+    reaches an existing install by: every job carries a per-field stamp of the
+    manifest entry it was built from (``app_manifest_digest``), and a job whose
+    stamp equals the current entry's is left exactly as it is -- hand edits
+    included. A job whose stamp differs is brought up to the manifest by
+    :func:`_resync_app_cron` FIELD BY FIELD -- only the keys whose manifest
+    value changed are sent, so a person's edit to a key the author never
+    touched stays -- and re-stamped; a job with no readable stamp (created
+    before it existed) takes the whole entry once. Its pause state is kept
+    always, and a change the scheduler cannot apply in place (a create-only
+    key, ``_CREATE_ONLY_CRON_KEYS``, or a message cleared to empty) waits for
+    a disable/enable of the app and says so in the log and the SEL trail on
+    every pass until then (the stamp records what the job carries for that
+    key, not the entry, so the drift is never marked as applied).
+
+    Returns the names of the jobs CREATED by this pass. A re-synced job is not
+    new and is reported in the log and the SEL trail instead.
     """
     if cron_service is None:
         return []
 
-    manifest, app_root = _registration_source(app_name)
-    if _registration_denied(
-        app_name,
-        action="cron_register",
-        app_root=app_root,
-    ):
-        return []
-
-    if shipped_builtin_app_root(app_name) is not None:
-        if manifest is None:
-            return []
-        defs, _ = _cron_defs_from_manifest(app_name, manifest)
-    else:
-        defs = load_app_cron_defs(app_name)
+    # Off-loop: this coroutine is awaited on the gateway loop (app enable, app
+    # update, gateway start), and admission walks the builtin app directories,
+    # reads manifests and the installed app-crons.json. Inline that parks every
+    # request and the heartbeat for the scan.
+    defs, app_root = await asyncio.to_thread(_admitted_app_cron_defs, app_name)
     if not defs:
         return []
 
     sdk = CronSDK(app_name, cron_service)
-    existing_names = {j.name for j in sdk.list_jobs()}
+    existing_jobs = {j.name: j for j in sdk.list_jobs()}
 
     # circular import: mcp_cron → security → ... → hooks_integration → bridges
     from kiro_crew.mcp_cron import _vet_script_file, _vet_shell_command
 
     newly_registered: list[str] = []
+    resynced: list[str] = []
     for d in defs:
         name = d.get("name", "")
-        if not name or name in existing_names:
+        if not name:
+            continue
+        existing = existing_jobs.get(name)
+        digest = app_cron_manifest_digest(d)
+        if existing is not None and existing.app_manifest_digest == digest:
+            # Built from the manifest entry on disk now, so nothing in it is
+            # news: whatever differs on the job is a hand edit, and it stays.
             continue
         command = d.get("command") or ""
         script = d.get("script") or ""
@@ -1713,31 +2325,37 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
                     logger.warning(
                         "App %s: cron %r registered ungrouped: %s", app_name, name, found.error
                     )
+            fields = _manifest_job_fields(
+                d, command=command, script=script, folder_id=folder_id, digest=digest
+            )
+            if existing is not None:
+                how = await _resync_app_cron(
+                    sdk,
+                    existing,
+                    d,
+                    digest=digest,
+                    command=command,
+                    script=script,
+                    folder_id=folder_id,
+                )
+                resynced.append(f"{name} ({how})")
+                sel().log_api_access(
+                    caller="app_bridge",
+                    operation="app_cron_resync_job",
+                    outcome="allowed",
+                    resources=f"app={app_name} cron={name} how={how}",
+                )
+                continue
             # Atomic add-if-absent: the name check and the append happen under
             # one store lock (fresh _sync first), so a CLI enable racing the
             # gateway's own registration cannot persist duplicate jobs. The
-            # existing_names snapshot above remains only a cheap fast path to
-            # skip vetting for jobs already seen; this call is the authority.
+            # existing_jobs snapshot above remains only a cheap fast path to
+            # skip vetting for jobs already up to date; this call is the
+            # authority.
             job = await sdk.add_job_if_absent_async(
                 name=name,
-                message=d.get("message", ""),
-                every_secs=d.get("every"),  # JSON "every" → Python "every_secs"
-                cron_expr=d.get("cron_expr"),
-                agent=d.get("agent") or "",
-                command=command,
-                script=script,
-                agent_sequence=d.get("agent_sequence") or None,
-                env=d.get("env") or None,
-                persistent_session=d.get("persistent_session", False),
-                silent=bool(d.get("silent", False)),
                 enabled=bool(d.get("enabled", True)),
-                # An empty timezone resolves to the config zone and then to UTC
-                # at fire time, so a manifest that pins an hour meaningful only
-                # in one zone must have it threaded here, not corrected by a
-                # second write after the job already exists.
-                timezone=d.get("timezone") or "",
-                skip_dates=d.get("skip_dates") or None,
-                folder_id=folder_id,
+                **fields,
             )
             if job is None:
                 # Lost the race (or already present): another registrar
@@ -1772,6 +2390,13 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
             app_name,
             len(newly_registered),
             ", ".join(newly_registered),
+        )
+    if resynced:
+        logger.info(
+            "App %s: re-applied a changed manifest to %d cron job(s): %s",
+            app_name,
+            len(resynced),
+            ", ".join(resynced),
         )
     return newly_registered
 
@@ -2812,6 +3437,41 @@ def _warn_unresolvable_stdio_command(app_name: str, server_name: str, cfg: dict)
         )
 
 
+def _warn_unresolved_secret_refs(app_name: str, server_name: str, env: dict) -> None:
+    """Warn when an app's stdio MCP server declares a ``secret://`` env value.
+
+    An app-registered stdio server is written into the agent config, and when
+    kiro-cli spawns it directly the child gets the literal reference text: the
+    credential silently never arrives. How an installed app may receive a vault
+    secret at all is an open trust decision, so this neither resolves the value
+    nor points at a route that would: it states the gap, gates nothing, and
+    leaves the entry exactly as declared.
+
+    Names only the env-var KEYS, never the secret name after the scheme -- the
+    same sink rule :mod:`kiro_crew.mcp_gateway.secret_uri` follows, because a
+    manifest-authored name can carry control characters. Never raises.
+    """
+    # Lazy: the resolver module pulls in the vault, which registration never needs.
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+
+    keys = sorted(
+        str(key)
+        for key, value in env.items()
+        if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
+    )
+    if not keys:
+        return
+    logger.warning(
+        "App %s: stdio MCP server %r sets env %s to a secret:// reference; when "
+        "kiro-cli spawns the server directly it receives the literal reference "
+        "text, not a vault value. How an app may receive a vault secret is "
+        "undecided (https://github.com/kirodotdev/KiroCrew/issues/10641)",
+        app_name,
+        server_name,
+        ", ".join(repr(k) for k in keys),
+    )
+
+
 def _schedule_unresolvable_warning(app_name: str, server_name: str, cfg: dict) -> None:
     """Run the unresolvable-command probe without ever blocking the event loop.
 
@@ -2991,6 +3651,7 @@ def _register_mcp_servers(
                     # through the shared normalization point (env.emit_env).
                     env = cfg.get("env")
                     if isinstance(env, dict):
+                        _warn_unresolved_secret_refs(app_name, server_name, env)
                         cfg = {**cfg, "env": emit_env(env)}
             servers[namespaced] = cfg
             registered.append(namespaced)
@@ -3253,10 +3914,17 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
     # Agents: the current link names the manifest still declares (same derivation
     # as _register_agents: the JSON's `name`, falling back to the file stem).
     current_links: set[str] = set()
+    screened_root = screen_app_path(app_root) if manifest.agents else Containment.UNCHECKED
     for agent_path_str in manifest.agents or []:
         agent_path = app_root / agent_path_str
         try:
-            if not agent_path.resolve().is_relative_to(app_root.resolve()):
+            contained = contained_in_screened_root(agent_path, screened_root)
+            if contained is Containment.UNCHECKED:
+                # An unverified path is not a removed agent: abort like an unreadable one.
+                raise OSError("containment could not be verified")
+            if contained is not Containment.INSIDE:
+                # Outside the root or refused by the path screen: registration
+                # never links it, so it carries no current name either.
                 continue
             data = json.loads(agent_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
@@ -3395,10 +4063,16 @@ def register_app(app_name: str) -> RegistrationResult:
             "-- agent source missing or unreadable"
         )
 
+    unchecked_skills: list[str] = []
     try:
-        result.skills = _register_skills(app_name, manifest, app_root)
+        result.skills = _register_skills(app_name, manifest, app_root, unchecked_skills)
     except Exception as exc:
         result.errors.append(f"skill registration failed: {exc}")
+    if unchecked_skills:
+        result.errors.append(
+            "skill path(s) could not be checked yet, retry registration: "
+            + ", ".join(unchecked_skills)
+        )
 
     try:
         result.crons = _register_crons(app_name, manifest)

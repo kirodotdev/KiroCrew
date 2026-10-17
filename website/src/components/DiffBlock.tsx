@@ -1,7 +1,7 @@
-import { Fragment, memo, useState, useMemo, useEffect, useRef } from 'react'
+import { Fragment, memo, useState, useMemo } from 'react'
 import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
-import { fileReadUrl } from '../utils/fileReadUrl'
+import { usePathKind } from '../hooks/usePathKind'
 import { isSafePath } from '../utils/safePath'
 import { splitPatchSections, type PatchSection } from '../utils/diffLineCounts'
 import { PierrePatch } from '../pierre'
@@ -13,6 +13,7 @@ import { usePlainDiff } from '../hooks/usePlainDiff'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { pathBasename, decodePathForDisplay } from '../utils/pathBasename'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -93,15 +94,20 @@ export function extractFilePath(code: string): { path: string; prefixStripped: b
  * path, making "relative spelling absent" meaningless as evidence. */
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
-const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+const basename = pathBasename
 
 /** What a file's header row is titled: the basename, and for a rename the old
  *  basename, an arrow, the new one. The full path is the wrapper's tooltip and
  *  the Open button's target; the row only has to tell the files of one patch
  *  apart. A rename that keeps its basename — a move between directories —
  *  reads as the full paths, `src/a.ts → test/a.ts`: the basenames would say
- *  `a.ts → a.ts`, which says nothing. */
+ *  `a.ts → a.ts`, which says nothing. Percent-escapes are decoded for the
+ *  title only (decodePathForDisplay); the Open target keeps the raw path. */
 function sectionTitle(section: PatchSection, fallbackPath: string | null): string {
+  return decodePathForDisplay(rawSectionTitle(section, fallbackPath))
+}
+
+function rawSectionTitle(section: PatchSection, fallbackPath: string | null): string {
   const name = section.name ?? fallbackPath
   if (name == null) return ''
   const prev = section.prevName
@@ -193,39 +199,16 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   const ambiguousRootless = extracted != null && extracted.prefixStripped && ROOTLESS_ABS_RE.test(extracted.path)
   const corroboratedRooted = ambiguousRootless && extracted != null && pathHint === '/' + extracted.path ? pathHint : null
   const probePath = ambiguousRootless ? corroboratedRooted : headerPath
-  // The path the Open button acts on — committed by the probe effect, KEYED to
-  // the headerPath that initiated the probe. The keyed derivation means a
-  // verdict measured for a PREVIOUS header is never rendered against the
-  // current one (same pattern as usePathKind): during the one render between a
-  // header change and the effect re-running, the stale entry mismatches and
-  // the button disappears instead of targeting the old path.
-  const [resolved, setResolved] = useState<{ forHeader: string; path: string } | null>(null)
-  const filePath = resolved && resolved.forHeader === headerPath ? resolved.path : null
-
-  // Stash onFileOpen in a ref so the effect below only depends on the probe
-  // candidates. If onFileOpen were a direct dep, every parent re-render that
-  // produced a new function reference would refire the effect →
-  // setResolved(null) → HEAD probe → setResolved(...), causing the Open
-  // button to flicker and reflowing the diff body by 1-2px each time.
-  const onFileOpenRef = useRef(onFileOpen)
-  onFileOpenRef.current = onFileOpen
-
-  useEffect(() => {
-    setResolved(null)
-    if (!probePath || !headerPath || !isSafePath(probePath) || !onFileOpenRef.current) return
-    const ac = new AbortController()
-    ;(async () => {
-      let ok = false
-      try {
-        ok = (await fetch(fileReadUrl(probePath), { method: 'HEAD', signal: ac.signal })).ok
-      } catch { /* network failure / abort → no affordance */ }
-      // An aborted run must not commit: its fetch may have settled before
-      // abort() fired, and the next run's setResolved(null) has already
-      // cleared the slate this result was measured against.
-      if (ok && !ac.signal.aborted) setResolved({ forHeader: headerPath, path: probePath })
-    })()
-    return () => ac.abort()
-  }, [headerPath, probePath])
+  // The path the Open button acts on. `usePathKind` keys its verdict to the path
+  // it was measured for, so a verdict for a PREVIOUS header is never rendered
+  // against the current one: during the render after a header change the kind
+  // reads `undefined` and the button disappears instead of targeting the old
+  // path. The probe shares the transcript-wide cache and batch the markdown
+  // chips use, so a header path a chip already resolved costs no request.
+  const probeKind = usePathKind(
+    probePath && headerPath && isSafePath(probePath) && onFileOpen ? probePath : null,
+  )
+  const filePath = probeKind === 'file' ? probePath : null
 
   // Diff layout follows the shared, persisted split preference (toggled from
   // this block's own header); wrap because chat/side-panel columns are

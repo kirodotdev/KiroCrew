@@ -167,7 +167,8 @@ describe('source-link removal through the existing session menu', () => {
     rowMenuButton().focus()
     await user.keyboard('{Enter}')
     const trigger = await screen.findByRole(device.touch ? 'button' : 'menuitem', { name: 'Hide a PR or Issue chip' })
-    trigger.focus(); await user.keyboard('{ArrowRight}')
+    // The first entry is "hide all"; step past it to the first chip.
+    trigger.focus(); await user.keyboard('{ArrowRight}{ArrowDown}')
     await waitFor(() => expect(removal()).toHaveFocus())
     await user.keyboard('{Enter}')  // stages
     await user.keyboard('{Enter}')  // confirms
@@ -181,7 +182,7 @@ describe('source-link removal through the existing session menu', () => {
     rowMenuButton().focus()
     await user.keyboard('{Enter}')
     ;(await screen.findByRole('menuitem', { name: 'Hide a PR or Issue chip' })).focus()
-    await user.keyboard('{ArrowRight}')
+    await user.keyboard('{ArrowRight}{ArrowDown}')
     await waitFor(() => expect(removal()).toHaveFocus())
     await user.keyboard('{Enter}')  // stage #634
     await user.keyboard('{Enter}')  // confirm #634
@@ -391,5 +392,99 @@ describe('source-link removal through the existing session menu', () => {
     await waitFor(() => expect(unlinkMock).toHaveBeenCalled())
     await waitFor(() =>
       expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.source_links_total).toBe(3))
+  })
+  const hideAll = () => screen.getByRole('menuitem', { name: 'Hide all PR and Issue chips' })
+  // Mid-walk the entry is relabelled with its progress, so find it by marker.
+  const hideAllEntry = () => document.querySelector<HTMLElement>('[data-hide-all-source-links]')
+  const confirmHideAll = () => screen.getByRole('menuitem', { name: 'Select again to permanently hide all 2 chips' })
+  it.each([false, true])('hides every chip after a second select on "hide all" through context=%s', async context => {
+    renderSidebar(); await openMenu(context)
+    fireEvent.click(hideAll())
+    expect(unlinkMock).not.toHaveBeenCalled()
+    fireEvent.click(confirmHideAll())
+    await waitFor(() => expect(unlinkMock).toHaveBeenCalledTimes(2))
+    expect(unlinkMock.mock.calls.map(call => call[1])).toEqual([PR_IDENTITY, ISSUE_IDENTITY])
+    // Both requests carry the generation captured when "hide all" was staged.
+    expect(unlinkMock.mock.calls[0][2]).toBe(unlinkMock.mock.calls[1][2])
+    await waitFor(() => { expect(chip()).toBeNull(); expect(chip(701)).toBeNull() })
+    expect(screen.queryByRole('menuitem', { name: 'Hide a PR or Issue chip' })).toBeNull()
+  })
+  it('sends the "hide all" DELETEs one at a time and stops at the first failure', async () => {
+    let reject!: (reason: Error) => void
+    unlinkMock.mockImplementation(() => new Promise((_resolve, fail) => { reject = fail }))
+    renderSidebar(); await openMenu()
+    fireEvent.click(hideAll()); fireEvent.click(confirmHideAll())
+    await waitFor(() => expect(unlinkMock).toHaveBeenCalledTimes(1))
+    expect(hideAllEntry()).toHaveTextContent('Hiding chip 1 of 2')
+    expect(hideAllEntry()).toHaveAttribute('data-disabled')
+    expect(removal(701)).toHaveAttribute('data-disabled')
+    await act(async () => { reject(new Error('store unavailable')) })
+    // The stop says how far the walk got inside the same alert, and the entry is back to idle.
+    expect(await screen.findByTestId('session-source-unlink-error')).toHaveTextContent('Stopped after hiding 0 of 2 chips.')
+    // The retry line says where to retry; the generic single-chip "Try again" would contradict the count.
+    expect(screen.getByTestId('session-source-unlink-error')).toHaveTextContent('To try again, hide the rest from this menu.')
+    expect(screen.getByTestId('session-source-unlink-error')).not.toHaveTextContent('Could not hide. Try again.')
+    expect(hideAll()).not.toHaveAttribute('data-disabled')
+    expect(unlinkMock).toHaveBeenCalledTimes(1)
+    expect(chip()).toBeInTheDocument(); expect(chip(701)).toBeInTheDocument()
+  })
+  it('says how many chips were hidden when a later DELETE stops the walk', async () => {
+    unlinkMock.mockReset()
+      .mockResolvedValueOnce({ ok: true, dismissed: true })
+      .mockRejectedValueOnce(new Error('store unavailable'))
+      .mockRejectedValueOnce(new Error('store unavailable'))
+    renderSidebar(); await openMenu()
+    fireEvent.click(hideAll()); fireEvent.click(confirmHideAll())
+    expect(await screen.findByTestId('session-source-unlink-error')).toHaveTextContent('Stopped after hiding 1 of 2 chips.')
+    expect(screen.getByTestId('session-source-unlink-error')).toHaveTextContent('To try again, hide the rest from this menu.')
+    expect(unlinkMock).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(chip()).toBeNull())
+    expect(chip(701)).toBeInTheDocument()
+    // A later single-chip failure reports itself, not the old walk's count.
+    unlinkVia(701)
+    await waitFor(() => expect(unlinkMock).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.getByTestId('session-source-unlink-error')).not.toHaveTextContent('Stopped after'))
+    expect(screen.getByTestId('session-source-unlink-error')).toHaveTextContent('Could not hide. Try again.')
+    expect(screen.getByTestId('session-source-unlink-error')).not.toHaveTextContent('hide the rest')
+  })
+  it('waits for the full list before "hide all" and then hides the off-preview chips too', async () => {
+    const list = rows(); list[0].source_links = list[0].source_links!.slice(0, 1)
+    let settle!: (value: unknown) => void
+    sourceLinksMock.mockReset().mockImplementation(() => new Promise(resolve => { settle = resolve }))
+    renderSidebar(list); await openMenu()
+    await waitFor(() => expect(sourceLinksMock).toHaveBeenCalled())
+    expect(hideAll()).toHaveAttribute('data-disabled')
+    fireEvent.click(hideAll())
+    expect(screen.queryByRole('menuitem', { name: 'Select again to permanently hide all 2 chips' })).toBeNull()
+    await act(async () => { settle({ links: rows()[0].source_links, total: 2 }) })
+    await waitFor(() => expect(hideAll()).not.toHaveAttribute('data-disabled'))
+    fireEvent.click(hideAll()); fireEvent.click(confirmHideAll())
+    await waitFor(() => expect(unlinkMock.mock.calls.map(call => call[1])).toEqual([PR_IDENTITY, ISSUE_IDENTITY]))
+  })
+  it('drops a staged "hide all" when the same-key session was recreated', async () => {
+    const { store } = renderSidebar(); await openMenu()
+    fireEvent.click(hideAll())
+    act(() => store.dispatch(updateSlot({ key: 's1', created: '2099-12-31T00:00:00Z' })))
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Select again to permanently hide all 2 chips' })).toBeNull())
+    expect(unlinkMock).not.toHaveBeenCalled()
+  })
+  it('keeps the "hide all" entry mounted while its walk is still running', async () => {
+    const settlers: Array<(value: unknown) => void> = []
+    unlinkMock.mockImplementation(() => new Promise(resolve => { settlers.push(resolve) }))
+    renderSidebar(); await openMenu()
+    fireEvent.click(hideAll()); fireEvent.click(confirmHideAll())
+    await waitFor(() => expect(settlers.length).toBe(1))
+    await act(async () => { settlers[0]({ ok: true, dismissed: true }) })
+    await waitFor(() => expect(settlers.length).toBe(2))
+    // One chip is left, but the walk is not done: the entry is still there.
+    expect(hideAllEntry()).toHaveTextContent('Hiding chip 2 of 2')
+    await act(async () => { settlers[1]({ ok: true, dismissed: true }) })
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Hide all PR and Issue chips' })).toBeNull())
+  })
+  it('offers no "hide all" entry when the session has a single chip', async () => {
+    const list = rows(); list[0].source_links = list[0].source_links!.slice(0, 1); list[0].source_links_total = 1
+    renderSidebar(list); await openMenu()
+    expect(removal()).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Hide all PR and Issue chips' })).toBeNull()
   })
 })

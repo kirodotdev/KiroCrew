@@ -1192,12 +1192,11 @@ class SessionResumeController:
                     # was made by the conversation's authorized owner and binds this
                     # one session to this one location, so the link's recorded peer
                     # is signed for exactly that pair here, and the map stores the
-                    # bytes verbatim. A link naming no peer is stored unsigned.
-                    admitted = link
-                    if link.principal:
-                        admitted = dataclasses.replace(
-                            link, admission=sign_mirror_admission(choice.key, link)
-                        )
+                    # bytes verbatim. A key-named session's row is signed with or
+                    # without a peer; a dashboard-born row naming none stays unsigned.
+                    admitted = dataclasses.replace(
+                        link, admission=sign_mirror_admission(choice.key, link) or None
+                    )
                     self.sessions.set_mirror_link(choice.key, admitted, accepts_inbound=True)
                     claimed = True
                     stored_row = admitted

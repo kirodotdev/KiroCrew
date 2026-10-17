@@ -37,7 +37,7 @@ from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import AWS_PROFILE_NAME_RE
 from kiro_crew.deploy import engine
-from kiro_crew.platform_compat import file_lock
+from kiro_crew.platform_compat import file_lock, open_lock_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
 
@@ -123,13 +123,10 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
     # required=True: a lost profile write is silent data loss, so refuse to
     # proceed without cross-process exclusion. flock_compat is a Windows no-op,
     # so this uses platform_compat's real msvcrt lock.
-    # touch + "r+": writable (msvcrt.locking needs it) but NON-TRUNCATING — a
-    # truncating "w" open of a lock file whose first byte another holder already
-    # locked raises a sharing violation on Windows instead of waiting. Full
-    # rationale: work_ledger._open_lock.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with file_lock(fd.fileno(), exclusive=True, required=True):
+    # open_lock_file opens writable and never truncates; its docstring carries
+    # the Windows rationale.
+    with open_lock_file(lock_path) as fd:
+        with file_lock(fd, exclusive=True, required=True):
             reg = load_registry()
             yield reg
             # Persist on clean exit (exceptions skip save, lock still releases)
@@ -222,11 +219,9 @@ def load_registry() -> dict[str, Any]:
 def save_registry(reg: dict[str, Any]) -> dict[str, Any]:
     _data_dir().mkdir(parents=True, exist_ok=True)
     lock_path = _registry_path().with_suffix(".lock")
-    # touch + "r+": writable but non-truncating; see locked_registry above and
-    # work_ledger._open_lock for the Windows sharing-violation rationale.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with file_lock(fd.fileno(), exclusive=True, required=True):
+    # open_lock_file: writable but non-truncating; see locked_registry above.
+    with open_lock_file(lock_path) as fd:
+        with file_lock(fd, exclusive=True, required=True):
             tmp_fd = tempfile.NamedTemporaryFile(
                 mode="w", dir=str(_data_dir()), suffix=".json.tmp",
                 delete=False, encoding="utf-8",
@@ -330,7 +325,8 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
 
     With ``account``+``role`` this is an iam-identity-style profile whose
     ``credential_process`` mints short-lived creds from the ambient IAM
-    session (``aws sts get-session-token``) — the profile block itself contains no
+    session (``aws sts assume-role --role-arn arn:aws:iam::<account>:role/<role>``,
+    session name ``kirocrew-deploy``) — the profile block itself contains no
     secret material. Without them, only ``region`` is written (the profile's
     credentials come from however the user otherwise configures it).
     Returns an error string, or None on success.

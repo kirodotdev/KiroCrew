@@ -262,7 +262,7 @@ async def test_a_dispatched_conductor_still_gets_its_board(service: Any) -> None
 
 @pytest.mark.parametrize(
     ("attribute", "value"),
-    [("memory_mode", "incognito"), ("is_remote", True), ("executor", "remote")],
+    [("memory_mode", "incognito"), ("executor", "remote")],
 )
 def test_privacy_and_remoteness_still_withhold_the_card(
     service: Any, attribute: str, value: Any
@@ -441,11 +441,11 @@ def test_the_publish_call_sits_after_the_ownership_refusal() -> None:
     before it" once both have run. The controls below keep a moved anchor from reading as
     a pass."""
     source = Path(routes.__file__).read_text(encoding="utf-8")
-    refusal = source.index("if record is not None and (not owner_key or owner_key != mine):")
+    refusal = source.index("if record is not None and not _owned_by(record, mine):")
     publish = source.index("_publish_derived_card(request.app[")
     # Controls: both anchors exist exactly once, so neither a rename nor a second call
     # site can satisfy this by making an index unfindable.
-    assert source.count("if record is not None and (not owner_key or owner_key != mine):") == 1
+    assert source.count("if record is not None and not _owned_by(record, mine):") == 1
     assert source.count("_publish_derived_card(request.app[") == 1
     assert refusal < publish, (
         "the derived card is published BEFORE the ownership refusal, so a record this "
@@ -1166,7 +1166,7 @@ def test_eviction_does_not_need_a_card_to_have_been_there(service: Any) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attribute", "value"),
-    [("memory_mode", "incognito"), ("is_remote", True), ("executor", "remote")],
+    [("memory_mode", "incognito"), ("executor", "remote")],
 )
 async def test_a_slot_that_tightens_after_publishing_loses_its_card(
     service: Any, attribute: str, value: Any

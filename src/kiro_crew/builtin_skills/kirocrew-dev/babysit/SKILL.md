@@ -39,7 +39,8 @@ recording `last_status: ok`; heartbeat's allowlist has no shell or push.
 Use one session-owned driver, not two watchers.
 
 A gated `monitor_start` hands its whole pull-request reading, comment and review
-bodies included, to the wake judge, so `wake_when` may name prose.
+bodies included, to the wake judge, so `wake_when` may name prose. No
+judge lane: only an unchanged subject is free.
 
 An installation can set how firmly this table's facts-decided row points at the
 structured path. With `monitoring.prefer_structured_arming` on, `monitor_watch` is
@@ -143,8 +144,8 @@ bound and no blanket grant: normal PreToolUse governance and approvals apply.
 A rejected or timed-out approval is a stall, not success or permission to loosen
 security. Fix, commit and push only within the user's authorization.
 
-- Naming exactly ONE public GitHub PR by full URL in `message` can select
-  observation gating; a bare number or owner/repo shorthand cannot.
+- Name ONE public GitHub PR by full URL in `message` to select gating. A
+  bare `PR <n>` gates only if this session already named its URL.
 - `gate=true` is the default. Quiet subjects avoid turns, with eventual delivery
   after enough quiet intervals. Use `gate=false` for generic comments/advisory
   scans and duties that act despite silence, such as chasing a missing reviewer
@@ -158,8 +159,8 @@ security. Fix, commit and push only within the user's authorization.
   `target`, `objective`, `max_agent_turns`, `max_tokens`, `max_provider_errors`
   or `wake_instructions`. On Webex, stop and create a new finite loop instead.
 - One automation occupies a session. `monitor_start` is create-only; update an
-  active loop rather than replacing it. A budget-paused legacy loop resumes only
-  by raising the bound it reached with user authorization. Manual pauses and user
+  active loop rather than replacing it. A new arm replaces a cap/budget-stopped
+  legacy loop, only with user authorization. Manual pauses and user
   stops stay preserved; retained evidence needs the owner action above. Do not
   rearm merged/closed work as if it still needed repairs.
 

@@ -185,7 +185,7 @@ def validate_name(name: str) -> str:
 # Approval modes a pod's gateway may boot with, mirroring the choices on
 # ``kirocrew gateway --approval``. This tuple is the ENFORCEMENT point: the env
 # file is hand-editable, so ``boot`` re-validates against it instead of trusting
-# whatever ``pod up`` wrote. The top-level ``cli.py`` repeats the literal for its
+# whatever ``pod up`` wrote. The top-level ``cli_parser_admin.py`` repeats the literal for its
 # argparse ``choices`` because that parser deliberately imports no pod module at
 # startup; argparse is the UX layer, this tuple is the invariant.
 APPROVAL_MODES: tuple[str, ...] = ("reads", "yolo", "interactive")
@@ -244,10 +244,13 @@ def embeddings_disabled(env_data: dict[str, str]) -> bool:
 
 def _parse_env_text(text: str) -> dict[str, str]:
     """Parse ``KEY='value'`` lines. Split out so a caller that must open the file
-    itself -- see :func:`_peer_claimed_port`, which needs no-follow semantics -- can
-    reuse this exact grammar instead of carrying a second copy that would drift."""
+    itself -- see ``runtime_ports._read_peer_env``, which needs no-follow semantics -- can
+    reuse this exact grammar instead of carrying a second copy that would drift.
+
+    A leading UTF-8 byte-order mark is dropped here, not only in the decode, so a
+    caller that decodes the bytes itself still reads the first key without it."""
     out: dict[str, str] = {}
-    for ln in text.splitlines():
+    for ln in strip_utf8_bom(text).splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#") or "=" not in ln:
             continue
@@ -274,13 +277,30 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     Takes the pod NAME, so the path read is one an operator named. A caller that
     instead reads whatever files happen to be in the pods directory is choosing its
     paths from directory contents rather than from an operator, which is a different
-    trust posture -- :func:`_peer_claimed_port` is that caller and does not come
-    through here.
+    trust posture -- ``runtime_ports._read_peer_env`` is that caller and does not
+    come through here.
+
+    Decoded through the data home's ``.env`` decoder, so a file a Windows editor
+    saved as UTF-8 with a byte-order mark reads as UTF-8 with the mark dropped. A
+    UTF-16 or UTF-32 file raises :class:`PodError` naming the file and the fix:
+    reading it as ``{}`` would launch the pod without the operator's variables,
+    and :func:`write_env_file` would then overwrite the file it could not read.
     """
+    # Imported here: the config loader is a heavy import the pod CLI does not
+    # otherwise need at module load.
+    from kiro_crew.config.loader import EnvFileWideEncodingError, decode_env_bytes
+
+    path = cfg.env_file(name)
     try:
-        text = cfg.env_file(name).read_text()
+        raw = path.read_bytes()
     except OSError:
         return {}
+    try:
+        text = decode_env_bytes(raw)
+    except EnvFileWideEncodingError as exc:
+        raise PodError(
+            f"pod env file {path} is saved with a {exc.reason}; save it as UTF-8"
+        ) from exc
     return _parse_env_text(text)
 
 
@@ -318,7 +338,12 @@ def write_env_file(cfg: PodConfig, name: str, updates: dict[str, str]) -> None:
             if "\n" in val or "\r" in val:
                 raise PodError(f"pod env value for {key!r} must be single-line")
         cfg.pods_dir.mkdir(parents=True, exist_ok=True)
-        body = "".join(f"{k}='{v}'\n" for k, v in data.items())
+        # Keep a UTF-8 byte-order mark the file was saved with: it is what makes
+        # read_env_file decode the file as UTF-8, and dropping it would leave a
+        # non-ASCII value to the locale decode on the next read.
+        from kiro_crew.config.loader import env_bom_prefix
+
+        body = env_bom_prefix(cfg.env_file(name)) + "".join(f"{k}='{v}'\n" for k, v in data.items())
         atomic_write(cfg.env_file(name), body, newline="")
 
 
@@ -537,9 +562,8 @@ class UserBusProbe:
 # The list is deliberately the COMPLETE table rather than the directories that
 # seem plausible for this unit. A short search path is a false "absent": the
 # probe reports no per-user manager on a host that HAS one, and the caller then
-# names a platform limit instead of telling the reader to start the manager. Two
-# review rounds on this PR each named a different missing entry, so the fix is to
-# make completeness checkable against one document instead of guessing again.
+# names a platform limit instead of telling the reader to start the manager.
+# Transcribing the whole table makes completeness checkable against one document.
 # `/lib/systemd/system` is not in Table 1; it is the pre-usr-merge location of
 # `/usr/lib/systemd/system` and is kept for split-usr hosts.
 #
@@ -573,13 +597,10 @@ _SYSTEMD_SYSTEM_UNIT_DIRS = (
     "/run/systemd/generator.late",
 )
 
-# Both shapes of per-user manager unit are searched in the SAME directories,
-# derived from the one list above rather than kept in a second tuple. A separate
-# list is what produced three review rounds on this file: each round named a
-# directory one tuple knew and the other did not, and the narrower tuple made
-# `user_manager_unit` report "absent" for a hand-installed unit in a directory the
-# template search already covered. Deriving both filenames from one list makes
-# that divergence unrepresentable instead of merely fixed.
+# Both shapes of per-user manager unit (the `user@.service` template and a
+# hand-installed `user@<uid>.service`) are looked up through `_unit_paths` over
+# the single `_SYSTEMD_SYSTEM_UNIT_DIRS` list above, never a second tuple, so the
+# two searches cannot cover different directories.
 _USER_MANAGER_TEMPLATE_NAME = "user@.service"
 
 
@@ -1283,8 +1304,8 @@ def build_pod_env(
         # REAL `HOME` — and every agent turn in the pod (a `chat`/`run`/`tui`
         # through `pod exec`, and the pod gateway's own sessions) would read and
         # WRITE the live workspace. `KIROCREW_WORKSPACE` is the documented override
-        # (config/loader.py:220, used as-is) and `eval/runner.py` already scopes a
-        # run the same way, so this is the existing mechanism rather than new
+        # (config/loader_locations.py `workspace_root`, used as-is) and `eval/runner.py`
+        # already scopes a run the same way, so this is the existing mechanism rather than new
         # resolution behaviour. Placing it inside the pod HOME means `pod down`'s
         # teardown removes it with everything else.
         "KIROCREW_WORKSPACE": str(home_dir / "workspace"),
@@ -1486,6 +1507,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "kiro_crew.pod.runtime_home": (
         "SeedError",
         "StoreMapping",
+        "_CREATE_ATTEMPTS",
         "_HOME_RECLAIM_ATTEMPTS",
         "_HOME_RECLAIM_PAUSE_SECS",
         "_RUNTIME_AUTH_STORE_FILE_CAP",

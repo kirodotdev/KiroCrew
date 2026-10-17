@@ -71,7 +71,7 @@ def _pin_config(monkeypatch, *, value: bool, declared: bool) -> None:
     folded the platform default into it, so there is no platform seam here — and
     ``declared`` only labels the audit event. Stubbing ``KiroCrewConfig.load`` keeps
     this focused on the spawn path rather than the loader's validation machinery;
-    the platform resolution itself is covered in ``test_config_loader.py``.
+    the platform resolution itself is covered in ``test_config_loader_agent_section.py``.
     """
     monkeypatch.setattr(
         loader_mod.KiroCrewConfig,
@@ -149,7 +149,7 @@ class TestTheGateReadsTheResolvedValue:
     """The spawn gate is a plain read, and that is the point.
 
     The platform default is folded into the field by the loader (its matrix lives in
-    ``test_config_loader.py``), so nothing here re-derives policy from whether the
+    ``test_config_loader_agent_section.py``), so nothing here re-derives policy from whether the
     key was declared. Keying the gate on presence would let a full-document
     ``KiroCrewConfig.save()`` — which publishes ``asdict(self.agent)`` — turn "never
     decided" into a declared lockdown and re-brick every spawn on a platform with no

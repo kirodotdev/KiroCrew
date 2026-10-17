@@ -30,9 +30,12 @@ import {
   issueRadarApi, type GhSetupReason, type RecentRepo, type RepoRef, type SourceProvider,
 } from './api'
 import { providerDefaultHost, providerTerms } from './lib/links'
+import { gitlabHostSet } from '../../utils/pullRequestLinks'
 import { relativeTimeOrDate } from './lib/format'
 import type { ActiveRepo } from './lib/types'
+import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import ErrorNotice from '../../components/ErrorNotice'
+import SimpleSelect from '../../components/SimpleSelect'
 import AzureDevopsLogo from '../../components/icons/AzureDevopsLogo'
 import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
@@ -127,8 +130,12 @@ const URL_TARGET_PREFIX = 'url:'
  * `provider` is threaded through because the parse is provider-scoped: folding an
  * Azure DevOps URL against GitHub's grammar yields null, so every Azure target
  * would compare as "not a duplicate" and be submitted twice. */
-export function repoIdentity(text: string, provider: SourceProvider = 'github'): string | null {
-  const parsed = parseRepoRef(text, provider)
+export function repoIdentity(
+  text: string,
+  provider: SourceProvider = 'github',
+  host?: string,
+): string | null {
+  const parsed = parseRepoRef(text, provider, host)
   if (!parsed) return null
   const slug = `${parsed.owner}/${parsed.repo}`
   return provider === 'github' ? slug.toLowerCase() : slug
@@ -170,6 +177,7 @@ function parseAzurePath(path: string): { owner: string; repo: string } | null {
 export function parseRepoRef(
   text: string,
   provider: ProviderId = 'github',
+  host?: string,
 ): { owner: string; repo: string } | null {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -178,28 +186,28 @@ export function parseRepoRef(
   // hostname, so it is treated as an owner on the selected provider's host.
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
   const looksHostless = !hasScheme && !trimmed.split('/')[0].includes('.')
-  // A hostless shorthand resolves against the SELECTED provider's public host —
+  // A hostless shorthand resolves against the SELECTED provider's host —
   // assuming github.com while the GitLab panel is open would connect a different
-  // project entirely.
-  const defaultHost = providerDefaultHost({ provider })
+  // project entirely. For GitLab that is the instance picked in the panel, which
+  // is only ever gitlab.com or a host from the operator's allowlist.
+  const defaultHost = host || providerDefaultHost({ provider })
   const withScheme = hasScheme
     ? trimmed
     : looksHostless ? `https://${defaultHost}/${trimmed}` : `https://${trimmed}`
-  let host: string
+  let parsedHost: string
   let path: string
   try {
     const u = new URL(withScheme)
-    host = u.hostname.toLowerCase().replace(/^www\./, '')
+    parsedHost = urlAuthority(u)
     path = u.pathname
   } catch {
     return null
   }
-  // Only the provider's PUBLIC host is recognised here. A self-managed GitLab is
-  // deliberately not shorthand-parsed: the client has no view of the operator's
-  // `dashboard.gitlab_hosts` allowlist, so guessing would produce a canonical URL
-  // the server then rejects. Such a URL is submitted verbatim instead, and the
+  // Only the selected host is recognised here. Any other GitLab instance is
+  // deliberately not shorthand-parsed: guessing would produce a canonical URL the
+  // server may then reject. Such a URL is submitted verbatim instead, and the
   // server's allowlist decision is the honest answer the user sees.
-  if (host && host !== defaultHost) return null
+  if (parsedHost && parsedHost !== defaultHost) return null
   // Azure DevOps' path is three levels deep and carries a literal `_git`, so it
   // shares nothing with the `namespace/name` shape below.
   if (provider === 'azure') return parseAzurePath(path)
@@ -218,19 +226,58 @@ export function parseRepoRef(
     : { owner: parts[0], repo: parts[1] }
 }
 
-/** The public web URL for `fullName` on `provider` — what `POST /connect` parses.
+/** A parsed URL's host in the form the allowlist stores it: `host[:port]`,
+ * lowercased, trailing dot removed, the default HTTPS port already dropped by
+ * the URL API. A port is kept because a self-managed instance on `:8443` is a
+ * distinct allowlist entry. `www.` folds only for the public hosts; a
+ * self-managed `www.` name is a different host to the backend. */
+function urlAuthority(u: URL): string {
+  const name = u.hostname.toLowerCase().replace(/\.+$/, '')
+  const bare = name === 'www.github.com' || name === 'www.gitlab.com' ? name.slice(4) : name
+  return u.port ? `${bare}:${u.port}` : bare
+}
+
+/** `https://` prepended to scheme-less text whose first segment is a hostname
+ * (contains a dot). Text with a scheme, or a bare `owner/repo`, is returned
+ * unchanged — the former already parses, the latter is not a URL at all. */
+export function withSchemeIfHostLike(text: string): string {
+  const trimmed = text.trim()
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed
+  return trimmed.split('/')[0].includes('.') ? `https://${trimmed}` : trimmed
+}
+
+/** The web URL for `fullName` on `provider` — what `POST /connect` parses.
+ *
+ * `host` is the instance the repo was listed from. Only GitLab varies it (a
+ * self-managed instance from the operator's allowlist); the others always use
+ * their public host.
  *
  * Azure DevOps needs the literal `_git` between the project and the repository,
  * so a plain `https://<host>/<full_name>` join produces a URL the server cannot
  * parse. A two-segment Azure name is a project whose default repository carries
  * the project's own name. */
-function publicRepoUrl(provider: ProviderId, fullName: string): string {
-  const host = providerDefaultHost({ provider })
-  if (provider !== 'azure') return `https://${host}/${fullName}`
+function publicRepoUrl(provider: ProviderId, fullName: string, host?: string): string {
+  if (provider !== 'azure') return `https://${host || providerDefaultHost({ provider })}/${fullName}`
+  const azureHost = providerDefaultHost({ provider })
   const parts = fullName.split('/').filter(Boolean)
-  if (parts.length < 2) return `https://${host}/${fullName}`
+  if (parts.length < 2) return `https://${azureHost}/${fullName}`
   const [org, project, ...rest] = parts
-  return `https://${host}/${org}/${project}/_git/${rest.length ? rest.join('/') : project}`
+  return `https://${azureHost}/${org}/${project}/_git/${rest.length ? rest.join('/') : project}`
+}
+
+/** The GitLab instances the connect panel can list projects from: every
+ * self-managed host in the operator's `dashboard.gitlab_hosts` allowlist, then
+ * public gitlab.com.
+ *
+ * Allowlisted hosts come FIRST so the first one is the default. An operator only
+ * lists a host because they work there, and defaulting to gitlab.com would show
+ * a self-managed user an empty (or "set up glab") picker for an account they
+ * may not even have. Normalised by `gitlabHostSet`, the same rule chat source
+ * tabs use, so the two never disagree about which host an entry means. */
+export function gitlabHostOptions(configured: readonly unknown[] | undefined): string[] {
+  const strings = (configured ?? []).filter((h): h is string => typeof h === 'string')
+  const hosts = [...gitlabHostSet(strings)].filter(h => h !== 'gitlab.com' && h !== 'www.gitlab.com')
+  return [...hosts, 'gitlab.com']
 }
 
 /** Whether picking `provider` puts the panel into its two-column body — and so
@@ -283,11 +330,30 @@ export interface ConnectFlow {
   pending: boolean
   /** Aggregate error text (per-target failures are joined), or null. */
   error: string | null
+  /** A dashboard-config failure that leaves the GitLab host unknown. */
+  configError: string | null
+  /** Retry the dashboard-config load after a failure. */
+  retryConfig: () => void
+  /** True after a provider/instance change dropped ticked repos, until the user
+   * ticks again. Lets the panel say why the selection vanished. */
+  selectionCleared: 'provider' | 'instance' | null
   /** "Connecting 2 of 3…" progress while a multi-connect runs. */
   progress: { done: number; total: number } | null
   /** Drop every queued target (ticks + typed URL). Used when the panel learns
    * nothing is connectable, so Connect can't be armed for a certain failure. */
   reset: () => void
+  /** The instance the selected provider's repos are listed from and connected
+   * on. Only GitLab offers a choice; the others are pinned to their public host. */
+  host: string
+  /** GitLab instances the user can pick between (allowlisted hosts, then
+   * gitlab.com). One entry means there is nothing to choose. */
+  gitlabHosts: string[]
+  /** Switch the GitLab instance. Clears the ticks: they name projects on the
+   * PREVIOUS instance, and connecting them on the new one would be wrong. */
+  setGitlabHost: (host: string) => void
+  /** False until the allowlist has loaded successfully, so GitLab never falls
+   * back to the public instance when configuration is unavailable. */
+  hostReady: boolean
 }
 
 /** Owns every piece of connect state the host card's action button needs.
@@ -302,6 +368,44 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [errors, setErrors] = useState<string[]>([])
 
+  // The shared dashboard-config query (same key + queryFn as every other reader),
+  // read here for the operator's GitLab allowlist. A failed read is surfaced
+  // and keeps GitLab disabled: falling back would query the public instance
+  // while the configured instances are unknown.
+  const dashCfg = useQuery<{ gitlab_hosts?: unknown[] }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: fetchDashboardConfig,
+    staleTime: 30_000,
+  })
+  const gitlabHosts = useMemo(
+    () => gitlabHostOptions(dashCfg.data?.gitlab_hosts),
+    [dashCfg.data?.gitlab_hosts],
+  )
+  const [chosenGitlabHost, setChosenGitlabHost] = useState<string | null>(null)
+  // A choice that the allowlist no longer carries falls back to the default
+  // rather than listing an instance the server would now refuse.
+  const gitlabHost = chosenGitlabHost && gitlabHosts.includes(chosenGitlabHost)
+    ? chosenGitlabHost
+    : gitlabHosts[0]
+  const host = provider === 'gitlab' ? gitlabHost : providerDefaultHost({ provider: provider ?? 'github' })
+  // Ticks are bare `group/repo` names resolved against `host`, so they belong to
+  // ONE provider + instance. Whenever that pair changes — a provider click, the
+  // instance picker, or an allowlist refresh dropping the chosen instance — the
+  // ticks are cleared, or Connect would rebuild them as URLs on a different
+  // instance and could connect a same-path project there. Done during render
+  // (not in an effect) so no frame ever commits stale ticks against a new host.
+  const pickScope = `${provider ?? ''}|${host}`
+  const [pickedScope, setPickedScope] = useState(pickScope)
+  // Which half of the scope moved decides the wording of the notice: "source"
+  // named neither the instance picker nor the provider row the user had just
+  // clicked, so the loss read as unexplained.
+  const [selectionCleared, setSelectionCleared] = useState<'provider' | 'instance' | null>(null)
+  if (pickedScope !== pickScope) {
+    const providerChanged = pickedScope.split('|')[0] !== (provider ?? '')
+    setPickedScope(pickScope)
+    setSelectionCleared(picked.size > 0 ? (providerChanged ? 'provider' : 'instance') : null)
+    if (picked.size) setPicked(new Set())
+  }
   // The connect loop is sequential and long-lived, so it outlives its host: an
   // SPA navigation (or any unmount the pending-dismissal guard can't intercept)
   // leaves it connecting the remaining repos with no visible progress and
@@ -320,18 +424,26 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
   const targetCountRef = useRef(0)
 
   const targets = useMemo<ConnectTarget[]>(() => {
+    // Without the allowlist, `host` is only the public fallback. Do not arm a
+    // connect against it when the operator's configured instances are unknown.
+    // Ticks are bare `group/project` names that NEED a known host, so they are
+    // dropped while the list is unavailable. Typed text is not: it goes to the
+    // server as typed (below), which decides on its own allowlist.
+    const hostKnown = provider !== 'gitlab' || dashCfg.isSuccess
     const scope = provider ?? 'github'
-    const out: ConnectTarget[] = [...picked].map((fullName) => ({
-      key: fullName,
-      url: publicRepoUrl(scope, fullName),
-      label: fullName,
-    }))
+    const out: ConnectTarget[] = hostKnown
+      ? [...picked].map((fullName) => ({
+        key: fullName,
+        url: publicRepoUrl(scope, fullName, host),
+        label: fullName,
+      }))
+      : []
     const typed = url.trim()
     // A typed URL that duplicates a tick is submitted once, not twice — matched
     // on normalised owner/repo identity, not raw text (see repoIdentity).
     if (typed) {
-      const typedId = repoIdentity(typed, scope)
-      const already = typedId !== null && out.some((t) => repoIdentity(t.url, scope) === typedId)
+      const typedId = repoIdentity(typed, scope, host)
+      const already = typedId !== null && out.some((t) => repoIdentity(t.url, scope, host) === typedId)
       if (!already) {
         // Submit the CANONICAL url when the text parses — `parseRepoRef` accepts
         // shorthand the backend does not (a bare `owner/repo`, a scheme-less
@@ -339,14 +451,19 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
         // taken from `parseRepoRef`, NOT the folded identity: the backend stores
         // owner/repo verbatim, so a folded name would be persisted as a second,
         // separate repo. Unparseable text is submitted as-is so the server's
-        // error stays the honest one.
-        const ref = parseRepoRef(typed, scope)
-        const url = ref ? publicRepoUrl(scope, `${ref.owner}/${ref.repo}`) : typed
+        // error stays the honest one, with one exception: scheme-less text that
+        // names a DIFFERENT host (`gitlab.com/grp/proj` while a self-managed
+        // instance is selected) gets `https://` prepended, otherwise the backend
+        // rejects it as "not an https URL" before its allowlist ever sees the
+        // host, and a link that connected before instance selection existed
+        // would now 400.
+        const ref = hostKnown ? parseRepoRef(typed, scope, host) : null
+        const url = ref ? publicRepoUrl(scope, `${ref.owner}/${ref.repo}`, host) : withSchemeIfHostLike(typed)
         out.push({ key: `${URL_TARGET_PREFIX}${typed}`, url, label: typed })
       }
     }
     return out
-  }, [picked, url, provider])
+  }, [picked, url, provider, host, dashCfg.isSuccess])
 
   const connectMutation = useMutation({
     mutationFn: async (list: ConnectTarget[]) => {
@@ -432,12 +549,12 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
     url,
     setUrl,
     picked,
-    togglePicked: (fullName) => setPicked((prev) => {
+    togglePicked: (fullName) => { setSelectionCleared(null); setPicked((prev) => {
       const next = new Set(prev)
       if (next.has(fullName)) next.delete(fullName)
       else next.add(fullName)
       return next
-    }),
+    }) },
     targets,
     submit: () => {
       if (!targets.length || connectMutation.isPending) return
@@ -447,11 +564,20 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
     },
     pending: connectMutation.isPending,
     error: errors.length ? errors.join(' · ') : null,
+    configError: dashCfg.isError ? (dashCfg.error as Error).message : null,
+    retryConfig: () => { void dashCfg.refetch() },
+    selectionCleared,
     progress,
     reset: () => {
       setPicked((prev) => (prev.size ? new Set() : prev))
       setUrl((prev) => (prev ? '' : prev))
     },
+    host,
+    gitlabHosts,
+    setGitlabHost: (next) => {
+      if (next !== gitlabHost) setChosenGitlabHost(next)
+    },
+    hostReady: provider !== 'gitlab' || dashCfg.isSuccess,
   }
 }
 
@@ -461,8 +587,13 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
  * the provider id: an assembled key is invisible to the static key-reference gate
  * and to the dead-key scan, so a typo in it would ship as raw
  * `apps.issueRadar…` text in the input's placeholder. */
-function urlPlaceholderFor(provider: SourceProvider): string {
-  if (provider === 'gitlab') return i18nT('apps.issueRadar.connectPanel.https_gitlab_com_group_project')
+function urlPlaceholderFor(provider: SourceProvider, host?: string): string {
+  if (provider === 'gitlab') {
+    // The example names the SELECTED instance — a gitlab.com example under a
+    // self-managed picker reads as "only gitlab.com links work here".
+    const example = i18nT('apps.issueRadar.connectPanel.https_gitlab_com_group_project')
+    return host && host !== 'gitlab.com' ? example.replace('gitlab.com', host) : example
+  }
   if (provider === 'azure') return i18nT('apps.issueRadar.connectPanel.https_dev_azure_com_org_project_git_repo')
   return i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo')
 }
@@ -481,6 +612,7 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   // collapsed because they are still placeholders.
   const expanded = expandsCard(flow.provider)
   const scopeProvider: SourceProvider = flow.provider ?? 'github'
+  const configError = scopeProvider === 'gitlab' ? flow.configError : null
 
   // One example for the SELECTED provider, never all of them in one string. A
   // combined "https://github.com/<owner>/<repo> or https://gitlab.com/…"
@@ -491,20 +623,27 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
   // `owner/repo`; a GitLab project lives under a possibly nested group; Azure
   // DevOps is `org/project/_git/repo`), so a shared example is wrong for all but
   // one of them however it is worded.
-  const urlPlaceholder = urlPlaceholderFor(scopeProvider)
+  const urlPlaceholder = urlPlaceholderFor(scopeProvider, flow.host)
+  // Only GitLab is multi-instance. Sent on GitLab ALWAYS, gitlab.com included:
+  // the server refuses a GitLab call with no host rather than guessing one.
+  const scopeHost = scopeProvider === 'gitlab' ? flow.host : undefined
 
   const query = useQuery({
-    // Keyed by provider: the two lists come from different accounts on different
-    // CLIs, so sharing one cache entry would show GitHub repos in the GitLab
-    // picker (and mark the wrong ones "Connected").
-    queryKey: ['issue-radar', 'recent-repos', RECENT_WINDOW_DAYS, scopeProvider],
-    queryFn: () => issueRadarApi.recentRepos(RECENT_WINDOW_DAYS, { provider: scopeProvider }),
-    // Only fetch once a wired provider's panel is actually open, and don't
-    // re-shell out to the CLI on every window focus.
-    enabled: expanded,
+    // Keyed by provider AND host: the lists come from different accounts on
+    // different CLIs (or different GitLab instances), so sharing one cache entry
+    // would show one account's repos in another's picker (and mark the wrong
+    // ones "Connected").
+    queryKey: ['issue-radar', 'recent-repos', RECENT_WINDOW_DAYS, scopeProvider, scopeHost ?? ''],
+    queryFn: () => issueRadarApi.recentRepos(RECENT_WINDOW_DAYS, { provider: scopeProvider, host: scopeHost }),
+    // Only fetch once a wired provider's panel is actually open (and, for
+    // GitLab, once its instance is known), and don't re-shell out to the CLI on
+    // every window focus.
+    enabled: expanded && flow.hostReady,
     refetchOnWindowFocus: false,
   })
-  const setupRequired = query.data?.setup_required ?? null
+  // A cached CLI-setup answer must not mask a later config failure: the picker
+  // suppresses its ErrorNotice (and retry) whenever a setup notice is showing.
+  const setupRequired = configError ? null : (query.data?.setup_required ?? null)
 
   // Nothing here is connectable without a working `gh`, so any target the user
   // picked before the query resolved is now a guaranteed failure — and the URL
@@ -589,6 +728,38 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
               stacked ? 'border-t border-border pt-4 min-h-[220px]' : 'min-h-0 border-l border-border pl-5'
             }`}
           >
+            {scopeProvider === 'gitlab' && flow.gitlabHosts.length > 1 && (
+              // Only rendered when there is a real choice: a one-option select
+              // (gitlab.com alone) is a control that does nothing.
+              <div className="flex flex-col gap-1 flex-shrink-0">
+                {/* Visible label: a bare host above "YOU CONTRIBUTED TO" reads as
+                  * a fixed value, not a choice. The select keeps its aria-label,
+                  * so the span is hidden from assistive tech to avoid a double read. */}
+                <span
+                  aria-hidden="true"
+                  className="text-[11px] font-semibold text-muted uppercase tracking-[.08em] opacity-70"
+                >
+                  {i18nT('apps.issueRadar.connectPanel.gitlab_instance')}
+                </span>
+                <SimpleSelect
+                  aria-label={i18nT('apps.issueRadar.connectPanel.gitlab_instance')}
+                  options={flow.gitlabHosts}
+                  value={flow.host}
+                  onChange={flow.setGitlabHost}
+                  disabled={flow.pending}
+                  className="w-full"
+                />
+              </div>
+            )}
+            {flow.selectionCleared && (
+              // Body colour, not muted: this tells the user work they built up
+              // (their ticks) is gone, so it must not read as a footnote.
+              <p role="status" className="m-0 text-xs text-text flex-shrink-0">
+                {flow.selectionCleared === 'instance'
+                  ? i18nT('apps.issueRadar.connectPanel.selection_cleared_those_projects_are_on_the_previous_instance')
+                  : i18nT('apps.issueRadar.connectPanel.selection_cleared_those_repos_belong_to_the_previous_provider')}
+              </p>
+            )}
             <RecentRepoPicker
               picked={flow.picked}
               onToggle={flow.togglePicked}
@@ -599,10 +770,11 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
               repos={query.data?.repos ?? []}
               truncated={query.data?.truncated ?? false}
               setupRequired={setupRequired}
-              isLoading={query.isLoading}
-              error={query.isError ? (query.error as Error).message : null}
+              isLoading={!configError && (query.isLoading || !flow.hostReady)}
+              error={configError ?? (query.isError ? (query.error as Error).message : null)}
               detail={query.data?.error ?? null}
-              onRetry={() => query.refetch()}
+              onRetry={configError ? flow.retryConfig : () => query.refetch()}
+              retryError={Boolean(configError)}
               // The setup notice names a CLI, and the two providers use
               // different ones — telling a GitLab user to install `gh` sends
               // them to set up the wrong tool on the one screen meant to
@@ -690,7 +862,7 @@ function ProviderRow({ provider, selected, onSelect }: {
  * when the repo list arrives, so every state — loading, setup notice, error,
  * empty, loaded — occupies exactly the same box. */
 function RecentRepoPicker({
-  picked, onToggle, repos, truncated, setupRequired, isLoading, error, detail, onRetry, disabled,
+  picked, onToggle, repos, truncated, setupRequired, isLoading, error, detail, onRetry, retryError, disabled,
   scopeProvider,
 }: {
   picked: Set<string>
@@ -702,6 +874,8 @@ function RecentRepoPicker({
   error: string | null
   detail: string | null
   onRetry: () => void
+  /** Show retry inside ErrorNotice only for the blocking config read. */
+  retryError: boolean
   /** True while a connect is in flight — rows stop accepting changes. */
   disabled: boolean
   /** Which provider's account this picker is listing — drives the CLI named by
@@ -712,7 +886,10 @@ function RecentRepoPicker({
   // Never claim a count when the feed was truncated: repos contributed to
   // earlier in the window may be missing, and a picker that looks exhaustive
   // makes the user conclude they didn't work on a repo they did.
-  const countLabel = picked.size > 0
+  // While the blocking config read is failing (retryError), the ticks are kept
+  // for recovery but the submit list is empty ("Connect 0"), so a "N selected"
+  // header would contradict the button. Hide the count until the read succeeds.
+  const countLabel = picked.size > 0 && !retryError
     ? `${picked.size} selected`
     : showList
       ? (truncated ? i18nT('apps.issueRadar.connectPanel.most_recent_activity') : `${repos.length} found`)
@@ -756,7 +933,28 @@ function RecentRepoPicker({
             input and the ticked repos, which are unsaved. */}
         {error && !setupRequired && (
           <div className="h-full flex items-center justify-center px-2">
-            <ErrorNotice message={error} />
+            <ErrorNotice
+              // retryError marks a config failure: the friendly line is the
+              // message, and the raw text ("internal error") sits behind a
+              // collapsed Details, since on its own it gives the user nothing
+              // to act on. Same treatment as the glab setup notice.
+              message={retryError ? i18nT('apps.issueRadar.connectPanel.gitlab_instances_unavailable_dashboard_settings_didn_t_load') : error}
+              footer={retryError ? (
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={onRetry}
+                    className="underline text-accent bg-transparent border-0 p-0 cursor-pointer text-[11.5px] self-start"
+                  >
+                    {i18nT('apps.issueRadar.connectPanel.try_again')}
+                  </button>
+                  <details className="text-[10.5px] text-muted opacity-60 max-w-full">
+                    <summary className="cursor-pointer">{i18nT('apps.issueRadar.connectPanel.details')}</summary>
+                    <p className="mt-1 leading-[1.5] break-words">{error}</p>
+                  </details>
+                </div>
+              ) : undefined}
+            />
           </div>
         )}
         {setupRequired && (

@@ -124,21 +124,22 @@ that it exists.
 | `computer_click(app, element_index)` | press a button, checkbox, menu item, link, row |
 | `computer_type_text(app, element_index, text)` | type text into that element. `element_index` is **required** — see the note below |
 | `computer_set_value(app, element_index, value)` | replace a field's whole contents in one step |
-| `computer_press_key(app, element_index, key)` | a key or chord — `"return"`, `"tab"`, `"escape"`, `"cmd+s"`, `"cmd+shift+a"`. **Paste (`cmd+v`) is refused** — the clipboard cannot be inspected, so use `computer_type_text` with the literal text |
+| `computer_press_key(app, element_index, key)` | a key or chord — `"return"`, `"tab"`, `"escape"`, `"cmd+s"`, `"cmd+shift+a"`. Paste (`cmd+v`) is allowed, but you cannot see the clipboard — when you know the text, prefer `computer_type_text` with the literal text |
 | `computer_scroll(app, element_index, direction, pages?)` | scroll a scrollable area (`up`/`down`/`left`/`right`) |
 | `computer_perform_action(app, element_index, action)` | run one of the element's own advertised actions when nothing above fits |
 | `computer_click(app, x, y)` | click a point when the target has no element — see below |
 | `computer_drag(app, from_x, from_y, to_x, to_y)` | a slider sweep, a range selection, a reorder — and, with `steps`, a canvas stroke |
 | `computer_launch_app(app)` | open an app that is not running yet. Name only, never a path |
 
-**Every one of these needs an `element_index`, and the keyboard tools are the ones
+**Every element tool needs an `element_index`, and the keyboard tools are the ones
 to remember.** There is no "type into whatever is focused" form: an unnamed target
 has no role or subrole, so the secure-field check cannot inspect it, and an indexless
 keystroke would land in a focused password box. That applies to `computer_press_key`
 too — `press_key("tab")` can *move* focus onto a password field, and the next
 keystroke would go there. So name the field you mean; if you want to tab through a
 form, address each field by index instead of tabbing blind. `computer_click` is the
-only exception, and only because it takes coordinates as the alternative.
+one element tool that also takes coordinates; `computer_drag` is coordinate-only and
+`computer_launch_app` takes only a name.
 
 Every action returns a **refreshed** tree, so after a click you already have the
 new indices — do not call `computer_get_state` again just to re-read them. The same
@@ -346,7 +347,7 @@ These are **answers**, not failures. Relay them and adapt; do not loop.
 | `element_index 7 changed since the last computer_get_state (was 'AXButton "Save"', now 'AXButton "Delete"')` | the UI moved under you — this refusal is what stopped you clicking the wrong thing | snapshot again and re-locate the element by its label, not its old number |
 | `'…' is a blocked target for computer use (…)` | KiroCrew's own dashboard is permanently refused — driving it would let you change your own security settings | do the task another way; tell the user why |
 | `refusing to type this text into 'X': …` | the text looked like a sensitive command or credential | do not rephrase to get around it; explain and stop |
-| `refusing to … a secure text field` | the target is a password field | ask the user to type it themselves |
+| `refusing to send input to a secure (password) field …` | the target is a password field | ask the user to type it themselves |
 | `computer use is disabled …` | the primary switch is off | tell the user to enable it in Settings → Computer Use; do not retry |
 | `computer use is not supported on this platform (…)` | no driver for this OS (e.g. Linux) | say so once |
 | `click_method 'app_post' is macOS-only …` / `'sky_click' is macOS-only …` | a macOS-only click method on Windows | use an `element_index` (no pointer moves), or name `click_method: "global"` to accept the cursor move |
@@ -385,10 +386,10 @@ this is what stops you clicking the same wrong index four times:
 
 ## Things that will bite you if you do not know them
 
-- **Electron apps are slow on the first snapshot.** Slack, VS Code, Obsidian and
-  KiroCrew's own desktop app need an accessibility opt-in that takes ~2 seconds to
-  take effect. The first `computer_get_state` on one of them looks like a hang and
-  is not. Wait for it; do not fire a second call.
+- **Electron apps are slow on the first snapshot.** Slack, VS Code and Obsidian
+  need an accessibility opt-in that takes ~2 seconds to take effect. The first
+  `computer_get_state` on one of them looks like a hang and is not. Wait for it;
+  do not fire a second call.
 - **A password field can look ordinary.** It renders as `<secure>` and its value
   is never shown to you. A window containing one gets **no screenshot at all** —
   that is deliberate, not a bug.
@@ -433,9 +434,10 @@ computer_end_turn()
 
 Two things to copy from this:
 
-- **The re-snapshot after the keypress is mandatory**, not stylistic: entering rename
+- **Take the new index from the refreshed tree after the keypress**: entering rename
   mode changed the tree, so the old index for the row is no longer the index of the
-  field. Never carry an index across a UI change.
+  field. Never carry an index across a UI change. The `computer_get_state` call is
+  there for the screenshot (a visible change), not to re-read indices.
 - **Three screenshots, not seven.** One to open the live view, one when the row turned
   into a field, one to show the result. The `click`, `set_value` and the first
   `press_key` produced no separate frame — they are steps toward one visible change,

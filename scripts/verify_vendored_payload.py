@@ -8,10 +8,12 @@ way: ``MANIFEST.in``'s ``global-exclude *.so`` strips precisely ``libllama.so``
 (every other Linux lib ends ``.so.0``, and the macOS/Windows libs are
 ``.dylib``/``.dll``), and ``python -m build`` builds the wheel FROM the sdist.
 
-Checked against the closure DECLARED in ``embeddings._REQUIRED_VENDORED_LIBS``,
-never a glob over the checkout: a glob can only prove the files present were
-shipped, so if a lib went missing from the source tree too it would pass
-vacuously.
+Checked against the closure DECLARED in
+``_llama_lib_path._REQUIRED_VENDORED_LIBS``, never a glob over the checkout: a
+glob can only prove the files present were shipped, so if a lib went missing
+from the source tree too it would pass vacuously. That stdlib-only leaf is
+where the declaration lives precisely so this gate can read it with ``ast``
+alone, in a CI job that installs build tools and no runtime dependencies.
 
 Both artifacts are inspected because the wheel is what users install while the
 sdist is what it is built from, and naming which artifact lost a file turns a
@@ -32,10 +34,9 @@ import zipfile
 _SDIST_SUFFIX = ".tar.gz"
 
 
-def _read_lib_declarations(source: pathlib.Path) -> tuple[str, dict[str, tuple[str, ...]]]:
-    """Read the runtime's literal declarations without loading its dependencies."""
-    names = {"_LIBS_DIR_NAME", "_REQUIRED_VENDORED_LIBS"}
-    declarations = {}
+def _literal_declarations(source: pathlib.Path, names: set[str]) -> dict[str, object]:
+    """Read named literal assignments from *source* without executing it."""
+    declarations: dict[str, object] = {}
     for node in ast.parse(source.read_text(encoding="utf-8"), filename=str(source)).body:
         value: ast.expr | None
         if isinstance(node, ast.Assign):
@@ -51,7 +52,16 @@ def _read_lib_declarations(source: pathlib.Path) -> tuple[str, dict[str, tuple[s
                 if value is None:
                     raise ValueError(f"{source}: {target.id} has no literal value")
                 declarations[target.id] = ast.literal_eval(value)
-    # A moved or computed declaration must fail the gate, never check zero libs.
+    return declarations
+
+
+def _read_lib_declarations(source: pathlib.Path) -> tuple[str, dict[str, tuple[str, ...]]]:
+    """Read the runtime's literal declarations without loading its dependencies."""
+    names = {"_LIBS_DIR_NAME", "_REQUIRED_VENDORED_LIBS"}
+    declarations = _literal_declarations(source, names)
+
+    # Both declarations must stay literal top-level assignments in this one
+    # file; either failure must stop the gate rather than check zero libs.
     missing = names - declarations.keys()
     if missing:
         raise ValueError(f"{source}: missing literal declarations: {sorted(missing)}")
@@ -61,7 +71,7 @@ def _read_lib_declarations(source: pathlib.Path) -> tuple[str, dict[str, tuple[s
 def main(argv: list[str]) -> int:
     dist = pathlib.Path(argv[1] if len(argv) > 1 else "dist")
     # CI installs build tools, not runtime dependencies such as PyYAML.
-    source = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/embeddings.py"
+    source = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/_llama_lib_path.py"
     libs_dir_name, required_libs = _read_lib_declarations(source)
 
     try:

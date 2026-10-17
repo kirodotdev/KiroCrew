@@ -108,15 +108,19 @@ let dragOffsetY = 0;
 
 let baseUrl = "";
 let credential = "";
+// True when the accepted credential rides the shared session cookie rather than
+// the page URL, so an empty `credential` still means "the probe was answered".
+let cookieAuth = false;
 let log = () => {};
 
 function setOverlayLogger(fn) {
   if (typeof fn === "function") log = fn;
 }
 
-function setOverlayTarget(url, token) {
+function setOverlayTarget(url, token, viaCookie = false) {
   baseUrl = url || "";
   credential = token || "";
+  cookieAuth = Boolean(viaCookie);
 }
 
 // ── Error-document latch ─────────────────────────────────────────────────────
@@ -171,7 +175,7 @@ function hasBlankedOverlay() {
  * @returns {number} how many windows were reloaded
  */
 function rearmBlankedCompanionWindows() {
-  if (!baseUrl || !credential) return 0;
+  if (!baseUrl || (!credential && !cookieAuth)) return 0;
   const pageUrl = companionPageUrl(baseUrl, "pet.html", credential);
   const reload = (win) => win.loadURL(pageUrl);
   let rearmed = overlayErrorLatch.rearm(overlays.values(), reload);

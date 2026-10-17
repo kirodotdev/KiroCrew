@@ -16,12 +16,17 @@ Other ops: `snapshot` (get element refs), then `click` / `type` / `press_key` /
 `hover` / `select_option` / `screenshot` / `wait_for` / `back` / `console`. Call
 `snapshot` first to get refs before a `click`/`type`.
 
-**The tool opens PUBLIC `http(s)` URLs only.** A loopback, `.localhost`,
-private, link-local, CGNAT or metadata address is refused outright, with an
-error pointing at `playwright-cli open <url>` — the path that prompts for the
-approval such a target requires. So a local dev server is always the
-`playwright-cli` path (see the **web-verify** and **web-preview** skills), never
-this tool.
+**The tool opens PUBLIC `http(s)` URLs, plus loopback origins the operator
+listed.** A loopback, `.localhost`, private, link-local, CGNAT or metadata
+address is refused, with an error pointing at `playwright-cli open <url>` — the
+path that prompts for the approval such a target requires. The one exception is
+an exact `host:port` (`localhost`, `127.0.0.1` or `[::1]` plus a port) the
+operator listed in the dashboard's local-origins setting; the gateway's own port is
+refused even when listed, and you cannot edit that list. So a local dev server
+is the `playwright-cli` path (see the **web-verify** and **web-preview**
+skills) unless the operator told you its origin is listed: then `navigate` opens
+it in the panel, and a refusal means it is not listed, so fall back to
+`playwright-cli`.
 
 If the tool returns guidance that **no native panel is serving this session** (a
 remote gateway, or a plain-browser dashboard with no Electron panel), THEN fall
@@ -32,11 +37,18 @@ prompt, and the user is watching the built-in panel, not that window.
 ## Fallback (and attach / logged-in sessions): `playwright-cli`
 
 The dashboard's right-side **Browser** panel also shows a live `playwright-cli`
-session. When the `browser` tool reports no native panel — or you need an
-**attached** browser carrying the user's real logins — open a page with:
+session. When the `browser` tool reports no native panel, open a page with:
 
 ```bash
 playwright-cli open https://example.com
+```
+
+`open` is a fresh headless browser with none of the user's logins. For a page that
+needs their login, or when they ask for their own Chrome, attach it instead — the
+**browser-auth** skill has the steps:
+
+```bash
+PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome
 ```
 
 The page loads in the session, the panel surfaces it, and the command prints the
@@ -100,7 +112,8 @@ permission, is the thing to get right:
   action-shaped URLs (`/logout`, anything carrying a token) that you found rather
   than the user asked for.
 - `localhost` carries no third-party session, so the untrusted-page rules above
-  do not apply to it. It is still not a `browser`-tool target — drive it with
+  do not apply to it. It is still not a `browser`-tool target unless the operator
+  listed that exact origin (see the top of this skill) — otherwise drive it with
   `playwright-cli`.
 
 ## Your PROCESS owns its browser, and `attach` binds to it
@@ -122,7 +135,8 @@ mutating verbs — lands on the PARENT session's panel. If you are a subagent an
 your parent may be browsing, use `playwright-cli` under your own `-s=<name>`
 instead of the tool.
 
-`playwright-cli attach --extension=chrome` binds that session name, not `chrome`.
+`PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome` binds that
+session name, not `chrome`.
 Keep the same command form afterwards (bare `playwright-cli tab-list`, or your
 chosen `-s=<name>`). Adding `--s=chrome` instead produces:
 

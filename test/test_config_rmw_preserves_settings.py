@@ -156,12 +156,18 @@ class TestNoFailOpenConfigWriters:
                     names.add(node.id)
             return bool(names) and names <= {"FileNotFoundError", "OSError"}
 
+        # config/loader.py is a facade over its config/loader_*.py owners, so the
+        # prefilter reads that family as one module.
+        loader_family = set((root / "config").glob("loader*.py"))
+        loader_text = "\n".join(
+            p.read_text(encoding="utf-8", errors="replace") for p in sorted(loader_family)
+        )
         offenders: list[str] = []
         for path in root.rglob("*.py"):
             if "_vendor" in path.parts:
                 continue
             src = path.read_text(encoding="utf-8", errors="replace")
-            if "config_path()" not in src:
+            if "config_path()" not in (loader_text if path in loader_family else src):
                 continue
             try:
                 tree = ast.parse(src)
@@ -223,9 +229,9 @@ class TestNoModeWideningConfigWriters:
         import pathlib
 
         root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
-        # loader.py IS the implementation; cli_commands.py hand-rolls the same
+        # loader_document.py IS the implementation; cli_commands.py hand-rolls the same
         # contract (explicit mode= + restrict_to_owner) and predates the helper.
-        allowed_files = {"loader.py", "cli_commands.py"}
+        allowed_files = {"loader_document.py", "cli_commands.py"}
         raw_writers = {"write_text", "atomic_write"}
 
         offenders: list[str] = []
@@ -788,9 +794,9 @@ class TestEveryConfigWriterIsLocked:
 
     #: The primitive itself writes through ``write_config_atomically`` by
     #: definition, and ``KiroCrewConfig.save`` writes under the same sidecar
-    #: lock via ``_config_write_lock``. Both live here, so the module is
-    #: exempt as a whole.
-    _ALLOWED_FILES = {"loader.py"}
+    #: lock via ``_config_write_lock``. They live in ``config/loader_document.py``
+    #: and ``config/loader_config.py``, so those modules are exempt as a whole.
+    _ALLOWED_FILES = {"loader_config.py", "loader_document.py"}
 
     #: Resolvers whose return value IS a config document path.
     _CONFIG_PATH_FUNCS = {"config_path", "config_local_path"}
@@ -950,9 +956,9 @@ class TestTheAtomicJsonWriteConfigFamilyIsRatcheted:
     unlocked config writer and is refused, not recorded.
     """
 
-    #: ``loader.py`` only names this family in prose; it owns the locked
+    #: ``loader_document.py`` only names this family in prose; it owns the locked
     #: primitive itself and is exempt as a whole, matching the sibling class.
-    _ALLOWED_FILES = {"loader.py"}
+    _ALLOWED_FILES = {"loader_document.py"}
 
     #: Resolvers whose return value IS a config document path.
     _CONFIG_PATH_FUNCS = {"config_path", "config_local_path"}

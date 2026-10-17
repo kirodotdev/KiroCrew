@@ -316,7 +316,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_url_preserves_path_slashes(self):
         captured = {}
 
-        def fake_fetch(url):
+        def fake_fetch(url, **_):
             captured["url"] = url
             return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
 
@@ -339,7 +339,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_url_still_encodes_query_and_fragment(self):
         captured = {}
 
-        def fake_fetch(url):
+        def fake_fetch(url, **_):
             captured["url"] = url
             return {"files": [{"path": "SKILL.md", "contents": "# ok"}]}
 
@@ -359,7 +359,7 @@ class TestSkillsShDownloadUrl:
     async def test_download_rejects_traversal_ids(self):
         calls = {"n": 0}
 
-        def fake_fetch(url):
+        def fake_fetch(url, **_):
             calls["n"] += 1
             return {"files": [{"path": "SKILL.md", "contents": "x"}]}
 
@@ -374,6 +374,34 @@ class TestSkillsShDownloadUrl:
             assert await p.fetch_skill_bundle("") is None
 
         assert calls["n"] == 0  # malformed ids never reach the network
+
+
+class TestSkillsShReadCeiling:
+    """A bundle the discover handler would accept (5 MiB of decoded files) must
+    be read whole: JSON escaping makes the raw body larger than its files, and a
+    body cut short at the read ceiling surfaced as a false "not found or empty"
+    404. Only the bundle download gets the larger ceiling; search keeps 1 MiB."""
+
+    def _ceiling_seen_by(self, fetch_name):
+        seen = []
+
+        def fake_http(url, **kwargs):
+            seen.append(kwargs["max_bytes"])
+            return {"files": [], "skills": []}
+
+        with patch("kiro_crew.skill_providers.skillsh._http.sync_fetch_json", fake_http):
+            asyncio.run(fetch_name(SkillsShProvider()))
+        return seen
+
+    def test_bundle_download_ceiling_sits_above_the_handler_guard(self):
+        (ceiling,) = self._ceiling_seen_by(lambda p: p.fetch_skill_bundle("o/r/s"))
+        assert ceiling > 5 * 1024 * 1024
+
+    def test_search_keeps_the_default_ceiling(self):
+        from kiro_crew.skill_providers import _http
+
+        (ceiling,) = self._ceiling_seen_by(lambda p: p.search("react"))
+        assert ceiling == _http.MAX_RESPONSE_BYTES
 
 
 class TestSkillsShBundleMalformedInput:

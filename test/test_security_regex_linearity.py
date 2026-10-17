@@ -224,8 +224,11 @@ def test_credential_pattern_module_still_compiles_one_alternation() -> None:
 
     body = inspect_source(redaction_mod._credential_redaction_plan)
     assert "_credential_matches(text)" in body
-    assert "_CREDENTIAL_PATTERNS.search(text, pos)" in inspect_source(
+    assert "_credential_search(text, pos, starts)" in inspect_source(
         redaction_mod._credential_matches
+    )
+    assert "_CREDENTIAL_PATTERNS.match(text, first)" in inspect_source(
+        redaction_mod._credential_search
     )
     assert "_might_contain_credential(text)" in body
     assert "re.compile(" not in body

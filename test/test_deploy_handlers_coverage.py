@@ -22,6 +22,7 @@ import pytest
 
 from kiro_crew.deploy import engine, handlers
 from kiro_crew.deploy import profiles as profiles_mod
+from kiro_crew.sandbox import SandboxUnavailableError
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -516,6 +517,20 @@ class TestDoDeployRefusals:
         assert status == 400 and "sensitive credential path" in payload["error"]
 
     @pytest.mark.asyncio
+    async def test_oversized_tree_is_refused_before_staging(self, _site, monkeypatch):
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(handlers, "_compute_tree_size_global",
+                            lambda _p: 200 * 1024 * 1024 + 1)
+
+        def _boom():
+            raise AssertionError("an oversized tree must be refused before staging")
+
+        monkeypatch.setattr(handlers, "_staging_root", _boom)
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site)})
+        assert status == 400 and "exceeds 200 MiB" in payload["error"]
+
+    @pytest.mark.asyncio
     async def test_tagged_staging_rejection_becomes_409(self, _site, monkeypatch):
         handlers._save_config("p", "us-west-2")
 
@@ -586,6 +601,38 @@ class TestDoDeployRefusals:
         status, payload = await handlers._do_deploy(
             {"site_id": "s", "local_dir": str(_site), "confirm": True})
         assert status == 409
+        assert payload["remediation"].endswith("install-reaper.sh --profile p --region us-west-2")
+
+    @pytest.mark.asyncio
+    async def test_missing_base_stack_remediation_creates_base_before_reaper(
+            self, _site, monkeypatch):
+        # install-reaper.sh exits while the base stack is missing, so the
+        # remediation must create the base first and only then run it.
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(engine, "run_aws", _aws_router([], default=(1, "", "no stack")))
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site), "confirm": True})
+        assert status == 409 and payload["code"] == "reaper_required"
+        cmd = payload["remediation"]
+        base_step, _, reaper_step = cmd.partition(" && ")
+        assert base_step.startswith(
+            "aws cloudformation deploy --stack-name kirocrew-deploy-base --template-file ")
+        assert "base-stack.yaml" in base_step
+        assert base_step.endswith("--profile p --region us-west-2")
+        assert reaper_step.endswith("install-reaper.sh --profile p --region us-west-2")
+        assert "install-reaper.sh exits while the base is missing" in payload["details"]
+
+    @pytest.mark.asyncio
+    async def test_missing_reaper_stack_remediation_skips_base_step(self, _site, monkeypatch):
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(engine, "run_aws", _aws_router([
+            ("kirocrew-deploy-base", (0, _BASE_OUTPUTS, "")),
+            ("kirocrew-deploy-reaper", (1, "", "missing")),
+        ]))
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site), "confirm": True})
+        assert status == 409 and payload["code"] == "reaper_required"
+        assert "cloudformation deploy" not in payload["remediation"]
         assert payload["remediation"].endswith("install-reaper.sh --profile p --region us-west-2")
 
     @pytest.mark.asyncio
@@ -1102,6 +1149,35 @@ class TestProfilesControlPlane:
         body = _payload(await handlers._handle_profiles_get(_FakeReq()))
         assert body["available"] == []
         assert body["default"] == "p"
+
+    @pytest.mark.asyncio
+    async def test_get_answers_typed_503_when_sandbox_backend_missing(self, monkeypatch):
+        # A host with no sandbox backend (`unshare` EPERM) and
+        # `agent.sandbox_allow_unsandboxed_exec` unset makes discovery raise
+        # SandboxUnavailableError straight out of engine.run_aws -> wrap_argv.
+        # It subclasses RuntimeError, not OSError -- the shape no caller here
+        # caught -- so it escaped the handler and aiohttp answered its bare
+        # "Server got itself in trouble" 500. The route must translate it into
+        # the readable answer the chat path already renders for this exact
+        # condition (dashboard/handlers/agents.py api_models): a typed 503 with
+        # a machine-readable code plus the probe detail and remedy the
+        # exception itself carries.
+        def _no_backend():
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable and allow_unsandboxed_exec is not set.",
+                kind="no_backend",
+                detail="unshare(CLONE_NEWUSER) failed with errno 1 (EPERM)",
+                remedy="enable_user_namespaces",
+            )
+
+        monkeypatch.setattr(profiles_mod, "discover_aws_profiles", _no_backend)
+        resp = await handlers._handle_profiles_get(_FakeReq())
+        assert resp.status == 503
+        body = _payload(resp)
+        assert body["code"] == "sandbox_unavailable"
+        assert body["kind"] == "no_backend"
+        assert "unshare(CLONE_NEWUSER)" in body["detail"]
+        assert body["remedy"] == "enable_user_namespaces"
 
     @pytest.mark.asyncio
     async def test_post_rejects_empty_name(self):

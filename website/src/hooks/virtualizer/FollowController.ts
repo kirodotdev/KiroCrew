@@ -46,6 +46,65 @@ export const DEFAULT_BOTTOM_THRESHOLD = 100
  */
 export const SELF_SCROLL_EPSILON = 2
 
+/**
+ * Whether a followed reader's position is the engine's clamp, not a move of
+ * theirs: follow is armed, scrollTop sits below the pin's last write, and the
+ * reader is flush at the bottom -- content shrank and the layout clamped them
+ * to the new end. A clamp only ever lands flush; a reader who scrolled up is
+ * off the bottom. An upward input in the settle window leaves the call to the
+ * scroll handler, because then the move may be the reader's.
+ *
+ * Gecko clamps at the forced layout a commit's own geometry reads trigger and
+ * dispatches the clamp's scroll event a frame later, after the tail has grown
+ * back, so that event arrives off the bottom and below the reference -- the
+ * shape of a reader scrolling up. Adopting the clamped position as the
+ * reference while it is still flush is what lets the late event read as ours.
+ */
+export function isEngineClampBelowWrite(input: {
+  stick: boolean
+  geom: ScrollGeom
+  lastWriteTop: number
+  upwardInputWithinSettle: boolean
+}): boolean {
+  const { stick, geom, lastWriteTop, upwardInputWithinSettle } = input
+  return (
+    stick &&
+    !upwardInputWithinSettle &&
+    lastWriteTop >= 0 &&
+    geom.scrollTop < lastWriteTop - SELF_SCROLL_EPSILON &&
+    distanceFromBottom(geom) <= SELF_SCROLL_EPSILON
+  )
+}
+
+/**
+ * The scroller's `overflow-anchor` value for a given follow state.
+ *
+ * The scroller carries native `overflow-anchor: auto`, which the browser uses
+ * to keep a scrolled-up reader's content visually stable when height changes
+ * ABOVE them -- the primary mechanism for that case, with the hook's own anchor
+ * (see shiftCompensation.ts) a fallback for an unmounted anchor node and the
+ * whole of it on WebKit, which ships none.
+ *
+ * While follow is ARMED the app's bottom pin owns the position outright, so
+ * native anchoring has nothing to contribute there -- and on Firefox it does
+ * worse than nothing. Gecko's anchoring picks an anchor node and, when the TAIL
+ * grows under a reader pinned at the bottom, holds that node by adjusting
+ * scrollTop UPWARD, away from the end. That adjustment fires a scroll event
+ * whose scrollTop lands outside SELF_SCROLL_EPSILON of the pin's last write, so
+ * the follow guard reads it as the reader scrolling up and releases the pin for
+ * the rest of the turn -- the transcript stops tracking new output. Chromium's
+ * anchoring cooperates with a bottom pin and never produced this; WebKit has no
+ * anchoring to produce it.
+ *
+ * So native anchoring is turned OFF exactly while the pin owns the position and
+ * back ON the moment the reader is scrolled up, where it is needed and already
+ * relied upon. This neither adds nor removes anything for the scrolled-up case
+ * on any engine; it only stops Gecko from fighting the pin.
+ */
+export function followAnchorMode(stick: boolean): 'auto' | 'none' {
+  return stick ? 'none' : 'auto'
+}
+
 // After a genuine user scroll, suppress ResizeObserver-driven auto-pins for
 // this long. Streaming/widget growth that should "follow" happens while the
 // user is stationary at the bottom; a re-measuring widget that fires mid-fling
@@ -288,9 +347,12 @@ export function pinSuppressedNow(
  * scroll event within `settleMs` is spent, not preserved forever.
  *
  * Pure so the caller can hand it clock and stamps; `lastScrollEventAt` is the
- * time of the last scroll event of ANY origin (ours or the reader's), because
- * after any scroll event the position reflects the input and the position test
- * is exact again. Returns the ms left on the hold so the caller can schedule
+ * time of the last scroll event that landed OUTSIDE the self-scroll epsilon of
+ * the caller's last write, ours or the reader's, because after such an event
+ * the position reflects the input and the position test is exact again. An
+ * event inside that epsilon is not an answer: it is our own pin landing or the
+ * first frame of the input, and the caller does not record it, so the hold
+ * outlives it. Returns the ms left on the hold so the caller can schedule
  * its retry exactly at expiry.
  */
 export function scrollIntentPending(

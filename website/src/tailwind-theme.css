@@ -86,15 +86,23 @@
   --color-ok: var(--ok);
   --color-ok-fg: var(--ok-fg);
   --color-ok-subtle: var(--ok-subtle);
+  /* `text-ok-text` / `text-danger-text` / `text-info-text`: the same shape as
+     `text-warn-text`, for status text on its own tint (index.css derives them). */
+  --color-ok-text: var(--ok-text);
   --color-warn: var(--warn);
   --color-warn-fg: var(--warn-fg);
   --color-warn-subtle: var(--warn-subtle);
+  /* `text-warn-text`: warn-hued text that keeps 4.5:1 on the warn tints in
+     light palettes (index.css derives it next to `--shadow-float`). */
+  --color-warn-text: var(--warn-text);
   --color-danger: var(--danger);
   --color-danger-fg: var(--danger-fg);
   --color-danger-subtle: var(--danger-subtle);
+  --color-danger-text: var(--danger-text);
   --color-info: var(--info);
   --color-info-fg: var(--info-fg);
   --color-info-subtle: color-mix(in srgb, var(--info) 12%, transparent);
+  --color-info-text: var(--info-text);
   --color-aim: var(--aim);
   --color-aim-fg: var(--aim-fg);
   --color-aim-subtle: var(--aim-subtle);

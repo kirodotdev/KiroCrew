@@ -91,7 +91,9 @@ def test_both_acp_transports_send_client_info_name() -> None:
     """
     for rel in ("src/kiro_crew/acp/client.py", "src/kiro_crew/acp/runtime.py"):
         src = Path(__file__).resolve().parents[1] / rel
-        text = src.read_text(encoding="utf-8")
+        # client.py's owner modules (client_*.py) hold code that was its own.
+        paths = [src, *sorted(src.parent.glob("client_*.py"))] if src.name == "client.py" else [src]
+        text = "".join(p.read_text(encoding="utf-8") for p in paths)
         assert '"clientInfo": {"name": CLIENT_NAME' in text, rel
         # The flat key kiro-cli ignores must not come back.
         assert '"clientName": CLIENT_NAME' not in text, rel

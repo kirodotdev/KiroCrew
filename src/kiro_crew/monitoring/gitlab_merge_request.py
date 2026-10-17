@@ -126,7 +126,7 @@ class GitLabMergeRequestProvider:
                 "provider_authentication",
             )
         except GitLabHostNotAllowed:
-            audit_provider_cli_denied("glab")
+            audit_provider_cli_denied("glab", reason="host_not_allowlisted")
             return provider_error_result(
                 ProviderErrorKind.AUTHORIZATION,
                 "provider_authorization",

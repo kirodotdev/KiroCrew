@@ -15,7 +15,7 @@
  * those modules own are re-exported below, so every import path is unchanged.
  */
 import { installSessionExpiryHandler } from './sessionExpirySignal'
-import { ApiError, friendlyErrText, toApiError } from './apiError'
+import { ApiError, friendlyErrText, toApiError, AcceptedBodyUnreadable } from './apiError'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
 import {
   STALE_OWNER_SESSION_CODE,
@@ -23,11 +23,12 @@ import {
   noteStaleOwnerResponse,
 } from './staleOwnerSignal'
 import { edgeChallengeMessage, noteEdgeAuthChallenge } from './edgeAuthChallenge'
+import { AUTH_BANNER_BUTTON_CSS, AUTH_BANNER_CSS } from './authBannerStyles'
 import { beginArtifactWrite, endArtifactWrite } from '../lib/artifactWrites'
 import { withDeadline } from '../lib/withDeadline'
 import { installApiTransport } from './apiTransport'
 import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './queryClient'
-import { recordError, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
+import { recordError, recordTransportRejection, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import type { ClientTransport } from './client/transport'
 import { createSystemEndpoints } from './client/system'
@@ -75,7 +76,13 @@ import type { DecisionsConsentData } from './client/decisions'
 export type { TunnelStatus } from './client/system'
 export type { WakaTimeStatsEntry, WakaTimeStats } from './client/telemetry'
 export type {
+  UsageSeriesDimension,
+  UsageSeriesLayer,
+  UsageSeriesPayload,
+} from './client/telemetry'
+export type {
   KiroPrerequisiteStatus,
+  KasBundleStatus,
   KasLoginStatus,
   KasLoginDeviceSession,
   KasLoginPollResult,
@@ -162,9 +169,15 @@ export type {
 export type {
   MemberRosterRow,
   MemberActivityEntry,
+  MemberRecap,
+  MemberGoals,
+  MemberGoal,
+  GoalKeyResult,
+  GoalSchedules,
+  GoalReport,
   CrewTeam,
-  CrewPanelData,
-  CrewPanelMeta,
+  DashboardFieldSpec,
+  DashboardManifest,
 } from './client/agents'
 export { SLASH_COMMANDS_TIMEOUT_MS } from './client/chatSlotSettings'
 export type {
@@ -180,6 +193,7 @@ export type {
 export type { SkillScriptValidation } from './client/skills'
 export { SKILLS_TIMEOUT_MS } from './client/skills'
 export { FILE_SEARCH_TIMEOUT_MS, BROWSE_FILES_TIMEOUT_MS } from './client/files'
+export type { ProjectAwsProfile } from './client/files'
 export type {
   ConnectionMintState,
   ConnectionStatus,
@@ -207,7 +221,7 @@ export type {
   FileMenuSurface,
   FileMenuContext,
 } from './client/apps'
-export type { AppPublishProvider } from './client/artifacts'
+export type { AppPublishProvider, DeploySitesResponse } from './client/artifacts'
 export { browserInstallConflictJob } from './client/browserAndComputerUse'
 export type {
   BrowserInstallData,
@@ -491,9 +505,7 @@ function showSessionExpiredBanner(lead?: string): void {
   _emitAuthEvent('mc-auth-required')
   const el = document.createElement('div')
   el.id = 'mc-session-expired'
-  el.style.cssText =
-    'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;' +
-    'padding:12px 20px;text-align:center;font:14px/1.5 system-ui;'
+  el.style.cssText = AUTH_BANNER_CSS
   const b = document.createElement('b')
   b.textContent = lead ?? i18nT('api.client.session_expired')
   const input = document.createElement('input')
@@ -637,6 +649,44 @@ function showSessionExpiredBanner(lead?: string): void {
   requestAnimationFrame(() => input.focus())
 }
 
+/**
+ * Raise the app-level notice for an interposed proxy's sign-in page.
+ *
+ * The proxy's refusal is already worded on the failing request's `ApiError`, but
+ * most of the requests a lapse breaks are background polls whose errors no card
+ * renders, so a tab left open past the proxy's session lifetime failed every poll
+ * for as long as it stayed open with nothing on screen. This is that missing
+ * signal.
+ *
+ * It shares the session-expired banner's element and latch rather than adding a
+ * second one, so the 2xx self-dismissal in `removeAuthBanner` clears it on the
+ * first request that gets through again, and a gateway denial arriving meanwhile
+ * cannot stack a second banner on top. It offers no token field: the gateway never
+ * saw the request, so no token could clear it. There is no dismiss control
+ * either; the notice lasts exactly as long as the requests keep being refused.
+ */
+function showEdgeChallengeBanner(): void {
+  if (_sessionExpiredShown || typeof document === 'undefined') return
+  _sessionExpiredShown = true
+  _emitAuthEvent('mc-auth-required')
+  const el = document.createElement('div')
+  el.id = 'mc-session-expired'
+  el.setAttribute('role', 'alert')
+  el.dataset.variant = 'edge-challenge'
+  el.style.cssText = AUTH_BANNER_CSS
+  const text = document.createElement('span')
+  text.textContent = i18nT('api.client.proxy_challenge_reload')
+  const reload = document.createElement('button')
+  reload.type = 'button'
+  reload.textContent = i18nT('components.errorBoundary.reload_page')
+  reload.style.cssText = AUTH_BANNER_BUTTON_CSS
+  // A full-document navigation is what lets a redirect-based proxy run its
+  // sign-in; a fetch cannot follow it.
+  reload.addEventListener('click', () => { window.location.reload() })
+  el.append(text, reload)
+  document.body.prepend(el)
+}
+
 export function checkSessionExpired(r: Response): Response {
   if (r.status === 403 && r.headers.get('X-Auth-Required') === 'true' && !_sessionExpiredShown) {
     // When this dashboard is running embedded in the Instances pane stack
@@ -734,7 +784,7 @@ export { STALE_OWNER_SESSION_CODE }
  * every existing consumer, and every test that mocks `../api/client`, is
  * unchanged by the move.
  */
-export { ApiError, friendlyErrText, toApiError }
+export { ApiError, friendlyErrText, toApiError, AcceptedBodyUnreadable }
 
 /**
  * Whether *e* is a failure the user can only clear by signing back in.
@@ -786,6 +836,9 @@ const apiFailure = (r: Response, errText: string, benign?: BenignDenial): ApiErr
   // Every one of these needs a person: the gateway never saw the request, so a silent
   // retry a second later reproduces it whether a session lapsed or a firewall refused.
   const edgeAuthExpired = edgeOutcome !== null
+  // A framed pane cannot complete a sign-in inside itself and its message already
+  // says where to go, so only a top-level document raises the notice.
+  if (edgeOutcome === 'challenged') showEdgeChallengeBanner()
   const message = staleOwnerSession
     ? i18nT('api.client.stale_owner_session_sign_in_again')
     : authRequired
@@ -889,13 +942,37 @@ const parseJson = async (r: Response, benign?: BenignDenial, nullOn204 = false) 
   // exactly as it did when this was its own copy of the body.
   if (nullOn204 && r.status === 204) return null
   if (!r.ok) {
-    const errText = await r.text()
+    // The status is the verdict; the body is only its explanation. A non-2xx
+    // whose body read is cut must still surface as an `ApiError` (a refusal,
+    // with the status line as the fallback reason) -- never as a raw network
+    // rejection, which the acceptance-receipt wires have to treat as
+    // indeterminate and would show as "delivery unconfirmed" instead of an
+    // error. The app-sdk's `jsonFetch` keeps the same guard.
+    const errText = await r.text().catch(() => r.statusText)
     throw apiFailure(r, errText, benign)
   }
   return r.json()
 }
 
 const j = (r: Response) => parseJson(r)
+
+/**
+ * `j()` for acceptance-receipt endpoints (a side-panel turn): the same auth
+ * recovery and `ApiError` for a non-2xx, but a body-read failure AFTER a 2xx
+ * is wrapped in `AcceptedBodyUnreadable`, so "accepted, receipt lost" stays
+ * distinguishable from a request that never left (both would otherwise
+ * surface as a `TypeError`/`SyntaxError`).
+ */
+const jAccepted = async (r: Response) => {
+  if (!r.ok) return parseJson(r)
+  checkSessionExpired(r)
+  removeAuthBanner()
+  try {
+    return await r.json()
+  } catch (e) {
+    throw new AcceptedBodyUnreadable(e, r)
+  }
+}
 
 /**
  * Nullable variant of j(): preserves auth recovery + ApiError semantics but
@@ -939,6 +1016,26 @@ const INSTANCES_DISABLED: BenignDenial = { status: 403, code: 'instances_disable
  */
 const jInstancesDisabled = (r: Response) => parseJson(r, INSTANCES_DISABLED)
 
+/**
+ * The second one, on its own merits: `/api/crew-board` answering `no_ledger` for a
+ * session that never ran a goal. Every reader treats it as "no board", not a
+ * failure (the Crew board page, its menu entry, the crewmate resume greeting),
+ * and the greeting probes it on every crewmate open, so journaling it would fill
+ * the error reports with one routine 404 per open.
+ */
+const CREW_BOARD_NO_LEDGER: BenignDenial = { status: 404, code: 'no_ledger' }
+const jCrewBoard = (r: Response) => parseJson(r, CREW_BOARD_NO_LEDGER)
+
+/**
+ * The third: a remote-artifact provider answering `scope_unsupported` for a
+ * browse scope it does not list. The `/artifacts` page treats it as "try the
+ * next scope", not a failure, and probes every discovery provider on each load,
+ * so journaling it would file one error report per load for a provider that
+ * works. Any other browse failure, including a different 400, journals normally.
+ */
+const REMOTE_SCOPE_UNSUPPORTED: BenignDenial = { status: 400, code: 'scope_unsupported' }
+const jRemoteBrowse = (r: Response) => parseJson(r, REMOTE_SCOPE_UNSUPPORTED)
+
 /** Add transport failures that have no HTTP Response to the same journal as apiFailure.
  *
  *  The journaled report is also PINNED to the rejection (`attachReport`). Every deadline here
@@ -953,14 +1050,34 @@ function withJournaledDeadline<T>(
 ): Promise<T> {
   return withDeadline(ms, outer, attempt).catch((error: unknown) => {
     if (isDeadlineError(error)) {
-      const report = recordError({
-        source: 'api',
-        message: error instanceof Error ? error.message : String(error),
-        code: 'timeout',
-        endpoint,
-      })
-      // `isDeadlineError` has already established this is a non-null object.
-      attachReport(error as object, report)
+      // `jfetch` already journals and pins a report when the inner fetch rejects
+      // with a TimeoutError, so an attempt that uses `jfetch` arrives here with
+      // a report already attached. Re-journaling would emit a duplicate entry
+      // (burning a ring slot) and overwrite the pinned endpoint with a second
+      // report that describes the same failure — both are waste. Only journal
+      // when the error carries no report yet (an attempt that bypasses `jfetch`
+      // or a deadline on a non-fetch operation).
+      const alreadyPinned = typeof error === 'object' && error !== null
+        && 'errorReport' in (error as Record<string, unknown>)
+      if (!alreadyPinned) {
+        // Route through `recordTransportRejection`, NOT `recordError`: a timeout
+        // whose `jfetch` entry the burst cap already suppressed arrives here with
+        // no pin (the suppressed call attached nothing), and `recordError` would
+        // skip the cap and re-add the very entry the cap dropped. The cap keys on
+        // `method + endpoint`; the method the inner `jfetch` saw is lost by here,
+        // so this re-record keys on the endpoint under the default GET bucket —
+        // which is the same bucket `jfetch` used for the suppressed GET it is
+        // standing in for, so the suppression carries through. A still-live key
+        // hands back its stored report; only a genuinely unrecorded deadline
+        // (an attempt that never went through `jfetch`) adds a fresh entry.
+        const report = recordTransportRejection({
+          message: error instanceof Error ? error.message : String(error),
+          code: 'timeout',
+          endpoint,
+        })
+        // `isDeadlineError` has already established this is a non-null object.
+        if (report) attachReport(error as object, report)
+      }
     }
     throw error
   })
@@ -970,6 +1087,62 @@ function withJournaledDeadline<T>(
 // Without it, browser requests would skip the `if sk:` check — a fail-open
 // path that an MCP subprocess could exploit by omitting its own header.
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
+
+/**
+ * A deliberate cancellation rather than a failure: an unmount, a navigation, or
+ * a react-query key that was superseded aborts the in-flight request on purpose.
+ * `fetch` rejects such a request with an `AbortError` DOMException. Recording it
+ * would evict a real report from the 20-deep ring for a request nobody was still
+ * waiting on — so these are the one transport rejection the journal skips.
+ *
+ * A `withDeadline` expiry is NOT an abort in this sense: it aborts with a
+ * `TimeoutError`-named reason (see lib/withDeadline), which `isDeadlineError`
+ * recognises and which is a genuine failure worth keeping.
+ */
+function isDeliberateAbort(error: unknown): boolean {
+  if (isDeadlineError(error)) return false
+  return typeof error === 'object' && error !== null
+    && (error as { name?: unknown }).name === 'AbortError'
+}
+
+/**
+ * The transport's rejection chokepoint. Wraps every `fetch` the API layer issues
+ * so a request that fails BEFORE producing an HTTP `Response` — a network drop
+ * (`TypeError: Failed to fetch` / `Load failed`), or a `withDeadline` timeout —
+ * is written to the same error journal that `apiFailure` writes answered
+ * failures to. Without this, `recordError` only ever runs once the server has
+ * answered, so the one failure class with no server-side log (the request never
+ * arrived) was also the one the client did not record — the exact gap #9579 and
+ * #12433 report.
+ *
+ * The message is journaled VERBATIM: `findReport` resolves the "ask the agent"
+ * hand-off by exact message match, so rewording here would orphan the entry this
+ * exists to create. Deliberate aborts are skipped (see `isDeliberateAbort`), and
+ * `recordTransportRejection` burst-caps per endpoint so offline polling cannot
+ * flush the ring. The original error is rethrown UNCHANGED: callers and tests
+ * key off its own message, and the report rides on it via `attachReport` so a
+ * notice resolves THIS request's endpoint rather than another rejection's.
+ */
+function jfetch(input: string, init?: RequestInit): Promise<Response> {
+  // Forward with the SAME argument shape the caller used: a raw read written on
+  // `fetch('/api/…')` with no init must stay a one-argument call, because adding
+  // a second `undefined` is a wire change the transport-contract tests pin (and
+  // keeping the shapes identical means this wrapper is observable only on the
+  // rejection path it exists for).
+  const request = init === undefined ? fetch(input) : fetch(input, init)
+  return request.catch((error: unknown) => {
+    if (!isDeliberateAbort(error)) {
+      const report = recordTransportRejection({
+        message: error instanceof Error ? error.message : String(error),
+        endpoint: requestPath(input),
+        method: (init?.method ?? 'GET').toUpperCase(),
+        code: isDeadlineError(error) ? 'timeout' : 'network',
+      })
+      if (report && typeof error === 'object' && error !== null) attachReport(error as object, report)
+    }
+    throw error
+  })
+}
 
 /**
  * Count a mutating request against the artifact it targets, so the leave-time
@@ -999,7 +1172,7 @@ function trackArtifactWrite(url: string, res: Promise<Response>): Promise<Respon
 }
 
 const get = (url: string, sessionKey?: string, signal?: AbortSignal) =>
-  fetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
+  jfetch(url, { headers: { ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk) }, ...(signal ? { signal } : {}) })
 const post = (
   url: string,
   body?: object,
@@ -1007,7 +1180,7 @@ const post = (
   extra?: HeadersInit,
   redirect?: RequestRedirect,
 ) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, jfetch(url, {
     method: 'POST',
     // sessionKey overrides the shared `dashboard:ui` placeholder with the REAL
     // slot. The placeholder satisfies the server's `if sk:` gate but names no
@@ -1025,11 +1198,11 @@ const post = (
     body: body ? JSON.stringify(body) : undefined,
   }))
 const put = (url: string, body: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
+  trackArtifactWrite(url, jfetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: JSON.stringify(body) }))
 const del = (url: string, body?: object, sessionKey?: string, extra?: HeadersInit) =>
-  trackArtifactWrite(url, fetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
+  trackArtifactWrite(url, jfetch(url, { method: 'DELETE', headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(sessionKey ? { 'X-Session-Key': sessionKey } : _sk), ...extra }, body: body ? JSON.stringify(body) : undefined }))
 const patch = (url: string, body: object, sessionKey?: string, signal?: AbortSignal) =>
-  trackArtifactWrite(url, fetch(url, {
+  trackArtifactWrite(url, jfetch(url, {
     method: 'PATCH',
     // Same override as post(): replace the shared `dashboard:ui` placeholder with
     // the REAL slot when the write belongs to a chat session, so the server's
@@ -1118,8 +1291,11 @@ const transport: ClientTransport = {
   del,
   patch,
   j,
+  jAccepted,
   jNullable,
   jInstancesDisabled,
+  jfetch,
+  jCrewBoard,
   sessionKeyHeader: _sk,
   checkSessionExpired,
   removeAuthBanner,
@@ -1299,7 +1475,7 @@ export const api = {
         `?scope=${encodeURIComponent(opts?.scope ?? 'mine')}` +
         (opts?.q ? `&q=${encodeURIComponent(opts.q)}` : '') +
         (opts?.pageToken ? `&pageToken=${encodeURIComponent(opts.pageToken)}` : ''),
-    ).then(j),
+    ).then(jRemoteBrowse),
   ...artifacts.remoteAndComments,
   ...browserAndComputerUse.hostAutomation,
   ...decisions.consentRead,

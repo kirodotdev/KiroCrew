@@ -57,7 +57,7 @@ describe('cron JobForm agent picker — crewmates and custom agents in two group
       expect.stringContaining('Custom agents'),
     ])
     // The custom-agent group says what a custom-agent pick means for the job.
-    expect(within(customAgents).getByText(/default crewmate's workspace and memory/)).toBeInTheDocument()
+    expect(within(customAgents).getByText(/default workspace and shared memory/)).toBeInTheDocument()
   })
 
   it('picking a template stores its bare name, exactly as picking a crew does', () => {

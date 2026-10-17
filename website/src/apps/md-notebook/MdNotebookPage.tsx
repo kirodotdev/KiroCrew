@@ -19,8 +19,8 @@ import {
   Plus,
   RefreshCw,
 } from 'lucide-react'
-// Same collapse glyphs the sessions sidebar uses (ChatPage), so the Notes
-// panel's hide/show control reads as the identical affordance.
+// Same collapse glyphs the sessions sidebar uses (SessionsSidebarChrome), so the
+// Notes panel's hide/show control reads as the identical affordance.
 import { PanelLeftLight, PanelLeftSolid } from '../../components/icons/panels'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
@@ -1728,8 +1728,8 @@ export default function MdNotebookPage() {
         style={{
           position: 'absolute',
           // Same rect as the sessions sidebar's floating collapse button
-          // (ChatPage: top-[9px] left-2 w-7 h-7): a 28px control whose center
-          // lands on the 23px shared control baseline, so this button, the
+          // (SessionsSidebarChrome: top-[9px] left-2 w-7 h-7): a 28px control whose
+          // center lands on the 23px shared control baseline, so this button, the
           // sessions toggle, and the left-nav collapse arrow all line up.
           top: '9px',
           left: '8px',

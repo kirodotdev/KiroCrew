@@ -14,15 +14,24 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
-from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_files import (
+    AGENT_FILENAME,
+)
+from kiro_crew.agent_files import (
+    DASHBOARD_AUTHOR_AGENT_FILENAME as _DASHBOARD_AUTHOR_AGENT_FILENAME,
+)
+from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME as _HEARTBEAT_FILENAME
 from kiro_crew.agent_files import WORKER_AGENT_FILENAME as _WORKER_AGENT_FILENAME
-from kiro_crew.agent_materialization import auto_approve, managed_mcp
+from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
+from kiro_crew.agent_spec_format import parse_markdown_spec, volatile_env_keys
+from kiro_crew.platform import safe_context_call
 
 #: The keys the worker spec MIRRORS from the resolved default agent spec, so its
 #: superset claim holds against the agent the user actually runs rather than
@@ -55,6 +64,69 @@ _WORKER_MIRRORED_SHAPES: dict[str, type | tuple[type, ...]] = {
 #: The mirrored surface, in spec order. Derived from the shape map so the two cannot
 #: disagree about which keys the mirror covers.
 _WORKER_MIRRORED_KEYS: tuple[str, ...] = tuple(_WORKER_MIRRORED_SHAPES)
+
+#: The agent names whose spec is DERIVED from the default spec, and so can be stale
+#: against it. ``kirocrew-worker`` mirrors the keys above; ``kirocrew-heartbeat`` copies
+#: the default's :func:`heartbeat_mirrored_servers` entries (see
+#: ``agent._install_heartbeat_agent``). Every other agent mirrors nothing.
+_WORKER_AGENT = Path(_WORKER_AGENT_FILENAME).stem
+_HEARTBEAT_AGENT = Path(_HEARTBEAT_FILENAME).stem
+_DERIVED_AGENTS: frozenset[str] = frozenset({_WORKER_AGENT, _HEARTBEAT_AGENT})
+
+#: The default-spec servers the heartbeat spec copies on EVERY edition, in copy order.
+#: ``autoApprove`` is kept and the main agent's tool filters are stripped from these;
+#: an edition's additions (:func:`heartbeat_mirrored_servers`) are copied verbatim
+#: minus ``autoApprove``.
+HEARTBEAT_MIRRORED_SERVERS: tuple[str, ...] = ("kirocrew-core",)
+
+
+def heartbeat_mirrored_servers() -> tuple[str, ...]:
+    """Every default-spec server the heartbeat spec copies, core first.
+
+    :data:`HEARTBEAT_MIRRORED_SERVERS`, then the ``@server/`` prefix of every pin in
+    ``SlackEnterpriseGate.heartbeat_safe_tools()`` (sorted, a core name never
+    repeated). The servers heartbeat mounts are exactly those the edition pinned
+    tools on, so the copy (:func:`heartbeat_mcp_servers`), the fingerprint
+    (:func:`_mirrored_surface`) and the freshness check read one list, and the
+    approval allowlist names the same servers.
+
+    Fail-closed like every context read: a ``PlatformCompositionError`` re-raises,
+    any other lookup failure (an older companion without the method) degrades to
+    the core list.
+    """
+    empty: frozenset[str] = frozenset()
+    pins: frozenset[str] = safe_context_call(
+        lambda: frozenset(agent_mod.current_context().slack_gate.heartbeat_safe_tools()),
+        fallback=empty,
+        log_message="heartbeat_safe_tools lookup failed; mirroring core only",
+    )
+    prefixes: set[str] = set()
+    for entry in pins:
+        if not isinstance(entry, str) or not entry.startswith("@") or "/" not in entry:
+            continue
+        server = entry[1:].split("/", 1)[0]
+        if server and server not in HEARTBEAT_MIRRORED_SERVERS:
+            prefixes.add(server)
+    return HEARTBEAT_MIRRORED_SERVERS + tuple(sorted(prefixes))
+
+
+def _mirrored_surface(spec: dict[str, Any], agent: str) -> dict[str, Any]:
+    """The part of the default *spec* that *agent*'s derived spec is a function of.
+
+    The fingerprint covers exactly this, so an edit to a part of the default the derived
+    spec does not copy does not force a re-derive.
+    """
+    if agent == _HEARTBEAT_AGENT:
+        servers = spec.get("mcpServers")
+        if not isinstance(servers, dict):
+            return {}
+        copied = {
+            name: servers[name]
+            for name in heartbeat_mirrored_servers()
+            if isinstance(servers.get(name), dict)
+        }
+        return {"mcpServers": copied}
+    return {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
 
 
 def _canonical_grant_pattern(ref: str) -> str | None:
@@ -713,24 +785,6 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
         except Exception:  # noqa: BLE001 — the audit must not break the install
             agent_mod.logger.debug("SEL audit unavailable for withheld autoApprove", exc_info=True)
 
-    # ONE ceiling pass over the whole assembled list, so it covers every source at
-    # once: the template's grants, the mirror of the default spec, and the two grants
-    # above. Placing it after them is what keeps the ceiling authoritative.
-    auto_approve._apply_allowed_tools_ceiling(config, source="_install_worker_agent")
-
-    # The SECOND way a call skips the PreToolUse gate is ``autoApprove`` on an
-    # ``mcpServers`` entry, and ``allowedTools`` filtering does not touch it. The
-    # mirror copies the default's map verbatim, so a hand-added ``autoApprove`` there
-    # would arrive on the worker ungoverned — the same reason
-    # ``rebuild_agent_config`` runs this pass over the primary spec's map.
-    config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(config["mcpServers"])
-
-    # Derived from the FILTERED grant list rather than restated as a literal, so a
-    # ceiling that strips a grant strips its KAS rule with it, and the cron
-    # subtraction reaches the KAS backend rather than stopping at ``allowedTools``,
-    # which nothing reads there. The shared writer version-gates it.
-    auto_approve._write_derived_permissions(config, config["allowedTools"], _WORKER_AGENT_FILENAME)
-
     if isinstance(existing, dict) and "model" in existing and _worker_model_is_user_pinned():
         # An explicit per-agent pick outranks the mirror, and it has to be read back
         # off the file: the template the mirror falls back to carries the shipped
@@ -762,7 +816,16 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
                 "model",
                 type(pinned).__name__,
             )
-    agent_mod._atomic_json_write(path, config)
+    # The shared governed-write tail, over the whole assembled spec, so it covers
+    # every source at once: the template's grants, the mirror of the default spec,
+    # and the two grants above. Running it at the write is what keeps it
+    # authoritative. It applies ONE ceiling pass to ``allowedTools``; strips an
+    # ``autoApprove`` the mirror copied verbatim off the default's map, which
+    # ``allowedTools`` filtering does not touch; pins the global ``mcp.json`` merge
+    # off, which an operator override in ``agent.json`` would otherwise carry
+    # through; and derives the KAS policy from the FILTERED list, so the cron
+    # subtraction reaches the KAS backend rather than stopping at ``allowedTools``.
+    auto_approve.write_governed_spec(path, config, source="_install_worker_agent")
     # Recorded INSIDE the critical section, against the same default-spec read this
     # derivation used: stamping it after the locks release would record a generation
     # other than the one the spec on disk mirrors.
@@ -831,6 +894,10 @@ class DerivedSpecSnapshot(NamedTuple):
     reads. ``None`` only where the bracket does not apply.
     """
 
+    agent: str = _WORKER_AGENT
+    """The derived agent this snapshot verified. It selects the default-spec surface the
+    post-load check fingerprints, so the two halves of the bracket hash the same thing."""
+
 
 class DerivedSpecStale(RuntimeError):
     """A derived agent spec does not match the default spec and cannot be repaired.
@@ -883,9 +950,10 @@ def default_spec_fingerprint() -> str | None:
     CONTENT, not mtime. Two writes inside one filesystem timestamp tick, a restored
     backup, and a clock that steps backwards all produce a stale mirror with a
     plausible mtime, and each of those is a case where a revoked server would stay
-    auto-approved on a worker. The hash covers exactly the keys the mirror copies --
-    the same :data:`_WORKER_MIRRORED_SHAPES` map the derivation reads -- so an edit
-    to a key the worker does not inherit does not force a pointless re-derive.
+    auto-approved on a worker. The hash covers exactly the surface *agent*'s derived
+    spec copies (:func:`_mirrored_surface`) -- for the worker the same
+    :data:`_WORKER_MIRRORED_SHAPES` map the derivation reads -- so an edit to a key the
+    derived spec does not inherit does not force a pointless re-derive.
 
     ``None`` when the default spec is absent or unreadable: there is nothing to be
     stale against, and the caller treats that as "no check possible" rather than as
@@ -893,6 +961,11 @@ def default_spec_fingerprint() -> str | None:
     hashes identically whichever writer produced it.
     """
     return _spec_fingerprint(_installed_default_spec())
+
+
+def _default_surface_fingerprint(agent: str) -> str | None:
+    """:func:`default_spec_fingerprint` for any derived *agent*'s surface."""
+    return _surface_fingerprint(_installed_default_spec(), agent)
 
 
 def _spec_fingerprint(spec: dict[str, Any] | None) -> str | None:
@@ -903,11 +976,65 @@ def _spec_fingerprint(spec: dict[str, Any] | None) -> str | None:
     a write landing between them yields a fingerprint describing a generation the caller
     never saw. Every pairing of a fingerprint with a file identity goes through here.
     """
+    return _surface_fingerprint(spec, _WORKER_AGENT)
+
+
+def _surface_fingerprint(spec: dict[str, Any] | None, agent: str) -> str | None:
+    """:func:`_spec_fingerprint` over the surface *agent*'s derived spec copies."""
     if spec is None:
         return None
-    mirrored = {key: spec[key] for key in _WORKER_MIRRORED_SHAPES if key in spec}
+    mirrored = _without_volatile_mcp_env(_mirrored_surface(spec, agent))
     payload = json.dumps(mirrored, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _without_volatile_mcp_env(mirrored: dict[str, Any]) -> dict[str, Any]:
+    """*mirrored* with per-launch MCP env nonce VALUES replaced, so they cannot move the hash.
+
+    A launcher may re-stamp a nonce into an ``mcpServers`` entry's ``env`` on every
+    session launch (``AIM_CREDS_AGENT_INJECTION`` is written into every agent spec the
+    launcher manages). A nonce is not a grant: the ACP skill views already leave those keys out
+    of their identity digests through :func:`kiro_crew.agent_spec_format.volatile_env_keys`,
+    and this hash follows the same list. Hashing them made every concurrent session
+    launch read as a trust change, so ``require_unchanged_derived_spec`` ended any
+    worker whose load straddled one.
+
+    Only the VALUE is normalized; the key stays in the hash. A default that drops the
+    key altogether is a changed spec -- otherwise the mirror would keep an env entry
+    absent from the default -- so it must still fingerprint differently. Every other
+    env value still counts: a rotated credential is a different grant.
+
+    Two checks read this fingerprint: the post-load bracket
+    (``require_unchanged_derived_spec``) and the mirror-freshness check
+    (``_derived_spec_matches_default``), which compares it against the fingerprint
+    ``set_mirrored_from`` recorded at derive time. So a change to a volatile value alone
+    also skips the mirror re-derive. That is safe: the launcher writes every agent spec it
+    manages, the worker's own included, each with its own per-launch value, so the mirror
+    never needs the default's copy.
+    """
+    servers = mirrored.get("mcpServers")
+    if not isinstance(servers, dict):
+        return mirrored
+    volatile = volatile_env_keys()
+    stripped: dict[str, Any] = {}
+    for name, entry in servers.items():
+        env = entry.get("env") if isinstance(entry, dict) else None
+        if not isinstance(env, dict) or not any(str(key) in volatile for key in env):
+            stripped[name] = entry
+            continue
+        stripped[name] = {
+            **entry,
+            "env": {
+                key: (_VOLATILE_VALUE_SENTINEL if str(key) in volatile else value)
+                for key, value in env.items()
+            },
+        }
+    return {**mirrored, "mcpServers": stripped}
+
+
+#: What a volatile env value hashes as. A fixed marker rather than omission, so the
+#: key's presence is still part of the fingerprint while its per-launch value is not.
+_VOLATILE_VALUE_SENTINEL = "<volatile>"
 
 
 def default_spec_identity() -> str | None:
@@ -966,13 +1093,13 @@ def _derived_spec_matches_default(agent: str) -> bool:
         and default_spec_identity() == identity
     ):
         return True
-    expected = default_spec_fingerprint()
+    expected = _default_surface_fingerprint(agent)
     if expected is None:
         raise DerivedSpecStale(
             f"the default agent spec {agent_mod.kiro_agents_dir_path() / AGENT_FILENAME} exists but "
             "cannot be read (oversized, not JSON, or refused at the read gate), so the "
-            f"{_WORKER_AGENT_FILENAME} mirror cannot be checked against it; refusing to "
-            "start the worker on a mirror of unknown generation"
+            f"{agent}.json mirror cannot be checked against it; refusing to "
+            f"start {agent} on a mirror of unknown generation"
         )
     return agent_state.get_mirrored_from(agent) == expected
 
@@ -1000,8 +1127,8 @@ def require_fresh_derived_spec(
     caller aborts the spawn -- the same reasoning ``require_fork_governance`` applies
     to an unprojected fork.
     """
-    if not agent or agent != Path(_WORKER_AGENT_FILENAME).stem:
-        # SCOPE guard, not a freshness verdict: nothing else mirrors another spec, so
+    if not agent or agent not in _DERIVED_AGENTS:
+        # SCOPE guard, not a freshness verdict: no other agent mirrors another spec, so
         # there is no generation to be stale against. Kept separate from the checks
         # below so "not applicable" can never be mistaken for "verified fresh".
         return None
@@ -1020,11 +1147,15 @@ def require_fresh_derived_spec(
     # bracket exists to catch, so the pair cannot come from the sidecar: the sidecar is
     # for the fast path that avoids a RE-DERIVE, and paying one hash of a small file on a
     # path that is already spawning a process is what buys coherence.
-    worker_path = agent_mod.kiro_agents_dir_path() / _WORKER_AGENT_FILENAME
+    worker_path = agent_mod.kiro_agents_dir_path() / f"{agent}.json"
+    require_fresh = (
+        _require_fresh_heartbeat_spec if agent == _HEARTBEAT_AGENT else _require_fresh_worker_spec
+    )
     for _ in range(_DEFAULT_SPEC_OBSERVATION_ATTEMPTS):
         identity = default_spec_identity()
-        _require_fresh_worker_spec(work_dir)
-        fingerprint = _spec_fingerprint(_installed_default_spec())
+        require_fresh(work_dir)
+        default_spec = _installed_default_spec()
+        fingerprint = _surface_fingerprint(default_spec, agent)
         # The derived spec is read HERE, inside the same window, and travels on the
         # snapshot. An in-process consumer that read it afterwards would be taking a
         # SECOND observation of a file this gate had already finished with, so a
@@ -1039,21 +1170,30 @@ def require_fresh_derived_spec(
             and fingerprint is not None
             and worker_identity is not None
             and worker_spec is not None
+            # The heartbeat copy is verified on the very bytes handed to the session,
+            # against the same default bytes the fingerprint is of.
+            and (
+                agent != _HEARTBEAT_AGENT
+                or (
+                    default_spec is not None
+                    and _heartbeat_copy_mismatch(worker_spec, default_spec) is None
+                )
+            )
             and _file_identity(worker_path) == worker_identity
             and (default_spec_identity() == identity)
         ):
-            return DerivedSpecSnapshot(identity, fingerprint, worker_spec)
+            return DerivedSpecSnapshot(identity, fingerprint, worker_spec, agent)
     # Fails CLOSED on a file that will not hold still. A snapshot taken anyway would be
     # the torn pair above, and the bracket built on it would either accept a stale spec
     # or kill a valid session -- neither is better than refusing a spawn that is
     # recoverable and reportable.
     raise DerivedSpecStale(
         f"the default agent spec {agent_mod.kiro_agents_dir_path() / AGENT_FILENAME} or the "
-        f"{_WORKER_AGENT_FILENAME} mirror kept changing while the mirror was being "
+        f"{agent}.json mirror kept changing while the mirror was being "
         f"verified, or the mirror could not be read "
         f"({_DEFAULT_SPEC_OBSERVATION_ATTEMPTS} attempts), so no coherent generation can "
         "be recorded and no verified spec can be handed to the session; refusing to "
-        "start the worker"
+        f"start {agent}"
     )
 
 
@@ -1081,16 +1221,17 @@ def require_unchanged_derived_spec(
     current_identity = default_spec_identity()
     if current_identity is not None and current_identity == snapshot.identity:
         return
-    current_fingerprint = default_spec_fingerprint()
+    current_fingerprint = _default_surface_fingerprint(snapshot.agent)
+    loaded = "heartbeat" if snapshot.agent == _HEARTBEAT_AGENT else "worker"
     if current_fingerprint is None:
         raise DerivedSpecStale(
-            "the default agent spec became unreadable while the worker spec was being "
-            "loaded, so the generation the session started on cannot be confirmed; "
+            f"the default agent spec became unreadable while the {loaded} spec was "
+            "being loaded, so the generation the session started on cannot be confirmed; "
             f"ending the session (verified {snapshot.fingerprint[:12]})"
         )
     if current_fingerprint != snapshot.fingerprint:
         raise DerivedSpecStale(
-            "the default agent spec changed during worker load, so this session may "
+            f"the default agent spec changed during {loaded} load, so this session may "
             "have started on a spec nobody verified; ending it "
             f"(verified {snapshot.fingerprint[:12]}, now {current_fingerprint[:12]})"
         )
@@ -1154,6 +1295,20 @@ def _require_fresh_worker_spec(work_dir: str | Path | None) -> None:
     mirror_path = agents_dir / _WORKER_AGENT_FILENAME
     _refuse_foreign_worker_spec(mirror_path, agent_mod._read_spec_capped(mirror_path))
     if not _derived_spec_matches_default(agent):
+        # Attributed for the same reason as the foreign-spec refusal above, and
+        # ahead of the re-derive rather than after it: where this data home does
+        # not own the agents directory the write is refused, and because
+        # ``rederive_worker_agent`` never raises, that refusal would arrive as
+        # "could not be re-derived" -- a permanent dispatch outage described as a
+        # generation mismatch, with nothing naming the directory or the remedy.
+        if agent_mod._declined_foreign_spec_write(mirror_path):
+            raise DerivedSpecStale(
+                f"{mirror_path} mirrors an older generation of {default_path}, and this "
+                f"instance's data home does not own {agents_dir}, so the mirror cannot be "
+                "re-derived; refusing to start the worker rather than run grants absent "
+                "from the default agent. To let this instance own its specs, remove the "
+                "stale kirocrew*.json specs from that directory and restart"
+            )
         agent_mod.logger.info(
             "Worker spec predates the default agent spec; re-deriving before spawn"
         )
@@ -1203,3 +1358,542 @@ def rederive_worker_agent(reason: str) -> bool:
         return False
     agent_mod.logger.info("Re-derived worker agent config after %s", reason)
     return True
+
+
+#: Command-line filters the heartbeat copy removes from a copied server's ``args``, so
+#: every read tool on that server surfaces to the heartbeat agent. Approval is enforced
+#: gateway-side by the heartbeat allowlist (``_heartbeat_approval``), not by
+#: per-agent MCP filtering.
+_HEARTBEAT_STRIPPED_FLAGS: tuple[str, ...] = (
+    "--include-tools",
+    "--include-tool-tags",
+    "--exclude-tools",
+)
+
+#: The keys the heartbeat installer writes. A copy carrying any other key (an
+#: ``allowedTools``, a ``toolsSettings``, a ``permissions`` block) holds something the
+#: derivation did not produce, so it is not a current copy.
+_HEARTBEAT_SPEC_KEYS: frozenset[str] = frozenset(
+    {"name", "description", "model", "includeMcpJson", "prompt", "mcpServers", "tools"}
+)
+
+
+def heartbeat_mcp_servers(default_spec: dict[str, Any] | None) -> dict[str, dict]:
+    """The ``mcpServers`` map the heartbeat spec derives from *default_spec*.
+
+    A copy of each server in :func:`heartbeat_mirrored_servers` that the default spec
+    mounts. A core server (:data:`HEARTBEAT_MIRRORED_SERVERS`) is copied ``autoApprove``
+    included, with :data:`_HEARTBEAT_STRIPPED_FLAGS` removed from its ``args``:
+    ``--flag=value`` is dropped, and a bare ``--flag`` drops the argument after it too.
+    An edition server is copied verbatim, filters included, minus ``autoApprove``:
+    that field makes kiro-cli approve a matching call itself, before the gateway's
+    ``_heartbeat_approval`` and its SEL audit ever see it, and this agent has no
+    approver behind it. Pure given the context, so the installer and the spawn gate
+    derive the same map from the same bytes.
+    """
+    servers = (default_spec or {}).get("mcpServers")
+    if not isinstance(servers, dict):
+        return {}
+    mcp: dict[str, dict] = {}
+    for name in heartbeat_mirrored_servers():
+        entry = servers.get(name)
+        if not isinstance(entry, dict):
+            continue
+        cleaned = dict(entry)
+        if name not in HEARTBEAT_MIRRORED_SERVERS:
+            cleaned.pop("autoApprove", None)
+            mcp[name] = cleaned
+            continue
+        args = entry.get("args") or []
+        if isinstance(args, list):
+            filtered: list[Any] = []
+            skip_next = False
+            for arg in args:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if not isinstance(arg, str):
+                    filtered.append(arg)
+                    continue
+                if any(arg == f or arg.startswith(f + "=") for f in _HEARTBEAT_STRIPPED_FLAGS):
+                    skip_next = "=" not in arg
+                    continue
+                filtered.append(arg)
+            cleaned["args"] = filtered
+        mcp[name] = cleaned
+    return mcp
+
+
+def _heartbeat_copy_mismatch(
+    copy_spec: dict[str, Any] | None, default_spec: dict[str, Any]
+) -> str | None:
+    """Why *copy_spec* is not the heartbeat spec *default_spec* derives, or ``None``.
+
+    Compares the copy's OWN grant surface with the one the derivation produces from the
+    default as it stands, rather than trusting a record of what was written: a copy left
+    by a failed install, a racing writer, a hand edit or another build all fail this the
+    same way. Volatile per-launch env values are normalized on both sides, as the
+    fingerprint does, so a launcher re-stamping a nonce is not a mismatch.
+
+    ``includeMcpJson`` must be literally ``False``: kiro-cli reads a missing key as true
+    and merges the global ``mcp.json``, whose servers and ``autoApprove`` lists this
+    comparison never sees.
+    """
+    if not isinstance(copy_spec, dict):
+        return "it is missing or does not parse as an agent spec"
+    if copy_spec.get("name") != _HEARTBEAT_AGENT:
+        return f"it declares the agent name {copy_spec.get('name')!r}"
+    if copy_spec.get("includeMcpJson") is not False:
+        return "its includeMcpJson is not false, so kiro-cli would merge the global mcp.json"
+    extra = sorted(str(key) for key in copy_spec if key not in _HEARTBEAT_SPEC_KEYS)
+    if extra:
+        return f"it carries keys the derivation does not write: {', '.join(extra)}"
+    expected = heartbeat_mcp_servers(default_spec)
+    servers = copy_spec.get("mcpServers")
+    if not isinstance(servers, dict) or _without_volatile_mcp_env(
+        {"mcpServers": servers}
+    ) != _without_volatile_mcp_env({"mcpServers": expected}):
+        return "its mcpServers differ from the default spec's mirrored entries"
+    if copy_spec.get("tools") != [f"@{name}" for name in expected]:
+        return "its tools differ from the servers it mounts"
+    return None
+
+
+def _require_fresh_heartbeat_spec(work_dir: str | Path | None) -> None:
+    """Return only when the heartbeat spec is POSITIVELY current; raise on anything else.
+
+    The heartbeat counterpart of :func:`_require_fresh_worker_spec`, and written in the
+    same shape: no ``return`` statement, so falling off the end is reachable only after
+    a verified match or a re-derive whose result verified.
+
+    The heartbeat spec copies the default's mirrored entries (:func:`heartbeat_mcp_servers`),
+    the core one ``autoApprove`` included. A copy the default has since moved past keeps
+    an auto-approval the default dropped, or a server the edition does not name, so a
+    start on it is refused here unless one re-derive brings it current.
+    The verdict is :func:`_heartbeat_copy_mismatch` on the two files' bytes, so it needs
+    no bookkeeping and holds in a data home that did not write the copy.
+    """
+    agent = _HEARTBEAT_AGENT
+    shadow = agent_mod._project_shadow_of(agent, work_dir)
+    if shadow is not None:
+        # kiro-cli resolves the checkout's file ahead of the derived one, so a verified
+        # derivation in the agents directory says nothing about the spec the session
+        # gets. Refused rather than repaired, as for the worker: the file belongs to the
+        # checkout.
+        raise DerivedSpecStale(
+            f"the project checkout declares its own {agent} spec at {shadow}, which "
+            "kiro-cli resolves ahead of the derived one; refusing to start the heartbeat "
+            "agent on a spec this derivation does not control"
+        )
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    default_path = agents_dir / AGENT_FILENAME
+    if not default_path.exists():
+        raise DerivedSpecStale(
+            f"the default agent spec {default_path} is missing, so the "
+            f"{_HEARTBEAT_FILENAME} copy cannot be verified or rebuilt; refusing "
+            "to start the heartbeat agent on a copy of unknown generation"
+        )
+    default_spec = _installed_default_spec()
+    if default_spec is None:
+        # Checked before any re-derive: re-deriving from an unreadable default writes a
+        # copy with no servers, which reads as fresh while carrying nothing it should.
+        raise DerivedSpecStale(
+            f"the default agent spec {default_path} exists but cannot be read (oversized, "
+            f"not JSON, or refused at the read gate), so the {_HEARTBEAT_FILENAME} copy "
+            "cannot be checked against it; refusing to start the heartbeat agent on a "
+            "copy of unknown generation"
+        )
+    mirror_path = agents_dir / _HEARTBEAT_FILENAME
+    reason = _heartbeat_copy_mismatch(agent_mod._read_spec_capped(mirror_path), default_spec)
+    if reason is not None:
+        if agent_mod._declined_foreign_spec_write(mirror_path):
+            raise DerivedSpecStale(
+                f"{mirror_path} is not a current copy of {default_path} ({reason}), and "
+                f"this instance's data home does not own {agents_dir}, so the copy cannot "
+                "be re-derived; refusing to start the heartbeat agent rather than run "
+                "auto-approvals absent from the default agent. To let this instance own "
+                "its specs, remove the stale kirocrew*.json specs from that directory "
+                "and restart"
+            )
+        agent_mod.logger.info(
+            "Heartbeat spec is not a current copy of the default agent spec (%s); "
+            "re-deriving before spawn",
+            reason,
+        )
+        if not rederive_heartbeat_agent("a stale copy observed on the spawn path"):
+            raise DerivedSpecStale(
+                f"{mirror_path} is not a current copy of {default_path} ({reason}) and "
+                "could not be re-derived; refusing to start the heartbeat agent rather "
+                "than run auto-approvals absent from the default agent"
+            )
+        after = _heartbeat_copy_mismatch(
+            agent_mod._read_spec_capped(mirror_path), _installed_default_spec() or {}
+        )
+        if after is not None:
+            raise DerivedSpecStale(
+                f"{mirror_path} is still not a current copy of {default_path} after a "
+                f"re-derive ({after}); refusing to start the heartbeat agent"
+            )
+
+
+def rederive_heartbeat_agent(reason: str) -> bool:
+    """Re-derive ``kirocrew-heartbeat.json`` from the default spec. Never raises.
+
+    Returns whether the re-derive ran. A failure leaves the previous copy in place, and
+    the spawn gate that called this refuses the start.
+    """
+    try:
+        agent_mod._install_heartbeat_agent()
+    except Exception:  # noqa: BLE001 — the caller turns a failure into a refusal
+        agent_mod.logger.warning("Heartbeat agent re-derive failed after %s", reason, exc_info=True)
+        return False
+    agent_mod.logger.info("Re-derived heartbeat agent config after %s", reason)
+    return True
+
+
+#: The shipped ``dashboard-template`` skill spec -- the ONE authoritative copy of the
+#: dashboard author's charter. The installer reads its ``prompt`` and ``description`` from
+#: here through :func:`parse_markdown_spec` rather than from a Python constant held equal
+#: to it by nothing. ``parent.parent`` is the ``kiro_crew`` package root (this module is
+#: ``kiro_crew/agent_materialization/worker_agent.py``).
+_DASHBOARD_AUTHOR_SPEC_PATH: Path = (
+    Path(__file__).resolve().parent.parent
+    / "builtin_skills"
+    / "kirocrew-dev"
+    / "dashboard-template"
+    / "agent-spec.md"
+)
+
+#: The agent NAME the dashboard-author spec declares. The install writes it as
+#: ``config["name"]``; ownership is confirmed by the installer-recorded digest keyed on
+#: this name (:func:`kiro_crew.agent_state.get_managed_digest`), not by the name itself.
+_MANAGED_OWNED_NAME = "kirocrew-dashboard-author"
+
+
+def _foreign_dashboard_author_spec_reason(spec: dict[str, Any] | None) -> str | None:
+    """Why *spec*, read from the owned dashboard-author path, is not this installer's own
+    managed write, or ``None`` when it REPRODUCES the installer-recorded ownership digest
+    (so the installer may rewrite it).
+
+    PROVENANCE by an installer-recorded digest in the ``agent_state`` sidecar, NOT by
+    content marks. The dashboard-author stem was a user-creatable template name before it
+    became owned, so a user could hand-place a ``kirocrew-dashboard-author.json`` -- and,
+    as review found, so could a copy of ANOTHER owned agent (``kirocrew``, a conductor)
+    renamed onto the stem, which would forge any mark chosen from the managed spec's own
+    shape (its name, its ``kirocrew-core`` reference, even a narrowed server map). Content
+    marks cannot tell such a duplicate apart from the managed spec. The digest can: it is
+    recorded by the installer AFTER it lands a write (:func:`_install_dashboard_author_agent`
+    calls :func:`kiro_crew.agent_state.set_managed_digest`), so only a file whose exact
+    bytes reproduce that recorded value is confirmed as this installer's own last write.
+
+    ``None`` -- "ours to rewrite" -- means exactly: *spec* is a dict whose canonical bytes
+    (:func:`kiro_crew.agent_state.spec_digest`) equal the digest the installer recorded for
+    this owned name. Everything else is foreign and left untouched:
+
+    * NO digest is recorded (``get_managed_digest`` is ``None``) -- the installer never
+      wrote here, so there is nothing to confirm and the present file is a user artefact;
+    * *spec* is absent / unreadable / not a dict (the caller passes ``None``) -- a file
+      whose provenance cannot even be parsed is never read as ours;
+    * *spec*'s bytes do not reproduce the recorded digest -- it has been hand-edited, or it
+      is a different agent's spec renamed onto the stem; either way not our last write.
+
+    A crash between the write and the digest record leaves no digest, which fails CLOSED:
+    the next rebuild sees "no ownership recorded" and declines rather than overwriting a
+    file it cannot attribute. The install gate (:func:`_present_spec_blocks_install`)
+    still refuses up front on an unreadable or symlinked file, so a broken file is covered
+    there too.
+    """
+    if not isinstance(spec, dict):
+        return None
+    if not agent_state.managed_digest_matches(
+        _MANAGED_OWNED_NAME, agent_state.spec_digest(spec), strict=True
+    ):
+        return "its bytes do not reproduce the installer-recorded ownership digest"
+    return None
+
+
+def _managed_dashboard_author_install_lands(path: Path) -> bool:
+    """Would the managed install actually WRITE at *path* -- i.e. is the stem owned by a
+    live installer that re-filters its grants every rebuild?
+
+    True when :func:`_write_dashboard_author_spec` would land. The ``.json`` must not be
+    blocked (absent, or it reproduces the installer-recorded ownership digest). A ``.md``
+    sibling blocks only a FIRST-TIME install (an unconfirmed ``.json``, which the install
+    must not write beside a user markdown spec); once the ``.json`` is CONFIRMED ours, the
+    install refreshes it in place despite the sibling, so the fork-governance loop may treat
+    it as owned (an owned writer re-filters its grants every rebuild). Mirrors the install
+    gate exactly, so the two never disagree about whether this stem has a live writer.
+    """
+    if _present_spec_blocks_install(path) is not None:
+        return False
+    current_json = agent_mod._read_spec_capped(path) if path.is_file() else None
+    json_confirmed = isinstance(current_json, dict) and _is_confirmed_managed_dashboard_author(
+        current_json
+    )
+    if not json_confirmed:
+        if _present_spec_blocks_install(path.parent / (path.stem + ".md")) is not None:
+            return False
+    return True
+
+
+def _is_confirmed_managed_dashboard_author(spec: dict[str, Any] | None) -> bool:
+    """Does *spec* POSITIVELY confirm as this installer's own managed dashboard-author?
+
+    The fail-closed companion to :func:`_foreign_dashboard_author_spec_reason`, for the
+    callers that must never strip a user's guards or skip filtering a user's approvals: the
+    fork refresh, the capability-parent check and the governance filter. Those ask "is this
+    confirmed OURS?", so an ABSENT, unreadable or non-dict spec (``None``) is confirmed as
+    NOTHING -- it is treated as a user file (never refreshed, never guard-stripped, still
+    filtered), NOT as "ours to rewrite". The install gate keeps using the reason helper,
+    where a broken file IS replaceable so one truncated write cannot wedge the install
+    forever; here the opposite default is the safe one.
+
+    Confirmation is the installer-recorded ownership digest: *spec*'s canonical bytes
+    reproduce the value :func:`kiro_crew.agent_state.get_managed_digest` holds for this
+    owned name. No digest recorded, or bytes that do not reproduce it, is NOT confirmed.
+    """
+    if not isinstance(spec, dict):
+        return False
+    return _foreign_dashboard_author_spec_reason(spec) is None
+
+
+def _install_dashboard_author_agent() -> None:
+    """Generate and install the kirocrew-dashboard-author agent config.
+
+    A dispatched, worker-shaped agent, but NOT the default-mirroring worker: it carries
+    its own charter and its own tool surface, so it is built from scratch the way each
+    conductor is rather than mirrored from the default spec. It authors ONE dashboard
+    template and lands it as a pull request, so it mounts the two capabilities that work
+    needs -- ``fs_write`` and ``execute_bash`` -- and nothing that would make it a
+    conductor or a reporting worker: no ``session`` verb, no ``@kirocrew-work`` mount, no
+    ``@kirocrew-dashboard`` publication surface, no ``code`` (governance classes it under
+    ``filesystem.write``, a second path to two capabilities already mounted).
+
+    ``fs_write`` and ``execute_bash`` are MOUNTED but never auto-approved, the line
+    ``kirocrew-conductor`` draws and for the same reason: ``allowedTools`` has no argument
+    matching, so a blanket write or shell grant cannot be told apart from "write anywhere"
+    / "run anything", and the author's whole safety story is that a human reads its diff
+    before it lands. Every auto-approved entry only READS or recalls -- the frontmatter
+    ``allowedTools`` of the shipped ``agent-spec.md`` (``fs_read``, ``tool_search`` and the
+    four read-only ``@kirocrew-core`` verbs) minus ``fs_read`` -- which is what makes
+    granting it on the one path that never reaches the PreToolUse gate safe.
+
+    Derived from the kirocrew agent so it inherits the resolved ``@kirocrew-core``
+    invocation and the security hooks, then narrowed: the ``mcpServers`` map keeps only
+    ``kirocrew-core`` (the one server any grant below names), and the KAS policy is
+    derived from the FILTERED grant list rather than restated, so a ceiling that strips a
+    grant strips its KAS rule with it. The shared writer version-gates it.
+
+    The ``prompt``, ``description``, ``tools`` and ``allowedTools`` are ALL read from the
+    shipped ``dashboard-template`` skill's ``agent-spec.md`` -- the one authoritative copy
+    of the charter, which :func:`parse_markdown_spec` already parses from the package --
+    rather than restated in Python literals that nothing holds equal to it. The
+    frontmatter ``allowedTools`` is the SOURCE's authored auto-approve intent; the install
+    drops ``fs_read`` from it (the one omission with a named reason below) and re-filters
+    the rest through the governance ceiling, so what lands is the governed surface rather
+    than a copy.
+    """
+    spec_source = parse_markdown_spec(_DASHBOARD_AUTHOR_SPEC_PATH.read_text(encoding="utf-8"))
+    config = agent_mod.build_agent_config()
+    config["name"] = _MANAGED_OWNED_NAME
+    config["description"] = spec_source["description"]
+    config["prompt"] = spec_source["prompt"]
+    config["tools"] = list(spec_source["tools"])
+    # ``allowedTools`` is the ONE path that never reaches the PreToolUse gate, so every
+    # grant is filtered through the governance ceiling first -- a governed ref stays
+    # MOUNTED (it is still in ``tools``) and simply prompts. The source frontmatter's
+    # ``allowedTools`` is the authored auto-approve intent; we drop ``fs_read`` from it
+    # because the ceiling withholds it from every derived spec's auto-approve list, so it
+    # reaches the gate like ``fs_write`` and ``execute_bash`` do, and offering it only to
+    # have it stripped would emit a withheld-audit event on every rebuild for a grant that
+    # was never going to land. The rest is derived from the parsed spec rather than
+    # restated, so the one authored list stays the single source of truth.
+    config["allowedTools"] = auto_approve._filter_auto_approve(
+        tuple(g for g in spec_source["allowedTools"] if g != "fs_read"),
+        source="_install_dashboard_author_agent",
+    )
+    # Narrowed to the one server any grant above names. ``build_agent_config`` mounts the
+    # whole managed set; a template is not published at run time, so the publication and
+    # session-control servers are surface this charter cannot account for.
+    mcp = config.get("mcpServers", {}) or {}
+    core_entry = mcp.get("kirocrew-core")
+    config["mcpServers"] = {"kirocrew-core": core_entry} if core_entry else {}
+    # The KAS policy is derived at the write, by the shared tail
+    # (``_write_dashboard_author_spec``), from the FILTERED grant list, so a ceiling that
+    # strips a grant strips its KAS rule with it.
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _DASHBOARD_AUTHOR_AGENT_FILENAME
+    # The whole read -> attribute -> write runs under ``agents_spec_lock``, the template-spec
+    # writer lock every other read-modify-writer of this directory holds (the worker
+    # installer, the reset path, the fork refresh, the dashboard PATCH). Without it two
+    # overlapping rebuilds could interleave their reads and writes. Holding the lock makes
+    # the ownership attribution and the write one atomic step, as the sibling worker
+    # installer does.
+    with agent_mod.agents_spec_lock(agents_dir):
+        # Preserve the two AUTHORIZED, persisted user settings a rebuild would otherwise
+        # discard, taken ONLY from a file this installer confirms is its own prior managed
+        # write (so a user file at the stem contributes nothing): an explicit ``model`` pin
+        # (``model_managed`` False, the dashboard PATCH / reset-model contract) and the user
+        # ``resources`` skill mappings. Everything else is regenerated from the shipped spec
+        # and the governance ceiling, so a grant the ceiling strips still goes. Read once,
+        # under the lock, so the carry-over cannot race the write.
+        existing = agent_mod._read_spec_capped(path)
+        removed_all_skills = False
+        if isinstance(existing, dict) and _is_confirmed_managed_dashboard_author(existing):
+            if agent_state.get_model_managed(_MANAGED_OWNED_NAME) is False:
+                pinned = existing.get("model")
+                if isinstance(pinned, str) and pinned.strip():
+                    config["model"] = pinned
+            # Mirror the confirmed spec's user skill mappings EXACTLY. "resources" PRESENT
+            # (even an empty list) is the user's saved selection and is carried as-is; the
+            # empty case matters -- an explicit remove-all-skills PATCH pops the key to [],
+            # and carrying only a non-empty list would let the build's inherited default
+            # (deep-merged from agent.json) restore the mapping the user removed. "resources"
+            # ABSENT means the user holds no selection, so any inherited default is dropped.
+            if "resources" in existing:
+                carried = existing["resources"]
+                if isinstance(carried, list):
+                    config["resources"] = carried
+                    # An explicit remove-all is the one selection the charter mapping
+                    # below does not touch. "No skills" is a thing a person can SAY
+                    # here -- the key is present and empty -- and it is pinned, so the
+                    # mapping respects it and the spec keeps no skill at all.
+                    removed_all_skills = not carried
+            else:
+                config.pop("resources", None)
+        if not removed_all_skills:
+            # The one skill the shipped charter names ("load the ``dashboard-template``
+            # skill before you write anything"). AFTER the carry-over above, and by
+            # MERGE: a person's saved selection keeps its entries and their order, and
+            # only the missing charter skill is appended. Dropping just that one entry
+            # from a non-empty list is therefore not expressible: a list without it
+            # reads the same as one saved before the mapping existed, and re-adding it
+            # is what carries the fix to everyone who already has a selection.
+            skill_resources.map_prompt_skills(config, "kirocrew-dev/dashboard-template")
+        _write_dashboard_author_spec(path, config)
+
+
+def _write_dashboard_author_spec(path: Path, config: dict) -> None:
+    """Write the managed spec, attributing any file already at *path* by the INSTALLER-RECORDED
+    OWNERSHIP DIGEST. Caller holds ``agents_spec_lock``.
+
+    POSITIVE-CONFIRMATION by the digest recorded in the ``agent_state`` sidecar
+    (:func:`_foreign_dashboard_author_spec_reason`): the spec is written only when the path
+    is FREE, or the file there reproduces the digest the installer recorded for its last
+    managed write, i.e. our own prior landed write. A user who hand-placed a spec at this
+    once-user-creatable stem -- or a copy of another owned agent renamed onto it -- is left
+    untouched, because its bytes do not reproduce the recorded digest. The digest is recorded
+    AFTER this write (below), under this same lock, so the record and the file move together.
+
+    Three branches, exactly:
+
+    * path ABSENT -> install (nothing to lose).
+    * path PRESENT and the file reproduces the recorded ownership digest -> refresh is
+      allowed (that digest IS the record that this is our own prior write).
+    * path PRESENT not reproducing the digest (no digest recorded, hand-edited, or a
+      different agent's spec renamed on), OR the file cannot be read -> leave it untouched
+      and log once. We never overwrite a file we cannot positively confirm is our own write.
+
+    BOTH candidate forms are checked before the name is claimed: kiro-cli reads
+    ``<stem>.json`` and the v3 engine also reads ``<stem>.md``, and a ``.json`` written
+    beside a user's ``.md`` would SHADOW that markdown spec. So a user ``.md`` at the stem
+    blocks the install exactly as an unconfirmed ``.json`` does -- the installer never
+    shadows a spec it did not write.
+    """
+    agents_dir = path.parent
+    stem = path.stem
+    md_candidate = agents_dir / (stem + ".md")
+    # Is the ``.json`` already our confirmed managed write? Decide this FIRST, because it
+    # changes whether a ``.md`` sibling may block. A ``.md`` at the stem must block a
+    # FIRST-TIME install (writing the ``.json`` would shadow the user's markdown spec), but
+    # it must NOT freeze an already-confirmed managed ``.json``: refusing to refresh that
+    # ``.json`` would leave its auto-approvals live after the ceiling revoked them, since a
+    # non-fork managed spec has no other writer to re-filter it. So a confirmed ``.json`` is
+    # refreshed in place and the sibling ``.md`` is left untouched.
+    current_json = agent_mod._read_spec_capped(path) if path.is_file() else None
+    json_confirmed = isinstance(current_json, dict) and _is_confirmed_managed_dashboard_author(
+        current_json
+    )
+    json_blocked = _present_spec_blocks_install(path)
+    if json_blocked is not None:
+        agent_mod.logger.warning(
+            "Not installing the managed %s: %s. Leaving it untouched; remove or rename "
+            "that file to let the managed agent install.",
+            _DASHBOARD_AUTHOR_AGENT_FILENAME,
+            json_blocked,
+        )
+        return
+    # The ``.md`` sibling blocks only a first-time install (unconfirmed ``.json``). Once the
+    # ``.json`` is confirmed ours, the ``.md`` does not stop the refresh.
+    if not json_confirmed:
+        md_blocked = _present_spec_blocks_install(md_candidate)
+        if md_blocked is not None:
+            agent_mod.logger.warning(
+                "Not installing the managed %s: %s. Leaving it untouched; remove or rename "
+                "that file to let the managed agent install.",
+                _DASHBOARD_AUTHOR_AGENT_FILENAME,
+                md_blocked,
+            )
+            return
+    # Every candidate is free, or the ``.json`` reproduces the installer-recorded ownership
+    # digest (so a refresh is allowed). Two-phase digest commit so a crash never leaves the
+    # bytes and the record out of step: record the NEW bytes' digest as PENDING first, then
+    # replace the file (``_atomic_json_write`` -- a tmp-file + atomic replace), then finalize.
+    # At every instant the file reproduces either the old finalized digest or the pending
+    # one, so a later rebuild always re-confirms and re-filters instead of freezing.
+    #
+    # The pending digest is taken INSIDE the shared writer, after its one governance
+    # pass and before the replace, so it is the digest of exactly the bytes that land:
+    # a ceiling that moves while this runs can change those bytes, never split them
+    # from their record.
+    current_digest = (
+        agent_state.spec_digest(current_json) if isinstance(current_json, dict) else None
+    )
+
+    def _record_pending(governed: dict) -> None:
+        agent_state.begin_managed_write(
+            _MANAGED_OWNED_NAME, agent_state.spec_digest(governed), current=current_digest
+        )
+
+    auto_approve.write_governed_spec(
+        path, config, source="_install_dashboard_author_agent", before_write=_record_pending
+    )
+    agent_state.finalize_managed_write(_MANAGED_OWNED_NAME)
+    agent_mod.logger.info("Installed dashboard-author agent config: %s", path)
+
+
+def _present_spec_blocks_install(candidate: Path) -> str | None:
+    """Why a file already at *candidate* (a ``.json`` or ``.md`` at the dashboard-author
+    stem) must block the managed install, or ``None`` when it does not.
+
+    ``None`` means: the candidate is ABSENT, or it is a ``.json`` that reproduces the
+    installer-recorded ownership digest (our own prior write, which the refresh may
+    overwrite). A reason string means leave everything untouched:
+
+    * a symlink / non-regular file -> never follow or clobber;
+    * a read failure (oversized, non-UTF-8, unparseable) -> provenance unconfirmable;
+    * a file that does not reproduce the recorded digest -> a user artefact or another
+      agent's spec (its ``.json`` is not our write; ANY ``.md`` is a user spec, since the
+      installer only ever writes ``.json``, so even a ``.md`` that reproduced the digest
+      would still be the user's and is left untouched).
+
+    The digest-reproducing ``.json`` refresh case is the ONE overwrite the installer makes;
+    everything else is protected.
+    """
+    if not os.path.lexists(candidate):
+        return None
+    if candidate.is_symlink() or not candidate.is_file():
+        return f"{candidate} is not a regular file"
+    current = agent_mod._read_spec_capped(candidate)
+    if current is None:
+        return f"the file at {candidate} could not be read, so its provenance cannot be confirmed"
+    # The installer only ever writes the ``.json`` form, so a ``.md`` is never its own write:
+    # a ``.md`` is always a user spec and must be left untouched. Only a ``.json`` may be
+    # confirmed as ours and refreshed.
+    if candidate.suffix.lower() != ".json":
+        return f"a user markdown spec exists at {candidate}"
+    reason = _foreign_dashboard_author_spec_reason(current)
+    if reason is not None:
+        return f"a file at {candidate} is not this installer's own ({reason})"
+    return None

@@ -20,6 +20,7 @@ import sys
 import threading
 import types
 import wave
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1551,11 +1552,36 @@ class TestBundledFfmpeg:
             frozenset({filename} if signer_rewritten else ()),
         )
         monkeypatch.setattr(transcribe.platform_compat, "is_bundled_interpreter", lambda: True)
+        # A release that SHIPS a decoder, whatever this host's own platform is: the
+        # fail-closed rules below are about that release, not about macOS Intel.
+        monkeypatch.setattr(
+            transcribe.decoder,
+            "platform_key",
+            lambda *a, **k: transcribe.decoder.ARTIFACTS[0].platform_key,
+        )
         return binary
 
     def test_resolves_the_exact_wheel_resource(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
         assert transcribe._bundled_ffmpeg() == str(binary)
+
+    def test_a_release_on_an_unpinned_host_cpu_still_uses_its_own_decoder(
+        self, monkeypatch, tmp_path
+    ):
+        """The x64 Windows release on an ARM64 PC keeps the decoder it carries.
+
+        Python reports the physical CPU there, which keys to the unpinned
+        ``windows-aarch64``. What the release ships decides, not that key.
+        """
+        binary = self._fake_package(monkeypatch, tmp_path)
+        monkeypatch.setattr(transcribe.decoder, "platform_key", lambda *a, **k: "windows-aarch64")
+
+        def _unexpected_system_lookup():
+            raise AssertionError("a release with a decoder looked for a system one")
+
+        monkeypatch.setattr(transcribe, "_find_system_ffmpeg", _unexpected_system_lookup)
+        assert transcribe._find_ffmpeg() == str(binary)
+        assert transcribe.ffmpeg_source() == transcribe.FFMPEG_SOURCE_BUNDLED
 
     def test_missing_wheel_resource_is_not_replaced_by_path(self, monkeypatch, tmp_path):
         self._fake_package(monkeypatch, tmp_path, create_binary=False)
@@ -1588,6 +1614,45 @@ class TestBundledFfmpeg:
 
         monkeypatch.setattr(transcribe, "_trusted_site_package_roots", _unexpected_roots)
         assert transcribe._bundled_ffmpeg() is None
+
+    @staticmethod
+    def _release_without_a_decoder(monkeypatch, system_ffmpeg):
+        """A bundled interpreter on the backend that ships no decoder (macOS Intel)."""
+        monkeypatch.setattr(transcribe.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            transcribe.decoder,
+            "platform_key",
+            lambda *a, **k: transcribe.decoder.DECODERLESS_BUNDLE_PLATFORM,
+        )
+
+        def _unexpected_roots():
+            raise AssertionError("a release that ships no decoder scanned its bundle for one")
+
+        monkeypatch.setattr(transcribe, "_trusted_site_package_roots", _unexpected_roots)
+        monkeypatch.setattr(transcribe, "_find_system_ffmpeg", lambda: system_ffmpeg)
+
+    def test_a_release_with_no_decoder_executes_the_system_one(self, monkeypatch):
+        """Nothing was shipped to be damaged, so failing closed would only break voice.
+
+        The Intel half of the universal app carries no imageio-ffmpeg. It resolves
+        exactly like a source install: a system FFmpeg from the fixed directories
+        first.
+        """
+        self._release_without_a_decoder(monkeypatch, "/usr/local/bin/ffmpeg")
+        assert transcribe._open_ffmpeg_for_execution() == "/usr/local/bin/ffmpeg"
+
+    def test_a_release_with_no_decoder_reports_the_system_one(self, monkeypatch):
+        """Status names the decoder execution would run, and where it came from."""
+        self._release_without_a_decoder(monkeypatch, "/usr/local/bin/ffmpeg")
+        assert transcribe._find_ffmpeg() == "/usr/local/bin/ffmpeg"
+        assert transcribe.ffmpeg_source() == transcribe.FFMPEG_SOURCE_SYSTEM
+
+    def test_a_release_with_no_decoder_and_no_system_one_reports_none(self, monkeypatch, tmp_path):
+        self._release_without_a_decoder(monkeypatch, None)
+        monkeypatch.setattr(transcribe.decoder, "store_dir", lambda: tmp_path)
+        assert transcribe._open_ffmpeg_for_execution() is None
+        assert transcribe._find_ffmpeg() is None
+        assert transcribe.ffmpeg_source() is None
 
     def test_packaged_cli_without_electron_parent_uses_release_decoder(self, monkeypatch, tmp_path):
         binary = self._fake_package(monkeypatch, tmp_path)
@@ -2075,9 +2140,8 @@ class TestBundledFfmpeg:
         authenticate. imageio-ffmpeg is a real dev dependency, so its wheel puts
         this platform's executable in site-packages -- the same upstream bytes the
         desktop build stages -- which turns one transcribed literal per host into a
-        checked claim. Across the Linux, Windows and macOS-arm64 legs that covers
-        three of the five pins; the two no runner can supply are shape-guarded
-        below.
+        checked claim. The Linux, Windows and macOS-arm64 legs cover every pin but
+        linux-aarch64, which no runner can supply and is shape-guarded below.
 
         CI may not skip this. Every CI leg runs on a platform the desktop matrix
         ships, and pip resolves that platform's imageio-ffmpeg wheel, which carries
@@ -2125,13 +2189,10 @@ class TestBundledFfmpeg:
     def test_every_pin_is_a_well_formed_size_and_sha256(self):
         """Shape guard for the pinned values no CI leg can hash.
 
-        macOS Intel and linux-aarch64 have no runner that installs their upstream
-        executable, and the only gate that EXECUTES a staged decoder
-        (``_packaged_ffmpeg_version_probe``, called from
-        ``local_voice_runtime_gate`` in packaging/build-desktop.sh) is skipped for
-        the Intel slice. So for those two entries a truncated digest or a
-        zero-length size would otherwise reach a desktop user as a generic
-        "missing or damaged decoder" remedy with CI fully green. The bounds are
+        linux-aarch64 has no runner that installs its upstream executable, so for
+        that entry a truncated digest or a zero-length size would otherwise reach a
+        desktop user as a generic "missing or damaged decoder" remedy with CI fully
+        green. The bounds are
         deliberately loose -- an ffmpeg build is tens of megabytes and a signed one
         stays under _MAX_SIGNED_FFMPEG_BYTES -- so a legitimate version bump passes
         while a transcription slip does not.
@@ -2457,7 +2518,7 @@ class TestFfmpegCandidateDirsWindows:
     """Regression guards for the Windows ffmpeg discovery fix.
 
     Runs on POSIX CI by monkeypatching ``platform_compat.IS_WINDOWS`` (same
-    pattern as ``TestTaskkillErrorMapping`` in ``test_platform_compat.py``) —
+    pattern as ``TestTaskkillErrorMapping`` in ``test_platform_compat_kill_reap.py``) —
     the branch construction is platform-independent code.
     """
 
@@ -2581,20 +2642,66 @@ class TestTranscribeFormatValidation:
 
 
 class TestProfileCredentialResolver:
+    @staticmethod
+    def _resolver(session: MagicMock) -> _ProfileCredentialResolver:
+        with patch.object(transcribe, "boto3") as boto3_module:
+            boto3_module.Session.return_value = session
+            return _ProfileCredentialResolver("test-profile")
+
     @pytest.mark.asyncio
     async def test_none_credentials_raises(self):
-        resolver = _ProfileCredentialResolver.__new__(_ProfileCredentialResolver)
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
         mock_session.profile_name = "test-profile"
-        resolver._session = mock_session
-        mock_creds_module = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {"amazon_transcribe": MagicMock(), "amazon_transcribe.auth": mock_creds_module},
-        ):
-            with pytest.raises(RuntimeError, match="No AWS credentials found"):
-                await resolver.get_credentials()
+        resolver = self._resolver(mock_session)
+        with pytest.raises(RuntimeError, match="No AWS credentials found"):
+            await resolver.get_credentials()
+
+    @pytest.mark.asyncio
+    async def test_a_stream_keeps_the_credentials_it_opened_with(self):
+        """A refresh mid-stream must not reach the events still to be signed.
+
+        The SDK asks the resolver again for every audio event, and each event's
+        signature chains from the opening request's, so Transcribe refuses an
+        event signed with a refreshed key.
+        """
+        pytest.importorskip("amazon_transcribe")
+        botocore_credentials = pytest.importorskip("botocore.credentials")
+        now = datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc)
+        # Inside botocore's advisory refresh window, so every read refreshes.
+        expiry = now + timedelta(minutes=12)
+        issued = iter(range(2, 100))
+
+        def _refresh() -> dict[str, str]:
+            n = next(issued)
+            return {
+                "access_key": f"AKIA{n}",
+                "secret_key": f"secret-{n}",
+                "token": f"token-{n}",
+                "expiry_time": expiry.isoformat(),
+            }
+
+        refreshing = botocore_credentials.RefreshableCredentials(
+            access_key="AKIA1",
+            secret_key="secret-1",
+            token="token-1",
+            expiry_time=expiry,
+            refresh_using=_refresh,
+            method="test",
+            time_fetcher=lambda: now,
+        )
+        session = MagicMock()
+        session.get_credentials.return_value = refreshing
+        resolver = self._resolver(session)
+
+        opening = await resolver.get_credentials()
+        later = [await resolver.get_credentials() for _ in range(3)]
+
+        assert refreshing.get_frozen_credentials().access_key != opening.access_key_id
+        assert {(c.access_key_id, c.secret_access_key, c.session_token) for c in later} == {
+            (opening.access_key_id, opening.secret_access_key, opening.session_token)
+        }
+        session.get_credentials.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

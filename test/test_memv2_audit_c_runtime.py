@@ -11,7 +11,18 @@ import pytest
 
 from kiro_crew import embeddings as emb
 from kiro_crew import executors as pools
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, wait_until
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
+
+
+async def _finished(coro, what: str, *, timeout: float | None = None):
+    """Run ``coro`` under the lost-run bound; fail by name if it hangs (D8)."""
+    task = asyncio.ensure_future(coro)
+    try:
+        return await await_until(task, timeout=timeout, what=what)
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 def test_same_name_size_weights_have_distinct_identity(tmp_path):
@@ -79,10 +90,13 @@ def test_cache_collision_does_not_block_other_text(monkeypatch):
         try:
             assert entered.wait(5)
             interactive = pool.submit(emb._shared_sync_embed, "other", priority=0)
-            assert interactive.result(timeout=1) == [1.0, 0.0]
+            wait_until(interactive.done, timeout=default_timeout())
+            assert not release.is_set(), "interactive embed waited for the bulk embed to finish"
+            assert interactive.result() == [1.0, 0.0]
         finally:
             release.set()
-            bulk.result(timeout=5)
+            wait_until(bulk.done)
+            bulk.result()
 
 
 @pytest.mark.asyncio
@@ -114,15 +128,16 @@ async def test_recall_has_own_admission_and_cancels_queued_native_work(monkeypat
             for i in range(7)
         ]
 
-        async def queued():
-            while backend._jobs.qsize() != 7:
-                await asyncio.sleep(0.001)
-
-        await asyncio.wait_for(queued(), 2)
+        await async_wait_until(lambda: backend._jobs.qsize() == 7)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        assert await asyncio.wait_for(pools.run_in_embed_pool(lambda: "prompt"), 1) == "prompt"
+        assert (
+            await _finished(
+                pools.run_in_embed_pool(lambda: "prompt"), "the embed pool accepting a new job"
+            )
+            == "prompt"
+        )
     finally:
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -163,10 +178,6 @@ async def test_same_key_bulk_is_promoted_without_duplicate_inference(monkeypatch
     monkeypatch.setattr(emb, "get_shared_embedder", lambda: backend)
     tasks = [asyncio.create_task(asyncio.to_thread(emb._shared_sync_embed, "blocker"))]
 
-    async def wait_until(predicate):
-        while not predicate():
-            await asyncio.sleep(0.001)
-
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         tasks.append(
@@ -174,7 +185,7 @@ async def test_same_key_bulk_is_promoted_without_duplicate_inference(monkeypatch
                 asyncio.to_thread(emb._shared_sync_embed, "same", priority=emb.PRIORITY_BULK)
             )
         )
-        await asyncio.wait_for(wait_until(lambda: backend._jobs.qsize() == 1), 2)
+        await async_wait_until(lambda: backend._jobs.qsize() == 1)
         backend._bulk_ready_at = time.monotonic() + 60
         tasks.append(
             asyncio.create_task(
@@ -186,9 +197,9 @@ async def test_same_key_bulk_is_promoted_without_duplicate_inference(monkeypatch
             with backend._jobs.mutex:
                 return bool(backend._jobs.queue and backend._jobs.queue[0][0] == 0)
 
-        await asyncio.wait_for(wait_until(promoted), 2)
+        await async_wait_until(promoted)
         release.set()
-        assert await asyncio.wait_for(asyncio.gather(*tasks), 2) == [[1.0, 0.0]] * 3
+        assert await await_until(asyncio.gather(*tasks)) == [[1.0, 0.0]] * 3
         assert calls == ["blocker", "same"]
     finally:
         release.set()
@@ -229,10 +240,6 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
     monkeypatch.setattr(emb, "get_shared_embedder", lambda: backend)
     monkeypatch.setattr(emb, "_EmbedFlight", SpyFlight)
 
-    async def wait_until(predicate):
-        while not predicate():
-            await asyncio.sleep(0.001)
-
     owner = asyncio.create_task(asyncio.to_thread(emb._shared_sync_embed, "same", priority=0))
     tasks = [owner]
     try:
@@ -241,7 +248,7 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
             asyncio.to_thread(emb._shared_sync_embed, "same", priority=emb.PRIORITY_BULK)
         )
         tasks.append(waiter)
-        await asyncio.wait_for(wait_until(lambda: WaiterSpy.polls > 0), 2)
+        await async_wait_until(lambda: WaiterSpy.polls > 0)
         # The owner's budget must run out WHILE its native call is in flight. A
         # 100 ms `_EMBED_WAIT_SECS` starts ticking at `_shared_sync_embed` entry
         # and has to outlast the `to_thread` hop, the infer thread's start and the
@@ -252,8 +259,8 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
         (owner_flight,) = flights
         owner_flight.work.cancelled.set()
         release.set()
-        assert await asyncio.wait_for(owner, 2) is None
-        assert await asyncio.wait_for(waiter, 2) == [1.0, 0.0]
+        assert await await_until(owner, what="the expired-owner task") is None
+        assert await await_until(waiter, what="the waiter task") == [1.0, 0.0]
         assert emb._shared_sync_embed("same", priority=0) == [1.0, 0.0]
         assert calls == ["same"]
     finally:
@@ -378,8 +385,9 @@ async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open, e
         app={"state": object()}, query={"q": "query", "store": "default"}, headers={}
     )
     try:
-        response = await asyncio.wait_for(
-            memory.memory_recall_deadline(memory_member.api_memory_recall)(request), 2
+        response = await _finished(
+            memory.memory_recall_deadline(memory_member.api_memory_recall)(request),
+            "the recall handler's 504 response",
         )
         assert response.status == 504
         assert b"memory_recall_timeout" in response.body
@@ -479,11 +487,11 @@ async def test_store_opened_after_apply_snapshot_before_config_gets_new_width(
 
     monkeypatch.setattr(memory, "_write_embed_model_config", open_before_write)
     try:
-        await asyncio.wait_for(
+        await _finished(
             asyncio.to_thread(
                 memory._apply_embedding_model, global_store, "", asyncio.get_running_loop()
             ),
-            10,
+            "the embedding model application",
         )
         assert opened, memory.reembed_progress().snapshot()
         assert candidate._serving
@@ -530,7 +538,10 @@ async def test_registered_recall_route_has_server_deadline(monkeypatch):
     assert route.handler is memory_member.api_memory_recall
     assert hasattr(route.handler, "__wrapped__")
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
-        response = await asyncio.wait_for(client.get("/api/memory/recall?store=default&q=query"), 2)
+        response = await _finished(
+            client.get("/api/memory/recall?store=default&q=query"),
+            "the recall route's 504 response",
+        )
         assert response.status == 504
         assert (await response.json())["code"] == "memory_recall_timeout"
     assert entered.is_set() and cancelled.is_set()
@@ -568,7 +579,8 @@ def test_same_width_alignment_rejects_inflight_old_vector(tmp_path, monkeypatch)
                 emb.align_store_embedding_space(store)
             finally:
                 release.set()
-            assert writer.result(timeout=5)
+            wait_until(writer.done)
+            assert writer.result()
         assert store.recorded_embedding_space() == emb.embedding_space_signature(new.model_id, 2)
         row = store.db.execute("SELECT embedding FROM episodic_memories").fetchone()
         assert row[0] is None

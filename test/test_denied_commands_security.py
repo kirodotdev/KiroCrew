@@ -37,6 +37,11 @@ from kiro_crew.security import perm_verb_mention as _perm_verb_mention
 from kiro_crew.security import (
     pinned_builtin_command_ids,
 )
+from kiro_crew.testing.wait import wait_until
+
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
 
 _GOLDEN = Path(__file__).parent / "fixtures" / "denied_commands_golden.json"
 
@@ -115,7 +120,7 @@ class TestCatalog:
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
         # flagged-file delivery self-protection floor added no row: it is an
         # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
-        assert len(BUILTIN_DENIED_RULES) == 112
+        assert len(BUILTIN_DENIED_RULES) == 113
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -557,18 +562,19 @@ class TestSelfProtectionFlagInterposition:
         A verb added to the CLI without a decision here would otherwise walk past
         the floor silently, which is the failure mode the enumeration invites.
 
-        Read by AST rather than by calling a builder, because ``cli.py`` builds its
-        parser inline in ``main()``; and by AST rather than by grepping the source,
-        because a substring assertion stays green when the construct it names moves
-        or is wrapped.
+        Read by AST rather than by calling a builder, because ``cli.main()`` builds
+        its parser inline from the ``cli_parser_*`` registrars; and by AST rather
+        than by grepping the source, because a substring assertion stays green when
+        the construct it names moves or is wrapped.
         """
         import ast
         import inspect
 
-        from kiro_crew import cli
+        from kiro_crew import cli, cli_parser_admin, cli_parser_agent, cli_parser_gateway
         from kiro_crew.security import argv_floor
 
-        tree = ast.parse(inspect.getsource(cli))
+        parser_modules = (cli, cli_parser_gateway, cli_parser_agent, cli_parser_admin)
+        tree = ast.parse("\n".join(inspect.getsource(module) for module in parser_modules))
         choices: "list[str] | None" = None
         required = None
         for node in ast.walk(tree):
@@ -7732,34 +7738,39 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         # interposed empty word is still not a publish.
         assert is_denied('git "" stash push') is None
 
-    def test_a_whitespace_only_word_is_a_documented_residual(self):
-        """DOCUMENTED GAP, pinned rather than claimed.
+    def test_a_whitespace_only_word_is_elided_from_an_added_view(self):
+        """A quoted WHITESPACE-ONLY word does not hide a command-shape rule.
 
-        A quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) renders the same
-        extra separator and still escapes the rule.  It is NOT fixed here.  A
-        render that dropped it would be additive like the empty-elided one and so
-        could not lose a denial, but it is not the same claim: an empty element
-        carries no characters, so a view without it is still the argv the shell
-        hands over, while a whitespace-only element is a real operand naming a
-        file that can exist, so a view without it is an argv ONE OPERAND SHORT of
-        the one that runs.  ``is_denied``'s exception machinery is matched against
-        views, so the direction that widening opens is ALLOW.
+        ``rm -rf " " /home/x`` runs the recursive delete with one extra operand
+        (a file named by a single space), but the single-space join renders that
+        operand as extra separators and the rule's text is not a substring of the
+        plain view or the empty-elided one.  A FOURTH view drops whitespace-only
+        tokens.  It is appended beside the others, never substituted, so it can
+        only add a match: a view whose match an exception excuses moves on to the
+        next pattern, and any other view that matches still denies.
 
-        The naive alternative is unsound and must not be chosen either:
-        whitespace-collapsing the joined line would merge a two-word filename
-        into two operands and match a rule against a command that was never run --
-        the second assertion below is what keeps that on the record.
-
-        When that gap is closed, this test is the one that must
-        flip.
+        The view is one operand short of the argv that runs, so it is a render
+        to match deny rules against, not a claim about which files are named.
+        Whitespace-collapsing the joined line instead is unsound: it would merge a
+        two-word filename into two operands, so a token that carries any
+        non-whitespace character is kept whole -- the last assertion pins that.
         """
         from kiro_crew import security
 
-        for cmd in ('rm -rf " " /home/x', "rm -rf $'\\t' /home/x"):
-            assert is_denied(cmd) is None, (
-                f"{cmd!r} is now denied -- the residual this pins is closed, so update "
-                "the security spec and flip this assertion"
-            )
+        for cmd in (
+            'rm -rf " " /home/x',
+            "rm -rf $'\\t' /home/x",
+            "rm -rf ' ' $'\\t' /home/x",
+        ):
+            assert (
+                is_denied(cmd) is not None
+            ), f"a whitespace-only word escaped the deny view: {cmd!r}"
+        # The added view is appended after the plain and empty-elided renders.
+        views = security._deny_segment_views('rm -rf " " /home/x')
+        assert views[-1] == "rm -rf /home/x"
+        assert "rm -rf   /home/x" in views
+        # A command with no whitespace-only word gains no view.
+        assert security._deny_segment_views("ls -la /tmp") == ("ls -la /tmp",)
         # ...and the two-word filename that makes a whitespace collapse unsound.
         assert security._deny_segment_views('rm -rf "a b"')[-1] == "rm -rf a b"
 
@@ -9139,8 +9150,23 @@ class TestSandboxEscapeSshSelf:
         assert "203.0.113.66" in resolved
         assert _argv_floor._NETLINK_ADDRS_PUBLISHED is True
 
+    _RESOLVER_THREAD = "kirocrew-own-host-resolve"
+
+    @classmethod
+    def _resolvers_now(cls) -> set[int]:
+        """The resolver daemons alive right now, by identity."""
+        return {id(t) for t in threading.enumerate() if t.name == cls._RESOLVER_THREAD}
+
     def _open_window(self, monkeypatch, *, netlink, fqdn=lambda: ""):
-        """A fresh process: nothing published, the worker free to start now."""
+        """A fresh process: nothing published, the worker free to start now.
+
+        Records the resolver daemons already alive, so :meth:`_join_resolver`
+        joins only the one this test starts. ``threading.enumerate()`` is
+        process-wide, and the unit tests below call the cache function directly,
+        where a macOS ``getfqdn`` for a ``*.local`` name takes seconds, so a
+        neighbour's daemon can still be running here under any test order.
+        """
+        self._foreign_resolvers = self._resolvers_now()
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
@@ -9150,11 +9176,24 @@ class TestSandboxEscapeSshSelf:
         monkeypatch.setattr(_argv_floor.socket, "getfqdn", fqdn)
         monkeypatch.setattr(_argv_floor.socket, "getaddrinfo", lambda *a, **k: [])
 
-    @staticmethod
-    def _join_resolver():
+    #: Lost-run bounds for the resolver tests below. Once released, the netlink
+    #: publish and the worker's exit take milliseconds; these only end a wedged
+    #: worker, inside half the suite's 120 s timeout.
+    _PUBLISH_DEADLINE_SECS = 30.0
+    _RESOLVER_JOIN_SECS = 30.0
+    #: How long a stubbed DNS lookup holds the worker. It must outlast the publish
+    #: wait, or a slow publish lets DNS return before the test can see it still
+    #: in flight. The test's ``finally`` releases it, so no passing run spends it.
+    _DNS_HOLD_SECS = 2 * _PUBLISH_DEADLINE_SECS
+
+    def _join_resolver(self):
+        """Join the resolver this test started, and fail if it outlives its bound."""
+        foreign = getattr(self, "_foreign_resolvers", frozenset())
+        bound = self._RESOLVER_JOIN_SECS
         for t in threading.enumerate():
-            if t.name == "kirocrew-own-host-resolve":
-                t.join(5)
+            if t.name == self._RESOLVER_THREAD and id(t) not in foreign:
+                t.join(bound)
+                assert not t.is_alive(), f"the own-host resolver still ran after {bound:.0f}s"
 
     def test_startup_warm_publishes_before_the_first_ip_literal(self, monkeypatch):
         # Without a boot-time read, the first IP-literal ssh of a gateway
@@ -9175,19 +9214,22 @@ class TestSandboxEscapeSshSelf:
         # The netlink dump runs BEFORE DNS: a host whose name is not in DNS
         # must not keep every IP literal refused for the length of the lookups,
         # and the warm returns without waiting for either.
+        # The lookup's hold outlasts the publish wait, so the in-flight check
+        # below runs while DNS is still held however long the publish took.
         release = threading.Event()
 
         def _slow_fqdn():
-            release.wait(5)
+            release.wait(self._DNS_HOLD_SECS)
             return ""
 
         self._open_window(monkeypatch, netlink=lambda: {"203.0.113.66"}, fqdn=_slow_fqdn)
         try:
             _argv_floor.warm_own_host_names()
-            deadline = time.monotonic() + 5
-            while not _argv_floor._NETLINK_ADDRS_PUBLISHED:
-                assert time.monotonic() < deadline, "netlink never published"
-                time.sleep(0.01)
+            wait_until(
+                lambda: _argv_floor._NETLINK_ADDRS_PUBLISHED,
+                timeout=self._PUBLISH_DEADLINE_SECS,
+                describe=lambda: "netlink never published",
+            )
             assert _argv_floor._OWN_HOST_RESOLVE_IN_FLIGHT is True  # DNS still blocked
             assert "203.0.113.66" in _argv_floor._OWN_HOST_NAMES_CACHE
             assert _denied_by("ssh 198.51.100.9 id") is None
@@ -10507,6 +10549,10 @@ class TestHostsFileWarmUp:
         # No live DNS, no netlink read, no real /etc/hosts, and no thread is
         # ever started: every spawn is recorded instead.  Every global the
         # code under test writes is pinned here so monkeypatch restores it.
+        # The gate runs on the gateway's event loop unless a test says
+        # otherwise; the no-loop tests put the real check back.
+        self._real_loop_check = getattr(_argv_floor, "_event_loop_running", None)
+        monkeypatch.setattr(_argv_floor, "_event_loop_running", lambda: True, raising=False)
         self.started: "list[str]" = []
         started = self.started
 
@@ -10566,6 +10612,11 @@ class TestHostsFileWarmUp:
         assert os.stat(hosts).st_size == _argv_floor._HOSTS_FILE_READ_CHUNK + 1
         return str(hosts)
 
+    def _real_loop(self, monkeypatch):
+        """Undo the fixture's on-loop pin: the gate sees this thread's real loop state."""
+        if self._real_loop_check is not None:
+            monkeypatch.setattr(_argv_floor, "_event_loop_running", self._real_loop_check)
+
     @staticmethod
     def _parser_must_not_run(monkeypatch):
         def _boom(*_a, **_k):
@@ -10602,6 +10653,53 @@ class TestHostsFileWarmUp:
         assert _denied_by("ssh dev-dsk uptime") is None
         assert _denied_by("ssh farbox uptime") is None
         assert _denied_by("ssh loopalias uptime") == self._RULE
+
+    def test_a_thread_with_no_event_loop_parses_a_large_file_in_call(self, monkeypatch):
+        # A process with no event loop (a cron-launched MCP server) gets no
+        # retry, so a cold gate there parses the large file in the call.
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n127.0.0.1 loopalias\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        assert _denied_by("ssh dev-dsk uptime") is None
+        assert _denied_by("ssh farbox uptime") is None
+        assert _denied_by("ssh loopalias uptime") == self._RULE
+        assert path in _argv_floor._HOSTS_FILE_CACHE
+        assert "kirocrew-hosts-warm" not in self.started
+
+    def test_the_event_loop_thread_still_defers_a_large_file(self, monkeypatch):
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+        self._parser_must_not_run(monkeypatch)
+
+        async def _on_loop():
+            return _denied_by("ssh dev-dsk uptime")
+
+        assert asyncio.run(_on_loop()) == self._RULE
+        assert self.started.count("kirocrew-hosts-warm") == 1
+
+    def test_a_no_loop_read_failure_is_pending_and_not_cached(self, monkeypatch):
+        self._real_loop(monkeypatch)
+        path = self._big_hosts(monkeypatch, "10.4.4.4 farbox\n")
+        monkeypatch.setattr(_argv_floor, "_hosts_file_paths", lambda: (path,))
+
+        def _eio(*_a, **_k):
+            raise OSError(5, "I/O error")
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _eio)
+        assert _denied_by("ssh farbox uptime") == self._RULE
+        assert path not in _argv_floor._HOSTS_FILE_CACHE
+
+    def test_a_no_loop_file_over_the_read_cap_is_read_truncated(self, monkeypatch):
+        # Past the read cap the no-loop parse truncates, as the warm does, so
+        # a name before the cap still gets a verdict instead of a refusal.
+        self._real_loop(monkeypatch)
+        chunk = _argv_floor._HOSTS_FILE_READ_CHUNK
+        monkeypatch.setattr(_argv_floor, "_HOSTS_FILE_READ_CAP", 2 * chunk)
+        path = self._hosts(monkeypatch, "10.4.4.4 farbox\n" + "#" * (3 * chunk) + "\n")
+        assert os.stat(path).st_size > 2 * chunk
+        assert _denied_by("ssh farbox uptime") is None
+        assert path in _argv_floor._HOSTS_FILE_CACHE
 
     def test_no_hosts_file_is_not_pending(self, monkeypatch):
         monkeypatch.setattr(
@@ -10668,6 +10766,33 @@ class TestHostsFileWarmUp:
         _argv_floor._warm_hosts_file_cache()  # the next pass, key now stable
         assert _argv_floor._host_is_self("ownalias") is True
         assert _denied_by("ssh farbox uptime") is None
+
+    def test_own_set_growing_during_the_gate_parse_keeps_an_absent_name_open(self, monkeypatch):
+        # The first ssh vet in a cold process seeds the own set AND starts
+        # the enrichment worker, whose netlink publish lands while this
+        # same call parses the hosts file.  The file did not change, so a
+        # name absent from it is absent under any own set and must fall
+        # through to the DNS layer, not be refused as pending; a local
+        # entry is still local; only a remote entry is held.
+        path = self._hosts(monkeypatch, "127.0.0.1 loopalias\n10.4.4.4 farbox\n")
+        real_parse = _argv_floor._parse_hosts_file
+        grown = iter(range(1, 1000))
+
+        def _parse_then_grow(*args, **kwargs):
+            table = real_parse(*args, **kwargs)
+            own = _argv_floor._OWN_HOST_NAMES_CACHE or frozenset()
+            _argv_floor._OWN_HOST_NAMES_CACHE = own | {f"10.77.0.{next(grown)}"}
+            return table
+
+        monkeypatch.setattr(_argv_floor, "_parse_hosts_file", _parse_then_grow)
+        assert _argv_floor._hosts_file_verdict("backuphost") is None
+        assert _argv_floor._hosts_file_verdict("loopalias") is True
+        assert _argv_floor._hosts_file_verdict("farbox") is True  # held, not served
+        assert "kirocrew-hosts-warm" in self.started
+        assert _argv_floor._HOSTS_FILE_CACHE == {}  # a moved key caches nothing
+        assert path not in _argv_floor._HOSTS_FILE_CACHE
+        assert _denied_by("ssh -o ConnectTimeout=10 backup@host uptime") is None
+        assert _denied_by("ssh loopalias uptime") == self._RULE
 
     def test_an_own_address_learned_later_re_marks_a_cached_alias(self, monkeypatch):
         self._hosts(monkeypatch, "198.51.100.44 lateownalias\n")

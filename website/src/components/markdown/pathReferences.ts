@@ -30,7 +30,8 @@ import type { PathActions } from './contexts'
  * and is not a shell control operator, on both shapes, since the two describe one
  * filesystem convention and an asymmetry is only a later bug report.
  *
- * IN: letters, marks, digits, `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
+ * IN: letters, marks, digits, emoji (pictographs, flag letters, ZWJ),
+ * `_ . @ ~ - space` and `' ! # % = + , ( ) [ ] { }`.
  * A closing bracket may also END a path, so `App (old)` and `data [2026]`
  * classify as directories.
  *
@@ -54,7 +55,7 @@ import type { PathActions } from './contexts'
  * Shape alone is NOT sufficient to linkify — see `isPathCandidate`.
  */
 const PATH_SHAPE_RE =
-  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}_.)\]}]$/u
+  /^~?(?:\.{0,2}[/\\])?[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}/\\ -]*[/\\][\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{}: -]*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.)\]}]$/u
 
 /**
  * Character-level shape of a DRIVE-rooted Windows path (`C:\x`, `c:/x`), whose
@@ -66,7 +67,7 @@ const PATH_SHAPE_RE =
  * `C:\Program Files (x86)\app.txt` and `C:\Users\O'Neil\notes.md` resolve.
  */
 const WIN_DRIVE_PATH_SHAPE_RE =
-  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}_.@~'!#%=+,()[\]{} -]*$/u
+  /^[A-Za-z]:[/\\](?:[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]+[/\\])*[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\p{Regional_Indicator}\u200D_.@~'!#%=+,()[\]{} -]*$/u
 
 /**
  * A UNC prefix in EITHER spelling — `\\host\share\…` or `//host/share/…` —
@@ -100,6 +101,29 @@ const WIN_DRIVE_PATH_SHAPE_RE =
  * copy chip rather than an open chip — the same trade `MdAnchor` already makes.
  */
 const UNC_PREFIX_RE = /^[/\\]{2}/
+
+/**
+ * A space followed by a flag (`-s`, `--force`) or by the root of a SECOND path
+ * (`/x`, `~/x`, `./x`, `..\x`, `C:\x`): the span is a command line carrying a
+ * path argument, not one path.
+ *
+ * `PATH_SHAPE_RE` admits spaces and `-` so that `My Docs/a.md` and
+ * `Report - final.md` classify, which also lets a whole command such as
+ * `sudo xcode-select -s /Applications/Xcode.app` pass on the extension of its
+ * last argument. The stat probe always refuses it, but the glyph reserve is
+ * keyed to SHAPE, not to the probe's answer, so the copy chip kept an invisible
+ * 16px glyph slot in front of the command for good — a blank gap that reads as
+ * a missing icon.
+ *
+ * A flag must be a whole word (`-s`, `--force`, ending at a space or the end),
+ * so a name with a dash glued to more of it (`Report -final.md`,
+ * `Backup -old/x.md`) still classifies. A space right before a root cannot be
+ * told apart from a command and its argument, so a name like `notes /draft.md`
+ * is refused; that rare loss is the accepted cost. A command whose argument is
+ * relative (`cat src/a.ts`) has no such tell and still classifies.
+ */
+const COMMAND_LINE_RE =
+  /\s(?:--?[A-Za-z][A-Za-z0-9-]*(?=\s|$)|~?[/\\]|\.{1,2}[/\\]|[A-Za-z]:[/\\])/
 
 /** The last path segment, split on EITHER separator so a Windows path yields its
  *  real basename. `lastIndexOf('/')` alone returns -1 for `C:\a\notes` and hands
@@ -150,7 +174,9 @@ const REL_PREFIX_RE = /^\.{1,2}[/\\]/
  * UNC is refused FIRST, ahead of every shape and signal test, because the other
  * rules would otherwise readmit it: the extension rule matches
  * `\\host\share\x.txt`, and the leading-`/` rule matches `//host/share/x`.
- * See `UNC_PREFIX_RE` for why that shape must never reach the probe.
+ * See `UNC_PREFIX_RE` for why that shape must never reach the probe. A command
+ * line carrying a path argument is refused next, for the same reason: the
+ * extension rule would otherwise admit the whole command (`COMMAND_LINE_RE`).
  *
  * A directory written with a trailing separator (`/home/user/notes/`,
  * `C:\Users\me\`) is classified by retrying on the slash-stripped form when the
@@ -167,6 +193,7 @@ const REL_PREFIX_RE = /^\.{1,2}[/\\]/
  */
 export function isPathCandidate(s: string): boolean {
   if (UNC_PREFIX_RE.test(s)) return false
+  if (COMMAND_LINE_RE.test(s)) return false
   if (classifyPathShape(s)) return true
   // Retry once on the slash-stripped form so a trailing separator does not
   // disqualify an otherwise-valid directory. Guarded to len > 1 so `/` and `\`

@@ -372,9 +372,11 @@ def _incomplete_bundle_reason(tree: Path) -> str:
 
 
 #: Every ``/assets/*.js|css`` an index.html references, ignoring a query or hash.
+#: A sub-path build (``KIROCREW_BASE_PATH``) writes ``/<base>/assets/...``; the
+#: base segments are matched and dropped so the ref still names a file in the tree.
 #: Byte-identical to ``ASSET_REF_PATTERN`` in website/scripts/publish-dist.mjs,
 #: pinned by test_frontend_dist_resolve.py, so both gates accept the same trees.
-_ASSET_REF = r'(?:src|href)="(/assets/[^"?#]+\.(?:js|css))(?:[?#][^"]*)?"'
+_ASSET_REF = r'(?:src|href)="(?:/[A-Za-z0-9._~-]+)*(/assets/[^"?#]+\.(?:js|css))(?:[?#][^"]*)?"'
 
 
 def _live_link_target(path: Path) -> Optional[Path]:

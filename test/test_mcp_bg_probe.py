@@ -44,7 +44,7 @@ class TestBgMcpProbeBoundedFanout:
         monkeypatch.setattr(mcp_mod, "_mcp_probe_cache", [])
         monkeypatch.setattr(mcp_mod, "_mcp_probe_in_progress", True)
 
-        await mcp_mod._bg_mcp_probe()
+        await mcp_mod._bg_mcp_probe(None)
 
         # The bounded path was used exactly once. Fails if an unbounded gather
         # over probe_server is ever reintroduced in _bg_mcp_probe.

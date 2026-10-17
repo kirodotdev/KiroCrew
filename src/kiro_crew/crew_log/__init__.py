@@ -72,6 +72,7 @@ _EXPORTS: dict[str, str] = {
     "CODE_UNSUPPORTED_VERSION": "errors",
     "IndeterminateAppend": "errors",
     "CrewLogError": "errors",
+    "CutUnaccounted": "errors",
     # schema
     "FIXED_SOURCES": "schema",
     "KIND_CREW": "schema",
@@ -204,6 +205,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         CODE_UNKNOWN_ENTRY_TYPE,
         CODE_UNSUPPORTED_VERSION,
         CrewLogError,
+        CutUnaccounted,
         IndeterminateAppend,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401

@@ -345,13 +345,12 @@ describe('chat sidebar — board view window-relative drag ceiling', () => {
     expect(getByRole('separator', { name: 'Resize sidebar' }).getAttribute('aria-valuemax')).toBe(String(room))
   })
 
-  // One rule on both sides of SIDEBAR_MAX: on a window too narrow for either,
-  // a saved 1400 and a saved 1401 paint at the same width, in list view and
-  // in board view. Board view also leaves the chat pane its minimum; the list
-  // views reserve only the nav rail, as the drawer's own clamp does.
+  // One rule on both sides of SIDEBAR_MAX and in every view: on a window too
+  // narrow for either, a saved 1400 and a saved 1401 paint at the same width
+  // and the chat pane keeps its minimum, in list view and in board view.
   it.each([false, true])('at 1200px a saved 1400 and a saved 1401 paint the same (board %s)', (board) => {
     setWin(1200)
-    const room = 1200 - railW() - (board ? CHAT_PANE_MIN_W : 0)
+    const room = 1200 - railW() - CHAT_PANE_MIN_W
     localStorage.setItem('mc-sidebar-width', String(SIDEBAR_MAX))
     const at = renderSidebar({ board })
     expect(at.panel.style.width).toBe(`${room}px`)
@@ -360,6 +359,14 @@ describe('chat sidebar — board view window-relative drag ceiling', () => {
     const past = renderSidebar({ board })
     expect(past.panel.style.width).toBe(`${room}px`)
     expect(localStorage.getItem('mc-sidebar-width')).toBe(String(SIDEBAR_MAX + 1))
+    // The drag ceiling and the handle's range end where the paint does, in
+    // either view: the smaller of SIDEBAR_MAX and the room.
+    const ceiling = Math.min(SIDEBAR_MAX, room)
+    expect(past.getByRole('separator', { name: 'Resize sidebar' }).getAttribute('aria-valuemax')).toBe(String(ceiling))
+    fireEvent.pointerDown(past.handle, { clientX: room, pointerId: 1 })
+    fireEvent.pointerMove(past.handle, { clientX: room + 100000, pointerId: 1 })
+    fireEvent.pointerUp(past.handle, { clientX: room + 100000, pointerId: 1 })
+    expect(past.panel.style.width).toBe(`${ceiling}px`)
   })
 
   // A window wider than SIDEBAR_MAX plus the rail and chat minimum, but

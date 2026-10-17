@@ -4,6 +4,7 @@
  * clipboard/download fallbacks. Kept free of React so every piece is unit
  * testable without a DOM.
  */
+import { clipboardRelayAvailable, clipboardWriteBlockedByPolicy, relayImageCopyToHost } from '../../../lib/paneClipboardRelay'
 
 /** Public repo link baked into the default caption and the card footer. */
 export const SHARE_REPO_URL = 'https://github.com/kirodotdev/KiroCrew'
@@ -107,8 +108,12 @@ export function prevUserTextFor(
  * Firefox rejects ClipboardItem writes and Safari is picky about multi-type
  * items, so retry image-only before reporting failure — the caller falls back
  * to a download, never a dead button.
+ *
+ * Inside an embedded instance pane the policy refuses this write outright, so
+ * the host window performs it for the pane (lib/paneClipboardRelay.ts).
  */
 export async function copyImageWithText(blob: Blob, text: string): Promise<boolean> {
+  if (clipboardWriteBlockedByPolicy()) return clipboardRelayAvailable() ? relayImageCopyToHost(blob, text) : false
   if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) return false
   try {
     await navigator.clipboard.write([

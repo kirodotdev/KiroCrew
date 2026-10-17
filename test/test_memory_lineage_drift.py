@@ -23,8 +23,9 @@ Three properties, one test each:
   ``sqlite3.Row`` and a reordered view silently changes what a positional read
   returns.
 
-The scan walks ``vector_memory.py``'s AST and opens nothing but ``:memory:``
-databases, so it has no filesystem side effects at all.
+The scan walks the AST of ``vector_memory.py`` and of every owner module it binds or
+delegates to, one file at a time, and opens nothing but ``:memory:`` databases, so it
+has no filesystem side effects at all.
 ``test_vector_memory_composition_contract.py`` re-applies this module's source scans
 to the ``vector_memory_runtime`` modules.
 """
@@ -307,11 +308,24 @@ class TestLineageDrift:
     """The engine's SQL must hold on both lineages, not only the one it grew on."""
 
     @staticmethod
-    def _module_tree() -> ast.Module:
+    def _module_trees() -> dict[str, ast.Module]:
+        """``vector_memory.py`` and every owner module it binds or delegates to, each
+        parsed on its own: the owners beside it and the ``vector_memory_runtime`` modules."""
         import kiro_crew
 
-        source = Path(kiro_crew.__file__).resolve().with_name("vector_memory.py")
-        return ast.parse(source.read_text(encoding="utf-8"))
+        root = Path(kiro_crew.__file__).resolve().parent
+        facade = root / "vector_memory.py"
+        paths = [facade]
+        for node in ast.parse(facade.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew":
+                paths += [
+                    root / f"{a.name}.py" for a in node.names if a.name.startswith("vector_memory_")
+                ]
+        paths += sorted((root / "vector_memory_runtime").glob("*.py"))
+        return {
+            path.relative_to(root).as_posix(): ast.parse(path.read_text(encoding="utf-8"))
+            for path in paths
+        }
 
     def test_a_write_to_a_view_is_refused_at_runtime(self) -> None:
         """The premise, pinned: SQLite really does refuse these four shapes.
@@ -369,7 +383,11 @@ class TestLineageDrift:
         assert 'f"DELETE FROM {self._epi_rel} ... {self._epi_guard}"' in violations[1]
 
     def test_every_write_statement_names_a_writable_relation(self) -> None:
-        violations = _write_violations(self._module_tree(), "vector_memory.py")
+        violations = [
+            violation
+            for label, tree in self._module_trees().items()
+            for violation in _write_violations(tree, label)
+        ]
         assert not violations, "\n\n".join(violations)
 
     def test_every_per_lineage_write_also_carries_its_kind_guard(self) -> None:
@@ -380,9 +398,10 @@ class TestLineageDrift:
         """
         import kiro_crew
 
-        module = Path(kiro_crew.__file__).resolve().with_name("vector_memory.py")
-        source = module.read_text(encoding="utf-8")
-        assert _unguarded_write_violations(source, "vector_memory.py") == []
+        root = Path(kiro_crew.__file__).resolve().parent
+        for label in self._module_trees():
+            source = (root / label).read_text(encoding="utf-8")
+            assert _unguarded_write_violations(source, label) == []
 
         sample = (
             'self.db.execute(f"UPDATE {self._sem_rel} SET a = 1 WHERE key = ?'
@@ -395,7 +414,7 @@ class TestLineageDrift:
 
     def test_every_relation_the_module_names_exists_in_both_lineages(self) -> None:
         """Shared SQL works on both lineages; member-only SQL names real V2 tables."""
-        tree = self._module_tree()
+        trees = self._module_trees()
         member_functions = {
             "_member_identity",
             "create_member_database",
@@ -410,41 +429,51 @@ class TestLineageDrift:
             "consolidation_receipt",
             "apply_consolidation",
         }
-        functions = {
-            node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
-        }
-        assert member_functions <= functions.keys()
+        # name -> (file, node); a member function is defined in exactly one scanned file
+        found: dict[str, list[tuple[str, ast.FunctionDef]]] = {}
+        for label, tree in trees.items():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    found.setdefault(node.name, []).append((label, node))
+        assert member_functions <= found.keys()
+        assert all(len(found[name]) == 1 for name in member_functions | {"_write_semantic"})
+        functions = {name: entries[0] for name, entries in found.items()}
         member_nodes = [functions[name] for name in member_functions]
         # _write_semantic is shared, but this exact branch is reached only by
         # apply_consolidation's V2 transaction. Keep all its other SQL shared.
+        semantic_file, semantic_write = functions["_write_semantic"]
         consolidation_blocks = [
-            node
-            for node in ast.walk(functions["_write_semantic"])
+            (semantic_file, node)
+            for node in ast.walk(semantic_write)
             if isinstance(node, ast.If)
             and isinstance(node.test, ast.Name)
             and node.test.id == "_consolidation"
         ]
         assert consolidation_blocks
         member_nodes.extend(consolidation_blocks)
-        for function in functions.values():
-            for call in ast.walk(function):
-                if isinstance(call, ast.Call) and any(
-                    keyword.arg == "_consolidation"
-                    and isinstance(keyword.value, ast.Constant)
-                    and keyword.value.value is True
-                    for keyword in call.keywords
-                ):
-                    assert function.name == "apply_consolidation"
+        for entries in found.values():
+            for _label, function in entries:
+                for call in ast.walk(function):
+                    if isinstance(call, ast.Call) and any(
+                        keyword.arg == "_consolidation"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is True
+                        for keyword in call.keywords
+                    ):
+                        assert function.name == "apply_consolidation"
         member_lines = {
-            line for node in member_nodes for line in range(node.lineno, node.end_lineno + 1)
+            (label, line)
+            for label, node in member_nodes
+            for line in range(node.lineno, node.end_lineno + 1)
         }
         shared, member = set(), set()
-        for lineno, text in _executable_literals(tree):
-            if not _has_sql_head(text):
-                continue
-            target = member if lineno in member_lines else shared
-            for pattern in (_WRITE_RE, _READ_RE):
-                target.update(match.group(1) for match in pattern.finditer(text))
+        for label, tree in trees.items():
+            for lineno, text in _executable_literals(tree):
+                if not _has_sql_head(text):
+                    continue
+                target = member if (label, lineno) in member_lines else shared
+                for pattern in (_WRITE_RE, _READ_RE):
+                    target.update(match.group(1) for match in pattern.finditer(text))
         shared -= {_INTERPOLATED} | _NOT_A_RELATION
         member -= {_INTERPOLATED} | _NOT_A_RELATION
         assert {"semantic_memory", "episodic_memories", "memory_events"} <= shared
@@ -473,14 +502,15 @@ class TestLineageDrift:
 
     @pytest.mark.parametrize("sql", ["SELECT * FROM memory_history", "DELETE FROM memory_history"])
     def test_member_relation_in_a_shared_operation_is_refused(self, monkeypatch, sql) -> None:
-        tree = self._module_tree()
+        trees = self._module_trees()
+        tree = trees["vector_memory.py"]
         unexpected = ast.parse(f"db.execute({sql!r})")
         ast.increment_lineno(
             unexpected,
             max(node.end_lineno or 0 for node in ast.walk(tree) if hasattr(node, "end_lineno")) + 1,
         )
         tree.body.extend(unexpected.body)
-        monkeypatch.setattr(self, "_module_tree", lambda: tree)
+        monkeypatch.setattr(self, "_module_trees", lambda: trees)
         with pytest.raises(AssertionError, match="Member SQL escaped its admitted V2 operation"):
             self.test_every_relation_the_module_names_exists_in_both_lineages()
 

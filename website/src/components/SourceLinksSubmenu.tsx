@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Link2Off, Loader2 } from 'lucide-react'
+import { ChevronRight, EyeOff, Link2Off, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { useConnected } from '../hooks/useConnected'
 import { useTranslation } from 'react-i18next'
@@ -9,11 +9,14 @@ import { updateSlot } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { findReport } from '../utils/errorReport'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
-import { DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem } from './ui/dropdown-menu'
-import { ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem } from './ui/context-menu'
+import { DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
+import { ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 
 type SourceLink = NonNullable<ChatSlot['source_links']>[number]
 const unlinkKey = (slotKey: string) => ['unlink-source-link', slotKey]
+/** Staging marker for the "hide all" entry. A lone NUL cannot collide with a
+ * link identity, which is a serialized provider key. */
+const HIDE_ALL = '\u0000'
 
 /** Placeholder for the full-list query while it re-keys after a removal.
  *
@@ -63,7 +66,16 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
   const [open, setOpen] = useState(false)
+  // True while "hide all" walks its DELETEs one by one. Pending covers each
+  // request, but not the gap between one settling and the next starting.
+  const [hidingAll, setHidingAll] = useState(false)
+  // How far the running walk has got, for its "Hiding chip 2 of 5" label.
+  const [walkProgress, setWalkProgress] = useState({ done: 0, total: 0 })
+  // Set when a failure stops the walk partway, so the submenu can say how many
+  // chips were hidden before it stopped. Cleared on the next stage or re-key.
+  const [walkStopped, setWalkStopped] = useState<{ done: number; total: number } | null>(null)
   // Per-item confirmation: the first select on a link STAGES it (the entry
   // switches to a "confirm unlink" affordance); only a second select on the
   // SAME staged link commits the DELETE. This makes the destructive, durable
@@ -100,7 +112,7 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
   const pending = usePendingSourceUnlinks(slotKey)
   // Drop a staged confirm the moment the session behind the key changes: the
   // entry the user staged belongs to the OLD session and must not commit here.
-  useEffect(() => { setConfirming(null) }, [sessionId])
+  useEffect(() => { setConfirming(null); setWalkStopped(null) }, [sessionId])
   // Same key as the expanded chip strip: reuse its complete list, but never
   // fetch just because the parent menu mounted or an untruncated list opened.
   const signature = `${total ?? ''}|${links.map(link => link.url).join(' ')}`
@@ -208,11 +220,59 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
   const unlinkError = outcomes.at(-1)
   const error = unlinkError ?? allLinks.error
   const rawError = error instanceof Error ? error.message : String(error ?? '')
+  // A walk that stopped on a failure says how far it got inside the same
+  // alert, so the count reaches the notice's report and the hand-off. The
+  // retry line names where to retry instead of the generic "Could not hide.
+  // Try again.", which read as contradicting the count before it. It names
+  // this menu rather than "Hide all", because one chip left hides that entry.
   const message = unlinkError
-    ? i18nT('pages.chatSidebar.unlink_source_link_failed')
+    ? walkStopped
+      ? `${i18nT('pages.chatSidebar.hide_all_source_links_stopped', { done: walkStopped.done, n: walkStopped.total })} ${i18nT('pages.chatSidebar.hide_all_source_links_retry')}`
+      : i18nT('pages.chatSidebar.unlink_source_link_failed')
     : allLinks.error ? i18nT('pages.chatSidebar.source_links_expand_failed') : null
   const shown = allLinks.data ?? links
   if (!shown.some(link => link.identity) && !(total && total > links.length)) return null
+  const identities = shown.flatMap(link => link.identity ? [link.identity] : [])
+  // "Hide all" needs the complete list, not the capped preview: a truncated
+  // session would otherwise keep every chip behind its "+N" overflow.
+  // A placeholder carried across a re-key is the previous list, which can miss
+  // a link that arrived since, so only a settled read counts as complete.
+  const listComplete = (total ?? 0) <= links.length || (allLinks.data !== undefined && !allLinks.isPlaceholderData)
+  const busy = !connected || pending.length > 0 || hidingAll
+  const stagedAll = confirming === HIDE_ALL
+
+  // Sequential, not parallel: each DELETE rewrites the same per-session
+  // dismissed set, and the first refusal (offline, a 409 for a recreated
+  // session) stops the walk instead of firing the rest blind. Every request
+  // carries the generation captured at staging, so the backend refuses any that
+  // would land on a replacement session; the loop also stops locally once the
+  // live generation moves.
+  const hideAll = async (expect: string) => {
+    const menu = triggerRef.current?.closest<HTMLElement>('[role="menu"]') ?? null
+    const targets = identities
+    let done = 0
+    setWalkStopped(null)
+    setWalkProgress({ done, total: targets.length })
+    setHidingAll(true)
+    try {
+      for (const identity of targets) {
+        if (slotGeneration(slotKey) !== expect) break
+        await unlink.mutateAsync({ identity, expect })
+        done += 1
+        setWalkProgress({ done, total: targets.length })
+      }
+    } catch {
+      // The failure is retained in the mutation cache and rendered below; the
+      // count says how far the walk got before it stopped.
+      setWalkStopped({ done, total: targets.length })
+    } finally {
+      setHidingAll(false)
+    }
+    // When the last chip goes this submenu unmounts with the focused entry in
+    // it. Hand focus to the parent menu so the arrow keys keep working.
+    const active = document.activeElement
+    if (menu?.isConnected && (!active || active === document.body)) menu.focus()
+  }
 
   return (
     <Sub open={open} onOpenChange={next => { setOpen(next); if (!next) setConfirming(null) }}>
@@ -227,6 +287,48 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
         </p>
         {!connected && <p className="px-3 py-1.5 text-[12px] text-muted">{i18nT('utils.offline.disabled_gateway_offline', { label: i18nT('pages.chatSidebar.source_link_actions') })}</p>}
         {allLinks.isFetching && <Loader2 className="lucide-inline animate-spin mx-3" aria-label={i18nT('pages.chatPage.loading')} />}
+        {/* Stays mounted through its own walk: the count drops below two after
+            the first DELETE, and unmounting the focused entry drops focus. */}
+        {(hidingAll || Math.max(total ?? 0, identities.length) > 1) && (
+          <>
+            <Item
+              data-hide-all-source-links
+              data-confirming={stagedAll || undefined}
+              disabled={busy || !listComplete}
+              className={stagedAll ? 'text-danger focus:text-danger' : undefined}
+              onSelect={event => {
+                event.preventDefault()
+                if (busy || !listComplete) return
+                // Same two-step confirm as a single chip: the first select
+                // stages, a second select on the staged entry commits.
+                if (stagedAll) {
+                  const committed = stagedGeneration.current === slotGeneration(slotKey)
+                  setConfirming(null)
+                  if (committed) void hideAll(stagedGeneration.current)
+                } else {
+                  stagedGeneration.current = slotGeneration(slotKey)
+                  setWalkStopped(null)
+                  setConfirming(HIDE_ALL)
+                }
+              }}
+            >
+              {hidingAll
+                ? <Loader2 className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+                : <EyeOff className="lucide-inline shrink-0 text-muted" aria-hidden="true" />}
+              <span className="break-words">
+                {hidingAll
+                  ? i18nT('pages.chatSidebar.hide_all_source_links_progress', {
+                    done: Math.min(walkProgress.done + 1, walkProgress.total),
+                    n: walkProgress.total,
+                  })
+                  : stagedAll
+                    ? i18nT('pages.chatSidebar.hide_all_source_links_confirm', { count: identities.length })
+                    : i18nT('pages.chatSidebar.hide_all_source_links')}
+              </span>
+            </Item>
+            <Separator />
+          </>
+        )}
         {shown.filter(link => link.identity).map(link => {
           const staged = confirming === link.identity
           return (
@@ -235,13 +337,13 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
               data-source-identity={link.identity}
               data-confirming={staged || undefined}
               title={link.url}
-              disabled={!connected || pending.length > 0}
+              disabled={busy}
               className={staged ? 'text-danger focus:text-danger' : undefined}
               onSelect={event => {
                 // Keep the result/error and its keyboard-reachable hand-off in
                 // Radix's anchored, collision-aware content on desktop and touch.
                 event.preventDefault()
-                if (!connected || pending.length > 0 || !link.identity) return
+                if (busy || !link.identity) return
                 // First select STAGES this link (and un-stages any other);
                 // second select on the SAME staged link commits the removal.
                 if (staged) {
@@ -254,6 +356,9 @@ export default function SourceLinksSubmenu({ slotKey, variant }: {
                   setConfirming(null)
                   if (committed) unlink.mutate({ identity: link.identity, expect: stagedGeneration.current })
                 } else {
+                  // A single-chip hide starts a new outcome, so an earlier
+                  // walk's stopped count no longer describes the next error.
+                  setWalkStopped(null)
                   stagedGeneration.current = slotGeneration(slotKey)
                   setConfirming(link.identity)
                 }

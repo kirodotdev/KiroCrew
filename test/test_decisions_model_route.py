@@ -162,13 +162,17 @@ class TestTheQuestion:
         assert mr.TIERS == ("simple", "medium", "complex")
         assert [q.options for q in mr.questions()] == [["simple", "medium", "complex"]]
 
-    def test_every_tier_is_described_in_the_prompt(self):
+    def test_every_tier_is_described_in_the_criteria_keyed_by_option(self):
         """Without the descriptions the three words are the oracle's own guess at
-        what 'medium' means, which is not a question about this product."""
-        prompt = mr.questions()[0].prompt
+        what 'medium' means, which is not a question about this product. The rubric
+        now rides in the provider's own per-option ``criteria`` map, keyed by the
+        tier it describes, not flattened into the prompt."""
+        question = mr.questions()[0]
+        assert question.criteria == mr.TIER_DESCRIPTIONS
         for tier in mr.TIERS:
-            assert f"{tier} = " in prompt
-            assert mr.TIER_DESCRIPTIONS[tier] in prompt
+            assert question.criteria[tier] == mr.TIER_DESCRIPTIONS[tier]
+            # The per-tier prose is carried by criteria, not the prompt stem.
+            assert mr.TIER_DESCRIPTIONS[tier] not in question.prompt
 
     def test_no_description_names_a_model_or_a_price(self):
         """The question is about the WORK. Naming a model would ask the oracle to
@@ -176,6 +180,29 @@ class TestTheQuestion:
         prose = " ".join(mr.TIER_DESCRIPTIONS.values()).lower()
         for forbidden in ("claude", "haiku", "opus", "cheap", "expensive", "cost", "$"):
             assert forbidden not in prose
+
+    def test_authored_criteria_reach_both_backends_end_to_end(self):
+        """``model.route`` is a real caller of ``Choice.criteria``: the rubric it
+        authors reaches BOTH backends in the shape each reads -- the Jev provider's
+        per-option ``criteria`` map and the LLM backend's rendered prompt -- so the
+        field is not inert plumbing. Each tier's own description travels with it."""
+        from kiro_crew.decisions import impl_jev, impl_llm
+
+        question = mr.questions()[0]
+
+        # Jev: the per-option map carries every tier's authored rubric, keyed by
+        # the declared option, with no option dropped.
+        wire = impl_jev._question_to_wire(question)
+        assert wire["type"] == "choice"
+        assert wire["criteria"] == {tier: mr.TIER_DESCRIPTIONS[tier] for tier in mr.TIERS}
+
+        # LLM: render_prompt writes a ``criteria:`` line beside the options, and
+        # each tier's description appears in it.
+        rendered = impl_llm.render_prompt("evidence", [question])
+        assert "criteria:" in rendered
+        tail = rendered.split("criteria:", 1)[1]
+        for tier in mr.TIERS:
+            assert f"{tier}: {mr.TIER_DESCRIPTIONS[tier]}" in tail
 
     def test_the_prompt_states_which_direction_an_error_costs_more(self):
         """Without it the oracle weighs the two mistakes equally, and a short message

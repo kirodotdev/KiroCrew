@@ -31,6 +31,7 @@ import { screen, waitFor, cleanup } from '@testing-library/react'
 import ArtifactsPage, { VIRTUALIZE_AT } from '../pages/ArtifactsPage'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { readPageFamily } from './pageFamily'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
@@ -117,7 +118,9 @@ async function renderWith(count: number) {
   await waitFor(() => expect(contentColumn()).toBeTruthy())
 }
 
-const src = () => readFileSync(join(__dirname, '..', 'pages', 'ArtifactsPage.tsx'), 'utf8')
+// The page and its owners: LibraryMasonry and MasonryGridItem live in
+// ArtifactsPageGallery.tsx.
+const src = () => readPageFamily('ArtifactsPage')
 // WidgetThumb and its THUMB_HEIGHT_SPACE key space were extracted into the
 // shared components/library/ArtifactThumbs.tsx module (so DrivePage can render
 // identical previews); the thumbnail-height assertions below read it there.

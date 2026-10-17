@@ -103,9 +103,37 @@ _SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
 _TTL_RE = re.compile(TTL_PATTERN)
 _DEFAULT_SSM_RUN_AS = "ec2-user"
 
+#: Provisioner ids whose crews are HEADLESS: they serve a turn route and have no
+#: dashboard behind the forward.
+#:
+#: Here, in the registry, because two unrelated callers need the same answer and
+#: a second copy would drift: the tunnel manager decides whether to mint a
+#: dashboard token, and the crew-turn route decides whether a chat pane may be
+#: offered. The decision is a property of the crew, not of its TRANSPORT -- a
+#: headless crew reached over SSM is as headless as one reached over an ECS
+#: exec, and keying on the transport is what makes a working forward look like a
+#: crew that will not answer.
+#: The ids as LITERALS, because importing a lane's module from here would close a
+#: cycle. ``handlers_crew_turn`` asserts them against the lanes' own constants at
+#: import, so a rename is an immediate failure rather than a headless crew this
+#: set fails to recognise.
+HEADLESS_CREW_PROVISIONERS: frozenset[str] = frozenset({"aws_fargate", "microvm"})
+
+
+def is_headless_provisioner(provisioner_id: str) -> bool:
+    """Whether a crew from this lane serves a turn route and no dashboard.
+
+    A named function rather than a bare set lookup at each call site, so what the
+    condition MEANS is in one place: there is no dashboard here, therefore no
+    dashboard token to mint and none to refresh, and the forward alone is the
+    connection.
+    """
+    return provisioner_id in HEADLESS_CREW_PROVISIONERS
+
+
 # The port a stock gateway binds, so "add a remote that has not been
 # reconfigured" needs no edit. NOT a second definition of the number:
-# ``config/loader.py`` owns it per docs/system-specs/common/code-style.md, which
+# ``config/loader_credentials.py`` owns it per docs/system-specs/common/code-style.md, which
 # names that module as the single owner of the dashboard port and cites
 # ``dashboard/origin.py`` importing it rather than restating it. This is the same
 # re-export seam, giving the value a name that says what it means HERE (the
@@ -172,6 +200,10 @@ class DuplicateInstanceError(InstancesError):
 
 class InstanceNotFoundError(InstancesError):
     """Raised when an operation targets an unknown instance id."""
+
+
+class InstanceDisabledError(InstancesError):
+    """The crew is disabled, so no tunnel may be opened for it."""
 
 
 class InvalidInstanceError(InstancesError):
@@ -310,6 +342,16 @@ class Instance:
     # what makes it the GATEWAY's own claim — a record an agent wrote or
     # redirected fails verification and is never reclaimed (fail closed).
     forwarder_sig: str = ""
+    # sha256 of the forwarder's argv as the kernel reported it right after
+    # spawn ("" = not recorded). When set, ``forwarder_sig`` covers it too, and
+    # reclaim compares it with the live process's fingerprint instead of a
+    # command line rebuilt from today's settings. A record without it (written
+    # before the field existed) keeps the rebuilt-argv check.
+    forwarder_argv_sig: str = ""
+    # The owner turned this crew off. A disabled crew keeps its record and its
+    # ``was_connected`` intent, but no tunnel is opened for it -- not by a click,
+    # not by auto-connect, not by the startup revive -- until it is enabled again.
+    disabled: bool = False
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -408,6 +450,11 @@ class Instance:
                 f"invalid forwarder_sig {self.forwarder_sig!r}: must be a "
                 f"string ('' = unsigned)"
             )
+        if not isinstance(self.forwarder_argv_sig, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_argv_sig {self.forwarder_argv_sig!r}: must "
+                f"be a string ('' = not recorded)"
+            )
 
     def _validate_aws_coordinates(self) -> None:
         """Reject a malformed ``aws_profile`` / ``aws_region`` (empty = default)."""
@@ -496,6 +543,8 @@ class Instance:
             "forwarder_pid": self.forwarder_pid,
             "forwarder_start": self.forwarder_start,
             "forwarder_sig": self.forwarder_sig,
+            "forwarder_argv_sig": self.forwarder_argv_sig,
+            "disabled": self.disabled,
         }
 
     @classmethod
@@ -555,6 +604,10 @@ class Instance:
             forwarder_pid=max(_NO_FORWARDER_PID, _as_int(data.get("forwarder_pid"), 0)),
             forwarder_start=str(data.get("forwarder_start", "") or ""),
             forwarder_sig=str(data.get("forwarder_sig", "") or ""),
+            forwarder_argv_sig=str(data.get("forwarder_argv_sig", "") or ""),
+            # A record written before this field existed has no key: enabled.
+            # `is True`: a hand-edited "false" string must not switch a crew off.
+            disabled=data.get("disabled", False) is True,
         )
 
 
@@ -937,8 +990,9 @@ class InstancesRegistry:
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``, ``provisioner_id``,
         ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
-        ``forwarder_start``, ``forwarder_sig``, ``via_instance_id``,
-        ``via_remote_port``.
+        ``forwarder_start``, ``forwarder_sig``, ``forwarder_argv_sig``,
+        ``via_instance_id``,
+        ``via_remote_port``, ``disabled``.
         The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
         as the auto-revive target in the SAME read-modify-write, so callers that
@@ -963,10 +1017,12 @@ class InstancesRegistry:
             "forwarder_pid",
             "forwarder_start",
             "forwarder_sig",
+            "forwarder_argv_sig",
             # A parent that reconnects lands on a new loopback port, so the hop
             # its children ride has to be re-pointed without re-adding them.
             "via_instance_id",
             "via_remote_port",
+            "disabled",
         }
         unknown = set(changes) - allowed
         if unknown:

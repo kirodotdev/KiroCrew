@@ -35,12 +35,12 @@ Three arms look at the unowned population.
 | Arm | Where | Sees | Acts |
 |---|---|---|---|
 | Reconciler | `runtime_reconcile.py` | pids in this install's agent cgroup slice (`instance_slice_pids`) | kills, default budget `DEFAULT_MAX_KILLS = 5` per pass |
-| Scope reaper | `session_scope_reap.py`, `reap_abandoned_agent_scopes` (every cleanup tick, through `reap_agent_scopes` in `session.py`) | whole transient scopes in the same slice | stops a scope that passes its four-part check (the module docstring of `session_scope_reap.py`) |
+| Scope reaper | `session_scope_reap.py`, `reap_abandoned_agent_scopes` (every cleanup tick, through `reap_agent_scopes` in `session_parts/sweeps.py`) | whole transient scopes in the same slice | stops a scope that passes its four-part check (the module docstring of `session_scope_reap.py`) |
 | Untracked report | `session_pid.py`, `_is_untracked_managed_agent_orphan` | init-reparented runtimes with `KIROCREW_SPAWNED` and no PID-file row, POSIX only (`_our_orphan_pids` returns `[]` on Windows) | logs; since #15755 also feeds the reconciler reading and the confirmed reclaim (Linux only, `RECLAIM_PLATFORM` in `runtime_reconcile.py`) |
 
 The reconciler requires five conditions before a signal: this install's spawn marker, unowned on the previous pass too, older than `DEFAULT_MIN_AGE_SECS` (300 s), an argv naming a managed harness, and `authorize_runtime_kill` allowing it. `session.reconcile_max_kills` can only lower the budget; at `0` it audits each would-be kill as `would_kill` and signals nothing.
 
-Each `AcpRuntime` spawn mints a `KIROCREW_SPAWN_INSTANCE` token (`acp/runtime.py`, held as `_process_instance`) and, since #15755, stamps it beside `KIROCREW_SPAWN_HOME` (this data home) on the child's environment. `AcpClient._spawn` (`acp/client.py`) is a second live spawn path, used by `providers/acp.py` and `knowledge/llm_pool.py`, and stamps only `KIROCREW_SPAWNED`; the reclaim refuses every runtime it spawns. Neither value is persisted by the gateway for either path. App backends already persist the same token beside pid and start time in their pid file (`apps/backend_runtime/pidfile.py`, `_record_app_pid`), which is the precedent this RFC follows.
+Each `AcpRuntime` spawn mints a `KIROCREW_SPAWN_INSTANCE` token (`acp/runtime.py`, held as `_process_instance`) and, since #15755, stamps it beside `KIROCREW_SPAWN_HOME` (this data home) on the child's environment. `AcpClient._spawn` (`acp/client_start.py`) is a second live spawn path, used by `providers/acp.py` and `knowledge/llm_pool.py`, and stamps only `KIROCREW_SPAWNED`; the reclaim refuses every runtime it spawns. Neither value is persisted by the gateway for either path. App backends already persist the same token beside pid and start time in their pid file (`apps/backend_runtime/pidfile.py`, `_record_app_pid`), which is the precedent this RFC follows.
 
 ### Problems
 

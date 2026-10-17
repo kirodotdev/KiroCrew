@@ -43,6 +43,7 @@ from unittest import mock
 
 import pytest
 
+from kiro_crew import github_runner
 from kiro_crew.apps.builtins.issue_radar.backend import azure_client, azure_transport
 from kiro_crew.apps.builtins.issue_radar.backend.errors import (
     ProviderCliError,
@@ -511,6 +512,27 @@ class TestAzEnv(unittest.TestCase):
         with mock.patch.object(azure_client, "minimal_env", return_value=shaped) as build:
             self.assertIs(azure_client._az_env(HOST), shaped)
         build.assert_called_once()
+
+    def test_hands_az_an_explicit_session_bus_address(self):
+        # az's encrypted token cache reaches the keyring through libsecret over
+        # GDBus. The child never searches for the bus itself (where none exists
+        # that autolaunches a private dbus-daemon and keyring daemon per call):
+        # it gets the value the parent resolved once, never the ambient one.
+        ambient = {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/ambient/forwarded/bus"}
+        for resolved in (github_runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+            with self.subTest(resolved=resolved):
+                with (
+                    mock.patch.dict(os.environ, ambient, clear=True),
+                    mock.patch.object(github_runner, "session_bus_address", return_value=resolved),
+                ):
+                    env = azure_client._az_env(HOST)
+                self.assertTrue(
+                    env.get("DBUS_SESSION_BUS_ADDRESS"), "az must not start with no bus address"
+                )
+                self.assertEqual(env["DBUS_SESSION_BUS_ADDRESS"], resolved)
+                self.assertNotEqual(
+                    env["DBUS_SESSION_BUS_ADDRESS"], ambient["DBUS_SESSION_BUS_ADDRESS"]
+                )
 
     def test_the_personal_access_token_is_forwarded_only_for_the_pinned_host(self):
         # It is one ambient credential with no host binding, so forwarding it to

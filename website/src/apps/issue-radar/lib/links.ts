@@ -124,7 +124,7 @@ export interface ProviderTerms {
    * A key rather than a literal, unlike the changeRequest family above: that
    * family is frozen debt the i18n ceilings already account for, and adding to
    * it would ship a fourth English-only noun. Resolved with `i18nT()` where it
-   * renders, the same shape as `FILTER_LABEL_KEY` in ChatSidebar. */
+   * renders, the same shape as `FILTER_LABEL_KEY` in chat-sidebar/SearchDock.tsx. */
   trackedItemPluralTitleKey: string
   /** "GitHub" / "GitLab" / "Azure DevOps". */
   providerName: string

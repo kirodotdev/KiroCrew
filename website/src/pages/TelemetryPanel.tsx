@@ -1,48 +1,43 @@
-import React, { useMemo, useState } from 'react'
+import React, { useContext } from 'react'
 
-import { useQuery } from '@tanstack/react-query'
-import { Activity, ChevronDown, ChevronRight, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { Activity, Coins, Gauge, Rocket } from 'lucide-react'
 import { Trans } from 'react-i18next'
-import { Link } from 'react-router-dom'
 
 import { api } from '../api/client'
 import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
-import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
-import { useSortableTable } from '../hooks/useSortableTable'
-import { usePersistedBool } from '../hooks/usePersistedBool'
+import { Card, CardTitle, EmptyState, Input } from '../components/ui'
 import { usePersistedString } from '../hooks/usePersistedString'
-import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
+import { fmtBytes, fmtNumber, fmtPercent } from '../i18n/format'
 import { i18nT } from '../i18n/t'
-// ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
-type Stat = {
-  count: number
-  mean_ms: number
-  p50_ms: number
-  p90_ms: number
-  min_ms: number
-  max_ms: number
-  // >0 => the 14d window straddles a bucket-boundary change and these numbers
-  // describe only the newest generation. Surfaced so a truncated sample is
-  // never quoted as the whole window.
-  other_generations?: number
-  // Samples across EVERY generation. Paired with `count` this reads
-  // "showing 1,134 of 2,926" — the reader-facing form of the disclosure.
-  total_count?: number
-}
-type Startup = {
-  overall: Stat
-  cold: Stat
-  warm: Stat
-  outcome: Record<string, number>
-  daily: { date: string; count: number; cold_p50_ms: number; cold_p90_ms: number; warm_p50_ms: number }[]
-  distribution: { buckets: number[]; bounds: number[] }
-  phases: (Stat & { name: string })[]
-  by_channel: (Stat & { name: string })[]
-}
-type Turn = Stat & { outcome: Record<string, number>; fault_rate: number }
+import {
+  DEFAULT_RANGE,
+  MAX_RANGE_DAYS,
+  RANGE_CHOICES,
+  type RangeChoice,
+  customDays,
+  earliestDay,
+  localDay,
+  rangeQuery,
+  rangeSearch,
+} from './telemetryRange'
+import {
+  type Stat,
+  type Startup,
+  type Turn,
+  type Other,
+  type Resp,
+  PanelWindowCtx,
+  panelWindow,
+  otelWindow,
+  spendWindow,
+  usePersistedChoice,
+} from './telemetryPanelModel'
+import { type Col, DataTable, Sums, Histogram } from './TelemetryPanelBlocks'
+import { SpendTab, ContextTab } from './TelemetryPanelConversations'
 
 /**
  * Outcomes that are NOT faults, mirroring the API's `_TERMINAL_FAULT_OUTCOMES`
@@ -63,147 +58,9 @@ const TURN_NON_FAULT_OUTCOMES = new Set([
   // fault_rate by the API (see the comment in HealthBar).
   'unclassified',
 ])
-type ContextSession = {
-  slot: string
-  turns: number
-  peak_pct: number
-  used: number
-  window: number
-  agent: string
-  model: string
-  surface: string
-  ts: string
-}
-type Context = {
-  turns: number
-  p50_pct: number
-  p90_pct: number
-  max_pct: number
-  sessions: ContextSession[]
-  window_days: number
-}
-type Other = {
-  name: string
-  kind: string
-  count?: number
-  p50_ms?: number
-  p90_ms?: number
-  // Present on every histogram instrument and absent on counters. Declared here
-  // because a latency profile needs the extremes, not only the percentiles.
-  min_ms?: number
-  max_ms?: number
-  mean_ms?: number
-  other_generations?: number
-  total_count?: number
-  total?: number
-  // A histogram whose values are NOT milliseconds carries this family instead of
-  // the `*_ms` one, plus the `unit` its values are in ("By" for a byte count,
-  // "1" for a dimensionless ratio). The backend keeps the two families apart
-  // because a resident set reported as `p50_ms` is a unit lie; the panel must
-  // therefore read WHICHEVER family a row carries, or the distribution is
-  // collected and then dropped at the render.
-  unit?: string
-  p50?: number
-  p90?: number
-  min?: number
-  max?: number
-  mean?: number
-  // Present on gauge instruments only: the newest point-in-time sample.
-  // Summing a gauge across export cycles would misreport process state, so
-  // the API keeps the latest value and the panel must read THIS field.
-  latest?: number
-  by_attr?: Record<string, number>
-  // Per-attribute sub-histograms, present only for the attribute keys the
-  // backend splits on (_OTHER_SPLIT_ATTRS). Keyed "attr=value", e.g. "warm=false".
-  splits?: Record<string, Stat>
-}
-type CostRow = {
-  name: string
-  credits: number
-  turns: number
-  per_turn: number
-  share_pct: number
-  // Absent for a name with no spend in the preceding period: there is no
-  // percentage change from zero, and rendering one would invent a number.
-  delta_pct?: number | null
-}
-type CostBand = { label: string; turns: number; mean_credits: number }
-type CostConvo = {
-  slot: string
-  /**
-   * The session taxonomy: `dashboard`, `bg`, `telegram`, `slack`, … Classified
-   * by the backend, because it is the only place that knows every session-key
-   * form. Used for the category column and for linkability — only a `dashboard`
-   * session has a route to open, while a Telegram thread is every bit a session
-   * with nowhere for a dashboard link to go. Deriving either from the key shape
-   * here would put a second, drifting copy of session-key knowledge in the
-   * frontend.
-   */
-  category: string
-  /** The unollapsed channel underneath the category (`cron`, `heartbeat`, …). */
-  channel: string
-  // Present only while the conversation is still open — titles are not persisted.
-  title?: string
-  credits: number
-  turns: number
-  peak_pct: number
-  span_days: number
-  first_ts: number
-  growth_pct_per_turn?: number | null
-  turns_to_compaction?: number | null
-}
-type Cost = {
-  window_days: number
-  credits: number
-  turns: number
-  per_turn: number
-  prior_credits: number
-  prior_turns: number
-  prior_per_turn: number
-  delta_pct?: number | null
-  priciest: { credits: number; slot: string; ts: string }
-  by_model: CostRow[]
-  by_channel: CostRow[]
-  /** Spend by the session taxonomy — the grouping the panel offers. */
-  by_category: CostRow[]
-  context_bands: CostBand[]
-  conversations: CostConvo[]
-  conversation_count: number
-  navigable_category: string
-}
-type Resp = {
-  enabled: boolean
-  window_days: number
-  shard_count: number
-  metrics_dir: string
-  startup: Startup | null
-  turn: Turn | null
-  context: Context | null
-  cost: Cost | null
-  other: Other[]
-}
 
 const fmtMs = (ms?: number | null): string =>
   ms == null ? '—' : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : Math.round(ms) + 'ms'
-
-/**
- * A share that is real but rounds to zero must not read as zero.
- *
- * Computed from the credits and the window total rather than read from the
- * payload's `share_pct`, which the backend has already rounded: a model with 7
- * credits arrived as a flat `0` and rendered "0%", while its 9.5-credit
- * neighbour arrived as 0.05 and rendered "<1%". Same magnitude, two different
- * claims, and the smaller one was the lie. Deriving it here means the only
- * rounding is the one being described.
- */
-const fmtSharePct = (credits: number, total: number): string => {
-  if (!total) return '—'
-  const ratio = credits / total
-  return ratio > 0 && ratio < 0.005 ? `<${fmtPercent(0.01)}` : fmtPercent(ratio)
-}
-
-const fmtDelta = (d?: number | null): string =>
-  d == null ? i18nT('pages.telemetryPanel.cost_new') : (d > 0 ? '+' : '') + fmtPercent(d / 100)
 
 function Notice({ children }: { children: React.ReactNode }) {
   return <div className="text-muted text-sm py-12 text-center leading-relaxed">{children}</div>
@@ -242,326 +99,6 @@ function GenNote({ shown, total, compact }: { shown?: number; total?: number; co
   return (
     <div className="text-[10px] mt-1" style={{ color: 'var(--warn)' }}>
       {text}
-    </div>
-  )
-}
-
-/**
- * Occupancy colour thresholds, applied ONLY to the aggregate percentiles.
- *
- * Compaction triggers at 90% of the window, so that is the danger line rather
- * than an arbitrary "nearly full" guess; 70% is the point where a long session
- * still has room but is worth watching.
- *
- * Deliberately NOT applied to the per-row peak-occupancy column. A peak is a
- * high-water mark over the session's whole life, so a busy window puts nearly
- * every row above 90% — the measured page had 6 of 8 rows in red, at which
- * point the danger colour marks "this row exists" rather than "act on this
- * row". The actionable companion number is turns-to-compaction, which IS
- * threshold-coloured below, because it is the one that can still be acted on.
- */
-const occColor = (p: number): string =>
-  p >= 90 ? 'var(--danger)' : p >= 70 ? 'var(--warn)' : 'var(--accent)'
-
-/**
- * Turns remaining before the next compaction. Unlike a peak, this is a forecast
- * a reader can act on, so it carries the page's only per-row alarm: under two
- * turns of headroom the next turn may compact, under five it is imminent.
- */
-const headroomColor = (turns: number): string | undefined =>
-  turns <= 2 ? 'var(--danger)' : turns <= 5 ? 'var(--warn)' : undefined
-
-// ── Sortable table ─────────────────────────────────────────────
-//
-// The sort MODEL is the shared `useSortableTable` hook the other five tables on
-// the dashboard use, so a chosen sort persists per table exactly as it does on
-// Hooks, Schedule, Cron, MCP and Memory.
-//
-// The header markup is local rather than `SortableHeader` for two reasons the
-// shared component cannot express without changing those five pages: this is
-// the first numeric-heavy table, so most columns must right-align (SortableHeader
-// hard-codes `text-left`, and its className is appended rather than merged, so
-// a competing `text-right` would resolve by stylesheet order), and it carries
-// the ▾/▴ caret plus accent-coloured active column from the Session & Task
-// Memory card. Giving SortableHeader a caret is worth doing for all six tables,
-// but as its own change.
-//
-// The comparison is also local, because the hook's direction model negates by
-// swapping arguments — which cannot express "nulls last in BOTH directions".
-// That property is load-bearing here: `unknown` is not a small value, and
-// flipping a column must not promote unmeasured rows to the top.
-const NUM_CELL = 'px-3 py-1.5 text-right font-mono text-[12.5px] tabular-nums whitespace-nowrap'
-const TXT_CELL = 'px-3 py-1.5 text-left text-[12.5px]'
-const HEAD_BASE = 'px-3 py-1.5 text-[11px] font-medium text-muted whitespace-nowrap'
-
-type Col<R> = {
-  key: string
-  label: string
-  /** Text columns render left-aligned and collate with compareText. */
-  left?: boolean
-  /** Sort value. `null` sorts last in both directions — unknown is not small. */
-  sort: (r: R) => number | string | null
-  render: (r: R) => React.ReactNode
-  color?: (r: R) => string | undefined
-  /** Responsive drop class, applied to the header and its cells together. */
-  hide?: string
-  /**
-   * Hover text on the column head, for a column whose VALUES cannot say where
-   * they came from. Two tabs of this page each carry a session-origin column
-   * derived a different way, and a bare noun in the head leaves a reader no way
-   * to tell which question a column answers.
-   */
-  tip?: string
-}
-
-/**
- * Defined at module scope on purpose. As a function declared INSIDE DataTable it
- * was a new component type on every render, so React unmounted and re-mounted
- * every `<th>` whenever the sort changed — which detached the very button the
- * user had just clicked, and a detached node's click never reaches React's root
- * listener. The visible symptom was a header that sorted once and then went
- * dead.
- */
-function HeadCell({
-  label,
-  left,
-  hide,
-  active,
-  desc,
-  onToggle,
-  tip,
-}: {
-  label: string
-  left?: boolean
-  hide?: string
-  active: boolean
-  desc: boolean
-  onToggle: () => void
-  tip?: string
-}) {
-  return (
-    <th
-      className={`${HEAD_BASE} ${left ? 'text-left' : 'text-right'} ${hide ?? ''}`}
-      aria-sort={active ? (desc ? 'descending' : 'ascending') : 'none'}
-    >
-      {/* One line, whatever the column width: the tip is a 16px circle after a
-          short label, and letting it wrap put the glyph on a row of its own and
-          made every tipped header two lines tall. */}
-      <span className="inline-flex items-center gap-1 whitespace-nowrap align-middle">
-      <Btn
-        type="button"
-        onClick={onToggle}
-        // `Btn` rather than a raw <button>, and a Lucide chevron rather than a
-        // ▾/▴ glyph: a text symbol ignores `currentColor` and the theme tokens,
-        // so it would not follow the accent colour the active column is marked
-        // with, and it renders differently on each platform.
-        //
-        // The overrides strip Btn's border, fill and 13px body type — a boxed
-        // control in every column head would read as an action rather than a
-        // label. twMerge resolves them over the defaults.
-        className={`border-transparent bg-transparent px-0 py-0 gap-1 text-[11px] font-medium ${
-          active ? 'text-accent' : 'text-muted'
-        }`}
-      >
-        {label}
-        {active &&
-          (desc ? (
-            <ChevronDown size={12} aria-hidden="true" className="lucide-inline" />
-          ) : (
-            <ChevronUp size={12} aria-hidden="true" className="lucide-inline" />
-          ))}
-      </Btn>
-      {/* Outside the Btn, never inside it: nesting the tip's own control in the
-          sort button would make one click both sort the table and open the tip,
-          and a button inside a button is invalid markup a screen reader cannot
-          announce as two actions. */}
-      {tip ? <InfoTip text={tip} placement="top" /> : null}
-      </span>
-    </th>
-  )
-}
-
-function DataTable<R>({
-  rows,
-  cols,
-  rowKey,
-  tableId,
-  defaultSort,
-  emptyTitle,
-  renderExpanded,
-}: {
-  rows: R[]
-  cols: Col<R>[]
-  rowKey: (r: R) => string
-  /** Namespaces the persisted sort, so each tab and grouping remembers its own. */
-  tableId: string
-  defaultSort: string
-  emptyTitle: string
-  /** Optional per-row drill-down. When set, every row grows a leading chevron
-   *  that toggles a full-width detail row beneath it. One row open at a time:
-   *  the drill-down is a comparison against the row above it, not a second
-   *  table to scroll. */
-  renderExpanded?: (r: R) => React.ReactNode
-}) {
-  // A text column opens A→Z; a measurement opens largest-first, which is the
-  // question being asked of it ("what cost the most", "what was slowest").
-  //
-  // Rebuilt each render rather than memoised: `cols` is a fresh array on every
-  // parent render, so a `[cols]` memo never once hit its cache — it paid the
-  // dependency check for nothing and read as if it were saving work.
-  const initialDirs = Object.fromEntries(cols.map(c => [c.key, c.left ? 'asc' : 'desc'] as const))
-  // Comparators are deliberately empty: this hook is used for the sort STATE
-  // and its persistence, and the ordering is applied below so nulls can stay
-  // last in both directions.
-  const { sort, toggle } = useSortableTable<R>(
-    [],
-    tableId,
-    {},
-    // The opening direction is the column's own, not a blanket 'desc': a column
-    // ordered by an index (the latency buckets) has to open ascending or the
-    // distribution renders back to front.
-    { key: defaultSort, dir: initialDirs[defaultSort] ?? 'desc' },
-    { bidirectional: true, initialDirs },
-  )
-  const desc = sort.dir === 'desc'
-  // The column that ACTUALLY orders the rows, which is not always the one the
-  // persisted sort names: a sort saved by an older column layout survives in
-  // localStorage, and the lookup then falls back to the first column. Resolving
-  // it once and marking the header from THIS key means the caret and `aria-sort`
-  // can never disagree with the order on screen — previously that case left the
-  // table sorted by its first column with no header marked at all.
-  const activeKey = (cols.find(c => c.key === sort.key) ?? cols[0])?.key
-
-  // The one open drill-down, by row key. Keyed state (not per-row booleans) so
-  // a re-sort keeps the same ROW open rather than the same position.
-  const [openKey, setOpenKey] = useState<string | null>(null)
-
-  // Not memoised, for the same reason `initialDirs` is not: `cols` is rebuilt
-  // by the parent on every render, so a dependency array naming it could never
-  // hit its cache. Hoisting the column builders to module scope WOULD stabilise
-  // them and is the wrong fix — they call `i18nT` per render on purpose, and
-  // freezing the labels at import time would leave the table in the old
-  // language after a locale switch. Sorting a handful of rows is cheaper than
-  // that bug.
-  const shown = (() => {
-    const col = cols.find(c => c.key === activeKey) ?? cols[0]
-    return rows.slice().sort((a, b) => {
-      const av = col.sort(a)
-      const bv = col.sort(b)
-      if (av == null && bv == null) return 0
-      if (av == null) return 1
-      if (bv == null) return -1
-      const d =
-        typeof av === 'string' && typeof bv === 'string' ? compareText(av, bv) : Number(av) - Number(bv)
-      return desc ? -d : d
-    })
-  })()
-
-  return (
-    <>
-      {shown.length === 0 ? (
-        <EmptyState icon={<Activity className="lucide-inline" />} title={emptyTitle} />
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse table-striped">
-            <thead>
-              <tr className="bg-bg-elevated border-b border-border">
-                {renderExpanded ? (
-                  <th className="w-7" aria-sort="none" aria-label={i18nT('pages.telemetryPanel.detail_col')} />
-                ) : null}
-                {cols.map(c => (
-                  <HeadCell
-                    key={c.key}
-                    label={c.label}
-                    left={c.left}
-                    hide={c.hide}
-                    active={c.key === activeKey}
-                    desc={desc}
-                    onToggle={() => toggle(c.key)}
-                    tip={c.tip}
-                  />
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map(r => {
-                const k = rowKey(r)
-                const open = renderExpanded != null && openKey === k
-                return (
-                  <React.Fragment key={k}>
-                    <tr className="border-b border-border/60 last:border-b-0">
-                      {renderExpanded ? (
-                        <td className="w-7 px-1">
-                          <Btn
-                            type="button"
-                            className="p-0.5 border-none text-muted hover:text-text rounded"
-                            aria-expanded={open}
-                            aria-label={i18nT(
-                              open
-                                ? 'pages.telemetryPanel.hide_turn_detail'
-                                : 'pages.telemetryPanel.show_turn_detail',
-                            )}
-                            onClick={() => setOpenKey(open ? null : k)}
-                          >
-                            {open ? (
-                              <ChevronDown className="lucide-inline" size={14} />
-                            ) : (
-                              <ChevronRight className="lucide-inline" size={14} />
-                            )}
-                          </Btn>
-                        </td>
-                      ) : null}
-                      {cols.map(c => (
-                        <td
-                          key={c.key}
-                          className={`${c.left ? TXT_CELL : NUM_CELL} ${c.hide ?? ''}`}
-                          style={c.color?.(r) ? { color: c.color(r) } : undefined}
-                        >
-                          {c.render(r)}
-                        </td>
-                      ))}
-                    </tr>
-                    {open ? (
-                      <tr className="border-b border-border/60 last:border-b-0">
-                        <td colSpan={cols.length + 1} className="px-2 py-2 bg-[var(--bg-accent)]">
-                          {renderExpanded(r)}
-                        </td>
-                      </tr>
-                    ) : null}
-                  </React.Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </>
-  )
-}
-
-/**
- * The per-tab summary. One borderless strip replaces what were fifteen
- * identically-shaped bordered tiles spread over four sections: with every
- * number in the same card as the rows it summarises, nothing has to be
- * cross-referenced between sections, and a headline total no longer competes
- * visually with a row of a table.
- */
-type Sum = { label: string; value: string; unit?: string; sub?: string; note?: React.ReactNode; color?: string }
-
-function Sums({ items }: { items: Sum[] }) {
-  return (
-    <div className="flex flex-wrap gap-x-9 gap-y-3 border-t border-border mt-3 pt-3">
-      {items.map(i => (
-        <div key={i.label}>
-          <div className="text-[10px] text-muted uppercase tracking-wide">{i.label}</div>
-          <div className="text-[19px] font-bold leading-tight" style={i.color ? { color: i.color } : undefined}>
-            {i.value}
-            {i.unit && <span className="text-[11px] text-muted font-normal ml-0.5">{i.unit}</span>}
-          </div>
-          {i.sub && <div className="text-[10px] text-muted mt-0.5">{i.sub}</div>}
-          {i.note}
-        </div>
-      ))}
     </div>
   )
 }
@@ -647,55 +184,6 @@ function RangeBar({
 }
 
 /**
- * A horizontal histogram. Bars carry magnitude by length and share one scale,
- * which is exactly what a distribution needs — unlike the sortable bucket table
- * this replaces, where sorting by count destroyed the bound order that IS the
- * shape.
- *
- * `label` is a node so a caller can style or link it; the widths either side of
- * the bar are the caller's because they set how much track is left, and a track
- * squeezed to nothing is a row that has stopped saying anything.
- *
- * `barDecorative` hides the bar from assistive technology, for a caller whose
- * label and figure already carry the row's facts as text — reading the bar too
- * announces the row twice. It is opt-in because muting a bar is a change to what
- * a reader is told, and that belongs to the caller that wants it rather than to
- * every caller of this function.
- */
-function Histogram({
-  rows,
-  labelClass = 'w-20 text-right font-mono text-muted',
-  valueClass = 'w-12',
-  barDecorative = false,
-}: {
-  rows: { key: string; label: React.ReactNode; count: number; title?: string }[]
-  labelClass?: string
-  valueClass?: string
-  barDecorative?: boolean
-}) {
-  const peak = Math.max(1, ...rows.map(r => r.count))
-  return (
-    <div className="flex flex-col gap-1">
-      {rows.map(r => (
-        <div key={r.key} className="flex items-center gap-2.5 text-[11px]" title={r.title}>
-          <span className={`${labelClass} shrink-0 min-w-0`}>{r.label}</span>
-          <div
-            aria-hidden={barDecorative || undefined}
-            className="h-2 min-w-0 flex-1 overflow-hidden rounded-sm bg-[var(--bg)]"
-          >
-            <span
-              className="block h-full rounded-sm"
-              style={{ width: `${(r.count / peak) * 100}%`, background: 'var(--muted-strong)' }}
-            />
-          </div>
-          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{fmtNumber(r.count)}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-/**
  * A daily trend as columns. `startup.daily` has shipped in the payload since the
  * startup block existed and was rendered nowhere, so the one time series this
  * page has was invisible. Columns rather than a line: a line needs a path, and a
@@ -740,874 +228,6 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
   )
 }
 
-// ── Spend ──────────────────────────────────────────────────────
-
-type SpendGroup = 'session' | 'category' | 'model'
-
-/** One row of GET /api/usage/turns — the same shard rows the totals above
- *  aggregate, returned individually. Every numeric field is optional: the
- *  reader drops what it cannot vouch for rather than inventing zeros. */
-type TurnUsageRow = {
-  ts: string
-  model: string
-  credits?: number
-  cost?: number
-  duration_ms?: number
-  context_used?: number
-  context_window?: number
-}
-
-const DRILL_TH = 'text-left font-normal text-[10px] text-muted uppercase tracking-wide px-2 py-1'
-const DRILL_TD = 'px-2 py-[3px] font-mono text-[11px] tabular-nums'
-// Same narrow-viewport convention as the parent table's columns: lower-priority
-// columns yield before the table overflows. Credits is the column the surface
-// exists for and never hides; the model column truncates instead of pushing.
-const DRILL_HIDE_TIME = 'max-[720px]:hidden'
-const DRILL_HIDE_DURATION = 'max-[720px]:hidden'
-const DRILL_HIDE_CONTEXT = 'max-[480px]:hidden'
-
-/**
- * The per-turn rows behind one session's spend total. The aggregate answers
- * "which session cost the most"; this answers "which TURNS did it" — a model
- * switch mid-session or one runaway turn is invisible in an average.
- */
-function SessionTurnsDrilldown({ slot }: { slot: string }) {
-  const q = useQuery<{ turns: TurnUsageRow[] }>({
-    queryKey: ['usage-turns', slot],
-    queryFn: () => api.usageTurns(slot),
-  })
-  if (q.isLoading) {
-    return <div className="text-[11px] text-muted px-2 py-1">{i18nT('pages.telemetryPanel.turns_loading')}</div>
-  }
-  if (q.isError) {
-    // A failed fetch must not read as "no rows": asserting the data does not
-    // exist when the request failed sends the reader away with a wrong fact
-    // and no reason to retry.
-    // askAgent on: a read of already-recorded usage rows; the drilldown holds
-    // nothing editable. Retry stays beside it — a different next step.
-    return (
-      <div className="flex items-center gap-2 px-2 py-1">
-        <ErrorNotice
-          variant="inline"
-          message={i18nT('pages.telemetryPanel.turns_error')}
-          askAgent
-          testId="telemetry-turns-error"
-        />
-        <Btn className="px-1.5 py-0.5 text-[11px]" onClick={() => void q.refetch()}>
-          {i18nT('pages.telemetryPanel.turns_retry')}
-        </Btn>
-      </div>
-    )
-  }
-  const turns = q.data?.turns ?? []
-  if (turns.length === 0) {
-    return <div className="text-[11px] text-muted px-2 py-1">{i18nT('pages.telemetryPanel.turns_empty')}</div>
-  }
-  return (
-    <table className="w-full border-collapse">
-      <thead>
-        <tr className="border-b border-border/60">
-          <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.turn_col')}</th>
-          <th className={`${DRILL_TH} ${DRILL_HIDE_TIME}`}>{i18nT('pages.telemetryPanel.time_col')}</th>
-          <th className={DRILL_TH}>{i18nT('pages.telemetryPanel.model_col')}</th>
-          <th className={`${DRILL_TH} text-right`}>{i18nT('pages.telemetryPanel.credits_col')}</th>
-          <th className={`${DRILL_TH} text-right ${DRILL_HIDE_DURATION}`}>{i18nT('pages.telemetryPanel.duration_col')}</th>
-          <th className={`${DRILL_TH} text-right ${DRILL_HIDE_CONTEXT}`}>{i18nT('pages.telemetryPanel.context_col')}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {turns.map((t, i) => (
-          <tr key={`${t.ts}-${i}`} className="border-b border-border/40 last:border-b-0">
-            <td className={`${DRILL_TD} text-muted`}>{fmtNumber(i + 1)}</td>
-            <td className={`${DRILL_TD} ${DRILL_HIDE_TIME}`}>
-              {fmtDateNumeric(t.ts)} {fmtTimeNumeric(t.ts)}
-            </td>
-            {/* Model ids are data, not copy — rendered verbatim like the model
-                column one table up, truncated so a long id cannot widen the
-                narrow layout the hidden columns just paid for. */}
-            <td className={`${DRILL_TD} text-muted`}>
-              <span className="block max-w-[160px] truncate" title={t.model}>
-                {t.model || '—'}
-              </span>
-            </td>
-            <td className={`${DRILL_TD} text-right`}>
-              {t.credits !== undefined ? fmtNumber(t.credits, { maximumFractionDigits: 2 }) : '—'}
-            </td>
-            <td className={`${DRILL_TD} text-right text-muted ${DRILL_HIDE_DURATION}`}>
-              {t.duration_ms !== undefined
-                ? fmtUnit(t.duration_ms / 1000, 'second', { maximumFractionDigits: 1 })
-                : '—'}
-            </td>
-            <td className={`${DRILL_TD} text-right text-muted ${DRILL_HIDE_CONTEXT}`}>
-              {t.context_used && t.context_window ? fmtPercent(t.context_used / t.context_window) : '—'}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-/**
- * Session / category / model are the same credits regrouped, so they are a
- * group-by over one table rather than three sections. As three sections they
- * were three separately-scrolled bar lists whose columns did not align and
- * whose empty rows — a model with a 0.4% share still drew a full-width rail —
- * made half the section blank.
- */
-function convoCols(navigable: string): Col<CostConvo>[] {
-  return [
-    {
-      key: 'name',
-      label: i18nT('pages.telemetryPanel.session_col'),
-      left: true,
-      sort: v => v.title ?? v.slot,
-      render: v =>
-        // The rule itself is `linksToConversation` -- shared with the Context
-        // table's session column so the two cannot drift apart. The tooltip
-        // differs on purpose: here it reveals the underlying slot, which is
-        // otherwise unreachable on this tab, whereas Context shows the slot as
-        // the row's text when no conversation joined.
-        linksToConversation(v, navigable) ? (
-          <Link
-            to={`/chat?sid=${encodeURIComponent(v.slot)}`}
-            className="block max-w-[320px] truncate text-[var(--accent)] hover:underline"
-            title={v.title}
-          >
-            {v.title}
-          </Link>
-        ) : (
-          <span className="block max-w-[320px] truncate text-muted" title={v.slot}>
-            {v.title ??
-              i18nT('pages.telemetryPanel.untitled_conversation_on', {
-                date: fmtDateNumeric(v.first_ts * 1000),
-              })}
-          </span>
-        ),
-    },
-    {
-      key: 'category',
-      label: i18nT('pages.telemetryPanel.category_col'),
-      // Names which surface OWNS the session, from the session key. The Context
-      // tab's own origin column reads the token row's `surface` field instead,
-      // which answers a different question — which code path RAN one turn — so
-      // the same session can legitimately read `bg` here and `heartbeat` there.
-      // The tip is what carries that, because the values alone cannot.
-      tip: i18nT('pages.telemetryPanel.category_col_tip'),
-      left: true,
-      // Rendered verbatim: these are backend enum values (`dashboard`, `bg`,
-      // `telegram`, `slack`), i.e. data, not copy to translate — the same
-      // treatment model names get one column over.
-      sort: v => v.category,
-      // Every sibling column has a breakpoint; without one this pushed Credits —
-      // the column the page exists for — off a narrow viewport.
-      hide: 'max-[900px]:hidden',
-      render: v => (
-        <span className="text-muted font-mono text-[11.5px]">{categoryLabel(v.category)}</span>
-      ),
-    },
-    {
-      key: 'credits',
-      label: i18nT('pages.telemetryPanel.credits_col'),
-      sort: v => v.credits,
-      render: v => fmtNumber(v.credits),
-    },
-    {
-      key: 'turns',
-      label: i18nT('pages.telemetryPanel.turns_col'),
-      sort: v => v.turns,
-      render: v => fmtNumber(v.turns),
-    },
-    {
-      key: 'per_turn',
-      // Derived here rather than read from the payload, which carries a per-turn
-      // figure only for the window as a whole. Rounded to the same single
-      // decimal the backend uses for its own averages, so the column and the
-      // total below it do not quote the same quantity at two precisions.
-      label: i18nT('pages.telemetryPanel.per_turn_col'),
-      sort: v => (v.turns ? v.credits / v.turns : null),
-      render: v => (v.turns ? fmtNumber(v.credits / v.turns, { maximumFractionDigits: 1 }) : '—'),
-    },
-    {
-      key: 'peak',
-      label: i18nT('pages.telemetryPanel.peak_ctx_col'),
-      sort: v => v.peak_pct,
-      render: v => fmtPercent(v.peak_pct / 100),
-    },
-    {
-      key: 'span',
-      label: i18nT('pages.telemetryPanel.span_col'),
-      hide: 'max-[720px]:hidden',
-      sort: v => v.span_days,
-      render: v => fmtUnit(v.span_days, 'day'),
-    },
-    {
-      key: 'growth',
-      label: i18nT('pages.telemetryPanel.growth_col'),
-      hide: 'max-[900px]:hidden',
-      sort: v => v.growth_pct_per_turn ?? null,
-      render: v =>
-        v.growth_pct_per_turn == null
-          ? '—'
-          : i18nT('pages.telemetryPanel.growth_per_turn', { rate: fmtNumber(v.growth_pct_per_turn) }),
-    },
-    {
-      key: 'headroom',
-      label: i18nT('pages.telemetryPanel.to_compaction_col'),
-      hide: 'max-[900px]:hidden',
-      sort: v => v.turns_to_compaction ?? null,
-      color: v => (v.turns_to_compaction == null ? undefined : headroomColor(v.turns_to_compaction)),
-      render: v =>
-        v.turns_to_compaction == null
-          ? '—'
-          : i18nT('pages.telemetryPanel.turns_to_compaction', {
-              count: v.turns_to_compaction,
-              n: fmtNumber(v.turns_to_compaction),
-            }),
-    },
-  ]
-}
-
-/**
- * `bg` is a coined abbreviation with no external referent, so it gets a translated
- * label; a transport name (`dashboard`, `telegram`, `slack`) is a proper noun the
- * reader already knows and is shown as the backend sent it.
- *
- * This lives in ONE place because the category is rendered by two different
- * surfaces — the Session table's column and the Group-by-Category table — and
- * mapping it in only one produced two labels for the same value.
- */
-function categoryLabel(name: string): string {
-  return name === 'bg' ? i18nT('pages.telemetryPanel.category_bg') : name
-}
-
-function shareCols(first: string, total: number, firstTip?: string): Col<CostRow>[] {
-  return [
-    {
-      key: 'name',
-      label: first,
-      // The grouped view asks the same question of the same values as the
-      // session table's column, so it earns the same tip when that is the
-      // grouping in force; grouping by model leaves it unset.
-      tip: firstTip,
-      left: true,
-      sort: r => r.name,
-      render: r => categoryLabel(r.name),
-    },
-    {
-      key: 'credits',
-      label: i18nT('pages.telemetryPanel.credits_col'),
-      sort: r => r.credits,
-      render: r => fmtNumber(r.credits),
-    },
-    {
-      key: 'turns',
-      label: i18nT('pages.telemetryPanel.turns_col'),
-      sort: r => r.turns,
-      render: r => fmtNumber(r.turns),
-    },
-    {
-      key: 'per_turn',
-      label: i18nT('pages.telemetryPanel.per_turn_col'),
-      sort: r => r.per_turn,
-      render: r => fmtNumber(r.per_turn),
-    },
-    {
-      key: 'share',
-      label: i18nT('pages.telemetryPanel.share_col'),
-      sort: r => r.credits,
-      render: r => fmtSharePct(r.credits, total),
-    },
-  ]
-}
-
-const SPEND_GROUPS = ['session', 'category', 'model'] as const
-
-/**
- * How many rows a spend block plots before the remainder folds into one row.
- *
- * Five keeps the two grouping blocks the same height beside each other. The
- * session list gets eight because it is the block a reader scans for a name,
- * and five names is too few to find one in.
- */
-const SPEND_GROUP_ROWS = 5
-const SPEND_SESSION_ROWS = 8
-
-type SpendBar = { label: React.ReactNode; credits: number; title?: string }
-
-/**
- * A titled bar block: heading, its own empty state, and an optional footnote.
- *
- * Credits render as bars on one shared scale, longest first, so the block answers
- * "how much of the window landed here" by shape rather than by reading five
- * numbers and dividing. The figure stays beside the bar because a bar cannot be
- * quoted. The scale is per block: session totals and grouping totals are
- * different populations — one session against every session's origin — so a
- * shared axis would flatten whichever block holds the smaller numbers.
- *
- * The heading is a flex row because `InfoTip` renders a `display: flex` button.
- * In a normal-flow block that button is a block-level box, so it drops onto a
- * line of its own and the bare "?" reads as a stray control.
- *
- * `note` describes the rows, so it renders only when there are rows; under an
- * empty state it is a caption for nothing.
- */
-function SpendBlock({
-  title,
-  tip,
-  rows,
-  labelClass,
-  note,
-}: {
-  title: string
-  tip?: string
-  rows: SpendBar[]
-  labelClass: string
-  note?: string
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="flex items-center gap-1 text-[10px] text-muted uppercase tracking-wide mb-1.5">
-        {title}
-        {tip && <InfoTip text={tip} />}
-      </div>
-      {rows.length > 0 ? (
-        <>
-          <Histogram
-            rows={rows.map((r, i) => ({ key: String(i), label: r.label, count: r.credits, title: r.title }))}
-            labelClass={labelClass}
-            valueClass="w-14"
-            barDecorative
-          />
-          {note && <div className="text-[10px] text-muted mt-1.5">{note}</div>}
-        </>
-      ) : (
-        <EmptyState
-          icon={<Coins className="lucide-inline" />}
-          title={i18nT('pages.telemetryPanel.no_spend_recorded')}
-        />
-      )}
-    </div>
-  )
-}
-
-/**
- * One grouping's rows as bars, with everything past `limit` summed into a single
- * trailing row.
- *
- * A grouping carries as many names as the window saw, most of them a bar a pixel
- * wide. Folding the tail keeps the block scannable while every credit stays on
- * screen, so the block and the table below it account for the same total.
- */
-function groupBars(rows: CostRow[], limit: number): SpendBar[] {
-  const sorted = [...rows].sort((a, b) => b.credits - a.credits)
-  const bars: SpendBar[] = sorted.slice(0, limit).map(r => ({
-    credits: r.credits,
-    // Monospace for the same reason the table's cells use it: a model id and a
-    // session-origin enum are tokens to compare character by character. The
-    // title reveals the raw value behind a translated label.
-    label: (
-      <span className="block truncate font-mono text-muted" title={r.name}>
-        {categoryLabel(r.name)}
-      </span>
-    ),
-  }))
-  const rest = sorted.slice(limit)
-  if (rest.length > 0) {
-    bars.push({
-      credits: rest.reduce((sum, r) => sum + r.credits, 0),
-      // The folded names themselves, so the row says WHAT it folded. The row is
-      // inert, and a fold that names nothing reads as something to click.
-      title: rest.map(r => categoryLabel(r.name)).join(', '),
-      label: (
-        <span className="block truncate text-muted">
-          {i18nT('pages.telemetryPanel.other_group', { n: fmtNumber(rest.length) })}
-        </span>
-      ),
-    })
-  }
-  return bars
-}
-
-/**
- * The biggest-spending sessions as bars.
- *
- * Named and linked through `sessionLabel` and `linksToConversation`, the same two
- * rules the table's own session column uses, so the block and the table cannot
- * disagree about what a row is called or whether it can be opened.
- */
-function sessionBars(convos: CostConvo[], navigable: string, limit: number): SpendBar[] {
-  return [...convos]
-    .sort((a, b) => b.credits - a.credits)
-    .slice(0, limit)
-    .map(v => ({
-      credits: v.credits,
-      label: linksToConversation(v, navigable) ? (
-        <Link
-          to={`/chat?sid=${encodeURIComponent(v.slot)}`}
-          className="block truncate text-[var(--accent)] hover:underline"
-          title={v.title}
-        >
-          {v.title}
-        </Link>
-      ) : (
-        // The title attribute holds the slot, which this block has no column to
-        // show: an inert row still has to be identifiable.
-        <span className="block truncate text-muted" title={v.slot}>
-          {sessionLabel(v, v.slot)}
-        </span>
-      ),
-    }))
-}
-
-function SpendTab({ c }: { c: Cost }) {
-  const [group, setGroup] = usePersistedChoice<SpendGroup>(
-    'telemetry:spend-group',
-    SPEND_GROUPS,
-    'session',
-  )
-  // Closed on first paint. The table answers "which row exactly", which is a
-  // second question: the blocks above it already say where the credits went, and
-  // opening on 45 rows puts the answer below the fold.
-  const [tableOpen, setTableOpen] = usePersistedBool('telemetry:spend-table-open', false)
-  const bands = c.context_bands
-  // Shown as "8 / 252" when the payload clamps the list. With the count alone, a
-  // reader who looks for a conversation outside the slice reads "no rows match"
-  // as "it spent nothing"; the ratio states the truncation. The pair is equal on
-  // a full payload, where the plain count is the honest form.
-  const sessionsValue =
-    c.conversations.length === c.conversation_count
-      ? fmtNumber(c.conversation_count)
-      : `${fmtNumber(c.conversations.length)} / ${fmtNumber(c.conversation_count)}`
-  return (
-    <Card className="mb-4">
-      <CardTitle>
-        {i18nT('pages.telemetryPanel.credits')}
-        <InfoTip text={i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(c.window_days) })}
-        </span>
-      </CardTitle>
-      {/* In the open, not only in the title's InfoTip. The spend and OTEL
-          numbers come from different stores over different windows, so a
-          950-turn spend total sits beside a 685-turn throughput; without the
-          source stated where both are visible, fewer turns over a longer
-          window reads as broken data rather than as two measurements. */}
-      <div className="text-[10px] text-muted -mt-2 mb-2.5">
-        {i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })}
-      </div>
-      <Sums
-        items={[
-          {
-            label: i18nT('pages.telemetryPanel.credits_col'),
-            value: fmtNumber(c.credits),
-            color: 'var(--accent)',
-            // The change rides on the total it describes. A percentage standing
-            // on its own cannot say whether it moved 12 credits or 1,200, and
-            // the label comes first so the "no prior spend" case reads as a
-            // sentence rather than as a number's unit.
-            //
-            // Both lines live in `note`, in this order, so "vs previous period"
-            // introduces the pair below it. This tile's label is "Credits", which
-            // lends the prior pair no period sense of its own: sitting directly
-            // under the current total, an unqualified "credits 9,400" reads as a
-            // component of it rather than as the window before.
-            note: (
-              <>
-                <div className="text-[10px] text-muted mt-0.5">
-                  {c.delta_pct != null && <>{i18nT('pages.telemetryPanel.vs_previous_period')} </>}
-                  <span className="text-text tabular-nums">{fmtDelta(c.delta_pct)}</span>
-                </div>
-                <div className="text-[10px] text-muted">
-                  {i18nT('pages.telemetryPanel.prior_credits_turns', {
-                    credits: fmtNumber(c.prior_credits),
-                    turns: fmtNumber(c.prior_turns),
-                  })}
-                </div>
-              </>
-            ),
-          },
-          {
-            label: i18nT('pages.telemetryPanel.per_turn_col'),
-            value: fmtNumber(c.per_turn),
-            sub: i18nT('pages.telemetryPanel.was_value', { value: fmtNumber(c.prior_per_turn) }),
-          },
-          {
-            label: i18nT('pages.telemetryPanel.turns_col'),
-            value: fmtNumber(c.turns),
-          },
-          {
-            label: i18nT('pages.telemetryPanel.priciest_turn'),
-            value: fmtNumber(c.priciest.credits),
-            // The unit, because a bare number under "Priciest turn" reads as a
-            // turn's ordinal just as readily as its cost.
-            sub: i18nT('pages.telemetryPanel.credits_col'),
-          },
-        ]}
-      />
-      {/* Both groupings at once. As a group-by over one table they were mutually
-          exclusive: seeing which origin spent the credits meant giving up the
-          model split, so no single screen answered where the window went.
-
-          Side by side only from `xl`. Each row spends a fixed label column plus a
-          fixed figure column, and in a half-width column below that the bar track
-          is what absorbs the shortfall — it reaches nearly zero, which removes the
-          compare-by-shape these blocks exist for. Below `xl` they stack, so both
-          still answer without a click and both keep their bars. */}
-      <div className="grid gap-x-8 gap-y-4 mt-4 xl:grid-cols-2">
-        <SpendBlock
-          title={i18nT('pages.telemetryPanel.credits_by_origin')}
-          tip={i18nT('pages.telemetryPanel.category_col_tip')}
-          rows={groupBars(c.by_category, SPEND_GROUP_ROWS)}
-          labelClass="w-32"
-        />
-        <SpendBlock
-          title={i18nT('pages.telemetryPanel.credits_by_model')}
-          rows={groupBars(c.by_model, SPEND_GROUP_ROWS)}
-          labelClass="w-32"
-        />
-      </div>
-      <div className="mt-4">
-        <SpendBlock
-          title={i18nT('pages.telemetryPanel.top_sessions')}
-          rows={sessionBars(c.conversations, c.navigable_category, SPEND_SESSION_ROWS)}
-          labelClass="w-[46%]"
-          note={i18nT('pages.telemetryPanel.top_spenders_link_to_chat')}
-        />
-      </div>
-      <div className="border-t border-border mt-4 pt-3">
-        <Btn
-          type="button"
-          className="flex items-center gap-2 px-1 py-0.5 border-none text-muted hover:text-text rounded"
-          aria-expanded={tableOpen}
-          onClick={() => setTableOpen(!tableOpen)}
-        >
-          {tableOpen ? (
-            <ChevronDown className="lucide-inline" size={14} />
-          ) : (
-            <ChevronRight className="lucide-inline" size={14} />
-          )}
-          <span className="text-[10px] uppercase tracking-wide">
-            {i18nT('pages.telemetryPanel.full_table')}
-          </span>
-          {/* The row count belongs on the closed header: it is what tells a
-              reader whether opening the table is worth it. */}
-          <span className="text-[10px] uppercase tracking-wide">
-            {i18nT('pages.telemetryPanel.sessions_col')}{' '}
-            <span className="font-mono tabular-nums text-text normal-case">{sessionsValue}</span>
-          </span>
-        </Btn>
-        {tableOpen && (
-          <div className="mt-2.5">
-            <div className="flex flex-wrap items-center gap-2 mb-2">
-              <span className="text-[10px] text-muted uppercase tracking-wide">
-                {i18nT('pages.telemetryPanel.group_by')}
-              </span>
-              <SegmentedControl<SpendGroup>
-                collapse={false}
-                value={group}
-                onChange={setGroup}
-                segments={[
-                  { key: 'session', label: i18nT('pages.telemetryPanel.session_col') },
-                  { key: 'category', label: i18nT('pages.telemetryPanel.category_col') },
-                  { key: 'model', label: i18nT('pages.telemetryPanel.model_col') },
-                ]}
-              />
-            </div>
-            {group === 'session' ? (
-              <DataTable<CostConvo>
-                rows={c.conversations}
-                key="telemetry-spend-conversation"
-                tableId="telemetry-spend-conversation"
-                cols={convoCols(c.navigable_category)}
-                rowKey={v => v.slot}
-                defaultSort="credits"
-                emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
-                renderExpanded={v => <SessionTurnsDrilldown slot={v.slot} />}
-              />
-            ) : (
-              <DataTable<CostRow>
-                rows={group === 'model' ? c.by_model : c.by_category}
-                key="telemetry-spend-share"
-                tableId="telemetry-spend-share"
-                cols={shareCols(
-                  group === 'model'
-                    ? i18nT('pages.telemetryPanel.model_col')
-                    : i18nT('pages.telemetryPanel.category_col'),
-                  c.credits,
-                  group === 'model' ? undefined : i18nT('pages.telemetryPanel.category_col_tip'),
-                )}
-                rowKey={r => r.name}
-                defaultSort="credits"
-                emptyTitle={i18nT('pages.telemetryPanel.no_spend_recorded')}
-              />
-            )}
-          </div>
-        )}
-      </div>
-      {bands.length > 0 && (
-        // The former "cost by context size" section, which was five rows of bar
-        // to carry five numbers. Occupancy is already a column on the rows
-        // above; what the section actually added was the shape of the
-        // relationship, and that fits on one line.
-        <div className="text-[10px] text-muted mt-3 leading-relaxed">
-          <span className="uppercase tracking-wide">
-            {i18nT('pages.telemetryPanel.mean_credits_by_occupancy')}
-          </span>{' '}
-          {bands.map((b, i) => (
-            <span key={b.label}>
-              {i > 0 && ' · '}
-              <span className="font-mono">{b.label}</span>{' '}
-              <span className="text-text tabular-nums">{fmtNumber(b.mean_credits)}</span>{' '}
-              <span className="tabular-nums">
-                ({i18nT('pages.telemetryPanel.sample_count', { count: fmtNumber(b.turns) })})
-              </span>
-            </span>
-          ))}
-        </div>
-      )}
-    </Card>
-  )
-}
-
-// ── Context ────────────────────────────────────────────────────
-
-/**
- * Rows are the per-session occupancy samples the API has always returned and
- * the page never rendered: `context.sessions[]` was computed, serialised and
- * dropped on the floor, so the only way to see which conversation was near
- * compaction was to read the spend ranking and hope the two windows agreed.
- */
-/**
- * What a Context row calls itself, given the spend row it joined (or none).
- *
- * Three outcomes, in the order the reader benefits from: the conversation's title;
- * the dated "untitled conversation" wording Spend already uses when a joined row has
- * no title (a title exists only while a conversation is open, so a closed one joins
- * and still has nothing to show); and the raw slot when nothing joined at all, which
- * is the only case with no conversation record to name.
- *
- * The middle case matters for cross-tab reading: the same conversation read
- * "Untitled conversation on <date>" in Spend and a bare slot here, so its rows could
- * not be matched between the two tabs. It needs no new copy - the key exists.
- */
-/**
- * Whether a conversation row should render as a link to the conversation.
- *
- * TWO conditions, not one, and the rule lives here rather than in each cell
- * because both tables ask it and a silent divergence between them is exactly the
- * cross-tab inconsistency this column set is trying to remove.
- *
- * A title alone is not enough: ChatPage resolves `?sid` against the live
- * DASHBOARD slot list, so a Telegram thread -- a real conversation, often titled
- * -- would render as a link that lands on `Session "..." not found` after a 5s
- * timeout. And a dashboard row with no title is untitled BECAUSE its slot is
- * gone, so it has nothing to resolve either.
- *
- * The `!!navigable` guard makes it fail CLOSED: without it a payload missing
- * `navigable_category` would satisfy the comparison for every row that also has
- * no category, and link all of them.
- */
-function linksToConversation(
-  convo: Pick<CostConvo, 'title' | 'category'> | undefined,
-  navigable: string | undefined,
-): boolean {
-  return !!convo?.title && !!navigable && convo.category === navigable
-}
-
-function sessionLabel(convo: CostConvo | undefined, slot: string): string {
-  if (convo?.title) return convo.title
-  if (convo) {
-    return i18nT('pages.telemetryPanel.untitled_conversation_on', {
-      date: fmtDateNumeric(convo.first_ts * 1000),
-    })
-  }
-  return slot
-}
-
-function sessionCols(
-  convoFor: (slot: string) => CostConvo | undefined,
-  navigable: string | undefined,
-): Col<ContextSession>[] {
-  return [
-    {
-      key: 'slot',
-      label: i18nT('pages.telemetryPanel.session_col'),
-      left: true,
-      // Sorted on what the row SHOWS. Sorting on the slot while displaying a
-      // title puts the column in an order the reader cannot see.
-      sort: s => sessionLabel(convoFor(s.slot), s.slot),
-      render: s => {
-        // The occupancy payload carries no title - it never has - so the whole spend
-        // row is joined on the slot the two share. The fallback is the raw slot, and
-        // it is load-bearing rather than defensive: the two measurements come from
-        // the same store over DIFFERENT windows, so a conversation sampled for
-        // occupancy can legitimately have no spend row. Either way the row still has
-        // to identify itself.
-        const convo = convoFor(s.slot)
-        const label = sessionLabel(convo, s.slot)
-        // Same rule as Spend, held in one place. Sharing the affordance is the
-        // point: this tab's task is "find which conversation is near compaction
-        // and go deal with it", and a title that is a link one tab over and inert
-        // here dead-ends exactly that.
-        //
-        // No explicit type size on these: TXT_CELL already sets 12.5px for every
-        // left-aligned cell in these tables.
-        if (linksToConversation(convo, navigable)) {
-          return (
-            <Link
-              to={`/chat?sid=${encodeURIComponent(s.slot)}`}
-              className="block max-w-[260px] truncate text-[var(--accent)] hover:underline"
-              title={convo?.title}
-            >
-              {convo?.title}
-            </Link>
-          )
-        }
-        return convo ? (
-          // Muted, like every non-link title on Spend: the same conversation should
-          // read the same weight on both tabs, and the contrast with the accent link
-          // is what makes "this one is clickable" legible at a glance.
-          <span className="block max-w-[260px] truncate text-muted" title={label}>
-            {label}
-          </span>
-        ) : (
-          // Monospace only for the raw id: an id is a token to compare
-          // character by character, a title is prose.
-          <span className="block max-w-[260px] truncate font-mono text-[11.5px]" title={s.slot}>
-            {s.slot}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'peak',
-      label: i18nT('pages.telemetryPanel.peak_ctx_col'),
-      sort: s => s.peak_pct,
-      render: s => fmtPercent(s.peak_pct / 100),
-    },
-    {
-      key: 'used',
-      label: i18nT('pages.telemetryPanel.used_tokens_col'),
-      sort: s => s.used,
-      render: s => fmtNumber(s.used),
-    },
-    {
-      key: 'window',
-      label: i18nT('pages.telemetryPanel.window_tokens_col'),
-      hide: 'max-[720px]:hidden',
-      sort: s => s.window,
-      render: s => fmtNumber(s.window),
-    },
-    {
-      key: 'turns',
-      label: i18nT('pages.telemetryPanel.turns_col'),
-      sort: s => s.turns,
-      render: s => fmtNumber(s.turns),
-    },
-    {
-      key: 'model',
-      label: i18nT('pages.telemetryPanel.model_col'),
-      left: true,
-      hide: 'max-[900px]:hidden',
-      sort: s => s.model,
-      render: s => <span className="font-mono text-[11.5px]">{s.model}</span>,
-    },
-    {
-      key: 'agent',
-      label: i18nT('pages.telemetryPanel.agent_col'),
-      left: true,
-      hide: 'max-[1100px]:hidden',
-      sort: s => s.agent,
-      render: s => <span className="font-mono text-[11.5px]">{s.agent}</span>,
-    },
-    {
-      key: 'surface',
-      label: i18nT('pages.telemetryPanel.surface_col'),
-      // Read from the turn's own row, so it names the code path that RAN the
-      // turn. A monitor nudge or a webhook turn says so here while its credits
-      // stay booked to the conversation that owns the session, which is what
-      // the Spend tab's own origin column reports.
-      tip: i18nT('pages.telemetryPanel.surface_col_tip'),
-      left: true,
-      hide: 'max-[1100px]:hidden',
-      sort: s => s.surface,
-      render: s => <span className="font-mono text-[11.5px]">{s.surface}</span>,
-    },
-  ]
-}
-
-function ContextTab({
-  c,
-  convos,
-  navigable,
-}: {
-  c: Context
-  convos?: CostConvo[]
-  navigable?: string
-}) {
-  // The whole spend row is kept, not just its title: the row is what decides
-  // linkability (category vs the payload's navigable category) and what supplies the
-  // dated untitled wording. Built once per render rather than scanned per row - the
-  // spend payload is capped but still hundreds of conversations on a busy install,
-  // and the table sorts, which would re-scan it for every comparison.
-  const convoFor = useMemo(() => {
-    const bySlot = new Map<string, CostConvo>()
-    for (const v of convos ?? []) bySlot.set(v.slot, v)
-    return (slot: string) => bySlot.get(slot)
-  }, [convos])
-  return (
-    <Card className="mb-4">
-      <CardTitle>
-        {i18nT('pages.telemetryPanel.context_window')}
-        <InfoTip text={i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(c.window_days) })}
-        </span>
-      </CardTitle>
-      <div className="text-[10px] text-muted -mt-2 mb-2.5">
-        {i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })}
-      </div>
-      <DataTable<ContextSession>
-        rows={c.sessions ?? []}
-          key="telemetry-context"
-          tableId="telemetry-context"
-        cols={sessionCols(convoFor, navigable)}
-        rowKey={s => s.slot}
-        defaultSort="peak"
-        emptyTitle={i18nT('pages.telemetryPanel.no_occupancy_samples')}
-      />
-      <Sums
-        items={[
-          {
-            label: i18nT('pages.telemetryPanel.occupancy_p50'),
-            value: fmtNumber(c.p50_pct),
-            unit: '%',
-            color: occColor(c.p50_pct),
-            sub: i18nT('pages.telemetryPanel.turns_measured', { count: c.turns, n: fmtNumber(c.turns) }),
-          },
-          {
-            label: i18nT('pages.telemetryPanel.occupancy_p90'),
-            value: fmtNumber(c.p90_pct),
-            unit: '%',
-            color: occColor(c.p90_pct),
-          },
-          {
-            // Uncoloured, unlike the two percentiles beside it. This is the
-            // high-water mark over every session in the window, so on any busy
-            // install it sits at or near 100% permanently — a red that never
-            // changes is wallpaper, not an alarm. p50 and p90 keep the colour
-            // because they can actually move.
-            label: i18nT('pages.telemetryPanel.peak_occupancy'),
-            value: fmtNumber(c.max_pct),
-            unit: '%',
-          },
-        ]}
-      />
-    </Card>
-  )
-}
-
 // ── Latency ────────────────────────────────────────────────────
 
 /**
@@ -1618,7 +238,8 @@ function ContextTab({
  * per-conversation latency column would have been.
  */
 
-function LatencyTab({ other, days }: { other: Other[]; days: number }) {
+function LatencyTab({ other }: { other: Other[] }) {
+  const { period } = useContext(PanelWindowCtx)
   // Split on the KIND the API states, not on whether `p50_ms` is present. A
   // histogram in a unit other than milliseconds carries `p50`/`max` instead, so
   // the presence test sent it to the counter list, which renders its count and
@@ -1672,9 +293,7 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
       <CardTitle>
         {i18nT('pages.telemetryPanel.instruments')}
         <InfoTip text={i18nT('pages.telemetryPanel.otel_has_no_per_conversation_split')} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })}
-        </span>
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{period}</span>
       </CardTitle>
 
       {hist.length === 0 && counters.length === 0 && gauges.length === 0 ? (
@@ -1737,7 +356,6 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
               {i18nT('pages.telemetryPanel.partial_window_legend')}
             </div>
           )}
-
 
           {counters.length > 0 && (
             <div className="mt-4 border-t border-border pt-3">
@@ -1857,8 +475,8 @@ function statCols(first: string): Col<Stat & { name: string }>[] {
 
 type Bucket = { label: string; count: number; idx: number }
 
-
-function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; total: number; days: number }) {
+function StartupTab({ s, faults, total }: { s: Startup; faults: number; total: number }) {
+  const { period } = useContext(PanelWindowCtx)
   const [group, setGroup] = usePersistedChoice<StartupGroup>(
     'telemetry:startup-group',
     STARTUP_GROUPS,
@@ -1884,9 +502,7 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
       <CardTitle>
         {i18nT('pages.telemetryPanel.session_startup')}
         <InfoTip text={i18nT('pages.telemetryPanel.startup_is_per_process_not_per_conversation')} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })}
-        </span>
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{period}</span>
       </CardTitle>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <span className="text-[10px] text-muted uppercase tracking-wide">
@@ -1992,7 +608,8 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
  * whole job is to be noticed, so it sits in a persistent strip — the same role
  * Activity Monitor's bottom bar plays for load.
  */
-function HealthBar({ t, days }: { t: Turn | null; days: number }) {
+function HealthBar({ t }: { t: Turn | null }) {
+  const { period } = useContext(PanelWindowCtx)
   const turnFaults = t
     ? // Count faults the way the API computes fault_rate: everything that is
       // neither "ok" nor a named non-fault outcome. Naming the failure outcomes
@@ -2080,7 +697,7 @@ function HealthBar({ t, days }: { t: Turn | null; days: number }) {
           {
             label: i18nT('pages.telemetryPanel.throughput'),
             value: t ? fmtNumber(t.count) : '—',
-            sub: t ? i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) }) : noTurns,
+            sub: t ? period : noTurns,
           },
         ]}
       />
@@ -2098,49 +715,136 @@ type Tab = 'spend' | 'context' | 'latency' | 'startup'
 const TABS = ['spend', 'context', 'latency', 'startup'] as const
 
 /**
- * A string-union choice remembered across reloads, the same way a chosen sort is.
- *
- * The tab and both group-by controls were plain `useState`, so every visit reopened
- * on Spend grouped by session no matter what the reader had been looking at - while
- * the sort inside those very tables was remembered. The storage half is
- * `usePersistedString`, so this shares the quota-defensive write and the read-once
- * mount behaviour with every other remembered preference rather than re-spelling it.
- *
- * What this ADDS is validation. A stored value outlives the choices it named: this
- * page's own sort persistence carries a comment about a sort saved by an older column
- * layout surviving in localStorage, and a tab set changes the same way - the segment
- * list is already filtered by which data exists, so `startup` can be stored on a
- * machine that has no startup shard today. An unrecognised value falls back rather
- * than selecting nothing, which is what a segmented control does with a value it has
- * no segment for.
- *
- * Local to this file on purpose: there is one consumer today (three call sites in it).
- * If a second page needs it, it belongs beside `usePersistedBool` and
- * `usePersistedString` in `hooks/` rather than copied.
+ * The one window control for the whole panel: presets ending now, or a custom
+ * pair of days. Every card below reads the payload it drives, and labels itself
+ * from the window the gateway reports back, so this control never has to say
+ * what was clamped.
  */
-function usePersistedChoice<T extends string>(
-  key: string,
-  allowed: readonly T[],
-  fallback: T,
-): readonly [T, (next: T) => void] {
-  // Delegates the storage half to `usePersistedString` rather than re-spelling its
-  // initializer and write effect. What this adds is validation, and validating on
-  // READ rather than correcting the stored value matters: a choice written by a
-  // NEWER build (a tab this build does not have yet) is unknown here, so it shows
-  // the fallback -- but it stays in storage and comes back intact on the newer
-  // build, instead of being clobbered by whichever version mounted last.
-  const [raw, setRaw] = usePersistedString(key, fallback)
-  const value = (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback
-  return [value, setRaw as (next: T) => void] as const
+function WindowControl({
+  choice,
+  onChoice,
+  since,
+  until,
+  onSince,
+  onUntil,
+  pending,
+}: {
+  choice: RangeChoice
+  onChoice: (next: RangeChoice) => void
+  since: string
+  until: string
+  /** A blank value resets only that end: start to a week before the end, end to today. */
+  onSince: (next: string) => void
+  onUntil: (next: string) => void
+  /** The figures on screen still belong to the previous pick. */
+  pending: boolean
+}) {
+  const now = new Date()
+  const today = localDay(now)
+  // Start through today spans at most MAX_RANGE_DAYS dates, end day included.
+  const earliest = localDay(earliestDay(MAX_RANGE_DAYS, now))
+  const preset = (key: RangeChoice, n: number, unit: 'h' | 'd') => ({
+    key,
+    label: i18nT(unit === 'h' ? 'pages.telemetryPanel.range_hours' : 'pages.telemetryPanel.range_days', {
+      n: fmtNumber(n),
+    }),
+  })
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-1" data-testid="telemetry-range">
+      <span className="text-[10px] text-muted uppercase tracking-wide">{i18nT('pages.telemetryPanel.range_label')}</span>
+      <SegmentedControl<RangeChoice>
+        layoutId="telemetry-range"
+        collapse={false}
+        // Content-sized segments: one row at desktop widths. Seven segments in
+        // the longer locales outgrow a phone-width row; wrap rather than
+        // overflow there, since this is the panel's only window control.
+        wrap="hug"
+        ariaLabel={i18nT('pages.telemetryPanel.range_label')}
+        value={choice}
+        onChange={onChoice}
+        segments={[
+          { key: 'default', label: i18nT('pages.telemetryPanel.range_default') },
+          preset('24h', 24, 'h'),
+          preset('7d', 7, 'd'),
+          preset('14d', 14, 'd'),
+          preset('30d', 30, 'd'),
+          preset('90d', 90, 'd'),
+          { key: 'custom', label: i18nT('pages.telemetryPanel.range_custom') },
+        ]}
+      />
+      {choice === 'custom' && (
+        <span className="flex items-center gap-1.5">
+          <Input
+            type="date"
+            className="flex-none px-2 py-1 text-[12px]"
+            aria-label={i18nT('pages.telemetryPanel.range_from')}
+            value={since}
+            min={earliest}
+            max={until}
+            onChange={e => onSince(e.target.value)}
+          />
+          <span className="text-muted text-[12px]" aria-hidden="true">
+            –
+          </span>
+          <Input
+            type="date"
+            className="flex-none px-2 py-1 text-[12px]"
+            aria-label={i18nT('pages.telemetryPanel.range_to')}
+            value={until}
+            min={since}
+            max={today}
+            onChange={e => onUntil(e.target.value)}
+          />
+        </span>
+      )}
+      {/* Always rendered, a full row of fixed height: an inline status wrapped
+          onto a row of its own at phone widths only while a pick loaded, so
+          every card below jumped down and back on each pick. The text alone
+          comes and goes, which the live region announces. */}
+      <span
+        role="status"
+        className="basis-full h-4 leading-4 truncate text-muted text-[11px]"
+        data-testid="telemetry-range-pending"
+      >
+        {pending ? i18nT('pages.telemetryPanel.loading_telemetry') : null}
+      </span>
+    </div>
+  )
 }
 
 export default function TelemetryPanel() {
-  const { data, isLoading, isError, error } = useQuery<Resp>({
-    queryKey: ['telemetry-startup'],
-    queryFn: () => api.telemetryStartup(),
+  const [range, setRange] = usePersistedChoice<RangeChoice>('telemetry:range', RANGE_CHOICES, DEFAULT_RANGE)
+  const [sinceRaw, setSince] = usePersistedString('telemetry:range-since', '')
+  const [untilRaw, setUntil] = usePersistedString('telemetry:range-until', '')
+  const custom = customDays(sinceRaw, untilRaw)
+  const query = rangeSearch(rangeQuery(range, custom.since, custom.until))
+  const { data, isLoading, isError, error, isPlaceholderData } = useQuery<Resp>({
+    // Keyed on the range: two windows are two answers, and a cached week must
+    // never be served as a month.
+    queryKey: ['telemetry-startup', query],
+    queryFn: () => api.telemetryStartup(query),
     refetchInterval: 5000,
+    // A new pick keeps the current figures up until its own arrive, instead of
+    // blanking the panel to "Loading" on every click of the control.
+    placeholderData: keepPreviousData,
   })
   const [tab, setTab] = usePersistedChoice<Tab>('telemetry:tab', TABS, 'spend')
+  // Every card, and the turn drill-down's own fetch, reads the window the
+  // payload ON SCREEN reports it measured. While a new pick loads that is still
+  // the previous payload, so one view never mixes two windows; and a fixed range
+  // reuses the measured bounds, not the request's future `until`.
+  const win = panelWindow(data, query)
+  const windowControl = (
+    <WindowControl
+      choice={range}
+      onChoice={setRange}
+      since={custom.since}
+      until={custom.until}
+      onSince={setSince}
+      onUntil={setUntil}
+      pending={isPlaceholderData}
+    />
+  )
 
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
   // A fetch that never produced data is a failure, not "nothing recorded": the
@@ -2184,25 +888,33 @@ export default function TelemetryPanel() {
     const offCost = data.cost && data.cost.turns ? data.cost : null
     if (!data.context && !offCost) {
       return (
-        <>
+        <PanelWindowCtx.Provider value={win}>
           {refetchNotice}
+          {windowControl}
           <Notice>
             <div className="text-text font-medium mb-1">{i18nT('pages.telemetryPanel.telemetry_is_off')}</div>
             {offBody}
           </Notice>
-        </>
+        </PanelWindowCtx.Provider>
       )
     }
     return (
-      <div className="overflow-y-auto flex-1 min-h-0 pb-8">
-        {refetchNotice}
-        {offCost && <SpendTab c={offCost} />}
-        {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
-        <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
-          <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
-          <span className="text-muted">{offBody}</span>
+      <PanelWindowCtx.Provider value={win}>
+        <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+          {refetchNotice}
+          {windowControl}
+          {offCost && (
+            <PanelWindowCtx.Provider value={spendWindow(data, win)}>
+              <SpendTab c={offCost} />
+            </PanelWindowCtx.Provider>
+          )}
+          {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
+          <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
+            <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
+            <span className="text-muted">{offBody}</span>
+          </div>
         </div>
-      </div>
+      </PanelWindowCtx.Provider>
     )
   }
 
@@ -2218,14 +930,14 @@ export default function TelemetryPanel() {
   const hasData =
     !!(s && s.overall.count) || !!(t && t.count) || !!ctx || other.length > 0 || !!(data?.cost && data.cost.turns)
   if (!data || !hasData) {
+    // The control stays on screen here too: a reader who picked a window with
+    // nothing in it must be able to pick a wider one.
     return (
-      <>
+      <PanelWindowCtx.Provider value={win}>
         {refetchNotice}
-        <Notice>
-          {i18nT('pages.telemetryPanel.no_telemetry_recorded_yet_in_the_last')} {data?.window_days ?? 14}{' '}
-          {i18nT('pages.telemetryPanel.days')}
-        </Notice>
-      </>
+        {windowControl}
+        <Notice>{i18nT('pages.telemetryPanel.no_telemetry_in_window', { period: win.period })}</Notice>
+      </PanelWindowCtx.Provider>
     )
   }
 
@@ -2267,35 +979,65 @@ export default function TelemetryPanel() {
       : []),
   ]
   const active = segments.some(g => g.key === tab) ? tab : (segments[0]?.key ?? 'spend')
+  // The exporter prunes metric shards after `telemetry.retention_days`, so the
+  // OTEL figures (health strip, latency, startup) cannot reach as far back as a
+  // wider window. Said once under the control, and each of those cards titles
+  // itself with the span it does cover rather than the panel's window.
+  const retention = data.metrics_retention_days ?? 0
+  const otelWin = otelWindow(data, win, Date.now())
 
   return (
-    <div className="overflow-y-auto flex-1 min-h-0 pb-8">
-      {refetchNotice}
-      {/* Above the tabs, not after the active tab's table.
-          The justification for this strip is that the fault rate is the one
-          number that has to find the reader rather than be looked for — and
-          placed at the bottom of a scroll container it was exactly as
-          findable as the section it replaced, i.e. only by scrolling. An
-          Activity Monitor bar sits at an EDGE; this is the edge that costs no
-          sticky positioning inside an already-scrolling panel. */}
-      <HealthBar t={t} days={data.window_days} />
+    <PanelWindowCtx.Provider value={win}>
+      <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+        {refetchNotice}
+        {windowControl}
+        {otelWin && (
+          <div className="text-muted text-[11px] -mt-1 mb-3" data-testid="telemetry-otel-retention">
+            <Trans
+              i18nKey="pages.telemetryPanel.otel_retention_cap"
+              values={{ days: fmtNumber(retention) }}
+              // The chip draws its own border, so give it room from the
+              // surrounding brackets instead of letting it sit on them.
+              components={{ settingRef: <span className="mx-1 inline-block" data-testid="retention-setting-ref"><SettingRef configKey="telemetry.retention_days" /></span> }}
+            />
+          </div>
+        )}
+        <PanelWindowCtx.Provider value={otelWin ?? win}>
+          {/* Above the tabs, not after the active tab's table.
+              The justification for this strip is that the fault rate is the one
+              number that has to find the reader rather than be looked for — and
+              placed at the bottom of a scroll container it was exactly as
+              findable as the section it replaced, i.e. only by scrolling. An
+              Activity Monitor bar sits at an EDGE; this is the edge that costs no
+              sticky positioning inside an already-scrolling panel. */}
+          <HealthBar t={t} />
+        </PanelWindowCtx.Provider>
 
-      {segments.length > 1 && (
-        <div className="mb-3">
-          <SegmentedControl<Tab> segments={segments} value={active} onChange={setTab} />
+        {segments.length > 1 && (
+          <div className="mb-3">
+            <SegmentedControl<Tab> segments={segments} value={active} onChange={setTab} />
+          </div>
+        )}
+
+        {active === 'spend' && data.cost && (
+          <PanelWindowCtx.Provider value={spendWindow(data, win)}>
+            <SpendTab c={data.cost} />
+          </PanelWindowCtx.Provider>
+        )}
+        {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
+        <PanelWindowCtx.Provider value={otelWin ?? win}>
+          {active === 'latency' && <LatencyTab other={other} />}
+          {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} />}
+        </PanelWindowCtx.Provider>
+
+        <div className="text-muted text-[11px] mt-2">
+          {/* The footer speaks for the OTEL sections, so it names the period they
+              cover: the retention-capped one their card titles use, when capped. */}
+          {i18nT('pages.telemetryPanel.window_footer', { period: (otelWin ?? win).period })} {data.shard_count}{' '}
+          {i18nT('pages.telemetryPanel.shard_s_source')} <code>{data.metrics_dir}</code>{' '}
+          {i18nT('pages.telemetryPanel.local_only_no_egress')}
         </div>
-      )}
-
-      {active === 'spend' && data.cost && <SpendTab c={data.cost} />}
-      {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
-      {active === 'latency' && <LatencyTab other={other} days={data.window_days} />}
-      {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} days={data.window_days} />}
-
-      <div className="text-muted text-[11px] mt-2">
-        {i18nT('pages.telemetryPanel.window_last')} {data.window_days}
-        {i18nT('pages.telemetryPanel.d')} {data.shard_count} {i18nT('pages.telemetryPanel.shard_s_source')}{' '}
-        <code>{data.metrics_dir}</code> {i18nT('pages.telemetryPanel.local_only_no_egress')}
       </div>
-    </div>
+    </PanelWindowCtx.Provider>
   )
 }

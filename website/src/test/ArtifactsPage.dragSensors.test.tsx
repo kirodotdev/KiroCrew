@@ -32,11 +32,11 @@
  * tree-wide property and is scanned there, for every file at once.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readPageFamily } from './pageFamily'
 
-const SRC = join(__dirname, '..', 'pages', 'ArtifactsPage.tsx')
-const src = readFileSync(SRC, 'utf8')
+// The page and its owners: the cards the last pin guards are drawn in
+// ArtifactsPageGallery.tsx and ArtifactsPageFolders.tsx.
+const src = readPageFamily('ArtifactsPage')
 
 describe('artifact library drag sensors', () => {
   it('takes its sensors from the shared hook, with this surface 6px distance', () => {

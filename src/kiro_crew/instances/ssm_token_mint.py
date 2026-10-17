@@ -41,10 +41,12 @@ from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
 from kiro_crew.instances.token_mint import (
     _OUTPUT_TAIL_CHARS,
     TokenMintError,
+    _mint_timeout_advice,
     _redacted_output_tail,
     _token_subcommand,
     _validate_port,
     _validate_ttl,
+    _with_stdout_tail,
     build_remote_command,
     parse_token_from_stdout,
 )
@@ -181,7 +183,12 @@ async def mint_remote_token_ssm(
     try:
         result = await _send_over_ssm(target, remote_command, profile, region, run_as, timeout_secs)
     except asyncio.TimeoutError as e:
-        raise TokenMintError(f"timed out minting token on {target} over SSM") from e
+        raise TokenMintError(
+            f"timed out minting token on {target} over SSM (polling budget {timeout_secs}s); "
+            f"the send-command invocation had not finished when the budget ran out. "
+            f"SSM command dispatch may be slow, or the target may not be answering "
+            f"(check that its SSM agent is online). {_mint_timeout_advice(timeout_secs)}"
+        ) from e
     except SsmValidationError as e:
         raise TokenMintError(f"invalid SSM settings for {target}: {e}") from e
     except Exception as e:  # AWSError etc. from the aws chokepoint
@@ -214,12 +221,15 @@ async def run_remote_kirocrew_ssm(
     remote_bin: str = "",
     marker_port: int | None = None,
     timeout_secs: float = 90.0,
+    stdout_tail: bool = False,
 ) -> tuple[int, str]:
     """Run ``kirocrew <subcommand>`` on *ssm_target* over SSM.
 
     The SSM-transport sibling of
     :func:`kiro_crew.instances.token_mint.run_remote_kirocrew`. Returns
     ``(returncode, stderr_tail)``; ``-1`` on a validation/dispatch failure.
+    *stdout_tail* appends a redacted stdout tail on a non-zero exit, as the SSH
+    runner's flag of the same name does.
     """
     try:
         target = validate_ssm_target(ssm_target)
@@ -239,4 +249,7 @@ async def run_remote_kirocrew_ssm(
         return -1, f"timed out after {timeout_secs}s"
     except Exception as e:
         return -1, f"SSM send-command failed: {e}"
-    return result.exit_code, _redacted_tail(result.stderr or "")
+    err_tail = _redacted_tail(result.stderr or "")
+    if stdout_tail and result.exit_code != 0:
+        return result.exit_code, _with_stdout_tail(err_tail, _redacted_tail(result.stdout or ""))
+    return result.exit_code, err_tail

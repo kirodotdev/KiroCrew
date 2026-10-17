@@ -52,7 +52,10 @@ const OWNER_MODULES = [
   'composerCards.ts',
   'connection.ts',
   'contextTraceRefresh.ts',
+  'dashboardFields.ts',
   'frames.ts',
+  'gatewayConnectivity.ts',
+  'idleRowRefresh.ts',
   'reconnectCatchUp.ts',
   'retiredIds.ts',
   'rowDeliveryWatchdog.ts',
@@ -81,7 +84,12 @@ function ownerValueImports(file: string): string[] {
 describe('the websocket owner directory is fully classified', () => {
   it('every module is a listed owner', () => {
     // A new file has to be added here, which puts it under the rules below.
-    const files = readdirSync(DIR).filter((f) => /\.tsx?$/.test(f)).sort()
+    // A co-located `*.test.ts` is NOT one of them: it is not part of the
+    // composition the facade builds, and it is already inside the directory, so
+    // rule 1's "nothing outside imports an owner" covers it with nothing to list.
+    const files = readdirSync(DIR)
+      .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f))
+      .sort()
     expect(files).toEqual([...OWNER_MODULES].sort())
   })
 })
@@ -90,8 +98,11 @@ describe('one public surface', () => {
   it('the facade exports exactly its original names', () => {
     expect(Object.keys(facade).sort()).toEqual([
       'CONTEXT_TRACE_COALESCE_MS',
+      'DASHBOARD_FIELDS_FRAME',
+      'MEMBER_DASHBOARD_QUERY_PREFIX',
       'ROW_STALL_MS',
       'ROW_STALL_TICK_MS',
+      'SESSION_DASHBOARD_QUERY_PREFIX',
       'UPDATE_RESTART_LATCH_KEY',
       'UPDATE_RESTART_LATCH_TTL_MS',
       'WS_SILENCE_CHECK_MS',
@@ -100,27 +111,25 @@ describe('one public surface', () => {
       '__resetRedactionHealForTests',
       'applySessionProjection',
       'askIdsOf',
-      'baselineOrHeld',
       'consumeUpdateRestartLatch',
       'contextTraceKey',
       'crewLogProjectionsKey',
       'emitSlotFocused',
       'fetchingAnyFoldQuery',
+      'handleDashboardMoved',
       'healRedactionSwitchAfterReconnect',
       'identityOf',
-      'invalidateBelowFloor',
       'onUsageFrame',
       'readSessionProjectionFrame',
       'reconcileQuestions',
-      'recordSlotProjectionFloor',
       'refetchSessionProjections',
       'rereadAllContextTraces',
       'resetContextTraceRefresh',
       'resetSlotProjectionRevisions',
       'resolvedSince',
       'seedFoldedProjection',
-      'slotProjectionFloor',
       'staleAskIds',
+      'subscribeDashboardFields',
       'takeFoldedSlotProjection',
       'useWebSocket',
     ])
@@ -131,6 +140,11 @@ describe('one public surface', () => {
     // would let a reset or a bind reach a different variable from the reader.
     expect(facade.__resetRedactionHealForTests).toBe(serverState.__resetRedactionHealForTests)
     expect(facade.healRedactionSwitchAfterReconnect).toBe(serverState.healRedactionSwitchAfterReconnect)
+    // The crewmate dashboard's cache prefix and its frame handler. The prefix is
+    // pinned beside the handler because a caller invalidating a second spelling
+    // of it would reach a different cache entry from the one the frame moves.
+    expect(facade.MEMBER_DASHBOARD_QUERY_PREFIX).toBe(serverState.MEMBER_DASHBOARD_QUERY_PREFIX)
+    expect(facade.handleDashboardMoved).toBe(serverState.handleDashboardMoved)
     expect(facade.identityOf).toBe(composerCards.identityOf)
     expect(facade.askIdsOf).toBe(composerCards.askIdsOf)
     expect(facade.reconcileQuestions).toBe(composerCards.reconcileQuestions)
@@ -212,9 +226,11 @@ describe('dependency direction', () => {
     'approvals.ts': ['attention.ts', 'retiredIds.ts'],
     'chatStream.ts': ['attention.ts', 'browserEvents.ts'],
     'composerCards.ts': ['attention.ts', 'retiredIds.ts'],
-    'reconnectCatchUp.ts': ['bundleReload.ts', 'serverState.ts'],
+    'connection.ts': ['gatewayConnectivity.ts'],
+    'reconnectCatchUp.ts': ['bundleReload.ts', 'gatewayConnectivity.ts', 'serverState.ts'],
     'serverState.ts': ['browserEvents.ts'],
-    'turnCompletion.ts': ['attention.ts', 'serverState.ts'],
+    'slotList.ts': ['idleRowRefresh.ts'],
+    'turnCompletion.ts': ['attention.ts', 'idleRowRefresh.ts', 'serverState.ts'],
   }
 
   it('owners import each other only along the listed edges', () => {

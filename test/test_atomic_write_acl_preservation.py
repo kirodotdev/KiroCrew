@@ -9,7 +9,7 @@ when an access-control attribute cannot be reproduced -- otherwise an edit would
 hand back a file protected more narrowly than the one it replaced.
 
 These tests monkeypatch ``os.listxattr``/``getxattr``/``setxattr`` exactly as
-test/test_artifacts.py does for the ``safe_write_file_nolink`` twin, so they run
+test/test_artifacts_source_root.py does for the ``safe_write_file_nolink`` twin, so they run
 offline without any real xattr support. Each asserts a distinct branch of the
 policy and fails if the ACL-carry code is reverted, so none can pass by accident.
 

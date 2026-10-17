@@ -26,7 +26,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
 
@@ -283,6 +283,28 @@ describe('InstanceTabBar', () => {
     expect(row.textContent).toMatch(/Cloud One/)
   })
 
+  it('marks every wrapper between the inline bar and the pinned row as growable', async () => {
+    // The desktop top bar's identity ladder measures the group's content width,
+    // with the pinned row contributing none of its own; the row then grows into the
+    // group's spare room through these wrappers (index.css, `.topbar.tb-measured`). One wrapper
+    // without the hook caps the row at zero width, so every pin reads as cut.
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: null, mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await u.click(await screen.findByTestId('crew-pin-cd-1'))
+    const row = await screen.findByTestId('crew-chip-row')
+    const between: string[] = []
+    for (let e = row.parentElement; e && !e.classList.contains('instance-tab-bar-inline'); e = e.parentElement) {
+      between.push(e.className)
+    }
+    expect(between.length, 'expected the row inside the inline bar').toBeGreaterThan(0)
+    for (const cls of between) expect(cls).toMatch(/\btb-crew-grow\b/)
+  })
+
   it('toggles the pin without switching crews, and keeps the menu open', async () => {
     // The pin shares a row with the destination, so the two must stay separable:
     // pinning a crew the user is not on must not navigate there, and the menu has
@@ -476,6 +498,51 @@ describe('InstanceTabBar', () => {
     // No `break-all`: the span's own `overflow-wrap: anywhere` breaks the unbreakable
     // token AND prefers word boundaries, so prose does not get cut mid-word.
     expect(msg.className).not.toMatch(/break-all/)
+  })
+
+  it('marks the list-failure notice so the desktop top bar gives it only spare room', async () => {
+    // The desktop top bar's identity ladder measures the group's content width.
+    // The notice (up to 320px) would raise that width and collapse the rest of
+    // the group to make room for it; index.css hooks this class to give it the
+    // group's spare room only. The message carries its own hook so that it alone gives way:
+    // the warning icon and the hand-off stay whole instead of being clipped.
+    vi.mocked(api.listInstances).mockRejectedValue(new Error('registry unavailable'))
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(notice.className).toMatch(/\btb-crew-notice\b/)
+    expect(within(notice).getByText('registry unavailable').className).toMatch(/\btb-crew-notice-msg\b/)
+  })
+
+  it('carries the full list-failure text as the message tooltip, since the flow bar can squeeze it to a few letters', async () => {
+    // The clamp and the spare-room sizing together can leave only an ellipsis
+    // (or nothing) of the message visible; the title keeps the whole sentence,
+    // including the part naming what to do about it, reachable on hover.
+    const failure = 'registry unavailable: the crews service did not answer in time'
+    vi.mocked(api.listInstances).mockRejectedValue(new Error(failure))
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(within(notice).getByText(failure)).toHaveAttribute('title', failure)
+  })
+
+  it('stays hidden on the gateway\'s own instances_disabled 403, since the feature is simply off', async () => {
+    const off = Object.assign(new ApiError(403, 'instances feature is disabled'), {
+      body: JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' }),
+    })
+    vi.mocked(api.listInstances).mockRejectedValue(off)
+    const { container } = renderWithProviders(<InstanceTabBar variant="inline" />)
+    await waitFor(() => expect(api.listInstances).toHaveBeenCalled())
+    await waitFor(() => expect(container).toBeEmptyDOMElement())
+    expect(screen.queryByTestId('instance-tab-bar-list-error')).toBeNull()
+  })
+
+  it('reports an owner-only 403, which is a real authorization failure and not the feature being off', async () => {
+    const denied = Object.assign(new ApiError(403, 'owner only'), {
+      body: JSON.stringify({ error: 'owner only', code: 'owner_only' }),
+    })
+    vi.mocked(api.listInstances).mockRejectedValue(denied)
+    renderWithProviders(<InstanceTabBar variant="inline" />)
+    const notice = await screen.findByTestId('instance-tab-bar-list-error')
+    expect(within(notice).getByText('owner only')).toBeInTheDocument()
   })
 
 })

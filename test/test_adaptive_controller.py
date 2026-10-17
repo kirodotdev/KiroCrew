@@ -671,7 +671,7 @@ class TestTick:
         confirmed_gate = gate.gate.capacity
         gate.answer = False  # daemon stops answering; the update stays pending
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=10, healthy_in_flight=6))
+        d = await ctl.step(_clean(clock.t, free_mem_mb=2048.0, running=10, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         newest = ctl.state()["recent_decisions"][-1]
         assert newest["exec_cap"] == d.effective_exec_cap == mgr.effective
@@ -733,7 +733,7 @@ class TestTick:
         assert gate.gate.capacity == 6
         assert ctl.state()["applied_gate_cap"] == 6
         clock.advance(5)
-        d = await ctl.step(_clean(clock.t, loop_lag_ms=400.0, running=8, healthy_in_flight=6))
+        d = await ctl.step(_clean(clock.t, free_mem_mb=2048.0, running=8, healthy_in_flight=6))
         assert d.action == ACTION_DECREASE
         newest = ctl.state()["recent_decisions"][-1]
         assert newest["gate_cap"] == gate.gate.capacity == ctl.state()["applied_gate_cap"]

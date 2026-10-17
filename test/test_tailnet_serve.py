@@ -35,7 +35,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.dashboard import tailnet_serve
+from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.tailnet_serve import ServeState
 
 _PORT = 5476
@@ -263,6 +263,32 @@ class TestFailureReporting:
             result = tailnet_serve.publish(_PORT)
         assert result.code == "no_cli"
         assert not result.ok
+
+    def test_refused_cli_names_the_binary_instead_of_asking_for_an_install(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A user-owned install (Homebrew) is present but never run. Telling its
+        owner to install Tailscale sends them to download what is already
+        running, so the refusal names the binary and the dashboard.url remedy."""
+        # A non-root euid keeps the writability branch under test on every
+        # runner; a root pytest would otherwise take the root-owner branch.
+        monkeypatch.setattr(tailnet.os, "geteuid", lambda: 1000, raising=False)
+        fake = tmp_path / "tailscale"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)  # user-writable by construction (tmp_path is ours)
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(fake),))
+        monkeypatch.setattr(tailnet, "IS_POSIX", True)
+        with patch.object(tailnet_serve, "is_governance_pinned_off", return_value=False):
+            result = tailnet_serve.publish(_PORT)
+            state = tailnet_serve.serve_state(_PORT)
+        assert result.code == "no_cli"
+        assert str(fake) in result.detail
+        assert "dashboard.url" in result.detail
+        assert tailnet_serve.manual_publish_command(_PORT) in result.detail
+        assert "Install Tailscale" not in result.detail
+        assert state.published is None
+        assert str(fake) in state.detail
+        assert "not found" not in state.detail
 
 
 class TestTimeoutOutputIsNotDiscarded:

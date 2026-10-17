@@ -347,8 +347,10 @@ class PublishProvider(ABC):
     #: internet, which is the truth for a public web destination and a falsehood
     #: for one that stores content privately behind a login. Shown where it is
     #: false, the gate trains the user to click past it where it is true.
-    #: The publish flow always requests ``visibility: PUBLIC``, so ``False`` is
-    #: a statement about that request: even a publication the provider files as
+    #: The publish flow requests ``visibility: PUBLIC`` unless the user picks
+    #: Private, which is offered only on a first publish whose sharing model
+    #: supports both, and shows neither the warning nor the acknowledgment. So ``False`` is
+    #: a statement about a PUBLIC request: even a publication the provider files as
     #: PUBLIC is served only to an authenticated reader. A provider whose PUBLIC
     #: publications are readable by anyone must leave this ``True``.
     #: Default ``True`` -- the failure mode of a wrong default is a missing
@@ -515,7 +517,16 @@ class PublishProvider(ABC):
         return SyncModel()
 
     def discovery_model(self) -> DiscoveryModel:
-        """Which discovery primitives the browse UI can offer (design §2.5)."""
+        """Which discovery primitives the browse UI can offer (design §2.5).
+
+        A provider that keeps the base :meth:`list_remote` cannot list any
+        scope, so it advertises no listing; the browse UI then never asks it
+        for one. A provider that implements ``list_remote`` gets the default
+        mine + shared + public shape, and overrides this method when it lists
+        only some of those scopes.
+        """
+        if type(self).list_remote is PublishProvider.list_remote:
+            return DiscoveryModel(list_mine=False, list_shared_with_me=False, list_public=False)
         return DiscoveryModel()
 
     # ── discovery (optional — default returns None = unsupported) ─────────
@@ -526,8 +537,11 @@ class PublishProvider(ABC):
         """List remote items for a discovery ``scope`` (mine/shared/public).
 
         Returns ``{"artifacts": list[RemoteListing-as-dict], "next_page_token":
-        str | None}`` or ``None`` when the provider can't list for that scope.
-        Powers the provider-routed browse UI. Best-effort: must not raise.
+        str | None}`` or ``None`` when the provider does not list that scope at
+        all. Powers the provider-routed browse UI, which treats ``None`` as
+        "skip this scope" rather than as a failure. A failure to list a scope
+        the provider does support (expired credentials, an unreachable remote)
+        raises instead, so the browse UI shows its reason.
         """
         return None
 

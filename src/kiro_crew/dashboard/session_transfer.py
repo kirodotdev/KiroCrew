@@ -99,10 +99,10 @@ from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 
-# Layering: chat_handlers' transitive import graph now reaches back into this
-# module (chat_handlers -> remote_adopt -> handlers_instances -> session_transfer),
-# so a MODULE-LEVEL import of chat_handlers here closes an import cycle: whichever
-# of the two loads first hits the other while it is still partially initialised.
+# Layering: chat_handlers must stay importable before this module finishes
+# loading, so a MODULE-LEVEL import of chat_handlers here risks an import cycle:
+# whichever of the two loads first hits the other while it is still partially
+# initialised.
 # The two symbols this module needs (``_materialise_slot_from_history`` and
 # ``_redact_history_rows``) are used only inside ``api_chat_slot_import``, so they
 # are imported FUNCTION-LOCALLY at the top of that handler instead. Keep it that
@@ -149,6 +149,7 @@ from kiro_crew.security import (
     redact_local_paths,
 )
 from kiro_crew.sel import sel
+from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 logger = logging.getLogger(__name__)
 
@@ -1283,6 +1284,8 @@ def _assemble_bundle(
     """
     messages: list[dict[str, Any]] = []
     for m in all_messages:
+        if is_warm_task_brief_message(m):
+            continue
         role = m.get("role")
         if role not in _VISIBLE_ROLES:
             continue

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from source_corpus import parsed_candidates
 
+from conftest import requires_symlinks
 from kiro_crew import image_artifacts
 from kiro_crew.messaging.outbound_files import (
     REASON_MISSING,
@@ -33,9 +34,12 @@ from kiro_crew.messaging.outbound_files import (
     REASON_SENSITIVE,
     REASON_SYMLINK,
     REASON_UNREADABLE,
+    ApprovedRoot,
     ExtractLimits,
     OutboundFile,
     Rejection,
+    approved_roots,
+    containing_root,
     extract_local_refs,
     extract_local_refs_off_loop,
     is_remote_destination,
@@ -869,6 +873,173 @@ class TestOffLoop:
         )
         assert [f.path for f in result.files] == [str(first)]
         assert len(result.rejections) == 1
+
+
+#: What a linked ANCESTOR under an admitted root is refused as. Windows screens
+#: every ancestor before the first resolving call (``first_linked_ancestor``) and
+#: answers ``REASON_SYMLINK``; POSIX lets the descriptor-pinned read catch it and
+#: answers ``REASON_UNREADABLE``. Either way the bytes stay on the host.
+_LINKED_ANCESTOR_REASON = REASON_SYMLINK if os.name == "nt" else REASON_UNREADABLE
+
+
+class TestBrowserSnapshotRoot:
+    """The browser CLI's output directory is an approved root beside the cwd.
+
+    ``playwright-cli`` is forced to write under the data home
+    (``snapshot_dir()``), never under a working directory, so without this
+    second root no screenshot the agent just took could ever travel inline.
+    The root is narrow: the directory itself, lexically, with the read pinned to
+    its canonical spelling -- its parent, its siblings, anything reached through
+    a link, and the directory itself once it is a link, all stay refused.
+    """
+
+    @pytest.fixture
+    def roots(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+        from kiro_crew.browser_cli.snapshots import snapshot_dir
+
+        snap = snapshot_dir()
+        snap.mkdir(parents=True, exist_ok=True)
+        return cwd, snap
+
+    def test_the_browser_root_is_listed_after_the_authorized_cwd(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        cwd, snap = roots
+        first, second = approved_roots(str(cwd))
+        assert first == ApprovedRoot(lexical=str(cwd), read_root=str(cwd))
+        assert second.lexical == str(snap)
+        assert second.read_root_is_canonical is True
+
+    def test_the_browser_roots_read_pin_resolves_the_home_but_not_the_leaf(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """The data home may be reached through an alias; the leaf is literal."""
+        cwd, snap = roots
+        _, browser = approved_roots(str(cwd))
+        assert browser.read_root == os.path.join(os.path.realpath(snap.parent), snap.name)
+        assert Path(browser.read_root).name == snap.name
+
+    def test_no_authorized_cwd_means_no_roots_at_all(self, roots: tuple[Path, Path]) -> None:
+        """The browser root never stands in for an authorization that was withheld."""
+        _, snap = roots
+        assert approved_roots("") == ()
+        assert containing_root(snap / "page-2026-10-13T07-00-00-000Z.png", "") is None
+
+    def test_a_screenshot_in_the_browser_root_is_uploaded(self, roots: tuple[Path, Path]) -> None:
+        cwd, snap = roots
+        shot = _png(snap, "page-2026-10-13T07-00-00-000Z.png")
+        result = extract_local_refs(f"![shot]({shot})", within_root=str(cwd))
+        assert result.rejections == []
+        assert [f.path for f in result.files] == [str(shot)]
+        assert result.files[0].data == _PNG
+
+    def test_the_cwd_still_wins_for_its_own_files(self, roots: tuple[Path, Path]) -> None:
+        cwd, _ = roots
+        shot = _png(cwd, "chart.png")
+        admitted = containing_root(shot, str(cwd))
+        assert admitted is not None and admitted.lexical == str(cwd)
+        assert admitted.read_root_is_canonical is False
+        result = extract_local_refs(f"![x]({shot})", within_root=str(cwd))
+        assert [f.path for f in result.files] == [str(shot)]
+
+    def test_the_browser_roots_parent_is_still_refused(self, roots: tuple[Path, Path]) -> None:
+        """The data home around the snapshot directory holds config and tokens."""
+        cwd, snap = roots
+        outside = _png(snap.parent, "config.png")
+        result = extract_local_refs(f"![x]({outside})", within_root=str(cwd))
+        assert result.files == []
+        assert result.rejections[0].reason == REASON_SENSITIVE
+        assert "outside the approved workspace" in str(result.rejections[0])
+
+    def test_a_sibling_of_the_browser_root_is_still_refused(self, roots: tuple[Path, Path]) -> None:
+        cwd, snap = roots
+        sibling = _png(snap.parent / "playwright-snapshots-2", "page.png")
+        assert containing_root(sibling, str(cwd)) is None
+        result = extract_local_refs(f"![x]({sibling})", within_root=str(cwd))
+        assert result.files == [] and result.rejections[0].reason == REASON_SENSITIVE
+
+    def test_a_traversal_spelled_through_the_browser_root_is_refused(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """``..`` is collapsed before comparison, so the spelling buys nothing."""
+        cwd, snap = roots
+        outside = _png(snap.parent, "config.png")
+        spelled = snap / ".." / outside.name
+        assert containing_root(spelled, str(cwd)) is None
+        result = extract_local_refs(f"![x]({spelled})", within_root=str(cwd))
+        assert result.files == [] and result.rejections[0].reason == REASON_SENSITIVE
+
+    @requires_symlinks
+    def test_a_symlink_inside_the_browser_root_is_refused(
+        self, roots: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """A leaf link under the admitted root is refused, not resolved."""
+        cwd, snap = roots
+        real = _png(tmp_path / "elsewhere", "secret.png")
+        link = snap / "page-2026-10-13T07-00-00-000Z.png"
+        link.symlink_to(real)
+        result = extract_local_refs(f"![x]({link})", within_root=str(cwd))
+        assert result.files == [] and result.rejections[0].reason == REASON_SYMLINK
+
+    @requires_symlinks
+    def test_a_linked_ancestor_inside_the_browser_root_cannot_escape_it(
+        self, roots: tuple[Path, Path], tmp_path: Path
+    ) -> None:
+        """The read is pinned to the browser root, so the descriptor must sit in it."""
+        cwd, snap = roots
+        real = _png(tmp_path / "elsewhere", "secret.png")
+        (snap / "alias").symlink_to(real.parent, target_is_directory=True)
+        through = snap / "alias" / real.name
+        # Lexically inside the admitted root: this is exactly the case the
+        # descriptor recheck exists for.
+        admitted = containing_root(through, str(cwd))
+        assert admitted is not None and admitted.lexical == str(snap)
+        result = extract_local_refs(f"![x]({through})", within_root=str(cwd))
+        assert result.files == []
+        assert result.rejections[0].reason == _LINKED_ANCESTOR_REASON
+
+    @requires_symlinks
+    def test_a_linked_snapshot_directory_does_not_move_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The snapshot directory itself as a link admits nothing.
+
+        The lexical check admits the spelled path -- that is the spelling the
+        agent was handed -- but the read is pinned to the canonical spelling with
+        the leaf kept literal, so the opened descriptor resolves outside it.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+        from kiro_crew.browser_cli.snapshots import snapshot_dir
+
+        snap = snapshot_dir()
+        elsewhere = tmp_path / "elsewhere"
+        shot = _png(elsewhere, "page-2026-10-13T07-00-00-000Z.png")
+        snap.symlink_to(elsewhere, target_is_directory=True)
+        spelled = snap / shot.name
+        admitted = containing_root(spelled, str(cwd))
+        assert admitted is not None and admitted.lexical == str(snap)
+        result = extract_local_refs(f"![x]({spelled})", within_root=str(cwd))
+        assert result.files == []
+        assert result.rejections[0].reason == _LINKED_ANCESTOR_REASON
+
+    @pytest.mark.asyncio
+    async def test_the_async_form_admits_the_browser_root_too(
+        self, roots: tuple[Path, Path]
+    ) -> None:
+        """Every channel renderer reaches extraction through the off-loop form."""
+        cwd, snap = roots
+        shot = _png(snap, "page-2026-10-13T07-00-00-000Z.png")
+        result = await extract_local_refs_off_loop(f"![shot]({shot})", within_root=str(cwd))
+        assert [f.path for f in result.files] == [str(shot)]
 
 
 class TestOutboundFile:

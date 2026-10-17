@@ -7,6 +7,18 @@ import { updateInfoQuery } from '../api/updateInfoQuery'
 export type UpdateState = globalThis.UpdateState
 
 /**
+ * The stop command an install refused with `gateway-still-running` names, or
+ * null for any other state. Both refusal surfaces (UpdateModal and the About
+ * card) render it verbatim after the catalog sentence that points at it, and
+ * fall back to their generic install-failure copy when no command came with
+ * the refusal.
+ */
+export function gatewayStopCommand(st: UpdateState | null | undefined): string | null {
+  if (st?.state !== 'error' || st.code !== 'gateway-still-running') return null
+  return typeof st.stopCommand === 'string' && st.stopCommand.trim() ? st.stopCommand : null
+}
+
+/**
  * The update lifecycle payload pushed by the Electron main process.
  *
  * The single shared declaration: AboutPanel and UpdateModal import it rather

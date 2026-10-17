@@ -18,7 +18,11 @@ import pytest
 
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
 from kiro_crew.mcp_gateway import rewriter
-from kiro_crew.mcp_gateway.hashing import expand_stub_flags, is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import (
+    expand_stub_flags,
+    hash_effective_env,
+    is_secret_env_key,
+)
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
@@ -1121,6 +1125,81 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
 
 
+def test_two_agents_declaring_one_server_alike_share_its_sidecar(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Identical declarations get SEPARATE sidecars holding IDENTICAL bytes.
+
+    Sharing a backend does not mean sharing this file. The file holds the
+    declaration's full env, rotating secrets included, and it is read back
+    unfiltered for a connection-private backend -- so one file per declaration
+    is what keeps one agent's credentials out of another agent's backend. The
+    contents being equal here is what makes the separate files cost nothing:
+    whichever one is read, the backend sees the same env.
+    """
+    monkeypatch.setenv("MYVAR", "s3cr3t-token")
+    paths = []
+    for agent in ("gpu-dev", "kirocrew"):
+        spec = {
+            "name": agent,
+            "mcpServers": {
+                "srv": {"command": sys.executable, "env": {"AUTH": "${env:MYVAR}"}},
+            },
+        }
+        entry, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+        flags = expand_stub_flags(entry["mcpServers"]["srv"]["args"])
+        paths.append(flags[flags.index("--env-file") + 1])
+    assert paths[0] != paths[1], "two agents' declarations landed on one file name"
+    both = [json.loads(Path(p).read_text(encoding="utf-8")) for p in paths]
+    assert both[0] == both[1] == {"AUTH": "s3cr3t-token"}
+
+
+def test_a_rotating_secret_alone_still_splits_the_sidecars(tmp_path: Path, monkeypatch) -> None:
+    """The collision the agent in the name exists to prevent.
+
+    These two agents declare ``srv`` with the same non-secret env and DIFFERENT
+    ``OAUTH_TOKEN`` values. ``effective_env_hash`` excludes ``OAUTH``-prefixed
+    keys, so the two hash equal -- a name built from that hash would put both
+    declarations on one file and the second write would hand the first agent's
+    private backend the second agent's token. Each must keep its own file with
+    its own token.
+
+    ``pooling_enabled=False`` is what makes this reachable, and is the whole
+    hazard: with pooling ON the rewriter leaves a secret-declaring server
+    unwrapped (``_withheld_env_count``), so no sidecar carries a secret. With it
+    OFF every backend is connection-private, the full declared env IS written to
+    the sidecar, and ``_declared_env_for_private_backend`` hands it back
+    unfiltered.
+    """
+    seen = {}
+    for agent, token in (("gpu-dev", "token-a"), ("kirocrew", "token-b")):
+        spec = {
+            "name": agent,
+            "mcpServers": {
+                "srv": {
+                    "command": sys.executable,
+                    "env": {"TOOL": "on", "OAUTH_TOKEN": token},
+                },
+            },
+        }
+        entry, _ = _rewrite(
+            spec,
+            tmp_path,
+            stub_servers=frozenset({"srv"}),
+            pooling_enabled=False,
+            forward_env=True,
+        )
+        flags = expand_stub_flags(entry["mcpServers"]["srv"]["args"])
+        seen[agent] = Path(flags[flags.index("--env-file") + 1])
+    # Premise: the pool dimension really cannot tell these two apart.
+    assert hash_effective_env({"TOOL": "on", "OAUTH_TOKEN": "token-a"}) == hash_effective_env(
+        {"TOOL": "on", "OAUTH_TOKEN": "token-b"}
+    )
+    assert seen["gpu-dev"] != seen["kirocrew"]
+    assert json.loads(seen["gpu-dev"].read_text(encoding="utf-8"))["OAUTH_TOKEN"] == "token-a"
+    assert json.loads(seen["kirocrew"].read_text(encoding="utf-8"))["OAUTH_TOKEN"] == "token-b"
+
+
 @pytest.mark.parametrize(
     "var",
     [
@@ -1430,6 +1509,61 @@ def _unencoded_json_reads(source: str) -> list[int]:
     return found
 
 
+# Parsers fed straight from ``read_text``: the stdlib pair plus the module's
+# user-JSON reader used on the global settings file.
+_JSON_TEXT_PARSERS = ("json.loads", "json.load", "loads_user_json")
+
+# An ``except`` naming any of these catches ``UnicodeDecodeError``.
+_CATCHES_DECODE_ERROR = frozenset(
+    {"UnicodeDecodeError", "UnicodeError", "ValueError", "Exception", "BaseException"}
+)
+
+
+def _json_text_reads(source: str) -> list[tuple[int, bool]]:
+    """``(line, guarded)`` for each JSON parse of a ``<path>.read_text(...)``.
+
+    ``guarded`` is True when the call sits in the body of some enclosing
+    ``try`` whose handlers catch ``UnicodeDecodeError`` (by name or through a
+    base class). A handler or ``finally`` block does not count as guarded.
+    """
+    import ast
+
+    tree = ast.parse(source)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def _catches(handler: ast.ExceptHandler) -> bool:
+        if handler.type is None:
+            return True
+        types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        return any(ast.unparse(t).rsplit(".", 1)[-1] in _CATCHES_DECODE_ERROR for t in types)
+
+    def _guarded(node: ast.AST) -> bool:
+        child, parent = node, parents.get(node)
+        while parent is not None:
+            if isinstance(parent, ast.Try) and child in parent.body:
+                if any(_catches(h) for h in parent.handlers):
+                    return True
+            child, parent = parent, parents.get(parent)
+        return False
+
+    found: list[tuple[int, bool]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        if ast.unparse(node.func) not in _JSON_TEXT_PARSERS:
+            continue
+        inner = node.args[0]
+        if not isinstance(inner, ast.Call):
+            continue
+        if not ast.unparse(inner.func).endswith(".read_text"):
+            continue
+        found.append((inner.lineno, _guarded(node)))
+    return sorted(found)
+
+
 class TestRewriterDecodesJsonAsUtf8:
     """Agent specs and the global settings file are UTF-8 JSON written by
     somebody else -- a user, an editor, the Kiro IDE -- so the rewriter decodes
@@ -1587,3 +1721,59 @@ class TestRewriterDecodesJsonAsUtf8:
             )
             == []
         )
+
+    def test_every_json_read_catches_a_decode_error(self) -> None:
+        """Pins the other half of the UTF-8 fix: the except arm.
+
+        ``encoding="utf-8"`` makes a non-UTF-8 file raise
+        ``UnicodeDecodeError``, a ``ValueError`` the old
+        ``(OSError, json.JSONDecodeError)`` tuples let through. The corrupt-file
+        behaviour test reaches the strict spec reader, not these arms, so
+        dropping ``UnicodeDecodeError`` from one of them would leave every other
+        test green. This scan fails instead.
+        """
+        from kiro_crew.mcp_gateway import rewriter as rw
+
+        source = Path(rw.__file__).read_text(encoding="utf-8")
+        reads = _json_text_reads(source)
+        assert len(reads) >= 3, (
+            f"the scan found only {reads}; rewriter.py has at least three "
+            "JSON reads of a file, so the matcher has stopped seeing them"
+        )
+        unguarded = [line for line, guarded in reads if not guarded]
+        assert unguarded == [], (
+            "rewriter.py parses JSON from read_text at line(s) "
+            f"{unguarded} with no enclosing except that catches "
+            "UnicodeDecodeError; one non-UTF-8 file would then abort the "
+            "rewrite pass instead of being skipped"
+        )
+
+    def test_the_decode_error_ratchet_can_actually_fail(self) -> None:
+        """Each shape the scan must reject, and each it must accept."""
+        head = "import json\nfrom pathlib import Path\n"
+        read = "    x = json.loads(Path('a').read_text(encoding='utf-8'))\n"
+
+        def scan(body: str) -> list[tuple[int, bool]]:
+            return _json_text_reads(head + body)
+
+        assert scan("x = json.loads(Path('a').read_text(encoding='utf-8'))\n") == [(3, False)]
+        assert scan("try:\n" + read + "except (OSError, json.JSONDecodeError):\n    pass\n") == [
+            (4, False)
+        ]
+        assert scan("try:\n    pass\nexcept OSError:\n" + read) == [
+            (6, False)
+        ], "a read inside the handler is not guarded by it"
+        assert scan(
+            "try:\n"
+            + read
+            + "except (OSError, json.JSONDecodeError, UnicodeDecodeError):\n    pass\n"
+        ) == [(4, True)]
+        assert scan("try:\n" + read + "except Exception:\n    pass\n") == [(4, True)]
+        assert scan(
+            "try:\n    try:\n    " + read + "    except OSError:\n        pass\n"
+            "except ValueError:\n    pass\n"
+        ) == [(5, True)], "an outer try that catches it still guards the read"
+        assert scan(
+            "try:\n    y = loads_user_json(Path('a').read_text(encoding='utf-8'))\n"
+            "except OSError:\n    pass\n"
+        ) == [(4, False)]

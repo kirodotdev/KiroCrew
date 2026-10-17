@@ -9,7 +9,7 @@ the applier's queuing, the confirmation text a model reads, and the two
 provenance gates that keep a borrowed slot safe from a headless caller.
 
 The consumer half — that a queued discard is actually applied at the turn
-boundary — lives in ``test_chat_runner_coverage.py::TestConsumePendingReset``.
+boundary — lives in ``test_chat_runner_coverage_pending.py::TestConsumePendingReset``.
 """
 
 import pytest

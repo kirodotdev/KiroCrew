@@ -18,7 +18,6 @@ freed space is lying to the user.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -27,7 +26,11 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
+from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
+    _read_session_key,
+    read_bounded_json,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import transcript_stems
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -246,22 +249,32 @@ def _optional_str_list(body: dict[str, Any], key: str) -> list[str] | None:
     return list(value)
 
 
-async def _json_body(request: web.Request) -> dict[str, Any] | None:
-    """Parse a JSON object body; ``None`` when it is absent, empty, or malformed.
+#: Byte ceiling for a session-storage request body. The largest legitimate body
+#: is a ``trash`` selection of ``_MAX_SELECTION`` uids, each at most 200
+#: characters (``session_storage._UNIT_ID_RE``) plus quotes, comma and a space,
+#: with 64 KiB for the other fields. That is the most any accepted request can
+#: need, and it sits below the app-wide ``client_max_size``, so the cap is
+#: enforced while the body streams in rather than after it is buffered.
+_MAX_BODY_BYTES = _MAX_SELECTION * (200 + 4) + 64 * 1024
 
-    A parse failure must NOT become ``{}``. An empty object is a legitimate request
-    on these endpoints, so collapsing malformed input into it would let a truncated
-    or non-JSON body read as "no arguments given" — and on this surface "no
-    arguments" is what widens an operation.
+
+async def _json_body(request: web.Request) -> tuple[dict[str, Any] | None, web.Response | None]:
+    """Parse a JSON object body; ``(None, response)`` means return *response*.
+
+    An ABSENT body is ``{}``: an empty object is a legitimate request on these
+    endpoints. A body that is present but malformed, or not an object, is
+    refused 400 ``invalid_body`` and must NOT become ``{}`` -- collapsing it would
+    let a truncated or non-JSON body read as "no arguments given", and on this
+    surface "no arguments" is what widens an operation.
+
+    Reads through :func:`read_bounded_json`, so a present body must declare a JSON
+    content type (415 ``unsupported_media_type`` otherwise) and is capped at
+    ``_MAX_BODY_BYTES`` (413 ``payload_too_large``), both before it is parsed.
     """
-    raw = await request.read()
-    if not raw.strip():
-        return {}
-    try:
-        body = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return body if isinstance(body, dict) else None
+    body, error = await read_bounded_json(request, max_bytes=_MAX_BODY_BYTES, allow_absent=True)
+    if error is not None and error.status == 400:
+        return None, _bad_request("Request body must be a JSON object.", "invalid_body")
+    return body, error
 
 
 def _report_payload() -> dict[str, Any]:
@@ -327,9 +340,10 @@ async def api_session_storage_cleanup(request: web.Request) -> web.Response:
     if _is_restricted_session(state, request):
         return _deny("session_storage.cleanup", request)
 
-    body = await _json_body(request)
-    if body is None:
-        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    body, body_error = await _json_body(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     raw_days = body.get("older_than_days")
     if not isinstance(raw_days, (int, float)) or isinstance(raw_days, bool):
         return web.json_response(
@@ -417,9 +431,10 @@ async def api_session_storage_restore(request: web.Request) -> web.Response:
     if _is_restricted_session(state, request):
         return _deny("session_storage.restore", request)
 
-    body = await _json_body(request)
-    if body is None:
-        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    body, body_error = await _json_body(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     batch_id = body.get("batch_id")
     if not isinstance(batch_id, str) or not batch_id:
         return web.json_response(
@@ -603,9 +618,10 @@ async def api_session_storage_empty(request: web.Request) -> web.Response:
     if _is_restricted_session(state, request):
         return _deny("session_storage.empty", request)
 
-    body = await _json_body(request)
-    if body is None:
-        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    body, body_error = await _json_body(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     batch_ids = _optional_str_list(body, "batch_ids")
     if batch_ids is _MALFORMED:
         return _bad_request("batch_ids must be a list of strings.", "invalid_batch")
@@ -1017,9 +1033,10 @@ async def api_session_inventory_trash(request: web.Request) -> web.Response:
     if _is_restricted_session(state, request):
         return _deny("session_storage.trash", request)
 
-    body = await _json_body(request)
-    if body is None:
-        return _bad_request("Request body must be a JSON object.", "invalid_body")
+    body, body_error = await _json_body(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     uids = _optional_str_list(body, "uids")
     if uids is _MALFORMED:
         return _bad_request("uids must be a list of strings.", "invalid_selection")

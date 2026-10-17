@@ -827,12 +827,14 @@ class TestScaffold:
         assert len(m.crons) == 1
         assert m.crons[0].name == "cron-app-check"
         assert m.crons[0].every == 300
+        assert m.permissions.cron is True
 
     def test_scaffold_without_cron(self, tmp_path):
         """Without --cron, no crons in manifest."""
         app_dir = scaffold_app(tmp_path, "no-cron")
         m = AppManifest.from_json_file(app_dir / "app.json")
         assert len(m.crons) == 0
+        assert m.permissions.cron is False
 
     def test_scaffold_all_options(self, tmp_path):
         """All flags together produce a valid manifest."""

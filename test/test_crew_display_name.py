@@ -131,6 +131,7 @@ class TestCreateEndpoint:
             degraded_sections=frozenset(),
             agents={},
             memory_stores={},
+            workspaces={},
             default_agent="kirocrew",
             save=lambda: saved.append(True),
             saved=saved,
@@ -326,6 +327,58 @@ class TestCrewIdDerivation:
         from kiro_crew.members import is_crew_id
 
         assert is_crew_id(value) is ok
+
+
+class TestCheckCrewLabel:
+    """``members.check_crew_label``: the rule every relabel outside the editor obeys."""
+
+    AGENTS = {
+        "scribe": KiroCrewAgentConfig(kiro_agent="kirocrew", display_name="Release Writer"),
+        "research": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+    }
+
+    @pytest.mark.parametrize(
+        ("key", "label"),
+        [
+            ("research", "Researcher"),
+            ("research", ""),  # clears back to the key
+            ("scribe", "Release Writer"),  # its own label
+            ("scribe", "scribe"),  # its own key
+        ],
+    )
+    def test_a_free_label_is_returned(self, key, label):
+        from kiro_crew.members import check_crew_label
+
+        assert check_crew_label(key, label, self.AGENTS) == label
+
+    @pytest.mark.parametrize(
+        ("key", "label", "other"),
+        [("research", "Release Writer", "scribe"), ("scribe", "research", "research")],
+    )
+    def test_a_name_another_crew_shows_is_taken(self, key, label, other):
+        from kiro_crew.members import MemberNameTaken, check_crew_label
+
+        with pytest.raises(MemberNameTaken) as exc:
+            check_crew_label(key, label, self.AGENTS)
+        assert exc.value.other == other
+
+    @pytest.mark.parametrize(
+        "label", ["Two\nLines", " padded ", "..", "x" * 501, "https://user:password@example.com"]
+    )
+    def test_an_unusable_label_is_refused(self, label):
+        from kiro_crew.members import MemberNameError, check_crew_label
+
+        with pytest.raises(MemberNameError) as exc:
+            check_crew_label("research", label, self.AGENTS)
+        assert label not in str(exc.value)
+
+    def test_crew_showing_skips_the_excluded_crew(self):
+        from kiro_crew.members import crew_showing
+
+        assert crew_showing("Release Writer", self.AGENTS) == "scribe"
+        assert crew_showing("Release Writer", self.AGENTS, exclude="scribe") == ""
+        # A labelled crew shows its label, not its key.
+        assert crew_showing("scribe", self.AGENTS) == ""
 
 
 class TestRosterSurfaces:

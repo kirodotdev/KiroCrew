@@ -147,6 +147,23 @@ def _health_wait_secs(args: argparse.Namespace) -> int:
     return min(max(secs, _POD_HEALTH_WAIT_FLOOR_SECS), _POD_HEALTH_WAIT_CEIL_SECS)
 
 
+def _retire_hint(name: str, *, deliberately: bool = False) -> str:
+    """The one sentence that tells an operator how to retire a pod `up` left behind.
+
+    Truthful on Windows, where `pod down` itself can refuse: a run whose producer
+    cannot be proven gone (a boot that never claimed its reservation, a supervisor
+    that died with a serving gateway) is preserved rather than reclaimed, and the
+    operator must then follow the README's manual retirement instead of retrying a
+    command that will keep refusing. The backend's refusal text never carries that
+    pointer; this CLI is its only speaker, so it appears once.
+    """
+    verb = "Retire it deliberately" if deliberately else "Retire it"
+    hint = f"{verb} with `kirocrew pod down {name}`."
+    if rt.IS_WINDOWS:
+        hint += " " + rt.win_backend.MANUAL_RETIREMENT_POINTER
+    return hint
+
+
 def _wait_healthy(
     cfg: PodConfig,
     name: str,
@@ -765,11 +782,7 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             if destroyed:
                 # Silent on success: a pod this command created and then removed
                 # leaves the operator nothing to act on, so there is nothing to say.
-                left_running = (
-                    ""
-                    if not stop_failed
-                    else f"{stop_failed} Retire it with `kirocrew pod down {name}`."
-                )
+                left_running = "" if not stop_failed else f"{stop_failed} {_retire_hint(name)}"
             elif halted:
                 left_running = (
                     " The gateway this command started has been stopped, but its "
@@ -778,14 +791,14 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                     if not halt_failed
                     else (
                         " Its isolated home was KEPT because it held state beforehand."
-                        f"{halt_failed} Retire it with `kirocrew pod down {name}`."
+                        f"{halt_failed} {_retire_hint(name)}"
                     )
                 )
             else:
                 left_running = (
                     " This pod was NOT stopped: this command did not start it, and "
                     "tearing it down would delete an isolated home it did not create. "
-                    f"Retire it deliberately with `kirocrew pod down {name}`."
+                    f"{_retire_hint(name, deliberately=True)}"
                 )
             if code == rt.HEALTH_FOREIGN:
                 # Reported ahead of the crash verdict: the port being taken is
@@ -974,7 +987,11 @@ def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
         # still registered and must be deleted before the HOME is reclaimed.
         if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS or rt.IS_WINDOWS):
             _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
-            _die(f"stopping pod {name} failed: {(cp.stderr or '').strip()}")
+            detail = (cp.stderr or "").strip()
+            if rt.IS_WINDOWS:
+                # The refusal names what could not be proven; this names the way out.
+                detail = f"{detail} {rt.win_backend.MANUAL_RETIREMENT_POINTER}"
+            _die(f"stopping pod {name} failed: {detail}")
         if rt.RECLAIMED_MARKER in (cp.stdout or ""):
             # Defense-in-depth for writers that bypass the mutex: a new pod
             # claimed this name mid-teardown. The old pod is gone, but the env

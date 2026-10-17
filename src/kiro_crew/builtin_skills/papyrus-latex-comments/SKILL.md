@@ -14,9 +14,12 @@ taxonomy. To propose concrete replacement text (accept/reject), use
 
 ## Step 1 — Setup (idempotent)
 
-```bash
-kpsewhich todonotes.sty    # non-empty = installed (ships with TeX Live — usually no install)
-```
+`todonotes` ships with TeX Live, so normally nothing needs installing. Do not
+probe for it with `kpsewhich` and do not try to install it: the app may compile
+with Tectonic (its managed install, or a `~/texlive` not on PATH), where
+`kpsewhich` is absent and an empty answer proves nothing. Inject the preamble
+below; if the author's next compile reports `File 'todonotes.sty' not found`,
+handle it with `papyrus-diagnose-compilation`.
 
 If the document has no comment preamble yet, inject this once at the end of the
 preamble, after all existing \usepackage lines (never duplicate it if it is

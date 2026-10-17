@@ -42,7 +42,7 @@ def _isolated_home(tmp_path, monkeypatch):
     # the drain: release rides the handle's refcount, so a lease still held here is
     # a retention, not a frame that has not finished unwinding. The table is
     # process-wide, so the key it names may belong to an EARLIER file on this
-    # worker (the macOS run of this PR caught ``test_crew_log_core.py``'s
+    # worker (the macOS run of this PR caught ``test_crew_log_core_segments.py``'s
     # chmod-refusal test that way); the path in the message says whose it is.
     assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
@@ -87,6 +87,21 @@ def _open_session(session_id: str = SESSION) -> None:
         cwd="/tmp",
         owner="default",
     )
+
+
+#: The writer's batching pause for a test that must see a whole burst BUFFERED. The
+#: writer claims a unit's bucket after ``batch_deadline_seconds`` (20 ms by default) and
+#: the claim takes the entries OUT of the pending count, so a burst that submits slower
+#: than that pause -- a loaded Windows xdist worker does -- is split across two claims
+#: and the ceiling is crossed by fewer entries than the test counted on
+#: (``overflow_writes() == 2``, not 6). This value is not waited out: the burst ends with
+#: ``drain_for_shutdown``, which wakes the writer and skips the pause; it is the backstop
+#: if that release never comes, the same budget as the drain's own.
+_HOLD_DRAINER_SECONDS = 20.0
+
+
+def _held_drain_limits(**limits: int) -> WriterLimits:
+    return WriterLimits(batch_deadline_seconds=_HOLD_DRAINER_SECONDS, **limits)
 
 
 # ===================================================================== #
@@ -193,8 +208,10 @@ def test_buffer_overflow_is_rejected_at_the_tail_and_counted(monkeypatch, caplog
     named exactly once at error level.
     """
     # A ceiling low enough to cross deterministically. The high-water warning
-    # stays well below it so the two thresholds do not collide in this test.
-    emit.reset_caches(limits=WriterLimits(pending_high_water=2, max_pending_count=4))
+    # stays well below it so the two thresholds do not collide in this test. The
+    # drainer is HELD for the burst (see ``_HOLD_DRAINER_SECONDS``): every entry
+    # meets the ceiling in the pending count, none is claimed out of it mid-burst.
+    emit.reset_caches(limits=_held_drain_limits(pending_high_water=2, max_pending_count=4))
     _open_session()
     assert emit.flush()
 
@@ -211,18 +228,27 @@ def test_buffer_overflow_is_rejected_at_the_tail_and_counted(monkeypatch, caplog
     async def _flood():
         for n in range(count):
             emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
-        # The ceiling holds while the writer is blocked: only the first entries fit.
-        assert emit.buffered_writes() <= 4
-        assert emit.overflow_writes() >= count - 4
+        # The ceiling holds while the writer is held: exactly the first entries fit.
+        assert emit.buffered_writes() == 4
+        assert emit.overflow_writes() == count - 4
         release.set()
-        assert emit.flush(timeout=20.0)
+        # Wakes the held writer and skips its batching pause; ``flush`` would wait
+        # the pause out.
+        assert emit.drain_for_shutdown(timeout=20.0)
 
-    with caplog.at_level(logging.ERROR, logger=emit.logger.name):
-        asyncio.run(_flood())
+    try:
+        with caplog.at_level(logging.ERROR, logger=emit.logger.name):
+            asyncio.run(_flood())
+    finally:
+        # A failed assertion above leaves the writer's thread parked in ``_slow``
+        # holding the log handle -- and with it the unit's write lease, which the
+        # autouse teardown reads as a lease that outlived its test and the NEXT test
+        # on this worker inherits as an error. Open the gate on every exit.
+        release.set()
 
     # The counter moved past what the cap allowed: the rejection is observable,
     # not a constant nobody reads.
-    assert emit.overflow_writes() >= count - 4
+    assert emit.overflow_writes() == count - 4
     assert emit.buffered_writes() == 0
 
     # The prefix that fit kept its order -- the tail was rejected, the head was not
@@ -230,8 +256,7 @@ def test_buffer_overflow_is_rejected_at_the_tail_and_counted(monkeypatch, caplog
     # middle.
     calls = [e for e in _body() if e["type"] == "tool/called"]
     ids = [e["data"]["call_id"] for e in calls]
-    assert ids == [f"tc-{n}" for n in range(len(ids))]
-    assert len(ids) <= 4
+    assert ids == [f"tc-{n}" for n in range(4)]
 
     over = [r for r in caplog.records if "buffer full" in r.getMessage()]
     assert len(over) == 1, f"overflow reported {len(over)} times, expected 1"
@@ -242,7 +267,7 @@ def test_a_ceiling_above_the_load_sheds_nothing(monkeypatch):
     overflows zero. Proves the counter tracks the cap, not the mere act of
     buffering -- raise the bound and the red assertion above goes green.
     """
-    emit.reset_caches(limits=WriterLimits(max_pending_count=100_000))
+    emit.reset_caches(limits=_held_drain_limits(max_pending_count=100_000))
     _open_session()
     assert emit.flush()
 
@@ -259,10 +284,16 @@ def test_a_ceiling_above_the_load_sheds_nothing(monkeypatch):
     async def _flood():
         for n in range(count):
             emit.on_tool_called(SESSION, 1, name="fs_read", call_id=f"tc-{n}")
+        # The same held flood as the test above: the whole burst is buffered when
+        # the ceiling is judged, so the only difference between the two is the cap.
+        assert emit.buffered_writes() == count
         release.set()
-        assert emit.flush(timeout=20.0)
+        assert emit.drain_for_shutdown(timeout=20.0)
 
-    asyncio.run(_flood())
+    try:
+        asyncio.run(_flood())
+    finally:
+        release.set()
 
     assert emit.overflow_writes() == 0
     assert emit.dropped_writes() == 0

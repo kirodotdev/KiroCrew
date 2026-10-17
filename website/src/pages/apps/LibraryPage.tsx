@@ -17,6 +17,7 @@
  * the action bar via the shared `useAppUpdates` hook.
  */
 import { useMemo, useState } from 'react'
+import { guideConfirm } from '../../uiLocations/targetRegistry'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, Lock, Trash2, X, ArrowUp, Compass,
@@ -38,6 +39,9 @@ import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
 import { cardDataKey } from './cardDataKey'
 import LaunchpadTile from './LaunchpadTile'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuideSelection } from '../../guide/guidePredicates'
+import { appDisplayName } from '../../components/appstore/appManifest'
 
 /** Uninstall preview payload (mirrors ``api.uninstallPreview`` return shape). */
 type UninstallPreview = Awaited<ReturnType<typeof api.uninstallPreview>>
@@ -59,12 +63,16 @@ export default function LibraryPage() {
   const [showAll, setShowAll] = usePersistedBool('mc-apps-library-show-all', false)
   const {
     apps, appsLoading, appsError, registryError,
-    browseApps, installedApps, disabledCount, updatables, announceAppsChanged,
+    browseApps, installedApps, disabledCount, updatables, announceAppsChanged, sources,
+    registriesUnknown,
   } = useAppsData({ showAll })
 
   const [query, setQuery] = useState('')
   const [successMsg, setSuccessMsg] = useState('')
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  // The app whose card ⋯ menu is open: a guide's "choose the app" step is done
+  // once it is the one the person named (its Details and Uninstall are there).
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   // `openCommand` apps opened from a remote/headless gateway cannot launch
   // here — the backend answers `{remote: true, command}` and the user runs
   // the command locally instead.
@@ -72,8 +80,10 @@ export default function LibraryPage() {
 
   const {
     setError, displayError, dismissError,
-    openDetail, updateApp, trustTarget, runEnable, trust,
-  } = useAppActions({ apps, browseApps, appsError, registryError, announceAppsChanged })
+    openDetail, updateApp, trustTarget, consentTarget, runEnable, trust,
+  } = useAppActions({
+    apps, browseApps, appsError, registryError, announceAppsChanged, sources, registriesUnknown,
+  })
 
   // Transient success surface for the shared update hook: the hook reports
   // outcomes, this page owns display + auto-dismiss (same 4s the other
@@ -136,6 +146,8 @@ export default function LibraryPage() {
       || (a.manifest?.description || '').toLowerCase().includes(q)
       || (a.manifest?.tags || []).some(t => t.toLowerCase().includes(q)))
   }, [installedApps, query])
+  const menuApp = menuOpenFor !== null ? installedApps.find(a => appDisplayName(a) === menuOpenFor) : undefined
+  useGuideSelection('app_tile_menu_open', { selected: menuOpenFor !== null, available: installedApps.length > 0, name: menuOpenFor ?? undefined, alias: menuApp ? menuApp.displayName || menuApp.name : undefined })
 
   // One definition of the view control, rendered both above the grid and inside
   // the empty enabled-only view. `aria-pressed` reflects the show-all state; the
@@ -277,7 +289,7 @@ export default function LibraryPage() {
             refused with code `app_execution_denied`, instead of surfacing the
             raw backend string in the error card above. */}
         <TrustAppModal
-          app={trust.target}
+          app={consentTarget}
           pending={trust.pending}
           failed={trust.failed}
           detail={trust.detail}
@@ -410,7 +422,9 @@ export default function LibraryPage() {
 
               <div className="flex items-center gap-2 justify-end">
                 <Btn onClick={() => { setUninstallTarget(null); setUninstallPreview(null) }}>{i18nT('pages.appsPage.cancel')}</Btn>
-                <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`}>
+                {/* The removal itself: a guide that led here ends when this is
+                    pressed, and goes back to its step on any other answer. */}
+                <Btn danger onClick={confirmUninstall} disabled={actionLoading === `${uninstallTarget.name}:uninstall`} {...guideConfirm()}>
                   {actionLoading === `${uninstallTarget.name}:uninstall` ? i18nT('pages.appsPage.removing') : i18nT('pages.appsPage.uninstall')}
                 </Btn>
               </div>
@@ -478,7 +492,11 @@ export default function LibraryPage() {
                 (GET /api/apps records) — the Discover/Library built-in
                 SURFACES are frontend nav entries, never installed-app
                 records, so they cannot appear as tiles. */}
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-7">
+            <div
+              className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-6 gap-x-3 gap-y-7"
+              aria-label={i18nT('pages.libraryPage.installed_apps')}
+              {...uiLocation('apps.library.app-list')}
+            >
               {filteredInstalled.map(app => {
                 // The sidebar's own eligibility/id derivation decides
                 // pinnability: a tile only offers a pin for a row the rail
@@ -527,6 +545,7 @@ export default function LibraryPage() {
                         ? `${app.name}:update`
                         : updatePending ? `${updatePending}:update` : actionLoading}
                       onTogglePin={togglePin}
+                      onMenuOpenChange={open => setMenuOpenFor(prev => (open ? appDisplayName(app) : prev === appDisplayName(app) ? null : prev))}
                       onAction={handleAction}
                       onOpen={() => {
                         // An `openCommand` app opens by RUNNING its command

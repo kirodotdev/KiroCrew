@@ -1,0 +1,530 @@
+{
+ "captured_at": "2026-10-03T12:00:00+00:00",
+ "folds": {
+  "approvals": {
+   "seq": 1284,
+   "value": {
+    "by_decision": {
+     "approved": 4,
+     "rejected": 1
+    },
+    "decided": 5,
+    "last": {
+     "approval_id": "21",
+     "by": "you",
+     "cause": "",
+     "decision": "approved",
+     "seq": 34,
+     "time": 1791002761522,
+     "tool": "execute_bash",
+     "turn": 49
+    },
+    "pending": 2,
+    "pending_dropped": 0,
+    "pending_omitted": 0,
+    "pending_requests": [],
+    "requested": 7,
+    "unidentified_requests": 0,
+    "unmatched_decisions": 0
+   }
+  },
+  "status": {
+   "seq": 1284,
+   "value": {
+    "agent": "kiro-lead",
+    "close_reason": null,
+    "closed_at": null,
+    "cwd": "/srv/repos/kiro",
+    "dropped": {
+     "bytes": 0,
+     "count": 0
+    },
+    "entries": 1284,
+    "last_error": null,
+    "last_stop_reason": "tool_use",
+    "last_time": 1791002821522,
+    "lifecycle": "open",
+    "model": "claude-opus-5",
+    "opened_at": 1791000000000,
+    "owner": "default",
+    "previous": null,
+    "provider": "acp",
+    "resumed": false,
+    "seeded": false,
+    "slot": "member-kiro-lead.memory-member-kiro-lead-sample",
+    "turn": null,
+    "turn_open": true,
+    "turns_completed": 12,
+    "turns_refused": 2
+   }
+  },
+  "subagents": {
+   "seq": 1284,
+   "value": {
+    "by_id": {},
+    "omitted": 0,
+    "running": 1,
+    "running_exact": true,
+    "totals": {
+     "closed_unmatched": 0,
+     "completed": 10,
+     "failed": 1,
+     "spawned": 12,
+     "stopped": 1,
+     "unknown": 0
+    }
+   }
+  },
+  "timeline": {
+   "seq": 1284,
+   "value": {
+    "dropped": 142,
+    "first_seq": 1,
+    "last_seq": 34,
+    "limit": 200,
+    "moments": [
+     {
+      "agent": "kiro-lead",
+      "resumed": false,
+      "seq": 1,
+      "time": 1791000000000,
+      "type": "session/opened"
+     },
+     {
+      "actor": "user",
+      "seq": 2,
+      "time": 1791000004000,
+      "turn": 1,
+      "type": "turn/started"
+     },
+     {
+      "credits": 1.84,
+      "duration_ms": 41300,
+      "seq": 3,
+      "stop_reason": "end_turn",
+      "time": 1791000045300,
+      "turn": 1,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 4,
+      "time": 1791000183888,
+      "turn": 4,
+      "type": "turn/started"
+     },
+     {
+      "credits": 0.61,
+      "duration_ms": 12900,
+      "seq": 5,
+      "stop_reason": "end_turn",
+      "time": 1791000196788,
+      "turn": 4,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 6,
+      "time": 1791000363528,
+      "turn": 7,
+      "type": "turn/started"
+     },
+     {
+      "approval_id": "11",
+      "reason": "Execute Bash",
+      "seq": 26,
+      "time": 1791000500313,
+      "turn": 19,
+      "type": "approval/requested"
+     },
+     {
+      "credits": 4.92,
+      "duration_ms": 183400,
+      "seq": 7,
+      "stop_reason": "end_turn",
+      "time": 1791000546928,
+      "turn": 7,
+      "type": "turn/completed"
+     },
+     {
+      "approval_id": "11",
+      "decision": "approved",
+      "seq": 29,
+      "time": 1791000555904,
+      "turn": 19,
+      "type": "approval/decided"
+     },
+     {
+      "actor": "user",
+      "seq": 8,
+      "time": 1791000688995,
+      "turn": 11,
+      "type": "turn/started"
+     },
+     {
+      "credits": 2.11,
+      "duration_ms": 64800,
+      "seq": 9,
+      "stop_reason": "end_turn",
+      "time": 1791000753795,
+      "turn": 11,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 10,
+      "time": 1791000892240,
+      "turn": 15,
+      "type": "turn/started"
+     },
+     {
+      "credits": 0.98,
+      "duration_ms": 27600,
+      "seq": 11,
+      "stop_reason": "end_turn",
+      "time": 1791000919840,
+      "turn": 15,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 12,
+      "time": 1791001072967,
+      "turn": 19,
+      "type": "turn/started"
+     },
+     {
+      "approval_id": "14",
+      "reason": "Execute Bash",
+      "seq": 27,
+      "time": 1791001278580,
+      "turn": 19,
+      "type": "approval/requested"
+     },
+     {
+      "credits": 7.44,
+      "duration_ms": 311200,
+      "seq": 13,
+      "stop_reason": "end_turn",
+      "time": 1791001384167,
+      "turn": 19,
+      "type": "turn/completed"
+     },
+     {
+      "agent": "kirocrew-worker",
+      "seq": 30,
+      "subagent_id": "sub-a1",
+      "time": 1791001528737,
+      "type": "subagent/spawned"
+     },
+     {
+      "actor": "user",
+      "seq": 14,
+      "time": 1791001558146,
+      "turn": 24,
+      "type": "turn/started"
+     },
+     {
+      "credits": 1.72,
+      "duration_ms": 48900,
+      "seq": 15,
+      "stop_reason": "end_turn",
+      "time": 1791001607046,
+      "turn": 24,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 16,
+      "time": 1791001676827,
+      "turn": 29,
+      "type": "turn/started"
+     },
+     {
+      "agent": "kirocrew-worker",
+      "seq": 31,
+      "subagent_id": "sub-a2",
+      "time": 1791001723303,
+      "type": "subagent/spawned"
+     },
+     {
+      "credits": 3.06,
+      "duration_ms": 95400,
+      "seq": 17,
+      "stop_reason": "end_turn",
+      "time": 1791001772227,
+      "turn": 29,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 18,
+      "time": 1791001840634,
+      "turn": 33,
+      "type": "turn/started"
+     },
+     {
+      "credits": 0.74,
+      "duration_ms": 19700,
+      "seq": 19,
+      "stop_reason": "end_turn",
+      "time": 1791001860334,
+      "turn": 33,
+      "type": "turn/completed"
+     },
+     {
+      "agent": "kirocrew-worker",
+      "seq": 32,
+      "subagent_id": "sub-b1",
+      "time": 1791001973460,
+      "type": "subagent/spawned"
+     },
+     {
+      "actor": "user",
+      "seq": 20,
+      "time": 1791002014527,
+      "turn": 38,
+      "type": "turn/started"
+     },
+     {
+      "approval_id": "21",
+      "reason": "Execute Bash",
+      "seq": 28,
+      "time": 1791002307003,
+      "turn": 19,
+      "type": "approval/requested"
+     },
+     {
+      "credits": 9.81,
+      "duration_ms": 402100,
+      "seq": 21,
+      "stop_reason": "end_turn",
+      "time": 1791002416627,
+      "turn": 38,
+      "type": "turn/completed"
+     },
+     {
+      "agent": "kirocrew-worker",
+      "seq": 33,
+      "subagent_id": "sub-b2",
+      "time": 1791002501569,
+      "type": "subagent/spawned"
+     },
+     {
+      "actor": "user",
+      "seq": 22,
+      "time": 1791002561345,
+      "turn": 44,
+      "type": "turn/started"
+     },
+     {
+      "credits": 2.38,
+      "duration_ms": 71500,
+      "seq": 23,
+      "stop_reason": "end_turn",
+      "time": 1791002632845,
+      "turn": 44,
+      "type": "turn/completed"
+     },
+     {
+      "actor": "user",
+      "seq": 24,
+      "time": 1791002701649,
+      "turn": 49,
+      "type": "turn/started"
+     },
+     {
+      "credits": 1.19,
+      "duration_ms": 33200,
+      "seq": 25,
+      "stop_reason": "end_turn",
+      "time": 1791002734849,
+      "turn": 49,
+      "type": "turn/completed"
+     }
+    ]
+   }
+  },
+  "tools": {
+   "seq": 1284,
+   "value": {
+    "by_name": {
+     "": {
+      "calls": 25,
+      "completed": 25,
+      "elapsed_ms": 31800,
+      "errors": 0,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "code": {
+      "calls": 54,
+      "completed": 54,
+      "elapsed_ms": 192700,
+      "errors": 0,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "execute_bash": {
+      "calls": 151,
+      "completed": 151,
+      "elapsed_ms": 1284900,
+      "errors": 4,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "fs_read": {
+      "calls": 214,
+      "completed": 214,
+      "elapsed_ms": 86400,
+      "errors": 0,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "fs_write": {
+      "calls": 88,
+      "completed": 88,
+      "elapsed_ms": 61200,
+      "errors": 1,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "grep": {
+      "calls": 41,
+      "completed": 41,
+      "elapsed_ms": 18300,
+      "errors": 0,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "spawn_run": {
+      "calls": 18,
+      "completed": 18,
+      "elapsed_ms": 742600,
+      "errors": 2,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "use_aws": {
+      "calls": 9,
+      "completed": 9,
+      "elapsed_ms": 44100,
+      "errors": 2,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     },
+     "work_report": {
+      "calls": 12,
+      "completed": 12,
+      "elapsed_ms": 5900,
+      "errors": 0,
+      "last_status": "completed",
+      "last_time": 1791002812522,
+      "servers": [],
+      "servers_omitted": 0,
+      "servers_omitted_saturated": false
+     }
+    },
+    "calls": 612,
+    "completed": 612,
+    "elapsed_ms": 2467900,
+    "errors": 9,
+    "names_omitted": 3,
+    "names_omitted_saturated": false,
+    "open": 1,
+    "open_calls": [],
+    "open_calls_omitted": 0,
+    "open_dropped": 0,
+    "unidentified_calls": 0,
+    "unmatched_completions": 0
+   }
+  },
+  "usage": {
+   "seq": 1284,
+   "value": {
+    "by_model": {
+     "claude-opus-5": {
+      "credits": 36.91,
+      "credits_reported": 12,
+      "tokens": 18442900,
+      "turns": 12
+     }
+    },
+    "compactions": {
+     "count": 3,
+     "freed_pct": 41.6
+    },
+    "context": {
+     "blocks": 212,
+     "by_source": {},
+     "chars": 742118,
+     "estimated_turns": 12,
+     "sources_omitted": 2,
+     "tokens": 185529,
+     "turns": [],
+     "window": 200000
+    },
+    "credits": 38.74,
+    "credits_by_source": {
+     "background": {
+      "credits": 0.71,
+      "reported": 6
+     },
+     "subagent": {
+      "credits": 1.12,
+      "reported": 4
+     },
+     "turn": {
+      "credits": 36.91,
+      "reported": 12
+     }
+    },
+    "duration_ms": 1312000,
+    "models_omitted": 0,
+    "models_omitted_saturated": false,
+    "steps": {
+     "completed": 318
+    },
+    "tokens": {
+     "cache_read": 14882000,
+     "cache_write": 1204900,
+     "input": 1911000,
+     "output": 445000,
+     "total": 18442900
+    },
+    "turns": {
+     "completed": 12,
+     "credits_reported": 12,
+     "duration_reported": 12,
+     "tokens_reported": 12
+    }
+   }
+  }
+ },
+ "pod": "sample-not-a-capture",
+ "slot": "member-kiro-lead.memory-member-kiro-lead-sample"
+}

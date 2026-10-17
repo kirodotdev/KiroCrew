@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import TYPE_CHECKING
 
@@ -147,6 +148,35 @@ def _reclaim_deleted_member_crew_log(name: str, cfg: KiroCrewConfig) -> None:
         logger.info("crew delete: the crew log of %r was not removed (%s)", slug, status)
 
 
+async def _remove_goal_check_ins(request: web.Request, name: str, cfg: KiroCrewConfig) -> None:
+    """Remove a deleted crewmate's goal check-in schedules. Never raises.
+
+    Each check-in is a gateway-owned job keyed ``goal-<cadence>:<slug>``
+    (``goal_reminder.MANAGED_PREFIXES``) and listed nowhere but its Goals tab,
+    so with the crewmate gone nothing would ever turn it off. *cfg* is the config
+    captured while the record was still in it, which the slug is resolved from;
+    a slug another live crew still derives keeps its schedules. The goal record
+    itself stays, like the rules file beside it.
+    """
+    state = request.app.get("state")
+    crons = getattr(state, "crons", None) if state is not None else None
+    if crons is None:
+        return
+    try:
+        from kiro_crew.dashboard import goal_reminder
+        from kiro_crew.members import member_slug
+
+        slug = member_slug(name, cfg)
+        if await asyncio.to_thread(_member_slug_is_claimed, slug):
+            return
+        for job in await goal_reminder.reminder_jobs(crons, slug):
+            await crons.remove_job_async(job.id, actor="dashboard", source="agent.delete")
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the goal check-ins of %r", name, exc_info=True
+        )
+
+
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
     """Remove the private template copy that existed only for a now-deleted crew.
 
@@ -232,6 +262,42 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 {"error": f"Cannot delete default agent '{name}'. Change default_agent first."},
                 status=409,
             )
+        # Card-Undo identity guard: a ``crewmate.create`` Undo carries the
+        # ``member_id`` its create returned, so a crewmate re-made under the same
+        # name is not erased. Enforced inside ``mutate(doc)`` below against the
+        # raw record read under the cross-process file lock, not the in-process
+        # snapshot. Absent for an ordinary delete.
+        from kiro_crew.dashboard.handlers.undo_identity_guard import (
+            REQ_CARD_UNDO_CREWMATE_EXPECT,
+            UNDO_IDENTITY_CHANGED_CODE,
+            UNDO_IDENTITY_CHANGED_MESSAGE,
+            identity_mismatch,
+        )
+
+        _raw_expect = request.get(REQ_CARD_UNDO_CREWMATE_EXPECT)
+        # The parent arms a ``str`` member_id today; tolerate a ``dict`` carrier
+        # (``{"member_id": ...}``) in case a future parent widens the shape — the
+        # middleware stays the parent's concern. An unarmed delete leaves this
+        # ``None`` and the guard adds nothing.
+        if isinstance(_raw_expect, dict):
+            _expect_val = _raw_expect.get("member_id")
+            armed = _expect_val is not None
+            expected_member_id = _expect_val if isinstance(_expect_val, str) else None
+        elif isinstance(_raw_expect, str):
+            armed = True
+            expected_member_id = _raw_expect
+        else:
+            armed = False
+            expected_member_id = None
+
+        # A FUNCTION-LOCAL sentinel exception, captured by the nested ``mutate``
+        # closure (via a cell, not a module global) so this owner adds no name to
+        # the composed handlers namespace. ``mutate`` raises it, which
+        # ``update_config_locked`` propagates before the rename, and the route
+        # catches it to answer 409 — the mismatch never reaches ``_err500``.
+        class _IdentityChanged(Exception):
+            pass
+
         retired_store = ""
         bound_template = ""
 
@@ -244,6 +310,18 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
                 agents = coerce_dict_section(doc, "agents")
                 if name not in agents:
                     raise UnknownMemoryStore(f"Crew Member {name!r} was removed concurrently")
+                # Identity re-enforced on the RAW record this locked read
+                # returned, BEFORE the del and before any crew-log / avatar /
+                # private-copy cleanup. ``agents[name]["member_id"]`` is the
+                # on-disk id of whatever crew now wears the name; an empty or
+                # absent id, or one that differs from the armed expectation,
+                # means a replacement — abort with the document untouched.
+                if armed:
+                    entry0 = agents[name]
+                    raw_id = entry0.get("member_id") if isinstance(entry0, dict) else None
+                    live_member_id = raw_id if isinstance(raw_id, str) and raw_id else None
+                    if identity_mismatch(expected_member_id or None, live_member_id):
+                        raise _IdentityChanged(name)
                 agent_section = doc.get("agent")
                 if doc.get("default_agent") == name or (
                     isinstance(agent_section, dict) and agent_section.get("default_agent") == name
@@ -292,7 +370,24 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
             _reclaim_deleted_member_crew_log(name, cfg)
             return retired_store
 
-        retired_store = await _drained_to_thread(_delete_member)
+        try:
+            retired_store = await _drained_to_thread(_delete_member)
+        except _IdentityChanged:
+            # The racing recreate: a replacement crewmate wears the name now, so
+            # the locked mutate aborted the write with the document untouched.
+            # Answer 409 ``changed_since_apply`` (not a 500) — the same outcome
+            # the dashboard renders for every armed-Undo identity mismatch.
+            _sel().log_api_access(
+                caller=request.get("user", "dashboard"),
+                operation="agent.delete",
+                outcome="denied",
+                source="dashboard",
+                resources=f"{name} {UNDO_IDENTITY_CHANGED_CODE}",
+            )
+            return web.json_response(
+                {"error": UNDO_IDENTITY_CHANGED_MESSAGE, "code": UNDO_IDENTITY_CHANGED_CODE},
+                status=409,
+            )
         if retired_store:
             from kiro_crew.context import release_cached_memory_store
 
@@ -306,6 +401,7 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         # same-name recreation has already uploaded and committed a new
         # picture under the same digest stem.
         await _drained_to_thread(_remove_avatar_files, name)
+        await _remove_goal_check_ins(request, name, cfg)
         # Likewise the crew's private template copy: a copy the sidecar marks
         # private to THIS crew, and that the crew was bound to, has no reader
         # left once the record is gone — kept, it lists in the Agent Templates

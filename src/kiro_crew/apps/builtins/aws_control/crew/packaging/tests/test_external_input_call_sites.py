@@ -329,7 +329,6 @@ UNCONVERTED: dict[str, dict[str, int]] = {
     "_staged_tree_hash": {".is_dir": 1, ".is_file": 3, ".is_symlink": 1},
     "_tree_hash": {".is_file": 1, ".is_symlink": 1},
     "_write_bytes_nofollow": {".exists": 1, ".is_dir": 2, ".is_file": 1, ".write_bytes": 1},
-    "_write_guarded": {".mkdir": 1},
     "build_bundle": {
         ".exists": 3,
         ".is_dir": 3,
@@ -338,7 +337,6 @@ UNCONVERTED: dict[str, dict[str, int]] = {
     },
     "build_bundle.<lambda>": {"os.rename": 1},
     "skill_candidates": {".exists": 1, ".is_dir": 1, ".is_file": 3, ".is_symlink": 1},
-    "write_plan": {".mkdir": 1},
 }
 
 VERDICTS: dict[str, str] = {
@@ -398,10 +396,6 @@ VERDICTS: dict[str, str] = {
         "crash: the parent predicates and the fallback write escape; the plain no-follow "
         "write calls it without converting them"
     ),
-    "_write_guarded": (
-        "crash: mkdir on the destination parent escapes, and the skill copy calls it without "
-        "converting it"
-    ),
     "build_bundle": (
         "crash: the post-marker report/plan reads now sit inside an OSError-to-ExportRefused "
         "boundary that releases this run's staging and marker, so those no longer strand; the "
@@ -415,10 +409,6 @@ VERDICTS: dict[str, str] = {
     "skill_candidates": (
         "collapse: the root and asset predicates answer False for an absent and an invalid "
         "path and raise for an unreadable one, so a selected asset can be dropped in silence"
-    ),
-    "write_plan": (
-        "crash: mkdir on the plan's parent escapes, so a plan run ends with a traceback "
-        "instead of a reason"
     ),
 }
 

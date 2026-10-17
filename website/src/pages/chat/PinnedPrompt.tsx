@@ -94,7 +94,7 @@ interface PinnedPromptProps {
 
 /**
  * Vertical padding a transcript row puts around its bubble (`py-1` on the
- * message row wrapper in ChatPage). The pinned band reproduces it so the card
+ * message row wrapper in ChatTranscriptView). The pinned band reproduces it so the card
  * sits the same distance below the fold as a bubble sits below its row top —
  * which is also what makes the hand-off land on the exact same pixel. Imported
  * from the geometry module because the hand-off line is derived from the same
@@ -140,7 +140,7 @@ const THUMB_FRAME = 'bg-muted forced-colors:border'
  * cap (so both follow Settings → Chat → Content Width, #8398), `px-4 py-2
  * rounded-xl bg-card text-sm` with an inner `my-1 leading-6` paragraph —
  * because the transcript row it represents is hidden while it is pinned (see
- * ChatPage's row `visibility`; the row's action strip beneath the bubble is
+ * ChatTranscriptView's row `visibility`; the row's action strip beneath the bubble is
  * re-shown in place by index.css's `[data-pinned-standin]` rule, since this card
  * copies the bubble and nothing below it). For a one-line prompt the two are the
  * same size at the same place at the moment of hand-off, so the bubble appears to

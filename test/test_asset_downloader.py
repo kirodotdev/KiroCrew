@@ -23,8 +23,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew import asset_downloader as dl
+from kiro_crew.testing.clock import ManualClock
 
 #: The real ``build_opener``, captured before the autouse no-network fixture
 #: replaces it -- the handler-wiring test is about the real one.
@@ -313,14 +315,29 @@ class TestResume:
         assert state.ranges == [None]
 
 
+def _pin_clock(monkeypatch: pytest.MonkeyPatch) -> ManualClock:
+    """A clock only the downloader reads, recording its pacing sleeps.
+
+    Installed on the downloader's own ``time`` binding. That binding IS the stdlib
+    module, so patching ``dl.time.sleep`` would also record every other thread's
+    sleep in the worker.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, dl)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert_clock_is_private(_pin_clock(monkeypatch), dl)
+
+
 class TestRateLimit:
     def test_pacing_sleeps_and_the_payload_is_unaffected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         open_fn, _state = _fake_urlopen()
         monkeypatch.setattr("kiro_crew.asset_downloader.build_opener", lambda *a, **k: open_fn)
-        slept: list[float] = []
-        monkeypatch.setattr(dl.time, "sleep", lambda s: slept.append(s))
+        clock = _pin_clock(monkeypatch)
         target = tmp_path / "clip.mp4"
         # 1 KiB/s over 4 KiB of payload: every chunk owes time it has not spent.
         ok, _err = dl.download_to(
@@ -328,17 +345,16 @@ class TestRateLimit:
         )
         assert ok is True
         assert target.read_bytes() == _PAYLOAD
-        assert slept and sum(slept) > 0
+        assert clock.sleeps and sum(clock.sleeps) > 0
 
     def test_no_limit_means_no_sleeping(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         open_fn, _state = _fake_urlopen()
         monkeypatch.setattr("kiro_crew.asset_downloader.build_opener", lambda *a, **k: open_fn)
-        slept: list[float] = []
-        monkeypatch.setattr(dl.time, "sleep", lambda s: slept.append(s))
+        clock = _pin_clock(monkeypatch)
         assert dl.download_to(tmp_path / "clip.mp4", _URL, sha256=_SHA, chunk_bytes=512)[0] is True
-        assert slept == []
+        assert clock.sleeps == ()
 
 
 class TestRedaction:
@@ -555,7 +571,7 @@ class TestStagingSymlink:
         try:
             assert offset == 10
             assert digest.hexdigest() == hashlib.sha256(b"0123456789").hexdigest()
-            hashed = dl._identity(os.fstat(out.fileno()))
+            hashed = dl.file_identity(os.fstat(out.fileno()))
             if sys.platform.startswith("win"):
                 out.write(b"x")
                 out.flush()
@@ -564,7 +580,7 @@ class TestStagingSymlink:
                 staging.unlink()
                 out.write(b"x")
                 out.flush()
-                assert dl._identity(os.fstat(out.fileno())) == hashed
+                assert dl.file_identity(os.fstat(out.fileno())) == hashed
                 assert os.fstat(out.fileno()).st_size == 11
         finally:
             out.close()
@@ -580,7 +596,7 @@ class TestStagingSymlink:
         staging.write_bytes(b"0123456789")
         assert dl._resume_partial(here, "clip.mp4.part", size=10) is None
         assert dl._resume_partial(here, "clip.mp4.part", size=5) is None
-        with dl._open_staging_nofollow(here, "clip.mp4.part") as out:
+        with dl.open_staging_nofollow(here, "clip.mp4.part") as out:
             out.write(b"fresh")
         assert staging.read_bytes() == b"fresh"
 
@@ -650,7 +666,7 @@ class TestStagingSymlink:
         monkeypatch.setattr("kiro_crew.asset_downloader.build_opener", lambda *a, **k: open_fn)
         target = tmp_path / "clip.mp4"
         staging = tmp_path / f"clip.mp4{dl.PART_SUFFIX}"
-        real_install = dl._install
+        real_install = dl.install_verified
 
         def _swap_then_install(target_dir, staging_name, name, **kwargs):  # noqa: ANN001
             staging.unlink()
@@ -658,15 +674,37 @@ class TestStagingSymlink:
             if sys.platform != "win32":
                 # The hashed descriptor is still open, so its inode is still
                 # allocated and the recreated file cannot have landed on it.
-                assert dl._identity(os.stat(staging)) != kwargs["verified"]
+                assert dl.file_identity(os.stat(staging)) != kwargs["verified"]
             return real_install(target_dir, staging_name, name, **kwargs)
 
-        monkeypatch.setattr(dl, "_install", _swap_then_install)
+        monkeypatch.setattr(dl, "install_verified", _swap_then_install)
         ok, err = dl.download_to(target, _URL, sha256=_SHA)
         assert ok is False
         assert "replaced during the transfer" in err
         assert not target.exists()
         assert not staging.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX O_NOFOLLOW refusal")
+    def test_a_link_swapped_in_at_the_staging_name_is_not_left_at_the_target(
+        self, tmp_path: Path
+    ) -> None:
+        """A symlink renamed onto the final name fails the no-follow reopen. It
+        must be removed, not left in place for a reader to follow."""
+        referent = tmp_path / "unverified"
+        referent.write_bytes(b"not the bytes that were hashed")
+        staging = tmp_path / "clip.mp4.part"
+        staging.symlink_to(referent)
+        target = tmp_path / "clip.mp4"
+        with pytest.raises(dl.StagingRefused, match="cannot be re-opened"):
+            dl.install_verified(
+                dl.TargetDir(tmp_path),
+                staging.name,
+                target.name,
+                verified=(0, 0),
+                restrict_to_owner=False,
+            )
+        assert not os.path.lexists(target)
+        assert referent.read_bytes() == b"not the bytes that were hashed"
 
     def test_the_installed_name_is_the_inode_that_was_hashed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -674,17 +712,17 @@ class TestStagingSymlink:
         open_fn, _state = _fake_urlopen()
         monkeypatch.setattr("kiro_crew.asset_downloader.build_opener", lambda *a, **k: open_fn)
         seen: list[tuple[int, int]] = []
-        real_install = dl._install
+        real_install = dl.install_verified
 
         def _record(target_dir, staging_name, name, *, verified, **kwargs):  # noqa: ANN001
             seen.append(verified)
             return real_install(target_dir, staging_name, name, verified=verified, **kwargs)
 
-        monkeypatch.setattr(dl, "_install", _record)
+        monkeypatch.setattr(dl, "install_verified", _record)
         target = tmp_path / "clip.mp4"
         ok, err = dl.download_to(target, _URL, sha256=_SHA)
         assert (ok, err) == (True, "")
-        assert seen == [dl._identity(os.stat(target))]
+        assert seen == [dl.file_identity(os.stat(target))]
 
     def test_the_link_count_is_judged_on_the_descriptor(self, tmp_path: Path) -> None:
         real = tmp_path / "real.part"
@@ -709,7 +747,7 @@ class TestStagingSymlink:
         victim.write_bytes(b"do not touch")
         staging = tmp_path / "clip.mp4.part"
         staging.symlink_to(victim)
-        with dl._open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part") as out:
+        with dl.open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part") as out:
             out.write(b"fresh")
         assert victim.read_bytes() == b"do not touch"
         assert not staging.is_symlink() and staging.read_bytes() == b"fresh"
@@ -730,7 +768,7 @@ class TestStagingSymlink:
         staging.symlink_to(victim)
         monkeypatch.setattr(dl, "_remove_stale_staging", lambda _d, _n: None)
         with pytest.raises(dl.StagingRefused):
-            dl._open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part")
+            dl.open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part")
         assert victim.read_bytes() == b"do not touch"
 
     def test_a_directory_at_the_staging_name_is_refused_not_removed(self, tmp_path: Path) -> None:
@@ -738,7 +776,7 @@ class TestStagingSymlink:
         staging.mkdir()
         (staging / "keep").write_bytes(b"x")
         with pytest.raises(dl.StagingRefused):
-            dl._open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part")
+            dl.open_staging_nofollow(dl.TargetDir(tmp_path), "clip.mp4.part")
         assert (staging / "keep").exists()
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX symlink semantics")

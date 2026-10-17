@@ -18,10 +18,12 @@ conftest, so these do not take ``tmp_path`` for the config themselves.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
+import sys
 import time
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -61,6 +63,47 @@ def _write_stt(**fields: object) -> None:
 
 def _stored_stt() -> dict:
     return json.loads(config_path().read_text(encoding="utf-8"))["stt"]
+
+
+def _ensure_botocore(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``botocore.config`` and ``botocore.exceptions`` importable for one test.
+
+    ``list_custom_vocabularies`` imports them as soon as its ``boto3`` guard
+    passes, and a fake ``boto3`` passes that guard on a host without the AWS
+    extra, so a test that reaches the listing through one calls this first.
+    Where the real package imports it is left alone. Otherwise minimal modules
+    holding the three names the listing uses stand in until the test ends.
+    A test that raises botocore's own errors still needs the real package,
+    because a stand-in cannot show how the real classes are handled.
+    """
+    try:
+        importlib.import_module("botocore.config")
+        importlib.import_module("botocore.exceptions")
+    except ImportError:
+        pass
+    else:
+        return
+
+    class Config:
+        """Stands in for ``botocore.config.Config``; keeps what it is given."""
+
+        def __init__(self, **options: Any) -> None:
+            self.options = options
+
+    class BotoCoreError(Exception):
+        """Stands in for ``botocore.exceptions.BotoCoreError``."""
+
+    class ClientError(Exception):
+        """Stands in for ``botocore.exceptions.ClientError``."""
+
+    config = ModuleType("botocore.config")
+    exceptions = ModuleType("botocore.exceptions")
+    package = ModuleType("botocore")
+    vars(config).update(Config=Config)
+    vars(exceptions).update(BotoCoreError=BotoCoreError, ClientError=ClientError)
+    vars(package).update(config=config, exceptions=exceptions)
+    for module in (package, config, exceptions):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
 
 
 class _FakeTranscribe:
@@ -244,6 +287,7 @@ async def test_an_unusable_name_is_skipped_and_siblings_still_apply(bogus: objec
 
 
 def test_lists_every_page_sorted_by_name(monkeypatch) -> None:
+    _ensure_botocore(monkeypatch)
     fake = _FakeTranscribe(
         pages=[
             {"Vocabularies": [_vocab("zeta"), _vocab("Alpha", "fr-FR")], "NextToken": "p2"},
@@ -269,6 +313,7 @@ def test_lists_every_page_sorted_by_name(monkeypatch) -> None:
 def test_an_empty_profile_uses_the_default_chain(monkeypatch) -> None:
     """The stream's own resolution: no profile means boto3's default chain, which
     ``profile_name=""`` would instead refuse as an unknown profile."""
+    _ensure_botocore(monkeypatch)
     fake = _FakeTranscribe(pages=[{"Vocabularies": []}]).install(monkeypatch)
     listing = tr.list_custom_vocabularies("", "us-east-1")
     assert listing.vocabularies == []
@@ -277,6 +322,7 @@ def test_an_empty_profile_uses_the_default_chain(monkeypatch) -> None:
 
 
 def test_stops_after_the_page_cap(monkeypatch, caplog) -> None:
+    _ensure_botocore(monkeypatch)
     endless = [{"Vocabularies": [_vocab(f"v{i}")], "NextToken": "more"} for i in range(50)]
     fake = _FakeTranscribe(pages=endless).install(monkeypatch)
     with caplog.at_level(logging.WARNING, logger="kiro_crew.transcribe"):
@@ -288,10 +334,28 @@ def test_stops_after_the_page_cap(monkeypatch, caplog) -> None:
 
 
 def test_skips_an_entry_without_a_name(monkeypatch) -> None:
+    _ensure_botocore(monkeypatch)
     _FakeTranscribe(pages=[{"Vocabularies": [{"LanguageCode": "en-US"}, _vocab("ok")]}]).install(
         monkeypatch
     )
     assert [v.name for v in tr.list_custom_vocabularies("", "us-east-1").vocabularies] == ["ok"]
+
+
+def test_lists_when_botocore_is_not_importable(monkeypatch) -> None:
+    """The stand-in botocore modules are what let the listing tests run on a host
+    without the AWS extra. Hiding the real package here exercises them on every
+    host."""
+    for name in ("botocore.config", "botocore.exceptions"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "botocore", None)
+    _ensure_botocore(monkeypatch)
+    fake = _FakeTranscribe(pages=[{"Vocabularies": [_vocab("ok")]}]).install(monkeypatch)
+
+    listing = tr.list_custom_vocabularies("", "us-east-1")
+
+    assert [v.name for v in listing.vocabularies] == ["ok"]
+    # Only the stand-in ``Config`` keeps its options, so the stand-in is what ran.
+    assert fake.clients[0]["config"].options["read_timeout"] == tr._VOCABULARY_READ_TIMEOUT_SECS
 
 
 def test_an_access_denial_has_its_own_code(monkeypatch) -> None:
@@ -336,6 +400,7 @@ def test_without_the_aws_packages_it_is_a_list_failure(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_lists_for_the_configured_target(monkeypatch, _consented) -> None:
+    _ensure_botocore(monkeypatch)
     _write_stt(provider="transcribe", transcribe_profile="team", transcribe_region="eu-west-1")
     fake = _FakeTranscribe(
         pages=[{"Vocabularies": [_vocab("team-terms"), _vocab("drafts", state="PENDING")]}]

@@ -10,6 +10,9 @@ The heartbeat service (`kiro_crew/heartbeat.py`) runs periodic background tasks 
 2. **FTS index rebuild** — every `_FTS_REBUILD_TICKS` ticks (~15 min at the default interval)
 3. **Daily retention prune** — every `_PRUNE_TICKS` ticks (~24h at the default interval): `prune_history(keep_days=memory.history_max_days)` plus `sel().prune()`. Both run on the maintenance executor, never on the event loop, and a failed SEL prune increments the `kirocrew.sel.prune_failed.count` counter rather than aborting the beat.
 4. **Idle-session consolidation** — `HistoryConsolidator.check_idle_sessions()` on **every** tick, not on a multiple
+5. **Rotating memory backup** — scheduled on the first beat and then every `_MEMORY_BACKUP_TICKS` (1440) ticks at offset `_MEMORY_BACKUP_OFFSET` (30), so it never lands on the prune tick; it copies every active memory store on the maintenance executor and runs only when `memory.backup_enabled` is on, keeping `memory.backup_keep` copies
+
+While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory awaiting owner recovery), a beat runs only idle consolidation (and the backup schedule above) and returns: no task processing, no FTS rebuild, no prune.
 
 ## HEARTBEAT.md Format
 
@@ -57,7 +60,7 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 ## Per-Task Timeout (Unattended Turn Bound)
 
 A heartbeat turn runs without a human present. The `_heartbeat_task` callback in
-`slack/gateway.py` wraps `stream_and_collect` in
+`slack/gateway_runtime/heartbeat_turns.py` wraps `stream_and_collect` in
 `asyncio.wait_for(..., timeout=HEARTBEAT_TASK_TIMEOUT_SECS)` (1800s / 30 min,
 mirroring cron's `_JOB_TIMEOUT_SECS`). This is the analogue of cron's
 `_execute_with_timeout`.
@@ -68,8 +71,8 @@ callback would block on the human-approval wait with no human present — wedgin
 
 On `asyncio.TimeoutError`:
 1. Reset the heartbeat session (`sessions.reset(HEARTBEAT_KEY)`) BEFORE the
-   `finally` releases it — kills the lingering `claude-agent-acp` turn/process so
-   it does not outlive the timeout. A failing reset is logged and swallowed. This
+   `finally` releases it — kills the lingering harness turn/process (whatever backend
+   serves the session) so it does not outlive the timeout. A failing reset is logged and swallowed. This
    is safe because `asyncio.wait_for` has already cancelled the in-flight
    `stream_and_collect`, and any concurrent sibling task in the same cycle is
    blocked on the per-key semaphore (held until our `finally` releases) — they
@@ -92,46 +95,47 @@ stays bounded.  Concurrent tasks share `HEARTBEAT_KEY`, so a per-task
 is still using (the per-key semaphore guarantees serialization, but resetting
 inside the critical section means the next holder receives a torn-down provider).
 
-The fix: per-task `finally` only releases the semaphore.  Cycle-end recycle
-is `SessionManager.recycle_heartbeat`, invoked once via
-`HeartbeatService(on_cycle_end=...)` after gather completes — and only when the
-session has crossed the `_BG_RECYCLE_PCT` (70%) or `_BG_BLIND_RECYCLE_PROMPTS`
-(40 prompt) threshold.  Healthy cycles reuse the warm session; the MCP toolbelt
-is cold-started ~once every N cycles instead of every cycle.
+So the per-task `finally` only releases the semaphore. Cycle-end recycle is
+`SessionManager.recycle_heartbeat`, invoked once via
+`HeartbeatService(on_cycle_end=...)` after gather completes. It tears the
+heartbeat session down at the end of EVERY cycle that has one; the context
+percentage is only logged. The next cycle's first task starts a fresh session.
 
 ## Gateway Wiring
 
-`HeartbeatService` is started in `slack/gateway.py` after cron service:
-- `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kirocrew-heartbeat"`, streams the response (gated by `HEARTBEAT_SAFE_TOOLS`), posts the result, and releases the per-key semaphore
-- `on_cycle_end` callback: invokes `SessionManager.recycle_heartbeat` once after `asyncio.gather` completes — recycles the session only when it has crossed the context / prompt-count threshold
+`HeartbeatService` is started in `slack/gateway_runtime/heartbeat_turns.py` after cron service:
+- `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kirocrew-heartbeat"`, streams the response (gated by the heartbeat allowlist in `_heartbeat_approval`), posts the result, and releases the per-key semaphore
+- `on_cycle_end` callback: invokes `SessionManager.recycle_heartbeat` once after `asyncio.gather` completes — tears the session down unconditionally
 - Callback re-raises exceptions so heartbeat can track failures
 - Stopped during gateway shutdown
 
 ### Session Identity
 
-Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kirocrew-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent.py`) — a minimal MCP surface (`kirocrew-core` only on public installs; the enterprise internal MCP server wiring is omitted, matching `_install_research_agent` / `_install_knowledge_agent`) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
+Heartbeat runs in its own session (`HEARTBEAT_KEY = "_hb"` in `session_parts/policy.py`), distinct from the shared `BACKGROUND_KEY = "_bg"` used by cron / consolidator / chat-title. The session uses the dedicated `kirocrew-heartbeat` agent (installed by `_install_heartbeat_agent` in `agent.py`) — a minimal MCP surface (`kirocrew-core`, plus the default-spec servers behind the edition's `heartbeat_safe_tools()` pins; a standalone install pins none) so cycle cold-starts stay cheap. SEL audit logging stays gateway-side in `_heartbeat_approval` regardless; the per-agent narrowing is purely a cold-start cost reduction.
 
-The session is shared across all tasks in one cycle (so concurrent gather'd tasks reuse the warm provider) and conditionally recycled by `recycle_heartbeat` between cycles when context grows past the threshold.
+The heartbeat spec copies the default spec's `heartbeat_mirrored_servers()` entries — `kirocrew-core` with `autoApprove` included and the main agent's tool filters stripped, then each server an edition pinned a tool on verbatim minus `autoApprove` (kiro-cli would honour that field locally, before `_heartbeat_approval` saw the call, on the one agent with no approver) — so it is a derived spec like `kirocrew-worker`. A name the default spec does not mount is skipped, so an edition contributes a heartbeat server by also returning it from `extra_mcp_servers()`. Every spawn runs `require_fresh_derived_spec`, which compares the heartbeat file's own grant surface with the one `heartbeat_mcp_servers` derives from `kirocrew.json` as it stands: its `mcpServers` (volatile per-launch env values aside), its `tools`, no key the installer does not write, and an `includeMcpJson` that is literally `false` (kiro-cli reads a missing key as true and merges the global `mcp.json`). A copy that does not match is re-derived once, and the start is refused with `DerivedSpecStale` when the re-derived file still does not match. An edit to any other part of the default spec does not touch the heartbeat copy; the fingerprint covers exactly the mirrored servers, edition ones included.
+
+The session is shared across all tasks in one cycle (so concurrent gather'd tasks reuse the warm provider) and recycled by `recycle_heartbeat` at the end of every cycle; it is never reused across cycles.
 
 Each task's prompt is built without a session key, but the record of skill bodies the session already holds is kept under `HEARTBEAT_KEY` (`build_message(..., skill_bodies_session=HEARTBEAT_KEY)`). A skill that several tasks on one session match is sent in full to the first and as its pointer line to the rest; a fresh session starts the record again. Each task settles the record with `rollback_skill_bodies` before it releases the session, because the next task builds on the same session: a task whose prompt never landed rolls it back, so the next task gets the full body. When the backend reports a completed compaction during a task's turn (`stream_and_collect(on_compaction=...)`), the task arms the session's one-shot reinjection flag before the release. The next task consumes it with `consume_reinjection` and passes `needs_reinjection=True`, so its prompt sends the skill bodies and session-start context the compaction dropped, and `rearm_reinjection` puts the flag back if that prompt never lands.
 
 ### HEARTBEAT_KEEP Injection
 
-Every heartbeat task text is prepended with a fixed instruction at the gateway (`_HEARTBEAT_KEEP_INJECTION` in `slack/gateway.py`) before `ctx_builder.build_message`. The instruction tells the agent it must include `HEARTBEAT_KEEP` in its response when the task is incomplete. Inline injection survives context compaction and webhook-restored sessions where skill / system-prompt copies of the same instruction can drift out of effective context.
+Every heartbeat task text is prepended with a fixed instruction at the gateway (`_HEARTBEAT_KEEP_INJECTION` in `slack/gateway_runtime/heartbeat_turns.py`) before `ctx_builder.build_message`. The instruction tells the agent it must include `HEARTBEAT_KEEP` in its response when the task is incomplete. Inline injection survives context compaction and webhook-restored sessions where skill / system-prompt copies of the same instruction can drift out of effective context.
 
-### Tool Approval (`HEARTBEAT_SAFE_TOOLS`)
+### Tool Approval (heartbeat allowlist)
 
-Heartbeat is unattended — there is no human to click an approval button. Tool approval uses `HOOK_BASED` policy with a heartbeat-scoped `HookManager` (built once at init by `_build_heartbeat_hooks`) and a custom callback (`GatewayOrchestrator._heartbeat_approval`) that auto-approves only tools whose name **exact-matches** a member of `HEARTBEAT_SAFE_TOOLS` and rejects everything else with a SEL audit event (`outcome=denied`, `reason=not_in_heartbeat_safe_tools`). Both approve and deny outcomes emit `log_tool_invocation` so every permission decision is auditable.
+Heartbeat is unattended — there is no human to click an approval button. Tool approval uses `HOOK_BASED` policy with a heartbeat-scoped `HookManager` (rebuilt for every task by `_build_heartbeat_hooks(self.ctx_builder.hooks)`, so a live change to denied commands applies without a restart) and a custom callback (`GatewayOrchestrator._heartbeat_approval`) that auto-approves only a tool whose **trusted identity** `_is_heartbeat_safe_tool` accepts and rejects everything else with a SEL audit event (`outcome=denied`, `reason=no_trusted_identity` when the event carries no trusted identity or an empty trusted `tool_name` (the cache hit on empty names a backend with no `_meta` identity channel produces), `reason=not_in_heartbeat_safe_tools` otherwise). Both approve and deny outcomes emit `log_tool_invocation` so every permission decision is auditable; the row names the `server/tool` identity the decision keyed on when the event is trusted, and the redacted title otherwise.
 
-The heartbeat-scoped hooks drop the user's `auto_approve_tools` so the allowlist is the **sole approval authority** — `llm_helpers._resolve_permission` would otherwise consult the hooks BEFORE the `_heartbeat_approval` callback, and a user config like `auto_approve_tools=["*"]` would auto-approve any tool, bypassing `HEARTBEAT_SAFE_TOOLS` entirely. The user's `auto_deny_tools` IS preserved (denies can only narrow what runs in heartbeat, never widen).
+The heartbeat-scoped hooks drop the user's `auto_approve_tools` so the allowlist is the **sole approval authority** — `llm_helpers._resolve_permission` would otherwise consult the hooks BEFORE the `_heartbeat_approval` callback, and a user config like `auto_approve_tools=["*"]` would auto-approve any tool, bypassing the allowlist entirely. The user's `auto_deny_tools` IS preserved (denies can only narrow what runs in heartbeat, never widen). The scoped hooks also set `HooksConfig.defer_reads_to_approver`, so the gate's read-only classifier tier gives no verdict: it auto-approves on the ACP `kind`, the title and `is_shell`, all of which the agent influences, so an edition MCP tool declaring `kind="read"` would otherwise run before `_heartbeat_approval` and its SEL audit ever saw it. Heartbeat judges reads itself, on the trusted identity, in `_is_heartbeat_safe_tool`; the deny tiers above still run first.
 
-A hook `TOOL_AUTO_APPROVE` that DOES fire in `_resolve_permission` (the read-only tier survives the heartbeat scoping; cron and autonudge turns run with the user's full hooks) is honoured for a **shell** command only after the name-grant check confirms each program name still resolves to the program it appears to name; a refusal downgrades to the caller's approver — `_heartbeat_approval` (exact-match allowlist) or the interactive card — never a hard block, audited as `outcome=auto_approve_declined` with `reason=name_grant`. On Windows the check models the shell's lookup and returns per-command verdicts the same way it does on POSIX, except that two host states still decline every name grant: `windows_lookup_not_modelled` when Windows cannot report where the user's Documents folder is (so whether a PowerShell profile runs before the command cannot be established), and `ambiguous_env` when a per-user PowerShell profile is present at one of the paths derived from Documents (kiro-cli starts the shell without `-NoProfile`, so that profile runs before every command and a function it defines resolves ahead of any program on `PATH` — the same threat `BASH_ENV` poses on POSIX); in those two states unattended cron/autonudge/heartbeat turns fall to their approver for shell tools the read-only tier auto-approves elsewhere. The check runs UNCONDITIONALLY; a refusal on a caller with no interactive approver rejects the tool (deny-by-default) rather than falling through to the caller-less auto-approve — an unattended turn is exactly where a shadowed name would otherwise run unwatched.
+A hook `TOOL_AUTO_APPROVE` that DOES fire in `_resolve_permission` (cron and autonudge turns run with the user's full hooks, read-only tier included) is honoured for a **shell** command only after the name-grant check confirms each program name still resolves to the program it appears to name; a refusal downgrades to the caller's approver — `_heartbeat_approval` (exact-match allowlist) or the interactive card — never a hard block, audited as `outcome=auto_approve_declined` with `reason=name_grant`. On Windows the check models the shell's lookup and returns per-command verdicts the same way it does on POSIX, except that two host states still decline every name grant: `windows_lookup_not_modelled` when Windows cannot report where the user's Documents folder is (so whether a PowerShell profile runs before the command cannot be established), and `inherited_env_can_redefine_programs` (`name_grant.AMBIGUOUS_ENV`) when a per-user PowerShell profile is present at one of the paths derived from Documents (kiro-cli starts the shell without `-NoProfile`, so that profile runs before every command and a function it defines resolves ahead of any program on `PATH` — the same threat `BASH_ENV` poses on POSIX); in those two states unattended cron/autonudge/heartbeat turns fall to their approver for shell tools the read-only tier auto-approves elsewhere. The check runs UNCONDITIONALLY; a refusal on a caller with no interactive approver rejects the tool (deny-by-default) rather than falling through to the caller-less auto-approve — an unattended turn is exactly where a shadowed name would otherwise run unwatched.
 
-The allowlist is name-based and exact-match only — no verb / heuristic fallback. Heartbeat polls untrusted external content (CR comments, ticket bodies) where prompt-injection could try to widen approval via a clever read-shaped tool name (`get_all_credentials`, `list_env_secrets`, etc.). Strict enforcement is auditable and cannot be widened that way; this is deny-by-default per the security-controls guideline.
+The allowlist is identity-based and exact-match only — no verb / heuristic fallback, and no fallback to the model-authored title. `event.mcp_identity_trusted` must be set (the `tool_name` / `mcp_server_name` pair came from the adapter's `_meta` channel) and `tool_name` must be non-empty, since a cache hit on empty names also sets the flag; a backend that publishes none (`acp/_dispatch.py` names claude-agent-acp and opencode) gets no heartbeat tool approval at all and runs as a text-only poller — intended, not a gap to paper over with a title fallback. Each such denial is audited as `reason=no_trusted_identity` and logs a gateway warning that the backend published no trusted tool identity, so every heartbeat tool call is denied on it. Heartbeat polls untrusted external content (CR comments, ticket bodies) where prompt-injection could try to widen approval via a clever read-shaped tool name (`get_all_credentials`, `list_env_secrets`, etc.). Strict enforcement is auditable and cannot be widened that way; this is deny-by-default per the security-controls guideline.
 
-The allowlist is curated for read-only / observation tools — local file reads (`Read`, `Grep`, `Glob`), `WorkspaceSearch`, and side-effect-free `kirocrew-core` reads (`learn_list`, `cron_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`). (The enterprise-internal read APIs — internal code/knowledge search, code-review/ticketing/pipeline/deploy/on-call reads, `recall` — were removed from the public fork's allowlist; an internal companion re-adds them out of band.) Write tools (`send_message`, `file_send`, `cron_add`, `Edit`, `Write`, shell `execute`/`run`) are not in the list and are rejected.
+The allowlist is curated for read-only / observation tools, each matched on its own identity shape (`slack-gateway.md`, Heartbeat Tool Allowlist, has the exact rules): the trusted host built-ins `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` names (`fs_read`, `glob`, `grep`, `web_fetch`, `web_search` — the spellings are the trusted channel's own, not the `Read` / `Grep` / `Glob` / `WorkspaceSearch` titles an earlier allowlist carried), side-effect-free reads from `kirocrew-core` (`learn_list`, `spawn_list`, `spawn_status`, `artifact_list`, `artifact_get`, `artifact_versions`, `local_knowledge_search`), each matched only as its qualified `kirocrew-core` identity, a host shell command whose recovered text classifies read-only and runs no `git` (git reads `.git/config` on invocation and `core.fsmonitor` / `core.hooksPath` name a program there that no text classifier sees; the interactive and cron paths have a human behind them, heartbeat does not), and the `@server/tool` identities an edition pins in `SlackEnterpriseGate.heartbeat_safe_tools()`. Write tools (`send_message`, `file_send`, `cron_add`, `fs_write`) and any shell command the classifier does not confirm read-only are rejected.
 
-When a legitimate new read tool needs to run in heartbeat, operators observe SEL `denied` events (or the gateway-log warning `Heartbeat blocked tool call: <name>`) and explicitly add the name to `HEARTBEAT_SAFE_TOOLS`.
+When a legitimate new read tool needs to run in heartbeat, operators observe SEL `denied` events (or the gateway-log warning `Heartbeat blocked tool call: <name>`) and explicitly add the name to the right set behind the heartbeat allowlist (`_HEARTBEAT_SAFE_CORE_MCP_TOOLS` for a `kirocrew-core` read, or the hooks built-in allowlist). A `no_trusted_identity` denial is a property of the backend, not a missing name.
 
 ## Constants
 
@@ -140,19 +144,19 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `_DEFAULT_INTERVAL` | 60 | `heartbeat.py` |
 | `_FTS_REBUILD_TICKS` | 15 | `heartbeat.py` |
 | `_PRUNE_TICKS` | 1440 | `heartbeat.py` |
+| `_MEMORY_BACKUP_TICKS` / `_MEMORY_BACKUP_OFFSET` | 1440 / 30 | `heartbeat.py` |
 | `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
-| `HEARTBEAT_KEY` | `_hb` | `session.py` |
-| `HEARTBEAT_SAFE_TOOLS` | curated frozenset | `slack/gateway_runtime/tool_policy.py` |
-| `_HEARTBEAT_KEEP_INJECTION` | reminder string | `slack/gateway.py` |
+| `HEARTBEAT_KEY` | `_hb` | `session_parts/policy.py` |
+| `_HEARTBEAT_SAFE_CORE_MCP_TOOLS` | frozenset of `kirocrew-core` reads | `slack/gateway_runtime/tool_policy.py` |
+| `_HEARTBEAT_KEEP_INJECTION` | reminder string | `slack/gateway_runtime/heartbeat_turns.py` |
 | `kirocrew-heartbeat` agent | minimal-MCP agent JSON | installed by `agent.py:_install_heartbeat_agent` |
-| `_BG_RECYCLE_PCT` | 70.0 (shared with background) | `session.py` |
 
 ## Known Limitations
 
 - No multiline tasks — each line is a separate task
-- If user edits file while tasks are processing, new additions may be lost
+- Tasks appended to HEARTBEAT.md while a cycle runs are kept: the rewrite re-reads the file under a file lock, merges what was appended, and replaces it atomically (`_rewrite_heartbeat_locked`). Only an edit or removal of a task that was in the cycle's own snapshot is overwritten
 - Exception-retried tasks have no max retry count
 
 ## Delivery Modes
@@ -194,7 +198,7 @@ audience. A refused target is SEL-logged `heartbeat_channel_deliver` /
 
 Resolves `chat-N` slot names to active session keys. The result is injected as a user message into the target slot, triggering an LLM response in that session. Useful for heartbeat tasks that should report back into an active dashboard conversation.
 
-Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. Falls back to Slack DM if slot not found.
+Slot resolution: `chat-0` → first active slot, `chat-3` → fourth slot. A busy slot queues the prompt. A slot that cannot be resolved drops the delivery: SEL `heartbeat_prompt_deliver` with `outcome=not_found` and a warning, with no Slack DM fallback.
 
 ### Slack Suppression for Incomplete Tasks
 

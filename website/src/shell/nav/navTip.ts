@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useTouchReplay } from '../../hooks/useTouchReplay'
 
 /** Shared hover-label state for collapsed (icon-only) nav rows. The label is
  *  rendered through a portal anchored to the row's screen position rather than
@@ -26,8 +27,13 @@ export function useNavTip<T extends HTMLElement>(enabled: boolean) {
         : { top: r.top, left: r.left, height: r.height }
     )
   }, [])
+  // A touch tap's replayed mouseenter (or the focus its mousedown gives the
+  // row) must not mount the label: on iOS that reads the tap as a hover and
+  // drops the row's click. Consumers spread `pointerProps` on the row so the
+  // tap's own pointer type is recorded (see useTouchReplay).
+  const { fromTouch, pointerProps } = useTouchReplay()
   const showTip = useCallback(() => {
-    if (!enabled || !rowRef.current) return
+    if (!enabled || !rowRef.current || fromTouch()) return
     if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null }
     place()
     // Mount at opacity 0, then flip next frame so the CSS opacity transition
@@ -36,7 +42,7 @@ export function useNavTip<T extends HTMLElement>(enabled: boolean) {
     // and flashes the label to full opacity before the unmount timer.
     if (rafId.current != null) cancelAnimationFrame(rafId.current)
     rafId.current = requestAnimationFrame(() => { rafId.current = null; setTipOn(true) })
-  }, [enabled, place])
+  }, [enabled, place, fromTouch])
   const hideTip = useCallback(() => {
     if (rafId.current != null) { cancelAnimationFrame(rafId.current); rafId.current = null }
     setTipOn(false)
@@ -82,5 +88,5 @@ export function useNavTip<T extends HTMLElement>(enabled: boolean) {
     if (hideTimer.current) clearTimeout(hideTimer.current)
     if (rafId.current != null) cancelAnimationFrame(rafId.current)
   }, [])
-  return { tip, tipOn, rowRef, showTip, hideTip, dismissTip }
+  return { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps }
 }

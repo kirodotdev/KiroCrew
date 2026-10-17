@@ -7,7 +7,7 @@ where the code lives:
 
 * the SURFACE: every name the module bound, with its kind, signature and value;
 * ``toolsSettings.subagent.availableAgents``: a kiro-cli-owned allowlist Crew reads at
-  its own spawn gate (``subagent.py``), carried byte-for-byte through every read,
+  its own spawn gate (``subagent_parts/agent_policy.py``), carried byte-for-byte through every read,
   normalize, rebuild, derived-agent and atomic-write path;
 * the tool-less guest spec, including its model fallback and install order;
 * the conductor prompts and grant tuples, which are spec bytes too.
@@ -48,7 +48,7 @@ BASE_SURFACE: dict[str, str] = {
     "CU_MCP_SERVER": "value str a7edc1bcf90cb13f",
     "DEPRECATED_AGENT_SPECS": "value dict 3c349bf8ac509967",
     "DERIVED_KEY": "value str 0c56dd87b525dbd3",
-    "DerivedSpecSnapshot": "class DerivedSpecSnapshot fields=identity,fingerprint,spec",
+    "DerivedSpecSnapshot": "class DerivedSpecSnapshot fields=identity,fingerprint,spec,agent",
     "DerivedSpecStale": "class DerivedSpecStale",
     "FileTooLargeError": "class FileTooLargeError",
     "ForeignAgentSpec": "class ForeignAgentSpec",
@@ -56,18 +56,17 @@ BASE_SURFACE: dict[str, str] = {
     "GUEST_AGENT_PROMPT": "value str 9f07b9e7c179fff5",
     "KIRO_AGENTS_DIR": "value host",
     "MCP_PATH_HINT": "value str 2c0b855124e13185",
-    "OWNED_KIRO_AGENT_FILES": "value tuple 3754b0aefac34d24",
+    "OWNED_KIRO_AGENT_FILES": "value tuple b6cbb50d931ce6c1",
     "Path": "class Path",
     "REQUIRED_KIRO_AGENT_FILES": "value tuple d3a5d201c05d5c9b",
     "SecurityEvent": "class SecurityEvent",
-    "_AppOwnership": "class _AppOwnership fields=owned,fully_read",
     "_BACKGROUND_CC_MODEL": "value str e5710d6b1810296f",
     "_BUNDLED_CFG_DIR": "value host",
     "_CC_MCP_JSON": "value host",
     "_CONDUCTOR_AGENT_FILENAME": "value str 923f5ca0627d569f",
-    "_CONDUCTOR_CORE_GRANTS": "value tuple 9ef89fe81974156e",
+    "_CONDUCTOR_CORE_GRANTS": "value tuple 7152a6eb169c7c40",
     "_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 0b859d2b54e84503",
-    "_CONDUCTOR_SYSTEM_PROMPT": "value str 1a9f0b08e1074817",
+    "_CONDUCTOR_SYSTEM_PROMPT": "value str 1209a2f6c77c3e84",
     "_CREW_ONLY_HOOK_EVENTS": "value frozenset 9d900cfb866f983a",
     "_DEFAULT_KIRO_HOOKS_DIR": "value host",
     "_DEFAULT_SPEC_OBSERVATION_ATTEMPTS": "value int 4e07408562bedb8b",
@@ -75,7 +74,7 @@ BASE_SURFACE: dict[str, str] = {
     "_FORK_REFRESH_WAIT_SECS": "value float db58b6c40698d737",
     "_GUEST_AGENT_FILENAME": "value str b1766e070226dc68",
     "_HEARTBEAT_AGENT_FILENAME": "value str 42387f9e3eabbf0e",
-    "_HEARTBEAT_SYSTEM_PROMPT": "value str 9054896452b91851",
+    "_HEARTBEAT_SYSTEM_PROMPT": "value str 63259f9ea08bdf5e",
     "_HOME_DERIVING_ENV_KEYS": "value frozenset 816c277fc333b3e0",
     "_HOOK_EVENT_CANONICAL": "value dict a09f334fa63b1a4f",
     "_HOOK_HEADER_RE": "value Pattern 905320879920c153",
@@ -102,7 +101,7 @@ BASE_SURFACE: dict[str, str] = {
     "_MANAGED_MCP_ENTRY_ITEM_TYPES": "value dict b743f9c4b68215c4",
     "_MANAGED_MCP_ENTRY_KEYS": "value frozenset 5b8554ac36b42722",
     "_MANAGED_MCP_ENTRY_VALUE_TYPES": "value dict adfab10cc996c8fe",
-    "_MANAGED_MCP_SERVERS": 'value dict {"gates": {"kirocrew-computer": "_computer_use_spec_gate", "kirocrew-core": null, "kirocrew-crew-log": null, "kirocrew-cron": null, "kirocrew-dashboard": null, "kirocrew-debug": null, "kirocrew-panel": null, "kirocrew-work": null}, "opt_in": {"kirocrew-computer": false, "kirocrew-core": false, "kirocrew-crew-log": true, "kirocrew-cron": false, "kirocrew-dashboard": true, "kirocrew-debug": true, "kirocrew-panel": true, "kirocrew-work": true}, "shape": {"kirocrew-computer": ["invocation_fn", "spec_gate"], "kirocrew-core": ["invocation_fn"], "kirocrew-crew-log": ["invocation_fn", "opt_in"], "kirocrew-cron": ["invocation_fn"], "kirocrew-dashboard": ["invocation_fn", "opt_in"], "kirocrew-debug": ["invocation_fn", "opt_in"], "kirocrew-panel": ["invocation_fn", "opt_in"], "kirocrew-work": ["invocation_fn", "opt_in"]}}',
+    "_MANAGED_MCP_SERVERS": 'value dict {"gates": {"kirocrew-computer": "_computer_use_spec_gate", "kirocrew-core": null, "kirocrew-crew-log": null, "kirocrew-cron": null, "kirocrew-dashboard": null, "kirocrew-debug": null, "kirocrew-guide": null, "kirocrew-mate": null, "kirocrew-panel": null, "kirocrew-work": null}, "opt_in": {"kirocrew-computer": false, "kirocrew-core": false, "kirocrew-crew-log": true, "kirocrew-cron": false, "kirocrew-dashboard": true, "kirocrew-debug": true, "kirocrew-guide": false, "kirocrew-mate": false, "kirocrew-panel": true, "kirocrew-work": true}, "shape": {"kirocrew-computer": ["invocation_fn", "spec_gate"], "kirocrew-core": ["invocation_fn"], "kirocrew-crew-log": ["invocation_fn", "opt_in"], "kirocrew-cron": ["invocation_fn"], "kirocrew-dashboard": ["invocation_fn", "opt_in"], "kirocrew-debug": ["invocation_fn", "opt_in"], "kirocrew-guide": ["invocation_fn"], "kirocrew-mate": ["invocation_fn"], "kirocrew-panel": ["invocation_fn", "opt_in"], "kirocrew-work": ["invocation_fn", "opt_in"]}}',
     "_MAX_HOOK_DESCRIPTION_LEN": "value int 40510175845988f1",
     "_MAX_HOOK_NAME_LEN": "value int 27badc983df1780b",
     "_MAX_HOOK_PAYLOAD_LEN": "value int 8b926d75599a618e",
@@ -111,13 +110,17 @@ BASE_SURFACE: dict[str, str] = {
     "_MAX_TOTAL_USER_HOOKS": "value int f5ca38f748a1d6ea",
     "_MAX_USER_HOOKS_PER_EVENT": "value int 4a44dc15364204a8",
     "_MCP_REGISTRY_TYPE": "value str 06c63899e16a32c5",
-    "_MEMBER_DASHBOARD_GRANTS": "value tuple 2903d7e5ad4146d8",
-    "_MEMBER_PANEL_GRANTS": "value tuple 8eca830550d60c52",
-    "_NATIVE_PROMPT_STUB": "value str ceed0be70c1f6da8",
+    "_MEMBER_DASHBOARD_GRANTS": "value tuple 217848c3e96f9a58",
+    # Moved for ``@kirocrew-panel/dashboard_types``, the dynamic dashboard's data-type
+    # catalog. The readable pin for this tuple is
+    # ``test_the_member_grants_extend_the_conductor_grants``, which spells the whole set
+    # out; this digest is the byte-level half and moves with it.
+    "_MEMBER_PANEL_GRANTS": "value tuple fe49f85f5f3b65f6",
+    "_NATIVE_PROMPT_STUB": "value str cf6d81ff1d0b3797",
     "_PIPELINE_CONDUCTOR_AGENT_FILENAME": "value str 3b5e111de6d1d305",
-    "_PIPELINE_CONDUCTOR_CORE_GRANTS": "value tuple 109d937a21907304",
+    "_PIPELINE_CONDUCTOR_CORE_GRANTS": "value tuple 1ad9ce711e266082",
     "_PIPELINE_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 3f7fb6d17a7f0ebc",
-    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str 01ae90df03972afa",
+    "_PIPELINE_CONDUCTOR_SYSTEM_PROMPT": "value str d7010e266b564182",
     "_PROVENANCE_SPEC_CAP_BYTES": "value int 54faea9b3eeffce2",
     "_PROVENANCE_TOTAL_BUDGET_BYTES": "value int 107f41ed92e01eb5",
     "_RESEARCH_AGENT_FILENAME": "value str 5cec351bc572af00",
@@ -126,21 +129,23 @@ BASE_SURFACE: dict[str, str] = {
     "_SAFE_PATH_RE": "value platform",
     "_SECURITY_CONDUCTOR_AGENT_FILENAME": "value str ea0f45466289114a",
     "_SECURITY_CONDUCTOR_DASHBOARD_GRANTS": "value tuple 4f02f1db82a878ee",
-    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str a45a590950b2383f",
+    "_SECURITY_CONDUCTOR_SYSTEM_PROMPT": "value str 667c3be2c962f11a",
+    "_TEAM_LEAD_AGENT_FILENAME": "value str ef870cb7d4ed6640",
+    "_TEAM_LEAD_SYSTEM_PROMPT": "value str 24dc989a61cd8e56",
     "_SOURCE_OWNED_MCP_KEYS": "value tuple b13c0a56645cc511",
     "_VALID_HOOK_EVENTS": "value frozenset 2b7aa96bff704c33",
     "_WORKER_AGENT_FILENAME": "value str e6d5cee102d8cbdf",
     "_WORKER_EXCLUDED_GRANTS": "value frozenset 1a2756dd420ed333",
     "_WORKER_MIRRORED_KEYS": "value tuple 27234a2a963813c9",
     "_WORKER_MIRRORED_SHAPES": "value dict 245618c04df2519f",
-    "_WORKER_SYSTEM_PROMPT": "value str 925d2229bb9d45c0",
+    "_WORKER_SYSTEM_PROMPT": "value str ccb9c4133462d4f2",
     "_WORKER_WORK_GRANTS": "value tuple 2617544a8ba41753",
     "_agent_identity_enabled": "callable _agent_identity_enabled() -> 'bool'",
     "_agentcore_capability_permitted": "callable _agentcore_capability_permitted() -> 'bool'",
     "_aim_skill_paths": "callable _all_skill_paths() -> 'list[str]'",
     "_alias_family_base": "callable _alias_family_base(key: 'str') -> 'str'",
     "_all_skill_paths": "callable _all_skill_paths() -> 'list[str]'",
-    "_app_owned_mcp_keys": "callable _app_owned_mcp_keys() -> '_AppOwnership'",
+    "_app_owned_mcp_keys": "callable _app_owned_mcp_keys() -> 'dict[str, bool]'",
     "_apply_allowed_tools_ceiling": "callable _apply_allowed_tools_ceiling(config: 'dict', *, source: 'str') -> 'None'",
     "_apply_connection_tool_aliases": "callable _apply_connection_tool_aliases(config: 'dict', claimed: 'frozenset[tuple[str, str, str]]' = frozenset()) -> 'tuple[str, frozenset[tuple[str, str, str]]] | None'",
     "_apply_operator_oauth_client": "callable _apply_operator_oauth_client(name: 'str', entry: 'dict', *, managed: 'bool') -> 'dict'",
@@ -155,7 +160,7 @@ BASE_SURFACE: dict[str, str] = {
     "_ceiling_filtered_spec": "callable _ceiling_filtered_spec(ref: 'str', spec: 'dict[str, Any]', *, audit: 'bool' = True) -> 'dict[str, Any]'",
     "_collect_app_mcp_servers": "callable _collect_app_mcp_servers(*, audit: 'bool' = True) -> 'dict[str, Any]'",
     "_computer_use_spec_gate": "callable _computer_use_spec_gate() -> 'bool'",
-    "_conductor_mcp_servers": "callable _conductor_mcp_servers(config: 'dict[str, Any]', *, work: 'bool' = False) -> 'dict[str, Any]'",
+    "_conductor_mcp_servers": "callable _conductor_mcp_servers(config: 'dict[str, Any]') -> 'dict[str, Any]'",
     "_conductor_spec": "callable _conductor_spec(*, name: 'str', description: 'str', filename: 'str', source: 'str', clean: 'bool' = False) -> 'dict[str, Any] | None'",
     "_conflicting_spec_for": "callable _conflicting_spec_for(name: 'str', chosen: 'Path', agents_dir: 'Path') -> 'Path | None'",
     "_connection_tool_aliases_enabled": "callable _connection_tool_aliases_enabled() -> 'bool'",
@@ -204,6 +209,7 @@ BASE_SURFACE: dict[str, str] = {
     "_install_pipeline_conductor_agent": "callable _install_pipeline_conductor_agent(*, clean: 'bool' = False) -> 'bool'",
     "_install_research_agent": "callable _install_research_agent() -> 'None'",
     "_install_security_conductor_agent": "callable _install_security_conductor_agent(*, clean: 'bool' = False) -> 'bool'",
+    "_install_team_lead_agent": "callable _install_team_lead_agent() -> 'None'",
     "_install_worker_agent": "callable _install_worker_agent() -> 'None'",
     "_installed_default_spec": "callable _installed_default_spec() -> 'dict[str, Any] | None'",
     "_interpreter_runnable": "callable _interpreter_runnable(candidate: 'Path') -> 'bool'",
@@ -387,6 +393,7 @@ BASE_COLLABORATORS: dict[str, tuple[str, str]] = {
         "kiro_crew.agent_files",
         "SECURITY_CONDUCTOR_AGENT_FILENAME",
     ),
+    "_TEAM_LEAD_AGENT_FILENAME": ("kiro_crew.agent_files", "TEAM_LEAD_AGENT_FILENAME"),
     "_WORKER_AGENT_FILENAME": ("kiro_crew.agent_files", "WORKER_AGENT_FILENAME"),
     "_declared_project_agent_name": ("kiro_crew.agent_discovery", "_declared_project_agent_name"),
     "_in_ephemeral_tree": ("kiro_crew.config.paths", "_in_ephemeral_tree"),
@@ -768,6 +775,7 @@ def test_derived_specs_inherit_the_shape_from_the_template(
         "kirocrew-pipeline-conductor.json",
         "kirocrew-security-conductor.json",
         "kirocrew-research.json",
+        "kirocrew-team-lead.json",
         "kirocrew-worker.json",
     ):
         assert rig.read(derived)["toolsSettings"] == built["toolsSettings"], derived
@@ -870,6 +878,7 @@ def test_the_lite_spec_is_the_bare_background_agent(
         "tools": [],
         "mcpServers": {},
         "prompt": "",
+        "includeMcpJson": False,
     }
     assert agent_state.get_cc_model("kirocrew-lite") == agent._BACKGROUND_CC_MODEL
 
@@ -908,10 +917,19 @@ def test_the_member_grants_extend_the_conductor_grants_in_order() -> None:
         "@kirocrew-dashboard/session_send",
         "@kirocrew-dashboard/session_broadcast",
         "@kirocrew-dashboard/session_stop",
+        "@kirocrew-dashboard/session_retry",
     )
     assert agent._MEMBER_PANEL_GRANTS == (
         "@kirocrew-panel/panel_templates",
         "@kirocrew-panel/panel_publish",
+        "@kirocrew-panel/dashboard_fields",
+        "@kirocrew-panel/dashboard_types",
+        "@kirocrew-panel/dashboard_write",
+        "@kirocrew-panel/dashboard_save",
+        "@kirocrew-panel/dashboard_templates",
+        "@kirocrew-panel/dashboard_preview",
+        "@kirocrew-panel/dashboard_apply",
+        "@kirocrew-panel/dashboard_rollback",
     )
 
 
@@ -935,7 +953,13 @@ def test_no_conductor_is_granted_a_fleet_write_or_a_model_switch() -> None:
         agent._SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
     )
     for grants in conductor_tuples:
-        for verb in ("session_broadcast", "session_send", "session_stop", "session_set_model"):
+        for verb in (
+            "session_broadcast",
+            "session_send",
+            "session_stop",
+            "session_retry",
+            "session_set_model",
+        ):
             assert f"@kirocrew-dashboard/{verb}" not in grants
     every = conductor_tuples + (agent._MEMBER_DASHBOARD_GRANTS, agent._MEMBER_PANEL_GRANTS)
     assert all("@kirocrew-dashboard/session_set_model" not in grants for grants in every)

@@ -25,6 +25,19 @@ _STDIO = {"command": "npx", "args": ["-y", "@acme/weather-mcp"], "env": {"KEY": 
 _REMOTE = {"url": "https://mcp.example.com/sse"}
 
 
+def _rebuild_that_writes(**kwargs) -> Path:
+    """A rebuild that wrote the spec: it reports the write the way the real one does."""
+    wrote_out = kwargs.get("_wrote_out")
+    if wrote_out is not None:
+        wrote_out.append(True)
+    return Path("/dev/null")
+
+
+def _rebuild_that_declines(**_kwargs) -> Path:
+    """A rebuild the shared-home guard refused: it returns the path and writes nothing."""
+    return Path("/dev/null")
+
+
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     """Pin $HOME to tmp_path so all config paths resolve into a sandbox."""
@@ -45,7 +58,7 @@ def sandbox(fake_home, monkeypatch):
 
     import kiro_crew.agent as agent_mod
 
-    rebuild = MagicMock()
+    rebuild = MagicMock(side_effect=_rebuild_that_writes)
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
     return SimpleNamespace(
@@ -110,7 +123,12 @@ class TestCustomAdd:
             resp = await client.post("/api/mcp/custom", json={"servers": {"weather": _STDIO}})
             assert resp.status == 200
             body = await resp.json()
-            assert body == {"ok": True, "added": ["weather"], "enabled": False}
+            assert body == {
+                "ok": True,
+                "added": ["weather"],
+                "enabled": False,
+                "agent_spec_rewritten": True,
+            }
             entry = _written(sandbox)["weather"]
             assert entry["command"] == "npx"
             assert entry["args"] == ["-y", "@acme/weather-mcp"]
@@ -373,7 +391,11 @@ class TestCustomUpdate:
         try:
             resp = await client.put("/api/mcp/custom/weather", json={"spec": _REMOTE})
             assert resp.status == 200
-            assert await resp.json() == {"ok": True, "name": "weather"}
+            assert await resp.json() == {
+                "ok": True,
+                "name": "weather",
+                "agent_spec_rewritten": True,
+            }
             written = _written(sandbox)["weather"]
             assert written["url"] == _REMOTE["url"]
             assert "command" not in written  # old stdio keys fully replaced
@@ -477,11 +499,15 @@ class TestCustomUpdate:
         finally:
             await client.close()
 
-    async def test_put_modifying_stored_headers_is_refused(self, sandbox, fake_sel):
-        """Stored values are shown redacted, so an edited value cannot be
-        distinguished from a mangled marker — refuse rather than guess."""
-        raw_headers = {"Authorization": "Bearer old-secret"}
-        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+    async def test_put_placeholder_keeps_value_and_new_value_replaces(self, sandbox, fake_sel):
+        """A header left as the exact placeholder keeps its stored value; a
+        header given a new value is replaced, in the same save."""
+        raw_headers = {"Authorization": "Bearer old-secret", "X-Api-Key": "kept-key"}
+        entry = {
+            "url": "https://mcp.example.com/sse",
+            "headers": raw_headers,
+            "disabledTools": ["write_file"],
+        }
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
         client = await _client()
         try:
@@ -489,10 +515,95 @@ class TestCustomUpdate:
             spec = (await resp.json())["spec"]
             spec["headers"]["Authorization"] = "Bearer new-secret"
             resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 200
+            body = await resp.text()
+            assert "kept-key" not in body and "new-secret" not in body
+            written = _written(sandbox)["remote"]
+            assert written["headers"] == {
+                "Authorization": "Bearer new-secret",
+                "X-Api-Key": "kept-key",
+            }
+            assert written["disabledTools"] == ["write_file"]
+        finally:
+            await client.close()
+
+    @pytest.mark.parametrize(
+        ("mutate", "reason"),
+        [
+            pytest.param(
+                lambda h: h.__setitem__("Authorization", ""),
+                "'Authorization' can't be empty",
+                id="empty-value",
+            ),
+            pytest.param(
+                lambda h: h.__setitem__("Authorization", "   "),
+                "'Authorization' can't be empty",
+                id="spaces-only-value",
+            ),
+            pytest.param(
+                lambda h: h.__setitem__("Authorization", h["Authorization"] + "x"),
+                "'Authorization' mixes",
+                id="altered-placeholder",
+            ),
+            pytest.param(
+                lambda h: h.__setitem__("Authorization", "Bearer " + h["Authorization"]),
+                "'Authorization' mixes",
+                id="placeholder-inside-value",
+            ),
+            pytest.param(
+                lambda h: h.__setitem__("X-Other", h.pop("Authorization")),
+                "Header names can't change here",
+                id="placeholder-under-another-name",
+            ),
+            pytest.param(
+                lambda h: h.pop("Authorization"),
+                "Header names can't change here",
+                id="name-removed",
+            ),
+            pytest.param(
+                lambda h: h.__setitem__("X-New", "fresh"),
+                "Header names can't change here",
+                id="name-added",
+            ),
+        ],
+    )
+    async def test_put_refuses_other_stored_header_edits(self, sandbox, fake_sel, mutate, reason):
+        """Only the exact placeholder under its own name keeps a value and only
+        a new value replaces one; anything else is refused and nothing written."""
+        raw_headers = {"Authorization": "Bearer old-secret", "X-Api-Key": "kept-key"}
+        entry = {"url": "https://mcp.example.com/sse", "headers": raw_headers}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            spec = (await resp.json())["spec"]
+            mutate(spec["headers"])
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
             assert resp.status == 400
             payload = await resp.json()
             assert payload["code"] == "stored_headers_not_editable"
+            assert reason in payload["error"]
+            assert "old-secret" not in json.dumps(payload)
             assert _written(sandbox)["remote"]["headers"] == raw_headers
+        finally:
+            await client.close()
+
+    async def test_empty_value_refusal_quotes_the_placeholder_exactly(self, sandbox, fake_sel):
+        """The refusal shows the exact text to put back, quoted, so it reads as
+        something to type and not as a label."""
+        from kiro_crew.mcp_discovery import MCP_REDACTED_HEADER_VALUE
+
+        entry = {"url": "https://mcp.example.com/sse", "headers": {"Authorization": "Bearer s"}}
+        sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"remote": entry}}))
+        client = await _client()
+        try:
+            resp = await client.get("/api/mcp/custom/remote")
+            spec = (await resp.json())["spec"]
+            spec["headers"]["Authorization"] = ""
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": spec})
+            assert resp.status == 400
+            error = (await resp.json())["error"]
+            assert f'"{MCP_REDACTED_HEADER_VALUE}" exactly' in error
         finally:
             await client.close()
 
@@ -536,9 +647,7 @@ class TestCustomGet:
         finally:
             await client.close()
 
-    async def test_oauth_hints_round_trip_without_echoing_authorization(
-        self, sandbox, fake_sel
-    ):
+    async def test_oauth_hints_round_trip_without_echoing_authorization(self, sandbox, fake_sel):
         """scopes/clientId survive GET→PUT unchanged, alongside a header entry."""
         entry = {
             "url": "https://api.githubcopilot.com/mcp/",
@@ -564,9 +673,7 @@ class TestCustomGet:
         finally:
             await client.close()
 
-    async def test_redacted_headers_round_trip_without_overwriting_values(
-        self, sandbox, fake_sel
-    ):
+    async def test_redacted_headers_round_trip_without_overwriting_values(self, sandbox, fake_sel):
         raw_headers = {
             "Authorization": "Bearer custom-secret",
             "X-Api-Key": "custom-api-key",
@@ -583,9 +690,7 @@ class TestCustomGet:
             assert "custom-secret" not in json.dumps(body)
             assert "custom-api-key" not in json.dumps(body)
 
-            resp = await client.put(
-                "/api/mcp/custom/remote", json={"spec": body["spec"]}
-            )
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": body["spec"]})
             assert resp.status == 200
             assert _written(sandbox)["remote"]["headers"] == raw_headers
         finally:
@@ -638,9 +743,7 @@ class TestMalformedConfigNeverClobbered:
         sandbox.kirocrew_json.write_text("{not json")
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 500
             assert "malformed" in (await resp.json())["error"]
             # The broken file is untouched — nothing was clobbered.
@@ -652,11 +755,11 @@ class TestMalformedConfigNeverClobbered:
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": ["broken"]}))
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 500
-            assert json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"] == ["broken"]
+            assert json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"] == [
+                "broken"
+            ]
         finally:
             await client.close()
 
@@ -666,9 +769,7 @@ class TestMalformedConfigNeverClobbered:
         )
         client = await _client()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 200
             servers = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]
             assert servers["existing"] == {"command": "keepme"}
@@ -764,7 +865,9 @@ class TestCarriedKeyRoundTrip:
                 json={"spec": {"command": "npx", "args": ["-y", "@acme/weather-mcp@2"]}},
             )
             assert resp.status == 200
-            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
             assert entry["disabledTools"] == ["dangerous_tool"], "must never be dropped by edit"
             assert entry["args"] == ["-y", "@acme/weather-mcp@2"]
         finally:
@@ -780,7 +883,9 @@ class TestCarriedKeyRoundTrip:
             )
             assert resp.status == 400
             assert "managed by other flows" in (await resp.json())["error"]
-            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"]["weather"]
+            entry = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))["mcpServers"][
+                "weather"
+            ]
             assert entry["disabledTools"] == ["dangerous_tool"]
         finally:
             await client.close()
@@ -820,15 +925,13 @@ class TestCarriedKeyRoundTrip:
             entry = _written(sandbox)["weather"]
             assert kiro_entry_scopes(entry) == [], "the cleared scopes must not come back"
             assert kiro_entry_client_id(entry) == "", "nor the cleared client id"
-            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
-                "a sibling sub-key we never owned still survives"
-            )
+            assert (
+                entry.get("oauth", {}).get("issuer") == "https://iss"
+            ), "a sibling sub-key we never owned still survives"
         finally:
             await client.close()
 
-    async def test_clearing_oauth_hints_also_drops_the_nested_wire_sibling(
-        self, sandbox, fake_sel
-    ):
+    async def test_clearing_oauth_hints_also_drops_the_nested_wire_sibling(self, sandbox, fake_sel):
         """The reader falls through to ``oauth.oauthScopes`` too, so a clear must reach it."""
         from kiro_crew.mcp_utils import kiro_entry_scopes
 
@@ -856,9 +959,9 @@ class TestCarriedKeyRoundTrip:
             assert resp.status == 200
             entry = _written(sandbox)["weather"]
             assert kiro_entry_scopes(entry) == [], "a nested wire sibling must not survive"
-            assert entry.get("oauth", {}).get("issuer") == "https://iss", (
-                "an unrelated oauth sub-key still survives"
-            )
+            assert (
+                entry.get("oauth", {}).get("issuer") == "https://iss"
+            ), "an unrelated oauth sub-key still survives"
         finally:
             await client.close()
 
@@ -882,9 +985,7 @@ class TestCarriedKeyRoundTrip:
             {"oauth": {"clientId": ""}},
             {"oauth": "not-a-dict"},
         ):
-            sandbox.kirocrew_json.write_text(
-                json.dumps({"mcpServers": {"weather": {"url": url}}})
-            )
+            sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": {"weather": {"url": url}}}))
             client = await _client()
             try:
                 resp = await client.put(
@@ -953,9 +1054,9 @@ class TestCarriedKeyRoundTrip:
                 entry = _written(sandbox)["weather"]
                 from kiro_crew.mcp_utils import kiro_entry_scopes
 
-                assert kiro_entry_scopes(entry) == expect_scopes, (
-                    f"{submit} must persist, got {entry}"
-                )
+                assert (
+                    kiro_entry_scopes(entry) == expect_scopes
+                ), f"{submit} must persist, got {entry}"
             finally:
                 await client.close()
 
@@ -1116,9 +1217,7 @@ class TestServersListSurfacesCustomAdds:
         from kiro_crew.dashboard.handlers import mcp as mcp_mod
 
         # Route discovery at the sandboxed KiroCrew scope file only.
-        monkeypatch.setattr(
-            "kiro_crew.mcp_discovery._MCP_JSON_PATHS", (sandbox.kirocrew_json,)
-        )
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (sandbox.kirocrew_json,))
         monkeypatch.setattr("kiro_crew.mcp_discovery._extra_scope_sources", lambda: [])
 
         app = web.Application()
@@ -1136,9 +1235,7 @@ class TestServersListSurfacesCustomAdds:
         client = TestClient(TestServer(as_owner(app)))
         await client.start_server()
         try:
-            resp = await client.post(
-                "/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}}
-            )
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
             assert resp.status == 200
 
             resp = await client.get("/api/mcp")
@@ -1149,5 +1246,97 @@ class TestServersListSurfacesCustomAdds:
             assert row["enabled"] is False
             assert row["status"] == "disabled"
             assert row["kirocrewManaged"] is True
+        finally:
+            await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Owner sign-in record: only the owner's dashboard add makes a server eligible
+# ---------------------------------------------------------------------------
+
+
+def _owner_record() -> dict:
+    from kiro_crew.config.loader import read_config_for_update
+
+    return read_config_for_update().get("connections", {}).get("owner_mcp_servers", {})
+
+
+@pytest.mark.asyncio
+class TestOwnerSignInRecord:
+    async def test_a_remote_add_records_the_server_at_its_url(self, sandbox, fake_sel):
+        client = await _client()
+        try:
+            resp = await client.post(
+                "/api/mcp/custom", json={"servers": {"remote": _REMOTE, "weather": _STDIO}}
+            )
+            assert resp.status == 200
+        finally:
+            await client.close()
+        # The local server has no OAuth flow, so only the remote one is recorded.
+        assert _owner_record() == {"remote": {"url": _REMOTE["url"]}}
+
+    async def test_an_owner_edit_rerecords_the_new_url(self, sandbox, fake_sel):
+        client = await _client()
+        try:
+            assert (
+                await client.post("/api/mcp/custom", json={"servers": {"remote": _REMOTE}})
+            ).status == 200
+            moved = {"url": "https://mcp.example.com/v2"}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": moved})
+            assert resp.status == 200
+        finally:
+            await client.close()
+        assert _owner_record() == {"remote": {"url": "https://mcp.example.com/v2"}}
+
+    async def test_a_server_written_straight_to_the_store_is_never_recorded(
+        self, sandbox, fake_sel
+    ):
+        # What an agent's shell can do: write the store file directly. Nothing
+        # records it, so the gateway never offers or mints its sign-in.
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"agentServer": {"url": "https://agent.example.com/mcp"}}}),
+            encoding="utf-8",
+        )
+        assert _owner_record() == {}
+
+
+# ---------------------------------------------------------------------------
+# A rebuild that does not write the spec is reported, not hidden
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestSpecNotRewritten:
+    async def test_add_reports_a_declined_rebuild(self, sandbox, fake_sel):
+        sandbox.rebuild.side_effect = _rebuild_that_declines
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": _STDIO}})
+            assert resp.status == 200
+            body = await resp.json()
+            assert body["added"] == ["weather"]
+            assert body["agent_spec_rewritten"] is False
+            assert "weather" in _written(sandbox), "the saved server must stay saved"
+        finally:
+            await client.close()
+
+    async def test_update_reports_a_declined_rebuild(self, sandbox, fake_sel):
+        client = await _client()
+        try:
+            await client.post("/api/mcp/custom", json={"servers": {"weather": _STDIO}})
+            sandbox.rebuild.side_effect = _rebuild_that_declines
+            resp = await client.put("/api/mcp/custom/weather", json={"spec": _STDIO})
+            assert resp.status == 200
+            assert (await resp.json())["agent_spec_rewritten"] is False
+        finally:
+            await client.close()
+
+    async def test_add_reports_a_failed_rebuild(self, sandbox, fake_sel):
+        sandbox.rebuild.side_effect = RuntimeError("boom")
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": _STDIO}})
+            assert resp.status == 200
+            assert (await resp.json())["agent_spec_rewritten"] is False
         finally:
             await client.close()

@@ -255,3 +255,109 @@ class TestThroughTheLoader:
         )
         assert cfg.mcp_gateway.stub_servers == ["legacy-mcp"]
         assert cfg.mcp_gateway.stub_overrides == {}
+
+
+class TestManagedServersFollowTheControlPlane:
+    """Crew's own caller-aware servers are stubbed whenever ``kirocrew-core`` is.
+
+    Without this an install that pools the control plane still paid one Python
+    process per session for ``kirocrew-guide``, which every default spec declares.
+    """
+
+    def test_followers_join_when_core_is_rostered(self) -> None:
+        from kiro_crew.config.integration_sections import MANAGED_STUB_FOLLOWERS
+
+        resolved = _resolve_stub_servers({"stub_servers": ["builder-mcp", "kirocrew-core"]})
+        assert resolved[:2] == ["builder-mcp", "kirocrew-core"]
+        assert set(MANAGED_STUB_FOLLOWERS) <= set(resolved)
+        assert len(resolved) == len(set(resolved))
+
+    def test_followers_join_when_core_is_added_by_override(self) -> None:
+        resolved = _resolve_stub_servers(
+            {"stub_servers": [], "stub_overrides": {"kirocrew-core": True}}
+        )
+        assert "kirocrew-guide" in resolved
+
+    def test_nothing_follows_without_core(self) -> None:
+        assert _resolve_stub_servers({"stub_servers": ["builder-mcp"]}) == ["builder-mcp"]
+        assert _resolve_stub_servers({}) == []
+
+    def test_nothing_follows_when_core_is_overridden_off(self) -> None:
+        assert (
+            _resolve_stub_servers(
+                {"stub_servers": ["kirocrew-core"], "stub_overrides": {"kirocrew-core": False}}
+            )
+            == []
+        )
+
+    def test_an_operator_can_turn_one_follower_off(self) -> None:
+        resolved = _resolve_stub_servers(
+            {"stub_servers": ["kirocrew-core"], "stub_overrides": {"kirocrew-guide": False}}
+        )
+        assert "kirocrew-guide" not in resolved
+        assert "kirocrew-panel" in resolved
+
+    def test_the_computer_server_never_follows(self) -> None:
+        assert "kirocrew-computer" not in _resolve_stub_servers({"stub_servers": ["kirocrew-core"]})
+
+    def test_the_roster_layer_is_unchanged(self) -> None:
+        """Writers persist the roster; the followers must never leak into it."""
+        assert _resolve_stub_roster({"stub_servers": ["kirocrew-core"]}) == ["kirocrew-core"]
+
+    def test_followers_are_every_caller_aware_server_not_excluded(self) -> None:
+        """Every caller-aware managed server is either a follower or excluded by name.
+
+        Pinned as an equality so a new caller-aware server fails here until it
+        is placed in one list or the other with a reason.
+        """
+        from kiro_crew.config.integration_sections import (
+            MANAGED_STUB_FOLLOWERS,
+            MANAGED_STUB_LEADER,
+        )
+        from kiro_crew.mcp_caller import POOLING_REQUIRES_TENANT_NONCE
+        from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+        from kiro_crew.mcp_discovery import _MANAGED_SERVERS_CALLER_AWARE
+
+        # computer: tenant-nonce gated. cron: outside this layer's measured scope.
+        excluded = {"kirocrew-computer", "kirocrew-cron"}
+        assert len(MANAGED_STUB_FOLLOWERS) == len(set(MANAGED_STUB_FOLLOWERS))
+        assert set(MANAGED_STUB_FOLLOWERS) == (
+            _MANAGED_SERVERS_CALLER_AWARE - {MANAGED_STUB_LEADER} - excluded
+        )
+        assert POOLING_REQUIRES_TENANT_NONCE <= excluded
+        assert set(MANAGED_STUB_FOLLOWERS) <= set(KIROCREW_BIN_MCP_SERVERS)
+
+    def test_the_cron_server_never_follows(self) -> None:
+        assert "kirocrew-cron" not in _resolve_stub_servers({"stub_servers": ["kirocrew-core"]})
+
+    def test_a_follower_turned_on_survives_core_turned_off_later(self) -> None:
+        from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions
+
+        section = {"stub_servers": ["kirocrew-core"]}
+        _record_stub_decisions(section, ["kirocrew-guide"], True)
+        _record_stub_decisions(section, ["kirocrew-core"], False)
+        resolved = _resolve_stub_servers(section)
+        assert "kirocrew-core" not in resolved
+        assert "kirocrew-guide" in resolved
+        assert "kirocrew-panel" not in resolved
+
+    def test_a_follower_toggled_with_core_in_one_call_survives(self) -> None:
+        from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions
+
+        section = {"stub_servers": ["kirocrew-core"]}
+        _record_stub_decisions(section, ["kirocrew-core", "kirocrew-guide"], True)
+        _record_stub_decisions(section, ["kirocrew-core"], False)
+        assert "kirocrew-guide" in _resolve_stub_servers(section)
+
+    def test_dashboard_stores_a_follower_turned_off(self) -> None:
+        """Toggling a follower off must persist, not be pruned as "agrees"."""
+        from kiro_crew.dashboard.handlers.mcp import _record_stub_decisions
+
+        section = {"stub_servers": ["kirocrew-core"]}
+        _record_stub_decisions(section, ["kirocrew-guide"], False)
+        assert section["stub_servers"] == ["kirocrew-core"]
+        assert section["stub_overrides"] == {"kirocrew-guide": False}
+        assert "kirocrew-guide" not in _resolve_stub_servers(section)
+        _record_stub_decisions(section, ["kirocrew-guide"], True)
+        assert section["stub_overrides"] == {"kirocrew-guide": True}
+        assert "kirocrew-guide" in _resolve_stub_servers(section)

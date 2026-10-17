@@ -1,13 +1,25 @@
 """Tests for ACP dynamic config propagation (effort levels, models)."""
 
+import asyncio
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from kiro_crew.acp.client import AcpClient
-from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
+    ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    JsonRpcMessage,
+)
+from kiro_crew.agent_sdk.backends import effort_config_option_id
 from kiro_crew.dashboard.chat_persistence import (
     _REASONING_EFFORT_FALLBACK,
     _SAFE_EFFORT_RE,
@@ -163,6 +175,101 @@ class TestSyncEffortLevels:
         ) as mock_update:
             client._sync_effort_levels()
         mock_update.assert_not_called()
+
+
+# Lists each advertised-option backend can report: pi adds ``minimal``, deepseek
+# has no ``medium`` or ``xhigh``, goose offers ``off`` and no ``xhigh`` on a
+# thinking model, and ``off`` alone on a model that does not think.
+_PER_SESSION_EFFORT_LISTS = [
+    (ACP_BACKEND_PI, ["off", "minimal", "low", "medium", "high", "xhigh"]),
+    (ACP_BACKEND_DEEPSEEK, ["low", "high", "max"]),
+    (ACP_BACKEND_GOOSE, ["off", "low", "medium", "high"]),
+    (ACP_BACKEND_GOOSE, ["off"]),
+    (ACP_BACKEND_OPENCODE, ["low", "medium", "high"]),
+]
+_KIRO_FALLBACK_ORDER = ["low", "medium", "high", "xhigh", "max"]
+
+
+def _advertised_effort_options(backend: str, levels: list[str]) -> list[dict]:
+    return [
+        {
+            "id": effort_config_option_id(backend),
+            "options": [{"value": level} for level in levels],
+        }
+    ]
+
+
+def _kiro_slot_request() -> MagicMock:
+    """A request for a kiro-cli slot: its provider advertises no effort option."""
+    provider = MagicMock()
+    provider.get_valid_effort_levels.return_value = []
+    state = MagicMock()
+    state.sessions.get_provider.return_value = provider
+    request = MagicMock()
+    request.query = {"slot": "kiro-slot"}
+    request.app = {"state": state}
+    return request
+
+
+class TestPerSessionEffortListsKeepGlobalOrder:
+    """A per-session advertised list never replaces the global fallback order."""
+
+    @pytest.fixture(autouse=True)
+    def _kiro_fallback_order(self, _floor_monkeypatch):
+        import kiro_crew.dashboard.chat_persistence as mod
+
+        _floor_monkeypatch.setattr(mod, "_reasoning_effort_ordered", list(_KIRO_FALLBACK_ORDER))
+        _floor_monkeypatch.setattr(
+            mod, "_reasoning_effort_values", set(mod._reasoning_effort_values)
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("backend", "levels"), _PER_SESSION_EFFORT_LISTS)
+    async def test_kiro_slot_keeps_global_order_after_client_sync(self, backend, levels):
+        from kiro_crew.dashboard.handlers.agents import api_effort_levels
+
+        assert backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+        client = AcpClient(acp_backend=backend)
+        client._store_session_config({"configOptions": _advertised_effort_options(backend, levels)})
+        assert client.get_valid_effort_levels() == levels
+
+        resp = await api_effort_levels(_kiro_slot_request())
+
+        assert resp.status == 200
+        assert json.loads(resp.body) == _KIRO_FALLBACK_ORDER
+        assert get_reasoning_effort_ordered() == _KIRO_FALLBACK_ORDER
+
+    @pytest.mark.parametrize(("backend", "levels"), _PER_SESSION_EFFORT_LISTS)
+    def test_client_sync_admits_per_session_levels(self, backend, levels):
+        client = AcpClient(acp_backend=backend)
+        client._acp_config_options = _advertised_effort_options(backend, levels)
+
+        client._sync_effort_levels()
+
+        assert set(levels) <= get_reasoning_effort_values()
+
+    @pytest.mark.parametrize(("backend", "levels"), _PER_SESSION_EFFORT_LISTS)
+    def test_handle_sync_keeps_global_order(self, backend, levels):
+        runtime = MagicMock()
+        runtime.acp_backend = backend
+        handle = AcpSessionHandle("sA", asyncio.Queue(), runtime)
+
+        handle.store_session_config({"configOptions": _advertised_effort_options(backend, levels)})
+
+        assert handle.get_valid_effort_levels() == levels
+        assert get_reasoning_effort_ordered() == _KIRO_FALLBACK_ORDER
+        assert set(levels) <= get_reasoning_effort_values()
+
+    def test_model_scoped_backend_still_seeds_global_order(self):
+        assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+        client = AcpClient(acp_backend=ACP_BACKEND_CLAUDE)
+        client._acp_config_options = _advertised_effort_options(
+            ACP_BACKEND_CLAUDE, ["low", "medium", "high"]
+        )
+
+        client._sync_effort_levels()
+
+        assert get_reasoning_effort_ordered() == ["low", "medium", "high"]
 
 
 class TestUpdateReasoningEffortValues:

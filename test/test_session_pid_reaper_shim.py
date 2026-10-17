@@ -93,7 +93,7 @@ class TestSweepDirectKillRoutesThroughShim:
     """kill_orphan_mcps' pid-targeted SIGKILL goes through kill_pid.
 
     The isolated-leader branch (killpg) is group semantics with no shim
-    spelling, and its tests already exist in test_pid_lifecycle.py; this
+    spelling, and its tests already exist in test_pid_lifecycle_process_sweeps.py; this
     pins only the pid-targeted branch. The sweep gate itself
     (``IS_WINDOWS -> 0``) is pinned in test_windows_kill_probe_audit.py.
     """

@@ -49,8 +49,8 @@ describe('platform defaults', () => {
     expect(isBareModifier(b)).toBe(false)
   })
 
-  it('defaults to hybrid mode at 500ms', () => {
-    expect(defaultConfig(true)).toEqual({ mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 })
+  it('defaults to hybrid mode at 500ms, key enabled', () => {
+    expect(defaultConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 })
     expect(HOLD_MS_DEFAULT).toBe(500)
   })
 
@@ -187,9 +187,23 @@ describe('normalizeBinding', () => {
 describe('normalizeConfig', () => {
   it('coerces field by field so one bad value does not reset the rest', () => {
     expect(normalizeConfig({ mode: 'nonsense', binding: { code: 'MetaRight' }, holdMs: 800 }, true))
-      .toEqual({ mode: 'hybrid', binding: { code: 'MetaRight' }, holdMs: 800 })
+      .toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'MetaRight' }, holdMs: 800 })
     expect(normalizeConfig({ mode: 'ptt', binding: { code: 'bogus-shape' }, holdMs: 'x' }, true))
-      .toEqual({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: HOLD_MS_DEFAULT })
+      .toEqual({ enabled: true, mode: 'ptt', binding: { code: 'AltRight' }, holdMs: HOLD_MS_DEFAULT })
+  })
+
+  // The off switch (issue #13078). Only an explicit `false` disables; a missing
+  // field — a config written before this one existed — must read as ENABLED, so
+  // the historical "the key is always on" default survives the upgrade.
+  it('reads enabled from the stored field, defaulting to on', () => {
+    expect(normalizeConfig({ enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, true).enabled)
+      .toBe(false)
+    expect(normalizeConfig({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, true).enabled)
+      .toBe(true)
+    // Legacy config with no `enabled` field, and a garbage value, both read as on.
+    expect(normalizeConfig({ mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, true).enabled).toBe(true)
+    expect(normalizeConfig({ enabled: 'yes', mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, true).enabled)
+      .toBe(true)
   })
 
   it('accepts every valid mode', () => {
@@ -206,7 +220,13 @@ describe('normalizeConfig', () => {
 
 describe('persistence', () => {
   it('round-trips through localStorage', () => {
-    const cfg = { mode: 'ptt' as const, binding: { code: 'ShiftRight' }, holdMs: 300 }
+    const cfg = { enabled: true, mode: 'ptt' as const, binding: { code: 'ShiftRight' }, holdMs: 300 }
+    savePttConfig(cfg)
+    expect(loadPttConfig(true)).toEqual(cfg)
+  })
+
+  it('round-trips a disabled config', () => {
+    const cfg = { enabled: false, mode: 'hybrid' as const, binding: { code: 'AltRight' }, holdMs: 500 }
     savePttConfig(cfg)
     expect(loadPttConfig(true)).toEqual(cfg)
   })
@@ -229,7 +249,7 @@ describe('persistence', () => {
   // clamped rather than reset — the user's intent ("shorter") is preserved.
   it('normalizes a stored config written by an older or broken build', () => {
     localStorage.setItem(PTT_STORAGE_KEY, JSON.stringify({ mode: 'hold', holdMs: -5 }))
-    expect(loadPttConfig(true)).toEqual({ mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: HOLD_MS_MIN })
+    expect(loadPttConfig(true)).toEqual({ enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: HOLD_MS_MIN })
   })
 })
 

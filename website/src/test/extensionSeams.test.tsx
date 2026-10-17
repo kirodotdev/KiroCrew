@@ -236,7 +236,7 @@ describe('panel shortcut — nav seam', () => {
     // changed the branch syntax), the guard has gone blind — fail so it gets
     // re-derived rather than silently passing.
     const KNOWN_PRE_PANEL = [
-      'KeyK', 'Comma', 'Enter', 'Backquote', 'ArrowLeft', 'ArrowRight',
+      'KeyK', 'Comma', 'Enter', 'Backquote', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
       'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
       'Digit6', 'Digit7', 'Digit8', 'Digit9',
     ]

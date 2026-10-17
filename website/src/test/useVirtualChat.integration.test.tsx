@@ -127,6 +127,43 @@ describe('useVirtualChat integration: follow / pin wiring', () => {
     expect(el.scrollTop).toBe(600)
   })
 
+  it('sets overflow-anchor none while followed and auto once the reader scrolls up (Firefox autoscroll)', () => {
+    // Firefox's native scroll anchoring, left on, holds a node above the tail
+    // and drags scrollTop up off the bottom as output streams — read by the
+    // follow guard as a user scroll-up, releasing the pin for the rest of the
+    // turn. The pin therefore turns native anchoring OFF while it owns the
+    // position, and back ON when the reader scrolls up (where it is relied on).
+    const { el, state, view } = render(
+      { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 },
+      mkItems(5),
+      'ff-anchor',
+    )
+    // Slot entry force-pinned to the bottom (follow armed) → anchoring off.
+    expect(el.scrollTop).toBe(1600)
+    expect(el.style.overflowAnchor).toBe('none')
+
+    // A streamed append while followed re-pins and keeps anchoring off.
+    act(() => {
+      state.scrollHeight = 2400
+      view.rerender({ items: mkItems(6), sessionId: 'ff-anchor', getKey, externalScrollerRef: { current: el } })
+    })
+    expect(el.scrollTop).toBe(2000)
+    expect(el.style.overflowAnchor).toBe('none')
+
+    // The reader scrolls up to read history: follow releases and native
+    // anchoring is handed back on so it steadies their view.
+    act(() => { state.scrollTop = 600; el.dispatchEvent(new Event('scroll')) })
+    expect(el.style.overflowAnchor).toBe('auto')
+
+    // A later append must not yank them, and anchoring stays on while released.
+    act(() => {
+      state.scrollHeight = 2800
+      view.rerender({ items: mkItems(7), sessionId: 'ff-anchor', getKey, externalScrollerRef: { current: el } })
+    })
+    expect(el.scrollTop).toBe(600)
+    expect(el.style.overflowAnchor).toBe('auto')
+  })
+
   it('force-pins to the bottom on slot switch even if the previous slot was scrolled up', () => {
     const { el, state, view } = render(
       { scrollTop: 0, scrollHeight: 2000, clientHeight: 400 },
@@ -563,6 +600,20 @@ describe('useVirtualChat: smooth-pin guard (GPT MEDIUM round 4)', () => {
     h.scrollTo(900) // user grabbed the page: scrollTop moved backward
     expect(h.result.current.isAtBottom).toBe(false)
     expect(h.wheelAborts()).toBe(false) // already disarmed by the backward move
+  })
+
+  it('hands overflow-anchor back to auto when the reader grabs the scroller mid-glide (Firefox autoscroll)', () => {
+    // The grab is a release with no write of ours after it, so nothing but the
+    // scroll handler can restore native anchoring for the reader who now owns
+    // the position (see followAnchorMode).
+    const h = smoothPinHarness('smooth-grab-anchor')
+    // The smooth pin re-armed follow, so native anchoring stands down.
+    expect(h.el.style.overflowAnchor).toBe('none')
+    h.scrollTo(1400)
+    expect(h.el.style.overflowAnchor).toBe('none')
+    h.scrollTo(900) // grabbed: scrollTop moved backward against the glide
+    expect(h.result.current.isAtBottom).toBe(false)
+    expect(h.el.style.overflowAnchor).toBe('auto')
   })
 
   it('a wheel abort freezes the glide in place instead of only releasing stick', () => {

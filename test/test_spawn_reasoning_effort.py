@@ -41,16 +41,20 @@ continuation_runtime = _continuation_runtime
 
 
 @contextmanager
-def _hermetic_cfg(role_models=None, agent_pins=None):
+def _hermetic_cfg(role_models=None, agent_pins=None, backend=None):
     """A config the verdict helpers AND the provider factory resolve
     identically on any box: the global model stays the unresolved ``auto``
     sentinel (``_resolve_agent_model`` would otherwise read the installed
     ``~/.kiro/agents/kirocrew.json`` from disk) and named-agent pins come from
-    *agent_pins* instead of the real agents directory."""
+    *agent_pins* instead of the real agents directory. *backend* selects
+    ``agent.acp_backend``; omitted, the default (kiro) backend is kept."""
     from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 
     pins = dict(agent_pins or {})
-    cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
+    agent_cfg = AgentConfig(role_models=role_models or {})
+    if backend is not None:
+        agent_cfg.acp_backend = backend
+    cfg = KiroCrewConfig(agent=agent_cfg)
     with (
         patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
         patch.object(KiroCrewConfig, "_resolve_agent_model", staticmethod(lambda: "")),
@@ -93,7 +97,7 @@ def _run_tool(args: dict[str, Any]) -> tuple[list[dict], str]:
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
+        result = mcp_core._call_tool("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 
@@ -162,7 +166,7 @@ def _run_tool_with_server_verdicts(
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
+        result = mcp_core._call_tool("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 
@@ -203,19 +207,19 @@ class TestUnsupportedModelReport:
 
     def test_report_appears_without_a_per_call_model(self):
         """The default case the old client-side guess could not see: no
-        per-call model, the server resolves to 'auto' and reports the drop."""
+        per-call model, and the server reports what happens to the level."""
         bodies, result = self._run_tool_with_server_verdict(
             {"task": "x", "reasoning_effort": "high"},
             [
                 {
                     "id": "a1",
-                    "effort_dropped": "no concrete model is pinned — the model resolves to 'auto'",
+                    "effort_dropped": "model 'deepseek-3.2' does not support effort configuration",
                 }
             ],
         )
         assert len(bodies) == 1
         assert "dropped for a1" in result
-        assert "auto" in result
+        assert "deepseek-3.2" in result
 
     def test_batch_reports_are_attributed_per_subagent(self):
         bodies, result = self._run_tool_with_server_verdict(
@@ -243,7 +247,7 @@ class TestUnsupportedModelReport:
             patch.object(mcp_core, "_resolve_session_key", return_value="dash:1"),
             patch.object(mcp_core, "sel", MagicMock()),
         ):
-            result = mcp_core._call_tool_inner(
+            result = mcp_core._call_tool(
                 "spawn_run",
                 {"task": "x", "model": "deepseek-3.2", "reasoning_effort": "high"},
             )
@@ -580,13 +584,13 @@ class TestEffortDropReason:
         assert self._reason(model, "") == ""
 
     @pytest.mark.parametrize("level", EFFORT_LEVELS)
-    def test_every_level_reports_on_unpinned_auto(self, level):
-        reason = self._reason("", level)
-        assert "auto" in reason
-        assert "does not support effort" in reason
+    def test_unpinned_reports_no_drop_at_any_level(self, level):
+        # Nothing pinned: the provider binds the level to the model the backend
+        # serves and judges it there, so the verdict has no drop to report.
+        assert self._reason("", level) == ""
 
     def test_explicit_auto_is_treated_as_unpinned(self):
-        assert "auto" in self._reason("auto", "high")
+        assert self._reason("auto", "high") == ""
 
     def test_non_capable_explicit_model_is_named(self):
         reason = self._reason("deepseek-3.2", "high")
@@ -616,12 +620,18 @@ class TestEffortDropReason:
     def test_explicit_auto_beats_a_capable_role_pin(self):
         """Regression (round-4 GPT finding): an explicit ``model="auto"`` is a
         truthy override — ``_run_inner`` forwards it verbatim and the factory
-        collapses it to unpinned, DROPPING the effort. The old verdict
-        normalized it away and reported the role pin as applied — an inverted
-        receipt."""
-        reason = self._reason("auto", "high", role_models={"subagent": "sonnet-test-model"})
-        assert "auto" in reason
-        assert "does not support effort" in reason
+        collapses it to unpinned. The old verdict normalized it away and
+        reported the role pin as applied — an inverted receipt. The receipt is
+        the unpinned one, never the pin's."""
+        from kiro_crew.subagent import effort_applied_note, effort_pending_note
+
+        role_models = {"subagent": "sonnet-test-model"}
+        assert self._reason("auto", "high", role_models=role_models) == ""
+        with _hermetic_cfg(role_models=role_models):
+            assert effort_applied_note("auto", "high", "") == ""
+            pending = effort_pending_note("auto", "high", "")
+        assert pending.startswith("no model is pinned")
+        assert "sonnet-test-model" not in pending
 
     def test_named_agent_capable_pin_is_silent(self):
         """Regression (round-4 Opus finding): a named kiro agent whose own
@@ -645,7 +655,7 @@ class TestEffortDropReason:
 
 class TestNoSpawnSiteDropWarning:
     """The spawn path does not emit its own drop warning: the
-    provider factory's effort gate (config/loader.py) is the single warning
+    provider factory's effort gate (config/loader_config.py) is the single warning
     authority, covering spawn, dashboard slot, and cron alike. The tool-result
     verdict (effort_dropped/effort_applied) remains the caller-facing signal;
     the operator-facing log line now comes from the gate itself."""
@@ -806,8 +816,8 @@ class TestApiSpawnEffortDropped:
         data = self._spawn(
             {"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"}
         )
-        assert "effort_dropped" in data
-        assert "auto" in data["effort_dropped"]
+        assert "effort_dropped" not in data and "effort_applied" not in data
+        assert data["effort_pending"].startswith("no model is pinned")
 
     def test_capable_explicit_model_omits_the_key(self):
         data = self._spawn(
@@ -889,8 +899,12 @@ class TestEffortAppliedNote:
     def test_no_effort_requested_means_no_note(self):
         assert self._note("sonnet-test-model", "") == ""
 
-    def test_auto_and_non_capable_stay_empty(self):
+    def test_unpinned_claims_no_delivery(self):
+        # Whether the level applies is decided at session start: see
+        # effort_pending_note.
         assert self._note("", "high") == ""
+
+    def test_non_capable_stays_empty(self):
         assert self._note("deepseek-3.2", "high") == ""
 
     def test_unavailable_model_resolution_omits_both_claims(self):
@@ -920,11 +934,15 @@ class TestEffortAppliedNote:
         "model", ["", "auto", "deepseek-3.2", "sonnet-test-model", "gpt-5.6-sol"]
     )
     @pytest.mark.parametrize("level", EFFORT_LEVELS)
-    def test_exactly_one_of_note_and_reason_for_a_requested_effort(self, model, level):
-        """Complementarity (design Property 1): a requested effort is either
-        reported dropped or reported applied — never both, never neither."""
-        note, reason = self._note(model, level), self._reason(model, level)
-        assert (note == "") != (reason == "")
+    def test_exactly_one_outcome_for_a_requested_effort(self, model, level):
+        """Complementarity (design Property 1): a requested effort is reported
+        dropped, applied, or decided at session start -- exactly one of them."""
+        from kiro_crew.subagent import effort_pending_note
+
+        with _hermetic_cfg():
+            pending = effort_pending_note(model, level, "")
+        outcomes = [self._note(model, level), self._reason(model, level), pending]
+        assert sum(1 for text in outcomes if text) == 1
 
 
 class TestVerdictFactoryParity:
@@ -958,6 +976,7 @@ class TestVerdictFactoryParity:
             _subagent_default_model,
             effort_applied_note,
             effort_drop_reason,
+            effort_pending_note,
         )
 
         role_models = {"subagent": role_pin} if role_pin else {}
@@ -981,14 +1000,119 @@ class TestVerdictFactoryParity:
             kwargs = provider_cls.call_args.kwargs
             gate_model = kwargs["model"] or ""
             gate_applies = bool(kwargs["effort_per_model"])
+            # Carried unkeyed for the provider to bind to the served model.
+            gate_carries = bool(kwargs["unbound_effort"])
 
             resolved = _spawn_effective_model(model, agent)
             drop = effort_drop_reason(model, "high", agent)
             note = effort_applied_note(model, "high", agent)
+            pending = effort_pending_note(model, "high", agent)
 
         assert resolved == gate_model
         assert (note != "") == gate_applies
-        assert (drop == "") == gate_applies
+        assert (pending != "") == gate_carries
+        assert (drop != "") == (not gate_applies and not gate_carries)
+
+
+class TestUnpinnedSpawnVerdictMatchesTheProvider:
+    """With no model pinned the factory carries the level unkeyed on every
+    backend, and the provider binds it at start to the model the backend
+    reports serving (``AcpProvider._bind_unbound_effort``). That model is not
+    known at accept time -- an unpinned kiro-cli serves its ``chat.defaultModel``
+    when one is set and ``auto`` when none is -- so the receipt reports the
+    outcome as decided at session start on every backend, neither a drop nor a
+    delivery."""
+
+    def _verdict(self, model: str, backend: str) -> tuple[str, str, str]:
+        from kiro_crew.subagent import effort_applied_note, effort_drop_reason, effort_pending_note
+
+        with _hermetic_cfg(backend=backend):
+            return (
+                effort_drop_reason(model, "high", ""),
+                effort_applied_note(model, "high", ""),
+                effort_pending_note(model, "high", ""),
+            )
+
+    @pytest.mark.parametrize("backend", ["", "kas", "claude", "codex", "deepseek", "pi"])
+    @pytest.mark.parametrize("model", ["", "auto"])
+    def test_every_backend_reports_the_outcome_as_pending(self, backend, model):
+        drop, applied, pending = self._verdict(model, backend)
+        assert drop == "" and applied == ""
+        assert "bound at start to the model the backend serves" in pending
+
+    def test_a_per_spawn_backend_keeps_its_own_channel_rules(self):
+        """The unpinned outcome sits below the per-spawn backend's own answers:
+        a harness that advertises its levels is judged at session start with no
+        field at all, and one with no effort channel still reports the drop."""
+        from kiro_crew.subagent import effort_applied_note, effort_drop_reason, effort_pending_note
+
+        with _hermetic_cfg():
+            for backend, want in (
+                ("claude", "pending"),
+                ("kas", "pending"),
+                ("pi", ""),
+                ("opencode", ""),
+                ("some-harness-nobody-registered", "drop"),
+            ):
+                outcome = {
+                    "drop": effort_drop_reason("", "high", "", backend=backend),
+                    "applied": effort_applied_note("", "high", "", backend=backend),
+                    "pending": effort_pending_note("", "high", "", backend=backend),
+                }
+                assert [k for k, text in outcome.items() if text] == (
+                    [want] if want else []
+                ), backend
+
+    @pytest.mark.parametrize("backend", ["", "kas", "claude", "pi"])
+    def test_verdict_agrees_with_what_the_factory_carries(self, backend, tmp_path):
+        """The receipt reports a pending outcome exactly when the factory hands
+        the provider an unbound level to bind."""
+        from kiro_crew.subagent import effort_pending_note
+
+        with _hermetic_cfg(backend=backend) as cfg:
+            with patch("kiro_crew.providers.acp.AcpProvider") as provider_cls:
+                cfg.create_provider_factory()(
+                    "parity-key",
+                    agent=None,
+                    model_override=None,
+                    cwd=str(tmp_path),
+                    reasoning_effort_override="high",
+                )
+            pending = effort_pending_note("", "high", "")
+        kwargs = provider_cls.call_args.kwargs
+        assert kwargs["acp_backend"] == backend
+        assert kwargs["effort_per_model"] == {}
+        assert kwargs["unbound_effort"] == "high"
+        assert pending.startswith("no model is pinned")
+
+    @pytest.mark.asyncio
+    async def test_kiro_receipt_agrees_with_a_kiro_session_serving_a_concrete_model(self):
+        """An unpinned kiro-cli serves its ``chat.defaultModel``, and the
+        provider pushes the level live to it, so the receipt must not claim a
+        drop for that spawn: it reports the outcome as decided at start."""
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+        from kiro_crew.providers.acp import AcpProvider
+        from kiro_crew.subagent import effort_drop_reason
+
+        with _hermetic_cfg(backend=ACP_BACKEND_KIRO):
+            drop = effort_drop_reason("", "high", "")
+
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend=ACP_BACKEND_KIRO, model="", unbound_effort="high")
+        client = provider._client
+        client.backend = ACP_BACKEND_KIRO
+        client._model = "auto"
+        client._resolved_model_id = "claude-sonnet-5.5"
+        client.send_command = AsyncMock()
+        provider._apply_effort_overlay = MagicMock(return_value=True)
+        await provider._bind_unbound_effort()
+
+        client.send_command.assert_awaited_once_with("/effort", args={"level": "high"})
+        assert provider._effort_per_model == {"claude-sonnet-5.5": "high"}
+        assert drop == ""
+        _, applied, pending = self._verdict("", ACP_BACKEND_KIRO)
+        assert applied == ""
+        assert "applied if that model takes effort" in pending
 
 
 class TestAppliedLineRendering:
@@ -1021,6 +1145,48 @@ class TestAppliedLineRendering:
     def test_no_applied_line_without_the_key(self):
         bodies, result = self._run({"task": "x", "reasoning_effort": "high"}, [{"id": "a1"}])
         assert "applied for" not in result
+
+    def test_pending_line_claims_neither_applied_nor_dropped(self):
+        """An unpinned spawn's outcome is decided at session start, so its line
+        carries no ✓ and neither verdict word."""
+        bodies, result = self._run(
+            {"tasks": ["x", "y"], "reasoning_effort": "high"},
+            [
+                {"id": "a1", "effort_pending": "pending-note"},
+                {"id": "a2", "effort_pending": "pending-note"},
+            ],
+        )
+        assert len(bodies) == 2
+        line = next(ln for ln in result.splitlines() if "reasoning_effort=" in ln)
+        assert line == "ℹ reasoning_effort='high' for a1, a2: pending-note"
+
+    def test_plain_spawn_without_effort_renders_its_receipt(self):
+        """A spawn that asks for no effort still renders the receipt: every
+        verdict list the receipt reads reaches it from the run's own state."""
+        bodies, result = self._run({"task": "x"}, [{"id": "a1"}])
+        assert len(bodies) == 1
+        assert "Spawned 1 subagent(s)" in result
+        assert "reasoning_effort=" not in result
+
+    def test_pending_verdicts_reach_the_receipt_helper(self):
+        """The receipt renders pending verdicts handed to it by keyword."""
+        from kiro_crew.mcp_tools.spawn import _spawn_run_receipt
+
+        result = _spawn_run_receipt(
+            agent_ids=["a1"],
+            agent_names=["kirocrew-default"],
+            agent_tasks=["x"],
+            effort_drops=[],
+            effort_applies=[],
+            effort_pendings=[("a1", ("high", "pending-note"))],
+            queued_reasons={},
+            errors=[],
+            transport_errors=[],
+            parent_session="dashboard:chat-1",
+            can_work=False,
+            keep=False,
+        )
+        assert "ℹ reasoning_effort='high' for a1: pending-note" in result.splitlines()
 
     def test_api_spawn_returns_applied_for_capable_model(self):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
@@ -1084,7 +1250,12 @@ class TestAppliedLineRendering:
         request.app = {"state": state}
         request.headers = {}
         request.json = AsyncMock(
-            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "dashboard:1"}
+            return_value={
+                "task": "x",
+                "model": "deepseek-3.2",
+                "reasoning_effort": "high",
+                "parent_session": "dashboard:1",
+            }
         )
         cfg = KiroCrewConfig(agent=AgentConfig())
         with (
@@ -1152,11 +1323,15 @@ class TestSessionChainResolution:
         assert self._reason("", "high", cfg=cfg) == ""
         assert "sonnet-test-model" in self._note("", "high", cfg=cfg)
 
-    def test_sentinel_global_still_drops(self):
+    def test_sentinel_global_is_decided_at_session_start(self):
         from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.subagent import effort_pending_note
 
         cfg = KiroCrewConfig(agent=AgentConfig(model="auto"))
-        assert "auto" in self._reason("", "high", cfg=cfg)
+        assert self._reason("", "high", cfg=cfg) == ""
+        assert self._note("", "high", cfg=cfg) == ""
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+            assert effort_pending_note("", "high", "").startswith("no model is pinned")
 
     def test_explicit_model_beats_the_crew_pin(self):
         cfg = self._cfg_with_crew("sonnet-test-model")
@@ -1211,7 +1386,7 @@ class TestVerdictOffTheEventLoop:
         cfg = KiroCrewConfig(agent=AgentConfig())
         seen: list[object] = []
 
-        def _recording_drop(model, effort, agent="", *, crew_agent=None):
+        def _recording_drop(model, effort, agent="", *, crew_agent=None, backend=None):
             seen.append(threading.current_thread())
             return "recorded-drop"
 

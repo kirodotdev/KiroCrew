@@ -1,11 +1,15 @@
-"""POST /api/chat/slots must stamp the resolved default agent on agent-less creates.
+"""POST /api/chat/slots must stamp the default TEMPLATE on agent-less creates.
 
 ``api_chat_slot_create`` stores ``body["agent"]`` verbatim, so a create that
-names no agent persisted ``""`` — dispatch still resolves the config default,
-but the slot's metadata disagrees with what actually answers, and the
-dashboard footer chip renders its literal ``'default'`` fallback. The
-dashboard's auto-create races the agents fetch, so agent-less creates are a
-common path, not an edge.
+names no agent persisted ``""`` — dispatch still resolves the default, but the
+slot's metadata disagrees with what actually answers, and the dashboard footer
+chip renders its literal ``'default'`` fallback. The dashboard's auto-create
+races the agents fetch, so agent-less creates are a common path, not an edge.
+
+What is stamped is the default template (``agent.default_agent``, ``kirocrew``
+when unset) in the ``template`` namespace -- never the ``default`` crewmate
+alias: a plain session is a template on the default folder and
+memory store, and the alias stamp made every plain chat that crewmate's.
 """
 
 from __future__ import annotations
@@ -25,10 +29,12 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_handlers
 
 
-def _stub_config(default_agent: str) -> KiroCrewConfig:
-    """A real config object (all sections present) with the default pinned."""
+def _stub_config(default_agent: str, default_template: str = "") -> KiroCrewConfig:
+    """A real config object (all sections present) with the default crewmate
+    alias pinned and, optionally, a default template other than ``kirocrew``."""
     cfg = KiroCrewConfig()
     cfg.default_agent = default_agent
+    cfg.agent.default_agent = default_template
     return cfg
 
 
@@ -120,18 +126,93 @@ async def test_owner_create_waits_for_memory_recovery_before_allocating(
 
 
 @pytest.mark.asyncio
-async def test_agentless_create_stamps_the_resolved_default(
+async def test_agentless_create_stamps_the_declared_name_not_a_file_stem(
     dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``agent.default_agent`` may spell a spec's file stem. The stamp must carry the
+    name kiro-cli declares: it outlives a later change of the default, and a stem
+    recorded verbatim would resolve nowhere once the default moved on."""
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(
+        chat_handlers,
+        "KiroCrewConfig",
+        SimpleNamespace(load=lambda: _stub_config("sales-agent", "KiroPkg-captain")),
+    )
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"captain", "kirocrew"}))
+    monkeypatch.setattr(loader, "_MATERIALIZED_STEMS", {"KiroPkg-captain": "captain"})
+    monkeypatch.setattr(loader, "_edition_agent_names", lambda: frozenset())
+    await _create_slot(dashboard_state, {"name": "stem"})
+    slot = dashboard_state._slots["stem"]
+    assert slot.agent == "captain"
+    assert slot.agent_kind == "template"
+
+
+@pytest.mark.asyncio
+async def test_agentless_create_warms_a_cold_snapshot_before_stamping(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """During the boot window the materialized snapshot is cold. The stamp runs
+    off-loop so ``dispatch_kiro_agent`` can warm it, instead of returning the
+    stem unchanged as it must on the event loop."""
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(
+        chat_handlers,
+        "KiroCrewConfig",
+        SimpleNamespace(load=lambda: _stub_config("sales-agent", "KiroPkg-captain")),
+    )
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", False)
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset())
+    monkeypatch.setattr(loader, "_MATERIALIZED_STEMS", {})
+    monkeypatch.setattr(loader, "_edition_agent_names", lambda: frozenset())
+
+    def _warm(*, heal_default: bool = False) -> None:
+        loader._MATERIALIZED_AGENTS = frozenset({"captain", "kirocrew"})
+        loader._MATERIALIZED_STEMS = {"KiroPkg-captain": "captain"}
+        loader._MATERIALIZED_AGENTS_READY = True
+
+    monkeypatch.setattr(loader, "refresh_materialized_agents", _warm)
+    await _create_slot(dashboard_state, {"name": "cold"})
+    assert dashboard_state._slots["cold"].agent == "captain"
+
+
+def test_the_blank_switch_stamp_is_the_declared_name_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The blank ``/agent`` switch stamps through the same helper as the create,
+    so a file-stem default is stamped as the name kiro-cli declares there too."""
+    from kiro_crew.config import loader
+
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+    monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"captain", "kirocrew"}))
+    monkeypatch.setattr(loader, "_MATERIALIZED_STEMS", {"KiroPkg-captain": "captain"})
+    monkeypatch.setattr(loader, "_edition_agent_names", lambda: frozenset())
+    assert chat_handlers._default_template_stamp(_stub_config("x", "KiroPkg-captain")) == "captain"
+    assert chat_handlers._default_template_stamp(_stub_config("x", "")) == "kirocrew"
+    # Pinned by source: the switch path stamps through the helper, off-loop.
+    import inspect
+
+    src = inspect.getsource(chat_handlers.switch_slot_agent)
+    assert "_default_template_stamp(KiroCrewConfig.load())" in src
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("default_template", "stamped"), [("", "kirocrew"), ("sales-template", "sales-template")]
+)
+async def test_agentless_create_stamps_the_default_template(
+    dashboard_state: Any, monkeypatch: pytest.MonkeyPatch, default_template: str, stamped: str
 ) -> None:
     monkeypatch.setattr(
         chat_handlers,
         "KiroCrewConfig",
-        SimpleNamespace(load=lambda: _stub_config("sales-agent")),
+        SimpleNamespace(load=lambda: _stub_config("sales-agent", default_template)),
     )
     await _create_slot(dashboard_state, {"name": "agentless"})
-    assert (
-        dashboard_state._slots["agentless"].agent == "sales-agent"
-    ), "an agent-less create must record the resolved default, not ''"
+    slot = dashboard_state._slots["agentless"]
+    assert slot.agent == stamped, "an agent-less create must record the default template, not ''"
+    assert slot.agent != "sales-agent", "never the default crewmate alias"
+    assert slot.agent_kind == "template"
 
 
 @pytest.mark.asyncio

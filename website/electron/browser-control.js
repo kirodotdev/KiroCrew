@@ -133,7 +133,7 @@ function planTransition(current, requested) {
 /**
  * Loopback hosts — a dev server on this machine, not a site with an identity.
  *
- * Mirrors the renderer's own `isLoopbackHost` (WebPreviewPanel.tsx) so both
+ * Mirrors the renderer's own `isLoopbackHost` (webPreviewPanelUrl.ts) so both
  * transports agree on what "local" means.
  */
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"]);

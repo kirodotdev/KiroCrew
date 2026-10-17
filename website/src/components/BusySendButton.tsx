@@ -168,14 +168,18 @@ export default function BusySendButton({
   onModeChange,
   onFire,
   disabled = false,
+  disabledReason,
   altChordAvailable = false,
   autoAvailable = false,
+  onPicked,
 }: {
   mode: BusySendMode
   onModeChange: (m: BusySendMode) => void
   /** Fire the currently selected mode with the composer's text. */
   onFire: () => void
   disabled?: boolean
+  /** Why the fire half is disabled, shown as its tooltip in place of the mode's. */
+  disabledReason?: string
   /**
    * Whether `Auto (Jev)` may be offered: the gateway reports the Decisions seam
    * as permitted by governance AND consented to. Only the host knows, and it
@@ -190,6 +194,13 @@ export default function BusySendButton({
    * in `enter-ctrl-newline` inserts a newline.
    */
   altChordAvailable?: boolean
+  /** Where focus goes after a PICK closes the menu. Without it the caret
+   *  trigger takes focus back, which is right for Escape (the user returns to
+   *  where they were) but wrong after choosing steer/queue: the caret is a
+   *  button, so the Enter meant as "send" re-opens the menu (#18313). The
+   *  host owns the composer and returns `true` when it took focus; `false`
+   *  (touch: focusing the box pops the keyboard) falls back to the caret. */
+  onPicked?: () => boolean
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null)
@@ -233,7 +244,10 @@ export default function BusySendButton({
   }
   const select = (m: BusySendMode) => {
     onModeChange(m)
-    closeToTrigger()
+    setMenuOpen(false)
+    // A pick is a finished action whose next step is the composer; only a
+    // cancel (Escape above) returns to the caret unconditionally.
+    if (!onPicked?.()) caretRef.current?.focus()
   }
 
   return (
@@ -246,7 +260,7 @@ export default function BusySendButton({
           className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 hover:bg-black/15 transition-all text-inherit"
           onClick={onFire}
           disabled={disabled}
-          title={FIRE_TITLE_KEY[mode] ? i18nT(FIRE_TITLE_KEY[mode]) : ''}
+          title={disabled && disabledReason ? disabledReason : FIRE_TITLE_KEY[mode] ? i18nT(FIRE_TITLE_KEY[mode]) : ''}
           aria-label={FIRE_LABEL_KEY[mode] ? i18nT(FIRE_LABEL_KEY[mode]) : ''}
           data-testid="busy-send-button"
           data-mode={mode}

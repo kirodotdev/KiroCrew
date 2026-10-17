@@ -148,24 +148,22 @@ failure. kiro-cli hands the URL to Kiro Crew over the ACP notification
 ([../reference/kiro-cli/acp.md](../reference/kiro-cli/acp.md), "MCP server
 events"), and Kiro Crew renders it as an **inline banner** in chat — a lock
 icon, `miro requires authentication.`, and an **Authorize** link that opens the
-provider (`dashboard/chat_runner._emit_mcp_oauth_request`, rendered by
+provider (`dashboard/chat_turn/mcp_session._emit_mcp_oauth_request`, rendered by
 `McpOAuthBanner`). Requests kiro-cli buffered while bringing MCP servers up are
 flushed into the transcript at session init, so the banner also appears on a
 fresh session with nothing typed.
 
-**For a user-added or self-hosted server that does not match a curated
-Connections provider, the chat banner is the only place you can start the
-sign-in** — and that is the manual case this guide is about. Curated providers
-have two additional dashboard surfaces. Miro is present in
-`connections/registry.json`, so it qualifies when the Connections UI is
-unlocked:
+Two dashboard surfaces start the same sign-in outside chat:
 
-- The **MCP** table's per-row **Sign in** control (`McpRowSignIn`) renders when
-  the row resolves to a registry provider and the Connections UI is unlocked.
-  It uses the same headless mint, authorization, and paste-back relay as the
-  Connections card. A user-added or self-hosted row that does not resolve to a
-  provider instead gets a sentence linking to chat; arbitrary URLs are never
-  minted from this surface.
+- The **MCP** table's per-row **Sign in** control (`McpRowSignIn`) renders on a
+  remote row when the Connections UI is unlocked, for a registry provider (Miro
+  is present in `connections/registry.json`) and for a server you added from
+  the dashboard's **Add Custom** form. It uses the same headless mint,
+  authorization, and paste-back relay as the Connections card. The dashboard
+  sends only the server's name, never a URL. Every other row gets a sentence
+  linking to chat instead: a local (stdio) server, a name containing `/`, a
+  name that is a registry provider's slug, and any remote server added another
+  way (by an agent, by a session, or by editing a config file).
 - A Connections provider card drives its own consent flow; a banner for one of
   those is tagged so chat does not repeat a prompt the card already shows.
 
@@ -190,6 +188,22 @@ static `Authorization` header ([../architecture/mcp.md](../architecture/mcp.md),
 Reaching **Signed in** is what gives the flow an ending. Because the panel is
 served from the probe cache for its TTL, a row you just authenticated can still
 read "Sign-in required" until you re-probe it (the panel names that step).
+
+With the Connections UI on (the default), a remote row can start the sign-in in
+place, for a registry provider and for a server you added from the dashboard
+alike:
+
+- **Sign in** on a **Sign-in required** row opens the provider's approval link.
+- **Sign in again** on a **Signed in** row, or under an OAuth server's `401`
+  error, first checks the held grant and asks for consent only when it no longer
+  works (expired, revoked, or minted for other scopes).
+
+When you add or edit a remote server from the dashboard, the gateway records its
+name and URL in `config.json`, which agents cannot write. The sign-in is offered,
+and minted, only while the server's configured URL still equals that record. A
+server an agent or a session added, or one of yours whose URL was changed
+outside the dashboard, keeps the chat guidance until you save it again from the
+dashboard.
 
 ## Complete the browser flow and select a team/tenant
 
@@ -223,20 +237,28 @@ exchange. It only delivers a code that was already minted.
 
 ## If the host is not recognized: the OAuth endpoint allowlist
 
-If the browser step fails **before** you ever reach the provider — the chat
-banner reports a prose warning like:
+If the browser step fails **before** you ever reach the provider, the failed
+OAuth banner in the chat reads like this (host and path are the refused
+authorization endpoint):
 
 ```text
-🚫 miro sent an authentication URL containing a credential pattern
-(rejected). If this is a self-hosted or otherwise unlisted identity
-provider, its authorization endpoint may need adding to oauth_endpoints.json
-in the Kiro Crew data home; otherwise ask the server owner to fix the URL.
+Authentication failed: URL contained credential or exfiltration pattern
+(endpoint: <host><path>). If you trust this identity provider, add
+{"host": "<host>", "path": "<path>"} to "additional_authorization_endpoints"
+in <Kiro Crew data home>/oauth_endpoints.json and retry
 ```
 
-(The terse string `URL contained credential or exfiltration pattern` is the
-message's `error` metadata field, not on-screen text — you will not find it by
-grepping the transcript for a visible line.) The authorization URL was rejected
-by Kiro Crew's gate, not by the provider.
+The failed banner renders the message's `error` field, so that is the on-screen
+text. The last sentence appears only when writing the entry would clear the
+rejection; a URL refused for a fixed credential, `http`, an explicit port or a
+host the file cannot hold (an IP literal, or a name without a letter TLD) shows
+the bare reason. The transcript row's own `content` is a longer prose version
+of the same notice. A sign-in URL on this machine (`localhost`, `127.0.0.1`,
+`::1`) is the one case with a different hint: the file cannot hold a loopback
+host, so the banner says that a local MCP server that needs no sign-in usually
+lands here when its first connection failed and the MCP client fell back to
+OAuth, and suggests checking that the server is running and starting a new chat.
+The authorization URL was rejected by Kiro Crew's gate, not by the provider.
 Kiro Crew scans consent URLs for credential-exfiltration patterns, and it
 relaxes the base64-blob / query-length heuristics **only** for authorization
 endpoints it recognizes by exact `(host, path)`. That recognized set is
@@ -247,7 +269,7 @@ providers' MCP authorization servers plus the classic web-OAuth hosts.
 server needs no entry of your own; a host outside that set whose consent URL
 exceeds the query-length heuristic fails closed instead. The fix is
 agent-fenced with no dashboard writer, so two surfaces name it: the chat banner
-that reports the rejection (`dashboard/chat_runner.py`) names the remedy inline,
+that reports the rejection (`dashboard/chat_turn/mcp_session.py`) names the remedy inline,
 and the Connections card names the refused endpoint, shows the remedy line and
 links to this section.
 
@@ -300,8 +322,10 @@ them from the provider's authorization-server metadata (RFC 8414 —
 `/.well-known/oauth-authorization-server`), reached from the server's own
 RFC 9728 protected-resource document — the same route the code-owned pairs were
 derived from. Neither the rejected banner nor the log echoes the URL that was
-refused (logging a URL that tripped the credential scanner would defeat the
-scanner), so there is nothing to copy out of Kiro Crew here.
+refused (its query carries state and PKCE material, and logging a URL that
+tripped the credential scanner would defeat the scanner). The banner shows only
+the sanitized host and path of the refused endpoint. Check that pair against the
+provider's metadata before you add it, because an override widens trust.
 **Miro's exact authorization endpoint is verified in this repo** as
 [`https://mcp.miro.com/authorize`](https://mcp.miro.com/authorize) and is
 already in the code-owned set, so do not add an operator override for it. For
@@ -327,6 +351,10 @@ happens. The failure modes differ accordingly — a `401` on an entry whose sent
 static header — or one whose reference did not resolve, because a missing or
 credential-filtered variable supplies nothing — is the `needs_auth` /
 "Sign-in required" path described above.
+
+A `secret://` vault reference is not resolved in a remote server's headers. The
+probe reports such a header as an error and does not contact the server; see
+[Remote (URL) servers: headers are not resolved](secrets-env.md#remote-url-servers-headers-are-not-resolved).
 
 For an OAuth server, an optional internal `scopes` list maps to the wire
 `oauthScopes` field (`mcp_utils._wire_scopes`). It is all-or-nothing: the field

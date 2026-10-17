@@ -3,7 +3,7 @@
 Mochi shipped with no tests at all, so this file carries both the manifest guard
 the Windows rollout requires and the first regression cover for the app's
 platform-sensitive file handling. The manifest tests follow the paradigm already
-accepted in ``test/test_dev_fleet_app.py``.
+accepted in ``test/test_dev_fleet_app_fleet_cache.py``.
 """
 
 from __future__ import annotations

@@ -20,7 +20,8 @@ Deliberately NOT violations -- flagging these would make the gate worse than no
 gate:
 
 * a lockdown on a temp path the same function LATER renames into place, in any
-  spelling (``os.replace(tmp, final)``, ``tmp.rename(final)``, or
+  spelling (``os.replace(tmp, final)``, ``replace_with_retry(tmp, final)``,
+  ``tmp.rename(final)``, or
   ``tmp.replace(target=final)``): the published file is never exposed, and this
   is the shape ``atomic_write`` uses. The rename must come AFTER the lockdown
   and in the same scope -- an EARLIER rename means the path was rotated aside
@@ -113,6 +114,9 @@ WRITE_DESTINATION_ARG = {
     "copyfile": 1,
     "copy": 1,
     "replace": 1,  # os.replace(tmp, final)
+    # atomic_write.replace_with_retry(tmp, final): os.replace with the Windows
+    # sharing-violation retry, same argument order.
+    "replace_with_retry": 1,
     "rename": 1,  # os.rename(tmp, final)
     "move": 1,  # shutil.move(tmp, final)
     "link": 1,  # os.link(tmp, final) — create-only publish; still a content landing
@@ -128,6 +132,7 @@ WRITE_DESTINATION_KWARG = {
     "copyfile": "dst",
     "copy": "dst",
     "replace": "dst",
+    "replace_with_retry": "dst",
     "rename": "dst",
     "move": "dst",
     "link": "dst",
@@ -153,7 +158,7 @@ WRITE_METHODS = frozenset({"write_text", "write_bytes"})
 #: ``move`` to the final path recorded no publication (so a lockdown after it was
 #: not flagged) AND the source got no temp exemption (so locking a temp and then
 #: moving it -- correct code -- was flagged).
-PUBLISH_CALLS = frozenset({"replace", "rename", "move", "link"})
+PUBLISH_CALLS = frozenset({"replace", "replace_with_retry", "rename", "move", "link"})
 
 #: The subset with a pathlib METHOD spelling where the receiver is the temp:
 #: ``<tmp>.rename(final)`` / ``<tmp>.replace(final)``. ``shutil.move`` is a

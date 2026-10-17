@@ -7,7 +7,8 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import { isRejectedDecision } from '../../utils/approvalDecision'
 import type { ChatState } from './state'
-import { isUnsafeKey, safeKey } from './wire'
+import { isUnsafeKey, normalizeQueueEntries, safeKey } from './wire'
+import { hydrateQueuedBubbles } from './queue'
 import { RECONCILE_WINDOW, ensureMsgId, finalizeTrailingStreaming, mintMsgId, tailNotInPage } from './transcript'
 import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking } from './thinking'
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
@@ -87,7 +88,7 @@ export const messageReducers = {
         if (m.role !== 'user') continue
         const rowSid = typeof m.meta?.sendId === 'string' && m.meta.sendId ? m.meta.sendId : ''
         if (echoSid && rowSid === echoSid && !m.meta?.optimistic) return
-        if (!m.meta?.optimistic || !m.meta?.steer) continue
+        if (!m.meta?.optimistic || (!m.meta?.steer && !(echoSid && m.meta?.responsiveSend))) continue
         if (echoSid) {
           // Id-bearing echo: the match is exact or there is no match.
           if (rowSid === echoSid) { target = m; break }
@@ -126,7 +127,7 @@ export const messageReducers = {
     }
     // Optimistic steer bubble from a pane-scoped composer: same freeze as the
     // appendMessage (active-slot) path.
-    if (message.role === 'user' && message.meta?.steer && message.meta?.optimistic) {
+    if (message.role === 'user' && ((message.meta?.steer && message.meta?.optimistic) || message.meta?.responsiveSend)) {
       finalizeTrailingStreaming(msgs)
     }
     // Mark non-steer user bubbles as optimistic so the sseChatMessage
@@ -271,8 +272,8 @@ export const messageReducers = {
     if (!resolve(state.messages)) resolve(state.slotMessages[safeKey(slot)])
   },
   removeByApprovalId(state: ChatState, action: PayloadAction<string>) { state.messages = state.messages.filter(m => m.meta?.approval_id !== action.payload) },
-  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string }>) {
-    const { id, slot, registry } = action.payload
+  resolveByApprovalId(state: ChatState, action: PayloadAction<{ id: string; slot?: string; decision?: string; registry?: string; allPending?: boolean }>) {
+    const { id, slot, registry, allPending } = action.payload
     if (!slot || isUnsafeKey(slot)) return
     const messages = slot === state.activeSlot
       ? state.messages
@@ -292,6 +293,13 @@ export const messageReducers = {
     // write downgraded the decision. The reverse direction stays open: a
     // real decision landing after 'stale' is new information and overwrites.
     if (m?.meta && !(decision === 'stale' && m.meta.resolved)) m.meta.resolved = decision
+    // `allPending`: a bare-id 404 proves NO request is pending under this id
+    // (`resolve_approval` checks the state and slot registries), yet a
+    // chat-runner row and a coordinator row can carry it. Settling only
+    // `matches[0]` left the other row up, so the bar stayed under its
+    // "expired" notice. A successful decide does not pass this: it answered
+    // ONE request, and another row may still be live.
+    if (allPending) for (const other of matches ?? []) if (other.meta && !other.meta.resolved) other.meta.resolved = decision
     // If rejected, mark the matching toolLog entry so the pill can show a rejection icon.
     // Every rejection token counts: a reject-once that missed this would leave
     // the pill unmarked, and ToolCallLine then reads its 🚫 sibling as an
@@ -361,8 +369,8 @@ export const messageReducers = {
    *  unbounded one. The reverse is refused, and a superseded slot cannot upgrade
    *  again, so this cannot loop.
    *  No-op for the active slot (its mirror is already live). */
-  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean }>) {
-    const { slot, messages, hasMore, bounded, total, running } = action.payload
+  hydrateSlotMessages(state: ChatState, action: PayloadAction<{ slot: string; messages: ChatMessage[]; queue?: unknown; hasMore?: boolean; bounded?: boolean; total?: number; running?: boolean; nextBefore?: number }>) {
+    const { slot, messages, queue, hasMore, bounded, total, running, nextBefore } = action.payload
     if (isUnsafeKey(slot)) return
     if (slot === state.activeSlot) return
     const k = safeKey(slot)
@@ -379,19 +387,23 @@ export const messageReducers = {
       const tail = tailNotInPage(prior.slice(boundedLen), messages)
       // Reasoning is broadcast-only so the wider page never carries it back.
       // Scoped to the REPLACED region: `tail` already keeps the live tail's own.
-      writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore)
+      writeSlotPage(state, slot, mergePreservedThinking(prior.slice(0, boundedLen), [...messages, ...tail], messages), hasMore, undefined, nextBefore)
       retainServerTotal(state, slot, total, running)
       return
     }
     const cur = state.slotMessages[slot] ?? []
     if (!state.slotHydrated) state.slotHydrated = {}
     state.slotHydrated[k] = true
+    const removedQueueIds = new Set(state.slotPaneRemovedQueueIds?.[k])
+    delete state.slotPaneRemovedQueueIds?.[k]
     // Only a page write records a marker, so its presence means `cur` is a
     // loaded transcript, and prepending a bounded tail onto that reorders it.
     if (state.slotPaneHasMore?.[k] !== undefined) return
     // Seeded frames are NEWER rows appended after the page, so the page's
     // has-more still describes what precedes it; dropping it hid the marker.
-    writeSlotPage(state, slot, [...messages, ...cur], hasMore, bounded ? messages.length : undefined)
+    const queued = normalizeQueueEntries(queue).filter(q => !removedQueueIds.has(q.queueId))
+    const hydrated = hydrateQueuedBubbles([...messages, ...tailNotInPage(cur, messages)], queued, true)
+    writeSlotPage(state, slot, hydrated, hasMore, bounded ? messages.length : undefined, nextBefore)
     retainServerTotal(state, slot, total, running)
   },
   sseChatMessageUpdate(state: ChatState, action: PayloadAction<{ slot: string; tool_call_id?: string; ts?: string; content?: string; meta?: Record<string, unknown> }>) {

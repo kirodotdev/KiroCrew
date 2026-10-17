@@ -11,6 +11,7 @@ import { MemoryRouter } from 'react-router-dom'
 import ApprovalModePicker from '../components/ApprovalModePicker'
 import { createTestStore } from './helpers'
 import { api } from '../api/client'
+import { isTrustRootTarget } from '../guide/findTargetPolicy'
 
 function renderPicker(mode = 'normal', compact = false) {
   const store = createTestStore()
@@ -35,6 +36,12 @@ describe('ApprovalModePicker', () => {
     renderPicker('trust')
     expect(screen.getByText('Trust')).toBeInTheDocument()
     expect(screen.queryByText('YOLO mode is an app-wide setting')).not.toBeInTheDocument()
+  })
+
+  it('marks its trigger as the agent\'s own ceiling, so no guide resolves or points at it', () => {
+    window.history.replaceState(null, '', '/chat')
+    renderPicker('normal')
+    expect(isTrustRootTarget(screen.getByLabelText('Approval mode: Normal'), 'Approval mode')).toBe(true)
   })
 
   it('compact trigger hides the label but keeps the aria-label', () => {

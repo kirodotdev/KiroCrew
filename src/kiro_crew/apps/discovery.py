@@ -148,7 +148,8 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
 
         try:
             manifest = AppManifest.from_json_file(manifest_path)
-            errors = manifest.validate(app_root=entry)
+            unchecked: list[str] = []
+            errors = manifest.validate(app_root=entry, unchecked=unchecked)
             if errors:
                 logger.warning(
                     "Skipping builtin %s: validation errors: %s",
@@ -156,6 +157,15 @@ def discover_builtin_apps(builtins_dir: Path | None = None) -> list[dict[str, An
                     "; ".join(errors),
                 )
                 continue
+            if unchecked:
+                # The path screen did not answer, which is not a verdict on the
+                # shipped manifest. The builtin stays listed (and so is not read
+                # as orphaned); registration screens each path again and retries.
+                logger.warning(
+                    "Builtin %s: paths not checked yet, keeping it listed: %s",
+                    entry.name,
+                    "; ".join(unchecked),
+                )
             apps.append(_manifest_to_builtin_dict(manifest))
             logger.debug("Discovered builtin app: %s v%s", manifest.name, manifest.version)
         except ValueError as exc:

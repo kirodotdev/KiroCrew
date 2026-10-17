@@ -137,77 +137,37 @@ def _create_skill_pinned(
         with suppress(OSError):
             os.rmdir(skill_dir.name, dir_fd=parent_fd)
         raise
-    # Bound before the guarded region so the rollback can tell "no identity to
-    # verify against" from "the identity is X" without inspecting locals.
-    leaf: os.stat_result | None = None
     try:
+        # The leaf is pinned_fs.write_new_file_pinned's transaction, shared with
+        # the steering and prompt creates: the O_EXCL create under dir_fd, the
+        # identity probe before the first write, the short-write loop, the close
+        # inside the guard, and the rollback that removes SKILL.md through
+        # unlink_verified only while the name still holds the inode this call
+        # created. With no identity (both probes failed) the leaf STAYS, empty --
+        # nothing was written before the probe -- so remove_dir_verified below
+        # finds the directory non-empty and puts the name back, leaving a skill
+        # with an empty body that the Skills tab lists and update_skill and
+        # delete_skill both reach: a save away from correct, where unlinking
+        # whatever answers to the name would destroy a file this code never read.
+        #
         # 0o666, masked by umask, is what the by-name floor's write_text
         # produces, so the two branches land the same permissions and the pin
         # changes no default. This is the mode prompts.py's own pinned O_EXCL
         # create of user content passes, for the same reason. A tighter default
         # for user-authored skill bodies is a policy change that has to cover
         # both branches and both platforms, so it does not ride a migration.
-        fd = os.open(
-            "SKILL.md",
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_BINARY", 0),
-            0o666,
-            dir_fd=dir_fd,
-        )
-        try:
-            try:
-                # Identity of the inode this call created, from the descriptor while
-                # it is provably ours: the rollback addresses a NAME, and a rival can
-                # unlink ours and create its own inside the failure window.
-                leaf = os.fstat(fd)
-                data = content.encode("utf-8")
-                written = 0
-                while written < len(data):
-                    written += os.write(fd, data[written:])
-            except BaseException:
-                # Ask for the identity once more while the descriptor is still open --
-                # the close below is what takes it away, and the rollback arm cannot
-                # unlink anything without one. An EIO or ESTALE that made the first
-                # fstat fail on a network filesystem is usually transient, so this is
-                # a free path back to the verified arm; it can never answer with
-                # another object, because it addresses a descriptor rather than a name.
-                if leaf is None:
-                    with suppress(OSError):
-                        leaf = os.fstat(fd)
-                raise
-        finally:
-            os.close(fd)
+        sk.pinned_fs.write_new_file_pinned(dir_fd, "SKILL.md", content.encode("utf-8"), mode=0o666)
     except BaseException:
-        # Roll the whole create back, leaf first, both through descriptors. Caught
-        # broadly rather than on OSError: a KeyboardInterrupt or a MemoryError
-        # building the buffer leaves the same half-made skill, and the retry is
-        # just as permanently 409 either way.
+        # Roll the directory back through its descriptor. Caught broadly rather
+        # than on OSError: a KeyboardInterrupt or a MemoryError building the buffer
+        # leaves the same half-made skill, and the retry is just as permanently
+        # 409 either way. The leaf's own rollback already ran inside the helper.
         #
-        # Both halves verify identity, because both address a NAME under a
-        # descriptor and a name can be replaced inside the failure window. The
-        # leaf goes through unlink_verified, which stats through the directory's
-        # own fd and unlinks only if the inode is still the one created above, so
-        # a rival that replaced SKILL.md keeps ITS file. The directory goes
-        # through remove_dir_verified, which renames it aside under the pinned
+        # remove_dir_verified renames the directory aside under the pinned
         # parent, re-checks (st_dev, st_ino), and only then rmdirs -- a directory
-        # swapped in at the name is reported rather than removed. A bare unlink
-        # or rmdir by name would delete whatever answers to the name, which is
-        # the step this whole migration exists to remove.
-        #
-        # ``leaf`` is None only when the leaf open failed, or when BOTH fstats on
-        # the descriptor this call owned failed -- and the first of those precedes
-        # the first os.write, so in every one of those cases nothing was written.
-        # No identity therefore means no unlink: the empty SKILL.md keeps the
-        # directory non-empty, remove_dir_verified's rmdir fails and puts the name
-        # back, and the create is left as a skill with an empty body, which the
-        # Skills tab lists and which update_skill and delete_skill both reach. That
-        # is a save away from correct; unlinking whatever answers to the name to
-        # spare that would destroy a file this code has never read.
-        if leaf is not None:
-            sk.pinned_fs.unlink_verified(dir_fd, "SKILL.md", (leaf.st_dev, leaf.st_ino))
+        # swapped in at the name is reported rather than removed. A bare rmdir by
+        # name would delete whatever answers to the name, which is the step this
+        # whole migration exists to remove.
         outcome = sk.pinned_fs.remove_dir_verified(
             parent_fd, skill_dir.name, expect=(created.st_dev, created.st_ino)
         )
@@ -359,6 +319,41 @@ def set_pinned(loader: SkillsLoader, name: str, pinned: bool) -> bool:
     return True
 
 
+def rewrite_inject_on_trigger(content: str, inject: bool) -> str | None:
+    """Return *content* with its ``inject_on_trigger`` setting rewritten.
+
+    The pure frontmatter core shared by :func:`set_inject_on_trigger` (the
+    dashboard toggle) and the builtin-skill sync, which carries the opt-out
+    across a packaged reinstall and recognises the carried line when it
+    verifies an installed tree. Every top-level ``inject_on_trigger:`` line is
+    dropped; ``inject=False`` then appends ``inject_on_trigger: false``.
+
+    The rewritten block keeps the line ending of the opening fence: a CRLF
+    file (a Windows checkout of a packaged skill) stays CRLF and an LF file
+    stays LF, and the body after the block is returned byte-for-byte. The
+    input is expected untranslated (decoded bytes, not a universal-newline
+    read), so the output is what lands on disk.
+
+    Returns None when *content* has no frontmatter block to edit.
+    """
+    m = re.match(r"^---(\r?\n)(.*?)\r?\n---(?:\r?\n)?(.*)$", content, re.DOTALL)
+    if not m:
+        return None
+    nl = m.group(1)
+    fm_lines = [
+        ln.removesuffix("\r")
+        for ln in m.group(2).split("\n")
+        # Only a TOP-LEVEL key, matched without stripping: an indented
+        # `inject_on_trigger:` belongs to a block scalar (a description that
+        # documents the flag, say), and deleting that line would silently
+        # rewrite the skill's prose while toggling a setting.
+        if not ln.lower().startswith("inject_on_trigger:")
+    ]
+    if not inject:
+        fm_lines.append("inject_on_trigger: false")
+    return f"---{nl}" + nl.join(fm_lines) + f"{nl}---{nl}" + m.group(3)
+
+
 def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool:
     """Opt a skill in or out of full-body injection on a trigger match.
 
@@ -379,8 +374,6 @@ def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool
     frontmatter block to edit — the caller surfaces that as a failed toggle
     rather than silently reporting success on a no-op.
     """
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
-
     if not loader._safe_name(name):
         return False
     skill_file = loader._resolve_path(name)
@@ -394,27 +387,22 @@ def set_inject_on_trigger(loader: SkillsLoader, name: str, inject: bool) -> bool
     except OSError:
         return False
     try:
-        content = skill_file.read_text(encoding="utf-8")
+        # Bytes, not read_text: a universal-newline read folds CRLF to LF, and
+        # the verbatim write below would then rewrite every line ending of a
+        # CRLF file while toggling one setting.
+        content = skill_file.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", content, re.DOTALL)
-    if not m:
+    new_content = rewrite_inject_on_trigger(content, inject)
+    if new_content is None:
         return False
-    fm_lines = [
-        ln
-        for ln in m.group(1).split("\n")
-        # Only a TOP-LEVEL key, matched without stripping: an indented
-        # `inject_on_trigger:` belongs to a block scalar (a description that
-        # documents the flag, say), and deleting that line would silently
-        # rewrite the skill's prose while toggling a setting.
-        if not ln.lower().startswith("inject_on_trigger:")
-    ]
-    if not inject:
-        fm_lines.append("inject_on_trigger: false")
-    new_content = "---\n" + "\n".join(fm_lines) + "\n---\n" + m.group(2)
-    # Atomic write (temp + rename), for the same reason set_pinned uses it:
-    # a partial write must never truncate the live SKILL.md.
-    sk.atomic_write(skill_file, new_content)
+    # The same atomic, access-control-carrying replace update_skill uses: the
+    # file's mode AND its named ACL entries are taken from the inode being
+    # replaced. Mode bits alone would keep 0644 but drop a named-user deny, and
+    # a built-in SKILL.md must keep its packaged mode because the builtin-sync
+    # fingerprint hashes it. A rejected target is a failed toggle.
+    if not loader._write_skill_md(skill_file, new_content, dir_fd=None):
+        return False
     loader._invalidate_iter_cache()
     logger.info("Skill %s on trigger: %s", "injects fully" if inject else "sends a pointer", name)
     return True

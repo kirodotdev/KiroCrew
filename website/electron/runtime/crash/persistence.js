@@ -2,9 +2,10 @@
 
 // What the collector remembers across launches, in the app's logs directory:
 // the seen-set that acknowledges each artifact once (with the activation and
-// baseline cutoffs that give it meaning), and `crashes.log`, the ledger that
-// survives every boot. Every write goes through a temp file and a rename, so a
-// crash during the crash scan cannot tear either file.
+// baseline cutoffs that give it meaning, and the swept set that marks which
+// acknowledged dumps the backlog sweep has opened), and `crashes.log`, the
+// ledger that survives every boot. Every write goes through a temp file and a
+// rename, so a crash during the crash scan cannot tear either file.
 
 const path = require("path");
 
@@ -67,13 +68,16 @@ function readSeenState(statePath, { fs, log = () => {} } = {}) {
         // Per-key count of consecutive scans a dump has read short. Bounds how
         // long an unreadable file may hold an inspection slot before it ages out.
         attempts: readAttempts(parsed.attempts),
+        // Acknowledged dumps the backlog sweep has already opened, so it opens
+        // none of them twice. A state file without the list reads as none swept.
+        swept: new Set(Array.isArray(parsed.swept) ? parsed.swept.map(String) : []),
       };
     }
     log(`crash state at ${statePath} has no seen list; re-establishing baseline`);
   } catch {
     // First run, or a torn write. Both mean the same thing to the caller.
   }
-  return { seen: new Set(), activatedAt: null, baselinedAt: null, baselined: false, attempts: {} };
+  return { seen: new Set(), activatedAt: null, baselinedAt: null, baselined: false, attempts: {}, swept: new Set() };
 }
 
 /** A `{key: count}` map, defended against a torn or hand-edited state file. */
@@ -100,7 +104,7 @@ function readAttempts(raw) {
  * file is something a person reads while working out why a crash was or was not
  * reported, and `1788539034123` does not answer that question.
  */
-function writeSeenState(statePath, seen, { fs, log = () => {}, activatedAt = null, baselinedAt = null, attempts = null } = {}) {
+function writeSeenState(statePath, seen, { fs, log = () => {}, activatedAt = null, baselinedAt = null, attempts = null, swept = null } = {}) {
   // Keep the newest keys: `seen` is insertion-ordered and appended newest-last.
   const keys = Array.from(seen);
   const kept = keys.length > MAX_SEEN_KEYS ? keys.slice(keys.length - MAX_SEEN_KEYS) : keys;
@@ -111,6 +115,9 @@ function writeSeenState(statePath, seen, { fs, log = () => {}, activatedAt = nul
   // Only carried when there is something pending: an empty map stays absent so a
   // legacy state file and a quiescent one look identical on disk.
   if (attempts && Object.keys(attempts).length > 0) state.attempts = attempts;
+  // Absent when empty, for the same reason.
+  const sweptKeys = swept ? Array.from(swept) : [];
+  if (sweptKeys.length > 0) state.swept = sweptKeys;
   const temp = `${statePath}.tmp`;
   try {
     fs.writeFileSync(temp, `${JSON.stringify(state)}\n`);
@@ -143,10 +150,10 @@ function writeSeenState(statePath, seen, { fs, log = () => {}, activatedAt = nul
 function armCrashCollector({ logsDir, fs, now = () => new Date(), log = () => {} } = {}) {
   if (!fs) return null;
   const statePath = crashStatePath(logsDir);
-  const { seen, activatedAt, baselinedAt } = readSeenState(statePath, { fs, log });
+  const { seen, activatedAt, baselinedAt, swept } = readSeenState(statePath, { fs, log });
   if (activatedAt !== null) return activatedAt;
   const stamped = now().getTime();
-  if (!writeSeenState(statePath, seen, { fs, log, activatedAt: stamped, baselinedAt })) return null;
+  if (!writeSeenState(statePath, seen, { fs, log, activatedAt: stamped, baselinedAt, swept })) return null;
   log(`crash collector armed at ${new Date(stamped).toISOString()}`);
   return stamped;
 }

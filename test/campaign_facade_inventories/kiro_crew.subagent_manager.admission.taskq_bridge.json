@@ -1,0 +1,39 @@
+{
+ "base_public_names": [
+  "DeferPoint",
+  "FairnessSettings",
+  "MEMORY_WAIT_UNTIL_KEY",
+  "MIN_RECHECK_DELAY_SECS",
+  "ManagerComponent",
+  "QUEUED_LISTING_CAP",
+  "QUEUED_WAIT_EXPIRED_TEXT",
+  "QueuedReadUnavailable",
+  "QueuedRun",
+  "QueuedRunListing",
+  "RESUMING_AFTER_RESTART",
+  "RESUMING_RETRY",
+  "UNKNOWN_PENDING",
+  "WINDOW_ENTRY_RECOVERING",
+  "outcome_task_state",
+  "tombstone_terminal_state"
+ ],
+ "note": "The facade of a split by binding: _TaskqBridgeMixin's moved members live in the taskq_bridge_* owners; the module keeps every public project name it bound.",
+ "rebound": {
+  "DeferPoint": "kiro_crew.subagent_manager.admission.types",
+  "FairnessSettings": "kiro_crew.subagent_manager.admission.types",
+  "MEMORY_WAIT_UNTIL_KEY": "kiro_crew.subagent_manager.admission.types",
+  "MIN_RECHECK_DELAY_SECS": "kiro_crew.subagent_manager.admission.types",
+  "ManagerComponent": "kiro_crew.subagent_manager._component",
+  "QUEUED_LISTING_CAP": "kiro_crew.subagent_manager.admission.taskq_bridge_reads",
+  "QUEUED_WAIT_EXPIRED_TEXT": "kiro_crew.subagent_wait_reasons",
+  "QueuedReadUnavailable": "kiro_crew.subagent_manager.admission.types",
+  "QueuedRun": "kiro_crew.subagent_manager.admission.types",
+  "QueuedRunListing": "kiro_crew.subagent_manager.admission.types",
+  "RESUMING_AFTER_RESTART": "kiro_crew.subagent_wait_reasons",
+  "RESUMING_RETRY": "kiro_crew.subagent_wait_reasons",
+  "UNKNOWN_PENDING": "kiro_crew.subagent_manager.admission.taskq_bridge_reads",
+  "WINDOW_ENTRY_RECOVERING": "kiro_crew.subagent_manager.admission.types",
+  "outcome_task_state": "kiro_crew.subagent_manager.admission.types",
+  "tombstone_terminal_state": "kiro_crew.subagent_manager.admission.types"
+ }
+}

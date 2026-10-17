@@ -103,6 +103,13 @@ with no app identity to check.
   an existing worktree is reported as `reused` only when `worktree list
   --porcelain` shows it checked out on the requested branch. Otherwise it is a
   409, never a session opened against the wrong branch.
+- **Reuse is only for an untouched tree.** A reused worktree must be exactly as
+  `worktree add` left it: `git status --porcelain` is empty and the branch has
+  no commit beyond the base it is cut from, and no session is scoped to the
+  worktree or a directory inside it. Otherwise the answer is a 409 with code
+  `worktree_in_use`, so the same card offered again never opens a second
+  session in a tree another session is using. A probe git cannot answer counts
+  as in use.
 - Sensitive paths are refused, and the destination directory is derived
   server-side (never supplied by the caller) and must not already exist.
 
@@ -123,8 +130,8 @@ Both endpoints emit SEL audit records.
 | Directive marker codec | `src/kiro_crew/session_directive.py` |
 | Directive applier (the effect) | `src/kiro_crew/dashboard/session_directive_apply.py` |
 | Arg schema | `src/kiro_crew/validation.py` |
-| Card endpoint | `src/kiro_crew/dashboard/chat_handlers.py` |
+| Card endpoint | `src/kiro_crew/dashboard/chat_api/followup_card.py` |
 | Worktree endpoint | `src/kiro_crew/dashboard/handlers/worktree.py` |
 | WS event → state | `website/src/hooks/useWebSocket.ts` (routes the frame), `website/src/hooks/websocket/composerCards.ts` (validates it), `website/src/store/chat/composerCards.ts` (the reducer) |
 | Card UI | `website/src/components/FollowUpCard.tsx` |
-| Render site | `website/src/pages/ChatPage.tsx` |
+| Render site | `website/src/pages/chat/page/ComposerDockView.tsx` |

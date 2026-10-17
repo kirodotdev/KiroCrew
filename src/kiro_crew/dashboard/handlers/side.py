@@ -19,8 +19,13 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.acp.client import AcpAuthRequired
-from kiro_crew.acp_backends import ACP_BACKENDS_SIDE_READONLY
+from kiro_crew.acp_backends import ACP_BACKEND_GOOSE, ACP_BACKENDS_SIDE_READONLY
 from kiro_crew.agent_discovery import warm_project_agent_names
+from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+from kiro_crew.agent_sdk.drivers.acp import (
+    claude_adapter_honours_session_options,
+    goose_side_home_supported,
+)
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     refresh_materialized_agents,
@@ -305,6 +310,24 @@ async def _try_side_steer(state: DashboardState, slot, question: str) -> str | N
     return steer_id
 
 
+async def _side_read_only_tools(side_backend: str | None) -> bool:
+    """Whether a side turn on *side_backend* runs read-only tools.
+
+    One answer for the turn and for ``GET /api/chat/side/tools``, so the footer
+    states what the turn does. ``None`` is a config that did not load.
+    """
+    if side_backend is None or side_backend not in ACP_BACKENDS_SIDE_READONLY:
+        return False
+    if is_claude_backend_name(side_backend):
+        # The confinement rides _meta.claudeCode.options, which an adapter
+        # below the verified floor may ignore.
+        return await asyncio.to_thread(claude_adapter_honours_session_options)
+    if side_backend == ACP_BACKEND_GOOSE:
+        # The confinement is a separate goose home, which only POSIX hosts get.
+        return goose_side_home_supported()
+    return True
+
+
 async def _run_side_turn(
     state: DashboardState,
     slot,
@@ -434,7 +457,11 @@ async def _run_side_turn(
         # The selected harness, read from the same config load that resolves the
         # agent. ``None`` when the load failed: the harness is then unknown, and
         # the read-only allowance below is granted by positive membership only.
+        # The config itself is kept too: the first-turn envelope reads the
+        # reply-style setting off it (``build_side_format_prompt``), and a
+        # failed load leaves it ``None`` so that block is simply omitted.
         side_backend: str | None = None
+        cfg: KiroCrewConfig | None = None
         try:
             cfg = KiroCrewConfig.load()
             side_backend = cfg.agent.acp_backend
@@ -497,16 +524,39 @@ async def _run_side_turn(
 
         # Whether this turn may EXECUTE read-only tools is a positive capability
         # of the harness (``ACP_BACKENDS_SIDE_READONLY``, harness-parity H6),
-        # never a negation: the allowance rests on the derived kiro-cli agent
-        # spec below, and another backend's own pre-approval surface
-        # (claude-agent-acp ``permissions.allow`` / ``bypassPermissions``) is
-        # one neither the spec nor the gate can see, so a call it pre-approves
-        # would run with no READ_ONLY decision and no SEL row. Off the set — or
-        # with the harness unknown because the config never loaded — the turn
-        # runs the pre-allowance posture: the base agent under REJECT_ALL, and
-        # the prompt and fallback say tools are unavailable here.
-        tools_available = side_backend is not None and side_backend in ACP_BACKENDS_SIDE_READONLY
-        if tools_available:
+        # never a negation. A harness's own pre-approval surface is one the gate
+        # cannot see, so each member confines its side session so that surface
+        # cannot reach a write: kiro-cli through the derived agent spec below,
+        # claude-agent-acp through the session options its client sends for
+        # ``side_read_only``, goose through the separate goose home its launch
+        # builds for ``side_read_only``. Off the set — or with the harness unknown because
+        # the config never loaded — the turn runs the pre-allowance posture: the
+        # base agent under REJECT_ALL, and the prompt and fallback say tools are
+        # unavailable here.
+        tools_available = await _side_read_only_tools(side_backend)
+        claude_side = tools_available and is_claude_backend_name(side_backend)
+        goose_side = tools_available and side_backend == ACP_BACKEND_GOOSE
+        side_session_kwargs: dict[str, Any] = {}
+        if goose_side:
+            # goose reads no kiro agent spec either. Its launch starts the side
+            # session on a goose home of its own, where no permission.yaml can
+            # pre-approve a tool and no MCP server is mounted, so every call
+            # reaches the READ_ONLY gate below.
+            side_agent: str | None = kiro_agent or slot_agent
+            approval_policy = ToolApprovalPolicy.READ_ONLY
+            binding = (side_agent or "", project or "", "goose_read_only")
+            side_session_kwargs["side_read_only"] = True
+        elif claude_side:
+            # claude reads no kiro agent spec. Its client starts the session with
+            # only the read built-ins and no MCP server and pins the asking mode,
+            # so every web call reaches the READ_ONLY gate below. Read, Grep and
+            # Glob inside the work dir run natively, which is a read, and the
+            # session's deny rules keep them off the host's sensitive paths.
+            side_agent = kiro_agent or slot_agent
+            approval_policy = ToolApprovalPolicy.READ_ONLY
+            binding = (side_agent or "", project or "", "claude_read_only")
+            side_session_kwargs["side_read_only"] = True
+        elif tools_available:
             # The side session runs under ``<agent>--readonly``: the resolved
             # agent's spec with every backend-side grant emptied
             # (``allowedTools: []``, no ``autoApprove``, no ``toolsSettings``
@@ -526,7 +576,7 @@ async def _run_side_turn(
             # (``ReadOnlySpecError``) — it never runs under the base agent.
             base_agent = kiro_agent or slot_agent or "kirocrew"
             published = await asyncio.to_thread(publish_readonly_spec, base_agent, project)
-            side_agent: str | None = published.name
+            side_agent = published.name
             approval_policy = ToolApprovalPolicy.READ_ONLY
             binding = (published.name, project or "", published.digest)
         else:
@@ -588,6 +638,7 @@ async def _run_side_turn(
             # which kiro-cli searches after the project scope.
             cwd=project,
             start_priority=start_priority,
+            **side_session_kwargs,
         )
         acquired_key = side_key
         # ``get_or_create`` suspended this task as well. A close landing during
@@ -617,15 +668,19 @@ async def _run_side_turn(
             question,
             is_first_turn=is_first_turn or (is_new and not resumed),
             tools_available=tools_available,
+            shell_available=not (claude_side or goose_side),
+            file_reads_available=not goose_side,
+            cfg=cfg,
         )
         try:
             response_text = await stream_and_collect(
                 provider,
                 message,
-                # Reads-mode semantics with reject as the fallback on kiro-cli:
-                # provably read-only calls run, everything else is refused (side
-                # chat has no approval card to fall back to); REJECT_ALL on any
-                # other harness (see ``tools_available`` above). The gate's
+                # Reads-mode semantics with reject as the fallback on a harness in
+                # ACP_BACKENDS_SIDE_READONLY: provably read-only calls run,
+                # everything else is refused (side chat has no approval card to
+                # fall back to); REJECT_ALL on any other harness (see
+                # ``tools_available`` above). The gate's
                 # identity is the SIDE key: ``sel._infer_source`` classifies
                 # ``side:*`` as the dashboard surface, so a dashboard-bound
                 # governance profile binds this turn exactly as it binds the
@@ -667,8 +722,8 @@ async def _run_side_turn(
 
         if not chunks:
             # Same vocabulary as the composer footer
-            # (``pages.chat.sideChat.context_only_tools_unavailable`` on
-            # kiro-cli, ``…_backend`` elsewhere): the strings describe one
+            # (``pages.chat.sideChat.context_only_tools_unavailable`` on a
+            # read-only harness, ``…_backend`` elsewhere): the strings describe one
             # boundary and must not drift.
             response_text = (
                 (
@@ -881,6 +936,38 @@ async def api_side_open(request: web.Request) -> web.Response:
             "messages": len(slot._side.messages),
             "last_run_id": slot._side.last_run_id,
             "created_at": slot._side.created_at,
+        }
+    )
+
+
+async def api_side_tools(request: web.Request) -> web.Response:
+    """GET /api/chat/side/tools — whether a side turn runs read-only tools.
+
+    Not per-slot: the answer is the configured harness and the host's adapter.
+    ``claude_adapter_outdated`` says the only thing missing is a newer
+    claude-agent-acp, so the footer can tell the user to update it.
+    ``config_unavailable`` says the config did not load, so the turn runs with
+    no tools for that reason rather than because of the harness.
+    """
+    config_unavailable = False
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        side_backend: str | None = cfg.agent.acp_backend
+    except Exception:
+        logger.debug("Side tools: config load failed", exc_info=True)
+        side_backend = None
+        config_unavailable = True
+    read_only_tools = await _side_read_only_tools(side_backend)
+    claude_adapter_outdated = (
+        not read_only_tools
+        and side_backend in ACP_BACKENDS_SIDE_READONLY
+        and is_claude_backend_name(side_backend)
+    )
+    return web.json_response(
+        {
+            "read_only_tools": read_only_tools,
+            "claude_adapter_outdated": claude_adapter_outdated,
+            "config_unavailable": config_unavailable,
         }
     )
 

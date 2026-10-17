@@ -204,6 +204,7 @@ class TestReadEndpoints:
             lambda p, r: {"reachable": True, "account": "123", "ec2_reachable": True},
         )
         monkeypatch.setattr(hc.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(hc.ssm, "session_manager_plugin_refusal", lambda: None)
         monkeypatch.setattr(hc.ssm, "session_manager_plugin_install_command", lambda: "sudo dnf x")
         resp = await hc.api_cloud_preflight(
             _req("GET", "/api/cloud/preflight?profile=dev", state=_state(tmp_path))
@@ -215,6 +216,50 @@ class TestReadEndpoints:
         # The remedy is resolved server-side, because only this process knows which
         # OS the check ran on.
         assert body["session_manager_plugin_command"] == "sudo dnf x"
+        assert body["session_manager_plugin_refused_path"] == ""
+        assert body["session_manager_plugin_refused_reason"] == ""
+        assert body["session_manager_plugin_refused_code"] == ""
+        assert body["session_manager_plugin_refused_owner"] == ""
+        assert body["session_manager_plugin_refused_owner_uid"] is None
+
+    async def test_preflight_reports_a_refused_plugin_with_its_reason(self, tmp_path, monkeypatch):
+        # A plugin the provenance check refused is installed: the row carries the
+        # refusal and its remedy, never the install command, which would
+        # reinstall the same refused file.
+        monkeypatch.setattr(hc.iam, "reachability_check", lambda p, r: {"reachable": True})
+        monkeypatch.setattr(hc.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(
+            hc.ssm,
+            "session_manager_plugin_refusal",
+            lambda: hc.ssm.PluginRefusal(
+                path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+                reason="executable parent is owned by another user (uid 1501)",
+                remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+                code="other_owner",
+                owner="",
+                owner_uid=1501,
+            ),
+        )
+
+        def _no_install_command() -> str:
+            raise AssertionError("a refused plugin must not be offered the install command")
+
+        monkeypatch.setattr(hc.ssm, "session_manager_plugin_install_command", _no_install_command)
+        resp = await hc.api_cloud_preflight(
+            _req("GET", "/api/cloud/preflight", state=_state(tmp_path))
+        )
+        body = _body(resp)
+        assert body["session_manager_plugin"] is False
+        assert body["session_manager_plugin_refused_path"] == (
+            "/usr/local/sessionmanagerplugin/bin/session-manager-plugin"
+        )
+        assert "owned by another user (uid 1501)" in body["session_manager_plugin_refused_reason"]
+        assert body["session_manager_plugin_refused_code"] == "other_owner"
+        assert body["session_manager_plugin_refused_owner"] == ""
+        assert body["session_manager_plugin_refused_owner_uid"] == 1501
+        assert body["session_manager_plugin_command"] == (
+            "sudo chown -R root:wheel /usr/local/sessionmanagerplugin"
+        )
 
     async def test_preflight_omits_the_remedy_once_the_plugin_is_present(
         self, tmp_path, monkeypatch
@@ -631,6 +676,183 @@ class TestInstanceMutations:
         assert r3.status == 200
         assert seen["destroy"]["tag"] == "kc-7b21"
         assert seen["destroy"]["kw"].get("wait") is False
+
+    async def test_these_verbs_dispatch_on_the_lane_that_created_the_crew(
+        self, tmp_path, monkeypatch
+    ):
+        """A crew from another lane must not be driven down the EC2 lane's path.
+
+        The built-in path looks for a CloudFormation stack named after the tag, and
+        only that lane creates one. Sent there, a MicroVM crew produced a credentials
+        error about describing a stack that was never meant to exist -- measured on a
+        live crew, and it reads as a broken profile rather than a verb that does not
+        apply here.
+        """
+        reached: list[str] = []
+        monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
+        monkeypatch.setattr(hc.ec2, "destroy", lambda *a, **k: reached.append("ec2.destroy") or {})
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+
+        torn: list[dict] = []
+
+        class _LaneEngine:
+            def teardown(self, *, tag, profile, region):
+                torn.append({"tag": tag, "profile": profile, "region": region})
+                return True
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = _LaneEngine()
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-2a276d"
+        job.instance_id = "mi-0abc"
+        state.cloud_launch_store.save(job)
+
+        unregistered: list[str] = []
+        monkeypatch.setattr(
+            hc.connect_mod, "unregister_instance", lambda iid: unregistered.append(iid) or True
+        )
+
+        # Deleting the crew is what this lane can do, and it goes to the lane's engine.
+        gone = await hc.api_cloud_destroy(
+            _req(
+                "DELETE",
+                "/api/cloud/kc-2a276d",
+                state=state,
+                match_info={"tag": "kc-2a276d"},
+            )
+        )
+        assert gone.status == 200
+        assert torn == [{"tag": "kc-2a276d", "profile": "", "region": ""}]
+        assert "ec2.destroy" not in reached
+        assert unregistered == ["mi-0abc"], "the registry row outlived the crew"
+
+    async def test_a_lane_with_no_paused_state_refuses_stop_rather_than_ending_the_crew(
+        self, tmp_path, monkeypatch
+    ):
+        """``stop``/``start`` are the EC2 lane's reversible pair. A lane whose engine
+        offers only ``teardown`` has no such pair, and mapping stop onto teardown
+        would make a panel button that asks for no confirmation destroy a crew's
+        conversations. So it is refused, and the refusal names what to do instead."""
+        monkeypatch.setattr(
+            hc.ec2, "stop", lambda *a, **k: pytest.fail("the EC2 lane answered for another lane")
+        )
+
+        torn: list[str] = []
+
+        class _LaneEngine:
+            def teardown(self, *, tag, profile, region):
+                torn.append(tag)
+                return True
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = _LaneEngine()
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-2a276d"
+        state.cloud_launch_store.save(job)
+
+        refused = await hc.api_cloud_stop(
+            _req(
+                "POST",
+                "/api/cloud/kc-2a276d/stop",
+                state=state,
+                match_info={"tag": "kc-2a276d"},
+            )
+        )
+        assert refused.status == 409
+        body = json.loads(refused.text or "{}")
+        assert body["code"] == "lane_cannot_pause"
+        assert body["provisioner_id"] == "microvm"
+        assert torn == [], "a refusal must not tear the crew down"
+
+    async def test_a_delete_whose_lane_engine_cannot_resolve_is_an_audited_4xx(
+        self, tmp_path, monkeypatch
+    ):
+        """Deleting a non-EC2 crew resolves the lane engine first. When the lane's
+        ``cloud.json`` block is missing/incomplete/unreadable the engine resolution
+        raises (``KeyError`` for an unknown provider), and without an arm for it the
+        request is an unaudited 500 and the running VM cannot be deleted from the
+        panel. It must be a named 4xx."""
+        audited: list[tuple] = []
+        monkeypatch.setattr(hc, "_audit", lambda *a, **k: audited.append((a, k)))
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None
+        monkeypatch.setattr(
+            hc, "_engine", lambda *a, **k: (_ for _ in ()).throw(KeyError("microvm"))
+        )
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-nolane"
+        state.cloud_launch_store.save(job)
+
+        resp = await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-nolane", state=state, match_info={"tag": "kc-nolane"})
+        )
+        assert resp.status == 400, resp.text
+        body = json.loads(resp.text or "{}")
+        assert body["code"] == "unknown_provisioner"
+        assert any("denied" in a for a, _ in audited), "the refusal must be audited"
+
+    async def test_a_delete_whose_lane_config_is_an_alias_is_an_audited_4xx(
+        self, tmp_path, monkeypatch
+    ):
+        """The ``LaunchUnavailable`` sibling: a config-alias refusal on the delete
+        path is the operator's host setup, named with its code, not a 500."""
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None
+        monkeypatch.setattr(
+            hc,
+            "_engine",
+            lambda *a, **k: (_ for _ in ()).throw(
+                hc.LaunchUnavailable("config_alias_refused", "cloud.json is a hardlink alias")
+            ),
+        )
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-alias"
+        state.cloud_launch_store.save(job)
+
+        resp = await hc.api_cloud_destroy(
+            _req("DELETE", "/api/cloud/kc-alias", state=state, match_info={"tag": "kc-alias"})
+        )
+        assert resp.status == 400, resp.text
+        body = json.loads(resp.text or "{}")
+        assert body["code"] == "config_alias_refused"
+
+    async def test_a_crew_from_the_builtin_lane_still_takes_the_builtin_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Non-vacuity for the two above: the dispatch must still send the lane it
+        was written for to the path it has always used, including a tag with no job
+        file left to read."""
+        reached: list[str] = []
+        monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.tag = "kc-ec2"
+        state.cloud_launch_store.save(job)
+
+        answered = await hc.api_cloud_stop(
+            _req("POST", "/api/cloud/kc-ec2/stop", state=state, match_info={"tag": "kc-ec2"})
+        )
+        assert answered.status == 200
+        assert reached == ["ec2.stop"]
+
+        # And a tag the job store knows nothing about keeps the same behaviour rather
+        # than being refused, which is what a reaped job file leaves behind.
+        reached.clear()
+        forgotten = await hc.api_cloud_stop(
+            _req("POST", "/api/cloud/kc-gone/stop", state=state, match_info={"tag": "kc-gone"})
+        )
+        assert forgotten.status == 200
+        assert reached == ["ec2.stop"]
 
     async def test_destroy_cleans_up_local_state_after_deletion_confirms(
         self, tmp_path, monkeypatch
@@ -1227,6 +1449,46 @@ class TestProvisionerSeam:
         assert body["code"] == "config_alias_refused"
         # The operator has to be able to act on it, so the file and the remedy travel with it.
         assert "cloud.json" in body["error"] and "regular file" in body["error"]
+
+    async def test_a_recipient_that_moved_is_a_400_with_the_remedy(self, tmp_path, monkeypatch):
+        """The lane's config changed after the operator confirmed its recipient. The engine
+        build refuses, nothing launches, and the answer is the operator's to act on -- not
+        a 500 that reads as a gateway fault."""
+        from kiro_crew.platform.defaults import RecipientMoved
+
+        row = _Provisioner("moved_lane")
+
+        class MovedProvider:
+            def provisioners(self):
+                return [row]
+
+            def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+                raise RecipientMoved(
+                    "its configuration changed after the recipient was approved; "
+                    "re-read the lane's recipient and confirm it again"
+                )
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = None
+        _compose(monkeypatch, MovedProvider())
+        resp = await hc.api_cloud_launch_create(
+            _req(
+                "POST",
+                "/api/cloud/launch",
+                state=state,
+                body={
+                    "provider_id": row.id,
+                    "profile": "p",
+                    "region": "us-east-1",
+                    "size_key": "1024/2048",
+                },
+            )
+        )
+
+        assert resp.status == 400, _body(resp)
+        body = _body(resp)
+        assert body["code"] == "recipient_moved"
+        assert "confirm it again" in body["error"]
 
     async def test_the_alias_refusal_is_not_confused_with_an_unknown_lane(
         self, tmp_path, monkeypatch

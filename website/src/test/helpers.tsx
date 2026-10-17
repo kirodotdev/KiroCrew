@@ -1,5 +1,6 @@
 import React from 'react'
-import { render, renderHook, type RenderOptions } from '@testing-library/react'
+import { render, renderHook, waitFor, type RenderOptions } from '@testing-library/react'
+import { expect } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -21,6 +22,24 @@ export function createTestStore(preloadedState?: Partial<RootState>) {
       instances: instancesReducer,
     },
     preloadedState,
+  })
+}
+
+/**
+ * Create a store whose dashboard is connected to the gateway.
+ *
+ * `createTestStore()` starts where the real dashboard boots: `connected: false`,
+ * until the SSE stream opens. A component gated on `connected` therefore renders
+ * its offline branch by default, and a test of its connected path must say so.
+ * This is that opt-in. Any `dashboard` fields you pass are laid over the reducer's
+ * real initial state, so you only name what the test is about; `connected` is
+ * always true. Other slices pass through unchanged.
+ */
+export function createConnectedTestStore(preloadedState?: Partial<RootState>) {
+  const initialDashboard = dashboardReducer(undefined, { type: '@@test/init' })
+  return createTestStore({
+    ...preloadedState,
+    dashboard: { ...initialDashboard, ...preloadedState?.dashboard, connected: true },
   })
 }
 
@@ -87,4 +106,18 @@ export function renderHookWithProviders<T>(
     )
   }
   return { store, ...renderHook(hook, { wrapper: Wrapper }) }
+}
+
+/** Let a freshly mounted ChatSidebar finish its first population, so its rows
+ *  spring and slide in again: `useRowAnimSettled` makes them snap until the
+ *  slot, folder and tag-column reads settle and two frames have painted, and the
+ *  sidebar root reports that as `data-row-anim="settled"`. The store must mark
+ *  `dashboard.slotsLoaded` (or a non-zero `slotsGeneration`), as the live slot
+ *  list does: with neither, the sidebar waits for a list and this times out.
+ *
+ *  The budget is above `waitFor`'s 1 s default because settling spans whole
+ *  re-renders of the list: a fixture with a hundred-plus rows re-renders in over
+ *  a second on a loaded runner, and the wait ends as soon as the root settles. */
+export async function settleSidebarRowAnim(): Promise<void> {
+  await waitFor(() => expect(document.querySelector('[data-row-anim="settled"]')).not.toBeNull(), { timeout: 5000 })
 }

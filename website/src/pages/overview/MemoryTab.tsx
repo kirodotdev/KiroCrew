@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { Trans } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal } from 'lucide-react'
+import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
@@ -84,6 +84,20 @@ function scopeCell(lesson: Lesson) {
   // alike, and their Deletes go to different files.
   if (lesson.scope !== 'workspace' || !lesson.workspace) return repo
   return <>{repo}<span className="block text-[12px] text-muted">{i18nT('pages.overview.memoryTab.scope_workspace', { name: lesson.workspace })}</span></>
+}
+
+/** The Source cell: the store's write origin in plain words. `user_explicit`
+ *  covers every deliberate save (`learn_add`, the dashboard, the CLI), whoever
+ *  made it, so its label names both the user and the agent. An origin with no
+ *  label shows its stored code; a row with none reads "Unknown". */
+function sourceCell(lesson: Lesson) {
+  switch (lesson.source || '') {
+    case '': return <span className="text-muted italic">{i18nT('pages.overview.memoryTab.source_unknown')}</span>
+    case 'user_explicit': return i18nT('pages.overview.memoryTab.source_user_explicit')
+    case 'consolidation': return i18nT('pages.overview.memoryTab.source_consolidation')
+    case 'taskrunner': return i18nT('pages.overview.memoryTab.source_taskrunner')
+    default: return <span className="font-mono">{esc(lesson.source ?? '')}</span>
+  }
 }
 
 export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNavigate }: { refreshTrigger: number; selectedStore?: string; onStoreNavigate?: (store: string) => void }) {
@@ -209,6 +223,9 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
   const [consolidating, setConsolidating] = useState(false)
   const [consolidateMsg, setConsolidateMsg] = useState<ReactNode>('')
   const [consolidateOk, setConsolidateOk] = useState(false)
+  // A tally with skips (and no failure) is not on the clear timer, so it gets
+  // its own dismiss control; this says whether the shown tally is that one.
+  const [consolidateStanding, setConsolidateStanding] = useState(false)
   // A failed press, apart from the status message: it reports rejected
   // requests, so it renders through ErrorNotice like every other failure.
   // `session` is the first failed request's session key, `count` how many failed.
@@ -283,6 +300,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
     rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
     category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
     repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
+    source: (a: Lesson, b: Lesson) => compareText(a.source ?? '', b.source ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
   }), [])
   const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
@@ -306,7 +324,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       timeoutsRef.current = timeoutsRef.current.filter(t => t !== consolidateClearRef.current)
       consolidateClearRef.current = null
     }
-    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false); setConsolidateFailure(null)
+    setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false); setConsolidateFailure(null); setConsolidateStanding(false)
     // The list is the press's first request. A gateway that is down or answers
     // 500 is a FAILURE of the press, not an empty list: it renders through the
     // same notice as a failed per-session request, with the server's reply as
@@ -416,7 +434,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       setConsolidateMsg(<><CheckCircle className="lucide-inline" /> {i18nT('pages.overview.memoryTab.consolidated')} {i18nT('pages.overview.memoryTab.session', { count: succeeded })}</>); setConsolidateOk(true)
     }
     setConsolidating(false)
-    if (failed === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
+    // Only the plain all-success tally clears itself. A tally with skips is a
+    // ~12-word line plus a "?" tip the reader opens, which four seconds does not
+    // cover, so it stands until the next press or its own dismiss control; a
+    // failure stands until the notice is dismissed.
+    setConsolidateStanding(failed === 0 && skipped > 0)
+    if (failed === 0 && skipped === 0) consolidateClearRef.current = scheduleClear(() => { consolidateClearRef.current = null; setConsolidateMsg('') }, 4000)
   }
   const addLesson = async () => {
     if (!rule) return
@@ -527,6 +550,15 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
           />
         )}
         {consolidateMsg && <span className={`text-[13px] ${consolidateOk ? 'text-ok' : 'text-danger'}`} data-testid="consolidate-msg">{consolidateMsg}</span>}
+        {consolidateMsg && consolidateStanding && (
+          <IconButton
+            aria-label={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+            title={i18nT('pages.overview.memoryTab.dismiss_summary_result')}
+            onClick={() => { setConsolidateMsg(''); setConsolidateStanding(false) }}
+          >
+            <X size={13} aria-hidden="true" />
+          </IconButton>
+        )}
 
         {migrated && <span className="text-[12px] text-muted ml-2">{i18nT('pages.overview.memoryTab.semantic_memory_active_text_files_are_read_only')}</span>}
       </div>
@@ -640,13 +672,13 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       />
       {/* Scrolls sideways rather than clipping: five columns plus a long path
           fragment overrun a narrow viewport, and the card hides overflow. */}
-      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={5}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
+      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.source')} sortKey="source" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
+        <tbody>{lessons.length === 0 ? <tr><td colSpan={6}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
           // Scope is part of the key: a scoped and a global row sharing rule text
           // are two lessons, and can share a timestamp. String() keeps the null
           // (unusable-scope) row distinct from the "" (global) one; the JSONL tier
           // keeps a workspace row distinct from a global one.
-          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
+          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{sourceCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm whitespace-nowrap">{fmtDateTimeNumeric(l.ts)}</td>
             <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
         ))}</tbody></table></div></Card>
     )}

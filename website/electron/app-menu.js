@@ -28,6 +28,7 @@ function buildMenuTemplate(deps) {
     zoomOut,
     alwaysOnTop, // initial checked state for Keep on Top (restored preference)
     toggleAlwaysOnTop,
+    toggleFocusMode, // ask the focused dashboard to flip focus mode
     openNewSessionWindow,
     openNewConnectionWindow,
     renameCurrentWindow,
@@ -101,6 +102,14 @@ function buildMenuTemplate(deps) {
         { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: zoomOut },
         { type: "separator" },
         { role: "togglefullscreen" },
+        // Focus mode hides the dashboard's top bar, which holds its own toggle,
+        // so this is the way out that stays visible while it is on. Plain item,
+        // not a checkbox: the state lives in the renderer and can change from
+        // the top bar or the keyboard, so a check mark here could go stale. No
+        // accelerator either: the chord is rebindable in the renderer's
+        // shortcut registry, and a menu accelerator would take the default
+        // chord before the page saw it.
+        { label: "Toggle Focus Mode", id: "focus-mode-toggle", click: toggleFocusMode },
         // Checkable, no accelerator: there is no cross-platform convention for
         // always-on-top, and inventing one risks colliding with an existing
         // binding. `checked` seeds from the restored preference; main.js

@@ -56,7 +56,10 @@ HINT_RESPONSIBLE = (
     "that launched Kiro Crew, not to Kiro Crew itself. Grant them to {process} — "
     "and note that 'not detected' does not always mean unavailable."
 )
-HINT_UNSUPPORTED = "computer use requires macOS; there is nothing to grant on this platform."
+HINT_UNSUPPORTED = (
+    "the Accessibility / Screen Recording permission probe applies only to macOS; "
+    "there is nothing to grant on this platform."
+)
 HINT_UNKNOWN = (
     "the permission state could not be read. Computer use may still work: grants "
     "follow the launching process, which a probe cannot inspect."

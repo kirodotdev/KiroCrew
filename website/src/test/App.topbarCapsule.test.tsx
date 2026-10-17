@@ -4,7 +4,7 @@
  * - macOS fullscreen: 'mac-fullscreen' class driven by the electron
  *   fullscreen-changed bridge (drops the 84px traffic-light inset via CSS)
  *
- * (The activity-panel open toggle lives in the ChatPage session header, not
+ * (The activity-panel open toggle lives in the ChatTitleOverlay session header, not
  * the top bar — see ChatPage.responsivePanel.test.tsx for its coverage.)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -13,6 +13,8 @@ import { renderWithProviders } from './helpers'
 import { safeSetItem } from '../utils/safeStorage'
 import { setDesktopUpdateAvailable } from '../store/dashboardSlice'
 import { MAC_FULLSCREEN_TOP_RESERVE_PX } from '../lib/electron'
+import { api } from '../api/client'
+import { namedCeiling } from './namedCeiling'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
@@ -45,6 +47,10 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    // Rejecting by default keeps every other test on its unloaded-config path;
+    // the sign-in pill test below answers them.
+    kirocrewConfig: vi.fn(() => Promise.reject(new Error('not stubbed'))),
+    kasLoginStatus: vi.fn(() => Promise.reject(new Error('not stubbed'))),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -145,6 +151,32 @@ describe('App top bar — update pill shifts the collapse-ladder budget', () => 
     renderWithProviders(<App />, { route: '/chat' })
     const metrics = await screen.findByLabelText('System metrics')
     expect(metrics.className).toContain('whitespace-nowrap')
+  })
+})
+
+describe('App shell — Kiro sign-in notice', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setWindowWidth(1400)
+  })
+
+  it('shows a lapsed KAS sign-in above the page, outside the top bar, away from the sign-in card', async () => {
+    // The persistent surface #11596 asked for: the sign-in card that already
+    // says "Sign-in expired" sits on Settings > Agent Harness, so an app-level
+    // notice is the only place a user who never opens that page can learn it.
+    // It is not a top-bar control: the bar's action groups are at their cap.
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'kas' } } as Awaited<ReturnType<typeof api.kirocrewConfig>>)
+    vi.mocked(api.kasLoginStatus).mockResolvedValue({
+      authenticated: true, provider: 'Google', identity: 'social', transport: 'device',
+      expires_at: '2000-01-01T00:00:00Z', expired: true, has_refresh_token: false,
+      refresh_rejected: false, usable: false,
+    })
+    const { container } = renderWithProviders(<App />, { route: '/chat' })
+    // Behind the lazy chunk, then the config read, then the status read it enables.
+    const el = await screen.findByTestId('kiro-sign-in-notice', {}, namedCeiling('KIRO_SIGN_IN_NOTICE_IN_APP', 10000))
+    expect(container.querySelector('main#main-content')?.contains(el)).toBe(true)
+    expect(container.querySelector('header')?.contains(el)).toBe(false)
+    expect(el).toHaveTextContent('Kiro sign-in expired')
   })
 })
 

@@ -226,6 +226,35 @@ describe('rankRootRows', () => {
     expect(ids).toContain('app-cmd')
   })
 
+  it('ends a capped attention group on the caller\'s overflow row, and lifts the cap on request', () => {
+    const rows: RootRow[] = Array.from({ length: 8 }, (_, i) => ({
+      id: `attention:s${i}`,
+      title: `Blocked ${i}`,
+      group: 'attention' as const,
+      kind: 'invoke' as const,
+    }))
+    rows.push({ id: 'command:x', title: 'Toggle Theme', group: 'commands', kind: 'invoke' })
+    const attentionOverflowRow = (hidden: number): RootRow => ({
+      id: 'attention:more',
+      title: `+${hidden} more`,
+      group: 'attention',
+      kind: 'invoke',
+    })
+
+    const capped = rankRootRows(rows, '', {}, 0, { attentionOverflowRow })
+    const attention = capped.filter(r => r.group === 'attention').map(r => r.id)
+    // The cap of six, then the overflow row last, counting the two it held back.
+    expect(attention).toHaveLength(7)
+    expect(attention[attention.length - 1]).toBe('attention:more')
+    expect(capped.find(r => r.id === 'attention:more')?.title).toBe('+2 more')
+
+    const full = rankRootRows(rows, '', {}, 0, { attentionOverflowRow, attentionExpanded: true })
+    expect(full.filter(r => r.group === 'attention').map(r => r.id)).toEqual(rows.slice(0, 8).map(r => r.id))
+
+    // Without the option a cap still hides rows silently, as every other group expects.
+    expect(rankRootRows(rows, '', {}, 0).some(r => r.id === 'attention:more')).toBe(false)
+  })
+
   it('still caps CONTRIBUTED command rows, so one app cannot become an index', () => {
     // The cap is not removed, it is pointed at the population it was written for: a
     // page nobody has typed into stays short, and the rest of an app's twenty rows are
@@ -421,7 +450,7 @@ describe('root purity ratchet', () => {
     // row that was selected against the PREVIOUS query, and the fallback row is not
     // on screen yet either.
     const src = readFileSync(join(__dirname, 'CommandBarOverlay.tsx'), 'utf8')
-    expect(src).toContain('rankRootRows(rootRows, query, usage)')
+    expect(src).toMatch(/rankRootRows\(rootRows, query, usage[,)]/)
     expect(src).not.toMatch(/rankRootRows\(rootRows,\s*debounced/)
     // The fallback row rides the same live query. It used to be a `fallbackVisible`
     // boolean; it is now a slot pushed under that condition, so the condition is what

@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 
 from aiohttp import web
 
 from kiro_crew.config.loader import (
+    CRED_FEISHU_APP_ID,
     CRED_JIRA_API_TOKEN,
+    CRED_MICROSOFT_APP_ID,
+    CRED_MICROSOFT_APP_TENANT_ID,
+    CRED_OWNER_ID,
     CRED_WAKATIME_API_KEY,
+    CRED_WECOM_BOT_ID,
     MANAGED_VAULT_FIXED_CONSUMERS,
+    VAULT_CHANNEL_CREDENTIAL_KEYS,
+    EnvFileWideEncodingError,
     KiroCrewConfig,
     config_dir,
     jira_global_token_applicable,
     jira_host_token_name,
     normalize_jira_host,
+    read_env_text,
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.secrets import SecretVault
 
 logger = logging.getLogger(__name__)
@@ -67,6 +78,86 @@ def _connections_client_secret_owned(name: str) -> web.Response | None:
             "Settings → OAuth Apps",
             "code": "managed_by_connections",
             "slug": slug,
+        },
+        status=409,
+    )
+
+
+# The ``.env`` keys the channel settings panels write: every channel token in
+# VAULT_CHANNEL_CREDENTIAL_KEYS plus the channel identifiers. All of them are
+# credential keys, so a ``secret://NAME`` line on any of them resolves NAME from
+# the vault when the channel starts.
+_CHANNEL_ENV_KEYS: frozenset[str] = frozenset(
+    VAULT_CHANNEL_CREDENTIAL_KEYS
+    | {
+        CRED_OWNER_ID,
+        CRED_WECOM_BOT_ID,
+        CRED_MICROSOFT_APP_ID,
+        CRED_MICROSOFT_APP_TENANT_ID,
+        CRED_FEISHU_APP_ID,
+    }
+)
+
+
+def _channel_referenced_names() -> frozenset[str] | None:
+    """The vault names a channel key's ``.env`` line or environment value references.
+
+    Parses ``.env`` the way ``load_credentials`` does, and also reads the
+    process environment, whose value for a key overrides the file's. A missing
+    file, and a UTF-16/32 file the credential readers treat as unset, reference
+    nothing. Returns ``None`` when the file exists but cannot be read, so the
+    caller fails closed. Blocking file IO: call via ``asyncio.to_thread``.
+    """
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+
+    try:
+        text = read_env_text(Path(config_dir()) / ".env")
+    except FileNotFoundError:
+        text = ""
+    except EnvFileWideEncodingError:
+        text = ""
+    except (OSError, UnicodeDecodeError):
+        return None
+    pairs: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        pairs.append((key.strip(), value.strip()))
+    pairs.extend((key, os.environ.get(key, "")) for key in _CHANNEL_ENV_KEYS)
+    return frozenset(
+        value[len(SECRET_URI_PREFIX) :]
+        for key, value in pairs
+        if key in _CHANNEL_ENV_KEYS and value.startswith(SECRET_URI_PREFIX)
+    )
+
+
+async def _channel_credential_owned(request: web.Request, name: str) -> web.Response | None:
+    """Refuse a remote vault write to a name a channel credential resolves from.
+
+    Every channel settings panel accepts a save only from the machine running
+    the gateway (``is_direct_local_request``), so a remote or tunnelled session
+    cannot plant a channel token or take a channel down. A channel token lives
+    in the vault behind its ``.env`` reference, so this generic route must apply
+    the same gate to it: to a name in ``VAULT_CHANNEL_CREDENTIAL_KEYS`` (where the
+    channel save stores the token) and to any name a channel key's ``.env``
+    line or environment value references. A ``.env`` that cannot be read is
+    treated as referencing every name. Returns the 409 to send, or ``None``
+    when the write may proceed.
+    """
+    if is_direct_local_request(request):
+        return None
+    if name not in VAULT_CHANNEL_CREDENTIAL_KEYS:
+        referenced = await asyncio.to_thread(_channel_referenced_names)
+        if referenced is not None and name not in referenced:
+            return None
+    return web.json_response(
+        {
+            "error": "this secret holds a channel credential, which a remote session "
+            "cannot change; change it under Settings → Channels on the machine "
+            "running the gateway",
+            "code": "managed_by_channels",
         },
         status=409,
     )
@@ -326,11 +417,16 @@ async def api_secrets_set(request: web.Request) -> web.Response:
     owned = _connections_client_secret_owned(name)
     if owned is not None:
         return owned
+    owned = await _channel_credential_owned(request, name)
+    if owned is not None:
+        return owned
 
     vault = SecretVault(config_dir())
-    await vault.set(name, value)
+    # The revision names THIS write (a digest of its ciphertext, never the
+    # value), so a caller that may delete it later can delete exactly it.
+    revision = await vault.set_with_revision(name, value)
     logger.info("Vault entry '%s' stored via dashboard", _sanitize_for_log(name))
-    return web.json_response({"ok": True, "name": name})
+    return web.json_response({"ok": True, "name": name, "revision": revision})
 
 
 async def api_secrets_delete(request: web.Request) -> web.Response:
@@ -346,6 +442,9 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
     owned = _connections_client_secret_owned(name)
     if owned is not None:
         return owned
+    owned = await _channel_credential_owned(request, name)
+    if owned is not None:
+        return owned
 
     vault = SecretVault(config_dir())
     # `vault.delete` is a no-op when the name is absent, so an unconditional
@@ -356,7 +455,17 @@ async def api_secrets_delete(request: web.Request) -> web.Response:
     names = await asyncio.to_thread(vault.list_names)
     if name not in names:
         return web.json_response({"error": "Secret not found", "code": "not_found"}, status=404)
-    await vault.delete(name)
+    # ``?if_revision=`` deletes only the entry that write stored (a change
+    # card's Undo), never a value saved over it since.
+    if_revision = request.query.get("if_revision")
+    if if_revision is not None:
+        if not await vault.delete_if_revision(name, if_revision):
+            return web.json_response(
+                {"error": "The secret changed since it was saved", "code": "changed"},
+                status=409,
+            )
+    else:
+        await vault.delete(name)
     logger.info("Vault entry '%s' deleted via dashboard", _sanitize_for_log(name))
     return web.json_response({"ok": True, "name": name})
 

@@ -46,12 +46,18 @@ from test_update_provider import _UNALLOCATABLE_PID
 import kiro_crew.subagent as subagent_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import _STARTUP_CAP_GATE_ROUNDS, SubagentInfo, SubagentManager
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # The end-to-end tests drive ``SubagentManager.spawn``, which refuses on a
 # memory-pressured host; pin the host reading so the verdict is the test's.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 # ── helpers ───────────────────────────────────────────────────────────────
+
+
+def _time_at(read, monotonic=time.monotonic) -> SimpleNamespace:
+    """A ``time`` double: *read* is the wall clock; the monotonic clock stays real."""
+    return SimpleNamespace(time=read, monotonic=monotonic)
 
 
 def _manager(
@@ -902,7 +908,7 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
     mgr._sample_live_costs = MagicMock()  # type: ignore[method-assign]
     mgr._sweep_stuck_waves_async = AsyncMock()  # type: ignore[method-assign]
     mgr._sweep_digest_holds_async = AsyncMock()  # type: ignore[method-assign]
-    mgr._sweep_conversations = MagicMock()  # type: ignore[method-assign]
+    mgr._sweep_conversations_async = AsyncMock()  # type: ignore[method-assign]
     mgr._taskq_pump = MagicMock()  # type: ignore[method-assign]
     mgr._maybe_flag_stall = AsyncMock()  # type: ignore[method-assign]
     monkeypatch.setattr(subagent_mod, "_REAPER_INTERVAL", 0)
@@ -913,12 +919,12 @@ async def test_reaper_sweep_reaps_at_the_base_deadline_under_a_crowd(monkeypatch
     monkeypatch.setattr(
         subagent_mod,
         "time",
-        SimpleNamespace(time=lambda: 1_000.0 + 125.0, monotonic=time.monotonic),
+        _time_at(lambda: 1_000.0 + 125.0, monotonic=time.monotonic),
     )
 
     loop_task = asyncio.ensure_future(mgr._reaper_loop())
     try:
-        await asyncio.wait_for(swept.wait(), 5.0)
+        await await_until(swept)
     finally:
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)
@@ -962,19 +968,17 @@ async def test_reaper_sweep_reaps_a_runtime_that_never_answers_its_first_prompt(
     mgr._sample_live_costs = MagicMock()  # type: ignore[method-assign]
     mgr._sweep_stuck_waves_async = AsyncMock()  # type: ignore[method-assign]
     mgr._sweep_digest_holds_async = AsyncMock()  # type: ignore[method-assign]
-    mgr._sweep_conversations = MagicMock()  # type: ignore[method-assign]
+    mgr._sweep_conversations_async = AsyncMock()  # type: ignore[method-assign]
     mgr._taskq_pump = MagicMock()  # type: ignore[method-assign]
     mgr._maybe_flag_stall = AsyncMock()  # type: ignore[method-assign]
     monkeypatch.setattr(subagent_mod, "_REAPER_INTERVAL", 0)
     monkeypatch.setattr(subagent_mod, "compact_cost_log", lambda: None)
     monkeypatch.setattr(subagent_mod, "prune_stale_tombstones", lambda *a, **k: 0)
-    monkeypatch.setattr(
-        subagent_mod, "time", SimpleNamespace(time=lambda: now, monotonic=time.monotonic)
-    )
+    monkeypatch.setattr(subagent_mod, "time", _time_at(lambda: now, monotonic=time.monotonic))
 
     loop_task = asyncio.ensure_future(mgr._reaper_loop())
     try:
-        await asyncio.wait_for(swept.wait(), 5.0)
+        await await_until(swept)
     finally:
         loop_task.cancel()
         await asyncio.gather(loop_task, return_exceptions=True)
@@ -1038,7 +1042,7 @@ class TestStreamOpenIsNotProgress:
         )
         task = asyncio.ensure_future(mgr._run_inner(info, "subagent:f00d1234"))
         try:
-            await asyncio.wait_for(opened.wait(), 5.0)
+            await await_until(opened)
             await _settle()
             assert info._exec_started is not None
             assert info._first_stream_started is None
@@ -1234,11 +1238,7 @@ def _shared_runtime(work_dir) -> tuple[object, asyncio.StreamReader, list[dict]]
 
 async def _until(predicate, what: str, ceiling: float = 10.0) -> None:
     """Wait on observable state, never on a guessed sleep."""
-    deadline = time.monotonic() + ceiling
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError(f"never observed: {what}")
-        await asyncio.sleep(0.01)
+    await async_wait_until(predicate, timeout=ceiling, describe=lambda: what)
 
 
 class TestOnlyThisSessionsFrameIsItsAnswer:
@@ -1391,7 +1391,7 @@ class TestOnlyThisSessionsFrameIsItsAnswer:
             assert info._startup_cotenant_frames == 1
             assert info._taskq_running_marked is True
             _feed({"id": prompt_id, "result": {"stopReason": "end_turn"}})
-            await asyncio.wait_for(run, timeout=10.0)
+            await await_until(run)
         finally:
             for task in (run, pump):
                 task.cancel()
@@ -1477,7 +1477,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
             held = await self._hold_one_behind_the_bound(mgr, driven)
             run = asyncio.ensure_future(mgr._run_inner(driven, f"subagent:{driven.id}"))
             try:
-                await asyncio.wait_for(opened.wait(), 5.0)
+                await await_until(opened)
                 assert driven._pid == _UNALLOCATABLE_PID
                 assert driven._first_stream_started is None
                 await _until(
@@ -1486,7 +1486,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
                 assert not mgr._queue
                 assert mgr._startup_population() == 2  # the peer and ``held``
                 release.set()
-                await asyncio.wait_for(run, 10.0)
+                await await_until(run)
             finally:
                 release.set()
                 run.cancel()
@@ -1527,7 +1527,7 @@ class TestLeavingStartupStartsTheHeldSpawn:
             held = await self._hold_one_behind_the_bound(mgr, driven)
             run = asyncio.ensure_future(mgr._run_inner(driven, f"subagent:{driven.id}"))
             try:
-                await asyncio.wait_for(opened.wait(), 5.0)
+                await await_until(opened)
                 await _settle()
                 assert driven._pid is None
                 assert SubagentManager._in_startup(driven) is True
@@ -1535,14 +1535,14 @@ class TestLeavingStartupStartsTheHeldSpawn:
                     runs.started == [] and len(mgr._queue) == 1
                 )  # an opened stream is not progress
                 send_first.set()
-                await asyncio.wait_for(first_sent.wait(), 5.0)
+                await await_until(first_sent)
                 assert driven._first_stream_started is not None
                 await _until(
                     lambda: runs.started == [held.id], "the held spawn starting on the first frame"
                 )
                 assert not mgr._queue
                 release.set()
-                await asyncio.wait_for(run, 10.0)
+                await await_until(run)
             finally:
                 send_first.set()
                 release.set()
@@ -1594,9 +1594,9 @@ class TestGateExitResetIsOneDefinition:
         info = _starting("a1", exec_started=100.0)
         info.last_activity = 100.0
         mark, reset = mgr._gate_wait_mark(info), mgr._gate_exit_reset(info)
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 100.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 100.0)):
             mark("cold-start")
-        monkeypatch.setattr(subagent_mod, "time", SimpleNamespace(time=lambda: 250.0))
+        monkeypatch.setattr(subagent_mod, "time", _time_at(lambda: 250.0))
         reset(1.0, "cold-start")  # marked at 100.0, granted at 250.0 -> 150s
         reset(5_000.0)  # never marked: the queue's own measurement is the fallback
         assert info._exec_started == 100.0, "the clock pauses; it does not restart"
@@ -1611,7 +1611,7 @@ class TestGateExitResetIsOneDefinition:
         _register(mgr, info)
         # Without the queued time, 200s past _exec_started reaps it.
         assert mgr._is_startup_stalled(info, now=1_000.0 + 200.0) is True
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_200.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 1_200.0)):
             mgr._gate_exit_reset(info)(200_000.0)
         assert mgr._is_startup_stalled(info, now=1_200.0 + 100.0) is False
         # A start wedged AFTER it holds its permit is still reaped at the base
@@ -1624,12 +1624,12 @@ class TestGateExitResetIsOneDefinition:
         mgr = _manager(startup_timeout=120)
         info = _starting("q1", exec_started=1_000.0)
         _register(mgr, info)
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_030.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 1_030.0)):
             mgr._gate_wait_mark(info)()
         assert info._gate_wait_started == 1_030.0
         # 400s into the queue: the clock still reads 30s.
         assert mgr._is_startup_stalled(info, now=1_030.0 + 400.0) is False
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_430.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 1_430.0)):
             mgr._gate_exit_reset(info)(400_000.0)
         assert info._gate_wait_started is None
         assert mgr._is_startup_stalled(info, now=1_430.0 + 89.0) is False
@@ -1647,10 +1647,10 @@ class TestGateExitResetIsOneDefinition:
             ("spawn admission", 200.0, 20.0),
             ("session/new", 100.0, 30.0),
         ):
-            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: clock)):
+            with patch.object(subagent_mod, "time", _time_at(lambda: clock)):
                 mgr._gate_wait_mark(info)(queue)
             clock += queued_for
-            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: clock)):
+            with patch.object(subagent_mod, "time", _time_at(lambda: clock)):
                 mgr._gate_exit_reset(info)(queued_for * 1000.0, queue)
             clock += worked_after
         # 600s queued, 60s worked: 60s more of a stalled initialize is the deadline.
@@ -1675,7 +1675,7 @@ class TestGateExitResetIsOneDefinition:
         mgr = _manager(startup_timeout=120)
         info = _starting("p1", exec_started=1_000.0)
         _register(mgr, info)
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_010.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 1_010.0)):
             mgr._gate_wait_mark(info)("cold-start")
         monitor = mgr._monitor
         assert monitor._start_queue_saturated_secs(info, 1_010.0 + _START_QUEUE_MAX_SECS) == 0.0
@@ -1705,10 +1705,10 @@ class TestGateExitResetIsOneDefinition:
         # microseconds of real time.
         before = info._start_queue_wait_ms
         kwargs = runtime.create_session.await_args.kwargs
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 700.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 700.0)):
             kwargs["on_gate_queued"]()
         assert info._gate_wait_started == 700.0
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 777.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 777.0)):
             kwargs["on_gate_acquired"](5.0)
         # The pause is the span on the WATCHDOG's clock (mark -> grant), not the
         # queue's monotonic measurement, which a suspended host leaves short.
@@ -1730,10 +1730,10 @@ class TestGateExitResetIsOneDefinition:
 
         async def _companion(_parent, **kwargs):
             paused_during_call.append(info._gate_wait_started is not None)
-            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_010.0)):
+            with patch.object(subagent_mod, "time", _time_at(lambda: 1_010.0)):
                 kwargs["on_gate_queued"]("companion runtime")
             assert info._gate_wait_started == 1_010.0
-            with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 1_410.0)):
+            with patch.object(subagent_mod, "time", _time_at(lambda: 1_410.0)):
                 kwargs["on_gate_acquired"](400_000.0, "companion runtime")
             return runtime
 
@@ -1766,7 +1766,7 @@ class TestGateExitResetIsOneDefinition:
         _register(mgr, info)
         task = asyncio.ensure_future(mgr._create_shared_session(info, "subagent:hung", ""))
         try:
-            await asyncio.wait_for(entered.wait(), timeout=5)
+            await await_until(entered)
             assert info._gate_wait_started is None
             assert mgr._is_startup_stalled(info, now=1_000.0 + 120.5) is True
             assert mgr._monitor._start_queue_saturated_secs(info, 1_000.0 + 120.5) == 0.0
@@ -1827,11 +1827,11 @@ class TestDedicatedPathGateExitReset:
         reset = captured.get("on_gate_acquired")
         mark = captured.get("on_gate_queued")
         assert callable(reset) and callable(mark), captured.keys()
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 4_300.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 4_300.0)):
             mark()
         assert info._gate_wait_started == 4_300.0
         started = info._exec_started
-        with patch.object(subagent_mod, "time", SimpleNamespace(time=lambda: 4_321.0)):
+        with patch.object(subagent_mod, "time", _time_at(lambda: 4_321.0)):
             reset(90_000.0, "spawn admission")
         assert info._exec_started == started
         # mark at 4300.0, grant at 4321.0: the watchdog's own 21s, not the 90s the

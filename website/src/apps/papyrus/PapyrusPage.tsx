@@ -220,6 +220,9 @@ export default function PapyrusPage() {
   const [slotKey, setSlotKey] = useState<string | null>(null)
   const [slotCreating, setSlotCreating] = useState(false)
   const [error, setError] = useState('')
+  // Separate from `error` because the two differ in SEVERITY, not just wording: `error`
+  // reports a failed user action, this reports a declined convenience the user can redo.
+  const [contextError, setContextError] = useState<string | null>(null)
   // The file whose on-disk copy diverged from an unsaved buffer (a co-author edit
   // arriving while the user was typing). Blocks saves until reconciled — see
   // `reloadOpenFile`'s no-flush branch and `resolveConflict`.
@@ -675,6 +678,28 @@ export default function PapyrusPage() {
     onError: (err: Error) => setError(err.message),
   })
 
+  // Routed through React Query like every other mutation on this page, so the request is
+  // retried, deduped and observable rather than a bare floating promise.
+  // Counts context pushes, so only the NEWEST one's result may set or clear the notice: a late
+  // success from a superseded session must not retract the current session's failure.
+  const contextRequestSeq = useRef(0)
+  const injectContextMut = useMutation({
+    mutationFn: (vars: { slotKey: string; seq: number }) =>
+      api.chatSlotContext(vars.slotKey, companionContext(), {
+        source: 'papyrus-co-author', ephemeral: true, maxAge: 3600,
+      }),
+    onSuccess: (_d: unknown, vars: { slotKey: string; seq: number }) => {
+      if (vars.seq === contextRequestSeq.current) setContextError(null)
+    },
+    // EVERY rejection reaches the user: silence left the session open with no document
+    // context and no way to know, and every cause shares the one actionable remedy.
+    onError: (_e: unknown, vars: { slotKey: string; seq: number }) => {
+      if (vars.seq !== contextRequestSeq.current) return
+      setContextError(i18nT('apps.papyrus.workspace.context_not_attached'))
+    },
+  })
+  const injectContext = injectContextMut.mutate
+
   // ── Git ───────────────────────────────────────────────────────────────────
 
   const gitQuery = useQuery({
@@ -741,6 +766,10 @@ export default function PapyrusPage() {
   // Adopt the remembered slot for this paper as soon as the project changes.
   useEffect(() => {
     setSlotKey(project ? loadSlot(project) : null)
+    // The notice names the paper it was raised on; a pending push for the old paper is
+    // superseded too, so its late result cannot raise or clear the next paper's notice.
+    contextRequestSeq.current += 1
+    setContextError(null)
   }, [project])
 
   /** Build the silent context that tells the agent which paper it is working on.
@@ -749,7 +778,6 @@ export default function PapyrusPage() {
   const companionContext = useCallback(() => {
     return companionContextLines(project ?? '', mainFile).join('\n')
   }, [project, mainFile])
-
   const startSession = useCallback(async () => {
     if (!project || slotCreating) return
     setSlotCreating(true)
@@ -759,6 +787,7 @@ export default function PapyrusPage() {
       const created = await api.createChatSlot(
         undefined, undefined, undefined, undefined, 'persistent',
         i18nT('apps.papyrus.workspace.session_title', { name: project }),
+        undefined, undefined, undefined, true,
       )
       const key = created.key as string
       dispatch(addSlotOptimistic({
@@ -767,9 +796,8 @@ export default function PapyrusPage() {
         messages: 0,
         running: false,
       } as ChatSlot))
-      api.chatSlotContext(key, companionContext(), {
-        source: 'papyrus-co-author', ephemeral: true,
-      }).catch(() => undefined)
+      contextRequestSeq.current += 1
+      injectContext({ slotKey: key, seq: contextRequestSeq.current })
       dispatch(fetchSlots())
       saveSlot(project, key)
       setSlotKey(key)
@@ -778,7 +806,7 @@ export default function PapyrusPage() {
     } finally {
       setSlotCreating(false)
     }
-  }, [project, slotCreating, dispatch, companionContext])
+  }, [project, slotCreating, dispatch, injectContext])
 
   const toggleChat = useCallback(() => {
     setChatOpen(open => {
@@ -823,6 +851,8 @@ export default function PapyrusPage() {
   // single answer to "is this session working" and already merges every signal
   // that decides it (stream state, sub-agents, the slots snapshot).
   const coAuthorBusy = useAppSelector(state => selectComposerBusy(state, slotKey))
+  // NO AUTO-RETRACTION ON A TURN. A turn does not attach the paper, so clearing on one told a
+  // user who typed anything at all that the co-author had it. The notice stands until dismissed.
   const prevBusyRef = useRef(false)
   useEffect(() => {
     const wasBusy = prevBusyRef.current
@@ -1319,14 +1349,32 @@ export default function PapyrusPage() {
                   content-sized, so a percentage on the child alone resolves
                   against a box that hugs its own content -- the panel would come
                   out narrower than the pixel width it replaced, not wider. */}
-              <div style={{ width: isMobile ? '100%' : chatWidth }} className="h-full min-h-0">
-                <CoAuthorPanel
-                  slotKey={slotKey}
-                  creating={slotCreating}
-                  onStartSession={startSession}
-                  onOpenFull={openFullChat}
-                  onClose={() => setChatOpen(false)}
+              <div
+                style={{ width: isMobile ? '100%' : chatWidth }}
+                className="flex h-full min-h-0 flex-col"
+              >
+                {/* IN THIS COLUMN: the action that fails is "Start a session" here, so a page-top
+                    banner puts the report a column away from the control that produced it.
+                    No hand-off: this page holds an editable buffer and `askAgent` navigates away,
+                    unmounting it, so the offer would risk unsaved edits to save nothing. */}
+                <ErrorNotice
+                  className="mb-2 animate-rise"
+                  message={contextError}
+                  title={i18nT('apps.papyrus.workspace.context_notice_title')}
+                  onDismiss={() => setContextError(null)}
                 />
+                {/* The panel sizes against THIS box, not the column: its own `h-full` measured the
+                    whole column, so the notice's height pushed the composer past a clipped edge --
+                    hiding the input the notice tells the reader to type into. */}
+                <div className="min-h-0 flex-1">
+                  <CoAuthorPanel
+                    slotKey={slotKey}
+                    creating={slotCreating}
+                    onStartSession={startSession}
+                    onOpenFull={openFullChat}
+                    onClose={() => setChatOpen(false)}
+                  />
+                </div>
               </div>
             </motion.div>
           )}

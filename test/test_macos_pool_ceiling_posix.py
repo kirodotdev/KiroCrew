@@ -52,6 +52,7 @@ class TestTheMacOsPoolCeiling:
         holders: str = "999",
         reads_cap: str = "12",
         jobs_junk: str = "",
+        fork: str | None = None,
     ) -> tuple[dict[str, str], str, list[str]]:
         bash = shutil.which("bash")
         # Asserted, not skipped. This module executes the verdict step under bash and
@@ -93,6 +94,9 @@ class TestTheMacOsPoolCeiling:
         stub.chmod(0o755)
         out_file = tmp_path / "gh-output"
         out_file.touch()
+        # Left out entirely when None, so the default-off reading of an unset
+        # FORK is what every pre-existing test exercises.
+        fork_env = {} if fork is None else {"FORK": fork}
         proc = subprocess.run(
             [bash, "-c", _verdict_script()],
             check=False,
@@ -128,6 +132,7 @@ class TestTheMacOsPoolCeiling:
                 "GITHUB_REPOSITORY": "kirodotdev/KiroCrew",
                 "GITHUB_RUN_ID": "999",
                 "GITHUB_OUTPUT": str(out_file),
+                **fork_env,
             },
             cwd=tmp_path,
             timeout=30,
@@ -276,3 +281,40 @@ class TestTheMacOsPoolCeiling:
         )
         assert outputs["reason"] == "pool-cap"
         assert len(gh_calls) == 2 + 6
+
+
+class TestAForkHeadKeepsOnlyTheLabel:
+    """A fork pull request runs the macOS suite only when a maintainer labels it.
+
+    The automatic switches started about half their suites on fork heads, each
+    holding four hosted macOS runners for over an hour, and the nightly covers
+    every merge. Executed against the same bash as the ceiling tests.
+    """
+
+    _run = TestTheMacOsPoolCeiling._run
+
+    def test_a_path_hit_on_a_fork_does_not_start_the_suite(self, tmp_path: Path) -> None:
+        outputs, stdout, gh_calls = self._run(tmp_path, paths_hit="true", fork="true")
+        assert outputs["run"] == "false"
+        assert outputs["reason"] == "none"
+        assert "fork" in stdout and "ci:macos" in stdout
+        # Nothing to cap, so the occupancy count spends no API reads.
+        assert gh_calls == []
+
+    def test_a_sampled_fork_head_does_not_start_the_suite(self, tmp_path: Path) -> None:
+        outputs, _, _ = self._run(tmp_path, head_sha="00000000" + "a" * 32, fork="true")
+        assert outputs["run"] == "false"
+
+    def test_the_label_still_runs_a_fork_and_drops_the_other_reasons(self, tmp_path: Path) -> None:
+        outputs, _, gh_calls = self._run(
+            tmp_path, paths_hit="true", labelled="true", fork="true", in_progress="99", ceiling="1"
+        )
+        assert outputs["run"] == "true"
+        assert outputs["reason"] == "label"
+        # `label` is never capped, so a busy pool cannot silence it on a fork.
+        assert gh_calls == []
+
+    def test_a_same_repository_head_keeps_every_switch(self, tmp_path: Path) -> None:
+        outputs, _, _ = self._run(tmp_path, paths_hit="true", fork="false")
+        assert outputs["run"] == "true"
+        assert outputs["reason"] == "paths"

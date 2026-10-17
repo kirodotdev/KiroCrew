@@ -39,13 +39,26 @@
 
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { bottomTerminalPrefsSnapshot } from '../hooks/useBottomTerminal'
+import { adoptBoardFolderCollapse, boardFolderCollapseBackup } from '../utils/boardFolderCollapse'
 
-/** Terminal labels have per-id write coordinates, but share the layout's
- *  existing backup key. Projection is read-only: syncing cannot race a layout
- *  mutation by publishing a synthesized snapshot back into localStorage. */
+/** Two keys are projections of state stored under other keys. Terminal labels
+ *  have per-id write coordinates and share the layout's backup key. The board
+ *  folder-collapse overrides live one localStorage key per pair and travel as
+ *  one wire key. Both projections are read-only. Syncing therefore cannot race
+ *  a live write by publishing a synthesized snapshot back into localStorage. */
 function readPreference(key: string): string | null {
+  if (key === 'kc-board-folder-collapsed') return boardFolderCollapseBackup()
   const raw = safeGetItem(key)
   return key === 'mc-bottom-terminal' && raw !== null ? bottomTerminalPrefsSnapshot(raw) : raw
+}
+
+/** Writes a host value under a plain wire key. The board folder-collapse value
+ *  is written as the per-key family it projects. The wire key itself never
+ *  reaches localStorage. Returns false when nothing was written. The caller
+ *  then treats the key as dropped, exactly as it does for `safeSetItem`. */
+function writePreference(key: string, value: string): boolean {
+  if (key === 'kc-board-folder-collapsed') return adoptBoardFolderCollapse(value)
+  return safeSetItem(key, value)
 }
 
 /**
@@ -325,6 +338,16 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-filter-folders-shelved',
   'mc-flat-hidden-folders',
   'mc-input-height',
+  // Sessions sidebar width (pages/chat-sidebar/resize.ts). The pre-board key
+  // is the width to restore when the user leaves board view. Without it a
+  // restored profile keeps the board width in list view.
+  'mc-sidebar-width',
+  'mc-sidebar-width-pre-board',
+  // Board-view folder collapse overrides (utils/boardFolderCollapse.ts). The
+  // overrides live one localStorage key per (column, folder) pair. They travel
+  // as this one key because the host caps the key count. `readPreference`
+  // projects the value from the per-key entries.
+  'kc-board-folder-collapsed',
   // Diff and file viewer toggles.
   'mc-diff-plain',
   'mc-diff-split',
@@ -533,6 +556,27 @@ function ownedAtFailure(): Set<string> | null {
 }
 
 /**
+ * Composite fields that are PURELY cosmetic rendering prefs: the local viewport's
+ * layout/scale, carrying no cross-device-meaningful state. For these, and ONLY
+ * these, a value the profile holds locally is kept over the host's cross-origin
+ * value even on a split-aware failed-restore marker (see `compositeChildOwned`).
+ *
+ * This is the deliberate, owner-ruled exception for GH #18237 (ruling recorded on
+ * PR #18558): a user's chat content width flipped Compact->Comfortable on upgrade
+ * because another origin's host value overwrote the locally-held one after a
+ * failed reconcile. The host value is usually another origin's EXPLICIT choice
+ * (`DEFAULTS.contentWidth` is `'compact'`), and the local value may be a default
+ * a whole-blob save filled in after the failure; the module cannot tell the two
+ * apart, and the ruling accepts that for this one cosmetic field the value this
+ * origin already holds wins. It decides this origin's display only: the kept
+ * value is baselined, not uploaded, so the other origin's choice stays on the
+ * host. The narrowest honest fix is a named allowlist (just the one field the
+ * ruling names) rather than a blanket present-local-wins rule (which would
+ * reverse the GPT 5.6 / Opus 5 default-fill protection for every field).
+ */
+const COSMETIC_COMPOSITE_FIELDS = new Set<string>(['contentWidth'])
+
+/**
  * Whether a composite CHILD wire key was owned at the failure that produced
  * `owned`.
  *
@@ -551,11 +595,29 @@ function ownedAtFailure(): Set<string> | null {
  * ownership is genuinely unavailable and the whole blob is the finest grain
  * there is. When any child entry is present the marker is from a split-aware
  * build and the exact child key is required.
+ *
+ * ONE narrow exception (GH #18237, owner-ruled): a COSMETIC composite field
+ * (`COSMETIC_COMPOSITE_FIELDS`) is treated as owned when the marker carries the
+ * parent -- the parent's presence proves the profile held chat config at the
+ * failure, so a cosmetic width value this origin holds survives the host's
+ * cross-origin value. Both callers act on the answer only when the local value
+ * is present, so an absent local field still takes the host value. This does
+ * NOT touch any non-cosmetic field: `showTimestamps`, `pinLastPrompt`, and every
+ * other default-fillable setting still require their exact child entry, so the
+ * GPT 5.6 / Opus 5 default-fill protection is unchanged for them.
  */
 function compositeChildOwned(owned: Set<string>, childWireKey: string): boolean {
   if (owned.has(childWireKey)) return true
   const hasChildEntry = [...owned].some((k) => childField(k) !== null)
-  return !hasChildEntry && owned.has(COMPOSITE_KEY)
+  if (!hasChildEntry) return owned.has(COMPOSITE_KEY)
+  // Split-aware marker: the exact child entry is normally required. Cosmetic
+  // exception -- a cosmetic field counts as owned under a parent-carrying
+  // marker (the profile demonstrably held chat config at the failure).
+  const field = childField(childWireKey)
+  if (field !== null && COSMETIC_COMPOSITE_FIELDS.has(field)) {
+    return owned.has(COMPOSITE_KEY)
+  }
+  return false
 }
 
 /** Record a failed restore. Never widens an existing snapshot (see the key's doc). */
@@ -978,7 +1040,7 @@ export async function reconcileNewDurableKeys(): Promise<number> {
         continue
       }
       const wrote =
-        field === null ? safeSetItem(key, value) : writeCompositeField(field, parsed)
+        field === null ? writePreference(key, value) : writeCompositeField(field, parsed)
       if (wrote) {
         updates.set(key, value)
         restored += 1
@@ -987,9 +1049,16 @@ export async function reconcileNewDurableKeys(): Promise<number> {
         // so it is neither baselined nor marked reconciled, and the reconcile
         // fails below (GPT 6.1 F2).
         failedChildRestores.add(key)
+      } else if (local !== null) {
+        // A plain key's host-wins restore was refused by quota. The local value
+        // stays in use. It is baselined like a kept local value on the cold
+        // hydrate. Unbaselined, the first flush would upload it over the host
+        // copy.
+        updates.set(key, local)
       }
-      // Dropped by quota: NOT baselined, or the first flush would read the
-      // missing key as a deletion and null out a good host backup.
+      // Dropped by quota with no local value: NOT baselined, or the first flush
+      // would read the missing key as a deletion and null out a good host
+      // backup.
     }
     // Commit baselines and roster in ONE verified write. Two separate writes
     // opened a real clobber: the baseline write could be dropped by quota while
@@ -1446,7 +1515,7 @@ function restoreHostValues(
       const local = readPreference(wireKey)
       if (local === raw) continue
       if (local !== null && (owned === null || owned.has(wireKey))) continue
-      if (safeSetItem(wireKey, raw)) restored += 1
+      if (writePreference(wireKey, raw)) restored += 1
       continue
     }
     // Composite field: decide local-vs-host per field, then stage it.
@@ -1711,8 +1780,9 @@ async function settleInFlight(): Promise<void> {
 /**
  * Upload what changed, then stop this page uploading preferences.
  *
- * For an operation that rewrites the HOST copy -- the settings import, whose
- * Merge applies an archive's `ui-prefs.json` over this host's. A flush that
+ * For an operation that can rewrite the HOST copy -- the settings import:
+ * Replace overwrites this host's `ui-prefs.json` with the archive's, and Merge
+ * installs the archive's only where this host has none. A flush that
  * lands after it would put this page's values straight back over the ones just
  * restored, and the import has no way to tell. Paused before the import request
  * is sent, so no PUT can start after it either. Every flush path checks the

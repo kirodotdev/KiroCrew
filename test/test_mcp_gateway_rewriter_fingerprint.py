@@ -720,14 +720,14 @@ def test_effective_user_site_policy_change_invalidates(
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
     first_args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
-    assert first_args[:2] == ["-m", rewriter._STUB_MODULE]
+    assert first_args[:3] == ["-P", "-m", rewriter._STUB_MODULE]
 
     before = rewrite_counter["n"]
     monkeypatch.setattr(rewriter.platform_compat.site, "ENABLE_USER_SITE", False)
     _rewrite(tmp_path)
     assert rewrite_counter["n"] == before + 1, "a user-site policy change must not serve cache"
     second_args = json.loads(overlay.read_text())["mcpServers"]["srv"]["args"]
-    assert second_args[:3] == ["-s", "-m", rewriter._STUB_MODULE]
+    assert second_args[:4] == ["-s", "-P", "-m", rewriter._STUB_MODULE]
 
 
 def test_path_env_change_invalidates(
@@ -2108,6 +2108,8 @@ def test_a_failed_overlay_write_leaves_the_previous_generations_sidecar(
     kept = json.loads((tmp_path / "mcp-gateway" / "agents" / "agent-1.json").read_text())
     kept_flags = expand_stub_flags(kept["mcpServers"]["srv"]["args"])
     assert "--env-file" in kept_flags, "premise: the kept overlay names a sidecar"
+    kept_env_file = Path(kept_flags[kept_flags.index("--env-file") + 1])
+    assert kept_env_file == victim_sidecar, "the kept overlay moved off its own sidecar"
     assert (
         json.loads(victim_sidecar.read_text())["K"] == "old"
     ), "the kept overlay's old args now launch against the new generation's env"

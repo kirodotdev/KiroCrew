@@ -18,14 +18,19 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
-| `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point |
+| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation and pinned to a `model` / `reasoning_effort`; either omitted inherits the dispatching crewmate's worker pair, else its own pair, else the default. Before any gate, a title is refused with `invalid_title` (400) under `session_rename`'s character rules (control, text-direction and non-allowed format characters, U+2800 anywhere, no visible character), then scrubbed with `_scrub_text` and cut to 200 characters; a cut result that shows nothing is refused the same way, and a blank title is no title |
+| `session_fork` | `POST /api/session-control/fork` | Open a new session that CARRIES a copy of a source session's transcript — the caller's own by default — the way the dashboard's Fork button does; optionally titled, filed, and cut at a fork point. The title meets `session_create`'s title rules before any gate (`invalid_title`, 400; scrubbed, cut to 200 characters, a cut result that shows nothing refused, a blank title is no title) |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_end_wait` | `POST /api/session-control/end-wait` | Wake a session the caller CREATED from the `wait` tool early, keeping its turn; any other target is refused `not_creator`, for every caller class |
-| `session_set_model` | `POST /api/session-control/set-model` | Record a pending model pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. A busy target is refused with `target_busy` and keeps its model |
+| `session_retry` | `POST /api/session-control/retry` | Re-run a failed last turn through `continue_slot_turn`, the Resume button's path, with `require_interrupted=True` (`turn_not_failed` otherwise) and `authorize_target` re-run synchronously under the slot lock before the continuation is queued |
+| `session_continue` | `POST /api/session-control/continue` | The same `continue_slot_turn` call without `require_interrupted`, as the Continue button makes it, through the helper `retry_target` shares (`_continue_turn_of_target`); the result's `body` is `resumed` or `continued`, whichever continuation `_is_interrupted` chose, and the allowed audit line records it. Not in any auto-grant: a member or conductor is asked before each call |
+| `session_set_model` | `POST /api/session-control/set-model` | Record a pending model and/or reasoning-effort pick on an idle session; `apply_pending_model_pick` commits it at the start of the target's next turn after re-running `authorize_target` in the same synchronous step. Each half yields separately to a newer user pick from its own control. A busy target is refused with `target_busy` and keeps its settings |
 | `session_reload` | `POST /api/session-control/reload` | Relaunch the agent process of an idle session the caller created, through `chat_handlers.reload_slot_session` (shared with the tab menu's Reload session). The transcript is kept and gets one notice naming the caller. Self, remote-crew and busy targets (turn running or starting, queued messages, sub-agents) are refused |
-| `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
+| `session_rename` | `POST /api/session-control/rename` | Set the caller's own title or a target's through `chat_title.apply_manual_title`, the sidebar rename's code, after `authorize_target` with `allow_self`; a scheduled run's own session is still refused as `unattended_target`. The title is final (`_TITLE_ORIGIN_USER`). An empty title, one over 200 characters (before or after `_scrub_text` redaction, which lengthens credential-shaped text into markers), one with no character that renders (only whitespace, characters `terminal_safe._is_invisible` reports such as zero-width, variation-selector and Hangul-filler characters, or the blank Braille pattern U+2800), one containing U+2800 anywhere (scanning normalization keeps it, so it could split a secret past the redactors), or one with a control character or any text-direction control (embeddings, overrides, isolates and the U+200E/U+200F/U+061C marks), or any other `Cf` format character except U+200C/U+200D and the tag characters U+E0020..U+E007F that spell flag subdivisions (`_is_allowed_format_char`; the tag block's other `Cf` character, U+E0001 LANGUAGE TAG, is refused; its unassigned code points are not `Cf`), is refused with `invalid_title`; if the history write fails the live slot keeps and broadcasts the new title (best-effort, like the sidebar and channel renames; the next full save writes it) and the verb answers `title_persist_failed` (500) instead of `ok` |
+| `session_generate_title` | `POST /api/session-control/generate-title` | Regenerate a session's title through `chat_title.generate_manual_title` and `chat_title.apply_regenerated_title`, the sidebar "Regenerate title" code: one awaited titling-model call; the result replaces the current title (a hand-set one included) and stays auto. After `authorize_target` (no `allow_self`), the target must be one the caller created (`not_creator`, 403) for every caller class. One admitted call per target per `create_rate_limit.WINDOW_SECS` (300 s) through the shared creation limiter keyed by the target slot, stamped before the model call (`title_rate_limited`, 429). After the model answers, the slot identity and closing flag are checked (`target_replaced`, 409) and `authorize_target` runs again synchronously; then every field is assigned before the first await, as `session_rename` does, and the save only makes that change durable. The save passes `still_current` (slot identity), so `_persist_title` refuses the write under the history lock when the slot left its key, and the verb then answers `target_replaced` (409) rather than overwriting a successor's saved title. A rename that landed during the model call wins (`changed: false`). If the history write fails the live slot keeps the title and the verb answers `title_persist_failed` (500). The sidebar push is skipped when the slot left its key during the save |
+| `session_close` | `POST /api/session-control/close` | Close (archive) another session, or the caller itself, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_revive` | `POST /api/session-control/revive` | Bring an archived session back into the live sidebar, as clicking it in the History tab does — the mirror of close, optionally filing it into a folder |
+| `session_history_list` | `GET /api/session-control/history` | List the archived sessions the caller could revive, newest first, optionally narrowed to one folder; every row passes the same containment and ownership fence `session_revive` applies |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_broadcast` | `POST /api/session-control/broadcast` | Deliver ONE message to several sessions — by default every session the caller created — in a required `queue` or `steer` mode, reporting the outcome per target |
 | `session_status` | `GET /api/session-control/status` | List the sessions the caller stood up and what each is doing, with the roster taken from the crew log's session tree so a session that is gone still appears |
@@ -33,6 +38,21 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_release` | `POST /api/session-control/release` | Let a session the caller holds, or the caller itself, out from under its parent; the released session keeps its own subtree |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
+
+`session_adopt` and `session_release` reshape the session tree, so both go
+through `authorize_target` like every other verb and add tree checks of their
+own. Adopt refuses 409 `would_cycle` when the target is an ancestor of the
+caller, and 409 `tree_unavailable` / `tree_not_ready` when the tree cannot be
+read. Both also refuse 409 `target_replaced` when the slot under the target
+key, compared by object identity after the final authorization, is a
+different session from the one captured before the first suspension (a close
+plus a same-key reopen); nothing is appended and a retry acts on the current
+session. Release waives the self-target refusal (`allow_self=True`), since a
+session releasing itself reaches no peer, and refuses 409 `already_root` or 403
+`not_parent`. Both wait until the tree append is durable before answering, so a
+takeover that never reached the disk is refused rather than reported. Neither
+verb is in the conductor or member grant sets (`_CONDUCTOR_DASHBOARD_GRANTS`,
+`_MEMBER_DASHBOARD_GRANTS`), and both are in `CHANNEL_AGENT_BLOCKED_TOOLS`.
 
 Each row above is one row of `mcp_dashboard.TABLE` (a `mcp_tools.table.ToolTable`):
 the row declares its route, its identity (`"strict"`), its descriptor and its
@@ -136,12 +156,22 @@ that edge can exist, but is a weaker, agent-editable source. The union is the
 answer, and every row names the sources that placed it (`crew_log`, `history`,
 `live`, joined with `+`).
 
-The row's `status` separates `working` / `queued` / `idle` / `gone` /
-`unknown`. A tree-backed row absent from the dashboard is `gone`, preserving the
-existing meaning. A history-only row is `unknown`: its metadata proves the
-session was created, but does not claim whether it finished or was lost. This
-does not add another completed-versus-lost conflation to `gone` (tracked in issue
-#14213). The persisted field is already read by the member ownership boundary in
+The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
+`unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the
+roster records that a session the dashboard no longer holds still existed, and
+its folded lifecycle says which fate it met. `closed` (carrying `closed_at`) is
+the DELIBERATE tab close -- the worker finished and its tab was closed
+(`session/closed` with reason `removed`, written by `_close_slot`); nothing is there to re-dispatch. `lost` is
+the fail-safe default: a session gone with a turn still open, or whose newest completed turn did not end
+cleanly (a deliberate mid-turn close cancels the running turn, whose `turn/completed`
+carries an abnormal `stop_reason` and clears `turn_open`), or whose only close
+edge came from a process recycle (`reset`) or a `destroy`, or whose fold could
+not be read -- the state a patrol re-dispatches. A history-only row is `unknown`:
+its metadata proves the session was created, but does not claim whether it
+finished or was lost. Splitting `closed` from `lost` is what resolves the
+completed-versus-lost conflation #14213 named; the split reads the lifecycle the
+status fold already projects, adding no new crew-log vocabulary. The persisted
+field is already read by the member ownership boundary in
 session-control authorization, so using it for an informational roster row asks
 no more trust of it than the existing fence. It does not become crew-log lineage,
 and its distinct `source` keeps that visible.
@@ -198,13 +228,32 @@ because `meta` is one of the keys a queued prompt is persisted with while a
 callback-carrying entry is excluded from that write, so a callback would trade
 the relay's survival across a restart for a notice that cannot survive one
 either. A requeued steer keeps the stamp because the requeue copies the
-admission dict onto the new entry's meta. Four cases deliberately produce no
+admission dict onto the new entry's meta. Five cases deliberately produce no
 notice: a human-typed entry carries no sender; a session that queued onto itself
 already reads the target's own notice; a sender closed while the message waited
 has no transcript left, and the SEL row is what keeps that outcome recoverable;
-and a structurally exempt entry is never dropped at all. The report is
+a reused slot key now holding a DIFFERENT occupant (`origin_tab` does not match
+the slot's `_tab_id`) is treated as the sender being gone; and a structurally
+exempt entry is never dropped at all. The report is
 best-effort and does not gate the drop — withholding the message is the
 authorization decision, and it must not depend on the notice landing.
+
+**A deliberate discard reports to the sender too.** The drain is not the only
+place a stamped entry leaves the queue unrun: a person cancelling its queue card
+(`api_chat_slot_queue_cancel`) and a hard stop clearing the queue
+(`stop_slot_turn`'s escalated branch) discard it as well, and the sender's last
+word is still the `started: false` receipt. Both sites read the entry's stamp and
+call `notify_send_origin_discarded` with their cause (`SEND_DISCARD_QUEUE_CANCEL`,
+`SEND_DISCARD_HARD_STOP`), which appends a notice to the sender naming the target,
+what discarded the message and an excerpt, and saying it will not run. The wording
+names the discard rather than a constraint, because neither discard changes an
+authorization. The recipient is resolved by the same check as the drop notice
+(`_send_origin_recipient`), so the same four cases write nothing: no stamp, a
+self-send, a closed sender, and a reused key held by a different tab. The hard
+stop reports exactly the entries it takes off the queue, before the settle can
+suspend; a send that lands during the settle stays queued and is not reported,
+because it will still run. Best-effort here too: the discard
+was already decided by the person or the stop.
 
 **The stamp names a session, not a key, and does not survive a restart.** It
 carries the sender's `_tab_id` beside its slot key and is omitted unless both are
@@ -378,19 +427,24 @@ window and replaces it with a narrower one: the steer RPC suspends on
   aimed at it alone -- the same sentence means different things in those two
   cases. This is the
   property the composer's own gate protects by keeping app-authenticated sends
-  off the steer path; here an explicit envelope answers it.
+  off the steer path; here an explicit envelope answers it. A body opener
+  shaped like the envelope (matched after NFKC with every `Cf` char dropped,
+  behind any `Ps` bracket) is rewritten to `[quoted: sent by session`, so only
+  the real envelope opens with the marker
+  (`test_send_body_cannot_forge_a_second_provenance_envelope`,
+  `test_neutralize_send_provenance_folds_invisible_chars_and_any_opening_bracket`).
 
   It reaches one level further down. `directive_user_origin` exempts a queue entry
   from the drain's LINKED drop because "the author typed into the session's own
-  surface", and the requeue used to derive that from the slot — sound while the
-  composer was the only caller of `steer_into_running_turn`, wrong as soon as
-  `session_send` became the second. Provenance is now REPORTED by the caller
+  surface", and deriving that from the slot would be wrong because
+  `steer_into_running_turn` has more than one caller (`session_send` is one).
+  Provenance is REPORTED by the caller
   (`user_origin`) and recorded per in-flight steer, defaulting to false so a future
   caller cannot acquire the human's exemption by saying nothing. The composer keeps
   it; a peer's steer does not.
 
 A steer is a delivery MODE, not a permission: `authorize_target` decides who may
-send, unchanged, and a crew-bound (`executor == "remote"`) target stays refused
+send, unchanged, and a relay archive (`executor == "remote"`) stays refused with `relay_archive_read_only`
 before either arm is reached. `steer` is strictly typed at both entry points (the
 tool schema and the HTTP handler) and defaults false, so a caller that omits it
 keeps the queue-or-run behaviour.
@@ -410,9 +464,9 @@ part of creation (#6118). The caller's OWN slot is filed the same way with
 `chat_folder_file_self` (folder tools, same server): it takes no `session`
 argument, resolves the target from the verified caller key, and so can be
 granted where `chat_folder_move_session` is withheld — a conductor files itself
-in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing used to be a second call
-(`chat_folder_move_session`), and the window between the two was a real defect
-path: a folder deleted in between left the session unfiled with the create
+in the goal's folder and then creates its workers under `<goal>/<agent>`. Filing is
+part of creation rather than a second call (`chat_folder_move_session`), because a
+folder deleted between two calls would leave the session unfiled with the create
 already done. The handler assigns `folder_id` inside the same synchronous window
 that configures the slot, holds `suspend_slots_push` across the whole
 allocation-to-persist span (so the slot's first broadcast frame already shows it
@@ -424,6 +478,44 @@ loses nothing — existence is confirmed read-only under the folder-store lock
 (`read_folders`) before the allocation, and the move path's Model-B un-hide runs
 only after the filing has landed, so a refused create leaves no folder-tree
 mutation behind.
+
+Filing into a folder also gives the child that folder's nearest inherited project
+directory as its project, as dashboard-native creation does; the workspace and
+memory boundary stay the caller's. An invalid folder project refuses the create
+with 400 `folder_project_invalid`, and a folder whose project changes while the
+creation is in flight refuses with 409 `folder_target_changed`.
+
+`session_create` also takes an optional `agent_kind`, with one value: `template`.
+It is the selection namespace for `agent`, and it exists for the one case a bare
+`agent` cannot express: a shared template that a crew member of the same name
+shadows. Name-first resolution (the kind omitted) selects the member, and a
+caller that may not bind that member's private store is refused
+`memory_delegation_denied` even when it wanted only the template. The stock
+`kirocrew-worker` is such a name on installs where the pre-0.8 enrol-on-mount
+agent sync registered it as a crew member with its own V2 store (a binding that
+is immutable by design, so no setting undoes it): a conductor running as a crew
+member's DM thread on the shared store, or a child a parent conductor created,
+could not dispatch it. `agent_kind: "template"` resolves the template in
+`resolve_agent_bindings(selection_kind="template")`, so the child takes the
+caller's own store exactly as an unshadowed template child does (see "A created
+worker receives one execution identity"). On an install with no shadowing member
+the template kind resolves exactly what the bare name resolves — the resolver
+skips only the alias lookup — so the goal conductor's charter and the
+goal-conductor skill always pass it when they dispatch `kirocrew-worker`, and no
+conductor meets the refusal first. There is no `member` kind on this route: a bare
+name already selects the member, so the value would only restate that
+resolution. The kind is selection input, never authority, and every gate on this
+route still applies. A stated kind requires `agent` (`agent_kind_requires_agent`,
+400), any value other than `template` is refused `invalid_agent_kind` (400), and a
+kind that does not resolve is refused `agent_unresolved` naming the namespace
+rather than falling back to whoever answers by default. When a kind was stated,
+the slot records the namespace the pick resolved in (`agent_kind`), and the
+persist-at-birth metadata carries it, so an idle template child of a shadowed
+name rehydrates in its namespace instead of re-resolving the bare name
+member-first. The MCP tool's reply to a `memory_delegation_denied` refusal names
+the two real remedies — re-send with `agent_kind: "template"`, or the owner's own
+tab — and says the binding is not a setting, because the refusal's deliberate
+terseness had left callers inventing a Settings control that does not exist.
 
 The path walk itself never leaves an empty or duplicate folder behind. When the
 `folder` path still has segments to create, `session_create` first posts the
@@ -454,9 +546,71 @@ member's folder list adds that home folder and its ancestors, the path its own
 
 `session_create` also takes an optional `model` — the model the child starts
 on, pinned as the person's own pick in the model dropdown would be (same
-`_model_rejected_reason` guard, same pick-generation bump). An id the guard
-refuses fails the whole create with `model_rejected`; omitted, the child starts
-on the agent's or the global default.
+`_model_rejected_reason` guard, same pick-generation bump) — and an optional
+`reasoning_effort`, one of the five canonical levels `session_set_model` takes,
+pinned through the slot's effort setter and applied by the first turn's cold
+start exactly as the effort dropdown's value is. An id the guard refuses fails
+the whole create with `model_rejected`; a level outside the five fails it with
+`effort_rejected`; both are checked before anything is allocated, and both ride
+the birth metadata line (`model`, `reasoning_effort`) so an idle newborn keeps
+them across a restart.
+
+**Omitted, each takes the dispatching crewmate's matching explicit pin.** A
+crewmate with a model or effort pin passes that value to a worker it opens unless
+the worker fields say otherwise. An empty crewmate pin leaves that half unpinned,
+so the worker's selected agent or the global default decides. `create_session`
+resolves the caller's member record
+(`_dispatching_crewmate`: the caller's protected execution record when it names
+a `member` — by persisted id, else by selection name — or, for a slot with no
+record, the slot's agent name as `resolve_crew_identity` reads it) and fills
+what the call left unsaid from `worker_session_defaults(record)`: the record's
+`worker_model` / `worker_reasoning_effort` when set, else its own `model` /
+`reasoning_effort`. `worker_model` is read raw, so `"auto"` is a real pin there
+(workers on the backend default while the crewmate stays on a costly model),
+where the crewmate's own `model` folds it to inherit. The crewmate's own effort
+carries over only while the workers run the crewmate's own model: with
+`worker_model` set, or a `model` named on the call, the only effort a worker
+takes is `worker_reasoning_effort`, so a `max` chosen for an opus conductor never
+reaches an `auto`, haiku or explicitly named worker model. With none pinned the
+child's first turn resolves its effort as any session does
+(`resolve_session_effort`: the child's own crew pin when it runs as a crewmate,
+else `agent.reasoning_effort`, else the model default), which is what the profile
+card's "No level set" names. An inherited pin is also dropped when it cannot
+follow the worker onto its harness (`_inherited_pin_foreign_to_child`): the
+crewmate's thread runs on `agent.member_acp_backend` and its own `model` was
+validated there, while the non-member child runs on `agent.acp_backend`, so that
+pin is dropped when the two harnesses disagree on model-id namespace; the
+profile's explicit `worker_model` is validated for the worker's harness
+(`PUT /api/agents/{name}` judges it against `agent.acp_backend`) and crosses
+freely. Either pin is dropped when the child's namespace advertises a list it is
+not on while another harness claims it; `"auto"` always passes. When the
+crewmate's own model is dropped, the crewmate's own effort that rode along for
+it is dropped too; an explicit `worker_reasoning_effort` stays. A caller whose record is a
+template — a dispatched worker running on its crewmate's store — is not a
+crewmate and its own children inherit nothing (an id-less member's worker keeps
+`member` as its selection, so there the template, read against
+`member_template_id`, is what tells it apart); a caller that is not a crewmate,
+or a crewmate with nothing set, leaves the slot on the agent's or the global
+default, exactly as before. Nor does a child that is itself a crewmate inherit:
+an explicit `agent` that selects a member runs that member's own profile through
+the crew-pin tier, and a copied pin would outrank it as a per-session pick. An
+explicit argument always wins. An inherited model runs the same guard an
+explicit one does (`_model_pin_refusal`, the picker's own), but a refusal there
+is DROPPED rather than raised: a profile pin goes stale (delisted, display-only,
+outside the account's entitlement, or an id only the crewmate's own harness serves) without
+anyone looking at it, and a hard failure would stop every worker the crewmate
+opens until someone edited the profile or named a model on every call. The child
+then starts on the default, the reply carries `inherited_model_dropped: true`
+(the tool reply says so in words), and the SEL record names the refused id. An
+explicit model the guard refuses still fails the create with `model_rejected`.
+The reply names which of the two came from the profile (`inherited`), as does the
+create's SEL record. The decision is
+[rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md).
+
+The pair is set from the crewmate's Profile card (**Worker model** / **Worker
+reasoning effort**, `CrewProfileSettings`), written through
+`PUT /api/agents/{name}` under the crew pin's own validators and shipped on
+`GET /api/members` (not on `GET /api/agents`: the crew editor never shows them).
 
 ### `session_fork`: a created child that carries a transcript
 
@@ -480,7 +634,7 @@ through the child's mint, message copy, save and the deleted-source rollback. Th
 session-control verb calls the same two, so what an agent's fork copies and what
 it inherits — agent, model, memory store and mode bound at birth, project,
 folder, tags, `forked_from` — is by construction what a person's fork copies
-and inherits. The human route's behaviour is unchanged by the split; the core
+and inherits, except the sidebar pin (last table row). The human route's behaviour is unchanged by the split; the core
 takes the request-derived facts as arguments (`request_app`, `origin`,
 `count_user_session`, `jev_route_allowed`, the SEL caller and operation) and the
 two routes answer them differently:
@@ -491,6 +645,7 @@ two routes answer them differently:
 | `count_user_session` | `True` — a human request-layer session for the pulse survey | `False` — an agent-made session is not one (`test_session_pulse_session_count` sweeps for the literal, so the core takes it as a parameter and the only literal `True` stays in `chat_fork.py`) |
 | `jev_route_allowed` | `is_owner_dashboard_request` | `False` — arming a second routed session is the owner's own click, which no agent caller made; the child keeps the parent's pinned `model` |
 | SEL operation | `chat.slot_fork` | `session_control.fork`, on the core's rows and on this module's own `_audit` row (`session_fork`), so the two entry points stay distinguishable |
+| Sidebar pin (`stamp`) | `_inherit_pin(source.slot)` copies the parent's `pinned` onto the child before its birth save, so the fork stays beside its parent in the pinned group; the response carries `pinned` | Never pinned: `pinned` marks a session as human-owned |
 
 The core's refusals are `web.json_response` objects — that is the module's
 refusal shape and its coded sites are what the error-code ratchet
@@ -532,7 +687,7 @@ and skip the target guard while keeping the creator gates.
 **What the child gets on top of the human fork**, applied by a `stamp` callback
 `fork_slot` runs on the child before its birth save, so it lands in the same
 metadata line as the transcript and is on disk before the slot is broadcast (no
-second persistence window; a failed save withdraws the whole child): `title` (else the fork's `↳ Fork of <parent>`),
+second persistence window; a failed save withdraws the whole child): `title` (a final, user-origin name; else the fork's `↳ Fork of <parent>`, which the background `refresh_forked_title` pass renames from the latest person-typed question when the parent's title was auto),
 `folder_id` (else the parent's folder, which the human fork inherits; an
 unknown folder refuses the whole fork before any copy, confirmed read-only under
 the folder-store lock like `create_session`, and the Model-B un-hide runs only
@@ -578,9 +733,8 @@ records (see `crew-log-emitter.md`).
 **Approval posture** — the caller's `_trust` and `_trust_reads` transfer, so a
 trusted operator's dispatched worker does not stall on a prompt nobody is
 watching. This is the posture `parent_trusted` already gives a `spawn_run`
-subagent, which reads the parent's stored `"auto"` policy; a `session_create`
-child previously started from `_ChatSlot.__init__`'s empty defaults, so the same
-delegation behaved differently depending only on whether it got a sidebar tab.
+subagent, which reads the parent's stored `"auto"` policy, so the same delegation
+behaves the same whether or not it gets a sidebar tab.
 No session-store write happens at creation: the child has no ACP session yet
 (`set_approval_policy` no-ops on a missing session), and `chat_runner` already
 derives the persistable policy from `_trust` on every session create/resume, so
@@ -602,12 +756,16 @@ create already in flight. Revoking mid-call yields an untrusted child.
 
 Nothing about trust is persisted at birth. The birth metadata carries
 `tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
-`memory_mode`, and `folder_id` / `created_by` / `model` when set — no trust field — so a
-restart returns the child to interactive along with its creator.
+`memory_mode`, and `folder_id` / `created_by` / `model` / `reasoning_effort` when
+set — no trust field — so a restart returns the child to interactive along with
+its creator.
 
-The create's SEL record carries `agent`, `folder_id`, `model` (empty when none
-was asked for), and what the child was
-born with: `inherited_trust` and `inherited_trust_reads`, present on both
+The create's SEL record carries `agent`, `folder_id`, `model` and
+`reasoning_effort` (each empty when none was pinned), `inherited` (which of the
+two the dispatching crewmate's profile supplied, `""` when neither),
+`inherited_model_dropped` (the profile model the guard refused and the create
+dropped, redacted, `""` when none), and what the
+child was born with: `inherited_trust` and `inherited_trust_reads`, present on both
 outcomes so `"false"` is positive evidence the posture did not transfer. That is
 what makes an auto-approved tool call in a dispatched session traceable to the
 creator's posture rather than unexplained.
@@ -649,12 +807,13 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Caller session cannot be identified | 403 | An unidentifiable caller makes the self-target guard blind |
 | Caller is an unattended session (`workflow-*`) | 403 | A `workflow-<run_id>` slot exists only once its originating tab is gone, so there is no owning session to fence it to. **Exception:** a cron slot (`cron-*` caller key) is admitted and fenced by creator ownership instead — see "Cron callers" below |
 | Caller is itself incognito, temporary, or app-scoped | 403 | Caller-side isolation — the direction the target-side checks cannot see |
-| Caller is an APP-owned cron (`created_by` starts `app:`), or a cron whose job cannot be found | 403 | `app_owned_cron_caller` / `cron_owner_unverifiable`. A cron tab is minted without `app=`, so the `_app` check above cannot see an app's own scheduled job; ownership is read from the JOB instead, and an unverifiable owner fails closed — see "Cron callers" below |
+| Caller is an APP-owned cron (`created_by` starts `app:`), a cron whose job cannot be found, or a cron whose authoring session is no longer open | 403 | `app_owned_cron_caller` / `cron_owner_unverifiable`. A cron tab is minted without `app=`, so the `_app` check above cannot see an app's own scheduled job; ownership is read from the JOB instead, and an unverifiable owner fails closed — see "Cron callers" below |
 | Caller is channel-linked (`linked_session_key` set) | 403 | The exfiltration direction: a linked caller's conversation IS a channel thread, so a read would hand a private dashboard transcript to that channel's readers. `CHANNEL_AGENT_BLOCKED_TOOLS` keys on the agent identity; a linked slot is a second route to the same surface. **Two exceptions:** a `cron:<job_id>` link, which names the job's own run transcript and republishes to nobody; and a 1:1 DM whose only human is the configured owner (`owner_dm_refusal` answering `""`) — see "Owner-DM channel callers" below |
 | Caller's own session is no longer open | 403 | Nothing to attribute the operation to |
 | Caller changed workspace while a creation was in flight | 403 | Creation resolves the workspace's project directory off-loop, so it suspends between authorizing the caller and allocating the slot. Both decisions that read the caller's workspace -- the memory boundary the child inherits, and whether the answering agent is bound to that workspace -- are invalidated by a move, and re-deciding the binding here is not available: it needs a config load, which must not run on the event loop |
+| Agent that would answer is bound to another workspace | 403 | `agent_workspace_mismatch`. The child runs in the caller's workspace, so an agent whose own binding names a different one would carry that workspace's memory into it. Checked on whatever answers, an omitted agent included (it resolves to the default template). **One inheritance:** an explicitly named TEMPLATE (`ResolvedBindings.selection_kind == "template"`, a passthrough or the default template, never a `config.agents` row) passes when the caller has an execution record and is the crew member whose own declared workspace (`config.workspaces`) is the caller slot's workspace (`_caller_member_workspace`). A template has no workspace binding -- `resolve_agent_bindings` files every template session under `default_workspace` -- and the template arm already binds the child to the caller's own store, so the child runs on the caller's workspace, project directory and store, under the template persona. Without it every crew member created on its own `member-<slug>` workspace (#19230) was refused `agent_workspace_mismatch` for `agent="kirocrew-worker"`, while members created before #19230 (workspace `default`) were not. Still refused: a crew MEMBER bound elsewhere (its store would cross), a caller with no record (the child would fall to the default store), and any non-member caller, whose template child has no store of its own in that workspace |
 | Named agent does not resolve to a configured one | 403 | The resolver falls back to the default agent, which passes the workspace check because it is the caller's own default -- so no boundary is crossed, but the created session would store and advertise a name that is not what answers. `ResolvedBindings.requested_resolved` states that contract for callers that store the requested name. Refused rather than rewritten to the effective agent: nothing exists yet, so a corrected name costs one retry, whereas an existing slot keeps its stored name verbatim so a momentarily stale resolution cannot permanently rebind it |
-| Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller is not ownership-fenced. Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
+| Caller may not bind a child to the selected member's private store | 403 | `memory_delegation_denied`; one check, on the route every branch of agent resolution has already produced, before slot allocation. Two admissions: the store is the caller's OWN, which requires this process's vouched identity and the caller's durable record to agree, or the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`: an owner-rooted chain is admitted; a cron-, channel- or member-rooted chain, or a broken one, is fenced). Same-store workers remain allowed; unfenced global callers retain member assignment. See "A created worker receives one execution identity" |
 | Caller changes history key, agent or memory store during creation | 400 | `caller_memory_changed`; the live caller must still match the identity checked before awaited preparation |
 | Target is the caller | 403 | A session controlling itself has no exit |
 | Target is unattended (`cron-*`, `workflow-*`) | 403 | A `workflow-<run_id>` slot is display-only and a cron's turns are driven by a schedule. Not exempted for a cron CALLER: a cron may create and drive its own children, never another job's tab |
@@ -724,7 +883,7 @@ The exceptions are `session_end_wait`, whose own creator fence (below, "Ending
 a wait early") binds every caller class, owner sessions included, and
 `session_reload`, whose creator fence binds every caller class the same way.
 
-#### The strict-internal surface admits a member DM slot, not every scoped caller
+#### The strict-internal surface admits a crew member in either spelling, not every scoped caller
 
 The five routes sit behind `_require_internal`, which first refuses anything
 without a valid `X-Internal-Secret`. On the authenticated branch,
@@ -733,8 +892,9 @@ off-loop through `internal_memory_scope`, without opening learned memory:
 
 - an **owner / Global-V1 caller** (no store scope) falls through to the handler,
   exactly as the surface behaved before member dispatch existed;
-- a **crew-member DM slot** (a `member-*` session key) is ADMITTED while the
-  surface is reachable for it — `agent.member_dispatch` OR the global
+- a **crew member** is ADMITTED in either spelling — a `member-*` DM slot, or an
+  ordinary chat slot bound to that member's private V2 store
+  (`member_admitted_to_scoped_surface`) — while the surface is reachable for it — `agent.member_dispatch` OR the global
   `agent.session_control` switch — so its request reaches `session_control.py`
   where the creator-ownership fence above does the real gating;
 - **every other scoped caller**, including a member while BOTH switches are
@@ -806,7 +966,11 @@ A private member store is reachable on two authorities and no others:
   chose would make the two sources one. Claiming it is OPT-IN: the default is not to
   vouch, so a binder that says nothing about provenance publishes the record and
   claims no authority, and a caller that should have claimed it fails loudly at a
-  refused dispatch rather than quietly widening access. A member-LESS identity is never
+  refused dispatch rather than quietly widening access. An owner's pick of a member
+  for a dashboard tab or member DM thread (`_pin_private_agent_assignment`) vouches:
+  every caller authorizes the owner's request first, and the store it publishes is
+  the one config resolves for that member, never one carried from the record. A
+  member-LESS identity is never
   vouched even when its caller asks: no member means the Global store, and the admission
   identifies its caller by member, so the entry could never be admitted.
   A record published elsewhere can also leave a vouched entry behind.
@@ -814,9 +978,11 @@ A private member store is reachable on two authorities and no others:
   record and against a stale vouched entry alike. `slot.agent` and
   `slot.memory_store` remain inadmissible, and not only because a later write can
   change them: both are rehydrated from that same record on restore;
-- the caller is not ownership-fenced, which is the owner's own dashboard session.
-  This keeps the shipped capability: an owner reopening member conversations and
-  dispatching member workers.
+- the caller's delegation lineage is not fenced (`_delegation_lineage_fenced`, the
+  live `_created_by` walk below): the owner's own dashboard session, or an agent
+  chain rooted in it. This keeps the shipped capability: an owner reopening member
+  conversations and dispatching member workers, directly or through a conductor
+  started in their own tab.
 
 The vouched half is held in this process, and the gateway also writes a copy of each
 vouch to `vouched-executions/` at the data-home root. Every sandbox masks that leaf and
@@ -829,11 +995,13 @@ agrees with, or any other key whose disk copy, durable record, privacy mode and 
 member's configured store all agree. A session that rewrites its record to name a peer's
 store matches neither source and stays refused.
 
-For an operator, the recovery is one owner action and nothing at restart time: a member
-session whose worker dispatch answers `memory_delegation_denied` after a gateway restart
-regains it as soon as its owner re-selects that member's agent on the slot, which binds
-afresh through the durable path and vouches again. The same action clears a refusal
-caused by cap eviction, since both reach the admission as an absent entry.
+For an operator, recovery after a gateway restart or a cap eviction is normally
+automatic: own-store dispatch self-heals at the next gate-verified admission, when a
+member DM key agrees with its record and the config, or the durable
+`vouched-executions/` copy agrees (`revouch_at_verified_admission`). Only when neither
+source agrees does a member session's worker dispatch keep answering
+`memory_delegation_denied`; the fallback is the owner re-selecting that member's agent
+on the slot, which binds afresh through the durable path and vouches again.
 Re-selecting the agent the slot already names is enough: the owner-facing switch
 records the selection with `replace`, so it re-binds rather than short-circuiting on an
 unchanged choice. Closing a tab is NOT such a trigger — a non-destructive close and an
@@ -844,6 +1012,15 @@ closing a tab. The refusal
 the caller sees names neither store nor member, so it is the server-side cause line that
 tells an operator a dropped entry apart from a record that disagrees with what this
 process committed; a member cannot diagnose which it hit from the refusal alone.
+The cause line also names, on its own, the caller class no re-bind can help: a
+caller whose own record is on the SHARED store (a Global-V1 crew member's DM
+thread, or an agent-created Global-store session under a carried fence verdict)
+is never vouched, because `bind_session_execution` vouches only a truthy
+`member_id`, so without that line every such refusal would read "no vouched
+identity" and point the operator at a restart or cap churn that is not the
+condition. The line says the caller holds no private store of its own for the
+selected member's to match and names the two remedies (a template dispatch, or the
+owner's own tab), while still naming neither the store nor the member.
 
 The vouched half is also BOUNDED, by one named count cap. The population is not the
 set of live sessions: every persistent `bind_session_execution` that establishes its
@@ -855,9 +1032,9 @@ releases its own entry at teardown where it has one, and the cap is the backstop
 the producers that do not. Passing the cap evicts the LEAST RECENTLY USED entry — a
 successful own-store admission refreshes its entry, so recency follows USE rather than
 birth and churn from the teardown-less producers falls on idle keys instead of on the
-member session still dispatching through its own. Eviction refuses that session's
-own-store admission until it binds again: the same deferral a restart
-carries, in the same fail-closed direction, and it never touches a durable record.
+member session still dispatching through its own. Eviction drops only the in-process entry: the next gate-verified admission re-vouches
+from the durable copy as after a restart, the same fail-closed direction when the
+sources disagree, and it never touches a durable record.
 Overflow is counted and reported, so an evicted entry is distinguishable from one
 never vouched — both read as absent. A refusal also records its CAUSE server-side —
 authority this process does not hold, against a record that disagrees with what it
@@ -872,10 +1049,11 @@ truncated — a truncated identity would compare equal to the session that owns 
 shortened form. The retained key needs no bound of its own: the vouch runs strictly
 after the durable write, so the map cannot hold a key the record cannot carry.
 
-Everything `_caller_is_ownership_fenced` already treats as untrusted is refused
-with `memory_delegation_denied` (403): a cron slot, a member DM slot naming a PEER
-member's agent, and anything either of them created — the fenced caller's unfenced
-deputy. An app-token caller never reaches the route (`internal_secret_required`)
+A member caller (fenced through the carried member verdict) and every caller whose
+delegation lineage `_delegation_lineage_fenced` fences are refused with
+`memory_delegation_denied` (403): a cron slot, a member DM slot naming a PEER
+member's agent, a channel-linked creator, anything any of them created — the
+fenced caller's unfenced deputy — and a chain whose lineage cannot be walked. An app-token caller never reaches the route (`internal_secret_required`)
 and an app-scoped one cannot create at all. The refusal names neither the store nor
 the member, so it cannot confirm a guessed agent name.
 
@@ -1021,15 +1199,17 @@ injection would strip a member thread of its tools mid-conversation. On the
 KAS backend the wire agent projection additionally grants the server in
 `tools` plus the member's approval-free dashboard verbs in `allowedTools`
 (ceiling-filtered like every other grant): `_MEMBER_DASHBOARD_GRANTS`, the
-conductor's read/create set plus `session_send` and `session_stop` — the
-write verbs are safe to auto-approve for a member *specifically* because the
+conductor's set (`_CONDUCTOR_DASHBOARD_GRANTS`: `chat_folder_tree`,
+`chat_folder_create`, `chat_folder_file_self`, `session_create`,
+`session_read_message`, `session_status`) plus `session_send`,
+`session_broadcast`, `session_stop` and `session_retry` — the write verbs are safe to auto-approve for a member *specifically* because the
 `created_by` ownership fence above bounds them to worker sessions the member
 itself opened. Member sessions also bypass the provider warm pool
 (`bypass_member`): a pooled child was spawned with no session key on the
 default backend, so a warm hit would skip both the member backend route and
 the mount. The member backend is `agent.member_acp_backend` (default `kas`),
 and requires a wire-capable backend (`ACP_BACKENDS_MEMBER_DISPATCH`: the
-claude seam, KAS, codex and opencode); kiro-cli v2 reads its template from disk and
+claude seam, KAS, codex, opencode, goose, deepseek and pi); kiro-cli v2 reads its template from disk and
 exposes no per-session channel, so a member session on it runs as plain chat —
 the tools are simply not mounted, never mounted-and-refused. Codex qualifies
 because `providers/mirrors/codex.py` already gives it a per-session array and
@@ -1041,9 +1221,7 @@ mechanism. `tool_gate.is_enforced` is true for opencode as well, on
 BACK from the harness's own config resolution before the first prompt, so a session
 that cannot establish the asking posture is refused there too, and
 `providers/mirrors/opencode.py` documents `permission_surface_owned` as
-accepted-and-ignored for exactly that reason.
-
-Which code appends the entry depends on who composes the array.
+accepted-and-ignored for exactly that reason. deepseek's routing, `VERIFIED_GATE_EXTENSION`, is enforced too: Crew's gate plugin answers every tool call with `ask`, and its load marker is read back before the first prompt. deepseek has no mirror, so its member array comes from `AcpClient._mirrorless_member_mounts`: only the member mounts, with `disabled` honoured and a narrowed tool withholding its whole server, since no mirror carries a per-tool deny there. An element that cannot start fails the whole deepseek session, so an entry that does not resolve is never placed.
 
 ### The crew panel rides the same vehicle
 
@@ -1092,11 +1270,14 @@ is never both named in `tools` and pre-approved on the session that is not mount
 it.
 
 
+Which code appends the entry depends on who composes the array.
 `AcpClient._append_member_dispatch_server` serves the backends whose array the
-CLIENT builds — claude's and opencode's — and honours the permission-surface
-precondition there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`,
-declared and not enforced, so owning `settings.local.json`
-(`_claude_settings_authored`) stands in for the read-back this core does not have,
+CLIENT builds — claude's, opencode's and goose's (none is in
+`ACP_BACKENDS_ACP_RUNTIME`) — and honours the permission-surface precondition
+there for an UNENFORCED routing only: claude's is `SEEDED_SETTINGS`, declared and
+not enforced, so `_permission_surface_governed` (this client authored
+`settings.local.json`, or a sibling's file passed share validation) stands in for
+the read-back this core does not have,
 while a harness whose routing is enforced must not be held to a file it never writes.
 A runtime-served harness never reaches that helper: codex's array comes from
 `AcpRuntime._mirrored_session_mcp`, and `create_session` / `load_session` append the
@@ -1121,9 +1302,11 @@ widening is approval-free. The resume half matters on its own: `session/load`
 re-initializes the session's servers and would otherwise re-mount what `session/new`
 withheld. Switching off one TOOL of that server is narrower and is weighed against the
 backend: where withholding the server is the whole of its per-tool deny channel
-(`mirrors.registry.PerToolDeny.WHOLE_SERVER`, opencode today) the mount is withheld
-too, while codex refuses the call at permission time and claude's deny rules refuse it
-inside the adapter, so both keep their mounts. Because the mount is
+(`mirrors.registry.PerToolDeny.WHOLE_SERVER`, goose today) the mount is withheld
+too, while codex refuses the call at permission time and claude's and opencode's
+deny rules refuse it inside the harness, so they keep their mounts. A
+server the projection could not keep narrowed on THIS session
+(`SessionProjection.unhonoured_servers`) is withheld from the mount on every backend. Because the mount is
 session-scoped, no other session on the same agent template gains the tools,
 preserving the two-part grant for ordinary agents (the switch AND the
 per-agent server assignment).
@@ -1190,13 +1373,17 @@ cannot produce, or a registry that cannot answer, refuses with
 owner", and nothing legitimate is refused by it because a cron whose job is gone is
 not running.
 
-One residual is accepted rather than closed. When `session_key` names a session that
-is no longer open its `_app` cannot be read, and the refusal returns nothing for it.
-Refusing instead would disable dispatch for the ordinary case — a user-created job
-whose authoring tab has since been closed, which is most of them — so the
-fail-closed direction is wrong here in a way it is not for a missing job. What
-bounds the exposure is that the slot has to be gone: while an app's session is live,
-its jobs are refused.
+A job whose `session_key` names a session that is no longer open also refuses with
+`cron_owner_unverifiable` (#8335). Its `_app` lived only on that slot, because
+`cron_add` records the caller in `session_key` and never writes `created_by`, so
+allowing it would let an app create a cron, close its session, and have the job
+dispatch a persistent non-app session this gate can no longer recognise. The cost is
+accepted, not closed: a genuinely user-created dispatching job whose authoring tab
+has since been closed is refused too. The operator recovers one with
+`kirocrew cron adopt <id> --release` (or `--session-of` an open non-app tab); a
+released job carries no `session_key` and passes this gate. Restoring dispatch for
+such jobs without reopening the escape needs an ownership record the caller cannot
+influence, written at create time, and is tracked in #8449 together with #13583.
 
 Applied at both
 caller-side sites so the two halves stay mirrors, and scoped to cron callers so no
@@ -1261,8 +1448,8 @@ The routes are **strict-internal** (`_STRICT_INTERNAL_API_PATHS`): loopback plus
 are the entry point to opening, stopping, and reading another live conversation —
 a cookie path there would be a new authorization surface rather than a
 convenience. The MCP process holds the secret; an agent's own sandbox does not
-(`KIROCREW_INTERNAL_SECRET` is stripped from agent env), which is why these are
-tools rather than something an agent can curl.
+(the gateway mints the secret in-process and never puts it in an agent's env),
+which is why these are tools rather than something an agent can curl.
 
 Each handler **re-asserts** `request["internal_auth"] is True` rather than
 trusting the path classification. Strict is not self-enforcing at the handler:
@@ -1387,7 +1574,7 @@ facts, and any it cannot establish answers **false**.
    mirror.
 
    **The origin does not survive a gateway restart, and the exemption goes with
-   it.** `set_origin_link` holds the record in memory by design (`session.py`),
+   it.** `set_origin_link` holds the record in memory by design (`session_parts/links.py`),
    while the slot and its mirror are persisted and the slot is re-surfaced at boot.
    So between a restart and the owner's next channel message this clause is the one
    that fails while the other three hold: a monitor-loop cycle or a turn taken in
@@ -1400,7 +1587,7 @@ facts, and any it cannot establish answers **false**.
    three gates name it (`ORIGIN_NOT_ON_RECORD`) and say what clears it, rather than
    reporting a channel link the caller cannot do anything about. Making the
    exemption survive a restart means giving the origin (or an equivalent durable
-   record of the conversation a session was born in) persistence in `session.py` —
+   record of the conversation a session was born in) persistence in `session_parts/links.py` —
    out of scope here, since that store serves the auto-compact notice, whose own
    reason for being in memory is that a restart takes the live session with it.
 
@@ -1576,7 +1763,7 @@ marker being the runner's own; and that a turn whose only call is `create_sessio
 records its audience at the creator gate; and that a Telegram allow-list entry that
 is not a positive integer (a group id, zero, text) is never attested as a DM peer,
 so a tab mirrored to such a conversation stays refused with the real transport. The crew-log
-opener is pinned in `test/test_discord.py` and `test/test_telegram.py`: a DM turn
+opener is pinned in `test/test_discord_mirroring.py` and `test/test_telegram_link_mirror.py`: a DM turn
 followed by a `work_ledger_record` write against the real writer lands, and the
 resumed-session path opens nothing.
 
@@ -1607,6 +1794,21 @@ silently skip everything in between. The caller falls back to a tail read.
 `running` is what makes the loop terminable: `running: false` with an empty
 window means the target finished and went idle, which is different from "nothing
 new yet". `queue_depth` reports how much the target still owes.
+
+A turn parked on a tool approval keeps `running` true for the whole approval
+window, so `running` alone cannot tell "working" from "waiting on a person".
+While the target has an open approval, the read adds `pending_approval: true`
+and, when a title is known, `pending_approval_tool` (redacted, at most
+`MAX_PENDING_APPROVAL_TOOL_CHARS`). The values are the slot projection's own
+`pending_approval` and `pending_approval_info["tool"]` (`slot.to_dict()`), the
+fields the dashboard card reads, so the two cannot disagree; that covers both
+the slot's `_approval_futures` (a native tool prompt) and
+`state.pending_coordinator_approvals(slot.key)` (a sub-agent spawn gate or a
+tool inside a running sub-agent). `to_dict()` walks the transcript, so it runs
+only once one of those registries has an open entry. The fields are absent when
+nothing is waiting. `session_status` rows
+carry the same two fields from the same helper, `_pending_approval_fields`; the
+row's `status` stays `working`.
 
 The cursor deliberately stops **before the streaming tail**. `chat_runner`
 appends a `chunk` row per token burst and `_flush_segment` then deletes that
@@ -1703,7 +1905,11 @@ the conversation is saved to history (`closed=True`) and can be reopened later, 
 closing dismisses the LIVE tab, it does not delete the transcript. It is a
 strictly heavier act than `session_stop` — an in-flight turn is cancelled first
 and its work discarded — so the tool description tells the caller to read the
-session before closing it. It reuses the dashboard's own close path
+session before closing it. Close waives the self-target refusal
+(`allow_self=True`, as release does) on both its admission gate and its pre-pop
+re-check, so a session that has finished its one job can archive its own tab; the
+self-close cancels the caller's own running turn, which is the turn that asked
+for it, and every other caller and target rule still applies. It reuses the dashboard's own close path
 (`close_slot`), the same sequence the ✕ button runs: a synchronous tombstone,
 auto-nudge-loop retirement BEFORE the awaits so no nudge resurrects the tab, the
 owning app's close hook with rollback, persist-as-closed, and per-tab session
@@ -1795,15 +2001,21 @@ refusal discards the built slot with nothing durable to undo and a clear that
 cannot land refuses `reopen_failed` instead of publishing a tab that would not
 restore. The existence and `created_at` identity barrier that guards the
 hook-less resume is re-run after the hook's last await, again on the
-verification read after the deferred clear, and a final time synchronously after
-the last await, so a session deleted or delete-and-recreated inside the hook
+verification read after the deferred clear, and a final time OFF the loop
+(`asyncio.to_thread(log.get_metadata_status, ...)`, so its bounded retries pause
+and outlast a Windows sharing-violation hold on a just-rewritten file) before the
+second hook pass, so a session deleted or delete-and-recreated inside the hook
 window is refused `resume_session_deleted` rather than published over the
 replacement (an unreadable answer on that last read refuses `resume_conflict`
 rather than falling through); the marker rollback compares `created_at` too, so it never archives
-a replacement. Because the deferred clear and its verification read are awaits
-after the hook's store-backed probes, the hook runs a second time after them as
-the last awaiting act, so a channel binding recorded in the store during those
-awaits is still refused. The store-free answers (slot fields, caps) are re-asserted once more in a
+a replacement. Because the deferred clear, its verification read and that final
+identity read are awaits after the hook's store-backed probes, the hook runs a
+second time after them as the last awaiting act, so a channel binding recorded
+in the store during those awaits is still refused. After that last await no file
+is read: two lock-free witnesses stand in for it, the key's history-cache
+invalidation generation (snapshotted before the off-loop read; every completed
+delete bumps it) and the in-flight delete marker, and either one refuses
+`resume_conflict` (409) immediately before the publish. The store-free answers (slot fields, caps) are re-asserted once more in a
 synchronous `final_check` after the core's last await, immediately before the
 publish; a refusal there restores the marker while the construction mark still
 reserves the key, and the restore is confirmed by a re-read (one retry on a
@@ -1832,6 +2044,37 @@ deduplicated the slot anyway, but silently answering "done" would hide that the
 caller's model of the sidebar is stale. Member DM threads
 (`member-*`) are refused outright (`member_thread_target`): they are opened only
 through the roster route that re-checks the member binding.
+
+## Listing what can be revived
+
+`session_history_list` answers "what is there to revive?" so an agent does not
+have to guess a title. `list_archived_sessions` runs the caller side exactly as
+`revive_session` does (`refuse_caller_identity`, then `refuse_caller_surface`,
+then the fence verdict) before touching history, so a refused caller learns
+nothing about what is on disk. The catalog walk (`_scan_revivable_history`) runs
+in a worker thread, newest first, and keeps a row only when revive would accept
+it. Revive's target-side refusals live in one predicate, `_archived_target_refusal`
+(metadata plus the store's link and mirror reading, answering a refusal code or
+none), which both `revive_session` and the walk call, so a refusal added to revive
+is hidden from the listing by the same edit. The walk asks it on the metadata
+alone first and probes the session store only for a row that passes. The listing
+adds the `member-` DM prefix guard and the folder filter. The store probes fail closed the
+way revive's do, so a session whose link cannot be read is hidden rather than
+offered and then refused. A fenced caller whose candidates the lineage cannot
+vouch for gets `lineage_unknown: true` beside the rows it could verify, so an empty
+answer during the post-boot unseeded window is not read as "nothing archived".
+The live-slot table is snapshotted on the loop before the walk and re-read after
+it (a session revived during the scan is dropped), and the caller surface and
+workspace are re-asserted after the walk because the rows carry titles, the same
+reason `created_session_status` re-checks. `folder_id` must exist in the tree
+(`folder_not_found` otherwise); `limit` is clamped to 1..100. The walk stops at
+the first eligible row past `limit` and answers `more: true`, so no metadata read
+or store probe is spent beyond the page. It examines at most
+`MAX_HISTORY_SCAN_ENTRIES` (5000) catalog entries, read through
+`newest_session_stems`, which keeps only that many stems and mtimes and reads no
+title or metadata line; when it runs out of them first it answers
+`scan_truncated: true` (and `more: true`), and the scan's memory stays bounded
+however large the archive is.
 
 ## Configuration
 
@@ -1863,8 +2106,9 @@ that agent's `allowedTools` — naming individual tools leaves the session verbs
 `hooks.on_tool_call`, while naming the whole server auto-approves them, because
 `_mcp_pattern` maps a bare `@server` entry to a one-level glob and
 `is_tool_in_allowlist` checks `@server` before `@server/<tool>`. The shipped
-conductor is in the second class for `session_create` and `session_read_message`
-(`_CONDUCTOR_DASHBOARD_GRANTS`), which is its stated operating model: its patrol
+conductor is in the second class for the verbs in `_CONDUCTOR_DASHBOARD_GRANTS`
+(`agent.py`: the folder tools, `session_create`, `session_read_message` and
+`session_status`), which is its stated operating model: its patrol
 loop runs with nobody at the keyboard and must not block on an approval no one is
 there to give. An operator who wants folder tools without session control names the
 folder tools individually.
@@ -1878,7 +2122,7 @@ gateway refuses a caller that presents a `cron:` session key on
 in `private_chat_route_refusal`, the gate every internal chat-route call passes
 after the internal secret validates, and it answers with the same 403 body the
 session-control routes send. The same three routes apply this module's creator
-fence to a `cron:` caller: `cron_creator_refusal` in the chat handlers refuses a
+fence to a `cron:` caller: `cron_creator_admission` in the chat handlers refuses a
 key whose slot was not created by that `cron:` key with 403 `not_creator`, the
 code `authorize_target` answers. A live slot is judged on its `_created_by`
 through `_created_by_other`. A key with no live slot is judged on the
@@ -1891,7 +2135,7 @@ adds one rule of its own, `cron_mode_refusal`: a `cron:` caller sets `trust` or
 `normal` included, answers 403 `mode_not_allowed` before governance or the
 safety override is consulted, while an unnamed slot answers 400 `slot_required`
 rather than the owner's all-slots grant. `_cron_session_control_refusal` and
-`cron_creator_refusal` are mirrors of this module's cron gate, the switch gate
+`cron_creator_admission` are mirrors of this module's cron gate, the switch gate
 and the `_created_by_other` fence, not a second rule: a change to how this
 module gates a cron must change those helpers with it. All three checks key on
 the key the caller presents, so they are a courtesy for `ScriptContext` callers
@@ -1933,6 +2177,48 @@ a config-level ceiling, not an enterprise `SCOPE_CATALOG` scope: `session_contro
 itself is a plain `agent.*` bool with no catalog entry, and a scope would need a
 new governance enforcement seam rather than a data-only append, so it is left to a
 follow-up.
+
+## Module layout
+
+`kiro_crew.dashboard.session_control` stays the only import path and the only patch
+seam for every verb: `src/kiro_crew/dashboard/session_control.py` is a mirrored facade
+(`kiro_crew._facade_mirror`) over the owner package
+`src/kiro_crew/dashboard/session_control_parts/`, one responsibility per module. A patch of
+`session_control.<name>` lands in every owner that binds the name, so a test patches the
+facade, never one owner; `test_facade_mirror_guards.py` holds the family to that contract
+and `test_session_control_parts_contract.py` to the rest of this layout. Every owner logs
+under the logger name `kiro_crew.dashboard.session_control`. New code for a responsibility
+goes to its owner, and the owners import each other lowest layer first, in this order:
+
+- `src/kiro_crew/dashboard/session_control_parts/caller_access.py`: who is calling, the
+  enablement gates, the member, cron and delegation ownership fences, and the audit record
+  every verb writes.
+- `src/kiro_crew/dashboard/session_control_parts/delivery_containment.py`: the
+  channel-mirror probes, the containment stamps a queued entry carries, the drop and
+  discard notices, and the audience-admission record.
+- `src/kiro_crew/dashboard/session_control_parts/target_authorization.py`: the owner-DM
+  judgement, a creator's eligibility, slot resolution, the refusal factories and
+  `authorize_target`.
+- `src/kiro_crew/dashboard/session_control_parts/turn_control.py`: stop, retry, continue,
+  end a wait, reload and close.
+- `src/kiro_crew/dashboard/session_control_parts/model_switch.py`: `session_set_model` and
+  the deferred model pick.
+- `src/kiro_crew/dashboard/session_control_parts/session_titles.py`: title cleaning,
+  `session_rename` and `session_generate_title`.
+- `src/kiro_crew/dashboard/session_control_parts/session_create.py`: `session_create` and
+  the spawn record a created or forked child gets.
+- `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
+  `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
+- `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and
+  `session_broadcast`, the provenance envelope, and the steer deliveries a cancelled
+  sender leaves behind.
+- `src/kiro_crew/dashboard/session_control_parts/session_status.py`: the read verbs: the
+  status roster of the sessions a caller created, a target's transcript tail and its
+  cached summary, and their limits.
+- `src/kiro_crew/dashboard/session_control_parts/session_revive.py`: listing the revivable
+  history and `session_revive`.
+
+The facade itself holds no verb: its docstring, its logger and the mirror.
 
 ## What is deliberately not here
 

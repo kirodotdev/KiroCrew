@@ -24,12 +24,11 @@ construction rather than by review.
   can quietly drop.
 * **A fetch that fails FAILS THE TURN.** A customer whose conversation appears
   forgotten is worse than an error, and the damage is worse than it first looks:
-  the backend would create a fresh transcript holding only this turn, and once a
-  durability writer exists it will replace whole objects (that is the write model
-  the extracted backup used and the one its replacement must keep), so the next
-  backup cycle would overwrite the customer's entire history in S3. Failing the
-  turn now keeps that hazard closed before the writer lands. The failure is
-  :class:`TranscriptUnavailable`, surfaced with its own error code.
+  the backend would create a fresh transcript holding only this turn, and the
+  sidecar replaces whole objects, so the next backup cycle would overwrite the
+  customer's entire history in S3. Failing the turn is what holds that hazard
+  closed. The failure is :class:`TranscriptUnavailable`, surfaced with its own
+  error code.
 * **Never log a transcript's contents.** The sid and the byte count only.
 
 **The filename, which is the part that was found the hard way.** The object is
@@ -39,7 +38,7 @@ thread is always ``dashboard``. Verified in the Kiro Crew wheel this image ships
 
 * ``dashboard/openai_compat.py:257`` takes the turn's ``id`` as the slot id and
   ``:296`` resolves it through ``state.get_or_create_slot``, which normalizes
-  with ``dashboard/state.py:_normalize_slot_key``.
+  with ``dashboard/state_parts/slot_directory.py:_normalize_slot_key``.
 * That function's docstring states the invariant a restart depends on:
   ``_safe_key(_history_key_for(key)) == f"dashboard_{key}"``. So the transcript
   stem is the slot key with a ``dashboard_`` prefix, and the file is
@@ -66,17 +65,18 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 import os
 import re
 import stat
-import tempfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ..common import Settings
+from .. import common
+from ..common import Settings, keys, objects, statefile
 from .slotlock import SlotSerializer
 
 logger = logging.getLogger("smc.front.transcript")
@@ -88,7 +88,6 @@ __all__ = [
     "TranscriptAbsent",
     "FetchOutcome",
     "transcript_stem",
-    "object_key",
     "local_transcript_path",
     "ensure_local_transcript",
     "prepared_turn",
@@ -98,41 +97,11 @@ __all__ = [
 # module docstring for where this is established.
 THREAD_PREFIX = "dashboard"
 
-# Mirrors ``dashboard/state.py:_ascii_slot_key`` then the filename fold in
+# Mirrors ``dashboard/state_parts/slot_directory.py:_ascii_slot_key`` then the filename fold in
 # ``history.py:_safe_key`` (``re.ASCII`` pins ``\w`` to ``[a-zA-Z0-9_]``). Order
 # matters: the non-printable pass produces ``-``, which the filename fold keeps.
 _NON_PRINTABLE_RE = re.compile(r"[^\x20-\x7e]")
 _FILENAME_UNSAFE_RE = re.compile(r"[^\w\-.]", flags=re.ASCII)
-
-# Namespace and key derivation for a transcript object in the S3 bucket. These moved HERE
-# from the backup layout module when the backup subsystem was extracted from this PR (the
-# durability design is tracked separately). The front's on-demand transcript fetch is
-# runtime, not backup, but it READS a key an eventual sidecar will WRITE, so the two must
-# derive the same key. Until the durability feature lands there is no writer, so this fetch
-# reads an empty bucket -- a capability the container does not yet have, not a regression.
-# When backup returns, the writer and this reader must share ONE derivation; the first live
-# deployment doubled the crew name in every key because two places each decided the prefix,
-# and it survived twelve green gates because writer and reader agreed with each other while
-# both disagreed with the contract. The lesson stands regardless of which module owns it.
-_TRANSCRIPT_DATA_NS = "data/"
-
-
-def _object_prefix(settings: Settings) -> str:
-    parts = [p for p in (settings.backup_prefix.strip("/"), settings.crew_name.strip("/")) if p]
-    return ("/".join(parts) + "/") if parts else ""
-
-
-def _sessions_prefix(settings: Settings) -> str:
-    """Rel-key prefix under which conversation transcripts live."""
-    try:
-        tail = settings.sessions_dir.relative_to(settings.data_home).as_posix()
-    except ValueError:
-        tail = settings.sessions_dir.name
-    return _TRANSCRIPT_DATA_NS + tail + "/"
-
-
-def _full_key(settings: Settings, rel_key: str) -> str:
-    return _object_prefix(settings) + rel_key
 
 
 class TranscriptUnavailable(RuntimeError):
@@ -154,12 +123,6 @@ class TranscriptAbsent(Exception):
     botocore-shaped ``NoSuchKey``/404 error is classified the same way by
     :func:`_fetch`, so the real boto3 client needs no wrapper of its own.
     """
-
-
-# Error codes S3 uses for "that key is not here". Anything else, ``AccessDenied``
-# included, is a FAILURE: absence and denial are different answers and only one
-# of them may let the turn proceed.
-_ABSENT_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 
 
 @runtime_checkable
@@ -216,70 +179,28 @@ class S3TranscriptReader:
                 f"the stored transcript {key} declares {declared} bytes, above the "
                 f"{MAX_TRANSCRIPT_BYTES}-byte ceiling, and was not read."
             )
-        return _read_bounded(resp["Body"], key)
+        try:
+            return objects.read_bounded(
+                resp["Body"], key, limit=MAX_TRANSCRIPT_BYTES, what="transcript"
+            )
+        except objects.ObjectTooLarge as exc:
+            # Translated, not re-classified. The ceiling and the streamed read are the
+            # shared ones; what this route needs on top is that the refusal is a
+            # ``TranscriptUnavailable``, so the turn fails closed rather than starting
+            # the conversation again from empty.
+            raise TranscriptTooLarge(str(exc)) from exc
 
 
 #: Ceiling on a transcript restored from the bucket.
 #:
-#: The bytes come from outside the container and are held IN MEMORY for the length of a
-#: turn, so without a ceiling one object decides how much memory this process uses. 64
-#: MiB is far above any real transcript (a conversation is JSONL text) and far below the
-#: task's memory, so it separates "a big conversation" from "an object that should not be
-#: read at all" without needing to know which conversations exist.
-MAX_TRANSCRIPT_BYTES: int = 64 * 1024 * 1024
-
-#: How much is read per chunk while enforcing that ceiling. Small enough that the
-#: overshoot before the refusal is bounded by this rather than by the object's size.
-_READ_CHUNK_BYTES: int = 1024 * 1024
+#: An alias, never a second number. The sidecar reads the same ceiling to warn at upload
+#: time about an object this reader would refuse, so two copies would let the writer
+#: promise what the reader declines. See ``common.config`` for why the value is what it is.
+MAX_TRANSCRIPT_BYTES: int = common.MAX_OBJECT_BYTES
 
 
 class TranscriptTooLarge(TranscriptUnavailable):
     """The stored object is larger than a transcript is allowed to be."""
-
-
-def _read_bounded(body, key: str, *, limit: int = MAX_TRANSCRIPT_BYTES) -> bytes:
-    """Read at most *limit* bytes from an S3 body, refusing an object that exceeds it.
-
-    Streamed in chunks rather than ``body.read()``: a single read materialises whatever
-    the object happens to be, so the ceiling would be enforced after the memory was
-    already committed. Reading one chunk PAST the limit is what makes the refusal
-    decidable -- stopping exactly at the limit cannot tell a file of exactly that size
-    from a larger one.
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = body.read(_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            raise TranscriptTooLarge(
-                f"the stored transcript {key} exceeds {limit} bytes and was not read. It "
-                "is held in memory for the length of a turn, so an object this size is "
-                "refused rather than loaded."
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _error_code(exc: Exception) -> str:
-    """The S3 error code of a botocore ClientError, or ``""``.
-
-    Read off the response dict rather than the exception type so a stub client in
-    a test can produce a genuine absence without botocore installed.
-    """
-    response = getattr(exc, "response", None)
-    if isinstance(response, dict):
-        error = response.get("Error")
-        if isinstance(error, dict):
-            code = error.get("Code")
-            if isinstance(code, str):
-                return code
-        status = response.get("ResponseMetadata")
-        if isinstance(status, dict) and status.get("HTTPStatusCode") == 404:
-            return "404"
-    return ""
 
 
 def _sid_of(key: str) -> str:
@@ -325,7 +246,7 @@ def is_fetchable_slot_id(slot_id: str) -> bool:
 def normalize_slot_key(slot_id: str) -> str:
     """Fold a turn's ``id`` exactly as the backend folds it into a slot key.
 
-    Mirrors ``dashboard/state.py:_normalize_slot_key``. The prefix stripping is
+    Mirrors ``dashboard/state_parts/slot_directory.py:_normalize_slot_key``. The prefix stripping is
     the part that matters here: ``id="dashboard_cust-1"`` reaches the SAME slot,
     and therefore the same transcript, as ``id="cust-1"``, so a fetch that
     skipped this step would miss the object for one of the two spellings and
@@ -351,20 +272,124 @@ def transcript_stem(slot_id: str) -> str:
     return f"{THREAD_PREFIX}_{normalized}"
 
 
-def object_key(settings: Settings, stem: str) -> str:
-    """The full S3 key of a transcript, matching what a sidecar would write.
+def _resolve_transcript_key(reader: TranscriptReader, settings: Settings, stem: str) -> str | None:
+    """The bucket key holding *stem*'s current transcript, resolved through the committed index.
 
-    Derived from THIS module's own key helpers now that backup is extracted. When the
-    durability feature returns, its writer and this reader must derive the same key from a
-    single shared definition, because drift here is invisible: the fetch would simply miss,
-    and a customer whose history was not found is indistinguishable from a new one.
+    Blocking (three single-key GETs at most), so the caller runs it off the event loop.
+    Returns the content-addressed ``data/blob/<digest>`` key the committed generation's
+    transcript index names for *stem*; ``None`` when the stem is ABSENT -- a new conversation
+    to serve fresh. A bucket with no committed pointer is empty: there is no pre-protocol
+    layout to fall back to, so every stem is absent. Once a committed pointer exists a stem
+    the committed index does not name is absent too, NOT resolved to any older object: a
+    recycled slot id reusing a deleted conversation's stem must not resurrect its bytes into
+    the new one.
 
-    That is not hypothetical. The first live deployment doubled the crew name in every key
-    (``crews/<crew>/<crew>/``) because two places each decided one prefix, and it survived
-    twelve green gates because writer and reader agreed with each other while both disagreed
-    with the contract.
+    Raises :class:`TranscriptUnavailable` when the pointer or index is PRESENT and cannot be
+    trusted (does not parse, names a non-generation id, maps the stem to a non-digest). That
+    is the fail-closed direction: an index that exists and is unreadable means a reader
+    cannot know the right blob, and serving a stale object instead would hand the
+    customer the wrong history. Absence is decided by the key being missing, never by a
+    denial, which :func:`_fetch` classifies the same way it does for a transcript.
+
+    The pointer and index JSON shapes are MIRRORED here rather than imported from
+    ``sidecar.generation``, the way :func:`_probe_local_entry` mirrors the hooks helper: the
+    front is deliberately isolated from
+    the ``sidecar`` package (it never lists, never writes), so it reads these two small,
+    stable shapes itself. The digest is validated through the shared :func:`keys.is_blob_digest`
+    so a value from the bucket can carry no path into the blob key.
     """
-    return _full_key(settings, f"{_sessions_prefix(settings)}{stem}.jsonl")
+    pointer_raw = _fetch(reader, keys.authority_pointer_key(settings))
+    if pointer_raw is None:
+        # No committed pointer: the bucket is empty (a fresh crew that has not committed a
+        # generation yet). There is no legacy per-stem layout to fall back to -- nothing has
+        # ever written one -- so the stem is ABSENT, a new conversation served fresh.
+        return None
+    # A committed pointer means this bucket is written by the content-addressed protocol, so
+    # the committed generation's index is the ONE authority on which blob a stem resolves to.
+    # A stem the committed index does not name is treated as ABSENT (a new conversation): a
+    # recycled slot id reusing a deleted conversation's stem must not resurrect its obsolete
+    # bytes into the new conversation. The authority pair resolves the same ambiguity the same
+    # way (restore.py: the pointer is the bucket's truth), so this keeps the two sides
+    # consistent.
+    generation_id = _committed_generation_id(pointer_raw)
+    index_raw = _fetch(reader, keys.transcript_index_key(settings, generation_id))
+    if index_raw is None:
+        # The committed pointer REFERENCES this index, and every committing cycle writes it
+        # (empty when there is no transcript) before committing the pointer -- so an absent
+        # index under a committed pointer is one external retention deleted while it was
+        # still referenced, not a generation that published none. Reading it as "every stem
+        # is a new conversation" would serve real history empty and let the next cycle
+        # overwrite it. So absence of a referenced index is REFUSED, not treated as absent.
+        raise TranscriptUnavailable(
+            f"the committed generation {generation_id}'s transcript index is absent from "
+            "the bucket, which under a committed pointer means it was deleted while still "
+            "referenced; the turn is refused rather than served an empty history that would "
+            "overwrite the real one."
+        )
+    digest = _digest_for_stem(index_raw, stem)
+    if digest is None:
+        # The committed index does not name this stem: a genuinely new conversation (an
+        # UNINDEXED stem, GPT's permitted absence). NOT a refusal -- the index exists and
+        # simply has no entry, which is the fresh-conversation case.
+        return None
+    return keys.blob_key(settings, digest)
+
+
+def _committed_generation_id(pointer_raw: bytes) -> str:
+    """Parse the committed generation id from the pointer bytes, or refuse.
+
+    Mirrors the pointer shape ``sidecar.generation.pointer_body`` writes. Raises
+    :class:`TranscriptUnavailable` on anything that is not a well-formed generation id, for
+    the fail-closed reason the resolver documents: a present-but-unreadable pointer must not
+    degrade to a blind fetch.
+    """
+    try:
+        parsed = json.loads(pointer_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise TranscriptUnavailable(
+            f"the generation pointer in the bucket does not parse ({exc}), so the committed "
+            "transcript cannot be located."
+        ) from exc
+    generation_id = parsed.get("generation") if isinstance(parsed, dict) else None
+    if not keys.is_generation_id(generation_id):
+        raise TranscriptUnavailable(
+            f"the generation pointer names {generation_id!r}, which is not a generation id, "
+            "so the committed transcript cannot be located."
+        )
+    assert isinstance(generation_id, str)
+    return generation_id
+
+
+def _digest_for_stem(index_raw: bytes, stem: str) -> str | None:
+    """The blob digest the committed index maps *stem* to, ``None`` when it names no stem.
+
+    Mirrors the index shape ``sidecar.backup._commit_transcript_index`` writes (a flat
+    ``stem -> digest`` object). Raises :class:`TranscriptUnavailable` when the index does not
+    parse or maps the stem to a value that is not a blob digest -- the fail-closed direction,
+    since a bad digest cannot name a blob and guessing past it serves the wrong conversation.
+    ``None`` (stem absent from the index) is the legitimate "no content-addressed blob for
+    this stem" the caller reads as a fresh conversation.
+    """
+    try:
+        parsed = json.loads(index_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise TranscriptUnavailable(
+            f"the committed transcript index does not parse ({exc}), so the transcript "
+            "cannot be located."
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise TranscriptUnavailable(
+            "the committed transcript index is not a JSON object mapping stems to digests."
+        )
+    digest = parsed.get(stem)
+    if digest is None:
+        return None
+    if not keys.is_blob_digest(digest):
+        raise TranscriptUnavailable(
+            f"the committed transcript index maps {stem!r} to {digest!r}, which is not a "
+            "blob digest, so the transcript cannot be located."
+        )
+    return digest
 
 
 #: Longest single filename this build will construct for a transcript. 255 is the POSIX
@@ -443,6 +468,10 @@ def _write_without_clobbering(path: Path, data: bytes) -> None:
       before it is created or written into, because ``mkdir(exist_ok=True)``
       succeeds on a symlink to a directory and every write then lands wherever
       that link points.
+
+    The mechanism behind the first two is :func:`container.common.statefile.link_new`,
+    which the restore step writes through as well. The refusals stay here, because what
+    an existing file means is a question about this turn.
     """
     parent = path.parent
     if parent.is_symlink():
@@ -460,32 +489,21 @@ def _write_without_clobbering(path: Path, data: bytes) -> None:
         raise TranscriptUnavailable(
             f"the sessions directory could not be created at {parent} ({exc})."
         ) from exc
-    fd, tmp = tempfile.mkstemp(dir=str(parent), prefix=".smc-fetch-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        try:
-            os.link(tmp, str(path))
-        except FileExistsError:
-            # Something arrived at this path while the fetch was in flight, so the file
-            # the turn will use is NOT the one just written and has had none of this
-            # module's checks applied to it. Keeping the copy on disk is still right --
-            # whoever created it has the newer history -- but only if it is a
-            # transcript at all, so the entry that won is validated the same way the
-            # pre-fetch check validates one, through the same helper rather than a
-            # second check that could drift from it. A shape that fails raises, which
-            # fails this turn.
-            _probe_local_entry(path)
-            logger.info(
-                "transcript fetch: sid=%s appeared while fetching; keeping the "
-                "copy on disk, which is the newer one",
-                _sid_of(path.name),
-            )
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    if not statefile.link_new(path, data, prefix=".smc-fetch-"):
+        # Something arrived at this path while the fetch was in flight, so the file
+        # the turn will use is NOT the one just written and has had none of this
+        # module's checks applied to it. Keeping the copy on disk is still right --
+        # whoever created it has the newer history -- but only if it is a
+        # transcript at all, so the entry that won is validated the same way the
+        # pre-fetch check validates one, through the same helper rather than a
+        # second check that could drift from it. A shape that fails raises, which
+        # fails this turn.
+        _probe_local_entry(path)
+        logger.info(
+            "transcript fetch: sid=%s appeared while fetching; keeping the "
+            "copy on disk, which is the newer one",
+            _sid_of(path.name),
+        )
 
 
 #: Flags for a shape probe on a local transcript entry.
@@ -575,7 +593,7 @@ def _fetch(reader: TranscriptReader, key: str) -> bytes | None:
     except TranscriptAbsent:
         return None
     except Exception as exc:  # noqa: BLE001 - classified, never swallowed
-        if _error_code(exc) in _ABSENT_CODES:
+        if objects.is_absent(exc):
             return None
         raise TranscriptUnavailable(f"GetObject failed for sid {_sid_of(key)}") from exc
 
@@ -622,11 +640,43 @@ async def ensure_local_transcript(
         # The warning is emitted once at startup, not once per turn.
         return FetchOutcome("no_store", stem)
 
-    key = object_key(settings, stem)
+    # Resolve the key through the committed generation's transcript index: the sidecar
+    # writes a transcript at a CONTENT-ADDRESSED ``data/blob/<digest>`` key and records
+    # ``stem -> digest`` in the committed generation's index, so the front reads the pointer
+    # then that index then the blob -- three single-key GETs, no listing. There is no
+    # per-stem fallback key: a bucket with no pointer is empty, and a stem the committed
+    # index does not name is a new conversation. All of it is blocking boto3, so it runs off
+    # the event loop like the GET.
+    try:
+        key = await asyncio.to_thread(_resolve_transcript_key, reader, settings, stem)
+    except TranscriptUnavailable:
+        # The pointer or index is present and could not be trusted -- raised so the turn is
+        # refused rather than served an empty or stale history (see _resolve_transcript_key).
+        raise
+    if key is None:
+        # A committed index exists and does not name this stem, so there is no transcript to
+        # restore: a new conversation. No older per-stem object is read -- a recycled slot id
+        # would otherwise resurrect a deleted conversation's bytes here.
+        logger.info("transcript fetch: sid=%s is absent from the committed index; fresh", stem)
+        return FetchOutcome("absent", stem)
     # boto3 is blocking. A multi-megabyte GET on the event loop would stall every
     # OTHER conversation's turn, so it runs in a thread.
     data = await asyncio.to_thread(_fetch, reader, key)
     if data is None:
+        # Absence means different things by WHICH key this is. A content-addressed
+        # ``data/blob/<digest>`` key came from the committed index, which REFERENCES it, so an
+        # absent blob is one external retention deleted while still referenced -- serving that
+        # as a fresh conversation would overwrite the real history, so it is REFUSED. With no
+        # committed pointer the bucket is empty, so a stem's absence is a genuinely new
+        # conversation.
+        blob_prefix = keys.full_key(settings, keys.NAMESPACE + keys.BLOB_PREFIX)
+        if key.startswith(blob_prefix):
+            raise TranscriptUnavailable(
+                f"the committed index names a blob for sid {stem} that is absent from the "
+                "bucket, which means it was deleted while still referenced; the turn is "
+                "refused rather than served an empty history that would overwrite the real "
+                "one."
+            )
         logger.info("transcript fetch: sid=%s not in S3; treating as a new conversation", stem)
         return FetchOutcome("absent", stem)
 

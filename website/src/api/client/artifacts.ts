@@ -10,6 +10,7 @@
  */
 
 import type { SessionDoc, PublishProviderDescriptor } from '../../types'
+import type { Site } from '../../hooks/useDirectDeploy'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -23,14 +24,29 @@ export interface AppPublishProvider {
   endpoint: string
 }
 
-export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessionExpired, removeAuthBanner }: ClientTransport) {
+/** What `GET /api/deploy/list` answers: every public-web site, read live from the
+ *  AWS accounts' resource tags. `configured: false` means no AWS profile is
+ *  registered, so there is nothing to list; `profile_errors` names the profiles
+ *  whose account could not be read. `error` is set when the listing could not
+ *  run on this host at all (deploy is unsupported on native Windows): the
+ *  answer is still HTTP 200, with no sites and `configured: false`. */
+export interface DeploySitesResponse {
+  sites: Site[]
+  configured: boolean
+  profile_errors?: string[]
+  error?: string
+}
+
+export function createArtifactsEndpoints({ get, post, del, patch, j, jfetch: fetch, checkSessionExpired, removeAuthBanner }: ClientTransport) {
   const library = {
     // Artifacts
     /** List artifacts. `session` scopes to the artifacts one chat session
      *  ORIGINATED; `touchedBy` widens that to every artifact the session was
      *  involved with — created, read, edited, iterated on or reverted — which is
-     *  what the in-session Artifacts tab lists. `pinned` filters on the star. */
-    artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; touchedBy?: string; pinned?: boolean }) => {
+     *  what the in-session Artifacts tab lists. `chatFolder` names a chat
+     *  sidebar folder and returns what any chat filed in it was involved with;
+     *  the server resolves the folder's chats. `pinned` filters on the star. */
+    artifacts: (filters?: { tag?: string; kind?: string; q?: string; source_path?: string; snippet?: boolean; contentMatch?: boolean; session?: string; touchedBy?: string; chatFolder?: string; pinned?: boolean }) => {
       const params = new URLSearchParams()
       if (filters?.tag) params.set('tag', filters.tag)
       if (filters?.kind) params.set('kind', filters.kind)
@@ -40,6 +56,7 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
       if (filters?.contentMatch) params.set('content', '1')
       if (filters?.session) params.set('session', filters.session)
       if (filters?.touchedBy) params.set('touched_by', filters.touchedBy)
+      if (filters?.chatFolder) params.set('chat_folder', filters.chatFolder)
       if (filters?.pinned !== undefined) params.set('pinned', filters.pinned ? '1' : '0')
       const s = params.toString()
       return get(`/api/artifacts${s ? `?${s}` : ''}`).then(j)
@@ -101,7 +118,7 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
     ) =>
       post(`/api/artifacts/${encodeURIComponent(slug)}/settle`, body).then(j) as
         Promise<{ outcome: 'kept' | 'saved' | 'deleted' }>,
-    updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean }) =>
+    updateArtifact: (slug: string, body: { content?: string; name?: string; kind?: string; description?: string; tags?: string[]; actor?: 'user' | 'agent'; event_type?: 'edited' | 'iterated' | 'reverted'; from_version?: number; snapshot?: boolean; expected_token?: string }) =>
       patch(`/api/artifacts/${encodeURIComponent(slug)}`, body).then(j),
     deleteArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}`).then(j),
     // Artifact library folders
@@ -225,10 +242,15 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
      *  Separate from `publishToProvider` on purpose: that one routes at an app's declared
      *  endpoint and falls back to `/api/deploy/deploy`, which is per-artifact deploy
      *  infrastructure -- a different destination, not a different spelling of this one. */
-    publishArtifactToCoreProvider: async (slug: string, providerName: string) => {
+    publishArtifactToCoreProvider: async (
+      slug: string,
+      providerName: string,
+      visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC' = 'PUBLIC',
+      sharedWith: string[] = [],
+    ) => {
       const r = await post(`/api/artifacts/${encodeURIComponent(slug)}/publish`, {
-        visibility: 'PUBLIC',
-        shared_with: [],
+        visibility,
+        shared_with: sharedWith,
         provider: providerName,
       })
       checkSessionExpired(r)
@@ -246,14 +268,23 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
         return { error: text }
       }
     },
-    publishToProvider: async (slug: string, providerId: string, provider?: AppPublishProvider, ttlHours?: number) => {
+    publishToProvider: async (
+      slug: string,
+      providerId: string,
+      provider?: AppPublishProvider,
+      ttlHours?: number,
+      profile?: string,
+    ) => {
       // Route to the provider's declared endpoint with the payload shape
       // that _do_deploy expects (site_id + artifact_slug). ttl_hours is sent on
       // BOTH preview and confirm so the previewed TTL matches what is deployed
       // (omitting it here makes preview use the backend 72h default).
+      // `profile` names the AWS profile to deploy with; omitted, the backend
+      // uses its default profile.
       const endpoint = provider?.endpoint || '/api/deploy/deploy'
       const payload: Record<string, unknown> = { site_id: slug, artifact_slug: slug, provider_id: providerId }
       if (ttlHours !== undefined) payload.ttl_hours = ttlHours
+      if (profile) payload.profile = profile
       const r = await post(endpoint, payload)
       checkSessionExpired(r)
       if (r.ok) { removeAuthBanner(); return r.json() }
@@ -261,6 +292,10 @@ export function createArtifactsEndpoints({ get, post, del, patch, j, checkSessio
       if (r.status === 409) { return r.json() }
       throw await toApiError(r)
     },
+    /** Every live public-web site across the registered AWS profiles. The deploy
+     *  keys a site by the artifact slug, so this is how a surface finds an
+     *  artifact's existing public link without a stored copy of it. */
+    deploySites: () => get('/api/deploy/list').then(j) as Promise<DeploySitesResponse>,
   }
 
   return { library, remoteAndComments, publishing }

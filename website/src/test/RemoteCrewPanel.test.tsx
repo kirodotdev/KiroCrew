@@ -177,7 +177,7 @@ describe('RemoteCrewPanel', () => {
     expect(await screen.findByText(/Loading/i)).toBeInTheDocument()
     // No row at all yet — so no overflow menu, and nothing that could delete.
     expect(screen.queryByRole('button', { name: /More actions/i })).not.toBeInTheDocument()
-    expect(screen.queryByText(/does not manage this machine/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/does not manage this crew/i)).not.toBeInTheDocument()
 
     releaseLaunches({ jobs: [DONE_JOB] })
 
@@ -238,7 +238,7 @@ describe('RemoteCrewPanel', () => {
     expect(
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/does not manage this machine/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/does not manage this crew/i)).not.toBeInTheDocument()
     const row = screen.getByText(CLOUD_INSTANCE.name).closest('[data-crew-id]') as HTMLElement
     expect(within(row).getByText('EC2')).toBeInTheDocument()
     expect(within(row).getByText('SSM')).toBeInTheDocument()
@@ -305,7 +305,7 @@ describe('RemoteCrewPanel', () => {
       await screen.findByText(/Launched by the EC2 launcher\. Its instance may still be running and billing/i),
     ).toBeInTheDocument()
     expect(
-      screen.queryByText(/cannot verify whether this machine has AWS resources/i),
+      screen.queryByText(/cannot verify whether this crew has AWS resources/i),
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Added by you/i)).not.toBeInTheDocument()
 
@@ -363,7 +363,7 @@ describe('RemoteCrewPanel', () => {
     // A fargate row IS an AWS resource, so its caption states that plainly and
     // never hedges the way an unidentified SSM row does.
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('shows a failed turn URL copy and clears it after a successful retry', async () => {
@@ -446,7 +446,7 @@ describe('RemoteCrewPanel', () => {
     const row = name.closest('[data-crew-id="f3"]') as HTMLElement
     expect(row).not.toBeNull()
     expect(within(row).getByText(/An AWS Fargate task\./)).toBeInTheDocument()
-    expect(within(row).queryByText(/cannot verify whether this machine has AWS resources/)).not.toBeInTheDocument()
+    expect(within(row).queryByText(/cannot verify whether this crew has AWS resources/)).not.toBeInTheDocument()
   })
 
   it('still lists the crews when the gateway cannot do cloud provisioning at all', async () => {
@@ -655,6 +655,43 @@ describe('RemoteCrewPanel', () => {
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
 
+  it('names the credential_process helper the AWS CLI could not find', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.cloudPreflight).mockResolvedValue({
+      ...PREFLIGHT_OK,
+      reachable: false,
+      account: '',
+      detail: "aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'",
+      credential_helper_missing: 'sso-cred-helper',
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+
+    expect(
+      await screen.findByText(/could not find sso-cred-helper on the gateway’s PATH.*credential_process/s),
+    ).toBeInTheDocument()
+    // The CLI failure renders through ErrorNotice with the agent hand-off.
+    const notice = screen.getByText(/could not find sso-cred-helper/).closest('[role="alert"]') as HTMLElement
+    expect(notice).not.toBeNull()
+    expect(notice).toHaveTextContent(/No such file or directory: 'sso-cred-helper'/)
+    expect(within(notice).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    // The sentence leads; the CLI's own error sits on its own smaller,
+    // monospace line under it instead of running on in the same red paragraph.
+    const lead = screen.getByText(/could not find sso-cred-helper/)
+    expect(lead).not.toHaveTextContent(/No such file or directory/)
+    const raw = within(notice).getByText("aws: [ERROR]: [Errno 2] No such file or directory: 'sso-cred-helper'")
+    expect(raw).not.toBe(lead)
+    expect(raw.className).toMatch(/\bfont-mono\b/)
+    // The row's warning circle is the only triangle.
+    const row = notice.closest('li') as HTMLElement
+    expect(row.querySelectorAll('.lucide-triangle-alert')).toHaveLength(1)
+    expect(notice.querySelector('.lucide-triangle-alert')).toBeNull()
+    // The plugin's install link belongs to the plugin row only.
+    expect(within(row).queryByRole('link', { name: /install page/ })).toBeNull()
+  })
+
   it('remembers the AWS profile across a remount and probes THAT account, not the default', async () => {
     // This panel unmounts when you visit another Settings section. Losing the
     // profile was worse than retyping: the committed value fell back to '', so the
@@ -819,7 +856,7 @@ describe('RemoteCrewPanel', () => {
   })
 
   it('shows the enable CTA when the feature is disabled (403)', async () => {
-    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
+    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
@@ -844,7 +881,7 @@ describe('RemoteCrewPanel', () => {
     expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
 
     // After the 403 resolves: transitions directly to the disabled card.
-    rejectInstances(new ApiError(403, 'instances feature is disabled'))
+    rejectInstances(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
   })
@@ -857,7 +894,7 @@ describe('RemoteCrewPanel', () => {
 
     // Cloud row carries the cloud attribution + a Stop control; manual row does not.
     expect(await screen.findByText('Launched by Kiro Crew')).toBeInTheDocument()
-    expect(screen.getByText(/does not manage this machine/i)).toBeInTheDocument()
+    expect(screen.getByText(/does not manage this crew/i)).toBeInTheDocument()
     await openRowMenu(u, /More actions for Kiro Crew Cloud/i)
     expect(screen.getByRole('menuitem', { name: 'Stop Kiro Crew Cloud (kc-3f9a)' })).toBeInTheDocument()
 
@@ -1413,7 +1450,7 @@ describe('RemoteCrewPanel', () => {
       const first = renderWithProviders(<RemoteCrewPanel />)
 
       await screen.findByText('Nimbus')
-      await u.type(screen.getByPlaceholderText('Remote Host 1'), 'Cirrus')
+      await u.type(screen.getByPlaceholderText('Crew 1'), 'Cirrus')
       await openRowMenu(u)
       await u.click(await screen.findByRole('menuitem', { name: /Diagnose Nimbus/i }))
       await screen.findByText(/c1: Remote dashboard down/i)
@@ -1422,7 +1459,7 @@ describe('RemoteCrewPanel', () => {
 
       renderWithProviders(<RemoteCrewPanel />, { store: first.store })
       await waitFor(() =>
-        expect(screen.getByPlaceholderText('Remote Host 1')).toHaveValue('Cirrus'),
+        expect(screen.getByPlaceholderText('Crew 1')).toHaveValue('Cirrus'),
       )
     })
 
@@ -1522,6 +1559,14 @@ describe('RemoteCrewPanel', () => {
         <button type="button" onClick={() => launch({ size_key: 'pool-small' })}>
           Claim a host
         </button>
+        {/* A form that DOES ask for a region, so the panel's fallback can be shown
+            not to override one the reader chose in the provisioner's own form. */}
+        <button
+          type="button"
+          onClick={() => launch({ size_key: 'pool-small', region: 'eu-west-2' })}
+        >
+          Pick Ireland and claim
+        </button>
         {launching ? <span>Claiming…</span> : null}
       </div>
     )
@@ -1578,13 +1623,46 @@ describe('RemoteCrewPanel', () => {
         expect(api.cloudLaunch).toHaveBeenCalledWith({
           provider_id: 'devspace_iad',
           profile: '',
-          region: '',
+          // The PANEL's region, inherited. This form asks for none of its own, and
+          // every provisioner's preflight refuses an empty one -- reported as
+          // `region='' is not a region`, which reads as a malformed value rather
+          // than an absent one. So a form that does not ask inherits the region
+          // the reader already chose here rather than posting nothing.
+          region: 'us-east-1',
           size_key: 'pool-small',
         }),
       )
       // And nothing re-probed AWS on the way: the preflight belongs to the EC2
       // form that was on screen before the switch.
       expect(vi.mocked(api.cloudPreflight).mock.calls.length).toBe(preflightsBefore)
+    })
+
+    it('keeps a region the provisioner form supplied rather than the panel one', async () => {
+      // The fallback fills a gap; it must not overrule a choice. A form that asks
+      // for a region is the reader saying where this crew goes, and the panel's
+      // own selection is not that answer.
+      vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [] })
+      vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+      vi.mocked(api.cloudPreflight).mockResolvedValue(PREFLIGHT_OK)
+      vi.mocked(api.cloudLaunch).mockResolvedValue({ ...RUNNING_JOB, provider_id: 'devspace_pdx' })
+      vi.mocked(api.cloudProvisioners).mockResolvedValue({
+        provisioners: [AWS_EC2_ROW, DEVSPACE_ROW],
+      })
+      const u = userEvent.setup()
+      renderWithProviders(<RemoteCrewPanel />)
+
+      await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+      await u.click(await screen.findByRole('button', { name: 'Amazon DevSpace (PDX)' }))
+      await u.click(await screen.findByRole('button', { name: /Pick Ireland and claim/i }))
+
+      await waitFor(() =>
+        expect(api.cloudLaunch).toHaveBeenCalledWith({
+          provider_id: 'devspace_pdx',
+          profile: '',
+          region: 'eu-west-2',
+          size_key: 'pool-small',
+        }),
+      )
     })
 
     it('never probes AWS when the remembered provisioner is not the AWS one', async () => {
@@ -1824,5 +1902,45 @@ describe('RemoteCrewPanel', () => {
       const arm = await screen.findAllByRole('button', { name: /· arm64/i })
       expect(arm.some(c => c.getAttribute('aria-pressed') === 'true')).toBe(true)
     })
+  })
+})
+
+describe('RemoteCrewPanel per-crew enable toggle', () => {
+  beforeEach(() => {
+    vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
+    vi.mocked(api.updateInstance).mockResolvedValue({ ...MANUAL_INSTANCE } as never)
+    vi.mocked(api.connectInstance).mockResolvedValue({ instance_id: 'm1', state: 'connected' } as never)
+  })
+
+  it('turns an enabled crew off without connecting it', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: true, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    renderWithProviders(<RemoteCrewPanel />)
+    const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await userEvent.setup().click(sw)
+    await waitFor(() => expect(api.updateInstance).toHaveBeenCalledWith('m1', { disabled: true }))
+    expect(api.connectInstance).not.toHaveBeenCalled()
+  })
+
+  it('gives a disabled crew one control, its switch, and one status', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
+    })
+    renderWithProviders(<RemoteCrewPanel />)
+    const sw = await screen.findByRole('switch', { name: 'dev-box-1 enabled' })
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByRole('button', { name: /^Connect/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Turn on/ })).toBeNull()
+    expect(screen.queryByText('Disconnected')).toBeNull()
+  })
+
+  it('turns a disabled crew back on from its switch, which reconnects', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({
+      active: true, warm_set_cap: 5, instances: [{ ...MANUAL_INSTANCE, disabled: true }],
+    })
+    renderWithProviders(<RemoteCrewPanel />)
+    await userEvent.setup().click(await screen.findByRole('switch', { name: 'dev-box-1 enabled' }))
+    await waitFor(() => expect(api.connectInstance).toHaveBeenCalledWith('m1'))
+    expect(api.updateInstance).toHaveBeenCalledWith('m1', { disabled: false })
   })
 })

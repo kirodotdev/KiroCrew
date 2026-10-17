@@ -270,9 +270,16 @@ async def serve_artifact_app_file(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.server import _extra_frame_ancestors
 
     ancestors = frame_ancestors_value(_extra_frame_ancestors(request, request.app))
+    # 'unsafe-eval' is NOT granted: this channel serves the app's own static
+    # files and injects no runtime of its own, so nothing here needs
+    # eval/new Function. 'wasm-unsafe-eval' IS granted: without either token
+    # the browser also refuses WebAssembly.compile/instantiate, and this
+    # channel serves application/wasm (with CORS, above) so apps can run it.
+    # It admits WebAssembly compilation only, never JS eval — the same split
+    # as the dashboard's own CSP (server._BASE_CSP).
     resp.headers["Content-Security-Policy"] = (
         "sandbox allow-scripts; "
-        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+        "default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data: blob:; "
         f"frame-ancestors {ancestors}"
     )
     # The sandboxed document runs with an OPAQUE

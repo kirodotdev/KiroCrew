@@ -332,7 +332,7 @@ class TestCgroupConsumerUnchanged:
         finally:
             # The degraded path arms the once-per-process warning latch; leaving
             # it set would silence the SECURITY warning for later tests on this
-            # worker (same reset as test_sandbox_argv.py's _reset_probe).
+            # worker (same reset as test_sandbox_argv_resource_ceilings.py's _reset_probe).
             sb._CGROUP_WARNED = False
         assert argv == ["/bin/true"]
         # Drift guard for the name's claim: degradation means NO properties,
@@ -522,7 +522,7 @@ class TestSingleParseSite:
 
     def test_no_module_outside_the_section_parser_parses_these_keys_itself(self):
         src = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        allowed = src / "config" / "sections.py"
+        allowed = src / "config" / "sections_limits.py"
         # A raw ``.get("<key>")`` is how each of the retired readers pulled its
         # value straight out of the config dict.
         pattern = re.compile(r"\.get\(\s*[\"'](" + "|".join(_ALL_KEYS) + r")[\"']")
@@ -535,7 +535,7 @@ class TestSingleParseSite:
                     offenders.append(f"{path.relative_to(src)}:{num}: {line.strip()}")
         assert offenders == [], (
             "resource_limits keys must be parsed only by "
-            "ResourceLimitsConfig.from_raw in config/sections.py -- these sites read "
+            "ResourceLimitsConfig.from_raw in config/sections_limits.py -- these sites read "
             "the raw dict themselves, which is how the two mechanisms' "
             "incompatible meanings of 0 drifted apart:\n" + "\n".join(offenders)
         )
@@ -545,6 +545,12 @@ class TestSingleParseSite:
         block, so a refactor cannot satisfy the test above by dropping config
         support altogether."""
         src = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
-        for rel in ("sandbox.py", "security/helpers.py", "resource_status.py"):
+        for rel in (
+            "sandbox_cgroup.py",
+            "sandbox_slice.py",
+            "sandbox_rlimit.py",
+            "security/helpers.py",
+            "resource_status.py",
+        ):
             body = (src / rel).read_text(encoding="utf-8")
             assert "ResourceLimitsConfig" in body, rel

@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, renderHook, act } from '@testing-library/react'
 import React from 'react'
 
-import { MeasureFarm, FARM_TICK_MS } from '../hooks/virtualizer/MeasureFarm'
+import { MeasureFarm, FARM_IDLE_MS, FARM_TICK_MS } from '../hooks/virtualizer/MeasureFarm'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import { PierreFarmHoldContext, useStagedMount, __resetStagingForTests, __stagedWaitingCount, EAGER_ROWS } from '../components/pierreStaging'
 
@@ -90,6 +90,45 @@ describe('MeasureFarm', () => {
     )
     runCycle()
     expect(record).not.toHaveBeenCalled()
+  })
+
+  it('holds rows appended at the tail for one idle window, and keeps sweeping above them', () => {
+    // A tail append reaches `count` a commit before the window mounts the row;
+    // a tick in that gap must not render a second copy of the user's just-sent
+    // bubble into the transcript column.
+    const measured = new Set<number>()
+    const record = vi.fn((index: number) => { measured.add(index); return true })
+    const renderItem = vi.fn((i: number) => <span>row {i}</span>)
+    const props = {
+      enabled: true,
+      originIndex: 0,
+      isMeasured: (i: number) => measured.has(i),
+      keyAt: (i: number) => `k${i}`,
+      record,
+      renderItem,
+      scrollerEl: scroller,
+      measureEl: () => 50,
+    }
+    // One row, unmeasured; an idle-only farm would already sweep it. Hold it
+    // out: it is the one the reader just sent and the window is about to mount.
+    const { rerender } = render(<MeasureFarm {...props} count={0} />)
+    rerender(<MeasureFarm {...props} count={1} />)
+    runCycle()
+    expect(renderItem).not.toHaveBeenCalled()
+    expect(record).not.toHaveBeenCalled()
+    // After the idle window the row is fair game (the reader scrolled up and
+    // it never mounted: the farm's job).
+    act(() => { vi.advanceTimersByTime(FARM_IDLE_MS) })
+    runCycle()
+    expect(record.mock.calls.map((c) => c[0])).toEqual([0])
+    // A second append holds only the APPENDED index; rows above keep sweeping.
+    measured.clear()
+    record.mockClear()
+    renderItem.mockClear()
+    rerender(<MeasureFarm {...props} count={2} originIndex={1} />)
+    runCycle()
+    expect(record.mock.calls.map((c) => c[0])).toEqual([0])
+    expect(renderItem.mock.calls.map((c) => c[0])).toEqual([0])
   })
 })
 

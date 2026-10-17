@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Coins, ExternalLink, Eye, EyeOff, Gift, Loader2, RefreshCw, UserRound } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, AlertTriangle, Coins, ExternalLink, Eye, EyeOff, Gift, Loader2, RefreshCw, UserRound } from 'lucide-react'
 
 import { api } from '../api/client'
 import type { KiroBonusCreditGrant, KiroCreditUsage, KiroUsageRefreshResponse } from '../api/client'
 import { parseKiroUsagePayload } from '../api/kiroUsage'
+import { forecastCreditRunOut } from '../api/creditForecast'
+import { providerUsageQuery } from '../api/providerUsageQuery'
+import { getAdapter } from '../providers/registry'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
@@ -120,6 +123,64 @@ function formatResetDate(value: string): string {
     day: 'numeric',
     year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
   })
+}
+
+/**
+ * One line under the meter: whether the plan lasts to the reset at the pace
+ * this cycle has run, weighted by this gateway's weekday pattern
+ * (`api/creditForecast.ts`). The per-day credits are the Usage tab's own Daily
+ * History rows, read through the same shared query, so the two never disagree
+ * about a day. Renders nothing while that report is loading or still
+ * refreshing, and nothing when there is nothing honest to project. A failed
+ * read goes through `ErrorNotice` like every other failure in this panel.
+ */
+function CreditForecastLine({ usage, onClose }: { usage: KiroCreditUsage; onClose: () => void }) {
+  // The registry's one adapter, not useProvider(): the context only ever
+  // holds that same adapter, and reading it directly keeps this line
+  // independent of every test that stubs the context with a bare `{ id }`.
+  const { data, error } = useQuery(providerUsageQuery(getAdapter()))
+  // Any failed read is reported, including a failed refetch over a cached
+  // report (the query keeps old data forever), so a stale shape is never
+  // presented as current.
+  if (error) {
+    return (
+      <div className="mt-2">
+        <ErrorNotice message={i18nT('components.kiroAccountModal.forecast_unavailable')} askAgent onHandoff={onClose} />
+      </div>
+    )
+  }
+  if (!data || data.refreshing) return null
+  const dailyCredits: Record<string, number> = {}
+  for (const row of data.sessions.dailyHistory) {
+    if (typeof row.credits === 'number') dailyCredits[row.date] = row.credits
+  }
+  const bonusRemaining = usage.bonusCredits.reduce((sum, g) => sum + Math.max(g.total - g.used, 0), 0)
+  const forecast = forecastCreditRunOut({
+    used: usage.used,
+    limit: usage.limit,
+    resets: usage.resets,
+    bonusRemaining,
+    dailyCredits,
+    now: new Date(),
+  })
+  if (!forecast) return null
+  if (forecast.kind === 'lasts') {
+    return (
+      <p className="mt-1 text-[12px] text-muted" data-testid="kiro-credit-forecast">
+        {i18nT('components.kiroAccountModal.forecast_lasts')}
+      </p>
+    )
+  }
+  // The warning is the one case this line exists for, so it carries the warn
+  // tone and an icon instead of the all-clear's muted grey.
+  return (
+    <p className="mt-1 flex items-center gap-1 text-[12px] text-warn" data-testid="kiro-credit-forecast">
+      <AlertTriangle className="lucide-inline shrink-0" aria-hidden="true" />
+      {i18nT('components.kiroAccountModal.forecast_runs_out', {
+        date: fmtDateFields(forecast.date, { month: 'short', day: 'numeric' }),
+      })}
+    </p>
+  )
 }
 
 function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
@@ -270,7 +331,7 @@ function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
               {email && (
                 <Clickable
                   onClick={toggleEmailVisibility}
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/35 hover:bg-accent/10 hover:text-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border text-muted transition-colors hover:border-accent/35 hover:bg-accent/10 hover:text-accent focus-ring-accent"
                   aria-label={i18nT(emailHidden ? 'components.kiroAccountModal.show_email' : 'components.kiroAccountModal.hide_email')}
                   title={i18nT(emailHidden ? 'components.kiroAccountModal.show_email' : 'components.kiroAccountModal.hide_email')}
                 >
@@ -404,7 +465,7 @@ function RefreshButton({
       onClick={onClick}
       disabled={pending || held}
       aria-busy={pending || undefined}
-      className={`inline-flex items-center gap-1.5 self-start transition-all disabled:cursor-default disabled:opacity-60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-accent ${shape}`}
+      className={`inline-flex items-center gap-1.5 self-start transition-all disabled:cursor-default disabled:opacity-60 focus-ring-accent ${shape}`}
     >
       {pending
         ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
@@ -436,6 +497,9 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
         // Pressing Refresh on the unreadable-config state retries BOTH reads:
         // the config that decides the surface and the balance it would show.
         if (configUnreadable) void queryClient.invalidateQueries({ queryKey: KIROCREW_CONFIG_QUERY })
+        // The forecast line reads the shared Usage report; retry it too, so a
+        // failed forecast read is not left behind a Refresh that cannot clear it.
+        void queryClient.invalidateQueries({ queryKey: ['provider-usage'] })
         refresh.mutation.mutate()
       }}
       compact={compact}
@@ -557,6 +621,7 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
           </span>
           {usage.resets && <span>{i18nT('app.resets')} {formatResetDate(usage.resets)}</span>}
         </div>
+        <CreditForecastLine usage={usage} onClose={onClose} />
       </div>
       <div className="rounded-lg border border-border px-3">
         <DetailRow label={i18nT('app.overage_used')} value={`${fmtNumber(usage.overage)} ${i18nT('app.credits')}`} />

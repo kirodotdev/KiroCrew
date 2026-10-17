@@ -553,7 +553,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /install/i }))
     await screen.findByText(TRUST_MODAL)
-    fireEvent.click(screen.getByRole('button', { name: /trust this app and enable/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^trust this app$/i }))
 
     // The grant did not take effect, so it is withdrawn and the modal stays up.
     await waitFor(() => expect(untrustApp).toHaveBeenCalledWith(NAME))
@@ -571,7 +571,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: /install/i }))
     expect(await screen.findByText(TRUST_MODAL)).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /trust this app and enable/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^trust this app$/i }))
 
     await waitFor(() => expect(trustApp).toHaveBeenCalledWith(NAME, TRUST_REPOSITORY))
     await waitFor(() => expect(screen.queryByText(TRUST_MODAL)).not.toBeInTheDocument())
@@ -588,7 +588,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /install/i }))
     await screen.findByText(TRUST_MODAL)
-    fireEvent.click(screen.getByRole('button', { name: /trust this app and enable/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^trust this app$/i }))
 
     // The retry rejected, so the grant it was written for owns nothing — the
     // gate withdraws it rather than leaving it over an absent app.
@@ -650,6 +650,67 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(enableApp).not.toHaveBeenCalled()
+  })
+
+  it('lists held-back permissions and approves them on click', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+      },
+      approvedGrants: { api: ['/api/sessions'], events: ['slots:own'] },
+    }))
+    renderDetail()
+    await loaded()
+
+    const notice = screen.getByText(/asks for new permissions\. They stay off until you approve them\./).closest('[role="status"]') as HTMLElement
+    expect(notice).not.toBeNull()
+    expect(within(notice).getByText(/API access: lets the app call/)).toBeInTheDocument()
+    expect(within(notice).getByText('/api/memory')).toBeInTheDocument()
+    expect(within(notice).getByText(/WebSocket events: lets the app receive or send/)).toBeInTheDocument()
+    expect(within(notice).getByText('log')).toBeInTheDocument()
+    expect(within(notice).queryByText('/api/sessions')).not.toBeInTheDocument()
+    expect(notice.textContent).toContain('Ignore this to keep Ledger Lens on the permissions you already approved.')
+    // The disable note follows the lists rather than closing the lead sentence.
+    expect(notice.textContent!.indexOf('/api/memory')).toBeLessThan(notice.textContent!.indexOf('you can stop Ledger Lens using them by disabling it'))
+    // The Permissions card marks the held-back entries, and only those.
+    expect(screen.getAllByText(/not approved/)).toHaveLength(2)
+    getApp.mockResolvedValue(installedApp({
+      manifest: {
+        displayName: 'Ledger Lens',
+        permissions: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+      },
+      approvedGrants: { api: ['/api/sessions', '/api/memory'], events: ['slots:own', 'log'] },
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, { api: ['/api/memory'], events: ['log'] }))
+    expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
+  })
+
+  it('offers no approval on a disabled app, whose enable would switch it on', async () => {
+    getApp.mockResolvedValue(installedApp({
+      enabled: false,
+      manifest: { displayName: 'Ledger Lens', permissions: { api: ['/api/sessions', '/api/memory'] } },
+      approvedGrants: { api: ['/api/sessions'], events: [] },
+    }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.getByText(/is off\. Turn it on, then approve these new permissions here\./)).toBeInTheDocument()
+    expect(screen.queryByText(/asks for new permissions/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Ignore this to keep/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
+  })
+
+  it('shows no staged-permission notice when nothing is staged', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: ['/api/memory'] } },
+    }))
+    renderDetail()
+    await loaded()
+
+    expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
   })
 
   it('syncs a gateway-managed app that has no update waiting', async () => {

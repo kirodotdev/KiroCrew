@@ -21,7 +21,12 @@ from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.json_line import parse_json_object_line, recover_line_id
 from kiro_crew.mcp_gateway import hazards
 from kiro_crew.mcp_gateway.admission import Admission
-from kiro_crew.mcp_gateway.backend import INTERNAL_STUB_PREFIXES, Backend, BackendGone
+from kiro_crew.mcp_gateway.backend import (
+    INTERNAL_STUB_PREFIXES,
+    Backend,
+    BackendGone,
+    has_recyclable_in_flight,
+)
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.admission_protocol import (
     _LEGACY_SPAWN_WAIT_SECS,
@@ -168,6 +173,21 @@ async def _handle_connection(
         return
 
     stub_uuid = str(register.get("stub_uuid", ""))
+    # The agent this stub was wrapped for. NOT a pool dimension, so it is read
+    # off the frame here rather than off ``pool_key``, which does not carry it,
+    # and it never reaches pool identity -- it can neither split nor merge a
+    # partition. Two readers, both needing "whose declaration is this" rather
+    # than "which backend is this":
+    #
+    # * the declared-env sidecar THIS stub's own private backend must read
+    #   (``daemon.launch._read_declared_env_sidecar``), and
+    # * ``Backend.agent_for_stub``, which stamps it into an intercepted app
+    #   render's spool record so the callback is governed by the agent that
+    #   produced it (``app_call._agent_for_call``).
+    #
+    # It arrives over the uid socket from the stub the rewriter wrote, which is
+    # what makes it an answer the governed agent cannot author.
+    stub_agent = str(register.get("agent_name") or "")
     # Absent ``poolable`` means this connection gets its own backend. Absence is
     # the safe default in both directions: an overlay written before the flag
     # existed never silently starts sharing, and a malformed frame cannot widen
@@ -445,6 +465,7 @@ async def _handle_connection(
                                 pool_key,
                                 resolver,
                                 exclusive_stub_uuid=exclusive_stub_uuid,
+                                declaring_agent=stub_agent,
                                 admission=admission,
                                 wait_deadline=deadline,
                                 on_queued=_on_queued if queue_aware else None,
@@ -470,7 +491,7 @@ async def _handle_connection(
                     # Attach BEFORE replying ``ready`` so the stub can never
                     # forward a frame before its inbox exists.
                     try:
-                        inbox = await backend.attach_stub(stub_uuid)
+                        inbox = await backend.attach_stub(stub_uuid, agent=stub_agent)
                     finally:
                         # Once attached, refcount>0 keeps the backend from
                         # eviction, so the hand-out reservation can go.
@@ -500,6 +521,7 @@ async def _handle_connection(
                             pool_key,
                             resolver,
                             exclusive_stub_uuid=exclusive_stub_uuid,
+                            declaring_agent=stub_agent,
                             admission=admission,
                             wait_deadline=(
                                 None
@@ -518,7 +540,7 @@ async def _handle_connection(
                     await _refuse_lazy_spawn(exc, writer, caller=caller, pool_key=pool_key)
                     return
                 try:
-                    inbox = await backend.attach_stub(stub_uuid)
+                    inbox = await backend.attach_stub(stub_uuid, agent=stub_agent)
                 finally:
                     _release_reservation()
                 writer_task = asyncio.create_task(
@@ -631,7 +653,9 @@ async def _teardown_connection(
         # with no consumer (the root cause of the stop/kill bug).
         # Best-effort: a failure here must never skip detach_stub below,
         # or the backend's refcount leaks and it can never be recycled.
-        had_in_flight = any(p.stub_uuid == stub_uuid for p in backend._pending_requests.values())
+        # Only work a cancel might not stop counts: an abandoned ping or
+        # listing keeps the warm backend for the client's retry.
+        had_in_flight = has_recyclable_in_flight(backend._pending_requests, stub_uuid)
         cancelled: list = []
         try:
             cancelled = await backend.cancel_in_flight_for_stub(stub_uuid)
@@ -657,7 +681,7 @@ async def _teardown_connection(
         else:
             logger.debug("stub %s detached; refcount=%d", stub_uuid, remaining)
         # Scope B: if no consumers remain and the backend had in-flight
-        # work, kill+respawn (the cancel notification is best-effort —
+        # tool work, kill+respawn (the cancel notification is best-effort —
         # the backend may not honour it).
         if remaining == 0 and had_in_flight:
             await backend.recycle_if_idle()

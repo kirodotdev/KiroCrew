@@ -16,16 +16,16 @@ platform could support it.
 | Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
-| Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Sends a file back to you | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Renders markdown tables natively | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
 | Reply length before splitting | 3900 chars | 1900 chars | 4000 chars | 16000 chars | 1750 chars (7000 bytes) | 5120 chars (20480 bytes) | 4000 chars | 4000 chars | 4096 chars | 4000 chars |
 | Tappable choices per prompt | 10 | 25 | 25 | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
-| Approval prompt waits | 120s | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
+| Approval prompt waits | 600s (config) | 300s | 300s | 300s | 300s | — | — | — | 300s | — |
 | Agent can message you first | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | Dashboard link is two-way | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
+| Answers a send with a message id | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
 | Parses `@everyone`-style mentions | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Reading the rows
@@ -35,6 +35,11 @@ Webex and WeCom cap in UTF-8 bytes rather than characters, so their character
 figure is the byte budget divided by four — the worst case for non-ASCII text.
 An ASCII-only reply on those channels fits far more than the character figure
 suggests.
+
+**Sends a file back to you** is what you receive from `file_send`. On WeCom the
+file arrives as a document (`send_document`), but an inline image reference in a
+reply is not uploaded: it keeps printing its path, so WeCom's `files_outbound`
+declaration stays off.
 
 **Tappable choices** is the total number of interactive options one prompt may
 present. Above the cap, the remainder degrades to a numbered list in the message
@@ -58,17 +63,12 @@ marker, so a Slack thread does continue its session.
 than a feature you use: it says which convention the channel follows when a send
 does not go out. Most platforms hand back an id, so an empty id there means
 refused or dropped, and a multi-part reply stops instead of posting the rest
-after a hole. WeCom's unprompted send and Feishu's reply carry no id at all, so
-on those two an empty id is the SUCCESS value and a real failure raises instead.
+after a hole. WeCom's unprompted send and Feishu's reply carry no id at all, and
+iMessage's bridge reports one only best-effort, so on those three an empty id is
+the SUCCESS value and a real failure raises instead.
 Kiro Crew reads the declaration wherever it has to judge delivery — a
 dashboard-addressed send, an owner DM, a quoted inbound copy — so a ❌ here is a
 different convention, not a missing capability.
-
-One caveat sits inside the ✅ column. **iMessage declares the strict reading, and
-its bridge does not keep it:** the bridge reports the message id as best-effort, so
-a delivered message can come back with no id and be recorded as undelivered. The
-cell reports what the channel declares, which is what the rest of Kiro Crew acts
-on; the bridge is the exception to it, and the two should agree.
 
 **Parses `@everyone`-style mentions** (`mention_grammars`) decides whether text
 the agent did not write gets a defang first: a zero-width space after every `@`
@@ -85,7 +85,7 @@ and Feishu turn the whole `[OPTIONS:]` list into numbered lines in the message
 body, and you answer by typing the number as an ordinary message — nothing to
 configure, nothing to tap, nothing dropped with the trailer. It is the same helper
 that handles overflow on a channel that does have buttons
-(`render_options_as_text` is `apply_options_cap` with zero widget slots), so the
+(`render_options_as_text` numbers every choice through `format_overflow`), so the
 numbering reads the same everywhere.
 
 **WhatsApp drops the list instead**, and that is a gap rather than a setting. Its
@@ -105,8 +105,8 @@ Only six channels ask you at all. Slack, Discord, Telegram, Teams, Webex and
 WhatsApp install an approval decider, so a tool that needs permission produces a
 prompt and waits:
 
-- **Slack: 120 seconds.** Slack has its own approval path with a shorter window
-  than every other channel.
+- **Slack: `agent.tool_approval_timeout_secs`** (default 600 seconds), read
+  through the same resolver the dashboard uses.
 - **Discord, Telegram, Teams, Webex, WhatsApp: 300 seconds.**
 
 An unanswered prompt is **denied**, never approved — the timeout never means yes.
@@ -118,9 +118,9 @@ refused straight away: nothing is posted and there is no window to answer in. Th
 channels, set the approval mode to `auto` or `trust` — see the channel's own
 guide.
 
-`agent.tool_approval_timeout_secs` (default 600) does **not** govern any of
-these. It applies only to the dashboard chat path. Changing it will not lengthen
-or shorten the window on any messaging channel.
+`agent.tool_approval_timeout_secs` (default 600) governs the dashboard chat
+path and Slack only. Changing it will not lengthen or shorten the window on any
+other messaging channel.
 
 ## Owner DM targets
 

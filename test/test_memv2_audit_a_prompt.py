@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -336,9 +338,13 @@ def test_legacy_execution_uses_project_override(env):
 
 
 def test_relative_prompt_file_resolves_like_essentials(env, tmp_path, monkeypatch):
-    (env.project / "persona").mkdir()
-    (env.project / "persona" / "task.md").write_text("PROJECT_RELATIVE_PERSONA", encoding="utf-8")
-    (env.project / ".kiro/agents/task-template.json").write_text(
+    # The documented base for a relative file:// prompt is the agent config
+    # file's own directory. The spec lives at <project>/.kiro/agents, so
+    # file://persona/task.md reads <project>/.kiro/agents/persona/task.md.
+    agents_dir = env.project / ".kiro" / "agents"
+    (agents_dir / "persona").mkdir(parents=True, exist_ok=True)
+    (agents_dir / "persona" / "task.md").write_text("PROJECT_RELATIVE_PERSONA", encoding="utf-8")
+    (agents_dir / "task-template.json").write_text(
         json.dumps({"name": "task-template", "prompt": "file://persona/task.md"}),
         encoding="utf-8",
     )
@@ -353,7 +359,34 @@ def test_relative_prompt_file_resolves_like_essentials(env, tmp_path, monkeypatc
     essentials = dict(
         documents_for_member("task-template", str(env.project), include_project=False)
     )
-    assert essentials[str(env.project / "persona" / "task.md")] == "PROJECT_RELATIVE_PERSONA"
+    assert essentials[str(agents_dir / "persona" / "task.md")] == "PROJECT_RELATIVE_PERSONA"
+
+
+def test_relative_prompt_resolves_against_agent_file_dir_not_home(env, tmp_path, monkeypatch):
+    """A global agent's ``file://./prompts/x.md`` reads
+    ``~/.kiro/agents/prompts/x.md`` — relative to the agent config file's own
+    directory — through both readers.
+
+    A distractor file at the home-relative location ``~/prompts/demo.md`` pins
+    that the resolver anchors on the agent directory, not on home: it reads
+    the agent-dir file and never the distractor.
+    """
+    agents_dir = kiro_agents_dir()
+    (agents_dir / "prompts").mkdir(parents=True, exist_ok=True)
+    (agents_dir / "prompts" / "demo.md").write_text("AGENT_DIR_PERSONA", encoding="utf-8")
+    # A distractor at the home-relative path (~/prompts/demo.md): anchoring on
+    # home rather than the agent directory would read this instead.
+    (Path.home() / "prompts").mkdir(parents=True, exist_ok=True)
+    (Path.home() / "prompts" / "demo.md").write_text("HOME_RELATIVE_DISTRACTOR", encoding="utf-8")
+    (agents_dir / "demo.kiro.json").write_text(
+        json.dumps({"name": "demo", "prompt": "file://./prompts/demo.md"}),
+        encoding="utf-8",
+    )
+
+    assert ContextBuilder._load_agent_prompt("demo") == "AGENT_DIR_PERSONA"
+    essentials = dict(documents_for_member("demo", None, include_project=False))
+    assert essentials[str(agents_dir / "prompts" / "demo.md")] == "AGENT_DIR_PERSONA"
+    assert "HOME_RELATIVE_DISTRACTOR" not in essentials.values()
 
 
 def test_product_prompt_reference_is_not_lost_for_private_fork(env):
@@ -479,8 +512,15 @@ async def test_queue_passes_exact_inject_row_to_runner(tmp_path, monkeypatch, ki
 
 @pytest.mark.parametrize("reader", ["context", "essentials"])
 @pytest.mark.parametrize("origin", ["project", "global"])
-@pytest.mark.parametrize("case", ["escape", "symlink_escape", "inside_parent", "absolute"])
+@pytest.mark.parametrize(
+    "case", ["beside", "inside_parent", "escape", "symlink_escape", "absolute"]
+)
 def test_prompt_file_source_boundary(env, tmp_path, monkeypatch, reader, origin, case):
+    # A relative file:// prompt is anchored to the agent config file's own
+    # directory (<root>/.kiro/agents), the documented base, while the admitted
+    # root (home or the project root) stays the containment boundary. So a
+    # sibling or in-dir prompt reads, a ``..`` that stays under the root reads,
+    # and a ``..`` chain or symlink that climbs ABOVE the root is refused.
     from pathlib import Path
 
     from conftest import make_dir_link
@@ -492,22 +532,32 @@ def test_prompt_file_source_boundary(env, tmp_path, monkeypatch, reader, origin,
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", home / ".kiro" / "agents")
     root = env.project if origin == "project" else home
-    (root / "persona").mkdir()
-    (root / "inside.txt").write_text("INSIDE_PERSONA", encoding="utf-8")
+    agents = root / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    # Fixtures are placed relative to the agents dir (the anchor), with one copy
+    # a level up but still under the admitted root to exercise the boundary.
+    (agents / "prompts").mkdir()
+    (agents / "prompts" / "inside.txt").write_text("INSIDE_PERSONA", encoding="utf-8")
+    # One level up from the agents dir but still under the admitted root.
+    (root / ".kiro" / "inside.txt").write_text("INSIDE_PERSONA", encoding="utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "private.txt").write_text("OUTSIDE_PERSONA", encoding="utf-8")
-    if case == "escape":
-        uri = "file://../outside/private.txt"
-    elif case == "symlink_escape":
-        make_dir_link(root / "linked", outside)
-        uri = "file://linked/private.txt"
+    if case == "beside":
+        # ./prompts/inside.txt next to <root>/.kiro/agents/boundary-template.json
+        uri = "file://./prompts/inside.txt"
     elif case == "inside_parent":
-        uri = "file://persona/../inside.txt"
+        # ../inside.txt climbs to <root>/.kiro, still inside the admitted root.
+        uri = "file://../inside.txt"
+    elif case == "escape":
+        # Enough ".." to climb ABOVE the admitted root -> refused.
+        rel = os.path.relpath(outside / "private.txt", agents)
+        uri = f"file://{rel}"
+    elif case == "symlink_escape":
+        make_dir_link(agents / "linked", outside)
+        uri = "file://linked/private.txt"
     else:
-        uri = f"file://{root / 'inside.txt'}"
-    agents = root / ".kiro" / "agents"
-    agents.mkdir(parents=True, exist_ok=True)
+        uri = f"file://{agents / 'prompts' / 'inside.txt'}"
     (agents / "boundary-template.json").write_text(
         json.dumps({"name": "boundary-template", "prompt": uri}), encoding="utf-8"
     )
@@ -545,8 +595,8 @@ def test_relative_prompt_read_rejects_ancestor_swap(env, tmp_path, monkeypatch, 
     from conftest import make_dir_link
     from kiro_crew import member_essential_context as essentials
 
-    directory = env.project / "persona"
-    directory.mkdir()
+    directory = env.project / ".kiro" / "agents" / "persona"
+    directory.mkdir(parents=True)
     (directory / "prompt.txt").write_text("INSIDE_PERSONA", encoding="utf-8")
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -562,7 +612,7 @@ def test_relative_prompt_read_rejects_ancestor_swap(env, tmp_path, monkeypatch, 
         result = resolve(*args)
         assert result is not None
         checked.append(result)
-        directory.rename(env.project / "original-persona")
+        directory.rename(env.project / ".kiro" / "agents" / "original-persona")
         make_dir_link(directory, outside)
         return result
 
@@ -599,7 +649,8 @@ def test_persisted_scalar_metadata_replays_with_legacy_identity(tmp_path, metada
 def test_relative_prompt_byte_reader_normalizes_or_refuses(env, monkeypatch, oversized):
     from kiro_crew import hooks
 
-    (env.project / "reader.txt").write_bytes(b"first\r\nsecond\rlast")
+    # The relative prompt is resolved against the agent file's own directory.
+    (env.project / ".kiro/agents/reader.txt").write_bytes(b"first\r\nsecond\rlast")
     (env.project / ".kiro/agents/reader-template.json").write_text(
         json.dumps({"name": "reader-template", "prompt": "file://reader.txt"}),
         encoding="utf-8",

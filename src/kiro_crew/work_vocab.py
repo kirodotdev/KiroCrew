@@ -11,7 +11,7 @@ only place all three can share without one of them dragging the others in.
 from __future__ import annotations
 
 import hashlib
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
 #: Here rather than in ``crew_log``: a reader outside that package needs the name to
@@ -35,19 +35,45 @@ WORK_ACTIONS: tuple[str, ...] = (
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
 WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
+#: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
+#: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
+#: clear, ``question`` a decision only it can make. ``progress`` is deliberately
+#: absent -- it advances the board and reaches the conductor on the next real wake,
+#: and charging a turn for it rebuilds the polling the watch exists to remove.
+#:
+#: Here rather than in one of its two readers because BOTH need it and each sits
+#: where the other may not be imported: ``ledger_wake`` is the watch's pure gate and
+#: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
+#: path. Two spellings of this set would let a trigger push for news the gate then
+#: refuses, which is precisely the wake nobody can see is wasted.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
+#: When a ``blocked`` or ``question`` report waits on a person, as data rather than
+#: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
+#: person can unblock it). A work-ledger watch whose open items all carry one,
+#: unchanged since its last turn, holds. A wait on anything else carries no reason.
+WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
+#: The statuses a ``reason`` may ride on.
+WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
 WORK_EVENT_KINDS: tuple[str, ...] = ("create", "bind", "report", "decision", "verdict", "close")
-#: Items one board may CREATE over its life, open and closed together -- and the
-#: number of item records the crew log's ``work`` fold retains per board. ONE value
-#: on purpose: the store counts a board's creates in a monotonic counter in its
-#: header and the fold counts them in an append-only log, so every create the store
-#: admits is one recorded create, a board that can never admit more creates than the
-#: fold retains can never overflow the fold, and the fold is then always the whole
-#: board rather than a prefix of it. The store enforces it as
-#: ``work_ledger.MAX_STORED_ITEMS_PER_CONDUCTOR``; the fold reads it as
-#: ``crew_log.projection.WORK_ITEM_LIMIT``. Neither side may import the other
-#: (the fold is forbidden from importing the store, and the store must not load
-#: the crew log's storage subsystem on the boot path), so the number lives here.
+#: Item records the crew log's ``work`` fold may HOLD for one board at once -- a
+#: memory bound on the fold, not a bound on the board's life. The fold forgets an
+#: item once it is closed and older than :data:`WORK_CLOSED_WINDOW` other closed
+#: items, so what it holds is the open items (at most 32, the store's open cap) plus
+#: that window; this ceiling is never reached by a board the store admits and only
+#: guards a log something else wrote. Also the highest goal ``item_cap`` the store
+#: accepts. It lives here because neither the fold nor the store may import the other.
 WORK_STORED_ITEM_LIMIT: int = 256
+#: Closed items the ``work`` fold keeps whole, newest-closed last, for the surfaces
+#: that draw recent history. Older closed items leave the fold; their full history
+#: stays in the crew log.
+WORK_CLOSED_WINDOW: int = 32
+#: Ids of items the ``work`` fold has forgotten, oldest first, kept so an entry for one
+#: that is folded late (a worker report in a unit read after the close) is recognised
+#: and dropped instead of parked. Ids only; past the cap the oldest id of a CREATED item
+#: goes first, and a late entry for an id past it parks and counts in ``omitted`` like
+#: any unknown id. A baseline-born id goes only once the set holds nothing else, since a
+#: late baseline for one would materialise the item again.
+WORK_TOMBSTONE_LIMIT: int = 4096
 #: Fields a conductor action may set on an item. What the write route logs from
 #: the committed item is what the fold applies to the rebuilt one; the two read
 #: this one table so they cannot drift apart. A worker's fields are fixed.
@@ -104,12 +130,18 @@ class WorkBoardItem(TypedDict):
     fails: int
     #: One of :data:`WORK_WORKER_STATUSES`, or unset.
     status: str | None
+    #: One of :data:`WORK_BLOCKED_REASONS` on a blocked/question report, or unset.
+    reason: str | None
     summary: str
     artifacts: dict[str, str]
     pr: int | None
     last_report_at: str | None
     created_at: str
     closed_at: str | None
+    #: When the conductor last wrote ``decide`` on the item, or unset.
+    decided_at: str | None
+    #: When the item's current run of ``pending`` verdicts began, or unset.
+    pending_since: str | None
     events: list[WorkBoardEvent]
 
 
@@ -144,6 +176,31 @@ class WorkBoardView(TypedDict):
     conductor: WorkBoardConductor
     items: list[WorkBoardItem]
     omitted: int
+    #: Closed items the fold has let go, so ``items`` is not the board's whole life.
+    #: Optional for a reader: a view without it holds every item.
+    forgotten: NotRequired[WorkBoardForgotten]
+
+
+class WorkBoardForgotten(TypedDict):
+    """What the ``work`` fold still knows about the closed items it let go.
+
+    ``created`` counts every item the board has held, forgotten ones included, and
+    sets the store's create counter on a rebuild; ``items`` is how many were
+    forgotten, split by the state they closed in, which the crew status and the
+    pipeline board add to their totals. The store's cache keeps every item's record.
+    """
+
+    created: int
+    items: int
+    accepted: int
+    rejected: int
+    abandoned: int
+    #: Forgotten items created in the board's current round, so "added this round"
+    #: still counts them. Zeroed when the round moves.
+    in_round: int
+    #: Ids of forgotten items a later baseline could name (their tombstones are
+    #: protected), so a rebuild counts such a record once. Not a count.
+    baseline_ids: NotRequired[list[str]]
 
 
 def work_event_id(ts: str, item_id: str, kind: str, text: str, *, status: str | None = None) -> str:

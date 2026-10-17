@@ -106,22 +106,24 @@ def test_the_wrapper_boots_the_named_pod_through_python(cfg):
     assert 'pod _run "smoke"' in body
 
 
-def test_the_wrapper_records_the_exit_code_because_there_is_no_restart_policy(cfg):
-    """``unit_state``'s crash signal is derived from this file, so it is required.
+def test_the_wrapper_writes_no_sidecar_and_the_producer_records_the_exit_code(cfg):
+    """``unit_state``'s crash signal is the result file, written by ``pod _run``.
 
     Task Scheduler retries a failed START, not a non-zero exit, and exposes no
     per-exit-code state in any locale-independent form. The recorded code is the
-    only crash signal ``_wait_healthy`` can stop on.
+    only crash signal ``_wait_healthy`` can stop on. It is written by the claimed
+    producer, whose identity the run record carries, never by the surrounding
+    ``cmd.exe``: a wrapper write would have no identity for ``stop`` to retire and
+    could land after teardown removed the sidecars.
     """
     body = win.render_task_script(cfg, "smoke")
     result = str(win.result_path(cfg, "smoke"))
-    # Cleared BEFORE the boot so the previous run's failure cannot be read as
-    # this one's, and captured into RC before anything else can clobber
-    # ERRORLEVEL.
-    assert f'del /q "{result}" 2>nul' in body
-    assert 'set "RC=%ERRORLEVEL%"' in body
-    assert f'> "{result}" echo %RC%' in body
-    assert body.rstrip().endswith("exit /b %RC%")
+    assert result not in body
+    assert "del " not in body
+    assert body.rstrip().endswith("exit /b %ERRORLEVEL%")
+    win.record_result(cfg, "smoke", 3)
+    assert win.last_result(cfg, "smoke") == 3
+    assert win.unit_state(cfg, "smoke") == ("failed", 1)
 
 
 def test_the_wrapper_routes_logs_to_files_since_there_is_no_journal(cfg):

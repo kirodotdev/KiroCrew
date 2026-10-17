@@ -12,8 +12,8 @@
  *
  *   ?scene=cached      part of the release is on disk and downloads are permitted:
  *                      the counts, the release, and the manual control.
- *   ?scene=downloading a clip is being fetched right now. The line names it and
- *                      the control is unavailable, because pressing it again
+ *   ?scene=downloading a clip is being fetched right now. The line names it by its
+ *                      title and the control is unavailable, because pressing it again
  *                      would queue the same pass twice.
  *   ?scene=policy-off  downloads are forbidden. The line says so and there is NO
  *                      control in any state — the "hidden, not greyed" claim.
@@ -47,6 +47,7 @@ const STATUS = {
   downloading: {
     enabled: true, download_enabled: true, release: '2026.09.1',
     cached: 1, total: 3, downloading: 'monitor-loops',
+    downloading_title: 'Let one session watch a pull request',
   },
   'policy-off': {
     enabled: true, download_enabled: false, release: '2026.09.1',
@@ -93,7 +94,8 @@ const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false 
 createRoot(document.getElementById('root')!).render(
   <Provider store={store}>
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      {/* The panel is split into rail groups; the cache row lives in Discovery. */}
+      <MemoryRouter initialEntries={['/settings?tab=chat&sub=discovery']}>
         {/* Width mirrors the settings content column, so wrapping matches production. */}
         <div data-capture-root className="bg-bg text-text min-h-screen p-8">
           <div className="max-w-[760px]">

@@ -529,7 +529,7 @@ class TestTheSweepNeverJudgesAnOwnerThroughALink:
 
 #: The two spawn chokepoints that must reap a child which planted a link.
 SPAWNERS = (
-    Path("src/kiro_crew/acp/client.py"),
+    Path("src/kiro_crew/acp/client_start.py"),
     Path("src/kiro_crew/acp/runtime.py"),
 )
 

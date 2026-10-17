@@ -260,6 +260,14 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [_expanded, setExpanded] = useState(false)
   const expanded = _expanded && messages.length > 1
+  // A stack handed no action callbacks is a read-only view (ChatEmbed shows
+  // the queue this way). Its cards say so in a tooltip, and a single card --
+  // which has nothing to expand either -- drops the pointer cursor, so a reader
+  // does not hesitate over a click that would do nothing (#19920). The
+  // dashboard always passes callbacks, so its stack is unchanged.
+  const readOnly = !onCancel && !onInterrupt && !onEdit && !onReorder
+  const clickable = messages.length > 1 || !readOnly
+  const readOnlyHint = readOnly ? i18nT('components.queueStack.read_only_waiting_to_send') : undefined
   const [editingId, setEditingId] = useState<string | null>(null)
 
   // Reset expanded when queue drains to trivial size
@@ -323,8 +331,12 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
     // keeps sliding UNDER the input box rather than over it.
     // ChatPage.statusStackLayering.test.tsx pins the ordering.
     <div className="px-4 mx-auto w-full relative" style={{ maxWidth: 'var(--mc-content-width, 900px)', zIndex: 2 }}>
+      {/* The tooltip is pointer-only, so a screen reader gets the same words
+          once, as text BESIDE the stack: inside it they would join the
+          expand button's accessible name once per card. */}
+      {readOnlyHint && messages.length > 0 && <span className="sr-only" data-testid="queue-readonly-hint">{readOnlyHint}</span>}
       <motion.div
-        className="relative cursor-pointer"
+        className={clickable ? 'relative cursor-pointer' : 'relative'}
         animate={{ height: targetHeight }}
         transition={SPRING}
         style={{ marginBottom: marginSpring }}
@@ -411,7 +423,11 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                 variant="chip"
                 radius={12}
                 data-testid="queue-card"
-                className="h-full glass-warn px-3 py-2 text-[13px] text-warn"
+                // `glass-warn-fg` (index.css): `--warn` in dark palettes, a
+                // darker mix of it in light ones, where plain `--warn` on this
+                // tint fails the 4.5:1 text floor (#19920).
+                className="h-full glass-warn px-3 py-2 text-[13px] glass-warn-fg"
+                title={readOnlyHint}
               >
                 <span className="flex items-center gap-1.5 h-full">
                   <span className="shrink-0 text-[10px] font-mono opacity-50 w-4 text-center">{i + 1}</span>
@@ -439,6 +455,7 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onReorder, f
                         </span>
                       )}
                       <span className="truncate flex-1">{displayText}</span>
+
                       {/* Reorder arrows only make sense with 2+ cards, and only
                           in the expanded stack where the run order is visible.
                           Index 0 runs first and renders at the BOTTOM of the

@@ -18,7 +18,12 @@
     .logo { font-size: 48px; margin-bottom: 16px; }
     h2 { margin-bottom: 12px; font-size: 18px; }
     p { color: #64748b; font-size: 13px; margin-bottom: 16px; line-height: 1.5; }
-    code { background: #e2e8f0; padding: 2px 6px; border-radius: 4px; color: #c2410c; }
+    code {
+      background: #e2e8f0; padding: 2px 6px; border-radius: 4px; color: #c2410c;
+      /* A bundled AppImage launcher path (~75 chars, no spaces) must not run
+         past the 480px column — Chromium will not break at "/" on its own. */
+      overflow-wrap: anywhere; word-break: break-word;
+    }
     input {
       width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #cbd5e1;
       background: #fff; color: #1e293b; font-size: 14px; margin-bottom: 12px;
@@ -55,27 +60,71 @@
     // two: on a platform without lsof the probe cannot determine an owner, and
     // asserting "not this app" there would be a confident guess. Default to the
     // hedged wording, which is right whenever we are unsure.
+    //
+    // A packaged AppImage installs no `kirocrew` on PATH — the launcher ships
+    // inside the image — so the shell passes the bundled launcher's absolute
+    // path in ?cli=. When present it replaces the bare `kirocrew` in the LOCAL
+    // mint command. The command is rendered as a <code> span (not inline prose)
+    // so a long bundled path is legible and selectable on its own. A "foreign"
+    // gateway's token must be minted on the OTHER machine, where this app's
+    // bundled CLI has no standing, so its command stays the plain on-PATH
+    // `kirocrew token`. With no ?cli= every branch renders exactly its prior
+    // text, so a normal install is unchanged.
     (function explain() {
       const q = new URLSearchParams(window.location.search);
       const port = q.get('port') || '5476';
       const host = q.get('host') || '';
       const where = host ? host : 'the machine running that gateway';
       const kind = q.get('kind');
-      var msg;
+      const cli = (q.get('cli') || '').trim();
+      // The LOCAL mint command: the bundled launcher path when the shell is a
+      // packaged AppImage, else the bare on-PATH name. A path with spaces is
+      // quoted so it is one shell token.
+      const localMint = cli
+        ? (/\s/.test(cli) ? '"' + cli + '"' : cli) + ' token'
+        : 'kirocrew token';
+
+      const why = document.getElementById('why');
+      why.textContent = '';
+      // Append plain text, then a <code> command, then more text — so the
+      // command renders in its own styled span the user can read and select.
+      const say = (t) => why.appendChild(document.createTextNode(t));
+      const cmd = (t) => {
+        const c = document.createElement('code');
+        c.textContent = t;
+        why.appendChild(c);
+      };
+
       if (kind === 'local') {
-        msg = 'Port ' + port + ' is served by this app\u2019s own gateway, but it could not issue a '
-          + 'dashboard token. Run kirocrew token on THIS machine and paste the URL below.';
+        say('Port ' + port + ' is served by this app\u2019s own gateway, but it could not issue a '
+          + 'dashboard token. Run ');
+        cmd(localMint);
+        say(' on THIS machine and paste the URL below.');
       } else if (kind === 'foreign') {
-        msg = 'Port ' + port + ' is held by a gateway this app did not start \u2014 most often an SSH '
+        say('Port ' + port + ' is held by a gateway this app did not start \u2014 most often an SSH '
           + 'tunnel to another machine. Its access key is its own, so a token has to come from '
-          + 'there: run kirocrew token on ' + where + ', then paste the URL below.';
-      } else {
-        msg = 'The gateway on port ' + port + ' would not issue a dashboard token, and this app '
+          + 'there: run ');
+        cmd('kirocrew token');
+        say(' on ' + where + ', then paste the URL below.');
+      } else if (cli) {
+        // Unknown owner on a packaged AppImage: name both paths, the local one
+        // using the bundled launcher.
+        say('The gateway on port ' + port + ' would not issue a dashboard token, and this app '
           + 'could not determine which machine it is running on. If you reached it through an SSH '
-          + 'tunnel, run kirocrew token on ' + where + '; otherwise run it on this machine. Then '
-          + 'paste the URL below.';
+          + 'tunnel, run ');
+        cmd('kirocrew token');
+        say(' on ' + where + '; otherwise run ');
+        cmd(localMint);
+        say(' on this machine. Then paste the URL below.');
+      } else {
+        // Unknown owner, not packaged: byte-for-byte the original hedged text,
+        // which refers back to the command rather than spelling it out again.
+        say('The gateway on port ' + port + ' would not issue a dashboard token, and this app '
+          + 'could not determine which machine it is running on. If you reached it through an SSH '
+          + 'tunnel, run ');
+        cmd('kirocrew token');
+        say(' on ' + where + '; otherwise run it on this machine. Then paste the URL below.');
       }
-      document.getElementById('why').textContent = msg;
     })();
 
     function go() {

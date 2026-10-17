@@ -53,6 +53,7 @@ from kiro_crew.taskq import store as store_mod
 from kiro_crew.taskq.adapters import runner as runner_mod
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitRecord
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -369,7 +370,7 @@ async def test_a_wait_parked_before_the_store_was_ready_is_woken_after_it(
     await orch._runner_admission_store_ready()
 
     assert coordinator.tick() == ["taskrunner:r7:task1"]
-    assert await asyncio.wait_for(parked, timeout=5) is True
+    assert await await_until(parked, what="taskrunner task parked on dependency") is True
     assert store.get("taskrunner:r7:task1").state == model.RUNNING
 
 
@@ -1598,8 +1599,10 @@ class TestStoreOffLoop:
         monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
         state = SimpleNamespace(subagents=mgr)
         info = await messaging._spawn_on_loop(state, "hello", parent_session_key="web-1", agent="")
-        for _ in range(10):
-            await asyncio.sleep(0.01)  # let the posted registration writes land
+        await async_wait_until(
+            lambda: asyncio.to_thread(lambda: real_store.get(info.id) is not None),
+            describe=lambda: "registration write not yet landed",
+        )
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
         # (The fake session makes the run itself fail right after it starts;
         # what this pins is the accept path, not the run.)
@@ -1681,15 +1684,18 @@ class TestStoreOffLoop:
         async def _states() -> dict[str, str]:
             return {rid: await asyncio.to_thread(store.state_of, rid) for rid in ("row0", "row1")}
 
-        deadline = asyncio.get_running_loop().time() + 10.0
-        states = await _states()
-        while not any(st in model.TERMINAL for st in states.values()):
-            assert asyncio.get_running_loop().time() < deadline, states
-            await asyncio.sleep(0.01)
+        async def _any_terminal() -> bool:
             states = await _states()
+            return any(st in model.TERMINAL for st in states.values())
+
+        await async_wait_until(_any_terminal, describe=lambda: "no terminal row yet")
         await mgr._drain_queue_async()
-        for _ in range(20):  # a second pass finds nothing to pick
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: asyncio.to_thread(
+                lambda: any(store.state_of(rid) in model.TERMINAL for rid in ("row0", "row1"))
+            ),
+            describe=lambda: "rows not yet terminal",
+        )
         assert store.loop_thread_calls == before
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
         states = {rid: store.state_of(rid) for rid in ("row0", "row1")}
@@ -1741,8 +1747,6 @@ class TestStoreOffLoop:
         resolved = await mgr._admission.resolve_window_lanes_async()
         assert resolved == {"subagent:ghostparent": "web-7"}, resolved
         await mgr._drain_queue_async()
-        for _ in range(20):
-            await asyncio.sleep(0.01)
         assert store.loop_thread_calls == before
         await mgr.cancel_all()
 
@@ -1917,8 +1921,10 @@ class TestStoreOffLoop:
             telegram_reply = await messaging_commands.spawn_task_reply(
                 "index it again", mgr, "telegram:kirocrew:direct:7"
             )
-            for _ in range(10):
-                await asyncio.sleep(0.01)  # let the posted registration writes land
+            await async_wait_until(
+                lambda: asyncio.to_thread(lambda: len(threads) >= 2),
+                describe=lambda: f"spawn registration writes not yet landed: {len(threads)}",
+            )
         finally:
             monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
 
@@ -1987,6 +1993,128 @@ class TestStoreOffLoop:
         await mgr.cancel_all()
 
     @pytest.mark.asyncio
+    async def test_has_pending_store_children_sees_a_durable_only_waiter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deferral's store-side half, read off the loop against a real store.
+
+        A durable-only spawn (accepted into the store, no in-memory run) is
+        invisible to the live/queued sets ``has_live_or_queued_children`` reads
+        in process, yet the identity-retire teardown cancels it. So the sweep asks
+        the store too, through ``has_pending_store_children`` -- on the writer
+        thread (``store.run``), BEFORE it takes the registry locks, so no store
+        read runs on the event loop. ``STRICT_ON_LOOP_ENV`` is armed to prove the
+        read goes off-loop.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        bridge = mgr._admission
+
+        # No rows for this parent yet.
+        assert await mgr.has_pending_store_children("cron:j1:planner") is False
+        assert await mgr.has_pending_store_children("") is False
+
+        rec = bridge.taskq_build_record(
+            "durable0",
+            {"task": "t0", "parent_session_key": "cron:j1:planner"},
+            parent_session_key="cron:j1:planner",
+            memory_store="",
+            app="",
+            model="",
+            allowed_tools=None,
+            approval_mode=None,
+        )
+        assert bridge.taskq_accept_record(rec) is None
+
+        # The store-only waiter is now seen, and only for its own parent. The read
+        # goes off the loop: ``STRICT_ON_LOOP_ENV`` is armed around it to prove so.
+        monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+        try:
+            assert await mgr.has_pending_store_children("cron:j1:planner") is True
+            assert await mgr.has_pending_store_children("cron:j1:idle") is False
+        finally:
+            monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+
+        # A failed read propagates rather than answering False: the sweep records
+        # the parent as a defer, so an accepted durable child is never read as
+        # absent and cancelled on an unreadable store.
+        def _boom(*_a, **_k):
+            raise RuntimeError("store read failed")
+
+        monkeypatch.setattr(bridge.taskq_store(), "list_pending", _boom)
+        with pytest.raises(RuntimeError):
+            await mgr.has_pending_store_children("cron:j1:planner")
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_identity_sweep_fence_records_but_does_not_suppress_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The identity sweep's tentative fence records admissions for the
+        retire-vs-defer re-check, but does NOT suppress an expiring row's delivery.
+
+        A committed teardown fence (``open_teardown_fence`` was once the same thing)
+        makes ``accepted_before_open_teardown`` drop a row's delivery as "accepted
+        for a conversation that ended". The identity sweep opens its fence BEFORE it
+        decides retire-vs-defer, and may spare the parent -- so its fence must not
+        suppress delivery. It is a separate, tentative fence: it records admissions
+        (``has_fenced_children`` sees them) but ``accepted_before_open_teardown``
+        ignores it. A committed teardown fence still suppresses.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        canc = mgr._cancellation
+        key = "cron:j1:planner"
+
+        # Tentative identity-sweep fence open: records admissions, no suppression.
+        fence = mgr.open_teardown_fence(key)
+        assert fence is not None
+        canc.note_teardown_store_accept(key, "child-1")
+        assert mgr.has_fenced_children(key) is True
+        # A row NOT in the fence must still deliver -- the parent may be spared.
+        assert canc.accepted_before_open_teardown(key, "other-row") is False
+        mgr.release_teardown_fence(key, fence)
+        assert mgr.has_fenced_children(key) is False
+
+        # A COMMITTED teardown fence (the real cancel) DOES suppress a non-fenced row.
+        canc.note_teardown_snapshot(key)
+        assert canc.accepted_before_open_teardown(key, "other-row") is True
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_commit_identity_sweep_retire_is_atomic_against_admission(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The final commit-vs-defer and the committed-fence open are atomic.
+
+        A child admitted into the tentative fence after the sweep's childless read
+        must defer, not be cancelled; and a commit must promote the tentative fence
+        to the committed one so a concurrent admission already recorded is carried
+        into the cancel's ``accepted_since``.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        canc = mgr._cancellation
+        key = "cron:j1:planner"
+
+        # A child arrived in the tentative fence -> commit refuses (defer).
+        fence_a = mgr.open_teardown_fence(key)
+        assert fence_a is not None
+        canc.note_teardown_store_accept(key, "late-child")
+        assert mgr.commit_identity_sweep_retire(key, fence_a) is False
+        mgr.release_teardown_fence(key, fence_a)
+
+        # Empty tentative fence -> commit promotes it to the committed fence, and a
+        # row recorded concurrently rides in it (so the cancel spares it).
+        fence_b = mgr.open_teardown_fence(key)
+        assert fence_b is not None
+        assert mgr.commit_identity_sweep_retire(key, fence_b) is True
+        # It is now the COMMITTED fence: an admission recorded into it is in
+        # accepted_since (not swept), i.e. accepted_before_open_teardown is False.
+        canc.note_teardown_store_accept(key, "rode-in")
+        assert canc.accepted_before_open_teardown(key, "rode-in") is False
+        # The tentative fence is gone (promoted), so has_fenced_children is False.
+        assert mgr.has_fenced_children(key) is False
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
     async def test_the_attached_children_guard_reads_the_store_off_loop(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2051,7 +2179,7 @@ class TestStoreOffLoop:
         """
         import ast
 
-        allowed = {("chat_utils.py", "_queued_depth_off_loop", "_queued_depth")}
+        allowed = {("chat_utils_completion.py", "_queued_depth_off_loop", "_queued_depth")}
         src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         offenders: list[str] = []
         for path in sorted(src.rglob("*.py")):
@@ -2248,8 +2376,10 @@ class TestStoreOffLoop:
             row = await store.run(store.get, victim.id)
             assert victim._taskq_generation == row.generation
             mgr._admission.taskq_settle(victim)
-            for _ in range(20):
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: asyncio.to_thread(lambda: store.state_of(victim.id) in model.TERMINAL),
+                describe=lambda: "victim not yet in terminal state",
+            )
             assert (await store.run(store.get, victim.id)).state in model.TERMINAL
         finally:
             mgr._agents.clear()
@@ -2415,8 +2545,8 @@ class TestStoreOffLoop:
             assert mgr._batch_submitted["wv"] == [1, 2]
             # And the two call sites take the awaited form, not the sync entry.
             reaper = inspect.getsource(monitoring_mod.OrphanStallMonitor._reaper_loop_impl)
-            assert "await self._manager._sweep_stuck_waves_async(now)" in reaper
-            assert "await self._manager._sweep_digest_holds_async(now)" in reaper
+            assert "await self._manager._sweep_stuck_waves_async(mono_now)" in reaper
+            assert "await self._manager._sweep_digest_holds_async(mono_now)" in reaper
             consumer = inspect.getsource(GatewayOrchestrator._init_subagents)
             assert "await _subagent_batch_pending(self.subagent_mgr, _batch_id)" in consumer
         finally:
@@ -2520,7 +2650,7 @@ class TestStoreOffLoop:
             assert await asyncio.to_thread(parked.wait, 10)
             assert await mgr.cancel("row0") is True
             release.set()
-            await asyncio.wait_for(drain, 20)
+            await await_until(drain, what="drain completed after cancellation")
             assert store.state_of("row0") == model.CANCELLED
             assert announced == [], (
                 "a row the canceller already reported was announced again, so one id "
@@ -2974,8 +3104,9 @@ async def test_a_spawn_during_the_parked_claim_queues_instead_of_overshooting(
     monkeypatch.setattr(store, "claim", _slow_claim)
     mgr._drain_queue()
     drain = getattr(mgr, "_drain_task")
-    while not parked.is_set():
-        await asyncio.sleep(0.005)
+    await async_wait_until(
+        parked.is_set, describe=lambda: "slow claim not yet parked on writer thread"
+    )
     # The claim is parked on the writer thread; the reservation is held.
     assert mgr._running_count == 1 == mgr._max_concurrent
     loser = mgr.spawn("late", parent_session_key="web-1")  # a sync accept-path spawn
@@ -2984,8 +3115,9 @@ async def test_a_spawn_during_the_parked_claim_queues_instead_of_overshooting(
     assert mgr._running_count == 1
     release.set()
     await drain
-    for _ in range(10):
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: "parked" in mgr._agents, describe=lambda: "spawned agent not yet in _agents"
+    )
     assert "parked" in mgr._agents
     assert mgr._running_count <= mgr._max_concurrent
     await mgr.cancel_all()
@@ -3141,8 +3273,10 @@ async def test_nested_child_of_a_blocked_parent_runs_w3_off_loop(
     child = await messaging._spawn_on_loop(
         NS(subagents=mgr), "child", parent_session_key=f"subagent:{parent.id}"
     )
-    for _ in range(20):
-        await asyncio.sleep(0.01)  # posted writes land (still under the guard)
+    await async_wait_until(
+        lambda: asyncio.to_thread(lambda: store.state_of("parent1") == _taskq.WAITING_CHILDREN),
+        describe=lambda: "W3 branch not yet written WAITING_CHILDREN to store",
+    )
     # The accept AND the W3 branch (ledger read, deadline read, enter_wait)
     # completed without a loop-thread store call.
     assert store.loop_thread_calls == before
@@ -3183,17 +3317,31 @@ async def test_a_raise_inside_reenter_releases_the_reservation(
     point = admission_mod.ClaimPoint("boom1")
     mgr._running_count += 1  # what spawn_impl does when it hands back a ClaimPoint
 
-    def _reenter(_claimed):
+    seen: dict[str, int] = {}
+
+    def _reenter(claimed):
+        seen["generation"] = int(claimed[0])
         raise RuntimeError("unwrapped agents-dir scan")
 
     with pytest.raises(RuntimeError):
         await mgr._admission.claim_and_start(point, _reenter)
     assert mgr._running_count == before, "the reservation is released when re-entry raises"
     assert "boom1" not in mgr._agents
-    # The claim itself landed; the row is leased to this incarnation and the
-    # pump's next claim keeps that lease (not lost, not a phantom run).
-    assert store.state_of("boom1") == _taskq.ADMITTED
-    assert mgr._admission.taskq_lease_is_ours("boom1")
+    # The claim landed and the store took the start (``admitted -> starting``)
+    # before the re-entry raised. Nothing runs under that row, so the claimer
+    # releases it by one fenced ``starting -> retry_wait`` write at the claim's
+    # generation, unleased and claimable at once: the next pump pass retries
+    # the accepted work (not lost, not a phantom run, not ended).
+    released = store.get("boom1")
+    assert released is not None and released.state == _taskq.RETRY_WAIT
+    assert released.generation == seen["generation"]
+    assert released.lease_owner is None and released.next_run_at is None
+    transitions = [e.data for e in store.events("boom1") if e.kind == "transition"]
+    assert not any(t.get("to") == _taskq.FAILED for t in transitions)
+    assert (transitions[-1].get("from"), transitions[-1].get("to")) == (
+        _taskq.STARTING,
+        _taskq.RETRY_WAIT,
+    )
     # The pump path swallows the same raise without leaking either.
     monkeypatch.setattr(
         mgr,
@@ -3227,6 +3375,11 @@ async def test_a_raise_inside_reenter_releases_the_reservation(
 
 # ── the pump sees a deferred row only after its defer landed ─────────────────
 
+#: Lost-run bound for the gated defer and the spawn the test releases. The test's call
+#: measured at most 0.04 s in repeats at -n0, so this only ends a broken run, by name,
+#: well inside the suite's 120 s timeout.
+_DEFER_LOST_RUN_SECS = 30.0
+
 
 @pytest.mark.asyncio
 async def test_admitting_id_is_held_until_the_posted_defer_landed(
@@ -3241,30 +3394,48 @@ async def test_admitting_id_is_held_until_the_posted_defer_landed(
     monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
     monkeypatch.setattr(subagent_mod, "check_memory_available", lambda min_gb: (False, 0.5))
     gate = threading.Event()
+    defer_entered = threading.Event()
     real_defer = store.defer
     seen: dict[str, Any] = {}
 
-    def _slow_defer(task_id, until, *, reason):
-        assert gate.wait(5)
-        seen["until"] = until
-        return real_defer(task_id, until, reason=reason)
+    def _slow_defer(task_id, *, wait, reason):
+        defer_entered.set()
+        assert gate.wait(_DEFER_LOST_RUN_SECS)
+        seen["wait"] = wait
+        return real_defer(task_id, wait=wait, reason=reason)
 
     monkeypatch.setattr(store, "defer", _slow_defer)
     task = asyncio.ensure_future(mgr.spawn_async("pressure", parent_session_key="web-1"))
-    for _ in range(20):
-        await asyncio.sleep(0.005)
-    admitting = getattr(mgr, "_admitting_ids")
-    assert (
-        len(admitting) == 1
-    ), "the row stays excluded from the refill while its defer is in flight"
-    (aid,) = tuple(admitting)
-    assert aid in mgr._admission.taskq_excluded_ids()
-    gate.set()
-    info = await task
+    try:
+        # The window under test opens when the posted defer is running and held by
+        # the gate. Wait for that, not for a count of loop turns: on a slow executor
+        # the spawn's off-loop hops outlast any count, and ``_admitting_ids`` does
+        # not exist until the spawn reaches the row it accepted. A spawn that
+        # returns without deferring ends the wait too, and fails below.
+        await async_wait_until(
+            lambda: defer_entered.is_set() or task.done(),
+            timeout=_DEFER_LOST_RUN_SECS,
+            describe=lambda: f"admitting={getattr(mgr, '_admitting_ids', None)!r}",
+        )
+        assert defer_entered.is_set(), f"the spawn never posted its defer: {task!r}"
+        admitting = getattr(mgr, "_admitting_ids", set())
+        assert (
+            len(admitting) == 1
+        ), "the row stays excluded from the refill while its defer is in flight"
+        (aid,) = tuple(admitting)
+        assert aid in mgr._admission.taskq_excluded_ids()
+    finally:
+        # Released on every path, so a failed assertion never leaves the store's
+        # writer thread parked on the gate.
+        gate.set()
+    info = await asyncio.wait_for(task, _DEFER_LOST_RUN_SECS)
     assert info is not None and info.queued
     assert not admitting, "cleared only once the defer landed"
     rec = store.get(info.id)
-    assert rec is not None and rec.next_run_at == seen["until"] > store.now()
+    assert seen["wait"] == mgr._admission.taskq_admit_wait_secs()
+    assert rec is not None and rec.next_run_at > store.now()
+    (deferred,) = [e for e in store.events(info.id) if e.kind == "deferred"]
+    assert rec.next_run_at == deferred.ts + seen["wait"], "until comes from the defer's own read"
     await mgr.cancel_all()
 
 
@@ -3357,7 +3528,7 @@ async def test_a_scope_armed_during_a_pump_sweep_gets_its_own_one_shot(
     before = store.loop_thread_calls
     try:
         mgr._taskq_pump()
-        await asyncio.wait_for(getattr(mgr, "_taskq_tick_task"), timeout=10)
+        await await_until(getattr(mgr, "_taskq_tick_task"), what="taskq tick completed")
         assert verdicts and verdicts[0].outcome == "wait"
         assert reads[0] is None, "the first pass read the schedule before the park"
         timer = getattr(mgr, "_taskq_pump_timer", None)
@@ -3421,7 +3592,7 @@ async def test_the_wired_pump_replays_a_terminal_write_the_store_refused(
     before = store.loop_thread_calls
     try:
         mgr._taskq_pump()
-        await asyncio.wait_for(getattr(mgr, "_taskq_tick_task"), timeout=10)
+        await await_until(getattr(mgr, "_taskq_tick_task"), what="taskq tick completed")
         assert adm.stats()["pending_terminal_writes"] == 0, "the owed write was never replayed"
         assert (await store.run(store.get, rec.id)).state == model.DONE
         assert store.loop_thread_calls == before

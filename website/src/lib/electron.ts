@@ -96,6 +96,32 @@ export function canOpenFileInEditor(): boolean {
 }
 
 /**
+ * Extensions the desktop shell's open-file handler accepts — a renderer-side
+ * MIRROR of `OPENABLE_EXTS` in `electron/ipc-registrar.js` (the
+ * `dashboard:open-file` handler), which stays the security bar. The mirror only
+ * lets a surface skip offering a launch the shell is certain to refuse;
+ * `editorOpenerParity.test.ts` pins the two sets equal.
+ */
+export const EDITOR_OPENABLE_EXTS: ReadonlySet<string> = new Set([
+  '.md', '.markdown', '.txt', '.text', '.rst', '.org', '.log',
+  '.json', '.jsonc', '.json5', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf', '.env',
+  '.css', '.graphql', '.proto',
+])
+
+/**
+ * Whether the shell's open-file handler would accept `filePath` by type: an
+ * absolute path (the handler resolves a relative one against its own working
+ * directory, not the gateway's project, and does not expand `~`) whose
+ * extension is in `EDITOR_OPENABLE_EXTS`.
+ */
+export function editorAcceptsPath(filePath: string): boolean {
+  if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(filePath)) return false
+  const base = filePath.split(/[\\/]/).pop() || ''
+  const dot = base.lastIndexOf('.')
+  return dot > 0 && EDITOR_OPENABLE_EXTS.has(base.slice(dot).toLowerCase())
+}
+
+/**
  * Hand a filesystem PATH to the desktop shell to open in the OS default handler
  * on the user's own machine (via shell.openPath in the main process) — never a
  * URL scheme. Resolves the main process's { ok, error? } verdict, or
@@ -115,6 +141,56 @@ export async function openFileInEditor(
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
+
+/**
+ * Whether the desktop shell's `folderPickAPI` bridge is present. Synchronous, so
+ * a surface can skip the availability round trip in a plain browser tab and the
+ * PWA, where the bridge never exists. Presence alone does NOT mean a pick can
+ * work -- ask {@link canPickFolderNatively} for that.
+ */
+export function hasNativeFolderPicker(): boolean {
+  const api = window.folderPickAPI
+  return typeof api?.available === 'function' && typeof api?.pick === 'function'
+}
+
+/**
+ * Whether this window can open the OS-native folder chooser: the bridge is
+ * present AND the shell's main process confirms this window's gateway runs on
+ * this machine. A connection window pointed at a remote gateway carries the same
+ * bridge, but a folder chosen there names a path on the wrong host, so the
+ * shell answers false for it. Resolves false with no bridge and on any error.
+ */
+export async function canPickFolderNatively(): Promise<boolean> {
+  if (!hasNativeFolderPicker()) return false
+  try {
+    return (await window.folderPickAPI!.available()) === true
+  } catch {
+    return false
+  }
+}
+
+/** How a native folder pick ended: a folder, a cancel, or a dialog that could not be used. */
+export type NativeFolderPick =
+  | { status: 'picked'; path: string }
+  | { status: 'cancelled' }
+  | { status: 'failed' }
+
+/**
+ * Open the OS-native folder chooser. Resolves the chosen absolute folder, a cancel, or a
+ * failure -- no bridge, a refusal from the shell, a dialog that could not open, or a malformed
+ * answer -- and never throws. The path is one the USER chose on this machine, not one the
+ * gateway vouched for: callers validate it the way they validate a typed path before using it.
+ */
+export async function pickFolderNatively(): Promise<NativeFolderPick> {
+  if (!hasNativeFolderPicker()) return { status: 'failed' }
+  try {
+    const picked = await window.folderPickAPI!.pick()
+    if (picked === null) return { status: 'cancelled' }
+    return typeof picked === 'string' && picked ? { status: 'picked', path: picked } : { status: 'failed' }
+  } catch {
+    return { status: 'failed' }
+  }
+}
 /**
  * Width reserved on the right for the Windows titleBarOverlay caption buttons
  * (minimize/maximize/close). The overlay is 138px wide at default DPI on
@@ -123,14 +199,39 @@ export async function openFileInEditor(
 export const WIN_CAPTION_OVERLAY_WIDTH = 138
 
 /**
- * Content reserve for that overlay: its raw width plus a small clearance so
- * the rightmost control never sits flush against the caption buttons. This is
- * the value the `.win-electron` and `.embedded-win-inset` header rules in
- * index.css hard-code as 142px — keep them in sync (pinned by the stylesheet
- * assertions in EmbeddedSwitcher.test.tsx). `WIN_CAPTION_OVERLAY_WIDTH` above
- * stays the raw geometry, used for drag-strip clipping.
+ * Height of the caption band at the top of a frameless window: the 42px header
+ * row. The Windows titleBarOverlay is sized to it (its height is derived from
+ * the header px, scaled by renderer zoom — `titleBarOverlayOptions` in
+ * electron/windows-titlebar.js:30-37, so 42 CSS px at any zoom) and the injected
+ * Linux caption controls hard-code the same 42px tall band
+ * (electron/runtime/window/linux-captions.js:49).
+ *
+ * This constant RESTATES those two values rather than deriving them, so if the
+ * header height ever changes update all three in lockstep: the Windows overlay
+ * is driven by the runtime header px, the Linux CSS hard-codes 42px, and this
+ * is the renderer-side mirror the portaled viewers read.
  */
-export const WIN_CAPTION_RESERVE_PX = WIN_CAPTION_OVERLAY_WIDTH + 4
+export const CAPTION_BAND_HEIGHT_PX = 42
+
+/**
+ * Top clearance for the controls of a full-window overlay that is portaled to
+ * <body> (the image and diagram viewers). Those overlays sit outside the shell
+ * div that carries `.win-electron` / `.linux-electron`, so the header's CSS
+ * insets never reach them, and their top-right controls land under the OS
+ * caption buttons and inside the window drag strip. Pushing the control row
+ * below the band keeps it in the corner users expect, without parking the
+ * viewer's close button next to the window's own.
+ *
+ * Non-zero on frameless Windows, frameless Linux, and inside an embedded
+ * remote pane whose Windows host relays `.embedded-win-inset` on <html>
+ * (EmbeddedHostBridge). Read at render time, not module load, because that
+ * class toggles at runtime.
+ */
+export function overlayCaptionClearancePx(): number {
+  if (isWinElectron || isLinuxFramelessElectron) return CAPTION_BAND_HEIGHT_PX
+  if (document.documentElement.classList.contains('embedded-win-inset')) return CAPTION_BAND_HEIGHT_PX
+  return 0
+}
 
 /**
  * True when an app declares `platform.requiresDesktopApp` but we are in a

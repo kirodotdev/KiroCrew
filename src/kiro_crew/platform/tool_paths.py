@@ -17,10 +17,11 @@ itself is identical and must not drift between them.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 from collections.abc import Mapping
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 #: EVERY argument name a tool may carry its target file path under. Public because
 #: it is shared with the consent prompt in ``cli_chat``: a prompt that disclosed a
@@ -30,8 +31,12 @@ from types import MappingProxyType
 #:
 #: The camel-case spelling is not hypothetical -- ``_SEARCH_DENY_ARG_KEYS`` has
 #: accepted it for the search plane all along, while the sensitive-path keystone
-#: below read only the two snake_case forms.
-TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath")
+#: below read only the two snake_case forms. ``targetFile`` is the KAS
+#: ``delete_file`` built-in's one argument (``tools/delete-file.ts``); a spec
+#: that names it on the kas backend mounts it (``kas_agents``), and a delete
+#: whose path the keystone never read would be the one filesystem write the
+#: sensitive-path floor did not see.
+TARGET_PATH_KEYS: tuple[str, ...] = ("path", "file_path", "filePath", "targetFile")
 
 
 #: Cap on the number of DISTINCT candidate paths collected below. The extractor
@@ -51,6 +56,20 @@ _TARGET_PATH_MAX_PATHS = 256
 #: orders of magnitude below it.
 _TARGET_PATH_MAX_NODES = 10_000
 
+# A patch is a document, not a path-valued argument. Bound the header walk
+# independently of the number of paths so a large body cannot stall the gate.
+_PATCH_TEXT_MAX_CHARS = 256_000
+_PATCH_HEADERS = ("*** Add File: ", "*** Update File: ", "*** Delete File: ")
+_PATCH_MOVE_HEADER = "*** Move to: "
+#: The characters JS ``String.prototype.trim()`` strips: ECMAScript WhiteSpace
+#: plus LineTerminator. The applier trims each header path with it. It holds
+#: U+FEFF, which ``str.strip`` keeps, and lacks ``\x1c``-``\x1f`` and ``\x85``,
+#: which ``str.strip`` drops.
+_JS_TRIM_CHARS = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
 
 class TargetPaths(list):
     """The collected paths, plus whether collection had to stop early.
@@ -62,8 +81,10 @@ class TargetPaths(list):
     a security consumer must treat that as "the call could not be verified" and
     deny, never as "everything present was checked".
 
-    ``unanchored`` is True when :func:`edit_target_candidates` was handed a diff
-    content block path that is still relative after ``~``/env expansion. Such a
+    ``unanchored`` is True when :func:`edit_target_candidates` was handed a
+    write-plane target -- a diff content block path or a params path spelling --
+    that is still relative after ``~``/env expansion, or a patch header path that
+    is not absolute as written. Such a
     path resolves against the PROCESS working directory — the gateway's, not the
     agent workspace's — so no gate can establish what file it actually names
     (a workspace symlink can point it at a protected file). A security consumer
@@ -130,10 +151,32 @@ def target_paths(raw_params: Mapping | None) -> TargetPaths:
     return found
 
 
+#: ACP ``kind`` values that put a call on the WRITE plane. ``edit`` is the
+#: file-write tool on every engine; ``delete`` is KAS's ``delete_file``
+#: (``tools/delete-file.ts`` emits the ACP ``delete`` kind). A delete has the
+#: write plane's effect -- the file is gone -- so it is judged by the same
+#: write-protected-config tier and ``filesystem.write`` scope an edit is; before
+#: this, ``delete_file {"targetFile": "~/.kiro/crew/config.json"}`` declared a
+#: kind neither gate routed and the always-on config hard-deny never ran.
+WRITE_PLANE_KINDS: frozenset[str] = frozenset({"edit", "delete"})
+
+#: The write-plane kinds whose PARAMS path is the call's ONLY target evidence.
+#: An ``edit`` also names its file in the ``{"type": "diff"}`` content block --
+#: the evidence :func:`is_edit_call` routes on, and the one spelling whose
+#: relative form has always been withheld as unverifiable -- so its params
+#: spellings are judged verbatim as they always were. A ``delete`` (KAS's
+#: ``delete_file``) carries no diff block: its one ``targetFile`` is the whole
+#: target, and :func:`edit_target_candidates` withholds a relative one and sets
+#: ``unanchored`` exactly as it does a relative diff path. Read off the ACP
+#: ``kind``, never off the backend (harness-parity H13).
+PARAMS_ONLY_TARGET_KINDS: frozenset[str] = frozenset({"delete"})
+
+
 def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
-    """Whether a tool call is on the WRITE plane: it declared the ``edit`` kind,
-    OR its tool_call frame carried a ``{"type": "diff"}`` content block naming a
-    path (*diff_path*).
+    """Whether a tool call is on the WRITE plane: it declared a write-plane
+    kind (:data:`WRITE_PLANE_KINDS` -- ``edit``, or ``delete`` for KAS's
+    ``delete_file``), OR its tool_call frame carried a ``{"type": "diff"}``
+    content block naming a path (*diff_path*).
 
     The diff content block is the edit's target of record, and its PRESENCE is
     what routes a call onto the write plane — the ACP ``kind`` field is
@@ -149,11 +192,124 @@ def is_edit_call(tool_kind: str, diff_path: str = "") -> bool:
     predicate NARROWED, never a different reading of what an edit is. The read
     allowance is keyed on the ABSENCE of a diff block: a read
     emits none, which is exactly what makes it a read.
+
+    A non-string *tool_kind* (a harness could stamp a list or a number on the
+    frame) is not on the plane by kind; only the diff block can route it. A
+    membership test on an unhashable value would raise instead of classify.
+    """
+    return (isinstance(tool_kind, str) and tool_kind in WRITE_PLANE_KINDS) or bool(diff_path)
+
+
+def is_workspace_edit_call(tool_kind: str, diff_path: str = "") -> bool:
+    """Whether a tool call is a plain file EDIT -- the ``edit`` kind or a diff
+    content block -- and NOT a delete.
+
+    :func:`is_edit_call` is the WRITE-PLANE routing predicate and, since
+    ``delete`` joined :data:`WRITE_PLANE_KINDS`, answers True for a deletion too:
+    the right reading for the gates, which must fence what a delete removes
+    exactly as they fence what an edit overwrites. It is the wrong reading for
+    the ``tool.risk`` ``caution``-badge carve-out, whose ground is that a
+    workspace edit is "easy to put back"; a deletion is not, so the badge must
+    keep printing on one. This predicate is that narrower reading, so the badge
+    consumer does not carry a private notion of an edit keyed on the ``kind``
+    alone (the diff block still routes a kindless edit here) and the gates keep
+    theirs. Two readings, one module, both named for what they decide.
     """
     return tool_kind == "edit" or bool(diff_path)
 
 
-def edit_target_candidates(raw_params: Mapping | None, diff_path: str = "") -> TargetPaths:
+def _is_literal_absolute(path: str) -> bool:
+    """Whether a patch header *path*, read as the literal string the applier
+    resolves, is absolute.
+
+    No ``~`` or ``$VAR`` expansion: the applier does none, so ``~/x`` and
+    ``$HOME/x`` are relative to it. An absolute path that variable expansion
+    would change is refused too, because the sensitivity matcher expands
+    variables and would judge a different file. A ``$`` that names no set
+    variable (``users.$id.tsx``) expands to itself and is judged as written.
+    """
+    return os.path.isabs(path) and os.path.expandvars(path) == path
+
+
+def _patch_targets(text: str, candidates: TargetPaths) -> None:
+    """Collect the paths a complete apply_patch envelope can write or remove.
+
+    Unknown control lines and incomplete envelopes are unverifiable, even if a
+    separate ``path`` argument names a harmless file. No patch body text is
+    interpreted as a shell command or as a path.
+
+    Lines are split on ``\n`` only, the one break the applier splits on. One
+    trailing ``\r`` per line is dropped, because the applier trims every marker
+    and header path it reads, so a CRLF patch names the same files. A line that
+    still holds any other break character (``\r``, ``\x1c``, ``\x85``,
+    ``\u2028``, ...) would be one line to the applier but could read as two to
+    any other splitter, so it is unverifiable. Each header path is judged as the
+    literal string the applier resolves: a path that is not absolute as written,
+    or that variable expansion would change, names a file the gate cannot pin,
+    so it is unanchored. A header path that Python's ``str.strip`` or JS
+    ``trim()`` would change (a trailing U+FEFF, which only JS strips) is
+    unverifiable.
+    """
+    if len(text) > _PATCH_TEXT_MAX_CHARS:
+        candidates.truncated = True
+        return
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        # The newline that ends the last line, not an empty line of its own.
+        lines.pop()
+    lines = [line[:-1] if line.endswith("\r") else line for line in lines]
+    if any(line and line.splitlines() != [line] for line in lines):
+        candidates.truncated = True
+        return
+    if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        candidates.truncated = True
+        return
+    seen = set(candidates)
+    section = ""
+    moved = False
+    count = 0
+    for line in lines[1:-1]:
+        if line.startswith(_PATCH_HEADERS):
+            header = next(prefix for prefix in _PATCH_HEADERS if line.startswith(prefix))
+            section = header
+            moved = False
+            count += 1
+            path = line[len(header) :]
+        elif line.startswith(_PATCH_MOVE_HEADER) and section == "*** Update File: " and not moved:
+            moved = True
+            path = line[len(_PATCH_MOVE_HEADER) :]
+        elif line == "*** End of File" and section == "*** Update File: ":
+            continue
+        elif line.startswith("*** "):
+            candidates.truncated = True
+            return
+        else:
+            # Only patch-body lines are allowed between file headers. A second
+            # unrecognised control form must never be ignored as harmless text.
+            if not section or not line or not line.startswith(("+", "-", " ", "@@")):
+                candidates.truncated = True
+                return
+            continue
+        # A path either trim would change names a file the gate cannot pin.
+        if not path or path != path.strip() or path != path.strip(_JS_TRIM_CHARS) or "\x00" in path:
+            candidates.truncated = True
+            return
+        if not _is_literal_absolute(path):
+            candidates.unanchored = True
+            return
+        if path not in seen:
+            if len(candidates) >= _TARGET_PATH_MAX_PATHS:
+                candidates.truncated = True
+                return
+            candidates.append(path)
+            seen.add(path)
+    if count == 0:
+        candidates.truncated = True
+
+
+def edit_target_candidates(
+    raw_params: Mapping | None, diff_path: str = "", *, tool_kind: str = ""
+) -> TargetPaths:
     """The target set a file-EDIT tool call is judged by: the UNION of every
     accepted path spelling in *raw_params* (via :func:`target_paths`) and
     *diff_path*, the path the tool_call's ``{"type": "diff"}`` content block
@@ -169,31 +325,81 @@ def edit_target_candidates(raw_params: Mapping | None, diff_path: str = "") -> T
     cannot import the helper from ``llm_helpers`` without a cycle.
 
     Extraction only, no sensitivity decision: the ``truncated`` flag is carried
-    through from the walk, and a *diff_path* that is still relative after
-    ``~``/env expansion sets ``unanchored`` instead of joining the set — the
-    diff block's path is a verbatim backend field, and a relative one resolves
-    against the gateway process CWD, so no consumer can verify what it names.
-    Both consumers keep their HARD-DENY reading of either flag (an unverifiable
-    target set is denied, never trusted). The empty-union verdict also stays
-    with the consumers — an empty return here is the fact, the deny is theirs.
+    through from the walk, and a diff-block path that is still relative after
+    ``~``/env expansion sets ``unanchored`` instead of joining the set. That
+    field is a verbatim backend one; a relative value resolves against the
+    gateway process CWD, not the agent workspace, so no consumer can verify
+    what it names. A relative PARAMS spelling is judged as it always was --
+    appended verbatim, beside the diff block's path -- for every write-plane
+    kind but the ones in :data:`PARAMS_ONLY_TARGET_KINDS`: an ``edit`` names
+    its file in the diff block too, and denying its params spelling would
+    refuse every ordinary relative edit on every backend; a ``delete`` (KAS's
+    ``delete_file``) carries no diff block, its one ``targetFile`` spelling IS
+    the target, and ``{"targetFile": "../config.json"}`` judged against the
+    gateway CWD is a verdict about a different file from the one the engine
+    deletes -- so for that kind a relative params path is withheld and sets
+    ``unanchored`` like a relative diff path. *tool_kind* is the ACP ``kind``
+    the consumer routed on (``""`` when unknown: an unknown kind is not a
+    delete, so the params are judged as an edit's). Both consumers keep their
+    HARD-DENY reading of either flag (an unverifiable target set is denied,
+    never trusted). The empty-union verdict also stays with the consumers --
+    an empty return here is the fact, the deny is theirs.
     """
-    candidates = target_paths(raw_params)
-    if candidates.truncated:
+    collected = target_paths(raw_params)
+    if collected.truncated:
         # A truncated walk is already unverifiable and both consumers hard-deny
         # on the flag before iterating; appending past it would also break the
         # module contract that the work caps bound the returned set.
-        return candidates
+        return collected
+    if tool_kind not in PARAMS_ONLY_TARGET_KINDS:
+        candidates = collected
+    else:
+        candidates = TargetPaths()
+        for path in collected:
+            if _is_anchored(path, require_drive=True):
+                candidates.append(path)
+            else:
+                # Withheld, not appended: the delete's only target spelling
+                # resolves against the process CWD, so any sensitivity verdict
+                # computed from it would be about the wrong file. The flag is
+                # the verdict-carrier; consumers deny on it.
+                candidates.unanchored = True
+    if isinstance(raw_params, Mapping) and "patchText" in raw_params:
+        patch = raw_params["patchText"]
+        if not isinstance(patch, str):
+            candidates.truncated = True
+            return candidates
+        _patch_targets(patch, candidates)
+        if candidates.truncated or candidates.unanchored:
+            return candidates
     if diff_path:
-        expanded = os.path.expanduser(os.path.expandvars(diff_path))
-        if not os.path.isabs(expanded):
-            # Not appended: an unanchored path resolves against the process CWD,
-            # so any sensitivity verdict computed from it would be about the
-            # wrong file. The flag is the verdict-carrier; consumers deny on it.
+        if not _is_anchored(diff_path):
             candidates.unanchored = True
             return candidates
         if diff_path not in candidates:
             candidates.append(diff_path)
     return candidates
+
+
+def _is_anchored(path: str, *, require_drive: bool = False, pathmod: ModuleType = os.path) -> bool:
+    """Whether *path* names a file independently of the process CWD: absolute
+    after ``~``/env expansion. The expansion mirrors what the sensitive-path
+    resolvers apply, so ``~/x`` is anchored and ``../x`` is not.
+
+    *require_drive* is set for a delete's params target, its whole target
+    spelling: on Windows a rooted path with no drive (``\\foo``) is relative to
+    the process's CURRENT drive, so the gateway and the engine can read it as two
+    different files, and it is not anchored there. ``pathmod`` is the path module
+    the check reads (``os.path`` in production; a test passes ``ntpath`` to pin
+    the Windows reading on any host).
+    """
+    expanded = pathmod.expanduser(pathmod.expandvars(path))
+    if not pathmod.isabs(expanded):
+        return False
+    if require_drive and pathmod is ntpath:
+        drive, _ = ntpath.splitdrive(expanded)
+        return bool(drive)
+    return True
 
 
 #: Argument names under which a NON-shell tool carries a document BODY: the

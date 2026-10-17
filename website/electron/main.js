@@ -32,11 +32,14 @@ const {
 } = require("./host-config");
 const { isLocalGatewayEnabled } = require("./local-gateway");
 const { seedRenamedStore } = require("./store-rename");
-const { resolveHome, secretCandidates } = require("./home-dir");
+const { resolveHome } = require("./home-dir");
+const { internalSecretFor } = require("./local-token");
 const { identityFamily } = require("./instance-guard");
+const { describeSingletonLock } = require("./singleton-lock");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
+const { applyAuthServerAllowlist } = require("./auth-allowlist");
 const { initGpuCrashFallback } = require("./gpu-crash-fallback");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
@@ -66,6 +69,7 @@ function reopenCrewCompanionAfterUpdate() {
 const { createGatewaySupervisor } = require("./gateway-supervisor");
 const { createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
+const { createDownloadExpectations } = require("./download-expectations");
 const { installEarlyBootGuard } = require("./early-boot-guard");
 
 // Everything from here to `app.whenReady()` runs synchronously at module load,
@@ -214,23 +218,40 @@ function gerror(line) {
   console.error("[gateway-launch] " + line);
 }
 
-function readInternalSecret() {
-  // Re-read on every call. The gateway rotates this secret across restarts, so
-  // caching turns a successful recovery into a stream of spurious 403s.
-  for (const candidate of secretCandidates()) {
-    try {
-      const value = fs.readFileSync(candidate, "utf8").trim();
-      if (value) return value;
-    } catch {
-      // Try the next platform-compatible home candidate.
-    }
-  }
-  return "";
+/**
+ * The X-Internal-Secret to send to `gatewayUrl`, or "" to send none.
+ *
+ * Only the entry the gateway published for the dialed listener counts
+ * (`internalSecretFor`), so the secret can authenticate only against the
+ * listener it is sent to. The home-wide `.local_secret` is never read here: it
+ * is a last-writer-wins slot, and a loopback port can be a tunnel's local end
+ * or another gateway, so sending it there could hand over a credential minted
+ * elsewhere.
+ *
+ * Re-read on every call. The gateway rotates this secret across restarts, so
+ * caching turns a successful recovery into a stream of spurious 403s.
+ *
+ * @param {string} gatewayUrl the URL the request is about to dial
+ * @returns {string}
+ */
+function readInternalSecret(gatewayUrl) {
+  return internalSecretFor({ gatewayUrl, home: resolveHome(), path, fs });
 }
 
 let isQuitting = false;
 let desktopMetricsRecorder = null;
 let windows = null;
+// Whether a dashboard document has finished loading in this run, owned by the
+// GPU-crash fallback (the single-instance winner arms it below). The dead-
+// renderer dialog reads it to tell a renderer that never started from one
+// that crashed later.
+let dashboardLoaded = () => false;
+
+// The native-logging result, kept because its `tightenLiveLog` can only run once
+// Chromium has opened `--log-file` — which is after `app.whenReady`, in a
+// different scope from the pre-ready arming call. Null when this process is not
+// the lock winner and so never armed logging at all.
+let nativeLogging = null;
 
 let crashScan = null;
 // Separate from `crashScan` so a scan that failed is not retried on every call:
@@ -291,6 +312,12 @@ const requestQuit = () => {
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
 if (!app.requestSingleInstanceLock()) {
+  const userDataDir = app.getPath("userData");
+  glog(
+    "single-instance lock held by another process; exiting. If no Kiro Crew window is open, "
+      + "a crash may have left a stale SingletonLock in " + userDataDir + ". "
+      + describeSingletonLock({ userDataDir }),
+  );
   app.exit(0);
 } else {
   // Record the moment this build became able to collect crashes, BEFORE the
@@ -322,7 +349,7 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
-  initNativeLogging({
+  nativeLogging = initNativeLogging({
     logsDir: path.dirname(gatewayLogPath()),
     appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
     startCrashReporter: (options) => crashReporter.start(options),
@@ -341,12 +368,20 @@ if (!app.requestSingleInstanceLock()) {
     log: glog,
   });
 
+  // Chromium reads the integrated-auth allowlist at network-service start, so
+  // an edition's baked allowlist must reach the command line before app ready.
+  // The public build bakes none and this appends nothing.
+  applyAuthServerAllowlist({
+    appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+    log: glog,
+  });
+
   // Same timing constraint as the opt-in above: a persisted software-rendering
   // decision has to reach Chromium before it initializes. Also arms the
   // `child-process-gone` listener that makes that decision, so a GPU process
   // that dies before the dashboard loads relaunches the app once in software
   // mode instead of letting Chromium abort it with no window and no log.
-  initGpuCrashFallback({
+  const gpuFallback = initGpuCrashFallback({
     app,
     store,
     backendUrl: BACKEND_URL,
@@ -354,6 +389,7 @@ if (!app.requestSingleInstanceLock()) {
     requestQuit,
     log: glog,
   });
+  dashboardLoaded = gpuFallback.dashboardLoaded;
 
   app.on("second-instance", () => {
     // Relaunch is explicit intent to see the existing window. The window owner
@@ -397,12 +433,20 @@ const gateway = createGatewaySupervisor({
   predictLocalPort: () => fallbackLocalPort(store, glog),
 });
 
+// Shared single-use registry of downloads the renderer explicitly asked for.
+// The ipc bridge registers an expectation when the export path announces a
+// download; the will-download handler consumes it, so only announced downloads
+// auto-save to Downloads (everything else keeps Chromium's default handling).
+const downloadExpectations = createDownloadExpectations();
+
 windows = createWindowLifecycle({
   electron,
   store,
   backendUrl: BACKEND_URL,
   port: PORT,
   glog,
+  logPath: gatewayLogPath,
+  dashboardLoaded: () => dashboardLoaded(),
   readInternalSecret,
   mintLocalToken: (...args) => gateway.mintLocalToken(...args),
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
@@ -410,6 +454,7 @@ windows = createWindowLifecycle({
   requestQuit,
   connectWindow: (...args) => gateway.connect(...args),
   syncTunnel: () => gateway.syncTunnel(),
+  downloadExpectations,
 });
 
 const ipcRegistrar = createIpcRegistrar({
@@ -423,6 +468,8 @@ const ipcRegistrar = createIpcRegistrar({
   closeCrewCompanionForUpdate,
   reopenCrewCompanionAfterUpdate,
   crashScan: scanCrashArtifacts,
+  downloadExpectations,
+  readInternalSecret,
 });
 
 /**
@@ -549,6 +596,19 @@ app.whenReady().then(async () => {
     glog("power: could not watch for resume: " + (error && error.message));
   }
 
+  // Chromium has opened `--log-file` by now, so this is the moment the live log's
+  // mode can be asserted rather than assumed. The pre-create in
+  // `initNativeLogging` only holds if Chromium opened the inode it created; if it
+  // unlinked and recreated the path instead, the file is sitting at the process
+  // umask (0644) with the dashboard session token in it. Idempotent and
+  // fail-soft — it logs and returns false rather than throwing — so it is cheap
+  // enough to run unconditionally on every boot.
+  try {
+    nativeLogging?.tightenLiveLog();
+  } catch (error) {
+    glog("native log post-open chmod failed: " + (error && error.message));
+  }
+
   const frameDecision = windows.platform.linuxFrameDecision;
   if (frameDecision) {
     glog(
@@ -614,7 +674,11 @@ app.whenReady().then(async () => {
   try {
     initCrewCompanion({
       backendUrl: BACKEND_URL,
-      mintLocalToken: (...args) => gateway.mintLocalToken(...args),
+      // The same credential chain Mochi and the dashboard window use. The local
+      // mint alone refuses for a remote crew's port and for a gateway this app
+      // adopted rather than spawned, which left the companion unable to ever ask
+      // whether it was enabled.
+      fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
     });

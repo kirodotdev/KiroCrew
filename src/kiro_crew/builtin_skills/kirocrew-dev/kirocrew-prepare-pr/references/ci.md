@@ -25,8 +25,28 @@ run in the Stage-2 `fork-*-review.yml` lanes under the same check names.
 
 **Merge queue:** the workflows are ready, the ruleset has not switched it on yet.
 Once it is on, auto-merge enqueues the PR; the queue re-runs the tests (not the AI
-reviews) on the tree that lands, and a failing group ejects the PR — fix or rerun,
-then re-arm.
+reviews) on the tree that lands, and a failing group ejects the PR — fix it, or rerun
+it once after the skill's *Before you rerun a red test*, then re-arm.
+
+## File-overlap scan
+
+Read from SKILL.md's Phase 0 *File overlap* gate. Do not use
+`gh pr list --limit N`: any cap at or below the open-PR count scans a subset and
+the gate reads as passing, and at this repo's size the single request 504s. Page
+with cursors instead:
+
+```bash
+gh api graphql --paginate --slurp -f query='query($endCursor: String) { repository(owner: "<owner>", name: "<repo>") { pullRequests(states: OPEN, first: 50, after: $endCursor) { pageInfo { hasNextPage endCursor } nodes { number files(first: 100) { pageInfo { hasNextPage } nodes { path } } } } } }'
+```
+
+Then check two things before trusting the result:
+
+1. The last page's `pullRequests.pageInfo.hasNextPage` is `false`.
+2. Each PR's own `files.pageInfo.hasNextPage`. A PR with more than 100 files is
+   truncated on that axis no matter how the outer list is paged; re-read it in
+   full with `gh api --paginate repos/<owner>/<repo>/pulls/<n>/files`.
+
+Why: `references/rationale.md`.
 
 ## Updating a PR body when `gh` fails
 

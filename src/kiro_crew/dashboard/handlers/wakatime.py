@@ -23,7 +23,6 @@ import io
 import json
 import logging
 import urllib.parse
-from collections import defaultdict
 from datetime import date
 from typing import Any
 
@@ -132,24 +131,17 @@ def _rows_by_project(summaries: list[dict]) -> list[dict[str, Any]]:
     Each summary day carries a ``projects`` list of ``{name, total_seconds}``;
     sum the seconds per project name across the range.
     """
-    totals: dict[str, float] = defaultdict(float)
-    for day in summaries:
-        for proj in day.get("projects") or []:
-            if not isinstance(proj, dict):
-                continue
-            name = proj.get("name")
-            seconds = proj.get("total_seconds")
-            if isinstance(name, str) and isinstance(seconds, (int, float)):
-                totals[name] += float(seconds)
-    rows = [
+    # Lazy, like the handlers below: keeps the WakaTime package off the boot path.
+    from kiro_crew.wakatime.client import sum_seconds_by_name
+
+    return [
         {
             "project": name,
             "seconds": round(secs, 2),
             "hours": round(secs / 3600.0, 4),
         }
-        for name, secs in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+        for name, secs in sum_seconds_by_name(summaries, "projects")
     ]
-    return rows
 
 
 async def api_wakatime_export(request: web.Request) -> web.Response:

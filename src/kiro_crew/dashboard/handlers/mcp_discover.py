@@ -17,6 +17,8 @@ import re
 
 from aiohttp import web
 
+from kiro_crew.agent import SharedAgentHomeRefused
+from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_mcp_lock,
@@ -378,15 +380,9 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             enable_now = not mcp_entry_is_muted(existing)
 
     # Rebuild the rendered agent configs so the new server loads on the next
-    # session, mirroring api_mcp_apply. Best-effort: the config write above
-    # already succeeded and survives a failed rebuild.
-    try:
-        # circular import: kiro_crew.agent imports dashboard handlers.
-        from kiro_crew.agent import rebuild_agent_config
-
-        await asyncio.to_thread(rebuild_agent_config)
-    except Exception:
-        logger.warning("rebuild_agent_config failed after MCP install", exc_info=True)
+    # session, mirroring api_mcp_apply. The config write above already landed
+    # and survives a skipped rebuild; the response says whether the spec moved.
+    spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, "MCP install")
 
     sel().log_api_access(
         caller="dashboard",
@@ -402,6 +398,7 @@ async def _install_from_official(request: web.Request, server_id: str) -> web.Re
             "required_env": required_env,
             "method": method,
             "enabled": enable_now,
+            "agent_spec_rewritten": spec_rewritten,
         }
     )
 
@@ -426,7 +423,18 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
     # circular import: agents/mcp import sibling handler modules at call time.
     from kiro_crew.dashboard.handlers._shared import _capability_manager
     from kiro_crew.dashboard.handlers.agents import _get_config_lock
-    from kiro_crew.dashboard.handlers.mcp import _sync_mcp_to_agent
+    from kiro_crew.dashboard.handlers.mcp import (
+        _agent_home_not_owned,
+        _agent_home_not_owned_response,
+        _sync_mcp_to_agent,
+    )
+
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the package
+    # installed while the spec declares none of it.
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
 
     res = await _capability_manager().install_mcp(server_id)
     if not res.ok:
@@ -444,7 +452,13 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
         # Off the loop: _sync_mcp_to_agent takes bridges' synchronous _mcp_lock
         # for a full kirocrew.json RMW; a direct call would freeze the gateway if
         # app registration holds that lock. Same offload as api_capability_mcp_install.
-        await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+        try:
+            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+        except SharedAgentHomeRefused:
+            # Ownership flipped DURING the install above: the preflight ran
+            # before it. Answered as the refusal it is, like every other write
+            # failure on this path.
+            return _agent_home_not_owned_response(server_id)
     state = request.app["state"]
     state.push_refresh("agents")
 

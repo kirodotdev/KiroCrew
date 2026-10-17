@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, act, waitFor } from '@testing-library/react'
 import type { RefObject } from 'react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
@@ -325,7 +325,14 @@ describe('older-history trigger — fetch through the gate', () => {
 
 describe('older-history trigger — ChatPage wiring contract', () => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const chatPageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+  // The page composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+  const pagesDir = resolve(here, '../pages')
+  const ownerDir = resolve(pagesDir, 'chat', 'page')
+  const chatPageSrc = [
+    readFileSync(resolve(pagesDir, 'ChatPage.tsx'), 'utf8'),
+    ...readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(resolve(ownerDir, f), 'utf8')),
+    ...readdirSync(pagesDir).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(resolve(pagesDir, f), 'utf8')),
+  ].join('\n')
 
   it('hands the virtualizer a top-reached callback', () => {
     expect(chatPageSrc).toMatch(/onTopReached:\s*handleTopReached/)

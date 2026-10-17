@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import importlib
 import io
 import mmap
 import os
@@ -30,6 +31,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import kiro_crew.embeddings as embeddings_mod
+from conftest import forget_env_at_teardown
 from kiro_crew.embeddings import (
     _DOWNLOAD_MAX_ATTEMPTS,
     LlamaCppEmbedder,
@@ -45,6 +47,7 @@ from kiro_crew.embeddings import (
     reset_shared_embedder,
     start_background_model_download,
 )
+from kiro_crew.testing.wait import wait_until
 
 # Captured at import so the lru_cache can always be cleared even while a test
 # has monkeypatched the module attribute ``_load_llama_class``.
@@ -70,8 +73,13 @@ def _model_bytes() -> bytes:
 
 
 @pytest.fixture(autouse=True)
-def _reset_embedding_singletons():
-    """Isolate the shared embedder / download manager singletons per test."""
+def _reset_embedding_singletons(_floor_monkeypatch: pytest.MonkeyPatch):
+    """Isolate the shared embedder, download manager, and loader environment.
+
+    The environment teardown rides the floor's own ``MonkeyPatch`` so a test's
+    ``monkeypatch.undo()`` cannot lift it (D11).
+    """
+    forget_env_at_teardown(_floor_monkeypatch, embeddings_mod._LIB_PATH_ENV)
     reset_shared_embedder()
     reset_download_manager()
     _REAL_LOAD_LLAMA.cache_clear()
@@ -236,6 +244,39 @@ class TestPlatformLibsDirname:
         assert _platform_libs_dirname() is None
 
 
+class TestLibPathSeam:
+    """The bundled directory travels to the vendored loader in-process, never via the environment."""
+
+    @pytest.fixture(autouse=True)
+    def _no_seam_outlives_the_test(self, _floor_monkeypatch) -> None:
+        _floor_monkeypatch.setitem(sys.modules, embeddings_mod._LIB_PATH_SEAM, object())
+        _floor_monkeypatch.delitem(sys.modules, embeddings_mod._LIB_PATH_SEAM)
+
+    def test_publishing_registers_the_directory_and_touches_no_environment(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        libs = tmp_path / "linux_x86_64"
+
+        embeddings_mod._publish_lib_path_for_import(libs)
+
+        seam = sys.modules[embeddings_mod._LIB_PATH_SEAM]
+        assert seam.LIBS_DIR == str(libs)
+        assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    def test_publishing_none_removes_the_seam(self, tmp_path: Path) -> None:
+        embeddings_mod._publish_lib_path_for_import(tmp_path)
+        embeddings_mod._publish_lib_path_for_import(None)
+        assert embeddings_mod._LIB_PATH_SEAM not in sys.modules
+        # Idempotent: removing an absent seam is not an error.
+        embeddings_mod._publish_lib_path_for_import(None)
+
+    def test_republishing_replaces_the_directory(self, tmp_path: Path) -> None:
+        embeddings_mod._publish_lib_path_for_import(tmp_path / "first")
+        embeddings_mod._publish_lib_path_for_import(tmp_path / "second")
+        assert sys.modules[embeddings_mod._LIB_PATH_SEAM].LIBS_DIR == str(tmp_path / "second")
+
+
 def _stub_bundled_linux_libs(root: Path) -> None:
     libs = root / embeddings_mod._LIBS_DIR_NAME / "linux_x86_64"
     libs.mkdir(parents=True)
@@ -243,9 +284,81 @@ def _stub_bundled_linux_libs(root: Path) -> None:
         (libs / name).write_bytes(b"\x7fELF")
 
 
+_RECORDING_LLAMA_CPP = '''\
+"""Stand-in for the vendored package: records both lib-path channels at import.
+
+The real ``_vendor/llama_cpp/llama_cpp.py`` reads the host's process-local seam
+first and ``LLAMA_CPP_LIB_PATH`` second (its ``kiro_crew DIVERGENCE FROM
+UPSTREAM``); this records what each held while the package was being imported.
+"""
+import os
+import subprocess
+import sys
+
+SEAM_AT_IMPORT = getattr(sys.modules.get("_kiro_crew_llama_cpp_lib_path"), "LIBS_DIR", None)
+ENV_AT_IMPORT = os.environ.get("LLAMA_CPP_LIB_PATH")
+# What a child spawned WHILE the import runs inherits: the environment is
+# snapshotted at spawn, so a variable set only for the import still reaches it.
+CHILD_ENV_AT_IMPORT = subprocess.run(
+    [sys.executable, "-c", "import os; print(os.environ.get('LLAMA_CPP_LIB_PATH', ''))"],
+    capture_output=True,
+    encoding="utf-8",
+    check=True,
+).stdout.strip() or None
+
+
+class Llama:
+    pass
+'''
+
+
+def _install_recording_llama_cpp(monkeypatch, vendor: Path) -> None:
+    """Put a stand-in ``llama_cpp`` package on the vendor path the loader prepends.
+
+    The vendored loader reads the seam and ``LLAMA_CPP_LIB_PATH`` while
+    ``llama_cpp`` is being imported, so a stand-in that is to observe them must
+    run at import time too -- a module pre-seeded into ``sys.modules`` never
+    executes. Any ``llama_cpp`` module already imported is evicted for the test,
+    and the stand-in and the seam are evicted after it, so none outlives the test.
+    """
+    package = vendor / "llama_cpp"
+    package.mkdir()
+    (package / "__init__.py").write_text(_RECORDING_LLAMA_CPP, encoding="utf-8")
+    for name in [n for n in sys.modules if n == "llama_cpp" or n.startswith("llama_cpp.")]:
+        monkeypatch.delitem(sys.modules, name)
+    # The seam the loader registers is evicted too, whether or not one is
+    # already present from an earlier load in this process.
+    monkeypatch.setitem(sys.modules, embeddings_mod._LIB_PATH_SEAM, object())
+    monkeypatch.delitem(sys.modules, embeddings_mod._LIB_PATH_SEAM)
+    # setitem then delitem: monkeypatch records a teardown action for the key
+    # even when it was absent, so the stand-in the import adds is removed again.
+    monkeypatch.setitem(sys.modules, "llama_cpp", object())
+    monkeypatch.delitem(sys.modules, "llama_cpp")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    importlib.invalidate_caches()
+
+
+def _bundled_libs_dir_of_another_install(root: Path, *, present: bool) -> Path:
+    """A different install's bundled libs directory, shaped as a loader leaves it in the environment."""
+    libs = (
+        root
+        / "previous-install"
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "kiro_crew"
+        / "_vendor"
+        / "llama_cpp_libs"
+        / "linux_x86_64"
+    )
+    if present:
+        libs.mkdir(parents=True)
+        for name in embeddings_mod._REQUIRED_VENDORED_LIBS["linux_x86_64"]:
+            (libs / name).write_bytes(b"\x7fELF")
+    return libs
+
+
 def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
-    env_was_set = embeddings_mod._LIB_PATH_ENV in os.environ
-    prior_env = os.environ.get(embeddings_mod._LIB_PATH_ENV)
     monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
     monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64")
     monkeypatch.setattr(embeddings_mod, "_linux_x86_64_cpu_flags", cpu_probe)
@@ -256,11 +369,6 @@ def _load_bundled_linux_llama(monkeypatch, vendor: Path, cpu_probe):
         return result, active_lib_path
     finally:
         embeddings_mod._load_llama_class.cache_clear()
-        if env_was_set:
-            assert prior_env is not None
-            os.environ[embeddings_mod._LIB_PATH_ENV] = prior_env
-        else:
-            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)
 
 
 class TestBundledLinuxX86CpuGate:
@@ -285,10 +393,7 @@ class TestBundledLinuxX86CpuGate:
     def test_compatible_cpu_continues_to_native_import(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
         _stub_bundled_linux_libs(tmp_path)
-        fake_llama_cpp = ModuleType("llama_cpp")
-        expected = object()
-        setattr(fake_llama_cpp, "Llama", expected)
-        monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
 
         result, active_lib_path = _load_bundled_linux_llama(
             monkeypatch,
@@ -296,10 +401,134 @@ class TestBundledLinuxX86CpuGate:
             lambda: embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS,
         )
 
-        assert result is expected
-        assert active_lib_path is not None
-        assert Path(active_lib_path).parts[-2:] == ("llama_cpp_libs", "linux_x86_64")
+        stand_in = sys.modules["llama_cpp"]
+        assert result is stand_in.Llama
+        # The vendored loader was handed the bundled directory through the
+        # process-local seam while it imported ...
+        assert stand_in.SEAM_AT_IMPORT == str(
+            tmp_path / embeddings_mod._LIBS_DIR_NAME / "linux_x86_64"
+        )
+        # ... and the environment never held it, not even during the import:
+        # a child spawned in that window -- an MCP server, a session, the
+        # gateway an in-app restart execs into -- snapshots os.environ, and one
+        # with its own llama-cpp bindings would load this install's libs.
+        assert stand_in.ENV_AT_IMPORT is None
+        assert (
+            stand_in.CHILD_ENV_AT_IMPORT is None
+        ), "a child spawned during the import inherited it"
+        assert active_lib_path is None
         assert embeddings_mod._LIB_PATH_ENV not in os.environ
+
+    @pytest.mark.parametrize("previous_install_present", [False, True])
+    def test_inherited_bundled_lib_path_is_ignored_for_this_installs_loader(
+        self, tmp_path: Path, monkeypatch, caplog, previous_install_present: bool
+    ) -> None:
+        """A loader reached without an entry prelude uses its own bundled directory.
+
+        The stale value remains observable to prove the loader performs no
+        environment write, while the process-local seam and CPU probe prove it
+        is not honoured as an operator override.
+        """
+        _stub_bundled_linux_libs(tmp_path)
+        inherited = _bundled_libs_dir_of_another_install(tmp_path, present=previous_install_present)
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(inherited))
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
+        cpu_probes: list[bool] = []
+
+        def counting_cpu_probe():
+            cpu_probes.append(True)
+            return embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS
+
+        with caplog.at_level("INFO", logger=embeddings_mod.__name__):
+            result, active_lib_path = _load_bundled_linux_llama(
+                monkeypatch, tmp_path, counting_cpu_probe
+            )
+
+        stand_in = sys.modules["llama_cpp"]
+        assert result is stand_in.Llama
+        assert stand_in.SEAM_AT_IMPORT == str(
+            tmp_path / embeddings_mod._LIBS_DIR_NAME / "linux_x86_64"
+        )
+        assert stand_in.ENV_AT_IMPORT == str(inherited)
+        assert stand_in.CHILD_ENV_AT_IMPORT == str(inherited)
+        assert cpu_probes, "the bundled CPU gate must apply to the bundled libs"
+        assert active_lib_path == str(inherited), "the loader must not write the environment"
+        assert str(inherited) in caplog.text
+        assert "left in the environment" in caplog.text
+
+    @pytest.mark.parametrize("why_unusable", ["unsupported-platform", "libs-dir-absent"])
+    def test_inherited_bundled_lib_path_stays_untouched_when_runtime_is_unusable(
+        self, tmp_path: Path, monkeypatch, caplog, why_unusable: str
+    ) -> None:
+        """Every early return leaves a bundled-shaped environment value unchanged."""
+        inherited = _bundled_libs_dir_of_another_install(tmp_path, present=True)
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(inherited))
+        monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", tmp_path / "no-libs-here")
+        if why_unusable == "unsupported-platform":
+            monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: None)
+        else:
+            monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "linux_x86_64")
+        embeddings_mod._load_llama_class.cache_clear()
+        try:
+            with caplog.at_level("INFO", logger=embeddings_mod.__name__):
+                result = embeddings_mod._load_llama_class()
+            assert result is None
+            assert os.environ[embeddings_mod._LIB_PATH_ENV] == str(inherited)
+            assert str(inherited) in caplog.text
+            assert "left in the environment" in caplog.text
+        finally:
+            embeddings_mod._load_llama_class.cache_clear()
+
+    def test_empty_lib_path_is_ignored_without_an_environment_write(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """An empty value remains empty while the bundled runtime uses the seam."""
+        _stub_bundled_linux_libs(tmp_path)
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, "")
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
+
+        with caplog.at_level("INFO", logger=embeddings_mod.__name__):
+            result, active_lib_path = _load_bundled_linux_llama(
+                monkeypatch, tmp_path, lambda: embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS
+            )
+
+        stand_in = sys.modules["llama_cpp"]
+        assert result is stand_in.Llama
+        assert stand_in.SEAM_AT_IMPORT == str(
+            tmp_path / embeddings_mod._LIBS_DIR_NAME / "linux_x86_64"
+        )
+        assert stand_in.ENV_AT_IMPORT == ""
+        assert stand_in.CHILD_ENV_AT_IMPORT is None
+        assert active_lib_path == ""
+        assert embeddings_mod._LIB_PATH_ENV in os.environ
+        assert "Ignoring LLAMA_CPP_LIB_PATH= left in the environment" in caplog.text
+
+    def test_operator_override_is_kept_out_of_the_bundled_shape_rule(
+        self, tmp_path: Path, monkeypatch, caplog
+    ) -> None:
+        """A directory that merely sits inside a Kiro Crew tree is still the operator's."""
+        _stub_bundled_linux_libs(tmp_path)
+        override = tmp_path / "kiro_crew" / "_vendor" / "llama_cpp_libs"  # no platform leaf
+        override.mkdir(parents=True)
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(override))
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
+
+        def unexpected_cpu_probe():
+            raise AssertionError("operator runtime must not use the bundled CPU gate")
+
+        with caplog.at_level("INFO", logger=embeddings_mod.__name__):
+            result, active_lib_path = _load_bundled_linux_llama(
+                monkeypatch, tmp_path, unexpected_cpu_probe
+            )
+
+        stand_in = sys.modules["llama_cpp"]
+        assert result is stand_in.Llama
+        # No seam for an operator runtime: the loader reads their directory from
+        # the environment, exactly as upstream does, and it stays theirs.
+        assert stand_in.SEAM_AT_IMPORT is None
+        assert stand_in.ENV_AT_IMPORT == str(override)
+        assert active_lib_path == str(override)
+        assert "inherited from another Kiro Crew process" not in caplog.text
 
     def test_runtime_import_hardens_locale_encoded_null_streams(
         self, tmp_path: Path, monkeypatch
@@ -877,13 +1106,14 @@ class TestLlamaCppEmbedder:
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = self._embedder(tmp_path)
-        # First embed never blocks: it kicks the background load and returns None.
-        assert emb.embed("hello world") is None
-        assert emb.wait_ready(timeout=5)
+        # Bulk work never blocks on the load: it kicks it and returns None.
+        assert emb.embed("hello world", priority=embeddings_mod.PRIORITY_BULK) is None
+        # An interactive caller off the event loop waits for that load instead.
         vec = emb.embed("hello world")
         assert vec is not None
         assert len(vec) == _DIM
         assert emb.is_ready()
+        emb.close()
 
     def test_embed_returns_none_when_model_file_missing(self, tmp_path: Path, monkeypatch) -> None:
         """No model file → None without ever constructing the Llama class."""
@@ -989,12 +1219,14 @@ class TestLlamaCppEmbedder:
         assert emb.is_ready()
         emb.close()
         assert not emb.is_ready()
-        # Safe to call repeatedly; the next embed kicks a fresh background load.
+        # Safe to call repeatedly; the next embed loads the model again.
         emb.close()
-        assert emb.embed("hello again") is None  # not loaded yet — reload kicked
+        bulk = embeddings_mod.PRIORITY_BULK
+        assert emb.embed("hello again", priority=bulk) is None  # reload kicked, not awaited
         assert emb.wait_ready(timeout=5)
         assert emb.embed("hello again") is not None
         assert len(fake_cls.instances) == 2
+        emb.close()
 
     def test_concurrent_embeds_are_safe(self, tmp_path: Path, monkeypatch) -> None:
         """Lock-serialized embeds from many threads all succeed.
@@ -1933,22 +2165,32 @@ class TestEmbedQueueTiming:
     """
 
     def test_a_queued_embed_reports_wait_not_inference(self, tmp_path: Path, monkeypatch) -> None:
+        """The split is checked as an ORDER of events, never as a stopwatch.
+
+        What ``_emit_embed_timing`` is handed is a pair of instants per call:
+        ``t0`` (submitted) and ``t_started`` (the worker entered the model).
+        The property is where the hold lands between them: the bulk embed was
+        already inside the model before the short one was submitted, so nothing
+        it reports as wait is queueing; the short embed entered the model only
+        after the bulk one was released, so the whole hold is its wait and none
+        of it is its inference. Both are facts about ordering, so they hold on
+        any runner. A millisecond ceiling on the bulk embed's wait would not:
+        that interval is the first submission spawning and scheduling the worker
+        thread, which a loaded host stretches arbitrarily and a coarse monotonic
+        clock (Windows ticks at ~15.6 ms) rounds further still.
+        """
         fake_cls = _make_fake_llama_class()
         monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
         emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
         assert emb.wait_ready(timeout=5)
 
+        # (t0, t_started, chars) as handed to the real emitter, so the assertions
+        # read the same instants the log line is computed from.
         emitted: list[tuple[float, float, int]] = []
         real_emit = embeddings_mod._emit_embed_timing
 
         def _spy(t0, t_started, texts, *, priority=embeddings_mod.PRIORITY_NORMAL, failed=False):
-            emitted.append(
-                (
-                    (t_started - t0) * 1000.0,
-                    (time.monotonic() - t_started) * 1000.0,
-                    sum(len(t) for t in texts),
-                )
-            )
+            emitted.append((t0, t_started, sum(len(t) for t in texts)))
             real_emit(t0, t_started, texts, priority=priority, failed=failed)
 
         monkeypatch.setattr(embeddings_mod, "_emit_embed_timing", _spy)
@@ -1971,8 +2213,8 @@ class TestEmbedQueueTiming:
         # Patch the queue only NOW: the first submission REPLACES self._jobs with
         # a fresh PriorityQueue when it spawns the worker, so a wrapper installed
         # before that point lands on the discarded original and never fires.
-        # Deterministic barrier: a fixed sleep here would race a loaded CI runner,
-        # releasing before the short embed enqueued and collapsing its wait.
+        # Deterministic barrier: releasing before the short embed is enqueued
+        # would let it run unqueued and the wait under test would never exist.
         queued = threading.Event()
         real_put = emb._jobs.put
 
@@ -1987,9 +2229,7 @@ class TestEmbedQueueTiming:
         short = threading.Thread(target=lambda: emb.embed("hi"))
         short.start()
         assert queued.wait(timeout=5), "short embed never reached the queue"
-        # Hold deliberately, so the measured wait is this duration rather than a
-        # scheduling artifact.
-        time.sleep(0.5)
+        released_at = time.monotonic()
         release.set()
         bulk.join(timeout=10)
         short.join(timeout=10)
@@ -1997,9 +2237,20 @@ class TestEmbedQueueTiming:
         big = [e for e in emitted if e[2] == 4000]
         small = [e for e in emitted if e[2] == 2]
         assert len(big) == 1 and len(small) == 1
-        assert big[0][0] < 200, f"bulk should not have queued: {big[0]}"
-        assert small[0][0] >= 300, f"queued embed should report wait: {small[0]}"
-        assert small[0][1] < 200, f"queued embed's own inference was fast: {small[0]}"
+        _big_t0, big_started, _ = big[0]
+        small_t0, small_started, _ = small[0]
+        # The bulk embed was in the model before the short one was submitted:
+        # its reported wait holds only the worker's start-up, never a queue.
+        assert big_started <= small_t0, (
+            f"bulk entered the model {big_started - small_t0:.3f}s after the short "
+            "embed was submitted, so its wait would include queueing"
+        )
+        # The short embed entered the model only once the hold was released, so
+        # the hold is reported as wait and none of it as inference.
+        assert small_started >= released_at, (
+            f"short embed entered the model {released_at - small_started:.3f}s "
+            "before the bulk one was released"
+        )
 
     def test_chars_bucket_is_low_cardinality(self) -> None:
         assert embeddings_mod._chars_bucket(2) == "<=128"
@@ -2227,7 +2478,6 @@ class TestBundledWindowsMsvcRuntimeGate:
                 assert embeddings_mod._load_llama_class() is None
         finally:
             embeddings_mod._load_llama_class.cache_clear()
-            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)
         assert "VCOMP140.DLL" in caplog.text
         assert "Visual C++" in caplog.text
         assert "keyword search" in caplog.text
@@ -2244,12 +2494,368 @@ class TestBundledWindowsMsvcRuntimeGate:
         monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: "win_amd64")
         monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
         monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _install_recording_llama_cpp(monkeypatch, tmp_path)
         embeddings_mod._load_llama_class.cache_clear()
         try:
-            # Reaches the import (which then resolves the real vendored copy on this
-            # host); the point is only that the runtime gate did not short-circuit it.
+            # Reaches the import; the point is only that the runtime gate did not
+            # short-circuit it. The stand-in package records the directory the
+            # seam carried into the import; the environment is never written.
             embeddings_mod._load_llama_class()
-            assert os.environ.get(embeddings_mod._LIB_PATH_ENV) == str(libs)
+            assert sys.modules["llama_cpp"].SEAM_AT_IMPORT == str(libs)
+            assert sys.modules["llama_cpp"].ENV_AT_IMPORT is None
+            assert embeddings_mod._LIB_PATH_ENV not in os.environ
         finally:
             embeddings_mod._load_llama_class.cache_clear()
-            os.environ.pop(embeddings_mod._LIB_PATH_ENV, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Idle eviction and the cold-load wait
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestIdleEviction:
+    """An idle model is unloaded; the next interactive embed loads it again."""
+
+    def _loaded(self, tmp_path: Path, monkeypatch):
+        fake_cls = _make_fake_llama_class()
+        closed: list[object] = []
+        fake_cls.close = lambda self: closed.append(self)
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        assert emb.embed("warm") is not None
+        # The embed returns as soon as the loader PUBLISHES the model, but the
+        # loader thread still runs its epilogue (_start_evictor) after that.
+        # evict_if_idle refuses while a loader thread is alive, and the evictor
+        # does not exist until the epilogue ran, so join the loader before any
+        # test reads either.
+        assert emb.wait_ready(timeout=5)
+        assert emb._load_thread is not None and not emb._load_thread.is_alive()
+        return emb, fake_cls, closed
+
+    def test_eviction_refuses_while_the_loader_is_still_finishing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A first embed can return before its loader thread has exited.
+
+        The loader publishes the model, then starts the evictor. An embed that
+        waited for the cold load returns on the publish, so a caller can reach
+        evict_if_idle while the loader is still alive, and is refused. The
+        epilogue is held here so the order is fixed, not left to the scheduler.
+        """
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        epilogue = threading.Event()
+        real_start_evictor = emb._start_evictor
+
+        def _held_start_evictor() -> None:
+            assert epilogue.wait(timeout=30), "the test never released the loader"
+            real_start_evictor()
+
+        monkeypatch.setattr(emb, "_start_evictor", _held_start_evictor)
+        try:
+            assert emb.embed("warm") is not None
+            assert emb._load_thread is not None and emb._load_thread.is_alive()
+            emb._last_used -= 100
+            assert emb.evict_if_idle(50) is False  # the loader is still alive
+            assert emb.is_ready()
+            epilogue.set()
+            assert emb.wait_ready(timeout=5)
+            assert not emb._load_thread.is_alive()
+            assert emb.evict_if_idle(50) is True
+            assert not emb.is_ready()
+        finally:
+            epilogue.set()
+            emb.close()
+
+    def test_evict_if_idle_unloads_and_frees_the_model(self, tmp_path: Path, monkeypatch):
+        emb, fake_cls, closed = self._loaded(tmp_path, monkeypatch)
+        try:
+            emb._last_used -= 100
+            assert emb.evict_if_idle(50) is True
+            assert not emb.is_ready()
+            assert closed == [fake_cls.instances[0]]
+            # The next interactive embed waits for the reload and gets a vector.
+            assert emb.embed("again") is not None
+            assert len(fake_cls.instances) == 2
+        finally:
+            emb.close()
+
+    def test_eviction_never_frees_a_context_a_late_worker_still_holds(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A worker started after eviction began must keep its context alive.
+
+        Prefetch-only load: no worker exists when eviction starts. One is
+        started (a first embed) just as close() takes the inference lock, and
+        it outlives close()'s join. Freeing the context then would be a native
+        use-after-free, so it must be left alone.
+        """
+        fake_cls = _make_fake_llama_class()
+        closed: list[object] = []
+        fake_cls.close = lambda self: closed.append(self)
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        monkeypatch.setattr(embeddings_mod, "_INFER_STOP_TIMEOUT_SECS", 0.05)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        release = threading.Event()
+        late_worker = threading.Thread(target=release.wait, daemon=True)
+        real_lock = emb._lock
+        try:
+            emb.prefetch()
+            assert emb.wait_ready(timeout=5)
+            assert emb._infer_thread is None
+            emb._last_used -= 100
+
+            class _LockThatStartsAWorker:
+                """Stands in for the dispatch that starts the worker mid-eviction."""
+
+                acquisitions = 0
+
+                def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                    type(self).acquisitions += 1
+                    if type(self).acquisitions == 2:  # close() taking it
+                        late_worker.start()
+                        emb._infer_thread = late_worker
+                    return real_lock.acquire(blocking, timeout)
+
+                def release(self) -> None:
+                    real_lock.release()
+
+                def __enter__(self):
+                    self.acquire()
+                    return self
+
+                def __exit__(self, *exc) -> None:
+                    self.release()
+
+            emb._lock = _LockThatStartsAWorker()
+            assert emb.evict_if_idle(50) is True
+            assert late_worker.is_alive()
+            assert closed == []  # not freed under the live worker
+        finally:
+            release.set()
+            emb._lock = real_lock
+            emb.close()
+
+    def test_eviction_never_frees_a_model_a_concurrent_retire_already_took(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A retire() that wins the race owns the model; the evictor must not free it.
+
+        The evictor passes its idle checks, then a model swap retires the embedder
+        first: it clears the model and the worker, whose job still holds the
+        context and outlives retire()'s join. The evictor's own close() then
+        retires nothing, so freeing its saved snapshot would be a native
+        use-after-free under that surviving worker.
+        """
+        fake_cls = _make_fake_llama_class()
+        closed: list[object] = []
+        fake_cls.close = lambda self: closed.append(self)
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        monkeypatch.setattr(embeddings_mod, "_INFER_STOP_TIMEOUT_SECS", 0.05)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        release = threading.Event()
+        surviving_worker = threading.Thread(target=release.wait, daemon=True)
+        real_lock = emb._lock
+        try:
+            emb.prefetch()
+            assert emb.wait_ready(timeout=5)
+            emb._last_used -= 100
+
+            class _LockThatLetsARetireWin:
+                """Stands in for a retire() that takes the lock just before the evictor."""
+
+                acquisitions = 0
+
+                def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                    type(self).acquisitions += 1
+                    if type(self).acquisitions == 2:  # the evictor's close() taking it
+                        # What the winning retire() left behind: model and worker
+                        # cleared, the worker still alive on its dequeued job.
+                        surviving_worker.start()
+                        emb._closed = True
+                        emb._llm = None
+                        emb._infer_thread = None
+                    return real_lock.acquire(blocking, timeout)
+
+                def release(self) -> None:
+                    real_lock.release()
+
+                def __enter__(self):
+                    self.acquire()
+                    return self
+
+                def __exit__(self, *exc) -> None:
+                    self.release()
+
+            emb._lock = _LockThatLetsARetireWin()
+            emb.evict_if_idle(50)
+            assert surviving_worker.is_alive()
+            assert closed == []  # the retired model is not freed under its worker
+        finally:
+            release.set()
+            emb._lock = real_lock
+            emb.close()
+
+    def test_reload_refuses_weights_changed_on_disk(self, tmp_path: Path, monkeypatch):
+        """A reload must map the weights model_id was computed from, or nothing."""
+        emb, fake_cls, _closed = self._loaded(tmp_path, monkeypatch)
+        try:
+            emb._last_used -= 100
+            assert emb.evict_if_idle(50) is True
+            # Same path, same width, different bytes: the in-place swap case.
+            _write_model_file(emb._model_path, payload=_model_bytes() + b"\x00" * 16)
+            assert emb.embed("again") is None
+            assert len(fake_cls.instances) == 1  # never constructed a second model
+            assert not emb.is_ready()
+            assert emb.can_load_on_demand() is False
+        finally:
+            emb.close()
+
+    def test_recent_use_is_not_evicted(self, tmp_path: Path, monkeypatch):
+        emb, _fake_cls, closed = self._loaded(tmp_path, monkeypatch)
+        try:
+            assert emb.evict_if_idle(50) is False
+            assert emb.is_ready()
+            assert closed == []
+        finally:
+            emb.close()
+
+    def test_running_inference_is_not_evicted(self, tmp_path: Path, monkeypatch):
+        emb, _fake_cls, closed = self._loaded(tmp_path, monkeypatch)
+        try:
+            emb._last_used -= 100
+            with emb._lock:  # what the worker holds while a native call runs
+                assert emb.evict_if_idle(50) is False
+            assert emb.is_ready()
+            assert closed == []
+        finally:
+            emb.close()
+
+    def test_evictor_thread_unloads_after_the_configured_idle_time(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(embeddings_mod, "embedding_idle_evict_secs", lambda: 0.2)
+        threads_before = _live_embed_threads()
+        emb, _fake_cls, _closed = self._loaded(tmp_path, monkeypatch)
+        wait_until(
+            lambda: not emb.is_ready(), describe=lambda: "the idle evictor unloads the model"
+        )
+        emb.close()
+        assert not (_live_embed_threads() - threads_before)
+
+    def test_zero_disables_eviction(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_idle_evict_secs": 0}
+        )
+        assert embeddings_mod.embedding_idle_evict_secs() == 0.0
+        monkeypatch.setattr(
+            embeddings_mod, "_read_memory_config", lambda: {"embedding_idle_evict_secs": "soon"}
+        )
+        assert embeddings_mod.embedding_idle_evict_secs() == embeddings_mod._DEFAULT_IDLE_EVICT_SECS
+
+    @pytest.mark.parametrize("configured", [0, 120])
+    def test_the_config_loader_keeps_the_configured_value(self, configured: int):
+        """`config get` exports what is configured, so `config set --file` keeps it."""
+        from kiro_crew.config.section_builders import _build_memory_config
+
+        built = _build_memory_config({"embedding_idle_evict_secs": configured})
+        assert built.embedding_idle_evict_secs == configured
+        assert _build_memory_config({}).embedding_idle_evict_secs == 3600
+
+    def test_close_stops_the_evictor(self, tmp_path: Path, monkeypatch):
+        threads_before = _live_embed_threads()
+        emb, _fake_cls, _closed = self._loaded(tmp_path, monkeypatch)
+        assert emb._evict_thread is not None and emb._evict_thread.is_alive()
+        emb.close()
+        assert not (_live_embed_threads() - threads_before)
+
+
+class TestColdLoadWait:
+    def test_a_loadable_model_reads_available_without_loading(self, tmp_path, monkeypatch):
+        from kiro_crew.knowledge.embedder import InProcessEmbedder
+
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        backend = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        monkeypatch.setattr(embeddings_mod, "get_shared_embedder", lambda: backend)
+        try:
+            assert backend.can_load_on_demand()
+            kb = InProcessEmbedder()
+            assert kb.is_available() is True
+            assert fake_cls.init_attempts == 0  # asking did not load it
+            # The search's own embed waits for the load and gets a vector.
+            assert kb.embed("release plan") is not None
+            assert fake_cls.init_attempts == 1
+        finally:
+            backend.close()
+
+    def test_a_missing_file_is_not_loadable(self, tmp_path):
+        backend = LlamaCppEmbedder(model_path=tmp_path / "missing.gguf")
+        assert backend.can_load_on_demand() is False
+
+    def test_a_failed_load_is_not_loadable_after_its_cooldown(self, tmp_path, monkeypatch):
+        """A model that never yields vectors (bad dim, corrupt file) is not 'available'."""
+        fail_cls = _make_failing_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fail_cls)
+        backend = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        assert backend.wait_ready(timeout=5) is False
+        assert fail_cls.init_attempts == 1
+        backend._load_failed_at -= embeddings_mod._LLM_LOAD_RETRY_SECS + 1  # cooldown over
+        assert backend.can_load_on_demand() is False
+
+    def test_watcher_residency_check_never_loads_an_unloaded_model(self, tmp_path, monkeypatch):
+        """The watcher asks on every pass; asking must not undo an idle unload."""
+        from kiro_crew.knowledge.embedder import InProcessEmbedder
+
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        backend = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        monkeypatch.setattr(embeddings_mod, "get_shared_embedder", lambda: backend)
+        try:
+            assert asyncio.run(InProcessEmbedder().model_resident_async()) is False
+            assert fake_cls.init_attempts == 0
+            assert backend._load_thread is None
+        finally:
+            backend.close()
+
+    def test_event_loop_callers_never_wait_for_the_load(self, tmp_path: Path, monkeypatch):
+        fake_cls = _make_fake_llama_class()
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+
+        async def _on_loop():
+            return emb.embed("hello")
+
+        try:
+            assert asyncio.run(_on_loop()) is None  # kicked, not awaited
+            assert emb.wait_ready(timeout=5)
+        finally:
+            emb.close()
+
+    def test_wait_is_bounded_by_the_callers_deadline(self, tmp_path: Path, monkeypatch):
+        gate = threading.Event()
+        fake_cls = _make_fake_llama_class()
+        real_init = fake_cls.__init__
+
+        def _slow_init(self, **kwargs):
+            gate.wait(60)
+            real_init(self, **kwargs)
+
+        fake_cls.__init__ = _slow_init
+        monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
+        emb = LlamaCppEmbedder(model_path=_write_model_file(tmp_path / "model.gguf"))
+        previous = embeddings_mod.embedding_work.get()
+        embeddings_mod.embedding_work.set(embeddings_mod.EmbeddingWork(time.monotonic() + 0.2))
+        try:
+            assert emb.embed("hello") is None
+            # It returned on the caller's deadline, not on the load: the load
+            # is still held at the gate.
+            assert not gate.is_set()
+            assert emb._load_thread is not None and emb._load_thread.is_alive()
+            assert not emb.is_ready()
+        finally:
+            embeddings_mod.embedding_work.set(previous)
+            gate.set()
+            emb.wait_ready(timeout=5)
+            emb.close()

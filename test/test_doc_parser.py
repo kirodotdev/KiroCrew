@@ -475,6 +475,63 @@ class TestMaxCharsBudget:
             os.unlink(path)
         assert len(text) < 10 * 1000
 
+    # The budget is a WHOLE-UNIT soft budget: extraction stops after the
+    # paragraph or slide that meets it, never inside one. The office preview
+    # redacts the extraction before cutting it to its cap, and that
+    # redaction only sees every token whole because of this contract -- a budget
+    # applied at a character position would hand it a severed credential, whose
+    # unmatched prefix would then be served. These tests pin the contract where
+    # it lives.
+
+    def test_docx_budget_keeps_the_paragraph_it_lands_in_whole(self):
+        """The paragraph that crosses the budget comes back whole, not cut at it."""
+        paragraphs = ["a" * 100, "b" * 100, "c" * 100 + "MARKER-END", "d" * 100]
+        path = _make_docx(paragraphs)
+        try:
+            # 250 lands 50 characters into the third paragraph.
+            text = extract_text(path, filename="doc.docx", max_chars=250)
+        finally:
+            os.unlink(path)
+        assert text == "\n".join(paragraphs[:3])
+        assert text.endswith("MARKER-END")
+
+    def test_docx_budget_met_exactly_at_a_paragraph_end_adds_no_partial_next(self):
+        """A budget that lands exactly on a paragraph end stops there, whole."""
+        paragraphs = ["a" * 100, "b" * 100, "c" * 100]
+        path = _make_docx(paragraphs)
+        try:
+            # 201 = len("a"*100 + "\n" + "b"*100): met at the end of paragraph 2.
+            text = extract_text(path, filename="doc.docx", max_chars=201)
+        finally:
+            os.unlink(path)
+        assert text == "\n".join(paragraphs[:2])
+
+    def test_pptx_budget_keeps_the_slide_it_lands_in_whole(self):
+        """Every slide returned is that slide's whole text, the last one included."""
+        decks = [["a" * 100], ["b" * 50, "c" * 50 + "MARKER-END"], ["d" * 100]]
+        path = _make_pptx(decks)
+        try:
+            # 150 lands inside slide 2.
+            slides = extract_slides(path, filename="deck.pptx", max_chars=150)
+            text = extract_text(path, filename="deck.pptx", max_chars=150)
+        finally:
+            os.unlink(path)
+        assert slides == [(1, "a" * 100), (2, "b" * 50 + "\n" + "c" * 50 + "MARKER-END")]
+        assert text == join_slides(slides)
+
+    def test_budget_of_one_still_returns_the_first_unit_whole(self):
+        """The smallest budget cannot sever: it returns the whole first unit."""
+        docx = _make_docx(["x" * 500 + "MARKER-END", "later"])
+        pptx = _make_pptx([["y" * 500 + "MARKER-END"], ["later"]])
+        try:
+            doc_text = extract_text(docx, filename="doc.docx", max_chars=1)
+            slides = extract_slides(pptx, filename="deck.pptx", max_chars=1)
+        finally:
+            os.unlink(docx)
+            os.unlink(pptx)
+        assert doc_text == "x" * 500 + "MARKER-END"
+        assert slides == [(1, "y" * 500 + "MARKER-END")]
+
     def test_no_budget_extracts_everything(self):
         """Without max_chars behavior is unchanged (existing callers unaffected)."""
         path = _make_pptx([["alpha"], ["beta"], ["gamma"]])

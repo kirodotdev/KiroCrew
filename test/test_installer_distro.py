@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 from installer_test_helpers import run_bounded
 
+from kiro_crew.testing.wait import wait_until
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CLI_SH = REPO_ROOT / "cli.sh"
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -1041,12 +1043,26 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
         start_new_session=True,
     )
     try:
-        time.sleep(1.0)  # let the step start; the child is 30 s of sleep
+        # The step owns INT only from its trap takeover to its restore, and the
+        # takeover happens before the fork, so the child's pid file is the
+        # signal that the interrupt path is armed: a Ctrl-C before it hits
+        # the caller's trap instead and the step runs to its end. A fixed
+        # pause raced the takeover on a slow runner (CI's macOS shard).
+        wait_until(
+            lambda: grandchild_pid.exists() and grandchild_pid.read_text().strip() != "",
+            describe=lambda: _session_processes(proc.pid),
+        )
         proc.send_signal(signal.SIGINT)
         try:
             out, _ = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            raise AssertionError("SIGINT did not end the step; the child kept running")
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                "SIGINT did not end the step; the child kept running\n"
+                f"output so far: {exc.output!r}\n"
+                f"step log: {(tmp_path / 'slow.log').read_text()!r}\n"
+                f"SIGINT disposition here: {signal.getsignal(signal.SIGINT)!r}\n"
+                f"processes in the step's session:\n{_session_processes(proc.pid)}"
+            ) from None
         # Measured before the cleanup below, which would otherwise take the
         # grandchild down itself and hide a survivor.
         gc_pid = int(grandchild_pid.read_text().strip())
@@ -1071,6 +1087,26 @@ def test_run_step_interrupt_terminates_the_child_and_fails_the_step(
     assert "outer trap" in out and "INT" in out.split("child-dead", 1)[1], (
         "the caller's INT trap was not restored after the step"
     )
+
+
+def _session_processes(sid: int) -> str:
+    """Every process in the step's session with its group and state, for a failure report.
+
+    `ps -g` reads a session id as a process group on BSD ps and as a session
+    on procps, so the listing is filtered here by the session column instead.
+    """
+    try:
+        listing = subprocess.run(
+            ["ps", "-A", "-o", "pid=,pgid=,sess=,stat=,command="],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"(ps unavailable: {exc})"
+    rows = [line for line in listing.splitlines() if line.split()[2:3] == [str(sid)]]
+    return "\n".join(rows) or "(no process left in the session)"
 
 
 def _pid_alive(pid: int) -> bool:

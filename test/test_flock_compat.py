@@ -109,7 +109,11 @@ class TestFlockCompat:
             "print(','.join(bad))\n"
         )
         out = subprocess.run(
-            [_sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+            [_sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
         )
         assert out.returncode == 0, f"cli import failed:\n{out.stderr}"
         offenders = [m for m in out.stdout.strip().split(",") if m]

@@ -38,7 +38,7 @@ import importlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
 # Module scope, not function-local: these are the only package imports this file
 # can safely make at import time. dep_sync and stdlib_shadow import the standard
@@ -49,6 +49,7 @@ from kiro_crew import __version__, dep_sync
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
 
 _PIP_TIMEOUT_SECS = 300
+_T = TypeVar("_T")
 
 
 def _import_cli() -> Callable[[], None]:
@@ -123,8 +124,25 @@ def main() -> None:
     if len(sys.argv) == 2 and sys.argv[1] == "--version":
         print(f"kirocrew {__version__}")
         return
+    # The stdio MCP servers the gateway launches skip the full CLI import
+    # (kiro_crew.mcp_entry; its module scope is stdlib-only). slim_server
+    # returns None for any other argv, which then takes the CLI path below.
+    # It does every import before the server reads stdin, so a missing
+    # dependency heals and retries here exactly as the CLI import does.
+    from kiro_crew.mcp_entry import slim_server
+
+    server = _load_healing(lambda: slim_server(sys.argv[1:]))
+    if server is not None:
+        server()
+        return
+    cli_main = _load_healing(_import_cli)
+    cli_main()
+
+
+def _load_healing(load: Callable[[], _T]) -> _T:
+    """Run *load*; on a missing dependency heal the install once and retry."""
     try:
-        cli_main = _import_cli()
+        return load()
     except ModuleNotFoundError as exc:
         if not _self_heal(exc.name or str(exc)):
             print(
@@ -139,7 +157,7 @@ def main() -> None:
         # coarse-mtime filesystems without an explicit invalidation.
         importlib.invalidate_caches()
         try:
-            cli_main = _import_cli()
+            loaded = load()
         except ModuleNotFoundError as exc2:  # heal ran but did not cover it
             print(
                 f"kirocrew: still failing after reinstall - {exc2}. "
@@ -148,4 +166,4 @@ def main() -> None:
             )
             raise SystemExit(1) from exc2
         print("kirocrew: dependencies restored.", file=sys.stderr)
-    cli_main()
+        return loaded

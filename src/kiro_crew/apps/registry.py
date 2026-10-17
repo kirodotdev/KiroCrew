@@ -642,7 +642,6 @@ if _typing.TYPE_CHECKING:
         list_catalog_apps,
         list_installed_apps,
         list_registry,
-        official_catalog,
         refresh_registries,
         registry_name_from_source,
         resolve_installed_trust_repository,
@@ -735,6 +734,7 @@ if _typing.TYPE_CHECKING:
         _retained_startup_refusal,
         _roll_back_post_script_refusal,
         _set_aside_new_layout_files,
+        _trust_grant_would_stay_local,
         _unpoison_rejected_checkout,
         app_admission_denied,
         app_name_error,
@@ -762,6 +762,7 @@ if _typing.TYPE_CHECKING:
         _fetch_app_manifest,
         _merge_manifest,
         _resolve_manifest,
+        official_catalog,
     )
     from kiro_crew.apps.registry_pipeline.recovery import (  # noqa: F401
         _STALE_CHECKOUT_PATTERN,

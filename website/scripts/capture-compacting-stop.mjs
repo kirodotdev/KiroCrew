@@ -20,16 +20,19 @@ const HINT = manual.components.chatInput.compacting_context_stop_unavailable
 const CARD = manual.pages.chat.stopEventCard.stop_declined_compacting_2
 if (!HINT || !CARD) throw new Error('compacting keys missing from en.manual.json')
 
-// The two gateway notices this change words, READ from dashboard/state.py at
+// The two gateway notices this change words, READ from
+// dashboard/state_parts/session_events.py (their owner; state.py re-exports them) at
 // capture time rather than copied here: a copy drifted once and the shots then
 // showed a wording the code no longer shipped.
-const STATE_PY = fileURLToPath(new URL('../../src/kiro_crew/dashboard/state.py', import.meta.url))
+const NOTICES_PY = fileURLToPath(
+  new URL('../../src/kiro_crew/dashboard/state_parts/session_events.py', import.meta.url),
+)
 function noticeTemplate(name) {
   // Matches ``NAME = (`` ... ``)`` and joins the adjacent string literals,
   // including a ``+ _RESTART_MEMORY_TAIL`` reference, which is resolved once.
-  const src = readFileSync(STATE_PY, 'utf-8')
+  const src = readFileSync(NOTICES_PY, 'utf-8')
   const block = src.match(new RegExp(`^${name} = \\(\\n([\\s\\S]*?)\\n\\)`, 'm'))
-  if (!block) throw new Error(`${name} not found in state.py`)
+  if (!block) throw new Error(`${name} not found in state_parts/session_events.py`)
   let text = ''
   for (const line of block[1].split('\n')) {
     const lit = line.match(/"((?:[^"\\]|\\.)*)"/)
@@ -46,7 +49,7 @@ const SLOT = 'compacting-demo'
 const now = Math.floor(Date.now() / 1000)
 
 // The gateway writes the envelope into `cls`, mirrors it into `content`, and
-// serves it parsed as `meta` (dashboard/state.py parse_cls_meta). All three, as
+// serves it parsed as `meta` (dashboard/state_parts/transcript_rows.py parse_cls_meta). All three, as
 // the HTTP history endpoint would.
 const stopMeta = {
   kind: 'stop_event',

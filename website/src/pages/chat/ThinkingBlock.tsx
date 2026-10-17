@@ -4,6 +4,8 @@ import { ChevronRight, Sparkles } from 'lucide-react'
 import { useRowDisclosure } from './rowDisclosure'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from './rowPill'
 import { useStreamIdle } from './ChatFooter'
+import { loadChatConfig } from './ChatSettings'
+import { useSmoothStream } from '../../hooks/useSmoothStream'
 
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -82,7 +84,20 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
   const quiet = useStreamIdle(changeTick, changeTick > 0, PREVIEW_IDLE_MS)
   const streaming = changeTick > 0 && !quiet
 
-  const tail = content && streaming && !expanded ? liveTail(content) : ''
+  // Reasoning chunks arrive a word or more at a time, so rendering `content`
+  // directly makes the trace jump forward per chunk while the answer below it
+  // flows per character. The same smoothing buffer as the answer evens that out
+  // and honours the same Settings switch; liveness above still reads the raw
+  // content, because the buffer trails it by design.
+  const [smooth] = useState(() => loadChatConfig().streamMode !== 'immediate')
+  // `streaming` lags the growth that sets it by one render (the tick moves in an
+  // effect), and the buffer snaps any growth it sees while not streaming. Count
+  // the render that carries the growth as live too, so the first burst after a
+  // mount is smoothed instead of jumping in whole.
+  const growing = lastContent.current !== null && lastContent.current !== content
+  const shown = useSmoothStream(content, streaming || growing, smooth)
+
+  const tail = shown && streaming && !expanded ? liveTail(shown) : ''
 
   // The newest words must be the ones on screen, so the row is kept scrolled to
   // its end. `text-align: right` is NOT enough: Chrome leaves scrollLeft at 0 on
@@ -108,7 +123,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
     if (!expanded || !streaming) return
     const el = bodyRef.current
     if (el && autoScroll.current) el.scrollTop = el.scrollHeight
-  }, [expanded, content, streaming])
+  }, [expanded, content, shown, streaming])
 
   // Latch on where the reader IS -- deliberately NOT on `content`: an append
   // commits a taller box before liveness flips, so re-deriving would stop follow.
@@ -143,7 +158,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
         // full row to scroll in, but a row WITHOUT one keeps its content-sized
         // hit area: widening it unconditionally would make empty space beside
         // the label toggle every settled block.
-        className={`${tail ? 'flex w-full min-w-0' : 'inline-flex'} ${ROW_PILL_BUTTON_CLASS} text-muted hover:text-text cursor-pointer bg-transparent border-none focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden`}
+        className={`${tail ? 'flex w-full min-w-0' : 'inline-flex'} ${ROW_PILL_BUTTON_CLASS} text-muted hover:text-text cursor-pointer bg-transparent border-none focus-ring-accent`}
         aria-expanded={expanded}
         aria-label={expanded ? i18nT('pages.chat.thinkingBlock.collapse_model_reasoning') : i18nT('pages.chat.thinkingBlock.expand_model_reasoning')}
         title={expanded ? i18nT('pages.chat.thinkingBlock.hide_reasoning') : i18nT('pages.chat.thinkingBlock.show_reasoning')}
@@ -220,7 +235,7 @@ function ThinkingBlock({ content, disclosureKey }: { content: string; disclosure
                   className="py-1 max-w-[65ch] text-[12px] text-muted leading-5 whitespace-pre-wrap"
                   style={{ wordBreak: 'break-word' }}
                 >
-                  {content}
+                  {shown}
                 </div>
               </div>
             </div>

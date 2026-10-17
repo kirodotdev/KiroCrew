@@ -15,6 +15,40 @@ was already chosen stops working mid-session is
 concrete model. `"auto"` is validated like any other id and is not assumed usable: a
 partition that does not serve it makes it as unusable as any other unentitled id.
 
+## Model-name format
+
+The shared spawn, task-batch, cron and session model-name validator accepts an
+alphanumeric first character followed by alphanumerics, dots, underscores or
+hyphens, optionally ending in one nonempty bracketed qualifier using those same
+characters. It also accepts a provider-qualified id, the spelling a backend that
+resolves its model from its advertised list uses (OpenCode, Pi): two or more
+such segments joined by `/` (`provider/model`, `provider/org/model`), with an
+optional `:tag` on the last segment (`ollama/qwen3:8b`), at most 256
+characters, the bound `model_registry` keeps on an advertised id. Every
+segment starts with an alphanumeric, so an id is never an option flag, an
+absolute path or a `.`/`..` hop. Empty segments, a colon anywhere but a
+trailing tag, whitespace, control characters (a trailing newline included) and
+shell metacharacters are rejected, and so are empty, unbalanced, nested,
+repeated or non-trailing bracket qualifiers. The existing field length limit
+still applies. This format check does not establish entitlement or alter the
+separate `MODEL_ID_RE` grammar (the check `AcpRuntime` applies to a `model=`
+argument) or ACP
+runtime validation. The Settings model pins (`_MODEL_PIN_PATTERN`) build their
+qualified branch from the same `QUALIFIED_MODEL_PATTERN`, so a picker cannot
+offer an id one boundary refuses and a sibling accepts.
+
+`POST /api/spawn` also checks a qualified id against the backend the request
+names (each `spawn_run` batch entry is its own request). A backend that does not
+resolve its model from an advertised list refuses it, and once the named backend
+has advertised a list, read the way `GET /api/models` reads it (the newest live
+session, else the namespace cache), an id missing from it is refused too. Both
+refusals answer HTTP 400 with the `model_unavailable` code the chat model switch
+already uses; an empty list cannot be checked and is trusted.
+Bare and bracketed names get no membership gate. A request that names no backend
+(a continuation runs where the original ran), a cron job, a CLI call and a session
+are judged on shape alone, because none of them names a backend when it is
+validated.
+
 ## Resolve, don't guess
 
 For a model chosen on the caller's behalf — background one-liners, tips, inherited or
@@ -24,7 +58,7 @@ or `"auto"` only when the backend advertises it, or `""` meaning **inherit the
 session's served backend default**. Returning `""` rather than substituting a guess is
 the whole point: the wire never receives a model the partition does not serve.
 
-Two behaviours of the resolver are worth knowing before writing a call site:
+These behaviours of the resolver are worth knowing before writing a call site:
 
 - An **unknown or empty advertised set** means entitlement is unknowable. `"auto"`
   degrades to `""` because it cannot be verified, while a concrete caller-supplied id
@@ -33,6 +67,13 @@ Two behaviours of the resolver are worth knowing before writing a call site:
   session advertises the bare id. The resolver retries the miss through
   `resolve_pin_spelling` and puts the **advertised** spelling on the wire, not the
   caller's, because the qualified spelling is one the backend never advertised.
+- `resolve_pin_spelling` never folds a pin onto a different reasoning-effort
+  suffix: a pin's effort half must match the advertised id's.
+- A wire site passes the harness it is sending to (`backend=` on
+  `resolve_usable_model`, or `resolve_pin_spelling_on` in `acp/runtime_models.py`).
+  On an `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` harness, a pin the fold could not
+  resolve widens to the bare model half, never for a `[1m]` window pin. A caller
+  not choosing a wire spelling leaves `backend` empty and keeps the plain fold.
 
 `run_bg_oneliner` adds a one-shot reactive retry on a wire rejection as a backstop.
 Treat it as a backstop, not as permission to skip the resolver.
@@ -53,6 +94,45 @@ startup model apply and `session/set_model` the pick, correcting only the wire
 alone so the warm-pool re-apply and the slot backfill still read "inherit". The
 dashboard carries the corrected id as the slot's `served_model` so the composer
 chip names the model a turn will run on instead of `auto`.
+
+A pooled session is checked a second time when `session/set_mode` activates an
+agent. kiro-cli puts the session on the model the activated agent's spec pins,
+which undoes the first check, and `agent.model` is copied into `kirocrew.json`, so
+an unentitled global default reaches the wire this way. `set_mode` answers `{}`;
+kiro-cli reports the applied model only in the `_kiro.dev/agent/switched` frame it
+sends before that answer (`{"agentName", "previousAgentName", "model", ...}`, seen
+on kiro-cli 2.29.1). The reader loop records that `model` per session
+(`AcpRuntime._note_switched_model`), and `AcpRuntime._served_default_after_mode`
+passes it to `ensure_served_default(activated_model=...)`, which judges it instead
+of the stale `session/new` id. The record is cleared before each start-path
+`set_mode`, so only that activation's frame counts. The spec file is not read
+again: it can change after kiro-cli read it, and only the host knows which copy of
+the agent it loaded. No frame, or a frame without a model, is no evidence and
+changes nothing. Both `create_session` and `load_session` run it.
+
+The non-pooled `AcpClient._initialize_session` kiro branch sends `set_mode` without
+waiting for its answer, so it judges the frame wherever it is read instead.
+`_note_agent_switched` records the `model` of the first agent/switched frame after
+that `set_mode`, read by the start drain or inside a later prompt, unless a
+`session/set_model` went out in between (the session runs that model instead). The
+record is judged by `_judge_activated_model`: after the start drain, and in
+`ensure_ready` before the next prompt when the frame came later. A served model is
+adopted as `_resolved_model_id` with no write; an unserved one goes through
+`_ensure_served_default`. Any `session/set_model` write drops a pending record.
+
+A live pooled session switched with `AcpSessionHandle.set_mode` is judged the same
+way. The handle clears the runtime's record for the session before sending, and each
+`_run_turn` takes the recorded model (`AcpRuntime.take_switched_model`) before the
+turn starts and passes it to `ensure_served_default(activated_model=...)`. A frame
+not yet read is looked for again at the following turn; a `set_model` that lands
+first ends the wait, since the session runs that model.
+
+KAS sends no `models` object; its list is only the `configOptions` `model`
+select, and it defaults a new session to `auto`. The pooled check asks that select
+one question: is the session on an `auto` the select does not list? If so it moves
+to a listed id. The select never becomes the session's advertised list, so the
+picker and the explicit-pick guard are unchanged for KAS, and a concrete current
+model is never judged against a list that may be incomplete.
 
 The claude backend has a different gap on the same exits: the model it reports is
 not always the model Claude Code runs. claude-agent-acp resolves an inheriting
@@ -282,7 +362,7 @@ serving that other model.
 
 Three more sites apply the same rule on the wire, and one on the picker:
 `AcpClient._apply_startup_model`, the shared-runtime cold start in
-`providers/acp.py`, the warm-pool post-claim switch in `session_allocation.py`
+`providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`
 (through the injected `model_pin_applies` dep), and `_scoped_default` behind
 `GET /api/models`. A harness-scope refusal logs at INFO on wire paths and at
 DEBUG on display paths, and MUST NOT take the entitlement warning path: harness
@@ -328,29 +408,72 @@ its own once the cache refreshes with a list that carries it.
 - **Pickers** MUST list options from `GET /api/models`, the advertised set, never a
   static in-code list. A hand-maintained list offers models the account cannot run and
   hides the ones it can.
+- **A pin's save gate accepts every id its picker offers.** The config PATCH gives
+  every validated model pin (`agent.role_models.*`, `agent.fallback_model`,
+  `agent.refusal_fallback_model`, the per-app `apps.<name>.model` and the
+  `decisions.model_route` tiers) one
+  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core.py`: a bare id, or the
+  provider-qualified `provider/model` form OpenCode advertises, built from the
+  same `QUALIFIED_MODEL_PATTERN` the spawn and cron model-name check uses (so
+  `ollama/qwen3:8b` saves too). It refuses empty
+  segments and shell metacharacters; `_validate_role_model` then judges
+  entitlement as above. The chat default `agent.model` uses the same grammar
+  (its picker lists the same names) without the entitlement check. `decisions.nudge_wake.llm_model` keeps the bare-id
+  grammar, because the decision gate scrubs any model `is_model_id` refuses.
 - Backends with `resolves_model_from_advertised_list` use their own advertised
-  model namespace. Claude retains its registry display-name reconciliation.
-  Other advertised-selection backends use their live session's model ids, then
-  their persisted namespace cache, preserving exact wire ids (including Pi
-  provider/model ids) without substituting the Kiro CLI catalog. A cold cache
-  offers `auto` and a scoped configured default until that backend advertises
-  its choices.
+  model namespace: their live session's model ids, then their persisted
+  namespace cache (`_advertised_cc_models`), so "no session is up" is never read
+  as "nothing advertised". Claude retains its registry display-name
+  reconciliation over that list, and shows the registry unfiltered only when
+  the cache is empty too. Other advertised-selection backends preserve exact
+  wire ids (including Pi provider/model ids) without substituting the Kiro CLI
+  catalog. A cold cache offers `auto` and a scoped configured default until
+  that backend advertises its choices.
+- Whether a canonical registry key is a display-only spelling is the backend's
+  `model_id_namespace` question, the same field `_wire_model_id` translates
+  through: a provider namespace whose registry row carries an id for the key
+  accepts it, and the `acp` namespace (kiro, KAS) refuses it
+  (`_model_rejected_reason`). A pick is judged on the harness of the slot it
+  lands on, so a member DM is judged on `agent.member_acp_backend`.
 - The chat composer reads `GET /api/chat/slots/{slot}/selection-capabilities` for
   the active ACP session's backend, effort support, and ordered effort levels. A
   missing session answers `known: false`; the composer then uses its existing
   model-name heuristic until ACP reports the session's actual options. A slot the
   gateway has not registered yet answers 404 `slot_not_found`, and the composer
   reads that the same way (`selectionCapabilitiesFailed` in `website/src/lib/effort.ts`):
-  only a real fault (403, 503 `peer_unavailable`, transport failure) shows the
-  "could not verify effort options" notice and hides the effort control. The same
-  endpoint proxies a remote slot to its execution peer. Model and effort are ONE
+  only a real fault (any error other than that 404, such as a 403 or a transport failure) shows the
+  "could not verify effort options" notice and hides the effort control. Model and effort are ONE
   composer control (`docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md`):
   the model chip names the level in force, and the model picker embeds the effort
   slider below its model list whenever the capability read reports support, offering
   exactly the advertised levels in their advertised order, whether the backend is
   Claude, Codex, Pi, or another capable ACP harness. A session that reports no
   effort support gets no effort row inside the picker. The composer never grows a
-  second, standalone effort control.
+  second, standalone effort control. A model pick first carries a staged effort
+  pick (or waits for an effort write already on the wire) and sends the model
+  after it; if the effort write is refused, the model pick aborts rather than
+  resetting the owner's previous selection.
+- The composer chip's marker (`modelChipMarker` in `website/src/lib/model.ts`)
+  reads `default` only when the model shown is the Settings default and the slot
+  takes it from there, and `auto` when the session was served a different model
+  for a slot that picked Auto or holds a withheld pin. A pin, an agent's own
+  model, or a default the surface cannot read carries no marker. When the config
+  read or the agent-pin read fails (`useSettingsDefaultModel` reports `failed`),
+  the composer shows an inline "failed to load config" notice instead.
+- **A dashboard chat slot with an empty `slot.model` inherits**, and keeps inheriting
+  across turns. When neither the slot nor its crewmate pins a model, the turn resolves
+  the default the slot inherits (`_default_session_model`). While that default is
+  non-empty, neither `slot.model` backfill site writes the provider's served model
+  into the slot; the composer chip reads it from `served_model`. The backfill still
+  runs when every tier defers to the backend. A settings change to the default
+  rebuilds the provider factory but leaves live sessions alone, so the next turn of an
+  inheriting slot compares its live session's allocation stamp
+  (`allocation_requested_model`) with the default it inherits now. When they differ
+  it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
+  turn already streaming on that session is never cut. An empty stamp is unknown and
+  triggers nothing. A slot or crewmate pin never triggers it. A `slot.model` an
+  earlier backfill stored is indistinguishable from a person's pick and stays until
+  the user picks Auto.
 - Codex advertises `model[effort]` pairs, but its `model` config option accepts the
   base ID and its `reasoning_effort` option accepts the level. The live capability
   marks only backends in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` for pair grouping;
@@ -373,16 +496,84 @@ its own once the cache refreshes with a list that carries it.
   set with one write, keep `auto` selected, and preserve hidden IDs absent from the
   current catalog. Enabling the configured effort default moves the slider thumb to
   that level before the setting write completes.
-- **Pin a cheaper model** only through `agent.role_models.<role>` (`background`,
-  `subagent`), read by `AgentConfig.resolve_model(role)` in `config/sections.py`. Roles
-  default to `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat
-  model does not silently become the price of every background task.
+- **Pin a cheaper model** for the worker roles only through
+  `agent.role_models.<role>` (`background`, `subagent`), read by
+  `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
+  `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
+  does not silently become the price of every background task. The sessions a
+  crewmate dispatches with `session_create` are the one decided exception
+  ([rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md)):
+  they take the CREWMATE profile's explicit model and effort pins (the values
+  the person chose on that crewmate's profile, never the user's chat model).
+  An empty crewmate pin leaves that half unpinned, so the worker's selected agent
+  or the global default decides. The per-crewmate cost cap is that
+  profile's `worker_model` / `worker_reasoning_effort`, where
+  `"auto"` is a real pin on the backend default. `worker_session_defaults` in
+  `config/sections_agent_fields.py` resolves the pair, and an explicit argument on the call
+  wins. An inherited model the picker guard refuses, or one the worker's harness
+  does not serve, is dropped and the session starts on the default; the full
+  rule is in [session-control](../modules/session-control.md).
+- **A served context window** is declared only through `agent.model_context_tokens`, one
+  entry per EXACT model id as `agent.model` carries it (`model_registry.model_window`
+  matches it as written, so two servers of the same weights stay distinct). It is an
+  operator's statement, never a built-in default for a family and never probed: an id
+  nobody declared and no registry tier lists stays unknown and keeps the 1,000,000-token
+  reference. See [memory-skills-hooks](../modules/memory-skills-hooks.md) "Model-window
+  metadata" for the resolution order.
+- **Pin a model for one app** only through `apps.<name>.model` (Settings → Chat →
+  Model → Apps, one row per enabled app). Empty inherits, so an app nobody picked
+  for resolves exactly as it would without the setting. It applies to the sessions
+  the app owns (`slot._app`) and to the app's background spawns that pass no
+  `model`, and nowhere else. It sits below the session's own pick, the app's own
+  pick (a Research campaign's model and the Spec Builder default ride the slot's
+  model) and a model pinned on the agent or crew, and above the global default:
+  tier 3 of `config.loader.resolve_effective_model(..., app_name=)` for a session,
+  `config.loader.resolve_app_spawn_model` for a spawn, which leaves `model` empty
+  when the spawned agent pins its own. Because it fills the spawn's `model`, a set
+  value also outranks `agent.role_models.subagent` for that app's spawns. The
+  config PATCH matches the path by the manifest's kebab-case name grammar, since
+  apps install at runtime, and validates the value like every pin above; a value
+  the account later stops serving is withheld at session start like any inherited
+  default. It never re-purposes `decisions.model_route`, whose tiers are the Auto
+  router's.
 - **Entitlement checks** always use the shared predicate
   `acp.client.model_is_unusable(id, advertised)` together with
   `advertised_model_ids(...)`. It is one predicate on purpose: two spellings of "can
   this account use it" eventually disagree. An empty or unknown advertised set means
   **allow** — reading it as "nothing is allowed" would withhold every model on a
   backend that simply does not advertise. Never hand-roll a membership test.
+- On a backend in `ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS` (codex) the advertised list
+  holds only `<id>[<effort>]` pairs while the model option takes the bare id, so the
+  question "is this bare id served" belongs to
+  `acp.runtime_models.resolve_pin_spelling_on(id, advertised, backend=...)` (and
+  `resolve_usable_model(..., backend=...)`, which calls it), not to a second
+  predicate. `AcpSessionProvider.set_model(id)` admits a pick on that verdict and
+  hands it to `AcpSessionHandle.set_model`, which applies the model config option
+  NON-strictly: an adapter that refuses every spelling leaves the session on its
+  default and records the refused id in `model_pin_refused` (reset at the start of
+  every call, so the field is always the last call's verdict). Substitute, restore
+  and startup callers (`llm_helpers.resolve_substitute_set_model`, the Auto route
+  and throttle walk in `chat_runner`, the warm-pool claim) read that as "stay on
+  the backend default" and say nothing. The explicit dashboard pick
+  (`chat_handlers._try_live_model_switch`) reads `provider_model_pin_refused` after
+  the call and raises `AcpModelUnavailable` itself, so the handler answers 400 and
+  the slot keeps its old model instead of reporting a switch the session never
+  made. `AcpClient.set_model` (dedicated runtime) raises inside the call as before.
+  On a backend that switches through `session/set_model` (kiro-cli),
+  `AcpSessionHandle.set_model` waits briefly for the adapter's reply before
+  recording the model. An explicit error reply is recorded in `model_pin_refused`
+  and the session keeps its model, the same contract as the config-option branch,
+  so the dashboard pick answers 4xx instead of resetting. No reply within the wait
+  is read as accepted and the model is recorded, as it was before the wait existed.
+  A startup pin that a kiro session withholds because the account does not serve
+  it (`AcpClient._apply_startup_model` on the dedicated runtime, the kiro start in
+  `providers/acp_runtime_start.py` on the shared one) is recorded in `model_pin_refused` the same
+  way, so the cron acquire step in `slack/gateway_runtime/cron_fire.py` annotates the result and
+  blanks the pinned model on the usage row instead of billing a model that never ran.
+  Both refusals carry `advertised_but_refused` from the same verdict, which selects
+  the adapter-mismatch wording; `AcpModelUnavailable` requires `backend=` and shows
+  the `kiro-cli whoami` hint only for backends that sign in through the host
+  kiro-cli identity store (`host_auth.signs_in_separately`).
 - The predicate is only meaningful where the advertised ids share a namespace with the
   id being tested, and callers gate on that. Comparing ids across two harnesses'
   namespaces calls every legitimate model unusable (harness-parity invariant `H12`).

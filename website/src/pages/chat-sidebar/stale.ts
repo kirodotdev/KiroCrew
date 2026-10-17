@@ -1,5 +1,5 @@
 /** Dormant-session collapse: the persisted threshold, per-container expansion, the
- *  exemption for rows that just moved, and the bridge that pre-expands when a narrow
+ *  exemption for rows that just moved or lost focus, and the bridge that pre-expands when a narrow
  *  clears. */
 import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import { safeSetItem } from '../../utils/safeStorage'
@@ -19,7 +19,7 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
 }) {
   // ── Stale-session collapse ─────────────────────────────────────────────────
   // Sessions idle past the threshold collapse behind a per-container
-  // "N dormant sessions hidden" expander row, independently at every tree level (each
+  // "Show N sleeping sessions" expander row, independently at every tree level (each
   // folder body + the ungrouped root). Pinned, focused, running and
   // needs-input sessions are exempt: collapsing de-noises settled work, it is
   // never a place where live or deliberately-kept rows can disappear.
@@ -42,6 +42,19 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
   // heartbeat prunes only entries a full interval old — a bare clear could
   // strip a move made milliseconds before the tick fired.
   const [staleRecentlyMoved, setStaleRecentlyMoved] = useState<ReadonlyMap<string, number>>(new Map())
+  // The row the user just LEFT by focusing another session gets the same
+  // entry: losing focus must not drop it behind an expander and shift every
+  // row below it. Recorded during render (React's adjust-state-on-prop-change
+  // pattern), not in an effect, so no frame paints the left row collapsed.
+  const [lastActiveSlot, setLastActiveSlot] = useState(activeSlot)
+  if (activeSlot !== lastActiveSlot) {
+    setLastActiveSlot(activeSlot)
+    if (lastActiveSlot) {
+      const left = lastActiveSlot
+      const at = Date.now()
+      setStaleRecentlyMoved(prev => new Map(prev).set(left, at))
+    }
+  }
   // Slow heartbeat so rows age INTO the collapsed set while the tab stays
   // open. Staleness moves on a scale of days, so ten minutes is plenty.
   const [, setStaleCollapseTick] = useState(0)
@@ -60,8 +73,8 @@ export function useStaleCollapse({ pinned, activeSlot, runningSet, subagentCount
   }, [staleCollapseMs])
   // Exempt everything live or owed to the user: pinned, focused, running
   // (incl. workflows/goal loops), live or queued subagents, an approval gate,
-  // an unanswered question, unread output — and a row the user JUST moved,
-  // which must stay visible at its destination whatever its age. The collapse
+  // an unanswered question, unread output — and a row the user JUST moved or
+  // just left, which must stay visible where it is whatever its age. The collapse
   // de-noises settled work; a row that needs the user is not settled.
   // Memoized (not just for render cost): the reveal-in-sidebar effect (./reveal)
   // consults it to decide whether the target row needs its dormant section

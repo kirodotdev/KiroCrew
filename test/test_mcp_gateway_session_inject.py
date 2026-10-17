@@ -541,7 +541,7 @@ def test_every_call_site_passes_the_session_checkout():
     whether the scope reached it. Covers the ``asyncio.to_thread(fn, ...)`` form,
     which is how four of the sites call these. A keyword carrying a DEAD value is
     invisible here by construction, which is what the client-seam test in
-    ``test_acp_session_mcp.py`` covers instead.
+    ``test_acp_session_mcp_client_seam.py`` covers instead.
     """
     import ast
 

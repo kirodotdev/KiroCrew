@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import type { useImeGuard } from '../../hooks/useImeGuard'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { ComposerControl } from '../composerControl'
@@ -75,6 +75,9 @@ export function usePromptHistory() {
       // Only intercept when input is empty OR caret is collapsed at position 0.
       const atStart = ta.selectionStart === 0 && ta.selectionEnd === 0
       if (!atStart && cur !== '') return
+      // A held ↑ scrolling up through the user's own draft stops at its start;
+      // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
+      if (e.repeat && !cursor && cur !== '') return
     } else {
       if (!cursor) return // not in history mode — let textarea handle
       // Only intercept when caret is at end (so multi-line edits still navigate within).
@@ -126,8 +129,11 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
   const prevUndoAfkRef = useRef(autoFocusKey)
   const slotSettlingRef = useRef(false)
 
-  // Record undo snapshots as the controlled value changes.
-  useEffect(() => {
+  // Record undo snapshots as the controlled value changes. A layout effect
+  // records in the same commit that puts the value on screen: a passive
+  // effect can run a scheduler task later, and a Ctrl/Cmd+Z pressed in that
+  // gap would find no entry for the text the user can already see.
+  useLayoutEffect(() => {
     const selection = composerControl()?.getSelection()
     // Consume the "this change came from a DOM edit" flag exactly once per run.
     const fromUser = valueFromUserRef.current
@@ -229,6 +235,43 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
     onRemoveDir(path)
   }), [onRemoveDir])
 
+  /** Walk the explicit snapshot history one step. Shared by the textarea's
+   *  keydown and the Lexical composer's UNDO/REDO commands: both composers are
+   *  controlled, so a programmatic value reset (send-clear, ↑/↓ recall,
+   *  optimize) wipes the editor's own history and only this one survives it.
+   *  Returns false when there is nothing to undo/redo. */
+  const stepUndoHistory = useCallback((direction: 'undo' | 'redo'): boolean => {
+    if (optimizingRef.current) return false
+    const hist = undoHistoryRef.current
+    let ptr = undoPointerRef.current
+    if (direction === 'undo' && ptr > 0) ptr -= 1
+    else if (direction === 'redo' && ptr < hist.length - 1) ptr += 1
+    else return false // nothing to undo/redo
+    undoPointerRef.current = ptr
+    const snap = hist[ptr]
+    applyingUndoRef.current = true
+    onChange(snap.value)
+    // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
+    // token brought back by the undo has its backing content again. Only
+    // emit when the set actually differs (identity or membership) to avoid a
+    // redundant parent render on plain-text undo. The pruneBlocks effect
+    // would otherwise strip a block whose token the undo just restored.
+    if (onPasteBlocksChange && !sameBlocks(pasteBlocksRef.current, snap.blocks)) {
+      onPasteBlocksChange(snap.blocks)
+    }
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.setSelectionRange(snap.selStart, snap.selEnd)
+        return
+      }
+      // No textarea mounted: the Lexical composer is the input.
+      composerControl()?.setSelection(snap.selStart, snap.selEnd, { focus: true })
+    })
+    return true
+  }, [optimizingRef, onChange, onPasteBlocksChange, pasteBlocksRef, inputRef, composerControl])
+
   /** Cmd/Ctrl+Z undoes, Cmd/Ctrl+Shift+Z or Ctrl+Y redoes. True when the key
    *  was one of those gestures, whether or not there was a step to take. */
   const handleUndoKey = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -243,34 +286,12 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
       const isRedo = (k === 'z' && e.shiftKey) || k === 'y'
       if (isUndo || isRedo) {
         e.preventDefault()
-        const hist = undoHistoryRef.current
-        let ptr = undoPointerRef.current
-        if (isUndo && ptr > 0) ptr -= 1
-        else if (isRedo && ptr < hist.length - 1) ptr += 1
-        else return true // nothing to undo/redo
-        undoPointerRef.current = ptr
-        const snap = hist[ptr]
-        applyingUndoRef.current = true
-        onChange(snap.value)
-        // Restore the paste blocks captured in this snapshot so a `[ Paste #N ]`
-        // token brought back by the undo has its backing content again. Only
-        // emit when the set actually differs (identity or membership) to avoid a
-        // redundant parent render on plain-text undo. The pruneBlocks effect
-        // would otherwise strip a block whose token the undo just restored.
-        if (onPasteBlocksChange && !sameBlocks(pasteBlocksRef.current, snap.blocks)) {
-          onPasteBlocksChange(snap.blocks)
-        }
-        requestAnimationFrame(() => {
-          const el = inputRef.current
-          if (!el) return
-          el.focus()
-          el.setSelectionRange(snap.selStart, snap.selEnd)
-        })
+        stepUndoHistory(isRedo ? 'redo' : 'undo')
         return true
       }
     }
     return false
-  }, [ime, optimizingRef, onChange, onPasteBlocksChange, pasteBlocksRef, inputRef])
+  }, [ime, optimizingRef, stepUndoHistory])
 
   /** One undo boundary at `v` unless the tip already holds it: what makes a
    *  finished optimize a single restorable step. */
@@ -289,5 +310,5 @@ export function useUndoHistory({ value, pasteBlocks, autoFocusKey, composerContr
 
   const endUndoBurst = useCallback(() => { undoLastEditRef.current = 0 }, [])
 
-  return { handleUndoKey, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
+  return { handleUndoKey, stepUndoHistory, appendBoundary, endUndoBurst, removeFileEndingUndoBurst, removeDirEndingUndoBurst }
 }

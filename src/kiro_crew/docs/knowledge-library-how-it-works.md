@@ -6,7 +6,11 @@ exact wording, with every result citing the source it came from.
 
 ## What gets indexed
 
-Uploaded documents, synced folders, and artifacts you have saved. Text is split
+Uploaded documents and synced folders are indexed when you add them. Two more
+sources are opt-in, both off by default: saved artifacts, with
+`knowledge.auto_ingest_artifacts` (kinds from `knowledge.auto_ingest_artifact_kinds`,
+default markdown, text, html and json), and documents the agent reads during its
+work, with `knowledge.auto_add_documents`. Text is split
 into overlapping chunks so a match can be quoted in context, and entities and
 relations found in each chunk are linked into a graph that connects passages
 across different files.
@@ -27,10 +31,13 @@ double every hit.
 
 ## Removing documents
 
-A file panel that shows a document already in the library offers a Remove
-toggle (green book icon, and a "Remove from Knowledge Library" row in the ⋯
-menu). Removing deletes that file's source and all of the chunks and graph
-entities indexed from it, and the panel falls back to its Add affordance.
+A file panel offers a Remove toggle (green book icon, and a "Remove from
+Knowledge Library" row in the ⋯ menu) only for a document the panel itself
+added, as its own per-file source. A file that is in the library through a
+synced folder shows the green badge without a Remove action; remove it from the
+Knowledge page instead. Removing deletes that file's source and all of the
+chunks and graph entities indexed from it; the file itself stays on disk. The
+panel then offers Add again, unless another source still covers the file.
 
 The Knowledge page removes sources at larger granularity: the Knowledge
 Detail view deletes a single item, and the Knowledge page supports bulk
@@ -53,9 +60,15 @@ order rather than failing:
    full-text matching answers alone. Keyword search is a local index with no model
    behind it, so it is always available.
 
+When the embedding model is unavailable, the agent's search result says so: its
+header, or its "No relevant knowledge found." answer, notes that only keyword
+results were used.
+
 ## Settings
 
-`knowledge.extraction_pool_size` bounds how many chunks are processed at once
+`knowledge.auto_ingest_artifacts` (default `false`) indexes saved artifacts and
+keeps them in sync; `knowledge.auto_add_documents` (default `false`) lets the
+agent add documents it reads. `knowledge.extraction_pool_size` bounds how many chunks are processed at once
 (1–10; idle workers are released after five minutes). The embedding model can be
 pointed elsewhere with `KIROCREW_EMBED_MODEL_URL` or `KIROCREW_EMBED_MODEL_PATH`.
 

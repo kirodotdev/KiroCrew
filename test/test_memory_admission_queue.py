@@ -31,6 +31,7 @@ from kiro_crew.dashboard.chat_runner import (
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND
 from kiro_crew.dashboard.state import CRON_NOTIFY_PREFIX
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+from kiro_crew.testing.wait import await_until
 
 # Short enough to keep the suite fast, long enough that the "after the grace
 # period" checks below really are after it.
@@ -67,6 +68,32 @@ def _app(state):
     app = _make_app(state)
     app.router.add_post("/api/chat/slots/{slot}/continue", api_chat_slot_continue)
     return app
+
+
+def _hold_first_admission(monkeypatch) -> tuple[asyncio.Event, asyncio.Event]:
+    """Park the first turn to reach the memory admission seam until the test releases it.
+
+    The real ``wait_for_memory_preparation`` still decides the turn, its grace
+    period and its refusal included. Holding the call only moves the start of that
+    grace period to a point the test chooses, so time the test spends before the
+    release, however slow the host, cannot run it out. Later calls go straight
+    through. Returns ``(at_seam, release)``: ``at_seam`` is set once the first
+    turn is parked; setting ``release`` lets it continue.
+    """
+    import kiro_crew.memory_startup as memory_startup
+
+    real = memory_startup.wait_for_memory_preparation
+    at_seam = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held(task):
+        if not at_seam.is_set():
+            at_seam.set()
+            await release.wait()
+        return await real(task)
+
+    monkeypatch.setattr(memory_startup, "wait_for_memory_preparation", held)
+    return at_seam, release
 
 
 async def _settle(state, slot) -> None:
@@ -134,19 +161,26 @@ async def test_message_queued_behind_a_refused_turn_runs_once_preparation_finish
 ):
     state, delivered = _state_with_pending_memory(tmp_path, monkeypatch)
     slot = _seeded_slot(state, "queued-slot")
+    at_seam, release = _hold_first_admission(monkeypatch)
     first = asyncio.create_task(_run_chat(state, slot, "FIRST-MESSAGE"))
     slot.task = first
     try:
         async with TestClient(TestServer(_app(state))) as client:
-            await asyncio.sleep(0)
+            # The first turn is parked at the admission seam with its grace
+            # period not yet started, so this send lands behind it however
+            # long the server and the request take.
+            await await_until(at_seam, what="the first turn reaching memory admission")
+            assert slot.turn_running
             resp = await client.post(
                 "/api/chat?ws=1", json={"message": "SECOND-MESSAGE", "slot": "queued-slot"}
             )
             assert resp.status == 200
             assert (await resp.json())["queued"] is True
 
-        # The turn in flight is refused at the admission seam; what queued
-        # behind it is retained and has not been popped.
+        # The turn in flight starts its grace period only now and is refused at
+        # the admission seam; what queued behind it is retained and has not
+        # been popped.
+        release.set()
         await first
         assert [item["content"] for item in slot._queue] == ["SECOND-MESSAGE"]
         assert not any(
@@ -158,6 +192,7 @@ async def test_message_queued_behind_a_refused_turn_runs_once_preparation_finish
         _finish_preparation(state)
         await _settle(state, slot)
     finally:
+        release.set()
         _finish_preparation(state)
 
     assert slot._queue == []

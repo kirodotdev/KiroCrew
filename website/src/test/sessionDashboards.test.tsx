@@ -4,7 +4,6 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import SessionDashboardsPage from '../pages/chat/command-center/SessionDashboardsPage'
-import type { Artifact } from '../types'
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (html: string | null) => ({ url: html ? '/sandbox/card' : null, pending: false, failed: false, retry: vi.fn() }),
@@ -31,7 +30,6 @@ describe('all session dashboards', () => {
     vi.spyOn(api, 'pendingQuestions').mockResolvedValue([{ slot: 'slot-1', ask_id: 'question-1', questions: [{ question: 'Which release?', options: [{ label: 'Stable' }] }] }])
     vi.spyOn(api, 'approvals').mockResolvedValue([{ id: 'approval-2', instance: 'inst-2', slot: 'slot-2', tool: 'shell', tool_input: 'git status' }])
     vi.spyOn(api, 'workflowRuns').mockResolvedValue({ runs: [] })
-    vi.spyOn(api, 'artifacts').mockResolvedValue({ artifacts: [] })
     vi.spyOn(api, 'sessionSummary').mockImplementation(async slot => ({ enabled: true, stale: false, constraints: [], generated_at: null, user_turns: 2, last_activity: null, intents: [{
       title: `Summary for ${slot}`, initial_intent: 'Ship the release', progress: ['Tests passed'], next_steps: [], ranges: [[1, 2]], status: 'active', verified: null, state: 'in-progress', last_touched_turn: 2, origin_turn: 1,
     }] }))
@@ -43,9 +41,10 @@ describe('all session dashboards', () => {
     const generate = vi.spyOn(api, 'generateSessionSummary')
     renderWithProviders(<SessionDashboardsPage />, { store: store() })
     await screen.findByText('Summary for slot-1')
-    expect(screen.getByText('Dashboards for currently open sessions, with saved summaries and requests that need you.')).toBeVisible()
+    // The page says what each entry carries, not that every session owns a dashboard
+    // page: a dispatched session's entry is a derived CARD, not a package of its own.
+    expect(screen.getByText('Saved summaries and status cards for your open sessions, plus the requests that need you.')).toBeVisible()
     const cards = visualCards()
-    expect(within(cards[0]).getByText('No published view yet. Use Open session, then ask the agent to publish a view for this task.')).toBeVisible()
     expect(within(cards[0]).getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=slot-1')
     expect(cards.map(c => c.getAttribute('data-slot')).slice(0, 2)).toEqual(['slot-1', 'slot-2'])
     const inbox = screen.getByRole('region', { name: 'Needs you' })
@@ -63,11 +62,7 @@ describe('all session dashboards', () => {
     await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
   })
 
-  it('keeps cards in place on live activity, re-sorts on a filter change, and shows a builder\'s view on its conductor', async () => {
-    const view = (slug: string, session: string): Artifact => ({ slug, session_key: session, name: slug, kind: 'html', source: 'chat', description: '', tags: ['task-dashboard'],
-      version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>view</p>' })
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [view('built-by-worker', 'dashboard:builder')] })
-    vi.spyOn(api, 'artifact').mockImplementation(async slug => view(slug, 'dashboard:builder'))
+  it('keeps cards in place on live activity and re-sorts on a filter change', async () => {
     const initial = store().getState()
     const team = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [
       ...initial.dashboard.slots, { key: 'builder', title: 'Builder', messages: 2, running: false, created_by: 'slot-2' },
@@ -78,8 +73,6 @@ describe('all session dashboards', () => {
     await screen.findByRole('button', { name: 'Approve once' })
     await screen.findByText('Stable')
     const before = domOrder()
-    const conductor = screen.getAllByTestId('session-dashboard-card').find(card => card.getAttribute('data-slot') === 'slot-2')!
-    await waitFor(() => expect(within(conductor).queryByText(/No published view yet/)).not.toBeInTheDocument())
     act(() => { team.dispatch({ type: 'dashboard/sseSlots', payload: team.getState().dashboard.slots.map(s => s.key === 'slot-2' ? { ...s, running: true, last_turn_ts: '2030-01-01T00:00:00Z' } : s) }) })
     // Live activity does not move cards; changing the filter re-takes the order.
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -169,6 +162,68 @@ describe('all session dashboards', () => {
     expect(screen.getAllByTestId('session-dashboard-card').filter(card => !card.hidden)).toHaveLength(12)
   })
 
+  it('cards every session whose card the route serves, and only those', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'adopted', ask_id: 'question-adopted', questions: [{ question: 'Rebase onto main?', options: [{ label: 'Rebase' }] }] }])
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const fleet = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'root', title: 'Root session', messages: 2, running: false },
+      // Dispatched, no session-tree parent: the card route serves this one its derived
+      // board, and this page is the only surface that mounts it.
+      { key: 'conductor', title: 'Dispatched conductor', messages: 2, running: false, created_by: 'root' },
+      // Adopted: a member of someone else's team, so it carries no board of its own.
+      { key: 'adopted', title: 'Adopted worker', messages: 2, running: false, parent: { slot: 'root', key: 'root' } },
+      { key: 'private', title: 'Incognito session', messages: 2, running: false, memory_mode: 'incognito' },
+      { key: 'remote', title: 'Remote session', messages: 2, running: false, executor: 'remote' },
+    ] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: fleet })
+    await screen.findByText('Summary for root')
+    await waitFor(() => expect(visualCards()).toHaveLength(2))
+    expect(visualCards().map(card => card.getAttribute('data-slot')).sort()).toEqual(['conductor', 'root'])
+    // No card means no read, so the page asks for exactly the boards it can show.
+    expect(vi.mocked(api.dashboardCard).mock.calls.map(([slot]) => slot).sort()).toEqual(['conductor', 'root'])
+    // A session with no card of its own keeps its decision on this page. The inbox has
+    // its own source (`['command-center', 'questions']`), which settles independently of
+    // the summary awaited above, so it is awaited on its own terms.
+    const inbox = screen.getByRole('region', { name: 'Needs you' })
+    expect(await within(inbox).findByText('Rebase onto main?')).toBeVisible()
+    expect(within(inbox).getByText('Adopted worker')).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeInTheDocument()
+    // The three sessions with no card are still said to exist, with their number.
+    expect(screen.getByText('3 sessions without a status card are not shown.')).toBeVisible()
+  })
+
+  it('says the open sessions have no card rather than that there are no sessions', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const hidden = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'private', title: 'Incognito session', messages: 2, running: false, memory_mode: 'incognito' },
+      { key: 'adopted', title: 'Adopted worker', messages: 2, running: false, parent: { slot: 'root', key: 'root' } },
+    ] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: hidden })
+    expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('None of your open sessions has a status card.')
+    expect(screen.queryByText('No sessions')).not.toBeInTheDocument()
+    expect(screen.getByText('2 sessions without a status card are not shown.')).toBeVisible()
+    expect(screen.queryAllByTestId('session-dashboard-card')).toHaveLength(0)
+  })
+
+  it('still says there are no sessions when none is open, and counts one in the singular', async () => {
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const none = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: none })
+    expect(await screen.findByTestId('empty-state-title')).toHaveTextContent('No sessions')
+    expect(screen.queryByText(/status card are not shown|status card is not shown/)).not.toBeInTheDocument()
+    const one = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'root', title: 'Root session', messages: 2, running: false },
+      { key: 'remote', title: 'Remote session', messages: 2, running: false, executor: 'remote' },
+    ] } })
+    renderWithProviders(<SessionDashboardsPage />, { store: one })
+    expect(await screen.findByText('1 session without a status card is not shown.')).toBeVisible()
+  })
+
   it('keeps pending decisions reachable beyond the summary page limit', async () => {
     vi.mocked(api.pendingQuestions).mockResolvedValue(Array.from({ length: 14 }, (_, i) => ({
       slot: `slot-${i}`, ask_id: `question-${i}`, questions: [{ question: `Decision ${i}`, options: [{ label: 'Continue' }] }],
@@ -185,44 +240,19 @@ describe('all session dashboards', () => {
     expect(within(inbox).getByText('Decision 0')).not.toBeVisible()
   })
 
-  it('bounds active documents while retaining published-view selection and native drafts across pages', async () => {
-    const artifacts: Artifact[] = Array.from({ length: 20 }, (_, i) => [0, 1].map(view => ({
-      slug: `view-${i}-${view}`, session_key: `dashboard:slot-${i}`, name: `View ${i}-${view}`,
-      kind: 'html' as const, source: 'chat', description: '', tags: ['task-dashboard'], version: 1,
-      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>Published evidence</p>',
-    }))).flat()
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts })
-    vi.spyOn(api, 'artifact').mockImplementation(async slug => artifacts.find(a => a.slug === slug)!)
+  it('bounds active documents to the shown page and keeps native drafts across pages', async () => {
     vi.mocked(api.dashboardCard).mockResolvedValue({ card: { html: '<p>Automatic evidence</p>', data: {} }, status: 'published', published_at: 1, content_event_at: 1, stale: false })
     const { container } = renderWithProviders(<SessionDashboardsPage />, { store: store(20) })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(12))
     expect(screen.getAllByTestId('session-dashboard-card')).toHaveLength(20)
-    expect(api.sessionSummary).toHaveBeenCalledTimes(12)
     expect(api.dashboardCard).toHaveBeenCalledTimes(12)
-    expect(api.artifact).toHaveBeenCalledTimes(12)
-    const first = visualCards()[0]
-    fireEvent.change(within(first).getByRole('combobox', { name: 'Published view' }), { target: { value: 'view-1-1' } })
-    await within(first).findByTitle('View 1-1')
     fireEvent.click(screen.getByText('Stable'))
     fireEvent.click(screen.getByRole('button', { name: 'Next sessions' }))
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(16))
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(8))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
-    expect(api.sessionSummary).toHaveBeenCalledTimes(20)
-    expect(api.dashboardCard).toHaveBeenCalledTimes(20)
-    expect(api.artifact).toHaveBeenCalledTimes(21)
     fireEvent.click(screen.getByRole('button', { name: 'Previous sessions' }))
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
-    expect(within(first).getByRole('combobox', { name: 'Published view' })).toHaveValue('view-1-1')
-    const search = screen.getByPlaceholderText('Search sessions…')
-    fireEvent.change(search, { target: { value: 'Session 19' } })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(2))
-    fireEvent.change(search, { target: { value: '' } })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
-    expect(within(first).getByRole('combobox', { name: 'Published view' })).toHaveValue('view-1-1')
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(12))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
-    expect(api.sessionSummary).toHaveBeenCalledTimes(20)
-    expect(api.dashboardCard).toHaveBeenCalledTimes(20)
-    expect(api.artifact).toHaveBeenCalledTimes(21)
   })
 
   it('shows actual task context alongside the decision without inventing a default', async () => {
@@ -275,4 +305,23 @@ describe('all session dashboards', () => {
     renderWithProviders(<SessionDashboardsPage />, { store: store(1) })
     expect(await screen.findByText(/behind the conversation/)).toBeInTheDocument()
   })
+
+  it('shows the restored-answer notice when the only pending question expires with a draft', async () => {
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const idle = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'slot-1', title: 'Session 1', messages: 2, running: false },
+    ] } })
+    const { queryClient } = renderWithProviders(<SessionDashboardsPage />, { store: idle })
+    const inbox = await screen.findByRole('region', { name: 'Needs you' })
+    fireEvent.change(await within(inbox).findByPlaceholderText(/type a custom answer/i), { target: { value: 'eu-west-1' } })
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(await screen.findByText(/The agent in "Session 1" stopped waiting for "Which release\?", so your answers weren't sent\. They're in that session's composer/)).toBeVisible()
+    expect(screen.queryByText('Which release?')).not.toBeInTheDocument()
+    // The notice is listed but not counted: nothing in it needs an answer.
+    expect(screen.getByRole('button', { name: 'Needs you (0)' })).toBeInTheDocument()
+    expect(within(inbox).getByTestId('panel-section-header')).toHaveTextContent('Needs you0')
+  })
+
 })

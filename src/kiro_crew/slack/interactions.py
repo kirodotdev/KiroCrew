@@ -40,6 +40,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import (
     redact_and_truncate,
@@ -2228,13 +2229,18 @@ async def _handle_allowlist(
             resources=new_user_id,
         )
         label = f"✅ `{display_name or new_user_id}` added to allowlist"
-        # Notify the approved user
+        # Notify the approved user. Multi-user access is disabled: the gateway
+        # keeps the allowlist owner-only and prunes non-owner entries at startup,
+        # so a non-owner still cannot message the bot. Tell them that plainly
+        # rather than claiming "you can now message me", which would be false.
         if _orch.slack:
             try:
                 dm = await _orch.slack.open_dm(new_user_id)
                 await _orch.slack.post_message(
                     dm,
-                    "✅ You've been added to the allowlist. You can now message me!",
+                    "✅ Your allowlist request was approved by the owner. "
+                    "Note: this bot is currently owner-only, so you still "
+                    "cannot message it directly yet.",
                 )
             except Exception:
                 logger.debug("Failed to DM approved user %s", new_user_id, exc_info=True)
@@ -2569,9 +2575,29 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
         # its queue, which in a shared thread holds co-tenants' messages;
         # ``stop_turn`` parks them for the successor instead.
         _kw = {"force": True, "preserve_queue": True} if _force else {}
-        outcome = await _orch.sessions.stop_turn(
-            thread_ts, on_soft=_on_soft, on_hard=_on_hard, **_kw
-        )
+        # Imported here: ``slack.events`` imports this module.
+        from kiro_crew.slack.events import _entry_owner, slack_stop_in_flight
+
+        # The PRESSER's queued messages, not the thread's: every member of a
+        # thread queues under its one session key, the way ``!stop`` scopes it.
+        # The hold keeps the others' kept entries from starting until the stop,
+        # and the cancel of the task it ended, have settled.
+        async with slack_stop_in_flight(_orch, thread_ts):
+            outcome = await _orch.sessions.stop_turn(
+                thread_ts,
+                owned_by=entries_queued_by(_entry_owner(user_id, channel)),
+                on_soft=_on_soft,
+                on_hard=_on_hard,
+                **_kw,
+            )
+            if outcome != "compacting":
+                # Pop only the task this Stop ended. A successor dispatched from
+                # a message admitted mid-await is the user's newer intent: left
+                # running and tracked.
+                if _orch._session_tasks.get(thread_ts) is active_task:
+                    _orch._session_tasks.pop(thread_ts, None)
+                if active_task and not active_task.done():
+                    active_task.cancel()
         if outcome == "compacting":
             # Nothing was stopped: the task stays tracked and nothing is cancelled.
             # The reply promises that a repeat forces, so arm the marker for this
@@ -2596,16 +2622,6 @@ async def _handle_stop_confirm(payload: dict, channel: str, msg_ts: str, user_id
                     return False
 
             await decline_stop(thread_ts, user_id, _say_declined)
-        else:
-            # Pop only the task this Stop ended; a successor dispatched during
-            # the await from pending work is cancelled with it (see the same
-            # guard on the !stop command path in slack/events.py).
-            # A successor dispatched from a message admitted mid-await is the
-            # user's newer intent: left running and tracked.
-            if _orch._session_tasks.get(thread_ts) is active_task:
-                _orch._session_tasks.pop(thread_ts, None)
-            if active_task and not active_task.done():
-                active_task.cancel()
         # If stop_turn returned "idle" (no active turn), neither callback
         # fired — dismiss the stale ephemeral with a "Nothing running" message.
         if outcome == "idle":
@@ -2930,6 +2946,9 @@ async def _handle_session_resume(
 
 
 _resume_locks: dict[str, LoopBoundLock] = {}
+_RESUME_TAB_CLOSED_MSG = (
+    "Resumed in Slack. The dashboard tab stays closed; reopen it from History to see it there."
+)
 
 
 async def _handle_resume_choice(
@@ -3008,11 +3027,17 @@ async def _handle_resume_choice(
             logger.info("slack session resume dropped: denied by channels governance policy")
             return
 
+        # A closed dashboard chat still resumes in Slack (its session key survives
+        # the close); only its dashboard tab stays shut, so say that, not more.
+        ds, slot = _orch.dashboard_state, session_key.split(":", 1)[-1]
+        is_dash = session_key.startswith("dashboard:")
+        tab_closed = ds is not None and is_dash and not ds.slot_exists(slot)
         if mode == "thread":
             target_channel = src_channel
-            thread_msg = (
-                f"\U0001f9f5 *{title}*\n"
-                "Session resumed. Continue the conversation in this thread."
+            thread_msg = f"\U0001f9f5 *{title}*\n" + (
+                _RESUME_TAB_CLOSED_MSG
+                if tab_closed
+                else "Session resumed. Continue the conversation in this thread."
             )
             try:
                 thread_ts = await _orch.slack.post_message(target_channel, thread_msg)
@@ -3045,6 +3070,8 @@ async def _handle_resume_choice(
             label = f"\u25b6\ufe0f Resumed *{title}* in DM."
         else:
             return
+        if tab_closed:
+            label = f"\u25b6\ufe0f *{title}*: {_RESUME_TAB_CLOSED_MSG}"
 
         # Link session
         _orch.sessions.set_slack_link(session_key, link_ts, link_channel)
@@ -3308,7 +3335,18 @@ async def _handle_inline_stop(
     )
     # ``preserve_queue`` with the force, for the reason the confirm button gives.
     _kw = {"force": True, "preserve_queue": True} if _force else {}
-    outcome = await _orch.sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
+    from kiro_crew.slack.events import _entry_owner, slack_stop_in_flight
+
+    # The presser's queued messages only, held until the stop settles, for the
+    # reasons the confirm button gives.
+    async with slack_stop_in_flight(_orch, session_key):
+        outcome = await _orch.sessions.stop_turn(
+            session_key,
+            owned_by=entries_queued_by(_entry_owner(user_id, channel)),
+            on_soft=_on_soft,
+            on_hard=_on_hard,
+            **_kw,
+        )
     if outcome == "compacting":
         # The reply promises that a repeat forces, so arm the marker -- and only
         # once the reply landed. This update is conditional on a client and a

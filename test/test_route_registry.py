@@ -5,16 +5,24 @@ Properties 1, 2: Route prefix enforcement and deregistration completeness.
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+import kiro_crew.apps.route_registry as route_registry_module
 from kiro_crew.apps.route_registry import (
     RouteRegistry,
     _compile_pattern,
     _has_params,
     _match_path_pattern,
+    _RegisteredRoute,
 )
 
 # ---------------------------------------------------------------------------
@@ -176,3 +184,95 @@ class TestPathPatternMatching:
         assert params == ["id", "sub_id"]
         assert pattern.match("/items/foo/sub/bar")
         assert not pattern.match("/items/foo/sub/")
+
+
+# ---------------------------------------------------------------------------
+# Handler exception boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sel_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Capture the SEL rows dispatch writes instead of touching the real log."""
+    rows: list[dict] = []
+    fake = MagicMock()
+    fake.log_api_access = lambda **kw: rows.append(kw)
+    monkeypatch.setattr(route_registry_module, "sel", lambda: fake)
+    return rows
+
+
+def _registry_with(handler, *, path: str = "/boom", app_name: str = "secretary") -> RouteRegistry:
+    registry = RouteRegistry(MagicMock())
+    registry._routes[app_name] = [
+        _RegisteredRoute(
+            method="GET", path=path, handler=handler,
+            has_params=False, compiled=None, param_names=None,
+        )
+    ]
+    registry._contexts[app_name] = MagicMock()
+    return registry
+
+
+def _request(app_name: str = "secretary", path: str = "boom"):
+    return make_mocked_request(
+        "GET",
+        f"/api/apps/{app_name}/{path}",
+        match_info={"app_name": app_name, "path": path},
+    )
+
+
+class TestHandlerExceptionBoundary:
+    @pytest.mark.asyncio
+    async def test_raising_handler_returns_502_json_and_one_warning(
+        self, sel_rows: list[dict], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def handler(request, ctx):
+            raise RuntimeError("Slack MCP tool failed: list_my_channels")
+
+        registry = _registry_with(handler)
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.apps.route_registry"):
+            resp = await registry.dispatch(_request())
+
+        assert resp.status == 502
+        assert json.loads(resp.body) == {
+            "error": "app route failed",
+            "code": "app_route_failed",
+            "app": "secretary",
+            "route": "GET /boom",
+        }
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "secretary" in msg and "GET /boom" in msg
+        assert "RuntimeError: Slack MCP tool failed: list_my_channels" in msg
+        assert warnings[0].exc_info is None
+        # Only the dispatch row: the failure's evidence is the WARNING above,
+        # and sel_audit_middleware already records the 502 for mutating verbs.
+        assert [r["outcome"] for r in sel_rows] == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_http_exception_propagates_unchanged(
+        self, sel_rows: list[dict], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def handler(request, ctx):
+            raise web.HTTPForbidden(text="nope")
+
+        registry = _registry_with(handler)
+        with (
+            caplog.at_level(logging.WARNING, logger="kiro_crew.apps.route_registry"),
+            pytest.raises(web.HTTPForbidden),
+        ):
+            await registry.dispatch(_request())
+
+        assert caplog.records == []
+        assert [r["outcome"] for r in sel_rows] == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_propagates_unchanged(self, sel_rows: list[dict]) -> None:
+        async def handler(request, ctx):
+            raise asyncio.CancelledError()
+
+        registry = _registry_with(handler)
+        with pytest.raises(asyncio.CancelledError):
+            await registry.dispatch(_request())
+        assert [r["outcome"] for r in sel_rows] == ["ok"]

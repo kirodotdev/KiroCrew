@@ -2,10 +2,12 @@
  *  (blocking asks and stateless cards), follow-up suggestions and folder
  *  suggestions, plus the reconnect reconcile that keeps question cards true to
  *  the server's pending set. */
-import { useMemo, useRef } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
-import { setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion } from '../../store/chatSlice'
+import { setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, isAnsweredQuestionEnding, markQuestionSettled } from '../../store/chatSlice'
+import { handBackQuestionDraft, questionDraftText } from '../../lib/questionDraftHandBack'
+import type { ChatState } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND } from '../notificationEvent'
 import { loadUnreadOnAttention } from '../unreadOnAttention'
 import { api } from '../../api/client'
@@ -120,7 +122,12 @@ export function staleAskIds(
   return askIdsOf(current).filter((id) => !live.has(id))
 }
 
+/** A blocking ask's unsent answer, held while its answer request is still in flight. */
+type RetiredDraft = ChatState['pendingQuestions'][string]
+
 export interface ComposerCards {
+  /** Reconcile retained drafts after request state changes. */
+  onQuestionStateChange(): void
   /** Reconcile question cards against the server's pending set (see below). */
   syncPendingQuestions(): Promise<void>
   onQuestionCard(data: FrameData, reconnecting: boolean): void
@@ -138,7 +145,33 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
   const resolvedAskIdsRef = useRef<Map<string, number>>(new Map())
   const resolvedSeqRef = useRef(0)
 
+  const retiredDraftsRef = useRef<Map<string, RetiredDraft>>(new Map())
+
+  const draftedBlockingAsk = useCallback((askId: string): RetiredDraft | undefined => {
+    const card = Object.values(store.getState().chat.pendingQuestions ?? {})
+      .find(candidate => candidate.ask_id === askId)
+    return questionDraftText(card) ? card : undefined
+  }, [])
+
+  // Read BEFORE the card leaves the store: resolveQuestionCard deletes the entry the picks live on.
+  const restoreDraftedBlockingAsk = useCallback((askId: string): void => {
+    handBackQuestionDraft(draftedBlockingAsk(askId), dispatch)
+  }, [dispatch, draftedBlockingAsk])
+
+  const onQuestionStateChange = useCallback(() => {
+    const chat = store.getState().chat
+    for (const [askId, draft] of retiredDraftsRef.current) {
+      if (chat.questionsSettled?.[askId]) {
+        retiredDraftsRef.current.delete(askId)
+      } else if (!chat.questionRequestsInFlight?.[askId]) {
+        retiredDraftsRef.current.delete(askId)
+        handBackQuestionDraft(draft, dispatch)
+      }
+    }
+  }, [dispatch])
+
   return useMemo<ComposerCards>(() => ({
+    onQuestionStateChange,
     /** `question_card` and `question_card_resolved` are one-shot broadcasts, so a
      *  reload or reconnect can miss either one: a card that should be showing is
      *  absent, or one resolved while we were disconnected is still on screen.
@@ -181,6 +214,18 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
         const heldBefore = Object.values(before ?? {})
         for (const id of drop) {
           const wasBlocking = heldBefore.some((c) => c?.ask_id === id)
+          const chat = store.getState().chat
+          const ending = pending.resolved?.[id]
+          const localRelease = chat.questionRequestsInFlight?.[id] === ending
+          const answered = wasBlocking && isAnsweredQuestionEnding(ending) && !localRelease
+          if (answered) dispatch(markQuestionSettled({ ask_id: id }))
+          const settled = answered || !!chat.questionsSettled?.[id]
+          const inFlight = wasBlocking && !settled && !!chat.questionRequestsInFlight?.[id]
+          if (inFlight) {
+            const draft = draftedBlockingAsk(id)
+            if (draft) retiredDraftsRef.current.set(id, draft)
+          }
+          if (wasBlocking && !settled && !inFlight) restoreDraftedBlockingAsk(id)
           dispatch(resolveQuestionCard(wasBlocking ? { ask_id: id } : { card_id: id }))
         }
         for (const q of add) {
@@ -215,7 +260,7 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
       }
     },
     onQuestionCardResolved(data) {
-      const ask = data as { ask_id?: string; card_id?: string }
+      const ask = data as { ask_id?: string; card_id?: string; reason?: string }
       // Recorded independently of local state: a resolution can arrive for
       // a card this client never held (empty state, or the card only exists
       // in an in-flight rehydration snapshot), in which case the dispatch
@@ -224,6 +269,18 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
       // `ask_id` and a stateless card's `card_id` — so one watermark covers
       // both kinds on the snapshot add side.
       recordInBoundedLog(resolvedAskIdsRef.current, resolvedSeqRef, ask.ask_id || ask.card_id || '')
+      const chatBefore = store.getState().chat
+      const localRelease = !!ask.ask_id && chatBefore.questionRequestsInFlight?.[ask.ask_id] === ask.reason
+      const answered = !!ask.ask_id && isAnsweredQuestionEnding(ask.reason) && !localRelease
+      if (answered) dispatch(markQuestionSettled({ ask_id: ask.ask_id! }))
+      const chat = store.getState().chat
+      const settled = answered || !!(ask.ask_id && chat.questionsSettled?.[ask.ask_id])
+      const inFlight = !!(ask.ask_id && !settled && chat.questionRequestsInFlight?.[ask.ask_id])
+      if (ask.ask_id && inFlight) {
+        const draft = draftedBlockingAsk(ask.ask_id)
+        if (draft) retiredDraftsRef.current.set(ask.ask_id, draft)
+      }
+      if (ask.ask_id && !settled && !inFlight) restoreDraftedBlockingAsk(ask.ask_id)
       dispatch(resolveQuestionCard(ask))
     },
     onFollowupCard(data) {
@@ -263,5 +320,5 @@ export function useComposerCards(dispatch: AppDispatch): ComposerCards {
         }))
       }
     },
-  }), [dispatch])
+  }), [dispatch, draftedBlockingAsk, onQuestionStateChange, restoreDraftedBlockingAsk])
 }

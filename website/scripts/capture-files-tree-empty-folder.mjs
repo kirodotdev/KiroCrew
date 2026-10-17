@@ -1,7 +1,7 @@
 /**
  * Screenshot harness for the workspace tree's STATE ROW under a childless
  * folder (#13054): "Empty folder", "Contains only hidden items (dotfiles,
- * caches)", "Link to another folder: contents not listed", "Not shown:
+ * caches)", "Link to another folder: contents not listed", "Some items not shown:
  * limit of 10,000 items reached" -- for the truncation badge that yields
  * to its own state row while the folder is expanded, for the folder the server
  * could not read (no state row beneath it, a lock marker on its row, and a
@@ -199,9 +199,9 @@ const TREE_CHAIN_TRUNCATED = {
 }
 
 const STATE_LABELS = {
-  '_bg/': 'Contains only hidden items (dotfiles, caches)',
+  '_bg/': 'Contains only hidden items (skipped tool and cache folders, protected entries)',
   'empty/': 'Empty folder',
-  'big/': 'Not shown: limit of 10,000 items reached',
+  'big/': 'Some items not shown: limit of 10,000 items reached',
   // `deploy/` holds only the link, so Pierre's `flattenEmptyDirectories` paints
   // the pair as one row whose path is the terminal directory.
   'deploy/current/': 'Link to another folder: contents not listed',
@@ -800,8 +800,8 @@ async function main() {
     const text = (panelEl?.innerText ?? '').replace(/\s+/g, ' ')
     const buttons = [...(panelEl?.querySelectorAll('button') ?? [])].map(b => b.textContent?.trim())
     return {
-      hiddenOnly: text.includes('This workspace contains only hidden items (dotfiles, caches)'),
-      rowWording: text.includes('Contains only hidden items (dotfiles, caches)'),
+      hiddenOnly: text.includes('This workspace contains only hidden items (skipped tool and cache folders, protected entries)'),
+      rowWording: text.includes('Contains only hidden items (skipped tool and cache folders, protected entries)'),
       empty: text.includes('No files in this workspace yet'),
       marked: !!panelEl?.querySelector('[data-testid="workspace-tree-root-hidden-only"]'),
       perFolderNotice: !!panelEl?.querySelector('[data-testid="workspace-tree-unreadable-notice"]'),
@@ -819,9 +819,9 @@ async function main() {
   }
   if (EXPECT_STATE_ROWS) {
     if (!hiddenRoot.hiddenOnly || hiddenRoot.rowWording || !hiddenRoot.marked || hiddenRoot.empty || hiddenRoot.refresh || hiddenRoot.handoff) {
-      throw new Error(`frame 31: expected "This workspace contains only hidden items (dotfiles, caches)" in the tree's place with no action row and no empty-workspace notice, got ${JSON.stringify(hiddenRoot)}`)
+      throw new Error(`frame 31: expected "This workspace contains only hidden items (skipped tool and cache folders, protected entries)" in the tree's place with no action row and no empty-workspace notice, got ${JSON.stringify(hiddenRoot)}`)
     }
-    await shot('31-root-hidden-only', [`"This workspace contains only hidden items (dotfiles, caches)" (data-testid workspace-tree-root-hidden-only) in the tree's place; no Refresh, no hand-off, no "No files in this workspace yet", no tree mounted (text: ${hiddenRoot.text})`])
+    await shot('31-root-hidden-only', [`"This workspace contains only hidden items (skipped tool and cache folders, protected entries)" (data-testid workspace-tree-root-hidden-only) in the tree's place; no Refresh, no hand-off, no "No files in this workspace yet", no tree mounted (text: ${hiddenRoot.text})`])
   } else {
     if (!hiddenRoot.empty || hiddenRoot.hiddenOnly) {
       throw new Error(`frame 31 (pre-fix dist): expected the empty-workspace notice over the hidden-only root, got ${JSON.stringify(hiddenRoot)}`)
@@ -843,7 +843,7 @@ async function main() {
       const panelEl = document.querySelector('div > .side-panel-strip')?.parentElement
       const text = (panelEl?.innerText ?? '').replace(/\s+/g, ' ')
       return {
-        limit: text.includes('Large workspace: limit of 10,000 items reached, some not shown'),
+        limit: text.includes('Workspace too large to list: limit of 10,000 items reached'),
         marked: !!panelEl?.querySelector('[data-testid="workspace-tree-root-truncated"]'),
         empty: text.includes('No files in this workspace yet'),
         tree: !!document.querySelector('file-tree-container'),
@@ -854,7 +854,7 @@ async function main() {
     if (!truncatedRoot.limit || !truncatedRoot.marked || truncatedRoot.empty || truncatedRoot.tree) {
       throw new Error(`frame 32: expected the limit notice in the tree's place, got ${JSON.stringify(truncatedRoot)}`)
     }
-    await shot('32-root-truncated', [`"Large workspace: limit of 10,000 items reached, some not shown" (data-testid workspace-tree-root-truncated) in the tree's place; no "No files in this workspace yet", no tree mounted (text: ${truncatedRoot.text})`])
+    await shot('32-root-truncated', [`"Workspace too large to list: limit of 10,000 items reached" (data-testid workspace-tree-root-truncated) in the tree's place; no "No files in this workspace yet", no tree mounted (text: ${truncatedRoot.text})`])
 
     // Frame 33: `pkg` folded into the `pkg/core` chain row keeps its badge.
     treeState = 'chain-truncated'

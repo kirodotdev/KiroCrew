@@ -230,6 +230,11 @@ def is_repo_public(url: str) -> bool | None:
 async def _fetch_repo_visibility(ref: SourceRef) -> bool | None:
     """Read a repo's public/private flag via the provider CLI. None on failure."""
     try:
+        if ref.provider == "github" and ref.host != "github.com":
+            # A "public" repository on GitHub Enterprise Server is visible to the
+            # instance's users, which is not anonymous-public, so it stays
+            # owner-only without a read.
+            return False
         if ref.provider == "github":
             # isPrivate is False for BOTH public AND internal (GitHub Enterprise)
             # repos, but an internal repo is visible only to enterprise members —
@@ -245,6 +250,7 @@ async def _fetch_repo_visibility(ref: SourceRef) -> bool | None:
                 f"{ref.owner}/{ref.repo}",
                 "--json",
                 "isPrivate,visibility",
+                host=ref.host,
             )
             if not isinstance(data, dict):
                 return None

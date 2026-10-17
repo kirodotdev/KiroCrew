@@ -1,8 +1,9 @@
 import { Suspense, lazy, type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
-import { Columns2, ExternalLink, EyeOff, MoreHorizontal, VenetianMask } from 'lucide-react'
+import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, VenetianMask } from 'lucide-react'
 
-import { api } from '../../../api/client'
+import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
+import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
 import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
@@ -11,10 +12,9 @@ import type { useChatPopouts } from '../../../hooks/useChatPopouts'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
 import { requestSlotReveal } from '../../../store/chatSlice'
-import { sseSlotTitle } from '../../../store/dashboardSlice'
 import type { ChatSlot } from '../../../types'
 import { errMessage } from '../../../utils/thunkError'
-import { ChatHeaderMenu } from '../ChatPageMessageContent'
+import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import SessionTitleControl from '../SessionTitleControl'
 
 // Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
@@ -39,8 +39,6 @@ interface MobileTopBarProps {
   /** Pre-expand sidebar state; a user reveal clears it (see ChatPage). */
   sidebarAutoHidden: MutableRefObject<boolean | null>
   openSidebar: () => void
-  /** One LLM title generation at a time from the menu item. */
-  menuAutoTitleInFlight: MutableRefObject<boolean>
   effectiveMode: string | undefined
   sidebarOnScreen: boolean
   activePoppedOut: boolean
@@ -78,7 +76,6 @@ export default function MobileTopBar({
   currentSlot,
   sidebarAutoHidden,
   openSidebar,
-  menuAutoTitleInFlight,
   effectiveMode,
   sidebarOnScreen,
   activePoppedOut,
@@ -99,7 +96,7 @@ export default function MobileTopBar({
         the menu chevron trails it, as on the approved mock — one control the
         eye reads as "the session, and its menu". Rendered whenever the slot
         exists, so the sessions toggle is in the bar even with no session open
-        (ChatPage's fixed corner button stands down); the title half needs a
+        (ChatPaneChrome's fixed corner button stands down); the title half needs a
         session and is not drawn in split view, whose grid names each pane. */}
     {topbarSlot && createPortal(
       <>
@@ -137,20 +134,15 @@ export default function MobileTopBar({
                 onRename={() => setEditingTitleSlot(activeSlot)}
                 // The phone bar does not render the title row's hover-revealed
                 // Auto-title button (an opacity-0 control has no touch home), so
-                // the LLM rename is a menu item here. Same endpoint and same
-                // store write as SessionTitleControl's button; the Undo window
+                // the LLM rename is a menu item here, through the same shared
+                // per-slot generation the sidebar row menu uses; the Undo window
                 // that button offers is a hover-hold affordance and is not
                 // offered from a menu -- Rename in the same menu is the way back.
                 onAutoTitle={() => {
-                  if (menuAutoTitleInFlight.current) return
-                  menuAutoTitleInFlight.current = true
+                  const run = generateSlotTitle(activeSlot, dispatch)
+                  if (!run) return
                   setActionError(null)
-                  const slot = activeSlot
-                  api.generateTitle(slot).then(r => {
-                    /* title is redacted server-side via redact_exfiltration_urls + redact_credentials */
-                    if (r.title) dispatch(sseSlotTitle({ key: slot, title: r.title }))
-                  }).catch(e => showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title')))
-                    .finally(() => { menuAutoTitleInFlight.current = false })
+                  run.catch(e => showActionError(errMessage(e) || i18nT('pages.chatPage.unknown_error'), i18nT('pages.chatPage.could_not_generate_title')))
                 }}
                 mode={effectiveMode}
                 sidebarOnScreen={sidebarOnScreen}
@@ -161,6 +153,9 @@ export default function MobileTopBar({
                 newSessionHere={embedMode !== 'chat' ? mobileNewSessionItem : undefined}
                 triggerLabel={
                   <>
+                    {/* Same pin marker as SessionTitleControl's desktop row, so a
+                        Pin or Unpin from this menu visibly takes effect on a phone. */}
+                    {currentSlot?.pinned && <Pin size={12} className="lucide-inline mr-1 shrink-0 text-accent" aria-label={i18nT('pages.chatSidebar.pinned')} data-testid="session-pinned-glyph" />}
                     {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
                     {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
                     {title}
@@ -182,10 +177,16 @@ export default function MobileTopBar({
         the activity panel, and split view. Nothing here is a hard swap: the
         menu opens with DropdownMenu's own animation. */}
     {topbarTrailSlot && activeSlot && !embedMode && createPortal(
+      <>
+      {/* The inline title row, which carries the concurrency-cut chip, is not
+          rendered on a phone: the cut is announced here, marked on this
+          trigger, and named as the menu's first row. */}
+      <ConcurrencyCutLiveRegion />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className="mc-touch-hit w-8 h-8 rounded-md flex items-center justify-center text-text hover:text-text-strong hover:bg-bg-hover bg-transparent border-none cursor-pointer shrink-0" aria-label={i18nT('pages.chatPage.more_actions')} title={i18nT('pages.chatPage.more_actions')} data-testid="mobile-topbar-more">
+          <button type="button" className="relative mc-touch-hit w-8 h-8 rounded-md flex items-center justify-center text-text hover:text-text-strong hover:bg-bg-hover bg-transparent border-none cursor-pointer shrink-0" aria-label={i18nT('pages.chatPage.more_actions')} title={i18nT('pages.chatPage.more_actions')} data-testid="mobile-topbar-more">
             <MoreHorizontal size={18} />
+            <ConcurrencyCutDot />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="min-w-[220px]">
@@ -216,6 +217,9 @@ export default function MobileTopBar({
               </>
             }
           ><Suspense fallback={null}><MobileUpdateMenuItem variant="menu-item" /></Suspense></ErrorBoundary>
+          {/* The concurrency cut, after an update and ahead of the window
+              actions: renders nothing while no cut is in force. */}
+          <ConcurrencyCutMenuItem Item={DropdownMenuItem} />
           {activePoppedOut ? (
             <DropdownMenuItem className="[@media(hover:none)]:min-h-10" onSelect={() => focusActivePopout(activeSlot)}>
               <span className="flex items-center gap-2"><ExternalLink size={14} className="shrink-0 text-muted" /><span>{i18nT('pages.chatPage.focus_popped_out_window')}</span></span>
@@ -240,7 +244,8 @@ export default function MobileTopBar({
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
-      </DropdownMenu>,
+      </DropdownMenu>
+      </>,
       topbarTrailSlot,
     )}
     </>

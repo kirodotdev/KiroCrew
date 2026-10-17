@@ -187,7 +187,7 @@ def test_a_remote_crew_target_is_refused(tmp_path, eager):
     state, caller, target = _world(tmp_path)
     target.executor = "remote"
 
-    assert _refused(state, caller).code == "remote_target_unsupported"
+    assert _refused(state, caller).code == "relay_archive_read_only"
     state.sessions.reset.assert_not_awaited()
 
 

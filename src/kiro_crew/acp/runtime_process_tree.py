@@ -12,12 +12,18 @@ them defined before the split.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 
 # Bound for the spawn audit (``test/test_spawn_audit.py``), which finds a spawn through
 # the modules a file imports; the probes that spawn with it read the client's binding.
 import subprocess as subprocess_mod  # noqa: F401
 import threading
+from collections.abc import Callable, Mapping
+from concurrent.futures import Executor
+from dataclasses import dataclass, field
+from typing import Literal
 
 # The helpers read the modules they probe with (``platform_compat``, ``sys``, ``Path``,
 # ``subprocess``, ``os``, ``time``) through the facade their code came from, imported
@@ -183,6 +189,145 @@ def _capture_child_records(pids: list[int]) -> dict[int, ChildRecord]:
     from kiro_crew.acp.client import platform_compat
 
     return {p: (platform_compat.get_process_start_id(p), _read_basename(p)) for p in pids}
+
+
+@dataclass(frozen=True)
+class TreeProbes:
+    """The blocking reads and the write one guarded tree pass is built from.
+
+    Injected rather than imported, so each caller hands over the bindings it
+    resolves at call time on its own module: a test that replaces one of them
+    on ``kiro_crew.acp.runtime`` or ``kiro_crew.acp.client`` reaches the pass.
+    """
+
+    #: ``pid -> every descendant pid`` (``_get_child_pids``). Runs off-loop.
+    walk: Callable[[int], list[int]]
+    #: ``pids -> {pid: (start_id, basename)}`` (``_capture_child_records``). Runs off-loop.
+    capture: Callable[[list[int]], dict[int, ChildRecord]]
+    #: ``pid -> start id or None`` (``platform_compat.get_process_start_id``). Spawns nothing.
+    start_id: Callable[[int], str | None]
+    #: ``(records, parent_pid=..., [drop=...]) -> bool`` (``session_pid._replace_child_pids``).
+    #: Runs off-loop. ``False`` means nothing may be published.
+    write: Callable[..., bool]
+
+
+TreePassOutcome = Literal["refused", "empty", "unchanged", "write_failed", "superseded", "written"]
+
+
+@dataclass(frozen=True)
+class TreePass:
+    """What one guarded pass found; only ``"written"`` may be published."""
+
+    outcome: TreePassOutcome
+    #: The whole record the caller should hold after a ``"written"`` pass.
+    record: dict[int, ChildRecord] = field(default_factory=dict)
+    #: The children this pass captured and confirmed.
+    confirmed: dict[int, ChildRecord] = field(default_factory=dict)
+    #: Recorded children outside the walk whose identity still holds (replace mode).
+    kept: dict[int, ChildRecord] = field(default_factory=dict)
+
+
+def _recorded_start(record: object) -> object:
+    """The start id a child record carries (``(start, basename)`` or a bare start)."""
+    return record[0] if isinstance(record, tuple) and record else record
+
+
+async def guarded_tree_pass(
+    pid: int,
+    recorded: Mapping[int, ChildRecord],
+    *,
+    probes: TreeProbes,
+    executor: Executor,
+    root_holds: Callable[[], bool],
+    replace: bool,
+    keep_unwalked: Callable[[int, ChildRecord], bool] | None = None,
+    still_owner: Callable[[], bool] | None = None,
+    retry_delay: float | None = None,
+) -> TreePass:
+    """Walk *pid*'s tree once, under every guard a recorded child needs.
+
+    The one implementation behind ``AcpRuntime._snapshot_descendants`` and
+    ``AcpClient.refresh_process_tree``. A record is how a teardown and the orphan
+    sweeps decide what to signal, so each guard below stops a stranger from being
+    recorded as ours:
+
+    - **Identity bracket.** *root_holds* must pass before the walk and again
+      before the write. A recycled root number leads a stranger's tree.
+    - **Second-walk confirm.** A captured child is kept only when a second walk
+      still finds it under the root AND its start id still reads back as the one
+      captured, and that id is never ``None``. A pid released between the walk and
+      the capture can be held by an unrelated process by then.
+    - **Write before publish.** The tracking file is written with the captured
+      identities first; a failed write returns ``"write_failed"`` and the caller
+      publishes nothing, so its next pass tries again. *still_owner*, when given,
+      is asked after the write: ``False`` (the caller's process was replaced
+      meanwhile) returns ``"superseded"``.
+
+    *replace* picks how the record moves:
+
+    - ``True``: every descendant is captured again and the result is the whole
+      answer. A recorded pid outside the walk stays only while
+      *keep_unwalked(pid, record)* vouches for it (a child that left the process
+      group); every other recorded pid is dropped from the file.
+    - ``False``: add-only. Only new pids, and recorded ones whose start id no
+      longer reads back, are captured; nothing is ever removed.
+
+    Every blocking probe and the write run on *executor* (the caller's own
+    ``subprocess_executor()``), never on the event loop.
+
+    *retry_delay* walks once more after that many seconds when the first walk is
+    empty (a root racing its own cold start). Never catches: the caller owns
+    logging and its own failure policy, and a cancellation must reach it.
+    """
+    loop = asyncio.get_running_loop()
+    if not root_holds():
+        return TreePass("refused")
+    descendants = await loop.run_in_executor(executor, probes.walk, pid)
+    if not descendants and retry_delay is not None:
+        await asyncio.sleep(retry_delay)
+        descendants = await loop.run_in_executor(executor, probes.walk, pid)
+    if not descendants:
+        return TreePass("empty")
+    if replace:
+        targets = list(descendants)
+    else:
+        # A number the root's tree reused belongs to a new child, and a stale
+        # record would make it fail every ownership check, so it is captured again.
+        targets = [
+            p
+            for p in descendants
+            if p not in recorded or _recorded_start(recorded[p]) != probes.start_id(p)
+        ]
+        if not targets:
+            return TreePass("unchanged")
+    captured = await loop.run_in_executor(executor, probes.capture, targets)
+    still_ours = set(await loop.run_in_executor(executor, probes.walk, pid))
+    confirmed = {
+        p: rec
+        for p, rec in captured.items()
+        if p in still_ours and rec[0] is not None and probes.start_id(p) == rec[0]
+    }
+    kept: dict[int, ChildRecord] = {}
+    if replace:
+        vouch = keep_unwalked or (lambda _p, _r: False)
+        kept = {p: rec for p, rec in recorded.items() if p not in confirmed and vouch(p, rec)}
+        record = {**kept, **confirmed}
+        gone = tuple(p for p in recorded if p not in record)
+        if record == dict(recorded):
+            return TreePass("unchanged")
+        write = functools.partial(probes.write, record, parent_pid=pid, drop=gone)
+    else:
+        if not confirmed:
+            return TreePass("unchanged")
+        record = {**recorded, **confirmed}
+        write = functools.partial(probes.write, confirmed, parent_pid=pid)
+    if not root_holds():
+        return TreePass("refused")
+    if not await loop.run_in_executor(executor, write):
+        return TreePass("write_failed", confirmed=confirmed, kept=kept)
+    if still_owner is not None and not still_owner():
+        return TreePass("superseded")
+    return TreePass("written", record=record, confirmed=confirmed, kept=kept)
 
 
 def _is_our_child(

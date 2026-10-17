@@ -713,6 +713,23 @@ class TestProtectedPidSweepShield:
 # ── Spawn grace period tests (Fix A) ──────────────────────────────────────────
 
 
+class _ModuleClock:
+    """Stand-in for ``session_pid.time`` whose ``time()`` is frozen at *now*.
+
+    Replacing the module's own ``time`` reference keeps the frozen clock local
+    to ``session_pid``; every other attribute resolves to the real module.
+    """
+
+    def __init__(self, now: float) -> None:
+        self._now = now
+
+    def time(self) -> float:
+        return self._now
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+
 class TestPidAgeSeconds:
     """Tests for _pid_age_seconds using a fake proc_root."""
 
@@ -842,6 +859,62 @@ class TestPidAgeSeconds:
         ):
             assert _pid_age_seconds(1234) == pytest.approx(42.5)
 
+    def test_windows_without_a_start_id_returns_none(self) -> None:
+        """Windows: no readable creation FILETIME → None (treated as young)."""
+        from kiro_crew.session_pid import _pid_age_seconds
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.session_pid.platform_compat.get_process_start_id", return_value=None),
+        ):
+            assert _pid_age_seconds(1234) is None
+
+    def test_windows_derives_age_from_filetime(self) -> None:
+        """Windows: the creation FILETIME is converted through its own epoch.
+
+        ``get_process_start_id`` returns the creation FILETIME as decimal text
+        in 100-ns units since 1601-01-01, NOT Unix seconds. The age must apply
+        both the unit scale and the epoch shift; a naive ``time.time() -
+        float(start_id)`` (the darwin arm) would be wrong by ~11.6 billion
+        seconds, so this pins the correct arithmetic.
+        """
+        from kiro_crew.session_pid import (
+            _FILETIME_TICKS_PER_SECOND,
+            _FILETIME_UNIX_EPOCH_OFFSET_SECONDS,
+            _pid_age_seconds,
+        )
+
+        now = 1_700_000_000.0  # a plausible Unix instant
+        age_desired = 42.5
+        unix_start = now - age_desired
+        # Encode that Unix instant back as a Windows creation FILETIME string.
+        filetime = int(
+            (unix_start + _FILETIME_UNIX_EPOCH_OFFSET_SECONDS) * _FILETIME_TICKS_PER_SECOND
+        )
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value=str(filetime),
+            ),
+            patch("kiro_crew.session_pid.time", _ModuleClock(now)),
+        ):
+            assert _pid_age_seconds(1234) == pytest.approx(age_desired, abs=1e-3)
+
+    def test_windows_non_numeric_filetime_returns_none(self) -> None:
+        """Windows: a non-numeric FILETIME token → None, not a crash."""
+        from kiro_crew.session_pid import _pid_age_seconds
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch(
+                "kiro_crew.session_pid.platform_compat.get_process_start_id",
+                return_value="not-a-number",
+            ),
+        ):
+            assert _pid_age_seconds(1234) is None
+
 
 class TestPidInSpawnGrace:
     """Tests for _pid_in_spawn_grace helper."""
@@ -860,11 +933,29 @@ class TestPidInSpawnGrace:
         ):
             assert _pid_in_spawn_grace(12345) is True
 
-    def test_windows_returns_false(self) -> None:
-        """Windows: no age source — grace not applicable, sweep proceeds."""
+    def test_windows_young_pid_returns_true(self) -> None:
+        """Windows: grace DOES apply — a young pid is protected.
+
+        The orphan sweep must not SIGKILL a provider still inside its
+        multi-second spawn window on Windows; grace applies cross-platform,
+        now that an age is derivable from the creation ``FILETIME``.
+        """
         from kiro_crew.session_pid import _pid_in_spawn_grace
 
-        with patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True):
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.session_pid._pid_age_seconds", return_value=30.0),
+        ):
+            assert _pid_in_spawn_grace(12345) is True
+
+    def test_windows_old_pid_returns_false(self) -> None:
+        """Windows: a pid older than the grace is sweepable (age ≥ threshold)."""
+        from kiro_crew.session_pid import _pid_in_spawn_grace
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", True),
+            patch("kiro_crew.session_pid._pid_age_seconds", return_value=300.0),
+        ):
             assert _pid_in_spawn_grace(12345) is False
 
     @_linux_only

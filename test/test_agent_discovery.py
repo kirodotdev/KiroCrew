@@ -712,11 +712,13 @@ class TestSpecModelCoercion:
         assert info.package == ""
         # to_dict() is the wire shape the dashboard renders. Non-string fields
         # are excluded by NAME, not skipped silently: the lists render as chips
-        # (one element each) and `kirocrew_owned` is the bool provenance flag —
-        # everything else must be a plain string or React error #31 returns.
+        # (one element each), `kirocrew_owned` is the bool provenance flag and
+        # `markdown_only` the bool backend-compatibility flag — everything else
+        # must be a plain string or React error #31 returns.
         assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+                   ("skills", "mcp_servers", "kirocrew_owned", "markdown_only"))
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
+        assert isinstance(info.to_dict()["markdown_only"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
         """`skills` / `mcp_servers` are rendered as chips, one element each.
@@ -1214,15 +1216,134 @@ class TestSpecByDeclaredName:
 
         assert spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test") is None
 
-    def test_two_specs_declaring_one_name_are_refused_naming_both(self, tmp_path: Path) -> None:
-        self._write(tmp_path, "Alpha-kirocrew.json")
-        self._write(tmp_path, "Beta-kirocrew.json")
+    def test_two_differing_specs_declaring_one_name_are_refused_naming_both(
+        self, tmp_path: Path
+    ) -> None:
+        self._write(tmp_path, "Alpha-kirocrew.json", description="alpha")
+        self._write(tmp_path, "Beta-kirocrew.json", description="beta")
 
         with pytest.raises(AmbiguousAgentSpecError) as exc:
             spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
 
         assert "Alpha-kirocrew.json" in str(exc.value)
         assert "Beta-kirocrew.json" in str(exc.value)
+        assert "differing content" in str(exc.value)
+        assert [p.name for p in exc.value.paths] == ["Alpha-kirocrew.json", "Beta-kirocrew.json"]
+
+    def test_identical_specs_declaring_one_name_resolve_to_that_one_spec(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A package installer that flattens dependencies writes the same spec
+        twice under two package prefixes. Both parse to one dict, so whichever
+        the backend runs, the policy and the projection read from it are the
+        same; the scan answers with that dict and warns naming both files."""
+        self._write(
+            tmp_path,
+            "Alpha-kirocrew.json",
+            description="shared",
+            managedToolPolicy={"exclude": ["shell"]},
+        )
+        self._write(
+            tmp_path,
+            "Beta-kirocrew.json",
+            description="shared",
+            managedToolPolicy={"exclude": ["shell"]},
+        )
+
+        with caplog.at_level("WARNING", logger="kiro_crew.agent_discovery"):
+            spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert spec == {
+            "name": "kirocrew",
+            "description": "shared",
+            "managedToolPolicy": {"exclude": ["shell"]},
+        }
+        (warning,) = [r for r in caplog.records if "identical specs" in r.getMessage()]
+        assert "Alpha-kirocrew.json" in warning.getMessage()
+        assert "Beta-kirocrew.json" in warning.getMessage()
+
+    def test_the_twin_warning_redacts_a_credential_shaped_name(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning names the files and the declared name, both untrusted
+        input from a user-writable directory, and it persists in gateway.log;
+        it goes through the same log-egress redaction as every other line
+        carrying text this process did not author."""
+        token = "ghp_" + "C" * 36
+        for stem in ("Alpha", "Beta"):
+            (tmp_path / f"{stem}-{token}.json").write_text(
+                json.dumps({"name": token, "description": "shared"}), encoding="utf-8"
+            )
+
+        with caplog.at_level("WARNING", logger="kiro_crew.agent_discovery"):
+            spec = spec_by_declared_name(tmp_path, token, operation="t", source="test")
+
+        assert spec is not None and spec["description"] == "shared"
+        (warning,) = [r for r in caplog.records if "identical specs" in r.getMessage()]
+        assert token not in warning.getMessage(), "the token reached the gateway log"
+        assert "REDACTED" in warning.getMessage()
+
+    def test_a_pair_equal_on_one_field_but_not_all_is_still_refused(self, tmp_path: Path) -> None:
+        """Equality is of the whole parse. Two specs that agree on the policy a
+        caller reads but differ in their tools are two agents, and which one
+        is live still decides what the session can do."""
+        self._write(
+            tmp_path, "Alpha-kirocrew.json", tools=["read"], managedToolPolicy={"exclude": []}
+        )
+        self._write(
+            tmp_path, "Beta-kirocrew.json", tools=["shell"], managedToolPolicy={"exclude": []}
+        )
+
+        with pytest.raises(AmbiguousAgentSpecError):
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+    def test_a_pair_differing_only_in_a_scalar_type_is_refused(self, tmp_path: Path) -> None:
+        """``True == 1`` in Python, but ``true`` and ``1`` are two documents to
+        a backend that parses the file itself, so they are two specs here too."""
+        self._write(tmp_path, "Alpha-kirocrew.json", includeMcpJson=True)
+        self._write(tmp_path, "Beta-kirocrew.json", includeMcpJson=1)
+
+        with pytest.raises(AmbiguousAgentSpecError):
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        self._write(tmp_path, "Beta-kirocrew.json", includeMcpJson=True)
+        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+        assert spec is not None and spec["includeMcpJson"] is True
+
+    def test_a_deeply_nested_identical_pair_resolves_without_a_recursion_error(
+        self, tmp_path: Path
+    ) -> None:
+        """The reader accepts a spec nested hundreds of levels deep, and the
+        comparison must answer for it rather than raise ``RecursionError`` out
+        of the scan: that exception is neither a resolution nor the typed
+        refusal, so a caller would fail its request instead of answering."""
+        deep: object = "leaf"
+        for _ in range(600):
+            deep = {"m": [deep]}
+        for stem in ("Alpha", "Beta"):
+            self._write(tmp_path, f"{stem}-kirocrew.json", metadata=deep)
+
+        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert spec is not None and "metadata" in spec
+
+    def test_an_identical_pair_beside_a_third_differing_claimant_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Three claimants, two of them twins: the odd one makes the set
+        divergent, so the refusal names all three."""
+        self._write(tmp_path, "Alpha-kirocrew.json", description="shared")
+        self._write(tmp_path, "Beta-kirocrew.json", description="shared")
+        self._write(tmp_path, "Gamma-kirocrew.json", description="odd")
+
+        with pytest.raises(AmbiguousAgentSpecError) as exc:
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert [p.name for p in exc.value.paths] == [
+            "Alpha-kirocrew.json",
+            "Beta-kirocrew.json",
+            "Gamma-kirocrew.json",
+        ]
 
     def test_only_the_first_matching_parse_is_held(self, tmp_path: Path, monkeypatch) -> None:
         """The refusal needs the duplicates' PATHS, not their parses.

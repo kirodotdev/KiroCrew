@@ -1,7 +1,7 @@
 // The dashboard registry — the ONE small shared file that ties a DashboardTab
 // to its nav metadata and its view component. Adding a dashboard = add its
 // view file (self-contained) + one entry here. Nothing else changes.
-import { GitPullRequestArrow, LayoutDashboard, Tags, Waypoints, type LucideIcon } from 'lucide-react'
+import { Activity, GitPullRequestArrow, Inbox, LayoutDashboard, Tags, Waypoints, type LucideIcon } from 'lucide-react'
 import type { ComponentType } from 'react'
 import type { DashboardTab } from '../lib/types'
 import { i18nT } from '../../../i18n/t'
@@ -9,6 +9,8 @@ import OverviewView from './OverviewView'
 import GraphView from './GraphView'
 import TaggingView from './TaggingView'
 import PipelineDashboardView from './PipelineDashboardView'
+import CiRunsView from './CiRunsView'
+import GroupReviewsView from './GroupReviewsView'
 
 interface DashboardEntry {
   key: DashboardTab
@@ -51,6 +53,20 @@ export const DASHBOARDS: DashboardEntry[] = [
     get label() { return i18nT('apps.issueRadar.views.registry.pipeline') },
     icon: GitPullRequestArrow,
     component: PipelineDashboardView,
+  },
+  {
+    key: 'ci-runs',
+    get label() { return i18nT('apps.issueRadar.views.registry.ci_runs') },
+    icon: Activity,
+    component: CiRunsView,
+  },
+  {
+    // Listed in the rail only while at least one GitLab group is followed (see
+    // DashboardsSection), so an install that follows none keeps its rail as-is.
+    key: 'reviews',
+    get label() { return i18nT('apps.issueRadar.views.registry.reviews') },
+    icon: Inbox,
+    component: GroupReviewsView,
   },
 ]
 

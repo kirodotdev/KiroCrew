@@ -95,7 +95,8 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import KiroCrewAgentsPage from '../pages/KiroCrewAgentsPage'
-import CrewAvatar, { hasAvatarOverride, seededTraits } from '../components/CrewAvatar'
+import CrewAvatar, { hasAvatarOverride, iconAvatarFrom, seededTraits } from '../components/CrewAvatar'
+import { poseDataUri } from '../lib/avatarPoses'
 import { BRAND_PURPLE } from '../lib/kiroGhostAvatar'
 
 function createTestStore() {
@@ -568,12 +569,13 @@ describe('crew editor — opening', () => {
     await renderRoster()
     const sheet = await openCreate()
     // The create door opens the Crewmates page's own dialog, not the full
-    // editor sheet: it asks for a Name, a "Built from" template and "what it
-    // looks after", with everything else behind an Advanced fold.
+    // editor sheet. This door asks for every setting up front, so its
+    // Advanced settings are already unfolded in the same card.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Create crewmate' })).toBeInTheDocument()
-    // Advanced is folded, so the workspace/model bindings are not shown up front.
-    expect(within(sheet).queryByRole('combobox', { name: 'Workspace' })).not.toBeInTheDocument()
+    // Unfolded, the card ends its Advanced settings with a second Create too.
+    expect(within(sheet).getAllByRole('button', { name: 'Create crewmate' })).toHaveLength(2)
+    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
   })
 })
 
@@ -649,6 +651,27 @@ describe('crew editor — save', () => {
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.setDefaultAgent).not.toHaveBeenCalled()
   })
+})
+
+describe('crew editor — Mate identity', () => {
+  // Mate is listed only with the Crewmates preview on (hideMateWithoutPreview).
+  beforeEach(() => { localStorage.setItem('mc-preview-crew', '1') })
+  afterEach(() => { localStorage.removeItem('mc-preview-crew') })
+  it('renaming Mate writes display_name under its unchanged key', async () => {
+    const mate = { name: 'mate', kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'default' }
+    mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, mate] })
+    await renderRoster(3)
+    const sheet = await openEditor('Mate')
+    gotoPane(sheet, 'overview')
+    fireEvent.change(within(sheet).getByTestId('display-name-input'), { target: { value: 'Skipper' } })
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
+      'mate',
+      expect.objectContaining({ display_name: 'Skipper', kiro_agent: 'kirocrew' }),
+    )
+  })
+
 })
 
 describe('crew editor — stale writes', () => {
@@ -801,6 +824,21 @@ describe('crew editor — delete', () => {
     expect(within(sheet).queryByRole('button', { name: 'Delete crewmate' })).not.toBeInTheDocument()
     expect(within(sheet).queryByText('Danger zone')).not.toBeInTheDocument()
   })
+
+  it.each(['kirocrew', 'my-template'])('lets the first crewmate on %s be deleted like any other crew (Crewmates preview on)', async (template) => {
+    localStorage.setItem('mc-preview-crew', '1')
+    try {
+      const first = { name: 'mate', kiro_agent: template, workspace: 'default', memory_store: 'default' }
+      mockApi.kirocrewAgents.mockResolvedValue({ ...AGENTS_RESPONSE, agents: [DEFAULT_CREW, OTHER_CREW, first] })
+      await renderRoster(3)
+      const sheet = await openEditor('Mate')
+      expect(within(sheet).getByTestId('crew-rail-danger')).not.toHaveAttribute('aria-disabled')
+      gotoPane(sheet, 'danger')
+      expect(within(sheet).getByRole('button', { name: 'Delete crewmate' })).toBeInTheDocument()
+    } finally {
+      localStorage.removeItem('mc-preview-crew')
+    }
+  })
 })
 
 describe('crew editor — keyboard', () => {
@@ -909,30 +947,56 @@ describe('crew avatar builder', () => {
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
-    // Pre-filled with the name-derived face; pick a different eye option.
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    // The builder opens on the Icon pane (the primary tier). Pick a pose; Apply
+    // stages the draft, the editor's own Save persists it.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-3'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
 
     // Apply only stages the draft; the editor's own Save persists it.
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
-    expect(body.avatar).toEqual({ kind: 'ghost', traits: { ...seededTraits('oncall'), eyes: 'wink' } })
+    expect(body.avatar).toMatchObject({ kind: 'icon', pose: 'pose-3' })
+    expect((body.avatar as { bg: string }).bg).toMatch(/^#[0-9a-f]{6}$/i)
   })
 
-  it('reset + Apply clears the override in the update payload', async () => {
+  it('reset commits the name-seeded icon default in the update payload', async () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
 
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    // The builder opens on the Icon pane for a crew with no override. Pick a
+    // pose, then reset: a non-ghost crew's default IS the name-seeded icon, so
+    // Reset returns to that icon (never a ghost) and Apply commits it.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-5'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-reset'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
 
-    // Nothing pending: the draft round-tripped back to "no override", so Save
-    // stays disabled — the dirty check compares normalized traits, not clicks.
-    expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    // Reset committed the name-seeded icon, which differs from the crew's prior
+    // "no override", so Save is now dirty.
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
+    expect(body.avatar).toMatchObject({ kind: 'icon' })
+  })
+
+  it('picks an icon pose and persists the icon override on Save', async () => {
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
+    const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
+
+    // The builder opens on the Icon pane for a crew with no override — the
+    // primary creation path. Pick a pose and a background, Apply, then Save.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-4'))
+    fireEvent.click(within(builder).getByTestId('avatar-icon-bg-25679d'))
+    fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
+
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
+    const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
+    expect(body.avatar).toEqual({ kind: 'icon', pose: 'pose-4', bg: '#25679d' })
   })
 })
 
@@ -1010,19 +1074,15 @@ describe('crew editor — appearance pack round-trip', () => {
     expect(hasAvatarOverride(PACK_CREW.avatar)).toBe(true)
   })
 
-  it('Reset → Apply → Save undresses a pack crew, using the explicit-reset spelling', async () => {
-    /* `{}` cannot express this. The backend's `_carry_pack_through_faceless_save`
-       reads a faceless save on a pack-wearing crew as an unrelated edit by a client
-       that cannot see packs, and KEEPS the pack — which is right for such a client
-       and wrong for this one, now that the Library tab exists and Reset is a click
-       that means something. So the editor has to send `null`, the spelling the
-       backend reserves for a reset that is meant. Before this, Reset → Save
-       reported success and left the crew wearing the pack.
+  it('Reset → Apply → Save re-dresses a pack crew as the name-seeded icon, never a ghost', async () => {
+    /* A pack crew wears no ghost, so Reset must NOT send `null`: `null` renders
+       the name's ghost, and a crew that never chose a ghost must never reset
+       INTO one (#18616). Reset instead commits the name-seeded icon default the
+       editor previews on the icon tier.
 
-       The other half of the distinction is pinned by "writes the pack back verbatim
-       when an unrelated field is saved" above: a save with no opinion about the face
-       must keep sending the pack, or every routing edit would undress the crew —
-       which is the bug the backend carve exists to stop. */
+       The other half is pinned by "writes the pack back verbatim when an
+       unrelated field is saved" above: a save that does not touch the face sends
+       the pack the crew wears, so a routing edit leaves it dressed. */
     await renderRoster()
     const sheet = await openEditor('aurora')
 
@@ -1035,7 +1095,7 @@ describe('crew editor — appearance pack round-trip', () => {
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.updateKirocrewAgent).toHaveBeenCalledWith(
       'aurora',
-      expect.objectContaining({ avatar: null }),
+      expect.objectContaining({ avatar: expect.objectContaining({ kind: 'icon' }) }),
     )
   })
 
@@ -1102,16 +1162,17 @@ describe('crew editor — appearance pack round-trip', () => {
 
     fireEvent.click(within(sheet).getByTestId('header-avatar-button'))
     const builder = await screen.findByRole('dialog', { name: 'Customize avatar' })
-    fireEvent.click(within(builder).getByTestId('avatar-opt-wink'))
+    // An unknown record opens on the Icon pane and offers no Ghost face tab
+    // (new ghost authoring is removed, issue #18616). The builder's own pick
+    // must still overrule the passthrough record it did not understand.
+    fireEvent.click(within(builder).getByTestId('avatar-icon-pose-pose-3'))
     fireEvent.click(within(builder).getByTestId('avatar-builder-save'))
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     const body = mockApi.updateKirocrewAgent.mock.calls[0][1]
-    expect(body.avatar).toEqual({
-      kind: 'ghost',
-      traits: { ...seededTraits('oncall'), eyes: 'wink' },
-    })
+    expect(body.avatar).toMatchObject({ kind: 'icon', pose: 'pose-3' })
+    expect((body.avatar as { bg: string }).bg).toMatch(/^#[0-9a-f]{6}$/i)
   })
 })
 
@@ -1228,6 +1289,39 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     expect(hasAvatarOverride({ kind: 'ghost' })).toBe(false) // no traits → renderer falls back
     expect(hasAvatarOverride({ kind: 'ghost', traits: seededTraits('oncall') })).toBe(true)
     expect(hasAvatarOverride({ kind: 'image', v: 1 })).toBe(true)
+    expect(hasAvatarOverride({ kind: 'icon', pose: 'pose-1', bg: '#9046ff' })).toBe(true)
+  })
+
+  it('iconAvatarFrom preserves an unknown pose RAW, so an unrelated save cannot wipe it', () => {
+    // Forward-compat invariant: a pose a newer client wrote (`pose-99`) must
+    // round-trip through this build untouched. The reader returns it raw and the
+    // renderer resolves it only at draw time — so the editor seeds the raw value
+    // and an unrelated save (a model change) ships `pose-99` back, not `pose-1`.
+    // Resolving here is exactly the wipe GPT F2 / the Design Watch flagged.
+    expect(iconAvatarFrom({ kind: 'icon', pose: 'pose-99', bg: '#25679d' })).toEqual({
+      pose: 'pose-99',
+      bg: '#25679d',
+    })
+    // A known pose rides through verbatim too.
+    expect(iconAvatarFrom({ kind: 'icon', pose: 'pose-3', bg: '#21a5de' })).toEqual({
+      pose: 'pose-3',
+      bg: '#21a5de',
+    })
+    // Not an icon / no pose → null, so no unrelated save reads it as one.
+    expect(iconAvatarFrom({ kind: 'icon' })).toBeNull()
+    expect(iconAvatarFrom({ kind: 'ghost', traits: {} })).toBeNull()
+  })
+
+  it('a prototype-key pose does not crash rendering — it degrades to the default', () => {
+    // `_AVATAR_POSE_RE` admits `constructor`/`toString`/`__proto__`, and a
+    // truthy `POSE_SVG[pose]` lookup would walk the prototype chain and return a
+    // FUNCTION, which poseDataUri then calls `.replace` on and throws (a render
+    // crash behind only the app-shell boundary). `resolvePose` uses Object.hasOwn,
+    // so each resolves to the default and the data URI is produced, never thrown.
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(() => poseDataUri(key, '#25679d')).not.toThrow()
+      expect(poseDataUri(key, '#25679d')).toContain('data:image/svg+xml')
+    }
   })
 
   it('every face in the editor is an "Edit avatar" button with the scrim affordance', async () => {
@@ -1325,7 +1419,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     const user = userEvent.setup()
     await user.type(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot'), 'staging')
     // "Built from" defaults to the built-in kirocrew template; no pick needed.
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create crewmate' }))
+    fireEvent.click(within(sheet).getByTestId('crewmate-create-submit'))
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     // Config mode: no navigation to the Crewmates page or anywhere else.
@@ -1374,8 +1468,8 @@ describe('crew avatar — uploaded picture', () => {
     // No picture chosen and none saved: Apply must not stage an empty image
     // override.
     expect(within(builder).getByTestId('avatar-builder-save')).toBeDisabled()
-    // The ghost pane's draft survives the round-trip through the picture tab.
-    fireEvent.click(within(builder).getByRole('radio', { name: 'Ghost face' }))
-    expect(within(builder).getByTestId('avatar-builder-preview')).toBeInTheDocument()
+    // The icon pane's draft survives the round-trip through the picture tab.
+    fireEvent.click(within(builder).getByRole('radio', { name: 'Icon' }))
+    expect(within(builder).getByTestId('avatar-icon-pane')).toBeInTheDocument()
   })
 })

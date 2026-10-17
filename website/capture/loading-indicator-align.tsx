@@ -9,13 +9,13 @@
  *
  * WHAT IS FAITHFUL is the COLUMN GEOMETRY, since that is the whole claim. The
  * `after` scene renders the REAL ChatFooter, which supplies its own row wrapper
- * because ChatPage renders it raw, as a sibling of the row wrappers rather than
+ * because ChatTranscriptView renders it raw, as a sibling of the row wrappers rather than
  * inside one. The `before` scene is a literal replica of the pre-fix markup:
  * the same wrapper plus the `px-3.5` inner div it used to carry, around the same
  * real SwapCarousel.
  *
  * The reference rows use the literal host wrapper every transcript row gets
- * (`px-4 mx-auto w-full py-1` under `--mc-content-width`, ChatPage.tsx:6625).
+ * (`px-4 mx-auto w-full py-1` under `--mc-content-width`, ChatTranscriptView.tsx).
  * No row component re-applies that gutter — TranscriptRowGeometry.test.tsx pins
  * it — so a row's content box always starts on the wrapper's padding edge, which
  * is the dashed line.

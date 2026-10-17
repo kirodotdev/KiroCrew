@@ -8,7 +8,12 @@
  * /apps/:name installed-app catch-all and is a reserved app name server-side.
  *
  * Preconditions provided by the stub gateway:
- * - Several disabled builtins populate the Discover catalog
+ * - The gateway runs with `KIROCREW_SKIP_APP_STORE_FETCH=1` (set by
+ *   `kiro_crew.testing.harness`), so Discover is the OFFLINE store: the
+ *   bundled seed's rows (`src/kiro_crew/apps/app-registry.json`), with no
+ *   published catalog and no per-row manifest clone. Discover renders catalog
+ *   rows only, never the wheel's installed builtins, so no builtin appears
+ *   here; the Updates tab is therefore always all-current.
  * - Task Runner (name: "projects") is installed and enabled
  */
 
@@ -84,7 +89,7 @@ test.describe('Discover Page — /apps', () => {
     await expect(page.getByRole('combobox', { name: 'Sort apps' })).toBeVisible()
   })
 
-  test('renders catalog cards for the available builtins', async ({ page }) => {
+  test('renders catalog cards for the bundled seed rows', async ({ page }) => {
     await gotoDiscover(page)
     const cards = browseCards(page)
     await expect(cards.first()).toBeVisible({ timeout: 10000 })
@@ -215,9 +220,9 @@ test.describe('App Page — /apps/:name', () => {
 
 test.describe('Discover Updates sub-tab — /apps/-/updates', () => {
   // TODO(PR2+): the POPULATED updates list (UpdatesList rows, per-row Update,
-  // Update All progress) is NOT covered here. The e2e gateway boots a fresh
-  // data home where every builtin is installed at its bundled version — equal
-  // to its registry version — so `updateAvailable` is false on every row and
+  // Update All progress) is NOT covered here. The e2e gateway's store is
+  // offline (see the file header): its rows are the bundled seed's, which
+  // carry no `version`, so `updateAvailable` is false on every row and
   // `updatables` is always empty. Covering the populated state needs either a
   // gateway seed knob (install an app at an older version than the registry
   // advertises) or /api/apps/registry route interception; neither exists in

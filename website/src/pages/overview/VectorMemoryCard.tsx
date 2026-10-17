@@ -656,7 +656,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
               <span className="text-muted text-[12px] self-center mr-1">{i18nT('pages.overview.vectorMemoryCard.filter_by_tag')}</span>
               {allTags.map((tag: string) => (
                 <button key={tag} disabled={episodicRead.isFetching} onClick={() => { const t = epTagFilter === tag ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
-                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${epTagFilter === tag ? 'bg-warn/30 text-warn border-warn/40' : 'bg-ok-subtle text-ok border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
+                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${epTagFilter === tag ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
               ))}
             </div>
           ) : null

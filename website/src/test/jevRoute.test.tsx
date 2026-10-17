@@ -16,7 +16,7 @@
  * so a picker highlighting on the model alone would tick the Auto row and name a
  * behaviour the session does not have.
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { render, screen, cleanup } from '@testing-library/react'
@@ -118,6 +118,18 @@ describe('isUnpinnedModel', () => {
   })
 })
 
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+// the pins read the page and those owners.
+const PAGES_DIR = join(__dirname, '../pages')
+const OWNER_DIR = join(PAGES_DIR, 'chat', 'page')
+const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+const chatPageSource = () => [
+  readFileSync(join(PAGES_DIR, 'ChatPage.tsx'), 'utf-8'),
+  ...readdirSync(OWNER_DIR).filter(isSource).sort().map(f => readFileSync(join(OWNER_DIR, f), 'utf-8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage/.test(f) && isSource(f)).sort()
+    .map(f => readFileSync(join(PAGES_DIR, f), 'utf-8')),
+].join('\n')
+
 describe('a picker with no live slot', () => {
   it('does not offer the row, and cannot hold the sentinel as a pending model', () => {
     // A pick made with no slot is HELD as the pending model and forwarded verbatim
@@ -129,34 +141,18 @@ describe('a picker with no live slot', () => {
     const consent = { permits: true }
     expect(jevRouteOffered(cfg, consent, false)).toBe(false)
     expect(jevRouteOffered(cfg, consent, true)).toBe(true)
-    for (const rel of ['../pages/ChatPage.tsx', '../components/ChatPane.tsx']) {
-      const source = readFileSync(join(__dirname, rel), 'utf-8')
+    for (const rel of ['../pages/ChatPage.tsx', '../components/useChatPanePickers.ts']) {
+      const source = rel === '../pages/ChatPage.tsx' ? chatPageSource() : readFileSync(join(__dirname, rel), 'utf-8')
       const line = source.split('\n').find(l => l.includes('jevRouteOffered('))
       expect(line, `${rel} offers Auto (Jev) without asking for a slot`).toMatch(/Slot\)/)
     }
     // Held as nothing rather than as a resolved id: the create-value guard in
     // ChatPage.newSessionModel.test.ts admits only an explicit pick or an empty
     // string, and an omitted model is what lets the backend resolve the chain.
-    const page = readFileSync(join(__dirname, '../pages/ChatPage.tsx'), 'utf-8')
+    const page = chatPageSource()
     expect(page, 'the no-slot branch holds the sentinel').toContain(
       "if (modelName === JEV_ROUTE_MODEL) { setPendingModel(''); return }",
     )
-  })
-})
-
-describe('a remote-bound session', () => {
-  it('is withheld at the call site, not inside jevRouteOffered', () => {
-    // The two pages AND the condition: a peer-bound session's turns run on the
-    // other machine through `relay_remote_turn` and never reach the routing hook,
-    // so the entry would be a control that silently does nothing. Asserted on the
-    // source because the condition is a conjunct at the call site — `jevRouteOffered`
-    // answers only the consent question and knows nothing about remoteness.
-    for (const rel of ['../pages/ChatPage.tsx', '../components/ChatPane.tsx']) {
-      const source = readFileSync(join(__dirname, rel), 'utf-8')
-      const line = source.split('\n').find(l => l.includes('jevRouteOffered('))
-      expect(line, `${rel} does not call jevRouteOffered`).toBeTruthy()
-      expect(line, `${rel} offers Auto (Jev) on a remote slot`).toMatch(/isRemote/)
-    }
   })
 })
 

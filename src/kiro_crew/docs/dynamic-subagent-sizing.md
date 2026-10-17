@@ -14,7 +14,8 @@ at 4 and halved whenever the gateway's event loop lagged or memory ran low.
 Those were count limits sitting under the memory floor. With two or more chats
 fanning out at once, one chat's wave held the slots the other chat's sub-agents
 waited for while memory was still free. Now nothing but memory (and work that
-keeps failing, below) holds a start back.
+keeps failing, below) holds a start back, and when memory runs short it is
+shared between chats (*Several chats near the floor*, below).
 
 ## Enabling It
 
@@ -131,7 +132,7 @@ the learned cost. So the sampler special-cases them:
   per-session *average share*, not a guessed constant.
 - **Dedicated** (per-process) spawns keep the per-PID subtree sampling above.
   A spawn takes that path when it sets `model`, `reasoning_effort`,
-  `allowed_tools`, `bare`, or `keep: true`; when `agent.role_models["subagent"]`
+  `allowed_tools`, `bare`, `backend`, or `keep: true`; when `agent.role_models["subagent"]`
   or `agent.role_efforts["subagent"]` is pinned; when it runs as a crew member;
   when `agent.session_sharing` is off; when there is no parent session; or when
   the parent is not ACP/kiro-backed (e.g. a Claude-Code parent).
@@ -169,7 +170,7 @@ grows only while backends keep initializing cleanly.
 | `agent.subagent_cost_gb` | `0.5` | Minimum price of a warming dedicated start in the admission gate (the measured or learned projection applies when higher); also the TaskRunner figure's fallback (GB/agent) until a learned cost exists, and the sub-agent auto cap's while `spawn_min_memory_gb <= 0` |
 | `agent.subagent_cpu_cost_cores` | `1.0` | **Deprecated, inert.** CPU no longer sizes anything; kept so an existing config is not rewritten |
 | `agent.subagent_auto_max` | `32` | The sub-agent count ceiling when `max_subagents=0` (provider-concurrency and fd/PID stand-in); memory binds below it on most hosts. With the floor disabled it caps the memory-sized figure instead |
-| `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the queue, never refused (one in temporary or incognito memory mode, or with `agent.task_queue_enabled` off, is lost if the gateway restarts), for at most `agent.subagent_queue_max_wait_secs` before it ends as `never started: waiting for memory`. `0` disables the gate, and the sub-agent auto cap is then sized from memory like the TaskRunner figure |
+| `agent.spawn_min_memory_gb` | `2.0` | Free memory (GB) that must remain after admitting a start; a spawn that does not fit waits in the queue, never refused (one in temporary or incognito memory mode, or with `agent.task_queue_enabled` off, is lost if the gateway restarts), for at most `agent.subagent_queue_max_wait_secs` before it ends as `never started: waiting for memory (not enough memory freed up in time); retry once memory frees up`. `0` disables the gate, and the sub-agent auto cap is then sized from memory like the TaskRunner figure |
 | `agent.subagent_spawn_stagger_secs` | `0.25` | Delay between successive spawns (initial fill and queued drain), so a high cap never bursts on cold start |
 | `session.pool_size` | `0` | Warm-pool size; reserved in the TaskRunner figure's memory term when > 0 (and in the sub-agent auto cap's while the floor is disabled) |
 
@@ -215,7 +216,9 @@ reap.
 
 The bound is tied to the session-start gate, not to the running cap:
 `2 × session_start_concurrency` (`_STARTUP_CAP_GATE_ROUNDS` rounds of the
-gate's width), clamped to `[1, cap]`, because the gate is the one resource
+gate's width), clamped to `[1, cap]` (with the default `"auto"` width, the
+floor of 2 until the gateway has sized it from the host just after boot),
+because the gate is the one resource
 every start in startup contends for: `session/new` runs under `G` permits, so
 at most `G` starts make progress at any moment, and every other admitted start
 is a spawned process (dedicated path) or a claimed slot holding nothing but a
@@ -245,7 +248,8 @@ value somewhere worse, and the operator's real lever already exists:
 Time spent WAITING FOR A PERMIT is not charged to the startup deadline, on
 either start path. A start can queue at three places: the session manager's
 cold-start semaphore, the gateway's spawn admission, and the ACP
-`SessionStartGate` (`agent.session_start_concurrency`) around `session/new`.
+`SessionStartGate` (`agent.session_start_concurrency`, default `auto`: 2..16
+sized from the host) around `session/new`.
 Each fires two callbacks around its wait: `on_gate_queued` immediately before
 the wait begins, and `on_gate_acquired` when the permit is granted, with the
 wait and the queue's name. The manager's `_gate_wait_mark` stamps
@@ -289,7 +293,11 @@ session first answered); a settled worker owes nothing, because its memory is
 already in the free-memory reading. A dedicated start is priced at what such a runtime
 settles at: the learned settled RSS of its agent once three runs have measured
 it (capped at 2 GB), else the measured default of about 1 GB, and never less than
-`subagent_cost_gb`. A start that will share its parent's runtime skips the
+`subagent_cost_gb`. An agent whose newest reading is more than seven days old is
+unlearned again, so a figure learned under a heavier MCP roster or another
+backend expires on its own even when it holds every dedicated start back and no
+new reading arrives; an agent with any reading inside the seven days keeps its
+figure. A start that will share its parent's runtime skips the
 process but still starts the agent's MCP servers, so it is priced at that less
 about 0.35 GB. Parents waiting without a slot retain their reservation; a shared session
 owes its price until it settles too, because its MCP servers start after it
@@ -297,6 +305,31 @@ binds. If the shared runtime turns out to be unavailable,
 the start is re-priced as dedicated and the floor re-checked before the fallback
 process starts. At defaults, a shared start needs about 2.65 GB free, the first
 dedicated start 3.0 GB, a second while the first still warms 4.0 GB.
+
+A nested sub-agent that will share its parent's runtime is the exception. Its
+parent already holds its memory (a parent waiting on its children keeps it), so
+waiting on memory for that child could only end at the 30-minute limit. Such a
+child is admitted with nothing owed for itself: at 2.0 GB free it starts, which
+can take the host below the floor by its shared price. It still counts at that
+price while it warms, so a second one needs 2.65 GB.
+
+### Several chats near the floor
+
+A start that waits for memory is re-checked as soon as memory can have moved:
+when one of the gateway's sub-agents finishes and, only while something waits,
+on a short sampler that reads free memory every few seconds, so memory another
+program frees, or a warming sub-agent that has settled, is noticed too. Each such check reads
+free memory once and starts only what now fits; a start that still does not fit
+is left waiting with nothing written. The fixed 30-second re-check remains as a
+backstop (after a restart, for example).
+
+Memory is shared between chats. While one chat's sub-agents wait for memory, a
+chat that already runs its share of dedicated sub-agents does not get the next
+start that memory allows; the waiting chat does. Shares follow
+`agent.lane_weights` (each chat weighs 1 unless listed), and a chat's nested
+sub-agents are never held back by it, so a running tree can always finish. This
+is not a count cap: with one chat alone, or with memory to spare, nothing
+changes.
 
 A start is never priced at a whole-run peak or a whole-tree p90: those measure
 the whole process subtree, including the test suites and builds a run launched,
@@ -312,7 +345,8 @@ that is already swapping), so it backs the figure up rather than replacing it.
 It never changes the count cap.
 
 What the floor guarantees, stated plainly: admission never takes the host below
-the floor. It does not shed running work: a settled sub-agent that later runs a
+the floor, except that a nested sub-agent sharing its parent's runtime can take it
+below by that one start's shared price (above). It does not shed running work: a settled sub-agent that later runs a
 build or a test suite, or another application, can still push free memory below
 it, and then new starts wait. On Windows the floor reads available physical
 memory, not the commit charge, so a host near its commit limit can admit a
@@ -342,5 +376,11 @@ start that later fails to commit (an accepted gap, tracked as
   measured zero usage retains the full limit. Missing or unlimited limits
   leave the host-memory fallback intact. Ancestors hidden above the cgroup
   mount cannot be measured.
+- Usage there means the working set: `memory.current` (v1:
+  `memory.usage_in_bytes`) minus the group's inactive page cache
+  (`inactive_file`, v1 `total_inactive_file`), so reclaimable cache does not
+  read as used. The agents slice (`kirocrew-agents.slice`) is a second clamp:
+  its headroom is the smaller of `memory.high` and `memory.max`, minus the
+  slice's own working set.
 - Design rationale and worked examples:
   [`docs/system-specs/modules/subagent.md`](https://github.com/kirodotdev/KiroCrew/blob/main/docs/system-specs/modules/subagent.md).

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from kiro_crew._sqlite_compat import sqlite3
+
+logger = logging.getLogger(__name__)
 
 V1_ACCEPTED_REVISION_LIMIT = 20
 
@@ -160,10 +163,40 @@ def ensure_schema(db: sqlite3.Connection) -> None:
         db.execute(statement)
 
 
+def identity_key(db: sqlite3.Connection, key: str, metadata: dict | None) -> str:
+    """Return the key of the active fact holding *metadata*'s identity, else *key*.
+
+    ``idx_memory_fact_identity`` makes the identity unique among active facts,
+    so a write naming an identity another key holds must land on that key; a
+    new key would INSERT a second holder. *metadata* must be normalized.
+    """
+    if not (metadata and metadata.get("subject") and metadata.get("predicate")):
+        return key
+    holder = db.execute(
+        "SELECT record_id FROM memory_record_meta WHERE scope=? AND subject=? "
+        "AND predicate=? AND status='active' AND kind IN ('fact','directive')",
+        (metadata.get("scope", ""), metadata["subject"], metadata["predicate"]),
+    ).fetchone()
+    return holder[0].removeprefix("key:") if holder else key
+
+
 def record_id_for(kind: str, record_id: str) -> str:
     if kind not in _KINDS or not isinstance(record_id, str) or not record_id:
         raise ValueError("Memory record kind and id are required")
     return record_id if kind == "episode" or record_id.startswith("key:") else f"key:{record_id}"
+
+
+def record_identity_or_none(kind: str, record_id: Any) -> str | None:
+    """The record id for a row, or ``None`` when its identity is NULL or empty.
+
+    SQLite lets a TEXT PRIMARY KEY hold NULL and older importers wrote such
+    rows; ``reconcile`` leaves them untouched rather than let one stop the
+    store from opening. Read paths share that contract through this helper so a
+    legacy row carries no metadata but never raises.
+    """
+    if not isinstance(record_id, str) or not record_id:
+        return None
+    return record_id_for(kind, record_id)
 
 
 def _json(value: Any) -> str:
@@ -485,16 +518,44 @@ def eligible(metadata: dict, *, now: str | None = None) -> bool:
     )
 
 
+def ineligible_record_ids(rows) -> set[str]:
+    """Record ids among metadata *rows* that :func:`eligible` rejects right now.
+
+    A row whose status is not ``active`` is ineligible at every instant, so it is
+    settled without parsing any timestamp; only active rows carrying a validity
+    window are evaluated, against one ``now`` taken for the whole set.
+    """
+    blocked: set[str] = set()
+    now: str | None = None
+    for row in rows:
+        if row["status"] != "active":
+            blocked.add(row["record_id"])
+            continue
+        if now is None:
+            now = datetime.now(timezone.utc).isoformat()
+        if not eligible(dict(row), now=now):
+            blocked.add(row["record_id"])
+    return blocked
+
+
 def reconcile(db: sqlite3.Connection) -> int:
     """Backfill metadata, or journal writes made by an older compatible binary."""
     changed = 0
     for relation, kind in (("semantic_memory", "fact"), ("episodic_memories", "episode")):
         cursor = db.execute(f"SELECT * FROM {relation}")
         names = [column[0] for column in cursor.description]
+        skipped = 0
         for values in cursor:
             row = dict(zip(names, values))
+            identity = row["id"] if kind == "episode" else row["key"]
+            if not isinstance(identity, str) or not identity:
+                # SQLite lets a TEXT PRIMARY KEY hold NULL, and older importers
+                # wrote such rows. They cannot carry metadata; one of them must
+                # not stop the whole store from opening, so leave it untouched.
+                skipped += 1
+                continue
             actual_kind = "directive" if str(row.get("key", "")).startswith("lesson.") else kind
-            record_id = record_id_for(actual_kind, row["id"] if kind == "episode" else row["key"])
+            record_id = record_id_for(actual_kind, identity)
             previous = get_record_metadata(db, record_id)
             if previous.get("content_hash") == content_hash(row):
                 continue
@@ -517,4 +578,11 @@ def reconcile(db: sqlite3.Connection) -> int:
                 operation="legacy_sync" if previous else "backfill",
             )
             changed += 1
+        if skipped:
+            logger.warning(
+                "Memory reconcile skipped %d %s row(s) with no %s",
+                skipped,
+                relation,
+                "id" if kind == "episode" else "key",
+            )
     return changed

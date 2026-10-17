@@ -9,6 +9,7 @@ import {
 import { useIssueRadar } from '../context'
 import { asArray, resolveAiLanguage } from '../lib/format'
 import ReadOnlyTag from '../components/ReadOnlyTag'
+import ErrorNotice from '../../../components/ErrorNotice'
 import UntaggedIssueCard from './tagging/UntaggedIssueCard'
 import LabelsPanel, { settingsKeyForCategory } from './tagging/LabelsPanel'
 import { providerTerms, readOnlyHint, repoScopeKey } from '../lib/links'
@@ -528,27 +529,35 @@ function TaggingDashboard() {
             {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.defines_no_labels_yet_so_there_is_nothing_to_ass')}
           </Banner>
         )}
+        {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
         {labelsError && (
-          <Banner kind="error">
-            {i18nT('apps.issueRadar.views.taggingView.couldn_t_load')} {owner}/{repo}{i18nT('apps.issueRadar.views.taggingView.s_labels')} {(labelsError as Error).message}
-            {' — '}{i18nT('apps.issueRadar.views.taggingView.applying_is_disabled_until_they_load_because_a_s')}
-          </Banner>
+          <ErrorNotice
+            title={`${i18nT('apps.issueRadar.views.taggingView.couldn_t_load')} ${owner}/${repo}${i18nT('apps.issueRadar.views.taggingView.s_labels')}`}
+            message={`${(labelsError as Error).message} — ${i18nT('apps.issueRadar.views.taggingView.applying_is_disabled_until_they_load_because_a_s').replace(/\s+/g, ' ')}`}
+          />
         )}
-        {settingsError && <Banner kind="error">{settingsError}</Banner>}
+        {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
+        <ErrorNotice message={settingsError} />
+        {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
         {reload.isError && (
-          <Banner kind="error">
-            {i18nT('apps.issueRadar.views.taggingView.couldn_t_reload_the_queue')} {(reload.error as Error).message}
-            {' — '}{i18nT('apps.issueRadar.views.taggingView.what_you_see_below_is_the_previous_result_not_th')}
-          </Banner>
+          <ErrorNotice
+            title={i18nT('apps.issueRadar.views.taggingView.couldn_t_reload_the_queue')}
+            message={`${(reload.error as Error).message} — ${i18nT('apps.issueRadar.views.taggingView.what_you_see_below_is_the_previous_result_not_th').replace(/\s+/g, ' ')}`}
+          />
         )}
-        {genError && <Banner kind="error">{genError}</Banner>}
-        {applyError && <Banner kind="error">{applyError}</Banner>}
+        {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
+        <ErrorNotice message={genError} />
+        {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
+        <ErrorNotice message={applyError} />
         {applyNote && <Banner kind={Object.keys(rowErrors).length ? 'warn' : 'ok'}>{applyNote}</Banner>}
 
         {taggingQuery.isLoading ? (
           <div className="text-[14px] text-muted py-2">{i18nT('apps.issueRadar.views.taggingView.loading_the_untagged_queue')}</div>
         ) : taggingQuery.isError ? (
-          <Banner kind="error">{(taggingQuery.error as Error).message}</Banner>
+          <>
+            {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
+            <ErrorNotice message={(taggingQuery.error as Error).message} />
+          </>
         ) : queue.length === 0 ? (
           <div className="text-[14px] text-muted py-2">
             {i18nT('apps.issueRadar.views.taggingView.every_open_issue_in')} {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.carries_at_least_one_label_nothing_to_tag')}
@@ -601,12 +610,10 @@ function Stat({ value, label, sub }: { value: number; label: string; sub?: strin
   )
 }
 
-function Banner({ kind, children }: { kind: 'ok' | 'warn' | 'error'; children: React.ReactNode }) {
-  const cls = kind === 'error'
-    ? 'border-danger/40 bg-danger/5 text-danger'
-    : kind === 'warn'
-      ? 'border-border bg-bg-hover text-text'
-      : 'border-accent/40 bg-accent-subtle text-accent'
+function Banner({ kind, children }: { kind: 'ok' | 'warn'; children: React.ReactNode }) {
+  const cls = kind === 'warn'
+    ? 'border-border bg-bg-hover text-text'
+    : 'border-accent/40 bg-accent-subtle text-accent'
   return (
     <div className={`rounded-lg border px-3 py-2 text-[13px] flex items-start gap-2 ${cls}`}>
       {kind === 'ok'

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
@@ -32,7 +32,14 @@ import { resolve } from 'node:path'
  * tip/survey compensation effect. Reading both is what keeps the attribute and
  * the callback it names from drifting apart.
  */
-const CHAT_PAGE = readFileSync(resolve(__dirname, '..', 'pages/ChatPage.tsx'), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the attribute pin reads the page and those owners.
+const PAGES = resolve(__dirname, '..', 'pages')
+const OWNER_DIR = resolve(PAGES, 'chat/page')
+const CHAT_PAGE = [
+  readFileSync(resolve(PAGES, 'ChatPage.tsx'), 'utf8'),
+  ...readdirSync(OWNER_DIR).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(resolve(OWNER_DIR, f), 'utf8')),
+  ...readdirSync(PAGES).filter(f => /^useChatPage\w*\.ts$/.test(f)).sort().map(f => readFileSync(resolve(PAGES, f), 'utf8')),
+].join('\n')
 const TRANSCRIPT_CONTROLLER = readFileSync(
   resolve(__dirname, '..', 'pages/chat/useChatPageTranscriptController.tsx'), 'utf8',
 )

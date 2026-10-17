@@ -15,6 +15,7 @@ const item = (over: Partial<FollowupItem> = {}): FollowupItem => ({
 function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
   const onAddToSession = vi.fn()
   const onStartInWorktree = vi.fn().mockResolvedValue(undefined)
+  const onStartInNewChat = vi.fn().mockResolvedValue(undefined)
   const onSkip = vi.fn()
   const utils = render(
     <FollowUpCard
@@ -22,11 +23,12 @@ function setup(props: Partial<React.ComponentProps<typeof FollowUpCard>> = {}) {
       projectDir="/repo"
       onAddToSession={onAddToSession}
       onStartInWorktree={onStartInWorktree}
+      onStartInNewChat={onStartInNewChat}
       onSkip={onSkip}
       {...props}
     />,
   )
-  return { onAddToSession, onStartInWorktree, onSkip, ...utils }
+  return { onAddToSession, onStartInWorktree, onStartInNewChat, onSkip, ...utils }
 }
 
 describe('FollowUpCard', () => {
@@ -58,6 +60,7 @@ describe('FollowUpCard', () => {
         projectDir="/repo"
         onAddToSession={vi.fn()}
         onStartInWorktree={vi.fn()}
+        onStartInNewChat={vi.fn()}
         onSkip={onSkip}
       />,
     )
@@ -65,34 +68,81 @@ describe('FollowUpCard', () => {
     expect(onSkip).toHaveBeenCalledWith(1)
   })
 
-  it('disables the worktree action when the session has no project dir', () => {
-    setup({ projectDir: undefined })
-    expect(screen.getByRole('button', { name: /start in new worktree/i })).toBeDisabled()
-    // The in-session route stays available — it needs no repo.
-    expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
-  })
-
-  it('demotes the disabled worktree button from the accent style so it does not read as the primary action', () => {
-    // A permanently-disabled button that keeps the accent background at 40%
-    // opacity still looks like the main CTA on a dark theme — users click it,
-    // meet a not-allowed cursor, and report a dead button. Unscoped sessions
-    // must render it in the secondary (bordered) look instead.
-    setup({ projectDir: undefined })
-    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
-    expect(worktree.className).not.toContain('bg-accent')
-    expect(worktree.className).toContain('border-border')
-  })
-
-  it('keeps the accent style on the worktree button when the session is scoped', () => {
-    setup()
-    const worktree = screen.getByRole('button', { name: /start in new worktree/i })
+  it('keeps the worktree action, label and footer unchanged in a git repository', () => {
+    const { onStartInWorktree, onStartInNewChat } = setup({ projectIsRepo: true })
+    const worktree = screen.getByRole('button', { name: 'Start in new worktree' })
     expect(worktree.className).toContain('bg-accent')
+    expect(worktree).toHaveAttribute('title', 'Create a git worktree from /repo and open a new session there')
+    expect(screen.queryByRole('button', { name: /start in new chat/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
+    fireEvent.click(worktree)
+    expect(onStartInWorktree).toHaveBeenCalledWith(item())
+    expect(onStartInNewChat).not.toHaveBeenCalled()
   })
 
-  it('explains the disabled worktree button in the footer instead of claiming both actions work', () => {
+  it('offers an enabled "Start in new chat" when the session has no project dir', () => {
+    const { onStartInWorktree, onStartInNewChat } = setup({ projectDir: undefined })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    const newChat = screen.getByRole('button', { name: /start in new chat/i })
+    expect(newChat).not.toBeDisabled()
+    // The spawn route is the primary action again, so it keeps the accent look.
+    expect(newChat.className).toContain('bg-accent')
+    // The in-session route stays available too.
+    expect(screen.getByRole('button', { name: /add to this session/i })).not.toBeDisabled()
+    fireEvent.click(newChat)
+    expect(onStartInNewChat).toHaveBeenCalledWith(item())
+    expect(onStartInWorktree).not.toHaveBeenCalled()
+  })
+
+  it('keeps the standard footer for an unscoped session, with no git terms', () => {
     setup({ projectDir: undefined })
-    expect(screen.getByText(/this session has no project directory/i)).toBeInTheDocument()
-    expect(screen.queryByText(/^both actions pre-fill/i)).not.toBeInTheDocument()
+    expect(screen.getByText('Both actions pre-fill the composer — nothing is sent until you press send.')).toBeInTheDocument()
+    expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
+  })
+
+  it('offers an enabled "Start in new chat" when the project is not a git repo', async () => {
+    const { onStartInWorktree, onStartInNewChat } = setup({ projectIsRepo: false })
+    expect(screen.queryByRole('button', { name: /start in new worktree/i })).not.toBeInTheDocument()
+    const newChat = screen.getByRole('button', { name: /start in new chat/i })
+    expect(newChat).not.toBeDisabled()
+    expect(newChat.className).toContain('bg-accent')
+    // The tooltip carries the reason; the always-visible footer says where the
+    // chat opens, in session terms.
+    expect(newChat.getAttribute('title')).toContain('/repo')
+    expect(newChat.getAttribute('title')).toMatch(/not a git repository/)
+    fireEvent.click(newChat)
+    await waitFor(() => expect(onStartInNewChat).toHaveBeenCalledWith(item()))
+    expect(onStartInWorktree).not.toHaveBeenCalled()
+    expect(screen.getByText(/the new chat opens in this session's project directory/i)).toBeInTheDocument()
+    expect(screen.queryByText(/unavailable|worktree|git/i)).not.toBeInTheDocument()
+  })
+
+  it('renders a new-chat failure inline and lets the user retry', async () => {
+    const onStartInNewChat = vi.fn().mockRejectedValue(new Error('The new chat could not be opened.'))
+    setup({ projectIsRepo: false, onStartInNewChat })
+    fireEvent.click(screen.getByRole('button', { name: /start in new chat/i }))
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('The new chat could not be opened.')
+    })
+    expect(screen.getByRole('button', { name: /start in new chat/i })).not.toBeDisabled()
+  })
+
+  it('does not open a second chat while one is being opened', async () => {
+    let release: (() => void) | undefined
+    const onStartInNewChat = vi.fn(() => new Promise<void>(res => { release = res }))
+    setup({ projectDir: undefined, onStartInNewChat })
+    const btn = screen.getByRole('button', { name: /start in new chat/i })
+    fireEvent.click(btn)
+    await waitFor(() => expect(screen.getByText(/opening chat/i)).toBeInTheDocument())
+    fireEvent.click(btn)
+    expect(onStartInNewChat).toHaveBeenCalledTimes(1)
+    release?.()
+  })
+
+  it('keeps the worktree action enabled while the repo probe is unresolved', () => {
+    // The server stays the backstop; an unknown probe must not suppress a real repo.
+    setup({ projectIsRepo: undefined })
+    expect(screen.getByRole('button', { name: /start in new worktree/i })).not.toBeDisabled()
   })
 
   it('renders the worktree failure inline instead of throwing', async () => {
@@ -125,7 +175,7 @@ describe('FollowUpCard', () => {
     const onStartInWorktree = vi.fn(() => new Promise<void>((_res, rej) => { reject = rej }))
     const a = item({ title: 'A' })
     const b = item({ title: 'B' })
-    const props = { projectDir: '/repo', onAddToSession: vi.fn(), onStartInWorktree, onSkip: vi.fn() }
+    const props = { projectDir: '/repo', onAddToSession: vi.fn(), onStartInWorktree, onStartInNewChat: vi.fn(), onSkip: vi.fn() }
     const { rerender } = render(<FollowUpCard items={[a, b]} {...props} />)
     fireEvent.click(screen.getAllByRole('button', { name: /start in new worktree/i })[0])
     await waitFor(() => expect(onStartInWorktree).toHaveBeenCalled())
@@ -147,6 +197,7 @@ describe('FollowUpCard', () => {
         projectDir="/repo"
         onAddToSession={vi.fn()}
         onStartInWorktree={onStartInWorktree}
+        onStartInNewChat={vi.fn()}
         onSkip={vi.fn()}
       />,
     )
@@ -158,6 +209,7 @@ describe('FollowUpCard', () => {
         projectDir="/repo"
         onAddToSession={vi.fn()}
         onStartInWorktree={onStartInWorktree}
+        onStartInNewChat={vi.fn()}
         onSkip={vi.fn()}
       />,
     )

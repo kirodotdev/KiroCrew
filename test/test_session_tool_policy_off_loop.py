@@ -373,6 +373,29 @@ async def test_two_specs_declaring_the_agent_name_are_denied_not_emptied(
 
 
 @pytest.mark.asyncio
+async def test_two_identical_specs_declaring_the_agent_name_answer_their_one_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A package installer that flattens dependencies writes the same spec under
+    two package prefixes. Whichever of the pair the session runs, its policy is
+    this one, so the read answers it -- with a SEL ``ok``, not the 409 a
+    differing pair gets -- and the agent's managed MCP servers keep their tools.
+    """
+    spec = json.dumps({"name": AGENT, "managedToolPolicy": {"exclude": ["shell"]}})
+    (tmp_path / f"Alpha-{AGENT}.json").write_text(spec, encoding="utf-8")
+    (tmp_path / f"Beta-{AGENT}.json").write_text(spec, encoding="utf-8")
+
+    sel = MagicMock()
+    monkeypatch.setattr(sessions_mod, "kiro_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(sessions_mod, "_sel", lambda: sel)
+    response = await sessions_mod.api_session_tool_policy(_request(_state()))
+
+    assert response.status == 200
+    assert _body(response) == {"exclude": ["shell"]}
+    assert sel.log_api_access.call_args.kwargs["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_the_declared_name_scan_also_runs_off_the_event_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

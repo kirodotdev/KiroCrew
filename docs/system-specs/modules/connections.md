@@ -30,7 +30,11 @@ grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
 secret in the encrypted vault (`CONNECTIONS_<SLUG>_CLIENT_SECRET`) as the source
 of truth and writes it into the emitted agent spec as `oauth.clientSecret` only
 because that file is the one thing kiro-cli reads — **the same footing the
-existing `headers` secrets have: vault is truth, the spec is a projection.** See
+existing `headers` secrets have: vault is truth, the spec is a projection.** The
+projection is owner-only on POSIX: every agent-spec write lands at `0o600` (an
+existing file keeps its owner bits and loses group/other), so the plaintext is
+never readable by another local user. Moving the secret off disk entirely needs a
+kiro-cli runtime secret channel and is tracked in #10702. See
 "Pre-registered OAuth clients" below.
 
 ## Status and cancel
@@ -90,6 +94,21 @@ until the runtime actually fails a call (or the artifacts are removed locally).
 The inverse direction — a grant present but the badge stale-downgraded —
 self-heals within one 30-second poll.
 
+**Proactive shared-grant signal.** When a provider's grant is present, the feed
+also reports whether the SAME OAuth artifacts are configured by another entry
+(`grantSharedWith` names those entries; `grantSharedUnconfirmed` says the census
+could not read every source, so an empty list is "could not confirm" rather than
+"sole owner"). This asks the same grant-identity rule `remove_provider_entry`
+uses — one definition of grant identity (`ownership._module_artifact_key`) — of
+the registry pair, read-only here with no lock or purge. It is the narrower
+question the feed needs (is the REGISTRY pair shared) rather than the full
+per-owned-key purge analysis a Disconnect runs, so the two cannot disagree on
+what grant identity means. The card can say a connection is backed
+by a shared grant, and that a local disconnect/reconnect keeps that shared token
+rather than forcing fresh consent, WITHOUT the user first attempting a Disconnect
+and reading the refusal. It is only the sharing fact; forcing a new sign-in on a
+shared grant still means revoking at the provider.
+
 The explicit **Test** action is the opt-in liveness check and does not change the
 badge's polling contract. Owner-only `POST /api/connections/test` starts a
 promptless kiro-cli ACP session, so bearer injection stays inside kiro-cli. Its
@@ -117,7 +136,7 @@ inventing a label locally would put an unverified identity on the card.
 ### The mint contract is preserved, not replaced
 
 `POST /api/connections/mint` and `GET /api/connections/mint?slug=…` keep their
-existing contract exactly: the POST reserves a row and returns
+existing contract, with one additive optional field: the POST reserves a row and returns
 `{ok, slug, state, token}`, the GET is the card's authoritative feed for a
 card-initiated mint (`idle|minting|waiting|granted|failed|expired`, with
 `oauth_url` only while `waiting`), and the frontend keeps polling it at its own
@@ -128,7 +147,9 @@ that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
 caller's row token, so the initiating tab continues to own the result. A second
 rejection is terminal and surfaces the existing `failed` / `mint_url_rejected`
-state; no other failure class retries. Warm URLs pass the same credential gate
+state; no other failure class retries. Beside `reason: mint_url_rejected` the GET
+may carry an optional `rejected_endpoint`, present only when the rejected endpoint
+can be named; the naming rules are in [security](security.md). Warm URLs pass the same credential gate
 before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
@@ -449,7 +470,7 @@ rather than a keep-the-first-claimant one.
 Every flow reads the user's config, a private generation tree, the old global agents directory,
 or kiro-cli's OAuth cache, any of which can sit on a network mount where a stat is unbounded, so
 all of that work lives in SYNCHRONOUS helpers and a coroutine reaches them through
-`asyncio.to_thread` -- enforced by a fixed-point drift guard in `test/test_connections_warm.py`
+`asyncio.to_thread` -- enforced by a fixed-point drift guard in `test/test_connections_warm_off_loop.py`
 that reuses the mint engine's own primitive sets so the two cannot drift apart. It reads
 `warm.py` and every `warm_runtime` owner as one call graph, so a coroutine that moves into an
 owner still owes the invariant and a helper the facade re-exports still counts. What the guard

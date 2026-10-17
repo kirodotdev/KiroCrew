@@ -17,6 +17,10 @@ import pytest
 from kiro_crew import member_memory_auth as auth
 from kiro_crew import platform_compat as pc
 
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
 
 @pytest.fixture
 def provenance(tmp_path, monkeypatch):

@@ -20,6 +20,9 @@ export interface CatalogSkill {
   source?: string
   /** Absolute path to the row's SKILL.md. */
   path?: string
+  /** Other keys that name this same file. The catalog lists one row per file,
+   *  so a mapping saved under a twin key (`kiro-user/x`) still resolves here. */
+  aliases?: string[]
 }
 
 /**
@@ -167,6 +170,7 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   const byKey = useMemo(() => {
     const m = new Map<string, CatalogSkill>()
     for (const s of catalog) m.set(s.key, s)
+    for (const s of catalog) for (const a of s.aliases ?? []) if (!m.has(a)) m.set(a, s)
     return m
   }, [catalog])
 
@@ -247,7 +251,9 @@ export default function AgentSkillsEditor({ agentName, skills, unmanaged = [], o
   const candidates = useMemo(
     () => catalogFailed
       ? []
-      : catalog.filter(s => !skills.includes(s.key)).sort((a, b) => compareText(a.name, b.name)),
+      : catalog
+        .filter(s => !skills.includes(s.key) && !(s.aliases ?? []).some(a => skills.includes(a)))
+        .sort((a, b) => compareText(a.name, b.name)),
     [catalog, skills, catalogFailed],
   )
 

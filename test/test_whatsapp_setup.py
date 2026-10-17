@@ -49,10 +49,10 @@ from kiro_crew.dashboard.handlers import whatsapp_setup as mod
 #: reverse proxy) reaches the gateway, and is what the production gate keys on.
 REMOTE_HEADERS = {"X-Forwarded-For": "203.0.113.7"}
 
-#: Each rotating code is valid for about 20 seconds, so an elapsed time of 50s
-#: selects index 2. Both neighbours are 10s away, which is far more slack than
-#: a loaded runner can consume between two statements.
-_ELAPSED_INTO_THIRD_CODE = 50.0
+#: Ages either side of the handler's 60s code life, each 30s clear of the bound,
+#: far more slack than a loaded runner can consume between two statements.
+_AGE_OF_A_LIVE_CODE = 30.0
+_AGE_OF_A_DEAD_CODE = 90.0
 
 
 class _FakeQrImage:
@@ -262,6 +262,56 @@ def test_config_get_truncates_a_long_connect_error(cfg_file: Path) -> None:
     status, body = _call(_serve(state), "GET", "/api/whatsapp/config")
     assert status == 200
     assert len(body["connect_error"]) == 120
+
+
+def _fake_neonize(monkeypatch, *, present: bool, channel: bool = True) -> None:
+    """Make neonize look present or absent to the SDK probe, and the pip install
+    channel available or not. Only ``neonize`` is faked."""
+    import kiro_crew.dashboard.handlers.messaging as messaging
+
+    real = messaging.importlib.util.find_spec
+    monkeypatch.setattr(
+        messaging.importlib.util,
+        "find_spec",
+        lambda name, *a: (object() if present else None) if name == "neonize" else real(name, *a),
+    )
+    monkeypatch.setattr(messaging, "_pip_install_channel_available", lambda: channel)
+
+
+def test_config_get_reports_an_installed_sdk_without_a_command(cfg_file: Path, monkeypatch) -> None:
+    _fake_neonize(monkeypatch, present=True)
+    status, body = _call(_serve(_FakeState()), "GET", "/api/whatsapp/config")
+    assert status == 200
+    assert body["sdk_installed"] is True
+    assert body["sdk_install_command"] == ""
+
+
+def test_config_get_names_this_interpreter_when_neonize_is_missing(
+    cfg_file: Path, monkeypatch
+) -> None:
+    """The panel shows this command instead of MISSING_EXTRA_HINT's bare
+    ``pip install``, which can target another environment."""
+    _fake_neonize(monkeypatch, present=False)
+    status, body = _call(_serve(_FakeState()), "GET", "/api/whatsapp/config")
+    assert status == 200
+    assert body["sdk_installed"] is False
+    assert body["sdk_install_supported"] is True
+    cmd = body["sdk_install_command"]
+    assert sys.executable in cmd
+    assert "-m pip install" in cmd
+    assert "neonize" in cmd
+    assert not cmd.startswith("pip ")
+
+
+def test_config_get_withholds_the_command_without_an_install_channel(
+    cfg_file: Path, monkeypatch
+) -> None:
+    _fake_neonize(monkeypatch, present=False, channel=False)
+    status, body = _call(_serve(_FakeState()), "GET", "/api/whatsapp/config")
+    assert status == 200
+    assert body["sdk_installed"] is False
+    assert body["sdk_install_supported"] is False
+    assert body["sdk_install_command"] == ""
 
 
 # ── PUT /api/whatsapp/config ──────────────────────────────────────────────────
@@ -552,7 +602,7 @@ def test_qr_start_reports_the_live_pairing_state() -> None:
 def test_qr_status_reports_disabled_without_a_live_client() -> None:
     status, body = _call(_serve(_FakeState()), "GET", "/api/channels/whatsapp/qr/status")
     assert status == 200
-    assert body == {"state": "disabled", "qr_data_url": None, "detail": ""}
+    assert body == {"state": "disabled", "qr_data_url": None, "qr_expired": False, "detail": ""}
 
 
 def test_qr_status_returns_the_qr_to_a_direct_local_request(fake_segno) -> None:
@@ -605,6 +655,76 @@ def test_qr_status_omits_the_qr_before_the_first_code_arrives(fake_segno) -> Non
     assert stub.encoded == []
 
 
+def test_qr_status_serves_a_code_still_inside_its_life(fake_segno) -> None:
+    stub = fake_segno()
+    client = _FakeClient(
+        state="pairing",
+        latest_qr=["code-a"],
+        latest_qr_at=time.monotonic() - _AGE_OF_A_LIVE_CODE,
+    )
+    status, body = _call(_serve(_FakeState(client)), "GET", "/api/channels/whatsapp/qr/status")
+    assert status == 200
+    assert body["qr_data_url"] == "data:image/png;base64,code-a-6"
+    assert body["qr_expired"] is False
+    assert stub.encoded == ["code-a"]
+
+
+def test_qr_status_declines_a_code_past_its_life(fake_segno) -> None:
+    """Once the pairing run stops emitting, the last code stays in
+    ``latest_qr`` for good, and serving it shows a well-formed QR the phone
+    refuses under a spinner that never ends. Past its life the code is
+    withheld, the response says so, and ``detail`` tells the operator what to do."""
+    stub = fake_segno()
+    client = _FakeClient(
+        state="pairing",
+        latest_qr=["code-a"],
+        latest_qr_at=time.monotonic() - _AGE_OF_A_DEAD_CODE,
+        state_detail="scan the QR code from your phone",
+    )
+    status, body = _call(_serve(_FakeState(client)), "GET", "/api/channels/whatsapp/qr/status")
+    assert status == 200
+    assert body["state"] == "pairing"
+    assert body["qr_data_url"] is None
+    assert body["qr_expired"] is True
+    assert "expired" in body["detail"]
+    assert "restart" in body["detail"]
+    assert stub.encoded == []  # a dead code is never even rendered
+
+
+def test_qr_status_reports_expiry_to_a_remote_session_too(fake_segno) -> None:
+    """Expiry is not a credential, so the remote read-only view learns of it
+    as well; the code itself is still never rendered for it."""
+    stub = fake_segno()
+    client = _FakeClient(
+        state="pairing",
+        latest_qr=["code-a"],
+        latest_qr_at=time.monotonic() - _AGE_OF_A_DEAD_CODE,
+    )
+    status, body = _call(
+        _serve(_FakeState(client)),
+        "GET",
+        "/api/channels/whatsapp/qr/status",
+        headers=REMOTE_HEADERS,
+    )
+    assert status == 200
+    assert body["qr_data_url"] is None
+    assert body["qr_expired"] is True
+    assert stub.encoded == []
+
+
+def test_qr_status_does_not_call_an_old_code_expired_once_paired(fake_segno) -> None:
+    """The stale code left behind after a successful pair is not an expiry."""
+    fake_segno()
+    client = _FakeClient(
+        state="connected",
+        latest_qr=["code-a"],
+        latest_qr_at=time.monotonic() - _AGE_OF_A_DEAD_CODE,
+    )
+    status, body = _call(_serve(_FakeState(client)), "GET", "/api/channels/whatsapp/qr/status")
+    assert status == 200
+    assert body["qr_expired"] is False
+
+
 def test_qr_status_truncates_a_long_detail() -> None:
     client = _FakeClient(state="connecting", state_detail="d" * 500)
     status, body = _call(_serve(_FakeState(client)), "GET", "/api/channels/whatsapp/qr/status")
@@ -618,39 +738,33 @@ def test_qr_status_truncates_a_long_detail() -> None:
 def test_render_qr_returns_a_loadable_png_data_url() -> None:
     """The panel puts this straight in an <img src>, so it must be real PNG bytes."""
     pytest.importorskip("segno", reason="ships with the optional whatsapp extra")
-    uri = mod._render_qr(["2@abc,def,ghi"], 0.0)
+    uri = mod._render_qr("2@abc,def,ghi")
     assert uri is not None
     assert uri.startswith("data:image/png;base64,")
     raw = base64.b64decode(uri.split(",", 1)[1], validate=True)
     assert raw[:8] == b"\x89PNG\r\n\x1a\n"  # exact PNG signature
 
 
-def test_render_qr_encodes_the_first_code_when_no_timestamp_is_known(fake_segno) -> None:
-    stub = fake_segno()
-    assert mod._render_qr(["a", "b", "c"], 0.0) == "data:image/png;base64,a-6"
-    assert stub.encoded == ["a"]
-
-
-def test_render_qr_encodes_the_code_valid_now(fake_segno) -> None:
-    """Each code lasts about 20s, so 50s in the third one is current."""
-    stub = fake_segno()
-    emitted_at = time.monotonic() - _ELAPSED_INTO_THIRD_CODE
-    assert mod._render_qr(["a", "b", "c", "d", "e"], emitted_at) == "data:image/png;base64,c-6"
-    assert stub.encoded == ["c"]
-
-
-def test_render_qr_clamps_to_the_last_code_once_all_have_expired(fake_segno) -> None:
-    """An expired batch renders its last code rather than indexing past the end."""
-    stub = fake_segno()
-    assert mod._render_qr(["a", "b", "c"], time.monotonic() - 10_000) == "data:image/png;base64,c-6"
-    assert stub.encoded == ["c"]
-
-
 def test_render_qr_returns_none_when_the_encoder_fails(fake_segno) -> None:
     """A render failure degrades to no image, never to a 500 on the poll."""
     stub = fake_segno(fail=True)
-    assert mod._render_qr(["a"], 0.0) is None
+    assert mod._render_qr("a") is None
     assert stub.encoded == ["a"]
+
+
+# ── _qr_expired ───────────────────────────────────────────────────────────────
+
+
+def test_qr_expired_treats_an_unknown_emission_time_as_live() -> None:
+    assert mod._qr_expired(0.0) is False
+
+
+def test_qr_expired_keeps_a_code_inside_its_life() -> None:
+    assert mod._qr_expired(time.monotonic() - _AGE_OF_A_LIVE_CODE) is False
+
+
+def test_qr_expired_drops_a_code_past_its_life() -> None:
+    assert mod._qr_expired(time.monotonic() - _AGE_OF_A_DEAD_CODE) is True
 
 
 # ── POST /api/channels/whatsapp/unlink ────────────────────────────────────────

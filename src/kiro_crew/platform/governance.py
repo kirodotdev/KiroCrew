@@ -64,6 +64,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_provenance import is_marked
 from kiro_crew.platform.admission import (
     canonical_signing_bytes,
+    ed25519_verify,
     hmac_signature,
     read_policy_trust_root,
 )
@@ -167,7 +168,7 @@ _MODES = frozenset({MODE_ALLOW, MODE_DENY})
 
 # Ordinal strictness scales, strictness-ASCENDING (loosest first → strictest
 # last).  ``approval`` and ``sandbox`` are verified against the live enforcers
-# (approval pipeline; ``sandbox.py`` level dirs off<standard<cc<strict).
+# (approval pipeline; ``sandbox_tiers.py`` level dirs off<standard<cc<strict).
 _ORDINAL_SCALES: Dict[str, Tuple[str, ...]] = {
     "approval": ("yolo", "auto", "interactive"),
     "sandbox": ("off", "standard", "cc", "strict"),
@@ -628,7 +629,7 @@ def classify_tool_args(
         # route is ``is_edit_call``: a diff content block is write-plane
         # evidence whatever the spec-optional ``kind`` field says, so a
         # kindless (or mislabelled) call carrying one is classified here too.
-        candidates = edit_target_candidates(params, diff_path)
+        candidates = edit_target_candidates(params, diff_path, tool_kind=tool_kind)
         edit_pairs: list = [("filesystem.write", path) for path in candidates]
         if candidates.truncated:
             edit_pairs.append(("filesystem.write", _TRUNCATED_SCAN_ITEM))
@@ -819,6 +820,16 @@ class Decision:
     # record names the wrong subject. Empty when the caller asked about one item
     # and already knows it.
     item: str = ""
+    # Whether a refusal came from a deny-mode pattern MATCHING the item (Rule 1
+    # deny), as opposed to an allow-mode set merely not listing it or a disabled
+    # scope. Set where the match happens (``ScopedRuleset.permits``) and carried
+    # through every composition (``_AndRuleset.permits``, ``resolve``) unchanged,
+    # because a fold relabels ``rule`` to ``rule2-intersect`` and a reader that
+    # must tell "denied" from "not allowed" -- ``gate_decision``'s alias groups,
+    # where an explicit deny on one spelling of an identity binds while an
+    # allow-mode miss on one spelling does not -- cannot recover it from the
+    # label. Never set on a permit.
+    explicit_deny: bool = False
 
 
 # A control that can answer "is this item permitted?" for ONE level.  Both
@@ -958,7 +969,12 @@ class ScopedRuleset:
         # deny mode: permitted unless explicitly denied.
         hit = next((pat for pat in self.deny if match(item, pat)), None)
         if hit is not None:
-            return Decision(False, f"{item!r} matches deny pattern {hit!r}", rule="rule1-deny")
+            return Decision(
+                False,
+                f"{item!r} matches deny pattern {hit!r}",
+                rule="rule1-deny",
+                explicit_deny=True,
+            )
         return Decision(True, f"{item!r} not denied", rule="rule1-deny")
 
     def declared_patterns(self) -> Tuple[str, ...]:
@@ -1024,14 +1040,40 @@ class _AndRuleset:
     def permits(self, item: str) -> Decision:
         o = self.outer.permits(item)
         if not o.permitted:
-            return Decision(False, f"policy: {o.reason}", rule="rule2-intersect", layer="policy")
+            # The outer refusal is the answer, but its PROVENANCE must not hide
+            # the inner half's: an authority's allow-mode miss short-circuited
+            # here would read as "not listed" even when the subordinate tier
+            # denies the item outright, and a reader that must tell "denied"
+            # from "not allowed" (``gate_decision``'s alias groups) would admit
+            # the identity through another spelling. So the inner half is still
+            # asked for its deny, and either half's explicit deny is carried.
+            i = self.inner.permits(item)
+            return Decision(
+                False,
+                f"policy: {o.reason}",
+                rule="rule2-intersect",
+                layer="policy",
+                explicit_deny=o.explicit_deny or (not i.permitted and i.explicit_deny),
+            )
         i = self.inner.permits(item)
         if not i.permitted:
             if isinstance(self.inner, _AndRuleset):
                 # A nested pair is another policy tier, not the profile — its
                 # decision already carries the right prefix and layer.
-                return Decision(False, i.reason, rule="rule2-intersect", layer=i.layer)
-            return Decision(False, f"profile: {i.reason}", rule="rule2-intersect", layer="profile")
+                return Decision(
+                    False,
+                    i.reason,
+                    rule="rule2-intersect",
+                    layer=i.layer,
+                    explicit_deny=i.explicit_deny,
+                )
+            return Decision(
+                False,
+                f"profile: {i.reason}",
+                rule="rule2-intersect",
+                layer="profile",
+                explicit_deny=i.explicit_deny,
+            )
         return Decision(True, "permitted by both levels", rule="rule2-intersect", layer="both")
 
     def declared_patterns(self) -> Tuple[str, ...]:
@@ -1176,8 +1218,9 @@ class ScopedMap:
     """
 
     members: RulesetLike
-    # member id -> {leaf name -> ScopedRuleset}
-    posture: Mapping[str, Mapping[str, ScopedRuleset]] = field(default_factory=dict)
+    # member id -> {leaf name -> ruleset}; a leaf both sides of a fold name holds
+    # their intersection, which may be an ``_AndRuleset``.
+    posture: Mapping[str, Mapping[str, RulesetLike]] = field(default_factory=dict)
 
     @staticmethod
     def from_dict(d: Mapping[str, object], *, allow_posture: bool) -> "ScopedMap":
@@ -1211,7 +1254,10 @@ class ScopedMap:
         return ScopedMap(members=members, posture=posture)
 
     def compose(self, narrower: "ScopedMap") -> "ScopedMap":
-        # members intersect; posture is policy-only so the ceiling's wins.
+        # members intersect, and so does posture: the narrower side can only
+        # tighten.  A profile never carries posture (``from_dict`` rejects it), so
+        # over a profile this keeps the ceiling's posture unchanged; between two
+        # policy tiers the lower tier's posture narrows the higher one's.
         base = self.members
         if isinstance(base, ScopedRuleset):
             composed: RulesetLike = base.compose(narrower.members)
@@ -1221,7 +1267,7 @@ class ScopedMap:
             # ``_compose_controls``) do, so a third — and any later — tier's
             # narrowing is honoured instead of being silently dropped.
             composed = _AndRuleset(base, narrower.members)
-        return ScopedMap(members=composed, posture=self.posture)
+        return ScopedMap(members=composed, posture=_compose_posture(self.posture, narrower.posture))
 
     def permits_member(self, member: str) -> Decision:
         return self.members.permits(member)
@@ -1234,6 +1280,32 @@ class ScopedMap:
         if ruleset is None:
             return Decision(True, f"no posture leaf {leaf!r} for {member!r}", rule="scopedmap")
         return ruleset.permits(item)
+
+
+def _compose_posture(
+    ceiling: Mapping[str, Mapping[str, RulesetLike]],
+    narrower: Mapping[str, Mapping[str, RulesetLike]],
+) -> Mapping[str, Mapping[str, RulesetLike]]:
+    """Intersect two ``ScopedMap`` postures, leaf by leaf.
+
+    An absent member or leaf permits everything, so a leaf only one side names
+    carries through as a restriction, and a leaf both name permits an item only
+    when both rulesets do.  No combination can permit what the ceiling refuses.
+    """
+    if not narrower:
+        return ceiling
+    merged: Dict[str, Dict[str, RulesetLike]] = {m: dict(ls) for m, ls in ceiling.items()}
+    for member, leaves in narrower.items():
+        target = merged.setdefault(member, {})
+        for leaf, ruleset in leaves.items():
+            base = target.get(leaf)
+            if base is None:
+                target[leaf] = ruleset
+            elif isinstance(base, ScopedRuleset):
+                target[leaf] = base.compose(ruleset)
+            else:
+                target[leaf] = _AndRuleset(base, ruleset)
+    return merged
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -3002,15 +3074,22 @@ def policy_signing_payload(data: Mapping[str, object]) -> bytes:
 
 
 def _policy_signature_state(
-    data: Mapping[str, object], trust_keys: Mapping[str, str]
+    data: Mapping[str, object],
+    trust_keys: Mapping[str, str],
+    public_keys: Optional[Mapping[str, str]] = None,
 ) -> Tuple[str, str]:
     """Classify a policy document's signature.  Returns ``(state, detail)``.
 
     Pure and I/O-free: the caller supplies the trust keys, so this is directly
     unit-testable and the loader keeps the single responsibility of deciding what
-    to DO with the verdict.  Mirrors ``admission._signature_valid`` — HMAC-SHA256
-    over the canonical payload, compared with ``hmac.compare_digest`` — with the
-    key selected by ``identity.issuer`` instead of a plugin ``publisher``.
+    to DO with the verdict.  The key is selected by ``identity.issuer``.
+
+    An issuer with an entry in *public_keys* (``trust_public_keys``) is verified
+    with Ed25519 over the canonical payload and with nothing else: it NEVER falls
+    back to its ``trust_keys`` secret, because a fallback would let anyone who can
+    read that secret mint a document the asymmetric key was provisioned to stop.
+    An issuer without a public key keeps the HMAC-SHA256 check, compared with
+    ``hmac.compare_digest`` like ``admission._signature_valid``.
     """
     identity = data.get("identity")
     identity_map: Mapping[str, object] = identity if isinstance(identity, dict) else {}
@@ -3021,6 +3100,17 @@ def _policy_signature_state(
     if not issuer:
         # A signature with no issuer names no key, so nothing can verify it.
         return SIGNATURE_UNVERIFIED, "identity.signature present but identity.issuer is empty"
+    # Select by MEMBERSHIP, not by a truthy value: an issuer named with an unusable
+    # key (``""`` from ``_coerce_public_keys``) must still never reach the HMAC path.
+    public_keys = public_keys or {}
+    if issuer in public_keys:
+        public_key = public_keys[issuer]
+        if ed25519_verify(public_key, policy_signing_payload(data), signature):
+            return SIGNATURE_VERIFIED, f"issuer {issuer!r} (ed25519)"
+        return (
+            SIGNATURE_UNVERIFIED,
+            f"signature does not verify against the Ed25519 public key for issuer {issuer!r}",
+        )
     secret = trust_keys.get(issuer)
     if not secret:
         return SIGNATURE_UNVERIFIED, f"no trust key for issuer {issuer!r}"
@@ -3047,8 +3137,12 @@ def _policy_signature_state(
     return SIGNATURE_UNVERIFIED, f"signature does not match trust key for issuer {issuer!r}"
 
 
-def _policy_trust_settings() -> Tuple[bool, Dict[str, str]]:
-    """Read the operator-controlled trust root: ``(require_policy_signature, keys)``.
+def _policy_trust_settings() -> Tuple[bool, Dict[str, str], Dict[str, str]]:
+    """Read the operator-controlled trust root.
+
+    Returns ``(require_policy_signature, trust_keys, trust_public_keys)`` from ONE
+    read, so a verification never pairs a symmetric map and a public-key map taken
+    from two different versions of a trust root mid-push.
 
     Sourced from the **admission policy** (``KIROCREW_ADMISSION_POLICY`` env path,
     else ``<data home>/admission_policy.json``) rather than from a new key store,
@@ -3078,10 +3172,14 @@ def _policy_trust_settings() -> Tuple[bool, Dict[str, str]]:
     """
     try:
         adm = read_policy_trust_root()
-        return bool(adm.require_policy_signature), dict(adm.trust_keys)
+        return (
+            bool(adm.require_policy_signature),
+            dict(adm.trust_keys),
+            dict(adm.trust_public_keys),
+        )
     except Exception:
         logger.debug("policy trust settings unavailable", exc_info=True)
-        return False, {}
+        return False, {}, {}
 
 
 def _policy_signature_required() -> bool:
@@ -3170,8 +3268,8 @@ def _verify_policy_signature(data: Mapping[str, object], *, source: str) -> str:
 
     Returns the state to record on the ceiling.  Never raises.
     """
-    _, trust_keys = _policy_trust_settings()
-    state, detail = _policy_signature_state(data, trust_keys)
+    _, trust_keys, public_keys = _policy_trust_settings()
+    state, detail = _policy_signature_state(data, trust_keys, public_keys)
     _audit_policy_signature(state, detail, source)
     return state
 
@@ -3990,16 +4088,29 @@ def resolve(
     """
     policy_control = ceiling.get(scope) if ceiling is not None else None
     policy_dec = _query_level(policy_control, scope, item)
+    profile_control = profile.get(scope) if profile is not None else None
     if not policy_dec.permitted:
+        # Same provenance rule as ``_AndRuleset.permits``: a policy allow-mode
+        # miss is the answer, but a profile deny beneath it still marks the
+        # refusal as an explicit deny.
+        _below = _query_level(profile_control, scope, item)
         return Decision(
-            False, f"policy denies: {policy_dec.reason}", rule=policy_dec.rule, layer="policy"
+            False,
+            f"policy denies: {policy_dec.reason}",
+            rule=policy_dec.rule,
+            layer="policy",
+            explicit_deny=policy_dec.explicit_deny
+            or (not _below.permitted and _below.explicit_deny),
         )
 
-    profile_control = profile.get(scope) if profile is not None else None
     profile_dec = _query_level(profile_control, scope, item)
     if not profile_dec.permitted:
         return Decision(
-            False, f"profile denies: {profile_dec.reason}", rule=profile_dec.rule, layer="profile"
+            False,
+            f"profile denies: {profile_dec.reason}",
+            rule=profile_dec.rule,
+            layer="profile",
+            explicit_deny=profile_dec.explicit_deny,
         )
 
     layer = (
@@ -4024,6 +4135,8 @@ def gate_decision(
     diff_path: str = "",
     mcp_ref: str = "",
     extra_titles: Tuple[str, ...] = (),
+    alias_groups: Tuple[Tuple[str, ...], ...] = (),
+    deny_aliases: Tuple[str, ...] = (),
 ) -> Decision:
     """Resolve a PreToolUse gate title against the governance ceiling ∩ profile.
 
@@ -4055,8 +4168,30 @@ def gate_decision(
     re-resolves the active profile, so a hot reload between the two could answer
     each question from a different snapshot and permit a tool that both complete
     profiles deny. Empty entries are ignored.
+
+    ``alias_groups`` carries identities that have SEVERAL spellings for ONE tool
+    -- a KAS built-in's raw id beside the kiro-cli name a rule about it is
+    written under (``("str_replace", "fs_write")``). A group is one question:
+    it is DENIED if any spelling meets an explicit deny rule at either level (a
+    deny-mode ``tools.deny: ["str_replace"]`` still binds), and otherwise
+    PERMITTED when EACH governing level permits some spelling -- the OR is taken
+    within a level and the intersection across levels, so a ceiling granting
+    ``str_replace`` beneath a profile granting ``fs_write`` admits the one tool
+    both granted, while an allow-mode profile listing only ``fs_write`` admits
+    the call rather than also demanding the raw id no operator wrote. A group
+    member that is also the display title covers the title, so the title is not
+    asked a second time as a lone item the allow set would have to carry.
+
+    ``deny_aliases`` carries spellings whose rules may REFUSE the call but never
+    admit it -- a KAS ``delete_file`` reads under ``fs_write`` because an operator
+    who denied writes denied deletes, yet kiro-cli's ``fs_write`` cannot delete,
+    so an allow-mode rule naming ``fs_write`` must not become a deletion grant.
+    Each is asked for an explicit deny only; an allow-mode miss on it is not a
+    refusal, and the identity itself (in ``extra_titles`` or the title) still
+    has to be permitted on its own name.
     """
-    pairs = list(classify_tool_title(tool_title))
+    _grouped = {s for group in alias_groups for s in group if s}
+    pairs = list(classify_tool_title(tool_title)) if tool_title not in _grouped else []
     # Additional NON-model-authored titles the caller holds for the same call --
     # e.g. the trusted ``_meta.kiro.toolName`` beside an LLM-authored display
     # title. They are classified here, in ONE decision, rather than asked as
@@ -4076,8 +4211,20 @@ def gate_decision(
     # Order-preserving dedupe -- a caller whose title already equals its trusted
     # identity must not pay the same resolve twice.
     pairs = list(dict.fromkeys(pairs))
-    if not pairs:
+    if not pairs and not alias_groups and not deny_aliases:
         return Decision(True, "title not name-gate-governed", rule="default")
+    # Deny-only spellings first: an explicit deny written under the alias binds
+    # the identity, and nothing else about the alias is consulted -- an
+    # allow-mode set that does not list it is not a refusal, because the alias
+    # is not a grant surface for this identity. The identity's own name is still
+    # in ``pairs`` and has to be permitted there.
+    for alias in deny_aliases:
+        if not alias:
+            continue
+        for scope, item in dict.fromkeys(classify_tool_title(alias)):
+            decision = resolve(ceiling, profile, scope, item)
+            if not decision.permitted and decision.explicit_deny:
+                return replace(decision, item=item)
     # Deny if ANY governed scope the title/args map to denies it (the unprefixed
     # case maps to both commands+tools; an ungoverned scope permits, so this only
     # tightens).  Return the first denial for a precise audit reason.
@@ -4088,6 +4235,47 @@ def gate_decision(
             # query the caller cannot infer it, and an audit naming the prose
             # title instead of the trusted tool name is a misleading record.
             return replace(decision, item=item)
+    # One identity, several spellings. An explicit deny on any spelling is final
+    # -- read from ``explicit_deny``, which every fold carries through, never
+    # from the ``rule`` label, which a composed ruleset relabels
+    # ``rule2-intersect`` and would hide a subordinate tier's deny behind an
+    # authority's allow. Short of that, the group is judged PER LAYER: a layer
+    # permits the identity if it permits any spelling, and the identity is
+    # admitted when every layer does. Resolving each spelling through the
+    # intersection first would refuse a ceiling that grants ``str_replace``
+    # beneath a profile that grants ``fs_write`` -- each layer granted the one
+    # tool, in its own vocabulary -- so the OR is taken inside each layer and the
+    # intersection across them. Spellings are tried in order and a refusing
+    # layer's LAST refusal is the one reported, so an allow-mode miss is named
+    # in the vocabulary the operator writes rules in.
+    for group in alias_groups:
+        spellings = [s for s in group if s]
+        if not spellings:
+            continue
+        refusal: Optional[Decision] = None
+        for layer_ceiling, layer_profile in ((ceiling, None), (None, profile)):
+            if layer_ceiling is None and layer_profile is None:
+                continue
+            admitted = False
+            last_refusal: Optional[Decision] = None
+            for spelling in spellings:
+                spelling_ok = True
+                for scope, item in dict.fromkeys(classify_tool_title(spelling)):
+                    decision = resolve(layer_ceiling, layer_profile, scope, item)
+                    if decision.permitted:
+                        continue
+                    if decision.explicit_deny:
+                        return replace(decision, item=item)
+                    spelling_ok = False
+                    last_refusal = replace(decision, item=item)
+                if spelling_ok:
+                    admitted = True
+            # Every layer is walked before a refusal is answered, so an explicit
+            # deny in the second layer is reported over an allow-miss in the first.
+            if not admitted and last_refusal is not None and refusal is None:
+                refusal = last_refusal
+        if refusal is not None:
+            return refusal
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
 
 
@@ -4576,6 +4764,201 @@ def strip_ungoverned_auto_approve(
     return out
 
 
+def _confirm_tool_patterns() -> tuple[str, ...] | None:
+    """The operator's ``hooks.confirm_tools`` patterns from ``config.json``.
+
+    ``()`` means no pattern is set. ``None`` means the operator may have set
+    patterns this read cannot see; the static writers then withhold every MCP
+    grant and the gate withholds every operator grant.
+
+    A load can stand in defaults for settings it could not read: the read
+    raised, a file did not parse (whole-config degradation, an unreadable base
+    file), or a ``hooks`` section is not an object. Those defaults cannot show
+    the list is empty, and they cannot show it is set either, so the files on
+    disk decide (:func:`_config_files_state`). While a file does not read as
+    written NOW, the list is unknown if some config file names the key.
+    Otherwise the loaded values stand: defaults for a torn file that never
+    names the key (every grant stays as it is with the key unset), the
+    watcher's last good values while it keeps them, and the real values once
+    the loader's process-lifetime degradation flag has gone stale.
+    """
+    loaded = True
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+
+        cfg = live.snapshot() or KiroCrewConfig.load()
+        degraded: frozenset[str] = getattr(cfg, "degraded_sections", frozenset())
+        hooks = cfg.hooks
+        stood_in = (
+            DEGRADED_WHOLE_CONFIG in degraded
+            or "hooks" in degraded
+            or bool(getattr(cfg, "_base_unreadable", False))
+            or not isinstance(hooks, (dict, type(None)))
+        )
+    except Exception:  # noqa: BLE001 — a config read must not break a writer
+        logger.warning("config read failed; judging hooks.confirm_tools from the files")
+        logger.debug("hooks.confirm_tools read failed", exc_info=True)
+        hooks, stood_in, loaded = None, True, False
+    if stood_in:
+        torn, names_key = _config_files_state()
+        if (torn or not loaded) and names_key:
+            return None
+        if not loaded:
+            return ()
+        # Every file reads as written, or none that does not names the key:
+        # the loaded values below are the whole story.
+    if not isinstance(hooks, dict) or "confirm_tools" not in hooks:
+        return ()
+    raw = hooks["confirm_tools"]
+    if not isinstance(raw, list):
+        # The operator wrote the key but not as a list: what they meant to
+        # confirm cannot be read, so it is unknown, not empty.
+        return None
+    return tuple(p for p in raw if isinstance(p, str))
+
+
+def _config_files_state() -> tuple[bool, bool]:
+    """``(torn, names_key)`` for the config files on disk now.
+
+    *torn*: a present ``config.json`` / ``config.local.json`` cannot be read,
+    does not parse as a JSON object, or holds a ``hooks`` value that is not an
+    object -- the cases where a load stands in defaults. *names_key*: some file
+    names the ``confirm_tools`` key, or cannot be read at all (bytes that cannot
+    be read cannot show the key unset). Only an operator who wrote the key can
+    have asked for a confirmation, so a torn file without it (a trailing comma)
+    keeps every grant, Crew's own ``@kirocrew-*`` included.
+    """
+    try:
+        from kiro_crew.config.loader import config_local_path, config_path, read_config_text
+
+        paths = (config_path(), config_local_path())
+    except Exception:  # noqa: BLE001 — a config read must not break a writer
+        logger.debug("config paths unavailable", exc_info=True)
+        return True, True
+    torn = names_key = False
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            text = read_config_text(path)
+        except Exception:  # noqa: BLE001 — bytes that cannot be read cannot show the key unset
+            logger.debug("config file unreadable: %s", path, exc_info=True)
+            return True, True
+        names_key = names_key or "confirm_tools" in text
+        try:
+            data = json.loads(text)
+        except ValueError:
+            torn = True
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+            torn = True
+    return torn, names_key
+
+
+def confirm_tools_unknown() -> bool:
+    """Whether the operator may have set ``hooks.confirm_tools`` patterns no read can see.
+
+    The gate's own ``HooksConfig`` is built from the same degraded load, which can
+    keep a base file's ``auto_approve_tools`` while dropping a torn overlay's
+    ``confirm_tools``; this flag is how it learns to withhold those grants too.
+    """
+    return _confirm_tool_patterns() is None
+
+
+def confirm_tools_unknown_now() -> bool:
+    """:func:`confirm_tools_unknown` as the config watcher holds it now, for the gate.
+
+    The gate's ``HooksConfig`` flag is set when that config is built. A tear the
+    watcher rides out builds none: it keeps the last good values, so nothing
+    changed and nothing is dispatched, yet the overlay it cannot read may hold
+    the patterns. The watcher's snapshot does carry the tear's degradation flag,
+    and while it does the files on disk decide, so the gate asks this on each
+    call it would otherwise settle.
+
+    Without a running watcher no reload replaces the gate's config, and the flag
+    set when it was built is the answer: this returns False without loading
+    anything. A watcher that cannot be read answers True, toward a confirmation.
+    The cost is attribute reads until the process has seen a degraded load, and
+    two config file reads per call after that.
+    """
+    try:
+        from kiro_crew.config import live
+
+        if live.snapshot() is None:
+            return False
+    except Exception:  # noqa: BLE001 — an unreadable watcher must not grant
+        logger.debug("config watcher unreadable; treating hooks.confirm_tools as unknown")
+        return True
+    return confirm_tools_unknown()
+
+
+def server_requires_confirmation(server: str, patterns: Sequence[str]) -> bool:
+    """Whether a ``confirm_tools`` pattern can match a call on MCP server ``server``.
+
+    The gate matches a pattern case-insensitively, with ``fnmatch`` wildcards that
+    also consume ``/``, against the call's identity spellings ``@server``,
+    ``@server/tool`` and ``Running: @server/tool``. A static grant hides every one
+    of those calls from the gate, so it is withheld whenever the pattern could
+    match ANY of them, for a tool name not known here.
+
+    The test is on the pattern's literal prefix (the text before its first
+    wildcard): every string the pattern matches starts with that prefix, so a
+    pattern whose prefix is compatible with neither ``@server/`` nor
+    ``running: @server/`` cannot match a call on this server. The test errs
+    toward withholding, which costs a prompt the gate then settles. A pattern
+    with no wildcard is compared exactly. A pattern that names a call only by its
+    model-authored title acts at the gate alone.
+    """
+    target = server.lower()
+    heads = (f"@{target}/", f"running: @{target}/")
+    exact = (f"@{target}", f"running: @{target}")
+    for pattern in patterns:
+        text = pattern.strip().lower()
+        cut = min((i for i, ch in enumerate(text) if ch in "*?["), default=-1)
+        if cut < 0:
+            if text in exact or text.startswith(heads):
+                return True
+            continue
+        prefix = text[:cut]
+        if prefix.startswith(heads) or any(head.startswith(prefix) for head in heads):
+            return True
+    return False
+
+
+def _operator_requires_confirmation(ref: str) -> bool:
+    """Whether ``hooks.confirm_tools`` names, or may name, the MCP server ``ref`` grants.
+
+    A list the operator may have set but that cannot be read now counts as
+    naming every server, so the grant is withheld and the gate settles each call
+    (see :func:`_confirm_tool_patterns`).
+
+    A grant ref is itself a pattern: ``*`` or ``@*`` covers every MCP call, and
+    ``@ser*`` covers every server whose name starts ``ser``. Such a ref is
+    withheld whenever any confirm pattern is listed, since the servers it covers
+    are not known here. A ref without a wildcard in its server segment is judged
+    for that one server. A ref whose literal prefix cannot begin with ``@`` (a
+    builtin such as ``fs_*``) covers no MCP call.
+    """
+    if not isinstance(ref, str):
+        return False
+    cut = min((i for i, ch in enumerate(ref) if ch in "*?["), default=-1)
+    literal = ref if cut < 0 else ref[:cut]
+    if not literal.startswith("@") and literal != "":
+        return False
+    server, sep, _ = literal[1:].partition("/")
+    names_one_server = literal.startswith("@") and bool(server) and (sep or cut < 0)
+    if not names_one_server and cut < 0:
+        return False
+    patterns = _confirm_tool_patterns()
+    if patterns is None:
+        return True
+    if not names_one_server:
+        return bool(patterns)
+    return server_requires_confirmation(server, patterns)
+
+
 def may_skip_gate_now(ref: str) -> bool:
     """:func:`may_skip_gate` against the CURRENTLY installed ceiling.
 
@@ -4591,7 +4974,24 @@ def may_skip_gate_now(ref: str) -> bool:
     from ``current_context()`` means "ungoverned host, keep every grant"; an
     exception means "there may be a ceiling and we cannot read it", and answering
     "skip the gate" to that is the bypass itself.
+
+    The operator's own ``hooks.confirm_tools`` opt-in withholds too: a server it
+    names asks on every call, so no writer may grant it statically.
     """
+    return _policy_may_skip_gate_now(ref) and not _operator_requires_confirmation(ref)
+
+
+def withheld_by_confirm_tools(ref: str) -> bool:
+    """Whether ``hooks.confirm_tools``, and not the security policy, withholds ``ref``'s grant.
+
+    For a writer that explains a withheld grant (doctor), so an operator's own
+    confirm list is not reported as an enterprise ceiling.
+    """
+    return _policy_may_skip_gate_now(ref) and _operator_requires_confirmation(ref)
+
+
+def _policy_may_skip_gate_now(ref: str) -> bool:
+    """The security-policy half of :func:`may_skip_gate_now`: ceiling and profiles."""
     try:
         from kiro_crew.platform.context import current_context
 

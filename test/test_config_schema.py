@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import re
+import types
 import typing
 
 from hypothesis import given
@@ -329,6 +330,11 @@ class TestConfigSchemaProperties:
             if dataclasses.is_dataclass(tp) and isinstance(tp, type):
                 expected_type = "object"
                 expected_has_children = True
+            elif origin in (typing.Union, types.UnionType):
+                # A scalar union (``int | str`` for an int knob that also
+                # takes "auto") flattens to its leading member's type.
+                expected_type = _EXPECTED_TYPE_MAP[typing.get_args(tp)[0]]
+                expected_has_children = False
             elif origin is not None:
                 base = origin
                 expected_type = _EXPECTED_TYPE_MAP.get(base, "string")

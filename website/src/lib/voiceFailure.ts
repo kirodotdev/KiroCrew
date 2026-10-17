@@ -8,14 +8,22 @@ export interface VoiceFailure {
   report: ErrorReport
 }
 
-export const voiceFailureMessage = (code: string) => code === 'voice_playback_blocked'
-  ? i18nT('components.voicePlaybackNotice.blocked', {
-    moreActions: i18nT('pages.chat.assistantMessage.more_actions'),
-    speak: i18nT('pages.chat.assistantMessage.speak'),
-  })
-  : i18nT('components.voicePlaybackNotice.failed', {
-    speak: i18nT('pages.chat.assistantMessage.speak'),
-  })
+export const voiceFailureMessage = (code: string) => {
+  const speak = i18nT('pages.chat.assistantMessage.speak')
+  if (code === 'voice_playback_blocked') {
+    return i18nT('components.voicePlaybackNotice.blocked', {
+      moreActions: i18nT('pages.chat.assistantMessage.more_actions'),
+      speak,
+    })
+  }
+  // No Amazon Polly consent is recorded for the selected profile and region.
+  // Retrying cannot help until the operator confirms it, so the sentence names
+  // that step.
+  if (code === 'voice_consent_required') {
+    return i18nT('components.voicePlaybackNotice.consent_required', { speak })
+  }
+  return i18nT('components.voicePlaybackNotice.failed', { speak })
+}
 
 /** Journal at the playback owner: ChatPage may be unmounted when audio fails.
  * The notice receives this same report, so presenting it never records it twice. */

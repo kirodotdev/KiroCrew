@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -400,7 +401,8 @@ def _dispatch_owners() -> list[Path]:
     pkg = Path(Q.__file__).resolve().parent.parent
     found = sorted(pkg.glob("*/dispatch/*.py"))
     assert len(found) >= 8, f"expected telegram's dispatch owners, found {found}"
-    return found
+    # Discord's owners sit beside its facade (``discord/transport_dispatch_*.py``).
+    return found + sorted(pkg.glob("*/transport_dispatch_*.py"))
 
 
 #: The two names a drain reaches the flip through: the registry transition itself, and a
@@ -558,11 +560,21 @@ class TestAnAddressKeyNamesOneConversation:
         the failure surfaces as an attribute error in whichever suite happens to touch
         it rather than at the fake's own definition. Checked as an ASSIGNMENT, because a
         mention in a docstring satisfies a substring search and writes nothing.
+
+        Only a file whose text can spell ``send_receipt`` is parsed. A method name is
+        an identifier in the source, and the parser folds identifiers through NFKC, so
+        a file holding neither the literal name nor an NFKC form of it cannot define the
+        method. Parsing every test file costs most of the per-test time budget.
         """
         root = Path(Q.__file__).resolve().parent.parent.parent.parent
         missing = []
         for path in sorted((root / "test").glob("test_*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            src = path.read_text(encoding="utf-8")
+            if "send_receipt" not in src and (
+                src.isascii() or "send_receipt" not in unicodedata.normalize("NFKC", src)
+            ):
+                continue
+            tree = ast.parse(src)
             for node in ast.walk(tree):
                 if not isinstance(node, ast.ClassDef):
                     continue
@@ -594,7 +606,12 @@ class TestAnAddressKeyNamesOneConversation:
         """
         missing = []
         for path in _dispatchers():
-            src = path.read_text(encoding="utf-8")
+            # Read with the owners in the channel's ``dispatch`` package, where a composed
+            # dispatcher builds its surface (Telegram's turn queue).
+            src = "".join(
+                q.read_text(encoding="utf-8")
+                for q in [path, *sorted((path.parent / "dispatch").glob("*.py"))]
+            )
             if "ReceiptSurface" not in src:
                 continue
             if "receipt_address_key(" not in src:
@@ -1559,7 +1576,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
         """
         seen = 0
         offenders: list[str] = []
-        for path in _dispatchers():
+        for path in _dispatchers() + _dispatch_owners():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

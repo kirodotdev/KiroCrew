@@ -7,11 +7,13 @@ import logging
 import os
 import re
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -22,7 +24,7 @@ from kiro_crew.dashboard.slot_ownership import TASK_REVIEW_SLOT_PREFIX, task_rev
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, bind_session_execution
 from kiro_crew.hooks import FileTooLargeError, validate_file_path
-from kiro_crew.llm_helpers import _steer_host_deny
+from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.security import (
     is_sensitive_path,
     is_sensitive_resolved_path,
@@ -55,10 +57,32 @@ def _canonical_task_reference(runner: TaskRunner, reference: str, *, first: bool
     return matches[0 if first else -1].task_id if matches else reference
 
 
-async def _task_result_slot(request: web.Request, state: DashboardState, task_id: str):
-    """Continue the owning project's exact execution in a fresh chat session."""
-    run = state.task_runner._runs.get(task_id) if state.task_runner else None
-    execution = run.execution_context if run else None
+#: ``DashboardState`` attribute mapping a run completion to the key of the chat slot
+#: opened for it, or to an ``asyncio.Event`` while that slot is being opened.
+_RESULT_SLOTS_ATTR = "_task_result_slots"
+_RESULT_SLOTS_MAX = 512
+
+
+#: Statuses a run passes through on its way to the one it settles on during cleanup.
+_SETTLING_STATUS = {"cancelling": "cancelled", "pausing": "paused"}
+
+
+def _completion_identity(run, branch: str) -> tuple[str, float, str, str]:
+    """One run attempt in one state: executing, resuming and retrying each stamp a new start.
+
+    The status separates a click while the run is still going from a click on its
+    outcome, so the outcome's results and prompt reach a chat of their own. A
+    status the run settles out of during cleanup counts as the one it settles on.
+    The finish time is not part of it: the runner announces a completion and then
+    stamps the finish time again once its sessions are cleaned up, so a click on
+    either side of that cleanup is still the same attempt.
+    """
+    status = _SETTLING_STATUS.get(run.status, run.status)
+    return (run.task_id, run.started_at, status, branch)
+
+
+async def _open_result_slot(state: DashboardState, task_id: str, execution):
+    """A new slot continuing the run's exact execution, or a plain chat without one."""
     if execution is None:
         return state.get_or_create_slot()
     token = uuid.uuid4().hex
@@ -76,6 +100,46 @@ async def _task_result_slot(request: web.Request, state: DashboardState, task_id
     slot.agent = execution.selection_name or execution.template_id
     slot._app = execution.app
     return slot
+
+
+async def _task_result_slot(request: web.Request, state: DashboardState, task_id: str, branch: str):
+    """The chat slot continuing one completion of *task_id*, and whether it is new.
+
+    A run attempt in one state (the run's start time and status) opens one slot per
+    *branch*, ``plan`` or ``review``. While that slot is open every call returns it
+    with ``False``, so a repeated click lands on the conversation already working in
+    the run's directory instead of starting a second agent there. A retry's or a
+    resume's new start time opens a new slot, as does the run reaching its outcome
+    after a click while it was going, and a call after the slot was closed.
+    """
+    run = state.task_runner._runs.get(task_id) if state.task_runner else None
+    if run is None:
+        return state.get_or_create_slot(), True
+    slots = getattr(state, _RESULT_SLOTS_ATTR, None)
+    if slots is None:
+        slots = OrderedDict()
+        setattr(state, _RESULT_SLOTS_ATTR, slots)
+    identity = _completion_identity(run, branch)
+    while isinstance(entry := slots.get(identity), asyncio.Event):
+        # Another call is opening this completion's slot; its outcome decides this one.
+        await entry.wait()
+    live = state.get_slot(entry) if entry else None
+    if live is not None:
+        return live, False
+    opening = asyncio.Event()
+    slots[identity] = opening
+    try:
+        slot = await _open_result_slot(state, task_id, run.execution_context)
+        slots[identity] = slot.key
+    except BaseException:
+        slots.pop(identity, None)
+        raise
+    finally:
+        opening.set()
+    slots.move_to_end(identity)
+    while len(slots) > _RESULT_SLOTS_MAX:
+        slots.popitem(last=False)
+    return slot, True
 
 
 def _sel():
@@ -181,6 +245,7 @@ async def api_taskrunner_status(request: web.Request) -> web.Response:
         return refusal
     visible_sources = {"text", "spec", "file", "chat", "dashboard", "mcp", "yaml"}
     data["runs"] = [r for r in data["runs"] if r.get("source") in visible_sources]
+    data["running"] = any(row.get("running") for row in data["runs"])
     for run in data["runs"]:
         if run.get("error"):
             run["error"] = redact_exfiltration_urls(run["error"])[0]
@@ -392,6 +457,14 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
                 {"error": "invalid spec path", "code": "invalid_spec_path"}, status=400
             )
         spec_path = validated
+
+    # Checked before the inline spec is written, so a refusal leaves nothing behind.
+    # Disabled in Library means no new runs: the run would have no page to
+    # watch or stop it from.
+    if await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+        return web.json_response(
+            {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
+        )
 
     # Handle inline spec content
     created_spec: Path | None = None
@@ -743,7 +816,9 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     # Handle planned runs — send to chat for optimization
     if run.status == "planned":
         summary = state.task_runner.plan_to_chat_context(task_id)
-        slot = await _task_result_slot(request, state, task_id)
+        slot, fresh = await _task_result_slot(request, state, task_id, "plan")
+        if not fresh:
+            return web.json_response({"ok": True, "slot": slot.key, "task_id": task_id})
         slot.title = f"Plan: {run.task_id}"
         slot.append("user", summary, "msg msg-u")
         from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
@@ -816,7 +891,10 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
         )
     summary = "\n".join(lines)
 
-    slot = await _task_result_slot(request, state, task_id)
+    slot, fresh = await _task_result_slot(request, state, task_id, "review")
+    if not fresh:
+        # The open review tab already holds this summary and its turn.
+        return web.json_response({"ok": True, "slot": slot.key})
     slot.title = f"Review: {spec_name}"
     slot.append("user", summary, "msg msg-u")
 
@@ -1206,6 +1284,12 @@ async def _run_refine(
                 )
                 await client.reject_tool(event.request_id)
             elif event.kind == EVENT_COMPLETE:
+                # A refine the backend never finished is not a finished spec: the
+                # error branch below sets status "error", and the partial text is
+                # still broadcast with it, so it reads as cut off.
+                unfinished = unfinished_turn_error(event, state._refine_text)
+                if unfinished is not None:
+                    raise unfinished
                 break
 
         _push()

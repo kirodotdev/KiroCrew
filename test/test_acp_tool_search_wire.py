@@ -373,6 +373,7 @@ class TestProjectedSpawnSpecRead:
         """A checkout that skipped setup has no managed spec yet; reading it as
         absent would decide "no loader" for the process while the projection,
         moments later, materializes a spec that grants one."""
+        from kiro_crew.acp import kas_agents as kas_agents_mod
         from kiro_crew.acp import runtime as runtime_mod
 
         calls: list[str] = []
@@ -382,7 +383,7 @@ class TestProjectedSpawnSpecRead:
             lambda agent: calls.append(f"materialize:{agent}"),
         )
         monkeypatch.setattr(
-            runtime_mod,
+            kas_agents_mod,
             "load_agent_spec",
             lambda agents_dir, agent: (calls.append(f"load:{agent}"), {"tools": ["tool_search"]})[
                 1
@@ -397,6 +398,7 @@ class TestProjectedSpawnSpecRead:
     def test_a_derived_snapshot_is_used_without_any_read(self, monkeypatch):
         from types import SimpleNamespace
 
+        from kiro_crew.acp import kas_agents as kas_agents_mod
         from kiro_crew.acp import runtime as runtime_mod
 
         monkeypatch.setattr(
@@ -405,7 +407,7 @@ class TestProjectedSpawnSpecRead:
             lambda agent: (_ for _ in ()).throw(AssertionError("must not materialize")),
         )
         monkeypatch.setattr(
-            runtime_mod,
+            kas_agents_mod,
             "load_agent_spec",
             lambda *a: (_ for _ in ()).throw(AssertionError("must not read")),
         )
@@ -415,11 +417,12 @@ class TestProjectedSpawnSpecRead:
         assert rt._projected_spawn_spec() == {"tools": ["fs_read"]}
 
     def test_an_unreadable_spec_grants_nothing(self, monkeypatch):
+        from kiro_crew.acp import kas_agents as kas_agents_mod
         from kiro_crew.acp import runtime as runtime_mod
 
         monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
         monkeypatch.setattr(
-            runtime_mod,
+            kas_agents_mod,
             "load_agent_spec",
             lambda *a: (_ for _ in ()).throw(FileNotFoundError("gone")),
         )

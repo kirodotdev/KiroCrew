@@ -23,13 +23,14 @@ Two properties are security-critical rather than merely tidy:
   than riding inside that one.
 
 Every test patches ``kiro_crew.agent``'s module globals with the
-``patch.multiple`` + ``ExitStack`` idiom from ``test_agent.py``, so the real
+``patch.multiple`` + ``ExitStack`` idiom from ``agent_helpers.py``, so the real
 ``~/.kiro`` is never read or written.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -111,7 +112,7 @@ def _bundled_defaults(tmp_path: Path) -> Path:
 def _run_install(tmp_path: Path, cfg_dir: Path, *, managed: "dict | None" = None, **kwargs) -> Path:
     """Run ``install_agent`` with every module global redirected into *tmp_path*.
 
-    The ``patch.multiple`` + ``ExitStack`` shape from ``test_agent.py``. This is
+    The ``patch.multiple`` + ``ExitStack`` shape from ``agent_helpers.py``. This is
     what keeps a test from touching the developer's real ``~/.kiro/agents`` — which
     for THIS feature would mean writing a computer-use MCP entry into their live
     agent config.
@@ -1191,7 +1192,8 @@ class TestSpecEmissionGate:
         from kiro_crew.dashboard.handlers import computer_use as handler
 
         src = inspect.getsource(handler.api_computer_use_config_save)
-        rebuild_at = src.find("rebuild_agent_config")
+        rebuild_call = re.search(r"to_thread\(\s*rebuild_agent_spec\b", src)
+        rebuild_at = rebuild_call.start() if rebuild_call else -1
         reset_at = src.find("_reset_all_sessions")
         assert rebuild_at != -1, "the enable flip must rebuild the agent spec"
         assert reset_at != -1

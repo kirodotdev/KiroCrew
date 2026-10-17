@@ -31,6 +31,7 @@ class SettingsConflictError extends Error {
 const DEFAULTS = {
   triage_labels: [] as string[], unlabeled_is_untriaged: true,
   good_first_issue_labels: [] as string[], notify_on_new_issue: false,
+  notify_on_own_pr_ci_failure: false,
   workspace_path: '', revision: 0,
 }
 vi.mock('../apps/issue-radar/api', () => ({
@@ -351,5 +352,28 @@ describe('RepoSettings — header and failure banners', () => {
 
     expect(await screen.findByText(/Couldn't save your changes/)).toBeInTheDocument()
     expect(screen.getByText(/zzq-save-refused/)).toBeInTheDocument()
+  })
+})
+
+describe('RepoSettings — CI-failure alerts', () => {
+  it('offers an off-by-default toggle on a GitHub repo and saves it on', async () => {
+    renderPage()
+    const toggle = await screen.findByRole('switch', { name: /CI fails on one of my pull requests/ })
+    await waitFor(() => expect(toggle).toHaveProperty('disabled', false))
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    await userEvent.click(toggle)
+    await waitFor(() => expect(api.putSettings).toHaveBeenCalledTimes(1))
+    expect(
+      (api.putSettings.mock.calls[0][1] as { notify_on_own_pr_ci_failure: boolean })
+        .notify_on_own_pr_ci_failure,
+    ).toBe(true)
+  })
+
+  it('is not offered on a GitLab repo', async () => {
+    const gl: RepoRef = { owner: 'zzq-org', repo: 'zzq-pkg', provider: 'gitlab', host: 'gitlab.com' }
+    setCtx({ repos: [{ ...gl, permissions: { push: true } }] })
+    renderPage(gl)
+    await screen.findByRole('switch', { name: /new issue/i })
+    expect(screen.queryByRole('switch', { name: /CI fails/ })).toBeNull()
   })
 })

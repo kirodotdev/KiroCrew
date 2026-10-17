@@ -7,7 +7,7 @@
  *
  * The scene-specific stub is one route, `POST /api/chat/slots/model`, answered
  * two ways the endpoint really answers today (`api_chat_slots_model` in
- * `src/kiro_crew/dashboard/chat_handlers.py`):
+ * `src/kiro_crew/dashboard/chat_api/slot_model.py`):
  *   1. `200 {ok: true, failed: [...]}` — the routine partial outcome: some
  *      slots' resets raised, the panel stays open and reports the count.
  *   2. `400 {error: "..."}` — the model-validation refusal. The message mirrors

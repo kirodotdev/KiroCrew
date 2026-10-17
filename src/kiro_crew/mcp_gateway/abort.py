@@ -74,14 +74,11 @@ class RuntimeAbortTarget:
     def build(cls, pid: object, socket_path: object) -> "RuntimeAbortTarget | None":
         """A target for ``pid`` on ``socket_path``, or ``None`` when unroutable.
 
-        The only constructor, and the only predicate any caller of this module
-        needs: ``None`` for a missing socket, a non-integer pid, and any pid at or
-        below 1, since pid 1 is init and 0 addresses a process group, so neither
-        names a runtime this gateway spawned.
-
-        :func:`schedule_abort` keeps a filter of its own because it guards the WIRE
-        for any caller, including one that never held a target. That is a different
-        boundary, not a second copy of this decision.
+        The only constructor, and the only place this module judges an address:
+        ``None`` for a missing socket, a non-integer pid, and any pid at or below
+        1, since pid 1 is init and 0 addresses a process group, so neither names a
+        runtime this gateway spawned. Everything downstream carries a target that
+        already passed here, so the predicate lives here and nowhere else.
         """
         if not socket_path or not isinstance(socket_path, str):
             return None
@@ -101,12 +98,24 @@ def schedule_abort_for(
 ) -> None:
     """Fire-and-forget abort push at a runtime named by an opaque target.
 
-    The seam the session layer uses. No-ops on ``None``, which is what a provider
-    answers when no runtime of its own is reachable.
+    The seam the session layer uses, and the only way to name an abort. No-ops on
+    ``None`` -- what a provider answers when no runtime of its own is reachable --
+    and quietly when there is no running event loop to schedule the push on. Safe
+    to call from sync or async code.
+
+    No address predicate here: holding a non-``None`` target already means
+    :meth:`RuntimeAbortTarget.build` judged the pid and socket routable, so this
+    schedules the push without re-deciding.
     """
     if target is None:
         return
-    schedule_abort(target._socket_path, [target._wire_pid], reason)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(send_abort(target._socket_path, [target._wire_pid], reason))
+    _PENDING.add(task)
+    task.add_done_callback(_PENDING.discard)
 
 
 def build_abort_frame(pids: list[int], reason: str) -> dict:
@@ -179,28 +188,3 @@ async def send_abort(
             exc,
         )
         return {}
-
-
-def schedule_abort(
-    socket_path: Optional[str],
-    pids: list[int],
-    reason: str = "session hard-stop",
-) -> None:
-    """Fire-and-forget abort push. Safe to call from sync or async code.
-
-    No-ops quietly when preconditions are missing (no gateway socket,
-    empty pids list, or no running event loop).
-    """
-    if not socket_path or not isinstance(socket_path, str) or not pids:
-        return
-    # Filter invalid PIDs
-    valid_pids = [p for p in pids if isinstance(p, int) and not isinstance(p, bool) and p > 1]
-    if not valid_pids:
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = loop.create_task(send_abort(socket_path, valid_pids, reason))
-    _PENDING.add(task)
-    task.add_done_callback(_PENDING.discard)

@@ -136,10 +136,60 @@ def release_store_use_lock(fd: int | None) -> None:
         os.close(fd)
 
 
+def _acquire_store_use_lock_for_read(db_path: Path, *, read_only_view: bool) -> int | None:
+    """Hold one store generation for a reader whose view may refuse the lock's write.
+
+    Unless *read_only_view* confirms a read-only mount, :func:`acquire_store_use_lock`
+    runs first, exactly as an opener's does. Where the view refuses its write, the same
+    shared lock is taken through a read-only descriptor on the existing file. A store
+    with no lock file there is read without one: the paths that take this lock
+    exclusively, replacement and pending-restore activation, hold the namespace lock as
+    well, and the reader already holds that. A lock file this path refuses raises
+    :class:`memory_stores.UnknownMemoryStore`, the namespace lock's own refusal, so a
+    command boundary handles both the same way.
+    """
+    if not read_only_view:
+        try:
+            return acquire_store_use_lock(db_path)
+        except OSError as exc:
+            if not memory_stores.is_lock_write_refusal(exc):
+                raise
+    lock_path = backup_directory(db_path) / _STORE_USE_LOCK
+    if lock_path.resolve() != lock_path.absolute():
+        raise memory_stores.UnknownMemoryStore("Member memory use lock is redirected")
+    fd = memory_stores.open_existing_lock_read_only(
+        lock_path,
+        refusal=memory_stores.UnknownMemoryStore,
+        defect="Member memory use lock is not a private regular file",
+    )
+    if fd is None:
+        logger.warning(
+            "memory store use lock %s does not exist and this process cannot create it; "
+            "reading the store without it",
+            lock_path,
+        )
+        return None
+    try:
+        platform_compat.acquire_lock(fd, exclusive=False)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 @contextmanager
 def hold_stores_for_read(stores_root: Path) -> Iterator[None]:
-    """Keep enumerated store generations in place until every file has been copied."""
-    with memory_stores.memory_store_namespace_lock(stores_root), ExitStack() as locks:
+    """Keep enumerated store generations in place until every file has been copied.
+
+    Works on a view of the tree this process cannot write, such as the read-only
+    ``memory_stores/`` a script cron's sandbox binds: both locks are then taken through
+    read-only descriptors on the files the gateway's writers lock, where those exist.
+    """
+    read_only_view = platform_compat.is_readonly_filesystem(stores_root)
+    with (
+        memory_stores.memory_store_namespace_lock(stores_root, read_only_ok=True),
+        ExitStack() as locks,
+    ):
         if stores_root.is_dir():
             for entry in sorted(stores_root.iterdir()):
                 if (
@@ -148,7 +198,9 @@ def hold_stores_for_read(stores_root: Path) -> Iterator[None]:
                     or memory_stores.memory_store_name_defect(entry.name) is not None
                 ):
                     continue
-                fd = acquire_store_use_lock(entry / memory_stores.MEMORY_DB_FILE)
+                fd = _acquire_store_use_lock_for_read(
+                    entry / memory_stores.MEMORY_DB_FILE, read_only_view=read_only_view
+                )
                 locks.callback(release_store_use_lock, fd)
         yield
 

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         _MAX_CAPABILITY_PACKAGE_LEN,
         _VALID_CAPABILITY_PACKAGE_RE,
         DashboardState,
+        SharedAgentHomeRefused,
         _capability_manager,
         _err500,
         _get_config_lock,
@@ -20,9 +21,9 @@ if TYPE_CHECKING:
         _require_owner,
         _sel,
         clear_list_agents_cache,
-        install_agent,
         logger,
         read_bounded_json,
+        rebuild_agent_spec,
     )
 
 
@@ -88,6 +89,16 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package installed while the spec still declares none of it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -104,7 +115,17 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
             # _mcp_lock and does a full RMW of kirocrew.json. If a concurrent app
             # registration holds that lock, a direct call would block the gateway
             # loop until it releases. Every other caller offloads — match it.
-            await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            try:
+                await asyncio.to_thread(_sync_mcp_to_agent, server_id, True)
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -124,6 +145,16 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
     server_id = body.get("server_id", "").strip()
     if not server_id:
         return web.json_response({"error": "server_id required"}, status=400)
+    # Ownership BEFORE the first mutation: the package manager runs ahead of
+    # the spec write, so a refusal reached only at the write leaves the
+    # package uninstalled while the spec still mounts it.
+    from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular: mcp imports agents
+        _agent_home_not_owned,
+    )
+
+    not_owned = await asyncio.to_thread(_agent_home_not_owned, server_id)
+    if not_owned is not None:
+        return not_owned
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -140,7 +171,17 @@ async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
         async with _get_config_lock():
             # Off the loop for the same reason as install: the synchronous
             # _mcp_lock RMW must not block the gateway if app registration holds it.
-            await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            try:
+                await asyncio.to_thread(lambda: _sync_mcp_to_agent(server_id, False, remove=True))
+            except SharedAgentHomeRefused:
+                # Reached only when ownership flipped DURING the package call
+                # above: the preflight ran before it. Answered as the refusal it
+                # is, like every other write failure on this path.
+                from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402 circular
+                    _agent_home_not_owned_response,
+                )
+
+                return _agent_home_not_owned_response(server_id)
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         return web.json_response({"ok": True, "server_id": server_id})
@@ -183,13 +224,19 @@ async def api_capability_skills_install(request: web.Request) -> web.Response:
         res = await mgr.install_skill(package)
         if not res.ok:
             return web.json_response({"error": (res.message or "install failed")[:500]}, status=500)
-        # Regenerate agent config to pick up new skill paths. install_agent()
-        # does filesystem-heavy config rebuilding — offload it so it never
-        # blocks the asyncio event loop (chat/heartbeat) under a slow FS.
-        await asyncio.to_thread(install_agent)
+        # Regenerate agent config to pick up new skill paths, and REPORT whether
+        # it landed. rebuild_agent_spec does filesystem-heavy config rebuilding —
+        # offload it so it never blocks the asyncio event loop (chat/heartbeat)
+        # under a slow FS. The package install above already landed and survives a
+        # declined rebuild (the shared-home guard refuses on a non-default data
+        # home), so a False verdict is not an error — the response says the package
+        # installed but the agent spec may still carry the previous skill paths.
+        spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, "skill install")
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
-        return web.json_response({"ok": True, "package": package})
+        return web.json_response(
+            {"ok": True, "package": package, "agent_spec_rewritten": spec_rewritten}
+        )
     except Exception as exc:
         return _err500(exc)
 
@@ -215,10 +262,16 @@ async def api_capability_skills_uninstall(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": (res.message or "uninstall failed")[:500]}, status=500
             )
-        await asyncio.to_thread(install_agent)
+        # Rebuild the agent config to drop the removed skill paths, and REPORT
+        # whether it landed. The uninstall above already landed and survives a
+        # declined rebuild, so a False verdict is not an error: the response says
+        # the package was removed but the agent spec may still mount it.
+        spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, "skill uninstall")
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
-        return web.json_response({"ok": True, "package": package})
+        return web.json_response(
+            {"ok": True, "package": package, "agent_spec_rewritten": spec_rewritten}
+        )
     except Exception as exc:
         return _err500(exc)
 
@@ -229,7 +282,10 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
     The two differ only in which seam op they call and the failure noun, and both
     must rebuild the agent config afterwards: an agent package carries agents plus
     its own skills and prompt sources, so the on-disk catalog and the generated
-    agent config are both stale until ``install_agent()`` re-runs.
+    agent config are both stale until ``rebuild_agent_spec()`` re-runs. Its verdict
+    rides back on the response as ``agent_spec_rewritten`` so the dashboard can say
+    the package landed but the spec may not have moved (a shared-home guard on a
+    non-default data home declines the write).
 
     Mirrors the guards ``mcp_discover.api_mcp_discover_install`` applies to the
     same seam: an allowlist on the name BEFORE it leaves core, ``_redact_external``
@@ -274,16 +330,24 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
             message = (res.message or f"{verb} failed")[:500]
             return web.json_response({"error": _redact_external(message)}, status=500)
         # Filesystem-heavy config rebuild — offload so it never blocks the asyncio
-        # event loop (chat turn + liveness heartbeat) on a slow FS.
-        await asyncio.to_thread(install_agent)
+        # event loop (chat turn + liveness heartbeat) on a slow FS. REPORT whether
+        # it landed: the package op above already landed and survives a declined
+        # rebuild (the shared-home guard refuses on a non-default data home), so a
+        # False verdict is not an error — the response says the package was
+        # installed/removed but the agent spec may still carry the previous shape.
+        spec_rewritten = await asyncio.to_thread(rebuild_agent_spec, f"agent {verb}")
         # list_agents() caches on a (count, newest-mtime-ns) signature, so a
         # mutation landing inside one mtime tick would otherwise serve a stale
-        # catalog until some unrelated write bumped the signature.
+        # catalog until some unrelated write bumped the signature. Cleared
+        # regardless of the spec verdict: the on-disk package catalog changed even
+        # when the shared-home guard declined to rewrite the generated spec.
         clear_list_agents_cache()
         state: DashboardState = request.app["state"]
         state.push_refresh("agents")
         _audit_capability(f"capability_agent_{verb}", "ok", package)
-        return web.json_response({"ok": True, "package": package})
+        return web.json_response(
+            {"ok": True, "package": package, "agent_spec_rewritten": spec_rewritten}
+        )
     except Exception as exc:
         return _err500(exc)
 

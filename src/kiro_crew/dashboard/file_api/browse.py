@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _WIN_DRIVE_ROOT_RE,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         platform_compat,
     )
 
@@ -29,7 +29,7 @@ def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
 
     Blocking, and unboundedly so: *base* is caller-chosen and defaults to ``$HOME``,
     so the scan is as large as that directory, and every surviving entry additionally
-    pays an ``is_sensitive_path`` call that resolves several paths of its own. Run via
+    pays a sensitive-path check against its ``realpath``. Run via
     ``asyncio.to_thread`` so one large directory cannot hold the sole event loop for
     the duration of the listing.
     """
@@ -42,7 +42,9 @@ def _browse_dirs_sync(base: str, skip: set[str]) -> list[dict]:
                 continue
             # Resolve symlinks before the sensitivity check — a symlink in
             # a benign dir pointing at ~/.aws would otherwise pass through.
-            if is_sensitive_path(os.path.realpath(entry.path)):
+            # The canonical gate matches inline on this worker thread, so a
+            # large listing submits nothing to the ``mc-pathres`` pool.
+            if is_sensitive_canonical_path(os.path.realpath(entry.path)):
                 continue
             dirs.append({"name": entry.name, "path": entry.path})
     except PermissionError:
@@ -77,8 +79,9 @@ def _browse_files_sync(base: str, skip: set[str]) -> tuple[list[dict], list[dict
             if entry.name.startswith(".") and not is_dir:
                 continue
             # Resolve symlinks before the sensitivity check — a symlink in a
-            # benign dir pointing at ~/.aws would otherwise pass through.
-            if is_sensitive_path(os.path.realpath(entry.path)):
+            # benign dir pointing at ~/.aws would otherwise pass through. Same
+            # inline canonical gate as the directory listing above.
+            if is_sensitive_canonical_path(os.path.realpath(entry.path)):
                 continue
             # Capture mtime so the activity-panel browser can offer a
             # sort-by-date option; fall back to 0 on a race (entry removed

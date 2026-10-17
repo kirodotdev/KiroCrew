@@ -39,6 +39,7 @@ from kiro_crew.agent_discovery import (
     read_agent_spec_strict,
     spec_by_declared_name,
 )
+from kiro_crew.agent_sdk.mcp_refs import per_tool_grants
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
     is_markdown_spec,
@@ -81,6 +82,7 @@ from kiro_crew.history import (
     transcript_stems,
     transcript_withholds_derivation,
 )
+from kiro_crew.kiro_cli import kiro_cli_version_at, pin_kiro_cli
 from kiro_crew.kiro_prerequisite import spawn_supervised_oneshot
 from kiro_crew.label_guard import PROSE_OPENERS, is_verdict_reply, looks_like_prose
 from kiro_crew.llm_helpers import run_bg_oneliner
@@ -258,7 +260,9 @@ _BONUS_COLON_RE = re.compile(
 # --- Text-scrape back-off --------------------------------------------------
 # The `/usage` text scrape is a kiro-cli slash command handled locally: it calls
 # the same free GetUsageLimits API the primary path uses and prints the usage
-# table, so no prompt reaches a model and the read costs no credits. It is the
+# table, so no prompt reaches a model and the read costs no credits. That holds
+# only on kiro-cli's V2 engine -- the V3 engine sends `/usage` to the model as a
+# prompt -- so the scrape pins V2 (see :func:`_usage_scrape_argv`). It is the
 # automatic fallback whenever the API path returns no plan. What it does cost is
 # a subprocess (whoami + the scrape, up to a minute and a half) on every refresh
 # interval, so a scrape that keeps producing unparseable output (kiro-cli format
@@ -763,12 +767,41 @@ def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | Non
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+#: Lowest kiro-cli release verified to accept ``chat --agent-engine v2``. Below
+#: it the scrape keeps the plain argv: an unknown flag fails the whole command,
+#: while an unpinned scrape fails only for a user whose global engine is V3.
+#: Lowering it once an older release is verified is a one-line change.
+USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION: tuple[int, int, int] = (2, 28, 0)
+
+
+def _usage_scrape_argv(kiro_bin: str) -> list[str]:
+    """The ``/usage`` scrape argv, with the V2 engine pinned where it is accepted.
+
+    Without a pin kiro-cli uses the user's global ``chat.agentEngine``. On V3,
+    ``/usage`` is not a slash command: it goes to the model as a prompt, spends
+    a model turn and prints no usage table.
+
+    The version read runs ``--version`` outside the sandbox, so it runs only on
+    the :func:`pin_kiro_cli` binary, and only when that is the binary being
+    spawned. *kiro_bin* may come off the inherited ``PATH``, which can lead with
+    an agent-writable directory; a binary from there gets the plain argv and is
+    never run unsandboxed. Blocking: the pin stats install directories, and the
+    version read is a bounded spawn on its first call per binary identity.
+    """
+    argv = [kiro_bin, "chat", "--no-interactive"]
+    version = None
+    pinned, _unpinned = pin_kiro_cli()
+    if pinned is not None and os.path.realpath(pinned) == os.path.realpath(kiro_bin):
+        version = kiro_cli_version_at(pinned)
+    if version is not None and version >= USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION:
+        argv += ["--agent-engine", "v2"]
+    return argv + ["--agent", "kirocrew-lite", "/usage"]
+
+
 def _wrap_argv_usage_scrape(kiro_bin: str) -> tuple[list[str], str | None]:
     """Executor entrypoint for the ``/usage`` scrape's wrap (see
     :func:`_wrap_argv_at_configured_tier` for why this runs off the loop)."""
-    return _wrap_argv_at_configured_tier(
-        [kiro_bin, "chat", "--no-interactive", "--agent", "kirocrew-lite", "/usage"]
-    )
+    return _wrap_argv_at_configured_tier(_usage_scrape_argv(kiro_bin))
 
 
 def _wrap_argv_whoami(kiro_bin: str) -> tuple[list[str], str | None]:
@@ -1439,8 +1472,8 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 #: * ``handlers/_shared.py`` — colon-only, wf-family only, to dispatch a memory-mode
 #:   lookup. Includes ``wf-scope``.
 #: * ``handlers/cron.py`` — colon-only, wf-family plus ``subagent``, to answer whether a
-#:   session is live and shared. Omits ``wf-scope``; suspected pre-existing gap in that
-#:   predicate rather than a deliberate exclusion.
+#:   session is live and shared. Omits ``wf-scope`` on purpose: that prefix names a
+#:   workflow run's memory anchor, and no session is created under it.
 #: * this one — matches PERSISTED folded keys via ``_in_namespace``, adds ``secretary``
 #:   and ``channel``, and deliberately excludes ``cron``, ``side`` and ``taskrunner``
 #:   because each of those holds conversations a reader started.
@@ -1450,8 +1483,9 @@ def _open_slot_transcript_keys(state: DashboardState) -> set[str]:
 #:
 #: It is spelled literally rather than derived from
 #: ``messaging.link._TELEMETRY_LOCAL_PREFIXES`` because that registry exists to bound
-#: telemetry label cardinality, and ``wf-unpooled``, ``wf-worker`` and ``wf-scope`` are
-#: all live session keys absent from it — a derived filter cannot see them.
+#: telemetry label cardinality, and ``wf-unpooled`` and ``wf-worker`` are live session
+#: keys absent from it, as is the ``wf-scope`` memory-anchor prefix — a derived filter
+#: cannot see them.
 #:
 #: Absent on purpose:
 #:
@@ -1635,6 +1669,30 @@ def _app_bulk_history_refusal(request: web.Request, operation: str) -> web.Respo
     return _app_not_found(request_app, operation, "sessions=*", "whole-history route")
 
 
+_SHORT_SLOT_NAME_RE = re.compile(r"chat-\d+")
+_DASHBOARD_SLOT_STEM_RE = re.compile(r"dashboard_(chat-\d+)-(\d+)")
+
+
+def _sessions_named(
+    canonical_key: Callable[[str], str], sessions: list[dict], name: str
+) -> list[dict]:
+    """The rows of *sessions* minted under the short slot name *name*, oldest first.
+
+    A row matches when its canonical transcript stem is ``dashboard_<name>-<ts>``.
+    Anything that is not a short name (a full key, a channel key, junk) matches
+    nothing, so the filter can never widen the list it narrows.
+    """
+    if not _SHORT_SLOT_NAME_RE.fullmatch(name):
+        return []
+    matched: list[tuple[int, dict]] = []
+    for row in sessions:
+        m = _DASHBOARD_SLOT_STEM_RE.fullmatch(canonical_key(row.get("key", "")))
+        if m and m.group(1) == name:
+            matched.append((int(m.group(2)), row))
+    matched.sort(key=lambda pair: pair[0])
+    return [row for _, row in matched]
+
+
 async def api_sessions(request: web.Request) -> web.Response:
     """GET /api/sessions — list conversation session files.
 
@@ -1661,6 +1719,12 @@ async def api_sessions(request: web.Request) -> web.Response:
         its metadata line. That is a tab opened and closed without a message
         (for example the blank tab the chat page opens when no tab is left).
         It has nothing to resume, and it too would show its storage key.
+      - ``name``: a dashboard session's SHORT name (``chat-7``). Keeps only the
+        dashboard transcripts minted under that name, open or closed, oldest
+        first by the mint time in the key. A slot number is reused across
+        gateway generations, so one name can match several sessions. Any other
+        value matches nothing. This is how a ``/chat?sid=chat-7`` link finds
+        the session it names.
 
     Returns ``{sessions, total, has_more}`` for pagination.
     """
@@ -1684,6 +1748,11 @@ async def api_sessions(request: web.Request) -> web.Response:
     # the event loop freezes chat, heartbeat, and every other coroutine for the
     # full duration. Offload to a worker thread.
     all_sessions = await asyncio.to_thread(state.conversation_log.list_sessions)
+    if "name" in request.query:
+        # Before the app filter, which reads each row's transcript under its lock.
+        all_sessions = _sessions_named(
+            state.conversation_log._canonical_key, all_sessions, request.query["name"]
+        )
     request_app = str(request.get("app") or "")
     if request_app:
         # Before every count, so ``total`` and ``has_more`` describe the app's
@@ -2149,6 +2218,77 @@ async def api_session_detail(request: web.Request) -> web.Response:
     # get_metadata, session_mtime, search_sessions, delete_session).
     messages = await asyncio.to_thread(state.conversation_log.read_messages, key)
     return web.json_response(messages)
+
+
+def _session_meta_row(log: ConversationLog, request_app: str, key: str) -> dict | None:
+    """The ``GET /api/sessions`` row for the ONE transcript *key* names, else None.
+
+    *key* may be a transcript stem (``dashboard_chat-7-<ts>``) or the slot key a
+    chat link carries (``chat-7-<ts>``), whose transcript lives under its
+    ``dashboard:`` key. Each spelling is checked directly, with no directory
+    scan: a stat and the cached first line, plus, for a transcript with no
+    title on that line, the bounded title fallback ``list_sessions`` reads (its
+    first 20 lines). The rest of the transcript is never read. An app caller sees
+    only a transcript it owns, the same rule every other ``/api/sessions*`` read
+    applies, and the verdict and the row are read under one hold of that
+    transcript's lock, so a same-key delete and recreate cannot land between
+    them. Blocking file IO; call it off the event loop. A lock timeout raises
+    ``HistoryLockTimeout``.
+    """
+    from kiro_crew.dashboard.chat_utils import slot_transcript_key
+
+    for candidate in dict.fromkeys((key, slot_transcript_key(key))):
+        if not log.has_log(candidate):
+            continue
+        if not request_app:
+            rows = log.list_sessions(keys=(candidate,))
+            if rows:
+                return rows[0]
+            continue
+        # Unlocked first, so no lock sidecar is created for a key the app has no
+        # claim on; then again with the read, under the lock.
+        if not _app_owns_transcript(log, request_app, candidate):
+            continue
+        with log._locked(candidate):
+            if not _app_owns_transcript(log, request_app, candidate):
+                continue
+            rows = log.list_sessions(keys=(candidate,))
+        if rows:
+            return rows[0]
+    return None
+
+
+async def api_session_meta(request: web.Request) -> web.Response:
+    """GET /api/sessions/{key}/meta: one session's key and title, or 404 when it has none.
+
+    The cheap per-key probe a chat link needs to tell "this session exists on
+    disk" from "no such session" without paging the whole list or reading the
+    whole transcript (see :func:`_session_meta_row` for what it reads). ``key`` in the body is the transcript stem, which is what a
+    resume takes. A missing key, and for an app caller a transcript it does not
+    own, both get the uniform 404, so the answer reveals nothing beyond what
+    ``GET /api/sessions`` does.
+    """
+    state: DashboardState = request.app["state"]
+    key = request.match_info["key"]
+    request_app = str(request.get("app") or "")
+    log = state.conversation_log
+    row = None
+    if log is not None:
+        try:
+            row = await asyncio.to_thread(_session_meta_row, log, request_app, key)
+        except HistoryLockTimeout:
+            return _app_transcript_busy()
+    if row is None:
+        if request_app:
+            return _app_not_found(
+                request_app, "session_meta", f"session={key}", _NOT_TRANSCRIPT_OWNER
+            )
+        from kiro_crew.dashboard.chat_handlers import _slot_not_found
+
+        return _slot_not_found()
+    if request_app:
+        _audit_app_allow(request_app, "session_meta", f"session={key}")
+    return web.json_response({"key": row.get("key", key), "title": row.get("title", key)})
 
 
 async def _owner_keys_bound_to_transcript(crons: Any, keys: Collection[str]) -> dict[str, set[str]]:
@@ -3896,9 +4036,11 @@ async def _clear_history_rows(
         failed,
         len(undeletable),
     )
+    # ``ok`` means nothing clearable was left behind: an undeletable row stays on
+    # disk exactly as a failed one does, so either one makes the clear partial.
     return web.json_response(
         {
-            "ok": failed == 0,
+            "ok": failed == 0 and not undeletable,
             "cleared": count,
             "skipped": skipped,
             "failed": failed,
@@ -4129,6 +4271,19 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
             and state.resolve_state_approval(approval_id, action == "approve")
         )
     else:
+        # Imported here: chat_handlers imports this package at module scope.
+        from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
+
+        if not bare_approval_decide_allowed(request):
+            # Only the dashboard owner's browser session may decide by id alone;
+            # any other caller names the request it means with the target above.
+            return web.json_response(
+                {
+                    "error": "an owner-bound approval target is required",
+                    "code": "approval_target_required",
+                },
+                status=404,
+            )
         ok = state.resolve_approval(
             approval_id, action == "approve", rejected_once=action == "reject_once"
         )
@@ -4600,7 +4755,8 @@ def _spec_failure_kind(path: Path, exc: BaseException) -> str:
 
 
 def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str:
-    """The wire ``reason`` for two specs declaring *agent_name*: names, not paths.
+    """The wire ``reason`` for two differing specs declaring *agent_name*: names,
+    not paths.
 
     The exception's own message quotes each file's full path for the terminal
     it was written for; this text reaches the MCP client's model-visible
@@ -4613,10 +4769,10 @@ def _ambiguous_spec_reason(agent_name: str, exc: AmbiguousAgentSpecError) -> str
         return str(exc)
     names = ", ".join(repr(path.name) for path in exc.paths)
     return (
-        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r}: "
-        f"{names}. Which one is live is undefined, so the policy for {agent_name!r} is "
-        f"unknown. Remove or rename one of them in the agents directory (~/.kiro/agents "
-        f"unless relocated); no restart needed."
+        f"{len(exc.paths)} specs in the agents directory declare the name {agent_name!r} "
+        f"with differing content: {names}. Which one is live is undefined, so the policy "
+        f"for {agent_name!r} is unknown. Remove or rename one of them in the agents "
+        f"directory (~/.kiro/agents unless relocated); no restart needed."
     )
 
 
@@ -4737,6 +4893,59 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
 # the KAS projection's: the two reads carry different SEL ``operation`` labels.
 _TOOL_POLICY_MEMO: AgentsDirMemo[dict[str, Any] | None] = AgentsDirMemo()
 
+#: The spec key that opts an agent into reading its ``@<server>/<tool>`` refs as
+#: an include list, inside ``managedToolPolicy``. Absent or ``false`` keeps the
+#: answer the policy alone gives.
+HONOUR_TOOL_REFS_KEY = "honourToolRefs"
+
+#: The answer key carrying the per-server include lists. Computed here from the
+#: spec's ``tools`` and never copied from the spec itself.
+POLICY_INCLUDE_KEY = "include"
+
+#: The managed server an opted-in spec's per-tool refs narrow.
+INCLUDE_LIST_SERVER = "kirocrew-core"
+
+
+def _policy_answer(
+    policy: dict[str, Any], config: dict[str, Any], agent_name: str, spec_path: Path | None
+) -> dict[str, Any]:
+    """The policy body the endpoint answers, given the spec's own ``managedToolPolicy``.
+
+    For a spec without ``honourToolRefs: true`` that is the policy as written,
+    less any ``include`` key: an include list is derived from the spec's
+    ``tools`` here, and an ``include`` written by hand is not a field the
+    managed servers read from a spec.
+
+    With the opt-in set and the spec granting :data:`INCLUDE_LIST_SERVER` ONLY
+    through ``@<server>/<tool>`` refs, its set of tool names goes under
+    ``include``; the server lists those and refuses any other call.
+    A whole-server grant -- ``*``, a bare ``@<server>``, a glob tool part --
+    yields no entry, so the server answers exactly as it does without the opt-in.
+
+    Raises :class:`ManagedToolPolicyUnreadable` for an opt-in that is present
+    but not a bool: the operator wrote something there and whether it narrows
+    the agent is unknown.
+    """
+    answer = {k: v for k, v in policy.items() if k != POLICY_INCLUDE_KEY}
+    opt_in = policy.get(HONOUR_TOOL_REFS_KEY, False)
+    if not isinstance(opt_in, bool):
+        where = f"in {spec_path.name!r}" if spec_path is not None else "in its spec"
+        remedy = (
+            _unreadable_spec_remedy(spec_path)
+            if spec_path is not None
+            else "Fix the spec in the agents directory; no restart needed."
+        )
+        raise ManagedToolPolicyUnreadable(
+            f"managedToolPolicy.{HONOUR_TOOL_REFS_KEY} for {agent_name!r} {where} is "
+            f"{type(opt_in).__name__}, not a bool. {remedy}"
+        )
+    if not opt_in:
+        return answer
+    granted = per_tool_grants(config.get("tools"), INCLUDE_LIST_SERVER)
+    if granted is not None:
+        answer[POLICY_INCLUDE_KEY] = {INCLUDE_LIST_SERVER: sorted(granted)}
+    return answer
+
 
 def _read_managed_tool_policy_sync(agents_dir: Path, agent_name: str) -> dict[str, Any] | None:
     """:func:`_read_managed_tool_policy_uncached`, answered from the memo while
@@ -4790,8 +4999,12 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
     not answer it with the same empty body a policy-free agent gets.
 
     Propagates :class:`kiro_crew.agent_discovery.AmbiguousAgentSpecError` when
-    two specs declare *agent_name*: that is not "no policy" either, and the
-    caller records it as a denial rather than answering it silently.
+    two specs declare *agent_name* with differing content: that is not "no
+    policy" either, and the caller records it as a denial rather than answering
+    it silently. Two IDENTICAL specs declaring the name are one policy, and the
+    scan answers it (see ``spec_by_declared_name``): a package installer that
+    flattens dependencies writes such twins, and whichever of them the session
+    runs, its policy is this one.
     """
     # The file the policy was read from, when it was a direct-filename read.
     # The declared-name scan returns a parse and not a path (see
@@ -4879,7 +5092,7 @@ def _read_managed_tool_policy_uncached(agents_dir: Path, agent_name: str) -> dic
         )
     policy = config.get("managedToolPolicy", {})
     if isinstance(policy, dict):
-        return policy
+        return _policy_answer(policy, config, agent_name, spec_path)
     # A policy of the wrong shape is a policy this cannot read, not an absent
     # one: the operator wrote something here and its meaning is unknown.
     if spec_path is None:

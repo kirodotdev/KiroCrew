@@ -83,7 +83,7 @@ export type McpManagedServer = {
   recommendation?: McpShareRecommendation
 }
 
-export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
+export function createMcpEndpoints({ get, post, put, j, jfetch: fetch }: ClientTransport) {
   const probeCache = {
     mcpProbeCache: () => fetch('/api/mcp/probe').then(j),
   }
@@ -106,13 +106,13 @@ export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
       post('/api/mcp/discover/install', { provider, id }).then(j) as Promise<import('../../types').McpDiscoverInstallResult>,
 
     mcpCustomAdd: (servers: Record<string, import('../../types').McpCustomSpec>, enable: boolean) =>
-      post('/api/mcp/custom', { servers, enable }).then(j) as Promise<{ ok: boolean; added: string[]; enabled: boolean }>,
+      post('/api/mcp/custom', { servers, enable }).then(j) as Promise<{ ok: boolean; added: string[]; enabled: boolean; agent_spec_rewritten?: boolean }>,
 
     mcpCustomGet: (name: string) =>
       get(`/api/mcp/custom/${encodeURIComponent(name)}`).then(j) as Promise<import('../../types').McpCustomSpecResponse>,
 
     mcpCustomUpdate: (name: string, spec: import('../../types').McpCustomSpec) =>
-      put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string }>,
+      put(`/api/mcp/custom/${encodeURIComponent(name)}`, { spec }).then(j) as Promise<{ ok: boolean; name: string; agent_spec_rewritten?: boolean }>,
     mcpActive: (agent?: string) => fetch('/api/mcp/active' + (agent ? `?agent=${encodeURIComponent(agent)}` : '')).then(j),
     mcpProbe: () => post('/api/mcp/probe').then(j),
     mcpResetProbeFailures: (name: string) =>
@@ -132,7 +132,7 @@ export function createMcpEndpoints({ get, post, put, j }: ClientTransport) {
     // MCP Gateway (shared pool)
     mcpGatewayStatus: () => fetch('/api/mcp-gateway/status').then(j) as Promise<{ enabled: boolean; stub: string[]; stub_count: number; running: boolean; ping_ok: boolean; supported: boolean; launch_refused?: Record<string, { reason: 'added_outside_dashboard' | 'changed_needs_reapproval'; commands?: string[][]; envs?: string[][]; approved_commands?: string[][]; approved_envs?: string[][]; complete?: boolean; expected_launch?: string }> }>,
     mcpGatewayEnable: (enabled: boolean) => post('/api/mcp-gateway/enable', { enabled }).then(j) as Promise<{ ok: boolean; enabled: boolean; running: boolean; ping_ok: boolean }>,
-    mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; agent: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
+    mcpGatewayMetrics: () => fetch('/api/mcp-gateway/metrics').then(j) as Promise<{ running: boolean; size?: number; max_backends?: number; backends: { server: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }[]; warm_pool_hits?: number; warm_pool_misses?: number; warm_pool_hit_rate_pct?: number }>,
     mcpGatewayServers: () => fetch('/api/mcp-gateway/servers').then(j) as Promise<{ servers: McpManagedServer[] }>,
     // What the gateway would run for this server, so the operator approves a
     // command rather than a name. `expected_launch` is the identity the approval

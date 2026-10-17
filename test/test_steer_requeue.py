@@ -465,7 +465,14 @@ class TestProductionWiring:
 
         import kiro_crew.dashboard.chat_runner as cr
 
-        return Path(cr.__file__).read_text(encoding="utf-8")
+        return "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(cr.__file__).with_name("chat_turn").glob("*.py")),
+                Path(cr.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
 
     def test_finally_calls_requeue_before_queue_drain(self):
         import inspect
@@ -522,7 +529,7 @@ class TestProductionWiring:
 
         src = Path(cd.__file__).read_text(encoding="utf-8")
         register_at = src.index("slot._pending_steers.append(message)")
-        await_at = src.index("await client.steer(message)")
+        await_at = src.index("await client.steer(wire_message)")
         assert register_at < await_at, (
             "pending registration must precede the steer RPC await so a turn "
             "dying mid-write still requeues the steer"

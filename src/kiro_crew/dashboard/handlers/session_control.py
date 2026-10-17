@@ -16,6 +16,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers._shared import (
     _read_session_key,
@@ -250,6 +251,20 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         dry_run = body.get("dry_run", False)
         if not isinstance(dry_run, bool):
             raise sc.SessionControlError("dry_run must be a boolean", code="invalid_field_type")
+        # The selection namespace for `agent`: "template", or absent for
+        # name-first resolution. Typed strictly here so a non-string never reaches
+        # the closed-set check in `create_session` as something that compares
+        # unequal and falls through.
+        agent_kind = body.get("agent_kind", "")
+        if not isinstance(agent_kind, str):
+            raise sc.SessionControlError("agent_kind must be a string", code="invalid_field_type")
+        # Absent means "inherit the dispatching crewmate's"; present must be a
+        # string, and the verb judges its value against the five levels.
+        effort = body.get("reasoning_effort")
+        if effort is not None and not isinstance(effort, str):
+            raise sc.SessionControlError(
+                "reasoning_effort must be a string", code="invalid_field_type"
+            )
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -260,8 +275,10 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             caller_session_key=_read_session_key(request),
             title=str(body.get("title") or ""),
             agent=str(body.get("agent") or ""),
+            agent_kind=agent_kind,
             folder_id=str(body.get("folder_id") or ""),
             model=str(body.get("model") or ""),
+            reasoning_effort=effort,
             dry_run=dry_run,
             # The fence verdict this request's admission already settled, for the
             # same reason every other route forwards it as
@@ -273,6 +290,22 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if not dry_run and isinstance(result, dict):
+        # A create is a dispatch, and a dispatch needs a patrol reading what
+        # comes back: the same default patrol a ledger bind arms, through the
+        # same outside-arm authorizer (``conductor_patrol.ensure_patrol``).
+        # Never raises, and the create already committed.
+        from kiro_crew.dashboard.handlers.work_ledger import holds_ledger
+
+        caller = session_ledger.ledger_key(_read_session_key(request))
+        ledger = await holds_ledger(caller)
+        patrol, reason = await conductor_patrol.ensure_patrol(
+            state, caller, has_ledger=ledger, source="session-create"
+        )
+        result = {**result, "patrol": patrol, "patrol_reason": reason}
+        note = conductor_patrol.patrol_note(state, caller, reason, has_ledger=ledger)
+        if note:
+            result["patrol_note"] = note
     return web.json_response(result)
 
 
@@ -333,6 +366,46 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_retry(request: web.Request) -> web.Response:
+    """POST /api/session-control/retry — re-run another session's failed last turn."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.retry_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_continue(request: web.Request) -> web.Response:
+    """POST /api/session-control/continue — pick up or carry on another session's thread."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.continue_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_end_wait(request: web.Request) -> web.Response:
     """POST /api/session-control/end-wait — wake another session from `wait` early."""
     refused = await _require_internal(request)
@@ -354,7 +427,7 @@ async def api_session_control_end_wait(request: web.Request) -> web.Response:
 
 
 async def api_session_control_set_model(request: web.Request) -> web.Response:
-    """POST /api/session-control/set-model — change an idle session's model."""
+    """POST /api/session-control/set-model — change an idle session's model and/or effort."""
     refused = await _require_internal(request)
     if refused is not None:
         return refused
@@ -362,14 +435,21 @@ async def api_session_control_set_model(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # Absent means "leave it alone"; present must be a string (an explicit
+        # null is refused, not read as absent), and the verb judges its value
+        # (it refuses an empty one of either).
         model = body.get("model")
-        if not isinstance(model, str):
+        if "model" in body and not isinstance(model, str):
             raise sc.SessionControlError("model must be a string", code="bad_request")
+        effort = body.get("reasoning_effort")
+        if "reasoning_effort" in body and not isinstance(effort, str):
+            raise sc.SessionControlError("reasoning_effort must be a string", code="bad_request")
         result = await sc.set_model_target(
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
             model=model,
+            reasoning_effort=effort,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
@@ -387,6 +467,50 @@ async def api_session_control_reload(request: web.Request) -> web.Response:
     try:
         body = await _body(request)
         result = await sc.reload_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_rename(request: web.Request) -> web.Response:
+    """POST /api/session-control/rename — rename the caller or a session it may control."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        title = body.get("title")
+        if not isinstance(title, str):
+            raise sc.SessionControlError("title must be a string", code="bad_request")
+        result = await sc.rename_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            title=title,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_generate_title(request: web.Request) -> web.Response:
+    """POST /api/session-control/generate-title — retitle a session the caller created."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        result = await sc.generate_title_target(
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
@@ -434,6 +558,32 @@ async def api_session_control_revive(request: web.Request) -> web.Response:
             caller_session_key=_read_session_key(request),
             target=_target(body),
             folder_id=str(body.get("folder_id") or ""),
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+async def api_session_control_history(request: web.Request) -> web.Response:
+    """GET /api/session-control/history — archived sessions this caller could revive."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here: `list_archived_sessions` warms the SEL logger and the
+    # config itself, the same ordering `revive_session` uses.
+    state: DashboardState = request.app["state"]
+    try:
+        limit_raw = request.query.get("limit")
+        try:
+            limit = int(limit_raw) if limit_raw else sc.DEFAULT_HISTORY_LIST_ROWS
+        except ValueError:
+            raise sc.SessionControlError("limit must be an integer", code="invalid_pagination")
+        result = await sc.list_archived_sessions(
+            state,
+            caller_session_key=_read_session_key(request),
+            folder_id=(request.query.get("folder_id") or "").strip(),
+            limit=limit,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
@@ -614,8 +764,10 @@ async def api_session_control_read(request: web.Request) -> web.Response:
     # Stays at the top for read alone: everything between here and the gate is
     # synchronous query parsing (`request.query` is already available and
     # `read_messages` does not await), so there is no suspension to invalidate it.
-    await sc.prewarm_enabled_check()
+    # The target's window loads ahead of it, off the loop, for the same reason.
     state: DashboardState = request.app["state"]
+    await sc.load_target_window(state, request.query.get("target") or "")
+    await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
         if not target:

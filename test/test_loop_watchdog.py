@@ -12,14 +12,21 @@ syscall, one holding the GIL.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
+import time
+import types
+import typing
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from test_stall_enrichment import loop_thread, wait_until_inside_handle
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard import loop_watchdog
@@ -261,6 +268,223 @@ def test_start_stop_thread_lifecycle() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ── A paging loop thread defers the exit ─────────────────────────────────────
+
+_MANAGED_BUDGET = 90.0
+
+
+class _PagingFixture:
+    """A started watchdog whose daemon thread never polls (one-hour interval),
+    so the test steps :meth:`check` itself against a fake clock and a fake
+    major-fault counter, recording every alarm arm and the WARNING lines.
+    The default budget is the managed-service one, above ``stall_after``."""
+
+    def __init__(self, *, exit_after: float = _MANAGED_BUDGET) -> None:
+        self.clock = _Clock()
+        self.arms: list[float] = []
+        self.major_faults: int | None = 0
+        self.fault_reads: list[int | None] = []
+        self.on_fault_read: Callable[[], None] | None = None
+        self.handler = _RecordingHandler()
+        log = logging.Logger("test.loop_watchdog.paging")
+        log.addHandler(self.handler)
+
+        def read_major_faults(native_thread_id: int | None) -> int | None:
+            self.fault_reads.append(native_thread_id)
+            if self.on_fault_read is not None:
+                self.on_fault_read()
+            return self.major_faults
+
+        self.wd = LoopStallWatchdog(
+            stall_after=30.0,
+            exit_after=exit_after,
+            poll_interval=5.0,
+            now=self.clock,
+            suspend_clock=lambda: None,
+            dump=lambda: None,
+            arm_later=self.arms.append,
+            cancel_later=lambda: None,
+            loop_major_faults=read_major_faults,
+            log=log,
+        )
+        # The daemon thread runs a no-op, so only the test steps check().
+        self.wd._run = lambda: None  # type: ignore[method-assign]
+        self.wd.start()
+        self.wd.beat()
+        self.arms.clear()
+
+    def poll_at(self, silence: float, *, add_faults: int = 0) -> None:
+        self.clock.t = self.wd._last_beat + silence
+        if self.major_faults is not None:
+            self.major_faults += add_faults
+        self.wd.check()
+
+    def paging_lines(self) -> list[str]:
+        return [m for m in self.handler.messages if "is paging" in m]
+
+
+def test_a_paging_loop_thread_re_arms_the_exit_and_says_so_once() -> None:
+    fx = _PagingFixture()
+    try:
+        fx.poll_at(5.0, add_faults=7)  # under two poll intervals: ignored
+        fx.poll_at(10.0)  # the baseline
+        fx.poll_at(15.0, add_faults=40)
+        fx.poll_at(20.0, add_faults=12)
+        assert fx.arms == [_MANAGED_BUDGET, _MANAGED_BUDGET]
+        assert fx.fault_reads[-1] == threading.get_native_id()
+        assert len(fx.paging_lines()) == 1
+        assert "40 major faults" in fx.paging_lines()[0]
+    finally:
+        fx.wd.stop()
+
+
+def test_a_silent_loop_thread_that_takes_no_major_faults_keeps_the_exit_budget() -> None:
+    """A blocked syscall or a GIL-held C call: the fault count stays flat."""
+    fx = _PagingFixture()
+    try:
+        for silence in (10.0, 15.0, 20.0, 25.0, 30.0):
+            fx.poll_at(silence)
+        assert fx.arms == []
+        assert fx.paging_lines() == []
+    finally:
+        fx.wd.stop()
+
+
+def test_a_fault_within_two_poll_intervals_of_a_beat_is_not_paging() -> None:
+    """Heartbeat and poll drift apart, so two polls can land between two beats
+    of a healthy loop; a stray fault there is not a stall."""
+    fx = _PagingFixture()
+    try:
+        fx.poll_at(4.0)
+        fx.poll_at(9.0, add_faults=1)
+        assert fx.arms == []
+        assert fx.paging_lines() == []
+    finally:
+        fx.wd.stop()
+
+
+def test_an_unreadable_fault_count_never_defers_the_exit() -> None:
+    """Off Linux, or with procfs unreadable, the reader answers None."""
+    fx = _PagingFixture()
+    fx.major_faults = None
+    try:
+        for silence in (10.0, 15.0, 20.0, 25.0):
+            fx.poll_at(silence)
+        assert fx.arms == []
+    finally:
+        fx.wd.stop()
+
+
+def test_the_desktop_budget_is_left_to_the_desktop_liveness_probe() -> None:
+    """A budget below ``stall_after`` is the desktop class: no deferral."""
+    fx = _PagingFixture(exit_after=_EXIT_BUDGET)
+    try:
+        fx.poll_at(10.0)
+        fx.poll_at(15.0, add_faults=40)
+        fx.poll_at(20.0, add_faults=40)
+        assert fx.arms == []
+        assert fx.fault_reads == []
+    finally:
+        fx.wd.stop()
+
+
+def test_the_paging_deferral_stops_at_the_grace_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(loop_watchdog, "PAGING_GRACE_MAX_SECS", 30.0)
+    fx = _PagingFixture()
+    try:
+        fx.poll_at(105.0)
+        fx.poll_at(110.0, add_faults=1)  # 10s of the 120s cap left
+        fx.poll_at(120.0, add_faults=1)  # the cap is spent
+        assert fx.arms == [10.0]
+    finally:
+        fx.wd.stop()
+
+
+def test_a_beat_ends_the_paging_episode() -> None:
+    fx = _PagingFixture()
+    try:
+        fx.poll_at(10.0)
+        fx.poll_at(15.0, add_faults=3)
+        fx.wd.beat()
+        fx.arms.clear()
+        fx.poll_at(10.0, add_faults=3)  # first counted poll after the beat: baseline only
+        assert fx.arms == []
+        fx.poll_at(15.0, add_faults=3)
+        assert fx.arms == [_MANAGED_BUDGET]
+        assert len(fx.paging_lines()) == 2
+    finally:
+        fx.wd.stop()
+
+
+def test_a_beat_during_the_fault_read_keeps_its_full_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loop recovers between the deferral's sample and its re-arm: the
+    beat's fresh budget must stay the last arm, not the old remainder."""
+    monkeypatch.setattr(loop_watchdog, "PAGING_GRACE_MAX_SECS", 30.0)
+    fx = _PagingFixture()
+    try:
+        fx.poll_at(105.0)
+        fx.on_fault_read = fx.wd.beat
+        fx.poll_at(115.0, add_faults=5)  # would otherwise arm the 5s remainder
+        assert fx.arms == [_MANAGED_BUDGET]
+        assert fx.paging_lines() == []  # nothing was deferred, so nothing says so
+    finally:
+        fx.wd.stop()
+
+
+def test_no_paging_deferral_arms_an_alarm_after_stop() -> None:
+    fx = _PagingFixture()
+    fx.poll_at(10.0)
+    fx.wd.stop()
+    fx.poll_at(15.0, add_faults=9)
+    assert fx.arms == []
+    assert fx.paging_lines() == []
+
+
+def test_the_fault_reader_counts_fields_after_the_last_parenthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thread name may hold spaces and parentheses; majflt is field 12."""
+    if not sys.platform.startswith("linux"):
+        monkeypatch.setattr(loop_watchdog.sys, "platform", "linux")
+    row = "4242 (odd ) name (x) S 1 2 3 4 5 6 70 80 913 0 0 0\n"
+    opened: list[str] = []
+
+    def _read_row(path: str) -> str:
+        opened.append(path)
+        return row
+
+    monkeypatch.setattr(loop_watchdog, "_read_text", _read_row)
+    assert loop_watchdog.read_thread_major_faults(4242) == 913
+    assert opened == ["/proc/self/task/4242/stat"]
+
+
+def test_the_fault_reader_answers_none_for_an_unreadable_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not sys.platform.startswith("linux"):
+        monkeypatch.setattr(loop_watchdog.sys, "platform", "linux")
+    monkeypatch.setattr(loop_watchdog, "_read_text", lambda _path: None)
+    assert loop_watchdog.read_thread_major_faults(4242) is None
+    monkeypatch.setattr(loop_watchdog, "_read_text", lambda _path: "4242 (x) S 1 2")
+    assert loop_watchdog.read_thread_major_faults(4242) is None
+
+
+def test_the_fault_reader_answers_none_without_a_thread_or_off_linux(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert loop_watchdog.read_thread_major_faults(None) is None
+    monkeypatch.setattr(loop_watchdog.sys, "platform", "darwin")
+    assert loop_watchdog.read_thread_major_faults(threading.get_native_id()) is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="procfs is Linux-only")
+def test_the_fault_reader_reads_this_threads_real_procfs_row() -> None:
+    count = loop_watchdog.read_thread_major_faults(threading.get_native_id())
+    assert isinstance(count, int) and count >= 0
+
+
 class _FakeDumpFile:
     """DumpFile stand-in proving the watchdog NEVER writes into the sentinel."""
 
@@ -422,6 +646,33 @@ def test_enrichment_precedes_soft_dump_threshold() -> None:
     assert dump_file.written == []  # even a full episode writes nothing itself
 
 
+def test_enrichment_names_the_native_callback_the_loop_is_stuck_in() -> None:
+    # The loop thread blocks inside a native callable scheduled straight onto
+    # the loop: faulthandler would show Handle._run and nothing above it.
+    wd, clock, dump_file, calls, handler = _make_enrich()
+    gate = threading.Lock()
+    gate.acquire()
+    with loop_thread() as (loop, thread_id):
+        beaten = threading.Event()
+        loop.call_soon_threadsafe(lambda: (wd.beat(), beaten.set()))
+        assert beaten.wait(5.0)
+        loop.call_soon_threadsafe(gate.acquire)
+        try:
+            wait_until_inside_handle(thread_id)
+            clock.advance(16.0)
+            wd.check()
+        finally:
+            gate.release()
+
+    (message,) = [m for m in handler.messages if "stall enrichment captured" in m]
+    assert f"loop thread {thread_id:#x} is at (asyncio/events.py:" in message
+    assert (
+        "asyncio Handle._run is running _thread.lock.acquire "
+        "(a native callable with no Python frame of its own)"
+    ) in message
+    assert dump_file.written == []
+
+
 # ---------------------------------------------------------------------------
 # A suspend is not a stall: the daemon thread reads the monotonic clock beside
 # a suspend-inclusive one and reports a resume; the alarm is the one decider
@@ -560,6 +811,91 @@ def test_suspend_clock_none_disables_the_comparison() -> None:
         clock.advance(5.0)
         assert wd.check() is False
     assert not any("suspend" in m for m in handler.messages)
+
+
+class _UnbiasedInterruptTime:
+    """A stand-in ``kernel32`` whose ``QueryUnbiasedInterruptTime`` reports :attr:`t`
+    seconds as 100 ns ticks: the Windows clock a sleep does not advance.  ``ok=False``
+    makes the call fail the way the API reports a failure (a zero return)."""
+
+    def __init__(self) -> None:
+        self.t = 1000.0
+        self.ok = True
+
+    def QueryUnbiasedInterruptTime(self, ref: typing.Any) -> int:  # noqa: N802 - Win32 name
+        ref._obj.value = round(self.t * 10_000_000)
+        return 1 if self.ok else 0
+
+
+def _simulate_windows(monkeypatch: pytest.MonkeyPatch) -> _UnbiasedInterruptTime:
+    clock = _UnbiasedInterruptTime()
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=clock), raising=False)
+    return clock
+
+
+def test_awake_now_reads_the_unbiased_interrupt_time_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows' ``time.monotonic()`` counts a sleep, so there the awake clock is the
+    unbiased interrupt time; a failed call falls back to ``time.monotonic()``."""
+    unbiased = _simulate_windows(monkeypatch)
+    unbiased.t = 4321.5
+    assert platform_compat.awake_now() == 4321.5
+    unbiased.ok = False
+    before = time.monotonic()
+    fallback = platform_compat.awake_now()
+    assert before <= fallback <= time.monotonic()
+
+
+def test_a_windows_resume_is_not_silence_and_a_real_hang_still_dumps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Windows the watchdog's default clock is the unbiased interrupt time.  A beat
+    before the host sleeps and a poll 5 awake seconds after it wakes see 5 s of
+    silence, however long the sleep was, so nothing is enriched or dumped.  A loop that
+    then stays silent for ``stall_after`` awake seconds is still a stall."""
+    unbiased = _simulate_windows(monkeypatch)
+    dumps: list[float] = []
+    enriched: list[float] = []
+    wd = LoopStallWatchdog(
+        stall_after=30.0,
+        exit_after=None,
+        poll_interval=5.0,
+        suspend_clock=lambda: None,
+        dump=lambda: dumps.append(unbiased.t),
+        enrich=lambda silence: enriched.append(silence) or [],
+        arm_later=lambda _t: None,
+        cancel_later=lambda: None,
+        log=logging.getLogger("test.loop_watchdog.windows"),
+    )
+    wd.beat()
+    unbiased.t += 5.0  # the sleep itself does not advance this clock
+    assert wd.check() is False
+    assert (dumps, enriched) == ([], [])
+    unbiased.t += 30.0  # no beat after the resume: a real stall
+    assert wd.check() is True
+    assert dumps == [unbiased.t]
+    assert enriched == [35.0]
+
+
+def test_awake_now_reads_the_platform_awake_clock() -> None:
+    """``awake_now`` returns a reading of the clock a suspend does not advance on this
+    host, bracketed by two direct reads of it: the real ``QueryUnbiasedInterruptTime``
+    on Windows, ``time.monotonic()`` elsewhere.  Nothing is stubbed, so the Windows
+    runner is where the real API is called."""
+    ticks = ctypes.c_ulonglong(0)
+
+    def platform_clock() -> float:
+        if platform_compat.IS_WINDOWS:
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            assert kernel32.QueryUnbiasedInterruptTime(ctypes.byref(ticks))
+            return ticks.value / 10_000_000
+        return time.monotonic()
+
+    before = platform_clock()
+    reading = platform_compat.awake_now()
+    assert before <= reading <= platform_clock()
 
 
 class _AlarmSeam:

@@ -71,7 +71,7 @@ function Scene() {
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
           {/* The transcript content column, verbatim from both hosts. */}
           <div className="px-5 mx-auto w-full py-1" style={{ maxWidth: 800 }}>
-            {/* ChatPage.tsx / ChatMessageList.tsx row + wrapper pair. */}
+            {/* transcriptRendering.tsx / ChatMessageList.tsx row + wrapper pair. */}
             <div className="group flex flex-col min-w-0 items-end">
               <div data-wrapper className={`flex flex-col gap-0.5 min-w-0 overflow-hidden ${capped}items-end`}>
                 <UserMessage

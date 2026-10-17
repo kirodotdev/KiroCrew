@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { earlierAffordanceInView, EARLIER_ADMISSION_LEAD_PX } from '../pages/chat/pagination'
 
@@ -81,7 +81,14 @@ describe('earlierAffordanceInView', () => {
 })
 
 describe('every automatic older trigger is gated on it', () => {
-  const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+  // The page composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+  const PAGES = join(__dirname, '..', 'pages')
+  const OWNERS = join(PAGES, 'chat', 'page')
+  const SRC = [
+    readFileSync(join(PAGES, 'ChatPage.tsx'), 'utf8'),
+    ...readdirSync(OWNERS).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(join(OWNERS, f), 'utf8')),
+    ...readdirSync(PAGES).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(join(PAGES, f), 'utf8')),
+  ].join('\n')
 
   it('the top sentinel checks it first', () => {
     const i = SRC.indexOf('const handleTopReached = useCallback(')

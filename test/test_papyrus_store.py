@@ -35,6 +35,7 @@ import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.builtins.papyrus.backend import store
+from kiro_crew.slugs import SLUG_CHARS
 
 
 @pytest.fixture()
@@ -152,6 +153,53 @@ class TestSafeProjectDir:
         """Slugifying must never launder an attack into an accepted name."""
         with pytest.raises(store.PathRejected):
             store.safe_project_dir(store.normalize_project_name("../escape"), data_root)
+
+
+class TestProjectNameStaysAscii:
+    """The name is a directory and a ``git``/``pdflatex`` argument, so the rule
+    stays a lowercase ASCII slug. A refusal is its own type, which the routes
+    answer with the character the user typed (see ``test_papyrus_routes.py``)."""
+
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            "\u8bba\u6587",  # Han
+            "\ubd84\uae30\ubcf4\uace0",  # Hangul
+            "\u041e\u0442\u0447\u0435\u0442",  # Cyrillic
+            "\u062a\u0642\u0631\u064a\u0631",  # Arabic
+            "\u8ad6\u6587\u30c9\u30e9\u30d5\u30c8",  # Japanese
+            "M\u00fcnchen",
+            "Mu\u0308nchen",  # NFD
+            "\u0130stanbul",  # lowercases to a combining dot, still refused
+        ],
+    )
+    def test_a_name_in_another_script_is_refused_and_creates_nothing(
+        self, data_root: Path, typed: str
+    ) -> None:
+        name = store.normalize_project_name(typed)
+        with pytest.raises(store.InvalidProjectName) as caught:
+            store.safe_project_dir(name, data_root)
+        # Still a PathRejected, so every existing handler keeps refusing it.
+        assert isinstance(caught.value, store.PathRejected)
+        assert str(caught.value) == "invalid project name"
+        assert not any(store.projects_dir(data_root).iterdir())
+
+    @pytest.mark.parametrize("name", ["../escape", "a\\b", "a\u202eb", "-rf", ".hidden", "x" * 65])
+    def test_path_and_option_refusals_hold(self, data_root: Path, name: str) -> None:
+        with pytest.raises(store.InvalidProjectName):
+            store.safe_project_dir(name, data_root)
+
+    def test_the_rule_itself_is_unchanged_ascii(self) -> None:
+        """The regex admits exactly the shared slug alphabet and nothing outside
+        ASCII -- this change explains the rule, it does not widen it."""
+        for code in range(0x110000):
+            if 0xD800 <= code <= 0xDFFF:
+                continue
+            char = chr(code)
+            accepted = bool(store.PROJECT_NAME_RE.match("a" + char))
+            assert accepted == (char in SLUG_CHARS), repr(char)
+        assert store.PROJECT_NAME_RE.match("x" * 64)
+        assert not store.PROJECT_NAME_RE.match("x" * 65)
 
 
 class TestMainFile:

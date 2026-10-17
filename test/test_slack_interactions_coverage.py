@@ -975,7 +975,12 @@ class TestAllowlistButtons:
         )
         assert orch._allowed_users == {"U9"}
         orch.slack.open_dm.assert_awaited_once_with("U9")
-        assert "allowlist" in orch.slack.post_message.await_args.args[1]
+        dm_text = orch.slack.post_message.await_args.args[1]
+        assert "allowlist" in dm_text
+        # The bot is owner-only, so the approve DM must not falsely tell a
+        # non-owner they can now message the bot.
+        assert "can now message me" not in dm_text
+        assert "owner-only" in dm_text
         assert "Nine" in orch.slack.update_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
@@ -1625,13 +1630,18 @@ def stop_orch(orch: MagicMock) -> MagicMock:
     orch.sessions.has_session = MagicMock(return_value=True)
     orch._session_tasks = {}
     orch.sessions.stop_turn = AsyncMock(return_value="soft")
+    # Empty queues: the stop's release drain finds nothing to start.
+    orch.sessions.dequeue = MagicMock(return_value=None)
+    orch._pending_queue = {}
     return orch
 
 
 class TestStopConfirm:
     @pytest.mark.asyncio
     async def test_soft_stop_notifies_thread(self, stop_orch: MagicMock) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, owned_by: Any = None, on_soft: Any = None, on_hard: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 
@@ -1642,7 +1652,9 @@ class TestStopConfirm:
 
     @pytest.mark.asyncio
     async def test_hard_stop_reports_session_reset(self, stop_orch: MagicMock) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, owned_by: Any = None, on_soft: Any = None, on_hard: Any = None
+        ) -> str:
             await on_hard()
             return "hard"
 
@@ -1654,7 +1666,9 @@ class TestStopConfirm:
     async def test_callback_posts_via_response_url(
         self, stop_orch: MagicMock, _mock_aiohttp: AsyncMock
     ) -> None:
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, owned_by: Any = None, on_soft: Any = None, on_hard: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 
@@ -1669,7 +1683,9 @@ class TestStopConfirm:
     ) -> None:
         _mock_aiohttp.post = AsyncMock(side_effect=RuntimeError("boom"))
 
-        async def stop_turn(key: str, on_soft: Any = None, on_hard: Any = None) -> str:
+        async def stop_turn(
+            key: str, owned_by: Any = None, on_soft: Any = None, on_hard: Any = None
+        ) -> str:
             await on_soft()
             return "soft"
 

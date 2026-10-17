@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_CLIENT_CAPABILITIES,
@@ -66,6 +67,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
+    ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_SIDE_READONLY,
@@ -74,6 +76,7 @@ from kiro_crew.acp_backends import (
     selectable_backends,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
 from kiro_crew.providers import mirrors
@@ -97,13 +100,13 @@ def _field_enum(name: str) -> object:
 
 
 # ---------------------------------------------------------------------------
-# Group A: Kiro is the default and the floor
+# Group A: KAS is the default; Kiro is the floor
 # ---------------------------------------------------------------------------
 
 
-def test_kiro_is_the_default_backend() -> None:
-    """H1: configuring nothing yields the Kiro harness."""
-    assert _field_default("acp_backend") == ACP_BACKEND_KIRO
+def test_kas_is_the_default_backend() -> None:
+    """H1: configuring nothing yields the KAS harness."""
+    assert _field_default("acp_backend") == ACP_BACKEND_KAS
 
 
 def test_kiro_is_always_selectable() -> None:
@@ -132,22 +135,18 @@ def test_provider_enum_is_acp_only() -> None:
 
 
 @pytest.mark.parametrize("persisted", ["", "kas", "byo-harness", "claude", None, 7])
-def test_unselectable_backend_degrades_to_kiro(persisted: object) -> None:
-    """H3: an unusable persisted value degrades to Kiro and never raises.
+def test_unselectable_backend_degrades_to_default(persisted: object) -> None:
+    """H3: an unusable persisted value degrades safely and never raises.
 
-    Includes the non-string shapes a hand-edited config.json can hold: a gate
-    that raises here turns a typo into a gateway that will not boot.
-
-    ``claude`` is in the list on purpose, and now for the opposite reason: it ships in
-    the public baseline, so it must SURVIVE rather than degrade. The assertion below is
-    conditional on membership precisely so this row proves the gate reads the registry
-    instead of hardcoding a verdict. ``byo-harness`` covers the unknown-id case, and a
-    known id that policy has denied is covered in
-    ``test_agent_backend_governance.py``.
+    Only an absent value (``None``) earns the KAS default. A malformed, denied
+    or host-unservable explicit value takes the unconditional Kiro floor, so the
+    resolved value always belongs to the live selectable set.
     """
     resolved = _normalize_acp_backend(persisted)
     assert resolved in selectable_backends()
-    if persisted not in selectable_backends():
+    if persisted is None:
+        assert resolved == ACP_BACKEND_KAS
+    elif persisted not in selectable_backends():
         assert resolved == ACP_BACKEND_KIRO
 
 
@@ -272,16 +271,30 @@ def test_member_capabilities_are_opt_in() -> None:
     for provider in (providers_acp.AcpProvider, AcpSessionProvider):
         source = inspect.getsource(provider.member_capabilities_supported.fget)
         assert "in ACP_BACKENDS_MEMBER_CAPABILITIES" in source
-    assert ACP_BACKENDS_MEMBER_CAPABILITIES == frozenset({ACP_BACKEND_KIRO})
+    assert ACP_BACKENDS_MEMBER_CAPABILITIES == frozenset(
+        {
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_DEEPSEEK,
+        }
+    )
     assert ACP_BACKENDS_MEMBER_CAPABILITIES is not ACP_BACKENDS_SESSION_SHARING
+    for provider in (providers_acp.AcpProvider, AcpSessionProvider):
+        source = inspect.getsource(provider.member_tool_limits_supported.fget)
+        assert "in ACP_BACKENDS_MEMBER_TOOL_LIMITS" in source
+    assert ACP_BACKENDS_MEMBER_TOOL_LIMITS == frozenset({ACP_BACKEND_KIRO})
 
 
 def test_steer_is_opt_in() -> None:
     """H6: the ``_session/steer`` extension is claimed by membership."""
     source = inspect.getsource(acp_client.AcpClient.supports_steer.fget)
-    assert "ACP_BACKENDS_STEER" in source
+    assert "in ACP_BACKENDS_STEER\n" in source
+    assert "in ACP_BACKENDS_STEER_CONCURRENT_PROMPT" in source
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_STEER
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_STEER_CONCURRENT_PROMPT
 
 
 def test_mcp_config_hot_reload_is_opt_in() -> None:
@@ -342,26 +355,55 @@ def test_steer_capability_declares_its_stamp() -> None:
     assert len(checked) >= 2, f"expected at least 2 steer-capable providers, saw {checked}"
 
 
-def test_is_kiro_cli_is_positive() -> None:
+def test_is_kiro_cli_is_positive(tmp_path) -> None:
     """H7: the sandbox-delegation flag is membership at every spawn site.
 
     This is the one identity test that fails OPEN. ``wrap_argv`` treats it as
     "this harness carries its own internal sandbox, which cannot nest inside
     ours, so skip ours" — granted to a harness without one, it leaves the agent
     process unconfined. A negative form grants it to every future harness.
+
+    Asked of the launch itself rather than of its spelling: every known host is
+    launched through the driver that serves it -- each per-session host on
+    ``AcpClient``, and every host the shared runtime serves on ``AcpRuntime`` --
+    with the pod-bundle step that decides the flag left real, and the flag the
+    sandbox wrap receives must be exactly membership.
     """
-    for spawn in (acp_runtime.AcpRuntime.spawn, acp_client.AcpClient.ensure_ready):
-        source = inspect.getsource(spawn)
-        for line in source.splitlines():
-            if "is_kiro_cli=" not in line:
-                continue
-            value = line.split("is_kiro_cli=", 1)[1]
-            assert (
-                "not " not in value and "!=" not in value
-            ), f"{spawn.__qualname__} derives is_kiro_cli from a negation: {line.strip()}"
-            assert "ACP_BACKENDS_INTERNAL_SANDBOX" in value or value.strip().startswith(
-                ("True", "False")
-            ), f"{spawn.__qualname__} must use membership or a literal: {line.strip()}"
+    from unittest.mock import AsyncMock, patch
+
+    import acp_launch_capture as capture_mod
+
+    from kiro_crew.acp_backends import ACP_BACKENDS_ACP_RUNTIME, ACP_BACKENDS_KNOWN
+
+    client_hosts = ACP_BACKENDS_KNOWN - capture_mod.RUNTIME_ONLY_BACKENDS
+    launches = [(acp_client, backend) for backend in sorted(client_hosts)]
+    launches += [(acp_runtime, backend) for backend in sorted(ACP_BACKENDS_ACP_RUNTIME)]
+    for driver, backend in launches:
+        flags: list[object] = []
+
+        async def _wrap(argv, _flags=flags, **kwargs):
+            _flags.append(kwargs["is_kiro_cli"])
+            return list(argv), None
+
+        patches = (
+            patch.object(driver, "apply_pod_bundle_spawn", new=acp_client.apply_pod_bundle_spawn),
+            patch.object(driver, "wrap_argv_async", side_effect=_wrap),
+            patch.object(
+                acp_client,
+                "_resolve_kiro_bin_for_spawn",
+                new=AsyncMock(return_value=capture_mod._KIRO_BIN),
+            ),
+        )
+        where = tmp_path / driver.__name__ / (backend or "kiro")
+        if driver is acp_runtime:
+            capture_mod._capture_runtime_served(
+                backend, where, capture_mod.fixed_parent_env(), patches
+            )
+        else:
+            capture_mod.capture(backend, where, extra_patches=patches)
+        assert flags == [
+            backend in ACP_BACKENDS_INTERNAL_SANDBOX
+        ], f"{driver.__name__} launched {backend or 'kiro'!r} with is_kiro_cli={flags}"
 
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO}), (
         "only kiro-cli ships an internal OS sandbox; adding a member here waives "
@@ -381,8 +423,10 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         # arriving some other way still has to be a backend the code recognizes.
         ("selectable_backends()", selectable_backends()),
         ("ACP_BACKENDS_MEMBER_CAPABILITIES", ACP_BACKENDS_MEMBER_CAPABILITIES),
+        ("ACP_BACKENDS_MEMBER_TOOL_LIMITS", ACP_BACKENDS_MEMBER_TOOL_LIMITS),
         ("ACP_BACKENDS_SESSION_SHARING", ACP_BACKENDS_SESSION_SHARING),
         ("ACP_BACKENDS_STEER", ACP_BACKENDS_STEER),
+        ("ACP_BACKENDS_STEER_CONCURRENT_PROMPT", ACP_BACKENDS_STEER_CONCURRENT_PROMPT),
         ("ACP_BACKENDS_INTERNAL_SANDBOX", ACP_BACKENDS_INTERNAL_SANDBOX),
         ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
         ("ACP_BACKENDS_COMPACT", ACP_BACKENDS_COMPACT),
@@ -648,8 +692,14 @@ def test_effort_channel_is_opt_in() -> None:
     """
     assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
     assert ACP_BACKENDS_KIRO_SLASH_COMMANDS <= ACP_BACKENDS_KNOWN
-    # Disjoint: a harness must not be told to push effort down both channels.
-    assert not (ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS)
+    # A harness in both sets is told to push effort down ONE channel: KAS is
+    # kiro-family for its other slash commands but takes effort only as a config
+    # option, so the capability answers never name both channels.
+    assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS == {
+        ACP_BACKEND_KAS
+    }
+    caps = capabilities_for(ACP_BACKEND_KAS)
+    assert caps.effort_via_config_option and not caps.effort_via_slash_command
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
     assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_SLASH_COMMANDS
@@ -738,7 +788,7 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
 #: harness. Declared rather than discovered so a DELETED splice fails the test below
 #: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
 #: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "goose", "opencode"]
+_MCP_SEAM_HOOKS = ["claude", "deepseek", "goose", "opencode", "pi"]
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
@@ -1005,7 +1055,14 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
         "ensure_served_default",
     ): "The served-default backfill reads kiro-cli's own ``currentModelId`` semantics. "
     "Another host reaching it would have its resolved id rewritten from a list it did "
-    "not author.",
+    "not author. KAS has its own narrower arm: it moves only an ``auto`` default its "
+    "own ``model`` select does not list, onto an id that select does list.",
+    (
+        "src/kiro_crew/acp/session_handle.py",
+        "_kas_compact_request",
+    ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
+    "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
+    "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
     (
         "src/kiro_crew/acp/session_handle.py",
         "_handle_update",
@@ -1205,7 +1262,12 @@ def test_every_deny_set_enforcement_role_is_filled_on_both_drivers():
     must be either a declared role or declared bookkeeping, so a FOURTH role added there
     cannot ship without a row -- and adding the row forces naming the handle's site.
     """
-    client_readers = _deny_set_readers(acp_client.AcpClient, "_spec_denied_tools")
+    client_readers = set().union(
+        *(
+            _deny_set_readers(sys.modules[name], "_spec_denied_tools")
+            for name in (acp_client.__name__, *acp_client._CLIENT_OWNERS)
+        )
+    )
     handle_readers = _deny_set_readers(acp_runtime.AcpSessionHandle, "spec_denied_tools")
 
     missing: list[str] = []

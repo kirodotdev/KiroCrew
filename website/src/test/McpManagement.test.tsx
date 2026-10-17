@@ -10,7 +10,7 @@
 // - sharing cannot be enabled while nothing is stubbed (it would do nothing),
 //   but can always be disabled
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { McpManagement } from '../pages/settings/McpManagement'
@@ -55,19 +55,15 @@ function preview(name: string, over: Record<string, unknown> = {}) {
 }
 
 /**
- * Turn a row's STUB switch on and take the review it opens.
+ * Turn a row's STUB switch on.
  *
- * Two steps, not one, and that is the contract: the switch reads the command and
- * shows it, and the approval is a separate press that carries the identity of what
- * was shown.
+ * One click, and that is the contract: the switch reads the launch and, if it can
+ * be approved, writes the stub straight away carrying its identity. No command is
+ * shown and there is no second press.
  */
 async function approveStub(name: string) {
   const sw = await screen.findByRole('switch', { name: `Put a stub in front of ${name}` })
   sw.click()
-  const approve = await screen.findByRole('button', {
-    name: `Approve and share the command ${name} will run`,
-  })
-  approve.click()
 }
 
 function mount() {
@@ -838,7 +834,7 @@ describe('stub every server the evidence allows', () => {
   }
   const idleProgress = { running: false, done: 0, total: 0, error: '' }
 
-  it('lists every candidate\'s command and writes nothing until that is confirmed', async () => {
+  it('lists every candidate by name and writes nothing until that is confirmed', async () => {
     // What the client still owns: WHICH rows are worth asking about. Eligibility
     // itself is the server's, so a row is a candidate whenever it has a stdio pipe
     // and is not already stubbed -- verdict strength is deliberately not consulted
@@ -881,17 +877,22 @@ describe('stub every server the evidence allows', () => {
     await screen.findByText('good-mcp')
     fireEvent.click(await screen.findByRole('button', { name: /evidence allows/i }))
 
-    // Every candidate's command is on screen BEFORE anything is written. A batch
-    // that wrote first would approve commands nobody had seen, N at a time.
-    expect(await screen.findByText('good-mcp@1')).toBeTruthy()
-    expect(screen.getByText('measured-mcp@1')).toBeTruthy()
-    expect(screen.getByText('bad-mcp@1')).toBeTruthy()
+    // Every candidate is listed BY NAME before anything is written, and no
+    // command text appears: the page shows no launch commands.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('good-mcp')).toBeTruthy()
+    expect(within(dialog).getByText('measured-mcp')).toBeTruthy()
+    expect(within(dialog).getByText('bad-mcp')).toBeTruthy()
+    expect(screen.queryByText('good-mcp@1')).toBeNull()
+    expect(screen.queryByText('measured-mcp@1')).toBeNull()
+    expect(screen.queryByText('bad-mcp@1')).toBeNull()
+    // The read still happens, to carry each server's launch identity on the write.
     expect(read).toHaveBeenCalledTimes(3)
     expect(setStub).not.toHaveBeenCalled()
     // Nothing was unmeasured, so no spawns were paid for.
     expect(start).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve and share these' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stub these servers' }))
 
     // One request per server, each naming the launch that server showed: a single
     // body cannot carry one launch identity per name, and the endpoint refuses a
@@ -968,12 +969,15 @@ describe('stub every server the evidence allows', () => {
       fireEvent.click(screen.getByRole('button', { name: /evidence allows/i }))
       await vi.advanceTimersByTimeAsync(2 * 1000)
 
-      // The review carries the row that only became visible after the wait.
-      await vi.waitFor(() => expect(screen.getByText('late-mcp@1')).toBeTruthy())
+      // The confirm lists the row that only became visible after the wait.
+      await vi.waitFor(() => {
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByText('late-mcp')).toBeTruthy()
+      })
       // Read more than once: the render's copy plus the post-wait re-read.
       expect(rows.mock.calls.length).toBeGreaterThan(1)
 
-      fireEvent.click(screen.getByRole('button', { name: 'Approve and share these' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Stub these servers' }))
       await vi.waitFor(() =>
         expect(setStub).toHaveBeenCalledWith(
           'late-mcp',
@@ -1068,12 +1072,13 @@ describe('stub every server the evidence allows', () => {
     mount()
     await screen.findByText('good-mcp')
     fireEvent.click(await screen.findByRole('button', { name: /evidence allows/i }))
-    // The one that cannot be shown in full stays in the list and says so, rather
-    // than being dropped from a list the operator approves as a whole.
-    expect(await screen.findByText('huge-mcp@1')).toBeTruthy()
-    expect(screen.getByText(/too long for Kiro Crew to show in full/)).toBeTruthy()
+    // The candidate that cannot be approved stays in the list by name; the write
+    // skips it. No command text is shown.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('huge-mcp')).toBeTruthy()
+    expect(screen.queryByText('huge-mcp@1')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve and share these' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Stub these servers' }))
 
     await waitFor(() => expect(screen.getByText(/Shared 1\./)).toBeTruthy())
     expect(screen.getByText(/Left 2 alone\./)).toBeTruthy()
@@ -1094,13 +1099,16 @@ describe('stub every server the evidence allows', () => {
     expect(alerts).toHaveLength(2)
     expect(alerts.some(text => text?.includes('Could not apply the change'))).toBe(true)
     expect(
-      alerts.some(text => text?.includes('moved-mcp: the command changed after it was shown')),
+      alerts.some(text => text?.includes('moved-mcp: its command changed after it was read')),
     ).toBe(true)
     expect(screen.getAllByRole('button', { name: 'Ask the agent' })).toHaveLength(2)
 
+    // "Check again" re-reads that server's launch; one click then re-attempts the
+    // write with the fresh identity. No review panel opens -- the page shows no
+    // command to review.
     fireEvent.click(screen.getByRole('button', { name: 'Check moved-mcp again' }))
-    expect(await screen.findByRole('group', { name: 'Check what moved-mcp will run' })).toBeTruthy()
-    expect(read).toHaveBeenLastCalledWith('moved-mcp')
+    await waitFor(() => expect(read).toHaveBeenLastCalledWith('moved-mcp'))
+    expect(screen.queryByRole('group', { name: 'Check what moved-mcp will run' })).toBeNull()
   })
 
   it('does not offer a confirmation that could only report zero', async () => {
@@ -1124,10 +1132,11 @@ describe('stub every server the evidence allows', () => {
     await screen.findByText('other-mcp')
     fireEvent.click(await screen.findByRole('button', { name: /evidence allows/i }))
 
-    const failure = await screen.findByRole('alert')
-    expect(failure.textContent).toContain('has no command to show')
-    expect(screen.getByRole('button', { name: 'Ask the agent' })).toBeTruthy()
-    const confirm = screen.getByRole('button', { name: 'Approve and share these' })
+    // The candidate whose launch could not be read is listed by name, and the
+    // confirm is disabled because there is nothing approvable to send.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('other-mcp')).toBeTruthy()
+    const confirm = screen.getByRole('button', { name: 'Stub these servers' })
     expect((confirm as HTMLButtonElement).disabled).toBe(true)
     expect(setStub).not.toHaveBeenCalled()
   })

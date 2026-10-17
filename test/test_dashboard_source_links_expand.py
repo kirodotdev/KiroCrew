@@ -1,10 +1,11 @@
 """Tests for the unbudgeted source-links read behind the sidebar's "+N" chip.
 
 The slots payload serializes at most ``_SERIALIZED_SOURCE_LINKS_PER_SLOT`` links
-per kind so a broadcast carrying dozens of rows stays small. That budget is
-exactly why the sidebar's overflow chip has nothing on the client to expand into,
-and why ``GET /api/chat/slots/{slot}/source-links`` exists: it is the only place
-the links behind "+N" can come from.
+in total per slot, pull requests first, so a card's strip stays short and a
+broadcast carrying dozens of rows stays small. That budget is exactly why the
+sidebar's overflow chip has nothing on the client to expand into, and why
+``GET /api/chat/slots/{slot}/source-links`` exists: it is the only place the
+links behind "+N" can come from.
 """
 
 from __future__ import annotations
@@ -36,9 +37,9 @@ def _slot() -> _ChatSlot:
 class TestSourceLinksPayload:
     def test_returns_every_link_the_chip_budget_hides(self):
         slot = _slot()
-        # Precondition: the slots payload really is capped, three per kind.
+        # Precondition: the slots payload really is capped at three in total.
         budgeted = slot.to_dict()["source_links"]
-        assert len(budgeted) == 6
+        assert len(budgeted) == 3
         assert slot.to_dict()["source_links_total"] == 8
 
         payload = slot.source_links_payload()
@@ -60,7 +61,31 @@ class TestSourceLinksPayload:
         assert expanded == changes + issues
 
         budgeted = [link["url"] for link in slot.to_dict()["source_links"]]
-        assert budgeted == changes[:3] + issues[:3]
+        assert budgeted == (changes + issues)[:3]
+
+    def test_issues_fill_only_the_slots_pull_requests_leave_free(self):
+        """The budget is shared, and pull requests claim it first.
+
+        A card shows at most three chips whatever a session mentions, but the
+        strip must never trade a pull request for an issue: issues take
+        whatever is left after every PR has been placed, and only a session
+        with no PR at all spends the whole budget on issues.
+        """
+        one_pr = _ChatSlot("s2")
+        one_pr.append("assistant", "\n".join([PRS[0], *ISSUES]), ts="t1")
+        budgeted = [link["url"] for link in one_pr.to_dict()["source_links"]]
+        assert budgeted == [PRS[0], *RECENT_ISSUES[:2]]
+        assert one_pr.to_dict()["source_links_total"] == 5
+
+        no_pr = _ChatSlot("s3")
+        no_pr.append("assistant", "\n".join(ISSUES), ts="t1")
+        budgeted = [link["url"] for link in no_pr.to_dict()["source_links"]]
+        assert budgeted == RECENT_ISSUES[:3]
+
+        many_prs = _slot()
+        budgeted = [link["url"] for link in many_prs.to_dict()["source_links"]]
+        assert budgeted == RECENT_PRS[:3]
+        assert all("/issues/" not in url for url in budgeted)
 
     def test_check_status_is_withheld_unless_the_caller_asked(self):
         slot = _slot()

@@ -87,12 +87,15 @@ class TestTheListItself:
 
     def test_every_tracked_name_is_a_test_that_exists(self):
         """A stale entry silently absorbs a regression, which is what the list forbids."""
+        # The route suite is split by behaviour across the test_routes*.py files, so a
+        # tracked name may live in any of them. The glob must find test_routes.py and at
+        # least one part, or it is reading a different set of files than the suite has.
         # encoding pinned: read_text() with no encoding decodes with the platform default
-        # (the ANSI code page on Windows), so any non-ASCII anywhere in test_routes.py --
-        # a locale round-trip fixture, an em dash in a docstring -- kills this read on the
-        # Windows shard alone. The file is UTF-8; say so rather than asking the host.
-        source = (Path(spec_conftest.__file__).parent / "test_routes.py").read_text(
-            encoding="utf-8"
-        )
+        # (the ANSI code page on Windows), so any non-ASCII anywhere in the test_routes*.py
+        # files -- a locale round-trip fixture, an em dash in a docstring -- kills this read
+        # on the Windows shard alone. The files are UTF-8; say so rather than asking the host.
+        paths = sorted(Path(spec_conftest.__file__).parent.glob("test_routes*.py"))
+        assert len(paths) >= 2 and "test_routes.py" in {p.name for p in paths}, paths
+        source = "\n".join(p.read_text(encoding="utf-8") for p in paths)
         missing = sorted(n for n in spec_conftest._WINDOWS_GAPS if f"def {n}(" not in source)
         assert missing == []

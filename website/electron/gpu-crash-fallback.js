@@ -330,7 +330,10 @@ function isDashboardDocument(url, backendUrl) {
  *   gateway is stopped the same way a user quit stops it.
  * @param {(msg: string) => void} [deps.log]
  * @param {string} [deps.platform]        Defaults to process.platform.
- * @returns {{softwareActive: boolean, switches: string[]}}
+ * @returns {{softwareActive: boolean, switches: string[], dashboardLoaded: () => boolean}}
+ *   `dashboardLoaded` is the one app-wide "a dashboard document has finished
+ *   loading in this run" fact; renderer-exhausted-notice.js reads it too, so
+ *   there is exactly one latch and one listener for it.
  */
 function initGpuCrashFallback({
   app,
@@ -384,7 +387,11 @@ function initGpuCrashFallback({
     fallback.handleChildGone(details || {});
   });
 
-  return { softwareActive: !!armed, switches };
+  return {
+    softwareActive: !!armed,
+    switches,
+    dashboardLoaded: () => fallback.dashboardLoaded,
+  };
 }
 
 module.exports = {

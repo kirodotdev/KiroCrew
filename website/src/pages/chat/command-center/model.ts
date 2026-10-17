@@ -1,10 +1,12 @@
 import type { ChatSlot, SubagentActivity } from '../../../types'
+import { isAwaitingSpawnApproval } from '../../../store/chatSlice'
 import { slotApprovalMode } from '../../../utils/slotApprovalMode'
 import type { ApprovalModeKey } from '../../../components/ApprovalModePicker'
 import { i18nT } from '../../../i18n/t'
 import { fmtNumber } from '../../../i18n/format'
 import { slotChannelNamespace } from '../../../utils/channelOrigin'
 import { deriveToolCallTitle, parseToolArgs } from '../../../utils/toolCallTitle'
+import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
 
 export type RunState = 'running' | 'idle' | 'done' | 'blocked' | 'waiting' | 'needs_input' | 'stopped'
 export const APPROVAL_MODE_KEYS: Record<ApprovalModeKey, string> = {
@@ -120,6 +122,30 @@ export function teamRoots(slots: ChatSlot[], key: string): string[] {
   return roots
 }
 
+/** Whether *slot* can carry a dashboard CARD -- what `GET .../dashboard-card` serves
+ * and `SessionStatusFrame` renders. The frame and every surface that lists cards ask
+ * through here, so they cannot disagree about who has a board.
+ *
+ * Not to be confused with the test for the dashboard PACKAGE, which is a ROOT
+ * session's (no `created_by`, no session-tree `parent`) and which the side panel spells
+ * out for its Overview. The two gate different objects on different routes: reusing
+ * the package test on a card surface withholds every dispatched conductor's board,
+ * which this route really does serve.
+ *
+ * The card route has NO root test. Its gate is the backend's `_derived_allowed`
+ * (`card_lifecycle.py`): privacy and remoteness only, which is why a session another
+ * session DISPATCHED still owns a derived board -- `publish_derived` says a conductor
+ * dispatched by another session "is exactly the case that must still get its board",
+ * and the read serves it before the cost gate. The session-tree `parent` edge is the
+ * one exclusion on top: an ADOPTED worker is a member of someone else's team and
+ * carries no board of its own.
+ *
+ * An unknown slot answers true, as the frame has always done: the row may not have
+ * reached this tab yet, and the route is the authority on what it holds. */
+export function canCarryCard(slot: ChatSlot | undefined | null): boolean {
+  return !isPrivateMemoryMode(slot?.memory_mode) && slot?.executor !== 'remote' && !slot?.parent
+}
+
 export function scopedSlots(slots: ChatSlot[], root: string | null): ChatSlot[] {
   if (root === null) return slots
   if (!slots.some(s => s.key === root)) return []
@@ -212,7 +238,7 @@ export function buildCommandCenter(source: CommandCenterSources) {
       if (agentIds.has(a.id)) continue
       agentIds.add(a.id)
       nodes.push({ id: `subagent:${a.id}`, kind: 'subagent', ref: a.id, slot: s.key, title: a.task !== a.id ? a.task : '', ordinal: nodes.length + 1,
-        state: a.status === 'done' ? 'done' : a.status === 'stopped' ? 'stopped' : a.status === 'error' || a.stalled ? 'blocked' : a.approval_id ? 'needs_input' : a.status === 'pending' ? 'waiting' : 'running',
+        state: a.status === 'done' ? 'done' : a.status === 'stopped' ? 'stopped' : a.status === 'error' || a.stalled ? 'blocked' : isAwaitingSpawnApproval(a) ? 'needs_input' : a.status === 'pending' ? 'waiting' : 'running',
         detail: a.lastTool || undefined, error: a.error || undefined })
     }
   }
@@ -247,8 +273,8 @@ export function buildCommandCenter(source: CommandCenterSources) {
     running: nodes.filter(n => n.state === 'running').length,
     blocked: nodes.filter(n => n.state === 'blocked').length + workItems.filter(w => w.state === 'blocked').length,
     // Nothing runs, waits or asks, and every counted item rests. An idle session
-    // with an open plan is NOT settled: the plan is the thing the dock still has
-    // to show, so the plan is tested on its own whether or not a work board
+    // with an open plan is NOT settled: the plan is unfinished work in its own
+    // right, so the plan is tested on its own whether or not a work board
     // supplies the progress number. A board that omitted entries is not settled
     // either: the items it did not return may be the open ones. The board needs
     // no done-over-total test: `done` counts acceptances, so a rejected or

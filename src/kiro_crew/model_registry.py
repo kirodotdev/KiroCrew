@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -372,7 +373,81 @@ def refresh_kiro_catalog(rows: list[dict[str, Any]], namespace: str) -> tuple[bo
     ids, windows = admit_catalog_rows(rows)
     windows_changed = _replace_kiro_windows(windows)
     advertised_changed = refresh_advertised_models(namespace, ids)
+    _replace_catalog_rates(namespace, _catalog_rates(rows, ids))
     return windows_changed, advertised_changed
+
+
+# Credit multiplier per model id, off the same ``--list-models`` rows: the
+# ``rate_multiplier`` field the picker's cost badge renders (Auto = 1.0), kept
+# per registry NAMESPACE -- the one :func:`refresh_kiro_catalog` was handed --
+# so a price is only ever read back for a session whose backend shares that
+# namespace, never for another harness whose ids happen to fold onto these. In
+# memory only and REPLACED by each snapshot, like the window cache: a price is a
+# fact about the catalog served now, and a stale one surviving a restart would
+# route a turn on a price the account does not pay. A cold process has none,
+# which every reader treats as "price unknown".
+_CATALOG_RATES: dict[str, dict[str, float]] = {}
+
+
+def _priced(value: object) -> float | None:
+    """*value* as a credit multiplier, or ``None`` when it is not a price.
+
+    The same test the picker applies before it draws a badge: a finite number
+    above zero. ``bool`` is refused, since ``True`` would read as a 1.0x price.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return number
+
+
+def _catalog_rates(rows: list[dict[str, Any]], ids: Sequence[str]) -> dict[str, float]:
+    """The multiplier of every ADMITTED id whose row carries a price."""
+    admitted = set(ids)
+    rates: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rate = _priced(row.get("rate_multiplier"))
+        if rate is None:
+            continue
+        for key in (row.get("model_id"), row.get("model_name")):
+            if isinstance(key, str) and key in admitted:
+                rates[key] = rate
+    return rates
+
+
+def _replace_catalog_rates(namespace: str, rates: dict[str, float]) -> None:
+    """Make *namespace*'s prices exactly *rates*; an empty snapshot is a no-op."""
+    if not rates:
+        return
+    _CATALOG_RATES[namespace] = dict(rates)
+
+
+def rate_multiplier(model_id: str, namespace: str) -> float | None:
+    """*model_id*'s credit multiplier in *namespace*'s last catalog, or ``None``.
+
+    *namespace* is the registry namespace of the session asking
+    (``agent_sdk.backends.model_registry_namespace``); a namespace no catalog was
+    read for has no prices. Asked as written, then case-folded, then on the
+    dot/dash fold the picker's ``normalizeModelKey`` applies, because a session
+    advertises the spelling its own backend uses and the catalog may print another.
+    """
+    rates = _CATALOG_RATES.get(namespace)
+    name = str(model_id or "").strip()
+    if not rates or not name:
+        return None
+    for candidate in (name, name.lower()):
+        found = rates.get(candidate)
+        if found is not None:
+            return found
+    folded = name.lower().replace(".", "-")
+    for key, rate in rates.items():
+        if key.lower().replace(".", "-") == folded:
+            return rate
+    return None
 
 
 def persist_kiro_windows() -> None:
@@ -936,6 +1011,22 @@ def _supplementary_window(model: str) -> int | None:
     return None
 
 
+# Windows an operator declared for exact model ids (``agent.model_context_tokens``): the
+# one tier a person can set. The config appliers replace it whole, at boot and on reload.
+_OPERATOR_WINDOWS: dict[str, int] = {}
+
+
+def apply_operator_windows(windows: Mapping[str, int]) -> None:
+    """Make *windows* the whole set of operator-declared served windows.
+
+    Replaces, never merges, so an id the operator removed or renamed stops resolving at
+    once. The set is copied and swapped in as one reference, so a reader on another thread
+    sees the old set or the new one, never a half-built one.
+    """
+    global _OPERATOR_WINDOWS
+    _OPERATOR_WINDOWS = dict(windows)
+
+
 def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int | None:
     """THE central model -> context-window resolver. Single source of truth.
 
@@ -944,26 +1035,33 @@ def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int
     1. ``live_tokens`` — the served window from kiro's per-turn
        ``usage_update.size`` (or any live signal the caller already has). Wins
        over everything: it is what the backend is ACTUALLY billing against.
-    2. Kiro-list cache — the structured ``context_window_tokens`` from
+    2. Operator-declared window (``agent.model_context_tokens``, see
+       :func:`apply_operator_windows`) — the window the operator says this exact id is
+       SERVED with. It outranks the catalog and the registry because a served limit is
+       narrower than the architecture maximum those advertise.
+    3. Kiro-list cache — the structured ``context_window_tokens`` from
        ``kiro-cli chat --list-models`` (see :func:`refresh_kiro_windows`),
        keyed by the kiro model id/name. Correct for EVERY model kiro serves,
        including non-Anthropic (GPT 272k, DeepSeek 164k, Qwen 256k) and the
        sonnet/haiku ids the static registry folds onto a 1M canonical.
-    3. Static registry — the hand-maintained ``window`` literal (Anthropic ids).
-    4. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`),
+    4. Static registry — the hand-maintained ``window`` literal (Anthropic ids).
+    5. Supplementary map — Bedrock/legacy ids (:data:`_SUPPLEMENTARY_WINDOWS`),
        exact then longest-substring.
-    5. ``[1m]``/``-1m`` heuristic -> 1M (forward-compat for an unlisted 1M id).
-    6. ``None`` — genuinely unknown. Callers treat None as
+    6. ``[1m]``/``-1m`` heuristic -> 1M (forward-compat for an unlisted 1M id).
+    7. ``None`` — genuinely unknown. Callers treat None as
        :data:`REFERENCE_WINDOW_TOKENS` (never a silent 200k), so an unknown
        model keeps the full budget rather than being wrongly shrunk.
 
     NOTE: there is intentionally no silent 200k default — that literal, which
     caused GPT/DeepSeek/etc. to under-report and the alias fold to over-report,
     is gone. A concrete 200k only ever comes from a source that really says 200k
-    (kiro list, registry entry, or a live usage_update).
+    (an operator declaration, the kiro list, a registry entry, or a live usage_update).
     """
     if isinstance(live_tokens, int) and not isinstance(live_tokens, bool) and live_tokens > 0:
         return live_tokens
+    declared = _OPERATOR_WINDOWS.get(canonical_or_id)
+    if declared:
+        return declared
     cached = _KIRO_WINDOWS.get(canonical_or_id)
     if cached:
         return cached
@@ -982,10 +1080,12 @@ def model_window(canonical_or_id: str, *, live_tokens: int | None = None) -> int
 def window_source(canonical_or_id: str) -> str:
     """Diagnostic: which tier :func:`model_window` resolves ``id`` from.
 
-    One of ``"kiro-list"``, ``"registry"``, ``"supplementary"``, ``"heuristic"``,
-    ``"unknown"``. (The ``"live"`` tier is per-call via ``live_tokens`` and not
-    reflected here.)
+    One of ``"operator"``, ``"kiro-list"``, ``"registry"``, ``"supplementary"``,
+    ``"heuristic"``, ``"unknown"``. (The ``"live"`` tier is per-call via ``live_tokens`` and
+    not reflected here.)
     """
+    if _OPERATOR_WINDOWS.get(canonical_or_id):
+        return "operator"
     if _KIRO_WINDOWS.get(canonical_or_id):
         return "kiro-list"
     if _registry_window(canonical_or_id) is not None:
@@ -1012,8 +1112,9 @@ def window(canonical_or_id: str) -> int:
 
 
 def has_known_window(canonical_or_id: str) -> bool:
-    """True if the window for ``id`` comes from a real source (kiro list or the
-    static registry) — NOT the ``[1m]`` heuristic or the unknown fallback.
+    """True if the window for ``id`` comes from a real source (an operator
+    declaration, the kiro list or the static registry) — NOT the ``[1m]`` heuristic or
+    the unknown fallback.
 
     Lets the context-budget scaler tell a genuinely-known window apart from a
     guessed/unknown one so it never shrinks an unknown model's budget. Now also
@@ -1022,7 +1123,8 @@ def has_known_window(canonical_or_id: str) -> bool:
     backfill report the model's real window.
     """
     return (
-        bool(_KIRO_WINDOWS.get(canonical_or_id))
+        bool(_OPERATOR_WINDOWS.get(canonical_or_id))
+        or bool(_KIRO_WINDOWS.get(canonical_or_id))
         or _registry_window(canonical_or_id) is not None
         or _supplementary_window(canonical_or_id) is not None
     )

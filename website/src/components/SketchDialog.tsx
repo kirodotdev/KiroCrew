@@ -9,6 +9,7 @@ import ErrorBoundary from './ErrorBoundary'
 import ErrorNotice from './ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useLanguage } from '../i18n/LanguageProvider'
+import { withBase } from '@/lib/basePath'
 
 /**
  * Sketch pad: an Excalidraw whiteboard in a modal, opened from the composer's
@@ -52,7 +53,7 @@ function loadExcalidraw(): Promise<typeof ExcalidrawModuleType> {
   // falls back to a third-party CDN (esm.sh) — which an air-gapped dashboard
   // can't reach and a private one shouldn't. The path is emitted into the
   // built dist (and served in dev) by vite.config's excalidrawFontsPlugin.
-  ;(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = '/vendor/excalidraw/'
+  ;(window as { EXCALIDRAW_ASSET_PATH?: string }).EXCALIDRAW_ASSET_PATH = withBase('/vendor/excalidraw/')
   loadInFlight = Promise.all([
     import('@excalidraw/excalidraw'),
     // Vite splits the stylesheet into the same lazy chunk group; Excalidraw
@@ -551,7 +552,7 @@ export default function SketchDialog({ open, onOpenChange, onInsert, returnFocus
                   <button
                     className={`text-[12px] px-2.5 py-1 rounded-lg bg-transparent border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0 ${
                       discardArmed
-                        ? 'text-danger border-danger hover:bg-danger/10'
+                        ? 'text-danger hover:text-danger-text border-danger hover:bg-danger/10'
                         : 'text-muted border-border hover:text-text hover:bg-bg-hover'
                     }`}
                     onClick={() => {

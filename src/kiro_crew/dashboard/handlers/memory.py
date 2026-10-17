@@ -21,6 +21,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
+from kiro_crew.config.memory_sections import memory_writes_off_key
 from kiro_crew.context import validated_cached_vector_stores
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import memory_startup_refusal
@@ -67,6 +68,7 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls, redact_local_paths
+from kiro_crew.validation import clamp_query_offset
 from kiro_crew.workflow_memory import WorkflowMemoryError
 
 from ._shared import (
@@ -804,7 +806,8 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
         )
     try:
         limit = min(int(request.query.get("limit", "1000")), 1000)
-        offset = int(request.query.get("offset", "0"))
+        # Clamped before the store binds it: see ``clamp_query_offset``.
+        offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     entries = []
@@ -859,10 +862,9 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
         # Imported here, not at module scope: ``vector_memory`` pulls
         # snowballstemmer plus the optional numpy/faiss imports (measured 175ms
         # and ~200 modules) and this enum is the module's ONLY use of it, on one
-        # error branch. The enum itself belongs in ``vector_memory_constants``
-        # (the dependency-free split-out this module's other constants already
-        # live in), but relocating it would edit ``vector_memory.py``; deferring
-        # the import keeps the cost off the import path without that change.
+        # error branch. The enum lives in ``vector_memory_runtime/write_outcomes.py``
+        # and its public path is ``vector_memory``; deferring the import keeps the
+        # cost off the import path.
         from kiro_crew.vector_memory import SemanticRejectCode
 
         sk = request.headers.get("X-Session-Key", "")
@@ -888,9 +890,20 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+_FORGET_BODY_FIELDS = frozenset({"expect_value_json", "superseded_by"})
+
+
 async def api_memory_semantic_delete(request: web.Request) -> web.Response:
     """DELETE /api/memory/semantic/{key} — tombstone a semantic entry in the store
-    named by ``?store=``, else the GLOBAL store."""
+    named by ``?store=``, else the GLOBAL store.
+
+    An optional JSON body carries two fields, both strings, for the CLI's
+    ``kirocrew memory forget``. ``expect_value_json`` makes it a compare-and-delete:
+    a row whose stored body differs from that value is kept and answers 409
+    ``value_changed``. ``superseded_by`` names the live key that replaces this one;
+    it must differ from *key* and be live, or the call answers 400/409. The
+    dashboard sends no body, and a bodiless call behaves exactly as before.
+    """
     state: DashboardState = request.app["state"]
     # The shared write gate rejects unknown callers before checking session
     # mode: the restricted-mode check alone returns False for an unknown key.
@@ -904,9 +917,52 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
     if denial is not None:
         return denial
     key = request.match_info["key"]
-    # Offload: acquires _db_lock internally — see api_memory_semantic.
-    ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit")
+    body, body_err = await read_bounded_json(request, allow_absent=True)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    if not set(body) <= _FORGET_BODY_FIELDS or not all(
+        isinstance(value, str) for value in body.values()
+    ):
+        return web.json_response(
+            {
+                "error": "body may hold only string expect_value_json and superseded_by",
+                "code": "invalid_forget_body",
+            },
+            status=400,
+        )
+    expect = body.get("expect_value_json")
+    winner = body.get("superseded_by")
+    if winner is not None:
+        if winner == key:
+            return web.json_response(
+                {"error": "superseded_by names the key itself", "code": "superseded_by_self"},
+                status=400,
+            )
+        if await asyncio.to_thread(store.get_semantic, winner) is None:
+            return web.json_response(
+                {"error": "superseded_by is not a live key", "code": "superseded_by_absent"},
+                status=409,
+            )
+    options: dict[str, str] = {}
+    if expect is not None:
+        options["expect_value_json"] = expect
+    if winner is not None:
+        options["superseded_by"] = winner
+    try:
+        # Offload: acquires _db_lock internally — see api_memory_semantic.
+        ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit", **options)
+    except ValueError:
+        # delete_semantic refuses a multi-line or over-long superseded_by.
+        return web.json_response(
+            {"error": "superseded_by must be a short key", "code": "invalid_forget_body"},
+            status=400,
+        )
     if not ok:
+        if expect is not None and await asyncio.to_thread(store.get_semantic, key) is not None:
+            return web.json_response(
+                {"error": "value changed", "code": "value_changed"}, status=409
+            )
         return web.json_response({"error": "not found"}, status=404)
     return web.json_response({"ok": True})
 
@@ -952,6 +1008,8 @@ async def api_memory_carve(request: web.Request) -> web.Response:
     group_by = request.query.get("count_by", "")
     try:
         limit = int(request.query.get("limit", str(memory_schema.DEFAULT_FACET_PAGE)))
+        # Not clamped here: ``memory_schema.facet_page_query`` bounds both the
+        # page and the offset for this route and the CLI verb alike.
         offset = int(request.query.get("offset", "0"))
     except (ValueError, TypeError):
         return web.json_response(
@@ -984,7 +1042,7 @@ async def api_memory_events(request: web.Request) -> web.Response:
         return denial
     try:
         limit = min(int(request.query.get("limit", "50")), 200)
-        offset = int(request.query.get("offset", "0"))
+        offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     # Offload: serializes on _db_lock — see api_memory_semantic.
@@ -1933,9 +1991,8 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
 async def api_memory_disable_embeddings(request: web.Request) -> web.Response:
     """POST /api/memory/disable-embeddings — gone: embeddings are always-on.
 
-    Kept as a graceful 410 (not a 404) because the shipped frontend still
-    renders a Disable button until its companion change lands. Remove
-    together with the frontend button.
+    A 410 (not a 404) compatibility stub for older clients that still post
+    here. The current frontend renders no Disable button and never calls it.
     """
     return web.json_response(
         {
@@ -1999,7 +2056,7 @@ async def api_memory_episodic_list(request: web.Request) -> web.Response:
         )
     try:
         limit = min(int(request.query.get("limit", "50")), 100)
-        offset = int(request.query.get("offset", "0"))
+        offset = clamp_query_offset(int(request.query.get("offset", "0")))
     except (ValueError, TypeError):
         return web.json_response({"error": "limit/offset must be integers"}, status=400)
     tag_filter = [t.strip() for t in request.query.get("tags", "").split(",") if t.strip()] or None
@@ -2182,26 +2239,33 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
         return gate
     if not state.consolidator:
         return web.json_response({"error": "consolidator not available"}, status=503)
-    # Global persistence switch (memory.persistence_enabled). The
+    # Global persistence switch (memory.persistence_enabled) and the
+    # writes-only switch (memory.writes_enabled). The
     # inner _consolidate gate would refuse anyway; refusing here tells the
     # dashboard caller WHY instead of returning a generic refusal, and spends
     # no transcript read on a request that cannot proceed. The denial is
     # SEL-recorded: the request passed identity and the write gate, so the
     # refusal is a config-state decision an audit trail has to show rather than
     # an unauthenticated caller being turned away upstream.
-    if not KiroCrewConfig.load().memory.persistence_enabled:
+    writes_off = memory_writes_off_key(KiroCrewConfig.load().memory)
+    if writes_off is not None:
+        code = (
+            "persistence_disabled"
+            if writes_off == "memory.persistence_enabled"
+            else "writes_disabled"
+        )
         _sel().log_api_access(
             caller=request.headers.get("X-Session-Key", ""),
             operation="memory.consolidate",
             outcome="denied",
             source="dashboard",
-            resources="persistence_disabled",
+            resources=code,
         )
         return web.json_response(
             {
-                "error": "Consolidation is paused: persistent memory is disabled "
-                "(memory.persistence_enabled is false).",
-                "code": "persistence_disabled",
+                "error": "Consolidation is paused: persistent memory writes are "
+                f"disabled ({writes_off} is false).",
+                "code": code,
             },
             status=403,
         )

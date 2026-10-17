@@ -28,6 +28,7 @@ from kiro_crew.subprocess_pool.executor import (
     pack_strings,
     unpack_strings,
 )
+from kiro_crew.testing.wait import wait_until
 
 _CHILD = pathlib.Path(child_mod.__file__)
 
@@ -275,12 +276,13 @@ class TestFailClosed:
         # does resolve.
         deadline = time.monotonic() + 10.0
         while True:
-            try:
-                assert pool.realpath_spellings(str(target))
-                break
-            except SubprocessPoolUnavailable:
-                assert time.monotonic() < deadline, "the reaper never respawned the slot"
-                time.sleep(0.05)
+            wait_until(
+                lambda: pool.realpath_spellings(str(target)),
+                timeout=deadline - time.monotonic(),
+                describe=lambda: "the reaper never respawned the slot",
+                ignoring=(SubprocessPoolUnavailable,),
+            )
+            break
 
     def test_a_child_that_never_answers_is_killed_at_the_ceiling(
         self, tmp_path: pathlib.Path
@@ -418,11 +420,11 @@ class TestCallerBudget:
         """Every child once the reaper has spawned it, by pid, so a test can tell a
         destroyed one from a fresh one.  Only the reaper spawns (a caller never does),
         so this waits for its start-up tick rather than spawning from the test thread."""
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            if all(child.proc is not None for child in executor._children):
-                break
-            time.sleep(0.02)
+        wait_until(
+            lambda: all(child.proc is not None for child in executor._children),
+            timeout=10.0,
+            describe=lambda: "reaper never spawned all pool children",
+        )
         return {child.proc.pid: child.proc for child in executor._children if child.proc}
 
     @staticmethod
@@ -489,9 +491,7 @@ class TestCallerBudget:
             # Handed to the reaper (or already collected by a tick that raced us).
             unreaped = executor._unreaped
             assert victim in unreaped._procs or victim.poll() is not None
-            deadline = time.monotonic() + 10.0
-            while victim in unreaped._procs and time.monotonic() < deadline:
-                time.sleep(0.1)
+            wait_until(lambda: victim not in unreaped._procs, timeout=10.0)
             assert victim not in unreaped._procs, "the reaper collects a killed child"
             assert victim.returncode is not None
         finally:
@@ -518,15 +518,17 @@ class TestCallerBudget:
             slot = executor._children[0]
             still_alive = types.SimpleNamespace(poll=lambda: None)
             executor._unreaped._procs = [still_alive]  # one corpse, below the bound
-            deadline = time.monotonic() + 10.0
-            while slot.proc is None and time.monotonic() < deadline:
-                time.sleep(0.05)
+            wait_until(
+                lambda: slot.proc is not None,
+                timeout=10.0,
+                describe=lambda: "below the bound the slot respawns at once",
+            )
             assert slot.proc is not None, "below the bound the slot respawns at once"
             slot.kill_async()
             slot.proc.wait(timeout=10.0)
             executor._unreaped._procs = [still_alive, still_alive]  # at the bound
             for _ in range(4):
-                time.sleep(0.6)  # four reaper ticks
+                time.sleep(0.6)  # flake-ok: deliberately drives four reaper-tick cycles
                 slot.ensure_spawned()
             assert (
                 slot.proc is None or slot.proc.poll() is not None
@@ -536,11 +538,11 @@ class TestCallerBudget:
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=5.0)
             assert time.monotonic() - started < 1.0, "exhaustion is reported at once"
             executor._unreaped._procs = [types.SimpleNamespace(poll=lambda: 0)]  # one exited
-            deadline = time.monotonic() + 10.0
-            while (slot.proc is None or slot.proc.poll() is not None) and (
-                time.monotonic() < deadline
-            ):
-                time.sleep(0.05)
+            wait_until(
+                lambda: slot.proc is not None and slot.proc.poll() is None,
+                timeout=10.0,
+                describe=lambda: "room again: refilled",
+            )
             assert slot.proc is not None and slot.proc.poll() is None, "room again: refilled"
         finally:
             executor.shutdown(wait=False)
@@ -577,9 +579,7 @@ class TestCallerBudget:
             assert fresh is not lost, "the slot object was replaced"
             assert victim in executor._unreaped._procs or victim.poll() is not None
             assert victim.wait(timeout=10.0) is not None, "the killed child is dead"
-            deadline = time.monotonic() + 10.0
-            while fresh.proc is None and time.monotonic() < deadline:
-                time.sleep(0.1)
+            wait_until(lambda: fresh.proc is not None, timeout=10.0)
             assert fresh.proc is not None and fresh.proc.pid != victim.pid
         finally:
             release.set()
@@ -595,9 +595,7 @@ class TestCallerBudget:
             before = self._spawned(executor)
             with pytest.raises(TimeoutError):
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=0.5)
-            deadline = time.monotonic() + 10.0
-            while executor._children[0].proc is None and time.monotonic() < deadline:
-                time.sleep(0.1)
+            wait_until(lambda: executor._children[0].proc is not None, timeout=10.0)
             fresh = executor._children[0].proc
             assert fresh is not None and fresh.pid not in before, "a new child, not the killed one"
         finally:
@@ -665,9 +663,7 @@ class TestCallerBudget:
         try:
             with pytest.raises(TimeoutError):  # start-up spawn, then the wedge
                 executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=1.0)
-            deadline = time.monotonic() + 10.0
-            while executor._children[0].proc is None and time.monotonic() < deadline:
-                time.sleep(0.05)
+            wait_until(lambda: executor._children[0].proc is not None, timeout=10.0)
             assert len(spawned_on) >= 2, spawned_on  # start-up and the respawn
             assert all(name.endswith("-reaper") for name in spawned_on), spawned_on
             assert threading.current_thread().name not in spawned_on
@@ -696,9 +692,11 @@ class TestCallerBudget:
             executor._enqueue(stale)  # the reaper's late enqueue from its snapshot
             assert stale.queued is False
             assert orphan.wait(timeout=10.0) is not None, "the orphan child is killed"
-            deadline = time.monotonic() + 10.0
-            while not fresh.queued and time.monotonic() < deadline:
-                time.sleep(0.05)
+            wait_until(
+                lambda: fresh.queued,
+                timeout=10.0,
+                describe=lambda: "the replacement is what gets leased",
+            )
             assert fresh.queued, "the replacement is what gets leased"
             # Retiring an already-retired slot is harmless and swaps nothing.
             assert executor._replace_slot(stale, None) is stale
@@ -740,15 +738,12 @@ class TestCallerBudget:
             assert victim is not None
             victim.kill()
             victim.wait(timeout=10.0)
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline:
-                try:
-                    answer = executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=10.0)
-                    break
-                except SubprocessPoolUnavailable:
-                    time.sleep(0.05)  # one refused resolution while the reaper respawns
-            else:
-                pytest.fail("the slot was never respawned")
+            answer = wait_until(
+                lambda: executor.call_op(OP_REALPATH_SPELLINGS, b"/x", timeout=10.0),
+                timeout=10.0,
+                describe=lambda: "the slot was never respawned",
+                ignoring=(SubprocessPoolUnavailable,),
+            )
             assert answer == b"original", "the respawned child runs the captured source"
         finally:
             executor.shutdown(wait=False)
@@ -819,11 +814,11 @@ class TestShutdownRefillWindow:
 
     @staticmethod
     def _wait_spawned(executor: SubprocessPoolExecutor, workers: int) -> None:
-        deadline = time.monotonic() + 30.0
-        while executor._free.qsize() < workers:
-            if time.monotonic() > deadline:  # pragma: no cover - a wedged host
-                pytest.fail("reaper never spawned the pool's children")
-            time.sleep(0.01)
+        wait_until(
+            lambda: executor._free.qsize() >= workers,
+            timeout=30.0,
+            describe=lambda: "reaper never spawned the pool's children",
+        )
 
     def test_shutdown_joins_the_reaper_before_it_kills_a_child(self, monkeypatch) -> None:
         executor = SubprocessPoolExecutor(workers=2)

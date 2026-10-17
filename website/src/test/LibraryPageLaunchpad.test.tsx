@@ -480,3 +480,28 @@ describe('LaunchpadTile — the disabled gate is the tile’s own branch', () =>
     expect(scope.queryByRole('menuitem', { name: 'Unpin' })).toBeNull()
   })
 })
+
+describe('LibraryPage — a guide picks an app by its card menu', () => {
+  it('reports the app whose ⋯ menu is open, by its own name, and outlines only the named card', async () => {
+    const { selectionState, selectedName } = await import('../guide/guidePredicates')
+    const { pickCandidate } = await import('../guide/guideActions')
+    renderLibrary()
+    await tile('secretary')
+    await tile('oncall-radar')
+    expect(selectionState('app_tile_menu_open')).toBe('none')
+    const grid = document.querySelector<HTMLElement>('[data-ui-location="apps.library.app-list"]')!
+    expect(grid.getAttribute('aria-label')).toBe('Installed apps')
+    const shown = () => true
+    // The pick names a card by the app's own name, never by text inside it.
+    expect(pickCandidate(grid, shown, 'Oncall Radar')).toBe(screen.getByTestId('launchpad-tile-oncall-radar'))
+    expect(pickCandidate(grid, shown, 'Radar')).toBeNull()
+    await openTileMenu('secretary', 'Secretary')
+    await waitFor(() => expect(selectionState('app_tile_menu_open')).toBe('selected'))
+    expect(selectedName('app_tile_menu_open')).toBe('Secretary')
+    // The menu holds the registered Uninstall item the guide's last step points at.
+    expect(document.querySelectorAll('[data-ui-location="apps.library.tile-uninstall"]')).toHaveLength(1)
+    // Closing it unpicks.
+    fireEvent.click(within(await tile('secretary')).getByRole('button', { name: 'More actions for Secretary' }))
+    await waitFor(() => expect(selectionState('app_tile_menu_open')).toBe('none'))
+  })
+})

@@ -29,10 +29,11 @@ to instrument, because the two backends parse tool frames in different places.
 The kiro backend runs on ``AcpRuntime`` + ``AcpSessionHandle``, which parses
 through the shared ``acp/_dispatch.py`` builders; the claude backend (and the app
 worker pools that build a client directly, e.g. ``knowledge/llm_pool``) stays on
-``acp/client.py``, which re-implements the same shaping inline and never calls
+``AcpClient`` (its tool-frame shaping lives in ``acp/client_tool_events.py``), which
+re-implements the same shaping inline and never calls
 ``parse_session_update``. ``providers/acp.py`` constructs an ``AcpClient`` and
-then swaps in an ``AcpSessionProvider`` at startup for the kiro path, so both
-parsers are live in a normal install and both are instrumented here.
+``providers/acp_runtime_start.py`` swaps in an ``AcpSessionProvider`` at startup for
+the kiro path, so both parsers are live in a normal install and both are instrumented here.
 
 Every surface -- dashboard, Slack, Discord, cron, subagents, task runner,
 workflow -- sits DOWNSTREAM of those two: they consume the emitted ``AcpEvent``
@@ -121,8 +122,8 @@ _TERMINAL_STATUSES = frozenset({OUTCOME_COMPLETED, OUTCOME_FAILED, OUTCOME_CANCE
 # A turn cannot legitimately hold this many tool calls open at once, so a
 # registry that reaches the cap is evidence of frames whose completion never
 # arrived (a killed process, a cancelled turn). It is dropped wholesale rather
-# than grown for the life of the process -- the same trade ``AcpClient`` makes
-# for its ``_skill_read_noted`` bookkeeping. The cost is missing samples for the
+# than grown for the life of the process -- the same trade the ACP layer's
+# ``SkillReadTracker`` makes for its noted set. The cost is missing samples for the
 # calls that were in flight, never a leak.
 _MAX_OPEN_CALLS = 4096
 

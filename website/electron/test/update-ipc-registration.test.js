@@ -109,7 +109,7 @@ test("the updater block does not depend on gateway boot completing", () => {
   // updater registration depend on gateway state and violate boot ordering.
   assert.match(
     REGISTRAR_SOURCE,
-    /stopGateway:\s*\(\)\s*=>\s*gateway\.stopGracefully\(\)/,
+    /stopGateway:\s*\(\)\s*=>\s*gateway\.stopForUpdate\(\)/,
     "stopGateway is no longer passed as a lazy callback — updater registration may now depend on gateway state",
   );
 });

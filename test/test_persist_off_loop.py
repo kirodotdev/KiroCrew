@@ -17,7 +17,7 @@ active — and most of these call sites swallow that in a best-effort ``except``
 Off the loop there is no running loop in the worker thread, so ``_locked`` takes
 the patient poll-to-deadline path instead.
 
-``history.py`` already warns (with ``stack_info``) when append runs on the loop,
+``history_offload.py`` already warns (with ``stack_info``) when append runs on the loop,
 but a warning is only as good as someone reading logs. This gate is the
 deterministic form: a NEW Slack call site cannot persist a turn on the loop
 without failing the build.
@@ -308,8 +308,13 @@ def test_every_slack_persist_site_goes_through_the_choke_point() -> None:
     """
     root = _src_root()
     sites = 0
-    for name in ("handler.py", "gateway.py", "transport_dispatch.py"):
-        tree = ast.parse((root / "slack" / name).read_text(encoding="utf-8"))
+    paths = [
+        root / "slack" / name for name in ("handler.py", "gateway.py", "transport_dispatch.py")
+    ]
+    # The gateway facade's composed owners hold part of its persist sites.
+    paths += sorted((root / "slack" / "gateway_runtime").glob("*.py"))
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
@@ -481,7 +486,7 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
 # buys false positives that would get suppressed rather than obeyed.
 #
 # What actually pins the property is behavioural, in
-# test_open_slots_persistence.py::test_restore_open_slots_async_reads_off_the_loop
+# test_open_slots_persistence_async_restore.py::test_restore_open_slots_async_reads_off_the_loop
 # and test_session_restore.py's off-loop class: they record the thread each half
 # ran on and fail on the base shape. This gate is the cheap companion that stops
 # a future edit from re-inlining a read straight into a driver.

@@ -57,6 +57,33 @@ def _install_client(
     )
 
 
+async def _run_scheduled_sends(
+    monkeypatch: pytest.MonkeyPatch, produce: Any, *, timeout: float = 5.0
+) -> None:
+    """Call a producer and await the send task(s) it schedules.
+
+    The producers schedule ``send_heartbeat`` with ``loop.create_task`` and
+    return at once; ``send_heartbeat`` then awaits ``asyncio.to_thread`` for its
+    destination read, which no fixed number of ``asyncio.sleep(0)`` yields can
+    be relied on to outlast. Capture the scheduled tasks and await them under a
+    bounded timeout so the assertions run after the send has actually resolved.
+    """
+    loop = asyncio.get_running_loop()
+    real_create_task = loop.create_task
+    scheduled: list[asyncio.Task[Any]] = []
+
+    def _spy(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        task = real_create_task(coro, **kwargs)
+        scheduled.append(task)
+        return task
+
+    monkeypatch.setattr(loop, "create_task", _spy)
+    produce()
+    monkeypatch.setattr(loop, "create_task", real_create_task)
+    for task in scheduled:
+        await asyncio.wait_for(task, timeout)
+
+
 def test_is_coding_tool_only_matches_write_and_shell() -> None:
     assert heartbeats.is_coding_tool("fs_write")
     assert heartbeats.is_coding_tool("execute_bash")
@@ -114,6 +141,69 @@ def test_send_flag_off_schedules_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
     assert scheduled == []
 
 
+def test_cadence_schedules_a_task_without_reading_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    # note_coding_cadence runs on the ACP dispatch hot path, so it does NO
+    # on-thread config read: it always schedules the send, and the send task
+    # re-checks the opt-in off the loop. A load on this thread is a failure.
+    class _FakeLoop:
+        def __init__(self) -> None:
+            self.tasks: list[Any] = []
+
+        def create_task(self, coro: Any) -> Any:
+            self.tasks.append(coro)
+            coro.close()  # never awaited in this test; avoid a pending-coro warning
+            return coro
+
+    loop = _FakeLoop()
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+
+    def _fail_load() -> Any:
+        raise AssertionError("cadence must not read config on the calling thread")
+
+    monkeypatch.setattr(heartbeats.KiroCrewConfig, "load", staticmethod(_fail_load))
+    heartbeats.note_coding_cadence("/tmp/repo")
+    assert len(loop.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_cadence_send_drops_when_opt_in_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The opt-in gate lives in the send task now, not the producer: a scheduled
+    # cadence beat is dropped when send_heartbeats is off, so a disabled install
+    # POSTs nothing even though the producer always schedules.
+    stub = _StubClient()
+    _install_client(monkeypatch, stub)
+    monkeypatch.setattr(
+        heartbeats.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: _Cfg(wakatime=_WakaCfg(enabled=True, send_heartbeats=False))),
+    )
+    await _run_scheduled_sends(monkeypatch, lambda: heartbeats.note_coding_cadence("/tmp/repo"))
+    assert stub.batches == []
+
+
+@pytest.mark.asyncio
+async def test_cadence_heartbeat_carries_no_attribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cadence beat exists only to give WakaTime a timestamp mid-turn; it must
+    # never carry token or line-change fields, so it cannot double-count
+    # attribution against the end-of-turn beat however often it fires.
+    stub = _StubClient()
+    _install_client(monkeypatch, stub)
+    monkeypatch.setattr(heartbeats.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
+
+    await _run_scheduled_sends(monkeypatch, lambda: heartbeats.note_coding_cadence("/tmp/my-repo"))
+
+    assert len(stub.batches) == 1
+    hb = stub.batches[0][0]
+    assert hb["entity"] == "my-repo"
+    assert hb["category"] == "ai coding"
+    assert hb["type"] == "app"
+    assert "ai_input_tokens" not in hb
+    assert "ai_output_tokens" not in hb
+    assert "ai_line_changes" not in hb
+
+
 def test_classifying_a_coding_tool_does_not_send_by_itself() -> None:
     # Classification and sending are separate. This keeps denied tools safe:
     # recognizing a write request does not produce a heartbeat unless the turn
@@ -130,17 +220,16 @@ async def test_enabled_and_opted_in_sends_one_heartbeat(
     _install_client(monkeypatch, stub)
     monkeypatch.setattr(heartbeats.KiroCrewConfig, "load", staticmethod(lambda: _Cfg()))
 
-    heartbeats.note_coding_activity(
-        "/tmp/my-repo",
-        ai_input_tokens=1200,
-        ai_output_tokens=340,
-        ai_line_changes=42,
-        config=cast(Any, _Cfg()),
+    await _run_scheduled_sends(
+        monkeypatch,
+        lambda: heartbeats.note_coding_activity(
+            "/tmp/my-repo",
+            ai_input_tokens=1200,
+            ai_output_tokens=340,
+            ai_line_changes=42,
+            config=cast(Any, _Cfg()),
+        ),
     )
-    for _ in range(20):
-        await asyncio.sleep(0)
-        if stub.batches:
-            break
 
     assert len(stub.batches) == 1
     assert len(stub.batches[0]) == 1

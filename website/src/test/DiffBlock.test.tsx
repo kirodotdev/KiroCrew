@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import DiffBlock, { extractFilePath } from '../components/DiffBlock'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { pathKindsFetch, probedPaths } from './pathKindStub'
 
 // The block's controls live in its own header row, but Pierre's lazy chunk still
 // mounts beneath that row in every highlighted-mode case below. Warm it once so
@@ -8,7 +10,8 @@ import DiffBlock, { extractFilePath } from '../components/DiffBlock'
 beforeAll(() => import('../pierre/PierreImpl'))
 
 beforeEach(() => {
-  globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch
+  __resetPathKindCache()
+  globalThis.fetch = pathKindsFetch(() => 'file') as unknown as typeof fetch
   // The split/unified layout persists app-wide (`mc-diff-split`); start each
   // test from the unseeded default so no test inherits another's toggle.
   localStorage.clear()
@@ -177,7 +180,7 @@ describe('DiffBlock', () => {
   })
 
   it('hides View file button when file does not exist', async () => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 })) as unknown as typeof fetch
+    globalThis.fetch = pathKindsFetch(() => null) as unknown as typeof fetch
     render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} />)
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
     expect(screen.queryByTitle(/^Open .* in side panel$/)).not.toBeInTheDocument()
@@ -187,7 +190,7 @@ describe('DiffBlock', () => {
     // All three actions (side-by-side / copy / Open) are hover-gated together.
     // Open uses a plain text label rather than an icon since the diff header
     // already prefixes the file name.
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, status: 200 })) as unknown as typeof fetch
+    globalThis.fetch = pathKindsFetch(() => 'file') as unknown as typeof fetch
     render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} />)
     await waitFor(() => expect(screen.getByText('Open')).toBeInTheDocument())
     // No labeled icon variant.
@@ -201,7 +204,7 @@ describe('DiffBlock', () => {
   })
 
   it('headers in diff content win over pathHint', async () => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, status: 200 })) as unknown as typeof fetch
+    globalThis.fetch = pathKindsFetch(() => 'file') as unknown as typeof fetch
     // simpleDiff has a real +++ b/<path> header — that should win.
     render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} pathHint="/wrong/path" />)
     await waitFor(() => expect(screen.getByText('Open')).toBeInTheDocument())
@@ -221,14 +224,11 @@ describe('DiffBlock', () => {
     // backend 400s every relative path, so absence is not evidence.
     const noIndexDiff = `diff --git a/home/user/src/app.ts b/home/user/src/app.ts\n--- a/home/user/src/app.ts\n+++ b/home/user/src/app.ts\n@@ -1,2 +1,2 @@\n-old\n+new`
 
-    const probedPaths = (mock: ReturnType<typeof vi.fn>) =>
-      mock.mock.calls.map(c => decodeURIComponent(String(c[0]).match(/path=([^&]*)/)?.[1] ?? ''))
-
     it('suppresses the probe entirely for an uncorroborated ambiguous header', async () => {
       // THE captured bug: no pathHint, `+++ b/home/user/…` header. The old
       // code fired `path=home/user/…&resolve=1` (the 400); the fix sends
       // nothing at all and offers no button.
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      const fetchMock = pathKindsFetch(() => 'file')
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} />)
       await new Promise(r => setTimeout(r, 20))
@@ -237,20 +237,20 @@ describe('DiffBlock', () => {
     })
 
     it('probes only the rooted spelling when the chat text corroborates it, and opens it', async () => {
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      const fetchMock = pathKindsFetch(() => 'file')
       globalThis.fetch = fetchMock as unknown as typeof fetch
       const onFileOpen = vi.fn()
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={onFileOpen} pathHint="/home/user/src/app.ts" />)
       await waitFor(() => expect(screen.getByTitle(/^Open .* in side panel$/)).toBeInTheDocument())
-      // Exactly one request, for the rooted spelling, with no resolve=1.
+      // Exactly one request, for the rooted spelling only.
+      expect(fetchMock).toHaveBeenCalledTimes(1)
       expect(probedPaths(fetchMock)).toEqual(['/home/user/src/app.ts'])
-      expect(String(fetchMock.mock.calls[0][0])).not.toContain('resolve=1')
       fireEvent.click(screen.getByTitle(/^Open .* in side panel$/))
       expect(onFileOpen).toHaveBeenCalledWith('/home/user/src/app.ts')
     })
 
     it('shows no button when the corroborated rooted spelling does not exist', async () => {
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: false, status: 404 }))
+      const fetchMock = pathKindsFetch(() => null)
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} pathHint="/home/user/src/app.ts" />)
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
@@ -258,7 +258,7 @@ describe('DiffBlock', () => {
     })
 
     it('a pathHint naming a DIFFERENT file does not corroborate — header stays suppressed', async () => {
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      const fetchMock = pathKindsFetch(() => 'file')
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={() => {}} pathHint="/somewhere/else.ts" />)
       await new Promise(r => setTimeout(r, 20))
@@ -267,7 +267,7 @@ describe('DiffBlock', () => {
     })
 
     it('does not treat an ordinary repo-relative header as ambiguous', async () => {
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      const fetchMock = pathKindsFetch(() => 'file')
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={simpleDiff} complete={true} onFileOpen={() => {}} />)
       await waitFor(() => expect(fetchMock).toHaveBeenCalled())
@@ -278,7 +278,7 @@ describe('DiffBlock', () => {
       // `+++ home/user/x` with NO `b/` prefix carries no evidence of a join —
       // treating it as absolute would be a guess, so it stays relative.
       const plainDiff = `--- home/user/notes.md\n+++ home/user/notes.md\n@@ -1,2 +1,2 @@\n-old\n+new`
-      const fetchMock = vi.fn(() => Promise.resolve({ ok: true }))
+      const fetchMock = pathKindsFetch(() => 'file')
       globalThis.fetch = fetchMock as unknown as typeof fetch
       render(<DiffBlock code={plainDiff} complete={true} onFileOpen={() => {}} />)
       await waitFor(() => expect(fetchMock).toHaveBeenCalled())
@@ -290,8 +290,7 @@ describe('DiffBlock', () => {
       // Open button targeting the OLD header's path once the diff content
       // (e.g. a streaming header) changes. The resolved state is keyed to the
       // header it was measured for; a mismatch renders no button.
-      const fetchMock = vi.fn((url: string) =>
-        Promise.resolve({ ok: String(url).includes(encodeURIComponent('/home/user/src/app.ts')) }))
+      const fetchMock = pathKindsFetch(p => (p === '/home/user/src/app.ts' ? 'file' : null))
       globalThis.fetch = fetchMock as unknown as typeof fetch
       const onFileOpen = vi.fn()
       const { rerender } = render(<DiffBlock code={noIndexDiff} complete={true} onFileOpen={onFileOpen} pathHint="/home/user/src/app.ts" />)

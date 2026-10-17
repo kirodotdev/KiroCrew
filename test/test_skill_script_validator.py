@@ -609,3 +609,182 @@ def test_benign_match_pattern_still_passes():
     src = "def f(p):\n    match p:\n        case complex(real=r, imag=i):\n            return r + i\n"
     ok, findings = validate_skill_script("run.py", src)
     assert ok is True, findings
+
+
+def test_rejects_builtins_bypass_via_bare_name():
+    """Block __builtins__ as a bare name to prevent .eval() bypass."""
+    for src in (
+        '__builtins__.eval("1+1")',
+        '__builtins__.exec("x=1")',
+        '__builtins__.compile("1", "<>", "eval")',
+        '__builtins__.__import__("os")',
+        'getattr(__builtins__, "eval")',
+        '__builtins__.__dict__["eval"]',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        assert any("dangerous builtin name" in f for f in findings), (src, findings)
+
+
+def test_rejects_builtins_bypass_via_subscript():
+    """Block __builtins__ as string keys in subscripts."""
+    for src in (
+        'vars()["__builtins__"]',
+        'globals()["__builtins__"]',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        assert any("dangerous subscript key" in f or "dangerous module lookup" in f for f in findings), (src, findings)
+
+
+def test_rejects_reflection_attributes():
+    """Block __self__, __subclasses__, __loader__, __spec__ etc."""
+    for src in (
+        'print.__self__.eval("1+1")',
+        '().__class__.__subclasses__()',
+        '__loader__.load_module("builtins")',
+        '__spec__.loader',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is False, f"Expected block for: {src}"
+        # Multiple possible blocking messages
+        assert len(findings) > 0, (src, findings)
+
+
+def test_allows_benign_compile_execute():
+    """Allow re.compile, cursor.execute, model.eval, df.eval - not every .compile/.execute/.eval is dangerous."""
+    for src in (
+        'import re; re.compile(r"\\d+")',
+        'cursor.execute("SELECT * FROM t")',
+        'model.eval()',
+        'df.eval("a + b")',
+    ):
+        ok, findings = validate_skill_script("run.py", src)
+        assert ok is True, f"Unexpected block for benign: {src} -> {findings}"
+
+
+def test_rejects_globals_get_with_dangerous_keys():
+    """`.get("__builtins__")` bypasses the subscript check."""
+    src = 'globals().get("__builtins__").eval("1+1")'
+    ok, findings = validate_skill_script("test.py", src)
+    assert ok is False, findings
+    assert any("dangerous dict key" in f and "__builtins__" in f for f in findings), findings
+
+
+def test_rejects_getattr_with_dangerous_string_literal():
+    """getattr(obj, "__self__") with a dangerous string literal is caught."""
+    for src in (
+        'getattr(print, "__self__").eval("1")',
+        'getattr(str, "__subclasses__")()',
+        'getattr(exit, "__globals__")["eval"]("1")',
+    ):
+        ok, findings = validate_skill_script("test.py", src)
+        assert ok is False, (src, findings)
+        assert any("dangerous attribute lookup" in f for f in findings), (src, findings)
+
+
+def test_rejects_from_sys_import_modules():
+    """`from sys import modules` is blocked."""
+    src = 'from sys import modules\nmodules["builtins"].eval("1")'
+    ok, findings = validate_skill_script("test.py", src)
+    assert ok is False, findings
+    assert any("dangerous import-from" in f and "modules" in f for f in findings), findings
+
+
+def test_rejects_getattr_sys_modules():
+    """getattr(sys, "modules") is blocked."""
+    src = 'import sys\ngetattr(sys, "modules")["builtins"].eval("1")'
+    ok, findings = validate_skill_script("test.py", src)
+    assert ok is False, findings
+    assert any("modules" in f for f in findings), findings
+
+
+def test_allows_spec_is_none():
+    """__spec__ is None comparison is benign and allowed."""
+    for src in (
+        '__spec__ is None',
+        '__spec__ is not None',
+        'if __spec__ is None: pass',
+    ):
+        ok, findings = validate_skill_script("test.py", src)
+        assert ok is True, (src, findings)
+
+
+def test_allows_from_mypkg_import_modules():
+    """from mypkg import modules should pass (not sys)."""
+    ok, findings = validate_skill_script("test.py", "from mypkg import modules")
+    assert ok, f"Expected pass but got: {findings}"
+
+
+def test_allows_environ_get_home():
+    """os.environ.get('HOME') should pass (.get with safe key)."""
+    ok, findings = validate_skill_script("test.py", 'os.environ.get("HOME")')
+    assert ok, f"Expected pass but got: {findings}"
+
+
+def test_allows_dict_get_builtins_count():
+    """d.get('builtins_count') should pass (.get with safe key)."""
+    ok, findings = validate_skill_script("test.py", 'd.get("builtins_count")')
+    assert ok, f"Expected pass but got: {findings}"
+
+
+def test_rejects_hasattr_with_dangerous_attrs():
+    """hasattr(obj, "__self__") with dangerous attr is now wired."""
+    ok, findings = validate_skill_script("test.py", 'hasattr(print, "__self__")')
+    assert not ok
+    assert any("dangerous attribute lookup" in f and "__self__" in f for f in findings)
+
+
+def test_rejects_setattr_with_dangerous_attrs():
+    """setattr(obj, "__globals__", x) with dangerous attr is now wired."""
+    ok, findings = validate_skill_script("test.py", 'setattr(exit, "__globals__", {})')
+    assert not ok
+    assert any("dangerous attribute lookup" in f and "__globals__" in f for f in findings)
+
+
+def test_rejects_match_class_self():
+    """case object(__self__=m) is rejected."""
+    src = 'match x:\n    case object(__self__=m): pass'
+    ok, findings = validate_skill_script("test.py", src)
+    assert not ok
+    assert any("__self__" in f or "match" in f.lower() for f in findings)
+
+
+def test_rejects_match_class_globals():
+    """case x(__globals__=g) is rejected."""
+    src = 'match x:\n    case object(__globals__=g): pass'
+    ok, findings = validate_skill_script("test.py", src)
+    assert not ok
+    assert any("__globals__" in f or "match" in f.lower() for f in findings)
+
+
+def test_rejects_match_class_f_builtins():
+    """case y(f_builtins=b) is rejected."""
+    src = 'match x:\n    case object(f_builtins=b): pass'
+    ok, findings = validate_skill_script("test.py", src)
+    assert not ok
+    assert any("f_builtins" in f or "match" in f.lower() for f in findings)
+
+
+def test_rejects_match_class_modules():
+    """case s(modules=m) is rejected."""
+    src = 'match x:\n    case object(modules=m): pass'
+    ok, findings = validate_skill_script("test.py", src)
+    assert not ok
+    assert any("modules" in f or "match" in f.lower() for f in findings)
+
+
+def test_rejects_sys_modules_get_name():
+    """sys.modules.get(__name__) is now refused (no exemption)."""
+    src = 'import sys\nsys.modules.get(__name__)'
+    ok, findings = validate_skill_script("test.py", src)
+    assert ok is False, findings
+    assert any("sys.modules" in f for f in findings), findings
+
+
+def test_rejects_globals_dunder_name_rebind():
+    """globals()["__name__"] = "builtins"; sys.modules.get(__name__) is refused."""
+    src = 'import sys\nglobals()["__name__"] = "builtins"\nsys.modules.get(__name__)'
+    ok, findings = validate_skill_script("test.py", src)
+    assert ok is False, findings
+    assert any("sys.modules" in f for f in findings), findings

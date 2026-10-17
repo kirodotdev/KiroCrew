@@ -13,6 +13,7 @@ from kiro_crew.agent_sdk.drivers.acp import projected_session_mcp_servers
 from kiro_crew.essential_delivery import EssentialDelivery
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
+from kiro_crew.testing.wait import default_timeout
 
 
 def test_only_real_provider_types_can_bind_context():
@@ -54,24 +55,39 @@ def test_projected_mcp_sdk_bridge_preserves_exact_underlying_result(monkeypatch,
     ],
 )
 def test_context_import_orders_do_not_form_a_cycle(tmp_path, modules):
+    order = modules.split(",")
     env = dict(os.environ)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
     env["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import importlib; [importlib.import_module(m) for m in "
-            + repr(modules.split(","))
-            + "]",
-        ],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=30,
-    )
+    bound = default_timeout()
+    # A hang writes nothing on its own, so the child dumps its stack shortly
+    # before the bound and the assertion below can name the import it stopped in.
+    dump_after = bound - min(5.0, bound / 4)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import faulthandler; "
+                f"faulthandler.dump_traceback_later({dump_after!r}, exit=False); "
+                "import importlib; [importlib.import_module(m) for m in " + repr(order) + "]",
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=bound,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # On POSIX the re-raised TimeoutExpired carries undecoded bytes even with text=True.
+        stderr = exc.stderr
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        raise AssertionError(
+            f"importing {' -> '.join(order)} in a fresh interpreter did not finish "
+            f"within {exc.timeout:g} s; stderr so far:\n{stderr}"
+        ) from None
     assert completed.returncode == 0, completed.stderr
 
 

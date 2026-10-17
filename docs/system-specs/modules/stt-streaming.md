@@ -23,6 +23,15 @@ emptied transcript is reported as nothing heard rather than written into an agen
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
 
+The batch endpoint's response contract: a decode that heard nothing
+(`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
+(`transcribe_audio` returns `None`) or an unexpected error is `500` with
+`code: "stt_transcription_failed"` (`handlers/core.py:_CODE_STT_FAILED`). The
+meetings audio import folds both into one failure: any falsy transcript, including
+`""` and a segmented over-cap import where a segment failed or was silent, is a
+`502` with `code: "transcription_failed"`
+(`apps/builtins/meetings/backend/routes/audio_import.py`).
+
 Compressed files are decoded by the FFmpeg executable in the pinned
 `imageio-ffmpeg` wheel. It is part of the desktop voice runtime, not a desktop
 system prerequisite. The release gate resolves that exact packaged resource and
@@ -31,6 +40,22 @@ dependency metadata or an ambient PATH copy satisfying the check. Source
 environments do not read their own site-packages, because a project venv is
 agent-writable executable storage; they resolve a system FFmpeg from the fixed
 platform paths, and failing that the digest-verified decoder store below.
+
+**macOS Intel ships no decoder, on purpose.** `macos-x86_64` has no pin in
+`stt.decoder.ARTIFACTS`, the Intel half of the universal app installs no
+`imageio-ffmpeg` (`desktop_decoder_requirement` in `packaging/build-desktop.sh`),
+and the store reports that platform `unsupported`. Every branch that means "a
+desktop release owns its decoder" asks `stt.decoder.bundle_carries_decoder()` —
+a bundled interpreter that is not the decoderless backend
+(`DECODERLESS_BUNDLE_PLATFORM`) — rather than `is_bundled_interpreter()` alone:
+the transcode resolver, `ffmpeg_source`, the doctor's remedy, the settings page's
+prerequisite commands and `auto_fetch`. The exception is named, not looked up in
+the pins: on Windows `platform.machine()` reports the physical CPU, so the x64
+release on an ARM64 PC would key to an unpinned platform and skip the decoder it
+carries. So an
+Intel desktop release resolves exactly like a source install (fixed system paths,
+e.g. Homebrew's), is told to install FFmpeg rather than to reinstall, and the
+fail-closed rule below still holds on every platform whose release does ship one.
 
 **The store is a third location, not a third rule.** A source or Toolbox install on
 a distribution that packages no FFmpeg (Amazon Linux, RHEL without EPEL) previously
@@ -55,7 +80,7 @@ FILENAME whose bytes match its pinned digest, re-verified on every open and kept
 bound to the descriptor that is spawned. A store file that fails is ignored and
 logged. The directory is user-writable and vouches for nothing; it is also inside
 the `models/` tree the agent's file and shell gates already write-protect.
-Platforms with no pinned artifact (32-bit ARM Linux, Windows on ARM, win32) report
+Platforms with no pinned artifact (macOS Intel, 32-bit ARM Linux, Windows on ARM, win32) report
 `unsupported` and start no download.
 
 That gate reports **two independent verdicts** and the build treats them
@@ -86,6 +111,23 @@ filesystem-permission claim, and a payload satisfying neither is refused.
 compressed member of the bundle contains a Mach-O, so this class of defect
 surfaces at sign time rather than as an opaque notarization `Invalid`.
 
+The batch path's import path is `kiro_crew.transcribe`: availability, the config
+read, the two provider-independent guards, `transcribe_audio`'s dispatch, the
+duration probe and the over-cap segmentation, plus the decoder's discovery and
+reporting surface (`ensure_ffmpeg_in_path`, `_find_ffmpeg`, `ffmpeg_source` and its
+codes, `find_brew`). It is a mirror facade
+(`kiro_crew._facade_mirror`) over three owners, so every name they define still
+reads and patches as `transcribe.<name>`, and they log as `kiro_crew.transcribe`. An
+exception class an owner defines (`VocabularyListError`) reports `kiro_crew.transcribe`
+as its module, so a traceback names the import path callers use.
+New work goes to the owner of its responsibility:
+
+| Owner | Owns |
+|---|---|
+| `transcribe_ffmpeg` | the decoder's execution path: resolving the executable to run (bundled image, fixed system directories, store), the authenticated private snapshot it runs from, the spawn, the exit description, the reap and the temporary-output cleanup |
+| `transcribe_aws` | the `transcribe` provider: its client-library availability, the profile credential resolver, the streaming transcription and the custom-vocabulary listing |
+| `transcribe_local` | the on-device providers: the `local` recogniser's WAV read, transcode and language, and the `apple` lane |
+
 Legacy provider values and the loader behavior for persisted values are in
 [Legacy provider values](#legacy-provider-values).
 
@@ -102,7 +144,16 @@ mic -> AudioWorklet (16 kHz mono Int16 PCM) -> WebSocket /api/ws/stt
 
 The microphone selector represents devices with an empty ID through System
 default only. Identifiable devices remain separately selectable; anonymous
-enumeration results cannot create a duplicate default option.
+enumeration results cannot create a duplicate default option. The default
+option is named: where the resolver can read the backing device it reads
+`System default (<device>)` (`components.micSourceMenu.system_default_named`
+in the composer's `MicSourceMenu`, `pages.settings.sttSettings.system_default_named`
+in the Settings picker), both folding Chromium's `default` pseudo-device through
+`selectableMicrophones`/`defaultMicName` in `website/src/hooks/mic.ts`. Under the
+Settings picker a **Test microphone** strip (`website/src/components/MicTestStrip.tsx`)
+opens the selected input, or the system default, and shows its live level through
+an `AnalyserNode` only -- no recorder, upload or transcription -- releasing
+capture on Stop, on a device change, and on unmount.
 
 The capture worklet keeps resampling phase across render blocks and applies a
 63-tap low-pass filter before downsampling, preventing high-frequency input from
@@ -130,6 +181,13 @@ Every actual capture end, including a fatal server frame, synchronously fires
 the composer's once-only capture-stop protection before deferred socket-close
 transcript delivery; explicit cancel and unmount remain discard-only and do not fire it.
 
+Audio start-up has two failure messages, one per step. A rejected
+`audioWorklet.addModule` load of `/pcm-worklet.js` reports that dictation could
+not finish loading and points at the connection; a rejected
+`AudioContext.resume()`, which happens after the module loaded, reports that the
+browser could not start audio and offers dictating again or reloading the page.
+Either one releases the microphone and ends the start.
+
 | Component | File | Role |
 |---|---|---|
 | WS endpoint | `src/kiro_crew/dashboard/stt_stream.py` | One provider session per connection, plus the caps and the SEL audit pair |
@@ -139,11 +197,11 @@ transcript delivery; explicit cancel and unmount remain discard-only and do not 
 | Endpointing VAD | `src/kiro_crew/stt/vad.py` | Adaptive-RMS speech detection and end-of-utterance |
 | Model catalog | `src/kiro_crew/stt/models.py` | The offered models, their sizes, and the sha256-pinned download |
 | Apple helper | `src/kiro_crew/apple_speech/` | Swift `AppleTranscribe.swift` plus its Python driver |
-| Config fields | `src/kiro_crew/config/sections.py` | `SttConfig`, and the degradation rules for a stored provider or model |
+| Config fields | `src/kiro_crew/config/sections_stt.py` | `SttConfig`, and the degradation rules for a stored provider or model |
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
-| Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
-| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ChatPage.tsx` and `ChatPane.tsx` mount the root and supply only host options |
+| Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx` and `ChatPane.tsx` mount the root and supply only host options |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
@@ -153,15 +211,15 @@ transcript delivery; explicit cancel and unmount remain discard-only and do not 
 
 Client to server:
 
-- Binary frames: raw 16 kHz mono, little-endian Int16 PCM; `test/test_stt_stream.py` pins the transport format and frame limits.
+- Binary frames: raw 16 kHz mono, little-endian Int16 PCM; `test/test_stt_stream.py` and `test/test_stt_stream_local_session.py` pin the transport format and frame limits.
 - Text frame `{"type":"stop"}`: the user released the mic. The server finishes
   the utterance and closes, so trailing finals still arrive.
 
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds.
-- `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
-  where `stage` is `downloading`, `preparing` or `ready`. A first-ever local session has to
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds. Every provider also advertises `max_duration_ms`, the wall-clock life of this connection (`_MAX_STREAM_DURATION_SECS`, derived at send time so a changed cap cannot leave a stale figure), so a client that outlives one connection -- the Meetings app -- can rotate to a fresh socket before the cap instead of discovering it by being ended.
+- `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...,"prepare_timeout_ms":N}`
+  where `stage` is `downloading`, `preparing` or `ready`, and `prepare_timeout_ms` is the preparation budget the readiness wait switches to. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
   indistinguishable from a hang, so the transport emits the notice itself *before*
   starting the fetch and `LocalSession.prepare()`'s own copy of it is dropped on
@@ -171,7 +229,11 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
   but not yet resident, so `prepare()` must load them (and re-hash them against the
   pin) before the first `ready`: that load emits no `downloading` status and is
   otherwise silent to the client, so the transport announces it with a single
-  `preparing` frame (zero byte counts, empty `code`) before starting the load. A
+  `preparing` frame (zero byte counts, empty `code`) before starting the load. The
+  pre-check (`pending_load()`) is advisory: a model resident when it ran can be
+  evicted before the load, so while `prepare()` runs without a transfer the
+  transport asks again and, when a load is now pending, sends that single
+  `preparing` frame late rather than leaving the wait on the short budget. A
   session with nothing to report -- neither a download nor a load, because the model
   is already resident -- emits no status frame at all and goes straight to `ready`.
 - `{"type":"partial","text":"..."}`: an in-progress hypothesis that replaces the
@@ -180,12 +242,36 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
 - `{"type":"endpoint","complete":true}`: the semantic endpointer judged the
   utterance a finished request, so the composer may submit without a keypress.
   Only when `stt.endpointing` is on.
-- `{"type":"error","message":"...","code":"..."}`: a setup failure, a refusal or
-  a cap. The English `message` is advisory and the `code` is the contract, because
+- `{"type":"error","message":"...","code":"..."}`: a setup failure, a refusal,
+  the cap, or a `transcribe` result stream that Amazon Transcribe ended before the
+  client stopped (`_CODE_SESSION_FAILED`; the read loop would otherwise keep
+  forwarding audio to a dead stream while the dashboard shows it is listening, so
+  this frame goes out and the socket closes). The cap is a server-initiated `stop` on all three providers: the
+  deadline ends the read loop without closing, the session finishes the
+  utterance in flight and relays its `final` to the still-open socket, then this
+  frame goes out with `_CODE_MAX_DURATION`, then the socket closes. How the read
+  loop ends differs: on `local` the deadline cancels the reader outright, which
+  is safe because that reader only queues frames and never awaits a write to the
+  recogniser; on `apple` and `transcribe` the reader runs over `_receive_until`,
+  which observes the cap only between frames, so a frame being forwarded to the
+  helper or the event stream is never cut half-way, and the grace below bounds a
+  reader stuck inside one. On `local` the cap frame is the promise that nothing the server
+  accepted was discarded: a drain that fails under the cap (its deadline, a
+  failed decode, a raise) sends that failure's own code in its place. On `apple`
+  and `transcribe` a failure during the cap's drain is reported by the relay or
+  logged, and the cap frame may still follow. A session with no pending audio
+  sends the cap frame straight away. A cap that lands after the client's `stop`
+  was read changes nothing, because that stop already owns the teardown. A reader
+  stuck inside the frame it is forwarding (a helper that stopped reading its
+  stdin) is cancelled after `_CAP_READER_GRACE_SECS`, so a wedged recogniser
+  cannot hold the session, and its slot, past the cap. The
+  English `message` is advisory and the `code` is the contract, because
   the dashboard renders localised text and cannot key off a sentence. Codes the
   `stt` package already owns travel through unchanged rather than being remapped;
-  the transport adds `_CODE_MAX_DURATION` and `_CODE_SESSION_FAILED` for the two
-  conditions only it can see. Only the FIRST fatal claimant sends a frame
+  the transport adds its own for the conditions only it can see:
+  `_CODE_MAX_DURATION`, `_CODE_SESSION_FAILED`, `_CODE_CONSENT_REQUIRED`,
+  `_CODE_VOCABULARY_REJECTED` and `_CODE_AWS_ACCESS_DENIED`. Only the FIRST fatal
+  claimant sends a frame
   (`_claim_fatal`): otherwise the duration cap and a concurrent failure each emit
   one in the window before the other's close lands, and the client shows two
   contradictory errors for a single failure. `useStreamingStt` resolves the code
@@ -229,7 +315,21 @@ After the three gates, each provider has its own precondition and failure frame:
   cannot run it" from "the Swift toolchain is missing", because only the second
   has a fix.
 - **transcribe**: `amazon_transcribe` must be importable, and
-  `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant.
+  `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant. AWS
+  authorizes the stream only when it opens, and the consent gate's
+  `sts:GetCallerIdentity` probe needs no permission, so the gate passes
+  credentials that may not stream. Their `AccessDeniedException` arrives as
+  `_CODE_AWS_ACCESS_DENIED`, because every retry is refused the same way. A
+  refused custom vocabulary has its own code too
+  ([Custom vocabulary](#custom-vocabulary-transcribe-only)), and so does
+  mixed-language detection on an SDK too old for it
+  ([Mixed-language detection](#mixed-language-detection-transcribe-only)); any
+  other start failure is `_CODE_SESSION_FAILED`. A stream on a named
+  `stt.transcribe_profile` keeps the credentials it opened with:
+  `_ProfileCredentialResolver` resolves once, because the SDK asks again for every
+  audio event and each event's signature chains from the opening request's, so a
+  key the profile refreshed mid-stream would be refused. With no profile set, the
+  SDK's own default-chain resolver signs the stream.
 
 ### The AWS consent gate is an authorization, not a preference
 
@@ -265,13 +365,15 @@ vocabulary.
   is sent, with a message naming the vocabulary. When a vocabulary is configured
   and the service's message names it, the frame carries
   `stt_transcribe_vocabulary_rejected`, whose fix is in Settings rather than a
-  retry; every other start failure keeps `stt_session_failed`. The batch path keeps
+  retry. An authorization refusal keeps `stt_aws_access_denied` and every other
+  start failure keeps `stt_session_failed`. The batch path keeps
   its `None` failure contract.
 - **The panel warns before the first dictation.** The Voice panel compares the
   chosen vocabulary against the list read from AWS and its language against
   `effective_language_code`, and says that dictation will fail when the vocabulary
-  is not ready or is for another language. `VocabularyName` is also not valid with
-  language identification, which would need `VocabularyNames` instead.
+  is not ready or is for another language. With mixed-language detection on it
+  judges each path: the vocabulary's language must be among the candidates (the
+  live stream) and must be `effective_language_code` (a voice message).
 - **`GET /api/stt/vocabularies` lists what the picker offers.** Read from live
   config, refused to an app token, and gated twice before any AWS call: `transcribe`
   must be the provider and `aws_consent.refuse_and_log` must grant, otherwise it
@@ -289,6 +391,55 @@ vocabulary.
   vocabularies plus the stored name when the list lacks it, is disabled and says it
   is loading while the list is still being read with the stored value still shown,
   and warns when the stored name is not ready in the configured region.
+
+### Mixed-language detection (`transcribe` only)
+
+`stt.transcribe_languages` lists the languages speakers switch between in one
+recording (empty: off). With `TRANSCRIBE_LANGUAGES_MIN` (two) or more,
+`SttConfig.transcribe_language_identification` returns them and the live socket
+opens the stream with `IdentifyMultipleLanguages` and `LanguageOptions`, so
+Amazon Transcribe transcribes each part in the language it identifies. With
+fewer, the stream is opened exactly like the single-language one, on
+`effective_language_code`.
+
+- **No `LanguageCode` beside identification.** Amazon Transcribe fails a stream
+  that names both, so `stt_stream._transcribe_language_kwargs` passes
+  `language_code=None` (the SDK then sends no header). A configured vocabulary
+  travels as `VocabularyNames`, the parameter identification accepts, instead of
+  `VocabularyName`. Its refusals speak of "vocabularies", so
+  `_vocabulary_rejected` matches the stem and the vocabulary-refusal code still
+  applies.
+- **One rule for both writers.** `config.sections.transcribe_language_options`
+  accepts a list of at most `TRANSCRIBE_LANGUAGES_MAX` (five, the most AWS
+  recommends) locale codes with no language twice, because a stream carries one
+  dialect per language. `PUT /api/config/stt` stores only a list it accepts, and
+  the loader degrades anything else to empty with a one-time warning. A
+  one-language list is valid: it is a selection in progress, and the stream keeps
+  the single-language path until a second language joins it.
+- **The live socket only.** Amazon Transcribe identifies several languages only in
+  a PCM stream, so `transcribe._transcribe_aws` (an Ogg/Opus voice memo, and
+  dictation with streaming off) keeps `effective_language_code`.
+- **An outdated SDK is named, not guessed at.** The parameters exist from
+  `amazon-transcribe` 0.6.3, which the `voice-aws` extra pins as its floor. An
+  older install would raise `TypeError` at stream start, so the socket reads the
+  client method's signature first (`_client_identifies_languages`) and, when it
+  lacks them, refuses before any audio is read with
+  `stt_transcribe_sdk_outdated` and logs the install command.
+- **The panel offers the picker beside Language.** Its candidates are the
+  served `language_codes` (which include `vi-VN`, and any stored code the
+  common list lacks, so a value set in config.json stays selectable), each named
+  in the app language beside its code, as the Language picker's options are; the
+  closed box lists the names, and with one picked it says one more is needed.
+  Ticked ones are sorted first when the
+  list opens and then stay in place, so no row moves while it is being ticked;
+  every row is locked while a save is in flight, so a second tick cannot be
+  built from the list before the first one landed.
+  Ticking a second dialect of a picked language swaps it in; at the maximum the
+  other languages are locked and one line at the top of the list says why; with
+  one picked the row says the language above is still in force, and with two or
+  more a line under Language says it now applies only to voice messages and to
+  dictation with Streaming off. `GET /api/config/stt` serves `transcribe_languages_min` and
+  `transcribe_languages_max` from the constants the validator uses.
 
 ## The local provider's pipeline
 
@@ -446,8 +597,8 @@ mutates the context, so two concurrent decodes on one context corrupt each other
 and a superseded partial aborts rather than queueing.
 
 **Boot prewarm.** `dashboard.server._stt_startup_prewarm` loads and warms the model
-in the background a few seconds after boot, so the first dictation of a gateway's
-life does not pay the cold start. Triggering only on the browser's pointer-down is
+in the background a few seconds after boot, on a host that has dictated recently (see
+below), so the first dictation of a gateway's life does not pay the cold start. Triggering only on the browser's pointer-down is
 too late: the digest verification and the native load sit in front of the first
 utterance's own decode, so a user who says a short phrase and stops is still waiting
 on them after they have finished speaking. It is registered beside the idle sweep and
@@ -465,6 +616,26 @@ first and second decode after a load). On macOS it is not: a reviewer measured
 0.018 s on every run after, because the OS caches the compiled library. Boot prewarm
 covers that once-per-machine cost, which makes it worth more on a Mac than the aarch64
 figures suggest rather than less.
+
+It runs only on a host that dictates. whisper.cpp reads the weights into one
+anonymous native buffer rather than mmapping them, so a boot warm of `large-v3-turbo`
+held ~1.6 GB for `idle_evict_secs` on every launch, the largest single mapping in the
+gateway's startup peak, whether or not anyone spoke. A model file on disk only proves
+a download once happened. So every real decode (any kind but the prewarm's own
+throwaway, `KIND_PREWARM`) touches the empty marker `models/whisper/.last-decode`,
+at most once an hour per process: `stt.models.claim_usage_stamp` decides on the loop
+with no I/O and `write_usage_marker` runs in a worker thread as a detached task the
+decode does not await, so a stalled filesystem can neither freeze the loop nor hold a
+finished transcript past the final's deadline. The boot
+prewarm requires `stt.models.used_within(_STT_BOOT_PREWARM_RECENT_USE_SECS)` (14 days)
+after the presence gate. The window is a recency test, not "ever decoded", so a host
+that tried dictation once and stopped does not pay the block on every boot for good;
+the hourly throttle keeps the marker's mtime current without a write per partial. The
+cost is a cold first dictation after a quiet spell, and on every host's first boot after
+upgrading, when no marker exists yet: that dictation pays the load via the pointer-down
+prewarm, as every host did before the boot warm existed, and its decode writes the
+marker so the next boot warms again. A models directory the gateway cannot write never
+gets a marker, so that host never boot-warms; stamping is best-effort and never raises.
 
 **A fixture is evidence too, and a wrong one is worse than none.** The capture
 harness answered `/api/stt/status` with `size_mb` where the payload's field is
@@ -657,6 +828,47 @@ matter for anyone tuning this path:
   the cadence is bounded by inference rather than by the setting. The interval is
   measured from the END of a decode, which bounds the queue but not the share of the
   machine cosmetic work takes.
+
+**Display-only decodes encode a sized window.** The floor is the encoder working
+through all 1500 frames (30 s) of its window whatever the audio's length.
+`WhisperEngine.decode(sized_window=True)` sets whisper.cpp's `audio_ctx` to
+`engine.preview_audio_ctx()` frames for that one call, and restores the shared params
+before the next. That is the clip plus a 2 s margin at 50 frames per second, rounded
+up to 64, and never under `PREVIEW_AUDIO_CTX_FLOOR` (512).
+- The session asks for it on its partials and phrase commits, and never on a final.
+  A sized window can change punctuation or an unsettled word, which a preview the
+  final replaces can afford and the text the user keeps cannot. One path keeps a
+  preview: when the socket closes before the final arrives, `useStreamingStt`
+  delivers the last partial as recovered text, so that text was decoded with a
+  sized window. It was an approximate preview at the full window too.
+- The floor is measured, not assumed. With `base`, a window under 448 frames sent
+  some 1 s clips into whisper.cpp's temperature fallback: 2.5 s against 0.36 s at the
+  full window. A window shorter than the clip truncates it. At the floor, across
+  four voices and every phrase length from 1 s to 8 s on a 16-thread x86-64 CPU
+  build, the sized decodes spent 2.5x less CPU and wall time than the full window.
+- Per second of speech the saving is smaller, because the partial interval starts
+  when a decode ends: a faster decode buys more previews, not only idle time. A
+  54 s talk streamed through `LocalSession` in real time on that build ran 81
+  decodes at a 242 ms median and 6.8 cores on average, against 64 decodes at
+  507 ms and 9.4 cores at the full window.
+- Because `MAX_PHRASE_SECS` is 8 s, every partial lands on the floor in practice.
+- The first sized decode after a full one costs about a full decode, because
+  whisper.cpp re-reserves the encoder graph for the new width.
+- `WhisperEngine._note_window_cost` keeps the most recent full-window decode as a
+  reference. It stops sizing for the rest of the loaded model's life after
+  `PREVIEW_WINDOW_MAX_STRIKES` (3) sized decodes IN A ROW took more than
+  `PREVIEW_WINDOW_SLOWDOWN` (2x) that reference, and logs it. The threshold is
+  the failure, not noise: a looping sized decode took 7-21x the full window,
+  while load moves a preview by tens of percent. The prewarm, a second of
+  silence, can be the first reference, so a session with no final yet still has
+  one. An aborted decode records nothing, because its early
+  unwind would understate the reference. It identifies the loaded model by a
+  WEAK reference: a context is freed when its last strong reference goes, so a
+  strong one would keep evicted or replaced weights resident.
+- The `Model.transcribe` fallback path always decodes at the full window, because
+  pywhispercpp stores any parameter passed there on the params object for good. So
+  does a binding whose params carry no `audio_ctx`: setting it there would fail
+  every preview, and the breaker only reacts to slow decodes.
 
 **The Voice panel's shape follows from that.** Two duration pickers were retired from
 Settings -> Voice as a consequence of the paragraph above, not as a matter of taste:
@@ -916,7 +1128,13 @@ transcription surfaces are deliberately open to an app token):
 
 - `GET /api/stt/status`: the availability code and prose, the resolved model with
   `model_present` and its size, whether a model is resident right now, and the live
-  transfer state. Separate from `GET /api/config/stt`, which serves settings. It also
+  transfer state. Separate from `GET /api/config/stt`, which serves settings and
+  also carries `available` and `code`, both from the same `availability_detail`
+  probe, so the chat microphone modal (`VoiceDisabledModal`) names the per-code
+  reason without a second request. The modal shows a code's sentence only when it
+  points at no Settings-only control (`modalUnavailableMessage` in
+  `lib/sttProviders.ts`), and shows the `pip install` entry of `prereqs`, never an
+  ffmpeg command, as the fix. `GET /api/stt/status` also
   carries `backend: {name, accelerated, encoder_only, detail, cpu_features, sections,
   system_info, threads, os, arch, python}` -- read from the build, with
   `accelerated: false` whenever it cannot be interrogated. `sections` is the ordered
@@ -977,13 +1195,58 @@ per session, because `WhisperEngine.ensure_loaded` settles residency before aski
 The digest is the second line of defence, not the first. Verifying and then handing a
 PATH to a native loader leaves a window in which the bytes can be swapped, and
 re-hashing cannot close it because the loader re-opens by name. What closes it is that
-`<data home>/models` is **write-protected from the agent on both gates**
-(`security._WRITE_PROTECTED_HOME_PATHS` for the file tools,
-`_WRITE_PROTECTED_BASH_LEAVES` for the shell), so the verified bytes are the loaded
-bytes. Reads stay allowed — the weights hold no secret and the settings surface reports
-what is installed — and Kiro Crew's own downloader writes directly without routing
-through those gates, so a first fetch and a re-download after a failed check both work.
+`<data home>/models` is **write-protected from the agent on both paths**
+(`security._WRITE_PROTECTED_HOME_PATHS` for the file tools, and the `models` leaf of
+`sandbox._CREW_READONLY_LEAVES`, mounted read-only for a shell). Both cover paths, so
+before a load `ModelStore._accept_existing` asks `sandbox.require_real_model_path`
+whether any name from `models` down to the weights is a symlink or junction. One that
+is refuses this model's load, and the download that would otherwise land through it,
+with a `failed` status flagged `refused` naming the path; sandboxed spawns and the
+other models are unaffected. A step below `models` sits inside the read-only seal, so
+only the host can have made such a link, and it threatens only the bytes this loader
+reads. A symlink or junction at the `models` name itself also refuses every spawn Kiro
+Crew seals, because that name sits in the writable data home. Keep the weights as real
+files under `models/`; to put them on another disk, relocate the whole data home
+(`KIROCREW_HOME`), so the seal covers them. A mount point at or under `models` is not
+checked: only the operator can create one on the host (a mount made inside the
+sandbox's namespace never reaches it), and a bind mount keeps its source path
+writable, so do not mount anything there. The check follows, reads and removes
+nothing; a missing name ends it, and a name that cannot be stat'ed refuses the load.
+Reads stay allowed — the
+weights hold no secret and the settings surface reports what is installed — and
+Kiro Crew's own downloader writes directly without routing through those gates, so a
+first fetch and a re-download after a failed check both work.
 The same directory holds the embedding GGUF, which the one entry covers.
+
+A second HARD LINK on the weights is judged here instead, at the gate that verifies
+them. `_verified_on_disk` opens the file once with `O_NOFOLLOW`, hashes it from that
+descriptor, and asks `sandbox.require_unaliased_model_file` about that same
+descriptor — so the inode judged and the inode hashed are one resolution, where a name
+check and a later `open` would be two. The question is asked BEFORE the first byte is
+read, and the inode's stamp (`st_ctime_ns`, `st_mtime_ns`, size, link count) must not
+move across the read: a check only at the end of the read loses a race in which a
+write through the alias lands in a chunk already hashed and the alias is then unlinked,
+so the final `fstat` sees one link while the digest still matches. A stamp that moves
+refuses the load the same way. An alias refuses that LOAD and nothing else:
+the bytes, the inode and both names are left as they are, because "unverified" would
+mean "download over it" (answering a condition only the operator can fix with a silent
+multi-gigabyte transfer) and deleting would remove one name of the operator's own file.
+The message names the file and the remedy: copy it to a temporary name in the same
+directory, then rename that copy over the path. `ModelStore.ensure` still returns
+`None` rather than raising: it records a `failed` status flagged `refused` (shown on
+the settings page like any failure), starts no download, and `ensure_loaded` reports
+that message instead of "not downloaded". Not on the spawn path, deliberately —
+`cp -al`, `hardlink`, `jdupes -L`, `rdfind -makehardlinks` and dotfile managers all
+produce this shape, and refusing a spawn for it would cost every sandboxed spawn on
+that host rather than one model load. (`rsync --link-dest` and rsnapshot rotation link
+snapshots to each other and leave the live file at `nlink 1`, so they do not reach it
+at all.) A sandboxed child cannot create the alias either: `link(2)` writes at the
+DESTINATION, one outside the seal is on another mount and answers `EXDEV`, and one
+inside the seal is refused by the read-only mount with `EROFS` (`EPERM`/`EACCES` under
+a path-based rule). The embedding GGUF beside the weights gets the same descriptor
+check at its own loader (`embeddings._model_file_stamp_unaliased`), and needs it more:
+it is size-only at load, so a second name is the only thing between a write and the
+next load. An aliased GGUF fails the embedder load, never a spawn.
 
 `is_present` also checks the file's size, which is what makes an interrupted
 download visible: a staging file never occupies the final path, so a wrong size
@@ -992,6 +1255,16 @@ download overwrite it. `MODEL_URL_ENV` repoints the base URL for a mirrored or
 air-gapped install without weakening the pin, and `SKIP_DOWNLOAD_ENV` is the same
 switch the embedding downloader honours, so one setting means "this process must
 not pull model weights".
+
+### A model outside the catalog
+
+The catalog is not the whole set. `stt.model` also accepts `custom`, which runs a file the user has already put in the models directory: `stt.custom_model_path` names it and `stt.custom_model_sha256` pins it. Nothing is downloaded for it.
+
+- The path must resolve, symlinks followed, to a regular file strictly inside `models_dir()`. Any `..` component, an absolute path elsewhere, a symlink out of the directory, a catalog file name (the catalog download deletes or overwrites a file there) and a `.part` staging file are refused by `models.custom_model_file`, which returns the real path the engine then loads, and which runs when `PUT /api/config/stt` saves the field and again on every load.
+- The file is hashed on every load and refused on a mismatch, like a catalog file. A refused custom file is left in place, because it is the user's own file.
+- The catalog's seal checks apply too, and refuse the load with a `failed` status flagged `refused`: `models` and the whisper folder must be real directories (`sandbox.require_real_model_path`), so the resolved file sits under the read-only seal, and the hash is the same one-descriptor check (`_sha256_verified_file`), so a second hard link, a symlinked leaf or a change during the read refuses it. A link below the folder is followed and must stay inside it.
+- A half-configured pair degrades to the default model with a warning. A complete pair whose file is missing does NOT degrade: it fails at load with the reason in `ModelStore.status`, so a different model is never run in its place without a word.
+- Both fields are owner-only on `GET`/`PUT /api/config/stt`. `config.json` is mounted read-only in the agent sandbox, so the pin cannot be rewritten to match a file an agent placed in the models directory.
 
 ## Caps and limits
 
@@ -1006,6 +1279,7 @@ restated here, because a copied constant goes stale silently.
 | `_MAX_TEXT_FRAME_BYTES` | `dashboard/stt_stream.py` | One inbound control frame |
 | `_MAX_LOCAL_BUFFER_BYTES`, `_MAX_LOCAL_BUFFER_FRAMES` | `dashboard/stt_stream.py` | PCM awaiting local inference, by bytes and frame count |
 | `_MAX_MODEL_PREPARE_SECS` | `dashboard/stt_stream.py` | The one-time model fetch a first-ever `local` session waits on |
+| `_CAP_READER_GRACE_SECS` | `dashboard/stt_stream.py` | After the cap, how long an `apple` or `transcribe` reader may stay inside the frame it is forwarding before it is cancelled |
 | `heartbeat` on `WebSocketResponse` | `dashboard/stt_stream.py` | Idle liveness ping interval |
 | `MAX_SESSION_SECS` | `stt/session.py` | Audio one local session buffers |
 | `MAX_PHRASE_SECS` | `stt/session.py` | Phrase length before a commit is forced |
@@ -1021,15 +1295,21 @@ audio-second and counts against the account's concurrent-stream quota; on `apple
 it holds a helper process and an OS recognition session; on `local` it accumulates
 buffered audio and keeps queueing decodes onto the one shared model. The
 concurrency cap is shared by the free providers because all still consume bounded local capacity.
+The duration cap bounds the CONNECTION, not the speech: at the cap each branch
+drains what it already accepted and delivers the trailing final before the cap's
+frame and the close, which is what lets a long-running client rotate to a fresh
+socket without loss. `ready` advertises the cap as `max_duration_ms` so that
+client can plan the rotation.
 
 The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` uses a request timeout, while `_prepare_local_with_progress` also bounds how long a WebSocket waits. On the WebSocket timeout the transfer is shielded and left running:
 cancelling it would release the model store's transfer lock while its worker thread
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.
 
-`test/test_stt_stream.py` pins the transport caps, `test/test_stt_session.py` the
-session ones, `test/test_stt_vad.py` the detector's thresholds and
-`test/test_stt_engine.py` the thread derivation and the availability codes.
+`test/test_stt_stream.py` and `test/test_stt_stream_local_session.py` pin the transport
+caps, `test/test_stt_session.py` the session ones, `test/test_stt_vad.py` the
+detector's thresholds and `test/test_stt_engine.py` the thread derivation and the
+availability codes.
 
 ## SEL audit pairing: emit before closing
 
@@ -1049,8 +1329,10 @@ needs. The close still runs, is still awaited immediately after, and still
 tolerates a broken transport (logged, not raised).
 
 A claimed fatal cause outranks the read loop's own outcome: the loop can exit
-cleanly because the cap or the relay closed the socket under it, and recording
-that as `ok` would report a session that died as a session that finished.
+cleanly because the cap ended it (between frames, or by cancelling a reader stuck
+past its grace), or the relay or the `transcribe` result-stream watcher closed the
+socket under it, and recording that as `ok` would report a session that died as a
+session that finished.
 
 Tests asserting on the audit pair must **wait** for the end event: neither
 receiving the error frame nor exiting the `TestClient` context orders the
@@ -1059,7 +1341,7 @@ either one is a race.
 
 ## Frozen-prefix behaviour
 
-`useComposerVoice.ts` (the `Composer` root's Voice atom, mounted by `ChatPage.tsx`
+`useComposerVoice.ts` (the `Composer` root's Voice atom, mounted by `ComposerDockView.tsx`
 and `ChatPane.tsx`) snapshots the composer's contents and the caret on the first
 `partial` of an utterance. Later partials replace only the live region after that
 snapshot, so anything the user typed before speaking survives, and the caret does
@@ -1068,7 +1350,7 @@ newly committed text.
 
 ## Legacy provider values
 
-`_validated_stt_provider` in `config/sections.py` accepts `local`, `apple`, `transcribe`, and `off`. Two classes of stored value fall outside that set and degrade differently, each logging the replacement once per process rather than preventing the gateway from loading a voice setting:
+`_validated_stt_provider` in `config/sections_stt.py` accepts `local`, `apple`, `transcribe`, and `off`. Two classes of stored value fall outside that set and degrade differently, each logging the replacement once per process rather than preventing the gateway from loading a voice setting:
 
 - Persisted `whisper`, `mlx`, `parakeet`, or `faster` (the retired names) degrade to `local`: each was a local recogniser the user had working, and the resident engine recognises the same speech.
 - Any other value degrades to `off`. An unknown value used to degrade to `local`, which put a typo or a guessed value onto the one provider that links a native library into the gateway; a user told to set `stt.provider off` while that library was crashing on model load got the crashing engine back, and learned it only from a WARNING line (kirodotdev/KiroCrew#13179). Failing closed is the one reading that cannot make things worse. `kirocrew config set stt.provider <value>` refuses a value outside the enum at the write, so a stored unknown value can only arrive from a hand edit or an older writer.

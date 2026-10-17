@@ -6,6 +6,10 @@ import sys
 
 import pytest
 
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
 
 @pytest.mark.skipif(
     sys.platform != "darwin" or __import__("platform").machine() != "x86_64",

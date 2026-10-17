@@ -256,8 +256,11 @@ function sessionRow(s: SessionPayloadRow): SessionRow {
  * A session whose crew log names a running creator nests under that creator, and
  * a task nests under the session that spawned it wherever THAT session sits, so
  * a worker's tasks show under the worker, under the conductor that opened it.
+ * A task a subagent spawned nests under that subagent's task row the same way,
+ * matched on the task's own `session_key`, so a fan-out reads as one tree at
+ * every depth rather than its grandchildren surfacing as top-level rows.
  *
- * A task whose `parent` matches no session is emitted as a TOP-LEVEL row rather
+ * A task whose `parent` matches no session or running task is emitted as a TOP-LEVEL row rather
  * than dropped. Dropping it is the contradiction this page exists to remove: the
  * footer counts `tasks.length`, so an unmatched task would be counted in
  * "Task sessions" and be absent from the table above it. An orphan happens for
@@ -281,13 +284,52 @@ export function buildTree(sessions: SessionPayloadRow[], tasks: TaskPayloadRow[]
     row.nested = true
     ;(owner.subRows ??= []).push(row)
   }
-  for (const t of tasks) {
-    const owner = rows.get(t.parent)
-    if (owner == null) continue
-    ;(owner.subRows ??= []).push(taskRow(t))
+  const taskRows = tasks.map(t => [t, taskRow(t)] as const)
+  // A nested subagent's `parent` is its parent TASK's key (`subagent:<id>`),
+  // which no session row carries, so tasks are matched against tasks too.
+  const taskByKey = new Map<string, TaskPayloadRow>()
+  const taskRowByKey = new Map<string, SessionRow>()
+  for (const [t, row] of taskRows) {
+    if (!t.session_key) continue
+    taskByKey.set(t.session_key, t)
+    taskRowByKey.set(t.session_key, row)
   }
-  const orphans = tasks.filter(t => !byKey.has(t.parent)).map(taskRow)
+  const orphans: SessionRow[] = []
+  for (const [t, row] of taskRows) {
+    // A live parent TASK wins over a session row of the same key: a continued
+    // run can also own a dedicated runtime that `/api/sessions/memory` lists as
+    // a session keyed `subagent:<original>`, and the task row is where the
+    // fan-out's own tree lives.
+    const owner = taskRowByKey.get(t.parent)
+    if (owner != null && owner !== row && !taskChainLoops(t, taskByKey)) {
+      ;(owner.subRows ??= []).push(row)
+      continue
+    }
+    const session = rows.get(t.parent)
+    if (session != null) {
+      ;(session.subRows ??= []).push(row)
+      continue
+    }
+    orphans.push(row)
+  }
   return orphans.length > 0 ? [...roots, ...orphans] : roots
+}
+
+/**
+ * Whether following `parent` from `t` through other tasks comes back to `t`.
+ * Never produced by the gateway, but a cycle would hang every row off another
+ * row in the loop and leave none of them reachable from a root, which is the
+ * dropped-row contradiction `buildTree` refuses; a looping task stays top-level.
+ */
+function taskChainLoops(t: TaskPayloadRow, byKey: Map<string, TaskPayloadRow>): boolean {
+  const seen = new Set<TaskPayloadRow>([t])
+  let cur = byKey.get(t.parent)
+  while (cur != null) {
+    if (seen.has(cur)) return true
+    seen.add(cur)
+    cur = byKey.get(cur.parent)
+  }
+  return false
 }
 
 /** The largest value per numeric column, for the heat tint. Tasks included. */

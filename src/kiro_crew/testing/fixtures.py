@@ -19,6 +19,9 @@ helper usable outside pytest (the PRD explicitly calls out scripts and
 non-pytest harnesses). The pytest fixture makes the common case a
 one-liner.
 
+Also here, pytest-only like (2): ``one_pool_thread``, which gives the test
+loop a one-thread default executor.
+
 SQLite deferral — see ``tests_fixtures/rich/README.md``. The helper
 treats fixtures as opaque directory trees, so once the SQLite builder
 lands the helper itself needs no change.
@@ -26,6 +29,7 @@ lands the helper itself needs no change.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import stat
@@ -53,7 +57,7 @@ from kiro_crew.seed import seed
 
 __all__ = ["seeded_home"]
 if pytest is not None:
-    __all__.append("seeded_home_fixture")
+    __all__ += ["one_pool_thread", "seeded_home_fixture"]
 
 
 def _retry_readonly_removal(func: object, path: str, _exc_info: object) -> None:
@@ -136,3 +140,30 @@ if pytest is not None:
         fixture_name = getattr(request, "param", "empty")
         with seeded_home(fixture_name) as home:
             yield home
+
+    @pytest.fixture
+    def one_pool_thread(event_loop: asyncio.AbstractEventLoop) -> None:
+        """Run the test on a loop whose default executor has ONE thread.
+
+        For a test whose code under test runs its writes on the default executor.
+        A test that waits for one of them by parking its own wait on that executor
+        (``asyncio.to_thread(event.wait, N)``) takes the only thread the write
+        needs, so the write can only run once the wait gives up. With one thread
+        that is certain rather than load-dependent: the test passes only if its
+        wait holds no pool thread, which ``kiro_crew.testing.wait``'s
+        ``async_wait_until`` and ``await_until`` never do.
+
+        Do not use it on a test that holds a pool thread on purpose (a patched
+        write blocked on a ``threading.Event`` while the test drives another
+        executor call): that test needs a second thread and would wait out the
+        lost-run bound.
+
+        Needs pytest-asyncio's ``event_loop``; the executor is shut down with the
+        loop. Use it by name (``@pytest.mark.usefixtures("one_pool_thread")``)
+        after importing it into the test module or a conftest.
+        """
+        # Imported here, not at module level, so a bare ``import kiro_crew.testing``
+        # stays as light as it was.
+        from concurrent.futures import ThreadPoolExecutor
+
+        event_loop.set_default_executor(ThreadPoolExecutor(max_workers=1))

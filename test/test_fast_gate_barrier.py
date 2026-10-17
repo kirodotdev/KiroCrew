@@ -29,6 +29,7 @@ Three properties, each of which fails silently rather than loudly if it regresse
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -93,6 +94,11 @@ _MUST_NOT_REACH: dict[str, str] = {
         "those outputs are empty strings and each consumer silently flips"
     ),
     "await-fast-gate": "is the barrier",
+    "cancel-superseded-run": (
+        "cancels a push run whose Fast Gate run was evicted while await-fast-gate is "
+        "still waiting; behind the barrier it would start only after the barrier had "
+        "failed, and that failed check would stay red on the commit"
+    ),
 }
 
 # These DO reach the barrier, unavoidably -- they consume the shards' artifacts. What
@@ -165,11 +171,38 @@ def barrier_step(ci: dict) -> dict:
 # the step itself owns the identity env and the one-line invocation, asserted
 # below.
 _SCRIPT = _REPO_ROOT / ".github" / "scripts" / "await-fast-gate.sh"
+_CANCEL_SCRIPT = _REPO_ROOT / ".github" / "scripts" / "cancel-superseded-run.sh"
+
+#: The one job allowed to hold actions:write, and the exact condition that keeps
+#: it to a push to main while the merge queue is off.
+_CANCEL_JOB = "cancel-superseded-run"
+_CANCEL_IF = (
+    "github.event_name == 'push' && github.ref == 'refs/heads/main' "
+    "&& vars.MERGE_QUEUE_ENABLED != 'true'"
+)
 
 
 @pytest.fixture(scope="module")
 def barrier_script() -> str:
     return _SCRIPT.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def cancel_script() -> str:
+    return _CANCEL_SCRIPT.read_text(encoding="utf-8")
+
+
+def _gh_api_calls(script: str) -> list[str]:
+    """Every non-comment line of a script that invokes ``gh``.
+
+    Any ``gh`` subcommand counts (``gh run cancel`` writes as surely as ``gh api``),
+    so the callers can require each one to be a ``gh api`` with a named method.
+    """
+    return [
+        ln
+        for ln in script.splitlines()
+        if re.search(r"(^|[\s(\"'$])gh\s", ln) and not ln.lstrip().startswith("#")
+    ]
 
 
 def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
@@ -196,6 +229,12 @@ def _assert_push_to_main_reaches_exactly_the_macos_boot_leg(ci: dict) -> None:
 
     for name, spec in jobs.items():
         if name in skipped_on_push or name == "e2e-boot-matrix":
+            continue
+        if name == _CANCEL_JOB:
+            # Needs neither (it runs beside the barrier), so the queue-on push
+            # has to be trimmed by its own condition, which carries the same
+            # variable clause the barrier's does.
+            assert spec["if"] == _CANCEL_IF, spec.get("if")
             continue
         needs = spec.get("needs") or []
         direct_needs = {needs} if isinstance(needs, str) else set(needs)
@@ -484,18 +523,133 @@ class TestTheBarrierFailsClosed:
         # has to outlast the poll budget, or the step is killed before it can report
         # its own fail-closed verdict and the job reports a timeout instead.
         total = int(script.split("TOTAL_BUDGET:-", 1)[1].split("}", 1)[0].strip())
+        # A superseded push spends up to CANCEL_WAIT more after the poll, waiting
+        # for cancel-superseded-run to cancel the run.
+        wait = int(script.split("\nCANCEL_WAIT=", 1)[1].split("\n", 1)[0].strip())
         cap_seconds = int(ci["jobs"]["await-fast-gate"]["timeout-minutes"]) * 60
-        assert cap_seconds > total, (
-            f"timeout-minutes ({cap_seconds}s) must exceed TOTAL_BUDGET ({total}s) so "
-            "the step reports the verdict rather than being killed mid-poll"
+        assert cap_seconds > total + wait, (
+            f"timeout-minutes ({cap_seconds}s) must exceed TOTAL_BUDGET ({total}s) plus "
+            f"CANCEL_WAIT ({wait}s) so the step reports the verdict rather than "
+            "being killed mid-poll"
         )
 
     def test_reading_another_workflows_runs_is_granted_explicitly(self, ci: dict) -> None:
         # Job-level permissions REPLACE the top-level grant, so actions:read has to be
         # restated here or the API read 404s and the barrier fails closed on every run.
+        # Read and nothing more: the barrier runs on pull requests and merge groups, and
+        # the one write a superseded push needs lives in the cancel job.
         perms = ci["jobs"]["await-fast-gate"]["permissions"]
-        assert perms.get("actions") == "read"
-        assert perms.get("contents") == "read"
+        assert perms == {"actions": "read", "contents": "read"}
+
+    def test_the_barrier_script_makes_no_write(self, barrier_script: str) -> None:
+        # `gh api` with -f fields defaults to POST, so every call names its method,
+        # and every one of them is a GET.
+        calls = _gh_api_calls(barrier_script)
+        assert calls, "found no gh call in the barrier script"
+        assert all("gh api --method GET" in ln for ln in calls), calls
+        for verb in ("POST", "PUT", "PATCH", "DELETE"):
+            assert f"--method {verb}" not in barrier_script, verb
+        assert "/cancel" not in barrier_script
+        assert "rerun" not in barrier_script
+        assert "RUN_ID" not in barrier_script, "the barrier has no use for its own run id"
+
+    def test_the_probe_switch_can_only_end_the_script_non_zero(self, barrier_script: str) -> None:
+        # SUPERSEDED_FILE turns a proven supersession into an immediate exit. That
+        # exit is the fail-closed one, so a probe switch left set on the barrier
+        # could only fail it, never release the matrix.
+        body = barrier_script.split("on_superseded() {", 1)[1].split("\n}\n", 1)[0]
+        probe = body.split('if [ -n "$SUPERSEDED_FILE" ]; then', 1)[1].split("fi", 1)[0]
+        assert "exit 1" in probe and "exit 0" not in probe, probe
+        assert "exit 0" not in body
+
+
+class TestOnlyThePushOnlyCancelJobCanWrite:
+    """The actions:write grant sits on one job that only a push to main starts.
+
+    The barrier runs on every event, including same-repository pull requests and
+    merge groups, so a write grant on it would reach code a branch can change. The
+    cancel job is the only holder, its condition admits nothing but a push to main,
+    and its script makes exactly one write: cancelling the run it is part of.
+    """
+
+    def test_the_workflow_default_stays_contents_read(self, ci: dict) -> None:
+        assert ci["permissions"] == {"contents": "read"}
+
+    def test_the_cancel_job_is_the_only_job_with_actions_write(self, ci: dict) -> None:
+        writers = {
+            name
+            for name, spec in ci["jobs"].items()
+            if (spec.get("permissions") or {}).get("actions") == "write"
+            or spec.get("permissions") == "write-all"
+        }
+        assert writers == {_CANCEL_JOB}, writers
+
+    def test_the_cancel_job_holds_exactly_actions_write_and_contents_read(self, ci: dict) -> None:
+        assert ci["jobs"][_CANCEL_JOB]["permissions"] == {"actions": "write", "contents": "read"}
+
+    def test_the_cancel_job_runs_only_on_a_push_to_main(self, ci: dict) -> None:
+        guard = ci["jobs"][_CANCEL_JOB]["if"]
+        assert guard == _CANCEL_IF
+        # A conjunction only: one `||` would let a second event through.
+        assert "||" not in guard
+        # The trigger list is what makes `push` mean main; the guard restates it.
+        # PyYAML reads the bare key `on` as boolean True.
+        triggers = ci.get(True) or ci.get("on") or {}
+        assert triggers["push"] == {"branches": ["main"]}
+
+    def test_the_cancel_job_runs_beside_the_barrier_and_gates_nothing(self, ci: dict) -> None:
+        assert "needs" not in ci["jobs"][_CANCEL_JOB]
+        dependents = []
+        for name, spec in ci["jobs"].items():
+            needs = spec.get("needs") or []
+            if _CANCEL_JOB in ([needs] if isinstance(needs, str) else needs):
+                dependents.append(name)
+        assert not dependents, f"{dependents} wait on the cancel job, which must gate nothing"
+
+    def test_the_cancel_step_runs_the_cancel_script_with_its_own_run_id(self, ci: dict) -> None:
+        steps = ci["jobs"][_CANCEL_JOB]["steps"]
+        assert len(steps) == 2, "the cancel job is checkout + one run step"
+        checkout, run_step = steps
+        assert checkout["uses"].startswith("actions/checkout@")
+        assert checkout["with"]["sparse-checkout"] == ".github/scripts"
+        assert checkout["with"]["persist-credentials"] is False
+        assert run_step["run"].strip() == "bash .github/scripts/cancel-superseded-run.sh"
+        env = run_step["env"]
+        assert env["RUN_ID"] == "${{ github.run_id }}"
+        assert env["EVENT"] == "${{ github.event_name }}"
+        assert env["SHA"] == "${{ github.sha }}"
+        assert env["BRANCH"] == "${{ github.ref_name }}"
+        assert env["HEAD_REPO"] == "${{ github.repository }}"
+        assert "SUPERSEDED_FILE" not in env, "the script sets the probe switch itself"
+
+    def test_the_barrier_step_carries_neither_the_run_id_nor_the_probe_switch(
+        self, barrier_step: dict
+    ) -> None:
+        assert "RUN_ID" not in barrier_step["env"]
+        assert "SUPERSEDED_FILE" not in barrier_step["env"]
+
+    def test_the_cancel_script_makes_one_write_and_it_cancels_this_run(
+        self, cancel_script: str
+    ) -> None:
+        calls = _gh_api_calls(cancel_script)
+        assert (
+            len(calls) == 1
+            and 'gh api --method POST "repos/$REPO/actions/runs/$RUN_ID/cancel"' in calls[0]
+        ), calls
+        for verb in ("PUT", "PATCH", "DELETE"):
+            assert f"--method {verb}" not in cancel_script, verb
+        assert "rerun" not in cancel_script
+        # It refuses to act anywhere but a push to main, whatever the job says.
+        assert '"${EVENT:-}" != "push"' in cancel_script
+        assert '"${BRANCH:-}" != "main"' in cancel_script
+
+    def test_the_cancel_job_outlasts_the_probe_and_the_landing_wait(
+        self, ci: dict, barrier_script: str, cancel_script: str
+    ) -> None:
+        total = int(barrier_script.split("TOTAL_BUDGET:-", 1)[1].split("}", 1)[0].strip())
+        land = int(cancel_script.split("\nLAND_BUDGET=", 1)[1].split("\n", 1)[0].strip())
+        cap_seconds = int(ci["jobs"][_CANCEL_JOB]["timeout-minutes"]) * 60
+        assert cap_seconds > total + land, (cap_seconds, total, land)
 
 
 class TestTheEdgeReachesEveryExpensiveJob:

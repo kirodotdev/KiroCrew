@@ -88,6 +88,10 @@ _CLASS_DIR = SELINUX_FS / "class"
 # the point of this module is to ask the host instead of encoding one policy's
 # type names.
 _SYSTEM_MANAGER_ATTR = Path("/proc/1/attr/current")
+# The installing process's own context: the login shell's, carried through sudo.
+_INSTALLER_ATTR = Path("/proc/self/attr/current")
+# Characters a context string is made of (user:role:type:level, MLS ranges).
+_CONTEXT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:,-")
 
 # libselinux's SELINUX_AVD_FLAGS_PERMISSIVE. Set in the compute_av reply when
 # the SOURCE DOMAIN is marked permissive in policy, which means the kernel logs
@@ -129,6 +133,63 @@ def _system_manager_context() -> str | None:
     # the policy lookup would then fail to parse the context.
     context = raw.strip().rstrip("\x00").strip()
     return context or None
+
+
+def installer_context(exec_path: str) -> str | None:
+    """The context the system unit's gateway should run in, or None to omit it.
+
+    A file takes its SELinux user from the process that creates it. A system
+    unit's gateway runs as ``system_u``, so every cache it writes under the
+    user's home (``~/.npm/_cacache`` and the like) carries ``system_u`` and the
+    user's own shell is then refused hardlinks inside it. Running the gateway
+    in the installer's own context keeps those files in the user's SELinux user.
+
+    The line must never stop a unit that starts today, so the loaded policy is
+    asked first: PID 1's domain must be allowed ``process transition`` into the
+    context, and the context must have ``file entrypoint`` on ``exec_path`` and
+    on the interpreter its shebang names. Any denial or unanswered question
+    omits the line, and the unit runs exactly as it does without it. Permissive
+    hosts are asked the same, so the line stays valid once the host enforces.
+
+    None as well when SELinux is off (no ``enforce`` node), when the context
+    cannot be read or does not look like ``user:role:type[:level]``, and when
+    the installer is itself ``system_u``.
+    """
+    try:
+        _ENFORCE_PATH.read_text(encoding="ascii")
+        raw = _INSTALLER_ATTR.read_text(encoding="ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    context = raw.strip().rstrip("\x00").strip()
+    fields = context.split(":")
+    if len(fields) < 3 or not all(fields[:3]) or not set(context) <= _CONTEXT_CHARS:
+        return None
+    if fields[0] == "system_u":
+        return None
+    manager = _system_manager_context()
+    if manager is None or not _policy_allows(manager, context, "process", "transition"):
+        _omit_context(f"PID 1 ({manager}) may not switch into {context}")
+        return None
+    for path in _exec_candidates(exec_path):
+        label = _file_context(path)
+        if label is None or not _policy_allows(context, label, "file", "entrypoint"):
+            _omit_context(f"{context} may not start {path} ({label})")
+            return None
+    return context
+
+
+def _omit_context(reason: str) -> None:
+    """Log once, at install, why the unit keeps running in the system context."""
+    log.info("service unit: SELinuxContext= left out: %s, or the policy gave no answer", reason)
+
+
+def _policy_allows(source: str, target: str, object_class: str, permission: str) -> bool:
+    """True only when the loaded policy answers that ``permission`` is allowed."""
+    bit = _perm_bit(object_class, permission)
+    if bit is None:
+        return False
+    verdict = _compute_av(source, target, object_class)
+    return verdict is not None and bool(verdict[0] & bit)
 
 
 def _file_context(path: str) -> str | None:
@@ -260,6 +321,14 @@ def _interpreter_of(path: str) -> str | None:
     return candidate if candidate.startswith("/") else None
 
 
+def _exec_candidates(exec_path: str) -> list[str]:
+    """The files an ``execve`` of ``exec_path`` runs: the resolved binary, then
+    the interpreter its shebang names (resolved too), when it has one."""
+    resolved = os.path.realpath(exec_path)
+    interpreter = _interpreter_of(resolved)
+    return [resolved] + ([os.path.realpath(interpreter)] if interpreter else [])
+
+
 def _execute_denied(source_context: str, path: str) -> str | None:
     """Label of ``path`` when ``source_context`` provably may not execute it.
 
@@ -305,11 +374,7 @@ def blocks_system_unit(exec_path: str) -> tuple[bool, str]:
     # The binary first, then the interpreter its shebang names: either one being
     # denied is enough to guarantee 203/EXEC, and naming the right file makes the
     # difference between an actionable message and a puzzle.
-    resolved = os.path.realpath(exec_path)
-    candidates = [resolved]
-    interpreter = _interpreter_of(resolved)
-    if interpreter:
-        candidates.append(os.path.realpath(interpreter))
+    candidates = _exec_candidates(exec_path)
 
     for candidate in candidates:
         label = _execute_denied(source_context, candidate)

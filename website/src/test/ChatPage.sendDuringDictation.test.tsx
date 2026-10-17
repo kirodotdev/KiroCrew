@@ -406,7 +406,7 @@ describe('ChatPage — sending while dictating', () => {
     // fake timers, and the `afterEach` below restores real timers even if an
     // assertion in the guarded region throws.
     setStt(true)
-    savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
+    savePttConfig({ enabled: true, mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
     const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
@@ -447,7 +447,7 @@ describe('ChatPage — sending while dictating', () => {
     // mid-sentence hits exactly this path, so the stranded text is something the
     // user never asked to dictate.
     setStt(true)
-    savePttConfig({ mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
+    savePttConfig({ enabled: true, mode: 'ptt', binding: { code: 'AltRight' }, holdMs: 500 })
     const store = makeStore('chat-main', [{ key: 'chat-main' }])
     await renderAndWaitForInput(store)
     const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement

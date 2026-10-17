@@ -13,9 +13,10 @@ import {
   type ContextProp,
   type VirtuosoHandle,
 } from 'react-virtuoso'
-import { AlertTriangle, ArrowDownToLine, MessageSquareText, ScrollText } from 'lucide-react'
+import { ArrowDownToLine, MessageSquareText, ScrollText } from 'lucide-react'
 
 import { Btn } from '../../../components/ui'
+import ErrorNotice from '../../../components/ErrorNotice'
 import { fmtTime } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import type { MeetingStatus, TranscriptSegment } from '../api'
@@ -188,14 +189,9 @@ export default function TranscriptPanel({
         </h3>
       </header>
 
+      {/* No hand-off: the meeting is still capturing live, and leaving for the chat would drop its unsent speech. */}
       {full ? (
-        <div
-          role="status"
-          className="flex-none mx-4 mt-3 rounded-lg border border-danger/20 bg-danger/10 px-3 py-2 text-[12px] text-danger flex items-start gap-2"
-        >
-          <AlertTriangle className="lucide-inline flex-none mt-0.5" />
-          <span>{i18nT('apps.meetings.transcript.full')}</span>
-        </div>
+        <ErrorNotice className="flex-none mx-4 mt-3" message={i18nT('apps.meetings.transcript.full')} />
       ) : null}
 
       {primary ? (

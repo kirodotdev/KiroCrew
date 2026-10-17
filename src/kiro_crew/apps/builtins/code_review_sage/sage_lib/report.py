@@ -311,6 +311,94 @@ def build_report(records: list[dict], config: dict | None = None) -> dict:
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
 
+def counts_without_dismissed(rec: dict, dismissed: set[str]) -> dict:
+    """The record's ``counts`` with its dismissed findings taken out.
+
+    A dismissal names a comment key (``finding:<i>``), and ``i`` indexes the
+    record's ``findings`` list -- the same mapping ``pipeline.build_pending_comments``
+    uses to mint the key. Severity is read the way the dashboard reads it: only
+    ``red`` blocks, everything else is a should-fix. Counts never go below zero,
+    so a key that points past the findings list cannot push a count negative.
+    """
+    counts = dict(rec.get("counts") or {})
+    red = int(counts.get("red", 0) or 0)
+    yellow = int(counts.get("yellow", 0) or 0)
+    findings = rec.get("findings") or []
+    for key in dismissed:
+        m = pipeline.FINDING_KEY_RE.match(str(key))
+        if not m:
+            continue
+        i = int(m.group(1))
+        if i >= len(findings) or not isinstance(findings[i], dict):
+            continue
+        if findings[i].get("severity") == "red":
+            red -= 1
+        else:
+            yellow -= 1
+    counts["red"], counts["yellow"] = max(0, red), max(0, yellow)
+    return counts
+
+
+def reband(payload: dict, dismissed: dict | None, root: Path | None = None,
+           run_id: str | None = None, config: dict | None = None) -> dict:
+    """Re-run ``classify()`` for the rows whose findings were dismissed.
+
+    A report row's band is the one ``classify()`` computed when the report was
+    built. Dismissing a finding later changes the red/yellow finding counts, which
+    is ONE of the reasons a row can be red or yellow, so the band must be
+    recomputed from the full record with the dismissed findings removed from
+    ``counts`` -- never from the count alone, or a row red for ``blast=LARGE``
+    would turn green the moment its only finding was dismissed.
+
+    ``dismissed`` is the run's ``{change_id: {key: {...}}}`` map. Rows with no
+    dismissals keep their stored band. The row's ``red`` / ``yellow`` stay the
+    report's own tallies: the dashboard subtracts dismissals from those itself,
+    so a server-side subtraction would be counted twice. A row whose result record
+    cannot be read (a report adopted without its records) also keeps its stored
+    band -- a stale band is a smaller error than a band computed from a record
+    that is not there.
+
+    The band tallies are rebuilt from the re-banded rows and the rows re-sorted,
+    so the chips, the filter and the row order agree on the same bands.
+    """
+    rows = list(payload.get("rows") or [])
+    if dismissed and isinstance(dismissed, dict):
+        for row in rows:
+            cid = str(row.get("change_id") or "")
+            per_change = dismissed.get(cid)
+            if not isinstance(per_change, dict) or not per_change:
+                continue
+            rec = results.read_result(cid, root, run_id)
+            if rec is None:
+                continue
+            adjusted = dict(rec)
+            try:
+                adjusted["counts"] = counts_without_dismissed(rec, set(per_change))
+                c = classify(adjusted, config)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                # The record and the live config.json both sit in the
+                # worker-reachable data dir and can be rewritten after the
+                # report was built (`"triage": null`, a string threshold, a
+                # shape the validator has not seen). The stored report already
+                # has a band for this row, so a recompute that cannot run keeps
+                # it: a stale band is a smaller error than a report read that
+                # fails for every row because one input is malformed.
+                continue
+            # Scrubbed like the build path scrubs the same fields: `why` carries
+            # the record's blast rating verbatim, and both the rating and the
+            # threshold it is compared to are worker-reachable, so the
+            # recomputed rationale is redacted before it reaches the row.
+            row.update(_redact_row({"band": c["band"], "why": c["why"],
+                                    "score": c["score"]}))
+    bands = {"red": 0, "yellow": 0, "green": 0}
+    for row in rows:
+        if row.get("band") in bands:
+            bands[row["band"]] += 1
+    order = {"red": 0, "yellow": 1, "green": 2}
+    rows.sort(key=lambda r: (order.get(r.get("band"), 3), -_as_count(r.get("score"))))
+    return {**payload, "bands": bands, "rows": rows}
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering (theme-aware base + Apple "system" accent palette)
 # ---------------------------------------------------------------------------
@@ -842,10 +930,17 @@ def read_within_reports(path: Path, root: Path | None = None,
 
 
 def generate(root: Path | None = None, slug: str | None = None,
-             run_id: str | None = None) -> dict:
-    """Read all result records, build + render + persist the report."""
+             run_id: str | None = None, records: list[dict] | None = None) -> dict:
+    """Build + render + persist the report.
+
+    ``records`` are the records the caller already accepted. A run passes them in
+    because its results directory stays writable by every dispatched worker, so a
+    re-read there would render whatever a worker wrote after acceptance. Without
+    them (the CLI), the stored records are read.
+    """
     cfg = store.load_config(root)
-    records = results.list_results(root, run_id)
+    if records is None:
+        records = results.list_results(root, run_id)
     report = build_report(records, cfg)
     html_body = render_html(report)
     index = write_outputs(report, html_body, root, slug, run_id)

@@ -14,8 +14,8 @@
  *     back button sits at the left edge;
  *   - hovering the pill changes nothing but the cursor (the Glass material has
  *     no hover state), and clicking it opens this crewmate's full editor;
- *   - with Reduce glass transparency on, the pill solidifies with the rest of
- *     the glass instead of staying translucent.
+ *   - with Translucent panels off (the default), the pill solidifies with the
+ *     rest of the glass instead of staying translucent.
  *
  * Usage:
  *   kirocrew pod up <worktree> --json | tail -1 > "$KIROCREW_SCRATCH/pod-info.json"
@@ -101,7 +101,7 @@ async function stills(browser, theme) {
   await page.getByTestId('member-identity-pill').waitFor({ state: 'visible', timeout: 10000 })
   await page.waitForTimeout(500)
 
-  // 4: Reduce glass transparency → the pill is a solid card, no glass layers.
+  // 4: Translucent panels off → the pill is a solid card, no glass layers.
   await page.evaluate(() => document.documentElement.setAttribute('data-reduce-transparency', 'on'))
   await page.mouse.move(5, 5)
   await page.waitForTimeout(300)

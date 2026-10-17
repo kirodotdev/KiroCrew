@@ -5,12 +5,13 @@ A lesson is a ``lesson.*`` semantic row whose value is either the mapping
 below reads both without guessing. The readers here decide which rows count as
 lesson population, which reach a prompt and in which tier and order, which rows
 a contradiction sweep or a delete may address, and they fetch through the
-store's locked helpers. The write path, ``VectorMemoryStore.write_lesson``, stays
-on the store and uses the same codec.
+store's locked helpers. The write path, ``VectorMemoryStore.write_lesson``, lives
+in ``lesson_write`` and uses the same codec.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from kiro_crew import context_omissions
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
@@ -1042,6 +1044,7 @@ def get_lessons_context(
         directive_block, directive_omitted = render_lesson_tier(
             directives,
             directive_room,
+            omission_kind=context_omissions.LESSON_RULES,
             **directive_tier,
         )
         # ``max(1, …)`` rather than the bare remainder: ``tighter_lesson_budget``
@@ -1072,6 +1075,7 @@ def get_lessons_context(
             # can act on rather than an absence it cannot see.
             experience_block = render_withheld_tier(
                 len(experiences),
+                omission_kind=context_omissions.LESSON_FINDINGS,
                 header="[Learned experience — past findings]",
                 footer="[End of learned experience]",
                 notice=(
@@ -1087,6 +1091,7 @@ def get_lessons_context(
             experience_block, experience_omitted = render_lesson_tier(
                 experiences,
                 experience_room,
+                omission_kind=context_omissions.LESSON_FINDINGS,
                 header=(
                     "[Learned experience — past findings, relevant ones first.\n"
                     "Reference material, not standing rules; call memory_recall for more.]"
@@ -1165,23 +1170,48 @@ def _renderable_entries(
     lesson_rows: list[dict], project_dir: str | Path | None
 ) -> list[tuple[dict, str]]:
     """``(row, text)`` for every row that renders and is in scope for *project_dir*."""
+    # The rendered text and scope are pure functions of the stored row, and
+    # deriving them (JSON decode plus the volatile-fact regexes) is most of a
+    # warm render. Memoize them only when the whole population fits the memo:
+    # a repeated scan wider than an LRU bound has a hit rate of exactly zero.
+    render = (
+        _lesson_render_fields
+        if len(lesson_rows) <= _LESSON_RENDER_CACHE_SIZE
+        else _lesson_render_fields.__wrapped__
+    )
     entries: list[tuple[dict, str]] = []
     for row in lesson_rows:
-        try:
-            decoded = json.loads(row["value_json"])
-        except (TypeError, ValueError, RecursionError):
+        rendered = render(row["key"], row["value_json"])
+        if rendered is None:
             # One unreadable row must not fail every context build; the key
             # names the row to repair, the value is left out of the log.
             logger.warning("Skipping lesson %r: stored value_json does not decode", row["key"])
             continue
-        text = _renderable_lesson_text(decoded, row["key"])
+        text, scope = rendered
         if not text:
             continue
-        scope = _lesson_scope(decoded)
         if scope and not project_scope_satisfied(scope, project_dir):
             continue
         entries.append((row, text))
     return entries
+
+
+#: Entries in the lesson render memo. Keyed by ``(key, value_json)``; an entry
+#: retains only the rendered text and scope, so the bound is in rows.
+_LESSON_RENDER_CACHE_SIZE = 16_384
+
+
+@functools.lru_cache(maxsize=_LESSON_RENDER_CACHE_SIZE)
+def _lesson_render_fields(key: str, value_json: object) -> tuple[str, str | None] | None:
+    """``(text, scope)`` for one stored lesson, or ``None`` when it does not decode."""
+    try:
+        decoded = json.loads(value_json)  # type: ignore[arg-type]
+    except (TypeError, ValueError, RecursionError):
+        return None
+    text = _renderable_lesson_text(decoded, key)
+    if not text:
+        return ("", None)
+    return (text, _lesson_scope(decoded))
 
 
 #: Request words in ``lesson_keywords``' stop list and words of two letters or

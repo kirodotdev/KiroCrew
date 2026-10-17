@@ -17,57 +17,22 @@
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { routeRadarDm, openRadarDm, makeCheck } from './lib/radar-dm-fixture.mjs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6882'
 const OUT = resolve(process.argv[3] || '../temp-screenshots/crewmate-run')
 mkdirSync(OUT, { recursive: true })
 const { LD_LIBRARY_PATH: _mise, ...browserEnv } = process.env
 const browser = await chromium.launch({ env: browserEnv })
-let failures = 0
-const check = (l, ok) => { console.log(`${l} => ${ok ? 'OK' : 'FAIL'}`); if (!ok) failures++ }
-
-const RADAR = {
-  name: 'Radar', slug: 'radar', bound: true, slot_key: 'member-radar', running: false,
-  kiro_agent: 'kirocrew', workspace: 'default', memory_store: 'radar', memory_version: 2, memory_owner: 'Radar',
-  model: '', description: 'Watches CI and the issue queue', source: 'kirocrew',
-  last_active_ts: Math.floor(Date.now() / 1000) - 30, last_message: 'Back up since 08:22Z.',
-}
-const MEMBERS = [RADAR, { ...RADAR, name: 'Fixer', slug: 'fixer', slot_key: 'member-fixer', memory_store: 'fixer', memory_owner: 'Fixer', description: 'Opens the fix PRs', last_message: 'Two PRs opened for the queue.' }]
-const THREAD = [
-  { role: 'user', content: 'Anything new on the nightly?', ts: '2026-10-05T07:40:00Z', meta: { mid: 'm1' } },
-  { role: 'assistant', content: 'Shard 1 went red twice on `test_spawn_approval_crew_log`: the test takes the crew-log lock on the event loop.\n\nBuilds are all green, so it is the test, not the code.', ts: '2026-10-05T07:40:21Z', meta: { mid: 'm2' } },
-  { role: 'assistant', content: 'Filed it as #16628 with the `asyncio.to_thread` fix sketched. Waiting on triage.', ts: '2026-10-05T07:40:24Z', meta: { mid: 'm3' } },
-  { role: 'user', content: 'Good. And the dispatcher?', ts: '2026-10-05T07:52:00Z', meta: { mid: 'm4' } },
-  { role: 'assistant', content: 'Back up since 08:22Z: it no longer mints an owner token, it presents the cron\'s own credential. First cycle dispatched 4 of the backlog.', ts: '2026-10-05T08:24:02Z', meta: { mid: 'm5' } },
-]
-const json = (body) => ({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+const state = { failures: 0 }
+const check = makeCheck(state)
 
 for (const theme of ['dark', 'light']) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 })
   const page = await ctx.newPage()
   const errors = []; page.on('pageerror', e => errors.push(String(e)))
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
-    const path = new URL(route.request().url()).pathname
-    if (path === '/api/members') return route.fulfill(json({ members: MEMBERS, default_agent: 'kirocrew' }))
-    if (path === '/api/teams') return route.fulfill(json({ teams: [] }))
-    if (path === '/api/autonudge') return route.fulfill(json({ enabled: true, loops: [] }))
-    if (path === '/api/config/default-agent') return route.fulfill(json({ default_agent: 'kirocrew' }))
-    if (path === '/api/workspaces') return route.fulfill(json({ workspaces: [{ name: 'default' }] }))
-    const thread = path.match(/^\/api\/members\/([^/]+)\/thread$/)
-    if (thread) return route.fulfill(json({ slot_key: 'member-radar', slug: 'radar', member: 'Radar', created: false }))
-    if (/^\/api\/members\/[^/]+\/activity$/.test(path)) return route.fulfill(json({ slug: 'radar', member: 'Radar', capped: false, entries: [] }))
-    if (/^\/api\/members\/[^/]+\/panel$/.test(path)) return route.fulfill(json({ panel: null, html: null }))
-    if (/^\/api\/chat\/slots\/[^/]+$/.test(path)) return route.fulfill(json({ key: 'member-radar', title: 'Radar', running: false, messages: THREAD }))
-    if (path === '/api/crons') return route.fulfill(json({ jobs: [] }))
-    if (path === '/api/webhooks') return route.fulfill(json({ tokens: [] }))
-    if (path === '/api/agents') return route.fulfill(json({ agents: [], default_agent: 'kirocrew' }))
-    if (/\/api\/chat\/(tags|pins|folders|tag-columns)$/.test(path)) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
-    const isList = /commands|skills|agents$|sessions|files|history|models|artifacts|folders|slots$/.test(path)
-    return route.fulfill({ status: 200, contentType: 'application/json', body: isList ? '[]' : '{}' })
-  })
-  await page.goto(`${BASE}/capture/members-page.html?theme=${theme}&route=/members%3Fmember%3DRadar`)
-  await page.waitForSelector('[data-capture-root]')
-  await page.getByText('Good. And the dispatcher?').waitFor()
+  await routeRadarDm(page)
+  await openRadarDm(page, BASE, theme)
   await page.waitForTimeout(400)
 
   const rows = page.locator('[data-testid="crewmate-message"]')
@@ -93,5 +58,5 @@ for (const theme of ['dark', 'light']) {
   await ctx.close()
 }
 await browser.close()
-if (failures) { console.error(`${failures} check(s) failed`); process.exit(1) }
+if (state.failures) { console.error(`${state.failures} check(s) failed`); process.exit(1) }
 console.log(`wrote ${OUT}`)

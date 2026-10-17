@@ -2,7 +2,8 @@
 
 The ``version`` frontmatter field, the ``.versions/v<N>-SKILL.md`` snapshots an
 update approval writes, their pruning, and the frontmatter rewrite that makes an
-update candidate the new live body. The approval itself stays in the facade.
+update candidate the new live body. The approval itself lives in
+``kiro_crew.skills_review``.
 """
 
 from __future__ import annotations

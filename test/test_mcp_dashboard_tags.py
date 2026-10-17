@@ -5,7 +5,7 @@ Covers ``chat_tag_list`` / ``chat_tag_create`` / ``chat_tag_update`` /
 delta composed onto the slot's current list, the compare-and-set revision the
 PUT carries, the identity gates, and result formatting. Each case is one
 tools/call frame through ``mcp_dashboard.TABLE`` against an in-memory
-dashboard; the endpoints themselves are tested by ``test_chat_tags.py``.
+dashboard; the endpoints themselves are tested by ``test_chat_tags*.py``.
 """
 
 from __future__ import annotations

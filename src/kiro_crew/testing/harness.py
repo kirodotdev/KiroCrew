@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.crash_dump_store import dump_replay_lines, newest_dump_with_stacks
 from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
 from kiro_crew.testing import fake_acp_backend
 
@@ -96,8 +97,49 @@ EXIT_DRAIN_SECONDS = 2.0
 SHIM_ENCODING = "oem"
 
 # Sentinel prefix the gateway prints to stdout once the dashboard is bound.
-# Owned by ``slack/gateway.py``; if you change it there, update here too.
+# Owned by ``slack/gateway_runtime/service_boot.py``; if you change it there, update here too.
 READY_PREFIX = "KIROCREW_READY:"
+
+
+def crash_dump_diagnostic(home: Path) -> str:
+    """The gateway's loop-stall stack dump, if its watchdog wrote one into *home*.
+
+    The watchdog's dump-then-exit (``dashboard/loop_watchdog.py``) writes every
+    thread's stack into ``<home>/logs/crash-dumps/`` and never into stderr, so a
+    gateway the alarm ended shows up in the captured stderr as silence followed
+    by ``exit=-14``. The harness removes the HOME right after, which makes this
+    file the one place the blocking frame can be read from: it is folded into
+    :meth:`GatewayHandle.diagnostics` so the frame reaches the test's failure
+    message instead of a directory nobody uploads.
+
+    The stacks come through :func:`~kiro_crew.dashboard.crash_dump_store.dump_replay_lines`
+    with its journal caps lifted: every thread, wedged thread first. The
+    journal's 120-line / 8 KiB budget is wrong for a failure message. A loop
+    thread caught at a syscall boundary (``selectors.select``, ``stat``) while
+    every visible worker is parked is waiting to reacquire the GIL from some
+    OTHER thread inside a long native call, and ``faulthandler`` lists threads
+    newest-first, so a capped replay ends before that thread -- the one stack
+    that says what stalled the gateway. The reader's own file bound (a few
+    MiB) is the only cap left.
+
+    Empty when no dump with stacks exists -- a header-only file is the sentinel
+    every boot opens and says nothing. Never raises: a missing or unreadable
+    directory is a gateway that produced no dump, and the diagnostic it would
+    decorate must still be reported.
+    """
+    try:
+        dump = newest_dump_with_stacks(home / "logs" / "crash-dumps")
+        if dump is None:
+            return ""
+        lines, truncated = dump_replay_lines(dump, max_lines=sys.maxsize, max_bytes=sys.maxsize)
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+        return ""
+    if not lines:
+        return ""
+    text = "\n".join(lines)
+    if truncated:
+        text += "\n... (dump truncated; wedged thread shown first)"
+    return f"\n--- loop-stall crash dump ({dump.name}) ---\n{text}"
 
 
 @dataclass(frozen=True)
@@ -441,6 +483,12 @@ def _wait_for_ready_line(
         return None, buffer
 
     buf = b""
+    # Bounded tail for diagnostics: mirrors the pump's post-READY tail so
+    # a long-running silent subprocess cannot grow this without limit.
+    # Chunks beyond the cap are counted (not retained) so the timeout
+    # message can report truncation.
+    stdout_received: deque[bytes] = deque(maxlen=_StdoutPump.TAIL_CHUNKS)
+    _stdout_dropped = 0  # chunks evicted by the deque cap
     while True:
         if proc.poll() is not None:
             # Scan whatever the reader captures up to EOF before declaring the
@@ -449,17 +497,45 @@ def _wait_for_ready_line(
             payload, buf = _scan(buf + pump.drain_until_eof(EXIT_DRAIN_SECONDS))
             if payload is not None:
                 return payload
+            _trunc_exit = (
+                f" [{_stdout_dropped} earlier chunk(s) dropped]" if _stdout_dropped else ""
+            )
+            stdout_at_exit = (
+                b"".join(stdout_received).decode("utf-8", errors="replace")[-2000:] + _trunc_exit
+            )
             raise GatewaySpawnError(
                 f"gateway subprocess exited with code {proc.returncode} "
                 f"before emitting {READY_PREFIX} line.\n"
-                f"--- stderr (last) ---\n{_stderr_tail()}"
+                f"--- stderr (last) ---\n{_stderr_tail()}\n"
+                f"--- stdout (so far) ---\n{stdout_at_exit}"
             )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            alive = proc.poll() is None
+            has_any_output = bool(stdout_received) or bool(stderr_buffer)
+            # Build a diagnostic that names whether the process is alive, what
+            # it wrote to stdout, and what state it is in.  The original
+            # stderr-only message left cold-import failures undiagnosable
+            # because stderr is empty for the whole Python import phase.
+            _trunc = f" [{_stdout_dropped} earlier chunk(s) dropped]" if _stdout_dropped else ""
+            stdout_so_far = (
+                b"".join(stdout_received).decode("utf-8", errors="replace")[-2000:] + _trunc
+            )
+            stderr_so_far = _stderr_tail()
+            process_state = f"alive (pid {proc.pid})" if alive else f"exited {proc.returncode}"
+            cold_hint = (
+                "\n(no output from subprocess — likely still in cold import "
+                "phase; raise KIROCREW_HARNESS_READY_TIMEOUT if the runner is slow)"
+                if not has_any_output
+                else ""
+            )
             raise GatewaySpawnError(
                 f"gateway did not emit {READY_PREFIX} line within "
-                f"{timeout:.1f}s. Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
-                f"--- stderr (last) ---\n{_stderr_tail()}"
+                f"{timeout:.1f}s [{process_state}]. "
+                f"Override with KIROCREW_HARNESS_READY_TIMEOUT.\n"
+                f"--- stderr (last) ---\n{stderr_so_far}\n"
+                f"--- stdout (so far) ---\n{stdout_so_far}"
+                f"{cold_hint}"
             )
         # Cap each wait at 0.5s so the deadline + poll() checks above run
         # frequently even if the subprocess goes silent.
@@ -471,8 +547,13 @@ def _wait_for_ready_line(
             # EOF on stdout without READY. The child may still be alive (it can
             # close stdout and keep running), so keep honouring the deadline and
             # the exit check rather than failing here; the queue is empty from
-            # now on, so each iteration sleeps its 0.5s instead of spinning.
+            # now on, so each iteration sleeps its 0.5 s instead of spinning.
+            # Deliberate: a child that closes stdout but keeps running must not
+            # be failed immediately; the deadline and the exit check own the verdict.
             continue
+        if len(stdout_received) == _StdoutPump.TAIL_CHUNKS:
+            _stdout_dropped += 1
+        stdout_received.append(chunk)
         payload, buf = _scan(buf + chunk)
         if payload is not None:
             return payload
@@ -940,9 +1021,10 @@ def harness_environment(
     Layered over the caller's ``os.environ`` so supported production knobs the
     test process exports (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach
     the gateway, then pinned: the data home, the agent-spec home, the test-rig
-    marker, unbuffered stdout, and -- unless ``skip_model_download`` is False --
-    the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is the ONLY
-    default a caller can drop, and only through this keyword: it is what a
+    marker, unbuffered stdout, the app store's off-network switch
+    (``KIROCREW_SKIP_APP_STORE_FETCH=1``), and -- unless ``skip_model_download``
+    is False -- the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is
+    the ONLY default a caller can drop, and only through this keyword: it is what a
     dedicated download-failure evidence gateway needs, because the production
     download manager honours the same flag for the dashboard's Retry click as
     for the boot-time background task. A caller that drops it must also export
@@ -980,6 +1062,15 @@ def harness_environment(
         # "Created default config") would block-buffer when stdout is a
         # pipe and could mask early failures.
         "PYTHONUNBUFFERED": "1",
+        # The app store answers from the bundled seed, never the live CDN or a
+        # clone of a listed repository: a harness gateway is the offline rig the
+        # browser specs run against, and ``GET /api/apps/registry`` otherwise
+        # pays an uncached HTTPS round trip per listing, bounded only by the
+        # catalog's fetch timeout -- the specs' ready budget. Spelled literally,
+        # like the model-download switch below: ``apps.official_catalog`` owns
+        # the name (``SKIP_FETCH_ENV``) and this module does not import the apps
+        # package.
+        "KIROCREW_SKIP_APP_STORE_FETCH": "1",
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway
@@ -1173,7 +1264,7 @@ def spawn_feature_gateway(
                 return (
                     f"gateway pid {proc.pid} exit={proc.poll()!r}\n"
                     f"--- stderr (last) ---\n{err}\n"
-                    f"--- stdout after READY (last) ---\n{out}"
+                    f"--- stdout after READY (last) ---\n{out}" + crash_dump_diagnostic(home)
                 )
 
             def _restart(skip_model_download: Optional[bool] = None) -> GatewayHandle:

@@ -20,12 +20,13 @@ and configuration import cycles.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
 import threading
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
@@ -597,6 +598,51 @@ def ensure_memory_store_dir(store: str) -> Path:
         return target
 
 
+def create_store_remedy(store: str) -> str:
+    """The command that creates a declared V1 store's missing directory."""
+    return f"run `kirocrew memory create-store {store}` to create it"
+
+
+def create_declared_store(store: str) -> tuple[Path, bool]:
+    """Create a DECLARED named V1 store's directory; ``(path, created)``.
+
+    The one explicit create step for such a store. Use never creates it:
+    :func:`require_memory_store` refuses a missing directory before
+    :func:`ensure_memory_store_dir` is reached, so a deleted store is not
+    silently recreated empty. An operator runs this instead.
+
+    Refuses the default store (its root is ``workspace/``), an undeclared name,
+    and a V2 member store (provisioned with its member). An existing directory
+    is left as it is and answered with ``created=False``.
+    """
+    name = resolve_declared_store(store)
+    if name == DEFAULT_MEMORY_STORE:
+        raise UnknownMemoryStore("the default store needs no create step")
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    config = KiroCrewConfig.load()
+    if memory_store_version(name) == 2:
+        raise UnknownMemoryStore(
+            f"memory store {name!r} is a member store; it is created with its member"
+        )
+    # Ownership and shape checks only: the directory is what this creates.
+    require_memory_store(name, config=config, require_directory=False)
+    with memory_store_namespace_lock():
+        target = _named_store_dir(name)
+        if target.is_dir():
+            # Left exactly as it is: no mode change, no content change.
+            existed = True
+        elif os.path.lexists(target):
+            raise UnknownMemoryStore(
+                f"memory store {name!r} path exists and is not a directory; nothing was created"
+            )
+        else:
+            existed = False
+            target = ensure_memory_store_dir(name)
+    require_memory_store(name, config=config)
+    return target, not existed
+
+
 def member_memory_identity(store: str) -> tuple[str, int]:
     """Read the canonical database identity without any filesystem manifest."""
     from kiro_crew.vector_memory import read_member_database_identity
@@ -625,7 +671,10 @@ def memory_store_version(store: str) -> int:
 
 def _require_legacy_store_files(store: str, target: Path) -> None:
     """An explicit member database cannot be opened through the V1 API."""
-    import sqlite3
+    # The same SQLite library the store opens this file with: a second copy keeps
+    # its own lock table, and closing its connection drops the POSIX locks the
+    # open store holds on the file, letting another process write mid-transaction.
+    from kiro_crew._sqlite_compat import sqlite3
 
     database = target / MEMORY_DB_FILE
     if not database.exists():
@@ -767,16 +816,113 @@ def named_store_operation(method):
     return guarded
 
 
+def is_lock_write_refusal(exc: OSError) -> bool:
+    """Whether *exc* is this process's view refusing the write a lock open makes.
+
+    A read-only mount answers ``EROFS``; a sandbox that seals the tree answers
+    ``EACCES`` or ``EPERM``. POSIX only: Windows raises ``PermissionError`` for a
+    sharing violation, which is contention on the file rather than a sealed view.
+    """
+    from kiro_crew import platform_compat
+
+    if not platform_compat.IS_POSIX:
+        return False
+    return isinstance(exc, PermissionError) or exc.errno == errno.EROFS
+
+
+def open_existing_lock_read_only(
+    path: Path, *, refusal: type[ValueError], defect: str
+) -> int | None:
+    """Open the lock file at *path* without write access, or ``None`` when it does not exist.
+
+    For a reader on a view that can neither create nor modify the file. ``flock`` needs
+    no write access, so a lock taken on this descriptor contends on the same inode as
+    the writers' and serializes against them exactly as the writable open does. The
+    no-follow open and the regular-file and single-link checks are the writable open's
+    own. The file must also belong to this process's user, which the writable open
+    enforces by tightening its mode, an operation only the owner may make. *defect* is
+    the message *refusal* carries when any check fails.
+    """
+    import stat
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        info = os.fstat(fd)
+        foreign = hasattr(os, "geteuid") and info.st_uid != os.geteuid()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or foreign:
+            raise refusal(defect)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+_NAMESPACE_LOCK_DEFECT = "memory store namespace lock is not a private regular file"
+
+
+def _open_namespace_lock(directory: Path, path: Path, *, read_only_ok: bool) -> int | None:
+    """The namespace lock's descriptor; ``None`` only for a reader that found no lock file.
+
+    A reader on a confirmed read-only mount goes straight to the read-only open, so it
+    makes no write for the owner-only tightening to log as a lockdown failure. Any
+    other view tries the writable open, and a reader falls back on that open's own
+    refusal.
+    """
+    import stat
+
+    from kiro_crew import platform_compat
+
+    if read_only_ok and platform_compat.is_readonly_filesystem(directory.parent):
+        return _open_namespace_lock_read_only(path)
+    try:
+        platform_compat.make_owner_only_dir(directory)
+        if path.resolve() != path:
+            raise UnknownMemoryStore("memory store namespace lock is redirected")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        if not (read_only_ok and is_lock_write_refusal(exc)):
+            raise
+        return _open_namespace_lock_read_only(path)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise UnknownMemoryStore(_NAMESPACE_LOCK_DEFECT)
+        platform_compat.restrict_to_owner(path)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _open_namespace_lock_read_only(path: Path) -> int | None:
+    if path.resolve() != path:
+        raise UnknownMemoryStore("memory store namespace lock is redirected")
+    return open_existing_lock_read_only(
+        path, refusal=UnknownMemoryStore, defect=_NAMESPACE_LOCK_DEFECT
+    )
+
+
 @contextmanager
-def memory_store_namespace_lock(root: Path | None = None) -> Iterator[None]:
+def memory_store_namespace_lock(
+    root: Path | None = None, *, read_only_ok: bool = False
+) -> Iterator[None]:
     """Serialize store allocation, publication and replacement before enumerating names.
 
     The lock lives in the host-local directory that replacement and rollback keep.
     Nested operations on the same thread share one hold. Operation-local file and
     configuration locks come after it; replace probes lifetime locks without waiting.
-    """
-    import stat
 
+    *read_only_ok* is for a caller that only reads the stores, such as a snapshot or an
+    export. Where this process's view refuses the lock file's write (a read-only mount,
+    or a sandbox that seals the tree), the same exclusive lock is taken through a
+    read-only descriptor on the existing file. When that view holds no lock file at
+    all, the read proceeds without one and is refused afterwards if the file appeared
+    meanwhile, because only a namespace operation creates it. Writers never pass it,
+    so allocation, publication and replacement keep failing loudly on such a view.
+    """
     from kiro_crew import platform_compat
 
     root = (root if root is not None else memory_stores_root()).resolve()
@@ -789,16 +935,26 @@ def memory_store_namespace_lock(root: Path | None = None) -> Iterator[None]:
     directory = root / MEMBER_BACKUPS_DIR_NAME
     if directory.resolve() != directory:
         raise UnknownMemoryStore("memory store namespace lock directory is redirected")
-    platform_compat.make_owner_only_dir(directory)
     path = directory / ".namespace.lock"
-    if path.resolve() != path:
-        raise UnknownMemoryStore("memory store namespace lock is redirected")
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = _open_namespace_lock(directory, path, read_only_ok=read_only_ok)
+    if fd is None:
+        logger.warning(
+            "memory store namespace lock %s does not exist and this process cannot create "
+            "it; reading the stores without it",
+            path,
+        )
+        held.add(root)
+        try:
+            yield
+        finally:
+            held.remove(root)
+        if os.path.lexists(path):
+            raise UnknownMemoryStore(
+                "the memory stores changed while they were read without the namespace "
+                "lock; run the read again"
+            )
+        return
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise UnknownMemoryStore("memory store namespace lock is not a private regular file")
-        platform_compat.restrict_to_owner(path)
         with platform_compat.file_lock(fd, exclusive=True, required=True):
             held.add(root)
             try:
@@ -1392,7 +1548,7 @@ def _provision_member_memory(config, member: str) -> str:
     from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
 
     manual = target / "memory"
-    manual.mkdir()
+    manual.mkdir(mode=0o700)
     atomic_write(manual / PREFERENCES_FILE, "# Member Preferences\n", fsync=True)
     atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
     agent.member_id = member_id
@@ -1466,6 +1622,22 @@ def retire_unpublished_allocation(
     return removed
 
 
+class MemberApprovalConflict(Exception):
+    """The stored ``approval_mode`` is not the one the writer read."""
+
+    def __init__(self, current: str) -> None:
+        super().__init__("the permission changed since it was read")
+        self.current = current
+
+
+class MemberFieldConflict(Exception):
+    """A stored field is not the value the writer expected to find (compare-and-set)."""
+
+    def __init__(self, field: str) -> None:
+        super().__init__(f"the crewmate's {field} changed since it was read")
+        self.field = field
+
+
 @memory_store_namespace_lock()
 def persist_member_config(
     config,
@@ -1474,6 +1646,9 @@ def persist_member_config(
     create: bool = False,
     expected_store=None,
     changed_fields: set[str] | None = None,
+    expected_approval_mode: str | None = None,
+    new_workspace: str = "",
+    expected_values: Mapping[str, object] | None = None,
 ) -> None:
     """Atomically publish a member and its ownership while retaining other writes.
 
@@ -1494,6 +1669,21 @@ def persist_member_config(
     Updates may name only the fields the caller actually changed, preserving
     concurrent edits to other fields. None retains full-record publication;
     creation always publishes the full record. A new binding must be included.
+
+    ``new_workspace`` names the workspace :func:`member_workspace.provision_member_workspace`
+    allocated for this create, if any. It is published in the SAME locked mutation
+    as the record (:func:`member_workspace.publish_member_workspace`: the name and
+    directory are re-checked against the document under the lock, the directory
+    is made, the entry written), so a member never lands bound to a workspace the
+    table does not declare. A create only; an update never allocates one.
+
+
+    *expected_values* is a compare-and-set on an update: each named field must
+    still hold that value on disk, read inside the cross-process config lock,
+    or the write is refused with :class:`MemberFieldConflict` naming the field.
+    A write that landed after the caller took its snapshot therefore wins, the
+    way ``expected_approval_mode`` already works for the permission. An absent
+    stored field compares as the dataclass default.
     """
     from dataclasses import asdict
 
@@ -1523,6 +1713,15 @@ def persist_member_config(
         if not unchanged_binding and store != DEFAULT_MEMORY_STORE
         else None
     )
+    if new_workspace and not create:
+        raise UnknownMemoryStore("a member update cannot allocate a workspace")
+    if new_workspace and (
+        config.agents[member].workspace != new_workspace or new_workspace not in config.workspaces
+    ):
+        raise UnknownMemoryStore(
+            f"workspace {new_workspace!r} is not the binding of Crew Member {member!r}"
+        )
+    workspace_entry = config.workspaces[new_workspace] if new_workspace else None
 
     def mutate(data: dict) -> dict:
         agents = data.setdefault("agents", {})
@@ -1548,6 +1747,25 @@ def persist_member_config(
                 raise UnknownMemoryStore(
                     f"Crew Member {member!r} memory changed concurrently; reload the roster"
                 )
+        if expected_approval_mode is not None and not create:
+            # Compare-and-set against the record on disk, inside the
+            # cross-process lock: a CLI or other-process write that landed
+            # after the caller loaded its snapshot wins, and this one is refused.
+            from kiro_crew.config.sections import coerce_member_approval_mode
+
+            stored_mode = coerce_member_approval_mode(
+                current.get("approval_mode") if isinstance(current, dict) else None
+            )
+            if stored_mode != expected_approval_mode:
+                raise MemberApprovalConflict(stored_mode)
+        if expected_values and not create and isinstance(current, dict):
+            # The same compare-and-set for any field the caller read: the
+            # value on disk, under this lock, must still be the one it saw.
+            defaults = asdict(type(config.agents[member])())
+            for field_name, expected in expected_values.items():
+                stored = current.get(field_name, defaults.get(field_name))
+                if stored != expected:
+                    raise MemberFieldConflict(field_name)
         if (
             isinstance(current, dict)
             and current.get("member_id")
@@ -1578,6 +1796,10 @@ def persist_member_config(
             ):
                 raise UnknownMemoryStore(f"memory store {store!r} ownership changed concurrently")
             stores[store] = {**(existing or {}), **store_record}
+        if workspace_entry is not None:
+            from kiro_crew.member_workspace import publish_member_workspace
+
+            publish_member_workspace(data, new_workspace, workspace_entry)
         if create:
             crew_teams.release_for_create(member)
         agents[member] = {**(current or {}), **agent_record}

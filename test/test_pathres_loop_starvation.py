@@ -142,9 +142,35 @@ class TestIsSensitiveResolvedPath:
         assert security.is_sensitive_resolved_path(real) is True
         assert security.is_sensitive_resolved_path(os.path.realpath(os.sep)) is False
 
-    def test_the_inline_anchors_are_the_bounded_anchors(self, monkeypatch) -> None:
+    def test_the_inline_anchors_are_the_bounded_anchors(self, tmp_path, monkeypatch) -> None:
         # Same targets from both routes, and the same cache key, so the
         # decision cannot drift between the loop's gate and the walker's.
+        #
+        # The two builds resolve the same anchors at two different moments, so
+        # the comparison is only about the ROUTE if the filesystem under those
+        # anchors cannot change in between. It can: the per-test crew
+        # home is a path the floor pins but never creates, and any thread that
+        # reaches ``config_dir()`` while this test runs creates it, because the
+        # env var is process-global. On Windows that flips ``realpath``'s first
+        # and second lookup of an anchor from "path not found" to "file not
+        # found", and ntpath then keeps the ``\\?\`` prefix on that one answer
+        # -- an extra target in whichever build straddled the mkdir. So this
+        # test owns its home and creates the directory above every anchor the
+        # build resolves BEFORE either build. A concurrent writer can then only
+        # add a missing LEAF, which ntpath resolves the same either way.
+        home = tmp_path / "crew"
+        home.mkdir()
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        resolved: dict[str, str | None] = {}
+        security.paths._anchor_targets(
+            security.paths._SENSITIVE_HOME_DIRS, security.paths._resolved_root_key(), resolved
+        )
+        # The build anchors on the RESOLVED home (``/var`` -> ``/private/var`` on macOS).
+        real_home = Path(os.path.realpath(home))
+        for anchor in resolved:
+            parent = Path(anchor).parent
+            if parent.is_relative_to(real_home):
+                parent.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(security.paths, "_home_targets_cache", {})
         bounded = security.paths._home_dir_targets(security.paths._SENSITIVE_HOME_DIRS)
         monkeypatch.setattr(security.paths, "_home_targets_cache", {})
@@ -189,7 +215,7 @@ class TestIsSensitiveResolvedPath:
 _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``_iter_skill_files``: one check per directory (prune) and per SKILL.md
     # (skip), each against the ``realpath`` the walk computed for loop detection.
-    "kiro_crew/skills.py": 2,
+    "kiro_crew/skills_discovery.py": 2,
     # ``_complete_path_listing`` / ``_scan_completion_dir``: the project root, the
     # directory a `./` completion token named, and every entry that directory
     # offers. Both halves of the contract hold. The argument is canonical without a
@@ -230,7 +256,12 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # (``_read_agent_spec`` / ``read_agent_spec_strict``, each handing it the
     # ``Path.resolve(strict=True)`` result; the native skill projection reads
     # every spec under ``asyncio.to_thread``, and a stalled pool there dropped
-    # agents silently and surfaced as ``no prepared skill discovery view``).
+    # agents silently and surfaced as ``no prepared skill discovery view``), and
+    # the dashboard's file-search and listing walks (``FileIndex._walk``, the
+    # ``/api/file-search`` fallback walk, ``_browse_dirs_sync`` and
+    # ``_browse_files_sync``), each handing it the ``os.path.realpath`` computed
+    # on the same line from a worker thread; one rebuild of a large index
+    # otherwise queued a pool hop per entry ahead of the loop's own checks.
     # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
     # the canonical spelling and the thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project

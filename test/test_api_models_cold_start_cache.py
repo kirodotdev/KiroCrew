@@ -51,11 +51,13 @@ def _reset_catalog_cache():
     agents._catalog_cache.models = None
     agents._catalog_cache.fetched_at = 0.0
     agents._catalog_cache.task = None
+    agents._catalog_cache.failure = None
     yield
     _drain_catalog_task()
     agents._catalog_cache.models = None
     agents._catalog_cache.fetched_at = 0.0
     agents._catalog_cache.task = None
+    agents._catalog_cache.failure = None
 
 
 async def _no_audit(**kwargs: Any) -> None:

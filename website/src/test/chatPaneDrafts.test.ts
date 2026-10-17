@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { readPaneDraft, writePaneDraft, takePaneDraft, mergePaneDraft, subscribePaneDraft, PANE_DRAFTS_KEY, LEGACY_PANE_FILE_DRAFTS_KEY, PANE_DRAFTS_MAX_BYTES, __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
-import { carryPastes, mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
+import { readPaneDraft, writePaneDraft, takePaneDraft, mergePaneDraft, subscribePaneDraft, suggestPaneDraft, takePaneDraftSwap, PANE_DRAFTS_KEY, LEGACY_PANE_FILE_DRAFTS_KEY, PANE_DRAFTS_MAX_BYTES, __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import { carryPastes, formatToken, mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
 
 /* The pane's parked drafts must survive the storage layer refusing a write:
  * a quota that ChatPage's own 2 MiB stores may already have filled, or a
@@ -213,13 +213,13 @@ describe('chatPaneDrafts', () => {
 
   it('a late merge re-numbers a carried block that collides with a parked one', () => {
     const parked = block(1, 'parked\ncontent\nhere')
-    writePaneDraft('a', { text: '[ Paste #1 · 3 lines ]', files: [], pastes: [parked] })
+    writePaneDraft('a', { text: formatToken(parked), files: [], pastes: [parked] })
     const carried = block(1, 'late\ncontent\ntoo')
-    mergePaneDraft('a', '[ Paste #1 · 3 lines ]', [], [carried])
+    mergePaneDraft('a', formatToken(carried), [], [carried])
     const merged = readPaneDraft('a')
     // Both tokens survive, and the carried one now points at seq 2.
-    expect(merged.text).toContain('[ Paste #1 · 3 lines ]')
-    expect(merged.text).toContain('[ Paste #2 · 3 lines ]')
+    expect(merged.text).toContain(formatToken(parked))
+    expect(merged.text).toContain(formatToken({ ...carried, seq: 2 }))
     expect(merged.pastes).toEqual([parked, { ...carried, seq: 2 }])
   })
 })
@@ -257,8 +257,51 @@ describe('carryPastes', () => {
     const kept = [block(1, 'k\nk\nk')]
     const free = block(3, 'f\nf\nf')
     const taken = block(1, 't\nt\nt')
-    const { text, pastes } = carryPastes('[ Paste #3 · 3 lines ] [ Paste #1 · 3 lines ]', [free, taken, kept[0]], kept)
+    const { text, pastes } = carryPastes(`${formatToken(free)} ${formatToken(taken)}`, [free, taken, kept[0]], kept)
     expect(pastes).toEqual([kept[0], free, { ...taken, seq: 2 }])
-    expect(text).toBe('[ Paste #3 · 3 lines ] [ Paste #2 · 3 lines ]')
+    expect(text).toBe(`${formatToken(free)} ${formatToken({ ...taken, seq: 2 })}`)
+  })
+})
+
+/* A suggested prompt on a crewmate's empty Dashboard fills the chat box.
+ * Clicking a second one must REPLACE the first while the box still holds it
+ * untouched, not stack both into one message (UX review on #19866). */
+describe('suggestPaneDraft', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    __resetPaneDraftsForTests()
+  })
+
+  it('a second prompt replaces the first in a parked composer', () => {
+    suggestPaneDraft('m', 'first prompt')
+    suggestPaneDraft('m', 'second prompt')
+    expect(readPaneDraft('m').text).toBe('second prompt')
+  })
+
+  it('appends instead when the user edited the first prompt', () => {
+    suggestPaneDraft('m', 'first prompt')
+    writePaneDraft('m', { text: 'first prompt, but mine', files: [], pastes: [] })
+    suggestPaneDraft('m', 'second prompt')
+    expect(readPaneDraft('m').text).toContain('first prompt, but mine')
+    expect(readPaneDraft('m').text).toContain('second prompt')
+  })
+
+  it('leaves text the user typed before any prompt in place', () => {
+    writePaneDraft('m', { text: 'my own words', files: [], pastes: [] })
+    suggestPaneDraft('m', 'a prompt')
+    expect(readPaneDraft('m').text).toContain('my own words')
+    expect(readPaneDraft('m').text).toContain('a prompt')
+  })
+
+  it('hands a live composer the text to swap out, once', () => {
+    const arrivals: Array<{ text: string; swap: string | undefined }> = []
+    subscribePaneDraft('m', () => arrivals.push({ text: takePaneDraft('m').text, swap: takePaneDraftSwap('m') }))
+    suggestPaneDraft('m', 'first prompt')
+    suggestPaneDraft('m', 'second prompt')
+    expect(arrivals).toEqual([
+      { text: 'first prompt', swap: undefined },
+      { text: 'second prompt', swap: 'first prompt' },
+    ])
+    expect(takePaneDraftSwap('m')).toBeUndefined()
   })
 })

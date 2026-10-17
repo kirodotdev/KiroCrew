@@ -401,7 +401,12 @@ async def test_fork_suffixes_past_reserved_windows_basename(tmp_path):
     assert set(after) == set(before) | {"con-2.json"}
     assert {name: after[name] for name in before} == before
     expected = {**json.loads(before["mytemplate.json"]), "name": "con-2"}
-    assert json.loads(after["con-2.json"]) == expected
+    # The fork refresh that follows the copy runs the governed-write tail: it pins
+    # the global mcp.json merge off and seeds a KAS block when the installed
+    # kiro-cli accepts one, so those two keys are what differ from the copy.
+    written = json.loads(after["con-2.json"])
+    written.pop("permissions", None)
+    assert written == {**expected, "includeMcpJson": False}
     writer.assert_called_once_with(agents_dir / "con-2.json", expected)
 
 

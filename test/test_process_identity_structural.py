@@ -20,7 +20,7 @@ This module reads the reaper modules' source with :mod:`ast` and fails on:
   / ``kill_pid`` / ``kill_pid_async`` -- anywhere except the allowlisted verified
   helpers in ``process_identity.py`` (:data:`ALLOWED_PID_CALLS`);
 * a comparison that uses ``.pid`` as identity -- ``a.pid == b.pid``, ``x.pid in
-  ...`` -- anywhere in the four modules;
+  ...`` -- anywhere in the reaper modules;
 * an annotated ``set[int]`` / ``dict[int, ...]`` whose name says ``pid`` and is not
   one of the named orphan-sweep shields (:data:`ALLOWED_PID_COLLECTIONS`), which
   compare against live pids the sweep itself enumerates and are not kill addresses.
@@ -32,20 +32,40 @@ WITH its justification, in the same change.
 from __future__ import annotations
 
 import ast
+import pkgutil
 from pathlib import Path
 
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
-#: The modules that hold the reaper's kill path: the cron reaper and ``cancel()``,
+#: The modules that hold the reaper's kill path: the cron reaper and ``cancel()`` (the
+#: facade and every ``cron_service/service`` owner it binds members from),
 #: the identity/kill module, and the session facade and allocation boundary the
 #: reaper drives (the torn-down table, the ending fence, the handle snapshot).
 REAPER_MODULES = (
     "cron.py",
+    *(
+        f"cron_service/service/{info.name}.py"
+        for info in pkgutil.iter_modules([str(SRC / "cron_service" / "service")])
+    ),
     "process_identity.py",
     "session.py",
+    "session_parts/claims.py",
+    "session_parts/config_apply.py",
+    "session_parts/links.py",
+    "session_parts/policy.py",
+    "session_parts/provider_probes.py",
+    "session_parts/record.py",
+    "session_parts/runtimes.py",
+    "session_parts/state_views.py",
+    "session_parts/sweeps.py",
+    "session_parts/teardown.py",
+    "session_parts/turn_context.py",
     "session_allocation.py",
+    "session_allocation_parts/companions.py",
+    "session_allocation_parts/errors.py",
+    "session_allocation_parts/get_or_create.py",
 )
 
 #: Attribute names that address a process by its bare pid when called.
@@ -86,7 +106,7 @@ ALLOWED_PID_CALLS: dict[str, dict[str, frozenset[str]]] = {
 #: is "do not kill this number right now", never a kill address). Converting them
 #: to handles is the sweep's change, not the reaper's.
 ALLOWED_PID_COLLECTIONS: dict[str, frozenset[str]] = {
-    "session.py": frozenset(
+    "session_parts/runtimes.py": frozenset(
         {
             "_starting_pids",
             "_pool_sweep_pids",

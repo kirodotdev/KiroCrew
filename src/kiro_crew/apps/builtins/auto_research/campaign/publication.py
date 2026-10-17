@@ -318,7 +318,12 @@ def _read_report_slug(cid: str) -> sqlite3.Row | None:
 
 def _live_report_slug(slug: str, cid: str) -> str | None:
     """``slug`` while its artifact still exists, so the UI never offers a dead
-    link; a missing artifact or a broken store reads as no report."""
+    link; a missing artifact or a broken store reads as no report.
+
+    Blocking; call off-loop. The probe opens the store, and ``get`` persists a
+    backfilled event history for an artifact saved before event logs existed,
+    which syncs that write to the device.
+    """
     try:
         ArtifactStore().get(slug)
     except ArtifactNotFoundError:
@@ -386,20 +391,18 @@ def _persist_report_slug(cid: str, slug: str) -> None:
         db.close()
 
 
-async def _publish_report_artifact(
-    cid: str, question: str, html: str, existing_slug: str | None
-) -> tuple[Any, str, bool]:
-    """Reuse-or-create the report artifact: ``(artifact, name, regenerated)``.
+def _reuse_or_create_report_artifact(
+    cid: str, name: str, html: str, existing_slug: str | None
+) -> tuple[Any, bool]:
+    """Blocking helper: the whole store phase of an export, ``(artifact, regenerated)``.
 
-    Repeated exports update ONE artifact (new version) instead of spawning a
-    fresh duplicate on every click. A stored slug is reused only if the
-    artifact still exists -- if the user deleted it, a fresh one is created and
-    its slug re-bound, so the next export regenerates this same artifact and
-    the UI can show "View report" upfront.
+    Every call here touches the filesystem, and each write syncs its bytes to the
+    device before it publishes them, so this belongs in a thread rather than on
+    the caller's event loop -- the report HTML is as large as the campaign made
+    it. Opening the store is part of the phase because that reads and creates
+    directories too.
     """
     store = ArtifactStore()
-    safe_q = untrusted._redact_finding({"v": question})["v"]
-    name = f"Research: {safe_q[:50]}"
     art = None
     regenerated = False
     if existing_slug:
@@ -425,6 +428,27 @@ async def _publish_report_artifact(
             description=f"Research findings for campaign {cid}",
             tags=["research"],
         )
+    return art, regenerated
+
+
+async def _publish_report_artifact(
+    cid: str, question: str, html: str, existing_slug: str | None
+) -> tuple[Any, str, bool]:
+    """Reuse-or-create the report artifact: ``(artifact, name, regenerated)``.
+
+    Repeated exports update ONE artifact (new version) instead of spawning a
+    fresh duplicate on every click. A stored slug is reused only if the
+    artifact still exists -- if the user deleted it, a fresh one is created and
+    its slug re-bound, so the next export regenerates this same artifact and
+    the UI can show "View report" upfront.
+
+    The store work runs in a thread, next to the slug persist that already did.
+    """
+    safe_q = untrusted._redact_finding({"v": question})["v"]
+    name = f"Research: {safe_q[:50]}"
+    art, regenerated = await asyncio.to_thread(
+        _reuse_or_create_report_artifact, cid, name, html, existing_slug
+    )
     if art.slug != existing_slug:
         await asyncio.to_thread(_persist_report_slug, cid, art.slug)
     return art, name, regenerated

@@ -25,7 +25,13 @@ const APPROVAL_LABEL = 'pages.settings.notificationsPanel.category_approval'
 const APPROVAL_DESCRIPTION = 'pages.settings.notificationsPanel.category_approval_description'
 
 /** English wording the fix retired; no shipped catalog may still carry it. */
-const RETIRED_ENGLISH = ['Agent replies', 'When the agent finishes a turn in any chat', 'Tool approval requests']
+const RETIRED_ENGLISH = [
+  'Agent replies',
+  'When the agent finishes a turn in any chat',
+  'Tool approval requests',
+  // Read as if a question card played the handoff sound.
+  'When a conversation finishes or pauses for your input',
+]
 
 function leaf(catalog: Record<string, unknown>, dotted: string): string {
   const value = dotted.split('.').reduce<unknown>(
@@ -54,6 +60,10 @@ describe('conversation attention copy', () => {
     // The two sound rows must not share a label or a description.
     expect(turn).not.toBe(approval)
     expect(turnDescription).not.toBe(approvalDescription)
+    // The handoff tip names the row an explicit question plays, by that row's
+    // own label, so a reader can find it on the page. The pseudolocale wraps
+    // and pads each value, so its label is not a substring of the tip.
+    if (code !== 'en-XA') expect(turnDescription).toContain(approval)
     // The retired wording promised audio on every turn / approvals only.
     if (code !== 'en') {
       for (const retired of RETIRED_ENGLISH) {
@@ -65,7 +75,9 @@ describe('conversation attention copy', () => {
   it('English states the specified semantics', () => {
     const en = CATALOGS.en.translation
     expect(leaf(en, TURN_LABEL)).toBe('Conversation handoffs')
-    expect(leaf(en, TURN_DESCRIPTION)).toBe('When a conversation finishes or pauses for your input')
+    expect(leaf(en, TURN_DESCRIPTION)).toBe(
+      'When a conversation finishes and hands control back to you. Agent questions use the “Approvals and questions” sound instead.',
+    )
     expect(leaf(en, APPROVAL_LABEL)).toBe('Approvals and questions')
     expect(leaf(en, APPROVAL_DESCRIPTION)).toBe('When the agent needs a tool approval or an answer')
     expect(leaf(en, TOAST_INPUT)).toBe('Waiting for your input')

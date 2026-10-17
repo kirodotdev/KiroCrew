@@ -19,6 +19,14 @@ import pytest
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
 import kiro_crew.teams.client as teams_client
+from kiro_crew.secrets import SecretVault
+
+
+def _vault_value(env: Path, key: str) -> str | None:
+    """The vault secret a channel save stored beside *env* under *key*."""
+    stored = SecretVault(env.parent).get(key)
+    return stored.reveal() if stored is not None else None
+
 
 _CRED_KEYS = ("MICROSOFT_APP_ID", "MICROSOFT_APP_PASSWORD", "MICROSOFT_APP_TENANT_ID")
 
@@ -122,6 +130,9 @@ class TestGet:
             "app_id_set",
             "app_password_set",
             "jwt_available",
+            "sdk_installed",
+            "sdk_install_supported",
+            "sdk_install_command",
             "enabled",
             "tenant_id",
             "allowed_emails",
@@ -143,6 +154,51 @@ class TestGet:
         assert _get(monkeypatch, tmp_path, {})["jwt_available"] is False
         monkeypatch.setattr(teams_client, "HAS_JWT", True)
         assert _get(monkeypatch, tmp_path, {})["jwt_available"] is True
+
+    @staticmethod
+    def _sdk(monkeypatch, *, present: bool, channel: bool = True) -> None:
+        """Make PyJWT (import name ``jwt``) look present or absent, and the pip
+        install channel available or not. Only ``jwt`` is faked so every other
+        lookup still resolves."""
+        real = mod.importlib.util.find_spec
+        monkeypatch.setattr(
+            mod.importlib.util,
+            "find_spec",
+            lambda name, *a: (object() if present else None) if name == "jwt" else real(name, *a),
+        )
+        monkeypatch.setattr(mod, "_pip_install_channel_available", lambda: channel)
+
+    def test_sdk_installed_needs_no_command(self, monkeypatch, tmp_path: Path) -> None:
+        self._sdk(monkeypatch, present=True)
+        payload = _get(monkeypatch, tmp_path, {})
+        assert payload["sdk_installed"] is True
+        assert payload["sdk_install_command"] == ""
+
+    def test_missing_sdk_names_this_interpreter(self, monkeypatch, tmp_path: Path) -> None:
+        """The command must name the gateway's own python, never a bare ``pip``:
+        installing PyJWT into another environment leaves the channel refusing
+        to start with nothing saying why."""
+        import sys
+
+        self._sdk(monkeypatch, present=False)
+        payload = _get(monkeypatch, tmp_path, {})
+        assert payload["sdk_installed"] is False
+        assert payload["sdk_install_supported"] is True
+        cmd = payload["sdk_install_command"]
+        assert sys.executable in cmd
+        assert "-m pip install" in cmd
+        assert "PyJWT" in cmd
+        assert not cmd.startswith("pip ")
+        assert "kirocrew[" not in cmd
+
+    def test_missing_sdk_without_an_install_channel_withholds_the_command(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        self._sdk(monkeypatch, present=False, channel=False)
+        payload = _get(monkeypatch, tmp_path, {})
+        assert payload["sdk_installed"] is False
+        assert payload["sdk_install_supported"] is False
+        assert payload["sdk_install_command"] == ""
 
     def test_thresholds_default_when_unset(self, monkeypatch, tmp_path: Path) -> None:
         payload = _get(monkeypatch, tmp_path, {})
@@ -329,7 +385,10 @@ class TestSaveCredentialVerification:
         )
 
         assert resp.status == 200
-        assert "MICROSOFT_APP_PASSWORD=good" in env.read_text(encoding="utf-8")
+        assert "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in env.read_text(
+            encoding="utf-8"
+        )
+        assert _vault_value(env, "MICROSOFT_APP_PASSWORD") == "good"
 
     def test_unreachable_azure_saves_with_a_warning(self, monkeypatch, tmp_path: Path) -> None:
         resp, env, _cfg = _save(
@@ -340,7 +399,10 @@ class TestSaveCredentialVerification:
         )
         assert resp.status == 200
         assert json.loads(resp.body)["verify_warning"]
-        assert "MICROSOFT_APP_PASSWORD=maybe-good" in env.read_text(encoding="utf-8")
+        assert "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in env.read_text(
+            encoding="utf-8"
+        )
+        assert _vault_value(env, "MICROSOFT_APP_PASSWORD") == "maybe-good"
 
     def test_accepted_credentials_save_clean(self, monkeypatch, tmp_path: Path) -> None:
         calls: list[tuple[str, str, str]] = []
@@ -353,7 +415,10 @@ class TestSaveCredentialVerification:
         assert resp.status == 200
         assert json.loads(resp.body)["verify_warning"] == ""
         assert calls == [("app-1", "good", "tenant-9")]
-        assert "MICROSOFT_APP_PASSWORD=good" in env.read_text(encoding="utf-8")
+        assert "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in env.read_text(
+            encoding="utf-8"
+        )
+        assert _vault_value(env, "MICROSOFT_APP_PASSWORD") == "good"
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["teams"]["app_id"] == "app-1"
         # The secret is env-only: config.json must never hold it.

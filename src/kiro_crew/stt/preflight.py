@@ -389,7 +389,7 @@ def _run_probe_child(timeout: float, extension: str) -> tuple[int | None, str, s
 
     ``-I`` (isolated: no ``''`` on ``sys.path``, no ``PYTHON*`` env, no user site)
     so nothing in whatever directory the gateway was started from can shadow the
-    extension -- the same "nothing to shadow" reasoning as ``sandbox.py``'s probe
+    extension -- the same "nothing to shadow" reasoning as ``sandbox_probe.py``'s probe
     shim. ``-S`` on top of it, because ``-I`` still imports ``site`` at startup and
     ``site`` executes every ``import`` line of every ``.pth`` file in the
     interpreter's site-packages -- a directory written by whoever installs into

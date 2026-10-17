@@ -66,7 +66,7 @@ interface SecurityFeature {
  * Shaped as flat `Record`s of full literal keys, indexed inline at the `i18nT()` call,
  * because that is the form `scripts/check-i18n-keys.mjs` can resolve statically — a key
  * it cannot resolve is a key it cannot verify exists. Same shape as `FILTER_LABEL_KEY`
- * in `pages/ChatSidebar.tsx` and `EFFORT_LABEL_KEY` in `lib/effort.ts`.
+ * in `pages/chat-sidebar/SearchDock.tsx` and `EFFORT_LABEL_KEY` in `lib/effort.ts`.
  */
 export const FEATURE_LABEL_KEY: Record<SecurityFeatureKey, string> = {
   os_sandbox: 'pages.settings.securityPanel.feature_os_sandbox',
@@ -2487,6 +2487,7 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm?.kind === 'disable-all'
           ? i18nT('pages.settings.securityPanel.disable_all_built_in_denies_2')
           : i18nT('pages.settings.securityPanel.disable_this_denied_command')}
@@ -2773,6 +2774,7 @@ function ThirdPartyAppsCard() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm?.kind === 'trust-all'
           ? i18nT('pages.settings.securityPanel.trustedApps.allow_all_label')
           : confirm
@@ -3081,6 +3083,7 @@ function TrustedRegistriesCard() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
+        guideTrustRoot
         title={confirm
           ? i18nT('pages.settings.securityPanel.trustedRegistries.grant_confirm_title', { name: confirm.name })
           : ''}

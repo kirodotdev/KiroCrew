@@ -702,7 +702,7 @@ def test_model_agnostic_and_top_level_only():
 #    so this asserts that same queue-entry shape classifies as runner-authored,
 #    i.e. the mirror is suppressed, while an ordinary user entry is not.
 def test_promise_only_continuation_not_mirrored_as_user_text():
-    # queue_insert stores this dict shape (state.py Slot.queue_insert).
+    # queue_insert stores this dict shape (state_parts/slot_turns.py Slot.queue_insert).
     promise_only_item = {
         "id": "abc123",
         "content": "Carry out the action you announced now by making the tool call.",

@@ -13,7 +13,10 @@ are checked by different machines, which is why they drift.
 > is `agent-spec.md` beside this file: the charter (what it is for and what it may never
 > do) plus the narrowed toolset that makes the charter true against a tool list rather
 > than only against prose. A human or another agent following this file gets the same
-> procedure; the crewmate just starts with it already loaded.
+> procedure. The gateway installs the spec as the owned agent `kirocrew-dashboard-author` at
+> every start (`OWNED_KIRO_AGENT_FILES`, `_install_dashboard_author_agent`), so a
+> crewmate dispatched on it starts with this procedure as its prompt; a human or
+> another agent loads this skill directly.
 
 The page is inert html. The host sanitizes it, renders it, and binds text into it by
 `data-dashboard-field`. No type checker is anywhere near that binding, because one half
@@ -41,7 +44,7 @@ supplies three sentences and nothing else.
 | 4 | `test_dashboard_template_<slug>.py` | the parity gate, both directions, plus the planted failures |
 | 5 | one line in `registry.py` | `slug -> (contract, provider, source fold, version)` |
 
-Files 1-4 live beside the package's other templates; file 4 goes in the repository's
+Files 1-3 live beside the package's other templates; file 4 goes in the repository's
 test directory. The scaffold writes all four and prints line 5 for you to paste.
 
 ## Do it in this order
@@ -49,15 +52,17 @@ test directory. The scaffold writes all four and prints line 5 for you to paste.
 1. **Name the question the page answers, in one sentence a person would ask.** "How much
    of this goal is settled, and what is waiting on me." Not "a board of metrics". If you
    cannot write the sentence, you do not yet know which fold to read.
-2. **Pick the fold.** Take one from the ten below. A new fold is the exception and needs
+2. **Pick the fold.** Take one of the advertised folds in `FOLDS.md` (not the
+   *(internal)* `class` fold, which `--fold` still accepts). A new fold is the exception and needs
    its own justification section in the pull request body, because a fold is a durable
    projection of the append-only log and every reader pays for it.
 3. **Write the field list.** One token per value: `name:str|unsaid` for text, or
-   `name:fraction:<total>` for a count, naming the fold key that holds its total. Both halves are checked against the fold, and the numerator is read under the field's own name -- add a fourth token, `shown:fraction:calls:open`, when the card field is deliberately named something else. There is no plain `str` kind: every declared field is
+   `name:fraction:<total>` for a count, naming the fold key that holds its total. Both halves are checked against the fold, and the numerator is read under the field's own name -- add a fourth token, `shown:fraction:calls:open`, when the card field is deliberately named something else. A text field takes the same escape as one optional third token, `shown:str|unsaid:<fold_key>`. There is no plain `str` kind: every declared field is
    read out of the fold, and a fold value can always be absent, so a text field is
    `str | Unsaid` or it is a contract the provider cannot satisfy. (`contract_version`
    and `captured_at` are plain `str` because the provider writes them; the scaffold adds
-   them itself.) Keep it under 24 fields; the host refuses an over-cap card WHOLE, so a
+   them itself.) Keep the whole card at 24 fields or fewer, the five the scaffold adds
+   (`contract_version`, `captured_at`, `lede`, `you`, `notes`) included, so at most 19 of yours; the host refuses an over-cap card WHOLE, so a
    page one field too large stops appearing rather than degrading.
 4. **Run the scaffold.** It emits the four files from that one list, so the four cannot
    disagree about what the fields are.
@@ -147,6 +152,50 @@ one subtly wrong reads a child as a sibling and says so in a precise sentence. S
 for markup it can follow instead. Your remedy is always one end tag, on the line the message
 names.
 
+## Motion
+
+Motion is decoration. With it off, the page must read the same. The reference is the
+`goal-board` built-in (`src/kiro_crew/dashboard_templates/builtin/goal-board/template.html`).
+
+Three kinds of effect are allowed:
+
+| Effect | When | Goal-board |
+|---|---|---|
+| pop-in | an element's FIRST draw only | `.item.pop` -> `gb-pop`, `.states.grow i` -> `gb-grow` |
+| subtle live loop | while an item is live or needs the reader | `.item.live::after` -> `gb-shimmer`, its `.dot` -> `gb-blink`; `.band` -> `gb-glow` (3 pulses) |
+| state-change flash | once, when a value changes | one short non-repeating `animation` |
+
+Only a live or needs-you element may loop, and gently: a soft shimmer or glow, never a
+spinner or a pulsing count. A needs-you glow pulses a few times and stops.
+Every loop stops under `prefers-reduced-motion`. A host
+refill redraws the page, so remember what was drawn and do not replay the pop-in
+(goal-board keeps a `seen` map by item id).
+
+The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
+
+- `sandbox="allow-scripts"` only: no `allow-popups`, no `allow-same-origin`.
+- CSP: inline `<style>` and `<script>` run; no CDN script, `connect-src 'none'`,
+  `img-src data: blob:`.
+- No link can leave the frame. A page asks the host instead:
+  `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
+  (`useFrameOpenLink`) opens it only from its own frame, only right after a click or
+  key press in that frame, and only for a URL matching `PR_URL_RE`, a
+  `https://github.com/<owner>/<repo>/pull/<n>` page. Anything else drops, so post it
+  from a click handler, never on a timer.
+
+Script and buttons are for the built-in directory templates. A scaffolded page above
+stays inert, so its motion is CSS only and it links nowhere.
+
+**MUST: every page that animates ships this block, reaching both pseudo-elements.**
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .board *, .board *::before, .board *::after { animation: none !important; transition: none !important; }
+}
+```
+
+Use your page's own root class in place of `.board`.
+
 ## Who may write what
 
 Split on purpose, because the two ends admit of different enforcement.
@@ -195,7 +244,7 @@ catalogue does not list is refused before any file is written.
 Only when no existing fold can answer the sentence, and then say so in the pull request
 under its own heading:
 
-- the question, and which of the ten you tried and why each fails;
+- the question, and which advertised folds you tried and why each fails;
 - the entry type the fold reads, and why the log already carries it;
 - what it stores, and why that is bounded;
 - its `affects` set, which may be wider than the truth and must never be narrower — a

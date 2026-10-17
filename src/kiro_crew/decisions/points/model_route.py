@@ -35,6 +35,11 @@ injections and autonudge wakes are excluded at the call site, because none of th
 has an owner watching the price of the answer and each already resolves its model
 through its own tier (``agent.role_models``, a crew binding, a cron's own slot).
 
+With ``decisions.model_route_derive`` on, the START of an unpinned sub-agent is
+asked about too (:func:`routed_spawn_model`), once, before its process exists --
+a start with a model of its own is never asked -- and empty tiers are filled
+from the advertised list (:func:`derive_tier_models`).
+
 Runs on the event loop
 ----------------------
 Unlike ``skills.select``, this point's caller is already a coroutine, so the
@@ -139,6 +144,23 @@ MIN_DOWNGRADE_P = 0.80
 #: and recorded, and applies nothing.
 DEFAULT_TIER_MODELS: dict[str, str] = {tier: "" for tier in TIERS}
 
+#: The credit multiplier the picker's cost badges are relative to -- Auto's own
+#: rate. A derived tier is priced against the session's own model, and against
+#: this when that model has no known price (the backend's default, a cold list).
+BASELINE_MULTIPLIER = 1.0
+
+#: The backend's own-default sentinel. Never a derived target: it names no model,
+#: so routing a tier to it would hand the choice to the service-side router.
+AUTO_MODEL = "auto"
+
+#: ``source`` on a route record whose model was derived rather than pinned. Absent
+#: on every other record, so a record with derivation off is shaped as it always is.
+SOURCE_DERIVED = "derived"
+
+#: ``derive`` on a route record when derivation was on and no advertised model had
+#: a price, so nothing could be derived. Absent on every other record.
+DERIVE_UNPRICED = "unpriced"
+
 #: What the log row and the strip carry for ``model_chosen`` when the answered tier
 #: is unpinned. A NAMED value rather than an absent field: "Jev said complex and
 #: nothing was applied" is a real outcome an owner acts on by pinning that tier, and
@@ -190,19 +212,288 @@ def tier_models(config: Any | None = None) -> dict[str, str]:
     return {tier: str(configured.get(tier) or "").strip() for tier in TIERS}
 
 
+def derive_enabled(config: Any | None = None) -> bool:
+    """Whether ``decisions.model_route_derive`` is on. Never raises; off on failure."""
+    try:
+        from kiro_crew.decisions.gate import model_route_derive
+
+        return model_route_derive(config)
+    except Exception:
+        logger.debug("model.route: derive switch unreadable; off", exc_info=True)
+        return False
+
+
+def _price(rate_of: Callable[[str], float | None], model_id: str) -> float | None:
+    """*model_id*'s multiplier through *rate_of*, or ``None`` when it has no price."""
+    try:
+        rate = rate_of(model_id)
+    except Exception:
+        return None
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or rate <= 0:
+        return None
+    return float(rate)
+
+
+def _sole_extreme(candidates: Sequence[tuple[str, float]], *, cheapest: bool) -> str:
+    """The one candidate at the extreme price, or ``""`` when no single one is.
+
+    A price tie goes to the larger KNOWN context window, so a 1M sibling of the
+    same model wins over its 200K spelling and the window guard has nothing to
+    refuse. A tie that survives that -- same price, same or unknown window --
+    inherits rather than picking by list order, which is not a fact about either
+    model.
+    """
+    if not candidates:
+        return ""
+    prices = [rate for _, rate in candidates]
+    best = min(prices) if cheapest else max(prices)
+    names = [name for name, rate in candidates if rate == best]
+    if len(names) == 1:
+        return names[0]
+    windows = {name: known_window(name) or 0 for name in names}
+    widest = max(windows.values())
+    winners = [name for name in names if windows[name] == widest]
+    return winners[0] if widest > 0 and len(winners) == 1 else ""
+
+
+def derive_tier_models(
+    advertised: Sequence[str],
+    baseline_model: str = "",
+    rate_of: Callable[[str], float | None] | None = None,
+) -> dict[str, str]:
+    """Tier targets read off the live advertised list and its credit multipliers.
+
+    ``simple`` is the cheapest advertised model priced BELOW the baseline,
+    ``medium`` is the baseline itself (``""``: the session keeps its own model),
+    and ``complex`` is the dearest advertised model priced ABOVE it. So a derived
+    ``simple`` never costs more than the session's own model and a derived
+    ``complex`` never costs less. The baseline's price is *baseline_model*'s, or
+    :data:`BASELINE_MULTIPLIER` when that model has none.
+
+    Every id comes from *advertised*, the account's own live list, so nothing here
+    names a model. An empty list, a list with no prices, and an unbroken tie each
+    leave the tier ``""``, which inherits. *rate_of* is the price lookup for the
+    session's OWN backend (:func:`rate_lookup`); ``None`` -- no catalog priced that
+    backend -- derives nothing.
+    """
+    derived = dict(DEFAULT_TIER_MODELS)
+    if rate_of is None:
+        return derived
+    lookup = rate_of
+    priced: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for raw in advertised:
+        name = str(raw or "").strip()
+        if not name or name.lower() == AUTO_MODEL or name in seen:
+            continue
+        seen.add(name)
+        rate = _price(lookup, name)
+        if rate is not None:
+            priced.append((name, rate))
+    if not priced:
+        return derived
+    baseline = str(baseline_model or "").strip()
+    reference = _price(lookup, baseline) if baseline and baseline.lower() != AUTO_MODEL else None
+    if reference is None:
+        reference = BASELINE_MULTIPLIER
+    derived[TIER_SIMPLE] = _sole_extreme(
+        [entry for entry in priced if entry[1] < reference], cheapest=True
+    )
+    derived[TIER_COMPLEX] = _sole_extreme(
+        [entry for entry in priced if entry[1] > reference], cheapest=False
+    )
+    return derived
+
+
+def effective_tier_models(
+    mapping: Mapping[str, str],
+    *,
+    advertised: Sequence[str],
+    baseline_model: str = "",
+    derive: bool = False,
+    rate_of: Callable[[str], float | None] | None = None,
+) -> tuple[dict[str, str], frozenset[str]]:
+    """The tier map a route applies, and which of its tiers were derived.
+
+    With *derive* off this is *mapping* unchanged and no tier is derived. With it
+    on, each tier the owner left EMPTY takes :func:`derive_tier_models`' target; a
+    tier the owner pinned keeps the pin whatever the derivation says.
+    """
+    effective = {tier: str(mapping.get(tier, "") or "").strip() for tier in TIERS}
+    if not derive:
+        return effective, frozenset()
+    targets = derive_tier_models(advertised, baseline_model, rate_of)
+    derived: set[str] = set()
+    for tier in TIERS:
+        if not effective[tier] and targets.get(tier):
+            effective[tier] = targets[tier]
+            derived.add(tier)
+    return effective, frozenset(derived)
+
+
+def rate_lookup(provider: Any) -> Callable[[str], float | None] | None:
+    """The credit-multiplier lookup for *provider*'s own backend, or ``None``.
+
+    Prices come from one backend's catalog and are kept under that backend's
+    registry namespace, so they are read back only for a session whose backend
+    resolves to the same namespace: a harness with a vocabulary of its own gets
+    ``None`` -- no prices, nothing derived -- even when its ids fold onto the
+    catalog's. The backend is read off the provider and then off the session it
+    wraps; a backend outside ``ACP_BACKENDS_KNOWN`` gets ``None``. Never raises.
+    """
+    if provider is None:
+        return None
+    try:
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_KNOWN, model_registry_namespace
+        from kiro_crew.llm_helpers import pick_epoch_host, provider_backend
+
+        backend = provider_backend(provider) or provider_backend(pick_epoch_host(provider))
+        if backend not in ACP_BACKENDS_KNOWN:
+            return None
+        namespace = model_registry_namespace(backend)
+    except Exception:
+        logger.debug("model.route: no price lookup for this session's backend", exc_info=True)
+        return None
+
+    def _lookup(model_id: str) -> float | None:
+        return model_registry.rate_multiplier(model_id, namespace)
+
+    return _lookup
+
+
+def has_prices(advertised: Sequence[str], rate_of: Callable[[str], float | None] | None) -> bool:
+    """Whether any advertised id has a price under *rate_of*."""
+    if rate_of is None:
+        return False
+    return any(_price(rate_of, str(name or "").strip()) is not None for name in advertised)
+
+
+#: Escalation is remembered for at most this many session keys; the oldest is
+#: dropped first. A forgotten key costs one step of escalation, never a turn.
+ESCALATION_MAX_KEYS = 1024
+
+#: The tier each session's last routed unit of work ran at, the tier its next
+#: routed turn may not go below, and the keys whose routed turn has not settled.
+#: In memory only, and written only while ``decisions.model_route_derive`` is on,
+#: so with the switch off nothing here is ever read back.
+_LAST_TIER: dict[str, str] = {}
+_FLOOR: dict[str, str] = {}
+_UNSETTLED: dict[str, str] = {}
+
+
+def step_up(tier: str) -> str:
+    """The tier one above *tier*; ``complex`` stays ``complex``; ``""`` stays ``""``."""
+    if tier not in TIERS:
+        return ""
+    return TIERS[min(TIERS.index(tier) + 1, len(TIERS) - 1)]
+
+
+def _higher(left: str, right: str) -> str:
+    """The higher of two tiers, ``""`` reading as below every tier."""
+    if left not in TIERS:
+        return right if right in TIERS else ""
+    if right not in TIERS:
+        return left
+    return left if TIERS.index(left) >= TIERS.index(right) else right
+
+
+def _remember(store: dict[str, str], key: str, tier: str) -> None:
+    """Store *tier* for *key*, dropping the oldest key past :data:`ESCALATION_MAX_KEYS`."""
+    store.pop(key, None)
+    store[key] = tier
+    while len(store) > ESCALATION_MAX_KEYS:
+        store.pop(next(iter(store)))
+
+
+def escalated_tier(session_key: str | None, tier: str, *, retried: bool = False) -> str:
+    """*tier* raised to this session's escalation floor, or one step for a retry.
+
+    A turn that FAILED leaves a floor one tier above the tier it ran at, so the
+    next routed turn runs at least there. A RETRIED turn runs one tier above the
+    tier the turn it repeats ran at. Neither ever lowers the answer.
+    """
+    if not session_key:
+        return tier
+    floor = _FLOOR.get(session_key, "")
+    if retried:
+        floor = _higher(floor, step_up(_LAST_TIER.get(session_key, "")))
+    return _higher(tier, floor)
+
+
+def note_routed(session_key: str | None, tier: str) -> None:
+    """Record that *session_key*'s current unit of work is routed at *tier*."""
+    if not session_key or tier not in TIERS:
+        return
+    _remember(_LAST_TIER, session_key, tier)
+    _remember(_UNSETTLED, session_key, tier)
+
+
+#: Key on a :func:`routed_model` answer that escalation follows. Never written to
+#: a row: :func:`build_outcome` copies named fields only.
+TRACKED = "_escalation_tracked"
+
+
+def note_applied(session_key: str | None, routed: Mapping[str, Any]) -> None:
+    """Record *routed*'s tier for :func:`settle` once the turn runs on it.
+
+    Called by the turn runner only on the exits where the session demonstrably
+    runs the tier's model -- switched to it, or already on it -- and never where
+    the answer is thrown away (a window refusal, no switch seam, a pick that moved
+    the premise, a switch that did not take): a tier the turn did not run at is
+    not one a failure or a regenerate may step up from. An answer whose switch
+    the runner recorded as not taken (``applied`` false: a backend that refused
+    the model without raising) is not followed either. A no-op for an answer
+    escalation does not follow, which is every answer while
+    ``decisions.model_route_derive`` is off.
+    """
+    if routed.get(TRACKED) and routed.get("applied", True):
+        note_routed(session_key, str(routed.get("tier") or ""))
+
+
+def settle(session_key: str | None, ok: bool | None) -> None:
+    """How *session_key*'s routed turn ended: ``True`` ok, ``False`` failed, ``None`` neither.
+
+    A success clears the floor, so the next request is classified on its own. A
+    failure leaves a floor one tier above the tier the turn ran at. ``None`` -- a
+    Stop press, a recovered stall -- changes nothing. A key with no routed turn in
+    flight is a no-op, which is every key while derivation is off.
+    """
+    if not session_key:
+        return
+    tier = _UNSETTLED.pop(session_key, "")
+    if not tier or ok is None:
+        return
+    if ok:
+        _FLOOR.pop(session_key, None)
+    else:
+        _remember(_FLOOR, session_key, step_up(tier))
+
+
 def questions() -> list[Question]:
-    """The one question, with a tier's description carried in the prompt.
+    """The one question, with each tier's description carried in ``criteria``.
 
     ONE ``Choice``, because the answer is consumed: a second question would be a
     second thing to reconcile with a turn that runs on exactly one model.
+
+    The per-tier rubric rides in the provider's own per-option ``criteria`` map,
+    keyed by the option it describes, rather than being flattened into the prompt.
+    Both backends know how to carry it -- ``impl_jev`` sends it as the ``criteria``
+    map and ``impl_llm`` renders it beside each option -- so ``Choice`` behaves the
+    same whichever oracle answers. At runtime, though, only ``nudge.wake`` is served
+    by the LLM lane, so for ``model.route`` it is Jev that receives the rubric; the
+    ``impl_llm`` rendering is kept deliberately as groundwork for a future
+    LLM-lane point rather than because this point reaches that backend today. The
+    prompt keeps only what is NOT per-option -- the question stem and
+    :data:`TIER_ASYMMETRY`, which is a property of the work's outcome, not of one
+    tier.
     """
-    described = "; ".join(f"{tier} = {TIER_DESCRIPTIONS[tier]}" for tier in TIERS)
     return [
         Choice(
             QUESTION_ID,
             "How hard is this request for an AI coding assistant? "
-            f"Answer one of: {described}. {TIER_ASYMMETRY}",
+            f"Answer one of: {', '.join(TIERS)}. {TIER_ASYMMETRY}",
             options=list(TIERS),
+            criteria=dict(TIER_DESCRIPTIONS),
         )
     ]
 
@@ -407,6 +698,10 @@ async def routed_model(
     advertised: Sequence[str] = (),
     history_source: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
     config: Any | None = None,
+    retried: bool = False,
+    track: bool = True,
+    rate_of: Callable[[str], float | None] | None = None,
+    scopes: Sequence[str] = (),
 ) -> dict[str, Any] | None:
     """The model this turn should run on, or ``None`` to leave it alone.
 
@@ -427,13 +722,39 @@ async def routed_model(
     *advertised* is the provider's advertised id list; an empty list reads as
     "not known" (see :func:`resolve_model`).
 
+    With ``decisions.model_route_derive`` on, empty tiers take derived targets
+    (:func:`effective_tier_models`, priced through *rate_of*, the session's own
+    backend lookup from :func:`rate_lookup`) and the answered tier is raised by
+    :func:`escalated_tier` -- one step for a *retried* turn, and to the floor a
+    turn too hard for its tier left -- and the answer is marked for
+    :func:`note_applied`, which the caller invokes once the turn runs on it. A
+    caller whose session key is not the unit of work being escalated (a sub-agent
+    start asks under its parent's key) passes ``track=False``, which skips both.
+    With the switch off neither *retried* nor *track* changes anything.
+
+    With the switch on and no advertised model priced -- a cold catalog, or a
+    backend no catalog prices -- the record says ``derive: "unpriced"``, so an
+    owner can read why turning derivation on moved nothing.
+
+    *scopes* are keystone scopes this request needs beyond the point's own,
+    checked by the gate against the keystone read that authorizes the send
+    (``gate.REQUEST_SCOPES``); a chat turn passes none.
+
     Never raises except :class:`asyncio.CancelledError`, which ``decide``
     propagates: cancellation is the turn going away, not a decision failure.
     """
     # Read once, before the send, and used for both the apply and the report. Every
     # tier unpinned is NOT a reason to skip the question: the answer is what tells
     # an owner which tier their turns land in, which is how they decide what to pin.
-    mapping = tier_models(config)
+    derive = derive_enabled(config)
+    mapping, derived_tiers = effective_tier_models(
+        tier_models(config),
+        advertised=advertised,
+        baseline_model=current_model,
+        derive=derive,
+        rate_of=rate_of,
+    )
+    unpriced = derive and not has_prices(advertised, rate_of)
     turn_id = uuid.uuid4().hex[:16]
     trace: dict[str, Any] = {}
     # Bound before the try so the latency below is always measurable, including
@@ -453,7 +774,13 @@ async def routed_model(
             "truncated": trace.get("truncated", 0),
         }
         answers = await core.decide(
-            POINT, state, questions(), session_key=session_key, config=config, extra=extra
+            POINT,
+            state,
+            questions(),
+            session_key=session_key,
+            config=config,
+            extra=extra,
+            scopes=scopes,
         )
     except asyncio.CancelledError:
         raise
@@ -463,9 +790,12 @@ async def routed_model(
         logger.debug("model.route: keeping the session's own model", exc_info=True)
         return None
     latency_ms = int((time.monotonic() - started) * 1000)
-    tier = read_tier(answers)
+    answered = tier = read_tier(answers)
     if not tier:
         return None
+    tracked = derive and track
+    if tracked:
+        tier = escalated_tier(session_key, tier, retried=retried)
     chosen = UNPINNED if is_unpinned(tier, mapping) else resolve_model(tier, mapping, advertised)
     if not chosen and not is_unpinned(tier, mapping):
         # The tier arrived, the owner DID pin it, and the pin is not one this
@@ -486,7 +816,7 @@ async def routed_model(
             error=ERROR_UNKNOWN_MODEL,
         )
         return None
-    return {
+    routed: dict[str, Any] = {
         "turn_id": turn_id,
         "tier": tier,
         "p": probability_of(answers),
@@ -494,6 +824,15 @@ async def routed_model(
         "baseline_model": current_model or "",
         "latency_ms": latency_ms,
     }
+    if chosen and tier in derived_tiers:
+        routed["source"] = SOURCE_DERIVED
+    if tier != answered:
+        routed["escalated_from"] = answered
+    if unpriced:
+        routed["derive"] = DERIVE_UNPRICED
+    if tracked:
+        routed[TRACKED] = True
+    return routed
 
 
 def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
@@ -510,6 +849,16 @@ def build_outcome(routed: Mapping[str, Any]) -> dict[str, Any]:
         "model_chosen": routed.get("model_chosen"),
         "baseline_model": routed.get("baseline_model") or "",
     }
+    # Present only on a derived choice, so a record with derivation off keeps the
+    # shape it has always had.
+    if routed.get("source"):
+        row["source"] = str(routed.get("source"))
+    # Present only when escalation raised the answer, for the same reason.
+    if routed.get("escalated_from"):
+        row["escalated_from"] = str(routed.get("escalated_from"))
+    # Present only when derivation was on and had no price to derive from.
+    if routed.get("derive"):
+        row["derive"] = str(routed.get("derive"))
     # Present only on an APPLY: an unpinned tier switches nothing, so a row saying
     # "not applied" there would name a failure where the shipped state is no pin.
     if "applied" in routed:
@@ -601,3 +950,146 @@ def record_error(
         )
     except Exception:
         logger.debug("model.route: could not record the %s row", error, exc_info=True)
+
+
+#: ``subject`` on a route row written for a sub-agent start rather than a chat turn.
+SUBJECT_SUBAGENT = "subagent"
+
+#: The keystone scopes a sub-agent start's question needs beyond ``model.route``'s
+#: own (``gate.REQUEST_SCOPES``): its task is a tool-call argument.
+SPAWN_SCOPES: tuple[str, ...] = ("tool_args",)
+
+
+def inherited_baseline(provider: Any) -> str | None:
+    """The model *provider*'s session runs with routing OFF, or ``None`` when unnameable.
+
+    The baseline a sub-agent start is priced against. NOT the live served model:
+    from the second routed turn on that is the previous turn's tier, so a start
+    spawned after a ``simple`` turn would be priced against the cheap model. So
+    the chat runner's latch is read first, while it still names this session and
+    pick epoch; then, while a fallback substitute serves the session, the primary
+    it substituted for, and ``None`` when that is unnamed (the substitute is not
+    a baseline); and only then the served model. Never raises.
+    """
+    try:
+        from kiro_crew.llm_helpers import (
+            TURN_FALLBACK_ATTR,
+            pick_epoch_host,
+            provider_active_model,
+            provider_fallback_active,
+            route_baseline_latch,
+        )
+
+        latched = route_baseline_latch(pick_epoch_host(provider))
+        if latched is not None:
+            return latched
+        if provider_fallback_active(provider):
+            marker = getattr(provider, TURN_FALLBACK_ATTR, None)
+            primary = str(marker[0] or "") if isinstance(marker, (tuple, list)) and marker else ""
+            return primary or None
+        return provider_active_model(provider)
+    except Exception:
+        logger.debug("model.route: no nameable baseline for a sub-agent start", exc_info=True)
+        return None
+
+
+def record_spawn_outcome(session_key: str | None, routed: Mapping[str, Any], run_id: str) -> bool:
+    """One outcome row for a routed sub-agent start. Never raises; never published.
+
+    Written under the PARENT's session key -- the session whose consent and
+    sampling the question rode -- and marked ``subject: subagent`` with the run's
+    id, so a reader tells it from that session's own turns. Not published: the
+    strip belongs to the parent's next reply, which this start did not shape.
+    Blocking (the append is filesystem IO), so a caller on the loop hands it to a
+    thread.
+    """
+    extra = build_outcome(routed)
+    extra["subject"] = SUBJECT_SUBAGENT
+    extra["run_id"] = run_id
+    try:
+        return bool(
+            _log.append(
+                _log.build_row(
+                    point=POINT,
+                    session_key=session_key,
+                    latency_ms=int(routed.get("latency_ms") or 0),
+                    extra=extra,
+                )
+            )
+        )
+    except Exception:
+        logger.debug("model.route: could not record the sub-agent row", exc_info=True)
+        return False
+
+
+async def routed_spawn_model(
+    task: str,
+    *,
+    session_key: str | None,
+    current_model: str = "",
+    advertised: Sequence[str] = (),
+    run_id: str = "",
+    config: Any | None = None,
+    rate_of: Callable[[str], float | None] | None = None,
+) -> tuple[str, str]:
+    """``(model, tier)`` for an UNPINNED sub-agent start, or ``("", "")`` to leave it.
+
+    Runs only with ``decisions.model_route_derive`` on: with it off a start is
+    never asked about, which is how every spawn routes today. It also needs the
+    keystone's ``tool_args`` scope, because the task it sends is a tool-call
+    argument rather than text the owner typed; without it nothing is sent. The
+    task is put in
+    a tier by the SAME question a chat turn gets, under the parent's
+    *session_key* (its consent and sampling), and the tier resolves through the
+    same effective map -- the owner's pins, derived targets for empty tiers.
+
+    *current_model* is the model the start would inherit, which is also the
+    baseline a derived tier is priced against. ``""`` comes back for the baseline
+    tier, for a tier that resolves to that same model, and for a move to a
+    smaller context window the answer's probability does not carry
+    (:func:`permits_smaller_window`), which writes the ``smaller-window-refused``
+    row a chat turn writes. The tier comes back beside the model so a caller
+    can tell a start that was asked from one that was not.
+    """
+    if not derive_enabled(config):
+        return "", ""
+    routed = await routed_model(
+        task,
+        session_key=session_key,
+        current_model=current_model,
+        advertised=advertised,
+        config=config,
+        track=False,
+        rate_of=rate_of,
+        # The task is a TOOL-CALL ARGUMENT (the agent wrote it into ``spawn_run``),
+        # not text the owner typed, so it may leave the machine only under the
+        # keystone's ``tool_args`` scope -- the consent ``tool.risk`` rides for the
+        # same category -- checked by the gate against the very keystone read that
+        # authorizes the endpoint.
+        scopes=SPAWN_SCOPES,
+    )
+    if not routed:
+        return "", ""
+    tier = str(routed.get("tier") or "")
+    chosen = str(routed.get("model_chosen") or "")
+    if chosen and current_model and _same_model(chosen, current_model):
+        chosen = ""
+    if chosen and not permits_smaller_window(
+        routed.get("p"),
+        current=known_window(current_model),
+        target=known_window(chosen),
+    ):
+        await asyncio.to_thread(
+            record_error,
+            session_key,
+            turn_id=str(routed.get("turn_id") or ""),
+            tier=tier,
+            latency_ms=int(routed.get("latency_ms") or 0),
+            error=ERROR_WINDOW_REFUSED,
+            p=routed.get("p"),
+        )
+        return "", tier
+    outcome = dict(routed)
+    outcome["model_chosen"] = chosen
+    await asyncio.to_thread(record_spawn_outcome, session_key, outcome, run_id)
+    return chosen, tier

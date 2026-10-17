@@ -4,8 +4,8 @@ status: partial
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07
-last-audited: 2026-09-12
-audited-at: bf09e50e5
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [9223]
 tracking-issues: []
@@ -20,8 +20,11 @@ superseded-by: []
 > [`../system-specs/modules/instances.md`](../system-specs/modules/instances.md).**
 > The single-task Fargate engine, configured provisioner lane, task-lifetime and
 > population bounds, direct turn API, and `fargate` registry/SSM tunnel are on
-> main. The body below predates registry parity and still describes registration,
-> the tunnel, and the relay as deferred; those claims are historical. Phase 2's
+> main. The body below predates registry parity. These sections still describe
+> registration, the tunnel, and the relay as deferred, and those claims are
+> historical: Goal 4 in §2, §6 "What stays the same", and the Phase 1 exit
+> criteria in §8. `CONNECTION_METHODS` in `instances/registry.py` includes
+> `fargate`. Phase 2's
 > one-action fan-out and Phase 3's comparative measurements remain unbuilt.
 
 ## Summary
@@ -201,13 +204,13 @@ class LaunchEngine(Protocol):
     """The AWS-touching operations a launch needs, injected for testability."""
     def preflight(self, profile, region) -> None: ...
     def provision(self, *, tag, size_key, profile, region) -> str: ...
-    def begin_signin(self, *, instance_id, profile, region) -> SigninHandle: ...
+    def begin_signin(self, *, instance_id, profile, region, login_target=None) -> SigninHandle: ...
     def register(self, *, instance_id, tag, profile, region) -> None: ...
     def teardown(self, *, tag, profile, region) -> bool: ...
 ```
 
-The EC2 implementation is `RealLaunchEngine` in `src/kiro_crew/cloud/launch_engine.py`,
-163 lines with five references to `ec2`, and the engine is already an injectable
+The snippet is abridged; `launch_job.py` owns the protocol. The EC2 implementation
+is `RealLaunchEngine` in `src/kiro_crew/cloud/launch_engine.py`, and the engine is already an injectable
 field named `cloud_launch_engine` in `src/kiro_crew/dashboard/state.py`, today set
 only by tests. A Fargate backend is a second
 implementation of these five methods. Everything above the seam, which is the

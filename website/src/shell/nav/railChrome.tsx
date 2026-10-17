@@ -4,6 +4,8 @@ import { ArrowLeftToLine, PanelLeft } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from '../../components/BrandIcon'
 import type { getThemeBranding } from '../../themeBranding'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 
 /** Glyph inside the nav-rail header's expand/collapse button — the same
  *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
@@ -47,6 +49,8 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
   branding: ReturnType<typeof getThemeBranding>
   botName: string
 }) {
+  // The rail's guide scope (`shell.nav-rail`): open while it shows labels.
+  useGuideRevealScope('shell.nav-rail', !effectiveCollapsed)
   /*
    * mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
    * header and the first nav item, without widening the 2px item gaps.
@@ -88,6 +92,7 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
         title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
+        {...uiLocation('shell.nav-toggle')}
       >
         <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
           <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
@@ -224,7 +229,7 @@ export function RailCommunityLinks({ effectiveCollapsed, setReportProblemOpen }:
               destination is reachable WITH evidence attached. A <button>
               (not an <a>) because it no longer navigates — styled to match
               its sibling link so the row's width budget above is unchanged. */}
-          <button type="button" onClick={() => setReportProblemOpen(true)} title={i18nT('app.report_a_problem_with_diagnostics')} aria-label={i18nT('app.report_a_problem_with_diagnostics')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-0 p-0 text-[12px]">{i18nT('app.report_issue')}</button>
+          <button type="button" onClick={() => setReportProblemOpen(true)} title={i18nT('app.report_a_problem_with_diagnostics')} aria-label={i18nT('app.report_a_problem_with_diagnostics')} {...uiLocation('shell.report-problem')} className="min-w-0 overflow-hidden text-ellipsis rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-0 p-0 text-[12px]">{i18nT('app.report_issue')}</button>
         </div>
         <a href="https://kiro.dev/discord/" target="_blank" rel="noopener noreferrer" title={i18nT('app.discord_community')} aria-label={i18nT('app.kiro_discord_community')} className="flex items-center justify-center ml-1 w-6 h-6 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors shrink-0"><DiscordIcon size={15} /></a>
       </div>

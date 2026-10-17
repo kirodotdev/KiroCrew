@@ -20,18 +20,26 @@ and terminal-state handling through a real spine cycle.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
+from kiro_crew import platform_compat
+from kiro_crew.apps.builtins.auto_improvement.backend import crew, mcp_server
 from kiro_crew.apps.builtins.auto_improvement.backend import progress as progress_mod
+from kiro_crew.apps.builtins.auto_improvement.backend import routes
 from kiro_crew.apps.builtins.auto_improvement.backend import runner as R
 from kiro_crew.apps.builtins.auto_improvement.backend import store
+from kiro_crew.dashboard.crash_dump_store import current_process_identity
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -538,6 +546,561 @@ class TestOfflineRunIsNotReportedAsDone:
         assert "available" in supervisor._offline_reason
 
 
+class TestRunCutOffByARestart:
+    """A run in flight when the gateway restarts is reported after it, as an error.
+
+    ``start()`` records the run and the process writing it before its thread exists; the
+    terminal write overwrites that record. A NEW ``RunSupervisor()`` on the same store is what
+    the next process builds, and also what the stdio MCP server builds while the gateway's run
+    is still going, so the record reads as interrupted only once nothing is behind the run: its
+    writer is gone, or the record names this process and no run of this process wrote it, as
+    after an in-place restart."""
+
+    _RECORD_KEYS = {
+        "run_id",
+        "status",
+        "error",
+        "cycle",
+        "kept",
+        "drafted",
+        "started_at",
+        "finished_at",
+        "offline_reason",
+    }
+
+    @staticmethod
+    def _park(
+        supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[dict[str, Any], threading.Event]:
+        """Start a run whose driver waits until the returned event is set."""
+        clone = _tiny_repo(tmp_path / "clone")
+        release = threading.Event()
+
+        class _ParkedDriver:
+            def run(self, **_kw: Any) -> Any:
+                release.wait(timeout=30.0)
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                release.set()
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _ParkedDriver())
+        return supervisor.start({"clone": str(clone)}), release
+
+    @staticmethod
+    def _rewrite_writer(**fields: Any) -> None:
+        """Replace writer fields of the in-flight record on disk."""
+        path = R._terminal_record_path()
+        assert path.is_file(), "start() wrote no in-flight record"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        assert record.get("in_flight") is True, record
+        record.update(fields)
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    @staticmethod
+    def _pin_start_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Have every process on this host read the same start identity, 4242.
+
+        ``platform_compat.get_process_start_id`` answers ``None`` where a host cannot read one,
+        and a record whose writer's start identity cannot be compared reads as alive. A case
+        that needs the host to tell two processes apart by it pins what the host answers."""
+        monkeypatch.setattr(platform_compat, "get_process_start_id", lambda _pid: "4242")
+
+    def test_a_second_supervisor_reports_a_run_still_in_flight_as_running(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A supervisor built while another one's run is parked finds the record's writer alive,
+        and that run among this process's live runs: the run is not interrupted. A reader in
+        another process, as the stdio MCP server is, is
+        ``test_a_run_another_live_process_wrote_reads_as_running_until_that_process_exits``."""
+        started, release = self._park(supervisor, tmp_path, monkeypatch)
+        try:
+            record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+            observed = R.RunSupervisor().status()
+        finally:
+            release.set()
+            _join(supervisor)
+
+        assert observed["status"] == R.STATUS_RUNNING, observed
+        assert observed["run_id"] == started["run_id"], observed
+        assert observed["error"] == "", observed
+        assert record["pid"] == os.getpid(), record
+        assert (record["pid_domain"], record["pid_start"]) == current_process_identity()
+
+    def test_a_run_is_registered_from_its_in_flight_record_to_its_terminal_one(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reader that finds the in-flight record of a run of this process must find the run
+        in ``_LIVE_RUNS`` too, or it takes the record for one an in-place restart left. So the run
+        is registered before the in-flight write and leaves only after the terminal write."""
+        real_persist = supervisor._persist_terminal_state
+        seen: list[tuple[bool, bool]] = []
+
+        def _persist(*, in_flight: bool = False) -> None:
+            seen.append((in_flight, supervisor._state.run_id in R._LIVE_RUNS))
+            real_persist(in_flight=in_flight)
+
+        monkeypatch.setattr(supervisor, "_persist_terminal_state", _persist)
+        started, release = self._park(supervisor, tmp_path, monkeypatch)
+        release.set()
+        _join(supervisor)
+
+        assert seen == [(True, True), (False, True)], seen
+        assert started["run_id"] not in R._LIVE_RUNS
+
+    def test_the_mcp_status_tool_follows_a_live_run_to_its_outcome(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``get_status`` answers from ``get_supervisor()``, which the MCP process keeps for its
+        whole life. It reports the run as running and then as finished, not its first reading."""
+        monkeypatch.setattr(R, "_SUPERVISOR", None)
+        started, release = self._park(supervisor, tmp_path, monkeypatch)
+        try:
+            during = mcp_server._tool_get_status({})
+        finally:
+            release.set()
+            _join(supervisor)
+        after = mcp_server._tool_get_status({})
+
+        assert during["status"] == R.STATUS_RUNNING and during["error"] == "", during
+        assert during["run_id"] == started["run_id"], during
+        assert after["status"] == R.STATUS_DONE and after["run_id"] == started["run_id"], after
+
+    def test_a_run_an_in_place_restart_cut_off_is_reported_as_interrupted(
+        self, supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The in-app restart ends in ``os.execv``, which keeps the PID and the start time, so the
+        record a cut-off run left names THIS process. The new image's first supervisor finds it
+        with no run of that image behind it: the record is what ``start()`` wrote before the
+        exec, and nothing in this image started the run. It also saves that outcome, because a
+        reader in another process sees this PID alive and cannot tell on its own."""
+        self._pin_start_identity(monkeypatch)
+        supervisor._state = R.RunState(
+            status=R.STATUS_RUNNING, run_id="run-before-the-exec", started_at=time.time()
+        )
+        supervisor._persist_terminal_state(in_flight=True)
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["in_flight"] is True and record["pid"] == os.getpid(), record
+        assert (record["pid_domain"], record["pid_start"]) == current_process_identity()
+
+        after_exec = R.RunSupervisor()
+        status = after_exec.status()
+        on_disk = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        with monkeypatch.context() as another_process:
+            # The stdio MCP server, for which this PID names a live process.
+            another_process.setattr(os, "getpid", lambda: R._PID_MAX)
+            elsewhere = R.RunSupervisor().status()
+
+        assert status["status"] == R.STATUS_ERROR, status
+        assert status["error"] == R.INTERRUPTED_BY_RESTART, status
+        assert status["run_id"] == "run-before-the-exec", status
+        assert set(on_disk) == self._RECORD_KEYS, on_disk
+        assert on_disk["status"] == R.STATUS_ERROR, on_disk
+        assert on_disk["error"] == R.INTERRUPTED_BY_RESTART, on_disk
+        assert elsewhere["status"] == R.STATUS_ERROR, elsewhere
+        assert elsewhere["run_id"] == "run-before-the-exec", elsewhere
+        # Nothing behind it to stop, and nothing left for `_refuse_while_running` to refuse on.
+        assert after_exec.stop()["note"] == "no active run"
+        assert after_exec.status()["status"] == R.STATUS_ERROR
+
+    def test_a_run_another_live_process_wrote_reads_as_running_until_that_process_exits(
+        self, supervisor: R.RunSupervisor, tmp_path: Path
+    ) -> None:
+        """A run live in a DIFFERENT process -- the gateway's, read from the stdio MCP server, or
+        an old gateway's still alive in an overlapping restart -- reads as running. When that
+        process exits without a terminal record, the next ``status()`` re-reads the record and
+        reports the run as interrupted instead of keeping its first reading."""
+        writer = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stdin.read()"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(tmp_path),
+        )
+        try:
+            supervisor._state = R.RunState(
+                status=R.STATUS_RUNNING, run_id="run-of-another-process", started_at=time.time()
+            )
+            supervisor._persist_terminal_state(in_flight=True)
+            self._rewrite_writer(
+                pid=writer.pid, pid_start=platform_compat.get_process_start_id(writer.pid)
+            )
+            observer = R.RunSupervisor()
+            while_alive = observer.status()
+        finally:
+            writer.kill()
+            writer.wait(timeout=30.0)
+            assert writer.stdin is not None
+            writer.stdin.close()
+        after_exit = observer.status()
+
+        # First the outcome: read once while the writer lived, the run must not stay unreported.
+        assert after_exit["status"] == R.STATUS_ERROR, after_exit
+        assert after_exit["error"] == R.INTERRUPTED_BY_RESTART, after_exit
+        assert after_exit["run_id"] == "run-of-another-process", after_exit
+        assert while_alive["status"] == R.STATUS_RUNNING, while_alive
+        assert while_alive["error"] == "", while_alive
+
+    @pytest.mark.asyncio
+    async def test_the_status_route_reads_the_run_record_off_the_event_loop(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``GET /run`` builds the singleton, which reads the run record, and asks its status,
+        which re-reads the record while the run is live outside it. Both happen in a worker
+        thread, never on the loop that serves every other request."""
+        started, release = self._park(supervisor, tmp_path, monkeypatch)
+        monkeypatch.setattr(R, "_SUPERVISOR", None)
+        reads = _record_reads(monkeypatch)
+        bodies: list[dict[str, Any]] = []
+        try:
+            for _ in range(2):
+                response = await routes._handle_run_status(_get_request("/run"))
+                assert isinstance(response, web.Response) and response.text is not None
+                bodies.append(json.loads(response.text))
+        finally:
+            release.set()
+            _join(supervisor)
+
+        assert [b["run_id"] for b in bodies] == [started["run_id"]] * 2, bodies
+        assert [b["status"] for b in bodies] == [R.STATUS_RUNNING] * 2, bodies
+        # The build, and one re-read per poll.
+        assert len(reads) == 3, reads
+        assert threading.get_ident() not in reads
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hook", ["routes._stop_run", "crew.on_shutdown", "crew.on_startup"])
+    async def test_the_app_hooks_resolve_the_supervisor_off_the_event_loop(
+        self, monkeypatch: pytest.MonkeyPatch, hook: str
+    ) -> None:
+        """The shutdown hooks look the supervisor up inside the hop, and the startup hook builds
+        it there: the first lookup builds it, and building it reads the run record."""
+        lookups: list[int] = []
+
+        class _Idle:
+            def stop(self) -> dict[str, Any]:
+                return {"stopped": False, "note": "no active run"}
+
+        def _get_supervisor() -> _Idle:
+            lookups.append(threading.get_ident())
+            return _Idle()
+
+        monkeypatch.setattr(R, "get_supervisor", _get_supervisor)
+        monkeypatch.setattr(crew, "ensure_team", lambda: None)
+        if hook == "crew.on_shutdown":
+            await crew.on_shutdown(None)
+        elif hook == "crew.on_startup":
+            await crew.on_startup(None)
+        else:
+            app = web.Application()
+            routes.register_routes(app)
+            (stop_run,) = [h for h in app.on_cleanup if getattr(h, "__name__", "") == "_stop_run"]
+            await stop_run(app)
+
+        assert lookups and threading.get_ident() not in lookups, lookups
+
+    @pytest.mark.parametrize(
+        "gone",
+        [
+            pytest.param({"pid": 2**31 - 1}, id="its-pid-names-no-process"),
+            pytest.param({"pid_start": "1"}, id="its-pid-names-a-later-process"),
+        ],
+    )
+    def test_a_run_cut_off_by_a_restart_is_reported_as_interrupted(
+        self,
+        supervisor: R.RunSupervisor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        gone: dict[str, Any],
+    ) -> None:
+        if "pid_start" in gone:
+            # The record is rewritten to start identity 1, which is not the one pinned here.
+            self._pin_start_identity(monkeypatch)
+        started, release = self._park(supervisor, tmp_path, monkeypatch)
+        try:
+            # The process dies here. Its PID is then free, or the next process on this host was
+            # handed it, so the record names a PID that is not its writer any more. The next
+            # process builds its own supervisor, twice for a second boot.
+            self._rewrite_writer(**gone)
+            first_boot = R.RunSupervisor()
+            second_boot = R.RunSupervisor()
+            after = [first_boot.status(), second_boot.status()]
+        finally:
+            release.set()
+            _join(supervisor)
+
+        for status in after:
+            assert status["run_id"] == started["run_id"], status
+            assert status["status"] == R.STATUS_ERROR, status
+            assert status["error"] == R.INTERRUPTED_BY_RESTART
+        # Reported, never resumed: neither boot holds a thread for it.
+        assert first_boot._thread is None and second_boot._thread is None
+
+    @pytest.mark.parametrize(
+        "unjudgeable",
+        [
+            pytest.param({"pid_domain": "another-host/pid:[1]"}, id="another-pid-domain"),
+            pytest.param({"pid": None, "pid_domain": None}, id="no-writer-named"),
+        ],
+    )
+    def test_an_in_flight_record_whose_writer_cannot_be_judged_is_ignored(
+        self,
+        supervisor: R.RunSupervisor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        unjudgeable: dict[str, Any],
+    ) -> None:
+        """A PID from another host or PID namespace cannot be probed here, so the record shows
+        neither a live run nor a dead one; it is ignored like any record nothing vouches for."""
+        _started, release = self._park(supervisor, tmp_path, monkeypatch)
+        try:
+            self._rewrite_writer(**unjudgeable)
+            status = R.RunSupervisor().status()
+        finally:
+            release.set()
+            _join(supervisor)
+
+        assert status["status"] == R.STATUS_IDLE and status["run_id"] == "", status
+
+    def test_a_reread_does_not_replace_a_run_started_meanwhile(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``status()`` re-reads another process's run outside the lock. A run this supervisor
+        starts in that gap owns ``_state``, so the record read for the other run is dropped."""
+        _started, release = self._park(supervisor, tmp_path, monkeypatch)
+        try:
+            observer = R.RunSupervisor()
+            own = R.RunState(status=R.STATUS_RUNNING, run_id="run-own")
+            real_read = store.read_json
+
+            def _a_start_lands_during_the_read(path: Path, default: Any = None) -> Any:
+                with observer._lock:
+                    observer._state = own
+                return real_read(path, default)
+
+            monkeypatch.setattr(store, "read_json", _a_start_lands_during_the_read)
+            observer.status()
+        finally:
+            release.set()
+            _join(supervisor)
+
+        assert observer._state is own
+
+    def test_a_run_that_finishes_saves_exactly_the_terminal_record(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        started = supervisor.start({"clone": str(clone)})
+        _join(supervisor)
+
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert set(record) == self._RECORD_KEYS
+        assert record["status"] == R.STATUS_DONE and record["run_id"] == started["run_id"]
+        assert R.RunSupervisor().status()["status"] == R.STATUS_DONE
+
+    def test_a_failed_write_at_start_is_logged_and_the_run_still_runs(
+        self,
+        supervisor: R.RunSupervisor,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        real_write = store.write_json_atomic
+        calls: list[dict] = []
+
+        def _first_write_fails(path: Path, data: Any) -> None:
+            calls.append(data)
+            if len(calls) == 1:
+                raise OSError("disk full")
+            real_write(path, data)
+
+        monkeypatch.setattr(store, "write_json_atomic", _first_write_fails)
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        with caplog.at_level("WARNING"):
+            assert supervisor.start({"clone": str(clone)})["status"] == R.STATUS_RUNNING
+            _join(supervisor)
+
+        assert calls[0].get("in_flight") is True
+        assert "could not persist the in-flight run record" in caplog.text
+        assert supervisor.status()["status"] == R.STATUS_DONE
+        record = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert record["status"] == R.STATUS_DONE and "in_flight" not in record
+
+    def test_a_run_whose_thread_cannot_start_is_not_reported_as_interrupted(
+        self, supervisor: R.RunSupervisor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A spawn failure after the in-flight write records the failure, so the next boot
+        does not report a run that never started as cut off by a restart."""
+        clone = _tiny_repo(tmp_path / "clone")
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        class _UnstartableThread(threading.Thread):
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+        class _ThreadingWithoutStart:
+            """The runner's own ``threading`` with a Thread that cannot start; the rest is real."""
+
+            Thread = _UnstartableThread
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(threading, name)
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        monkeypatch.setattr(R, "threading", _ThreadingWithoutStart())
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            supervisor.start({"clone": str(clone)})
+
+        after = R.RunSupervisor().status()
+        assert after["status"] == R.STATUS_ERROR, after
+        assert after["error"] != R.INTERRUPTED_BY_RESTART
+        assert "can't start new thread" in after["error"]
+        assert after["run_id"] not in R._LIVE_RUNS
+
+
+class TestASpawnFailureKeepsTheSupervisorUntilItIsRecorded:
+    """``start()`` records a spawn failure before it releases the supervisor.
+
+    A calibration admitted while the failure is still being recorded would own ``_state``:
+    ``_fail`` would mark it failed and the terminal write would file its snapshot as the failed
+    run's record. A stop in the same window would write ``stopping`` over the failure, a status
+    the next boot ignores. Each call is made from inside the recording on the same thread, so
+    the order is fixed and nothing depends on timing."""
+
+    @staticmethod
+    def _run_thread_cannot_start(
+        supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> list[threading.Thread]:
+        """Make the run's thread fail to start; return the threads that did start."""
+
+        class _InstantDriver:
+            def run(self, **_kw: Any) -> Any:
+                return _FakeStats()
+
+            def request_stop(self) -> None:
+                pass
+
+        started: list[threading.Thread] = []
+
+        class _RunThreadCannotStart(threading.Thread):
+            """The run's thread cannot start; a calibration's starts as usual."""
+
+            def start(self) -> None:
+                if self.name.startswith("auto-improvement-run-"):
+                    raise RuntimeError("can't start new thread")
+                started.append(self)
+                super().start()
+
+        class _Threading:
+            """The runner's own ``threading`` with that Thread; the rest is real."""
+
+            Thread = _RunThreadCannotStart
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(threading, name)
+
+        def _calibrate_loop(_config: dict[str, Any]) -> None:
+            # The real loop's first step, releasing the reservation once its thread runs. The
+            # calibration's own work is not what these tests are about.
+            with supervisor._lock:
+                supervisor._reserved = False
+
+        monkeypatch.setattr(supervisor, "_build_driver", lambda _cfg: _InstantDriver())
+        monkeypatch.setattr(supervisor, "_calibrate_loop", _calibrate_loop)
+        monkeypatch.setattr(R, "threading", _Threading())
+        return started
+
+    def test_a_calibration_asked_for_while_a_spawn_failure_is_recorded_is_refused(
+        self, supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started = self._run_thread_cannot_start(supervisor, monkeypatch)
+        real_fail = supervisor._fail
+        attempts: list[str] = []
+
+        def _fail_with_a_calibration_in_the_gap(exc: BaseException) -> None:
+            try:
+                supervisor.calibrate({})
+            except RuntimeError as refused:
+                attempts.append(f"refused: {refused}")
+            else:
+                attempts.append("admitted")
+            real_fail(exc)
+
+        written: list[dict] = []
+        real_write = store.write_json_atomic
+
+        def _record_write(path: Path, data: Any) -> None:
+            written.append(dict(data))
+            real_write(path, data)
+
+        monkeypatch.setattr(supervisor, "_fail", _fail_with_a_calibration_in_the_gap)
+        monkeypatch.setattr(store, "write_json_atomic", _record_write)
+        try:
+            with pytest.raises(RuntimeError, match="can't start new thread"):
+                supervisor.start({})
+            assert written and written[0].get("in_flight") is True, written
+            run_id = written[0]["run_id"]
+            on_disk = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+            assert attempts and attempts[0].startswith("refused"), (
+                f"a calibration was admitted while the failed run {run_id} was still being "
+                f"recorded ({attempts}); the record on disk is {on_disk['run_id']} with status "
+                f"{on_disk['status']!r}"
+            )
+            assert on_disk["run_id"] == run_id and "in_flight" not in on_disk, on_disk
+            assert on_disk["status"] == R.STATUS_ERROR, on_disk
+            assert "can't start new thread" in on_disk["error"], on_disk
+            # After start() returns, the failed run does not hold the supervisor.
+            assert supervisor.calibrate({})["status"] == R.STATUS_CALIBRATING
+        finally:
+            for thread in started:
+                thread.join(timeout=10.0)
+
+    def test_a_stop_while_a_spawn_failure_is_recorded_leaves_the_failure_on_disk(
+        self, supervisor: R.RunSupervisor, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._run_thread_cannot_start(supervisor, monkeypatch)
+        real_persist = supervisor._persist_terminal_state
+        stops: list[dict[str, Any]] = []
+
+        def _persist_after_a_stop(*, in_flight: bool = False) -> None:
+            if not in_flight:
+                stops.append(supervisor.stop())
+            real_persist(in_flight=in_flight)
+
+        monkeypatch.setattr(supervisor, "_persist_terminal_state", _persist_after_a_stop)
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            supervisor.start({})
+
+        on_disk = json.loads(R._terminal_record_path().read_text(encoding="utf-8"))
+        assert on_disk["status"] == R.STATUS_ERROR, (on_disk, stops)
+        assert stops and stops[0]["stopped"] is False, stops
+        after = R.RunSupervisor().status()
+        assert after["status"] == R.STATUS_ERROR and after["run_id"] == on_disk["run_id"], after
+
+
 class TestStop:
     def test_stop_on_an_idle_supervisor_is_a_noop(self, supervisor: R.RunSupervisor) -> None:
         result = supervisor.stop()
@@ -703,6 +1266,25 @@ def _join(supervisor: R.RunSupervisor, *, timeout: float = 30.0) -> None:
     deadline = time.time() + 2.0
     while time.time() < deadline and supervisor.status()["status"] == R.STATUS_RUNNING:
         time.sleep(0.02)
+
+
+def _record_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Make every read of the run record note the thread it runs on, and return those notes."""
+    threads: list[int] = []
+    real_read = store.read_json
+
+    def _read(path: Path, default: Any = None) -> Any:
+        if Path(path).name == R.TERMINAL_RECORD_NAME:
+            threads.append(threading.get_ident())
+        return real_read(path, default)
+
+    monkeypatch.setattr(store, "read_json", _read)
+    return threads
+
+
+def _get_request(path: str) -> web.Request:
+    """A GET for one of this app's routes, for calling its handler directly."""
+    return make_mocked_request("GET", f"/api/apps/{store.APP_NAME}{path}")
 
 
 def _join_calibration(supervisor: R.RunSupervisor, *, timeout: float = 30.0) -> None:

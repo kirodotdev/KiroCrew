@@ -13,9 +13,8 @@ exception here.
 
 The harnesses are Codex (Rust), openclaw (TypeScript), hermes (Python) and grok-build
 (Rust). pi-mono (TypeScript) is included where it decides a boundary. Codex and
-openclaw were read from local clones; hermes, grok-build and pi-mono are from the
-architecture cards written this week and are marked `[card]` where a claim rests only
-on the card.
+openclaw were read from local clones; hermes, grok-build and pi-mono are from
+architecture cards and are marked `[card]` where a claim rests only on the card.
 
 ## 1. The four buckets
 
@@ -55,7 +54,7 @@ The mapping targets, from this tree (`src/kiro_crew/apps/manifest.py`, consumed 
 | Skills | `skills` (list of paths) | `bridges.register_app`, symlinked into `config_dir()/skills` |
 | MCP servers | `mcpServers` (object) | `bridges._register_mcp_servers` |
 | Agents | `agents` (list of paths) | `bridges`, materialized into the kiro agents dir |
-| Cron jobs | `crons` (list of objects) | `bridges.register_app_crons` |
+| Cron jobs | `crons` (list of objects) | `bridges.register_app_crons_with_service` |
 | Command rows | `contributes.commands` | Command Bar, see [command-bar.md](command-bar.md) |
 | Panel tabs / pages | `contributes.panelTabs`, `ui.pages` | dashboard, declarative |
 | HTTP surface | `backend.entryPoint`, `backend.routes`, `permissions.api` | app backend + gateway proxy |
@@ -247,13 +246,12 @@ Two platform findings came out of that run, neither a converter question:
   port would otherwise be a dead address that breaks every session. A SELF-MANAGED app
   (empty `backend.entryPoint` -- which is also every converted package, since a
   converted app emits no `backend`) has an AUTHORITATIVE fixed endpoint that never gets
-  a live registration, so the registrar now PRESERVES its url rather than dropping it.
+  a live registration, so the registrar PRESERVES its url rather than dropping it.
   This mirrors `_collect_app_mcp_servers` in `agent_materialization/mcp_sources.py`, the
-  other writer of this config, which already kept a self-managed url: the two writers
+  other writer of this config, which also keeps a self-managed url: the two writers
   must agree, or registration scrubs an entry the next rebuild writes straight back.
-  (Resolved: #15826 initially moved the fix to the converter, which `@buluoray`'s review
-  blocked because the rebuild path deliberately carries these servers; the fix belongs
-  in the registrar, scrubbing only when a backend port is expected.)
+  The scrub lives in the registrar, not the converter, and runs only when a backend port
+  is expected, because the rebuild path deliberately carries these servers.
 - The dashboard app card reads `mcpServers` from the MANIFEST, so it shows a server
   the agent config does not carry. The two surfaces disagree by construction.
 

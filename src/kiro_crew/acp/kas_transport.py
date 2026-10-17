@@ -19,13 +19,20 @@ Who answers the engine's credential callback is a per-spawn choice:
   refresh token never leaves Crew; the engine sees an access token and its
   expiry.
 
-Crew does NOT locate kiro-cli's *extracted* KAS bundle itself and run
-``node .../acp-server.js --auth=acp-callback``. That works, but it makes Crew
-depend on kiro-cli's internal on-disk layout (a
+Crew does NOT locate kiro-cli's *extracted* KAS bundle and run it: that would
+make Crew depend on kiro-cli's internal on-disk layout (a
 ``{data_dir}/kas/{version}-{hash}/node_modules/@kiro/agent/...`` path that
-kiro-cli is free to change) and it answers the callback by shelling out to a
-hidden ``kiro-cli chat _ get-kas-token`` verb. The relay owns the layout; the
-credential is Crew's own or kiro-cli's own, never a shell-out.
+kiro-cli is free to change). The relay owns that layout.
+
+The second route is Crew's OWN bundle (``agent.kas_bundle = true``,
+:mod:`kiro_crew.acp.kas_bundle`): a pinned ``@kiro/agent`` build plus a Node
+runtime that ``kirocrew kas install`` fetched from a sha256-pinned manifest and
+laid down under Crew's data home, where Crew controls the layout. The harness
+then spawns ``node --experimental-wasm-modules <acp-server.js> --transport=stdio
+--auth=acp-callback`` itself -- byte-for-byte the argv kiro-cli's relay builds
+for the engine, minus kiro-cli. There is no ``--auth-method`` on this route:
+the engine's ``_kiro/auth/getAccessToken`` always reaches Crew, and Crew's
+vault is the only credential (:func:`build_kas_bundle_argv`).
 
 Frame parity between the two routes is measured, not assumed:
 all forward methods Crew sends (``initialize``, ``session/new`` carrying
@@ -126,3 +133,37 @@ def build_kas_argv(kiro_bin: str, *, host_auth: bool = False) -> list[str]:
     if not host_auth:
         argv += [KAS_RELAY_AUTH_FLAG, KAS_RELAY_AUTH_OWNER]
     return argv
+
+
+#: Node flag the engine needs: its tree-sitter and z3 dependencies ship as wasm
+#: modules imported with ESM syntax, which Node still gates behind this flag.
+KAS_BUNDLE_NODE_FLAG = "--experimental-wasm-modules"
+#: The engine's own CLI: stdio transport, and the token asked of the ACP client.
+KAS_BUNDLE_TRANSPORT_ARG = "--transport=stdio"
+KAS_BUNDLE_AUTH_ARG = "--auth=acp-callback"
+
+
+def build_kas_bundle_argv(node_bin: str, acp_server: str) -> list[str]:
+    """argv for a KAS stdio session served by Crew's own installed bundle.
+
+    Crew is ALWAYS the auth owner on this route -- there is no kiro-cli to hand
+    the credential to -- so the plan built from this argv carries
+    ``host_auth=True`` unconditionally, and a vault with no identity surfaces as
+    the engine's own "not signed in" prompt failure (the same vocabulary the
+    runtime already maps to a sign-in prompt), never as a silent fallback to a
+    credential store Crew does not own.
+
+    No ``--agent`` and no ``--model``, for the reasons :func:`build_kas_argv`
+    gives: both travel over the wire per session.
+    """
+    if not node_bin:
+        raise ValueError("node_bin must be a non-empty path to a Node runtime")
+    if not acp_server:
+        raise ValueError("acp_server must be a non-empty path to the engine's acp-server.js")
+    return [
+        node_bin,
+        KAS_BUNDLE_NODE_FLAG,
+        acp_server,
+        KAS_BUNDLE_TRANSPORT_ARG,
+        KAS_BUNDLE_AUTH_ARG,
+    ]

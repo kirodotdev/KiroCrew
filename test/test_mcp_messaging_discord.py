@@ -607,6 +607,22 @@ async def test_a_failed_channel_delivery_is_reported_not_swallowed(audit) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_send_whose_answer_was_lost_is_not_reported_as_failed(audit) -> None:
+    """A DM send that timed out may have landed, so the caller is told it was not
+    confirmed: a caller told "delivery failed" sends the message again."""
+    transport = _discord_transport()
+    transport.client.send_message = AsyncMock(side_effect=TimeoutError())
+    async with TestClient(TestServer(_app(_state(transport)))) as client:
+        resp = await client.post("/api/send-message", json={"text": "hi", "session": "discord"})
+        assert resp.status == 502
+        payload = await resp.json()
+        assert payload["code"] == "channel_delivery_failed"
+        assert payload["error"].startswith("discord delivery was not confirmed")
+        assert "delivery failed" not in payload["error"]
+    transport.client.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_revoked_target_is_refused_rather_than_widened(audit) -> None:
     """The allowlist is re-consulted at use: a stale target does not fall back."""
     transport = _discord_transport()

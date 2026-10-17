@@ -13,6 +13,11 @@ deny-by-default backstop refused it ("shell command could not be verified").
 Only read-only tools, which codex often runs without a permission request,
 escaped. These tests pin ``classify_tool_call`` -- the one place the whole frame
 is read -- and every consumer of its verdict.
+
+This file holds the classifier, the tool_call event builder, the permission event and
+the gate, and the legacy AcpClient path. KAS frames are in
+``test_tool_call_classification_kas.py``, and the provenance caches' shared bound is in
+``test_tool_call_classification_provenance_bound.py``.
 """
 
 from __future__ import annotations

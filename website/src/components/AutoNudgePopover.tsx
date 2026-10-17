@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Goal, Pause, Play, Radar, X, Zap } from 'lucide-react'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { Popover, PopoverTrigger, PopoverContent } from './ui/popover'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -79,6 +80,10 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }
+
+/** A save the store refused because the goal changed (or the gateway reloaded it)
+ *  since the form read its baseline: the 409 `goal_stale_baseline`. */
+class StaleGoalBaseline extends Error {}
 
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
@@ -169,6 +174,54 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     loop ? { message: loop.message || defaultMsg(), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 } : null,
   )
 
+  /* The goal baseline: the `goal_token` of the stored goal the form's text
+     was seeded from, sent back as `expect_fingerprint` on a save that carries the
+     goal, so the store refuses (409) a save over a goal another writer saved
+     meanwhile. Read at open from the slot route rather than off `loop`: the
+     record here is often a websocket frame, which carries no token. A read that
+     finds the stored goal already different from the seeded text records ''
+     (a baseline that never matches), because the form then shows a goal that is
+     not the stored one and a save from it must be refused, not land. No token at
+     all (an older gateway, a failed read) leaves the save unfenced.
+     `baselineGen` drops a read that a newer read or a landed write overtook. */
+  const goalBaseline = useRef<{ loopId: string, token: string } | null>(null)
+  const baselineGen = useRef(0)
+
+  /** Read the stored goal's token for `loopId`. `expectedMessage` is the text the
+   *  form was seeded from; `null` adopts whatever is stored, which is what a 409
+   *  wants: the reader has been told, so their next save replaces it. */
+  function readGoalBaseline(loopId: string, expectedMessage: string | null): void {
+    const gen = ++baselineGen.current
+    goalBaseline.current = null
+    void (async () => {
+      try {
+        const resp = await fetch(`/api/autonudge/slot/${encodeURIComponent(slotKey)}`)
+        if (!resp?.ok) return
+        const data = await resp.json().catch(() => ({}))
+        const stored = data?.loop
+        if (gen !== baselineGen.current) return
+        if (!stored || stored.id !== loopId || typeof stored.goal_token !== 'string' || !stored.goal_token) return
+        goalBaseline.current = {
+          loopId,
+          token: expectedMessage === null || stored.message === expectedMessage ? stored.goal_token : '',
+        }
+      } catch {
+        // No baseline: the save goes out unfenced.
+      }
+    })()
+  }
+
+  /** A write landed: its answer names the goal the form now holds. Only a write
+   *  that carried the goal moves the baseline; adopting the token on a cadence-only
+   *  save would bless a goal another writer stored that the form never showed. */
+  function adoptBaseline(written: AutoNudgeLoop | null | undefined, fieldsSent: Partial<LoopFields> | null) {
+    if (!fieldsSent || !('message' in fieldsSent)) return
+    baselineGen.current++
+    goalBaseline.current = written?.id && typeof written.goal_token === 'string' && written.goal_token
+      ? { loopId: written.id, token: written.goal_token }
+      : null
+  }
+
   // Compute the draft to persist for the current field state, or null to drop
   // the slot: the blank / pristine-default case stores nothing so an emptied or
   // untouched popover never pins the template. (Only reached when no loop is
@@ -214,7 +267,16 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
       setIdleInput(String(loop.idle_secs || 60))
       setMaxCyclesInput(String(loop.max_cycles || 0))
       seeded.current = { message: loop.message || defaultMsg(), idle_secs: loop.idle_secs || 60, max_cycles: loop.max_cycles || 0 }
+      // A popover that cannot write (crew/member mode) has nothing to fence.
+      if (writeDisabled) {
+        baselineGen.current++
+        goalBaseline.current = null
+      } else {
+        readGoalBaseline(loop.id, loop.message)
+      }
     } else {
+      baselineGen.current++
+      goalBaseline.current = null
       const remembered = loadGoalDraft(slotKey)
       setMessage(remembered ? remembered.message : defaultMsg())
       setIdleInput(String(remembered ? remembered.idleSecs : 60))
@@ -277,13 +339,25 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  revive it, so this surface offers nothing to press and the fields go read-only. */
   const finished = loopFinished(loop)
 
+  /** An ACTIVE loop holding for an unanswered approval. It fires nothing, so
+   *  it reads as paused and Play resumes it (Play's fire releases the hold
+   *  server-side). Pause stays live, because it is the one way to stop a held
+   *  loop from here; Clear stays with stopped loops. It also resumes by itself
+   *  once a person answers an approval or sends a message. */
+  const heldForApproval = !!loop?.active && loop.approval_stalled === true
+  /** Running in the sense the controls mean: active and not held. */
+  const runsNow = !!loop?.active && !heldForApproval
+  /** An ACTIVE work-ledger watch resting because every open task waits on a
+   *  person. Its controls stay as running (Nudge now still fires a turn), but its
+   *  status reads in the warn tone, because the next move is the user's. */
+  const waitingOnPerson = runsNow && loop?.waiting_on_person === true
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
    *  loop is paused and saving first when the form is dirty. */
   const playName = !loop
     ? i18nT('components.autoNudgePopover.start_loop')
-    : loop.active
+    : runsNow
       ? i18nT(formDirty ? 'components.autoNudgePopover.trigger_nudge' : 'components.autoNudgePopover.nudge_now')
       : i18nT(formDirty ? 'components.autoNudgePopover.save_edits_and_resume' : 'components.autoNudgePopover.resume_loop')
   /** An icon-only `Btn` is square: `twMerge` lets `p-1.5` replace the text
@@ -306,7 +380,15 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
         ? { method }
         : { method, headers: JSON_HEADERS, body: JSON.stringify(body) })
       const data = await resp.json().catch(() => ({}))
-      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+      if (!resp.ok) {
+        // Worded here, not by the server's English: this is the one refusal the
+        // reader is meant to act on in place, so it names the control that saves
+        // (whose name also says it nudges) in the reader's language.
+        if (resp.status === 409 && data.code === 'goal_stale_baseline') {
+          throw new StaleGoalBaseline(i18nT('components.autoNudgePopover.goal_stale_baseline', { action: playName }))
+        }
+        throw new Error(data.error || `HTTP ${resp.status}`)
+      }
       return data.loop
     },
     onSuccess: () => {
@@ -382,6 +464,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  their baseline, since the record may hold another writer's value for them. */
   async function writeLoop(write: { url: string, method: 'PATCH' | 'POST', body: unknown }, fieldsSent: Partial<LoopFields> | null): Promise<AutoNudgeLoop> {
     const written = await loopWrite.mutateAsync(write)
+    adoptBaseline(written, fieldsSent)
     if (fieldsSent) adoptStored(written, fieldsSent)
     onChange(written)
     return written
@@ -428,9 +511,24 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   function play() {
     if (!loop) return
     const fields = editedFields()
-    const body = loop.active ? fields : { ...fields, active: true }
+    const edits = loop.active ? fields : { ...fields, active: true }
     return runControl(async () => {
-      const written = body ? await writeLoop({ url: `/api/autonudge/${loop.id}`, method: 'PATCH', body }, fields) : null
+      let body: Record<string, unknown> | null = edits
+      // Not awaited: a press that beats the open read (or a read that never
+      // answers) saves unfenced rather than hanging.
+      const baseline = goalBaseline.current
+      if (body && 'message' in body && baseline && baseline.loopId === loop.id) {
+        body = { ...body, expect_fingerprint: baseline.token }
+      }
+      let written: AutoNudgeLoop | null = null
+      try {
+        written = body ? await writeLoop({ url: `/api/autonudge/${loop.id}`, method: 'PATCH', body }, fields) : null
+      } catch (e: unknown) {
+        // The text stays in the form. Re-read what is stored now, so the
+        // reader's next press replaces it, as the refusal tells them.
+        if (e instanceof StaleGoalBaseline) readGoalBaseline(loop.id, null)
+        throw e
+      }
       // A legacy stub without the record's id has nothing to fire on.
       await fireNow(written?.id ? written : loop)
     })
@@ -501,27 +599,33 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   /** THE STATUS LINE under the title, independent of the controls: a running
    *  loop's countdown, why a finished one is done, or why a paused one is paused. */
   const statusText = loop
-    ? loop.active
-      ? countdownText
-      : doneLine
-        ? i18nT(doneLine.key)
-        : loop.stopped_reason && loop.stopped_reason in PAUSED_STATUS_KEY
-          ? i18nT(PAUSED_STATUS_KEY[loop.stopped_reason], { cycles: loop.cycle_count, max: loop.max_cycles })
-          : i18nT('components.autoNudgePopover.loop_paused')
+    ? heldForApproval
+      ? i18nT('components.autoNudgePopover.paused_approval_hold')
+      : waitingOnPerson
+        ? i18nT('components.autoNudgePopover.waiting_on_person_hold')
+        : loop.active
+        ? countdownText
+        : doneLine
+          ? i18nT(doneLine.key)
+          : loop.stopped_reason && loop.stopped_reason in PAUSED_STATUS_KEY
+            ? i18nT(PAUSED_STATUS_KEY[loop.stopped_reason], { cycles: loop.cycle_count, max: loop.max_cycles })
+            : i18nT('components.autoNudgePopover.loop_paused')
     : ''
   /** The title names the state: the goal's cycle while running, Done once
    *  finished, Paused otherwise, and the invitation when there is no loop. */
   const titleText = !loop
     ? i18nT('components.autoNudgePopover.set_a_goal')
-    : loop.active
+    : runsNow
       ? i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })
       : finished
         ? i18nT('components.autoNudgePopover.loop_done')
         : i18nT('components.autoNudgePopover.loop_paused')
   /** Whether a cycle is ALREADY armed to run. Derived from the same countdown
-   *  the status line renders, so the button and the text can never disagree. */
+   *  the status line renders, so the button and the text can never disagree.
+   *  Never while held: its deadline has passed but nothing is armed, and the
+   *  press is how a person resumes it. */
   const cycleAlreadyDue =
-    countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
+    !heldForApproval && countdownText === i18nT('components.autoNudgePopover.next_cycle_due')
   /** Help line under the goal textarea while it carries the raw kill-switch
    *  token; '' otherwise. See the JSX comment at the render site (#10458). */
   const stopFileHelp = message.includes(STOP_FILE_TOKEN)
@@ -554,7 +658,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
             loop?.active
               ? interrupted
-                ? 'text-warn hover:text-warn hover:bg-warn/10'
+                ? 'text-warn hover:text-warn-text hover:bg-warn/10'
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
@@ -599,10 +703,10 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           <p
             data-testid="auto-nudge-status"
             className={`mb-2 rounded-md border px-2 py-1.5 text-[11px] leading-relaxed ${
-              loop.active
+              runsNow && !waitingOnPerson
                 ? writeDisabled ? 'border-border bg-bg text-muted' : 'border-ok/30 bg-ok-subtle text-ok-fg'
                 : finished
-                  ? 'border-info/30 bg-info-subtle text-info'
+                  ? 'border-info/30 bg-info-subtle text-info-text'
                   : 'border-warn/30 bg-warn-subtle text-warn-fg'
             }`}
           >
@@ -879,7 +983,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 would refuse the resume anyway, and a live Play here would promise
                 one. Clear is the only way on; a new goal is set after it. */}
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
-              <Btn type="button" className={ICON_BTN} onClick={pause} disabled={saving || writeDisabled || !loop.active} aria-label={pauseName} title={pauseName}>
+              <Btn type="button" className={ICON_BTN} onClick={pause} disabled={saving || writeDisabled || !loop.active} aria-label={i18nT('components.autoNudgePopover.pause_loop')} title={pauseName} {...uiLocation('composer.automation.pause')}>
                 <Pause size={14} aria-hidden />
               </Btn>
               <Btn
@@ -897,7 +1001,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 aria-label={playName}
                 title={playName}
               >
-                {loop.active ? <Zap size={14} aria-hidden /> : <Play size={14} aria-hidden />}
+                {runsNow ? <Zap size={14} aria-hidden /> : <Play size={14} aria-hidden />}
                 {formDirty && (
                   <span data-testid="auto-nudge-play-dirty" aria-hidden className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-warn ring-1 ring-bg" />
                 )}

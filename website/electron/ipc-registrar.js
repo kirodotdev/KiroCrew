@@ -18,6 +18,7 @@ const { makeUpdaterLogger } = require("./update-logger");
 const { detectWsl2 } = require("./wsl-detection");
 const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
+const { safeFilename } = require("./download-handler");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -40,6 +41,17 @@ function createIpcRegistrar({
   // companion being wired.
   closeCrewCompanionForUpdate = () => {},
   reopenCrewCompanionAfterUpdate = () => {},
+  // Shared single-use registry of downloads the renderer explicitly announced,
+  // consumed by the will-download handler (see download-expectations.js). When
+  // absent the download:expect channel is simply not registered.
+  downloadExpectations = null,
+  // The terminal-app allowlist and its grant-gated launcher. Injected so the
+  // channel can be exercised without probing real install paths.
+  externalTerminal = require("./external-terminal"),
+  // The gateway's internal secret, re-read per call (it rotates per boot). Used
+  // only to redeem an external-terminal grant at this shell's own gateway.
+  readInternalSecret = () => "",
+  fetchFn = (url, init) => fetch(url, init),
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -53,6 +65,7 @@ function createIpcRegistrar({
 
   const {
     app,
+    dialog,
     Notification,
     ipcMain,
     shell,
@@ -63,6 +76,9 @@ function createIpcRegistrar({
   let shellRegistered = false;
   let updaterRegistered = false;
   let updater = null;
+  // True while a native folder chooser is on screen, so a second request
+  // answers "no choice" instead of stacking another dialog.
+  let folderPickOpen = false;
 
   setGlobalHotkeyLogger(log);
   const summonDashboard = createSummonHandler({
@@ -113,6 +129,25 @@ function createIpcRegistrar({
       windows.menu.execute(event.sender, id, index));
     ipcMain.on("dev-mode-changed", (_event, enabled) =>
       windows.menu.setDevMode(enabled));
+
+    // The export path announces each download it is about to start ("expect one
+    // download named <name>") so the will-download handler auto-saves ONLY
+    // downloads the app explicitly asked for. The expectation is keyed by the
+    // ANNOUNCING FRAME's own origin (event.sender), not a renderer-supplied
+    // value, so one origin cannot pre-authorise another's download; the leaf
+    // name is sanitised with the same safeFilename the handler uses so both
+    // sides key on the same value.
+    if (downloadExpectations && typeof downloadExpectations.register === "function") {
+      ipcMain.on("download:expect", (event, filename) => {
+        let origin = "";
+        try {
+          origin = new URL(event.sender.getURL()).origin;
+        } catch {
+          origin = "";
+        }
+        downloadExpectations.register({ origin, filename: safeFilename(filename) });
+      });
+    }
 
     // The shortcuts UI reports what is ACTUALLY bound. Registration may have
     // fallen back to the default or degraded to no shortcut at all.
@@ -384,6 +419,102 @@ function createIpcRegistrar({
       }
     });
 
+    // The OS-native folder chooser behind the project picker's "Open system
+    // folder picker" button. Electron's own dialog draws it from this process,
+    // so it spawns nothing and needs no sandbox allowance.
+    //
+    // Gated like `crash-reports:reveal`: a dialog is an action on the machine in
+    // front of the user, and the folder it returns is a path on THIS machine, so
+    // it is only meaningful to a window whose gateway runs here. A connection
+    // window pointed at a remote gateway shares this preload and is refused.
+    //
+    // The renderer supplies nothing. The handler reads only the event: the
+    // options are fixed here, so a page cannot choose the default path, the
+    // properties (files, multi-select) or the filters. The answer is the one
+    // absolute folder the user chose, or null for a cancel or a malformed
+    // result; a dialog that fails to open rejects, so the picker can tell the
+    // user instead of reading it as a cancel. The picker validates the path
+    // through the gateway's directory listing before using it. The chosen path
+    // is never logged.
+    ipcMain.handle("dashboard:pick-folder", async (event) => {
+      await assertLocalDashboard(event, "dashboard:pick-folder");
+      if (folderPickOpen) return null;
+      folderPickOpen = true;
+      try {
+        const owner = windows.windowForWebContents(event.sender);
+        const parent = owner && !(typeof owner.isDestroyed === "function" && owner.isDestroyed())
+          ? owner
+          : null;
+        const options = { properties: ["openDirectory"] };
+        let result;
+        try {
+          result = parent
+            ? await dialog.showOpenDialog(parent, options)
+            : await dialog.showOpenDialog(options);
+        } catch (e) {
+          log(`dashboard:pick-folder failed: ${e && e.message}`);
+          throw new Error("dashboard:pick-folder could not open the folder dialog");
+        }
+        if (!result || result.canceled || !Array.isArray(result.filePaths)) return null;
+        const picked = result.filePaths[0];
+        if (typeof picked !== "string" || !require("path").isAbsolute(picked)) return null;
+        return picked;
+      } finally {
+        folderPickOpen = false;
+      }
+    });
+
+    // Whether this window may use `dashboard:pick-folder`, so the picker shows
+    // the button only where it works. Runs the same gate and answers a bare
+    // boolean -- the same fact a gated channel's rejection already tells -- and
+    // never opens a dialog.
+    ipcMain.handle("dashboard:can-pick-folder", async (event) => {
+      try {
+        await assertLocalDashboard(event, "dashboard:can-pick-folder");
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    // Open the user's own terminal app in a project directory. Gated like
+    // `dashboard:open-file` because it is a LAUNCH on the machine in front of
+    // the user, and a connection window pointed at a remote gateway shares this
+    // preload.
+    //
+    // `detect` lists the allowlisted apps installed here, for the Settings
+    // picker; the pick itself is gateway config. `open` takes the opaque grant
+    // the gateway minted after its own checks (owner, direct-local request,
+    // integrated terminal enabled, an app picked) and starts nothing unless the
+    // gateway redeems it. The app id and the directory come from that
+    // redemption, the binary and argv from the allowlist in
+    // external-terminal.js, and no OS opener is involved at any step.
+    //
+    // `detect` answers a refused window `{ apps: [], capable: false }` instead
+    // of rejecting, as `dashboard:can-pick-folder` answers false: a desktop
+    // window reaching a remote crew through an SSH tunnel is an ordinary
+    // window that can never launch here, not a failed check, so the renderer
+    // hides the row and the picker rather than reporting an error a Retry
+    // cannot clear. The gate still runs (and logs) before any probe, so a
+    // refused window learns only this one bit, and `open` keeps rejecting.
+    ipcMain.handle("external-terminal:detect", async (event) => {
+      try {
+        await assertLocalDashboard(event, "external-terminal:detect");
+      } catch {
+        return { apps: [], capable: false };
+      }
+      return { apps: externalTerminal.detectTerminals(), capable: true };
+    });
+    ipcMain.handle("external-terminal:open", async (event, grant) => {
+      await assertLocalDashboard(event, "external-terminal:open");
+      return externalTerminal.launchFromGrant(grant, {
+        backendUrl,
+        getSecret: () => readInternalSecret(backendUrl),
+        fetchFn,
+        log,
+      });
+    });
+
     ipcMain.handle("zoom:get", (event) =>
       windows.chrome.getZoom(event.sender));
     ipcMain.handle("zoom:set", (event, factor) =>
@@ -507,7 +638,7 @@ function createIpcRegistrar({
             // Native notifications are optional; discovery still succeeds.
           }
         },
-        stopGateway: () => gateway.stopGracefully(),
+        stopGateway: () => gateway.stopForUpdate(),
         // WHY this hook precedes stopGateway: it closes the watchdog race before
         // the intentional shutdown and disarms probing throughout bundle swap.
         // auto-update invokes onInstallDispatched before awaiting stopGateway;

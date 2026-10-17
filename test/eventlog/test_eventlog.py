@@ -673,6 +673,28 @@ def test_redact_projection_value_scrubs_keys_not_just_values():
     assert "AKIAIOSFODNN7EXAMPLE" not in blob
 
 
+def test_redact_projection_value_scrubs_short_url_secret_param():
+    """A short URL-embedded credential whose query is under the exfiltration
+    heuristic's length floor and whose value is not credential-shaped
+    (`?api_key=abc123`) is not altered by the exfiltration or credential passes,
+    so the projection chain must apply the URL-secret-parameter layer the
+    sibling roster egress carries. The roster projection block of GET /api/members
+    and the live member-projection WS push both fold this function and the roster
+    ROW masks the same leaf, so the value is masked here too."""
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    leaf = "https://h.example/v1?api_key=abc123"
+    out = _redact_projection_value({"roster": {"model": leaf}})
+    assert out["roster"]["model"] == "https://h.example/v1?api_key=[REDACTED]"
+    assert "abc123" not in json.dumps(out)
+
+    # Nested-list leaf: the str branch runs under list recursion too, so a secret
+    # carried inside a list value is masked just as a nested dict value is.
+    nested = _redact_projection_value({"roster": {"models": [leaf]}})
+    assert nested["roster"]["models"] == ["https://h.example/v1?api_key=[REDACTED]"]
+    assert "abc123" not in json.dumps(nested)
+
+
 def test_service_broadcast_never_raises(tmp_path, monkeypatch):
     import kiro_crew.members as members
 
@@ -1309,7 +1331,7 @@ def test_a_colliding_members_activity_does_not_reach_the_other_members_view(tmp_
 
     # Stamped relative to NOW rather than to a fixed calendar date. The fold's
     # ``today`` is a ROLLING 24-hour window (``age < day`` in
-    # ``ActivityProjection.view``), so a hardcoded date stops being inside it
+    # ``_recency_counts``), so a hardcoded date stops being inside it
     # the following day and the count assertion below reds on an unchanged
     # tree -- which is exactly what happened to this test.
     from datetime import datetime, timedelta, timezone
@@ -1494,11 +1516,18 @@ class TestEveryHardExitDrainsTheMemberEventLog:
 
         import kiro_crew.slack.gateway as gateway_module
 
-        source = Path(gateway_module.__file__).read_text(encoding="utf-8")
-        exits = [i for i, line in enumerate(source.splitlines()) if "os._exit(" in line]
+        slack_dir = Path(gateway_module.__file__).resolve().parent
+        exits = [
+            (path.read_text(encoding="utf-8").splitlines(), i)
+            for path in [
+                slack_dir / "gateway.py",
+                *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+            ]
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines())
+            if "os._exit(" in line
+        ]
         assert exits, "no hard exit found, so this guard would pass vacuously"
-        lines = source.splitlines()
-        for index in exits:
+        for lines, index in exits:
             window = "\n".join(lines[max(0, index - 40) : index])
             assert (
                 "eventlog_hooks.drain_for_shutdown" in window

@@ -138,7 +138,7 @@ tmux survives an SSH disconnect but does **not** auto-restart on crash or
 auto-start on reboot. Move to [a real service](#3-keep-it-alive-as-a-service)
 once the smoke test passes, and **kill the tmux session first**: only one
 gateway can own the dashboard port, which defaults to `5476`
-(`config/loader.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
+(`config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
 environment variable). Two gateways on one port means the second one fails to
 bind.
 
@@ -192,7 +192,7 @@ What matters, and where it lives:
 | Config | `~/.kiro/crew/config.json` | Model preferences, dashboard settings, and integration config. The sync overwrites the remote copy, then patches `dashboard.url`; inspect it for legacy inline credentials before copying |
 | Skills | `~/.kiro/crew/skills/` | Custom skill definitions |
 | Tasks | `~/.kiro/crew/tasks/` | Task runner state |
-| Webhook hooks | `~/.kiro/crew/hooks.json`, `hooks/` | Script-hook definitions (`hooks.py` `ScriptHookStore`) and their scripts |
+| Webhook hooks | `~/.kiro/crew/hooks.json`, `hooks/` | Script-hook definitions (`hook_runtime/script_hooks.py` `ScriptHookStore`) and their scripts |
 | Cron jobs | `~/.kiro/crew/crons.json` | Scheduled recurring jobs (`cron.py`). Once copied, the jobs run on both hosts unless you pause them on one |
 | Dashboard metadata | `~/.kiro/crew/folders.json`, `tags.json`, `tag_boards.json`, `autonudge.json` | Sidebar folders, tag vocabulary, kanban columns and auto-nudge state |
 
@@ -264,7 +264,7 @@ ssh -fN -L 7779:localhost:7779 user@your-host.example.com   # background
 
 Pass `-C` to enable SSH transport compression. A hand-rolled tunnel gets no
 compression by default, while Kiro Crew's own tunnel manager turns it on for
-exactly this traffic (`src/kiro_crew/instances/ssh_tunnel_manager.py`): the
+exactly this traffic (`src/kiro_crew/instances/ssh_tunnel_manager_child_text.py`): the
 forwarded stream carries the dashboard SPA bundle plus all API/WS payloads,
 which are highly compressible, and the gateway does not gzip at the HTTP layer.
 
@@ -397,6 +397,15 @@ the same and the difference is the whole security story:
   permissions cannot be silently escalated by the dashboard. If the publish is
   refused, the card and command print what Tailscale itself said rather than a
   generic failure.
+
+  The Tailscale CLI is run only from its standard install locations, and only
+  when the binary and its folder need administrator rights to change, so no
+  other program can swap in a fake one. A Homebrew install on macOS usually
+  belongs to your own account, so it is refused: the card says Tailscale is
+  installed but will not be run, and `tailnet up` and `tailnet status` name the
+  refused binary. For that setup, publish the dashboard with `tailscale serve`
+  yourself, set `dashboard.url` to the exact address your browser opens, and
+  restart Kiro Crew.
 
   `kirocrew tailnet status` shows the three things that are independently
   required — whether the setting is on, whether a MagicDNS name resolves right
@@ -544,6 +553,59 @@ service installer such as `cloudflared service install`).
 > forward or a socat relay adds no such header, so it looks local and is not
 > refused.
 
+### Behind a reverse proxy
+
+Your own nginx, Caddy or similar works the same way as a tunnel: it terminates
+TLS on a public name and forwards to the loopback port.
+
+1. Serve the whole dashboard (page, API and WebSocket) from one host name, at
+   the root path. The dashboard's Content-Security-Policy admits `'self'` for
+   `connect-src`, so the browser accepts `wss://<that name>` sockets. It admits
+   no other public host, and no setting adds one. A split setup, with the
+   socket on a second host, is refused by the browser.
+2. Set `dashboard.url` to that public URL, as shown above, and restart. This
+   adds the origin to the allowed-origin set, so the CSRF check, the
+   WebSocket handshake and the DNS-rebinding `Host` barrier accept it.
+3. Pass these headers to the gateway:
+   - `Host`: the public name (or `localhost:<port>`). Any other value is
+     refused by the `Host` barrier.
+   - `X-Forwarded-Proto: https`. Without it the auth cookie is set without
+     `Secure`, and mobile browsers drop it from the `wss://` upgrade.
+   - `Upgrade` and `Connection`, so WebSocket upgrades pass through.
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name kirocrew.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+
+    location / {
+        proxy_pass http://127.0.0.1:5476;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+        proxy_buffering off;
+    }
+}
+```
+
+Caddy forwards `Host`, `X-Forwarded-Proto` and WebSocket upgrades by default:
+
+```
+kirocrew.example.com {
+    reverse_proxy 127.0.0.1:5476
+}
+```
+
+The public-internet notes above apply here too: put an auth layer in front of
+the proxy, and change settings over SSH, since proxied requests stay
+read-only.
+
 ### Getting a link on your phone
 
 1. In your Kiro Crew DM, send `/kirocrew dashboard` (or `/kirocrew dashboard 6h`).
@@ -563,7 +625,7 @@ desktop-style command menu first.
 ### Session duration
 
 Three clocks. The first two are signed into the access token payload
-(`dashboard/token_auth.py`), the third into the refresh cookie
+(`dashboard/token_auth_tokens.py`), the third into the refresh cookie
 (`dashboard/refresh_tokens.py`):
 
 | Clock | Value | What it governs |
@@ -661,23 +723,36 @@ Safari's address bar.
 
 **The service worker provides a limited offline shell.**
 [`website/public/sw.js`](../../website/public/sw.js) caches exactly `/` and
-`/index.html`. Every other same-origin `GET` is either passed straight to the
-browser or handled network-first; no other response is cached:
+`/index.html`. Every other same-origin `GET` falls into one of two buckets: a
+small set of **boot-critical assets** the worker takes over only so a transient
+`5xx` can be retried (never cached — the HTTP immutable cache still owns them),
+and the paths it **declines** and hands straight to the network. Only the shell is
+ever cached.
 
-| Path | Service-worker behavior |
+Retried (intercepted so one transient `5xx` cannot dead-page the boot):
+
+| Path | Why it earns a retry |
 |---|---|
-| any URL with a `token` query parameter (the `/?token=...` sign-in link) | Declines to intercept, never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
-| `/api`, `/sandbox-doc/`, `/app-windows/`, `/apps/` | Declines to intercept API, one-shot document, standalone app-window, and app-backend responses |
-| `/assets/`, `/vendor/` | Retries network errors and 5xx responses twice with jitter, but never caches the response |
-| `/fonts/`, `/sprites/` | Declines to intercept non-critical static resources |
-| `/logo.png`, `/static/` | Declines to intercept gateway-served brand assets |
+| `/assets/` | Vite content-hashed bundles a document cannot boot without; one 502 leaves a dark skeleton no reload clears |
+| `/vendor/` | Bare-specifier module stubs the import map depends on; boot-critical on standalone app-window documents |
+| `/pcm-worklet.js` | The dictation/STT worklet, fetched once by `addModule` with no retry of its own; the fetch handler routes it through `fetchAssetWithRetry`, giving it the same bounded retry as `/assets/` and `/vendor/` so one transient `5xx` cannot reject `addModule`, and the response is never cached |
 
-Every other same-origin `GET` is network-first, with the cached shell used only
-for failed navigation requests. So offline you get the shell and its reconnecting
-state — and only while the browser's own HTTP cache still holds the hashed
-`/assets/` bundles, which the worker never caches. After a build that changes
-those hashes, the cached shell references bundle URLs nothing has downloaded yet.
-Sessions, history, and notifications are never served from disk.
+Declined (handed straight to the network, never intercepted):
+
+| Path | Why it is not intercepted |
+|---|---|
+| any URL with a `token` query parameter (the `/?token=...` sign-in link) | Never answers from the cached shell and never caches it, so the gateway's token exchange always runs |
+| `/api`, `/apps/` | Gateway and app-backend responses must never be served stale |
+| `/fonts/`, `/sprites/` | Cost looks, not boot — a failed font or sprite does not stop the page running, so it earns no retry |
+| `/logo.png`, `/static/` | Gateway-served brand assets; intercepting them strands a broken image across a gateway restart |
+| `/sandbox-doc/`, `/app-windows/`, navigations into a widget frame | One-shot credentialed URLs, standalone app-window documents, and the shell fallback must not render into a widget frame |
+
+Everything not listed above is intercepted network-first, but only the shell is
+ever cached. So offline you get the shell and its reconnecting state — and only
+while the browser's own HTTP cache still holds the hashed `/assets/` bundles, which
+the worker never caches. After a build that changes those hashes, the cached shell
+references bundle URLs nothing has downloaded yet. Sessions, history, and
+notifications are never served from disk.
 
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
@@ -789,6 +864,28 @@ fi
 
 open "$URL"
 ```
+
+### Behind a reverse proxy at a sub-path
+
+The stock dashboard expects to sit at the root of its origin. To serve it under
+a prefix such as `https://gateway.example.com/proxy/kirocrew/`, build the
+frontend for that prefix:
+
+```bash
+cd website
+KIROCREW_BASE_PATH=/proxy/kirocrew npm run build
+cd .. && PYTHONPATH=src python -m kiro_crew.frontend stage .
+```
+
+`KIROCREW_BASE_PATH` is read only at build time. It becomes the prefix of every
+asset URL, the router base, and the path of the dashboard's own API, stream and
+WebSocket calls. The gateway serves the built page unchanged and does not read
+the variable, so a sub-path deployment is its own build. Unset, or `/`, builds
+the stock root dashboard. A value with a scheme, a host, a query, or a `.`/`..`
+segment stops the build.
+
+The proxy strips the prefix before forwarding, relays cookies, and rewrites
+`Location` headers on redirects. It no longer needs to rewrite the JavaScript.
 
 ---
 

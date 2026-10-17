@@ -333,8 +333,13 @@ take effect on next agent invocation. Backend changes require restart.
 ├── skills/               ← skill files
 │   └── sample-skill/
 │       └── SKILL.md
-├── backend/              ← optional backend
+├── backend/              ← optional backend (--backend)
 │   └── server.py
+├── ui/                   ← optional UI frontend (--ui)
+│   ├── package.json
+│   ├── vite.config.ts
+│   └── src/
+│       └── App.tsx
 └── README.md
 ```
 """
@@ -561,6 +566,8 @@ def scaffold_app(
                 "message": f"Run periodic check for {display_name}",
             }
         ]
+        # Manifest validation refuses crons without this grant.
+        manifest["permissions"] = {"cron": True}
     # The manifest is BUILT here but WRITTEN last (see the end of this
     # function). Overwriting app.json is the one destructive act in a
     # scaffold of an existing app -- every other site is generated and

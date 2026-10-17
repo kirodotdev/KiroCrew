@@ -44,6 +44,7 @@ if _APP_ROOT not in sys.path:  # allow `python3 sage_lib/learning.py` (run as sc
 from sage_lib import store  # noqa: E402
 
 from kiro_crew import platform_compat  # noqa: E402
+from kiro_crew.slugs import refused_slug_char  # noqa: E402
 
 # Learning is mined ONLY from human-validated, ground-truth signals.
 ADMISSIBLE_SOURCES = {"fix_introduce", "human_comment", "design_outcome", "import"}
@@ -53,6 +54,11 @@ DEFAULT_NAMESPACE = "default"
 # A valid user namespace token: lowercase alphanumeric start/end, with hyphens,
 # dots and underscores in between, 2-64 chars. Deliberately excludes path
 # separators and ".." so a namespace name can NEVER escape the namespaces/ dir.
+# ASCII on purpose: the name IS the directory, so it must mean one thing on every
+# platform and filesystem. A refusal names the offending character
+# (`create_namespace`'s `char`) so the dashboard can explain the rule in the
+# user's own language. The class is `kiro_crew.slugs.SLUG_CHARS`, which tests
+# pin it to.
 _NS_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$")
 
 
@@ -172,9 +178,23 @@ def list_namespaces(root: Path | None = None) -> list[str]:
 
 def create_namespace(name: str, root: Path | None = None) -> dict:
     """Create a new namespace with an empty learnings file."""
+    typed = name
     name = name.strip().lower().replace(" ", "-")
     if not _is_valid_ns_name(name):
-        return {"ok": False, "error": f"invalid namespace name: {name!r} (use lowercase alphanumeric, hyphens, dots, 2-64 chars)"}
+        # `code` + `char` are what the dashboard renders, in the user's language;
+        # the English `error` is for logs and catalog-less callers. `char` comes
+        # from what the user typed, before lowercasing, so it is a character they
+        # will recognize -- not a lowercase stand-in that can look like an
+        # allowed Latin letter.
+        return {
+            "ok": False,
+            "code": "invalid_namespace_name",
+            "char": refused_slug_char(typed),
+            "error": (
+                f"invalid namespace name: {name!r} (use lowercase a-z, 0-9, '.', '_' "
+                "or '-', starting and ending with a letter or digit, 2-64 chars)"
+            ),
+        }
     if name == DEFAULT_NAMESPACE:
         return {"ok": False, "error": "'default' namespace already exists (it maps to common/)"}
     ns_path = _namespace_dir(name, root)
@@ -486,8 +506,8 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
                       namespace: str | None = None,
                       candidate_ids: Sequence[str] | None = None) -> dict:
     """Atomically replace learned-patterns.md with the AI-merged content, then
-    clear the candidate. Refuses to write empty content (never wipes the ruleset
-    on a bad merge).
+    clear the candidate. Refuses to write empty, unparseable or duplicate-ID
+    content (never wipes the ruleset on a bad merge).
 
     The content is redacted here rather than at the caller because THIS is the
     persistence chokepoint. ``merged_md`` is written by the merge worker, which
@@ -500,6 +520,9 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
     """
     if not merged_md or not merged_md.strip():
         return {"ok": False, "error": "merged content is empty; refusing to overwrite learned-patterns.md"}
+    # Shape is judged on the worker's text as written: redaction is a storage
+    # transformation, and scrubbing a credential out of a heading must not be what
+    # decides whether the merge is a ruleset at all.
     if not parse_patterns(merged_md):
         # Non-empty prose is not a ruleset. Writing it would replace every pattern
         # with commentary and clear the candidate file in the same call, so the
@@ -507,7 +530,30 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
         return {"ok": False,
                 "error": "merged content has no recognizable patterns; "
                          "refusing to overwrite learned-patterns.md"}
-    merged_md = _redact(merged_md)
+    stored_md = _redact(merged_md)
+    stored_patterns = parse_patterns(stored_md)
+    if not stored_patterns:
+        # The redacted text is what gets stored, so a scrub that leaves no
+        # recognizable pattern is refused here rather than written and cleared.
+        return {"ok": False,
+                "error": "redaction left no recognizable patterns; "
+                         "refusing to overwrite learned-patterns.md"}
+    # Uniqueness is judged on the STORED text, not the worker's: redaction can erase
+    # the only difference between two titles (two distinct credentials both become
+    # the same tag), so a pre-redaction count can pass two patterns that land as one
+    # duplicate pair on disk.
+    counts = collections.Counter(p["id"] for p in stored_patterns)
+    duplicate_ids = sorted(pid for pid, count in counts.items() if count > 1)
+    if duplicate_ids:
+        # Titles, not just the content hashes: the caller's retry prompt and a human
+        # both need to know WHICH rules collided before they can merge them.
+        duplicate_set = set(duplicate_ids)
+        duplicate_titles = sorted({p["title"] for p in stored_patterns if p["id"] in duplicate_set})
+        named = "; ".join(duplicate_titles) if duplicate_titles else "see duplicate_ids"
+        return {"ok": False, "duplicate_ids": duplicate_ids,
+                "duplicate_titles": duplicate_titles,
+                "error": "merged content has duplicate pattern IDs; merge each "
+                         f"repeated title and scope into one rule and retry ({named})"}
     store.ensure_layout(root)
     staged = candidate_count(root, namespace)
     # Which candidates this merge is entitled to clear. The caller passes the set
@@ -515,7 +561,7 @@ def consolidate_apply(merged_md: str, root: Path | None = None,
     # which still protects anything staged after this instant.
     if candidate_ids is None:
         candidate_ids = [p["id"] for p in list_candidate(root, namespace)]
-    body = merged_md if merged_md.endswith("\n") else merged_md + "\n"
+    body = stored_md if stored_md.endswith("\n") else stored_md + "\n"
     # The guards above check the merged text's shape, not that it kept every rule, so
     # keep the pre-merge ruleset: a merge that parses and still loses lessons is
     # recoverable from this copy and from nowhere else.

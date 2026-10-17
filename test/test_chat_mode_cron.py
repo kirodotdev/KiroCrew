@@ -1,7 +1,7 @@
 """A ``cron:`` caller on ``POST /api/chat/mode`` sets one posture on one slot it created.
 
 ``ScriptContext.set_session_mode`` is the cron path to ``api_chat_mode``
-(``src/kiro_crew/dashboard/chat_handlers.py``). The handler holds a caller that
+(``src/kiro_crew/dashboard/chat_api/slot_approval.py``). The handler holds a caller that
 presents an attested ``cron:<job id>`` key to three rules, each audited:
 
 1. the mode is ``trust`` or ``trust_reads``; ``yolo``, ``normal`` and anything
@@ -465,8 +465,8 @@ async def test_a_cron_naming_a_slot_that_is_not_live_gets_unknown_slot(
 async def test_the_fence_judges_the_slot_the_grant_is_written_to(state, override, audit, attested):
     """The fence runs on the resolved live slot, after the unknown-slot check."""
     owner = _owner_slot(state)
-    fence = MagicMock(wraps=chat_handlers.cron_creator_refusal)
-    with patch.object(chat_handlers, "cron_creator_refusal", fence):
+    fence = MagicMock(wraps=chat_handlers.cron_creator_admission)
+    with patch.object(chat_handlers, "cron_creator_admission", fence):
         status, body = await _as_cron(state, {"slot": owner.key, "mode": "trust"})
 
     assert (status, body["code"]) == (403, "not_creator")

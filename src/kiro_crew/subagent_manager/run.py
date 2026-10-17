@@ -9,6 +9,7 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from ..aws_project_profiles import ResolvedAwsProfile
 from ..constants import DENY_CAUSE_SURFACE_POLICY
 from ..hooks import permission_pre_tool_block
 from ..metrics import events as metric_events
@@ -17,6 +18,7 @@ from ..subagent_persistence import (
     remember_live_cleanup_identity,
     write_run_agent,
 )
+from ..subagent_wait_reasons import DEFERRED_QUEUED_REASONS
 from ..tool_permission import (
     GATE_GRANT,
     Ask,
@@ -32,6 +34,7 @@ from ..tool_permission import (
     SubagentRows,
 )
 from ._component import ManagerComponent
+from .admission.taskq_bridge import _in_memory_queued_entries
 from .admission.types import WINDOW_ENTRY_RECOVERING
 
 if TYPE_CHECKING:
@@ -60,6 +63,8 @@ if TYPE_CHECKING:
         HOOK_EVENT_POST_TOOL_USE,
         MAX_ERROR_DETAIL_LEN,
         MEMORY_CAUSE_READ_UNANSWERED,
+        SESSION_NOT_FOUND_GIVE_UP_TEXT,
+        SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
         STOP_CLASS_CANCELLED,
         STOP_RECOVERY_MAX_RETRIES,
         TRANSIENT_RETRIES,
@@ -80,6 +85,7 @@ if TYPE_CHECKING:
         _host_memory_reading_off_loop,
         _redact,
         _resolved_model_of,
+        _route_unpinned_start,
         _RunCreditAccounting,
         _selection_kind,
         _SharingPlan,
@@ -90,6 +96,7 @@ if TYPE_CHECKING:
         _timeout_context,
         _validate_agent,
         _vet_spawn_governance,
+        acp_error_is_session_not_found,
         acp_error_is_transient,
         advance_fallback_candidate,
         agent_dir_for_display,
@@ -113,6 +120,7 @@ if TYPE_CHECKING:
         process_survived_async,
         provider_fallback_active,
         read_tombstone,
+        refresh_live_process_tree,
         refuse_stale_switch,
         replace_stale_shared_session,
         reproject_claimed_session,
@@ -222,6 +230,7 @@ class _ApprovalPrompt:
         approval_id, origin = cast("tuple[str, tuple[str, int]]", token)
         self._info._awaiting_approval = False
         self._info.last_activity = _time.time()
+        self._info._last_activity_mono = _time.monotonic()
         self._run._record_crew_log_approval_decided(
             origin, approval_id=approval_id, decision=decision, by=by
         )
@@ -269,11 +278,25 @@ class _SubagentNarrator(Narrator):
             self._info.tool_count += 1
 
 
+def _stop_in_progress(info: SubagentInfo) -> bool:
+    """Whether *info* is being stopped: a Stop, a parent end or a reap has begun.
+
+    Read live by the run loop and by its permission ladder (``Policy.stopping``).
+    The stop cancels the run task only after its session teardown, and the
+    approval wait turns that cancel into a denial, so a run can still be reading
+    its stream while this holds.
+    """
+    return bool(info._reap_started or info.user_stopped or info.reaped)
+
+
 class RunEventCoordinator(ManagerComponent):
     """Own run transitions while state remains facade-owned."""
 
     _publish_identity = staticmethod(publish_live_cleanup_identity)
     _remember_identity = staticmethod(remember_live_cleanup_identity)
+    # Reached as an attribute: an ``_impl`` method resolves its globals in the
+    # facade module, which does not hold this module's helpers.
+    _stop_in_progress = staticmethod(_stop_in_progress)
     _write_run_agent = staticmethod(write_run_agent)
     __slots__ = ()
 
@@ -717,6 +740,27 @@ class RunEventCoordinator(ManagerComponent):
         and the teardown gate — leaking a concurrency slot, which is the very
         class of bug this module's guard split exists to prevent.
         """
+        if not info._session_sharing:
+            # Re-walk the tree while the run still holds its lease, so children
+            # this run's turns started are on the handle taken below and can
+            # vouch for the group once the leader exits. Before ``release()``:
+            # a walk after it would leave the key claimable for the walk's
+            # length, and a claimer's live turn would then be popped by the
+            # reset. A cancellation here still releases the lease and records
+            # the undecided kill, like one during the reset.
+            try:
+                await refresh_live_process_tree(self._manager._sessions, session_key)
+            except asyncio.CancelledError as exc:
+                try:
+                    self._manager._sessions.release(session_key, cleanup=False)
+                except Exception:
+                    logger.warning("Subagent %s: release failed", info.id, exc_info=True)
+                if not info._reap_started:
+                    info.error = with_kill_failure(
+                        info.error or "",
+                        f"{failure_name(exc)}: the teardown was cancelled before its kill decided",
+                    )
+                raise
         try:
             if info._session_sharing:
                 # Session-sharing subagents: destroy the session handle
@@ -749,17 +793,17 @@ class RunEventCoordinator(ManagerComponent):
             # reaper finds the map empty and reads this entry instead. On a map
             # miss here the roles are reversed and the entry is the reaper's.
             # Every process the key names is a candidate, each on its own handle.
-            pairs = self._manager._sessions_under(session_key)
-            handles = self._manager._retain_process_handles(info.id, session_key, pairs)
-            seen = [session for session, _handle in pairs]
-            # Under a scope whose hook takes the handle of the exact session the
-            # reset pops (a successor a cold start registered after the snapshot);
-            # a popped session with no pid the snapshot never saw is a kill
-            # failure, one it saw names no process (see ``_force_reap``).
-            reset_kwargs, popped = teardown_capture(self._manager._sessions, session_key)
             kill_failed: str | None = None
             fallback_ran = False
             try:
+                pairs = self._manager._sessions_under(session_key)
+                handles = self._manager._retain_process_handles(info.id, session_key, pairs)
+                seen = [session for session, _handle in pairs]
+                # Under a scope whose hook takes the handle of the exact session the
+                # reset pops (a successor a cold start registered after the snapshot);
+                # a popped session with no pid the snapshot never saw is a kill
+                # failure, one it saw names no process (see ``_force_reap``).
+                reset_kwargs, popped = teardown_capture(self._manager._sessions, session_key)
                 try:
                     await asyncio.wait_for(
                         self._manager._sessions.reset(session_key, **reset_kwargs),
@@ -808,21 +852,31 @@ class RunEventCoordinator(ManagerComponent):
                     # this returns) before it builds its payload, so the
                     # completion the parent receives, the ``subagent_done``
                     # event and the tombstone all carry the same failure -- and
-                    # a completed run whose process the kill left standing is
-                    # NOT marked delivered (``_report_terminal`` gates that on
-                    # an empty error), so its folder stays in orphan
-                    # reconciliation, which is what kills the survivor at the
-                    # next start. Published first, the parent received a clean
-                    # completion whose ``delivered`` tombstone hid the process
-                    # from reconciliation for good (the cron reaper's
+                    # the survivor is recorded as a LEAKED PROCESS, separate
+                    # from the delivery. Published first, the parent received a
+                    # clean completion whose ``delivered`` tombstone hid the
+                    # process from reconciliation for good (the cron reaper's
                     # ``last_error`` takes the same suffix, the one spelling).
+                    # A completed run has no tombstone yet and gets none here:
+                    # until the parent acknowledges the completion its folder
+                    # must stay in orphan reconciliation, which re-delivers a
+                    # completion a restart dropped from the parent's queue.
+                    # ``_leaked_process`` is read by the report instead: an
+                    # acknowledged delivery writes the ``delivered`` tombstone
+                    # with ``leaked_process``, so the next start ends the
+                    # process without announcing the run a second time
+                    # (``_end_leaked_processes_impl``).
                     info.error = with_kill_failure(info.error or "", kill_failed)
                     tombstone = read_tombstone(info.id)
-                    if tombstone is not None and tombstone.get("cause") != "delivered":
+                    if tombstone is None:
+                        info._leaked_process = True
+                    elif tombstone.get("cause") != "delivered":
                         # The run's own arm wrote it already (an error, a
                         # timeout, a cancel): re-written under the same cause so
                         # the record on disk names the failure too.
-                        self._manager._write_tombstone(info, str(tombstone.get("cause") or "error"))
+                        self._manager._write_tombstone(
+                            info, str(tombstone.get("cause") or "error"), leaked_process=True
+                        )
                 if fallback_ran:
                     try:
                         sel().log_tool_invocation(
@@ -883,6 +937,11 @@ class RunEventCoordinator(ManagerComponent):
         if not info.result and info.streaming_text:
             info.result = info.streaming_text
         info.done = True
+        # Terminal done flip on the reap-ending path: arm with it. The reap's
+        # report is spawned separately and reaches the consumer only after its
+        # own teardown, so a done-but-unarmed window here would let a sibling
+        # close the wave early (same shape as the run's own terminal flips).
+        self._manager.arm_report_in_flight(info)
         if not neutral:
             Stats().inc_subagent_failed()
         self._manager._write_tombstone(info, info._reap_reason or "reaped")
@@ -895,8 +954,13 @@ class RunEventCoordinator(ManagerComponent):
         # report once its kill has decided (see the ``finally``).
         reap_owns_report = False
         try:
+            # Capture the deadline once, when execution starts. A record that
+            # unexpected-cancel recovery respawns keeps its nonzero value, so a
+            # config reload between the two attempts cannot move it.
+            if info.timeout_secs == 0:
+                info.timeout_secs = self._manager._default_timeout
             await asyncio.wait_for(
-                self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
+                self._manager._run_inner(info, session_key), timeout=info.timeout_secs
             )
             if info._reap_started and not info.done:
                 # Returned with no ending while a reap is in flight -- the tail
@@ -919,8 +983,17 @@ class RunEventCoordinator(ManagerComponent):
             # unwinds -- is never overwritten or respawned, and its log line
             # says the run completed rather than naming what cut its tail short.
             if not info.reaped and not info.done:
-                info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+                info.error = f"Timed out after {info.timeout_secs // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
+                # Armed HERE, synchronously with the flip -- not left to the
+                # report task spawned later. Between this flip and that task's
+                # first run the coroutine yields (the teardown awaits), and in
+                # that done-but-unarmed window a sibling completion reads this
+                # member as neither pending nor in flight and closes the wave
+                # early; the report then finalizes it AGAIN (the
+                # failure-path window). The report machinery's own arm stays
+                # as an idempotent no-op.
+                self._manager.arm_report_in_flight(info)
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
             if info._ending_claimed:
@@ -928,6 +1001,7 @@ class RunEventCoordinator(ManagerComponent):
             else:
                 logger.warning("Subagent %s timed out", info.id)
         except asyncio.CancelledError:
+            handed_to_recovery = False
             if not info.reaped and not info.done:
                 if (
                     not info.user_stopped
@@ -972,8 +1046,13 @@ class RunEventCoordinator(ManagerComponent):
                     except Exception:
                         logger.debug("SEL audit for cancel recovery failed", exc_info=True)
                     self._manager._schedule_cancel_recovery(info)
+                    handed_to_recovery = True
                 else:
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above --
+                    # the cancel path yields at teardown before its report
+                    # task first runs (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     if (
                         info.tool_count > 0
                         and not info.user_stopped
@@ -999,6 +1078,18 @@ class RunEventCoordinator(ManagerComponent):
                 logger.info("Subagent %s completed before a cancel ended the run", info.id)
             else:
                 logger.info("Subagent %s cancelled", info.id)
+            if handed_to_recovery:
+                # The run continues on the ``<id>:recovery`` task, not this one,
+                # so this task must end CANCELLED rather than return: a waiter
+                # holding it (``await task``, ``asyncio.wait_for``,
+                # ``asyncio.timeout``) would otherwise read a clean completion
+                # while the run has neither finished nor claimed its session,
+                # and a ``wait_for`` that timed out would return instead of
+                # raising ``TimeoutError``. ``_resume``'s handshake
+                # waits with ``asyncio.wait``, which does not care how the task
+                # ended; the finally below runs either way and, while
+                # ``_recovering`` is set, reports nothing.
+                raise
         except Exception as exc:
             if getattr(exc, "context_overflow", False):
                 # The native session that raised this cannot shrink the envelope
@@ -1068,9 +1159,52 @@ class RunEventCoordinator(ManagerComponent):
                     else:
                         info.error = detail
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above
+                    # (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "error")
                     logger.warning("Subagent %s context overflow: %s", info.id, exc)
+            elif acp_error_is_session_not_found(exc) and not info._reap_started:
+                # A live backend holds no session under this run's id. The
+                # teardown in ``finally`` resets the session and keeps its
+                # durable pointer, so a respawned run's claim re-loads the SAME
+                # id on a fresh runtime. Same side-effect gate as the
+                # unexpected-cancel respawn: once a tool ran, re-sending the
+                # task could repeat it, so the run ends with the partial kept.
+                can_reload = (
+                    not info._session_not_found_retry_used
+                    and info.tool_count == 0
+                    and not info.user_stopped
+                    and not self._manager._shutting_down
+                )
+                if can_reload:
+                    info._session_not_found_retry_used = True
+                    info._recovering = True
+                    logger.warning(
+                        "Subagent %s: backend lost its session; re-running once on a "
+                        "fresh runtime: %s",
+                        info.id,
+                        exc,
+                    )
+                    self._manager._schedule_cancel_recovery(info, reason="session_not_found")
+                else:
+                    if not info.result and info.streaming_text:
+                        info.result = info.streaming_text
+                    detail = _redact(str(exc))[:MAX_ERROR_DETAIL_LEN]
+                    if info._session_not_found_retry_used:
+                        info.error = f"{SESSION_NOT_FOUND_GIVE_UP_TEXT} {detail}"
+                    elif info.tool_count:
+                        info.error = f"{SESSION_NOT_FOUND_NOT_REPLAYED_TEXT} {detail}"
+                    else:
+                        info.error = detail
+                    info.done = True
+                    # Same synchronous flip+arm as the timeout arm above
+                    # (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
+                    Stats().inc_subagent_failed()
+                    self._manager._write_tombstone(info, "error")
+                    logger.warning("Subagent %s lost its session: %s", info.id, exc)
             elif info._reap_started and is_runtime_death(exc):
                 # The ECHO of our own teardown, not a fault of the run.
                 # ``_force_reap`` resets the run's session (or shuts its shared
@@ -1127,6 +1261,9 @@ class RunEventCoordinator(ManagerComponent):
                         _describe_exception(exc), exc, budget=MAX_ERROR_DETAIL_LEN
                     )
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above
+                    # (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "error")
                 if info._ending_claimed:
@@ -1200,6 +1337,10 @@ class RunEventCoordinator(ManagerComponent):
                 if self._manager._release_slot(info):
                     self._manager._running_count -= 1
                     self._manager._drain_queue()
+                # The run's session is torn down, so what it held is free memory
+                # again: a start waiting for memory is re-checked now, not at its
+                # admit wait (a no-op when none waits).
+                self._manager._admission.wake_memory_waits("child_terminal")
                 # A run that ended while parked on a wait: its resume entry
                 # must not hand a slot to a finished run, and its dependency
                 # scope must stop counting it (a finished probe is the scope's
@@ -1227,8 +1368,9 @@ class RunEventCoordinator(ManagerComponent):
         # spawned in the finally above; block until it completes so sequencing is
         # unchanged for callers.
         #
-        # NOT during shutdown. `_run`'s CancelledError arm deliberately does not
-        # re-raise, so by the time we reach this await the cancellation has been
+        # NOT during shutdown. `_run`'s terminal CancelledError arm deliberately
+        # does not re-raise (only the hand-off to cancel recovery does, and it
+        # spawns no report), so by the time we reach this await the cancellation has been
         # consumed and `shield` would simply wait out the full _ON_DONE_TIMEOUT
         # injection cap — holding `cancel_all()`'s gather for up to 20 minutes.
         # The report is registered in `self._report_tasks`, so `cancel_all()`'s
@@ -1244,6 +1386,7 @@ class RunEventCoordinator(ManagerComponent):
         running-card drops the "stalled" warning the moment work resumes.
         """
         info.last_activity = time.time()
+        info._last_activity_mono = time.monotonic()
         info._stall_suspect_at = 0.0  # activity resets the 2-sweep confirmation
         # Retire the oracle so the next suspicion samples a fresh baseline rather
         # than differencing against counters from before this activity, and bump
@@ -1298,7 +1441,12 @@ class RunEventCoordinator(ManagerComponent):
         return in_window + self._manager._admission.taskq_overflow(parent_session_key)
 
     def _window_depth(self, parent_session_key: str, *, include_recovering: bool = True) -> int:
-        """Unstarted spawns *parent_session_key* holds in the in-memory window.
+        """Unstarted spawns *parent_session_key* holds in memory.
+
+        The dispatch window and the entries the pump holds while it re-checks
+        them (:func:`_in_memory_queued_entries`): an entry popped for a re-check
+        with no store row is in neither the window nor the store until the gate
+        decides, and it is still waiting to start.
 
         A ``_resume_id`` entry is not one: it is a RESIDENT run asking for its
         lane slot back, already counted where running runs are, and it leaves
@@ -1316,7 +1464,7 @@ class RunEventCoordinator(ManagerComponent):
         resident = self._manager._admission.entry_is_resident_resume
         return sum(
             1
-            for q in self._manager._queue
+            for q in _in_memory_queued_entries(self._manager)
             if q.get("parent_session_key", "") == parent_session_key
             and not resident(q)
             and (include_recovering or not q.get(WINDOW_ENTRY_RECOVERING))
@@ -1349,9 +1497,12 @@ class RunEventCoordinator(ManagerComponent):
         return await self._manager._queued_depth_async(parent_session_key)
 
     def _in_window_count(self, parent_session_key: str) -> int:
-        """This parent's spawns in the in-memory dispatch window."""
+        """This parent's spawns in memory: the dispatch window and the entries
+        the pump holds mid re-check (:func:`_in_memory_queued_entries`)."""
         return sum(
-            1 for q in self._manager._queue if q.get("parent_session_key", "") == parent_session_key
+            1
+            for q in _in_memory_queued_entries(self._manager)
+            if q.get("parent_session_key", "") == parent_session_key
         )
 
     def _has_live_parent_run_task(self, parent_session_key: str, *, exclude_id: str = "") -> bool:
@@ -1370,6 +1521,23 @@ class RunEventCoordinator(ManagerComponent):
             if task is not None and not task.done():
                 return True
         return False
+
+    def has_unfinished_report_for_impl(self, parent_session_key: str) -> bool:
+        """Whether a terminal report owned by *parent_session_key* is still running.
+
+        The span after :meth:`_has_live_parent_run_task` goes false: the run's
+        task is gone, and its report sits in ``_report_owners`` until delivery
+        resolves -- for a reaped run, across the reap's reset and kill awaits. A
+        parent teardown in that span marks the child teardown-cancelled and the
+        report skips ``_on_done``, so a caller deciding whether a parent may be
+        torn down must count it. Synchronous, in-memory, loop-safe.
+        """
+        if not parent_session_key:
+            return False
+        return any(
+            owner.parent_session_key == parent_session_key and not task.done()
+            for task, owner in self._manager._report_owners.items()
+        )
 
     def _has_live_parent_followup_watcher(self, parent_session_key: str) -> bool:
         """Whether a live follow-up watcher still owns work for this parent."""
@@ -1448,7 +1616,8 @@ class RunEventCoordinator(ManagerComponent):
 
         *wait* is the gate's label for WHY the rows wait (a ``QUEUED_REASON_*``
         ``reason``, plus ``available_gb`` / ``required_gb`` for the memory
-        kinds; ``memory_pressure`` carries no figures). It is recorded per parent with the request and rides on every
+        kinds, or ``cause`` in place of ``available_gb`` when the cgroup usage
+        is unreadable; ``memory_pressure`` carries no figures). It is recorded per parent with the request and rides on every
         later non-zero frame for that parent until a depth-0 read that no
         request overlapped forgets it; an overlapped 0 read is published bare
         and keeps the label, since the overlapping request may have written it.
@@ -1567,6 +1736,13 @@ class RunEventCoordinator(ManagerComponent):
             extra: dict[str, Any] = {"queued": depth}
         else:
             extra = {"queued": depth, **manager._queue_wait.get(parent_session_key, {})}
+            if extra.get("reason") in DEFERRED_QUEUED_REASONS:
+                # The live bound on a memory wait, read as the frame is sent so
+                # a config reload shows on the next frame (0 is no bound).
+                # One reader with the sweep and the pressure hold that end the wait.
+                extra["max_wait_secs"] = max(
+                    0, int(manager._admission.taskq_memory_wait_bound_secs())
+                )
         info = SubagentInfo(
             id="_queue", task="", parent_session_key=parent_session_key, batch_id=batch_id
         )
@@ -1918,6 +2094,7 @@ class RunEventCoordinator(ManagerComponent):
                 annotate=_unverified_title,
             ),
             narrator=_SubagentNarrator(info, rows, log),
+            stopping=lambda: self._stop_in_progress(info),
         )
 
     async def _run_inner_impl(
@@ -1934,6 +2111,7 @@ class RunEventCoordinator(ManagerComponent):
         # watchdog measures from here, not from registration (which may include
         # an arbitrary spawn-approval wait). Must be the first statement.
         info._exec_started = time.time()
+        info._exec_started_mono = time.monotonic()
         info._first_stream_started = None
         info._first_stream_mono = None
         info._startup_cotenant_frames = 0
@@ -1942,7 +2120,9 @@ class RunEventCoordinator(ManagerComponent):
         # (or a mark it was cancelled inside) would be subtracted from a clock that
         # never paid it -- blinding the watchdog, or spending the saturation cap.
         info._start_queue_wait_ms = 0.0
+        info._start_queue_wait_mono_ms = 0.0
         info._gate_wait_started = None
+        info._gate_wait_started_mono = None
         # The durable row stays ``starting`` until this run's OWN turn produces
         # its first stream event addressed to its session
         # (``ensure_running_marked`` in the stream loop below):
@@ -1957,12 +2137,14 @@ class RunEventCoordinator(ManagerComponent):
         # that pre-execution delay as idle time and prematurely surface a
         # healthy, just-started subagent as "stalled".
         info.last_activity = info._exec_started
+        info._last_activity_mono = info._exec_started_mono
         if info.error.startswith("memory_unavailable:"):
             raise RuntimeError(info.error)
         if not isinstance(info.memory_store, str):
             raise ValueError("memory_unavailable: the recorded memory identity is malformed")
         # Local imports: this body runs on ``kiro_crew.subagent``'s globals
         # (bind_component_globals), which do not export these names.
+        from kiro_crew.agent_sdk import capture_prompt_timeout
         from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
         from kiro_crew.recovery.ladder import InfraError
         from kiro_crew.taskq.dependency import classify_exception
@@ -2146,7 +2328,14 @@ class RunEventCoordinator(ManagerComponent):
         # The one sharing decision (``_sharing_plan``), which admission also read
         # to price this start: template execution, not ``keep``, the eligibility
         # predicate, and no model / reasoning-effort pin.
-        plan = self._manager._sharing_plan(info)
+        # An UNPINNED start may take a model from ``model.route``'s derived tiers
+        # (``decisions.model_route_derive``, off by default). Decided before the
+        # sharing plan, which reads the routed model as a pin: a routed model
+        # cannot be applied to the parent's already-started runtime.
+        await _route_unpinned_start(info, kind, self._manager._sessions)
+        plan = self._manager._sharing_plan(
+            info, child_aws_profile=await self._resolve_child_aws_profile(info)
+        )
         eff_model = plan.eff_model
         # Record the EFFECTIVE pin (per-spawn OR the role_models['subagent']
         # config pin, via ``_subagent_default_model()``) as the requested side of
@@ -2164,6 +2353,10 @@ class RunEventCoordinator(ManagerComponent):
         eff_effort = plan.eff_effort
         if eff_effort:
             extra_kwargs["reasoning_effort_override"] = eff_effort
+        # The per-spawn backend (spawn_run ``backend``). ``is not None``: ``""``
+        # is a Kiro request and must reach the factory under a non-Kiro default.
+        if info.backend is not None:
+            extra_kwargs["backend_override"] = info.backend
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:
@@ -2209,7 +2402,7 @@ class RunEventCoordinator(ManagerComponent):
         # follow-up rather than the only one.
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
-            self._manager._conversations[session_key] = time.time()
+            self._manager._conversations[session_key] = time.monotonic()
         use_session_sharing = plan.shared
         if use_session_sharing:
             # Local import: run.py's ``*_impl`` bodies resolve globals through
@@ -2509,6 +2702,11 @@ class RunEventCoordinator(ManagerComponent):
                     "model provenance",
                     requested_model=info.requested_model,
                     resolved_model=info.resolved_model,
+                    # What a continuation after a restart keeps: the caller's own
+                    # pin, not ``requested_model`` (which also holds a role pin or
+                    # a routed tier), and the effort.
+                    pinned_model=info.model,
+                    reasoning_effort=info.reasoning_effort,
                 )
                 if _wrote:
                     break
@@ -2593,7 +2791,33 @@ class RunEventCoordinator(ManagerComponent):
             # on-loop writers (promote / release) contend for -- taking the
             # per-agent lock here is what orders it against any other pool
             # writer.
-            await self._manager._write_state_off_loop(info, "session record", **state_update)
+            #
+            # This write is the SINGLE owner of `cwd` and `session_id` on the
+            # spawn path (continuation reads `cwd` back through
+            # recorded_cwd), so it gets the same ONE bounded retry as the
+            # model-provenance write above: an exception or a reported skip
+            # (False -- update_state could not read the state) gets a second
+            # chance, and only a reported write ends the loop. CancelledError
+            # is not an Exception, so a cancellation still ends the loop
+            # instead of starting a second writer. A write that fails both
+            # times is logged at WARNING, so a run whose record lacks `cwd` is
+            # visible in the log.
+            _session_record_written = False
+            for _session_record_attempt in range(2):
+                try:
+                    if await self._manager._write_state_off_loop(
+                        info, "session record", **state_update
+                    ):
+                        _session_record_written = True
+                        break
+                    logger.debug("Session record write skipped (unreadable state) for %s", info.id)
+                except Exception:
+                    logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
+            if not _session_record_written:
+                logger.warning(
+                    "Session record (session_id/cwd) was not persisted for %s after 2 attempts",
+                    info.id,
+                )
         except Exception:
             logger.debug("Failed to record session_id for %s", info.id, exc_info=True)
 
@@ -2652,6 +2876,16 @@ class RunEventCoordinator(ManagerComponent):
         _policy = _policy_for(_spec)
         # Set when the stream ends on a generate failure after real output.
         _kept_after_generate_failure = False
+        # One run owns one immutable manager deadline. Capture a transport
+        # budget only when the concrete provider declares that capability, then
+        # reuse it across every retry, fallback, and recovery continuation.
+        # Legacy duck providers retain their one-argument stream call. Captured
+        # here, after the cleanup identity above is published and persisted: a
+        # cancel landing on this await still leaves a tombstone whose provider
+        # files can be reclaimed.
+        prompt_timeout = await asyncio.to_thread(
+            capture_prompt_timeout, client, float(info.timeout_secs)
+        )
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -2686,6 +2920,10 @@ class RunEventCoordinator(ManagerComponent):
             msg = full_message
             while True:
                 usage.begin(client)
+                # A new prompt starts with nothing in flight. A call the last
+                # attempt or turn never closed would otherwise wait in the
+                # in-flight set and be handed the slot when a later call returns.
+                self._manager._clear_tool_dispatch(info)
                 try:
                     if not use_session_sharing:
                         # Publish the live dedicated PID before every prompt,
@@ -2713,7 +2951,12 @@ class RunEventCoordinator(ManagerComponent):
                     # by a continuation on the same session.
                     _withheld: LLMEvent | None = None
                     _infra: Any = None
-                    async for _ev in client.stream(msg):
+                    stream = (
+                        client.stream(msg)
+                        if prompt_timeout is None
+                        else client.stream(msg, timeout=prompt_timeout)
+                    )
+                    async for _ev in stream:
                         if not _ev.runtime_global:
                             # A frame addressed to THIS session: the run's own
                             # turn exists, so the durable row is ``running`` and
@@ -2807,20 +3050,25 @@ class RunEventCoordinator(ManagerComponent):
                     # coordinator -- ONE schedule for every session on that
                     # scope -- and yields its lane slot until the scope wakes
                     # it by capacity. The in-turn ladder below stays for
-                    # transients no adapter classifies and for a manager
-                    # without a durable queue.
+                    # transients no adapter classifies, for a manager without a
+                    # durable queue, and for a run that has no task row at all
+                    # (``None``: nothing records its wait and nothing else owns
+                    # its work). A row another owner holds, a row that ended,
+                    # or a store that cannot say stops the run (``False``).
                     _signal = classify_exception(exc) if _dep_coordinator is not None else None
                     if _signal is not None and not _signal.terminal:
                         if _had_activity and post_activity_attempts >= 1:
                             raise
-                        if not await self._manager._yield_for_dependency(info, _signal):
+                        _parked = await self._manager._yield_for_dependency(info, _signal)
+                        if _parked is False:
                             raise
-                        if _had_activity:
-                            post_activity_attempts += 1
-                            msg = _TRANSIENT_CONTINUE_MSG
-                        else:
-                            msg = full_message
-                        continue
+                        if _parked:
+                            if _had_activity:
+                                post_activity_attempts += 1
+                                msg = _TRANSIENT_CONTINUE_MSG
+                            else:
+                                msg = full_message
+                            continue
                     if _had_activity:
                         if post_activity_attempts >= 1:
                             raise
@@ -3017,6 +3265,24 @@ class RunEventCoordinator(ManagerComponent):
                 # wall-clock reaper fires. Generous multiple of the parent's
                 # limit: legitimate crews fan many small child tool calls.
                 _ask = tool_permission.Ask(event, _wire, session_key)
+                # A run that is being stopped bails every request as ``stopped``
+                # before any grant or person is consulted: audited, and rejected
+                # bare on the wire. The stop cancels this task only after its
+                # session teardown; when the teardown and its kill both fail, the
+                # stream keeps going, and a request read here would otherwise be
+                # settled for a run the user stopped. The request is answered
+                # (it is already dequeued) and the run ends here, as at the limit
+                # bails below; the stream's own ending arms record the stop.
+                if self._stop_in_progress(info):
+                    logger.warning(
+                        "Subagent %s: rejecting a tool request, a stop is in progress",
+                        info.id,
+                    )
+                    try:
+                        await tool_permission.bail(_ask, _policy, "stopped")
+                    except Exception:
+                        logger.exception("failed to reject a request after a stop")
+                    break
                 if not event.sub_session_id:
                     turns += 1
                     info.turns = turns
@@ -3041,6 +3307,10 @@ class RunEventCoordinator(ManagerComponent):
                         info.result = result_text or "_Partial output._"
                         info.error = f"child_escalation_limit:{child_escalation_limit}"
                         info.done = True
+                        # In-run terminal flip: the report is spawned only
+                        # after this return unwinds to ``_run``'s ``finally``
+                        # -- arm with the flip.
+                        self._manager.arm_report_in_flight(info)
                         Stats().inc_subagent_failed()
                         logger.warning(
                             "Subagent %s hit child escalation limit (%d)",
@@ -3074,6 +3344,11 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_kind": event.tool_kind,
                         "turns": info.turns,
                         "tool_count": info.tool_count,
+                        # Lets the card's tool-call list tell this request apart
+                        # from the parent's own call that announced it (same id,
+                        # same tool_count) and from a child's request (other id,
+                        # tool_count unchanged).
+                        "tool_call_id": _redact(event.tool_call_id or ""),
                     },
                 )
                 if turns > turn_limit:
@@ -3087,12 +3362,22 @@ class RunEventCoordinator(ManagerComponent):
                     info.result = result_text or "_Partial output._"
                     info.error = f"turn_limit:{turn_limit}"
                     info.done = True
+                    # In-run terminal flip -- same arm as the escalation-limit
+                    # return above.
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
                     usage.settle()
                     self._manager._write_tombstone(info, "turn_limit")
                     return
-                await tool_permission.settle(_ask, _policy)
+                settled = await tool_permission.settle(_ask, _policy)
+                if settled.rung == "stopped":
+                    # The ladder bailed this request for a stop that landed
+                    # while it was being settled: the run ends here, as at the
+                    # bail above. A person's no (a stop's cancel the approval
+                    # wait turned into a denial) reads on: a stream the stop tore
+                    # down raises at the next read, a live one meets the bail.
+                    break
             elif event.kind == EVENT_AGENT_SWITCHED:
                 # A mid-run mode switch runs a different agent, so ITS spec hooks gate
                 # the permission requests that follow, not the previous agent's. An
@@ -3117,6 +3402,7 @@ class RunEventCoordinator(ManagerComponent):
                         "tool_kind": event.tool_kind,
                         "turns": info.turns,
                         "tool_count": info.tool_count,
+                        "tool_call_id": _redact(event.tool_call_id or ""),
                     },
                 )
                 # Fire PreToolUse hooks for auto-approved tools (informational only).
@@ -3333,7 +3619,20 @@ class RunEventCoordinator(ManagerComponent):
             except Exception:
                 logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
             finally:
+                # Read before the flip: the hold belongs to the line that makes
+                # the done transition (see the ``was_done`` arm below).
+                _flipped = not info.done
                 info.done = True
+                # The claimed-success flip is a terminal done transition like
+                # any other, and the most common one. _run's finally spawns the
+                # report task then awaits the session teardown; the report's own
+                # arm runs only after that teardown await, so without arming
+                # here member A is done, not pending, and not in flight for the
+                # whole teardown window -- a sibling completion would read the
+                # wave as closeable and finalize it early, and A's late report
+                # would finalize it again. Arm with the flip.
+                if _flipped:
+                    self._manager.arm_report_in_flight(info)
             return
         # Any other ending, including a whole answer a stop got to first: _run's
         # ``finally`` caps the streamed file and records no whole answer.
@@ -3353,6 +3652,16 @@ class RunEventCoordinator(ManagerComponent):
             return
         was_done = info.done
         info.done = True
+        # Success is a terminal done transition like any other: between this
+        # flip and the report task's first run, the caller's teardown can
+        # yield -- arm with the flip so the window is closed on EVERY terminal
+        # path, not just failures. Only on the transition: when another path
+        # (``was_done``, a reap) recorded the ending first, it armed at its own
+        # flip and its report releases that hold, possibly already. ``_run``'s
+        # finally then spawns no report (the claim is gone), so a re-arm here
+        # would pin the wave-close fallback until ``finalize_batch``.
+        if not was_done:
+            self._manager.arm_report_in_flight(info)
         if info.user_stopped:
             # The user-stop path owns the tombstone/stat for this record.
             logger.info("Subagent %s stream ended by user stop (%s)", info.id, _stop.stop_reason)
@@ -3566,7 +3875,7 @@ class RunEventCoordinator(ManagerComponent):
                 break
         info._resume_pending = False
 
-    async def _yield_for_dependency_impl(self, info: SubagentInfo, signal: Any) -> bool:
+    async def _yield_for_dependency_impl(self, info: SubagentInfo, signal: Any) -> bool | None:
         """Park *info* on its dependency scope's ONE schedule and wait for the wake.
 
         ``coordinator.report`` writes the wait (``running -> waiting_dependency``
@@ -3577,11 +3886,18 @@ class RunEventCoordinator(ManagerComponent):
         is re-granted FIFO like every other start. A typed provider throttle is
         also reported to the adaptive controller. True once the slot is held
         again; False when the coordinator failed the scope (deadline or
-        attempts cap -- the row is already ``failed``) or the wait timed out.
+        attempts cap -- the row is already ``failed``), when the wait did not
+        persist (``unpersisted``: the row is another owner's or has ended, or the
+        store could not say, so the run stops rather than retry work it may not
+        own), or when the wait timed out. None when
+        NO row exists for the run (``no_row``: a memory mode that keeps none).
+        Nothing was decided then and nothing else owns the work, so the caller
+        handles the error as it would with no coordinator at all.
         """
         from kiro_crew.taskq.dependency import (
             KIND_CONCURRENCY_EXCEEDED,
             KIND_RATE_LIMITED,
+            OUTCOME_NO_ROW,
             PHASE_WAITING,
         )
         from kiro_crew.taskq.waits import EVIDENCE_DEPENDENCY_ADAPTER, WaitRecord
@@ -3623,7 +3939,7 @@ class RunEventCoordinator(ManagerComponent):
                 verdict.outcome,
                 verdict.reason,
             )
-            return False
+            return None if verdict.outcome == OUTCOME_NO_ROW else False
         if not info._slot_released:
             self._manager._admission.yield_slot(
                 info,
@@ -3941,7 +4257,8 @@ class RunEventCoordinator(ManagerComponent):
         """Decide whether a subagent should use the shared-runtime path.
 
         All must hold: session_sharing config True; parent session exists and
-        is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare).
+        is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare);
+        no per-spawn backend.
         """
         # Member capability and native prompt documents are prepared at launch.
         if info._force_dedicated:
@@ -3954,13 +4271,23 @@ class RunEventCoordinator(ManagerComponent):
                 return False
         except Exception:
             return False
-        if info.model or info.allowed_tools or info.bare:
+        if info.model or info.routed_model or info.allowed_tools or info.bare:
+            return False
+        # The shared runtime is the parent's own process, on the parent's backend:
+        # a run asked onto a backend of its own needs a process of its own.
+        if info.backend is not None:
             return False
         if not info.parent_session_key:
             return False
         return self._manager._sessions.is_session_sharing_eligible(info.parent_session_key)
 
-    def _sharing_plan_impl(self, info: SubagentInfo, *, cfg: Any = None) -> _SharingPlan:
+    def _sharing_plan_impl(
+        self,
+        info: SubagentInfo,
+        *,
+        cfg: Any = None,
+        child_aws_profile: ResolvedAwsProfile | None = None,
+    ) -> _SharingPlan:
         """Decide how *info* will start: the ONE decision behind both callers.
 
         ``_run_inner`` takes the shared-runtime arm exactly when ``shared`` is
@@ -3973,9 +4300,20 @@ class RunEventCoordinator(ManagerComponent):
         where the override reaches the provider factory. Eligibility is the
         backend's opt-in membership (``is_session_sharing_eligible``); nothing
         here names a harness. *cfg* is a config the caller already loaded.
+
+        A run whose ``cwd`` binds another AWS profile (``aws.project_profiles``)
+        than the binding set on the parent also takes the dedicated arm, where
+        the spawn sets the run's own profile: the shared arm would run it with
+        the parent's. Resolving that binding reads the filesystem, so it is never
+        done here: the run resolves it off the event loop and passes it as
+        *child_aws_profile*. Without it -- the admission probe -- a split that is
+        possible at all (a binding in the map, or one on the parent) is read as
+        dedicated, the price the run may need. Only a real ``True`` from the
+        session manager's answers rules sharing out, so a double that cannot
+        answer them keeps the decision above.
         """
         kind = _selection_kind(info)
-        eff_model = info.model or _subagent_default_model(cfg)
+        eff_model = info.model or _subagent_default_model(cfg) or info.routed_model
         eff_effort = info.reasoning_effort or _subagent_default_effort(cfg)
         # Not coerced: the eligibility answer is passed through as the run has
         # always read it, and admission prices a start shared only on a real
@@ -3986,7 +4324,37 @@ class RunEventCoordinator(ManagerComponent):
             and not (eff_model or eff_effort)
             and self._manager._should_use_session_sharing(info)
         )
+        if shared and self._aws_profile_split_possible(info):
+            if child_aws_profile is None:
+                shared = False
+            else:
+                differs = getattr(self._manager._sessions, "aws_profile_differs_from_parent", None)
+                if (
+                    differs is not None
+                    and differs(info.parent_session_key, child_aws_profile.name) is True
+                ):
+                    shared = False
         return _SharingPlan(eff_model, eff_effort, shared)
+
+    def _aws_profile_split_possible(self, info: SubagentInfo) -> bool:
+        """Whether *info* could bind another AWS profile than its parent; reads no path."""
+        possible = getattr(self._manager._sessions, "aws_profile_split_possible", None)
+        return possible is not None and possible(info.parent_session_key) is True
+
+    async def _resolve_child_aws_profile(self, info: SubagentInfo) -> ResolvedAwsProfile | None:
+        """*info*'s own ``aws.project_profiles`` binding, resolved off the event loop.
+
+        ``realpath`` over every mapped directory: one on a mount that stops
+        answering stalls this run's thread, not the gateway's loop. ``None`` when
+        no split is possible, so a run with no binding anywhere takes no thread hop.
+        """
+        if not self._aws_profile_split_possible(info):
+            return None
+        resolve = getattr(self._manager._sessions, "project_aws_profile", None)
+        if resolve is None:
+            return None
+        name = await asyncio.to_thread(resolve, info.cwd)
+        return ResolvedAwsProfile(name if isinstance(name, str) else None)
 
     async def _ensure_dedicated_start_priced_impl(self, info: SubagentInfo) -> None:
         """Reserve a dedicated process for a start admitted at the shared price.
@@ -4158,17 +4526,27 @@ class RunEventCoordinator(ManagerComponent):
 
         def _on_gate_acquired(queue_wait_ms: float, queue: str = START_QUEUE_SESSION_NEW) -> None:
             now = time.time()
+            mono = time.monotonic()
             # The pause is measured on the watchdog's own clock (``time.time()``,
             # from the mark), not on the queue's monotonic wait: the two disagree
             # by however long the host was suspended during the wait, and a laptop
             # that slept in a gate queue would have that sleep charged as start
             # time. The queue's own measurement is the log's, and the fallback for
-            # a grant whose entry was never marked.
+            # a grant whose entry was never marked. The monotonic twin pairs with
+            # ``_exec_started_mono`` the same way.
             marked = info._gate_wait_started
+            marked_mono = info._gate_wait_started_mono
             info._gate_wait_started = None
+            info._gate_wait_started_mono = None
             info.last_activity = now
+            info._last_activity_mono = mono
             info._start_queue_wait_ms += (
                 max(0.0, now - marked) * 1000.0 if marked is not None else float(queue_wait_ms)
+            )
+            info._start_queue_wait_mono_ms += (
+                max(0.0, mono - marked_mono) * 1000.0
+                if marked_mono is not None
+                else float(queue_wait_ms)
             )
             if queue_wait_ms >= START_QUEUE_LOG_MIN_MS:
                 logger.info(
@@ -4196,6 +4574,7 @@ class RunEventCoordinator(ManagerComponent):
 
         def _on_gate_queued(queue: str = START_QUEUE_SESSION_NEW) -> None:
             info._gate_wait_started = time.time()
+            info._gate_wait_started_mono = time.monotonic()
 
         return _on_gate_queued
 
@@ -4324,9 +4703,13 @@ class RunEventCoordinator(ManagerComponent):
             # The adopted session is this run's real start: its clock starts here,
             # so the queue waits the abandoned attempt accumulated are not its.
             info._exec_started = now
+            info._exec_started_mono = time.monotonic()
             info._start_queue_wait_ms = 0.0
+            info._start_queue_wait_mono_ms = 0.0
             info._gate_wait_started = None
+            info._gate_wait_started_mono = None
             info.last_activity = now
+            info._last_activity_mono = info._exec_started_mono
             # ``recovering`` is the lost-owner (claimable) state; the adopted
             # session is live under our lease, so the row leaves it now rather
             # than at the first stream event.

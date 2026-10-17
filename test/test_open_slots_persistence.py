@@ -27,34 +27,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
-from windows_sim import builtin_open_sharing_violation
+from open_slots_persistence_helpers import _seed_session
+from windows_sim import builtin_open_sharing_violation, read_text_sharing_violation
 
 from kiro_crew.dashboard.chat_persistence import (
-    _rehydrate_slot_from_history,
+    ENV_AUTHORITY_RESTORED,
     restore_open_slots,
     restore_open_slots_async,
 )
 from kiro_crew.dashboard.chat_utils import _history_key_for
 from kiro_crew.dashboard.state import DashboardState
-
-
-def _seed_session(state, slot_key: str, *, closed: bool = False) -> None:
-    """Write a minimal session metadata + one user message so rehydrate succeeds."""
-    history_key = _history_key_for(slot_key)
-    log = state.conversation_log
-    assert log is not None
-    log.append(history_key, "user", "hello")
-    if closed:
-        # Use the canonical update_metadata helper rather than manually
-        # rewriting the JSONL — depends only on the public API and is
-        # resilient to format changes.
-        log.update_metadata(history_key, {"closed": True})
 
 
 def test_persist_writes_open_slots_json(tmp_path, monkeypatch):
@@ -334,9 +320,7 @@ def test_rehydrate_slot_restores_persisted_tab_id_for_fork_chaining(tmp_path, mo
 
     # Legacy-session path: no tab_id in meta -> one is generated and written back.
     _seed_session(state, "chat-2-legacy-no-tab-id")
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-2-legacy-no-tab-id"], "ts": 0.0}))
     state3 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state3)
     assert restored == 1
@@ -420,8 +404,10 @@ def test_rehydrate_slot_uses_chained_read_with_500_message_window(tmp_path, monk
         flat_calls.append(key)
         return real_flat(key, *args, **kwargs)
 
-    with patch.object(state2.conversation_log, "read_messages_chained", _spy_chained), \
-            patch.object(state2.conversation_log, "read_messages", _spy_flat):
+    with (
+        patch.object(state2.conversation_log, "read_messages_chained", _spy_chained),
+        patch.object(state2.conversation_log, "read_messages", _spy_flat),
+    ):
         restored = restore_open_slots(state2)
 
     assert restored == 1
@@ -461,9 +447,7 @@ def test_rehydrate_slot_loads_full_500_message_window(tmp_path, monkeypatch):
         log.append(history_key, "user", f"msg-{i:03d}")
 
     snapshot_path = tmp_path / "open_slots.json"
-    snapshot_path.write_text(
-        json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0})
-    )
+    snapshot_path.write_text(json.dumps({"keys": ["chat-1-bigwindow"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     restored = restore_open_slots(state2)
@@ -750,671 +734,6 @@ def test_reseed_skips_unicode_digit_key_without_crashing(tmp_path, monkeypatch):
     assert state._slot_counter == 4
 
 
-# ── Startup must not block the event loop (stall-watchdog crash-loop) ──
-#
-# Regression cover for the gateway crash-loop: restoring many large tabs ran
-# synchronously on the event loop, so the LoopStallWatchdog heartbeat (which pets
-# the watchdog FROM A COROUTINE) never got a turn. After exit_after=25s the
-# watchdog dumped thread stacks and _exit()ed, so the app never finished starting.
-
-
-def test_restore_open_slots_async_yields_between_tabs(tmp_path, monkeypatch):
-    """The async restore must hand the loop back per tab so the heartbeat can run.
-
-    Pins the actual crash mechanism: a coroutine running concurrently with the
-    restore must observe a partially restored slot set. If restore ever blocks
-    through every tab and yields only after the work is done, this fails.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    tab_count = 6
-    for i in range(tab_count):
-        _seed_session(state, f"chat-{i}-yield")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": [f"chat-{i}-yield" for i in range(tab_count)], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    partial_restore_observed = False
-
-    async def _drive():
-        async def ticker():
-            nonlocal partial_restore_observed
-            while True:
-                restored_so_far = len(state2._slots)
-                if 0 < restored_so_far < tab_count:
-                    partial_restore_observed = True
-                await asyncio.sleep(0)
-
-        t = asyncio.create_task(ticker())
-        try:
-            return await restore_open_slots_async(state2)
-        finally:
-            t.cancel()
-            # `cancel()` only requests cancellation; without awaiting it the ticker is
-            # still live when `asyncio.run` tears the loop down, leaving a "coroutine
-            # ignored GeneratorExit" for a later test to trip over.
-            try:
-                await t
-            except asyncio.CancelledError:
-                pass
-
-    restored = asyncio.run(_drive())
-    assert restored == tab_count
-    # Observe intermediate progress rather than an incidental number of scheduler
-    # turns; a single yield after all tab work is complete must not satisfy the test.
-    assert partial_restore_observed, "restore did not yield between tabs"
-
-
-def test_restore_reads_transcript_before_backfilling_tab_id(tmp_path, monkeypatch):
-    """A tab needing a tab_id backfill must be READ before the backfill fires.
-
-    ``_rehydrate_slot_from_history`` mints a tab_id for a legacy session that
-    lacks one and persists it via ``update_metadata_off_loop`` — which dispatches
-    an ``os.replace()`` of THIS session file to a worker thread. If that write is
-    dispatched BEFORE the loop-thread transcript read of the same file, the
-    replace races the read: on Windows the in-flight replace makes the reader's
-    ``open()`` raise a sharing violation, and the on-loop read retry cannot pause
-    (a loop sleep would starve the LoopStallWatchdog), so it drops the tab —
-    the intermittent ``restored == N-1`` open-tabs loss on restart.
-
-    Reproduced deterministically without threads: dispatching the backfill for a
-    key arms its transcript read to raise the sharing violation, standing in for
-    the in-flight replace holding the file. Under the correct order (read first)
-    the read completes while the file is quiescent, so nothing is ever armed and
-    every tab restores. Under the buggy order the armed read faults and the tab
-    is dropped. The read-retry mechanics themselves are out of scope here (they
-    are exercised by test_history's sharing-violation tests); this pins the
-    ordering that keeps the file quiescent for the read in the first place.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    n = 4
-    for i in range(n):
-        # _seed_session writes no tab_id, so every tab triggers the backfill.
-        _seed_session(state, f"chat-{i}-race")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": [f"chat-{i}-race" for i in range(n)], "ts": 0.0})
-    )
-
-    import kiro_crew.dashboard.chat_persistence as chat_persistence
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    armed_unreadable: set[str] = set()
-
-    real_read_messages = log._read_messages
-
-    def guarded_read_messages(key):
-        if key in armed_unreadable:
-            raise PermissionError(
-                f"[WinError 32] simulated in-flight os.replace holding {key}"
-            )
-        return real_read_messages(key)
-
-    monkeypatch.setattr(log, "_read_messages", guarded_read_messages)
-
-    real_backfill = chat_persistence.update_metadata_off_loop
-
-    def arming_backfill(conv_log, key, fields):
-        # Dispatching the tab_id os.replace makes the file briefly unreadable.
-        armed_unreadable.add(key)
-        return real_backfill(conv_log, key, fields)
-
-    monkeypatch.setattr(chat_persistence, "update_metadata_off_loop", arming_backfill)
-
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == n, (
-        "a tab was dropped: its transcript was read while its tab_id backfill "
-        "replace was in flight (read must precede the backfill dispatch)"
-    )
-    assert set(state2._slots) == {f"chat-{i}-race" for i in range(n)}
-
-
-def test_restore_open_slots_async_matches_sync_result(tmp_path, monkeypatch):
-    """The async and sync drivers must restore the same slots.
-
-    They share one generator, so this guards the two thin wrappers from drifting.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-same")
-    _seed_session(state, "chat-2-same")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-same", "chat-2-same"], "ts": 0.0})
-    )
-
-    sync_state = _make_state(tmp_path / "sessions")
-    async_state = _make_state(tmp_path / "sessions")
-    assert restore_open_slots(sync_state) == asyncio.run(
-        restore_open_slots_async(async_state)
-    )
-    assert set(sync_state._slots) == set(async_state._slots) == {"chat-1-same", "chat-2-same"}
-
-
-def test_rehydrate_does_not_scan_the_whole_session_dir(tmp_path, monkeypatch):
-    """Rehydrating one tab must not call list_sessions().
-
-    list_sessions() stats + reads the first line of EVERY session file. Running it
-    once per restored tab to look up one title (which it cannot find anyway — its
-    keys are filename stems, ``dashboard_x``, while the lookup uses the canonical
-    ``dashboard:x``) makes restore O(tabs x all sessions), which is ~13s of stall
-    on a real 77-tab home.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-noscan")
-    state.conversation_log.update_metadata(
-        _history_key_for("chat-1-noscan"), {"title": "Kept Title"}
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    with patch.object(
-        type(state2.conversation_log),
-        "list_sessions",
-        side_effect=AssertionError("list_sessions() must not be called per slot"),
-    ):
-        slot = _rehydrate_slot_from_history(state2, "chat-1-noscan")
-
-    assert slot is not None
-    # Title still comes through, from the metadata line we already read.
-    assert slot.title == "Kept Title"
-    assert slot._titled is True
-
-
-def test_bulk_restore_emits_one_slots_broadcast(tmp_path, monkeypatch):
-    """suspend_slots_push() coalesces the per-slot broadcasts into one.
-
-    get_or_create_slot() broadcasts the FULL slot list every call, so restoring N
-    tabs serialized 1+2+...+N slots — quadratic redaction work for intermediate
-    states no client ever renders.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    for i in range(5):
-        _seed_session(state, f"chat-{i}-bcast")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": [f"chat-{i}-bcast" for i in range(5)], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    seen: list[str] = []
-    state2._broadcast = lambda note: seen.append(note.get("_type"))  # type: ignore[method-assign]
-
-    with state2.suspend_slots_push():
-        restored = restore_open_slots(state2)
-
-    assert restored == 5
-    assert seen.count("slots") == 1, f"expected 1 coalesced slots push, got {seen.count('slots')}"
-
-
-def test_suspend_slots_push_unwinds_and_flushes_on_exception(tmp_path, monkeypatch):
-    """The suspend depth must unwind (and the owed push fire) even if the body raises.
-
-    Otherwise one failed restore would leave the gateway permanently unable to
-    broadcast slot updates.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    seen: list[str] = []
-    state._broadcast = lambda note: seen.append(note.get("_type"))  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError):
-        with state.suspend_slots_push():
-            state.push_slots_update()
-            raise RuntimeError("boom")
-
-    assert state._slots_push_suspend == 0
-    assert seen.count("slots") == 1
-
-
-def test_suspend_slots_push_nested_does_not_flush_early(tmp_path, monkeypatch):
-    """Only the OUTERMOST suspend block flushes — nested users must not push early."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    seen: list[str] = []
-    state._broadcast = lambda note: seen.append(note.get("_type"))  # type: ignore[method-assign]
-
-    with state.suspend_slots_push():
-        with state.suspend_slots_push():
-            state.push_slots_update()
-        assert seen.count("slots") == 0, "inner exit flushed early"
-    assert seen.count("slots") == 1
-
-
-def test_suspend_slots_push_no_push_means_no_broadcast(tmp_path, monkeypatch):
-    """An empty suspend block must not synthesize a broadcast nobody asked for."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    seen: list[str] = []
-    state._broadcast = lambda note: seen.append(note.get("_type"))  # type: ignore[method-assign]
-
-    with state.suspend_slots_push():
-        pass
-
-    assert seen.count("slots") == 0
-
-
-# ── a serialization failure in the slots flush must name its offender ────────
-#
-# The evidenced failure class behind a slots-broadcast 500 is a non-serializable
-# value in slot state: json.dumps raises deep in the flush, every slots read
-# path is equally broken, and the stock TypeError names neither the slot nor
-# the field. Worse, when the flush fails while a suspend block is unwinding
-# over the body's own exception, the flush's exception REPLACES the body's in
-# the caller's view (the original demoted to __context__), which is how such a
-# failure reads as a broadcast bug. These pin the two diagnostics: the offender
-# note on BOTH coalescing branches, and the unwinding-over note.
-# Semantics stay untouched: same exception types, same propagation, same
-# chaining, no caught-and-swallowed anything.
-
-
-def _poison_slots_projection(state):
-    """Make serialize_slots return one slot whose ``title`` cannot be dumped."""
-    entry = {"key": "chat-poison", "title": object()}
-    state.serialize_slots = lambda **kw: [dict(entry)]  # type: ignore[method-assign]
-
-
-def test_leading_edge_serialization_failure_names_the_offender(tmp_path, monkeypatch):
-    """The immediate (leading-edge) broadcast annotates the raising TypeError."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _poison_slots_projection(state)
-
-    with pytest.raises(TypeError) as excinfo:
-        state.push_slots_update()
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "'chat-poison'" in notes, f"note must name the slot key, got: {notes!r}"
-    assert "'title'" in notes, "note must name the offending field"
-    assert "object" in notes, "note must name the value's type"
-    assert "value withheld" in notes, "note must never carry the value itself"
-
-
-def test_trailing_flush_serialization_failure_names_the_offender(tmp_path, monkeypatch):
-    """The trailing-edge callback funnels through the same annotated dump.
-
-    Both timing branches converge on _do_slots_broadcast, so the diagnostic
-    covers them by construction — this pins the trailing half of that claim.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _poison_slots_projection(state)
-
-    with pytest.raises(TypeError) as excinfo:
-        state._trailing_slots_flush()
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "'chat-poison'" in notes
-    assert "'title'" in notes
-
-
-def test_flush_failure_during_unwind_names_the_masked_exception(tmp_path, monkeypatch):
-    """A flush failing during exception unwind must say whose funeral it crashed.
-
-    The body's RuntimeError is the actual fault; the flush's TypeError merely
-    reports a broken projection. Today's chaining (body as __context__) is
-    preserved and now NAMED, so the top of the traceback stops eating the lede.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _poison_slots_projection(state)
-
-    with pytest.raises(TypeError) as excinfo:
-        with state.suspend_slots_push():
-            state.push_slots_update()  # queue the owed push
-            raise RuntimeError("boom")  # the body's actual fault
-
-    exc = excinfo.value
-    assert isinstance(exc.__context__, RuntimeError), "implicit chaining must survive"
-    notes = "\n".join(getattr(exc, "__notes__", []))
-    assert "unwinding over" in notes and "RuntimeError" in notes
-    assert "__context__" in notes, "note must point at where the original went"
-    assert "'chat-poison'" in notes, "offender note must also be present"
-    assert state._slots_push_suspend == 0, "depth must still unwind"
-
-
-def test_flush_failure_without_inflight_exception_has_no_unwind_note(tmp_path, monkeypatch):
-    """A plain flush failure (body exited normally) gets the offender note only."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _poison_slots_projection(state)
-
-    with pytest.raises(TypeError) as excinfo:
-        with state.suspend_slots_push():
-            state.push_slots_update()  # owed flush raises on a clean exit
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "'chat-poison'" in notes
-    assert "unwinding over" not in notes, "no body exception, so no unwind note"
-
-
-def test_healthy_flush_is_unchanged_by_the_diagnostics(tmp_path, monkeypatch):
-    """Benign control: the hoisted dump changes nothing on the happy path."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    seen: list[str] = []
-    state._broadcast = lambda note: seen.append(note.get("_type"))  # type: ignore[method-assign]
-
-    state.push_slots_update()
-
-    assert seen.count("slots") == 1
-
-
-# ── every REMAINING slots read path carries the same offender note ───────────
-#
-# The sibling read paths serialize the SAME projection, so without the note they
-# fail with the same bare TypeError: the
-# dashboard-user WS frame (``_slots_ws_frame``, both its send sites), the WS
-# connect snapshot, and ``GET /api/chat/slots``. These pin the note on each
-# path, the ``path`` label that names which one raised, and the benign controls
-# proving healthy outputs are unchanged.
-
-
-def _poisoned_slots() -> list[dict]:
-    return [{"key": "chat-poison", "title": object()}]
-
-
-def test_ws_frame_serialization_failure_names_the_offender():
-    """The dashboard-user WS frame annotates its dump failure with the offender."""
-    from kiro_crew.dashboard.state import _slots_ws_frame
-
-    with pytest.raises(TypeError) as excinfo:
-        _slots_ws_frame(
-            _poisoned_slots(),
-            yolo=False,
-            channel_trusted=False,
-            gitlab_hosts_gen=0,
-            folders=[],
-            folders_gen=0,
-            governance_gen=0,
-        )
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "[ws-frame]" in notes, f"note must name the raising path, got: {notes!r}"
-    assert "'chat-poison'" in notes and "'title'" in notes
-    assert "value withheld" in notes
-
-
-def test_ws_frame_failure_outside_slots_exonerates_the_slot_list():
-    """A clean-slots note is evidence too: the offender is in the envelope extras."""
-    from kiro_crew.dashboard.state import _slots_ws_frame
-
-    with pytest.raises(TypeError) as excinfo:
-        _slots_ws_frame(
-            [{"key": "chat-1", "title": "fine"}],
-            yolo=False,
-            channel_trusted=False,
-            gitlab_hosts_gen=0,
-            folders=object(),  # the actual offender, outside the slot list
-            folders_gen=0,
-            governance_gen=0,
-        )
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "[ws-frame]" in notes
-    assert "no offending entry found" in notes, "clean slots must be exonerated"
-
-
-def test_ws_frame_healthy_roundtrip_unchanged():
-    """Benign control: the wrapped dump produces the same frame."""
-    from kiro_crew.dashboard.state import _slots_ws_frame
-
-    frame = json.loads(
-        _slots_ws_frame(
-            [{"key": "chat-1"}],
-            yolo=True,
-            channel_trusted=False,
-            gitlab_hosts_gen=3,
-            folders=[{"id": "f1"}],
-            folders_gen=7,
-            governance_gen=9,
-        )
-    )
-
-    assert frame == {
-        "type": "slots",
-        "data": [{"key": "chat-1"}],
-        "yolo": True,
-        "channelTrusted": False,
-        "gitlabHostsGeneration": 3,
-        "folders": [{"id": "f1"}],
-        "foldersGeneration": 7,
-        "governanceGeneration": 9,
-    }
-
-
-@pytest.mark.asyncio
-async def test_rest_slots_get_serialization_failure_names_the_offender(tmp_path, monkeypatch):
-    """GET /api/chat/slots annotates its dump failure instead of a bare TypeError."""
-    from aiohttp.test_utils import make_mocked_request
-
-    from kiro_crew.dashboard.chat_handlers import api_chat_slots
-
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _poison_slots_projection(state)
-
-    request = make_mocked_request("GET", "/api/chat/slots", app={"state": state})
-    request["user"] = "local-app"
-    request["app"] = ""
-
-    with pytest.raises(TypeError) as excinfo:
-        await api_chat_slots(request)
-
-    notes = "\n".join(getattr(excinfo.value, "__notes__", []))
-    assert "[GET /api/chat/slots]" in notes, f"note must name the REST path, got: {notes!r}"
-    assert "'chat-poison'" in notes and "'title'" in notes
-
-
-@pytest.mark.asyncio
-async def test_rest_slots_get_healthy_response_is_unchanged(tmp_path, monkeypatch):
-    """Benign control: explicit dump serves the same 200/JSON as json_response did."""
-    from aiohttp.test_utils import TestClient, TestServer
-    from chat_test_helpers import _make_app
-
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-
-    async with TestClient(TestServer(_make_app(state))) as client:
-        resp = await client.get("/api/chat/slots")
-        assert resp.status == 200
-        assert resp.content_type == "application/json"
-        assert await resp.json() == state.serialize_slots(
-            include_check_status=True, dashboard_user=True
-        )
-
-
-@pytest.mark.asyncio
-async def test_ws_connect_snapshot_failure_is_logged_with_the_offender(
-    tmp_path, monkeypatch, caplog
-):
-    """The connect snapshot's swallow gets a WARNING carrying the offender note.
-
-    The whole connect block sits under ``except Exception: pass``, so before
-    this seam a broken snapshot meant an empty sidebar with zero evidence.
-    The exception flow is unchanged (still swallowed); the log is the one new
-    observable, and it carries the note through ``exc_info``.
-    """
-    import logging
-
-    from kiro_crew.dashboard import ws as dashboard_ws
-
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-
-    state = MagicMock()
-    state.owner_id = "U_OWNER"
-    state.serialize_slots = lambda **kw: _poisoned_slots()
-    state._yolo = False
-    state._folders = [{"id": "f1", "name": "Work", "order": 0}]
-    state.folders_generation = MagicMock(return_value=7)
-
-    class Request(dict):
-        def __init__(self) -> None:
-            super().__init__({"user": "local-app", "app": ""})
-            self.setdefault("is_dashboard_user", True)
-            self.app = {"state": state}
-
-    class FakeWebSocket:
-        def __init__(self) -> None:
-            self.closed = True
-            self.sent: list = []
-            self._flags: dict = {"_is_dashboard_user": True}
-
-        def __setitem__(self, key, value) -> None:
-            self._flags[key] = value
-
-        def __getitem__(self, key):
-            return self._flags[key]
-
-        def get(self, key, default=None):
-            return self._flags.get(key, default)
-
-        async def prepare(self, request) -> None:
-            return None
-
-        async def send_json(self, payload) -> None:
-            self.sent.append(payload)
-
-        async def send_str(self, payload: str) -> None:
-            self.sent.append(json.loads(payload))
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            raise StopAsyncIteration
-
-    fake_ws = FakeWebSocket()
-    monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-    monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
-
-    with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.ws"):
-        result = await dashboard_ws.api_ws(Request())  # type: ignore[arg-type]
-
-    assert result is fake_ws
-    slots_frames = [f for f in fake_ws.sent if isinstance(f, dict) and f.get("type") == "slots"]
-    assert not slots_frames, "the poisoned snapshot must not have been sent"
-    records = [r for r in caplog.records if "connect snapshot" in r.message]
-    assert records, "the swallowed failure must leave a WARNING behind"
-    exc = records[0].exc_info[1]  # type: ignore[index]
-    notes = "\n".join(getattr(exc, "__notes__", []))
-    assert "[ws-connect-snapshot]" in notes
-    assert "'chat-poison'" in notes and "'title'" in notes
-
-
-def test_note_helper_path_label_and_degradation():
-    """The path label lands in every message; a shape surprise degrades, never raises."""
-    from kiro_crew.dashboard.state import _slots_serialization_note
-
-    assert _slots_serialization_note([], path="x") == (
-        "[x] slot list fails serialization; no offending entry found"
-    )
-    # Callers guarantee list-of-dicts; anything else degrades to the generic
-    # note via the defensive except (the shrunken shape-check branches).
-    assert _slots_serialization_note(42) == (
-        "[slots-broadcast] slot projection is not JSON-serializable (offender walk failed)"
-    )
-    assert _slots_serialization_note({"not": "a list"}, path="y") == (
-        "[y] slot projection is not JSON-serializable (offender walk failed)"
-    )
-
-
-# ── The deferred restore must not let a flush truncate the snapshot ──
-#
-# start_flush_loop() is running (every 5s) BEFORE the startup restore. While the
-# restore was synchronous it starved that timer, so a flush could never land
-# mid-restore. Now that the restore yields per tab, one can — and
-# _flush_dirty_slots calls _persist_open_slots, which would overwrite the very
-# file being restored FROM with a half-populated slot set. Reproduced at real
-# scale before the guard: 77 tabs collapsed to 70.
-
-
-def test_flush_during_async_restore_does_not_truncate_snapshot(tmp_path, monkeypatch):
-    """A flush landing mid-restore must not shrink open_slots.json."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    keys = [f"chat-{i}-flush" for i in range(8)]
-    for k in keys:
-        _seed_session(state, k)
-    snapshot = tmp_path / "open_slots.json"
-    snapshot.write_text(json.dumps({"keys": keys, "ts": 0.0}))
-
-    state2 = _make_state(tmp_path / "sessions")
-
-    # Fire the flush deterministically at the restore's own yield point — that is
-    # exactly where the real 5s flush timer gets to run — rather than racing a
-    # second task (which the scheduler may not interleave at all).
-    real_sleep = asyncio.sleep
-    observed: list[int] = []
-
-    async def flushing_sleep(delay, *a, **kw):
-        if delay == 0:
-            state2._persist_open_slots()
-            # Record what a crash at THIS instant would leave on disk.
-            observed.append(len(json.loads(snapshot.read_text())["keys"]))
-        return await real_sleep(delay, *a, **kw)
-
-    with patch(
-        "kiro_crew.dashboard.chat_persistence.asyncio.sleep", side_effect=flushing_sleep
-    ):
-        restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 8
-    assert observed, "flush never landed mid-restore — test would not detect the bug"
-    # Assert on the INTERMEDIATE states, not just the final one. Without the guard
-    # the file transiently reads 1, 2, 3 … tabs; it only ends up complete because
-    # the restore happens to finish. A kill in that window is what loses tabs.
-    assert all(n == len(keys) for n in observed), (
-        f"snapshot was truncated mid-restore: sizes {observed} (expected all {len(keys)})"
-    )
-    assert set(json.loads(snapshot.read_text())["keys"]) == set(keys)
-
-
-def test_restoring_flag_clears_and_reenables_persistence(tmp_path, monkeypatch):
-    """The guard must be released after the restore so snapshots resume."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-flag")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-flag"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    assert state2.restoring_open_slots is False
-    asyncio.run(restore_open_slots_async(state2))
-    assert state2.restoring_open_slots is False
-
-    # A normal flush after restore writes the live set again.
-    state2.get_or_create_slot("chat-9-postrestore")
-    state2._persist_open_slots()
-    assert set(json.loads((tmp_path / "open_slots.json").read_text())["keys"]) == {
-        "chat-1-flag",
-        "chat-9-postrestore",
-    }
-
-
-def test_restoring_flag_cleared_even_if_restore_raises(tmp_path, monkeypatch):
-    """A crash mid-restore must not leave open-tab persistence disabled forever."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-boom")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-boom"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    with patch(
-        "kiro_crew.dashboard.chat_persistence._build_kiro_model_map",
-        side_effect=RuntimeError("boom"),
-    ):
-        with pytest.raises(RuntimeError):
-            asyncio.run(restore_open_slots_async(state2))
-
-    assert state2.restoring_open_slots is False
-
-
 # ── A flush BEFORE restore has run must not wipe the reopen seed ──
 #
 # start_flush_loop() arms the 5s periodic flush BEFORE the startup open-tab
@@ -1699,6 +1018,43 @@ def test_context_snapshot_prune_runs_after_restore(tmp_path, monkeypatch):
 
     persisted = json.loads(snap_path.read_text())
     assert set(persisted) == {"chat-1-live"}, "a dead key survived the post-restore prune"
+
+
+def test_context_snapshot_write_skipped_when_pre_restore_read_fails(tmp_path, monkeypatch):
+    """A failed snapshot read before restore must not replace the file.
+
+    The flush merges the disk readings into memory before it writes. If that
+    read fails transiently (a Windows sharing violation) and the failure were
+    latched as an empty, loaded map, the write would replace the file with
+    only the boot-time reading and destroy every other tab's saved reading.
+    The write is skipped instead, the same rule as the open_slots.json seed.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    snap_path = tmp_path / "context_snapshots.json"
+    snap_path.write_text(json.dumps({"chat-1-idle": {"pct": 42}, "chat-2-idle": {"pct": 7}}))
+    before = snap_path.read_bytes()
+
+    state = _make_state(tmp_path / "sessions")
+    assert state.open_slots_restored is False
+    with state._context_snapshots_lock:
+        state._context_snapshots["chat-9-newtab"] = {"pct": 1}
+        state._context_snapshots_dirty = True
+
+    with read_text_sharing_violation(match="context_snapshots.json", times=1) as seen:
+        state._persist_context_snapshots()
+
+    assert seen["n"] == 1, "the simulator never intercepted the snapshot read"
+    assert snap_path.read_bytes() == before, (
+        "a transient pre-restore snapshot read failure replaced the saved "
+        "snapshots instead of skipping the write"
+    )
+    assert state._context_snapshots_loaded is False, "a failed read was latched as loaded"
+    assert state._context_snapshots_dirty is True, "the skipped write is owed, not lost"
+
+    # The next flush reads the intact file and writes the union.
+    state._persist_context_snapshots()
+    persisted = json.loads(snap_path.read_text())
+    assert set(persisted) == {"chat-1-idle", "chat-2-idle", "chat-9-newtab"}
 
 
 def test_push_slots_update_survives_a_partially_constructed_state():
@@ -1992,6 +1348,67 @@ def test_absent_session_is_dropped_from_reopen_seed(tmp_path, monkeypatch):
     assert persisted == {"chat-1-real"}
 
 
+def test_remote_only_slot_is_kept_as_reopen_seed_after_authority_restore(tmp_path, monkeypatch):
+    """A listed slot with no LOCAL transcript survives a remote authority restore.
+
+    GPT 6.1 F1 / crash-data-loss: a replacement task restores ``open_slots.json``
+    from a committed remote snapshot but NOT the transcripts (they load lazily,
+    per turn). The listed slot then has empty-but-readable local metadata -- the
+    same signal as a genuinely-absent session -- and the plain restore prunes it,
+    so the next flush writes an empty ``open_slots.json`` the sidecar commits:
+    silent loss of the whole restored slot table on an ordinary replacement.
+
+    With ``ENV_AUTHORITY_RESTORED`` set, the key is kept as a reopen seed and the
+    flush preserves it. The negative control
+    ``test_absent_session_is_dropped_from_reopen_seed`` proves the ordinary boot
+    (flag unset) still prunes, so dead tabs do not resurrect forever.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv(ENV_AUTHORITY_RESTORED, "1")
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-local")
+    # chat-2-remote is in the restored table but its transcript is not on disk,
+    # exactly the cold-replacement shape.
+    (tmp_path / "open_slots.json").write_text(
+        json.dumps({"keys": ["chat-1-local", "chat-2-remote"], "ts": 0.0})
+    )
+
+    state2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(state2)
+
+    assert restored == 1, "only the slot with a local transcript rebuilds this boot"
+    assert "chat-2-remote" in state2.unrestored_slot_keys, (
+        "a remote-only slot was pruned instead of kept as a reopen seed, so the "
+        "restored slot table is lost on the next flush"
+    )
+    state2._persist_open_slots()
+    persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
+    assert persisted == {
+        "chat-1-local",
+        "chat-2-remote",
+    }, "the post-restore flush dropped the remote-only key from the slot table"
+
+
+def test_closed_tab_is_dropped_even_after_authority_restore(tmp_path, monkeypatch):
+    """A ✕-closed tab stays gone even when remote-only preservation is on.
+
+    The preserve rule is scoped to slots whose transcript is merely not-yet-local,
+    not to tabs the user dismissed: a closed tab carries ``meta.closed`` and must
+    not be resurrected by a replacement.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setenv(ENV_AUTHORITY_RESTORED, "1")
+    state = _make_state(tmp_path / "sessions")
+    _seed_session(state, "chat-1-closed", closed=True)
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-closed"], "ts": 0.0}))
+
+    state2 = _make_state(tmp_path / "sessions")
+    restored = restore_open_slots(state2)
+
+    assert restored == 0
+    assert "chat-1-closed" not in state2.unrestored_slot_keys
+
+
 def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog):
     """The restore layer must name the dropped tab, not just the history layer.
 
@@ -2002,9 +1419,7 @@ def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog)
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     state = _make_state(tmp_path / "sessions")
     _seed_session(state, "chat-1-logged")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-logged"], "ts": 0.0})
-    )
+    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": ["chat-1-logged"], "ts": 0.0}))
 
     state2 = _make_state(tmp_path / "sessions")
     victim = state2.conversation_log._path(_history_key_for("chat-1-logged")).name
@@ -2013,8 +1428,7 @@ def test_metadata_failure_is_reported_above_debug(tmp_path, monkeypatch, caplog)
             restore_open_slots(state2)
 
     assert any(
-        "chat-1-logged" in r.message and "reopen seed" in r.message
-        for r in caplog.records
+        "chat-1-logged" in r.message and "reopen seed" in r.message for r in caplog.records
     ), f"no WARNING named the affected tab; got {[r.message for r in caplog.records]}"
 
 
@@ -2047,9 +1461,7 @@ def test_get_metadata_status_separates_unreadable_from_absent(tmp_path, monkeypa
         assert log.get_metadata(history_key) == {}
 
 
-def test_non_object_metadata_line_does_not_abort_the_whole_restore(
-    tmp_path, monkeypatch
-):
+def test_non_object_metadata_line_does_not_abort_the_whole_restore(tmp_path, monkeypatch):
     """A transcript whose first line is valid JSON but not an OBJECT is skipped.
 
     ``json.loads`` happily returns ``None`` / a list / a str / an int, and a bare
@@ -2090,552 +1502,3 @@ def test_non_object_metadata_line_does_not_abort_the_whole_restore(
     state2._persist_open_slots()
     persisted = set(json.loads((tmp_path / "open_slots.json").read_text())["keys"])
     assert persisted == {"chat-0-ok", "chat-2-ok"}
-
-
-# ── Startup must not READ on the event loop either ──
-#
-# The per-tab yield above bounded how long ONE tab could hold the loop, but the
-# per-tab WORK still ran on it: get_metadata_status plus a chained
-# read_messages_chained walk on a multi-megabyte transcript is seconds of loop
-# time *between* yields, and the ``open_slots.json`` read plus the agent→model
-# map glob were on-loop before the first yield ever arrived. So the reads now
-# move into asyncio.to_thread and only the slot mutation stays on the loop --
-# the same prefetch-then-apply split rehydrate_slot_from_history_async
-# established, and for the same non-negotiable reason (slot construction
-# broadcasts through asyncio.Queue.put_nowait / Event.set, neither thread-safe).
-
-
-def _record_restore_threads(monkeypatch, state):
-    """Instrument one state's restore so each half's thread is observable.
-
-    Returns a dict of thread-name lists, filled in as the restore runs:
-
-    * ``walk`` — ``read_messages_chained``, the expensive half. Must NEVER run on
-      the loop thread; this is the property #895 is about.
-    * ``prefetch`` — ``_prefetch_rehydrate_inputs``, the offloaded read bundle.
-    * ``recheck`` — ``_deletion_during_read``, the post-hop deletion guard, which
-      must run ON the loop *by design*: it gates the build and no suspension point
-      may separate the two. So it is asserted separately rather than lumped in
-      with the reads.
-    * ``build`` — ``_rehydrate_slot_from_history``, loop-affine.
-    * ``snapshot`` — the ``open_slots.json`` read.
-
-    Wraps the REAL implementations so the restore still completes end to end and
-    the assertions are about placement, not about a stub's behaviour.
-    """
-    from kiro_crew.dashboard import chat_persistence
-
-    log = state.conversation_log
-    assert log is not None
-    seen: dict[str, list[str]] = {
-        "walk": [],
-        "prefetch": [],
-        "recheck": [],
-        "build": [],
-        "snapshot": [],
-    }
-
-    real_chained = log.read_messages_chained
-    real_prefetch = chat_persistence._prefetch_rehydrate_inputs
-    real_recheck = chat_persistence._deletion_during_read
-    real_build = chat_persistence._rehydrate_slot_from_history
-    real_keys = chat_persistence._read_open_slots_keys
-
-    def _chained(key):
-        seen["walk"].append(threading.current_thread().name)
-        return real_chained(key)
-
-    def _prefetch(*a, **kw):
-        seen["prefetch"].append(threading.current_thread().name)
-        return real_prefetch(*a, **kw)
-
-    def _recheck(*a, **kw):
-        seen["recheck"].append(threading.current_thread().name)
-        return real_recheck(*a, **kw)
-
-    def _build(*a, **kw):
-        seen["build"].append(threading.current_thread().name)
-        return real_build(*a, **kw)
-
-    def _keys():
-        seen["snapshot"].append(threading.current_thread().name)
-        return real_keys()
-
-    monkeypatch.setattr(log, "read_messages_chained", _chained)
-    monkeypatch.setattr(chat_persistence, "_prefetch_rehydrate_inputs", _prefetch)
-    monkeypatch.setattr(chat_persistence, "_deletion_during_read", _recheck)
-    monkeypatch.setattr(chat_persistence, "_rehydrate_slot_from_history", _build)
-    monkeypatch.setattr(chat_persistence, "_read_open_slots_keys", _keys)
-    return seen
-
-
-def test_restore_open_slots_async_reads_off_the_loop(tmp_path, monkeypatch):
-    """Every per-tab disk read must run in a worker thread, not on the loop.
-
-    This is the assertion the yield-only fix could not make: it passes only when
-    the metadata read and the chained transcript walk have actually left the
-    event-loop thread. Driving the synchronous generator (the previous shape)
-    fails it on the first tab.
-
-    The post-hop deletion re-check is deliberately excluded and asserted to be ON
-    the loop instead — see the sibling test below.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    keys = [f"chat-{i}-offloop" for i in range(3)]
-    for k in keys:
-        _seed_session(state, k)
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
-
-    state2 = _make_state(tmp_path / "sessions")
-    seen = _record_restore_threads(monkeypatch, state2)
-
-    main = threading.current_thread().name
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == len(keys)
-    assert set(state2._slots) == set(keys)
-    assert seen["walk"], "no transcript was read — the test would not detect the bug"
-    assert all(t != main for t in seen["walk"]), (
-        "a transcript walk ran ON the event-loop thread; a large transcript "
-        f"there stalls the stall-watchdog heartbeat (threads: {sorted(set(seen['walk']))})"
-    )
-    assert seen["prefetch"] and all(t != main for t in seen["prefetch"]), (
-        f"the prefetch bundle ran on the loop (threads: {sorted(set(seen['prefetch']))})"
-    )
-    assert seen["snapshot"] and all(t != main for t in seen["snapshot"]), (
-        "open_slots.json was read on the event loop before the first yield"
-    )
-    assert seen["build"] == [main] * len(keys), (
-        "slot construction left the event-loop thread; it broadcasts through "
-        "asyncio.Queue.put_nowait / Event.set, neither of which is thread-safe "
-        f"(threads: {seen['build']})"
-    )
-
-
-def test_the_deletion_recheck_runs_on_the_loop_next_to_the_build(tmp_path, monkeypatch):
-    """The guard must NOT be offloaded — that would reopen the window it closes.
-
-    ``_deletion_during_read`` gates the build, so an await between the two would
-    let a delete land in the gap. It is one mtime-cached metadata line, which is
-    why paying for it on the loop is the right trade.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-gated")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-gated"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    seen = _record_restore_threads(monkeypatch, state2)
-
-    main = threading.current_thread().name
-    assert asyncio.run(restore_open_slots_async(state2)) == 1
-    assert seen["recheck"] == [main], (
-        "the deletion re-check must run on the loop, immediately before the "
-        f"build it gates (threads: {seen['recheck']})"
-    )
-    assert seen["build"] == [main]
-
-
-def test_restore_open_slots_sync_driver_still_reads_inline(tmp_path, monkeypatch):
-    """The synchronous caller keeps its inline reads — no loop to offload to.
-
-    Guards the split from being "fixed" by making the sync path spawn threads it
-    has no reason to: with no running loop, ``_locked`` already takes the patient
-    path and a thread hop would only add latency. It also must not pay for the
-    post-hop deletion re-check, since its read has no suspension point to go
-    stale across.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-inline")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-inline"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    seen = _record_restore_threads(monkeypatch, state2)
-
-    main = threading.current_thread().name
-    assert restore_open_slots(state2) == 1
-    assert seen["walk"] and all(t == main for t in seen["walk"])
-    assert seen["build"] == [main]
-    assert seen["recheck"] == [], (
-        "the sync driver paid for a post-hop re-check it cannot need"
-    )
-
-
-def test_async_restore_keeps_an_unreadable_tab_in_the_reopen_seed(tmp_path, monkeypatch):
-    """The offloaded read must still distinguish "unreadable" from "gone".
-
-    ``get_metadata`` reports ``{}`` for both, and treating the second as the
-    first is what silently drops a live tab (the Windows sharing-violation
-    shape). Moving the read into a worker thread must not lose the
-    ``get_metadata_status`` readability flag that carries the difference.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    keys = ["chat-1-ok", "chat-2-unreadable"]
-    for k in keys:
-        _seed_session(state, k)
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_status = log.get_metadata_status
-
-    def _status(key):
-        if key.endswith("unreadable"):
-            return {}, False
-        return real_status(key)
-
-    monkeypatch.setattr(log, "get_metadata_status", _status)
-
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 1
-    assert "chat-1-ok" in state2._slots
-    assert "chat-2-unreadable" not in state2._slots
-    assert "chat-2-unreadable" in state2.unrestored_slot_keys, (
-        "an unreadable tab was dropped from the reopen seed instead of carried"
-    )
-
-
-def test_async_restore_does_not_carry_a_confidently_absent_tab(tmp_path, monkeypatch):
-    """A readable-but-empty metadata read is a confident answer, not a retry.
-
-    Companion to the test above: carrying every miss would resurrect keys for
-    sessions that are already gone, forever.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-present")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-present", "chat-2-absent"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 1
-    assert "chat-2-absent" not in state2.unrestored_slot_keys
-
-
-def test_async_restore_rejects_a_path_separator_key(tmp_path, monkeypatch):
-    """The path-traversal screen must survive the driver rewrite.
-
-    ``open_slots.json`` is attacker-writable in the threat model the screen
-    exists for, and the async driver does not share the generator's body — so
-    the screen is asserted on the driver that startup actually runs.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-clean")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps(
-            {"keys": ["../../etc/passwd", "..\\..\\windows", "chat-1-clean"], "ts": 0.0}
-        )
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 1
-    assert set(state2._slots) == {"chat-1-clean"}
-
-
-def test_async_restore_leaves_a_carried_seed_alone_when_there_is_no_snapshot(
-    tmp_path, monkeypatch
-):
-    """A missing snapshot is a no-op — including for ``unrestored_slot_keys``.
-
-    The set is rebound per restore so a key that becomes readable stops being
-    carried. Rebinding it when there is nothing to restore FROM would instead
-    erase a seed the previous boot deliberately kept.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    carried = {"chat-7-carried"}
-    state.unrestored_slot_keys = carried
-
-    assert asyncio.run(restore_open_slots_async(state)) == 0
-    assert state.unrestored_slot_keys is carried
-    assert state.restoring_open_slots is False
-
-
-# ── Deletion during the offloaded read ──
-#
-# ``ConversationLog.delete_session`` leaves NO tombstone — its own docstring
-# notes that once the delete releases the lock "a concurrent writer can recreate
-# the session". Offloading the transcript read opened a window where the user can
-# permanently delete a session while restore holds its content, and the published
-# slot would rewrite the deleted file on its next flush. The dashboard's HTTP
-# listener is bound BEFORE startup restore runs (``_start_site`` precedes it in
-# ``start_dashboard``), so this is reachable, not theoretical.
-#
-# The chat-resume handler already guards its own read this way; the restore paths
-# mirror it rather than reinventing it. Raised as blocking by GPT 5.6 review.
-
-
-def test_a_session_deleted_during_the_read_is_not_restored(tmp_path, monkeypatch):
-    """A tab whose session vanished mid-read must not be rebuilt from stale bytes."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    keys = ["chat-1-keep", "chat-2-deleted"]
-    for k in keys:
-        _seed_session(state, k)
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_chained = log.read_messages_chained
-
-    def _delete_then_read(key):
-        msgs = real_chained(key)
-        if "chat-2-deleted" in key:
-            # The user hits Delete while this transcript is in flight.
-            log.delete_session(key)
-        return msgs
-
-    monkeypatch.setattr(log, "read_messages_chained", _delete_then_read)
-
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 1
-    assert set(state2._slots) == {"chat-1-keep"}, (
-        "restored a tab for a session the user permanently deleted; its next "
-        "flush would rewrite the deleted transcript"
-    )
-    # A confident answer, not a retry — the key must not be carried forward.
-    assert "chat-2-deleted" not in state2.unrestored_slot_keys
-
-
-def test_a_session_recreated_during_the_read_is_not_overwritten(tmp_path, monkeypatch):
-    """Delete-then-recreate leaves metadata PRESENT but belonging to a new chat.
-
-    Existence alone reads that as "still here" and would publish a slot holding
-    the OLD transcript, whose flush overwrites a conversation the user is actively
-    using — worse than the plain-delete arm, because the destroyed data is live.
-    ``created_at`` is the discriminator.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-swapped")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-swapped"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_chained = log.read_messages_chained
-
-    def _swap_then_read(key):
-        msgs = real_chained(key)
-        if "swapped" in key:
-            log.delete_session(key)
-            log.append(key, "user", "a brand new conversation")
-            log.update_metadata(key, {"created_at": "2099-01-01T00:00:00"})
-        return msgs
-
-    monkeypatch.setattr(log, "read_messages_chained", _swap_then_read)
-
-    assert asyncio.run(restore_open_slots_async(state2)) == 0
-    assert "chat-1-swapped" not in state2._slots
-    # The replacement conversation is intact on disk.
-    assert [m.get("content") for m in log.read_messages_chained(
-        _history_key_for("chat-1-swapped")
-    )] == ["a brand new conversation"]
-
-
-def test_an_unreadable_recheck_still_restores_the_tab(tmp_path, monkeypatch):
-    """Refusing is the destructive direction on doubt, so unreadable != deleted.
-
-    ``get_metadata`` returns ``{}`` for both "deleted" and "could not be read",
-    and treating an unreadable line as a deletion would silently discard a LIVE
-    tab — the Windows sharing-violation shape again. The guard must fall through
-    to restoring.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-flaky")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-flaky"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_status = log.get_metadata_status
-    calls = {"n": 0}
-
-    def _status(key):
-        calls["n"] += 1
-        # First call is the prefetch (must succeed); the post-hop re-check reads
-        # back unreadable.
-        if calls["n"] > 1:
-            return {}, False
-        return real_status(key)
-
-    monkeypatch.setattr(log, "get_metadata_status", _status)
-
-    assert asyncio.run(restore_open_slots_async(state2)) == 1
-    assert "chat-1-flaky" in state2._slots
-    assert calls["n"] >= 2, "the post-hop re-check never ran"
-
-
-def test_a_rewrite_that_preserves_created_at_is_not_refused(tmp_path, monkeypatch):
-    """A compaction/rewrite carries ``created_at`` through, so it must not fire.
-
-    Guards the identity arm from being a blanket "anything changed" refusal,
-    which would drop tabs on ordinary housekeeping.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-rewritten")
-    log0 = state.conversation_log
-    key0 = _history_key_for("chat-1-rewritten")
-    log0.update_metadata(key0, {"created_at": "2026-01-01T00:00:00"})
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-rewritten"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_chained = log.read_messages_chained
-
-    def _touch_then_read(key):
-        msgs = real_chained(key)
-        if "rewritten" in key:
-            # Metadata churn that keeps identity — the rewrite case.
-            log.update_metadata(key, {"title": "renamed by housekeeping"})
-        return msgs
-
-    monkeypatch.setattr(log, "read_messages_chained", _touch_then_read)
-
-    assert asyncio.run(restore_open_slots_async(state2)) == 1
-    assert "chat-1-rewritten" in state2._slots
-
-
-def test_missing_created_at_falls_through_to_restoring(tmp_path, monkeypatch):
-    """Pre-``created_at`` transcripts must stay restorable.
-
-    Refusing when the discriminator is absent on either side would reject every
-    session whose metadata predates the field — a visible break for real users —
-    to close a narrow race. The residual (an undetected recreate of such a
-    transcript) is accepted and documented; the durable fix is a tombstone in
-    ``history.delete_session``, which is out of scope.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-legacy")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-legacy"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    key = _history_key_for("chat-1-legacy")
-    from kiro_crew.dashboard import chat_persistence as cp
-
-    # The session is PRESENT (so the absence arm cannot fire) and the pre-read
-    # metadata carries no ``created_at`` — the legacy-transcript shape. The
-    # identity arm needs two DIFFERING stamps, so one missing side falls through.
-    assert cp._deletion_during_read(log, key, {"title": "legacy"}, []) is None
-    # And with both sides present but equal, it also falls through.
-    live_meta = log.get_metadata(key)
-    assert live_meta.get("created_at"), "fixture no longer stamps created_at"
-    assert cp._deletion_during_read(log, key, live_meta, []) is None
-
-    assert asyncio.run(restore_open_slots_async(state2)) == 1
-    assert "chat-1-legacy" in state2._slots
-
-
-def test_a_never_persisted_key_is_not_treated_as_a_deletion(tmp_path, monkeypatch):
-    """An absent key is a new conversation, not something that was deleted."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    from kiro_crew.dashboard import chat_persistence as cp
-
-    assert cp._deletion_during_read(
-        state.conversation_log, "dashboard:never-existed", {}, None
-    ) is None
-
-
-def test_a_tab_closed_during_the_open_slot_read_is_not_restored(tmp_path, monkeypatch):
-    """The open-tab driver needs the SAME tombstone re-check as its siblings.
-
-    ``rehydrate_slot_from_history_async`` and the recent-sessions driver both
-    consult the close tombstone after their thread hop; this driver must too.
-    The close pops
-    the slot and records the tombstone synchronously, but persists the ``closed``
-    flag only after its own awaits — so the metadata read mid-flight still says
-    open. Restoring from it re-creates a dismissed tab, and worse, the restored
-    slot's next flush writes metadata WITHOUT ``closed``, erasing the close.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    keys = ["chat-1-stays", "chat-2-dismissed"]
-    for k in keys:
-        _seed_session(state, k)
-    (tmp_path / "open_slots.json").write_text(json.dumps({"keys": keys, "ts": 0.0}))
-
-    state2 = _make_state(tmp_path / "sessions")
-    log = state2.conversation_log
-    real_chained = log.read_messages_chained
-
-    from kiro_crew.dashboard import channel_slots
-
-    def _close_then_read(key):
-        if "chat-2-dismissed" in key:
-            # The user clicks ✕ while this transcript is in flight.
-            channel_slots.note_slot_closed(state2, "chat-2-dismissed")
-        return real_chained(key)
-
-    monkeypatch.setattr(log, "read_messages_chained", _close_then_read)
-
-    restored = asyncio.run(restore_open_slots_async(state2))
-
-    assert restored == 1
-    assert set(state2._slots) == {"chat-1-stays"}, (
-        "restored a tab the user dismissed mid-read; its flush would also clear "
-        "the closed marker"
-    )
-    # A confident answer, not a retry — the key must not be carried forward.
-    assert "chat-2-dismissed" not in state2.unrestored_slot_keys
-
-
-def test_an_older_close_does_not_block_an_open_slot_restore(tmp_path, monkeypatch):
-    """Negative control: only a close DURING the read is the race.
-
-    Without the ``>= started`` comparison the guard would make a reopened tab
-    un-restorable for the tombstone's whole lifetime.
-    """
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-    state = _make_state(tmp_path / "sessions")
-    _seed_session(state, "chat-1-reopened")
-    (tmp_path / "open_slots.json").write_text(
-        json.dumps({"keys": ["chat-1-reopened"], "ts": 0.0})
-    )
-
-    state2 = _make_state(tmp_path / "sessions")
-    from kiro_crew.dashboard import channel_slots
-
-    # The close must land STRICTLY before the driver's own ``started =
-    # time.time()``, and a real sleep does not guarantee that: on Windows under
-    # CPython <= 3.12 (what CI pins) ``time.sleep`` waits on a high-resolution
-    # timer while ``time.time`` still steps in ~15.6 ms system-clock ticks, so a
-    # 10 ms sleep can leave both readings EQUAL — and ``slot_closed_since`` is
-    # inclusive (``when >= instant``), so the tombstone would block the reopen
-    # and this negative control would accuse the guard of the very defect it
-    # exists to disprove. Stamp an explicitly older instant instead, making
-    # eligibility arithmetic on every platform. 60 s is far inside
-    # ``_CLOSE_TOMBSTONE_TTL_SECS`` (3600 s), so the tombstone still EXISTS when
-    # the guard consults it and the assertion cannot pass vacuously.
-    closed_at = time.time() - 60.0
-    with monkeypatch.context() as mp:
-        mp.setattr(time, "time", lambda: closed_at)
-        channel_slots.note_slot_closed(state2, "chat-1-reopened")  # then reopened
-
-    assert asyncio.run(restore_open_slots_async(state2)) == 1
-    assert "chat-1-reopened" in state2._slots

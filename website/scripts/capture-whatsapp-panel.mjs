@@ -51,6 +51,19 @@ const SCENARIOS = [
     clickPair: true,
   },
   {
+    // The pairing run stopped emitting and its last code is past its life: the
+    // gateway withholds it, and the panel must clear the image and say why.
+    name: 'expired',
+    config: { ...BASE_CONFIG, state: 'pairing', configured: false },
+    qr: {
+      state: 'pairing',
+      qr_data_url: null,
+      qr_expired: true,
+      detail: 'the pairing code expired without being scanned; restart the gateway to get a new code',
+    },
+    clickPair: true,
+  },
+  {
     name: 'connected',
     config: { ...BASE_CONFIG, state: 'connected', connected: true },
     qr: { state: 'connected', qr_data_url: null, detail: '' },

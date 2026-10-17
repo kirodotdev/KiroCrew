@@ -1291,6 +1291,8 @@ class TestLessonDedupPaths:
         assert result.outcome is LessonWriteOutcome.DEDUPED
         assert result.reason == "semantic_similarity"
         assert result.superseded == ()
+        assert result.winner == taught
+        assert result.winner_repo_scope is None
         assert _lesson_texts(store) == [taught]
 
     def test_small_keyword_subset_cannot_bypass_semantic_source_authority(

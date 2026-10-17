@@ -34,6 +34,9 @@ export interface ClientTransport {
   patch: (url: string, body: object, sessionKey?: string, signal?: AbortSignal) => Promise<Response>
   /** Parse a 2xx body; run auth recovery and throw a journaled `ApiError` otherwise. */
   j: (r: Response) => ReturnType<Response['json']>
+  /** `j` for an acceptance-receipt endpoint: a post-2xx body-read failure
+   *  rejects as `AcceptedBodyUnreadable` instead of the raw parse error. */
+  jAccepted: (r: Response) => ReturnType<Response['json']>
   /** `j`, except that a 204 resolves to `null`. */
   jNullable: (r: Response) => ReturnType<Response['json']>
   /**
@@ -55,6 +58,20 @@ export interface ClientTransport {
    * can never be opted out.
    */
   jInstancesDisabled: (r: Response) => ReturnType<Response['json']>
+  /**
+   * `fetch` for a method that talks RAW transport (`fetch('/api/…').then(j)`)
+   * rather than through the five helpers. Identical to the global `fetch` on the
+   * success path, but a rejection with no HTTP `Response` — a network drop
+   * (`TypeError: Failed to fetch`) or a `withDeadline` timeout — is written to
+   * the error journal (burst-capped per endpoint; a deliberate `AbortError` is
+   * skipped) and the report pinned to the rejection, before it is rethrown
+   * UNCHANGED. The one chokepoint that gives the raw-fetch family the same
+   * unanswered-failure journaling the helpers get. Destructured AS `fetch` by
+   * the domain modules so their call sites are the global's shape, unchanged.
+   */
+  jfetch: (input: string, init?: RequestInit) => Promise<Response>
+  /** `j` that does not journal `/api/crew-board`'s 404 `no_ledger` (see client.ts). */
+  jCrewBoard: (r: Response) => ReturnType<Response['json']>
   /** The shared `X-Session-Key: dashboard:ui` header, for a raw `fetch` that must still carry it. */
   sessionKeyHeader: { 'X-Session-Key': string }
   /** The pre-body 403 `X-Auth-Required` hook, for a method that reads its own response. */

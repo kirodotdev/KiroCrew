@@ -309,3 +309,39 @@ class TestFileSearch:
             for bad in ("-5", "0"):
                 resp = await client.get(f"/api/file-search?q=match&project={tmp_path}&limit={bad}")
                 assert len((await resp.json())["results"]) == 1, bad
+
+
+class TestFolderScopedSearchReachesWhatTheProjectPageMisses:
+    """Why the Files rail sends a cut folder to its folder tab ("Open in folder tab").
+
+    The rail's project-wide search answers one ranked page (it asks for 50). Inside a
+    folder too big to list, a match that ranks below that page is never shown by it;
+    the folder tab's search, rooted at that folder, reaches it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_match_below_the_project_page_is_found_by_the_folder_search(
+        self, tmp_path, mock_sel
+    ):
+        busy = tmp_path / "aaa"
+        busy.mkdir()
+        for i in range(60):
+            (busy / f"billing{i}.ts").write_text("x")
+        deep = tmp_path / "huge" / "zz"
+        deep.mkdir(parents=True)
+        (deep / "billing_report_quarterly_final_v2.ts").write_text("x")
+
+        async with TestClient(TestServer(_make_app())) as client:
+            project = await client.get(
+                "/api/file-search", params={"q": "billing", "project": str(tmp_path), "limit": "50"}
+            )
+            scoped = await client.get(
+                "/api/file-search",
+                params={"q": "billing", "project": str(tmp_path / "huge"), "limit": "50"},
+            )
+            project_names = {r["name"] for r in (await project.json())["results"]}
+            scoped_names = {r["name"] for r in (await scoped.json())["results"]}
+
+        assert len(project_names) == 50
+        assert "billing_report_quarterly_final_v2.ts" not in project_names
+        assert "billing_report_quarterly_final_v2.ts" in scoped_names

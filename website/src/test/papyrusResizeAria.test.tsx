@@ -135,7 +135,9 @@ describe('papyrus resize grips report a position inside the range they advertise
 
 /** The width actually applied to the co-author column, in px. */
 function chatBoxWidth(): number {
-  const box = screen.getByTestId('co-author-panel').parentElement
+  // The sized column box, not the direct parent: the context notice shares that column, so
+  // the panel sits in a flex-1 child of it.
+  const box = screen.getByTestId('co-author-panel').closest<HTMLElement>('[style*="width"]')
   return parseFloat(box?.style.width ?? '')
 }
 

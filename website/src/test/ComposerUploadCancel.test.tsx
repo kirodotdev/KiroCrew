@@ -4,8 +4,8 @@
  * While `uploading` is true every attach entry point is disabled, and the
  * request itself used to run to completion whatever the user did: the only exit
  * from a slow transfer was reloading the page, which throws away the bytes
- * already sent. Both composer hosts now hold the request's AbortController and
- * hand a cancel control to ChatInput.
+ * already sent. Both composer hosts now register the request's AbortController
+ * per slot (composerSendHolds) and hand a cancel control to ChatInput.
  *
  * Two things are pinned per host, because the second is the trap: aborting must
  * end the request AND must not be dressed up as a failure. The blanket catch
@@ -169,7 +169,8 @@ function pasteImage(input: HTMLElement, name = 'pasted.png') {
   })
 }
 
-const cancelControl = () => screen.queryByRole('button', { name: 'Cancel upload' })
+// Either label: singular for one upload, counted once two or more are live (#13071).
+const cancelControl = () => screen.queryByRole('button', { name: /^Cancel (\d+ uploads|upload)$/ })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -201,7 +202,7 @@ describe.each([
     // the user-visible half of the fix: the control disappears with the spinner.
     await waitFor(() => expect(cancelControl()).not.toBeInTheDocument())
     // A cancel the user asked for is not an upload failure.
-    expect(screen.queryByText(/max 50 MB/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/max \d+ MB/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Upload failed/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument()
   })
@@ -239,6 +240,8 @@ describe('ChatPage composer: what the cancel control speaks for (#5744)', () => 
     await act(async () => { pasteImage(screen.getByLabelText('Message input')) })
     await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(2))
     expect(signals).toHaveLength(2)
+    // One press ends both, so the label must say so rather than claim one.
+    await waitFor(() => expect(cancelControl()).toHaveAccessibleName('Cancel 2 uploads'))
 
     await act(async () => { fireEvent.click(cancelControl()!) })
 

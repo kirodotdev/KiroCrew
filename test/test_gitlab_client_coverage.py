@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from kiro_crew import github_runner
 from kiro_crew.apps.builtins.issue_radar.backend import gitlab_client as gl
 
 # The autouse isolation fixture stubs ``allowed_hosts``, so the two tests that
@@ -266,6 +267,22 @@ def test_glab_env_pins_the_host_and_drops_the_token_off_gitlab_com(monkeypatch):
 def test_glab_env_keeps_the_token_for_gitlab_com(monkeypatch):
     monkeypatch.setenv("GITLAB_TOKEN", "glpat-xyz")
     assert gl._glab_env("gitlab.com")["GITLAB_TOKEN"] == "glpat-xyz"
+
+
+def test_glab_env_hands_the_cli_an_explicit_session_bus_address(monkeypatch):
+    """Issue Radar polls glab too. The child never searches for the bus itself (that
+    autolaunches a private dbus-daemon and keyring daemon per poll where no user bus
+    exists): it gets the value the parent resolved once, and never the ambient one."""
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+
+    for resolved in (github_runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+        monkeypatch.setattr(
+            github_runner, "session_bus_address", lambda resolved=resolved: resolved
+        )
+        env = gl._glab_env("gitlab.com")
+        assert env.get("DBUS_SESSION_BUS_ADDRESS"), "glab must not start with no bus address"
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == resolved
+        assert env["DBUS_SESSION_BUS_ADDRESS"] != "unix:path=/ambient/forwarded/bus"
 
 
 # ── the spawn chokepoint ─────────────────────────────────────────────────────
@@ -737,6 +754,14 @@ def test_get_current_login_returns_none_on_a_cli_failure(route):
     assert gl.get_current_login(host="gitlab.com") is None
 
 
+def test_get_current_login_surfaces_a_host_setup_failure(monkeypatch):
+    # A stale KIROCREW_ISSUE_RADAR_GLAB path must reach the route as a setup
+    # error (setup_required), not collapse into "no login" -> empty picker.
+    monkeypatch.setenv("KIROCREW_ISSUE_RADAR_GLAB", "/nonexistent/glab")
+    with pytest.raises(gl.ProviderSetupError):
+        gl.get_current_login(host="gitlab.com")
+
+
 def test_list_contributed_repos_filters_by_activity_and_shape(route):
     route([("projects?membership=true", [
         {"path_with_namespace": "g/p", "last_activity_at": "2099-01-01T00:00:00Z",
@@ -746,7 +771,8 @@ def test_list_contributed_repos_filters_by_activity_and_shape(route):
     ])])
     rows, truncated = gl.list_contributed_repos("alice", host="gitlab.com", within_days=30)
     assert rows == [
-        {"owner": "g", "repo": "p", "pushed_at": "2099-01-01T00:00:00Z",
+        {"owner": "g", "repo": "p", "full_name": "g/p",
+         "last_contributed_at": "2099-01-01T00:00:00Z", "pushed_at": "2099-01-01T00:00:00Z",
          "private": False, "description": "d"}
     ]
     assert truncated is False

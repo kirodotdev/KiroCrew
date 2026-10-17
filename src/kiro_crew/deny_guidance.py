@@ -75,6 +75,14 @@ DENY_CLASS_SECRET_FILE = "secret_file"
 DENY_CLASS_TRUST_ROOT = "trust_root"
 DENY_CLASS_EXFIL_SHAPE = "exfil_shape"
 DENY_CLASS_SELF_PROTECTION = "self_protection"
+#: A destructive SQL statement matched as TEXT on the command line. The ``sql``
+#: rules are plain text matches over the whole line, so they refuse the statement
+#: inside a heredoc body, a ``printf`` argument or an inline program exactly as
+#: they refuse one handed to a database client, and the bare pattern line does not
+#: say so. Its own class because the two readings need opposite next steps: a
+#: statement that was going to RUN belongs to the user, while prose that merely
+#: mentions one is written with the file-editing tool and referenced by path.
+DENY_CLASS_STATEMENT_TEXT = "statement_text"
 #: The sensitive-path gate could not canonicalise the path within its budget and
 #: refused fail-closed WITHOUT matching anything. Its own class because every
 #: other class's remediation presumes a real match, and a refusal that reads as
@@ -180,22 +188,29 @@ _CLASS_MATCHERS: tuple[tuple[str, tuple[re.Pattern[str], ...]], ...] = tuple(
 )
 
 
-#: Built-in rule CATEGORY → the class its rules fall back to. Only the two
+#: Built-in rule CATEGORY → the class its rules fall back to. Only the
 #: categories with a sanctioned path appear, and ``credential-exfil`` mapping to
 #: the outbound-transfer answer is what the ten AWS-named exfiltration rules
 #: receive: "not a spelling problem, do not re-spell it", rather than the
 #: credential-READ answer their patterns attract by naming the credential
 #: environment variables.
 #:
-#: The other seven categories (``aws-destructive``, ``local-destructive``,
-#: ``git-publish``, ``sql``, ``iac-teardown``, ``reverse-shell``,
-#: ``pipe-to-shell``) are deliberately absent, and a rule in them gets no
-#: guidance: a destructive ``rm`` explains itself, and prose invented for it would
-#: bury the classes where the agent genuinely cannot infer the next step. That
-#: silence is ANSWERED, not merely missing — see :func:`_rule_class`.
+#: ``sql`` is here for the opposite reason to the credential rows: not because the
+#: statement has a sanctioned path, but because the rule's text match reaches a
+#: shape the agent does not expect it to -- a statement quoted inside prose it is
+#: writing -- and the bare pattern line reads as a verdict on SQL the agent never
+#: ran. The guidance keeps the refusal and explains the reach.
+#:
+#: The other six categories (``aws-destructive``, ``local-destructive``,
+#: ``git-publish``, ``iac-teardown``, ``reverse-shell``, ``pipe-to-shell``) are
+#: deliberately absent, and a rule in them gets no guidance: a destructive ``rm``
+#: explains itself, and prose invented for it would bury the classes where the
+#: agent genuinely cannot infer the next step. That silence is ANSWERED, not
+#: merely missing — see :func:`_rule_class`.
 _CATEGORY_CLASSES: dict[str, str] = {
     "credential-exfil": DENY_CLASS_EXFIL_SHAPE,
     "self-protection": DENY_CLASS_SELF_PROTECTION,
+    "sql": DENY_CLASS_STATEMENT_TEXT,
 }
 
 #: Built-in rule ID → class, for the rules whose class is NOT their category's.
@@ -426,6 +441,30 @@ REMEDIATION: dict[str, str] = {
         "product code — a file-reading tool, a CLI subcommand's own output, or an "
         "ordinary package query. If you genuinely need this exact action, say so "
         "and let the user run it."
+    ),
+    DENY_CLASS_STATEMENT_TEXT: (
+        "This rule matched the TEXT of a destructive SQL statement on the command "
+        "line. It reads the whole line and matches that text wherever it appears -- "
+        "quoted, as an echo or printf argument, inside a heredoc body, or in an "
+        "inline interpreter program -- because a shell command line cannot tell a "
+        "statement a database client is about to run from one that is only being "
+        "written down, and the rule refuses rather than guess. That makes it a "
+        "matter of what the line carries, not how it is spelled: re-spelling the "
+        "statement, splitting its keywords or moving it to another shell writer "
+        "meets the same rule, so do not try. Which step comes next depends on what "
+        "you were doing. If the statement was going to RUN against a database, that "
+        "is exactly what is refused: name the statement and let the user run it "
+        "themselves; no other door to that effect is open to you. If the statement "
+        "is only prose or data you are writing -- notes, a document, a comment or "
+        "commit body, a fixture a linter must reject -- then the shell was never "
+        "needed: the file-editing tool is not a shell command, so this rule does "
+        "not read what it writes. Write the document with that tool, then hand "
+        "its path to a prose reader such as `gh ... --body-file <path>` or `git "
+        "commit -F <path>`. A database client (`psql`, `mysql`, `sqlite3` or any "
+        "other) must never be handed that document: that is the refused statement "
+        "by another route. If the text was not even yours to write and only the "
+        "command line happened to carry it, say so plainly and report it as an "
+        "over-block."
     ),
 }
 

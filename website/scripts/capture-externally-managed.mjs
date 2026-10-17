@@ -69,9 +69,11 @@ async function main() {
         channelPreference: '',
         platform: 'darwin-arm64',
         packaged: true,
-        disabled: 'externally-managed',
-        managedBy: withMeta ? 'internal-registry' : '',
-        updateCommand: withMeta ? 'pkgtool update kirocrew' : '',
+        // withMeta=true → managed lane (updateCommand present, no disabled field)
+        // withMeta=false → bare marker (no updateCommand, disabled:'externally-managed')
+        ...(withMeta
+          ? { managedBy: 'internal-registry', updateCommand: 'pkgtool update kirocrew' }
+          : { disabled: 'externally-managed', managedBy: '', updateCommand: '' }),
       }),
       setChannel: async () => ({ ok: true }),
     }

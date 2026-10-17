@@ -356,7 +356,9 @@ class TestTryLiveModelSwitch:
     @pytest.mark.asyncio
     async def test_model_unavailable_propagates_instead_of_resetting(self):
         provider = _acp()
-        provider.client.set_model = AsyncMock(side_effect=AcpModelUnavailable("nope"))
+        provider.client.set_model = AsyncMock(
+            side_effect=AcpModelUnavailable("nope", backend=ACP_BACKEND_KIRO)
+        )
         with pytest.raises(AcpModelUnavailable):
             await ch._try_live_model_switch("s1", _ChatSlot("s1"), provider, "opus-4.8-1m")
 
@@ -815,14 +817,22 @@ class TestSlotContextInject:
         assert status2 == 200
 
     @pytest.mark.asyncio
-    async def test_queue_is_fifo_evicted_at_the_shared_ceiling(self, _sel):
+    async def test_queue_refuses_at_the_shared_ceiling_instead_of_evicting(self, _sel):
+        """A full queue REFUSES the newest entry rather than evicting the oldest.
+
+        Evicting discarded an entry the caller already had a 200 for, with nothing
+        reporting the loss. The endpoint now answers 429 `context_not_queued`, which
+        the caller can retry after the next drain.
+        """
         slot = _ChatSlot("s1")
         slot._pending_context = [{"content": f"c{i}", "source": ""} for i in range(50)]
         assert len(slot._pending_context) == _MAX_PENDING_CONTEXT
         status, body = await self._post(_state(slot), "s1", {"content": "newest"})
-        assert (status, body) == (200, {"ok": True, "pending": _MAX_PENDING_CONTEXT})
-        assert slot._pending_context[0]["content"] == "c1"
-        assert slot._pending_context[-1]["content"] == "newest"
+        assert status == 429
+        assert body["code"] == "context_not_queued"
+        assert slot._pending_context[0]["content"] == "c0"
+        assert len(slot._pending_context) == _MAX_PENDING_CONTEXT
+        assert all(e["content"] != "newest" for e in slot._pending_context)
 
 
 # ── queue mutation routes ────────────────────────────────────────────────────
@@ -868,6 +878,20 @@ class TestQueueCancel:
         assert payload["queue_id"] == qid
         state.push_slots_update.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_a_send_already_in_the_conversation_is_not_cancelled(self, _sel):
+        # Its row is in the transcript already: dropping only the entry would
+        # leave the message there and give the text back to send twice.
+        slot = _ChatSlot("s1")
+        qid = slot.queue_append("orig")
+        slot._queue[0]["_responsive_row"] = slot.append("user", "orig", "msg msg-u")
+        state = _state(slot)
+        status, body = await self._delete(state, "s1", qid)
+        assert status == 409
+        assert body["code"] == "queue_item_already_sent"
+        assert [item["id"] for item in slot._queue] == [qid]
+        state.broadcast_ws.assert_not_called()
+
 
 class TestQueueEdit:
     async def _patch(self, state, name, qid, payload):
@@ -898,6 +922,20 @@ class TestQueueEdit:
         qid = slot.queue_append("orig")
         status, _ = await self._patch(_state(slot), "s1", qid, {"content": 5})
         assert status == 400
+
+    @pytest.mark.asyncio
+    async def test_a_send_already_in_the_conversation_is_not_edited(self, _sel):
+        # A waiting send whose row was written where it was sent is part of the
+        # conversation; editing only its entry would leave the old row and add
+        # a second one at the drain.
+        slot = _ChatSlot("s1")
+        qid = slot.queue_append("orig")
+        slot._queue[0]["_responsive_row"] = slot.append("user", "orig", "msg msg-u")
+        status, body = await self._patch(_state(slot), "s1", qid, {"content": "changed"})
+        assert status == 409
+        assert body["code"] == "queue_item_already_sent"
+        assert slot._queue[0]["content"] == "orig"
+        assert [m["content"] for m in slot.messages if m["role"] == "user"] == ["orig"]
 
     @pytest.mark.asyncio
     async def test_unknown_queue_id_is_404(self, _sel):
@@ -1403,12 +1441,13 @@ class TestSlotFollowup:
         assert [i["title"] for i in payload["items"]] == ["Ship it", "Later"]
 
     @pytest.mark.asyncio
-    async def test_unscoped_slot_gets_the_worktree_warning(self):
+    async def test_unscoped_slot_gets_the_new_chat_note(self):
         slot = _ChatSlot("s1")
         slot.project = ""
         status, body = await self._post(self._state_with(slot), "s1", {"items": [_item()]})
         assert status == 200
         assert "no project directory" in body["warning"]
+        assert "start in new chat" in body["warning"].lower()
 
     @pytest.mark.asyncio
     async def test_a_failed_delivery_reports_zero_not_a_500(self):

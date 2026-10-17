@@ -34,7 +34,7 @@ _LIVE_EXECUTIONS: dict[tuple[str, str], ExecutionContext] = {}
 # Insertion-ordered and BOUNDED, because the population is not the set of live
 # sessions: every persistent `bind_session_execution` vouches, and several of its
 # callers mint a fresh key per request rather than per session -- a webhook with
-# no `sessionKey` gets `hook:default:<unix seconds>`, and a task runner refine run
+# no `sessionKey` gets `hook:default:<unix seconds>-<random hex>`, and a task runner refine run
 # gets one per run. Those keys are released by their own turn's teardown where one
 # exists, so the cap is the backstop for uptime, not the primary release: an entry
 # whose producer has no teardown would otherwise live until the process restarts.
@@ -229,10 +229,38 @@ def clear_session_execution(
         forget_durable_vouch(session_key, only_if=expected.to_record())
 
 
+_UNAVAILABLE_PREFIX = "Execution memory is unavailable: "
+_UNAVAILABLE_SUFFIX = "; Global was not used"
+
+#: The two refusals a crewmate's own memory binding produces. Callers that turn
+#: a refusal into user-facing text key a remedy on these exact reasons.
+MEMBER_ON_GLOBAL_REASON = "a member cannot use the Global store"
+MEMBER_WITHOUT_IDENTITY_REASON = "member has no persisted identity"
+
+
 def _unavailable(message: str):
+    """An execution-context refusal. *message* is fixed text, never formatted
+    from an exception or a path, so a caller may show it to the user."""
     from kiro_crew.memory_stores import UnknownMemoryStore
 
-    return UnknownMemoryStore(f"Execution memory is unavailable: {message}; Global was not used")
+    return UnknownMemoryStore(f"{_UNAVAILABLE_PREFIX}{message}{_UNAVAILABLE_SUFFIX}")
+
+
+def unavailable_reason(exc: BaseException | None) -> str:
+    """The reason an execution-context refusal names, without its shared wrapper.
+
+    Answers the text inside the "Execution memory is unavailable: ...; Global
+    was not used" framing, so a caller can put the reason in its own sentence
+    without the wording doubling up. Only this module's refusals carry that
+    framing, and their reasons are fixed text, so the answer names no path or
+    exception detail. Answers ``""`` for any other exception, including a
+    memory-store refusal that formats an ``OSError`` into its own text, and for
+    ``None``.
+    """
+    text = str(exc).strip()
+    if not (text.startswith(_UNAVAILABLE_PREFIX) and text.endswith(_UNAVAILABLE_SUFFIX)):
+        return ""
+    return text[len(_UNAVAILABLE_PREFIX) : -len(_UNAVAILABLE_SUFFIX)].strip()
 
 
 def canonical_memory_mode(mode: object) -> str:
@@ -269,7 +297,7 @@ class MemoryStoreRef:
 
             validate_slug(self.member_id)
             if self.store_id == "default":
-                raise _unavailable("a member cannot use the Global store")
+                raise _unavailable(MEMBER_ON_GLOBAL_REASON)
 
     @property
     def legacy_name(self) -> str:
@@ -494,7 +522,7 @@ def resolve_member_execution(
     declaration = config.memory_stores.get(store)
     member_id = getattr(agent, "member_id", "") or None
     if getattr(declaration, "memory_version", 1) == 2 and not member_id:
-        raise _unavailable("member has no persisted identity")
+        raise _unavailable(MEMBER_WITHOUT_IDENTITY_REASON)
     return ExecutionContext(
         member_id=member_id,
         store=MemoryStoreRef(store, member_id),

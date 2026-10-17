@@ -23,7 +23,7 @@ import { i18nT } from '../../../i18n/t'
 /** Label keys as full literals in one indexable map, so the key-resolution
  *  gate can verify each one exists. Indexed at the call site, not read off a
  *  local — that indirection is what made these sites unverifiable. */
-const BAND_LABEL_KEY: Record<Band, string> = {
+export const BAND_LABEL_KEY: Record<Band, string> = {
   red: 'apps.codeReviewSage.components.bandChips.needs_review',
   yellow: 'apps.codeReviewSage.components.bandChips.worth_a_glance',
   green: 'apps.codeReviewSage.components.bandChips.clean',
@@ -32,17 +32,17 @@ const BAND_LABEL_KEY: Record<Band, string> = {
 const BAND_META: Record<Band, { dot: string; on: string; off: string }> = {
   red: {
     dot: 'text-danger',
-    on: 'bg-danger-subtle text-danger border-danger',
+    on: 'bg-danger-subtle text-danger-text border-danger',
     off: 'bg-card text-muted border-border hover:text-text',
   },
   yellow: {
     dot: 'text-warn',
-    on: 'bg-warn-subtle text-warn border-warn',
+    on: 'bg-warn-subtle text-warn-text border-warn',
     off: 'bg-card text-muted border-border hover:text-text',
   },
   green: {
     dot: 'text-ok',
-    on: 'bg-ok-subtle text-ok border-ok',
+    on: 'bg-ok-subtle text-ok-text border-ok',
     off: 'bg-card text-muted border-border hover:text-text',
   },
 }
@@ -69,8 +69,8 @@ function Chip({
       onClick={onClick}
       className={
         'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] '
-        + 'font-medium cursor-pointer transition-colors focus:outline-hidden '
-        + 'focus-visible:ring-1 focus-visible:ring-accent/40 '
+        + 'font-medium cursor-pointer transition-colors '
+        + 'focus-ring-accent '
         + (selected ? on : off)
       }
     >

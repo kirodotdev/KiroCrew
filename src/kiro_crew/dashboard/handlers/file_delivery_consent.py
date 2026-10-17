@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import datetime as _dt
 import logging
+import sys
 
 from aiohttp import web
 
@@ -51,6 +52,7 @@ _CODE_APPROVE_NOT_LOCAL = "file_delivery_approve_not_local"
 _CODE_APPROVE_REFUSED = "file_delivery_approve_refused"
 _CODE_APPROVE_COMPUTER_USE = "file_delivery_approve_computer_use_active"
 _CODE_APPROVE_UNSANDBOXED = "file_delivery_approve_unsandboxed"
+_CODE_APPROVE_UNSUPPORTED_PLATFORM = "file_delivery_approve_unsupported_platform"
 _CODE_APPROVE_WRITE_FAILED = "file_delivery_approve_write_failed"
 _CODE_INVALID_NONCE = "invalid_nonce"
 
@@ -301,13 +303,31 @@ async def api_file_delivery_consent_approve(request: web.Request) -> web.Respons
     # then read the nonce and complete the owner's step-up with no human present.
     # Both must hold, and both fail closed.
     if not await asyncio.to_thread(lambda: credential_mask_applies(configured_sandbox_mode())):
+        # On native Windows there is no Kiro Crew sandbox backend at all, so the
+        # mask can NEVER apply here and no `agent.sandbox` value changes that.
+        # The generic message's remediation ("set agent.sandbox to 'auto' or
+        # 'strict' on a host with a working backend") is unactionable on
+        # Windows and misleads the operator, so answer honestly instead. Fail
+        # closed either way -- only the wording and code differ.
+        if sys.platform == "win32":
+            return await _refuse_approve(
+                "approve: refused on native Windows (no sandbox backend to hide the nonce)",
+                error=(
+                    "flagged-file delivery approval is not available on native "
+                    "Windows: there is no sandbox backend to hide this approval's "
+                    "nonce from the agent, so a host step-up cannot prove a human "
+                    "is present. Retrieve the file from disk directly instead "
+                    "(changing agent.sandbox does not enable approval on Windows)"
+                ),
+                code=_CODE_APPROVE_UNSUPPORTED_PLATFORM,
+            )
         return await _refuse_approve(
             "approve: refused because the nonce-hiding sandbox mask is not in effect",
             error=(
                 "the agent sandbox that hides this approval's nonce is not in "
                 "effect (agent.sandbox is 'off', or no sandbox backend is "
                 "available), so a host step-up can no longer prove a human is "
-                "present; set agent.sandbox to 'standard' or 'strict' on a host "
+                "present; set agent.sandbox to 'auto' or 'strict' on a host "
                 "with a working backend, then arm and approve delivery again"
             ),
             code=_CODE_APPROVE_UNSANDBOXED,

@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
-import KiroCrewCfgTab from '../pages/overview/KiroCrewCfgTab'
+import KiroCrewCfgTab, { AgentRunSettings } from '../pages/overview/KiroCrewCfgTab'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
@@ -106,6 +106,21 @@ function seed(cfg: Cfg = CFG, patched: Cfg = CFG) {
 async function renderTab() {
   const view = renderWithProviders(<KiroCrewCfgTab />)
   expect(await screen.findByRole('heading', { name: /Crewmates/ })).toBeInTheDocument()
+  return view
+}
+
+/** Settings > Agent Harness's run cards (Subagent Settings + Warm Pool), alone. */
+async function renderRun() {
+  const view = renderWithProviders(<AgentRunSettings />)
+  expect(await screen.findByRole('heading', { name: /Subagent Settings/ })).toBeInTheDocument()
+  return view
+}
+
+/** Both surfaces on one query cache, for edits that cross from one to the other. */
+async function renderBoth() {
+  const view = renderWithProviders(<><KiroCrewCfgTab /><AgentRunSettings /></>)
+  expect(await screen.findByRole('heading', { name: /Crewmates/ })).toBeInTheDocument()
+  expect(await screen.findByRole('heading', { name: /Subagent Settings/ })).toBeInTheDocument()
   return view
 }
 
@@ -291,8 +306,8 @@ describe('KiroCrewCfgTab — numeric rows', () => {
     updated.session.pool_ttl_secs = 900
     seed(CFG, updated)
 
-    await renderTab()
-    const input = num('Pool TTL')
+    await renderRun()
+    const input = num('Retire After')
     fireEvent.change(input, { target: { value: '900' } })
 
     // Any other key is a keystroke mid-edit, not a commit.
@@ -306,8 +321,8 @@ describe('KiroCrewCfgTab — numeric rows', () => {
   })
 
   it('does not patch when the committed value equals the current one', async () => {
-    await renderTab()
-    const input = num('Pool Size')
+    await renderRun()
+    const input = num('Kept Ready')
     fireEvent.change(input, { target: { value: '2' } })
     fireEvent.blur(input)
 
@@ -361,10 +376,10 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
   })
 
   it('labels the empty pool agent with the configured default', async () => {
-    await renderTab()
-    expect(optionIn('Pool Agent', '(crew-alpha)')).toBeInTheDocument()
+    await renderRun()
+    expect(optionIn('Uses Crewmate', 'Default crewmate (crew-alpha)')).toBeInTheDocument()
 
-    fireEvent.click(optionIn('Pool Agent', 'crew-beta'))
+    fireEvent.click(optionIn('Uses Crewmate', 'crew-beta'))
     await waitFor(() => {
       expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('session.pool_agent', 'crew-beta')
     })
@@ -443,8 +458,8 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     const m = seed()
     m.setDefaultAgent = vi.fn().mockResolvedValue({ ok: true })
 
-    await renderTab()
-    const poolSize = screen.getByRole('spinbutton', { name: 'Pool Size' })
+    await renderBoth()
+    const poolSize = screen.getByRole('spinbutton', { name: 'Kept Ready' })
     fireEvent.change(poolSize, { target: { value: '7' } })
     expect(poolSize).toHaveValue(7)
     fireEvent.click(optionIn('Default crewmate', 'crew-beta'))
@@ -452,7 +467,7 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     await waitFor(() => expect(m.setDefaultAgent).toHaveBeenCalledWith('crew-beta'))
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
     // Uncommitted (no Enter, no blur): still the typed draft, never PATCHed.
-    expect(screen.getByRole('spinbutton', { name: 'Pool Size' })).toHaveValue(7)
+    expect(screen.getByRole('spinbutton', { name: 'Kept Ready' })).toHaveValue(7)
     expect(m.patchConfig).not.toHaveBeenCalled()
   })
 
@@ -541,18 +556,31 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     })
   })
 
-  it('surfaces a failed patch in both cards that host the save banner', async () => {
+  it('surfaces a failed patch in the card that hosts the save banner', async () => {
     const m = vi.mocked(api)
     m.patchConfig = vi.fn().mockRejectedValue(new Error('read-only config'))
 
     await renderTab()
     fireEvent.click(toggleFor('MCP Tool Search'))
 
-    // The banner is rendered once in Warm Pool and once in Config Summary.
+    // Config Summary is the only card on this tab that hosts the banner.
     await waitFor(() => {
-      expect(screen.getAllByText('read-only config')).toHaveLength(2)
+      expect(screen.getAllByText('read-only config')).toHaveLength(1)
     })
     // onError also invalidates the config query, so it refetches.
+    await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
+  })
+
+  it('surfaces a failed warm-pool patch in its own card and refetches', async () => {
+    const m = vi.mocked(api)
+    m.patchConfig = vi.fn().mockRejectedValue(new Error('read-only config'))
+
+    await renderRun()
+    fireEvent.change(num('Kept Ready'), { target: { value: '4' } })
+    fireEvent.blur(num('Kept Ready'))
+
+    // Shown through ErrorNotice, so it is announced as an alert.
+    expect(await screen.findByRole('alert')).toHaveTextContent('read-only config')
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
   })
 
@@ -566,21 +594,31 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     sparse.default_agent = ''
     seed(sparse)
 
-    await renderTab()
-    expect(num('Pool Size').value).toBe('0')
+    await renderBoth()
+    expect(num('Kept Ready').value).toBe('0')
     expect(toggleFor('MCP Tool Search')).toHaveTextContent('on')
     expect(screen.queryByRole('group', { name: /Enforce Denied Commands|enforce_denied_commands/ })).not.toBeInTheDocument()
     // With no default agent configured, the empty pool-agent option falls back
     // to a generic placeholder instead of naming one.
-    expect(optionIn('Pool Agent', '(default agent)')).toBeInTheDocument()
+    expect(optionIn('Uses Crewmate', '(default agent)')).toBeInTheDocument()
   })
 
   it('renders the warm pool card for a provider that advertises the capability', async () => {
-    await renderTab()
+    await renderRun()
     // The active ACP adapter sets capabilities.warmPool, so the card is present
-    // and owns the only Pool Size row on the page.
-    expect(screen.getByText('Warm Pool')).toBeInTheDocument()
-    expect(screen.getAllByRole('spinbutton', { name: 'Pool Size' })).toHaveLength(1)
+    // and owns the only Kept Ready row on the page.
+    expect(screen.getByText('Pre-started Sessions')).toBeInTheDocument()
+    expect(screen.getAllByRole('spinbutton', { name: 'Kept Ready' })).toHaveLength(1)
+    // It saves on change, and says so beside the card that waits for Save.
+    expect(screen.getByText('Keeps agents started so new chats open at once. Changes save right away, and you can change them back.')).toBeInTheDocument()
+  })
+
+  it('leaves Subagent Settings and Warm Pool to Settings > Agent Harness', async () => {
+    await renderTab()
+    expect(screen.queryByRole('heading', { name: /Subagent Settings/ })).toBeNull()
+    expect(screen.queryByText('Pre-started Sessions')).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Kept Ready' })).toBeNull()
+    expect(screen.queryByRole('spinbutton', { name: 'Max Turns per Subagent' })).toBeNull()
   })
 })
 
@@ -589,8 +627,10 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   const saveBtn = () => screen.getByRole('button', { name: 'Save' })
 
   it('keeps Save disabled until something actually differs', async () => {
-    await renderTab()
+    await renderRun()
     expect(saveBtn()).toBeDisabled()
+    // The card says it waits for Save, unlike the cards that save on change.
+    expect(screen.getByText('Helpers an agent starts for side tasks. Changes apply when you press Save.')).toBeInTheDocument()
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
     expect(saveBtn()).toBeEnabled()
@@ -599,9 +639,25 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     expect(saveBtn()).toBeDisabled()
   })
 
+  it('stakes a leave guard while a subagent draft is unsaved', async () => {
+    await renderRun()
+    // Clean: the guard lets every navigation through and stakes nothing.
+    let [guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    expect(atStake).toBe(false)
+    expect(guard()).toBe(true)
+
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
+    ;[guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    expect(atStake).toBe(true)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    expect(guard()).toBe(false)
+    expect(confirm).toHaveBeenCalledTimes(1)
+    confirm.mockRestore()
+  })
+
   it('sends the whole subagent block and confirms', async () => {
     const m = vi.mocked(api)
-    await renderTab()
+    await renderRun()
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
     fireEvent.click(saveBtn())
@@ -620,7 +676,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     const m = vi.mocked(api)
     m.saveKirocrewConfig = vi.fn().mockResolvedValue({ error: 'value out of range' })
 
-    await renderTab()
+    await renderRun()
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '7' } })
     fireEvent.click(saveBtn())
 
@@ -633,7 +689,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     const m = vi.mocked(api)
     m.saveKirocrewConfig = vi.fn().mockRejectedValue(new Error('socket hang up'))
 
-    await renderTab()
+    await renderRun()
     fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '5' } })
     fireEvent.click(saveBtn())
 
@@ -645,7 +701,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     const m = vi.mocked(api)
     m.saveKirocrewConfig = vi.fn().mockRejectedValue('gateway went away')
 
-    await renderTab()
+    await renderRun()
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '9' } })
     fireEvent.click(saveBtn())
 
@@ -653,7 +709,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   })
 
   it('reveals the auto-size ceiling only while concurrency is auto', async () => {
-    await renderTab()
+    await renderRun()
     expect(screen.queryByRole('spinbutton', { name: 'Auto-Size Max' })).toBeNull()
 
     fireEvent.change(num('Max Concurrent Subagents'), { target: { value: '0' } })
@@ -665,7 +721,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   })
 
   it('clamps every numeric input to its own bounds', async () => {
-    await renderTab()
+    await renderRun()
 
     // A blank max-turns collapses to the minimum rather than NaN.
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '' } })
@@ -690,7 +746,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     updated.agent.subagent_max_turns = 42
     seed(CFG, updated)
 
-    await renderTab()
+    await renderBoth()
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
     expect(num('Max Turns per Subagent').value).toBe('150')
 
@@ -701,6 +757,24 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     expect(saveBtn()).toBeDisabled()
   })
 
+  it('keeps an unsaved subagent draft when an unrelated config write lands', async () => {
+    // A harness switch or warm-pool edit on the same tab replaces the cached
+    // config with a new object whose subagent values are unchanged.
+    const updated = clone()
+    updated.auto_update = false
+    seed(CFG, updated)
+
+    const { container } = await renderBoth()
+    fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
+    fireEvent.click(toggleFor('Auto Update'))
+    await waitFor(() => expect(vi.mocked(api).patchConfig).toHaveBeenCalledWith('auto_update', false))
+    // useDirtyTrack ticks once the saved config is back in the cache, i.e. the
+    // same render that hands both cards the new config object.
+    await waitFor(() => expect(container.querySelector('.text-ok')).not.toBeNull())
+    expect(num('Max Turns per Subagent').value).toBe('150')
+    expect(saveBtn()).toBeEnabled()
+  })
+
   it('falls back to built-in subagent defaults when the block is absent', async () => {
     const sparse = clone() as Cfg
     const agent = sparse.agent as Record<string, unknown>
@@ -709,7 +783,7 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     delete agent.subagent_auto_max
     seed(sparse)
 
-    await renderTab()
+    await renderRun()
     expect(num('Max Turns per Subagent').value).toBe('100')
     expect(num('Max Concurrent Subagents').value).toBe('3')
     expect(saveBtn()).toBeDisabled()

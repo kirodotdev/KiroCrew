@@ -52,7 +52,7 @@ import ChatPane from '../components/ChatPane'
 const SLOT = 'chat-1-stacking'
 
 /** Shell overlays the dim must stay under: the sessions-drawer scrim (z-[46])
- *  and the mobile workspace panel (z-[47]) in ChatPage. */
+ *  and the mobile workspace panel (z-[47]) in pages/chat/page/. */
 const SHELL_OVERLAY_FLOOR = 46
 
 function mount(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {

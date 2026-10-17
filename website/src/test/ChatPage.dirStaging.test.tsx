@@ -43,14 +43,23 @@ vi.mock('../api/client', () => ({
     // slot carries none) -- FilePickerMenu relativizes against the search
     // response's own `root`, not the `project` prop directly, so a mock that
     // ignored the query would give every slot the same root regardless of its
-    // actual project.
-    fileSearch: vi.fn().mockImplementation((_q: string, project?: string) => Promise.resolve({
-      root: project || '/repo',
-      results: [
-        { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime: Math.floor(Date.now() / 1000) - 60, kind: 'dir' },
-        { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime: Math.floor(Date.now() / 1000) - 60, kind: 'file' },
-      ],
-    })),
+    // actual project. Queries against '/repo/src' include a sentinel 'config.ts'
+    // row absent from the '/repo' set, giving tests a real DOM signal that
+    // rootRef.current has advanced to '/repo/src' before a click fires.
+    fileSearch: vi.fn().mockImplementation((_q: string, project?: string) => {
+      const root = project || '/repo'
+      const mtime = Math.floor(Date.now() / 1000) - 60
+      const results = root === '/repo/src'
+        ? [
+            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
+            { path: '/repo/src/config.ts', name: 'config.ts', size: 5, mtime, kind: 'file' },
+          ]
+        : [
+            { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime, kind: 'dir' },
+            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
+          ]
+      return Promise.resolve({ root, results })
+    }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -413,15 +422,17 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
 
     const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
     fireEvent.change(taB, { target: { value: '@mai' } })
-    // The picker's `placeholderData` keeps slot-a's LAST resolved results on
-    // screen while slot-b's own (differently-rooted) query is in flight, so
-    // "main.ts" can satisfy findByText from the stale placeholder alone.
-    // Wait for the query to actually have been ISSUED with slot-b's project
-    // before trusting the row -- otherwise a click can land while the menu is
-    // still showing slot-a's root and relativize against the wrong one.
-    await waitFor(() => expect(vi.mocked(api.fileSearch).mock.calls.some(c => c[1] === '/repo/src')).toBe(true))
-    const rowB = await screen.findByText('main.ts', undefined, { timeout: 3000 })
-    fireEvent.mouseDown(rowB)
+    // `placeholderData` keeps slot-a's results on screen while slot-b's query
+    // is in flight; 'main.ts' appears in both sets so row presence is not a
+    // reliable signal. 'config.ts' exists only in '/repo/src' results, so its
+    // appearance in [role="option"] proves rootRef.current has advanced to
+    // '/repo/src' and selectionFor() will compute '@main.ts', not '@src/main.ts'.
+    await screen.findByText('config.ts', undefined, { timeout: 3000 })
+    await waitFor(() => {
+      const opt = [...document.querySelectorAll('[role="option"]')].find(el => el.textContent?.includes('main.ts'))
+      if (!opt) throw new Error('main.ts option row not found yet')
+      fireEvent.mouseDown(opt)
+    }, { timeout: 3000 })
     // Under slot-b's project the SAME absolute file relativizes to a bare
     // `@main.ts`, overwriting pickedFileTokens' shared entry for this path.
     await waitFor(() => expect(taB.value).toContain('@main.ts'))
@@ -661,16 +672,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // computes a DIFFERENT rel for the identical absolute path.
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/repo/src' })) })
     fireEvent.change(ta, { target: { value: ta.value + ' and @mai' } })
-    // As in the cross-slot test above: the picker's placeholderData keeps
-    // the FIRST query's (project '/repo') results on screen while the
-    // second, differently-rooted query is in flight. Waiting merely for the
-    // call to have been ISSUED is not enough -- the row's rendered NAME text
-    // is project-independent (only its computed relativePath differs), so a
-    // retry loop keyed on row presence can't tell placeholder from real data
-    // apart. Wait for the call's own promise to settle instead.
-    await waitFor(() => expect(vi.mocked(api.fileSearch).mock.calls.some(c => c[1] === '/repo/src')).toBe(true))
-    await vi.mocked(api.fileSearch).mock.results.at(-1)?.value
-    await new Promise(r => setTimeout(r, 0))
+    // 'config.ts' exists only in '/repo/src' results; waiting for it in
+    // [role="option"] is a real DOM signal that rootRef.current has advanced
+    // to '/repo/src', so selectionFor() computes '@main.ts' on the click.
+    await screen.findByText('config.ts', undefined, { timeout: 3000 })
     // The file is already staged (its chip shows "main.ts" too), so the
     // dropdown's OWN "main.ts" row is now ambiguous against the chip's text
     // -- scope to an actual [role="option"] row, re-queried on every retry
@@ -1424,8 +1429,8 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
 
     const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
     fireEvent.paste(ta, { clipboardData: { types: ['text/plain'], items: [], getData: () => 'line one\nline two\nline three\nline four\nline five\nline six' } })
-    await waitFor(() => expect(ta.value).toMatch(/\[ Paste #1 · \d+ lines \]/))
-    const token = ta.value.match(/\[ Paste #1 · \d+ lines \]/)![0]
+    await waitFor(() => expect(ta.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/))
+    const token = ta.value.match(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d+ lines \]/)![0]
 
     // Park the caret INSIDE the token (preview position) and record it.
     const inside = ta.value.indexOf(token) + 4

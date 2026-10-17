@@ -16,7 +16,6 @@ import importlib.util
 import os
 import re
 import sys
-import types
 from pathlib import Path
 from unittest import mock
 
@@ -88,7 +87,7 @@ _BACKEND_GUARDS = (
     # src/kiro_crew/apps/builtins was added to _BACKEND_ROOTS.
     "src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py",
     "src/kiro_crew/apps/builtins/crew_companion/tests/test_manifest.py",
-    "src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py",
+    "src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes_claim_and_slot.py",
 )
 
 _FRONTEND_GUARDS = (
@@ -398,20 +397,60 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     no-op on NTFS so the stub is never the ``gh`` that resolves. Listing the module
     is how a POSIX-only-by-design suite is stated here; a class-level ``skipif``
     would leave a marker that proves nothing on that shard either.
+
+    ``test_ci_fork_windows_scope_posix.py`` is listed for the same reason: it runs
+    ci.yml's fork Windows scope step under bash inside a throwaway git checkout.
     """
     assert _ignore_names() == {
+        "test_ci_fork_windows_scope_posix.py",
         "test_macos_pool_ceiling_posix.py",
         "test_sandbox_argv.py",
+        "test_sandbox_argv_launcher_plan.py",
+        "test_sandbox_argv_profile.py",
+        "test_sandbox_argv_resource_ceilings.py",
+        "test_sandbox_argv_spawn.py",
         "test_sandbox_cc_mode.py",
         "test_sandbox_hardlink_scan.py",
         "test_sandbox_md_notebook_carveout.py",
         "test_sandbox_nested_tier.py",
         "test_pid_lifecycle.py",
+        "test_pid_lifecycle_browser_daemon.py",
+        "test_pid_lifecycle_orphan_cleanup.py",
+        "test_pid_lifecycle_process_sweeps.py",
+        "test_pid_lifecycle_provider_tree.py",
+        "test_pid_lifecycle_teardown.py",
+        "test_pid_lifecycle_tracking_integrity.py",
         "test_pid_sweep_helpers.py",
         "test_process_tree_kill.py",
         "test_source_providers.py",
+        "test_source_providers_chip_status.py",
+        "test_source_providers_endpoints.py",
+        "test_source_providers_fetch_cache.py",
+        "test_source_providers_fetch_capacity.py",
+        "test_source_providers_gitlab_host.py",
+        "test_source_providers_issues.py",
+        "test_source_providers_mutations.py",
+        "test_source_providers_payloads.py",
+        "test_source_providers_provider_cli.py",
+        "test_source_providers_reviews.py",
         "test_terminal_handler.py",
         "test_acp_client.py",
+        "test_acp_client_binary_resolution.py",
+        "test_acp_client_commands.py",
+        "test_acp_client_compaction.py",
+        "test_acp_client_inbound.py",
+        "test_acp_client_model_entitlement.py",
+        "test_acp_client_model_substitution.py",
+        "test_acp_client_process_lifecycle.py",
+        "test_acp_client_prompt_turn.py",
+        "test_acp_client_session_setup.py",
+        "test_acp_client_settings_restore.py",
+        "test_acp_client_spawn.py",
+        "test_acp_client_stale_turn.py",
+        "test_acp_client_tool_call_updates.py",
+        "test_acp_client_tool_events.py",
+        "test_acp_client_tool_hooks.py",
+        "test_acp_client_transient_errors.py",
         "test_stop_kill_cancel.py",
         "test_app_backend_stale_reap.py",
         "test_env.py",
@@ -426,6 +465,18 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
+        "test_dev_fleet_app_make_live.py",
+        "test_dev_fleet_app_make_live_cutover.py",
+        "test_dev_fleet_app_trusted_helpers.py",
+        "test_dev_fleet_app_context.py",
+        "test_dev_fleet_app_prune.py",
+        "test_dev_fleet_app_fleet_cache.py",
+        "test_dev_fleet_app_teardown.py",
+        "test_dev_fleet_app_foreground.py",
+        "test_dev_fleet_app_pull_build.py",
+        "test_dev_fleet_app_worktrees.py",
+        "test_dev_fleet_app_sync.py",
+        "test_dev_fleet_app_guards.py",
         "test_pod_windows_boot.py",
     }
 
@@ -632,29 +683,7 @@ _CONTAINER_CONFTEST = (
 )
 
 
-def _os_reporting(name: str):
-    """A stand-in ``os`` module whose ``name`` is *name*, for ``sys.modules``.
-
-    ``mock.patch.object(os, "name", ...)`` cannot be used here. ``pathlib.Path.__new__``
-    consults ``os.name`` on EVERY instantiation to pick ``PosixPath`` or ``WindowsPath``,
-    and the conftest calls ``Path(__file__).resolve()``, so patching the real attribute
-    makes that line raise ``cannot instantiate 'WindowsPath' on your system`` -- in both
-    directions, since a Windows runner patched to ``posix`` fails the mirror way.
-
-    Swapping the module that the conftest's own ``import os`` resolves to keeps the
-    change inside the module under test: ``pathlib`` bound the real ``os`` object when it
-    was first imported and never looks it up again.
-    """
-    proxy = types.ModuleType("os")
-    proxy.__dict__.update(vars(os))
-    # Through ``__dict__`` rather than ``proxy.name``: mypy types a ``ModuleType``
-    # attribute set by the stub for the real ``os``, so the direct assignment is an
-    # ``attr-defined`` error on a line that is doing exactly what it means to.
-    proxy.__dict__["name"] = name
-    return proxy
-
-
-def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
+def _run_container_conftest(*, present: set[str], platform: str = "linux"):
     """Load the container conftest as a module with ``find_spec`` reporting only ``present``.
 
     Uses the same ``spec_from_file_location`` + ``exec_module`` mechanism as
@@ -678,14 +707,24 @@ def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
     try:
         importlib.util.find_spec = fake_find_spec  # type: ignore[assignment]
         # Pin the platform the conftest sees, so what a caller measures is the branch it
-        # asked for. The conftest tests ``os.name`` BEFORE it tests the deps, so on a
-        # Windows runner ``collect_ignore_glob`` is set whatever ``present`` says, and
-        # every dep-branch assertion would be reading the platform branch's answer.
+        # asked for. The conftest tests ``sys.platform`` BEFORE it tests the deps, so on a
+        # Windows or macOS runner ``collect_ignore_glob`` is set whatever ``present`` says,
+        # and every dep-branch assertion would be reading the platform branch's answer.
+        # The default is therefore ``linux``, which is the only platform on which the dep
+        # branch is reachable at all.
         #
-        # Skipping those tests on Windows was the alternative and is worse: the
-        # dependency logic is not platform-specific, so a skip stops checking a live
-        # property on one platform while still scoring as a pass.
-        with mock.patch.dict(sys.modules, {"os": _os_reporting(os_name)}):
+        # Skipping those tests off Linux was the alternative and is worse: the dependency
+        # logic is not platform-specific, so a skip stops checking a live property on two
+        # of the three platforms while still scoring as a pass.
+        #
+        # ``sys.platform`` is a plain string and is safe to patch directly, unlike
+        # ``os.name``: ``pathlib.Path.__new__`` consults ``os.name`` on every
+        # instantiation to pick ``PosixPath`` or ``WindowsPath``, and the conftest calls
+        # ``Path(__file__).resolve()``, so pinning that attribute raises ``cannot
+        # instantiate 'WindowsPath' on your system`` -- in both directions, since a
+        # Windows runner pinned to a POSIX name fails the mirror way. Nothing consults
+        # ``sys.platform`` per-instantiation.
+        with mock.patch.object(sys, "platform", platform):
             spec.loader.exec_module(module)
     finally:
         importlib.util.find_spec = saved  # type: ignore[assignment]
@@ -710,20 +749,26 @@ def test_container_suite_runs_when_all_collect_time_deps_present() -> None:
     )
 
 
-def test_the_platform_branch_wins_over_the_dep_branch() -> None:
-    """On a non-POSIX host the suite is skipped even with every dep importable.
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_the_platform_branch_wins_over_the_dep_branch(platform: str) -> None:
+    """Off Linux the suite is skipped even with every dep importable.
 
     The two branches answer different questions -- "can this subject run here at all"
     and "are its imports satisfied" -- and the platform one has to win, because the
     image is Linux-only however complete the dev env is. Ordering them the other way
-    would collect the suite's POSIX-dependent tests on Windows whenever someone had
+    would collect the whole Linux-dependent suite on Windows whenever someone had
     installed ``requirements-dev.txt`` there.
+
+    ``darwin`` is covered beside ``win32`` because it is the case a POSIX test admits
+    and Linux does not: macOS is POSIX, and publication in this package links a
+    descriptor through ``/proc/self/fd``, which Darwin does not have. A gate keyed on
+    POSIX lets every such test through to a guaranteed ``FileNotFoundError``.
     """
-    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, os_name="nt")
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, platform=platform)
     assert ns._missing_image_deps == [], "the dep branch had nothing to complain about"
     assert getattr(ns, "collect_ignore_glob", None) == [
         "test_*.py"
-    ], "the image suite must not be collected on a non-POSIX host, whatever its deps"
+    ], "the image suite must not be collected on a host that is not Linux, whatever its deps"
 
 
 def test_boto3_is_not_a_collect_time_gate() -> None:

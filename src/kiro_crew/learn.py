@@ -15,6 +15,7 @@ import threading
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from kiro_crew import context_omissions
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ALWAYS,
@@ -103,6 +104,16 @@ _MAX_LESSONS_TOTAL = 200  # prune oldest when exceeded
 # is what keeps that case from corrupting the file rather than merely losing an edit.
 _PATH_LOCKS: dict[Path, threading.Lock] = {}
 _PATH_LOCKS_GUARD = threading.Lock()
+
+# Write generation per file, shared the same way. ``_write_all`` bumps it after every
+# write and each instance keys its parse cache on it, so a write through any instance
+# invalidates every other instance's cache. The file's mtime cannot do that alone: two
+# writes inside one timestamp tick leave it unchanged, and the stale instance would
+# keep serving, and on its next save write back, the rows from before the other write.
+# One int per written file, and every key is also a key of ``_PATH_LOCKS``, so it adds
+# no population of its own. Never evicted: a missing entry has to mean generation 0,
+# not a bump that was forgotten.
+_PATH_GENERATIONS: dict[Path, int] = {}
 
 
 def _lock_for(path: Path) -> threading.Lock:
@@ -264,8 +275,8 @@ class LessonStore:
 
         self._memory_store_name = named_store_of_db(self._dir / "memory.db")
         self._lock = _lock_for(self._path)
-        # mtime-based cache: (mtime, lessons)
-        self._cache: tuple[float, list[Lesson]] | None = None
+        # Parse cache: ((write generation, st_mtime, st_size), lessons).
+        self._cache: tuple[tuple[int, float, int], list[Lesson]] | None = None
 
     @property
     def path(self) -> Path:
@@ -320,7 +331,21 @@ class LessonStore:
             mode=mode,
             newline="",
         )
+        # After the rename, so ``load_all`` can read the generation before it reads the
+        # file. The caller holds the path's lock, so two bumps of one path never race.
+        _PATH_GENERATIONS[self._path] = _PATH_GENERATIONS.get(self._path, 0) + 1
         self._cache = None  # invalidate
+
+    def _load_for_write(self) -> list[Lesson]:
+        """The rows a write builds on: parsed from the file, never taken from the cache.
+
+        The caller MUST hold ``self._lock``. A write made by this process moves the
+        generation ``load_all`` keys on, but a rewrite by another process (the CLI)
+        inside one timestamp tick that keeps the size changes nothing the key can see,
+        and writing the cached rows back would delete it.
+        """
+        self._cache = None
+        return self.load_all()
 
     @named_store_operation
     def save(self, lesson: Lesson) -> str:
@@ -396,10 +421,10 @@ class LessonStore:
             # scope, and a non-string is refused before ``.strip()`` can raise,
             # because consolidation hands over a value the model produced.
             wanted_scope = canonical_scope(lesson.repo_scope)
-            # load_all() is called under the lock deliberately: it takes no lock of
-            # its own, so this is not a re-entrant acquisition on a non-reentrant
-            # Lock. Do NOT call save() from in here for the same reason.
-            existing = self.load_all()
+            # _load_for_write() reads under the lock deliberately: load_all() takes no
+            # lock of its own, so this is not a re-entrant acquisition on a
+            # non-reentrant Lock. Do NOT call save() from in here for the same reason.
+            existing = self._load_for_write()
             wanted = lesson.rule.lower().strip()
             updated: list[Lesson] = []
             matched = False
@@ -517,7 +542,7 @@ class LessonStore:
         if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
             raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
         with self._lock:
-            lessons = self.load_all()
+            lessons = self._load_for_write()
             lower = rule_substring.lower()
             wanted_text = lower.strip()
             # A missing selector leaves scope out of the match. A present one --
@@ -556,24 +581,43 @@ class LessonStore:
 
     @named_store_operation
     def load_all(self) -> list[Lesson]:
-        """Load all lessons from the JSONL file. Uses mtime-based caching."""
+        """Load all lessons from the JSONL file, cached per instance.
+
+        The cache is reused only while ``(write generation, st_mtime, st_size)`` is
+        unchanged (see ``_PATH_GENERATIONS``). The generation is read BEFORE the file:
+        ``_write_all`` bumps it after its rename, so a write that lands while this call
+        parses leaves the cache keyed to the older generation, and the next read parses
+        again.
+        """
         require_memory_ready(self._memory_store_name)
         if not self._path.exists():
             self._cache = None
             return []
+        generation = _PATH_GENERATIONS.get(self._path, 0)
         try:
-            mtime = self._path.stat().st_mtime
+            st = self._path.stat()
         except OSError:
             return []
-        if self._cache and self._cache[0] == mtime:
+        key = (generation, st.st_mtime, st.st_size)
+        if self._cache and self._cache[0] == key:
             return self._cache[1]
         lessons: list[Lesson] = []
-        for line in self._path.read_text().splitlines():
+        # Non-blank lines that do not read as a lesson, with their line numbers.
+        # Each one costs only itself; the warning below counts them.
+        unreadable: list[tuple[int, str]] = []
+        for lineno, line in enumerate(self._path.read_text().splitlines(), start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 data = json.loads(line)
+                # Valid JSON is not yet a lesson. A row that is not an object, or
+                # whose rule is not text, would raise at ``data.get`` below or at
+                # ``rule.lower()`` in every later save and remove, taking every
+                # other lesson in the file down with it.
+                if not isinstance(data, dict) or not isinstance(data.get("rule", ""), str):
+                    unreadable.append((lineno, line))
+                    continue
                 raw_scope = data.get("repo_scope")
                 # A PRESENT but unusable scope is not "applies everywhere": the row
                 # meant to be scoped and cannot say where, so it is dropped rather
@@ -582,6 +626,7 @@ class LessonStore:
                 if raw_scope is not None and (
                     not isinstance(raw_scope, str) or not raw_scope.strip()
                 ):
+                    unreadable.append((lineno, line))
                     continue
                 lessons.append(
                     Lesson(
@@ -603,8 +648,21 @@ class LessonStore:
                     )
                 )
             except (json.JSONDecodeError, KeyError):
+                unreadable.append((lineno, line))
                 continue
-        self._cache = (mtime, lessons)
+        if unreadable:
+            # The next save rewrites the file from the rows that loaded, so it drops
+            # these, as the cron store drops a skipped job record. This warning is
+            # the window to recover them, which is why it names their lines.
+            logger.warning(
+                "Skipped %d of %d rows in %s that do not read as a lesson (lines %s); "
+                "the next save removes them from the file",
+                len(unreadable),
+                len(unreadable) + len(lessons),
+                self._path,
+                ", ".join(str(n) for n, _ in unreadable[:5]),
+            )
+        self._cache = (key, lessons)
         return lessons
 
     def _applicable(self, lessons: list[Lesson], project_dir: str | Path | None) -> list[Lesson]:
@@ -703,6 +761,7 @@ class LessonStore:
         directive_block, _ = render_lesson_tier(
             ranked_directives,
             directive_room,
+            omission_kind=context_omissions.LESSON_RULES,
             header=(
                 "[Learned corrections — user-taught rules from past mistakes.\n"
                 "ALWAYS follow these. They override default behavior.]"
@@ -738,6 +797,7 @@ class LessonStore:
             # the next turn can act on rather than an absence it cannot see.
             experience_block = render_withheld_tier(
                 len(experience_entries),
+                omission_kind=context_omissions.LESSON_FINDINGS,
                 header="[Learned experience — past findings]",
                 footer="[End of learned experience]",
                 notice=(
@@ -752,6 +812,7 @@ class LessonStore:
             experience_block, _ = render_lesson_tier(
                 experiences,
                 experience_room,
+                omission_kind=context_omissions.LESSON_FINDINGS,
                 header=(
                     # "relevant ones first", matching the vector tier's wording, because
                     # ``order_by_request_relevance`` runs above: claiming "newest first"

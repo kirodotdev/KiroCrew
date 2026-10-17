@@ -234,7 +234,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, input
 }
 
 /** Catalog key per payload section — the same resolvable shape as
- *  `FILTER_LABEL_KEY` in ChatSidebar. Reuses the Activity panel's own
+ *  `FILTER_LABEL_KEY` in chat-sidebar/SearchDock.tsx. Reuses the Activity panel's own
  *  Input/Output keys rather than minting a second pair: identical words for the
  *  same two halves of a tool call, and a duplicate pair is translation debt in
  *  eleven catalogs for no gain. */

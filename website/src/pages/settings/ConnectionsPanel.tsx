@@ -19,6 +19,7 @@ import { SettingsCard, SettingsInput, SettingsSection } from '../../components/s
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../components/AgentSpecNotRewrittenNotice'
 import { api, type ConnectionOAuthClient, type ConnectionOAuthClientSave } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
@@ -99,6 +100,8 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
   const [secretClear, setSecretClear] = useState(false)
   const [formKey, setFormKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  // The change was saved but the agent spec did not follow it.
+  const [notApplied, setNotApplied] = useState(false)
   const [removeConfirm, setRemoveConfirm] = useState(false)
   const removeCancelRef = useRef<HTMLButtonElement>(null)
   // Focus lands on Cancel when the delete arms, so a stray second press backs out.
@@ -110,7 +113,8 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
 
   const saveMut = useMutation({
     mutationFn: (body: ConnectionOAuthClientSave) => api.connectionsOAuthClientSave(client.slug, body),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      setNotApplied(agentSpecNotRewritten(r))
       setSecret('')
       setSecretClear(false)
       setFormKey(k => k + 1)
@@ -123,7 +127,8 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
   })
   const deleteMut = useMutation({
     mutationFn: () => api.connectionsOAuthClientDelete(client.slug),
-    onSuccess: () => {
+    onSuccess: (r) => {
+      setNotApplied(agentSpecNotRewritten(r))
       setClientId('')
       setSecret('')
       setSecretClear(false)
@@ -233,6 +238,8 @@ function ClientCard({ client, index, readOnly }: { client: ConnectionOAuthClient
             destroying the client id and secret the operator has typed but not
             yet saved (a save failure is exactly when those drafts still exist). */}
         {error && <ErrorNotice title={i18nT('pages.settings.connectionsPanel.save_failed')} message={error} />}
+        {/* Same reason, no hand-off: it would unmount the card's unsaved drafts. */}
+        {notApplied && <AgentSpecNotRewrittenNotice askAgent={false} />}
 
         {!readOnly && (
           <div className="flex items-center justify-between gap-2">

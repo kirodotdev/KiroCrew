@@ -25,8 +25,10 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
          and changes nothing else -- same exit codes, same prose. Its
          ``progress_key`` sub-object is the only part safe to compare between
          runs; a monitoring loop uses it to tell a stalled PR from a moving one;
-         --disposition-gate evaluates ONLY the disposition rule for an
-         explicitly given repo/PR/head, prints one JSON object and exits 0 --
+         --disposition-gate evaluates the disposition rule for an explicitly
+         given repo/PR/head and also reports ``unpublished`` (whole-design
+         lanes that still owe this head a verdict); it prints one JSON object
+         and exits 0 --
          this is what pr-readiness.yml calls to enforce the rule server-side,
          so the rule keeps a single definition;
          --supersession-gate reports which verdicts for that head a later
@@ -51,8 +53,9 @@ Exit codes:
                   comment violating the one-lane / one-rationale-per-finding
                   rule, an unanswered whole-design CONCERNS verdict for the
                   current head (local loop only -- --disposition-gate and the
-                  required status are unchanged), or anything that cannot be
-                  confirmed
+                  required status are unchanged), a superseded verdict (a lane
+                  blocked this head in a sample a later one replaced), or
+                  anything that cannot be confirmed
    2  ENV ERROR - gh missing or not authenticated, or PR not found
 """
 
@@ -113,6 +116,8 @@ comment_key = _review_contract.comment_key
 extract_findings = _review_contract.extract_findings
 extract_design_items = _review_contract.extract_design_items
 design_lane_verdicts = _review_contract.design_lane_verdicts
+design_lane_punchlines = _review_contract.design_lane_punchlines
+redact = _review_contract.redact
 unanswered_concern_lanes = _review_contract.unanswered_concern_lanes
 unanswered_concerns_reason = _review_contract.unanswered_concerns_reason
 parse_disposition_record = _review_contract.parse_disposition_record
@@ -2339,6 +2344,26 @@ def main(argv):
             print(
                 "  - {}: OVERRIDDEN by @{} (human judgment recorded for this head; "
                 "the model was not re-run)".format(sanitize(name), sanitize(actor))
+            )
+
+    # Each whole-design lane's punchline, read from the lane bodies rather than
+    # from the marker rows above: a pinned fleet such as `--reviewers gpt,opus`
+    # lists no whole-design lane there, and on a PASS the punchline is the lane's
+    # one ask. Printed every cycle so a green head cannot hide it. Advisory: it
+    # changes no exit code.
+    if marker_eval.get("ok") and bot_comments is not None:
+        punchlines = design_lane_punchlines(bot_comments, head_sha, marker_bindings)
+        lane_verdicts = design_lane_verdicts(bot_comments, head_sha, marker_bindings)
+        print("-- Whole-design punchlines, untrusted (head {}) --".format(sanitize(head_sha[:12])))
+        if not punchlines:
+            print("  (none to check on this head)")
+        for name in sorted(punchlines):
+            print(
+                "  - {} ({}): {}".format(
+                    sanitize(name),
+                    sanitize(lane_verdicts.get(name) or "?"),
+                    sanitize(redact(punchlines[name]))[:280],
+                )
             )
 
     # Disposition-rule gate: a repository writer's disposition

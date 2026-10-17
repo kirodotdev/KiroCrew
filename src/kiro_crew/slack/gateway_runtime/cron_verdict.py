@@ -4,8 +4,9 @@ The per-run tally of approved, refused and unresolved tool calls and the refusal
 summary it names, the banner put in front of a partially blocked result, and the
 volatile-stripped hash and reminder windows that result dedup compares against.
 
-Recording the verdict on the job (``_apply_gate_verdict``) stays in the facade,
-beside the shared-death streak it clears: the runtime-death audit reads it there.
+Recording the verdict on the job (``_apply_gate_verdict``) is in ``runtime_charge``,
+beside the shared-death streak it clears and the runtime-death attribution that
+counts it: the runtime-death audit reads them together.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.

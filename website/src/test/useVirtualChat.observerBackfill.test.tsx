@@ -37,7 +37,7 @@ const getKey = (it: Item) => it.id
 const mkItems = (n: number): Item[] => Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))
 
 /**
- * Renders rows exactly as ChatPage does — `measureRef(index)` on each mounted
+ * Renders rows exactly as ChatTranscriptView does — `measureRef(index)` on each mounted
  * row — so the refs attach in the same commit that mounts the list, before the
  * hook's passive effects run.
  */

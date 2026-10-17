@@ -42,23 +42,27 @@ against a binding that exists.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import ledger_wake, session_ledger, work_ledger
+from kiro_crew import conductor_patrol, ledger_wake, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
 from kiro_crew.crew_log.resolve import UNKNOWN, unit_for_session_key
 from kiro_crew.dashboard import session_control
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
+)
 
 # Module-scope like ``session_ledger.py``'s identical imports: the recognition
 # gate and the incognito classifier are this module's own load-bearing deps.
 from kiro_crew.dashboard.handlers.cron import _recognize_session
+from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
@@ -88,7 +92,7 @@ _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_ALREADY_BOUND: 409,
     work_ledger.CODE_ITEM_CLOSED: 409,
     work_ledger.CODE_ITEM_CAP_EXCEEDED: 409,
-    work_ledger.CODE_ITEM_STORE_FULL: 409,
+    work_ledger.CODE_GOAL_CONCURRENCY_CAP_REACHED: 409,
     work_ledger.CODE_DEPTH_EXCEEDED: 409,
     work_ledger.CODE_FIELD_TOO_LONG: 400,
     work_ledger.CODE_INVALID_ACTION: 400,
@@ -324,6 +328,11 @@ async def _caller_key(
 
 
 def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
+    """:func:`caller_admission` over a request. See it for the judgement."""
+    return caller_admission(request.app["state"], sk)
+
+
+def caller_admission(state: DashboardState, sk: str) -> tuple[str, Any, dict[str, Any] | None]:
     """The entry gate's one judgement of *sk*: ``(why, slot, admission)``.
 
     ``why`` is ``""`` when the caller may reach the ledger, else the refusal reason
@@ -346,12 +355,16 @@ def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str
     A key that resolves to no open slot has no slot to record an audience on and
     nothing of its own that publishes; it is judged as before -- by its key and the
     live probe -- and records nothing.
+
+    Takes the STATE rather than the request, because an in-process producer that
+    delivers ledger state into a session's own turn has to pass this same gate and
+    holds no request. One judgement, one implementation: a second copy of a
+    containment test is how one of the two drifts open.
     """
-    state: DashboardState = request.app["state"]
     slot_key = session_control.caller_slot_key(state, sk)
     slot = state.get_slot(slot_key) if slot_key else None
     if slot is None:
-        return _contained_channel_caller(request, sk), None, None
+        return contained_channel_caller(state, sk), None, None
     try:
         verdict = session_control.judge_owner_dm(state, slot)
     except Exception:  # pragma: no cover - the predicate fails closed itself
@@ -366,6 +379,11 @@ def _caller_admission(request: web.Request, sk: str) -> tuple[str, Any, dict[str
 
 
 def _contained_channel_caller(request: web.Request, sk: str) -> str:
+    """:func:`contained_channel_caller` over a request. See it for the judgement."""
+    return contained_channel_caller(request.app["state"], sk)
+
+
+def contained_channel_caller(state: DashboardState, sk: str) -> str:
     """Why *sk*'s turns reach a channel audience the ledger must stay out of; ``""`` if not.
 
     Two mechanisms reach a channel -- a channel-BORN key, and a dashboard-born
@@ -390,9 +408,8 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
     this reason-only form is what that gate falls back to for a key no open slot
     answers to, where there is nothing to record.
     """
-    if not (is_channel_session_key(sk) or _reaches_a_channel(request, sk)):
+    if not (is_channel_session_key(sk) or reaches_a_channel(state, sk)):
         return ""
-    state: DashboardState = request.app["state"]
     try:
         return session_control.session_owner_dm_refusal(state, sk)
     except Exception:  # pragma: no cover - the predicate fails closed itself
@@ -401,6 +418,11 @@ def _contained_channel_caller(request: web.Request, sk: str) -> str:
 
 
 def _reaches_a_channel(request: web.Request, sk: str) -> bool:
+    """:func:`reaches_a_channel` over a request. See it for the predicate."""
+    return reaches_a_channel(request.app["state"], sk)
+
+
+def reaches_a_channel(state: DashboardState, sk: str) -> bool:
     """Whether this caller's turns reach a messaging channel, mirror included.
 
     ``is_channel_session_key`` catches a channel-BORN session. It does not catch a
@@ -415,7 +437,6 @@ def _reaches_a_channel(request: web.Request, sk: str) -> bool:
     a peer, and which FAILS CLOSED: a session store that cannot answer counts as
     mirrored.
     """
-    state: DashboardState = request.app["state"]
     for candidate in (
         sk,
         session_ledger.ledger_key(sk),
@@ -545,11 +566,15 @@ async def api_work_brief(request: web.Request) -> web.Response:
     return web.json_response({"brief": brief})
 
 
+#: A route refusal rather than a store code: the store never sees the report.
+_CODE_DONE_WITHOUT_EVIDENCE = "done_without_evidence"
+
+
 async def api_work_report(request: web.Request) -> web.Response:
     """POST /api/work-ledger/report — this worker's status against its own item.
 
-    ``status`` and ``summary`` are required; ``artifacts`` and ``pr`` are
-    optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
+    ``status`` and ``summary`` are required; ``artifacts``, ``pr`` and ``reason``
+    are optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
     ``verdict`` and no ``state``, so no round trip through here can write a
     conductor-owned field.
     """
@@ -588,6 +613,24 @@ async def api_work_report(request: web.Request) -> web.Response:
         cleaned = crew_log_emit.safe_work_fields(cleaned)
     except crew_log_emit.WorkFieldError as exc:
         return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc))
+    if cleaned.get("status") == "done" and not cleaned.get("artifacts") and not cleaned.get("pr"):
+        # A ``done`` names what the conductor should check. One pointer is enough,
+        # and a check that could not run is still a pointer when it says so.
+        _audit(
+            key,
+            "work_report",
+            "denied",
+            resources=item_id,
+            error=_CODE_DONE_WITHOUT_EVIDENCE,
+        )
+        return _refuse_400(
+            _CODE_DONE_WITHOUT_EVIDENCE,
+            "a 'done' report must carry its evidence in this report: at least one "
+            "artifacts pointer (commit, test command and exit code, path) or a pr. "
+            "If a check could not run, say so in an artifact, e.g. "
+            '{"tests": "not run: harness unavailable"}',
+            field="artifacts",
+        )
 
     # The record is refused BEFORE the cache commits: the widest entry this report
     # can produce (the committed `pr` may be an earlier report's) must fit a line.
@@ -608,6 +651,7 @@ async def api_work_report(request: web.Request) -> web.Response:
         generation=_WIDEST_HEX_ID,
         round=_WIDEST_COUNTER,
         status=cleaned.get("status"),
+        reason=cleaned.get("reason"),
         summary=cleaned.get("summary"),
         artifacts=cleaned.get("artifacts") or {},
         pr=work_ledger.MAX_PR,
@@ -667,6 +711,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                     cleaned.get("summary"),
                     cleaned.get("artifacts"),
                     cleaned.get("pr"),
+                    cleaned.get("reason"),
                 )
             except WorkLedgerError as exc:
                 _audit(caller, "work_report", "denied", resources=item_id, error=exc.code)
@@ -699,6 +744,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                     generation=getattr(board, "generation", None) or None,
                     round=item.round,
                     status=item.status,
+                    reason=item.reason,
                     summary=item.summary,
                     artifacts=item.artifacts,
                     pr=item.pr,
@@ -818,6 +864,7 @@ def _entry_probe_with_baseline(
 #: rest -- what the worker cannot change -- is what fails to fit.
 _WORKER_REPORT_FIELDS: tuple[str, ...] = (
     "status",
+    "reason",
     "summary",
     "artifacts",
     "pr",
@@ -889,12 +936,15 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "round": item.round,
         "fails": item.fails,
         "status": item.status,
+        "reason": item.reason,
         "summary": item.summary or None,
         "artifacts": item.artifacts,
         "pr": item.pr,
         "created_at": item.created_at or None,
         "last_report_at": item.last_report_at or None,
         "closed_at": item.closed_at or None,
+        "decided_at": getattr(item, "decided_at", None) or None,
+        "pending_since": getattr(item, "pending_since", None) or None,
     }
 
 
@@ -902,15 +952,14 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
 #: append and across a rebuild, so a rebuild can never fold between the two and
 #: write the cache back to before a mutation the log then records. Every writer
 #: and every rebuild runs on this gateway's one loop, which is what makes an
-#: in-process lock the complete answer.
-_BOARD_LOCKS: dict[str, asyncio.Lock] = {}
+#: in-process lock the complete answer. The registry is ``office_slides``'s
+#: ``_KeyedLocks``: a board's entry lives only while someone holds or waits for
+#: its lock, so it is bounded by the boards in use.
+_BOARD_LOCKS = _KeyedLocks()
 
 
-def _board_lock(slot: str) -> asyncio.Lock:
-    lock = _BOARD_LOCKS.get(slot)
-    if lock is None:
-        lock = _BOARD_LOCKS[slot] = asyncio.Lock()
-    return lock
+def _board_lock(slot: str) -> contextlib.AbstractAsyncContextManager[None]:
+    return _BOARD_LOCKS.hold(slot)
 
 
 async def _drain_before_cancelling(coro: Any) -> Any:
@@ -1112,6 +1161,7 @@ def _report(
     summary: Any,
     artifacts: Any,
     pr: Any,
+    reason: Any = None,
 ) -> dict[str, Any]:
     return work_ledger.apply_worker_report(
         conductor_key,
@@ -1120,6 +1170,7 @@ def _report(
         summary=summary,
         artifacts=artifacts,
         pr=pr,
+        reason=reason,
     )
 
 
@@ -1188,19 +1239,13 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     # read too: a patrol that reads only the status columns must still see a dead
     # worker.
     conductor_alive = _slot_open(state, key)
+    # One read for the whole board: an open item whose conductor holds no active
+    # work-ledger watch has nobody reading its reports, and the flag puts that in
+    # front of the conductor's next turn.
+    patrolled = conductor_patrol.has_active_patrol(state, key)
     rows: list[dict[str, Any]] = []
     for item in shown:
-        row = item.to_dict()
-        row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
-        row["stale"] = work_ledger.is_stale(
-            item,
-            worker_running=_slot_running(state, item.worker_session_key or ""),
-            worker_closed=_slot_closed(state, item.worker_session_key or ""),
-        )
-        # Why an item is (or is not) in ``accept_batch``, on the item itself. Without
-        # it a conductor sees an item it dispatched simply missing from the batch and
-        # has no way to tell "bar not filled in yet" from "the read dropped it".
-        row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+        row = _row_with_flags(state, item, conductor_alive=conductor_alive, patrolled=patrolled)
         if compact:
             rows.append({name: row[name] for name in _COMPACT_ROW_FIELDS})
             continue
@@ -1223,7 +1268,17 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
-    payload: dict[str, Any] = {"conductor": record.to_dict(), "items": rows}
+    # ``goal_items_used`` and ``cap_exceeded`` are derived, never stored: the
+    # number the conductor's "items used: N of <item_cap>" line reports, and
+    # whether that line has gone past its cap, both read off the same header.
+    # Advisory: the compact read carries them so a patrol that reads only the
+    # status columns still sees a goal spending past what the user expected.
+    conductor = dict(
+        record.to_dict(),
+        goal_items_used=record.goal_items_used,
+        cap_exceeded=record.cap_exceeded,
+    )
+    payload: dict[str, Any] = {"conductor": conductor, "items": rows}
     if compact:
         payload["compact"] = True
     else:
@@ -1232,8 +1287,53 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+def _row_with_flags(
+    state: DashboardState,
+    item: work_ledger.WorkItem,
+    *,
+    conductor_alive: bool,
+    patrolled: bool,
+) -> dict[str, Any]:
+    """One item as a read row, with the flags the store derives at read time.
+
+    A function rather than four lines inlined per caller because the read route and
+    the wake snapshot both publish these flags and must publish the SAME ones: a
+    snapshot that said a worker was alive while the route called it stale would be a
+    second opinion on the one question a conductor acts on.
+
+    Liveness is read straight off the dashboard's own slot table rather than over
+    HTTP: every caller runs in the process that owns it. ``orphaned`` asks whether
+    the CONDUCTOR's slot is still open and ``stale`` whether the WORKER's is -- the
+    conjunction with the staleness window is what keeps a worker in a thirty-minute
+    build from being flagged.
+
+    ``acceptance_concrete`` says why an item is (or is not) in ``accept_batch``.
+    Without it a conductor sees an item it dispatched simply missing from the batch
+    and has no way to tell "bar not filled in yet" from "the read dropped it".
+
+    ``unpatrolled`` marks an open item whose conductor holds no active work-ledger
+    watch -- nobody is reading its reports -- and ``patrolled`` is that one read for
+    the whole board, passed in rather than re-read per item.
+
+    ``pending_overdue`` marks an item whose acceptance has read ``pending`` past the
+    budget, so the conductor stops polling it and asks the user.
+    """
+    row = item.to_dict()
+    row["orphaned"] = work_ledger.is_orphaned(item, conductor_slot_exists=conductor_alive)
+    row["stale"] = work_ledger.is_stale(
+        item,
+        worker_running=_slot_running(state, item.worker_session_key or ""),
+        worker_closed=_slot_closed(state, item.worker_session_key or ""),
+        worker_looping=_slot_looping(item.worker_session_key or ""),
+    )
+    row["acceptance_concrete"] = work_ledger.is_acceptance_concrete(item.acceptance)
+    row["unpatrolled"] = item.state == "open" and not patrolled
+    row["pending_overdue"] = work_ledger.is_pending_overdue(item)
+    return row
+
+
 #: The fields a ``compact=true`` row carries: what a patrol cycle reads to decide
-#: who moves next, the three derived flags included, and nothing that is a
+#: who moves next, the derived flags included, and nothing that is a
 #: document in its own right (``acceptance``, ``artifacts``, the events).
 _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "item_id",
@@ -1241,6 +1341,7 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "state",
     "created_at",
     "status",
+    "reason",
     "summary",
     "decision",
     "verdict",
@@ -1250,6 +1351,8 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
     "orphaned",
     "stale",
     "acceptance_concrete",
+    "unpatrolled",
+    "pending_overdue",
 )
 
 #: Query-string spellings of ``compact``. ``true`` / ``false`` is what the tool
@@ -1379,6 +1482,42 @@ def _slot_closed(state: DashboardState, key: str) -> bool:
     return ledger_wake.worker_closed(state, key)
 
 
+def _slot_looping(key: str) -> bool:
+    """Whether *key*'s session holds an active loop, read the way the wake gate reads it.
+
+    One resolver, :func:`ledger_wake.worker_looping`, answers both the badge and the
+    stall wake, so a worker waiting inside its own monitor loop reads the same on
+    both. No auto-nudge service, or anything unreadable, answers False.
+    """
+    from kiro_crew.autonudge import get_instance
+
+    return ledger_wake.worker_looping(get_instance(), key)
+
+
+def worker_holds_open_item(slot_key: str) -> bool:
+    """Whether *slot_key* is a worker bound to an OPEN item that names it back. BLOCKING.
+
+    For the slot-retention paths (the open-tab restore budget and the idle
+    sweep), which must not leave a worker without its tab: the wake gate reads a
+    worker with no slot as closed. The key is the slot's own name, resolved by
+    the server, never by a caller. Both spellings are asked, because a binding
+    is filed under the ledger's folded key. Any read that fails answers True: an
+    unknown binding must not cost a worker its tab.
+    """
+    try:
+        for candidate in dict.fromkeys((slot_key, session_ledger.ledger_key(slot_key))):
+            binding = work_ledger.read_binding(candidate, strict=True)
+            if binding is None:
+                continue
+            item = work_ledger.read_work_item(*binding, strict=True)
+            if item is not None and not item.is_terminal and item.worker_session_key == candidate:
+                return True
+    except Exception:  # noqa: BLE001 - unreadable binding means keep the tab
+        logger.debug("work-ledger binding read failed for %s", slot_key, exc_info=True)
+        return True
+    return False
+
+
 def _find_slot(state: DashboardState, key: str):
     if not key:
         return None
@@ -1490,6 +1629,8 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         event_ts=_WIDEST_STAMP,
         created_at=_WIDEST_STAMP,
         closed_at=_WIDEST_STAMP,
+        decided_at=_WIDEST_STAMP,
+        pending_since=_WIDEST_STAMP,
     )
     if invalid is not None:
         return invalid
@@ -1515,6 +1656,8 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
             event_ts=_WIDEST_STAMP,
             created_at=_WIDEST_STAMP,
             closed_at=_WIDEST_STAMP,
+            decided_at=_WIDEST_STAMP,
+            pending_since=_WIDEST_STAMP,
         ):
             return _refuse_item_too_large(key, "work_ledger_record", str(cleaned.get("item_id")))
         _audit(key, "work_ledger_record", "denied", resources=action, error="work_entry_too_large")
@@ -1621,6 +1764,10 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
                 event_ts=getattr(event, "ts", None) or None,
                 created_at=getattr(item, "created_at", None) if action == "create" else None,
                 closed_at=getattr(item, "closed_at", None) if action == "close" else None,
+                decided_at=getattr(item, "decided_at", None) if action == "decide" else None,
+                pending_since=(
+                    getattr(item, "pending_since", None) if action == "verdict" else None
+                ),
             ),
         )
         if not landed:
@@ -1660,6 +1807,18 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
         payload: dict[str, Any] = {"ok": True, "action": action}
         if item is not None:
             payload["item"] = item.to_dict()
+        if action == "bind":
+            # A dispatched worker must have a patrol reading its reports. After the
+            # bind committed, arm the default one when this conductor has no
+            # active loop; never raises, never displaces an active loop or a
+            # person's stop, and a refusal does not undo the bind
+            # (``conductor_patrol`` module docstring).
+            patrol, reason = await conductor_patrol.ensure_patrol(state, key)
+            payload["patrol"] = patrol
+            payload["patrol_reason"] = reason
+            note = conductor_patrol.patrol_note(state, key, reason)
+            if note:
+                payload["patrol_note"] = note
         conductor = result.get("conductor")
         if conductor is not None:
             payload["conductor"] = conductor.to_dict()
@@ -1673,6 +1832,20 @@ async def api_work_ledger_record(request: web.Request) -> web.Response:
     # the lock goes back with that divergence visible to the next reader.
     async with _board_lock(key):
         return await _drain_before_cancelling(_under_board())
+
+
+async def holds_ledger(session_key: str) -> bool:
+    """Whether *session_key* holds a readable work ledger.
+
+    For the session-control create route, which arms a work-ledger patrol only
+    on a caller that has a ledger to watch. The key is the caller's own,
+    resolved from its ``X-Session-Key`` by that route; this answers a yes/no
+    and returns nothing from the record.
+    """
+    try:
+        return await asyncio.to_thread(work_ledger.read_conductor, session_key) is not None
+    except Exception:  # noqa: BLE001 - an unreadable ledger is no ledger to watch
+        return False
 
 
 async def api_work_ledger_rebuild(request: web.Request) -> web.Response:
@@ -1941,6 +2114,9 @@ def _write(key: str, action: str, cleaned: dict[str, Any]) -> dict[str, Any]:
         goal=cleaned.get("goal"),
         round_number=cleaned.get("round"),
         fails=cleaned.get("fails"),
+        item_cap=cleaned.get("item_cap"),
+        concurrency_cap=cleaned.get("concurrency_cap"),
+        new_goal=cleaned.get("new_goal"),
     )
 
 

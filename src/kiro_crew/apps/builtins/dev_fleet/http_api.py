@@ -90,8 +90,9 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
         # instead of rendering a failure against a path the user never chose.
         return web.json_response({"worktrees": [], "needs_setup": True})
     except repository.RepoUnreadable as exc:
-        # A checkout WAS named and git cannot read it: the page renders this as the
-        # Discovery Error banner, naming the path because the user chose it.
+        # A checkout WAS named and git cannot read it, OR a present config file
+        # would not parse: either way the page renders this as the Discovery Error
+        # banner, naming the path the user chose or the config file they can fix.
         # Redacted like every other display string this module emits (and like the
         # middleware's copy of the same exception) — git stderr can carry a remote
         # URL with credentials in it.

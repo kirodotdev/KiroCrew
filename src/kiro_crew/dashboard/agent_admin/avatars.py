@@ -1,4 +1,4 @@
-"""Per-crew uploaded avatars: the image store under the data home (stage, promote, commit, roll back, remove), the pack and motion carry-through for saves that omit them, and ``POST /api/agents/{name}/avatar``."""
+"""Per-crew uploaded avatars: the image store under the data home (stage, promote, commit, roll back, remove), the motion carry-through for saves that omit them, and ``POST /api/agents/{name}/avatar``."""
 
 from __future__ import annotations
 
@@ -30,40 +30,6 @@ if TYPE_CHECKING:
     )
 
 
-def _carry_pack_through_faceless_save(stored: dict, raw: object, validated: dict) -> dict:
-    """Keep a worn pack when a save names no face at all.
-
-    The shipped crew editor rebuilds the avatar from a CLOSED shape -- ghost or
-    picture -- so for a crew wearing a pack it sees neither, renders the
-    name-derived face, and on ANY unrelated save (a model change, a colour)
-    submits ``{}`` or a faceless ``{"kind": "ghost", "sounds": ...}``. Taken at
-    face value that is "reset", and the pack the user chose through the API is
-    gone with no click that meant it. Until the picker can show a pack, a save
-    that names no face therefore keeps the pack it found, and the cue the save
-    DID carry rides onto it -- so editing a sound on a pack-wearing crew stores
-    the sound and keeps the pack. ``motions`` never rides along: the validator
-    drops it on this tier, so a faceless ghost save carries none by the time this
-    is reached.
-
-    Deliberately narrow:
-
-    * only when the CURRENT record is a pack -- ghost and picture keep their
-      existing reset semantics untouched;
-    * ``None`` on the wire is still an explicit reset (the editor never sends it,
-      so it stays available to a caller that means it);
-    * a real face -- a ghost with traits, a picture, another pack -- replaces the
-      pack exactly as before.
-    """
-    if stored.get("kind") != "pack" or raw is None:
-        return validated
-    kind = validated.get("kind")
-    if kind is None or (kind == "ghost" and "traits" not in validated):
-        kept: dict = {"kind": "pack", "id": stored["id"]}
-        kept.update({k: v for k, v in validated.items() if k in ("expressions", "sounds")})
-        return kept
-    return validated
-
-
 def _carry_motions_through_motionless_save(stored: dict, raw: object, validated: dict) -> dict:
     """Keep a ghost's stored ``motions`` when a ghost save says nothing about them.
 
@@ -71,9 +37,8 @@ def _carry_motions_through_motionless_save(stored: dict, raw: object, validated:
     it rebuilds a ghost draft from the axes it can draw (``traits``,
     ``expressions``, ``sounds``) and submits exactly those, so a ghost that was
     given motions through the API would lose them on the next unrelated save --
-    a model change, a colour -- with no click that meant it. The same shape as
-    :func:`_carry_pack_through_faceless_save`, and for the same reason: a save
-    from a client that cannot see a value is not a decision about it.
+    a model change, a colour -- with no click that meant it. A save from a
+    client that cannot see a value is not a decision about it.
 
     The rule is the tri-state ``save_pack`` already applies to a pack's cues.
     A payload with NO ``motions`` key leaves the stored ones alone; a payload

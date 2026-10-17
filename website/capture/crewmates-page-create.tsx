@@ -30,7 +30,7 @@ const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
 const scene = params.get('scene') || 'empty'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
-// ThemeProvider (the drawer's CrewWebview needs it) reads its cache from
+// ThemeProvider (the page needs it) reads its cache from
 // storage; first-run flags keep onboarding dialogs off the frame.
 localStorage.setItem('mc-theme', theme)
 localStorage.setItem('mc-color-theme', 'kiro')

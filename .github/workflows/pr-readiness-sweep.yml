@@ -145,13 +145,21 @@ jobs:
     # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
     timeout-minutes: 15
     steps:
-      # The scan script only. sparse-checkout with cone mode off is what makes a
-      # single-file path legal, and persist-credentials: false leaves no token in
-      # the worktree -- nothing here runs git against the remote.
-      - name: Check out the readiness scan script
+      # The scan script, the withheld-verdict republisher, and the
+      # disposition gate the republisher shells out to -- plus the two sibling
+      # modules pr_status.py loads (_review_contract.py, green_age.py). sparse-
+      # checkout with cone mode off is what makes a single-file path list legal,
+      # and persist-credentials: false leaves no token in the worktree -- nothing
+      # here runs git against the remote.
+      - name: Check out the readiness scan + republish scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/scripts/readiness_sweep_scan.py
+          sparse-checkout: |
+            .github/scripts/readiness_sweep_scan.py
+            .github/scripts/republish_withheld_verdict.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -268,13 +276,44 @@ jobs:
           # costs one sweep interval; the opposite default would re-fire every
           # ordinary lane-pending whenever the read broke.
           READ_FAILURE_TOKEN="[read-failed]"
-          readiness_is_read_failure() {
-            local sha="$1" description
-            description="$(gh api "repos/$REPO/commits/$sha/status" \
+          # The matching token on a pending that an advisory review lane owes
+          # this head a verdict it computed and could not publish.
+          # Unlike a read-failure pending, a recompute of THIS aggregator cannot
+          # resolve it -- the lane's own check-run is already `success`, so a
+          # recompute re-derives the same named pending -- and unlike mode 1's
+          # evidence case there is no later check to nudge on, because the lane
+          # completed before its comment write was refused. The only thing that
+          # republishes the verdict is RE-RUNNING THE LANE, which this sweep does
+          # via republish_withheld_verdict.py below. PR Readiness stamps this
+          # token FIRST on the pending's description for the same 140-char-cap
+          # reason the read-failure token leads; it can also lead, so the match
+          # is a substring, not a prefix. test_pr_readiness_sweep.py pins the
+          # literal against pr-readiness.yml's.
+          VERDICT_UNPUBLISHED_TOKEN="[verdict-unpublished]"
+          # The "PR Readiness" commit-status description for this head, or "" on
+          # an unreadable read. ONE read serves both token tests below, so a
+          # pending that is neither read-failure nor verdict-unpublished still
+          # costs a single status read, exactly as before.
+          readiness_description() {
+            gh api "repos/$REPO/commits/$1/status" \
               --jq "[.statuses[]? | select(.context == \"$STATUS_CONTEXT\")][0].description // empty" \
-              2>/dev/null || echo "")"
-            case "$description" in
+              2>/dev/null || echo ""
+          }
+          readiness_is_read_failure() {
+            case "$1" in
               "$READ_FAILURE_TOKEN"*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          # Substring, not prefix: a read-failure token can lead it when both
+          # conditions hold on one head (a transient read failed on a PR that
+          # also owes a verdict). Fails CLOSED on an empty description -- an
+          # unreadable status is not treated as a withheld verdict, so a missed
+          # recovery costs one sweep interval rather than re-running a lane on a
+          # head that does not need it.
+          readiness_has_unpublished_verdict() {
+            case "$1" in
+              *"$VERDICT_UNPUBLISHED_TOKEN"*) return 0 ;;
               *) return 1 ;;
             esac
           }
@@ -354,6 +393,27 @@ jobs:
             # lists so they cannot drift.
             newest_check="$(jq -r '.newest_completed_check_at // empty' <<<"$row")"
             newest_fail="$(jq -r '.newest_failed_check_at // empty' <<<"$row")"
+
+            # Newest human review submission or dismissal on the pull request.
+            # Readiness blocks on a changes-requested review of the head. A
+            # review reaches pr-readiness.yml through the Sensitive Change
+            # Review run it starts. This is the path for a review whose run
+            # never starts (a newer event on the same PR cancelled it while
+            # queued) and for a readiness run that is cancelled or cannot
+            # read. The success and
+            # failure arms count it against the same floor as check evidence in
+            # the pending arm -- the publication stamp minus
+            # publish_lag_seconds -- because a review landing inside the
+            # evaluate-to-publish gap pre-dates the stamp but was never read.
+            # The pending arm ignores it: a pending verdict already holds
+            # merge, and the check completion that resolves it re-reads the
+            # reviews. A missing timeline (the scan could not
+            # read it) is no evidence, never invented staleness.
+            newest_review="$(jq -r '.newest_review_at // empty' <<<"$row")"
+            review_epoch=0
+            if [ -n "$newest_review" ]; then
+              review_epoch="$(date -u -d "$newest_review" +%s 2>/dev/null || echo 0)"
+            fi
 
             # A rollup page the scan could not read leaves this evidence PARTIAL.
             # Evaluate anyway: missing evidence can only fail to prove a verdict
@@ -475,10 +535,61 @@ jobs:
                 # (see pending_min_age_seconds), which is what carries a
                 # rescue's own republish past the same check on the next tick.
                 if [ "$newest_epoch" -le $(( updated_epoch - publish_lag_seconds )) ]; then
-                  # No evidence. The one pending that still deserves a nudge
-                  # here is the read-failure class, and it is aged against
+                  # No evidence. Both recoveries below are aged against
+                  # STALE_MINUTES, so a pending younger than that is left alone
+                  # BEFORE the status-description read: a young pending in the
+                  # shared pool costs no REST call per tick.
+                  if [ "$age" -lt "$stale_seconds" ]; then
+                    echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
+                      "check completed within ${publish_lag_seconds}s of it being published;" \
+                      "a recompute would re-derive the same verdict, so not re-firing."
+                    continue
+                  fi
+                  # ONE status-description read classifies this pending for
+                  # both recoveries that depend on it.
+                  rs_desc="$(readiness_description "$sha")"
+                  # A pending that an advisory lane owes this head a
+                  # verdict it withheld. A recompute of THIS aggregator cannot
+                  # fix it -- the lane's check-run is already `success`, so the
+                  # recompute re-derives the same named pending -- so instead of
+                  # dispatching readiness, re-run the owing lane(s), which is the
+                  # only thing that republishes the verdict. The predicate that
+                  # decides WHICH lane is `evaluate_reviewer_markers`,
+                  # read through pr_status.py's `--disposition-gate` so this
+                  # sweep cannot disagree with the required status about a head.
+                  # This re-fires a LANE, not readiness, so it is deliberately
+                  # OUTSIDE the oldest-first dispatch pass and its MAX_DISPATCH
+                  # cap, and self-terminates: once the lane republishes, the
+                  # token clears and the next sweep does nothing. A lane whose
+                  # re-run is in flight carries an `in_progress` check-run that
+                  # PR Readiness scores `(not started)`, so the token is absent
+                  # in the gap between dispatch and republish and nothing double
+                  # -fires. Gated on the same STALE_MINUTES age as the other
+                  # no-evidence recovery so a verdict still inside the publish
+                  # lag is left to land on its own.
+                  #
+                  # RESIDUAL: this lives in the NO-EVIDENCE branch because that
+                  # is where the description is already read, so a withheld
+                  # verdict on a head where some OTHER monitored check completed
+                  # after the verdict takes the evidence branch below and gets an
+                  # aggregator re-fire this tick instead -- which re-derives the
+                  # same named pending harmlessly. Once that later check settles
+                  # (no new evidence), the next tick reaches here and re-runs the
+                  # lane. The common case -- the lane's own `success` is the
+                  # newest completion -- is handled immediately, and adding the
+                  # read to every pending to close the gap is the per-PR cost the
+                  # sweep's GraphQL rebuild exists to avoid.
+                  if readiness_has_unpublished_verdict "$rs_desc"; then
+                    echo "PR #$number: PR Readiness names a withheld advisory verdict at $sha;" \
+                      "re-running the owing lane(s) to republish it."
+                    python3 .github/scripts/republish_withheld_verdict.py \
+                      --repo "$REPO" --pr "$number" --head "$sha" || true
+                    continue
+                  fi
+                  # The one PENDING that still deserves an aggregator nudge here
+                  # is the read-failure class, and it is aged against
                   # STALE_MINUTES, not the lag -- see the note above.
-                  if [ "$age" -lt "$stale_seconds" ] || ! readiness_is_read_failure "$sha"; then
+                  if ! readiness_is_read_failure "$rs_desc"; then
                     echo "PR #$number: PR Readiness pending for ${age}s at $sha but no" \
                       "check completed within ${publish_lag_seconds}s of it being published;" \
                       "a recompute would re-derive the same verdict, so not re-firing."
@@ -528,6 +639,13 @@ jobs:
                 # the same second as the publish does not look like new evidence.
                 if [ "$newest_epoch" -gt $(( updated_epoch + 5 )) ]; then
                   reason="failure published at $updated_at but a check completed later at $newest_check"
+                elif [ "$age" -ge "$publish_lag_seconds" ] \
+                  && [ "$review_epoch" -gt $(( updated_epoch - publish_lag_seconds )) ]; then
+                  # Review evidence: an approval, a re-review or a dismissal can
+                  # clear a changes-requested red. Examined only once the verdict
+                  # is lag old, so the recompute's own republish lands past the
+                  # same review and the nudge fires once per review, not per tick.
+                  reason="failure published at $updated_at but a review was submitted or dismissed at $newest_review"
                 else
                   # Mode 5: COMMENT evidence. Since #6658 readiness also fails on
                   # a disposition-rule violation, so the verdict now depends on
@@ -627,6 +745,13 @@ jobs:
                 fi
                 if [ "$newest_fail_epoch" -gt $(( updated_epoch + 5 )) ]; then
                   reason="$state published at $updated_at but a check FAILED later at $newest_fail"
+                elif [ "$age" -ge "$publish_lag_seconds" ] \
+                  && [ "$review_epoch" -gt $(( updated_epoch - publish_lag_seconds )) ]; then
+                  # The PERMITTING direction: a changes-requested review after a
+                  # green verdict leaves the required status green over a head a
+                  # reviewer rejected. Same lag-old gate as the failure arm, so
+                  # each review is counted once.
+                  reason="$state published at $updated_at but a review was submitted or dismissed at $newest_review"
                 else
                   # Mode 5 in the PERMITTING direction, and this is the half that
                   # actually matters. A writer can post a rule-violating

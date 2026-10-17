@@ -88,7 +88,18 @@ def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
     identity_keys = facade.pool_identity_env_keys()
-    pairs = _declared_env_pairs(pool_key, identity_keys)
+    # SHARED backend, so no declaring agent is asked for and none is needed. A
+    # shared backend has no single declaring agent by construction, and every
+    # sidecar coherent with this key agrees on the keys this function returns:
+    # the two filters below keep only ``non_secret_env``, which is exactly the
+    # set ``effective_env_hash`` is computed over, so two coherent sidecars that
+    # differ at all differ only in keys dropped here. Taking any one of them is
+    # therefore not a choice with consequences -- which is why this path may
+    # scan, while :func:`_declared_env_for_private_backend` may not.
+    coherent = _coherent_env_sidecars(pool_key, identity_keys)
+    pairs = coherent[0] if coherent else {}
+    if not _declared_env_launch_approved(pool_key, pairs):
+        return {}
     return {
         k: v
         for k, v in non_secret_env(pairs, identity_keys=identity_keys).items()
@@ -96,31 +107,47 @@ def _declared_non_secret_env(pool_key: PoolKey) -> dict[str, str]:
     }
 
 
-def _read_declared_env_sidecar(pool_key: PoolKey) -> Optional[dict[str, str]]:
-    """Return the raw declared env sidecar for ``pool_key``, or ``None``.
+def _env_sidecar_dir_for_config() -> Path:
+    """The declared-env sidecar directory this daemon reads.
 
-    ``None`` means no readable JSON object exists. The values are unfiltered and
-    ungated; :func:`_declared_env_pairs` and :func:`env_target_resolver` apply
-    their own checks.
-
-    BLOCKING: reads a file. Callers must run it off the event loop.
+    Falls back to the default overlay dir when config is unreadable, so an
+    unparseable config degrades to the standard location rather than raising
+    into a spawn.
     """
     try:
         overlay_dir = resolve_overlay_dir(KiroCrewConfig.load().mcp_gateway.overlay_dir)
     except Exception:
         logger.debug("declared-env: config unreadable; using default overlay dir", exc_info=True)
         overlay_dir = resolve_overlay_dir()
-    path = env_sidecar_dir(overlay_dir) / env_sidecar_name(
-        pool_key.agent_name, pool_key.server_name
-    )
+    return env_sidecar_dir(overlay_dir)
+
+
+def _load_env_sidecar(path: Path) -> Optional[dict[str, str]]:
+    """Parse one sidecar file into str/str pairs, or ``None``.
+
+    The coercion mirrors the stub's ``_parse_env_json`` (str keys and values,
+    empty keys dropped) so a sidecar the stub hashed always reproduces that hash
+    here.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
-        # No sidecar for this key: the server declared no env. Not an error.
+        # No sidecar: the server declared no env. Not an error.
+        return None
+    except UnicodeDecodeError:
+        # Caught HERE and not at the ``json.loads`` below, which is too late:
+        # ``read_text`` decodes, so a file holding a non-UTF-8 byte raises
+        # before any JSON parsing happens. That matters because
+        # ``_coherent_env_sidecars`` SCANS the directory -- one undecodable
+        # ``*.json`` in it would otherwise escape as an uncaught exception
+        # through every scanning caller, taking down the spawn of servers that
+        # have nothing to do with that file. Skipping the candidate degrades to
+        # "declares no env", which is what an absent sidecar already does.
+        logger.warning("declared-env: sidecar %s is not valid UTF-8; ignoring", path)
         return None
     try:
         decoded = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError:
         logger.warning("declared-env: sidecar %s is not valid JSON; ignoring", path)
         return None
     if not isinstance(decoded, dict):
@@ -129,12 +156,116 @@ def _read_declared_env_sidecar(pool_key: PoolKey) -> Optional[dict[str, str]]:
     return {str(k): str(v) for k, v in decoded.items() if k}
 
 
-def _declared_env_pairs(pool_key: PoolKey, identity_keys: Collection[str]) -> dict[str, str]:
+def _read_declared_env_sidecar(
+    pool_key: PoolKey, *, declaring_agent: str
+) -> Optional[dict[str, str]]:
+    """Return the sidecar ``declaring_agent`` declared for this server, or ``None``.
+
+    EXACT, by name: ``declaring_agent`` is read off the Register frame of the one
+    stub this read is for, and :func:`rewriter.env_sidecar_name` is injective
+    over ``(agent, server)``, so this can only ever open that stub's own
+    declaration. That is the whole point -- the returned pairs are UNFILTERED,
+    rotating secrets included, so opening another agent's file here would hand
+    one agent's credentials to another agent's backend. The PoolKey cannot
+    substitute for the agent: ``effective_env_hash`` excludes every
+    ``AWS_SECRET``/``AWS_SESSION``/``OAUTH`` key, so two agents declaring one
+    server with different credentials are indistinguishable by key alone.
+
+    ``declaring_agent`` empty (a stub predating the field, or one with no agent
+    behind it) yields a name the rewriter never writes, hence ``None`` and no
+    forwarding -- the same outcome such a stub got before, and fail-closed.
+
+    ``None`` means no readable JSON object exists. The values are ungated;
+    :func:`_declared_env_pairs` applies the coherence and approval gates.
+
+    BLOCKING: reads a file. Callers must run it off the event loop.
+    """
+    return _load_env_sidecar(
+        _env_sidecar_dir_for_config() / env_sidecar_name(declaring_agent, pool_key.server_name)
+    )
+
+
+def _coherent_env_sidecars(
+    pool_key: PoolKey, identity_keys: Collection[str]
+) -> list[dict[str, str]]:
+    """Every sidecar whose contents hash to ``pool_key.effective_env_hash``.
+
+    Returns the VERIFIED CONTENTS, never the paths. The bytes a caller acts on
+    must be the bytes this function hashed: handing back a path and letting the
+    caller re-open it reintroduces the very window the coherence check exists to
+    close, because the rewriter can replace the file between the two reads and
+    the second read carries no hash at all. One read, one hash, one answer.
+
+    More than one entry is legitimate and ordinary: two agents declaring one
+    server with the same non-secret env hash equal however their credentials
+    differ, and each has its own file. Ordered by file name, so the answer is
+    deterministic across passes.
+
+    For readers that have NO declaring agent and need none -- see
+    :func:`_declared_non_secret_env` for why "any coherent one" is a complete
+    answer there rather than a guess.
+
+    Scans rather than computing a name because the name is keyed by the agent
+    that declared the file, and these callers (a shared backend's cold spawn, a
+    prewarm replayed from a recorded payload, an idle-reap respawn) have no one
+    agent to name. The coherence test is the same one
+    :func:`_declared_env_pairs` applies, so an entry this returns is one that
+    function would also have accepted.
+
+    BLOCKING: lists a directory and reads files. Keep it off the event loop.
+    """
+    try:
+        candidates = sorted(_env_sidecar_dir_for_config().glob("*.json"))
+    except OSError:
+        return []
+    out: list[dict[str, str]] = []
+    for path in candidates:
+        pairs = _load_env_sidecar(path)
+        if pairs is None:
+            continue
+        if hash_effective_env(pairs, identity_keys=identity_keys) == pool_key.effective_env_hash:
+            out.append(pairs)
+    return out
+
+
+def _declared_env_launch_approved(pool_key: PoolKey, pairs: dict[str, str]) -> bool:
+    """Whether ``pairs`` is the env of an operator-approved launch of this server.
+
+    Empty ``pairs`` is approved vacuously: there is nothing to forward, so there
+    is nothing for an approval to authorise.
+    """
+    if not pairs:
+        return True
+    if _launch_approved_from_snapshot(
+        pool_key.server_name,
+        pool_key.command_args_hash,
+        launch_approval.env_fingerprint(pairs),
+    ):
+        return True
+    logger.warning(
+        "declared-env: sidecar for %r does not match an approved launch; "
+        "skipping forwarding for this backend",
+        pool_key.server_name,
+    )
+    return False
+
+
+def _declared_env_pairs(
+    pool_key: PoolKey, identity_keys: Collection[str], *, declaring_agent: str
+) -> dict[str, str]:
     """Return the declared env sidecar's contents for ``pool_key``, or ``{}``.
 
     Unfiltered, but coherence-gated: a sidecar whose contents do not hash to
     ``pool_key.effective_env_hash`` yields ``{}``. Callers apply whatever
     co-tenancy filtering their acquisition path requires.
+
+    ``declaring_agent`` is REQUIRED and has no default, because what this
+    function returns is unfiltered: every caller must state WHOSE declaration it
+    is asking for rather than inherit a guess. See
+    :func:`_read_declared_env_sidecar` for why no PoolKey field can stand in for
+    it. A caller that genuinely has no declaring agent must not use this
+    function -- it wants :func:`_declared_non_secret_env`, whose answer does not
+    depend on which coherent sidecar it reads.
 
     ``identity_keys`` is REQUIRED rather than read here, so the caller's ONE
     snapshot of ``pool_identity_env_keys()`` governs both the hash recomputed
@@ -147,7 +278,7 @@ def _declared_env_pairs(pool_key: PoolKey, identity_keys: Collection[str]) -> di
 
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
-    pairs = _read_declared_env_sidecar(pool_key)
+    pairs = _read_declared_env_sidecar(pool_key, declaring_agent=declaring_agent)
     if pairs is None:
         return {}
     # COHERENCE GATE — the invariant that makes forwarding safe must be
@@ -187,21 +318,14 @@ def _declared_env_pairs(pool_key: PoolKey, identity_keys: Collection[str]) -> di
     # only that two agent-controlled inputs agree. The env forwarded here runs
     # outside the sandbox, so it must be one the gateway derived from an
     # operator-approved launch (``launch_approval``). Fails closed.
-    if not _launch_approved_from_snapshot(
-        pool_key.server_name,
-        pool_key.command_args_hash,
-        launch_approval.env_fingerprint(pairs),
-    ):
-        logger.warning(
-            "declared-env: sidecar for %r does not match an approved launch; "
-            "skipping forwarding for this backend",
-            pool_key.server_name,
-        )
+    if not _declared_env_launch_approved(pool_key, pairs):
         return {}
     return pairs
 
 
-def _declared_env_for_private_backend(pool_key: PoolKey) -> dict[str, str]:
+def _declared_env_for_private_backend(
+    pool_key: PoolKey, *, declaring_agent: str = ""
+) -> dict[str, str]:
     """Return the declared env for a CONNECTION-PRIVATE backend, or ``{}``.
 
     A private backend has exactly one stub, so both filters that
@@ -225,9 +349,20 @@ def _declared_env_for_private_backend(pool_key: PoolKey) -> dict[str, str]:
     The coherence gate still applies: a sidecar edited after this session
     started yields ``{}`` rather than values the running stub never hashed.
 
+    ``declaring_agent`` is the agent named on the Register frame of the ONE stub
+    this backend belongs to, and it is what selects the sidecar -- this is the
+    only reader that returns rotating secrets, so it is also the only one that
+    must not scan. Reading a sidecar by anything the PoolKey carries would let
+    another agent's credentials reach this backend, because
+    ``effective_env_hash`` excludes exactly the keys that would differ. Default
+    ``""`` finds no sidecar and so forwards nothing, which is the outcome for a
+    stub that names no agent and is fail-closed.
+
     BLOCKING: never call this on the event loop.
     """
-    return _declared_env_pairs(pool_key, facade.pool_identity_env_keys())
+    return _declared_env_pairs(
+        pool_key, facade.pool_identity_env_keys(), declaring_agent=declaring_agent
+    )
 
 
 def _declared_env_to_forward(pool_key: PoolKey) -> dict[str, str]:
@@ -276,19 +411,40 @@ def resolvable_target_stems(env: Optional[dict[str, str]] = None) -> list[str]:
 def _approval_env_identity(pool_key: PoolKey) -> str:
     """The full-env approval identity of the launch behind ``pool_key``.
 
-    A readable sidecar coherent with ``pool_key.effective_env_hash`` yields the
-    complete declared env's fingerprint, the identity the approval stores. In
-    every other case the PoolKey hash stands, which matches an approval only
-    when that approval's env carried no secret-prefixed key.
+    EXACTLY ONE coherent sidecar yields the complete declared env's fingerprint,
+    the identity the approval stores. In every other case the PoolKey hash
+    stands, which matches an approval only when that approval's env carried no
+    secret-prefixed key.
+
+    Ambiguity is counted over DISTINCT CONTENTS, not over files, and the
+    difference is the Goal's own case. Two agents declaring one server
+    identically each get their own sidecar holding the SAME bytes, so two files
+    are one declaration and there is nothing to be ambiguous about: counting
+    files would push that case onto the fallback below, and an approval whose env
+    holds an ``OAUTH``/``AWS_SECRET`` key never matches that fallback, so the one
+    shared spawn this change exists to enable would be refused.
+
+    Genuinely different contents are a real ambiguity. This runs on the
+    :data:`TargetResolver` path, whose one-argument signature carries no
+    declaring agent, so two DIFFERENT coherent declarations cannot be told
+    apart. Each has its own approval, and returning one would answer "is this
+    launch approved" with another agent's approval -- a server one agent is
+    approved to launch would spawn for an agent who is not. The PoolKey hash is
+    then the stricter answer, not a weaker one: it matches an approval only when
+    that approval's env carried no secret-prefixed key, so ambiguity narrows what
+    may spawn.
 
     BLOCKING: reads a file. Callers must run it off the event loop.
     """
-    pairs = _read_declared_env_sidecar(pool_key)
-    if pairs is not None and (
-        hash_effective_env(pairs, identity_keys=facade.pool_identity_env_keys())
-        == pool_key.effective_env_hash
-    ):
-        return launch_approval.env_fingerprint(pairs)
+    identity_keys = facade.pool_identity_env_keys()
+    coherent = [pairs for pairs in _coherent_env_sidecars(pool_key, identity_keys) if pairs]
+    # Sorted items, because a dict is unhashable and two sidecars written from
+    # one declaration are equal as mappings however their key order landed.
+    distinct = {tuple(sorted(pairs.items())) for pairs in coherent}
+    if len(distinct) == 1:
+        # The verified contents, not a re-read of the file they came from: a
+        # second read could pick up a replacement that no hash ever covered.
+        return launch_approval.env_fingerprint(coherent[0])
     return pool_key.effective_env_hash
 
 

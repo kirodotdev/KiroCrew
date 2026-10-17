@@ -14,6 +14,7 @@ import {
   __resetUiPrefsSyncForTests,
 } from '../lib/uiPrefs'
 import { saveChatConfig, loadChatConfig } from '../pages/chat/ChatSettings'
+import { loadBoardFolderCollapse, persistBoardOverride } from '../utils/boardFolderCollapse'
 
 const SYNCED_KEYS_KEY = 'mc-ui-prefs-synced'
 const ROSTER_ENTRY = 'mc:ui-prefs:roster'
@@ -361,6 +362,138 @@ describe('uiPrefs', () => {
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
       expect(lastPatch(spy)).toEqual({ 'mc-font-family': '1.25' })
+    })
+
+    it('sends the sessions sidebar width keys as stored and the board collapse family as one projected key', async () => {
+      localStorage.setItem('mc-sidebar-width', '920')
+      localStorage.setItem('mc-sidebar-width-pre-board', '260')
+      localStorage.setItem('kc-board-folder-collapsed:col-b:f1', '0')
+      localStorage.setItem('kc-board-folder-collapsed:col-a:f1', '1')
+      // A key added to the allowlist is withheld until a reconcile has read
+      // the host's copy. The host holds none, so the local values seed it.
+      mockFetch(() => okJson({ prefs: {} }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({
+        'mc-sidebar-width': '920',
+        'mc-sidebar-width-pre-board': '260',
+        'kc-board-folder-collapsed': '{"col-a:f1":true,"col-b:f1":false}',
+      })
+      // The projection exists only on the wire. Nothing is stored under it.
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+    })
+
+    it('deletes the host copy of the board collapse family once the last override is gone', async () => {
+      localStorage.setItem('kc-board-folder-collapsed:col-a:f1', '1')
+      mockFetch(() => okJson({ prefs: {} }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      localStorage.removeItem('kc-board-folder-collapsed:col-a:f1')
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ 'kc-board-folder-collapsed': null })
+    })
+
+    it('a cold restore writes the board collapse family as per-key entries', async () => {
+      mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true}' } }))
+      expect(await hydrateUiPrefs()).toBe(1)
+      expect(localStorage.getItem('kc-board-folder-collapsed:col-a:f1')).toBe('1')
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      expect(loadBoardFolderCollapse().get('col-a:f1')).toBe(true)
+      // Hydrate baselines the adopted family as this profile's local value.
+      // The next flush therefore has nothing to send.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('a toggle after a cold restore uploads the toggled family and survives the next load', async () => {
+      // The restored family is adopted whole. One toggle changes one pair. The
+      // flush uploads the whole family with that pair changed. A later load
+      // reads the toggled value. No restored copy remains to re-adopt over it.
+      mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true,"col-b:f2":false}' } }))
+      expect(await hydrateUiPrefs()).toBe(1)
+      persistBoardOverride('col-a', 'f1', false)
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ 'kc-board-folder-collapsed': '{"col-a:f1":false,"col-b:f2":false}' })
+      __resetUiPrefsSyncForTests()
+      expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': false, 'col-b:f2': false })
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      const after = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(after).not.toHaveBeenCalled()
+    })
+
+    it('a cold restore whose board collapse write is refused counts nothing and keeps the host copy', async () => {
+      const realSet = Storage.prototype.setItem
+      const setSpy = vi
+        .spyOn(Storage.prototype, 'setItem')
+        .mockImplementation(function (this: Storage, k: string, v: string) {
+          if (k.startsWith('kc-board-folder-collapsed:')) throw new DOMException('full', 'QuotaExceededError')
+          return realSet.call(this, k, v)
+        })
+      try {
+        mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true}' } }))
+        expect(await hydrateUiPrefs()).toBe(0)
+      } finally {
+        setSpy.mockRestore()
+      }
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      expect(loadBoardFolderCollapse().size).toBe(0)
+      // The dropped key has no baseline and no local value. The first flush
+      // neither re-sends it nor deletes the host's copy.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('a cold restore never overrides a board collapse family this profile already holds', async () => {
+      localStorage.setItem('kc-board-folder-collapsed:col-a:f1', '0')
+      mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true}' } }))
+      expect(await hydrateUiPrefs()).toBe(0)
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      expect(loadBoardFolderCollapse().get('col-a:f1')).toBe(false)
+    })
+
+    it('a settings import replaces the board collapse family with the imported one', async () => {
+      // Scenario: a Replace import rewrote the host copy of a synced profile
+      // that holds its own overrides. The imported family must win whole.
+      localStorage.setItem('kc-board-folder-collapsed:col-a:f1', '0')
+      localStorage.setItem('kc-board-folder-collapsed:col-c:f3', '1')
+      mockFetch(() => okJson({ prefs: {} }))
+      await hydrateUiPrefs()
+      expect(await adoptHostUiPrefsOnNextLoad()).toBe(true)
+
+      __resetUiPrefsSyncForTests()
+      mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true,"col-b:f2":true}' } }))
+      expect(await hydrateUiPrefs()).toBe(1)
+      expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': true, 'col-b:f2': true })
+      expect(localStorage.getItem('kc-board-folder-collapsed:col-c:f3')).toBeNull()
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      // The adopted family equals the baseline, so nothing re-uploads over the
+      // imported copy.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('a warm profile adopts a board collapse family another origin already backed up', async () => {
+      // Scenario: this profile synced before the key joined the allowlist and
+      // holds no override. Another origin on the same host uploaded its family.
+      localStorage.setItem('mc-crews-view', 'list')
+      mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      __resetUiPrefsSyncForTests()
+      mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true}' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1)
+      expect(localStorage.getItem('kc-board-folder-collapsed:col-a:f1')).toBe('1')
+      expect(localStorage.getItem('kc-board-folder-collapsed')).toBeNull()
+      expect(loadBoardFolderCollapse().get('col-a:f1')).toBe(true)
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
     })
 
     it('sends only what changed since the last successful flush', async () => {
@@ -874,6 +1007,40 @@ describe('uiPrefs', () => {
       expect(spy).not.toHaveBeenCalled()
     })
 
+    it('a refused host-wins adoption on the retry baselines the toggled pair instead of uploading it', async () => {
+      // The reconcile failed while the profile held no override. The family is
+      // therefore not owned. One pair was toggled after the failure. On the
+      // retry the host wins. Quota refuses the adoption and it rolls back. The
+      // pair stays in use. The first flush must not replace the host's family.
+      await warmLegacyProfile()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      persistBoardOverride('col-a', 'f1', false)
+      const refused = 'kc-board-folder-collapsed:col-b:f2'
+      const realSet = Storage.prototype.setItem
+      const setSpy = vi
+        .spyOn(Storage.prototype, 'setItem')
+        .mockImplementation(function (this: Storage, k: string, v: string) {
+          if (k === refused) throw new DOMException('full', 'QuotaExceededError')
+          realSet.call(this, k, v)
+        })
+      try {
+        mockFetch(() => okJson({ prefs: { 'kc-board-folder-collapsed': '{"col-a:f1":true,"col-b:f2":true,"col-c:f3":true}' } }))
+        expect(await reconcileNewDurableKeys()).toBe(0)
+      } finally {
+        setSpy.mockRestore()
+      }
+      expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': false })
+      expect(localStorage.getItem('mc-ui-prefs-hydrate-pending')).toBeNull()
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+      // A kept local value goes up on the next change the user makes to it.
+      persistBoardOverride('col-a', 'f1', true)
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ 'kc-board-folder-collapsed': '{"col-a:f1":true}' })
+    })
+
     it('fails the whole reconcile when the baseline+roster commit write is dropped', async () => {
       // A roster recorded without its baselines would start the sync and let
       // the first flush upload unreconciled local values over the host backup.
@@ -1254,6 +1421,11 @@ describe('uiPrefs', () => {
       // succeed. The reconcile must FAIL (keep the pending marker + migration
       // state) rather than mark the child reconciled -- otherwise the first
       // flush uploads the stale local `true` over the host's newer `false`.
+      //
+      // `pinLastPrompt` is a NON-cosmetic field, so the GH #18237 cosmetic-pref
+      // exception does NOT reach it: the general owned-at-failure rule stands and
+      // the host value wins here exactly as before. (A cosmetic width/scale field
+      // in the same shape WOULD be kept -- see the c404 F1 cosmetic exception test.)
       localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify({ [CFG]: 'legacy.fp.0' }))
       localStorage.setItem(CFG, JSON.stringify({ pinLastPrompt: true }))
       // A prior restore failed, recording an owned-at-failure snapshot that does
@@ -1423,6 +1595,12 @@ describe('uiPrefs', () => {
       // entry must NOT grant ownership to those defaults: a child the user truly
       // held is kept, but a default-filled child the host has a real value for
       // must lose to the host. (Earlier the parent OR-grant kept every default.)
+      //
+      // ONE narrow exception holds (GH #18237, owner-ruled): a COSMETIC
+      // width/scale pref (`contentWidth`) present in the blob under a
+      // parent-carrying marker is KEPT over the host's cross-origin value -- see
+      // the dedicated regression test below. A non-cosmetic default-fill
+      // (`showTimestamps`) is unaffected and still loses to the host here.
       localStorage.setItem(CFG, JSON.stringify({ pinLastPrompt: true }))
       localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify({ [CFG]: 'legacy.fp' }))
       mockFetch(() => Promise.reject(new Error('offline')))
@@ -1440,7 +1618,51 @@ describe('uiPrefs', () => {
 
       const blob = JSON.parse(localStorage.getItem(CFG)!) as Record<string, unknown>
       expect(blob.pinLastPrompt).toBe(true) // the field the profile genuinely held is kept
-      expect(blob.showTimestamps).toBe(false) // the post-failure default loses to the host
+      expect(blob.showTimestamps).toBe(false) // the non-cosmetic post-failure default loses to the host
+    })
+
+    it('a locally-present COSMETIC width pref survives the host cross-origin value (c404 F1 cosmetic exception, GH #18237)', async () => {
+      // The GH #18237 regression. The reported flip: chat content width goes
+      // Compact->Comfortable on an insider.14 -> nightly upgrade. A failed
+      // reconcile froze a split-aware marker while the local blob did not yet
+      // hold `contentWidth`, so the marker carries the parent but NOT the
+      // `contentWidth` child. `contentWidth: 'compact'` entered the blob AFTER
+      // the failure (a whole-blob `saveChatConfig` writes every field, defaults
+      // included), and the general rule then let the host's cross-origin
+      // `comfortable` (another origin's choice -- the default is `compact`)
+      // overwrite this origin's `compact`.
+      //
+      // Under the owner-ruled cosmetic-pref exception, a cosmetic width/scale
+      // field present in the blob under a parent-carrying marker is KEPT, even
+      // though it cannot be told apart from a default fill. Same marker shape as
+      // c404 F1 above; only the cosmetic field's outcome differs.
+      localStorage.setItem(CFG, JSON.stringify({ pinLastPrompt: true }))
+      localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify({ [CFG]: 'legacy.fp' }))
+      mockFetch(() => Promise.reject(new Error('offline')))
+      expect(await reconcileNewDurableKeys()).toBe(-1) // marker: [child(pinLastPrompt), parent]
+
+      // The user's `compact` enters the blob after the failure, so the marker
+      // has no `contentWidth` child entry.
+      localStorage.setItem(
+        CFG,
+        JSON.stringify({ pinLastPrompt: true, contentWidth: 'compact' }),
+      )
+      // The host backup holds a cross-origin `comfortable`.
+      mockFetch(() => okJson({ prefs: { [child('contentWidth')]: '"comfortable"' } }))
+      await hydrateUiPrefs()
+
+      const blob = JSON.parse(localStorage.getItem(CFG)!) as Record<string, unknown>
+      expect(blob.contentWidth).toBe('compact') // the user's local cosmetic choice is kept -- no flip
+
+      // The kept value decides THIS origin's display only. It is baselined, not
+      // uploaded, so the other origin's `comfortable` stays on the host backup.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      const puts = spy.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT')
+      const patch = puts.length
+        ? JSON.parse((puts.at(-1)![1] as RequestInit).body as string).prefs
+        : {}
+      expect(patch[child('contentWidth')]).toBeUndefined()
     })
 
     it('a fully reconciled profile reports nothing unreconciled and pays no per-boot reconcile GET (c404 F2)', async () => {

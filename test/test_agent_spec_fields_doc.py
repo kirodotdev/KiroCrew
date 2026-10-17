@@ -61,16 +61,16 @@ def test_steering_is_still_the_backend_gated_half(doc_text: str) -> None:
     that module, so a token match anywhere would keep this green with the steering
     gate's own condition dropped.
     """
-    source = (Path(__file__).parent.parent / "src" / "kiro_crew" / "context.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        Path(__file__).parent.parent / "src" / "kiro_crew" / "context_assembly" / "session_start.py"
+    ).read_text(encoding="utf-8")
     gate = (
-        "            not essentials\n"
-        "            and not is_custom\n"
-        "            and is_cc\n"
-        "            and _group_included(context_groups, CONTEXT_GROUP_PROJECT)\n"
-        "        ):\n"
-        "            steering_ctx = _load_steering_resources()\n"
+        "        not essentials\n"
+        "        and not is_custom\n"
+        "        and is_cc\n"
+        "        and ctx._group_included(context_groups, ctx.CONTEXT_GROUP_PROJECT)\n"
+        "    ):\n"
+        "        steering_ctx = ctx._load_steering_resources()\n"
     )
     assert gate in source, (
         "the steering block's gate no longer reads is_cc together with the default-agent "

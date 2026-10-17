@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import voice_reply as voice
 from kiro_crew.dashboard import chat_voice
+from kiro_crew.testing.wait import await_until, finished
 
 
 class RawPiper:
@@ -71,7 +72,7 @@ async def test_first_pcm_precedes_eof_and_early_close_reaps(piper_env, monkeypat
     monkeypatch.setattr(voice, "create_subprocess_limited", spawn)
     stream = voice.streaming_piper_reply("你好。下一句话！", piper_model=str(model))
     async with contextlib.aclosing(stream):
-        idx, sample_rate, pcm = await asyncio.wait_for(anext(stream), timeout=2)
+        idx, sample_rate, pcm = await finished(anext(stream), "first audio chunk")
         assert (idx, sample_rate, pcm) == (0, 22050, b"\x01\x00\x02\x00")
         assert proc.returncode is None
         assert not proc.reaped
@@ -95,7 +96,7 @@ async def test_pcm_odd_pipe_reads_preserve_samples(piper_env, monkeypatch):
     monkeypatch.setattr(voice, "create_subprocess_limited", AsyncMock(return_value=proc))
     stream = voice.streaming_piper_reply("one. two.", piper_model=str(model))
     async with contextlib.aclosing(stream):
-        first = await asyncio.wait_for(anext(stream), timeout=2)
+        first = await finished(anext(stream), "first audio chunk")
         proc.stdout.feed_data(b"\x04\x05\x06")
         proc.stdout.feed_eof()
         proc.stderr.feed_eof()
@@ -374,12 +375,12 @@ async def test_original_deadline_cancels_and_reaps_cli_including_a_fallback(
     )
     task = asyncio.create_task(anext(stream))
     try:
-        await asyncio.wait_for(spawned.wait(), 5)
+        await await_until(spawned)
         # Expire the original owner after CLI starts. A fresh fallback deadline
         # cannot replace it, and teardown still has to reap the active process.
         deadline.reschedule(asyncio.get_running_loop().time())
         with pytest.raises(voice.VoiceSynthesisError) as error:
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert error.value.code == "voice_timeout"
         assert deadlines == [voice._PIPER_STREAM_TIMEOUT_SECONDS]
         assert proc.killed and proc.reaped and not cleanup.exists()
@@ -463,10 +464,10 @@ async def test_cancel_while_waiting_for_first_pcm_reaps(piper_env, monkeypatch):
     stream = voice.streaming_piper_reply("hello", piper_model=str(model))
     pending = asyncio.create_task(anext(stream))
     try:
-        await asyncio.wait_for(spawned.wait(), timeout=2)
+        await await_until(spawned)
         pending.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(pending, timeout=2)
+            await await_until(pending)
         assert proc.killed and proc.reaped
         assert not cleanup.exists()
     finally:
@@ -498,21 +499,21 @@ async def test_repeated_cancel_joins_cli_reap_and_removes_sandbox(piper_env, mon
     stream = voice.streaming_piper_reply("hello", piper_model=str(model))
     task = asyncio.create_task(anext(stream))
     try:
-        await asyncio.wait_for(spawned.wait(), 2)
+        await await_until(spawned)
         task.cancel()
-        await asyncio.wait_for(reaping.wait(), 2)
+        await await_until(reaping)
         task.cancel()
         # Deliver the repeated cancellation while the reap remains blocked.
         await asyncio.sleep(0)
         assert not task.done()
         release_reap.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
+            await await_until(task)
         assert proc.killed and proc.reaped and not cleanup.exists()
     finally:
         release_reap.set()
         task.cancel()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+        await finished(asyncio.gather(task, return_exceptions=True), "task cleanup")
         await stream.aclose()
 
 
@@ -541,7 +542,7 @@ async def test_real_pipe_can_be_played_then_cancelled_without_waiting_for_exit(
     stream = voice.streaming_piper_reply("hello", piper_model=str(model))
     try:
         async with contextlib.aclosing(stream):
-            _idx, _rate, pcm = await asyncio.wait_for(anext(stream), timeout=5)
+            _idx, _rate, pcm = await finished(anext(stream), "audio chunk")
             assert pcm == bytes(8)
             assert processes[0].returncode is None
         assert processes[0].returncode is not None
@@ -550,7 +551,7 @@ async def test_real_pipe_can_be_played_then_cancelled_without_waiting_for_exit(
         for proc in processes:
             if proc.returncode is None:
                 proc.kill()
-            await asyncio.wait_for(proc.communicate(), timeout=5)
+            await finished(proc.communicate(), "process reap")
 
 
 def test_chinese_and_long_unpunctuated_text_keep_every_character():
@@ -652,12 +653,12 @@ async def test_cancel_closes_generator_and_frees_capacity(voice_app, monkeypatch
             )
         )
         try:
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started)
             response = await client.post(
                 "/api/voice/cancel", json={"slot": "s1", "request_id": "stop-me"}
             )
             assert response.status == 200
-            await asyncio.wait_for(closed.wait(), timeout=2)
+            await await_until(closed)
             assert not app[chat_voice._VOICE_REQUESTS].tasks
             state.broadcast_ws.assert_not_called()
         finally:

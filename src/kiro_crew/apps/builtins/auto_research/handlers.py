@@ -519,13 +519,41 @@ async def _handle_create(request: web.Request) -> web.Response:
     return web.json_response(result, status=201)
 
 
+def _worker_model_state(request: web.Request, campaign: dict) -> dict:
+    """Copy the worker slot's model verdict onto one campaign payload.
+
+    The withhold verdict and the served model live on the live worker slot
+    (``research-<cid>``), not in the campaign row, so the Research Lab page
+    could never see that a picked model fell back. ``model_withheld`` is the
+    slot's own answer (true = the account cannot run the pick, false = it can,
+    null = not known); ``served_model`` is what the session resolved to ("" =
+    not known). Both are null/"" when no worker slot exists. DISPLAY only,
+    like the slots payload they mirror: never a write source.
+    """
+    withheld: bool | None = None
+    served = ""
+    state = request.app.get("state")
+    cid = campaign.get("id")
+    if state is not None and hasattr(state, "get_slot") and isinstance(cid, str):
+        try:
+            slot = state.get_slot(agent_mode.research_slot_key(cid))
+        except ValueError:
+            slot = None
+        if slot is not None:
+            withheld = getattr(slot, "model_withheld", None)
+            served = str(getattr(slot, "served_model", "") or "")
+    campaign["model_withheld"] = withheld
+    campaign["served_model"] = served
+    return campaign
+
+
 async def _handle_list(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
     lifecycle._audit("campaign_list", "*")
     loop = asyncio.get_running_loop()
     campaigns = await loop.run_in_executor(None, storage.list_campaigns)
-    return web.json_response(campaigns)
+    return web.json_response([_worker_model_state(request, c) for c in campaigns])
 
 
 async def _handle_get(request: web.Request) -> web.Response:
@@ -537,7 +565,9 @@ async def _handle_get(request: web.Request) -> web.Response:
     lifecycle._audit("campaign_get", cid)
     loop = asyncio.get_running_loop()
     c = await loop.run_in_executor(None, storage.get_campaign, cid)
-    return web.json_response(c) if c else web.json_response({"error": "Not found"}, status=404)
+    if not c:
+        return web.json_response({"error": "Not found"}, status=404)
+    return web.json_response(_worker_model_state(request, c))
 
 
 async def _handle_report(request: web.Request) -> web.Response:
@@ -588,6 +618,20 @@ async def _handle_action(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "Can only fork a completed or stopped campaign"}, status=409
             )
+        # The fork runs on the parent's pick unless the body names one: the fork
+        # flow shows that pick pre-selected, so a user who changes it there gets
+        # the model they chose, and one who leaves it keeps the parent's. A
+        # body "model" of "" is an explicit choice to inherit the default.
+        if "model" in body:
+            model_error = lifecycle._campaign_model_error({"model": body["model"]})
+            if model_error:
+                return web.json_response(
+                    {"error": "Validation failed", "code": "model_invalid", "errors": [model_error]},
+                    status=400,
+                )
+            fork_model = lifecycle._campaign_model({"model": body["model"]})
+        else:
+            fork_model = parent["model"] or ""
         # Build the fork config from the request body (sub_questions come from
         # the frontend's challenge-mode grill tree).
         fork_config = {
@@ -602,7 +646,7 @@ async def _handle_action(request: web.Request) -> web.Response:
             "success_criteria": body.get("success_criteria"),
             "auto_approve": body.get("auto_approve", False),
             "parent_id": cid,
-            "model": parent["model"] or "",  # fork continues on the parent's pick
+            "model": fork_model,
             "grill_tree": body.get("grill_tree"),
         }
         loop = asyncio.get_running_loop()
@@ -752,7 +796,11 @@ async def _handle_report_status(request: web.Request) -> web.Response:
     slug = row["report_artifact_slug"]
     if not slug:
         return web.json_response({"slug": None})
-    return web.json_response({"slug": publication._live_report_slug(slug, cid)})
+    # In a thread like the row read above it: the existence probe opens the
+    # artifact store, and for an artifact saved before event logs existed that
+    # read writes back a backfilled history, syncing it to the device.
+    live = await asyncio.to_thread(publication._live_report_slug, slug, cid)
+    return web.json_response({"slug": live})
 
 
 async def _handle_to_artifact(request: web.Request) -> web.Response:

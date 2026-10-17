@@ -17,7 +17,9 @@ from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
+from kiro_crew.agent_sdk import capture_prompt_timeout
 from kiro_crew.providers.acp import AcpProvider
+from kiro_crew.testing.wait import await_until
 
 
 def _build_provider(backend: str) -> AcpProvider:
@@ -155,6 +157,42 @@ class TestStreamCommandRouting:
         provider._client.stream_command.assert_not_called()
         assert len(events) == 1
         assert events[0].text == "ok"
+
+
+class TestStreamTimeoutForwarding:
+    @pytest.mark.asyncio
+    async def test_dedicated_client_receives_explicit_transport_timeout(self):
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        provider._client.stream_events = MagicMock(
+            return_value=_async_iter([AcpEvent(kind="complete", stop_reason="end_turn")])
+        )
+        timeout = capture_prompt_timeout(provider, 21600.0)
+
+        events = await _drain(provider.stream("long run", timeout=timeout))
+
+        assert timeout == 21660.0
+        assert [event.kind for event in events] == ["complete"]
+        provider._client.stream_events.assert_called_once_with("long run", timeout=21660.0)
+
+    @pytest.mark.asyncio
+    async def test_runtime_backed_client_forwards_timeout_to_handle_prompt(self):
+        handle = AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
+        seen: list[tuple[str, float | None]] = []
+
+        async def prompt(message: str, timeout: float | None = None):
+            seen.append((message, timeout))
+            yield AcpEvent(kind="complete", stop_reason="end_turn")
+
+        handle.prompt = prompt
+        provider = _build_provider(backend="")
+        provider._client = AcpSessionProvider(handle, runtime=MagicMock())
+        timeout = capture_prompt_timeout(provider, 21600.0)
+
+        events = await _drain(provider.stream("long shared run", timeout=timeout))
+
+        assert timeout == 21660.0
+        assert [event.kind for event in events] == ["complete"]
+        assert seen == [("long shared run", 21660.0)]
 
 
 class TestToLlmEventFieldPropagation:
@@ -302,7 +340,12 @@ class TestToLlmEventFieldParity:
 
     # Fields that are intentionally NOT forwarded through _to_llm_event.
     # Each entry must document why it is excluded.
-    _INTENTIONALLY_DROPPED: set[str] = set()
+    #
+    # ``unattributed``: provenance read off the raw codex frame and consumed by
+    # ``AcpSessionHandle._run_turn`` before the event leaves the ACP layer. By
+    # then the held chunk has been delivered as ordinary text or turned into the
+    # turn's error, so no provider consumer has a decision left to make with it.
+    _INTENTIONALLY_DROPPED: set[str] = {"unattributed"}
 
     @staticmethod
     def _distinguishable(field: "dataclasses.Field") -> object | None:
@@ -587,6 +630,29 @@ class TestEffortControl:
         provider._effort_per_model = {"claude-opus-4.7": "max"}
         await provider._apply_initial_effort()
         provider._client.set_config_option.assert_awaited_once_with("effort", "max")
+
+    @pytest.mark.asyncio
+    async def test_claude_start_pushes_effort_keyed_by_configured_model_spelling(self):
+        # The factory keys the level by the configured spelling; startup records
+        # the advertised one on the client.
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(
+                acp_backend=ACP_BACKEND_CLAUDE,
+                model="claude-opus-5.5",
+                effort_per_model={"claude-opus-5.5": "max"},
+            )
+        client = provider._client
+        client.backend = ACP_BACKEND_CLAUDE
+        client._model = "claude-opus-5.5"
+        client.supports_config_option = MagicMock(return_value=True)
+        client.set_config_option = AsyncMock()
+
+        async def _ensure_ready():
+            client._model = "claude-opus-5-5[1m]"
+
+        client.ensure_ready = AsyncMock(side_effect=_ensure_ready)
+        await provider.start()
+        client.set_config_option.assert_awaited_once_with("effort", "max")
 
     @pytest.mark.asyncio
     async def test_apply_initial_effort_noop_on_kiro_backend(self):
@@ -1048,7 +1114,7 @@ class TestStartKiroRuntimeResume:
         ):
             start = asyncio.ensure_future(provider._start_kiro_runtime())
             try:
-                await asyncio.wait_for(settle_entered.wait(), timeout=5)
+                await await_until(settle_entered, what="the stderr settle starting")
                 await asyncio.sleep(0.1)
                 start.cancel()
                 await asyncio.wait({start}, timeout=5)
@@ -1533,6 +1599,8 @@ class TestStartKiroRuntimeModelEntitlement:
         handle.session_id = "kiro-sess-1"
         handle.store_session_config = MagicMock()
         handle.set_model = AsyncMock()
+        # A real AcpSessionHandle starts with no refusal recorded.
+        handle.model_pin_refused = ""
         handle.available_models = [{"modelId": m, "name": m} for m in advertised]
         # The spawn-time withhold revalidates once via refresh_available_models
         # before dropping a pin. Default: the probe agrees with the startup
@@ -1565,6 +1633,20 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_unusable_configured_model_is_never_sent(self):
         handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_withheld_configured_model_is_recorded_as_refused(self):
+        # The pin never ran, so a caller that bills or labels a turn by it (the
+        # cron acquire step) reads it from the handle's model_pin_refused.
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
+        handle.set_model.assert_not_awaited()
+        assert handle.model_pin_refused == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
+    async def test_an_applied_configured_model_records_no_refusal(self):
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6", "claude-opus-4.8"])
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_usable_configured_model_is_applied(self):

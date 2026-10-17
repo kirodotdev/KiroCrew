@@ -213,3 +213,147 @@ def test_strict_get_fork_info_surfaces_corruption_while_lenient_degrades(monkeyp
     assert agent_state.get_fork_info("any") is None  # lenient default
     with pytest.raises(ValueError):
         agent_state.get_fork_info("any", strict=True)
+
+
+# --------------------------------------------------------------------------- #
+# managed_digest -- the installer-recorded ownership record (GPT 6.1 F1).
+# --------------------------------------------------------------------------- #
+
+
+def test_spec_digest_matches_the_bytes_the_installer_writes():
+    """``spec_digest`` hashes the CANONICAL bytes the atomic writer lands --
+    ``json.dumps(indent=2)`` + a trailing newline -- so a spec read back and re-serialized
+    the same way reproduces the recorded value. No ``sort_keys`` (the writer does not sort)."""
+    import hashlib
+    import json
+
+    config = {"name": "kirocrew-dashboard-author", "mcpServers": {"kirocrew-core": {}}}
+    expected = hashlib.sha256((json.dumps(config, indent=2) + "\n").encode("utf-8")).hexdigest()
+    assert agent_state.spec_digest(config) == expected
+
+
+def test_managed_digest_roundtrips_and_clears():
+    assert agent_state.get_managed_digest("kirocrew-dashboard-author") is None
+    agent_state.set_managed_digest("kirocrew-dashboard-author", "deadbeef")
+    assert agent_state.get_managed_digest("kirocrew-dashboard-author") == "deadbeef"
+    agent_state.set_managed_digest("kirocrew-dashboard-author", None)
+    assert agent_state.get_managed_digest("kirocrew-dashboard-author") is None
+
+
+def test_managed_digest_survives_alongside_model_bookkeeping():
+    agent_state.set_model_managed("kirocrew-dashboard-author", True)
+    agent_state.set_managed_digest("kirocrew-dashboard-author", "cafe1234")
+    assert agent_state.get_managed_digest("kirocrew-dashboard-author") == "cafe1234"
+    assert agent_state.get_model_managed("kirocrew-dashboard-author") is True
+
+
+def test_prune_drops_the_managed_digest():
+    agent_state.set_managed_digest("x", "feed0000")
+    agent_state.prune("x")
+    assert agent_state.get_managed_digest("x") is None
+
+
+def test_strict_get_managed_digest_surfaces_corruption_while_lenient_degrades(
+    monkeypatch, tmp_path
+):
+    """A caller whose answer decides an OVERWRITE reads strict: an unreadable sidecar must
+    raise (fail closed), not degrade to 'no ownership' and let the file be rewritten. Display
+    callers keep the lenient default."""
+    import pytest
+
+    sidecar = tmp_path / "agent_model_state.json"
+    sidecar.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(agent_state, "_state_path", lambda: sidecar)
+
+    assert agent_state.get_managed_digest("any") is None  # lenient default
+    with pytest.raises((ValueError, OSError)):
+        agent_state.get_managed_digest("any", strict=True)
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase managed-write digest (GPT 6.1): the file reproduces one of the two
+# recorded digests at every instant, so a crash never freezes a managed spec.
+# --------------------------------------------------------------------------- #
+
+
+def test_managed_digest_matches_finalized_or_pending():
+    name = "kirocrew-dashboard-author"
+    old, new = "oldoldold", "newnewnew"
+    agent_state.set_managed_digest(name, old)
+    # Before any write: only the finalized digest matches.
+    assert agent_state.managed_digest_matches(name, old) is True
+    assert agent_state.managed_digest_matches(name, new) is False
+    # begin: pending recorded, finalized still in place -> BOTH match.
+    agent_state.begin_managed_write(name, new)
+    assert agent_state.managed_digest_matches(name, old) is True  # file still old bytes
+    assert agent_state.managed_digest_matches(name, new) is True  # or already new bytes
+    # finalize: new promoted, pending cleared -> only new matches.
+    agent_state.finalize_managed_write(name)
+    assert agent_state.managed_digest_matches(name, new) is True
+    assert agent_state.managed_digest_matches(name, old) is False
+
+
+def test_crash_after_begin_before_write_leaves_old_bytes_confirmable():
+    """Process death between begin and the file replace: the file still holds the OLD bytes,
+    which reproduce the finalized digest -> still confirmed, so a rebuild refreshes it."""
+    name = "kirocrew-dashboard-author"
+    old_bytes_digest = "oldbytes"
+    agent_state.set_managed_digest(name, old_bytes_digest)
+    agent_state.begin_managed_write(name, "newbytes")  # crash here, no file write, no finalize
+    assert agent_state.managed_digest_matches(name, old_bytes_digest) is True
+
+
+def test_crash_after_write_before_finalize_leaves_new_bytes_confirmable():
+    """Process death between the file replace and finalize: the file holds the NEW bytes,
+    which reproduce the pending digest -> still confirmed, so a rebuild refreshes it."""
+    name = "kirocrew-dashboard-author"
+    agent_state.set_managed_digest(name, "oldbytes")
+    agent_state.begin_managed_write(name, "newbytes")  # file now written to new bytes...
+    # ...crash before finalize_managed_write(name)
+    assert agent_state.managed_digest_matches(name, "newbytes") is True
+
+
+def test_finalize_is_a_noop_without_a_pending():
+    name = "kirocrew-dashboard-author"
+    agent_state.set_managed_digest(name, "keepme")
+    agent_state.finalize_managed_write(name)  # nothing pending
+    assert agent_state.get_managed_digest(name) == "keepme"
+
+
+def test_prune_drops_both_digest_slots():
+    name = "x"
+    agent_state.set_managed_digest(name, "fin")
+    agent_state.begin_managed_write(name, "pend")
+    agent_state.prune(name)
+    assert agent_state.get_managed_digest(name) is None
+    assert agent_state.managed_digest_matches(name, "fin") is False
+    assert agent_state.managed_digest_matches(name, "pend") is False
+
+
+def test_begin_carries_the_current_on_disk_digest_so_a_double_interruption_recovers():
+    """GPT 6.1 (on 8965bd31bf): a first write finalize-interrupts, leaving finalized=A,
+    pending=B, FILE=B. The next write's begin must keep the file (B) confirmable even if its
+    own replace then fails. ``begin`` writes the CURRENT on-disk digest (B) to finalized
+    before setting the new pending (C), so the worst case is finalized=B, pending=C, file=B
+    -- B still matches, so the spec is recoverable rather than frozen."""
+    name = "kirocrew-dashboard-author"
+    A, B, C = "digestA", "digestB", "digestC"
+    # State after a finalize-interrupted first write: finalized=A, pending=B, file=B.
+    agent_state.set_managed_digest(name, A)
+    agent_state.begin_managed_write(name, B)  # file then written to B, finalize interrupted
+    assert agent_state.managed_digest_matches(name, B) is True  # file=B confirms (pending)
+
+    # Second write begins, passing the CURRENT on-disk digest (B) as `current`...
+    agent_state.begin_managed_write(name, C, current=B)
+    # ...and its replace FAILS before finalize. The file is still B.
+    assert agent_state.managed_digest_matches(name, B) is True  # recoverable: B is finalized now
+    assert agent_state.managed_digest_matches(name, C) is True  # or the new bytes, if written
+
+
+def test_begin_without_current_only_sets_pending():
+    """A first install (nothing on disk) passes no ``current``: only the pending slot is set,
+    no spurious finalized digest is invented for bytes that are not there yet."""
+    name = "kirocrew-dashboard-author"
+    agent_state.begin_managed_write(name, "firstbytes")
+    assert agent_state.managed_digest_matches(name, "firstbytes") is True
+    assert agent_state.get_managed_digest(name) is None  # finalized still unset

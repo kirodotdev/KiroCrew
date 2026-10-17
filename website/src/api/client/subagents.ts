@@ -6,7 +6,7 @@
 import type { SubagentInfo } from '../../types'
 import type { ClientTransport } from './transport'
 
-export function createSubagentsEndpoints({ post, del, j }: ClientTransport) {
+export function createSubagentsEndpoints({ post, del, j, jfetch: fetch }: ClientTransport) {
   const spawned = {
     // Spawn
     spawnList: (): Promise<{ agents?: SubagentInfo[] }> => fetch('/api/spawn').then(j),

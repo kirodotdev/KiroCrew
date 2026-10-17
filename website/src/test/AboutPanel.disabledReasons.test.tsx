@@ -7,6 +7,12 @@
 // That is exactly what happened when `disabled: 'channel'` was added for Windows
 // on the stable channel: the platform HAS an update lane, just not on the channel
 // the install tracks, and the way back is the switcher in this same panel.
+//
+// Two shapes of EXTERNALLY-MANAGED marker are tested separately:
+//   • bare marker (no updateCommand) — sets disabled:'externally-managed', shows
+//     only the "updates are managed by …" notice, no command block, no Check button
+//   • managed lane (has updateCommand) — no disabled field, shows the notice AND
+//     the copyable command AND the regular update controls (Check button etc.)
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -62,7 +68,10 @@ describe('AboutPanel disabled-update reasons', () => {
     expect(screen.queryByText(/unavailable in this build on this platform/i)).toBeNull()
   })
 
-  it('shows the externally-managed message with the owner and its update command', async () => {
+  it('bare marker: shows the externally-managed message with the owner, no command block', async () => {
+    // A bare marker (no updateCommand) sets disabled:'externally-managed' and
+    // provides no command. The notice names the owner; there is no command box
+    // and no Check button because the updater is off.
     mountWithUpdateApi({
       version: '0.1.0',
       platform: 'darwin-arm64',
@@ -71,15 +80,36 @@ describe('AboutPanel disabled-update reasons', () => {
       channelSwitchable: false,
       disabled: 'externally-managed',
       managedBy: 'internal-registry',
+      updateCommand: '',
+    })
+    expect(await screen.findByText(/managed by internal-registry/i)).toBeTruthy()
+    // No command block: a bare marker carries no updateCommand.
+    expect(screen.queryByTestId('managed-update-command')).toBeNull()
+    // No channel surface: the switcher AND the read-only channel row both
+    // describe a lane the marker's owner never reads.
+    expect(screen.queryByTestId('channel-switcher')).toBeNull()
+    // The platform message would blame the OS for an operator decision.
+    expect(screen.queryByText(/unavailable in this build on this platform/i)).toBeNull()
+  })
+
+  it('managed lane: shows the managed-by notice and the copyable command above the update controls', async () => {
+    // A marker with updateCommand routes to the managed lane (no disabled field).
+    // The managed-by notice and the copyable command appear above the regular
+    // Check button; the updater is armed and auto-update controls are visible.
+    mountWithUpdateApi({
+      version: '0.1.0',
+      platform: 'darwin-arm64',
+      packaged: true,
+      channelSwitchable: false,
+      managedBy: 'internal-registry',
       updateCommand: 'pkgtool update kirocrew',
     })
     expect(await screen.findByText(/managed by internal-registry/i)).toBeTruthy()
     expect(screen.getByTestId('managed-update-command').textContent).toBe(
       'pkgtool update kirocrew',
     )
-    // No channel surface: the switcher AND the read-only channel row both
-    // describe a lane the marker's owner never reads.
-    expect(screen.queryByTestId('channel-switcher')).toBeNull()
+    // The Check button is present because the managed lane IS armed.
+    expect(screen.getByText(/check for updates/i)).toBeTruthy()
     // The platform message would blame the OS for an operator decision.
     expect(screen.queryByText(/unavailable in this build on this platform/i)).toBeNull()
   })

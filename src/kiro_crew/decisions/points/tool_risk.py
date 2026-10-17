@@ -66,9 +66,9 @@ the same way. The tier is not the flag on its own: ``p`` is the probability the
 provider assigned to the option it CHOSE, so an answer at 0.5 is a coin flip about
 which tier the call is even in, and :data:`CAUTION_CONFIDENCE_THRESHOLD` and
 :data:`RISKY_CONFIDENCE_THRESHOLD` are where this build stops printing one. A plain
-file write or edit (:func:`kiro_crew.platform.tool_paths.is_edit_call`) never
+file write or edit (:func:`kiro_crew.platform.tool_paths.is_workspace_edit_call`) never
 draws a ``caution`` badge once its write identity is on the card this point
-reads. The row still carries the tier it was given either way, so the
+reads; a DELETE is not that edit and keeps its badge. The row still carries the tier it was given either way, so the
 suppressed answers stay countable -- which is how both thresholds were
 measured and the only way the next ones can be.
 
@@ -99,7 +99,7 @@ from kiro_crew import decisions as core
 from kiro_crew.decisions import log as _log
 from kiro_crew.decisions.points import as_text
 from kiro_crew.decisions.types import Answer, Choice, Question
-from kiro_crew.platform.tool_paths import is_edit_call
+from kiro_crew.platform.tool_paths import is_workspace_edit_call
 
 logger = logging.getLogger(__name__)
 
@@ -165,9 +165,11 @@ CAUTION_CONFIDENCE_THRESHOLD = 0.80
 #: harness's own "Write File" title. ``risky`` still badges on a write, because
 #: a write outside the workspace or over a credential file is exactly what
 #: ``risky`` is for. Whether a call IS that write is
-#: :func:`kiro_crew.platform.tool_paths.is_edit_call`, the same routing
-#: predicate the hook edit gate and governance classification share -- not a
-#: second, private reading of what an edit is keyed on the ACP ``kind`` alone,
+#: :func:`kiro_crew.platform.tool_paths.is_workspace_edit_call`, the edit-only
+#: sibling of the write-plane routing predicate the hook edit gate and
+#: governance classification share (``is_edit_call``, which also routes a KAS
+#: ``delete`` -- a delete is not "easy to put back", so it keeps its badge) --
+#: not a second, private reading of what an edit is keyed on the ACP ``kind`` alone,
 #: which the harness marks agent-influenced and can arrive empty or as
 #: ``read`` on a call whose content block still declares a file change.
 
@@ -231,7 +233,8 @@ def earns_badge(tier: str, p: float, *, file_write: bool = False) -> bool:
     word, and an alarm nobody believes is what costs every other badge its
     meaning. ``caution`` must clear :data:`CAUTION_CONFIDENCE_THRESHOLD`, and is
     never printed on a *file_write* (a plain edit, see
-    :func:`kiro_crew.platform.tool_paths.is_edit_call`): it is the mild word --
+    :func:`kiro_crew.platform.tool_paths.is_workspace_edit_call`; a delete is
+    not one): it is the mild word --
     "inside the workspace, easy to put back" -- so the card only carries it when
     the provider is sure and the call is not the ordinary workspace edit the word
     already describes.
@@ -367,8 +370,11 @@ async def risk_record(
     *tool_kind* and *diff_path* are the harness's ACP ``kind`` and the tool
     call's cached diff-block path; neither is sent to the provider, and together
     they decide whether the call is a file write for :func:`earns_badge` via
-    :func:`kiro_crew.platform.tool_paths.is_edit_call` -- the same predicate the
-    hook edit gate and governance classification share, so ``kind`` alone (which
+    :func:`kiro_crew.platform.tool_paths.is_workspace_edit_call` -- the edit-only
+    sibling of the write-plane predicate the hook edit gate and governance
+    classification route on, and deliberately narrower: that plane also covers
+    ``delete``, which this carve-out must not, so a delete keeps its badge. Like
+    the plane it reads the diff block beside ``kind``, so ``kind`` alone (which
     is agent-influenced and can arrive empty or as ``read`` on a real edit) never
     has to answer this on its own.
 
@@ -422,7 +428,9 @@ async def risk_record(
             tier=tier,
             p=p,
             policy=bounded_policy,
-            file_write=is_edit_call(tool_kind, diff_path),
+            # Edit-only on purpose: the carve-out's ground is "easy to put back",
+            # which a delete is not, so a KAS ``delete_file`` keeps its badge.
+            file_write=is_workspace_edit_call(tool_kind, diff_path),
         )
     except Exception:
         logger.debug("tool.risk: leaving the tool card unannotated", exc_info=True)

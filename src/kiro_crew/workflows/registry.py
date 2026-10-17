@@ -104,6 +104,9 @@ class RunHandle:
     # call_index → bounded reason that call failed. Kept next to agent_results so a
     # missing payload always comes with an explanation instead of a bare ok=False.
     agent_errors: dict = field(default_factory=dict)
+    # call_index → that call's fingerprint. A rerun replays a cached result only
+    # into a call with the same fingerprint; a record without them replays nothing.
+    agent_fingerprints: dict = field(default_factory=dict)
     source_format: str = "python"
     driver: str = "workflow"
     task_id: str = ""
@@ -280,6 +283,7 @@ class RunHandle:
             "args": self.args,
             "agent_results": {str(k): v for k, v in self.agent_results.items()},
             "agent_errors": {str(k): v for k, v in self.agent_errors.items()},
+            "agent_fingerprints": {str(k): v for k, v in self.agent_fingerprints.items()},
             "events": [e.to_json() for e in self.events],
         }
 
@@ -325,6 +329,11 @@ class RunHandle:
             args=obj.get("args") or {},
             agent_results={_int_key(k): v for k, v in (obj.get("agent_results") or {}).items()},
             agent_errors={_int_key(k): v for k, v in (obj.get("agent_errors") or {}).items()},
+            agent_fingerprints={
+                _int_key(k): v
+                for k, v in (obj.get("agent_fingerprints") or {}).items()
+                if isinstance(v, str)
+            },
         )
 
 
@@ -347,6 +356,10 @@ class RunRegistry:
         # Persist live runs at most every N events (terminal state always flushes),
         # so a long fan-out run doesn't write its file on every single event.
         self._save_every = 5
+        # Runs a load found still ``running`` and failed: the restart ended them
+        # before any terminal transition could notify their chats. Drained once by
+        # :meth:`notify_runs_ended_by_restart`.
+        self._ended_by_restart: list[RunHandle] = []
 
     # --- wiring (set by the gateway at startup) ---
     def set_on_done(self, cb: Optional[OnDoneFn]) -> None:
@@ -458,6 +471,7 @@ class RunRegistry:
         result: Any,
         ok: bool = True,
         error: str = "",
+        fingerprint: str = "",
     ) -> None:
         """Checkpoint ONE settled agent call onto the handle, as the call returns.
 
@@ -467,6 +481,11 @@ class RunRegistry:
         killed by the ceiling still holds every payload it has already paid for, the
         terminal paths read them back, and ``mark_terminal`` flushes the completed
         record to disk.
+
+        The call's ``fingerprint`` (its identity for replay, "" when it has none)
+        lands in the same step as its result, so any write that holds the result
+        also holds the fingerprint, and a rerun of a run that a gateway restart
+        interrupted can still replay that call.
 
         Deliberately does NOT force a store write of its own. ``store.save``
         re-serializes and re-redacts the ENTIRE run record, so writing once per
@@ -482,6 +501,8 @@ class RunRegistry:
         if h is None:
             return
         h.agent_results[call_index] = result
+        if fingerprint:
+            h.agent_fingerprints[call_index] = fingerprint
         if error or not ok:
             h.agent_errors[call_index] = error or "agent call failed (no reason recorded)"
 
@@ -502,6 +523,19 @@ class RunRegistry:
                 self._on_done(run_id, handle.snapshot(include_events=False))
             except Exception:  # noqa: BLE001
                 pass
+
+    def notify_runs_ended_by_restart(self) -> None:
+        """Send each run a load failed for the restart its completion notice, once.
+
+        The load runs before the host can deliver a notice, so the host calls this
+        after it publishes the service. The load writes the failed status back, so
+        a later load reads the run as terminal and never collects it again. A run
+        its host reopened since the load is active and is skipped.
+        """
+        handles, self._ended_by_restart = self._ended_by_restart, []
+        for handle in handles:
+            if handle.status not in ACTIVE_STATUSES:
+                self._notify_done(handle.run_id, handle)
 
     def mark_terminal(
         self, run_id: str, status: str, *, result: Any = None, error: Optional[str] = None
@@ -665,6 +699,7 @@ class RunRegistry:
             # survive the writeback.
             if obj.get("status") == STATUS_RUNNING:
                 self._persist(handle)
+                self._ended_by_restart.append(handle)
         self._evict()
         return loaded
 
@@ -700,6 +735,7 @@ class RunRegistry:
                 loaded += 1
                 if obj.get("status") == STATUS_RUNNING:
                     await self.persist_async(handle.run_id)
+                    self._ended_by_restart.append(handle)
             # Same oldest-terminal eviction as the sync API, but await deletion
             # through the per-run write queue instead of doing disk I/O on-loop.
             await self._evict_async()

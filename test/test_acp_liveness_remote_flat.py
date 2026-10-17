@@ -1,10 +1,11 @@
 """The remote_flat tag: an MCP tool blocked on its own remote call.
 
-Oracle side: a genuinely flat tool subtree in which a TOOL-side process (not
-the kiro-cli runtime, and not the sandbox launcher's kiro-cli child) holds an
-established TCP connection is tagged ``remote_flat``. Watchdog side: that tag
-narrows the UNKNOWN window to ``watchdog.remote_flat_probe_secs``, measured from
-the later of the last own frame and the last WORKING reading.
+Oracle side: a genuinely flat tool subtree in which the in-flight tool's OWN MCP
+server (the one process launched as the server the call names, or a process
+below it) holds an established TCP connection is tagged ``remote_flat``; a
+sibling server's or a shell tunnel's connection never is. Watchdog side: that
+tag narrows the UNKNOWN window to ``watchdog.remote_flat_probe_secs``, measured
+from the later of the last own frame and the last WORKING reading.
 """
 
 from __future__ import annotations
@@ -31,14 +32,21 @@ from kiro_crew.acp.liveness import (
     LivenessOracle,
     ProcessRow,
     ToolCallState,
+    launch_matches,
 )
+from kiro_crew.acp.mcp_session_report import BUCKET_CAP, NAME_CAP
 from kiro_crew.acp.session_handle import (
+    _LAUNCH_MAX_ARGS,
+    _LAUNCH_MAX_TOKEN,
+    _LAUNCHES_PER_SERVER,
     AcpSessionHandle,
     WatchdogSettings,
     _watchdog_evidence_class,
+    mcp_launch_roster,
 )
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.config.loader import WatchdogConfig
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 # ── Oracle: /proc ────────────────────────────────────────────────────────────
 
@@ -59,15 +67,24 @@ def _set_tcp(fake: FakeProc, pid: int, inodes: list[str], peer: str = _REMOTE_PE
     (d / "tcp6").write_text(header)
 
 
-def _oracle(fake, clock, sample_min: float = 3.0, tenancy=lambda: 1) -> LivenessOracle:
+# The server every single-server tree below runs, as its session launched it.
+_SERVER = "remote"
+_ROSTER = {_SERVER: (("node", "mcp-server.js"),)}
+
+
+def _oracle(fake, clock, sample_min: float = 3.0, launches=lambda: _ROSTER) -> LivenessOracle:
     return LivenessOracle(
-        str(fake.root), now=clock, sample_min_secs=sample_min, socket_tenancy=tenancy
+        str(fake.root), now=clock, sample_min_secs=sample_min, server_launches=launches
     )
 
 
-def _mcp_tool(clock: _Clock, tool_name: str = "") -> ToolCallState:
+def _mcp_tool(clock: _Clock, tool_name: str = "", server: str = _SERVER) -> ToolCallState:
     return ToolCallState(
-        title="ReadInternalWebsites", command="{}", dispatch_ts=clock.t, tool_name=tool_name
+        title="ReadInternalWebsites",
+        command="{}",
+        dispatch_ts=clock.t,
+        tool_name=tool_name,
+        mcp_server_name=server,
     )
 
 
@@ -197,26 +214,31 @@ def _raises() -> int:
 
 
 @requires_symlinks
-def test_the_same_tree_with_a_sole_tenant_is_tagged(tmp_path):
+def test_the_same_tree_with_a_declared_roster_is_tagged(tmp_path):
     clock = _Clock()
     oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0)
 
     _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
 
     assert evidence.startswith(EVIDENCE_REMOTE_FLAT)
+    assert "own server (pid 300)" in evidence
+
+
+def _not_a_mapping():
+    return [("remote", ("node", "mcp-server.js"))]
 
 
 @requires_symlinks
 @pytest.mark.parametrize(
-    "tenancy",
-    [None, lambda: 2, lambda: 0, _raises],
-    ids=["undeclared", "co-tenant", "unreadable-count", "probe-raises"],
+    "launches",
+    [None, lambda: None, _raises, _not_a_mapping, lambda: {}],
+    ids=["undeclared", "declared-off", "probe-raises", "not-a-mapping", "empty"],
 )
-def test_remote_flat_needs_a_declared_sole_tenant(tmp_path, tenancy):
-    """The scan reads the whole tree, so a co-tenant's (or a riding subagent's)
-    remote call must not shorten this session's window."""
+def test_remote_flat_needs_a_declared_launch_roster(tmp_path, launches):
+    """Without a roster the tool's own server cannot be found, so no socket in
+    the tree may shorten the window."""
     clock = _Clock()
-    oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0, tenancy=tenancy)
+    oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0, launches=launches)
 
     _, (verdict, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
 
@@ -225,65 +247,323 @@ def test_remote_flat_needs_a_declared_sole_tenant(tmp_path, tenancy):
     assert evidence.startswith("mcp subtree flat")
 
 
-def test_handle_declares_its_runtime_tenancy():
-    rt = MagicMock()
-    rt._session_queues = {"sA": object(), "sB": object()}
-    rt._session_inits_in_flight = 1
-    handle = AcpSessionHandle(
-        "sA", asyncio.Queue(), rt, watchdog=WatchdogSettings(remote_flat_probe_secs=900.0)
+@requires_symlinks
+@pytest.mark.parametrize("server", ["", "unlisted"], ids=["untrusted-identity", "unknown-server"])
+def test_remote_flat_needs_the_call_to_name_a_listed_server(tmp_path, server):
+    """No trusted server name (fail-closed identity) or a name the roster does
+    not launch: there is no subtree to read, so the full window holds."""
+    clock = _Clock()
+    oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock, server=server))
+
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+
+def _two_server_tree(tmp_path) -> FakeProc:
+    """kiro-cli (100) runs server ``keepalive`` (300) and server ``quiet`` (400).
+
+    Only ``keepalive`` holds a remote connection, as a persistent keepalive or an
+    ``mcp-remote`` bridge does for its whole life.
+    """
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[300, 400], io_bytes=1000)
+    fake.add_socket_fd(100, 7, "111")  # kiro-cli's own model connection
+    fake.set_net_tcp(100, ["111"])
+    fake.add_pid(300, cmdline="node keepalive.js", io_bytes=2000)
+    fake.add_socket_fd(300, 9, "555")
+    _set_tcp(fake, 300, ["555"])
+    fake.add_pid(400, cmdline="node quiet.js", io_bytes=3000)
+    fake.set_net_tcp(400, [])
+    return fake
+
+
+_TWO_SERVERS = {"keepalive": (("node", "keepalive.js"),), "quiet": (("node", "quiet.js"),)}
+
+
+@requires_symlinks
+def test_another_servers_persistent_connection_does_not_tag_a_quiet_tool(tmp_path):
+    """The case that kept the window off: server A holds a remote connection
+    while server B's quiet tool runs. B's call must keep its full window."""
+    clock = _Clock()
+    fake = _two_server_tree(tmp_path)
+    oracle = _oracle(fake, clock, sample_min=1.0, launches=lambda: _TWO_SERVERS)
+
+    _, (verdict, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock, server="quiet"))
+
+    assert verdict == VERDICT_UNKNOWN
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+    assert evidence.startswith("mcp subtree flat")
+
+
+@requires_symlinks
+def test_the_holding_servers_own_quiet_tool_is_tagged(tmp_path):
+    """Same tree, but the quiet call is A's own: that is the remote-call shape."""
+    clock = _Clock()
+    fake = _two_server_tree(tmp_path)
+    oracle = _oracle(fake, clock, sample_min=1.0, launches=lambda: _TWO_SERVERS)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock, server="keepalive"))
+
+    assert evidence.startswith(EVIDENCE_REMOTE_FLAT)
+    assert "pid 300" in evidence
+
+
+@requires_symlinks
+def test_a_shell_tunnel_elsewhere_in_the_tree_does_not_tag_a_quiet_tool(tmp_path):
+    """A background tunnel a shell tool left running is not the server's call."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[300, 500], io_bytes=1000)
+    fake.add_socket_fd(100, 7, "111")
+    fake.set_net_tcp(100, ["111"])
+    fake.add_pid(300, cmdline="node mcp-server.js", io_bytes=2000)
+    fake.set_net_tcp(300, [])
+    fake.add_pid(500, cmdline="ssh -N -L 9000:db:5432 bastion", io_bytes=4000)
+    fake.add_socket_fd(500, 3, "777")
+    _set_tcp(fake, 500, ["777"])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
+
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+
+@requires_symlinks
+def test_a_connection_below_the_server_counts_and_names_the_server(tmp_path):
+    """A launcher that starts a versioned copy of itself as its child matches
+    twice: the topmost match is the server, and its child's connection
+    is the server's call."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[300], io_bytes=1000)
+    fake.add_socket_fd(100, 7, "111")
+    fake.set_net_tcp(100, ["111"])
+    fake.add_pid(300, cmdline="/opt/bin/tool mcp serve x", children=[310], io_bytes=10)
+    fake.set_net_tcp(300, [])
+    fake.add_pid(310, cmdline="/opt/tool/1.2/tool mcp serve x", children=[320], io_bytes=20)
+    fake.set_net_tcp(310, [])
+    fake.add_pid(320, cmdline="/opt/x/server", io_bytes=30)
+    fake.add_socket_fd(320, 4, "888")
+    _set_tcp(fake, 320, ["888"])
+    roster = {"x": (("/opt/bin/tool", "mcp", "serve", "x"),)}
+    oracle = _oracle(fake, clock, sample_min=1.0, launches=lambda: roster)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock, server="x"))
+
+    assert evidence.startswith(EVIDENCE_REMOTE_FLAT)
+    assert "pid 320" in evidence and "own server (pid 300)" in evidence
+
+
+@requires_symlinks
+def test_a_second_copy_of_the_server_is_not_attributable(tmp_path):
+    """Two processes launched the same way are two sessions' (or a subagent's)
+    copies; which one serves this call is unknowable, so nothing is tagged."""
+    clock = _Clock()
+    fake = _remote_call_tree(tmp_path)
+    fake.add_pid(100, children=[300, 301], io_bytes=1000)
+    fake.add_pid(301, cmdline="node mcp-server.js", io_bytes=5000)
+    fake.set_net_tcp(301, [])
+    oracle = _oracle(fake, clock, sample_min=1.0)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
+
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+
+@requires_symlinks
+def test_a_process_that_fits_two_servers_is_not_attributable(tmp_path):
+    clock = _Clock()
+    roster = {_SERVER: (("node", "mcp-server.js"),), "twin": (("/usr/bin/node", "mcp-server.js"),)}
+    oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0, launches=lambda: roster)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
+
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+
+@requires_symlinks
+def test_the_roster_is_read_at_verdict_time(tmp_path):
+    """A resumed session re-declares its servers; the next probe reads the new
+    roster rather than the one the oracle was built with."""
+    clock = _Clock()
+    current: dict = {}
+    oracle = _oracle(_remote_call_tree(tmp_path), clock, sample_min=1.0, launches=lambda: current)
+    tool = _mcp_tool(clock)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, tool)
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+    current.update(_ROSTER)
+    clock.advance(2.0)
+    _, evidence = oracle.check_tool(100, tool)
+    assert evidence.startswith(EVIDENCE_REMOTE_FLAT)
+    assert oracle.fresh()._launch_roster() == _ROSTER
+
+
+# ── Launch matching and the roster ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "cmdline, launch, expected",
+    [
+        ("node srv.js --port 1", ("node", "srv.js", "--port", "1"), True),  # as launched
+        ("/usr/bin/node srv.js", ("node", "srv.js"), True),  # PATH-resolved
+        ("/opt/bin/artifactory-mcp", ("artifactory-mcp",), True),  # no args
+        ("/usr/bin/python3 /opt/bin/tool serve", ("/opt/bin/tool", "serve"), True),  # #! line
+        ("/bin/sh /opt/bin/tool serve", ("tool", "serve"), True),  # #! via PATH
+        ("node srv.js --port 2", ("node", "srv.js", "--port", "1"), False),  # other args
+        ("node srv.js", ("node", "srv.js", "--port", "1"), False),  # args missing
+        ("node other.js", ("node", "srv.js"), False),
+        # A launcher that execs into a different argv is not recognized.
+        ("/lib/ld.so --library-path /x /x/python -m pkg serve", ("/opt/bin/pkg", "serve"), False),
+        ("/opt/My App/bin/srv --x", ("/opt/My App/bin/srv", "--x"), True),  # exact only
+        ("/other/My App/bin/srv --x", ("/opt/My App/bin/srv", "--x"), False),
+        ("", ("node", "srv.js"), False),
+        ("node srv.js", (), False),
+    ],
+)
+def test_launch_matches(cmdline, launch, expected):
+    assert launch_matches(cmdline, launch) is expected
+
+
+def test_launch_roster_reads_the_spec_and_the_wire_array():
+    spec = {
+        "mcpServers": {
+            "builder": {"command": "/opt/bin/builder", "args": ["--tags", "a,b"]},
+            "bare": {"command": "artifactory-mcp"},
+            "remote-http": {"url": "https://example.invalid/mcp"},
+            "bad-args": {"command": "x", "args": [1, 2]},
+            "no-command": {"args": ["x"]},
+            "shared": {"command": "kc", "args": ["mcp-core"]},
+        }
+    }
+    wire = [
+        {"name": "shared", "type": "stdio", "command": "/py", "args": ["-m", "stub"], "env": []},
+        {"name": "shared", "type": "stdio", "command": "kc", "args": ["mcp-core"], "env": []},
+        {"name": "sse", "type": "sse", "url": "http://127.0.0.1:1/sse", "headers": []},
+        "not-an-element",
+    ]
+
+    roster, refused = mcp_launch_roster(spec, wire)
+
+    assert roster == {
+        "builder": (("/opt/bin/builder", "--tags", "a,b"),),
+        "bare": (("artifactory-mcp",),),
+        # Both sources stay, once each: which one the host launched is its call.
+        "shared": (("kc", "mcp-core"), ("/py", "-m", "stub")),
+    }
+    # Remote and malformed entries have no launch to bound: not refusals.
+    assert refused == 0
+
+
+@pytest.mark.parametrize(
+    "spec, wire",
+    [(None, None), ("spec", 7), ({"mcpServers": ["x"]}, {"name": "x"}), ({"mcpServers": None}, [])],
+)
+def test_launch_roster_of_malformed_input_is_empty(spec, wire):
+    assert mcp_launch_roster(spec, wire) == ({}, 0)
+
+
+def test_launch_roster_bounds_its_server_count_and_says_so():
+    spec = {"mcpServers": {f"s{i}": {"command": f"c{i}"} for i in range(BUCKET_CAP + 7)}}
+
+    roster, refused = mcp_launch_roster(spec, None)
+
+    assert len(roster) == BUCKET_CAP
+    assert refused == 7
+
+
+@pytest.mark.parametrize(
+    "name, entry",
+    [
+        ("n" * (NAME_CAP + 1), {"command": "node"}),
+        ("argc", {"command": "node", "args": ["a"] * (_LAUNCH_MAX_ARGS + 1)}),
+        ("long-arg", {"command": "node", "args": ["a" * (_LAUNCH_MAX_TOKEN + 1)]}),
+        ("long-command", {"command": "/" + "c" * _LAUNCH_MAX_TOKEN}),
+    ],
+    ids=["name", "arg-count", "arg-length", "command-length"],
+)
+def test_launch_roster_refuses_an_oversized_entry_whole(name, entry):
+    """A retained field past its bound refuses the entry outright: a truncated
+    argv would match some other process, or none, so nothing of it is kept."""
+    roster, refused = mcp_launch_roster({"mcpServers": {name: entry, "ok": {"command": "x"}}}, None)
+
+    assert roster == {"ok": (("x",),)}
+    assert refused == 1
+
+
+def test_launch_roster_bounds_launches_per_server():
+    wire = [{"name": "srv", "command": f"c{i}"} for i in range(_LAUNCHES_PER_SERVER + 2)]
+
+    roster, refused = mcp_launch_roster(None, wire)
+
+    assert len(roster["srv"]) == _LAUNCHES_PER_SERVER
+    assert refused == 2
+
+
+def test_recording_a_refused_entry_is_logged_once(caplog):
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=WatchdogSettings())
+    spec = {"mcpServers": {f"s{i}": {"command": f"c{i}"} for i in range(BUCKET_CAP + 3)}}
+
+    with caplog.at_level("WARNING", logger="kiro_crew.acp.session_handle"):
+        handle.record_mcp_launches(spec, None)
+
+    warnings = [r for r in caplog.records if "past the roster bounds" in r.getMessage()]
+    assert len(warnings) == 1
+    assert " 3 MCP server launch" in warnings[0].getMessage()
+
+
+# ── Handle: what it declares to the oracle ───────────────────────────────────
+
+
+def _on() -> WatchdogSettings:
+    return WatchdogSettings(remote_flat_probe_secs=900.0)
+
+
+def test_handle_declares_its_launch_roster_while_the_window_is_on():
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=_on())
+    assert handle._oracle._launch_roster() == {}
+
+    handle.record_mcp_launches(
+        {"mcpServers": {"srv": {"command": "node", "args": ["srv.js"]}}},
+        [{"name": "core", "command": "kc", "args": ["mcp-core"]}],
     )
 
-    assert handle._runtime_tenancy() == 3
-    assert handle._oracle._socket_tenancy() == 3
-    assert handle._oracle.fresh()._socket_tenancy() == 3
+    expected = {"srv": (("node", "srv.js"),), "core": (("kc", "mcp-core"),)}
+    assert handle._oracle._launch_roster() == expected
+    assert handle._oracle.fresh()._launch_roster() == expected
 
-    rt._session_queues = {"sA": object()}
-    rt._session_inits_in_flight = 0
-    assert handle._oracle._socket_tenancy() == 1
+    # session/load re-declares the servers: the roster is replaced, not merged.
+    handle.record_mcp_launches(None, [])
+    assert handle._oracle._launch_roster() == {}
 
 
-def test_handle_declares_no_socket_tenancy_while_the_window_is_off():
+def test_handle_declares_no_roster_while_the_window_is_off():
     """Off by default means no tag at all: the evidence and metric bucket stay put."""
-    rt = MagicMock()
-    rt._session_queues = {"sA": object()}
-    rt._session_inits_in_flight = 0
-    handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=WatchdogSettings())
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=WatchdogSettings())
+    handle.record_mcp_launches({"mcpServers": {"srv": {"command": "node"}}}, None)
 
-    assert handle._runtime_tenancy() == 1
-    assert handle._oracle._socket_tenancy() is None
+    assert handle._oracle._launch_roster() is None
 
-    handle._watchdog = WatchdogSettings(remote_flat_probe_secs=900.0)
-    assert handle._oracle._socket_tenancy() == 1
+    handle._watchdog = _on()
+    assert handle._oracle._launch_roster() == {"srv": (("node",),)}
 
 
-def test_handle_counts_an_unsettled_start_as_a_tenant():
-    """A timed-out session/new still owns a tree after its init scope closes."""
-    rt = MagicMock()
-    rt._session_queues = {"sA": object()}
-    rt._session_inits_in_flight = 0
-    rt._start_collectors = {7: object()}
-    handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=WatchdogSettings())
+def test_recording_the_roster_never_raises(monkeypatch):
+    """The runtime calls this on session establishment: a failure must cost the
+    narrowing, never the session."""
+    from kiro_crew.acp import session_handle as session_handle_mod
 
-    assert handle._runtime_tenancy() == 2
+    def _boom(*_a):
+        raise RuntimeError("unreadable")
 
-    rt._start_collectors = {}
-    assert handle._runtime_tenancy() == 1
+    monkeypatch.setattr(session_handle_mod, "mcp_launch_roster", _boom)
+    handle = AcpSessionHandle("sA", asyncio.Queue(), MagicMock(), watchdog=_on())
 
+    handle.record_mcp_launches({"mcpServers": {}}, [])
 
-def test_tenancy_reads_the_real_runtime_session_tables():
-    """Pins the three AcpRuntime attributes the count reads, so a rename there
-    cannot silently fall back to a default that reads as a sole tenant."""
-    from kiro_crew.acp.runtime import AcpRuntime
-
-    rt = AcpRuntime()
-    handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=WatchdogSettings())
-    assert handle._runtime_tenancy() == 0
-
-    rt._session_queues["sA"] = asyncio.Queue()
-    rt._session_queues["sB"] = asyncio.Queue()
-    rt._session_inits_in_flight += 1
-    rt._start_collectors[7] = object()  # type: ignore[assignment]
-    assert handle._runtime_tenancy() == 4
+    assert handle._oracle._launch_roster() == {}
 
 
 def test_handle_leaves_the_model_wait_tenancy_undeclared():
@@ -296,11 +576,86 @@ def test_handle_leaves_the_model_wait_tenancy_undeclared():
     assert handle._oracle._shared_tree_reason() == ""
 
 
-def test_handle_without_a_session_table_is_unreadable():
-    rt = MagicMock(spec=["pid"])
-    handle = AcpSessionHandle("sA", asyncio.Queue(), rt, watchdog=WatchdogSettings())
+def test_every_runtime_roster_handoff_records_the_launches():
+    """Both runtime establishment paths (session/new, session/load), held by
+    structure: where the wire array is final, the handle is told how its servers
+    were launched, from the same spec and the same array the guard reads."""
+    import inspect
 
-    assert handle._runtime_tenancy() is None
+    from kiro_crew.acp import runtime as runtime_mod
+
+    lines = inspect.getsource(runtime_mod).splitlines()
+    handoffs = [i for i, ln in enumerate(lines) if ".begin_session(" in ln]
+    assert len(handoffs) == 2, "a runtime session-establishment path was added or removed"
+    for i in handoffs:
+        roster = lines[i].split(".begin_session(", 1)[1].rstrip(")").strip()
+        window = [ln.strip() for ln in lines[i + 1 : i + 8]]
+        assert (
+            f"handle.record_mcp_launches(ref_spec, {roster})" in window
+        ), f"line {i} hands over a final roster and never records its launches"
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_session_records_the_spec_and_wire_launches():
+    """A real runtime session/new: the roster holds the spec's own servers and the
+    array that reached the wire, not the pre-filter one."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    from kiro_crew.acp.runtime import AcpRuntime, _MirroredSessionMcp
+    from kiro_crew.acp.types import ACP_BACKEND_CODEX
+
+    rt = AcpRuntime(work_dir="/tmp", acp_backend=ACP_BACKEND_CODEX, expect_mcp_reports=False)
+    proc = MagicMock()
+    proc.stdout = None
+    proc.stdin = MagicMock()
+    proc.returncode = None
+    proc.pid = UNALLOCATABLE_PID
+    rt._process = proc
+    rt._pid = UNALLOCATABLE_PID
+    rt._initialized = True
+    # stdio only, so the sse element below never reaches the wire.
+    rt._agent_capabilities = {"mcpCapabilities": {"http": False, "sse": False}}
+    kept = {"name": "kept", "type": "stdio", "command": "x", "args": ["serve"], "env": []}
+    dropped = {"name": "dropped", "type": "sse", "url": "http://127.0.0.1:1/sse", "headers": []}
+    spec = {"tools": ["@kept"], "mcpServers": {"own": {"command": "node", "args": ["own.js"]}}}
+
+    async def _send_and_await(method, params, timeout=None):
+        if method == "session/new":
+            return {
+                "sessionId": "sid-1",
+                "modes": {"currentModeId": "agent"},
+                "configOptions": [
+                    {"id": "mode", "options": [{"value": "read-only"}, {"value": "agent"}]}
+                ],
+            }
+        return {}
+
+    async def _send_request(method, params, **_kw):
+        return 999
+
+    async def _wait_for_response(_self, req_id, timeout=None):
+        return {}
+
+    async def _mirrored(*_a, **_k):
+        return _MirroredSessionMcp(
+            servers=[kept, dropped],
+            denied_tools=frozenset(),
+            stub_token="",
+            derived_spec_snapshot=None,
+            ref_spec=spec,
+        )
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(rt, "_send_and_await", _send_and_await))
+        stack.enter_context(patch.object(rt, "send_request", _send_request))
+        stack.enter_context(
+            patch.object(AcpSessionHandle, "_wait_for_response", _wait_for_response)
+        )
+        stack.enter_context(patch.object(rt, "_mirrored_session_mcp", _mirrored))
+        handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+    assert handle._mcp_launches == {"own": (("node", "own.js"),), "kept": (("x", "serve"),)}
 
 
 @requires_symlinks
@@ -315,7 +670,8 @@ def test_loopback_peer_is_not_a_remote_call(tmp_path):
     fake.add_pid(300, cmdline="python -m kiro_crew.mcp_core", io_bytes=2000)
     fake.add_socket_fd(300, 9, "555")
     _set_tcp(fake, 300, ["555"], peer=_LOOPBACK_PEER)
-    oracle = _oracle(fake, clock, sample_min=1.0)
+    roster = {_SERVER: (("python", "-m", "kiro_crew.mcp_core"),)}
+    oracle = _oracle(fake, clock, sample_min=1.0, launches=lambda: roster)
 
     _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
 
@@ -340,22 +696,33 @@ def test_proc_loopback_hex(addr, loopback):
 
 def test_no_procfs_and_no_backend_never_tags(tmp_path):
     clock = _Clock()
-    oracle = LivenessOracle(str(tmp_path / "nonexistent"), now=clock, sample_min_secs=1.0)
-    assert oracle._tool_side_established(100) is None
+    oracle = LivenessOracle(
+        str(tmp_path / "nonexistent"),
+        now=clock,
+        sample_min_secs=1.0,
+        server_launches=lambda: _ROSTER,
+    )
+    assert oracle._own_server_remote_holder(100, _SERVER) is None
 
 
 # ── Oracle: darwin backend ──────────────────────────────────────────────────
 
 
 class _Backend:
+    """kiro-cli (100) running server ``remote`` (300) and server ``other`` (301)."""
+
     def __init__(self, tcp: dict[int, int] | None, *, with_probe: bool = True) -> None:
-        self.rows = {300: ProcessRow(pid=300, started=None, cmdline="node mcp-server.js")}
+        self.rows = {
+            300: ProcessRow(pid=300, started=None, cmdline="node mcp-server.js"),
+            301: ProcessRow(pid=301, started=None, cmdline="node other.js"),
+        }
         self.tcp = tcp or {}
         if with_probe:
             self.established_tcp = lambda pid: self.tcp.get(pid, 0)
 
     def descendants(self, root_pid: int) -> list[int] | None:
-        return [300]
+        # libproc's walk lists everything below the root, never the root itself.
+        return [300, 301] if root_pid == 100 else []
 
     def row(self, pid: int) -> ProcessRow | None:
         return self.rows.get(pid)
@@ -372,7 +739,10 @@ def _darwin_oracle(backend, clock, tmp_path) -> LivenessOracle:
         darwin_backend=backend,
         wall_now=clock,
         steady_now_fn=clock,
-        socket_tenancy=lambda: 1,
+        server_launches=lambda: {
+            _SERVER: (("node", "mcp-server.js"),),
+            "other": (("node", "other.js"),),
+        },
     )
 
 
@@ -397,6 +767,15 @@ def test_darwin_runtime_connection_alone_is_not_tagged(tmp_path):
     assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
 
 
+def test_darwin_another_servers_connection_is_not_tagged(tmp_path):
+    clock = _Clock()
+    oracle = _darwin_oracle(_Backend({100: 3, 301: 1}), clock, tmp_path)
+
+    _, (_, evidence) = _two_ticks(oracle, clock, 100, _mcp_tool(clock))
+
+    assert not evidence.startswith(EVIDENCE_REMOTE_FLAT)
+
+
 def test_darwin_backend_without_socket_probe_is_not_tagged(tmp_path):
     clock = _Clock()
     oracle = _darwin_oracle(_Backend({300: 1}, with_probe=False), clock, tmp_path)
@@ -415,8 +794,8 @@ def test_remote_flat_has_its_own_metric_bucket():
 
 
 def test_remote_flat_narrowing_is_off_by_default():
-    """The holder is not yet tied to the in-flight tool's own MCP server, so
-    the narrowing is opt-in."""
+    """Opt-in: turning it on by default ships as a new default value, so an
+    operator who already set the key keeps exactly the seconds they set."""
     assert WatchdogConfig().remote_flat_probe_secs == 0.0
     assert WatchdogSettings().remote_flat_probe_secs == 0.0
 

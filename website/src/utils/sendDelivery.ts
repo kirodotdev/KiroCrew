@@ -6,6 +6,11 @@ export interface SendReceiptBody {
   queued?: boolean
   /** A steer-flagged send was injected into the running turn. */
   steered?: boolean
+  /** A crewmate DM send's priority path (`steered`, `queued`, `cancel_requested`,
+   *  `waiting_for_input`, `stopping`, `compacting`). Informational: `ok`,
+   *  `queued` and `steered` alone decide the receipt, so `steered` here is
+   *  the same success as a steer and the steer echo owns the one bubble. */
+  responsive?: string
   /** The server-minted stable id (`meta.mid`) of the user row this send
    *  appended. Present only on a confirmed immediate dispatch; the client
    *  stamps it onto the optimistic bubble so message-pinning works before the

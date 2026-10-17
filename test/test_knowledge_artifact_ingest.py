@@ -891,6 +891,36 @@ class TestArtifactKnowledgeSync:
         assert any("arrived while off" in c for c in _contents(kstore, sid))
 
     @pytest.mark.asyncio
+    async def test_reconcile_now_runs_the_pass(
+        self, pipeline, art_store, kstore
+    ):
+        sid, _ = ensure_artifact_source(kstore)
+        art_store.create(name="Late", content="synced by hand", kind="markdown")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync.reconcile_now(sid)
+        assert any("synced by hand" in c for c in _contents(kstore, sid))
+        assert not sync._lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_reconcile_now_propagates_a_failed_pass(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The manual Sync owns the row's status, so it must see the failure
+        that the start-time pass only logs."""
+        monkeypatch.setattr(
+            artifact_ingest, "reconcile_artifacts",
+            AsyncMock(side_effect=RuntimeError("store unreadable")))
+        sid, _ = ensure_artifact_source(kstore)
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        with pytest.raises(RuntimeError, match="store unreadable"):
+            await sync.reconcile_now(sid)
+        assert not sync._lock.locked()
+
+    @pytest.mark.asyncio
     async def test_start_takes_no_db_connection_on_the_loop(
         self, pipeline, art_store, kstore, monkeypatch
     ):

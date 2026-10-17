@@ -95,15 +95,48 @@ case "$url" in
     # to -- from green_runs.json, each entry re-labelled with the lane's path
     # so the step's own `.path` select finds it. LANE_FILES is the step's
     # spec list, derived by the Runner from the workflow text.
+    # codeql_pr_runs.json is the checked-in CodeQL workflow's own runs
+    # (advanced setup), passed through with the path they carry.
     jq -cs --arg names "$LANE_FILES" '
       {workflow_runs:
         ([.[0].workflow_runs[] | .path = ".github/workflows/ci.yml"]
          + [.[1].workflow_runs[] as $r
             | ($names | split(" ")[] | select(. != "")) as $n
-            | $r | .path = ".github/workflows/" + $n])}
-    ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json"
+            | $r | .path = ".github/workflows/" + $n]
+         + .[2].workflow_runs)}
+    ' "$FIXTURES/ci_runs.json" "$FIXTURES/green_runs.json" "$FIXTURES/codeql_pr_runs.json"
     exit 0 ;;
   *"/actions/runs?event=dynamic"*)         cat "$FIXTURES/codeql_runs.json"; exit 0 ;;
+  *"/collaborators/"*"/permission"*)
+    # A reviewer's repository permission, after gh's own --jq. The fixture
+    # maps login -> permission; a login it does not name has write access.
+    # "__404__" answers "not a collaborator"; "__FAIL__" is a server error.
+    login="${url#*/collaborators/}"
+    login="${login%%/*}"
+    perm="write"
+    if [ -f "$FIXTURES/permissions.json" ]; then
+      perm="$(jq -r --arg l "$login" '.[$l] // "write"' "$FIXTURES/permissions.json")"
+    fi
+    case "$perm" in
+      __404__) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+      __FAIL__) echo 'gh: Server Error (HTTP 500)' >&2; exit 1 ;;
+    esac
+    printf '%s\n' "$perm"
+    exit 0 ;;
+  *"/pulls/"*"/reviews"*)
+    # Human reviews, as `--paginate --slurp` returns them: one array per page.
+    # No fixture = a PR nobody has reviewed. A __FAIL__ fixture makes the read
+    # fail like a server error.
+    if [ -f "$FIXTURES/reviews.json" ]; then
+      if [ "$(cat "$FIXTURES/reviews.json")" = "__FAIL__" ]; then
+        echo 'gh: Server Error (HTTP 500)' >&2
+        exit 1
+      fi
+      cat "$FIXTURES/reviews.json"
+    else
+      echo '[]'
+    fi
+    exit 0 ;;
 esac
 echo "gh stub: unhandled: $*" >&2
 exit 90
@@ -286,6 +319,9 @@ class Runner:
         (self.fixtures / "codeql_runs.json").write_text(
             _run_json("codeql", status="completed", conclusion="success")
         )
+        # The checked-in CodeQL workflow has no run by default: today's repo
+        # runs default setup only.
+        (self.fixtures / "codeql_pr_runs.json").write_text(json.dumps({"workflow_runs": []}))
         (self.fixtures / "check_runs.json").write_text(
             json.dumps(
                 {
@@ -1062,8 +1098,9 @@ class TestSameSecondRunCollapse:
         assert outputs["label"] == "readiness: passed"
 
     def test_every_collapse_site_carries_identical_logic(self):
-        # The workflow resolves runs/results at five separately-written sites: the
-        # monitored-workflow loop, the dynamic CodeQL read, the trigger-run read
+        # The workflow resolves runs/results at six separately-written sites: the
+        # monitored-workflow loop, the dynamic CodeQL read, the checked-in
+        # (advanced-setup) CodeQL read, the trigger-run read
         # that dates an attempt-bound fork check-run, and the fork check-run
         # read itself (collapsing to the newest row sharing a trigger-bound id,
         # so a human-override rerun of the lane cannot have its stale failure
@@ -1077,10 +1114,10 @@ class TestSameSecondRunCollapse:
         fragment = "| max_by(.id) // empty"
         lines = [ln.strip() for ln in script.splitlines()]
         count = lines.count(fragment)
-        assert count == 5, (
-            "expected exactly the five result-collapse sites (monitored"
-            " workflows + dynamic CodeQL + CodeQL security result + fork"
-            " trigger run + fork check-run),"
+        assert count == 6, (
+            "expected exactly the six result-collapse sites (monitored"
+            " workflows + dynamic CodeQL + checked-in CodeQL + CodeQL security"
+            " result + fork trigger run + fork check-run),"
             f" found {count}"
         )
         # No site may re-grow a filter stage between the select() and the
@@ -1622,6 +1659,144 @@ class TestDispositionViolationsBlockTheVerdict:
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "failure"
         assert outputs["description"] == "1 blocking readiness item(s)"
+
+
+def _review(login: str, state: str, commit_id: str) -> dict:
+    return {"user": {"login": login}, "state": state, "commit_id": commit_id}
+
+
+_OLD_HEAD = "0" * 40
+
+
+class TestAChangesRequestedReviewOnThisHeadBlocks:
+    """A reviewer asked for changes and nothing was pushed since: the head they
+    rejected is the head being judged, so readiness must not read green."""
+
+    def _reviews(self, runner: Runner, *pages: list[dict]) -> None:
+        (runner.fixtures / "reviews.json").write_text(json.dumps(list(pages)))
+
+    def test_changes_requested_on_the_head_turns_the_verdict_red(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", sha)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["label"] == "readiness: action required"
+        assert outputs["description"] == "1 blocking readiness item(s)"
+        assert "changes requested by @alice on this head" in _lane_log(proc)
+
+    def test_a_commit_pushed_after_the_review_clears_it(self, runner: Runner):
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", _OLD_HEAD)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert outputs["label"] == "readiness: passed"
+
+    def test_a_later_approval_by_the_same_reviewer_clears_it(self, runner: Runner):
+        # The two reviews sit on different pages, so this also proves the
+        # newest-per-reviewer fold reads across every page in order.
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [_review("alice", "CHANGES_REQUESTED", sha)],
+            [_review("alice", "APPROVED", sha)],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+
+    def test_a_dismissed_review_does_not_block(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "DISMISSED", sha)])
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+
+    def test_a_later_comment_does_not_withdraw_the_request(self, runner: Runner):
+        # GitHub keeps the request standing across a COMMENTED review, so a
+        # reply in review form must not read as the reviewer standing down.
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [
+                _review("alice", "CHANGES_REQUESTED", sha),
+                _review("alice", "COMMENTED", sha),
+            ],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+
+    def test_another_reviewers_approval_does_not_clear_it(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(
+            runner,
+            [
+                _review("alice", "CHANGES_REQUESTED", sha),
+                _review("bob", "APPROVED", sha),
+            ],
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert "@alice" in _lane_log(proc)
+        assert "@bob" not in _lane_log(proc)
+
+    def _permissions(self, runner: Runner, **by_login: str) -> None:
+        (runner.fixtures / "permissions.json").write_text(json.dumps(by_login))
+
+    @pytest.mark.parametrize("permission", ["read", "triage", "none", "__404__"])
+    def test_a_reviewer_without_write_access_does_not_block(self, runner: Runner, permission: str):
+        # Any signed-in account can review a public PR; only a writer's
+        # request counts, the bar GitHub's own review decision holds.
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("mallory", "CHANGES_REQUESTED", sha)])
+        self._permissions(runner, mallory=permission)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert outputs["label"] == "readiness: passed"
+        assert "changes requested by @mallory" not in _lane_log(proc)
+
+    @pytest.mark.parametrize("permission", ["write", "admin"])
+    def test_a_reviewer_with_write_access_blocks(self, runner: Runner, permission: str):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", sha)])
+        self._permissions(runner, alice=permission)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert "changes requested by @alice on this head" in _lane_log(proc)
+
+    def test_an_unreadable_permission_waits_instead_of_deciding(self, runner: Runner):
+        sha = runner.env["SHA"]
+        self._reviews(runner, [_review("alice", "CHANGES_REQUESTED", sha)])
+        self._permissions(runner, alice="__FAIL__")
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["description"].startswith("[read-failed] ")
+        assert "permission of reviewer @alice could not be read" in _lane_log(proc)
+
+    def test_an_unreadable_review_list_waits_instead_of_going_red(self, runner: Runner):
+        (runner.fixtures / "reviews.json").write_text("__FAIL__")
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["description"].startswith("[read-failed] ")
+        assert "human reviews could not be read" in _lane_log(proc)
+
+    @pytest.mark.parametrize("body", ['{"message": "Not Found"}', "[{}]", "not json"])
+    def test_a_body_that_is_not_a_review_list_waits_instead_of_passing(
+        self, runner: Runner, body: str
+    ):
+        # A fold that skipped what it could not read would find no blocker and
+        # publish green over a head nobody's reviews were read for.
+        (runner.fixtures / "reviews.json").write_text(body)
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "human reviews could not be read" in _lane_log(proc)
 
 
 class TestTheTickReportsItsRemainingBudget:

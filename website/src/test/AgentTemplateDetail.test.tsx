@@ -33,7 +33,7 @@ const mockApi = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: mockApi }))
 
 import AgentTemplateDetail from '../components/crew/AgentTemplateDetail'
-import { ApiError } from '../api/apiError'
+import { ApiError, friendlyErrText } from '../api/apiError'
 
 const DENIED = Array.from({ length: 11 }, (_, i) => `denied-${i}`)
 const FIELD_LABEL = 'Agent Template'
@@ -550,6 +550,75 @@ describe('blueprint semantics — fork on first edit', () => {
 
     await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { model: 'sonnet' }))
     expect(mockApi.agentFork).not.toHaveBeenCalled()
+  })
+})
+
+describe('a refused model save', () => {
+  const SAVE_FAILED = 'That change didn’t save — try again.'
+
+  /** The ApiError the client throws for a failed response: the body's human
+   *  message when it has one, else `HTTP <status>`. */
+  const clientError = (status: number, body: string) =>
+    new ApiError(status, friendlyErrText(status, body) || `HTTP ${status}`, body)
+
+  /** Pick a model on the own copy with the save rejected by `err`; resolves to
+   *  the notice that renders. */
+  const refusedPick = async (err: unknown) => {
+    mockApi.agentsInstalled.mockResolvedValue(OWN_COPY_INSTALLED)
+    detailsByName({
+      'atlas-crewA': { name: 'atlas-crewA', model: 'opus', skills: [] },
+      atlas: { name: 'atlas', model: 'opus', skills: [] },
+    })
+    mockApi.agentPatch.mockRejectedValue(err)
+    renderPane({ template: 'atlas-crewA', crew: 'crewA' })
+
+    await screen.findByRole('combobox', { name: 'Model' })
+    await pickModel('sonnet')
+    return screen.findByRole('alert')
+  }
+
+  it('leads with the generic line and follows it with the server\'s reason', async () => {
+    // The refusal's `error` text names the remedy; the generic line still says
+    // the pick did not save.
+    const reason = "'atlas-crewA' matches more than one template file; rename one first."
+    const alert = await refusedPick(
+      clientError(409, JSON.stringify({ error: reason, code: 'ambiguous_template_name' })),
+    )
+
+    expect(within(alert).getByText(SAVE_FAILED).tagName).toBe('STRONG')
+    expect(within(alert).getByText(reason)).toBeInTheDocument()
+  })
+
+  it('keeps the generic line when the save never reached the server', async () => {
+    // A dropped connection rejects with the browser's own English text, which
+    // names no remedy and does not say the pick was lost.
+    const alert = await refusedPick(new TypeError('Failed to fetch'))
+
+    expect(alert).toHaveTextContent(SAVE_FAILED)
+    expect(alert).not.toHaveTextContent('Failed to fetch')
+  })
+
+  it('keeps the generic line alone for a 5xx with a plain-text body', async () => {
+    // A bare server crash page names no remedy.
+    const alert = await refusedPick(clientError(500, '500 Internal Server Error\n\nServer got itself in trouble'))
+
+    expect(alert.textContent).toBe(SAVE_FAILED)
+  })
+
+  it('keeps the generic line alone for a body-less 4xx', async () => {
+    // The client's own `HTTP 404` fallback is not a reason.
+    const alert = await refusedPick(clientError(404, ''))
+
+    expect(alert.textContent).toBe(SAVE_FAILED)
+  })
+
+  it('keeps the generic line alone when the refusal\'s error is only its code', async () => {
+    // A refusal whose `error` repeats its `code` carries an identifier, not a sentence.
+    const alert = await refusedPick(
+      clientError(409, JSON.stringify({ error: 'source_unreadable', code: 'source_unreadable' })),
+    )
+
+    expect(alert.textContent).toBe(SAVE_FAILED)
   })
 })
 

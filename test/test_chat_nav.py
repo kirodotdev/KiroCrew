@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-import pytest
+import asyncio
+from types import SimpleNamespace
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from kiro_crew.acp.types import STOP_REASON_END_TURN
+from kiro_crew.dashboard import chat_nav
 from kiro_crew.dashboard.chat_nav import (
     _build_link_summary_prompt,
     _normalize_link,
     _resolve_link_summaries,
 )
+from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 
 
 class TestBuildLinkSummaryPrompt:
@@ -608,3 +616,190 @@ class TestApiEndpointResilience:
             assert resp.status == 200
             data = await resp.json()
             assert data["summaries"] == [""]
+
+
+class _GatedBgSessions:
+    """Background sessions whose answer waits for ``release``; counts acquisitions."""
+
+    def __init__(self, answer: str = "Docs page") -> None:
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()  # set when a background call starts
+        self.acquired = 0
+        self.destroyed = 0
+        self.prompts: list[str] = []
+        self._answer = answer
+
+    async def get_bg_session(self, start_priority=None):
+        self.acquired += 1
+        self.started.set()
+        owner = self
+
+        class _Session:
+            served_model = "fake-model"
+
+            async def set_model(self, model):
+                return None
+
+            async def prompt(self, text, allow_image=False):
+                owner.prompts.append(text)
+                await asyncio.wait_for(owner.release.wait(), 5.0)
+                yield SimpleNamespace(kind=EVENT_TEXT_CHUNK, text=owner._answer)
+                yield SimpleNamespace(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+            async def destroy(self):
+                owner.destroyed += 1
+
+        return _Session()
+
+
+def _nav_app(sessions) -> web.Application:
+    app = web.Application(client_max_size=8 * 1024 * 1024)
+    app["state"] = SimpleNamespace(sessions=sessions)
+    app.router.add_post("/api/chat/nav/resolve-links", chat_nav.api_chat_nav_resolve_links)
+    return app
+
+
+async def _within(awaitable, what: str, ceiling: float = 5.0):
+    """Await *awaitable*; fail with *what* if it has not finished within *ceiling* seconds."""
+    try:
+        return await asyncio.wait_for(awaitable, ceiling)
+    except TimeoutError:
+        pytest.fail(f"{what} did not happen within {ceiling:.0f} s")
+
+
+async def _until(done, what: str, ceiling: float = 5.0) -> None:
+    """Poll *done* until it holds; fail with *what* if it does not within *ceiling* seconds."""
+    try:
+        async with asyncio.timeout(ceiling):
+            while not done():
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"{what} did not happen within {ceiling:.0f} s")
+
+
+def _count_shared_call_entries(monkeypatch) -> list[int]:
+    """Count the requests that reached ``_shared_link_summaries``.
+
+    It decides whether to join a running call or start one before its first await,
+    so once every request has entered it, no further call can start.
+    """
+    original = chat_nav._shared_link_summaries
+    entered = [0]
+
+    async def _counting(state, links):
+        entered[0] += 1
+        return await original(state, links)
+
+    monkeypatch.setattr(chat_nav, "_shared_link_summaries", _counting)
+    return entered
+
+
+class TestLinkLabelInFlight:
+    @pytest.mark.asyncio
+    async def test_identical_requests_share_one_call(self, monkeypatch):
+        entered = _count_shared_call_entries(monkeypatch)
+        sessions = _GatedBgSessions()
+        body = {"links": [{"url": "https://example.com/docs", "context": "docs"}]}
+        async with TestClient(TestServer(_nav_app(sessions))) as client:
+            posts = [
+                asyncio.ensure_future(client.post("/api/chat/nav/resolve-links", json=body))
+                for _ in range(5)
+            ]
+            await _within(sessions.started.wait(), "the background call starting")
+            await _until(lambda: entered[0] == 5, "all 5 requests reaching the shared call")
+            acquired_while_waiting = sessions.acquired
+            sessions.release.set()
+            replies = [await (await p).json() for p in posts]
+        assert acquired_while_waiting == 1, (
+            f"{acquired_while_waiting} background calls ran for 5 identical requests"
+        )
+        assert replies == [{"summaries": ["Docs page"]}] * 5
+        assert getattr(chat_nav, "_LINK_SUMMARY_INFLIGHT", {}) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_single_request_is_not_delayed(self):
+        # The gate is open before the request, so the call runs at once and the
+        # request completes without waiting on any other request: one acquire,
+        # one destroy, and the reply is the summary. No wall-clock bound is
+        # asserted; a join that waited would show as a second acquire or a
+        # reply that never comes (the test's own `_within` ceiling).
+        sessions = _GatedBgSessions()
+        sessions.release.set()
+        body = {"links": [{"url": "https://example.com/docs", "context": "docs"}]}
+        async with TestClient(TestServer(_nav_app(sessions))) as client:
+            reply = await _within(
+                (await client.post("/api/chat/nav/resolve-links", json=body)).json(),
+                "a single request completing",
+            )
+        assert reply == {"summaries": ["Docs page"]}
+        assert sessions.acquired == sessions.destroyed == 1
+
+    @pytest.mark.asyncio
+    async def test_an_inflight_entry_holds_only_the_bounded_fields(self, monkeypatch):
+        url_max = getattr(chat_nav, "_LINK_URL_MAX", 500)
+        ctx_max = getattr(chat_nav, "_LINK_CONTEXT_MAX", 300)
+        original = chat_nav._resolve_link_summaries
+        call_inputs: list[list[dict]] = []
+
+        async def _spy(state, links):
+            call_inputs.append(links)
+            return await original(state, links)
+
+        monkeypatch.setattr(chat_nav, "_resolve_link_summaries", _spy)
+        sessions = _GatedBgSessions()
+        body = {"links": [{"url": _LONG_URL, "context": "c" * (1024 * 1024)}]}
+        async with TestClient(TestServer(_nav_app(sessions))) as client:
+            post = asyncio.ensure_future(client.post("/api/chat/nav/resolve-links", json=body))
+            await _within(sessions.started.wait(), "the background call starting")
+            key_chars = [
+                sum(len(u) + len(c) for u, c in key) for key in chat_nav._LINK_SUMMARY_INFLIGHT
+            ]
+            input_chars = [
+                sum(len(link["url"]) + len(link["context"]) for link in links)
+                for links in call_inputs
+            ]
+            sessions.release.set()
+            assert (await (await post).json()) == {"summaries": ["Docs page"]}
+        assert key_chars and max(key_chars) <= url_max + ctx_max, (
+            f"an in-flight key holds {max(key_chars)} chars of a 2 MiB request"
+        )
+        assert input_chars and max(input_chars) <= url_max + ctx_max, (
+            f"the shared call holds {max(input_chars)} chars of a 2 MiB request"
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_identical_long_requests_share_one_call(self, monkeypatch):
+        entered = _count_shared_call_entries(monkeypatch)
+        sessions = _GatedBgSessions()
+        body = {"links": [{"url": _LONG_URL, "context": "docs"}]}
+        async with TestClient(TestServer(_nav_app(sessions))) as client:
+            posts = [
+                asyncio.ensure_future(client.post("/api/chat/nav/resolve-links", json=body))
+                for _ in range(2)
+            ]
+            await _within(sessions.started.wait(), "the background call starting")
+            await _until(lambda: entered[0] == 2, "both requests reaching the shared call")
+            acquired_while_waiting = sessions.acquired
+            sessions.release.set()
+            replies = [await (await p).json() for p in posts]
+        assert acquired_while_waiting == 1
+        assert replies == [{"summaries": ["Docs page"]}] * 2
+
+    @pytest.mark.asyncio
+    async def test_labels_for_a_long_url_line_up_with_the_request(self):
+        sessions = _GatedBgSessions(answer="Long page\nShort page")
+        sessions.release.set()
+        body = {
+            "links": [
+                {"url": _LONG_URL, "context": "a long one"},
+                {"url": "https://example.com/short", "context": "a short one"},
+            ]
+        }
+        async with TestClient(TestServer(_nav_app(sessions))) as client:
+            reply = await (await client.post("/api/chat/nav/resolve-links", json=body)).json()
+        assert reply == {"summaries": ["Long page", "Short page"]}
+        assert sessions.prompts and _LONG_URL[:500] in sessions.prompts[0]
+        assert _LONG_URL[:501] not in sessions.prompts[0]
+
+
+_LONG_URL = "https://example.com/" + "a" * (1024 * 1024)

@@ -9,6 +9,7 @@ import type { ComputerUseConfigData, ComputerUseConfigSave } from '../../api/cli
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../components/AgentSpecNotRewrittenNotice'
 
 const QK = ['computer-use-config']
 
@@ -173,6 +174,8 @@ export function ComputerUsePanel() {
   const [draftWidth, setDraftWidth] = useState<string | null>(null)
   // Set when the server reports it restarted sessions to apply the enable.
   const [restarted, setRestarted] = useState(false)
+  // Set when the enable saved but the agent spec was not rewritten.
+  const [specNotRewritten, setSpecNotRewritten] = useState(false)
 
   // Mount time, for the poll's wall-clock bound. A ref (not state) so reading it
   // never re-renders and the deadline survives every refetch.
@@ -210,6 +213,9 @@ export function ComputerUsePanel() {
       // reads as a crash, and a user who is not told will still wonder why the
       // tools did not show up.
       if ((data?.sessions_reset ?? 0) > 0) setRestarted(true)
+      // Only a save that changed the enable carries the verdict; any other save
+      // leaves the last one standing, since the spec is still what it was.
+      if (data && 'agent_spec_rewritten' in data) setSpecNotRewritten(agentSpecNotRewritten(data))
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData<ComputerUseConfigData>(QK, ctx.prev)
@@ -350,8 +356,18 @@ export function ComputerUsePanel() {
               disabled={busy}
             />
           )}
+          {/* No hand-off: the hand-off navigates away, and this panel's numeric
+              fields hold drafts that only commit on blur. */}
+          {specNotRewritten && <AgentSpecNotRewrittenNotice className="pt-1" askAgent={false} />}
+          {/* Shown even beside the notice: the sessions really were restarted, and
+              hiding that would leave a torn-down chat unexplained. Beside the notice
+              it drops "so this takes effect", which the notice says is not true. */}
           {restarted && (
-            <div className="pt-1 text-[13px] text-muted animate-rise">{i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}</div>
+            <div className="pt-1 text-[13px] text-muted animate-rise">
+              {specNotRewritten
+                ? i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted')
+                : i18nT('pages.settings.computerUsePanel.your_chat_sessions_were_restarted_so_this_takes')}
+            </div>
           )}
           {cfg.enabled && (
             <div className="pt-1 text-[13px] text-muted">{i18nT('pages.settings.computerUsePanel.computer_use_lets_the_agent_read_any_app_window')}</div>

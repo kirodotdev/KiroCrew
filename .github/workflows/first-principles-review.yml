@@ -69,7 +69,7 @@ jobs:
     # skipped job's `name:` expression, so while the guard was a job-level `if:`
     # every fork PR published the raw expression source as its check name.
     # Letting the job start with all steps gated costs seconds of runner time and
-    # reports the intended name instead. `test_ai_review_workflows.py` asserts
+    # reports the intended name instead. `test_ai_review_workflows_fork_stage2.py` asserts
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'First Principles Review' || 'First Principles Review (same-repo lane, not applicable to forks)' }}"
@@ -81,13 +81,40 @@ jobs:
       # persist-credentials:false stops actions/checkout from writing the
       # GITHUB_TOKEN into .git/config, where the agentic reviewer -- which reads
       # untrusted PR diff content -- could otherwise read and leak it. `git diff`
-      # still works (history is fetched via depth 0); the posting step uses its
-      # own scoped GH_TOKEN. Mirrors design-review.yml.
+      # still works (the next step fetches the merge-base it diffs from); the
+      # posting step uses its own scoped GH_TOKEN. Mirrors design-review.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
         with:
-          fetch-depth: 0
+          # The merge ref plus its two parents (the base tip and the PR head),
+          # not the whole history.
+          fetch-depth: 2
           persist-credentials: false
+
+      # The checkout is shallow, so a three-dot `base...HEAD` range has no
+      # history to find its merge-base in. GitHub's compare API names the
+      # merge-base; that one commit is fetched at depth 1, and every diff below
+      # is the two-dot `<merge-base>..HEAD`. A two-dot diff compares two trees
+      # and needs no history, and it is the same diff the three-dot range gave
+      # on a full clone. Runs before the base-ref contract read, which would
+      # otherwise read a missing base as "no contract".
+      - name: Fetch the merge-base commit (shallow history)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        id: merge_base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # need SHA / merge_base X Y -- see the script's header.
+          . "$GITHUB_WORKSPACE/.github/scripts/review-merge-base.sh"
+          need "$BASE_SHA"
+          tip="$(git rev-parse HEAD)"
+          tree="$(merge_base "$BASE_SHA" "$tip")"
+          need "$tree"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "merge-base of $BASE_SHA and the checkout $tip: $tree"
 
       # Scope gate. The lane needs at least one capability to inventory, so it
       # runs whenever the diff touches product or CI surface -- INCLUDING a plain
@@ -99,10 +126,10 @@ jobs:
         if: github.event.pull_request.head.repo.full_name == github.repository
         id: scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_BASE: ${{ steps.merge_base.outputs.tree }}
         run: |
           set -euo pipefail
-          touched="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          touched="$(git diff --name-only "$MERGE_BASE"..HEAD)"
           # Product and CI surface this lane can interrogate. Test paths are
           # subtracted because a test ships no capability, so a tests-only diff has
           # no feature to inventory; docs, screenshots and generated files fall out
@@ -190,14 +217,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_BASE: ${{ steps.merge_base.outputs.tree }}
           PATCH: ${{ runner.temp }}/authentic.patch
           INTENT: ${{ runner.temp }}/pr-intent.txt
         run: |
           set -uo pipefail
-          git diff --no-color "$BASE_SHA"...HEAD > "$PATCH"
+          git diff --no-color "$MERGE_BASE"..HEAD > "$PATCH"
           if [ ! -s "$PATCH" ]; then
-            echo "::error::empty diff for $BASE_SHA...HEAD; failing closed."
+            echo "::error::empty diff for $MERGE_BASE..HEAD; failing closed."
             exit 1
           fi
           # The title and description come from ONE shared capture, sourced by
@@ -472,9 +499,36 @@ jobs:
             echo "verdict=OVERRIDE" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # #13595: a skip arm must leave a keyed slot for THIS head even on a
+          # first-time skip, so an absent slot on a `success` conclusion means
+          # the lane could not publish rather than chose not to review. The body
+          # names `$HEAD` in prose, which is the per-head marker readiness scopes
+          # the skip exemption on (pr_status.py `slots_naming_head`). Head FIRST,
+          # slot read LAST, mirroring the human-override and no-contract arms.
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR: first-principles review skipped (no Bedrock secrets/OIDC)."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
+              echo
+              echo "_Revision \`$HEAD\` is a Dependabot pull request, which runs with no Bedrock secrets/OIDC, so the first-principles review was skipped. Advisory — does not block merge._"
+            } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
+            confirm_head
+            find_existing
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+                echo "Updated existing first-principles-review comment #$existing to skip notice"
+              fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
+              echo "Created first-principles-review skip notice for $HEAD"
+            elif [ "$lookup_ok" -eq 0 ]; then
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the first-principles skip notice for $HEAD was not written. Re-run this lane to record the notice."
+            fi
             exit 0
           fi
           if [ "$SURFACE" = "true" ] && [ "$CONTRACT" = "false" ]; then
@@ -502,8 +556,11 @@ jobs:
             # and another run on this same head can fill the slot inside that gap.
             find_existing
             if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
-              gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-                --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+              confirm_head
+              if [ "$head_unchanged" -eq 1 ]; then
+                gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+                  --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
+              fi
             elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
               gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
             elif [ "$lookup_ok" -eq 0 ]; then
@@ -514,26 +571,26 @@ jobs:
           if [ "$SURFACE" != "true" ]; then
             echo "No added surface: first-principles review skipped."
             echo "verdict=SKIPPED" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
+              echo
+              echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
+            } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
+            confirm_head
             find_existing
-            # This arm replaces a comment already in the slot and never creates one, so
-            # the head question is only asked once an occupant is found: asking it first
-            # makes a run with an empty slot report a withheld notice that this arm was
-            # never going to write.
-            if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            if [ "$head_unchanged" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
               confirm_head
               if [ "$head_unchanged" -eq 1 ]; then
-                {
-                  echo "$MARKER"
-                  echo "## First Principles Review (Opus 5.5) — ⏭️ skipped"
-                  echo
-                  echo "_Revision \`$HEAD\` ships no reviewable capability (docs, tests or generated files only), so there is nothing to inventory. Advisory — does not block merge._"
-                } > "${RUNNER_TEMP:-/tmp}/fp-comment.md"
                 gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
                   --field body="$(cat "${RUNNER_TEMP:-/tmp}/fp-comment.md")" >/dev/null || true
                 echo "Updated existing first-principles-review comment #$existing to skip notice"
               fi
+            elif [ "$head_unchanged" -eq 1 ] && [ "$lookup_ok" -eq 1 ]; then
+              gh pr comment "$PR" --body-file "${RUNNER_TEMP:-/tmp}/fp-comment.md" || true
+              echo "Created first-principles-review skip notice for $HEAD"
             elif [ "$lookup_ok" -eq 0 ]; then
-              echo "::warning::This lane's slot was unreadable after 6 attempts, so a comment already in it still shows an earlier revision's outcome rather than the skip notice for $HEAD."
+              echo "::warning::This lane's slot was unreadable after 6 attempts, so the first-principles skip notice for $HEAD was not written. Re-run this lane to record the notice."
             fi
             exit 0
           fi
@@ -722,7 +779,7 @@ jobs:
             fi
           fi
           # ONE publication primitive for every marker-comment write in this
-          # lane; test_ai_review_workflows.py pins it byte-identical across all
+          # lane; test_ai_review_workflows_comment_writes.py pins it byte-identical across all
           # of them, the way it already pins guarded_comment_upsert, so neither
           # the budget nor the honesty below can drift lane by lane.
           #
@@ -1162,13 +1219,24 @@ jobs:
             return 1
           }
           # Guarded upsert (#8292, #8344): the shared function below is defined
-          # byte-identically in every review lane; test_ai_review_workflows.py
+          # byte-identically in every review lane; test_ai_review_workflows_comment_writes.py
           # pins all copies to one canonical body so the invariant cannot
           # drift lane by lane.
           guarded_comment_upsert() {
             local marker="$1" stamp="$2" lane="$3" out_file="$4"
             local matches existing lookup_ok pr_head="" attempt withhold="" write_rc
-            local verdict_read_rc superseded=""
+            # What reached the slot is recorded as the step output `publication`,
+            # because every arm below returns 0 and the write status would
+            # otherwise end with this function. The fork Opus and GPT finalize
+            # steps read it: a verdict computed for this head is a pass there only
+            # once it is in the slot. `published` is this run's body in the slot,
+            # `superseded` a head this PR has moved past, and `not_published` every
+            # other arm. That includes an earlier run's sample for this head, which
+            # the PR then shows instead of this run's verdict, and an override note
+            # a repeat stopped at: that note names no head the repeat can check, and
+            # an override for THIS head is answered by the finalize step's own
+            # override input.
+            local verdict_read_rc superseded="" publication="not_published"
             # Find the bot's existing marker comment (first match wins) and
             # capture its id. Author filter: only a github-actions[bot]
             # comment can match, so a PR commenter cannot plant the marker and
@@ -1254,6 +1322,7 @@ jobs:
                 # publishes the verdict that counts, so a record here would
                 # point a reader at a revision nobody is reviewing.
                 superseded=1
+                publication="superseded"
                 withhold="$HEAD is no longer this PR's head ($pr_head)"
               fi
             fi
@@ -1287,6 +1356,7 @@ jobs:
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
+                printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
                 return 0
               fi
               if [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -1294,6 +1364,7 @@ jobs:
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
+                printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
                 return 0
               fi
               # The lookup SUCCEEDED and found nothing, so there is no verdict
@@ -1312,6 +1383,11 @@ jobs:
               else
                 echo "::error::$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
+              case "$write_rc" in
+                0) publication="published" ;;
+                4) publication="superseded" ;;
+              esac
+              printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
               return 0
             fi
             if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -1351,6 +1427,11 @@ jobs:
                 echo "::error::$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             fi
+            case "$write_rc" in
+              0) publication="published" ;;
+              4) publication="superseded" ;;
+            esac
+            printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
           }
           guarded_comment_upsert "$MARKER" "[FIRST-PRINCIPLES-REVIEWED]" "First Principles Review" "${RUNNER_TEMP:-/tmp}/fp-comment.md"
 

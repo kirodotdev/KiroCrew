@@ -13,8 +13,16 @@
  *
  * Open/Reveal items render only when `directLocal` is true (the backend reports
  * the request comes from a browser on the same machine). Remote and tunneled
- * sessions see Copy path only, because opening Finder on a host the user is not
+ * sessions do not get them, because opening Finder on a host the user is not
  * looking at is useless.
+ *
+ * The in-app items ("Open in side panel", "Show folder in side panel") render
+ * whenever the host passes the matching handler, in every deployment, as their
+ * own group above the native rows. They act on the viewer's own screen, so they
+ * are the menu's one action that works whether or not the browser shares a
+ * machine with the gateway, including an `ssh -L` tunnel that `directLocal`
+ * cannot tell apart from a local browser. They need no locality gate and do not
+ * change the native rows' gates.
  *
  * The reveal label is platform-aware — it reuses the same gatewayPlatform-driven
  * wording MarkdownPanel's overflow menu uses, so the two menus name the identical
@@ -31,12 +39,13 @@
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, FolderOpen, Copy, Check, AlertCircle, PenLine } from 'lucide-react'
+import { ExternalLink, FolderOpen, FolderTree, Copy, Check, AlertCircle, PenLine, PanelRight } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
 } from './ui/context-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { useBranding } from '../hooks/useBranding'
@@ -44,6 +53,7 @@ import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import { canOpenFileInEditor, openFileInEditor } from '../lib/electron'
+import { parentDir } from '../apps/file-explorer/deepLink'
 import { i18nT } from '../i18n/t'
 
 /** What the wrapped path is on disk. Directories cannot be "opened".
@@ -169,9 +179,51 @@ export function useCanOpenFile(kind?: FilePathKind): boolean {
   return !!directLocal && kind !== 'dir' && gatewayPlatform !== 'windows'
 }
 
+/**
+ * The ONE owner of the desktop shell's "Open in editor" launch for a path.
+ *
+ * It hands the PATH to the shell's shell.openPath bridge so the file opens in
+ * the user's own OS default handler — the one place the built-in viewer and the
+ * gateway-host reveal cannot reach. `canOpenInEditor` is true only when the
+ * fileOpenAPI preload bridge exists (desktop shell, not a browser tab or the
+ * PWA) and the target is not a directory. A failed launch is held as
+ * `editorError` for the caller to render in place through the shared
+ * `ErrorNotice`; it is separate from a gateway reveal's error, since this launch
+ * happens entirely in the shell and never touches /api/reveal.
+ *
+ * Shared by this menu's row and the artifacts list's session-document paths, so
+ * both surfaces gate, launch and report a refusal identically.
+ */
+export function useOpenInEditor(filePath: string, kind?: FilePathKind) {
+  const canOpenInEditor = kind !== 'dir' && canOpenFileInEditor()
+  const [editorError, setEditorError] = useState<string | null>(null)
+  useEffect(() => { setEditorError(null) }, [filePath])
+  const openInEditor = async () => {
+    setEditorError(null)
+    const r = await openFileInEditor(filePath)
+    // The bridge always names a reason on failure (bad path, unsupported type,
+    // or the OS refusal string), so there is no English fallback to translate.
+    if (!r.ok) setEditorError(r.error || 'error')
+  }
+  const clearEditorError = useCallback(() => setEditorError(null), [])
+  return { canOpenInEditor, openInEditor, editorError, clearEditorError }
+}
+
 // ── Menu-item building blocks ────────────────────────────────────────────────
 
-interface FilePathMenuItemsProps {
+/** The host's in-app openers. Each one, when passed, adds its menu row; a host
+ *  with no side panel passes neither and the menu keeps its native rows only. */
+interface InAppPathHandlers {
+  /** Open the FILE in the host's side panel ("Open in side panel" on a file). */
+  onFileOpen?: (path: string) => void
+  /** Open a folder as a folder tab in the host's side panel: the directory
+   *  itself on a directory ("Open in side panel"), the containing folder on a
+   *  file ("Show folder in side panel", not offered for a path with no parent
+   *  directory). */
+  onFolderOpen?: (path: string) => void
+}
+
+interface FilePathMenuItemsProps extends InAppPathHandlers {
   /** Absolute file path to act on. */
   filePath: string
   /** Whether the path is a file or a directory. The Open item is suppressed for
@@ -257,10 +309,10 @@ export function useCopyAck(filePath: string) {
 }
 
 /**
- * Renders the file-path action items (Open / Reveal / Copy path) as
- * ContextMenu items. Drop these into any ContextMenuContent.
+ * Renders the file-path action items (in-app open / Open / Reveal / Copy path)
+ * as ContextMenu items. Drop these into any ContextMenuContent.
  */
-function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
+function FilePathMenuItems({ filePath, kind, onFileOpen, onFolderOpen }: FilePathMenuItemsProps) {
   const revealErrorId = useId()
   const editorErrorId = useId()
   const isLocal = useBranding().directLocal
@@ -271,6 +323,20 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
   // The one shared Open gate (see useCanOpenFile) — the same predicate the two
   // overflow menus consume, so a Windows/dir target hides Open identically.
   const canOpen = useCanOpenFile(kind)
+
+  // In-app rows: gated on the host's handler alone, never on locality, so a
+  // viewer on another machine always has an entry that acts on its own screen.
+  // "Open in side panel" opens the path itself: a file in the viewer, a
+  // directory as a folder tab. A file also gets its containing folder, the
+  // in-app counterpart of the native reveal; a path with no parent (a
+  // filesystem root, a bare relative name) has nothing to open there, so that
+  // row is not offered. Its label leads with the folder, so it reads apart
+  // from "Open in side panel" and not as selecting the file in a listing.
+  const isDir = kind === 'dir'
+  const openInPanel = (isDir ? onFolderOpen : onFileOpen) ?? null
+  const containingFolder = !isDir && onFolderOpen ? parentDir(filePath) : null
+  const openInPanelLabel = i18nT('components.filePathMenu.open_in_side_panel')
+  const openFolderLabel = i18nT('components.filePathMenu.show_folder_in_side_panel')
 
   // Copy path's whole acknowledgment is the glyph flipping to a tick and back
   // (see useCopyAck, shared with the Office card). The Copy item keeps the menu
@@ -283,24 +349,10 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
       ? i18nT('components.filePathMenu.copy_failed')
       : i18nT('components.filePathMenu.copy_path')
 
-  // "Open in editor" hands the PATH to the desktop shell's shell.openPath bridge
-  // so the file opens in the user's own OS default handler — the one place the
-  // built-in viewer and the gateway-host reveal cannot reach. Shown only when
-  // the fileOpenAPI preload bridge exists (desktop shell, not a browser tab or
-  // the PWA) and the target is a file, not a directory. Its own error line,
-  // separate from the gateway reveal's, since this launch happens entirely in
-  // the shell and never touches /api/reveal.
-  const canOpenInEditor = kind !== 'dir' && canOpenFileInEditor()
+  // "Open in editor" through the shell bridge (see useOpenInEditor), with its
+  // own error line separate from the gateway reveal's.
+  const { canOpenInEditor, openInEditor, editorError, clearEditorError } = useOpenInEditor(filePath, kind)
   const openInEditorLabel = i18nT('components.markdownPanel.open_in_editor')
-  const [editorError, setEditorError] = useState<string | null>(null)
-  useEffect(() => { setEditorError(null) }, [filePath])
-  const openInEditor = async () => {
-    setEditorError(null)
-    const r = await openFileInEditor(filePath)
-    // The bridge always names a reason on failure (bad path, unsupported type,
-    // or the OS refusal string), so there is no English fallback to translate.
-    if (!r.ok) setEditorError(r.error || 'error')
-  }
 
   return (
     <>
@@ -327,11 +379,32 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
             variant="inline"
             className="whitespace-normal"
             message={editorError}
-            onDismiss={() => setEditorError(null)}
+            onDismiss={clearEditorError}
             testId="file-path-menu-editor-error"
           />
         </div>
       )}
+      {openInPanel && (
+        <ContextMenuItem
+          onSelect={() => openInPanel(filePath)}
+          aria-label={openInPanelLabel}
+        >
+          <PanelRight size={14} className="lucide-inline" aria-hidden="true" />
+          {openInPanelLabel}
+        </ContextMenuItem>
+      )}
+      {containingFolder && onFolderOpen && (
+        <ContextMenuItem
+          onSelect={() => onFolderOpen(containingFolder)}
+          aria-label={openFolderLabel}
+        >
+          <FolderTree size={14} className="lucide-inline" aria-hidden="true" />
+          {openFolderLabel}
+        </ContextMenuItem>
+      )}
+      {/* The in-app rows are their own group, so they do not read as variants of
+          the native rows below that act on the gateway host. */}
+      {(openInPanel || containingFolder) && <ContextMenuSeparator />}
       {canOpenInEditor && (
         <ContextMenuItem
           // preventDefault keeps the menu open so a launch failure can render
@@ -396,7 +469,7 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
 
 // ── Right-click wrapper ──────────────────────────────────────────────────────
 
-export interface FilePathMenuProps {
+export interface FilePathMenuProps extends InAppPathHandlers {
   /** Absolute file path to act on. */
   filePath: string
   /** The element that triggers the context menu on right-click. */
@@ -414,7 +487,7 @@ export interface FilePathMenuProps {
  * </FilePathMenu>
  * ```
  */
-export default function FilePathMenu({ filePath, children, kind }: FilePathMenuProps) {
+export default function FilePathMenu({ filePath, children, kind, onFileOpen, onFolderOpen }: FilePathMenuProps) {
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -424,6 +497,8 @@ export default function FilePathMenu({ filePath, children, kind }: FilePathMenuP
         <FilePathMenuItems
           filePath={filePath}
           kind={kind}
+          onFileOpen={onFileOpen}
+          onFolderOpen={onFolderOpen}
         />
       </ContextMenuContent>
     </ContextMenu>

@@ -84,7 +84,7 @@ export default function PublicPublishAckModal({
       <p className="text-sm text-text mt-3 mb-0 font-medium">
         {i18nT('components.publicPublishAckModal.do_not_publish_anything')}
       </p>
-      <div className="mt-3 text-sm text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+      <div className="mt-3 text-sm text-warn-text p-2 rounded border border-warn/30 bg-warn-subtle">
         {/* Body-size, not fine print: how long the link stays public is the
             decision the human is actually making here. */}
         {ttlHours > 0

@@ -579,6 +579,7 @@ describe('PptxMakerPage', () => {
       // pinning a wrong spelling here would let a silently agent-less chat pass.
       expect(api.createChatSlot).toHaveBeenCalledWith(
         undefined, 'pptx-maker-spec', undefined, undefined, 'persistent',
+        undefined, undefined, undefined, undefined, true,
       ),
     )
   })

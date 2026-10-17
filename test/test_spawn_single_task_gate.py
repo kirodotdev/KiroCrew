@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import mcp_shared
 from kiro_crew.dashboard.handlers.messaging import parent_work_supported
 from kiro_crew.mcp_tools import spawn as spawn_tools
 from kiro_crew.validation import SPAWN_RUN_SCHEMA, SPAWN_SUB_AGENTS_SCHEMA, validate_tool_args
@@ -101,6 +102,8 @@ def _run(tool: str, args: dict[str, Any], answer: dict | None = None):
         patch.object(mcp_core, "sel", MagicMock(return_value=sel)),
     ):
         result = mcp_core._call_tool_inner(tool, args)
+        if tool == "spawn_run" and isinstance(result, mcp_shared.DeferredTool):
+            result = mcp_shared.drive_deferred(result, clock=mcp_core.time)
     return bodies, result, sel
 
 
@@ -158,10 +161,11 @@ def _run_sub_agents(agents: list[dict]) -> tuple[list[dict], str, MagicMock]:
         patch.object(spawn_tools.mcp_core, "time", _Time),
         patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(spawn_tools.mcp_core, "sel", MagicMock(return_value=sel)),
-        patch.object(spawn_tools, "_hold_for_parent_resume", return_value=None),
-        patch.object(spawn_tools, "is_tool_cancelled", return_value=False),
+        patch.object(spawn_tools._ResumeHold, "probe", return_value=(True, None)),
     ):
         result = spawn_tools.spawn_sub_agents("spawn_sub_agents", {"agents": agents})
+        if isinstance(result, mcp_shared.DeferredTool):
+            result = mcp_shared.drive_deferred(result, clock=spawn_tools.mcp_core.time)
     return bodies, result, sel
 
 

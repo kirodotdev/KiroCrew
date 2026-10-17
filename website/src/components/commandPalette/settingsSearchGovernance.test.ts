@@ -354,6 +354,20 @@ describe('the palette provider honours it', () => {
     expect(hasKeyRow(ids(search(OFF, 'Jev API key')))).toBe(false)
   })
 
+  it('drops the judge provider and judge model selects when decisions are withdrawn', () => {
+    // These two entries come from `DecisionsPointPanel.tsx`, the card's detail half,
+    // which only mounts when the card is rendered. The ceiling that withdraws the
+    // card also withdraws these — a governance pin covers the whole point panel.
+    const judgeProviderEntry = entryById('developer.which-judge-answers')
+    const judgeModelEntry = entryById('developer.model-for-the-small-model-judge')
+    const hasId = (results: string[], id: string) => results.some(r => r.endsWith(id))
+    // Both surfaces: enabled means offered, disabled means withheld.
+    expect(hasId(ids(search(ON, judgeProviderEntry.label)), 'developer.which-judge-answers')).toBe(true)
+    expect(hasId(ids(search(OFF, judgeProviderEntry.label)), 'developer.which-judge-answers')).toBe(false)
+    expect(hasId(ids(search(ON, judgeModelEntry.label)), 'developer.model-for-the-small-model-judge')).toBe(true)
+    expect(hasId(ids(search(OFF, judgeModelEntry.label)), 'developer.model-for-the-small-model-judge')).toBe(false)
+  })
+
   it('drops Feature Tips from both the corpus query and the chat tab listing', () => {
     const hasTips = (results: string[]) => results.some(id => id.endsWith(FEATURE_TIPS_SETTING_ID))
     expect(hasTips(ids(search(ON, 'Feature Tips')))).toBe(true)
@@ -385,6 +399,32 @@ describe('DECISIONS_SETTING_IDS covers the whole card', () => {
     // The extractor's own pass assigns no ids (that happens in the global pass), so
     // the entries are matched back by LABEL — which is also what a collision-suffixed
     // id would be matched by anyway.
+    expect(entries.length).toBeGreaterThan(0)
+    const missing: string[] = []
+    for (const extracted of entries) {
+      const real = SETTINGS_REGISTRY.find(
+        e => e.tab === 'developer' && e.label === extracted.label,
+      )
+      if (!real) {
+        missing.push(`${extracted.label}: no registry entry`)
+      } else if (!DECISIONS_SETTING_IDS.has(real.id)) {
+        missing.push(`${real.id}: not in DECISIONS_SETTING_IDS`)
+      }
+    }
+    expect(missing, missing.join('\n')).toEqual([])
+  })
+
+  it('names every entry the extractor finds in DecisionsPointPanel.tsx', () => {
+    // The point panel is the detail half of the Decisions card and only mounts
+    // when the card is rendered. The extractor scans it as part of the developer
+    // tab (PANEL_TAB_MAP maps it to 'developer'), so any SettingsSelect/Toggle it
+    // finds lands in the registry. A control added to that file without a matching
+    // entry in DECISIONS_SETTING_IDS would leak into search under a governance pin.
+    const source = readFileSync(
+      resolve(__dirname, '../../pages/settings/DecisionsPointPanel.tsx'),
+      'utf-8',
+    )
+    const { entries } = extractFromSource(source, 'DecisionsPointPanel.tsx')
     expect(entries.length).toBeGreaterThan(0)
     const missing: string[] = []
     for (const extracted of entries) {

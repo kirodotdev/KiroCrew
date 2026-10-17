@@ -14,7 +14,15 @@ import type { ClientTransport } from './transport'
  *  explain. Rationale in the CR description. */
 export const SLASH_COMMANDS_TIMEOUT_MS = 15_000
 
-export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
+/** A session's turn time limit as `/api/chat/slots/{slot}/turn-timeout` reports it. */
+export interface SlotTurnTimeout {
+  secs: number | null
+  global_secs: number
+  min: number
+  max: number
+}
+
+export function createChatSlotSettingsEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const selection = {
     models: () => fetch('/api/models').then(j),
     chatSlotSelectionCapabilities: (slot: string) =>
@@ -35,20 +43,31 @@ export function createChatSlotSettingsEndpoints({ post, j }: ClientTransport) {
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather
-     *  than answered by the default agent. */
-    chatSlotAgent: (slot: string, agent: string, kind?: 'member' | 'template') =>
+     *  than answered by the default agent. `announce` asks the gateway to
+     *  append the "Switched to agent" transcript line, as the typed `/agent`
+     *  command does; the picker leaves it off. */
+    chatSlotAgent: (slot: string, agent: string, kind?: 'member' | 'template', opts?: { announce?: boolean }) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', {
         agent,
         ...(kind ? { agent_kind: kind } : {}),
+        ...(opts?.announce ? { announce: true } : {}),
       }).then(j) as Promise<{ ok?: boolean; agent?: string; agent_kind?: 'member' | 'template' | ''; workspace?: string }>,
     chatSlotModel: (slot: string, model: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
-    /** This slot's auto-compact threshold override (null = follows the global). */
+    /** This slot's auto-compact threshold override (null = follows a default:
+     *  `agent_pct` when the session's agent declares one, else `global_pct`). */
     chatSlotAutocompact: (slot: string) =>
-      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; min: number; max: number }>,
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact').then(j) as Promise<{ pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number }>,
     /** Set (number) or clear (null) this slot's auto-compact threshold override. */
     setChatSlotAutocompact: (slot: string, pct: number | null) =>
-      post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number }>,
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/autocompact', { pct }).then(j) as Promise<{ ok?: boolean; pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null }>,
+    /** This slot's own turn time limit in seconds (null = follows the global
+     *  `agent.chat_turn_timeout_secs`, reported as `global_secs`). */
+    chatSlotTurnTimeout: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/turn-timeout').then(j) as Promise<SlotTurnTimeout>,
+    /** Give this slot its own turn time limit (whole seconds), or null to follow the global. */
+    setChatSlotTurnTimeout: (slot: string, secs: number | null) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/turn-timeout', { secs }).then(j) as Promise<SlotTurnTimeout & { ok?: boolean }>,
     chatSlotsModel: (model: string, skip_running: boolean) =>
       post('/api/chat/slots/model', { model, skip_running }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[] }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>

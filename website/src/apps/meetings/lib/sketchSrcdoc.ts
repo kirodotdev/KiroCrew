@@ -85,7 +85,10 @@
 //     Replacing `'unsafe-inline'` with a build-time hash of that literal would
 //     retire even that, and is the natural follow-up.
 
-import { MERMAID_RUNTIME_PATH } from '../../../lib/vendorPaths'
+import { MERMAID_RUNTIME_PATH as MERMAID_RUNTIME_PATH_ROOT } from '../../../lib/vendorPaths'
+import { withBase } from '../../../lib/basePath'
+/** The runtime's served path under this build's base (the bare path in the stock build). */
+const MERMAID_RUNTIME_PATH = withBase(MERMAID_RUNTIME_PATH_ROOT)
 
 /**
  * CSP for the sketch frame. `scriptOrigin` is the dashboard's own origin

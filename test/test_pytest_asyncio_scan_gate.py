@@ -1,6 +1,6 @@
-"""The rootdir conftest gates pytest-asyncio 0.20.3's per-test fixture rescan.
+"""The rootdir conftest gates pytest-asyncio 0.21.2's per-test fixture rescan.
 
-pytest-asyncio 0.20.3 walks every registered fixture definition on every collected test
+pytest-asyncio 0.21.2 walks every registered fixture definition on every collected test
 function to wrap the async ones. Fixtures it already wrapped are skipped by a set
 lookup, but every synchronous one is re-inspected each time, so the cost is
 O(tests x fixtures). Measured with cProfile on a ``--collect-only`` over this suite:
@@ -153,12 +153,9 @@ class TestTheGateIsInstalledInThisSession:
 class TestAsyncFixturesStillWrap:
     """Behaviour preserved: a fixture registered AFTER the gate went clean is still wrapped.
 
-    This suite has no async fixtures of its own -- the pinned pytest-asyncio 0.20.3 cannot
-    drive one under pytest >= 8.1 (its wrapper reads ``fixturedef.unittest``), so the suite
-    avoids them by convention. The proof therefore stops at the wrap: run a small inner
-    session through ``pytester`` in-process (same patched plugin module, same gate), and
-    check the plugin processed the new fixture -- it is in ``_HOLDER`` and carries the
-    ``request``/``event_loop`` argnames the wrap injects.
+    Run a small inner session through ``pytester`` in-process (same patched plugin module,
+    same gate) and check the plugin processed the new fixture -- it is in ``_HOLDER`` and
+    carries the ``request``/``event_loop`` argnames the wrap injects.
     """
 
     def test_a_late_registered_async_fixture_is_still_wrapped(
@@ -199,3 +196,59 @@ class TestAsyncFixturesStillWrap:
         wrapped = {fd.argname: fd for fd in set(pa._HOLDER) - before}
         assert "answer" in wrapped, sorted(wrapped)
         assert {"request", "event_loop"} <= set(wrapped["answer"].argnames)
+
+
+class TestTheInstalledPairRunsAsyncFixtures:
+    """The declared pytest and pytest-asyncio pins can SET UP and tear down an async fixture.
+
+    A wrap alone is not enough: pytest-asyncio 0.20.3 wraps fine under pytest 9 and then
+    fails every async fixture at setup, because its wrapper reads ``FixtureDef.unittest``,
+    which pytest 8.2 removed. So this runs the inner session for real, covering each path
+    the wrapper takes: a coroutine fixture, an async-generator fixture whose teardown must
+    run, and a coroutine fixture on a test class (the path that rebinds to the instance).
+    """
+
+    def test_async_fixtures_set_up_and_tear_down(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile("""
+            import asyncio
+            import pytest
+            import pytest_asyncio
+
+            torn_down = []
+
+            @pytest_asyncio.fixture
+            async def value():
+                await asyncio.sleep(0)
+                return 1
+
+            @pytest_asyncio.fixture
+            async def resource():
+                await asyncio.sleep(0)
+                yield 2
+                await asyncio.sleep(0)
+                torn_down.append("resource")
+
+            @pytest.mark.asyncio
+            async def test_coroutine_fixture(value):
+                assert value == 1
+
+            @pytest.mark.asyncio
+            async def test_async_generator_fixture(resource):
+                assert resource == 2
+
+            def test_the_generator_fixture_was_torn_down():
+                assert torn_down == ["resource"]
+
+            class TestOnAClass:
+                @pytest_asyncio.fixture
+                async def bound(self):
+                    return self
+
+                @pytest.mark.asyncio
+                async def test_method_fixture_binds_to_the_instance(self, bound):
+                    assert bound is self
+            """)
+        # Rooted at the inner session's own directory; see the test above for why.
+        pytester.makeini("[pytest]\n")
+        result = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-n0", "-o", "addopts=")
+        result.assert_outcomes(passed=4)

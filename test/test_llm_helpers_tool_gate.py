@@ -936,18 +936,42 @@ async def _run_read_only(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool", "kind"),
-    [("fs_read", "read"), ("web_fetch", "fetch"), ("grep", "")],
-    ids=["fs_read+read", "web_fetch+fetch", "grep+kindless"],
+    [("fs_read", "read"), ("read", "read"), ("web_fetch", "fetch"), ("grep", "")],
+    ids=["fs_read+read", "read+read", "web_fetch+fetch", "grep+kindless"],
 )
 async def test_read_only_policy_approves_a_host_known_read_tool(tool, kind):
     """The positive path: a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the
     host-stamped identity, no MCP server, provenance verified. The kind may
-    agree or be absent — it is not what proves the call."""
+    agree or be absent — it is not what proves the call. `read` is the name
+    kiro-cli stamps for the same built-in; it reaches the allowlist through
+    `_HOST_READ_ONLY_BUILTIN_ALIASES`."""
     provider = await _run_read_only(
         _read_only_event(tool_kind=kind, tool_name=tool, mcp_identity_trusted=True)
     )
     assert provider.approved == ["r1"]
     assert provider.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_denies_an_aliased_read_the_rule_names_canonically():
+    """The deny tiers run before the proof. `auto_deny_tools=["fs_read"]`
+    against kiro-cli's `read` stamp: the alias the proof resolves is also a
+    deny target, so the rule wins and READ_ONLY rejects instead of approving
+    the call the operator refused."""
+    from kiro_crew.hooks import HookManager, HooksConfig
+
+    provider = _ScriptedProvider(
+        _permission_script(_read_only_event(tool_name="read", mcp_identity_trusted=True))
+    )
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.READ_ONLY,
+        hooks=HookManager(HooksConfig(auto_deny_tools=["fs_read"])),
+        retry_transient=False,
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
 
 
 @pytest.mark.asyncio
@@ -1018,6 +1042,77 @@ async def test_read_only_policy_rejects_a_read_looking_title_alone():
     path would take the `_is_read_only_tool` title fallback; READ_ONLY has no
     card behind it and refuses the model-authored prose."""
     provider = await _run_read_only(_read_only_event(tool_kind=""))
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
+# claude-agent-acp stamps no `_meta.kiro` identity. Its read built-ins are named
+# by `harness_builtin_tool`, mapped from the tool name the adapter stamped on the
+# preceding tool_call frame, and the same kind narrowing applies.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("builtin", "kind", "title"),
+    [
+        ("web_search", "fetch", 'Search "release notes"'),
+        ("web_fetch", "fetch", "Fetch https://example.com/changelog"),
+        ("fs_read", "read", "Read /etc/hosts"),
+    ],
+    ids=["WebSearch", "WebFetch", "Read"],
+)
+async def test_read_only_policy_approves_a_claude_read_tool(builtin, kind, title):
+    provider = await _run_read_only(
+        _read_only_event(title=title, tool_kind=kind, harness_builtin_tool=builtin)
+    )
+    assert provider.approved == ["r1"]
+    assert provider.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_rejects_a_claude_search_kind():
+    """claude's Grep and Glob are kind ``search``. The kind may only narrow, so
+    the one that reaches the gate (outside the work dir) is refused."""
+    provider = await _run_read_only(
+        _read_only_event(title="grep TODO", tool_kind="search", harness_builtin_tool="grep")
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_rejects_a_claude_builtin_name_with_a_server():
+    provider = await _run_read_only(
+        _read_only_event(
+            tool_kind="fetch", harness_builtin_tool="web_fetch", mcp_server_name="files:srv"
+        )
+    )
+    assert provider.rejected == ["r1"]
+    assert provider.approved == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_policy_denies_a_claude_web_tool_an_operator_denied():
+    """A deny on the kiro-cli name binds claude's tool too: the mapped name is a
+    deny target, so the read-only proof never runs."""
+    from kiro_crew.hooks import HookManager, HooksConfig
+
+    provider = _ScriptedProvider(
+        _permission_script(
+            _read_only_event(
+                title="Fetch https://example.com",
+                tool_kind="fetch",
+                harness_builtin_tool="web_fetch",
+            )
+        )
+    )
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.READ_ONLY,
+        hooks=HookManager(HooksConfig(auto_deny_tools=["web_fetch"])),
+        retry_transient=False,
+    )
     assert provider.rejected == ["r1"]
     assert provider.approved == []
 

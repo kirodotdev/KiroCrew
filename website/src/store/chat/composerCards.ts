@@ -4,8 +4,16 @@
  *  of a stateless question card lives with the chat-frame reducer in
  *  chatSlice.ts. */
 import type { PayloadAction } from '@reduxjs/toolkit'
-import type { ChatState, FollowupItem } from './state'
+import type { ChatState, FollowupItem, QuestionNotice } from './state'
 import { isUnsafeKey, safeKey } from './wire'
+
+const QUESTION_SETTLED_LIMIT = 200
+
+const ANSWERED_QUESTION_ENDINGS = new Set(['answered', 'composer', 'queued'])
+
+/** Whether a blocking ask ended because the user's text reached the agent. */
+export const isAnsweredQuestionEnding = (reason: unknown): boolean =>
+  typeof reason === 'string' && ANSWERED_QUESTION_ENDINGS.has(reason)
 
 /** Retire folder-suggestion cards for slots an authoritative list reports as
  *  already filed.
@@ -98,6 +106,13 @@ export const capturePendingAskId = (
  *  deferring to queue_pop would hold the two against each other for the entire
  *  ask window. A rejected send resolves nothing — the card is the user's only
  *  way to answer, and the session never moved on. */
+/** A release-failed notice describes the open card, so it leaves with that card. */
+const dropReleaseFailedNotice = (state: ChatState, slot: string): void => {
+  if (!slot || isUnsafeKey(slot)) return
+  const key = safeKey(slot)
+  if (state.restoredQuestionNotices?.[key]?.kind === 'release_failed') delete state.restoredQuestionNotices[key]
+}
+
 export const shouldResolveAskOnSend = (
   accepted: { ok?: boolean; queued?: boolean } | null | undefined,
   askAtSend: string | null,
@@ -174,6 +189,7 @@ export const composerCardReducers = {
       serverCardId: action.payload.card_id,
       ...(action.payload.native ? { native: true } : {}),
       ...(sameShape && prev.draftActive === true ? { draftActive: true } : {}),
+      ...(sameShape && prev.draftAnswers ? { draftAnswers: prev.draftAnswers } : {}),
     }
   },
   /** Take a slot's card off screen, optionally only if it is still the card
@@ -182,23 +198,61 @@ export const composerCardReducers = {
    *  lands after a newer card replaced the one dismissed must not take that
    *  newer card down with it. Unlike `resolveQuestionCard`, this is the user's
    *  own explicit action, so a draft in progress does not spare the card. */
-  clearQuestionCard(state: ChatState, action: PayloadAction<{ slot: string; card_id?: string }>) {
+  clearQuestionCard(state: ChatState, action: PayloadAction<{ slot: string; card_id?: string; restored_notice?: boolean }>) {
     if (isUnsafeKey(action.payload.slot)) return
     const key = safeKey(action.payload.slot)
+    if (action.payload.restored_notice) {
+      delete state.restoredQuestionNotices?.[key]
+      return
+    }
     const card = state.pendingQuestions?.[key]
     if (!card) return
     if (action.payload.card_id && card.serverCardId !== action.payload.card_id) return
     delete state.pendingQuestions[key]
+    dropReleaseFailedNotice(state, action.payload.slot)
   },
-  /** Publish whether the slot's pending card has a non-empty custom answer
-   *  in progress. The draft text itself lives in QuestionCard's component
-   *  state; the reducer only needs the boolean so `dropStaleStatelessQuestion`
-   *  can refuse to unmount a card whose typed answer would be destroyed.
-   *  No-op when no card is pending (a late flip after resolution). */
-  setQuestionDraft(state: ChatState, action: PayloadAction<{ slot: string; active: boolean }>) {
+  /** Publish component-local answers for retirement recovery and stateless draft protection. */
+  setQuestionDraft(state: ChatState, action: PayloadAction<{ slot: string; answers: Record<string, string> }>) {
     if (isUnsafeKey(action.payload.slot)) return
-    const card = state.pendingQuestions?.[safeKey(action.payload.slot)]
-    if (card) card.draftActive = action.payload.active
+    const key = safeKey(action.payload.slot)
+    const card = state.pendingQuestions?.[key]
+    if (!card) return
+    if (Object.keys(action.payload.answers).length) {
+      card.draftActive = true
+      card.draftAnswers = action.payload.answers
+    } else {
+      delete card.draftActive
+      delete card.draftAnswers
+    }
+  },
+  /** A durable notice above a slot's card: unlike a transcript row it survives the refetch a send triggers. */
+  setQuestionNotice(state: ChatState, action: PayloadAction<{ slot: string; message: string; kind?: QuestionNotice['kind'] }>) {
+    if (!action.payload.slot || isUnsafeKey(action.payload.slot) || !action.payload.message) return
+    if (!state.restoredQuestionNotices) state.restoredQuestionNotices = {}
+    state.restoredQuestionNotices[safeKey(action.payload.slot)] = {
+      message: action.payload.message,
+      kind: action.payload.kind ?? 'restored',
+    }
+  },
+  setQuestionRequestInFlight(state: ChatState, action: PayloadAction<{ ask_id: string; inFlight: boolean; releaseReason?: 'composer' | 'queued' }>) {
+    if (!action.payload.ask_id || isUnsafeKey(action.payload.ask_id)) return
+    if (!state.questionRequestsInFlight) state.questionRequestsInFlight = {}
+    const key = safeKey(action.payload.ask_id)
+    if (action.payload.inFlight) state.questionRequestsInFlight[key] = action.payload.releaseReason ?? true
+    else delete state.questionRequestsInFlight[key]
+  },
+  markQuestionSettled(state: ChatState, action: PayloadAction<{ ask_id: string }>) {
+    if (!action.payload.ask_id || isUnsafeKey(action.payload.ask_id)) return
+    if (!state.questionsSettled) state.questionsSettled = {}
+    const key = safeKey(action.payload.ask_id)
+    delete state.questionsSettled[key]
+    state.questionsSettled[key] = true
+    const overflow = Object.keys(state.questionsSettled).length - QUESTION_SETTLED_LIMIT
+    if (overflow > 0) {
+      for (const retired of Object.keys(state.questionsSettled).slice(0, overflow)) {
+        delete state.questionsSettled[retired]
+      }
+    }
   },
   /** Clear the card the backend just retired, matched by IDENTITY.
    *
@@ -209,20 +263,26 @@ export const composerCardReducers = {
    *  card the user is part-way through.
    *
    *  A STATELESS card with a draft in progress survives, for the same reason
-   *  `dropStaleStatelessQuestion` spares it: the typed answer lives only in the
-   *  card's component state, so unmounting discards it — and a retirement
-   *  arrives at an unpredictable moment (a nudge frame on a monitored session
-   *  retires the record while the user is still typing). The card is already
-   *  answerable as a plain message, and dismissing it after the server dropped
-   *  the record is treated as success. A BLOCKING ask is not spared: its future
-   *  is already settled, so the card cannot be answered at all. */
-  resolveQuestionCard(state: ChatState, action: PayloadAction<{ ask_id?: string; card_id?: string }>) {
-    const { ask_id: askId, card_id: cardId } = action.payload
+   *  `dropStaleStatelessQuestion` spares it: its server record may retire while
+   *  the component-local answer is still being edited. A BLOCKING ask is removed
+   *  immediately; the websocket handler restores its published `draftAnswers`
+   *  before dispatching this reducer. `settled` is a local caller that has
+   *  finished with either kind of card. */
+  resolveQuestionCard(state: ChatState, action: PayloadAction<{ ask_id?: string; card_id?: string; settled?: boolean; restored_notice?: string }>) {
+    const { ask_id: askId, card_id: cardId, settled, restored_notice: restoredNotice } = action.payload
     if (!askId && !cardId) return
     for (const [slotKey, card] of Object.entries(state.pendingQuestions ?? {})) {
       const hit = askId ? card?.ask_id === askId : card?.serverCardId === cardId
       if (!hit) continue
-      if (!askId && card?.draftActive) continue
+      if (!settled && cardId && card?.draftActive) continue
+      dropReleaseFailedNotice(state, card.slot)
+      if (askId && restoredNotice) {
+        if (!state.restoredQuestionNotices) state.restoredQuestionNotices = {}
+        state.restoredQuestionNotices[safeKey(card.slot)] = {
+          message: restoredNotice,
+          kind: 'restored',
+        }
+      }
       delete state.pendingQuestions[slotKey]
     }
   },

@@ -8,7 +8,7 @@
  * screen.
  *
  * The scene composes the REAL surface out of `src/`: the notice wrapper
- * ChatPage renders above the composer and the composer itself. The titles come
+ * ComposerDockView renders above the composer and the composer itself. The titles come
  * from the live catalog through `i18nT`, so a frame also proves the two new
  * keys resolve — nothing here re-implements the components, their classes, or
  * their strings.
@@ -106,7 +106,7 @@ createRoot(document.getElementById('root')!).render(
               />
             </div>
           )}
-          {/* The composer's real container in ChatPage — the notice above mirrors
+          {/* The composer's real container in ComposerDockView — the notice above mirrors
               it, so the frame shows the true alignment rather than a harness one. */}
           <div className="px-4 pb-2 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }}>
             <ChatInput

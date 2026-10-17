@@ -19,7 +19,7 @@ describe('TurnBlock — interim fan-out fold', () => {
     { kind: 'single', msg: { role: 'error', content: 'a spawn failed', ts: '2' }, idx: 1 },
   ]
   /** The element CollapsibleSection wraps its children in. */
-  const collapsed = (c: HTMLElement) => c.querySelector('[style*="overflow: hidden"]')
+  const collapsed = (c: HTMLElement) => c.querySelector('[data-collapsed="true"]')
 
   it('folds the region behind one toggle in DEFAULT mode, where nothing folded before', () => {
     const turn = { ...makeTurn(interimItems()), interim: true }
@@ -117,7 +117,7 @@ describe('TurnBlock — file role visibility', () => {
     // File message at idx 1 must be visible (not inside collapsed overflow:hidden section)
     const fileItem = container.querySelector('[data-testid="item-1"]')
     expect(fileItem).not.toBeNull()
-    expect(fileItem?.closest('[style*="overflow"]')).toBeNull()
+    expect(fileItem?.closest('[data-collapsed="true"]')).toBeNull()
     // Conclusion still visible
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
@@ -143,7 +143,7 @@ describe('TurnBlock — file role visibility', () => {
     // (overflow-hidden) section — same assertion shape as the file-row test.
     const reportItem = container.querySelector('[data-testid="item-0"]')
     expect(reportItem).not.toBeNull()
-    expect(reportItem?.closest('[style*="overflow"]')).toBeNull()
+    expect(reportItem?.closest('[data-collapsed="true"]')).toBeNull()
     // Conclusion still visible
     expect(container.querySelector('[data-testid="item-2"]')).not.toBeNull()
   })
@@ -168,11 +168,11 @@ describe('TurnBlock — file role visibility', () => {
     // not render or sits inside a collapsed overflow section. This pins the
     // user-preference contract the marker deliberately opts OUT of.
     const reportItem = container.querySelector('[data-testid="item-0"]')
-    expect(reportItem === null || reportItem.closest('[style*="overflow"]') !== null).toBe(true)
+    expect(reportItem === null || reportItem.closest('[data-collapsed="true"]') !== null).toBe(true)
     // The conclusion is the visible survivor.
     const conclusion = container.querySelector('[data-testid="item-2"]')
     expect(conclusion).not.toBeNull()
-    expect(conclusion?.closest('[style*="overflow"]')).toBeNull()
+    expect(conclusion?.closest('[data-collapsed="true"]')).toBeNull()
   })
 
   it('renders file in its original turn position (not hoisted to top)', () => {
@@ -219,7 +219,7 @@ describe('TurnBlock — renderable content stays visible in collapseAll mode', (
     const widgetItem = container.querySelector('[data-testid="item-1"]')
     expect(widgetItem).not.toBeNull()
     // It should NOT be a descendant of a CollapsibleSection (motion.div with overflow:hidden).
-    const collapsedAncestors = widgetItem?.closest('[style*="overflow"]') ?? null
+    const collapsedAncestors = widgetItem?.closest('[data-collapsed="true"]') ?? null
     expect(collapsedAncestors).toBeNull()
     // The conclusion (last assistant message) is still visible.
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
@@ -243,7 +243,7 @@ describe('TurnBlock — renderable content stays visible in collapseAll mode', (
     )
     const imgItem = container.querySelector('[data-testid="item-1"]')
     expect(imgItem).not.toBeNull()
-    expect(imgItem?.closest('[style*="overflow"]')).toBeNull()
+    expect(imgItem?.closest('[data-collapsed="true"]')).toBeNull()
   })
 
   it('plain prose between tool calls still collapses (no regression)', () => {
@@ -264,7 +264,7 @@ describe('TurnBlock — renderable content stays visible in collapseAll mode', (
     // Plain prose at idx 1 should be inside a collapsed (overflow:hidden) section.
     const proseItem = container.querySelector('[data-testid="item-1"]')
     expect(proseItem).not.toBeNull()
-    expect(proseItem?.closest('[style*="overflow"]')).not.toBeNull()
+    expect(proseItem?.closest('[data-collapsed="true"]')).not.toBeNull()
     // Conclusion still visible.
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
@@ -444,7 +444,7 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     // (overflow:hidden) reasoning section — it is a real deliverable.
     const handBack = container.querySelector('[data-testid="item-1"]')
     expect(handBack).not.toBeNull()
-    expect(handBack?.closest('[style*="overflow"]')).toBeNull()
+    expect(handBack?.closest('[data-collapsed="true"]')).toBeNull()
     // The final conclusion is still visible too.
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
@@ -467,7 +467,7 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     // collapsed section — surfacing it would defeat "hide intermediate reasoning".
     const prose = container.querySelector('[data-testid="item-1"]')
     expect(prose).not.toBeNull()
-    expect(prose?.closest('[style*="overflow"]')).not.toBeNull()
+    expect(prose?.closest('[data-collapsed="true"]')).not.toBeNull()
     // Conclusion still visible.
     expect(container.querySelector('[data-testid="item-3"]')).not.toBeNull()
   })
@@ -494,10 +494,10 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
     for (const i of [1, 2, 3]) {
       const el = container.querySelector(`[data-testid="item-${i}"]`)
       expect(el).not.toBeNull()
-      expect(el?.closest('[style*="overflow"]')).toBeNull()
+      expect(el?.closest('[data-collapsed="true"]')).toBeNull()
     }
     // ...while the templated ack is still free to fold away.
-    expect(container.querySelector('[data-testid="item-0"]')?.closest('[style*="overflow"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="item-0"]')?.closest('[data-collapsed="true"]')).not.toBeNull()
   })
 
   it('does not treat a stray class containing "crew-reply" as a marker', () => {
@@ -514,7 +514,7 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
         collapseAll={true}
       />
     )
-    expect(container.querySelector('[data-testid="item-0"]')?.closest('[style*="overflow"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="item-0"]')?.closest('[data-collapsed="true"]')).not.toBeNull()
   })
 
   it('the "Worked through N steps" count excludes the now-visible hand-back', () => {
@@ -546,7 +546,7 @@ describe('TurnBlock — mid-turn hand-back ([OPTIONS:]) visibility', () => {
 describe('TurnBlock — answer before a tool-refusal recovery', () => {
   const renderItem = (it: TurnItem, i: number) => <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
   const isFolded = (container: HTMLElement, i: number) =>
-    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[style*="overflow"]') != null
+    container.querySelector(`[data-testid="item-${i}"]`)?.closest('[data-collapsed="true"]') != null
 
   it('keeps the answer and the refusal card visible when a reply follows the card', () => {
     const items: TurnItem[] = [
@@ -799,7 +799,7 @@ describe('TurnBlock — trailing recycle notice does not become the conclusion (
   const renderItem = (it: TurnItem, i: number) => (
     <div data-testid={`item-${i}`}>{it.kind === 'single' ? it.msg.content : 'group'}</div>
   )
-  const inFold = (el: HTMLElement) => el.closest('[style*="overflow: hidden"]')
+  const inFold = (el: HTMLElement) => el.closest('[data-collapsed="true"]')
 
   for (const collapseAll of [false, true]) {
     it(`keeps the answer visible and the notice after it (collapseAll=${collapseAll})`, () => {

@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.apps import manager
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.history import ConversationLog
 from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.fixtures import seeded_home
 
 pytest_plugins = ["kiro_crew.testing.fixtures"]
 
@@ -20,6 +22,7 @@ def test_multi_workspace_fixture_routes_sessions_and_memory(
     config = KiroCrewConfig.load()
     assert config.default_workspace == "default"
     assert set(config.workspaces) == {"default", "review", "research"}
+    assert config.instances.enabled is True
 
     seeded_root = seeded_home_fixture.resolve()
     expected = {
@@ -52,3 +55,18 @@ def test_multi_workspace_fixture_routes_sessions_and_memory(
         ("review", "kirocrew"),
         ("research", "orchestrator"),
     }
+
+
+def test_multi_workspace_fixture_enables_the_builtin_dev_fleet_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # register_builtin_apps() refreshes this process-global cache; scope it so
+    # a later list_apps() on this worker does not read an entry this test built.
+    monkeypatch.setattr(manager, "_orphaned_builtins_cache", None)
+    with seeded_home("multi-workspace"):
+        manager.register_builtin_apps()
+        installed = {app["name"]: app for app in manager.list_apps()}
+
+    dev_fleet = installed["dev-fleet"]
+    assert dev_fleet["enabled"] is True
+    assert dev_fleet["manifest"]["name"] == "dev-fleet"

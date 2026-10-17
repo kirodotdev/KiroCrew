@@ -138,7 +138,7 @@ async def test_non_git_source_install_discovers_checkout_before_pod_op(
     monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
     monkeypatch.setattr(repository, "_own_source_checkout", lambda: str(installed_source))
     monkeypatch.setattr(repository, "_candidate_checkouts", lambda: [str(checkout)])
-    monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", True))
+    monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda failed=None: ("", True))
     monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda path: path)
     monkeypatch.setattr(repository, "_repo_source_hint", lambda: "unused")
     monkeypatch.setattr(repository, "_DISCOVERY_DONE", False)
@@ -453,6 +453,140 @@ def test_pod_up_tool_returns_the_token_verbatim(monkeypatch: pytest.MonkeyPatch)
     assert "http://127.0.0.1:7913" in out
     assert calls[0][0] == "/api/apps/dev-fleet/pod/up"
     assert calls[0][1] == {"worktree": "kc-wt-1"}
+
+
+def _token_line(out: str) -> str:
+    return next(line for line in out.splitlines() if line.startswith("token:"))
+
+
+def test_pod_up_tool_names_both_token_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The link window and the session lifetime are both named, from the route's numbers.
+
+    Naming only the session lifetime tells the agent its token lasts hours when
+    the pod refuses it as expired minutes later.
+    """
+    monkeypatch.setattr(
+        apps_tools.mcp_core,
+        "_post",
+        lambda *_a, **_k: {
+            "ok": True,
+            "port": 7913,
+            "base_url": "http://127.0.0.1:7913",
+            "token": "tok-abc123",
+            "ttl": "2h",
+            "link_ttl_secs": 300,
+            "session_ttl_secs": 7200,
+        },
+    )
+    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+    line = _token_line(out)
+    assert "tok-abc123" in line
+    assert "use within 5 min" in line
+    assert "the session it opens lasts 2h" in line
+    assert "ttl 2h" not in out
+    assert "call pod_up again" in out
+
+
+def test_pod_up_tool_reads_the_numbers_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The windows come from the route response, not from constants in the tool."""
+    monkeypatch.setattr(
+        apps_tools.mcp_core,
+        "_post",
+        lambda *_a, **_k: {
+            "ok": True,
+            "port": 7913,
+            "token": "tok-abc123",
+            "link_ttl_secs": 120,
+            "session_ttl_secs": 1800,
+        },
+    )
+    line = _token_line(apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"}))
+    assert "use within 2 min" in line
+    assert "lasts 30 min" in line
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"ttl": "2h"},
+        {"link_ttl_secs": 0, "session_ttl_secs": 7200},
+        {"link_ttl_secs": True, "session_ttl_secs": 7200},
+        {"link_ttl_secs": "300", "session_ttl_secs": 7200},
+    ],
+)
+def test_pod_up_tool_names_no_duration_it_was_not_given(
+    monkeypatch: pytest.MonkeyPatch, extra: dict[str, Any]
+) -> None:
+    """Without usable windows the line names no duration; a guessed one is the defect."""
+    monkeypatch.setattr(
+        apps_tools.mcp_core,
+        "_post",
+        lambda *_a, **_k: {"ok": True, "port": 7913, "token": "tok-abc123", **extra},
+    )
+    line = _token_line(apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"}))
+    assert "tok-abc123" in line
+    assert "2h" not in line
+    assert "straight away" in line
+
+
+def test_pod_up_description_names_the_link_window() -> None:
+    """The description is what an agent plans from, so it states both limits."""
+    desc = next(t for t in apps_tools.schemas() if t["name"] == "pod_up")["description"]
+    assert "2h credential" not in desc
+    assert "5 minutes" in desc
+    assert "session" in desc and "2h" in desc
+    assert "fresh token" in desc
+
+
+@pytest.mark.asyncio
+async def test_pod_up_route_reports_the_windows_of_the_minted_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route reads both windows from the token's own claims.
+
+    A real link token is minted the way the pod mints one (a 2h session), so the
+    numbers pinned here are the ones a pod hands out, not ones this test chose.
+    """
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.apps.builtins.dev_fleet import repository, runtime, worktree_ops
+    from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, generate_token
+
+    token = generate_token("local-app", ttl_seconds=7200, register_nonce=False)
+    handle = {"name": "kc-wt-1", "status": "up", "port": 7913, "token": token, "ttl": "2h"}
+    monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
+    monkeypatch.setattr(worktree_ops, "_pod_env", lambda: {})
+    monkeypatch.setattr(runtime, "_warm_build_path", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime, "_load_cfg", lambda: None)
+    monkeypatch.setattr(runtime, "_find_cli", lambda: ["kirocrew"])
+    monkeypatch.setattr(runtime, "_POD_AVAILABLE", False)
+    monkeypatch.setattr(repository, "_repo", lambda: "/nonexistent-repo")
+    monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(return_value=(0, json.dumps(handle), "")))
+    result = await worktree_ops._pod_up_locked("kc-wt-1")
+    assert result["ok"] is True
+    assert result["token"] == token
+    assert result["link_ttl_secs"] == LINK_WINDOW_SECS == 300
+    assert result["session_ttl_secs"] == 7200
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "",
+        "not-a-token",
+        "!!!.sig",
+        "bnVsbA.sig",  # JSON null
+        "WzEsMiwzXQ.sig",  # a JSON list
+        "eyJpYXQiOjEwMCwiZXhwIjoxMDB9.sig",  # no session_exp, zero link window
+        "eyJpYXQiOjEwMCwiZXhwIjp0cnVlLCJzZXNzaW9uX2V4cCI6MjAwfQ.sig",  # bool exp
+    ],
+)
+def test_token_windows_reports_nothing_for_a_malformed_token(token: str) -> None:
+    """A token the route cannot read yields no window rather than a wrong one."""
+    from kiro_crew.apps.builtins.dev_fleet import worktree_ops
+
+    assert worktree_ops._token_windows(token) == {}
 
 
 def test_pod_up_tool_says_so_when_the_cli_withheld_the_token(

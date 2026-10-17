@@ -88,7 +88,12 @@ extra model run per round *and* real Presenter effort. A deliberate, occasional 
   `include_lessons=false`, because the Presenter's memory and saved lessons are exactly
   the reasoning the Listener must not have seen. Keep `include_project=true` when the
   topic is code in the active project. The Listener is told which groups were withheld,
-  so it flags a gap rather than inventing context.
+  so it flags a gap rather than inventing context. The flags withhold only what is
+  INJECTED: the Listener still has the default toolset (`memory_recall`, `learn_list`,
+  `search_chat_history`, `get_chat_session`, file reads), so it can fetch the
+  Presenter's reasoning or the artifact on its own. Blindness is a charter instruction,
+  not an enforced fence — keep the charter's "do not look it up" line, and treat a
+  Listener answer that quotes the artifact verbatim as contaminated.
 - **Keep the charter + explanation compact.** If the topic is large, **compress** the
   explanation to its essential claims — do NOT paste the whole artifact, and for a
   genuinely large topic write it to a file and hand the Listener the path. Compression
@@ -97,14 +102,17 @@ extra model run per round *and* real Presenter effort. A deliberate, occasional 
 - **Cross-vendor is the point.** A same-family Listener *tends to* rationalize the way
   the Presenter does (same-family models often diverge too, but cross-vendor maximizes
   failure-mode diversity). Discover the live menu with `kiro-cli chat --list-models --format
-  json`; prefer large `context_window_tokens`, pick a different vendor than yours.
+  json` (it lists kiro-cli's own models only; another backend's menu comes from that
+  backend); prefer large `context_window_tokens`, pick a different vendor than yours.
 
 ## Listener charter (the `task`, `{TOPIC_EXPLANATION}` filled in)
 
 ```
 You are the LISTENER in a "rubber duck review" — an adversarial skeptic. A presenter
 explained a topic to you. You have NOT seen their doc or data — only the explanation
-and the original ask below. Force honesty by LOCATING defects — name the specific claim, number, or step
+and the original ask below. Keep it that way: do NOT call memory_recall, learn_list,
+search_chat_history or get_chat_session, and do NOT open the artifact or its data.
+Force honesty by LOCATING defects — name the specific claim, number, or step
 that is suspect and say why; do NOT fix or rewrite anything (error-finding, not fixing,
 is your job). Judge only factual support and logical validity — ignore length,
 formatting, fluency, and confident tone. Separate OBSERVED from INFERRED and challenge

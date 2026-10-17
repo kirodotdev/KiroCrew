@@ -72,7 +72,7 @@ export interface RelayStrings {
  * cannot reach it and the tab shows a connection error. The gateway's own
  * loopback listener DID mint the code, so pasting the failed callback URL back
  * lets the gateway replay it locally and finish the flow. It only DELIVERS an
- * already-minted code; it never mints one (parked decision #4286, untouched).
+ * already-minted code; it never mints one.
  *
  * `onDeadEnd` lets a host that has NO out-of-band completion signal (the MCP
  * table, whose only feedback is the row badge) route the two terminal

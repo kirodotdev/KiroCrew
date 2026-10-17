@@ -8,7 +8,7 @@
           "command": "echo kiro-crew-gate-probe",
           "description": "print a probe marker"
         },
-        "title": "print a probe marker",
+        "title": "bash",
         "tool_call_id": "toolu_probe_01",
         "tool_input": "{\n  \"command\": \"echo kiro-crew-gate-probe\",\n  \"description\": \"print a probe marker\"\n}",
         "tool_kind": "other",

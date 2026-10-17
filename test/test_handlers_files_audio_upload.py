@@ -122,7 +122,7 @@ async def test_audio_uses_the_buffered_file_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Apply the ordinary file cap to audio streamed through the media path."""
-    monkeypatch.setattr("kiro_crew.dashboard.handlers.files._MAX_UPLOAD_BYTES", 64)
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.files.upload_max_bytes", lambda: 64)
     status, body = await _post(OGG + b"\x00" * 128, "long.ogg", "audio/ogg")
     assert status == 413, body
     assert body["code"] == "audio_too_large", body

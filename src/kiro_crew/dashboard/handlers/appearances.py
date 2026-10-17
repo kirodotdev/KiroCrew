@@ -38,6 +38,7 @@ from typing import Any
 from aiohttp import BodyPartReader, web
 
 from kiro_crew.appearance_packs import DEFAULT_PACK
+from kiro_crew.appearance_packs.transfer import MAX_BUNDLE_BYTES, fetch_petdex_pet
 from kiro_crew.dashboard.appearances import (
     delete_pack_if_unworn,
     get_appearance_store,
@@ -64,22 +65,6 @@ _SVG_CSP = "script-src 'none'; style-src 'unsafe-inline'"
 #: Cap on a slot name. It is only ever a dict key here, never a path segment,
 #: but an unbounded key from the wire has no reason to be accepted.
 _MAX_SLOT_LEN = 64
-
-
-def _max_bundle_bytes() -> int:
-    """``pack_transfer.MAX_BUNDLE_BYTES``, resolved at call time.
-
-    boot path: ``pack_transfer`` builds a ``urllib`` opener at module scope
-    (its PetDex redirect guard), and this handler module is imported by the
-    dashboard's route table during ``start_dashboard()`` -- before the socket
-    binds. A module-scope import here would therefore run that construction on
-    every gateway launch, including on installs where nothing ever imports a
-    pack. It is cheap, but ``no-new-work-on-gateway-boot-path`` is about the
-    class, not the cost: the first request pays it instead.
-    """
-    from kiro_crew.appearance_packs.transfer import MAX_BUNDLE_BYTES
-
-    return MAX_BUNDLE_BYTES
 
 
 def _sel():
@@ -220,13 +205,22 @@ async def api_appearances_list(request: web.Request) -> web.Response:
 
 
 async def api_appearance_detail(request: web.Request) -> web.Response:
-    """GET /api/appearances/{id} — one pack with its art inlined."""
+    """GET /api/appearances/{id} — one pack with its art inlined.
+
+    ``?meta=1`` answers without any file's bytes: each slot's format, the sprite
+    geometry and the cue presence. That is what a crew avatar reads to choose a
+    player; the svg and sprite tiers then draw from the slot route, so they never
+    download art they would throw away.
+    """
     denied = await _require_owner(request, "appearances.detail")
     if denied is not None:
         return denied
+    include_content = request.query.get("meta") != "1"
     try:
         store = await asyncio.to_thread(get_appearance_store)
-        detail = await asyncio.to_thread(store.pack_detail, request.match_info["id"])
+        detail = await asyncio.to_thread(
+            store.pack_detail, request.match_info["id"], include_content=include_content
+        )
     except OSError:
         return _library_unavailable()
     if detail is None:
@@ -344,7 +338,7 @@ async def _bundle_from_request(request: web.Request) -> tuple[Any, web.Response 
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > _max_bundle_bytes():
+                    if total > MAX_BUNDLE_BYTES:
                         return None, _bad_request("that bundle is too large", "bundle_too_large")
                     chunks.append(chunk)
                 break
@@ -417,9 +411,6 @@ async def api_appearances_petdex_fetch(request: web.Request) -> web.Response:
         body = {}
     if not isinstance(body, dict):
         body = {}
-    # boot path: see _max_bundle_bytes.
-    from kiro_crew.appearance_packs.transfer import fetch_petdex_pet
-
     result = await asyncio.to_thread(fetch_petdex_pet, body.get("input", ""))
     _audit(
         "appearances.petdex_fetch",

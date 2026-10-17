@@ -14,22 +14,29 @@ import asyncio
 import json
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.crew_main_contract import (
+    _DECISION_WORDS,
+    _ENGLISH,
     CARD_FIELDS,
     DERIVED_FIELDS,
     FOLD_UNREADABLE,
     JUDGMENT_FIELDS,
     JUDGMENT_TEXT_LIMIT,
     NOT_RECORDED,
+    PHRASES_FIELD,
     UNREADABLE,
     CrewMainData,
     CrewMainReads,
+    Phrase,
+    _english,
     build_crew_main,
     card_data_payload,
+    crew_main_phrases,
     merge_crew_main,
 )
 from kiro_crew.dashboard import card_lifecycle
@@ -85,7 +92,6 @@ class _Slot:
         self.key = key
         self.messages: list[dict] = kwargs.pop("messages", [{"role": "user", "content": "hi"}])  # type: ignore[assignment]
         self._created_by = kwargs.pop("created_by", "")
-        self.is_remote = kwargs.pop("is_remote", False)
         self.executor = kwargs.pop("executor", "")
         self.memory_mode = kwargs.pop("memory_mode", "persistent")
         self._dashboard_card_identity = kwargs.pop("identity", "id-" + key)
@@ -242,9 +248,9 @@ def test_a_damaged_value_costs_one_field_and_not_the_card() -> None:
 def test_the_phase_names_a_stop_in_words_never_the_enum() -> None:
     """A reader shown ``end_turn`` is shown a machine word; the field says what happened."""
     finished = build_crew_main(_reads(status={"turn_open": False, "last_stop_reason": "end_turn"}))
-    assert finished["phase"] == "the last turn finished"
+    assert finished["phase"] == "last turn finished"
     novel = build_crew_main(_reads(status={"turn_open": False, "last_stop_reason": "brand_new"}))
-    assert novel["phase"] == "the last turn stopped"
+    assert novel["phase"] == "last turn stopped"
     assert "_" not in novel["phase"]
 
 
@@ -253,7 +259,7 @@ def test_the_phase_names_a_stop_in_words_never_the_enum() -> None:
     [
         pytest.param("open", "session open", id="open"),
         pytest.param("closed", "session closed", id="closed"),
-        pytest.param("unknown", "the log no longer says", id="retention-took-it"),
+        pytest.param("unknown", "no longer in the log", id="retention-took-it"),
         pytest.param("nonsense", NOT_RECORDED, id="a-word-the-fold-does-not-use"),
     ],
 )
@@ -320,6 +326,28 @@ def test_a_worker_claim_is_not_reported_as_an_acceptance() -> None:
         )
     )
     assert derived["items_done"] == "1 of 3 items accepted"
+
+
+def test_forgotten_closed_items_still_count_toward_the_board_totals() -> None:
+    """A closed item the fold let go is still the board's: its counts ride in
+    ``forgotten`` and join the totals, so a long board does not read as short."""
+    derived = build_crew_main(
+        _reads(
+            work={
+                "items": [{"state": "open", "status": "progress"}, {"state": "accepted"}],
+                "omitted": 0,
+                "forgotten": {
+                    "created": 300,
+                    "items": 298,
+                    "accepted": 290,
+                    "rejected": 5,
+                    "abandoned": 3,
+                },
+            }
+        )
+    )
+    assert derived["items_done"] == "291 of 300 items accepted"
+    assert derived["items_open"] == "1 of 300 items not yet done"
 
 
 def test_dropped_log_entries_are_never_added_into_a_board_total() -> None:
@@ -395,14 +423,15 @@ def test_the_merge_ignores_a_derived_key_even_when_one_reaches_it() -> None:
 def test_a_clean_card_carries_the_folded_numbers_and_the_three_sentences() -> None:
     derived = build_crew_main(_reads())
     reply = _reply(lede="Working through the queue.", you="Rule on the question.", notes="")
-    card = _root_card_output(reply, None, derived)
+    card = _root_card_output(reply, None, derived, crew_main_phrases(_reads()))
     assert card is not None
     assert card["html"] == LAYOUT
-    assert set(card["data"]) == CARD_FIELDS
+    assert set(card["data"]) == CARD_FIELDS | {PHRASES_FIELD}
     for field in DERIVED_FIELDS:
         assert card["data"][field] == derived[field], field  # type: ignore[literal-required]
     assert card["data"]["lede"] == "Working through the queue."
     assert card["data"]["you"] == "Rule on the question."
+    assert card["data"][PHRASES_FIELD] == crew_main_phrases(_reads())
 
 
 def _html_reply(html: str, **data: object) -> str:
@@ -435,7 +464,10 @@ def _html_reply(html: str, **data: object) -> str:
 )
 def test_a_card_whose_model_part_carries_a_number_is_refused(reply: str) -> None:
     """The publish seam: a number the model wrote anywhere it shows refuses the card."""
-    assert _root_card_output(reply, None, build_crew_main(_reads())) is None
+    assert (
+        _root_card_output(reply, None, build_crew_main(_reads()), crew_main_phrases(_reads()))
+        is None
+    )
 
 
 def test_digits_in_css_are_layout_not_numbers() -> None:
@@ -445,16 +477,25 @@ def test_digits_in_css_are_layout_not_numbers() -> None:
 
 
 def test_a_data_only_reply_keeps_the_layout_and_refreshes_the_numbers() -> None:
-    first = _root_card_output(_reply(lede="Starting."), None, build_crew_main(_reads()))
+    first = _root_card_output(
+        _reply(lede="Starting."), None, build_crew_main(_reads()), crew_main_phrases(_reads())
+    )
     assert first is not None
-    later = build_crew_main(_reads(work={"items": [{"state": "accepted", "status": "done"}]}))
-    second = _root_card_output(json.dumps({"data": {"lede": "Finished."}}), first, later)
+    later_reads = _reads(work={"items": [{"state": "accepted", "status": "done"}]})
+    later = build_crew_main(later_reads)
+    later_phrases = crew_main_phrases(later_reads)
+    second = _root_card_output(
+        json.dumps({"data": {"lede": "Finished."}}), first, later, later_phrases
+    )
     assert second is not None
     assert second["html"] == first["html"]
     assert second["data"]["items_done"] == later["items_done"]
+    assert second["data"][PHRASES_FIELD] == later_phrases
     assert second["data"]["lede"] == "Finished."
     # With no layout to keep, a data-only reply has nothing to publish into.
-    assert _root_card_output(json.dumps({"data": {"lede": "Hi."}}), None, later) is None
+    assert (
+        _root_card_output(json.dumps({"data": {"lede": "Hi."}}), None, later, later_phrases) is None
+    )
 
 
 def test_the_prompt_hands_numbers_over_as_facts_and_forbids_digits() -> None:
@@ -467,9 +508,34 @@ def test_the_prompt_hands_numbers_over_as_facts_and_forbids_digits() -> None:
 
 
 def test_the_published_card_fits_the_host_caps_at_their_worst() -> None:
-    long = {field: "x" * JUDGMENT_TEXT_LIMIT for field in JUDGMENT_FIELDS}
-    for reads in (_reads(), _reads(**{name: FOLD_UNREADABLE for name in FOLD_NAMES})):
-        data = card_data_payload(merge_crew_main(build_crew_main(reads), long))  # type: ignore[arg-type]
+    """Three full sentences, every phrase at its longest, and the biggest counts a fold
+    could plausibly carry: the data island still fits, phrases included. The sentences are
+    written in a three-byte script, because the cap counts bytes and a translated card is
+    exactly the one that spends them."""
+    long = {field: "語" * JUDGMENT_TEXT_LIMIT for field in JUDGMENT_FIELDS}
+    big = 10**15
+    widest = _reads(
+        status={"lifecycle": "open", "turns_completed": big, "turns_refused": big, "entries": big},
+        usage={
+            "credits": float(big),
+            "credits_by_source": {"subagent": {"credits": float(big), "reported": big}},
+            "tokens": {"total": big},
+        },
+        approvals={
+            "requested": big,
+            "decided": big,
+            "pending": big,
+            "by_decision": {
+                name: big for name in ("approved", "rejected", "rejected_once", "unknown")
+            },
+        },
+        work={"items": [{"state": "open", "status": "progress"}] * 400, "omitted": big},
+    )
+    for reads in (_reads(), _reads(**{name: FOLD_UNREADABLE for name in FOLD_NAMES}), widest):
+        data = card_data_payload(
+            merge_crew_main(build_crew_main(reads), long),  # type: ignore[arg-type]
+            crew_main_phrases(reads),
+        )
         assert len(LAYOUT.encode()) <= MAX_HTML_BYTES
         size = sum(len(k.encode()) + len(v.encode()) for k, v in data.items())
         assert size <= MAX_DATA_BYTES, f"{size} data bytes"
@@ -479,8 +545,119 @@ def test_the_published_card_fits_the_host_caps_at_their_worst() -> None:
 def test_every_field_name_is_one_the_host_accepts() -> None:
     from kiro_crew.dashboard.dynamic_cards import _FIELD_NAME
 
-    for field in CARD_FIELDS:
+    for field in CARD_FIELDS | {PHRASES_FIELD}:
         assert _FIELD_NAME.fullmatch(field), field
+
+
+# --------------------------------------------------------------------------
+# the same values as phrases, for the dashboard to render in its language
+# --------------------------------------------------------------------------
+
+_PHRASE_CASES: list[dict] = json.loads(
+    (Path(__file__).parent / "fixtures" / "crew_main_phrases.json").read_text(encoding="utf-8")
+)["cases"]
+
+
+def _render(phrase: list) -> str:
+    return _english(Phrase(phrase[0], phrase[1] if len(phrase) > 1 else {}))
+
+
+@pytest.mark.parametrize("case", _PHRASE_CASES, ids=lambda case: case["english"])
+def test_every_shared_phrase_renders_the_english_the_dashboard_catalog_holds(case: dict) -> None:
+    """The fixture is read by the dashboard's catalog test too: one English, two renderers."""
+    assert _render(case["phrase"]) == case["english"]
+
+
+def test_the_shared_fixture_covers_every_phrase_and_both_plural_forms() -> None:
+    assert {case["phrase"][0] for case in _PHRASE_CASES} == set(_ENGLISH)
+    for phrase_id, template in _ENGLISH.items():
+        if isinstance(template, tuple):
+            counts = {c["phrase"][1]["n"] for c in _PHRASE_CASES if c["phrase"][0] == phrase_id}
+            assert 1 in counts and counts - {1}, phrase_id
+    named = {
+        name
+        for case in _PHRASE_CASES
+        if case["phrase"][0] == "approvals_decided_by"
+        for name, _ in case["phrase"][1]["rows"]
+    }
+    assert named == set(_DECISION_WORDS)
+
+
+_KNOWN_DECISIONS = {
+    "requested": 9,
+    "decided": 4,
+    "pending": 2,
+    "by_decision": {"approved": 3, "rejected_once": 1},
+}
+
+
+@pytest.mark.parametrize(
+    "reads",
+    [
+        pytest.param(_reads(), id="a-full-board"),
+        pytest.param(_reads(**{name: FOLD_UNREADABLE for name in FOLD_NAMES}), id="nothing-read"),
+        pytest.param(_reads(**{name: {} for name in FOLD_NAMES}), id="folds-read-but-empty"),
+        pytest.param(_reads(work={"items": []}, approvals=_KNOWN_DECISIONS), id="known-decisions"),
+        pytest.param(
+            _reads(
+                status={"turn_open": False, "last_stop_reason": "max_tokens", "turns_completed": 1},
+                usage={
+                    "credits": 0.001,
+                    "credits_by_source": {"subagent": {"credits": 0.002, "reported": 1}},
+                },
+                approvals={"pending": 1, "decided": 0},
+            ),
+            id="singulars-and-tiny-charges",
+        ),
+    ],
+)
+def test_the_phrases_say_exactly_what_the_english_says(reads: CrewMainReads) -> None:
+    """Every phrase renders back to its field's English, and only recorded text has none."""
+    english = build_crew_main(reads)
+    phrases = json.loads(crew_main_phrases(reads))
+    assert set(phrases) <= DERIVED_FIELDS
+    for field, value in english.items():
+        if field in phrases:
+            assert _render(phrases[field]) == value, field
+        else:
+            assert field in {"agent", "model", "approvals_decided"}, field
+            assert value not in {NOT_RECORDED, UNREADABLE}, field
+
+
+def test_recorded_text_and_an_open_decision_name_stay_english() -> None:
+    """A name the log recorded is shown as recorded, never pushed through a catalog."""
+    phrases = json.loads(crew_main_phrases(_reads()))
+    assert "agent" not in phrases and "model" not in phrases
+    # ``allow`` / ``deny`` are not decisions the catalog names, so the field stays English.
+    assert "approvals_decided" not in phrases
+    known = json.loads(crew_main_phrases(_reads(approvals=_KNOWN_DECISIONS)))
+    assert known["approvals_decided"] == [
+        "approvals_decided_by",
+        {"n": 4, "rows": [["approved", 3], ["rejected_once", 1]]},
+    ]
+    absent = json.loads(crew_main_phrases(_reads(status={})))
+    assert absent["agent"] == absent["model"] == ["not_recorded"]
+
+
+def test_a_count_of_one_takes_the_singular_in_every_pluralised_phrase() -> None:
+    """The English the dashboard catalog pluralises is pluralised here too."""
+    derived = build_crew_main(
+        _reads(
+            usage={
+                "credits": 1.0,
+                "credits_by_source": {"subagent": {"credits": 1.0, "reported": 1}},
+            },
+            approvals={"pending": 1, "decided": 1, "by_decision": {"rejected_once": 1}},
+        )
+    )
+    assert derived["credits_subagents"] == "1.00 of that from 1 sub-agent charge"
+    assert derived["approvals_open"] == "1 tool approval still waiting"
+    assert derived["approvals_decided"] == "1 answered (1 rejected once)"
+
+
+def test_the_prompt_puts_the_layouts_labels_in_the_cards_language() -> None:
+    """The values follow the dashboard's catalog; the labels around them are the model's."""
+    assert "every label the HTML shows in ONE language" in " ".join(_ROOT_PROMPT.split())
 
 
 # --------------------------------------------------------------------------
@@ -509,7 +686,6 @@ def test_a_worker_is_not_eligible_for_a_card_at_all() -> None:
 @pytest.mark.parametrize(
     "kwargs",
     [
-        pytest.param({"is_remote": True}, id="remote-flag"),
         pytest.param({"executor": "remote"}, id="remote-executor"),
         pytest.param({"memory_mode": "incognito"}, id="incognito"),
     ],
@@ -688,6 +864,8 @@ async def test_the_root_card_shows_the_fold_values_and_a_worker_gets_none(monkey
     expected = build_crew_main(reads["now"])
     for field in DERIVED_FIELDS:
         assert served["card"]["data"][field] == expected[field]  # type: ignore[literal-required]
+    # The same numbers ride beside the English as phrases, for the dashboard's language.
+    assert served["card"]["data"][PHRASES_FIELD] == crew_main_phrases(reads["now"])
     # The model saw the numbers only as facts, and saw them exactly.
     context = json.loads(prompts[0][len(_ROOT_PROMPT) :])
     assert context["facts"] == dict(expected)
@@ -721,6 +899,7 @@ async def test_numbers_follow_the_log_between_generations_with_no_model_call(mon
     await asyncio.wait_for(lifecycle._derived_worker, 2)
     card = (await lifecycle.read(root))["card"]
     assert card["data"]["items_done"] == "1 of 1 items accepted"
+    assert card["data"][PHRASES_FIELD] == crew_main_phrases(reads["now"])
     assert card["data"]["lede"] == "Reviewing."
     assert len(prompts) == 1
     await lifecycle.shutdown()
@@ -1062,7 +1241,10 @@ async def test_a_workers_report_re_binds_the_conductors_numbers(monkeypatch) -> 
 def test_a_binding_the_binder_never_fills_does_not_count(html: str) -> None:
     # The binder fills body elements it keeps. A fact bound anywhere else is a blank cell.
     reply = json.dumps({"html": html, "data": {"lede": "Working.", "you": "", "notes": ""}})
-    assert _root_card_output(reply, None, build_crew_main(_reads())) is None
+    assert (
+        _root_card_output(reply, None, build_crew_main(_reads()), crew_main_phrases(_reads()))
+        is None
+    )
 
 
 def test_the_growth_signal_reaches_only_the_current_producer(monkeypatch) -> None:
@@ -1096,18 +1278,28 @@ def test_a_layout_that_leaves_a_fact_out_is_refused(html: str) -> None:
     # The model owns the layout, so without this a card could drop every number the
     # folds produced and still publish.
     reply = json.dumps({"html": html, "data": {"lede": "Working.", "you": "", "notes": ""}})
-    assert _root_card_output(reply, None, build_crew_main(_reads())) is None
-    assert _root_card_output(_reply(lede="Working."), None, build_crew_main(_reads())) is not None
+    assert (
+        _root_card_output(reply, None, build_crew_main(_reads()), crew_main_phrases(_reads()))
+        is None
+    )
+    assert (
+        _root_card_output(
+            _reply(lede="Working."), None, build_crew_main(_reads()), crew_main_phrases(_reads())
+        )
+        is not None
+    )
 
 
 def test_a_new_layout_that_drops_a_fact_keeps_the_last_layout_and_takes_the_sentences() -> None:
-    first = _root_card_output(_reply(lede="Starting."), None, build_crew_main(_reads()))
+    first = _root_card_output(
+        _reply(lede="Starting."), None, build_crew_main(_reads()), crew_main_phrases(_reads())
+    )
     assert first is not None
     thin = '<p data-dashboard-field="lede"></p><p data-dashboard-field="you"></p>'
     reply = json.dumps(
         {"html": thin, "data": {"lede": "Waiting on a date.", "you": "", "notes": ""}}
     )
-    second = _root_card_output(reply, first, build_crew_main(_reads()))
+    second = _root_card_output(reply, first, build_crew_main(_reads()), crew_main_phrases(_reads()))
     assert second is not None
     assert second["html"] == first["html"]
     assert second["data"]["lede"] == "Waiting on a date."
@@ -1115,12 +1307,17 @@ def test_a_new_layout_that_drops_a_fact_keeps_the_last_layout_and_takes_the_sent
 
 def test_an_empty_layout_keeps_the_one_on_screen() -> None:
     # Models answer "keep the layout" with "html": "" as often as by omitting the key.
-    first = _root_card_output(_reply(lede="Starting."), None, build_crew_main(_reads()))
+    first = _root_card_output(
+        _reply(lede="Starting."), None, build_crew_main(_reads()), crew_main_phrases(_reads())
+    )
     assert first is not None
     reply = json.dumps({"html": " ", "data": {"lede": "Waiting.", "you": "", "notes": ""}})
-    second = _root_card_output(reply, first, build_crew_main(_reads()))
+    second = _root_card_output(reply, first, build_crew_main(_reads()), crew_main_phrases(_reads()))
     assert second is not None
     assert second["html"] == first["html"]
     assert second["data"]["lede"] == "Waiting."
     # With no layout on screen there is nothing to keep.
-    assert _root_card_output(reply, None, build_crew_main(_reads())) is None
+    assert (
+        _root_card_output(reply, None, build_crew_main(_reads()), crew_main_phrases(_reads()))
+        is None
+    )

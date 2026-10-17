@@ -41,6 +41,8 @@ from kiro_crew.apps.builtins.auto_research.handlers import (
     write_guidance,
     write_status,
 )
+from kiro_crew.testing.fixtures import one_pool_thread  # noqa: F401 (fixture)
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
 
 @pytest.fixture(autouse=True)
@@ -1252,6 +1254,7 @@ class TestHTTPHandlers:
         ]
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("one_pool_thread")
     async def test_resume_cannot_be_overwritten_by_slow_terminal_sidecar(
         self, app, tmp_path: Path, monkeypatch
     ):
@@ -1281,7 +1284,9 @@ class TestHTTPHandlers:
         def _slow_terminal_sidecar(cid: str, status: str, **extra):
             if status == CampaignStatus.STOPPED:
                 terminal_sidecar_started.set()
-                assert release_terminal_sidecar.wait(timeout=5)
+                assert release_terminal_sidecar.wait(
+                    timeout=default_timeout()
+                ), "the test never released the terminal sidecar"
             real_write_status(cid, status, **extra)
 
         monkeypatch.setattr(h, "write_status", _slow_terminal_sidecar)
@@ -1317,7 +1322,10 @@ class TestHTTPHandlers:
                     stopped_reason=AUTONUDGE_STOP_REASON,
                 )
             )
-            assert await asyncio.to_thread(terminal_sidecar_started.wait, 5)
+            await async_wait_until(
+                terminal_sidecar_started.is_set,
+                describe=lambda: "the terminal status sidecar write never started",
+            )
 
             async with TestClient(TestServer(app)) as client:
                 resume = asyncio.create_task(
@@ -2336,6 +2344,7 @@ class TestWatchdogStopTombstone:
         assert last_ts == {}
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("one_pool_thread")
     async def test_cancellation_waits_for_persisted_loop_removal(self, tmp_path, monkeypatch):
         """Shutdown cannot split terminal status from durable loop cleanup."""
         from kiro_crew.apps.builtins.auto_research import handlers as h
@@ -2357,7 +2366,9 @@ class TestWatchdogStopTombstone:
 
         def _persist(_cid, _status, **_kwargs):
             status_write_started.set()
-            assert release_status_write.wait(timeout=5)
+            assert release_status_write.wait(
+                timeout=default_timeout()
+            ), "the test never released the status write"
 
         monkeypatch.setattr(h, "update_campaign_status", _persist)
         monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
@@ -2366,7 +2377,10 @@ class TestWatchdogStopTombstone:
                 cid, [], {}, {}, observed_started_at=1.0
             )
         )
-        assert await asyncio.to_thread(status_write_started.wait, 5)
+        await async_wait_until(
+            status_write_started.is_set,
+            describe=lambda: "the terminal status write never started",
+        )
 
         task.cancel()
         await asyncio.sleep(0)
@@ -2414,7 +2428,9 @@ class TestWatchdogStopTombstone:
 
         def _persist(_cid, _status, **_kwargs):
             status_write_started.set()
-            assert release_status_write.wait(timeout=5)
+            assert release_status_write.wait(
+                timeout=default_timeout()
+            ), "the test never released the status write"
 
         monkeypatch.setattr(h, "update_campaign_status", _persist)
         monkeypatch.setattr(h, "_campaign_run_is_current", lambda _cid, _started: True)
@@ -2425,7 +2441,10 @@ class TestWatchdogStopTombstone:
                 cid, [], {}, {}, observed_started_at=1.0
             )
         )
-        assert await asyncio.to_thread(status_write_started.wait, 5)
+        await async_wait_until(
+            status_write_started.is_set,
+            describe=lambda: "the terminal status write never started",
+        )
 
         replacement = await svc.add(
             slot_key=slot_key,
@@ -2461,7 +2480,9 @@ class TestWatchdogStopTombstone:
 
         def _persist(_cid, _status, **_kwargs):
             status_write_started.set()
-            assert release_status_write.wait(timeout=5)
+            assert release_status_write.wait(
+                timeout=default_timeout()
+            ), "the test never released the status write"
             raise OSError("status store unavailable")
 
         monkeypatch.setattr(h, "update_campaign_status", _persist)
@@ -2471,12 +2492,18 @@ class TestWatchdogStopTombstone:
                 cid, [], {}, {}, observed_started_at=1.0
             )
         )
-        assert await asyncio.to_thread(status_write_started.wait, 5)
+        await async_wait_until(
+            status_write_started.is_set,
+            describe=lambda: "the terminal status write never started",
+        )
 
         task.cancel()
         release_status_write.set()
+        # The settle runs real durable work after the cancel (a SQLite open and
+        # schema check off the loop); on a loaded hosted Windows runner that takes
+        # seconds, so the wait is the lost-run bound, not a number.
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="the cancelled settlement finishing")
 
         # A non-terminal campaign keeps its loop so restart can retry settling.
         assert svc.get_by_slot(f"research-{cid}") is loop
@@ -2513,7 +2540,9 @@ class TestWatchdogStopTombstone:
 
         def _persist(_cid, _status, **_kwargs):
             status_write_started.set()
-            assert release_status_write.wait(timeout=5)
+            assert release_status_write.wait(
+                timeout=default_timeout()
+            ), "the test never released the status write"
             raise OSError("status store unavailable")
 
         monkeypatch.setattr(h, "update_campaign_status", _persist)
@@ -2523,14 +2552,17 @@ class TestWatchdogStopTombstone:
                 cid, [], {}, {}, observed_started_at=1.0
             )
         )
-        assert await asyncio.to_thread(status_write_started.wait, 5)
+        await async_wait_until(
+            status_write_started.is_set,
+            describe=lambda: "the terminal status write never started",
+        )
 
         try:
             task.cancel()
             release_status_write.set()
             with caplog.at_level(logging.ERROR, logger=h.__name__):
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
+                    await await_until(task, what="the cancelled settlement finishing")
 
             failure_records = [
                 r

@@ -18,7 +18,7 @@ function makeVoice(overrides: Partial<VoiceControls> = {}) {
   return v
 }
 
-const MAC_ALT_RIGHT: PttConfig = { mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }
+const MAC_ALT_RIGHT: PttConfig = { enabled: true, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }
 
 function down(code: string, init: KeyboardEventInit = {}) {
   act(() => {
@@ -197,7 +197,7 @@ describe('binding discrimination', () => {
 
   // A chord's primary key WOULD type a character or scroll the page.
   it('claims a chord binding keydown', () => {
-    savePttConfig({ mode: 'hybrid', binding: { code: 'Space', alt: true, shift: true }, holdMs: 500 })
+    savePttConfig({ enabled: true, mode: 'hybrid', binding: { code: 'Space', alt: true, shift: true }, holdMs: 500 })
     const voice = makeVoice()
     renderHook(() => usePushToTalk(voice))
     const ev = new KeyboardEvent('keydown', { code: 'Space', altKey: true, shiftKey: true, bubbles: true, cancelable: true })
@@ -676,7 +676,7 @@ describe('a second press cancels a startup that has not gone live yet', () => {
   }
 
   it('ends a pending toggle-mode session instead of opening a second one', async () => {
-    savePttConfig({ mode: 'toggle', binding: { code: 'AltRight' }, holdMs: 500 })
+    savePttConfig({ enabled: true, mode: 'toggle', binding: { code: 'AltRight' }, holdMs: 500 })
     // recording stays false until go(): the fake is still inside getUserMedia.
     const voice = makeSlowVoice(true)
     renderHook(() => usePushToTalk(voice))
@@ -811,5 +811,54 @@ describe('live rebinding', () => {
     })
     down('MetaRight', { metaKey: true })
     expect(voice.calls).toEqual(['start'])
+  })
+})
+
+describe('disabled key (issue #13078)', () => {
+  // The off switch in Settings: with it off the bound key must not open capture
+  // at all, leaving the mic button as the only way in. This is the user-visible
+  // behaviour the issue asks for — a key you can turn off, not only reassign.
+  it('does not arm on the bound key when disabled', () => {
+    savePttConfig({ ...MAC_ALT_RIGHT, enabled: false })
+    const voice = makeVoice()
+    renderHook(() => usePushToTalk(voice))
+
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    up('AltRight')
+
+    expect(voice.start).not.toHaveBeenCalled()
+    expect(voice.calls).toEqual([])
+    expect(voice.recording).toBe(false)
+  })
+
+  // Flipping the toggle takes effect live, both ways, like a rebind does — the
+  // same PTT_CHANGED_EVENT path the Settings page fires. Uses hold-only (ptt)
+  // mode and full holds so each gesture is independent (no lingering latch).
+  it('stops and resumes arming when the toggle changes at runtime', () => {
+    const PTT: PttConfig = { ...MAC_ALT_RIGHT, mode: 'ptt' }
+    savePttConfig(PTT)
+    const voice = makeVoice()
+    renderHook(() => usePushToTalk(voice))
+
+    const hold = () => {
+      down('AltRight', { altKey: true })
+      act(() => { vi.advanceTimersByTime(500) })
+      up('AltRight')
+    }
+
+    // Enabled: a hold records.
+    hold()
+    expect(voice.start).toHaveBeenCalledTimes(1)
+
+    // Turn it off: the key goes dead.
+    act(() => { savePttConfig({ ...PTT, enabled: false }) })
+    hold()
+    expect(voice.start).toHaveBeenCalledTimes(1)
+
+    // Turn it back on: the key records again.
+    act(() => { savePttConfig({ ...PTT, enabled: true }) })
+    hold()
+    expect(voice.start).toHaveBeenCalledTimes(2)
   })
 })

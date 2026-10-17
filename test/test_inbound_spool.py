@@ -215,7 +215,8 @@ def _spool(path: Path, **kw: Any) -> SpooledInbound:
 def test_every_shared_channel_turn_declares_an_inbound_route() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
     calls: list[tuple[Path, ast.Call]] = []
-    for path in root.glob("*/transport_dispatch.py"):
+    # A channel's dispatcher includes the owners beside its facade (``transport_dispatch_*``).
+    for path in [*root.glob("*/transport_dispatch.py"), *root.glob("*/transport_dispatch_*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         calls.extend(
             (path, node)
@@ -1364,7 +1365,7 @@ def test_the_spool_root_exists_before_a_mask_has_to_bind_over_it(
     """A mask over an absent name is no mask, and this store is created on first write.
 
     ``mount(2)`` cannot cover a path that does not exist and the launcher's
-    ``SENSITIVE_DIRS`` loop is guarded on ``isdir``, so on a host where no inbound
+    ``sensitive_dirs`` loop is guarded on ``isdir``, so on a host where no inbound
     message has been refused the spool root is skipped and every sandbox spawned
     first runs with the name unmasked. That sandbox can create the directory itself
     and leave an entry the gateway reads on the next start and quotes as the

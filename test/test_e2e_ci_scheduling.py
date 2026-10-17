@@ -365,7 +365,7 @@ raise SystemExit(m['main']())
         proc = self.start(
             {
                 lane: [sys.executable, "-c", boot, str(HELPER), lane, str(self.root)]
-                for lane in ("smoke", "memory-ui", "i18n")
+                for lane in ("smoke", "memory-ui")
             }
         )
         output, _ = proc.communicate(timeout=10)
@@ -376,29 +376,26 @@ raise SystemExit(m['main']())
         self.assertEqual(ui["TMPDIR"], str(self.root / "e2e-u"))
         self.assertIsNone(smoke["KIROCREW_E2E"])
         self.assertEqual(ui["KIROCREW_E2E"], "1")
-        i18n = json.loads((self.root / "i18n.json").read_text())
-        self.assertEqual(i18n["TMPDIR"], str(self.root / "e2e-i"))
-        self.assertIsNone(i18n["KIROCREW_E2E"])
-        for env in (smoke, ui, i18n):
+        for env in (smoke, ui):
             self.assertEqual(env["KIROCREW_E2E_REQUIRE"], "1")
             self.assertEqual(env["KIROCREW_STRICT_ON_LOOP_PERSIST"], "1")
 
-    def test_i18n_failure_is_not_hidden_by_both_other_lanes(self):
+    def test_a_gated_lane_failure_is_not_hidden_by_lanes_that_finished_first(self):
         proc = self.start(
             {
                 "a": self.command("a"),
                 "b": self.command("b"),
-                "i18n": self.command("i18n", rc=7, gated=True),
+                "c": self.command("c", rc=7, gated=True),
             }
         )
         self.wait_file("a.done")
         self.wait_file("b.done")
-        self.wait_file("i18n.started")
-        self.assertIsNone(proc.poll(), "i18n was not awaited")
+        self.wait_file("c.started")
+        self.assertIsNone(proc.poll(), "c was not awaited")
         (self.root / "release").touch()
         output, _ = proc.communicate(timeout=10)
         self.assertEqual(proc.returncode, 7, output)
-        self.assertTrue((self.root / "i18n.done").exists())
+        self.assertTrue((self.root / "c.done").exists())
 
     def test_workflow_keeps_private_gate_and_original_commands(self):
         import yaml
@@ -445,21 +442,54 @@ raise SystemExit(m['main']())
                 "test/e2e/test_memory_ui_evidence.py",
             ],
         )
-        self.assertEqual(
-            module["COMMANDS"]["i18n"], ["npm", "--prefix", "website", "run", "i18n:render"]
-        )
+        # The render gate is not a lane of this step. Alongside the suite it
+        # starves it past its 1020 s ceiling on the hosted 4-vCPU runner a fork
+        # PR gets; the helper holds the two gateway-backed lanes only.
+        self.assertEqual(set(module["COMMANDS"]), {"smoke", "memory-ui"})
+        self.assertNotIn("i18n", "\n".join(str(s) for s in steps))
+        self.assertEqual(module["MEMORY_UI_TIMEOUT"], 720)
+
+    def test_render_gate_is_its_own_job_with_the_base_resolved_before_it(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        job = jobs["i18n-render"]
+        # A fork PR cannot be routed to the fleet, so this job must fit a hosted
+        # runner on its own: default size, its own timeout, no gateway boundary.
+        self.assertEqual(job["needs"], ["changes", "await-fast-gate"])
+        self.assertEqual(job["if"], "needs.changes.outputs.only_backend != 'true'")
+        self.assertNotIn("defaults", job)
+        self.assertLessEqual(job["timeout-minutes"], 20)
+        steps = job["steps"]
+        render = next(s for s in steps if s.get("run") == "npm run i18n:render")
+        self.assertEqual(render["working-directory"], "website")
+        self.assertNotIn("if", render)
+        self.assertNotIn("continue-on-error", render)
         base = next(
-            s
-            for s in steps
-            if s.get("name") == "Resolve base for the parallel i18n render-time gate"
+            s for s in steps if s.get("name") == "Resolve base for the i18n render-time gate"
         )
-        self.assertLess(steps.index(base), steps.index(parallel))
+        self.assertLess(steps.index(base), steps.index(render))
         self.assertIn("resolve-i18n-base.sh", base["run"])
         self.assertIn('"$GITHUB_ENV"', base["run"])
         self.assertIn("I18N_BASE_REF", base["env"])
         self.assertNotIn("continue-on-error", base)
-        self.assertNotIn("--no-vs-base", str(module["COMMANDS"]))
-        self.assertEqual(module["MEMORY_UI_TIMEOUT"], 720)
+        self.assertNotIn("--no-vs-base", render["run"])
+        # The render needs the browser the E2E job provisions the same way: an
+        # exact version key, so a restore-key prefix cannot hand it a different
+        # Chromium revision than @playwright/test expects.
+        install = next(s for s in steps if s.get("run") == "npx playwright install chromium")
+        cache = next(s for s in steps if str(s.get("uses", "")).startswith("actions/cache@"))
+        self.assertLess(steps.index(cache), steps.index(install))
+        self.assertLess(steps.index(install), steps.index(render))
+        self.assertNotIn("restore-keys", cache["with"])
+        self.assertEqual(install["timeout-minutes"], 6)
+        # The gate runs nowhere else in the workflow: one job owns it.
+        owners = [
+            name
+            for name, spec in jobs.items()
+            if "i18n:render" in "\n".join(str(s) for s in spec.get("steps", []))
+        ]
+        self.assertEqual(owners, ["i18n-render"])
         for step in steps:
             if step.get("name") in (
                 "Upload member memory UI evidence",

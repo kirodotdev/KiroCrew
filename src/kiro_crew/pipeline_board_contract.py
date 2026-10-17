@@ -492,7 +492,8 @@ def _derive_numbers(
     added = 0
     for item in items:
         by_state.setdefault(item["state"], []).append(item)
-        for stamp in (item["created_at"], item["last_report_at"], item["closed_at"]):
+        stamps = (item["created_at"], item["last_report_at"], item["closed_at"])
+        for stamp in (*stamps, item.get("decided_at")):
             if stamp and stamp > item_newest:
                 item_newest = stamp
         if item["round"] >= conductor["round"]:
@@ -510,8 +511,16 @@ def _derive_numbers(
                 "cards": [_card(item, judgment) for item in by_state.get(state, [])],
             }
         )
+    # Closed items the fold has let go (past ``WORK_CLOSED_WINDOW``) are still this
+    # board's work: their per-state counts ride in ``forgotten`` and join the segments
+    # and the total, so a long board's progress covers its whole life. They have no
+    # cards -- the columns show what the fold still holds.
+    forgotten = _forgotten_counts(view)
+    # A forgotten item created this round is still "added this round".
+    added += forgotten.get("in_round", 0)
     segments: list[PipelineBoardSegment] = [
-        {"name": state, "n": len(by_state.get(state, []))} for state in BOARD_COLUMN_NAMES
+        {"name": state, "n": len(by_state.get(state, [])) + forgotten.get(state, 0)}
+        for state in BOARD_COLUMN_NAMES
     ]
     return {
         # DERIVED FROM THE ROUND, which is why the card does not print it. Printed beside the
@@ -530,12 +539,24 @@ def _derive_numbers(
             # neither. The drops reach the reader as their own count instead, which is
             # the honest place for them: they are a fact about the LOG, not about the
             # board's work.
-            "total": len(items),
+            "total": len(items) + forgotten.get("items", 0),
             "added_since": added,
             "segments": segments,
         },
         "omitted": view["omitted"],
     }
+
+
+def _forgotten_counts(view: WorkBoardView) -> dict[str, int]:
+    """The view's ``forgotten`` counts, each a non-negative int, 0 when absent or bad."""
+    raw = view.get("forgotten")
+    if not isinstance(raw, dict):
+        return {}
+    counts: dict[str, int] = {}
+    for key, value in raw.items():
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            counts[str(key)] = value
+    return counts
 
 
 def _card(item: WorkBoardItem, judgment: PipelineBoardJudgment) -> PipelineBoardCard:
@@ -564,7 +585,8 @@ def _stats(view: WorkBoardView, judgment: PipelineBoardJudgment) -> list[Pipelin
     """The metric tiles: a derived count each, with the publisher's gloss if any."""
     conductor = view["conductor"]
     values = {
-        "items": str(len(view["items"])),
+        # The whole board, forgotten closed items included, like ``progress.total``.
+        "items": str(len(view["items"]) + _forgotten_counts(view).get("items", 0)),
         "entries": str(conductor["entries"]),
         "round": str(conductor["round"]),
     }
@@ -1081,17 +1103,26 @@ def _legend(progress: Any, round_value: Any = UNSAID) -> str:
     return " · ".join(parts)
 
 
-def _column_head(column: Any, total: int | None) -> str:
-    """One column's heading: its name and its share of the board."""
+def _column_head(column: Any, share: int | None, total: int | None) -> str:
+    """One column's heading: its name and its share of the board.
+
+    ``share`` is the column's WHOLE count -- the progress segment for this state,
+    which already folds in the closed items the fold let go (they have no cards). It
+    falls back to ``len(cards)`` only when no segment was supplied, so a bare columns
+    payload still renders. Using ``len(cards)`` as the numerator understated a long
+    board's heading ("accepted 32 of 500") against a denominator that counts its whole
+    life, while the progress legend -- which sums the segments -- disagreed.
+    """
     column = column if isinstance(column, dict) else {}
     cards = column.get("cards")
     held = len(cards) if isinstance(cards, list) else None
     name = _text(column.get("name"))
-    if held is None:
+    if held is None and share is None:
         return f"{name} · {UNREADABLE}"
+    shown = share if share is not None else held
     # WITH ITS DENOMINATOR. A bare "3" over a column says nothing about whether that is
     # most of the board or a corner of it.
-    return f"{name} · {held} of {total}" if total is not None else f"{name} · {held}"
+    return f"{name} · {shown} of {total}" if total is not None else f"{name} · {shown}"
 
 
 def _column_rows(column: Any, *, limit: int, actions: bool) -> str:
@@ -1251,9 +1282,10 @@ def panel_card_data(panel: PipelineBoardPanel) -> dict[str, str]:
        ``column_0_``. ``stats`` is keyed by its own ``k`` instead of by position, so a
        tile's label can be literal text in the page.
     3. A list whose length is UNBOUNDED collapses to one text field on its parent, its
-       elements newline-separated: a board holds up to
-       :data:`~kiro_crew.work_vocab.WORK_STORED_ITEM_LIMIT` items and the host drops a
-       card over 24 fields whole, so ``columns[0].cards`` is ``column_0_rows``.
+       elements newline-separated: a column holds as many items as the fold keeps
+       (open items plus :data:`~kiro_crew.work_vocab.WORK_CLOSED_WINDOW` closed) and the
+       host drops a card over 24 fields whole, so ``columns[0].cards`` is
+       ``column_0_rows``.
     4. A leaf the page renders as part of a SENTENCE has no field of its own and reaches
        the card inside the finished sentence: ``meta.age_seconds`` is in ``meta_when``,
        ``progress.total`` is in ``progress_legend`` and in every ``column_N_head``. A
@@ -1302,9 +1334,21 @@ def panel_card_data(panel: PipelineBoardPanel) -> dict[str, str]:
     by_name = {
         str(column.get("name") or ""): column for column in columns if isinstance(column, dict)
     }
+    # The column head's numerator is the column's WHOLE share -- its progress segment,
+    # which already folds in the forgotten closed items that have no cards. Built here
+    # from the segments the contract carries, keyed by state, so the head and the
+    # progress legend read the same number and no new contract field is needed.
+    shares: dict[str, int] = {}
+    raw_segments = progress.get("segments")
+    for seg in raw_segments if isinstance(raw_segments, list) else []:
+        if isinstance(seg, dict):
+            n = _count(seg.get("n"))
+            if n is not None:
+                shares[str(seg.get("name") or "")] = n
     ordered = [by_name.get(name, {"name": name, "cards": []}) for name in BOARD_COLUMN_NAMES]
     for index, column in enumerate(ordered):
-        fixed[f"column_{index}_head"] = _column_head(column, total)
+        name = BOARD_COLUMN_NAMES[index]
+        fixed[f"column_{index}_head"] = _column_head(column, shares.get(name), total)
     # KEYED BY THE CLOSED VOCABULARY, not by what arrived. Writing a field per stat the
     # payload happens to carry is the one mistake this card cannot survive: the host binds
     # a field it was NOT given to the empty string, so a tile whose key went missing

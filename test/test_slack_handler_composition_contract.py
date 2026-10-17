@@ -32,6 +32,7 @@ import pytest
 from source_corpus import repo_root
 
 from conftest import MockSlackClient
+from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.config.loader import ACTIVATION_REVIEW
@@ -432,6 +433,11 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path):
         # the work in place: the order then depends on the code alone.
         return func(*args, **kwargs)
 
+    async def _inline_gate(func, /, *args, on_queue_timeout, **kwargs):
+        # The gate's queue-bound refusal is the pool's, not the gate's: in place,
+        # the call always gets a worker.
+        return func(*args, **kwargs)
+
     for name, value in {
         "sel": lambda: _Sel(log),
         "Stats": _StatsFactory(log),
@@ -466,6 +472,9 @@ def world(monkeypatch: pytest.MonkeyPatch, tmp_path):
     }.items():
         monkeypatch.setattr(handler, name, value)
     monkeypatch.setattr(asyncio, "to_thread", _inline)
+    # The tool gate hops onto its own pool rather than through to_thread; the same
+    # in-place run keeps the transcript order a property of the code.
+    monkeypatch.setattr(handler, "run_in_tool_gate_pool", _inline_gate)
     handler._trusted_sessions.clear()
     log.monkeypatch = monkeypatch  # type: ignore[attr-defined]
     yield log
@@ -1129,6 +1138,10 @@ class _ConversationLog:
         self._log.add("history.get_metadata", key=session_key)
         return dict(self._meta)
 
+    def get_metadata_status(self, session_key):
+        # Hydration's read: the same metadata line as get_metadata, reported readable.
+        return self.get_metadata(session_key), True
+
     def update_metadata(self, session_key, values):
         self._log.add("history.update_metadata", key=session_key, values=values)
 
@@ -1482,10 +1495,10 @@ SCENARIOS = {
 _GOLDEN_DIGESTS: dict[str, str] = {
     "agent_commands": "39b8b3d66b3217fb6317adc4771441310d0643612260626511b63446b106b669",
     "append_refused_then_rotated": "a9a19cb62f8ff1e7a7b1908cbca4c1b540d49637e4986ad37fbfdd6f2cd51d34",
-    "auto_approval_mode": "25998ff4d0b7f25719ed53b8fb0cb812a076020f8be28971673a5ac7b698a45e",
+    "auto_approval_mode": "70f52018d5f65bf50cd313b653a57df4fe0c691764352ddfc2ef81dd1b071411",
     "builders_and_filters": "18a6d4f9613d0ee226214b549f0b821676bd9083bc843aadbc27b3e1f2030872",
     "cancelled_messages": "fcfbabbeaa380023b98273c08331bbae08d6971a5c5237c6f3b218d827aac943",
-    "cancelled_stop_reason": "e3f5412f31edb2ff97f116efce8072534c31c0f6e514ab8edb390956277293dc",
+    "cancelled_stop_reason": "38c292699d20bc4d1b460b264e2ca9cb62a3e67ddbf465434566d482b7a1f50c",
     "cmd_allowed_denied": "0802fc63efe6e37f62e532419b17548240110c89100b8b4925703f80306e2621",
     "cmd_allowlist_and_channel": "0b64b0c42209ad4e75596212067a1b7fd2c7dabdba488324355a4cdcca3f9d43",
     "cmd_compact": "6e48bff6ebaa74ae629d99c5f6977e10e73aed3c42f10c7f906cfc91d65f2a62",
@@ -1493,58 +1506,58 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "cmd_link_to_dashboard_unavailable": "3a7c8916de8eec9ddf603e7ccaaa8d892e682a9f5d7a56783277ea8e64955fdd",
     "cmd_owner_only_denied": "91655cbd5755fc47ca671f71bff1ef08fb9e5bd93da44cfa302a56330f569275",
     "cmd_sessions": "637197868fc541a4013406679648954e232c2467f86a34afcee2c9c09ba8bf15",
-    "cmd_status": "ca11627ca9d9be58a362650d9a04591b8f6179c7579ef8bffc1479b2757d1e5f",
+    "cmd_status": "99a5ab8189db5fc1241f21fd9fbc161a6696609d0597bd78cd183b445e00a763",
     "cmd_stop_no_session": "de5c5a671702ba32d7a8fef5d2528b07a3803d772f21f8d5a0aa64206f5b1d42",
-    "cmd_stop_running": "7a8a362aa0e8c73282bfcaefe11938c8112f066fbfa8a6bcbdafc0ddb04ab91f",
+    "cmd_stop_running": "1698b578b632c700afdb4c0a717b6ae66493a42dda13e6a9be522506f133262e",
     "cmd_ta_and_project": "0c1a7c878d745efc579eff89b6ebc4de99cb1fdfadecb29560afa5942a370443",
     "cmd_title": "d2d928c6a0e2a5a6b1b0cafe0cad309a92d321947c1e42e4f35de7b240b40bd5",
     "cmd_unknown_bang": "3ac3bfd77e7207cdf6a0a2d5c394d7acdcf42c7833ef8f49d17bdd4ff17ddc4a",
     "cmd_voice": "303e13ef1d640f338b7456d4e070d9e66c66a1173a468b1ad67bb407fd25cbf7",
     "cmd_yolo_status": "5370a104288a5f4cd6c22a392cc9c04d006d7cf1bcdaaf60ff4a95a1a6b2ee16",
-    "comment_hold_and_brackets_at_end": "7b79a02d547d75f2d46f80e6a9011d93f04baf7ca70d23d5f3637e9630fb617a",
-    "compaction_failed_permanent": "9762853e90d425652892c30ebee48248a58b4e9f8d2daa28e3a8a37a3563fdb3",
+    "comment_hold_and_brackets_at_end": "2a567067edee4ea284bf3a3a59d9136943f2c329f8f9f05587e370105c1a8172",
+    "compaction_failed_permanent": "b2b310eeab6a25f773777e6d4b3fb1fd7fbdd04f5f103983b85e2a7ad790f3d3",
     "compaction_failed_transient_replay": "5d66704abad764ed644d01d6a0b59c01cdc5c63460a8140b2224401aa191e601",
     "credential_redaction": "0782b2c2f1c02318bb8fae507aa566609357c98c52fa856e63e27564c9452177",
-    "delivery_failures": "9eb017651e80c8908f83f0d5de6b62622c1b5a0e4afc369697eea6ef1abf5d8d",
+    "delivery_failures": "27aa79d438fdd6b057e6e50055c1db0fc6c840de810ac3618d74297057ac1ab3",
     "error_acp": "8efbab04ebf42b0989c9d19a805da15a77bd032d920f031a215a66f7ea6f2e4c",
-    "error_after_partial_text": "4544ee57247e9d6ee18c086a5c7b32247a51a21616d19ee42b54ba5ea4ae396b",
+    "error_after_partial_text": "816e7d73a1bd9eed97fb1027758343201ff318e64eae58df0e399c4c69384171",
     "error_from_trusted_bot": "f347570f5f67a5ca3659343ec439a0802b29970f757e66c3a5330e530afac193",
     "error_process_died": "d35a33b0b576068801e5fe522cc02df56a62acf4d66d4e58e7e294311cd15815",
     "error_prompt_busy": "3617d636151fb29f5ff88ac9e803a226a1f77bec56fc013e1bf32f9a65484de6",
-    "error_timeout": "0625bccb70ce8ed8e7e690e5a83b1aa394f5ef1d435188f58e1aa07d9deb2f80",
+    "error_timeout": "608f9764fe3ed40a4e758a69d881f2c829e08a6aa89302e9f007a1c1b463db44",
     "error_unexpected": "ae7bc265f3ffd8441f818df443f1586b1e0f3c6d2009d7b707220f0b6e92829a",
     "hook_auto_reply": "f976c5ff2c752a2259381bcfd9fbf6e2fb72ca95fcdb1bbfa53c5ddf98f68f53",
-    "hook_deny_and_flag": "3ea9ae72ea37f86461afc8af054c106826868c30e4f757e24dcf08ac252035a1",
+    "hook_deny_and_flag": "128570569dc7d30d1327ba223a903e3d1da2c190df536c018cc8555f04bfb1da",
     "interaction_edges": "80e9ab4e4ba623f57a0360df952f7d6c787348fc81ff69368bbfcfb2ce22bc8f",
-    "interactive_approve": "b4e4979741ce4fecf6c65c51abaf9a7c6871ac6a718c70d261c811c651cf98b3",
+    "interactive_approve": "e6f33da7bfb82b921f184c46ac76705f6a2d0bfb3841c230d5be7c30c5783e47",
     "interactive_approve_answered": "cbcfe6a559c59c8314699ebb58b1ca04c0ea7e0cc01b301fc345b93d7f7fc963",
     "interactive_reject": "2caf89795617e42d1a38dddcc05a93bdba195fb10036f67d71438e824e44cfee",
     "interactive_timeout": "8767f772a5d23a1d318c0fe1ff69acc56bad7b024d552a4e4c5f132be2e024a4",
-    "interactive_trust_in_dm": "7399a56b1464fb93aeb2c375683baba8900264b0a2104b891adeb222e60663a5",
-    "keyword_commands": "38b23c11924193a6343d1b21b7c55d9d671480b45bb2bee60c7cf268f6dc97fe",
+    "interactive_trust_in_dm": "d1f9b4ac5a71a94236bf697afab088161b9dd828f1aa8beee479ed6c02e76bbb",
+    "keyword_commands": "0ef1fd95b16ed0bbdcce2999f6632c4be8acc92e943cd4a69c05ccd5ffb2fb73",
     "linked_approval": "8a85aaf602b5281707519634a49589c814694ac0f9c7b71164bbdaa2cc474bc9",
-    "linked_dashboard_session": "64d7b0e29f9fbda173a952c5180d7948fd1bd5bd41e1f52ce9d5b2dd63498210",
+    "linked_dashboard_session": "224ca7d87df8c73e94811b56554a3000701402072c1dd2b46cb770803ccd24b0",
     "linked_thread_routes_to_slot": "ac7b70b93a3f485e84491edcac4cb8eb3e5aff6fa8a54a23846d8dae6be746af",
     "mention_prefixed_bang": "f6ba6be59eb71104d3fa7202fd9bbcf91a5a6376f253db3fda41a256d468ab1e",
-    "pinned_answer": "61b9ae0c7da7445b9c166594ddd40be11a9f48f3f32c6c60bcbc329c4e7f82ca",
-    "presentation_raises": "1dc6efb188003ae71ee9602ec25f158bc30bfd63d6b4b8bb14e5fd09296ced4b",
-    "privacy_modifiers": "a2fec949a9c70a7721c8f104fae7cac5ad01ad3881fe9fa4c3764b2824ae7b23",
-    "reasoning_only": "918e51ea9599f89344156a9626ebb6e3eccc9836d12fd9abfbe4ed3bd1790075",
+    "pinned_answer": "c590ad8ef702c7284d257b0d486a8c6b69f76255d32a5d0ae4dd896ad6f549d5",
+    "presentation_raises": "361a0de433fd48b58f859146ae2c68a7d9519ea8181399752673f044c299d2ce",
+    "privacy_modifiers": "4061ede8e707257cf7903974e6de0a090562202d606bb78e60b2554d945ec8ba",
+    "reasoning_only": "a18cd8aa10fbb3dcbb6897ce5fb316ec5ebc84acd12632c4570a295e7bf6721c",
     "replay_stopped_before_prompt": "148eaa37b40ed17826eae6b36aaa56909402e9e42b20ad1dd8f4c4b8fed192cb",
     "review_mode": "2c6cf08bc3259143b5e8711d64adc1f109ee1f1a6fa5a98caa1be62f3d4951f6",
     "shared_runtime_deaths": "7448fcb0e2a7665b8dfbf9e6343876d16fa9f2dab262ac2db302f9defef129d7",
     "status_reactions": "14c5040b7db5254737f18a51d8aefce91330427f59142ee4dc59106f8bb098dd",
     "streamed_turn": "e10e8c45137bb50f1c38513b9b5c25c7b0450381277d18f3ae7e4e286cd95887",
-    "tool_then_rejected_while_streaming": "d0da681796b528bf98f379156ef9412f80ff6f07874fd6a31503e00688ffe304",
+    "tool_then_rejected_while_streaming": "fb8a0d0b3be37ee59571bf1482fe4c14049899f301ed538ad079da4728af020b",
     "top_level_no_placeholder": "416dbaac1ae3932ccb2df432ea72b0d56ab0e9dd8455eafa04baf1c274172891",
-    "transport_floor_refusal": "b91bc97cf50e5329d3558532439126c805c05c3baca7fedf27a3ad977c7e51ce",
-    "trusted_session": "5feaf868b0afb37d53d6d4264259050a05a18d7da7d2006cccfefccca02c9bef",
+    "transport_floor_refusal": "8bc29ce9634f29549dbcab78cb139f12f0eb565ea92cc8a6856f6aa8eaae1803",
+    "trusted_session": "33cdb5f7e51781f7636d4a8591bda14b7b57c094df5590633f5124d4bf05759d",
     "turn_ceiling_and_shutdown": "3ac9dcaeb5c6c42bf8886118f06df788a8b280da346addf25dbc811baf9e2c9d",
-    "turn_with_history": "8c45c5b3d4822c45a8429e1c60caa054a70675ff3ea4874c48c72ae9dd8cc611",
+    "turn_with_history": "bcc140758baf11312bd9e0bd2ec299c92cc4f51802eb5d8afb0e376d29799583",
     "unstreamed_long_reply": "a338e70172346e12ef9c1d2a7cc155041dfdb54d5e155bd5fb3aa56a58601a94",
     "unstreamed_tool_and_auto_approval": "a771de255da501fa0a5a7a2636fd02cfa115f6bd75e5fd0a058b891bf890acf8",
     "voice_reply_requested": "c7447016937c719eb3bbb1d9e0dc753256f7c4b910cdc450aa01efe6fbbb5f5c",
-    "wait_tool_seals_stream": "5b6829c6bdbef8690d2f16961e2a752ad2ac0031ef91e30fc1fba14c2f55cb90",
+    "wait_tool_seals_stream": "da9e4d35f2fb9f1460b361a5b82cfe66096dbc4e4e5243163b984a3df434a037",
 }
 
 
@@ -2164,15 +2177,20 @@ def test_a_moved_function_reads_its_source_from_its_owner() -> None:
     assert inspect.getsourcefile(handler.post_linked_approval) == _owner("approvals").__file__
 
 
-def test_the_compose_copy_matches_its_siblings() -> None:
-    """Each composition keeps its own copy of the technique so no package imports
-    another's, and the copies stay identical."""
-
-    def body(rel: str) -> str:
-        text = (_SRC / "kiro_crew" / rel / "__init__.py").read_text(encoding="utf-8")
-        return text[text.index("def compose(") :]
-
-    assert body("slack/handler_runtime") == body("hook_runtime")
+def test_the_facade_composes_through_the_shared_helper() -> None:
+    """The facade composes its owners with the one shared helper,
+    ``kiro_crew._facade_compose.compose``, calling it exactly once, and the owner
+    package keeps no copy of its own: its ``__init__`` defines no function."""
+    assert handler._facade_compose is facade_compose
+    source = Path(handler.__file__).read_text(encoding="utf-8")
+    assert source.count("\n_facade_compose(\n") == 1
+    package = ast.parse(Path(handler_runtime.__file__).read_text(encoding="utf-8"))
+    defined = [
+        node.name
+        for node in package.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    ]
+    assert defined == []
 
 
 # ── one edge ──────────────────────────────────────────────────────────────────
@@ -2544,7 +2562,10 @@ def test_the_facade_still_carries_what_the_source_guards_read() -> None:
     assert _calls_in("handle_interaction", "approve_tool") == 1  # test_transport_permission_floor
     assert source.count(".reject_tool(") == 4  # test_messaging_deny_notice
     assert source.count("await _steer_host_deny(") == 2  # test_messaging_deny_notice
-    assert source.count("context_builder.hooks.on_tool_call(") == 2  # test_hooks
+    gate_calls = re.findall(
+        r"await run_in_tool_gate_pool\(\s*context_builder\.hooks\.on_tool_call,", source
+    )
+    assert len(gate_calls) == 2  # test_hooks
     assert "**hook_gate_kwargs(event)" in source  # test_hooks
     for needle in (
         "turn_ceiling.gate(",  # test_turn_ceiling
@@ -2573,7 +2594,7 @@ def test_the_facade_still_carries_what_the_source_guards_read() -> None:
         assert needle in source, needle
     assert source.count("save_conversation_turn_off_loop(") >= 7  # test_persist_off_loop
     for needle in (
-        "admit_inbound_callback(",  # test_update_check_install_aware
+        "admit_inbound_callback(",  # test_update_check_install_aware_background_work
         "mint_options_token(",  # test_options_click_validation
         "_options_owner =",  # test_slack_options_lifecycle
         "maybe_handle_keyword_command",  # test_slack_options_lifecycle

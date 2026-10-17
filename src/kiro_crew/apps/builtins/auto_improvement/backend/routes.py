@@ -23,7 +23,8 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.apps import teardown
+from kiro_crew.apps.manager import app_lifecycle_lock, is_app_enabled
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.security import redact
 
@@ -483,7 +484,10 @@ async def _handle_pr_status(request: web.Request) -> web.StreamResponse:
     if status.get("ok"):
         return web.json_response(status, status=200)
     return web.json_response(
-        {"code": "pr_status_unavailable", "error": _redact_for_display(str(status.get("error") or ""))},
+        {
+            "code": "pr_status_unavailable",
+            "error": _redact_for_display(str(status.get("error") or "")),
+        },
         status=502,
     )
 
@@ -1500,6 +1504,22 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
         return owner_denied
     await _audit_owner_route_allowed(request, "auto_improvement.run_start")
 
+    # Admit under the app's lifecycle lock, which disable holds across its stop hook and
+    # the `enabled` write. Either this sees the app disabled, or the stop count it records
+    # predates that hook, so the hook's stop makes `start` refuse. Held only for this
+    # short read, never across the driver build.
+    def _admit() -> int | None:
+        if not is_app_enabled(store.APP_NAME):
+            return None
+        return runner.get_supervisor().stop_seq()
+
+    async with app_lifecycle_lock(store.APP_NAME):
+        admitted_at = await asyncio.to_thread(_admit)
+    if admitted_at is None:
+        return web.json_response(
+            {"code": "app_disabled", "error": f"{store.APP_NAME} is disabled"}, status=403
+        )
+
     # Read the config INSIDE the lock, together with the start it feeds. Read outside, a
     # retarget landing between the read and the start means the run operates on the repo
     # that was just replaced while the UI shows the new one. `_build_driver` re-enters the
@@ -1507,7 +1527,7 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
     def _start() -> dict:
         with commit_mod.clone_lock():
             config = store.read_json(store.config_path(), {})
-            return runner.get_supervisor().start(config or {})
+            return runner.get_supervisor().start(config or {}, admitted_at=admitted_at)
 
     try:
         result = await asyncio.to_thread(_start)
@@ -1528,10 +1548,15 @@ async def _handle_run_start(request: web.Request) -> web.StreamResponse:
 
 
 async def _handle_run_status(_request: web.Request) -> web.StreamResponse:
-    """Live run status. Reads in-memory state only, so it stays responsive while the
-    worker thread is deep in a measurement."""
+    """Live run status, read in a worker thread so the event loop never waits on the store.
 
-    return web.json_response(runner.get_supervisor().status())
+    The supervisor lookup rides inside the hop, as in :func:`_refuse_while_running`:
+    ``get_supervisor()`` builds the singleton on first use, which reads the run record back
+    (``RunSupervisor._hydrate_terminal_record``), and ``status()`` re-reads that record while
+    the run is live in another process. Neither touches the run's worker thread, so a poll stays
+    answered while that thread is deep in a measurement."""
+
+    return web.json_response(await asyncio.to_thread(lambda: runner.get_supervisor().status()))
 
 
 async def _handle_run_stop(request: web.Request) -> web.StreamResponse:
@@ -1634,9 +1659,54 @@ def register_routes(app: web.Application) -> None:
         """
         try:
 
-            await asyncio.to_thread(runner.get_supervisor().stop)
+            # The lookup rides inside the hop too: on first use it builds the supervisor, which
+            # reads the run record back (see `_stop_on_disable` below).
+            await asyncio.to_thread(lambda: runner.get_supervisor().stop())
         except Exception:  # pragma: no cover - defensive
             logger.warning("%s: run shutdown failed", store.APP_NAME, exc_info=True)
+
+    async def _stop_on_disable(_app: str) -> None:
+        """Wind the same run down when the OPERATOR switches the app off.
+
+        ``on_cleanup`` fires at gateway shutdown and nowhere else. Disabling the app
+        takes a different path entirely: :func:`_require_enabled` starts refusing the
+        routes, while the supervisor thread keeps the clone lock and keeps spending
+        budget — the operator sees the app off and the work carries on.
+
+        :func:`~kiro_crew.apps.teardown.notify_app_disabled` fires INSIDE the disable
+        request and before the ``enabled`` flag is written, which is what makes this
+        an off-switch rather than a sweep: a run signalled on the next poll instead
+        would get a whole further candidate out of a permission that was already
+        withdrawn.
+
+        Both workers stand down, because both keep acting on the operator's
+        repositories: a watcher runs an agent turn inside a per-PR clone on a
+        timer, and the run holds the clone lock and spends budget. Each is
+        signalled the way its own shutdown hook signals it — ``stop_all``
+        only sets flags and joins nothing, ``stop`` is bounded and blocks, so it
+        goes off the loop — and each is contained separately. ``on_cleanup``
+        gets that independence free by holding two hooks; here one failing
+        signal must not swallow the other.
+        """
+        try:
+            # Off the loop: ``stop_all`` only sets flags, but it takes the registry
+            # lock, and the orphan-clone sweep (``_delete_clone_if_unowned``) holds that
+            # same lock across a ``shutil.rmtree``. A disable landing mid-sweep would
+            # otherwise block the event loop — chat and heartbeat tasks included — until
+            # the delete finished. The ``get_registry()`` resolution rides inside the hop
+            # too, so first-call construction cannot run on the loop either.
+            await asyncio.to_thread(lambda: pr_watchers.get_registry().stop_all())
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("%s: watcher stop on disable failed", store.APP_NAME, exc_info=True)
+        try:
+            # Resolve the supervisor INSIDE the hop as well: ``get_supervisor()``
+            # lazily constructs ``RunSupervisor`` on first call, and construction runs
+            # ``_hydrate_terminal_record`` → a synchronous ``store.read_json``. Resolving
+            # it on the loop would block chat/heartbeat on that storage read; the lambda
+            # keeps both the construction and the stop off-loop.
+            await asyncio.to_thread(lambda: runner.get_supervisor().stop())
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("%s: run stop on disable failed", store.APP_NAME, exc_info=True)
 
     # Guarded: register_routes runs before the runner freezes its signal lists,
     # so appending is safe — but a failure here must never break gateway startup.
@@ -1646,5 +1716,23 @@ def register_routes(app: web.Application) -> None:
         app.on_cleanup.append(_stop_run)
     except Exception:  # pragma: no cover - defensive
         logger.warning("%s: could not register lifecycle hooks", store.APP_NAME)
+
+    # Same wind-down, different trigger. Feature-detected with ``getattr`` rather
+    # than called directly, so a core build whose teardown module predates this
+    # registry still loads — there the shutdown hook above is the only stop
+    # there is, which is the pre-registry behaviour rather than a regression.
+    #
+    # Registered once here, at boot. It is NOT re-asserted on a later path, and
+    # that is accepted: the only thing that drops it is ``forget_app_hooks`` on
+    # uninstall (``apps/hook_reconcile.py``), and this app cannot be uninstalled —
+    # it is a builtin registered ``lifecycle="locked"``, which ``uninstall_app``
+    # refuses (``apps/manager.py``). So an uninstall+reinstall-without-restart that
+    # would strand the hook cannot happen for ``auto_improvement``.
+    try:
+        register_disable = getattr(teardown, "register_app_disable_hook", None)
+        if register_disable is not None:
+            register_disable(store.APP_NAME, _stop_on_disable)
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("%s: could not register the app-disable hook", store.APP_NAME)
 
     logger.info("%s backend routes registered", store.APP_NAME)

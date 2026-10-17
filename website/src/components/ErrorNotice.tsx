@@ -1,7 +1,8 @@
 import type { ComponentType, ReactNode } from 'react'
+import { useSyncExternalStore } from 'react'
 import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
-import type { ErrorReport } from '../utils/errorReport'
+import { isGatewayConnected, subscribeGatewayConnected, type ErrorReport } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { withOriginLink } from './withOriginLink'
@@ -44,7 +45,10 @@ export function ErrorNoticeMenuItem({
    *  and so differs from the journal entry `findReport` looks up. */
   report?: ErrorReport
 }) {
-  if (!message) return null
+  // Same gate as AskAgentButton, for the same reason: while the gateway is
+  // unreachable the hand-off delivers the error to a composer that cannot send.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  if (!message || !gatewayConnected) return null
 
   return (
     <Item
@@ -66,6 +70,29 @@ export function ErrorNoticeMenuItem({
     </Item>
   )
 }
+
+/**
+ * The fourth hand-off state: no hand-off, because the agent it would open
+ * cannot run. The agent's own credential or backend is what failed (on the KAS
+ * backend every agent runs as the stored Kiro sign-in, so an expired sign-in
+ * notice that offered "Ask the agent" would open a chat that fails the same
+ * way).
+ *
+ * `noHandoffReason` is a sentence for the reviewer, never rendered. Setting it
+ * together with `askAgent`, `askAgentLabel` or `onHandoff` does not typecheck:
+ * a notice either hands off or states why it cannot. It is NOT the form for a
+ * notice next to an unsaved draft; that one keeps `askAgent` off with a
+ * `No hand-off:` comment naming the draft (see `errors-use-error-notice` in
+ * `website/AUTOSDE.yaml`).
+ */
+export type ErrorNoticeNoHandoff =
+  | { noHandoffReason?: undefined }
+  | {
+    noHandoffReason: string
+    askAgent?: never
+    askAgentLabel?: never
+    onHandoff?: never
+  }
 
 /**
  * The shared error surface — one place that renders an error *and* offers to
@@ -107,6 +134,7 @@ export default function ErrorNotice({
   messageClassName = '',
   messageTooltip,
   testId,
+  showIcon = true,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -162,7 +190,8 @@ export default function ErrorNotice({
    *
    * Set it `true` where there is nothing to lose — crash fallbacks, and read/list
    * failures on pages that hold no draft input. Leave it off next to any editable
-   * field whose contents are not yet saved somewhere durable.
+   * field whose contents are not yet saved somewhere durable. Where the agent
+   * the hand-off would open cannot run at all, pass `noHandoffReason` instead.
    */
   askAgent?: boolean
   /**
@@ -244,7 +273,14 @@ export default function ErrorNotice({
    * an existing `<p data-testid="…">` keeps its id here.
    */
   testId?: string
-}) {
+  /**
+   * Off for a notice nested in a row that already marks the failure with its
+   * own status icon (a pre-flight check row's warning circle), so the problem
+   * is not shown twice. The icon is decorative (`aria-hidden`), so turning it
+   * off changes nothing for assistive tech; `role="alert"` stays. On by default.
+   */
+  showIcon?: boolean
+} & ErrorNoticeNoHandoff) {
   if (!message) return null
   // The secondary line: smaller than the title, lighter than the lead, but still
   // the alert's own colour -- it is the failure's text, demoted, not a caption.
@@ -263,9 +299,9 @@ export default function ErrorNotice({
         id={id}
         data-testid={testId}
       >
-        <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
+        {showIcon && <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />}
         {title && <strong className="font-semibold">{title}</strong>}
-        <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger/80' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
+        <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger-text' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
           <AskAgentButton
             report={report}
@@ -322,17 +358,17 @@ export default function ErrorNotice({
   return (
     <div
       role="alert"
-      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger ${className}`}
+      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}
     >
-      <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+      {showIcon && <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />}
       <div className={`min-w-0 flex-1 whitespace-pre-wrap${scrollMessage ? ' min-h-0 self-stretch flex flex-col' : ''}`} style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
             existing consumer's tests read. */}
         {scrollMessage || messageBelow || messageClassName || messageTooltip
-          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger/80' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
+          ? <span className={`${messageBelow ? 'block text-[12px] font-normal text-danger-text' : ''} ${messageClassName}${scrollMessage ? ' min-h-0 overflow-y-auto' : ''}`} title={messageTooltip}>{withOriginLink(message)}</span>
           : withOriginLink(message)}
         {footer && <div className="mt-1 font-normal">{footer}</div>}
         {askAgent && actionPlacement === 'below' && (

@@ -100,8 +100,8 @@ describe('store/chat owners', () => {
 
 /** Reducers the facade wires inline next to the families: small UI flags and the live frame reducer. */
 const INLINE_REDUCERS = [
-  'setPendingInput', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoiceAudio',
-  'requestSlotReveal', 'clearSlotReveal', 'requestFolderReveal', 'sseChatMessage',
+  'setPendingInput', 'stageToMainComposer', 'setAgentSwitchNotice', 'setVoicePlaying', 'setVoicePreparing', 'setVoiceAudio',
+  'requestSlotReveal', 'clearSlotReveal', 'requestFolderReveal', 'sseChatMessage', 'setCloseRefused',
 ]
 
 const FAMILIES: Record<string, Record<string, unknown>> = {
@@ -155,34 +155,36 @@ describe('reducer families', () => {
 
 /** owner module -> the names the facade re-exports from it. */
 const REEXPORTS: Array<[string, Record<string, unknown>, string[]]> = [
-  ['wire', wire, ['clampToolOutput', 'TOOL_OUTPUT_MAX_CHARS', 'queueEntryAttachments', 'queueEntryQuote']],
+  ['wire', wire, ['clampToolOutput', 'TOOL_OUTPUT_MAX_CHARS', 'normalizeQueueEntries', 'queueEntryAttachments', 'queueEntryQuote']],
+  ['queue', queue, ['hydrateQueuedBubbles']],
   ['transcript', transcript, ['floorForGen', 'hasUnidentifiedDurableRow', 'raiseChunkSeq', 'snapshotChunkGen', 'snapshotChunkSeq', 'transcriptTsMs']],
   ['paging', paging, [
     'OLDER_PAGE_LIMIT', 'OLDER_WALK_PAGE_LIMIT', 'SLOT_DETAIL_MAX_LIMIT', 'PANE_HYDRATE_LIMIT', 'REFRESH_LIMIT_CEILING',
     'slotSwitchFetchLimit', 'slotCoverageShortfall', 'countMatchedFetchLimit', 'isSupersededPagingRejection', 'abortActiveOlderFetch',
   ]],
-  ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
+  ['composerCards', composerCards, ['FOLDER_SUGGESTION_MAX_TURNS', 'capturePendingAskId', 'isAnsweredQuestionEnding', 'pendingQuestionFor', 'shouldResolveAskOnSend']],
   ['mcpApps', mcpApps, ['mcpAppKey']],
   ['subagents', subagents, [
-    'isAwaitingSpawnApproval', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
+    'isActiveSubagent', 'isAwaitingSpawnApproval', 'isSpawnApprovalGone', 'isSpawnApprovalRetired', 'selectSidebarApprovalCounts', 'selectSidebarStartedSubagentCounts', 'selectSidebarSubagentCounts', 'selectSlotPendingSpawnApprovals',
     'selectSlotSubagents', 'selectSlotSubagentsActive', 'selectSubagentActivityCount',
   ]],
   ['workflows', workflows, ['WORKFLOW_TERMINAL_STATUSES', 'isTerminalWorkflowStatus', 'selectSidebarWorkflowActive', 'selectSidebarWorkflowActiveKeys']],
   ['automations', automations, ['selectAutomationForSlot', 'selectSidebarAutomationRunningKeys']],
   ['side', side, ['queueEditBroadcastAt']],
   ['selectors', selectors, [
-    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectSendConfirmed', 'selectSlotMessages',
+    'selectActiveSlotProject', 'selectComposerBusy', 'selectContinuable', 'selectProjectChipLocked', 'selectSendAccepted', 'selectSendConfirmed', 'selectSlotMessages',
     'selectSlotPendingApproval', 'selectSlotRunEpoch', 'selectSlotStreamState', 'selectSlotToolLog', 'selectTrailingSendUnconfirmed',
-    'selectTurnInterrupted',
+    'selectSlotTurnFromWake', 'selectTurnInterrupted', 'QUIET_END_SERVER', 'QUIET_END_TOOL',
   ]],
   ['slotSwitch', slotSwitch, ['clearSwitchSlotGone', 'switchSlot', 'switchSlotNoticeCopy']],
   ['slotRefresh', slotRefresh, ['refreshSlot', 'warmSlotCache']],
+  ['runState', runState, ['wireTurnIdentity']],
   ['windowWalk', windowWalk, ['WINDOW_WALK_MAX_PAGES']],
-  ['lifecycle', lifecycle, ['createSlot', 'deleteHistorySession', 'fetchHistory', 'forkSlot', 'resumeFromHistory']],
+  ['lifecycle', lifecycle, ['clearHistorySessions', 'createSlot', 'deleteHistorySession', 'fetchHistory', 'forkSlot', 'resumeFromHistory']],
 ]
 
 /** Names the facade itself defines rather than re-exports. */
-const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'missedChunkMarker', 'requestStop']
+const FACADE_OWN = ['batchedTextAboveFloor', 'default', 'deleteSlot', 'loadOlderMessages', 'loadOlderSlotMessages', 'missedChunkMarker', 'reconcileGoneSubagent', 'requestStop']
 
 describe('facade re-exports', () => {
   const surface = facade as unknown as Record<string, unknown>

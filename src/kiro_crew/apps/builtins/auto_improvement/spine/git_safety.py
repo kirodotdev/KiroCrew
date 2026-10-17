@@ -7,6 +7,8 @@ the gateway user, in the very worktree/clone the agent edits. Git is configurabl
 REPOSITORY, and several of those settings name a PROGRAM git then executes:
 
   * ``core.hooksPath`` + a hook file — runs on ``commit``/``push``/``checkout``.
+  * ``hook.<name>.command`` + ``hook.<name>.event`` (git 2.54+) — a hook defined in
+    config, which ``core.hooksPath`` does not reach.
   * ``core.fsmonitor`` — a program git spawns to enumerate changes (``status``/``diff``).
   * ``filter.<name>.clean`` / ``.smudge`` — bound by ``.gitattributes``, run by ``add``
     and ``checkout``.
@@ -68,9 +70,11 @@ from __future__ import annotations
 
 import os
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
 
 #: Config-named host execution/read vectors, disabled on OUR argv (``-c`` beats any repo
 #: config). Hooks and fsmonitor are disabled; external attributes/excludes files are pinned
@@ -288,7 +292,9 @@ def _pin(git_dir_owner: Path | str) -> str:
     except OSError as exc:
         # A gitdir EXISTS but we could not pin it — that is the dangerous case (a driver bound
         # in this real repo would run undefended), so escalate rather than degrade.
-        raise GitSafetyError(f"could not write the git attributes pin under {gitdir}: {exc}") from exc
+        raise GitSafetyError(
+            f"could not write the git attributes pin under {gitdir}: {exc}"
+        ) from exc
 
 
 def pin_attributes(git_dir_owner: Path | str) -> bool:
@@ -322,4 +328,27 @@ def git_argv(cwd: Path | str, *args: str) -> list[str]:
     forgotten by a new caller.
     """
     require_pinned(cwd)
-    return ["git", "-C", str(cwd), *GIT_SAFE_CONFIG, *args]
+    return ["git", "-C", str(cwd), *GIT_SAFE_CONFIG, *hook_off_args(cwd), *args]
+
+
+def hook_off_args(
+    cwd: Path | str,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """``-c hook.<name>.enabled=false`` for every config-defined hook git sees in ``cwd``.
+
+    Goes right after :data:`GIT_SAFE_CONFIG` on every host-side call. A hook defined in
+    config (``hook.<name>.command``, git 2.54+) is not reached by ``core.hooksPath``, and its
+    name is chosen by whoever wrote the config, so a fixed ``-c`` cannot cover it. See
+    :mod:`kiro_crew.git_config_hooks`. Empty when no such hook exists. Fail-closed: raises
+    :class:`GitSafetyError` when the names cannot be listed safely.
+
+    ``env`` should be the sanitized environment the real git call uses. Pass it when the
+    caller strips variables like ``GIT_DIR`` that could otherwise redirect the scan to a
+    different repository.
+    """
+    try:
+        return config_hook_disable_args(cwd, env=env)
+    except ConfigHookScanError as exc:
+        raise GitSafetyError(str(exc)) from exc

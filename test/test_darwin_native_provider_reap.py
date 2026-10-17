@@ -31,6 +31,8 @@ pytestmark = [
     pytest.mark.skipif(sys.platform != "darwin", reason="requires the real Darwin kernel"),
     pytest.mark.timeout(60),
     pytest.mark.xdist_group(name="subprocess_spawn"),
+    # The zombie and process-group readers go through the cached libc handle.
+    pytest.mark.usefixtures("fresh_darwin_libc_handles"),
 ]
 
 # Children cannot leave the group until pytest has recorded EVERY child identity.

@@ -1,5 +1,5 @@
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react'
-import { folderColorStroke, folderColorWash } from './folderColorPaint'
+import { folderColorStroke, folderColorWash, folderDisclosureNotch } from './folderColorPaint'
 
 // Default classes carry the stroke color: the icon paints via currentColor, so
 // the root's text color IS the outline color — muted/70 at rest like the
@@ -23,20 +23,30 @@ const _FOLDER_GLYPH_CLASS = 'shrink-0 text-muted/70 group-hover:text-muted trans
  *  as open/closed state and click an expanded folder expecting it to expand
  *  (#11269). The overlay is absolutely positioned so the glyph box keeps its
  *  exact width and the folder-alignment geometry (ChatSidebar.folderAlignment
- *  .test.tsx) is untouched. Callers that render the glyph outside a
+ *  .test.tsx) is untouched; it sits inside the box's bottom-right corner in a
+ *  hole masked out of the shape, so it never crosses the folder outline or
+ *  crowds the name. Callers that render the glyph outside a
  *  collapse context (modal preview, menus, drag ghost) omit `open` and get
  *  the bare glyph.
  *  Shared by the sidebar rows and the folder-settings modal's live preview. */
 export default function FolderGlyph({ color, icon, size = 20, open, className = _FOLDER_GLYPH_CLASS, testId }: { color?: string; icon?: string; size?: number; open?: boolean; className?: string; testId?: string }) {
   const Icon = open ? FolderOpen : Folder
-  const disclosure = open !== undefined && (
+  const hasDisclosure = open !== undefined
+  const notch = folderDisclosureNotch(size)
+  const disclosure = hasDisclosure && (
     <ChevronRight
       data-testid={testId ? `${testId}-disclosure` : undefined}
-      size={Math.max(7, Math.round(size * 0.55))}
-      strokeWidth={3}
-      className={`absolute -bottom-0.5 -right-1 text-muted transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+      size={notch.chevron}
+      strokeWidth={2.5}
+      className={`absolute text-muted transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+      style={{ left: notch.chevronLeft, top: notch.chevronLeft }}
     />
   )
+  // The glyph itself is masked with a round hole under the chevron, so the
+  // chevron sits in clear space instead of crossing the folder outline (or the
+  // emoji). A mask, not a backing disc in the row colour: the row repaints on
+  // hover, when pinned and per theme, and a mask is right on all of them.
+  const notchMask = hasDisclosure ? { maskImage: notch.maskImage, WebkitMaskImage: notch.maskImage } : undefined
   // A data guard, not defensive noise: folders.json is a hand-editable file on
   // disk, so `icon` is boundary input here even though every server write path
   // coerces it to a string. A non-string value (`{}`, `1`, `["🚀"]`) rendered
@@ -45,14 +55,14 @@ export default function FolderGlyph({ color, icon, size = 20, open, className = 
   if (typeof icon === 'string' && icon) {
     return (
       <span data-testid={testId} aria-hidden className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size, fontSize: Math.max(12, Math.round(size * 0.85)), lineHeight: 1 }}>
-        {icon}
+        <span data-testid={testId ? `${testId}-shape` : undefined} className="inline-flex items-center justify-center" style={{ width: size, height: size, ...notchMask }}>{icon}</span>
         {disclosure}
       </span>
     )
   }
   return (
     <span data-testid={testId} aria-hidden className={`relative inline-flex items-center justify-center ${className}`} style={{ width: size, height: size, ...(color ? { color: folderColorStroke(color) } : {}) }}>
-      <Icon size={size} strokeWidth={2} fill={open ? 'none' : color ? folderColorWash(color) : 'var(--bg-elevated)'} style={{ transition: 'fill .2s' }} />
+      <Icon data-testid={testId ? `${testId}-shape` : undefined} size={size} strokeWidth={2} fill={open ? 'none' : color ? folderColorWash(color) : 'var(--bg-elevated)'} style={{ transition: 'fill .2s', ...notchMask }} />
       {disclosure}
     </span>
   )

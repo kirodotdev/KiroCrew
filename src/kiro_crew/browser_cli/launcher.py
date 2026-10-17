@@ -66,11 +66,14 @@ from urllib.parse import urlsplit
 from kiro_crew import platform_compat
 from kiro_crew.browser_cli.install import (
     ATTRIBUTION_REMEDY,
+    CLI_LEGACY_UNTRUSTED_REASON,
+    CLI_NOT_INSTALLED_REASON,
     SeamSupport,
     cli_command,
     cli_dashboard_socket_support,
     cli_env,
     cli_path,
+    legacy_launcher_refused,
     redact_install_output,
 )
 from kiro_crew.browser_cli.launch import SESSION_ENV, SOCKETS_ENV, ui_socket_env
@@ -388,12 +391,11 @@ def _session_lock(session: str) -> threading.Lock:
         return lock
 
 
-#: Whether the "installed CLI lacks the dashboard socket layout" warning has been
-#: emitted: said once per process, at WARNING, so an upstream rename is visible
-#: in the gateway log instead of a silent loss of the auto-attach.
-#: One warning per distinct dashboard-layout loss, keyed on the reason. A repeat
-#: of the SAME reason is silenced -- the gate is consulted before every reveal --
-#: while a reason that CHANGED is a different host state and still speaks. Keyed
+#: One WARNING per distinct dashboard-layout loss, keyed on the reason, so an
+#: upstream rename is visible in the gateway log instead of a silent loss of the
+#: auto-attach. A repeat of the SAME reason is silenced -- the gate is consulted
+#: before every reveal -- while a reason that CHANGED is a different host state
+#: and still speaks. Keyed
 #: rather than a once-ever flag so an UNVERIFIED host that later becomes
 #: UNSUPPORTED, or vice versa, is not silently held at its first reading.
 _warned_layout_losses: set[str] = set()
@@ -502,7 +504,10 @@ def open_url(url: str, session_key: str) -> LaunchResult:
     cli = cli_path()
     command = cli_command(cli) if cli is not None else None
     if command is None:
-        return LaunchResult(False, session, "playwright-cli is not installed")
+        reason = (
+            CLI_LEGACY_UNTRUSTED_REASON if legacy_launcher_refused() else CLI_NOT_INSTALLED_REASON
+        )
+        return LaunchResult(False, session, reason)
     env = _launch_env(session)
     with _session_lock(session):
         if _session_is_open(command, session, env) is False:

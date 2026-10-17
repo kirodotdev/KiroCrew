@@ -6,9 +6,14 @@ import { store, type AppDispatch } from '../../store'
 import { markSlotUnread } from '../../store/dashboardSlice'
 import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
-import { chatMessageMarksUnread, unreadWatermarkTs } from '../unreadOnAttention'
+import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
+import { isSlotMuted } from '../sessionMute'
+import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
+import { isWindowAway } from '../windowAway'
+import { nativeNotificationPermitted, postNativeNotification } from '../../lib/nativeNotify'
+import { i18nT } from '../../i18n/t'
 import { isReconcileNote } from '../../lib/noteContract'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
@@ -42,8 +47,8 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // parks its turn on this `permission` row and emits no `approval`
       // frame for it (that frame is the coordinator registry's, and chimes
       // on its own), so this row is where the sound is synthesized — the
-      // `chat_done` / `question_card` layering: client-side, sound only,
-      // no feed row, no toast. The row is delivered once, so one frame is
+      // `chat_done` / `question_card` layering: client-side, no feed row,
+      // and the OS toast below rides the same gate. The row is delivered once, so one frame is
       // one sound; a row carrying `resolved` — the batch-rejection
       // re-append, or a turn with no budget left to wait, decided before
       // the append — and a reconnect replay stay silent. A Slack post
@@ -51,6 +56,25 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // `approval_resolved`; that arrival chime is the accepted residual.
       if (data.role === 'permission' && shouldChimeOnPermissionRow({ meta: data.meta, reconnecting: reconnectingRef.current })) {
         dispatchMcNotification(APPROVAL_KIND)
+        // The same row is the OS toast for a user away from the window: no
+        // feed note exists for it, so `useNativeNotification` never sees it.
+        // One toast per pending prompt (the tag names slot and request, so
+        // every window that receives the row collapses onto one banner),
+        // silent because WebAudio owns the sound, and only with the OS
+        // permission granted. Neither mute applies (the session's own per-row
+        // mute or its creator's): a prompt is the session waiting on the
+        // user, as for turn-done, so no `isSlotMuted` gate here.
+        if (data.slot && nativeNotificationPermitted() && isWindowAway()) {
+          const slotTitle = store.getState().dashboard.slots.find(s => s.key === data.slot)?.title || data.slot
+          const requestId = String(data.meta?.approval_id ?? data.ts ?? '')
+          // Session name as the title, status as the body: the chat-done
+          // toast's layout, so both banners from one chat read alike.
+          postNativeNotification(slotTitle, {
+            body: i18nT('hooks.useWebSocket.approval_waiting', { name: data.content || i18nT('hooks.useWebSocket.unknown') }),
+            silent: true,
+            tag: `kirocrew-approval:${data.slot}:${requestId}`,
+          })
+        }
       }
       // Re-rank the sidebar the instant a session sees a message, instead of waiting
       // for the next full slots push. `last_ts` moves for agent output too (it feeds
@@ -69,8 +93,27 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // relays later carry its ts explicitly (see noteUnsavedRowTs).
       if (data.slot && unreadWatermarkTs(data.role, data.ts) === undefined && data.ts) noteUnsavedRowTs(data.slot, data.ts)
       // The "only when done or waiting" opt-in leaves routine rows unbadged.
+      // A member DM thread badges only on a row the crewmate wrote to the
+      // user (`memberThreadRowMarksUnread`): its tool calls are its own work,
+      // not a message, so they must not light the Crewmates rail.
+      // Recorded whether or not the thread is on screen: the `chat_done`
+      // badge for a member thread asks "did this turn say anything", and a
+      // row the user watched arrive still counts as said.
+      if (data.slot && isMemberThreadSlot(data.slot, store.getState().dashboard.slots)) noteMemberThreadRow(data.slot, data.role, data.meta?.notice)
+      // Recorded on or off screen, like the member record: the turn's
+      // `chat_done` reads it to exempt a failed turn from the mute.
+      if (data.slot) noteTurnErrorRow(data.slot, data)
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
-        if (chatMessageMarksUnread(data.role)) {
+        const slots = store.getState().dashboard.slots
+        const marks = isMemberThreadSlot(slot, slots)
+          ? memberThreadRowMarksUnread(data.role, data.meta?.notice)
+          : chatMessageMarksUnread(data.role, data.meta?.notice)
+        // Criterion 7: a muted session (per row or by its creator) never becomes
+        // unread from its own activity. This is the chat_message half of the
+        // two automatic markSlotUnread sites; turnCompletion.ts has the other.
+        // A terminal error row is exempt: the worker has stopped, and a
+        // silenced failure stalls it unseen just as a silenced approval would.
+        if (marks && (!isSlotMuted(slots, slot) || isTerminalErrorRow(data))) {
           dispatch(markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
         }
       })
@@ -86,6 +129,10 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       }
       if (!isPassiveNote && data.slot && (data.role === 'user' || data.role === 'inject' || data.role === 'subagent')) {
         dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', ts: Date.now() }))
+        // A new turn starts clean: an error row appended outside a turn (an
+        // archive that failed after cancelling the turn) has no chat_done of
+        // its own to take it, and must not break the mute on this turn.
+        takeTurnErrored(data.slot)
       }
     },
     onSteerPush(data) {

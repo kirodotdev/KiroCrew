@@ -43,10 +43,11 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _SRC = Path(sandbox.__file__).resolve().parent
 
-#: The spawn paths that put a session-leader runtime on the host. Both thread their own
-#: ``is_kiro_cli`` delegation decision into ``wrap_argv`` directly, so a runtime this
+#: The spawn paths that put a session-leader runtime on the host: the two drivers, which
+#: hand their own ``wrap_argv`` to the launch tail they share, and that tail, which
+#: threads the ``is_kiro_cli`` delegation decision into it directly -- so a runtime this
 #: install starts as a leader carries no tool marker.
-_LEADER_SPAWN_SITES = ("acp/runtime.py", "acp/client.py")
+_LEADER_SPAWN_SITES = ("acp/runtime.py", "acp/client.py", "acp/launch.py")
 
 #: Sites that route a MANAGED-HARNESS argv through the tool chokepoint, which is why
 #: the exclusion cannot rest on the marker alone. The pod child probe spawns
@@ -126,6 +127,32 @@ def test_a_marker_value_other_than_ours_does_not_match(tmp_path: Path) -> None:
     assert session_pid._env_is_sandbox_tool(4245, proc_root=tmp_path) is False
 
 
+#: The grandchild of the live read: one line on its stdout, written by the NEW image,
+#: then it lingers so the read has a live pid. That line is the signal the child waits
+#: for before it publishes the pid -- see :data:`_CHILD_PROGRAM`.
+_GRANDCHILD_PROGRAM = "import sys, time\nprint('ready', flush=True)\ntime.sleep(30)\n"
+
+#: The child: spawns the grandchild, waits for the grandchild's line, and only THEN
+#: prints the grandchild's pid for the test to read.
+#:
+#: Why the wait: ``Popen`` returning does not mean the grandchild has finished its
+#: exec. CPython spawns through ``vfork`` on Linux, and ``vfork`` releases the parent
+#: when the kernel installs the new image's address space, which is BEFORE the ELF
+#: loader records where that image's environment lives. In that window
+#: ``/proc/<pid>/environ`` reads as zero bytes -- neither the parent's copy nor the
+#: new one -- and a marker read answers ``False``. The window is a few microseconds
+#: on an idle host and long enough to lose on a loaded CI runner. A line the
+#: grandchild wrote from Python is proof its image is running, so the environ the
+#: test reads afterwards is the exec-time copy the exclusion is about.
+_CHILD_PROGRAM = (
+    "import subprocess, sys, time\n"
+    f"g = subprocess.Popen([sys.executable, '-c', {_GRANDCHILD_PROGRAM!r}], stdout=subprocess.PIPE)\n"
+    "g.stdout.readline()\n"
+    "print(g.pid, flush=True)\n"
+    "time.sleep(30)\n"
+)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="needs /proc for a live read")
 def test_a_grandchild_the_spawn_never_recorded_carries_the_marker() -> None:
     """END TO END: the stamped env reaches a descendant's ``/proc`` entry.
@@ -133,16 +160,14 @@ def test_a_grandchild_the_spawn_never_recorded_carries_the_marker() -> None:
     The claim the exclusion rests on is about processes no spawn recorded, and a
     grandchild is the smallest one of those. Read live, with no fixture seam, so the
     env-inheritance step is the kernel's rather than the test's.
+
+    Both pids are read only after a line each process wrote from its NEW image: the
+    child's line is the grandchild's pid, the grandchild's line is relayed by the
+    child's wait in :data:`_CHILD_PROGRAM`. A pid read before that line can land in
+    the exec window where ``/proc/<pid>/environ`` is empty.
     """
     child = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import subprocess, sys, time\n"
-            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
-            "print(g.pid, flush=True)\n"
-            "time.sleep(30)\n",
-        ],
+        [sys.executable, "-c", _CHILD_PROGRAM],
         env=_marked_env(),
         stdout=subprocess.PIPE,
         # The child is a Python process whose only output is a pid we print, so its
@@ -172,10 +197,14 @@ def _referenced_names(relative: str) -> set[str]:
     bytes some of them carry, which would fail the scan for a reason unrelated to what
     it asserts.
     """
-    tree = ast.parse((_SRC / relative).read_text(encoding="utf-8"))
+    paths = [_SRC / relative]
+    if relative == "acp/client.py":
+        # client.py's owner modules (client_*.py) hold code that was its own.
+        paths += sorted((_SRC / "acp").glob("client_*.py"))
     return {
         node.attr if isinstance(node, ast.Attribute) else node.id
-        for node in ast.walk(tree)
+        for path in paths
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(node, (ast.Name, ast.Attribute))
     }
 

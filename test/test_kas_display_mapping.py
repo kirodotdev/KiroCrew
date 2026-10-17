@@ -69,6 +69,50 @@ def test_current_mode_update_missing_id_emits_nothing() -> None:
     assert _update(handle, {"sessionUpdate": "current_mode_update", "currentModeId": ""}) == []
 
 
+def test_current_mode_update_reports_a_wire_alias_as_the_crewmate() -> None:
+    # The batch registered ``default`` under its wire alias, so the engine names
+    # the alias; every reader of the switch keys on the crewmate's own id.
+    handle = _handle(ACP_BACKEND_KAS)
+    handle.kas_registered_agents = [{"id": "default", "prompt": "p"}]
+    handle.kas_projected_agent = "default"
+    events = _update(
+        handle, {"sessionUpdate": "current_mode_update", "currentModeId": "default-crewmate"}
+    )
+    assert [e.text for e in events] == ["default"]
+    assert handle.kas_projected_agent == "default"
+
+
+def test_a_built_in_of_the_crewmates_name_is_a_separate_mode() -> None:
+    # Crewmate ``vibe`` runs as ``vibe-crewmate``; the engine's own ``vibe`` is a
+    # different mode, so the switch to it is not swallowed as a repeat and does
+    # not inherit the crewmate's approvals.
+    from kiro_crew.acp.kas_agents import AUTO_APPROVABLE_CAPABILITIES
+
+    handle = _handle(ACP_BACKEND_KAS)
+    handle.kas_registered_agents = [{"id": "vibe", "prompt": "p", "permissions": {"rules": []}}]
+    handle.kas_projected_agent = "vibe"
+    first = _update(
+        handle, {"sessionUpdate": "current_mode_update", "currentModeId": "vibe-crewmate"}
+    )
+    assert [e.text for e in first] == ["vibe"]
+    crewmate_approved = handle.kas_auto_approved
+    second = _update(handle, {"sessionUpdate": "current_mode_update", "currentModeId": "vibe"})
+    assert len(second) == 1
+    assert handle.kas_auto_approved == frozenset(AUTO_APPROVABLE_CAPABILITIES)
+    assert handle.kas_auto_approved != crewmate_approved
+
+
+def test_current_mode_update_maps_only_an_alias_the_batch_registered() -> None:
+    # Unregistered, the same string is just a mode id (a user agent may be
+    # literally named ``default-crewmate``), so it is passed through unchanged.
+    handle = _handle(ACP_BACKEND_KAS)
+    handle.kas_registered_agents = [{"id": "kirocrew", "prompt": "p"}]
+    events = _update(
+        handle, {"sessionUpdate": "current_mode_update", "currentModeId": "default-crewmate"}
+    )
+    assert [e.text for e in events] == ["default-crewmate"]
+
+
 # ── session_info_update / context_usage → context meter ──────────────────────
 
 

@@ -268,11 +268,16 @@ def test_no_recovery_handler_persists_a_partial_reply_without_recording_it():
 
     Mutation guard: re-inlining any of those blocks reddens this.
     """
-    import inspect
-
     from kiro_crew.dashboard import chat_runner
 
-    src = inspect.getsource(chat_runner).splitlines()
+    src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(chat_runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    ).splitlines()
     offenders = []
     for i, line in enumerate(src):
         if "slot.purge_chunks()" not in line:
@@ -322,7 +327,7 @@ async def test_message_received_records_entry_text_before_prompt_expansion(tmp_p
 
     state, slot = _state_and_slot(tmp_path, [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")])
 
-    async def _expand(_message, _state, _slot):
+    async def _expand(_message, _state, _slot, *, project=None):
         return "injected prompt body", "ok"
 
     with pytest.MonkeyPatch.context() as patch:
@@ -434,12 +439,25 @@ def test_a_segment_cut_by_a_steer_is_recorded_as_interrupted():
 
     # The steer cut is the caller that must set it. Read from the source of the
     # enclosing runner because the callback is a closure built per turn.
-    runner_src = inspect.getsource(chat_runner)
+    runner_src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(chat_runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     cut_at = runner_src.index("def _steer_segment_cut(")
     cut_body = runner_src[cut_at : cut_at + 4000]
+    # A steer cut is interrupted unless its caller says the reply goes on
+    # (a crewmate send that waits behind the turn).
+    signature = cut_body[: cut_body.index(")") + 1]
+    assert "interrupted: bool = True" in signature, "a steer cut does not default to interrupted"
     call_at = cut_body.index("_flush_segment(")
     call = cut_body[call_at : call_at + 300]
-    assert "interrupted=True" in call, "the pre-steer flush does not mark its text interrupted"
+    assert (
+        "interrupted=interrupted" in call
+    ), "the pre-steer flush does not mark its text interrupted"
 
 
 def test_an_ordinary_segment_is_not_marked_interrupted():
@@ -593,6 +611,9 @@ async def test_the_turn_ordinal_keeps_rising_across_a_native_clear(tmp_path):
     Mutation guard: dropping the base advance at the clear site makes the third
     ordinal fall back to the low single digits and reddens both assertions.
     """
+    from chat_test_helpers import pin_kiro_cli_harness
+
+    pin_kiro_cli_harness()
     events: list[AcpEvent] = [AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]
     state, slot = _state_and_slot(tmp_path, events)
     # Several prior rows, so a window rebuilt from scratch is visibly shorter.

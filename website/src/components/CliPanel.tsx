@@ -128,6 +128,9 @@ function applyTerminalFontToAll(): void {
   for (const { term, fit } of termCache.values()) {
     term.options.fontFamily = fontFamily
     term.options.fontSize = font.fontSize
+    // cursorStyle is a plain option xterm applies on the next render, so it does
+    // not need the font's re-measure/refit dance (it changes no cell metric).
+    term.options.cursorStyle = font.cursorStyle
     remeasureAndFit(term, fit)
   }
 }
@@ -168,6 +171,7 @@ function getOrCreateTerm(id: string): { term: Terminal; fit: FitAddon } {
     const font = getTerminalFont()
     const term = new Terminal({
       cursorBlink: true,
+      cursorStyle: font.cursorStyle,
       fontSize: font.fontSize,
       fontFamily: resolveTerminalFontFamily(font.fontFamily),
       theme: getTermTheme(),

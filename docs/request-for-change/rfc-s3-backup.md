@@ -3,10 +3,10 @@ title: Off-host backup — a bundle a dead machine cannot take with it
 status: partial
 author: mingweic
 created: 2026-08-11
-last-audited: 2026-09-25
-audited-at: d6f2ed5a91
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 2744
-implementation-prs: [2764, 13272]
+implementation-prs: [2764]
 tracking-issues: [13259, 13550]
 supersedes: []
 superseded-by: []
@@ -59,15 +59,20 @@ SSH, no reboot — taking every conversation and every learned memory with it.
 
 ## Current state
 
+This section and *Three problems* describe the repository at this RFC's creation
+(2026-08-11). The off-host destination has since shipped in the AWS Control app,
+which uploads snapshot and sessions backups off-host; its contract is
+[aws-control.md](../system-specs/modules/aws-control.md).
+
 | Mechanism | Code | Destination |
 |---|---|---|
 | CLI snapshot / restore | `snapshot.py`, `snapshot_components.py` (`VALID_COMPONENTS`, `CORE_FILES`) | `<data home>/snapshots/` — inside what it protects |
-| Dashboard export / import | `portability.py` (`EXPORT_EXCLUDE`:41, `EXCLUDE_DIRS`:59) | browser download, unscheduled |
-| Session transfer | `dashboard/session_transfer.py`, `handlers_instances.py:417` | another **live** instance over an SSH tunnel |
+| Dashboard export / import | `portability.py` (`EXPORT_EXCLUDE`, `EXCLUDE_DIRS`) | browser download, unscheduled |
+| Session transfer | `dashboard/session_transfer.py`, `dashboard/handlers_instances.py` | another **live** instance over an SSH tunnel |
 
 Session transfer needs both hosts up simultaneously — the one condition a host loss
-breaks — and carries no memory or config (`instances.md` §14). No code path in the
-repository writes crew state to a remote store.
+breaks — and carries no memory or config (`instances.md` §14). At creation, no code
+path in the repository wrote crew state to a remote store.
 
 ## Three problems
 
@@ -75,17 +80,17 @@ repository writes crew state to a remote store.
 store `session_storage.py:7-10` documents (`<data home>/sessions/*.jsonl` +
 `sessions/archive/`, resolver `:277`; `<kiro home>/sessions/cli/<sid>.*`, resolver
 `config/paths.py` (`kiro_sessions_dir`)). `uploads/` is excluded outright on the dashboard path
-(`portability.py:62`) and absent from `CORE_FILES`; `artifacts/` is in neither.
+(`EXCLUDE_DIRS` in `portability.py`) and absent from `CORE_FILES`; `artifacts/` is in neither.
 Measured on one install: 385 MB irreplaceable (322 MB transcripts, 28 MB uploads,
 22 MB memory DBs, < 2 MB config + artifacts) against a ~30 MB bundle today. Small
 enough that full-bundle-per-run beats incremental.
 
 **P2 — one component ships a reference to state no component ships.**
 `CORE_FILES["config"]` carries `session_map.json`, the join to kiro-cli
-sessions living outside the crew home (`session_transfer.py:16`), while neither
+sessions living outside the crew home (see the `dashboard/session_transfer.py` module docstring), while neither
 side of what it points at is staged; a `session_map` entry is load-bearing for
-storage reclamation (`state.py:3207`). The dashboard path takes the opposite
-position (`portability.py:54`). This RFC asserts no runtime consequence — M2
+storage reclamation in `DashboardState`. The dashboard path takes the opposite
+position (`session_map.json` is in `EXPORT_EXCLUDE` in `portability.py`). This RFC asserts no runtime consequence — M2
 lands a fix or a test pinning current behavior. It is evidence that "what belongs
 in a bundle" was never settled between the two implementations.
 
@@ -160,7 +165,7 @@ inherited.
 `sessions/archive/` + `uploads/` + `artifacts/`. The two-store split is an
 implementation detail and must not surface: a component backs up a session
 completely or does not claim to have backed it up. Its tree walk goes through the
-existing `_data_filter` (traversal, symlink and hardlink rejection, `0o600`
+existing `_data_filter` in `snapshot_archive.py` (traversal, symlink and hardlink rejection, `0o600`
 pinning) rather than reimplementing those properties.
 
 **D4 — session fidelity is a tier.** Default `sessions` = crew transcripts +
@@ -313,10 +318,10 @@ off-host copy behaves exactly as today.
 * **A bundle's secret policy must be explicit per purpose, not implied by which
   filenames are on an allowlist.** Today both questions — what is in a bundle, and
   whether it is safe to hand to another person — are answered by the same
-  filename-matching gate: `is_sensitive_path` (`portability.py:156`) matches
+  filename-matching gate: `is_sensitive_path` (`security/paths.py`) matches
   credential *files*, and the config dataclass's own `sensitive=True` field metadata
   has no reader in either exporter. Whether the current gate delivers what
-  `portability.py:7` claims is under review through the channel in `SECURITY.md`,
+  the `portability.py` module docstring claims is under review through the channel in `SECURITY.md`,
   not in this document. The requirement this RFC takes on is structural: the seam
   exists (D1), a `purpose: share` bundle's freedom from credential material is
   asserted by test rather than argued from the allowlist, and a component that fails
@@ -349,10 +354,17 @@ off-host copy behaves exactly as today.
 
 ## Platform support: where a staged body can be held, and where a kind is refused
 
-This section records a capability WITHDRAWAL, which is why it is here rather than in
-the milestones: on a platform without a staging mask the snapshot kind is refused
-outright instead of uploading bytes whose provenance cannot be established. Recorded
-for review; nothing here is an approval.
+**Proposed, not shipped.** On main the snapshot kind is offered on every platform:
+`kind_unavailable_reason` in the AWS Control backup refuses only the sessions kind,
+and `test_snapshot_stays_available_on_every_platform` pins that. The withdrawal below
+is a proposal; the threat analysis stands, and
+[#13550](https://github.com/kirodotdev/KiroCrew/issues/13550) tracks the fix that
+would make the refusal unnecessary.
+
+This section records a proposed capability WITHDRAWAL, which is why it is here rather
+than in the milestones: on a platform without a staging mask the snapshot kind would be
+refused outright instead of uploading bytes whose provenance cannot be established.
+Recorded for review; nothing here is an approval.
 
 **The threat is a same-user writer, not another account.** Every upload body is staged
 in a directory the agent can write, so a name handed to the AWS CLI is a name that gets
@@ -386,12 +398,12 @@ is recorded here rather than left to be found, and the producers-hold-the-payloa
 below closes it for the same reason it restores Windows -- a body held from birth needs no
 mask to be trustworthy.
 
-**The honest consequence, stated rather than implied: Windows is left with no backup
+**The honest consequence, stated rather than implied: Windows would be left with no backup
 kind at all.** The sessions archive kind is ALREADY refused there, and not by this
 decision -- it needs descriptor-pinned directory traversal (`openat`), which that
 platform does not provide, so walking agent-writable directories by name would leave a
 window in which a directory swapped for a link could be archived and uploaded. So a
-Windows host that could previously run a nightly snapshot backup can now run neither
+Windows host that can run a nightly snapshot backup today would run neither
 kind. Each refusal states its own capability and neither speaks for the other, which is
 also why the snapshot refusal's own message makes no claim about the archive kind: on
 the platform that reads it, that claim would be false.

@@ -126,6 +126,12 @@ describe('eventKeyToken', () => {
     expect(eventKeyToken(ke({ code: 'KeyK', key: '˚', altKey: true }))).toBe('k')
   })
 
+  it('reads punctuation from the code, so Shift+` records as ` rather than ~', () => {
+    expect(eventKeyToken(ke({ code: 'Backquote', key: '~', shiftKey: true }))).toBe('`')
+    expect(eventKeyToken(ke({ code: 'Slash', key: '?', shiftKey: true }))).toBe('/')
+    expect(eventKeyToken(ke({ code: 'Backslash', key: '\\' }))).toBe('\\')
+  })
+
   it('returns null for a bare modifier keydown', () => {
     for (const key of ['Shift', 'Control', 'Alt', 'Meta']) {
       expect(eventKeyToken(ke({ key }))).toBeNull()
@@ -194,6 +200,34 @@ describe('chordMatchesEvent', () => {
     const c = { key: '`', ctrl: true } as const
     expect(chordMatchesEvent(ke({ code: 'Backquote', key: '`', ctrlKey: true }), c, false)).toBe(true)
     expect(chordMatchesEvent(ke({ code: 'Backquote', key: '`', metaKey: true }), c, false)).toBe(false)
+  })
+
+  it('matches a Shift chord recorded on a key with no positional token (ISO IntlBackslash)', () => {
+    // UK ISO: Ctrl+Shift+IntlBackslash reports key '|'; the recorder stores it folded to '\\'.
+    const stored = normalizeChord({ key: '|', ctrl: true, shift: true })
+    expect(stored.key).toBe('\\')
+    expect(chordMatchesEvent(ke({ code: 'IntlBackslash', key: '|', ctrlKey: true, shiftKey: true }), stored, false)).toBe(true)
+  })
+
+  it('matches Ctrl+Shift+` on a Mac ISO board that reports the key as IntlBackslash', () => {
+    const c = { key: '`', ctrl: true, shift: true } as const
+    expect(chordMatchesEvent(ke({ code: 'IntlBackslash', key: '~', ctrlKey: true, shiftKey: true }), c, true)).toBe(true)
+  })
+
+  it('matches punctuation by position only, never by another key\'s typed glyph', () => {
+    // Italian: the Backquote key types '\\'. Ctrl on it is the terminal's Ctrl+`, not the side panel's Ctrl+\\.
+    expect(chordMatchesEvent(ke({ code: 'Backquote', key: '\\', ctrlKey: true }), { key: '\\', mod: true }, false)).toBe(false)
+    expect(chordMatchesEvent(ke({ code: 'Backquote', key: '\\', ctrlKey: true }), { key: '`', ctrl: true }, false)).toBe(true)
+    // UK ISO: Shift+Backslash types '~'; it must not reach a Ctrl+Shift+` binding.
+    expect(chordMatchesEvent(ke({ code: 'Backslash', key: '~', ctrlKey: true, shiftKey: true }), { key: '`', ctrl: true, shift: true }, false)).toBe(false)
+    // Dvorak: the Semicolon key types 's'; it must not fire a Ctrl+S chord.
+    expect(chordMatchesEvent(ke({ code: 'Semicolon', key: 's', ctrlKey: true }), { key: 's', ctrl: true }, false)).toBe(false)
+  })
+
+  it('keeps letters positional only, so a non-US layout glyph does not match', () => {
+    // AZERTY: the physical Q key types 'a'. Only the positional token 'q' matches.
+    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'a', ctrl: true }, false)).toBe(false)
+    expect(chordMatchesEvent(ke({ code: 'KeyQ', key: 'a', ctrlKey: true }), { key: 'q', ctrl: true }, false)).toBe(true)
   })
 })
 

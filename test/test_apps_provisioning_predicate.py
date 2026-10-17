@@ -12,6 +12,7 @@ drifts is exactly how a gate ends up waiving what the runtime does not provision
 from __future__ import annotations
 
 import inspect
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -405,9 +406,13 @@ class TestRequirementsInTree:
         req.symlink_to("requirements.txt")
         assert requirements_in_tree(tmp_path, req) is None
         (tmp_path / "server.py").symlink_to("server.py")
-        # is_file() on a loop is False (ELOOP is ignored), so the spawn's reason
-        # is "not found"; what matters is that no exception escapes.
-        assert file_entry_point_refusal("server.py", tmp_path) == "not found"
+        # On POSIX the screen canonicalises the loop to the link itself and
+        # is_file() on it is False (ELOOP is ignored), so the spawn's reason is
+        # "not found". On Windows the screen reads the link chain hop by hop and
+        # refuses a chain past its hop budget. What matters is that no exception
+        # escapes.
+        expected = "refused by the path screen" if sys.platform == "win32" else "not found"
+        assert file_entry_point_refusal("server.py", tmp_path) == expected
 
 
 class TestFileEntryPointRefusal:

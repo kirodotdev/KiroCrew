@@ -1,11 +1,11 @@
 ---
 title: Global Workflow System — reusable definitions and TaskRunner composition
-status: partial
+status: implemented
 revision: v2
 author: Kyle Seaman, with Codex
 created: 2026-08-25
-last-audited: 2026-09-22
-audited-at: 80bd0a81f
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 5951
 implementation-prs: [5951]
 tracking-issues: []
@@ -15,7 +15,7 @@ superseded-by: []
 # RFC: Global Workflow System — reusable definitions and TaskRunner composition
 
 - Status: implemented — reusable definitions, exact MCP and `/workflow`
-  invocation, the Agent Capabilities library UI, and TaskRunner `task-plan`
+  invocation, the Customize > Workflows library UI, and TaskRunner `task-plan`
   composition are on `main`. The shipped contract is
   [`../system-specs/modules/workflows.md`](../system-specs/modules/workflows.md).
 - Author: Kyle Seaman, with Codex

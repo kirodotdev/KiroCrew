@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.acp import client as acp_client
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.types import (
@@ -28,6 +29,7 @@ from kiro_crew.dashboard.chat_runner import (
     _session_mcp_report,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.clock import ManualClock
 
 
 def _ready_frame(name: str) -> JsonRpcMessage:
@@ -40,10 +42,24 @@ def _failed_frame(name: str, error: str) -> JsonRpcMessage:
     )
 
 
+@pytest.fixture
+def drain_clock(monkeypatch):
+    """The clock ``AcpClient._drain_notifications`` reads, moved only by its own readings.
+
+    The drain takes its deadline on entry and checks it before every read, so a host that
+    stalls for longer than a test's ``duration`` in between ends the drain before its
+    first read. On this clock each reading moves time 10 ms: the drain reaches its first
+    read about 20 ms into a deadline of 100 ms or more however slow the host is, and the
+    deadline still arrives after a bounded number of loop turns.
+    """
+    ManualClock(monotonic_start=0.0, tick=0.01).install(monkeypatch, acp_client)
+
+
 class TestAcpClientCapture:
     """The dedicated transport records the frames its init drain consumes."""
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("drain_clock")
     async def test_drain_records_buffered_frames(self, tmp_path):
         # Before this, the drain reduced these frames to one log line and
         # cleared them, so a session that started without a server could not say
@@ -64,23 +80,30 @@ class TestAcpClientCapture:
         assert payload["failures"] == {"slack-mcp": "spawn ENOENT"}
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("drain_clock")
     async def test_drain_records_live_frames(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         client._mcp_notifications = []
         frames = [_ready_frame("github-mcp")]
+        reads: list[float] = []
 
         async def fake_read(timeout=2.0):
+            reads.append(timeout)
             return frames.pop(0) if frames else None
 
         client._read_message = fake_read
 
         await client._drain_notifications(duration=0.2)
 
+        # An empty report after a drain that never read says nothing about frame
+        # handling, so the missing read gets its own message.
+        assert reads, "the drain ended before its first read"
         payload = client.mcp_session_report().payload()
         assert payload is not None
         assert payload["ready"] == ["github-mcp"]
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("drain_clock")
     async def test_drain_ignores_unrelated_notifications(self, tmp_path):
         client = AcpClient(work_dir=tmp_path)
         client._mcp_notifications = [
@@ -105,10 +128,14 @@ class TestAcpClientCapture:
             == {
                 "configured": [],
                 "unresolved_refs": [],
+                "no_tools": [],
+                "no_tools_omitted": 0,
+                "pruned_omitted": 0,
                 "ready": ["a"],
                 "failed": [],
                 "awaiting_auth": [],
                 "failures": {},
+                "restart_to_load": [],
             }
         )
 
@@ -471,10 +498,14 @@ class TestReportFrameFloor:
         # client), so this pins the one line the leak lives on. The OAuth and
         # config captures above it must stay UNgated.
         import inspect
+        import sys
 
         from kiro_crew.acp import client as client_mod
 
-        src = inspect.getsource(client_mod)
+        src = "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (client_mod.__name__, *client_mod._CLIENT_OWNERS)
+        )
         marker = "if idx >= self._mcp_report_frame_floor:"
         assert marker in src, (
             "the buffered drain records into the report without the attempt floor, "

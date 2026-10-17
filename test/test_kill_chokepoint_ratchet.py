@@ -276,7 +276,7 @@ def test_the_gate_verdict_is_acted_on(module: str, function: str) -> None:
 #: with no effect, which is why this list is short rather than exhaustive.
 _RELEASE_BEFORE_KILL = (
     (
-        "src/kiro_crew/session_allocation.py",
+        "src/kiro_crew/session_allocation_parts/get_or_create.py",
         "release_session_lease",
         "_dispatch_hard_kill",
     ),

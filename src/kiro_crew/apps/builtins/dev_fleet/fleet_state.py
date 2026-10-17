@@ -1428,6 +1428,10 @@ async def _build_fleet() -> dict:
         # False only while the gateway's pointer state could not be read: the
         # live/staged fields above are then UNKNOWN, not empty.
         "live_state_known": live_state_known,
+        # False only when the live row is the pointer's target taken on trust: a
+        # packaged gateway cannot confirm it runs that checkout, so the row shows
+        # "live?". An outage is live_state_known above, not this field.
+        "live_verified": live_path is None or pointer.live_verified,
         "manual_restart": live._manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous

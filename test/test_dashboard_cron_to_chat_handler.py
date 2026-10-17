@@ -177,6 +177,74 @@ class TestApiCronToChat:
         assert slot_holder["s"]._dismissed_hydrated is False  # write deferred, not erased
 
     @pytest.mark.asyncio
+    async def test_deleted_job_with_history_restores_its_turn_limit(self):
+        # The tab's own turn time limit is slot-owned metadata on the same line:
+        # the reopen restores it, or the next full save erases it.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state.conversation_log.get_metadata_status.return_value = (
+            {"_type": "metadata", "turn_timeout_secs": 28800},
+            True,
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs == 28800
+        assert slot._turn_timeout_hydrated is True
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_keeps_a_turn_limit_set_during_the_metadata_read(self):
+        # A user's change that commits while the off-loop read runs is newer than
+        # the line the read returns, so the restore leaves it in place.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+
+        def _read_while_user_sets(_key):
+            slot = state.get_or_create_slot("cron-deleted123")
+            slot.turn_timeout_secs = 3600
+            slot._turn_timeout_hydrated = True
+            return {"_type": "metadata", "turn_timeout_secs": 28800}, True
+
+        state.conversation_log.get_metadata_status.side_effect = _read_while_user_sets
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs == 3600
+        assert slot._turn_timeout_hydrated is True
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_rebound_during_the_metadata_read_takes_no_turn_limit(self):
+        # A tab bound to another transcript while the read runs keeps its limit
+        # unread rather than taking this transcript's.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+
+        def _read_while_rebound(_key):
+            state.get_or_create_slot("cron-deleted123").linked_session_key = "cron:other"
+            return {"_type": "metadata", "turn_timeout_secs": 28800}, True
+
+        state.conversation_log.get_metadata_status.side_effect = _read_while_rebound
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        slot = state.get_or_create_slot("cron-deleted123")
+        assert slot.turn_timeout_secs is None
+        assert slot._turn_timeout_hydrated is False
+
+    @pytest.mark.asyncio
+    async def test_deleted_job_defers_its_turn_limit_when_metadata_unreadable(self):
+        # Unread, the slot holds no limit of its own and is marked unhydrated, so
+        # its saves carry the on-disk limit forward instead of erasing it.
+        state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
+        state.conversation_log.get_metadata_status.return_value = ({}, False)
+        stale = state.get_or_create_slot("cron-deleted123")
+        stale.turn_timeout_secs = 600  # a prior binding's limit on a reused slot
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/crons/deleted123/to-chat")
+            assert resp.status == 200
+        assert stale.turn_timeout_secs is None
+        assert stale._turn_timeout_hydrated is False
+
+    @pytest.mark.asyncio
     async def test_deleted_job_unreadable_clears_stale_foreign_dismissal(self):
         # A REUSED cron slot still carries a PRIOR binding's dismissal (key A).
         # The deleted-job rebind reads UNREADABLE metadata, so the authoritative

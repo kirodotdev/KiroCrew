@@ -29,6 +29,7 @@ import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { AppApiProvider } from '../app-sdk'
 import { i18nT } from '../i18n/t'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
+import { withBase } from '@/lib/basePath'
 
 // ---------------------------------------------------------------------------
 // Session identity handed to the control
@@ -131,7 +132,7 @@ export default function SessionControlHost({
   // Keyed on the popover being mounted, which is exactly when Escape is ours.
   const imeLatch = useDocumentImeLatch(!!anchorRect)
 
-  const bundlePath = `/apps/${control.appName}/ui/${control.entryPoint}`
+  const bundlePath = withBase(`/apps/${control.appName}/ui/${control.entryPoint}`)
 
   const LazyControl = useMemo(
     () =>

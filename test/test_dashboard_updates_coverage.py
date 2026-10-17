@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import json
 import logging
 import os
@@ -36,9 +37,11 @@ import pytest
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 
+from kiro_crew import platform_compat
 from kiro_crew.config.loader import ConfigReadError
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_layout
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -246,6 +249,332 @@ class TestUpdateCheckEndpoint:
         assert payload["minimum_version_enforced"] == "0.9.0"
         assert payload["update_required"] is True
         assert "auto_update" in payload
+
+
+# A stand-in ``git`` whose fetch starts a helper that inherits git's stderr and
+# outlives git, the way a real ``git fetch`` starts ``git remote-https``, ssh or
+# a credential helper; then git hangs so the fetch timeout fires. It records its
+# own pid and its helper's, each with the start-time identity it reads at the one
+# moment that pid is provably the process meant: its own, and its helper's while
+# it has not reaped the helper (it never does). Each record is written whole.
+_HELPER_GIT = """#!{python}
+import os, subprocess, sys, time
+sys.dont_write_bytecode = True  # the import below writes nothing into the checkout
+sys.path.insert(0, {src!r})
+from kiro_crew.platform_compat import get_process_start_id
+
+
+def record(path, pid):
+    with open(path + ".tmp", "w") as f:
+        f.write("%d %s" % (pid, get_process_start_id(pid) or ""))
+    os.replace(path + ".tmp", path)
+
+
+record({pidfile!r} + ".git", os.getpid())
+if {with_helper}:
+    helper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)"], cwd=os.path.dirname({pidfile!r})
+    )
+    record({pidfile!r}, helper.pid)
+time.sleep(600)
+"""
+
+
+def _recorded(path: Path) -> tuple[int, str | None] | None:
+    """The (pid, start-time identity) the stand-in git recorded in *path*, or None before.
+
+    A record that exists is whole. Its identity is None when the stand-in could not
+    read one.
+    """
+    try:
+        fields = path.read_text(encoding="utf-8").split()
+        return int(fields[0]), (fields[1] if len(fields) > 1 else None)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+class _TimedOutGitWaits:
+    """``asyncio`` as the updates module sees it, with every git wait timing out.
+
+    Bound as that module's own ``asyncio``, never over the real module, so the
+    event loop, the test's own bound and ``platform_compat`` keep the real one.
+    ``wait_for`` does what the real one does when its deadline passes -- cancels
+    the awaited ``communicate()`` and raises ``TimeoutError`` -- but on a signal,
+    never a clock: it waits until the stand-in git has recorded *started_record*
+    (its helper's pid when there is a helper, else git's own pid). The stand-in
+    writes that record only after ``create_subprocess_exec`` has launched it and
+    ``communicate()`` is reading, so the timeout fires with git provably started
+    and hung -- and, with a helper, the helper holding git's stderr -- however
+    long the stand-in took to start.
+    """
+
+    def __init__(self, started_record: Path) -> None:
+        self._started_record: Path | None = started_record
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(asyncio, name)
+
+    async def wait_for(self, aw, timeout=None):
+        record, self._started_record = self._started_record, None
+        waited = asyncio.ensure_future(aw)
+        if record is not None:
+            await async_wait_until(
+                lambda: _recorded(record) is not None,
+                off_loop=True,
+                describe=lambda: f"the stand-in git never recorded itself in {record}",
+            )
+        waited.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waited
+        raise asyncio.TimeoutError
+
+
+class TestGitFetchTimeoutReapsTheHelper:
+    """A timed-out fetch returns even when git's transport helper holds stderr."""
+
+    def _stand_in_git(
+        self, monkeypatch, tmp_path, *, with_helper: bool, short_waits: bool = True
+    ) -> Path:
+        pidfile = tmp_path / "helper.pid"
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        git = bindir / "git"
+        git.write_text(
+            _HELPER_GIT.format(
+                python=sys.executable,
+                src=str(Path(platform_compat.__file__).resolve().parents[1]),
+                with_helper=with_helper,
+                pidfile=str(pidfile),
+            ),
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}")
+        if short_waits:
+            started = pidfile if with_helper else Path(f"{pidfile}.git")
+            waits = _TimedOutGitWaits(started)
+            monkeypatch.setattr(updates, "asyncio", waits)
+        return pidfile
+
+    @staticmethod
+    def _gone(pid: int, identity: str) -> bool:
+        """Whether the process the stand-in git recorded as (*pid*, *identity*) has exited.
+
+        A zombie awaiting its reaper has exited. Once that process is reaped nothing
+        holds *pid*, and the kernel can give the number to another process, so a pid
+        whose start-time identity now differs, or reads None, is gone too. The state
+        is read first: a zombie at the number means ours is not running, whoever it is.
+        """
+        zombie = platform_compat.pid_is_zombie(pid) is True
+        return zombie or platform_compat.get_process_start_id(pid) != identity
+
+    @staticmethod
+    def _end_pinned(pid: int, identity: str | None) -> None:
+        """SIGKILL a recorded process the test has not seen exit, while its identity holds.
+
+        A pid whose start-time identity now differs, or reads None, is a stranger or
+        nothing, so it is not signalled; nor is a record that carries no identity.
+        """
+        if identity is None or platform_compat.get_process_start_id(pid) != identity:
+            return
+        with contextlib.suppress(OSError):
+            platform_compat.kill_pid_pinned(pid, identity, platform_compat.SIGKILL)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.asyncio
+    async def test_a_fetch_timeout_returns_while_a_helper_holds_stderr(self, monkeypatch, tmp_path):
+        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=True)
+        helper_exited = False
+        try:
+            check = asyncio.ensure_future(
+                updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
+            )
+            try:
+                await await_until(check, what="the fetch timeout handler returning")
+            except AssertionError as stalled:
+                check.cancel()
+                raise AssertionError(
+                    "the fetch timeout handler did not return: it killed git and then "
+                    "waited on a stderr pipe the helper still holds open"
+                ) from stalled
+            assert updates._update_info["error_code"] == updates.ERR_GIT_FETCH_FAILED
+            helper = _recorded(pidfile)
+            assert helper is not None, "the stand-in git never started its helper"
+            helper_pid, helper_identity = helper
+            assert helper_identity is not None, f"no start-time identity for helper {helper_pid}"
+            # Wait on the helper's own exit by its recorded identity, rather than
+            # sleeping a fixed time for the group kill.
+            helper_exited = bool(
+                await async_wait_until(
+                    lambda: self._gone(helper_pid, helper_identity),
+                    off_loop=True,
+                    describe=lambda: f"helper {helper_pid} ({helper_identity}) still running",
+                )
+            )
+        finally:
+            # Never signal a helper seen exit: nothing holds its pid once it is
+            # reaped. Otherwise only while that pid still has the helper's identity.
+            recorded = _recorded(pidfile)
+            if recorded is not None and not helper_exited:
+                self._end_pinned(*recorded)
+        assert helper_exited, "the timeout left git's helper running"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.asyncio
+    async def test_a_fetch_timeout_without_a_helper_is_still_a_failed_check(
+        self, monkeypatch, tmp_path
+    ):
+        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=False)
+        await await_until(
+            asyncio.ensure_future(
+                updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
+            ),
+            what="the fetch timeout handler returning",
+        )
+        assert updates._update_info["error_code"] == updates.ERR_GIT_FETCH_FAILED
+        assert updates._update_info["check_status"] == updates.CHECK_FAILED
+        assert not pidfile.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.asyncio
+    async def test_a_cancelled_fetch_ends_git_and_its_helper(self, monkeypatch, tmp_path):
+        """A shutdown cancels the check while git fetch runs: git and its helper end too.
+
+        git runs in its own session, where a terminal's Ctrl-C does not reach
+        it, so the cancel arm is what stops it. Without that arm the
+        cancellation leaves git and its helper running.
+        """
+        pidfile = self._stand_in_git(monkeypatch, tmp_path, with_helper=True, short_waits=False)
+        task = asyncio.ensure_future(
+            updates._check_git_checkout(_git_proj(monkeypatch, tmp_path), _git_capability())
+        )
+        helper = git = None
+        git_exited = helper_exited = False
+        try:
+            await async_wait_until(
+                lambda: task.done() or _recorded(pidfile) is not None,
+                off_loop=True,
+                describe=lambda: f"no helper record in {pidfile}; check done={task.done()}",
+            )
+            helper = _recorded(pidfile)
+            assert helper is not None, "the stand-in git never started its helper"
+            git = _recorded(Path(f"{pidfile}.git"))
+            assert git is not None, "the stand-in git never recorded its own pid"
+            assert git[1] is not None, f"no start-time identity for git {git[0]}"
+            assert helper[1] is not None, f"no start-time identity for helper {helper[0]}"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled check settling")
+
+            def _both_gone() -> bool:
+                nonlocal git_exited, helper_exited
+                git_exited, helper_exited = self._gone(*git), self._gone(*helper)
+                return git_exited and helper_exited
+
+            await async_wait_until(
+                _both_gone,
+                off_loop=True,
+                describe=lambda: f"git exited={git_exited}, helper exited={helper_exited}",
+            )
+        finally:
+            if not task.done():
+                task.cancel()
+            # Never signal a process seen exit; otherwise only while its pid still
+            # has the start-time identity the stand-in recorded for it.
+            for recorded, exited in ((git, git_exited), (helper, helper_exited)):
+                if recorded is not None and not exited:
+                    self._end_pinned(*recorded)
+        assert git_exited, "the cancelled check left git running"
+        assert helper_exited, "the cancelled check left git's helper running"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.asyncio
+    async def test_the_timeout_tests_cleanup_signals_no_helper_it_saw_exit(
+        self, monkeypatch, tmp_path
+    ):
+        """Drives the timeout test above with a recorder in place of ``os.kill``.
+
+        That test sees the helper exit before its cleanup runs, and nothing holds the
+        helper's pid once the helper is reaped: a signal sent to the pid then reaches
+        whatever process holds the number. After the fetch timeout returns, the
+        recorder passes a signal to that pid on only while the pid still runs the
+        helper (its recorded start-time identity, not a zombie). It records any other
+        and never sends it.
+        """
+        pidfile = tmp_path / "helper.pid"
+        real_kill = os.kill
+        timed_out = False
+        late: list[tuple[int, int]] = []
+
+        def aimed_at_a_gone_helper(pid: int) -> bool:
+            try:
+                fields = pidfile.read_text(encoding="utf-8").split()
+            except OSError:
+                return False
+            if not fields or fields[0] != str(pid):
+                return False
+            identity = fields[1] if len(fields) > 1 else None
+            if identity is None or platform_compat.pid_is_zombie(pid) is True:
+                return True
+            return platform_compat.get_process_start_id(pid) != identity
+
+        def recorder(pid: int, sig: int) -> None:
+            if timed_out and sig != 0 and aimed_at_a_gone_helper(pid):
+                late.append((pid, sig))
+                return
+            real_kill(pid, sig)
+
+        check = updates._check_git_checkout
+
+        async def check_then_mark(*args: object, **kwargs: object) -> None:
+            nonlocal timed_out
+            try:
+                await check(*args, **kwargs)
+            finally:
+                timed_out = True
+
+        monkeypatch.setattr(os, "kill", recorder)
+        monkeypatch.setattr(updates, "_check_git_checkout", check_then_mark)
+        await self.test_a_fetch_timeout_returns_while_a_helper_holds_stderr(monkeypatch, tmp_path)
+        assert not late, (
+            f"the cleanup sent signal {late[0][1]} to pid {late[0][0]}, the helper's, after "
+            "the helper had exited; nothing held that pid any more"
+        )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    def test_the_cleanup_signals_a_recorded_pid_only_while_its_identity_holds(
+        self, monkeypatch, tmp_path
+    ):
+        """The failure-path kill: a pid whose start-time identity differs is not signalled.
+
+        A child of this test stands in for the recorded process. This test holds it
+        unreaped, so its pid cannot name another process, and its identity is read here.
+        """
+        import signal
+        import subprocess
+
+        sent: list[tuple[int, str, int]] = []
+        pinned = platform_compat.kill_pid_pinned
+
+        def record(pid: int, identity: str, sig: int) -> bool:
+            sent.append((pid, identity, sig))
+            return pinned(pid, identity, sig)
+
+        monkeypatch.setattr(platform_compat, "kill_pid_pinned", record)
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path)
+        try:
+            identity = platform_compat.get_process_start_id(proc.pid)
+            assert identity is not None, "precondition: the child's identity is readable"
+            self._end_pinned(proc.pid, f"{identity}0")
+            self._end_pinned(proc.pid, None)
+            assert sent == [], f"a pid whose identity did not match was signalled: {sent}"
+            self._end_pinned(proc.pid, identity)
+            assert sent == [(proc.pid, identity, platform_compat.SIGKILL)]
+            assert proc.wait(timeout=10) == -signal.SIGKILL
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
 
 
 class TestGitCheckoutFailurePaths:
@@ -700,7 +1029,7 @@ class TestPipInstallFailureReport:
 
         state = MagicMock()
 
-        def fake_sync(repo, target_py, emit=None, timeout=None):
+        def fake_sync(repo, target_py, emit=None, timeout=None, **_kw):
             # dep_sync passes pip's captured output through verbatim; the cap is
             # this endpoint's job because it is the one publishing it.
             emit("x" * 4000, True)
@@ -744,6 +1073,70 @@ class TestApplyRefusals:
         assert resp.status == 503
         assert json.loads(resp.body.decode())["code"] == "shutting_down"
         applied.assert_not_awaited()
+
+    @staticmethod
+    def _policy_installer(monkeypatch) -> tuple[asyncio.Event, list[str]]:
+        """A policy apply that runs until cancelled and records its cancel arm.
+
+        Stands in for ``CommandProvider.apply``, whose cancel arm stops the
+        installer child with SIGTERM.
+        """
+        from kiro_crew.platform import update_provider
+
+        started = asyncio.Event()
+        hold = asyncio.Event()  # never set: only a cancel ends the apply
+        stopped: list[str] = []
+
+        async def _installer_running() -> bool | None:
+            started.set()
+            try:
+                await hold.wait()
+            except asyncio.CancelledError:
+                stopped.append("installer")
+                raise
+            return True
+
+        monkeypatch.setattr(update_provider, "apply_policy_update", _installer_running)
+        return started, stopped
+
+    @pytest.mark.asyncio
+    async def test_a_running_policy_apply_is_tracked_for_the_shutdown_path(self, monkeypatch):
+        """The apply runs as a task the gateway's shutdown can cancel and await.
+
+        Inline in the handler, it is cancelled only by aiohttp's own teardown,
+        which the gateway's graceful cap exits ahead of, so the installer would
+        keep running unsupervised.
+        """
+        started, stopped = self._policy_installer(monkeypatch)
+        req = _request({})
+        handler = asyncio.create_task(updates.api_update_apply(req))
+        await await_until(started, what="the apply to start")
+
+        tracked = updates.policy_applies_in_flight()
+        assert len(tracked) == 1
+        tracked[0].cancel()  # what the gateway's shutdown does
+        resp = await await_until(handler, what="the handler to answer")
+
+        assert stopped == ["installer"]
+        assert resp.status == 503
+        assert json.loads(resp.body.decode())["code"] == "shutting_down"
+        assert updates.policy_applies_in_flight() == []
+        step, _detail = req.app["state"].push_update_progress.call_args[0]
+        assert step == "failed"
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_stops_waiting_still_stops_the_apply(self, monkeypatch):
+        """The tracking changes who else can cancel the apply, not the caller's arm."""
+        started, stopped = self._policy_installer(monkeypatch)
+        handler = asyncio.create_task(updates.api_update_apply(_request({})))
+        await await_until(started, what="the apply to start")
+
+        handler.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(handler, what="the handler to unwind")
+
+        assert stopped == ["installer"]
+        assert updates.policy_applies_in_flight() == []
 
     @pytest.mark.asyncio
     async def test_refuses_when_no_project_dir_is_configured(self):
@@ -814,6 +1207,34 @@ class TestApplyRefusals:
 
         assert resp.status == 409
         assert "uncommitted changes" in json.loads(resp.body.decode())["error"]
+        assert req.app["state"]._background_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_a_dirty_tree_refusal_names_its_reason_and_counts_the_changes(
+        self, monkeypatch, tmp_path
+    ):
+        """The 409 carries a stable code and a count, so the UI can guide the user.
+
+        The count is of changed entries only: no paths leave the gateway.
+        """
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
+        monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
+        _sequence_procs(
+            monkeypatch,
+            [_FakeProc(out=b" M src/kiro_crew/cli.py\n?? notes.txt\n")],
+        )
+
+        req = _request({})
+        resp = await updates.api_update_apply(req)
+
+        assert resp.status == 409
+        payload = json.loads(resp.body.decode())
+        assert payload["code"] == "dirty_worktree"
+        assert payload["changed"] == 2
+        # Older clients read only ``error``; it keeps its wording.
+        assert payload["error"] == "Working tree has uncommitted changes — commit or stash first"
+        assert "cli.py" not in json.dumps(payload)
         assert req.app["state"]._background_tasks == set()
 
     @pytest.mark.asyncio
@@ -1382,10 +1803,10 @@ class TestRingLogHandler:
         handler.emit(_record("broadcast me"))
         # The fan-out is scheduled via call_soon_threadsafe, so it lands on a
         # later loop iteration rather than inside emit().
-        for _ in range(50):
-            await asyncio.sleep(0.005)
-            if ws.send_str.await_count:
-                break
+        await async_wait_until(
+            lambda: ws.send_str.await_count,
+            describe=lambda: f"send_str awaits={ws.send_str.await_count}",
+        )
 
         ws.send_str.assert_awaited_once()
         payload = json.loads(ws.send_str.await_args[0][0])
@@ -1536,18 +1957,14 @@ class TestLogsStream:
         before = len(root.handlers)
 
         task = asyncio.ensure_future(updates.api_logs(_request(query={"lines": "1"})))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if any(isinstance(h, updates._QueueLogHandler) for h in root.handlers):
-                break
-        assert any(isinstance(h, updates._QueueLogHandler) for h in root.handlers)
+        await async_wait_until(
+            lambda: any(isinstance(h, updates._QueueLogHandler) for h in root.handlers),
+            describe=lambda: f"handlers={root.handlers!r}",
+        )
 
         logging.getLogger("kiro_crew.stream").warning("live one")
         logging.getLogger("kiro_crew.stream").warning("live two")
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if len(writes) >= 2:
-                break
+        await async_wait_until(lambda: len(writes) >= 2, describe=lambda: f"writes={writes!r}")
         task.cancel()
         await task
 
@@ -1578,10 +1995,9 @@ class TestLogsStream:
         monkeypatch.setattr(asyncio, "wait_for", _no_waiting)
 
         task = asyncio.ensure_future(updates.api_logs(_request()))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if b": keepalive\n\n" in writes:
-                break
+        await async_wait_until(
+            lambda: b": keepalive\n\n" in writes, describe=lambda: f"writes={writes!r}"
+        )
         task.cancel()
         await task
 
@@ -1603,7 +2019,7 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
 
     Scoped to each door's own `chat_message` BRANCH rather than the whole file.
     A file-wide scan cannot work here: `chat_message_frame` is *defined* in
-    `state.py`, so its own `"slot": note[...]` body reads as a hand-built frame
+    `state_parts/transcript_rows.py`, so its own `"slot": note[...]` body reads as a hand-built frame
     and its `def` line satisfies a naive "calls the helper" check.
     """
     from pathlib import Path
@@ -1699,12 +2115,9 @@ class TestDashboardStream:
         )
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if len(writes) >= 6:
-                break
+        await async_wait_until(lambda: len(writes) >= 6, describe=lambda: f"writes={writes!r}")
         updates.shutdown_event.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the stream handler returning on shutdown")
 
         text = b"".join(writes).decode()
         assert "event: slots\ndata: []\n\n" in text
@@ -1720,6 +2133,29 @@ class TestDashboardStream:
         assert payload["version"] == updates._local_version
         # The per-client queue is always handed back, disconnect or not.
         req.app["state"].unregister_sse.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("is_dashboard_user", [True, False])
+    async def test_only_a_dashboard_reader_gets_pin_ranks_on_sse(
+        self, monkeypatch, is_dashboard_user
+    ):
+        """A rank is a place in the person's whole order; a scoped reader gets none."""
+        writes = _stub_stream(monkeypatch)
+        slots = json.dumps([{"key": "a", "pin_rank": 0}])
+        req = self._request_with_queue(
+            [{"_type": "slots", "slots": slots}], is_dashboard_user=is_dashboard_user
+        )
+        task = asyncio.ensure_future(updates.api_stream(req))
+        await async_wait_until(
+            lambda: any(w.startswith(b"event: slots") for w in writes),
+            describe=lambda: f"writes={writes!r}",
+        )
+        updates.shutdown_event.set()
+        await await_until(task, what="the stream handler returning on shutdown")
+        frames = [w.decode() for w in writes if w.startswith(b"event: slots")]
+        assert frames, "no slots frame was written"
+        rows = json.loads(frames[0].split("data: ", 1)[1].strip())
+        assert ("pin_rank" in rows[0]) is is_dashboard_user
 
     @pytest.mark.asyncio
     async def test_the_sse_chat_message_frame_carries_the_rows_identity(self, monkeypatch):
@@ -1746,12 +2182,12 @@ class TestDashboardStream:
         )
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if any(w.startswith(b"event: chat_message") for w in writes):
-                break
+        await async_wait_until(
+            lambda: any(w.startswith(b"event: chat_message") for w in writes),
+            describe=lambda: f"writes={writes!r}",
+        )
         updates.shutdown_event.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the stream handler returning on shutdown")
 
         frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
         assert frames, "no chat_message frame was written"
@@ -1778,12 +2214,12 @@ class TestDashboardStream:
         )
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if any(w.startswith(b"event: chat_message") for w in writes):
-                break
+        await async_wait_until(
+            lambda: any(w.startswith(b"event: chat_message") for w in writes),
+            describe=lambda: f"writes={writes!r}",
+        )
         updates.shutdown_event.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the stream handler returning on shutdown")
 
         frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
         assert frames, "no chat_message frame was written"
@@ -1822,12 +2258,12 @@ class TestDashboardStream:
         )
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if any(w.startswith(b"event: chat_message") for w in writes):
-                break
+        await async_wait_until(
+            lambda: any(w.startswith(b"event: chat_message") for w in writes),
+            describe=lambda: f"writes={writes!r}",
+        )
         updates.shutdown_event.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the stream handler returning on shutdown")
 
         frames = [w.decode() for w in writes if w.startswith(b"event: chat_message")]
         assert frames, "no chat_message frame was written"
@@ -1887,9 +2323,9 @@ class TestDashboardStream:
         state.status_snapshot.return_value = {"sessions": 0}
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        await asyncio.sleep(0.05)
+        await async_wait_until(lambda: queue.probes > 1, describe=lambda: f"probes={queue.probes}")
         updates.shutdown_event.set()
-        resp = await asyncio.wait_for(task, timeout=5)
+        resp = await await_until(task, what="the stream handler returning on shutdown")
 
         assert isinstance(resp, web.StreamResponse)
         state.unregister_sse.assert_called_once()
@@ -1900,10 +2336,10 @@ class TestDashboardStream:
         req = self._request_with_queue([])
 
         task = asyncio.ensure_future(updates.api_stream(req))
-        for _ in range(200):
-            await asyncio.sleep(0.005)
-            if req.app["state"].register_sse.called:
-                break
+        await async_wait_until(
+            lambda: req.app["state"].register_sse.called,
+            describe=lambda: "register_sse never called",
+        )
         task.cancel()
         resp = await task
 
@@ -2036,7 +2472,7 @@ class TestExternallyManagedCheck:
         monkeypatch.setattr("kiro_crew.platform.update_capability.distribution", lambda: "wheel")
         monkeypatch.setattr(updates, "_check_release_feed", _count)
         leader = asyncio.create_task(updates._do_update_check())
-        await asyncio.wait_for(started.wait(), timeout=1)
+        await await_until(started, what="the leader's check starting")
         follower = asyncio.create_task(updates._do_update_check())
         await asyncio.sleep(0)
         assert not follower.done()

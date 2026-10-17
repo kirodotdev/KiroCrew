@@ -24,7 +24,12 @@ never navigate a borrowed tab away from the user's work.
 
 Attach is the strongest of the three, and worth naming as such: it drives the
 user's own running browser with every session they are logged into, not a scoped
-copy. Prefer saved state when the task only needs one site.
+copy. When the user has Chrome on this machine, attach is the default: asking for
+"my Chrome", or for a site they are signed in to (their mail, their files), means
+attach. Saved state fits a site you return to often. Fall back to the headless
+`playwright-cli open` only when no Chrome is installed, the user asks for
+headless, or the gateway runs on another machine. The `browser` tool's fallback
+text tells you which of these this host is.
 
 ## Attach
 
@@ -58,9 +63,24 @@ Supported channels: `chrome`, `chrome-beta`, `chrome-dev`, `chrome-canary`,
 `msedge`, `msedge-beta`, `msedge-dev`, `msedge-canary`.
 
 ```bash
-playwright-cli attach --extension=chrome
+PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome
+playwright-cli tab-list
 playwright-cli goto https://internal.example.com/dashboard
 ```
+
+**Keep `PLAYWRIGHT_MCP_ISOLATED=false` on the attach.** A launch config named by
+`PLAYWRIGHT_MCP_CONFIG` may set `browser.isolated: true`, and the CLI checks that
+before the extension. The attach then prints `attached to chrome` while it really
+launched a fresh in-memory browser with none of the user's logins. The variable
+overrides the file for that one command and changes nothing when no config sets
+it. Leave it off the later commands: the file may need `isolated` for `open`. In
+PowerShell, where a leading `NAME=value` is not an assignment, use
+`$env:PLAYWRIGHT_MCP_ISOLATED='false'; playwright-cli attach --extension=chrome; Remove-Item Env:PLAYWRIGHT_MCP_ISOLATED`.
+
+**Check that you reached their Chrome before you say so.** Run `tab-list` right
+after the attach. A lone `about:blank`, or a later `detach` answering
+`session '...' was not attached`, means you are in a throwaway browser: say that
+plainly, and re-attach with the variable instead of telling the user it is theirs.
 
 `PLAYWRIGHT_CLI_SESSION` names your process's browser; `attach --extension=chrome`
 binds it, not a session named `chrome`. Keep using bare commands such as
@@ -79,7 +99,7 @@ The extension and CLI pair through a relay. An optional token in
 panel installs the CLI. Attach uses the user's real logins without cookie handling.
 
 **A token changed AFTER your process started breaks attach.** Your shell carries
-the value injected when the gateway started, so editing it in the extension alone
+the value injected when your process started, so editing it in the extension alone
 leaves the two disagreeing:
 
 ```
@@ -90,11 +110,15 @@ PLAYWRIGHT_MCP_EXTENSION_TOKEN matches its token.
 
 That names a mismatch, not a missing extension, so the extension link is the wrong
 answer. Either drop the stale variable for the attach command alone, which puts the
-approval back in the browser, or have the user restart the gateway so it reads the
-new value:
+approval back in the browser, or have the user paste the extension's current token
+into **Settings → Browser** and continue in a new session: saving re-publishes it
+to processes started afterwards, while a session already running keeps the value
+it started with. Restarting the gateway alone re-reads the OLD stored token.
+
+For the first option:
 
 ```bash
-env -u PLAYWRIGHT_MCP_EXTENSION_TOKEN playwright-cli attach --extension=chrome
+env -u PLAYWRIGHT_MCP_EXTENSION_TOKEN PLAYWRIGHT_MCP_ISOLATED=false playwright-cli attach --extension=chrome
 ```
 
 Use that form on `attach` only. Do not carry it forward in a shell variable for
@@ -129,13 +153,13 @@ prompt: those are the user's to complete, and working around them is not on the
 table. When they confirm they are in:
 
 ```bash
-playwright-cli state-save ~/.kiro/crew/browser-state/example.json
+playwright-cli state-save "${KIROCREW_HOME:-$HOME/.kiro/crew}/browser-state/example.json"
 ```
 
 **Replay it later.**
 
 ```bash
-playwright-cli state-load ~/.kiro/crew/browser-state/example.json
+playwright-cli state-load "${KIROCREW_HOME:-$HOME/.kiro/crew}/browser-state/example.json"
 playwright-cli goto https://internal.example.com/dashboard
 ```
 

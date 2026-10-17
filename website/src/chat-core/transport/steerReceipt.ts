@@ -50,6 +50,9 @@ export interface SteerReceiptAdapter {
    *  receipt is ignored: the steer provably landed. A host that mints no
    *  reconcilable bubble (or no `sendId`) returns `false`. */
   echoReconciled: () => boolean
+  /** Optional queue-custody proof for a surface that mints queued-send bubbles.
+   *  Acceptance prevents restoring a duplicate, without claiming dispatch. */
+  sendAccepted?: () => boolean
   /** Restore the raw typed text and files to the SENDING slot's composer.
    *  Called on `refused`, `transport-error` and `response-late`, with the
    *  triggering status passed in so a host can gate differently per ruling.
@@ -104,6 +107,8 @@ export function applySteerReceipt(receipt: SendReceipt, adapter: SteerReceiptAda
   // including when a steer raced onto a new turn and lost its steer flag. This
   // runs before every ruling so an indeterminate transport outcome never
   // clobbers a bubble the server already owns.
+  if ((receipt.status === 'refused' || receipt.status === 'response-late' || receipt.status === 'transport-error')
+    && adapter.sendAccepted?.()) return
   if ((receipt.status === 'response-late' || receipt.status === 'transport-error')
     && adapter.echoReconciled()) return
 

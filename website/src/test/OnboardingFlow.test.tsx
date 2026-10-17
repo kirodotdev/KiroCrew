@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import OnboardingFlow from '../components/OnboardingFlow'
 import { api } from '../api/client'
+import { LIQUID_GLASS_SEEDED_KEY, LIQUID_GLASS_STORAGE_KEY } from '../utils/liquidGlass'
+import { lookPreviewSrc } from '../utils/lookPreview'
 
 // Partial api mock: profile read/write + theme boot. Everything else keeps its
 // real implementation (ThemeProvider's ancillary fetches no-op in jsdom).
@@ -31,6 +33,12 @@ vi.mock('../api/client', async importOriginal => {
 
 const patchConfig = vi.mocked(api.patchConfig)
 const kirocrewConfig = vi.mocked(api.kirocrewConfig)
+
+// The flow saves its first-run step in localStorage so a reload resumes it;
+// the store outlives a test, so start each one from step 1.
+beforeEach(() => {
+  localStorage.removeItem('mc-onboarding-step')
+})
 
 const advanceToStep2 = () => {
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
@@ -84,17 +92,61 @@ describe('OnboardingFlow — About You step', () => {
     expect(patchConfig).not.toHaveBeenCalled()
   })
 
-  it('deselecting an answer before Next results in no write', async () => {
+  it('a second click on the selected answer keeps it selected', async () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     const chip = screen.getByRole('button', { name: 'Developer' })
     fireEvent.click(chip)
+    fireEvent.click(chip)
     expect(chip).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(chip) // toggle off — back to the initial ''
-    expect(chip).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+    expect(patchConfig).toHaveBeenCalledWith('dashboard.user_role', 'developer')
+  })
+
+  it('on a replay, clicking the preselected answer again does not clear it', async () => {
+    kirocrewConfig.mockResolvedValue({
+      dashboard: { user_role: 'developer', user_technical_level: 'codes' },
+    })
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    advanceToStep2()
+    const chip = await screen.findByRole('button', { name: 'Developer', pressed: true })
+    fireEvent.click(chip)
+    expect(chip).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
     expect(patchConfig).not.toHaveBeenCalled()
+  })
+
+  it('a reload during the tour resumes the same step instead of step 1', async () => {
+    const first = renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    advanceToStep2()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+    first.unmount()
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(await screen.findByText('Work that runs on time')).toBeInTheDocument()
+    expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
+  })
+
+  it('finishing the flow forgets the saved step', async () => {
+    const onComplete = vi.fn()
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={onComplete} />)
+    advanceToStep2()
+    fireEvent.click(screen.getByRole('button', { name: /Skip/ }))
+    await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    expect(localStorage.getItem('mc-onboarding-step')).toBeNull()
+  })
+
+  it('ignores a saved step once the user is onboarded (a /onboarding replay starts at step 1)', () => {
+    localStorage.setItem('mc-onboarding-step', '4')
+    localStorage.setItem('mc-onboarded', '1')
+    try {
+      renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+      expect(screen.getByText('Pick your look')).toBeInTheDocument()
+    } finally {
+      localStorage.removeItem('mc-onboarded')
+    }
   })
 
   it('Skip on the About You step still persists answers already selected', async () => {
@@ -400,7 +452,7 @@ describe('OnboardingFlow — About You step', () => {
     expect(screen.getByRole('button', { name: /Skip/ })).toHaveFocus()
   })
 
-  it('keeps typed text when Other is toggled off and back on', () => {
+  it('keeps typed text when the user picks another role and comes back to Other', () => {
     renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
     advanceToStep2()
     const other = screen.getByRole('button', { name: 'Other' })
@@ -408,10 +460,126 @@ describe('OnboardingFlow — About You step', () => {
     fireEvent.change(screen.getByLabelText('Describe your role'), {
       target: { value: 'founder' },
     })
-    fireEvent.click(other) // toggle off — field hides
+    fireEvent.click(screen.getByRole('button', { name: 'Developer' })) // field hides
     expect(screen.queryByLabelText('Describe your role')).not.toBeInTheDocument()
     fireEvent.click(other) // back on — the answer is still there
     expect(screen.getByLabelText('Describe your role')).toHaveValue('founder')
+  })
+})
+
+describe('OnboardingFlow — Pick your look offers the Translucent panels switch', () => {
+  afterEach(() => {
+    localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+    localStorage.removeItem(LIQUID_GLASS_SEEDED_KEY)
+    document.documentElement.removeAttribute('data-reduce-transparency')
+  })
+
+  it('shows the Settings switch between the mode row and the theme grid', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const sw = screen.getByRole('switch', { name: 'Translucent panels' })
+    // Reads in order: mode row (Dark) -> the switch -> the COLOR THEME heading.
+    const dark = screen.getByRole('button', { name: 'Dark' })
+    const heading = screen.getByText('Color theme')
+    expect(dark.compareDocumentPosition(sw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(sw.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('turns the glass ON for a fresh store (the key was never written) on the first-run tour', () => {
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'true')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBe('on')
+    expect(localStorage.getItem(LIQUID_GLASS_SEEDED_KEY)).toBe('1')
+    expect(document.documentElement.dataset.reduceTransparency).toBe('off')
+  })
+
+  it('an already-onboarded user replaying the tour (no marker yet, glass off) is not seeded', () => {
+    localStorage.setItem('mc-onboarded', '1')
+    try {
+      renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+      expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'false')
+      expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+      expect(localStorage.getItem(LIQUID_GLASS_SEEDED_KEY)).toBeNull()
+    } finally {
+      localStorage.removeItem('mc-onboarded')
+    }
+  })
+
+  it('a reload before the tour is finished does not seed again: the browser remembers the default was offered', () => {
+    // Turned off on the first-run step (absent key), then the page reloaded
+    // with onboarding still unfinished: the step reopens with initialOpen.
+    localStorage.setItem(LIQUID_GLASS_SEEDED_KEY, '1')
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'false')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+  })
+
+  it('turning it off, going to step 2 and coming Back keeps it off (the seed runs once per first run)', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Translucent panels' })) // seeded on -> off
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    advanceToStep2()
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'false')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+  })
+
+  it('a closed mount (every dashboard boot) writes nothing: an absent key stays absent', () => {
+    // firstRun.tsx keeps OnboardingFlow mounted for the life of the dashboard so
+    // `/onboarding` can reopen it. Off is stored as the absent key, so a seed
+    // that ran here would turn an existing user's glass back on at every boot.
+    renderWithProviders(<OnboardingFlow initialOpen={false} onComplete={vi.fn()} />)
+    expect(screen.queryByRole('switch', { name: 'Translucent panels' })).toBeNull()
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    expect(document.documentElement.dataset.reduceTransparency).toBeUndefined()
+  })
+
+  it('a /onboarding reopen shows the CURRENT setting and does not seed', async () => {
+    renderWithProviders(<OnboardingFlow initialOpen={false} onComplete={vi.fn()} />)
+    // The user turned the glass on in Settings after the flow mounted...
+    localStorage.setItem(LIQUID_GLASS_STORAGE_KEY, 'on')
+    act(() => { window.dispatchEvent(new Event('mc-start-onboarding')) })
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'true')
+    // ...and a user who turned it OFF (absent key) keeps it off on a reopen.
+    localStorage.removeItem(LIQUID_GLASS_STORAGE_KEY)
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all setup and onboarding' }))
+    await waitFor(() => expect(screen.queryByRole('switch', { name: 'Translucent panels' })).toBeNull())
+    act(() => { window.dispatchEvent(new Event('mc-start-onboarding')) })
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'false')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+  })
+
+  it('flipping it off persists the same key and root attribute Settings does, live', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Translucent panels' }))
+    expect(screen.getByRole('switch', { name: 'Translucent panels' })).toHaveAttribute('aria-checked', 'false')
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBeNull()
+    expect(document.documentElement.dataset.reduceTransparency).toBe('on')
+    fireEvent.click(screen.getByRole('switch', { name: 'Translucent panels' }))
+    expect(localStorage.getItem(LIQUID_GLASS_STORAGE_KEY)).toBe('on')
+    expect(document.documentElement.dataset.reduceTransparency).toBe('off')
+  })
+
+  it('is a copy of the Settings row, so it carries no deep-link anchor', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    expect(document.querySelector('[data-setting-label="Translucent panels"]')).toBeNull()
+  })
+})
+
+describe('OnboardingFlow — Pick your look previews the real dashboard', () => {
+  it('embeds the dashboard in a passive, scaled, same-origin frame above the controls', () => {
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    const box = screen.getByTestId('look-preview')
+    expect(box).toHaveAttribute('aria-hidden', 'true')
+    const frame = box.querySelector('iframe')!
+    expect(frame.getAttribute('src')).toBe(lookPreviewSrc())
+    expect(frame).toHaveAttribute('inert')
+    expect(frame).toHaveAttribute('tabindex', '-1')
+    // Above the mode row, so the picture sits over what changes it.
+    const system = screen.getByRole('button', { name: 'System' })
+    expect(box.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
 

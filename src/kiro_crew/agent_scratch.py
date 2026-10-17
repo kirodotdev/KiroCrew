@@ -22,11 +22,14 @@ Reclamation is keyed on PROCESS liveness, never on file age:
   crash, gateway restart with survivors), and the positive liveness signal
   below covers every death path by construction.
 * The gateway sweeps hourly (first pass an hour after start -- never on the
-  boot path). A directory is removed only when its recorded owner's process
+  boot path). A directory is reclaimed only when its recorded owner's process
   GROUP is dead AND the whole tree has been idle past the grace window; a
   directory with a live owner is never touched (agent processes can outlive
   a gateway restart), an ownerless directory is never deleted, and a garbled
-  owner file is left for a human.
+  owner file is left for a human. A reclaimed directory that holds a git
+  repository is moved into the quarantine (:data:`QUARANTINE_DIRNAME`) rather
+  than deleted, and is deleted from there only after
+  :data:`QUARANTINE_TTL_SECONDS`.
 
 The WORK directory follows the session tree, not the process. The scratch
 root is masked for every sandboxed process and each spawn is handed back only
@@ -76,6 +79,7 @@ of by truncating a name the child can point somewhere else.
 
 from __future__ import annotations
 
+import calendar
 import logging
 import os
 import re
@@ -90,7 +94,13 @@ from typing import Literal
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import (
+    config_dir,
+    demote_scratch_root_override,
+    scratch_root_owner_refusal,
+    scratch_root_writer_refusal,
+    valid_scratch_root_override,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +121,27 @@ OwnerOutcome = Literal["recorded", "unwritable", "refused", "stale", "garbled"]
 #: orphan: allocation happens before the child pid exists. Anything older
 #: with no owner belongs to a spawn that never completed.
 _UNOWNED_GRACE_SECONDS = 3600.0
+
+#: The sweep's holding area, a directory of the managed root. A dead, idle tree
+#: that holds a git repository is moved here instead of being deleted: a dead
+#: owner says the PROCESS ended, not that the work in a clone is saved, and no
+#: check of a repository the agent wrote can prove that it is. Inside the root,
+#: the move is a rename on one filesystem (no copy that can fail halfway), and
+#: the quarantined tree stays as masked from sandboxed processes as the root is.
+#: No allocated name can collide with it: those all end in ``-<token>``.
+QUARANTINE_DIRNAME = ".quarantine"
+#: How long a quarantined tree is kept, counted from its move. Long enough for a
+#: user to notice the log line and recover the work; bounded so that kept trees
+#: do not fill the disk.
+QUARANTINE_TTL_SECONDS = 14 * 24 * 3600.0
+#: A quarantined tree is named ``<UTC move time>-<its scratch name>``; the time
+#: is what the expiry reads, and stripping it gives back the original name.
+_QUARANTINE_STAMP = "%Y%m%dT%H%M%SZ"
+_QUARANTINED_NAME = re.compile(r"(\d{8}T\d{6}Z)-(.+)")
+#: The entries git looks for in a git directory, plus the one a linked
+#: worktree's directory carries. Any two of them in one directory make it a
+#: repository for the sweep (:func:`holds_git_repository`).
+_GIT_DIR_ENTRIES = ("HEAD", "objects", "refs", "commondir")
 
 _LABEL_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -177,7 +208,36 @@ class SharedScratchJoinError(ScratchBoundaryError):
 
 
 def scratch_root() -> Path:
-    """The managed root: ``<data home>/scratch``."""
+    """The managed root: ``KIROCREW_SCRATCH_ROOT`` if set and safe, else
+    ``<data home>/scratch``.
+
+    The override points the bulky, disposable scratch tree at an explicit
+    directory independent of ``KIROCREW_HOME`` -- its reason to exist is the
+    Windows case where staged self-update installers under scratch fill the
+    system drive. An override naming a filesystem/drive root or a known
+    system directory is refused by :func:`valid_scratch_root_override` and
+    logged once, falling back to ``config_dir()/scratch`` -- the same
+    ignore-and-fall-back contract :func:`config_dir` applies to an unsafe
+    ``KIROCREW_HOME``. ``KIROCREW_SCRATCH`` (no ``_ROOT``) is unrelated: it is an
+    OUTPUT written by :func:`scratch_env` to tell child processes where their
+    scratch is, and setting it changes nothing here.
+
+    The override is used AS the managed root, so the subdirectory the sweep and
+    allocator operate on is the overridden path itself. :func:`valid_scratch_root_override`
+    resolves and validates the override ONCE and pins it for the process lifetime, and it
+    is honoured on Windows ONLY (refused with a logged reason on every other platform,
+    falling back to ``config_dir()/scratch``). It also REJECTS a symlinked or junctioned
+    override name, a crew home, the workspace, a system directory, and an unresolvable path,
+    falling back the same way. The link/junction refusal in :func:`allocate_scratch` still
+    fires on a link planted at an allocation BELOW that resolved root, exactly as it does
+    under the default location.
+    """
+    override = valid_scratch_root_override()
+    if override is not None:
+        return override
+    # A set-but-refused override logs its reason once per distinct value when the override
+    # pin is computed (see ``config.paths._resolve_scratch_root_override``); here we only
+    # fall back to the guarded default root.
     return config_dir() / _SUBDIR
 
 
@@ -378,6 +438,16 @@ def allocate_scratch(label: str) -> Path:
     Raises :class:`ScratchBoundaryError` when the managed root is a link.
     """
     root = scratch_root()
+    # Decide whether THIS root is a relocated override from ``root`` ALONE -- a single read of
+    # the pin, inside ``scratch_root()`` -- never a second ``valid_scratch_root_override()``.
+    # A concurrent allocation that refuses its own owner re-check calls
+    # ``demote_scratch_root_override`` (clearing the pin); a second read here could then return
+    # ``None`` AFTER ``scratch_root()`` already handed us the override as ``root``, and the
+    # adoption checks would be skipped on a foreign-created directory. Comparing ``root`` to the
+    # guarded default (the same expression ``scratch_root()`` falls back to) is independent of
+    # the pin's later state: any non-default root -- which only a relocated override produces --
+    # always gets the owner/lock/writer checks, failing safe even if the pin changes again.
+    is_relocated_root = root != config_dir() / _SUBDIR
     # Twice around the mkdir, which is both the step a pre-planted link
     # subverts and the moment one could win the race with the first check:
     # ``mkdir(parents=True, exist_ok=True)`` SUCCEEDS on a link to a directory,
@@ -389,6 +459,71 @@ def allocate_scratch(label: str) -> Path:
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
+    # When the root is a relocated override (``KIROCREW_SCRATCH_ROOT``), lock it to the
+    # owner. The default root inherits the owner-only ACL ``ensure_data_home`` sets on the
+    # data home, but an override points at an arbitrary directory whose ACL is whatever its
+    # parent gives it -- and the ``mode=0o700`` above is ignored on Windows, so without this
+    # a relocated root on e.g. ``D:\`` keeps the drive's default ACL (Authenticated Users
+    # Modify) and another local user could read or replace this session's scratch.
+    #
+    # The validator refuses a relocated root the current user does not own, but it does so
+    # on the resolved value and CACHES the result (keyed on the raw env string). When the
+    # root does not exist yet at validation time -- the boot sweep calls ``scratch_root()``
+    # before any ``mkdir`` -- the validator has nothing to check and the cached accept pins.
+    # In the window before this allocation, another local user on a shared drive can create
+    # the override path and own it; the ``mkdir(exist_ok=True)`` above then adopts THEIR
+    # directory, and ``restrict_dir_to_owner`` only rewrites the access list -- it never
+    # changes the owner -- so tightening it would cement the foreign owner's control over
+    # every session's scratch. So re-run the owner decision HERE, on the created directory,
+    # before tightening: :func:`config.paths.scratch_root_owner_refusal` is the SAME helper
+    # the validator uses, so the two cannot drift. On refusal (foreign, or an owner that
+    # cannot be read) fall back fail-closed to the guarded default root
+    # (``config_dir()/scratch``), which carries the data home's owner-only ACL -- the same
+    # outcome the validator produces for an EXISTING foreign root.
+    if is_relocated_root:
+
+        def _fall_back_to_default(refusal: str) -> Path:
+            # Demote the pin so ``scratch_root()`` -- which the sweep (:func:`sweep_dead_scratch`),
+            # the log cap (:func:`cap_kiro_cli_logs`) and the shared-window join all read --
+            # returns the SAME guarded default this allocation now falls back to. The pin was
+            # computed while the root was absent (a cached accept), so without this it keeps
+            # returning the refused override and those readers operate on the foreign-owned
+            # directory while allocations land in the default. See
+            # :func:`config.paths.demote_scratch_root_override`.
+            demote_scratch_root_override(refusal)
+            fallback = config_dir() / _SUBDIR
+            _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
+            fallback.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
+            return fallback
+
+        # Two-step adoption of a relocated root. FIRST decide the OWNER only
+        # (:func:`scratch_root_owner_refusal`): accept the current user, or
+        # ``BUILTIN\Administrators`` when this token is itself an admin (an elevated creator);
+        # refuse SYSTEM, TrustedInstaller, any other owner, and an unreadable owner.
+        owner_refusal = scratch_root_owner_refusal(root)
+        if owner_refusal is not None:
+            root = _fall_back_to_default(owner_refusal)
+        else:
+            # THEN lock it owner-only. ``restrict_dir_to_owner`` is the same helper the data
+            # home uses; a no-op-shaped owner-only tighten on POSIX, an owner-only ACL on
+            # Windows -- which also removes the inherited ``Authenticated Users: Modify`` ACE a
+            # secondary-drive directory starts with. It is fail-loud (raises ``OSError`` when
+            # the ACL cannot be rewritten); a lock we cannot complete leaves the inherited
+            # replaceable-writer ACE in place, so treat it like the owner and writer refusals
+            # and fall back fail-closed to the guarded default rather than letting the error
+            # abort every spawn while the override is set.
+            try:
+                platform_compat.restrict_dir_to_owner(root)
+            except OSError as exc:
+                root = _fall_back_to_default(f"owner-only lock failed: {exc}")
+            else:
+                # FINALLY, AFTER the lock, run the writer check: the inherited replaceable-writer
+                # ACE is gone now, so the documented ``D:\kirocrew-scratch`` case passes; if a
+                # foreign writer somehow survives the lock, fall back fail-closed to the default.
+                writer_refusal = scratch_root_writer_refusal(root)
+                if writer_refusal is not None:
+                    root = _fall_back_to_default(writer_refusal)
     safe = _LABEL_SAFE.sub("-", label)[:40].strip("-") or "agent"
     path = root / f"{safe}-{secrets.token_hex(4)}"
     # No ``exist_ok``: ``mkdir`` never follows the final component, so this
@@ -896,6 +1031,161 @@ def _restore_owner_after_partial_delete(child: Path, pids: tuple[int, ...]) -> N
         logger.warning("agent-scratch: could not restore the owner of %r", child.name)
 
 
+def quarantine_dir() -> Path:
+    """Where the sweep moves a dead, idle tree that holds a git repository."""
+    return scratch_root() / QUARANTINE_DIRNAME
+
+
+def holds_git_repository(tree: Path) -> bool:
+    """Whether *tree* holds a git repository anywhere in it, or might.
+
+    The answer decides whether the sweep may delete a dead, idle tree at once,
+    so every doubt answers True. A repository is:
+
+    * an entry named ``.git`` that is a file or a link (a separate git
+      directory, a submodule, a linked worktree), whatever it names;
+    * a ``.git`` directory holding anything but ``objects``;
+    * any other directory, *tree* included, holding at least two of
+      :data:`_GIT_DIR_ENTRIES`, each of any kind, so a bare repository counts
+      even when its object store or refs are a link.
+
+    A ``.git`` directory holding only ``objects`` is residue git does not open,
+    such as the read-only object files a partial delete strands on Windows.
+    Entries are read with ``lstat``; no link is followed or descended into, no
+    file is opened and no git runs. A tree that cannot be listed answers True.
+    """
+    stack = [tree]
+    try:
+        while stack:
+            current = stack.pop()
+            present = sum(os.path.lexists(current / name) for name in _GIT_DIR_ENTRIES)
+            if present >= 2:
+                return True
+            for entry in os.scandir(current):
+                path = current / entry.name  # name-composed: cannot escape the tree
+                is_dir = _is_plain_dir(path)
+                if entry.name == ".git":
+                    if not is_dir or any(name != "objects" for name in os.listdir(path)):
+                        return True
+                    continue
+                if is_dir:
+                    stack.append(path)
+    except (OSError, ValueError):
+        return True
+    return False
+
+
+def _quarantine(child: Path, now: float) -> bool:
+    """Move *child* into the quarantine instead of deleting it; False keeps it in place.
+
+    Called under :data:`_SWEEP_LOCK`, after the sweep's final look. The move is
+    one ``rename`` inside the managed root and never a copy: the tree is either
+    still where it was or whole in the quarantine, and its files keep their
+    contents, modes and times. Anything that stops the move -- a quarantine
+    that cannot be made, one that is not a plain directory, a name already
+    taken, a rename that fails (a quarantine on another filesystem included) --
+    leaves the tree where it is, logged, for the next sweep: a tree with a git
+    repository is never deleted from the root.
+
+    Each move logs one INFO line naming where the tree went and when it is
+    deleted from there.
+    """
+    holding = quarantine_dir()
+    target = holding / f"{time.strftime(_QUARANTINE_STAMP, time.gmtime(now))}-{child.name}"
+    try:
+        os.mkdir(holding, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        logger.warning(
+            "agent-scratch: keeping %s in place: it holds a git repository and the "
+            "quarantine %s could not be created",
+            child,
+            holding,
+            exc_info=True,
+        )
+        return False
+    if not _is_plain_dir(holding) or os.path.lexists(target):
+        logger.warning(
+            "agent-scratch: keeping %s in place: it holds a git repository and %s "
+            "cannot receive it",
+            child,
+            target,
+        )
+        return False
+    try:
+        os.rename(child, target)
+    except OSError:
+        logger.warning(
+            "agent-scratch: keeping %s in place: it holds a git repository and could "
+            "not be moved to %s",
+            child,
+            target,
+            exc_info=True,
+        )
+        return False
+    expires = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(now + QUARANTINE_TTL_SECONDS))
+    logger.info(
+        "agent-scratch: moved %s to %s instead of deleting it, because it holds a git "
+        "repository; it is deleted after %s, so move it out of the quarantine before "
+        "then to keep it",
+        child.name,
+        target,
+        expires,
+    )
+    return True
+
+
+def _quarantined_at(name: str) -> float | None:
+    """The move time a quarantined tree's name records, or None for any other name."""
+    match = _QUARANTINED_NAME.fullmatch(name)
+    if match is None:
+        return None
+    try:
+        return float(calendar.timegm(time.strptime(match.group(1), _QUARANTINE_STAMP)))
+    except ValueError:
+        return None
+
+
+def _expire_quarantine(now: float) -> int:
+    """Delete quarantined trees older than :data:`QUARANTINE_TTL_SECONDS`.
+
+    Only a plain directory whose name this module wrote is judged, and one
+    that something wrote into within the grace window is kept until it has
+    been idle that long. Only a write defers the delete: reading or copying
+    files out of a tree leaves its mtimes alone, so the way to keep a tree
+    past its date is to move it out of the quarantine. Anything else in the
+    quarantine is left for a human. A partial delete is retried on a later
+    sweep.
+
+    Returns the number of trees deleted.
+    """
+    holding = quarantine_dir()
+    if not _is_plain_dir(holding):
+        return 0
+    try:
+        entries = list(os.scandir(holding))
+    except OSError:
+        logger.debug("agent-scratch: could not list %s", holding, exc_info=True)
+        return 0
+    expired = 0
+    for entry in entries:
+        path = holding / entry.name  # name-composed: cannot escape the quarantine
+        moved_at = _quarantined_at(entry.name)
+        if moved_at is None or not _is_plain_dir(path):
+            continue
+        if now - moved_at < QUARANTINE_TTL_SECONDS:
+            continue
+        if now - _tree_newest_mtime(path, fallback=now) < _UNOWNED_GRACE_SECONDS:
+            continue
+        if not platform_compat.rmtree_force(path):
+            logger.warning("agent-scratch: could not fully remove %s; will retry", path)
+            continue
+        logger.info("agent-scratch: deleted %s, whose quarantine expired", path)
+        expired += 1
+    return expired
+
+
 def sweep_dead_scratch(now: float | None = None) -> int:
     """Periodic sweep: remove directories whose owner is DEAD and content IDLE.
 
@@ -915,8 +1205,16 @@ def sweep_dead_scratch(now: float | None = None) -> int:
       ownerless dir indicates a state this code did not produce -- deleting
       on absence of evidence is how live work gets lost.
     * A garbled owner file is left for a human.
+    * A dead, idle dir that holds a git repository is never deleted here: it
+      is moved into the quarantine (:func:`_quarantine`) and deleted from
+      there once :data:`QUARANTINE_TTL_SECONDS` have passed
+      (:func:`_expire_quarantine`). A dead owner says the PROCESS ended, not
+      that the work is saved: a session outlives its processes, a clone is
+      where an agent is told to work, and nothing the agent wrote can prove
+      its work is saved, so the sweep does not try to tell.
 
-    Returns the number of directories removed.
+    Returns the number of directories deleted, from the root or the quarantine;
+    a tree moved into the quarantine is not counted.
     """
     root = scratch_root()
     if platform_compat.is_link_or_junction(root):
@@ -936,6 +1234,8 @@ def sweep_dead_scratch(now: float | None = None) -> int:
     reference = time.time() if now is None else now
     removed = 0
     for entry in entries:
+        if entry.name == QUARANTINE_DIRNAME:
+            continue  # the sweep's own holding area: expired below, never swept
         child = root / entry.name  # name-composed: cannot escape the root
         if not _is_plain_dir(child):
             continue  # symlinks and stray files are never swept
@@ -970,6 +1270,10 @@ def sweep_dead_scratch(now: float | None = None) -> int:
             # A tree adopted by a successor names its predecessor too; either
             # one alive is a live user.
             continue
+        # Walked before the sweep lock is taken, because a large checkout
+        # takes a while to list; a spawn that marks the tree active meanwhile
+        # still wins at the final look under the lock.
+        holds_git = holds_git_repository(child)
         with _SWEEP_LOCK:
             # Final look under the lock a spawn's validate-and-touch also
             # takes: a spawn that marked this tree active since the idle
@@ -979,10 +1283,13 @@ def sweep_dead_scratch(now: float | None = None) -> int:
                     continue
             except OSError:
                 continue
+            if holds_git:
+                _quarantine(child, reference)
+                continue
             if not platform_compat.rmtree_force(child):
                 _restore_owner_after_partial_delete(child, pids)
                 continue
         removed += 1
     if removed:
         logger.info("agent-scratch: sweep removed %d dead idle scratch dir(s)", removed)
-    return removed
+    return removed + _expire_quarantine(reference)

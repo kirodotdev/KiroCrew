@@ -32,6 +32,24 @@ import { SESSION_CONTROL_STATUS_PATH_RE } from '../lib/sessionControlStatusPath'
  */
 export const MAX_INLINE_SESSION_CONTROLS = 2
 
+/** Query-key root shared by every status probe. */
+export const SESSION_CONTROL_STATUS_KEY = 'session-control-status'
+
+/**
+ * The session identity a dashboard chat's controls are keyed on. The rest of
+ * the system stores session-scoped state under `dashboard:<slot>`, not the bare
+ * slot id, and the composer and the turn-end refresh must build it the same way.
+ *
+ * @param slot Dashboard slot id (`chat-2`), or null when no chat is open
+ * @returns `dashboard:<slot>`, or `''` for no slot
+ *
+ * @example
+ * dashboardSessionKey('chat-2')  // 'dashboard:chat-2'
+ */
+export function dashboardSessionKey(slot: string | null | undefined): string {
+  return slot ? `dashboard:${slot}` : ''
+}
+
 export interface ResolvedSessionControl {
   /** Composite key, unique across apps: `${appName}:${control.id}`. */
   key: string
@@ -339,7 +357,9 @@ export function useSessionControlStatuses(
       // identical — React Query would dedupe them into one query whose result
       // names only one control, leaving the sibling chip permanently stateless.
       // The pre-React-Query probe string keyed on c.key for this reason.
-      queryKey: ['session-control-status', c.key, c.appName, c.statusPath, sessionKey, folderId, folderName],
+      // sessionKey second, so [SESSION_CONTROL_STATUS_KEY, sessionKey] is a
+      // prefix selecting one session's probes (the turn-end refresh).
+      queryKey: [SESSION_CONTROL_STATUS_KEY, sessionKey, c.key, c.appName, c.statusPath, folderId, folderName],
       queryFn: async () => {
         if (typeof api?.appSessionStatus !== 'function') return null
         const params: Record<string, string> = { session_key: sessionKey }

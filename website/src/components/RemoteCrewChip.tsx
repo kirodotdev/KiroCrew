@@ -21,7 +21,7 @@ import { Server } from 'lucide-react'
 export function RemoteCrewChip({ name, title, label }: { name: string; title?: string; label?: string }) {
   return (
     <span
-      className="shrink-0 inline-flex items-center gap-0.5 max-w-[7rem] text-[10px] px-1 rounded bg-info-subtle text-info border border-info/40"
+      className="shrink-0 inline-flex items-center gap-0.5 max-w-[7rem] text-[10px] px-1 rounded bg-info-subtle text-info-text border border-info/40"
       title={title || name}
       data-testid="remote-crew-chip"
     >

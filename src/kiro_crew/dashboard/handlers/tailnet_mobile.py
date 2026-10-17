@@ -95,6 +95,7 @@ MOBILE_QR_BOX_SIZE = 4
 
 Step = Literal[
     "pinned",
+    "untrusted_cli",
     "install",
     "start_daemon",
     "sign_in",
@@ -130,6 +131,10 @@ def _derive_step(
        errands. ``start_daemon`` covers both a daemon that does not answer and
        one that answers as stopped (``BackendState "Stopped"``): the errand is
        the same, and the verbatim probe detail tells the two apart.
+       ``untrusted_cli`` is the one of these where Tailscale IS installed, at a
+       path the planted-binary check refuses (a user-owned Homebrew prefix):
+       downloading it again changes nothing, and ``dashboard.url`` is the
+       remedy that works.
     3. ``enable_https`` — the name exists but the tailnet has not granted
        certificate provisioning for it. This is a tailnet-wide administrator
        consent and cannot safely be performed by a gateway process.
@@ -155,7 +160,7 @@ def _derive_step(
     if pinned:
         return "pinned"
     if not probe.installed:
-        return "install"
+        return "untrusted_cli" if probe.refused_cli else "install"
     if not probe.reachable:
         return "start_daemon"
     # A stopped daemon (``BackendState "Stopped"``) answers status reads but the
@@ -301,6 +306,16 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # above is a best-effort hint; this is what Tailscale actually said,
             # and it is the only thing that stays correct if upstream rewords.
             "detail": live.serve_detail or probe.detail,
+            # The refused binary's path on ``untrusted_cli``, shown on its own
+            # line; ``detail`` already says why in a sentence the card's body
+            # copy repeats, so the card renders only the path.
+            "refused_cli": probe.refused_cli,
+            # The publish the gateway cannot run for a refused binary, spelled
+            # for the operator to run by hand. Built here because only the
+            # server knows the port it actually listens on.
+            "serve_command": (
+                tailnet_serve.manual_publish_command(port) if probe.refused_cli and port else ""
+            ),
             "download_url": TAILSCALE_DOWNLOAD_URL,
         }
     )
@@ -350,9 +365,12 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
         # No audit_tool: a polled read must not append an HMAC-chained SEL row
         # per refresh (see tailnet.is_governance_pinned_off).
         pinned = await asyncio.to_thread(tailnet.is_governance_pinned_off)
-    except Exception:  # pragma: no cover - the probe is itself guarded
+    except Exception:
+        # Fail CLOSED, matching the callee's own contract: an unknown ceiling is
+        # treated as pinned, so the QR mint refuses rather than issuing an owner
+        # credential over a tailnet the ceiling may forbid.
         logger.debug("tailnet mobile: governance probe unavailable", exc_info=True)
-        pinned = False
+        pinned = True
 
     probe = tailnet.DaemonProbe(
         name="", installed=False, reachable=False, logged_in=False, detail=""
@@ -399,7 +417,7 @@ async def _live_state(request: web.Request, port: int) -> _LiveState:
 #: tailnet access, and a still-running publication from before the pin was applied
 #: must not remain a source of fresh owner credentials.
 #:
-#: The four "no usable tailnet name" steps deliberately share ``no_name``: they
+#: The "no usable tailnet name" steps deliberately share ``no_name``: they
 #: differ in which errand fixes them, which is the CARD's business, and the API
 #: contract only needs to say why no code was made.
 _QR_REFUSALS: dict[Step, tuple[str, str]] = {
@@ -427,12 +445,13 @@ _QR_REFUSALS: dict[Step, tuple[str, str]] = {
         "The dashboard is not published on the tailnet, so a phone could not " "reach it.",
     ),
 }
-#: The other three "no usable tailnet name" steps answer exactly as ``install``, and
+#: The other "no usable tailnet name" steps answer exactly as ``install``, and
 #: an undetermined serve state is not "free" — it refuses as not-yet-published.
 #: Written as an update rather than a ``for`` loop so no loop variable is left bound
 #: at module scope.
 _QR_REFUSALS.update(
     {
+        "untrusted_cli": _QR_REFUSALS["install"],
         "start_daemon": _QR_REFUSALS["install"],
         "sign_in": _QR_REFUSALS["install"],
         "enable_magicdns": _QR_REFUSALS["install"],

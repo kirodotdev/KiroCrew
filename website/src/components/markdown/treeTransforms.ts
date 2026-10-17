@@ -1,5 +1,7 @@
 import type { Root as HastRoot, RootContent, Element as HastElement } from 'hast'
 
+import { chatHrefSid, namesASession } from '../../utils/sessionKeys'
+
 /**
  * Structural passes over the parsed trees: the ones that keep React's tree equal
  * to the one the browser builds (`rehypeMarkFencedCode`, `rehypeUnwrapBlocks`),
@@ -84,6 +86,91 @@ export function rehypeMarkFencedCode() {
         }
         if (isPre && child.tagName === 'code') {
           child.properties = { ...(child.properties ?? {}), 'data-fenced': '' }
+        }
+        walk(child)
+      }
+    }
+    walk(tree)
+  }
+}
+
+/** The marker `rehypeSessionRefPunctuation` stamps, as the component sees it. */
+export const SESSION_REF_TRAILING = 'data-session-trailing'
+/** Sentence punctuation that closes the clause a reference ends: it belongs to
+ *  the sentence, so it stays glued to the reference whatever renders after it. */
+const TRAILING_PUNCTUATION_RE = /^[.,;:!?…)]+/
+
+/** Whether an href names a chat session by shape, the way `MdAnchor` decides it. */
+function sessionLinkHref(href: string): boolean {
+  let decoded = href
+  try { decoded = decodeURIComponent(href) } catch { /* keep as written */ }
+  const sid = chatHrefSid(decoded)
+  return !!sid && namesASession(sid)
+}
+
+/** Whether an element is a chat-session reference: a `?sid=` link, or a code
+ *  span whose whole text is a session key (the backtick chip `InlineCode` draws). */
+export function namesSessionRef(el: HastElement): boolean {
+  if (el.tagName === 'a') {
+    const href = el.properties?.href
+    return typeof href === 'string' && sessionLinkHref(href)
+  }
+  if (el.tagName === 'code') {
+    const only = el.children.length === 1 ? el.children[0] : null
+    return !!only && only.type === 'text' && namesASession(only.value.trim())
+  }
+  return false
+}
+
+/**
+ * Moves the punctuation that directly follows a chat-session reference (a
+ * `?sid=` link, or a backticked session key) out of the text node and onto the
+ * element as `data-session-trailing`.
+ *
+ * `MdAnchor` and `InlineCode` render such a reference as the link or chip plus,
+ * when the reader clicked and the session could not be checked, a notice beside
+ * it. Rendered as React siblings, that notice lands BETWEEN the reference and
+ * the sentence's own full stop, so the period ends up after "Try again" and, at
+ * a narrow width, wraps onto a line of its own. Carrying the punctuation on the
+ * element lets the component draw it right after the reference, before the
+ * notice, so the sentence keeps its full stop wherever the notice goes.
+ *
+ * Only a session reference is touched: it is the one inline element that
+ * renders something after itself, and moving text around every link or code
+ * span would reshape the text nodes of every paragraph for no reader-visible
+ * reason. Like `data-fenced`, the marker is ours alone: an authored
+ * `data-session-trailing` in raw HTML is stripped first (by normalised key,
+ * since the HTML parser lowercases), so no message can make a reference print
+ * text it does not end with.
+ */
+/** Whether a paragraph holds a session reference anywhere under it: the one
+ *  case `MdParagraph` draws a notice slot after itself. */
+export function holdsSessionRef(node: HastElement | undefined): boolean {
+  if (!node?.children) return false
+  return node.children.some(c => c.type === 'element' && (namesSessionRef(c) || holdsSessionRef(c)))
+}
+
+export function rehypeSessionRefPunctuation() {
+  return (tree: HastRoot) => {
+    const walk = (node: HastRoot | HastElement) => {
+      if (!node.children) return
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i]
+        if (child.type !== 'element') continue
+        if ((child.tagName === 'a' || child.tagName === 'code') && child.properties) {
+          for (const key of Object.keys(child.properties)) {
+            if (key.toLowerCase().replace(/-/g, '') === 'datasessiontrailing') delete child.properties[key]
+          }
+          const next = node.children[i + 1]
+          if (namesSessionRef(child) && next?.type === 'text') {
+            const run = TRAILING_PUNCTUATION_RE.exec(next.value)?.[0]
+            if (run) {
+              child.properties[SESSION_REF_TRAILING] = run
+              const rest = next.value.slice(run.length)
+              if (rest) next.value = rest
+              else node.children.splice(i + 1, 1)
+            }
+          }
         }
         walk(child)
       }

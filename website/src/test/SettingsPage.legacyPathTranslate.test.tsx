@@ -45,7 +45,12 @@ vi.mock('../pages/settings/SettingsSearch', () => ({ default: () => null }))
 // id the registry does not know). The contract under test is the TRANSLATION
 // layer carrying highlight across untouched, so the hook must not race the
 // search assertion — its own strip behavior is pinned by its own tests.
-vi.mock('../hooks/useSettingHighlight', () => ({ useSettingHighlight: () => {} }))
+// Only the hook is stubbed; the module's anchor constants stay real, because the
+// Developer tab's sections import them at module load.
+vi.mock('../hooks/useSettingHighlight', async importOriginal => ({
+  ...(await importOriginal<typeof import('../hooks/useSettingHighlight')>()),
+  useSettingHighlight: () => {},
+}))
 vi.mock('../store', () => ({ useAppSelector: () => '1.0.0' }))
 
 // SidePanelLayout → useIsMobile reads window.matchMedia at module load; jsdom lacks it.

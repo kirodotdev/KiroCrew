@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.pool import BackendPool
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 
 if TYPE_CHECKING:
     from kiro_crew.mcp_gateway import gatewayd as facade
@@ -198,8 +199,8 @@ def _write_diagnostic(path: Path, *records: dict[str, Any]) -> None:
     directory or EROFS on the log volume must not crash gatewayd itself.
     """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
+        ensure_directory(path.parent)  # 0700 inside the data home
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
             for record in records:
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError as exc:  # pragma: no cover — defensive

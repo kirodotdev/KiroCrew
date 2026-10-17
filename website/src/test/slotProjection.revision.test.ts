@@ -1,4 +1,5 @@
-/** The `slot_projection` revision gate: the highest per (slot, fold) wins.
+/** The `slot_projection` revision gate: the highest per (slot, fold) wins, and it
+ *  decides about FRAMES only.
  *
  *  A slot fold joins several unit files, so its `seq` is the newest unit's own and
  *  does not move for a conductor-side change on a board with a worker bound. The
@@ -6,17 +7,17 @@
  *  client needs from it, which is that a lower one is DROPPED rather than applied
  *  on top of a newer value — and dropped means nothing happens, not "re-read".
  *
+ *  The ledger holds only what a frame actually delivered here. No case below asks
+ *  it about a REST read, because it is never asked: a read is applied whatever
+ *  revision it carries. `commandCenterSources.test.tsx` pins that end.
+ *
  *  Reached through the `useWebSocket` facade, like every other owner binding: the
  *  accepted-revision ledger is module state, so a second import path to it would
  *  let the reset reach a different Map from the gate. */
-import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
 import {
-  baselineOrHeld,
-  invalidateBelowFloor,
-  recordSlotProjectionFloor,
   resetSlotProjectionRevisions,
-  slotProjectionFloor,
   seedFoldedProjection,
   takeFoldedSlotProjection,
 } from '../hooks/useWebSocket'
@@ -139,7 +140,8 @@ describe('seeding the cache', () => {
 
   it('never moves a held value backwards: a delayed older frame leaves a newer baseline', () => {
     const client = new QueryClient()
-    // A REST read answered at revision 10; it raises no floor, so a frame at 9 passes it.
+    // A prior FRAME applied revision 10 (a read caches no revision); a delayed
+    // frame at 9 is older than it, so it is dropped and the baseline stays.
     client.setQueryData(WORK_KEY, { name: 'work', value: { items: ['rest'] }, revision: 10 })
     expect(seedFoldedProjection(client, SLOT, taken(9, ['delayed']))).toBe(true)
     expect(client.getQueryData(WORK_KEY)).toEqual({ name: 'work', value: { items: ['rest'] }, revision: 10 })
@@ -158,81 +160,21 @@ describe('seeding the cache', () => {
   })
 })
 
-describe('a baseline against the floor', () => {
-  it('accepts a baseline AT the floor, which is the read an unseeded push asked for', () => {
-    // A frame at revision 5 raised the floor but could not seed (a read was in
-    // flight). The follow-up read returns revision 5; it must replace the 4 held.
-    expect(kindOf(frame(5, ['new']))).toBe('folded')
-    const held = { value: { items: ['old'] }, revision: 4 }
-    const response = { value: { items: ['new'] }, revision: 5 }
-    expect(baselineOrHeld(SLOT, 'work', response, held)).toBe(response)
+describe('the ledger records only what a frame delivered', () => {
+  it('a revision never delivered here cannot make the frame that delivers it stale', () => {
+    // The server may be at revision 90 and this tab at nothing: it has taken no
+    // frame and may not have read either. The frame carrying 90 is the first
+    // sight of that value, so it is taken.
+    expect(kindOf(frame(90, ['first sight']))).toBe('folded')
+    // And once taken, the SAME number is a duplicate.
+    expect(kindOf(frame(90, ['again']))).toBe('stale')
   })
 
-  it('keeps the held value against a baseline BELOW the floor', () => {
-    expect(kindOf(frame(5, ['new']))).toBe('folded')
-    const held = { value: { items: ['new'] }, revision: 5 }
-    const response = { value: { items: ['old'] }, revision: 4 }
-    expect(baselineOrHeld(SLOT, 'work', response, held)).toBe(held)
-  })
-})
-
-describe('a cached value below its floor is never served', () => {
-  it('refuses a baseline below the floor when the held value is below it too', () => {
-    // A read cached revision 4, then a floor of 5 was recorded; a read still in
-    // flight resolves at 4. Keeping the held 4 would serve a value already passed.
-    recordSlotProjectionFloor({ revisions: { [SLOT]: { work: 5 } } })
-    const held = { value: { items: ['old'] }, revision: 4 }
-    const response = { value: { items: ['old'] }, revision: 4 }
-    expect(() => baselineOrHeld(SLOT, 'work', response, held)).toThrow()
-  })
-
-  it('re-reads every cached board below its floor once a floor is recorded, and only those', () => {
-    const queryClient = new QueryClient()
-    queryClient.setQueryData(['command-center', 'conductor', 'work'], { value: { items: [] }, revision: 4 })
-    queryClient.setQueryData(['command-center', 'current', 'work'], { value: { items: [] }, revision: 7 })
-    queryClient.setQueryData(['command-center', 'unnumbered', 'work'], { value: { items: [] } })
-    queryClient.setQueryData(['command-center', 'conductor', 'artifacts'], [])
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    recordSlotProjectionFloor({
-      revisions: { [SLOT]: { work: 5 }, 'dashboard:current': { work: 7 }, 'dashboard:unnumbered': { work: 2 } },
-    })
-    invalidateBelowFloor(queryClient)
-    expect(invalidate.mock.calls.map(c => c[0]?.queryKey)).toEqual([
-      ['command-center', 'conductor', 'work'],
-      ['command-center', 'unnumbered', 'work'],
-    ])
-  })
-})
-
-describe('the floor after a gateway restart', () => {
-  it('REPLACES the floors with the subscribe frame, so a restarted process is not judged by the old one', () => {
-    recordSlotProjectionFloor({ revisions: { [SLOT]: { work: 90 } } })
-    expect(slotProjectionFloor(SLOT, 'work')).toBe(90)
-    // The new process numbers from 1 again; its subscribe frame is the truth.
-    recordSlotProjectionFloor({ revisions: { [SLOT]: { work: 3 } } })
-    expect(slotProjectionFloor(SLOT, 'work')).toBe(3)
-    expect(kindOf(frame(4, ['after-restart']))).toBe('folded')
-  })
-
-  it('drops a floor the new process does not name', () => {
-    recordSlotProjectionFloor({ revisions: { [SLOT]: { work: 90 } } })
-    recordSlotProjectionFloor({ revisions: {} })
-    expect(slotProjectionFloor(SLOT, 'work')).toBe(0)
-  })
-})
-
-describe('a COLD baseline against the floor', () => {
-  it('refuses a cold baseline BELOW the floor, keeping nothing, so the query reads again', () => {
-    expect(kindOf(frame(5, ['pushed']))).toBe('folded')
-    const response = { value: { items: ['older'] }, revision: 4 }
-    expect(() => baselineOrHeld(SLOT, 'work', response, undefined)).toThrow()
-  })
-
-  it('accepts a cold baseline at or above the floor', () => {
-    expect(kindOf(frame(5, ['pushed']))).toBe('folded')
-    const at = { value: { items: ['same'] }, revision: 5 }
-    const above = { value: { items: ['newer'] }, revision: 6 }
-    expect(baselineOrHeld(SLOT, 'work', at, undefined)).toBe(at)
-    expect(baselineOrHeld(SLOT, 'work', above, undefined)).toBe(above)
+  it('after a gateway restart the ledger is empty, so the new process numbers from 1 freely', () => {
+    expect(kindOf(frame(900))).toBe('folded')
+    // The socket re-opens on a restarted gateway, which mints from 1 again.
+    resetSlotProjectionRevisions()
+    expect(kindOf(frame(1, ['after-restart']))).toBe('folded')
+    expect(kindOf(frame(2, ['after-restart']))).toBe('folded')
   })
 })

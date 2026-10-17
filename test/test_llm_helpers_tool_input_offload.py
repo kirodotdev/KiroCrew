@@ -32,6 +32,7 @@ import pytest
 
 import kiro_crew.sel as sel_mod
 from kiro_crew import llm_helpers, security
+from kiro_crew.hooks import HookManager, HooksConfig, UserDeniedPattern
 from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 
@@ -63,7 +64,11 @@ def _event(tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = Fals
 
 
 async def _resolve(
-    tool_input: str, title: str = _BENIGN_TITLE, *, is_shell: bool = False
+    tool_input: str,
+    title: str = _BENIGN_TITLE,
+    *,
+    is_shell: bool = False,
+    hooks: HookManager | None = None,
 ) -> tuple[bool, _RecordingProvider, list[dict]]:
     """Drive ``_resolve_permission`` and capture every SEL row it logged."""
     provider = _RecordingProvider()
@@ -75,7 +80,7 @@ async def _resolve(
             provider,  # type: ignore[arg-type]
             _event(tool_input, title, is_shell=is_shell),
             ToolApprovalPolicy.AUTO_APPROVE,
-            None,
+            hooks,
         )
     return approved, provider, rows
 
@@ -604,3 +609,280 @@ class TestShellCommandTextLeavesThePathTier:
             source = inspect.getsource(tier)
             assert "_is_exempt_command_text(" in source, tier.__name__
             assert source.count("sensitive_path_refusal(") == 1, tier.__name__
+
+
+class TestToolIdentityTitleLeavesThePathTier:
+    """A permission title that is exactly the call's own verified
+    ``@server/tool`` identity names a tool, not a file, so the title tier does
+    not resolve it as a path -- and a resolver stall cannot refuse it as one.
+    Any other title, an unverified identity, and every argument stay gated.
+    """
+
+    @staticmethod
+    def _mcp_event(
+        title: str, *, server: str = "kirocrew-core", tool: str = "wait", trusted: bool = True
+    ) -> LLMEvent:
+        ev = _event(json.dumps({"seconds": 60}), title=title)
+        ev.mcp_server_name = server
+        ev.tool_name = tool
+        ev.mcp_identity_trusted = trusted
+        return ev
+
+    async def _resolve_event(self, ev: LLMEvent) -> tuple[bool, _RecordingProvider]:
+        provider = _RecordingProvider()
+        sel_stub = MagicMock()
+        with patch.object(sel_mod, "sel", lambda: sel_stub):
+            approved = await _resolve_permission(
+                provider,  # type: ignore[arg-type]
+                ev,
+                ToolApprovalPolicy.AUTO_APPROVE,
+                None,
+            )
+        return approved, provider
+
+    def test_an_exempt_identity_title_never_reaches_the_path_tier(self) -> None:
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on a tool identity")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            assert (
+                llm_helpers._title_denial("@kirocrew-core/wait", None, identity_exempt=True) is None
+            )
+
+    def test_the_predicate_matches_only_the_verified_identity(self) -> None:
+        from kiro_crew.hooks import title_is_trusted_mcp_identity as match
+
+        # Only an exact, provenance-verified ``@server/tool`` with a PROVEN tool
+        # is exempt. Over-refusing an unverified or incomplete title is the safe
+        # failure, so a bare ``@server`` is never exempt.
+        assert match("@srv/tool", "srv", "tool", mcp_identity_trusted=True)
+        # A bare ``@srv`` is NOT this call's exact identity, whether the tool is
+        # known (names a broader thing than the tool that ran) or unproven (the
+        # identity itself is incomplete). Both stay path-gated.
+        assert not match("@srv", "srv", "tool", mcp_identity_trusted=True)
+        assert not match("@srv", "srv", "", mcp_identity_trusted=True)
+        assert not match("@srv/tool", "srv", "tool", mcp_identity_trusted=False)
+        assert not match("@srv/tool", "", "tool", mcp_identity_trusted=True)
+        assert not match("Running: @srv/tool", "srv", "tool", mcp_identity_trusted=True)
+        assert not match("@srv/x/tool", "srv/x", "tool", mcp_identity_trusted=True)
+        assert not match("@srv/..\\tool", "srv", "..\\tool", mcp_identity_trusted=True)
+
+    def test_the_identity_exemption_keeps_the_command_tiers(self) -> None:
+        with patch.object(llm_helpers, "is_sensitive_bash_command", lambda *_a, **_k: "bash"):
+            hit = llm_helpers._title_denial("@srv/tool", None, identity_exempt=True)
+        assert hit == ("bash", "bash")
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_path_tier_cannot_refuse_a_tool_identity_title(self) -> None:
+        stall = (
+            f"{security.UNVERIFIABLE_PATH_PREFIX}, so it is refused. Path: '@kirocrew-core/wait'"
+        )
+        with patch.object(llm_helpers, "sensitive_path_refusal", lambda *_a, **_k: stall):
+            approved, provider = await self._resolve_event(self._mcp_event("@kirocrew-core/wait"))
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", ["@kirocrew-core/wait", "Running: @kirocrew-core/wait"])
+    async def test_the_raw_and_stripped_title_forms_give_the_same_verdict(self, title: str) -> None:
+        """The hook side normalizes the title (``GateFacts.normalized`` ->
+        ``_normalize_tool_name``) before the identity check, so this side must
+        too. Before the fix this side read the RAW title, so ``@kirocrew-core/
+        wait`` was exempt while ``Running: @kirocrew-core/wait`` was not -- the
+        two sides reached different verdicts on the identical call. Both forms
+        name the same verified identity, so both must be exempt here."""
+
+        def never(*_a, **_k):
+            raise AssertionError("the path tier ran on a verified tool identity")
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", never):
+            approved, provider = await self._resolve_event(self._mcp_event(title))
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("title", "trusted"),
+        [
+            ("@kirocrew-core/wait", False),  # identity not provenance-verified
+            ("~/.ssh/id_rsa", True),  # a path title on a verified MCP call
+            ("@kirocrew-core/wait/x", True),  # not the identity byte for byte
+            ("@other/wait", True),  # another server's identity
+            (
+                "@kirocrew-core/other",
+                True,
+            ),  # same server, a tool the title names but the frame does not
+        ],
+    )
+    async def test_any_other_title_still_pays_the_path_tier(
+        self, title: str, trusted: bool
+    ) -> None:
+        seen: list[str] = []
+
+        def refuse(path, *_a, **_k):
+            seen.append(path)
+            return "Blocked: sensitive path"
+
+        with patch.object(llm_helpers, "sensitive_path_refusal", refuse):
+            approved, provider = await self._resolve_event(self._mcp_event(title, trusted=trusted))
+        assert title in seen
+        assert approved is False
+        assert provider.rejected == ["r1"]
+
+
+class TestTruncatedShellTitleTier:
+    """The title tier judges a cut-short shell title as the command it slices.
+
+    kiro-cli cuts a shell call's ``Running: <command>`` title to 197 characters
+    plus ``...``, and the git-publish floor read the cut end of a long push as a
+    push naming no branch. ``hooks.on_tool_call`` and this funnel apply the same
+    rule (``hooks.untruncated_shell_title``): a title that is a leading slice of
+    the recovered command is judged uncut, any other title verbatim.
+    """
+
+    LEASE = "0123456789abcdef0123456789abcdef01234567"
+    OPTIONS = (
+        "git -C /workspace/checkouts/project-worktree -c credential.helper= "
+        "-c credential.helper=/workspace/checkouts/credential-helper.sh push"
+    )
+    FEATURE_PUSH = (
+        f"{OPTIONS} --force-with-lease=refs/heads/fix/long-branch-123:{LEASE} "
+        f"origin {LEASE}:refs/heads/fix/long-branch-123"
+    )
+    BARE_PUSH = f"{OPTIONS} --force-with-lease=refs/heads/fix/long-branch-123:{LEASE}"
+    MAIN_PUSH = f"{OPTIONS} --force-with-lease=main:{LEASE} origin {LEASE}:main"
+
+    @staticmethod
+    def _cut_title(command: str) -> str:
+        return f"Running: {command[:197]}..."
+
+    @pytest.mark.asyncio
+    async def test_a_long_feature_branch_push_is_approved(self) -> None:
+        assert self.FEATURE_PUSH.index(" origin ") >= 197
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_long_push_cut_at_another_length_is_approved(self) -> None:
+        # The rebuild is not pinned to kiro-cli's 197-character cut.
+        title = f"Running: {self.FEATURE_PUSH[:220]}..."
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}), title=title, is_shell=True
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_long_push_to_main_is_still_refused_as_protected(self) -> None:
+        assert self.MAIN_PUSH.index(" origin ") >= 197
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": self.MAIN_PUSH}),
+            title=self._cut_title(self.MAIN_PUSH),
+            is_shell=True,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert "rule=git-publish-push-protected-branch-name" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_a_cut_title_that_is_not_the_commands_slice_is_still_refused(self) -> None:
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": "git status"}),
+            title=self._cut_title(self.BARE_PUSH),
+            is_shell=True,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "rule=git-publish-push-bare" in _decision(rows)[1]
+
+    @pytest.mark.asyncio
+    async def test_an_operator_regex_on_the_cut_title_still_fires(self) -> None:
+        # The tier judges the rebuilt title, and the operator's own regexes judge
+        # the title as SENT too: a rule written against kiro-cli's ``...`` keeps
+        # refusing the call.
+        hooks = HookManager(
+            HooksConfig(denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\.\.\.$")])
+        )
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert r"\.\.\.$" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_an_operator_regex_on_one_chained_command_still_fires(self) -> None:
+        # The sent title is judged per segment too, so a rule anchored to the
+        # chained command the cut ends inside still refuses the call.
+        command = "git status && echo blocked " + "x" * 220
+        hooks = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[
+                    UserDeniedPattern(id="u1", pattern=r"^echo blocked .*\.\.\.$")
+                ]
+            )
+        )
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}),
+            title=self._cut_title(command),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        _outcome, error, mechanism = _decision(rows)
+        assert "echo blocked" in error
+        assert mechanism == "always_deny"
+
+    @pytest.mark.asyncio
+    async def test_the_sent_title_meets_operator_rules_only(self) -> None:
+        # An operator rule that does not match leaves the push approved: the
+        # shipped floor that misread the cut never judges the sent title.
+        hooks = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[UserDeniedPattern(id="u1", pattern=r"\bshred\b")]
+            )
+        )
+        approved, provider, _rows = await _resolve(
+            json.dumps({"command": self.FEATURE_PUSH}),
+            title=self._cut_title(self.FEATURE_PUSH),
+            is_shell=True,
+            hooks=hooks,
+        )
+        assert approved is True
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_command_just_under_the_size_ceiling_is_not_pushed_over_it(self) -> None:
+        # The rebuilt title is the display prefix plus the whole command; the bash
+        # tier scans it without the prefix, so a command that fits the ceiling is
+        # not refused as too large to scan because of the nine prefix characters.
+        command = "echo " + "a" * (security.MAX_SCANNABLE_COMMAND_CHARS - 5 - 5)
+        assert len("Running: " + command) > security.MAX_SCANNABLE_COMMAND_CHARS
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}), title=self._cut_title(command), is_shell=True
+        )
+        assert approved is True, _decision(rows)
+        assert provider.rejected == []
+
+    @pytest.mark.asyncio
+    async def test_a_command_over_the_size_ceiling_is_still_refused(self) -> None:
+        command = "echo " + "a" * security.MAX_SCANNABLE_COMMAND_CHARS
+        approved, provider, rows = await _resolve(
+            json.dumps({"command": command}), title=self._cut_title(command), is_shell=True
+        )
+        assert approved is False
+        assert provider.rejected == ["r1"]
+        assert "too large to security-scan" in _decision(rows)[1]

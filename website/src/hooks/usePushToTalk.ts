@@ -232,6 +232,10 @@ export function usePushToTalk(voice: VoiceControls, { disabled }: UsePushToTalkO
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (disabledRef.current) return
+      // The user turned the key trigger off in Settings: the mic button is the
+      // only way in, so no keystroke arms or reconciles. Same early-out as the
+      // parent `disabled` opt above — a disabled key is a key that does nothing.
+      if (!cfgRef.current.enabled) return
       // Auto-repeat: a held key fires keydown ~30x/sec. Only the first is an arm.
       if (e.repeat) return
       const { binding, mode, holdMs } = cfgRef.current

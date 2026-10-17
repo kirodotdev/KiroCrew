@@ -6,13 +6,21 @@ import React from 'react'
 
 const mockDispatch = vi.fn(() => ({ unwrap: () => Promise.resolve() }))
 const mockSwitchSlot = vi.fn((key: string) => ({ type: 'chat/switchSlot', payload: key }))
+const mockAddSlotOptimistic = vi.fn((slot: { key: string }) => ({ type: 'dashboard/addSlotOptimistic', payload: slot }))
+let mockSlots: { key: string }[] = []
 
 vi.mock('../store', () => ({
   useAppDispatch: () => mockDispatch,
+  useAppStore: () => ({ getState: () => ({ dashboard: { slots: mockSlots, closingSlots: {} } }) }),
 }))
 
 vi.mock('../store/chatSlice', () => ({
   switchSlot: (key: string) => mockSwitchSlot(key),
+}))
+
+vi.mock('../store/dashboardSlice', () => ({
+  addSlotOptimistic: (slot: { key: string }) => mockAddSlotOptimistic(slot),
+  fetchSlots: () => ({ type: 'dashboard/fetchSlots' }),
 }))
 
 vi.mock('../pages/ChatPage', () => ({
@@ -42,9 +50,23 @@ beforeEach(() => {
   vi.clearAllMocks()
   // Re-assign after restoreAllMocks clears the implementations
   mockDispatch.mockReturnValue({ unwrap: () => Promise.resolve() })
+  mockSlots = []
 })
 
 describe('ChatPanel', () => {
+  it('adds a slot missing from the slot list before switching to it', () => {
+    render(<ChatPanel slotKey="my-slot-123" />)
+    expect(mockAddSlotOptimistic).toHaveBeenCalledWith(expect.objectContaining({ key: 'my-slot-123' }))
+    expect(mockAddSlotOptimistic.mock.invocationCallOrder[0]).toBeLessThan(mockSwitchSlot.mock.invocationCallOrder[0])
+  })
+
+  it('does not add a slot the slot list already has', () => {
+    mockSlots = [{ key: 'my-slot-123' }]
+    render(<ChatPanel slotKey="my-slot-123" />)
+    expect(mockAddSlotOptimistic).not.toHaveBeenCalled()
+    expect(mockSwitchSlot).toHaveBeenCalledWith('my-slot-123')
+  })
+
   it('dispatches switchSlot with provided slotKey on mount', () => {
     render(<ChatPanel slotKey="my-slot-123" />)
     expect(mockSwitchSlot).toHaveBeenCalledWith('my-slot-123')

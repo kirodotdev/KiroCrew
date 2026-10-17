@@ -23,19 +23,23 @@ working could not pass as an SSH forward.
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
+from test_sandbox_launcher_program import launch
 
 import kiro_crew.sandbox as sb
+from kiro_crew import sandbox_launcher_program as program
+from kiro_crew.sandbox_plan import namespace_payload
 
 
 @pytest.fixture(autouse=True)
 def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
+    """The namespace plan asks the HOST's ``ssh -V`` for accept-new support.
 
-    The env scrub lists read out of the launcher do not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
+    The env scrub lists the plan hands the launcher do not depend on that answer, and
+    a real ssh spawned from the test process is a host dependency this module is not
     about (it tests the SOCKET forward, never the client). Pinned so no binary runs.
     """
     monkeypatch.setattr(sb, "_ssh_supports_accept_new", lambda: True)
@@ -150,42 +154,63 @@ def test_seatbelt_scrub_keys_on_omits_socket_only(monkeypatch):
     assert "AWS_SECRET_ACCESS_KEY" in keys
 
 
-# --- Site 1: Linux namespace launcher script (POSIX-only) ---
+# --- Site 1: Linux namespace launcher (POSIX-only) ---
 
-# _build_launcher_script builds the Linux user-namespace launcher and calls
-# os.getuid(), which does not exist on Windows; the launcher never runs there.
+# The namespace plan reads os.getuid(), which does not exist on Windows; the launcher
+# never runs there.
 _linux_only = pytest.mark.skipif(
     sys.platform == "win32", reason="Linux namespace launcher is POSIX-only (os.getuid)"
 )
 
 
+def _launcher_child_env(tmp_path, **kwargs) -> tuple[tuple[str, ...], dict[str, str]]:
+    """The plan's scrub list, and the environment the launcher child execs the agent with.
+
+    The plan is built the way ``_build_launcher_script`` builds it, then its payload
+    drives the program's own ``scrub_env`` stage over an environment carrying the
+    socket and a credential.
+    """
+    plan = sb._spawn_plan("namespace", "strict", **kwargs)
+    run = launch(tmp_path, namespace_payload(plan), environ=_env_with_socket())
+    program.scrub_env(run)
+    return plan.env_scrub_prefixes, run.environ
+
+
 @_linux_only
-def test_launcher_off_scrubs_socket():
+def test_launcher_off_scrubs_socket(tmp_path):
     """forward=False (default): the launcher lists SSH_AUTH_SOCK to delete."""
-    script = sb._build_launcher_script("strict", strip_python_env=True)
-    # Negative + control in one string: the socket prefix AND another credential
-    # prefix both appear in the launcher's ENV_PREFIXES payload.
-    assert "SSH_AUTH_SOCK" in script
-    assert "AWS_SECRET" in script
+    prefixes, child_env = _launcher_child_env(tmp_path, strip_python_env=True)
+    # Negative + control: the socket prefix AND another credential prefix are both in
+    # the launcher's scrub list, and both keys are gone from the child's environment.
+    assert "SSH_AUTH_SOCK" in prefixes
+    assert "AWS_SECRET" in prefixes
+    assert "SSH_AUTH_SOCK" not in child_env
+    assert "AWS_SECRET_ACCESS_KEY" not in child_env
+    assert child_env["PATH"] == "/usr/bin"
 
 
 @_linux_only
-def test_launcher_on_keeps_socket_only():
+def test_launcher_on_keeps_socket_only(tmp_path):
     """forward=True: the launcher omits SSH_AUTH_SOCK from its scrub, but still lists
     the other credential prefixes."""
-    script = sb._build_launcher_script("strict", strip_python_env=True, forward_ssh_auth_sock=True)
-    # Positive: socket prefix dropped from the delete set.
-    assert '"SSH_AUTH_SOCK"' not in script
-    # Control (same script): a real credential prefix is STILL in the delete set,
+    prefixes, child_env = _launcher_child_env(
+        tmp_path, strip_python_env=True, forward_ssh_auth_sock=True
+    )
+    # Positive: socket prefix dropped from the delete set, so the child keeps the
+    # socket with its exact value.
+    assert "SSH_AUTH_SOCK" not in prefixes
+    assert child_env["SSH_AUTH_SOCK"] == "/tmp/agent.sock"
+    # Control (same launch): a real credential prefix is STILL in the delete set,
     # proving the launcher scrub itself is intact.
-    assert "AWS_SECRET" in script
+    assert "AWS_SECRET" in prefixes
+    assert "AWS_SECRET_ACCESS_KEY" not in child_env
 
 
 # --- Scope: the forward is agent-only; generic launchers keep scrubbing ---
 
 
 @_linux_only
-def test_generic_launcher_default_never_forwards_socket():
+def test_generic_launcher_default_never_forwards_socket(tmp_path):
     """A generic (non-agent) launcher build defaults forward_ssh_auth_sock=False,
     so an app openCommand / sandboxed_spawn_argv spawn through the same builder
     keeps scrubbing the socket even if an operator opted in for AGENT spawns.
@@ -194,8 +219,9 @@ def test_generic_launcher_default_never_forwards_socket():
     only, never read from config inside the generic builder.
     """
     # No forward_ssh_auth_sock argument == the generic caller's default.
-    script = sb._build_launcher_script("strict", strip_python_env=True)
-    assert "SSH_AUTH_SOCK" in script  # socket still scrubbed for generic callers
+    prefixes, child_env = _launcher_child_env(tmp_path, strip_python_env=True)
+    assert "SSH_AUTH_SOCK" in prefixes  # socket still scrubbed for generic callers
+    assert "SSH_AUTH_SOCK" not in child_env
 
 
 # --- Platform gate: the forward is a no-op where the socket concept is absent ---
@@ -214,12 +240,12 @@ def test_forward_is_noop_on_windows(monkeypatch):
 
     # On Windows the forward is refused despite consent being granted.
     monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", True)
-    assert sb._forward_ssh_auth_sock() is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
     # Control (same reader, non-Windows): with the platform guard off, granted
     # consent is honoured, proving the reader works and only the platform gate
     # suppressed it above.
     monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", False)
-    assert sb._forward_ssh_auth_sock() is True
+    assert sb._forward_ssh_auth_sock("strict", ()) is True
 
 
 def test_forward_reads_keystone_not_agent_config(monkeypatch, tmp_path):
@@ -236,12 +262,12 @@ def test_forward_reads_keystone_not_agent_config(monkeypatch, tmp_path):
 
     # Absent store -> not forwarded.
     assert consent.is_granted() is False
-    assert sb._forward_ssh_auth_sock() is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
 
     # Only an explicit boolean True enables; a truthy string does not.
     (tmp_path / "c.json").write_text('{"enabled": "true"}', encoding="utf-8")
     assert consent.is_granted() is False
-    assert sb._forward_ssh_auth_sock() is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
 
     # Malformed store -> fail closed.
     (tmp_path / "c.json").write_text("{ not json", encoding="utf-8")
@@ -252,7 +278,7 @@ def test_forward_reads_keystone_not_agent_config(monkeypatch, tmp_path):
         '{"enabled": true, "granted_at": "2026-01-01"}', encoding="utf-8"
     )
     assert consent.is_granted() is True
-    assert sb._forward_ssh_auth_sock() is True
+    assert sb._forward_ssh_auth_sock("strict", ()) is True
 
 
 def test_keystone_leaf_is_fenced_and_sealed():
@@ -263,3 +289,155 @@ def test_keystone_leaf_is_fenced_and_sealed():
     assert "ssh_auth_sock_consent.json" in _sp._CREW_SECRET_LEAVES
     assert "ssh_auth_sock_consent.json" in _sb._CREW_READONLY_LEAVES
     assert "ssh_auth_sock_consent.json" in _sb._CREW_PRECREATE_READONLY_FILE_LEAVES
+
+
+# --- Tier default: the forward follows whether ~/.ssh is readable to the child ---
+
+
+@pytest.fixture
+def _no_consent(monkeypatch):
+    """Consent absent, non-Windows, ungoverned: only the tier rule can forward."""
+    from kiro_crew import ssh_auth_sock_consent as consent
+
+    monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(consent, "is_granted", lambda: False)
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: None)
+    return consent
+
+
+@pytest.mark.parametrize("mode", ["auto", "standard", "cc", "off"])
+def test_tiers_that_expose_ssh_forward_by_default(_no_consent, mode):
+    """auto/standard/cc/off leave ~/.ssh readable, so the socket is kept with no consent."""
+    assert sb._forward_ssh_auth_sock(mode, ()) is True
+
+
+def test_strict_needs_consent(_no_consent, monkeypatch):
+    """strict hides ~/.ssh, so the socket would reach hidden keys: consent decides."""
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
+    # Control (same call): recorded consent forwards under strict.
+    monkeypatch.setattr(_no_consent, "is_granted", lambda: True)
+    assert sb._forward_ssh_auth_sock("strict", ()) is True
+
+
+def test_unknown_tier_falls_to_consent(_no_consent):
+    """A tier outside the allow set never forwards by omission."""
+    assert sb._forward_ssh_auth_sock("paranoid-new-tier", ()) is False
+    # Control: a known exposing tier through the same reader does forward.
+    assert sb._forward_ssh_auth_sock("standard", ()) is True
+
+
+def test_governance_floor_clamp_is_honoured(_no_consent, monkeypatch):
+    """A governed floor that raises standard to strict takes the default away.
+
+    The forward must judge the tier the wrap will APPLY, not the one configured.
+    """
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: "strict")
+    assert sb._forward_ssh_auth_sock("standard", ()) is False
+    # Control: ungoverned, the same configured tier forwards.
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: None)
+    assert sb._forward_ssh_auth_sock("standard", ()) is True
+
+
+def test_floor_read_failure_fails_closed(_no_consent, monkeypatch):
+    """A floor that cannot be composed scrubs the socket rather than forwarding."""
+
+    def _boom():
+        raise RuntimeError("composition failed")
+
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", _boom)
+    assert sb._forward_ssh_auth_sock("standard", ()) is False
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        ("~/.ssh",),  # the directory itself
+        ("~",),  # an ancestor masking the whole home
+        ("~/.ssh/id_ed25519",),  # a leaf inside it
+    ],
+)
+def test_harness_mask_over_ssh_needs_consent(_no_consent, monkeypatch, hidden):
+    """An enforced harness that masks ~/.ssh keeps the socket behind consent.
+
+    There the files are unreadable, so the socket would reach further than they do.
+    """
+    resolved = tuple(os.path.expanduser(h) for h in hidden)
+    assert sb._forward_ssh_auth_sock("standard", resolved) is False
+    # Control (same tier, same reader): consent forwards it.
+    monkeypatch.setattr(_no_consent, "is_granted", lambda: True)
+    assert sb._forward_ssh_auth_sock("standard", resolved) is True
+
+
+def test_unrelated_mask_keeps_the_default(_no_consent):
+    """A mask that leaves ~/.ssh readable does not take the default away.
+
+    A sibling whose name merely starts with ``.ssh`` is not inside it.
+    """
+    hidden = (
+        os.path.expanduser("~/.aws"),
+        os.path.expanduser("~/.ssh-backup"),
+    )
+    assert sb._forward_ssh_auth_sock("standard", hidden) is True
+
+
+def test_windows_never_forwards_on_any_route(_no_consent, monkeypatch):
+    """No SSH_AUTH_SOCK on Windows: neither the tier rule nor consent forwards."""
+    monkeypatch.setattr(sb.platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(_no_consent, "is_granted", lambda: True)
+    assert sb._forward_ssh_auth_sock("standard", ()) is False
+    assert sb._forward_ssh_auth_sock("strict", ()) is False
+
+
+def test_cc_extended_to_hide_ssh_needs_consent(_no_consent, monkeypatch):
+    """A PlatformContext whose cc list names .ssh takes the default away for cc.
+
+    The cc tier list is an extension point, so visibility is read from it rather
+    than assumed from the tier name.
+    """
+
+    class _Policy:
+        def cc_dirs(self):
+            return [".aws", ".ssh"]
+
+    monkeypatch.setattr(sb, "_sandbox_policy", lambda: _Policy())
+    assert sb._forward_ssh_auth_sock("cc", ()) is False
+    # Control (same reader): the shipped cc list leaves .ssh visible and forwards.
+    monkeypatch.setattr(_Policy, "cc_dirs", lambda self: [".aws"])
+    assert sb._forward_ssh_auth_sock("cc", ()) is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no SSH_AUTH_SOCK forward on Windows")
+@pytest.mark.parametrize(("floor", "expected"), [("strict", False), (None, True)])
+def test_wrap_rejudges_forward_against_the_floor_it_applies(
+    _no_consent, monkeypatch, floor, expected
+):
+    """A floor raised after the launch tail resolved the forward drops the socket.
+
+    The tail judged ``standard`` and passed ``forward_ssh_auth_sock=True``; the wrap
+    then reads its own floor. The flag handed to the backend builder must follow the
+    tier the wrap APPLIES. Control row: no floor raise keeps the forward.
+    """
+
+    class _Stop(Exception):
+        pass
+
+    seen = {}
+
+    def _builder(*_a, **kw):
+        seen["forward"] = kw.get("forward_ssh_auth_sock")
+        raise _Stop
+
+    monkeypatch.setattr(sb, "_governance_sandbox_floor", lambda: floor)
+    monkeypatch.setattr(sb, "detect_backend", lambda **_: "namespace")
+    # The suite may itself run inside a Crew sandbox; take the outer-wrap path.
+    monkeypatch.setattr(sb, "_inside_kirocrew_sandbox", lambda: False)
+    monkeypatch.setattr(sb, "namespace_argv", _builder)
+    monkeypatch.setattr(sb, "sandbox_exec_argv", _builder)
+    with pytest.raises(_Stop):
+        sb.wrap_argv(["/bin/true"], mode="standard", forward_ssh_auth_sock=True)
+    assert seen["forward"] is expected
+
+
+def test_rejudge_never_grants_a_forward_the_caller_refused(_no_consent):
+    """The wrap only narrows: a False from the caller stays False."""
+    assert sb._forward_for_effective_tier("strict", ()) is False

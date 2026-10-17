@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, SkillsLoader
+from kiro_crew.skills import AutoSkillProvenance, ClaimRefusal, PendingApprovalRefused, SkillsLoader
 
 
 @pytest.fixture()
@@ -90,7 +90,7 @@ def test_get_pending_returns_body_and_scripts(loader):
 
 def test_approve_promotes_and_marks_scripts_executable(loader):
     _stage(loader, "promote-me", scripts=[{"filename": "run.py", "content": "print(1)\n"}])
-    name = loader.approve_pending_skill("promote-me")
+    name = loader.approve_pending_skill_checked("promote-me")
     assert name == "auto/promote-me"
     # Now live and triggerable.
     assert [s["key"] for s in loader.list_auto_skills()] == ["auto/promote-me"]
@@ -114,7 +114,9 @@ def test_approve_refuses_when_live_exists(loader):
     live.mkdir(parents=True)
     (live / "SKILL.md").write_text("---\nname: auto/dup\n---\nbody\n", encoding="utf-8")
     loader._invalidate_iter_cache()
-    assert loader.approve_pending_skill("dup") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("dup")
+    assert refused.value.reason == "live_exists"
     # Candidate remains pending for the user to resolve.
     assert [p["slug"] for p in loader.list_pending_skills()] == ["dup"]
 
@@ -179,7 +181,9 @@ def test_approve_rejects_unexpected_candidate_file(loader):
     block approval so it can't be promoted live unredacted."""
     _stage(loader, "auxtest")
     (loader._pending_root() / "auxtest" / "leak.txt").write_text("secret", encoding="utf-8")
-    assert loader.approve_pending_skill("auxtest") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("auxtest")
+    assert refused.value.reason == "invalid_layout"
     # Nothing moved: the candidate stays in the pending queue.
     assert (loader._pending_root() / "auxtest").is_dir()
     assert not (loader._dir / "auto" / "auxtest").exists()
@@ -193,7 +197,9 @@ def test_approve_rejects_regular_file_named_scripts(loader):
     (loader._pending_root() / "scriptfile" / "scripts").write_text(
         "AKIAIOSFODNN7EXAMPLE", encoding="utf-8"
     )
-    assert loader.approve_pending_skill("scriptfile") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("scriptfile")
+    assert refused.value.reason == "invalid_layout"
     assert (loader._pending_root() / "scriptfile").is_dir()
     assert not (loader._dir / "auto" / "scriptfile").exists()
 
@@ -205,7 +211,9 @@ def test_failed_approval_preserves_meta(loader, monkeypatch):
     meta = loader._pending_root() / "metakeep" / ".meta.json"
     assert meta.exists()
     monkeypatch.setattr(loader, "_redact_file_in_place", lambda *a, **k: False)
-    assert loader.approve_pending_skill("metakeep") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("metakeep")
+    assert refused.value.reason == "redaction_failed"
     assert meta.exists()  # bookkeeping not destroyed by the failed approval
     assert not (loader._dir / "auto" / "metakeep").exists()
 
@@ -227,7 +235,9 @@ def test_redaction_breaking_script_aborts_promotion(loader, monkeypatch):
         return orig(fp)
 
     monkeypatch.setattr(loader, "_redact_file_in_place", corrupt)
-    assert loader.approve_pending_skill("redactbreak") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("redactbreak")
+    assert refused.value.reason == "script_validation_failed"
     assert (loader._pending_root() / "redactbreak").is_dir()
     assert not (loader._dir / "auto" / "redactbreak").exists()
     # The pending script must be RESTORED to its original bytes, not left as the
@@ -249,7 +259,9 @@ def test_failed_move_restores_meta(loader, monkeypatch):
         raise OSError("dest unwritable")
 
     monkeypatch.setattr(S.shutil, "move", _boom)
-    assert loader.approve_pending_skill("movefail") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("movefail")
+    assert refused.value.reason == "promotion_failed"
     assert meta.exists() and meta.read_bytes() == orig_bytes
     assert not (loader._dir / "auto" / "movefail").exists()
 
@@ -268,7 +280,9 @@ def test_failed_meta_unlink_aborts_promotion(loader, monkeypatch):
         return orig(self, *a, **k)
 
     monkeypatch.setattr(pathlib.Path, "unlink", guarded)
-    assert loader.approve_pending_skill("metafail") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("metafail")
+    assert refused.value.reason == "promotion_failed"
     assert (loader._pending_root() / "metafail").is_dir()
     assert not (loader._dir / "auto" / "metafail").exists()
 
@@ -296,7 +310,9 @@ def test_approve_refuses_symlink_in_candidate(loader):
     target = pdir / "real.txt"
     target.write_text("ok", encoding="utf-8")
     os.symlink(str(target), str(pdir / "scripts" / "evil.py"))
-    assert loader.approve_pending_skill("linky") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("linky")
+    assert refused.value.reason == "invalid_layout"
     assert loader.list_auto_skills() == []
 
 
@@ -318,7 +334,9 @@ def test_approve_revalidates_scripts_written_directly(loader):
     (pdir / "SKILL.md").write_text("---\nname: auto/sneaky\n---\nbody", encoding="utf-8")
     (pdir / "scripts" / "wipe.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
     # Approve must refuse (dangerous script) and leave it live-free.
-    assert loader.approve_pending_skill("sneaky") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("sneaky")
+    assert refused.value.reason == "script_validation_failed"
     assert loader.list_auto_skills() == []
 
 
@@ -334,7 +352,9 @@ def test_approve_validates_nested_scripts(loader):
     detail = loader.get_pending_skill("nest-cand")
     assert any(s["filename"].endswith("evil.py") for s in detail["scripts"])
     # ...and blocks promotion.
-    assert loader.approve_pending_skill("nest-cand") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("nest-cand")
+    assert refused.value.reason == "script_validation_failed"
     assert not (loader._dir / "auto" / "nest-cand").exists()
 
 
@@ -368,7 +388,7 @@ def test_direct_write_candidate_is_redacted_at_detail_and_approve(loader):
     assert secret not in detail["content"]
     assert all(secret not in s["content"] for s in detail["scripts"])
 
-    assert loader.approve_pending_skill(slug) == f"auto/{slug}"
+    assert loader.approve_pending_skill_checked(slug) == f"auto/{slug}"
     live = loader._dir / "auto" / slug
     assert secret not in (live / "SKILL.md").read_text(encoding="utf-8")
     assert secret not in (live / "scripts" / "run.py").read_text(encoding="utf-8")
@@ -435,7 +455,7 @@ def test_publish_cannot_occupy_a_queued_candidates_destination(loader):
     )
     assert not (loader._dir / "auto" / "sib-2").exists()
     # The queued candidate keeps its destination and stays approvable.
-    assert loader.approve_pending_skill("sib-2") == "auto/sib-2"
+    assert loader.approve_pending_skill_checked("sib-2") == "auto/sib-2"
 
 
 def test_staging_skips_a_sibling_whose_live_name_is_taken(loader):
@@ -454,7 +474,7 @@ def test_staging_skips_a_sibling_whose_live_name_is_taken(loader):
     )
     # -2 is live, so the distinct candidate lands on the next free name.
     assert _stage_distinct(loader, "coord", description="OTHER") == "auto/coord-3"
-    assert loader.approve_pending_skill("coord-3") == "auto/coord-3"
+    assert loader.approve_pending_skill_checked("coord-3") == "auto/coord-3"
 
 
 def test_exhausted_pending_slugs_report_failure_not_success(loader):
@@ -736,7 +756,7 @@ def test_restore_cannot_occupy_a_queued_candidates_destination(loader):
     # The archive keeps its copy and the queued candidate still approves.
     assert (archived / "SKILL.md").exists()
     assert not (loader._dir / "auto" / "revived").exists()
-    assert loader.approve_pending_skill("revived") == "auto/revived"
+    assert loader.approve_pending_skill_checked("revived") == "auto/revived"
 
 
 def test_pending_metadata_is_committed_under_the_claim_lock(loader):
@@ -816,7 +836,7 @@ def test_approve_marks_nested_scripts_executable(loader):
     (pdir / "scripts" / "nested").mkdir(parents=True, exist_ok=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/nest-exec\n---\n# x\n", encoding="utf-8")
     (pdir / "scripts" / "nested" / "run.py").write_text("print('ok')\n", encoding="utf-8")
-    assert loader.approve_pending_skill(slug) == "auto/nest-exec"
+    assert loader.approve_pending_skill_checked(slug) == "auto/nest-exec"
     live = loader._dir / "auto" / slug / "scripts" / "nested" / "run.py"
     assert live.exists()
     if os.name != "nt":  # Windows has no POSIX exec bit
@@ -831,7 +851,9 @@ def test_failed_approve_restores_candidate_to_pending(loader):
     nested = pdir / "scripts" / "nested"
     nested.mkdir(parents=True, exist_ok=True)
     (nested / "evil.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
-    assert loader.approve_pending_skill("restore-me") is None
+    with pytest.raises(PendingApprovalRefused) as refused:
+        loader.approve_pending_skill_checked("restore-me")
+    assert refused.value.reason == "script_validation_failed"
     # Restored, not stranded in a quarantine dir or lost.
     assert (loader._pending_root() / "restore-me" / "SKILL.md").exists()
     assert any(s["slug"] == "restore-me" for s in loader.list_pending_skills())
@@ -866,3 +888,145 @@ def test_nested_meta_credentials_redacted(loader):
     )
     detail = loader.get_pending_skill(slug)
     assert secret not in _json.dumps(detail["meta"])
+
+
+# -- The document cap ---------------------------------------------------------------
+#
+# The detail read bounds the candidate's PROSE and METADATA files (SKILL.md,
+# .meta.json) with their own cap, derived from the generator's procedure limit,
+# and bundled scripts with MAX_SCRIPT_BYTES. Under one shared number a valid
+# generated document over 4 KiB is unreadable and Approve stays disabled, so the
+# two caps are separate and these tests hold them apart.
+
+#: A generated SKILL.md over the 4 KiB bundled-script cap and far under the
+#: generator's own 10,240-character procedure limit, the size a reporter hit.
+_REPORTED_DOCUMENT_BYTES = 6_713
+
+
+def _stage_with_document_of(loader, slug, size):
+    """Stage *slug* through the generator so its SKILL.md is exactly *size* bytes on disk.
+
+    The generator writes in text mode, so every newline in its content lands as
+    ``os.linesep``; the padding is sized against that on-disk length, not the
+    character count, so the fixture is exact on Windows too. The procedure is
+    ASCII, so one padding character is one byte, and the helper asserts the size
+    it produced: a test cannot pass on a document smaller than the one it names.
+    Returns the staged procedure.
+    """
+    from kiro_crew import skills as sk
+
+    prov = _prov()
+    heading = "## Steps\n\n"
+
+    def on_disk(procedure):
+        content = sk._build_auto_skill_content(
+            slug=slug,
+            description=f"desc {slug}",
+            triggers=slug,
+            procedure_md=procedure,
+            provenance=prov,
+        )
+        return len(content.encode("utf-8")) + content.count("\n") * (len(os.linesep) - 1)
+
+    procedure = heading + "x" * (size - on_disk(heading + "x") + 1)
+    assert on_disk(procedure) == size
+    assert len(procedure) <= sk.AUTO_SKILL_MAX_PROCEDURE_CHARS, "fixture past the generator limit"
+    assert (
+        loader.stage_skill_candidate(
+            slug, description=f"desc {slug}", triggers=slug, procedure_md=procedure, provenance=prov
+        )
+        == f"auto/{slug}"
+    )
+    assert (loader._pending_root() / slug / "SKILL.md").stat().st_size == size
+    return procedure
+
+
+def test_detail_serves_a_generated_document_over_the_script_cap(loader):
+    """A valid generated SKILL.md over 4 KiB opens for review.
+
+    The generator may write a procedure of ``AUTO_SKILL_MAX_PROCEDURE_CHARS``, so
+    the detail read bounds the document with its own cap rather than
+    ``MAX_SCRIPT_BYTES``, the cap for bundled scripts: under the script cap a
+    6,713-byte candidate is unreadable and the dashboard holds Approve disabled.
+    The whole body is served, not a view cut at the script cap, and the approve
+    the detail informs goes through.
+    """
+    from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
+
+    assert _REPORTED_DOCUMENT_BYTES > MAX_SCRIPT_BYTES, "the fixture is under the old cap"
+    procedure = _stage_with_document_of(loader, "long-doc", _REPORTED_DOCUMENT_BYTES)
+
+    detail = loader.get_pending_skill("long-doc")
+
+    assert detail is not None, "a valid generated document over the script cap was refused"
+    assert detail["content"].endswith(procedure + "\n"), "the body was served in part"
+    assert detail["meta"]["slug"] == "long-doc"
+    assert loader.approve_pending_skill_checked("long-doc") == "auto/long-doc"
+
+
+def test_a_bundled_script_over_the_script_cap_is_refused(loader):
+    """The script cap is independent of the document cap.
+
+    The SAME 6,713 bytes the document read accepts are over the bound for an
+    executable under ``scripts/``, and the refusal is of the whole candidate, not
+    an omission of the one script.
+    """
+    from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES
+
+    assert MAX_SCRIPT_BYTES == 4096, "the bundled-script cap is not 4 KiB"
+    _stage(loader, "big-script")
+    pdir = loader._pending_root() / "big-script"
+    (pdir / "scripts").mkdir(exist_ok=True)
+    (pdir / "scripts" / "big.py").write_text("#" * _REPORTED_DOCUMENT_BYTES, encoding="utf-8")
+
+    assert loader.get_pending_skill("big-script") is None
+    assert loader.pending_candidate_is_staged("big-script") is True
+
+
+def test_a_document_over_the_document_cap_is_refused_whole(loader):
+    """The document read is bounded, and the bound is exact.
+
+    A ``SKILL.md`` AT the cap is served; one byte over refuses the candidate,
+    which stays staged (the dashboard's ``pending_skill_unreadable`` case), and
+    nothing is served in part: the refusal is the whole detail, not a cut body.
+    """
+    from kiro_crew import skills as sk
+
+    _stage(loader, "cap-doc")
+    pdir = loader._pending_root() / "cap-doc"
+    shell = b"---\nname: auto/cap-doc\n---\n\n# cap-doc\n\n"
+    # Bytes, not text: a text-mode write would land each newline as ``os.linesep``
+    # and move the fixture off the cap on Windows.
+    (pdir / "SKILL.md").write_bytes(shell + b"x" * (sk._PENDING_DOCUMENT_MAX_BYTES - len(shell)))
+    assert (pdir / "SKILL.md").stat().st_size == sk._PENDING_DOCUMENT_MAX_BYTES
+    at_cap = loader.get_pending_skill("cap-doc")
+    assert at_cap is not None, "exactly the document cap was refused"
+    assert len(at_cap["content"]) == sk._PENDING_DOCUMENT_MAX_BYTES
+
+    with (pdir / "SKILL.md").open("ab") as fh:
+        fh.write(b"x")
+    assert (pdir / "SKILL.md").stat().st_size == sk._PENDING_DOCUMENT_MAX_BYTES + 1
+
+    assert loader.get_pending_skill("cap-doc") is None
+    assert loader.pending_candidate_is_staged("cap-doc") is True
+
+
+def test_metadata_over_the_document_cap_refuses_the_candidate(loader):
+    """``.meta.json`` reads under the same document cap, and over it is a refusal.
+
+    Unreadable through the pin is a fence signal: the candidate is refused rather
+    than served with empty metadata, the same answer a linked ``.meta.json`` gets.
+    """
+    import json as _json
+
+    from kiro_crew import skills as sk
+
+    _stage(loader, "cap-meta")
+    pdir = loader._pending_root() / "cap-meta"
+    (pdir / ".meta.json").write_text(
+        _json.dumps({"slug": "cap-meta", "pad": "x" * sk._PENDING_DOCUMENT_MAX_BYTES}),
+        encoding="utf-8",
+    )
+
+    assert loader.get_pending_skill("cap-meta") is None
+    assert loader.pending_candidate_is_staged("cap-meta") is True

@@ -134,7 +134,8 @@ class TestChannelClearContext:
         sessions = AsyncMock()
 
         request = _make_request("ch1", {}, channel=ch, sessions=sessions)
-        request.json = AsyncMock(side_effect=Exception("no body"))
+        # What aiohttp raises for an unparseable body (JSONDecodeError is one).
+        request.json = AsyncMock(side_effect=ValueError("no body"))
         with patch(
             "kiro_crew.dashboard.handlers_channel._mgr",
             return_value=MagicMock(get=MagicMock(return_value=ch)),

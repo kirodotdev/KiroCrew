@@ -175,7 +175,7 @@ const WorkflowRunCard = memo(function WorkflowRunCard({
   }
 
   // Row geometry -- the px-4 gutter and the --mc-content-width clamp -- belongs to
-  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // the HOST row wrapper, never to this card. ChatTranscriptView wraps every renderMessage
   // result, and the shared registries wrap this card through ctx.row. Re-applying
   // it here nested one clamp inside another and inset the card by a second full
   // gutter, so it sat 20px right of every sibling row and 40px narrower.

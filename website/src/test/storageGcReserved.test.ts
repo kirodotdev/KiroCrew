@@ -18,7 +18,7 @@ const HEIGHTS = 'vc_heights_'
  *  hardcoded copy here silently stops describing the keys the sweep owns the
  *  moment that version is bumped — which reads as the sweep having a hole. */
 const ANCHOR = ANCHOR_KEY_PREFIX
-/** Must stay in step with `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPage.tsx`. */
+/** Must stay in step with `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPageGallery.tsx`. */
 const GALLERY = 'artifacts-gallery'
 
 describe('gcOrphanedStorage', () => {

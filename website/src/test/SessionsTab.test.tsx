@@ -232,6 +232,30 @@ describe('Created-by citation', () => {
     expect(document.querySelector('[title*="Created by"]')).toBeNull()
   })
 
+  it('keeps the citation on a row re-parented onto an open ancestor, and names the closed creator', async () => {
+    // The one nested row that still needs the line. Its place in the tree is NOT its
+    // creator -- it hangs from the nearest open ancestor -- so the expander above it
+    // names a session that did not open it, and without this line nothing says the
+    // creator closed. The name must be the creator's, never the ancestor's.
+    const payload = defaultPayload()
+    payload.sessions.push({
+      ...payload.sessions[0],
+      key: 'dashboard:chat-4',
+      title: 'Worker whose conductor closed under a live lead',
+      slot_key: 'chat-4',
+      pid: 1006,
+      parent: { slot: 'chat-99-gone', key: 'dashboard:chat-1', ancestor: true },
+    })
+    mockSessionsMemory.mockResolvedValue(payload)
+    renderWithProviders(<SessionsTab planeStateRef={makePlaneStateRef()} />)
+    await waitFor(() => {
+      expect(screen.getByText('Worker whose conductor closed under a live lead')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Created by chat-99-gone (closed)')).toBeInTheDocument()
+    // The ancestor it nests under is named by its own expander, not by this row.
+    expect(screen.queryByText(/Created by Debugging session/)).toBeNull()
+  })
+
   it('keeps the orphan citation under a fold, where the parent row is a group row', async () => {
     // Under Group by, a top-level row's parent row is the synthetic group row,
     // so nesting cannot be read off the row tree; the row's own `nested` flag

@@ -4,9 +4,20 @@
  * null-origin iframe cannot survive a remount, so an unmount loses the drawing.
  */
 import { describe, it, expect } from 'vitest'
+import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { readSource } from './readSource'
 import { shouldMountSidePanel, isSidePanelHidden, SIDE_PANEL_DOCK_TRANSITION, SIDE_PANEL_MOTION_EASE, SIDE_PANEL_MOTION_MS, sidePanelDimTransition } from '../pages/chat/sidePanelMount'
+
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+const PAGES = join(__dirname, '..', 'pages')
+const chatPageHost = () => [
+  readSource(join(PAGES, 'ChatPage.tsx')),
+  ...readdirSync(join(PAGES, 'chat', 'page')).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readSource(join(PAGES, 'chat', 'page', f))),
+  ...readdirSync(PAGES).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readSource(join(PAGES, f))),
+].join('\n')
 
 const S = (activityOpen: boolean, hasLiveAppTab: boolean, searchOpen = false, hasBrowserTab = false) =>
   ({ activityOpen, hasLiveAppTab, hasBrowserTab, searchOpen })
@@ -53,7 +64,7 @@ describe('side panel mount decision', () => {
     expect(src).toContain('active={isActive && !panelHidden}')
     // ...and the flag has to reach the panel from its host, or the guard above
     // is dead code that always reads undefined.
-    const host = readSource(join(__dirname, '..', 'pages', 'ChatPage.tsx'))
+    const host = chatPageHost()
     expect(host.match(/panelHidden=\{isSidePanelHidden\(/g) ?? []).toHaveLength(2)
   })
 
@@ -168,7 +179,7 @@ describe('side panel motion timing is shared, not copied', () => {
   })
 
   it('is the shared constant that the dock wrapper actually uses', () => {
-    const host = readSource(join(__dirname, '..', 'pages', 'ChatPage.tsx'))
+    const host = chatPageHost()
     expect(host).toContain('transition={SIDE_PANEL_DOCK_TRANSITION}')
   })
 })

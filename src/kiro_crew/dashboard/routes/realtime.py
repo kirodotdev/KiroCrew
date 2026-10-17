@@ -111,6 +111,19 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/kas-login/poll", _lazy_kas("api_kas_login_poll"))
     app.router.add_post("/api/kas-login/cancel", _lazy_kas("api_kas_login_cancel"))
     app.router.add_post("/api/kas-login/logout", _lazy_kas("api_kas_login_logout"))
+
+    # Kiro Crew's own KAS engine bundle (agent.kas_bundle). Lazy for the same
+    # boot-path reason as kas_login above.
+    def _lazy_kas_bundle(handler_name: str):
+        async def _dispatch(request):
+            from kiro_crew.dashboard.handlers import kas_bundle
+
+            return await getattr(kas_bundle, handler_name)(request)
+
+        return _dispatch
+
+    app.router.add_get("/api/kas-bundle", _lazy_kas_bundle("api_kas_bundle_status"))
+    app.router.add_post("/api/kas-bundle/install", _lazy_kas_bundle("api_kas_bundle_install"))
     app.router.add_get("/api/governance/channels", handlers.api_governance_channels)
 
     # Suggestions (pre-computed contextual prompts)

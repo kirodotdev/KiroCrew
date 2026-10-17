@@ -164,6 +164,25 @@ beforeEach(() => {
 })
 afterEach(() => vi.clearAllMocks())
 
+describe('sidebar rename editor surface', () => {
+  // The selected row, the ::selection highlight and the focus glow all paint
+  // --accent-subtle, so a transparent editor lets the selected text and the
+  // glow vanish into the row. The editor paints the elevated field surface,
+  // as the header title editor's shared Input does.
+  it('paints the elevated field surface, not a transparent one', () => {
+    const { container } = renderSidebar()
+    const wrap = container.querySelector(`[data-slot-key="${SLOT_KEY}"]`) as HTMLElement
+    const title = within(wrap.querySelector('.session-row') as HTMLElement).getByTitle(SERVER_TITLE)
+    fireEvent.click(title, { detail: 1 })
+    fireEvent.click(title, { detail: 2 })
+    fireEvent.doubleClick(title, { detail: 2 })
+    const textarea = currentTextarea(container)
+    expect(textarea.classList.contains('bg-bg-elevated')).toBe(true)
+    expect(textarea.classList.contains('bg-transparent')).toBe(false)
+    expect(textarea.classList.contains('border-accent')).toBe(true)
+  })
+})
+
 describe('sidebar rename failure recovery (#10151)', () => {
   it('snaps the title back to the server value when the rename is refused', async () => {
     renameSlotMock.mockRejectedValue(new Error('rename refused'))

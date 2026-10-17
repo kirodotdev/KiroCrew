@@ -5,6 +5,7 @@ import type { ComponentType } from 'react'
 import ArtifactsPage from '../pages/ArtifactsPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import type { Artifact, PublishProviderDescriptor, RemoteArtifact } from '../types'
 
 vi.mock('../api/client')
@@ -78,6 +79,18 @@ const mkRemote = (id: string): RemoteArtifact => ({
   tags: [],
   local_slug: null,
 })
+
+// The gateway's answer for a browse scope the provider does not list.
+const scopeUnsupported = (scope?: string) => new ApiError(
+  400,
+  `companion does not support ${scope} listing`,
+  JSON.stringify({ error: `companion does not support ${scope} listing`, code: 'scope_unsupported' }),
+)
+
+// A scope fallback is a chain of queries, each settling only after the previous
+// answer and the skip effect it triggers; under a loaded coverage runner that
+// outlasts the default one-second wait.
+const SCOPE_CHAIN_TIMEOUT_MS = 5_000
 
 describe('ArtifactsPage remote-browse gating', () => {
   beforeEach(() => {
@@ -179,6 +192,58 @@ describe('ArtifactsPage remote-browse gating', () => {
 
     await userEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenCalledTimes(2))
+  })
+
+  it('skips a scope the provider answers scope_unsupported for and lists the next one', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion')],
+      kind: 'widget',
+    })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockImplementation(async (_p, opts) => {
+      if (opts?.scope === 'mine') throw scopeUnsupported('mine')
+      return { artifacts: [mkRemote(`ext-${opts?.scope}`)] }
+    })
+    renderWithProviders(<ArtifactsPage />)
+    // Chain: providers query -> `mine` browse answers scope_unsupported -> the
+    // skip effect -> `shared` browse resolves and renders its row.
+    await waitFor(
+      () => expect(screen.getByText('Remote ext-shared')).toBeInTheDocument(),
+      { timeout: SCOPE_CHAIN_TIMEOUT_MS },
+    )
+    expect(screen.getByText('On Companion Provider')).toBeInTheDocument()
+    expect(screen.queryByTestId('remote-browse-error-companion')).not.toBeInTheDocument()
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenNthCalledWith(1, 'companion', { scope: 'mine' })
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenNthCalledWith(2, 'companion', { scope: 'shared' })
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenCalledTimes(2)
+  })
+
+  it('renders NO section and NO error when every advertised scope is unsupported', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion', {
+        discovery_model: {
+          list_mine: true, list_shared_with_me: false, list_public: true,
+          full_text_search: false, pull_by_id: true,
+        },
+      })],
+      kind: 'widget',
+    })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockImplementation(async (_p, opts) => {
+      throw scopeUnsupported(opts?.scope)
+    })
+    const { queryClient } = renderWithProviders(<ArtifactsPage />)
+    // Positive signal before the absence checks: the section has moved past its
+    // last advertised scope, so it read both answers and has nothing left to ask.
+    // Chain: providers query -> `mine` browse -> skip effect -> `public` browse
+    // -> skip effect -> the disabled query for "no scope left".
+    await waitFor(() => expect(queryClient.getQueryCache().find({
+      queryKey: ['remote-artifacts', 'companion', ['scope', undefined]], exact: true,
+    })).toBeDefined(), { timeout: SCOPE_CHAIN_TIMEOUT_MS })
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenNthCalledWith(1, 'companion', { scope: 'mine' })
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenNthCalledWith(2, 'companion', { scope: 'public' })
+    expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText('local a')).toBeInTheDocument()
+    expect(screen.queryByText('On Companion Provider')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('remote-browse-error-companion')).not.toBeInTheDocument()
   })
 
   it('full-text search keeps the filter input focused and mounted across keystrokes', async () => {

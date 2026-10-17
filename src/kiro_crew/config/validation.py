@@ -14,7 +14,7 @@ What lives here:
   cache, with an explicit ``clear()`` (replacing the bare module globals that
   were impossible to reset/inject in tests).
 
-What deliberately stays in ``config/loader.py``:
+What deliberately stays in ``config/loader_document.py``:
 - ``_config_fingerprint()`` — it reads ``config_path()`` / ``config_local_path()``,
   which the test suite patches via ``kiro_crew.config.loader.config_path``; keeping
   it there preserves that monkeypatch seam. The loader computes the fingerprint
@@ -51,6 +51,35 @@ from kiro_crew.config.fields import _coerce_bool
 #     manages; read by apps/builtins/dev_fleet/repository.py::_load_dev_fleet_cfg
 #     and prescribed by the dashboard's "no checkout found" banner.
 _APP_OWNED_TOP_KEYS: frozenset = frozenset({"dev_fleet"})
+
+# Top-level config.json sections THIS CORE itself writes and reads, but does not
+# model as a dataclass field. The settings UI persists them into config.json and
+# a core module reads them back on startup -- so, exactly like the keys save()
+# stamps (CONFIG_RESERVED_TOP_KEYS), the product wrote them itself and warning
+# "unrecognized" about them is a false positive. They differ from the reserved
+# keys in that they carry live operator settings that must survive save(): the
+# loader captures them into _extra_sections and re-emits them via to_dict(), so
+# they are NOT reserved (reserved keys are dropped on save). They differ from
+# _APP_OWNED_TOP_KEYS only in who owns the reader -- core here, a builtin app
+# there -- which is why they are a separate set and the "second member becomes a
+# registration mechanism" note on the app-owned set does not govern this one:
+# a core-owned section has no manifest to declare itself through.
+# Excluded only in the shape the reader keeps -- a JSON object -- so a scalar
+# written by hand keeps the one warning that says it is being ignored.
+#   * voice_reply -- the dashboard/Slack voice settings block. Written by
+#     slack/interactions.py (``data.setdefault("voice_reply", {})``) and
+#     dashboard/chat_voice.py (persisted with json.dump), and read back on
+#     startup by slack/handler_runtime/voice.py::load_voice_reply_config
+#     (``cfg.raw.get("voice_reply")``), and also by
+#     telegram/transport_dispatch.py (``raw.get("voice_reply")``). No
+#     SCHEMA_REGISTRY entry.
+#   * connections -- the Connections block. The Settings "OAuth Apps" form
+#     writes ``connections.oauth_clients.<slug>.client_id``
+#     (dashboard/handlers/connections.py::_write_oauth_client), read back by
+#     connections/oauth_clients.py::_config_client_id; the
+#     ``connections.tool_aliases`` gate is read by
+#     agent_materialization/mcp_aliases.py. No SCHEMA_REGISTRY entry.
+_CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections"})
 
 try:
     import jsonschema
@@ -202,6 +231,15 @@ def _actual_type_name(value: object) -> str:
 #:   unreadable section so the loader records its degradation and the creation
 #:   guard refuses instead of treating the operator's setting as absent.
 #:
+#: * ``hooks`` (the section) and ``hooks.confirm_tools``: the confirm list's
+#:   default is **open** (no call asks), so repairing a malformed list -- or a
+#:   non-object section that carried it, which an overlay can use to replace the
+#:   base file's -- to absent would let every static grant and
+#:   ``auto_approve_tools`` grant it was written to withhold through. Preserved,
+#:   the loader records a non-object section as degraded (``_coerced_section``)
+#:   and ``governance._confirm_tool_patterns`` reads it, or a present non-list
+#:   value, as an unknown list, so the writers and the gate withhold instead.
+#:
 #: * ``workspaces``: the table names WHERE the Global V1 memory workspaces
 #:   live, some possibly at absolute directories outside the data home, and the
 #:   folder-steering memory-store fence is built from it. Repairing a malformed
@@ -224,8 +262,16 @@ _FAIL_CLOSED_PATHS = frozenset(
         "dashboard.tailscale",
         "memory",
         "workspaces",
+        "hooks",
+        "hooks.confirm_tools",
     }
 )
+
+
+def _is_flat_workspace_string(dot_path: str, value: object) -> bool:
+    """Whether *value* is the flat ``workspaces.<name>: "<dir>"`` form."""
+    parts = dot_path.split(".")
+    return len(parts) == 2 and parts[0] == "workspaces" and isinstance(value, str)
 
 
 def _apply_field_default(data: dict, dot_path: str) -> bool:
@@ -461,17 +507,22 @@ def validate_config_data(data: dict) -> dict:
     # config's *sections*, so the keys save() stamps itself are not in it and
     # must be excluded — otherwise every load of a config Kiro Crew has ever
     # saved warns about Kiro Crew's own bookkeeping. A section a builtin app owns
-    # and reads from the file directly (_APP_OWNED_TOP_KEYS) is not in the
-    # registry either, and is excluded for the same reason: the product told the
-    # operator to write it. Excluded only in the shape the app reads -- a JSON
-    # object. The app's reader keeps only a dict (repository.py
-    # ``isinstance(raw.get("dev_fleet"), dict)``) and silently falls back to
-    # discovery on anything else, so a scalar ``dev_fleet: "/opt/kc"`` would
+    # and reads from the file directly (_APP_OWNED_TOP_KEYS), or that this core
+    # writes and reads without a dataclass model (_CORE_OWNED_TOP_KEYS), is not
+    # in the registry either and is excluded for the same reason: the product
+    # told the operator to write it, or wrote it itself. Excluded only in the
+    # shape the reader keeps -- a JSON object. A reader keeps only a dict and
+    # silently falls back on anything else, so a scalar written by hand would
     # otherwise lose the one warning that tells the operator it is being ignored.
     known_top_keys = {e.path for e in SCHEMA_REGISTRY if "." not in e.path and e.path != "*"}
     app_owned_sections = {k for k in _APP_OWNED_TOP_KEYS if isinstance(data.get(k), dict)}
+    core_owned_sections = {k for k in _CORE_OWNED_TOP_KEYS if isinstance(data.get(k), dict)}
     unknown = sorted(
-        set(data.keys()) - known_top_keys - CONFIG_RESERVED_TOP_KEYS - app_owned_sections
+        set(data.keys())
+        - known_top_keys
+        - CONFIG_RESERVED_TOP_KEYS
+        - app_owned_sections
+        - core_owned_sections
     )
     if unknown:
         logger.warning("Config: unrecognized top-level keys: %s", ", ".join(unknown))
@@ -516,6 +567,14 @@ def validate_config_data(data: dict) -> dict:
     if "auto_update" in data and not isinstance(data["auto_update"], bool):
         data["auto_update"] = _coerce_bool(data["auto_update"], False)
 
+    # 3c. A retired verbosity level is renamed, not rejected: the enum check
+    # would otherwise delete it and drop the user back to the verbose default.
+    dashboard = data.get("dashboard")
+    if isinstance(dashboard, dict) and "verbosity" in dashboard:
+        from kiro_crew.config.sections import normalize_verbosity
+
+        dashboard["verbosity"] = normalize_verbosity(dashboard["verbosity"])
+
     # 3a. Resolve the STT provider and model through the loader's own degradation
     # rules before the enum check can discard them. Both fields accept values that
     # are deliberately absent from their enum (a retired provider, and a model name
@@ -530,7 +589,38 @@ def validate_config_data(data: dict) -> dict:
         if "provider" in stt:
             stt["provider"] = _validated_stt_provider(stt["provider"])
         if "model" in stt:
-            stt["model"] = _validated_stt_model(stt["model"])
+            # The sibling pair travels with the name: ``custom`` is only a usable
+            # selection when both halves are set, and validating it without them
+            # rewrites a correctly configured custom model back to the default here,
+            # before the parse site ever sees it.
+            stt["model"] = _validated_stt_model(
+                stt["model"],
+                custom_path=stt.get("custom_model_path", ""),
+                custom_sha256=stt.get("custom_model_sha256", ""),
+            )
+
+    # 3d. The harness fields have a product default distinct from their safety
+    # floor. Absent or "" is "no choice" and takes the default, but a PRESENT
+    # malformed value must not be deleted into that same absence by jsonschema:
+    # it is an unusable explicit choice and resolves to the Kiro CLI floor,
+    # stored as ``"kiro"`` (harness-parity H3). Normalize it before type
+    # validation so jsonschema-backed loads keep that distinction. jsonschema is
+    # a pinned runtime dependency; the early no-jsonschema return is an
+    # import-failure survival path and keeps its field-default fallback.
+    if isinstance(agent, dict):
+        for harness_key in ("acp_backend", "member_acp_backend"):
+            if harness_key in agent and not isinstance(agent[harness_key], str):
+                from kiro_crew.acp_backends import (
+                    GOVERNANCE_FLOOR_BACKEND,
+                    backend_to_stored,
+                )
+
+                logger.warning(
+                    "Ignoring agent.%s %r (not a backend id); using the Kiro CLI floor",
+                    harness_key,
+                    agent[harness_key],
+                )
+                agent[harness_key] = backend_to_stored(GOVERNANCE_FLOOR_BACKEND)
 
     # 4. Preserve numeric values written by older config writers.
     _coerce_legacy_numeric_values(data, JSON_SCHEMA)
@@ -570,12 +660,16 @@ def validate_config_data(data: dict) -> dict:
                     "using default" if removed else "value kept (validated by its consumer)",
                 )
             elif err.validator == "type":
+                if _is_flat_workspace_string(dot_path, value):
+                    # The loader migrates this form to {"dir": ...} and writes
+                    # it back, so the string stays for it to read.
+                    logger.info("Config: flat workspace string at '%s' is migrated", dot_path)
+                    continue
                 expected = err.schema.get("type", "unknown")
                 actual = _actual_type_name(value)
                 removed = _apply_field_default(data, dot_path)
                 logger.warning(
-                    "Config: type mismatch at '%s': "
-                    "expected %s, got %s (value: %s); %s",
+                    "Config: type mismatch at '%s': " "expected %s, got %s (value: %s); %s",
                     dot_path,
                     expected,
                     actual,

@@ -596,7 +596,7 @@ async def test_process_auto_skills_update_route_forwards_scripts():
 async def test_stage_update_skips_non_live_target():
     """The judge sees PENDING candidates in `existing`, so it can answer
     `UPDATE auto/<pending-slug>` — a target that is not live. Staging that would
-    queue a candidate approve_pending_update rejects forever, so drop it."""
+    queue a candidate approve_pending_update_checked rejects forever, so drop it."""
     loader = FakeLoader(live_body=None)
     c = _mk(loader)
     c._event_loop = asyncio.get_running_loop()
@@ -909,7 +909,7 @@ async def test_base_version_is_captured_before_the_body_it_describes():
 
     If live advances while the (up to 90s) merge turn runs, sampling the version
     afterwards records the NEW version against a body merged from the OLD one —
-    and approve_pending_update's staleness guard, seeing base == current, would
+    and approve_pending_update_checked's staleness guard, seeing base == current, would
     let that stale body overwrite the intervening update. The guard is only as
     good as the version it is handed.
     """

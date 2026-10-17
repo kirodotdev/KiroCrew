@@ -204,7 +204,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
 class TestTheSpawnStaysInsidePopenLimited:
     """The spawn audits key on the ENCLOSING FUNCTION, so its location is load-bearing.
 
-    ``_SYNC_ALLOWED`` and ``BENIGN_SPAWNS`` both name ``sandbox.py::popen_limited``.
+    ``_SYNC_ALLOWED`` and ``BENIGN_SPAWNS`` both name ``sandbox_rlimit.py::popen_limited``.
     Extracting this ``Popen`` into a helper migrates its audit key: the entries go
     stale and the relocated call reads as a new unrouted, preexec_fn-forking spawn.
     """
@@ -223,7 +223,7 @@ class TestTheSpawnStaysInsidePopenLimited:
         assert spawns, (
             "popen_limited no longer contains its own subprocess.Popen call — the "
             "spawn audits key on the enclosing function, so extracting it strands "
-            "the sandbox.py::popen_limited entries in _SYNC_ALLOWED and "
+            "the sandbox_rlimit.py::popen_limited entries in _SYNC_ALLOWED and "
             "BENIGN_SPAWNS and reports the relocated call as a new spawn."
         )
         assert all(
@@ -585,9 +585,14 @@ class TestAnOverlappingWakeCostsNoFailureStrike:
 
     def test_the_consumer_treats_skipped_as_non_counting(self):
         """The status is inert unless the consumer honours it -- pin that too."""
-        gateway = pathlib.Path(
-            importlib.import_module("kiro_crew.slack.gateway").__file__
-        ).read_text(encoding="utf-8")
+        slack_dir = pathlib.Path(importlib.import_module("kiro_crew.slack.gateway").__file__).parent
+        gateway = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                slack_dir / "gateway.py",
+                *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+            ]
+        )
         # Both cron dispatch paths must intercept it before the strike branch.
         assert gateway.count('== "skipped"') == 2
 
@@ -600,7 +605,7 @@ class TestARefusedOverlapIsNotPersistedAsASuccessfulRun:
     the auto-pause budget. So a dispatch branch that merely returns ``None``
     without setting ``last_status`` persists a run that never happened. The
     ``cancelled`` branch escapes this only via ``_execute``'s separate
-    ``self._cancelled_jobs`` membership check, which a refused overlap is not in.
+    check of the run claim's ``cancelled`` flag, which a refused overlap never sets.
 
     These tests assert the disposition the starvation and fire-time-denial paths
     already use: ``last_status="error"`` (skips the success branch) plus
@@ -609,8 +614,13 @@ class TestARefusedOverlapIsNotPersistedAsASuccessfulRun:
     """
 
     def _dispatch_source(self) -> str:
-        return pathlib.Path(importlib.import_module("kiro_crew.slack.gateway").__file__).read_text(
-            encoding="utf-8"
+        slack_dir = pathlib.Path(importlib.import_module("kiro_crew.slack.gateway").__file__).parent
+        return "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                slack_dir / "gateway.py",
+                *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+            ]
         )
 
     def _skipped_branches(self, source: str) -> list[str]:
@@ -666,8 +676,9 @@ class TestARefusedOverlapIsNotPersistedAsASuccessfulRun:
 
         If this ever stops holding, the assertions above are guarding nothing.
         """
-        cron_src = pathlib.Path(importlib.import_module("kiro_crew.cron").__file__).read_text(
-            encoding="utf-8"
+        cron_src = "".join(
+            pathlib.Path(importlib.import_module(name).__file__).read_text(encoding="utf-8")
+            for name in ("kiro_crew.cron", "kiro_crew.cron_service.service.run_execution")
         )
         assert 'if job.last_status != "error":' in cron_src
         assert "job.record_success()" in cron_src
@@ -873,7 +884,9 @@ class TestAllThreeWrappersShareOneDiscriminator:
     """The decision is factored; the three spawns are deliberately NOT."""
 
     def _source(self) -> str:
-        return pathlib.Path(sandbox_mod.__file__).read_text(encoding="utf-8")
+        # The module and the owners carved out of it.
+        modules = (sandbox_mod, *map(importlib.import_module, sandbox_mod._CARVED_OWNERS))
+        return "\n".join(pathlib.Path(m.__file__).read_text(encoding="utf-8") for m in modules)
 
     def test_every_wrapper_routes_through_the_shared_helper(self):
         src = self._source()
@@ -1181,8 +1194,16 @@ class TestSpawnOnlyCancellationIsReportedHonestly:
 
     @staticmethod
     def _cron_source() -> str:
-        return pathlib.Path(importlib.import_module("kiro_crew.cron").__file__).read_text(
-            encoding="utf-8"
+        import pkgutil
+
+        service = importlib.import_module("kiro_crew.cron_service.service")
+        names = (
+            "kiro_crew.cron",
+            *(f"{service.__name__}.{info.name}" for info in pkgutil.iter_modules(service.__path__)),
+        )
+        return "".join(
+            pathlib.Path(importlib.import_module(name).__file__).read_text(encoding="utf-8")
+            for name in names
         )
 
     def test_the_control_flow_reader_is_gated_on_the_job_being_an_agent_job(self):

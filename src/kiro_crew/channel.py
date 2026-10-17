@@ -24,15 +24,31 @@ from typing import Any
 
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config import live
+from kiro_crew.config import KiroCrewConfig, live
+from kiro_crew.config.fields import _safe_int
+from kiro_crew.config.loader import config_local_path, config_path, read_config_text
 from kiro_crew.config.paths import config_dir
+from kiro_crew.config.resolution import _deep_merge
 from kiro_crew.constants import (
     DENY_CAUSE_APPROVAL_OVERSIZE,
     DENY_CAUSE_APPROVAL_TIMEOUT,
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
+    TOOL_APPROVAL_TIMEOUT,
 )
-from kiro_crew.llm_helpers import _steer_host_deny, is_prompt_busy
+from kiro_crew.llm_helpers import (
+    CREDENTIAL_RELOAD_RETRY_NOTICE,
+    SESSION_NOT_FOUND_GIVE_UP_TEXT,
+    SESSION_NOT_FOUND_NOT_REPLAYED_TEXT,
+    SESSION_NOT_FOUND_RETRY_NOTICE,
+    _steer_host_deny,
+    acp_error_is_session_not_found,
+    acp_error_needs_fresh_credentials,
+    credential_give_up_text,
+    is_prompt_busy,
+    unfinished_turn_error,
+)
+from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.trust_patterns import extract_bash_command
 
@@ -49,8 +65,10 @@ _MAX_MESSAGES = 200
 # sees the whole command, and a cut title beside a live Approve button is an
 # approval of a suffix nobody read. The refusal notice is itself bounded.
 _APPROVAL_FIELD_MAX_CHARS = 500
-# How long a posted approval card waits for a reader before the HOST declines
-# it. Named so the in-band notice can quote the same figure the wait used.
+# The longest a posted approval card waits for a reader before the HOST
+# declines it, and the wait while ``agent.tool_approval_timeout_secs`` is left at
+# its default (see :func:`_channel_approval_window_secs`). The in-band notice
+# quotes the window the wait actually used.
 _APPROVAL_TIMEOUT_SECS = 3600
 # The card title of a grantable shell command is this prefix plus the command;
 # the exact tier sends the title back (minus the prefix) as its consent proof.
@@ -149,12 +167,23 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # Ending another session's wait moves that turn forward on a schedule the
     # channel's thread text would then be choosing; same containment reason.
     "session_end_wait",
+    # Re-running a turn spends the target's model and tools on work a channel
+    # message did not ask for; same containment reason as stop.
+    "session_retry",
+    # Continuing a thread spends the target's model and tools the same way.
+    "session_continue",
     # Changing a session's model decides what the user's next turn there runs
     # on and spends; same containment reason as stop.
     "session_set_model",
     # Reload relaunches another session's agent process; same containment
     # reason as stop.
     "session_reload",
+    # Renaming relabels a session in the person's sidebar, named from thread text
+    # other people wrote; same containment reason as the tree verbs below.
+    "session_rename",
+    # Retitling spends a model call and relabels a session in the person's
+    # sidebar; same containment reason as stop.
+    "session_generate_title",
     "session_send",
     "session_read_message",
     # A digest of the same transcript `session_read_message` returns, so it is
@@ -191,7 +220,21 @@ CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
     # ``chat_tag_column_list`` stays available: the layout names no session.
     "chat_tag_column_create",
     "chat_tag_column_move",
+    # Moving a card between board columns retags another session, which a
+    # channel agent would name from thread text; the handler also refuses a
+    # ``channel:`` caller at dispatch.
+    "session_move_to_column",
+    # Reordering pins is the same containment case: it rewrites the person's
+    # sidebar order, and its handler refuses a ``channel:`` caller at dispatch.
+    "chat_session_pin_move",
     "session_revive",
+    # Renaming a folder changes the person's sidebar the same way, and a channel
+    # caller reaches the endpoint with the person's folder authority. The
+    # chat_folder_update handler refuses a ``channel:`` caller at dispatch.
+    "chat_folder_update",
+    # Lists archived session titles and keys: a channel thread other people
+    # read is not where the person's closed-session history belongs.
+    "session_history_list",
     # The four work-ledger tools, blocked for the same containment reason and not
     # for a new one: a channel agent has no dispatch relationship, so it is
     # neither a conductor nor a bound worker and has no business holding one.
@@ -283,6 +326,23 @@ def _shell_base_binary(cmd: str) -> str | None:
     return base
 
 
+def _offerable_base_binary(cmd: str) -> str | None:
+    """The base a "Trust all <base> commands" consent may name, else None.
+
+    ``_shell_base_binary`` tokenizes in POSIX mode, where a backslash is an
+    escape, so the Windows path ``.\\deploy.bat`` derives ``.deploy.bat``: a
+    name the user never typed, and one that also covers a different file
+    literally called ``.deploy.bat``. A consent label must name what the user
+    read, so a first token holding a backslash gets no base offer and no base
+    grant; the exact-command tier still covers that command.
+    """
+    stripped = cmd.lstrip() if cmd else ""
+    first = stripped.split(None, 1)[0] if stripped else ""
+    if "\\" in first:
+        return None
+    return _shell_base_binary(cmd)
+
+
 # Anything that makes a command more than ONE plain invocation. Deliberately
 # broader than the enforcement splitter's operator set: over-matching here
 # fails toward "no per-command grant available", never toward a wider grant.
@@ -316,11 +376,15 @@ def _match_trusted_channel_command(cmd: str, agent: "ChannelAgent") -> str | Non
     Compound commands never match a base grant and only match an exact grant
     granted for that identical compound; there is no pattern language and no
     per-segment matching, so a grant can never cover text the user did not
-    read. Returns an audit label or None.
+    read. The base is derived with ``_offerable_base_binary``, the same rule the
+    card offers from: a first token holding a backslash has no base, because
+    POSIX tokenizing drops the backslash and ``n\\pm`` would otherwise match a
+    ``npm`` grant while Windows runs a different file. Returns an audit label
+    or None.
     """
     if cmd in agent._trusted_commands:
         return f"command:{cmd}"
-    base = _shell_base_binary(cmd)
+    base = _offerable_base_binary(cmd)
     if base is not None and base in agent._trusted_bases:
         return f"base:{base}"
     return None
@@ -422,6 +486,9 @@ class ChannelAgent:
     # titles and request-body patterns are LLM-influenced and never scope a
     # grant. Set while ``_approval_future`` is pending, cleared with it.
     _pending_approval_command: str = field(default="", repr=False)
+    # The provider's text when the last lost-session verdict was a credential
+    # failure ("" otherwise), so the recovery notices can name the real cause.
+    _credential_error: str = field(default="", repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -542,7 +609,11 @@ class Channel:
         msg_type: str = "progress",
         thread_id: str | None = None,
         meta: dict[str, str] | None = None,
+        notify_members: bool = True,
     ) -> ChannelMessage:
+        # ``notify_members=False`` records, broadcasts and saves the message but
+        # queues it for no member: a display-only notice for the human reader that
+        # must not wake the agent whose thread it lands in.
         # Normalize mentions to a set
         mentions: set[str] = set()
         if isinstance(mention, list):
@@ -593,7 +664,7 @@ class Channel:
         # that changed after it was queued.
         queued = replace(msg)
 
-        for agent in self.members.values():
+        for agent in self.members.values() if notify_members else ():
             if agent.id == from_id or agent.state in ("done", "failed"):
                 continue
             if agent.listen_mode == ListenMode.SILENT:
@@ -1016,15 +1087,16 @@ async def run_channel_agent(
                     agent.state = "failed"
                     break
                 client = replacement
-            busy = await _stream_task(
+            fault = await _stream_task(
                 agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
             )
-            if busy:
+            if fault:
                 # This loop owns the SessionManager, so it is the only place that
-                # can clear a wedge: replace the session and replay the message
-                # once on a cold one, then rebind the now-dead client.
+                # can clear a wedge or a lost session: replace the session and
+                # replay the message once on a cold one, then rebind the
+                # now-dead client.
                 replacement = await _recover_busy_agent(
-                    agent, channel, sessions, prompt, thread_id=tid, is_yolo=is_yolo
+                    agent, channel, sessions, prompt, thread_id=tid, is_yolo=is_yolo, cause=fault
                 )
                 if replacement is None:
                     # Report the dead end EXACTLY ONCE and stop consuming the
@@ -1035,8 +1107,12 @@ async def run_channel_agent(
                     # abandoned replacement out of the session registry.
                     await channel.post(
                         agent.id,
-                        "❌ This agent's session is stuck and could not be recovered. "
-                        "Clear its context or wake it to try again.",
+                        (
+                            "❌ This agent's session is stuck and could not be recovered. "
+                            if fault == _STREAM_BUSY
+                            else f"❌ {_lost_give_up_text(agent)} "
+                        )
+                        + "Clear its context or wake it to try again.",
                         from_role=agent.role,
                         msg_type="system",
                         thread_id=tid,
@@ -1099,6 +1175,27 @@ async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
     return client
 
 
+#: ``_stream_task`` verdicts. Each non-empty one names a session fault that only
+#: the caller, which owns the ``SessionManager``, can clear by replacing the session.
+_STREAM_OK = ""
+#: The backend still holds an in-flight prompt and rejects every new one.
+_STREAM_BUSY = "busy"
+#: A live backend holds no session under the mapped id. The replacement re-loads
+#: the same id on a fresh runtime, so the message is replayed once on it.
+_STREAM_LOST = "lost"
+#: The same loss after a tool ran this turn: the session is replaced, but the
+#: message is not replayed, since that could repeat the tool's side effect.
+_STREAM_LOST_AFTER_TOOL = "lost_after_tool"
+
+_LOST_AFTER_TOOL_TEXT = f"⟳ {SESSION_NOT_FOUND_NOT_REPLAYED_TEXT}"
+
+
+def _lost_give_up_text(agent: Any) -> str:
+    """The dead end of a lost verdict: the provider's remedy when credentials caused it."""
+    cause = getattr(agent, "_credential_error", "")
+    return credential_give_up_text(cause) if cause else SESSION_NOT_FOUND_GIVE_UP_TEXT
+
+
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
     """Replace *agent*'s wedged session and return a lease on a cold one.
 
@@ -1149,8 +1246,13 @@ async def _recover_busy_agent(
     message: str,
     thread_id: str | None = None,
     is_yolo: Any = None,  # callable returning bool
+    cause: str = _STREAM_BUSY,
 ) -> Any | None:
-    """Replace a prompt-busy session and replay *message* once on a cold one.
+    """Replace a prompt-busy or lost session and replay *message* once on a cold one.
+
+    *cause* is the ``_stream_task`` verdict that asked for the replacement. A
+    lost session posts a short reconnect notice before the replay; a loss after
+    a tool ran replaces the session without replaying.
 
     Returns the replacement client, or ``None`` when the agent cannot be used
     again: the replacement lease was unobtainable, or the wedge survived it. In
@@ -1163,22 +1265,45 @@ async def _recover_busy_agent(
     and re-wedge instantly.
     """
     logger.warning(
-        "Channel agent %s (%s) session is prompt-busy — replacing it",
+        "Channel agent %s (%s) session is %s — replacing it",
         agent.id,
         agent.role,
+        "prompt-busy" if cause == _STREAM_BUSY else "lost by its backend",
     )
     client = await _reset_busy_session(sessions, agent)
     if client is None:
         return None
-    still_busy = await _stream_task(
+    if cause == _STREAM_LOST_AFTER_TOOL:
+        await channel.post(
+            agent.id,
+            _LOST_AFTER_TOOL_TEXT,
+            from_role=agent.role,
+            msg_type="system",
+            thread_id=thread_id,
+        )
+        return client
+    if cause == _STREAM_LOST:
+        await channel.post(
+            agent.id,
+            (
+                CREDENTIAL_RELOAD_RETRY_NOTICE
+                if getattr(agent, "_credential_error", "")
+                else SESSION_NOT_FOUND_RETRY_NOTICE
+            ),
+            from_role=agent.role,
+            msg_type="system",
+            thread_id=thread_id,
+        )
+    still_failing = await _stream_task(
         agent, channel, client, message, thread_id=thread_id, is_yolo=is_yolo
     )
-    if not still_busy:
+    if not still_failing:
         return client
     logger.error(
-        "Channel agent %s (%s) still prompt-busy after a session reset",
+        "Channel agent %s (%s) still %s after a session reset",
         agent.id,
         agent.role,
+        "prompt-busy" if still_failing == _STREAM_BUSY else "without a session",
     )
     try:
         await sessions.reset(
@@ -1192,6 +1317,58 @@ async def _recover_busy_agent(
     return None
 
 
+def _written_approval_window() -> int:
+    """``agent.tool_approval_timeout_secs`` as ``config.json`` and ``config.local.json`` state it.
+
+    The two documents merge the way the load merges them, the overlay winning key by
+    key. The number is read the way the load reads an integer (a numeric string or an
+    integral float counts, anything else reads as the default) and BEFORE the load's
+    clamps, so a number the loader pulls under the turn ceiling is still the number
+    that was written. The field default when neither document states a usable one.
+    """
+    default = int(TOOL_APPROVAL_TIMEOUT)
+    merged: dict = {}
+    for path in (config_path(), config_local_path()):
+        try:
+            document = json.loads(read_config_text(path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(document, dict):
+            merged = _deep_merge(merged, document)
+    agent = merged.get("agent")
+    written = agent.get("tool_approval_timeout_secs") if isinstance(agent, dict) else None
+    return _safe_int(written, default)
+
+
+def _channel_approval_window_secs() -> int:
+    """How long an unanswered channel approval card waits before it is declined.
+
+    The loaded ``agent.tool_approval_timeout_secs``, capped at
+    :data:`_APPROVAL_TIMEOUT_SECS`, once the operator has written a number other than
+    its default. While the setting is absent or holds the default the card waits the
+    cap, and so it does when config cannot be read.
+
+    Whether a number was chosen is read from the documents
+    (:func:`_written_approval_window`), never from the loaded number or from the
+    key's presence. ``KiroCrewConfig.save`` writes every field, so a config nobody
+    edited carries the default. The loader pulls a window under
+    ``agent.chat_turn_timeout_secs``, which rewrites the number: under a 300 s ceiling
+    a saved 600 and a written 500 both load as 240, and an omitted key loads as 600.
+    Exactly the default cannot be pinned on a channel while any other number can.
+
+    The wait is the loaded number, so it carries the loader's clamps: into 30..7200 s,
+    then under the turn ceiling. A configured zero arrives as 30 s. Reads
+    ``config.json`` and ``config.local.json``: call it off the loop.
+    """
+    try:
+        window = KiroCrewConfig.load().agent.tool_approval_timeout_secs
+        chosen = _written_approval_window() != int(TOOL_APPROVAL_TIMEOUT)
+    except Exception:
+        logger.debug("channel approval window: config unavailable; using the cap", exc_info=True)
+        return _APPROVAL_TIMEOUT_SECS
+    return min(_APPROVAL_TIMEOUT_SECS, window) if chosen else _APPROVAL_TIMEOUT_SECS
+
+
 async def _stream_task(
     agent: ChannelAgent,
     channel: Channel,
@@ -1199,12 +1376,13 @@ async def _stream_task(
     message: str,
     thread_id: str | None = None,
     is_yolo: Any = None,  # callable returning bool
-) -> bool:
+) -> str:
     """Stream an LLM task, posting output as channel messages.
 
-    Returns True when the provider reported a prompt-busy wedge, which only the
-    caller can clear (it owns the ``SessionManager``); False on success and on
-    every other error, which a session reset cannot fix.
+    Returns a non-empty verdict (``_STREAM_BUSY``, ``_STREAM_LOST``,
+    ``_STREAM_LOST_AFTER_TOOL``) when the provider reported a session fault that
+    only the caller can clear (it owns the ``SessionManager``); ``_STREAM_OK`` on
+    success and on every other error, which a session reset cannot fix.
     """
     from kiro_crew.providers.base import (
         EVENT_COMPLETE,
@@ -1216,6 +1394,9 @@ async def _stream_task(
     from kiro_crew.sel import sel
 
     chunks: list[str] = []
+    # Set once a tool call or a permission request arrived: a session lost after
+    # that point is not replayed, because the tool may already have run.
+    tool_seen = False
 
     try:
         async for event in client.stream(message):
@@ -1223,6 +1404,7 @@ async def _stream_task(
                 chunks.append(event.text)
 
             elif event.kind == EVENT_TOOL_CALL:
+                tool_seen = True
                 # Don't post messages — broadcast status like chat page footer
                 tool_name = event.text or ""
                 tool_name, _ = redact_exfiltration_urls(tool_name)
@@ -1238,6 +1420,7 @@ async def _stream_task(
                 )
 
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                tool_seen = True
                 # Block direct-to-user messaging tools — channel agents
                 # communicate via channel posts only. send_notification is
                 # functionally equivalent for reaching the user (feed
@@ -1542,7 +1725,7 @@ async def _stream_task(
                 # ``_APPROVAL_FIELD_MAX_CHARS`` (the title was refused above if
                 # it would not fit, and the base is one token of that title);
                 # the raw command never leaves this scope.
-                _base_binary = _shell_base_binary(_cmd) if _command_grantable else None
+                _base_binary = _offerable_base_binary(_cmd) if _command_grantable else None
                 approval_meta: dict[str, str] = {
                     "tool_title": sanitized_name,
                     "tool_input": sanitized_input,
@@ -1551,10 +1734,14 @@ async def _stream_task(
                     "base_command": _base_binary or "",
                 }
                 _approval_timed_out = False
+                _approval_window = _APPROVAL_TIMEOUT_SECS
                 try:
                     # Posting and waiting are one ownership scope. If the post
                     # itself fails, neither the Future nor its command authority
                     # may leak onto the next approval handled by this agent.
+                    # The window is read here, inside that scope, for the same
+                    # reason: a cancel while it is read still clears the Future.
+                    _approval_window = await asyncio.to_thread(_channel_approval_window_secs)
                     await channel.post(
                         agent.id,
                         f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```",
@@ -1563,9 +1750,7 @@ async def _stream_task(
                         thread_id=thread_id,
                         meta=approval_meta,
                     )
-                    decision = await asyncio.wait_for(
-                        approval_future, timeout=_APPROVAL_TIMEOUT_SECS
-                    )
+                    decision = await asyncio.wait_for(approval_future, timeout=_approval_window)
                 except asyncio.TimeoutError:
                     # Nobody answered: the HOST declines, not the reader.
                     # Recorded apart from the decision so the reject below can
@@ -1626,8 +1811,7 @@ async def _stream_task(
                         await _steer_host_deny(
                             client,
                             event,
-                            "the channel approval card went unanswered for "
-                            f"{_APPROVAL_TIMEOUT_SECS}s",
+                            f"the channel approval card went unanswered for {_approval_window}s",
                             cause=DENY_CAUSE_APPROVAL_TIMEOUT,
                             title=event.text or event.title or "",
                         )
@@ -1652,6 +1836,11 @@ async def _stream_task(
                     )
 
             elif event.kind == EVENT_COMPLETE:
+                # A turn the backend never finished is not the agent's reply:
+                # the error branch below posts its notice instead of this text.
+                unfinished = unfinished_turn_error(event, "".join(chunks))
+                if unfinished is not None:
+                    raise unfinished
                 break
     except Exception as exc:
         if is_prompt_busy(exc):
@@ -1660,7 +1849,15 @@ async def _stream_task(
             # rejected identically until the session is replaced — and only the
             # caller can do that. Report the wedge upward instead.
             logger.warning("Prompt busy for channel agent %s (%s): %s", agent.id, agent.role, exc)
-            return True
+            return _STREAM_BUSY
+        if acp_error_is_session_not_found(exc):
+            # Same dead end as the wedge: every later prompt on this binding
+            # draws the same answer until the session is replaced.
+            logger.warning(
+                "Backend lost the session of channel agent %s (%s): %s", agent.id, agent.role, exc
+            )
+            agent._credential_error = str(exc) if acp_error_needs_fresh_credentials(exc) else ""
+            return _STREAM_LOST_AFTER_TOOL if tool_seen else _STREAM_LOST
         logger.exception("LLM stream error for agent %s (%s)", agent.id, agent.role)
         await channel.post(
             agent.id,
@@ -1669,11 +1866,11 @@ async def _stream_task(
             msg_type="system",
             thread_id=thread_id,
         )
-        return False
+        return _STREAM_OK
 
     full_text = "".join(chunks).strip()
     if not full_text:
-        return False
+        return _STREAM_OK
     # Sanitize LLM output before posting
     full_text, _ = redact_exfiltration_urls(full_text)
     full_text, _ = redact_credentials(full_text)
@@ -1689,4 +1886,25 @@ async def _stream_task(
         thread_id=thread_id,
         mention=mention_ids or None,
     )
-    return False
+    # A reply carrying a redaction placeholder is followed by the same notice
+    # every other channel posts, counted over the text that shipped. It lands in
+    # the reply's thread for the human reader and wakes no member. Best-effort:
+    # the reply is already posted, so a failed notice is logged, never raised.
+    cred_count, url_count = count_redaction_tags(full_text)
+    if cred_count or url_count:
+        try:
+            await channel.post(
+                agent.id,
+                redaction_notice(cred_count, url_count),
+                from_role=agent.role,
+                msg_type="system",
+                thread_id=thread_id,
+                notify_members=False,
+            )
+        except Exception:
+            logger.warning(
+                "Could not post the redaction notice for channel agent %s (reply already posted)",
+                agent.id,
+                exc_info=True,
+            )
+    return _STREAM_OK

@@ -6,7 +6,7 @@ mode is reserved before the steer, committed once the steer lands (committed as
 unconfirmed when the steer raises or is cancelled), and released only when the
 provider declines. A message that is not steered is queued with its receipt through
 ``TelegramDispatcher._enqueue_with_receipt``. That wrapper, the receipt flip and the
-drain that replays queued messages stay in ``transport_dispatch.py``, where the
+drain that replays queued messages are ``dispatch/turn_queue.py``'s, where the
 queue-drain and receipt ratchets read them.
 """
 
@@ -76,7 +76,7 @@ async def _handle_busy(
     # forwards TEXT ONLY, so steering a photo/document message would deliver
     # its caption and silently drop every file. Such a message always goes to
     # the queue path below, which carries ``attachments`` through the drain.
-    # Mirrors discord/transport_dispatch.py's identical gate -- Telegram was
+    # Mirrors discord/transport_dispatch_midturn.py's identical gate -- Telegram was
     # missing it, and album buffering makes it far more reachable: a follow-up
     # typed during the debounce window starts a turn, so the album's own flush
     # arrives mid-turn and would have been steered as caption-only.
@@ -299,7 +299,7 @@ async def _handle_resumed_busy(
             # ``/unlink`` is exempt from the busy gate (the refusal even names it),
             # so a re-entry's fresh binding resolution could land this message in
             # the native session the user just left this one for.
-            privacy_mode.hydrate(self.sessions, session_key)
+            await privacy_mode.hydrate_inbound(self.sessions, session_key)
             await self._run_turn(
                 msg,
                 text,

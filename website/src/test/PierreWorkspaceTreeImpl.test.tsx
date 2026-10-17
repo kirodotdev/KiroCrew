@@ -33,7 +33,9 @@ vi.mock('../components/AppIcon', () => ({ default: () => null }))
 
 import { PierreWorkspaceTreeImpl, breakAtSlashes } from '../pierre/PierreWorkspaceTreeImpl'
 import { STATE_ROW_DECORATION, STATE_ROW_ICON, STATE_ROW_MARKER } from '../pierre/treeStateRows'
+import { MAX_FOLDER_LISTINGS } from '../pierre/treeFolderListings'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import {
   recallExpandedPaths,
   rememberExpandedPaths,
@@ -281,8 +283,22 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     }))
     renderTree()
     const notice = await screen.findByTestId('workspace-tree-root-truncated')
-    expect(notice).toHaveTextContent('limit of 10,000 items reached')
+    expect(notice).toHaveTextContent('Workspace too large to list: limit of 10,000 items reached')
     expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
+  })
+
+  it("points the empty capped tree at the search box above it", async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: [],
+      directories: [],
+      repo: false,
+      truncated: true,
+      truncatedDirectories: [''],
+    }))
+    renderTree()
+    await screen.findByTestId('workspace-tree-root-truncated')
+    expect(screen.getByTestId('workspace-tree-root-truncated-hint'))
+      .toHaveTextContent('Type a file name in the box above to find it.')
   })
 
   it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
@@ -406,7 +422,7 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     renderTree()
 
     const state = await screen.findByTestId('workspace-tree-root-hidden-only')
-    expect(state).toHaveTextContent('This workspace contains only hidden items (dotfiles, caches)')
+    expect(state).toHaveTextContent('This workspace contains only hidden items (skipped tool and cache folders, protected entries)')
     expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
     expect(screen.queryByTestId('workspace-tree-root-unreadable')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument()
@@ -499,7 +515,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     ])
   })
 
-  it('says "Contains only hidden items (dotfiles, caches)" when the folder holds only folders the listing skips or hides', async () => {
+  it('says "Contains only hidden items (skipped tool and cache folders, protected entries)" when the folder holds only folders the listing skips or hides', async () => {
     vi.mocked(api.projectTree).mockResolvedValue(mkTree({
       paths: ['HEARTBEAT.md'],
       directories: ['_bg'],
@@ -510,7 +526,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     await waitForTree()
 
     expect(treeMock.last().calls.resetPaths).toEqual([
-      ['HEARTBEAT.md', '_bg/', `_bg/Contains only hidden items (dotfiles, caches)${M}`],
+      ['HEARTBEAT.md', '_bg/', `_bg/Contains only hidden items (skipped tool and cache folders, protected entries)${M}`],
     ])
   })
 
@@ -1194,7 +1210,7 @@ describe('PierreWorkspaceTreeImpl — state row under a childless folder', () =>
     await waitForTree()
 
     expect(treeMock.last().calls.resetPaths).toEqual([
-      ['README.md', 'big/', `big/Not shown: limit of 10,000 items reached${M}`],
+      ['README.md', 'big/', `big/Some items not shown: limit of 10,000 items reached${M}`],
     ])
     // The folder row's badge and the state row beneath it make the same claim,
     // so the badge yields while the row is showing (the folder is expanded) and
@@ -1765,7 +1781,7 @@ describe('PierreWorkspaceTreeImpl — search forwarding', () => {
     const { update } = renderTree()
     await waitForTree()
     const model = treeMock.last()
-    const bigRow = `big/Not shown: limit of 10,000 items reached${M}`
+    const bigRow = `big/Some items not shown: limit of 10,000 items reached${M}`
     expect(model.calls.resetPaths.at(-1)).toEqual(['README.md', 'empty/', 'big/', `empty/Empty folder${M}`, bigRow])
     const decorate = model.options.renderRowDecoration as (
       context: { item: MenuItem; row: VisibleRow },
@@ -2156,7 +2172,9 @@ describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
       fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
 
       const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
-      expect(notice).toHaveTextContent('flagged by the credential scan')
+      expect(notice).toHaveTextContent('the credential scan flagged')
+      // The copy points the owner at the setting that releases their own file.
+      expect(notice).toHaveTextContent('Settings → Security → Flagged-file delivery')
       expect(URL.createObjectURL).not.toHaveBeenCalled()
       expect(cap.names).toEqual([])
     } finally {
@@ -2744,5 +2762,356 @@ describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
     expect(treeMock.last().calls.resetPathsOptions).toEqual([
       { initialExpandedPaths: ['src'] },
     ])
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — folders past the row cap', () => {
+  const cut = () => mkTree({
+    paths: ['README.md'],
+    directories: ['big'],
+    truncated: true,
+    truncatedDirectories: ['big'],
+  })
+  const bigListing = (): TreePayload => ({
+    root: ROOT,
+    dir: 'big',
+    paths: ['big/late/leaf.ts'],
+    directories: ['big/late'],
+    repo: false,
+    truncated: false,
+    truncatedDirectories: [],
+  })
+  const answer = () => vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir === 'big' ? bigListing() : cut()))
+
+  it('loads a cut folder on its own when it is expanded, and feeds its rows to the model', async () => {
+    answer()
+    renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    expect(api.projectTree).not.toHaveBeenCalledWith(ROOT, 'big')
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'big'))
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts'))
+  })
+
+  it('loads a cut folder opened through its chain row, and keeps it open once split', async () => {
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir === 'big'
+      ? bigListing()
+      : mkTree({ paths: ['big/core/a.ts'], directories: ['big', 'big/core'], truncated: true, truncatedDirectories: ['big'] })))
+    renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big/core'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/core/', isExpanded: true }])
+    })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'big'))
+    await waitFor(() => expect(model.calls.expand).toContain('big'))
+  })
+
+  it('does not reload a folder the listing bound dropped while it stays open', async () => {
+    const folders = Array.from({ length: MAX_FOLDER_LISTINGS + 1 }, (_, i) => `f${String(i).padStart(2, '0')}`)
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir
+      ? { root: ROOT, dir, paths: [`${dir}/x.ts`], directories: [], repo: false, truncated: false, truncatedDirectories: [] }
+      : mkTree({ paths: ['README.md'], directories: folders, truncated: true, truncatedDirectories: folders })))
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(folders)
+      model.simulateVisibleRows(folders.map(f => ({ kind: 'directory' as const, path: `${f}/`, isExpanded: true })))
+    })
+    const folderCalls = () => vi.mocked(api.projectTree).mock.calls.filter(c => c[1]).length
+    await waitFor(() => expect(folderCalls()).toBeGreaterThanOrEqual(MAX_FOLDER_LISTINGS))
+    const settled = folderCalls()
+    // Every further store event finds the dropped folder still open and cut;
+    // without the guard each one would load it again and drop the next.
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        model.simulateVisibleRows(folders.map(f => ({ kind: 'directory' as const, path: `${f}/`, isExpanded: true })))
+        await new Promise<void>(resolve => queueMicrotask(resolve))
+      })
+    }
+    await waitFor(() => expect(model.calls.resetPaths.length).toBeGreaterThan(0))
+    expect(folderCalls()).toBe(settled)
+    // The dropped folder's cached listing is gone too, so a host Refresh
+    // (a prefix refetch, inactive queries included) cannot re-walk it.
+    expect(qc.getQueryCache().find({ queryKey: ['project-tree', ROOT, 'dir', folders[0]], exact: true })).toBeUndefined()
+  })
+
+  it('names a cut folder whose own listing failed in a notice above the tree', async () => {
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'big') throw new Error('deadline exceeded')
+      return cut()
+    })
+    renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    const notice = await screen.findByTestId('workspace-tree-folder-listing-retry')
+    expect(notice).toHaveTextContent('big')
+    expect(screen.queryByTestId('workspace-tree-folder-unavailable')).toBeNull()
+  })
+
+  it('retries a failed folder from the notice\'s own button and clears it on success', async () => {
+    let fail = true
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'big') {
+        if (fail) throw new Error('deadline exceeded')
+        return bigListing()
+      }
+      return cut()
+    })
+    renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    const notice = await screen.findByTestId('workspace-tree-folder-listing-error')
+    fail = false
+    fireEvent.click(within(notice).getByRole('button', { name: /retry/i }))
+    await waitFor(() => expect(screen.queryByTestId('workspace-tree-folder-listing-error')).toBeNull())
+    expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts')
+  })
+
+  it('does not reload a gone (404) folder that stays open while the whole listing still names it', async () => {
+    let gone = false
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'big') {
+        if (gone) throw new ApiError(404, 'Folder cannot be listed')
+        return bigListing()
+      }
+      return cut()
+    })
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    const rows = [{ kind: 'directory' as const, path: 'big/', isExpanded: true }]
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows(rows)
+    })
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts'))
+    gone = true
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT, 'dir', 'big'], exact: true }) })
+    const bigCalls = () => vi.mocked(api.projectTree).mock.calls.filter(c => c[1] === 'big').length
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).not.toContain('big/late/leaf.ts'))
+    const settled = bigCalls()
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        model.simulateVisibleRows(rows)
+        await new Promise<void>(resolve => queueMicrotask(resolve))
+      })
+    }
+    expect(bigCalls()).toBe(settled)
+  })
+
+  it('re-reads at most three open loaded folders per whole-tree poll, in turn', async () => {
+    const folders = ['f1', 'f2', 'f3', 'f4', 'f5']
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir
+      ? { root: ROOT, dir, paths: [`${dir}/x.ts`], directories: [], repo: false, truncated: false, truncatedDirectories: [] }
+      : mkTree({ paths: ['README.md'], directories: folders, truncated: true, truncatedDirectories: folders })))
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(folders)
+      model.simulateVisibleRows(folders.map(f => ({ kind: 'directory' as const, path: `${f}/`, isExpanded: true })))
+    })
+    const dirCalls = () => vi.mocked(api.projectTree).mock.calls.filter(c => c[1]).length
+    await waitFor(() => expect(dirCalls()).toBe(folders.length))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+    await waitFor(() => expect(dirCalls()).toBe(folders.length + 3))
+    await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
+    expect(dirCalls()).toBe(folders.length + 3)
+  })
+
+  it('keeps the notice of a refused (403) folder until the user dismisses it, without re-fetching it', async () => {
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'link') throw new ApiError(403, 'Folder cannot be listed')
+      return cut()
+    })
+    const { update } = renderTree()
+    await waitForTree()
+    update({ reveal: { path: 'link', nonce: 1 } })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'link'))
+    const notice = await screen.findByTestId('workspace-tree-folder-listing-error')
+    expect(notice).toHaveTextContent('link')
+    // A refusal offers no retry: none can change it.
+    expect(screen.getByTestId('workspace-tree-folder-refused')).toHaveTextContent("can't be opened here")
+    expect(screen.queryByTestId('workspace-tree-folder-gone')).toBeNull()
+    expect(screen.queryByTestId('workspace-tree-folder-listing-retry')).toBeNull()
+    expect(within(notice).queryByRole('button', { name: /retry/i })).toBeNull()
+    await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
+    expect(vi.mocked(api.projectTree).mock.calls.filter(c => c[1] === 'link')).toHaveLength(1)
+    fireEvent.click(within(notice).getByRole('button', { name: /dismiss/i }))
+    await waitFor(() => expect(screen.queryByTestId('workspace-tree-folder-listing-error')).toBeNull())
+  })
+
+  it('keeps a retained folder failure on screen when the whole tree turns empty', async () => {
+    let empty = false
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'only') throw new ApiError(404, 'Folder cannot be listed')
+      return empty
+        ? mkTree({ paths: [], directories: [], truncated: false, truncatedDirectories: [] })
+        : mkTree({ paths: [], directories: ['only'], truncated: true, truncatedDirectories: ['only'] })
+    })
+    const { qc, update } = renderTree()
+    await waitForTree()
+    update({ reveal: { path: 'only', nonce: 1 } })
+    expect(await screen.findByTestId('workspace-tree-folder-listing-error')).toHaveTextContent('only')
+    expect(screen.getByTestId('workspace-tree-folder-gone')).toHaveTextContent('no longer exists')
+    empty = true
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+    expect(screen.getByTestId('workspace-tree-folder-listing-error')).toHaveTextContent('only')
+  })
+
+  it('drops the rows of a loaded folder that is gone (404) and keeps naming it', async () => {
+    let gone = false
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'big') {
+        if (gone) throw new ApiError(404, 'Folder cannot be listed')
+        return bigListing()
+      }
+      return cut()
+    })
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts'))
+    gone = true
+    act(() => model.simulateExpanded([]))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT, 'dir', 'big'], exact: true }) })
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).not.toContain('big/late/leaf.ts'))
+    // The rows go; the notice that says why stays until dismissed.
+    expect(screen.getByTestId('workspace-tree-folder-listing-error')).toHaveTextContent('big')
+  })
+
+  it('keeps naming a folder whose refresh failed after a good read', async () => {
+    let fail = false
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'big') {
+        if (fail) throw new Error('deadline exceeded')
+        return bigListing()
+      }
+      return cut()
+    })
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    await waitFor(() => expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts'))
+    fail = true
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT, 'dir', 'big'], exact: true }) })
+    expect(await screen.findByTestId('workspace-tree-folder-listing-error')).toHaveTextContent('big')
+    expect(model.calls.resetPaths.at(-1)).toContain('big/late/leaf.ts')
+  })
+
+  it('re-reads an open loaded folder when the whole-tree poll lands, and not a closed one', async () => {
+    answer()
+    const { qc } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    act(() => {
+      model.simulateExpanded(['big'])
+      model.simulateVisibleRows([{ kind: 'directory', path: 'big/', isExpanded: true }])
+    })
+    const bigCalls = () => vi.mocked(api.projectTree).mock.calls.filter(c => c[1] === 'big').length
+    await waitFor(() => expect(bigCalls()).toBe(1))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+    await waitFor(() => expect(bigCalls()).toBe(2))
+    act(() => model.simulateExpanded([]))
+    await act(async () => { await qc.refetchQueries({ queryKey: ['project-tree', ROOT], exact: true }) })
+    await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
+    expect(bigCalls()).toBe(2)
+  })
+
+  it('tells the host a reveal was consumed, so a remount cannot replay it', async () => {
+    answer()
+    const onRevealed = vi.fn()
+    const { update } = renderTree({ onRevealed })
+    await waitForTree()
+    update({ onRevealed, reveal: { path: 'big', nonce: 1 } })
+    await waitFor(() => expect(onRevealed).toHaveBeenCalledTimes(1))
+  })
+
+  it('loads and expands a folder a host reveals', async () => {
+    answer()
+    const { update } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    update({ reveal: { path: 'big', nonce: 1 } })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'big'))
+    await waitFor(() => expect(model.calls.focusPath).toContain('big/'))
+    expect(model.calls.expand).toContain('big')
+    expect(model.calls.select).toContain('big')
+  })
+
+  it('re-reads the whole listing once when a folder answers 404, not when it answers 403', async () => {
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => {
+      if (dir === 'gone') throw new ApiError(404, 'Folder cannot be listed')
+      if (dir === 'link') throw new ApiError(403, 'Folder cannot be listed')
+      return cut()
+    })
+    const { update } = renderTree()
+    await waitForTree()
+    const wholeReads = () => vi.mocked(api.projectTree).mock.calls.filter(c => !c[1]).length
+    const before = wholeReads()
+    update({ reveal: { path: 'link', nonce: 1 } })
+    await screen.findByTestId('workspace-tree-folder-refused')
+    await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
+    expect(wholeReads()).toBe(before)
+    update({ reveal: { path: 'gone', nonce: 2 } })
+    await screen.findByTestId('workspace-tree-folder-gone')
+    await waitFor(() => expect(wholeReads()).toBe(before + 1))
+    await act(async () => { await new Promise<void>(resolve => queueMicrotask(resolve)) })
+    expect(wholeReads()).toBe(before + 1)
+  })
+
+  it('reveals the nearest listed ancestor when a revealed folder settles with no row', async () => {
+    // git lists an empty or ignored folder as nothing, so its listing adds no row.
+    vi.mocked(api.projectTree).mockImplementation(async (_p, dir) => (dir === 'big/empty'
+      ? { root: ROOT, dir, paths: [], directories: [], repo: true, truncated: false, truncatedDirectories: [] }
+      : cut()))
+    const { update } = renderTree()
+    await waitForTree()
+    const model = treeMock.last()
+    update({ reveal: { path: 'big/empty', nonce: 1 } })
+    await waitFor(() => expect(api.projectTree).toHaveBeenCalledWith(ROOT, 'big/empty'))
+    await waitFor(() => expect(model.calls.focusPath).toContain('big/'))
+    expect(model.calls.select).toContain('big')
+    expect(model.calls.select).not.toContain('big/empty')
+  })
+
+  it('hands the cut folder to the host when its limit row is selected', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['README.md'],
+      directories: ['big'],
+      truncated: true,
+      truncatedDirectories: ['big'],
+    }))
+    const onOpenFolder = vi.fn()
+    renderTree({ onOpenFolder })
+    await waitForTree()
+    const model = treeMock.last()
+    const row = model.calls.resetPaths.at(-1)!.find(p => p.startsWith('big/') && p.endsWith(M))!
+    expect(row).toContain('Open in folder tab')
+    act(() => model.simulateSelection(row))
+    expect(onOpenFolder).toHaveBeenCalledWith('big')
   })
 })

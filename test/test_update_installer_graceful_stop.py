@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import async_wait_until, finished, wait_until
 
 pytestmark = pytest.mark.skipif(
     not platform_compat.IS_POSIX, reason="POSIX process groups and a POSIX shell"
@@ -99,10 +100,11 @@ def _installer_command(tmp_path: Path, case: Path, *args: str) -> str:
 
 
 async def _wait_for_file(path: Path, timeout: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not path.exists():
-        assert time.monotonic() < deadline, f"{path.name} never appeared"
-        await asyncio.sleep(0.02)
+    await async_wait_until(
+        lambda: path.exists(),
+        timeout=timeout,
+        describe=lambda: f"{path.name} never appeared",
+    )
 
 
 def _assert_restored(case: Path) -> None:
@@ -124,22 +126,28 @@ def reap_groups(tmp_path):
     for pgid in groups:
         with contextlib.suppress(Exception):
             platform_compat.kill_process_group(pgid, platform_compat.SIGKILL)
+
     # Bounded wait for every group to empty, so nothing outlives the test. A
     # leader the test's (closed) event loop never reaped is a zombie child of
     # this process, which still counts as a member, so reap it here.
-    deadline = time.monotonic() + 10
-    while any(platform_compat.pgroup_exists(pgid) for pgid in groups):
-        assert time.monotonic() < deadline, "a test process group outlived teardown"
+    def _reap_and_check():
         for pgid in groups:
             with contextlib.suppress(ChildProcessError, OSError):
                 os.waitpid(pgid, os.WNOHANG)
-        time.sleep(0.05)
+        return not any(platform_compat.pgroup_exists(pgid) for pgid in groups)
+
+    wait_until(
+        _reap_and_check,
+        timeout=10,
+        describe=lambda: "a test process group outlived teardown",
+    )
 
 
 async def _cancel_and_settle(task: asyncio.Task) -> None:
     task.cancel()
+
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=15)
+        await finished(task, "cancel settle", timeout=15)
 
 
 class TestTerminateAndReapSync:
@@ -153,10 +161,11 @@ class TestTerminateAndReapSync:
             start_new_session=True,
         )
         reap_groups.append(proc.pid)
-        deadline = time.monotonic() + 10
-        while not (tmp_path / "phase").exists():
-            assert time.monotonic() < deadline, "the child never started"
-            time.sleep(0.02)
+        wait_until(
+            lambda: (tmp_path / "phase").exists(),
+            timeout=10,
+            describe=lambda: "the child never started",
+        )
         grace = 0.5
 
         started = time.monotonic()
@@ -164,10 +173,11 @@ class TestTerminateAndReapSync:
 
         assert time.monotonic() - started >= grace
         assert proc.returncode is not None
-        deadline = time.monotonic() + 5
-        while platform_compat.pgroup_exists(proc.pid):
-            assert time.monotonic() < deadline, "the TERM-ignoring group survived SIGKILL"
-            time.sleep(0.05)
+        wait_until(
+            lambda: not platform_compat.pgroup_exists(proc.pid),
+            timeout=5,
+            describe=lambda: "the TERM-ignoring group survived SIGKILL",
+        )
 
     def test_a_pid_no_process_can_own_falls_back_without_raising(self):
         proc = MagicMock()
@@ -258,8 +268,11 @@ class TestTerminateAndReap:
         grace = 0.5
 
         started = time.monotonic()
-        await asyncio.wait_for(
-            platform_compat.terminate_and_reap(proc, grace=grace, reap_timeout=5), timeout=15
+
+        await finished(
+            platform_compat.terminate_and_reap(proc, grace=grace, reap_timeout=5),
+            "terminate_and_reap",
+            timeout=15,
         )
         elapsed = time.monotonic() - started
 
@@ -268,10 +281,11 @@ class TestTerminateAndReap:
         # member lingers as a zombie until init reaps it, and a foreign
         # ``waitpid`` in the test process can leave asyncio reporting 255.
         assert elapsed >= grace
-        deadline = time.monotonic() + 5
-        while platform_compat.pgroup_exists(proc.pid):
-            assert time.monotonic() < deadline, "the TERM-ignoring group survived SIGKILL"
-            await asyncio.sleep(0.05)
+        await async_wait_until(
+            lambda: not platform_compat.pgroup_exists(proc.pid),
+            timeout=5,
+            describe=lambda: "the TERM-ignoring group survived SIGKILL",
+        )
 
     @pytest.mark.asyncio
     async def test_a_child_that_honours_term_is_never_killed(self, tmp_path, reap_groups):
@@ -280,8 +294,10 @@ class TestTerminateAndReap:
         proc = await self._spawn(script, case, reap_groups)
         await _wait_for_file(case / "phase")
 
-        await asyncio.wait_for(
-            platform_compat.terminate_and_reap(proc, grace=10, reap_timeout=5), timeout=15
+        await finished(
+            platform_compat.terminate_and_reap(proc, grace=10, reap_timeout=5),
+            "terminate_and_reap",
+            timeout=15,
         )
 
         # The trap ran to completion, which a SIGKILL would have prevented.
@@ -297,8 +313,10 @@ class TestTerminateAndReap:
         proc = await self._spawn(script, case, reap_groups)
         await _wait_for_file(case / "phase")
 
-        await asyncio.wait_for(
-            platform_compat.terminate_and_reap(proc, grace=10, reap_timeout=5), timeout=20
+        await finished(
+            platform_compat.terminate_and_reap(proc, grace=10, reap_timeout=5),
+            "terminate_and_reap",
+            timeout=20,
         )
 
         _assert_restored(case)
@@ -328,7 +346,9 @@ class TestTerminateAndReap:
         proc.returncode = None
         proc.communicate = AsyncMock(return_value=(b"", b""))
 
-        await asyncio.wait_for(platform_compat.terminate_and_reap(proc, grace=0.1), timeout=10)
+        await finished(
+            platform_compat.terminate_and_reap(proc, grace=0.1), "terminate_and_reap", timeout=10
+        )
 
         proc.kill.assert_called_once()
 

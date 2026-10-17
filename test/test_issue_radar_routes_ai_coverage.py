@@ -1,9 +1,9 @@
 """Unit coverage for Issue Radar's MODEL-BACKED routes and their fast paths.
 
 ``test_issue_radar_routes_coverage.py`` covers the request-validation /
-authorization / error-taxonomy layer that every route shares, and
-``test_issue_radar_tagging.py`` covers the tagging queue. What neither reaches is
-the half of ``backend/routes.py`` that runs a model call or serves a progressive
+authorization / error-taxonomy layer that every route shares, and the
+``test_issue_radar_tagging*.py`` modules cover the tagging queue. What neither reaches
+is the half of ``backend/routes.py`` that runs a model call or serves a progressive
 first paint:
 
   * ``_run_oneshot_model`` — the ephemeral tool-less session every AI route funnels

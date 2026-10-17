@@ -5,6 +5,7 @@ import { api } from '../../api/client'
 import { store } from '../../store'
 import { Card, Btn, SearchInput, EmptyState } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
 import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -131,7 +132,7 @@ function InclusionChip({ file, showDefault = false }: { file: SteeringFile; show
       aria-label={title}
       className={`text-[10px] px-1.5 py-[1px] rounded-full font-mono shrink-0 border max-w-[9rem] truncate ${
         unrecognized
-          ? 'bg-warn-subtle text-warn border-warn'
+          ? 'bg-warn-subtle text-warn-text border-warn'
           : 'bg-bg-elevated text-muted border-border'
       }`}
     >
@@ -665,20 +666,18 @@ export default function SteeringTab() {
         {/* A failed create leaves this modal OPEN, so the page-level error banner
           * behind it is invisible — the refusal has to render here or the Create
           * button just appears inert. */}
+        {/* Same code-keyed substitution as the page banner. Without it this
+          * surface — the only verb with its own alert — printed the server's
+          * English diagnostic, which `steering.py` explicitly documents as a
+          * fallback for clients that cannot localize. A create conflict has
+          * already triggered the re-list, so it takes that copy. */}
+        {/* No hand-off: the new file's name and content in this modal are not saved yet. */}
         {createFile.error && (
-          <div
-            role="alert"
-            className="px-3 py-2 rounded-md bg-danger/10 border border-danger/20 text-[13px] text-danger"
-          >
-            {/* Same code-keyed substitution as the page banner. Without it this
-              * surface — the only verb with its own alert — printed the server's
-              * English diagnostic, which `steering.py` explicitly documents as a
-              * fallback for clients that cannot localize. A create conflict has
-              * already triggered the re-list, so it takes that copy. */}
-            {isProjectConflict(createFile.error)
+          <ErrorNotice
+            message={isProjectConflict(createFile.error)
               ? i18nT('pages.overview.steeringTab.conflict_list_refreshed')
               : (createFile.error as Error).message}
-          </div>
+          />
         )}
         <label className="flex flex-col gap-1" htmlFor="steering-new-name">
           <span className="text-[13px] text-muted">{i18nT('pages.overview.steeringTab.file_name')}</span>
@@ -781,14 +780,16 @@ export default function SteeringTab() {
         </div>
       </div>
 
+      {/* No hand-off: a failed save leaves the open file's unsaved edits in the editor. */}
       {mutError && !fieldErrorShown && (
-        <div className="mb-3 px-3 py-2 rounded-md bg-danger/10 border border-danger/20 text-[13px] text-danger">
-          {conflictError
+        <ErrorNotice
+          className="mb-3"
+          message={conflictError
             ? i18nT(savingConflict
               ? 'pages.overview.steeringTab.conflict_while_editing'
               : 'pages.overview.steeringTab.conflict_list_refreshed')
             : declarationErrorText(mutErrorCode) ?? mutError.message}
-        </div>
+        />
       )}
 
       {isLoading ? (

@@ -103,6 +103,19 @@ export const STATE_ROW_ICON = 'kirocrew-tree-state-row'
 export const STATE_ROW_DECORATION = { icon: { name: STATE_ROW_ICON, width: 0, height: 0 } } as const
 
 /**
+ * The decoration of a state row that is also an ACTION: the `truncated` row
+ * under a folder the cap still cuts, in a host that can open that folder in a folder tab.
+ * Its own icon name, so the stylesheet can give exactly this row a
+ * pointer while every other state row stays inert. The wrapper's guards treat
+ * it as a state row like any other (no open, no drag, no context menu); its
+ * selection hands the folder to the host instead.
+ */
+export const STATE_ROW_ACTION_ICON = 'kirocrew-tree-state-row-action'
+
+/** The decoration the wrapper returns for an actionable state row. */
+export const STATE_ROW_ACTION_DECORATION = { icon: { name: STATE_ROW_ACTION_ICON, width: 0, height: 0 } } as const
+
+/**
  * A label becomes a path SEGMENT, so it must not contain the separator: a
  * translation written as "no files / hidden" would otherwise mint a subfolder.
  * The division slash (U+2215) reads the same and is an ordinary name character.

@@ -1,8 +1,8 @@
 /** Drop targets, sortable wrappers and drag previews rendered inside the sidebar's
  *  DndContext. */
-import { useDroppable } from '@dnd-kit/core'
+import { useDndContext, useDroppable } from '@dnd-kit/core'
 import { useRef, useState, useCallback, useLayoutEffect } from 'react'
-import { EyeOff, Repeat, MessagesSquare } from 'lucide-react'
+import { EyeOff, Repeat, MessagesSquare, CornerDownRight } from 'lucide-react'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { SessionRefBlockReason } from '../../../utils/sessionRefs'
@@ -139,6 +139,51 @@ export function ChatPaneDropZone({ refusal }: { refusal: SessionRefBlockReason |
         // Fall back to a centered pill rather than rendering no affordance at all.
         <div className="absolute inset-0 flex items-center justify-center">{pill}</div>
       )}
+    </div>
+  )
+}
+
+/**
+ * A parent-owned landing overlay shown while a session is being dragged.
+ *
+ * An expanded parent folder's ordinary droppable wraps its whole subtree, but
+ * containment ranking correctly gives a nested folder under the pointer
+ * precedence. That leaves only the compact parent header as unambiguous space.
+ * This overlay covers that header and extends 8px below it, making the parent
+ * destination 44px tall without inserting layout or moving the rows under the
+ * pointer. The small overlap leaves the rest of the first child row and its
+ * whole body available, so the nested folder remains directly targetable.
+ *
+ * `pointer-events-none` keeps the transient overlay from intercepting clicks;
+ * dnd-kit resolves the drop from measured rectangles rather than DOM pointer
+ * events, so the entire painted overlay remains a real target.
+ */
+export function ParentFolderDropTarget({ folder, depth }: { folder: Pick<ChatFolder, 'id' | 'name'>; depth: number }) {
+  const label = i18nT('pages.chatSidebar.drop_into_folder', { name: folder.name })
+  const { setNodeRef, isOver } = useDroppable({
+    id: `folder-parent-drop:${folder.id}`,
+    data: { type: 'folder-drop', folderId: folder.id, headerHitRect: 'self', headerHitDepth: depth },
+  })
+  const { over } = useDndContext()
+  const overData = over?.data.current as { type?: string; folderId?: string | null } | undefined
+  // The pointer can resolve to this explicit overlay OR to the parent block's
+  // equivalent folder-drop while it is over the original header/owned rows.
+  // Highlight by semantic destination so both paths paint the same answer.
+  const active = isOver || (overData?.type === 'folder-drop' && overData.folderId === folder.id)
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`folder-parent-drop-${folder.id}`}
+      data-folder-parent-drop={folder.id}
+      aria-label={label}
+      className={`pointer-events-none absolute inset-x-0 -top-1 -bottom-2 z-10 min-h-11 flex items-center justify-center gap-1.5 rounded-md border border-dashed bg-bg-elevated px-2 text-[12px] text-accent shadow-sm transition-colors select-none ${
+        active
+          ? 'border-accent ring-2 ring-inset ring-accent'
+          : 'border-accent/50'
+      }`}
+    >
+      <CornerDownRight size={13} className="shrink-0" aria-hidden />
+      <span data-folder-parent-drop-label="" className="truncate">{label}</span>
     </div>
   )
 }

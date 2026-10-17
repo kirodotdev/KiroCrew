@@ -937,13 +937,39 @@ class TestVolumeClassification:
         assert windows_acl.describe(Path("C:/x")).volume_is_local is False
 
     @windows_only
-    def test_a_unc_path_yields_the_share_root(self, reader) -> None:
-        """The root handed to GetDriveTypeW must be `\\\\server\\share\\`, not the file."""
+    def test_a_unc_path_yields_the_share_root(self, reader, monkeypatch) -> None:
+        """The root handed to GetDriveTypeW must be `\\\\server\\share\\`, not the file.
+
+        `describe` stats the path for `is_dir`, which over a UNC share is a live
+        network round-trip and can raise WinError 64 against a share the runner
+        cannot reach. The classification under test is a pure function of the
+        path string, so the stat is faked here and the test touches no network.
+        """
         seen: list[str] = []
+        monkeypatch.setattr(Path, "is_dir", lambda self: False)
         fake = reader(_FakeDlls(null_dacl=True, sids={_OWNER_PTR: SYSTEM}))
         fake.GetDriveTypeW = lambda root: (seen.append(root), 4)[1]
         windows_acl.describe(Path("//server/share/gh.exe"))
         assert seen == ["\\\\server\\share" + os.sep]
+
+    def test_a_transient_stat_failure_becomes_unreadable(self, reader, monkeypatch) -> None:
+        """A network stat that fails is a refusal, not an escaping OSError.
+
+        `describe` stats the path for `is_dir` before it reads the descriptor. On
+        a network volume that stat can fail transiently with WinError 64. The
+        trust check clears nothing in that case, so the fail-safe answer is to
+        refuse: `describe` folds the error into `AclUnavailable`, which the caller
+        turns into a plain refusal, rather than letting a bare `OSError` escape
+        and abort the check.
+        """
+
+        def _boom(self):
+            raise OSError(64, "the specified network name is unavailable")
+
+        monkeypatch.setattr(Path, "is_dir", _boom)
+        reader(_FakeDlls(null_dacl=True, sids={_OWNER_PTR: SYSTEM}))
+        with pytest.raises(windows_acl.AclUnavailable):
+            windows_acl.describe(Path("//server/share/gh.exe"))
 
     def test_no_drive_component_is_not_local(self, reader) -> None:
         """The off-Windows shape, asserted where it actually occurs.

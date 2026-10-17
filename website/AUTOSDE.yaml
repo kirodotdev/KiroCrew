@@ -3,6 +3,10 @@
 # This package is the KiroCrew dashboard frontend (React + TypeScript).
 # Backend-only rules (Python security, hooks.py, SEL audit, etc.) live in
 # the KiroCrew package's AUTOSDE.yaml and are not duplicated here.
+#
+# Every file-pattern below is relative to website/ (so "src/**/*.tsx" means
+# website/src/**/*.tsx), matching the website/ working directory the
+# code-review.yml greps run in.
 
 custom-rules:
   - id: frontend-security
@@ -14,16 +18,22 @@ custom-rules:
       Enforce KiroCrew frontend security controls based on real vulnerabilities
       found in this codebase.
 
-      - Never use `.innerHTML = ...` — it caused ACAT findings (commit 3c40ef9 in
-        KiroCrew). Use `textContent`, `createElement`, or React elements
+      - Never write HTML into the DOM with `.innerHTML = ...` / `+=` (dot or
+        bracket access), `.outerHTML = ...`, or `insertAdjacentHTML()` — the
+        innerHTML form caused real XSS findings in this codebase's history. Use
+        `textContent`, `createElement`, `replaceChildren()`, or React elements
       - Never use `dangerouslySetInnerHTML` without DOMPurify — use `sanitize()`
-        or `md()` from helpers.ts
+        or `md()` from `src/api/helpers.ts`, or call `DOMPurify.sanitize()` on
+        the value before it reaches `__html` (the sanitizing call may sit on an
+        earlier line, e.g. in a `useMemo`)
       - Never build HTML strings with template literals containing user/LLM
         content — use React components
       - Never use regex URL linkification into HTML strings — use React elements
         via `.split()`
-      - Mermaid `securityLevel` must be `'strict'` (iframe sandbox) — never
-        `'loose'` which allows JS execution from diagram payloads.
+      - Mermaid `securityLevel` must be `'strict'` (labels HTML-encoded, click
+        handlers disabled) — never `'loose'`, which allows JS execution from
+        diagram payloads, and never `'antiscript'`, which still renders
+        diagram-supplied HTML.
 
   - id: no-text-below-minimum
     blocking: false
@@ -31,13 +41,14 @@ custom-rules:
       - "src/**/*.tsx"
       - "src/**/*.ts"
     regex:
-      pattern: "text-\\[[0-9]px\\]"
+      pattern: "\\btext-\\[[0-9](?:\\.[0-9]+)?px\\]"
       check-added: true
       check-removed: false
     rule: |
       KiroCrew's typography scale has a minimum usable text size of 10px.
-      Single-digit px values (`text-[0px]` through `text-[9px]`) are not
-      accessible and must not be introduced.
+      Single-digit px values (`text-[0px]` through `text-[9px]`, including
+      decimals like `text-[9.5px]`), and the same sizes written as an inline
+      `fontSize` or in rem, are not accessible and must not be introduced.
 
       Follow the established scale:
       - Body: 14px (`text-sm`)
@@ -54,7 +65,7 @@ custom-rules:
       - "src/**/*.tsx"
       - "src/**/*.ts"
     regex:
-      pattern: "(?:bg|text|border)-(?:gray|slate|zinc|neutral|stone)-\\d"
+      pattern: "\\b(?:bg|text|border)-(?:gray|slate|zinc|neutral|stone)-\\d"
       check-added: true
       check-removed: false
     rule: |
@@ -72,7 +83,7 @@ custom-rules:
   - id: narrow-viewport-required
     blocking: true
     file-patterns:
-      - "src/pages/*.tsx"
+      - "src/pages/**/*.tsx"
       - "src/apps/**/*.tsx"
       - "src/components/**/*.tsx"
     rule: |
@@ -110,7 +121,7 @@ custom-rules:
   - id: page-layout-pattern
     blocking: true
     file-patterns:
-      - "src/pages/*.tsx"
+      - "src/pages/**/*.tsx"
     regex:
       pattern: "max-w-\\[(?:9[0-9]{2}|[1-9][0-9]{3,})px\\]"
       check-added: true
@@ -159,6 +170,9 @@ custom-rules:
       a page omitting the row is CONFORMANT: do not flag its absence.
 
       Do NOT use `<div className="p-6 max-w-[960px] mx-auto">` — this is the old pattern.
+      The regex catches only the `max-w-[NNNpx]` spelling; the same wrapper written
+      as a `max-w-5xl`-style class, in rem, or as an inline `maxWidth` is the same
+      old pattern and is a finding too.
 
       Exception: Multi-tab pages (Settings, Developer, Capabilities) use `SidePanelLayout`
       which provides its own sidebar nav + content area with proper scroll handling.
@@ -170,6 +184,9 @@ custom-rules:
     blocking: true
     file-patterns:
       - "src/pages/ChatSidebar.tsx"
+      - "src/pages/chat-sidebar/SessionRow.tsx"
+      - "src/pages/chat-sidebar/SessionSourceChips.tsx"
+      - "src/pages/chat-sidebar/HistoryPane.tsx"
       - "src/pages/chat/SessionFlyout.tsx"
       - "src/components/SessionGridView.tsx"
     rule: |
@@ -370,7 +387,7 @@ custom-rules:
       - "src/**/*.tsx"
       - "src/**/*.ts"
     regex:
-      pattern: "useEffect\\(\\s*async|\\.then\\(.*=>|\\[loading,.*setLoading\\]|\\[data,.*setData\\]"
+      pattern: "useEffect\\(\\s*async|^(?!.*\\b(?:queryFn|mutationFn)\\b).*\\b(?:fetch|api(?:\\.\\w+)+)\\(.*\\.then\\(|\\[(?:is)?[lL]oading,\\s*set(?:Is)?Loading\\]|\\[data,.*setData\\]"
       check-added: true
       check-removed: false
     rule: |
@@ -389,7 +406,11 @@ custom-rules:
       - Optimistic updates via `queryClient.setQueryData()` where possible
       - Query keys follow `['resource-name']` convention (e.g. `['mcp-servers']`, `['skills']`)
 
-      The QueryClientProvider is configured in `main.tsx` with `staleTime: 30_000` and `retry: 1`.
+      The shared client is built by `newQueryClient()` in `src/api/queryClient.ts` (passed to
+      the QueryClientProvider in `main.tsx`): `staleTime: Infinity` — freshness comes from
+      WebSocket-driven `invalidateQueries`, not timed refetch — and `retry: retryPolicy`
+      (up to 4 retries on 429 throttles, none on our own deadline or an edge challenge,
+      one otherwise). Do not ask a component to restate these defaults.
 
   - id: use-framer-motion
     blocking: false
@@ -420,7 +441,9 @@ custom-rules:
       - Layout animations (`layout` prop)
       - Spring physics and gesture-driven motion
 
-      Existing CSS animations (`animate-rise`, `animate-shimmer`) are grandfathered.
+      Existing CSS keyframe animations defined in `src/index.css` (`animate-rise`,
+      `animate-shimmer` and the others there) are grandfathered, as is CSS animation
+      inside an `iframe` `srcdoc` document, where Framer Motion cannot run.
 
   - id: use-lucide-icons
     blocking: true
@@ -438,8 +461,9 @@ custom-rules:
       and sizing, and impossible to search or refactor. lucide-react provides 1,500+
       tree-shakeable icons with consistent 24×24 viewBox, configurable `size` and
       `strokeWidth` props, and automatic `currentColor` inheritance — matching the
-      design system's color token approach. The APPROVAL_SEGMENTS in App.tsx already
-      use lucide icons as the reference pattern.
+      design system's color token approach. APPROVAL_SEGMENTS in
+      components/ApprovalModePicker.tsx already uses lucide icons as the reference
+      pattern.
 
       Import named icons from `lucide-react`:
       ```tsx
@@ -493,7 +517,7 @@ custom-rules:
     file-patterns:
       - "src/**/*.tsx"
     regex:
-      pattern: "<(div|span)(?![^>]*role=)[^>]*onClick"
+      pattern: "<(div|span)\\b(?!(?:=>|[^>])*\\srole=)(?:=>|[^>])*\\sonClick"
       check-added: true
       check-removed: false
     rule: |
@@ -526,8 +550,11 @@ custom-rules:
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') handler() }}>
       ```
 
-      Exception: `<div onClick={e => e.stopPropagation()}>` used purely as event
-      boundary (e.g. modal backdrop click-away) does not need Clickable treatment.
+      Exception: a `<div>` whose onClick is purely an event boundary (e.g.
+      `onClick={e => e.stopPropagation()}` or a modal backdrop click-away) does
+      not need Clickable treatment. Mark it `role="presentation"`: the regex
+      above and the code-review.yml grep flag any div/span onClick line without
+      a `role=`, so the bare form still fails the deterministic check.
 
   - id: icon-buttons-need-labels
     blocking: true
@@ -563,7 +590,7 @@ custom-rules:
       Do NOT use emoji characters as UI icons or status indicators. Use `lucide-react`
       components instead.
 
-      Why: KiroCrew's dashboard supports 11 color themes with CSS custom property
+      Why: Kiro Crew's dashboard supports many color themes with CSS custom property
       design tokens (`--ok`, `--warn`, `--danger`, `--muted`, etc.). Emoji ignore
       `currentColor` and design tokens entirely, so emoji-based status badges and
       buttons render identically across all themes — breaking the visual language.
@@ -572,12 +599,10 @@ custom-rules:
       announce emoji names literally). Migrated 40+ emoji to Lucide icons.
 
       Exception: do not flag emoji usage in
-      SecretaryPage.tsx (inline emoji reaction picker),
-      folderEmoji.ts + FolderConfigModal.tsx (folder icon picker — FOLDER_EMOJIS
-      grid + custom-emoji input), FolderGlyph.tsx (renders the folder's icon as
-      data; extracted from ChatSidebar.tsx),
-      scene components (src/pages/scenes/), useTheme.ts, or themeEditor.tsx
-      (theme display names). These are intentional decorative/data uses.
+      FolderConfigModal.tsx (folder icon picker — emoji grid + custom-emoji
+      input), FolderGlyph.tsx (renders the folder's icon as data; extracted from
+      ChatSidebar.tsx), scene components (src/pages/scenes/), hooks/useTheme.tsx,
+      or themeEditor.tsx (theme display names). These are intentional decorative/data uses.
 
       Bad:
       ```tsx
@@ -626,7 +651,8 @@ custom-rules:
       property (the prop's doc comment says why). The hand-off NAVIGATES to the
       chat and unmounts the tree that rendered the banner, destroying any
       unsaved local state in it. The AUTHOR decides per surface:
-      - `askAgent` MUST be on when there is nothing to lose: crash fallbacks,
+      - `askAgent` MUST be on when there is nothing to lose and the agent can
+        run: crash fallbacks,
         read / list / load failures, action failures on a surface whose inputs
         are already persisted, log and status panels.
       - `askAgent` MUST stay off next to an editable field whose value is not
@@ -639,6 +665,19 @@ custom-rules:
         Give the `ErrorNotice` an `id` and pass that same value as the menu
         item's `describedBy`; this is the third sanctioned state, because a
         nested button is skipped by the menu's roving focus.
+      - `noHandoffReason="…"` is the fourth sanctioned state, and ONLY for a
+        notice whose hand-off would open an agent that cannot run: the
+        failure IS the agent's own credential or backend (on the KAS backend
+        every agent runs as the stored Kiro sign-in, so an expired-sign-in
+        notice offering "Ask the agent" opens a chat that fails the same
+        way). The reason is a sentence for the reviewer, never rendered,
+        and the type forbids it next to `askAgent`, `askAgentLabel` or
+        `onHandoff`. It is not a second spelling of the draft form: a notice
+        that skips the hand-off to protect a draft keeps the `No hand-off`
+        comment, and a notice whose agent can still run (a failed read, a
+        refusal that has not expired yet) keeps `askAgent`. A `No hand-off`
+        comment whose reason is that the agent cannot run is this state
+        written the old way: use the prop, so there is one form for it.
       - `onHandoff` lets a dialog close itself before the navigation (the
         `App.tsx` update-modal form). It does NOT make the navigation safe:
         the tree beneath the dialog still unmounts, so over an unsaved draft
@@ -646,10 +685,13 @@ custom-rules:
 
       On the hand-off choice, the REVIEWER blocks on a missing decision, never
       on the direction of it: an added or touched `ErrorNotice` must carry
-      `askAgent`, a `No hand-off` comment naming a concrete draft, or a sibling
+      `askAgent`, a `No hand-off` comment naming a concrete draft, a sibling
       `ErrorNoticeMenuItem` in the same conditional branch whose `describedBy`
-      matches the notice's `id`. (The hand-written-surface ban above is its own
-      blocking trigger.) Whether a subtree holds unsaved state is not visible
+      matches the notice's `id`, or a `noHandoffReason` naming the agent's own
+      credential or backend as what failed. (The hand-written-surface ban above
+      is its own blocking trigger.) A `noHandoffReason` that names anything else
+      (a draft, a taste for fewer buttons, "the agent can't help here") is the
+      missing decision, not a stated one: block it. Whether a subtree holds unsaved state is not visible
       in a hunk, so a reviewer never demands `askAgent` be turned on — a wrong
       demand causes exactly the data loss the default prevents. Doubt a
       comment's claim in a thread; do not overrule it.

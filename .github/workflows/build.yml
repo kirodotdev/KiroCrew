@@ -124,6 +124,17 @@ jobs:
   # payload rather than 40 bytes, which is the largest single addition. The job
   # keeps its 20-minute cap; if the real installer cannot be built, installed and
   # booted inside that, the artifact users receive has a problem worth failing on.
+  #
+  # On a pull_request it runs only when a Windows-packaging input changed (the
+  # `windows_installer` output of desktop-matrix, the same paths-filter that
+  # gates the macos-15 leg). It is a hosted-only job -- the installer test needs
+  # an interactive desktop the CodeBuild Windows container lacks -- so running it
+  # on every PR spends the shared hosted pool on PRs that cannot change what it
+  # proves. Source-level Windows regressions stay covered per PR by ci.yml's
+  # backend-test-windows; a source change deeper in the gateway's import
+  # closure is proven installed only by the merge group or the push. A merge
+  # group always runs it; a push to main runs it unless MERGE_QUEUE_ENABLED is
+  # 'true' (build-wheel's skip then skips this job through `needs`).
   build-windows-installer:
     name: Build Windows Installer (x64)
     runs-on: windows-latest
@@ -131,7 +142,8 @@ jobs:
     # job already stages the frontend dist into the package before building, so
     # its wheel is the one users install. Building a second wheel here would add
     # an npm frontend build to a Windows runner and let the two drift.
-    needs: build-wheel
+    needs: [build-wheel, desktop-matrix]
+    if: needs.desktop-matrix.outputs.windows_installer == 'true'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -195,12 +207,15 @@ jobs:
           & $python -m pip install --prefer-binary --no-warn-script-location `
             --disable-pip-version-check $wheel[0].FullName
           if ($LASTEXITCODE -ne 0) { throw "pip install of the wheel failed." }
-          # The relocatable launcher shim, byte-identical in shape to the one
-          # build_backend_windows writes: %~dp0 is bin\, so the interpreter
-          # resolves relative to the bundle wherever it lands.
+          # The relocatable launcher shim, line for line the one
+          # build_backend_windows writes (test_build_desktop_windows_launcher.py
+          # holds the two copies to the same lines): %~dp0 is bin\, so the
+          # interpreter resolves relative to the bundle wherever it lands, and
+          # PYTHONPATH/PYTHONHOME are cleared under setlocal so a dev shell's
+          # checkout is never imported into the bundled backend.
           New-Item -ItemType Directory -Force (Join-Path $out "bin") | Out-Null
           Set-Content -Encoding ascii -LiteralPath (Join-Path $out "bin\kirocrew.cmd") `
-            -Value @('@echo off', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
+            -Value @('@echo off', 'setlocal', 'set "PYTHONPATH="', 'set "PYTHONHOME="', '"%~dp0..\python.exe" -s -P -m kiro_crew %*')
           # Self-containment gate, same as the packaging script's: a missing
           # dependency must fail here, not at gateway boot.
           & $python -s -P -m kiro_crew --version
@@ -276,14 +291,53 @@ jobs:
       pull-requests: read
     outputs:
       os: ${{ steps.compute.outputs.os }}
+      # 'true' or 'false': whether build-windows-installer runs. Always 'true'
+      # off a pull_request; on one, only when a Windows-packaging input changed.
+      windows_installer: ${{ steps.compute.outputs.windows_installer }}
+      # Runner for the ubuntu-22.04 (x64) desktop leg: the large CodeBuild label
+      # or the hosted ubuntu-22.04. See the `runner` step.
+      linux_x64_runner: ${{ steps.runner.outputs.linux_x64_runner }}
     steps:
+      # Same admission as ci.yml's `changes` resolver: this repository, a push,
+      # a merge group or an opened/synchronize same-repository PR, and an actor
+      # in CODEBUILD_ACTOR_IDS. Everything else (forks, other PR activities, a
+      # missing variable) stays on hosted ubuntu-22.04. The fleet image is
+      # aws/codebuild/standard:7.0, Ubuntu 22.04, so the glibc the AppImage
+      # links against (2.35) is unchanged; rpm, which the rpm target needs, is
+      # in the image. Large compute: `npm run build` runs vite with a 6 GiB
+      # heap. Only the PR-time leg moves; build-desktop.yml, which builds the
+      # shipped Linux bytes for nightly and release, stays on hosted runners.
+      - name: Pick the Linux x64 desktop runner label
+        id: runner
+        env:
+          ELIGIBLE: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) }}
+          LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if [ "$ELIGIBLE" = "true" ]; then
+            echo "linux_x64_runner=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          else
+            echo "linux_x64_runner=ubuntu-22.04" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The local-git diff below needs the PR base commit; a depth-1 fetch of
+      # that one SHA is enough (a two-dot diff reads trees, not history).
+      - name: Fetch the pull request base commit
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name == 'pull_request'
         with:
+          # Same reason as ci.yml's `changes` job: an empty token switches the
+          # action to local git change detection, so it spends none of the
+          # installation-token quota every workflow in this repository shares.
+          # With the default token this step fails with `API rate limit
+          # exceeded for installation` whenever the fleet has drained it.
+          token: ''
           filters: |
             desktop:
               - 'website/electron/**'
@@ -301,10 +355,33 @@ jobs:
               - 'setup.cfg'
               - '.github/workflows/build.yml'
               - '.github/workflows/build-desktop.yml'
+            # What build-windows-installer consumes: the wheel's packaging
+            # metadata, the Electron/NSIS config, the payload assembly
+            # (build-desktop.sh's build_backend_windows twin, precompile, the
+            # installer assets), the installer test, and the gateway leg's two
+            # entry modules plus the fake ACP backend it boots against. Broad on
+            # purpose: a missed path skips a gate. The rest of src/ is left out
+            # (it would match nearly every PR); see the job's own comment.
+            windows_installer:
+              - 'website/electron/**'
+              - 'website/package.json'
+              - 'website/package-lock.json'
+              - 'packaging/**'
+              - '.github/scripts/test-windows-installer.ps1'
+              - 'scripts/windows-process-tree.ps1'
+              - '.github/workflows/build.yml'
+              - 'pyproject.toml'
+              - 'setup.cfg'
+              - 'setup.py'
+              - 'MANIFEST.in'
+              - 'src/kiro_crew/__main__.py'
+              - 'src/kiro_crew/cli_server.py'
+              - 'src/kiro_crew/testing/**'
       - id: compute
         env:
           EVENT: ${{ github.event_name }}
           DESKTOP_CHANGED: ${{ steps.filter.outputs.desktop }}
+          WINDOWS_CHANGED: ${{ steps.filter.outputs.windows_installer }}
           # The string 'true' or 'false': an unset variable compares unequal
           # to 'true', so the expression is never empty under `set -u`.
           QUEUE_ON: ${{ vars.MERGE_QUEUE_ENABLED == 'true' }}
@@ -320,14 +397,26 @@ jobs:
           else
             echo 'os=["ubuntu-22.04","ubuntu-22.04-arm"]' >> "$GITHUB_OUTPUT"
           fi
+          # The Windows installer: skipped only on a pull_request that changed
+          # no Windows-packaging input. Every other event runs it.
+          if [ "$EVENT" = "pull_request" ] && [ "$WINDOWS_CHANGED" != "true" ]; then
+            echo 'windows_installer=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'windows_installer=true' >> "$GITHUB_OUTPUT"
+          fi
 
   build-desktop:
     needs: [desktop-matrix]
     name: Build Desktop (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # Only the x64 leg maps to the resolved runner; `matrix.os`, and so the job
+    # name the ruleset requires, stays `ubuntu-22.04`. The arm64 and macOS legs
+    # keep their hosted images. The `||` fallback keeps a hosted runner if the
+    # resolver output is ever empty.
+    runs-on: ${{ matrix.os == 'ubuntu-22.04' && (needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}
     # macOS bills at 10x, so an unbounded hang here is the costliest in the repo.
     timeout-minutes: 45
     strategy:
+      max-parallel: 4
       fail-fast: false
       matrix:
         # Resolved by the desktop-matrix job: on a PR or merge group both Linux

@@ -12,6 +12,7 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,10 +31,12 @@ if TYPE_CHECKING:
         _is_sessions_keyword,
         _thread_agents,
         _thread_projects,
+        agent_switch_target,
         append_and_surface,
         config_path,
         is_allowed_user,
         is_sensitive_path,
+        load_window_off_loop,
         logger,
         privacy_mode,
         redact_credentials,
@@ -61,6 +64,18 @@ def _hydrate_conv_flags(sessions: object, session_key: str) -> None:
     from the durable ``SessionMap`` entry).
     """
     privacy_mode.hydrate(sessions, session_key)
+
+
+async def _hydrate_conv_header(sessions: object, session_key: str) -> None:
+    """Restore the mode the transcript header records, read off the loop.
+
+    The header half of the inbound restore (``privacy_mode.hydrate_inbound``,
+    which reads the map row as well): a thread whose map row is missing stays
+    private when its header records the mode. It yields, so each caller awaits
+    it beside ``_hydrate_thread_overrides`` -- before the owner re-check that
+    commits the route -- and still runs ``_hydrate_conv_flags`` where it did.
+    """
+    await privacy_mode.hydrate_inbound(sessions, session_key)
 
 
 async def _apply_privacy_mode(
@@ -189,17 +204,23 @@ def _read_thread_overrides(
         logger.debug("Failed to hydrate thread overrides for %s", session_key, exc_info=True)
         return "", ""
     from kiro_crew.messaging.session_resume import session_agent_from_metadata
+    from kiro_crew.slack.thread_override_slots import bounded_override
 
-    resolved_agent = session_agent_from_metadata(meta) or meta.get("agent") or ""
+    # Nothing bounds what the metadata holds, so each value is kept only as text within
+    # the per-value limit of the maps it lands in (OVERRIDE_VALUE_MAX_CHARS).
+    resolved_agent = bounded_override(
+        session_key, "agent", session_agent_from_metadata(meta) or meta.get("agent") or ""
+    )
     project = ""
-    if meta.get("project"):
+    raw_project = bounded_override(session_key, "project", meta.get("project") or "")
+    if raw_project:
         # Defense-in-depth: re-validate the persisted path at this input
         # boundary. Conversation-log metadata is normally written through the
         # guarded !project handler, but if it is ever corrupted or tampered
         # with, a sensitive credential path (~/.aws, ~/.ssh, …) must never be
         # loaded into the in-memory cache.
-        if not is_sensitive_path(meta["project"]):
-            project = meta["project"]
+        if not is_sensitive_path(raw_project):
+            project = raw_project
         else:
             logger.warning(
                 "Ignoring sensitive project path from thread metadata for %s",
@@ -211,28 +232,72 @@ def _read_thread_overrides(
 async def _hydrate_thread_overrides(
     session_key: str, conversation_log: ConversationLog | None
 ) -> None:
-    """Resolve private identity off-loop, then preserve any newer live selections."""
+    """Resolve private identity off-loop, then preserve any newer live selections.
+
+    The thread is marked hydrated only after a read the conversation log reports as
+    readable (``thread_override_slots.read_back``): a line it could not read is not
+    published, and the thread's next message reads it again.
+    A read that a ``!ta`` or ``!project`` metadata write may postdate is not published:
+    the commands count their writes, and a read the count moved across is made again,
+    at most ``HYDRATION_READ_ATTEMPTS`` times. When every read overlapped a write,
+    nothing is published and the thread is not marked hydrated, so its next message
+    hydrates it. A kind a command pinned is never published over.
+    """
+    from kiro_crew.slack import thread_override_slots as slots
+
     if session_key in _hydrated_sessions:
+        slots.touch(session_key)
         return
     if not conversation_log:
-        _hydrated_sessions.add(session_key)
+        slots.note_hydrated(session_key, _hydrated_sessions, _thread_agents, _thread_projects)
         return
     agent_before = _thread_agents.get(session_key)
     project_before = _thread_projects.get(session_key)
-    agent, project = await asyncio.to_thread(_read_thread_overrides, session_key, conversation_log)
-    # A concurrent hydration/command may have settled this session while the
-    # worker read it. Never publish a stale result over that live selection.
-    if session_key in _hydrated_sessions:
+    agent = project = ""
+    for _attempt in range(slots.HYDRATION_READ_ATTEMPTS):
+        writes_before = slots.command_writes()
+        read = await asyncio.to_thread(
+            slots.read_back, session_key, conversation_log, _read_thread_overrides
+        )
+        # A concurrent hydration/command may have settled this session while the
+        # worker read it. Never publish a stale result over that live selection.
+        if session_key in _hydrated_sessions:
+            return
+        if read is None:
+            # The conversation log already warned about the read it could not make.
+            logger.debug(
+                "Thread overrides for %s not hydrated: the metadata could not be read; "
+                "the next message reads it again",
+                session_key,
+            )
+            return
+        agent, project = read
+        if slots.command_writes() == writes_before:
+            break
+    else:
+        logger.warning(
+            "Thread overrides for %s not hydrated: a !ta or !project metadata write "
+            "landed during each of %d reads; the next message reads them again",
+            session_key,
+            slots.HYDRATION_READ_ATTEMPTS,
+        )
         return
-    _hydrated_sessions.add(session_key)
-    if agent and _thread_agents.get(session_key) == agent_before:
+    slots.note_hydrated(session_key, _hydrated_sessions, _thread_agents, _thread_projects)
+    # Never over a kind a command pinned: a pinned thread whose hydration gave up hydrates again.
+    agent_pinned = slots.kind_is_pinned(session_key, "agent")
+    project_pinned = slots.kind_is_pinned(session_key, "project")
+    if agent and not agent_pinned and _thread_agents.get(session_key) == agent_before:
         _thread_agents[session_key] = agent
-    if project and _thread_projects.get(session_key) == project_before:
+    if project and not project_pinned and _thread_projects.get(session_key) == project_before:
         _thread_projects[session_key] = project
 
 
 def _get_agent_for_session(session_key: str) -> str:
     """Return agent for a session: thread override first, then global default."""
+    from kiro_crew.slack import thread_override_slots
+
+    # Background readers (monitor ticks, subagent notices) keep their thread resident.
+    thread_override_slots.touch(session_key)
     return _thread_agents.get(session_key) or _get_default_agent()
 
 
@@ -257,6 +322,19 @@ def _set_default_agent(name: str) -> None:
         raise ValueError(f"Failed to read config: {e}") from e
     except OSError as e:
         raise ValueError(f"Failed to write config: {e}") from e
+    _cached_default_agent = name
+
+
+def adopt_default_agent(name: str) -> None:
+    """Make *name* the default agent a thread with no override starts on.
+
+    Called by the gateway's config applier when ``agent.default_agent`` changes,
+    whichever writer changed it (the dashboard, ``kirocrew config set``, an editor).
+    :func:`_set_default_agent` sets the same cache straight after its own write,
+    because the next message may arrive before the watcher's next tick; the watcher
+    then applies the same value again, which changes nothing.
+    """
+    global _cached_default_agent
     _cached_default_agent = name
 
 
@@ -364,6 +442,31 @@ async def maybe_route_linked_thread(
         return False
     if not route_pinned and _is_sessions_keyword(text):
         return False
+    # An @mention leads the text of a mention event; for ``/agent <name>`` drop
+    # it, so the slot's runner sees the command and switches the linked chat's
+    # agent (the switch the dashboard's picker makes) instead of prompting the
+    # model with it.
+    _unmentioned = re.sub(r"^<@[A-Z0-9]+(?:\|[^>]*)?>\s*", "", text.strip())
+    if not route_pinned and agent_switch_target(_unmentioned) is not None:
+        text = _unmentioned
+
+    if getattr(_linked_slot, "window_pending", False) is True:
+        # A tab restored as a sidebar row: its window loads with the read off
+        # the loop before the row lands. The thread can be relinked or unlinked
+        # while that awaits, so an unpinned route is resolved again and then
+        # pinned to what it resolves to, which bounds this to one more pass.
+        await load_window_off_loop(_linked_slot)
+        if not route_pinned and _dashboard_state.get_linked_slot(reply_ts) is not _linked_slot:
+            return await maybe_route_linked_thread(
+                text,
+                session_key,
+                user_id,
+                channel,
+                slack,
+                reply_ts,
+                target_slot=_dashboard_state.get_linked_slot(reply_ts),
+                route_pinned=True,
+            )
 
     _linked_slot_key = _linked_slot.key
     # Redact for UI display only — LLM receives original text so it can process

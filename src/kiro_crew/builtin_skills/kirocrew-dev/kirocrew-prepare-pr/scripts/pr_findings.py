@@ -227,6 +227,8 @@ comment_key = _review_contract.comment_key
 extract_findings = _review_contract.extract_findings
 extract_design_items = _review_contract.extract_design_items
 design_lane_verdicts = _review_contract.design_lane_verdicts
+design_lane_punchlines = _review_contract.design_lane_punchlines
+redact = _review_contract.redact
 CLEARS_WHEN_RE = _review_contract.CLEARS_WHEN_RE
 parse_disposition_record = _review_contract.parse_disposition_record
 
@@ -265,60 +267,6 @@ def resolve_marker_authors(environ):
     return {n.strip().lower() for n in raw.split(",") if n.strip()} or {
         a.lower() for a in DEFAULT_MARKER_AUTHORS
     }
-
-
-# Credential redaction (best-effort; applied to all printed untrusted text).
-_SECRET_RE = re.compile(
-    r"(?i)(ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
-    # The dashboard link token is TWO segments (`base64url(payload).base64url(
-    # hmac_sig)`), so the three-segment alternative above never matched it and a
-    # bare token in prose printed verbatim. It needs its OWN alternative.
-    #
-    # Byte-identical to the one in `security.py`, which carries the full
-    # derivation of both bounds and is the single source for it; this script is
-    # documented as stdlib-only and portable, so it cannot import it, and
-    # `test/test_redaction_mirror_parity.py` fails if this copy drifts. Locally the
-    # points that matter: the signature width is PINNED (`{43}`, a property of the
-    # HMAC-SHA256 digest), the payload bound is a generator-derived floor rather
-    # than a guess (a guessed floor is beatable by a verbose identifier), and the
-    # left boundary (incl. `.`, so attribute access is excluded) keeps ordinary
-    # dotted code intact.
-    #
-    # Placing it after the three-segment alternative is defensive, not
-    # load-bearing for real tokens: a conventional JWS header is only 33 chars
-    # past `eyJ`, far below this alternative's first-segment floor, so it cannot
-    # match a real JWS's `header.payload`. It matters only for a JWS whose header
-    # clears that floor AND whose payload is exactly 43 chars, since the right
-    # boundary is satisfied by a `.` and would leave `.signature` in the printed
-    # log. That shape is covered by a test.
-    r"|(?<![A-Za-z0-9_.-])eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"
-    r"|-----BEGIN[A-Z ]*PRIVATE KEY-----)"
-)
-_KV_RE = re.compile(
-    r"(?i)\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY|"
-    r"ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)[A-Za-z0-9_]*)\s*[:=]\s*\S+"
-)
-_AUTH_RE = re.compile(r"(?i)\b(authorization|proxy-authorization)\b\s*:\s*.+")
-_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-# scheme://user:pass@host -> redact the credentials, keep the scheme/host shape.
-_URLCRED_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^\s/:@]+:[^\s/@]+@")
-# Whole PEM private-key block (header + base64 body + footer), across lines.
-_PEM_BLOCK_RE = re.compile(
-    r"-----BEGIN[A-Z ]*PRIVATE KEY-----.*?-----END[A-Z ]*PRIVATE KEY-----", re.DOTALL
-)
-
-
-def redact(text):
-    text = _PEM_BLOCK_RE.sub("[REDACTED PRIVATE KEY]", text)
-    text = _SECRET_RE.sub("[REDACTED]", text)
-    text = _AUTH_RE.sub(lambda m: m.group(1) + ": [REDACTED]", text)
-    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _URLCRED_RE.sub(lambda m: m.group(1) + "[REDACTED]@", text)
-    text = _KV_RE.sub(lambda m: m.group(1) + "=[REDACTED]", text)
-    return text
 
 
 def run(args):
@@ -825,6 +773,7 @@ def main(argv):
             # from extract_design_items, which is deliberately not part of the
             # extract_findings universe the server-side disposition gate reads.
             verdicts = design_lane_verdicts(bot_comments, head_sha, bindings)
+            punchlines = design_lane_punchlines(bot_comments, head_sha, bindings)
             design_items = list(extract_design_items(bot_comments, head_sha, bindings))
             print("-- whole-design lanes (answer these BEFORE the line-level findings)")
             if not verdicts:
@@ -835,6 +784,8 @@ def main(argv):
                         sanitize(redact(lane)), sanitize(redact(verdicts[lane]))
                     )
                 )
+                if lane in punchlines:
+                    print("    punchline: " + sanitize(redact(punchlines[lane]))[:280])
             for item in design_items:
                 print(
                     "- span={}  [{}]{} {}  ({})".format(
@@ -851,6 +802,8 @@ def main(argv):
                     print("  Clears when: " + sanitize(redact(item["clears_when"]))[:280])
             if verdicts and not design_items:
                 print("(no Blockers/Watch/Subtraction/Suggestion items in those bodies)")
+            if any(verdicts.get(lane) == "PASS" for lane in punchlines):
+                print("(a PASS lane's punchline is its one ask: it still needs an answer)")
             print("-- line-level findings (GPT / Opus)")
             findings = list(extract_findings(bot_comments, head_sha, bindings))
             for f in findings:

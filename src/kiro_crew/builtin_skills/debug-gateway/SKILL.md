@@ -19,7 +19,7 @@ or at `docs/reference/debug/README.md` in a checkout:
 - symptom table: section "Symptom to tool"
 - the sandbox traps, including the empty placeholder mounts: section "Sandbox traps"
 - who may take each reading: section "Authorization"
-- why the server is opt-in: the note under the five questions
+- why the server is opt-in, and how to grant it: the paragraph above the five questions
 
 ## Ask before you conclude
 
@@ -45,7 +45,10 @@ unmeasured and say so, rather than concluding the gateway is current.
 beside it. A real fingerprint that differs means the daemon is serving backends built
 from another checkout, and a directive tool can report success against one.
 `unknown (pre-fingerprint build)` means the daemon cannot be compared at all, which is
-unmeasured rather than stale. `null` means no daemon was described.
+unmeasured rather than stale. A null `matches_this_install` has two causes, told apart
+by `running` beside it: `running: false` is a measured absence (no daemon), while
+`running: null` is a FAILED probe — the daemon could not be described — which is
+unmeasured, not a confirmed absence. Do not read a failed probe as "no daemon".
 `recorder.available` false means the build carries no diagnostics package, which is
 also why three of the five tools cannot answer on it.
 
@@ -91,9 +94,11 @@ its own tracer, so hand that command to the user to run.
 
 ### debug_processes
 
-It answers identity and shape, and no CPU rate: `cpu_pct`, `runq_wait_pct` and
-`gil_saturated_hint` always read `null` or false, and the tool description says why.
-Take a contention question to `debug_threads` `mode=now`.
+It answers identity and shape first. `cpu_pct` and `runq_wait_pct` are deltas against
+the route's previous read, so the first read, a read under 1s after the last one, and
+a read more than 300s after it carry `null` (with the reason in `degraded`), and
+`gil_saturated_hint` is false whenever the rate is missing. `null` there is unmeasured,
+not idle. Take a contention question to `debug_threads` `mode=now`.
 
 `owner` is a label, not a session key. Through this route it reads `gateway:<pid>` or
 `runtime:<pid>`, which says which gateway tracks the process or which tracked runtime it
@@ -118,14 +123,19 @@ you a `cursor`.
 | 403 | `forbidden` | Several refusals share this code, so read the message. It covers a caller class that holds no host-wide view, a session the gateway cannot name at all, a request from another component, and a named session outside your scope | Never retry and never look for another route. Only for the host-wide-view refusal do the owner's own tab and `session=self` help; an unnameable session reads nothing, including its own rows, and an out-of-scope session key is refused however it is asked |
 | 501 | `diag_unavailable` | The build carries no `kiro_crew.diag`, so threads, processes and snapshots cannot answer. Relayed verbatim so it cannot be mistaken for an empty answer | Report the build. `debug_gateway` and `debug_refusals` still work; do not synthesize the missing reading |
 | 404 | `dump_missing` | A dump named by an earlier listing rotated away before this read | Re-list and read a current name |
-| 400 | `bad_range` | An argument is malformed: an unparsable `around`, a `radius` like `5x`, a non-integer `last` | Fix the argument and call again |
+| 503 | `dump_unreadable` | A dump named by an earlier listing is still present but could not be read (an `OSError` opening it) | Re-list; if it persists the dump is damaged, so pick another name |
+| 400 | `bad_range` | An argument is malformed: an unparsable `around`, a `radius` like `5x`, a non-integer `last`, a non-finite `seconds` | Fix the argument and call again |
 
-Three more codes appear. `recorder_off` (422) means the recorder is not running, so
+More codes appear. `recorder_off` (422) means the recorder is not running, so
 the series has no rows. `unavailable` means nothing answered at all, which is a
 transport failure rather than a refusal. `too_large` and `truncated_to_fit` mean the
 answer outgrew its size budget, and `truncated_hint` states that budget and the remedy.
+`dump_unreadable` (503) means a dump exists but could not be read. An argument the tool's
+schema rejects (a non-integer `last`, a `mode` outside the enum) comes back as plain
+`Error: <field>: ...` text with no `code`; fix the argument.
 
 ## If the tools are not there
 
 The server is opt-in, so absence means it was not granted to this agent: say so, point
-at the `@kirocrew-debug` reference in the agent's `tools`, and do not shell around it.
+at the two halves a grant needs, the `kirocrew-debug` entry in the agent's `mcpServers`
+and the `@kirocrew-debug` reference in its `tools`, and do not shell around it.

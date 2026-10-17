@@ -214,6 +214,13 @@ session exists. Polling **fails closed**: a third-party app that is down is not
 retried at the composer's expense, and a malformed or unknown payload degrades
 to `none` rather than rendering an unknown state.
 
+The host re-asks a status when the chat opens, when the control's popover
+closes, and when a turn in that session finishes (`chat_done`). The turn-end
+re-ask selects only that session's probes, and React Query refetches only the
+ones a mounted composer shows. There is no interval: the dashboard's freshness
+model is push (`queryClient.ts`, `staleTime: Infinity`), and a turn boundary is
+the push that already exists for "the agent may have changed something".
+
 ## 5. Migration plan
 
 **S1 and S2 must land together.** Shipping S1 alone would add a twelfth
@@ -308,7 +315,10 @@ The change is additive in both directions.
    open question — not whether a global cap should exist.
 3. **Should status be pushed rather than polled?** `rfc-local-notification-bus.md`
    has a bus whose Phase 2 is wired with no producer. A control's status change is
-   a plausible producer, and would retire the poll.
+   a plausible producer, and would retire the poll. A finished turn now re-asks
+   the session's statuses (§4.3), which covers changes the agent makes; a change
+   made between turns still waits for the next one, and closing that gap is the
+   app-published push this question is about.
 4. **How does a second surface get selected?** An earlier draft shipped a
    `placement` field for this, with `session-bar` as its only legal value. It was
    removed before merge: nothing branched on it, so it was manifest schema —

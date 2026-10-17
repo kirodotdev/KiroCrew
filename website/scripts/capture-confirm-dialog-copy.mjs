@@ -9,8 +9,9 @@
  * Each scene ASSERTS THE RENDERED TEXT before writing the file, so a frame
  * cannot silently photograph the wrong state. Default (after) expects the
  * consequence-first bodies and the unified "changes" verb; --before inverts
- * the assertions (run it against base catalogs, e.g. with the locale changes
- * stashed) and expects the question-restating bodies and "edits".
+ * the assertions (run it against base catalogs, e.g. after
+ * `git checkout <base> -- <locale files>`) and expects the question-restating
+ * bodies and "edits".
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6824 --strictPort   # in another shell

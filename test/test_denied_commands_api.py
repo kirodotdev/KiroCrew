@@ -8,10 +8,8 @@ the full refreshed snapshot; mutations write ``config.json`` under
 
 The aiohttp handlers are exercised through an in-test ``TestClient`` opened with
 ``async with`` (matching ``test_api_kiro_hooks.py``) rather than an async-gen
-fixture: the CI-pinned ``pytest-asyncio==0.20.3`` is incompatible with the
-pinned ``pytest==8.4.1`` for async fixtures (its wrapper reads the
-``fixturedef.unittest`` attribute removed in pytest 8.1), so the whole suite
-avoids ``@pytest_asyncio.fixture`` by convention.
+fixture, following the suite's convention for teardown that must await on the test's own loop
+(testing-conventions.md, "Async tests").
 """
 
 from __future__ import annotations

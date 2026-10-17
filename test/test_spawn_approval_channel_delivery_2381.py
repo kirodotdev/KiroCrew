@@ -38,7 +38,12 @@ import pytest
 from test_telegram import _cfg, _dispatcher, _prime_live  # noqa: E402
 
 from kiro_crew.messaging import spawn_approval_delivery as seam
-from kiro_crew.messaging.link import CHAT_TYPE_FORUM, parse_session_key
+from kiro_crew.messaging.display_safety import canonicalize_display
+from kiro_crew.messaging.link import (
+    CHAT_TYPE_FORUM,
+    CHAT_TYPE_PRIVATE_TOPIC,
+    parse_session_key,
+)
 from kiro_crew.messaging.session_trust import (
     _trusted_sessions,
     clear_trusted_sessions,
@@ -46,6 +51,7 @@ from kiro_crew.messaging.session_trust import (
 )
 from kiro_crew.subagent import SpawnApprovalUnreachable
 from kiro_crew.telegram.renderer import TelegramApprovalDecider
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -226,7 +232,10 @@ class TestWrappedSpawnApproval:
         """
         import kiro_crew.slack.gateway as gateway_mod
 
-        src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
+        # ``_spawn_approve`` is a closure of ``_init_subagents``, which the facade
+        # composes from its subagent_wiring owner.
+        wiring = Path(gateway_mod.__file__).with_name("gateway_runtime") / "subagent_wiring.py"
+        src = wiring.read_text(encoding="utf-8")
         consult = src.index("deliver_spawn_approval(")
         fallback = src.index("return await _approve_spawn_gate(event, parent_session_key)")
         assert consult < fallback, "the channel seam must be consulted before the fallback gate"
@@ -264,10 +273,7 @@ async def _press(dispatcher, session_key: str, request_id: str, flag: str) -> No
     ``a:`` path a tool approval uses.
     """
     key = TelegramApprovalDecider.key(session_key, request_id)
-    for _ in range(50):
-        if key in TelegramApprovalDecider._REGISTRY:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
     nonce = TelegramApprovalDecider._NONCES[key]
     cb = SimpleNamespace(
         callback_query_id="q1",
@@ -282,6 +288,38 @@ async def _press(dispatcher, session_key: str, request_id: str, flag: str) -> No
 
 
 class TestTelegramDeliveryHook:
+
+    def test_a_credential_split_by_invisible_characters_is_not_displayed(self) -> None:
+        """The preview is cleared in the form Telegram renders, as Discord's twin is.
+
+        A zero-width character between two halves of a key breaks every literal
+        scan while rendering as nothing, so the upstream pass leaves it intact and
+        ``html.escape`` keeps it, and the reader sees a whole secret. The assertion
+        is made on the canonicalized text for the same reason: the literal message
+        never contains the secret as one string, so checking the literal would
+        pass with no redaction at all.
+        """
+        d, cli, _sess = _dispatcher({7})
+        session_key = d._session_key(("direct", "7"))
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        split = secret[:6] + "​" + secret[6:]
+
+        async def _go() -> str:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval(
+                    "spawn:abc", f"spawn_run(deploy using {split})", session_key
+                )
+            )
+            await async_wait_until(lambda: cli.sent)
+            text, _markup = cli.sent[0]
+            await _press(d, session_key, "spawn:abc", "0")
+            await task
+            return text
+
+        text = asyncio.run(_go())
+        assert secret not in canonicalize_display(text), "the rendered preview carries the secret"
+        assert "REDACTED" in text, text
+
     """The prompt lands in the originating conversation and the press resolves it."""
 
     def test_approve_resolves_true(self) -> None:
@@ -336,10 +374,7 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             # One prompt posted, carrying the three-button keyboard for spawn:abc.
             assert len(cli.sent) == 1
             _text, markup = cli.sent[0]
@@ -372,17 +407,11 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             # The prompt was threaded into the originating Topic, not the group root.
             assert cli.send_threads == [thread]
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             nonce = TelegramApprovalDecider._NONCES[key]
             cb = SimpleNamespace(
                 callback_query_id="q1",
@@ -419,10 +448,7 @@ class TestTelegramDeliveryHook:
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             key = TelegramApprovalDecider.key(session_key, "spawn:abc")
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             nonce = TelegramApprovalDecider._NONCES[key]
             # Rotate the parent conversation's generation AFTER arming.
             d._conv.bump_gen(route)
@@ -458,10 +484,7 @@ class TestTelegramDeliveryHook:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if key in TelegramApprovalDecider._REGISTRY:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
             # Prompt is live and awaiting: both entries armed.
             assert key in TelegramApprovalDecider._REGISTRY
             assert key in TelegramApprovalDecider._NONCES
@@ -625,10 +648,7 @@ class TestASilentSendFailureFallsThroughAtOnce:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
-            for _ in range(50):
-                if cli.sent:
-                    break
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: cli.sent)
             await _press(d, session_key, "spawn:abc", "1")
             return await task
 
@@ -760,6 +780,59 @@ class TestTheDestinationIsReauthorizedBeforeTheSend:
         key = TelegramApprovalDecider.key(session_key, "spawn:abc")
         assert key not in TelegramApprovalDecider._NONCES
 
+    @pytest.mark.usefixtures("_press_lands_inside_the_window")
+    def test_a_private_topic_posts_through_the_roster_not_the_forum_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A private-chat forum Topic carries a thread, but its chat_id IS the
+        # peer's positive user id. The roster admits it exactly as a threadless
+        # DM; the supergroup forum gate (empty allow-list here) must NOT be the
+        # thing consulted, or the prompt would never post into the owner's own
+        # topic.
+        chat_id, thread = 7, 42
+        d, cli, _sess = _dispatcher({chat_id})
+        empty_forum = _cfg(allow_forum=False, allowed_forum_chat_ids=[])
+        _prime_live(empty_forum)
+        monkeypatch.setattr(d, "_live_cfg", lambda: empty_forum)
+        # A real transport attests the owner's own private chat; the gate reads
+        # that attestation (positive roster id -> itself) rather than a
+        # hand-rolled ``chat_id > 0`` copy.
+        d.transport = SimpleNamespace(  # type: ignore[assignment]
+            direct_peer_of=lambda cid: cid if int(cid) > 0 else "",
+            may_send_to=lambda *_a, **_k: True,
+        )
+        session_key = d._session_key((CHAT_TYPE_PRIVATE_TOPIC, f"{chat_id}:{thread}"))
+        parsed = parse_session_key(session_key)
+        assert parsed is not None and parsed.chat_type == CHAT_TYPE_PRIVATE_TOPIC
+
+        async def _go() -> bool | None:
+            task = asyncio.ensure_future(
+                d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
+            )
+            await async_wait_until(lambda: cli.sent)
+            # The prompt threaded into the private topic it came from, not the
+            # chat root -- proof the roster admitted it despite the empty forum
+            # allow-list.
+            assert cli.send_threads == [thread]
+            key = TelegramApprovalDecider.key(session_key, "spawn:abc")
+            await async_wait_until(lambda: key in TelegramApprovalDecider._REGISTRY)
+            nonce = TelegramApprovalDecider._NONCES[key]
+            cb = SimpleNamespace(
+                callback_query_id="q1",
+                user_id=chat_id,
+                chat_id=chat_id,
+                message_id=100,
+                data=f"a:spawn:abc:{nonce}:1",
+                label="",
+                chat_type="private",
+                message_thread_id=thread,
+            )
+            await d.on_callback(cb)
+            return await task
+
+        assert asyncio.run(_go()) is True
+        assert len(cli.sent) == 1
+
     def test_a_transport_egress_denial_gets_no_prompt(self) -> None:
         # The roster still holds the peer, so ONLY the transport's own
         # revocation-at-egress decision can refuse here.
@@ -839,7 +912,7 @@ class TestTheDestinationIsReauthorizedBeforeTheSend:
                 d.deliver_spawn_approval("spawn:abc", "spawn_run(build)", session_key)
             )
             await _press(d, session_key, "spawn:abc", "1")
-            return await asyncio.wait_for(task, 10.0)
+            return await await_until(task)
 
         assert asyncio.run(_go()) is True
         assert len(cli.sent) == 1
@@ -1137,7 +1210,7 @@ class TestTheDeliveryHookCharacterization:
             task = asyncio.ensure_future(
                 d.deliver_spawn_approval("spawn:abc", "d", "telegram:kirocrew:direct:7")
             )
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -1202,7 +1275,15 @@ class TestTheDeliveryHookCharacterization:
         assert result is None and len(cli.sent) == 1
 
     def test_the_destination_table(self) -> None:
+        # A real transport always attests its own peer; the gate calls
+        # ``direct_peer_of`` directly, so the double mirrors that contract:
+        # a positive roster id attests itself, every other id attests "".
+        def _peer(conversation_id: str) -> str:
+            cid = int(conversation_id)
+            return conversation_id if cid > 0 else ""
+
         d, _cli, _sess = _dispatcher({7})
+        d.transport = SimpleNamespace(direct_peer_of=_peer)  # type: ignore[assignment]
         assert d._spawn_prompt_destination_permitted(7, None) is True
         assert d._spawn_prompt_destination_permitted(8, None) is False
         assert d._spawn_prompt_destination_permitted(0, None) is False
@@ -1210,9 +1291,38 @@ class TestTheDeliveryHookCharacterization:
         assert d._spawn_prompt_destination_permitted(7, None) is False
 
         d, _cli, _sess = _dispatcher({7}, allow_forum=True, allowed_forum_chat_ids=[-1001234567890])
+        d.transport = SimpleNamespace(direct_peer_of=_peer)  # type: ignore[assignment]
         assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is True
         assert d._spawn_prompt_destination_permitted(-1009999999999, 42) is False
         d._allowed.clear()
+        assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is False
+
+    def test_a_private_topic_is_attested_by_direct_peer_of(self) -> None:
+        # A private-chat Topic (positive roster chat_id + thread) is admitted on
+        # the SAME ``direct_peer_of`` attestation ``may_send_to`` uses, not a
+        # hand-rolled ``chat_id > 0`` copy. The gate must CONSULT the transport's
+        # attestation: when the transport is wired, a positive roster id that the
+        # transport declines to attest (``""``) is NOT a private topic, so it
+        # falls through to the forum gate and is refused — a ``chat_id > 0`` copy
+        # would wrongly admit it. That divergence is what pins the shared seam.
+        d, _cli, _sess = _dispatcher({7})
+
+        attested: dict[str, str] = {}  # transport attests exactly these ids
+
+        def _peer(conversation_id: str) -> str:
+            return attested.get(conversation_id, "")
+
+        d.transport = SimpleNamespace(  # type: ignore[assignment]
+            direct_peer_of=_peer, may_send_to=lambda *_a, **_k: True
+        )
+        # Transport attests 7 as its own peer -> private topic -> permitted.
+        attested["7"] = "7"
+        assert d._spawn_prompt_destination_permitted(7, 42) is True
+        # Transport withholds attestation for 7 (positive, on roster) -> the gate
+        # must defer to the attestation, not ``chat_id > 0`` -> forum gate -> refused.
+        attested.clear()
+        assert d._spawn_prompt_destination_permitted(7, 42) is False
+        # Negative supergroup id + thread -> never attested -> forum gate -> refused.
         assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is False
 
     def test_the_egress_gate_table(self) -> None:
@@ -1230,7 +1340,7 @@ class TestTheDeliveryHookCharacterization:
         assert d._spawn_prompt_destination_permitted(7, None) is True
         d.transport = SimpleNamespace(may_send_to=_answer(0))  # type: ignore[assignment]
         assert d._spawn_prompt_destination_permitted(7, None) is False
-        d.transport = SimpleNamespace(may_send_to=_answer("yes"))  # type: ignore[assignment]
+        d.transport = SimpleNamespace(may_send_to=_answer("yes"), direct_peer_of=lambda _c: "")  # type: ignore[assignment]
         assert d._spawn_prompt_destination_permitted(-1001234567890, 42) is True
         assert seen == [("7", None), ("-1001234567890", "42")]
         seen.clear()

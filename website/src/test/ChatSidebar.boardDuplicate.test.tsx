@@ -16,7 +16,7 @@ import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatTag, TagColumn, ChatFolder } from '../types'
 import type { RootState } from '../store'
@@ -113,7 +113,7 @@ function renderSidebar(activeSlot: string | null = null, opts: { foldered?: bool
   const store = createTestStore({
     dashboard: {
       status: {}, connected: false, slots, approvalMode: 'normal',
-      channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
+      channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null, slotsLoaded: true,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
     } as RootState['dashboard'],
@@ -165,8 +165,9 @@ describe('multi-tag session in two columns', () => {
     expect(container.querySelectorAll(`[data-slot-key="${SLOT_KEY}"]`)).toHaveLength(2)
   })
 
-  it('namespaces each ungrouped copy layoutId by its column id', () => {
+  it('namespaces each ungrouped copy layoutId by its column id', async () => {
     const { container } = renderSidebar()
+    await settleSidebarRowAnim()
     // Assert the exact namespaced shape, not just distinctness: a regression
     // that made ids distinct-but-wrong (e.g. random suffix) would still pass a
     // bare not.toBe check, so pin the format to slot-<columnId>-<slotKey>.
@@ -174,8 +175,9 @@ describe('multi-tag session in two columns', () => {
     expect(layoutIdIn(container, COL_REVIEW)).toBe(`slot-${COL_REVIEW}-${SLOT_KEY}`)
   })
 
-  it('namespaces each foldered copy layoutId by column id + folder id', () => {
+  it('namespaces each foldered copy layoutId by column id + folder id', async () => {
     const { container } = renderSidebar(null, { foldered: true })
+    await settleSidebarRowAnim()
     // Foldered rows render via renderColumnFolder, scope `${columnId}:${folderId}`.
     expect(layoutIdIn(container, COL_PLANNED_BLOCKED)).toBe(`slot-${COL_PLANNED_BLOCKED}:${FOLDER_ID}-${SLOT_KEY}`)
     expect(layoutIdIn(container, COL_REVIEW)).toBe(`slot-${COL_REVIEW}:${FOLDER_ID}-${SLOT_KEY}`)

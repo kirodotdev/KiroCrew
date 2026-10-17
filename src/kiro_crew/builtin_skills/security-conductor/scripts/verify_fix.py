@@ -129,7 +129,7 @@ here, and it is what decides how each kind is treated:
     refused by ANY of the three checks ``hooks.on_tool_call`` applies to a shell
     command, in its order -- the sensitive-command tier, the
     exfiltration auditor, and the deny-rule catalog (:data:`TIERS`, the same table
-    ``scripts/deny_diff.py`` declares). Measuring the catalog alone would go green
+    as the gate's ``hooks.SHELL_DENY_TIERS``, which ``scripts/deny_diff.py`` reads). Measuring the catalog alone would go green
     on a fix that tightened either of the other two, which is the specific way this
     gate could ship a meaningless pass. The verdict names the tier that refused,
     because "the sensitive-command tier refused it" and "a catalog rule matched it" need
@@ -820,14 +820,18 @@ def run_verifier(
 
 #: The deny checks the tool gate applies to a shell command, in the order
 #: ``hooks.on_tool_call`` applies them, as (tier name, attribute of
-#: ``kiro_crew.security``). Declared as data, and kept IDENTICAL to ``_TIERS`` in
-#: ``scripts/deny_diff.py``: the two gates make the same claim -- "no golden path is
-#: refused at the tool gate" -- and it holds only while both measure the same
-#: composite. A check the tree does not carry is coverage lost, and the probe
-#: reports it as unavailable rather than skipping it.
+#: ``kiro_crew.security``). Kept IDENTICAL to the gate's own ``hooks.SHELL_DENY_TIERS``,
+#: which ``scripts/deny_diff.py`` reads: the two gates make the same claim -- "no
+#: golden path is refused at the tool gate" -- and it holds only while both measure
+#: the same composite. Declared HERE rather than read from a ``hooks.py`` because
+#: this script runs as a synced skill file with no product tree beside it, and the
+#: one tree it does see is the worktree under review -- reading the table from there
+#: would let the fix being judged choose its own gate. A check the tree does not
+#: carry is coverage lost, and the probe reports it as unavailable rather than
+#: skipping it.
 TIERS: tuple[tuple[str, str], ...] = (
     # No path tier: a shell command is command text, which the gate deliberately does
-    # not match paths in; see the matching note on ``deny_diff._TIERS``.
+    # not match paths in; see the matching note on ``hooks.SHELL_DENY_TIERS``.
     ("sensitive-bash", "is_sensitive_bash_command"),
     ("exfil", "audit_bash_exfiltration"),
     ("deny-rules", "is_denied"),

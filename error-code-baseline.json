@@ -1,11 +1,11 @@
 {
   "_comment": "Error responses without a machine-readable `code`, per file. Generated - regenerate with `python test/test_error_code_contract.py --update`. This is both the CI ratchet and the Track B worklist: drive `missing_code` to zero, one PR per file or per directory, moving each frontend consumer in the same PR. Never raise a number to make CI pass. See test/test_error_code_contract.py for what each bucket means and which false negatives it accepts.",
   "_totals": {
-    "missing_code": 1048,
+    "missing_code": 1046,
     "opaque_body": 18,
     "dynamic_status": 38
   },
-  "_compliant": 2559,
+  "_compliant": 2675,
   "files": {
     "apps/builtins/auto_research/handlers.py": {
       "dynamic_status": 1,
@@ -72,11 +72,44 @@
     "dashboard/agent_admin/installed_agents.py": {
       "missing_code": 2
     },
+    "dashboard/chat_api/agent_switch.py": {
+      "missing_code": 1
+    },
+    "dashboard/chat_api/app_admission.py": {
+      "missing_code": 1
+    },
+    "dashboard/chat_api/chat_send.py": {
+      "missing_code": 4
+    },
+    "dashboard/chat_api/followup_card.py": {
+      "missing_code": 2
+    },
+    "dashboard/chat_api/prompt_queue.py": {
+      "missing_code": 5
+    },
+    "dashboard/chat_api/session_relaunch.py": {
+      "missing_code": 3
+    },
+    "dashboard/chat_api/slot_approval.py": {
+      "missing_code": 6
+    },
+    "dashboard/chat_api/slot_create.py": {
+      "missing_code": 2
+    },
+    "dashboard/chat_api/slot_effort.py": {
+      "missing_code": 1
+    },
+    "dashboard/chat_api/slot_model.py": {
+      "missing_code": 4
+    },
+    "dashboard/chat_api/slot_settings.py": {
+      "missing_code": 1
+    },
+    "dashboard/chat_api/turn_stop.py": {
+      "missing_code": 1
+    },
     "dashboard/chat_folders.py": {
       "missing_code": 19
-    },
-    "dashboard/chat_handlers.py": {
-      "missing_code": 31
     },
     "dashboard/chat_mirror.py": {
       "missing_code": 6
@@ -103,7 +136,7 @@
       "missing_code": 6
     },
     "dashboard/file_api/uploads.py": {
-      "missing_code": 4
+      "missing_code": 3
     },
     "dashboard/file_api/workspaces.py": {
       "missing_code": 20
@@ -188,7 +221,7 @@
       "missing_code": 21
     },
     "dashboard/handlers/updates.py": {
-      "missing_code": 9
+      "missing_code": 8
     },
     "dashboard/handlers/webapp_preview.py": {
       "missing_code": 1

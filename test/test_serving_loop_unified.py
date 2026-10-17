@@ -158,7 +158,8 @@ def test_only_bind_and_the_accessor_write_the_field() -> None:
     A third reintroduces the many-writers shape this change removed -- a reader
     that wants the loop recorded should READ the accessor, which latches for it.
     """
-    tree = ast.parse(Path(state_mod.__file__).read_text(encoding="utf-8"))
+    state_file = Path(state_mod.__file__)
+    paths = (state_file, *sorted((state_file.parent / "state_parts").glob("[!_]*.py")))
     allowed = {"bind_serving_loop", "serving_loop"}
     offenders: list[str] = []
 
@@ -182,7 +183,8 @@ def test_only_bind_and_the_accessor_write_the_field() -> None:
                         offenders.append(f"{inner or '<module>'}:{child.lineno}")
             scan(child, inner)
 
-    scan(tree, None)
+    for path in paths:
+        scan(ast.parse(path.read_text(encoding="utf-8")), None)
     assert not offenders, (
         "something other than bind_serving_loop and the accessor writes "
         f"_serving_loop: {offenders} -- read DashboardState.serving_loop instead, "
@@ -209,11 +211,12 @@ def test_only_one_latched_serving_loop_field_remains() -> None:
         re.MULTILINE,
     )
     offenders: dict[str, set[str]] = {}
-    for mod in (state_mod, updates):
-        src = Path(mod.__file__).read_text(encoding="utf-8")
+    state_owners = sorted((Path(state_mod.__file__).parent / "state_parts").glob("[!_]*.py"))
+    for path in (Path(state_mod.__file__), *state_owners, Path(updates.__file__)):
+        src = path.read_text(encoding="utf-8")
         names = {m.group(1) for m in pattern.finditer(src)} - {"_serving_loop"}
         if names:
-            offenders[Path(mod.__file__).name] = names
+            offenders[path.name] = names
 
     assert not offenders, (
         "a second latched serving-loop field reappeared: "
@@ -251,8 +254,15 @@ def test_no_latched_loop_held_across_a_closure() -> None:
     # The server_runtime owners server.py composes hold its startup closures too.
     owners = sorted((Path(server_mod.__file__).parent / "server_runtime").glob("[!_]*.py"))
     assert owners, "expected the server_runtime owners beside server.py"
+    # And the state_parts owners state.py composes hold the code it held.
+    state_owners = sorted((Path(state_mod.__file__).parent / "state_parts").glob("[!_]*.py"))
+    assert state_owners, "expected the state_parts owners beside state.py"
     offenders: dict[str, list[str]] = {}
-    for path in (*(Path(mod.__file__) for mod in (server_mod, state_mod, updates)), *owners):
+    for path in (
+        *(Path(mod.__file__) for mod in (server_mod, state_mod, updates)),
+        *owners,
+        *state_owners,
+    ):
         name = path.name
         hits = [
             line.strip()

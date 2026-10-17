@@ -807,3 +807,88 @@ describe('streaming errors reach the user', () => {
     expect(onError.mock.calls[0][0]).toBeTruthy()
   })
 })
+
+/**
+ * A dictation that stops before the user ends it must be audible.
+ *
+ * Someone reading from another screen while dictating does not see the mic
+ * button or the Listening pill clear, so the hook raises the `dictation` sound
+ * whenever capture ends without the user's stop or cancel.
+ */
+describe('a dictation that stops on its own is announced', () => {
+  const kinds: string[] = []
+  const onSound = (e: Event) => { kinds.push(String((e as CustomEvent<{ kind?: string }>).detail?.kind)) }
+
+  beforeEach(async () => {
+    kinds.length = 0
+    const { MC_NOTIFICATION_EVENT } = await import('../hooks/notificationEvent')
+    window.addEventListener(MC_NOTIFICATION_EVENT, onSound)
+  })
+
+  afterEach(async () => {
+    const { MC_NOTIFICATION_EVENT } = await import('../hooks/notificationEvent')
+    window.removeEventListener(MC_NOTIFICATION_EVENT, onSound)
+  })
+
+  it('on an error frame while capturing, once, even when the close follows', async () => {
+    const { hook } = await startRecording()
+    const ws = lastSocket()
+    await act(async () => {
+      ws.becomeReady()
+      ws.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'stt_max_duration_exceeded' }) })
+    })
+    await act(async () => { ws.close() })
+    expect(hook.result.current.recording).toBe(false)
+    expect(kinds).toEqual(['dictation'])
+  })
+
+  it('on a connection that drops while capturing', async () => {
+    await startRecording()
+    const ws = lastSocket()
+    await act(async () => {
+      ws.becomeReady()
+      ws.close()
+    })
+    expect(kinds).toEqual(['dictation'])
+  })
+
+  it('on a socket error followed by its close, once', async () => {
+    await startRecording()
+    const ws = lastSocket()
+    await act(async () => {
+      ws.becomeReady()
+      ws.onerror?.()
+      ws.close()
+    })
+    expect(kinds).toEqual(['dictation'])
+  })
+
+  it('when the readiness buffer fills and capture stops itself', async () => {
+    await startRecording()
+    const node = lastNode()
+    await act(async () => {
+      for (let i = 0; i < 600; i++) node.speak(3200)
+    })
+    expect(kinds).toEqual(['dictation'])
+  })
+
+  it('not after the user stops, even when the drain then fails', async () => {
+    const { hook } = await startRecording()
+    const ws = lastSocket()
+    await act(async () => { ws.becomeReady() })
+    await act(async () => { hook.result.current.stop() })
+    await act(async () => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'error', code: 'stt_decode_failed' }) })
+      ws.close()
+    })
+    expect(kinds).toEqual([])
+  })
+
+  it('not on cancel', async () => {
+    const { hook } = await startRecording()
+    const ws = lastSocket()
+    await act(async () => { ws.becomeReady() })
+    await act(async () => { hook.result.current.cancel() })
+    expect(kinds).toEqual([])
+  })
+})

@@ -69,6 +69,8 @@ from kiro_crew.mcp_gateway.launch_approval import (
 )
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.read_limits import config_read_buffer_limit
+from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
+from kiro_crew.mcp_provenance import WITHHELD_KEY, is_withheld_mute
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.sandbox import scrub_agent_denied_env
 from kiro_crew.security import is_sensitive_path
@@ -581,6 +583,33 @@ def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, An
     return {}
 
 
+def _needs_private_backend(withheld: int, entry_env: Mapping[str, Any]) -> bool:
+    """True when a routed server must get a connection-private backend to run at all.
+
+    A server whose env would be partly withheld from a SHARED backend is normally
+    left unwrapped, so the session launches it with its declared env. That cannot
+    work when the env names a vault secret: the session cannot read the vault, so
+    the server would start with the literal ``secret://`` text as its credential.
+    A private backend receives the whole declared env
+    (``daemon/launch._declared_env_for_private_backend``) and is spawned by the
+    gateway, which is the one place the reference is resolved.
+    """
+    return bool(withheld) and bool(secret_reference_keys(entry_env))
+
+
+def _must_stay_wrapped(entry_env: Mapping[str, Any]) -> bool:
+    """True when a routed server must be wrapped even if it cannot be served yet.
+
+    Only a stub keeps a session from launching the agent spec's own entry, and
+    that entry starts the server with the literal ``secret://`` text. So a routed
+    server whose env names a vault secret is wrapped even when its command does
+    not resolve on the gateway search path or its launch is not approved: the
+    gateway then refuses it (no approved target, or a failed spawn whose stub
+    fallback refuses the reference), and the server does not start.
+    """
+    return bool(secret_reference_keys(entry_env))
+
+
 def _withheld_env_count(
     entry_env: dict[str, Any],
     forward_env: bool,
@@ -795,7 +824,8 @@ def _build_stub_entry(
     the stub entirely when the command is unresolvable or (for a poolable
     entry) any declared key would be withheld from the shared backend. This
     function therefore never emits a stub whose pooled spawn is a guaranteed
-    ENOENT or whose declared env is silently dropped.
+    ENOENT or whose declared env is silently dropped. The one exception is a
+    server :func:`_must_stay_wrapped` keeps wrapped, which must fail to start.
 
     Preserves ``autoApprove`` on the wrapped entry so kiro-cli still honours
     it at the UI layer. ``env`` is cleared on the wrapper — the stub passes
@@ -869,6 +899,16 @@ def _build_stub_entry(
         # 'foo_bar' still collides. The shared helper appends a digest of the RAW
         # components, which is injective, and gatewayd's reader recomputes that
         # same helper — so writer and reader can never disagree on the name.
+        #
+        # ONE FILE PER (agent, server) DECLARATION, which is what makes the
+        # file safe to hand to a connection-private backend: this file holds the
+        # declaration's full env, rotating secrets included, and two agents
+        # declaring one server with different secrets must never land on one
+        # name. Naming it after a hash that EXCLUDES those secrets would do
+        # exactly that, because ``effective_env_hash`` drops every
+        # ``AWS_SECRET``/``AWS_SESSION``/``OAUTH`` key: both agents would write
+        # one file, the second write would win, and the first agent's private
+        # backend would be spawned with the second agent's credentials.
         env_file = env_dir / env_sidecar_name(agent_name, server_name)
         # One publish path: always staged, and whoever owns the ledger commits.
         # A caller that passed none is not deferring, so a local ledger is
@@ -964,8 +1004,18 @@ def _build_stub_entry(
         if k not in ("command", "args", "env", "poolable", "autoApprove",
                      _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY)
     }
+    # ``-P`` (``PYTHONSAFEPATH``) keeps the launch cwd off ``sys.path``:
+    # kiro-cli starts the stub in the agent's SESSION cwd, a project checkout
+    # Kiro Crew does not control, and a stdlib-named file there (``json.py``,
+    # ``socket.py``) would otherwise be imported in place of the standard
+    # library. The rewrite fingerprint's ``python_isolation_flags`` records the
+    # same option prefix, so an overlay written without it is regenerated on
+    # upgrade instead of served from cache.
     stub_argv = platform_compat.isolated_python_argv(
-        "-m", _STUB_MODULE, f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}"
+        "-P",
+        "-m",
+        _STUB_MODULE,
+        f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}",
     )
     wrapped.update({
         _WRAPPER_MARKER: True,
@@ -974,7 +1024,8 @@ def _build_stub_entry(
         # ``Program Files`` install it carries the space that makes cmd.exe
         # quote-stripping reachable (see the helper's docstring).
         "command": _cmd_safe_command(stub_argv[0]),
-        # The helper's optional ``-s`` precedes ``-m kiro_crew.mcp_gateway.stub``;
+        # The helper's optional ``-s`` and ``-P`` precede
+        # ``-m kiro_crew.mcp_gateway.stub``;
         # the stub's own flags follow as ONE encoded envelope.
         # Every value above is raw operator or
         # filesystem text -- the executable path, the work dir, the socket, the
@@ -1147,6 +1198,20 @@ def _rewrite_single_spec(
             # the client's own filter decides, like the mute below.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
+        if (
+            is_withheld_mute(entry)
+            and mcp_entry_is_muted(entry)
+            and routed_for_secret_reference(name, stub_servers)
+        ):
+            # The rebuild muted this entry only because it was not routed, and
+            # this pass routes it (the launch probe asks before the routing is
+            # saved). A wrapped server is started by the gateway, which resolves
+            # the reference, so the mute is lifted here rather than read as the
+            # user's: otherwise the launch the routing switch must approve is
+            # never captured.
+            entry = {
+                k: v for k, v in entry.items() if k not in (WITHHELD_KEY, "disabled")
+            }
         if mcp_entry_is_muted(entry):
             # Honour the user's mute: a server disabled in the agent spec must
             # never be wrapped into a live pooling stub. Read fail-closed, so a
@@ -1175,7 +1240,15 @@ def _rewrite_single_spec(
         # call sites, uncached). Honouring it only in this function produced a
         # stub nothing pointed at, and a dashboard row that read "stub" for a
         # server that had none. One source of truth instead.
-        if name not in stub_servers:
+        if name not in stub_servers and not (
+            secret_reference_keys(entry.get("env"))
+            and routed_for_secret_reference(name, stub_servers)
+        ):
+            # A spec key is the slash-free alias, while the routing list may hold
+            # the raw name. A server carrying a vault reference is routed under
+            # either form, by the same helper the agent-spec rebuild asks before
+            # it lets the server through; every other server keeps the
+            # exact-name rule.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # A reserved kirocrew-* name launches the managed invocation, whatever
@@ -1189,6 +1262,22 @@ def _rewrite_single_spec(
         resolved_cmd = _resolve_target_command(
             str(entry.get("command", "")), entry_env, notes
         )
+        # See :func:`_must_stay_wrapped`: such a server is wrapped even when the
+        # checks below would leave it unwrapped, so it fails closed instead.
+        stay_wrapped = _must_stay_wrapped(entry_env)
+        # Set only when a check below would have left the server unwrapped and
+        # it is wrapped anyway; such a stub is not pooled.
+        forced_wrap = False
+        if not resolved_cmd and stay_wrapped:
+            forced_wrap = True
+            logger.warning(
+                "rewriter: cannot resolve MCP command %r for opted-in server "
+                "%r (agent %r) on the gateway search path, and its env holds a "
+                "secret:// reference; wrapping it anyway so it fails to start "
+                "rather than start with the reference unresolved.",
+                entry.get("command", ""), name, agent_name,
+            )
+            resolved_cmd = str(entry.get("command", ""))
         if not resolved_cmd:
             # An unresolvable bare command means gatewayd's spawn is a
             # guaranteed ENOENT (it runs under the systemd --user PATH), and
@@ -1211,7 +1300,10 @@ def _rewrite_single_spec(
             if pooling_enabled
             else 0
         )
-        if withheld:
+        # A server whose env names a vault secret is the one case where leaving it
+        # unwrapped cannot work; see :func:`_needs_private_backend`.
+        private = _needs_private_backend(withheld, entry_env)
+        if withheld and not private:
             # A pooled backend is spawned WITHOUT
             # part (or, with forwarding off, all) of the env this spec
             # declares. A server that needs a withheld key dies at prime on
@@ -1244,8 +1336,13 @@ def _rewrite_single_spec(
             resolved_cmd=resolved_cmd,
             entry_env=entry_env,
         ):
-            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
-            continue
+            if not stay_wrapped:
+                new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+                continue
+            # A refused launch that stays wrapped is still never exec'd by the
+            # gateway: ``filter_target_env`` drops its target, so it is refused.
+            forced_wrap = True
+        private = private or forced_wrap
         new_servers[name] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=name,
@@ -1259,8 +1356,9 @@ def _rewrite_single_spec(
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
             # Sharing is global over the stub set: being stubbed is the only
-            # per-server decision, so there is nothing further to consult here.
-            poolable=pooling_enabled,
+            # per-server decision -- except a server that could not be shared
+            # with its env intact and names a vault secret (``private`` above).
+            poolable=pooling_enabled and not private,
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
@@ -1335,6 +1433,12 @@ def _rewrite_single_spec(
         resolved_cmd = _resolve_target_command(
             str(entry.get("command", "")), entry_env, notes
         )
+        inject_stay_wrapped = _must_stay_wrapped(entry_env)
+        inject_forced = False
+        if not resolved_cmd and inject_stay_wrapped:
+            # Wrapped anyway, for the reason in :func:`_must_stay_wrapped`.
+            resolved_cmd = str(entry.get("command", ""))
+            inject_forced = True
         if not resolved_cmd:
             # Membership in ``inject`` was vetted by
             # _injectable_settings_servers (same resolver, same pass), so this
@@ -1363,9 +1467,18 @@ def _rewrite_single_spec(
             resolved_cmd=resolved_cmd,
             entry_env=entry_env,
         ):
-            # Not injected at all: kiro-cli's own merge of the real settings
-            # file still gives the session this server, launched in-sandbox.
-            continue
+            if not inject_stay_wrapped:
+                # Not injected at all: kiro-cli's own merge of the real settings
+                # file still gives the session this server, launched in-sandbox.
+                continue
+            inject_forced = True
+        # The vetting pass let a withheld-env server through only for this reason.
+        inject_private = inject_forced or (
+            pooling_enabled
+            and _needs_private_backend(
+                _withheld_env_count(entry_env, forward_env, identity_keys), entry_env
+            )
+        )
         new_servers[alias] = _build_stub_entry(
             stubs_dir=stubs_dir,
             server_name=alias,
@@ -1378,7 +1491,7 @@ def _rewrite_single_spec(
             sandbox_mode=sandbox_mode,
             approval_mode=approval_mode,
             sidecars_written=sidecars_written,
-            poolable=pooling_enabled,
+            poolable=pooling_enabled and not inject_private,
             identity_keys=identity_keys,
             read_buffer_limit=read_buffer_limit,
             notes=notes,
@@ -1458,7 +1571,9 @@ def _injectable_settings_servers(
         # projection already repairs both).
         entry = _repair_control_plane_entry(name, entry, "settings/mcp.json")
         entry_env = _normalized_env(entry, context=f"settings server {name!r}")
-        if not _resolve_target_command(str(entry.get("command", "")), entry_env, notes):
+        if not _resolve_target_command(
+            str(entry.get("command", "")), entry_env, notes
+        ) and not _must_stay_wrapped(entry_env):
             # Settings edition of the unresolvable-command guard: an
             # unresolvable bare command must not be pooled into a stub whose
             # spawn is a guaranteed ENOENT. Leaving it out of the injection
@@ -1477,7 +1592,7 @@ def _injectable_settings_servers(
             if pooling_enabled
             else 0
         )
-        if withheld:
+        if withheld and not _needs_private_backend(withheld, entry_env):
             # Settings edition of the withheld-env guard: pooling would
             # withhold part or all of this server's declared env and
             # crash-loop it.
@@ -1743,8 +1858,10 @@ def _rewrite_inputs_fingerprint(
       ``pooling_enabled`` — decide stub flags and which entries are shareable.
     * ``python`` records ``sys.executable``, which is baked into every overlay
       ``command``. ``python_isolation_flags`` records the effective option prefix
-      derived by :func:`platform_compat.isolated_python_argv`, so either an
-      interpreter move or a user-site policy change regenerates the overlays.
+      the stub argv carries (``-P`` plus the optional ``-s`` derived by
+      :func:`platform_compat.isolated_python_argv`), so an interpreter move, a
+      user-site policy change, or a change to the stub's own interpreter
+      options regenerates the overlays.
     * ``python_cmd_safe`` — the cmd.exe-safe spelling of ``sys.executable``
       actually written as the overlay ``command`` on Windows. A volume's 8.3
       name generation being toggled (or the alias stripped with ``fsutil
@@ -1784,7 +1901,8 @@ def _rewrite_inputs_fingerprint(
         "schema": _FINGERPRINT_SCHEMA,
         "package": __version__,
         "python": sys.executable,
-        "python_isolation_flags": platform_compat.isolated_python_argv()[1:],
+        # The stub argv's option prefix, ``-P`` included (see _build_stub_entry).
+        "python_isolation_flags": platform_compat.isolated_python_argv("-P")[1:],
         "python_cmd_safe": _cmd_safe_command(sys.executable),
         "path_env": os.environ.get("PATH", ""),
         "pathext": os.environ.get("PATHEXT", ""),
@@ -3025,19 +3143,33 @@ def env_sidecar_name(agent_name: str, server_name: str) -> str:
     NUL-delimited RAW components restores injectivity, so distinct
     ``(agent, server)`` pairs can never share a file.
 
+    THE AGENT STAYS IN THE NAME EVEN THOUGH IT IS NOT A POOL DIMENSION, and the
+    two facts do not conflict. This file carries one declaration's FULL env,
+    rotating secrets included, and it is read back unfiltered for a
+    connection-private backend. The pool dimension available instead,
+    ``effective_env_hash``, deliberately EXCLUDES every
+    ``AWS_SECRET``/``AWS_SESSION``/``OAUTH`` key, so two agents declaring one
+    server with the same non-secret env and different credentials hash equal:
+    naming the file after that hash would put both declarations on one name,
+    the second write would win, and the first agent's private backend would be
+    handed the second agent's credentials. One name per declaration makes that
+    substitution unrepresentable. Pool identity is unaffected either way --
+    nothing here reaches :class:`~kiro_crew.mcp_gateway.pool.PoolKey`, so two
+    agents declaring a server identically still share one backend and simply
+    read their own byte-identical copy of this file.
+
     Single source of truth for the naming rule: the rewriter writes the sidecar
-    and ``gatewayd`` reads it back by recomputing this name from the PoolKey's
-    ``agent_name``/``server_name``, so a change here moves both ends at once.
-    Sidecars written under an older naming scheme are pruned as stale by
-    ``rewrite_agents`` (it deletes any ``env/*.json`` it did not just write).
+    and ``gatewayd`` reads it back by recomputing this name from the agent its
+    Register frame named plus the PoolKey's ``server_name``, so a change here
+    moves both ends at once. Sidecars written under an older naming scheme are
+    pruned as stale by ``rewrite_agents`` (it deletes any ``env/*.json`` it did
+    not just write).
     """
 
     def _san(s: str) -> str:
         return "".join(c if (c.isalnum() or c in "_-") else "_" for c in s)
 
-    digest = hashlib.sha256(
-        f"{agent_name}\0{server_name}".encode("utf-8")
-    ).hexdigest()[:12]
+    digest = hashlib.sha256(f"{agent_name}\0{server_name}".encode("utf-8")).hexdigest()[:12]
     return f"{_san(agent_name)}.{_san(server_name)}.{digest}.json"
 
 

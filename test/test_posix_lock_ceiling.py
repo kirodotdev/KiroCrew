@@ -35,9 +35,11 @@ from pathlib import Path
 from typing import Iterator
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 
 from kiro_crew import platform_compat
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.clock import ManualClock
 
 pytestmark = pytest.mark.skipif(
     not platform_compat.IS_POSIX, reason="POSIX flock ceiling; Windows has its own branch"
@@ -285,6 +287,38 @@ class TestStagingLockOutlastsItsOwnWork:
         assert seen.get("timeout") == frontend._STAGING_LOCK_TIMEOUT
 
 
+def _pin_clock(monkeypatch) -> ManualClock:
+    """A clock only the lock helpers read, starting at 0.
+
+    Installed on ``platform_compat``'s own binding. Its ``time`` IS the stdlib
+    module, so patching ``platform_compat.time.sleep`` (or the stdlib ``time``
+    itself) would also record, and count against the deadline, any other
+    thread's sleep in the worker.
+
+    The lock owners in ``kiro_crew.platform_lock_compat`` read the clock through a
+    function-local ``from kiro_crew.platform_compat import ... time``
+    (``_posix_acquire_blocking``, ``_win_acquire_blocking``, ``file_lock`` and
+    ``acquire_lock``), so this one install clocks all of them, including a
+    ``file_lock`` that another thread left running in this worker takes while
+    the test runs.
+
+    It also clocks ``platform_compat``'s own readers of that binding, such as
+    ``terminate_and_reap_sync`` (its POSIX process-group wait) and
+    ``_drain_windows_process_tree``. A thread left inside one of those while
+    the test runs would still record its poll sleep here. That window is
+    acceptable: it needs a leftover thread in one of a few cleanup loops for
+    the length of one test, where a stdlib patch would record every sleeping
+    thread in the worker.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, platform_compat)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    assert_clock_is_private(_pin_clock(monkeypatch), platform_compat)
+
+
 class TestOnLoopNeverSleeps:
     """A contended acquire on the event-loop thread must not sleep there."""
 
@@ -296,7 +330,7 @@ class TestOnLoopNeverSleeps:
 
         async def _acquire_on_loop() -> None:
             with pytest.MonkeyPatch.context() as mp:
-                mp.setattr(time, "sleep", lambda s: slept.append(s))
+                clock = _pin_clock(mp)
                 fd = os.open(held_lock, os.O_CREAT | os.O_RDWR, 0o600)
                 try:
                     started = time.monotonic()
@@ -314,6 +348,7 @@ class TestOnLoopNeverSleeps:
                     assert "stuck" not in message
                 finally:
                     os.close(fd)
+                slept.extend(clock.sleeps)
 
         asyncio.run(_acquire_on_loop())
         # The assertion that matters: zero sleeps on the loop thread. A patched
@@ -476,23 +511,16 @@ class TestPollBackoff:
     def test_backoff_caps_the_sleep_and_never_overshoots_the_deadline(self, monkeypatch):
         # No real lock here: the SLEEP SCHEDULE is the subject, so the acquire is
         # stubbed permanently-held and every sleep is recorded instead of taken.
-        slept: list[float] = []
         monkeypatch.setattr(platform_compat, "_LOCK_TIMEOUT_SECS", 5.0)
 
         def _always_held(fd, mode):
             raise OSError(errno.EAGAIN, "held")
 
-        clock = {"now": 0.0}
-
-        def _fake_sleep(secs: float) -> None:
-            slept.append(secs)
-            clock["now"] += secs
-
         monkeypatch.setattr(platform_compat.fcntl, "flock", _always_held)
-        monkeypatch.setattr(platform_compat.time, "sleep", _fake_sleep)
-        monkeypatch.setattr(platform_compat.time, "monotonic", lambda: clock["now"])
+        clock = _pin_clock(monkeypatch)
 
         assert platform_compat._posix_acquire_blocking(0, 0) is False
+        slept = clock.sleeps
 
         # Bounded wakeups: a flat 10ms poll over 5s would be ~500 sleeps.
         assert len(slept) < 60, f"too many wakeups: {len(slept)}"

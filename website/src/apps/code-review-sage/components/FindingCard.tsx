@@ -29,10 +29,11 @@
 // renders through MarkdownRenderer; the `snippet` is code from a private diff and
 // renders verbatim in a monospace block — NEVER through the markdown renderer, so
 // it cannot be reinterpreted as markup.
-import { Check, Loader2, MessageSquarePlus } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { Check, EyeOff, Loader2, MessageSquarePlus } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import ErrorNotice from '../../../components/ErrorNotice'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
-import type { Finding } from '../lib/types'
+import type { DismissedFinding, Finding } from '../lib/types'
 
 import { i18nT } from '../../../i18n/t'
 /** Severity → visual treatment. Red is a blocking finding, yellow a should-fix.
@@ -108,6 +109,7 @@ function DetailRow({ label, value, accent = false, children }: {
 export default function FindingCard({
   finding, onPost, posted = false, posting = false,
   selectable = false, selected = false, onToggle, label = '',
+  dismissed = null, onDismiss,
 }: {
   finding: Finding
   /** Post THIS finding as a single inline comment. Omitted when the run cannot
@@ -122,7 +124,25 @@ export default function FindingCard({
   onToggle?: () => void
   /** Accessible name for the checkbox — the card's own text is long. */
   label?: string
+  /** Set when the user chose not to send this finding, with their reason. */
+  dismissed?: DismissedFinding | null
+  /** Dismiss with a reason, or undo with `null`. Omitted when the run cannot
+   *  take a dismissal. Resolves once the server stored it. */
+  onDismiss?: (reason: string | null) => Promise<void>
 }) {
+  const [asking, setAsking] = useState(false)
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const save = (value: string | null) => {
+    if (!onDismiss) return
+    setSaving(true)
+    setFailed(false)
+    onDismiss(value)
+      .then(() => { setAsking(false); setReason('') })
+      .catch(() => setFailed(true))
+      .finally(() => setSaving(false))
+  }
   const { text, border, word } = severityVisual(finding.severity)
   const location = [finding.file, finding.line != null && finding.line !== '' ? String(finding.line) : null]
     .filter(Boolean)
@@ -134,12 +154,20 @@ export default function FindingCard({
   // A record predating the `headline` field has none, so the dimension eyebrow
   // carries the card alone and the observation stays the lead — old reviews keep
   // rendering rather than showing an empty heading.
-  const showActions = posted || Boolean(onPost) || (selectable && !posted)
+  // A dismissed finding is not offered for posting: the footer shows the reason
+  // and the undo instead.
+  const isDismissed = Boolean(dismissed) && !posted
+  const canDismiss = Boolean(onDismiss) && !posted
+  const showActions = posted || Boolean(onPost) || (selectable && !posted) || canDismiss
 
   return (
-    <div className={`rounded-lg border border-border bg-bg-elevated overflow-hidden border-l-[3px] ${border} my-2`}>
+    <div className={`rounded-lg border border-border bg-bg-elevated overflow-hidden border-l-[3px] ${
+      isDismissed ? 'border-l-border' : border} my-2`}>
       <div className="px-3.5 pb-2 pt-2.5">
-        <div className={`text-[10px] font-semibold uppercase tracking-wider ${text}`}>
+        {/* A dismissed finding no longer asks for action, so its severity reads
+            muted rather than as a live blocker. */}
+        <div className={`text-[10px] font-semibold uppercase tracking-wider ${
+          isDismissed ? 'text-muted line-through' : text}`}>
           {eyebrow}
         </div>
         {headline && (
@@ -188,7 +216,81 @@ export default function FindingCard({
           Each post is its own pending review on the pull request. The checkbox
           lives here rather than in the header so that choosing a finding and
           drafting it read as one decision. */}
-      {showActions && (
+      {showActions && isDismissed && (
+        <div className="flex items-start gap-2 border-t border-border-strong bg-bg-elevated px-3.5 py-2">
+          <EyeOff size={12} className="mt-0.5 flex-shrink-0 text-muted" aria-hidden="true" />
+          <div className="min-w-0 flex-1 flex flex-col gap-1 text-[11.5px] text-muted break-words">
+            {i18nT('apps.codeReviewSage.components.findingCard.dismissed_reason',
+              { reason: asText(dismissed?.reason) })}
+            {/* On this card the failed call was an undo, so say that, not "dismissal". */}
+            <ErrorNotice
+              message={failed ? i18nT('apps.codeReviewSage.components.findingCard.undo_dismiss_failed') : null}
+              askAgent
+              variant="inline"
+            />
+          </div>
+          {onDismiss && (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => save(null)}
+              className="flex-shrink-0 rounded-md bg-transparent px-1.5 py-0.5 text-[11.5px] text-accent hover:underline disabled:opacity-50 cursor-pointer disabled:cursor-default"
+            >
+              {i18nT('apps.codeReviewSage.components.findingCard.undo_dismiss')}
+            </button>
+          )}
+        </div>
+      )}
+      {showActions && !isDismissed && asking && (
+        <form
+          className="flex flex-col gap-2 border-t border-border-strong bg-bg-elevated px-3.5 py-2"
+          onSubmit={(e) => { e.preventDefault(); if (reason.trim()) save(reason.trim()) }}
+        >
+          <label className="flex flex-col gap-1 text-[11.5px] text-muted">
+            {i18nT('apps.codeReviewSage.components.findingCard.dismiss_reason_label')}
+            <textarea
+              aria-label={i18nT('apps.codeReviewSage.components.findingCard.dismiss_reason_label')}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              // An edit typed during the save would be cleared unsaved on success.
+              disabled={saving}
+              maxLength={500}
+              rows={2}
+              autoFocus
+              placeholder={i18nT('apps.codeReviewSage.components.findingCard.dismiss_reason_placeholder')}
+              className="rounded-md border border-border bg-card px-2 py-1 text-[12px] text-text"
+            />
+          </label>
+          {/* No hand-off: beside a live input, and the agent navigation would
+              take the half-typed reason with it. */}
+          <ErrorNotice
+            message={failed ? i18nT('apps.codeReviewSage.components.findingCard.dismiss_failed') : null}
+            askAgent={false}
+            variant="inline"
+          />
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              // While the save is in flight, cancelling would close the form
+              // before a failure could show in it.
+              disabled={saving}
+              onClick={() => { setAsking(false); setReason(''); setFailed(false) }}
+              className="rounded-md bg-transparent px-1.5 py-1 text-[11.5px] text-muted hover:text-text disabled:opacity-50 cursor-pointer disabled:cursor-default"
+            >
+              {i18nT('apps.codeReviewSage.components.findingCard.cancel_dismiss')}
+            </button>
+            <button
+              type="submit"
+              disabled={saving || !reason.trim()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-text hover:text-accent hover:border-accent disabled:opacity-50 cursor-pointer disabled:cursor-default"
+            >
+              {saving && <Loader2 size={11} className="animate-spin motion-reduce:animate-none" aria-hidden="true" />}
+              {i18nT('apps.codeReviewSage.components.findingCard.confirm_dismiss')}
+            </button>
+          </div>
+        </form>
+      )}
+      {showActions && !isDismissed && !asking && (
         <div className="flex items-center gap-2 border-t border-border-strong bg-bg-elevated px-3.5 py-2">
           {selectable && !posted && (
             <label className="flex items-center gap-2 text-[11.5px] text-muted cursor-pointer">
@@ -204,6 +306,16 @@ export default function FindingCard({
             </label>
           )}
           <span className="flex-1" />
+          {canDismiss && !posting && (
+            <button
+              type="button"
+              onClick={() => setAsking(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-2 py-1 text-[11.5px] text-muted hover:text-text hover:border-border-strong cursor-pointer"
+            >
+              <EyeOff size={11} aria-hidden="true" />
+              {i18nT('apps.codeReviewSage.components.findingCard.dismiss')}
+            </button>
+          )}
           {posted ? (
             <span className="inline-flex items-center gap-1.5 text-[11.5px] text-ok">
               <Check size={11} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.findingCard.posted_to_the_pull_request')}

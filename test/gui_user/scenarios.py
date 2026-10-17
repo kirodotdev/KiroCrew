@@ -57,7 +57,7 @@ FEATURES: dict[str, str] = {
     "topbar": "Top bar",
     "search": "Search everywhere & command palette",
     "members": "Crew Members",
-    "capabilities": "Agent capabilities (crews, templates, skills, prompts, steering, hooks, workflows)",
+    "capabilities": "Customize (crews, templates, skills, prompts, steering, hooks, workflows)",
     "connections": "Connections (MCP servers & services)",
     "memory": "Memory, lessons & usage",
     "knowledge": "Knowledge library",
@@ -132,6 +132,20 @@ PERSONAS: dict[str, str] = {
 DEFAULT_PERSONA = "new-user"
 
 
+#: Placeholder a scenario's ``summary``, ``steps`` and ``expectations`` may carry.
+#: The target boots once per run, so a retry meets whatever its first attempt
+#: created: a scenario that creates a named thing ("Radar") would have its
+#: retry refused as a duplicate, and the refused form would stay open, dirty,
+#: for the next scenario to land on. Writing the name as
+#: ``Radar{attempt_suffix}`` gives attempt 1 "Radar" and attempt N "Radar N".
+ATTEMPT_SUFFIX = "{attempt_suffix}"
+
+
+def attempt_suffix(attempt_no: int) -> str:
+    """What :data:`ATTEMPT_SUFFIX` reads on ``attempt_no`` (1-based): '' then ' 2', ' 3'..."""
+    return "" if attempt_no <= 1 else f" {attempt_no}"
+
+
 class ScenarioError(ValueError):
     """A scenario file is malformed."""
 
@@ -163,16 +177,25 @@ class Scenario:
     def reports_friction(self) -> bool:
         return bool(self.persona_prompt)
 
-    def task_prompt(self) -> str:
-        """The user-turn text handed to the model, built only from the YAML."""
+    def task_prompt(self, attempt_no: int = 1) -> str:
+        """The user-turn text handed to the model, built only from the YAML.
+
+        ``attempt_no`` fills :data:`ATTEMPT_SUFFIX` (see :func:`attempt_suffix`),
+        so a scenario that creates a named thing asks its retry for a new name.
+        """
+        suffix = attempt_suffix(attempt_no)
+
+        def fill(text: str) -> str:
+            return text.replace(ATTEMPT_SUFFIX, suffix)
+
         lines = [
-            f"TASK: {self.summary}",
+            f"TASK: {fill(self.summary)}",
             "",
             "Do these steps in order, like a person at the keyboard:",
         ]
-        lines += [f"{i}. {s}" for i, s in enumerate(self.steps, 1)]
+        lines += [f"{i}. {fill(s)}" for i, s in enumerate(self.steps, 1)]
         lines += ["", "When you are done, ALL of these must be true and visible on screen:"]
-        lines += [f"- {e}" for e in self.expectations]
+        lines += [f"- {fill(e)}" for e in self.expectations]
         lines += [
             "",
             f"You have at most {self.max_steps} actions and about {self.max_seconds // 60} minutes.",

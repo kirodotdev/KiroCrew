@@ -7,12 +7,11 @@
  * registry cannot quietly drop a dimension; they pass both before and after
  * the refactor, which deliberately changed no filter's behaviour.
  *
- * The structural cases are the before/after guard, and their reach is narrow:
- * they fail while the effect names filter state directly, and they pin that
- * the registry adapts the single filterDimensions declaration rather than
- * declaring dimensions of its own. The declaration's shape — and that
- * filteredSlots and listNarrowed derive from the same source — is pinned by
- * ChatSidebar.filterDimensions.test.tsx.
+ * The structural case reads only the reveal owner's effect, and its reach is
+ * narrow: it fails while the effect names filter state directly. That the
+ * registry is derived from the one dimension declaration, with one entry per
+ * dimension answering the same rows the filter pass drops, is pinned at the row
+ * model's interface (`pages/chat-sidebar/rows.test.ts`).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -235,12 +234,10 @@ describe('reveal-in-sidebar drops every registered filter dimension', () => {
   })
 })
 
-const SRC = join(__dirname, '..', 'pages', 'ChatSidebar.tsx')
 /** The reveal owner: both reveal effects live here, the session one first. */
 const REVEAL_SRC = join(__dirname, '..', 'pages', 'chat-sidebar', 'reveal.ts')
 // Flattened first: a line-by-line scan misses a construct the moment a
 // reformat splits it across lines.
-const flat = readFileSync(SRC, 'utf8').replace(/\s+/g, ' ')
 const revealFlat = readFileSync(REVEAL_SRC, 'utf8').replace(/\s+/g, ' ')
 
 /** The session reveal effect's body, from its guard clause to its dependency array. */
@@ -266,22 +263,5 @@ describe('reveal filter dimensions are registered, not enumerated in the effect'
     }
     // It consults the registry instead.
     expect(effect).toContain('revealBlockingFilters')
-  })
-
-  it('the registry derives from the single filterDimensions declaration', () => {
-    const registry = flat.match(/const revealBlockingFilters = useMemo<RevealBlockingFilter\[\]>.*?\}, \[[^\]]*\]\)/)?.[0]
-    expect(registry).toBeDefined()
-    // Dimensions are declared ONCE, in filterDimensions (whose shape
-    // ChatSidebar.filterDimensions.test.tsx pins); this registry only adapts
-    // them, so it can no longer hold a dimension the other consumers miss.
-    expect(registry).toContain('filterDimensions.map')
-    for (const named of [
-      'filterTagIds', 'clearTagFilter',
-      'slotFilter', 'setSlotFilter',
-      'activeFilters', 'setActiveFilters', 'SESSION_FILTERS',
-      'filterHiddenSubtree', 'setFilterHiddenFolders',
-    ]) {
-      expect(registry, `reveal registry must not name ${named} directly`).not.toContain(named)
-    }
   })
 })

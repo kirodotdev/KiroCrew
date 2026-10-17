@@ -148,6 +148,62 @@ class TestSafeAvatar:
         assert _safe_avatar(raw)["traits"]["tile"] == "#21a5de"
 
 
+class TestSafeAvatarIconKind:
+    """The icon tier: a shipped pose over a solid background."""
+
+    def test_valid_icon_round_trips(self):
+        icon = {"kind": "icon", "pose": "pose-3", "bg": "#21a5de"}
+        assert _safe_avatar(icon) == icon
+
+    def test_bg_normalized_lowercase(self):
+        out = _safe_avatar({"kind": "icon", "pose": "pose-1", "bg": "#21A5DE"})
+        assert out["bg"] == "#21a5de"
+
+    def test_bg_pinned_to_hex(self):
+        """bg is interpolated into SVG markup, so junk must not survive."""
+        out = _safe_avatar({"kind": "icon", "pose": "pose-1", "bg": '"><script>'})
+        assert "bg" not in out
+        assert out == {"kind": "icon", "pose": "pose-1"}
+
+    def test_missing_pose_collapses(self):
+        """A pose IS the icon's whole identity — no pose, nothing to draw."""
+        assert _safe_avatar({"kind": "icon", "bg": "#21a5de"}) == {}
+        assert _safe_avatar({"kind": "icon", "pose": "", "bg": "#21a5de"}) == {}
+        assert _safe_avatar({"kind": "icon", "pose": 42}) == {}
+
+    def test_unknown_pose_is_kept_not_dropped(self):
+        """Forgiving like a ghost trait: a pose a newer client wrote survives so
+        an unrelated save does not wipe it; the client resolves it."""
+        out = _safe_avatar({"kind": "icon", "pose": "pose-99", "bg": "#21a5de"})
+        assert out == {"kind": "icon", "pose": "pose-99", "bg": "#21a5de"}
+
+    def test_junk_charset_pose_collapses(self):
+        """A pose that could reach the SVG template as markup is refused."""
+        assert _safe_avatar({"kind": "icon", "pose": '"><script>'}) == {}
+
+    def test_pose_bounded_in_length(self):
+        out = _safe_avatar({"kind": "icon", "pose": "p" * 200})
+        assert len(out["pose"]) == _AVATAR_TRAIT_MAX_LEN
+
+    def test_icon_carries_no_reaction_keys(self):
+        """An icon is static — motions/sounds/expressions never ride on it."""
+        out = _safe_avatar(
+            {
+                "kind": "icon",
+                "pose": "pose-1",
+                "bg": "#21a5de",
+                "motions": {"done": "bounce"},
+                "sounds": {"done": "chime"},
+                "expressions": {"done": {"eyes": "wink"}},
+            }
+        )
+        assert out == {"kind": "icon", "pose": "pose-1", "bg": "#21a5de"}
+
+    def test_absent_bg_drops_the_key(self):
+        out = _safe_avatar({"kind": "icon", "pose": "pose-2"})
+        assert out == {"kind": "icon", "pose": "pose-2"}
+
+
 class TestKiroCrewAgentConfigAvatar:
     """avatar field on KiroCrewAgentConfig."""
 
@@ -1319,7 +1375,7 @@ class TestGhostReactionsRoundTripThroughTheEndpoints:
     # that save would delete a pick the user made through the API, with no
     # click that meant it. Absent key = leave alone; naming the key -- `{}`
     # included -- is the caller's statement. Same tri-state `save_pack` gives a
-    # pack's cues, same reason `_carry_pack_through_faceless_save` exists.
+    # pack's cues.
 
     @pytest.fixture()
     def ghost_with_motions(self, seeded_agent):
@@ -1674,8 +1730,13 @@ class TestPackAvatarThroughTheEndpoints:
         assert KiroCrewConfig.load().agents[seeded_agent].avatar == _PACK
 
     @pytest.mark.asyncio
-    async def test_an_explicit_null_still_takes_the_pack_off(self, seeded_agent):
-        """`null` is the one reset spelling the editor never emits, so it stays honest."""
+    async def test_an_unrelated_save_leaves_the_pack_alone(self, seeded_agent):
+        """A save that does not carry the ``avatar`` key is not about the face.
+
+        This is the spelling every caller that edits something else uses -- the
+        composer's model chip, the roster's star, change cards -- so a pack the
+        crew wears survives all of them without any help from the avatar path.
+        """
         from aiohttp.test_utils import TestClient, TestServer
 
         async with TestClient(TestServer(self._app())) as client:
@@ -1683,31 +1744,64 @@ class TestPackAvatarThroughTheEndpoints:
                 await client.put(f"/api/agents/{seeded_agent}", json={"avatar": _PACK})
             ).status == 200
             assert (
-                await client.put(f"/api/agents/{seeded_agent}", json={"avatar": None})
+                await client.put(f"/api/agents/{seeded_agent}", json={"description": "edited"})
             ).status == 200
+        stored = KiroCrewConfig.load().agents[seeded_agent]
+        assert stored.avatar == _PACK
+        assert stored.description == "edited"
+
+    @pytest.mark.asyncio
+    async def test_an_editor_style_save_names_the_pack_and_keeps_it(self, seeded_agent):
+        """The crew editor loads a pack crew as ``{kind: 'pack', id}`` and sends it
+        back on every save, so an edit to the model or colour writes the pack the
+        crew already wears."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            assert (
+                await client.put(f"/api/agents/{seeded_agent}", json={"avatar": _PACK})
+            ).status == 200
+            assert (
+                await client.put(
+                    f"/api/agents/{seeded_agent}",
+                    json={"avatar": dict(_PACK), "description": "edited"},
+                )
+            ).status == 200
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == _PACK
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reset", [None, {}])
+    async def test_both_reset_spellings_take_the_pack_off(self, seeded_agent, reset):
+        """``null`` and ``{}`` are the documented reset spellings, and a pack
+        honours them like every other tier does."""
+        from aiohttp.test_utils import TestClient, TestServer
+
+        async with TestClient(TestServer(self._app())) as client:
+            assert (
+                await client.put(f"/api/agents/{seeded_agent}", json={"avatar": _PACK})
+            ).status == 200
+            assert (
+                await client.put(f"/api/agents/{seeded_agent}", json={"avatar": reset})
+            ).status == 200
+            roster = await (await client.get("/api/agents")).json()
+        assert self._row(roster, seeded_agent)["avatar"] == {}
         assert KiroCrewConfig.load().agents[seeded_agent].avatar == {}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("faceless", "expected"),
+        "faceless",
         [
-            ({}, _PACK),
-            ({"kind": "ghost", "sounds": {"done": "ding"}}, {**_PACK, "sounds": {"done": "ding"}}),
-            ({"kind": "ghost", "motions": {"done": "nod"}}, _PACK),
+            {"kind": "ghost", "sounds": {"done": "ding"}},
+            {"kind": "ghost", "motions": {"done": "nod"}},
         ],
     )
-    async def test_a_faceless_save_keeps_the_pack(self, seeded_agent, faceless, expected):
-        """What the shipped editor sends for a crew whose pack it cannot render.
+    async def test_a_faceless_ghost_save_moves_a_pack_crew_to_the_ghost(
+        self, seeded_agent, faceless
+    ):
+        """A ghost with no ``traits`` is the name-derived face plus its reactions.
 
-        `CrewAvatarBuilder` rebuilds the override from a closed ghost/picture
-        shape, so a pack-wearing crew opens as the name-derived face and ANY
-        save -- a model change, a colour -- submits `{}` (or a faceless ghost
-        carrying the ghost tier's own reactions). Read as a reset, that silently
-        clears a pack the user set through the API. The pack is kept, and the cue
-        the save carried rides onto it -- so editing a sound on a pack-wearing
-        crew stores the sound and keeps the pack. A ``motions`` pick does not ride
-        along: the validator drops it on this tier, so there is none left by the
-        time the carry runs.
+        Over a pack that is a tier change, the same as it is over a picture: the
+        crew wears the ghost the save describes, reactions included.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -1719,8 +1813,8 @@ class TestPackAvatarThroughTheEndpoints:
                 await client.put(f"/api/agents/{seeded_agent}", json={"avatar": faceless})
             ).status == 200
             roster = await (await client.get("/api/agents")).json()
-        assert self._row(roster, seeded_agent)["avatar"] == expected
-        assert KiroCrewConfig.load().agents[seeded_agent].avatar == expected
+        assert self._row(roster, seeded_agent)["avatar"] == faceless
+        assert KiroCrewConfig.load().agents[seeded_agent].avatar == faceless
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1750,7 +1844,7 @@ class TestPackAvatarThroughTheEndpoints:
 
     @pytest.mark.asyncio
     async def test_a_faceless_save_on_a_ghost_still_resets(self, seeded_agent):
-        """The carve-out is for packs only; ghost keeps its reset semantics."""
+        """``{}`` resets a ghost the same way it resets a pack."""
         from aiohttp.test_utils import TestClient, TestServer
 
         ghost = {"kind": "ghost", "traits": {"eyes": "wink"}}

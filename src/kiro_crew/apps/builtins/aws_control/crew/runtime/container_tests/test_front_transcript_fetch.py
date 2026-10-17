@@ -39,6 +39,11 @@ from .test_front_proxy import _free_port, backend, env  # noqa: F401 - fixtures
 
 TURN = "/c/crew/v1/chat/completions"
 
+#: The turn route authenticates its caller now, so these tests carry the secret.
+#: What each one asserts is unchanged: that the transcript fetch happens, and in
+#: which order relative to the backend seeing the turn.
+AUTH = {"X-SMC-Control-Secret": "CTRL"}
+
 # A body long enough that a truncating bug is visible, and carrying a distinctive
 # string so a test can prove it never reaches a log line.
 SECRET_LINE = "customer-said-something-private"
@@ -95,6 +100,48 @@ def _client_error(code: str, status: int) -> Exception:
     return exc
 
 
+def _data_gets(gets):
+    """The TRANSCRIPT keys fetched, dropping the pointer/index control-plane probes.
+
+    The front resolves a transcript through the committed generation -- a pointer read then
+    (when committed) a transcript-index read -- before the content-addressed blob. These tests
+    measure which transcript objects are consulted, so the two control-plane probes are
+    filtered out; a bucket with no committed pointer answers absent and the stem is a fresh
+    conversation (no legacy fallback).
+    """
+    return [
+        g
+        for g in gets
+        if not g.endswith("/authority_generation.json") and not g.endswith("/transcript_index.json")
+    ]
+
+
+def _stage_committed_transcript(reader, settings, stem: str, body: bytes) -> str:
+    """Stage a committed generation that names *stem* -> *body* so the front resolves it.
+
+    Writes the pointer, the generation's transcript index (``stem -> sha256(body)``), and the
+    content-addressed blob into *reader*. Returns the blob key the fetch should read. The
+    legacy per-stem layout is gone, so this is the only path by which the front finds a
+    transcript now.
+    """
+    import hashlib
+
+    from container.common import keys as _keys
+    from container.sidecar import generation as _generation
+
+    gen_id = _keys.new_generation_id()
+    digest = hashlib.sha256(body).hexdigest()
+    blob = _keys.blob_key(settings, digest)
+    reader.objects[_keys.authority_pointer_key(settings)] = _generation.pointer_body(
+        gen_id, _keys.new_incarnation()
+    )
+    reader.objects[_keys.transcript_index_key(settings, gen_id)] = json.dumps(
+        {stem: digest}
+    ).encode("utf-8")
+    reader.objects[blob] = body
+    return blob
+
+
 def make_settings(backend_env, *, bucket: str | None = "smc-bucket", prefix: str = "crews"):
     """Settings for the HTTP-path tests, with a data home of their own.
 
@@ -111,7 +158,7 @@ def make_settings(backend_env, *, bucket: str | None = "smc-bucket", prefix: str
         backend_run_dir=run_dir,
         front_port=8080,
         route_prefix="/c/crew",
-        control_secret=None,
+        control_secret="CTRL",
         data_home=data_home,
         config_dir=data_home,
         crew_name="crew",
@@ -146,7 +193,7 @@ async def drive(settings, reader, payload: dict) -> httpx.Response:
     app = build_app(settings, transcript_reader=reader)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
-        return await client.post(TURN, json=payload)
+        return await client.post(TURN, json=payload, headers=AUTH)
     finally:
         await client.aclose()
         backend_client = getattr(app.state, "backend_client", None)
@@ -158,7 +205,7 @@ async def drive_stream(settings, reader, payload: dict) -> tuple[int, str]:
     app = build_app(settings, transcript_reader=reader)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
-        async with client.stream("POST", TURN, json=payload) as resp:
+        async with client.stream("POST", TURN, json=payload, headers=AUTH) as resp:
             body = b"".join([chunk async for chunk in resp.aiter_bytes()])
             return resp.status_code, body.decode("utf-8")
     finally:
@@ -185,19 +232,23 @@ def test_the_stem_carries_the_dashboard_thread_prefix() -> None:
 
 
 def test_a_bare_slot_name_is_not_the_object_name(tmp_path: Path) -> None:
-    """A store holding ``<slot>.jsonl`` is a MISS. This is the mutation test.
+    """A bucket with no committed generation has no transcript for the slot: a MISS.
 
-    Point the code at ``<slot>.jsonl`` and this reddens: the object is found and
-    written, which in production is the same shape as the defect (the fetch reads
-    the wrong key) only inverted, so it is the sharpest available witness.
+    With the legacy per-stem layout gone, the resolver reads the pointer, finds none, and
+    answers absent without deriving or fetching any data key. So a transcript dropped into the
+    old per-stem location is simply never consulted -- the content-addressed committed index is
+    the only path to a transcript now.
     """
     settings = local_settings(tmp_path)
-    reader = FakeReader(objects={"crews/crew/data/sessions/cust-8831.jsonl": TRANSCRIPT_BODY})
+    reader = FakeReader(
+        objects={"crews/crew/data/sessions/dashboard_cust-8831.jsonl": TRANSCRIPT_BODY}
+    )
 
     outcome = asyncio.run(transcript.ensure_local_transcript(settings, "cust-8831", reader=reader))
 
     assert outcome.action == "absent"
-    assert reader.gets == ["crews/crew/data/sessions/dashboard_cust-8831.jsonl"]
+    # No committed pointer, so no data key is fetched at all (no legacy fallback).
+    assert _data_gets(reader.gets) == []
     assert not (settings.sessions_dir / "dashboard_cust-8831.jsonl").exists()
 
 
@@ -219,25 +270,6 @@ def test_a_slot_id_cannot_escape_the_sessions_directory(tmp_path: Path) -> None:
     path = transcript.local_transcript_path(settings, stem)
     assert path is not None
     assert path.parent == settings.sessions_dir
-
-
-def test_the_transcript_key_is_derived_consistently(tmp_path: Path) -> None:
-    """The reader must name the object a writer would.
-
-    The backup subsystem (which once owned the key shape) was extracted from this PR, so
-    the front now derives the key from its OWN helpers. When durability returns, its writer
-    and this reader must share one derivation; this pins the front's half so a prefix-join
-    or namespace change reddens here rather than the fetch silently missing every object.
-    """
-    for prefix in ("crews", "", "crews/nested/"):
-        settings = local_settings(tmp_path)
-        settings = common.Settings(**{**settings.__dict__, "backup_prefix": prefix})
-        # Reconstruct the expected key from the same rule the front documents: the
-        # <backup_prefix>/<crew_name>/ join over the data/sessions/<stem>.jsonl rel key.
-        parts = [p for p in (prefix.strip("/"), settings.crew_name.strip("/")) if p]
-        object_prefix = ("/".join(parts) + "/") if parts else ""
-        expected = f"{object_prefix}data/sessions/dashboard_cust-1.jsonl"
-        assert transcript.object_key(settings, "dashboard_cust-1") == expected
 
 
 def test_the_reader_cannot_list_or_write() -> None:
@@ -302,9 +334,8 @@ def test_a_transcript_that_appears_mid_fetch_is_not_clobbered(tmp_path: Path) ->
 
 def test_a_fetch_leaves_no_temp_file_behind(tmp_path: Path) -> None:
     settings = local_settings(tmp_path)
-    reader = FakeReader(
-        objects={"crews/crew/data/sessions/dashboard_cust-1.jsonl": TRANSCRIPT_BODY}
-    )
+    reader = FakeReader()
+    _stage_committed_transcript(reader, settings, "dashboard_cust-1", TRANSCRIPT_BODY)
     outcome = asyncio.run(transcript.ensure_local_transcript(settings, "cust-1", reader=reader))
     assert outcome.action == "fetched" and outcome.bytes_written == len(TRANSCRIPT_BODY)
     assert (settings.sessions_dir / "dashboard_cust-1.jsonl").read_bytes() == TRANSCRIPT_BODY
@@ -407,8 +438,8 @@ async def test_a_streamed_turn_fetches_the_transcript_before_forwarding(env) -> 
     slot lock.
     """
     settings = make_settings(env)
-    key = "crews/crew/data/sessions/dashboard_cust-7.jsonl"
-    reader = FakeReader(objects={key: TRANSCRIPT_BODY})
+    reader = FakeReader()
+    blob = _stage_committed_transcript(reader, settings, "dashboard_cust-7", TRANSCRIPT_BODY)
     env["fake"].stream_chunks = [
         b'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n',
         b"data: [DONE]\n\n",
@@ -419,7 +450,7 @@ async def test_a_streamed_turn_fetches_the_transcript_before_forwarding(env) -> 
     )
 
     assert status == 200 and "[DONE]" in body
-    assert reader.gets == [key]
+    assert _data_gets(reader.gets) == [blob]
     assert (settings.sessions_dir / "dashboard_cust-7.jsonl").read_bytes() == TRANSCRIPT_BODY
     assert len(env["fake"].requests) == 1
 
@@ -427,13 +458,13 @@ async def test_a_streamed_turn_fetches_the_transcript_before_forwarding(env) -> 
 @pytest.mark.asyncio
 async def test_a_non_streamed_turn_fetches_then_forwards(env) -> None:
     settings = make_settings(env)
-    key = "crews/crew/data/sessions/dashboard_cust-8831.jsonl"
-    reader = FakeReader(objects={key: TRANSCRIPT_BODY})
+    reader = FakeReader()
+    blob = _stage_committed_transcript(reader, settings, "dashboard_cust-8831", TRANSCRIPT_BODY)
 
     resp = await drive(settings, reader, {"model": "crew", "id": "cust-8831", "messages": []})
 
     assert resp.status_code == 200
-    assert reader.gets == [key]
+    assert _data_gets(reader.gets) == [blob]
     assert (settings.sessions_dir / "dashboard_cust-8831.jsonl").read_bytes() == TRANSCRIPT_BODY
 
 
@@ -467,16 +498,16 @@ async def test_two_concurrent_turns_on_one_slot_fetch_once(env) -> None:
     that the fetch and the lock are the same scope.
     """
     settings = make_settings(env)
-    key = "crews/crew/data/sessions/dashboard_cust-9.jsonl"
-    reader = FakeReader(objects={key: TRANSCRIPT_BODY}, delay=0.05)
+    reader = FakeReader(delay=0.05)
+    blob = _stage_committed_transcript(reader, settings, "dashboard_cust-9", TRANSCRIPT_BODY)
     env["fake"].turn_delay = 0.05
 
     app = build_app(settings, transcript_reader=reader)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
         r1, r2 = await asyncio.gather(
-            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}),
-            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}),
+            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}, headers=AUTH),
+            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}, headers=AUTH),
         )
     finally:
         await client.aclose()
@@ -485,7 +516,9 @@ async def test_two_concurrent_turns_on_one_slot_fetch_once(env) -> None:
             await backend_client.aclose()
 
     assert r1.status_code == 200 and r2.status_code == 200
-    assert reader.gets == [key], f"fetched {len(reader.gets)} times, expected once"
+    assert _data_gets(reader.gets) == [
+        blob
+    ], f"fetched {len(_data_gets(reader.gets))} times, expected once"
     assert env["fake"].saw_409 == 0
 
 
@@ -494,9 +527,8 @@ async def test_two_concurrent_turns_on_one_slot_fetch_once(env) -> None:
 # --------------------------------------------------------------------------- #
 def test_the_log_carries_the_sid_and_the_byte_count_and_no_contents(tmp_path: Path, caplog) -> None:
     settings = local_settings(tmp_path)
-    reader = FakeReader(
-        objects={"crews/crew/data/sessions/dashboard_cust-1.jsonl": TRANSCRIPT_BODY}
-    )
+    reader = FakeReader()
+    _stage_committed_transcript(reader, settings, "dashboard_cust-1", TRANSCRIPT_BODY)
     with caplog.at_level(logging.DEBUG, logger="smc.front.transcript"):
         asyncio.run(transcript.ensure_local_transcript(settings, "cust-1", reader=reader))
 

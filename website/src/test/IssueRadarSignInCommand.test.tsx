@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { REFRESH_DEFAULTS, AI_LANGUAGE_FOLLOW } from '../apps/issue-radar/lib/format'
 // `/all` for every catalog: `../i18n` registers English only.
@@ -49,7 +50,10 @@ describe('Issue Radar sign-in hint', () => {
       await i18next.changeLanguage(lng)
       for (const { ref, command } of PROVIDERS) {
         signedOut(ref)
-        const { container } = render(<GeneralSettings anchor="account" />)
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        const { container } = render(
+          <QueryClientProvider client={client}><GeneralSettings anchor="account" /></QueryClientProvider>,
+        )
         const codes = [...container.querySelectorAll('code')].map(c => c.textContent)
         expect(codes, `${ref.provider} in ${lng}`).toContain(command)
         cleanup()

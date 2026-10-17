@@ -3,8 +3,9 @@
 Ranks a query over metadata and bodies (the term index first, bounded direct
 reads for the rest), serves an exact key while a first walk is still running, and
 resolves ``$skillname`` tokens. The available set itself
-(``SkillsLoader.scoped_skills``) and exact reads (``read_scoped_skill``) stay in
-the facade with the other ``repo_scope`` gate sites.
+(``SkillsLoader.scoped_skills``) and exact reads (``read_scoped_skill``) live in
+``kiro_crew.skills_selection`` and ``kiro_crew.skills_body_reads``, with the other
+``repo_scope`` gate sites.
 """
 
 from __future__ import annotations

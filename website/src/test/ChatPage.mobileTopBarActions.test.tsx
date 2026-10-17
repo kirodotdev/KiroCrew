@@ -20,7 +20,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
 import type { ComponentProps, ReactNode } from 'react'
 
-vi.mock('../pages/chat/ChatPageMessageContent', () => ({
+vi.mock('../pages/chat/ChatHeaderMenu', () => ({
   ChatHeaderMenu: (p: { onReveal: () => void; onRename: () => void; onAutoTitle: () => void; triggerLabel: ReactNode }) => (
     <div data-testid="header-menu">
       <span data-testid="trigger-label">{p.triggerLabel}</span>
@@ -40,6 +40,14 @@ vi.mock('../pages/chat/SessionTitleControl', () => ({
   ),
 }))
 vi.mock('../components/UpdatePill', () => ({ default: () => null }))
+// The concurrency-cut pieces read the controller through a query and the
+// router; this suite renders the bar without either, so each stands in as a
+// marker that shows WHERE the bar mounts it.
+vi.mock('../components/ConcurrencyCutChip', () => ({
+  ConcurrencyCutLiveRegion: () => <span data-testid="cut-live-region" />,
+  ConcurrencyCutDot: () => <span data-testid="cut-dot" />,
+  ConcurrencyCutMenuItem: ({ Item }: { Item: (p: { children?: ReactNode }) => ReactNode }) => <Item>cut-row</Item>,
+}))
 const apiMock = vi.hoisted(() => ({ generateTitle: vi.fn() }))
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
@@ -74,7 +82,6 @@ function props(over: Partial<Props> = {}): Props {
     currentSlot: { key: 'slot-a', title: 'Release notes' } as ChatSlot,
     sidebarAutoHidden: { current: true },
     openSidebar: vi.fn(),
-    menuAutoTitleInFlight: { current: false },
     effectiveMode: 'normal',
     sidebarOnScreen: false,
     activePoppedOut: false,
@@ -117,6 +124,13 @@ describe('leading cell', () => {
   it('marks a temporary session', () => {
     render(<MobileTopBar {...props({ currentSlot: { key: 'slot-a', memory_mode: 'temporary' } as ChatSlot })} />)
     expect(screen.getByLabelText(i18nT('pages.chatPage.temporary_no_memory_reads_or_writes'))).toBeInTheDocument()
+  })
+
+  it('marks a pinned session at rest and drops the mark once unpinned', () => {
+    const { rerender } = render(<MobileTopBar {...props({ currentSlot: { key: 'slot-a', pinned: true } as ChatSlot })} />)
+    expect(screen.getByLabelText(i18nT('pages.chatSidebar.pinned'))).toBeInTheDocument()
+    rerender(<MobileTopBar {...props({ currentSlot: { key: 'slot-a', pinned: false } as ChatSlot })} />)
+    expect(screen.queryByLabelText(i18nT('pages.chatSidebar.pinned'))).toBeNull()
   })
 
   it('stands the title down in split view and the toggle down in a chat embed', () => {
@@ -171,7 +185,6 @@ describe('session menu actions', () => {
     expect(p.setActionError).toHaveBeenCalledWith(null)
     await act(async () => { resolve({ title: 'Shipping plan' }) })
     expect(p.dispatch).toHaveBeenCalledWith(sseSlotTitle({ key: 'slot-a', title: 'Shipping plan' }))
-    expect(p.menuAutoTitleInFlight.current).toBe(false)
   })
 
   it('auto-title narrates a failure through the page, titled', async () => {
@@ -181,7 +194,6 @@ describe('session menu actions', () => {
     fireEvent.click(screen.getByText('auto-title'))
     await waitFor(() => expect(p.showActionError).toHaveBeenCalledWith('model offline', i18nT('pages.chatPage.could_not_generate_title')))
     expect(p.dispatch).not.toHaveBeenCalled()
-    expect(p.menuAutoTitleInFlight.current).toBe(false)
   })
 
   it('the open title editor drives the page state', () => {
@@ -223,6 +235,18 @@ describe('trailing ⋯ menu', () => {
     await openMore()
     fireEvent.click(await screen.findByRole('menuitem', { name: i18nT('pages.chatPage.return_to_split_view') }))
     expect(p.enterSplit).toHaveBeenCalledWith('slot-z')
+  })
+
+  it('carries the concurrency cut the inline title row cannot show on a phone', async () => {
+    render(<MobileTopBar {...props()} />)
+    const more = trail.querySelector('[data-testid="mobile-topbar-more"]')!
+    // Announced from the bar, and marked on the menu's own trigger.
+    expect(trail.querySelector('[data-testid="cut-live-region"]')).not.toBeNull()
+    expect(more.querySelector('[data-testid="cut-dot"]')).not.toBeNull()
+    await openMore()
+    // Ahead of the window actions (the update row, mocked away here, leads).
+    const rows = await screen.findAllByRole('menuitem')
+    expect(rows[0].textContent).toBe('cut-row')
   })
 
   it('offers no split row when the split feature is off, and enters split for the anchor itself', async () => {

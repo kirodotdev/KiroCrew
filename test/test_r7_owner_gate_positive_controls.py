@@ -330,6 +330,7 @@ class _FakeWorkflowService:
         self.updated: tuple | None = None
         self.promoted: tuple | None = None
         self.started_definition: tuple | None = None
+        self.rerun: tuple | None = None
 
     def list_definitions(self, search: str = ""):
         return [{"id": "wfd_1", "slug": "debug"}]
@@ -361,6 +362,10 @@ class _FakeWorkflowService:
         self.promoted = (run_id, kwargs)
         return {"ok": True, "definition": {"id": "wfd_2", "slug": "promoted"}}
 
+    async def rerun_subtree(self, run_id: str, from_index: int = 0, **kwargs):
+        self.rerun = (run_id, from_index, kwargs)
+        return {"run_id": "wf_4"}
+
 
 def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
     from kiro_crew.dashboard.handlers.workflows import (
@@ -371,6 +376,7 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
         api_workflow_run,
         api_workflow_run_intent,
         api_workflow_run_promote,
+        api_workflow_run_rerun,
     )
 
     service = _FakeWorkflowService()
@@ -387,6 +393,7 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
         "/api/workflows/definitions/{workflow_ref}/run", api_workflow_definition_run
     )
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
     return app, service
 
 
@@ -471,6 +478,16 @@ async def test_internal_secret_caller_can_still_run_a_saved_definition(
         status, body, "POST /api/workflows/definitions/{ref}/run (internal secret)"
     )
     assert service.started_definition is not None, "the MCP saved-definition path never ran"
+
+
+async def test_owner_can_rerun_a_workflow(attested_internal_identity) -> None:
+    app, service = _workflow_app()
+    async with _client(app, _owner_claims()) as client:
+        response = await client.post("/api/workflows/runs/wf_1/rerun", json={"from_index": 0})
+        status, body = response.status, await _body(response)
+
+    _assert_not_owner_refused(status, body, "POST /api/workflows/runs/{id}/rerun (owner)")
+    assert service.rerun is not None, "owner's rerun never started"
 
 
 async def test_owner_can_save_a_workflow_definition() -> None:

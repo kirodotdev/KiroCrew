@@ -6,7 +6,7 @@
 
 import type { ClientTransport } from './transport'
 
-export function createThemesEndpoints({ post, put, del, j }: ClientTransport) {
+export function createThemesEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const branding = {
     branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   }
@@ -34,8 +34,6 @@ export function createThemesEndpoints({ post, put, del, j }: ClientTransport) {
       import_onboarded?: boolean
       /** Gates the gateway's first heartbeat; see `beacon.telemetry_permitted`. */
       privacy_acked?: boolean
-      /** Set once the first-run Meet CrewMates flow was finished or dismissed. */
-      crewmates_onboarded?: boolean
     }) =>
       put('/api/config/theme', body).then(j),
   }

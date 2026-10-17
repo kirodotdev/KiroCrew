@@ -1,20 +1,24 @@
-"""One-time importer that moves plaintext Jira ``.env`` tokens into the vault.
+"""One-time importer that moves plaintext ``.env`` credentials into the vault.
 
-Kiro Crew stored the Jira API token as a plaintext ``KEY=VALUE`` line in the
-data home's ``.env`` (``~/.kiro/crew/.env``). The encrypted vault
+Kiro Crew keeps credentials as plaintext ``KEY=VALUE`` lines in the data home's
+``.env`` (``~/.kiro/crew/.env``). The encrypted vault
 (:class:`~kiro_crew.secrets.SecretVault`) supersedes that store, and the
-``secret://`` resolver / vault-aware Jira consumer reads the secret without
-ever exposing the plaintext to the agent.
+``secret://`` resolvers read the secret without ever exposing the plaintext to
+the agent.
 
-This module bridges the two for the ONLY vault-aware credential surface in this
-change: the global ``JIRA_API_TOKEN`` and the per-host ``JIRA_TOKEN_<HEX>``
-tokens that ``_get_jira_auth`` resolves vault-first. For each such token still
-held in plaintext it writes the value into the vault under the same key name
-and rewrites the ``.env`` line to ``KEY=secret://KEY``. Other credential keys
-(Slack, Discord, kiro-cli, …) are deliberately NOT migrated — their consumers
-still read the literal ``.env`` value, so rewriting them to a ``secret://``
-reference would break auth. The source file is never deleted — the caller is
-told exactly what migrated and how to remove the leftover plaintext.
+This module bridges the two for the credential keys whose every reader resolves
+a ``secret://`` reference: the global ``JIRA_API_TOKEN`` and the per-host
+``JIRA_TOKEN_<HEX>`` tokens that ``_get_jira_auth`` resolves vault-first, and
+the channel secrets in :data:`~kiro_crew.config.loader.VAULT_CHANNEL_CREDENTIAL_KEYS`
+that :func:`~kiro_crew.config.loader.load_credentials` resolves. For each such
+token still held in plaintext it writes the value into the vault under the same
+key name and rewrites the ``.env`` line to ``KEY=secret://KEY``. Other
+credential keys (kiro-cli's own key, the Azure DevOps PAT, …) are NOT migrated:
+a child process reads them from its inherited environment, where a
+``secret://`` reference cannot be resolved. The source file is never deleted —
+the caller is told exactly what migrated and how to remove the leftover
+plaintext. :class:`ChannelSecretStore` is the same move for one dashboard
+channel save.
 
 The importer is idempotent and order-correct: a line already holding a
 ``secret://`` reference (or a later empty line) for a key WINS over any earlier
@@ -49,18 +53,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     _JIRA_TOKEN_RE,
     CRED_JIRA_API_TOKEN,
+    CREDENTIAL_KEYS,
+    VAULT_CHANNEL_CREDENTIAL_KEYS,
     EnvFileWideEncodingError,
     config_dir,
     env_path,
     read_env_file,
+    read_env_text,
+    vault_channel_env_value,
     warn_undecodable_env,
 )
+from kiro_crew.hidden_leaf_staging import publish_env
 from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
 from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets.vault import entry_revision
 
 logger = logging.getLogger(__name__)
 
@@ -108,19 +117,134 @@ class MigrationConflictError(RuntimeError):
 
 
 def _is_recognized_key(key: str) -> bool:
-    """True if *key* is a Jira credential the vault-aware consumer reads.
+    """True if *key* is a credential whose every reader resolves ``secret://``.
 
-    Scoped deliberately to the ONLY credential surface that resolves through
-    the vault in this change: the global ``JIRA_API_TOKEN`` and the per-host
-    ``JIRA_TOKEN_<HEX>`` tokens that ``_get_jira_auth`` reads vault-first.
+    The global ``JIRA_API_TOKEN`` and the per-host ``JIRA_TOKEN_<HEX>`` tokens
+    that ``_get_jira_auth`` reads vault-first, and the channel secrets in
+    :data:`VAULT_CHANNEL_CREDENTIAL_KEYS`, which reach their channels only
+    through :meth:`KiroCrewConfig.load_credentials`.
 
-    Other ``CREDENTIAL_KEYS`` (Slack, Discord, kiro-cli, …) are intentionally
-    NOT migrated: their consumers still read the literal ``.env`` value, so
-    rewriting their line to a ``secret://`` reference would hand them the URI
-    string instead of the secret and break auth. They migrate once their
-    consumers become vault-aware in a later change.
+    Other ``CREDENTIAL_KEYS`` are NOT migrated. Identifiers (app ids, the owner
+    id) are not secrets, and kiro-cli's key and the Azure DevOps PAT are read by
+    a child process from its inherited environment, so rewriting their line to
+    a ``secret://`` reference would hand that child the URI string instead of
+    the secret and break auth.
     """
-    return key == CRED_JIRA_API_TOKEN or bool(_JIRA_TOKEN_RE.match(key))
+    return (
+        key == CRED_JIRA_API_TOKEN
+        or bool(_JIRA_TOKEN_RE.match(key))
+        or key in VAULT_CHANNEL_CREDENTIAL_KEYS
+    )
+
+
+class ChannelSecretStore:
+    """The vault half of one dashboard channel save.
+
+    :meth:`stage` stores each new :data:`VAULT_CHANNEL_CREDENTIAL_KEYS` token in
+    the vault beside *ep* under the key's own name and hands back the ``.env``
+    updates to write, with that token replaced by its ``secret://KEY``
+    reference (:func:`vault_channel_env_value`). The caller writes them, then
+    calls :meth:`finish` on success or :meth:`rollback` on failure, so a refused
+    ``.env`` write leaves the vault as it found it.
+
+    Clearing a key whose ``.env`` line is the product's own ``secret://KEY``
+    reference deletes that vault entry once the ``.env`` write has landed; a
+    line that points anywhere else names a secret this save does not own, and
+    its entry is left alone.
+
+    Both undo paths are compare-and-swap under the vault's own store lock: a
+    rollback restores an entry only while it still holds the ciphertext this
+    save wrote, and a clear deletes an entry only while it still holds the
+    revision read at :meth:`stage`, so a value stored meanwhile through another
+    writer (the Secrets panel does not take the ``.env`` lock) is never undone.
+
+    Every method is blocking file IO, run by the caller under the ``.env`` lock
+    (:func:`_env_lock_path`). No error or log line carries a token value.
+    """
+
+    def __init__(self, ep: Path) -> None:
+        self._ep = ep
+        self._vault = SecretVault(ep.parent)
+        # key -> (the entry this save displaced, the entry it wrote)
+        self._staged: dict[str, tuple[dict[str, str] | None, dict[str, str]]] = {}
+        # key -> revision of the entry a cleared reference pointed at
+        self._drop: dict[str, str] = {}
+
+    def stage(self, updates: dict[str, str | None]) -> dict[str, str | None]:
+        """Store the new channel tokens in *updates*; return the ``.env`` updates.
+
+        Raises :class:`OSError` when the vault cannot be written, after undoing
+        any entry this call already stored: the save fails closed rather than
+        writing the token to ``.env`` in plaintext. A ``.env`` that cannot be
+        decoded raises before anything is stored.
+        """
+        current: dict[str, str] = {}
+        if any(key in VAULT_CHANNEL_CREDENTIAL_KEYS for key in updates) and self._ep.exists():
+            current = dict(_parse_env_lines(read_env_text(self._ep, encoding="utf-8")))
+        env_updates: dict[str, str | None] = {}
+        for key, value in updates.items():
+            line_value = vault_channel_env_value(key, value)
+            env_updates[key] = line_value
+            if key not in VAULT_CHANNEL_CREDENTIAL_KEYS:
+                continue
+            if not value:
+                if current.get(key) == f"{_SECRET_URI_PREFIX}{key}":
+                    self._note_drop(key)
+                continue
+            if line_value == value:
+                # Already a reference: nothing to store.
+                continue
+            try:
+                self._staged[key] = self._vault._replace_entry_sync(key, value)
+            except Exception as exc:  # noqa: BLE001 - any vault fault fails the save closed
+                self.rollback()
+                raise OSError(
+                    f"The secrets vault could not store {key} ({type(exc).__name__}); "
+                    "nothing was saved."
+                ) from None
+        return env_updates
+
+    def _note_drop(self, key: str) -> None:
+        """Remember the revision of *key*'s entry so :meth:`finish` can delete it."""
+        try:
+            entry = self._vault._load_entries().get(key)
+        except Exception:  # noqa: BLE001 - an unreadable vault leaves the entry in place
+            logger.warning(
+                "Could not read the vault entry %s for a cleared channel value;"
+                " remove it under Settings > Secrets.",
+                key,
+            )
+            return
+        if isinstance(entry, dict):
+            self._drop[key] = entry_revision(entry)
+
+    def rollback(self) -> None:
+        """Undo every vault write :meth:`stage` made that no other writer replaced."""
+        for key, (replaced, written) in self._staged.items():
+            try:
+                self._vault._restore_entry_if_sync(key, written, replaced)
+            except Exception:  # noqa: BLE001 - best effort; the key is named for cleanup
+                logger.warning(
+                    "Could not restore the vault entry %s after a failed channel save;"
+                    " check it under Settings > Secrets.",
+                    key,
+                )
+        self._staged.clear()
+        self._drop.clear()
+
+    def finish(self) -> None:
+        """Delete the vault entries of the channel values this save cleared."""
+        for key, revision in self._drop.items():
+            try:
+                self._vault._delete_if_revision_sync(key, revision)
+            except Exception:  # noqa: BLE001 - the .env line is already gone
+                logger.warning(
+                    "Could not delete the vault entry %s for a cleared channel value;"
+                    " remove it under Settings > Secrets.",
+                    key,
+                )
+        self._staged.clear()
+        self._drop.clear()
 
 
 @dataclass
@@ -205,7 +329,7 @@ def migrate_env_secrets(
     agent-influenced argument) can point the importer at an arbitrary file to
     read, nor at an arbitrary directory to write the vault key/entries into. For
     each line
-    whose key is recognized (:data:`CREDENTIAL_KEYS` or a ``JIRA_TOKEN_<HEX>``)
+    whose key is recognized (see :func:`_is_recognized_key`)
     and whose value is still plaintext, the value is stored in the vault under
     the same key and the line is queued for rewrite to ``KEY=secret://KEY``.
 
@@ -266,16 +390,16 @@ def migrate_env_secrets(
             continue
         # Runtime override wins — but ONLY for keys that load_credentials
         # actually overlays from the process environment. That overlay is scoped
-        # to CREDENTIAL_KEYS, of which our recognized set contains exactly the
-        # GLOBAL `JIRA_API_TOKEN`. The per-host `JIRA_TOKEN_<HEX>` keys are NOT
+        # to CREDENTIAL_KEYS: the global `JIRA_API_TOKEN` and the channel secrets
+        # of our recognized set. The per-host `JIRA_TOKEN_<HEX>` keys are NOT
         # in CREDENTIAL_KEYS, so the environment does NOT override them at
         # runtime — Jira reads the .env/vault value. Skipping a per-host key just
         # because a same-named env var happens to exist would leave the stale
-        # file token unmigrated while Jira keeps using it, so restrict the skip
-        # to the global token. For it, a nonempty env value is the effective
+        # file token unmigrated while Jira keeps using it, so the skip is scoped
+        # to CREDENTIAL_KEYS. For those, a nonempty env value is the effective
         # credential, and migrating the stale .env value would let vault-first
         # resolution shadow the live override.
-        if key == CRED_JIRA_API_TOKEN and os.environ.get(key):
+        if key in CREDENTIAL_KEYS and os.environ.get(key):
             to_migrate.pop(key, None)
             continue
         # Plaintext value: last plaintext write of a repeated key wins (matches
@@ -525,12 +649,11 @@ def migrate_env_secrets(
                         f"change is not clobbered. Re-run `kirocrew secrets import "
                         f"--apply` to finish rewriting the .env references."
                     )
-                atomic_write(
+                publish_env(
                     ep,
                     bom + new_text.encode("utf-8", errors="surrogateescape"),
-                    mode=0o600,
+                    restrict_on_error="raise",
                     fsync=True,
-                    restrict_to_owner=True,
                 )
         except BaseException:
             # The .env rewrite failed (or never ran). Roll back every vault entry

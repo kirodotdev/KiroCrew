@@ -79,6 +79,17 @@ step "Building the Kiro Crew wheel"
 # ships it, harmlessly.
 python3 -c 'import build' 2>/dev/null \
   || die "the 'build' package is missing: pip install build"
+# Dated from a FIXED epoch, not from the clock. `python -m build` stamps every
+# member of the wheel with the current time unless this is set, so two builds of
+# identical source produce different bytes -- and the MicroVM lane hashes this
+# wheel into its base recipe digest, which is half its image cache key, so a
+# wheel staged by this script missed the cache and paid for a full multi-minute
+# image build. 315532800 is 1980-01-01T00:00:00Z, the ZIP format's own epoch and
+# the same constant scripts/build_microvm_image_zip.py uses: both scripts stage
+# the same wheel, so they have to agree on its bytes. An operator who already
+# exported a value keeps it, as that script's own build env does -- any constant
+# makes the wheel reproducible.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-315532800}"
 WHEEL_OUT="$(mktemp -d)"
 ( cd "${REPO_ROOT}" && python3 -m build --wheel --outdir "${WHEEL_OUT}" >/dev/null )
 built="$(ls "${WHEEL_OUT}"/*.whl 2>/dev/null | head -1 || true)"

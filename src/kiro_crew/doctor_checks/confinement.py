@@ -93,6 +93,27 @@ def _process_userns_vantage_confined() -> bool | None:
     )
 
 
+def _doctor_vantage_confined() -> bool:
+    """Whether THIS doctor process is known to run inside a sandbox.
+
+    Decides how a denied data-home read is reported (see
+    :func:`render._unreadable_skips_section`): a skip inside a sandbox, an issue
+    outside it. The evidence cannot say WHO built the sandbox -- the agent
+    sandbox, kiro-cli's own, or one an operator wrapped around the process -- and
+    the verdict does not need to: in each case the denial is the sandbox's, not a
+    permission fault in the data home, so the remedy is the same (run from an
+    unconfined terminal). ``cli.main()`` drops the launcher's marker before any
+    command runs, so the evidence is the kernel's: a Seatbelt verdict on macOS
+    (:func:`sandbox.agent_confinement_evidence`), the agent-shell user-namespace
+    shape on Linux (:func:`_process_userns_vantage_confined`). Deny-direction
+    only -- a ``False`` never claims the process is unconfined, it only keeps the
+    stricter "count it" verdict.
+    """
+    if cli_doctor.sandbox.agent_confinement_evidence() is not None:
+        return True
+    return _process_userns_vantage_confined() is True
+
+
 def _service_profile_applies(profile_path: Path, profile_name: str) -> bool:
     """True when the installed profile is ATTACHED to the launcher script this
     host currently resolves, and no ``AppArmorProfile=`` directive overrides it.
@@ -331,6 +352,15 @@ def _doctor_sandbox_backend(issues: list[str]) -> None:
         render._print_wrapped(
             "Kiro Crew cannot nest its own sandbox inside it. Launch the gateway "
             "outside that sandbox to hand isolation back to Kiro Crew's own profile."
+        )
+        # The kernel's verdict cannot say WHO built the sandbox, and cli.main()
+        # drops the launcher's marker before any command runs, so an agent
+        # running doctor from its own shell lands here too. Name that vantage so
+        # the line above is not read as an instruction to relaunch the gateway.
+        render._print_wrapped(
+            "If you ran this from an agent's shell, that outer sandbox is the agent "
+            "sandbox itself and nothing needs changing: run `kirocrew doctor` from "
+            "your own terminal to check the gateway."
         )
         return
 

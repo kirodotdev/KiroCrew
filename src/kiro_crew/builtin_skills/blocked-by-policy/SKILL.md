@@ -1,6 +1,6 @@
 ---
 name: blocked-by-policy
-description: What to do when a Kiro Crew safety policy blocks a tool call — tell a policy block from a user refusal, then take the sanctioned path for that class (AWS creds, SSO, key files, trust root, exfiltration, self-protection). Load on any 'command denied' result or refused credential/AWS access.
+description: What to do when a Kiro Crew safety policy blocks a tool call — tell a policy block from a user refusal, then take the sanctioned path for its class (AWS creds, SSO, key files, trust root, exfiltration, self-protection, SQL text in a heredoc). Load on a 'command denied' result or refused AWS access.
 triggers: blocked by security policy, user denied tool execution, access to sensitive path, sensitive credential path, data-exfiltration pattern, governance trust-root, permission denied by policy, cannot access aws, no aws credentials, aws access denied, sso login, credential path, credential tool not available
 ---
 
@@ -12,6 +12,8 @@ A rejected tool call is reported to you as a generic failure — on kiro-cli
 literally `User denied tool execution`. That string is wrong about *who*
 refused. Kiro Crew's own gate produces most refusals, and the real reason
 arrives separately as a `[Kiro Crew host notice]` message in the same turn.
+A host notice that says you made the same tool call several times is not a
+refusal: nothing was blocked. It is advice to change strategy.
 
 So:
 
@@ -181,6 +183,34 @@ What to do instead depends on what you were actually after:
   its internals, or an ordinary package query. If nothing else will do, hand that
   one step to the user rather than re-spelling it.
 
+### A destructive SQL statement matched as text
+
+The `sql` rules (`DROP DATABASE`, `DROP TABLE`, `TRUNCATE TABLE`) match the
+statement's **text** wherever it appears on the command line — quoted, as an
+`echo` or `printf` argument, inside a heredoc body, in a `python -c` program.
+A command line cannot tell a statement a database client is about to run from
+one that is only being written down, so the rule refuses rather than guess. That
+means a shell command writing release notes that mention the statement is refused
+exactly like one that runs it, and the refusal names the SQL pattern even though
+you ran no SQL.
+
+It is a matter of what the line carries, not how it is spelled: re-spelling the
+statement, splitting its keywords, or moving it to another shell writer meets the
+same rule. What to do depends on what you were doing:
+
+- **The statement was going to run against a database.** That is exactly what is
+  refused. Name the statement and let the user run it themselves; no other door
+  to that effect is open to you.
+- **The statement is prose or data you are writing** — notes, a document, a
+  comment or commit body, a fixture a linter must reject. The shell was never
+  needed: the file-editing tool is not a shell command, so this rule does not
+  read what it writes. Write the document with that tool, then hand its path to
+  a prose reader such as `gh … --body-file <path>` or `git commit -F <path>`. A
+  database client (`psql`, `mysql`, `sqlite3` or any other) must never be handed
+  that document: that is the refused statement by another route.
+- **The text was not yours to write and the command line merely carried it.**
+  Say so plainly and report it as an over-block.
+
 ## Reading the refusal
 
 The reason has two possible forms:
@@ -191,11 +221,16 @@ The reason has two possible forms:
   a pattern your text does not literally match still fired.
 - `Blocked: <sentence>` — the always-on floor (sensitive paths, the trust root,
   exfiltration shapes). These name the class directly.
+- `Blocked: the path could not be verified against the sensitive-path list…` —
+  NOT a match. The resolver ran out of time before judging the path, so it was
+  refused unjudged. This is the one refusal where the rule above inverts: do not
+  switch reader or spelling (they meet the same budget); wait about thirty
+  seconds and retry the identical call, and if it keeps happening tell the user
+  the path resolver is timing out and name the path.
 
 Where the `kirocrew-debug` tools are granted, `debug_refusals` reads the gateway's
-own record and gives each refusal its real class, which the refusal text alone does
-not carry — in particular `unverifiable_path`, a path the resolver never finished
-judging, which is retried rather than worked around.
+own record and gives each refusal its class, including refusals your session never
+saw — `unverifiable_path` there is the stall described above.
 
 ## Useful checks
 

@@ -172,6 +172,12 @@ class PlanHost:
     voice_runtime_ancestor_guards: tuple[str, ...] = ()
     #: The resolved kiro agents tree, sealed read-only.
     kiro_agents_targets: tuple[str, ...] = ()
+    #: The running gateway's packaged install tree (both spellings), sealed read-only.
+    #: Empty for an editable or from-source checkout.
+    install_root_targets: tuple[str, ...] = ()
+    #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
+    #: deny on the package directory does not hold if a parent can be renamed away.
+    install_root_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -518,10 +524,19 @@ def writable_carveouts(
 ) -> tuple[list[str], list[Refusal]]:
     """Validate write carve-outs against the sandbox's own seals.
 
-    ``extra_writable_dirs`` exists for exactly one purpose: a caller that hands a child
-    its private scratch directory INSIDE the sealed runtime parent (``<data home>/run``)
-    needs that one directory writable -- the MCP probe's ``TMPDIR`` lives at
-    ``run/mcp-tmp/<probe>``. Everything else stays sealed.
+    ``extra_writable_dirs`` is NOT general-purpose: it exists for a caller that hands a
+    child its OWN self-derived directory INSIDE the sealed runtime parent
+    (``<data home>/run``) and needs that one directory writable. The uses are:
+
+    * ``run/mcp-tmp/<probe>`` -- the MCP probe's private ``TMPDIR``;
+    * the npm resolver's private install prefix (``mcp_gateway.resolve_once``);
+    * ``run/decisions/<id>`` -- the local decision runtime's own work dir
+      (``decisions.local_runtime.WORK_SUBDIR``), holding the preset's uv environment
+      and ``server.log``; the sandboxed uv and the model server both write there, and
+      it cannot live under ``models`` because that leaf is READONLY and a private
+      window opens only inside a HIDDEN tree.
+
+    Everything else stays sealed.
 
     Both renderers apply a carve-out with override semantics (Seatbelt is
     last-match-wins; the launcher remounts a fresh bind read-write), so an unvalidated
@@ -796,6 +811,10 @@ def _namespace_plan(
     readonly.extend(path for path in host.relocated_crew_readonly if path not in kept)
     # Same relocation hole for the kiro agents tree (fork governance's specs).
     readonly.extend(path for path in host.kiro_agents_targets if path not in kept)
+    # The gateway's own packaged install tree: what it executes on its next start. Not
+    # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
+    # updater that legitimately writes it runs in the gateway process, unwrapped.
+    readonly.extend(path for path in host.install_root_targets if path not in kept)
     # The launcher re-applies a mask nested inside a private window after binding the
     # window, from a descriptor it already holds, so such a window is admitted here.
     windows, window_refusals = private_windows(
@@ -950,6 +969,7 @@ def _seatbelt_plan(
         [os.path.join(home, rel) for rel in host.crew_readonly_targets]
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
+        + list(host.install_root_targets)
     )
     caller_targets = list(
         dict.fromkeys(absolute(path, host.cwd) for path in request.extra_hidden_dirs)
@@ -987,7 +1007,9 @@ def _seatbelt_plan(
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
-    ancestor_guards = list(host.voice_runtime_ancestor_guards)
+    ancestor_guards = list(
+        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+    )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is
     # last-match-wins, so this allow overrides only the runtime parent's write seal.
@@ -1036,9 +1058,10 @@ _PLANNERS: Mapping[
 def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
     """The data the namespace launcher program reads, as JSON-safe values.
 
-    Each value is spelled as the launcher has always received it, so a path appears in
-    the program exactly as ``json.dumps`` writes it. Every flag is an ``int`` and nothing
-    is null, so the payload reads the same as JSON and as a Python literal.
+    This is the ONE substitution the launcher renderer makes. It is embedded in the
+    program as a Python literal, so it carries no ``true``/``false``/``null``: every flag
+    is an ``int``. Each value is spelled as the launcher has always received it, so a
+    path appears in the program exactly as ``json.dumps`` writes it.
     """
     ids = plan.identities
     return {
@@ -1075,4 +1098,5 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "strict_host_key_opt": (
             " -o StrictHostKeyChecking=accept-new" if plan.ssh_accept_new else ""
         ),
+        "stand_in_roots": [f"/run/user/{plan.uid}", "/dev/shm"],
     }

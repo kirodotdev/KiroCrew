@@ -2,7 +2,8 @@
 
 The project directory, the data home and a leftover legacy home, deployed cron
 scripts and installed skills against their sources, the ``kirocrew`` launcher on
-``PATH``, an editable install's source checkout, and the Python import path.
+``PATH``, an editable install's source checkout, the Python import path, and the
+timezone data the runtime resolves zones from.
 """
 
 from __future__ import annotations
@@ -10,7 +11,9 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from pathlib import Path
+import zoneinfo
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PurePosixPath
 
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
@@ -41,7 +44,22 @@ def _doctor_data_home() -> None:
     """
     print("\nData Home")
     home = cli_doctor.config_dir()
-    print(f"  location:    ✅ {home}")
+    # Print the canonical (symlink-resolved) spelling, the same form the PATH
+    # launcher row prints: one install reached through a ``current`` symlink and
+    # through its versioned directory must not read as two installs.
+    print(f"  location:    ✅ {os.path.realpath(home)}")
+    from kiro_crew.browser_cli.install import agent_writable_root_over_data_home
+
+    if (overlap := agent_writable_root_over_data_home(Path(home))) is not None:
+        print(
+            f"  workspace:   ⚠️  {render._safe_display(str(overlap))} contains the data home, "
+            "so it is agent-writable and the managed browser launcher cannot run"
+        )
+        print(
+            "               Point the workspace root (KIROCREW_WORKSPACE or "
+            "<data-home>/workspace_dir) and any KIROCREW_PROJECT_DIR outside the "
+            "data home, then restart the gateway."
+        )
 
     legacy = Path.home() / cli_doctor.LEGACY_CONFIG_DIR_NAME
     if not legacy.is_dir():
@@ -274,7 +292,8 @@ def _doctor_path_launcher() -> None:
         return
     running = _resolve_kirocrew_bin()
     if not os.path.isabs(running) or os.path.realpath(on_path) == os.path.realpath(running):
-        print(f"  kirocrew CLI: ✅ {on_path}")
+        # Canonical spelling, matching the Data Home row and the comparison above.
+        print(f"  kirocrew CLI: ✅ {os.path.realpath(on_path)}")
         return
     print("  ⚠ kirocrew CLI on PATH belongs to a different install than this one.")
     # Paths are printed UNWRAPPED, one per line: a wrapped path cannot be copied
@@ -285,6 +304,60 @@ def _doctor_path_launcher() -> None:
         "Both can coexist — the wheel keeps its own updates — but `kirocrew` in a "
         "terminal runs the one on PATH, which may be a different version or "
         "channel. Run `kirocrew setup` from the install you want to own the name."
+    )
+
+
+def _doctor_browser_bootstrap() -> None:
+    """Report the npm and Node the browser install would pick from THIS shell's PATH.
+
+    The in-product browser install resolves both through ``env.find_node_tool``
+    -- version-manager directories first, then ``PATH`` -- and that is the one
+    step of browser support that still reads the environment. Doctor repeats
+    the lookup in its own process, so where no version manager supplies the
+    tool and the gateway was started with a different ``PATH`` (a service
+    manager), the gateway can resolve another binary; the install logs the
+    paths it actually ran, which is the authoritative record. Writability comes
+    from the same predicate the CLI resolver refuses on. Nothing is refused here.
+
+    A toolchain only this account can replace -- nvm, fnm, volta and mise under
+    ``$HOME``, Homebrew's user-owned prefix -- is the NORMAL case and reads as
+    information. A warning is earned only when another account could replace
+    it (a group- or world-writable component) or when the writable component is
+    not this account's own, and even that is not recorded as a doctor issue.
+    """
+    from kiro_crew.browser_cli.install import bootstrap_tool_provenance
+    from kiro_crew.env import find_node_tool
+
+    for name in ("npm", "node"):
+        label = f"  browser {name}:"
+        path = find_node_tool(name)
+        if path is None:
+            print(f"{label} ⏹ not found (the browser install needs Node.js with npm)")
+            continue
+        info = bootstrap_tool_provenance(path)
+        if info["writable_at"] is None:
+            print(f"{label} ✅ {path} (writability not checked on this platform)")
+        elif not info["writable_at"]:
+            print(f"{label} ✅ {path}")
+        elif info["own_toolchain"]:
+            print(f"{label} ℹ️  {path} (your own toolchain, e.g. a version manager or Homebrew)")
+        elif info["shared_write"]:
+            print(f"{label} ⚠️  {path} can be replaced by other accounts")
+            render._print_wrapped(
+                f"{info['writable_at']} is group- or world-writable, so another account "
+                "could swap the binary before the browser install runs it. Remove "
+                "that write bit, or install Node from a version manager or Homebrew."
+            )
+        else:
+            print(f"{label} ⚠️  {path} sits in a directory this account does not own")
+            render._print_wrapped(
+                f"{info['writable_at']} is writable by this account but owned by "
+                "another, so its owner could also swap the binary. Install Node "
+                "from a version manager or Homebrew."
+            )
+    render._print_wrapped(
+        "These rows resolve from this shell's PATH; the gateway logs the npm and "
+        "Node it actually ran at install time."
     )
 
 
@@ -487,3 +560,78 @@ def _doctor_sqlite_fts5(issues: list[str]) -> None:
             issues.append("sqlite fts5")
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  sqlite fts5: ⚠️  could not check ({exc})")
+
+
+# ── timezone data ─────────────────────────────────────────────────────────────
+# Cron expressions and clock-time ``at_time`` values resolve through stdlib
+# ``zoneinfo``, which uses whatever data it finds: a system zoneinfo tree on
+# macOS and Linux, the ``tzdata`` package where no tree exists (Windows). Stale
+# data still resolves every zone name, so nothing at save or fire time can tell
+# it apart from current data; a job just runs at the hour the old rule gives.
+#
+# The probe is behavioural because a system tree exposes no version the stdlib
+# can read. IANA tzdb 2026b keeps America/Vancouver on UTC-7 all year; older
+# data still moves it back to UTC-8 each November. A December instant in the
+# first winter under the new rule therefore separates data from 2026b on from
+# everything older.
+_TZ_PROBE_ZONE = "America/Vancouver"
+_TZ_PROBE_INSTANT = datetime(2026, 12, 1, 12, tzinfo=timezone.utc)
+_TZ_PROBE_OFFSET = timedelta(hours=-7)
+
+
+def _tz_probe_offset() -> timedelta | None:
+    """The probe zone's UTC offset at the probe instant, read fresh from disk.
+
+    ``ZoneInfo.no_cache`` bypasses the process-wide zone cache, so the answer
+    describes the data installed now. Raises ``ZoneInfoNotFoundError`` when no
+    installed data resolves the zone.
+    """
+    zone = zoneinfo.ZoneInfo.no_cache(_TZ_PROBE_ZONE)
+    return _TZ_PROBE_INSTANT.astimezone(zone).utcoffset()
+
+
+def _tz_data_from_system() -> bool:
+    """Whether the probe zone resolves from a system zoneinfo tree.
+
+    ``zoneinfo`` searches ``TZPATH`` first and falls back to the ``tzdata``
+    package only when no tree holds the zone, so a file on ``TZPATH`` is the
+    data in use and the system package is what needs updating.
+    """
+    parts = PurePosixPath(_TZ_PROBE_ZONE).parts
+    return any(Path(root, *parts).is_file() for root in zoneinfo.TZPATH)
+
+
+def _doctor_tz_data(issues: list[str]) -> None:
+    """Report whether the timezone data in use carries current rules.
+
+    A ``tz data`` row is printed either way. Out-of-date or missing data is an
+    issue, and the remedy names the source that supplies the data: the
+    operating system's timezone package, or the ``tzdata`` Python package. A
+    running gateway keeps every zone it already loaded until it restarts, so
+    the remedy ends with a restart.
+    """
+    try:
+        offset = _tz_probe_offset()
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        print("  tz data:     ❌ no timezone data resolves America/Vancouver")
+        print("               A named timezone does not resolve, so a job cannot use one.")
+        if cli_doctor.pip_install_channel_available():
+            print(f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('tzdata')}")
+        print("               Or install the operating system's timezone data (tzdata).")
+        issues.append("timezone data missing")
+        return
+    if offset == _TZ_PROBE_OFFSET:
+        print("  tz data:     ✅ current (America/Vancouver stays UTC-7 in winter)")
+        return
+    print("  tz data:     ⚠️  out of date (older than IANA tzdb 2026b)")
+    print("               It still moves America/Vancouver back to UTC-8 on")
+    print("               2026-11-01, so a job in that zone runs an hour late.")
+    if _tz_data_from_system():
+        print("               Fix: update the operating system's timezone data")
+        print("               (the tzdata package), then restart the gateway.")
+    elif cli_doctor.pip_install_channel_available():
+        print(f"{render._INDENT}Fix: {cli_doctor.pip_install_command_for('-U', 'tzdata')}")
+        print("               then restart the gateway.")
+    else:
+        print("               Fix: update Kiro Crew, then restart the gateway.")
+    issues.append("timezone data out of date")

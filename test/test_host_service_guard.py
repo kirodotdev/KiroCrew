@@ -447,7 +447,9 @@ class TestGuardIsArmed:
         Without this the whole fixture could be a blanket refusal and the suite
         above would still pass.
         """
-        res = subprocess.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True)
+        res = subprocess.run(
+            [sys.executable, "-c", "print('ok')"], capture_output=True, text=True, encoding="utf-8"
+        )
         assert res.returncode == 0
         assert res.stdout.strip() == "ok"
 

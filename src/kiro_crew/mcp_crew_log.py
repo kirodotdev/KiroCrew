@@ -612,7 +612,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 #: :func:`~kiro_crew.mcp_core.require_strict_session_key`, whose first source is
 #: that block, and the endpoint scopes every read on the key this server forwards.
 #:
-#: Advertising is not cosmetic. ``mcp_gateway/backend.py`` strips any client-forged
+#: Advertising is not cosmetic. ``mcp_gateway/backend_stubs.py`` strips any client-forged
 #: caller block from EVERY forwarded request and re-injects its own only when the
 #: backend advertised this capability — so without the advertisement the block
 #: never arrives and a pooled backend would resolve an empty identity for every

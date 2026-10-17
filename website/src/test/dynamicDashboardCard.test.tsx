@@ -81,7 +81,7 @@ describe('host-owned card freshness and cost controls', () => {
     await waitFor(() => expect(toggle).toBeEnabled())
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     expect(patch).not.toHaveBeenCalled()
-    const benefit = screen.getByText('Summaries of each session’s recent work and next steps.')
+    const benefit = screen.getByText(/^Summaries of each session’s recent work and next steps/)
     expect(benefit).toBeVisible()
     expect(screen.getByText(/60 attempts per hour shared by all sessions, including failures/)).toBeVisible()
     expect(benefit.compareDocumentPosition(screen.getByText(/Off by default/)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()

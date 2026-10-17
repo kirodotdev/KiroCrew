@@ -27,6 +27,14 @@ export const BasePathCtx = createContext<string | null>(null)
 export const CompactImagesCtx = createContext<boolean>(false)
 
 /**
+ * When true, every fenced code block in the subtree renders copy-only (the
+ * plain CodeBlock), as the `readOnlyCode` prop does for one renderer. For a
+ * transcript whose code is another machine's (a crew window): Edit and Run in
+ * terminal would act on THIS machine. Default false.
+ */
+export const ReadOnlyCodeCtx = createContext<boolean>(false)
+
+/**
  * A per-message token appended to local image URLs.
  *
  * `/api/file-raw?path=…` addresses a file by PATH, so every impression of a file
@@ -92,16 +100,26 @@ export const LinkUnfurlCtx = createContext<LinkUnfurl>({ enabled: false, live: f
  *
  * `InlineCode` consults it so a code span used as a link label —
  * ``[`https://example.com/x`](https://example.com/x)`` — stays inert instead of
- * becoming a click-to-copy chip. The chip's handler calls `preventDefault`, and
- * that cancels the anchor's default action from anywhere in propagation, so
- * without this the label copied and the link silently stopped navigating (a
- * regression from #4433, which gave non-path spans a primary-click copy).
+ * becoming a chip. Every chip's handler calls `preventDefault`, and that
+ * cancels the anchor's default action from anywhere in propagation, so without
+ * this the label copied (#5730, a regression from #4433, which gave non-path
+ * spans a primary-click copy) or, on a link to a web page whose label named a
+ * real local path, opened that path (#5745), and the link silently stopped
+ * navigating.
  *
  * Provided only where `MdAnchor` places `children` inside an `<a>`. The Jira and
  * forge chips render a parsed label instead of `children`, and a `LinkOverride`
  * owns its element outright, so neither needs it.
+ *
+ * The value says where the link goes. `'external'`: its href carries a scheme
+ * or is protocol-relative, so the click leaves the dashboard and the link wins
+ * over every chip, a confirmed path chip included. `'local'`: a root-relative,
+ * relative or fragment href. Such an href is often the very file the label
+ * names (``[`README.md`](README.md)``) and the anchor cannot always open it
+ * itself, so a confirmed path chip keeps the click there.
  */
-export const InsideLinkCtx = createContext(false)
+export type InsideLink = false | 'external' | 'local'
+export const InsideLinkCtx = createContext<InsideLink>(false)
 
 /**
  * Whether inline-code chips may issue stat probes.
@@ -151,6 +169,30 @@ export type SessionActions = {
 export const SessionActionCtx = createContext<SessionActions>({})
 
 /**
+ * How a session chip reaches a session that is NOT open: a closed conversation
+ * whose transcript is still on disk.
+ *
+ * `lookup` asks the gateway about ONE full key (`GET /api/sessions/{key}/meta`)
+ * and answers that session's transcript key and title, or null when no such
+ * session exists, so a forged key still gets no chip. It is a background read
+ * and raises nothing itself: a failed read keeps the chip live, and only the
+ * reader's click on it shows `ClosedSessionNotice` at that spot. `open` resumes it,
+ * the same way the sidebar's Older-sessions row does. Both absent (every host but
+ * the chat page) keeps today's rule: only an open session chips.
+ *
+ * Provided ONCE by the page, like `SidebarFolderCtx`, so every renderer under
+ * it offers the same chip without each re-plumbing it. Only consulted while the
+ * open roster is wired (`SessionActions.sessions`), so offline it stays off too.
+ */
+export type ClosedSessionActions = {
+  lookup?: (key: string) => Promise<{ key: string; title: string } | null>
+  /** Resumes the session after checking again that it still exists, and says
+   *  so itself when it cannot. `gone` tells the chip to drop. */
+  open?: (session: { key: string; title: string }) => Promise<'opened' | 'gone' | 'failed'>
+}
+export const ClosedSessionCtx = createContext<ClosedSessionActions>({})
+
+/**
  * Where a SIDEBAR-folder chip sends its activation, plus the folder list that
  * decides whether a chip is offered at all.
  *
@@ -175,3 +217,14 @@ export type SidebarFolderActions = {
   folders?: readonly { id: string; name: string; parent_id?: string }[]
 }
 export const SidebarFolderCtx = createContext<SidebarFolderActions>({})
+
+/**
+ * Where a paragraph's closed-session notices render: a block the paragraph
+ * draws right after itself, so a notice about a link or chip in mid-sentence
+ * sits BELOW the paragraph instead of inside it, and the sentence reads whole.
+ * `null` where no paragraph provides one (a tight list item, a heading, a
+ * table cell): the notice then renders inline, after the reference's own
+ * trailing punctuation. Provided by `MdParagraph` for a paragraph that holds a
+ * session reference, and only then, so other paragraphs keep their exact DOM.
+ */
+export const ParagraphNoticeSlotCtx = createContext<HTMLElement | null>(null)

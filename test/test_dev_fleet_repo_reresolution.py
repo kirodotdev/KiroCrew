@@ -35,6 +35,7 @@ def fresh_discovery(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
     monkeypatch.setattr(repository, "MAIN_REPO", "")
     monkeypatch.setattr(repository, "MAIN_REPO_INFERRED", False)
     monkeypatch.setattr(repository, "_REPO_INVALID_MSG", None)
+    monkeypatch.setattr(repository, "_REPO_CFG_UNREADABLE_MSG", None)
     monkeypatch.setattr(repository, "_LATCHED_CONFIGURED", "")
     monkeypatch.setattr(runtime, "_GIT_TRUSTED_HELPERS", None)
 
@@ -130,7 +131,9 @@ class TestTheLatchWaitsForAnAnswerWorthKeeping:
     ) -> None:
         """An embedded NUL follows the configured-path refusal, never a 500."""
         malformed = "/somewhere/kirocrew\x00bad"
-        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: (malformed, True))
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda failed=None: (malformed, True)
+        )
         monkeypatch.setattr(repository, "_repo_source_hint", lambda: "set dev_fleet.repo_path")
         monkeypatch.setattr(runtime, "_trusted_bin", lambda _name: "git")
 
@@ -260,7 +263,7 @@ def _configured_tiers(monkeypatch: pytest.MonkeyPatch, *, valid: bool) -> dict:
     monkeypatch.setattr(
         repository,
         "_configured_main_repo_checked",
-        lambda: (state["configured"], state["whole"]),
+        lambda failed=None: (state["configured"], state["whole"]),
     )
     monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
     monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: state["valid"])
@@ -414,7 +417,9 @@ class TestAConfigReadThatFailedIsNotAConfigChange:
         monkeypatch.setattr(repository, "_REPO_INVALID_MSG", "not a Kiro Crew checkout")
         monkeypatch.setattr(repository, "MAIN_REPO", "/opt/typo")
         monkeypatch.setattr(repository, "_LATCHED_CONFIGURED", "/opt/typo")
-        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", False))
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda failed=None: ("", False)
+        )
         assert repository._invalid_resolution_is_stale() is False
 
     async def test_a_whole_read_that_cleared_the_path_still_reopens_the_latch(
@@ -431,7 +436,9 @@ class TestAConfigReadThatFailedIsNotAConfigChange:
         monkeypatch.setattr(repository, "_REPO_INVALID_MSG", "not a Kiro Crew checkout")
         monkeypatch.setattr(repository, "MAIN_REPO", "/opt/typo")
         monkeypatch.setattr(repository, "_LATCHED_CONFIGURED", "/opt/typo")
-        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", True))
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda failed=None: ("", True)
+        )
         assert repository._invalid_resolution_is_stale() is True
 
     async def test_an_unparseable_file_reads_as_a_partial_snapshot(
@@ -503,6 +510,92 @@ class TestAConfigReadThatFailedIsNotAConfigChange:
         assert whole is False
 
 
+class TestTheUnreadableConfigIsNamedNotMistakenForAMissingCheckout:
+    """A present-but-unparseable config reads as a named file, not "no checkout found".
+
+    On the partial-read path ``MAIN_REPO`` stays empty by design. ``_repo()`` checks the
+    unreadable-config message ahead of the empty-``MAIN_REPO`` gate, so the operator is
+    told which config file to fix rather than sent to look for a checkout that is not the
+    problem. The failed file names come from the one read the attempt already does, and
+    surface through ``RepoUnreadable``.
+    """
+
+    async def test_a_torn_config_read_tells_the_operator_which_file_not_to_find_a_checkout(
+        self, fresh_discovery, monkeypatch, tmp_path
+    ) -> None:
+        """A torn config read names the file instead of blaming a missing checkout.
+
+        A present ``config.local.json`` that does not parse drives discovery down the
+        partial-read branch, leaving ``MAIN_REPO`` empty. ``_repo()`` raises
+        ``RepoUnreadable`` naming ``config.local.json`` ahead of the missing-checkout
+        gate, so the operator learns the real cause.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "config_dir", lambda: tmp_path)
+        (tmp_path / "config.json").write_text('{"dev_fleet": {}}', encoding="utf-8")
+        (tmp_path / "config.local.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.delenv("KIROCREW_DEVFLEET_REPO", raising=False)
+
+        await repository.ensure_main_repo_discovered()
+
+        assert repository.MAIN_REPO == ""
+        with pytest.raises(repository.RepoUnreadable, match="config.local.json"):
+            repository._repo()
+
+    async def test_the_checked_read_hands_back_the_names_of_the_files_that_failed(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The failed names come from the single existing read, via its out-list.
+
+        No second pass over the config directory: ``_load_dev_fleet_cfg_checked``
+        appends to the list it is handed as it reads each file once.
+        """
+        from kiro_crew.config import loader as loader_mod
+
+        monkeypatch.setattr(loader_mod, "config_dir", lambda: tmp_path)
+        (tmp_path / "config.json").write_text('{"dev_fleet": {}}', encoding="utf-8")
+        (tmp_path / "config.local.json").write_text("{not json", encoding="utf-8")
+        failed: list[str] = []
+        section, whole = repository._load_dev_fleet_cfg_checked(failed)
+        assert whole is False
+        assert failed == ["config.local.json"]
+
+    async def test_the_message_names_one_file(self) -> None:
+        msg = repository._cfg_unreadable_message(["config.local.json"])
+        assert "config.local.json" in msg
+        assert "is present but could not be read or parsed" in msg
+
+    async def test_the_message_names_both_files(self) -> None:
+        msg = repository._cfg_unreadable_message(["config.json", "config.local.json"])
+        assert "config.json" in msg
+        assert "config.local.json" in msg
+        assert "are present but could not be read or parsed" in msg
+
+    async def test_the_message_has_a_neutral_fallback_on_the_fixed_between_polls_race(self) -> None:
+        """An empty failed list (the file was fixed between read and here) still says
+        something true, never an empty banner."""
+        msg = repository._cfg_unreadable_message([])
+        assert msg
+        assert "could not be read or parsed" in msg
+
+    async def test_a_whole_read_clears_a_prior_parse_message(
+        self, fresh_discovery, monkeypatch
+    ) -> None:
+        """A later whole read beside a resolved checkout must not keep the banner up."""
+        monkeypatch.setattr(repository, "_REPO_CFG_UNREADABLE_MSG", "stale parse message")
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda failed=None: ("/opt/kc", True)
+        )
+        monkeypatch.setattr(repository, "_discover_main_repo", lambda configured=None: "/opt/kc")
+        monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
+        monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: True)
+        monkeypatch.setattr(repository, "_repo_source_hint", lambda: "set dev_fleet.repo_path")
+        await repository.ensure_main_repo_discovered()
+        assert repository.MAIN_REPO == "/opt/kc"
+        assert repository._REPO_CFG_UNREADABLE_MSG is None
+
+
 class TestAPartialReadAtDiscoveryLatchesNothing:
     """The second read is the dangerous one, because its latch can be FINAL.
 
@@ -526,7 +619,9 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
         ``MAIN_REPO`` is seeded with the provisional import-time value on purpose. The
         fixture zeroes it, so asserting it stays empty would pass whether or not the
         attempt clears anything; a real install reaches this branch holding that hint,
-        and ``_repo()`` gates on ``MAIN_REPO`` alone, never on ``_DISCOVERY_DONE``.
+        and ``_repo()`` gates on ``_REPO_CFG_UNREADABLE_MSG`` first, then on
+        ``MAIN_REPO``, never on ``_DISCOVERY_DONE``. The parse message naming the file
+        is what the operator now sees instead of the missing-checkout one.
         """
         calls: list[int] = []
 
@@ -534,9 +629,14 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
             calls.append(1)
             return "/opt/inferred-kirocrew"
 
+        def _checked(failed: list[str] | None = None) -> tuple[str, bool]:
+            if failed is not None:
+                failed.append("config.local.json")
+            return ("", False)
+
         monkeypatch.setattr(repository, "MAIN_REPO", "/opt/import-time-hint")
         monkeypatch.setattr(repository, "MAIN_REPO_INFERRED", True)
-        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", False))
+        monkeypatch.setattr(repository, "_configured_main_repo_checked", _checked)
         monkeypatch.setattr(repository, "_discover_main_repo", _discover)
         monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)
         monkeypatch.setattr(repository, "_is_kirocrew_checkout", lambda p: True)
@@ -545,7 +645,9 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
         assert repository.MAIN_REPO == ""
         assert repository.MAIN_REPO_INFERRED is False
         assert repository._DISCOVERY_DONE is False
-        with pytest.raises(repository.RepoNotConfigured):
+        assert repository._REPO_CFG_UNREADABLE_MSG is not None
+        assert "config.local.json" in repository._REPO_CFG_UNREADABLE_MSG
+        with pytest.raises(repository.RepoUnreadable, match="config.local.json"):
             repository._repo()
 
     async def test_a_torn_read_on_the_reopen_path_leaves_the_next_poll_reachable(
@@ -563,7 +665,7 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
         """
         reads: list[int] = []
 
-        def _checked() -> tuple[str, bool]:
+        def _checked(failed: list[str] | None = None) -> tuple[str, bool]:
             reads.append(1)
             return ("", False)
 
@@ -586,7 +688,9 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
         Without this, the test above would pass against a function that never
         resolves anything.
         """
-        monkeypatch.setattr(repository, "_configured_main_repo_checked", lambda: ("", True))
+        monkeypatch.setattr(
+            repository, "_configured_main_repo_checked", lambda failed=None: ("", True)
+        )
         monkeypatch.setattr(
             repository, "_discover_main_repo", lambda configured=None: "/opt/inferred-kirocrew"
         )
@@ -613,7 +717,9 @@ class TestAPartialReadAtDiscoveryLatchesNothing:
             return configured or ""
 
         monkeypatch.setattr(
-            repository, "_configured_main_repo_checked", lambda: ("/opt/named-by-operator", True)
+            repository,
+            "_configured_main_repo_checked",
+            lambda failed=None: ("/opt/named-by-operator", True),
         )
         monkeypatch.setattr(repository, "_discover_main_repo", _discover)
         monkeypatch.setattr(repository, "_resolve_primary_checkout", lambda p: p)

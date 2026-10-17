@@ -720,8 +720,17 @@ _FENCED_READERS = {"sel.py"}
 # encoding, abort-not-skip posture) and which is stated on the function itself.
 _DEFERRED_READERS: set[str] = set()
 
+# Streams the transcript that `_read_messages_locked` otherwise reads WHOLE with
+# `handle.read()`: one line can be no larger than that file, so the stream never
+# allocates more than the read it replaces. It must not skip or abort an
+# over-cap record either -- its count has to equal the whole-file read's.
+_WHOLE_FILE_PEERS = {"transcript_count.py"}
+
 _ALLOWED_UNBOUNDED_FILES = (
-    {path for path, _ in _KERNEL_PSEUDO_FILE_READERS} | _FENCED_READERS | _DEFERRED_READERS
+    {path for path, _ in _KERNEL_PSEUDO_FILE_READERS}
+    | _FENCED_READERS
+    | _DEFERRED_READERS
+    | _WHOLE_FILE_PEERS
 )
 
 

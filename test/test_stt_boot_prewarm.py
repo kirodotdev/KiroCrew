@@ -54,12 +54,20 @@ def warm(monkeypatch: pytest.MonkeyPatch):
     return cfg, calls
 
 
-def _patch_stt(monkeypatch: pytest.MonkeyPatch, calls: dict, *, present: bool, ok: bool = True):
+def _patch_stt(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: dict,
+    *,
+    present: bool,
+    ok: bool = True,
+    used: bool = True,
+):
     """Stand in for the two lazily-imported modules the prewarm reaches."""
     from kiro_crew.stt import models as stt_models
     from kiro_crew.stt import session as stt_session
 
     monkeypatch.setattr(stt_models, "is_present", lambda model: present)
+    monkeypatch.setattr(stt_models, "used_within", lambda seconds: used)
 
     async def _prewarm(*, model_name: str, language: str):
         calls["prewarm"].append((model_name, language))
@@ -71,7 +79,7 @@ def _patch_stt(monkeypatch: pytest.MonkeyPatch, calls: dict, *, present: bool, o
     # leaves the original behind as a REAL attribute on teardown, which from then on
     # shadows `__getattr__` -- so every later test that patches `stt.session.prewarm`
     # is silently ignored. This file did exactly that, and it broke
-    # `test_dashboard_handlers_core_coverage.py::TestSttPrewarm` in any run where the
+    # `test_dashboard_handlers_core_coverage_stt_runtime.py::TestSttPrewarm` in any run where the
     # two files shared a worker: order-dependent, silent, and nothing to do with the
     # code under test. The boot prewarm reads `stt.prewarm`, which resolves through
     # `__getattr__` to this same object, so patching here is visible to it.
@@ -221,6 +229,83 @@ class TestTheBootPrewarmRefrains:
         _patch_stt(monkeypatch, calls, present=True, ok=False)
         await server_mod._stt_startup_prewarm()  # must not raise
         assert calls["prewarm"] == [("base", "zh")]
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_has_not_decoded_recently_is_not_warmed(
+        self, warm, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The weights are one anonymous native buffer, 1.6 GB for large-v3-turbo.
+
+        A present model only proves a download once happened. Without recent use the
+        boot warm held that block for ``idle_evict_secs`` on every launch for nobody;
+        the pointer-down prewarm still covers a returning user.
+        """
+        _, calls = warm
+        _patch_stt(monkeypatch, calls, present=True, used=False)
+        await server_mod._stt_startup_prewarm()
+        assert calls["prewarm"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_recency_window_is_the_one_the_gate_asks_about(
+        self, warm, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A recent decode keeps the boot warm, judged against the declared window."""
+        from kiro_crew.stt import models as stt_models
+
+        _, calls = warm
+        _patch_stt(monkeypatch, calls, present=True)
+        asked: list[float] = []
+        monkeypatch.setattr(stt_models, "used_within", lambda s: asked.append(s) or True)
+        await server_mod._stt_startup_prewarm()
+        assert asked == [server_mod._STT_BOOT_PREWARM_RECENT_USE_SECS]
+        assert calls["prewarm"] == [("base", "zh")]
+
+
+class TestTheUsageMarker:
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        from kiro_crew.stt import models as stt_models
+
+        monkeypatch.setattr(stt_models, "models_dir", lambda: tmp_path)
+        monkeypatch.setattr(stt_models, "_last_usage_stamp", None)
+        return tmp_path
+
+    def test_no_marker_means_not_used(self, home):
+        from kiro_crew.stt import models as stt_models
+
+        assert stt_models.used_within(14 * 86400) is False
+
+    def test_a_decode_stamp_reads_back_as_recent(self, home):
+        from kiro_crew.stt import models as stt_models
+
+        assert stt_models.claim_usage_stamp() is True
+        stt_models.write_usage_marker()
+        assert stt_models.used_within(60) is True
+
+    def test_an_old_stamp_is_not_recent(self, home):
+        import os
+        import time
+
+        from kiro_crew.stt import models as stt_models
+
+        stt_models.write_usage_marker()
+        old = time.time() - 30 * 86400
+        os.utime(stt_models.usage_marker_path(), (old, old))
+        assert stt_models.used_within(14 * 86400) is False
+
+    def test_stamping_is_throttled_within_a_process(self, home):
+        """One claim per interval, so every partial of a dictation is not a write."""
+        from kiro_crew.stt import models as stt_models
+
+        assert stt_models.claim_usage_stamp() is True
+        assert stt_models.claim_usage_stamp() is False
+
+    def test_an_unwritable_directory_does_not_raise(self, tmp_path, monkeypatch):
+        from kiro_crew.stt import models as stt_models
+
+        monkeypatch.setattr(stt_models, "models_dir", lambda: tmp_path / "missing" / "dir")
+        stt_models.write_usage_marker()
+        assert stt_models.used_within(60) is False
 
 
 class TestTheTaskIsSafeToRunOnEveryBoot:

@@ -193,6 +193,9 @@ def _parse_state(payload: dict[str, Any]) -> live.PointerState:
     staged = payload.get("staged")
     cancel = payload.get("staged_cancel_available")
     previous = payload.get("previous")
+    verified = payload.get("live_verified", True)
+    if not isinstance(verified, bool):
+        raise live.PointerUnavailable("gateway live-target route: 'live_verified' is not a bool")
     if live_path is not None and not isinstance(live_path, str):
         raise live.PointerUnavailable("gateway live-target route: 'live' is not a string")
     if staged is not None and not isinstance(staged, str):
@@ -204,6 +207,7 @@ def _parse_state(payload: dict[str, Any]) -> live.PointerState:
         staged=staged or None,
         staged_cancel_available=bool(cancel),
         previous=previous or None,
+        live_verified=verified,
     )
 
 

@@ -310,10 +310,19 @@ class TestTransportDelivery:
         # was summarized silently, and on a compaction FAILURE the operator never
         # saw the line telling them to run /compact or /new. Every other proactive
         # leg walks origin-then-mirror; this one now does too.
+        import dataclasses
+
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
         transport = _Transport()
+        # Signed as the channel's own bind stores it: a key-named row must be.
+        mirror = ChannelLink("telegram", channel_id="4242")
+        mirror = dataclasses.replace(
+            mirror, admission=sign_mirror_admission("telegram:kirocrew:direct:7", mirror)
+        )
         state = _state(
             transport=transport,
-            sessions=_Sessions(origin=None, mirror=ChannelLink("telegram", channel_id="4242")),
+            sessions=_Sessions(origin=None, mirror=mirror),
             channel_type="telegram",
         )
 

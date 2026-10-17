@@ -990,7 +990,7 @@ class TestBootDispositions:
         """The other half, so the refusal above cannot pass for the wrong reason."""
         secret = "fleet-trust-key"
         monkeypatch.setattr(
-            governance, "_policy_trust_settings", lambda *_a: (False, {"fleet-control": secret})
+            governance, "_policy_trust_settings", lambda *_a: (False, {"fleet-control": secret}, {})
         )
         signed = _sign(_doc("fleet-control"), secret)
         source = transport(
@@ -3070,6 +3070,9 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         from kiro_crew import agent as agent_mod
 
         monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
+        # Nor may an earlier test's rebuild answer seed the baseline these tests pin.
+        monkeypatch.setattr(agent_mod, "_rebuild_answer_generation", None, raising=False)
+        monkeypatch.setattr(agent_mod, "_rebuild_incomplete", False, raising=False)
 
     @staticmethod
     def _hook(monkeypatch):
@@ -3240,9 +3243,9 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         revocation, before the poller starts."""
         from pathlib import Path as _Path
 
-        import kiro_crew.slack.gateway as gw
+        from kiro_crew.slack.gateway_runtime import service_boot
 
-        src = _Path(gw.__file__).read_text(encoding="utf-8")
+        src = _Path(service_boot.__file__).read_text(encoding="utf-8")
         assert "register_post_install_hook(reproject_for_ceiling_change)" in src
         assert src.index("register_post_install_hook(reproject_for_ceiling_change)") < src.index(
             "await asyncio.to_thread(start_refresher)"
@@ -3287,7 +3290,9 @@ class TestASignatureMandateBoundsAForgedCache:
         )
         body = json.dumps(doc).encode("utf-8")
         pd.write_cache(body, source=_TEST_SOURCE, etag="v1")
-        monkeypatch.setattr(governance, "_policy_trust_settings", lambda *_a: (True, {issuer: key}))
+        monkeypatch.setattr(
+            governance, "_policy_trust_settings", lambda *_a: (True, {issuer: key}, {})
+        )
 
         ceiling = pd.parse_distributed_policy(body, source=_TEST_SOURCE)
         assert ceiling.signature_state == governance.SIGNATURE_VERIFIED
@@ -4228,10 +4233,10 @@ class TestAnExposedCacheIsStillReadOnly:
     def _pinned_ssh_probe(self, monkeypatch):
         """Answer the launcher's ``ssh -V`` probe in-process.
 
-        ``_build_launcher_script`` consults ``_ssh_supports_accept_new`` for the
+        A namespace plan consults ``_ssh_supports_accept_new`` for the
         ``StrictHostKeyChecking`` flag, and the real probe spawns the host's
         ``ssh``. It is memoised, so it fires in whichever test on the worker
-        first builds a launcher — these tests read the mount lists, not the ssh
+        first builds a plan — these tests read the mount lists, not the ssh
         flag, so the seam is pinned rather than left to find the host binary.
         """
         from kiro_crew import sandbox
@@ -4257,17 +4262,37 @@ class TestAnExposedCacheIsStillReadOnly:
             cache not in plan.sensitive_dirs
         ), "it also has to be READABLE — that is why it was exposed"
 
-    def test_the_seal_is_a_remount_because_ms_rdonly_is_ignored_on_a_bind(self):
-        """Both mount calls are load-bearing: the bind alone grants write."""
-        from kiro_crew import sandbox
+    @pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="the namespace launcher is Linux-only"
+    )
+    def test_the_seal_is_a_remount_because_ms_rdonly_is_ignored_on_a_bind(self, tmp_path):
+        """Both mount calls are load-bearing: the bind alone grants write.
 
-        script = sandbox._build_launcher_script(
-            "standard", extra_visible_dirs=(self._cache_path(),)
-        )
-        loop = script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
+        The launcher program's seal stage runs over a read-only entry with a stand-in
+        libc: it binds the path over itself, then remounts that bind ``MS_RDONLY``,
+        and a refusal of EITHER mount refuses the spawn rather than running unsealed.
+        """
+        from test_sandbox_launcher_program import RecordingLibc, launch, payload, refusal
 
-        assert "_MS_REMOUNT | _MS_BIND | _MS_RDONLY" in loop
-        assert loop.count("_mount_or_die(") == 2
+        from kiro_crew import sandbox_launcher_program as program
+
+        cache = tmp_path / pd.CACHE_DIR_LEAF
+        cache.mkdir()
+        libc = RecordingLibc()
+        program.seal_readonly(launch(tmp_path, payload(readonly_dirs=[str(cache)]), libc=libc))
+
+        assert [call.target_path for call in libc.calls] == [str(cache), str(cache)]
+        bind, remount = (call.flags for call in libc.calls)
+        assert bind == program._MS_BIND
+        sealed = program._MS_REMOUNT | program._MS_BIND | program._MS_RDONLY
+        assert remount & sealed == sealed
+
+        for fail_at, step in ((1, "exposing"), (2, "sealing")):
+            failing = RecordingLibc(fail_at=fail_at)
+            run = launch(tmp_path, payload(readonly_dirs=[str(cache)]), libc=failing)
+            message = refusal(program.seal_readonly, run)
+            assert message is not None, f"a refused {step} mount let the spawn run"
+            assert message.startswith(f"sandbox: BLOCKED -- {step} read-only path {cache} failed")
 
     def test_an_unexposed_cache_gets_no_read_only_rule(self):
         """The ordinary spawn hides it; only the protected runtime parent is read-only."""

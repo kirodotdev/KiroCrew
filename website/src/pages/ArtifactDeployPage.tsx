@@ -84,7 +84,7 @@ interface SiteMutationResp {
 // Route all fetches through proper X-Session-Key header (client.ts pattern).
 const _sk = { 'X-Session-Key': 'dashboard:ui' }
 /** Catalog key per "Ready to deploy" column, resolved where the header renders —
- *  the same shape as `FILTER_LABEL_KEY` in ChatSidebar. `null` is the actions
+ *  the same shape as `FILTER_LABEL_KEY` in chat-sidebar/SearchDock.tsx. `null` is the actions
  *  column, which carries no label. */
 const READY_COLUMN_KEY: (string | null)[] = [
   'pages.artifactDeployPage.col_name',

@@ -226,7 +226,7 @@ function CfgToggle({ label, path, value, hint, onSave }: { label: string; path: 
   useEffect(() => { setLocal(value) }, [value])
   return (
     <CfgRow label={label} hint={hint} ok={ok}>
-      <button className={`h-7 min-w-[120px] px-2 py-0.5 rounded text-[13px] font-mono ${local ? 'bg-ok/15 text-ok border border-ok/30' : 'bg-bg-elevated text-muted border border-border'}`} onClick={() => { markDirty(); const v = !local; setLocal(v); onSave(path, v) }}>
+      <button className={`h-7 min-w-[120px] px-2 py-0.5 rounded text-[13px] font-mono ${local ? 'bg-ok/15 text-ok-text border border-ok/30' : 'bg-bg-elevated text-muted border border-border'}`} onClick={() => { markDirty(); const v = !local; setLocal(v); onSave(path, v) }}>
         {local ? 'on' : 'off'}
       </button>
     </CfgRow>
@@ -234,7 +234,6 @@ function CfgToggle({ label, path, value, hint, onSave }: { label: string; path: 
 }
 
 export default function KiroCrewCfgTab() {
-  const provider = useProvider()
   const queryClient = useQueryClient()
   const dispatch = useAppDispatch()
   const { data: cfg = null, error: queryErr } = useQuery<KiroCrewCfg>({
@@ -377,12 +376,11 @@ export default function KiroCrewCfgTab() {
             </tbody>
           </table>
         )}
-        {/* The Settings-side writer of the default crewmate. The Crewmates tab
-            only marks it with a badge; the chat composer's ★ writes the same
-            setting but only for the agent a session is bound to, and the picker
-            withholds covered crewmates unless dashboard.crewmates_in_agent_picker is on — so without
-            this row a user with several crewmates could not pick which one new
-            sessions start as.
+        {/* The Settings-side writer of the ROSTER's default crewmate: the badge
+            on the Crewmates page, the undeletable row, the one `select_crew`
+            keeps for itself. It is not what a new session runs — that is the
+            default custom agent, which the chat composer's ★ (Default for new
+            sessions) writes to `agent.default_agent` — and the hint says so.
             Rendered whenever any crewmate exists — the roster badge deep-links
             here even with one, so the anchor must be on the page for the ring
             to land (a one-option select is a true statement, not a trap). */}
@@ -403,12 +401,12 @@ export default function KiroCrewCfgTab() {
               path="agent.default_agent"
               value={cfg.default_agent}
               options={agents.map(([name]) => name)}
-              hint={i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_hint')}
+              hint={i18nT('pages.overview.kiroCrewCfgTab.default_crewmate_hint_badge')}
               onSave={(_path, name) => { setDefaultErr(''); defaultMut.mutate(name) }}
             />
             {/* No hand-off: it navigates to the chat and unmounts this page, and
-                Subagent Settings below keeps its drafts in local state until its
-                own Save — a hand-off here would throw them away. */}
+                the Workspaces create dialog keeps its typed fields in local state
+                — a hand-off here would throw them away. */}
             <ErrorNotice message={defaultErr} variant="inline" testId="cfg-default-crewmate-error" />
           </div>
         )}
@@ -482,21 +480,8 @@ export default function KiroCrewCfgTab() {
         )}
       </Card>
 
-      {/* Subagent Settings */}
-      <SubagentSettings cfg={cfg} onSaved={() => queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })} />
-
-      {/* Warm Pool */}
-      {provider.capabilities.warmPool && (
-      <Card>
-        <CardTitle><Flame className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.warm_pool')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.warm_pool_description')} /></CardTitle>
-        {saveErr && <p className="text-danger text-[13px] mb-2">{saveErr}</p>}
-        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
-          <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
-          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': `(${cfg.default_agent || i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
-          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
-        </div>
-      </Card>
-      )}
+      {/* Subagent Settings and Warm Pool live on Settings > Agent Harness
+          (`AgentRunSettings` below): both govern how agents run. */}
 
       {/* Quick Info */}
       <Card>
@@ -518,6 +503,56 @@ export default function KiroCrewCfgTab() {
   )
 }
 
+/**
+ * The two run-time editors Settings > Agent Harness hosts: Subagent Settings
+ * and Warm Pool. They read and write the same `['kirocrewConfig']` cache as the
+ * Developer page's config tab, so an edit on either surface shows on the other.
+ */
+export function AgentRunSettings() {
+  const provider = useProvider()
+  const queryClient = useQueryClient()
+  const { data: cfg = null, error: queryErr } = useQuery<KiroCrewCfg>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  const [saveErr, setSaveErr] = useState('')
+  const [rev, setRev] = useState(0)
+  const patchMut = useMutation({
+    mutationFn: ({ path, value }: { path: string; value: unknown }) => api.patchConfig(path, value),
+    onSuccess: (updated) => { queryClient.setQueryData(['kirocrewConfig'], updated) },
+    onError: (e: Error) => {
+      setSaveErr(e.message)
+      setTimeout(() => setSaveErr(''), 4000)
+      queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      setRev(r => r + 1)
+    },
+  })
+  const save = (path: string, value: unknown) => { patchMut.mutate({ path, value }) }
+
+  if (queryErr) return <Card><ErrorNotice message={queryErr instanceof Error ? queryErr.message : String(queryErr)} askAgent /></Card>
+  if (!cfg) return <Card><div className="skeleton h-40 rounded" /></Card>
+
+  return (
+    <>
+      <SubagentSettings cfg={cfg} onSaved={() => queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })} />
+      {provider.capabilities.warmPool && (
+      <Card>
+        <CardTitle><Flame className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.warm_pool')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.warm_pool_description')} /></CardTitle>
+        <p className="text-muted text-[12px] mb-2">{i18nT('pages.overview.kiroCrewCfgTab.warm_pool_save_note')}</p>
+        {/* No hand-off: the Subagent Settings card above may hold an unsaved
+            draft, and a hand-off to the chat would navigate away from it. */}
+        <ErrorNotice message={saveErr} variant="inline" />
+        <div className="grid grid-cols-2 gap-x-6 gap-y-2 max-[600px]:grid-cols-1">
+          <CfgNumber key={`poolsize-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_size')} path="session.pool_size" value={cfg.session.pool_size ?? 0} min={0} max={10} hint={i18nT('pages.overview.kiroCrewCfgTab.number_of_pre_spawned_processes_0_disables')} onSave={save} />
+          <CfgSelect key={`poolagent-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_agent')} path="session.pool_agent" value={cfg.session.pool_agent ?? ''} options={['', ...Object.keys(cfg.agents)]} labels={{'': cfg.default_agent ? i18nT('pages.overview.kiroCrewCfgTab.pool_agent_default_option', { name: cfg.default_agent }) : `(${i18nT('pages.overview.kiroCrewCfgTab.default_agent')})`}} hint={i18nT('pages.overview.kiroCrewCfgTab.agent_for_pool_processes_empty_uses_default_agent')} onSave={save} />
+          <CfgNumber key={`poolttl-${rev}`} label={i18nT('pages.overview.kiroCrewCfgTab.pool_ttl')} path="session.pool_ttl_secs" value={cfg.session.pool_ttl_secs} suffix="s" min={0} max={7200} hint={i18nT('pages.overview.kiroCrewCfgTab.max_age_for_pooled_processes_0_disables_expiry')} onSave={save} />
+        </div>
+      </Card>
+      )}
+    </>
+  )
+}
+
 function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => void }) {
   const [maxTurns, setMaxTurns] = useState(cfg.agent.subagent_max_turns ?? 100)
   const [maxSubs, setMaxSubs] = useState(cfg.agent.max_subagents ?? 3)
@@ -527,13 +562,23 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   const [msg, setMsg] = useState<ReactNode>('')
   const [msgOk, setMsgOk] = useState(false)
 
+  // Resync from the stored subagent values only. Keyed on the whole config, any
+  // unrelated write on the same tab (a harness switch, a warm-pool edit) hands
+  // in a new object and would silently reset an unsaved draft here.
+  const storedTurns = cfg.agent.subagent_max_turns
+  const storedSubs = cfg.agent.max_subagents
+  const storedAutoMax = cfg.agent.subagent_auto_max
   useEffect(() => {
-    setMaxTurns(cfg.agent.subagent_max_turns ?? 100)
-    setMaxSubs(cfg.agent.max_subagents ?? 3)
-    setAutoMax(cfg.agent.subagent_auto_max ?? 16)
-  }, [cfg])
+    setMaxTurns(storedTurns ?? 100)
+    setMaxSubs(storedSubs ?? 3)
+    setAutoMax(storedAutoMax ?? 16)
+  }, [storedTurns, storedSubs, storedAutoMax])
 
   const dirty = maxTurns !== (cfg.agent.subagent_max_turns ?? 100) || maxSubs !== (cfg.agent.max_subagents ?? 3) || autoMax !== (cfg.agent.subagent_auto_max ?? 16)
+  // The drafts live only in local state until Save. On Settings > Agent Harness
+  // the backend picker's error notices can hand off to the chat, which unmounts
+  // this card; the guard asks before any navigation drops an unsaved draft.
+  useSidePanelLeaveGuard(() => !dirty || window.confirm(i18nT('pages.overview.promptsTab.discard_unsaved_changes')), dirty)
 
   const save = async () => {
     setSaving(true); setMsg('')
@@ -547,6 +592,7 @@ function SubagentSettings({ cfg, onSaved }: { cfg: KiroCrewCfg; onSaved: () => v
   return (
     <Card>
       <CardTitle><Bot className="lucide-inline" /> {i18nT('pages.overview.kiroCrewCfgTab.subagent_settings')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.controls_how_many_subagents_can_run_concurrently')} /></CardTitle>
+      <p className="text-muted text-[12px] mb-2">{i18nT('pages.overview.kiroCrewCfgTab.subagent_save_note')}</p>
       <div className="grid grid-cols-2 gap-x-6 gap-y-3 max-[600px]:grid-cols-1">
         <label htmlFor="subagent-max-turns" className="flex justify-between items-center gap-3 py-1.5 border-b border-border text-sm">
           <span className="text-muted inline-flex items-center gap-1">{i18nT('pages.overview.kiroCrewCfgTab.max_turns_per_subagent')} <InfoTip text={i18nT('pages.overview.kiroCrewCfgTab.tool_call_budget_per_subagent_1_1000_default_100')} /></span>

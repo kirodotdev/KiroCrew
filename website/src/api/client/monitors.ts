@@ -24,7 +24,7 @@ export type MonitorWrite = {
 
 export type MonitorResponse = { ok: true; monitor: unknown }
 
-export function createMonitorsEndpoints({ post, patch, j }: ClientTransport) {
+export function createMonitorsEndpoints({ post, patch, j, jfetch: fetch }: ClientTransport) {
   const loops = {
     /** All goal loops across sessions — every record the service holds, ACTIVE
      *  OR STOPPED (a stopped loop keeps `active: false` + `stopped_reason`, which

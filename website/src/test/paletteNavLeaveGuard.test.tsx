@@ -78,7 +78,9 @@ describe('command palette navigation leave guard', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { result } = renderActions(DirtyPage)
     result.current.navigate('/chat')
-    expect(navigateSpy).toHaveBeenCalledWith('/chat')
+    // The jump carries the mark that the guards were asked, so a page that
+    // stays mounted through it and acts on it does not ask again.
+    expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } })
   })
 
   it('does not ask when the page has nothing at stake', () => {
@@ -86,7 +88,7 @@ describe('command palette navigation leave guard', () => {
     const { result } = renderActions(CleanPage)
     result.current.navigate('/chat')
     expect(confirmSpy).not.toHaveBeenCalled()
-    expect(navigateSpy).toHaveBeenCalledWith('/chat')
+    expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } })
   })
 
   it('asks when the jump would drop the query the pane is mounted on', () => {
@@ -106,6 +108,7 @@ describe('command palette navigation leave guard', () => {
     // Nothing changes, so nothing unmounts. A confirm the user did not earn is
     // what teaches them to click through the one that matters.
     expect(confirmSpy).not.toHaveBeenCalled()
-    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=prompts')
+    // Nothing was asked, so the jump carries no `leaveGranted` mark.
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=prompts', undefined)
   })
 })

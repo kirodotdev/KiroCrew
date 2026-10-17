@@ -241,8 +241,8 @@ def resolve_model_window(model: str | None) -> int | None:
         return None
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
-    # Delegate to the central window authority: kiro-list cache > registry >
-    # [1m] heuristic > None. It already returns None (not a silent 200k) for a
+    # Delegate to the central window authority: operator window > kiro-list cache >
+    # registry > [1m] heuristic > None. It already returns None (not a silent 200k) for a
     # genuinely-unknown model, so an unrecognized id keeps the full reference
     # budget (via _effective_window(None)) rather than being wrongly shrunk —
     # exactly the guarantee this function existed to provide, now centralized.
@@ -343,6 +343,10 @@ def admit_background(
         else:
             omitted.add("skills" if "[Skills:]" in part else "background context")
     if omitted:
+        # Imported at call time, like every Kiro Crew name an owner reads.
+        from kiro_crew import context_omissions
+
+        context_omissions.record(context_omissions.BACKGROUND, "budget", sections=omitted)
         admitted.append(
             "[Context budget: omitted "
             + ", ".join(sorted(omitted))

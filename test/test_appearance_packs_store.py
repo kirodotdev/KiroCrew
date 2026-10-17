@@ -201,6 +201,15 @@ class TestSaving:
         leftovers = [d.name for d in (tmp_path / "appearances").iterdir() if d.name.startswith(".tmp-")]
         assert leftovers == []
 
+    def test_an_unencodable_pack_file_is_refused_without_leaving_staging(self, tmp_path, store):
+        """A lone surrogate cannot be written as UTF-8: the save refuses and
+        removes its staging directory instead of raising."""
+        m = {"meta": {"id": "p", "format": "lottie", "type": "custom"}, "states": {}}
+        assert store.save_pack("p", m, {"idle.json": "\ud800"}) is False
+        leftovers = [d.name for d in (tmp_path / "appearances").iterdir() if d.name.startswith(".tmp-")]
+        assert leftovers == []
+        assert not (tmp_path / "appearances" / "p").exists()
+
     def test_a_pack_file_named_manifest_json_is_refused(self, tmp_path, store):
         """The manifest is generated from the validated payload; a pack file
         with the reserved name overwrote it in staging, letting bundle content

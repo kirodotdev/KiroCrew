@@ -25,7 +25,8 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 import kiro_crew
 import kiro_crew.config.resolution as _resolution
 from kiro_crew import aws_consent, beacon, platform_compat, stt
-from kiro_crew.acp_backends import selectable_backend_values
+from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
+from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
 from kiro_crew.computer_use.types import MAX_TREE_NODES_LIMIT as _CU_MAX_TREE_NODES_LIMIT
 from kiro_crew.computer_use.types import MIN_SCREENSHOT_MAX_PX as _CU_MIN_SCREENSHOT_MAX_PX
@@ -33,6 +34,8 @@ from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
+    CHAT_TURN_TIMEOUT_MAX,
+    CHAT_TURN_TIMEOUT_MIN,
     COMPLETION_KEEP_CHARS_MIN,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
@@ -57,22 +60,34 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
     KiroCrewConfig,
+    _clamp_compact_wait_secs,
     coerce_dict_section,
     config_path,
     update_config_locked,
 )
 from kiro_crew.config.sections import (
+    COMPACT_WAIT_SECS_MAX,
+    COMPACT_WAIT_SECS_MIN,
     DECISION_BUCKET_MAX,
     DECISION_BUCKET_MIN,
     DECISION_MODEL_ROUTE_TIERS,
+    EXTERNAL_TERMINAL_APPS,
     FOLDER_SORT_MODES,
     JUDGE_PROVIDERS,
+    SESSION_SORT_MODES,
     STT_LANGUAGE_AUTO,
+    TITLE_REFRESH_EVERY_TURNS_MAX,
+    TRANSCRIBE_LANGUAGES_MAX,
+    TRANSCRIBE_LANGUAGES_MIN,
+    SttConfig,
+    transcribe_language_options,
     transcribe_vocabulary_name,
 )
+from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
 from kiro_crew.dashboard.handlers._shared import (
+    _owner_denial_response,
     _pip_install_channel_available,
     guard_owner_surface_routes,
     owner_surface_guard,
@@ -122,6 +137,7 @@ from kiro_crew.transcribe import (
     ffmpeg_source,
     list_custom_vocabularies,
 )
+from kiro_crew.validation import QUALIFIED_MODEL_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +192,7 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "workspace",
     "memory_store",
     "model",
+    "worker_model",
     "source",
     "telegram_account",
 )
@@ -187,8 +204,9 @@ def _mask_agent_free_text(value: object) -> object:
     Same rule the roster endpoint's rows need: a value the
     redactors would alter — credential- or exfiltration-URL-shaped text — is
     replaced WHOLESALE by ``_SENSITIVE_MASK``; a non-string is masked too (it
-    is not renderable content, and ``description`` has no load-time type guard,
-    so one can genuinely arrive here). Benign content passes through
+    is not renderable content; the loader pins every declared-``str`` agent
+    field except ``memory_store`` and ``member_id`` to its default, so for the
+    rest this branch is defence in depth, not the only guard). Benign content passes through
     byte-identical, so an ordinary stored value renders exactly as written.
     ``GET /api/agents`` ships these fields verbatim — that half of the class is
     not this endpoint's.
@@ -785,10 +803,11 @@ def _stt_providers() -> list[str]:
     return providers
 
 
-# Common BCP-47 language codes surfaced in the Chat Settings STT picker.
-# The handler accepts any string value on PUT — this list only drives the UI
-# dropdown. AWS Transcribe supports many more; advanced users can edit
-# config.json directly.
+# Common BCP-47 language codes surfaced in the Chat Settings STT picker, and the
+# candidates the Transcribe mixed-language picker offers. The handler accepts any
+# string value on PUT; this list only drives the UI dropdowns, and GET adds the
+# stored values to it so a code set in config.json stays selectable. AWS
+# Transcribe supports many more.
 _STT_LANGUAGE_CODES: tuple[str, ...] = (
     "en-US",
     "en-GB",
@@ -801,7 +820,24 @@ _STT_LANGUAGE_CODES: tuple[str, ...] = (
     "ja-JP",
     "ko-KR",
     "zh-CN",
+    "vi-VN",
 )
+
+
+def _stt_language_codes(stt_cfg: SttConfig) -> list[str]:
+    """The picker's codes for *stt_cfg*: ``auto`` first for the local provider, the
+    common codes, then any stored code they do not already hold.
+
+    A stored code outside the common list comes from config.json or an older
+    build. Offering it keeps it on screen as a choice, so changing the language and
+    changing back cannot lose it.
+    """
+    codes = [STT_LANGUAGE_AUTO] if stt_cfg.provider == PROVIDER_LOCAL else []
+    codes += list(_STT_LANGUAGE_CODES)
+    for stored in (stt_cfg.effective_language_code, *stt_cfg.transcribe_languages):
+        if stored not in codes:
+            codes.append(stored)
+    return codes
 
 
 #: Machine-readable reasons on the STT endpoints' non-2xx bodies. The dashboard
@@ -832,24 +868,21 @@ def _spawn_stt_background(coro: Coroutine[Any, Any, Any]) -> None:
     task.add_done_callback(_stt_background_tasks.discard)
 
 
-def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
-    """Refuse an app token on the dashboard-only STT endpoints. 403 or None.
+def _audit_stt_refusal(request: web.Request, operation: str, error: str) -> None:
+    """Record a refused STT capability in SEL. Best-effort, never raises.
 
-    ``request["user"]`` is truthy for an app token too, so a cookie check alone
-    does not separate a browser from an app that declared this path in its
-    manifest's ``permissions.api``. These endpoints start a model download and
-    warm a resident model inside the gateway, which is operator setup rather than
-    something an app earns by naming a path. The live transcription surfaces
-    (``/api/ws/stt``, ``POST /api/stt/transcribe``) are deliberately NOT gated
-    this way: shipped apps reach them on an app token.
+    An unwrapped SEL failure here would replace the intended 403 with a 500, which
+    is the one outcome a refusal must never turn into.
 
-    An absent ``app`` key is refused along with a non-empty one, so an
-    unauthenticated route can only ever fail closed here.
+    A direct enqueue, not a ``to_thread`` hop: the SEL singleton is warmed at
+    startup (:func:`kiro_crew.sel.warm_sel_singleton`, awaited by both start
+    paths), so the first-touch construction that would otherwise justify offloading
+    this -- reading the HMAC key, the chain tip and the live-file identity from disk --
+    never runs on a request. Ten handler sites already record their decision this
+    way; ``members.py`` states the same reasoning. Still guarded, because a FAILED
+    warm leaves that construction to retry on this thread and possibly raise, and
+    an audit must never change the outcome it is recording.
     """
-    if request.get("app") == "":
-        return None
-    # Best-effort: an unwrapped SEL failure here would replace the intended 403
-    # with a 500, which is the one outcome a refusal must never turn into.
     try:
         _sel().log_api_access(
             caller=str(request.get("app") or request.get("user") or "unknown"),
@@ -857,14 +890,208 @@ def _deny_app_token(request: web.Request, operation: str) -> web.Response | None
             outcome="denied",
             source="dashboard",
             resources=request.path,
-            error="dashboard user required",
+            error=error,
         )
     except Exception:
         logger.warning("SEL logging failed for %s", operation, exc_info=True)
+
+
+def _audit_custom_model_disclosure(
+    request: web.Request, cfg: KiroCrewConfig, *, served: bool
+) -> None:
+    """Record whether the custom-model pair was served to this caller. Never raises.
+
+    The write path audits only its REFUSAL (:func:`_deny_non_owner_stt_custom_model`),
+    which left the read side of the same authorization decision unrecorded: the same
+    owner predicate decides whether ``GET /api/config/stt`` serves or withholds
+    ``custom_model_path`` / ``custom_model_sha256``, and neither branch wrote an event.
+    So a silent gap in owner-only custom-model access could not be reconstructed from
+    the log afterwards -- a served pair is the exact value a caller would need to echo
+    back on the write it may not make. Both outcomes are recorded, not just the denial:
+    "nobody was served this" is only provable if the allowed branch logs too.
+
+    Only when a pair is IN PLAY. With no custom file, no digest and a catalog model in
+    force, the branch discloses two empty strings and there is no decision to audit --
+    while this endpoint is fetched by the chat composer's voice hook
+    (``useComposerVoice``) on mount, not just by the settings page, so an
+    unconditional row per GET would bury the decisions that do carry a value.
+
+    Best-effort like every other audit on this endpoint (``critical=False``): an
+    unwrapped SEL failure here would turn a served config into a 500, and an audit
+    must never change the outcome it is recording.
+    """
+    if not (cfg.stt.custom_model_path or cfg.stt.custom_model_sha256):
+        if cfg.stt.model != stt_models.CUSTOM_MODEL:
+            return
+    try:
+        _sel().log_api_access(
+            caller=str(request.get("app") or request.get("user") or "unknown"),
+            operation="stt.custom_model.read",
+            outcome="allowed" if served else "denied",
+            source="dashboard",
+            resources=request.path,
+            error="" if served else "non-owner identity, pair withheld",
+        )
+    except Exception:
+        logger.warning("SEL logging failed for stt.custom_model.read", exc_info=True)
+
+
+def _audit_stt_custom_model_write_allowed(request: web.Request) -> None:
+    """Record that the owner gate ADMITTED a custom-model write. Never raises.
+
+    The gate below logged only its refusal, so the log answered "who was turned
+    away" and not "who chose the weights". Those are not the same question, and only
+    the second one names the file and digest the gateway went on to verify and
+    load. A denial-only record also cannot distinguish an endpoint nobody exercised
+    from one exercised successfully, which is the distinction an operator needs
+    after the fact: the admitted write is the event with consequences.
+
+    Unconditional, unlike :func:`_audit_custom_model_disclosure`'s "only when a pair
+    is in play" gate. That gate exists because ``GET /api/config/stt`` is fetched on
+    every chat mount by ``useComposerVoice``, so most reads carry no decision. This
+    is the WRITE, reached only by a body that names ``custom`` or one of the two
+    fields -- the presence test above already made it rare and deliberate.
+
+    Same operation name and same best-effort contract as the refusal it pairs with,
+    so both outcomes of one authorization decision read as one operation in SEL.
+    """
+    try:
+        _sel().log_api_access(
+            caller=str(request.get("app") or request.get("user") or "unknown"),
+            operation="stt.custom_model",
+            outcome="allowed",
+            source="dashboard",
+            resources=request.path,
+            error="",
+        )
+    except Exception:
+        logger.warning("SEL logging failed for stt.custom_model", exc_info=True)
+
+
+def _refuse_app_token(request: web.Request, operation: str) -> web.Response:
+    """The audited 403 an app token gets on a dashboard-only capability."""
+    _audit_stt_refusal(request, operation, "dashboard user required")
     return web.json_response(
         {"error": "dashboard user required", "code": _CODE_DASHBOARD_USER_REQUIRED},
         status=403,
     )
+
+
+def _deny_app_token(request: web.Request, operation: str) -> web.Response | None:
+    """Refuse an app token on the dashboard-only STT endpoints. 403 or None.
+
+    These endpoints start a model download and warm a resident model inside the
+    gateway, which is operator setup rather than something an app earns by naming
+    a path. The live transcription surfaces (``/api/ws/stt``, ``POST
+    /api/stt/transcribe``) are deliberately NOT gated this way: shipped apps reach
+    them on an app token.
+
+    Whole-handler. The per-FIELD sibling is
+    :func:`_deny_non_owner_stt_custom_model`, for the config endpoint that an app
+    may legitimately reach for everything except the custom model.
+
+    An absent ``app`` key is refused along with a non-empty one, so an
+    unauthenticated route can only ever fail closed here.
+    """
+    if request.get("app") == "":
+        return None
+    return _refuse_app_token(request, operation)
+
+
+async def _deny_non_owner_stt_custom_model(request: web.Request, body: dict) -> web.Response | None:
+    """Refuse a non-owner caller the custom-model fields of ``PUT /api/config/stt``.
+
+    ``PUT /api/config/stt`` is app-reachable as a whole, so this is per-field
+    rather than the blanket :func:`_deny_app_token` that ``stt.status``,
+    ``stt.prepare`` and ``stt.prewarm`` use. Those three are denied because they
+    fetch weights and load them into the gateway. The custom-model pair reaches
+    exactly that outcome by a longer road: it names a file the gateway will verify
+    against a digest THE SAME CALLER supplied, and load — and the transcription
+    surfaces that trigger the load are deliberately app-reachable. So a caller
+    allowed to write these fields would choose the weights every later utterance is
+    transcribed through. That is a hole through the side door, and it is the whole
+    reason this exists.
+
+    The bar is the OWNER dashboard (``is_owner_dashboard_request``), not merely a
+    caller holding a non-app token. An allow-listed messaging user who runs
+    ``!dashboard`` is minted a dashboard session too, and its app claim is ``""``
+    just like the operator's: "not an app" and "the operator" are different
+    questions, and only the second one may choose the weights. Same predicate, and
+    same denial tail, as every other owner-only mutation in the dashboard.
+
+    Scope, and why each half is drawn where it is:
+
+    - ``custom_model_path`` / ``custom_model_sha256`` are refused on PRESENCE.
+      The GET omits them for everyone but the owner, so no other caller has a
+      legitimate source for either value and none can be round-tripping one it
+      was served.
+    - ``model`` is refused on PRESENCE of ``custom`` too, unconditionally, NOT
+      only when it would change the selection. An earlier version compared
+      against ``cfg.stt.model`` to let a caller harmlessly write back a ``custom``
+      already in force. That comparison cannot be made safely here: ``cfg`` is
+      read by the caller BEFORE the shared config lock, so a non-owner who reads
+      "custom is already active" and then writes inside the lock re-activates a
+      custom model the owner had just turned off. The round-trip that carve-out
+      protected is a convenience; the race it opened is an authorization bypass,
+      so the convenience loses.
+
+    403 rather than dropping the fields quietly, because a 200 would tell the
+    caller its custom model had been stored.
+    """
+    # Non-dict bodies never reach here: the caller 400s them before this gate, so
+    # every membership test below is well-defined. Presence is checked FIRST so an
+    # ordinary write (language, toggles) is untouched for every caller this gate
+    # does not concern.
+    if not (
+        body.get("model") == stt_models.CUSTOM_MODEL
+        or "custom_model_path" in body
+        or "custom_model_sha256" in body
+    ):
+        return None
+    # Imported in the body, as `require_owner_dashboard_request` does: importing
+    # `source_providers` at module scope pulls chat-state helpers that reach back
+    # into sibling handler modules.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if is_owner_dashboard_request(request):
+        _audit_stt_custom_model_write_allowed(request)
+        return None
+    # Domain audit stays here under this endpoint's own operation name; only the
+    # denial TAIL is shared, so a session that predates the configured owner gets
+    # the standard 401 relabel instead of a 403 it cannot act on.
+    _audit_stt_refusal(request, "stt.custom_model", "non-owner identity rejected")
+    return _owner_denial_response(request, "the custom speech model is owner-only")
+
+
+def _stt_custom_model_refusal(body: dict) -> web.Response | None:
+    """A 400 for a custom-model field that may not be stored, else ``None``.
+
+    Refused rather than skipped, because a skipped field answers 200 and the row
+    the user just typed into resets from the response, with nothing to say why.
+    ``""`` is always accepted: it clears the field, which is how a user goes back to
+    a catalog model.
+
+    The path is checked against the disk here -- inside the models directory, no
+    ``..`` and no symlink out of it, present, a regular file -- with the same
+    function every load runs, so a value this endpoint stores is one a load will
+    accept until the file itself changes. Blocking I/O; the caller runs it off the
+    loop.
+    """
+    if "custom_model_path" in body and body["custom_model_path"] != "":
+        try:
+            stt_models.custom_model_file(body["custom_model_path"])
+        except stt_models.CustomModelPathError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
+    if "custom_model_sha256" in body and body["custom_model_sha256"] != "":
+        if not stt_models.valid_custom_sha256(body["custom_model_sha256"]):
+            return web.json_response(
+                {
+                    "error": "The SHA-256 must be 64 hexadecimal characters.",
+                    "code": "custom_model_sha256_invalid",
+                },
+                status=400,
+            )
+    return None
 
 
 def _stt_positive_int(body: dict, key: str, *, minimum: int, maximum: int) -> int | None:
@@ -891,6 +1118,24 @@ async def api_stt_config(request: web.Request) -> web.Response:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid JSON"}, status=400)
+        # Every field read below is a membership test followed by a subscript, and
+        # a JSON array satisfies `"model" in body` while `body["model"]` raises
+        # TypeError — a 500 out of a partial-update endpoint, and out of the
+        # security gate on the next line. Refused once here rather than type-tested
+        # at each of the fifteen fields, matching the sibling theme handler above.
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": "request body must be an object", "code": "body_not_object"}, status=400
+            )
+        # Before the lock and before any write: the custom-model fields are the one
+        # part of this endpoint a non-owner caller may not touch. See
+        # `_deny_non_owner_stt_custom_model` for why they and not the rest.
+        denied = await _deny_non_owner_stt_custom_model(request, body)
+        if denied is not None:
+            return denied
+        refused = await asyncio.to_thread(_stt_custom_model_refusal, body)
+        if refused is not None:
+            return refused
         path = config_path()
         from kiro_crew.config.loader import ConfigReadError, update_config_locked  # noqa: F811
         from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
@@ -928,10 +1173,32 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 # panel failed on a field they never edited. `resolve` is the wrong
                 # tool in the other direction: it answers the DEFAULT for an unknown
                 # name, so using it here would let a junk value overwrite a good
-                # stored one.
-                canonical = stt_models.canonical_name(body["model"])
+                # stored one. `custom` is admitted beside it because it is legal
+                # without being a catalog row either -- `resolve` special-cases it
+                # against the path/digest pair -- so `canonical_name` answers None.
+                canonical = (
+                    stt_models.CUSTOM_MODEL
+                    if body["model"] == stt_models.CUSTOM_MODEL
+                    else stt_models.canonical_name(body["model"])
+                )
                 if canonical is not None:
                     stt_section["model"] = canonical
+            # Accepted independently of `model` so the pair can be filled in BEFORE
+            # `custom` is selected: the config loader degrades a `custom` selection
+            # with no usable pair back to the default model, so writing the two in
+            # the other order would store a selection that reads back as `base`.
+            # `_stt_custom_model_refusal` has already refused a value that cannot be
+            # used, so what reaches here is usable or `""`; normalised with the same
+            # helpers the loader uses, so a value this endpoint stores is one the
+            # loader keeps.
+            if "custom_model_path" in body:
+                stt_section["custom_model_path"] = stt_models.valid_custom_path(
+                    body["custom_model_path"]
+                )
+            if "custom_model_sha256" in body:
+                stt_section["custom_model_sha256"] = stt_models.valid_custom_sha256(
+                    body["custom_model_sha256"]
+                )
             if "transcribe_region" in body and isinstance(body["transcribe_region"], str):
                 stt_section["transcribe_region"] = body["transcribe_region"]
             if "transcribe_profile" in body and isinstance(body["transcribe_profile"], str):
@@ -943,6 +1210,13 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 vocabulary = transcribe_vocabulary_name(body["transcribe_vocabulary"])
                 if vocabulary is not None:
                     stt_section["transcribe_vocabulary"] = vocabulary
+            # Same rule as the loader: a list it would drop (too long, a malformed
+            # code, two dialects of one language) is skipped here, leaving the
+            # stored candidates in force.
+            if "transcribe_languages" in body:
+                languages = transcribe_language_options(body["transcribe_languages"])
+                if languages is not None:
+                    stt_section["transcribe_languages"] = languages
             if "language_code" in body and isinstance(body["language_code"], str):
                 stt_section["language_code"] = body["language_code"]
             if "streaming" in body and isinstance(body["streaming"], bool):
@@ -1009,6 +1283,14 @@ async def api_stt_config(request: web.Request) -> web.Response:
         cfg = KiroCrewConfig.load()
 
     provider = cfg.stt.provider
+    # Who this response is being assembled for. The custom-model pair below is the
+    # owner's alone, on the same predicate that gates writing it, so the GET cannot
+    # serve a value the PUT would refuse. Local import for the reason given in
+    # `_deny_non_owner_stt_custom_model`.
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    owner_request = is_owner_dashboard_request(request)
+    _audit_custom_model_disclosure(request, cfg, served=owner_request)
     # Every probe below touches the filesystem or imports an optional extra, so
     # none of them belongs on the event loop, and they ride one thread rather than
     # several: _stt_prereq_commands resolves ffmpeg and Homebrew, the
@@ -1048,6 +1330,21 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "enabled": cfg.stt.enabled,
             "provider": provider,
             "model": cfg.stt.model,
+            # The custom-model pair, so the panel can show what is configured and
+            # edit it. Served to the OWNER dashboard alone, the same bar that
+            # `_deny_non_owner_stt_custom_model` puts on writing them: serving them
+            # to a caller that may not write them would hand it the exact values to
+            # echo back. `custom_model_dir` is the folder the file has to be in, so
+            # the panel can say where to put it.
+            **(
+                {
+                    "custom_model_path": cfg.stt.custom_model_path,
+                    "custom_model_sha256": cfg.stt.custom_model_sha256,
+                    "custom_model_dir": str(stt_models.models_dir()),
+                }
+                if owner_request
+                else {}
+            ),
             "available": available,
             "code": availability_code,
             "streaming": cfg.stt.streaming,
@@ -1057,6 +1354,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "transcribe_region": cfg.stt.transcribe_region,
             "transcribe_profile": cfg.stt.transcribe_profile,
             "transcribe_vocabulary": cfg.stt.transcribe_vocabulary,
+            "transcribe_languages": cfg.stt.transcribe_languages,
+            # The bounds the mixed-language picker enforces, served from the same
+            # constants the PUT and the loader validate against.
+            "transcribe_languages_min": TRANSCRIBE_LANGUAGES_MIN,
+            "transcribe_languages_max": TRANSCRIBE_LANGUAGES_MAX,
             "language_code": cfg.stt.effective_language_code,
             "silence_ms": cfg.stt.silence_ms,
             "partial_interval_ms": cfg.stt.partial_interval_ms,
@@ -1073,10 +1375,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
             # name — the latter silently hid the toggle when `apple` was added.
             "streaming_providers": list(_STREAMING_PROVIDERS),
-            "language_codes": (
-                ([STT_LANGUAGE_AUTO] if cfg.stt.provider == PROVIDER_LOCAL else [])
-                + list(_STT_LANGUAGE_CODES)
-            ),
+            "language_codes": _stt_language_codes(cfg.stt),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
             # requirement (`boto3` + `amazon-transcribe`) satisfiable in this
@@ -1110,7 +1409,10 @@ async def api_stt_status(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     cfg = KiroCrewConfig.load()
-    model = stt_models.resolve(cfg.stt.model)
+    # Off the loop: for `custom` this reads config to find the file and
+    # digest, so a catalog lookup that would otherwise stay in memory performs file
+    # I/O. Same reason the three async callers in `stt/` offload it.
+    model = await asyncio.to_thread(stt_models.resolve, cfg.stt.model)
 
     # availability_detail imports the recogniser (or the AWS client), and each
     # is_present stats a model file: none of it belongs on the loop.
@@ -1139,6 +1441,27 @@ async def api_stt_status(request: web.Request) -> web.Response:
             }
             for m in stt_models.CATALOG
         ]
+        if model.name == stt_models.CUSTOM_MODEL:
+            # Appended rather than being a catalog row, because a custom model is
+            # configuration and not a published artifact. It still has to appear
+            # here: this list is what renders the picker's presence line, and
+            # without a row the panel would report the selected model as absent
+            # forever. Last, because the list is ordered by download size and this
+            # one has none to sort by. `error` says why an absent file is unusable,
+            # since there is nothing to download in its place.
+            try:
+                stt_models.custom_model_file(model.custom_path)
+                custom_error = ""
+            except stt_models.CustomModelPathError as exc:
+                custom_error = str(exc)
+            catalog.append(
+                {
+                    "name": model.name,
+                    "size_bytes": model.size_bytes,
+                    "present": stt_models.is_present(model),
+                    "error": custom_error,
+                }
+            )
         ensure_ffmpeg_in_path()
         # Read from the BUILD, not from the request we make of it: whisper.cpp's
         # context defaults ask for `use_gpu` and are granted it on a CPU-only wheel,
@@ -1326,8 +1649,10 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
 
     An optional ``{"model": name}`` body fetches a model the operator has not
     saved yet, so the picker can offer the weights BEFORE the selection is
-    committed. Only catalog names reach the network: an unknown one resolves to
-    the default with a logged reason, the same as the configured value does.
+    committed. Only a catalog name reaches the network: an unknown one resolves to
+    the default with a logged reason, the same as the configured value does, and
+    ``custom`` resolves to the file and digest already in config, which are checked
+    and never downloaded.
     """
     denied = _deny_app_token(request, "stt.prepare")
     if denied is not None:
@@ -1341,7 +1666,7 @@ async def api_stt_prepare(request: web.Request) -> web.Response:
         body = {}
     requested = body.get("model") if isinstance(body, dict) else None
     name = requested if isinstance(requested, str) and requested else cfg.stt.model
-    model = stt_models.resolve(name)
+    model = await asyncio.to_thread(stt_models.resolve, name)
     if stt_models.store().status.get("step") != "downloading":
         # Skipped while a transfer is already running purely so a polling panel
         # cannot accumulate tasks; the store's lock, not this check, is what makes
@@ -1363,7 +1688,7 @@ AUTO_FETCH_BUNDLED = "bundled"
 
 def _ffmpeg_auto_fetch() -> str:
     """Whether this host's decoder can be fetched, and if not, why not."""
-    if platform_compat.is_bundled_interpreter():
+    if stt_decoder.bundle_carries_decoder():
         return AUTO_FETCH_BUNDLED
     if stt_decoder.artifact_for() is None:
         return AUTO_FETCH_UNSUPPORTED
@@ -1890,7 +2215,7 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
         command = pip_extra_install_command(extra)
         if command:
             cmds.append(command)
-    if not platform_compat.is_bundled_interpreter():
+    if not stt_decoder.bundle_carries_decoder():
         cmds.extend(_ffmpeg_install_commands())
     return cmds
 
@@ -2599,17 +2924,18 @@ def _validate_role_model(
     No advertised set => accept (entitlement unknowable; don't accuse on no
     evidence), matching that predicate's own conservative default.
 
-    *provider* is forwarded to :func:`_model_rejected_reason` so a caller holding
-    an already-loaded config does not pay a second synchronous config read; the
-    remaining work is in-memory. *backend* scopes any live catalog to the harness
-    the edited agent will use. Omit either when that identity is unavailable.
+    *provider* is the ``validate_fn`` hooks' shared third argument and is not
+    read here. *backend* is the harness the edited agent will use: it decides
+    whether a canonical key is display-only (:func:`_model_rejected_reason`,
+    which then pays no config read of its own) and scopes any live catalog.
+    Omit it when that identity is unavailable.
     """
     if not value or value == "auto":
         return None
     from kiro_crew.acp.client import model_is_unusable
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
-    reason = _model_rejected_reason(value, provider=provider)
+    reason = _model_rejected_reason(value, backend)
     if reason:
         return reason
     advertised = (
@@ -2654,39 +2980,66 @@ def _selectable_acp_backends() -> list[str]:
     return selectable_backend_values()
 
 
+def _acp_backend_patch_values() -> list[str]:
+    """What a PATCH may store in ``agent.acp_backend``: the config-file vocabulary.
+
+    Every selectable backend in its stored spelling (Kiro CLI is ``"kiro"``),
+    plus ``""``, which stores "no choice" so the install follows the default.
+    """
+    return [*selectable_stored_backend_values(), ""]
+
+
+# The grammar of every model PIN a Settings picker writes and `_validate_role_model`
+# then checks against the account's entitlement. The pickers list the advertised
+# model names, which OpenCode spells `provider/model`, so a pin accepts a bare id
+# OR a provider-qualified id (`validation.QUALIFIED_MODEL_PATTERN`, the branch the
+# spawn, task-batch and cron model-name check shares); the empty value (INHERIT /
+# disabled, per key) still matches. Malformed segments (`a//b`, `/a`, `a/`) and
+# shell metacharacters are refused. One constant so a picker cannot offer an id a
+# sibling pin refuses.
+_MODEL_PIN_PATTERN = rf"(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*|{QUALIFIED_MODEL_PATTERN})?\Z"
+
+
 _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.provider": {"type": "enum", "values": ["acp"]},
-    # Which ACP agent drives a session: "" = kiro-cli, "kas" = kiro-agent.
+    # Which ACP agent drives a session, in the config-file vocabulary: "kiro" =
+    # kiro-cli, "kas" = kiro-agent, "" = no choice (the default).
     # ``values_fn`` rather than a literal, because the set WIDENS after this module
     # is imported: an edition registers a backend from
     # ``ProviderRegistry.register_acp_backends`` at boot, and a literal would
     # reject it here with a misleading "invalid value". Resolved per request
     # against the one code owner, so this cannot drift from what ``AcpProvider``
     # will actually serve.
-    "agent.acp_backend": {"type": "enum", "values_fn": _selectable_acp_backends},
+    "agent.acp_backend": {"type": "enum", "values_fn": _acp_backend_patch_values},
+    # The KAS bundle route switch (Settings → Agent Harness → KAS). Boot-only on the
+    # schema; the card says so after a save. No install is implied by turning it on:
+    # a true value with nothing installed refuses the next KAS spawn by name.
+    "agent.kas_bundle": {"type": "bool"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry
     # keys ("opus-4.8-1m") and kiro's own ids ("claude-opus-4.8"). So this is a
-    # grammar check instead — model-id charset only, no separators or shell
-    # metacharacters — and an unknown-but-well-formed id is rejected downstream
-    # by kiro itself rather than silently accepted here. "auto"/"" = defer to
-    # the agent config / kiro's own default.
-    "agent.model": {"type": "str", "max_len": 64, "pattern": r"^[A-Za-z0-9._\-\[\]]*$"},
-    # Per-task-class model overrides. Same grammar as agent.model (the real
-    # vocabulary is whatever the backend advertises). "" / "auto" defers to the
-    # chat default. `validate_fn` additionally rejects a well-formed id the
-    # active provider or the account's entitlement cannot honor.
+    # grammar check instead — `_MODEL_PIN_PATTERN`, the grammar every model pin
+    # shares, since the Settings → Chat picker lists the same advertised names
+    # (provider-qualified on OpenCode) — and an unknown-but-well-formed id is
+    # rejected downstream by kiro itself rather than silently accepted here.
+    # "auto"/"" = defer to the agent config / kiro's own default.
+    "agent.model": {"type": "str", "max_len": 64, "pattern": _MODEL_PIN_PATTERN},
+    # Per-task-class model overrides. The model-pin grammar (the real
+    # vocabulary is whatever the backend advertises, provider-qualified on
+    # OpenCode). "" / "auto" defers to the chat default. `validate_fn`
+    # additionally rejects a well-formed id the active provider or the
+    # account's entitlement cannot honor.
     "agent.role_models.background": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.role_models.subagent": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Throttle-exhaustion fallback model. Single value: "auto" (default) defers
@@ -2697,7 +3050,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     # Content-filter (refusal) fallback model. Single value: "" (default)
@@ -2708,7 +3061,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.refusal_fallback_model": {
         "type": "str",
         "max_len": 64,
-        "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     },
     "agent.reasoning_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
@@ -2726,7 +3079,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "enum",
         "values": ["30m", "1h", "6h", "12h", "24h", "until_shutdown"],
     },
-    # Kept equal to the ``agent.sandbox`` enum in ``config/sections.py`` (pinned by
+    # Kept equal to the ``agent.sandbox`` enum in ``config/sections_agent.py`` (pinned by
     # test_sandbox_strict_selectable): a tier the CLI admits must be selectable
     # here too, or Settings silently offers fewer tiers than ``config set``.
     "agent.sandbox": {"type": "enum", "values": ["auto", "strict", "off"]},
@@ -2743,13 +3096,31 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": SOFT_STOP_BUDGET_MIN,
         "max": SOFT_STOP_BUDGET_MAX,
     },
+    # Same bounds as the load-time clamp, so Settings cannot save a ceiling the
+    # loader would then rewrite. Read on every turn, so the next turn follows it.
+    "agent.chat_turn_timeout_secs": {
+        "type": "int",
+        "min": CHAT_TURN_TIMEOUT_MIN,
+        "max": CHAT_TURN_TIMEOUT_MAX,
+    },
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
-    # Range shared with the load-time clamp in config/loader.py — one constant
+    # Range shared with the load-time clamp in config/loader_builders.py — one constant
     # pair, so the write gate and the load path cannot drift.
     "session.autocompact_pct": {
         "type": "float",
         "min": AUTOCOMPACT_PCT_MIN,
         "max": AUTOCOMPACT_PCT_MAX,
+    },
+    # ``0`` (the built-in budget) or 60-3600 s. Not one contiguous range, so the
+    # write CLAMPS through the load path's own coercion instead of rejecting:
+    # the stored value is exactly what a load of it would produce, and the
+    # response's ``clamp_notice`` lets the Settings row say what was saved.
+    # ``min``/``max`` are the positive band, reported in that notice.
+    "session.compact_wait_secs": {
+        "type": "float",
+        "min": COMPACT_WAIT_SECS_MIN,
+        "max": COMPACT_WAIT_SECS_MAX,
+        "clamp_fn": lambda v: _clamp_compact_wait_secs(v, 0.0),
     },
     "session.pool_size": {"type": "int", "min": 0, "max": 10},
     "session.pool_agent": {"type": "str", "values_fn": _agent_values},
@@ -2777,10 +3148,24 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": RECENT_TINT_COUNT_MIN,
         "max": RECENT_TINT_COUNT_MAX,
     },
+    # Auto-title refresh cadence (Settings → Chat → Sessions). The gate admits
+    # the loader's whole domain, 0 (the built-in schedule) through MAX, and the
+    # loader raises a stored 1-3 to MIN, the same as it does for a value
+    # `kirocrew config set` wrote. The row reads back the LOADED value, so it
+    # shows the cadence that runs. chat_title reads the key on every turn, so a
+    # save applies from the next turn with no restart.
+    "dashboard.title_refresh_every_turns": {
+        "type": "int",
+        "min": 0,
+        "max": TITLE_REFRESH_EVERY_TURNS_MAX,
+    },
     # The sidebar's folder sort mode. A view preference the sidebar menu writes and
     # the kirocrew-dashboard MCP server reads back, so the two draw the tree in
     # the same order; the enum is the loader's own list, spelled once.
     "dashboard.folder_sort": {"type": "enum", "values": list(FOLDER_SORT_MODES)},
+    # The sidebar's session sort key, written by the sort menu; the enum is the
+    # loader's own list, spelled once.
+    "dashboard.session_sort": {"type": "enum", "values": list(SESSION_SORT_MODES)},
     # Per-version snooze/skip verdict for the proactive update popup, written
     # as ONE atomic record: the three fields only mean anything together, so
     # per-field writes would open both a crash window (old verdict paired
@@ -2819,6 +3204,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # next click with no restart. Only a literal `true` turns it on — a
     # hand-edited non-boolean stays off.
     "dashboard.terminal.reuse_current": {"type": "bool"},
+    # The terminal app "Open in external terminal" starts (Settings → Display →
+    # Terminal). "" = unset, the default, which withholds the action. Limited
+    # to the desktop shell's launch allowlist; the launch gate in
+    # handlers/external_terminal.py re-reads it and treats anything else as
+    # unset.
+    "dashboard.terminal.external_app": {
+        "type": "enum",
+        "values": ["", *EXTERNAL_TERMINAL_APPS],
+    },
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
@@ -2972,17 +3366,18 @@ _EDITABLE_CONFIG: dict[str, dict] = {
 # on its own" -- the point validates it against what the provider advertises to
 # this account and keeps the session's model when it is not there -- whereas the
 # endpoint chooses WHERE collected state is sent and `api_key` is schema-sensitive,
-# so the masked GET returns a sentinel for it. Same grammar and the same
-# entitlement validation as the `agent.role_models.*` pins next to it, because the
-# vocabulary is identically unknowable up front: `""` INHERITS (the turn keeps its
-# session's model) and no concrete id is named here.
+# so the masked GET returns a sentinel for it. The same entitlement validation as
+# the `agent.role_models.*` pins next to it, because the vocabulary is identically
+# unknowable up front: `""` INHERITS (the turn keeps its session's model) and no
+# concrete id is named here. The grammar is `_MODEL_PIN_PATTERN`, shared with the
+# role-model and fallback pins.
 for _tier in DECISION_MODEL_ROUTE_TIERS:
     _EDITABLE_CONFIG[f"decisions.model_route.{_tier}"] = {
         "type": "str",
         "max_len": 64,
         # OpenCode's picker advertises provider/model ids. Allow those while
         # retaining the empty INHERIT value and rejecting malformed segments.
-        "pattern": r"(?:[A-Za-z0-9][A-Za-z0-9._\-\[\]]*|[A-Za-z0-9][A-Za-z0-9._\-]*(?:/[A-Za-z0-9][A-Za-z0-9._\-]*)+)?\Z",
+        "pattern": _MODEL_PIN_PATTERN,
         "validate_fn": _validate_role_model,
     }
 
@@ -2996,11 +3391,14 @@ for _tier in DECISION_MODEL_ROUTE_TIERS:
 # its own consent scope, not by either of these keys.
 #
 # ``provider`` is a closed enum, so a typo is a refusal rather than a silently
-# different judge. ``llm_model`` takes the same grammar and the same entitlement
-# validation as the ``agent.role_models.*`` pins and the ``decisions.model_route``
-# tiers, because the vocabulary is identically unknowable up front: the id must be
-# one the provider advertises to this account, and ``JUDGE_MODEL_DEFAULT`` INHERITS
-# (the judge keeps the model its agent already resolves).
+# different judge. ``llm_model`` takes the same entitlement validation as the
+# ``agent.role_models.*`` pins and the ``decisions.model_route`` tiers, because the
+# vocabulary is identically unknowable up front: the id must be one the provider
+# advertises to this account, and ``JUDGE_MODEL_DEFAULT`` INHERITS (the judge keeps
+# the model its agent already resolves). Its grammar stays the bare id, NOT
+# ``_MODEL_PIN_PATTERN``: the decision gate scrubs any model that fails
+# ``decisions.types.is_model_id`` (no ``/``), so a saved ``provider/model`` pin
+# would never reach the judge.
 _EDITABLE_CONFIG["decisions.nudge_wake.provider"] = {
     "type": "enum",
     "values": list(JUDGE_PROVIDERS),
@@ -3011,6 +3409,38 @@ _EDITABLE_CONFIG["decisions.nudge_wake.llm_model"] = {
     "pattern": r"^[A-Za-z0-9._\-\[\]]*$",
     "validate_fn": _validate_role_model,
 }
+
+
+# ``apps.<name>.model``, the model each app's row in Settings → Apps writes. Apps
+# install and uninstall while the gateway runs, so the path is matched by the
+# manifest's own name grammar (``KEBAB_RE``) rather than listed. The value is the
+# same kind of pin as the ``agent.role_models.*`` rows, with the same grammar and
+# entitlement validation; ``""`` INHERITS. It grants nothing: the session layer
+# withholds an id the account cannot run, as it does for every other pin.
+_APP_MODEL_SPEC: dict = {
+    "type": "str",
+    "max_len": 64,
+    "pattern": _MODEL_PIN_PATTERN,
+    "validate_fn": _validate_role_model,
+}
+
+
+def _editable_config_spec(path_key: object) -> dict | None:
+    """The PATCH spec for *path_key*: a listed field, or a per-app model path."""
+    if not isinstance(path_key, str):
+        return None
+    spec = _EDITABLE_CONFIG.get(path_key)
+    if spec is None:
+        parts = path_key.split(".")
+        # ``fullmatch``: ``KEBAB_RE``'s ``$`` also matches before a trailing newline.
+        if (
+            len(parts) == 3
+            and parts[0] == "apps"
+            and parts[2] == "model"
+            and KEBAB_RE.fullmatch(parts[1])
+        ):
+            return _APP_MODEL_SPEC
+    return spec
 
 
 def _beacon_governance_pinned_off() -> bool:
@@ -3057,6 +3487,10 @@ def _tailnet_governance_pinned_off() -> bool:
     return tailnet.is_governance_pinned_off(audit_tool="config_patch_dashboard_tailnet")
 
 
+class _ConfigKeyAlreadySet(Exception):
+    """A conditional config write found an existing leaf under the write lock."""
+
+
 async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     """PATCH /api/config/kirocrew — update a single config field."""
     from kiro_crew.config.loader import (
@@ -3099,8 +3533,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
     path_key: str = body.get("path", "")
     value: Any = body.get("value")
+    if_unset = body.get("if_unset", False)
+    if not isinstance(if_unset, bool):
+        return _deny("if_unset must be a boolean")
+    clamp_notice: dict | None = None
 
-    spec = _EDITABLE_CONFIG.get(path_key)
+    spec = _editable_config_spec(path_key)
     if not spec:
         # `agent.apps_allow_third_party` was deliberately REMOVED from the editable
         # set. It is not an ordinary preference: turning it off has to stop the code
@@ -3126,7 +3564,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
     elif spec["type"] == "int":
         try:
             value = int(value)
-        except (TypeError, ValueError):
+        # int() raises OverflowError on a non-finite float, which aiohttp's json.loads accepts.
+        except (TypeError, ValueError, OverflowError):
             return _deny("must be an integer", f"{path_key}={value}")
         lo, hi = spec.get("min", 0), spec.get("max", 999999)
         if value < lo or value > hi:
@@ -3135,6 +3574,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if not isinstance(value, bool):
             return _deny("must be a boolean", f"{path_key}={value}")
     elif spec["type"] == "float":
+        clamp_fn = spec.get("clamp_fn")
+        if clamp_fn is not None and isinstance(value, bool):
+            # bool is an int subclass: `true` must not save as a 1 s budget.
+            return _deny("must be a number", f"{path_key}={value}")
         try:
             value = float(value)
         except (TypeError, ValueError):
@@ -3142,7 +3585,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
         if not math.isfinite(value):
             return _deny("must be a finite number", f"{path_key}={value}")
         lo, hi = spec.get("min", 0.0), spec.get("max", 999999.0)
-        if value < lo or value > hi:
+        if clamp_fn is not None:
+            stored = float(clamp_fn(value))
+            if stored != value:
+                clamp_notice = {
+                    "path": path_key,
+                    "requested": value,
+                    "stored": stored,
+                    "min": float(lo),
+                    "max": float(hi),
+                }
+            value = stored
+        elif value < lo or value > hi:
             return _deny(f"must be between {lo} and {hi}", f"{path_key}={value}")
     elif spec["type"] == "str":
         if not isinstance(value, str):
@@ -3359,6 +3813,18 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
 
         def _mutate_config_patch(data: dict) -> dict | None:
             """Apply a single dotted-key assignment to the raw config dict."""
+            if if_unset:
+                # Raw presence, not the loaded default: a stored default is a
+                # choice too. Check under the write lock so no save can race it.
+                existing = data
+                for part in parts[:-1]:
+                    child = existing.get(part)
+                    if not isinstance(child, dict):
+                        break
+                    existing = child
+                else:
+                    if parts[-1] in existing:
+                        raise _ConfigKeyAlreadySet
             # Walk (creating) intermediate objects, then set the leaf. Handles
             # arbitrary depth uniformly — 1-level ("auto_update"), 2-level
             # ("agent.model"), and 3-level ("agent.role_models.background") —
@@ -3371,10 +3837,21 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
             section[parts[-1]] = value
+            # Saving the old default of an auto-adopting superseded-default row
+            # (a 7200 turn limit) is an explicit choice. Ack it here, under the
+            # config lock and before the write, so the reload this write triggers
+            # does not adopt it away. A failed ack raises OSError and aborts the
+            # write, rather than saving a value the next load would delete.
+            ack_explicit_write(path_key, value)
             return data
 
         try:
             await asyncio.to_thread(update_config_locked, cfg_path, mutate=_mutate_config_patch)
+        except _ConfigKeyAlreadySet:
+            _log_sel("denied", f"{path_key}=already_set")
+            return web.json_response(
+                {"error": f"{path_key} is already set", "code": "already_set"}, status=409
+            )
         except ConfigReadError:
             _log_sel("error", f"{path_key}=read_failed")
             return web.json_response({"error": "failed to read config file"}, status=500)
@@ -3429,7 +3906,10 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     },
                     status=503,
                 )
-    return web.json_response(_masked_config_dict(applied))
+    payload = _masked_config_dict(applied)
+    if clamp_notice is not None:
+        payload["clamp_notice"] = clamp_notice
+    return web.json_response(payload)
 
 
 # ── Local token bootstrap (Electron / local apps) ─────────────────────
@@ -3504,9 +3984,10 @@ async def api_token_local(request: web.Request) -> web.Response:
             resources="invalid-secret",
         )
         return web.json_response({"error": "invalid secret", "code": "invalid_secret"}, status=403)
-    from kiro_crew.member_memory_auth import local_owner_bootstrap_allowed
+    from kiro_crew.member_memory_auth import local_owner_bootstrap_provenance
 
-    if not await asyncio.to_thread(local_owner_bootstrap_allowed, request):
+    provenance = await asyncio.to_thread(local_owner_bootstrap_provenance, request)
+    if provenance is None:
         _sel().log_api_access(
             caller="local-process",
             operation="token.local",
@@ -3539,12 +4020,21 @@ async def api_token_local(request: web.Request) -> web.Response:
     if epp.isdigit() and 1 <= int(epp) <= 65535:
         extra["embed_parent_port"] = str(int(epp))
     token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=extra or None)
+    # The provenance gate knows WHICH app's backend owns the calling process, so
+    # the audit row names it: a token minted by an app is attributed to that app,
+    # and any later per-app scoping of this grant is a data change here rather
+    # than a protocol change. The name goes into the record only, not into the
+    # token: an ``app``-scoped token is refused by ``is_owner_dashboard_request``,
+    # so a claim would withdraw the capability. The registry key is kebab-case
+    # (``apps.manifest.app_name_error``), so it cannot carry a space or ``=`` and
+    # cannot forge a second field in the row.
+    app_name = provenance.app
     _sel().log_api_access(
         caller=request.remote or "unknown",
         operation="token.local",
         outcome="success",
         source="local-bootstrap",
-        resources="token-issued",
+        resources=f"token-issued app={app_name}" if app_name else "token-issued",
     )
     return web.json_response({"token": token, "expires_in": ttl})
 
@@ -3686,13 +4176,21 @@ async def api_session_agent_stream(request: web.Request) -> web.StreamResponse:
 async def api_logout(request: web.Request) -> web.Response:
     """POST /api/logout — revoke all active dashboard sessions.
 
-    Called by ``kirocrew logout`` CLI. Requires loopback + local secret
-    (same auth as /api/token/local) to prevent unauthorized revocation.
+    Called by ``kirocrew logout`` CLI. Admits a loopback origin OR a
+    kernel-attested same-user AF_UNIX peer (``_unix_peer_is_self``, which the
+    owner-only socket transport arrives as, with an empty ``request.remote``),
+    plus the local secret — same auth as /api/token/local — to prevent
+    unauthorized revocation.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
     from kiro_crew.dashboard.token_auth import revoke_all_sessions  # noqa: F811
 
-    if not _h.is_loopback(request.remote or ""):
+    # Reachable over loopback TCP or the dashboard's AF_UNIX socket. A unix peer
+    # has an EMPTY request.remote, so the loopback test alone would 403 the
+    # owner-only socket transport the CLI prefers; admit it on a positive kernel
+    # same-principal check (_unix_peer_is_self), exactly as /api/token/local does.
+    # The X-Local-Secret check below is unchanged on both transports.
+    if not _h.is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="logout",
@@ -3757,14 +4255,17 @@ async def api_shutdown(request: web.Request) -> web.Response:
     exits the process.
 
     Intended for the desktop app to call before installing an auto-update, so
-    the Squirrel bundle swap never races a live gateway. Requires loopback +
-    the local secret (same auth as ``/api/token/local`` and ``/api/logout``)
-    so a web page cannot trigger a shutdown.
+    the Squirrel bundle swap never races a live gateway. Requires loopback (or a
+    kernel-attested same-user AF_UNIX peer, ``_unix_peer_is_self``, which is how
+    ``kirocrew stop``'s owner-verified socket send arrives, with an empty
+    ``request.remote``) plus the local secret (same auth as
+    ``/api/token/local`` and ``/api/logout``) so a web page cannot trigger a
+    shutdown.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
     from kiro_crew import shutdown_event  # noqa: F811
 
-    if not _h.is_loopback(request.remote or ""):
+    if not _h.is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="shutdown",

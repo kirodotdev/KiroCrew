@@ -601,3 +601,27 @@ class TestChatSlotContinueAfterRepeatedStartFailures:
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/s/continue")
             assert resp.status == 200, await resp.text()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_audit_write_does_not_strand_the_queued_continue():
+    # The recovery entry is committed to the queue before the SEL audit line is
+    # written. If a raising audit write aborted the request there, the entry would
+    # sit undispatched and every later press would be refused with
+    # slot_queue_pending, so the session could never be resumed again.
+    slot = _ChatSlot("s")
+    slot.append("user", "hi", "msg msg-u")
+    slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+    state = _mock_state(slot)
+    mock_sel = MagicMock()
+    mock_sel.log_tool_invocation = MagicMock(side_effect=OSError("sel disk full"))
+    started = AsyncMock(return_value=True)
+    with (
+        patch("kiro_crew.dashboard.chat_handlers.sel", return_value=mock_sel),
+        patch("kiro_crew.dashboard.chat_handlers._start_next_queued_turn", started),
+    ):
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s/continue")
+            assert resp.status == 200, await resp.text()
+    mock_sel.log_tool_invocation.assert_called_once()
+    started.assert_awaited_once()

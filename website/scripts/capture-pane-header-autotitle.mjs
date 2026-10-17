@@ -1,7 +1,7 @@
 /**
  * Evidence for #9727 (UX round): the pane header's regenerate control is no
  * longer an unlabeled glyph — the hover-revealed state carries the visible
- * "Auto-title" text next to the Sparkles, in every pane of a split.
+ * "Regenerate title" text next to the Sparkles, in every pane of a split.
  *
  * Runs the REAL built SPA (website/dist) behind the shared in-process static
  * server with all /api/** answered from fixtures (gateway-free) — the pod path
@@ -13,7 +13,7 @@
  *
  * Frames:
  *   1. pane-header-autotitle-hover.png — pointer on the left pane's title bar:
- *      Pen + Sparkles + "Auto-title" revealed; the right pane stays at rest.
+ *      Pen + Sparkles + "Regenerate title" revealed; the right pane stays at rest.
  *   2. pane-header-autotitle-hover-zh.png — the same in zh-CN, so the label is
  *      shown to come from the catalog, not a hardcoded string.
  *   3. pane-header-hover.png — the rename story's hover frame, on the current
@@ -27,13 +27,13 @@
  *      pod capture of the same state, which showed an icon-only sparkle the
  *      current control cannot render).
  *   6. pane-header-generating.png — the generate-title POST is held open:
- *      spinner + "Auto-title…" in place of the button in the pane that asked.
+ *      spinner + "Generating title…" in place of the button in the pane that asked.
  *   6b. pane-header-undo-offer.png — the generated title landed: the previous
  *      name is offered back inline ("Undo"), visible at rest; the harness then
  *      presses it and asserts the previous title is restored and the offer gone.
  *   7. main-header-hover.png / 8. main-header-editing.png — the SAME control
  *      on the single-session header (no split layout seeded): hover reveals
- *      Pen + Sparkles + "Auto-title"; the editor opens with the long title
+ *      Pen + Sparkles + "Regenerate title"; the editor opens with the long title
  *      selected and scrolled to its start. Closes the UX lane's evidence gap
  *      for the non-compact host.
  *
@@ -87,7 +87,9 @@ const rightMsgs = [
 
 const TRANSCRIPTS = { [LEFT]: leftMsgs, [RIGHT]: rightMsgs }
 
-const LABEL = { en: 'Auto-title', 'zh-CN': '自动命名' }
+const LABEL = { en: 'Regenerate title', 'zh-CN': '重新生成标题' }
+// The spinner's own progress phrase (pages.chatPage.regenerating_title).
+const BUSY = { en: 'Generating title', 'zh-CN': '正在生成标题' }
 
 async function shoot(browser, base, locale, file) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2, locale })
@@ -228,7 +230,7 @@ async function shootFlow(browser, base) {
   await page.waitForTimeout(300)
   await leftBar.getByText(LABEL.en, { exact: true }).click()
   await leftBar.locator('.animate-spin').first().waitFor({ state: 'visible', timeout: 5_000 })
-  await leftBar.getByRole('status').getByText(`${LABEL.en}…`, { exact: true }).waitFor({ state: 'visible', timeout: 5_000 })
+  await leftBar.getByRole('status').getByText(`${BUSY.en}…`, { exact: true }).waitFor({ state: 'visible', timeout: 5_000 })
   await page.waitForTimeout(300)
   await page.screenshot({ path: `${OUT}/pane-header-generating.png`, fullPage: false })
   console.log(`wrote ${OUT}/pane-header-generating.png (spinner while generate-title is held)`)

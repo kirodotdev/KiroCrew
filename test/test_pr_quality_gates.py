@@ -285,7 +285,7 @@ class TestScreenshotEvidence:
         ceiling beside it, and names where a bigger recording goes instead: the
         description via the web editor, which the attachment path reads at
         100 MB. The script's ceiling itself is pinned in
-        test_ai_review_workflows.py and is not this test's to move."""
+        test_ai_review_workflows_ux_committed_evidence.py and is not this test's to move."""
         root = WORKFLOWS.parents[1]
         skills = root / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev"
         template = (root / ".github" / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8")
@@ -334,7 +334,7 @@ class TestScreenshotEvidence:
         the same thing as the script -- listing SVG as accepted while both
         evidence scripts drop it is the trap -- and the reason SVG is out is stated
         where an author reads it. Executed coverage of the script lives in
-        test_ai_review_workflows.py."""
+        test_ai_review_workflows_ux_committed_evidence.py."""
         root = WORKFLOWS.parents[1]
         script = (root / ".github" / "scripts" / "pr-committed-evidence.sh").read_text(
             encoding="utf-8"
@@ -1185,7 +1185,7 @@ class TestMissingEvidenceIsABlockNotAConcern:
             # mime table with no size cap or skip counting. The reviewer is
             # told this list means the evidence rendered, so admission is the
             # script's byte typing and mode gate, exercised by execution in
-            # test_ai_review_workflows.py, not a name plus existence.
+            # test_ai_review_workflows_ux*.py, not a name plus existence.
             attach = '"$GITHUB_WORKSPACE/.github/scripts/pr-attachment-evidence.sh"'
             committed = '"$GITHUB_WORKSPACE/.github/scripts/pr-committed-evidence.sh"'
             assert attach in raw and committed in raw

@@ -17,6 +17,7 @@ import pytest
 from kiro_crew import piper_runtime as runtime
 from kiro_crew import piper_worker as worker
 from kiro_crew import voice_reply as voice
+from kiro_crew.testing.wait import await_until
 
 
 def frame(kind, identity="", pcm=b"", **meta):
@@ -157,8 +158,12 @@ async def test_two_requests_share_loaded_worker_and_finish_without_eof(runtime_e
     monkeypatch.setattr(runtime, "create_subprocess_limited", spawn)
     engine = runtime.PiperRuntime()
     try:
-        first = await asyncio.wait_for(collect(engine, runtime_env, "first"), 2)
-        second = await asyncio.wait_for(collect(engine, runtime_env, "second"), 2)
+        first = await await_until(
+            asyncio.ensure_future(collect(engine, runtime_env, "first")), what="the first reply"
+        )
+        second = await await_until(
+            asyncio.ensure_future(collect(engine, runtime_env, "second")), what="the second reply"
+        )
         assert first == second and first[0][:2] == (0, 22050)
         assert [r["id"] for r in proc.requests] == ["first", "second"]
         assert spawn.call_count == 1
@@ -171,7 +176,7 @@ async def test_two_requests_share_loaded_worker_and_finish_without_eof(runtime_e
         assert runtime.wrap_argv_async.call_args.kwargs["mode"] == "standard"
         assert "first_party_fixed_argv" not in runtime.wrap_argv_async.call_args.kwargs
     finally:
-        await asyncio.wait_for(engine.close(), 2)
+        await await_until(asyncio.ensure_future(engine.close()), what="engine.close()")
     assert proc.killed and proc.reaped
 
 
@@ -199,7 +204,7 @@ async def test_cancelled_waiter_does_not_kill_active_request(runtime_env, monkey
     engine = runtime.PiperRuntime()
     active = asyncio.create_task(collect(engine, runtime_env, "active"))
     try:
-        await asyncio.wait_for(proc.sent.wait(), 2)
+        await await_until(proc.sent, what="the request reaching the worker")
         waiting = asyncio.create_task(collect(engine, runtime_env, "waiting"))
         await asyncio.sleep(0)
         waiting.cancel()
@@ -207,7 +212,7 @@ async def test_cancelled_waiter_does_not_kill_active_request(runtime_env, monkey
             await waiting
         assert not proc.killed and [r["id"] for r in proc.requests] == ["active"]
         proc.answer("active")
-        assert await asyncio.wait_for(active, 2)
+        assert await await_until(active, what="the active request finishing")
     finally:
         active.cancel()
         await asyncio.gather(active, return_exceptions=True)
@@ -223,10 +228,10 @@ async def test_cancel_active_request_reaps_and_next_request_reloads(runtime_env,
     engine = runtime.PiperRuntime()
     active = asyncio.create_task(collect(engine, runtime_env))
     try:
-        await asyncio.wait_for(first.sent.wait(), 2)
+        await await_until(first.sent, what="the request reaching the first worker")
         active.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(active, 2)
+            await await_until(active, what="the cancelled request ending")
         assert first.killed and first.reaped
         assert await collect(engine, runtime_env)
     finally:
@@ -240,7 +245,7 @@ async def test_early_generator_close_retires_worker(runtime_env, monkeypatch):
     engine = runtime.PiperRuntime()
     stream = engine.stream(["hello"], **runtime_env)
     async with contextlib.aclosing(stream):
-        assert await asyncio.wait_for(anext(stream), 2)
+        assert await await_until(asyncio.ensure_future(anext(stream)), what="the first chunk")
     assert proc.killed and proc.reaped
     await engine.close()
 
@@ -253,11 +258,11 @@ async def test_idle_and_shutdown_reap_workers(runtime_env, monkeypatch):
     )
     engine = runtime.PiperRuntime(idle_seconds=0.01)
     await collect(engine, runtime_env)
-    await asyncio.wait_for(asyncio.shield(engine._idle), 2)
+    await await_until(asyncio.shield(engine._idle), what="the idle reap")
     assert first.killed and first.reaped
     active = asyncio.create_task(collect(engine, runtime_env))
-    await asyncio.wait_for(second.sent.wait(), 2)
-    await asyncio.wait_for(engine.close(), 2)
+    await await_until(second.sent, what="the request reaching the second worker")
+    await await_until(asyncio.ensure_future(engine.close()), what="engine.close()")
     assert active.cancelled() and second.killed and second.reaped
 
 
@@ -285,7 +290,9 @@ async def test_invalid_protocol_is_bounded_and_reaped(runtime_env, monkeypatch, 
     engine = runtime.PiperRuntime()
     try:
         with pytest.raises(voice.VoiceSynthesisError):
-            await asyncio.wait_for(collect(engine, runtime_env), 2)
+            await await_until(
+                asyncio.ensure_future(collect(engine, runtime_env)), what="the refused request"
+            )
         assert proc.killed and proc.reaped
     finally:
         await engine.close()
@@ -314,10 +321,10 @@ async def test_timeout_reaps(runtime_env, monkeypatch, phase):
     engine = runtime.PiperRuntime()
     task = asyncio.create_task(collect(engine, runtime_env))
     try:
-        await asyncio.wait_for(reached.wait(), 2)
+        await await_until(reached, what="the lifecycle boundary being reached")
         deadline.reschedule(asyncio.get_running_loop().time())
         with pytest.raises(voice.VoiceSynthesisError, match="timed out") as error:
-            await asyncio.wait_for(task, 2)
+            await await_until(task, what="the request task ending")
         assert error.value.code == "voice_timeout"
         if phase == "after_request":
             spawn.assert_awaited_once()
@@ -526,10 +533,10 @@ async def test_caller_cancelled_between_yields_closes_nested_runtime(runtime_env
 
     task = asyncio.create_task(consume())
     try:
-        await asyncio.wait_for(received.wait(), 2)
+        await await_until(received, what="the first chunk arriving")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
+            await await_until(task, what="the request task ending")
         assert proc.killed and proc.reaped
     finally:
         await engine.close()
@@ -560,11 +567,14 @@ raise SystemExit(serve(voice, SimpleNamespace, sys.stdin.buffer, sys.stdout.buff
     engine = runtime.PiperRuntime()
     try:
         for identity in ("one", "two"):
-            chunks = await asyncio.wait_for(collect(engine, runtime_env, identity), 5)
+            chunks = await await_until(
+                asyncio.ensure_future(collect(engine, runtime_env, identity)),
+                what="the real worker's reply",
+            )
             assert b"".join(part[2] for part in chunks) == b"\x01\x00" * 5000
         assert len(processes) == 1 and processes[0].returncode is None
     finally:
-        await asyncio.wait_for(engine.close(), 5)
+        await await_until(asyncio.ensure_future(engine.close()), what="engine.close()")
     assert processes[0].returncode is not None
 
 
@@ -587,15 +597,15 @@ async def test_repeated_cancel_during_reap_keeps_cleanup_owned(runtime_env, monk
     engine = runtime.PiperRuntime()
     task = asyncio.create_task(collect(engine, runtime_env))
     try:
-        await asyncio.wait_for(proc.sent.wait(), 2)
+        await await_until(proc.sent, what="the request reaching the worker")
         task.cancel()
-        await asyncio.wait_for(reaping.wait(), 2)
+        await await_until(reaping, what="the reap starting")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
+            await await_until(task, what="the request task ending")
         assert engine._reaping is not None and not engine._reaping.done()
         release_reap.set()
-        await asyncio.wait_for(engine.close(), 2)
+        await await_until(asyncio.ensure_future(engine.close()), what="engine.close()")
         assert proc.killed and proc.reaped and not cleanup.exists()
     finally:
         release_reap.set()

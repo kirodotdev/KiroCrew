@@ -61,6 +61,26 @@ _CANONICAL_DISPATCH_EXPR = (
     "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
     "|| 'ubuntu-latest' }}"
 )
+# The sensitive-change gate runs only default-branch scripts, never PR code, so
+# every pull_request and pull_request_review event may use the fleet.
+_CANONICAL_BASE_ONLY_PR_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && github.event.pull_request.head.repo.full_name == github.repository && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
+# PR Readiness runs only default-branch code too. Only its pull_request_target
+# runs use the fleet: workflow_run carries the in_progress merge-guard hold,
+# and workflow_dispatch names no head to check, so both stay hosted.
+_CANONICAL_READINESS_EXPR = (
+    "${{ github.repository == 'kirodotdev/KiroCrew' && "
+    + _ACTOR_PREDICATE
+    + " && github.event_name == 'pull_request_target' && "
+    "github.event.pull_request.head.repo.full_name == github.repository && "
+    "format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) "
+    "|| 'ubuntu-latest' }}"
+)
 # The ratchet audit: push, manual dispatch, and the merge group, which is the
 # integrated tree one step before it lands.
 _CANONICAL_DISPATCH_MERGE_GROUP_EXPR = (
@@ -94,7 +114,6 @@ _PERMANENT_EXCEPTIONS = {
     ("first-principles-review.yml", "first-principles-review"),
     ("ux-review.yml", "ux-review"),
     ("design-review.yml", "design-review"),
-    ("code-review.yml", "sast"),
     ("ci-runner-watchdog.yml", "watchdog"),
 }
 
@@ -136,12 +155,16 @@ _EXPECTED_ROUTED_JOBS = {
     ("macos-on-demand.yml", "decide"),
     ("ci.yml", "changes"),
     ("ci.yml", "await-fast-gate"),
+    ("ci.yml", "cancel-superseded-run"),
     ("code-review.yml", "autosde-rules"),
     ("code-review.yml", "inclusive-language"),
     ("code-review.yml", "pr-hygiene"),
+    ("code-review.yml", "sast"),
     ("pr-merge-conflict-label.yml", "label"),
     ("build-wheel.yml", "build-wheel"),
     ("dependency-vulnerability.yml", "audit-production-dependencies"),
+    ("sensitive-change-review.yml", "sensitive-change-review"),
+    ("pr-readiness.yml", "readiness"),
 }
 _PUSH_ONLY_WORKFLOWS = {
     "release.yml",
@@ -150,6 +173,8 @@ _PUSH_ONLY_WORKFLOWS = {
     "dependency-vulnerability.yml",
 }
 _DISPATCH_WORKFLOWS = {"pages.yml"}
+_BASE_ONLY_PR_WORKFLOWS = {"sensitive-change-review.yml"}
+_READINESS_WORKFLOWS = {"pr-readiness.yml"}
 _DISPATCH_MERGE_GROUP_WORKFLOWS = {"main-ratchet-audit.yml"}
 # The fleet-routed workflows that declare a `merge_group` trigger.
 _MERGE_GROUP_WORKFLOWS = {"ci.yml", "fast-gate.yml", "build.yml"}
@@ -193,6 +218,7 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "frontend-coverage-merge"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "bundle-size"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    ("ci.yml", "i18n-render"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "e2e"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "integration"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "e2e-boot-matrix"): _CANONICAL_BOOT_MATRIX_EXPR,
@@ -207,6 +233,10 @@ def _all_workflow_files() -> list[Path]:
 def _expected_inline_expression(workflow_name: str) -> str:
     if workflow_name in _PUSH_ONLY_WORKFLOWS:
         return _CANONICAL_PUSH_EXPR
+    if workflow_name in _BASE_ONLY_PR_WORKFLOWS:
+        return _CANONICAL_BASE_ONLY_PR_EXPR
+    if workflow_name in _READINESS_WORKFLOWS:
+        return _CANONICAL_READINESS_EXPR
     if workflow_name in _DISPATCH_WORKFLOWS:
         return _CANONICAL_DISPATCH_EXPR
     if workflow_name in _DISPATCH_MERGE_GROUP_WORKFLOWS:
@@ -363,6 +393,40 @@ def test_ci_resolvers_share_actor_policy_and_emit_large_labels() -> None:
         assert f'echo "{output}={hosted}"' in script
 
 
+def test_build_desktop_routes_only_the_x64_leg_through_the_shared_policy() -> None:
+    """The PR-time x64 desktop leg uses the fleet under ci.yml's admission.
+
+    The arm64 and macOS legs keep their hosted images, `matrix.os` (the
+    required job name) stays `ubuntu-22.04`, and an ineligible run falls back
+    to hosted ubuntu-22.04 -- the same image family whose glibc the AppImage
+    links against.
+    """
+    workflow = yaml.safe_load((_WORKFLOWS_DIR / "build.yml").read_text(encoding="utf-8"))
+    resolver = workflow["jobs"]["desktop-matrix"]
+    expected_eligibility = _CANONICAL_MERGE_GROUP_ROUTING_EXPR.split(" && format(", 1)[0] + " }}"
+    step = {s.get("id"): s for s in resolver["steps"]}["runner"]
+    assert step["env"]["ELIGIBLE"] == expected_eligibility
+    assert step["env"]["LABEL"] == (
+        "codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert resolver["outputs"]["linux_x64_runner"] == "${{ steps.runner.outputs.linux_x64_runner }}"
+    script = step["run"]
+    assert 'if [ "$ELIGIBLE" = "true" ]; then' in script
+    assert 'echo "linux_x64_runner=$LABEL instance-size:large"' in script
+    assert 'echo "linux_x64_runner=ubuntu-22.04"' in script
+
+    desktop = workflow["jobs"]["build-desktop"]
+    assert desktop["name"] == "Build Desktop (${{ matrix.os }})"
+    assert desktop["runs-on"] == (
+        "${{ matrix.os == 'ubuntu-22.04' && "
+        "(needs.desktop-matrix.outputs.linux_x64_runner || 'ubuntu-22.04') || matrix.os }}"
+    )
+
+    # The release matrix (nightly/release) builds the shipped bytes on hosted.
+    release = yaml.safe_load((_WORKFLOWS_DIR / "build-desktop.yml").read_text(encoding="utf-8"))
+    assert release["jobs"]["build-desktop"]["runs-on"] == "${{ matrix.os }}"
+
+
 def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
     """The poll's TOTAL_BUDGET must outlast the slowest chain of ci.yml job caps.
 
@@ -387,12 +451,29 @@ def test_merge_queue_readiness_budget_covers_ci_critical_path() -> None:
     ci = yaml.safe_load((_WORKFLOWS_DIR / "ci.yml").read_text(encoding="utf-8"))
     jobs = ci["jobs"]
 
+    def rounds(spec: dict) -> int:
+        # A matrix capped by max-parallel runs its legs in rounds, so its
+        # worst case is that many back-to-back timeout-minutes, not one.
+        strategy = spec.get("strategy") or {}
+        matrix = strategy.get("matrix")
+        cap = strategy.get("max-parallel")
+        if not isinstance(matrix, dict) or not isinstance(cap, int):
+            return 1
+        axes = [v for k, v in matrix.items() if k not in ("include", "exclude")]
+        if not axes or not all(isinstance(v, list) for v in axes):
+            return 1
+        legs = 1
+        for values in axes:
+            legs *= len(values)
+        legs -= len(matrix.get("exclude") or [])
+        return max(1, -(-legs // cap))
+
     def longest_path(job_id: str) -> int:
         spec = jobs[job_id]
         needs = spec.get("needs", [])
         needs = [needs] if isinstance(needs, str) else list(needs)
         upstream = max((longest_path(n) for n in needs), default=0)
-        return upstream + int(spec["timeout-minutes"])
+        return upstream + rounds(spec) * int(spec["timeout-minutes"])
 
     critical_path = max(longest_path(job_id) for job_id in jobs)
     assert budget_minutes >= critical_path, (
@@ -413,7 +494,7 @@ def _readiness_job() -> dict:
 def test_merge_queue_readiness_rollout_values() -> None:
     """The poll's budget and job cap are the rollout's numbers.
 
-    The ruleset's status-check timeout (180 minutes) is set from these, so a
+    The ruleset's status-check timeout (240 minutes) is set from these, so a
     change here is a change to the documented rollout and must move with it.
     The poll has no rerun cap because it never reruns: a rerun inside the queue
     holds every group behind this one for the rerun's whole duration.
@@ -423,8 +504,8 @@ def test_merge_queue_readiness_rollout_values() -> None:
     job = _readiness_job()
     (step,) = job["steps"]
     values = dict(re.findall(r"^\s*(TOTAL_BUDGET|MAX_RERUNS)=(\d+)\s*$", step["run"], re.MULTILINE))
-    assert values == {"TOTAL_BUDGET": "7200"}
-    assert job["timeout-minutes"] == 125
+    assert values == {"TOTAL_BUDGET": "10800"}
+    assert job["timeout-minutes"] == 185
 
 
 def test_merge_queue_readiness_reads_runs_and_never_reruns_them() -> None:

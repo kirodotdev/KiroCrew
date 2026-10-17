@@ -59,7 +59,7 @@ const JOBS = [
   },
 ]
 
-// Fixture from website/src/test/KiroPrerequisiteGate.test.tsx `status()`, with
+// Fixture from website/src/test/KiroPrerequisiteGateTestUtils.tsx `status()`, with
 // the probe diagnostic the PR surfaces. `installed: true` keeps the earlier
 // first-run branches from claiming the render before the probe_error branch.
 const PREREQ = {

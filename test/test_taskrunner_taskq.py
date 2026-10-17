@@ -25,6 +25,7 @@ from kiro_crew.recovery.ladder import RecoveryLadder
 from kiro_crew.taskq import model as m
 from kiro_crew.taskq.adapters import runner as r
 from kiro_crew.taskq.dependency import KIND_RATE_LIMITED, SIGNAL_ATTR, DependencySignal
+from kiro_crew.taskq.reconcile import reconcile_on_boot
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskrunner import Step, StepStatus, TaskRun, TaskRunner
 
@@ -464,6 +465,138 @@ async def test_restart_without_a_checkpoint_is_not_re_run_blind(
     assert report.unknown_side_effect == ["taskrunner:r9"]
     assert run.status == "paused" and "r9" not in runner._tasks
     assert any("not auto-resumed" in n for n in notices)
+
+
+def _gateway_lives_that_resumed(
+    path: Path, clock: Clock, row_id: str, run_id: str, lives: int
+) -> None:
+    """Leave *row_id* as *lives* earlier gateway lives would have: each adopted the
+    row, resumed the run, and stopped again before the run finished."""
+    store = TaskStore(path, window=8, clock=clock, network_fs=False).open()
+    store.accept_one(
+        m.TaskRecord(
+            id=row_id,
+            kind=m.KIND_TASKRUNNER_STEP,
+            params={"task_id": run_id, r.PARAM_SAFE_RETRY: True},
+        )
+    )
+    store.claim(row_id, owner="first-life")
+    store.transition(row_id, m.STARTING)
+    store.transition(row_id, m.RUNNING)
+    store.close()
+    for _ in range(lives):
+        store = TaskStore(path, window=8, clock=clock, network_fs=False).open()
+        try:
+            reconcile_on_boot(store)
+            report = r.adopt_orphaned_rows(
+                store, kinds=(m.KIND_TASKRUNNER_STEP,), resume=lambda _rec: True
+            )
+            assert report.resumed == [row_id]
+            claim = store.claim(row_id)
+            store.transition(row_id, m.STARTING, generation=claim.generation)
+            store.transition(row_id, m.RUNNING, generation=claim.generation)
+        finally:
+            store.close()
+
+
+def _next_gateway_life(
+    tmp_path: Path, path: Path, clock: Clock
+) -> tuple[TaskStore, MagicMock, TaskRunner, list[tuple[str, str]]]:
+    """The gateway life after those: a reopened store, the boot reconcile, and a
+    TaskRunner attached to it whose notices are collected as ``(title, body)``."""
+    store = TaskStore(path, window=8, clock=clock, network_fs=False).open()
+    reconcile_on_boot(store)
+    provider = _provider(lambda n, msg: _done())
+    runner = _runner(tmp_path, provider, _admission(store, clock))
+    notices: list[tuple[str, str]] = []
+
+    async def _notify(title, body, *args, **kw):
+        notices.append((title, body))
+
+    runner._on_notify = _notify
+    return store, provider, runner, notices
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row_id", ["taskrunner:r1", "taskrunner:r1~2"], ids=["row", "re-run-row"])
+async def test_a_run_whose_recoveries_are_spent_stays_paused_and_the_operator_is_told(
+    tmp_path: Path, clock: Clock, row_id: str
+) -> None:
+    """The row ends ``failed`` in the task store, but the run the operator sees is
+    the TaskRunner's: it stays ``paused``, resumable by hand, and the sweep says
+    why it was not resumed again. The limit counts every gateway stop, so the
+    notice must tell a long run that routine restarts cut off from a step that
+    takes the gateway down. ``~2`` is the row a manual resume opens once the
+    run's first row has ended."""
+    path = tmp_path / "tasks.db"
+    _gateway_lives_that_resumed(path, clock, row_id, "r1", m.RECOVERY_MAX_ATTEMPTS)
+    store, provider, runner, notices = _next_gateway_life(tmp_path, path, clock)
+    try:
+        run = _run(tmp_path, Step(index=1, title="x", description="d"), task_id="r1")
+        run.status = "paused"
+        runner._runs["r1"] = run
+
+        report = await runner.adopt_task_rows()
+
+        assert report.lost_owner_limit == [row_id] and report.resumed == []
+        assert store.get(row_id).state == m.FAILED
+        assert run.status == "paused" and "r1" not in runner._tasks and not provider.calls
+        assert len(notices) == 1
+        title, body = notices[0]
+        assert "not auto-resumed" in title
+        assert f"resumed automatically {m.RECOVERY_MAX_ATTEMPTS} times" in body
+        assert "every gateway stop" in body
+        again = await runner.adopt_task_rows()  # the settled row is not announced twice
+        assert again.examined == 0 and len(notices) == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_a_recovery_left_is_resumed_and_gets_no_limit_notice(
+    tmp_path: Path, clock: Clock
+) -> None:
+    path = tmp_path / "tasks.db"
+    _gateway_lives_that_resumed(path, clock, "taskrunner:r1", "r1", m.RECOVERY_MAX_ATTEMPTS - 1)
+    store, _, runner, notices = _next_gateway_life(tmp_path, path, clock)
+    try:
+        run = _run(tmp_path, Step(index=1, title="x", description="d"), task_id="r1")
+        run.status = "paused"
+        runner._runs["r1"] = run
+        runner.execute_plan = AsyncMock(return_value="r1")
+
+        report = await runner.adopt_task_rows()
+
+        assert report.resumed == ["taskrunner:r1"] and report.lost_owner_limit == []
+        runner.execute_plan.assert_awaited_once_with("r1")
+        assert not [title for title, _body in notices if "not auto-resumed" in title]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "cancelled"], ids=["run-gone", "run-cancelled"])
+async def test_a_run_that_cannot_be_resumed_by_hand_is_not_announced_at_the_limit(
+    tmp_path: Path, clock: Clock, status: str | None
+) -> None:
+    """A run missing from the registry, or not paused, has nobody to tell and
+    nothing to resume: its row still ends ``failed`` and the sweep completes."""
+    path = tmp_path / "tasks.db"
+    _gateway_lives_that_resumed(path, clock, "taskrunner:r1", "r1", m.RECOVERY_MAX_ATTEMPTS)
+    store, provider, runner, notices = _next_gateway_life(tmp_path, path, clock)
+    try:
+        if status is not None:
+            run = _run(tmp_path, Step(index=1, title="x", description="d"), task_id="r1")
+            run.status = status
+            runner._runs["r1"] = run
+
+        report = await runner.adopt_task_rows()
+
+        assert report.lost_owner_limit == ["taskrunner:r1"]
+        assert store.get("taskrunner:r1").state == m.FAILED
+        assert notices == [] and not provider.calls
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

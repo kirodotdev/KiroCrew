@@ -35,6 +35,11 @@ from typing import Any, Callable, Iterator, Mapping
 from kiro_crew import autonudge_stop_log, platform_compat
 from kiro_crew.autonudge_service.model import AutoNudgeStoreUnvetted, NudgeLoop
 from kiro_crew.monitoring.models import monitor_state_to_dict
+from kiro_crew.owner_only_files import (
+    ensure_directory,
+    owner_only_opener_for,
+    write_text_owner_only_in_home,
+)
 
 # The service's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.autonudge")
@@ -69,9 +74,11 @@ def _rows_or_empty(value: Any) -> list:
 
 @contextmanager
 def _locked_file(path: Path, mode: str) -> Iterator[Any]:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Owner-only in the data home (the store and its sidecar lock), like the
+    # mkstemp-written commits that replace it.
+    ensure_directory(path.parent)
     if "r" in mode and not path.exists():
-        path.write_text(json.dumps({"version": _STORE_VERSION, "loops": []}))
+        write_text_owner_only_in_home(path, json.dumps({"version": _STORE_VERSION, "loops": []}))
     # "r" -> "r+": Windows msvcrt.locking requires WRITE access on the fd — a
     # read-only handle fails with EACCES, which platform_compat.file_lock
     # swallows (best-effort), silently degrading the reader's lock to a no-op
@@ -81,7 +88,7 @@ def _locked_file(path: Path, mode: str) -> Iterator[Any]:
     exclusive = "w" in mode or "+" in mode
     if mode == "r":
         mode = "r+"
-    with open(path, mode, encoding="utf-8") as fh:
+    with open(path, mode, encoding="utf-8", opener=owner_only_opener_for(path)) as fh:
         with platform_compat.file_lock(fh.fileno(), exclusive=exclusive):
             yield fh
 
@@ -207,7 +214,7 @@ class LoopStore:
                 "is empty. Fix the store entry or the host's credential policy and "
                 "restart; the file on disk is untouched."
             )
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.path.parent)
         fd, tmp_path = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -564,7 +571,7 @@ class LoopStore:
         if not rows:
             return
         payload = {"version": _STORE_VERSION, "quarantined": rows}
-        self.quarantine_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.quarantine_path.parent)
         fd, tmp_path = tempfile.mkstemp(dir=self.quarantine_path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:

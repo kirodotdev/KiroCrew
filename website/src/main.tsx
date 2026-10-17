@@ -1,5 +1,13 @@
+// The look-preview frame's fences (utils/lookPreviewBoot.ts). Must stay the
+// very first import: ES modules evaluate in import order, and this has to run
+// before any module -- the base-path shim and the extension root included --
+// touches storage, fetch or a socket.
+import './utils/lookPreviewBoot'
+// Base-path transport shims (sub-path builds only) run before any module that
+// could capture `fetch`. A no-op in the stock build. See ./lib/basePath.ts.
+import './lib/installBasePath'
 // Extension composition root — the one file a downstream edition owns. Imported
-// FIRST (before store/providers/App) so seam registrations run before render.
+// before store/providers/App so seam registrations run before render.
 // Empty in the stock build. See website/src/extensions.ts.
 import './extensions'
 import { startMemoryWatch } from './lib/memoryWatch'
@@ -19,6 +27,7 @@ import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/
 import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
+import { routerBasename } from './lib/basePath'
 // i18n must initialize before the first render — a component rendering ahead of
 // init would emit its bare translation key instead of text. The `/lazy` entry
 // fetches a non-English catalog on demand; plain `./i18n` has no loader, so
@@ -189,7 +198,7 @@ const appTree = (
               <UIModeProvider>
                 <ThemeExperienceLayer />
                 <NavigationLeaveGuardProvider>
-                  <BrowserRouter>
+                  <BrowserRouter basename={routerBasename()}>
                     {/* Inside the router (it navigates) and outside the routes
                         (it must survive every route change). Renders nothing,
                         and stays out of the history stack entirely until a page

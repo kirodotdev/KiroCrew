@@ -58,14 +58,14 @@ import time
 import traceback
 import weakref
 from collections import deque
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Container, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, fsync_dir
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import validate_data
 from kiro_crew.crew_log.errors import (
@@ -81,6 +81,7 @@ from kiro_crew.crew_log.errors import (
     CODE_SEGMENT_GAP,
     CODE_UNKNOWN_ENTRY_TYPE,
     CrewLogError,
+    CutUnaccounted,
     IndeterminateAppend,
 )
 from kiro_crew.crew_log.lease import LEASE_FILE
@@ -106,8 +107,10 @@ from kiro_crew.crew_log.schema import (
 from kiro_crew.jsonl_util import (
     UnreadableRecord,
     bounded_raw_records,
+    bounded_raw_records_with_offsets,
     strict_raw_records,
 )
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, mkdirs_owner_only, owner_only_opener
 from kiro_crew.platform_compat import file_lock, restrict_dir_to_owner
 from kiro_crew.session_ledger import _store_name, is_link, resolved_within, unlink_lock_in_hold
 
@@ -121,6 +124,28 @@ _SEGMENT_STEM = "log"
 _SEGMENT_SUFFIX = ".jsonl"
 _SEGMENT_GLOB = f"{_SEGMENT_STEM}.*{_SEGMENT_SUFFIX}"
 _LOCK_FILE = ".lock"
+
+#: How many times this unit's history has been CUT BACK, as a decimal count.
+#:
+#: The store's rule is that a committed line is never rewritten, and two recovery
+#: paths bend it: an unreachable chunk group is dropped and closers are appended
+#: from the cut, and a failed append is removed after its bytes reached the disk.
+#: Both leave a file that reuses seqs an earlier read already consumed, and both
+#: are invisible to a reader -- the file is longer, its newest seq is higher, and
+#: every stat says "appended to". A reader that wants to CONTINUE a fold over such
+#: a file therefore has to be told, and this counter is how: it rises once before
+#: each cut and once after it, so a reader holding the value it saw last time can
+#: decide in one small read whether the bytes it already folded are still the bytes
+#: on disk.
+#:
+#: A SEQLOCK, so the value counts cut PHASES rather than cuts. Even means settled;
+#: odd means a cut is in flight and :func:`read_cuts` reports nothing at all, which
+#: is what stops a reader that sampled halfway through a cut from matching the same
+#: value again once the bytes have moved.
+#:
+#: Not a segment name, so retention and every segment walk ignore it, and it is
+#: removed with the unit.
+_CUTS_FILE = ".cuts"
 
 #: The one data-home leaf that holds every crew log, of every kind.
 #:
@@ -359,6 +384,451 @@ def segment_first_seqs(kind: str, unit_id: str) -> list[int]:
 
 def _lock_path(kind: str, unit_id: str) -> Path:
     return crew_log_dir(kind, unit_id) / _LOCK_FILE
+
+
+# --------------------------------------------------------------------------- #
+# Cut counter
+# --------------------------------------------------------------------------- #
+
+
+def _cuts_path(directory: Path) -> Path:
+    return directory / _CUTS_FILE
+
+
+def _read_cuts_raw(directory: Path) -> int | None:
+    """*directory*'s counter exactly as it is written, parity and all.
+
+    The counter's PHASE, which is the question a WRITER has: :func:`_open_cut` has to
+    advance from the number on disk even when that number is odd, and an odd number is
+    precisely what :func:`read_cuts` refuses to hand back. ``None`` is narrower here too
+    -- absent or unparseable, the two cases with no number to advance from -- because a
+    reader's three situations collapse into one answer and a writer's do not.
+
+    Private, and it has to stay that way: a READER that took an odd value at face value
+    is the whole failure this file exists to prevent. Both functions parse here so there
+    is one spelling of what the file says, rather than two waiting to disagree.
+    """
+    try:
+        raw = _cuts_path(directory).read_bytes()
+    except OSError:
+        return None
+    text = raw.decode("ascii", errors="replace").strip()
+    if not text.isascii() or not text.isdecimal():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # All digits and still not a number this build will convert: CPython refuses a
+        # decimal string past its integer-conversion limit (4300 digits by default), and
+        # the counter is a plain file anything on the host can write. NOT PROVEN is the
+        # same answer the other unparseable shapes get, so a counter too long to read
+        # costs the digest rather than raising out of a fold that only wanted to know
+        # whether a cut had happened.
+        log_exception_text(
+            logger, logging.DEBUG, "crew log cut counter for %s is not convertible", directory
+        )
+        return None
+
+
+def _fresh_phase() -> int:
+    """An odd phase no earlier reading of this counter can be holding.
+
+    What a cut advances to when the counter is GONE or unparseable, which is the one
+    case with no number to advance from. Starting the count again LOW is the thing that
+    must not happen: a reader or a savepoint holds a real even number this unit issued,
+    and a count that began again at 1 would close on 2 -- so a savepoint written before
+    the lost cut would compare equal across it and be admitted over the records the cut
+    removed.
+
+    A nanosecond clock reading is around 1.7e18, far past any count a log reaches by
+    being cut, so it cannot equal a value this unit issued by counting. The low bit is
+    forced so the value is ODD, which keeps the cut in flight and is also what sends
+    every reader still holding the lost count to the digest in the meantime.
+
+    It need not be monotonic, unique, or ordered against anything: no caller compares
+    two counts for order, the counter is only ever an equality test against one value
+    this unit wrote down earlier. A collision would need the clock to come back to the
+    same nanosecond, and the value it collided with to be one this unit had settled on.
+    """
+    return time.time_ns() | 1
+
+
+def read_cuts(directory: Path) -> int | None:
+    """*directory*'s cut counter, or ``None`` when it proves nothing.
+
+    ``None`` means NOT PROVEN, and it covers three situations a caller must treat the
+    same way. The counter may be ABSENT, which is every log written before it existed
+    and every log that has never been cut. It may be there and UNREADABLE -- a torn
+    write, a hand-edit, a permission fault. Or it may read ODD, which says a cut is in
+    flight right now (:func:`_open_cut`), so the bytes under it are moving as this
+    reader looks at them.
+
+    All three answer ``None`` because the only correct response to any of them is to
+    fall back to whatever stronger evidence the caller has. A caller that read an absent
+    counter as "zero cuts" would compare equal across a cut whose counter was lost, and
+    one that took an odd reading at face value would compare equal across a cut it
+    caught halfway -- which are the two readings this file exists to prevent.
+    """
+    value = _read_cuts_raw(directory)
+    if value is None:
+        return None
+    # ODD is a cut IN FLIGHT, which is not a value to compare. A reader admitted on an
+    # odd reading would be one that sampled between the raise and the truncation, folded
+    # the doomed records, and then found the same odd number again afterwards -- nothing
+    # raises it a third time -- and continued over the bytes the cut replaced.
+    return None if value % 2 else value
+
+
+def _sync_cuts_dir(directory: Path) -> bool:
+    """Force *directory*'s own entries out, so a counter just put there or taken away
+    is still there or still gone after a power cut. ``True`` when it is.
+
+    The half ``fsync=True`` does not cover. Syncing a descriptor forces the file's
+    BYTES; the NAME that reaches them lives in the parent directory, so until that is
+    synced a power-off can return from the rename -- or from the unlink -- and still
+    come back to the entry that was there before.
+
+    A failed sync answers ``False`` and the cut does not proceed on it, because an
+    error here says the device refused a write and refusing the cut over that is cheap.
+
+    ITS SILENCE IS NOT EVIDENCE, though, and no caller may read it as such.
+    ``fsync_dir`` returns quietly where the platform cannot express a directory sync --
+    Windows has no directory descriptor, and some filesystems reject ``fsync`` on a
+    directory -- so ``True`` here means "nothing refused it", which on those
+    filesystems is not the same as "the name is on disk". That is why every retirement
+    and every publication goes through :func:`_retire_cuts_inode` first: emptying the
+    file in place needs no directory entry, so what a reader comes back to after a lost
+    rename or a lost unlink is a counter that proves nothing rather than a pre-cut
+    count. This function makes the new name durable SOONER; it is not what makes the
+    old value stop counting.
+
+    A caller with nothing else holding correctness up -- the unlink fallback reached
+    when the emptying FAILED -- must not use this one. :func:`_cuts_dir_forced` is the
+    spelling for that, and it reports only a sync it actually performed.
+    """
+    try:
+        fsync_dir(directory)
+    except OSError:
+        log_exception_text(
+            logger,
+            logging.DEBUG,
+            "crew log cut counter directory %s could not be synced",
+            directory,
+        )
+        return False
+    return True
+
+
+def _cuts_dir_forced(directory: Path) -> bool:
+    """``True`` only when *directory*'s own entries were FORCED out, here, just now.
+
+    The strict twin of :func:`_sync_cuts_dir`, and the two differ on exactly one case:
+    a platform or filesystem that cannot express a directory sync. ``fsync_dir`` returns
+    QUIETLY there -- Windows has no directory descriptor, and some filesystems reject
+    ``fsync`` on a directory -- which is correct for a caller whose work is already
+    committed and useless to one asking whether a NAME is on disk. So this does the
+    sync itself and reports only what it actually did.
+
+    Used where a directory change is the ONLY thing standing between a cut and a reader
+    holding the count it removes: the unlink fallback in :func:`_unprove_cuts`, reached
+    when the counter could not be emptied in place. Everywhere else the emptying carries
+    correctness and the lenient spelling is right, because a cut refused on a filesystem
+    with no directory sync would refuse every cut that platform ever makes.
+
+    Nothing is logged for the unsupported case: it is not a fault, and the caller's
+    answer to it is to refuse the cut rather than to report a problem.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        dir_fd = os.open(str(directory), flags)
+    except OSError:
+        return False
+    forced = False
+    try:
+        os.fsync(dir_fd)
+        forced = True
+    except OSError:
+        forced = False
+    try:
+        os.close(dir_fd)
+    except OSError:
+        # A deferred write error the kernel held back until the close, which is the same
+        # signal as a failed fsync for a caller about to cut on the strength of it.
+        return False
+    return forced
+
+
+def _retire_cuts_inode(directory: Path) -> bool:
+    """Empty *directory*'s counter IN PLACE, durably. ``True`` when it is empty on disk.
+
+    The one way to retire this counter that no filesystem can leave half-done, and the
+    foundation every other durability claim here stands on. Emptying a file changes its
+    CONTENTS, which an ``fsync`` of the descriptor forces, and leaves the directory
+    entry exactly where it was -- so there is no name to publish, no rename to lose, and
+    nothing owed to :func:`_sync_cuts_dir`. An empty file is not a decimal number, so
+    :func:`read_cuts` answers ``None`` for it and every reader falls back to the digest.
+
+    Why that matters more than it looks: a directory sync is not available everywhere.
+    ``fsync_dir`` returns QUIETLY where the platform cannot express one -- Windows has no
+    directory descriptor, and some filesystems reject ``fsync`` on a directory -- which
+    is the right contract for it and the wrong evidence for a cut. A rename or an unlink
+    there is as durable as the filesystem feels like being, so a cut that rested on one
+    could come back to the PRE-CUT count beside a log that was truncated.
+
+    ``True`` only for an emptying this performed, or for a counter that is already
+    absent: there is no old value left to certify either way. A failure is ``False`` --
+    the file may still hold what it held.
+
+    Not needed at create (:func:`_seed_cuts`), where there is no earlier value.
+    """
+    path = _cuts_path(directory)
+    try:
+        with open(path, "r+b") as handle:
+            handle.truncate(0)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileNotFoundError:
+        return True
+    except OSError:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log cut counter for %s could not be emptied", directory
+        )
+        return False
+    return True
+
+
+def _write_cuts(directory: Path, value: int) -> bool:
+    """Put *value* in *directory*'s counter, durably. ``True`` when it landed.
+
+    THE OLD VALUE IS RETIRED FIRST, in place and durably
+    (:func:`_retire_cuts_inode`), and that ordering is what makes this function's
+    promise true on a filesystem that cannot sync a directory. ``atomic_write`` renames
+    a NEW inode over the counter's name; if that rename's metadata never reaches disk,
+    the name still points at the OLD inode -- and because this emptied that inode first,
+    what a reader comes back to is a counter that proves nothing rather than the
+    pre-cut count. Unproven is slower and never wrong; the pre-cut count beside a
+    truncated log is the one wrong answer this file exists to prevent.
+
+    So correctness rests on the emptying, which needs no directory entry, and the
+    directory sync below is what it can actually be: the step that makes the new NAME
+    durable sooner. It is still required to succeed, because an error from it (an
+    ``EIO``, say) says the device refused a write, and refusing the cut over that is
+    cheap. Its SILENCE carries nothing, and nothing here reads it as proof.
+
+    An absent counter has no old value to retire, which is the create path and every log
+    whose counter was lost.
+    """
+    if not _retire_cuts_inode(directory):
+        return False
+    try:
+        _mkdir_private(directory)
+        atomic_write(_cuts_path(directory), f"{value}\n", fsync=True, newline="\n")
+    except OSError:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log cut counter for %s could not be written", directory
+        )
+        return False
+    return _sync_cuts_dir(directory)
+
+
+def _unprove_cuts(directory: Path) -> bool:
+    """Make *directory*'s counter prove nothing, without needing a byte of space.
+
+    The fallback when :func:`_write_cuts` cannot raise the counter, and the reason a
+    failed raise is not a wrong answer. Removing the file, or emptying it in place, both
+    make :func:`read_cuts` answer ``None``, which sends every reader to the digest or to
+    a fold from empty.
+
+    TWO WAYS, and the DURABLE one first. Emptying the file in place
+    (:func:`_retire_cuts_inode`) changes its contents, which an ``fsync`` of the
+    descriptor forces, and touches no directory entry -- so it is as real as the device
+    is, on every filesystem. Unlinking is the tidier result but it publishes a
+    directory change, and a directory sync is not available everywhere, so an unlink
+    alone can come back. Doing the emptying first makes the unlink's durability stop
+    mattering: if the removal is lost, the name points at an inode that is already
+    empty, which reads as nothing proven.
+
+    Neither needs a byte of free space, which is why both are here. A full disk is the
+    likely cause of a failed raise -- the append that triggered the rollback failed for
+    the same reason -- so a path that had to allocate would fail for the same reason
+    again.
+
+    ``True`` ONLY where the retirement is one this function performed and made durable.
+    Anything else is ``False``, which refuses the cut, and the asymmetry is deliberate:
+    this answer is a claim about what a READER will find, so it may rest on an action
+    taken, never on a reading taken. Asking :func:`read_cuts` afterwards would be
+    exactly that -- it answers ``None`` for an UNREADABLE counter as readily as for an
+    absent one, so a counter held open by another process, with its old value still on
+    disk, would certify its own retirement and then come back the moment the handle
+    closed. A Windows sharing lock denies the replace, the unlink and the open together,
+    which is the one fault that reaches all three attempts here.
+    """
+    if _retire_cuts_inode(directory):
+        # Retired for good. The unlink after it is housekeeping -- it stops a file that
+        # proves nothing from sitting in the unit's directory -- so its failure, and the
+        # durability of the directory change it makes, are both beside the point.
+        try:
+            _cuts_path(directory).unlink()
+        except OSError:
+            pass
+        return True
+    # The emptying failed, so the file may still hold what it held, and an unlink is all
+    # that is left. It is the WEAKER way, because it publishes a directory change, and
+    # correctness here rests on nothing else -- so the sync is required to have actually
+    # HAPPENED (:func:`_cuts_dir_forced`) rather than merely not to have complained.
+    # `_sync_cuts_dir` would answer `True` on a filesystem that cannot express a
+    # directory sync at all, which is the reading this whole file refuses to make.
+    try:
+        _cuts_path(directory).unlink()
+    except FileNotFoundError:
+        # Gone between the failed open and here. The absence still has to be made
+        # durable: a removal nothing synced can be sitting in unwritten directory
+        # entries, and the file that comes back would hold the count this cut removes.
+        return _cuts_dir_forced(directory)
+    except OSError:
+        log_exception_text(
+            logger, logging.DEBUG, "crew log cut counter for %s could not be retired", directory
+        )
+        # Nothing here changed what a reader will find. Whether the counter is readable
+        # right now does not decide that: an unreadable counter still holds its old
+        # value, and reporting it retired is how a cut proceeds over a count that comes
+        # back to certify the bytes it removed.
+        return False
+    return _cuts_dir_forced(directory)
+
+
+def _open_cut(directory: Path) -> None:
+    """Declare a cut of *directory*'s log IN FLIGHT, durably, before it happens.
+
+    Half of a seqlock, and the half that must not be skipped. It raises the counter to
+    an ODD number, which :func:`read_cuts` refuses to return -- so a reader that samples
+    anywhere inside the cut is told "not proven" rather than handed a value it could
+    match again afterwards. :func:`_close_cut` raises it back to EVEN once the bytes
+    have settled, and that second raise is what makes a reading taken before a cut
+    differ from one taken after it.
+
+    Counting PHASES rather than cuts is the whole point. A single raise brackets "a cut
+    STARTED since you last looked", which is not the question: a reader that sampled the
+    raised value, folded the records the cut was about to remove, and sampled the same
+    value again would compare equal across a completed rewrite.
+
+    NO VALUE IS EVER ISSUED TWICE, which is the invariant behind every reading of this
+    counter: a held count is believed because it could only have come from the state it
+    was taken in. So the phase advances from what is ON DISK, odd readings included, and
+    where the file says nothing it jumps somewhere no earlier reading can sit
+    (:func:`_fresh_phase`) instead of counting up from one. A cut left unclosed is the
+    case that makes this load-bearing -- a counter that recovered from it by restarting
+    would close on the very value the interrupted cut had moved away from.
+
+    RAISES :class:`CutUnaccounted` when it cannot make the counter stop proving the old
+    value (:func:`_unprove_cuts`). Everywhere else this counter is an optimisation token
+    and a write fault only costs speed, but not here: cutting while a reader can still
+    read a count that certifies the bytes being removed is a wrong answer that persists,
+    since the slot savepoint records the same value. Refusing the cut leaves the file as
+    it was, which the next open repairs again.
+
+    That refusal is an ``OSError``, not a :class:`CrewLogError`, and the difference is
+    whether a caller's entry survives. Every cut here is a RECOVERY the caller is doing
+    on its way to something else -- repairing a torn tail before an append, dropping an
+    unreachable group at open -- so this exception surfaces as that caller's failure.
+    The write-behind reads a `CrewLogError` as "declined on its own merits, retrying is
+    pointless" and drops the entry; the causes here are storage faults that CLEAR, so a
+    transient lock on the counter would permanently lose a valid event. See
+    :class:`CutUnaccounted`.
+    """
+    raw = _read_cuts_raw(directory)
+    if raw is None:
+        # Absent or unparseable: there is no number to advance from, so the count starts
+        # again somewhere no earlier reading of this unit can sit. Starting at 1 would
+        # close on 2, and 2 is a value an old savepoint or warm memo may still hold.
+        value = _fresh_phase()
+    elif raw % 2:
+        # A cut that was opened and never closed -- a crash after the raise, or a close
+        # whose write failed. Advancing by TWO keeps the value odd, so this cut is in
+        # flight like any other, and it never lands on raw - 1: that is the settled
+        # value readers held before the unclosed cut, and the one value re-issuing would
+        # let a stale fold match across both cuts.
+        value = raw + 2
+    else:
+        value = raw + 1
+    if _write_cuts(directory, value):
+        return
+    if _unprove_cuts(directory):
+        return
+    raise CutUnaccounted(
+        f"crew log cut counter for {directory} can neither be raised nor retired, "
+        "so a reader could keep a fold built from the bytes this cut removes"
+    )
+
+
+def _close_cut(directory: Path) -> None:
+    """Declare *directory*'s in-flight cut SETTLED, durably, after the bytes moved.
+
+    The other half of the seqlock: the counter goes back to EVEN, and the value it lands
+    on differs from the one it held before the cut, so no reader holding either can
+    compare equal across it.
+
+    Best-effort and silent, because failing is already safe. A counter left ODD reads as
+    a cut in flight forever, which every reader answers by falling back to the digest or
+    folding from empty -- slower, never wrong. That is also what a crash between the
+    truncation and this call leaves behind, so the failure and the crash need one answer
+    rather than two.
+    """
+    now = _cuts_path(directory)
+    try:
+        raw = now.read_bytes().decode("ascii", errors="replace").strip()
+        current = int(raw) if raw.isdecimal() else None
+    except (OSError, ValueError):
+        current = None
+    if current is None:
+        # Nothing to close: the counter was retired instead of raised, so it already
+        # proves nothing and writing an even number here would restore a proof for a
+        # cut nothing recorded the start of.
+        return
+    _write_cuts(directory, current + 1)
+
+
+def _note_cut_if_shorter(path: Path, size: int) -> bool:
+    """Open a cut of *path* down to *size*, unless it would remove nothing.
+
+    ``True`` when a cut was declared and :func:`_close_cut` is owed; ``False`` when
+    there was nothing to declare.
+
+    A cut that removes no byte changes no reader's evidence, so declaring it would send
+    every reader of this unit back to the slow path for a mutation that did not happen.
+    The guard also covers the rollback of a write that reached no byte of the file at
+    all, which is an ordinary outcome rather than a cut.
+
+    A stat that fails counts the cut. Not knowing the file's length is not grounds for
+    claiming nothing was removed.
+    """
+    try:
+        current: int | None = path.stat().st_size
+    except OSError:
+        current = None
+    if current is None or current > size:
+        _open_cut(path.parent)
+        return True
+    return False
+
+
+def _seed_cuts(directory: Path) -> None:
+    """Start *directory*'s cut counter at zero, at create.
+
+    Written at CREATE and nowhere else, so the file is never produced by a read. What
+    it buys is that a log whose counter exists is on the cheap read path from its first
+    entry: an absent counter is unproven rather than zero, so a reader that found none
+    would fall back to hashing the records it folded for the whole life of the log.
+
+    Zero is EVEN, which is what "settled, no cut in flight" reads as. There is no
+    earlier value to retire here, which is the one call where
+    :func:`_retire_cuts_inode` has nothing to do.
+
+    Best-effort, and silent when it fails: at create there is nothing to protect yet, so
+    a failure costs this log the cheap read path and a create that refused over it would
+    refuse a perfectly good crew log.
+    """
+    _write_cuts(directory, 0)
 
 
 # --------------------------------------------------------------------------- #
@@ -2041,6 +2511,116 @@ def find_last_tree_edge(directory: Path) -> "Entry | None":
     return None
 
 
+#: The entry a creator's log carries for each session it created (see
+#: ``entry_types``). Read separately from :data:`_TREE_EDGE_TYPES`: a unit holds at most
+#: one decision that matters -- its newest -- but one ``session/spawned`` per child.
+_SPAWNED_TYPE = "session/spawned"
+#: The marker a raw record must contain before it is parsed. Every other line in a
+#: busy log is skipped without a JSON parse, which is most of the cost of this read.
+_SPAWNED_NEEDLE = b'"session/spawned"'
+
+
+def _spawned_child_slot(entry: "Entry") -> "str | None":
+    """The child slot a ``session/spawned`` entry names, or ``None`` when it is shaped
+    wrong. Mirrors the field :func:`session_tree.spawned_record` keys the edge on, so
+    the two agree about which child an entry is about."""
+    child = entry.data.get("child")
+    if not isinstance(child, dict):
+        return None
+    slot = child.get("slot")
+    return slot if isinstance(slot, str) and slot else None
+
+
+def find_spawned_entries(
+    directory: Path, limit: int, self_parented: "Container[str]" = frozenset()
+) -> "tuple[list[Entry], bool, bool]":
+    """The NEWEST *limit* ``session/spawned`` entries in *directory*'s surviving log,
+    oldest first, plus two flags: whether any older LOAD-BEARING one was left out
+    (``cut``), and whether the per-unit cap was hit at all (``hit_cap``).
+
+    The whole log, every segment, because a creator records its children over its
+    whole life and any of them may still be waiting for a first turn. The newest are
+    kept because the newest children are the ones most likely to have no log of their
+    own yet. A reader holds what it returns, so the bound is the caller's.
+
+    The held set is ALWAYS the newest *limit* spawns of every child, independent of
+    *self_parented* -- a pure function of this log, so a caller may cache it by this
+    log's identity.
+
+    *self_parented* names child slots the caller already knows have a parent edge of
+    their OWN -- the child opened a log that names a parent, which the fold applies
+    instead of this spawn (:func:`session_tree.fold_tree`: a spawn fills a child's
+    citation "only when none of the child's own records names a parent"). It affects
+    ONLY the ``cut`` flag: an evicted spawn whose child is self-parented is not counted
+    lost, since the fold would discard it anyway. Without this, a long-running creator
+    that evicted more than *limit* children over its life -- all long since started and
+    self-recorded -- would report ``cut`` on every scan, which the fold's reader turns
+    into "lineage unknown" and uses to refuse adopt/release authority checks
+    gateway-wide until retention pruned the log, though no evicted spawn was
+    load-bearing. The default empty set keeps the plain "every eviction counts".
+
+    ``hit_cap`` is the RAW fact that the cap evicted at least one spawn, self-parented
+    or not. A caller caches a scan by this log's identity, but a self-parented child
+    whose spawn was evicted can later have its OWN log removed WITHOUT changing this
+    creator's identity -- at which point that evicted spawn becomes load-bearing and the
+    cached "complete" answer is wrong. So a caller must refuse to cache (and re-read
+    next time) whenever ``hit_cap`` is set, even when ``cut`` was suppressed.
+
+    Both flags are load-bearing. A cut answer is not the unit's whole answer, so a
+    caller must not report a reading built from it as complete, and a capped scan must
+    not be cached as the unit's whole answer.
+
+    Raises what the reads raise, as ``OSError`` or ``ValueError``, for the reason
+    :func:`find_last_tree_edge` does: "no child recorded" and "the bytes were not seen"
+    are different answers, and only the first may be cached.
+    """
+    found = [
+        (first, child)
+        for child in directory.iterdir()
+        if (first := _segment_first_seq(child)) is not None
+    ]
+    found.sort(key=lambda pair: pair[0])
+    kept: "deque[Entry]" = deque(maxlen=max(limit, 0))
+    # The held set is the newest *limit* spawns of EVERY child, independent of
+    # *self_parented*: it is cached by the creator log's own identity, so it must stay a
+    # pure function of that log. Filtering the held set by the children's logs would let
+    # a later change to a child's log (its deletion, a retracted parent) leave a stale
+    # cache missing a now-needed edge. *self_parented* instead relaxes only the cut flag:
+    # a dropped spawn is counted lost only when its child is NOT self-parented, since the
+    # fold would discard a self-parented child's spawn anyway.
+    cut = False
+    hit_cap = False
+    for _first, segment in found:
+        if segment.stat().st_size == 0:
+            continue
+        with open(segment, "rb") as handle:
+            try:
+                for raw in strict_raw_records(handle, segment, cap=MAX_ENTRY_BYTES):
+                    if _SPAWNED_NEEDLE not in raw:
+                        continue
+                    parsed = _parses_to_object(raw.strip())
+                    if parsed is None:
+                        continue
+                    entry = Entry.from_dict(parsed)
+                    if entry is not None and entry.type == _SPAWNED_TYPE:
+                        # Appending to a full maxlen deque evicts the oldest. The cap
+                        # was hit either way (hit_cap, which gates CACHING); the eviction
+                        # is only a lost answer -- cut, which gates the INCOMPLETE
+                        # signal -- when the evicted child is not self-parented.
+                        if kept.maxlen and len(kept) == kept.maxlen:
+                            hit_cap = True
+                            if _spawned_child_slot(kept[0]) not in self_parented:
+                                cut = True
+                        kept.append(entry)
+            except UnreadableRecord as exc:
+                # Same conversion :func:`_scan_whole_for_types` makes, so every caller
+                # guards one pair of exception types.
+                raise ValueError(
+                    f"crew log segment {segment.name} holds an unreadable record"
+                ) from exc
+    return list(kept), cut, hit_cap
+
+
 def _scan_whole_for_types(segment: Path, types: "frozenset[str]") -> "Entry | None":
     """The newest entry of *types* anywhere in *segment*, or ``None``.
 
@@ -2134,7 +2714,7 @@ def _open_lock(path: Path) -> Iterator[None]:
     closed, which is why nothing here has a lock-less fallback.
     """
     _mkdir_private(path.parent)
-    path.touch(exist_ok=True)
+    path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
     with open(path, "r+") as handle:
         with file_lock(handle.fileno(), exclusive=True):
             yield
@@ -2321,7 +2901,31 @@ class _Bounded:
 def _iter_entries(path: Path, end: int | None = None) -> Iterator[Entry]:
     """Every parseable entry in *path*, oldest first, header excluded.
 
+    A projection of :func:`_iter_entries_located`, which owns the framing, the skip
+    posture and the strict per-record decode. One implementation rather than two, so
+    a reader that wants byte offsets and one that does not cannot come to disagree
+    about where a record begins or whether it counts.
+    """
+    for entry, _at in _iter_entries_located(path, end):
+        yield entry
+
+
+def _iter_entries_located(
+    path: Path, end: int | None = None, *, start: int = 0
+) -> "Iterator[tuple[Entry, int]]":
+    """Every parseable entry in *path* and the byte offset its record begins at.
+
     *end*, when given, is the byte offset the read stops at (see :class:`_Bounded`).
+
+    *start* is where the read BEGINS, and it is how a reader resumes at a record it
+    has already located instead of walking to it. Zero reads the file from the top,
+    where record 1 is the header and is skipped; any other value is already past the
+    header, so nothing is skipped there -- a resumed read that dropped its first
+    record would silently lose the entry the caller seeked to.
+
+    The offset is the record's OWN start, taken from the framing layer rather than
+    accumulated here, so an over-cap record -- which the framer discards in full,
+    terminator included -- cannot leave every later offset short by its length.
 
     A malformed interior line is SKIPPED, not raised on: the log is append-only
     and one damaged line must not hide the history in front of it. The file is
@@ -2337,20 +2941,26 @@ def _iter_entries(path: Path, end: int | None = None) -> Iterator[Entry]:
     line is damage and is skipped exactly like unparseable JSON.
 
     The file is read in BINARY mode and framed by
-    :func:`jsonl_util.bounded_raw_records`, so no universal-newline translation
-    can rewrite the bytes on the way in, and one planted line cannot cost more
-    than :data:`MAX_ENTRY_BYTES` of memory however long it is. That cap is the
-    format's own write limit, so a longer line is not something this writer
+    :func:`jsonl_util.bounded_raw_records_with_offsets`, so no universal-newline
+    translation can rewrite the bytes on the way in, and one planted line cannot
+    cost more than :data:`MAX_ENTRY_BYTES` of memory however long it is. That cap is
+    the format's own write limit, so a longer line is not something this writer
     produced: it is damage, and the skip posture already applies to damage.
     """
     try:
         with open(path, "rb") as raw_source:
+            if start:
+                raw_source.seek(start)
             source: Any = raw_source if end is None else _Bounded(raw_source, end)
-            for index, raw in enumerate(
-                bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
+            for index, (at, _stop, raw) in enumerate(
+                bounded_raw_records_with_offsets(
+                    source, path, cap=MAX_ENTRY_BYTES, label="crew log"
+                )
             ):
-                if index == 0:
+                if index == 0 and not start:
                     continue  # the header
+                if raw is None:
+                    continue  # an over-cap record, reported so a resumer can step past it
                 stripped = raw.strip()
                 if not stripped:
                     continue
@@ -2359,7 +2969,7 @@ def _iter_entries(path: Path, end: int | None = None) -> Iterator[Entry]:
                     continue
                 entry = Entry.from_dict(parsed)
                 if entry is not None:
-                    yield entry
+                    yield entry, at
     except FileNotFoundError:
         return
 
@@ -2412,6 +3022,70 @@ def _read_first_entry_seq(path: Path) -> int | None:
 # --------------------------------------------------------------------------- #
 # Read results
 # --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where a walk of one unit's log stopped, as a position a later walk can seek to.
+
+    What it buys is the difference between a tail read that costs the TAIL and one
+    that costs the LOG. :meth:`CrewLog.iter_from` yields from a seq, and reaching that
+    seq means decoding every record below it -- so a reader that polls a growing log
+    for its newest entry decodes the whole of it on every poll, however little
+    arrived. Handed one of these, the same walk opens the file at the record it
+    already knows and decodes only what came after.
+
+    Every field is part of the proof, and a walk that cannot confirm one of them walks
+    the log from the top instead:
+
+    ``segment`` is the FILE NAME, not a path, because a unit's history is several
+    files and a byte offset means nothing without the one it indexes. A name absent
+    from disk -- retention dropped it -- is not an error, it is a resume point that
+    has stopped applying.
+
+    ``offset`` is where the record carrying ``seq`` BEGINS. It must be a record
+    boundary, and that is checked by reading there and requiring the framed record to
+    start at exactly this value: an offset landing inside a record yields the
+    remainder, which does not parse, and the next record then starts above the
+    offset.
+
+    ``seq`` is what the record at ``offset`` must carry. This is the positive check --
+    the one that says the bytes at the offset are the bytes the reader thinks they
+    are, rather than merely that something parses there. It also ANCHORS the walk's
+    "every seq must advance" rule: the resumed walk's first record is this one, so
+    every record after it is still compared against a known predecessor.
+
+    ``cuts`` is :meth:`CrewLog.cuts` as it read when the offset was taken. A cut is
+    the only thing in this store that moves a committed record, so an unchanged count
+    is what says the bytes BELOW the offset -- which the resumed walk does not read --
+    are the bytes they were. ``None`` is not proven and never resumes: a log with no
+    counter has no evidence for its prefix, so it gets the full walk.
+    """
+
+    segment: str
+    offset: int
+    seq: int
+    cuts: int | None
+
+
+@dataclass
+class ReadCursor:
+    """Where the walk a caller is driving has reached, for it to remember.
+
+    Mutable and passed IN, because :meth:`CrewLog.iter_from` is a generator and a
+    generator's return value is not reachable by a caller that iterates it. The same
+    shape :class:`~kiro_crew.crew_log.projection._SlotStream` already uses for the
+    heights it reports: the walk fills it as it goes, and the caller reads it when the
+    walk is done.
+
+    ``at`` names the last entry the walk YIELDED, not the last record it framed. That
+    is the position a continuation wants: a reader resumes to find what it has not
+    folded, and a record it skipped -- an ignorable type it does not know, a damaged
+    line -- is one it has not folded either, so a point past it would hide it from
+    every later read.
+    """
+
+    at: "ResumePoint | None" = None
 
 
 @dataclass(frozen=True)
@@ -2604,6 +3278,7 @@ class CrewLog:
                 )
             _mkdir_private(path.parent)
             atomic_write(path, f"{line}\n", fsync=True, newline="\n")
+            _seed_cuts(path.parent)
         return cls(
             kind=kind,
             unit_id=unit_id,
@@ -3097,6 +3772,29 @@ class CrewLog:
 
     # -- read --------------------------------------------------------------- #
 
+    def cuts(self) -> int | None:
+        """This unit's settled cut count, or ``None`` when nothing is settled.
+
+        The cheap answer to the question :meth:`raw_prefix_digest` answers expensively:
+        are the records a fold already consumed still the records on disk? A cut is the
+        only thing in this store that can change them, so a reader that holds the count
+        it saw last time and finds the same count again knows they are -- in one read of
+        a file a few bytes long, whatever the log's size.
+
+        A value comes back only with the bytes SETTLED. The store brackets each cut with
+        a raise on either side, and the odd value in between answers ``None``, so no
+        reader can hold a count that was taken while the file was being rewritten.
+
+        ``None`` is NOT PROVEN, never zero: see :func:`read_cuts`. A caller that gets it
+        has to fall back to the digest, which is what a log created before this counter
+        existed does until its first cut.
+
+        Read from DISK on every call, like :func:`log_origin` and for the same reason: a
+        value captured when the handle was opened keeps answering for the file that
+        existed then, which is exactly the staleness this is here to detect.
+        """
+        return read_cuts(self._path.parent)
+
     def raw_prefix_digest(self, records: int) -> tuple[str, int]:
         """SHA-256 of the first *records* raw entry records, and count hashed.
 
@@ -3203,6 +3901,8 @@ class CrewLog:
         *,
         known: Collection[str] | None = None,
         strict_seq: bool = True,
+        resume: "ResumePoint | None" = None,
+        cursor: "ReadCursor | None" = None,
     ) -> Iterator[Entry]:
         """Every entry from *seq* onward, OLDEST first -- the shape a fold wants.
 
@@ -3246,9 +3946,50 @@ class CrewLog:
         reading. A caller that FOLDS state must keep the default -- tolerating
         a non-advancing seq there is how two reads of the same bytes disagree,
         which is the defect this parameter's default closes.
+
+        *resume* is a :class:`ResumePoint` this unit handed out on an earlier walk,
+        and it is what makes a tail read cost the TAIL. Reaching *seq* otherwise
+        means decoding every record below it, so a reader polling a growing log for
+        its newest entry decodes the whole log on every poll. Given a point it can
+        confirm, the walk opens the file AT that record and decodes only what follows.
+
+        A point never narrows what this call answers. It is ignored outright when *seq*
+        is below the point's own seq, because opening at the point would drop the
+        records between the two and hand back a short answer to a caller that asked for
+        them. So the same *seq* yields the same entries whether a point is passed or
+        not, and the point only changes how much was read to produce them.
+
+        What a resume gives up is exactly the prefix it does not read. The checks
+        here -- the advancing-seq rule, each earlier segment's header, each segment's
+        filename-against-first-entry claim, contiguity across the boundaries below
+        the point -- apply only to the records this walk reads, so records below the
+        point go unchecked. A resume is therefore honoured only when ``cuts`` still
+        reads as it did (so the store itself has not moved a committed record) AND
+        the record at ``offset`` still carries ``seq``; anything else, including a
+        point this log never issued, falls back to the full walk. See
+        :meth:`_resume_at` for each refusal.
+
+        *cursor* is where this walk REPORTS its own resume point, for the caller to
+        hand back next time. It is filled per yielded entry, so after the walk it
+        names the last one -- and a walk that yielded nothing leaves it untouched,
+        which is what lets a caller keep the point it already had.
         """
         walked = 0
-        for entry in self._iter_segments():
+        # Read ONCE, before any record, and stamped into every point this walk hands
+        # out. A cut landing mid-walk then leaves the point carrying the count from
+        # before it, which the next read compares unequal and falls back on -- the
+        # error falls towards a full walk. Reading it afterwards would stamp the
+        # count from after the cut, and the next read would resume over cut bytes.
+        cuts = self.cuts() if (cursor is not None or resume is not None) else None
+        # A point may start the walk only where it cannot hide an entry this call asked
+        # for. Opening at the point yields its own record and everything after it, so
+        # the answer is whole exactly when *seq* is at or above the point's seq. Asked
+        # for anything lower, the records in between are owed, and a point that skipped
+        # them would make this an optimisation that changes the answer -- which is the
+        # one thing it must never be. :meth:`_resume_at` cannot see this: it is handed
+        # the point and the bytes, and answers whether they agree, not what was asked.
+        usable = resume if resume is not None and seq >= resume.seq else None
+        for entry, segment, at in self._iter_segments_located(resume=usable, cuts=cuts):
             if entry.seq <= walked:
                 if strict_seq:
                     raise CrewLogError(
@@ -3272,6 +4013,8 @@ class CrewLog:
                         field="type",
                     )
                 continue
+            if cursor is not None:
+                cursor.at = ResumePoint(segment=segment, offset=at, seq=entry.seq, cuts=cuts)
             yield entry
 
     def _durable_end(self, path: Path) -> int:
@@ -3285,6 +4028,86 @@ class CrewLog:
     def _iter_segments(self) -> Iterator[Entry]:
         """Every entry of every segment, oldest first, refusing bad provenance.
 
+        A projection of :meth:`_iter_segments_located`, which owns the provenance
+        refusals and the walk. Two walks over a unit's segments would be two answers
+        waiting to disagree about which files are authoritative.
+        """
+        for entry, _segment, _at in self._iter_segments_located():
+            yield entry
+
+    def _resume_at(
+        self,
+        paths: "list[Path]",
+        resume: "ResumePoint | None",
+        newest_end: int | None,
+        cuts: int | None,
+    ) -> "tuple[int, int]":
+        """Which segment index and byte offset a walk may start at, for *resume*.
+
+        ``(0, 0)`` means "start at the top", and it is the answer to every question
+        this cannot settle -- a resume point is an optimisation token, so a token that
+        does not check out costs the full walk and never a wrong answer.
+
+        The refusals, each for its own reason:
+
+        * **No point, or a nonsense offset.** Offset zero is the header's own
+          position, so it names no entry; a negative or non-integer one names nothing
+          at all.
+        * **The cut count moved, or either reading is unknown.** This is the only
+          evidence there is about the prefix the resumed walk does NOT read: a cut is
+          the one thing in the store that changes a committed record, so an unchanged
+          count is what says those bytes still are what they were. ``None`` is not
+          proven rather than zero (see :func:`read_cuts`), so a log with no counter
+          takes the full walk -- it has nothing to vouch for its prefix with. The
+          counter is a seqlock, so ``None`` also covers a reading taken while a cut is
+          in flight: that one is odd, and admitting it would let a reader match the
+          same odd value again over bytes the cut had meanwhile replaced.
+        * **The named segment is gone.** Retention removes whole segments off the
+          front, and a point into one of them is stale rather than wrong.
+        * **The offset is at or past the durable end.** Bytes past it are an append
+          still in flight (see :meth:`_durable_end`).
+        * **The offset is not a record boundary.** Read there and the framing layer
+          reports where the record it delivers actually began: an offset inside a
+          record yields that record's remainder, which does not parse, and the first
+          entry found then starts ABOVE the offset.
+        * **The record there is not the expected seq.** The positive check, and the
+          one that makes the whole thing safe to build on: it says the bytes at the
+          offset are the bytes the caller thinks they are, not merely that something
+          parses there. It also leaves the walk's advancing-seq rule anchored, since
+          the resumed walk's first record is this known one.
+        """
+        if resume is None:
+            return 0, 0
+        if not isinstance(resume.offset, int) or isinstance(resume.offset, bool):
+            return 0, 0
+        if resume.offset <= 0:
+            return 0, 0
+        if resume.cuts is None or cuts is None or resume.cuts != cuts:
+            return 0, 0
+        index = next((at for at, path in enumerate(paths) if path.name == resume.segment), None)
+        if index is None:
+            return 0, 0
+        end = newest_end if index == len(paths) - 1 else None
+        if end is not None and resume.offset >= end:
+            return 0, 0
+        found = next(_iter_entries_located(paths[index], end, start=resume.offset), None)
+        if found is None:
+            return 0, 0
+        entry, at = found
+        if at != resume.offset or entry.seq != resume.seq:
+            return 0, 0
+        return index, resume.offset
+
+    def _iter_segments_located(
+        self,
+        *,
+        resume: "ResumePoint | None" = None,
+        cuts: int | None = None,
+    ) -> "Iterator[tuple[Entry, str, int]]":
+        """Every entry of every segment with its segment name and byte offset.
+
+        Oldest first, refusing bad provenance.
+
         Every segment repeats the header because retention may remove the first one.
         Each header must therefore identify this same crew log and schema before any
         entry from that independent file becomes authoritative. The filename's first
@@ -3296,6 +4119,13 @@ class CrewLog:
         unreadable record must not make the rest of the file unreadable. Across two
         files a gap is a different thing: a half-finished copy or deleted middle
         segment is invisible unless the boundary is checked.
+
+        *resume*, when :meth:`_resume_at` accepts it, starts the walk inside one
+        segment and SKIPS every segment before it. The header of the resumed segment
+        is still checked -- it is the file the walk reads -- but the earlier ones are
+        not opened, and the boundary into the resumed segment has no previous entry
+        to be compared against, so it is not checked either. That is the prefix the
+        resume trades away, and :meth:`_resume_at` is where it is paid for.
         """
         expected = 0
         paths = segment_paths(self._kind, self._id)
@@ -3306,7 +4136,10 @@ class CrewLog:
         # still in flight, and a reader that yields them can hand a fold an entry the
         # durable log never keeps. Older segments take no more appends.
         newest_end = self._durable_end(paths[-1]) if paths else None
+        from_index, from_offset = self._resume_at(paths, resume, newest_end, cuts)
         for index, path in enumerate(paths):
+            if index < from_index:
+                continue
             raw_header = _read_header_line(path)
             parsed_header = None if not raw_header else _parses_to_object(raw_header)
             try:
@@ -3341,7 +4174,8 @@ class CrewLog:
 
             at_boundary = bool(index) and expected > 0
             end = newest_end if index == len(paths) - 1 else None
-            for entry in _iter_entries(path, end):
+            begin = from_offset if index == from_index else 0
+            for entry, at in _iter_entries_located(path, end, start=begin):
                 if at_boundary and entry.seq != expected:
                     raise CrewLogError(
                         f"segment {path.name} starts at seq {entry.seq}, but the "
@@ -3352,7 +4186,7 @@ class CrewLog:
                     )
                 at_boundary = False
                 expected = entry.seq + 1
-                yield entry
+                yield entry, path.name, at
 
     def get(self, seq: int) -> Entry | None:
         """The entry at *seq*, or ``None``.
@@ -3559,9 +4393,11 @@ def _mkdir_private(directory: Path) -> None:
 
     Best-effort for the same reason the root's is: a filesystem that refuses the mode
     change must not make a crew log unwritable, and the sandbox mask and the file-tool
-    fence still stand.
+    fence still stand. Every level this creates is born ``0700`` (a ``parents=True``
+    mkdir would leave the intermediate ``crew-log/<kind>`` at the umask default); the
+    ``chmod`` below is for the leaf that already existed.
     """
-    directory.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(directory)
     if os.name == "posix":
         try:
             if directory.stat().st_mode & 0o777 == 0o700:
@@ -3642,11 +4478,19 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
     recovery already exists; the distinct type is so a caller can tell "nothing
     happened" from "something may have".
 
+    "Fails" there covers the rollback REFUSING as well as erroring. The rollback counts
+    its cut, and on a filesystem that has gone read-only it can neither record the cut
+    nor disown the count, so it declines to truncate and raises a
+    :class:`CrewLogError`. The bytes are then still in the file, which is this clause's
+    case exactly -- so it is reported as indeterminate and the entry stays retryable.
+    Reported as a refusal it would be read as "declined before any byte was written",
+    and the event would be dropped over a fault that recovery clears.
+
     Truncating is safe against a concurrent writer because every caller reaches here
     holding the session's append lock, so no other handle can have appended between
     this write and its rollback -- the bytes removed can only be this call's own.
     """
-    with open(path, "ab") as handle:
+    with open(path, "ab", opener=owner_only_opener) as handle:  # conversation bodies: 0600
         before = handle.tell()
         try:
             handle.write(blob)
@@ -3656,7 +4500,15 @@ def _write_then_sync(path: Path, blob: bytes) -> None:
             try:
                 handle.close()
                 _rollback_append(path, before)
-            except OSError as undo:
+            # The rollback REFUSING lands here too, because the cut it has to account
+            # for can be refused (`CutUnaccounted`, an OSError) and then the bytes are
+            # left in place deliberately. That is this clause's case exactly: the file
+            # has been touched and the outcome is unknown. CrewLogError is named as a
+            # BACKSTOP rather than for a refusal that reaches here today -- anything
+            # raised once this append's bytes are on disk has to be reported as
+            # indeterminate, since the writer reads a CrewLogError as "declined before
+            # any byte" and drops the event instead of retrying it.
+            except (OSError, CrewLogError) as undo:
                 raise IndeterminateAppend(
                     f"append to {path.name} failed ({exc}) and could not be rolled "
                     f"back ({undo}): the file may hold bytes no entry claims",
@@ -3674,11 +4526,36 @@ def _rollback_append(path: Path, size: int) -> None:
     reader could already have seen rather than editing history. It is the same
     category as the torn-tail truncation, moved to the moment the tear happens
     instead of the next open.
+
+    "A state a reader could already have seen" is also why the cut is COUNTED. The
+    bytes removed were flushed before the fsync that failed, so a reader holding no
+    lock can have read them as a committed entry -- and the retry then writes a
+    different entry under the same seq. That is the same evidence problem the
+    torn-tail cut has, and it gets the same accounting.
+
+    The counter is opened before and closed after, so a reader that samples it at any
+    point during this function is told the bytes are moving rather than handed a value
+    it could match again once they have. The close runs in a ``finally`` because a
+    truncation that RAISED may still have moved bytes, so every reader holding the old
+    value has to fold cold either way -- and the only reading that says so is a settled
+    one that differs from it. Leaving the counter odd forever would also be safe, and it
+    would pin this unit to the slow path for the rest of its life.
+
+    The open can REFUSE -- on a filesystem gone read-only the count can neither be
+    recorded nor disowned -- and then nothing is truncated and this raises before the
+    ``try``. :func:`_write_then_sync` turns that into an :class:`IndeterminateAppend`
+    rather than letting it out as a refusal, because the failed append's bytes are still
+    in the file and the entry is still worth retrying.
     """
-    with open(path, "r+b") as handle:
-        handle.truncate(size)
-        handle.flush()
-        os.fsync(handle.fileno())
+    opened = _note_cut_if_shorter(path, size)
+    try:
+        with open(path, "r+b") as handle:
+            handle.truncate(size)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if opened:
+            _close_cut(path.parent)
 
 
 def _refuse_content_repair(unit_id: str, skipped: str) -> None:
@@ -3787,7 +4664,25 @@ def _orphan_chunk_offset(path: Path) -> "tuple[int, int, int] | None":
 
 
 def _truncate(path: Path, offset: int) -> None:
-    """Drop everything at or after *offset* -- the one allowed mutation."""
+    """Drop everything at or after *offset* -- the one allowed mutation.
+
+    Bracketed by the unit's cut counter, because this is the one place the mutation
+    happens: every caller that cuts a segment reaches here, so accounting for it here is
+    the only placement a later caller cannot forget. The counter is raised to an ODD
+    value before the truncation and back to an EVEN one after it, so a reader that
+    samples it mid-cut is told "not proven" and a reader that samples before and after
+    sees two different values. See :func:`_open_cut`.
+    """
+    opened = _note_cut_if_shorter(path, offset)
+    try:
+        _truncate_now(path, offset)
+    finally:
+        if opened:
+            _close_cut(path.parent)
+
+
+def _truncate_now(path: Path, offset: int) -> None:
+    """:func:`_truncate`'s bytes, with the cut already declared in flight."""
     with open(path, "r+b") as handle:
         handle.truncate(offset)
         handle.flush()

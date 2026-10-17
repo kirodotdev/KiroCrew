@@ -965,6 +965,16 @@ class TestTheCarveCliVerb:
         # between the namespace and the store.
         assert "pref.lang" not in printed
 
+    @pytest.mark.parametrize("huge", [2**63, 2**80])
+    def test_an_offset_past_the_sqlite_range_is_an_empty_carve_not_a_traceback(
+        self, seeded, capsys, huge
+    ) -> None:
+        """The store binds the offset as a SQLite parameter; the verb clamps first."""
+        self._run(store=seeded, crew=_FINANCE, offset=huge)
+        printed = capsys.readouterr().out
+        assert "No live rows" in printed
+        assert "OverflowError" not in printed
+
     def test_the_default_store_prints_the_refusal_not_an_empty_list(self, capsys) -> None:
         """The same contract the store raises and the route returns as 409.
 

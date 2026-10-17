@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 from skill_script_helpers import load_skill_script
 
-from kiro_crew import agent, hooks
+from kiro_crew import agent, hooks, validation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "src" / "kiro_crew" / "builtin_skills" / "pipeline-conductor"
@@ -1078,6 +1078,77 @@ class TestPatrolLoopEnumeratesTheTags:
         # The instruction the tag replaced. Left standing it is a second, weaker
         # answer to the question the probe already answers.
         assert "diff each fired line's `i=`" not in loop
+
+
+class TestPatrolBoundsAgree:
+    """The patrol's three arming bounds describe ONE loop.
+
+    ``max_cycles`` and ``max_runtime_secs`` each end the loop on their own, so
+    the smaller of the two is the patrol's real lifetime. When the interval
+    times the cycle cap falls short of the runtime, the cap ends the patrol
+    while the runtime it was armed with is still unspent: the skill promises a
+    run the server never gives.
+
+    The cycle ceiling is read from the server's own schemas rather than copied
+    here: a restated number would agree with the skill and still be wrong
+    about the server.
+    """
+
+    HEADING = "## Startup (once per run)"
+
+    def _arm_step(self) -> str:
+        """The numbered startup step that arms the patrol, flattened.
+
+        A list item's continuation lines are indented, so the step ends at the
+        first line that is not; another paragraph's numbers cannot leak in.
+        """
+        lines = _skill_section(self.HEADING).splitlines()
+        start = next((i for i, line in enumerate(lines) if "Arm the patrol" in line), None)
+        assert start is not None, f"no 'Arm the patrol' step under {self.HEADING}"
+        step = [lines[start]]
+        for line in lines[start + 1 :]:
+            if not line.startswith("   "):
+                break
+            step.append(line)
+        return _flat("\n".join(step))
+
+    def _bounds(self) -> tuple[int, int, int]:
+        step = self._arm_step()
+        # The interval's number must sit in its own clause: a step that drops it
+        # fails here instead of borrowing the next bound's number and passing.
+        interval = re.search(r"interval[^`\d]*(\d+)", step)
+        cycles = re.search(r"`max_cycles=(\d+)`", step)
+        runtime = re.search(r"`max_runtime_secs=(\d+)`", step)
+        assert interval and cycles and runtime, step
+        return int(interval.group(1)), int(cycles.group(1)), int(runtime.group(1))
+
+    @staticmethod
+    def _server_max(schema: validation.ToolSchema, name: str) -> int:
+        spec = next((field for field in schema.fields if field.name == name), None)
+        assert spec is not None, f"{schema.tool_name} has no {name} field"
+        assert spec.max_val is not None, f"{schema.tool_name}.{name} has no ceiling"
+        return int(spec.max_val)
+
+    def test_the_cycle_cap_covers_the_runtime(self):
+        interval, cycles, runtime = self._bounds()
+        assert interval * cycles >= runtime, (
+            f"{interval} s x {cycles} cycles = {interval * cycles} s, short of "
+            f"max_runtime_secs={runtime}: the cycle cap ends the patrol first"
+        )
+
+    def test_the_cycle_cap_is_one_the_server_accepts(self):
+        """Arming and renewing are both refused above the schema's ceiling."""
+        _, cycles, _ = self._bounds()
+        for schema in (validation.MONITOR_START_SCHEMA, validation.MONITOR_UPDATE_SCHEMA):
+            assert cycles <= self._server_max(schema, "max_cycles"), schema.tool_name
+
+    def test_renewal_raises_both_bounds_under_the_servers_ceiling(self):
+        """A renewal that raises the runtime alone re-creates the short cap, and
+        the ceiling the step names is the one ``monitor_update`` enforces."""
+        step = self._arm_step()
+        assert "raise `max_cycles` and `max_runtime_secs` together with `monitor_update`" in step
+        ceiling = self._server_max(validation.MONITOR_UPDATE_SCHEMA, "max_cycles")
+        assert re.search(rf"caps it at {ceiling}\b", step), step
 
 
 class TestConductorOwnedState:

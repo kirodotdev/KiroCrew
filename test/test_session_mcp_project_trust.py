@@ -188,8 +188,12 @@ def _assert_spawn_run_denied(backend: str, checkout: Path) -> None:
         assert "mcp__kirocrew-core__spawn_run" in rules
     elif backend == ACP_BACKEND_CODEX:
         assert ("kirocrew-core", "spawn_run") in face.denied_tools
+    elif backend == ACP_BACKEND_OPENCODE:
+        # The server stays mounted and the harness is told to deny the one tool.
+        assert "kirocrew-core_spawn_run" in face.harness_deny_rules
+        assert "kirocrew-core" not in face.unhonoured_servers
     else:
-        # opencode and goose have no per-tool deny channel: the server is withheld.
+        # goose has no safe per-tool deny channel: the server is withheld.
         assert "kirocrew-core" not in names
 
 

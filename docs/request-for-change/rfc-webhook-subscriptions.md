@@ -3,8 +3,8 @@ title: Webhook subscriptions — extend the inbound webhook to wake sessions on 
 status: draft
 author: pepmach
 created: 2026-09-15
-last-audited: 2026-09-16
-audited-at: 6163d9a9ca
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -134,14 +134,14 @@ Verified at `6163d9a9ca`. Paths are relative to `src/kiro_crew/`.
 | `webhooks.py` `WebhookRunStore`, `MAX_RUNS` | Bounded ring of runs including rejections and auth failures | Superseded by the event log (§5.2): every received, dropped, coalesced, delivered and dead event, in SQLite. The ring stays for the legacy endpoint until Phase 7. |
 | `webhooks.py` `auth_throttle_blocked`, token-store kill switch; `hooks.py` `_HOOK_BODY_MAX_BYTES`, `_HOOK_MAX_CONCURRENT` | Per-source auth-failure throttle, operator switch, bounded body read before auth, global turn semaphore | **Reused as-is** on every ingress path (§7.3). |
 | `webhooks.py` `context_freshness`, `register_hook` contexts in `hooks.json` | Three-horizon decay of a caller-supplied restored context | Unchanged for `hook:*` sessions; a subscription's standing instruction replaces it for subscription-targeted wakes. |
-| `dashboard/token_auth.py` `_BYPASS_EXACT_METHODS`, `AGENT_HOOK_PATH`, `TEAMS_WEBHOOK_PATH` | Dashboard-auth bypass for self-authenticating webhooks: **exact path plus POST only**, two entries today — the agent webhook and the Microsoft Teams inbound webhook. The method scope is load-bearing: the literal `agent` also matches the `{hook_id}` wildcard of the dashboard's own PUT/DELETE `/api/hooks/{hook_id}` CRUD routes, which authenticate by dashboard token | Gains exactly one more exact-path, POST-only entry, `POST /api/hooks/in` (§7.1). No wildcard or prefix bypass; every other method and path under `/api/hooks/` keeps the dashboard token. |
-| `dashboard/handlers/messaging.py` cron-notify injection; slot `queue_append` (`dashboard/state.py`, `dashboard/slot_queue_repository.py`); `dashboard/chat_runner.py` `_start_next_queued_turn` | A message for a busy slot is appended to the slot queue and drained by the runner when the turn ends; an idle slot gets an immediate guarded turn | **The wake's delivery path.** The buffer in front of it is what makes it durable across a restart. |
+| `dashboard/token_auth_paths.py` `_BYPASS_EXACT_METHODS`, `AGENT_HOOK_PATH`, `TEAMS_WEBHOOK_PATH` | Dashboard-auth bypass for self-authenticating webhooks: **exact path plus POST only**, two entries today — the agent webhook and the Microsoft Teams inbound webhook. The method scope is load-bearing: the literal `agent` also matches the `{hook_id}` wildcard of the dashboard's own PUT/DELETE `/api/hooks/{hook_id}` CRUD routes, which authenticate by dashboard token | Gains exactly one more exact-path, POST-only entry, `POST /api/hooks/in` (§7.1). No wildcard or prefix bypass; every other method and path under `/api/hooks/` keeps the dashboard token. |
+| `dashboard/handlers/messaging.py` cron-notify injection; slot `queue_append` (`dashboard/state_parts/slot_turns.py`, `dashboard/slot_queue_repository.py`); `dashboard/chat_runner.py` `_start_next_queued_turn` | A message for a busy slot is appended to the slot queue and drained by the runner when the turn ends; an idle slot gets an immediate guarded turn | **The wake's delivery path.** The buffer in front of it is what makes it durable across a restart. |
 | `irq.py` — `Probe`, `Observation`, `Severity`, `ResetsOn`, `run`, `DEFAULT_COALESCE_SECS`, `DEFAULT_REALERT_SECS` | Interrupt kernel for script crons: dedupe, per-subject coalescing, `IMMEDIATE`, epoch reset, stuck-probe backstop | The **semantics** of the buffer's coalescing, and the runtime for pull-side sources and reconcile probes (§8). |
 | `monitoring/` — `controller.py`, `decision.py` `decide_monitor`, `models.MonitorBudgets`; `probes/__init__.py` `build` | Typed pull-request probes with runtime/turn/token/error budgets | Budget vocabulary reused; Phase 7 moves its wake onto the buffer per [rfc-consolidated-monitor.md](rfc-consolidated-monitor.md). |
 | `autonudge.py` | Timer loop re-injecting an instruction into the same session | The mechanism this RFC retires for signal-driven work. |
-| `subagent.py` `SubagentManager` | Spawn with admission queue, concurrency cap, completion events delivered to the parent session | The `spawn` consumer's execution path. |
+| `subagent_parts/manager.py` `SubagentManager` | Spawn with admission queue, concurrency cap, completion events delivered to the parent session | The `spawn` consumer's execution path. |
 | `apps/builtins/ops_mission_control/backend/dispatch.py` | Deterministic cron cycle: poll signal sources, claim unowned signals atomically, release idle claims | Closest in-tree precedent for "signal → claim → agent"; the claim-and-release shape reappears as the buffer's lease. |
-| `events/` `base.py` envelope `{v, kind, src, key, ts_ms, data}` | Structured lifecycle event log; additive-only schema; no writer yet | The Event record's envelope half; the dispatcher becomes an emitter once the log has a writer. |
+| `kiro_crew.crew_log` (the per-unit crew log) | The one structured record of what happened; the planned global `kiro_crew.events` stream was retired unwritten ([crew-log-core.md](../system-specs/modules/crew-log-core.md)) | Where the dispatcher's lifecycle facts are emitted; the buffer defines its own record fields. |
 | `notifications/bus.py` `SYSTEM_CHANNELS["system.hook"]` | Outbound notification channel for webhook activity | Reports accepted/dead counts and auto-pauses. |
 | `dashboard/tailnet_serve.py` | Publishes the dashboard on the tailnet with `tailscale serve` | **Tailnet-only** today; Funnel appears once, in a status-parsing comment. GitHub cannot reach it. §7.1 adds the opt-in. |
 
@@ -203,8 +203,9 @@ A source is a token-store entry, generalized:
 
 ### 5.2 Event record
 
-One row per received event. The envelope half is the `kiro_crew.events`
-shape; the buffer half is the queue state.
+One row per received event. The buffer defines its own field names: an
+envelope half (`v`, `kind`, `src`, `key`, `ts_ms`, `data`) and a queue-state
+half.
 
 ```json
 {
@@ -255,12 +256,10 @@ The buffer is SQLite under a masked `webhooks/events/` root in the data home —
 the same choice [rfc-durable-run-coordinator.md](rfc-durable-run-coordinator.md)
 makes for run state, for the same reason: one process, transactional claims, a
 ledger that survives a restart. Secrets stay in the existing token store, not
-in the buffer. The buffer borrows only the envelope's **field names** from
-`kiro_crew.events`; its identity, ordering and state are its own (`id`,
-`received_ms`, `state`), so nothing in the core slice (PR 2) depends on who assigns that log's
-sequence. Emitting lifecycle facts *into* the log (§6) waits for the log's first
-writer and is the only coupling, which is why §14 question 5 stays open without
-gating PR 1.
+in the buffer. The buffer's identity, ordering and state are its own (`id`,
+`received_ms`, `state`), so nothing in the core slice (PR 2) depends on another
+log's sequence. Emitting lifecycle facts into the crew log (§6) is the only
+coupling, and it gates neither PR 1 nor PR 2.
 
 ### 5.3 Subscription
 
@@ -405,8 +404,8 @@ about and enqueues anything the push path missed, deduped against what was
 received. Quiet turns go to zero; a sweep is a script, not a turn.
 
 **Lifecycle facts.** The dispatcher emits `webhook/received`,
-`webhook/coalesced`, `webhook/woke`, `webhook/dead` into `kiro_crew.events`
-once that log has a writer, and accepted/dead counts to the `system.hook`
+`webhook/coalesced`, `webhook/woke`, `webhook/dead` into `kiro_crew.crew_log`,
+and accepted/dead counts to the `system.hook`
 notification channel. Every accepted, rejected and dead event is an SEL entry,
 as every run is today.
 
@@ -635,7 +634,6 @@ tracker for the work a wake starts.
 4. Whether the GitHub reconcile probe authenticates with the `gh` CLI the
    existing probes use, or with a GitHub App installation token when the
    source is an App.
-5. Whether `kiro_crew.events` gains its first writer here or the webhook layer
-   waits for the writer another RFC lands, to avoid two competing sequence
-   definitions. Non-gating for the core slice, PR 2 (§5.2): the buffer shares field names with
-   that envelope, not its sequencing.
+5. Closed as moot: `kiro_crew.events` was retired unwritten in favour of the crew
+   log ([crew-log-core.md](../system-specs/modules/crew-log-core.md)), so there is
+   no competing sequence definition. The buffer defines its own fields (§5.2).

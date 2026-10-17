@@ -17,8 +17,11 @@ import os
 import threading
 import time
 import unittest.mock
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -105,6 +108,15 @@ AGENTS_NOT_RESIDUE = pytest.mark.parametrize(
     "plant",
     [_spec_inside_agents, _folder_inside_agents, _file_named_agents],
     ids=["a spec inside", "a folder inside", "a file named agents"],
+)
+
+# Which walks a test may force. Forcing ``supports_pinned_walk`` to True on a
+# platform that has no pinned walk drives the pinned open into ``pin_parent``,
+# which reads ``os.O_DIRECTORY`` -- absent on Windows -- and raises an uncaught
+# AttributeError. So the pinned case is offered only where production could
+# really take it; the by-name case runs everywhere.
+_PINNED_WALK_PARAMS = (
+    [True, False] if session_work_dir.pinned_fs.supports_pinned_walk() else [False]
 )
 
 
@@ -469,6 +481,91 @@ class TestReclaimRule:
         assert memory.exists()
         assert subagent.exists()
 
+    @AGENTS_NOT_RESIDUE
+    def test_a_permitted_marked_folder_with_non_residue_is_counted_kept(
+        self, tmp_path: Path, plant
+    ) -> None:
+        """A marked folder the rule permits but the sweep keeps for its contents is *kept*.
+
+        On both walks a folder that gained anything beyond Crew's residue is kept
+        by the sweep; the census reports it in a third figure instead of over a
+        clean line. Counting reads the tree but removes nothing.
+        """
+        work_dir = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        plant(work_dir)
+        before = _tree(work_dir)
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        assert census == session_work_dir.RunDirCensus(kept=1)
+        assert _tree(work_dir) == before
+
+    @pytest.mark.parametrize("pinned", _PINNED_WALK_PARAMS)
+    def test_kiro_clis_empty_agents_is_kept_only_on_the_by_name_walk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned: bool
+    ) -> None:
+        """A marked folder holding only kiro-cli's empty ``.kiro/agents``.
+
+        The pinned walk reclaims it, so the census counts it nowhere; the by-name
+        walk keeps it (removing the folder by name could follow a swapped-in
+        junction), so the census reports it as *kept*.
+        """
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        work_dir = _residue_dir(
+            tmp_path,
+            "subagent_0123456789abcdef",
+            owner_pid=PREDECESSOR_PID,
+            kiro_cli_agents=True,
+        )
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        expected = (
+            session_work_dir.RunDirCensus() if pinned else session_work_dir.RunDirCensus(kept=1)
+        )
+        assert census == expected
+        assert work_dir.exists()
+
+    def test_a_permitted_residue_only_folder_is_counted_nowhere(self, tmp_path: Path) -> None:
+        """A marked, residue-only folder the sweep would reclaim is in no figure."""
+        _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        census = session_work_dir.count_run_dirs(tmp_path, retained_gateway_pids=frozenset())
+        assert census == session_work_dir.RunDirCensus()
+
+    @pytest.mark.parametrize("pinned", _PINNED_WALK_PARAMS)
+    @pytest.mark.parametrize(
+        "plant",
+        [None, _spec_inside_agents, _folder_inside_agents, _file_named_agents],
+        ids=["residue only", "a spec inside", "a folder inside", "a file named agents"],
+    )
+    def test_the_probe_and_the_sweep_agree_on_every_tree(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        pinned: bool,
+        plant: Callable[[Path], None] | None,
+    ) -> None:
+        """The read-only probe and the sweep's reclaim never disagree on one tree.
+
+        The census mirrors the sweep's residue rule in its own read-only walk, so
+        the two could drift if a later change touches one copy and not the other.
+        This runs both over identical fixtures -- residue-only, and residue plus
+        each non-residue shape -- on each walk the platform offers, and asserts
+        ``_run_dir_holds_only_residue`` says *keep* exactly when
+        ``reclaim_session_work_dir`` leaves the directory. If they ever disagree,
+        this goes red.
+        """
+        monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
+        probed = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
+        reclaimed = _residue_dir(tmp_path, "subagent_000000000000000a", owner_pid=PREDECESSOR_PID)
+        if plant is not None:
+            plant(probed)
+            plant(reclaimed)
+        probe_keeps = not session_work_dir._run_dir_holds_only_residue(probed)
+        # A permissive marker rule and no age gate isolate the residue decision,
+        # which is the only thing the probe judges.
+        swept = session_work_dir.reclaim_session_work_dir(
+            reclaimed, marker_permits=lambda _record: True
+        )
+        sweep_keeps = not swept
+        assert probe_keeps == sweep_keeps
+
     def test_kiro_clis_empty_agents_folder_is_residue(self, tmp_path: Path) -> None:
         """kiro-cli creates ``.kiro/agents`` in the folder it starts in; it must not pin the run."""
         work_dir = _residue_dir(tmp_path, "subagent_0123456789abcdef", kiro_cli_agents=True)
@@ -723,8 +820,14 @@ class TestSweepBounds:
     ) -> None:
         for n in range(3):
             _residue_dir(tmp_path, f"subagent_{n:016x}", age_secs=7200, owner_pid=PREDECESSOR_PID)
-        ticks = iter([0.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
-        monkeypatch.setattr(session_work_dir.time, "monotonic", lambda: next(ticks, 10.0))
+        # The deadline, one entry counted inside it, then a spent budget: a sweep
+        # that skipped the counting pass's check would judge (and reclaim) an entry
+        # before its judging bound fired. The script replaces the module's own
+        # ``time`` name, never the shared stdlib clock, which every other reader on
+        # the worker (a loop thread, a finalizer) would draw from too.
+        ticks = iter([0.0, 0.5])
+        clock = SimpleNamespace(monotonic=lambda: next(ticks, 10.0), time=time.time)
+        monkeypatch.setattr(session_work_dir, "time", clock)
         assert _sweep(tmp_path, max_seconds=1.0) == 0
         assert all((tmp_path / f"subagent_{n:016x}").exists() for n in range(3))
 
@@ -889,8 +992,13 @@ class TestGatewayWiring:
         self,
     ) -> None:
         from kiro_crew.slack import gateway
+        from kiro_crew.slack.gateway_runtime import process_entry, service_boot
 
-        source = Path(gateway.__file__).read_text(encoding="utf-8")
+        # ``run`` holds the boot sequence; ``run_gateway``'s hourly wake comes after it.
+        source = "\n".join(
+            Path(module.__file__).read_text(encoding="utf-8")
+            for module in (service_boot, process_entry)
+        )
         reap = source.index(
             "await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)"
         )
@@ -906,7 +1014,11 @@ class TestGatewayWiring:
         assert (
             "_run_agent_scratch_sweep" in source[writers:hourly]
         ), "the hourly wake keeps calling the same predecessor-only sweep"
-        assert "sweep_disposable_work_dirs" not in source
+        facade = Path(gateway.__file__)
+        assert "sweep_disposable_work_dirs" not in "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [facade, *sorted((facade.parent / "gateway_runtime").glob("*.py"))]
+        )
 
     def test_the_wrapper_hands_the_sweep_this_homes_ledger_and_live_dirs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1262,6 +1374,34 @@ class TestProviderReclaimsAtShutdown:
         assert events == ["claim-enter", "worker-enter", "worker-return", "claim-exit"]
 
 
+# One lost-run ceiling for every wait in a test together, never a race: the slowest
+# single wait below measured 1.8s with every off-loop hop 0.2s late on a GIL-starved
+# host, so only a wedged registry spends it. With the hold it stays under half the
+# suite's --timeout=120, so it fails here by name, not as a lost worker.
+_LOST_RUN_CEILING = 55.0
+# The parked loser must outlast this while the winner holds the lease. The park is
+# proven first and only ``mgr.release`` wakes it, so a correct registry never ends
+# inside it -- a cost, not a race; a lease wait that gives up sooner reds here.
+_PARKED_HOLD = 3.0
+
+
+def _ceiling_spent(what: str, give_up_at: float) -> NoReturn:
+    """Fail by name: *what* did not happen inside the test's ``_LOST_RUN_CEILING``."""
+    spent = asyncio.get_running_loop().time() - (give_up_at - _LOST_RUN_CEILING)
+    pytest.fail(
+        f"{what}: not inside _LOST_RUN_CEILING ({_LOST_RUN_CEILING:.0f}s), {spent:.1f}s spent"
+    )
+
+
+async def _await_until(predicate: Callable[[], bool], what: str, give_up_at: float) -> None:
+    """Yield the loop until *predicate* holds, failing by name at *give_up_at*."""
+    loop = asyncio.get_running_loop()
+    while not predicate():
+        if loop.time() >= give_up_at:
+            _ceiling_spent(what, give_up_at)
+        await asyncio.sleep(0.01)
+
+
 class TestRegistryLeavesASiblingsDirectory:
     """Two providers for one KEY derive one directory; the discarded one leaves it.
 
@@ -1311,23 +1451,52 @@ class TestRegistryLeavesASiblingsDirectory:
         made: list = []
         gate = asyncio.Event()
         mgr = SessionManager(_cfg(tmp_path), provider_factory=self._factory(work_dir, made, gate))
+        loop = asyncio.get_running_loop()
+        give_up_at = loop.time() + _LOST_RUN_CEILING
         first = asyncio.create_task(mgr.get_or_create(self.KEY))
         second = asyncio.create_task(mgr.get_or_create(self.KEY))
-        await asyncio.sleep(0.05)
+        # A provider is built only after its cold start read the key as free, and
+        # the gate holds both short of registration: two built IS the race. Off-loop
+        # hops precede each build, so this waits on that state, never a sleep.
+        await _await_until(
+            lambda: len(made) == 2 or first.done() or second.done(),
+            "both cold starts building a provider",
+            give_up_at,
+        )
+        assert len(made) == 2, f"a cold start ended before the race: {first!r} {second!r}"
         gate.set()
-        done, pending = await asyncio.wait({first, second}, timeout=3.0)
+        done, pending = await asyncio.wait(
+            {first, second}, timeout=give_up_at - loop.time(), return_when=asyncio.FIRST_COMPLETED
+        )
+        if not done:
+            _ceiling_spent("a cold start winning the key", give_up_at)
         assert len(done) == 1 and len(pending) == 1, "exactly one cold start wins the key"
-        await asyncio.sleep(0.05)
+        (parked,) = pending
+        session = mgr._sessions[mgr._fold_key(self.KEY)]
+        # The loser shuts its duplicate down and only then queues on the winner's
+        # lease, so a waiter on that semaphore is a loser whose shutdown has run.
+        await _await_until(
+            lambda: bool(session.semaphore._waiters) or parked.done(),
+            "the loser queueing on the winner's lease",
+            give_up_at,
+        )
+        assert not parked.done(), "the loser did not wait for the winner's lease"
 
-        winner = mgr._sessions[mgr._fold_key(self.KEY)].provider
+        winner = session.provider
         (loser,) = [p for p in made if p is not winner]
         loser._client.shutdown.assert_awaited_once()
         assert work_dir.exists(), "the discarded provider reclaimed the live sibling's cwd"
         assert loser._disposable_work_dir is False
         assert winner._disposable_work_dir is True
+        await asyncio.wait({parked}, timeout=_PARKED_HOLD)
+        assert not parked.done(), "the loser stopped waiting for the winner's lease"
+        assert work_dir.exists(), "the discarded provider reclaimed the live sibling's cwd"
 
         mgr.release(self.KEY)
-        await asyncio.wait_for(next(iter(pending)), timeout=3.0)
+        try:
+            await asyncio.wait_for(parked, timeout=give_up_at - loop.time())
+        except asyncio.TimeoutError:
+            _ceiling_spent("the loser claiming the key once the winner released it", give_up_at)
         mgr.release(self.KEY)
         await mgr.close_all()
         assert not work_dir.exists(), "the winner still owned the directory at its shutdown"

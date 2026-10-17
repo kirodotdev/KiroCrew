@@ -343,7 +343,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
           {SETTINGS_SECTIONS.map((s) => {
             const on = active === s.id
             return (
-              <button key={s.id} onClick={() => setActive(s.id)} style={{
+              <button key={s.id} onClick={() => setActive(s.id)} aria-current={on ? 'page' : undefined} style={{
                 display: 'flex', alignItems: 'center', gap: 7, textAlign: 'left',
                 padding: '6px 8px', borderRadius: 6, fontSize: 12, cursor: 'pointer',
                 border: '1px solid transparent',

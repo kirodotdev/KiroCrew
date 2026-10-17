@@ -114,6 +114,17 @@ class SsmValidationError(ValueError):
     """Raised when an ssm_target, aws_profile, or aws_region fails validation."""
 
 
+class UnsupportedConnectionMethodError(SshValidationError):
+    """Raised when a record names a ``connection_method`` this build does not know.
+
+    A subclass of :class:`SshValidationError` so every caller that already
+    catches transport-validation errors refuses the crew instead of dialling it.
+    ``code`` is the typed reason a caller can hand back to a client.
+    """
+
+    code = "connection_method_unsupported"
+
+
 def validate_ssh_host(ssh_host: str) -> str:
     """Return *ssh_host* if safe to place in an ssh argv, else raise.
 

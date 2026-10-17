@@ -149,9 +149,7 @@ class TestMigrateChannelTranscripts:
 
     def test_same_text_at_different_times_is_kept_twice(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
-        _write(
-            tmp_path / f"{CHANNEL_STEM}.jsonl", {}, [_msg("user", "ok", "2026-08-01T10:00:00")]
-        )
+        _write(tmp_path / f"{CHANNEL_STEM}.jsonl", {}, [_msg("user", "ok", "2026-08-01T10:00:00")])
         _write(tmp_path / f"{ORPHAN_STEM}.jsonl", {}, [_msg("user", "ok", "2026-08-01T11:00:00")])
 
         assert migrate_channel_transcripts(log) == 1
@@ -171,9 +169,7 @@ class TestMigrateChannelTranscripts:
             raise OSError("disk full")
 
         calls: list[int] = []
-        monkeypatch.setattr(
-            "kiro_crew.channel_transcript_migration.atomic_write", _boom
-        )
+        monkeypatch.setattr("kiro_crew.channel_transcript_migration.atomic_write", _boom)
 
         assert migrate_channel_transcripts(log) == 0
 
@@ -395,9 +391,7 @@ class TestMixedTimezoneOrdering:
         assert a > b
         # Whether the instants agree depends on the host's offset; what must
         # hold is that the parsed keys are compared as instants, not as text.
-        assert (_epoch_of(a) < _epoch_of(b)) == (
-            _epoch_of(a)[1] < _epoch_of(b)[1]
-        )
+        assert (_epoch_of(a) < _epoch_of(b)) == (_epoch_of(a)[1] < _epoch_of(b)[1])
 
     def test_an_unparseable_timestamp_sorts_after_every_real_instant(self):
         from kiro_crew.channel_transcript_migration import _epoch_of
@@ -492,9 +486,7 @@ class TestProvenanceNotFilenameShape:
         channel_before = channel.read_text(encoding="utf-8")
         orphan_before = orphan.read_text(encoding="utf-8")
 
-        assert (
-            migrate_channel_transcripts(log, dashboard_slots=frozenset({CHANNEL_STEM})) == 0
-        )
+        assert migrate_channel_transcripts(log, dashboard_slots=frozenset({CHANNEL_STEM})) == 0
         assert channel.read_text(encoding="utf-8") == channel_before
         assert orphan.read_text(encoding="utf-8") == orphan_before
 
@@ -576,3 +568,232 @@ class TestConsolidationOffset:
         assert meta["last_consolidated"] == 2
         assert meta["rotation_generation"] == 4
         assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == ["c1", "c2", "t1"]
+
+    def test_an_in_flight_sub_offset_is_dropped_when_the_merge_moves_the_head(self, tmp_path):
+        # ``last_consolidated`` is 0 (no whole message consolidated yet) but an
+        # oversized head at index 0 is being extracted a slice at a time, so
+        # ``consolidation_sub_offset`` is live. The merge interleaves an OLDER
+        # orphan message ahead of it, so the message now at index 0 is a
+        # different one. Resuming the slice at the retained character offset
+        # would mark the new head's unread prefix consolidated — data loss. The
+        # offset-shift test alone misses this because both ``[:0]`` slices are
+        # empty, so the sub-offset must be dropped by bumping the generation.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {
+                "last_consolidated": 0,
+                "rotation_generation": 4,
+                "consolidation_sub_offset": 5000,
+                "consolidation_sub_offset_generation": 4,
+            },
+            [_msg("user", "channel head being sliced", "2026-08-01T12:00:00+00:00")],
+        )
+        # Older than the channel head, so it lands at index 0 after the merge.
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan older head", "2026-08-01T10:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        # Generation bumped -> the stale sub-offset falls out of scope, so the
+        # new head at index 0 is re-sliced from its start, not resumed at 5000.
+        assert meta["rotation_generation"] == 5
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "orphan older head",
+            "channel head being sliced",
+        ]
+
+    def test_an_in_flight_sub_offset_survives_a_pure_append(self, tmp_path):
+        # Marker 0 with a live sub-offset, but the orphan message is newer, so it
+        # appends AFTER the head being sliced. The message at index 0 is
+        # unchanged, so the sub-offset still describes the same content and must
+        # NOT be dropped — bumping would re-slice the head from the start for
+        # nothing.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {
+                "last_consolidated": 0,
+                "rotation_generation": 4,
+                "consolidation_sub_offset": 5000,
+                "consolidation_sub_offset_generation": 4,
+            },
+            [_msg("user", "channel head being sliced", "2026-08-01T10:00:00+00:00")],
+        )
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan newer", "2026-08-01T23:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        assert meta["rotation_generation"] == 4
+        assert int(meta.get("consolidation_sub_offset", 0)) == 5000
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "channel head being sliced",
+            "orphan newer",
+        ]
+
+    def test_a_moved_head_with_a_changed_prefix_also_resets_the_marker(self, tmp_path):
+        # ``last_consolidated`` is nonzero AND a sub-offset is live. An older
+        # orphan sorts strictly before the marker, so BOTH the consolidated
+        # prefix and the head at the marker move. Bumping the generation alone
+        # (dropping the sub-offset) is not enough: the marker itself now points
+        # past a message the orphan displaced, so the orphan would never be
+        # extracted and an already-consolidated row would be read twice. The
+        # marker must reset to 0 as well.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {
+                "last_consolidated": 2,
+                "rotation_generation": 4,
+                "consolidation_sub_offset": 5000,
+                "consolidation_sub_offset_generation": 4,
+            },
+            [
+                _msg("user", "c1", "2026-08-01T10:00:00+00:00"),
+                _msg("user", "c2", "2026-08-01T12:00:00+00:00"),
+                _msg("user", "head being sliced", "2026-08-01T14:00:00+00:00"),
+            ],
+        )
+        # 11:00 lands between c1 and c2 -> prefix [:2] changes AND the message at
+        # index 2 (the sliced head) is displaced.
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan", "2026-08-01T11:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        assert meta["last_consolidated"] == 0
+        assert meta["rotation_generation"] == 5
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "c1",
+            "orphan",
+            "c2",
+            "head being sliced",
+        ]
+
+    def test_a_leading_notice_does_not_hide_a_replaced_sliced_head(self, tmp_path):
+        # A display-only ``notice`` sits at the marker, with the oversized head
+        # being sliced right behind it and a live sub-offset. An older orphan is
+        # inserted between the notice and the head, so the RAW message at the
+        # marker (the notice) is unchanged while the first RENDERED message moved.
+        # Comparing the raw marker row would miss the swap; the first
+        # non-display-only row must be compared, so the sub-offset is dropped.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {
+                "last_consolidated": 0,
+                "rotation_generation": 4,
+                "consolidation_sub_offset": 5000,
+                "consolidation_sub_offset_generation": 4,
+            },
+            [
+                _msg("notice", "autonudge", "2026-08-01T09:00:00+00:00"),
+                _msg("user", "head being sliced", "2026-08-01T14:00:00+00:00"),
+            ],
+        )
+        # Older than the real head (14:00) but newer than the notice (09:00), so
+        # it lands between them: notice, orphan, head.
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan older head", "2026-08-01T11:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        # The rendered head changed from "head being sliced" to "orphan older
+        # head", so the generation bumps and the stale sub-offset is discarded.
+        assert meta["rotation_generation"] == 5
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "autonudge",
+            "orphan older head",
+            "head being sliced",
+        ]
+
+    def test_a_moved_head_bumps_the_generation_with_no_sub_offset_yet(self, tmp_path):
+        # The race the generation bump must close: a consolidator in another
+        # process has written its final snapshot (``last_consolidated`` set) but
+        # NOT yet its first ``consolidation_sub_offset`` — so no sub-offset is
+        # persisted when the merge runs. The merge replaces the rendered head at
+        # the marker with an OLDER orphan but does NOT change the prefix (the
+        # orphan lands exactly at the marker). If the generation were bumped only
+        # when a sub-offset is already live, nothing would invalidate the
+        # generation the racing consolidator captured, and its first
+        # ``advance_consolidation_sub_offset`` — generation guard still matching —
+        # would write a character offset into the replacement head it never read,
+        # silently dropping that head's unread prefix. Bumping on the head move
+        # alone makes that later write's generation guard reject the stale offset.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {
+                # Marker at index 1: c1 is consolidated, the head being sliced is
+                # at index 1. NO consolidation_sub_offset key — the race window.
+                "last_consolidated": 1,
+                "rotation_generation": 4,
+            },
+            [
+                _msg("user", "c1", "2026-08-01T08:00:00+00:00"),
+                _msg("user", "head being sliced", "2026-08-01T14:00:00+00:00"),
+            ],
+        )
+        # 12:00 is newer than c1 (so the prefix [:1] is unchanged) but older than
+        # the head at index 1 (so it lands AT the marker, displacing the head).
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan older head", "2026-08-01T12:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        # The prefix [:1] (c1) is unchanged, so the marker is NOT reset…
+        assert meta["last_consolidated"] == 1
+        # …but the rendered head at the marker moved, so the generation IS bumped
+        # even though no sub-offset was persisted — this is what the fix adds.
+        assert meta["rotation_generation"] == 5
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "c1",
+            "orphan older head",
+            "head being sliced",
+        ]
+
+    def test_a_pure_append_does_not_bump_the_generation_with_no_sub_offset(self, tmp_path):
+        # Guard against over-bumping: with no sub-offset persisted and a pure
+        # append (the orphan is newer than the whole file), the rendered head at
+        # the marker is unchanged, so neither the marker nor the generation move
+        # — re-slicing a head that did not move would be wasted work.
+        log = ConversationLog(base_dir=tmp_path)
+        _write(
+            tmp_path / f"{CHANNEL_STEM}.jsonl",
+            {"last_consolidated": 1, "rotation_generation": 4},
+            [
+                _msg("user", "c1", "2026-08-01T08:00:00+00:00"),
+                _msg("user", "head being sliced", "2026-08-01T10:00:00+00:00"),
+            ],
+        )
+        _write(
+            tmp_path / f"{ORPHAN_STEM}.jsonl",
+            {},
+            [_msg("user", "orphan newer", "2026-08-01T23:00:00+00:00")],
+        )
+
+        assert migrate_channel_transcripts(log) == 1
+        meta = log.get_metadata(CHANNEL_STEM)
+        assert meta["last_consolidated"] == 1
+        assert meta["rotation_generation"] == 4
+        assert [m["content"] for m in log.read_messages(CHANNEL_STEM)] == [
+            "c1",
+            "head being sliced",
+            "orphan newer",
+        ]

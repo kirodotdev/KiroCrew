@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -27,6 +28,10 @@ GITHUB_ENV_ID = "KIROCREW_CONNECTIONS_GITHUB_CLIENT_ID"
 GITHUB_ENV_SECRET = "KIROCREW_CONNECTIONS_GITHUB_CLIENT_SECRET"
 NON_OWNER = {"X-Test-User": "someone-else"}
 SECRET = "s3cr3t-value-that-must-never-be-echoed"
+
+
+# The real refresh, held before the autouse ``refreshed`` fixture replaces it.
+_REAL_REFRESH = connections._refresh_client_projections
 
 
 @pytest.fixture()
@@ -712,3 +717,80 @@ async def test_rollback_leaves_a_secret_someone_else_wrote_in_between(home, monk
 
     held = vault.get(GITHUB_VAULT_NAME)
     assert held is not None and held.reveal() == "newer-from-elsewhere"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rebuild", "expected"),
+    [
+        pytest.param(
+            lambda **kw: (kw["_wrote_out"].append(True), Path("/dev/null"))[1],
+            True,
+            id="wrote",
+        ),
+        # The shared-home guard refused: the path comes back and nothing is written.
+        pytest.param(lambda **_: Path("/dev/null"), None, id="declined"),
+        pytest.param(
+            lambda **_: (_ for _ in ()).throw(RuntimeError("boom")),
+            False,
+            id="raised",
+        ),
+    ],
+)
+async def test_the_projection_refresh_tells_a_decline_from_a_failure(
+    monkeypatch, rebuild, expected
+):
+    import kiro_crew.agent as agent_mod
+    import kiro_crew.connections.mint as mint_mod
+
+    async def _no_mint(slug: str) -> None:
+        return None
+
+    class _NoLock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return None
+
+    monkeypatch.setattr(mint_mod, "cancel_mint", _no_mint)
+    monkeypatch.setattr(connections, "_scrub_preregistered_oauth_copies", lambda slug: None)
+    monkeypatch.setattr(connections, "_get_mcp_lock", _NoLock)
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    assert await _REAL_REFRESH("github") is expected
+
+
+@pytest.mark.asyncio
+async def test_a_declined_rebuild_answers_success_and_says_the_spec_did_not_follow(
+    home, monkeypatch
+):
+    """A decline repeats on every call, so a 500 would never clear: the save is
+    answered and audited, and the response says the agent spec did not follow."""
+
+    async def _declined(slug: str) -> None:
+        return None
+
+    audits: list[dict] = []
+    monkeypatch.setattr(connections, "_refresh_client_projections", _declined)
+    monkeypatch.setattr(
+        connections, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: audits.append(kw))
+    )
+
+    client = await _client()
+    try:
+        resp = await client.put(f"{BASE}/github", json={"client_secret": SECRET})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["agent_spec_rewritten"] is False
+        assert SECRET not in json.dumps(body)
+        resp = await client.delete(f"{BASE}/github")
+        assert resp.status == 200
+        assert (await resp.json())["agent_spec_rewritten"] is False
+    finally:
+        await client.close()
+
+    assert [a["operation"] for a in audits] == [
+        "connections_oauth_client_put",
+        "connections_oauth_client_delete",
+    ]

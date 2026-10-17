@@ -32,8 +32,13 @@ export interface LineageRow {
    * the child's crew log. `key` is the creator's row key in this payload, and is null
    * when the creator is not running or the records formed a cycle. So a row can cite
    * a creator it cannot nest under, which is the orphan case.
+   *
+   * `ancestor` is the one case where the two name different sessions: the creator in
+   * `slot` has CLOSED and `key` is the nearest ancestor above it that is still open,
+   * so the row nests where the run is owned while still citing a creator that is
+   * gone. Absent on every ordinary edge.
    */
-  parent?: { slot?: string; key?: string | null } | null
+  parent?: { slot?: string; key?: string | null; ancestor?: boolean } | null
 }
 
 /** The tree, flattened into the two lookups a renderer actually walks. */
@@ -179,6 +184,24 @@ export function buildLineage<R extends LineageRow>(
  */
 export function orphanCitation<R extends LineageRow>(row: R, placedUnder: string | null): string | null {
   if (placedUnder != null) return null
+  const slot = row.parent?.slot
+  return typeof slot === 'string' && slot !== '' ? slot : null
+}
+
+/**
+ * The CLOSED creator of a row that was nonetheless placed, or null.
+ *
+ * The companion of `orphanCitation` for the row the backend re-parented: its own
+ * creator closed, so it hangs from the nearest ancestor still open rather than from
+ * the top level. It is not an orphan — the run it belongs to is on screen — but the
+ * fact that produced the nesting is worth the same glyph, because without it the row
+ * reads as a child of a session that never opened it.
+ *
+ * Returns null for every ordinary edge, including an orphan: `orphanCitation` already
+ * names that one, and a row answering both would wear the glyph twice.
+ */
+export function closedCreatorCitation<R extends LineageRow>(row: R, placedUnder: string | null): string | null {
+  if (placedUnder == null || row.parent?.ancestor !== true) return null
   const slot = row.parent?.slot
   return typeof slot === 'string' && slot !== '' ? slot : null
 }

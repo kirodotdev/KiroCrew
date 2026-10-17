@@ -262,6 +262,26 @@ class TestEmptyTurnIsNeverAFinishedReply:
         assert "failed to generate" in rows[-1]["content"]
 
     @pytest.mark.asyncio
+    async def test_a_failure_row_never_records_a_path_or_a_credential(self, tmp_path: Path) -> None:
+        """The pipeline hands this adapter the RAW exception (``TurnRecord.error``);
+        the error row it writes takes the same redaction as every channel-visible
+        failure text, so the transcript never stores a host path or a token."""
+        secret = "ghp_" + "x" * 36
+
+        class _SecretDying(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                raise RuntimeError(f"boom reading /srv/alice/notes.db with token={secret}")
+                yield  # pragma: no cover -- makes this an async generator
+
+        d, _cli, _sess, log = _dispatcher(_SecretDying(), tmp_path)
+
+        await d.handle_message(_inbound("hello?"))
+
+        (row,) = [r for r in _rows(log, d) if r["role"] == "error"]
+        assert row["content"].startswith("❌ boom reading")
+        assert "alice" not in row["content"] and secret not in row["content"]
+
+    @pytest.mark.asyncio
     async def test_an_undelivered_notice_is_recorded_as_a_failure(self, tmp_path: Path) -> None:
         """The notice is the turn's ENTIRE delivery; if Discord never took it, the
         user heard nothing, and that is the undelivered turn `record_failure` is

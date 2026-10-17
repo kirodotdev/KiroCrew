@@ -48,7 +48,9 @@
 //   fetchFn(url, { method, headers, body })   -> a Response-like { ok, status,
 //                                                 async json(), async text() }
 //   getGatewayUrl()   -> base URL of the loopback gateway (e.g. http://127.0.0.1:PORT)
-//   getSecret()       -> the X-Internal-Secret value (NEVER read a file here)
+//   getSecret(url)    -> the X-Internal-Secret value for the gateway at `url`,
+//                        the same base URL this request dials (NEVER read a
+//                        file here)
 //   listPanelIds()    -> session keys that currently have a native panel
 //   dispatch(sessionKey, op, args) -> Promise of the op's result (or rejects)
 //   onError(err, context)          -> log sink; must never throw meaningfully
@@ -157,9 +159,12 @@ function createAgentCommandChannel(deps) {
     });
   }
 
-  function headers() {
+  // The secret is chosen for the URL the request dials, read once per request,
+  // so a backend URL that changes between the two reads cannot pair one
+  // gateway's secret with another's address.
+  function headers(gatewayUrl) {
     const h = { "Content-Type": "application/json" };
-    const secret = getSecret();
+    const secret = getSecret(gatewayUrl);
     if (secret) h["X-Internal-Secret"] = secret;
     return h;
   }
@@ -175,9 +180,10 @@ function createAgentCommandChannel(deps) {
   async function drainOnce(sessionKeys) {
     let res;
     try {
-      res = await fetchFn(joinUrl(getGatewayUrl(), DRAIN_PATH), {
+      const gatewayUrl = getGatewayUrl();
+      res = await fetchFn(joinUrl(gatewayUrl, DRAIN_PATH), {
         method: "POST",
-        headers: headers(),
+        headers: headers(gatewayUrl),
         body: JSON.stringify({ session_keys: sessionKeys, wait_ms: waitMs }),
       });
     } catch (err) {
@@ -217,9 +223,10 @@ function createAgentCommandChannel(deps) {
    *  Best-effort: a failure here is reported but never breaks the loop. */
   async function heartbeat() {
     try {
-      await fetchFn(joinUrl(getGatewayUrl(), DRAIN_PATH), {
+      const gatewayUrl = getGatewayUrl();
+      await fetchFn(joinUrl(gatewayUrl, DRAIN_PATH), {
         method: "POST",
-        headers: headers(),
+        headers: headers(gatewayUrl),
         body: JSON.stringify({ session_keys: [], wait_ms: 0 }),
       });
     } catch (err) {
@@ -232,9 +239,10 @@ function createAgentCommandChannel(deps) {
   async function postResult(payload) {
     let res;
     try {
-      res = await fetchFn(joinUrl(getGatewayUrl(), RESULT_PATH), {
+      const gatewayUrl = getGatewayUrl();
+      res = await fetchFn(joinUrl(gatewayUrl, RESULT_PATH), {
         method: "POST",
-        headers: headers(),
+        headers: headers(gatewayUrl),
         body: JSON.stringify(payload),
       });
     } catch (err) {

@@ -2,6 +2,8 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type R
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -126,6 +128,7 @@ function safeApprovalUrl(value: string): string {
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { isElectron } from '../../lib/electron'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { guideAnchor } from '../../uiLocations/targetRegistry'
 
 export interface PendingConnect {
   kind: 'new' | 'reconnect'
@@ -456,6 +459,15 @@ interface ConnectionCardProps {
    *  `state`, because two substates share `not-verified`: a confirmed absence
    *  can name itself, while an unknowable one must keep the honest hedge. */
   grantPresent?: boolean
+  /** Other configured MCP entries backed by the SAME OAuth grant as this
+   *  provider, from /api/connections/status. Non-empty only when the grant is
+   *  present AND shared. Drives a proactive note so a user learns the connection
+   *  is shared (and that a local disconnect/reconnect keeps the token) without
+   *  having to attempt a Disconnect first. */
+  grantSharedWith?: string[]
+  /** True when the shared-grant census could not read every source, so an empty
+   *  `grantSharedWith` is "could not confirm sole ownership", not "unshared". */
+  grantSharedUnconfirmed?: boolean
   busy?: ConnectionAction
   /** The provider NAME (not slug) of whichever card currently owns the single
    *  in-flight Connections Test, or undefined when none is running. Used only
@@ -600,7 +612,7 @@ function PrerequisiteTip({ label, heading, text }: { label: string; heading: str
         onMouseLeave={releaseHover}
         onFocus={holdHover}
         onBlur={releaseHover}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-warn transition-colors hover:bg-warn-subtle"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-warn transition-colors hover:text-warn-text hover:bg-warn-subtle"
       >
         <AlertTriangle className="h-4 w-4" aria-hidden="true" />
       </button>
@@ -631,6 +643,8 @@ function ConnectionCard({
   oauth,
   connectedSince,
   grantPresent,
+  grantSharedWith,
+  grantSharedUnconfirmed,
   busy,
   testingProvider,
   feedbackSlots,
@@ -889,12 +903,12 @@ function ConnectionCard({
     'waiting-for-approval': {
       label: t('pages.connectionsPage.waiting_for_approval'),
       icon: <CircleDashed className="w-3.5 h-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />,
-      tone: 'bg-warn-subtle text-warn',
+      tone: 'bg-warn-subtle text-warn-text',
     },
     connected: {
       label: t('pages.connectionsPage.connected'),
       icon: <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-ok-subtle text-ok',
+      tone: 'bg-ok-subtle text-ok-text',
     },
     // Warn tone, not the error tone: an unverifiable state is not a failure. The
     // icon is static on purpose — a spinner would claim a grant is in flight
@@ -902,12 +916,12 @@ function ConnectionCard({
     'not-verified': {
       label: t('pages.connectionsPage.not_verified'),
       icon: <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-warn-subtle text-warn',
+      tone: 'bg-warn-subtle text-warn-text',
     },
     'needs-attention': {
       label: t('pages.connectionsPage.needs_attention'),
       icon: <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />,
-      tone: 'bg-danger-subtle text-danger',
+      tone: 'bg-danger-subtle text-danger-text',
     },
     // Muted, not warn: nothing is wrong with the provider, a step is missing on
     // OUR side. The lock says "this needs a key" without alarming a user who
@@ -1060,7 +1074,7 @@ function ConnectionCard({
                   disabled={busy === 'relay'}
                   aria-invalid={invalidReturnAddress}
                   aria-describedby={invalidReturnAddress ? `return-address-error-${provider.slug}` : undefined}
-                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+                  className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-[11px] text-text focus-ring-accent"
                 />
                 <Btn primary onClick={() => void runRelay()} disabled={!returnAddress.trim() || busy === 'relay'}>
                   {busy === 'relay' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />}
@@ -1139,7 +1153,17 @@ function ConnectionCard({
                 <dd className="m-0 text-text">{fmtDate((connectedSince || server?.connectedSince) as string)}</dd>
               </dl>
             )}
-            <div className="flex justify-end gap-2">
+            {/* The shared-grant state (shared with whom, or could-not-confirm)
+                and its disconnect/reconnect caveat BOTH ride in the single
+                action-row PrerequisiteTip below, never an always-visible band:
+                the connection-card-caveat-tip rule keeps one triangle per action
+                and the card the same height in every state. */}
+            {/* Test and Disconnect are visually separated groups (never three
+                peer buttons): the shared-grant caveat tip sits in the Disconnect
+                group, immediately before Disconnect, because it qualifies that
+                action -- the connection-card-caveat-tip convention, reusing the
+                shared PrerequisiteTip heading and label. */}
+            <div className="flex items-center justify-between gap-2">
               <Btn
                 onClick={() => void onTest()}
                 disabled={!!busy || !!testingProvider}
@@ -1149,9 +1173,22 @@ function ConnectionCard({
                 {busy === 'test' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : <RotateCw className="w-3.5 h-3.5" aria-hidden="true" />}
                 {busy === 'test' ? t('pages.connectionsPage.testing') : t('pages.connectionsPage.test_connection')}
               </Btn>
-              <Btn danger onClick={() => void onDisconnect()} disabled={!!busy}>
-                <Unplug className="w-3.5 h-3.5" aria-hidden="true" /> {t('pages.connectionsPage.disconnect')}
-              </Btn>
+              <div className="flex items-center gap-2">
+                {(grantSharedWith && grantSharedWith.length > 0) || grantSharedUnconfirmed ? (
+                  <PrerequisiteTip
+                    label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+                    heading={t('pages.connectionsPage.before_you_connect')}
+                    text={`${
+                      grantSharedWith && grantSharedWith.length > 0
+                        ? t('pages.connectionsPage.grant_shared_fact', { names: grantSharedWith.join(', ') })
+                        : t('pages.connectionsPage.grant_shared_fact_unconfirmed')
+                    } ${t('pages.connectionsPage.grant_shared_caveat')}`}
+                  />
+                ) : null}
+                <Btn danger onClick={() => void onDisconnect()} disabled={!!busy}>
+                  <Unplug className="w-3.5 h-3.5" aria-hidden="true" /> {t('pages.connectionsPage.disconnect')}
+                </Btn>
+              </div>
             </div>
           </div>
         )}
@@ -1677,18 +1714,24 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         entryKept && (survived || shared || !result.grantRemoved)
           ? t('pages.connectionsPage.disconnect_entry_left_alone')
           : ''
+      // The rebuild after the purge did not confirm a write, so new sessions may
+      // still load the entry. That is a failed step, reported like a survivor.
+      // Only when the entry actually left the config: a click that removed
+      // nothing changed nothing the spec should follow.
+      const specNotRewritten = result.agentSpecRewritten === false && result.entryRemoved
+      const specClause = specNotRewritten ? t('pages.connectionsPage.disconnect_spec_not_rewritten') : ''
       setFeedback(current => ({
         ...current,
         [provider.slug]: disconnectFeedback(
           provider,
-          [grantClause, entryClause].filter(Boolean).join(' '),
+          [grantClause, entryClause, specClause].filter(Boolean).join(' '),
           // A census gap tells the user their access was NOT withdrawn and hands
           // them a repair to make; a not-ours entry leaves the card showing
           // Connected with a live Disconnect button, so a green success would
           // misreport a click that changed nothing. Neither is an `error`,
           // because nothing failed — a safety rule declined to act, or there was
           // nothing here to act on.
-          survived ? 'error' : censusGap || entryNotOurs ? 'warning' : 'success',
+          survived || specNotRewritten ? 'error' : censusGap || entryNotOurs ? 'warning' : 'success',
         ),
       }))
     }
@@ -1863,6 +1906,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           </button>
           <button
             id="connections-mcp-tab"
+            // One spread: the anchor's registering ref rides in as the location's own.
+            {...uiLocation('connections.mcp-servers-tab', guideAnchor('mcp.servers-tab').ref)}
+            data-guide-anchor="mcp.servers-tab"
             type="button"
             role="tab"
             aria-selected={activeTab === 'mcp-servers'}
@@ -1881,6 +1927,10 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         </div>
       </div>
 
+      {/* The MCP servers panel's scope owner: a guide walking to a control
+          on that panel points at its tab until this reads open. Outside the
+          panel conditional, so it says "closed" while the panel is unmounted. */}
+      <GuideRevealScope id="open:connections.mcp-servers-tab" open={activeTab === 'mcp-servers'}>
       {activeTab === 'services' ? (
         <div id="connections-services-panel" role="tabpanel" aria-labelledby="connections-services-tab">
           {servicesEnabled && <div className="mb-4 flex items-center gap-3">
@@ -1894,10 +1944,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
             <Badge variant="muted">{t('pages.connectionsPage.services_available', { value: filteredProviders.length })}</Badge>
           </div>}
 
+          {/* No hand-off: a card waiting for approval can hold an unsaved return address while this status re-polls. */}
           {isError && (
-            <div role="alert" className="mb-3 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger">
-              {t('pages.connectionsPage.could_not_load_status')}
-            </div>
+            <ErrorNotice message={t('pages.connectionsPage.could_not_load_status')} className="mb-3" />
           )}
 
           {isLoading ? (
@@ -1947,6 +1996,8 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     // The same confirmed-only verdict the state fold received:
                     // indeterminate stays undefined so the card keeps the hedge.
                     grantPresent={confirmedGrantPresent(status)}
+                    grantSharedWith={status?.grantSharedWith}
+                    grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}
@@ -1968,6 +2019,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           <McpTab onManagedProviderClick={openProvider} />
         </div>
       )}
+      </GuideRevealScope>
     </section>
   )
 }

@@ -57,7 +57,11 @@ def test_downgrade_gate_covers_every_approval_grant_source() -> None:
     the same file, so a new grant source there fails here instead of silently
     reopening this hole.
     """
-    source = _RUNNER.read_text(encoding="utf-8")
+    source = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(_RUNNER.with_name("chat_turn").glob("*.py")), _RUNNER]
+        if turn_file.name != "__init__.py"
+    )
 
     # The tool-event branch that auto-approves without human confirmation.
     approval = re.search(

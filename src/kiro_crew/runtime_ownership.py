@@ -218,21 +218,44 @@ class Acquisition:
     lease: str
 
 
+@dataclass
+class _Founding:
+    """A spawn in flight for *key*, which same-key arrivals may wait on.
+
+    ``reserved`` counts the founder plus every waiter that has chosen to wait, so
+    an arrival waits only while the runtime being launched will still have room
+    for it. ``done`` resolves when the founding ends, published or not, and only
+    tells a waiter to look again -- never what it found.
+    """
+
+    key: Hashable
+    done: asyncio.Future[None]
+    reserved: int = 1
+
+
 class RuntimeOwnership:
     """The lease table: which runtimes exist and who still needs them.
 
-    One lock serializes the whole registry rather than one lock per key. The
-    critical section is a dict lookup plus, for a miss, one spawn, and holding it
-    across that spawn is a deliberate trade of concurrency for simplicity: the
-    bookkeeping this lock protects -- entry list, lease index, last-runtime map --
-    stays provably consistent because nothing else can observe it mid-spawn.
+    The bookkeeping -- entry list, lease index, last-runtime map, foundings in
+    flight -- is only ever read or written in a stretch of code with no ``await``
+    in it. On one event loop that is the whole consistency argument: no other
+    coroutine can run mid-stretch, so nothing observes a half-made change, and a
+    cancellation cannot land inside one.
+
+    ``spawn()`` is the one slow step, and it runs OUTSIDE every such stretch. A
+    founding launch therefore holds nothing an unrelated ``acquire`` or
+    ``release`` needs: two founding starts on different keys overlap, and a
+    teardown elsewhere does not wait out someone else's process launch. A same-key
+    arrival that the launching runtime will have room for waits on that founding
+    instead of launching a second process; one it will not have room for founds
+    concurrently, since waiting would only serialize two launches.
     """
 
     def __init__(self) -> None:
         self._entries: list[_Entry] = []
         self._by_lease: dict[str, _Entry] = {}
         self._last_for_session: dict[str, _Entry] = {}
-        self._lock = asyncio.Lock()
+        self._foundings: list[_Founding] = []
 
     # -- writes --
 
@@ -259,38 +282,71 @@ class RuntimeOwnership:
 
         At ``cap=1`` no entry with a lease has room, so every acquisition spawns
         and serves exactly one lease -- which is the unpooled behaviour, with the
-        lease recorded.
+        lease recorded. No arrival ever waits at that cap: the launching runtime
+        is already full with its founder.
 
         A dead runtime is never handed out and never counted: it is dropped on the
         way past, so the caller that finds none alive spawns, and the sessions
         that were on it rejoin through this same path on their own next turn.
+
+        A waiter that wakes re-picks rather than trusting the founding: the new
+        runtime may have filled, died, or never been published because its spawn
+        raised or was cancelled. A founder's failure is its own; the waiter gets
+        no share of it and simply looks again, founding itself if it must.
         """
-        async with self._lock:
-            self._drop_dead_locked()
-            entry = self._pick_locked(key, cap=cap, session_key=session_key)
-            joined = entry is not None
-            if entry is None:
-                runtime = await spawn()
-                entry = _Entry(runtime=runtime, key=key)
-                self._entries.append(entry)
-            lease = uuid.uuid4().hex
-            entry.leases[lease] = session_key
-            self._by_lease[lease] = entry
-            self._last_for_session[session_key] = entry
-            logger.info(
-                "runtime_ownership outcome=%s pid=%s leases=%d cap=%d runtimes=%d",
-                "joined" if joined else "spawned",
-                _pid_of(entry.runtime),
-                len(entry.leases),
-                cap,
-                len(self._entries),
+        while True:
+            self._drop_dead()
+            entry = self._pick(key, cap=cap, session_key=session_key)
+            if entry is not None:
+                return self._mint(entry, session_key, cap=cap, joined=True)
+            founding = next(
+                (f for f in self._foundings if f.key == key and f.reserved < cap),
+                None,
             )
-            return Acquisition(
-                runtime=entry.runtime,
-                joined=joined,
-                leases_on_runtime=len(entry.leases),
-                lease=lease,
-            )
+            if founding is None:
+                break
+            founding.reserved += 1
+            try:
+                # Shielded: a waiter's cancellation must not cancel the shared
+                # signal every other waiter is parked on.
+                await asyncio.shield(founding.done)
+            finally:
+                if not founding.done.done():
+                    founding.reserved -= 1
+
+        founding = _Founding(key=key, done=asyncio.get_running_loop().create_future())
+        self._foundings.append(founding)
+        try:
+            runtime = await spawn()
+            entry = _Entry(runtime=runtime, key=key)
+            self._entries.append(entry)
+            return self._mint(entry, session_key, cap=cap, joined=False)
+        finally:
+            # Every way out -- published, raised, cancelled -- clears the marker
+            # and wakes the waiters, or they park on a launch that never ends.
+            self._foundings = [f for f in self._foundings if f is not founding]
+            if not founding.done.done():
+                founding.done.set_result(None)
+
+    def _mint(self, entry: _Entry, session_key: str, *, cap: int, joined: bool) -> Acquisition:
+        lease = uuid.uuid4().hex
+        entry.leases[lease] = session_key
+        self._by_lease[lease] = entry
+        self._last_for_session[session_key] = entry
+        logger.info(
+            "runtime_ownership outcome=%s pid=%s leases=%d cap=%d runtimes=%d",
+            "joined" if joined else "spawned",
+            _pid_of(entry.runtime),
+            len(entry.leases),
+            cap,
+            len(self._entries),
+        )
+        return Acquisition(
+            runtime=entry.runtime,
+            joined=joined,
+            leases_on_runtime=len(entry.leases),
+            lease=lease,
+        )
 
     async def release(self, lease: str) -> OwnedRuntime | None:
         """Drop ONE lease; return the runtime to kill only if it was the last.
@@ -309,25 +365,26 @@ class RuntimeOwnership:
         Releasing is not optional for a caller that is about to signal. The gate
         refuses a runtime whose lease is still out, so a kill path that skips its
         release refuses its own teardown and leaks the process.
+
+        Nothing here waits, so a release never queues behind a spawn in flight.
         """
-        async with self._lock:
-            entry = self._by_lease.pop(lease, None)
-            if entry is None:
-                return None
-            entry.leases.pop(lease, None)
-            if entry.leases:
-                logger.info(
-                    "runtime_ownership outcome=released pid=%s remaining_leases=%d",
-                    _pid_of(entry.runtime),
-                    len(entry.leases),
-                )
-                return None
-            self._forget_entry_locked(entry)
+        entry = self._by_lease.pop(lease, None)
+        if entry is None:
+            return None
+        entry.leases.pop(lease, None)
+        if entry.leases:
             logger.info(
-                "runtime_ownership outcome=last_release pid=%s",
+                "runtime_ownership outcome=released pid=%s remaining_leases=%d",
                 _pid_of(entry.runtime),
+                len(entry.leases),
             )
-            return entry.runtime
+            return None
+        self._forget_entry(entry)
+        logger.info(
+            "runtime_ownership outcome=last_release pid=%s",
+            _pid_of(entry.runtime),
+        )
+        return entry.runtime
 
     # -- reads --
 
@@ -399,7 +456,7 @@ class RuntimeOwnership:
 
     # -- internals --
 
-    def _pick_locked(self, key: Hashable, *, cap: int, session_key: str) -> _Entry | None:
+    def _pick(self, key: Hashable, *, cap: int, session_key: str) -> _Entry | None:
         sticky = self._last_for_session.get(session_key)
         if (
             sticky is not None
@@ -424,11 +481,11 @@ class RuntimeOwnership:
         except Exception:
             return False
 
-    def _drop_dead_locked(self) -> None:
+    def _drop_dead(self) -> None:
         for entry in list(self._entries):
             if not self._alive(entry):
                 orphaned = entry.session_keys()
-                self._forget_entry_locked(entry)
+                self._forget_entry(entry)
                 if orphaned:
                     logger.warning(
                         "runtime_ownership outcome=dead_runtime_dropped pid=%s sessions=%d",
@@ -436,7 +493,7 @@ class RuntimeOwnership:
                         len(orphaned),
                     )
 
-    def _forget_entry_locked(self, entry: _Entry) -> None:
+    def _forget_entry(self, entry: _Entry) -> None:
         """Drop every reference to *entry*, in any order its callers use.
 
         The session-key index is pruned BY VALUE rather than by asking the entry

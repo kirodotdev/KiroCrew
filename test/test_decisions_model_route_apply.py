@@ -21,6 +21,7 @@ model through their own tier, and none of them has an owner watching the price.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -586,7 +587,9 @@ class TestTheRoutingFlag:
         defect was a write placed ABOVE the busy check where no rollback covers it."""
         import kiro_crew.dashboard.chat_handlers as handlers
 
-        source = Path(handlers.__file__).read_text(encoding="utf-8")
+        source = (Path(handlers.__file__).parent / "chat_api" / "slot_model.py").read_text(
+            encoding="utf-8"
+        )
         body = source[source.index("async def api_chat_slot_model(") :]
         body = body[: body.index("\nasync def ")]
         busy = body.index('"code": "turn_in_flight"')
@@ -1405,6 +1408,41 @@ class TestTheWindowTheSwitchActuallyLandedOn:
         row = _refusals(tmp_path)[0]
         assert row["tier"] == "medium"
         assert "applied" not in row and "model_used" not in row
+
+    @pytest.mark.asyncio
+    async def test_a_put_back_that_raises_is_still_the_refusal(
+        self, tmp_path, answered, windows, caplog
+    ):
+        """The switch TO the tier model landed and the switch BACK raised. That is the
+        refusal the rules made, so the row is ``smaller-window-refused`` carrying ``p``,
+        and the warning names the restore -- not ``switch-failed`` blaming the switch
+        that worked."""
+        served_windows = {"model-c": 1_000_000, "model-b": 200_000}
+        answered("medium", 0.95)
+        slot = _routed_slot("chat-served-restore-raises")
+        state, client = _wired(tmp_path, serves="model-c", used=150_000, limit=70.0)
+        client.context_window_tokens = MagicMock(
+            side_effect=lambda: served_windows.get(client.served_model, 1_000_000)
+        )
+
+        async def _set_model(name: str) -> None:
+            if name == "model-c":
+                raise RuntimeError("restore refused")
+            client.served_model = name
+
+        client.set_model = AsyncMock(side_effect=_set_model)
+        with caplog.at_level(logging.WARNING, logger=chat_runner.logger.name):
+            await _turn(state, slot)
+
+        assert _switched_to(client) == ["model-b", "model-c"]
+        refusals = _refusals(tmp_path)
+        assert len(refusals) == 1
+        assert refusals[0]["tier"] == "medium"
+        assert refusals[0]["p"] == 0.95
+        assert not [r for r in _rows(tmp_path) if r.get("error") == mr.ERROR_SWITCH_FAILED]
+        warnings = [r.getMessage() for r in caplog.records if "model.route" in r.getMessage()]
+        assert any("restoring 'model-c' failed" in w for w in warnings)
+        assert not any("set_model('model-b') failed" in w for w in warnings)
 
     @pytest.mark.asyncio
     async def test_a_served_window_that_holds_is_left_alone(self, tmp_path, answered, windows):

@@ -28,10 +28,34 @@ from kiro_crew.agent_files import (
 from kiro_crew.agent_files import (
     SECURITY_CONDUCTOR_AGENT_FILENAME as _SECURITY_CONDUCTOR_AGENT_FILENAME,
 )
-from kiro_crew.agent_materialization import auto_approve, managed_mcp
+from kiro_crew.agent_materialization import auto_approve, managed_mcp, skill_resources
 
 
-def _conductor_mcp_servers(config: dict[str, Any], *, work: bool = False) -> dict[str, Any]:
+def _conductor_prompt(charter: str) -> str:
+    """A conductor spec's prompt: its own *charter*, then the shared work-ledger
+    protocol (``_CONDUCTOR_WORK_LEDGER_PROTOCOL``). Used by the conductors whose
+    charter does not already state the ledger flow -- the pipeline and security
+    conductors; ``_conductor_spec`` keeps the goal conductor's charter as is."""
+    return charter + agent_mod._CONDUCTOR_WORK_LEDGER_PROTOCOL
+
+
+def _conductor_shipped(
+    core: tuple[str, ...], dashboard: tuple[str, ...], work: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    """The grants a conductor installer ships: the shared builtins, its own *core*
+    and *dashboard* verbs, then the base work-ledger verbs every conductor holds
+    (``_CONDUCTOR_BASE_WORK_GRANTS``) followed by any extra *work* verbs of its own.
+
+    The base work verbs are here, and not in each installer's arguments, because
+    ``_conductor_mcp_servers`` mounts ``kirocrew-work`` on every conductor: a mount
+    whose record verb prompts on every unattended patrol cycle is a ledger nobody
+    writes to.
+    """
+    work_verbs = dict.fromkeys((*agent_mod._CONDUCTOR_BASE_WORK_GRANTS, *work))
+    return ("session", "report", "tool_search", *core, *dashboard, *work_verbs)
+
+
+def _conductor_mcp_servers(config: dict[str, Any]) -> dict[str, Any]:
     """The narrowed ``mcpServers`` map every conductor spec carries.
 
     ``kirocrew-core`` is inherited from ``build_agent_config``; ``kirocrew-dashboard``
@@ -48,12 +72,14 @@ def _conductor_mcp_servers(config: dict[str, Any], *, work: bool = False) -> dic
     session store than the one it reports on. Both helpers return empty on a
     default install, so the emitted spec is unchanged there.
 
-    ``work`` mounts ``kirocrew-work``, and ``_conductor_spec`` is what passes it —
-    so ``kirocrew-conductor`` and its ``kirocrew-ledger-conductor`` alias carry the
-    entry and the pipeline and security conductors do not. It stays a parameter
-    rather than becoming unconditional because those two specs are what the
-    isolation is now for: their children report through their own skills' scripts,
-    and a mount they never call is surface their charters cannot account for.
+    ``kirocrew-work`` is mounted on every conductor, unconditionally. The work
+    ledger is where every conductor records the items it dispatches
+    (``_CONDUCTOR_WORK_LEDGER_PROTOCOL``), and the dashboard's ``workstreams`` fold
+    mints a board only from the ``work/recorded`` entries that ledger writes: a
+    conductor without the mount runs a fleet its Dashboard tab cannot show. A
+    conductor's own store (a pipeline queue, a security findings ledger) stays the
+    detail behind the ledger row. The verbs every conductor auto-approves on the
+    mount are ``_CONDUCTOR_BASE_WORK_GRANTS`` (``_conductor_shipped``).
     """
     mcp = config.get("mcpServers", {}) or {}
     core_entry = mcp.get("kirocrew-core")
@@ -68,8 +94,7 @@ def _conductor_mcp_servers(config: dict[str, Any], *, work: bool = False) -> dic
     if dash_env:
         dash_entry["env"] = dash_env
     narrowed["kirocrew-dashboard"] = dash_entry
-    if work:
-        narrowed["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
+    narrowed["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
     return narrowed
 
 
@@ -116,6 +141,7 @@ _HISTORY_CORE_VERBS: frozenset[str] = frozenset(
         "@kirocrew-core/send_message",
         "@kirocrew-core/send_notification",
         "@kirocrew-core/ask_question",
+        "@kirocrew-core/nothing_to_do",
     }
 )
 # The dashboard verbs every conductor ships: the folder/session reads and creates,
@@ -133,7 +159,8 @@ _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
 # The work-ledger verbs the goal conductor and the ledger alias ship. The two
 # ledger verbs were on the goal AND pipeline conductors for one release before the
 # ledger flow moved to its own spec, and came back to the goal conductor with
-# ``work_brief`` when it took the alias's spec over; ``work_report`` is the
+# ``work_brief`` when it took the alias's spec over; they are the base every
+# conductor ships; ``work_report`` is the
 # WORKER's verb and no conductor has ever shipped it, so it is nobody's to drop.
 _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
     {
@@ -143,15 +170,16 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
     }
 )
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
-#: today: the goal conductor's bare ``@kirocrew-core``; the two work-ledger verbs
-#: the pipeline conductor shipped for one release. Beyond each spec's current
-#: tuple the table holds exactly those three entries (pinned by test), so an
-#: entry can join it only as a grant some release is shown to have shipped.
+#: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
+#: tuple the table holds exactly that entry (pinned by test), so an entry can join
+#: it only as a grant some release is shown to have shipped. The pipeline
+#: conductor's two work-ledger verbs were shipped for one release, retired, and are
+#: shipped again as the base every conductor holds.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
     "kirocrew-conductor": (
         frozenset({"session", "report", "tool_search", "@kirocrew-core"})
         | _HISTORY_CORE_VERBS
-        | {"@kirocrew-core/select_crew"}
+        | {"@kirocrew-core/select_crew", "@kirocrew-core/reset_conversation"}
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
@@ -160,7 +188,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
     "kirocrew-ledger-conductor": (
         frozenset({"session", "report", "tool_search"})
         | _HISTORY_CORE_VERBS
-        | {"@kirocrew-core/select_crew"}
+        | {"@kirocrew-core/select_crew", "@kirocrew-core/reset_conversation"}
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
@@ -177,6 +205,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | _HISTORY_CORE_VERBS
         | _HISTORY_DASHBOARD_VERBS
         | {"@kirocrew-dashboard/chat_folder_file_self"}
+        | {"@kirocrew-work/work_ledger_read", "@kirocrew-work/work_ledger_record"}
     ),
 }
 
@@ -394,8 +423,7 @@ def _governed_grants(
     with the spec, be torn by a failed write, or be hand-damaged into a wrong
     answer. What it costs is one case: a user who hand-adds a grant Crew once
     shipped and has since retired (the bare ``@kirocrew-core`` an early goal
-    conductor shipped, the pipeline conductor's one-release work-ledger verbs)
-    loses it at the next start, named in the WARNING and the SEL feed, and the
+    conductor shipped) loses it at the next start, named in the WARNING and the SEL feed, and the
     tool it covered asks instead of being auto-approved -- the drop fails closed.
     What the history cannot name is a grant a NEWER release ships: on an install
     downgraded past it, that grant reads as the user's until the re-upgrade --
@@ -568,13 +596,10 @@ def _audit_revoked(source: str, resources: str) -> None:
 def _conductor_shipped_grants() -> tuple[str, ...]:
     """The grants ``_conductor_spec`` ships, read once per install so the goal conductor
     and its ledger alias merge against the same tuple."""
-    return (
-        "session",
-        "report",
-        "tool_search",
-        *agent_mod._CONDUCTOR_CORE_GRANTS,
-        *agent_mod._CONDUCTOR_DASHBOARD_GRANTS,
-        *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
+    return _conductor_shipped(
+        agent_mod._CONDUCTOR_CORE_GRANTS,
+        agent_mod._CONDUCTOR_DASHBOARD_GRANTS,
+        agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS,
     )
 
 
@@ -645,7 +670,16 @@ def _conductor_spec(
     config = agent_mod.build_agent_config()
     config["name"] = name
     config["description"] = description
+    # The charter already states the work-ledger flow in detail, so the shared
+    # protocol block (``_conductor_prompt``) is not appended here.
     config["prompt"] = agent_mod._CONDUCTOR_SYSTEM_PROMPT
+    # The two skills this prompt names: ``goal-conductor`` carries the operating
+    # procedure it says to read first, and ``dashboard`` is how it changes the page
+    # it reports on. Mapped rather than assumed reachable: this spec is a custom
+    # template, so with no mapping its search scope is empty and neither document
+    # can be found. The alias installer emits this same body, so the alias carries
+    # the mapping too.
+    skill_resources.map_prompt_skills(config, "goal-conductor", "dashboard")
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -697,13 +731,15 @@ def _conductor_spec(
     if granted is None:
         return None
     config["allowedTools"] = granted
-    config["mcpServers"] = _conductor_mcp_servers(config, work=True)
-    # Derive the KAS policy from the FILTERED grant list instead of restating it
-    # as a literal: the rules come out byte-identical, a later edit to
-    # ``allowedTools`` carries through, and a ceiling that strips a grant strips
-    # its KAS rule with it (a hand-written ``kirocrew-core/*`` allow would have
-    # survived the filter on the KAS backend). The shared writer version-gates it.
-    auto_approve._write_derived_permissions(config, config["allowedTools"], filename)
+    config["mcpServers"] = _conductor_mcp_servers(config)
+    # The KAS policy is NOT written here: the shared tail each installer writes
+    # through (``auto_approve.write_governed_spec``) derives it from the FILTERED
+    # grant list instead of restating it as a literal, so the rules come out
+    # byte-identical, a later edit to ``allowedTools`` carries through, and a
+    # ceiling that strips a grant strips its KAS rule with it (a hand-written
+    # ``kirocrew-core/*`` allow would have survived the filter on the KAS
+    # backend). The same tail pins the global ``mcp.json`` merge off and strips
+    # an ungoverned ``autoApprove``.
     return config
 
 
@@ -752,7 +788,7 @@ def _install_conductor_agent(*, clean: bool = False) -> bool:
         return False
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    auto_approve.write_governed_spec(path, config, source="_install_conductor_agent")
     agent_mod.logger.info("Installed conductor agent config: %s", path)
     return True
 
@@ -804,7 +840,7 @@ def _install_ledger_conductor_agent(*, clean: bool = False) -> bool:
         return False
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _LEDGER_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    auto_approve.write_governed_spec(path, config, source="_install_ledger_conductor_agent")
     agent_mod.logger.info("Installed ledger-conductor alias agent config: %s", path)
     return True
 
@@ -816,11 +852,12 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
     installer per generated agent is the file's established pattern — and
     keeps every property that installer's docstring argues for: derived from
     the kirocrew agent, **no dedicated file-writing tool** (neither ``fs_write``
-    nor ``code``), ``@kirocrew-dashboard`` mounted whole but auto-approved only
-    verb by verb, ``execute_bash`` mounted but never auto-approved
-    (``allowedTools`` has no argument matching, so trusting the two bundled
-    skill scripts cannot be told apart from trusting arbitrary shell), and the
-    KAS policy derived from the FILTERED grant list. Where the two agents
+    nor ``code``), ``@kirocrew-dashboard`` and ``@kirocrew-work`` mounted whole but
+    auto-approved only verb by verb, ``execute_bash`` mounted but never
+    auto-approved (``allowedTools`` has no argument matching, so trusting the two
+    bundled skill scripts cannot be told apart from trusting arbitrary shell), and
+    the KAS policy derived from the FILTERED grant list. Each dispatched item is a
+    work-ledger row; the queue and ``decisions.md`` stay its detail. Where the two agents
     differ is charter, not mechanics: this one supervises a repository
     pipeline's worker fleet (probe / verify / intervene / adjudicate / govern)
     per the ``pipeline-conductor`` builtin skill, rather than decomposing a
@@ -835,7 +872,13 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
         "governs host resources and per-item credit budgets. Never does a "
         "work item's work itself."
     )
-    config["prompt"] = agent_mod._PIPELINE_CONDUCTOR_SYSTEM_PROMPT
+    config["prompt"] = _conductor_prompt(agent_mod._PIPELINE_CONDUCTOR_SYSTEM_PROMPT)
+    # The skills this prompt and that skill name: ``pipeline-conductor`` is the
+    # procedure it says to read, and the skill itself sends the reader to
+    # ``dashboard`` for the page. Note ``pipeline-conductor/SKILL.md`` is larger
+    # than one read's capacity, so reaching it is paged -- a separate limit the
+    # mapping does not change.
+    skill_resources.map_prompt_skills(config, "pipeline-conductor", "dashboard")
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -845,13 +888,11 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
         "tool_search",
         "@kirocrew-core",
         "@kirocrew-dashboard",
+        "@kirocrew-work",
     ]
-    shipped = (
-        "session",
-        "report",
-        "tool_search",
-        *agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
-        *agent_mod._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
+    shipped = _conductor_shipped(
+        agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
+        agent_mod._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
     )
     granted = _governed_grants(
         shipped,
@@ -864,14 +905,11 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
         return False
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Same derive-don't-restate rationale as the conductor above; the shared
-    # writer version-gates it.
-    auto_approve._write_derived_permissions(
-        config, config["allowedTools"], _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    )
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    # The shared tail derives the KAS policy from the filtered grant list, on the
+    # same derive-don't-restate rationale as the conductor above.
+    auto_approve.write_governed_spec(path, config, source="_install_pipeline_conductor_agent")
     agent_mod.logger.info("Installed pipeline-conductor agent config: %s", path)
     return True
 
@@ -910,13 +948,10 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
     agents is already this file's practice, and ``_filter_auto_approve`` plus
     ``_conductor_mcp_servers`` are the same argument applied one level down.
 
-    ``@kirocrew-work`` is deliberately NOT mounted, matching
-    ``kirocrew-pipeline-conductor``: the work-ledger flow belongs to
-    ``kirocrew-conductor`` (``_conductor_spec``), and a conductor gaining tools that
-    only make sense under a different procedure is a change to its charter rather
-    than an addition to it. This agent's children report findings through the
-    ``security-conductor`` skill's ledger scripts, not the work ledger, so the
-    mount would grant a flow whose procedure this conductor does not run.
+    ``@kirocrew-work`` is mounted with the base work-ledger grants, as on every
+    conductor (``_conductor_mcp_servers``): each auditor, verifier and fixer is a
+    ledger item. Findings, severity and evidence stay in the
+    ``security-conductor`` skill's ledger scripts as the detail behind that row.
     """
     config = agent_mod.build_agent_config()
     config["name"] = "kirocrew-security-conductor"
@@ -926,7 +961,12 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         "an independent verifier per finding, adjudicates severity, and gates "
         "any fix behind a human yes. Never touches the target itself."
     )
-    config["prompt"] = agent_mod._SECURITY_CONDUCTOR_SYSTEM_PROMPT
+    config["prompt"] = _conductor_prompt(agent_mod._SECURITY_CONDUCTOR_SYSTEM_PROMPT)
+    # The one skill this prompt names. Its fixer dispatch hands a worker the
+    # ``kirocrew-prepare-pr`` skill, but that worker is a separate session on its
+    # own spec, so mapping it here would widen this agent's search scope past what
+    # its own charter reads.
+    skill_resources.map_prompt_skills(config, "security-conductor")
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -936,13 +976,11 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         "tool_search",
         "@kirocrew-core",
         "@kirocrew-dashboard",
+        "@kirocrew-work",
     ]
-    shipped = (
-        "session",
-        "report",
-        "tool_search",
-        *agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
-        *agent_mod._SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
+    shipped = _conductor_shipped(
+        agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
+        agent_mod._SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
     )
     granted = _governed_grants(
         shipped,
@@ -955,14 +993,10 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         return False
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Derived from the FILTERED grant list rather than restated, so a ceiling
-    # that strips a grant strips its KAS rule with it; the shared writer
-    # version-gates it.
-    auto_approve._write_derived_permissions(
-        config, config["allowedTools"], _SECURITY_CONDUCTOR_AGENT_FILENAME
-    )
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _SECURITY_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    # The shared tail derives the KAS policy from the FILTERED grant list rather
+    # than restating it, so a ceiling that strips a grant strips its KAS rule too.
+    auto_approve.write_governed_spec(path, config, source="_install_security_conductor_agent")
     agent_mod.logger.info("Installed security-conductor agent config: %s", path)
     return True

@@ -198,6 +198,13 @@ async def api_spawn_status(request: web.Request) -> web.Response:
     if info.done:
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
+        # ``spawn_sub_agents`` flags a completed run that made no tool call,
+        # since it cannot have written what it reports. Sent for a completed run
+        # only: a stopped or failed one is not read as a finished result.
+        if getattr(info, "outcome", "") == "completed":
+            no_calls = getattr(info, "made_no_tool_calls", None)
+            if isinstance(no_calls, bool):
+                data["made_no_tool_calls"] = no_calls
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):

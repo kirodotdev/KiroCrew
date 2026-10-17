@@ -21,6 +21,10 @@ export default defineConfig({
     : undefined,
   fullyParallel: true, // Enable parallel execution
   forbidOnly: !!process.env.CI,
+  // Retries DETECT a flaky spec; they never fix one (docs/ci/e2e-gate.md). A spec
+  // that passes only on a retry is reported as flaky, and MAX_FLAKY_SPECS = 0 in
+  // test/test_playwright_e2e.py fails the gate naming it: that ceiling is the one
+  // place the flaky policy lives.
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined, // Use default workers (parallel) except in CI
   reporter: process.env.CI ? 'html' : 'list', // 'list' shows test names as they run

@@ -71,6 +71,7 @@ vi.mock('../hooks/virtualizer/useVirtualChat', () => ({
       getFollow: () => true,
       scrollToBottom: vi.fn(),
       mountIndex: vi.fn(),
+      retainRange: vi.fn(),
       measureRef: () => () => {},
       topSentinelRef: { current: null },
       bottomSentinelRef: { current: null },
@@ -292,13 +293,21 @@ describe('chip roster carries only surfaces ChatPage can show', () => {
 describe('one session-entry path', () => {
   // A SOURCE guard: the two callees were behaviourally identical, so only the
   // structure can distinguish the collapsed form from the duplicated one.
-  const pageSource = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf-8')
   const sessionSource = readFileSync(join(__dirname, '..', 'pages', 'chat', 'useChatPageSessionController.ts'), 'utf-8')
   // The page's owners (pages/chat/page/) are scanned too, so neither absence
   // below can be escaped by moving code out of ChatPage.tsx.
-  const ownerSources = readdirSync(join(__dirname, '..', 'pages', 'chat', 'page'))
-    .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
-    .map(f => readFileSync(join(__dirname, '..', 'pages', 'chat', 'page', f), 'utf-8'))
+  const ownerSources = [
+    ...readdirSync(join(__dirname, '..', 'pages', 'chat', 'page'))
+      .filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f))
+      .sort()
+      .map(f => readFileSync(join(__dirname, '..', 'pages', 'chat', 'page', f), 'utf-8')),
+    ...readdirSync(join(__dirname, '..', 'pages'))
+      .filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f))
+      .sort()
+      .map(f => readFileSync(join(__dirname, '..', 'pages', f), 'utf-8')),
+  ]
+  // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+  const pageSource = [readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf-8'), ...ownerSources].join('\n')
 
   it('routes the in-message chip through the shared switch callee', () => {
     expect(pageSource).toContain('onSessionOpen={selectSessionTab}')

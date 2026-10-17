@@ -394,7 +394,8 @@ describe('crew editor — a registry write re-reads the config snapshot', () => 
     fireEvent.change(within(create).getByPlaceholderText('e.g. Radar or Dr. Eggbot'), { target: { value: 'fix' } })
     // "Built from" defaults to the built-in kirocrew template (the list leads
     // with it), so no template pick is needed to fire the create.
-    fireEvent.click(within(create).getByRole('button', { name: 'Create crewmate' }))
+    // Both Create buttons submit the same form; the first one is enough.
+    fireEvent.click(within(create).getAllByRole('button', { name: 'Create crewmate' })[0])
 
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     // The dialog invalidates BOTH ['kirocrew-agents'] and ['kirocrewConfig'] in

@@ -25,6 +25,17 @@ from meetings_helpers import (  # noqa: F401
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
+from kiro_crew.testing.wait import async_wait_until, await_until
+
+
+async def _finished(coro, what: str, *, timeout: float | None = None):
+    """Run ``coro`` under the lost-run bound; fail by name if it hangs (D8)."""
+    task = asyncio.ensure_future(coro)
+    try:
+        return await await_until(task, timeout=timeout, what=what)
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 class TestNoiseFilter:
@@ -185,7 +196,7 @@ class TestAgentQueue:
         queue.pending_kickoff = "kickoff contract"
         queue.queue = ["opening transcript"]
 
-        await asyncio.wait_for(queue.flush_now(), timeout=1)
+        await _finished(queue.flush_now(), "the forced drain")
 
         assert manager.calls == []
         assert queue.pending_kickoff == "kickoff contract"
@@ -228,9 +239,9 @@ class TestAgentQueue:
         queue.pending_kickoff = "kickoff contract"
         queue.queue = ["opening transcript"]
         queue.flush_soon()
-        await asyncio.wait_for(started.wait(), timeout=1)
+        await await_until(started, what="the kickoff stream started")
 
-        await asyncio.wait_for(queue.flush_now(), timeout=1)
+        await _finished(queue.flush_now(), "the forced drain")
 
         provider.cancel.assert_awaited_once_with(wait_ack_timeout=sess._AGENT_CANCEL_ACK_SECS)
         assert manager.released == [queue.key]
@@ -254,7 +265,7 @@ class TestAgentQueue:
 
         assert queue._flush_task is not sleeping
         assert queue._flush_task is not None
-        await asyncio.wait_for(queue._flush_task, timeout=2)
+        await await_until(queue._flush_task, what="the batch flush task")
         assert manager.calls == [("k", "a", "meeting opening")]
         assert queue.queue == []
 
@@ -274,12 +285,12 @@ class TestAgentQueue:
         queue.queue = ["turn already running"]
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
             queue.flush_soon()
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="the first dispatch started")
             queue.enqueue("opening held during init")
             queue.flush_soon()
             release.set()
             assert queue._flush_task is not None
-            await asyncio.wait_for(queue._flush_task, timeout=2)
+            await await_until(queue._flush_task, what="the batch flush task")
 
         assert delivered == ["turn already running", "opening held during init"]
         assert queue.queue == []
@@ -308,15 +319,15 @@ class TestAgentQueue:
         monkeypatch.setattr(sess.asyncio, "sleep", controlled_sleep)
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
             queue.flush_soon()
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="the live dispatch started")
             queue.flush_soon()
             release.set()
             assert queue._flush_task is not None
-            await asyncio.wait_for(queue._flush_task, timeout=2)
+            await await_until(queue._flush_task, what="the batch flush task")
 
             assert queue._flush_soon_requested is False
             queue.enqueue("later batch")
-            await asyncio.wait_for(next_delay.wait(), timeout=2)
+            await await_until(next_delay, what="the next batch delay started")
 
         assert sleeps == [0.0, 60.0]
         queue.cancel()
@@ -392,13 +403,13 @@ class TestAgentQueue:
         queue.queue = ["spoken before the stop"]
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
             queue._schedule_flush()
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="the dispatch started")
             assert queue.busy is True  # mid-dispatch, not sleeping
 
             stopping = asyncio.create_task(queue.flush_now())
             await asyncio.sleep(0)  # let flush_now observe `busy`
             release.set()
-            await asyncio.wait_for(stopping, timeout=2)
+            await await_until(stopping, what="flush_now completing")
 
         assert delivered == ["spoken before the stop"]
         assert queue.queue == []
@@ -416,7 +427,7 @@ class TestAgentQueue:
         queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
         queue.queue = [line, line, line]
 
-        await asyncio.wait_for(queue.flush_now(), timeout=5)
+        await _finished(queue.flush_now(), "the full drain")
 
         assert len(manager.calls) == 3
         assert queue.queue == []
@@ -446,7 +457,7 @@ class TestAgentQueue:
             return await original(*args, **kwargs)
 
         manager.get_or_create = flaky  # type: ignore[method-assign]
-        await asyncio.wait_for(queue.flush_now(), timeout=5)
+        await _finished(queue.flush_now(), "the retry drain")
 
         assert queue.queue == [], "the retry must drain the queue, not abandon it"
         assert len(manager.calls) == 1
@@ -465,7 +476,7 @@ class TestAgentQueue:
         queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
         queue.queue = ["never lands"]
 
-        await asyncio.wait_for(queue.flush_now(), timeout=5)
+        await _finished(queue.flush_now(), "the drain with permanent failure")
 
         assert queue.fail_count == k.MAX_DISPATCH_FAILURES
         assert queue.paused is True
@@ -486,10 +497,7 @@ class TestAgentQueue:
         queue.queue = [line, line, line]
 
         queue._schedule_flush()
-        for _ in range(50):
-            if not queue.queue:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not queue.queue)
 
         assert queue.queue == []
         assert len(manager.calls) == 3
@@ -506,7 +514,7 @@ class TestAgentQueue:
         )
         queue.queue = ["a", "b"]
         with mock.patch.object(sess, "dispatch_to_agent", boom):
-            await asyncio.wait_for(queue.flush_now(), timeout=5)
+            await _finished(queue.flush_now(), "the drain with all failures")
         # Nothing delivered, nothing lost, and the breaker counted the failure.
         assert queue.queue == ["a", "b"]
         assert queue.fail_count >= 1
@@ -521,8 +529,13 @@ class TestAgentQueue:
         manager = FakeSessionManager()
         queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=30)
         queue.enqueue("line")
+        sleeping_task = queue._flush_task
+        assert sleeping_task is not None
         assert queue.busy is False  # sleeping on the timer
-        await asyncio.wait_for(queue.flush_now(), timeout=2)
+        await _finished(queue.flush_now(), "the flush cancelling the sleeping timer")
+        # The sleeping timer task must be cancelled, not completed: flush_now
+        # aborts the wait rather than letting the 30 s interval run.
+        assert sleeping_task.cancelled(), "flush_now waited out the timer instead of cancelling it"
         assert manager.calls == [("k", "a", "line")]
 
     @pytest.mark.asyncio
@@ -767,7 +780,7 @@ class TestMeetingSession:
         )
         session.agents = {"pending": pending, "healthy": healthy}
 
-        await asyncio.wait_for(sess.broadcast_system(session, k.SYSTEM_MEETING_ENDED), timeout=1)
+        await _finished(sess.broadcast_system(session, k.SYSTEM_MEETING_ENDED), "broadcast_system")
 
         assert manager.calls == [
             (healthy.key, "", k.SYSTEM_MEETING_ENDED),
@@ -921,7 +934,7 @@ class TestInitAgents:
             meeting_id="m", sessions=manager, config=store.read_config(root)
         )
 
-        await asyncio.wait_for(sess.init_agents(session, meta, root), timeout=1)
+        await _finished(sess.init_agents(session, meta, root), "init_agents")
 
         assert entered == {
             "meetings-note-taker-m",
@@ -965,19 +978,19 @@ class TestInitAgents:
             kickoff = asyncio.create_task(
                 sess._safe_dispatch(session, "note-taker", "kickoff contract", "")
             )
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started, what="the kickoff dispatch started")
             queue.enqueue("direct message")
 
-            await asyncio.wait_for(queue.flush_now(), timeout=1)
+            await _finished(queue.flush_now(), "flush during kickoff")
 
             assert prompts == ["kickoff contract"]
             assert queue.queue == ["direct message"]
             assert queue._initializing is True
 
             finish.set()
-            await asyncio.wait_for(kickoff, timeout=1)
+            await await_until(kickoff, what="the kickoff task")
             assert queue._flush_task is not None
-            await asyncio.wait_for(queue._flush_task, timeout=1)
+            await await_until(queue._flush_task, what="the follow-up flush")
 
         assert prompts == ["kickoff contract", "direct message"]
         assert queue.queue == []
@@ -1012,19 +1025,19 @@ class TestInitAgents:
             kickoff = asyncio.create_task(
                 sess._safe_dispatch(session, "note-taker", "kickoff contract", "")
             )
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started, what="the kickoff dispatch started")
             queue.enqueue("direct message")
 
-            await asyncio.wait_for(queue.flush_now(), timeout=1)
+            await _finished(queue.flush_now(), "flush during timed-out kickoff")
 
             assert prompts == ["kickoff contract"]
             assert queue.queue == ["direct message"]
             assert queue.pending_kickoff is None
 
             finish.set()
-            await asyncio.wait_for(kickoff, timeout=1)
+            await await_until(kickoff, what="the kickoff task")
             assert queue._flush_task is not None
-            await asyncio.wait_for(queue._flush_task, timeout=1)
+            await await_until(queue._flush_task, what="the follow-up flush")
 
         assert prompts == ["kickoff contract", "kickoff contract", "direct message"]
         assert queue.pending_kickoff is None
@@ -1060,18 +1073,18 @@ class TestInitAgents:
             kickoff = asyncio.create_task(
                 sess._safe_dispatch(session, "note-taker", "kickoff contract", "")
             )
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started, what="the kickoff dispatch started")
             queue.enqueue("direct message")
 
-            await asyncio.wait_for(queue.flush_now(), timeout=1)
+            await _finished(queue.flush_now(), "flush during failed kickoff")
 
             assert prompts == ["kickoff contract"]
             assert queue.queue == ["direct message"]
 
             finish.set()
-            await asyncio.wait_for(kickoff, timeout=1)
+            await await_until(kickoff, what="the kickoff task")
             assert queue._flush_task is not None
-            await asyncio.wait_for(queue._flush_task, timeout=1)
+            await await_until(queue._flush_task, what="the follow-up flush")
 
         assert prompts == ["kickoff contract", "direct message"]
         assert queue.pending_kickoff is None
@@ -1109,7 +1122,7 @@ class TestInitAgents:
             meeting_id="m", sessions=manager, config=store.read_config(root)
         )
 
-        await asyncio.wait_for(sess.init_agents(session, meta, root), timeout=1)
+        await _finished(sess.init_agents(session, meta, root), "init_agents")
 
         assert cancelled == ["0.001"]
         assert "meetings-note-taker-m" in manager.released
@@ -1156,7 +1169,7 @@ class TestInitAgents:
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
         monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", 0.01)
 
-        await asyncio.wait_for(sess.init_agents(session, meta, root), timeout=1)
+        await _finished(sess.init_agents(session, meta, root), "init_agents")
 
         assert meta["agents_enabled"] == ["optional-agent"]
         assert manager.prompts_for(k.TASK_EXTRACTOR_ID)
@@ -1419,7 +1432,7 @@ class TestInitAgents:
                     raise RuntimeError("cancel failed")
                 if cancel_outcome == "acked":
                     terminal.set()
-                    await asyncio.wait_for(closed.wait(), timeout=1)
+                    await await_until(closed, what="the provider stream closing")
                 return cancel_outcome
 
         async def get_or_create(*_args, **_kwargs):
@@ -1483,10 +1496,10 @@ class TestInitAgents:
             sess.dispatch_to_agent(manager, "k", "kickoff", timeout_secs=30)
         )
         try:
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started, what="the stream started")
             dispatch.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(dispatch, timeout=1)
+                await await_until(dispatch, what="the cancelled dispatch")
             assert events == ["cancel", "closed", "release"]
             if cancel_outcome == "acked":
                 manager.reset.assert_not_awaited()
@@ -1609,8 +1622,18 @@ class TestDispatchThreadsGovernanceIdentity:
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "on_tool_call"
+            and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "on_tool_call")
+                # The awaitable form a coroutine uses:
+                # ``await run_in_tool_gate_pool(hooks.on_tool_call, ...)``.
+                or (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "run_in_tool_gate_pool"
+                    and bool(node.args)
+                    and isinstance(node.args[0], ast.Attribute)
+                    and node.args[0].attr == "on_tool_call"
+                )
+            )
         ]
         assert calls, "llm_helpers no longer calls hooks.on_tool_call"
         for call in calls:

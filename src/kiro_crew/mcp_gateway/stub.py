@@ -630,6 +630,8 @@ _KIROCREW_MCP_SUBCOMMANDS = frozenset(
         "mcp-crew-log",
         "mcp-debug",
         "mcp-panel",
+        "mcp-guide",
+        "mcp-mate",
     }
 )
 
@@ -788,6 +790,21 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         "type": "register",
         "stub_uuid": str(uuid.uuid4()),
         "server_name": args.server,
+        # NOT a pool dimension — the agent name never reaches the backend
+        # process, so two agents declaring one server identically share it (see
+        # the ``pool`` module docstring). LOAD-BEARING ANYWAY, and this list is
+        # what a future removal has to answer to. A daemon reads it off the
+        # frame (``daemon.connection``'s ``stub_agent``) for three things:
+        #   * a daemon predating the pool-dimension removal runs a
+        #     ``PoolKey.from_register`` that hard-requires the key and would
+        #     reject every new stub as malformed;
+        #   * it names the declared-env sidecar a connection-PRIVATE backend
+        #     reads (``daemon.launch._read_declared_env_sidecar``), so dropping
+        #     it would start such a backend with no declared env; and
+        #   * it is stamped into an intercepted app render's spool record
+        #     (``Backend.agent_for_stub`` -> ``backend._fetch_and_deliver_ui``),
+        #     which is the governance identity of that render's callbacks, so
+        #     dropping it would have every app callback refused.
         "agent_name": args.agent,
         "command_args_hash": hash_command(args.target_command, target_args),
         "effective_env_hash": hash_effective_env(env_pairs, identity_keys=identity_keys),
@@ -832,6 +849,10 @@ def build_register_payload(args: argparse.Namespace) -> dict:
         # the key. Safe to drop once no daemon predating the key can be adopted.
         "user_identity": caller["principal_id"] or "unknown",
         "channel_id": channel_id,
+        # Wire-compat ballast on the same terms as ``user_identity`` above, and
+        # inert from the start: this has always been a constant run of 64 zeros,
+        # so it never partitioned anything. Deleted as a pool dimension; still
+        # sent so a daemon predating the deletion keeps accepting this register.
         "config_snapshot_hash": _CONFIG_SNAPSHOT_PLACEHOLDER,
         "caller": caller,
         # Claim-push (gateway → gatewayd ``claim`` frame): the ancestor PID
@@ -2469,8 +2490,13 @@ def log_fallback(
     written before the field existed has no key and so still counts as a
     fallback — which is what it was."""
     try:
+        # The log is always under the stub's own data home (_crew_home), so it is
+        # owner-only unconditionally: no lexical home test, which would compare
+        # a raw KIROCREW_HOME against the resolved one and import config.paths.
+        from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener
+
         log_path = _fallback_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdirs_owner_only(log_path.parent)
         record = {
             "ts": time.time(),
             "ts_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -2495,7 +2521,7 @@ def log_fallback(
         from kiro_crew.jsonl_util import rotate_jsonl_at
 
         rotate_jsonl_at(log_path, _FALLBACK_LOG_MAX_BYTES)
-        with open(log_path, "a", encoding="utf-8") as f:
+        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener) as f:
             f.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError:
         pass
@@ -2856,6 +2882,46 @@ def _fallback_user_site_holds_our_package() -> bool:
         return False
 
 
+#: Exit status of a fallback that refuses to start the backend because its env
+#: still holds a ``secret://`` reference. ``EX_CONFIG`` from sysexits: the
+#: operator's configuration asks for something this path cannot provide.
+_EXIT_UNRESOLVED_SECRET = 78
+
+
+def _refuse_unresolved_secret_references(
+    args: argparse.Namespace, declared_env: Mapping[str, str]
+) -> None:
+    """Exit instead of exec'ing a backend whose env carries a ``secret://`` value.
+
+    The sidecar keeps the raw reference on purpose -- the value is resolved from
+    the vault only on the gateway's backend spawn. This direct exec runs in the
+    session's own process tree, which cannot read the vault, so exec'ing would
+    start the server with the literal reference as its credential: the server
+    comes up and every authenticated call fails, which is exactly the outcome the
+    reference promises not to produce. Refusing the start is the documented
+    behaviour for a reference that cannot be resolved.
+
+    Names only the env KEYS, never a value or the secret's name, for the reason
+    given in :mod:`kiro_crew.mcp_gateway.secret_uri`.
+    """
+    # Deferred: the module imports the vault, which only this rare path needs.
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    keys = secret_reference_keys(declared_env)
+    if not keys:
+        return
+    message = (
+        f"MCP server {getattr(args, 'server', '') or '?'!r} was not started: env "
+        f"{', '.join(repr(k) for k in keys)} holds a secret:// reference, which is "
+        "resolved only when the gateway starts the server, and this session fell "
+        "back to starting it directly. Start a new session once the gateway is "
+        "serving it; `kirocrew doctor` reports the gateway's state."
+    )
+    logger.error("fallback: %s", message)
+    print(message, file=sys.stderr, flush=True)
+    raise SystemExit(_EXIT_UNRESOLVED_SECRET)
+
+
 def fallback_exec(args: argparse.Namespace) -> None:
     """Replace the current process with the real MCP backend. ``execvpe``
     never returns on success; a return raises so the caller surfaces a
@@ -2871,7 +2937,11 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # the non-pooled baseline — the daemon's own environment lacks it.
     session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
     exec_env = dict(os.environ)
-    exec_env.update(_parse_env_file(getattr(args, "env_file", "") or ""))
+    declared_env = _parse_env_file(getattr(args, "env_file", "") or "")
+    # Only the DECLARED env is checked: an unrelated inherited value must not
+    # cost a working fallback.
+    _refuse_unresolved_secret_references(args, declared_env)
+    exec_env.update(declared_env)
     # The token is a bearer name for this session's identity. A third-party
     # server binary must never inherit it: on a later gateway start it could
     # register with it and be answered as this session. Kiro Crew's OWN control

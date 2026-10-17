@@ -2337,6 +2337,12 @@ async def _handle_backup_status(request: web.Request) -> web.Response:
         # and the first deliberately reads 0 for the second's keys. Neither asserts
         # anything is reclaimable. See `backup.retention_unrecorded`.
         "retentionUnrecorded": await asyncio.to_thread(backup_mod.retention_unrecorded, account),
+        # Per kind, how the last sweep ENDED -- successful, refused or failed, its fixed
+        # skip reason, what it retired, and when. `retentionKeep` says what a sweep would
+        # act on; without this nothing says whether one has, so a sweep refused every
+        # night looks identical to a working one. Written on every ending, refusals
+        # included, and stamped rather than live. See `backup.retention_last_sweep`.
+        "retentionLastSweep": await asyncio.to_thread(backup_mod.retention_last_sweep, account),
         # Per kind, the consecutive-failure record for UNATTENDED attempts, and absent
         # for a kind whose last attempt completed. `runs` below says when the nightly
         # last SUCCEEDED, which cannot distinguish a schedule that has never run from

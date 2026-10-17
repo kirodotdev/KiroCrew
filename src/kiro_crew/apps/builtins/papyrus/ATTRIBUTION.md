@@ -26,8 +26,8 @@ the original author's name preserved in `app.json`.
 - The backend was rewritten from a standalone `ThreadingHTTPServer` on its own
   port into in-gateway aiohttp routes under `/api/apps/papyrus/*`, with every
   subprocess and filesystem call moved off the asyncio event loop.
-- The frontend was rewritten against this repository's own conventions: Monaco
-  instead of CodeMirror, the browser's native PDF viewer instead of a bundled
+- The frontend was rewritten against this repository's own conventions: the Pierre
+  editor (`website/src/pierre`) instead of CodeMirror, the browser's native PDF viewer instead of a bundled
   `pdf.js`, React Query for server state, Lucide icons, the shared page-layout
   components, and translated strings for every locale the dashboard ships.
 - Compilation now passes `-no-shell-escape` explicitly and runs through the

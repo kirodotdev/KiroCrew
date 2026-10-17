@@ -81,6 +81,7 @@ def _probe(
     https_enabled: bool | None = True,
     detail: str = "",
     stopped: bool = False,
+    refused_cli: str = "",
 ) -> DaemonProbe:
     return DaemonProbe(
         name=name,
@@ -90,6 +91,7 @@ def _probe(
         detail=detail,
         login=login,
         stopped=stopped,
+        refused_cli=refused_cli,
         https_enabled=https_enabled,
     )
 
@@ -116,6 +118,28 @@ class TestProbeDistinguishesCauses:
         with patch.object(tailnet, "_cli_path", return_value=None):
             p = tailnet.probe_daemon()
         assert (p.installed, p.reachable, p.logged_in, p.name) == (False, False, False, "")
+
+    def test_absent_cli_is_not_reported_as_refused(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(tmp_path / "absent"),))
+        p = tailnet.probe_daemon()
+        assert (p.installed, p.refused_cli) == (False, "")
+        assert "not installed" in p.detail
+
+    def test_refused_cli_is_reported_as_installed_elsewhere(self, monkeypatch, tmp_path) -> None:
+        """A user-owned install (Homebrew) is present but never run. Reporting
+        it as missing sends its owner to download what is already running."""
+        # A non-root euid keeps the writability branch under test on every
+        # runner; a root pytest would otherwise take the root-owner branch.
+        monkeypatch.setattr(tailnet.os, "geteuid", lambda: 1000, raising=False)
+        fake = tmp_path / "tailscale"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)  # user-writable by construction (tmp_path is ours)
+        monkeypatch.setattr(tailnet, "_CLI_CANDIDATE_PATHS", (str(fake),))
+        monkeypatch.setattr(tailnet, "IS_POSIX", True)
+        p = tailnet.probe_daemon()
+        assert (p.installed, p.refused_cli, p.name) == (False, str(fake), "")
+        assert str(fake) in p.detail
+        assert "not installed" not in p.detail
 
     def test_daemon_silent_reports_installed_but_unreachable(self) -> None:
         with (
@@ -369,6 +393,19 @@ class TestStepPrecedence:
     def test_install_outranks_the_config_switch(self) -> None:
         """A user without Tailscale must not be sent to a config toggle."""
         assert _step(probe=_probe(name="", installed=False), trusted=False) == "install"
+
+    def test_refused_cli_is_not_sent_to_install(self) -> None:
+        """Tailscale is already installed; only ``dashboard.url`` helps."""
+        probe = _probe(
+            name="", installed=False, reachable=False, refused_cli="/opt/homebrew/bin/tailscale"
+        )
+        assert _step(probe=probe, trusted=False) == "untrusted_cli"
+
+    def test_pinned_outranks_a_refused_cli(self) -> None:
+        probe = _probe(
+            name="", installed=False, reachable=False, refused_cli="/opt/homebrew/bin/tailscale"
+        )
+        assert _step(pinned=True, probe=probe) == "pinned"
 
     def test_unreachable_daemon_is_its_own_step(self) -> None:
         assert _step(probe=_probe(name="", reachable=False, logged_in=False)) == "start_daemon"
@@ -952,6 +989,24 @@ class TestQrRefusals:
         """
         with _machine(pinned=True, published=True):
             with patch.object(tailnet_mobile, "generate_token") as mint:
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+        assert resp.status == 409
+        assert b"governance_pinned" in resp.body
+        mint.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_governance_probe_failure_fails_closed(self, _unrestricted, _quiet_audit) -> None:
+        """If the ceiling probe itself cannot complete, the ceiling is unknown and
+        must read as pinned: a ready machine still refuses to mint."""
+        with _machine(published=True):
+            with (
+                patch.object(
+                    tailnet_mobile.tailnet,
+                    "is_governance_pinned_off",
+                    side_effect=RuntimeError("probe dispatch failed"),
+                ),
+                patch.object(tailnet_mobile, "generate_token") as mint,
+            ):
                 resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
         assert resp.status == 409
         assert b"governance_pinned" in resp.body
@@ -1758,6 +1813,33 @@ class TestStatusIsOwnerOnly:
         resp = await self._status()
         assert resp.status == 200
         assert json.loads(resp.body)["boot_id"]
+
+    @pytest.mark.asyncio
+    async def test_refused_cli_reaches_the_card_with_its_path(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        refused = DaemonProbe(
+            name="",
+            installed=False,
+            reachable=False,
+            logged_in=False,
+            detail="why",
+            refused_cli="/opt/homebrew/bin/tailscale",
+        )
+        with patch.object(tailnet_mobile.tailnet, "probe_daemon", return_value=refused):
+            resp = await tailnet_mobile.api_tailnet_mobile_status(_request())
+        body = json.loads(resp.body)
+        assert (body["step"], body["refused_cli"]) == (
+            "untrusted_cli",
+            "/opt/homebrew/bin/tailscale",
+        )
+        # The gateway cannot publish with a refused binary, so the card is handed
+        # the command to run by hand, for the port this server listens on.
+        port = tailnet_mobile._dashboard_port(_request())
+        assert port
+        assert body["serve_command"] == (
+            f"tailscale serve --bg --https=443 http://127.0.0.1:{port}"
+        )
 
     @pytest.mark.asyncio
     async def test_non_owner_read_is_refused(self, _unrestricted, _quiet_audit) -> None:

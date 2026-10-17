@@ -34,12 +34,14 @@ def reset_module_state(monkeypatch):
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
+    mcp_shared._last_failure_class = ""
     yield
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
+    mcp_shared._last_failure_class = ""
 
 
 @pytest.fixture
@@ -546,6 +548,60 @@ class TestLongCacheFailures:
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             mcp_shared._resolve_tool_policy()
         assert urlopen.call_count == 0
+
+
+class TestFailureCause:
+    """A ``resolution_failed`` read names the exception that caused it."""
+
+    def _failed_event(self, fake_sel):
+        events = [
+            c.kwargs
+            for c in fake_sel.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "tool_policy.resolution_failed"
+        ]
+        assert len(events) == 1, events
+        return events[0]
+
+    def test_audit_event_carries_the_exception_class_and_message(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
+        urlopen = MagicMock(side_effect=ConnectionRefusedError("gateway port closed"))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.unresolved == "resolution_failed"
+        assert policy.detail == "ConnectionRefusedError"
+        event = self._failed_event(fake_sel)
+        assert event["error"] == "ConnectionRefusedError: gateway port closed"
+        assert event["resources"] == "error_class=ConnectionRefusedError"
+
+    def test_message_is_redacted_and_capped(self, fake_sel, patch_session_setup, monkeypatch):
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
+        token = "ghp_" + "a1B2" * 9
+        urlopen = MagicMock(side_effect=OSError(f"bad {token} " + "x" * 500))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            mcp_shared._resolve_tool_policy()
+        error = self._failed_event(fake_sel)["error"]
+        assert error.startswith("OSError: bad ")
+        assert token not in error
+        assert len(error) <= len("OSError: ") + mcp_shared._FAILURE_MESSAGE_MAX
+
+    def test_negative_cache_hit_still_names_the_class(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
+        urlopen = MagicMock(side_effect=TimeoutError("timed out"))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            mcp_shared._resolve_tool_policy()
+            cached = mcp_shared._resolve_tool_policy()
+        assert urlopen.call_count == 1
+        assert cached.detail == "TimeoutError"
+        hits = [
+            c.kwargs
+            for c in fake_sel.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "tool_policy.negative_cache_hit"
+        ]
+        assert hits and hits[-1]["error"] == "TimeoutError"
 
 
 # ─────────────────────────────────────────────────────────────────────

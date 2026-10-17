@@ -12,13 +12,22 @@ import fnmatch
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew import agent_state, kiro_cli
-from kiro_crew.agent import OWNED_KIRO_AGENT_FILES, agents_spec_lock, kiro_agents_dir_path
+from kiro_crew.agent import (
+    OWNED_KIRO_AGENT_FILES,
+    _is_confirmed_managed_dashboard_author,
+    _read_spec_capped,
+    agents_spec_lock,
+    kiro_agents_dir_path,
+)
+from kiro_crew.agent_capabilities_withheld import withheld_approvals as _withheld_approvals
+from kiro_crew.agent_files import DASHBOARD_AUTHOR_AGENT_FILENAME
 from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
 from kiro_crew.agent_spec_format import (
     agent_spec_candidates,
@@ -33,14 +42,43 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.platform import redact_via_context
 from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.platform.governance_profiles import governance_answer_generation
 from kiro_crew.validation import is_registered_agent_name
 
+logger = logging.getLogger(__name__)
+
 SECTIONS = agent_state.CAPABILITY_SECTIONS
 MAX_OPERATIONS = 300
 MAX_DOCUMENT_BYTES = 1024 * 1024
+
+#: Managed servers a member's copy may carry when its Parent does not: the
+#: crewmate's own record, which every crewmate is meant to have. Its transport
+#: is never the request's: it is the entry the default template carries
+#: (:func:`_member_platform_transport`), refreshed on every projection.
+MEMBER_PLATFORM_SERVERS = frozenset({"kirocrew-mate"})
+
+
+def _member_platform_transport(name: str) -> dict | None:
+    from kiro_crew import agent as agent_mod
+
+    return agent_mod.managed_member_transport(name)
+
+
+def _platform_entry(transport: dict, disabled: bool) -> dict:
+    """*transport* as the copy's entry: ``disabled`` only when it is a mute.
+
+    An enabled entry carries no ``disabled`` key at all, exactly as the default
+    template's does. A ``"disabled": false`` would be a key a per-session element
+    cannot express, so the session mount would withhold the server's identity
+    element and every call would refuse ``identity_unattested``.
+    """
+    entry = {k: v for k, v in transport.items() if k != "disabled"}
+    if disabled:
+        entry["disabled"] = True
+    return entry
 
 
 class CapabilityError(ValueError):
@@ -56,6 +94,9 @@ class CapabilityError(ValueError):
         #: it (``target + ".json"``), so a hand edit cannot change it. Never a
         #: directory: the agents folder is fixed per scope and a path is not.
         self.file = ""
+        #: The draft's own approval reference a shape refusal is about, echoed
+        #: back so the pane names it without re-implementing the shape rule.
+        self.ref = ""
 
 
 def _digest(value: Any) -> str:
@@ -217,7 +258,9 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
 
 def _approval_ref(ref: str) -> tuple[str, str]:
     if not ref.startswith("@") or "/" not in ref or not all(ref[1:].split("/", 1)):
-        raise CapabilityError("invalid_approval_ref", 400)
+        error = CapabilityError("invalid_approval_ref", 400)
+        error.ref = ref
+        raise error
     return tuple(ref[1:].split("/", 1))  # type: ignore[return-value]
 
 
@@ -650,6 +693,80 @@ _INERT_FIELDS = frozenset({"$schema"})
 _REBUILT_FIELDS = frozenset({"hooks", "includeMcpJson"})
 
 
+def _parent_is_owned(snap: dict) -> bool:
+    """Is the capability projection's parent template one Crew owns?
+
+    A global-scope parent whose filename is in ``OWNED_KIRO_AGENT_FILES`` -- except the
+    dashboard-author stem, which was a user-creatable template name before it became owned.
+    For that stem the owned classification holds ONLY when the on-disk spec POSITIVELY
+    confirms as this installer's own -- its bytes reproduce the installer-recorded ownership
+    digest; a pre-existing user template at the stem -- one whose bytes do not reproduce it,
+    or an absent/unreadable file -- is NOT an owned parent, so a capability save
+    (``_maintain_owned`` / ``_unvouched``) does not refresh its inherited custom guards away
+    and publication does not bind the crew to that replacement. Fail-closed: unconfirmed is a
+    user file. The install gate and the fork-governance origin check apply the same gate.
+    """
+    parent_path = snap["parent"].get("path", "")
+    name = Path(parent_path).name
+    if snap["parent"].get("scope") != "global" or name not in OWNED_KIRO_AGENT_FILES:
+        return False
+    if name == DASHBOARD_AUTHOR_AGENT_FILENAME:
+        spec = _read_spec_capped(Path(parent_path))
+        return _is_confirmed_managed_dashboard_author(spec)
+    return True
+
+
+def _fork_refresh_failed_for(name: str) -> bool:
+    """Did the last fork refresh record a failure for *name* (or for every fork)?"""
+    import kiro_crew.agent as agent_facade
+
+    failed: frozenset[str] = getattr(agent_facade, "_fork_refresh_failed", frozenset())
+    return bool(name) and (name in failed or "*" in failed)
+
+
+def _detach_owned(snap: dict) -> bool:
+    """Would the fork refresh re-apply owned plumbing to this member's copy?
+
+    Asks the refresh's own rule (origin NAME, any scope) as well as
+    ``_parent_is_owned`` (global scope only): a project-scoped parent at an
+    owned name is refreshed as owned too.
+    """
+    from kiro_crew.agent import fork_origin_is_owned
+
+    return _parent_is_owned(snap) or fork_origin_is_owned(snap["target"])
+
+
+def _detach_blocker(snap: dict, intent: dict, owned: bool) -> str | None:
+    """The code that refuses Stop following for this saved setup, else None.
+
+    Once the intent is gone the member runs as an independent copy, so a
+    setup that copy could not keep is refused: single-tool limits (chat
+    start checks them against the backend only for a saved setup) and a
+    removal under a template Crew owns (the refresh restores it).
+    """
+    spec = snap["spec"]
+    if tool_limited_servers(spec):
+        return "detach_tool_limits_unkept"
+    if owned and any(
+        override.get("action") == "remove"
+        for section in SECTIONS
+        for override in intent["overrides"].get(section, {}).values()
+    ):
+        return "detach_removal_unkept"
+    return None
+
+
+def _detach_loses_mcp_json(snap: dict) -> bool:
+    """Does the copy also read the global mcp.json (``includeMcpJson`` unset)?
+
+    The fork refresh pins that merge off for a private copy with no saved
+    intent, so stopping turns it off. That is the state such a copy had
+    before it was enrolled, but it changes which servers the member loads, so
+    the owner confirms it (``accept_mcp_json``) instead of it happening silently.
+    """
+    return snap["spec"].get("includeMcpJson", True) is not False
+
+
 def _unvouched(snap: dict, spec: dict) -> list[str]:
     """Top-level keys of *spec* the review cannot show and this funnel cannot vouch for.
 
@@ -662,10 +779,7 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
     (``_INERT_FIELDS``). What remains is a hand edit no one has seen.
     """
     vouched = set(SECTIONS) | set(ORDINARY_FIELDS) | _STRUCTURAL_FIELDS | _INERT_FIELDS
-    if (
-        snap["parent"].get("scope") == "global"
-        and Path(snap["parent"].get("path", "")).name in OWNED_KIRO_AGENT_FILES
-    ):
+    if _parent_is_owned(snap):
         vouched |= _REBUILT_FIELDS
     if spec.get("permissions") == derived_agent_permissions(
         spec.get("allowedTools"), str(spec.get("name", ""))
@@ -706,16 +820,12 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
 def _maintain_owned(snap: dict, spec: dict) -> None:
     """Refresh host plumbing without regranting omitted capability entries."""
     from kiro_crew.agent import (
-        OWNED_KIRO_AGENT_FILES,
         _collect_app_mcp_servers,
         _refresh_dynamic_fields,
     )
 
     selected = copy.deepcopy(spec.get("mcpServers", {}))
-    if (
-        snap["parent"].get("scope") == "global"
-        and Path(snap["parent"].get("path", "")).name in OWNED_KIRO_AGENT_FILES
-    ):
+    if _parent_is_owned(snap):
         preserved = {
             key: copy.deepcopy(spec[key])
             for key in ("prompt", "model", "resources", "tools", "allowedTools")
@@ -730,6 +840,23 @@ def _maintain_owned(snap: dict, spec: dict) -> None:
         spec["mcpServers"] = {
             key: value for key, value in spec.get("mcpServers", {}).items() if key in selected
         }
+    else:
+        # A platform server the copy carries and its Parent does not is Crew's own
+        # entry, so it is kept current here the way an owned Parent's refresh keeps
+        # it, and retracted when a fresh build would not emit it.
+        parent_servers = snap["parent_spec"].get("mcpServers") or {}
+        for key in MEMBER_PLATFORM_SERVERS & selected.keys() - parent_servers.keys():
+            current = _member_platform_transport(key)
+            if current is None:
+                spec.get("mcpServers", {}).pop(key, None)
+                continue
+            entry = _platform_entry(current, selected[key].get("disabled") is True)
+            # A per-tool restriction the copy already holds survives the refresh:
+            # the transport is Crew's to keep current, the restriction is not.
+            retained = selected[key].get("disabledTools")
+            if retained:
+                entry["disabledTools"] = list(retained)
+            spec.setdefault("mcpServers", {})[key] = entry
     namespaced = {key for key in selected if ":" in key}
     if namespaced:
         current = _collect_app_mcp_servers(audit=False)
@@ -975,9 +1102,16 @@ class CapabilityService:
                         if set(value) != {"disabled"} or type(value["disabled"]) is not bool:
                             raise CapabilityError("managed_transport_locked", 400)
                         original = parent_rows[section].get(key)
+                        platform = original is None and key in MEMBER_PLATFORM_SERVERS
+                        if platform:
+                            original = _member_platform_transport(key)
                         if original is None:
                             raise CapabilityError("managed_transport_unavailable")
-                        value = {**original, "disabled": value["disabled"]}
+                        value = (
+                            _platform_entry(original, value["disabled"])
+                            if platform
+                            else {**original, "disabled": value["disabled"]}
+                        )
                     elif ":" in key:
                         from kiro_crew.agent import _collect_app_mcp_servers
 
@@ -1112,8 +1246,24 @@ class CapabilityService:
                 prepare_member_capabilities(snap["member"], snap["project"])
             except CapabilityError as exc:
                 runtime.update(status="failed", error_code=exc.code)
+        # Only a saved (or previewed, which always carries its projected
+        # intent) spec is gated at chat start; an unenrolled member runs its
+        # template as before and gets no warning.
+        backend_warning = member_backend_warning(selected) if intent else None
+        detach_blocked = None
+        detach_mcp_json_loss = False
+        if intent and isinstance(snap.get("spec"), dict) and snap.get("target"):
+            try:
+                detach_blocked = _detach_blocker(snap, intent, _detach_owned(snap))
+                detach_mcp_json_loss = _detach_loses_mcp_json(snap)
+            except Exception:
+                detach_blocked = None
+                detach_mcp_json_loss = False
         return safe_view(
             {
+                "backend_warning": backend_warning,
+                "detach_blocked": detach_blocked,
+                "detach_mcp_json_loss": detach_mcp_json_loss,
                 "schema_version": 1,
                 "member": snap["member"],
                 "mode": "inherited" if intent else snap["mode"],
@@ -1236,6 +1386,7 @@ class CapabilityService:
                             }
                         )
         view["impact"] = safe_view(impact)
+        view["withheld_approvals"] = _withheld_approvals(request, spec, intent, snap["catalog"])
         view["preview_token"] = self._preview_token(plans, request)
         return view
 
@@ -1261,6 +1412,124 @@ class CapabilityService:
         return self.put(
             member, {**body, "preview_token": preview["preview_token"]}, reset_parent=True
         )
+
+    def detach(self, member: str, body: Any) -> dict:
+        """Stop following the Parent: the member keeps its saved values as its own.
+
+        The member's private copy already holds the materialized effective spec,
+        so dropping the inheritance intent leaves an independent private copy
+        (``legacy_snapshot``) with exactly the values the member runs today. No
+        value is recomputed or loosened. Only verified saved bytes are kept: a
+        pending save or a drifted file is refused, so the member never keeps
+        bytes nobody reviewed. The only write is the sidecar entry, so a failure
+        changes nothing; a governance answer newer than the save is applied by
+        the fork refresh that follows. The Parent itself need not be readable: a
+        missing Parent is a reason to leave.
+        """
+        if (
+            not isinstance(body, dict)
+            or "revision" not in body
+            or not set(body) <= {"revision", "accept_mcp_json"}
+        ):
+            raise CapabilityError("invalid_request", 400)
+        if not isinstance(body["revision"], str):
+            raise CapabilityError("invalid_revision", 400)
+        accept_mcp_json = body.get("accept_mcp_json", False)
+        if not isinstance(accept_mcp_json, bool):
+            raise CapabilityError("invalid_request", 400)
+        snap = self._snapshot(member)
+        if body["revision"] != snap["revision"]:
+            raise CapabilityError("stale_revision")
+        if not snap["intent"]:
+            raise CapabilityError("not_inherited")
+        root = kiro_agents_dir_path()
+        from kiro_crew.agent import hold_spawn_gate
+
+        stale_governance = [False]
+        mcp_json_pinned = [False]
+        target_name = [""]
+        # Hold the spawn gate across the write and the refresh it triggers, so a
+        # session cannot start on not-yet-refiltered grants between them.
+        with hold_spawn_gate():
+            with ExitStack() as locks:
+
+                def mutate(document: dict) -> None:
+                    locks.enter_context(agents_spec_lock(root))
+                    locks.enter_context(agent_state._locked())
+                    fresh = self._snapshot(member, document, snap)
+                    if fresh["revision"] != snap["revision"]:
+                        raise CapabilityError("stale_revision")
+                    intent = fresh["intent"]
+                    if not intent:
+                        raise CapabilityError("not_inherited")
+                    if intent.get("status") != "saved":
+                        raise CapabilityError("materialization_pending")
+                    lineage = agent_state.get_fork_info(fresh["target"], strict=True)
+                    if not lineage or lineage["private_to"] != member:
+                        raise CapabilityError("foreign_private_copy")
+                    if _digest(fresh["spec"]) != intent.get("materialized"):
+                        raise CapabilityError("materialization_changed")
+                    # Refusals decided by the saved setup alone (the pane also gets them
+                    # in the view, so it can say so before the user opens the dialog).
+                    owned = _detach_owned(fresh)
+                    blocker = _detach_blocker(fresh, intent, owned)
+                    if blocker:
+                        raise CapabilityError(blocker)
+                    # Turning the global mcp.json merge off changes which servers the
+                    # member loads, so the owner confirms it first.
+                    loses_mcp_json = _detach_loses_mcp_json(fresh)
+                    if loses_mcp_json and not accept_mcp_json:
+                        raise CapabilityError("detach_mcp_json_unkept")
+                    # One write: the spec file is never touched, so a failure
+                    # leaves the intent and the reviewed bytes exactly as they
+                    # were. A governance answer newer than the save is applied by
+                    # the fork refresh below, which governs every private copy
+                    # that has no saved intent.
+                    target_name[0] = fresh["target"]
+                    mcp_json_pinned[0] = loses_mcp_json
+                    stale_governance[0] = intent.get("governance_generation") != (
+                        governance_answer_generation()
+                    )
+                    state = agent_state._read(strict=True)
+                    entry = state[fresh["target"]]
+                    entry.pop("capabilities")
+                    # A copy of a template Crew owns can still track the shipped
+                    # model (``model_managed``); the fork refresh would then
+                    # replace a model the member chose. The member's own copy
+                    # keeps the model it runs, so stop tracking it, in this write.
+                    if (
+                        owned
+                        and entry.get("model_managed") is True
+                        and any(
+                            override.get("action") == "set"
+                            for override in intent["overrides"].get("model", {}).values()
+                        )
+                    ):
+                        entry["model_managed"] = False
+                    agent_state._write(state)
+                    return None
+
+                self._write_bindings({member: snap}, mutate)
+            from kiro_crew.agent_discovery import clear_list_agents_cache
+
+            clear_list_agents_cache()
+            if (
+                stale_governance[0]
+                or mcp_json_pinned[0]
+                or _fork_refresh_failed_for(target_name[0])
+            ):
+                # The kept copy was last governed under an older answer, or an
+                # earlier refresh failed for it while it still had an intent (a
+                # missing Parent makes that refresh fail). Re-run the refresh that
+                # filters every intent-free private copy; if it fails the copy's
+                # sessions stay blocked (fail closed), as for any fork.
+                try:
+                    from kiro_crew.agent import _refresh_forked_templates
+
+                    _refresh_forked_templates()
+                except Exception:
+                    logger.warning("fork refresh after stop following failed", exc_info=True)
+        return self.get(member)
 
     def _finish_publish(self, member: str, expected_template: str, name: str) -> dict:
         """Clear only this publication's lineage, with normal config-first locks."""
@@ -1549,8 +1818,26 @@ def require_unmanaged_template(name: str) -> None:
         raise CapabilityError("capabilities_editor_required")
 
 
+def _parent_identity(descriptor: dict) -> dict:
+    """The Parent file a descriptor names, without the project it was resolved from.
+
+    ``_source`` records the project it searched in, but a global Parent is the
+    same file from every project that does not shadow its name, so that field
+    alone never makes two resolutions different Parents. Name, scope, source and
+    resolved path still must all match.
+    """
+    return {key: value for key, value in descriptor.items() if key != "project"}
+
+
 def prepare_member_capabilities(member: str, project_dir: str | Path | None = None) -> dict:
-    """Read-only startup seam; success proves saved bytes, never runtime loading."""
+    """Read-only startup seam; success proves saved bytes, never runtime loading.
+
+    *project_dir* is the chat's own project. It may differ from the project the
+    capabilities were saved in: the start is refused only when that project
+    resolves a different Parent than the reviewed one (``project_identity_changed``).
+    A project-scoped Parent belongs to its own project; a global Parent stays
+    the reviewed Parent until a project template shadows its name.
+    """
     cfg = KiroCrewConfig.load()
     binding = cfg.agents.get(member)
     if binding is None:
@@ -1559,7 +1846,9 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
     if intent is None:
         return {"template": binding.kiro_agent, "revision": "", "status": "unverified"}
     project = str(Path(project_dir).resolve()) if project_dir else ""
-    if project != intent["parent"]["project"]:
+    saved_parent = intent["parent"]
+    other_project = project != saved_parent["project"]
+    if other_project and saved_parent["scope"] != "global":
         raise CapabilityError("project_identity_changed")
     if intent.get("status") != "saved":
         raise CapabilityError("materialization_pending")
@@ -1568,9 +1857,11 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
     lineage = agent_state.get_fork_info(binding.kiro_agent, strict=True)
     if not lineage or lineage["private_to"] != member:
         raise CapabilityError("foreign_private_copy")
-    _, _, descriptor = _source(intent["parent"]["name"], project)
-    if descriptor != intent["parent"]:
-        raise CapabilityError("parent_identity_changed")
+    _, _, descriptor = _source(saved_parent["name"], project)
+    if _parent_identity(descriptor) != _parent_identity(saved_parent):
+        raise CapabilityError(
+            "project_identity_changed" if other_project else "parent_identity_changed"
+        )
     _, spec, own = _source(binding.kiro_agent, project, allow_private=True)
     if own["scope"] != "global":
         raise CapabilityError("private_template_shadowed")
@@ -1587,7 +1878,85 @@ def prepare_member_capabilities(member: str, project_dir: str | Path | None = No
             for name, server in spec.get("mcpServers", {}).items()
             if not server.get("disabled", False)
         ),
+        # Launched servers whose entry turns single tools off. Not every member
+        # backend can carry that (``ACP_BACKENDS_MEMBER_TOOL_LIMITS``).
+        "tool_limited_servers": tool_limited_servers(spec),
     }
+
+
+def tool_limited_servers(spec: dict) -> tuple[str, ...]:
+    """Launched MCP servers in *spec* whose entry turns single tools off.
+
+    The one definition both the chat-start seam (via
+    :func:`prepare_member_capabilities`) and the Capabilities page warning read,
+    so the page cannot name a different set than the start refuses on.
+    """
+    servers = spec.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        return ()
+    return tuple(
+        sorted(
+            name
+            for name, server in servers.items()
+            if isinstance(server, dict)
+            and server.get("disabledTools")
+            and not mcp_entry_is_muted(server)
+        )
+    )
+
+
+def member_backend_gap(backend: str, limited_servers: tuple[str, ...]) -> str | None:
+    """Why a member chat on *backend* would refuse a saved spec, or ``None``.
+
+    Mirrors the start gate in ``session_allocation``: a backend outside
+    ``ACP_BACKENDS_MEMBER_CAPABILITIES`` refuses with
+    ``capability_harness_unsupported``; one outside
+    ``ACP_BACKENDS_MEMBER_TOOL_LIMITS`` refuses a spec with single-tool limits
+    with ``capability_tool_limits_unsupported``. Pure: no config read.
+    """
+    from kiro_crew.acp_backends import (
+        ACP_BACKENDS_MEMBER_CAPABILITIES,
+        ACP_BACKENDS_MEMBER_TOOL_LIMITS,
+    )
+
+    if backend not in ACP_BACKENDS_MEMBER_CAPABILITIES:
+        return "harness_unsupported"
+    if limited_servers and backend not in ACP_BACKENDS_MEMBER_TOOL_LIMITS:
+        return "tool_limits_unsupported"
+    return None
+
+
+def member_backend_warning(spec: dict) -> dict | None:
+    """Non-blocking warning for the Capabilities page, or ``None``.
+
+    Checks both backends a member's chats can start on, resolved as
+    ``members.select_provider_backend`` resolves them: the member DM arm
+    (``agent.member_acp_backend``) and the default arm (``agent.acp_backend``),
+    which carries the member's Slack threads, cron jobs and spawned sessions --
+    those also reach the chat-start gate through ``resolve_crew_identity``. The
+    first backend that would refuse is named, member DMs first. A spawn with an
+    explicit backend override is chosen per call and cannot be known here. A
+    warning only: the settings can change after the save, so nothing refuses.
+    """
+    from kiro_crew.acp_backends import resolve_selected_backend
+
+    cfg = KiroCrewConfig.load()
+    limited = tool_limited_servers(spec)
+    for setting, value in (
+        ("agent.member_acp_backend", cfg.agent.member_acp_backend),
+        ("agent.acp_backend", cfg.agent.acp_backend),
+    ):
+        backend = resolve_selected_backend(value)
+        code = member_backend_gap(backend, limited)
+        if code is None:
+            continue
+        warning: dict[str, Any] = {"code": code, "backend": backend, "setting": setting}
+        # Also on a harness refusal: switching to a member backend that loads
+        # saved specs (kas) would then refuse these, so the page names both fixes.
+        if limited:
+            warning["servers"] = list(limited)
+        return warning
+    return None
 
 
 def reconcile_member_capabilities(member: str) -> None:

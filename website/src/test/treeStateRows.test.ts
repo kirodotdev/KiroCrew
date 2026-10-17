@@ -12,7 +12,7 @@ import { PIERRE_TREE_STATE_ROW_CSS } from '../pierre/config'
 
 const LABELS = {
   empty: 'Empty folder',
-  'hidden-only': 'Contains only hidden items (dotfiles, caches)',
+  'hidden-only': 'Contains only hidden items (skipped tool and cache folders, protected entries)',
   linked: 'Link to another folder: contents not listed',
   truncated: 'Not shown',
 } as const
@@ -35,7 +35,7 @@ describe('planTreeStateRows', () => {
     // a failed read is the notice's to report, not a status line's.
     expect([...plan.paths]).toEqual([
       `empty/Empty folder${M}`,
-      `onlyhidden/Contains only hidden items (dotfiles, caches)${M}`,
+      `onlyhidden/Contains only hidden items (skipped tool and cache folders, protected entries)${M}`,
       `cut/Not shown${M}`,
     ])
     expect(plan.paths.has(`cut/Not shown${M}`)).toBe(true)

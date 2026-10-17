@@ -1,6 +1,6 @@
 # Investigation: issue #7597 — `fleet_probe.py` at 14.8% failing the per-file coverage floor
 
-> Archived analysis; owning spec: [dev-fleet](../../../../system-specs/modules/dev-fleet.md).
+> Archived analysis; owning specs: [pipeline-conductor](../../../../system-specs/modules/pipeline-conductor.md) (`fleet_probe.py`) and [CI and the review gates](../../../../ci/ci-and-reviews.md#ciyml-correctness) (the per-file coverage floor).
 ## Summary
 
 The disposition is **needs-investigation / likely duplicate of the CI coverage-arm

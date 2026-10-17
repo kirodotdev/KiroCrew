@@ -19,6 +19,7 @@ from kiro_crew.github_runner import (
     PROVIDER_CLI_OVERRIDE_ENV,
     SetupError,
     agent_writable_roots,
+    apply_session_bus_address,
     provider_executable_candidates,
     validate_provider_executable,
 )
@@ -70,14 +71,22 @@ _PROCESS_EXIT_TIMEOUT_SECS = 2.0
 logger = logging.getLogger(__name__)
 
 
+class _OutputTooLarge(ValueError):
+    """A provider CLI pipe exceeded its byte bound."""
+
+
 def resolve_provider_cli(executable: str) -> str:
     """Resolve one allowlisted provider CLI through the shared trust policy."""
     if executable not in _RESOLVABLE_PROVIDER_CLIS:
-        raise SetupError("unsupported provider CLI")
+        raise SetupError("unsupported provider CLI", reason="unsupported_provider")
     override_name = PROVIDER_CLI_OVERRIDE_ENV[executable]
     override = os.environ.get(override_name)
     candidates = (override,) if override is not None else provider_executable_candidates(executable)
     last_error = ""
+    # A set override that fails is an operator choice the trust check refused;
+    # otherwise only a rejection other than "does not exist" means a binary was
+    # found and refused, matching the dashboard source-link runner.
+    untrusted = override is not None
     for candidate in candidates:
         if not candidate:
             last_error = "empty override"
@@ -86,8 +95,13 @@ def resolve_provider_cli(executable: str) -> str:
             return validate_provider_executable(candidate, require_protected=True)
         except ValueError as exc:
             last_error = str(exc)
+            if last_error != "path does not exist":
+                untrusted = True
     detail = f" ({last_error})" if last_error else ""
-    raise SetupError(f"no usable `{executable}` CLI found{detail}")
+    raise SetupError(
+        f"no usable `{executable}` CLI found{detail}",
+        reason="executable_untrusted" if untrusted else "executable_not_found",
+    )
 
 
 def provider_cli_env(
@@ -114,6 +128,7 @@ def provider_cli_env(
     for key in tuple(env):
         if key.upper() in _AMBIENT_IDENTITY_KEYS | _INJECTION_ENV_KEYS:
             del env[key]
+    apply_session_bus_address(env)
     system_path = platform_compat.trusted_system_path()
     if system_path is None:
         env.pop("PATH", None)
@@ -178,11 +193,11 @@ def run_provider_cli(
     """Run a validated provider CLI with bounded time, memory, and credentials."""
     try:
         binary = resolve_provider_cli(executable)
-    except SetupError:
+    except SetupError as exc:
         # CLI trust resolution is itself a permission decision. Record the
         # refusal before returning it so a missing or untrusted provider binary
         # cannot bypass the source-probe audit trail.
-        _audit_provider_cli(executable, "denied")
+        _audit_provider_cli(executable, "denied", reason=exc.reason or "executable_untrusted")
         raise
     try:
         _audit_provider_cli(executable, "invoked", critical=True)
@@ -272,8 +287,14 @@ def run_provider_cli(
                     raise SetupError("provider CLI pipes did not close") from exc
             finally:
                 readers.shutdown(wait=False, cancel_futures=True)
+    except subprocess.TimeoutExpired:
+        _audit_provider_cli(executable, "failed", reason="timeout")
+        raise
+    except _OutputTooLarge:
+        _audit_provider_cli(executable, "failed", reason="output_too_large")
+        raise
     except Exception:
-        _audit_provider_cli(executable, "failed")
+        _audit_provider_cli(executable, "failed", reason="provider_error")
         raise
     finally:
         if cleanup_path:
@@ -287,9 +308,12 @@ def run_provider_cli(
             stderr=stderr.decode("utf-8"),
         )
     except UnicodeDecodeError as exc:
-        _audit_provider_cli(executable, "failed")
+        _audit_provider_cli(executable, "failed", reason="output_not_utf8")
         raise SetupError("provider CLI returned non-UTF-8 output") from exc
-    _audit_provider_cli(executable, "completed" if decoded.returncode == 0 else "failed")
+    if decoded.returncode == 0:
+        _audit_provider_cli(executable, "completed")
+    else:
+        _audit_provider_cli(executable, "failed", reason="exit_nonzero")
     return decoded
 
 
@@ -307,7 +331,7 @@ def _read_limited(
         output.extend(chunk)
         if len(output) > maximum:
             _kill_provider_tree(proc)
-            raise ValueError("provider CLI output exceeds the monitor bound")
+            raise _OutputTooLarge("provider CLI output exceeds the monitor bound")
 
 
 def _kill_provider_tree(proc: subprocess.Popen[bytes]) -> None:
@@ -339,13 +363,25 @@ def _stop_provider_process(proc: subprocess.Popen[bytes]) -> None:
             raise SetupError("provider CLI process did not terminate") from exc
 
 
-def audit_provider_cli_denied(executable: str) -> None:
+def audit_provider_cli_denied(executable: str, *, reason: str = "authorization_refused") -> None:
     """Audit preflight refusals without forwarding targets or credentials."""
-    _audit_provider_cli(executable, "denied")
+    _audit_provider_cli(executable, "denied", reason=reason)
 
 
-def _audit_provider_cli(executable: str, outcome: str, *, critical: bool = False) -> None:
-    """Record only provider identity and coarse lifecycle, never argv or output."""
+def _audit_provider_cli(
+    executable: str,
+    outcome: str,
+    *,
+    reason: str = "",
+    critical: bool = False,
+) -> None:
+    """Record only provider identity, coarse lifecycle, and a fixed reason word.
+
+    ``reason`` comes from a fixed vocabulary (``executable_not_found``,
+    ``executable_untrusted``, ``unsupported_provider``, ``authorization_refused``,
+    ``host_not_allowlisted``, ``exit_nonzero``, ``timeout``, ...), never a
+    target, argv, credential, or process output.
+    """
     try:
         sel().log_api_access(
             caller="core:monitor",
@@ -353,6 +389,7 @@ def _audit_provider_cli(executable: str, outcome: str, *, critical: bool = False
             outcome=outcome,
             source="builtin-app",
             resources=executable,
+            error=reason,
             critical=critical,
         )
     except Exception:

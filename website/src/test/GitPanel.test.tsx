@@ -21,6 +21,7 @@ const H = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ api: H.api }))
 
 import GitPanel from '../components/GitPanel'
+import { namedCeiling } from './namedCeiling'
 
 const PROJECT = '/workspace/project'
 
@@ -36,6 +37,9 @@ function mount() {
     </QueryClientProvider>,
   )
 }
+
+/** Ceiling for the recovery refetch that follows a refused log read and its retry. */
+const LOG_REFETCHED = namedCeiling('LOG_REFETCHED', 5000)
 
 beforeEach(async () => {
   await initI18n()
@@ -479,7 +483,12 @@ describe('GitPanel filter-driver refusal', () => {
 
     mount()
 
-    await waitFor(() => expect(H.api.projectGitLog.mock.calls.length).toBeGreaterThanOrEqual(3))
+    // A chain: the log read and its retry are refused, then GitPanel's recovery
+    // effect (status readable, log still refusing) refetches the log.
+    await waitFor(
+      () => expect(H.api.projectGitLog.mock.calls.length).toBeGreaterThanOrEqual(3),
+      LOG_REFETCHED,
+    )
     // And the refusal is gone, so the panel is not left claiming history can't
     // be shown while the changes list renders beneath it. On the recovered
     // history, not merely without the notice: the refetch resets the log query's

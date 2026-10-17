@@ -37,7 +37,7 @@ in the **same commit** when you change what it documents.
 | If you are touching… | Read first |
 |---|---|
 | `platform/`, editions, CPP seam, governance | [platform-context](docs/system-specs/modules/platform-context.md) + [governance](docs/system-specs/modules/governance.md) |
-| `security.py`, `hooks.py`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
+| `security.py`, `hooks.py`, `hook_runtime/`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
 | `config/` — the live watcher, `restart=True` marks, appliers, `config.json` writes | [config](docs/system-specs/modules/config.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
@@ -51,11 +51,12 @@ in the **same commit** when you change what it documents.
 | killing a runtime, leases and tenancies, sweeps and reapers, `runtime_ownership.py`, `runtime_reconcile.py`, `session_pid.py`'s kill paths | [runtime-ownership](docs/system-specs/modules/runtime-ownership.md) |
 | session summaries, the chat summary panel, intent extraction | [session-summary](docs/system-specs/modules/session-summary.md) |
 | memory, embeddings, vectors, lessons, skills, hooks | [memory-skills-hooks](docs/system-specs/modules/memory-skills-hooks.md) |
-| `context.py`, `context_blocks.py`, what reaches the model's context | [context-management](docs/architecture/context-management.md) |
+| `context.py`, `context_blocks.py`, `context_assembly/`, what reaches the model's context | [context-management](docs/architecture/context-management.md) + [memory-skills-hooks: Context Builder](docs/system-specs/modules/memory-skills-hooks.md#context-builder-contextpy) (module ownership) |
 | MCP servers or tools (adding, changing, statelessness) | [mcp](docs/architecture/mcp.md) |
+| `mcp_gateway/` — `gatewayd.py`, `daemon/`, the daemon's lifecycle and facade | [mcp-gateway-daemon-lifecycle](docs/system-specs/modules/mcp-gateway-daemon-lifecycle.md) + [mcp](docs/architecture/mcp.md) |
 | apps, App Kit, manifests, app agents | [app-kit-platform](docs/system-specs/modules/app-kit-platform.md) + [app-kit/](docs/app-kit/README.md) |
 | artifacts, companion chat | [artifacts](docs/system-specs/modules/artifacts.md) |
-| `stt/`, `transcribe.py`, `voice_reply.py`, the mic, dictation, TTS | [stt-streaming](docs/system-specs/modules/stt-streaming.md) + [voice-streaming](docs/system-specs/modules/voice-streaming.md) |
+| `stt/`, `transcribe.py` and its `transcribe_*.py` owners, `voice_reply.py`, the mic, dictation, TTS | [stt-streaming](docs/system-specs/modules/stt-streaming.md) + [voice-streaming](docs/system-specs/modules/voice-streaming.md) |
 | cron, learn, dashboard handlers | [learn-cron-dashboard](docs/system-specs/modules/learn-cron-dashboard.md) |
 | Slack, Discord, any channel, messaging, approvals | [messaging](docs/system-specs/modules/messaging.md) + [slack-gateway](docs/system-specs/modules/slack-gateway.md) |
 | subagents, spawn, orphan recovery | [subagent](docs/system-specs/modules/subagent.md) |
@@ -149,7 +150,7 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   command line and the OS sandbox does not hold the path (#7441 went four rounds
   of `command`/`exec -a`/`nice`/`env -i`/`timeout`/`busybox` before restructuring).
 - **The sandbox's SCOPE is the operator's to widen, never yours.** What
-  `sandbox.py` seals, masks or no-follow pins decides which of the operator's own
+  `sandbox.py` and its `sandbox_*` owners seal, mask or no-follow pin decides which of the operator's own
   files their agent can still reach, so a widening they did not ask for surfaces
   days later as work that stopped, with no record that anyone chose to lose it.
   Never add a seal, mask or refusal a task did not ask for, never tighten a fence
@@ -177,8 +178,9 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
 `claude-*`, `opus*`, `sonnet*`, `haiku*`, `gpt-*` or `fable*` as a default or
 fallback fails at runtime for anyone not entitled to it, silently until the first
 prompt. The default is `"auto"`; resolve a substitute choice through
-`acp.client.resolve_usable_model`; pin a cheaper model only via
-`agent.role_models.<role>`. `code-review.yml` fails on a newly added hardcoded
+`acp.client.resolve_usable_model`; pin a cheaper model for the worker roles only
+via `agent.role_models.<role>` (and, for one crewmate's dispatched sessions, via
+that crewmate's `worker_model`). `code-review.yml` fails on a newly added hardcoded
 literal. Rules and the one exception:
 [model-selection](docs/system-specs/common/model-selection.md).
 
@@ -267,10 +269,17 @@ from the suffix rule: [release](docs/build/release.md).
 ## The gate before you commit
 
 ```bash
-python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
-flake8 src/kiro_crew test && mypy src/kiro_crew
+python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test conftest.py xdist_budget.py
+flake8 src/kiro_crew test conftest.py xdist_budget.py && mypy src/kiro_crew
+BASE="$(git merge-base HEAD origin/main)" && COMMENT_HISTORY_BASE_REF="$BASE" python3 scripts/check_comment_history.py && BRAND_BASE_REF="$BASE" python3 scripts/check_brand_name.py
 python3 scripts/local-gate.py
 ```
+
+The third line runs the two diff-scoped Fast Gate checks most often red on a
+PR: history narration in an added comment, and a misspelled product name on an
+added line. If `check_black_formatting.py` reports a baselined file as now
+black-clean (formatting what you touched does that), run it with
+`--update-baseline` and commit the shorter baseline.
 
 `local-gate.py` runs the tests related to your diff on both surfaces with a
 bounded worker count; the full suite is CI's job and never runs locally unless a
@@ -288,6 +297,13 @@ human passes `--full`. See
   --max-worker-restart=2`; a bare override silently drops `--dist loadgroup` and
   scatters `@pytest.mark.xdist_group` tests into flaky races.
 
+**No hand-written file over 2,000 lines; put new code in a new module.** When a
+file nears the cap, move whole definitions into a sibling module and keep the
+original path as the import path callers use. `scripts/check_file_line_cap.py`
+enforces it in CI's lint jobs; run it before you push. The files already over are
+listed in `.github/file-line-cap-baseline.txt`, which only shrinks, so never add a
+row. Details: [code-style](docs/system-specs/common/code-style.md).
+
 Gates, the seven flake classes, the conftest isolation floor and the traps that are
 invisible when reading a test: [code-style](docs/system-specs/common/code-style.md) +
 [testing-conventions](docs/system-specs/common/testing-conventions.md). A test that
@@ -299,7 +315,14 @@ Tests MUST be deterministic: wait on a signal, never sleep as a barrier; never s
 to make timestamps differ (set them); one clock, injected or frozen at the module's
 own binding; never assert an order you did not define; no literal port for a real
 listener (bind 0); no network beyond loopback; every self-unblocked await bounded.
-`AUTOSDE.yaml`'s `tests-are-deterministic` rule blocks these in review. Contract:
+`AUTOSDE.yaml`'s `tests-are-deterministic` rule blocks these in review, the SAST
+job's `semgrep/test-determinism.yaml` refuses the commonest on a new line, and
+`test/test_flake_pattern_ratchet.py` counts per file the clock, wait, port, environment
+and module-cache shapes those patterns miss, failing a change that adds one to a file
+(measured against its merge-base; a deliberate one carries `# flake-ok: <reason>`).
+It is a local, pre-push gate (why: testing-conventions.md "Determinism contract"):
+run `python -m pytest -n0 test/test_flake_pattern_ratchet.py` before pushing.
+Contract:
 [testing-conventions § Determinism contract](docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first).
 
 ## Cross-platform

@@ -10,6 +10,7 @@ const mockPost = vi.fn()
 
 vi.mock('../app-sdk/index', () => ({
   useAppApi: () => ({ get: mockGet, post: mockPost }),
+  useAppInfo: () => ({ name: 'test-app', version: '0', permissions: { api: ['/api/chat'], events: [] } }),
 }))
 
 interface MockChatMessageListProps {
@@ -72,7 +73,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
   // Default: return empty slot data
   mockGet.mockResolvedValue({ messages: [], running: false, title: '' })
-  mockPost.mockResolvedValue({})
+  mockPost.mockResolvedValue({ ok: true })
   queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -126,6 +127,8 @@ describe('ChatEmbed', () => {
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       })
+      // React Query delivers the first read through its notification timer.
+      await act(async () => { await vi.advanceTimersToNextTimerAsync() })
       expect(screen.getByText('Session ready. Type a message to start.')).toBeInTheDocument()
     })
 
@@ -227,10 +230,14 @@ describe('ChatEmbed', () => {
         fireEvent.click(screen.getByLabelText('Send message'))
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', {
+      // `?ws=1` selects the JSON receipt the shared transport reads; the scoped
+      // path check ignores the query, so the app's `/api/chat` grant still covers it.
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', {
         message: 'hello world',
         slot: 'slot-1',
         agent: 'test-agent',
+        // Client-minted correlation id, same convention as ChatPage/ChatPane.
+        meta: { sendId: expect.stringMatching(/^s-/) },
       })
     })
 
@@ -261,7 +268,7 @@ describe('ChatEmbed', () => {
         fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
       })
 
-      expect(mockPost).toHaveBeenCalledWith('/api/chat', expect.objectContaining({
+      expect(mockPost).toHaveBeenCalledWith('/api/chat?ws=1', expect.objectContaining({
         message: 'hello',
       }))
     })
@@ -379,7 +386,7 @@ describe('ChatEmbed', () => {
       })
 
       expect(onSend).toHaveBeenCalledWith('hi')
-      expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+      expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
     })
 
     it('still posts to /api/chat when no onSend is supplied', async () => {
@@ -394,7 +401,7 @@ describe('ChatEmbed', () => {
       })
 
       expect(mockPost).toHaveBeenCalledWith(
-        '/api/chat',
+        '/api/chat?ws=1',
         expect.objectContaining({ message: 'hi', slot: 'slot-1' }),
       )
     })
@@ -413,7 +420,7 @@ describe('ChatEmbed', () => {
       })
 
       // Bounded to one page (P5-e): the newest EMBED_PAGE_LIMIT rows, never the whole slot.
-      expect(mockGet).toHaveBeenCalledWith('/api/chat/slots/' + encodeURIComponent('test-slot') + '?limit=200')
+      expect(mockGet).toHaveBeenCalledWith('/api/chat/slots/' + encodeURIComponent('test-slot') + '?limit=200&cursor=1')
     })
 
     it('polls at 5000ms interval when idle', async () => {
@@ -454,6 +461,37 @@ describe('ChatEmbed', () => {
       expect(mockGet).toHaveBeenCalled()
     })
 
+    it.each([
+      { name: 'a fresh session', messages: [], label: 'New session' },
+      { name: 'a resumed session', messages: [{ role: 'user', content: 'Earlier turn', cls: '' }], label: 'Untitled session' },
+    ])('replaces the untitled label after polling $name without remounting', async ({ messages, label }) => {
+      mockGet.mockResolvedValue({ messages, running: false })
+      const slotKey = 'coder-untitled'
+      await act(async () => {
+        renderWithProviders(<ChatEmbed slotKey={slotKey} />)
+      })
+      // React Query delivers the first read through its notification timer.
+      await act(async () => { await vi.advanceTimersToNextTimerAsync() })
+      expect(mockGet).toHaveBeenCalledTimes(1)
+      const header = screen.getByTestId('chat-embed-title')
+      expect(header).toHaveTextContent(new RegExp(`^${label}$`))
+      expect(header).toHaveAttribute('title', slotKey)
+      expect(screen.queryByText(slotKey)).toBeNull()
+
+      mockGet.mockResolvedValue({ messages, running: false, title: 'Trip planning' })
+      // Step the real query scheduler until its next poll, without copying its cadence.
+      for (let step = 0; step < 20 && mockGet.mock.calls.length < 2; step++) {
+        await act(async () => { await vi.advanceTimersToNextTimerAsync() })
+      }
+      expect(mockGet).toHaveBeenCalledTimes(2)
+      // React Query delivers the settled result through its notification timer.
+      await act(async () => { await vi.advanceTimersToNextTimerAsync() })
+      expect(screen.getByTestId('chat-embed-title')).toBe(header)
+      expect(header).toHaveTextContent(/^Trip planning$/)
+      expect(screen.queryByText(label)).toBeNull()
+      expect(screen.queryByText(slotKey)).toBeNull()
+    })
+
     it('shows streaming indicator when running', async () => {
       mockGet.mockResolvedValue({ messages: [], running: true, title: 'My Session' })
 
@@ -484,14 +522,16 @@ describe('ChatEmbed', () => {
       expect(screen.getByText('My Custom Title')).toBeInTheDocument()
     })
 
-    it('shows slotKey as fallback when no title', async () => {
+    it('shows "New session" when no title, with the slotKey only as the hover title', async () => {
       mockGet.mockResolvedValue({ messages: [], running: false })
 
       await act(async () => {
         renderWithProviders(<ChatEmbed slotKey="fallback-slot" />)
       })
+      await act(async () => { await vi.advanceTimersToNextTimerAsync() })
 
-      expect(screen.getByText('fallback-slot')).toBeInTheDocument()
+      expect(screen.getByText('New session')).toHaveAttribute('title', 'fallback-slot')
+      expect(screen.queryByText('fallback-slot')).toBeNull()
     })
   })
 
@@ -625,7 +665,7 @@ describe('ChatEmbed follow-up options', () => {
     })
 
     expect(input.value).toBe('Run tests')
-    expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
+    expect(mockPost).not.toHaveBeenCalledWith('/api/chat?ws=1', expect.anything())
   })
 
   it('picking an option twice removes it from the draft again', async () => {
@@ -655,6 +695,38 @@ describe('ChatEmbed follow-up options', () => {
       vi.advanceTimersByTime(250)
     })
     expect(input.value).toBe('')
+  })
+
+  // #18013: a single-select `[OPTION:]` pick REPLACES the previous one rather than
+  // joining it, matching the main chat and chat pane. ChatEmbed used to join
+  // because it drove useComposerDraft without the offer's select mode.
+  it('a single-select [OPTION:] pick replaces the previous pick', async () => {
+    mockGet.mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'Pick one. [OPTION: Go | Go All | Cancel]' }],
+      running: false,
+      title: '',
+    })
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="slot-1" />)
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(100)
+    })
+    const input = screen.getByLabelText('Chat message') as HTMLInputElement
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Go' }))
+      vi.advanceTimersByTime(250)
+    })
+    expect(input.value).toBe('Go')
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      vi.advanceTimersByTime(250)
+    })
+    // Replaced, not joined: NOT "Go, Cancel".
+    expect(input.value).toBe('Cancel')
+    expect(mockPost).not.toHaveBeenCalledWith('/api/chat', expect.anything())
   })
 
 })

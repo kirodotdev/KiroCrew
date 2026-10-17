@@ -154,7 +154,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
     : i18nT('pages.chat.subagentCompletionCard.show_details')
 
   // Row geometry -- the px-4 gutter and the --mc-content-width clamp -- belongs to
-  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // the HOST row wrapper, never to this card. ChatTranscriptView wraps every renderMessage
   // result, and the shared registries wrap this card through ctx.row. Re-applying
   // it here nested one clamp inside another and inset the card by a second full
   // gutter, so it sat 20px right of every sibling row and 40px narrower.
@@ -183,12 +183,12 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
           <span
             className={`${CHIP} ${
               failed
-                ? 'bg-danger-subtle border-danger/20 text-danger'
+                ? 'bg-danger-subtle border-danger/20 text-danger-text'
                 : interrupted
-                  ? 'bg-warn-subtle border-warn/20 text-warn'
+                  ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : stopped
                     ? 'bg-muted/15 border-border text-muted'
-                    : 'bg-ok-subtle border-ok/20 text-ok'
+                    : 'bg-ok-subtle border-ok/20 text-ok-text'
             }`}
           >
             {outcomeLabel(parsed.outcome)}
@@ -196,12 +196,12 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
         ) : (
           <>
             {parsed.ok > 0 && (
-              <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok`} data-testid="chip-ok">
+              <span className={`${CHIP} bg-ok-subtle border-ok/20 text-ok-text`} data-testid="chip-ok">
                 <CheckCircle2 size={10} aria-hidden /> {parsed.ok}
               </span>
             )}
             {parsed.failed > 0 && (
-              <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger`} data-testid="chip-failed">
+              <span className={`${CHIP} bg-danger-subtle border-danger/20 text-danger-text`} data-testid="chip-failed">
                 <AlertCircle size={10} aria-hidden /> {parsed.failed}
               </span>
             )}
@@ -224,7 +224,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
             <code
               className={`${CHIP} font-mono max-w-[8rem] ${
                 modelDowngraded
-                  ? 'bg-warn-subtle border-warn/20 text-warn'
+                  ? 'bg-warn-subtle border-warn/20 text-warn-text'
                   : resolvedKnown
                     ? 'bg-accent/10 border-accent/20 text-accent/80'
                     : 'bg-bg-hover border-border text-muted/60'
@@ -302,7 +302,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
         // rendered as persistent text here too (UX review #3582). role=status so
         // AT announces it; the amber matches the chip.
         <div
-          className="flex items-start gap-1.5 px-3 py-1.5 border-t border-warn/20 bg-warn-subtle/50 text-[11px] leading-4 text-warn"
+          className="flex items-start gap-1.5 px-3 py-1.5 border-t border-warn/20 bg-warn-subtle/50 text-[11px] leading-4 text-warn-text"
           role="status"
           data-testid="subagent-completion-downgrade"
         >
@@ -331,7 +331,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
         // bottom) — pre-fix, the only indicator was the UA :focus-visible
         // outline reduced to a hairline on the top edge alone (WCAG 2.4.7).
         <div
-          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-ring-accent-inset"
           data-testid="subagent-completion-body"
           role="region"
           aria-labelledby={headlineId}

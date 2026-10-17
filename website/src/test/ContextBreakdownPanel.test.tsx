@@ -265,7 +265,7 @@ describe('ContextBreakdownPanel rendering', () => {
   it('draws only the newest 30 turns and counts the rest', () => {
     const many = Array.from({ length: MAX_CHART_TURNS + 5 }, (_, i) => turnOf({ your_message: 10 + i, memory: 100 }))
     render(<ContextBreakdownPanel trace={trace({ turns: many })} />)
-    expect(screen.getByText('5 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getByText('Turns 1–5 earlier')).toBeInTheDocument()
     expect(screen.getByText(`Last ${MAX_CHART_TURNS} turns`)).toBeInTheDocument()
     expect(screen.queryByText(/^All /)).toBeNull()
     expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
@@ -284,7 +284,7 @@ describe('ContextBreakdownPanel rendering', () => {
       turnOf({ your_message: 10 + i, memory: 100 }, { ordinal: 41 + i }),
     )
     render(<ContextBreakdownPanel trace={trace({ turns: many })} />)
-    expect(screen.getByText('45 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getByText('Turns 1–45 earlier')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(MAX_CHART_TURNS)
     // The newest is turn 75, the oldest shown is 46.
     expect(screen.getByText(/Turn 75 · latest/)).toBeInTheDocument()
@@ -306,7 +306,7 @@ describe('ContextBreakdownPanel rendering', () => {
       turnOf({ your_message: 30, memory: 100 }, { ordinal: 48 }),
     ]
     render(<ContextBreakdownPanel trace={trace({ turns: regenerated })} />)
-    expect(screen.getByText('44 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getByText('Turns 1–45 earlier · 1 of them listed above')).toBeInTheDocument()
   })
 
   it('lists a regenerated start turn once, from its newest attempt', () => {
@@ -322,7 +322,7 @@ describe('ContextBreakdownPanel rendering', () => {
     const startRows = container.querySelectorAll('[data-start-row]')
     expect(startRows).toHaveLength(1)
     expect(startRows[0]).toHaveAttribute('data-turn', '2')
-    expect(startRows[0].textContent).toContain('Turn 41 · session start')
+    expect(startRows[0].textContent).toContain('Turn 41 · context rebuilt')
     expect(startRows[0].textContent).toContain('31,120 characters')
     // The previous turn for turn 42 is the kept start attempt, not the dropped one.
     const detail = screen.getByTestId('selected-turn-detail')
@@ -358,7 +358,7 @@ describe('ContextBreakdownPanel rendering', () => {
       turnOf({ your_message: 30, memory: 100 }, { ordinal: 10 }),
     ]
     render(<ContextBreakdownPanel trace={trace({ turns: few })} />)
-    expect(screen.getByText('7 earlier turns not shown')).toBeInTheDocument()
+    expect(screen.getByText('Turns 1–7 earlier')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /^Turn \d+:/ })).toHaveLength(3)
   })
 
@@ -402,6 +402,54 @@ describe('ContextBreakdownPanel rendering', () => {
   it('renders a readable empty state for a session with no recorded turns', () => {
     render(<ContextBreakdownPanel trace={trace({ turns: [] })} />)
     expect(screen.getByText(/No context breakdown recorded/i)).toBeInTheDocument()
+  })
+
+  it('does not promise data while recording is switched off', () => {
+    // "yet" is true for a session whose next turn fills the panel, and false when the
+    // gateway records nothing at all: the payload says which, and the copy follows it.
+    render(<ContextBreakdownPanel trace={trace({ turns: [], recording: false, env_file: '/srv/crew/.env' })} />)
+    expect(screen.getByText(/Context breakdown is not recorded while the crew log is off\. Remove KIROCREW_CREW_LOG from \/srv\/crew\/\.env/)).toBeInTheDocument()
+    expect(screen.queryByText(/yet/)).toBeNull()
+  })
+
+  it('keeps the "yet" empty state when the payload says recording is on', () => {
+    render(<ContextBreakdownPanel trace={trace({ turns: [], recording: true })} />)
+    expect(screen.getByText('No context breakdown recorded for this session yet.')).toBeInTheDocument()
+  })
+
+  it('names a single earlier turn without a range', () => {
+    const rows = [
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 2 }),
+      turnOf({ your_message: 20, memory: 100 }, { ordinal: 3 }),
+    ]
+    render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
+    expect(screen.getByTestId('earlier-turns')).toHaveTextContent('Turn 1 earlier')
+  })
+
+  it('labels only turn 1 as the session start and a later start row as a rebuild', () => {
+    const rows = [
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 1 }),
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 2 }),
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 3 }),
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 4 }),
+    ]
+    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
+    const labels = Array.from(container.querySelectorAll('[data-start-row]')).map(r => r.textContent ?? '')
+    expect(labels[0]).toContain('Turn 1 · session start')
+    expect(labels[1]).toContain('Turn 3 · context rebuilt')
+    expect(labels[1]).not.toContain('session start')
+  })
+
+  it('labels the fold-marked start "session start" even when a refused turn 1 put it at turn 2', () => {
+    const rows = [
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 2, first_start: true }),
+      turnOf({ your_message: 10, memory: 100 }, { ordinal: 3, first_start: false }),
+      turnOf({ your_message: 120, memory: 30_000 }, { phase: 'session_start', ordinal: 4, first_start: false }),
+    ]
+    const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
+    const labels = Array.from(container.querySelectorAll('[data-start-row]')).map(r => r.textContent ?? '')
+    expect(labels[0]).toContain('Turn 2 · session start')
+    expect(labels[1]).toContain('Turn 4 · context rebuilt')
   })
 
   it('shows a loading state before the first payload', () => {
@@ -456,7 +504,7 @@ describe('session-start turns sit above the chart', () => {
       .map(t => Number((t.textContent ?? '').replace(/,/g, '')))
       .filter(n => Number.isFinite(n))
     expect(Math.max(...ticks)).toBeLessThan(10_000)
-    expect(screen.getByText(/shown above the chart so later turns stay readable/)).toBeInTheDocument()
+    expect(screen.getByText(/Session-start and rebuild turns are listed above the chart so later turns stay readable/)).toBeInTheDocument()
   })
 
   it('announces the start row by its TRUE ordinal, matching what the row displays', () => {
@@ -473,7 +521,7 @@ describe('session-start turns sit above the chart', () => {
     const { container } = render(<ContextBreakdownPanel trace={trace({ turns: rows })} />)
     const row = container.querySelector('[data-start-row]') as HTMLElement
     // Visible text and the selection key disagree on purpose: ordinal 41, window index 1.
-    expect(row.textContent).toContain('Turn 41 · session start')
+    expect(row.textContent).toContain('Turn 41 · context rebuilt')
     expect(row).toHaveAttribute('data-turn', '1')
 
     fireEvent.click(row)

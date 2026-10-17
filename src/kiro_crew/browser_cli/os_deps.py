@@ -48,13 +48,13 @@ _DEBIAN_IDS = frozenset({"debian", "ubuntu"})
 #: (``libgbm1`` for ``mesa-libgbm``) -- so no command this module could compose
 #: from :data:`_RPM_CHROMIUM_PACKAGES` works there, even when ``dnf`` or
 #: ``yum`` happens to be installed from SUSE's own repos. Lineage decides,
-#: not which binaries the host carries: see :func:`_rpm_package_manager`.
+#: not which binaries the host carries: see :func:`rpm_package_manager`.
 _SUSE_IDS = frozenset({"opensuse", "sles", "suse"})
 
 #: ``ID``/``ID_LIKE`` tokens that mean rpm packaging. Family membership says how
 #: packages are NAMED, not which manager installs them: Fedora-lineage hosts
 #: carry ``dnf`` or ``yum``, while the SUSE tokens mean ``zypper`` -- so the
-#: manager is probed per host (see :func:`_rpm_package_manager`), never assumed
+#: manager is probed per host (see :func:`rpm_package_manager`), never assumed
 #: from the family. ``amzn`` reports ``ID_LIKE=fedora``, so the ``ID_LIKE`` scan
 #: covers Amazon Linux without naming it, but it is listed anyway: Amazon Linux 2
 #: omits ``ID_LIKE``.
@@ -133,7 +133,7 @@ _APT_DEPS_COMMAND = "npx playwright install-deps {engine}"
 
 #: Remedy prefix for the rpm family, completed with :data:`_RPM_CHROMIUM_PACKAGES`.
 #: ``{manager}`` is filled with whichever supported manager this host actually
-#: has -- see :func:`_rpm_package_manager` -- because half the rpm family does
+#: has -- see :func:`rpm_package_manager` -- because half the rpm family does
 #: not carry ``dnf``, and a hardcoded manager fails on its own first argument
 #: exactly the way the module docstring warns about. Privilege elevation is
 #: composed separately by :func:`_sudo_prefix`.
@@ -156,6 +156,18 @@ _UNLISTED_ENGINE_HINT = (
     "download."
 )
 
+#: What an operator is told for an engine measured not to run on this
+#: distribution (:func:`engine_unsupported_here`): the engine cannot run on this
+#: host, and no command composed here or by the operator changes that. It names
+#: the engine that failed and the one this host does support, and like every hint
+#: it is the LAST line of the failure detail -- the position that survives
+#: truncation.
+_UNSUPPORTED_ENGINE_HINT = (
+    "{title} is not supported on this operating system: Kiro Crew has no way to "
+    "install the OS libraries it needs on this Linux distribution. Chromium is "
+    "the supported browser engine on this host."
+)
+
 #: Engines whose rpm package set is :data:`_RPM_CHROMIUM_PACKAGES`.
 _RPM_LISTED_ENGINES = frozenset({"chromium"})
 
@@ -175,24 +187,30 @@ def _sudo_prefix() -> str:
     return "sudo " if shutil.which("sudo") else ""
 
 
-def _os_release_ids() -> set[str]:
-    """Lowercased ``ID`` and ``ID_LIKE`` tokens identifying this distribution.
+def _os_release() -> dict[str, str]:
+    """This host's freedesktop os-release fields, or ``{}`` when there are none.
 
     Read through :func:`platform.freedesktop_os_release` rather than opening
     ``/etc/os-release`` directly. The stdlib consults BOTH locations the
     freedesktop specification defines -- a minimal or immutable image may ship
     only ``/usr/lib/os-release`` -- and it applies the spec's shell-style
     unquoting, so a hand-rolled parser here would be a less correct copy of it.
+    """
+    try:
+        return platform.freedesktop_os_release()
+    except OSError:
+        logger.debug("no freedesktop os-release on this host", exc_info=True)
+        return {}
+
+
+def _os_release_ids() -> set[str]:
+    """Lowercased ``ID`` and ``ID_LIKE`` tokens identifying this distribution.
 
     An absent or unreadable file yields an empty set, which reports as
     :data:`FAMILY_UNKNOWN` -- the conservative answer, since that is the family
     for which no package manager is assumed.
     """
-    try:
-        release = platform.freedesktop_os_release()
-    except OSError:
-        logger.debug("no freedesktop os-release on this host", exc_info=True)
-        return set()
+    release = _os_release()
     # ``ID`` is single-valued; ``ID_LIKE`` is a space-separated list naming the
     # bases a derivative inherits from. Both are scanned so a derivative that
     # names itself in ``ID`` still resolves through its base.
@@ -200,6 +218,22 @@ def _os_release_ids() -> set[str]:
     for key in ("ID", "ID_LIKE"):
         ids.update(token for token in release.get(key, "").lower().split() if token)
     return ids
+
+
+def os_release_ids() -> frozenset[str]:
+    """Public read of :func:`_os_release_ids`, for other per-distribution hints."""
+    return frozenset(_os_release_ids())
+
+
+def _os_release_id() -> str:
+    """The lowercased ``ID`` alone: the distribution itself, not its lineage.
+
+    What :func:`engine_unsupported_here` compares against. ``ID_LIKE`` is left
+    out on purpose, in both directions: a base's measurement does not transfer
+    to a derivative that merely names it, and a derivative's does not transfer
+    to its base.
+    """
+    return _os_release().get("ID", "").strip().lower()
 
 
 @lru_cache(maxsize=1)
@@ -233,8 +267,12 @@ def with_deps_supported() -> bool:
     return linux_family() == FAMILY_DEBIAN
 
 
-def _rpm_package_manager() -> str | None:
+def rpm_package_manager() -> str | None:
     """The supported rpm-family manager for this host, or ``None``.
+
+    Public because two surfaces name this host's manager to the operator:
+    :func:`manual_deps_command` here and the PPTX Maker LibreOffice hint. Both ask
+    this one probe, so they cannot disagree about which manager the host has.
 
     Lineage first, then the probe. A SUSE host (:data:`_SUSE_IDS` in its
     os-release tokens) is answered ``None`` outright: its packages are named
@@ -273,7 +311,7 @@ def manual_deps_command(engine: str = "chromium") -> str | None:
     side (whose packages this module's list cannot name), any rpm host with no
     supported manager on ``PATH``, and every engine other than Chromium on the
     rpm family (:data:`_RPM_LISTED_ENGINES`): no verified command can be
-    composed, so none is -- see :func:`_rpm_package_manager`.
+    composed, so none is -- see :func:`rpm_package_manager`.
     """
     family = linux_family()
     if family == FAMILY_DEBIAN:
@@ -281,7 +319,7 @@ def manual_deps_command(engine: str = "chromium") -> str | None:
     if family == FAMILY_RPM:
         if engine not in _RPM_LISTED_ENGINES:
             return None
-        manager = _rpm_package_manager()
+        manager = rpm_package_manager()
         if manager is None:
             return None
         return (
@@ -292,6 +330,37 @@ def manual_deps_command(engine: str = "chromium") -> str | None:
     return None
 
 
+def engine_unsupported_here(engine: str) -> bool:
+    """Whether *engine* is measured not to run on this distribution.
+
+    One measured pair: WebKit on Amazon Linux (os-release ``ID`` ``amzn``).
+    MEASURED on Amazon Linux 2023: ``install-browser webkit`` exits 0 and names
+    27 missing libraries (``libgtk-4.so.1``, ``libflite*``, ``libmanette-0.2``,
+    ``libhyphen``, ``libavif``, ``libx264``, ICU 74 sonames where the host ships
+    ICU 67), most with no package in the distribution's repositories, and
+    Playwright's own dependency installer is apt-only. ``install-browser
+    firefox`` on the same host passes host validation, so Firefox is not here:
+    it stays an unlisted engine whose libraries, when one is missing, the
+    operator can install by name.
+
+    Compared on ``ID`` alone (:func:`_os_release_id`), never on ``ID_LIKE`` or
+    the family: a measurement is of one distribution's repositories, not of a
+    lineage. ``amzn`` reports ``ID_LIKE=fedora``, and Fedora packages gtk4, ICU,
+    libavif, flite, libmanette and hyphen, so an operator there can follow the
+    manual instruction (:data:`_UNLISTED_ENGINE_HINT`), which is what every
+    other rpm distribution keeps. A second measured pair would be a second
+    comparison, with its capture.
+
+    The install layer reads this to attach the verdict only to a failure that
+    names the missing libraries: the verdict is a claim about the host, and that
+    report is its only evidence, so a download that failed for another reason
+    keeps its own error instead.
+    """
+    if not platform_compat.IS_LINUX:
+        return False
+    return engine == "webkit" and _os_release_id() == "amzn"
+
+
 def missing_deps_hint(engine: str = "chromium") -> str:
     """One line for a failed *engine* download, or ``""`` when there is nothing to add.
 
@@ -300,11 +369,17 @@ def missing_deps_hint(engine: str = "chromium") -> str:
     host-validation failure into the command that resolves it without adding a
     surface to the UI or a string to the translation catalogs.
 
-    An rpm-family host downloading an engine with no verified package list gets
-    an engine-named manual instruction instead of a command
-    (:data:`_UNLISTED_ENGINE_HINT`). An unrecognized host still gets nothing.
+    A distribution measured not to run *engine* at all
+    (:func:`engine_unsupported_here`) gets the verdict that the engine is
+    unsupported on this operating system (:data:`_UNSUPPORTED_ENGINE_HINT`); no
+    instruction could be followed there. Any other rpm-family host downloading
+    an engine with no verified package list gets an engine-named manual
+    instruction instead of a command (:data:`_UNLISTED_ENGINE_HINT`). An
+    unrecognized host still gets nothing.
     """
     title = _ENGINE_TITLES.get(engine, engine)
+    if engine_unsupported_here(engine):
+        return _UNSUPPORTED_ENGINE_HINT.format(title=title)
     command = manual_deps_command(engine)
     if command is not None:
         return _MISSING_DEPS_HINT.format(title=title, command=command)

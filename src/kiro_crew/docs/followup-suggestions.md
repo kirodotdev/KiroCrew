@@ -2,7 +2,8 @@
 
 At the end of a turn the agent can offer concrete next steps as a card above the
 chat composer. Each suggestion carries an **expanded handoff prompt** and three
-actions: start it in a new git worktree, add it to the current session, or skip.
+actions: start it in a new chat (in a new git worktree when the project is a git
+repository), add it to the current session, or skip.
 
 Both non-skip actions **pre-fill a composer and stop**. Nothing is sent until
 you press send, so a single click can never launch an unattended agent turn.
@@ -36,13 +37,14 @@ Calling the tool is the agent's own judgement call; there is no turn-boundary ho
 
 | Action | Effect |
 | --- | --- |
-| **Start in new worktree** | Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and pre-fills its composer with the prompt. Disabled — and demoted from the accent style to the secondary look — when the session has no project directory; the card footer says why, and the tool result tells the agent so it can steer to "Add to this session" instead. |
+| **Start in new worktree** | Shown when the session's project directory is a git repository (or the repository check has not answered yet). Creates `<parent>/<repo>-wt-<slug>` on a new branch off the repo's default branch, opens a new chat session scoped to that directory, and pre-fills its composer with the prompt. |
+| **Start in new chat** | Takes the worktree button's place when the session has no project directory, or its project directory is not a git repository. Opens a new chat session in the same project directory (or, when the session has none, wherever a new chat starts by default) and the same sidebar folder, with no worktree and no git call, and pre-fills its composer with the prompt. The button's tooltip says why no worktree is created, and in a project directory the card footer says where the new chat opens. With no project directory the tool result also tells the agent which button the card shows. |
 | **Add to this session** | Pre-fills the current session's composer with the prompt. An unsent draft is preserved — the prompt is appended below it, not written over it. |
 | **Skip** | Dismisses that one suggestion; siblings remain. The card disappears when its last item is gone. |
 
 ## Scope and limits
 
-- **Dashboard surface only.** The tool is **stateless**: `mcp_tools/control.py::suggest_followup` validates the items and returns a session-directive marker carrying no session key. The session-aware consumer (`dashboard/session_directive_apply.py::apply_session_directive`) resolves the authoritative session and applies the card to ITS OWN slot, so a cron, sub-agent, or otherwise tabless caller is refused there rather than posting a card into someone else's session. The gate is a live card surface, not where the conversation started: `suggest_followup` requires both a chat slot and `has_dashboard_surface(session_key)`, so a channel-born session with its dashboard tab open qualifies, while a slot-less caller (a channel transport's `TurnDriver`) is refused even when a tab happens to be open. Every path emits a SEL audit event.
+- **Dashboard surface only.** The tool is **stateless**: `mcp_tools/control.py::suggest_followup` validates the items and returns a session-directive marker carrying no session key. The session-aware consumer (`dashboard/session_directive_apply.py::apply_session_directive`) resolves the authoritative session and applies the card to ITS OWN slot, so a cron, sub-agent, or otherwise tabless caller is refused there rather than posting a card into someone else's session. The gate is a live card surface AND authenticated-human provenance, not where the conversation started: `suggest_followup` requires a chat slot, `has_dashboard_surface(session_key)`, and a user-origin producer, so a channel-born session with its dashboard tab open qualifies when a human is driving it, while a slot-less caller (a channel transport's `TurnDriver`) is refused even when a tab happens to be open. The provenance half is what makes the refusal above true of a cron or sub-agent turn that INHERITED a tab it never opened: a surface check alone asks only whether a tab exists, which such a turn satisfies without a human having asked for a card. Every path emits a SEL audit event. Only a turn a person sent can post a card: the session's own machine-driven turns — a sub-agent completion/synthesis turn, a queued completion event, a monitor or auto-nudge wake, a task-runner summary — carry no human provenance and are refused too, even on their own slot. Unlike `reset_conversation`, there is no self-wake carve-out.
 - **Three items max**, one card **per session**. Cards are slot-keyed, so a
   suggestion arriving in one session never evicts another's. A second call for
   the same session replaces its unacted-on card rather than stacking.

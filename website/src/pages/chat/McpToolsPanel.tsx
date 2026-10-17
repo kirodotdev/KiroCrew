@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { Zap, ChevronRight } from 'lucide-react'
+import { Zap, ChevronRight, TriangleAlert } from 'lucide-react'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { mcpToolStatus, type McpToolStatus } from '../../lib/mcpLoadedTools'
 import {
+  mcpSessionExtraNoTools,
   mcpSessionExtraServers,
   mcpSessionFailureReason,
+  mcpSessionGaveNoTools,
   mcpSessionHasReport,
+  mcpSessionNeedsRestart,
   mcpSessionServerState,
   type McpSessionServerState,
 } from '../../lib/mcpSessionReport'
@@ -60,7 +63,7 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
 }
 
 /**
- * The chat session-options dropdown's MCP view: a "MCP Servers (n/n)" header,
+ * The chat session-options dropdown's MCP view: a "MCP Servers (n/m enabled)" header,
  * the Tool Search mode line, and an expandable per-server list.
  *
  * TWO different facts are on screen, and keeping them distinguishable is the
@@ -106,11 +109,20 @@ export default function McpToolsPanel({
   const extraServers = hasSessionReport
     ? mcpSessionExtraServers(servers.map(s => s.name), sessionReport)
     : []
+  const extraNoTools = hasSessionReport
+    ? mcpSessionExtraNoTools(servers.map(s => s.name), sessionReport)
+    : []
+  // Names past the report's cap are counted, not listed: say how many.
+  const noToolsOmitted = sessionReport?.no_tools_omitted ?? 0
 
   return (
     <div>
       <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">
-        {i18nT('pages.chatPage.mcp_servers_2')} {servers.length > 0 && `(${enabledCount}/${servers.length})`}
+        {/* McpInfoButton's header key, so both MCP views word the count the
+            same way: it counts enabled entries, not connected ones. */}
+        {servers.length > 0
+          ? i18nT('pages.chat.mcpInfoButton.mcp_servers_count', { count: enabledCount, total: servers.length })
+          : i18nT('pages.chatPage.mcp_servers_2')}
       </div>
       <div className="flex items-center gap-1.5 text-[11px] mb-0.5">
         <Zap size={11} className={toolSearchOn ? 'text-ok' : 'text-muted'} />
@@ -142,17 +154,25 @@ export default function McpToolsPanel({
           </span>
         </div>
       )}
-      {!loading && servers.length > 0 && hasSessionReport && (
+      {!loading && servers.length > 0 && (hasSessionReport || enabledCount > 0) && (
         // The tool rows' dots and the server rows' dots share a shape but not a
         // vocabulary, so the tool legend alone would invite reading a server dot
         // as a tool state. No `title` on these swatches: the per-server dot owns
         // that, and duplicating it would make the tooltip ambiguous.
+        //
+        // With no report, only an enabled row draws a session mark, and it is
+        // always `no_report`. So the legend shows when such a row exists and
+        // lists that state alone: the other three would read as though a report
+        // had ruled them out. Each swatch takes the size the rows draw it at.
         <div className="flex items-center gap-2.5 flex-wrap text-[10px] text-muted mb-2">
-          {(
-            ['started', 'failed', 'awaiting_auth', 'no_report'] as McpSessionServerState[]
+          {(hasSessionReport
+            ? (['started', 'failed', 'awaiting_auth', 'no_report'] as McpSessionServerState[])
+            : (['no_report'] as McpSessionServerState[])
           ).map(st => (
             <span key={st} className="inline-flex items-center gap-1">
-              <span className={`w-2 h-2 rounded-full ${SESSION_DOT_CLASS[st]}`} />
+              <span
+                className={`${hasSessionReport ? 'w-2 h-2' : 'w-1.5 h-1.5'} rounded-full ${SESSION_DOT_CLASS[st]}`}
+              />
               {i18nT(SESSION_LABEL_KEY[st])}
             </span>
           ))}
@@ -176,6 +196,8 @@ export default function McpToolsPanel({
           const sessionState = mcpSessionServerState(s.name, sessionReport)
           const sessionReason = mcpSessionFailureReason(s.name, sessionReport)
           const sessionLabel = i18nT(SESSION_LABEL_KEY[sessionState])
+          const gaveNoTools = hasSessionReport && mcpSessionGaveNoTools(s.name, sessionReport)
+          const needsRestart = hasSessionReport && mcpSessionNeedsRestart(s.name, sessionReport)
           // With a report in hand the mark answers "did this start HERE" and is
           // drawn as a ring. Without one the configured `enabled` flag is a read of
           // mcp.json, so painting it `ok` claimed a session nobody had measured.
@@ -210,15 +232,29 @@ export default function McpToolsPanel({
               >
                 <span
                   className={`rounded-full shrink-0 ${serverDotClass}`}
+                  // With no report, `sessionState` is `no_report`, so the label
+                  // names the dashed ring. A disabled row with no report stays
+                  // untitled: its filled dot means "disabled", which a
+                  // report-shaped caption would contradict.
                   title={
                     hasSessionReport
                       ? sessionReason
                         ? `${sessionLabel}: ${sessionReason}`
                         : sessionLabel
-                      : undefined
+                      : serverDim
+                        ? undefined
+                        : sessionLabel
                   }
                 />
-                <code className="text-text flex-1">{s.name}</code>
+                <code className="text-text flex-1 inline-flex items-center gap-1 min-w-0">
+                  <span className="truncate">{s.name}</span>
+                  {/* The ring stays "started" (the server did start), so the
+                      problem needs its own mark on the name, where a reader
+                      scanning the rows will see it. */}
+                  {gaveNoTools && (
+                    <TriangleAlert size={11} className="text-warn shrink-0" aria-hidden="true" />
+                  )}
+                </code>
                 {totalLoadable > 0 && toolSearchOn && (
                   <span className="text-[10px] text-muted tabular-nums">
                     {loadedN}/{totalLoadable}
@@ -239,6 +275,23 @@ export default function McpToolsPanel({
                     message={sessionReason ? `${sessionLabel}: ${sessionReason}` : sessionLabel}
                     askAgent
                   />
+                  {/* A credential-shaped failure is not final: a new session loads
+                      the server once the credential works. Say so in body text,
+                      not muted text: it is the row's one actionable line. */}
+                  {needsRestart && (
+                    <div role="status" className="mt-0.5 text-[11px] text-text leading-snug">
+                      {i18nT('pages.chatPage.mcp_session_restart_to_load', { name: s.name })}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* Started, yet gave this session no tools: most often a tool name
+                  that clashes with another server's, which the backend resolves
+                  by silently dropping one server's whole set. Text, not just a
+                  colour, so it reads without hovering. */}
+              {gaveNoTools && (
+                <div role="status" className="ml-3.5 mb-1 text-[11px] text-warn leading-snug">
+                  {i18nT('pages.chatPage.mcp_session_no_tools')}
                 </div>
               )}
               {isOpen && (
@@ -289,6 +342,15 @@ export default function McpToolsPanel({
         // there is to show.
         <div className="mt-2 pt-2 border-t border-border text-[10px] text-muted leading-snug">
           {i18nT('pages.chatPage.mcp_session_also_started', { names: extraServers.join(', ') })}
+        </div>
+      )}
+      {(extraNoTools.length > 0 || noToolsOmitted > 0) && (
+        // A spec-declared server is often absent from the configured list, and
+        // that is exactly the clash case, so it is named here instead of lost.
+        <div role="status" className="mt-2 text-[11px] text-warn leading-snug">
+          {i18nT('pages.chatPage.mcp_session_no_tools_also', {
+            names: [...extraNoTools, ...(noToolsOmitted > 0 ? [`+${noToolsOmitted}`] : [])].join(', '),
+          })}
         </div>
       )}
     </div>

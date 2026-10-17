@@ -8,51 +8,31 @@ bytes untouched; ``depth`` at the cap refuses ``create``; consecutive ``progress
 reports coalesce; a duplicated event line collapses on read; and only the Phase 2
 routes module imports the store (an allowlist that was an empty set while Phase 1
 stood alone, so that phase reverted by deleting two files).
+
+The store's other criteria live in sibling files, split by behaviour: the caps and
+input bounds in ``test_work_ledger_caps.py``, corruption and transient read errors in
+``test_work_ledger_corruption.py``, concurrent writers, the lock files and the undo in
+``test_work_ledger_concurrency.py``, and the maintenance purge in
+``test_work_ledger_purge.py``. Their shared fixtures are in ``work_ledger_helpers.py``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
 import re
-import shutil
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 import pytest
-from windows_sim import read_sharing_violation
+import work_ledger_helpers
+from work_ledger_helpers import CONDUCTOR, WORKER, _bytes_on_disk, _new_item
 
-from kiro_crew import atomic_write, platform_compat
 from kiro_crew import work_ledger as wl
+from kiro_crew.work_vocab import WORK_CLOSED_WINDOW
 
-CONDUCTOR = "chat-1-conductor"
-WORKER = "chat-2-worker"
-
-
-@pytest.fixture(autouse=True)
-def _isolated_home(tmp_path, monkeypatch):
-    """Every test writes into its own data home, never the live one."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    yield
-
-
-def _new_item(*, title: str = "port the gate", acceptance: dict | None = None) -> str:
-    wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    result = wl.apply_conductor_action(
-        CONDUCTOR,
-        "create",
-        title=title,
-        acceptance=acceptance if acceptance is not None else {"kind": "human_approval"},
-    )
-    return result["item"].item_id
-
-
-def _bytes_on_disk(item_id: str) -> tuple[bytes, bytes]:
-    item = wl.item_path(CONDUCTOR, item_id).read_bytes()
-    events = wl.item_events_path(CONDUCTOR, item_id).read_bytes()
-    return item, events
+# The shared fixtures, bound here by name so pytest registers them for this module.
+_isolated_home = work_ledger_helpers._isolated_home
 
 
 # ── vocabularies and caps, pinned ─────────────────────────────────────────
@@ -96,7 +76,8 @@ def test_conductor_actions_are_exactly_six():
 
 def test_caps_hold_their_rfc_values():
     assert wl.MAX_ITEMS_PER_CONDUCTOR == 32
-    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == 256
+    assert WORK_CLOSED_WINDOW == 32
+    assert wl.MAX_GOAL_ITEM_CAP == 256
     assert wl.MAX_EVENTS_PER_ITEM == 200
     assert wl.MAX_DEPTH == 2
     assert wl.MAX_GOAL_CHARS == 2000
@@ -111,21 +92,12 @@ def test_caps_hold_their_rfc_values():
     assert wl.SCHEMA_VERSION == 1
 
 
-def test_the_stored_bound_is_the_folds_item_ceiling():
-    """The two numbers MUST be one number.
-
-    Every stored item is one recorded create, so a board that can never hold more
-    records than the fold retains can never overflow the fold: ``omitted`` stays 0,
-    the fold is always the whole board and never a prefix, and the rebuild's ceiling
-    guard is defensive. Both sides read the same ``work_vocab`` value; this pins
-    that neither has grown a number of its own.
-    """
+def test_the_fold_holds_far_less_than_its_ceiling():
+    """Open fan-out plus the closed window sits far below the fold's held-item
+    ceiling, so a board the store admits never reaches it."""
     from kiro_crew.crew_log import projection
-    from kiro_crew.work_vocab import WORK_STORED_ITEM_LIMIT
 
-    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == projection.WORK_ITEM_LIMIT
-    assert wl.MAX_STORED_ITEMS_PER_CONDUCTOR == WORK_STORED_ITEM_LIMIT
-    assert wl.MAX_ITEMS_PER_CONDUCTOR < wl.MAX_STORED_ITEMS_PER_CONDUCTOR
+    assert wl.MAX_ITEMS_PER_CONDUCTOR + WORK_CLOSED_WINDOW < projection.WORK_ITEM_LIMIT
 
 
 # ── paths and ids ─────────────────────────────────────────────────────────
@@ -238,6 +210,14 @@ def test_ensure_conductor_refuses_a_depth_past_the_cap():
     assert caught.value.code == wl.CODE_DEPTH_EXCEEDED
 
 
+def test_ensure_conductor_refuses_the_first_depth_that_may_not_conduct():
+    """A ledger at ``MAX_DEPTH`` could create nothing, so it must not open at all."""
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.ensure_conductor("sterile", goal="g", depth=wl.MAX_DEPTH)
+    assert caught.value.code == wl.CODE_DEPTH_EXCEEDED
+    assert wl.read_conductor("sterile") is None
+
+
 def test_ensure_conductor_records_a_parent_item_and_checks_its_shape():
     parent = wl.mint_item_id()
     record = wl.ensure_conductor("child", depth=1, parent_item=parent)
@@ -249,20 +229,80 @@ def test_ensure_conductor_records_a_parent_item_and_checks_its_shape():
 # ── depth ─────────────────────────────────────────────────────────────────
 
 
-def test_child_depth_advances_one_level_and_refuses_at_the_cap():
+def test_child_depth_advances_one_level_and_refuses_the_last_conducting_level():
+    """A root may dispatch a conductor; that conductor's children may only work.
+
+    The refusal lands on the PARENT's side of the dispatch: ``child_depth(1)`` is
+    what a depth-1 conductor's child would be born at, and refusing there is what
+    keeps a ledger from opening at a depth where every create is refused.
+    """
     assert wl.child_depth(0) == 1
-    assert wl.child_depth(1) == 2
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.child_depth(1)
+    assert caught.value.code == wl.CODE_DEPTH_EXCEEDED
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.child_depth(2)
     assert caught.value.code == wl.CODE_DEPTH_EXCEEDED
 
 
-def test_create_is_refused_when_the_conductor_is_at_the_depth_cap():
-    wl.ensure_conductor("capped", goal="g", depth=wl.MAX_DEPTH)
+def _header_at_depth(slot_key: str, depth: int) -> None:
+    """Put a ledger on disk whose stored depth no entry guard admitted.
+
+    ``ensure_conductor`` refuses such a depth, so the header is rewritten after a
+    legal open -- the shape a rebuild from the crew log can leave, since it keeps
+    the depth the stored header holds.
+    """
+    wl.ensure_conductor(slot_key, goal="g", depth=0)
+    header_path = wl.conductor_dir(slot_key) / "conductor.json"
+    stored = json.loads(header_path.read_text(encoding="utf-8"))
+    stored["depth"] = depth
+    header_path.write_text(json.dumps(stored), encoding="utf-8")
+    assert wl.read_conductor(slot_key).depth == depth
+
+
+def test_create_is_refused_when_a_stored_header_sits_at_a_depth_that_may_not_conduct():
+    _header_at_depth("capped", wl.MAX_DEPTH)
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action("capped", "create", title="t", acceptance={})
     assert caught.value.code == wl.CODE_DEPTH_EXCEEDED
     assert wl.list_work_items("capped") == []
+
+
+@pytest.mark.parametrize("depth", range(0, 4))
+def test_the_three_depth_guards_agree_at_every_depth(depth: int):
+    """One predicate, three guards: a depth a dispatch admits is a depth a ledger
+    opens at is a depth that may create. No depth is let in by one and refused by
+    another."""
+    allowed = wl.may_conduct(depth)
+    assert allowed == (depth < wl.MAX_DEPTH)
+
+    def refused(call) -> bool:
+        try:
+            call()
+        except wl.WorkLedgerError as exc:
+            assert exc.code == wl.CODE_DEPTH_EXCEEDED
+            return True
+        return False
+
+    def dispatch() -> None:
+        wl.child_depth(depth - 1)
+
+    def open_ledger() -> None:
+        wl.ensure_conductor(f"open-{depth}", goal="g", depth=depth)
+
+    slot = f"stored-{depth}"
+
+    def create() -> None:
+        wl.apply_conductor_action(slot, "create", title="t", acceptance={})
+
+    # Guard 1: the dispatch that would create a conductor at *depth*.
+    if depth > 0:
+        assert refused(dispatch) == (not allowed)
+    # Guard 2: opening a ledger at *depth*.
+    assert refused(open_ledger) == (not allowed)
+    # Guard 3: creating an item from a header stored at *depth*.
+    _header_at_depth(slot, depth)
+    assert refused(create) == (not allowed)
 
 
 def test_a_conductor_one_below_the_cap_may_still_dispatch():
@@ -489,7 +529,7 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
     import inspect
 
     names = set(inspect.signature(wl.apply_worker_report).parameters)
-    assert names == {"slot_key", "item_id", "status", "summary", "artifacts", "pr"}
+    assert names == {"slot_key", "item_id", "status", "summary", "artifacts", "pr", "reason"}
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 
 
@@ -758,13 +798,146 @@ def test_a_done_item_is_never_stale_however_long_it_stays_quiet():
     assert item is not None
     much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
     assert wl.is_stale(item, worker_running=False, now=much_later) is False
-    for status in ("progress", "blocked", "question"):
-        wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="s")
-        still_working = wl.read_work_item(CONDUCTOR, item_id)
-        assert still_working is not None
-        assert wl.is_stale(still_working, worker_running=False, now=much_later) is True, status
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="s")
+    still_working = wl.read_work_item(CONDUCTOR, item_id)
+    assert still_working is not None
+    assert wl.is_stale(still_working, worker_running=False, now=much_later) is True
     assert "done" not in wl.STALE_ELIGIBLE_STATUSES
     assert wl.STALE_ELIGIBLE_STATUSES < wl.WORKER_STATUSES
+
+
+@pytest.mark.parametrize("status", ["blocked", "question"])
+def test_a_blocked_or_question_item_is_never_stale_however_long_it_stays_quiet(status):
+    """Both reports already woke the conductor, and the next move is the conductor's
+    or a person's. The worker waiting in silence is the expected shape of that wait,
+    so the flag must not point at it -- with the worker idle, closed or neither."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="waiting")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(item, worker_running=False, now=much_later) is False
+    assert status not in wl.STALE_ELIGIBLE_STATUSES
+
+
+def test_decide_stamps_decided_at_and_it_round_trips():
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    fresh = wl.read_work_item(CONDUCTOR, item_id)
+    assert fresh is not None and fresh.decided_at is None
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="go ahead")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.decided_at
+    assert wl.WorkItem.from_dict(item.to_dict()).decided_at == item.decided_at
+
+
+@pytest.mark.parametrize("status", ["blocked", "question"])
+def test_a_decide_hands_a_waiting_item_back_to_the_worker(status):
+    """After ``blocked`` / ``question`` the move is the conductor's. Its ``decide``
+    hands it back, so the worker's silence is measured again -- from the decision,
+    under every liveness rule a ``progress`` item gets."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="waiting")
+    waiting = wl.read_work_item(CONDUCTOR, item_id)
+    assert waiting is not None
+    much_later = datetime.now(timezone.utc) + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(waiting, worker_running=False, now=much_later) is False
+
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="go ahead")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.status == status
+    decided = wl.parse_stamp(item.decided_at or "")
+    assert decided is not None
+    inside = decided + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS / 2)
+    past = decided + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 2)
+    # The window runs from the decision, not from the older report.
+    assert wl.is_stale(item, worker_running=False, now=inside) is False
+    assert wl.is_stale(item, worker_running=False, now=past) is True
+    assert wl.is_stale(item, worker_running=True, now=past) is False
+    assert wl.is_stale(item, worker_running=False, worker_looping=True, now=past) is False
+    # A worker gone after the hand-back is flagged without waiting out the window.
+    assert wl.is_stale(item, worker_running=False, worker_closed=True, now=inside) is True
+
+
+def test_a_report_after_the_decide_takes_the_move_back():
+    """The worker answering with ``question`` again hands the move to the conductor."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="question", summary="a or b?")
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="a")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    item.last_report_at = "2999-01-01T00:00:00+00:00"
+    much_later = datetime(3000, 1, 1, tzinfo=timezone.utc)
+    assert wl.is_stale(item, worker_running=False, now=much_later) is False
+
+
+@pytest.mark.parametrize("status", ["blocked", "question"])
+def test_a_waiting_item_whose_worker_closed_is_stale_without_a_decide(status):
+    """A worker that died while waiting cannot act on any answer, so the conductor
+    learns of it at once -- whether or not it has written a ``decide`` yet."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status=status, summary="waiting")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.decided_at is None
+    assert wl.is_stale(item, worker_running=False, worker_closed=True) is True
+    # Open and silent, it stays the conductor's, so it is not flagged.
+    assert wl.is_stale(item, worker_running=False) is False
+    assert wl.is_stale(item, worker_running=True, worker_closed=True) is False
+
+
+def test_a_decide_on_a_progress_item_does_not_restart_its_window():
+    """The hand-back is for ``blocked`` / ``question``. A ``progress`` item already
+    belongs to the worker, so its silence is measured from its last report."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="half way")
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="carry on")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.decided_at
+    item.last_report_at = "2026-01-01T00:00:00+00:00"
+    item.decided_at = "2026-01-01T00:20:00+00:00"
+    now = datetime(2026, 1, 1, 0, 25, tzinfo=timezone.utc)
+    assert wl.is_stale(item, worker_running=False, now=now, window_secs=900) is True
+
+
+def test_a_done_item_whose_worker_closed_is_still_not_stale():
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="green")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    assert wl.is_stale(item, worker_running=False, worker_closed=True) is False
+
+
+def test_a_worker_parked_in_its_own_loop_is_not_stale():
+    """A worker waiting on CI inside its own monitor loop has no turn in flight between
+    cycles, yet it is alive: the loop wakes it. Only a loop that is still ACTIVE counts,
+    and the caller answers that; ``False``, the default, flags as an unwired caller does."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="waiting on CI")
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    much_later = datetime.now(timezone.utc) + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(item, worker_running=False, worker_looping=True, now=much_later) is False
+    assert wl.is_stale(item, worker_running=False, worker_looping=False, now=much_later) is True
+    assert wl.is_stale(item, worker_running=False, now=much_later) is True
+    # A session that is gone cannot be woken by a loop record it left behind.
+    assert (
+        wl.is_stale(
+            item, worker_running=False, worker_looping=True, worker_closed=True, now=much_later
+        )
+        is True
+    )
+
+
+def test_a_looping_worker_on_a_handed_back_item_is_not_stale():
+    """``verdict: fail`` hands the move back to the worker; a worker already looping on
+    that retry is alive, and one that is not is still flagged."""
+    item_id = _new_item(acceptance={"kind": "human_approval"})
+    wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="claimed")
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="fail", fails=1)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None
+    much_later = datetime.now(timezone.utc) + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    assert wl.is_stale(item, worker_running=False, now=much_later) is True
+    assert wl.is_stale(item, worker_running=False, worker_looping=True, now=much_later) is False
 
 
 def test_a_done_item_the_conductor_handed_back_is_stale_again():
@@ -773,7 +946,7 @@ def test_a_done_item_the_conductor_handed_back_is_stale_again():
     again — otherwise a worker that vanished mid-retry could never be surfaced."""
     item_id = _new_item(acceptance={"kind": "human_approval"})
     wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="claimed")
-    much_later = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
+    much_later = datetime.now(timezone.utc) + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 10)
     waiting = wl.read_work_item(CONDUCTOR, item_id)
     assert waiting is not None
     assert wl.is_stale(waiting, worker_running=False, now=much_later) is False
@@ -849,431 +1022,6 @@ def test_work_brief_shows_the_item_and_not_the_conductors_goal():
     assert "goal" not in brief
     assert "worker_session_key" not in brief
     assert wl.read_work_brief(CONDUCTOR, wl.mint_item_id()) is None
-
-
-# ── caps refuse, and a refusal changes no bytes ───────────────────────────
-
-
-def test_the_item_cap_refuses_the_thirty_third_item():
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    for index in range(wl.MAX_ITEMS_PER_CONDUCTOR):
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
-    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
-    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
-
-
-@pytest.mark.parametrize("terminal_state", sorted(wl.TERMINAL_ITEM_STATES))
-def test_closed_items_do_not_count_toward_the_item_cap(terminal_state: str):
-    """The cap bounds LIVE fan-out: closing an item frees its seat.
-
-    A queue conductor mints one item per ticket and closes each as it lands, so a
-    cap that counted its closed history would refuse the 33rd ticket of the shift
-    with nothing live behind the refusal.
-    """
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    ids = [
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
-            "item"
-        ].item_id
-        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
-    ]
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
-
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[0], state=terminal_state)
-    minted = wl.apply_conductor_action(CONDUCTOR, "create", title="next ticket", acceptance={})
-    assert minted["item"].state == "open"
-
-    # Thirty-two open again, so the next one is refused -- the cap still holds.
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
-    assert "open items" in str(caught.value)
-
-
-def test_closed_items_stay_on_disk_listed_and_readable_past_the_cap():
-    """Freeing a seat changes nothing about the closed item's own record."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    ids = [
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
-            "item"
-        ].item_id
-        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
-    ]
-    for item_id in ids:
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    closed_bytes = {item_id: _bytes_on_disk(item_id) for item_id in ids}
-
-    # A whole second shift's worth fits once the first is closed...
-    second = [
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"s{index}", acceptance={})[
-            "item"
-        ].item_id
-        for index in range(wl.MAX_ITEMS_PER_CONDUCTOR)
-    ]
-    # ...and the cap bites again at thirty-two OPEN.
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_CAP_EXCEEDED
-
-    listed = wl.list_work_items(CONDUCTOR)
-    assert len(listed) == 2 * wl.MAX_ITEMS_PER_CONDUCTOR
-    assert {it.item_id for it in listed} == set(ids) | set(second)
-    assert sum(it.state == "accepted" for it in listed) == wl.MAX_ITEMS_PER_CONDUCTOR
-    for item_id in ids:
-        stored = wl.read_work_item(CONDUCTOR, item_id)
-        assert stored is not None and stored.state == "accepted"
-        assert wl.item_path(CONDUCTOR, item_id).exists()
-        assert _bytes_on_disk(item_id) == closed_bytes[item_id]
-    brief = wl.read_work_brief(CONDUCTOR, ids[0])
-    assert brief is not None and brief["item_id"] == ids[0]
-
-
-def test_the_stored_bound_refuses_a_create_on_a_board_of_closed_items(monkeypatch):
-    """The second bound counts EVERY create, so closed history cannot grow past it.
-
-    A board that has created ``MAX_STORED_ITEMS_PER_CONDUCTOR`` items, every one of
-    them closed, has zero open items and is refused anyway -- with the store's own
-    code, not the open cap's -- and the refusal changes no bytes. The message names
-    the create count, the bound and the remedy (the ledger sweep's purge), and the
-    header's counter stands at the bound. The bound is patched small the way the
-    projection tests patch the fold's ceiling: filling a board to the real number
-    takes seconds, and the number itself is pinned by
-    ``test_caps_hold_their_rfc_values`` and
-    ``test_the_stored_bound_is_the_folds_item_ceiling``.
-    """
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    ids: list[str] = []
-    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
-        ids.append(
-            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
-                "item"
-            ].item_id
-        )
-        # Close as we go, so the open cap never bites and only the stored bound can.
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
-    listed = wl.list_work_items(CONDUCTOR)
-    assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-    assert not any(item.state == "open" for item in listed)
-    before = sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir())
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-    assert caught.value.field == "items"
-    message = str(caught.value)
-    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in message
-    assert f"stored bound is {wl.MAX_STORED_ITEMS_PER_CONDUCTOR}" in message
-    assert "kirocrew ledger-sweep --purge" in message
-    assert sorted(p.name for p in wl.items_dir(CONDUCTOR).iterdir()) == before
-    # Closing frees nothing here: the bound is on creates, and a close keeps its
-    # record. Every closed item is still on the board, listed and readable.
-    assert wl.read_work_item(CONDUCTOR, ids[0]) is not None
-    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-    header = wl.read_conductor(CONDUCTOR)
-    assert header is not None and header.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-
-
-def _closed_board_at_the_stored_bound() -> list[str]:
-    """Fill the board to ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates, closing each as
-    it lands so the open cap never bites and only the stored bound can."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    ids: list[str] = []
-    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
-        ids.append(
-            wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})[
-                "item"
-            ].item_id
-        )
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=ids[-1], state="accepted")
-    return ids
-
-
-def test_the_stored_bound_counts_a_record_the_listing_cannot_read(monkeypatch):
-    """A torn record still holds its place on the board.
-
-    The stored bound is measured against the header's create counter, which the
-    torn record's own create bumped, so a board of ``MAX_STORED_ITEMS_PER_CONDUCTOR``
-    creates with one record torn to unreadable JSON lists one item fewer and holds
-    zero open ones, and a create is refused anyway, with the store's code, changing
-    no byte under ``items/``. Counted off the listing instead, the torn record would
-    have let one create more through than the fold retains.
-    """
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
-    ids = _closed_board_at_the_stored_bound()
-    torn = ids[1]
-    wl.item_path(CONDUCTOR, torn).write_text("{", encoding="utf-8")
-    listed = wl.list_work_items(CONDUCTOR)
-    assert len(listed) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
-    assert torn not in {item.item_id for item in listed}
-    assert not any(item.state == "open" for item in listed)
-    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-    assert caught.value.field == "items"
-    assert f"has created {wl.MAX_STORED_ITEMS_PER_CONDUCTOR} items" in str(caught.value)
-    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
-
-
-def test_removing_a_record_does_not_reclaim_stored_capacity(monkeypatch):
-    """The bound is a counter of creates, not a count of the files in ``items/``.
-
-    The crew log's fold counts creates in an append-only log, so a record removed
-    from the cache -- by hand, by the ``cache_dirty`` remedy, by loss -- still has
-    its create there. A board of ``MAX_STORED_ITEMS_PER_CONDUCTOR`` creates with one
-    record file (and its event log) deleted lists one item fewer, and the next
-    create is refused all the same: ``item_store_full``, every remaining file under
-    ``items/`` byte-identical, and the header's ``created_total`` exactly where the
-    last create left it. Counted off the files, the deletion would have admitted a
-    create the fold cannot hold, and the rebuild's ceiling guard would then refuse
-    that board for good.
-    """
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
-    ids = _closed_board_at_the_stored_bound()
-    header_before = wl.read_conductor(CONDUCTOR)
-    assert header_before is not None
-    assert header_before.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-    wl.item_path(CONDUCTOR, ids[2]).unlink()
-    wl.item_events_path(CONDUCTOR, ids[2]).unlink()
-    assert len(wl._stored_item_ids(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
-    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1
-    before = {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()}
-    header_bytes = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-    assert caught.value.field == "items"
-    assert "removing one reclaims nothing" in str(caught.value)
-    assert {p.name: p.read_bytes() for p in wl.items_dir(CONDUCTOR).iterdir()} == before
-    assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == header_bytes
-    header_after = wl.read_conductor(CONDUCTOR)
-    assert header_after is not None
-    assert header_after.created_total == wl.MAX_STORED_ITEMS_PER_CONDUCTOR
-
-
-def test_a_header_from_before_the_counter_is_seeded_from_its_records_once(monkeypatch):
-    """``created_total`` is zero on a header that predates it. The first create on
-    such a board seeds the counter from the records the board holds, then bumps it,
-    so the count starts where the board stands rather than at zero; a board that
-    already holds every record it may hold is refused on that seed."""
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 4)
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    for index in range(2):
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
-    header_path = wl.conductor_dir(CONDUCTOR) / "conductor.json"
-    stored = json.loads(header_path.read_text(encoding="utf-8"))
-    assert stored["created_total"] == 2
-    del stored["created_total"]  # a header written before the field existed
-    header_path.write_text(json.dumps(stored), encoding="utf-8")
-    assert wl.read_conductor(CONDUCTOR).created_total == 0
-
-    wl.apply_conductor_action(CONDUCTOR, "create", title="third", acceptance={})
-    assert wl.read_conductor(CONDUCTOR).created_total == 3, "seeded from two records, then bumped"
-
-    wl.apply_conductor_action(CONDUCTOR, "create", title="fourth", acceptance={})
-    stored = json.loads(header_path.read_text(encoding="utf-8"))
-    del stored["created_total"]  # zero again, with four records on the board
-    header_path.write_text(json.dumps(stored), encoding="utf-8")
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-    assert json.loads(header_path.read_text(encoding="utf-8")) == stored, "a refusal writes nothing"
-
-
-def test_the_stored_bound_is_checked_before_the_open_cap(monkeypatch):
-    """At both bounds at once the refusal names the store.
-
-    The open cap's remedy -- close something -- would not help a board that is
-    full of records, so the stored bound speaks first.
-    """
-    monkeypatch.setattr(wl, "MAX_ITEMS_PER_CONDUCTOR", 2)
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 2)
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    for index in range(2):
-        wl.apply_conductor_action(CONDUCTOR, "create", title=f"t{index}", acceptance={})
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="one too many", acceptance={})
-    assert caught.value.code == wl.CODE_ITEM_STORE_FULL
-
-
-@pytest.mark.parametrize(
-    "kwargs,expected_field",
-    [
-        ({"status": "progress", "summary": "x" * (wl.MAX_SUMMARY_CHARS + 1)}, "summary"),
-        (
-            {
-                "status": "progress",
-                "summary": "ok",
-                "artifacts": {f"k{i}": "v" for i in range(wl.MAX_ARTIFACT_KEYS + 1)},
-            },
-            "artifacts",
-        ),
-        (
-            {
-                "status": "progress",
-                "summary": "ok",
-                "artifacts": {"k" * (wl.MAX_ARTIFACT_KEY_CHARS + 1): "v"},
-            },
-            "artifacts",
-        ),
-        (
-            {
-                "status": "progress",
-                "summary": "ok",
-                "artifacts": {"k": "v" * (wl.MAX_ARTIFACT_VALUE_CHARS + 1)},
-            },
-            "artifacts",
-        ),
-    ],
-)
-def test_a_refused_worker_cap_leaves_both_files_byte_identical(kwargs, expected_field):
-    item_id = _new_item()
-    wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="baseline")
-    before = _bytes_on_disk(item_id)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_worker_report(CONDUCTOR, item_id, **kwargs)
-    assert caught.value.code == wl.CODE_FIELD_TOO_LONG
-    assert caught.value.field == expected_field
-    assert _bytes_on_disk(item_id) == before
-
-
-def test_a_refused_conductor_cap_leaves_both_files_byte_identical():
-    item_id = _new_item()
-    before = _bytes_on_disk(item_id)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(
-            CONDUCTOR,
-            "decide",
-            item_id=item_id,
-            decision="d" * (wl.MAX_DECISION_CHARS + 1),
-        )
-    assert (caught.value.code, caught.value.field) == (wl.CODE_FIELD_TOO_LONG, "decision")
-    assert _bytes_on_disk(item_id) == before
-
-
-def test_an_oversized_title_and_goal_are_refused_not_truncated():
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    for action, kwargs, name in (
-        ("create", {"title": "t" * (wl.MAX_TITLE_CHARS + 1), "acceptance": {}}, "title"),
-        ("goal", {"goal": "g" * (wl.MAX_GOAL_CHARS + 1)}, "goal"),
-    ):
-        with pytest.raises(wl.WorkLedgerError) as caught:
-            wl.apply_conductor_action(CONDUCTOR, action, **kwargs)
-        assert (caught.value.code, caught.value.field) == (wl.CODE_FIELD_TOO_LONG, name)
-    record = wl.read_conductor(CONDUCTOR)
-    assert record is not None and record.goal == "g"
-
-
-def test_a_boundary_length_value_is_accepted():
-    item_id = _new_item(title="t" * wl.MAX_TITLE_CHARS)
-    wl.apply_worker_report(
-        CONDUCTOR,
-        item_id,
-        status="progress",
-        summary="s" * wl.MAX_SUMMARY_CHARS,
-        artifacts={"k" * wl.MAX_ARTIFACT_KEY_CHARS: "v" * wl.MAX_ARTIFACT_VALUE_CHARS},
-    )
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None and len(item.summary) == wl.MAX_SUMMARY_CHARS
-
-
-@pytest.mark.parametrize("bad_pr", [0, -1, wl.MAX_PR + 1, True, 1.5, float("nan"), "12", object()])
-def test_pr_is_bounded_and_a_bool_is_not_an_integer(bad_pr):
-    item_id = _new_item()
-    before = _bytes_on_disk(item_id)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", pr=bad_pr)
-    assert caught.value.field == "pr"
-    assert _bytes_on_disk(item_id) == before
-
-
-def test_an_unknown_status_is_refused_with_its_own_code():
-    item_id = _new_item()
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_worker_report(CONDUCTOR, item_id, status="finished", summary="s")
-    assert caught.value.code == wl.CODE_INVALID_STATUS
-
-
-def test_wrong_typed_fields_are_refused_rather_than_coerced():
-    item_id = _new_item()
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary=17)
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", artifacts=["x"])
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_worker_report(CONDUCTOR, item_id, status="done", summary="s", artifacts={"k": 1})
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance=["nope"])
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="fail", fails=-1)
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="maybe")
-    with pytest.raises(wl.WorkLedgerError):
-        wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key="a\0b")
-
-
-def test_acceptance_must_be_json_serialisable():
-    wl.ensure_conductor(CONDUCTOR)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"fn": lambda: None})
-    assert caught.value.field == "acceptance"
-
-
-def test_an_oversized_acceptance_is_refused(monkeypatch):
-    wl.ensure_conductor(CONDUCTOR)
-    # Above the header's own size (the header must still read back), below the blob's.
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 300)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"blob": "x" * 400})
-    assert caught.value.code == wl.CODE_FIELD_TOO_LONG
-
-
-def test_a_record_lands_at_the_size_the_ceiling_measured(monkeypatch):
-    """The whole-file writer pins ``newline`` so the stored bytes are the measured bytes.
-
-    :func:`_write_item_locked` and :func:`_read_json_record` both reason in the
-    ``\\n`` form ``_serialize`` produced. With the default newline translation
-    Windows writes ``\\r\\n``, one byte per line more, so a record measured just
-    under ``MAX_RECORD_BYTES`` would land over it and read back as absent. POSIX
-    cannot observe that growth, so the contract is pinned at the writer's boundary.
-    """
-    calls: list[dict] = []
-    real = wl.atomic_write
-
-    def recorder(path, content, **kwargs):
-        calls.append({"path": Path(path), "content": content, "newline": kwargs.get("newline")})
-        real(path, content, **kwargs)
-
-    monkeypatch.setattr(wl, "atomic_write", recorder)
-    wl.ensure_conductor(CONDUCTOR)
-    _new_item(acceptance={"kind": "manual"})
-    records = [c for c in calls if c["path"].suffix == ".json"]
-    assert records, "no whole-file record was written"
-    for call in records:
-        assert call["newline"] == "\n", call["path"].name
-        assert "\r" not in call["content"]
-    # The header is written by the bootstrap and again by the create (its create
-    # counter), so what is on disk is each path's LAST write.
-    for call in {c["path"]: c for c in records}.values():
-        assert call["path"].read_bytes() == call["content"].encode("utf-8")
-
-
-def test_acceptance_is_stored_verbatim_and_never_interpreted():
-    payload = {"kind": "pr_checks", "pr": 123, "repo": "owner/name", "extra": [1, {"a": None}]}
-    item_id = _new_item(acceptance=payload)
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None and item.acceptance == payload
 
 
 # ── events ────────────────────────────────────────────────────────────────
@@ -1526,277 +1274,6 @@ def test_only_progress_reports_merge_and_never_done_reports():
     assert texts == ["a", "b"]
 
 
-# ── corruption reads as absent ────────────────────────────────────────────
-
-
-def test_a_truncated_item_file_reads_as_absent():
-    item_id = _new_item()
-    path = wl.item_path(CONDUCTOR, item_id)
-    raw = path.read_text(encoding="utf-8")
-    path.write_text(raw[: len(raw) // 2], encoding="utf-8")
-    assert wl.read_work_item(CONDUCTOR, item_id) is None
-    assert wl.list_work_items(CONDUCTOR) == []
-
-
-def test_a_non_utf8_item_file_reads_as_absent():
-    item_id = _new_item()
-    wl.item_path(CONDUCTOR, item_id).write_bytes(b"\xff\xfe not utf-8")
-    assert wl.read_work_item(CONDUCTOR, item_id) is None
-
-
-def test_an_oversized_item_file_reads_as_absent(monkeypatch, caplog):
-    item_id = _new_item()
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 4)
-    with caplog.at_level("WARNING"):
-        assert wl.read_work_item(CONDUCTOR, item_id) is None
-    assert "size ceiling" in caplog.text
-
-
-def test_a_corrupt_conductor_file_reads_as_absent():
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    (wl.conductor_dir(CONDUCTOR) / "conductor.json").write_text("{ torn", encoding="utf-8")
-    assert wl.read_conductor(CONDUCTOR) is None
-
-
-def test_a_malformed_item_filename_is_skipped_not_raised():
-    good = _new_item(title="good")
-    (wl.items_dir(CONDUCTOR) / "it_bad.json").write_text("{}", encoding="utf-8")
-    (wl.items_dir(CONDUCTOR) / "it_1a2b3c4d5.json").write_text("{}", encoding="utf-8")
-    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [good]
-    # create walks the same listing for the cap, so it must not crash either.
-    wl.apply_conductor_action(CONDUCTOR, "create", title="next", acceptance={})
-
-
-def test_one_torn_item_does_not_hide_its_siblings():
-    good = _new_item(title="good")
-    bad = _new_item(title="bad")
-    wl.item_path(CONDUCTOR, bad).write_text("{", encoding="utf-8")
-    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [good]
-
-
-def test_an_item_nested_too_deep_for_the_parser_reads_as_absent():
-    """A 20 KB item file of ten thousand nested arrays is under the ceiling and
-    raises ``RecursionError`` from inside ``json.loads``; it reads the way any
-    other content the reader cannot trust does — absent — and hides no sibling."""
-    good = _new_item(title="good")
-    deep = _new_item(title="deep")
-    wl.item_path(CONDUCTOR, deep).write_text("[" * 10_000 + "]" * 10_000, encoding="utf-8")
-    assert wl.read_work_item(CONDUCTOR, deep) is None
-    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [good]
-
-
-def test_a_wrong_typed_stored_field_resets_to_its_default_without_raising():
-    item_id = _new_item()
-    path = wl.item_path(CONDUCTOR, item_id)
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    stored.update(
-        {
-            "state": "teleported",
-            "status": 17,
-            "verdict": "maybe",
-            "round": "many",
-            "artifacts": {"keep": "me", "drop": 5},
-            "title": None,
-            "pr": True,
-            "acceptance": "not an object",
-        }
-    )
-    path.write_text(json.dumps(stored), encoding="utf-8")
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None
-    assert (item.state, item.status, item.verdict, item.round) == ("open", None, None, 0)
-    assert item.artifacts == {"keep": "me"}
-    assert (item.title, item.pr, item.acceptance) == ("", None, {})
-
-
-def test_an_item_file_storing_a_different_id_reads_as_absent(caplog):
-    """Honouring a mismatched stored id would let a write taken
-    under this item's lock land on another item's path."""
-    a = _new_item(title="a")
-    b = _new_item(title="b")
-    stored = json.loads(wl.item_path(CONDUCTOR, a).read_text(encoding="utf-8"))
-    stored["item_id"] = b
-    wl.item_path(CONDUCTOR, a).write_text(json.dumps(stored), encoding="utf-8")
-    with caplog.at_level("WARNING"):
-        assert wl.read_work_item(CONDUCTOR, a) is None
-    assert "treating as absent" in caplog.text
-    b_before = wl.item_path(CONDUCTOR, b).read_bytes()
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "decide", item_id=a, decision="x")
-    assert caught.value.code == wl.CODE_UNKNOWN_ITEM
-    assert wl.item_path(CONDUCTOR, b).read_bytes() == b_before
-
-
-def _fault_record_read(monkeypatch, *, name: str | None = None, parent: Path | None = None):
-    """Make a record read raise a Windows-style sharing violation, and undo it.
-
-    Records are read through ``atomic_write.read_bytes_with_retry``, so the fault
-    belongs on ``Path.read_bytes``. On POSIX that helper treats ``PermissionError``
-    as a genuine access fault and re-raises on the first attempt, so a test pinning
-    the fail-closed contract sees the error directly. Returns the callable that
-    restores the real reader.
-
-    Exactly one selector: ``name`` faults a single file, ``parent`` faults every
-    read inside one directory.
-    """
-    real_read_bytes = Path.read_bytes
-
-    def flaky(self, *a, **kw):
-        if (name is not None and self.name == name) or (
-            parent is not None and self.parent == parent
-        ):
-            raise PermissionError("sharing violation")
-        return real_read_bytes(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_bytes", flaky)
-
-    def restore() -> None:
-        monkeypatch.setattr(Path, "read_bytes", real_read_bytes)
-
-    return restore
-
-
-def test_the_bind_guard_fails_closed_on_a_transient_read_error(monkeypatch):
-    """A prior item that is present but momentarily unreadable must
-    NOT read as stale, or the worker is rebound and its open item stranded."""
-    first = _new_item(title="first")
-    second = _new_item(title="second")
-    wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
-    restore = _fault_record_read(monkeypatch, name=f"{first}.json")
-    with pytest.raises(PermissionError):
-        wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    restore()
-    assert wl.read_binding(WORKER) == (CONDUCTOR, first)
-    second_item = wl.read_work_item(CONDUCTOR, second)
-    assert second_item is not None and second_item.worker_session_key is None
-
-
-def test_the_bind_guard_fails_closed_when_the_binding_itself_is_unreadable(monkeypatch):
-    """The same strictness applies to the BINDING read, or a transient
-    error there reads as unbound and the open item is stranded."""
-    first = _new_item(title="first")
-    second = _new_item(title="second")
-    wl.apply_conductor_action(CONDUCTOR, "bind", item_id=first, worker_session_key=WORKER)
-    binding_before = wl.binding_path(WORKER).read_bytes()
-    restore = _fault_record_read(monkeypatch, parent=wl.bindings_dir())
-    with pytest.raises(PermissionError):
-        wl.apply_conductor_action(CONDUCTOR, "bind", item_id=second, worker_session_key=WORKER)
-    restore()
-    assert wl.binding_path(WORKER).read_bytes() == binding_before
-    assert wl.read_binding(WORKER) == (CONDUCTOR, first)
-    # The lenient reader still answers 'unbound' for a worker tool.
-    _fault_record_read(monkeypatch, parent=wl.bindings_dir())
-    assert wl.read_binding(WORKER) is None
-
-
-def test_a_transient_read_error_does_not_reset_the_conductor_header(monkeypatch):
-    """ensure_conductor must not mint a fresh header over one it
-    merely failed to read."""
-    wl.ensure_conductor(CONDUCTOR, goal="keep me", depth=1)
-    wl.apply_conductor_action(CONDUCTOR, "goal", round_number=4)
-    before = (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes()
-    restore = _fault_record_read(monkeypatch, name="conductor.json")
-    with pytest.raises(PermissionError):
-        wl.ensure_conductor(CONDUCTOR, goal="other")
-    # The action entry point's lenient pre-lock read answers ``no_ledger`` first;
-    # either way nothing is written.
-    with pytest.raises((PermissionError, wl.WorkLedgerError)):
-        wl.apply_conductor_action(CONDUCTOR, "goal", goal="other")
-    with pytest.raises(PermissionError):
-        wl._write_goal(CONDUCTOR, wl.ConductorRecord(slot_key=CONDUCTOR), "other", None)
-    restore()
-    assert (wl.conductor_dir(CONDUCTOR) / "conductor.json").read_bytes() == before
-    record = wl.read_conductor(CONDUCTOR)
-    assert record is not None and (record.goal, record.round, record.depth) == ("keep me", 4, 1)
-
-
-def test_a_transient_read_error_does_not_truncate_the_event_log(monkeypatch):
-    """The log writer rewrites from what it read, so an unreadable
-    log must fail the write, not be replaced by a one-line log."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="one")
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="two")
-    before = _bytes_on_disk(item_id)
-    real_read_text = Path.read_text
-
-    def flaky(self, *a, **kw):
-        if self.suffix == ".jsonl":
-            raise PermissionError("sharing violation")
-        return real_read_text(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "read_text", flaky)
-    with pytest.raises(PermissionError):
-        wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="three")
-    monkeypatch.setattr(Path, "read_text", real_read_text)
-    assert _bytes_on_disk(item_id) == before
-    assert len(wl.read_events(CONDUCTOR, item_id)) == 3
-
-
-def test_an_interrupted_bind_can_be_retried(caplog):
-    """A binding whose item does not name the worker back is the
-    half-state a kill between bind's two writes leaves; the retry must succeed."""
-    item_id = _new_item()
-    # Simulate the crash: binding written, item never updated.
-    wl._write_binding(WORKER, CONDUCTOR, item_id)
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None and item.worker_session_key is None
-    with caplog.at_level("WARNING"):
-        wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=WORKER)
-    assert "interrupted bind" in caplog.text
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None and item.worker_session_key == WORKER
-    assert wl.read_binding(WORKER) == (CONDUCTOR, item_id)
-    # And a genuinely live binding (item names the worker) still refuses.
-    other = _new_item(title="other")
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_conductor_action(CONDUCTOR, "bind", item_id=other, worker_session_key=WORKER)
-    assert caught.value.code == wl.CODE_ALREADY_BOUND
-
-
-def test_lenient_reads_still_treat_a_transient_error_as_absent(monkeypatch):
-    item_id = _new_item()
-    _fault_record_read(monkeypatch, name=f"{item_id}.json")
-    assert wl.read_work_item(CONDUCTOR, item_id) is None
-    assert wl.list_work_items(CONDUCTOR) == []
-
-
-def test_round_number_is_refused_on_actions_that_do_not_take_it():
-    item_id = _new_item()
-    for action, kwargs in (
-        ("bind", {"worker_session_key": WORKER}),
-        ("verdict", {"verdict": "pass"}),
-        ("close", {"state": "accepted"}),
-    ):
-        before = _bytes_on_disk(item_id)
-        with pytest.raises(wl.WorkLedgerError) as caught:
-            wl.apply_conductor_action(CONDUCTOR, action, item_id=item_id, round_number=3, **kwargs)
-        assert caught.value.field == "round_number"
-        assert _bytes_on_disk(item_id) == before
-
-
-def test_records_built_from_a_non_object_are_empty_defaults():
-    assert wl.ConductorRecord.from_dict("nope").goal == ""
-    assert wl.WorkItem.from_dict(None).state == "open"
-    assert wl.WorkEvent.from_dict([1]) is None
-
-
-def test_read_helpers_backfill_an_id_the_stored_record_lost():
-    item_id = _new_item()
-    path = wl.item_path(CONDUCTOR, item_id)
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    del stored["item_id"]
-    path.write_text(json.dumps(stored), encoding="utf-8")
-    item = wl.read_work_item(CONDUCTOR, item_id)
-    assert item is not None and item.item_id == item_id
-
-    conductor_file = wl.conductor_dir(CONDUCTOR) / "conductor.json"
-    header = json.loads(conductor_file.read_text(encoding="utf-8"))
-    del header["slot_key"]
-    conductor_file.write_text(json.dumps(header), encoding="utf-8")
-    record = wl.read_conductor(CONDUCTOR)
-    assert record is not None and record.slot_key == CONDUCTOR
-
-
 # ── derived flags ─────────────────────────────────────────────────────────
 
 
@@ -1927,349 +1404,6 @@ def test_is_stale_reads_an_extreme_naive_stamp_without_raising():
     assert wl.is_stale(far, worker_running=False) is False, "the far end is not past yet"
 
 
-# ── concurrency ───────────────────────────────────────────────────────────
-
-
-def test_two_concurrent_writers_leave_a_parseable_item_and_a_clean_event_log():
-    """One report loop and one conductor loop against the SAME item.
-
-    Threads rather than processes so the test runs unchanged on Windows: the locks
-    are taken on separate descriptors, which serialise across threads exactly as
-    they do across processes, and nothing here uses a POSIX-only API.
-    """
-    item_id = _new_item()
-    rounds = 25
-    errors: list[BaseException] = []
-
-    def report() -> None:
-        try:
-            for index in range(rounds):
-                wl.apply_worker_report(
-                    CONDUCTOR,
-                    item_id,
-                    status="blocked" if index % 2 else "done",
-                    summary=f"worker {index}",
-                    artifacts={"step": str(index)},
-                )
-        except BaseException as exc:  # pragma: no cover - surfaced by the assert
-            errors.append(exc)
-
-    def decide() -> None:
-        try:
-            for index in range(rounds):
-                wl.apply_conductor_action(
-                    CONDUCTOR, "decide", item_id=item_id, decision=f"conductor {index}"
-                )
-        except BaseException as exc:  # pragma: no cover - surfaced by the assert
-            errors.append(exc)
-
-    threads = [threading.Thread(target=report), threading.Thread(target=decide)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=120)
-    assert not errors, errors
-    assert not any(thread.is_alive() for thread in threads)
-
-    # The item still parses, and holds one writer's field beside the other's.
-    stored = json.loads(wl.item_path(CONDUCTOR, item_id).read_text(encoding="utf-8"))
-    assert stored["item_id"] == item_id
-    assert stored["decision"].startswith("conductor ")
-    assert stored["summary"].startswith("worker ")
-
-    # Every line is a whole JSON object — no interleaving, no partial line.
-    raw = wl.item_events_path(CONDUCTOR, item_id).read_text(encoding="utf-8")
-    lines = [line for line in raw.splitlines() if line.strip()]
-    assert lines
-    for line in lines:
-        parsed = json.loads(line)
-        assert parsed["item_id"] == item_id
-        assert parsed["kind"] in wl.EVENT_KINDS
-    assert len(wl.read_events(CONDUCTOR, item_id)) == len(lines)
-
-
-def test_the_item_cap_holds_under_concurrent_creates():
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    refused: list[str] = []
-
-    def create() -> None:
-        for _ in range(12):
-            try:
-                wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={})
-            except wl.WorkLedgerError as exc:
-                refused.append(exc.code)
-
-    threads = [threading.Thread(target=create) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=120)
-    assert len(wl.list_work_items(CONDUCTOR)) == wl.MAX_ITEMS_PER_CONDUCTOR
-    assert refused and set(refused) == {wl.CODE_ITEM_CAP_EXCEEDED}
-
-
-def test_the_lock_order_is_conductor_item_binding_and_is_documented():
-    doc = wl.__doc__ or ""
-    assert "conductor -> item -> binding(worker)" in doc
-    assert "conductor" in (wl.conductor_lock.__doc__ or "").lower()
-    assert "FIRST" in (wl.conductor_lock.__doc__ or "")
-    assert "SECOND" in (wl.item_lock.__doc__ or "")
-    assert "THIRD" in (wl.binding_lock.__doc__ or "")
-
-
-def test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding():
-    conductors = [f"chat-{n}-c" for n in range(4)]
-    items = []
-    for key in conductors:
-        wl.ensure_conductor(key, goal="g")
-        items.append(
-            (
-                key,
-                wl.apply_conductor_action(key, "create", title="t", acceptance={})["item"].item_id,
-            )
-        )
-    # One record per thread, keyed by the conductor that thread bound with, so a
-    # thread that dies silently or never finishes still leaves a named entry. The
-    # Catching only ``wl.WorkLedgerError`` and appending nothing on anything
-    # else lets a Windows sharing violation (a bare ``OSError``) kill a thread
-    # without a trace and shorten the count, so the test reports a bare count
-    # mismatch and throws away the one fact that names the cause. Each thread
-    # starts as ``"never-started"`` and is overwritten only
-    # when its body actually runs, so a thread that never scheduled is
-    # distinguishable from one that ran and died.
-    records: dict[str, str] = {key: "never-started" for key, _ in items}
-
-    # ``records`` keeps the COUNTED outcome verbatim ("bound" or the error code) so
-    # the two assertions below count only that. ``details`` keeps, for the same
-    # thread, the field and message behind a WorkLedgerError -- an ``invalid_value``
-    # says nothing about WHICH validator refused or WHAT value it saw. Recording
-    # ``exc.field`` and the message names the choke point for a Windows-shard
-    # occurrence. This is diagnosis, not tolerance: the assertions are unaffected.
-    details: dict[str, str] = {key: "" for key, _ in items}
-
-    def bind(key: str, item_id: str) -> None:
-        try:
-            wl.apply_conductor_action(key, "bind", item_id=item_id, worker_session_key=WORKER)
-            records[key] = "bound"
-        except wl.WorkLedgerError as exc:
-            records[key] = exc.code
-            details[key] = f"field={exc.field!r} msg={exc}"
-        except BaseException as exc:  # noqa: BLE001 — diagnostic: never swallow, always name
-            records[key] = f"{type(exc).__name__}: {exc}"
-
-    threads = {key: threading.Thread(target=bind, args=(key, item_id)) for key, item_id in items}
-    for thread in threads.values():
-        thread.start()
-    for thread in threads.values():
-        thread.join(timeout=120)
-
-    # A ``join`` that timed out returns with the thread still alive, which is
-    # indistinguishable from a silent death by the records alone — mark those
-    # explicitly so a hung thread names itself instead of masquerading as one that
-    # appended nothing.
-    for key, thread in threads.items():
-        if thread.is_alive():
-            records[key] = f"still-running-after-120s (last record: {records[key]})"
-
-    outcomes = list(records.values())
-    _detail = "; ".join(
-        f"{key}={records[key]}" + (f" ({details[key]})" if details[key] else "") for key, _ in items
-    )
-    assert outcomes.count("bound") == 1, (
-        f"expected exactly one thread to bind the worker, got "
-        f"{outcomes.count('bound')} — per-thread outcomes: {_detail}"
-    )
-    assert outcomes.count(wl.CODE_ALREADY_BOUND) == 3, (
-        f"expected 3 threads to report {wl.CODE_ALREADY_BOUND!r}, got "
-        f"{outcomes.count(wl.CODE_ALREADY_BOUND)} — a shortfall means a thread hit "
-        f"something other than a clean already-bound refusal (a bare OSError from a "
-        f"Windows sharing violation, or a thread that never finished); per-thread "
-        f"outcomes: {_detail}"
-    )
-    binding = wl.read_binding(WORKER)
-    assert binding is not None
-    bound = [pair for pair in items if pair == binding]
-    assert len(bound) == 1
-    for key, item_id in items:
-        item = wl.read_work_item(key, item_id)
-        assert item is not None
-        assert (item.worker_session_key == WORKER) == ((key, item_id) == binding)
-
-
-def test_the_guards_tolerate_a_prefixed_leaf_resolve(monkeypatch):
-    """A leaf resolve that comes back extended-length-prefixed must not refuse.
-
-    ``ntpath.realpath`` keeps Windows' ``\\\\?\\`` prefix when its prefix-strip
-    re-check races a concurrent swap of the same file -- exactly what a losing
-    ``bind`` sees while the winner replaces the binding record it is composing
-    the path of. A guard that compares that prefixed child against an
-    unprefixed parent reads the spelling as an escape and turns a clean
-    ``already_bound`` refusal into ``invalid_value``, which is Windows-only
-    because POSIX ``realpath`` has no prefix re-check. The guards therefore go
-    through ``resolved_within``, which strips the prefix from BOTH sides before
-    comparing. POSIX cannot produce the prefixed spelling natively, so this
-    simulates it where it arises: ``Path.resolve`` returning the
-    extended-length form of the correct answer.
-    """
-    import kiro_crew.session_ledger as sl
-
-    original_resolve = Path.resolve
-
-    def prefixing(self: Path, *args, **kwargs) -> Path:
-        real = original_resolve(self, *args, **kwargs)
-        text = str(real)
-        # Only a drive-absolute spelling can legally carry the prefix; POSIX
-        # paths get a synthetic one through the fold's own contract instead.
-        return Path(f"\\\\?\\{text}") if text[1:2] == ":" else real
-
-    # The pure half: the shared fold must strip both prefix spellings.
-    assert sl.strip_extended_length_prefix(Path("\\\\?\\C:\\store\\bindings\\w.json")) == Path(
-        "C:\\store\\bindings\\w.json"
-    )
-    assert sl.strip_extended_length_prefix(Path("\\\\?\\UNC\\host\\share\\x")) == Path(
-        "\\\\host\\share\\x"
-    )
-
-    # The integration half: both guards answer a real path, not a refusal,
-    # when every resolve is prefixed the way the Windows race spells it.
-    monkeypatch.setattr(Path, "resolve", prefixing)
-    assert wl.binding_path(WORKER).name == f"{wl._store_name(WORKER)}.json"
-    assert wl.conductor_dir(CONDUCTOR).name == wl._store_name(CONDUCTOR)
-    # And hostile keys are still refused with the guards' own code.
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir("evil/../key")
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path("has\0null")
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_a_planted_link_at_a_guarded_leaf_is_refused(tmp_path):
-    """A pre-planted symlink at either guard's composed leaf must be refused.
-
-    ``resolved_within`` resolves the composed leaf, so a link whose target sits
-    outside the base lands outside the resolved base and reads as an escape.
-    This pins that the shared-helper path keeps the containment the guards had
-    when each spelled the check inline. Skipped where symlinks cannot be
-    created (Windows without privilege), matching how the defense is exercised
-    there; the prefix-tolerance half has its own test above.
-    """
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "victim.json").write_text("{}", encoding="utf-8")
-
-    linked_dir = wl._work_ledger_root() / wl._store_name(CONDUCTOR)
-    linked_dir.parent.mkdir(parents=True, exist_ok=True)
-    linked_binding = wl.bindings_dir() / f"{wl._store_name(WORKER)}.json"
-    linked_binding.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        linked_dir.symlink_to(outside, target_is_directory=True)
-        linked_binding.symlink_to(outside / "victim.json")
-    except OSError:
-        pytest.skip("cannot create symlinks on this platform/account")
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir(CONDUCTOR)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path(WORKER)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_the_guards_share_one_containment_helper(monkeypatch):
-    """Both guards must route through ``session_ledger.resolved_within``.
-
-    The helper is where the prefix-stripped, single-base-resolve comparison
-    lives; a guard that re-inlines its own two-``resolve()`` comparison
-    silently reintroduces the Windows race the helper exists to close, with
-    every existing test still green on POSIX. Patching the helper to refuse
-    and watching both guards refuse is what makes the routing itself a tested
-    property rather than a convention.
-    """
-    import kiro_crew.work_ledger as wl_module
-
-    monkeypatch.setattr(wl_module, "resolved_within", lambda base, name: None)
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.binding_path(WORKER)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-    with pytest.raises(wl.WorkLedgerError) as excinfo:
-        wl.conductor_dir(CONDUCTOR)
-    assert excinfo.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_a_contended_item_read_still_refuses_with_already_bound():
-    """A losing bind must refuse PERMANENTLY, not fail as if the write broke.
-
-    ``_refuse_if_worker_holds_open_item`` reads the prior item under the WORKER's
-    binding lock, while that item's own conductor holds a DIFFERENT lock, so the
-    read is unserialized against a correct concurrent writer. On Windows that read
-    raises ``PermissionError``, which escapes the guard's ``WorkLedgerError`` arm and
-    reaches the dashboard route as a transient 503 "try again" -- telling a conductor
-    to retry a binding that is legitimately taken until the item closes.
-
-    ``read_sharing_violation`` reproduces the fault on any OS, so this drives the
-    exact path a Windows host takes. It does NOT prove the real OS behaviour, only
-    that the read survives one contended window and the refusal stays permanent.
-    """
-    holder, loser = "chat-hold-c", "chat-lose-c"
-    for key in (holder, loser):
-        wl.ensure_conductor(key, goal="g")
-    held_item = wl.apply_conductor_action(holder, "create", title="t", acceptance={})[
-        "item"
-    ].item_id
-    loser_item = wl.apply_conductor_action(loser, "create", title="t", acceptance={})[
-        "item"
-    ].item_id
-    wl.apply_conductor_action(holder, "bind", item_id=held_item, worker_session_key=WORKER)
-
-    with (
-        mock.patch.object(platform_compat, "IS_WINDOWS", True),
-        mock.patch.object(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0),
-        read_sharing_violation(match=f"{held_item}.json", times=1) as state,
-    ):
-        with pytest.raises(wl.WorkLedgerError) as caught:
-            wl.apply_conductor_action(loser, "bind", item_id=loser_item, worker_session_key=WORKER)
-
-    assert caught.value.code == wl.CODE_ALREADY_BOUND, (
-        f"a contended read of the prior item must still refuse with "
-        f"{wl.CODE_ALREADY_BOUND!r}, got {caught.value.code!r}: {caught.value}"
-    )
-    assert state["n"] >= 2, (
-        "the guard's read of the prior item must be retried after the simulated "
-        f"sharing violation; intercepted reads: {state['n']}"
-    )
-    # The loser's own item keeps no binding, and the holder's keeps the one it won.
-    assert wl.read_binding(WORKER) == (holder, held_item)
-
-
-def test_acquiring_a_lock_does_not_truncate_the_lock_file():
-    """The lock-file open must be WRITABLE but MUST NOT truncate.
-
-    This is the property whose absence made
-    ``test_two_conductors_binding_one_worker_at_once_yield_exactly_one_binding``
-    fail on Windows only. ``msvcrt.locking`` needs a writable handle, so the fd
-    cannot be opened ``"r"``; but ``"w"`` truncates on open, and on Windows a
-    truncating open of a lock file whose first byte another holder already locked
-    raises a sharing violation instead of waiting — so the second, contending
-    acquirer crashes with a bare ``OSError`` before it reaches ``file_lock`` and
-    the bind it was serialising is never mutually excluded. POSIX ``flock``
-    tolerates the truncate, which is why the defect was invisible on Linux.
-
-    Truncation is the direct, platform-independent observable: seed the lock file
-    with bytes, acquire and release the lock, and assert the bytes survived. Under
-    the old ``open(path, "w")`` this test fails on every platform (the file is
-    emptied); under the ``touch`` + ``"r+"`` open it passes, and the same
-    non-truncating open is what stops the Windows sharing violation.
-    """
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    lock_path = wl.conductor_dir(CONDUCTOR) / wl._LOCK_FILE
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    sentinel = b"held by a prior acquirer\n"
-    lock_path.write_bytes(sentinel)
-    with wl.conductor_lock(CONDUCTOR):
-        pass
-    assert lock_path.read_bytes() == sentinel
-
-
 # ── revertability ─────────────────────────────────────────────────────────
 
 
@@ -2316,6 +1450,11 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # ``bind`` event text is blanked), liveness is joined server-side so the
         # page never needs the key, and its action route resolves the key from the
         # store rather than accepting one from the body.
+        #
+        # Its ``closed_items`` reader also serves the crewmate goal reports, so
+        # ``dashboard/goal_reminder.py`` reaches the ledger through this seam
+        # instead of importing the store: the slot there is the crewmate's own
+        # goal binding, never a supplied key.
         "dashboard/handlers/work_ledger_board.py",
         # The work-ledger PROBE. A monitor whose subject is a conductor's own
         # ledger has to READ that ledger to observe it — folding its items into a
@@ -2325,15 +1464,12 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # taken from the loop, not from a supplied key) and is read-only. This is
         # the single new store seam this PR adds.
         "probes/work_ledger.py",
-        # The conductor wake's loop-side lookup: worker slot -> conductor's armed
-        # loop -> fire_now, for the close and turn-end triggers (the report trigger is
-        # a crew-log bus subscription and reads no store). It reads exactly one thing,
-        # ``read_binding``, and resolves no external caller's identity: the key it is
-        # handed is the slot whose session closed or whose turn ended, observed by the
-        # gateway, never supplied by a request. It is read-only and carries no payload
-        # anywhere -- the push moves a deadline, and the conductor's own probe then reads
-        # the store under the conductor's identity, exactly as on a scheduled tick.
-        "conductor_wake.py",
+        # ``conductor_wake.py`` was listed here while it resolved a worker slot to its
+        # conductor's binding for the close and turn-end triggers. Both triggers are
+        # gone and the one that remains is a crew-log bus subscription whose event
+        # already names the conductor's board, so the module reads no store at all and
+        # the seam is closed again. The guard checks both directions, so leaving the
+        # entry would fail this test rather than sit unused.
     }
 )
 
@@ -2390,1083 +1526,3 @@ def test_only_the_phase_2_seams_import_the_module():
         f"allowlisted module(s) no longer import the store: {sorted(stale)}. Either a "
         "seam moved (fix the entry) or it is gone (delete it)."
     )
-
-
-# ── maintenance ───────────────────────────────────────────────────────────
-
-
-def _pin_purge_clock(monkeypatch, directory, *, age):
-    """Evaluate age against the real census/mtime; leave parsing and locks intact."""
-    latest = wl._newest_activity(directory, wl.census_items(directory))
-    assert latest is not None
-    moment = latest + age
-
-    class EvaluationClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return moment.astimezone(tz) if tz else moment.astimezone().replace(tzinfo=None)
-
-    monkeypatch.setattr(wl, "datetime", EvaluationClock)
-    return latest
-
-
-@pytest.mark.parametrize("residue", [False, True], ids=["closed-item", "headerless-residue"])
-@pytest.mark.parametrize(
-    "age,idle_for,removed",
-    [
-        # NO WINDOW: age is not consulted, so nothing about the store's
-        # timestamps can refuse. The negative age is a ``latest`` reading AHEAD
-        # of the clock -- what a file mtime does where the filesystem's
-        # resolution is finer than the clock's advance -- and the elapsed time is
-        # then negative, which is less than a zero window.
-        (timedelta(microseconds=-1), timedelta(0), True),
-        (timedelta(seconds=1), timedelta(0), True),
-        # Less than no window is still no window, in both clock directions.
-        (timedelta(microseconds=-1), timedelta(days=-1), True),
-        (timedelta(seconds=1), timedelta(days=-1), True),
-        # A POSITIVE window does judge age, and there the same future reading
-        # REFUSES: the caller asked for a judgement, a store whose newest write
-        # reads ahead of the clock has just been written to, and refusing is the
-        # conservative half of an irreversible delete.
-        (timedelta(microseconds=-1), timedelta(days=30), False),
-        (timedelta(days=30, microseconds=-1), timedelta(days=30), False),
-        (timedelta(days=30), timedelta(days=30), True),
-        (timedelta(days=30, microseconds=1), timedelta(days=30), True),
-    ],
-    ids=[
-        "zero-window-future",
-        "zero-window-past",
-        "negative-window-future",
-        "negative-window-past",
-        "positive-window-future-refused",
-        "inside-window",
-        "at-boundary",
-        "past-boundary",
-    ],
-)
-def test_purge_retention_uses_actual_latest_activity(monkeypatch, residue, age, idle_for, removed):
-    if residue:
-        wl.ensure_conductor(CONDUCTOR, goal="g")
-        directory = wl.conductor_dir(CONDUCTOR)
-        (directory / "conductor.json").unlink()
-    else:
-        item_id = _new_item()
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-        directory = wl.conductor_dir(CONDUCTOR)
-    before = {
-        path.relative_to(directory): path.read_bytes()
-        for path in directory.rglob("*")
-        if path.is_file()
-    }
-    latest = _pin_purge_clock(monkeypatch, directory, age=age)
-    assert wl._newest_activity(directory, wl.census_items(directory)) == latest
-
-    if removed:
-        assert wl.purge_conductor(CONDUCTOR, allow_unreadable=residue, idle_for=idle_for) is True
-        assert not directory.exists()
-    else:
-        with pytest.raises(wl.WorkLedgerError, match="retention window") as caught:
-            wl.purge_conductor(CONDUCTOR, allow_unreadable=residue, idle_for=idle_for)
-        assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-        assert directory.is_dir()
-        assert {path: (directory / path).read_bytes() for path in before} == before
-
-
-def test_purge_retention_skips_the_age_gate_when_there_is_no_activity_to_read(monkeypatch):
-    """``latest is None`` reaches the same verdict as a non-positive window: no refusal.
-
-    A store whose newest activity cannot be read at all has no age to judge, so
-    the gate is skipped even under a wide window. Forced rather than staged: a
-    directory that exists can always be statted, so ``_newest_activity`` returns
-    ``None`` only if every candidate is unavailable.
-    """
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    monkeypatch.setattr(wl, "_newest_activity", lambda *a, **k: None)
-
-    assert (
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(days=30)) is True
-    )
-    assert not directory.exists()
-
-
-@pytest.mark.parametrize(
-    "idle_for", [timedelta(0), timedelta(days=-1)], ids=["zero-window", "negative-window"]
-)
-def test_a_window_that_does_not_judge_age_still_refuses_an_open_item(monkeypatch, idle_for):
-    """Declining a retention window declines AGE, and nothing else.
-
-    The open-item, unreadable-record, lock and ownership refusals are independent
-    of the window, so a caller that passes no window still cannot delete a ledger
-    a worker is live on.
-    """
-    _new_item()
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(microseconds=-1))
-
-    with pytest.raises(wl.WorkLedgerError, match="open item") as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=idle_for)
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert directory.is_dir()
-
-
-def test_purge_conductor_removes_the_ledger_under_the_conductor_lock(monkeypatch):
-    """The removal happens INSIDE the conductor lock, so nothing it deletes can be
-    half-written by a ``goal`` or ``create`` holding that same lock.
-
-    Asserted by counting what was gone while the lock was held rather than by the
-    exit code: a purge that ran entirely outside the lock would remove the same
-    directory and return the same value.
-    """
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    assert (directory / "items" / f"{item_id}.json").exists()
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    real_lock = wl.conductor_lock
-    inside: list[bool] = []
-
-    @contextlib.contextmanager
-    def _watched(slot_key: str, **kwargs):
-        with real_lock(slot_key, **kwargs):
-            yield
-            # Recorded on the way OUT, still under the hold: the item RECORD must
-            # already be gone by the time the lock is released. The items
-            # directory itself outlives the hold by design -- it still holds the
-            # item lock files, which go only after their handles are closed.
-            inside.append(not (directory / "items" / f"{item_id}.json").exists())
-
-    with mock.patch.object(wl, "conductor_lock", _watched):
-        assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-
-    assert inside == [True], "the ledger was removed outside the conductor lock"
-    assert not directory.exists()
-    assert wl.read_conductor(CONDUCTOR) is None
-
-
-def test_purge_conductor_refuses_a_conductor_with_no_items_at_all(monkeypatch):
-    """Finished-LOOKING is not finished, and the store applies the rule itself so a
-    caller-built report cannot turn an empty conductor into a purgeable one --
-    whatever its header looks like."""
-    wl.ensure_conductor(CONDUCTOR, goal="never dispatched")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0))
-
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert (directory / "conductor.json").exists()
-
-
-def test_newest_activity_falls_back_to_the_directory_when_the_header_is_gone(monkeypatch):
-    """A header that cannot be statted must not make the newest close the only
-    reading: ``atomic_write`` renames into the directory, so a store written to a
-    minute ago is fresh by its directory even with no header to say so."""
-    from datetime import timedelta
-
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    path = wl.item_path(CONDUCTOR, item_id)
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["closed_at"] = (datetime.now().astimezone() - timedelta(days=90)).isoformat()
-    path.write_text(json.dumps(record), encoding="utf-8")
-    (directory / "conductor.json").unlink()  # the directory is written to NOW
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(days=30))
-
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert "retention window" in str(caught.value)
-    assert path.exists(), "the closed item survives"
-
-
-def test_purge_conductor_refuses_a_torn_header_unless_the_caller_asks(monkeypatch):
-    """The header is re-read under the lock with the store's own ``header_damage``
-    check -- the one the sweep's scanner uses -- so the recheck cannot trust a
-    report over the store's account of itself."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    (directory / "conductor.json").write_text("[]", encoding="utf-8")
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    assert wl.header_damage(directory) == "conductor record is not a JSON object"
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert "conductor record" in str(caught.value)
-    assert directory.is_dir()
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0)) is True
-
-
-def test_census_reads_an_item_shaped_file_with_a_foreign_stem_as_unreadable(monkeypatch):
-    """A ``.json`` under ``items/`` whose stem is not an id the store minted is a
-    renamed or hand-moved record. Skipped, a plain purge would delete it with the
-    rest of the contents; counted unreadable, it needs ``allow_unreadable``."""
-    item_id = _new_item()
-    other = wl.apply_conductor_action(
-        CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
-    )["item"].item_id
-    for each in (item_id, other):
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=each, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    stray = directory / "items" / "renamed-by-hand.json"
-    wl.item_path(CONDUCTOR, item_id).rename(stray)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    # Skipped rather than counted, the census would read "one closed item, nothing
-    # unreadable" -- a finished ledger -- and a plain purge would remove the stray
-    # with the rest of the contents.
-
-    census = wl.census_items(directory)
-
-    assert (census.closed, census.unreadable) == (1, 1)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert stray.exists()
-
-
-def test_purge_conductor_removes_a_headerless_itemless_residue_with_allow_unreadable(monkeypatch):
-    """The no-items refusal is for a conductor WITH a header. A directory with
-    neither -- the residue of a purge whose lock file could not go -- is damage,
-    refused by a plain purge and removed when the caller asks."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    directory = wl.conductor_dir(CONDUCTOR)
-    (directory / "conductor.json").unlink()
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert "no conductor record" in str(caught.value)
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0)) is True
-    assert not directory.exists()
-
-
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX, reason="symlink creation needs no privilege on POSIX"
-)
-def test_the_content_walker_unlinks_a_linked_items_directory_as_a_name(tmp_path):
-    """Defence in depth behind the census and the purge's own refusal: even called
-    directly on a store whose ``items/`` is a link, the walker removes the LINK
-    and never descends into the target."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    directory = wl.conductor_dir(CONDUCTOR)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "precious.json").write_text("{}", encoding="utf-8")
-    (elsewhere / "nested").mkdir()
-    (directory / "items").symlink_to(elsewhere, target_is_directory=True)
-
-    failures = wl._remove_contents_locked(directory)
-
-    assert failures == 0
-    assert not (directory / "items").exists() and not (directory / "items").is_symlink()
-    assert (elsewhere / "precious.json").exists() and (elsewhere / "nested").is_dir()
-
-
-def test_purge_conductor_is_a_no_op_for_a_ledger_that_does_not_exist():
-    assert (
-        wl.purge_conductor("chat-never-conducted", allow_unreadable=False, idle_for=timedelta(0))
-        is False
-    )
-
-
-def test_purge_conductor_refuses_a_key_that_could_escape_the_root():
-    """The same shape gate every path constructor passes through — a delete must
-    not be the one call that takes an unchecked key."""
-    with pytest.raises(wl.WorkLedgerError) as info:
-        wl.purge_conductor("../../etc", allow_unreadable=False, idle_for=timedelta(0))
-    assert info.value.code == wl.CODE_INVALID_VALUE
-
-
-def test_purge_conductor_refuses_a_ledger_that_still_has_an_open_item(monkeypatch):
-    """The census runs INSIDE the hold, so a caller's stale eligibility snapshot is
-    caught here rather than acted on. ``_create_item`` takes this same lock across
-    its whole transaction, so an item cannot appear between the check and the
-    removal."""
-    item_id = _new_item()
-    _pin_purge_clock(monkeypatch, wl.conductor_dir(CONDUCTOR), age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert wl.read_work_item(CONDUCTOR, item_id) is not None
-    assert wl.conductor_dir(CONDUCTOR).is_dir()
-
-
-def test_purge_conductor_refuses_a_torn_item_unless_the_caller_asks(monkeypatch):
-    """A torn record reads as absent to ``list_work_items``, so "every item is
-    closed" must not be provable by damaging one — the refusal is the store's, not
-    the caller's."""
-    item_id = _new_item()
-    wl.item_path(CONDUCTOR, item_id).write_text("{tor", encoding="utf-8")
-    _pin_purge_clock(monkeypatch, wl.conductor_dir(CONDUCTOR), age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert wl.conductor_dir(CONDUCTOR).is_dir()
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0)) is True
-    assert not wl.conductor_dir(CONDUCTOR).exists()
-
-
-def test_purge_conductor_reads_an_unknown_item_state_as_damage_not_as_closure(monkeypatch):
-    """An unrecognised ``state`` is not evidence of closure, so the purge refuses.
-
-    The classification is asserted too, not just the refusal: the census counts
-    such an item as UNREADABLE, so ``allow_unreadable`` — the operator's explicit
-    "yes, remove what you cannot parse" — clears it, while counting it as an open
-    item would refuse forever and leave the ledger permanently uncollectable.
-    """
-    item_id = _new_item()
-    path = wl.item_path(CONDUCTOR, item_id)
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["state"] = "finished-ish"
-    path.write_text(json.dumps(record), encoding="utf-8")
-    _pin_purge_clock(monkeypatch, wl.conductor_dir(CONDUCTOR), age=timedelta(seconds=1))
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert wl.conductor_dir(CONDUCTOR).is_dir()
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0)) is True
-    assert not wl.conductor_dir(CONDUCTOR).exists()
-
-
-def test_create_item_refuses_when_the_header_is_gone():
-    """A create that was waiting behind a purge must not write an item into a store
-    whose header is gone -- that would be a ledger destroyed down to the records
-    that made it one. The pre-lock snapshot is not a substitute; it describes a
-    ledger that does not exist."""
-    record = wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    (wl.conductor_dir(CONDUCTOR) / "conductor.json").unlink()
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl._create_item(CONDUCTOR, record, "late", {"kind": "human_approval"}, None)
-
-    assert caught.value.code == wl.CODE_NO_LEDGER
-    assert not list(wl.items_dir(CONDUCTOR).glob("it_*.json")), "no header-less item"
-
-
-def test_a_late_report_on_a_purged_ledger_refuses_and_rebuilds_nothing(monkeypatch):
-    """A worker whose binding outlived its conductor reports against a purged
-    ledger. The item lock must not recreate ``<store>/items/<id>.lock`` on the way
-    to ``unknown_item`` -- a lock-only store with no header and no items is one the
-    sweep keeps forever -- so the lock is taken non-creating and a missing lock
-    file IS the missing item."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-    assert not directory.exists()
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="late")
-
-    assert caught.value.code == wl.CODE_UNKNOWN_ITEM
-    assert not directory.exists(), "the report must not rebuild the purged store"
-
-
-def test_an_item_that_lost_only_its_lock_file_is_still_writable():
-    """The other half of non-creating item locks: a store that still HOLDS the item
-    record but lost its lock file (hand-removed) exists, so the lock is recreated
-    for it rather than the item being reported unknown."""
-    item_id = _new_item()
-    wl._item_lock_path(CONDUCTOR, item_id).unlink()
-
-    result = wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="still here")
-
-    assert result["item"].summary == "still here"
-    assert wl._item_lock_path(CONDUCTOR, item_id).exists()
-
-
-def test_the_lost_lock_recreate_loses_a_purge_race_without_rebuilding_the_store(monkeypatch):
-    """The recreate of a hand-removed item lock happens UNDER the conductor lock
-    with the record re-checked inside the hold. Simulated: the purge completes in
-    the gap between the writer's first ``exists()`` check and its acquire of the
-    conductor lock. A creating open in that gap would rebuild ``items/<id>.lock``
-    in the removed store; the locked recreate finds no ledger and touches
-    nothing."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    wl._item_lock_path(CONDUCTOR, item_id).unlink()
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    real_lock = wl._existing_conductor_lock
-    raced: list[bool] = []
-
-    def _purge_then_lock(slot_key):
-        if not raced:
-            raced.append(True)
-            assert (
-                wl.purge_conductor(slot_key, allow_unreadable=False, idle_for=timedelta(0)) is True
-            )  # the race: purge wins
-        return real_lock(slot_key)
-
-    monkeypatch.setattr(wl, "_existing_conductor_lock", _purge_then_lock)
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.apply_worker_report(CONDUCTOR, item_id, status="progress", summary="late")
-
-    assert caught.value.code in {wl.CODE_NO_LEDGER, wl.CODE_UNKNOWN_ITEM}
-    assert raced == [True]
-    assert not directory.exists(), "the losing writer must not rebuild the purged store"
-
-
-def test_a_goal_on_a_purged_ledger_refuses_and_rebuilds_nothing(monkeypatch):
-    """``conductor_lock`` creates the store around its lock file, so a ``goal`` that
-    waited behind a purge would rebuild the directory before refusing on the
-    missing header. The writer takes the non-creating form: a missing lock file is
-    a missing ledger, and nothing is written."""
-    record = wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    item_id = wl.apply_conductor_action(
-        CONDUCTOR, "create", title="t", acceptance={"kind": "human_approval"}
-    )["item"].item_id
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-
-    with pytest.raises(wl.WorkLedgerError) as goal_refused:
-        wl._write_goal(CONDUCTOR, record, "late goal", None)
-    with pytest.raises(wl.WorkLedgerError) as create_refused:
-        wl._create_item(CONDUCTOR, record, "late item", {"kind": "human_approval"}, None)
-
-    assert goal_refused.value.code == wl.CODE_NO_LEDGER
-    assert create_refused.value.code == wl.CODE_NO_LEDGER
-    assert not directory.exists(), "neither writer may rebuild the purged store"
-
-
-def test_a_torn_but_present_header_refuses_both_writers_under_the_lock():
-    """The header holds the create count the stored bound is measured against, and
-    the pre-lock snapshot may hold it low -- every writer that held the lock since
-    the snapshot was read is missing from it. So a header that is present but does
-    not read under the lock refuses the write instead of standing the snapshot in
-    for it: a create mints no record and bumps nothing, a goal rewrites nothing,
-    and the torn bytes stay exactly as found for the rebuild to replace. The code is
-    the one the same header reads as everywhere else -- corruption reads as absent
-    -- and the message says the header is present."""
-    record = wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    header = wl.conductor_dir(CONDUCTOR) / "conductor.json"
-    header.write_text("{tor", encoding="utf-8")
-    torn = header.read_bytes()
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl._create_item(CONDUCTOR, record, "after the tear", {"kind": "human_approval"}, None)
-    assert caught.value.code == wl.CODE_NO_LEDGER
-    assert "present but unreadable" in str(caught.value)
-    assert "rebuild_from_projection" in str(caught.value)
-    assert header.read_bytes() == torn, "the snapshot was not written over the torn header"
-    assert not wl.items_dir(CONDUCTOR).exists(), "no record was minted"
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl._write_goal(CONDUCTOR, record, "new goal", 3)
-    assert caught.value.code == wl.CODE_NO_LEDGER
-    assert "present but unreadable" in str(caught.value)
-    assert header.read_bytes() == torn
-
-
-def test_census_reads_a_misnamed_item_as_unreadable_not_closed(monkeypatch):
-    """``read_work_item`` treats a record whose stored id names another item as
-    absent; the census applies the same rule, or a terminal ``state`` in a
-    hand-moved file would count as closed and a plain purge would delete a record
-    the store itself refuses to read."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    path = wl.item_path(CONDUCTOR, item_id)
-    record = json.loads(path.read_text(encoding="utf-8"))
-    record["item_id"] = "it_00000000"
-    path.write_text(json.dumps(record), encoding="utf-8")
-    _pin_purge_clock(monkeypatch, wl.conductor_dir(CONDUCTOR), age=timedelta(seconds=1))
-
-    census = wl.census_items(wl.conductor_dir(CONDUCTOR))
-
-    assert (census.closed, census.unreadable, census.open_items) == (0, 1, 0)
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0))
-    assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-    assert path.exists(), "a plain purge must not delete a record the store will not read"
-
-
-def test_purge_conductor_keeps_the_header_when_any_content_survives(monkeypatch):
-    """Removal is ordered and the header goes LAST, only once everything else is
-    gone -- so a failed removal leaves an identifiable store, never a header-less
-    pile of items."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    original = Path.unlink
-
-    def _refuse_item_record(self, *args, **kwargs):
-        if self.name == f"{item_id}.json":
-            raise PermissionError(32, "sharing violation")
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", _refuse_item_record)
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is False
-
-    assert (directory / "conductor.json").exists(), "the header must survive a failure"
-    assert (directory / "items" / f"{item_id}.json").exists()
-    assert wl.read_conductor(CONDUCTOR) is not None, "the store stays identifiable"
-
-
-def test_purge_conductor_removal_failures_are_counted_not_ignored(monkeypatch):
-    """``rmtree(ignore_errors=True)`` would report success over a subtree it left
-    standing; the count is what the header decision depends on."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    (directory / "stray.txt").write_text("x", encoding="utf-8")
-    real_unlink = Path.unlink
-
-    def _refuse_stray(self, *args, **kwargs):
-        if self.name == "stray.txt":
-            raise OSError(13, "Permission denied")
-        return real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", _refuse_stray)
-
-    with wl.conductor_lock(CONDUCTOR):
-        assert wl._remove_contents_locked(directory) == 1
-    assert (directory / "conductor.json").exists()
-
-
-def test_purge_conductor_keeps_the_breadcrumb_until_the_header_is_gone(monkeypatch):
-    """A header unlink that fails must leave a store that still NAMES itself, so a
-    later purge can still be aimed at it. Deleting the breadcrumb first would
-    strand the ledger: header present, no key, no primitive that can reach it."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    original = Path.unlink
-
-    def _refuse_header(self, *args, **kwargs):
-        if self.name == "conductor.json":
-            raise PermissionError(32, "sharing violation")
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", _refuse_header)
-    latest = wl._newest_activity(directory, wl.census_items(directory))
-    assert latest is not None
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is False
-
-    assert (directory / "conductor.json").exists()
-    assert (directory / "slot_key").exists(), "the store must still name itself"
-    assert not (directory / "items" / f"{item_id}.json").exists(), "items went first"
-
-
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX, reason="the detached-inode shape needs POSIX unlink semantics"
-)
-def test_a_writer_queued_behind_a_purge_refuses_instead_of_publishing():
-    """The lock-inode residual, closed: a writer that acquires a lock whose store
-    was purged while it waited finds the inode it holds is not the one at
-    the path, and refuses. Simulated by acquiring the lock, removing the store
-    underneath, and then running the post-acquire check the lock takes."""
-    wl.ensure_conductor(CONDUCTOR, goal="g")
-    directory = wl.conductor_dir(CONDUCTOR)
-    lock_path = directory / ".lock"
-    import shutil
-
-    from kiro_crew import session_ledger as sl
-
-    with open(lock_path, "r+") as handle:
-        # The purge runs to completion "while this writer waits": the store and
-        # the lock inode it holds are gone from the path.
-        shutil.rmtree(directory)
-        with pytest.raises(OSError, match="removed while waiting"):
-            sl.require_lock_inode(handle.fileno(), lock_path)
-        # A fresh store at the path is a DIFFERENT inode: still refused.
-        wl.ensure_conductor(CONDUCTOR, goal="new life")
-        with pytest.raises(OSError, match="replaced while waiting"):
-            sl.require_lock_inode(handle.fileno(), lock_path)
-    # And the legitimate case: the inode held is the one at the path.
-    with open(lock_path, "r+") as handle:
-        sl.require_lock_inode(handle.fileno(), lock_path)
-
-
-def test_every_store_lock_runs_the_inode_check_after_acquiring(monkeypatch):
-    """The check is wired into ``_open_lock`` itself, so no store lock -- conductor,
-    item or binding -- can be taken without it."""
-    from kiro_crew import session_ledger as sl
-
-    seen: list[str] = []
-    real = sl.require_lock_inode
-
-    def _spy(fd, path):
-        seen.append(Path(path).name)
-        return real(fd, path)
-
-    monkeypatch.setattr(wl, "require_lock_inode", _spy)
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item_id, worker_session_key=WORKER)
-
-    assert ".lock" in seen, "conductor lock"
-    assert f"{item_id}.lock" in seen, "item lock"
-    assert f"{wl._store_name(WORKER)}.lock" in seen, "binding lock"
-
-
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX, reason="flock-based holder simulation is POSIX-only"
-)
-def test_purge_conductor_refuses_while_a_worker_holds_an_item_lock(monkeypatch):
-    """A file being written reads as unreadable to the census, so a census alone
-    cannot tell "damaged" from "being written". The item lock can: a live writer
-    holds it for its whole read-modify-write, and the purge takes every item lock
-    non-blocking before deciding. Held lock -> refusal, even with allow_unreadable."""
-    import os
-
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    # Torn on disk, as a mid-write record looks, AND its lock held by "the writer".
-    wl.item_path(CONDUCTOR, item_id).write_text("{mid-wr", encoding="utf-8")
-    lock_path = wl._item_lock_path(CONDUCTOR, item_id)
-    lock_path.touch()
-    _pin_purge_clock(monkeypatch, wl.conductor_dir(CONDUCTOR), age=timedelta(seconds=1))
-    holder = os.open(str(lock_path), os.O_RDWR)
-    try:
-        assert platform_compat.try_acquire_lock(holder, exclusive=True)
-        with pytest.raises(wl.WorkLedgerError) as caught:
-            wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0))
-        assert caught.value.code == wl.CODE_LEDGER_NOT_FINISHED
-        assert "being written" in str(caught.value)
-        assert wl.item_path(CONDUCTOR, item_id).exists(), "the item must survive"
-        platform_compat.release_lock(holder)
-    finally:
-        os.close(holder)
-    # Writer gone: the same torn record is now genuinely damage, and the flag clears it.
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=True, idle_for=timedelta(0)) is True
-
-
-def test_purge_conductor_holds_every_item_lock_through_the_removal(monkeypatch):
-    """Not just checked and dropped: the locks stay held while the census runs and
-    the files go, so a writer cannot slip in between the two."""
-    ids = [_new_item()]
-    ids.append(
-        wl.apply_conductor_action(
-            CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
-        )["item"].item_id
-    )
-    for item_id in ids:
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    held_during_removal: list[bool] = []
-    real_remove = wl._remove_contents_locked
-
-    def _probe(dir_path):
-        # While removal runs, every item lock must be unavailable to a newcomer.
-        import os
-
-        for item_id in ids:
-            fd = os.open(str(wl._item_lock_path(CONDUCTOR, item_id)), os.O_RDWR)
-            try:
-                held_during_removal.append(not platform_compat.try_acquire_lock(fd, exclusive=True))
-            finally:
-                os.close(fd)
-        return real_remove(dir_path)
-
-    monkeypatch.setattr(wl, "_remove_contents_locked", _probe)
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-    assert held_during_removal == [True, True], "both item locks held through removal"
-    assert not directory.exists()
-
-
-def test_purge_never_unlinks_a_lock_file_while_its_handle_is_held(monkeypatch):
-    """Windows: a handle has no FILE_SHARE_DELETE, so unlinking a held lock raises.
-    Every lock the purge holds -- the conductor's, opened through the module's
-    ``open``, and each item's, opened through ``os.open`` -- must therefore be
-    unlinked only after its handle is closed, or the directory stays non-empty and
-    the purge reports False over a store it already emptied. Simulated portably by
-    tracking BOTH open paths and making every lock-file unlink raise while its
-    handle is open. An earlier version of this test tracked ``os.open`` alone, so
-    the conductor lock was invisible to it and a shell that ran inside the
-    conductor hold passed here and failed on the Windows runners."""
-    import builtins
-    import os
-
-    ids = [_new_item()]
-    ids.append(
-        wl.apply_conductor_action(
-            CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
-        )["item"].item_id
-    )
-    for item_id in ids:
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-
-    open_locks: set[Path] = set()
-    real_os_open = os.open
-    real_close = os.close
-    real_open = builtins.open
-    fd_paths: dict[int, Path] = {}
-
-    def _tracking_os_open(path, flags, *args, **kwargs):
-        fd = real_os_open(path, flags, *args, **kwargs)
-        p = Path(path)
-        if p.name.endswith(".lock"):
-            fd_paths[fd] = p
-            open_locks.add(p.resolve())
-        return fd
-
-    def _tracking_close(fd):
-        p = fd_paths.pop(fd, None)
-        if p is not None:
-            open_locks.discard(p.resolve())
-        return real_close(fd)
-
-    class _TrackedHandle:
-        """The two things ``_open_lock`` uses: ``fileno()`` and the ``with`` protocol."""
-
-        def __init__(self, handle, path: Path):
-            self._handle, self._path = handle, path
-            open_locks.add(path.resolve())
-
-        def fileno(self):
-            return self._handle.fileno()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            open_locks.discard(self._path.resolve())
-            self._handle.close()
-
-    def _tracking_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        p = Path(path)
-        return _TrackedHandle(handle, p) if p.name.endswith(".lock") else handle
-
-    real_unlink = Path.unlink
-
-    def _windows_unlink(self, *args, **kwargs):
-        if self.name.endswith(".lock") and self.resolve() in open_locks:
-            raise PermissionError(32, "The process cannot access the file because it is being used")
-        return real_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(os, "open", _tracking_os_open)
-    monkeypatch.setattr(os, "close", _tracking_close)
-    monkeypatch.setattr(wl, "open", _tracking_open, raising=False)
-    monkeypatch.setattr(Path, "unlink", _windows_unlink)
-
-    assert (
-        wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-    ), "the purge must succeed under Windows unlink rules"
-    assert not directory.exists()
-    assert not open_locks, "every lock handle was closed"
-
-
-def test_goal_refuses_when_the_header_is_gone():
-    """A ``goal`` that waited behind a purge must not rewrite the stale pre-lock
-    header into the removed store -- that would resurrect a header with no
-    breadcrumb, which no later purge could name."""
-    record = wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    directory = wl.conductor_dir(CONDUCTOR)
-    (directory / "conductor.json").unlink()
-
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl._write_goal(CONDUCTOR, record, "new goal", None)
-
-    assert caught.value.code == wl.CODE_NO_LEDGER
-    assert not (directory / "conductor.json").exists(), "nothing resurrected"
-
-
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="in-hold unlink is the POSIX path")
-def test_every_lock_inode_is_unlinked_inside_the_holds(monkeypatch):
-    """Conductor lock and every item lock are unlinked while still held, so a
-    writer queued on any of them acquires a detached inode and refuses; nothing is
-    handed a second inode while a first is held."""
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    _pin_purge_clock(monkeypatch, directory, age=timedelta(seconds=1))
-    conductor_lock_path = directory / ".lock"
-    item_lock_path = wl._item_lock_path(CONDUCTOR, item_id)
-    assert item_lock_path.exists()
-
-    seen: list[tuple[bool, bool]] = []
-    real_release = wl.release_lock
-
-    def _observe(fd):
-        seen.append((conductor_lock_path.exists(), item_lock_path.exists()))
-        return real_release(fd)
-
-    monkeypatch.setattr(wl, "release_lock", _observe)
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is True
-    # ``release_lock`` fires for the item hold(s) via _hold_every_item_lock; the
-    # conductor lock is released by file_lock's own exit, so what we can observe
-    # is that by the time the FIRST release happens, both lock paths are gone.
-    assert seen and seen[0] == (False, False), seen
-    assert not directory.exists()
-
-
-@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="in-hold unlink is the POSIX path")
-def test_the_post_release_shell_never_touches_a_lock_the_hold_already_removed():
-    """Same property as the session half: a lock path unlinked inside the hold is
-    never unlinked again after release, because a refused writer may have rebuilt
-    the store with a fresh inode there by then."""
-    import os
-
-    item_id = _new_item()
-    directory = wl.conductor_dir(CONDUCTOR)
-    conductor_lock = directory / ".lock"
-    item_lock = wl._item_lock_path(CONDUCTOR, item_id)
-    item_lock.touch()
-    # The hold removed both; a writer then rebuilt fresh locks at both paths.
-    conductor_lock.unlink()
-    conductor_lock.touch()
-    item_lock.unlink()
-    item_lock.touch()
-    fresh = (os.stat(conductor_lock).st_ino, os.stat(item_lock).st_ino)
-
-    wl._remove_lock_shell(directory, conductor_lock_gone=True, item_locks_left=[])
-
-    assert conductor_lock.exists() and item_lock.exists()
-    assert (os.stat(conductor_lock).st_ino, os.stat(item_lock).st_ino) == fresh
-    # The Windows-shaped case: the hold could not unlink, so the shell may.
-    (directory / "items" / f"{item_id}.json").unlink()
-    (directory / "items" / f"{item_id}.jsonl").unlink()
-    (directory / "conductor.json").unlink()
-    (directory / "slot_key").unlink()
-    wl._remove_lock_shell(directory, conductor_lock_gone=False, item_locks_left=[item_lock])
-    assert not directory.exists()
-
-
-def test_census_tolerates_a_naive_closed_at_beside_an_aware_one():
-    """A naive stamp beside an offset-bearing one must not make the ``>`` raise
-    TypeError out of ``census_items`` -- which ``scan()`` promises never raises,
-    and which ``purge_conductor`` runs under the lock mid-``--purge``."""
-    first = _new_item()
-    second = wl.apply_conductor_action(
-        CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
-    )["item"].item_id
-    for item_id in (first, second):
-        wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    stamps = {first: "2026-01-10T09:00:00", second: "2026-01-10T09:00:00+00:00"}
-    for item_id, stamp in stamps.items():
-        path = wl.item_path(CONDUCTOR, item_id)
-        record = json.loads(path.read_text(encoding="utf-8"))
-        record["closed_at"] = stamp
-        path.write_text(json.dumps(record), encoding="utf-8")
-
-    census = wl.census_items(wl.conductor_dir(CONDUCTOR))
-
-    assert census.closed == 2
-    assert census.newest_closed_at in stamps.values()
-
-
-def test_a_purge_racing_a_finished_purge_recreates_nothing(monkeypatch):
-    """Two sweeps scan the same store; the first deletes it; the second reaches its
-    lock. A lock that CREATES would rebuild the directory -- a lock-only,
-    breadcrumb-less store no later purge can name -- and only then find nothing to
-    guard. The purge's lock must refuse instead."""
-    import shutil
-
-    item_id = _new_item()
-    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
-    directory = wl.conductor_dir(CONDUCTOR)
-    real_lock = wl.conductor_lock
-
-    @contextlib.contextmanager
-    def _first_sweep_wins(slot_key, **kwargs):
-        shutil.rmtree(directory)  # the other sweep finished just before our acquire
-        with real_lock(slot_key, **kwargs):
-            yield
-
-    monkeypatch.setattr(wl, "conductor_lock", _first_sweep_wins)
-
-    assert wl.purge_conductor(CONDUCTOR, allow_unreadable=False, idle_for=timedelta(0)) is False
-    assert not directory.exists(), "the purge must not recreate the store it found gone"
-
-
-def test_a_writer_lock_still_creates_the_store():
-    """The non-creating form is the purge's alone: a writer bringing a conductor
-    into being by locking it is the normal path and must keep working."""
-    directory = wl.conductor_dir("chat-70-fresh")
-    assert not directory.exists()
-    with wl.conductor_lock("chat-70-fresh"):
-        assert (directory / ".lock").exists()
-
-
-# ── the undo holds the locks the writers of its files hold ────────────────
-
-
-def test_the_undo_waits_for_a_writer_holding_the_item_it_rewrites():
-    """An existing item's record is not rewritten under the writer holding it.
-
-    The route's write returns before the undo runs, so the item lock is free in
-    between and another writer can take it. The undo then rewrites that item's
-    record and event log from bytes older than the writer's, so without the item
-    lock it replaces a record mid-write: torn on POSIX, a refused open on
-    Windows. The dashboard's board lock cannot stand in for it -- that one is
-    in-process, and this lock is what a second gateway obeys.
-    """
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
-    started, finished = threading.Event(), threading.Event()
-
-    def _undo() -> None:
-        started.set()
-        wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
-        finished.set()
-
-    undo = threading.Thread(target=_undo, daemon=True)
-    with wl.item_lock(CONDUCTOR, item_id, create=False):
-        undo.start()
-        assert started.wait(10)
-        assert not finished.wait(1.5), "the undo rewrote the record under a lock held here"
-        # Still the writer's bytes, not the snapshot's: nothing was put back yet.
-        assert _bytes_on_disk(item_id)[0] != snapshot[str(wl.item_path(CONDUCTOR, item_id))]
-    undo.join(60)
-    assert finished.is_set(), "the undo must proceed once the writer lets the lock go"
-    assert _bytes_on_disk(item_id) == (
-        snapshot[str(wl.item_path(CONDUCTOR, item_id))],
-        snapshot[str(wl.item_events_path(CONDUCTOR, item_id))],
-    )
-
-
-def test_the_undo_waits_for_a_conductor_holding_the_binding_it_rewrites():
-    """The same gap at the binding, whose lock is third in the lock order.
-
-    ``bind`` snapshots ``bindings/<worker>.json``, and two conductors binding one
-    worker serialise on that lock so neither sees it free while the other writes.
-    An undo that rewrites the file without the lock lands between one's read and
-    its write.
-    """
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id, worker_session_key=WORKER)
-    started, finished = threading.Event(), threading.Event()
-
-    def _undo() -> None:
-        started.set()
-        wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, worker_session_key=WORKER)
-        finished.set()
-
-    undo = threading.Thread(target=_undo, daemon=True)
-    with wl.binding_lock(WORKER):
-        undo.start()
-        assert started.wait(10)
-        assert not finished.wait(1.5), "the undo rewrote a binding under a lock held here"
-    undo.join(60)
-    assert finished.is_set(), "the undo must proceed once the binding lock is free"
-
-
-def test_the_undo_leaves_a_second_gateways_write_alone_and_flags_the_cache():
-    """An undo puts back only what its own write left; another gateway's survives.
-
-    Two gateways share one store. A's write commits, its crew-log append fails,
-    so A undoes. B's write lands in that gap and B has been told it is recorded.
-    The per-file locks order neither, so bytes older than B's would replace B's
-    record -- dropping a write the record holds, with nothing to announce it.
-    Given what A's own write left behind, the undo passes that file over and
-    flags the cache, which is the state a rebuild reconciles.
-    """
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="A ships it")
-    left_by_a = wl.current_bytes(snapshot)
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="B ships it")
-    landed_by_b = _bytes_on_disk(item_id)
-
-    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, expected=left_by_a)
-
-    assert _bytes_on_disk(item_id) == landed_by_b, "B's committed record was replaced"
-    assert b"B ships it" in landed_by_b[0]
-    assert wl.cache_dirty(CONDUCTOR), "a partial undo must flag the cache for a rebuild"
-    wl.clear_cache_dirty(CONDUCTOR)
-
-
-def test_the_undo_still_puts_back_the_files_its_own_write_left():
-    """The comparison must not turn every undo into a no-op.
-
-    Nothing writes in the gap here, so every snapshotted file still holds what
-    the write left and the undo is the plain one: the bytes go back and the cache
-    is untouched. Without this, skipping everything would read as a clean undo.
-    """
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
-
-    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id, expected=wl.current_bytes(snapshot))
-
-    assert _bytes_on_disk(item_id) == (
-        snapshot[str(wl.item_path(CONDUCTOR, item_id))],
-        snapshot[str(wl.item_events_path(CONDUCTOR, item_id))],
-    )
-    assert wl.cache_dirty(CONDUCTOR) is None
-
-
-def test_the_undo_of_a_purged_board_recreates_nothing():
-    """A store removed after the snapshot holds no mutation to take back.
-
-    Every file the undo writes is the board's own, so recreating one to put bytes
-    back resurrects a board an operator deleted -- and a creating lock taken to
-    do it rebuilds the directory the sweep removed, leaving the lock-only store
-    the sweep then keeps forever.
-    """
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
-    directory = wl.conductor_dir(CONDUCTOR)
-    shutil.rmtree(wl.items_dir(CONDUCTOR), ignore_errors=True)
-    shutil.rmtree(directory, ignore_errors=True)
-
-    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
-
-    assert not directory.exists(), "the undo must not recreate the store it found gone"
-    assert not wl.item_path(CONDUCTOR, item_id).exists()
-
-
-def test_the_undo_still_puts_every_snapshotted_file_back():
-    """The partner the two refusals above need: an undo that did nothing at all
-    would pass them. A healthy board's undo restores the snapshotted bytes
-    exactly."""
-    item_id = _new_item()
-    snapshot = wl.snapshot_for_write(CONDUCTOR, item_id=item_id)
-    before = _bytes_on_disk(item_id)
-    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="ship it")
-    assert _bytes_on_disk(item_id) != before
-
-    wl.restore_snapshot(CONDUCTOR, snapshot, item_id=item_id)
-
-    assert _bytes_on_disk(item_id) == before
-
-
-def test_the_undo_removes_an_item_the_write_created():
-    """A create's undo takes the new item away, and names it twice without hanging.
-
-    ``created_item`` and ``item_id`` are the same id on a create, and one thread
-    cannot hold one lock file twice -- the second acquire would wait on the first
-    until the ceiling. So the locks this takes are deduplicated, and this test is
-    what fails if they stop being.
-    """
-    wl.ensure_conductor(CONDUCTOR, goal="drive the fleet")
-    snapshot = wl.snapshot_for_write(CONDUCTOR)
-    created = wl.apply_conductor_action(
-        CONDUCTOR, "create", title="port the gate", acceptance={"kind": "human_approval"}
-    )["item"].item_id
-    assert wl.item_path(CONDUCTOR, created).exists()
-
-    wl.restore_snapshot(CONDUCTOR, snapshot, created_item=created, item_id=created)
-
-    assert not wl.item_path(CONDUCTOR, created).exists()
-    assert not wl.item_events_path(CONDUCTOR, created).exists()

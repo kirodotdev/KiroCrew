@@ -25,12 +25,21 @@
  * — which input the effect reads — so that is what this locks in.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pageSrc = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the negative pin reads
+// the page and those owners; the positive one ("the page must run the bridge") reads the page alone.
+const pages = resolve(here, '../pages')
+const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+const pageAndOwnersSrc = [
+  pageSrc,
+  ...readdirSync(resolve(pages, 'chat/page')).filter(isSource).sort().map(f => readFileSync(resolve(pages, 'chat/page', f), 'utf8')),
+  ...readdirSync(pages).filter(f => /^useChatPage/.test(f) && isSource(f)).sort().map(f => readFileSync(resolve(pages, f), 'utf8')),
+].join('\n')
 const bridgesSrc = readFileSync(resolve(here, '../pages/chat/page/eventBridges.ts'), 'utf8')
 
 describe('ChatPage – native browser reachability', () => {
@@ -38,7 +47,7 @@ describe('ChatPage – native browser reachability', () => {
     // The regression shape: `trackSession(activeSlot, ...)`. If that ever comes
     // back, a background chat is unreachable and a fresh chat races the poller.
     // Checked in the page as well as the owner, so it cannot move back unseen.
-    expect(pageSrc).not.toMatch(/trackSession\(\s*activeSlot/)
+    expect(pageAndOwnersSrc).not.toMatch(/trackSession\(\s*activeSlot/)
     expect(pageSrc, 'the page must run the bridge that declares the keys').toMatch(/useChatEventBridges\(\{/)
     expect(bridgesSrc).not.toMatch(/trackSession\(\s*activeSlot/)
     expect(bridgesSrc).toMatch(/trackableSlotKeys\s*=\s*useMemo\(/)

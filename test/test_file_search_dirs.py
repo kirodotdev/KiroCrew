@@ -199,7 +199,7 @@ class TestFileIndexDirs:
         def fake_sensitive(p):
             return os.path.realpath(p) == real
 
-        with patch("kiro_crew.dashboard.file_index.is_sensitive_path", side_effect=fake_sensitive):
+        with patch("kiro_crew.dashboard.file_index.is_sensitive_canonical_path", side_effect=fake_sensitive):
             entries, _ = idx._walk()
         names = {e[1] for e in entries if e[5] == "dir"}
         assert "widgetslink" not in names
@@ -218,7 +218,7 @@ class TestFileIndexDirs:
         def fake_sensitive(p):
             return os.path.realpath(p) == real
 
-        with patch("kiro_crew.dashboard.file_index.is_sensitive_path", side_effect=fake_sensitive):
+        with patch("kiro_crew.dashboard.file_index.is_sensitive_canonical_path", side_effect=fake_sensitive):
             entries, _ = idx._walk()
         names = {e[1] for e in entries if e[5] == "file"}
         assert "widgetslink.py" not in names
@@ -337,9 +337,9 @@ class TestApiFileSearchDirs:
             return os.path.realpath(p) == real
 
         with patch(
-            # api_file_search imports is_sensitive_path locally from
+            # api_file_search imports its walk gate locally from
             # kiro_crew.security, so the source module is the patch target.
-            "kiro_crew.security.is_sensitive_path",
+            "kiro_crew.security.is_sensitive_canonical_path",
             side_effect=fake_sensitive,
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -449,3 +449,108 @@ class TestApiFileSearchDirs:
             f"walk descended {calls['n']} directories of {levels + 1} -- the "
             "dirs-visited ceiling did not stop the traversal"
         )
+
+
+class TestFileSearchWalkDeadline:
+    """The file-search walk's wall-clock budget.
+
+    The entry/dir ceilings (``_WALK_MAX_*``) bound how MANY filesystem calls the
+    walk makes, not how LONG each one takes. On local disk a ceiling-reaching
+    walk measured 4.20s worst, under the client's 15s deadline with ~3.6x
+    headroom -- but that figure is local disk only. On an NFS/SSHFS-class mount
+    each ``os.stat``/``scandir`` is a network round trip, so the same bounded
+    number of calls can run many times longer and blow past the client bound,
+    and its Retry re-enters the same bound, failing every attempt. The fix is a
+    server-side wall-clock budget on the walk itself: it stops descending once
+    the budget is spent and returns the partial set gathered so far.
+
+    Worker-1 has no network mount, so these tests SIMULATE a slow store without
+    sleeping: a fake monotonic clock is advanced one tick per directory
+    ``os.walk`` yields, patched onto the module-level ``_walk_monotonic`` seam
+    the walk reads (so only the walk's clock is faked, never the stdlib ``time``
+    the event loop and other tests use). Driving the clock by yields instead of
+    real elapsed time makes the deadline land on a CHOSEN yield, so the test does
+    not depend on runner scheduling (tests-are-deterministic). The budget is
+    patched DOWN to a few ticks; the production default is
+    ``_WALK_TIME_BUDGET_SECS`` (10s).
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_slow_store_stops_the_walk_at_the_wall_clock_budget(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """MEASUREMENT: the local-disk headroom does NOT hold on a slow store.
+
+        Matches live BELOW the root (in nested directories), so collecting them
+        requires descending. A slow store makes the per-directory latency sum
+        past the walk budget before the deeper levels are reached: the walk stops
+        early and never collects the deep matches. Without a time bound the walk
+        descends the whole tree and finds them all. This test fails on main,
+        where the walk has only count ceilings and no time bound.
+        """
+        # A root whose matches are all one level down: 6 subdirs, each holding a
+        # matching dir. The walk yields the root first (no "widget" match there),
+        # then must descend into each subdir to reach the matches.
+        for parent in range(6):
+            sub = tmp_path / f"sub{parent}"
+            sub.mkdir()
+            (sub / f"widget{parent}").mkdir()
+
+        real_walk = files_mod.os.walk
+        yields = {"n": 0}
+
+        # A fake monotonic clock advanced one tick (1.0) per yielded directory,
+        # NOT by real time. The walk reads it once to set its deadline (clock 0.0
+        # -> deadline = budget below), then per directory; advancing the clock
+        # inside the generator makes the deadline cross on a deterministic yield.
+        clock = {"t": 0.0}
+
+        def fake_monotonic() -> float:
+            return clock["t"]
+
+        def slow_walk(*a, **kw):
+            for item in real_walk(*a, **kw):
+                yields["n"] += 1
+                clock["t"] += 1.0  # one "slow" directory worth of latency
+                yield item
+
+        # Budget 1.5 ticks: the root yield (clock 1.0, under 1.5) finds no match,
+        # the first descent yield pushes the clock to 2.0 and the per-directory
+        # deadline check stops the walk BEFORE the deeper matches are collected.
+        # Dir/entry ceilings far above the tree size, so only time can stop it.
+        with patch.object(files_mod, "_WALK_TIME_BUDGET_SECS", 1.5), \
+                patch.object(files_mod, "_walk_monotonic", fake_monotonic), \
+                patch.object(files_mod.os, "walk", slow_walk):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/file-search?q=widget&project={tmp_path}")
+                assert resp.status == 200
+                body = await resp.json()
+
+        # The walk stopped on the budget: it consumed only the first couple of
+        # os.walk yields, not the whole tree (7 directories: root + 6 subdirs).
+        assert yields["n"] <= 2, (
+            f"walk consumed {yields['n']} directory yields -- the wall-clock "
+            "budget must stop it early, not let it drain the tree"
+        )
+        # And it therefore missed the deep matches a complete walk would return.
+        assert len(body["results"]) < 6
+
+    @pytest.mark.asyncio
+    async def test_a_fast_store_walks_the_whole_tree(self, tmp_path, mock_sel, monkeypatch):
+        """Control: with no artificial latency and the production-class budget, the
+        same tree is walked in full and every nested match is returned."""
+        for parent in range(6):
+            sub = tmp_path / f"sub{parent}"
+            sub.mkdir()
+            (sub / f"widget{parent}").mkdir()
+
+        with patch.object(files_mod, "_WALK_TIME_BUDGET_SECS", 10.0):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/file-search?q=widget&project={tmp_path}")
+                assert resp.status == 200
+                body = await resp.json()
+
+        # The whole tree is walked, so every nested match is returned and the
+        # response carries no truncation signal (there is no such field).
+        assert len(body["results"]) == 6
+        assert "truncated" not in body

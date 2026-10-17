@@ -4,7 +4,7 @@ Manages PID files (``kiro_pids.txt`` and ``kiro_session_pids.txt``) that
 track spawned kiro-cli processes.  Provides startup cleanup, periodic
 sweeping, and per-process track/untrack operations.
 
-See ``session.py`` module docstring for the full Process Sweep Architecture.
+See the ``session_parts/sweeps.py`` module docstring for the full Process Sweep Architecture.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -20,6 +21,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from stat import S_ISREG
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_sdk.backends import agent_process_markers, node_adapter_entry_relpaths
@@ -34,6 +36,7 @@ from kiro_crew.constants import (
     KIROCREW_SPAWNED_VALUE,
 )
 from kiro_crew.mcp_gateway.shutdown_budget import TOTAL_SHUTDOWN_BUDGET_SECS
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.runtime_ownership import (
     PidRefcount,
     authorize_runtime_kill,
@@ -57,6 +60,16 @@ _SESSION_PID_FILE = "kiro_session_pids.txt"
 # cycle; a wrong kill does not.
 SWEEP_SPAWN_GRACE_SECONDS = 120
 
+# Windows ``get_process_start_id`` returns the creation ``FILETIME`` as decimal
+# text in 100-ns units since the FILETIME epoch (1601-01-01 UTC), NOT Unix
+# seconds like the darwin value. Converting to a Unix-epoch age therefore needs
+# both a unit scale (100 ns → s) and an epoch shift (1601 → 1970); the naive
+# ``time.time() - float(start_id)`` the darwin arm uses would be wrong by the
+# epoch offset. 11644473600 is the whole seconds between 1601-01-01 and the Unix
+# epoch; 1e7 is the number of 100-ns ticks per second.
+_FILETIME_TICKS_PER_SECOND = 10_000_000
+_FILETIME_UNIX_EPOCH_OFFSET_SECONDS = 11_644_473_600
+
 
 def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     """Return the process age in seconds, or None if it cannot be determined.
@@ -72,12 +85,27 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
     startup sweep SIGKILL'd a live kiro-cli off a stale dead-gateway entry on
     macOS because the grace window silently did not apply there.
 
-    On Windows: returns None (no grace — sweep behavior unchanged there).
+    On Windows: derived from ``platform_compat.get_process_start_id``, whose
+    value is the process creation ``FILETIME`` (100-ns units since the 1601
+    epoch). It is converted to a Unix-epoch instant before dating it against
+    ``time.time()`` — see ``_FILETIME_UNIX_EPOCH_OFFSET_SECONDS``. Like the
+    macOS path this needs no ``subprocess`` and is safe on the event loop.
+    Without it the spawn grace silently did not apply on Windows, so the orphan
+    sweep could SIGKILL a provider still inside its multi-second spawn window.
 
     The *proc_root* parameter allows injection of a fake /proc tree for testing.
     """
     if platform_compat.IS_WINDOWS:
-        return None
+        start_id = platform_compat.get_process_start_id(pid)
+        if start_id is None:
+            return None
+        try:
+            unix_start = (
+                float(start_id) / _FILETIME_TICKS_PER_SECOND - _FILETIME_UNIX_EPOCH_OFFSET_SECONDS
+            )
+        except ValueError:
+            return None
+        return max(0.0, time.time() - unix_start)
     if sys.platform != "linux":
         start_id = platform_compat.get_process_start_id(pid)
         if start_id is None:
@@ -99,15 +127,12 @@ def _pid_age_seconds(pid: int, proc_root: str = "/proc") -> float | None:
 def _pid_in_spawn_grace(pid: int) -> bool:
     """Return True if the PID is within the spawn grace period and should be skipped.
 
-    - Windows: returns False (no age source — fall through to existing kill
-      behavior so the sweep remains functional there).
-    - POSIX (Linux via /proc, macOS via ``ps -o etime=``) + successful age
-      read: True if age < SWEEP_SPAWN_GRACE_SECONDS.
-    - POSIX + read failure (age is None): True (treat as young — safe
-      direction; dead processes are already pruned by the earlier liveness check).
+    - All platforms (Linux via /proc, macOS via ``get_process_start_id``,
+      Windows via the creation ``FILETIME``) + successful age read: True if
+      age < SWEEP_SPAWN_GRACE_SECONDS.
+    - Age read failure (age is None): True (treat as young — safe direction;
+      dead processes are already pruned by the earlier liveness check).
     """
-    if platform_compat.IS_WINDOWS:
-        return False
     age = _pid_age_seconds(pid)
     if age is None:
         return True  # cannot determine age → treat as young (safe direction)
@@ -162,7 +187,7 @@ def _session_pid_file_path() -> Path:
 def _session_pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for session PID file operations."""
     lock_path = _session_pid_file_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
     # loses the lock on Windows (GH-9248). The helper does the create-or-open in
     # one syscall; the parent mkdir above stays because it does not.
@@ -215,7 +240,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
     entry = f"{prefix}:{token}" if token else prefix
     with _session_pid_file_lock():
         path = _session_pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         if path.exists():
             lines = _read_pid_file_text(path).splitlines()
             kept: list[str] = []
@@ -257,7 +282,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
                 if not _rewrite_pid_file(path, "\n".join(kept) + "\n"):
                     raise OSError(f"could not record root PID {pid} in {path}")
                 return
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             f.write(f"{entry}\n")
 
 
@@ -265,7 +290,7 @@ def _track_session_pid(pid: int, start_token: str | None = None) -> None:
 def _pid_file_lock():  # type: ignore[no-untyped-def]
     """Exclusive file lock for all PID file read-modify-write operations."""
     lock_path = _pid_file_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     # Open non-truncating; see ``platform_compat.open_lock_file`` for why ``"w"``
     # loses the lock on Windows (GH-9248). The helper does the create-or-open in
     # one syscall; the parent mkdir above stays because it does not.
@@ -495,9 +520,10 @@ def _sandbox_launcher_wrapped_argv(tokens: list[bytes]) -> list[bytes] | None:
         ``<interpreter> -I -S <run dir>/kirocrew_sandbox_<pid>_<rand>.py <harness argv…>``
 
     and the launcher's parent never execs: it writes the child's uid/gid maps and then
-    blocks in ``waitpid`` for the life of the session (``sandbox_launcher.main``). So the
-    gate's ``argv[0]`` is the interpreter and the harness sits past the script, out of
-    reach of :func:`_harness_naming_tokens`'s two positions.
+    blocks in ``waitpid`` for the life of the session
+    (``sandbox_launcher_program.main``). So the gate's ``argv[0]`` is the interpreter and
+    the harness sits past the script, out of reach of :func:`_harness_naming_tokens`'s two
+    positions.
 
     Recognising it is not optional, because an unrecognised agent root is UNRECLAIMABLE
     rather than spared: :func:`_sweep_pid_entries` RETAINS a settled-token entry the argv
@@ -517,7 +543,7 @@ def _sandbox_launcher_wrapped_argv(tokens: list[bytes]) -> list[bytes] | None:
     * ``argv[0]``'s basename is a CPython spelling
       (:data:`_LAUNCHER_INTERPRETER_NAME_PREFIX`);
     * the launcher's interpreter flags occupy the next positions EXACTLY, in order;
-    * that token's basename carries the prefix AND the suffix ``sandbox.py`` generates
+    * that token's basename carries the prefix AND the suffix ``sandbox_argv.py`` generates
       its launcher tempfile with -- the suffix because the ``.sb`` seatbelt profile is
       written beside it under the same prefix;
     * its DIRECTORY is the one ``namespace_argv`` writes launchers into;
@@ -1305,7 +1331,7 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
     if not path.exists():
         return set(), []
     lock_path = path.with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock_path.parent)
     try:
         # Non-truncating, for the reason spelled out in `_session_pid_file_lock`.
         # This site is the likeliest of the three to feel it: the sweep runs on a
@@ -1314,7 +1340,7 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
         # Kept inline rather than routed through `platform_compat.open_lock_file`:
         # this fd is held across the try/finally below, not a `with` block, so a
         # with-scoped opener that closes the fd at block exit does not fit.
-        lock_path.touch(exist_ok=True)
+        lock_path.touch(mode=0o600, exist_ok=True)
         lock_fd = open(lock_path, "r+")
     except OSError:
         return set(), []
@@ -2301,6 +2327,52 @@ def _reap_provider_root(pid: int, recorded_start: str | None, *, gated: bool) ->
         pass
 
 
+def _release_client_seed_registrations(client: object) -> None:
+    """Run the client's synchronous settings-seed hand-back, if it has one.
+
+    ``AcpClient.release_settings_seed_claim`` withdraws the owner claim or reader
+    lease the client holds on its ``settings.local.json`` seed; a torn-down client
+    whose ``shutdown`` never runs otherwise keeps that registration for the life of
+    the gateway, and every later session on the same work dir reads the path as a
+    live sibling's. Resolved by name rather than by type, as every client
+    read in this leaf is: ``session_pid`` imports nothing from the ACP layer. A
+    client without the method -- a test stand-in, a provider shape that never
+    seeds -- costs nothing, and one that holds no registration performs no I/O.
+    Never lets an exception out: the teardown that follows is the process's only
+    remaining end, and a hand-back that did not land is the recorded-orphan shape
+    a later session already repairs.
+    """
+    hand_back = getattr(client, "release_settings_seed_claim", None)
+    if not callable(hand_back):
+        return
+    try:
+        hand_back()
+    except Exception:
+        logger.debug(
+            "_sync_kill_provider: the client's settings-seed hand-back failed", exc_info=True
+        )
+
+
+def _root_identity_refuted(pid: int, recorded_start: str | None, live_start: str | None) -> bool:
+    """Whether an unverified recorded root is KNOWN to be gone or recycled.
+
+    Decides the settings-seed hand-back for a root whose identity did not hold.
+    True when the pid names no process at all (the runtime is gone) or when a live
+    start identity was read and differs from the recorded one (the pid was handed to
+    a stranger): in both, the process that read the seed is not the one behind this
+    pid, so handing the claim back lets the next session on the work dir adopt the seed.
+    False when nothing can be read -- the pid exists but its start identity is
+    unavailable, or no identity was recorded at spawn -- because an unreadable
+    identity cannot tell our live runtime from a stranger's, and a successor must not
+    re-seed the permission file under a runtime that may still be ours.
+    """
+    if not platform_compat.pid_exists(pid):
+        return True
+    return (
+        isinstance(recorded_start, str) and live_start is not None and live_start != recorded_start
+    )
+
+
 def _sync_kill_provider(provider: object) -> None:
     """Synchronously kill a provider's whole process tree.
 
@@ -2331,6 +2403,18 @@ def _sync_kill_provider(provider: object) -> None:
     """
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)
+    # The provider is being abandoned: nothing will call its client's shutdown, so
+    # the registrations that client took on its settings seed are handed back by
+    # this funnel -- but only once the gates below have said what stands behind the
+    # pid. A seed is written before the spawn publishes a pid and the claim belongs
+    # to the client OBJECT, so with no pid at all there is no runtime to protect and
+    # the claim is handed back at once. With a pid, the hand-back follows the gate's
+    # verdict: released when the teardown is authorized (before the first signal, so
+    # it lands ahead of the grace), when the recorded root is known to be gone or
+    # recycled, and otherwise KEPT -- while a lease or tenancy still holds the
+    # runtime, and while the root's identity cannot be read -- because a successor
+    # adopting the seed would re-write ``permissions.defaultMode`` under a runtime
+    # that may still be live. Duck-typed like every other client read in this leaf.
     pid = getattr(client, "_pid", None) if client else None
     # Whether the pid is a RECORDED number (staleness-prone, so identity-gated
     # below) or one read from a live handle this process owns.
@@ -2345,6 +2429,7 @@ def _sync_kill_provider(provider: object) -> None:
         if proc is not None and proc.returncode is None:
             pid = proc.pid
     if pid is None:
+        _release_client_seed_registrations(client)
         return
     # Only ever signal a real, positive, non-init PID. Test stand-ins are the
     # sharp edge: a Mock attribute passes the None check and coerces to 1 via
@@ -2353,6 +2438,9 @@ def _sync_kill_provider(provider: object) -> None:
     # excludes the kill(0)/kill(-n) process-group semantics outright.
     if not isinstance(pid, int) or pid <= 1:
         logger.debug("_sync_kill_provider: refusing to signal invalid pid %r", pid)
+        # No process stands behind an invalid pid, so the seed claim is handed back
+        # exactly as for no pid.
+        _release_client_seed_registrations(client)
         return
     # Asked ONCE, here, before any signal. Everything below is one careful
     # escalation -- a group resolved while the leader was alive, a SIGTERM grace,
@@ -2383,6 +2471,16 @@ def _sync_kill_provider(provider: object) -> None:
         reason="leaked provider teardown",
         caller="session_pid._sync_kill_provider",
     ):
+        # The runtime is still leased or in use, so its settings seed stays
+        # claimed: a successor must not re-seed the permission file under a
+        # process another party is still mid-flight on. The claim is handed back
+        # only by a later teardown of this runtime, or when this process exits
+        # and the persisted holder reads as stale.
+        logger.debug(
+            "_sync_kill_provider: keeping the settings-seed claim of pid %d; the "
+            "runtime is still leased or in use",
+            pid,
+        )
         return
     # The verdict above is a statement about the past, and this function is where
     # that matters most: it runs on an EXECUTOR thread while a session-sharing
@@ -2416,6 +2514,9 @@ def _sync_kill_provider(provider: object) -> None:
     # recycled pid would still send ``taskkill /T`` down a foreign tree.
     root_verified = True
     recorded_start: str | None = None
+    # Set once the seed claim has been handed back on this path, so the authorized
+    # arms below do not hand it back a second time.
+    seed_claim_handed_back = False
     if pid_from_client:
         recorded_start = getattr(client, "_start_time", None)
         live_start = platform_compat.get_process_start_id(pid)
@@ -2432,6 +2533,21 @@ def _sync_kill_provider(provider: object) -> None:
                 recorded_start,
                 live_start,
             )
+            # The seed claim follows what the identity read established. A root
+            # that is gone or recycled has none of our processes behind its pid,
+            # so the claim is handed back here (the Windows
+            # arm below returns without signalling, and the POSIX arm may still
+            # sweep recorded descendants). An identity that could not be read is
+            # kept: it cannot tell our live runtime from a stranger's.
+            if _root_identity_refuted(pid, recorded_start, live_start):
+                _release_client_seed_registrations(client)
+                seed_claim_handed_back = True
+            else:
+                logger.debug(
+                    "_sync_kill_provider: keeping the settings-seed claim of pid %d; the "
+                    "root's identity could not be read",
+                    pid,
+                )
     # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /F is a hard
     # kill) and no os.waitpid for non-child PIDs, so a single kill suffices.
     if platform_compat.IS_WINDOWS:
@@ -2449,6 +2565,12 @@ def _sync_kill_provider(provider: object) -> None:
         # between the verdict and a claim taken while the tree comes down.
         if not _commit_teardown(pid, tenancy_token):
             return
+        # Authorized and committed: the runtime is coming down, so its seed claim
+        # is handed back now, ahead of the kill, and the replacement spawn on the
+        # same work dir finds the slot free when it seeds.
+        if not seed_claim_handed_back:
+            _release_client_seed_registrations(client)
+            seed_claim_handed_back = True
         try:
             if pid_from_client:
                 # PINNED: the query handle that verified this identity is held
@@ -2533,6 +2655,17 @@ def _sync_kill_provider(provider: object) -> None:
     # answer that holds for the duration of a kill that cannot be taken back.
     if not _commit_teardown(pid, tenancy_token):
         return
+    # Authorized and committed: the runtime is coming down, so its seed claim is
+    # handed back here, before the first signal. Ahead of the grace on purpose --
+    # the replacement spawn on the same work dir runs beside this teardown and
+    # reads the live slot when it seeds; a hand-back that waited out the grace
+    # would land after that read and the replacement would decline its own seed
+    # as a live sibling's. Verified roots only: an unverified root is never
+    # signalled below (only its recorded descendants are swept), so a root whose
+    # identity could not be read may still be running and keeps its claim.
+    if root_verified and not seed_claim_handed_back:
+        _release_client_seed_registrations(client)
+        seed_claim_handed_back = True
     try:
         for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
             # killpg is authorized by GROUP OWNERSHIP, not by the root still being
@@ -2797,11 +2930,32 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
         lines: list[str] = _read_pid_file_text(path).splitlines() if path.exists() else []
 
     # Step 2: Process outside lock (slow: os.kill, _get_child_pids, SIGKILL)
+    supervisor_verdicts: dict[int, bool] = {}
+
     def _skip_tagged(gw_pid: int, _pid: int) -> bool:
-        """Skip if owning gateway is still alive."""
+        """Skip if owning gateway is still alive.
+
+        One live owner is NOT a gateway: the supervisor an in-app restart
+        through a supervising launcher (``toolbox-exec``) leaves behind. The
+        restart ``os.execv``s the launcher, which runs this gateway as its
+        child, so the old pid stays alive with its start identity unchanged and
+        never reads dead while this gateway runs. Its rows were filed by this
+        gateway's own previous image, whose sessions the exec left unmanaged,
+        so they are swept here as the previous run's. Sweeping them signals no
+        foreign process: each row's child is still checked against its
+        recorded start token and the managed-agent argv before any kill, and a
+        live gateway ancestor still runs Python
+        (:func:`platform_compat.is_exec_supervisor_of_this_process`) and keeps
+        its rows.
+        """
         # pid_exists() returns True on a live PID or one we can't signal
         # (can't tell — preserve), and False only when confirmed dead.
-        return platform_compat.pid_exists(gw_pid)
+        if not platform_compat.pid_exists(gw_pid):
+            return False
+        # One ancestry walk per owner, not per row.
+        if gw_pid not in supervisor_verdicts:
+            supervisor_verdicts[gw_pid] = platform_compat.is_exec_supervisor_of_this_process(gw_pid)
+        return not supervisor_verdicts[gw_pid]
 
     killed, killed_or_dead, _ = _sweep_pid_entries(
         lines,
@@ -2858,10 +3012,44 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     retained under either setting, and this pass never touches the shared
     ``kiro_session_pids.txt`` that pass 1 rewrites.
 
+    The same setting turns on the one prune of a LIVE pid: a mapping whose
+    recorded start token disagrees with the pid's live one, see
+    :func:`_retract_recycled_mapping`. The boot setting skips it for the same
+    reason it skips the snapshot.
+
     Returns the number of mapping files removed.
     """
+    # The live-pid arm runs in one pass per process at a time, so a private name
+    # this process made is never in flight while another pass of it settles
+    # leftovers. A pass that finds the lock taken skips the arm for this tick.
+    retract = narrow_with_leaders and _RETRACT_LOCK.acquire(blocking=False)
+    try:
+        return _prune_session_pid_files_pass(narrow_with_leaders, retract)
+    finally:
+        if retract:
+            _RETRACT_LOCK.release()
+
+
+#: Serializes the live-pid retraction arm within this process.
+_RETRACT_LOCK = threading.Lock()
+
+
+def _prune_session_pid_files_pass(narrow_with_leaders: bool, retract: bool) -> int:
+    """One pass of :func:`_prune_stale_session_pid_files`; *retract* enables the live-pid arm."""
     stale_pid_files = 0
-    pid_files = list(config_dir().glob("session_pid_*.txt"))
+    cfg = config_dir()
+    if retract:
+        # A retraction that stopped part-way leaves its private name behind, and
+        # that file may be a CURRENT mapping moved aside by mistake. Only a
+        # leftover no running pass owns is settled, and it is settled before the
+        # glob so a restored mapping is judged below.
+        # Mappings before sidecars: whether a sidecar is still needed depends on
+        # whether its mapping was put back.
+        for suffix in (".txt", ".sig"):
+            for leftover in cfg.glob(f".session_pid_*{suffix}{_RETRACT_SUFFIX}*"):
+                if _retraction_leftover_is_orphaned(leftover.name):
+                    _settle_retraction_leftover(leftover)
+    pid_files = list(cfg.glob("session_pid_*.txt"))
     # Snapshot the host's thread-group leaders ONCE for the whole sweep — one
     # directory read instead of a synchronous /proc read per mapping.
     #
@@ -2900,18 +3088,23 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
         #
         # ``leaders is None`` means the question was unanswerable (non-Linux,
         # unreadable /proc), so it never contributes to a prune.
+        #
+        # Absence from the snapshot selects a CANDIDATE, never the outcome. The
+        # snapshot was read before this loop, so a pid recycled since -- whose
+        # mapping the new owner has already republished at this same path -- is
+        # missing from it while naming a LIVE session. Unlinking that mapping
+        # would lose a live session's identity, so the decision needs a reading
+        # for this pid taken now. Retain on anything but a definite "not a
+        # process", and pay the per-pid read only for the few candidates rather
+        # than for every mapping.
         if platform_compat.pid_exists(pid):
-            if leaders is None or pid in leaders:
-                continue
-            # Absence from the snapshot selects a CANDIDATE, never the outcome.
-            # The snapshot was read before this loop, so a pid recycled since --
-            # whose mapping the new owner has already republished at this same
-            # path -- is missing from it while naming a LIVE session. Unlinking
-            # that mapping would lose a live session's identity, so the decision
-            # needs a reading for this pid taken now. Retain on anything but a
-            # definite "not a process", and pay the per-pid read only for the
-            # few candidates rather than for every mapping.
-            if platform_compat.is_thread_group_leader(pid) is not False:
+            if (
+                leaders is None
+                or pid in leaders
+                or platform_compat.is_thread_group_leader(pid) is not False
+            ):
+                if retract and _retract_recycled_mapping(pid_file, pid):
+                    stale_pid_files += 1
                 continue
         pid_file.unlink(missing_ok=True)
         # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
@@ -2922,6 +3115,218 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)
     return stale_pid_files
+
+
+#: Infix of the private name a mapping is moved to while it is being retracted.
+_RETRACT_SUFFIX = ".retract-"
+
+
+def _retract_recycled_mapping(pid_file: Path, pid: int) -> bool:
+    """Remove *pid_file* when its recorded start token differs from the live pid's.
+
+    Such a mapping names the pid's PREVIOUS owner. Both resolvers already refuse
+    it (``session_pid_sig._pid_recycled``), but the lenient client resolver
+    cannot tell it from a planted file -- it reads without a signature check --
+    so it counts the record as unusable and a caller with no other identity
+    source ends its walk refused. The publisher's own sweep is the party that can
+    retire it, so it does, and the walk then sees the absence it would have seen
+    had the old owner's mapping been pruned when that owner exited.
+
+    Only POSITIVE evidence retracts: an absent recorded token (legacy file), an
+    unreadable live token, a malformed body or a co-tenant record all stay, as
+    does anything that is not a regular file.
+
+    The live owner of the pid may republish this exact path at any moment, so the
+    file is first moved to a private name and the retraction stands only if what
+    moved is still the inode that was read AND its body still proves the recycle.
+    Anything else is put back without replacing a file published after it, and a
+    file that cannot be put back is KEPT under its private name for the next
+    sweep to settle rather than deleted. The ``.sig`` sidecar is handled the same
+    way, see :func:`_retract_sidecar`.
+
+    Returns True when the mapping was retracted. Never raises.
+    """
+    try:
+        before = os.lstat(pid_file)
+    except OSError:
+        return False
+    if not S_ISREG(before.st_mode) or not _is_recycled_record(pid, pid_file, before):
+        return False
+    private = _private_name(pid_file)
+    try:
+        os.rename(pid_file, private)
+    except OSError:
+        return False
+    if not _is_recycled_record(pid, private, before):
+        if _restore_no_replace(private, pid_file):
+            _discard(private)
+        return False
+    _discard(private)
+    _retract_sidecar(pid_file)
+    logger.debug("Retracted session_pid_%d: the pid now names a different process", pid)
+    return True
+
+
+def _private_name(path: Path) -> Path:
+    """The name *path* is moved to while it is retracted, unique to this call."""
+    return path.with_name(f".{path.name}{_RETRACT_SUFFIX}{os.getpid()}-{secrets.token_hex(4)}")
+
+
+def _is_recycled_record(pid: int, path: Path, expected: os.stat_result) -> bool:
+    """True when *path* is still the inode *expected* and its body proves a recycle.
+
+    Read through the mapping family's own hardened reader, which never blocks on
+    a FIFO and never follows a link: the directory is same-uid agent-writable, so
+    anything swapped in after the caller's ``lstat`` is either refused by type or
+    by the identity check against *expected*.
+    """
+    from kiro_crew import session_pid_sig
+
+    body = session_pid_sig._read_regular_nofollow(path, expected=expected)
+    if body is None:
+        return False
+    return session_pid_sig._mapping_from_body(pid, body).refusal == session_pid_sig.REFUSAL_RECYCLED
+
+
+def _retract_sidecar(pid_file: Path) -> None:
+    """Remove the ``.sig`` beside a retracted *pid_file*, never a republished one.
+
+    The publisher writes ``.txt`` then ``.sig``. The sidecar is moved aside first
+    and the ``.txt`` checked after the move: if a ``.txt`` is back, or another
+    pass holds one privately and may put it back, whatever was moved goes back
+    too, without replacing a newer sidecar; if not, any sidecar published from
+    here on lands after the move and is untouched.
+    """
+    sig = pid_file.with_suffix(".sig")
+    private = _private_name(sig)
+    try:
+        os.rename(sig, private)
+    except OSError:
+        return
+    if not _mapping_may_return(pid_file) or _restore_no_replace(private, sig):
+        _discard(private)
+
+
+def _mapping_may_return(pid_file: Path) -> bool:
+    """True while *pid_file* exists, or any pass holds a ``.txt`` of it privately.
+
+    Another process's pass can have moved a CURRENT mapping aside and be about
+    to put it back, so an empty public path alone does not mean the sidecar is
+    unused.
+    """
+    # A pass moves a mapping aside with one rename and puts it back by linking
+    # the public name BEFORE dropping the private one, so at every instant at
+    # least one name exists. Public, private, public again: a move that lands
+    # between the first two checks shows in the second, a restore that lands
+    # between them shows in the third.
+    if os.path.lexists(pid_file):
+        return True
+    if any(pid_file.parent.glob(f".{pid_file.name}{_RETRACT_SUFFIX}*")):
+        return True
+    return os.path.lexists(pid_file)
+
+
+def _retraction_leftover_is_orphaned(name: str) -> bool:
+    """True when no running pass owns private name *name*.
+
+    The name ends ``.retract-<pid>-<hex>``. Called with :data:`_RETRACT_LOCK`
+    held, so this process has no retraction in flight and its own leftovers are
+    settled too; another live process's may be in flight and are left alone.
+
+    One live owner has no pass in flight: the supervisor an in-app restart
+    through a supervising launcher leaves behind. The restart ``os.execv``s the
+    launcher, so the old pid stays alive as this gateway's ancestor while the
+    image that ran the retraction is gone, and a leftover it had in flight at
+    the exec would otherwise stay unsettled for as long as the supervisor lives.
+    A live gateway ancestor still runs Python
+    (:func:`platform_compat.is_exec_supervisor_of_this_process`) and keeps its
+    leftovers.
+    """
+    try:
+        owner = int(name.rsplit(_RETRACT_SUFFIX, 1)[1].split("-", 1)[0])
+    except (IndexError, ValueError):
+        return False
+    return (
+        owner == os.getpid()
+        or not platform_compat.pid_exists(owner)
+        or platform_compat.is_exec_supervisor_of_this_process(owner)
+    )
+
+
+def _settle_retraction_leftover(leftover: Path) -> None:
+    """Finish an unowned retraction: delete what is proven stale, restore the rest.
+
+    A ``.txt`` leftover is deleted only when its body still proves the recycle;
+    anything else may be a current mapping moved aside by mistake, so it goes
+    back to its name without replacing a newer one. A ``.sig`` leftover goes back
+    only beside a ``.txt``; with no ``.txt`` and no private ``.txt`` of the same
+    pid still waiting to go back, nothing reads it. A leftover that cannot be put
+    back stays for the next sweep.
+    """
+    original = leftover.with_name(leftover.name[1:].rsplit(_RETRACT_SUFFIX, 1)[0])
+    if original.suffix == ".txt":
+        try:
+            pid = int(original.stem.removeprefix("session_pid_"))
+            st = os.lstat(leftover)
+        except (ValueError, OSError):
+            return
+        if S_ISREG(st.st_mode) and _is_recycled_record(pid, leftover, st):
+            _discard(leftover)
+        elif _restore_no_replace(leftover, original):
+            _discard(leftover)
+    elif original.suffix == ".sig":
+        txt = original.with_suffix(".txt")
+        if os.path.lexists(txt):
+            if _restore_no_replace(leftover, original):
+                _discard(leftover)
+        elif not _mapping_may_return(txt):
+            _discard(leftover)
+
+
+def _restore_no_replace(private: Path, target: Path) -> bool:
+    """Link *private* back at *target* only if *target* is free.
+
+    True when *private* can be discarded: it was linked back, or *target*
+    already holds a newer file. False when the link could not be made (a
+    filesystem without hard links, an I/O error); the caller then keeps
+    *private*, because a rename here could replace a newer file.
+
+    Only a regular file is ever linked, and never through a symlink: the
+    directory is same-uid agent-writable, so a planted link at a private name
+    must not become a public name for whatever it points at. Anything else is
+    reported as discardable, so the caller unlinks the name itself.
+    """
+    try:
+        if not S_ISREG(os.lstat(private).st_mode):
+            return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    try:
+        if _LINK_NOFOLLOW:
+            os.link(private, target, follow_symlinks=False)
+        else:
+            os.link(private, target)
+    except FileExistsError:
+        return True
+    except OSError:
+        logger.debug("Could not restore %s; keeping %s", target.name, private.name)
+        return False
+    return True
+
+
+#: ``os.link`` must link the name itself, never a symlink's target, where the
+#: platform lets it choose; the ``S_ISREG`` check covers the rest.
+_LINK_NOFOLLOW = os.link in os.supports_follow_symlinks
+
+
+def _discard(path: Path) -> None:
+    """Unlink a private retraction name, tolerating an I/O error."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Could not remove retraction leftover: %s", path.name)
 
 
 #: How long an unrefreshed ``session_token_<sha256>.sig`` mapping is kept.
@@ -3000,9 +3405,12 @@ def cleanup_orphaned_session_roots() -> int:
     recorded. The recorded start token only ever SUBTRACTS: a live value that differs
     prunes without a signal, an unreadable one retains the entry, and a value that
     matches settles identity well enough to skip the weaker PPid reparent test. A
-    token-less entry is judged by the argv gate plus that PPid test.
+    token-less entry is judged by the argv gate plus that PPid test. An entry whose
+    owning pid is the exec supervisor of this process
+    (:func:`platform_compat.is_exec_supervisor_of_this_process`) was filed by this
+    gateway's own previous image and is judged as a dead owner's.
 
-    Called periodically from ``session.py``'s ``_cleanup_loop``. Returns the
+    Called periodically from ``SessionManager._cleanup_loop``. Returns the
     number of exact-handle trees completed plus orphaned processes killed.
     """
 
@@ -3026,6 +3434,7 @@ def cleanup_orphaned_session_roots() -> int:
 
     my_gw_pid = os.getpid()
     entries_to_remove: set[str] = set()
+    supervisor_verdicts: dict[int, bool] = {}
 
     for line in lines:
         stripped = line.strip()
@@ -3063,16 +3472,31 @@ def cleanup_orphaned_session_roots() -> int:
         # platform_compat: os.kill(pid, 0) would *terminate* the process on
         # Windows, so use the three-way liveness probe instead.
         gw_liveness = platform_compat.pid_liveness(gw_pid)
-        if gw_liveness == platform_compat.PID_ALIVE:
-            continue  # gateway alive — its responsibility
         if gw_liveness == platform_compat.PID_UNSIGNALABLE:
             continue  # can't determine — skip
-        # gw_liveness == PID_DEAD — orphan candidate
+        if gw_liveness == platform_compat.PID_ALIVE:
+            # One live owner is NOT a gateway: the supervisor an in-app restart
+            # through a supervising launcher (``toolbox-exec``) leaves as this
+            # process's ancestor. Its rows were filed by this gateway's own
+            # previous image, and the startup sweep does not settle all of them:
+            # a child still in the spawn grace at boot, or one whose token could
+            # not be read then, is retained, and this is the only sweep that runs
+            # again before the next start. Such a row goes through every identity
+            # test below exactly as a dead owner's does. A live gateway ancestor
+            # still runs Python
+            # (:func:`platform_compat.is_exec_supervisor_of_this_process`) and
+            # keeps its rows. One ancestry walk per owner, not per row.
+            if gw_pid not in supervisor_verdicts:
+                is_supervisor = platform_compat.is_exec_supervisor_of_this_process(gw_pid)
+                supervisor_verdicts[gw_pid] = is_supervisor
+            if not supervisor_verdicts[gw_pid]:
+                continue  # gateway alive — its responsibility
+        # Owner dead, or this gateway's own exec supervisor — orphan candidate
 
-        # Gateway is dead. A process-local pending tree still owns its tracking.
+        # A process-local pending tree still owns its tracking.
         if platform_compat.windows_tree_cleanup_pending(child_pid, recorded_token):
             continue
-        # Gateway is dead. Check if the child PID is still alive.
+        # Check if the child PID is still alive.
         child_liveness = platform_compat.pid_liveness(child_pid)
         if child_liveness == platform_compat.PID_DEAD:
             # Already dead — just prune the entry
@@ -3181,8 +3605,8 @@ def _track_pid(pid: int) -> None:
     """Append a PID to the tracking file."""
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
+        ensure_directory(path.parent)
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             f.write(f"{pid}\n")
 
 
@@ -3199,9 +3623,9 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
         return
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         existing = set(_read_pid_file_text(path).splitlines()) if path.exists() else set()
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as f:
             for pid in pids:
                 key = f"{pid}:{parent_pid}"
                 if any(e == key or e.startswith(key + ":") for e in existing):
@@ -3278,7 +3702,7 @@ def _replace_child_pids(
         return True
     with _pid_file_lock():
         path = _pid_file_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         lines = _read_pid_file_text(path).splitlines() if path.exists() else []
         kept: list[str] = []
         for raw in lines:
@@ -4635,6 +5059,42 @@ def tracked_agent_pid_owners() -> dict[int, int]:
     return owners
 
 
+def tracked_session_roots() -> dict[int, tuple[int, str | None]] | None:
+    """``{runtime root pid: (gateway pid, recorded start token)}`` -- READ ONLY.
+
+    The runtime roots ``kiro_session_pids.txt`` records: one per runtime a gateway
+    spawned, with the gateway that wrote the entry and the start identity it
+    recorded (``None`` for an entry written without one). A diagnostic accessor
+    for the doctor's runtime census, so that report does not re-spell this file
+    format. Like :func:`tracked_agent_pid_owners` it neither writes, locks,
+    signals nor reports completeness, and no reaper consults it; a malformed line
+    is skipped.
+
+    ``None`` when the file exists and cannot be read, so a report can say the
+    ownership is unknown rather than call every runtime untracked. A missing file
+    is an empty registry.
+    """
+    try:
+        raw = _read_pid_file_text(_session_pid_file_path())
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return None
+    roots: dict[int, tuple[int, str | None]] = {}
+    for line in raw.split():
+        fields = line.split(":")
+        if len(fields) not in (2, 3):
+            continue
+        try:
+            gateway, pid = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        if gateway > 0 and pid > 0:
+            token = (fields[2] or None) if len(fields) == 3 else None
+            roots.setdefault(pid, (gateway, token))
+    return roots
+
+
 def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: set[int]) -> bool:
     """REPORT-ONLY: a managed agent runtime that no reaper can reach.
 
@@ -5528,6 +5988,46 @@ def _build_child_map(proc_root: Path | None = None) -> dict[int, list[int]]:
     return {} if child_map is None else child_map
 
 
+_rss_ceiling_inert_warned = False
+
+
+def _warn_rss_ceiling_inert_once(reason: str) -> None:
+    """Say once per process that the session RSS ceiling cannot measure here.
+
+    Without it an unsupported host reads every tree as 0 MiB and silently never
+    recycles a session, however large it grows.
+    """
+    global _rss_ceiling_inert_warned
+    if _rss_ceiling_inert_warned:
+        return
+    _rss_ceiling_inert_warned = True
+    logger.warning(
+        "session RSS ceiling cannot measure on this host (%s): every tree reads 0 MiB "
+        "and no session is recycled for memory",
+        reason,
+    )
+
+
+def _off_linux_tree_mb(pid: int, exclude_pids: set[int]) -> int:
+    """Tree reading (MiB) where there is no ``/proc``: macOS walks libproc.
+
+    It does not reuse the runtime watchdog's ``acp.runtime._get_rss_tree_mb``:
+    this module sits outside the agent-SDK boundary, and
+    ``scripts/check_agent_sdk_boundary.py`` refuses new ACP-layer imports here.
+
+    Any other host, or a Mac whose libproc does not load, cannot measure; it
+    answers 0 and warns once. Windows never comes here (see ``get_session_rss_mb``).
+    """
+    if sys.platform != "darwin":
+        _warn_rss_ceiling_inert_once(f"platform {sys.platform}")
+        return 0
+    if not platform_compat.darwin_libproc_available():
+        _warn_rss_ceiling_inert_once("libproc unavailable")
+        return 0
+    tree_mb = platform_compat.darwin_footprint_tree_mb(pid, exclude_pids)
+    return 0 if tree_mb is None else int(tree_mb)
+
+
 def _rss_mb_from_tree(
     pid: int,
     child_map: dict[int, list[int]],
@@ -5543,7 +6043,13 @@ def _rss_mb_from_tree(
     across sequential/threaded calls. Any PID in *exclude_pids* is skipped along
     with its subtree. Resident pages are summed across the tree and converted to
     MiB once at the end.
+
+    Off Linux (no *proc_root*) the map is not used: macOS sums each process's
+    footprint over libproc's live child lists instead (``_off_linux_tree_mb``),
+    honouring *exclude_pids* the same way.
     """
+    if proc_root is None and sys.platform != "linux":
+        return _off_linux_tree_mb(pid, exclude_pids)
     total_pages = 0
     seen: set[int] = set()
     frontier = [pid]
@@ -5581,17 +6087,18 @@ def get_session_rss_mb(
     walk (see ``_build_child_map``), so it delegates to
     ``platform_compat.proc_rss_tree_mb_for_pid``, which sums only
     lineage-validated descendants; without that the ceiling measured every tree
-    as 0 MiB there and no session was ever recycled. macOS has no ctypes-only
-    per-pid RSS path, so it returns 0 and the ceiling stays inert.
+    as 0 MiB there and no session was ever recycled. macOS has no ``/proc``
+    either; it sums footprints over libproc (``_off_linux_tree_mb``). Any other
+    host returns 0 and logs one warning that the ceiling cannot measure.
 
-    *exclude_pids* is honoured on the ``/proc`` route. The Windows route derives
-    its own validated descendant set, so a caller that needs a subtree barrier
-    there must exclude the pid before calling.
+    *exclude_pids* is honoured on the ``/proc`` and macOS routes. The Windows
+    route derives its own validated descendant set, so a caller that needs a
+    subtree barrier there must exclude the pid before calling.
     """
     if platform_compat.IS_WINDOWS and proc_root is None:
         tree_mb = platform_compat.proc_rss_tree_mb_for_pid(pid)
         return 0 if tree_mb is None else int(tree_mb)
-    if sys.platform != "linux":
-        return 0
+    if proc_root is None and sys.platform != "linux":
+        return _off_linux_tree_mb(pid, exclude_pids)
     child_map = _build_child_map(proc_root)
     return _rss_mb_from_tree(pid, child_map, exclude_pids, proc_root)

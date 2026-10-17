@@ -49,14 +49,24 @@ each entry ships a prebuilt `route`, and that route highlights by
 resolves an English label against the rendered DOM and cannot match a translated
 dashboard.
 
+## Scope: the dashboard renderer
+
+The catalogs and their gates cover the dashboard renderer. Electron main-process
+and pre-dashboard chrome — the remote-crew prompt
+(`electron/runtime/gateway/remote-crew-prompt.js`), the main-process message boxes
+(gateway takeover, update and session-security dialogs), and the
+Linux window-caption `aria-label`s (`electron/runtime/window/linux-captions.js`) — is
+English-only, outside the catalogs and outside the i18n gates. Localizing it is a
+separate product request.
+
 ## Catalog structure
 
 Catalogs live in `src/i18n/locales/`:
 
 | File | Owner |
 |---|---|
-| `en.json` | **generated**. `node scripts/i18n-codemod.mjs` rewrites it wholesale. Never hand-edit. |
-| `en.manual.json` | hand-authored English with no source literal to extract, for example the language picker's own labels. |
+| `en.json` | extracted by `node scripts/i18n-codemod.mjs` and also maintained by hand (the `apps.<id>.manifest.*` blocks, feature namespaces such as `settingRef`). Add keys by hand or with `--merge`. A bare full run rebuilds the catalog from the sources, and the codemod refuses it when it would extract under three-quarters of the keys the catalog holds. |
+| `en.manual.json` | hand-authored English the codemod does not extract, for example the language picker's own labels and the welcome view's strings (`en.json` keeps an empty `welcomeView` shell). |
 | `<tag>.json` | one per translation. Its key set must match the English key set exactly. |
 | `en-XA.json` | generated pseudolocale, dev-only. Not a language. |
 
@@ -120,10 +130,8 @@ downstream editions: overriding one variable rebrands every catalog string,
 instead of forking 13 locale files through every upstream sync (see
 [extension-seams](extension-seams.md)).
 
-> The pre-existing catalog values were converted in batches (the full-catalog
-> diff exceeds the reviewable size limit). The conversion is complete; a
-> catalog-wide test in `productName.test.ts` pins that no value outside the
-> exceptions below carries the literal.
+A catalog-wide test in `productName.test.ts` pins that no value outside the
+exceptions below carries the literal.
 
 Authoring rules that follow:
 
@@ -308,11 +316,13 @@ Two traps worth knowing before you debug them:
 
 Third-party apps are deliberately out of scope: their copy is their author's to
 translate, so they fall through to whatever the manifest supplied. That fallthrough is
-also a **trust boundary** — `keysFor()` refuses to resolve when `_registry` is set, so a
-registry row that reuses a built-in id cannot wear the built-in's localised identity next
-to an Install button. `_registry` is attached server-side and cannot be forged by index
-content; `origin` can, which is why it is not the signal. Same ordering as `sourceLabel()`
-and `isVerified()` in `src/components/appstore/types.ts`.
+also a **trust boundary** — `keysFor()` resolves only when `_registry` is absent AND
+`origin === 'builtin'`. The two checks block different records: `_registry` (attached
+server-side, not forgeable by index content) blocks a registry row that reuses a built-in
+id, even when install-state enrichment lends it `origin: builtin`; `origin` blocks an
+installed third-party record, whose detail payload carries no `_registry`. Both are
+required. Same ordering as `sourceLabel()` and `isVerified()` in
+`src/components/appstore/types.ts`.
 
 ## Formatting follows the app language, not the browser
 
@@ -345,8 +355,8 @@ when you need explicit components instead.
 Available: `fmtNumber`, `fmtPercent`, `fmtCurrency`, `fmtUnit`, `fmtDuration`,
 `fmtCompact`, `fmtBytes`, `fmtDate`, `fmtTime`, `fmtDateTime`, `fmtDateNumeric`,
 `fmtTimeNumeric`, `fmtDateTimeNumeric`, `fmtDateFields`, `fmtWeekday`,
-`fmtRelative`, `fmtList`, `collator`, `compareText`, plus `activeLocale` and
-`toDate`.
+`fmtRelative`, `fmtList`, `fmtCredits`, `collator`, `compareText`, plus
+`activeLocale` and `toDate`.
 
 Bounded-monitor evidence follows the same seam. Probe, wake, agent-turn, token,
 provider-error, cadence, and budget values pass through `fmtNumber`; probe

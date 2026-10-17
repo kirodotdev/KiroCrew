@@ -7,7 +7,7 @@ executable with no PATH search, so a command resolved once can never be rebound.
 
 These run the REAL rebuild repeatedly against one on-disk config, which is the
 only way the readback participates at all. The helper is reused from
-``test_agent``: seeding each rebuild identically by hand is what made this defect
+``test_agent_mcp_merge``: seeding each rebuild identically by hand is what made this defect
 invisible.
 
 The record applies only to a server no other config source declares -- the one

@@ -56,6 +56,17 @@ describe('UpdatePill', () => {
     await waitFor(() => expect(pill()).toHaveTextContent('42'))
   })
 
+  it('marks its label for the desktop top bar to fold it, keeping the pill named', async () => {
+    // index.css's last actions-group rung (`tb-drop-update-label`) hides the
+    // label so the pill cannot push the bell out; the icon and the
+    // aria-label still carry the meaning.
+    await mount({ status: { update_available: true } })
+    const label = pill()!.querySelector('.tb-drop-update-label')
+    expect(label).not.toBeNull()
+    expect(label!.textContent).not.toBe('')
+    expect(pill()).toHaveAccessibleName()
+  })
+
   it('flips to update-ready once the build is staged', async () => {
     await mount({ desktop: true, state: { state: 'downloaded', version: '9.9.9' } })
     // Pinned via the catalog key's EN value so a copy tweak fails loudly here.

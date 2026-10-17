@@ -25,7 +25,8 @@
  * from the root's paste context instead of its two paste props. Planned
  * atoms, in order: Mention (P3-d), Slash + Skills (P3-e), Editor + Send +
  * Attach + FollowUps (P3-f, at which point `ChatInput` is a preset and is
- * deleted).
+ * deleted). The first Editor + Send pair (`atoms.tsx`) is the store-free one
+ * ChatEmbed mounts; `ChatInput` keeps its own until it is rebuilt on them.
  */
 import { createContext, forwardRef, useCallback, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -62,18 +63,21 @@ export interface ComposerProps {
    *  `ChatInput` reads them from the root instead of its `pasteBlocks` /
    *  `onPasteBlocksChange` props, the same way `draft` wins over `value`. */
   pastes?: ComposerPasteSlice
+  /** Root-mounted atoms this surface does not offer. Omitted, every atom runs. */
+  capabilities?: ComposerCapabilities
   children?: ReactNode
 }
 
-/*
- * No `capabilities` record yet — deliberately. The atom shape (RFC §3 layer 4)
- * has one, so a surface can say what it does not offer, but every surface that
- * mounts this root today wants everything the root has (voice), and a surface
- * that wants nothing simply does not mount it. The record arrives with the first
- * writer: the ChatEmbed `embedded` preset, when its capability props move onto
- * the root in P3-f. Shipping a flag with no writer was reviewed as dead surface
- * twice on #9787; this note is what stops a third.
- */
+/** What a surface turns off on the root (RFC §3 layer 4). Only atoms the ROOT
+ *  mounts are listed: an atom the host places itself (`ComposerEditor`,
+ *  `ComposerSend`) is offered by mounting it, not by a flag. */
+export interface ComposerCapabilities {
+  /** `false` keeps the Voice atom unmounted. Its STT config read goes through
+   *  the dashboard api client and its setup modal navigates the dashboard
+   *  router, so an app embed — whose requests must pass the host app's
+   *  `allowedApiPaths` and which may have no router — turns it off. */
+  voice?: boolean
+}
 
 function shallowEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const ka = Object.keys(a); const kb = Object.keys(b)
@@ -133,6 +137,7 @@ export interface ComposerContextValue {
   }
   voiceOptions: ComposerVoiceOptions
   voiceSlot: Slot<ComposerVoiceSlice | null>
+  capabilities: ComposerCapabilities
   /** Set only by `ComposerVoiceSliceOverride`: no atom must run under it. */
   testOverride?: true
 }
@@ -160,6 +165,17 @@ export function useComposerDraftText(): string | null {
   return draft ? text : null
 }
 
+/** The editor's text and writer, for an atom the host places inside the root
+ *  (`ComposerEditor`, `ComposerSend`). With a `draft` store the caller is
+ *  subscribed to it; with a controlled `value` the host re-renders the root —
+ *  and so the atom — on every change, and the mirror is read during render. */
+export function useComposerEditor(): { text: string; onChange: (value: string) => void } {
+  const ctx = useContext(ComposerContext)
+  const stored = useComposerDraftText()
+  if (!ctx) throw new Error('A composer atom must be mounted inside <Composer>.')
+  return { text: stored ?? ctx.editor.inputRef.current, onChange: ctx.editor.onChange }
+}
+
 /** The host's paste blocks, in their own context rather than the root's, so
  *  a block change reaches the editor that reads them without changing the
  *  value the Voice atom reads. Null with no root, or a root given no
@@ -178,7 +194,7 @@ export interface ComposerHandle {
 }
 
 const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { slotKey, value = '', draft, onChange, voice, pastes, children }, ref,
+  { slotKey, value = '', draft, onChange, voice, pastes, capabilities, children }, ref,
 ) {
   const valueRef = useRef(value); valueRef.current = value
   // With a draft store the ref reads through to it, so an atom never sees text
@@ -189,12 +205,16 @@ const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer
     : valueRef, [draftStore])
   const voiceSlot = useRef(createSlot<ComposerVoiceSlice | null>(null)).current
   const voiceOptions = voice ?? EMPTY_VOICE_OPTIONS
+  // Keyed on the flag, not the object: a host passing a literal each render
+  // must not rebuild the context (and re-render every atom) for nothing.
+  const voiceOn = capabilities?.voice !== false
+  const caps = useMemo<ComposerCapabilities>(() => (voiceOn ? ALL_CAPABILITIES : { voice: false }), [voiceOn])
   useImperativeHandle(ref, () => ({ voice: () => voiceSlot.get()?.controls ?? null }), [voiceSlot])
   const ctx = useMemo<ComposerContextValue>(() => ({
     slotKey,
     editor: { onChange, inputRef, draft: draftStore },
-    voiceOptions, voiceSlot,
-  }), [slotKey, onChange, inputRef, draftStore, voiceOptions, voiceSlot])
+    voiceOptions, voiceSlot, capabilities: caps,
+  }), [slotKey, onChange, inputRef, draftStore, voiceOptions, voiceSlot, caps])
   // The atoms the root mounts live HERE, as siblings of the children, never
   // inside a subscriber. `ChatInput` subscribes to the voice slot; if the
   // atom were its child, every publish would re-render `ChatInput`, which would
@@ -210,6 +230,7 @@ const ComposerRoot = forwardRef<ComposerHandle, ComposerProps>(function Composer
   )
 })
 const EMPTY_VOICE_OPTIONS: ComposerVoiceOptions = {}
+const ALL_CAPABILITIES: ComposerCapabilities = {}
 
 // ---------------------------------------------------------------------------
 // The dictation atom (root-mounted, module-private).
@@ -233,6 +254,7 @@ function VoiceAtom() {
   // `voiceSlot.subscribe` doubles as the "am I the real root?" test: the test
   // seam below hands `ChatInput` a fixed bundle and must not also run an engine.
   if (!ctx || ctx.voiceSlot === NULL_SLOT || ctx.testOverride) return null
+  if (ctx.capabilities.voice === false) return null
   return <VoiceAtomInner ctx={ctx} />
 }
 
@@ -313,6 +335,7 @@ export function ComposerVoiceSliceOverride({ inputProps, children }: { inputProp
     slotKey: null,
     editor: { onChange: () => {}, inputRef, draft: null },
     voiceOptions: EMPTY_VOICE_OPTIONS, voiceSlot: slotRef.current,
+    capabilities: ALL_CAPABILITIES,
     testOverride: true,
   }), [])
   return <ComposerContext.Provider value={ctx}>{children}</ComposerContext.Provider>
@@ -322,6 +345,6 @@ export function ComposerVoiceSliceOverride({ inputProps, children }: { inputProp
 // allow. There is deliberately no `Composer.Voice` export — a host mounting an
 // atom by hand next to the root's own would run two engines into one slot.
 // Named export only: nothing imports a default, and the module-private context
-// is reached through `useComposerVoiceSlice` (the one consumer that exists).
-// An atom outside this module will get a context hook the round it needs one.
+// is reached through hooks (`useComposerVoiceSlice`, `useComposerEditor`), never
+// exported itself.
 export const Composer = ComposerRoot

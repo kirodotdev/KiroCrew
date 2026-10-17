@@ -21,6 +21,7 @@ field validation) is covered by ``test_cloud_login_target.py``,
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
@@ -260,6 +261,24 @@ class CountingEngine(TargetEngine):
 
     def register(self, *, instance_id, tag, profile, region):
         self.registrations += 1
+
+
+class GatedEngine(CountingEngine):
+    """Records the instance every login targets, and holds each login open until
+    ``release`` is set, so a test can check a request while a login is running."""
+
+    def __init__(self, handle=None):
+        super().__init__(handle)
+        self.instances: list = []
+        self.release = threading.Event()
+
+    def begin_signin(self, *, instance_id, profile, region, login_target=None):
+        self.instances.append(instance_id)
+        if not self.release.wait(timeout=10):
+            raise AssertionError("the test never released the login")
+        return super().begin_signin(
+            instance_id=instance_id, profile=profile, region=region, login_target=login_target
+        )
 
 
 def _store(tmp_path):
@@ -1320,19 +1339,81 @@ class TestSigninRestartRoute:
         assert resp.status == 409
         assert _read(resp)["code"] == "launch_already_running"
 
-    async def test_it_refuses_while_another_launch_runs(self, tmp_path):
-        """One live device code at a time, or the user types the wrong one."""
+    async def test_a_launch_with_no_instance_yet_still_blocks(self, tmp_path):
+        """Until `provision` returns, nothing says which instance a launch will sign
+        in on, so a launch that has none yet blocks a restart on every crew."""
         state, job_id = await self._unsigned_job(tmp_path)
         other = state.cloud_launch_store.create(
             profile="dev", region="us-east-1", size_key="balanced"
         )
+        other.step(lj.STEP_PROVISION).state = lj.STEP_ACTIVE
         other.status = lj.RUNNING
         state.cloud_launch_store.save(other)
         resp = await hc.api_cloud_launch_signin_restart(
             _req("POST", "/x", state=state, match_info={"id": job_id})
         )
         assert resp.status == 409
-        assert _read(resp)["code"] == "launch_already_running"
+        body = _read(resp)
+        assert body["code"] == "launch_already_running"
+        assert body["job"]["id"] == other.id
+
+    async def test_a_job_on_another_crew_does_not_block_the_restart(self, tmp_path):
+        """The sign-in acts on one instance. Crew B's launch, already on its own
+        instance and waiting on its own code, cannot race a sign-in on crew A."""
+        state, job_id = await self._unsigned_job(tmp_path)
+        store = state.cloud_launch_store
+        other = store.create(profile="dev", region="us-east-1", size_key="balanced")
+        other.instance_id = "i-0bbbbbbbbbbbbbbb0"
+        other.step(lj.STEP_PREFLIGHT).state = lj.STEP_DONE
+        other.step(lj.STEP_PROVISION).state = lj.STEP_DONE
+        other.step(lj.STEP_SIGNIN).state = lj.STEP_ACTIVE
+        other.signin = lj.SigninPrompt(url="https://x/?user_code=B", code="B")
+        other.status = lj.AWAITING_SIGNIN
+        store.save(other)
+        engine = GatedEngine(FakeHandle(url="https://x/?user_code=A2", code="A2", signed=True))
+        engine.release.set()
+        state.cloud_launch_engine = engine
+
+        resp = await hc.api_cloud_launch_signin_restart(
+            _req("POST", "/x", state=state, match_info={"id": job_id})
+        )
+
+        assert resp.status == 202
+        assert engine.instances == ["i-0abc123456789def0"], "the login went to crew A only"
+        assert store.get(job_id).signin_detected is True
+        untouched = store.get(other.id)
+        assert untouched.status == lj.AWAITING_SIGNIN
+        assert untouched.signin is not None and untouched.signin.code == "B"
+
+    async def test_two_restarts_on_one_crew_start_one_login(self, tmp_path):
+        """The RUNNING claim is persisted under the launch lock, so of two restarts on
+        one crew arriving together one is admitted, the other gets 409, and exactly
+        one remote login starts. The first login is held open while the second is
+        checked: a login that already finished would rightly admit the next one."""
+        state, job_id = await self._unsigned_job(tmp_path)
+        state.cloud_launch_sync = False  # the real worker thread
+        engine = GatedEngine(FakeHandle(url="https://x/?user_code=N", code="N", signed=True))
+        state.cloud_launch_engine = engine
+
+        async def restart():
+            return await hc.api_cloud_launch_signin_restart(
+                _req("POST", "/x", state=state, match_info={"id": job_id})
+            )
+
+        try:
+            responses = await asyncio.wait_for(asyncio.gather(restart(), restart()), timeout=30)
+        finally:
+            engine.release.set()
+            workers = [t for t in threading.enumerate() if t.name == f"cloud-signin-{job_id}"]
+            for worker in workers:
+                worker.join(timeout=10)
+
+        assert not any(w.is_alive() for w in workers), "the sign-in worker did not finish"
+        assert sorted(r.status for r in responses) == [202, 409]
+        refused = next(r for r in responses if r.status == 409)
+        assert _read(refused)["code"] == "launch_already_running"
+        assert engine.instances == ["i-0abc123456789def0"], "a second remote login started"
+        assert state.cloud_launch_store.get(job_id).signin_detected is True
 
     def test_the_sync_starter_does_no_store_io_when_the_thread_fails(self, tmp_path, monkeypatch):
         """`_start_signin_worker` is sync and is called from the event loop. Its
@@ -1755,9 +1836,10 @@ def test_ssm_module_is_untouched_by_these_tests():
 class TestKillPatternMatchesWhatTheBoxLaunches:
     """The `pkill` pattern is only ever exercised on the remote box.
 
-    The design lane's objection is exact: a pattern that matches nothing exits 1
-    from `pkill` just as a successful kill does, so an assertion about our own
-    command text proves nothing about whether the box's login would be found.
+    The design lane's objection is exact: `pkill` exits 1 when the pattern
+    matches nothing, the same status as a login that already exited, so an
+    assertion about our own command text proves nothing about whether the box's
+    login would be found.
 
     Two guards stand in for a live run. This class is the static one -- it ties
     our killer to main's launcher, so a rename on EITHER side fails here instead

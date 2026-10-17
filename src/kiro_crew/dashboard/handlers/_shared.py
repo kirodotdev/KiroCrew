@@ -32,6 +32,7 @@ from kiro_crew.agent_discovery import (
     expand_skill_uri,
     parsed_agent_specs,
     skill_resource_uris,
+    skill_uri_for_path,
 )
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
@@ -42,6 +43,8 @@ from kiro_crew.dashboard.token_auth import (
     _b64url_decode,
     required_peer_key_unverified,
 )
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.history import TRANSCRIPT_HEADER_MAX_BYTES, memory_mode_from_header_line
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
@@ -441,7 +444,7 @@ async def read_bounded_json(
     header puts the preflight back. In-tree callers are unaffected: every client
     that sends a body already sets ``application/json`` (the frontend
     ``post``/``put``/``patch``/``del`` helpers, ``mcp_core``, ``cron_script``,
-    ``cli_*``, ``pod.runtime``, ``remote_relay``), and the bodiless requests
+    ``cli_*``, ``pod.runtime``), and the bodiless requests
     (``app_lifecycle_client``, ``cron_trigger``) are not checked.
 
     ONE caller opts OUT, and must: ``POST /api/messaging/teams``, where
@@ -468,9 +471,11 @@ async def read_bounded_json(
     415 and the declared-oversize 413 return BEFORE a single byte is read, a
     caller that does not return every error this helper hands back must pass
     ``require_json_content_type=False``, or it inherits an unread stream that
-    nothing bounds. Every other caller in the tree returns the error
-    unconditionally (``chat_pins`` rewrites a 400's code and then returns it),
-    so the Teams route is the only opt-out.
+    nothing bounds. Every other caller in the tree answers every error it gets
+    (``chat_pins``, ``session_storage`` and ``artifacts`` rewrite a 400 into
+    their own shape; ``hooks`` defaults an ``invalid_json`` 400, which comes
+    back only after the whole body was read), so the Teams route is the only
+    opt-out.
 
     Which also means: this gate is a SECOND barrier, not the first one. Every
     other unsafe-method ``/api/`` route is already refused cross-origin by
@@ -480,19 +485,26 @@ async def read_bounded_json(
     to be exploitable. Extending the refusal to the Teams route is a separate
     decision about an external contract, not part of this one.
 
-    The other self-authenticating webhook, ``POST /api/hooks/agent``, reads
-    through ``handlers/hooks.py::_json_object`` and is untouched by this.
+    The other self-authenticating webhook, ``POST /api/hooks/agent``, reads raw
+    bytes through ``handlers/hooks.py::_read_hook_body`` (it must HMAC the exact
+    bytes) and is not a caller, so this gate does not reach it.
 
-    NOT yet the dashboard's only such guard. Four siblings survive and diverge:
-    ``handlers_channel._json_object`` (same ``invalid_json``/``body_not_object``
-    codes, but raises ``HTTPBadRequest`` instead of returning the response),
-    ``handlers/hooks.py::_json_object`` (``default_empty=True`` collapses a
-    MALFORMED body to defaults), ``handlers/session_storage.py::_json_body``
-    (deliberately different: an empty body is legitimate there, and it
-    documents why), and ``handlers/artifacts.py::_read_json_body`` (raises
-    ``ArtifactValidationError``, carries its own cap). Folding or narrowing each
-    is still outstanding -- claiming one owner before that is done would be a
-    claim the tree does not support.
+    The four module-local JSON body guards read through this helper and keep
+    only their module's answer shape:
+    ``handlers_channel._json_object`` (raises, via
+    :func:`bounded_json_error_as_exception`), ``handlers/hooks.py::_json_object``
+    (``default_empty`` defaults an absent or ``invalid_json`` body, never a 415
+    or 413), ``handlers/session_storage.py::_json_body`` (absent is ``{}``,
+    malformed is its own ``invalid_body`` 400), and
+    ``handlers/artifacts.py::_read_json_body`` (``ArtifactValidationError`` for
+    the 400s, the 415 raised). So a handler that picks any of them gets the
+    media-type gate.
+
+    What this does NOT cover: handlers that still call ``await request.json()``
+    directly, and the builtin apps' own body helpers. Those parse whatever media
+    type is declared, behind ``csrf_middleware``'s Origin barrier only. A
+    multipart or raw-bytes route (uploads, the session import) is correctly not
+    a caller.
 
     The cap is enforced BEFORE decoding: a Content-Length precheck rejects an
     oversized declared body, and the stream is then read incrementally so a
@@ -574,6 +586,39 @@ async def read_bounded_json(
             {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
         )
     return body, None
+
+
+def bounded_json_error_code(error: web.Response) -> str | None:
+    """The ``code`` of a :func:`read_bounded_json` refusal *error*.
+
+    For the callers that answer one refusal their own way (a defaulted
+    ``invalid_json``, a module-specific message) while passing the rest through.
+    Telling ``invalid_json`` from ``body_not_object`` needs the code: both are 400.
+    """
+    try:
+        code = json.loads(error.text or "").get("code")
+    except (ValueError, AttributeError):
+        return None
+    return code if isinstance(code, str) else None
+
+
+def bounded_json_error_as_exception(error: web.Response) -> web.HTTPException:
+    """The :func:`read_bounded_json` refusal *error*, as an exception to raise.
+
+    For the callers whose contract is to RAISE rather than return a response
+    (``handlers_channel._json_object``, the 415 from
+    ``handlers/artifacts.py::_read_json_body``). aiohttp answers a raised
+    ``HTTPException`` with its own status and body, so the client sees the same
+    status, ``code`` and JSON the returning callers send. Keeping the mapping
+    here means a raising caller cannot drop the 415 by translating it into the
+    wrong status.
+    """
+    kwargs: dict[str, Any] = {"text": error.text, "content_type": "application/json"}
+    if error.status == 415:
+        return web.HTTPUnsupportedMediaType(**kwargs)
+    if error.status == 413:
+        return web.HTTPRequestEntityTooLarge(max_size=0, actual_size=0, **kwargs)
+    return web.HTTPBadRequest(**kwargs)
 
 
 # Chunk size for draining an OUTBOUND HTTP response to EOF. Matches the
@@ -991,6 +1036,21 @@ async def internal_memory_scope(
     )
 
 
+def spawn_parent_claim(request: web.Request, parent_session: str) -> str | None:
+    """The session a spawn route claims for ``internal_memory_scope``.
+
+    The spawn routes default a missing ``parent_session`` to ``""``. For a caller
+    without a session (no ``X-Session-Key``: only the internal secret, e.g. a
+    host-side sidecar or the CLI) that empty parent is "no claim", so it is passed
+    as ``None``. A caller WITH a session keeps the empty claim, which does not
+    match its own session and is refused: it may not start a run detached from
+    the session that owns it.
+    """
+    if parent_session or request.headers.get("X-Session-Key", ""):
+        return parent_session
+    return None
+
+
 #: The three chat routes a script cron opens, seeds and sets the approval mode of
 #: its sessions on. Session control is what ``agent.session_control`` switches
 #: off, and these are its writes.
@@ -1076,10 +1136,10 @@ async def cron_slot_creator(request: web.Request) -> str:
     return session
 
 
-async def cron_creator_refusal(
+async def cron_creator_admission(
     request: web.Request, state: Any, slot_name: str | None, cron_creator: str
-) -> web.Response | None:
-    """The creator fence for a ``cron:`` caller on the chat routes, or ``None``.
+) -> tuple[web.Response | None, bool, dict[str, Any]]:
+    """Judge a ``cron:`` caller and return its refusal and persisted snapshot.
 
     A script cron opens a slot with ``POST /api/chat/slots``, seeds it with
     ``POST /api/chat`` and sets its approval mode with ``POST /api/chat/mode``.
@@ -1099,50 +1159,59 @@ async def cron_creator_refusal(
     therefore makes its mint decision with no await after this returns. The
     mode route mints nothing and calls this only once its slot is live, so for
     it the whole judgement is the synchronous ``_created_by`` read.
+    The persisted flag and metadata describe the same read used for the creator
+    verdict, so the create caller restores a closed session's saved title
+    without a second store lookup.
     """
     if not cron_creator or not slot_name:
-        return None
+        return None, False, {}
     key = _normalize_slot_key(str(slot_name))
     if not key:
-        return None
+        return None, False, {}
     from kiro_crew.dashboard.session_control import _created_by_other
 
+    persisted = False
+    persisted_meta: dict[str, Any] = {}
     slot = state._slots.get(key)
     if slot is None:
         log = getattr(state, "conversation_log", None)
         if log is None:
-            return None
+            return None, False, {}
         from kiro_crew.dashboard.chat_utils import slot_transcript_key
 
         history_key = slot_transcript_key(key)
 
-        def _persisted_creator() -> str | None:
+        def _persisted_slot() -> tuple[bool, dict[str, Any]]:
             if not log.has_log(history_key):
-                return None
-            meta = log.get_metadata(history_key)
-            return str(meta.get("created_by") or "")
+                return False, {}
+            return True, log.get_metadata(history_key)
 
         try:
-            persisted = await asyncio.to_thread(_persisted_creator)
+            persisted, persisted_meta = await asyncio.to_thread(_persisted_slot)
         except Exception:
             logger.debug("persisted creator of slot %s unreadable", key, exc_info=True)
             refused = True
         else:
-            refused = persisted is not None and _created_by_other(
-                SimpleNamespace(_created_by=persisted), cron_creator
+            refused = persisted and _created_by_other(
+                SimpleNamespace(_created_by=str(persisted_meta.get("created_by") or "")),
+                cron_creator,
             )
         slot = state._slots.get(key)
         if slot is None and not refused:
-            return None
+            return None, persisted, persisted_meta
     if slot is not None and not _created_by_other(slot, cron_creator):
-        return None
+        return None, persisted, persisted_meta
     await _audit_cron_chat_denial(request, "not_creator", f"{request.path} slot={key}")
-    return web.json_response(
-        {
-            "error": "a scheduled run can only control sessions it created itself",
-            "code": "not_creator",
-        },
-        status=403,
+    return (
+        web.json_response(
+            {
+                "error": "a scheduled run can only control sessions it created itself",
+                "code": "not_creator",
+            },
+            status=403,
+        ),
+        persisted,
+        persisted_meta,
     )
 
 
@@ -1170,7 +1239,7 @@ async def cron_mode_refusal(
     cron asking for ``yolo`` is refused as a cron before the request reaches
     governance or the safety override, and whatever the slot. A mode that is not
     a string at all, a list say, is refused the same way rather than raising. The
-    creator fence, :func:`cron_creator_refusal`, is the handler's job once the
+    creator fence, :func:`cron_creator_admission`, is the handler's job once the
     slot resolves. Like the other two checks, this keys on the attested key the
     caller presents.
     """
@@ -1242,7 +1311,8 @@ async def private_chat_route_refusal(request: web.Request) -> web.Response | Non
             return None
     # A crew member is admitted to the chat FOLDER and TAG routes it needs to
     # organise its own worker sessions (session_create with folder=,
-    # chat_folder_file_self, chat_tag_assign, chat_session_pin), and to the
+    # chat_folder_file_self, chat_tag_assign, chat_session_pin,
+    # session_move_to_column), and to the
     # read-only session LIST its folder tools use to resolve its own slot -- the
     # surface session-control already opens to the same members. This is COARSE admission only: it lets
     # the caller reach the handler, whose own per-resource fence
@@ -1297,6 +1367,10 @@ _MEMBER_CHAT_SLOT_TAGS_METHODS = frozenset({"PUT"})
 #: Pinning a session (``chat_session_pin``); ``api_chat_slot_pin`` applies the
 #: same ``member_owns_slot`` fence as filing and tagging.
 _MEMBER_CHAT_SLOT_PIN_METHODS = frozenset({"PATCH"})
+#: Moving a session into a board column (``session_move_to_column``);
+#: ``api_chat_slot_drop`` applies the same ``member_owns_slot`` fence and the
+#: agent tag-grants policy ``PUT /tags`` applies.
+_MEMBER_CHAT_SLOT_DROP_METHODS = frozenset({"POST"})
 #: The session LIST is admitted read-only: the folder/tag MCP tools
 #: (chat_folder_file_self / chat_folder_move_session / chat_folder_tree) read it
 #: to resolve the caller's own slot. ``api_chat_slots`` filters the response for
@@ -1317,7 +1391,8 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
     neither renames nor deletes shared tags -- so its DELETE (which has no
     vocabulary fence) is refused at the gate. ``/api/chat/slots`` is the session
     LIST only; a deeper ``/api/chat/slots/<slot>/...`` sub-resource other than
-    the fenced ``/folder``, ``/tags`` and ``/pin`` writes is NOT matched here.
+    the fenced ``/folder``, ``/tags``, ``/pin`` and ``/drop`` writes is NOT
+    matched here.
     """
     if path in ("/api/chat/folders", "/api/chat/folders/"):
         return _MEMBER_CHAT_FOLDERS_METHODS
@@ -1347,6 +1422,9 @@ def _admitted_chat_route_methods(path: str) -> frozenset[str] | None:
     slot = _single_id_segment(path, "/api/chat/slots/", suffix="/pin")
     if slot is not None:
         return _MEMBER_CHAT_SLOT_PIN_METHODS
+    slot = _single_id_segment(path, "/api/chat/slots/", suffix="/drop")
+    if slot is not None:
+        return _MEMBER_CHAT_SLOT_DROP_METHODS
     return None
 
 
@@ -1532,20 +1610,73 @@ def _get_memory(state: DashboardState):
     return state._standalone_memory  # type: ignore[attr-defined]
 
 
-def _get_active_workspace(state: DashboardState) -> str:
-    """Return the workspace of the most recently active chat slot, or 'default'."""
-    slots = getattr(state, "_slots", {})
-    if slots:
-        # Pick the slot with the most messages (most active)
-        best = max(slots.values(), key=lambda s: s.total_messages, default=None)
-        if best and best.workspace and best.workspace != "default":
-            return best.workspace
+def _lesson_caller_slot_key(state: DashboardState, session_key: str) -> str:
+    """Map a lesson caller's session key to its slot key, or ``""``.
+
+    Delegates to :func:`session_control.caller_slot_key` for the shared
+    resolution (history key, slot key, transcript stem) and adds ONLY a
+    fallback that matches each slot's :func:`effective_session_key`, so a
+    channel-born slot surfaced without a session-map binding -- whose turns run
+    on ``dashboard:<slot>`` -- still resolves to its own workspace.
+
+    That extra match belongs ONLY to the lesson read/write path, which is why
+    it lives here rather than in ``caller_slot_key``: widening the latter would
+    also change the ``authorize_target`` self-target guard that every
+    session-control verb consults, which this bug does not touch.
+    """
+    if not session_key:
+        return ""
+    from kiro_crew.dashboard import session_control
+
+    resolved = session_control.caller_slot_key(state, session_key)
+    if resolved:
+        return resolved
+    # Lazy, like the other session_control imports in this module.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    for slot in list(getattr(state, "_slots", {}).values()):
+        try:
+            if session_key == effective_session_key(slot):
+                return slot.key
+        except Exception:
+            continue
+    return ""
+
+
+def _get_active_workspace(state: DashboardState, session_key: str = "") -> str:
+    """Return the REQUESTING session's workspace, or 'default'.
+
+    Resolution is per-session: *session_key* names the chat slot making the
+    call, and that slot's own ``workspace`` is returned. Falling back to
+    ``'default'`` is the ONLY fallback -- never to another session's workspace.
+
+    A global "which slot is busiest" value is not a safe source for this: it
+    would route every session's workspace-scoped lesson reads and writes into
+    whichever workspace happens to be most active, crossing workspace
+    boundaries.
+
+    A caller with no session key (``session_key`` empty) or whose slot cannot
+    be found (headless/standalone, or a slot that does not exist) resolves to
+    ``'default'``. The slot is resolved through the lessons-local
+    :func:`_lesson_caller_slot_key`, not ``session_control.caller_slot_key``, so
+    the session-control self-target guard is unaffected by this path.
+    """
+    slot = state.get_slot(_lesson_caller_slot_key(state, session_key)) if session_key else None
+    ws = getattr(slot, "workspace", None) if slot is not None else None
+    if ws and ws != "default":
+        return ws
     return "default"
 
 
-def _get_lessons(state: DashboardState, workspace: str | None = None):
-    """Get LessonStore for a workspace. Falls back to global."""
-    ws = workspace or _get_active_workspace(state)
+def _get_lessons(state: DashboardState, workspace: str | None = None, *, session_key: str = ""):
+    """Get LessonStore for a workspace. Falls back to the requesting session.
+
+    *workspace* wins when the caller names one explicitly; otherwise the
+    workspace is resolved from *session_key* (the requesting slot), never from a
+    global heuristic. Both resolve to the global store ('default') when nothing
+    names a non-default workspace.
+    """
+    ws = workspace or _get_active_workspace(state, session_key)
     if ws != "default" and state.context_builder:
         return state.context_builder.get_lessons_for(ws)
     return state.lessons
@@ -1819,6 +1950,51 @@ def requesting_slot_project(state: DashboardState, session_key: str = "") -> Pat
     return _slot_project(slot)
 
 
+def session_project_for_spawn_gate(state: DashboardState, session_key: str) -> list[Path]:
+    """Every project directory *session_key*'s own kiro-cli may be running in.
+
+    For the spawn gate's parent-spec read (``subagent.parent_project_dirs``),
+    which applies the spec of EACH directory returned. A sub-agent parent
+    (``subagent:<id>``) answers its run's cwd. A chat parent answers the cwd its
+    LIVE session is bound to (``provider.cwd``) AND the project of the slot whose
+    effective session key IS *session_key*: a ``set_project`` change only
+    stages the slot's project and resets the runtime on the next message, so
+    until then the running agent still loaded its spec from the old directory.
+    Deliberately NOT :func:`active_project_dir`: its "the one project every slot
+    shares" fallback names a directory this session may never have run in.
+    Dict reads only (no I/O), so it is safe from the worker thread the gate's
+    read runs on.
+    """
+    if not session_key:
+        return []
+    if session_key.startswith("subagent:"):
+        manager = getattr(state, "subagents", None)
+        agents = getattr(manager, "_agents", None) or {}
+        info = agents.get(session_key.removeprefix("subagent:"))
+        cwd = getattr(info, "cwd", "") if info is not None else ""
+        return [Path(cwd)] if isinstance(cwd, str) and cwd else []
+    found: list[Path] = []
+    sessions = getattr(state, "sessions", None)
+    get_provider = getattr(sessions, "get_provider", None)
+    if callable(get_provider):
+        live_cwd = getattr(get_provider(session_key), "cwd", "")
+        if isinstance(live_cwd, str) and live_cwd:
+            found.append(Path(live_cwd))
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    for slot in list((getattr(state, "_slots", {}) or {}).values()):
+        try:
+            if effective_session_key(slot) != session_key:
+                continue
+        except Exception:  # noqa: BLE001 - a slot-like object without a key is not this session
+            continue
+        staged = _slot_project(slot)
+        if staged is not None and staged not in found:
+            found.append(staged)
+        break
+    return found
+
+
 def _resolve_active_project(state: DashboardState, session_key: str) -> Path | None:
     """The three-step resolution shared by the two public accessors."""
     slots = getattr(state, "_slots", {}) or {}
@@ -1881,21 +2057,11 @@ def _parse_skill_description(skill_md: Path) -> tuple[str, bool]:
             head = f.read(_KIRO_SKILL_FRONTMATTER_BYTES).decode("utf-8", errors="replace")
     except OSError:
         return "", False
-    if not head.startswith("---"):
-        return "", False
-    end = head.find("\n---", 3)
-    if end < 0:
-        return "", False
-    desc = ""
-    always = False
-    for line in head[3:end].splitlines():
-        line = line.strip()
-        if line.startswith("description:"):
-            desc = line.split(":", 1)[1].strip().strip('"').strip("'")
-        elif line.startswith("always:"):
-            val = line.split(":", 1)[1].strip().lower()
-            always = val == "true"
-    return desc, always
+    # The loader's own grammar: only a column-0 key is a field, so an indented
+    # ``description:`` inside a nested block (``inputs[].description``) never
+    # replaces the skill's own, and both readers agree on what a row says.
+    meta = parse_frontmatter(head, SKILL_LOADER)
+    return meta.get("description", ""), meta.get("always", "").strip().lower() == "true"
 
 
 def list_kiro_skills(project_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -2156,7 +2322,110 @@ def collect_skills_blocking(
         workspace_rows.extend(project_rows)
     result.extend(workspace_rows)
     annotate_skills_with_agents(result)
-    return result
+    return _one_row_per_skill_file(result)
+
+
+def _skill_file_identity(row: dict[str, Any]) -> tuple[int, int] | None:
+    """The ``(st_dev, st_ino)`` of the SKILL.md a row lists, or ``None``.
+
+    An inode, not a path: ``/home/u`` and ``/local/home/u`` can be one bind
+    mount, so two spellings of the same file only compare equal this way.
+    Workspace rows return ``None``: they come from the confined no-follow
+    catalog and are gated on project consent, so they are never merged with
+    an operator-owned row. A row whose path is a directory (an edition row may
+    carry the skill dir) is compared by its ``SKILL.md``.
+    """
+    if row.get("source") == "kiro-workspace":
+        return None
+    raw = row.get("path") or ""
+    if not raw:
+        return None
+    try:
+        if os.path.isdir(raw):
+            raw = os.path.join(raw, "SKILL.md")
+        st = os.stat(raw)
+    except (OSError, ValueError):
+        return None
+    if not st.st_ino:
+        # Some filesystems (FAT/exFAT, certain network shares) report inode 0
+        # for every file; that identity cannot tell two files apart.
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _row_is_editable(row: dict[str, Any]) -> bool:
+    """Whether the dashboard's Edit/Delete can write this row's file.
+
+    Only a Kiro Crew row under the skills dir the loader writes to: the write
+    handlers join the key onto that dir, so a row reached through
+    ``skills.extra_paths`` (``owned: False``) or any other source is read-only.
+    """
+    return row.get("source") == "kirocrew" and row.get("owned") is not False
+
+
+def _row_rank(row: dict[str, Any]) -> int:
+    """Which of two rows for one file to keep: lower wins, ties keep the first.
+
+    The editable row first. Then a row from the source that owns the file's
+    folder (``package``, ``kiro-user``): its key is the one the agent-skill
+    catalog keys that folder by, so a mapping saved from it resolves. A
+    ``kirocrew`` row reached through ``skills.extra_paths`` or an edition root
+    (``owned: False``) is last: nothing can edit it and that catalog does not
+    key it.
+    """
+    if _row_is_editable(row):
+        return 0
+    if row.get("source") == "kirocrew":
+        return 2
+    return 1
+
+
+def _one_row_per_skill_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse rows that list the same SKILL.md into one row.
+
+    Two sources can reach one file -- ``skills.extra_paths`` naming
+    ``~/.kiro/skills`` lists it as a Kiro Crew row AND ``list_kiro_skills``
+    lists it as ``kiro-user`` -- and the browser showed both. :func:`_row_rank`
+    picks the row kept. ``loaded_by_agents`` is the union, so an agent-scoped listing
+    still finds the skill through whichever spelling its glob matched, and the
+    dropped keys ride along as ``aliases`` for readers that look a row up by key.
+    """
+    out: list[dict[str, Any]] = []
+    seen: dict[tuple[int, int], int] = {}
+    for row in rows:
+        ident = _skill_file_identity(row)
+        if ident is None:
+            out.append(row)
+            continue
+        idx = seen.get(ident)
+        if idx is None:
+            seen[ident] = len(out)
+            out.append(row)
+            continue
+        kept = out[idx]
+        if _row_rank(row) < _row_rank(kept):
+            kept, row = row, kept
+            out[idx] = kept
+        agents = list(kept.get("loaded_by_agents") or [])
+        for name in row.get("loaded_by_agents") or []:
+            if name not in agents:
+                agents.append(name)
+        kept["loaded_by_agents"] = agents
+        # The dropped row's key stays resolvable: an agent's skill:// mapping
+        # inverts to whichever key the catalog walk meets first (``kiro-user/``
+        # leads), which can be the key of the row dropped here.
+        aliases = list(kept.get("aliases") or [])
+        for key in [row.get("key"), *(row.get("aliases") or [])]:
+            if key and key != kept.get("key") and key not in aliases:
+                aliases.append(key)
+        kept["aliases"] = aliases
+        # Usage, size and the injection mode come only from the loader's read,
+        # so a kept row from another source would otherwise show the skill as
+        # never used, sizeless and "on demand" even when it is pointer-only.
+        for field in ("deliveries", "last_used_at", "size_bytes", "inject_on_trigger"):
+            if kept.get(field) is None and row.get(field) is not None:
+                kept[field] = row[field]
+    return out
 
 
 def _warn_skills_outside_roots(package_skills: list[dict[str, Any]]) -> None:
@@ -2237,8 +2506,13 @@ def _declared_app_skill_dirs(resolved: Path) -> list[Path]:
     mutable installed metadata. Empty — admitting nothing — when *resolved* names
     no app, the app declares no skills, or its manifest cannot be read.
     """
-    app_name = ""
-    for root in _trusted_skill_roots():
+    from kiro_crew.apps.execution import shipped_builtin_app_name_at
+
+    # A shipped builtin is found by the package root it resolves into: its
+    # directory name need not match its manifest name.
+    app_name = shipped_builtin_app_name_at(resolved) or ""
+    roots = [] if app_name else _trusted_skill_roots()
+    for root in roots:
         try:
             rel = resolved.relative_to(root)
         except ValueError:
@@ -2677,19 +2951,6 @@ def enumerate_skill_catalog(state: DashboardState, session_key: str = "") -> dic
     return walk_skill_catalog(state, session_key).entries
 
 
-def _skill_uri_for_path(skill_md: Path) -> str:
-    """Render a discovered ``SKILL.md`` path as a ``skill://`` resource URI.
-
-    Paths under ``$HOME`` are emitted in ``~/`` form: kiro-cli expands it, and
-    it keeps the written agent spec portable across machines and home dirs.
-    """
-    try:
-        rel_home = skill_md.relative_to(Path.home())
-    except ValueError:
-        return f"{SKILL_URI_PREFIX}{skill_md.as_posix()}"
-    return f"{SKILL_URI_PREFIX}~/{rel_home.as_posix()}"
-
-
 def skill_key_for_uri(
     uri: str,
     agent_path: Path,
@@ -2751,7 +3012,10 @@ def skill_uri_for_key(
     skill_md = entries.get(key)
     if skill_md is None:
         return None
-    return _skill_uri_for_path(skill_md)
+    # The one renderer the builtin-agent installers call too, so the editor's
+    # mappings and theirs cannot drift into two forms ``expand_skill_uri`` treats
+    # differently.
+    return skill_uri_for_path(skill_md)
 
 
 def agent_skill_views(
@@ -3199,7 +3463,23 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     Reads X-Session-Key header (set by browser and MCP subprocesses).
     Returns True if the session should be blocked from memory operations.
     """
-    sk = _read_session_key(request)
+    return is_restricted_session_key(state, _read_session_key(request))
+
+
+def is_restricted_session_key(state: DashboardState, sk: str) -> bool:
+    """The same judgement as :func:`_is_restricted_session`, over a KEY.
+
+    Split out so a caller holding a session key but no request reaches this
+    predicate instead of re-deriving it. An in-process producer that delivers
+    session-scoped state into a session's own turn is such a caller: it has the
+    key off the record it is serving and no request to read a header from, and a
+    second copy of a four-way restricted test is how one of the two drifts open.
+
+    *sk* is expected ALREADY NORMALIZED (the request form strips it through
+    ``_read_session_key``, for the inconsistent-normalization reason that function
+    gives); a caller holding a stored key has one that is normalized by
+    construction.
+    """
     if not sk:
         return False
     if sk == "dashboard:ui":
@@ -3270,10 +3550,9 @@ def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
     return False
 
 
-# Byte ceiling for the session-metadata head read. The metadata line is a small
-# JSON object (a few hundred bytes); 64 KiB is generous headroom while keeping an
-# enormous or adversarial first line from being pulled into memory.
-_METADATA_HEAD_MAX_BYTES = 64 * 1024
+# Byte ceiling for the session-metadata head read, shared with the whole-install
+# export so both read the same amount of a first line before judging it.
+_METADATA_HEAD_MAX_BYTES = TRANSCRIPT_HEADER_MAX_BYTES
 
 
 def _persisted_session_paths(slot_name: str) -> list["Path"]:
@@ -3423,28 +3702,9 @@ def _read_memory_mode(path: "Path") -> str | None:
     except OSError:
         return None
     first, _sep, _rest = head.partition(b"\n")
-    try:
-        d = json.loads(first.decode("utf-8", "replace"))
-    except ValueError:
-        return None
-    if not isinstance(d, dict) or d.get("_type") != "metadata":
-        return None
-    mode = d.get("memory_mode")
-    if mode is None:
-        # Valid header, field absent -> legacy persistent session.
-        return "persistent"
-    if not isinstance(mode, str):
-        return None
-    # Allowlist, not normalize-and-hope: an unrecognised value must read as
-    # unknown so the caller fails closed. Case/whitespace matter because the
-    # comparison downstream is set membership — `"incognito "` would lower() to
-    # itself, miss INCOGNITO_MEMORY_MODES, and be treated as unrestricted. The
-    # API validates this field on the way in, but a hand-edited or partially
-    # written transcript is not bound by that.
-    normalized = mode.strip().lower()
-    if normalized not in VALID_MEMORY_MODES:
-        return None
-    return normalized
+    # The shared header parse (allowlisted, fails closed on anything it does not
+    # recognise) -- the same one the whole-install export and import apply.
+    return memory_mode_from_header_line(first)
 
 
 async def require_owner_dashboard_request(
@@ -3884,3 +4144,41 @@ async def vector_memory_for_store(state: DashboardState, store: str):
     from kiro_crew.context import ContextBuilder
 
     return await ContextBuilder.ensure_store(store)
+
+
+# The response text for a saved change whose agent-spec rebuild did not confirm a write.
+AGENT_SPEC_NOT_REWRITTEN = (
+    "saved, but the agent spec may not have been rewritten, so new sessions may keep "
+    "the previous servers; see the gateway log"
+)
+
+
+def rebuild_agent_spec(context: str) -> bool:
+    """Rebuild the agent spec after a dashboard config write; True only on a confirmed rewrite.
+
+    Blocking: call it through ``asyncio.to_thread``. A handler puts the answer in
+    its response as ``agent_spec_rewritten`` so the dashboard can say the change
+    was saved but may not have reached the agent spec. ``False`` covers both
+    unconfirmed outcomes: the rebuild declined to write (this instance may not own
+    the shared agent home), or it raised, possibly after part of the spec set was
+    already written. The config write itself already landed, so neither is an
+    error response.
+
+    The import stays function-local: ``kiro_crew.agent`` imports the dashboard
+    handlers, and resolving the name at call time is what lets a test that
+    substitutes ``kiro_crew.agent.rebuild_agent_config`` reach this call.
+    """
+    try:
+        from kiro_crew.agent import rebuild_agent_config_reporting
+
+        _spec_path, wrote = rebuild_agent_config_reporting()
+    except Exception:
+        logger.warning("agent spec rebuild failed after %s", context, exc_info=True)
+        return False
+    if not wrote:
+        logger.warning(
+            "agent spec was not rewritten after %s: this instance may not write the shared "
+            "agent home, so new sessions may keep the previous spec",
+            context,
+        )
+    return wrote

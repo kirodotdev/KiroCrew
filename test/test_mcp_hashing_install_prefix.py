@@ -20,6 +20,7 @@ the spellings ``bridges.py`` actually emits ARE the alias keys.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sys
 from pathlib import Path
@@ -475,3 +476,30 @@ def test_the_long_name_lookup_runs_once_per_own_path() -> None:
     info = hashing._windows_long_path.cache_info()
     assert info.misses <= 4
     assert info.hits >= info.misses
+
+
+@pytest.mark.skipif(os.name != "nt", reason="GetLongPathNameW exists only on Windows")
+def test_an_unresolvable_short_own_path_is_logged_with_its_win32_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A ``~`` path the real ``GetLongPathNameW`` cannot expand says why at DEBUG.
+
+    That path keeps only its short spelling in the alias table, so a stub and a
+    gateway can reach different digests; the log line, with the Win32 error,
+    is what makes that divergence diagnosable. A path without ``~`` stays quiet.
+    """
+    missing = str(tmp_path / "GONE~1" / "python.exe")
+    plain = str(tmp_path / "gone" / "python.exe")
+    hashing._windows_long_path.cache_clear()
+    try:
+        with caplog.at_level(logging.DEBUG, logger=hashing.__name__):
+            assert hashing._windows_long_path(missing) is None
+            assert hashing._windows_long_path(plain) is None
+    finally:
+        hashing._windows_long_path.cache_clear()
+    lines = [r.getMessage() for r in caplog.records if r.name == hashing.__name__]
+    assert len(lines) == 1, lines
+    assert missing in lines[0] or repr(missing) in lines[0]
+    # ERROR_FILE_NOT_FOUND (2) or ERROR_PATH_NOT_FOUND (3): the real error
+    # code is captured, not a stale or zero value.
+    assert "last error 2)" in lines[0] or "last error 3)" in lines[0], lines[0]

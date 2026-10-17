@@ -908,3 +908,71 @@ async def test_home_tab_skill_loader_and_listing_run_off_loop(tmp_path, monkeypa
         assert all(thread != loop_thread for thread in threads)
     finally:
         loader.close()
+
+
+@dataclass
+class FakeCronJobTZ:
+    """A cron job that carries its own timezone, like the real CronJob."""
+
+    name: str = "tz-job"
+    enabled: bool = True
+    timezone: str = ""
+    schedule: object = field(default_factory=lambda: MagicMock())
+
+
+class TestPublishHomeTabCronTimezone:
+    """App Home cron rows honour each job's own timezone."""
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ✅",
+    )
+    async def test_uses_each_jobs_own_timezone(self, _mw, _yolo):
+        """A job's own timezone is passed to format_schedule, not the config zone."""
+        orch = _make_orch(
+            cron_svc=FakeCronService([FakeCronJobTZ(timezone="Asia/Seoul")]),
+        )
+        captured: dict = {}
+
+        def _capture(_schedule, tz_name=""):
+            captured["tz_name"] = tz_name
+            return "0 9 * * *"
+
+        cfg = SimpleNamespace(timezone="America/New_York")
+        with (
+            patch("kiro_crew.slack.events.format_schedule", side_effect=_capture),
+            patch("kiro_crew.slack.events.KiroCrewConfig.load", return_value=cfg),
+        ):
+            await _publish_home_tab(orch, "U123")
+
+        assert captured.get("tz_name") == "Asia/Seoul"
+
+    @pytest.mark.asyncio
+    @patch("kiro_crew.slack.events.is_yolo_mode", return_value=False)
+    @patch(
+        "kiro_crew.sso_status.get_sso_status_line",
+        new_callable=AsyncMock,
+        return_value="*SSO:* ✅",
+    )
+    async def test_falls_back_to_configured_zone_when_job_has_none(self, _mw, _yolo):
+        """A job with no timezone falls back to the existing App Home zone."""
+        orch = _make_orch(
+            cron_svc=FakeCronService([FakeCronJobTZ(timezone="")]),
+        )
+        captured: dict = {}
+
+        def _capture(_schedule, tz_name=""):
+            captured["tz_name"] = tz_name
+            return "0 9 * * *"
+
+        cfg = SimpleNamespace(timezone="America/New_York")
+        with (
+            patch("kiro_crew.slack.events.format_schedule", side_effect=_capture),
+            patch("kiro_crew.slack.events.KiroCrewConfig.load", return_value=cfg),
+        ):
+            await _publish_home_tab(orch, "U123")
+
+        assert captured.get("tz_name") == "America/New_York"

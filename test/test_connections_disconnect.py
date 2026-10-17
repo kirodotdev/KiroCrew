@@ -145,6 +145,7 @@ from kiro_crew.connections import ownership  # noqa: E402
 from kiro_crew.connections import warm  # noqa: E402
 from kiro_crew.dashboard.handlers import connections  # noqa: E402
 from kiro_crew.dashboard.handlers import mcp as mcp_handlers  # noqa: E402
+from kiro_crew.testing.wait import await_until  # noqa: E402
 
 _ = pytest_asyncio
 
@@ -164,6 +165,14 @@ async def _no_lock():
 
 def _entry(name: str, url: str) -> types.SimpleNamespace:
     return types.SimpleNamespace(name=name, url=url)
+
+
+def _rebuild_that_writes(**kwargs) -> pathlib.Path:
+    """A rebuild that wrote the spec: it reports the write the way the real one does."""
+    wrote_out = kwargs.get("_wrote_out")
+    if wrote_out is not None:
+        wrote_out.append(True)
+    return pathlib.Path("/dev/null")
 
 
 def _wire(
@@ -232,7 +241,7 @@ def _wire(
 
     _purge.seen = scopes if scopes is not None else []  # type: ignore[attr-defined]
     monkeypatch.setattr(mcp_handlers, "_purge_server_config", _purge)
-    monkeypatch.setattr(agent_mod, "rebuild_agent_config", lambda: None)
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", _rebuild_that_writes)
     monkeypatch.setattr(connections, "sel", lambda: types.SimpleNamespace(log_api_access=_audit))
     if not real_rearm:
         seen_rearms = rearms if rearms is not None else []
@@ -307,7 +316,41 @@ async def test_disconnect_revokes_the_grant_and_removes_the_entry(
         "grantSharedWith": [],
         "grantCensusIncomplete": False,
         "grantCensusUnreadable": [],
+        "agentSpecRewritten": True,
     }
+    assert purged == [_SLUG]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rebuild",
+    [
+        # The shared-home guard refused: the path comes back and nothing is written.
+        pytest.param(lambda **_: pathlib.Path("/dev/null"), id="declined"),
+        pytest.param(
+            lambda **_: (_ for _ in ()).throw(RuntimeError("boom")),
+            id="raised",
+        ),
+    ],
+)
+async def test_disconnect_reports_a_spec_rebuild_that_did_not_write(
+    monkeypatch: pytest.MonkeyPatch, rebuild
+) -> None:
+    """The entry is gone from the config, but new sessions may still load it."""
+    purged: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=[],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=purged,
+    )
+    monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
+
+    body = await _disconnect()
+
+    assert body["entryRemoved"] is True
+    assert body["agentSpecRewritten"] is False
     assert purged == [_SLUG]
 
 
@@ -628,6 +671,95 @@ async def test_a_custom_agent_config_sharing_the_endpoint_blocks_the_revoke(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_purge_keeps_the_surviving_mirrors_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A purge refused by a foreign-owned agents dir must not revoke the grant the
+    surviving mirror still holds.
+
+    The owned ``slug`` scope is mirrored into a shared agent file this data home
+    does not own. _judge leaves the mirror out of the sharer set on the assumption
+    the purge removes it -- but the purge is refused, so the mirror stays on disk
+    still using the one artifact pair the endpoint names. Revoking it would
+    unlink the OAuth artifacts the surviving owner's server needs and deauthorize
+    a server this disconnect never meant to touch, with no local recovery. So the
+    grant must be KEPT, and the entry reported as not removed.
+    """
+    revoked: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=["token", "registration"],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        revoked=revoked,
+        raw_specs={
+            # Owned registry scope (a purge target) ...
+            "kirocrew": {_SLUG: {"url": _provider_url()}},
+            # ... mirrored into a shared agent file another data home owns, at the
+            # same endpoint, so it holds the same artifact pair.
+            f"{ownership._MIRROR_PREFIX}kiroGlobal": {_SLUG: {"url": _provider_url()}},
+        },
+    )
+
+    # The config purge is refused because the shared agents dir is foreign-owned.
+    def _refuse(_name: str, *, scopes: tuple[str, ...] | None = None) -> dict:
+        raise agent_mod.SharedAgentHomeRefused("foreign data home owns the shared agent specs")
+
+    monkeypatch.setattr(mcp_handlers, "_purge_server_config", _refuse)
+
+    body = await _disconnect()
+
+    assert revoked == [], "revoked a grant the surviving mirror still holds after a refused purge"
+    assert body["grantRemoved"] is False
+    # The entry was not actually removed (the purge was refused).
+    assert body["entryRemoved"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_refused_purge_keeps_a_query_variant_mirrors_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused purge must keep the grant of a surviving mirror even when the
+    mirror's URL carries a query the owned endpoint does not.
+
+    The artifact pair is keyed query-insensitively, so a mirror at
+    ``?workspace=other`` holds the SAME pair as the owned entry while failing the
+    query-sensitive endpoint test. If the purge is refused it survives still using
+    that pair, so it must be counted as a holder and the grant kept -- a revoke
+    that skipped it would deauthorize the surviving server with no local recovery.
+    """
+    revoked: list[str] = []
+    _wire(
+        monkeypatch,
+        removed=["token", "registration"],
+        surviving=["token", "registration"],
+        inventory=[_entry(_SLUG, _provider_url())],
+        purged=[],
+        revoked=revoked,
+        raw_specs={
+            "kirocrew": {_SLUG: {"url": _provider_url()}},
+            # Same artifact pair, different (query-qualified) endpoint, in a shared
+            # agent file another data home owns.
+            f"{ownership._MIRROR_PREFIX}kiroGlobal": {
+                _SLUG: {"url": _provider_url() + "?workspace=other"}
+            },
+        },
+    )
+
+    def _refuse(_name: str, *, scopes: tuple[str, ...] | None = None) -> dict:
+        raise agent_mod.SharedAgentHomeRefused("foreign data home owns the shared agent specs")
+
+    monkeypatch.setattr(mcp_handlers, "_purge_server_config", _refuse)
+
+    body = await _disconnect()
+
+    assert revoked == [], "revoked a grant a surviving query-variant mirror still holds"
+    assert body["grantRemoved"] is False
+    assert body["entryRemoved"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_mismatched_entry_in_another_scope_survives_the_purge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -817,7 +949,7 @@ async def test_disconnect_does_not_wait_for_the_rearm(
         task = registry[_SLUG]
         assert not task.done(), "the Disconnect awaited the re-arm it only had to schedule"
         release.set()
-        assert await asyncio.wait_for(task, timeout=5) == []
+        assert await await_until(task, what="task completed") == []
 
 
 @pytest.mark.asyncio

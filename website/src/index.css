@@ -231,6 +231,107 @@
                  U+3200-32FF, U+3300-33FF, U+3400-4DBF, U+4E00-9FFF, U+A960-A97F,
                  U+AC00-D7AF, U+D7B0-D7FF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF;
 }
+/* Kana-only and Hangul-only fallback faces (#13085). The default
+   --script-fallbacks token below names no face that draws kana or Hangul, so
+   under a non-ja/ko UI (e.g. <html lang="en">) Japanese and Korean CONTENT
+   falls to the browser's per-script OS fallback, which on the Linux Electron
+   AppImage renders missing-glyph boxes (tofu) in chat and the Markdown preview.
+   These two aliases are added to the default token so kana and Hangul draw a
+   real face on EVERY surface regardless of UI language.
+
+   Their unicode-range is deliberately NARROWER than 'KC Japanese Fallback' /
+   'KC Korean Fallback': kana and Hangul ONLY, with NO Han range. The regional
+   faces claim the shared Han ideographs (U+4E00-9FFF etc.), so putting one in
+   the default token would force Japanese or Korean Han glyph forms onto all
+   bare-Han content under an English UI — the exact regression the
+   :root/html:lang() split exists to avoid. A kana/Hangul-only range draws only
+   the code points that are tofu today; bare Han is left to the OS/browser
+   locale-aware cascade exactly as before, and when the UI IS ja/ko the
+   html:lang() rules still swap in the full regional faces (which lead these in
+   the stack). local() names mirror the regional faces so no new host font is
+   required. unicode-range keeps them off Latin, so the user's Font Family
+   preference and every Latin stack are byte-identical to before. */
+@font-face {
+  font-family: 'KC Kana Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Hiragino Sans W3'), local('HiraginoSans-W3'),
+       local('Yu Gothic Regular'), local('YuGothic-Regular'),
+       local('Yu Gothic UI Regular'), local('YuGothicUI-Regular'), local('Meiryo'),
+       local('Noto Sans CJK JP'), local('NotoSansCJKjp-Regular'),
+       local('Noto Sans JP'), local('NotoSansJP-Regular'),
+       local('IPAexGothic'), local('IPAGothic'), local('TakaoPGothic'),
+       local('VL PGothic'), local('VLPGothic-Regular'),
+       local('Source Han Sans JP'), local('SourceHanSansJP-Regular'),
+       local('Droid Sans Fallback');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Kana Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Hiragino Sans W6'), local('HiraginoSans-W6'),
+       local('Yu Gothic Bold'), local('YuGothic-Bold'),
+       local('Yu Gothic UI Bold'), local('YuGothicUI-Bold'), local('Meiryo Bold'),
+       local('Meiryo-Bold'), local('Noto Sans CJK JP Bold'),
+       local('NotoSansCJKjp-Bold'), local('Noto Sans JP Bold'),
+       local('NotoSansJP-Bold'), local('IPAexGothic'), local('IPAGothic'),
+       local('TakaoPGothic'), local('VL PGothic'),
+       local('Source Han Sans JP Bold'), local('SourceHanSansJP-Bold'),
+       local('Droid Sans Fallback');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Hangul Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Apple SD Gothic Neo'), local('AppleSDGothicNeo-Regular'),
+       local('Malgun Gothic'), local('MalgunGothic'), local('Noto Sans CJK KR'),
+       local('NotoSansCJKkr-Regular'), local('Noto Sans KR'), local('NotoSansKR-Regular'),
+       local('Source Han Sans KR'), local('SourceHanSansKR-Regular'),
+       local('Nanum Gothic'), local('NanumGothic'), local('UnDotum'),
+       local('Baekmuk Gulim'), local('Droid Sans Fallback');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Hangul Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Apple SD Gothic Neo Bold'), local('AppleSDGothicNeo-Bold'),
+       local('Malgun Gothic Bold'), local('MalgunGothic-Bold'),
+       local('Noto Sans CJK KR Bold'), local('NotoSansCJKkr-Bold'),
+       local('Noto Sans KR Bold'), local('NotoSansKR-Bold'),
+       local('Source Han Sans KR Bold'), local('SourceHanSansKR-Bold'),
+       local('Nanum Gothic Bold'), local('NanumGothic-Bold'), local('UnDotum Bold'),
+       local('Baekmuk Gulim'), local('Droid Sans Fallback');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Kana Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('Sarasa Mono J'), local('SarasaMonoJ-Regular'),
+       local('Noto Sans Mono CJK JP'), local('NotoSansMonoCJKjp-Regular');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Kana Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('Sarasa Mono J Bold'), local('SarasaMonoJ-Bold'),
+       local('Noto Sans Mono CJK JP Bold'), local('NotoSansMonoCJKjp-Bold');
+  unicode-range: U+3040-309F, U+30A0-30FF, U+31F0-31FF, U+FF65-FF9F;
+}
+@font-face {
+  font-family: 'KC Hangul Mono Fallback';
+  font-style: normal; font-weight: 400;
+  src: local('D2Coding'), local('D2Coding-Regular'), local('Sarasa Mono K'),
+       local('SarasaMonoK-Regular'), local('Noto Sans Mono CJK KR'),
+       local('NotoSansMonoCJKkr-Regular');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
+@font-face {
+  font-family: 'KC Hangul Mono Fallback';
+  font-style: normal; font-weight: 700;
+  src: local('D2Coding Bold'), local('D2Coding-Bold'), local('Sarasa Mono K Bold'),
+       local('SarasaMonoK-Bold'), local('Noto Sans Mono CJK KR Bold'),
+       local('NotoSansMonoCJKkr-Bold');
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7AF, U+D7B0-D7FF;
+}
 @font-face {
   font-family: 'KC Devanagari Fallback';
   font-style: normal; font-weight: 400;
@@ -282,6 +383,70 @@
        local('Segoe UI'), local('SegoeUI'), local('Roboto'), local('Liberation Sans'),
        local('DejaVu Sans'), local('Noto Sans'), local('Nimbus Sans');
   unicode-range: U+0022, U+0027;
+}
+
+/* ─── Space Grotesk + JetBrains Mono (SIL-OFL) ── the brand faces ───
+   Served from the dashboard's own origin so the shell needs no third-party
+   host: it renders the same on a VPN-only or offline install, and the CSP
+   admits no outside font origin. The files sit in src/assets/fonts/ so Vite
+   content-hashes them into /assets/ (cached as immutable); each family's
+   OFL.txt ships unhashed under public/fonts/<family>/.
+   Each family is one variable face split by script with unicode-range, so a
+   page downloads only the subsets it draws (Latin, in practice). The ranges
+   are the per-subset ranges the upstream font CSS publishes. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('./assets/fonts/space-grotesk/SpaceGrotesk-vietnamese.woff2') format('woff2');
+  unicode-range: U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('./assets/fonts/space-grotesk/SpaceGrotesk-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url('./assets/fonts/space-grotesk/SpaceGrotesk-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-cyrillic-ext.woff2') format('woff2');
+  unicode-range: U+0460-052F,U+1C80-1C8A,U+20B4,U+2DE0-2DFF,U+A640-A69F,U+FE2E-FE2F;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-cyrillic.woff2') format('woff2');
+  unicode-range: U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-greek.woff2') format('woff2');
+  unicode-range: U+0370-0377,U+037A-037F,U+0384-038A,U+038C,U+038E-03A1,U+03A3-03FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-vietnamese.woff2') format('woff2');
+  unicode-range: U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal; font-weight: 400 500; font-display: swap;
+  src: url('./assets/fonts/jetbrains-mono/JetBrainsMono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }
 
 /* ─── OpenDyslexic (SIL-OFL) ── accessibility built-in ───
@@ -363,8 +528,8 @@
      same reason, fixing the straight-quote glyph (#6374) in every UI language.
      It is sans-only: the mono stacks resolve to JetBrains Mono, whose straight
      quotes are already correct. */
-  --script-fallbacks:'KC Straight Quotes','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks:'KC Straight Quotes','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
   /* An installed theme pack fills --theme-font-sans / --theme-font-mono with its
      own faces (see hooks/themeCss.ts). Reading them here means code surfaces
      follow a pack's monospace face without the user having to switch the whole UI
@@ -384,21 +549,31 @@
 html:lang(zh-CN) {
   /* Isolated Simplified aliases for Chinese UI. Not :lang(zh): that also
      matches zh-TW / zh-HK / zh-Hant. Document-level only — :root/--font-body
-     and useZoom already resolve var(--script-fallbacks) on <html>. */
-  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     and useZoom already resolve var(--script-fallbacks) on <html>.
+     'KC Han Fallback' draws neither kana nor Hangul, so the kana/Hangul-only
+     aliases follow it: Japanese and Korean CONTENT under a Chinese UI (#13085)
+     otherwise falls to the OS cascade and renders as tofu. They carry no Han
+     range, so they never override the leading Simplified Han face. */
+  --script-fallbacks:'KC Straight Quotes','KC Han Fallback','KC Kana Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Han Mono Fallback','KC Han Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ja) {
   /* Never retain the SC aliases here. If no named Japanese face is installed,
-     falling through lets the browser use its lang-aware Japanese fallback. */
-  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     falling through lets the browser use its lang-aware Japanese fallback.
+     'KC Japanese Fallback' covers kana but NOT Hangul, so the Hangul-only alias
+     follows it: Korean content under a Japanese UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Japanese face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Japanese Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Japanese Mono Fallback','KC Japanese Fallback','KC Hangul Mono Fallback','KC Hangul Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 html:lang(ko) {
   /* Never retain the SC or JP aliases here. Neither draws Hangul, so leaving one
-     in front only delays resolution to the browser's lang-aware Korean fallback. */
-  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
-  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+     in front only delays resolution to the browser's lang-aware Korean fallback.
+     'KC Korean Fallback' covers Hangul but NOT kana, so the kana-only alias
+     follows it: Japanese content under a Korean UI (#13085) would otherwise be
+     tofu. No Han range on it, so the leading Korean face still wins Han. */
+  --script-fallbacks:'KC Straight Quotes','KC Korean Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
+  --script-fallbacks-mono:'KC Korean Mono Fallback','KC Korean Fallback','KC Kana Mono Fallback','KC Kana Fallback','KC Devanagari Fallback','KC Bengali Fallback';
 }
 /* Dark theme shadows */
 :root,[data-theme="dark"],[data-theme="monokai-dark"],[data-theme="solarized-dark"],[data-theme="amber-dark"],[data-theme="nord-dark"],[data-theme="dracula-dark"],[data-theme="rosepine-dark"],[data-theme="catppuccin-dark"],[data-theme="tokyonight-dark"],[data-theme="gruvbox-dark"],[data-theme="ice-dark"]{
@@ -482,6 +657,40 @@ html:lang(ko) {
   --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
   --shadow-lg:0 12px 28px rgba(0,0,0,.12);
 }
+/* Internal token, outside the [data-theme] blocks so packs cannot set it.
+   --shadow-lg alone reads flat over near-black chat; light mode keeps it. */
+:root{--shadow-float:0 0 0 1px rgba(0,0,0,.4),0 24px 64px -8px rgba(0,0,0,.7),0 8px 24px rgba(0,0,0,.45)}
+[data-mode="light"]{--shadow-float:var(--shadow-lg)}
+/* Warn-hued TEXT on a warn-tinted fill (`bg-warn-subtle`, `bg-warn/N`,
+   `glass-warn`): the `text-warn-text` utility and `.glass-warn-fg`. Dark
+   palettes keep the plain `--warn` hue. In light palettes `--warn` on its own
+   10-30% tint falls below the 4.5:1 text floor (1.9:1 in rosepine-light, 4.2:1
+   in `light`; issues #19920, #20071), so the text keeps half the hue and
+   darkens the rest toward black: still amber-brown, so the warning cue
+   survives. The share is set by the strongest tint paired in the source
+   (`bg-warn/30`): 50% clears it at 5.4:1 in the worst light palette
+   (rosepine-light), 60% would drop it to 4.15:1.
+   Internal, derived, outside the [data-theme] blocks so packs cannot set it;
+   glassWarnTextContrast.test.ts reads the share from this rule and measures
+   every tint the source pairs with it in every light palette. */
+:root{--warn-text:var(--warn);}
+[data-mode="light"]{--warn-text:color-mix(in srgb, var(--warn) 50%, #000);}
+/* Ok- and danger-hued TEXT on its own tint (`bg-ok-subtle`, `bg-ok/N`,
+   `bg-danger-subtle`, `bg-danger/N`): the `text-ok-text` and
+   `text-danger-text` utilities, the same shape as `--warn-text`. In light
+   palettes the plain hue on its 5-25% tint falls below 4.5:1 (ok 1.97:1 in
+   amoled-light, danger 2.37:1 in tokyonight-light), so the text keeps part of
+   the hue and darkens the rest toward black: still green and red. Each share
+   is the most hue that still clears the strongest tint the source pairs with
+   it, so the text stays as coloured as the floor allows. Danger keeps 55%
+   (`bg-danger/25` on hover: 4.82:1 in tokyonight-light; 60% would be
+   4.35:1). Ok keeps 60% (`bg-ok/20`: 4.56:1 in amoled-light; 61% would be
+   4.45:1). Info (`text-info-text` on `bg-info-subtle`, `bg-info/N`) reads
+   1.69:1 plain in amoled-light and keeps 58% (`bg-info/15`: 4.53:1 in
+   amoled-light; 59% would be 4.41:1). statusTextContrast.test.ts reads every
+   share from this rule and measures every paired tint in every light palette. */
+:root{--ok-text:var(--ok);--danger-text:var(--danger);--info-text:var(--info);}
+[data-mode="light"]{--ok-text:color-mix(in srgb, var(--ok) 60%, #000);--danger-text:color-mix(in srgb, var(--danger) 55%, #000);--info-text:color-mix(in srgb, var(--info) 58%, #000);}
 :root,[data-theme="dark"],[data-theme="amber-dark"]{
   --search-highlight:rgba(255,167,38,.45);--search-highlight-current:rgba(255,120,0,.85);--search-highlight-current-border:rgba(255,255,255,.9);
   --bg:#12141a;--bg-accent:#14161d;--bg-elevated:#1a1d25;--bg-hover:#262a35;
@@ -1292,6 +1501,68 @@ html:lang(ko) {
   color-scheme:light;
 }
 
+/* ── Nu Disco ── */
+/* Color palette from the Nu Disco VS Code theme by Danny Banks
+   (https://github.com/dbanksdesign/nu-disco-vscode-theme)
+   MIT License Copyright (c) 2019 Danny Banks
+   Upstream text and border tokens are white (dark) or #0C001F (light) at an
+   alpha; they are flattened here onto the upstream background they sit on,
+   because several consumers (xterm, contrast tests, color-mix ramps) need
+   opaque hex. */
+[data-theme="nu-disco-dark"]{
+  --bg:#0C001F;--bg-accent:#180D2A;--bg-elevated:#231934;--bg-hover:#322941;
+  --card:#180D2A;--card-fg:#EFEEF0;--card-hl:rgba(255,255,255,.05);
+  --panel:#0C001F;--panel-strong:#180D2A;
+  --chrome:rgba(12,0,31,.95);
+  --text:#EFEEF0;--text-strong:#FFFFFF;--muted:#9E99A5;--muted-fg:#000;--muted-strong:#6D6679;
+  --border:#2C223D;--border-strong:#4D445B;--border-hover:#6D6679;
+  --accent:#FF82B4;--accent-fg:#000;--accent-hover:#FF9DC4;--accent-subtle:rgba(255,130,180,.15);
+  --accent-glow:rgba(255,130,180,.25);--ring:#FF82B4;
+  --ok:#67E591;--ok-fg:#000;--ok-subtle:rgba(103,229,145,.12);
+  --warn:#FFB271;--warn-fg:#000;--warn-subtle:rgba(255,178,113,.12);
+  --danger:#FF7878;--danger-fg:#000;--danger-subtle:rgba(255,120,120,.12);
+  --info:#6BB5FF;--info-fg:#000;
+  --aim:#AD7DFF;--aim-fg:#000;--aim-subtle:rgba(173,125,255,.15);
+  --clarify:#FFF373;--clarify-subtle:rgba(255,243,115,.08);
+  --diff-add:rgba(103,229,145,.15);--diff-add-text:#67E591;
+  --diff-del:rgba(255,120,120,.15);--diff-del-text:#FF7878;
+  --diff-hunk:rgba(82,231,225,.15);--diff-hunk-text:#52E7E1;
+  --diff-meta-text:#EFEEF0;
+  --json-key:#52E7E1;--json-str:#67E591;--json-num:#FF82B4;--json-bool:#FF7878;
+  --term-magenta:#FF82B4;--term-cyan:#52E7E1;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow-md:0 4px 12px rgba(0,0,0,.35),0 0 0 1px rgba(255,255,255,.03);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.45);
+  color-scheme:dark;
+}
+[data-theme="nu-disco-light"]{
+  --search-highlight:rgba(255,167,38,.35);--search-highlight-current:rgba(255,120,0,.7);--search-highlight-current-border:rgba(0,0,0,.8);
+  --bg:#F8F7F8;--bg-accent:#ECE9EC;--bg-elevated:#FFFFFF;--bg-hover:#E7E4E7;
+  --card:#FFFFFF;--card-fg:#0C001F;--card-hl:rgba(12,0,31,.03);
+  --panel:#F8F7F8;--panel-strong:#ECE9EC;
+  --chrome:rgba(248,247,248,.95);
+  --text:#231934;--text-strong:#0C001F;--muted:#6D6679;--muted-fg:#fff;--muted-strong:#4D445B;
+  --border:#E7E4E7;--border-strong:#CECCD2;--border-hover:#9E99A5;
+  --accent:#B6034B;--accent-fg:#fff;--accent-hover:#E62472;--accent-subtle:rgba(182,3,75,.10);
+  --accent-glow:rgba(182,3,75,.15);--ring:#B6034B;
+  --ok:#009E35;--ok-fg:#000;--ok-subtle:rgba(0,158,53,.1);
+  --warn:#D16100;--warn-fg:#000;--warn-subtle:rgba(209,97,0,.1);
+  --danger:#BD0000;--danger-fg:#fff;--danger-subtle:rgba(189,0,0,.1);
+  --info:#005C8A;--info-fg:#fff;
+  --aim:#4B1E97;--aim-fg:#fff;--aim-subtle:rgba(75,30,151,.1);
+  --clarify:#D16100;--clarify-subtle:rgba(209,97,0,.06);
+  --diff-add:rgba(0,158,53,.12);--diff-add-text:#007A29;
+  --diff-del:rgba(189,0,0,.12);--diff-del-text:#BD0000;
+  --diff-hunk:rgba(0,131,127,.12);--diff-hunk-text:#006B68;
+  --diff-meta-text:#0C001F;
+  --json-key:#00837F;--json-str:#007A29;--json-num:#B6034B;--json-bool:#BD0000;
+  --term-magenta:#B6034B;--term-cyan:#00837F;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 12px rgba(0,0,0,.08),0 0 0 1px rgba(0,0,0,.04);
+  --shadow-lg:0 12px 28px rgba(0,0,0,.12);
+  color-scheme:light;
+}
+
 /* ── AMOLED Midnight — pure-black dark + a true light variant ── */
 [data-theme="amoled-midnight-dark"]{
   --bg:#000000;--bg-accent:#09090b;--bg-elevated:#121214;--bg-hover:#1a1a1d;
@@ -1422,7 +1693,24 @@ html:lang(ko) {
      than `:focus` so a pointer click never paints it — the ring is drawn only
      for the keyboard and AT interactions that have no other cue to where focus
      sits. `outline` is used (not border/box-shadow) because it is painted
-     outside the box and so cannot shift layout. */
+     outside the box and so cannot shift layout.
+     OUTLINE-ONLY BY DESIGN. The accent `outline` carries the theme's identity.
+     It is deliberately NOT paired with a `box-shadow` hairline at the global
+     level, because the house opt-out — `outline-hidden`/`outline-none` — resets
+     only `outline`, not `box-shadow`. A global hairline would therefore survive
+     the opt-out and paint a hard high-contrast rectangle on every element that
+     meant to opt out: the chat composer and docked SearchBar, the
+     programmatically-focused `<h1 tabIndex={-1} outline-hidden>` page titles
+     (OnboardingFlow, AgentImportFlow, PrivacyChapter) and the `focus-visible:
+     bg-*` menu rows. Keeping the global rule outline-only means opting out stays
+     a complete opt-out, exactly as on main.
+     WHERE THE 3:1 HAIRLINE LIVES: controls that need to clear WCAG 1.4.11's 3:1
+     non-text floor in the three light palettes where `--accent` alone is below
+     it (rosepine-light 2.60, everforest-light 2.81, intellij-light 2.92) opt IN
+     to `.focus-ring` / `.focus-ring-accent*`, which add the opaque `--text-strong`
+     hairline on top of the accent band. Those utilities are the migrated call
+     sites from issue #4428; the global accent outline is the baseline cue for
+     everything else. */
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   @media(prefers-reduced-motion:reduce){*:not([data-virtuoso-scroller] *),*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important}}
   /* The rule above zeroes animation-DURATION but not animation-DELAY, and both
@@ -1590,6 +1878,19 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 @keyframes csb-a{0%,30%{opacity:1;transform:translateY(0) scale(1)}38%{opacity:0;transform:translateY(-3px) scale(.6)}45%,82%{opacity:0;transform:translateY(3px) scale(.6)}90%,100%{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes csb-b{0%,30%{opacity:0;transform:translateY(3px) scale(.6)}38%{opacity:0;transform:translateY(3px) scale(.6)}45%{opacity:1;transform:translateY(-2px) scale(1)}55%{opacity:1;transform:translateY(0) scale(1)}82%{opacity:1;transform:translateY(0) scale(1)}90%{opacity:0;transform:translateY(-3px) scale(.6)}100%{opacity:0;transform:translateY(3px) scale(.6)}}
 
+/* ── Typing dots (components/chat/TypingDots) ──
+   The crewmate typing bubble's "a reply is being typed" glyph: three bouncing
+   dots in `currentColor`, so the host paints them with its text colour (the
+   bubble sets `text-muted`), sized to sit on one text line inside the bubble.
+   The resting style IS the reduced-motion style: the global reduced-motion rule
+   above ends every animation on its first frame, which leaves a dot at its base
+   opacity. */
+.typing-dots{display:inline-flex;align-items:center;gap:5px;padding:0 3px;line-height:0}
+.typing-dots>span{display:block;width:8px;height:8px;border-radius:9999px;background:currentColor;opacity:.6;animation:typing-dot 1.3s ease-in-out infinite both}
+.typing-dots>span:nth-child(2){animation-delay:.18s}
+.typing-dots>span:nth-child(3){animation-delay:.36s}
+@keyframes typing-dot{0%,60%,100%{transform:translateY(0);opacity:.6}30%{transform:translateY(-3px);opacity:1}}
+
 /* ── The ghost-pose loader icons ──
    These are the DEFAULT loader artwork for every theme (see ChatFooter's
    DEFAULT_ICONS); a theme replaces them through the themeBranding `loaderIcons`
@@ -1708,6 +2009,76 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
    Scoped to kiro-light: in every other theme --panel is the page colour, not a shell colour. */
 [data-theme="kiro-light"] .focus-chrome-rail,[data-theme="kiro-light"] .sidebar-inner{background-color:var(--panel)}
 [data-theme="kiro-light"] .user-bubble{background-color:var(--bg-hover)}
+/* Crewmate bubble (`crewmateBubbleClass`, a crewmate's chat, #17839): filled with the theme's
+   `--bg-hover`, the one neutral step every theme keeps above the page. Its CONTENTS paint with
+   the same tokens — kiro-light's inline-code patch is `var(--bg-hover)` (rule above), every
+   `hover:bg-bg-hover` control, a `bg-card` / `bg-bg-elevated` card — so on this fill they would
+   vanish (Design review on #17918). The bubble therefore scopes those surface tokens one step off
+   its fill for its subtree; `--crewmate-fill` is snapshotted on the PARENT first because the rule
+   that re-points `--bg-hover` would already see the new value. */
+:has(>.message-bubble.crewmate-bubble){--crewmate-fill:var(--bg-hover)}
+.message-bubble.crewmate-bubble{
+  background-color:var(--crewmate-fill);
+  --bg-hover:color-mix(in srgb,var(--text) 10%,var(--crewmate-fill));
+  --bg-elevated:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --card:color-mix(in srgb,var(--text) 6%,var(--crewmate-fill));
+  --bg:var(--crewmate-fill);
+}
+/* Kiro dark paints inline code with the LITERAL #28242e, which is kiro-dark's --bg-hover — the
+   fill — so the token scope above cannot reach it; same step off the fill, by hand. (0,3,2) beats
+   the (0,2,2) literal rule. */
+[data-theme="kiro-dark"] .message-bubble.crewmate-bubble :not(pre)>code{background:var(--bg-hover)}
+/* Accent-filled user bubble (`tone="accent"` on UserMessage; a crewmate's chat, #17839). The
+   bubble is `--accent` with `--accent-fg` text, and everything drawn INSIDE it was styled for the
+   neutral surface: inline code, link pills, the sent quote card (`text-muted` excerpt, `bg-accent`
+   bar, `border-border`, `hover:bg-bg-hover`), and whatever user-message rendering gains later.
+   Rather than re-pointing those one selector at a time (Design review on #17918: anything not on
+   the list keeps neutral colours on the fill), the bubble REDEFINES the theme tokens for its
+   subtree: utilities compile to `var(--text)` etc. (tailwind-theme.css, `@theme inline`), so
+   every descendant inherits colours derived from `--accent-fg` with no per-element rule and no
+   specificity argument. `--accent` itself is re-pointed (a quote bar or chip on the fill must
+   not paint accent-on-accent), so the fill reads `--bubble-accent`, snapshotted from the outer
+   accent on the bubble's PARENT: a custom property declared in the same rule that redefines
+   `--accent` would already see the redefined value.
+   Specificity (0,3,0) on purpose: it beats the kiro-light `.user-bubble` tint (0,2,0) and the
+   Kiro code rules (0,2,2); the chip rules are (0,3,2) but now say `color:var(--text)` /
+   `var(--accent)`, which resolve to the redefined tokens anyway. The two Kiro-dark literals
+   (`#b07fff` links / code, `#28242e` code bg) are the one thing tokens cannot reach, hence the
+   two code / link rules that stay.
+   CLI mode (`data-ui="cli"`) draws this bubble neutral, like every other user bubble.
+   cli-mode.css paints user bubbles with `var(--bg-elevated)` and `var(--text)` under
+   `!important`; read on this element, those are the redefined tokens below, a 15%-black patch
+   and accent-fg text (`#000` on `#222222` in gruvbox-dark). So every rule that
+   starts with the hook carries `:where(:root:not([data-ui="cli"]))`: `:where()` adds no
+   specificity, so chat mode's cascade is unchanged. The `--bubble-accent` snapshot needs no
+   guard, because nothing reads it in CLI mode. */
+:has(>.msg-content.user-bubble.user-bubble-accent){--bubble-accent:var(--accent)}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent{
+  --text:var(--accent-fg);--text-strong:var(--accent-fg);--card-fg:var(--accent-fg);
+  /* Text and strokes are accent-fg mixes; SURFACES are translucent black. A lighter patch
+     (accent-fg mixed in) would pull the fill toward the text colour and cost contrast where it
+     is scarcest (white at 88% on a 14%-white-over-#8e48ff card measured 3.2:1); a darker patch
+     moves the fill away from light text and barely dents dark text on a light accent. 90%, not
+     the ~78% a neutral surface's muted would be: that was 4.1:1 on kiro's accent. */
+  --muted:color-mix(in srgb,var(--accent-fg) 90%,transparent);
+  --muted-strong:color-mix(in srgb,var(--accent-fg) 72%,transparent);
+  --accent:var(--accent-fg);--accent-hover:var(--accent-fg);
+  --accent-subtle:rgba(0,0,0,.18);
+  --border:color-mix(in srgb,var(--accent-fg) 45%,transparent);
+  --border-strong:color-mix(in srgb,var(--accent-fg) 60%,transparent);
+  --bg:rgba(0,0,0,.12);--bg-elevated:rgba(0,0,0,.15);--bg-hover:rgba(0,0,0,.18);--card:rgba(0,0,0,.12);
+  background-color:var(--bubble-accent);color:var(--accent-fg);
+}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent :not(pre)>code{background:var(--bg-hover);color:var(--accent-fg)}
+/* A link keeps a link SIGNAL once its colour is the body colour: a solid underline (UX review on
+   #17918: white-on-accent with the colour cue gone read as a label). The two link pills
+   (`.mc-md-ref-chip` in MarkdownRenderer, `LinkChip` in LinkPreview: `bg-accent/10` +
+   `border-border/60`, label `no-underline`) read the redefined tokens for their patch and
+   outline and get their label's underline back here. */
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent a{color:var(--accent-fg);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--accent-fg) 75%,transparent);text-underline-offset:2px}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent span.group:has(>a){background:var(--bg-hover);border-color:var(--border)}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent span.group>a.no-underline{text-decoration:underline}
+:where(:root:not([data-ui="cli"])) .msg-content.user-bubble.user-bubble-accent .text-accent{color:var(--accent-fg)}
 /* Kiro theme: lift unselected nav labels + section headers to Prey/300 (#c1bec6, ~9.8:1) per the
    Figma settings-panel guideline (was Prey/400 #938f9b ~5.7:1). Inactive icons inherit this color
    (they only carry opacity-70), lifting them from ~3.4:1 to ~5.6:1. Active items keep .nav-active. */
@@ -1840,7 +2211,7 @@ file-tree-container{
 .edit-grow>textarea{width:100%;min-width:0}
 
 /* Pinned-prompt stand-in. While a user prompt is pinned, its transcript row is
-   `visibility: hidden` (ChatPage's row wrapper, VirtualTranscript, ChatMessageList)
+   `visibility: hidden` (ChatTranscriptView's row wrapper, VirtualTranscript, ChatMessageList)
    and the PinnedPrompt card is drawn in its place — but the card copies only the
    BUBBLE, and the row also carries the message's action strip (copy, copy link,
    pin, edit, timestamp). Visibility is inherited, so a `visible` descendant of the
@@ -1959,7 +2330,7 @@ file-tree-container{
    The hit area can only reach as far as the nearest `overflow: hidden`
    ancestor: a clipped part of a box is not hit-testable. A host inside such
    a wrapper must lift the clip under the same media query (the sidebar's
-   split New button does, see ChatSidebar). */
+   split New button does, see chat-sidebar/SidebarHeader.tsx). */
 @layer components {
   @media (pointer: coarse) {
     .mc-touch-hit, .mc-touch-hit-y, .mc-touch-hit-end { position: relative; }
@@ -2006,6 +2377,10 @@ file-tree-container{
    Because both side tracks are the same `minmax(0,1fr)`, they are always equal,
    so the search is exactly window-centred by construction — no measurement, no
    ResizeObserver, no absolutely-positioned overlay to keep clear of.
+
+   Desktop windows keep these tracks and the container rungs below. The measured
+   ladder (`tb-measured`, at the end of this section) adds folds wherever those
+   rungs leave a group's contents overflowing.
 
    The side tracks deliberately have NO floor: they are pure remainder, and each
    group re-lays-out its own contents against the width it was handed
@@ -2084,6 +2459,7 @@ file-tree-container{
    exactly the semantics wanted here: the track is sized by the window, and the
    contents adapt to it. */
 .tb-left,.tb-right{container-type:inline-size;min-width:0;display:flex;align-items:center;overflow:hidden}
+.tb-left > .tb-measure,.tb-right > .tb-measure{display:contents}
 .tb-left{justify-content:flex-start;gap:.5rem}
 /* The actions group ends flush with the header's own padding edge, and the
    notification bell's unread badge is deliberately offset 4px past the button's
@@ -2118,7 +2494,12 @@ file-tree-container{
    breakpoint that cannot know what the group currently holds (usage pill
    present or not, resource posture firing, extension segments registered).
    Rungs drop cheapest-first: metric numbers, then the credit counter, then the
-   feedback labels, then the readouts entirely. */
+   feedback labels, then the readouts entirely. These rungs stay live on desktop;
+   the measured `.tbl-N` / `.tbr-N` ladders at the end of this section fold more
+   wherever contents still overflow. The readout rungs (the capsule's included)
+   and the Back/Forward rung target elements that render only on the desktop
+   layout; on a phone only the identity group's crew-name and active-chip rungs
+   have anything to hide. */
 /* Thresholds are the MEASURED content width of the rung above, plus a small
    margin: the rung must fire before the group gets narrower than its contents,
    because flex children would otherwise absorb the difference by squeezing their
@@ -2235,6 +2616,84 @@ file-tree-container{
    off, so those crews' unread rolls into the aggregate badge. */
 @container (max-width:128px){ .tb-left .tb-crew-active-chip{display:none} }
 
+/* Desktop (`tb-measured`, set by App.tsx whenever the desktop form is rendered).
+   The tracks and size containers are the ones above, so the search stays on the
+   header's centre line and the container rungs still respond to each group's
+   width. The `.tbl-N` (identity) and `.tbr-N` (actions) classes add folds at the
+   lowest level whose contents fit, so an item no fixed threshold counted (a
+   prerelease chip, an update pill, a longer locale) collapses something in its
+   own group instead of clipping. The measured level never sits below the last
+   step the container rungs have folded, so the two ladders fold in one order.
+   The hook reads each group's contents through
+   its `.tb-measure` wrapper, which gets a max-content flex box only for the read.
+   The actions group's last rung folds the update pill to its icon, so no built-in
+   item can push the bell out. The group aligns `safe` to its end: if it still
+   overflows there (an extension widget past its budget), it clips from its far
+   end, the bell first, so its first item, the connection dot, goes last.
+
+   Pinned crews still give way first, as they do on a phone: the chip row adds
+   nothing to the identity group's measured width (`width:0`), grows into whatever
+   room the group has spare up to its natural width, and its own clipped-chip
+   measurement takes over from there. Every wrapper between the group and the
+   row (`.instance-tab-bar-inline`, `.tb-crew-grow`) grows to pass that room down.
+   The crews list's error notice (`.tb-crew-notice`) gives way the same way, so a
+   failing list is truncated rather than collapsing the rest of the group.
+   Its floor is its own max-content, so the hand-off's label never wraps in that
+   calculation, and only its message (`.tb-crew-notice-msg`) can shrink inside
+   it: with `width:0` the message adds nothing to that max-content, so the floor
+   is the warning icon, the gaps and the unwrapped hand-off button, which stay
+   whole and in view at every width unless the group holds something no rung can
+   hide (a clipped hand-off would still take keyboard focus). Its 4px end margin, part of that floor, keeps the hand-off's
+   focus ring (2px outline plus 2px offset) inside the group's clip when the
+   notice ends flush with the group. The message grows into the notice's spare
+   room up to its own text (`max-width:max-content`), so it holds no blank width
+   beyond its own text; a clamped line can still end short of the hand-off,
+   because the clamp breaks between words. While it shows, the switcher's own wrapper is
+   flattened (`display:contents`) so the pinned row, the dropdown and the notice
+   are siblings in one flex line: the notice follows the dropdown directly instead
+   of trailing an empty grown wrapper. The notice grows first (`flex-grow:100`
+   against the row's 1), up to its 320px cap, so the failure stays readable; the
+   pinned row takes what is left, and its cut chips stay in the dropdown. An even
+   split squeezes the message out at mid widths and leaves only a clipped
+   hand-off link. (`flex-grow:0` on that wrapper would keep the notice in
+   place but starve the row, which only grows THROUGH that wrapper, so every
+   pinned chip would measure as cut at any width.) Nothing reads that
+   wrapper's box -- the row is its own offsetParent and the menu anchors to its
+   trigger -- so flattening it costs no measurement.
+   Rung tbl-2 hides the chip names, and with them the 5ch floor a connected chip
+   keeps for a readable name (`min-w-[calc(5ch+…)]` in InstanceTabBar.tsx), so
+   the chips go icon-only instead of holding blank width.
+
+   The metrics fetch failure (`.tb-metrics-notice`) keeps its natural width, since
+   its text is short and fixed, and the actions ladder makes room for it like any
+   other item. Rung tbr-5 folds it to its warning and hand-off icons with the
+   capsule's readouts: the message is hidden visually (the sr-only property set),
+   so the alert still reads the failure to assistive tech, and the hand-off label
+   collapses (`font-size:0`), so the button keeps its name and title. Rung tbr-2
+   leaves it whole, because a bare icon there would have no visible name on
+   keyboard focus. */
+@media (min-width:768px){
+  .topbar.tb-measured > .tb-right{justify-content:safe flex-end}
+  .topbar.tb-measured .tb-left .instance-tab-bar-inline,.topbar.tb-measured .tb-left .tb-crew-grow{flex:1 1 auto}
+  .topbar.tb-measured .tb-left .crew-chip-row{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-notice{width:0;flex:100 1 auto;min-width:max-content;margin-right:4px}
+  .topbar.tb-measured .tb-left .tb-crew-notice-msg{width:0;flex:1 1 auto;max-width:max-content}
+  .topbar.tb-measured .tb-left .tb-crew-grow:has(> .tb-crew-notice) > .tb-crew-grow{display:contents}
+  .tb-measured.tbl-1 .tb-left .tb-drop-navhistory{display:none}
+  .tb-measured.tbl-2 .tb-left .tb-drop-crew-name{display:none}
+  .tb-measured.tbl-2 .tb-left .crew-chip-row > *{min-width:auto}
+  .tb-measured.tbl-3 .tb-left .tb-crew-active-chip{display:none}
+  .tb-measured.tbr-1 .tb-right .tb-narrow-only{display:block}
+  .tb-measured.tbr-1 .tb-right .tb-drop-metrics{display:none}
+  .tb-measured.tbr-2 .tb-right .tb-drop-feedback-label{display:none}
+  .tb-measured.tbr-3 .tb-right .tb-drop-usage{display:none}
+  .tb-measured.tbr-4 .tb-right .tb-drop-feedback{display:none}
+  .tb-measured.tbr-5 .tb-right .tb-capsule > :not([data-liquid-glass-layer]) ~ :not([data-liquid-glass-layer]){display:none}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice button{font-size:0;gap:0}
+  .tb-measured.tbr-5 .tb-right .tb-metrics-notice-msg{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0}
+  .tb-measured.tbr-6 .tb-right .tb-drop-update-label{display:none}
+}
+
 /* ── Topbar glass ── */
 .topbar-glass{
   background:color-mix(in srgb, var(--chrome) 74%, transparent);
@@ -2281,10 +2740,37 @@ file-tree-container{
    and mark the header as a drag region so the integrated menu row still moves
    the window — with an explicit no-drag opt-out for every interactive control,
    including the titlebar app-menu triggers below.
-   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts
-   (the 138px overlay plus 4px clearance). */
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js (the 138px overlay plus 4px clearance). The reserve is ZOOM-AWARE: the native
+   caption buttons are a fixed native width (DIPs), but a CSS-px padding is
+   multiplied by page zoom when painted, so a static 142 CSS px shrinks to
+   142*zoom DIP on screen and stops clearing the buttons below 100% zoom (the
+   bell slides under Minimize — the reported bug). The main process computes the
+   CSS-px reserve that paints to a constant 142 DIP (142/zoom) and sets it on
+   <html> as --mc-win-caption-reserve, next to where it scales the overlay
+   height — see pushWinCaptionReserve in runtime/window/chrome.js. The 142px
+   fallback here covers the first paint before that runs and non-Electron
+   contexts (a plain browser tab, jsdom in tests), preserving the previous
+   static layout there. One custom property keeps all four
+   `.win-electron`/`.embedded-win-inset` reserve rules below in lock-step. */
+/* Default the custom property on :root so it always resolves to the static
+   142px before the main process pushes the live zoom-aware value (and in
+   non-Electron contexts). It MUST be :root, not `.win-electron`: the main
+   process sets the live value inline on <html> (= :root), but `.win-electron`
+   sits on the inner shell <div> (App.tsx), so a default declared there would
+   re-set the property ON that div and shadow the inherited <html> value for
+   the whole header subtree — the reserve would stay a static 142px and the
+   zoom fix would never take effect. On :root the inline <html> style overrides
+   it (inline beats stylesheet) and every descendant — the header AND the
+   host-rendered strip in InstancesViewport, which renders OUTSIDE the shell
+   div — inherits the live value. Declaring the default here also lets the
+   padding rules use the plain `var(--mc-win-caption-reserve)` reference without
+   repeating the fallback: a bare custom-property reference round-trips through
+   every CSSOM (happy-dom drops a `var()` whose comma fallback it cannot parse),
+   while a defaulted property keeps the first-paint value correct. */
+:root{--mc-win-caption-reserve:142px}
 .win-electron header.topbar-glass{
-  padding-right:142px;
+  padding-right:var(--mc-win-caption-reserve);
   -webkit-app-region:drag;
 }
 .win-electron header.topbar-glass button,
@@ -2317,7 +2803,7 @@ file-tree-container{
    with nothing clearing the caption band. The controls stay painted there on
    both platforms — only macOS hides its own with the chrome, so only macOS needs
    no reserve. Keep the widths in sync with the two header rules above. */
-body.mc-focus-mode .win-electron .focus-caption-reserve{padding-right:142px}
+body.mc-focus-mode .win-electron .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
 body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
 /* Embedded remote pane (option B): the pane is a separate document loaded in an
    iframe, so its SPA can't see Electron — `isMacElectron` is false inside it and
@@ -2331,19 +2817,19 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    frameless window (`winInset` in mc-host-model); the bridge toggles
    `.embedded-win-inset` on <html> so the pane's now-topmost header insets its
    RIGHT side clear of the parent window's native caption buttons.
-   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts and
-   with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
+   Keep 142px in sync with WIN_CAPTION_RESERVE_CSS_PX in
+   electron/runtime/window/chrome.js and with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
    here: draggable regions are only collected from the host document, never
    from a cross-origin iframe (see InstancesViewport), and the host's drag
    strips already clip at the caption zone. */
-.embedded-win-inset header.topbar-glass{padding-right:142px}
+.embedded-win-inset header.topbar-glass{padding-right:var(--mc-win-caption-reserve)}
 /* Focus mode inside an embedded pane under a Windows frameless host: same
    caption reserve as the local `.win-electron` rule further up — focus mode
    takes the pane's header out of flow, so the peeked surface at that corner
    must clear the caption band too. `.mc-focus-mode` (the body class) instead
    of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
    body's parent. Keep 142px in sync as above. */
-.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:142px}
+.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:var(--mc-win-caption-reserve)}
 /* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone
@@ -2441,6 +2927,22 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   mask-image:linear-gradient(to bottom,black calc(100% - 20px),transparent);
   -webkit-mask-image:linear-gradient(to bottom,black calc(100% - 20px),transparent)}
 
+
+/* The disclosure shell applies this only while content remains below the
+   capped body. The mask uses the theme's opaque text token as its alpha source,
+   so the cue carries no fixed visible colour and disappears at the scroll end. */
+.markdown-disclosure-scroll-more{
+  mask-image:linear-gradient(to bottom,var(--text) calc(100% - 20px),transparent);
+  -webkit-mask-image:linear-gradient(to bottom,var(--text) calc(100% - 20px),transparent)}
+
+/* Skill instructions are supporting transcript detail, not an assistant answer.
+   Keep their heading hierarchy inside the card and below the answer's scale. */
+.skill-load-markdown h1{font-size:15px;line-height:20px;margin-top:12px;margin-bottom:6px}
+.skill-load-markdown h2{font-size:14px;line-height:20px;margin-top:10px;margin-bottom:6px}
+.skill-load-markdown h3,
+.skill-load-markdown h4,
+.skill-load-markdown h5,
+.skill-load-markdown h6{font-size:13px;line-height:20px;margin-top:8px;margin-bottom:4px}
 /* ── Table row striping ── */
 .table-striped tbody tr:nth-child(even){background:var(--card-hl)}
 
@@ -2498,7 +3000,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    `outline:none` opts out of the global ring in favour of this border + glow,
    and the extra class raises specificity so the two never stack. */
 .focus-ring:focus-visible{outline:none;border-color:var(--ring);
-  box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
+  box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
 /* The desktop Settings search bar (pages/settings/SettingsSearch.tsx) is a boxed
    input, not a glass pane, so it keeps a focus ring -- the shared shape with a
    neutral colour: a stronger neutral border and a neutral halo, never the theme
@@ -2509,6 +3011,71 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    name only. Same specificity chain plus one class, so it wins here only. */
 .settings-search .focus-ring:focus-visible{border-color:color-mix(in srgb,var(--text) 60%,var(--border));
   box-shadow:0 0 0 3px color-mix(in srgb,var(--text) 22%,transparent),0 0 20px rgba(0,0,0,.06)}
+
+/* ── Shared accent focus ring (WCAG 1.4.11-safe) ── */
+/* The house keyboard-focus cue for controls that want the THEME ACCENT ring
+   rather than the neutral `.focus-ring` glow (completion-card scroll regions,
+   row-pill buttons, icon buttons, text inputs). Replaces the old per-site
+   `focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-hidden`
+   cluster — see issue #4428.
+
+   WHY A SHARED UTILITY AND NOT `ring-accent`: `--accent` is where each theme
+   spends its identity, so it must stay the ring colour, but it is NOT a token
+   with a contrast contract — it falls below WCAG 1.4.11's 3:1 non-text floor
+   against `--bg` in three light palettes (rosepine-light 2.60, everforest-light
+   2.81, intellij-light 2.92) and lower still against the accent-tinted card fill
+   (2.39 / 2.56 / 2.66). A translucent `ring-accent/40` or `/50` cannot reach the
+   floor with ANY opaque token at that alpha. So the identity hue cannot also
+   carry the minimum.
+
+   HOW: hue identifies, a neutral hairline carries the minimum. The inner 1px
+   layer is opaque `--text-strong`, which clears 3:1 against both `--bg` and the
+   card fill in every one of the 36 built-in themes (worst case 6.48:1,
+   everforest-light); the accent band outside it supplies the theme identity. A
+   control stays legible even in the themes where the accent alone would not.
+   `outline:2px solid transparent` opts out of the global `:focus-visible` ring
+   in favour of this `box-shadow` cue, and the `.focus-ring-accent` class raises
+   specificity so the two never stack. The outline is TRANSPARENT rather than
+   `none` so that in `forced-colors: active` (Windows High Contrast) — where the
+   UA forces every `box-shadow` to `none` and would otherwise leave these
+   migrated controls with no focus ring at all (a WCAG 2.4.7 regression) — the
+   system repaints the transparent outline in its own highlight colour. This
+   matches the `outline-hidden` behaviour every call site had before migration
+   (Tailwind 4's `outline-hidden` expands to a transparent forced-colors
+   outline) and the repo's established `forced-colors` handling elsewhere.
+   `box-shadow` (like `outline`) paints outside the border box, so it never
+   shifts layout. The `-inset` variant uses `outline-offset:-2px` so its forced-
+   colors ring is drawn inside the clipped box, matching its inset shadow. */
+.focus-ring-accent:focus-visible{outline:2px solid transparent;outline-offset:2px;
+  box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent)}
+/* A control that marks SELECTION with its own `ring-1 ring-accent ring-offset-1`
+   (the colour swatches in `TagManagerList`) loses that selection cue while it
+   is keyboard-focused, because `.focus-ring-accent`'s `box-shadow` replaces the
+   Tailwind ring. Re-add the selection as an OUTER layer beyond the focus band
+   so a focused + selected swatch still reads as chosen: 1px gap (`--bg`) then a
+   2px `--accent` selection ring outside the 3px focus band. `aria-pressed=true`
+   is the selected state the swatch sets.
+   NARROWED to the swatch's own `.swatch-cue` class: the bare
+   `.focus-ring-accent[aria-pressed="true"]` selector also matched two toggles
+   that carry no selection ring to restore (the TagManagerList status toggle and
+   the band filter chip), giving them an unwanted outer accent ring. Only the
+   colour swatch combines `.swatch-cue` + `.focus-ring-accent` + `aria-pressed`,
+   so this reaches exactly the one consumer that needs it. */
+.swatch-cue.focus-ring-accent[aria-pressed="true"]:focus-visible{
+  box-shadow:0 0 0 1px var(--text-strong),0 0 0 3px var(--accent),
+             0 0 0 4px var(--bg),0 0 0 6px var(--accent)}
+/* Gap variant: a 1px `--bg` gap between the control edge and the hairline, for
+   a BORDERED option whose pre-migration cue carried `ring-offset-1
+   ring-offset-bg` (the `SessionPulseSurveyCard` rating options). The gap keeps
+   the ring from sitting flush against the option's own border. The hairline and
+   accent band shift out by 1px; the hairline still carries the 3:1 floor. */
+.focus-ring-accent-gap:focus-visible{outline:2px solid transparent;outline-offset:2px;
+  box-shadow:0 0 0 1px var(--bg),0 0 0 2px var(--text-strong),0 0 0 4px var(--accent)}
+/* Inset variant for a scroll region flush inside an `overflow-hidden` box (the
+   completion / compaction / workflow card digests), where an outset ring would
+   be clipped. `inset` draws the same two layers INSIDE the content edge. */
+.focus-ring-accent-inset:focus-visible{outline:2px solid transparent;outline-offset:-2px;
+  box-shadow:inset 0 0 0 1px var(--text-strong),inset 0 0 0 3px var(--accent)}
 
 /* ── Colour-swatch hover cue ── */
 /* The colour swatches (session colours, folder/tag colours) carry no built-in
@@ -2603,6 +3170,17 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .side-tab-inactive:hover::before{
   content:'';position:absolute;left:0;right:0;top:2px;bottom:4px;
   border-radius:8px;background:var(--bg-hover);z-index:-1}
+/* Narrow strip: the pinned views (Changes / Artifacts / Files) are labelled,
+   but at a strip too narrow for three labels an INACTIVE pinned chip drops to
+   its icon, so all three stay on screen instead of the last one scrolling out
+   of view. The active chip keeps its word; every chip keeps its aria-label and
+   tooltip. Unlayered, so it beats the chip's Tailwind width/padding utilities.
+   The strip is the query container (`side-panel-strip-cq`). */
+.side-panel-strip-cq{container-type:inline-size}
+@container (max-width:400px){
+  .side-tab-pinned-idle{width:2rem;max-width:none;justify-content:center;padding-left:0;padding-right:0}
+  .side-tab-pinned-idle .side-tab-label,.side-tab-pinned-idle .side-tab-badge{display:none}
+}
 /* Reveal-in-sidebar confirmation: an accent outline the reveal handler holds
    briefly and then fades (ChatSidebar reveal effect, issue #912). Outline, not
    background, because the revealed row is usually the active one and already
@@ -2616,14 +3194,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
 .session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
 .session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
-/* Pinned folder headers in the Sessions lane (ChatSidebar renderFolderHeader).
+/* Pinned folder headers in the Sessions lane (chat-sidebar/folderBlocks.tsx renderFolderHeader).
    A sticky row needs an opaque surface or the session rows scroll visibly
    through it; it takes the card's own surface so it reads as part of the
    panel. `:where()` keeps this at one class of specificity so the row's
    `hover:bg-bg-hover` still wins on hover. kiro-light steps the card back to
    --panel (.sidebar-inner above), so the pinned row follows it. A host that
    repaints the card sets --folder-row-sticky-bg to the same surface (the
-   /embed/sessions wrapper in ChatPage paints it --bg).
+   /embed/sessions wrapper in SessionsSidebarChrome paints it --bg).
    --folder-row-sticky-h is the header's height, which is what a nested header
    is offset by per depth, so the row is held to it: a default-agent badge or
    the rename input would otherwise grow the row 4-6px and the pinned header
@@ -2648,7 +3226,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .folder-rail:hover>span{left:3px;width:3px;background:color-mix(in srgb,var(--accent) 60%,transparent)}
 @media (prefers-reduced-motion:reduce){.folder-rail>span{transition:none}}
 /* Rows scrolled into view (arrow-key roving, focus, reveal) stop below the
-   pinned header stack of their folder block (ChatSidebar renderFolderBlock
+   pinned header stack of their folder block (chat-sidebar/folderBlocks.tsx renderFolderBlock
    sets --folder-pin-stack); unfiled rows have no stack and keep 0. Chromium's
    `block: 'nearest'` ignores this margin for a row already in view, so the
    arrow-key rove re-aligns such a row itself (chat/sessionRowNav.ts). */
@@ -2665,7 +3243,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    surface (kiro-light's --panel, the /embed/sessions host's --bg). */
 :where(.sidebar) .list-dock-shelf{background:linear-gradient(to bottom,transparent,var(--folder-row-sticky-bg,var(--bg-elevated)) 8px)}
 :where([data-theme="kiro-light"] .sidebar-inner) .list-dock-shelf{background:linear-gradient(to bottom,transparent,var(--folder-row-sticky-bg,var(--panel)) 8px)}
-/* Stalled goal loop (ChatSidebar `goalLoopStalled`): the loop is armed but its
+/* Stalled goal loop (chat-sidebar/SessionRow.tsx `goalLoopStalled`): the loop is armed but its
    last turn died and nothing is executing — the whole card flashes danger-red
    until the user resumes. Two-class specificity outranks the Tailwind
    bg-accent-subtle an active row carries, so the alarm wins on the selected
@@ -2675,6 +3253,12 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    would silence the alarm exactly for the users who asked for less motion. */
 .session-row.session-loop-stalled{background-color:var(--danger-subtle);animation:kc-loop-stalled-flash 1.6s ease-in-out infinite}
 @keyframes kc-loop-stalled-flash{0%,100%{background-color:var(--danger-subtle)}50%{background-color:transparent}}
+/* Live session dot (chat-sidebar/SessionRow.tsx `showLiveDot`): leads the session name while the
+   row's state resolver says the session is working. A filled accent disc, so it
+   claims none of the row chrome other states own: the background (selection,
+   stalled alarm) and the left edge (session colour bar, recency tint) stay
+   untouched. Its pulse is the shared `animate-pulse` utility on the element. */
+.session-live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:middle;flex-shrink:0}
 .session-row.session-colored{position:relative}
 /* Flush against the row's left edge, and inset vertically by exactly the row's
    corner radius — so the bar spans (row height - 2 * radius) and its ends stop
@@ -2821,15 +3405,22 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .mc-cmt-bubble.unread { background-color: var(--warn); color: var(--warn-fg, #1a1a1a); }
 .mc-cmt-bubble.active { background-color: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
-/* Artifact toolbar: every control (version select + buttons) the same height.
-   Icon-only buttons become squares; labeled buttons keep their padding-driven
-   width. ArtifactDetailPage already carries the `mc-art-toolbar` class. */
+/* Artifact toolbar: every button the same height. Icon-only buttons become
+   squares (the min-width matches the height); labeled buttons keep their
+   padding-driven width. The version select is a Radix trigger inside a
+   wrapper div, so this selector cannot reach it -- it takes the same 32px
+   through its own className (TOOLBAR_SELECT_CLASS in ArtifactDetailPage). A
+   button wrapped in HoverTip (`[data-hover-tip]`) is one level deeper and is
+   matched explicitly. */
 .mc-art-toolbar > button,
+.mc-art-toolbar > [data-hover-tip] > button,
 .mc-art-toolbar > select {
   height: 32px;
+  min-width: 32px;
   box-sizing: border-box;
 }
-.mc-art-toolbar > button {
+.mc-art-toolbar > button,
+.mc-art-toolbar > [data-hover-tip] > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3005,6 +3596,18 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --tile-teal: #32ade6;
 }
 
+/* Crewmate goal marks (CrewGoals `goalColor`): the numbered dot that ties a
+ * milestone to the goals it serves. A muted, dusty palette -- periwinkle,
+ * mauve, clay, sea glass, rose -- that reads as identity, not status, so it
+ * stays clear of the ok green and warn yellow. Dark mode lifts each hue;
+ * light mode deepens it so the dot holds against a white card. */
+:root {
+  --goal-1: #9aa8f5; --goal-2: #c6a3d9; --goal-3: #e3a283; --goal-4: #86c3c0; --goal-5: #e79fb4;
+}
+[data-mode="light"] {
+  --goal-1: #5867c9; --goal-2: #8e62a8; --goal-3: #b8674a; --goal-4: #3d8784; --goal-5: #b65a77;
+}
+
 /* Liquid Glass tint (components/ui/liquid-glass.tsx): the fill laid over the
  * blurred backdrop of the composer and the mobile settings search capsule. Read
  * from data-mode polarity like the pane shadow: light themes get a milky
@@ -3038,7 +3641,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * anchored on `--bg` (#12141a) in dark and on white in light. `--glass-tint`
  * itself is the step the host wears (`.glass-<step>` below, `thin` on :root), and
  * the modifier steps further down mix INTO `--glass-tint-step`, the host's own
- * plain step tint, so an accent chip on a thick pane is a thick accent. */
+ * plain step tint, so an accent chip on a thick pane is a thick accent.
+ * `--glass-band-plain` is the band's own plain value for the same reason: the
+ * hue modifiers mix into it and set `--glass-band`, so the lit edges of a
+ * tinted pane are lit in the pane's hue. A white band on a purple pane read as
+ * a white frame around it, not as light (issue #18314). */
 :root {
   --glass-tint-ultrathin: rgba(34, 33, 37, 0.30);
   --glass-tint-thin: rgba(30, 30, 34, 0.40);
@@ -3047,7 +3654,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --glass-tint-ultrathick: rgba(24, 25, 30, 0.78);
   --glass-tint-step: var(--glass-tint-thin);
   --glass-tint: var(--glass-tint-thin);
-  --glass-band: rgba(255, 255, 255, 0.22); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
+  --glass-band-plain: rgba(255, 255, 255, 0.22); --glass-band: var(--glass-band-plain); --glass-edge: rgba(255, 255, 255, 0.14); --glass-hairline: rgba(0, 0, 0, 0.50);
 }
 [data-mode="light"] {
   --glass-tint-ultrathin: rgba(236, 236, 236, 0.35);
@@ -3055,7 +3662,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   --glass-tint-regular: rgba(243, 243, 243, 0.55);
   --glass-tint-thick: rgba(245, 245, 245, 0.65);
   --glass-tint-ultrathick: rgba(247, 247, 247, 0.82);
-  --glass-band: rgba(255, 255, 255, 1); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
+  --glass-band-plain: rgba(255, 255, 255, 1); --glass-band: var(--glass-band-plain); --glass-edge: rgba(0, 0, 0, 0.24); --glass-hairline: rgba(0, 0, 0, 0.20);
 }
 /* The step a pane wears, set on the host by Glass.tsx. Both tokens are set so a
  * modifier below (also on the host) can mix into `--glass-tint-step` while
@@ -3090,12 +3697,28 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * `thin` on :root) -- so the hue lands on the pane's own thickness, and a
  * property reads a sibling token rather than itself. These rules follow the
  * step classes so that, at equal specificity, the modifier's `--glass-tint`
- * wins on a host carrying both. */
-.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); }
+ * wins on a host carrying both.
+ *
+ * A HUE modifier also tints the light bands: the same hue at the same share,
+ * mixed into `--glass-band-plain` (the polarity's plain band) and set as
+ * `--glass-band`, which the primitive paints as the 1px crisp core and the
+ * specular gradient along the top and bottom edges. Light through tinted
+ * glass carries the tint; a band left pure white framed an accent pane in a
+ * white line in light mode and washed its edge grey in dark (issue #18314).
+ * The neutral steps (`glass-hover`, `glass-faded`) leave the band alone. */
+.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--accent) 14%, var(--glass-band-plain)); }
 .glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }
-.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); }
-.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); }
+.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--warn) 12%, var(--glass-band-plain)); }
+.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--danger) 12%, var(--glass-band-plain)); }
 .glass-hover:hover { --glass-tint: color-mix(in srgb, var(--text) 8%, var(--glass-tint-step)); }
+
+/* Warn-hued text on a `glass-warn` pane (the queued-message card, the memory
+ * mode chip): the same `--warn-text` token the `text-warn-text` utility paints
+ * on `bg-warn-subtle` / `bg-warn/N` fills (see the token's note next to
+ * `--shadow-float`; issues #19920, #20071). glassWarnTextContrast.test.ts
+ * measures every light palette against it and refuses a `glass-warn` pane or a
+ * warn-tinted fill that still paints plain `text-warn`. */
+.glass-warn-fg { color: var(--warn-text); }
 
 /* The context shelf (agent, project, branch, model chips) sits BELOW the glass
  * pane, on the bare transcript, and the dock floats over content, so a chip
@@ -3107,7 +3730,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
  * faint line a few pixels below the pane -- read as a reflection of the pane's
  * own bottom edge. 6px covers the pane's hairline and the start of its shadow
  * (which paints OVER this layer, see below) and nothing else. It is a `::before` at `z-index: -1` in the dock's
- * input-area stacking context (ChatPage's `relative z-10 dock-inert` wrapper),
+ * input-area stacking context (ComposerDockView's `relative z-10 dock-inert` wrapper),
  * NOT in one of the shelf's own: that puts the fade BEHIND the pane and its
  * `.glass-shadow`, so the shadow falls onto the solid strip the way it fell
  * onto the page, instead of being whitened out part-way down and leaving a
@@ -3141,7 +3764,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 /* A pending approval swaps the pane's shadow for the warm glow. */
 .glass-shadow.approval-glow { box-shadow: var(--approval-shadow); }
 
-/* The composer dock's two wrapper boxes (ChatPage.tsx) span the pane but hold
+/* The composer dock's two wrapper boxes (ComposerDockView.tsx) span the pane but hold
    nothing of their own: every child is its own content column. The wrappers
    pass input through and each child catches it, so the empty width beside the
    column, and the scrollbar gutter, reach the transcript underneath. One rule
@@ -3149,7 +3772,7 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    The status stack is itself a scroll box (`max-h-[50svh] overflow-y-auto`):
    while it overflows, its own scrollbar has to be a hit target, and a
    scrollbar belongs to the box, not to a child, so the dock's measure marks
-   the overflowing stack (`data-overflowing`, ChatPage.tsx) and it catches input
+   the overflowing stack (`data-overflowing`, useChatPageTranscriptController.tsx) and it catches input
    as a whole for exactly that stretch. */
 .dock-inert{pointer-events:none}.dock-inert>*{pointer-events:auto}
 .dock-inert[data-overflowing="true"]{pointer-events:auto}
@@ -3494,9 +4117,10 @@ html[data-font-family="opendyslexic"] .nav-item {
    column widths and heights. Hosts that do
    not publish the property fall back to ordinary markdown sizing. */
 /* Only top-level assistant tables may escape the reading column, and only
-   from an unbordered bubble: a host that draws the reply as a bordered card
-   (a crewmate's chat, AssistantMessage's `bubbleClassName` → `data-bordered`)
-   keeps its table inside the card. The
+   from a surfaceless bubble: a host that draws the reply as its own framed
+   card (a crewmate's chat, AssistantMessage's `bubbleClassName` →
+   `data-bordered`; a fill counts as much as a border) keeps its table inside
+   the card. The
    intervening div is rehypeStableRootKeys' display:contents wrapper;
    quoted/list tables and formatted code cards retain their own bounds. */
 .chat-container .chat-message-body:has([data-role="assistant"] > .message-bubble:not([data-bordered]) > [data-image-scope] > div > .markdown-table),

@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
  * The shared instant-tooltip spelling for the follow-up chips and ChatInput's
@@ -56,11 +57,12 @@ export interface TipPos {
    *  top. `below` puts its top edge 8px under the anchor's bottom -- for an
    *  anchor in the top bar, where "above" is off-screen. */
   placement?: TipPlacement
-  /** Where a `below` bubble goes instead when it does not fit under the anchor
-   *  inside the viewport, or would cross `floor`: the `above` position (first
-   *  fragment, boundary lift). Set by `flow` placement only — an explicit
-   *  `below` has no above to go to (its anchor is in the top bar) and is
-   *  clamped instead. */
+  /** The opposite-side candidate: a default/explicit `above` carries the
+   *  anchor's bounding-box `below` position for viewport fitting. A `flow`
+   *  `below` carries `above` (first fragment, boundary lift) when it would
+   *  cross the viewport bottom or `floor`. A `flow` `above` has no candidate
+   *  below, to spare the following prose. An explicit `below` has no above
+   *  to go to (its anchor is in the top bar) and is clamped instead. */
   flip?: { top: number; left: number }
   /** The bottom edge a `below` bubble must stay inside: a flow anchor's
    *  container bottom (`flowFloor`) — the message's own box. A bubble that
@@ -325,7 +327,8 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: placement === 'flow' ? above : undefined, floor: placement === 'flow' ? flowFloor(el) : undefined })
       return
     }
-    setTip(above)
+    const b = el.getBoundingClientRect()
+    setTip({ ...above, flip: placement === 'above' ? { top: b.bottom + 8, left: b.left } : undefined })
   }
   const hide = () => {
     openBubbles.delete(entry)
@@ -462,6 +465,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   className?: string
   children: React.ReactNode
 }) {
+  const trustRoot = useGuideTrustRootAttrs()
   const ref = useRef<HTMLDivElement | null>(null)
   // Where the bubble ended up once its size is known; null while `tip`'s own
   // position stands.
@@ -475,9 +479,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // visible anchor whose left is already off-screen — either way clipping
   // exactly the long labels the tooltip exists to recover. The left floor wins
   // when the bubble is wider than the viewport, so the start of the text always
-  // survives. Vertically for `below`: a chip on the last line of a full-height
-  // pane would open the bubble off the bottom; a flow anchor goes above after
-  // all (its `flip`), an explicit `below` is clamped to the bottom edge.
+  // survives. A default/explicit `above` that crosses the viewport top takes
+  // its `below` candidate if that side has more room. If neither side fits,
+  // clamp on the roomier side, keeping the text's start at least 8px from the
+  // viewport top even when the bubble is taller than the viewport. Flow keeps
+  // its prose-aware placement. Vertically for `below`: a chip on the last line
+  // of a full-height pane would open the bubble off the bottom; a flow anchor
+  // goes above after all (its `flip`), an explicit `below` is clamped to the bottom edge.
   useLayoutEffect(() => {
     setFit(null)
     if (!tip) return
@@ -496,6 +504,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
         if (tip.flip) { placement = 'above'; top = tip.flip.top; left = tip.flip.left }
         else top = Math.max(8, maxTop)
       }
+    } else if (tip.flip && top - el.offsetHeight < 8) {
+      const belowRoom = window.innerHeight - 8 - tip.flip.top
+      if (belowRoom > top - 8) {
+        placement = 'below'
+        top = Math.max(8, Math.min(tip.flip.top, window.innerHeight - 8 - el.offsetHeight))
+        left = tip.flip.left
+      } else top = el.offsetHeight + 8
     }
     const maxLeft = window.innerWidth - 8 - el.offsetWidth
     left = Math.max(8, Math.min(left, maxLeft))
@@ -512,6 +527,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       id={tipId}
       role="tooltip"
       data-placement={placement}
+      {...trustRoot}
       className={`fixed z-[9999] ${edge}rounded-lg border border-border-strong bg-bg-elevated px-2.5 py-1.5 text-[11px] leading-snug shadow-lg pointer-events-none ${className}`}
       style={{ top: fit?.top ?? tip.top, left: fit?.left ?? tip.left }}
     >
@@ -519,4 +535,57 @@ export function InstantTip({ tip, tipId, className = '', children }: {
     </div>,
     document.body,
   )
+}
+
+type LabelTipHandlers = {
+  onPointerEnter?: React.PointerEventHandler<HTMLElement>
+  onPointerDown?: React.PointerEventHandler<HTMLElement>
+  onPointerUp?: React.PointerEventHandler<HTMLElement>
+  onMouseEnter?: React.MouseEventHandler<HTMLElement>
+  onMouseLeave?: React.MouseEventHandler<HTMLElement>
+  onFocus?: React.FocusEventHandler<HTMLElement>
+  onBlur?: React.FocusEventHandler<HTMLElement>
+}
+
+/** Whether `el`'s focus is one the browser would ring (`:focus-visible`): a
+ *  tab stop, not the focus a menu hands back to its trigger after a mouse
+ *  pick. A hint painted on that returned focus would float over a button the
+ *  mouse user already left. Where the selector is unsupported, every focus
+ *  counts. */
+function keyboardFocused(el: Element): boolean {
+  try { return el.matches(':focus-visible') } catch { return true }
+}
+
+function both<E>(own: ((e: E) => void) | undefined, tip: (e: E) => void): (e: E) => void {
+  return own ? (e: E) => { own(e); tip(e) } : tip
+}
+
+/**
+ * The hover/focus hint for an icon-only control, whose text is the control's
+ * own accessible name (its `aria-label`). The label is already translated and
+ * already names what the control does, so the hint adds no new copy; it only
+ * makes the name visible, at once, to a pointer or keyboard user, instead of
+ * after the browser's native `title` delay.
+ *
+ * `label` undefined turns it off: no handlers are added and nothing renders
+ * (the hook still runs, so a caller may switch it on and off). `own` is the
+ * caller's handlers for the same events; each one runs before the hint's.
+ * No `aria-describedby`: the description would repeat the accessible name
+ * the screen reader just read.
+ */
+export function useLabelTip(label: string | undefined, own: LabelTipHandlers = {}): { handlers: LabelTipHandlers; bubble: React.ReactNode } {
+  const { tip, tipHandlers, tipId } = useInstantTip()
+  if (!label) return { handlers: own, bubble: null }
+  return {
+    handlers: {
+      onPointerEnter: both(own.onPointerEnter, tipHandlers.onPointerEnter),
+      onPointerDown: both(own.onPointerDown, tipHandlers.onPointerDown),
+      onPointerUp: both(own.onPointerUp, tipHandlers.onPointerUp),
+      onMouseEnter: both(own.onMouseEnter, tipHandlers.onMouseEnter),
+      onMouseLeave: both(own.onMouseLeave, tipHandlers.onMouseLeave),
+      onFocus: both(own.onFocus, e => { if (keyboardFocused(e.currentTarget)) tipHandlers.onFocus(e) }),
+      onBlur: both(own.onBlur, tipHandlers.onBlur),
+    },
+    bubble: <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[20rem] break-words">{label}</InstantTip>,
+  }
 }

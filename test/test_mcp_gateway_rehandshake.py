@@ -48,13 +48,11 @@ def _make_backend() -> Backend:
     now = time.monotonic()
     key = PoolKey(
         server_name="example-mcp",
-        agent_name="kirocrew",
         command_args_hash="c",
         effective_env_hash="e",
         work_dir="/nonexistent",
         binary_version="1",
         os_uid=1000,
-        config_snapshot_hash="s",
     )
     return Backend(
         pool_key=key,

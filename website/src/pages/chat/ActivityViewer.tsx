@@ -18,9 +18,9 @@ import IssuePanel from '../../components/IssuePanel'
 import { PinnedMessagesPanel } from './PinnedMessagesPanel'
 import type { ChatPin } from '../../api/pins'
 import { useAppSelector, useAppDispatch } from '../../store'
-import { markSubagentApproving, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
+import { markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, isSpawnApprovalGone, isSpawnApprovalRetired, openActivityToTab, selectSubagent, clearTerminalSubagents, sseSubagentDone } from '../../store/chatSlice'
 import SegmentedControl from '../../components/SegmentedControl'
-import { PanelSectionHeader, ContentSkeleton } from '../../components/ui'
+import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
 import { runBelongsToSlot } from '../../apps/workflows/runModel'
@@ -35,13 +35,16 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 const CrewLogTab = lazy(() => import('./CrewLogPanel').then(m => ({ default: m.CrewLogTab })))
 import SessionSummaryTab from './SessionSummaryTab'
 import { i18nT } from '../../i18n/t'
-import { queuedWaitText } from './subagentQueuedReason'
+import { isNeverStarted, neverStartedKind, queuedWaitText } from './subagentQueuedReason'
 import GitPanel from '../../components/GitPanel'
-import { fmtDateFields } from '../../i18n/format'
+import { fmtDateFields, fmtElapsed } from '../../i18n/format'
 import { isModelDowngrade } from './subagentCompletion'
 import { normalizeModelKey } from '../../lib/model'
 import { fmtCredits } from '../../i18n/format'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
+import { sanitizeLlmOutput } from '../../utils/sanitize'
+import { findReport, type ErrorReport } from '../../utils/errorReport'
+
 const STATUS = {
   pending: <Lock size={12} className="text-muted" />,
   running: <LoaderIcon size={12} className="text-accent animate-spin" />,
@@ -109,6 +112,62 @@ function DiskLoader({ id, autoLoad }: { id: string; autoLoad?: boolean }) {
   return <button className="text-accent/70 hover:text-accent text-[12px] underline cursor-pointer bg-transparent border-none p-0 font-mono" onClick={e => { e.stopPropagation(); load() }}>{i18nT('pages.chat.activityViewer.load_output_from_disk')}</button>
 }
 
+const RUNNING_PREFIX = /^Running: /
+
+function SubagentToolCalls({ a, isRunning }: { a: SubagentActivity; isRunning: boolean }) {
+  const calls = a.toolCalls ?? []
+  // Follow the newest call the way the output body does: stay pinned to the
+  // bottom unless the user scrolled up to read an earlier one.
+  const listRef = useRef<HTMLOListElement>(null)
+  const follow = useRef(true)
+  // Rows scrolled out above the box are cut mid-line; fade that edge so the
+  // cut reads as "more above" rather than a rendering fault.
+  const [fadeTop, setFadeTop] = useState(false)
+  const newestTool = calls[calls.length - 1]?.tool
+  useEffect(() => {
+    const el = listRef.current
+    if (el && follow.current) el.scrollTop = el.scrollHeight
+    if (el) setFadeTop(el.scrollTop > 0)
+  }, [calls.length, newestTool])
+  if (!calls.length) return null
+  // `toolCount` is the backend's own count; the timeline is capped and can
+  // miss frames the scale coalescer merged, so say how many it leaves out
+  // instead of implying the list is the whole run. The count sits in the
+  // heading, outside the scroller: the list follows the newest call, so a row
+  // at its top would scroll away on exactly the long, capped runs it is for.
+  const unlisted = Math.max(0, (a.toolCount ?? 0) - calls.length)
+  const fade = fadeTop ? 'linear-gradient(to bottom,transparent,#000 24px)' : undefined
+  return (
+    <div className="px-3 pb-2" data-testid="subagent-tool-calls">
+      <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">
+        {i18nT('pages.chat.activityViewer.tool_calls')}
+        {unlisted > 0 && <span className="normal-case tracking-normal text-muted/70" data-testid="subagent-tool-calls-unlisted"> · {i18nT('pages.chat.activityViewer.tool_calls_not_listed', { count: unlisted })}</span>}
+      </div>
+      {/* The solid box stays put; only the inner scroller is masked, so the
+          fade dims rows sliding out of view rather than the box's own edge. */}
+      <div className="px-2.5 py-2 bg-bg rounded-md">
+      <ol ref={listRef} onScroll={e => { const el = e.currentTarget; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8; setFadeTop(el.scrollTop > 0) }} data-fade-top={fadeTop || undefined} style={fade ? { maskImage: fade, WebkitMaskImage: fade } : undefined} className="text-[12px] font-mono max-h-[144px] overflow-y-auto space-y-0.5 list-none m-0 p-0">
+        {calls.map((c, i) => {
+          const current = isRunning && i === calls.length - 1
+          const tool = sanitizeLlmOutput(c.tool)
+          // Native titles carry kiro-cli's "Running: " status prefix. It is
+          // false on finished rows and redundant on the live one, which the
+          // spinner, accent colour and aria-current already mark.
+          const label = tool.replace(RUNNING_PREFIX, '')
+          return (
+            <li key={i} className={`truncate ${current ? 'text-accent' : 'text-muted/70'}`} title={label} aria-current={current ? 'step' : undefined}>
+              {current
+                ? <LoaderIcon className="lucide-inline animate-spin" aria-hidden="true" />
+                : <Wrench className="lucide-inline" aria-hidden="true" />} {label}
+            </li>
+          )
+        })}
+      </ol>
+      </div>
+    </div>
+  )
+}
+
 function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slot: string; onClick: () => void; selected?: boolean }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<HTMLDivElement>(null)
@@ -134,7 +193,21 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   const [actionError, setActionError] = useState<string | null>(null)
   // WHICH approval is gone, not merely that one was: the id scopes the
   // withdrawal, so a later live approval here is never suppressed by it.
+  // Kept beside the store marker because this card renders the `a` its PROPS
+  // carry: a host whose `subagents` prop is not the live store slice (or lags
+  // it by a render) would otherwise re-offer the buttons the press just proved
+  // dead. The store marker covers every other surface.
   const [goneFor, setGoneFor] = useState<string | null>(null)
+  // A failed read of the spawn inventory while this card's liveness is open.
+  // Reported, not swallowed: the composer and Reload stay blocked until it
+  // resolves, so a silent failure would read as a hang.
+  const [livenessError, setLivenessError] = useState<string | null>(null)
+  const checkLiveness = useCallback((approvalId: string) => {
+    if (!slot) return
+    dispatch(reconcileGoneSubagent({ slot, id: a.id, approval_id: approvalId })).unwrap()
+      .then(() => setLivenessError(null))
+      .catch(() => setLivenessError(i18nT('pages.chat.subagentProgressBar.liveness_check_failed')))
+  }, [a.id, slot, dispatch])
   // 1-click transcript: chip selection expands the card, scrolls it into
   // view, and (via DiskLoader autoLoad) fetches the output — then clears the
   // selection so a later re-click re-triggers.
@@ -163,6 +236,11 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       dispatch(markSubagentApproving({ id: a.id, approving: false }))
       const gone = isTerminalApprovalRefusal(e)
       setGoneFor(gone ? a.approval_id ?? null : null)
+      // The composer banner resolves this same id from the store.
+      if (gone && a.approval_id) {
+        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
+        checkLiveness(a.approval_id)
+      }
       const reason = e instanceof Error ? e.message : ''
       setActionError(gone
         ? i18nT('components.approvalCard.approval_no_longer_pending')
@@ -170,7 +248,27 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
           : i18nT('components.approvalCard.decision_failed'))
     })
-  }, [a.approval_id, a.id, slot, dispatch])
+  }, [a.approval_id, a.id, slot, dispatch, checkLiveness])
+
+  // A refusal found through the composer banner lands here via the store, so
+  // this card withdraws the same approval. The refused request reports itself
+  // once, on the surface that sent it: the composer already said why, so this
+  // card adds only its neutral status. A transient failure from an older press
+  // here is superseded by that verdict, and its retry advice is now false.
+  const retired = isSpawnApprovalRetired(a)
+  const storeGone = isSpawnApprovalGone(a) || retired
+  const shownError = storeGone && goneFor !== a.approval_id ? null : actionError
+  // SubagentProgressBar owns the periodic re-read of a gone approval's
+  // liveness, but it is unmounted while this tab is open. This card keeps that
+  // retry going on the same cadence until the inventory settles the card.
+  const livenessOpen = isSpawnApprovalGone(a) && !retired && !!slot && !!a.approval_id
+  useEffect(() => {
+    if (!livenessOpen || !a.approval_id) return
+    const approvalId = a.approval_id
+    const t = setInterval(() => checkLiveness(approvalId), 30_000)
+    return () => clearInterval(t)
+  }, [livenessOpen, a.approval_id, checkLiveness])
+  const shownLivenessError = livenessOpen ? livenessError : null
 
   // Live elapsed timer for running subagents
   const [elapsed, setElapsed] = useState(0)
@@ -202,21 +300,22 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   }, [a.id])
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
-  const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
   // A running card whose start time was only ASSUMED has no elapsed figure to
   // show: the agent may have been running long before the frame that minted its
   // entry, so a number here would be wrong rather than merely imprecise. A
   // `subagent_done` or snapshot frame supplies real timing and this resolves.
-  // Withheld HERE rather than inside the line above so that line stays exactly
-  // as it was: its `m`/`s` concatenation is frozen i18n debt, and rewriting the
-  // line would move that debt onto a line this change wrote.
-  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed
+  // Whole seconds, matching the progress-bar row, so one run reads the same
+  // figure in both places (and `1h 9m 32s`, not `69m 32s`, past an hour).
+  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed(displayElapsed * 1000, { wholeSeconds: true })
   // What the header calls this agent. An entry recovered from an incremental
   // frame has no agent name, and showing nothing left two such cards reading as
   // the same "Running Tool" with no way to tell them apart -- the same complaint
   // the progress row had, so the same fallback answers it. This is not a redesign
   // of the header, only a refusal to leave the recovered state anonymous.
   const identity = a.agent || (a.id ? `agent #${a.id.slice(-6)}` : '')
+  // Short, stable wave tag. Follows the `agent #…` identity chip's raw-literal
+  // convention in this file rather than a new catalog string (#759 item 4).
+  const waveTag = a.batchId ? `wave #${a.batchId.slice(-6)}` : ''
   const terminalCredits = isDone && typeof a.credits === 'number' && Number.isFinite(a.credits) && a.credits > 0
     ? a.credits
     : null
@@ -224,13 +323,44 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
   // status got clipped. Show the status; keep the full phrase as the tooltip.
-  const statusLabel = isPending
-    ? i18nT('pages.chat.activityViewer.pending_approval')
+  // A gone approval's card says what is still open: whether it started. A card
+  // the inventory retired says only what the inventory found, no record: an
+  // absent row can also be a run the gateway no longer retains.
+  const statusLabel = storeGone
+    ? i18nT(retired ? 'pages.chat.activityViewer.no_record' : 'pages.chat.subagentProgressBar.checking_whether_it_started')
+    : isPending ? i18nT('pages.chat.activityViewer.pending_approval')
     : a.status === 'tool' ? i18nT('pages.chat.activityViewer.running_tool')
       : a.status === 'running' ? (a.streaming ? i18nT('pages.chat.activityViewer.running') : i18nT('pages.chat.activityViewer.starting'))
         : a.status === 'done' ? i18nT('pages.chat.activityViewer.complete')
           : a.status === 'stopped' ? i18nT('pages.chat.activityViewer.stopped')
-            : a.error?.includes('Cancelled') ? i18nT('pages.chat.activityViewer.cancelled') : i18nT('pages.chat.activityViewer.error')
+            : a.error?.includes('Cancelled') ? i18nT('pages.chat.activityViewer.cancelled')
+              // A run a memory wait ended never ran, so the header says that rather
+              // than "Error". It still counts under "Retry failed": retrying it is
+              // the way out its notice names.
+              : isNeverStarted(a.error) ? i18nT('pages.chat.activityViewer.never_started')
+                : i18nT('pages.chat.activityViewer.error')
+
+  // The gate's terminal for a run that never started is written for every
+  // reader (the parent agent, Slack, the CLI), none of which has this panel's
+  // "Retry failed" control. Here the notice names the reason the run ended with
+  // and that control instead.
+  const neverStarted = neverStartedKind(a.error)
+  const errorMessage = neverStarted === 'memory_pressure'
+    ? i18nT('pages.chat.activityViewer.never_started_memory_pressure_reason')
+    : neverStarted === 'low_memory'
+      ? i18nT('pages.chat.activityViewer.never_started_low_memory_reason')
+      : a.error
+  // The rewording is for the reader; "Ask the agent" still hands off the
+  // backend terminal, so the agent sees what the gate actually reported.
+  const errorReport: ErrorReport | undefined = neverStarted && a.error
+    ? findReport(a.error) ?? {
+      id: `subagent-never-started-${a.id}`,
+      at: 0,
+      source: 'system',
+      message: a.error,
+      route: typeof location === 'undefined' ? '' : location.pathname,
+    }
+    : undefined
 
   return (
     // Card-level mouse convenience that selects the subagent; it wraps its own
@@ -257,6 +387,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
         {identity && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={identity}>{identity}</code>}
+        {waveTag && <code data-testid="subagent-batch" data-batch={a.batchId} className="text-[11px] text-muted/40 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={waveTag}>{waveTag}</code>}
         {(() => {
           const resolvedKnown = !!a.model
           const display = a.model || a.requestedModel || ''
@@ -270,7 +401,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
           if (!resolvedKnown && !liveDowngrade && normalizeModelKey(display) !== 'auto') return null
           return (
             <code
-              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
+              className={`text-[11px] px-1.5 py-0.5 rounded shrink-[4] min-w-0 max-w-[7rem] truncate inline-block align-middle [direction:rtl] [unicode-bidi:plaintext] text-left${liveDowngrade ? ' bg-warn-subtle border border-warn/20 text-warn-text' : resolvedKnown ? ' text-accent/70 bg-accent/10' : ' text-muted/60 bg-bg-hover'}`}
               data-testid="subagent-model"
               // The downgrade meaning rides on the amber colour + the AlertCircle
               // glyph (aria-hidden), and the chip's [direction:rtl] truncation can
@@ -295,18 +426,18 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span
+        {!isPending && !retired && <span
           data-testid="subagent-run-stats"
           className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums"
         >{shownElapsed}</span>}
-        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
+        {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger-text cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
       {/* A recovered terminal entry can have usage but no task yet. Keep the
           usage visible while withholding an empty input block. */}
-      {!collapsed && (a.task || (isDone && !isNative)) && (
+      {!collapsed && (a.task || (isDone && !isNative && !retired)) && (
         <div className="px-3 pt-1 pb-2">
-          {isDone && !isNative && (
+          {isDone && !isNative && !retired && (
             <div data-testid="subagent-credit-usage" className="text-[12px] text-muted font-mono tabular-nums break-words mb-2">
               {terminalCredits === null
                 ? i18nT('pages.chat.activityViewer.credits_not_reported')
@@ -322,7 +453,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
         </div>
       )}
       {/* Approval buttons for pending */}
-      {isPending && !a.approving && goneFor !== a.approval_id && (
+      {isPending && !a.approving && goneFor !== a.approval_id && !storeGone && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all" onClick={e => onApprove(e, 'approve')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
           <button className="px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={e => onApprove(e, 'reject')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
@@ -331,13 +462,18 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       {isPending && a.approving && <div className="px-3 pb-2 text-[12px] text-muted/50">{i18nT('pages.chat.activityViewer.resolving')}</div>}
       {/* Activity panel, no draft to lose → hand-off on. Also covers a refused
           Cancel on a running card. */}
-      {actionError && (
+      {shownError && (
         <div className="px-3 pb-2">
-          <ErrorNotice variant="inline" message={actionError} askAgent />
+          <ErrorNotice variant="inline" message={shownError} askAgent />
+        </div>
+      )}
+      {shownLivenessError && (
+        <div className="px-3 pb-2">
+          <ErrorNotice variant="inline" message={shownLivenessError} askAgent />
         </div>
       )}
       {/* Output (streaming body) */}
-      {!isPending && !collapsed && (
+      {!isPending && !retired && !collapsed && (
       <>
       <div className="px-3 pb-2">
         <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.output')}</div>
@@ -345,15 +481,16 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             the way the transcript's completion card does. `streaming` holds a
             half-typed fence until it closes. */}
         <div ref={bodyRef} onScroll={onScroll} data-testid="subagent-output-body" className="px-2.5 py-2 bg-bg rounded-md text-[12px] break-words max-h-[240px] overflow-y-auto text-muted/80 leading-relaxed">
-          {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
-          {a.lastTool && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {a.lastTool}</div>}
+          {(a.streaming || a.result) ? <MarkdownRenderer content={a.streaming || a.result || ''} streaming={isRunning && !!a.streaming} softBreaks readOnlyCode /> : (isDone ? (isNative ? <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.output_shown_in_chat')}</span> : isNeverStarted(a.error) ? <span className="text-muted/70 italic">{i18nT('pages.chat.activityViewer.no_output_never_started')}</span> : <DiskLoader id={a.id} autoLoad={selected} />) : <span className="text-muted/30 italic">{i18nT('pages.chat.activityViewer.waiting_for_output')}</span>)}
+          {a.lastTool && !a.toolCalls?.length && <div className="text-accent mt-1 font-mono"><Wrench className="lucide-inline" /> {sanitizeLlmOutput(a.lastTool)}</div>}
         </div>
       </div>
+      <SubagentToolCalls a={a} isRunning={isRunning} />
       {/* Error details — a backend-reported subagent failure, so it takes the
           shared notice (hand-off on: nothing in this panel is unsaved). */}
       {a.error && (
         <div className="px-3 py-1.5 text-[12px] border-t border-border/20 space-y-0.5">
-          <ErrorNotice variant="inline" message={a.error} askAgent />
+          <ErrorNotice variant="inline" message={errorMessage ?? a.error} report={errorReport} askAgent />
           {a.lastTool && <div className="text-muted/40">{i18nT('pages.chat.activityViewer.last_tool')} {a.lastTool}</div>}
         </div>
       )}
@@ -620,6 +757,9 @@ type SessionArtifactRow = {
   offerSave: boolean
 }
 
+/** `Btn` restyled as an inline text link, for the tab's navigation controls. */
+const PANEL_LINK_BTN = 'border-transparent bg-transparent text-accent hover:underline hover:border-transparent hover:bg-transparent'
+
 /** Cap on library search results shown inline — the panel is a ~460px rail, so
  *  a search that matches half the library still shows a readable slice, and the
  *  "Browse all" link goes to the full /artifacts page for the rest. */
@@ -658,6 +798,12 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
   // slot field changing (message count, running flag) can't re-render the tab.
   const boundArtifactSlug = useAppSelector(
     s => s.dashboard.slots.find(x => x.key === slot)?.artifact || '',
+  )
+  // The sidebar folder this chat is filed in, if any: it adds a "Browse this
+  // folder" link that opens the library scoped to the chats in that folder and
+  // its sub-folders.
+  const slotFolderId = useAppSelector(
+    s => s.dashboard.slots.find(x => x.key === slot)?.folder_id || '',
   )
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['session-artifact-records', slot] })
@@ -771,6 +917,15 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
               label={i18nT('pages.chat.activityViewer.artifacts_this_session')}
               count={rows.length}
               className="mt-0.5 mb-0.5"
+              trailing={slot ? (
+                <Btn
+                  type="button"
+                  onClick={() => navigate(`/artifacts?touched_by=${encodeURIComponent(slot)}`)}
+                  className={`shrink-0 px-1 py-0 text-[11px] ${PANEL_LINK_BTN}`}
+                >
+                  {i18nT('pages.chat.activityViewer.artifacts_open_session_in_library')}
+                </Btn>
+              ) : undefined}
             />
             {rows.map(r => (
               <ArtifactListRow key={r.key} row={r} busy={rowBusy(r)} onOpen={openRow} onSave={savePermanently} />
@@ -820,13 +975,24 @@ function SessionArtifactsTab({ slot, onArtifactOpen }: { slot: string; onArtifac
                 </div>
               )
             )}
-            <button
-              type="button"
-              onClick={() => navigate('/artifacts')}
-              className="self-start mt-1.5 px-2 py-1 text-[11.5px] text-accent hover:underline bg-transparent border-none cursor-pointer transition-colors"
-            >
-              {i18nT('pages.chat.activityViewer.artifacts_browse_all', { count: libraryTotal })}
-            </button>
+            <div className="self-start mt-1.5 flex flex-wrap items-center gap-x-1">
+              {slotFolderId && (
+                <Btn
+                  type="button"
+                  onClick={() => navigate(`/artifacts?chat_folder=${encodeURIComponent(slotFolderId)}`)}
+                  className={`px-2 py-1 text-[11.5px] ${PANEL_LINK_BTN}`}
+                >
+                  {i18nT('pages.chat.activityViewer.artifacts_browse_folder')}
+                </Btn>
+              )}
+              <Btn
+                type="button"
+                onClick={() => navigate('/artifacts')}
+                className={`px-2 py-1 text-[11.5px] ${PANEL_LINK_BTN}`}
+              >
+                {i18nT('pages.chat.activityViewer.artifacts_browse_all', { count: libraryTotal })}
+              </Btn>
+            </div>
           </div>
         )}
       </div>
@@ -987,11 +1153,14 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     // The local clear stays optimistic; a refused delete is reported so the
     // user knows the card still exists server-side.
     setBatchError(null)
-    void Promise.allSettled(terminalIds.map(id => api.spawnDelete(id))).then(results => {
+    // A retired card is one the inventory already showed the backend holds no
+    // record of, so it is cleared locally only: a DELETE would 404.
+    const serverIds = terminalIds.filter(id => !isSpawnApprovalRetired(subagents[id]))
+    void Promise.allSettled(serverIds.map(id => api.spawnDelete(id))).then(results => {
       if (results.some(r => r.status === 'rejected')) setBatchError(i18nT('pages.chat.activityViewer.dismiss_failed'))
     })
     dispatchRedux(clearTerminalSubagents({ slot }))
-  }, [dispatchRedux, slot, terminalIds])
+  }, [dispatchRedux, slot, terminalIds, subagents])
 
   // Dynamic Workflow runs (M6) — dedup + caching + self-managed polling.
   // Through the api client, which REJECTS on a non-OK response (its doc comment

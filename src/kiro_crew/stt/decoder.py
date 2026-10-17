@@ -1,7 +1,8 @@
 """The pinned FFmpeg decoder, and a digest-verified store for source installs.
 
 A desktop release carries the ``imageio-ffmpeg`` executable inside its own
-interpreter, so it never needs this. A source or Toolbox install carries nothing,
+interpreter, so it never needs this -- except on macOS Intel, which carries none
+(see :func:`bundle_carries_decoder`). A source or Toolbox install carries nothing,
 and the only decoder it can otherwise reach is a system FFmpeg from a fixed
 set of package-manager directories -- which on a distribution that ships no
 FFmpeg package (Amazon Linux, RHEL without EPEL) does not exist, leaving batch
@@ -126,6 +127,10 @@ class DecoderArtifact:
 #:
 #: ``windows-i686`` is deliberately absent for the same reason it is absent from
 #: the shipped set: no 32-bit Windows target exists in any build workflow.
+#:
+#: ``macos-x86_64`` is deliberately absent too: the Intel backend ships no decoder
+#: and resolves a system FFmpeg instead. Keep it absent -- a pin here is what would
+#: make this store fetch that executable and the desktop resolver accept it.
 ARTIFACTS: tuple[DecoderArtifact, ...] = (
     DecoderArtifact(
         platform_key="macos-aarch64",
@@ -140,20 +145,6 @@ ARTIFACTS: tuple[DecoderArtifact, ...] = (
         ),
         wheel_size_bytes=21_113_891,
         wheel_sha256="b1ae3173414b5fc5f538a726c4e48ea97edc0d2cdc11f103afee655c463fa742",
-    ),
-    DecoderArtifact(
-        platform_key="macos-x86_64",
-        filename="ffmpeg-macos-x86_64-v7.1",
-        size_bytes=75_991_688,
-        sha256="4a4a968b98859588e98500ae25973d80a5ca5eed0724222b9f76360dcb72a001",
-        wheel_filename=("imageio_ffmpeg-0.6.0-py3-none-macosx_10_9_intel.macosx_10_9_x86_64.whl"),
-        wheel_url=(
-            "https://files.pythonhosted.org/packages/da/58/"
-            "87ef68ac83f4c7690961bce288fd8e382bc5f1513860fc7f90a9c1c1c6bf/"
-            "imageio_ffmpeg-0.6.0-py3-none-macosx_10_9_intel.macosx_10_9_x86_64.whl"
-        ),
-        wheel_size_bytes=24_932_969,
-        wheel_sha256="9d2baaf867088508d4a3458e61eeb30e945c4ad8016025545f66c4b5aaef0a61",
     ),
     DecoderArtifact(
         platform_key="linux-x86_64",
@@ -222,7 +213,7 @@ _SYSTEM_PREFIX: dict[str, str] = {
 #: ``platform.machine()`` spellings that mean the same ISA. The value differs by
 #: OS for identical hardware -- Windows reports ``AMD64`` and macOS ``arm64``
 #: where Linux reports ``x86_64`` and ``aarch64`` -- so matching on the raw string
-#: would leave two of the five shipped platforms unable to find their own pin.
+#: would leave the Windows and macOS pins unreachable on their own platforms.
 _MACHINE_SUFFIX: dict[str, str] = {
     "x86_64": "x86_64",
     "amd64": "x86_64",
@@ -273,6 +264,35 @@ def artifact_for(system: str | None = None, machine: str | None = None) -> Decod
     """The pinned decoder for *system*/*machine*, or ``None`` when unsupported."""
     key = platform_key(system, machine)
     return _BY_PLATFORM.get(key) if key else None
+
+
+#: The one desktop backend built without a decoder: the x86_64 tree of the
+#: universal macOS app, for which ``desktop_decoder_requirement`` in
+#: packaging/build-desktop.sh installs no imageio-ffmpeg.
+DECODERLESS_BUNDLE_PLATFORM = "macos-x86_64"
+
+
+def bundle_carries_decoder() -> bool:
+    """Whether this install's own payload is where its decoder comes from.
+
+    True for every desktop release except the macOS Intel backend. Such a release
+    authenticates its own executable, never looks anywhere else, and is repaired
+    by reinstalling. The Intel backend carries no decoder at all, so it resolves a
+    system FFmpeg the way a source install does, rather than reporting a payload
+    that was never shipped as damaged. Every caller that branches on "this is a
+    desktop release" for DECODER behaviour asks this, not
+    ``is_bundled_interpreter`` alone.
+
+    The exception is named, not derived from the store's pins. On Windows,
+    ``platform.machine()`` reports the physical CPU, so the x64 release running on
+    an ARM64 PC keys to the unpinned ``windows-aarch64``; a pin lookup would skip
+    the decoder that release does carry. On macOS it reports the running
+    process's architecture, which is the backend's own: the launcher starts the
+    x86_64 tree only as an x86_64 process.
+    """
+    return (
+        platform_compat.is_bundled_interpreter() and platform_key() != DECODERLESS_BUNDLE_PLATFORM
+    )
 
 
 def store_dir() -> Path:

@@ -39,6 +39,19 @@ not asserted alone: every needle must find a site, files known to hold sites mus
 still hold them, and the exemption is exercised end to end against a fixture tree
 so deleting its branch fails a test. A scanner that silently stops matching
 reports zero offenders, which reads exactly like success.
+
+The tree is read ONCE per worker, and most of it is never tokenized. ``src`` is
+~75 MB of Python; tokenizing all of it costs ~8 s on an idle core and timed out the
+120 s budget on a loaded CI shard. Every text pattern here is a word-boundary
+assertion around a literal, and blanking only ever writes spaces, so a file whose
+raw text lacks every literal cannot hold a text-family site and is not tokenized
+(``_literal_cores`` derives the literals from the patterns, and a test pins that
+derivation). The reflective family is gated the way ``test/source_corpus.py``
+gates its AST ratchets: on the NFKC-normalised text, because CPython folds
+identifiers at parse time and a homoglyph spelling of ``getattr`` is ``getattr``
+in the tree but not in the bytes. Neither gate narrows what is counted; both
+skip only files that were always going to be non-matches. The retired-spelling
+scan rides the same single pass instead of tokenizing the tree a second time.
 """
 
 from __future__ import annotations
@@ -48,6 +61,7 @@ import functools
 import io
 import re
 import tokenize
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -62,7 +76,9 @@ _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 
 #: Each needle names one way code gets from a session to a process, spelled as an
 #: attribute or a call. Fragments are concatenated so a scan of this tree cannot
-#: report this file as an offender.
+#: report this file as an offender. Every pattern is ``\b`` assertions around an
+#: escaped literal (alternated with ``|``); ``_literal_cores`` relies on that shape
+#: and ``test_needle_patterns_are_boundary_wrapped_literals`` pins it.
 _NEEDLES: dict[str, str] = {
     # The session layer's pid accessor, and its own definitions down the chain.
     "get" + "_pid()": r"\bget" + r"_pid\(",
@@ -109,7 +125,8 @@ _REFLECTIVE_NAMES = frozenset(
 #: stay in ``_NEEDLES`` -- a needle matching nothing is how a scan passes for the
 #: wrong reason, which ``test_every_needle_finds_a_site`` refuses -- so their
 #: absence is asserted directly instead. That keeps the retirement from quietly
-#: becoming permission to bring the reader back under its old name.
+#: becoming permission to bring the reader back under its old name. Same pattern
+#: shape as ``_NEEDLES``, for the same pre-filter.
 _RETIRED_READERS: dict[str, str] = {
     # A provider handed the session layer ``(runtime_pid, gateway_socket_path)``,
     # which is how every consumer of the abort seam could re-derive a pid. The
@@ -147,11 +164,12 @@ _BASELINE_OWNER_MARKED = 3
 #: be found, so a scanner that matches nothing cannot pass as a clean tree. Drop a
 #: name here in the same change that removes its last site.
 _KNOWN_SITE_FILES = (
-    "acp/client.py",
+    "acp/client_start.py",
     "acp/runtime.py",
     "acp/session_provider.py",
     "providers/base.py",
-    "session.py",
+    "session_parts/claims.py",
+    "session_parts/provider_probes.py",
     "session_pid_sig.py",
     # Reached ONLY by the reflective family, so one of these failing is the signal
     # that the string-literal form stopped being counted.
@@ -167,39 +185,94 @@ class Scan(NamedTuple):
     per_file: Counter[str]
     witnesses: tuple[tuple[str, tuple[str, ...]], ...]
     owner_marked: int
+    #: ``file:line (name)`` for every retired spelling found, in walk order.
+    retired: tuple[str, ...]
 
 
-def _blanked(source: str) -> str:
-    """``source`` with every comment and string literal blanked in place.
+def _literal_cores(pattern: str) -> tuple[str, ...]:
+    """The literal each alternative of ``pattern`` must contain to match.
 
-    Spaces replace the token's bytes and newlines are kept, so offsets and line
-    numbers still line up with the file on disk and a needle cannot match across a
-    blanked region. Only the text family reads this; the reflective family needs
-    the string literals and goes through ``ast``, which ignores prose by
-    construction.
+    Valid for the one shape this file uses -- ``\\b`` assertions around an
+    ``re.escape``-d literal, alternatives joined with ``|`` -- which
+    ``test_needle_patterns_are_boundary_wrapped_literals`` pins by round-tripping
+    the result through ``re.escape``. Such a pattern cannot match text that lacks
+    its literal, and ``_blanked`` only ever replaces characters with spaces, so a
+    file whose RAW text holds none of the literals has no text-family site and
+    need not be tokenized. That is the whole pre-filter: it removes files that were
+    always going to be non-matches and nothing else.
     """
-    lines = source.splitlines(keepends=True)
-    offsets, running = [0], 0
-    for line in lines:
-        running += len(line)
-        offsets.append(running)
-    buffer = list(source)
+    return tuple(re.sub(r"\\(.)", r"\1", alt.replace(r"\b", "")) for alt in pattern.split("|"))
+
+
+#: The literals a file must contain for the text or retired family to find a site.
+_TEXT_FAMILY_CORES: tuple[str, ...] = tuple(
+    core
+    for pattern in (*_NEEDLES.values(), *_RETIRED_READERS.values())
+    for core in _literal_cores(pattern)
+)
+
+
+def _nfkc(text: str) -> str:
+    """NFKC-normalise, matching how CPython folds identifiers at parse time.
+
+    Same rule as ``test/source_corpus.py``: a reflective call written with a
+    compatibility homoglyph of ``getattr`` is ``getattr`` in the AST but not in
+    the bytes, so the reflective pre-filter looks at the normalised text. NFKC is
+    the identity on ASCII, and ``isascii`` is O(1), so most files skip the pass.
+    """
+    if text.isascii():
+        return text
+    return unicodedata.normalize("NFKC", text)
+
+
+def _blanked_pair(source: str) -> tuple[str, str]:
+    """``source`` blanked two ways from ONE tokenization.
+
+    First element: comments AND string literals blanked, what the text family
+    reads. Second: comments blanked but STRING LITERALS LEFT IN PLACE, what the
+    retired-reader scan reads -- a retired name comes back in two spellings and
+    the reflective one puts it inside a string, which the first form erases.
+
+    Spaces replace a blanked token's characters and newlines are kept, so offsets
+    and line numbers still line up with the file on disk and a needle cannot match
+    across a blanked region. Only ``COMMENT`` and ``STRING`` tokens are blanked --
+    the token set the recorded baseline was measured with.
+    """
+    starts = [0]
+    for line in source.split("\n"):
+        starts.append(starts[-1] + len(line) + 1)
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError, IndentationError):
         # An unparseable module is scanned raw rather than skipped: a file the
         # tokenizer refuses is the one place a site could hide for free.
-        return source
+        return source, source
+    code: list[str] = []
+    strings_kept: list[str] = []
+    cursor = 0
     for token in tokens:
         if token.type not in (tokenize.COMMENT, tokenize.STRING):
             continue
         (start_row, start_col), (end_row, end_col) = token.start, token.end
-        start = offsets[start_row - 1] + start_col
-        end = min(offsets[end_row - 1] + end_col, len(buffer))
-        for index in range(start, end):
-            if buffer[index] != "\n":
-                buffer[index] = " "
-    return "".join(buffer)
+        start = starts[start_row - 1] + start_col
+        end = min(starts[end_row - 1] + end_col, len(source))
+        if start < cursor or end <= start:
+            continue
+        kept = source[cursor:start]
+        segment = source[start:end]
+        blank = "\n".join(" " * len(part) for part in segment.split("\n"))
+        code.append(kept)
+        code.append(blank)
+        strings_kept.append(kept)
+        strings_kept.append(blank if token.type == tokenize.COMMENT else segment)
+        cursor = end
+    tail = source[cursor:]
+    return "".join(code) + tail, "".join(strings_kept) + tail
+
+
+def _blanked(source: str) -> str:
+    """``source`` with every comment and string literal blanked in place."""
+    return _blanked_pair(source)[0]
 
 
 def _comments_blanked(source: str) -> str:
@@ -213,26 +286,7 @@ def _comments_blanked(source: str) -> str:
     retired reader is prose about it, not a reading -- the same line the rest of
     this file draws.
     """
-    lines = source.splitlines(keepends=True)
-    offsets, running = [0], 0
-    for line in lines:
-        running += len(line)
-        offsets.append(running)
-    buffer = list(source)
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    except (tokenize.TokenError, SyntaxError, IndentationError):
-        return source
-    for token in tokens:
-        if token.type is not tokenize.COMMENT:
-            continue
-        (start_row, start_col), (end_row, end_col) = token.start, token.end
-        start = offsets[start_row - 1] + start_col
-        end = min(offsets[end_row - 1] + end_col, len(buffer))
-        for index in range(start, end):
-            if buffer[index] != "\n":
-                buffer[index] = " "
-    return "".join(buffer)
+    return _blanked_pair(source)[1]
 
 
 def _reflective_spans(source: str) -> list[tuple[int, int]]:
@@ -274,18 +328,26 @@ def _in_scope(path: Path) -> bool:
 
 
 def _scan_tree(root: Path) -> Scan:
-    """Read ``root`` once. Uncached, so a test may point it at a fixture tree."""
+    """Read ``root`` once. Uncached, so a test may point it at a fixture tree.
+
+    Every ``*.py`` in scope is read; only the files that can hold a site are
+    tokenized or parsed (see ``_literal_cores`` and ``_nfkc``). Nothing but the
+    counts is retained, so the walk leaves no source text behind on the worker.
+    """
     per_needle: Counter[str] = Counter()
     per_file: Counter[str] = Counter()
     witnesses: dict[str, list[str]] = {name: [] for name in (*_NEEDLES, _REFLECTIVE)}
     owner_marked = 0
+    retired: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if not _in_scope(path):
             continue
         relative = path.relative_to(root).as_posix()
         source = path.read_text(encoding="utf-8", errors="replace")
-        raw_lines = source.splitlines()
-        code_lines = _blanked(source).splitlines()
+        raw_lines: list[str] | None = None
+
+        def line_of(offset: int) -> int:
+            return source.count("\n", 0, offset) + 1
 
         def record(name: str, count: int, exempt: bool) -> None:
             nonlocal owner_marked
@@ -297,17 +359,26 @@ def _scan_tree(root: Path) -> Scan:
             if relative not in witnesses[name]:
                 witnesses[name].append(relative)
 
-        for raw, code in zip(raw_lines, code_lines):
-            marked = _OWNER_MARKER in raw
+        if any(core in source for core in _TEXT_FAMILY_CORES):
+            code, strings_kept = _blanked_pair(source)
             for name, pattern in _NEEDLES.items():
-                found = len(re.findall(pattern, code))
-                if found:
-                    record(name, found, marked)
-        for first, last in _reflective_spans(source):
-            span = raw_lines[first - 1 : last]
-            record(_REFLECTIVE, 1, any(_OWNER_MARKER in line for line in span))
+                for match in re.finditer(pattern, code):
+                    if raw_lines is None:
+                        raw_lines = source.split("\n")
+                    record(name, 1, _OWNER_MARKER in raw_lines[line_of(match.start()) - 1])
+            for name, pattern in _RETIRED_READERS.items():
+                for match in re.finditer(pattern, strings_kept):
+                    retired.append(f"{relative}:{line_of(match.start())} ({name})")
+            del code, strings_kept
+
+        if any(func in _nfkc(source) for func in _REFLECTIVE_FUNCS):
+            for first, last in _reflective_spans(source):
+                if raw_lines is None:
+                    raw_lines = source.split("\n")
+                span = raw_lines[first - 1 : last]
+                record(_REFLECTIVE, 1, any(_OWNER_MARKER in line for line in span))
     frozen = tuple((name, tuple(files)) for name, files in witnesses.items())
-    return Scan(per_needle, per_file, frozen, owner_marked)
+    return Scan(per_needle, per_file, frozen, owner_marked, tuple(retired))
 
 
 @functools.lru_cache(maxsize=1)
@@ -330,6 +401,53 @@ def _report(scan: Scan) -> str:
     )
 
 
+def test_needle_patterns_are_boundary_wrapped_literals() -> None:
+    """The pre-filter is only sound for the pattern shape ``_literal_cores`` assumes.
+
+    Each pattern must be ``\\b`` assertions around ``re.escape``-d literals joined
+    by ``|``, with no whitespace in a literal (blanking writes spaces, so a literal
+    containing one could be manufactured by blanking). A needle written any other
+    way -- a character class, a quantifier, an optional group -- could match a file
+    the raw-text pre-filter skips, and this test is what refuses it.
+    """
+    for name, pattern in (*_NEEDLES.items(), *_RETIRED_READERS.items()):
+        cores = _literal_cores(pattern)
+        assert cores and all(cores), f"{name}: a pattern alternative has no literal core"
+        assert "|".join(re.escape(core) for core in cores) == pattern.replace(r"\b", ""), (
+            f"{name}: pattern {pattern!r} is not word boundaries around escaped literals; "
+            "the raw-text pre-filter cannot vouch for it"
+        )
+        assert not any(
+            ch.isspace() for core in cores for ch in core
+        ), f"{name}: a literal with whitespace could be created by blanking"
+        assert all(
+            re.search(pattern, core) for core in cores
+        ), f"{name}: pattern does not match its own literal"
+
+
+def test_every_needle_is_reachable_through_the_prefilter(tmp_path: Path) -> None:
+    """A file holding exactly one site per needle is tokenized and counted.
+
+    The real-tree witness test proves the same thing against ``src``; this one
+    proves it against a tree the pre-filter has never seen, so a needle whose
+    literal the pre-filter failed to derive fails here with its own name rather
+    than as a mysterious drop in the total.
+    """
+    sites: dict[str, str] = {
+        "get" + "_pid()": "def f(s):\n    return s.get" + "_pid()\n",
+        "." + "_pid": "def f(p):\n    return p." + "_pid\n",
+        "process" + "_instance": "def f(p):\n    return p.process" + "_instance\n",
+        "is_process" + "_alive": "def f(p):\n    return p.is_process" + "_alive()\n",
+        "sidecar": "def f(k):\n    return verify_session" + "_pid(k)\n",
+    }
+    assert set(sites) == set(_NEEDLES), "every needle needs a fixture spelling here"
+    for index, (name, body) in enumerate(sites.items()):
+        (tmp_path / f"m{index}.py").write_text(body, encoding="utf-8")
+    scan = _scan_tree(tmp_path)
+    assert {name: scan.per_needle[name] for name in _NEEDLES} == {name: 1 for name in _NEEDLES}
+    assert scan.owner_marked == 0 and scan.retired == ()
+
+
 def test_every_needle_finds_a_site() -> None:
     """A needle that matches nothing makes the ratchet pass for the wrong reason."""
     dead = sorted(name for name, files in _scan().witnesses if not files)
@@ -350,19 +468,11 @@ def test_a_retired_reader_spelling_stays_retired() -> None:
     removes the guard, so the old spelling could be reintroduced for free and the
     total would not move.
 
-    Reads ``_comments_blanked``, not ``_blanked``: both spellings of the name must
-    be refused, and the reflective one lives inside a string literal that
-    ``_blanked`` would erase.
+    Read off the same cached scan as the count, where the retired patterns run
+    over the comments-blanked text (string literals kept, so the reflective
+    spelling is refused too) rather than tokenizing the tree a second time.
     """
-    offenders: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
-        if not _in_scope(path):
-            continue
-        code = _comments_blanked(path.read_text(encoding="utf-8", errors="replace"))
-        for line_no, line in enumerate(code.splitlines(), start=1):
-            for name, pattern in _RETIRED_READERS.items():
-                if re.search(pattern, line):
-                    offenders.append(f"{path.relative_to(_SRC).as_posix()}:{line_no} ({name})")
+    offenders = list(_scan().retired)
     assert not offenders, (
         "a retired pid-reader spelling is back in src/kiro_crew: "
         + ", ".join(offenders)
@@ -398,12 +508,19 @@ def test_both_spellings_of_a_retired_reader_are_refused(tmp_path: Path) -> None:
         "must not be reported as a site"
     )
 
-    # The reflective shape must ALSO move the count, so the two guards disagree on
-    # nothing: the name stays in _REFLECTIVE_NAMES for exactly this reason.
+    # The same three shapes through the real tree scan, which is what the ratchet
+    # asserts on: both readings are reported with their line, the prose is not.
     fixture = tmp_path / "kiro_crew"
     fixture.mkdir()
+    (fixture / "attribute.py").write_text(attribute_form, encoding="utf-8")
     (fixture / "m.py").write_text(reflective_form, encoding="utf-8")
-    assert sum(_scan_tree(fixture).per_needle.values()) == 1
+    (fixture / "prose.py").write_text(prose_only, encoding="utf-8")
+    scan = _scan_tree(fixture)
+    assert scan.retired == (f"attribute.py:2 ({retired})", f"m.py:2 ({retired})")
+
+    # The reflective shape must ALSO move the count, so the two guards disagree on
+    # nothing: the name stays in _REFLECTIVE_NAMES for exactly this reason.
+    assert sum(scan.per_needle.values()) == 1
 
 
 def test_known_reader_files_are_still_counted() -> None:
@@ -453,6 +570,24 @@ def test_reflective_reads_survive_nesting_and_wrapping(tmp_path: Path) -> None:
     assert scan.owner_marked == 0
 
 
+def test_a_homoglyph_reflective_call_is_still_counted(tmp_path: Path) -> None:
+    """The reflective pre-filter reads the text the way the parser does.
+
+    CPython NFKC-folds identifiers, so ``\\uff47etattr`` (a fullwidth ``g``) IS
+    ``getattr`` in the AST while the raw bytes hold no ``getattr`` at all. A
+    pre-filter on raw bytes would skip the file and let the reading through green;
+    the normalised pre-filter must not.
+    """
+    name = "_" + "pid"
+    module = tmp_path / "wide.py"
+    module.write_text(
+        "def f(p):\n    return \uff47et" + f'attr(p, "{name}", None)\n',
+        encoding="utf-8",
+    )
+    scan = _scan_tree(tmp_path)
+    assert scan.per_needle[_REFLECTIVE] == 1, dict(scan.per_needle)
+
+
 def test_owner_marker_exempts_a_site_and_is_counted_apart(tmp_path: Path) -> None:
     """The exemption is exercised through the real scan, not a synthetic match.
 
@@ -480,6 +615,26 @@ def test_owner_marker_exempts_a_site_and_is_counted_apart(tmp_path: Path) -> Non
     assert scan.owner_marked == 2, (
         "both marked sites must be reported as marked rather than dropped: " f"{scan.owner_marked}"
     )
+
+
+def test_a_site_inside_prose_is_not_counted(tmp_path: Path) -> None:
+    """Blanking still runs on a file the pre-filter lets through.
+
+    The pre-filter admits a file on its RAW text, which includes comments and
+    strings, so a file whose only spelling of a reader is prose is tokenized and
+    must then come out empty -- the half of the contract the pre-filter does not
+    cover.
+    """
+    name = "_" + "pid"
+    module = tmp_path / "prose.py"
+    module.write_text(
+        "def f(p):\n"
+        f"    # p.{name} used to be read here; take the lease handle\n"
+        f'    return "p.{name} is retired"\n',
+        encoding="utf-8",
+    )
+    scan = _scan_tree(tmp_path)
+    assert sum(scan.per_needle.values()) == 0, dict(scan.per_needle)
 
 
 def test_owner_marked_sites_match_the_recorded_count() -> None:

@@ -18,6 +18,7 @@ import {
 import type { Notification } from '../../types'
 import { notePriority, safeInternalUrl } from './notifMeta'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
+import { CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 
 /** Where a leaving card travels: the vector from its own top-right corner to
  *  the bell's centre, so with `transform-origin: top right` the card shrinks
@@ -340,6 +341,11 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   const overflow = expanded && !isMobile ? pending.length - visible.length : 0
   const deckHidden = !expanded && !isMobile ? pending.length - 1 : 0
   const moreLabel = i18nT('components.notifications.notificationBanner.show_more_notifications_count', { count: deckHidden })
+  // A failed crewmate-roster read is reported once on the banner, on the first
+  // full card showing a crewmate's note. Deck shells draw no face, so they
+  // never carry it. The bell popover and the inbox, which report it on their
+  // own, suppress the banner while they are on screen.
+  const rosterReportTs = visible.find((n, idx) => (expanded || isMobile || idx === 0) && noteMember(n))?.ts
 
   const setCardEl = (ts: string) => (el: HTMLElement | null) => {
     if (el) cardEls.current.set(ts, el); else cardEls.current.delete(ts)
@@ -457,18 +463,23 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
                     dismissVisible={isMobile}
                     actions={actions}
                     actionsAlign="end"
-                    footer={ackFailed[n.ts] ? (
-                      /* No hand-off: this card floats over whatever page the
-                         user is on, which may hold an unsaved draft (a chat
-                         composer, a settings form) that the hand-off's
-                         navigation to the chat would destroy. The action
-                         button on the card is the retry. */
-                      <ErrorNotice
-                        variant="inline"
-                        testId="notification-banner-ack-failed"
-                        message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
-                        onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
-                      />
+                    footer={ackFailed[n.ts] || n.ts === rosterReportTs ? (
+                      <>
+                        {ackFailed[n.ts] && (
+                          /* No hand-off: this card floats over whatever page the
+                             user is on, which may hold an unsaved draft (a chat
+                             composer, a settings form) that the hand-off's
+                             navigation to the chat would destroy. The action
+                             button on the card is the retry. */
+                          <ErrorNotice
+                            variant="inline"
+                            testId="notification-banner-ack-failed"
+                            message={i18nT('components.notifications.notificationBanner.mark_read_failed')}
+                            onDismiss={() => setAckFailed(prev => { const { [n.ts]: _drop, ...rest } = prev; void _drop; return rest })}
+                          />
+                        )}
+                        {n.ts === rosterReportTs && <CrewmateRosterError />}
+                      </>
                     ) : null}
                   />
                 )}

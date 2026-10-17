@@ -177,16 +177,21 @@ async def _read_until(fd: int, needle: bytes, seen: bytearray, deadline: float) 
 # interactive Bash abandons the rest of a command line when SIGINT arrives rather
 # than running it. This child reports the signal itself, so the marker can only
 # appear if SIGINT actually reached the foreground process group.
+#
+# SIGINT is blocked before CHILD_READY is written so the kernel queues any ^C
+# that arrives between the write and sigwait, eliminating the signal.pause()
+# race: when SIGINT's C-level handler fires before pause(2) is entered, pause(2)
+# blocks until the next signal -- which never comes.  signal.sigwait dequeues
+# the queued signal atomically and returns it, so SIGINT_REACHED_THE_CHILD can
+# only appear when SIGINT actually reached this process's foreground group.
 _SIGINT_REPORTER = (
     "import signal,sys\n"
-    "def on_sigint(*_):\n"
-    "    sys.stdout.write('SIGINT_REACHED_THE_CHILD\\n')\n"
-    "    sys.stdout.flush()\n"
-    "    sys.exit(0)\n"
-    "signal.signal(signal.SIGINT, on_sigint)\n"
+    "signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGINT])\n"
     "sys.stdout.write('CHILD_READY\\n')\n"
     "sys.stdout.flush()\n"
-    "signal.pause()\n"
+    "signal.sigwait([signal.SIGINT])\n"
+    "sys.stdout.write('SIGINT_REACHED_THE_CHILD\\n')\n"
+    "sys.stdout.flush()\n"
 )
 
 

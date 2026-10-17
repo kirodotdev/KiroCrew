@@ -22,7 +22,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { appendMessage } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -113,10 +113,11 @@ function makeStore(content = ASSISTANT_WITH_OPTIONS, mode = '', slot = 'chat-1')
 async function renderPage(content = ASSISTANT_WITH_OPTIONS, mode = '', settleChip = 'Deploy', slot = 'chat-1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   ;(api.chatSlots as ReturnType<typeof vi.fn>).mockResolvedValue([{ key: slot, messages: 1, running: false, mode, project: '/repo' }])
+  const store = makeStore(content, mode, slot)
   await act(async () => {
     render(
       <QueryClientProvider client={qc}>
-        <Provider store={makeStore(content, mode, slot)}>
+        <Provider store={store}>
           <ThemeProvider>
             <MemoryRouter><ChatPage /></MemoryRouter>
           </ThemeProvider>
@@ -125,6 +126,7 @@ async function renderPage(content = ASSISTANT_WITH_OPTIONS, mode = '', settleChi
     )
   })
   await waitFor(() => expect(screen.getByRole('button', { name: settleChip })).toBeTruthy())
+  return store
 }
 
 const composer = () => screen.getByLabelText('Message input') as HTMLTextAreaElement
@@ -295,6 +297,54 @@ describe('ChatPage follow-up option toggle', () => {
     })
     expect(api.sendChat).not.toHaveBeenCalled()
     expect(composer().value).toBe('Deploy, Roll back')
+  })
+
+  it('replaces the previous pick on a single-select [OPTION:] offer', async () => {
+    await renderPage('Ready to proceed.\n\n[OPTION: Deploy | Roll back | Retry]')
+    vi.useFakeTimers()
+    await act(async () => {
+      clickOption('Deploy')
+      clickOption('Roll back')
+    })
+    expect(composer().value).toBe('Roll back')
+    await act(async () => { clickOption('Retry') })
+    expect(composer().value).toBe('Retry')
+    // Un-picking the live choice still clears it.
+    await act(async () => { clickOption('Retry') })
+    expect(composer().value).toBe('')
+  })
+
+  it('a newer [OPTION:] reply with the same labels keeps the earlier offer\'s unsent picks', async () => {
+    // The picks belong to the older row; the fresh offer must not replace them.
+    const store = await renderPage()
+    vi.useFakeTimers()
+    await act(async () => {
+      clickOption('Deploy', { shiftKey: true })
+      clickOption('Roll back')
+    })
+    expect(composer().value).toBe('Deploy, Roll back')
+    await act(async () => {
+      store.dispatch(appendMessage({ role: 'assistant', content: 'One more thing.\n\n[OPTION: Deploy | Roll back | Retry]', cls: '', ts: '2026-01-01T00:00:05Z' }))
+    })
+    await act(async () => { clickOption('Retry') })
+    expect(composer().value).toBe('Deploy, Roll back, Retry')
+  })
+
+  it('a newer [OPTIONS:] reply with the same labels keeps the multi-select picks, as on base', async () => {
+    // Only a single-select offer resets on a new source row; a multi-select row keeps
+    // its picks, so clicking a still-picked chip removes it.
+    const store = await renderPage()
+    vi.useFakeTimers()
+    await act(async () => {
+      clickOption('Deploy', { shiftKey: true })
+      clickOption('Roll back')
+    })
+    expect(composer().value).toBe('Deploy, Roll back')
+    await act(async () => {
+      store.dispatch(appendMessage({ role: 'assistant', content: 'One more thing.\n\n[OPTIONS: Deploy | Roll back | Retry]', cls: '', ts: '2026-01-01T00:00:05Z' }))
+    })
+    await act(async () => { clickOption('Deploy') })
+    expect(composer().value).toBe('Roll back')
   })
 })
 

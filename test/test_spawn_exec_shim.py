@@ -26,6 +26,7 @@ import threading
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew import _spawn_exec_shim as shim
@@ -41,6 +42,7 @@ from kiro_crew.sandbox import (
     run_limited,
     spawn_shim_argv,
 )
+from kiro_crew.testing.clock import ManualClock
 
 # The shim exists to deliver POSIX rlimits, and `spawn_shim_argv` returns an empty
 # prefix on Windows, so there is nothing here to exercise there. Skipping at import
@@ -95,6 +97,22 @@ class TestShimSpecParsing:
         assert applied == [(resource.RLIMIT_NOFILE, (4096, 4096))]
 
 
+def _pin_clock(monkeypatch) -> ManualClock:
+    """A clock only the shim reads, recording its exec-retry sleeps.
+
+    Installed on the shim's own ``time`` binding. That binding IS the stdlib
+    module, so patching ``shim.time.sleep`` would also record every other
+    thread's sleep in the worker.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, shim)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    assert_clock_is_private(_pin_clock(monkeypatch), shim)
+
+
 class TestShimArgvContract:
     def test_missing_separator_is_refused(self, capsys):
         assert shim.main(["--rlimits=RLIMIT_NOFILE:1024"]) == 127
@@ -110,18 +128,16 @@ class TestShimArgvContract:
         assert "no command" in capsys.readouterr().err
 
     def test_exec_failure_reports_127_not_a_traceback(self, capsys, monkeypatch):
-        sleeps: list[float] = []
-        monkeypatch.setattr(shim.time, "sleep", sleeps.append)
+        clock = _pin_clock(monkeypatch)
         assert shim.main(["--", "/nonexistent/binary"]) == 127
         assert "cannot execute" in capsys.readouterr().err
-        assert sleeps == [shim._EXECV_RETRY_DELAY_S] * (shim._EXECV_RETRY_ATTEMPTS - 1)
+        assert clock.sleeps == (shim._EXECV_RETRY_DELAY_S,) * (shim._EXECV_RETRY_ATTEMPTS - 1)
 
     def test_transient_target_absence_is_retried_but_other_errors_are_not(
         self, capsys, monkeypatch
     ):
         calls: list[tuple] = []
-        sleeps: list[float] = []
-        monkeypatch.setattr(shim.time, "sleep", sleeps.append)
+        clock = _pin_clock(monkeypatch)
 
         def fake_execv(path, argv):
             calls.append((path, argv))
@@ -133,15 +149,14 @@ class TestShimArgvContract:
             assert shim.main(["--", "/bin/echo"]) == 127
         # One retry for the transient miss, then EACCES stops the loop.
         assert len(calls) == 2
-        assert sleeps == [shim._EXECV_RETRY_DELAY_S]
+        assert clock.sleeps == (shim._EXECV_RETRY_DELAY_S,)
         assert "Permission denied" in capsys.readouterr().err
 
     @posix_only
     def test_a_terminal_command_missing_is_not_retried(self, capsys, monkeypatch):
         """The rename-window retry is the runtime spawn's; a terminal command fails fast."""
         calls: list[tuple] = []
-        sleeps: list[float] = []
-        monkeypatch.setattr(shim.time, "sleep", sleeps.append)
+        clock = _pin_clock(monkeypatch)
         monkeypatch.setattr(shim.os, "login_tty", lambda fd: None)
 
         def fake_execv(path, argv):
@@ -151,7 +166,7 @@ class TestShimArgvContract:
         with patch.object(shim.os, "execv", fake_execv):
             assert shim.main(["--ctty-fd=0", "--", "/bin/true"]) == 127
         assert len(calls) == 1
-        assert sleeps == []
+        assert clock.sleeps == ()
         assert "cannot execute" in capsys.readouterr().err
 
     def test_separator_inside_the_command_is_not_consumed(self):

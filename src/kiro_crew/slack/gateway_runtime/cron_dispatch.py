@@ -6,8 +6,8 @@ choosing its own governance, the first-run tab pre-create, the claim-time re-vet
 inside the cron-pool worker with its handoff against an awaiter that gave up, and
 the one-shot post-token CONTINUE resume of an agent turn.
 
-The cron callback that sequences them stays in the facade: the usage-row,
-runtime-death and dispatch-site audits count its call sites there.
+The cron callback that sequences them lives in ``cron_fire.py``, its command and
+script arms in ``cron_exec.py`` and its agent turns in ``cron_turn.py``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -23,6 +23,7 @@ from kiro_crew.subagent import _TRANSIENT_CONTINUE_MSG
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
         _SUBPROC_CLEANUP_ALLOWANCE_SECS,
+        TOOL_ACTIVITY_ATTR,
         Any,
         Callable,
         CronJob,
@@ -91,7 +92,7 @@ async def _await_cron_fire_time_gate(
     Bounding the wait below the wake budget makes starvation surface as
     ``CronQueueTimeout`` BEFORE the deadline can fire.  That is what makes the
     retention marker reachable: ``starved`` is reported to the caller and
-    ``run_never_started`` is set here, which ``cron.py``'s delete site honours.
+    ``run_never_started`` is set here, which the cron service's delete site honours.
     The marker is deliberately not
     ``fire_time_denied`` -- that flag also parks an at-job disabled and records
     the event as a policy denial, and pool capacity is neither.
@@ -238,7 +239,7 @@ async def _pre_create_cron_slot(dashboard_state: "DashboardState", job: CronJob)
     window would let any failure there kill the run the tab was meant to serve —
     and worse than killing it: ``_execute`` clears ``run_never_started``
     before invoking this callback and its ``except`` arm never re-arms it, so
-    an error propagating from here would reach ``cron.py``'s delete site with
+    an error propagating from here would reach the cron service's delete site with
     the retention marker down, and a ``delete_after_run`` one-shot — the DEFAULT
     shape of an at-scheduled job — would be consumed by a run that never
     dispatched.
@@ -561,6 +562,14 @@ async def _cron_stream_with_posttoken_resume(
             return preserved + text, carried_credits
         except Exception as exc:
             partial = "".join(parts)
+            if _resume_used:
+                # The continuation's own tag sees only the continuation. The
+                # first prompt already produced output and may have run tools,
+                # so a caller must never re-send the task after this.
+                try:
+                    setattr(exc, TOOL_ACTIVITY_ATTR, True)
+                except Exception:
+                    pass
             if _resume_used or not partial or not acp_error_is_transient(exc):
                 raise
             _resume_used = True

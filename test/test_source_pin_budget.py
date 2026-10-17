@@ -27,8 +27,9 @@ that way is still a read, and review is what catches it.
 The pins kept, each with the reason no turn can stand in for it in its test's
 docstring: the module-wide absence of a bare ``question_card`` emitter, the
 bounded steer never re-wrapped at a call site, the clear arm's start-row reset (an
-equivalent mutant), the runner's import boundary, and every approval-mark site
-flagging the slot dirty.
+equivalent mutant), the runner's import boundary, every approval-mark site
+flagging the slot dirty, every runner import read by something the composition
+runs, and the turn object's copy and closure rules.
 """
 
 from __future__ import annotations
@@ -59,8 +60,13 @@ BUDGET: dict[str, int] = {
     "test/test_file_change_snapshots.py": 1,  # the clear arm's start-row reset
     "test/test_native_question_card_lifecycle.py": 1,  # no bare question_card emitter
     "test/test_orphaned_approval_card.py": 1,  # every mark site flags the slot dirty
+    # The composition's guards: what compose binds is checked against the import
+    # statements of the runner's text, and a store of a shared name and its copy onto
+    # the turn are one property of the text; no recorded turn can show either.
+    "test/test_chat_runner_compose_binding.py": 2,
+    "test/test_chat_runner_turn_plumbing.py": 2,
     # Other scopes' reads, frozen as measured; each may only fall.
-    "src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py": 1,
+    "src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_delete.py": 1,
     "test/metrics/test_context_trace.py": 2,
     "test/metrics/test_usage_turns.py": 1,
     "test/test_autonudge_banner.py": 1,
@@ -75,11 +81,11 @@ BUDGET: dict[str, int] = {
     "test/test_crew_log_order.py": 3,
     "test/test_crew_log_previous_latch.py": 2,
     "test/test_dashboard_approval.py": 2,
-    "test/test_dashboard_chat.py": 1,
+    "test/test_dashboard_chat_token_usage.py": 1,
     "test/test_deny_audit_first.py": 1,
     "test/test_decisions_compaction_hook.py": 1,
     "test/test_discord_empty_turn.py": 1,
-    "test/test_external_logout_detection.py": 1,
+    "test/test_external_logout_detection_baseline.py": 1,
     "test/test_gateway_appkit_endpoints.py": 1,
     "test/test_leaked_toolcall_notice.py": 5,
     "test/test_mcp_session_report.py": 1,
@@ -105,7 +111,7 @@ BUDGET: dict[str, int] = {
     "test/test_turn_duration_recorded.py": 1,
     "test/test_turn_metric_all_surfaces.py": 2,
     "test/test_wake_judge_feedback.py": 1,
-    "test/test_ws_event_scoping.py": 1,
+    "test/test_ws_event_scoping_frames.py": 1,
 }
 
 

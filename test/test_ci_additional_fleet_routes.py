@@ -170,6 +170,61 @@ def test_actor_and_event_truth_table(
     assert _evaluate(_EXPRESSIONS[policy], context) == expected
 
 
+@pytest.mark.parametrize(
+    "event,repo,pr_head,run_head,actor,actors,eligible",
+    [
+        # A same-repository PR head from a listed actor uses the fleet.
+        ("pull_request_target", _REPO, _REPO, "", "101", _ACTORS, True),
+        ("pull_request_target", _REPO, _REPO, "", "202", _ACTORS, True),
+        # A fork head stays hosted; the workflow_run field never stands in.
+        ("pull_request_target", _REPO, _FORK, "", "101", _ACTORS, False),
+        ("pull_request_target", _REPO, "", _REPO, "101", _ACTORS, False),
+        # The merge-guard hold path stays hosted, same-repo head or not.
+        ("workflow_run", _REPO, "", _REPO, "202", _ACTORS, False),
+        ("workflow_run", _REPO, _REPO, _REPO, "101", _ACTORS, False),
+        ("workflow_run", _REPO, "", _FORK, "101", _ACTORS, False),
+        # No head in the payload: the sweep's dispatch and a manual one.
+        ("workflow_dispatch", _REPO, "", "", "101", _ACTORS, False),
+        ("workflow_dispatch", _REPO, "", "", "41898282", _ACTORS, False),
+        # Unlisted actor, missing or empty list, or another repository.
+        ("pull_request_target", _REPO, _REPO, "", "999", _ACTORS, False),
+        ("workflow_run", _REPO, "", _REPO, "999", _ACTORS, False),
+        ("workflow_run", _REPO, "", _REPO, "101", "", False),
+        ("pull_request_target", _REPO, _REPO, "", "101", "[]", False),
+        ("pull_request_target", _FORK, _FORK, "", "101", _ACTORS, False),
+        ("pull_request", _REPO, _REPO, "", "101", _ACTORS, False),
+    ],
+)
+def test_readiness_route_truth_table(event, repo, pr_head, run_head, actor, actors, eligible):
+    context = {
+        "github.repository": repo,
+        "github.event_name": event,
+        "github.event.pull_request.head.repo.full_name": pr_head,
+        "github.event.workflow_run.head_repository.full_name": run_head,
+        "github.actor_id": actor,
+        "vars.CODEBUILD_ACTOR_IDS": actors,
+        "github.run_id": "456",
+        "github.run_attempt": "3",
+    }
+    expected = "codebuild-kirocrew-gha-linux-456-3" if eligible else "ubuntu-latest"
+    assert _evaluate(parity._CANONICAL_READINESS_EXPR, context) == expected
+
+
+def test_readiness_never_checks_out_pr_code():
+    """The fleet route rests on this: every checkout is the default branch."""
+    workflow = yaml.safe_load(
+        (parity._WORKFLOWS_DIR / "pr-readiness.yml").read_text(encoding="utf-8")
+    )
+    (job,) = workflow["jobs"].values()
+    checkouts = [s for s in job["steps"] if "actions/checkout" in s.get("uses", "")]
+    assert checkouts, "the disposition evaluator checkout must exist"
+    for step in checkouts:
+        assert step["with"]["ref"] == (
+            "${{ github.event.repository.default_branch || github.ref_name }}"
+        )
+        assert step["with"]["persist-credentials"] is False
+
+
 @pytest.mark.parametrize("shape", ["no-actor", "wrong-fork", "literal-array", "folded"])
 def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
     expression = parity._CANONICAL_ROUTING_EXPR
@@ -194,9 +249,11 @@ def test_parity_detector_rejects_corrupted_routes(tmp_path, monkeypatch, shape):
         ("code-review.yml", "autosde-rules"),
         ("code-review.yml", "inclusive-language"),
         ("code-review.yml", "pr-hygiene"),
+        ("code-review.yml", "sast"),
         ("pr-merge-conflict-label.yml", "label"),
         ("build-wheel.yml", "build-wheel"),
         ("dependency-vulnerability.yml", "audit-production-dependencies"),
+        ("pr-readiness.yml", "readiness"),
     ],
 )
 def test_additional_routes_have_no_container_or_cloud_credential_steps(filename, job_id):

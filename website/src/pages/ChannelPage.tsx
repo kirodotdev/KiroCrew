@@ -277,7 +277,7 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
   // keyboard contract moves focus INTO the menu on open, and the row holding
   // it is unmounted by the close — without a restore, focus would be orphaned
   // on <body>. Outside-click dismissal is left alone (the browser routes focus
-  // per the click target), matching the MicSourceMenu posture (#6267).
+  // per the click target), matching the MicSourceMenu posture.
   const triggerRef = useRef<HTMLButtonElement>(null)
   // The role="menu" element itself — narrower than `menuRef` (which wraps the
   // trigger too) so item discovery never picks up the trigger button.
@@ -286,7 +286,7 @@ function AgentControlRow({ agent, onDismiss, onListenChange, onClearContext }: {
 
   // role="menu" promises the WAI-ARIA menu keyboard contract (arrow-key row
   // navigation with wrap, Home/End, Tab containment). The shared hook owns it
-  // for all role="menu" surfaces rather than re-spelled here (#6231, #6269).
+  // for all role="menu" surfaces rather than re-spelled here.
   // The rows are native <button>s (`Btn`), so the hook's item discovery finds
   // them with no extra markup. Escape stays owned by the dismiss effect below:
   // what "close" means here — menu state, focus restore — is this host's

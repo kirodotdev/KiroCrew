@@ -32,14 +32,43 @@ class _Settings:
 
 
 class _Reader:
-    """Records every key asked for, so a fetch that should not happen is visible."""
+    """Records every TRANSCRIPT key asked for, so a fetch that should not happen is visible.
 
-    def __init__(self) -> None:
+    Models a committed generation: a pointer, a transcript index, and the content-addressed
+    blob. ``names`` holds ``stem -> body``; a stem not in it resolves ABSENT (the committed
+    index does not name it), which is how a legal-but-unknown id reads now that the legacy
+    per-stem layout is gone. The pointer and index are control-plane probes and are NOT
+    recorded as a transcript fetch -- these tests measure which TRANSCRIPT keys are consulted.
+    """
+
+    def __init__(self, names: dict[str, bytes] | None = None) -> None:
+        import hashlib
+        import json as _json
+
+        from container.common import keys as _keys
+        from container.sidecar import generation as _generation
+
         self.keys: list[str] = []
+        self._names = names or {}
+        # A fixed-shape committed generation naming every configured stem.
+        self._gen = _keys.new_generation_id()
+        self._settings_for_keys = None  # bound lazily on first get via the asked key's shape
+        self._pointer_body = _generation.pointer_body(self._gen, _keys.new_incarnation())
+        self._index = {stem: hashlib.sha256(body).hexdigest() for stem, body in self._names.items()}
+        self._index_body = _json.dumps(self._index).encode("utf-8")
+        self._blobs = {hashlib.sha256(body).hexdigest(): body for body in self._names.values()}
 
     def get(self, key: str) -> bytes:
+        if key.endswith("/authority_generation.json"):
+            return self._pointer_body
+        if key.endswith("/transcript_index.json"):
+            return self._index_body
+        # A content-addressed blob key: the digest is its last path segment.
         self.keys.append(key)
-        return b'{"role":"user"}\n'
+        digest = key.rsplit("/", 1)[-1]
+        if digest in self._blobs:
+            return self._blobs[digest]
+        raise transcript.TranscriptAbsent(key)
 
 
 @pytest.fixture
@@ -81,7 +110,7 @@ def test_every_legal_id_still_fetches(settings, good: str) -> None:
     and the sidecar's whole-object put would then overwrite that customer's real
     history in S3. So this half of the guard matters more than the other.
     """
-    reader = _Reader()
+    reader = _Reader(names={transcript.transcript_stem(good): b'{"role":"user"}\n'})
     outcome = asyncio.run(transcript.ensure_local_transcript(settings, good, reader=reader))
     assert len(reader.keys) == 1, f"{good!r} was not fetched: {outcome.action}"
 

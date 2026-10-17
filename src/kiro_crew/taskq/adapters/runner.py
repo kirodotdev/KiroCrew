@@ -53,6 +53,7 @@ from ..lanes import SYSTEM_LANE, lane_key_for
 from ..migrate import TASKRUNNER_ID_PREFIX
 from ..model import (
     ADMITTED,
+    ADOPTED_RESUME_EVENT,
     CANCELLED,
     CLAIMABLE,
     DONE,
@@ -62,6 +63,7 @@ from ..model import (
     PARKED,
     QUEUED,
     RECOVERING,
+    RECOVERY_MAX_ATTEMPTS,
     RUNNING,
     SIDE_EFFECT_IDEMPOTENT_KEY,
     SIDE_EFFECT_NONE,
@@ -73,6 +75,7 @@ from ..model import (
     WAITING_DEPENDENCY,
     WAITING_INPUT,
     TaskRecord,
+    recovery_exhausted,
 )
 from ..store import TaskStore, TaskStoreUnavailable
 from ..waits import WaitLedger, WaitRecord
@@ -1104,7 +1107,7 @@ class RunnerAdmission:
                 await self._db(
                     store.defer,
                     task_id,
-                    self.now() + self._admit_wait,
+                    wait=self._admit_wait,
                     reason=reason,
                 )
             except TaskStoreUnavailable:
@@ -1864,6 +1867,8 @@ class AdoptReport:
     skipped: list[str] = field(default_factory=list)
     #: Rows a dead incarnation accepted and never claimed; ended ``cancelled``.
     cancelled: list[str] = field(default_factory=list)
+    #: Rows ended ``failed`` because their lost-owner recoveries were spent.
+    lost_owner_limit: list[str] = field(default_factory=list)
 
 
 #: Rows per page of the orphan sweep, never a ceiling on what it settles: the sweep
@@ -1965,7 +1970,10 @@ def adopt_orphaned_rows(
     * an unleased ACTIVE row (``starting``/``running``/``waiting_*``) or a
       ``recovering`` row whose step is :func:`is_safe_retry` is handed to
       *resume* (the runner's checkpoint restart); a resume that returns True
-      leaves the row claimable for the runner's own ``admit``;
+      leaves the row claimable for the runner's own ``admit``. Each gateway
+      life that resumes a row spends one of its lost-owner recoveries, the
+      reconciler's ``RECOVERY_MAX_ATTEMPTS``; a row that has spent them ends
+      ``failed`` with the reason instead of being resumed again;
     * one that is NOT safe to retry becomes ``unknown_side_effect`` -- the
       run stays paused for a human, and nothing is re-run blind;
     * a ``queued`` row of these kinds whose accepting incarnation is gone
@@ -2030,6 +2038,28 @@ def adopt_orphaned_rows(
             if store.transition(rec.id, UNKNOWN_SIDE_EFFECT, detail={"adopted": "not_safe_retry"}):
                 report.unknown_side_effect.append(rec.id)
             continue
+        if resume is not None:
+            recoveries = store.lost_owner_recoveries(rec.id)
+            if recovery_exhausted(recoveries):
+                # Every earlier gateway life that resumed this row stopped before
+                # the row finished: a step that takes its gateway down would
+                # otherwise restart it on every boot.
+                reason = (
+                    f"the gateway stopped during this task {recoveries + 1} times; "
+                    f"not resumed after {RECOVERY_MAX_ATTEMPTS} recoveries"
+                )
+                if store.transition(
+                    rec.id,
+                    FAILED,
+                    detail={
+                        "adopted": "lost_owner_limit",
+                        "lost_owner_recoveries": recoveries,
+                        "error": reason,
+                    },
+                ):
+                    report.lost_owner_limit.append(rec.id)
+                    logger.warning("taskq runner: %s failed: %s", rec.id, reason)
+                continue
         if rec.state == ADMITTED:
             # Claimed, never started: back to the queue, as the reconciler does.
             if not store.transition(rec.id, QUEUED, detail={"adopted": "lost_owner"}):
@@ -2044,6 +2074,11 @@ def adopt_orphaned_rows(
         if resume is None:
             report.skipped.append(rec.id)
             continue
+        # One lost-owner recovery granted to this gateway life, counted on the
+        # row so a restart cannot forget it (``TaskStore.lost_owner_recoveries``).
+        store.append_event(
+            rec.id, ADOPTED_RESUME_EVENT, {"incarnation": store.incarnation, "state": rec.state}
+        )
         try:
             ok = bool(resume(rec))
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the sweep
@@ -2063,13 +2098,14 @@ def adopt_orphaned_rows(
     if report.examined:
         logger.info(
             "taskq runner adopt: examined=%d resumed=%d unknown_side_effect=%d failed=%d "
-            "cancelled=%d skipped=%d",
+            "cancelled=%d skipped=%d lost_owner_limit=%d",
             report.examined,
             len(report.resumed),
             len(report.unknown_side_effect),
             len(report.failed),
             len(report.cancelled),
             len(report.skipped),
+            len(report.lost_owner_limit),
         )
     return report
 

@@ -290,7 +290,7 @@ export function useAgentSession(): UseAgentSession {
         // in the wrong directory with no signal, recreating the exact wrong-cwd
         // failure this feature exists to remove.
         const slot = await dispatch(
-          createSlot({ folder_id: folderId, title, memory_mode: 'persistent', project: workspacePath || null }),
+          createSlot({ folder_id: folderId, title, memory_mode: 'persistent', project: workspacePath || null, sessionFolder: false }),
         ).unwrap()
         // The slot is persisted but not yet linked to an investigation record, so
         // a failure before the seed leaves an EMPTY session behind — and the next

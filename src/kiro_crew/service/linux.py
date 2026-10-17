@@ -389,6 +389,11 @@ def render_unit(*, user_scope: bool = False) -> str:
                 ("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus"),
             )
         )
+    # System unit only: a user unit already runs in its login's context. Without
+    # it the gateway runs as system_u and labels every cache it writes under the
+    # user's home system_u (see selinux.installer_context).
+    selinux_context = None if user_scope else selinux.installer_context(bin_path)
+    selinux_line = f"SELinuxContext={selinux_context}\n" if selinux_context else ""
     return (
         "[Unit]\n"
         "Description=Kiro Crew gateway (dashboard + Slack + cron)\n"
@@ -406,7 +411,9 @@ def render_unit(*, user_scope: bool = False) -> str:
         # Omitted for the user scope: the per-user manager already runs as this
         # account, and it REJECTS User=/Group= outright ("Unknown key name"),
         # which would make the whole unit unloadable rather than merely noisy.
-        + ("" if user_scope else f"User={user}\nGroup={group}\n") + f"WorkingDirectory={home}\n"
+        + ("" if user_scope else f"User={user}\nGroup={group}\n")
+        + selinux_line
+        + f"WorkingDirectory={home}\n"
         f"ExecStart={exec_start}\n"
         # `always`, not `on-failure`: the gateway deliberately exits on its own
         # to be relaunched — the stale-asset watchdog shuts down cleanly when a
@@ -417,6 +424,12 @@ def render_unit(*, user_scope: bool = False) -> str:
         # exempt from Restart=), and StartLimit* above caps a tight loop.
         "Restart=always\n"
         "RestartSec=10\n"
+        # systemd 219 (<= 228) reads StartLimit* only from [Service]; the
+        # [Unit] copy above covers systemd >= 229, which places them there.
+        # Emitting both ensures the crash-loop cap works on all supported distros.
+        # StartLimitInterval is the pre-229 key name; >= 229 accepts it as an alias.
+        "StartLimitBurst=3\n"
+        "StartLimitInterval=300\n"
         # ...but never against a home another gateway already serves. The lock
         # refusal for a LIVE holder (kiro_crew.gateway_lock) is a standing
         # condition for this unit: the incumbent keeps serving, and every
@@ -642,6 +655,7 @@ class _UnitState:
     unit_id: str = ""
     error: str = ""
     result: str = ""
+    started: str = ""
 
     @property
     def reachable(self) -> bool:
@@ -714,7 +728,15 @@ class _UnitState:
         return f"{self.scope} scope: {self.active} ({self.sub}){alias}"
 
 
-_SHOW_PROPERTIES = ("Id", "LoadState", "ActiveState", "SubState", "FragmentPath", "Result")
+_SHOW_PROPERTIES = (
+    "Id",
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "FragmentPath",
+    "Result",
+    "ExecMainStartTimestampMonotonic",
+)
 
 
 def _unit_state(*, user: bool) -> _UnitState:
@@ -763,6 +785,65 @@ def _unit_state(*, user: bool) -> _UnitState:
         fragment=props.get("FragmentPath", ""),
         unit_id=props.get("Id", ""),
         result=props.get("Result", ""),
+        started=props.get("ExecMainStartTimestampMonotonic", ""),
+    )
+
+
+def _loaded_restart_prevent(*, user: bool) -> str | None:
+    """The ``RestartPreventExitStatus`` value the scope's manager has LOADED for
+    our unit -- the merged unit, drop-ins included, as of the last daemon-reload
+    -- or ``None`` when ``systemctl`` answered with no such property line.
+
+    ``--all`` so an unset property still prints as ``RestartPreventExitStatus=``
+    (empty) rather than being omitted, which keeps "not set" apart from "this
+    systemctl did not answer".
+    """
+    res = _systemctl(
+        "show",
+        "--all",
+        "-p",
+        "RestartPreventExitStatus",
+        f"{SERVICE_NAME}.service",
+        sudo=False,
+        user=user,
+    )
+    for line in (res.stdout or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "RestartPreventExitStatus":
+            return value.strip()
+    return None
+
+
+def _stale_unit_line(state: _UnitState) -> str | None:
+    """One line saying the LOADED unit does not exempt
+    :data:`LIVE_HOLDER_EXIT_CODE` from ``Restart=``, with the command that fixes
+    it, or ``None`` when there is nothing to say.
+
+    ``service install`` writes the unit once and no upgrade re-renders it, so a
+    unit written before the exemption existed keeps relaunching into the
+    live-holder refusal. The manager's loaded value is what is asked, not the
+    file on disk: it is what systemd acts on, it includes drop-ins, and a file
+    edited without a daemon-reload still reads as missing. Read-only on purpose:
+    no sudo, no rewrite, no reload. Only a loaded unit that is ours
+    (:attr:`_UnitState.ours`) is asked; a property ``systemctl`` did not report
+    makes no claim.
+    """
+    if state.load != "loaded" or not state.ours:
+        return None
+    value = _loaded_restart_prevent(user=state.scope == "user")
+    if value is None or str(LIVE_HOLDER_EXIT_CODE) in value.split():
+        return None
+    directive = f"RestartPreventExitStatus={LIVE_HOLDER_EXIT_CODE}"
+    if state.scope == "system":
+        remedy = "re-run `sudo kirocrew service install` to re-render it"
+    else:
+        where = f" in {state.fragment}" if state.fragment else ""
+        remedy = (
+            f"add it under [Service]{where}, then run `systemctl --user daemon-reload`"
+        )
+    return (
+        f"  ⚠️  the loaded unit lacks `{directive}`, which this build's unit carries "
+        f"(no upgrade re-renders an installed unit): {remedy}."
     )
 
 
@@ -1044,9 +1125,11 @@ def install() -> apparmor.ProfileOutcome:
     of letting a CalledProcessError surface.
 
     Returns the AppArmor profile outcome for the caller to report. The profile is
-    installed BEFORE systemd starts the unit: the directive only takes effect at
-    service start, so loading it afterwards would leave the first gateway process
-    unprofiled and every agent spawn failing closed until the next restart.
+    installed BEFORE systemd starts the unit: the unit carries no
+    ``AppArmorProfile=`` line, and the path-attached profile is applied by the
+    kernel at ``execve()`` of the launcher, so loading it afterwards would leave
+    the first gateway process unprofiled and every agent spawn failing closed
+    until the next restart.
     """
     # Fail early and cleanly if we cannot escalate: without this the first
     # `sudo` call raises FileNotFoundError, which controller.install_service
@@ -1246,7 +1329,10 @@ class UninstallReport:
     says one runs; a refusal — an alias, an unverified ``Id``, a running unit
     under a load state other than ``loaded`` — that leaves a RUNNING unit or the
     system unit file at ``UNIT_PATH`` behind; and a unit file or link that could
-    not be removed after a successful stop. The report still carries every
+    not be removed after a successful stop; and a closing ``daemon-reload`` the
+    manager rejected (``"removed (…), but `… daemon-reload` failed: …; run it by
+    hand"``) — the file is gone but the manager still holds the old definition,
+    so the scope is not in ``removed`` until the reload takes. The report still carries every
     scope, the controller marks those lines and exits non-zero after printing
     it. A refusal that leaves nothing behind is a report and finishes the
     scope: in the user scope a unit that runs nothing and is not ours to remove
@@ -1593,20 +1679,21 @@ def _teardown_owned(owned: OwnedUnit, state: _UnitState) -> _ScopeTeardown:
         failure = _remove_owned(owned, after_verbs=True)
         if failure is not None:
             return _ScopeTeardown(failure, finished=False)
-    _finish_scope(owned)
+    reload_failure = _finish_scope(owned)
     if owned.linked:
         line = (
             f"removed (the link to {owned.definition}; the linked unit file {owned.definition} "
             f"itself was kept)"
         )
     elif not present:
+        reloaded = "" if reload_failure is not None else "; daemon-reload run"
         line = (
             f"stopped (its unit file {owned.definition} was already gone, so nothing was disabled "
-            f"or unlinked; daemon-reload run)"
+            f"or unlinked{reloaded})"
         )
     else:
         line = f"removed ({owned.definition})"
-    return _ScopeTeardown(line, removed=True)
+    return _scope_finished(line, reload_failure)
 
 
 def _remove_stale_owned(owned: OwnedUnit) -> _ScopeTeardown:
@@ -1623,24 +1710,39 @@ def _remove_stale_owned(owned: OwnedUnit) -> _ScopeTeardown:
     failure = _remove_owned(owned, after_verbs=False)
     if failure is not None:
         return _ScopeTeardown(failure, finished=False)
-    _finish_scope(owned)
+    reload_failure = _finish_scope(owned)
     if owned.linked:
-        return _ScopeTeardown(
+        line = (
             f"removed (the link to {owned.definition}; the linked unit file {owned.definition} "
-            f"itself was kept)",
-            removed=True,
+            f"itself was kept)"
         )
-    if owned.mask:
-        return _ScopeTeardown(
-            f"removed (the mask {owned.definition}; {SERVICE_NAME}.service is unmasked)",
-            removed=True,
-        )
-    return _ScopeTeardown(f"removed ({owned.definition})", removed=True)
+    elif owned.mask:
+        line = f"removed (the mask {owned.definition}; {SERVICE_NAME}.service is unmasked)"
+    else:
+        line = f"removed ({owned.definition})"
+    return _scope_finished(line, reload_failure)
 
 
-def _finish_scope(owned: OwnedUnit) -> None:
+def _scope_finished(line: str, reload_failure: str | None) -> _ScopeTeardown:
+    """A scope whose unit file is gone: removed when the closing
+    ``daemon-reload`` took; unfinished — and NOT removed — when the manager
+    refused it, since the manager still holds the old definition until someone
+    reloads it by hand, so the headline must not read ``stopped and removed``."""
+    if reload_failure is not None:
+        return _ScopeTeardown(f"{line}, but {reload_failure}", finished=False)
+    return _ScopeTeardown(line, removed=True)
+
+
+def _finish_scope(owned: OwnedUnit) -> str | None:
     """The steps after a removal: the system scope's untouched overrides seed
-    goes with the unit, and the scope's manager is told to reload."""
+    goes with the unit, and the scope's manager is told to reload.
+
+    Returns ``None`` on success, or a diagnostic string when the
+    ``daemon-reload`` exits non-zero — the manager still holds the old
+    definition until someone reloads it by hand. On a host not booted with
+    systemd (no ``/run/systemd/system``) there is no system manager, so a
+    failed system-scope reload is not a failure.
+    """
     if owned.scope == "system" and _env_file_is_untouched_seed():
         # Only when it still holds our untouched seed — proving both that we
         # wrote it and that the operator never edited it. An operator-authored
@@ -1649,7 +1751,14 @@ def _finish_scope(owned: OwnedUnit) -> None:
         # is best-effort and only clears an empty dir.
         _sudo_run("rm", "-f", str(ENV_FILE_PATH))
         _sudo_run("rmdir", str(ENV_DIR))
-    _systemctl("daemon-reload", user=owned.scope == "user")
+    user = owned.scope == "user"
+    res = _systemctl("daemon-reload", user=user)
+    if res.returncode != 0 and (user or _SYSTEMD_BOOTED_DIR.is_dir()):
+        # A host not booted with systemd has no system manager to hold the old
+        # definition, so the reload failing there leaves nothing behind.
+        reload_cmd = "systemctl --user daemon-reload" if user else "sudo systemctl daemon-reload"
+        return f"`{reload_cmd}` failed: {_first_line(res)}; run it by hand"
+    return None
 
 
 def _teardown_scope(*, user: bool) -> _ScopeTeardown:
@@ -1751,7 +1860,10 @@ def uninstall() -> UninstallReport:
 
 
 def user_unit_installed() -> bool:
-    """Whether the calling account's own manager has a ``kirocrew.service`` loaded.
+    """Whether the calling account's own manager has a ``kirocrew.service`` installed:
+    the manager answers a load state other than ``not-found`` for a unit whose
+    canonical ``Id`` is ours (``loaded``, ``masked``, ``bad-setting`` and
+    ``error`` all count; only ``not-found`` does not).
 
     The one scope question a caller outside this module needs: ``kirocrew logs``
     reads the USER journal when the gateway is the per-user unit, and that
@@ -1849,6 +1961,58 @@ def is_up() -> bool:
     return any((s := _unit_state(user=user)).up and s.ours for user in (False, True))
 
 
+@dataclass(frozen=True)
+class AliasHolder:
+    """A scope whose ``kirocrew.service`` name resolves to a DIFFERENT unit.
+
+    ``scope`` is ``system`` or ``user``; ``unit_id`` is the canonical ``Id`` the
+    manager resolved our name to — the unit an operator pointed at our name with
+    ``Alias=kirocrew.service`` in their own unit's ``[Install]`` section, or a
+    ``kirocrew.service -> other.service`` symlink in a unit directory.
+    """
+
+    scope: str
+    unit_id: str
+
+
+def alias_holder() -> AliasHolder | None:
+    """Return the scope that holds ``kirocrew.service`` as an alias of another
+    unit, or ``None`` when no scope does.
+
+    The question :func:`is_active` / :func:`is_up` / :func:`stop` / :func:`restart`
+    cannot answer and callers that fall back from them need: those predicates
+    fail CLOSED on an alias (:attr:`_UnitState.ours` is False, so the unit is
+    never selected or counted), which is correct for "do not act on it" but
+    leaves a caller unable to tell "no managed unit here" apart from "the name is
+    an alias of a unit a manager supervises". ``kirocrew stop`` / ``kirocrew
+    restart`` ask this before their foreground-gateway fallback so they refuse —
+    exit 1, nothing signalled, nothing spawned — rather than SIGTERM the alias
+    target's process (which its manager restarts at once) and spawn a competitor
+    for the port and the ``KIROCREW_HOME`` lock. :func:`uninstall` already refuses
+    an alias whole and :func:`status` already names it; this is the same fact
+    offered to the two verbs that fall through to signalling.
+
+    System scope is checked first — the same order :func:`status` and
+    :func:`uninstall` report in — and the first scope that is an alias is
+    returned, since a refusal needs only one holder to name. ``show`` needs no
+    sudo, so both scopes use the unprivileged path.
+
+    An alias whose target is stopped (:attr:`_UnitState.running` is False —
+    ``ActiveState`` is ``inactive`` or ``failed``) is NOT reported: there is no
+    process the alias's manager is supervising, so the caller's SIGTERM would not
+    land on another unit's process, and refusing would misdirect — the printed
+    ``systemctl`` remedy points at a unit that is already down while the real
+    foreground gateway the operator means to stop keeps running. ``running``
+    fails CLOSED on an indeterminate ``ActiveState`` (empty, or a value a newer
+    systemd adds), so an alias we cannot confirm is stopped still refuses.
+    """
+    for user in (False, True):
+        state = _unit_state(user=user)
+        if state.is_alias and state.running:
+            return AliasHolder(state.scope, state.unit_id)
+    return None
+
+
 def stop() -> None:
     """Stop the service in every scope where it runs, without disabling it."""
     for user in _running_scopes():
@@ -1867,6 +2031,12 @@ def stop() -> None:
 # an exec failure and a Python import error with margin; a gateway that dies
 # later than that is the supervisor's to report, and `kirocrew service status`
 # / `kirocrew logs` are where it shows.
+#
+# A unit whose ``RestartSec`` is shorter than the read interval can die and be
+# ``active`` again between two reads, so the state alone can step over the
+# death. Each read therefore also carries ``ExecMainStartTimestampMonotonic``:
+# the manager stamps it at every exec of the main process, so a value that
+# changes inside the window is a restart the reads never saw in progress.
 _RESTART_SETTLE_SECS = 2.0
 _RESTART_POLL_SECS = 0.25
 
@@ -1895,9 +2065,15 @@ def _confirm_up(*, user: bool) -> tuple[str, str] | None:
     the deadline and reports what it finds there. A manager that stops answering
     mid-window leaves the unit's health UNKNOWN — not "exiting", not "restarted"
     — and is reported as :data:`RESTART_UNCONFIRMED`.
+
+    A main-process start stamp that changes between two reads is a death and a
+    re-exec the state reads fell between (a short ``RestartSec``), reported as
+    :data:`RESTART_NOT_UP` whatever state the later read shows. A manager that
+    answers no stamp (``0`` or absent) leaves this check off.
     """
     unit = f"{SERVICE_NAME}.service"
     deadline = time.monotonic() + _RESTART_SETTLE_SECS
+    first_start = ""
     while True:
         state = _unit_state(user=user)
         if not state.reachable:
@@ -1912,6 +2088,16 @@ def _confirm_up(*, user: bool) -> tuple[str, str] | None:
                 RESTART_NOT_UP,
                 f"{unit} is {state.active} ({state.sub}){last} after the restart — "
                 f"the gateway exits as soon as it starts",
+            )
+        started = state.started if state.started not in ("", "0") else ""
+        if started and not first_start:
+            first_start = started
+        elif started and started != first_start:
+            return (
+                RESTART_NOT_UP,
+                f"{unit} exited and was started again by the manager after the "
+                f"restart (now {state.active} ({state.sub}){last}) — the gateway "
+                f"exits as soon as it starts",
             )
         if time.monotonic() >= deadline:
             if state.up:
@@ -1989,7 +2175,8 @@ def restart() -> RestartReport:
     it regardless of restart policy.
 
     The report is per scope (:class:`RestartReport`), and ``ok`` only when every
-    restarted unit is UP at the end of the settle window — not when ``systemctl``
+    restarted unit is UP — ``active`` or ``reloading``, what ``systemctl
+    is-active`` exits 0 for — at the end of the settle window, not when ``systemctl``
     exited 0: for the ``Type=simple`` unit this module renders that exit says
     the process was forked, not that it lived, so a crash-looping gateway
     restarted into ``activating (auto-restart)`` would otherwise read as
@@ -2017,7 +2204,11 @@ def status() -> str:
     ``ActiveState (SubState)``, followed by the ``systemctl status`` block for
     each scope that actually has a unit. A scope with no unit never shows
     systemd's ``inactive (dead)`` for it: that line, printed for the system
-    scope alone, is what makes a running user-scope gateway read as dead.
+    scope alone, is what makes a running user-scope gateway read as dead. A
+    loaded unit of ours whose manager-loaded ``RestartPreventExitStatus`` does
+    not name :data:`LIVE_HOLDER_EXIT_CODE` gets one more line under its headline
+    naming the directive and the command that adds it (:func:`_stale_unit_line`);
+    nothing is rewritten.
 
     Status is queryable without sudo. We avoid sudo here so
     ``kirocrew service status`` doesn't prompt for a password just to
@@ -2027,6 +2218,9 @@ def status() -> str:
     for user in (False, True):
         state = _unit_state(user=user)
         lines = [state.headline()]
+        stale = _stale_unit_line(state)
+        if stale is not None:
+            lines.append(stale)
         if state.installed:
             res = _systemctl(
                 "status", f"{SERVICE_NAME}.service", "--no-pager", sudo=False, user=user

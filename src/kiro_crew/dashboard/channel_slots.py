@@ -66,8 +66,9 @@ from kiro_crew.dashboard.channel_folders import (
     folder_id_for_name,
     lookup_channel_folder,
 )
-from kiro_crew.dashboard.chat_title import _persist_title
+from kiro_crew.dashboard.chat_title import apply_manual_title
 from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
+from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
     durable_row_count,
@@ -263,34 +264,22 @@ async def rename_channel_title_live(
     Returns ``False`` when no live slot owns the session, so the channel can fall
     back to its conversation-log-only path. A live slot is authoritative once it
     exists: changing only transcript metadata lets its later save rewrite the old
-    in-memory title over the new one. Match the dashboard's own manual-rename
-    ordering instead — update the slot synchronously, bump its title epoch so a
-    background titler stands down, persist through the epoch-aware helper, then
-    broadcast the exact value every dashboard client must render.
+    in-memory title over the new one. So the live slot is renamed through
+    :func:`~kiro_crew.dashboard.chat_title.apply_manual_title`, the code the
+    sidebar rename and ``session_rename`` share: the slot is updated
+    synchronously, its title epoch bumped so a background titler stands down,
+    the title persisted through the epoch-aware helper, then broadcast.
 
-    ``_persist_title`` is best-effort by dashboard contract. A failed immediate
-    metadata write leaves the updated live slot authoritative and a later slot
-    save can recover it; the dashboard's own rename endpoint makes the same trade.
+    The save is best-effort by dashboard contract. A failed immediate metadata
+    write leaves the updated live slot authoritative, and a later slot save can
+    recover it; the dashboard's own rename endpoint makes the same trade.
     """
     slot = live_dashboard_slot(dashboard_state, session_key)
     if slot is None:
         return False
 
-    slot.title = title
-    slot._titled = True
-    slot._title_origin = "user"
-    slot._title_epoch = int(getattr(slot, "_title_epoch", 0)) + 1
-    persisted = await _persist_title(dashboard_state, slot)
-    if not persisted:
+    if not await apply_manual_title(dashboard_state, slot, title):
         logger.warning("channel title update is live but not yet durable for %s", session_key)
-
-    push_title = getattr(dashboard_state, "push_slot_title", None)
-    if callable(push_title):
-        push_title(slot.key, title)
-    else:
-        push_slots = getattr(dashboard_state, "push_slots_update", None)
-        if callable(push_slots):
-            push_slots()
     return True
 
 
@@ -625,6 +614,11 @@ def surface_channel_session(
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
+    # The session's own turn time limit, for the same reason: without it a
+    # surfaced slot follows the global limit and its next save drops the key.
+    from kiro_crew.dashboard.chat_persistence import _validate_turn_timeout_secs
+
+    slot.turn_timeout_secs = _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
     # Restore the dismissed source-link tombstones, mirroring the persistence
     # loaders: this surfacing path applies metadata by hand rather than going
     # through _rehydrate_slot_from_history, so without it an unlinked chip
@@ -734,7 +728,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     # Durable-only view of the same prefix (transient-role lines excluded),
     # recomputed from the transcript on every rebuild — the base absolute
     # message positions are built over. ``islice`` avoids copying the whole
-    # prefix. See _ChatSlot.__init__.
+    # prefix. See ``init_transcript_fields`` in dashboard/state_parts/slot_transcript.py.
     slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")
@@ -757,6 +751,8 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
         # created — the save path re-serializes this window and would otherwise
         # restamp every line "dashboard".
         carry_provenance(slot.messages[-1], msg)
+        # The same save would drop the fields a newer build wrote on the line.
+        remember_unknown_row_fields(slot, msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)
@@ -860,6 +856,7 @@ def refresh_channel_window(slot: "_ChatSlot", messages: list[dict[str, Any]], mt
         )
         # See the equivalent call in _rebuild_window.
         carry_provenance(slot.messages[-1], msg)
+        remember_unknown_row_fields(slot, msg)
     slot.drain()
     slot._resumed_count = len(slot.messages)
     slot._disk_window_len = len(slot.messages)

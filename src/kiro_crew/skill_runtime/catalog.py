@@ -10,8 +10,8 @@ precedence order, filters disabled apps' skills by owning app, expands an agent'
 ``skill://`` mapping into its available entries through the same provider-root
 fence, and looks an enumerated name up.
 
-The tree walk itself (``skills._iter_skill_files``) and the trust verdict that
-selects a scope stay in the facade. All state is the loader's; the structures a
+The tree walk itself (``skills_discovery._iter_skill_files``) and the trust verdict
+that selects a scope (``skills_body_reads``) live outside this package. All state is the loader's; the structures a
 background build publishes into are guarded by ``loader._catalog_lock``.
 """
 

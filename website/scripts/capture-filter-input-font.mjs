@@ -10,7 +10,7 @@
  * This harness documents the two filter boxes reachable from the chat composer:
  *
  *   1. the MODEL picker's filter box   (components/ModelEffortDropdown.tsx)
- *   2. the AGENT picker's filter box   (pages/ChatPage.tsx, agent dropdown portal)
+ *   2. the AGENT picker's filter box   (ComposerDockView.tsx, agent dropdown portal)
  *
  * and, as the deliberate CONTRAST, a model-list row's model NAME
  * (components/ModelDropdownList.tsx, `[data-model-name]`), which must STAY mono:

@@ -203,6 +203,62 @@ for.
 the app then detects a system kiro-cli exactly as before. The Windows installer
 grows by about 190 MB before outer installer compression.
 
+
+### Bundled KAS engine — the `agent.kas_bundle` route with no download
+
+By default (`BUNDLE_KAS=1`), the build stages the KAS engine bundle this release
+PINS (`src/kiro_crew/acp/kas_pin.py`: `KAS_PIN_VERSION` and
+`KAS_PIN_MANIFEST_SHA256`) into the app's resources, so the built-in engine
+route runs with nothing to download and no kiro-cli at all. The staging IS the
+backend's own installer, `acp.kas_bundle.install_bundle`, run from the
+just-built backend tree's interpreter: the manifest's bytes are checked against
+the pin before parsing, every artifact is sha256+size-pinned by that manifest,
+tar extraction uses `filter="data"`, the staged Node answers `--version` on the
+build host, and the tree is published with one rename. The result is
+byte-for-byte what `kirocrew kas install` lays down under the data home, read
+back at build time through the same reader the gateway uses
+(`installed_bundle(root=…)`), so a tree the reader would reject is a build
+error, not a refusal on the user's first prompt.
+
+Layout mirrors the backend trees. A universal macOS build stages one root per
+architecture, `backend-dist/kas-arm64/` and `backend-dist/kas-x64/` (Node ships
+no universal binary; the engine's own JS is shared), a single-arch build stages
+`backend-dist/kas/`. Each root holds `<version>/{bundle,node,install.json}` plus
+a `BUNDLED-VERSION` file beside the version directory. The Electron shell
+(`gateway-env.js`, `bundledKasEnvironment`) reads that file and the install
+record beside it, and exports the root as `KIROCREW_BUNDLED_KAS_DIR` — the
+arch-suffixed root first, the unsuffixed one second, never a root for another
+architecture. It runs nothing at boot: the route is off by default, the build
+already probed the staged Node, and a copy that cannot run on this machine
+fails at session spawn, only for a user who turned the switch on. A build
+without the payload or a source checkout exports nothing, and the backend then
+sees only the data home, exactly as an unbundled build does.
+The two values the shell joins onto the staged tree, the version and the
+record's `node_bin`, must be relative and free of `.`/`..`/empty segments
+(`staysWithinStagedTree`); and because that record chooses a program the gateway
+runs outside any sandbox on every bundle-route spawn, the backend seals the exported root
+read-only for every sandboxed child, the same seal as its own packaged install
+tree (`sandbox_tiers._resolved_install_root_targets`; the rules are in the
+[security spec](../system-specs/modules/security.md)).
+
+The backend (`acp.kas_bundle.installed_bundle`) reads the exported root as a
+SECOND root after the data home's `engines/kas`: an operator's own `kirocrew kas
+install` (or a `--unpinned` test install) wins over the copy the app was built
+with, the same precedence `KIROCREW_KIRO_BIN` has over the bundled kiro-cli.
+`kirocrew kas status` and `kirocrew doctor` say which one answered (`built into
+the app`), the status payload carries `installed.bundled`, and the Settings card
+names where each copy came from: "KAS engine … (included with the app)" for the
+app's copy, "KAS engine … (installed by you)" for the data home's.
+
+Bundling the engine does not turn the route on: `agent.kas_bundle` keeps its
+default (off) on every platform while the route is in shadow testing, and the
+app still ships the bundled kiro-cli for the relay route. Nothing in the build,
+the installer or the shell flips the switch; that stays the user's own step. `BUNDLE_KAS=0 make desktop` opts a build out (the payload is ~55 MB
+compressed, ~370 MB extracted per architecture); the switch then needs
+`kirocrew kas install` first, exactly as a pip install does. `KAS_BUNDLE_URL`
+names another manifest host (a mirror serving the same bytes; the pin refuses
+anything else).
+
 ### macOS opt-out and Linux — host-arch-only builds
 
 `UNIVERSAL=0 make desktop` (and every Linux build) produces an installer for
@@ -355,7 +411,7 @@ wholesale so single- and dual-backend layouts both package.
 > "am I the bundled interpreter?" via
 > `platform_compat.is_bundled_interpreter()`
 > (`BUNDLED_BACKEND_DIST_DIRNAME`), which is what stops `pip` from writing
-> into the signed bundle during app builds. `test/test_platform_compat.py`
+> into the signed bundle during app builds. `test/test_platform_compat_pinned_tools.py`
 > pins that constant to both `extraResources` here and
 > `packaging/build-desktop.sh`, so a rename fails a test — update the constant
 > and the packaging layer in the same change.
@@ -501,6 +557,7 @@ The script honors these environment flags:
 | `BUNDLE_KIRO_CLI=0` | Ship without the bundled kiro-cli (default `1` stages it; see [Bundled kiro-cli](#bundled-kiro-cli--the-app-carries-its-own-agent-runtime)) |
 | `KIRO_CLI_VERSION=<version>` / `latest` | Override the `packaging/kiro-cli-version` pin; `latest` resolves the upstream manifest instead (still sha256-verified) |
 | `KIROCREW_MANAGED_INSTALL_MARKER=<file>` | Bake that JSON file into the app as the externally-managed marker; a missing or malformed file fails the build (see [Baking the marker into the app](#baking-the-marker-into-the-app-editions)) |
+| `KIROCREW_AUTH_SERVER_ALLOWLIST=<list>` | Bake a comma-separated host list (`*.example.com,intranet.example.org`) into the app so its web contents, the Browser panel included, answer Kerberos/Negotiate challenges from those hosts; Electron gets it as its integrated-auth server switch before app ready. The switch is process-wide, so a page the agent drives in the Browser panel also signs in to those hosts as the user; list only hosts the agent may read as the user. Credential delegation is never enabled. A malformed list fails the build; unset, the app enables integrated auth for no host |
 
 ## The bundled backend (python-build-standalone)
 
@@ -534,8 +591,10 @@ same way). Key details:
   the half that resolves the chain.
 - **Local dictation runtime bundled** — supported desktop builds include
   `pywhispercpp`, the platform `imageio-ffmpeg` executable used for compressed
-  recordings, and all transitive runtime dependencies. The build imports the
-  recognizer and executes the exact packaged decoder before publishing — and
+  recordings, and all transitive runtime dependencies. The macOS Intel backend
+  installs no `imageio-ffmpeg`; the Intel app uses a system FFmpeg. The build
+  imports the recognizer and executes the exact packaged decoder before
+  publishing — and
   distinguishes a decoder that fails to AUTHENTICATE, which fails the build, from
   one that authenticates but will not run on the build host, which warns and
   ships (see [stt-streaming](../system-specs/modules/stt-streaming.md)). Model
@@ -599,6 +658,32 @@ With no gateway to reuse, the shell locates the backend binary via
 gateway --no-open`, polls `/api/status`, and loads the dashboard once it is
 healthy.
 
+For a bundled backend, the shell removes inherited `PYTHONPATH` and `PYTHONHOME`
+before spawning Python. Windows cleanup also removes mixed-case spellings of
+these keys. This keeps a desktop app launched from a development shell from
+importing a checkout instead of its packaged backend. Source-tree gateway
+launches retain those environment variables for development. The bundled
+launcher already uses `-s` to disable user-site imports for the gateway itself;
+the shell does not set `PYTHONNOUSERSITE`, which would also disable user-site
+dependencies in operator Python, ACP, and MCP child processes. Because the
+bundled gateway's environment is what it hands to the operator Python, MCP
+server, and cron child processes it spawns, those descendants no longer inherit
+a shell-exported `PYTHONPATH` or `PYTHONHOME` either; a child that relied on one
+to resolve its imports under the desktop app must set it for itself.
+
+The bundled launchers themselves drop the same two variables, so the scrub also
+covers every caller the shell is not: `kirocrew token` or `kirocrew stop` typed
+into a development shell, the `~/.local/bin/kirocrew` symlink the gateway
+plants, and the AppImage token page's bundled CLI path. The POSIX
+`bin/kirocrew` script runs `unset PYTHONPATH PYTHONHOME` before it execs the
+bundled `python3.12`; the Windows `bin\kirocrew.cmd` shim runs `set
+"PYTHONPATH="` and `set "PYTHONHOME="` under `setlocal`, so an interactive
+`cmd` window keeps its own variables after the command returns. Neither uses
+`-E`, which would also discard `PYTHONUTF8` and the bytecode settings above.
+The shell's own scrub stays as a second guard for the gateway it spawns, and on
+Windows it is the only one on that path, because the shell unwraps the `.cmd`
+and spawns `python.exe` directly.
+
 Host-runtime discovery stays behind the same main-process ownership boundaries.
 The `wsl:detect` handler in
 [`ipc-registrar.js`](../../website/electron/ipc-registrar.js) fails closed unless
@@ -611,6 +696,25 @@ manual SSH tunnel, foreign listener, unbound port, or unavailable owner probe is
 therefore refused; only then may
 [`wsl-detection.js`](../../website/electron/wsl-detection.js) run the trusted
 system `wsl.exe` path.
+
+The project picker's **Open system folder picker…** button rides the same gate.
+`window.folderPickAPI` in [`preload.js`](../../website/electron/preload.js) has
+two calls, and neither passes anything to the main process. `available()`
+invokes `dashboard:can-pick-folder`, which runs the three checks above and
+answers a boolean without opening anything; the picker shows the button only on
+`true`, so a browser tab, the PWA and a connection window pointed at a remote
+gateway keep the in-app picker alone. `pick()` invokes `dashboard:pick-folder`,
+which runs the same checks and then opens Electron's own
+`dialog.showOpenDialog` parented to the sender's window with fixed
+`openDirectory` options. The page cannot choose a default path, properties or
+filters. The dialog is drawn by the main process, so nothing is spawned and the
+sandbox is unchanged. It answers the one absolute folder chosen, or `null` for a
+cancel or a malformed result, and a second request while a dialog is open
+answers `null`; a dialog that fails to open rejects, so the picker can say so
+rather than read it as a cancel. The chosen path is never logged. The picker
+then lists the folder through `/api/browse-dirs`, the read its path field uses,
+and commits it only when that listing succeeds; a refusal, a failed dialog and
+a refused gate are each told beside the button.
 
 Before spawning a **bundled** backend the shell checks that the bundle's Python
 stdlib is fully on disk
@@ -793,6 +897,11 @@ Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
   Unreadable dumps, Electron-shaped strangers and this app's own dumps are
   never deleted.
+- Minidumps that reached `crashes-seen.json` without that check (the first
+  scan's baseline writes them off unread) are swept: each is opened once more,
+  oldest first, within what the fresh artifacts leave of the same 25-file
+  budget, and deleted on the same proof. The state file lists them as swept,
+  so none is opened again.
 
 ### Native window chrome
 
@@ -807,6 +916,10 @@ closes the popup and collapses the labels back to the hamburger. The menu surfac
 uses the dashboard theme because native Windows popups capture window input and
 cannot support hover switching; a narrow IPC bridge keeps command execution and
 standard Electron roles in the main process.
+The View submenu's **Toggle Focus Mode** flips focus mode from the native menu,
+which is the way out that stays visible once focus mode has hidden the
+dashboard's own top-bar toggle; it is a plain item (no check mark, no
+accelerator) because the state and its rebindable chord live in the renderer.
 When a remote crew is connected, the instance switcher shares the same bounded
 left region as the menu: it is a single trigger naming the crew on screen (see
 InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant
@@ -960,7 +1073,16 @@ the matching backend in a universal app:
    install manager leaves it mid-update, and what `PATH` names is not this app's
    backend. The launch shows the "installation still finishing" dialog instead,
    whose probe re-runs this resolution and starts the backend once a probed path
-   is back. Unpackaged (source checkout) launches keep the `PATH` fallback.
+   is back. When the refusal follows a stale-asset re-resolve, the tree the app
+   was running from was removed and nothing is installing, so the same dialog
+   says the app files were removed and asks the user to quit and reopen the
+   app (or reinstall), with the accent on Quit, and the splash behind it says
+   the same; the probe stays armed without the copy promising it. This holds
+   across a Retry
+   and clears once a launcher resolves to a real backend. The pruned copy stays
+   until the probe finds a complete tree, which paints the usual completion
+   frame and starts the backend.
+   Unpackaged (source checkout) launches keep the `PATH` fallback.
 
 The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
 `__dirname`, and the arch are injected — so both arch branches are
@@ -1298,7 +1420,7 @@ asymmetry is a useful triage question ("how did you start the gateway?") and a
 usable workaround, not evidence that the app is fine.
 
 One caveat worth knowing before concluding the usage string alone fixed it: agent
-shell commands are wrapped by `sandbox_exec_argv` in `src/kiro_crew/sandbox.py`,
+shell commands are wrapped by `sandbox_exec_argv` in `src/kiro_crew/sandbox_argv.py`,
 which `exec`s the target through `/usr/bin/sandbox-exec` and replaces the process
 image. The Seatbelt profile itself is `(allow default)` plus filesystem denies and
 carries **no** network rules, so the sandbox does not block sockets — but whether
@@ -1360,13 +1482,14 @@ ones the packager never reads). The body is optional JSON:
 
 A marker without `updateCommand` turns the updater off, and About shows the
 "updates are managed by …" message naming `managedBy`. A marker with
-`updateCommand` runs the managed lane below instead, and About shows the normal
-update card, with no managed-by message and no copyable command. That lane also
-needs `checkCommand`: without it every check fails with "this managed install
-has no checkCommand", so no update is ever offered or applied
-([#15799](https://github.com/kirodotdev/KiroCrew/issues/15799)). An empty or unparsable body still counts as managed — an
+`updateCommand` (and a `checkCommand`) runs the managed lane below instead, and
+About shows the "managed by …" notice and the copyable command above the regular
+update controls. An empty or unparsable body still counts as managed — an
 operator who dropped the file gets the safe behavior even when the metadata is
-wrong.
+wrong. The build script (`KIROCREW_MANAGED_INSTALL_MARKER`) rejects a marker
+with `updateCommand` but no `checkCommand`: every managed-lane check would fail
+with "this managed install has no checkCommand" and no update would ever be
+offered or applied.
 
 The body is only read when the marker's **provenance** can be established:
 neither the marker nor its directory may be owned by the account the app runs

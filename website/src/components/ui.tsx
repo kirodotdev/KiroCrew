@@ -2,8 +2,10 @@ import React from 'react'
 import { twMerge } from 'tailwind-merge'
 import { motion, useMotionValue, useSpring, useMotionTemplate, useReducedMotion } from 'framer-motion'
 import InfoTip from './InfoTip'
+import { useLabelTip } from './InstantTip'
 import { i18nT } from '../i18n/t'
 import { haptic } from '../lib/haptic'
+import { autoSiteRef } from '../uiLocations/targetRegistry'
 
 /* ── Shared UI primitives ── */
 
@@ -66,12 +68,12 @@ export function CardTitle({ children, className, ...rest }: Omit<React.Component
 export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean; primary?: boolean }>(
   ({ children, danger, primary, className, ...rest }, ref) => (
     <button
-      ref={ref}
+      ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
       className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:opacity-30 disabled:cursor-not-allowed ${
         primary
           ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)]'
           : danger
-            ? 'border-border bg-transparent text-danger hover:border-danger hover:bg-danger-subtle'
+            ? 'border-border bg-transparent text-danger hover:text-danger-text hover:border-danger hover:bg-danger-subtle'
             : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover'
       }`, className)}
       {...rest}
@@ -81,9 +83,10 @@ export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttribute
   )
 )
 
-export function SendBtn({ children, onClick, disabled, style, className, ...rest }: { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>) {
+export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.ReactNode } & Omit<React.ComponentPropsWithoutRef<'button'>, 'children' | 'dangerouslySetInnerHTML'>>(function SendBtn({ children, onClick, disabled, style, className, ...rest }, ref) {
   return (
     <button
+      ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
       // `min-h-9`, not `h-9`. A fixed height around inline content clips the
       // label instead of growing for it: at a narrow width a two-line label
       // needs ~40px and `h-9` gives it 36, so 12px of text is cut off — and the
@@ -100,38 +103,48 @@ export function SendBtn({ children, onClick, disabled, style, className, ...rest
       {children}
     </button>
   )
-}
+})
 
 /* ── Icon button group ──
  * The hover-revealed capsule of small square icon buttons used in chat session
  * rows, the widget header, and other row/card affordances. `IconButtonGroup`
  * is the bordered `bg-card` capsule; pass `reveal` to fade it in on the parent's
  * :hover / focus-within (the parent element must carry the `group` class).
- * `IconButton` is a single square icon button; `variant` sets the hover color. */
+ * `IconButton` is a single square icon button; `variant` sets the hover color.
+ * With no `title`, hovering or focusing it shows its `aria-label` in an
+ * `InstantTip` (`useLabelTip`). A caller that passes `title` keeps that native
+ * tooltip instead, since several use it to say more than the label does. */
 const ICON_BUTTON_VARIANTS: Record<'default' | 'accent' | 'danger' | 'active', string> = {
   default: 'text-muted hover:text-text hover:bg-bg-hover',
   accent: 'text-muted hover:text-accent hover:bg-bg-hover',
-  danger: 'text-muted hover:text-danger hover:bg-danger-subtle',
+  danger: 'text-muted hover:text-danger-text hover:bg-danger-subtle',
   active: 'text-accent hover:bg-bg-hover',
 }
 
 export const IconButton = React.forwardRef<
   HTMLButtonElement,
   Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'aria-label'> & { variant?: keyof typeof ICON_BUTTON_VARIANTS; 'aria-label': string }
->(({ variant = 'default', className, children, ...rest }, ref) => (
-  <button
-    ref={ref}
-    type="button"
-    className={twMerge(
-      'p-[4px] rounded transition-all active:scale-[0.97] active:duration-75 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed',
-      ICON_BUTTON_VARIANTS[variant],
-      className,
-    )}
-    {...rest}
-  >
-    {children}
-  </button>
-))
+>(({ variant = 'default', className, children, onPointerEnter, onPointerDown, onPointerUp, onMouseEnter, onMouseLeave, onFocus, onBlur, ...rest }, ref) => {
+  const { handlers, bubble } = useLabelTip(rest.title === undefined ? rest['aria-label'] : undefined, {
+    onPointerEnter, onPointerDown, onPointerUp, onMouseEnter, onMouseLeave, onFocus, onBlur,
+  })
+  return (
+    <button
+      ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
+      type="button"
+      className={twMerge(
+        'p-[4px] rounded transition-all active:scale-[0.97] active:duration-75 cursor-pointer bg-transparent border-none disabled:opacity-30 disabled:cursor-not-allowed',
+        ICON_BUTTON_VARIANTS[variant],
+        className,
+      )}
+      {...rest}
+      {...handlers}
+    >
+      {children}
+      {bubble}
+    </button>
+  )
+})
 
 export function IconButtonGroup({ reveal, className, children }: { reveal?: boolean; className?: string; children: React.ReactNode }) {
   return (
@@ -171,11 +184,11 @@ export function SearchInput({ className = '', ...props }: React.InputHTMLAttribu
 
 export function Badge({ variant, children, className, ...rest }: { variant: 'ok' | 'err' | 'warn' | 'aim' | 'muted' } & Omit<React.ComponentPropsWithoutRef<'span'>, 'children' | 'dangerouslySetInnerHTML'> & { children: React.ReactNode }) {
   const cls =
-    variant === 'ok' ? 'bg-ok-subtle text-ok'
-    : variant === 'err' ? 'bg-danger-subtle text-danger'
+    variant === 'ok' ? 'bg-ok-subtle text-ok-text'
+    : variant === 'err' ? 'bg-danger-subtle text-danger-text'
     : variant === 'aim' ? 'bg-aim-subtle text-aim'
     : variant === 'muted' ? 'bg-[var(--bg-hover)] text-[var(--muted)]'
-    : 'bg-warn-subtle text-warn'
+    : 'bg-warn-subtle text-warn-text'
   return (
     // No hover transform: a Badge is a non-interactive status label, so growing
     // it under the cursor announced an affordance that isn't there.
@@ -422,10 +435,12 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
   )
 }
 
-export function Toggle({ checked, onChange, disabled, label, describedBy, tone = 'accent' }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string; describedBy?: string; tone?: 'accent' | 'muted' }) {
+export function Toggle({ checked, onChange, disabled, label, describedBy, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string; describedBy?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
   return (
     <div
       role="switch"
+      data-ui-auto={uiAuto}
+      ref={autoSiteRef<HTMLDivElement>(uiAuto)}
       aria-checked={checked}
       // Without this a screen reader announces a disabled switch as actionable:
       // the disabled state was carried only by `tabIndex={-1}` and an opacity

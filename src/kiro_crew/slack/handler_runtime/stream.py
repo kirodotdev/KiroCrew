@@ -14,8 +14,9 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.slack.handler import (
@@ -204,6 +205,67 @@ async def _safe_final_update(
             logger.debug("Failed to post continuation message", exc_info=True)
 
 
+def _ts_before(ts: str) -> str | None:
+    """The Slack ts one microsecond before *ts*, as an exclusive lower bound."""
+    secs, _, micros = ts.partition(".")
+    if not secs.isdigit() or not micros.isdigit() or len(micros) > 6:
+        return None
+    total = int(secs) * 1_000_000 + int(micros.ljust(6, "0")) - 1
+    if total < 0:
+        return None
+    return f"{total // 1_000_000}.{total % 1_000_000:06d}"
+
+
+def _add_to_rich_text(block: dict[str, Any], run: str) -> bool:
+    """Add *run* to the last text of a ``rich_text`` block, in place."""
+    elements = block.get("elements")
+    if not isinstance(elements, list) or not elements or not isinstance(elements[-1], dict):
+        return False
+    leaf = elements[-1]
+    if leaf.get("type") == "rich_text_list":
+        items = leaf.get("elements")
+        if not isinstance(items, list) or not items or not isinstance(items[-1], dict):
+            return False
+        leaf = items[-1]
+    inline = leaf.get("elements")
+    if not isinstance(inline, list):
+        return False
+    last = inline[-1] if inline else None
+    if isinstance(last, dict) and last.get("type") == "text" and isinstance(last.get("text"), str):
+        last["text"] += run
+    else:
+        inline.append({"type": "text", "text": run})
+    return True
+
+
+def _blocks_with_run(blocks: Any, run: str) -> list[dict[str, Any]] | None:
+    """A copy of a message's own blocks with *run* added where its text ends.
+
+    Every other block is kept as it is, so the message keeps its formatting.
+    None when the blocks are not a shape this can edit.
+    """
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    try:
+        out = json.loads(json.dumps(blocks))  # Slack's blocks are JSON; this is a deep copy
+    except (TypeError, ValueError):
+        return None
+    for block in reversed(out):
+        if not isinstance(block, dict):
+            return None
+        kind = block.get("type")
+        if kind == "markdown" and isinstance(block.get("text"), str):
+            block["text"] += run
+            return out
+        if kind == "rich_text":
+            return out if _add_to_rich_text(block, run) else None
+        # A task plan, a task card or a divider holds no answer text, so the
+        # message's text may end before it. Any other block is not known here.
+        if kind not in ("plan", "task_card", "divider"):
+            return None
+    return None
+
+
 class _AnswerStream:
     """The Slack wire one native turn's answer is written to.
 
@@ -261,11 +323,18 @@ class _AnswerStream:
         self.debt = False
         # Rolling-buffer redactor for the live Slack wire: withholds the trailing
         # credential-class run so a credential split across streaming chunks can't
-        # reach Slack unredacted (issue 3). The final message is posted from the
-        # complete, fully-redacted `accumulated`, so the held tail is superseded at
-        # stop_stream — no data loss.
+        # reach Slack unredacted (issue 3). The run still held when the turn ends is
+        # settled by ``settle_tail`` at the seal: sent when the final text is clean,
+        # dropped when the final copy replaces the message.
         self.redactor = StreamRedactor()
         self.accumulated = ""
+        self.carried = ""  # the held run carried across a ``wait`` (see ``take_carried``)
+        # The message a run held at a ``wait`` ended, and that run. The first text
+        # sent after the wait puts the run back on that message (see ``_give_back``).
+        self.move_back: tuple[str, str] | None = None
+        self.given_back = ""  # a run given back after the final copy was taken (see ``seal``)
+        self.finishing = False  # True from ``finish``: the final copy is already taken
+        self.streamed_at_finish = False  # whether the stream was up when ``finish`` began
         self.thinking_accumulated = ""
         self.stream_buffer = (
             ""  # unsent chunks for streaming API (buffered between rate-limited appends)
@@ -326,9 +395,8 @@ class _AnswerStream:
         Streams through the rolling redactor (``redactor``) so a credential split
         across streaming chunks can't reach Slack unredacted (issue 3): only the
         confirmed-safe prefix is sent now; the trailing (possible-partial-
-        credential) run is withheld until the next append. The final message is
-        posted from the complete, fully-redacted ``accumulated`` at stop_stream,
-        so the withheld tail is superseded — never lost.
+        credential) run is withheld until the next append, or until
+        ``settle_tail`` decides it when the message ends.
         """
         if not self.stream_ts:
             return True
@@ -337,6 +405,48 @@ class _AnswerStream:
         safe = self.redactor.feed(text)  # redacts the confirmed-safe prefix internally
         if not safe:
             return True  # whole delta withheld (partial credential) — nothing to send yet
+        return await self._deliver(safe)
+
+    async def settle_tail(self, *, redacted: bool) -> None:
+        """Send or drop what the redactor still holds, because the turn's text ends here.
+
+        The redactor withholds the last run of every chunk until more text shows it
+        is safe. At the end of the turn that text never comes, so decide now: when
+        the final text is clean, send the held run so the last word is not lost;
+        when it is not, drop it, because the seal replaces the visible copy.
+
+        Only the seal calls this. At a tool card or a ``wait`` the held run may be
+        the first half of a value the next text completes, so it stays held until
+        the redactor can see both halves. A ``wait`` also carries it in
+        ``carried``, so a turn that ends there posts it with the final text, and
+        a turn that goes on gives it back to the message it ended once the joined
+        text is cleared (``_give_back``).
+        """
+        if redacted:
+            self.redactor.reset()
+            return
+        tail = self.redactor.flush()
+        if not tail or not self.stream_ts or self.channel_activation == ACTIVATION_REVIEW:
+            return
+        await self._deliver(tail)
+
+    async def _deliver(self, safe: str) -> bool:
+        """Put already-redacted text on the stream, rotating once on a refusal."""
+        assert self.stream_ts is not None
+        if self.move_back is not None:
+            ts, run = self.move_back
+            self.move_back = None
+            if await self._give_back(ts, run, safe):
+                self.delivered = True
+                self.accumulated = self.accumulated[len(run) :]
+                # The final copy is taken from ``accumulated`` before ``finish``.
+                # Given back after that, the copy still opens with the run, so the
+                # seal trims it there. Given back earlier, the copy never had it.
+                if self.finishing:
+                    self.given_back = run
+                safe = safe[len(run) :]
+                if not safe:
+                    return True
         if "[REDACTED" in safe:
             self.had_redaction = True
         # Best-effort: MUST NOT raise. A raising append is the same event as a refused
@@ -372,6 +482,46 @@ class _AnswerStream:
         else:
             self.debt = True
         return ok
+
+    async def _give_back(self, ts: str, run: str, safe: str) -> bool:
+        """Put the run held at a ``wait`` back at the end of the message it came from.
+
+        *safe* is the first text the filter let out after the wait: the run joined
+        to the text that continues it. Only when that joined text came out whole
+        and unchanged is the run known to be a word of its own, so only then is it
+        moved. The message is edited from its own blocks, so it keeps its
+        formatting. True when the edit landed; on False the caller sends *safe*
+        as it is, so the run opens the next message, whole.
+        """
+        if (
+            not run
+            or not self.use_slack_stream
+            or not safe.startswith(run)
+            or not self.accumulated.startswith(run)
+            or "[REDACTED" in safe
+            or redact(safe) != safe
+        ):
+            return False
+        oldest = _ts_before(ts)
+        if oldest is None:
+            return False
+        try:
+            replies = await self.slack.fetch_thread_replies(
+                self.channel, self.reply_ts, limit=20, warn_on_pagination=False, oldest=oldest
+            )
+            message = next((m for m in replies if isinstance(m, dict) and m.get("ts") == ts), None)
+            blocks = _blocks_with_run(message.get("blocks"), run) if message else None
+            if message is None or blocks is None:
+                logger.debug("Slack: no editable blocks on the message before a wait")
+                return False
+            text = message.get("text")
+            await self.slack.update_message(
+                self.channel, ts, (text if isinstance(text, str) else "") + run, blocks=blocks
+            )
+        except Exception as exc:
+            logger.debug("Slack: editing the message before a wait failed (%s)", type(exc).__name__)
+            return False
+        return True
 
     async def settle_debt(self, ts: str) -> None:
         """Disclose answer text Slack refused for good, on the message that lost it.
@@ -566,6 +716,7 @@ class _AnswerStream:
     async def on_text(self, event: LLMEvent) -> None:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
+        self.take_carried()
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
             first = event.text[:1]
             if first and first not in ("\n", " "):
@@ -746,6 +897,13 @@ class _AnswerStream:
             # also puts the notice on the message the gap is in. Ordered
             # after the tail append so a refusal of that tail counts.
             await self.settle_debt(self.stream_ts)
+            # The run held now ends this message. A second ``wait`` before any
+            # text keeps the message the first one named: the run still ends it.
+            if self.redactor.discarding or not self.redactor.held:
+                self.move_back = None
+            else:
+                _target = self.move_back[0] if self.move_back else self.stream_ts
+                self.move_back = (_target, self.redactor.held)
             try:
                 await self.slack.stop_stream(self.channel, self.stream_ts)
             except Exception:
@@ -754,7 +912,35 @@ class _AnswerStream:
                     exc_info=True,
                 )
             self.stream_ts = None
+            self.given_back = ""
+            # A carried run stays in the redactor, so the text after the wait is
+            # joined to it. The final copy is built from ``accumulated``, so it
+            # must start from that same run: the full-text pass then sees what
+            # the redactor saw. While a value is being dropped there is no run
+            # to read, so the whole text is carried instead. It waits in
+            # ``carried`` until more text or the turn's end, so an error after
+            # the wait still shows its own notice.
+            # A second ``wait`` before any text keeps what the first carried.
+            self.carried = (
+                self.carried + self.accumulated if self.redactor.discarding else self.redactor.held
+            )
             self.accumulated = ""
+            if self.carried:
+                # The next text continues that run, so no gap goes between them.
+                self.tool_gap = False
+
+    def take_carried(self) -> None:
+        """Put the text carried across a ``wait`` back into the answer.
+
+        It goes at the end, right before the next text, so a tool line added
+        since the ``wait`` never lands between the run and the text that
+        continues it. No gap goes between them even when another tool call
+        came first.
+        """
+        if self.carried:
+            self.accumulated += self.carried
+            self.carried = ""
+            self.tool_gap = False
 
     async def prepare_for_approval(self) -> None:
         """Open the stream if it is not, show the approval status, and flush the buffer,
@@ -784,6 +970,8 @@ class _AnswerStream:
         released when it is content.
         """
         # Mark last task complete
+        self.finishing = True
+        self.streamed_at_finish = self.use_slack_stream
         if self.active_task_id:
             _elapsed = self.tool_elapsed_str()
             self.cancel_tool_timer()
@@ -812,6 +1000,20 @@ class _AnswerStream:
         nothing to notice.
         """
         assert self.stream_ts is not None
+        # The overwrite below carries the whole text when it runs, so the held
+        # tail is only sent when it will not.
+        _was_streaming = self.use_slack_stream or self.streamed_at_finish
+        await self.settle_tail(redacted=self.had_redaction or redacted)
+        # A run given back to the message before a ``wait`` is not on this one, so
+        # this message's final copy starts after it, as the stream did.
+        if self.given_back and clean_text.startswith(self.given_back):
+            clean_text = clean_text[len(self.given_back) :]
+        # Sending the last text (in ``finish``) or the held run can fail its retry
+        # and demote the stream. Then the update below re-sends the whole text, so
+        # there is no gap to disclose.
+        _demoted = _was_streaming and not self.use_slack_stream
+        if _demoted:
+            self.debt = False
         if self.debt:
             await self.settle_debt(self.stream_ts)
         # The seal is decoration: the answer is already on screen, so a
@@ -820,6 +1022,19 @@ class _AnswerStream:
             await self.slack.stop_stream(self.channel, self.stream_ts, clean_text or _NO_RESPONSE)
         except Exception:
             logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+        if _demoted:
+            # The answer's last text is on no message yet, so this update is what
+            # delivers it: a failed send raises and the turn books a failure.
+            await _safe_final_update(
+                self.slack,
+                self.channel,
+                self.stream_ts,
+                (_convert_tables(clean_text) if clean_text else "") or _NO_RESPONSE,
+                self.reply_ts,
+                raise_on_primary_failure=True,
+            )
+            self.delivered = True
+            return
         # Redaction overwrite is decoration on an already-delivered stream:
         # it corrects the visible copy, it does not deliver the answer.
         if self.had_redaction or redacted:

@@ -11,6 +11,26 @@ from unittest.mock import AsyncMock
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew.testing.wait import await_until
+
+
+async def _bounded(coro, *, what: str):
+    """Await a coroutine the code under test should finish, under the lost-run bound.
+
+    Replacement for ``asyncio.wait_for(coro, <short N>)`` (rule D1): the
+    coroutine runs as its own task and ``await_until`` awaits that task for
+    half the test's timeout, so a hang fails by name instead of betting on the
+    runner's speed. Past the bound the task is cancelled and settled before the
+    error propagates, so teardown does not meet a step still running.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        return await await_until(task, what=what)
+    except AssertionError:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 @pytest.fixture
@@ -207,19 +227,19 @@ async def test_cancelled_launch_waits_for_result_then_drains(kernel, monkeypatch
 
     task = asyncio.create_task(pc.create_windows_cleanup_owned_process(factory))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         task.cancel()
         await asyncio.sleep(0)
         assert not task.done()
         assert len(pc._WINDOWS_TREE_ADMISSIONS) == 1
         finish.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert kernel.identities[root][2] is not None
         assert not pc._WINDOWS_TREE_ADMISSIONS
     finally:
         finish.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(task, return_exceptions=True), what="task cleanup")
 
 
 @pytest.mark.asyncio
@@ -289,15 +309,15 @@ async def test_cancelled_failed_factory_refunds_without_a_child(kernel):
 
     task = asyncio.create_task(pc.create_windows_cleanup_owned_process(factory))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         task.cancel()
         finish.set()
         with pytest.raises(OSError, match="never created"):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert not pc._WINDOWS_TREE_ADMISSIONS
     finally:
         finish.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(task, return_exceptions=True), what="task cleanup")
 
 
 @pytest.mark.asyncio
@@ -314,73 +334,87 @@ async def test_cancelled_spawn_failed_cleanup_keeps_capacity(kernel, monkeypatch
 
     task = asyncio.create_task(pc.create_windows_cleanup_owned_process(factory))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         task.cancel()
         finish.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert len(pc._WINDOWS_TREE_ADMISSIONS) == 1
         assert pc._PENDING_WINDOWS_TREE_CLEANUPS[(100, 10)].handles == {100: root}
         assert kernel.closed == []
     finally:
         finish.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(task, return_exceptions=True), what="task cleanup")
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("module_name", ["client", "runtime"])
 @pytest.mark.parametrize("manual", [False, True])
-async def test_both_physical_spawn_expressions_obey_admission(kernel, module_name, manual):
-    """Execute each production physical-spawn expression, without its IO prelude."""
-    import ast
+def test_both_physical_spawn_expressions_obey_admission(kernel, module_name, manual, tmp_path):
+    """Each driver's real launch is refused at admission, before its factory runs.
+
+    Driven through the launch capture, which stubs every collaborator up to the
+    physical spawn, with this file's admission put back in front of it: both
+    drivers hand their own process factory to the one launch tail, and a full
+    cleanup capacity -- or a manual tree -- must refuse the spawn without the
+    factory ever being awaited.
+    """
     import importlib
-    import inspect
-    import textwrap
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
+
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_CODEX, ACP_BACKEND_KIRO
 
     mod = importlib.import_module(f"kiro_crew.acp.{module_name}")
-    cls = mod.AcpClient if module_name == "client" else mod.AcpRuntime
-    method = cls._spawn if module_name == "client" else cls._spawn_admitted
-    tree = ast.parse(textwrap.dedent(inspect.getsource(method)))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(target, ast.Attribute) and target.attr == "_process"
-            for target in node.targets
-        )
-    ]
-    assert len(calls) == 1
-    assignment = calls[0]
+    backend = ACP_BACKEND_KIRO if module_name == "client" else ACP_BACKEND_CODEX
+    real_admission = pc.create_windows_cleanup_owned_process
     state = pc.reserve_windows_tree_cleanup()
     if manual:
         pc._manual_windows_tree(state)
     else:
         pc.reserve_windows_tree_cleanup()
     factory = AsyncMock()
-    namespace = dict(
-        vars(mod),
-        create_subprocess_limited=factory,
-        self=SimpleNamespace(_spawn_work_dir="unused", _bound_workspace_fd=None),
-        argv=["never-launched"],
-        env={},
-    )
-    function = ast.AsyncFunctionDef(
-        name="physical_spawn",
-        args=ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
-        body=[assignment],
-        decorator_list=[],
-        type_params=[],
-    )
-    code = compile(
-        ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
-        "<production physical spawn>",
-        "exec",
-    )
-    exec(code, namespace)  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected -- runs the PRODUCTION spawn statement lifted out of this repo's own source by AST, never external input; a hand-copied duplicate is exactly what this test exists to rule out  # noqa: E501  # fmt: skip
     with pytest.raises(pc.WindowsCleanupCapacityError):
-        await namespace["physical_spawn"]()
+        capture_mod.capture(
+            backend,
+            tmp_path,
+            extra_patches=(
+                patch.object(pc, "create_windows_cleanup_owned_process", new=real_admission),
+                patch.object(mod, "create_subprocess_limited", new=factory),
+            ),
+        )
     factory.assert_not_awaited()
+
+    # ...and that tail is the ONLY physical spawn either driver has: a second
+    # expression built straight on the factory would spawn unadmitted, and the launch
+    # above would never run it. Each driver names its factory only to hand it over.
+    import ast
+    import inspect
+    import sys
+
+    from kiro_crew.acp import launch as launch_mod
+
+    def _reads(module, name):
+        modules = [module]
+        if module is sys.modules["kiro_crew.acp.client"]:
+            # client.py's owner modules hold code that was its own.
+            modules += [sys.modules[owner] for owner in module._CLIENT_OWNERS]
+        found = []
+        for function in (
+            node for source in modules for node in ast.walk(ast.parse(inspect.getsource(source)))
+        ):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Name) and node.id == name) or (
+                    isinstance(node, ast.Attribute) and node.attr == name
+                ):
+                    found.append(function.name)
+        return sorted(set(found))
+
+    assert _reads(mod, "create_subprocess_limited") == ["_launch_tools"]
+    assert _reads(launch_mod, "create_subprocess_limited") == ["launch"]
+    assert _reads(launch_mod, "create_windows_cleanup_owned_process") == ["launch"]
 
 
 def test_app_capacity_refusal_and_manual_dead_root_preserve_rows(kernel, monkeypatch, tmp_path):
@@ -451,7 +485,7 @@ async def test_resume_worker_settles_before_repeated_cancellation(kernel):
 
     task = asyncio.create_task(pc.finish_windows_cleanup_owned_spawn(worker))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         task.cancel()
         await asyncio.sleep(0)
         task.cancel()
@@ -459,10 +493,10 @@ async def test_resume_worker_settles_before_repeated_cancellation(kernel):
         assert not task.done()
         finish.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
     finally:
         finish.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(task, return_exceptions=True), what="task cleanup")
 
 
 @pytest.mark.parametrize("shape", ["_client", "_proc", "_active_proc"])
@@ -540,12 +574,14 @@ async def test_competing_physical_starts_only_launch_the_last_slot(kernel, monke
         asyncio.create_task(pc.create_windows_cleanup_owned_process(factory)) for _ in range(8)
     ]
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         assert calls == [True]
         assert sum(task.done() for task in tasks) == 7
         assert len(pc._WINDOWS_TREE_ADMISSIONS) == 1
         finish.set()
-        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        results = await _bounded(
+            asyncio.gather(*tasks, return_exceptions=True), what="all tasks to finish"
+        )
         processes = [result for result in results if not isinstance(result, BaseException)]
         assert len(processes) == 1
         assert sum(isinstance(result, pc.WindowsCleanupCapacityError) for result in results) == 7
@@ -553,7 +589,7 @@ async def test_competing_physical_starts_only_launch_the_last_slot(kernel, monke
         assert not pc._WINDOWS_TREE_ADMISSIONS
     finally:
         finish.set()
-        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(*tasks, return_exceptions=True), what="task cleanup")
 
 
 def test_process_snapshot_is_bounded_during_enumeration(kernel, monkeypatch):
@@ -790,14 +826,15 @@ async def test_slow_identity_read_leaves_the_event_loop_serving(kernel, monkeypa
     async def other_session_work() -> None:
         while serving:
             served.append(time.monotonic())
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)  # yield the loop; the 0.3s window has room for many ticks
 
     heartbeat = asyncio.create_task(other_session_work())
-    owned = await asyncio.wait_for(
-        pc.create_windows_cleanup_owned_process(AsyncMock(return_value=process)), 10
+    owned = await _bounded(
+        pc.create_windows_cleanup_owned_process(AsyncMock(return_value=process)),
+        what="cleanup-owned-process factory",
     )
     serving = False
-    await asyncio.wait_for(heartbeat, 5)
+    await await_until(heartbeat)
 
     assert owned is process
     # Windows' monotonic clock is coarse enough to report a 0.3s sleep as 0.296s,

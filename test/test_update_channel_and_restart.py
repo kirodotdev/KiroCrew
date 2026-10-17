@@ -578,6 +578,51 @@ class TestUpdateRevalidate:
         assert resp.status == 403
         assert called == []
 
+    def test_kernel_attested_unix_peer_is_admitted(self, _isolated_channel_home):
+        """The CLI's owner-verified send prefers the owner-only AF_UNIX socket,
+        where ``request.remote`` is empty; a same-user peer the kernel confirms
+        (``check_peer_is_self`` MATCH) is admitted, the secret still required."""
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        called: list[str] = []
+
+        async def _fake_check() -> None:
+            called.append("recheck")
+
+        with (
+            patch("kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True),
+            patch(
+                "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+                lambda _s: PeerCredResult.MATCH,
+            ),
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+            patch.object(updates, "_do_update_check", _fake_check),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote=""))
+            )
+        assert resp.status == 200
+        assert called == ["inv", "recheck"]
+
+    def test_foreign_unix_peer_is_refused(self, _isolated_channel_home):
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        called: list[str] = []
+        with (
+            patch("kiro_crew.dashboard.token_auth.request_is_unix_socket", lambda _r: True),
+            patch(
+                "kiro_crew.dashboard.handlers.core.check_peer_is_self",
+                lambda _s: PeerCredResult.MISMATCH,
+            ),
+            patch.object(updates, "_invalidate_update_check", lambda ch: called.append("inv")),
+        ):
+            resp = asyncio.run(
+                updates.api_update_revalidate(self._cli_request("s3cret", remote=""))
+            )
+        assert resp.status == 403
+        assert json.loads(resp.body.decode())["code"] == "loopback_only"
+        assert called == []
+
     def test_non_ascii_secret_is_refused_not_crashed(self, _isolated_channel_home):
         """A non-ASCII X-Local-Secret must be an audited 403, never a TypeError/500.
 
@@ -707,3 +752,62 @@ class TestRestartEndpoint:
         first, second = asyncio.run(_run())
         assert first.status == 200
         assert second.status == 200
+
+    @staticmethod
+    def _refused(**patches: object) -> tuple[web.Response, MagicMock]:
+        """POST /api/restart with the pre-drain checks patched.
+
+        Returns the state as the handler leaves it: whether a restart task was
+        recorded is settled when the handler returns, so no sleep is needed.
+        """
+
+        async def _no_restart(_state: object) -> None:
+            raise AssertionError("a refused restart reached _restart_gateway")
+
+        async def _run() -> tuple[web.Response, MagicMock]:
+            req = _request({})
+            req.app["state"]._background_tasks = set()
+            with (
+                patch.object(updates, "_restart_gateway", _no_restart),
+                patch.multiple(updates, **patches),
+            ):
+                resp = await updates.api_gateway_restart(req)
+            return resp, req.app["state"]
+
+        return asyncio.run(_run())
+
+    def test_a_broken_launcher_is_refused_before_the_200(self):
+        """A refusal after the 200 would reach a restart control only as a
+        progress step it never reads, so the endpoint answers it on the request."""
+
+        def _broken() -> str:
+            raise ValueError("launcher is not executable")
+
+        resp, state = self._refused(resolve_restart_launcher=_broken)
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["error"] == "Cannot restart: invalid gateway launcher path"
+        assert body["code"] == "restart_launcher_invalid"
+        assert state._gateway_restart_task is None, "a refused restart still recorded a task"
+        assert not state._background_tasks
+
+    def test_a_missing_interpreter_is_refused_before_the_200(self):
+        platform_compat = MagicMock()
+        platform_compat.execv_target_available.return_value = False
+        with (
+            patch("kiro_crew.platform.wheel_engine.respawn_executable", lambda: "/gone/python"),
+            patch.object(updates.update_ownership, "clear_restart_deferral") as cleared,
+        ):
+            resp, state = self._refused(
+                resolve_restart_launcher=lambda: None, platform_compat=platform_compat
+            )
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["error"] == "Cannot restart: invalid Python executable path"
+        assert body["code"] == "restart_interpreter_missing"
+        platform_compat.execv_target_available.assert_called_once_with("/gone/python")
+        # The same refusal `_restart_gateway` makes, with the same release of a
+        # deferred restart whose bundle went with the pruned tree.
+        cleared.assert_called_once_with()
+        assert state._gateway_restart_task is None
+        assert not state._background_tasks

@@ -166,6 +166,8 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
     "chat_todo.py::api_chat_slot_todo": ("<default>", _BOUNDED_BY_DEFAULT),
+    # Mate's one-line Global preference: a short sentence, so a 4 KB cap
+    # is well above any legitimate body and far below the shared default.
     # A thread reply is one text field (capped at 32 KiB by the handler) plus a
     # slot key, so the shared default ceiling is the right one.
     "chat_threads.py::api_chat_thread_reply": ("<default>", _BOUNDED_BY_DEFAULT),
@@ -225,6 +227,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/memory.py::api_memory_history": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/memory.py::api_memory_import": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/memory.py::api_memory_semantic_write": ("None", _UNBOUNDED_USER_CONTENT),
+    # The forget body is two strings: a key and the stored value it expects,
+    # which the store caps at 4 KB, so the shared default ceiling is ample.
+    "handlers/memory.py::api_memory_semantic_delete": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/memory.py::api_memory_settings": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_consolidate": ("None", _CONTROL_FIELDS_CAP_PENDING),
     "handlers/memory.py::api_memory_promote": ("None", _CONTROL_FIELDS_CAP_PENDING),
@@ -298,38 +303,50 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         "_MAX_REORDER_BODY_BYTES",
         _BOUNDED_EXPLICIT,
     ),
+    # The two mute toggles (mutes_opened, muted) share one body that carries a
+    # boolean and an optional expected_created stamp -- a fixed set of control
+    # fields, so the shared default cap is right.
+    "chat_folders.py::_toggle_slot_user_flag": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # The pinned-session reorder carries a bounded list of slot keys, sized
+    # from the key-count and key-length ceilings in pinned_session_order.
+    "chat_folders.py::api_chat_pinned_order": (
+        "_MAX_PINNED_ORDER_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     # ---- tranche 3 ----
     # chat_handlers.py and its chat_api owners: control-field slot mutations take
     # the cap; the sites that carry a chat message, queued-edit text, follow-up
     # prompts, or injected context/note content stay uncapped.
-    "chat_handlers.py::api_chat": ("None", _UNBOUNDED_USER_CONTENT),
-    "chat_handlers.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
-    "chat_handlers.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/chat_send.py::api_chat": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_api/slot_create.py::api_chat_slot_create": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/continue_turn.py::api_chat_slot_end_wait": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/turn_stop.py::api_chat_slot_interrupt": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/prompt_queue.py::api_chat_slot_queue_edit": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_api/prompt_queue.py::api_chat_slot_queue_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_api/slot_lifecycle.py::api_chat_slot_reset_conversation": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
     "chat_api/slot_lifecycle.py::api_chat_slots_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_folder_cleanup.py::api_chat_folders_cleanup": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_reasoning_effort": (
+    "chat_api/agent_switch.py::api_chat_slot_agent": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_model.py::api_chat_slot_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_model.py::api_chat_slots_model": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_effort.py::api_chat_slot_reasoning_effort": (
         "<default>",
         _BOUNDED_CONTROL_FIELDS,
     ),
-    "chat_handlers.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_followup": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_api/session_relaunch.py::api_chat_slot_workspace": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/session_relaunch.py::api_chat_slot_project": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_settings.py::api_chat_slot_turn_timeout": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/project_lists.py::api_favorite_project_add": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/followup_card.py::api_chat_slot_followup": ("None", _UNBOUNDED_USER_CONTENT),
     "chat_api/resume.py::api_chat_slot_resume": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    "chat_handlers.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
-    "chat_handlers.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_api/slot_approval.py::api_chat_mode": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_approval.py::api_chat_slot_approve": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/slot_settings.py::api_chat_slot_color": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "chat_api/pending_context.py::api_chat_slot_context": ("None", _UNBOUNDED_USER_CONTENT),
+    "chat_api/slot_note.py::api_chat_slot_note": ("None", _UNBOUNDED_USER_CONTENT),
     # handlers/mcp.py: identifier/flag mutations take the cap; a full server
     # config (PUT detail) and per-server toolOverrides maps (apply) do not.
     "handlers/mcp.py::api_mcp_quarantine_clear": ("<default>", _BOUNDED_CONTROL_FIELDS),
@@ -383,7 +400,20 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/files.py::api_file_write": ("None", _UNBOUNDED_USER_CONTENT),
     # a root path and a query the handler caps at 200 characters
     "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # a capped list of paths, each a FILE_READ_SCHEMA path
+    "file_api/pinned_io.py::api_file_kinds": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "file_api/dashboard_config.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # The four module-local body guards, which read through the helper.
+    # A channel message carries user prose and these routes never had a cap below
+    # client_max_size; adding one would be a new limit, not this convergence.
+    "handlers_channel.py::_json_object": ("None", _UNBOUNDED_USER_CONTENT),
+    # Hook/webhook control fields, capped at the external webhook's own ceiling.
+    "handlers/hooks.py::_json_object": ("_HOOK_BODY_MAX_BYTES", _BOUNDED_EXPLICIT),
+    # A trash selection of up to _MAX_SELECTION uids, sized from the uid grammar.
+    "handlers/session_storage.py::_json_body": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
+    # Artifact content (25 MiB) plus envelope: the module's existing cap, which
+    # now bounds what is allocated rather than only what is accepted.
+    "handlers/artifacts.py::_read_json_body": ("_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent

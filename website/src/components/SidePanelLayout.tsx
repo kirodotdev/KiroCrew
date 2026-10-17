@@ -1,10 +1,11 @@
 import React from 'react'
 import { useSearchParams, useLocation, useNavigate } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { NavBackBar } from './NavBackBar'
 import { useRegisterNavigationLeaveGuard, usePublishNavigationStake } from './NavigationLeaveGuard'
 import { hasSubSelection, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { useVisualViewport } from '../hooks/useVisualViewport'
 import { useBottomTerminalOpen, useTerminalPosition } from '../hooks/useBottomTerminal'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
@@ -24,6 +25,12 @@ export interface SidePanelTab {
   description?: string
   /** Presence dot after the label (e.g. About while an update is available). */
   dot?: boolean
+  /** Count pill after the label, for items waiting on the user inside this tab
+   *  (e.g. Skills while generated skill candidates wait for review). Nothing
+   *  renders at a count of 0. `label` names what is counted, count included,
+   *  and is the pill's accessible name: a bare number beside a tab label does
+   *  not say what it counts. */
+  badge?: { count: number; label: string }
   /** Optional group label. Desktop nav renders an uppercase header above the
    *  first tab of each new group; tabs without a group render header-less.
    *  Mobile ignores groups (flat pill row). */
@@ -185,11 +192,34 @@ export function useSidePanelLeaveGuard(guard: SidePanelLeaveGuard, atStake = fal
 
 const TAB_MEMORY_PREFIX = 'kirocrew:sidepanel-tab:'
 
+/** A tab's count pill (see `SidePanelTab.badge`). Same pill as the main rail's
+ *  expanded badge. `role="status"` carries the label as the accessible name, as
+ *  the presence dot does, so the row is announced with what the number counts. */
+function TabCountBadge({ badge, className = '' }: { badge?: SidePanelTab['badge']; className?: string }) {
+  if (!badge || badge.count <= 0) return null
+  return (
+    <span
+      className={`${className} shrink-0 bg-accent text-accent-fg text-[11px] font-bold px-1.5 py-[1px] rounded-full min-w-[18px] text-center leading-[14px]`}
+      role="status"
+      aria-label={badge.label}
+      title={badge.label}
+    >{badge.count}</span>
+  )
+}
+
 export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, footer, headerRight, headerRightDock = 'header', navTop, paneOwnsHeader = false, fixedContent, basePath, children }: SidePanelLayoutProps) {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
   const navigate = useNavigate()
   const isMobile = useIsMobile()
+  // "More below" cue under the desktop tab list. Settings has twenty rows, so
+  // on a laptop-height window the last few (Developer, Releases, About) sit
+  // below the fold, and the overlay scrollbar stays hidden until hovered: the
+  // list read as complete and a first-time user could not find Developer. The
+  // cue says so while rows are hidden below, in its own strip outside every
+  // row. `attachContent` watches the rows themselves, so a tab appearing or a
+  // late font changing a row's height re-measures too.
+  const [attachTabList, tabListEdges, , attachTabListContent] = useScrollEdgesY<HTMLDivElement>()
   // Keyboard avoidance for the bottom-float dock. iOS Safari shrinks only the
   // VISUAL viewport when the keyboard opens (the layout viewport `fixed`
   // resolves against keeps its height — see CommandPalette.tsx), so a
@@ -474,7 +504,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
             * are not a selection — and a listbox may contain only options and
             * groups, which the separators and headers here are not. Groups
             * carry the header text as their accessible name; the visual header
-            * stays aria-hidden so it is not announced twice. */}
+            * stays aria-hidden so it is not announced twice. No row is
+            * `aria-current`: nothing is open at the root, and `tab` is only the
+            * default for the pane. */}
           <div role="list" aria-label={title} className="flex flex-col gap-0.5 pb-2">
             {groupedTabs.map(({ group, items }, gi) => {
               const rows = items.map(t => (
@@ -489,6 +521,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                       : <span className="w-5 h-5 shrink-0 flex items-center justify-center text-muted">{t.icon}</span>}
                     <span className="flex-1 min-w-0 truncate">{t.label}</span>
                     {t.dot && <span className="w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                    <TabCountBadge badge={t.badge} />
                     <ChevronRight size={15} className="text-muted-strong shrink-0" />
                   </button>
                 </div>
@@ -555,7 +588,8 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
           )}
           {/* Only the tab list scrolls — the title and navTop above and the
             * footer below stay fixed. */}
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay scrollbar-overlay-thin flex flex-col gap-0.5">
+          <div ref={attachTabList} data-testid="side-panel-tab-list" className="flex-1 min-h-0 overflow-y-auto scrollbar-overlay scrollbar-overlay-thin">
+          <div ref={attachTabListContent} className="flex flex-col gap-0.5">
           {tabs.map((t, i) => (
             <React.Fragment key={t.key}>
               {t.dividerBefore && <div className="h-px bg-border mx-2.5 my-2" role="separator" />}
@@ -570,6 +604,9 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     ? 'bg-accent-subtle text-accent'
                     : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
                 }`}
+                // The rows navigate, so the open tab is the current page. The class
+                // above paints it; this is the part a screen reader can read.
+                aria-current={tab === t.key ? 'page' : undefined}
                 onClick={() => setTab(t.key)}
               >
                 {t.tile
@@ -579,10 +616,31 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
                     </span>}
                 {t.label}
                 {t.dot && <span className="ml-auto w-2 h-2 bg-accent rounded-full shrink-0" role="status" aria-label={i18nT('components.sidePanelLayout.update_available')} />}
+                {/* The dot, when present, already holds the row's right edge. */}
+                <TabCountBadge badge={t.badge} className={t.dot ? '' : 'ml-auto'} />
               </button>
             </React.Fragment>
           ))}
           </div>
+          </div>
+          {/* A label, not a control: its own strip under the last row, so it
+            * reads as the list's edge rather than part of any row. The strip
+            * keeps its height for as long as the list overflows at all and
+            * only its text hides at the end, so reaching the last row does not
+            * resize the list and jump it. Decorative: every row it points at is
+            * already in the tab order and the accessibility tree. Accent text
+            * and a hairline because a muted caption over the footer was easy
+            * to miss. */}
+          {(tabListEdges.top || tabListEdges.bottom) && (
+            <div
+              aria-hidden="true"
+              data-testid="side-panel-tab-list-more"
+              className={`shrink-0 flex items-center justify-center gap-1 pt-1.5 pb-1 border-0 border-t border-solid border-border text-[12px] font-medium text-accent select-none ${tabListEdges.bottom ? '' : 'invisible'}`}
+            >
+              {i18nT('components.sidePanelLayout.more_below')}
+              <ChevronDown size={14} />
+            </div>
+          )}
           {footer && <div className="shrink-0 pt-3 px-2.5">{footer}</div>}
         </nav>}
 

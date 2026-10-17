@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api/client'
 import { Badge } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import SimpleSelect from '../components/SimpleSelect'
 import { framablePreviewUrl, safeHttpUrl } from '../lib/safeUrl'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
@@ -129,7 +130,7 @@ function CostPills({ cost, label }: { cost: WebAppMetadata['cost']; label: strin
         <span className="text-[12px] text-muted font-medium">{label}</span>
         {/* Each pill is a what-if traffic scenario over the window — say so
             loudly, so "$45" isn't read as a monthly bill. */}
-        <span className="text-[10px] px-1.5 py-px rounded-full bg-warn-subtle text-warn font-medium uppercase tracking-wide">
+        <span className="text-[10px] px-1.5 py-px rounded-full bg-warn-subtle text-warn-text font-medium uppercase tracking-wide">
           {i18nT('components.webAppArtifactCard.estimate')}
         </span>
       </div>
@@ -725,7 +726,7 @@ export default function WebAppArtifactCard({
             type="button"
             onClick={handleTeardown}
             disabled={teardownMut.isPending || isExpired}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium border border-danger/40 text-danger hover:bg-danger/10 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-transparent"
+            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12px] font-medium border border-danger/40 text-danger hover:text-danger-text hover:bg-danger/10 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-transparent"
             title={i18nT('components.webAppArtifactCard.cancel_tear_down_marks_the_deployment_expired_in')}
             aria-label={i18nT('components.webAppArtifactCard.cancel_tear_down')}
           >
@@ -736,13 +737,14 @@ export default function WebAppArtifactCard({
         </div>
       </div>
 
+      {/* No hand-off: on the artifact page this card sits beside the comments sidebar, whose composer draft is local state the hand-off would discard. */}
       {teardownMut.error && (
-        <div className="px-3 py-2 rounded-md border border-danger/40 bg-danger-subtle text-[13px] text-danger">
-          <strong>{i18nT('components.webAppArtifactCard.teardown_failed')}</strong>{' '}
-          {teardownMut.error instanceof Error
+        <ErrorNotice
+          title={i18nT('components.webAppArtifactCard.teardown_failed')}
+          message={teardownMut.error instanceof Error
             ? teardownMut.error.message
             : String(teardownMut.error)}
-        </div>
+        />
       )}
     </div>
   )

@@ -169,6 +169,12 @@ async def _add_monitor_locked(
                     or existing_monitor.config_generation != expected_existing_config_generation
                 ):
                     raise MonitorUpdateConflict("monitor changed before restart")
+            # A structured monitor is never itself a default patrol, so it
+            # displaces an ACTIVE one exactly as a prompt arm does
+            # (``mutations._add_unserialized``, ``NudgeLoop.default_patrol``).
+            displaces_default = bool(
+                existing is not None and existing.default_patrol is True and existing.active
+            )
             if existing:
                 # Same split as the legacy add: create-only refuses ANY
                 # record unless the caller opted into ``replace_stopped``,
@@ -181,7 +187,11 @@ async def _add_monitor_locked(
                 # any-record 409 keeps retained evidence intact. The
                 # wake-in-flight guard below still covers a terminal record
                 # that owns an accepted, uncompleted wake.
-                if not replace_existing and (existing.active or not replace_stopped):
+                if (
+                    not replace_existing
+                    and not displaces_default
+                    and (existing.active or not replace_stopped)
+                ):
                     raise MonitorUpdateConflict("session already has an automation")
                 existing_monitor = existing.monitor
                 if (
@@ -199,6 +209,7 @@ async def _add_monitor_locked(
                 if (
                     not replace_existing
                     and replace_stopped
+                    and not displaces_default
                     and not _stopped_row_is_replaceable(existing)
                 ):
                     # Same owner ruling as the legacy add: consumer-recorded
@@ -209,7 +220,11 @@ async def _add_monitor_locked(
                         "and is not replaceable by a re-arm; its owner must clear "
                         "it first from the dashboard's goal popover"
                     )
-                if existing_monitor is not None and existing_monitor.wake_in_flight:
+                if (
+                    existing_monitor is not None
+                    and existing_monitor.wake_in_flight
+                    and not displaces_default
+                ):
                     raise MonitorUpdateConflict(
                         "existing monitor cannot be replaced while a wake is in flight"
                     )
@@ -269,6 +284,14 @@ async def _add_monitor_locked(
                     await self._restore_provider_credentials(existing)
                 raise
             if existing is not None:
+                if displaces_default:
+                    # Same reason as the prompt path: do not cancel the running
+                    # wake that is issuing this arm (``detach_firing_default_timer``).
+                    from kiro_crew.autonudge_service.mutations import (
+                        detach_firing_default_timer,
+                    )
+
+                    detach_firing_default_timer(self, existing)
                 self.remove_sync(existing.id, persist=False)
                 if defer_replaced_trust_revocation:
                     self._deferred_monitor_replacements[loop.id] = (
@@ -310,6 +333,8 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
     ``False`` means another mutation already consumed the pending replacement,
     so the rollback deliberately leaves that newer state untouched.
     """
+    from kiro_crew import autonudge_judge as _judge
+
     removed: NudgeLoop | None = None
     prior: NudgeLoop | None = None
     async with _maintenance_lock(self._base_dir):
@@ -343,6 +368,11 @@ async def rollback_monitor_replacement(self: AutoNudgeService, loop_id: str) -> 
                 )
                 raise
             removed = self.remove_sync(loop_id, persist=False, emit=False)
+            # The snapshot above is the commit: the failed row is out of the store
+            # for good, so its judge stash and loss notice go with it. Its self-arm
+            # entry is the authorizer's to withdraw, so the shared hook that pairs
+            # the two does not run here and the forget is spelled out.
+            _judge.forget_pr_bodies(loop_id)
             if prior is not None:
                 self._loops[prior.id] = prior
                 if restore_prior_provider_credentials:

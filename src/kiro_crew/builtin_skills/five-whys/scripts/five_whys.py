@@ -34,9 +34,11 @@ Usage:
 
 import argparse
 import contextlib
+import errno
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -47,6 +49,13 @@ else:
 
 CORE_TYPES = {"ask", "answer", "focus", "done", "discuss", "prune"}
 STAGES = {"what", "example", "why-not", "benefits", "costs"}
+
+# Windows reports a held byte-range lock as EACCES, and the blocking codes as EDEADLOCK.
+_BUSY_ERRNOS = (errno.EACCES, getattr(errno, "EDEADLOCK", errno.EDEADLK))
+# Same poll and ceiling as platform_lock_compat's Windows acquire. A skill script runs
+# outside the package, so it cannot import that helper.
+_LOCK_POLL_SECS = 0.01
+_LOCK_TIMEOUT_SECS = 300.0
 
 
 def _now():
@@ -96,7 +105,28 @@ def _flock(fd, acquire):
         # unwritable through every other descriptor, so a write here fails with
         # EACCES against whoever acquired first.
         os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK if acquire else msvcrt.LK_UNLCK, 1)
+        if not acquire:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            return
+        # LK_LOCK is not a wait: after about ten one-second retries it raises
+        # EDEADLOCK for a lock that is merely held. Poll the non-blocking code
+        # until the holder lets go. EACCES is also what a descriptor that cannot
+        # lock reports, so the wait ends at a ceiling by refusing, never by
+        # running the transaction unserialized.
+        deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError as exc:
+                if exc.errno not in _BUSY_ERRNOS:
+                    raise
+            if time.monotonic() >= deadline:
+                raise SystemExit(
+                    "log lock still held after waiting %gs; refusing to proceed "
+                    "unserialized" % _LOCK_TIMEOUT_SECS
+                )
+            time.sleep(_LOCK_POLL_SECS)
     else:
         fcntl.flock(fd, fcntl.LOCK_EX if acquire else fcntl.LOCK_UN)
 
@@ -117,12 +147,12 @@ def _log_lock(path):
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         _flock(fd, True)
-        yield
-    finally:
         try:
-            _flock(fd, False)
+            yield
         finally:
-            os.close(fd)
+            _flock(fd, False)
+    finally:
+        os.close(fd)
 
 
 def _load(path):

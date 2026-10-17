@@ -18,6 +18,7 @@ import kiro_crew.subagent as subagent_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.subagent import QUEUED_REASON_LOW_MEMORY, SubagentManager
 from kiro_crew.subagent_manager.admission import SpawnAdmissionCoordinator
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -80,7 +81,7 @@ async def test_a_deferred_spawn_is_readable_until_it_starts(monkeypatch) -> None
         # on the registry answers for it, so the queued read must not.
         free["gb"] = 32.0
         mgr._taskq_admit_wait_secs = 0.05
-        await mgr._taskq.run(mgr._taskq.defer, info.id, 0.0, reason="test: eligible now")
+        await mgr._taskq.run(mgr._taskq.defer, info.id, wait=-1.0, reason="test: eligible now")
         for _ in range(250):
             if started.is_set():
                 break
@@ -96,6 +97,94 @@ async def test_a_deferred_spawn_is_readable_until_it_starts(monkeypatch) -> None
         for task in tasks:
             task.cancel()
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 5)
+        mgr._taskq.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_an_entry_with_no_row_is_readable_while_the_pump_rechecks_it(monkeypatch) -> None:
+    """A memory-deferred spawn with no durable row (temporary memory here) is
+    popped from the window for each re-check, and the re-check awaits off-loop
+    reads before the gate starts or re-queues it. For that whole span the spawn
+    is in neither the window nor the registry; the queued reads still answer
+    it, so ``GET /api/spawn/{id}`` and its ownership check do not read the
+    caller's own accepted spawn as an unknown run."""
+    cfg = KiroCrewConfig()
+    cfg.agent.subagent_cost_gb = 0.5
+    cfg.agent.spawn_min_memory_gb = 4.0
+    monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
+    monkeypatch.setattr(subagent_mod, "Stats", MagicMock())
+    monkeypatch.setattr(subagent_mod, "sel", MagicMock())
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    free = {"gb": 3.0}
+
+    def memory_check(*, min_gb, **_kw):
+        return free["gb"] >= min_gb, free["gb"]
+
+    monkeypatch.setattr(subagent_mod, "check_memory_available", memory_check)
+    mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx(), max_concurrent=3)
+    await wait_taskq_open(mgr)
+    mgr._spawn_stagger_secs = 0.0
+    mgr._taskq_admit_wait_secs = 0.05
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def worker(info) -> None:
+        started.set()
+        await finish.wait()  # runs until the teardown cancels it
+
+    monkeypatch.setattr(mgr, "_run", AsyncMock(side_effect=worker))
+    try:
+        info = await mgr.spawn_async(
+            "summarize the log", parent_session_key="dash:vis", _memory_mode="temporary"
+        )
+        assert info is not None and info.queued is True
+        assert mgr.get(info.id) is None, "fixture: a deferred spawn has no registered run"
+
+        # Hold the next re-check inside its off-loop agent read.
+        entered, release = asyncio.Event(), asyncio.Event()
+        check_agent = mgr._check_agent_off_loop
+
+        async def held_check(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await check_agent(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_check_agent_off_loop", held_check)
+
+        def rechecking() -> bool:
+            mgr._drain_queue()
+            return entered.is_set()
+
+        await async_wait_until(rechecking, describe=lambda: "the pump never re-checked the spawn")
+        windowed = [p.get("_preassigned_id") for p in mgr._queue]
+        assert (
+            info.id not in windowed and mgr.get(info.id) is None
+        ), "fixture: the re-check holds the spawn outside the window and the registry"
+
+        queued = await mgr.queued_run_async(info.id)
+        assert queued is not None and queued.id == info.id
+        assert queued.parent_session_key == "dash:vis"
+        assert queued.task == "summarize the log"
+        assert [q.id for q in (await mgr.queued_runs_async("dash:vis")).runs] == [info.id]
+        assert (await mgr.queued_runs_async("dash:other")).runs == ()
+
+        # Memory recovers and the held re-check goes on: the run starts, and from
+        # then on the registry answers for it, not the queued reads.
+        free["gb"] = 32.0
+        release.set()
+        await await_until(started, what="the deferred spawn to start")
+        assert mgr.get(info.id) is not None
+        assert await mgr.queued_run_async(info.id) is None
+        assert (await mgr.queued_runs_async("dash:vis")).runs == ()
+    finally:
+        mgr._shutting_down = True
+        tasks = [task for task in mgr._tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        await await_until(
+            asyncio.gather(*tasks, return_exceptions=True), what="the cancelled runs to end"
+        )
         mgr._taskq.close()
 
 
@@ -313,7 +402,7 @@ def test_an_old_deferral_sentence_does_not_describe_a_later_wait(tmp_path) -> No
         store.accept([_row("d1"), _row("d2")])
         later = time.time() + 600
         for rid in ("d1", "d2"):
-            assert store.defer(rid, later, reason=sentence)
+            assert store.defer(rid, wait=600, reason=sentence)
         store.append_event("d1", "claimed", {})
         _force(store, "d1", "recovering", attempts=1, next_run_at=later)
         rows, _ = _read_queued_rows(store, session_key="dash:vis", app=None, exclude_ids=[])
@@ -354,7 +443,9 @@ async def test_an_unreadable_store_makes_the_listing_partial() -> None:
 
     store = types.SimpleNamespace(run=_down)
     fake = types.SimpleNamespace(
-        _manager=types.SimpleNamespace(_agents={}, _queue=[], _queue_wait={}),
+        _manager=types.SimpleNamespace(
+            _agents={}, _queue=[], _undurable_in_dispatch={}, _queue_wait={}
+        ),
         taskq_store=lambda: store,
     )
     fake._manager._queued_listing_partial = False
@@ -386,6 +477,36 @@ def test_in_memory_pending_work_is_the_arms_whole_view() -> None:
         assert mgr.has_in_memory_pending_work_for(parent, exclude_id="me") is False
         assert mgr.has_in_memory_pending_work_for(parent) is True
     finally:
+        loop.close()
+
+
+@pytest.mark.usefixtures("close_subagent_managers")
+def test_an_unfinished_report_is_owed_after_its_run_task_ends() -> None:
+    """A report in ``_report_owners`` counts for its own parent until it is done,
+    even once the run's task is gone and the pending-work signal does not see it."""
+    from kiro_crew.subagent import SubagentInfo
+
+    loop = asyncio.new_event_loop()
+    try:
+        mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
+        parent = "dash:report"
+        assert mgr.has_unfinished_report_for(parent) is False
+        assert mgr.has_unfinished_report_for("") is False
+
+        child = SubagentInfo(id="c1", task="t", parent_session_key=parent)
+        child.done = True
+        mgr._agents[child.id] = child
+        report = loop.create_future()
+        mgr._report_owners[report] = child  # type: ignore[index]
+
+        assert mgr.has_in_memory_pending_work_for(parent) is False
+        assert mgr.has_unfinished_report_for(parent) is True
+        assert mgr.has_unfinished_report_for("dash:other") is False
+
+        report.set_result(None)
+        assert mgr.has_unfinished_report_for(parent) is False
+    finally:
+        mgr._report_owners.clear()
         loop.close()
 
 
@@ -636,6 +757,7 @@ def test_no_child_probe_spells_a_slots_session_key_by_hand() -> None:
         "has_pending_work_for",
         "has_pending_work_for_async",
         "has_in_memory_pending_work_for",
+        "has_unfinished_report_for",
     }
     src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
     offenders: list[str] = []

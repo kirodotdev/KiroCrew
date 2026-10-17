@@ -8,6 +8,11 @@ app**, next to the pull request they came from — nothing is written to the pul
 request unless you turn on `review.auto_post`, which publishes them as a PENDING
 (draft) review for you to submit.
 
+A finding you will not send can be **dismissed with a reason** from its card. The
+reason is kept on the review's run record (`dismissed`, beside `posted_keys`);
+the card then shows it with an undo, and the finding is left out of every later
+post. A finding already on the pull request cannot be dismissed.
+
 ## Ask the reviewer
 
 A report states conclusions; "why did you decide that?" is answerable only by the
@@ -42,13 +47,40 @@ the platform's own user-controlled session cleanup.
 
 ## Architecture (V1)
 
+Automatic runs build reports, archived HTML, and posting payloads from the
+driver's accepted response snapshots, never by re-reading worker-writable result
+files. Standalone report generation and manual posting retries still use stored
+records; this response handoff does not authenticate those durable inputs or
+prevent a poster with file tools from changing its own staging file. The automatic
+posting path restores the accepted findings to the durable record before checking
+delivery, so a failed confirmation cannot leave substituted findings for a manual
+retry.
+
+Responses may include Markdown fences and narration. The decoder scans backward
+from the end of the response using nesting and string-aware object boundaries,
+then examines at most 64 complete objects. Braces inside quoted snippets do not
+consume the candidate budget. Each candidate is bounded to one million characters
+and one million UTF-8 bytes before parsing. Schema, capability, and change
+identity select the envelope. A rejected coverage follow-up retains the first
+pass and exposes a redacted reason in progress and the per-change run result.
+
 - **Deterministic shell** (`sage_lib/`): data store + self-heal layout, GitHub
   source adapter, blast-radius signals, result records, scorer/export.
   Token-free, unit-tested.
-- **LLM judgment** (`skills/` + sub-agents): the per-change design gate +
-  dimension review and the final report synthesis, each in a clean session.
+- **LLM judgment** (`skills/sage-review`): one thorough review pass per change,
+  in a clean session on a `review_pool` ACP worker (no `/api/spawn`, no
+  sub-agents), plus at most one targeted follow-up when the review reports
+  incomplete file coverage. Design is one dimension of that review, not a
+  separate gate. The Focus Report is built deterministically by
+  `sage_lib/report.py` from the result records.
 - **Backend** (`backend/routes.py`): registers the `/api/apps/code-review-sage`
-  routes on the dashboard app.
+  routes on the dashboard app, including `GET .../review-queue` (open PRs that
+  request the `gh` user's review), which backs the page's **Requests** rail tab.
+- **Authorization**: every mutating route is the dashboard owner's alone — a
+  non-owner dashboard subject and any app token (Sage's own included) get the
+  shared 403 `owner_only` before a body is read. A review runs with the owner's
+  `gh` login and a post publishes as the owner. The `GET` reads (settings,
+  namespaces, repos, runs) stay open. `tests/test_owner_gate.py` pins it.
 - **UI**: the `/code-review-sage` dashboard page is a React component at
   `website/src/apps/code-review-sage/CodeReviewSagePage.tsx` (registered in
   `website/src/apps/builtinRegistry.ts`).
@@ -64,7 +96,8 @@ code_review_sage/
 │   └── routes.py            # /api/apps/code-review-sage routes
 ├── sage_lib/
 │   ├── store.py             # data layout self-heal + config
-│   ├── review_driver.py     # code-enforced 1-isolated-spawn-per-change loop
+│   ├── review_driver.py     # code-enforced one-isolated-review-per-change loop
+│   ├── worker_response.py   # binds a worker's response envelope to its dispatch
 │   ├── review_pool.py       # reviewer worker pool (config-driven model/effort)
 │   ├── adapters.py          # GitHub PR source adapter
 │   └── ...
@@ -106,6 +139,12 @@ for it:
 ```bash
 gh auth login --hostname ghe.example.com
 ```
+
+This list is separate from the dashboard's `dashboard.github_hosts` in
+`~/.kiro/crew/config.json`, which decides which Enterprise pull-request and
+issue links the dashboard's chips and Changes/Issues panels recognize. Neither
+reads the other, so list a host in both to use it in both places; the one
+`gh auth login --hostname` entry serves both.
 
 Hosts are matched exactly against the parsed URL hostname — never as a
 substring — so lookalike hosts are refused.

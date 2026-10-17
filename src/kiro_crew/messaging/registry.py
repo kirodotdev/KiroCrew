@@ -2,10 +2,10 @@
 
 One registry entry per channel carries the host's per-channel LIFECYCLE seams —
 the members tuple, the start call, the shutdown gather. The other per-channel
-seams (the ``orch._<channel>_*`` hoist in ``slack/gateway.py``, the config dataclass in
-``config/sections.py`` with its ``config/section_builders.py`` builder and its
-``KiroCrewConfig`` field in ``config/loader.py``, the ``sandbox.py`` credential denylist, the
-``dashboard/state.py`` connected fields, the uncredentialed-skip probe table in
+seams (the ``orch._<channel>_*`` hoist in ``slack/gateway_runtime/channel_boot.py``, the
+config dataclass in ``config/sections_*.py`` with its ``config/section_builders.py`` builder and its
+``KiroCrewConfig`` field in ``config/loader_config.py``, the ``sandbox_tiers.py`` credential
+denylist, the ``dashboard/state.py`` connected fields, the uncredentialed-skip probe table in
 ``_start_channel_transports``) are still hand-edited.
 
 This module owns the TYPES and the LOOPS
@@ -56,7 +56,8 @@ class ChannelDescriptor:
 
     ``channel_type`` is the single identity used EVERYWHERE: the governance
     member id, ``MessagingTransport.channel_type``, the session-key surface
-    segment, the config section name, and the dashboard badge prefix. The
+    segment (except a ``dm_scope="unified"`` direct-DM key, which starts with
+    ``unified``), the config section name, and the dashboard badge prefix. The
     contract tests pin that these never diverge.
     """
 
@@ -67,6 +68,14 @@ class ChannelDescriptor:
     """Boot factory, or ``None`` for a host-managed lifecycle (Slack)."""
 
     credentials: tuple[str, ...] = ()
+    """Credential keys this channel needs ALL of before it can connect.
+
+    Data rather than a per-channel branch, so a diagnostic can report every
+    channel's readiness from one loop. Empty means the channel needs no
+    credential at all — iMessage is the real case: its transport is the
+    operator's own Messages.app, so there is nothing to store or rotate, and an
+    empty tuple must read as "nothing missing" rather than "not configured".
+    """
     #: ``credential key -> config attribute`` for the channels that accept the
     #: secret from ``config.json`` as well as the environment. Readiness has to
     #: consult BOTH, or it reports a missing credential for a channel the gateway
@@ -97,14 +106,6 @@ class ChannelDescriptor:
     #: ``live.watch_section``; the two are disjoint by construction and
     #: ``test_channel_boot_keys_contract.py`` pins that.
     boot_keys: frozenset[str] = frozenset()
-    """Credential keys this channel needs ALL of before it can connect.
-
-    Data rather than a per-channel branch, so a diagnostic can report every
-    channel's readiness from one loop. Empty means the channel needs no
-    credential at all — iMessage is the real case: its transport is the
-    operator's own Messages.app, so there is nothing to store or rotate, and an
-    empty tuple must read as "nothing missing" rather than "not configured".
-    """
 
 
 def governed_members(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[str, ...]:

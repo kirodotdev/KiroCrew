@@ -54,6 +54,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SELF_SERVED_ACP,
     POLICY_ID_BY_BACKEND,
+    host_unservable_reason,
     launch_for,
 )
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
@@ -79,6 +80,16 @@ UNKNOWN = "unknown"
 # drift -- and a rename that missed one copy leaves the sweep unable to recognise a
 # process Crew spawns, which spares an orphan and then drops its tracking entry.
 COMPONENT_KIRO_CLI = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_KIRO]
+#: What a kiro-cli too old for KAS lacks: its ``acp`` relay's KAS engine selector.
+#: Spelled here because this package may not import ``kiro_crew.acp``; a test pins
+#: it to ``acp.kas_transport``'s flag and engine constants.
+COMPONENT_KAS_ENGINE = f"{COMPONENT_KIRO_CLI} acp --agent-engine v3"
+#: What the KAS row is missing on the BUNDLE route (``agent.kas_bundle`` on): Kiro
+#: Crew's own installed engine, laid down by ``kirocrew kas install`` or the
+#: Settings card's Install button -- never kiro-cli, which that route does not run.
+COMPONENT_KAS_BUNDLE = "KAS engine bundle"
+#: The command that installs it, shown beside the component.
+KAS_BUNDLE_INSTALL_COMMAND = "kirocrew kas install"
 #: The ACP adapter Crew launches for the Claude backend.
 COMPONENT_CLAUDE_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 #: The Claude CLI handed to that adapter as ``CLAUDE_CODE_EXECUTABLE``. A
@@ -181,21 +192,63 @@ def _probe_kiro() -> BackendInstallState:
     )
 
 
-def _probe_kas() -> BackendInstallState:
-    """KAS's answer IS kiro's, by construction -- there is no kas resolver.
+def _kas_bundle_route() -> bool:
+    """Whether ``agent.kas_bundle`` is on: KAS then runs Crew's own engine, not kiro-cli.
 
-    KAS is not an independent harness: it is reached through kiro-cli's own ACP
-    relay, resolved from the same binary and handed ``acp --agent-engine v3``.
-    There is no second binary, no bundle and no Node runtime of Crew's own to
-    look for, so inventing a kas resolve would be a search for something that is
-    never spawned -- and it could then disagree with kiro's verdict about the one
-    binary they share.
+    Read on every probe, never remembered here: the switch is boot-only for the
+    harness but the panel reads this verdict live, and the probe cache's TTL is
+    the one staleness this module already accepts.
+    """
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        return bool(KiroCrewConfig.load().agent.kas_bundle)
+    except Exception:
+        return False
+
+
+def _probe_kas() -> BackendInstallState:
+    """KAS's answer IS kiro's, by construction, on the relay route.
+
+    KAS is not an independent harness there: it is reached through kiro-cli's own
+    ACP relay, resolved from the same binary and handed ``acp --agent-engine v3``.
+    There is no second binary to look for, so inventing a kas resolve would be a
+    search for something that is never spawned -- and it could then disagree with
+    kiro's verdict about the one binary they share.
+
+    On the BUNDLE route (``agent.kas_bundle`` on) the answer is Crew's own
+    installed engine instead (``agent_sdk.kas_bundle.installed_bundle``): that
+    route never runs kiro-cli, so a host without it is INSTALLED once the engine
+    is, and a host with kiro-cli but no engine is MISSING the bundle -- the one
+    component the row then names, with the command that lays it down.
 
     Delegating through :func:`probe_backend` rather than calling ``_probe_kiro``
-    directly also means both rows share one cache entry, so listing the switch
-    resolves the binary once.
+    directly also means both rows share one cache entry on the relay route, so
+    listing the switch resolves the binary once.
     """
+    if _kas_bundle_route():
+        from kiro_crew.agent_sdk import kas_bundle
+
+        if kas_bundle.installed_bundle() is None:
+            return BackendInstallState(
+                ACP_BACKEND_KAS,
+                _policy_id(ACP_BACKEND_KAS),
+                MISSING,
+                (COMPONENT_KAS_BUNDLE,),
+                KAS_BUNDLE_INSTALL_COMMAND,
+            )
+        return BackendInstallState(ACP_BACKEND_KAS, _policy_id(ACP_BACKEND_KAS), INSTALLED)
     kiro = probe_backend(ACP_BACKEND_KIRO)
+    # The one way KAS differs from kiro here: the boot-time floor found the shared
+    # binary too old to select the KAS engine. The panel prints the component, so
+    # it names what the update must bring rather than a bare "kiro-cli".
+    if kiro.installed == INSTALLED and host_unservable_reason(ACP_BACKEND_KAS):
+        return BackendInstallState(
+            ACP_BACKEND_KAS,
+            _policy_id(ACP_BACKEND_KAS),
+            MISSING,
+            (COMPONENT_KAS_ENGINE,),
+        )
     return BackendInstallState(
         ACP_BACKEND_KAS,
         _policy_id(ACP_BACKEND_KAS),
@@ -548,8 +601,11 @@ __all__ = [
     "CACHE_TTL_SECONDS",
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",
+    "COMPONENT_KAS_BUNDLE",
+    "COMPONENT_KAS_ENGINE",
     "COMPONENT_KIRO_CLI",
     "INSTALLED",
+    "KAS_BUNDLE_INSTALL_COMMAND",
     "MISSING",
     "UNKNOWN",
     "BackendInstallState",

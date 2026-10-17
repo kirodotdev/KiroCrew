@@ -3,7 +3,7 @@
  *
  * The model's context window, in tokens, decides whether a prompt can be
  * delivered whole. `POST /api/chat` (`api_chat` in
- * `src/kiro_crew/dashboard/chat_handlers.py`) applies no per-message cap of its
+ * `src/kiro_crew/dashboard/chat_api/chat_send.py`) applies no per-message cap of its
  * own, so the window is the first limit a large prompt meets. The composer
  * already receives it as `contextWindowTokens` (the same value the context
  * meter shows). An unknown or invalid value skips this check.

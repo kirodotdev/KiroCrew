@@ -100,7 +100,7 @@ def test_os_thread_count_matches_proc_when_available():
 
 def test_open_fds_delegates_to_the_shared_probe():
     # The probe's behavior (fd-dir correction, Windows handle count) is pinned
-    # in test_platform_compat_coverage.py; here only the delegation matters.
+    # in test_platform_compat_coverage_metrics.py; here only the delegation matters.
     with patch.object(pg.platform_compat, "count_open_fds", return_value=17):
         assert pg.read_open_fds() == 17
 

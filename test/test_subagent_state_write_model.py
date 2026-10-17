@@ -101,9 +101,13 @@ _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
     ): (1, "off loop at every call site; serialized by the callee's unconditional lock"),
     (
         "kiro_crew/subagent_manager/continuation.py",
-        "release_conversation_impl",
+        "_release_disk_sync",
         "update_state",
-    ): (1, "on loop; fenced by the release path refusing while the run is in flight"),
+    ): (
+        1,
+        "off loop from every event-loop caller (release_conversation_async), which "
+        "holds the conversation until the worker lands; inherits the per-agent lock",
+    ),
     (
         "kiro_crew/subagent_persistence.py",
         "create_agent_folder",

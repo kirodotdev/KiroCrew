@@ -223,16 +223,20 @@ describe('the pinned reducer does not alias two distinct pastes', () => {
   // for both -- and equal content length, so a content-shape key would collide.
   const first = block(1, 'alpha\nbravo\ncharlie')
   const second = block(1, 'delta\nechos\nfoxtrot')
-  const prompt = formatToken(first)
 
+  // Each message carries its OWN block's token in `raw` (what the composer
+  // serializes): the tokens differ by their hidden id, so the reducer resolves
+  // each against its own paste even though both display `#1`.
   const input = (b: PasteBlock, over: Record<string, unknown> = {}) => ({
-    idx: 4, ts: 't1', raw: prompt, pastes: [b], push: 0, bannerH: 40, ...over,
+    idx: 4, ts: 't1', raw: formatToken(b), pastes: [b], push: 0, bannerH: 40, ...over,
   })
 
-  it('the two really are indistinguishable to a seq+length key', () => {
+  it('the two share a seq+length key but are distinguished by the hidden token id', () => {
     expect(second.content.length).toBe(first.content.length)
     expect(second.lines).toBe(first.lines)
-    expect(formatToken(second)).toBe(formatToken(first))
+    expect(second.seq).toBe(first.seq)
+    expect(formatToken(second)).not.toBe(formatToken(first))
+    expect(first.id).not.toBe(second.id)
   })
 
   it('derives the second message from its OWN paste, not the first one held', () => {

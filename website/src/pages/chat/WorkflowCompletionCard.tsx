@@ -103,7 +103,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
   const label = sanitizeLlmOutput(name.slice(0, 80))
 
   // Row geometry -- the px-4 gutter and the --mc-content-width clamp -- belongs to
-  // the HOST row wrapper, never to this card. ChatPage wraps every renderMessage
+  // the HOST row wrapper, never to this card. ChatTranscriptView wraps every renderMessage
   // result, and the shared registries wrap this card through ctx.row. Re-applying
   // it here nested one clamp inside another and inset the card by a second full
   // gutter, so it sat 20px right of every sibling row and 40px narrower.
@@ -122,8 +122,8 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         <span
           className={`shrink-0 text-[10px] leading-4 px-1.5 py-0.5 rounded border ${
             ok
-              ? 'bg-ok/10 border-ok/20 text-ok'
-              : 'bg-danger/10 border-danger/20 text-danger'
+              ? 'bg-ok/10 border-ok/20 text-ok-text'
+              : 'bg-danger/10 border-danger/20 text-danger-text'
           }`}
         >
           {status}
@@ -171,7 +171,7 @@ const WorkflowCompletionCard = memo(function WorkflowCompletionCard({
         // (index.css), so an outward ring or UA outline would be swallowed on
         // every edge that touches the root. ring-inset paints inside the box.
         <div
-          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+          className="px-3 pb-2 pt-1 border-t border-accent/10 max-h-[24rem] overflow-y-auto overflow-x-hidden focus-ring-accent-inset"
           data-testid="workflow-completion-body"
           role="region"
           aria-labelledby={headlineId}

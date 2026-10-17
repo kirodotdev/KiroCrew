@@ -13,19 +13,17 @@ reused; each launch uploads to ``<tag>/kirocrew-src.tar.gz``.
 from __future__ import annotations
 
 import base64
-import errno
 import hashlib
 import logging
 import os
 import stat
-import struct
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
-from kiro_crew import platform_compat
+from kiro_crew import github_runner, platform_compat
 from kiro_crew.cloud import aws
 from kiro_crew.config.loader import config_dir
 from kiro_crew.sel import sel
@@ -194,112 +192,94 @@ def _chain_the_launcher_owns(base: Path) -> list[Path]:
     return chain
 
 
-def _group_shared_with_another_account(gid: int) -> Optional[str]:
-    """Why group ``gid`` admits an account other than this one, or ``None`` if it does not.
+def _first_replaceable_windows(path: Path) -> Optional[tuple[Path, str]]:
+    """The Windows arm of :func:`_first_replaceable`, read from the ACL.
 
-    A group-writable directory is a foreign writer's door only when the GROUP holds
-    somebody else. A host with user-private groups leaves ordinary directories
-    group-writable to a group holding the operator alone, and refusing there would
-    reject a supported layout for no gain -- so the mode bit cannot decide this and
-    the membership has to.
+    The same two questions the POSIX walk asks -- is an ancestor owned by a third
+    account, and can anything outside the trusted set replace what is inside it --
+    answered from each directory's SECURITY DESCRIPTOR because ``st_uid`` and the
+    mode bits carry no information on Windows (``os.stat`` reports ``st_uid == 0``
+    and ``st_mode == 0o777`` for every path).
 
-    Membership has two halves and BOTH are needed. ``gr_mem`` lists supplementary
-    members only: an account whose PRIMARY group this is never appears there, so a
-    thoroughly shared group can present an empty ``gr_mem`` and read as private.
-    The passwd database supplies the other half.
+    The per-component decision is NOT re-implemented here: it is exactly the
+    relaxed-mode policy :func:`kiro_crew.github_runner.check_provider_path_component_windows`
+    already applies to each parent of a provider CLI -- owner and writers must be
+    the launcher, a well-known machine SID, or (here) Owner Rights -- reading the
+    descriptor through :func:`kiro_crew.windows_acl.describe`. Calling it keeps ONE
+    spelling of the policy, so the two walks cannot drift apart. This arm supplies
+    only what differs from that walk: the chain to visit, the first-failing-node
+    return shape (the function raises per component; this maps the raise to
+    ``(node, reason)``), and the one extra trusted principal below.
 
-    FAILS CLOSED, and that is the whole point of returning a reason rather than a
-    bool. Calling a group private takes a successful read of both databases, so a
-    lookup that raises, or a passwd database that will not enumerate -- SSSD and
-    other directory backends commonly refuse, and a directory host is exactly where
-    groups are shared -- leaves privacy UNPROVEN and refuses. The account's own
-    presence in the enumeration is the control: a passwd database that cannot see
-    this account cannot show that no other account shares the gid, however many
-    rows it returns.
+    Without this ancestor walk, the only Windows protections on the staging path
+    are the link/junction screens and the inheritable owner-only DACL on the
+    staging leaf, and neither sees an ANCESTOR of the leaf renamed away and
+    replaced with a real directory. On a multi-user host whose data home sits
+    under a directory a local peer can write, that swap reaches the uploaded
+    tarball. The walk closes it.
 
-    ``getgrgid`` answers with ONE group entry, but a host may carry several entries
-    with the same gid, and each grants its members that gid as a supplementary
-    group. So the supplementary half reads every entry carrying the gid.
+    ``S-1-3-4`` (Owner Rights) is trusted here where the provider-executable walk
+    does not trust it: this chain runs over the data home, and
+    ``ensure_data_home`` locks that home down with an inheritable owner-only DACL
+    whose grants are ``(S-1-3-4, me)`` -- so the Owner-Rights full-control ACE on
+    this chain is this account's OWN lockdown, not a foreign writer, and refusing
+    on it would reject the ordinary locked-down home on every launch.
+
+    Fails closed on an unverifiable launcher SID -- ``current_user_sid`` reads only
+    this process's access token and returns ``None`` on failure, so there is
+    nothing to compare an owner or writer against. The POSIX arm cannot reach that
+    (``geteuid`` always answers); the shared function needs a non-empty ``me_sid``,
+    so the guard also protects the call. Every other failure shape -- unreadable
+    descriptor, non-local volume, NULL DACL, unparsable ACE, foreign owner, foreign
+    writer -- is the shared function's and surfaces as its ``ValueError`` message;
+    any exception it does NOT raise as a ``ValueError`` (an ``OSError`` from the
+    volume probe, say) is still an uncleared descriptor and is caught and returned
+    as a fail-closed ``(node, reason)`` rather than propagated.
+
+    The volume ROOT is passed ``volume_root=True``: a drive root is not an entry
+    in any directory on this host, so a plain ``DELETE`` grant on it swaps nothing
+    and is not treated as a replaceability vector there, while
+    ``FILE_DELETE_CHILD`` (the actual child-swap right on a root) and the other
+    substitution rights still refuse. The stock ACL on a secondary NTFS volume
+    grants ``Authenticated Users`` Modify -- which carries ``DELETE`` but not
+    ``FILE_DELETE_CHILD`` -- on the drive root, and without this exemption a data
+    home relocated directly under such a root was refused although it is safe.
+
+    Only ancestors :func:`_chain_the_launcher_owns` returns are in scope, same as
+    POSIX: a directory above the operator's home belongs to the administrator, and a
+    relocated home is walked whole.
     """
-    # Local import: neither module exists on Windows, where the walk has already
-    # stood down before reaching here.
-    import grp
-    import pwd
-
-    try:
-        entry = grp.getgrgid(gid)
-    except (KeyError, OSError):
-        return f"a group (gid {gid}) this host cannot resolve"
-    try:
-        me = pwd.getpwuid(os.geteuid()).pw_name
-    except (KeyError, OSError):
-        return f"group {entry.gr_name!r}, which cannot be compared to this account"
-    try:
-        same_gid = [g for g in grp.getgrall() if g.gr_gid == gid]
-    except OSError:
-        return f"group {entry.gr_name!r}, whose entries this host will not enumerate"
-    members = {name for g in [entry, *same_gid] for name in g.gr_mem}
-    supplementary = sorted(members - {me})
-    if supplementary:
-        return f"group {entry.gr_name!r}, shared with {len(supplementary)} other account(s)"
-    try:
-        everyone = pwd.getpwall()
-    except OSError:
-        everyone = []
-    if not any(person.pw_name == me for person in everyone):
-        return f"group {entry.gr_name!r}, whose membership this host will not enumerate"
-    primary = sorted({p.pw_name for p in everyone if p.pw_gid == gid and p.pw_name != me})
-    if primary:
-        return f"group {entry.gr_name!r}, the primary group of {len(primary)} other account(s)"
-    return None
-
-
-_ACL_XATTR_VERSION = 2
-_ACL_USER = 0x02
-_ACL_GROUP = 0x08
-_ACL_MASK = 0x10
-_ACL_WRITE = 0o2
-# A filesystem or kernel that keeps no POSIX ACL answers with one of these.
-_NO_ACL_ERRNOS = frozenset(
-    e for e in (getattr(errno, n, None) for n in ("ENODATA", "ENOTSUP", "EOPNOTSUPP")) if e
-)
-
-
-def _acl_admits_another_account(node: Path, mine: int) -> Optional[str]:
-    """Why ``node``'s POSIX access ACL lets another account write it, or ``None``.
-
-    With an extended ACL the mode's group bits show the ACL mask, so a named entry
-    can give a peer write access behind a group bit that looks private. Only an
-    EFFECTIVE write counts: a named entry's bits are ANDed with the mask. A named
-    user that is ``mine`` (this process's uid) or root is already trusted, and a named group gets
-    the same membership question as the owning group. The default ACL governs what
-    is created inside, not this directory, so it is not read.
-
-    No ACL API (macOS, BSD) or no ACL on this node leaves the mode bits as the test.
-    Any other read failure, or a value this parser does not recognise, fails closed.
-    """
-    getxattr = getattr(os, "getxattr", None)
-    if getxattr is None:
-        return None
-    try:
-        raw = getxattr(node, "system.posix_acl_access")
-    except OSError as exc:
-        if exc.errno in _NO_ACL_ERRNOS:
-            return None
-        return "an ACL this host cannot read"
-    if len(raw) < 4 or (len(raw) - 4) % 8 or struct.unpack_from("<I", raw)[0] != _ACL_XATTR_VERSION:
-        return "an ACL this host cannot read"
-    entries = [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
-    mask = next((perm for tag, perm, _ in entries if tag == _ACL_MASK), 0o7)
-    for tag, perm, ident in entries:
-        if not perm & mask & _ACL_WRITE:
-            continue
-        if tag == _ACL_USER and ident not in (mine, 0):
-            return f"an ACL entry for another account (uid {ident})"
-        if tag == _ACL_GROUP:
-            shared = _group_shared_with_another_account(ident)
-            if shared is not None:
-                return f"an ACL entry for {shared}"
+    me_sid = platform_compat.current_user_sid()
+    if not me_sid:
+        return path, "runs under a user whose SID this host cannot verify"
+    for node in _chain_the_launcher_owns(path):
+        try:
+            github_runner.check_provider_path_component_windows(
+                node,
+                label=f"'{node}'",
+                me_sid=me_sid,
+                strict=False,
+                trust_owner_rights=True,
+                # A volume root cannot itself be renamed or deleted, so a plain
+                # DELETE grant on it is no swap vector -- let the shared check
+                # ignore a DELETE-only writer there while still refusing
+                # FILE_DELETE_CHILD / WRITE_DAC / WRITE_OWNER / GENERIC_ALL.
+                volume_root=node == Path(node.anchor),
+            )
+        except ValueError as exc:
+            # The function raises the first problem it finds on this node, label
+            # first; strip the label so the caller's sentence reads "'<node>'
+            # <reason>, so what it holds can be replaced...".
+            reason = str(exc)
+            prefix = f"'{node}' "
+            return node, reason[len(prefix) :] if reason.startswith(prefix) else reason
+        except Exception as exc:
+            # The shared check surfaces every policy failure as a ValueError; any
+            # OTHER exception (e.g. an OSError from the volume probe inside
+            # describe()) is still a descriptor we could not clear. Fail closed on
+            # the node with a readable reason rather than letting a raw exception
+            # propagate out of the launch prologue.
+            return node, f"could not be checked ({type(exc).__name__}: {exc})"
     return None
 
 
@@ -333,17 +313,18 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
     definition. GROUP-writable asks one more question first, because the bit cannot
     answer it: the same bit means a foreign writer on a shared group and nobody at
     all on a user-private one, where a group holds the operator alone.
-    :func:`_group_shared_with_another_account` settles which from the membership,
-    and fails closed -- a group whose privacy cannot be PROVEN counts as shared.
-    With an extended POSIX ACL that bit is the ACL mask, so
-    :func:`_acl_admits_another_account` asks the named entries the same question.
+    :func:`platform_compat.group_write_admits_another_account` settles which from
+    the membership, and fails closed -- a group whose privacy cannot be PROVEN counts
+    as shared. With an extended POSIX ACL that bit is the ACL mask, so the same
+    question asks the named entries too.
 
     Root-first, so the answer is the outermost problem rather than an inner symptom
-    of it. Windows mode bits and uids carry no ACL information, so the walk stands
-    down there and the ACL the lockdown applies is the guarantee instead.
+    of it. On Windows ``st_uid`` and the mode bits carry no information, so the walk
+    reads each ancestor's SECURITY DESCRIPTOR instead and asks the same two
+    questions from it -- see :func:`_first_replaceable_windows`.
     """
     if platform_compat.IS_WINDOWS:
-        return None
+        return _first_replaceable_windows(path)
     mine = os.geteuid()
     for node in _chain_the_launcher_owns(path):
         try:
@@ -358,9 +339,7 @@ def _first_replaceable(path: Path) -> Optional[tuple[Path, str]]:
         if mode & stat.S_IWOTH and not mode & stat.S_ISVTX:
             return node, f"is writable by any account and not sticky (mode {mode:04o})"
         if mode & stat.S_IWGRP and not mode & stat.S_ISVTX:
-            shared = _acl_admits_another_account(node, mine) or _group_shared_with_another_account(
-                info.st_gid
-            )
+            shared = platform_compat.group_write_admits_another_account(node, info.st_gid)
             if shared is not None:
                 return node, f"is writable by {shared} and not sticky (mode {mode:04o})"
     return None
@@ -472,12 +451,31 @@ def _staging_dir() -> Path:
         node, reason = replaceable
         # The path IS named: it is the operator's own layout, they chose it through
         # the data-home setting, and the path is what makes the message actionable.
+        # The remedy is platform-specific: chmod/setfacl do not exist on Windows and
+        # cannot change a DACL, so a Windows refusal would otherwise point the
+        # operator at commands they cannot run.
+        if platform_compat.IS_WINDOWS:
+            # On these chains the offending grant is usually INHERITED from a
+            # parent, and 'icacls /remove:g' does not remove an inherited ACE --
+            # inheritance has to be converted to explicit ACEs first
+            # ('/inheritance:d'). Moving the data home under a directory only you
+            # can write avoids the ACL edit entirely.
+            remedy = (
+                f"Convert the directory's inherited ACL to explicit entries and remove "
+                f"the foreign grant (e.g. 'icacls \"{node}\" /inheritance:d' then "
+                f"'icacls \"{node}\" /remove:g <account>'), or move the data home "
+                "under a directory only you can write."
+            )
+        else:
+            remedy = (
+                f"Drop the write bit ('chmod go-w {node}'), remove the ACL "
+                f"('setfacl -b {node}'), or move the data home under a directory "
+                "only you can write."
+            )
         raise aws.AWSError(
             f"'{node}' {reason}, so what it holds can be replaced wholesale and the AWS CLI "
-            "would re-open the staged name inside the replacement -- refusing to build the "
-            f"source tarball. Drop the write bit ('chmod go-w {node}'), remove the ACL "
-            f"('setfacl -b {node}'), or move the data home under a directory only you can "
-            "write.",
+            f"would re-open the staged name inside the replacement -- refusing to build the "
+            f"source tarball. {remedy}",
             action="source:PackageLocalCheckout",
         )
     staging = base / _STAGING_DIR_LEAF
@@ -1033,6 +1031,40 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     )
 
 
+def ensure_instance_kms_boundary(profile: str = "", region: str = "", create: bool = False) -> str:
+    """Verify (and, for the admin step only, create) the OPT-IN KMS-session boundary.
+
+    Only a launch with ``--ssm-kms-key`` or ``kirocrew cloud iam-boundary --ssm-kms``
+    reaches this: a default launch never names, creates or reads
+    ``kirocrew-ec2-kms-boundary``. The content is the base instance boundary plus
+    the Session Manager KMS decrypt (:func:`iam.kms_boundary_policy_document`), and
+    it goes through the same verify-before-reuse :func:`_ensure_boundary`
+    sequence, so a drifted policy at this name is refused, never reused.
+
+    A launch passes ``create=False``. The launcher policy grants no
+    ``iam:CreatePolicy`` on this name, because in an account that never opts in the
+    name would stay unclaimed: a leaked launcher credential could create a
+    permissive policy there and then a role capped by it. So only an admin creates
+    it (``iam-boundary --ssm-kms`` passes ``create=True``), and a launch that finds
+    it absent names that step.
+    """
+    from kiro_crew.cloud import iam
+
+    account = _require_account(profile, region)
+    return _ensure_boundary(
+        name=iam.KMS_BOUNDARY_NAME,
+        arn=iam.kms_boundary_arn(account),
+        expected=iam.kms_boundary_policy_document(account),
+        description=(
+            "Kiro Crew EC2 instance permissions ceiling (SSM core + launcher source "
+            "read + KMS for encrypted Session Manager)."
+        ),
+        profile=profile,
+        region=region,
+        admin_step="" if create else "kirocrew cloud iam-boundary --ssm-kms",
+    )
+
+
 def ensure_crew_boundary(profile: str = "", region: str = "") -> str:
     """Create (once, idempotently) the shared Fargate crew boundary; return its ARN.
 
@@ -1110,8 +1142,12 @@ def _ensure_boundary(
     description: str,
     profile: str,
     region: str,
+    admin_step: str = "",
 ) -> str:
     """Create-once-and-verify, shared by every permissions boundary this launcher owns.
+
+    ``admin_step`` set means this caller must NOT create the boundary: an absent
+    one is refused with that command named, and an existing one is still verified.
 
     ONE copy of the sequence rather than one per lane, because the ORDER here is
     the security property and not an implementation detail: an existing policy is
@@ -1127,13 +1163,43 @@ def _ensure_boundary(
     # Already present? VERIFY its content matches our fixed document before reusing
     # it (a permissive boundary seeded at this name must NOT be trusted to cap
     # anything).
-    rc, _out, _err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
+    rc, _out, read_err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
     if rc == 0:
         _verify_boundary_content(arn, name, expected, profile, region)
         return arn
 
-    # Not present (or GetPolicy denied — CreatePolicy will surface the real
-    # error) → create it once from the content-fixed document.
+    # A DENIED read is not an absent boundary, and the two need different remedies.
+    # Continuing to create-policy here reports whatever THAT call is denied — the
+    # create verb — so an operator who lacks only the read grant is told to add
+    # `iam:CreatePolicy`, which neither fixes the launch nor is a grant they want.
+    # Name the verb actually missing instead. A boundary that genuinely does not
+    # exist answers NoSuchEntity rather than AccessDenied, so it still falls
+    # through to the create below.
+    if aws.is_access_denied(read_err):
+        read_missing = aws.map_missing_action(read_err) or "iam:GetPolicy"
+        raise aws.AWSError(
+            f"could not read the permissions boundary '{name}': "
+            f"{(read_err or '').strip()[:300]} — grant `{read_missing}` and retry",
+            action="iam:GetPolicy",
+            missing_action=read_missing,
+            returncode=rc,
+            stderr=read_err or "",
+        )
+
+    # Absent, and this caller may not create it: refuse with the admin step that
+    # can. The launcher policy grants no iam:CreatePolicy on such a name, so a
+    # create here would only be denied.
+    if admin_step:
+        raise aws.AWSError(
+            f"could not find the permissions boundary '{name}' (an AWS admin creates "
+            f"it once for this account with `{admin_step}`): "
+            f"{(read_err or '').strip()[:300]}",
+            action="iam:GetPolicy",
+            returncode=rc,
+            stderr=read_err or "",
+        )
+
+    # Not present → create it once from the content-fixed document.
     create = [
         "iam",
         "create-policy",
@@ -1156,12 +1222,16 @@ def _ensure_boundary(
         _verify_boundary_content(arn, name, expected, profile, region)
         return arn
     # Any other failure (AccessDenied, throttling) is real — surface it with the
-    # precise missing action so the user knows what to grant.
+    # precise missing action so the user knows what to grant. The admin step is
+    # named BEFORE the raw AWS text: it is the remedy for a launcher whose policy
+    # has had iam:CreatePolicy removed, and a caller that keeps only the head of
+    # the message still shows it.
     missing = aws.map_missing_action(err)
     hint = f" — grant `{missing}` and retry" if missing else ""
     _audit_iam_policy_change("iam.create-policy", arn, "denied", error=(err or "").strip()[:300])
     raise aws.AWSError(
-        f"could not create the permissions boundary '{name}': "
+        f"could not create the permissions boundary '{name}' (an AWS admin can "
+        "create it once for this account with `kirocrew cloud iam-boundary`): "
         f"{(err or '').strip()[:300]}{hint}",
         action="iam:CreatePolicy",
         missing_action=missing,

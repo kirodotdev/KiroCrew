@@ -134,6 +134,27 @@ class TestRecordStringsAreMasked:
         assert avatar["traits"]["mouth"] == "smile"
         assert CRED not in json.dumps(body)
 
+    @pytest.mark.asyncio
+    async def test_avatar_icon_pose_is_masked(self, tmp_path):
+        """The icon ``pose`` is an agent-writable free-text leaf: ``_safe_avatar``
+        keeps any ``_AVATAR_POSE_RE`` value up to the trait max length (so a
+        credential-shaped token fits) for forward-compat, so the roster must mask
+        it. A masked pose degrades to the default face at render (``resolvePose``
+        gates on ``Object.hasOwn``) rather than leaking the stored value."""
+        agents = {
+            "leaky": KiroCrewAgentConfig(
+                kiro_agent="kirocrew",
+                avatar={"kind": "icon", "pose": CRED, "bg": "#25679d"},
+            )
+        }
+        rows, body = await _roster(tmp_path, agents)
+        avatar = rows["leaky"]["avatar"]
+        assert avatar["pose"] == _SENSITIVE_MASK
+        # Structural and pinned-shape leaves stay intact.
+        assert avatar["kind"] == "icon"
+        assert avatar["bg"] == "#25679d"
+        assert CRED not in json.dumps(body)
+
 
 class TestBenignRowsAreUntouched:
     @pytest.mark.asyncio

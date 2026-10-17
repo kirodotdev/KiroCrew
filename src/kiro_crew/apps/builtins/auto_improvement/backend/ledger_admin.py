@@ -45,6 +45,8 @@ import re
 import time
 from typing import Any
 
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
+
 # The ONE process-wide lock that serializes read → decide → append against the ledger
 # file, SHARED with the loop's own filing writer: :meth:`spine.ledger.Ledger.record`
 # acquires the SAME object, so an operator forget / purge / manual-filed / commit here
@@ -250,8 +252,8 @@ def _append_event(row: dict[str, Any]) -> None:
     strength of this event having been recorded.
     """
     path = store.ledger_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    ensure_directory(path.parent)
+    with open(path, "a", encoding="utf-8", opener=owner_only_opener_for(path)) as handle:
         handle.write(json.dumps(row) + "\n")
         handle.flush()
         os.fsync(handle.fileno())

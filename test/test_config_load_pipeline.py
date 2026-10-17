@@ -218,6 +218,25 @@ class TestBuildConfig:
         assert cfg._base_unreadable is True
         assert cfg.skills.project_skills_enabled is False
 
+    @pytest.mark.parametrize("base", [None, {"workspaces": {"default": "~/ws"}}])
+    def test_an_unreadable_overlay_is_reported_by_the_load_that_read_it(self, config_home, base):
+        """Per read, like ``_base_unreadable``: the whole-config marker in
+        ``degraded_sections`` lasts the process, so it cannot say whether THIS load
+        holds the overlay's settings. A cache hit reports what its own read found."""
+        if base is not None:
+            _write(config_home / "config.json", base)
+        local = config_home / "config.local.json"
+        local.write_text("{broken", encoding="utf-8")
+        for _ in range(2):
+            doc = loader.read_config_document()
+            assert doc.overlay_unreadable is True
+            assert doc.base_unreadable is False
+            assert loader.build_config(doc)._overlay_unreadable is True
+        _write(local, {"agents": {"crew": {"kiro_agent": "reviewer"}}})
+        doc = loader.read_config_document()
+        assert doc.overlay_unreadable is False
+        assert loader.build_config(doc)._overlay_unreadable is False
+
     def test_the_inline_entry_reads_take_their_field_defaults(self, tmp_path):
         cfg = loader.build_config(
             _document(

@@ -32,6 +32,7 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import (
     _CONSOLIDATION_BACKOFF_BASE_SECS,
     _CONSOLIDATION_MAX_ATTEMPTS,
+    _CONSOLIDATION_PROMPT_BUDGET_CHARS,
     _SESSION_MAX_BYTES,
     ConversationLog,
     HistoryConsolidator,
@@ -44,7 +45,7 @@ KEY = "dashboard:chat-retry"
 @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
 async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, mode):
     from kiro_crew import execution_context
-    from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
+    from kiro_crew.history_consolidation import _CONSOLIDATION_BUSY, _CONSOLIDATION_REFUSED
 
     captured = execution_context.ExecutionContext(
         None, execution_context.MemoryStoreRef("default"), "template", "kirocrew", mode
@@ -60,7 +61,9 @@ async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, 
     consolidator = _make_consolidator(_seed_log(tmp_path, count=0))
     consolidator._call_llm = AsyncMock()
     result = await asyncio.wait_for(consolidator._consolidate(KEY), 10)
-    assert result is (None if mode == "persistent" else _CONSOLIDATION_REFUSED)
+    # count=0 leaves no transcript on disk, so the lease (which requires an
+    # existing session) is refused before any snapshot.
+    assert result is (_CONSOLIDATION_BUSY if mode == "persistent" else _CONSOLIDATION_REFUSED)
     consolidator._call_llm.assert_not_awaited()
     assert len(reads) == 1
     assert reads[0][0] != loop_thread
@@ -226,20 +229,22 @@ class TestTheLineIsValidatedWithTheRows:
         c._call_llm = AsyncMock(return_value={"history_entry": "leaked"})
         # Unreadable only from the snapshot's own lock hold onward, so the
         # pre-checks (which read the line too) pass and the snapshot is the gate.
-        real_locked_stems = type(log).locked_stems
+        # Hooked on the snapshot itself: the lease check takes the same lock
+        # first and must still read the line.
+        real_snapshot = type(log).snapshot_for_consolidation
         real_status = type(log)._read_metadata_status
         inside = {"lock": False}
 
-        def _locked_then_unreadable(self, stems):
+        def _snapshot_then_unreadable(self, key, **kwargs):
             inside["lock"] = True
-            return real_locked_stems(self, stems)
+            return real_snapshot(self, key, **kwargs)
 
         def _status(self, key):
             if inside["lock"] and key == KEY:
                 return {}, False
             return real_status(self, key)
 
-        monkeypatch.setattr(type(log), "locked_stems", _locked_then_unreadable)
+        monkeypatch.setattr(type(log), "snapshot_for_consolidation", _snapshot_then_unreadable)
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
 
         outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)
@@ -252,7 +257,7 @@ class TestTheLineIsValidatedWithTheRows:
         log = _seed_log(tmp_path)
         with history_mod.allow_on_loop_persist():
             log.update_metadata(KEY, {"memory_mode": "incognito"})
-        rows, total, generation = log.snapshot_for_consolidation(KEY)
+        rows, total, generation, _sub = log.snapshot_for_consolidation(KEY)
         assert (len(rows), total) == (3, 3)
         with pytest.raises(history_mod.TranscriptWithheld):
             log.snapshot_for_consolidation(KEY, withhold_restricted=True)
@@ -701,10 +706,20 @@ async def test_consolidate_refuses_a_channel_thread_whose_map_entry_was_pruned(
         privacy_mode.reset()  # the fresh gateway's trackers start empty
         c = _make_consolidator(log, sessions=None)  # no map: the header must answer
         c._call_llm = AsyncMock(return_value={"history_entry": "x"})
+        real_consolidate = c._consolidate
+        outcomes: list[object] = []
+
+        async def _recording(*args, **kwargs):
+            outcomes.append(await real_consolidate(*args, **kwargs))
+            return outcomes[-1]
+
+        c._consolidate = _recording
         c.consolidate_session(live_key)
         tasks = list(c._tasks)
         assert len(tasks) == 1, "premise: the session-end hook scheduled one pass"
-        result = await asyncio.wait_for(tasks[0], 10)
+        await asyncio.wait_for(tasks[0], 10)
+        assert len(outcomes) == 1, "premise: the session-end hook ran one pass"
+        result = outcomes[0]
     finally:
         privacy_mode.reset()
 
@@ -1121,8 +1136,13 @@ class TestAttemptCap:
         assert log.consolidation_retry_state(KEY) == (0, 0.0)
         c._last_activity[KEY] = time.time() - 10
         c._tasks.clear()
-        c.check_idle_sessions()
-        assert not c._tasks
+        # The sweep counts off the loop, so the count is drained before the
+        # check that nothing was consolidated.
+        with patch.object(c, "_consolidate", AsyncMock()) as again:
+            c.check_idle_sessions()
+            while c._tasks:
+                await asyncio.gather(*list(c._tasks))
+        again.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cap_without_a_marker_write_stays_ineligible(self, tmp_path):
@@ -1139,6 +1159,70 @@ class TestAttemptCap:
             )
 
         assert c.retry_eligible(KEY) is False
+
+    @pytest.mark.asyncio
+    async def test_abandoning_a_span_reports_it_to_the_owner(self, tmp_path):
+        """The abandon path tells its owner which span it dropped and why."""
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+        seen: list[tuple[str, int, str]] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
+            (key, count, reason)
+        )
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
+            await c._consolidate(KEY, include_history=True)
+
+        assert seen == [(KEY, 3, "empty LLM result")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_attempt_below_the_cap_reports_nothing(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+        seen: list[tuple[str, int, str]] = []
+        c.on_abandoned = lambda key, count, reason, char_count=0, last_slice=False: seen.append(
+            (key, count, reason)
+        )
+
+        with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
+            await c._consolidate(KEY, include_history=True)
+
+        assert seen == []
+        assert log.unconsolidated_count(KEY) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_raising_owner_callback_does_not_undo_the_abandon(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+
+        def _boom(
+            key: str, count: int, reason: str, char_count: int = 0, last_slice: bool = False
+        ) -> None:
+            raise RuntimeError("bell unavailable")
+
+        c.on_abandoned = _boom
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS - 1,
+                    "consolidation_retry_at": 0.0,
+                },
+            )
+
+        with patch.object(c, "_call_llm", AsyncMock(return_value=None)):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.unconsolidated_count(KEY) == 0
+        assert log.consolidation_retry_state(KEY) == (0, 0.0)
 
 
 class TestSuccessClearsTheAccounting:
@@ -1807,10 +1891,16 @@ class TestRotationReleasesTheBudgetForNewContent:
             )
             assert c.retry_eligible(KEY) is False
 
-            # Blow the byte budget so _maybe_rotate archives the failing messages
-            # and bumps the generation itself.
-            for i in range(5):
-                log.append(KEY, "user", f"{i}" * _OVER_CAP_ROW_CHARS)
+            # Blow the FILE byte budget so _maybe_rotate archives the failing
+            # messages and bumps the generation itself. Each row stays within one
+            # prompt budget (so a pass consolidates a whole message, not a
+            # sub-chunk — sub-chunking of an over-budget head is covered in
+            # test_history_consolidation_bounds.py); it is their NUMBER that
+            # overflows the session file and triggers rotation.
+            row = "r" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS // 2)
+            rows_to_rotate = (_SESSION_MAX_BYTES // len(row)) + 4
+            for i in range(rows_to_rotate):
+                log.append(KEY, "user", f"{i}:{row}")
         assert log.get_metadata(KEY)["rotation_generation"] >= 1, "no rotation fired"
 
         with history_mod.allow_on_loop_persist():
@@ -1819,19 +1909,27 @@ class TestRotationReleasesTheBudgetForNewContent:
             c.retry_eligible(KEY) is True
         ), "a rotation left the session permanently unable to consolidate"
 
-        # Each of these rows is megabytes wide, so the prompt budget puts one
-        # message in front of the model per pass. Drive the passes to a fixed
-        # point rather than asserting on one: what the rotation released is that
-        # the tail CAN be consolidated, and a bounded pass reaches that over
-        # successive turns. The pass cap is what proves it terminates.
+        # The prompt budget puts a bounded number of messages in front of the
+        # model per pass. Drive the passes to a fixed point rather than asserting
+        # on one: what the rotation released is that the tail CAN be consolidated,
+        # and a bounded pass reaches that over successive turns. The pass cap is
+        # what proves it terminates. Progress is the durable position advancing —
+        # the message marker, or (for an over-budget head) the sub-offset.
+        def _position() -> tuple:
+            m = log.get_metadata(KEY)
+            return (
+                int(m.get("last_consolidated", 0) or 0),
+                int(m.get("consolidation_sub_offset", 0) or 0),
+            )
+
         passes = 0
         with patch.object(
             c, "_call_llm", AsyncMock(return_value={"history_entry": "after rotation"})
         ):
-            while log.unconsolidated_count(KEY) and passes < 20:
-                before = log.unconsolidated_count(KEY)
+            while log.unconsolidated_count(KEY) and passes < 400:
+                before = _position()
                 await c._consolidate(KEY, include_history=True)
-                assert log.unconsolidated_count(KEY) < before, "a pass consolidated nothing"
+                assert _position() > before, "a pass advanced nothing"
                 passes += 1
 
         assert log.unconsolidated_count(KEY) == 0, "post-rotation content never consolidated"
@@ -2146,7 +2244,7 @@ class TestAnEditedTranscriptEarnsAFreshBudget:
         log = self._plant_capped_slot(tmp_path, monkeypatch)
         key = "dashboard:chat1"
         # The consolidation turn starts: one atomic pre-turn snapshot.
-        _msgs, total, generation = log.snapshot_for_consolidation(key)
+        _msgs, total, generation, _sub = log.snapshot_for_consolidation(key)
         assert total == 2 and generation == 0
 
         state = _dashboard_state(log)
@@ -2360,21 +2458,22 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
         c = _make_consolidator(log)
         self._plant_capped(log)
 
-        c.consolidate_session(KEY)
-        assert not c._tasks, "a capped span with no growth still fired a turn"
+        with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "x"})) as spy:
+            c.consolidate_session(KEY)
+            await asyncio.gather(*list(c._tasks), return_exceptions=True)
+        assert spy.await_count == 0, "a capped span with no growth still fired a turn"
 
         with history_mod.allow_on_loop_persist():
             log.append(KEY, "user", "arrived after the cap")
 
         with patch.object(c, "_call_llm", AsyncMock(return_value={"history_entry": "recovered"})):
             c.consolidate_session(KEY)
-            assert c._tasks, (
-                "one failed abandon write left the session permanently unable to "
-                "consolidate anything it writes from now on"
-            )
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
 
-        assert log.unconsolidated_count(KEY) == 0
+        assert log.unconsolidated_count(KEY) == 0, (
+            "one failed abandon write left the session permanently unable to "
+            "consolidate anything it writes from now on"
+        )
         assert "consolidation_attempts" not in log.get_metadata(KEY)
 
 
@@ -2582,20 +2681,22 @@ class TestConsolidateIsTheEligibilityChokePoint:
         """A caller whose pre-check misses — a future entry point without one,
         or a pre-check that raced the backoff being recorded — still cannot
         bill the span: the gate inside _consolidate is the enforcement, the
-        pre-checks are scheduling short-circuits. The first retry_eligible
-        answer (the pre-check) lies True; the second (the inner gate) tells
-        the truth."""
+        pre-checks are scheduling short-circuits. The deadline short-circuit
+        is bypassed and the first retry_eligible answer (the pre-check) lies
+        True; the second (the inner gate) tells the truth."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
         self._arm_backoff(log)
 
         with (
             patch.object(c, "_call_llm", new_callable=AsyncMock) as spy,
-            patch.object(c, "retry_eligible", side_effect=[True, False]),
+            patch.object(c, "retry_eligible", side_effect=[True, False]) as eligible,
+            patch.object(c, "_inside_retry_deadline", return_value=False),
         ):
             c.maybe_consolidate(KEY)
             assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
+        assert eligible.call_count == 2, "premise broken: the inner gate was never reached"
 
         spy.assert_not_awaited()
         assert KEY not in c._running, "the refusal leaked the running claim"
@@ -2605,8 +2706,8 @@ class TestConsolidateIsTheEligibilityChokePoint:
     async def test_a_refusal_does_not_strand_the_key_in_running(self, tmp_path):
         """Callers add the key to _running before the task and rely on
         done-callbacks to release it; a refusal path that skipped the release
-        would wedge consolidation for the session permanently. The pre-check
-        is bypassed (first retry_eligible answer lies True) so the inner
+        would wedge consolidation for the session permanently. The pre-checks
+        are bypassed (no deadline, first retry_eligible answer lies True) so the inner
         gate's refusal path actually runs."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
@@ -2614,11 +2715,13 @@ class TestConsolidateIsTheEligibilityChokePoint:
 
         with (
             patch.object(c, "_call_llm", new_callable=AsyncMock),
-            patch.object(c, "retry_eligible", side_effect=[True, False]),
+            patch.object(c, "retry_eligible", side_effect=[True, False]) as eligible,
+            patch.object(c, "_inside_retry_deadline", return_value=False),
         ):
             c.maybe_consolidate(KEY)
             assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
+        assert eligible.call_count == 2, "premise broken: the inner gate was never reached"
 
         assert KEY not in c._running, "the refusal leaked the running claim"
 
@@ -2652,8 +2755,8 @@ class TestConsolidateIsTheEligibilityChokePoint:
         """Advancing the offset on a refusal marks the window consolidated with
         no pass run — once the backoff expires the threshold test would skip it
         until a whole new threshold of messages accumulates, silently dropping
-        its preference/project extraction. The pre-check is bypassed (first
-        retry_eligible answer lies True) so the inner gate's refusal path
+        its preference/project extraction. The pre-checks are bypassed (no
+        deadline, first retry_eligible answer lies True) so the inner gate's refusal path
         actually runs."""
         log = _seed_log(tmp_path, count=history_mod._CONSOLIDATION_THRESHOLD)
         c = _make_consolidator(log)
@@ -2661,11 +2764,13 @@ class TestConsolidateIsTheEligibilityChokePoint:
 
         with (
             patch.object(c, "_call_llm", new_callable=AsyncMock) as spy,
-            patch.object(c, "retry_eligible", side_effect=[True, False]),
+            patch.object(c, "retry_eligible", side_effect=[True, False]) as eligible,
+            patch.object(c, "_inside_retry_deadline", return_value=False),
         ):
             c.maybe_consolidate(KEY)
             assert c._tasks, "premise broken: the bypassed pre-check did not schedule"
             await asyncio.gather(*list(c._tasks), return_exceptions=True)
+        assert eligible.call_count == 2, "premise broken: the inner gate was never reached"
 
         spy.assert_not_awaited()
         assert KEY not in c._prefs_offset, "a refused pass advanced the prefs offset"

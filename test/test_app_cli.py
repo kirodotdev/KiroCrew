@@ -26,6 +26,8 @@ def _make_app_source(tmp_path, name="cli-test-app", crons=None, hooks=None):
     }
     if crons is not None:
         manifest["crons"] = crons
+        if crons:
+            manifest["permissions"] = {"cron": True}
     if hooks is not None:
         manifest["backend"] = {"hooks": hooks}
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))

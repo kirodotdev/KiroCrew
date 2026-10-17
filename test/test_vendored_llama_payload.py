@@ -36,6 +36,7 @@ MANIFEST.in, so a wheel-only build cannot observe an sdist regression at all.
 
 from __future__ import annotations
 
+import ast
 import io
 import os
 import runpy
@@ -49,6 +50,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.embeddings as embeddings_mod
+from kiro_crew._llama_lib_path import _BUNDLED_LIBS_DIR_NAMES
 from kiro_crew.embeddings import (
     _LIB_PATH_ENV,
     _LIBS_DIR_NAME,
@@ -330,6 +332,36 @@ class TestIncompletePayloadRefusal:
         )
         assert os.environ[_LIB_PATH_ENV] == str(override), "the override was overwritten"
 
+    def test_an_inherited_bundled_path_does_not_exempt_the_gate(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """A bundled directory in the environment is not the operator's override.
+
+        A process that bypasses the entry prelude still applies this install's
+        completeness gate. The inherited value remains unchanged, proving the
+        loader classifies it without mutating the environment.
+        """
+        _stub_libs_tree(tmp_path, "linux_x86_64", complete=False)
+        inherited = (
+            tmp_path
+            / "previous-install"
+            / "site-packages"
+            / "kiro_crew"
+            / "_vendor"
+            / "llama_cpp_libs"
+            / "linux_x86_64"
+        )
+        monkeypatch.setenv(_LIB_PATH_ENV, str(inherited))
+
+        with caplog.at_level("INFO", logger=embeddings_mod.__name__):
+            assert self._load(monkeypatch, tmp_path) is None
+
+        assert "is incomplete" in caplog.text
+        assert "libllama.so" in caplog.text
+        assert str(inherited) in caplog.text
+        assert "left in the environment" in caplog.text
+        assert os.environ[_LIB_PATH_ENV] == str(inherited)
+
 
 class TestPayloadVerifierWithoutRuntimeDependencies:
     """Run the real build gate with only Python's standard library available."""
@@ -393,9 +425,25 @@ class TestPayloadDeclarations:
         script = runpy.run_path(str(_REPO_ROOT / "scripts" / "verify_vendored_payload.py"))
         return script["_read_lib_declarations"](source)
 
+    def test_reads_both_literals_from_the_startup_leaf(self, tmp_path: Path) -> None:
+        """One file carries both declarations, so the gate reads one file.
+
+        No import is followed and no second file is opened: a leaf that holds
+        only one of the two is the missing-declaration failure below, not a
+        cue to go looking in `embeddings.py`.
+        """
+        source = tmp_path / "_llama_lib_path.py"
+        source.write_text(
+            "_LIBS_DIR_NAME = 'native'\n"
+            "_REQUIRED_VENDORED_LIBS = {'example': ('example.so',)}\n",
+            encoding="utf-8",
+        )
+
+        assert self._read(source) == ("native", {"example": ("example.so",)})
+
     @pytest.mark.parametrize("annotation", ["", ": str"])
     def test_reads_literals_without_executing_source(self, tmp_path: Path, annotation: str) -> None:
-        source = tmp_path / "embeddings.py"
+        source = tmp_path / "_llama_lib_path.py"
         source.write_text(
             "raise RuntimeError('must not execute')\n"
             f"_LIBS_DIR_NAME{annotation} = 'native'\n"
@@ -409,7 +457,151 @@ class TestPayloadDeclarations:
         ["", "_REQUIRED_VENDORED_LIBS = dict()", "_REQUIRED_VENDORED_LIBS: dict"],
     )
     def test_missing_or_computed_manifest_fails(self, tmp_path: Path, declaration: str) -> None:
-        source = tmp_path / "embeddings.py"
+        source = tmp_path / "_llama_lib_path.py"
         source.write_text(f"_LIBS_DIR_NAME = 'native'\n{declaration}\n", encoding="utf-8")
         with pytest.raises(ValueError):
             self._read(source)
+
+    def test_the_bundled_dir_names_are_derived_from_the_closure(self) -> None:
+        """`_BUNDLED_LIBS_DIR_NAMES` must be the closure's keys, not a second list.
+
+        The two sets being equal today is what a re-listed literal also looks
+        like, and that duplicate is exactly what drifted: a platform added to
+        one and not the other makes `_is_bundled_libs_dir` disagree with the
+        payload gate about what a bundled directory is. So this reads the leaf
+        and pins the DERIVATION -- the frozenset is built from the dict's name,
+        and no platform name appears as a literal anywhere else in the file.
+        """
+        leaf = _REPO_ROOT / "src" / "kiro_crew" / "_llama_lib_path.py"
+        tree = ast.parse(leaf.read_text(encoding="utf-8"), filename=str(leaf))
+
+        assert _BUNDLED_LIBS_DIR_NAMES == frozenset(_REQUIRED_VENDORED_LIBS)
+
+        derived = [
+            node.value
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_BUNDLED_LIBS_DIR_NAMES" for t in node.targets
+            )
+        ]
+        assert len(derived) == 1, "_BUNDLED_LIBS_DIR_NAMES must have exactly one assignment"
+        call = derived[0]
+        assert (
+            isinstance(call, ast.Call)
+            and getattr(call.func, "id", None) == "frozenset"
+            and [getattr(a, "id", None) for a in call.args] == ["_REQUIRED_VENDORED_LIBS"]
+            and not call.keywords
+        ), "_BUNDLED_LIBS_DIR_NAMES must be frozenset(_REQUIRED_VENDORED_LIBS)"
+
+        declaration = next(
+            node
+            for node in tree.body
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and any(
+                isinstance(t, ast.Name) and t.id == "_REQUIRED_VENDORED_LIBS"
+                for t in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            )
+        )
+        inside = {id(node) for node in ast.walk(declaration)}
+        elsewhere = sorted(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value in _REQUIRED_VENDORED_LIBS
+            and id(node) not in inside
+        )
+        assert elsewhere == [], f"platform names re-listed outside the closure: {elsewhere}"
+
+
+class TestVendoredLoaderLibPathPrecedence:
+    """The ``kiro_crew DIVERGENCE FROM UPSTREAM`` in ``_vendor/llama_cpp/llama_cpp.py``.
+
+    The host hands the bundled directory to the vendored loader through a
+    process-local seam (a module in ``sys.modules``) so that nothing is ever
+    written to ``LLAMA_CPP_LIB_PATH`` -- a child spawned while the import runs
+    would inherit that. These tests execute the REAL vendored module up to and
+    including its ``load_shared_library`` call, with that call recorded instead
+    of performed, and check which directory reaches it: the seam first, the
+    operator's variable second, upstream's ``<package>/lib`` default last.
+    """
+
+    _LOADER = _VENDOR_SRC / "llama_cpp" / "llama_cpp.py"
+
+    def _resolved_base_path(self, monkeypatch, *, seam: str | None, env: str | None) -> Path:
+        import types
+
+        source = self._LOADER.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(self._LOADER))
+        prefix: list[ast.stmt] = []
+        for node in tree.body:
+            prefix.append(node)
+            if (
+                isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "_lib" for t in node.targets)
+                and isinstance(node.value, ast.Call)
+                and getattr(node.value.func, "id", None) == "load_shared_library"
+            ):
+                break
+        else:
+            pytest.fail("the vendored loader no longer assigns `_lib = load_shared_library(...)`")
+        module_prefix = ast.Module(body=prefix, type_ignores=[])
+        code = compile(module_prefix, str(self._LOADER), "exec")
+
+        recorded: list[Path] = []
+        extensions = types.ModuleType("llama_cpp._ctypes_extensions")
+        extensions.load_shared_library = lambda name, base_path: recorded.append(base_path)  # type: ignore[attr-defined]
+        extensions.byref = object()  # type: ignore[attr-defined]
+        extensions.ctypes_function_for_shared_library = lambda lib: lib  # type: ignore[attr-defined]
+        package = types.ModuleType("llama_cpp")
+        package.__path__ = [str(self._LOADER.parent)]  # type: ignore[attr-defined]
+        for name in [n for n in sys.modules if n == "llama_cpp" or n.startswith("llama_cpp.")]:
+            monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setitem(sys.modules, "llama_cpp", package)
+        monkeypatch.setitem(sys.modules, "llama_cpp._ctypes_extensions", extensions)
+
+        monkeypatch.setitem(sys.modules, embeddings_mod._LIB_PATH_SEAM, object())
+        monkeypatch.delitem(sys.modules, embeddings_mod._LIB_PATH_SEAM)
+        if seam is not None:
+            seam_module = types.ModuleType(embeddings_mod._LIB_PATH_SEAM)
+            seam_module.LIBS_DIR = seam  # type: ignore[attr-defined]
+            monkeypatch.setitem(sys.modules, embeddings_mod._LIB_PATH_SEAM, seam_module)
+        if env is None:
+            monkeypatch.delenv(_LIB_PATH_ENV, raising=False)
+        else:
+            monkeypatch.setenv(_LIB_PATH_ENV, env)
+
+        namespace = {"__name__": "llama_cpp.llama_cpp", "__file__": str(self._LOADER)}
+        # The code object is the repository's own vendored loader, read from
+        # disk and cut at its library-load statement: no external input reaches
+        # it, which is what the audit rule guards against.
+        exec(code, namespace)  # noqa: S102  # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
+        assert len(recorded) == 1, "the prefix must reach exactly one load_shared_library call"
+        return Path(recorded[0])
+
+    def test_the_seam_names_the_directory(self, monkeypatch, tmp_path: Path) -> None:
+        bundled = tmp_path / "bundled"
+        assert self._resolved_base_path(monkeypatch, seam=str(bundled), env=None) == bundled
+
+    def test_the_seam_wins_over_a_stale_environment_value(self, monkeypatch, tmp_path: Path) -> None:
+        """The host applies the override rule before publishing; what it published stands."""
+        bundled = tmp_path / "bundled"
+        stale = tmp_path / "previous-install"
+        assert self._resolved_base_path(monkeypatch, seam=str(bundled), env=str(stale)) == bundled
+
+    def test_without_a_seam_the_operator_variable_is_upstream_behaviour(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        operator = tmp_path / "gpu-build"
+        assert self._resolved_base_path(monkeypatch, seam=None, env=str(operator)) == operator
+
+    def test_without_either_the_upstream_default_applies(self, monkeypatch) -> None:
+        resolved = self._resolved_base_path(monkeypatch, seam=None, env=None)
+        assert resolved == self._LOADER.parent.resolve() / "lib"
+
+    def test_the_seam_is_published_by_the_host_under_that_key(self) -> None:
+        """Pin the two literals to each other; the vendor README lists this divergence."""
+        source = self._LOADER.read_text(encoding="utf-8")
+        assert f'sys.modules.get("{embeddings_mod._LIB_PATH_SEAM}")' in source
+        readme = (_VENDOR_SRC / "README.md").read_text(encoding="utf-8")
+        assert embeddings_mod._LIB_PATH_SEAM in readme

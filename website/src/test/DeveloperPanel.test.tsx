@@ -106,6 +106,18 @@ describe('DeveloperPanel', () => {
     })
   })
 
+  describe('Automatic cards', () => {
+    it('has its own card outside Feature Previews, off by default', async () => {
+      renderPanel()
+      const sw = await screen.findByRole('switch', { name: /automatic cards for all sessions/i })
+      expect(screen.getByTestId('developer-automatic-cards')).toContainElement(sw)
+      expect(sw).toHaveAttribute('aria-checked', 'false')
+      const previews = document.querySelector('[data-setting-key="feature-previews-section"]')
+      expect(previews).not.toBeNull()
+      expect(previews!.contains(sw)).toBe(false)
+    })
+  })
+
   describe('Gateway section', () => {
     type LocalGatewayAPI = { get(): Promise<boolean>; set(enabled: boolean): Promise<boolean> }
     const installBridge = (api: LocalGatewayAPI) => {
@@ -133,6 +145,28 @@ describe('DeveloperPanel', () => {
       fireEvent.click(toggle)
       expect(set).toHaveBeenCalledWith(false)
       await waitFor(() => expect(toggle).not.toBeChecked())
+    })
+
+    it('names the tunnel prerequisite and links the guide that sets it up (#3810)', async () => {
+      // "Off" only works when something else already answers on this app's
+      // port; the app never opens that forward, so the row must say so before
+      // the user flips it, not after the next launch fails.
+      installBridge({ get: () => Promise.resolve(true), set: vi.fn(() => Promise.resolve(false)) })
+      renderPanel()
+      await screen.findByRole('switch', { name: 'Run a local gateway' })
+      expect(screen.getByText(/already reaches a crew on another machine/)).toBeInTheDocument()
+      // A hand-run tunnel alone is refused as a foreign holder (#3810 review),
+      // so the copy must say the crew is saved for the port AND name where
+      // the app-held tunnel is switched on.
+      expect(screen.getByText(/“Set Remote Host…” in the Connection menu/)).toBeInTheDocument()
+      expect(screen.getByText(/Keep an SSH tunnel to this crew open/)).toBeInTheDocument()
+      expect(screen.getByText(/Settings → Remote Crew connections stop when this is off/)).toBeInTheDocument()
+      const link = screen.getByRole('link', { name: /How to set up an SSH tunnel/ })
+      expect(link).toHaveAttribute(
+        'href',
+        'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-and-mobile.md#ssh-tunnel-laptop',
+      )
+      expect(link).toHaveAttribute('target', '_blank')
     })
   })
 })

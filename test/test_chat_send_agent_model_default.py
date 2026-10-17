@@ -35,6 +35,10 @@ from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
 
+#: The eager-spawn tests need a pre-warm allowance, which is zero while the
+#: host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 GLOBAL_DEFAULT = "claude-opus-5"
 CREW_PIN = "claude-sonnet-5"
 SLOT_PIN = "claude-haiku-5"
@@ -278,6 +282,222 @@ class TestRunChatDefaultModel:
         assert _session_model(state) == GLOBAL_DEFAULT
         assert seen["thread"] != threading.get_ident()
         assert seen["loop_on_thread"] is False
+
+
+class TestLiveSessionFollowsDefaultChange:
+    """An inheriting slot's live session follows a new chat default.
+
+    The settings write rebuilds the provider factory and drains the warm pool
+    but leaves live sessions alone. So the next turn of a slot that pins
+    nothing compares the model its live session was allocated on with the
+    default it inherits now, and resets the session before claiming when they
+    differ. A slot or crew pin never triggers that.
+    """
+
+    OLD_DEFAULT = "claude-sonnet-5"
+
+    def _live_state(self, tmp_path: Path, stamped: str):
+        state, client = _turn_state(tmp_path)
+        client.has_active_turn = unittest.mock.MagicMock(return_value=False)
+        state.sessions.get_provider = unittest.mock.MagicMock(return_value=client)
+        state.sessions.allocation_requested_model = unittest.mock.MagicMock(return_value=stamped)
+        state.sessions.reset = unittest.mock.AsyncMock(return_value=True)
+        return state
+
+    @staticmethod
+    def _reset_keys(state) -> list[str]:
+        return [c.args[0] for c in state.sessions.reset.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_unpinned_slot_resets_a_session_on_the_old_default(
+        self, tmp_path, _runner_config
+    ):
+        _runner_config(_config(tmp_path))
+        state = self._live_state(tmp_path, self.OLD_DEFAULT)
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" in self._reset_keys(state)
+        assert _session_model(state) == GLOBAL_DEFAULT
+        # Still inheriting: nothing was pinned by the reset.
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_reset_never_interrupts_a_busy_session(self, tmp_path, _runner_config):
+        _runner_config(_config(tmp_path))
+        state = self._live_state(tmp_path, self.OLD_DEFAULT)
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        ours = [
+            c for c in state.sessions.reset.await_args_list if c.args[0] == "dashboard:chat-cov-1"
+        ]
+        assert ours
+        assert all(c.kwargs.get("skip_if_busy") is True for c in ours)
+
+    @pytest.mark.asyncio
+    async def test_session_already_on_the_default_is_kept(self, tmp_path, _runner_config):
+        _runner_config(_config(tmp_path))
+        state = self._live_state(tmp_path, GLOBAL_DEFAULT)
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" not in self._reset_keys(state)
+
+    @pytest.mark.asyncio
+    async def test_slot_pin_is_never_reset(self, tmp_path, _runner_config):
+        _runner_config(_config(tmp_path))
+        state = self._live_state(tmp_path, self.OLD_DEFAULT)
+        slot = _slot()
+        slot.model = SLOT_PIN
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" not in self._reset_keys(state)
+        assert _session_model(state) == SLOT_PIN
+
+    @pytest.mark.asyncio
+    async def test_crew_pin_is_never_reset(self, tmp_path, _runner_config):
+        cfg = _config(tmp_path, crew_model=CREW_PIN)
+        _runner_config(cfg)
+        _grant_researcher(cfg)
+        state = self._live_state(tmp_path, self.OLD_DEFAULT)
+        slot = _slot()
+        slot.agent = "researcher"
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" not in self._reset_keys(state)
+        assert _session_model(state) == CREW_PIN
+
+    @pytest.mark.asyncio
+    async def test_serving_the_inherited_default_does_not_pin_the_slot(
+        self, tmp_path, _runner_config
+    ):
+        """The backfill must not turn "inherit" into a pin on the default."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = GLOBAL_DEFAULT
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_a_differently_spelled_served_model_does_not_pin_either(
+        self, tmp_path, _runner_config
+    ):
+        """Any served id on an inheriting slot stays off ``slot.model``."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = SLOT_PIN
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_activity_line_names_the_inherited_default(self, tmp_path, _runner_config):
+        """The "Session created" line names the model run, not ``auto``."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = GLOBAL_DEFAULT
+        client.served_model = GLOBAL_DEFAULT
+        frames: list[dict] = []
+        state.broadcast_ws = lambda kind, payload: frames.append(payload)
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        texts = [f.get("text", "") for f in frames if isinstance(f, dict)]
+        created = [t for t in texts if t.startswith("Session created")]
+        assert created and created[0].endswith(f"· {GLOBAL_DEFAULT}")
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_activity_line_names_the_served_model_when_the_default_is_withheld(
+        self, tmp_path, _runner_config
+    ):
+        """Startup withheld the inherited default: the line names what runs."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = SLOT_PIN
+        client.served_model = SLOT_PIN
+        frames: list[dict] = []
+        state.broadcast_ws = lambda kind, payload: frames.append(payload)
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        texts = [f.get("text", "") for f in frames if isinstance(f, dict)]
+        created = [t for t in texts if t.startswith("Session created")]
+        assert created and created[0].endswith(f"· {SLOT_PIN}")
+
+    @pytest.mark.asyncio
+    async def test_no_resolved_default_still_backfills(self, tmp_path, _runner_config):
+        """With every tier deferring to the backend, the served model is kept."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = SLOT_PIN
+        slot = _slot()
+
+        with unittest.mock.patch.object(chat_runner, "resolve_effective_model", return_value=""):
+            await _drive(state, slot)
+
+        assert slot.model == SLOT_PIN
+
+    @pytest.mark.asyncio
+    async def test_two_turns_across_a_default_change(self, tmp_path, _runner_config):
+        """Turn 1 serves the old default; the default changes; turn 2 resets.
+
+        Turn 1 resolves the old default through the resolver seam, so one real
+        config serves both turns and turn 2 reads its new default.
+        """
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        client.client._model = self.OLD_DEFAULT
+        slot = _slot()
+
+        with unittest.mock.patch.object(
+            chat_runner, "resolve_effective_model", return_value=self.OLD_DEFAULT
+        ):
+            await _drive(state, slot)
+
+        assert slot.model == ""
+        assert _session_model(state) == self.OLD_DEFAULT
+
+        # The session the reset cold-starts serves the new default.
+        client.client._model = GLOBAL_DEFAULT
+        client.has_active_turn = unittest.mock.MagicMock(return_value=False)
+        state.sessions.get_provider = unittest.mock.MagicMock(return_value=client)
+        state.sessions.allocation_requested_model = unittest.mock.MagicMock(
+            return_value=self.OLD_DEFAULT
+        )
+        state.sessions.reset = unittest.mock.AsyncMock(return_value=True)
+        state.sessions.get_or_create.reset_mock()
+        _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" in self._reset_keys(state)
+        assert _session_model(state) == GLOBAL_DEFAULT
+        assert slot.model == ""
+
+    @pytest.mark.asyncio
+    async def test_unknown_stamp_is_left_alone(self, tmp_path, _runner_config):
+        """A session that recorded no selection is not reset on a guess."""
+        _runner_config(_config(tmp_path))
+        state = self._live_state(tmp_path, "")
+        slot = _slot()
+
+        await _drive(state, slot)
+
+        assert "dashboard:chat-cov-1" not in self._reset_keys(state)
 
 
 class TestDefaultSessionModelThreadBoundary:

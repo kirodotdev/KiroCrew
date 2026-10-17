@@ -433,11 +433,13 @@ reason, no hedging or preamble; the author reads this first. Examples:
 
 ## Draft-only safety (hard rule)
 
-Every comment is posted as a **draft** (`publish=false`). A human publishes. Never
-auto-publish. For shipped/merged changes with no open thread, record findings in
-the result record only (no comment).
+**You record; you never post.** A review session writes the result record and
+calls no comment tool. The app builds every comment body in Python (redacted),
+and only when the user asks (or `review.auto_post` is on) does a separate poster
+session publish them as ONE pending (unsubmitted) GitHub review. A human submits
+it. Never auto-publish.
 
-## Comment mechanics
+## Comment mechanics (what the app renders from your finding fields)
 
 - **Line numbers are LLM-emitted** (no deterministic locator in V1). Minor drift
   is accepted — **every inline comment MUST quote the offending code snippet** in
@@ -452,8 +454,8 @@ the result record only (no comment).
 
   **Suggestion:** {concrete fix}
   ```
-- Attribute drafts as `[code-review-sage]` and dedupe against existing drafts so
-  there is no double-posting when composed with a team's own reviewer.
+- The app attributes drafts with the `[code-review-sage]` marker and replaces
+  only its own stale pending draft, so you do not write the marker or dedupe.
 
 ---
 
@@ -487,11 +489,17 @@ candidate is pure staging until consolidated.
 
 ---
 
-## Result record (write one per change)
+## Result response (one per change)
 
-Write `data/results/<change-id>.json`. This is
-the durable source of truth the Focus Report reads. **Findings JSON contract**
-(kept stable so the deterministic scorer is decoupled from prompt wording):
+The driver owns durable persistence. Do not write a result file. Return exactly
+one driver-requested JSON envelope as the final response, with no Markdown fence
+or prose. Echo its exact `capability` and `change_id`; put the result record in
+`record`. A coverage follow-up also echoes the supplied `base_digest`, preserves
+all first-pass metadata, and appends findings without changing existing ones.
+The driver accepts only those appended findings plus refreshed coverage and summary fields,
+then recomputes counts before atomically persisting the result. **Findings JSON
+contract** (kept stable so the deterministic scorer is
+decoupled from prompt wording):
 
 ```json
 {
@@ -542,9 +550,9 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
 }
 ```
 
-> Use the `change_id` emitted by `<python> sage_lib/pipeline.py prepare` **verbatim** — do NOT invent or reformat it (it must match the driver's `_cid`, or the record write and read hit different files).
+> Use the driver-issued `change_id` **verbatim** — do NOT invent or reformat it.
 
-**One record, written in one pass.** Every review writes exactly ONE record with
+**One record, returned in one pass.** Every review returns exactly ONE record with
 `deep_reviewed: true` and a fully populated `phase1` block (design dimension) —
 there is no "gate-only" record and no design-vs-code split. Two coverage fields
 make first-pass completeness machine-checkable:
@@ -562,7 +570,7 @@ Some repos maintain a team-specific rulebook. At review time, *if*
 skill directory name), resolve and read that `SKILL.md` and apply it as
 **additional rules** layered on top of the generic dimensions — **read-only
 reuse, no fork**. If no mapping exists (the default), the review uses only the
-generic dimensions below. If a pack says "do not use subagents", honor it: read
+generic dimensions above. If a pack says "do not use subagents", honor it: read
 the file and apply its checks inside this single clean session — do not nest
 orchestration.
 
@@ -576,7 +584,7 @@ orchestration.
 - [ ] ONE thorough pass: design dimension (verdict + design_risk + criticality + design_headline) AND the 9 code dimensions together → chain-of-consequences findings
 - [ ] Coverage self-check: every changed hunk reviewed against all dimensions; emit files_covered + coverage_complete (driver runs ONE targeted follow-up if incomplete)
 - [ ] Self-critique (Filter / De-dup against green gates / Merge / Sharpen / Stabilize)
-- [ ] Post surviving findings as DRAFT comments (publish=false), each quoting the snippet
+- [ ] Record surviving findings (each with a quoted `snippet`) — do NOT post; the app posts on request
 - [ ] If the change is a fix, run INLINE miss-analysis (learn-from-sage) → STAGE the learning into the candidate file
-- [ ] Write the result record JSON
+- [ ] Return the driver-bound result response JSON
 ```

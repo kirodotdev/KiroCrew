@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.cron import CronService
+from kiro_crew.cron import CronService, CronStoreBusy
 from kiro_crew.cron_script import (
     _filter_grant_env,
     _secret_env_precheck,
@@ -1020,6 +1020,119 @@ class TestMcpSecretRequest:
         assert reloaded is not None
         assert reloaded.secret_env_pending == {}
         assert reloaded.secret_env_pending_pin == ""
+
+    def _pending_request(self, cron_home):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._svc_and_job(cron_home)
+        out = mcp_cron._call_tool_locally(
+            "cron_secret_request",
+            {"job_id": job.id, "secrets": {"MY_TOKEN": "slack-sandbox"}},
+        )
+        assert "PENDING" in out, out
+        return svc, job
+
+    @pytest.mark.parametrize(
+        "args",
+        # What a client that drops empty objects delivers for ``secrets: {}`` beside
+        # the flag is the flag alone; a client that keeps both sends both.
+        [{"withdraw": True}, {"withdraw": True, "secrets": {}}],
+    )
+    def test_withdraw_withdraws_the_pending_request(self, cron_home, args):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._pending_request(cron_home)
+
+        out = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": job.id, **args})
+
+        assert out == "Withdrew the pending secret request."
+        reloaded = CronService(base_dir=svc._dir).get_job(job.id)
+        assert reloaded is not None
+        assert reloaded.secret_env_pending == {}
+        assert reloaded.secret_env_pending_pin == ""
+
+    def test_a_mapping_beside_withdraw_false_is_still_recorded_pending(self, cron_home):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._svc_and_job(cron_home)
+
+        out = mcp_cron._call_tool_locally(
+            "cron_secret_request",
+            {"job_id": job.id, "secrets": {"MY_TOKEN": "slack-sandbox"}, "withdraw": False},
+        )
+
+        assert "PENDING" in out, out
+        reloaded = CronService(base_dir=svc._dir).get_job(job.id)
+        assert reloaded is not None
+        assert reloaded.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
+    def test_withdraw_beside_a_mapping_is_refused_and_keeps_the_request(self, cron_home):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._pending_request(cron_home)
+        before = CronService(base_dir=svc._dir).get_job(job.id)
+        assert before is not None
+
+        out = mcp_cron._call_tool_locally(
+            "cron_secret_request",
+            {"job_id": job.id, "secrets": {"OTHER_TOKEN": "slack-sandbox"}, "withdraw": True},
+        )
+
+        assert out.startswith("Error: withdraw:"), out
+        after = CronService(base_dir=svc._dir).get_job(job.id)
+        assert after is not None
+        assert after.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+        assert after.secret_env_pending_pin == before.secret_env_pending_pin
+
+    @pytest.mark.parametrize("args", [{}, {"withdraw": False}, {"secrets": None}])
+    def test_neither_secrets_nor_withdraw_is_refused(self, cron_home, args):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._pending_request(cron_home)
+
+        out = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": job.id, **args})
+
+        assert out.startswith("Error: secrets: required"), out
+        after = CronService(base_dir=svc._dir).get_job(job.id)
+        assert after is not None and after.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
+    # ``withdraw: true`` stands in for ``secrets: {}`` where a client drops the empty
+    # object, so each way an empty request can end must read the same in both.
+    @pytest.mark.parametrize("args", [{"secrets": {}}, {"withdraw": True}])
+    def test_an_empty_request_for_a_job_out_of_reach_changes_nothing(
+        self, cron_home, monkeypatch, args
+    ):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._pending_request(cron_home)
+
+        unknown = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": "0123abcd", **args})
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-other")
+        foreign = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": job.id, **args})
+
+        assert unknown == mcp_cron._not_found("0123abcd")
+        assert foreign == mcp_cron._not_found(job.id)
+        after = CronService(base_dir=svc._dir).get_job(job.id)
+        assert after is not None and after.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
+
+    @pytest.mark.parametrize("args", [{"secrets": {}}, {"withdraw": True}])
+    def test_an_empty_request_on_a_busy_store_says_so_and_keeps_the_request(
+        self, cron_home, monkeypatch, args
+    ):
+        from kiro_crew import mcp_cron
+
+        svc, job = self._pending_request(cron_home)
+
+        def busy(*_args, **_kwargs):
+            raise CronStoreBusy("store busy")
+
+        monkeypatch.setattr(CronService, "update_job", busy)
+
+        out = mcp_cron._call_tool_locally("cron_secret_request", {"job_id": job.id, **args})
+
+        assert out == "Error: cron store busy, please retry"
+        after = CronService(base_dir=svc._dir).get_job(job.id)
+        assert after is not None and after.secret_env_pending == {"MY_TOKEN": "slack-sandbox"}
 
     def test_cron_update_cannot_write_active_grant(self, cron_home):
         """The general-purpose MCP update tool must never carry the grant."""

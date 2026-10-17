@@ -19,15 +19,18 @@ import { i18nT } from '../../i18n/t'
 import { recordEvent } from '../../rum'
 import { isSessionApprovalConsentRequiredError, useTrustGate } from '../../components/appstore/TrustAppModal'
 import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
+import { consentTierFor } from '../../components/appstore/registryTier'
 import type { AppsData } from './useAppsData'
 
 type AppActionsInput = Pick<
   AppsData,
-  'apps' | 'browseApps' | 'appsError' | 'registryError' | 'announceAppsChanged'
+  'apps' | 'browseApps' | 'appsError' | 'registryError' | 'announceAppsChanged' | 'sources'
+  | 'registriesUnknown'
 >
 
 export function useAppActions({
-  apps, browseApps, appsError, registryError, announceAppsChanged,
+  apps, browseApps, appsError, registryError, announceAppsChanged, sources,
+  registriesUnknown,
 }: AppActionsInput) {
   const navigate = useNavigate()
   const [error, setError] = useState('')
@@ -92,8 +95,26 @@ export function useAppActions({
 
   const trust = useTrustGate(runEnable)
 
+  // What the consent dialog renders: the gate's target with its registry badge
+  // and review tier re-read at RENDER time, as the detail page does. `trust.open`
+  // snapshots the target when a refusal lands, and a refusal can land before
+  // `listRegistries` resolves; a tier read then would stay missing for the whole
+  // dialog. While that list is loading or failed, the tier is unknown, so
+  // `consentTierFor` shows the not-vetted box rather than read the listing as
+  // vetted. Only display fields are replaced: the server-issued
+  // `trustRepository` proof and the retry flags stay the gate's.
+  const consentTarget = ((): TrustAppTarget | null => {
+    const t = trust.target
+    if (!t) return null
+    // A local install has no listing, so it carries no registry claim even when
+    // a registry row shares its name (the detail page's rule).
+    if (apps.find(a => a.name === t.name)?.origin === 'local') return t
+    const registry = browseApps.find(a => a.name === t.name)?._registry ?? t._registry
+    return { ...t, _registry: registry, ...consentTierFor(registry, sources, registriesUnknown) }
+  })()
+
   return {
     setError, displayError, dismissError,
-    openDetail, getApp, updateApp, trustTarget, runEnable, trust,
+    openDetail, getApp, updateApp, trustTarget, consentTarget, runEnable, trust,
   }
 }

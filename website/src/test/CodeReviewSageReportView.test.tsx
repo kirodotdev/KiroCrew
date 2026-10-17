@@ -177,3 +177,116 @@ describe('ReportView', () => {
     expect(screen.queryByRole('button', { name: /Share/ })).not.toBeInTheDocument()
   })
 })
+
+describe('ReportView severity chips with dismissals', () => {
+  it('counts a blocking finding that is not dismissed', () => {
+    render(<ReportView report={makeReport()} />)
+    expect(screen.getByText(/1 blocking/)).toBeInTheDocument()
+  })
+
+  it('hides the blocking chip once its only blocking finding is dismissed', () => {
+    render(
+      <ReportView
+        report={makeReport()}
+        dismissed={{ c1: { 'finding:0': { reason: 'false positive' } } }}
+      />,
+    )
+    expect(screen.queryByText(/blocking/)).not.toBeInTheDocument()
+    // The other row has no dismissals, so its should-fix chip is unchanged.
+    expect(screen.getByText(/2 should-fix/)).toBeInTheDocument()
+  })
+
+  it('subtracts a dismissed should-fix finding from the should-fix chip', () => {
+    const report = makeReport()
+    report.rows[1].findings = [
+      { dimension: 'Style', severity: 'yellow', observation: 'a' },
+      { dimension: 'Style', severity: 'yellow', observation: 'b' },
+    ]
+    render(
+      <ReportView
+        report={report}
+        dismissed={{ c2: { 'finding:1': { reason: 'not worth it' } } }}
+      />,
+    )
+    expect(screen.getByText(/1 should-fix/)).toBeInTheDocument()
+    expect(screen.queryByText(/2 should-fix/)).not.toBeInTheDocument()
+  })
+})
+
+/** The report after c1's only red finding was dismissed: the backend re-bands
+ *  the row to yellow, and with its lower score it now sorts BELOW c2. */
+function rebandedReport(): RunReport {
+  const report = makeReport()
+  report.rows[0] = { ...report.rows[0], band: 'yellow', why: 'blast=MEDIUM', score: 20 }
+  report.bands = { red: 0, yellow: 2, green: 0 }
+  return report
+}
+
+const titles = () => screen.getAllByTestId('md').map((el) => el.textContent)
+
+describe('ReportView keeps a re-banded row in place', () => {
+  it('under a band filter, the acted-on row stays listed with its new band', () => {
+    const { rerender } = render(<ReportView report={makeReport()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Needs review/ }))
+    expect(screen.getByText('Red PR title')).toBeInTheDocument()
+    expect(screen.queryByText('Yellow PR title')).not.toBeInTheDocument()
+
+    rerender(<ReportView report={rebandedReport()} />)
+    // The card the user just acted on is still here (its Undo control with it)...
+    expect(screen.getByText('Red PR title')).toBeInTheDocument()
+    expect(screen.queryByText('Yellow PR title')).not.toBeInTheDocument()
+    // ...its dot shows the NEW band, and a line says where it moved to.
+    const card = screen.getByText('Red PR title').closest('.rounded-lg') as HTMLElement
+    expect(card.querySelector('.text-warn.mt-1')).toBeTruthy()
+    expect(card.querySelector('.text-danger.mt-1')).toBeNull()
+    const line = screen.getByText(/Now in Worth a glance/)
+    expect(line).toBeInTheDocument()
+    // A sentence, so it must be allowed to wrap on a narrow screen.
+    expect(line.className).not.toMatch(/whitespace-nowrap/)
+  })
+
+  it('a row that is not held carries no moved line', () => {
+    render(<ReportView report={rebandedReport()} />)
+    expect(screen.queryByText(/Now in Worth a glance/)).not.toBeInTheDocument()
+  })
+
+  it('under All, nothing is held: the row takes its new place at once', () => {
+    const { rerender } = render(<ReportView report={makeReport()} />)
+    expect(titles()).toEqual(['Red PR title', 'Yellow PR title'])
+    rerender(<ReportView report={rebandedReport()} />)
+    // Every row is listed under All, so the card cannot vanish; the list simply
+    // shows the stored order, and no row carries the hold line.
+    expect(titles()).toEqual(['Yellow PR title', 'Red PR title'])
+    expect(screen.queryByText(/Now in Worth a glance/)).not.toBeInTheDocument()
+  })
+
+  it('changing the filter releases the hold', () => {
+    const { rerender } = render(<ReportView report={makeReport()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Needs review/ }))
+    rerender(<ReportView report={rebandedReport()} />)
+    expect(screen.getByText('Red PR title')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /All/ }))
+    // Released: the row now sorts by its real band and score, below c2, and
+    // the moved line goes with the hold.
+    expect(titles()).toEqual(['Yellow PR title', 'Red PR title'])
+    expect(screen.queryByText(/Now in Worth a glance/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Needs review/ }))
+    expect(screen.queryByText('Red PR title')).not.toBeInTheDocument()
+  })
+
+  it('a row first shown with its new band is not held', () => {
+    render(<ReportView report={rebandedReport()} />)
+    expect(titles()).toEqual(['Yellow PR title', 'Red PR title'])
+  })
+
+  it('another run\'s report releases the hold', () => {
+    const { rerender } = render(<ReportView report={makeReport()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Needs review/ }))
+    rerender(<ReportView report={rebandedReport()} />)
+    expect(screen.getByText('Red PR title')).toBeInTheDocument()
+    // Same change id, other run, re-banded from the start: not held.
+    rerender(<ReportView report={{ ...rebandedReport(), run_id: 'run-2' }} />)
+    expect(screen.queryByText('Red PR title')).not.toBeInTheDocument()
+  })
+})

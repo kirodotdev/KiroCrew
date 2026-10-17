@@ -1,9 +1,17 @@
 """Durable Windows pod run identity; missing evidence never certifies retirement.
 
 The CLI reserves before scheduling. A separate short claim lock serializes
-supervisor admission without taking the name mutex held by `pod up` while it
-waits for health. Ready records are immutable until a terminal drain receipt;
-only a retired publisher or the publisher's final action may write that receipt.
+producer admission without taking the name mutex held by `pod up` while it
+waits for health. The scheduled producer claims the reservation as its first
+act, before any provisioning check, so every later refusal carries the identity
+(pid + creation time) of the one process that writes this generation's sidecars.
+A producer that refuses without spawning a gateway publishes a `finished`
+receipt as its last write to the record; it still logs the boot's audit event
+on its way out, so `stop` lets it exit before ending it. Ready records are
+immutable until a terminal drain
+receipt; only a retired publisher or the publisher's final action may write
+that receipt. `stop` publishes `retired` once it has proven an unspawned
+generation's producer gone, and `finish` consumes either terminal receipt.
 """
 
 from __future__ import annotations
@@ -23,7 +31,12 @@ from kiro_crew.pod.config import PodConfig
 
 _VERSION = 1
 _MAX_RECORD_BYTES = 8192
-_STATES = {"reserved", "cancelled", "preparing", "ready", "drained"}
+_STATES = {"reserved", "cancelled", "preparing", "finished", "ready", "drained", "retired"}
+#: States of a claimed generation whose producer never published a contained
+#: gateway. `stop` retires these by proving the producer gone, not by draining.
+UNSPAWNED_STATES = frozenset({"preparing", "finished"})
+#: Receipts `finish` consumes once HOME reclamation has succeeded.
+TERMINAL_STATES = frozenset({"drained", "retired"})
 
 
 def path(cfg: PodConfig, name: str) -> Path:
@@ -89,6 +102,11 @@ def read(cfg: PodConfig, name: str) -> dict[str, Any] | None:
             job_name = record.get("job")
             if not isinstance(job_name, str) or jobs._NAME_RE.fullmatch(job_name) is None:
                 raise ValueError("invalid contained job name")
+        elif record["state"] in UNSPAWNED_STATES | {"retired"}:
+            if any(key in record for key in ("root", "job")):
+                raise ValueError("unspawned run carries gateway evidence")
+            if record["state"] == "finished" and type(record.get("exit")) is not int:
+                raise ValueError("finished run carries no exit code")
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise OSError("Windows pod run record is malformed or belongs to another run") from exc
     return record
@@ -133,6 +151,7 @@ def cancel_reserved(cfg: PodConfig, name: str, record: dict[str, Any]) -> Iterat
 
 
 def claim(cfg: PodConfig, name: str) -> dict[str, Any]:
+    """Bind the reserved generation to this process before it does anything else."""
     with claim_lock(cfg, name):
         record = read(cfg, name)
         if record is None or record["state"] != "reserved":
@@ -143,6 +162,45 @@ def claim(cfg: PodConfig, name: str) -> dict[str, Any]:
         record.update(state="preparing", publisher=[os.getpid(), token])
         publish(cfg, name, record)
         return record
+
+
+def own_claim(cfg: PodConfig, name: str) -> dict[str, Any]:
+    """The `preparing` record this process claimed; anything else refuses."""
+    record = read(cfg, name)
+    if record is None or record["state"] != "preparing":
+        raise OSError("Windows pod boot requires this process's own claimed run")
+    token = pc.process_start_time(os.getpid())
+    if not token or record["publisher"] != [os.getpid(), token]:
+        raise OSError("Windows pod run is claimed by a different publisher")
+    return record
+
+
+def finished(cfg: PodConfig, name: str, record: dict[str, Any], exit_code: int) -> None:
+    """The producer's last write to the record: it spawned no gateway and is exiting.
+
+    Only the claiming publisher may write it, and only over its own unchanged
+    `preparing` record. A boot that reached `ready` publishes `drained` instead.
+    """
+    with claim_lock(cfg, name):
+        current = read(cfg, name)
+        if current != record or record["state"] != "preparing":
+            raise OSError("Windows pod run changed before its completion receipt")
+        publish(cfg, name, {**record, "state": "finished", "exit": int(exit_code)})
+
+
+def retired(cfg: PodConfig, name: str, record: dict[str, Any]) -> dict[str, Any]:
+    """Record that an unspawned generation's producer is proven gone.
+
+    Written by `stop` after it has verified the publisher identity is retired and
+    no gateway evidence exists, so HOME reclamation may proceed and retry.
+    """
+    with claim_lock(cfg, name):
+        current = read(cfg, name)
+        if current != record or record["state"] not in UNSPAWNED_STATES:
+            raise OSError("Windows pod run changed while retiring its producer")
+        result = {**record, "state": "retired"}
+        publish(cfg, name, result)
+        return result
 
 
 def ready(
@@ -170,6 +228,6 @@ def finish(cfg: PodConfig, name: str) -> None:
     record = read(cfg, name)
     if record is None:
         return
-    if record["state"] != "drained" or cfg.home_dir(name).exists():
-        raise OSError("Windows pod reclamation has no completed drain receipt")
+    if record["state"] not in TERMINAL_STATES or cfg.home_dir(name).exists():
+        raise OSError("Windows pod reclamation has no completed drain or retirement receipt")
     path(cfg, name).unlink()

@@ -529,7 +529,13 @@ class TestOnlyTheSpawnGateRaises:
 
         import kiro_crew.slack.gateway as gateway_mod
 
-        src = Path(gateway_mod.__file__).read_text(encoding="utf-8")
+        # The facade and the owners it composes (``_init_subagents`` and its
+        # closures live in gateway_runtime/subagent_wiring.py), read as one.
+        facade = Path(gateway_mod.__file__)
+        src = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
+        )
         assert "on_tool_approval=_approve_subagent," in src
         assert "return await _approve_spawn_gate(event, parent_session_key)" in src
         assert src.count("raise_when_unreachable=True") == 1

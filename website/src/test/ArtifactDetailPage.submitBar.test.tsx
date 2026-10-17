@@ -28,12 +28,16 @@ import { renderWithProviders, createTestStore } from './helpers'
 import { api } from '../api/client'
 import { sseSlots, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import type { Artifact, ArtifactComment, ChatSlot } from '../types'
+import { MORE_ACTIONS } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 vi.mock('../pages/ChatPage', () => ({
   default: () => <div data-testid="chat-page" />,
   PREFILL_STORAGE_KEY: 'kirocrew_prefill',
 }))
+/** Jev's consent for `Auto` mode, set per test rather than fetched. */
+const jev = vi.hoisted(() => ({ consented: false }))
+vi.mock('../pages/chat/useJevAutoSend', () => ({ useJevAutoSend: () => jev.consented }))
 
 const ARTIFACT: Artifact = {
   slug: 'cr-queue',
@@ -120,6 +124,28 @@ describe('ArtifactDetailPage comment submit bar', () => {
     expect(await screen.findByText('2 comments to send to this chat')).toBeInTheDocument()
   })
 
+  it('marks each row the count is made of, and no other', async () => {
+    renderPage([
+      mkComment('h1'),
+      mkComment('h2'),
+      mkComment('a1', { is_agent: true }),
+      mkComment('s1'),
+    ], { sentIds: ['s1'] })
+    await screen.findByText('2 comments to send to this chat')
+    const marked = (id: string) => !!screen.getByText(`note ${id}`).closest('.group')!
+      .querySelector('[data-testid="comment-pending-submit"]')
+    expect(screen.getAllByTestId('comment-pending-submit')).toHaveLength(2)
+    expect([marked('h1'), marked('h2'), marked('a1'), marked('s1')]).toEqual([true, true, false, false])
+  })
+
+  it('unmarks the rows once the batch is sent', async () => {
+    renderPage([mkComment('h1')])
+    await bar()
+    expect(screen.getAllByTestId('comment-pending-submit')).toHaveLength(1)
+    fireEvent.click(submit())
+    await waitFor(() => expect(screen.queryByTestId('comment-pending-submit')).toBeNull())
+  })
+
   it('leaves a resolved thread out of the batch, reply included', async () => {
     // This page has its OWN pending-batch derivation, separate from
     // ArtifactPanel's. Filtering only the panel's would show the page's filtered
@@ -147,13 +173,13 @@ describe('ArtifactDetailPage comment submit bar', () => {
 
   it('offers no bar when every thread is resolved', async () => {
     renderPage([mkComment('r1', { status: 'resolved', thread_id: 'r1' })])
-    await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: MORE_ACTIONS })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
   })
 
   it('offers no bar when every comment is agent-authored', async () => {
     renderPage([mkComment('a1', { is_agent: true })])
-    await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: MORE_ACTIONS })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
   })
 
@@ -221,6 +247,7 @@ describe('ArtifactDetailPage comment submit bar', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Ask agent to address/ })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /^Submit$/ })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('comment-pending-submit')).not.toBeInTheDocument()
   })
 
   it('keeps the comments pending when the send times out', async () => {
@@ -259,5 +286,79 @@ describe('ArtifactDetailPage comment submit bar', () => {
     expect(btn).toBeDisabled()
     fireEvent.click(btn)
     expect(vi.mocked(api).sendChat).not.toHaveBeenCalled()
+  })
+})
+
+/** The batch is a Send press on the bound session, so it carries the steer flag
+ *  that session's busy-send mode gives (sendChat's 6th argument), instead of
+ *  always queueing behind a running turn or parking behind sub-agents. */
+describe('ArtifactDetailPage comment submit follows the busy-send mode', () => {
+  const steerArg = () => vi.mocked(api).sendChat.mock.calls[0][5]
+  const setMode = (mode: string) => localStorage.setItem(`mc-busy-send-mode:${BOUND.key}`, mode)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    sessionStorage.clear()
+    vi.mocked(api).artifact = vi.fn().mockResolvedValue(ARTIFACT)
+    vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
+    vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({ slug: 'cr-queue', events: [] })
+    vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).sendChat = vi.fn().mockResolvedValue(accepted())
+    jev.consented = false
+  })
+
+  /** Bind a session in the given state, then press Submit once. */
+  async function submitWith(slot: Partial<ChatSlot>, { consent = false } = {}) {
+    const bound = { ...BOUND, ...slot } as ChatSlot
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([bound])
+    jev.consented = consent
+    vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [mkComment('h1')] })
+    const store = createTestStore()
+    act(() => { store.dispatch(sseConnected()); store.dispatch(sseSlots([bound])) })
+    renderWithProviders(
+      <Routes><Route path="/artifacts/:slug" element={<ArtifactDetailPage />} /></Routes>,
+      { route: '/artifacts/cr-queue', store },
+    )
+    await bar()
+    fireEvent.click(submit())
+    await waitFor(() => expect(vi.mocked(api).sendChat).toHaveBeenCalledTimes(1))
+  }
+
+  it('sends plainly while the session is idle', async () => {
+    await submitWith({ running: false })
+    expect(steerArg()).toBeUndefined()
+  })
+
+  it('steers past the sub-agent hold in Steer mode', async () => {
+    await submitWith({ running: false, subagents_running: true })
+    expect(steerArg()).toBe(true)
+  })
+
+  it('steers a running turn in Steer mode, and a steered receipt marks the batch sent', async () => {
+    vi.mocked(api).sendChat = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, steered: true }) })
+    await submitWith({ running: true })
+    expect(steerArg()).toBe(true)
+    await waitFor(() => expect(JSON.parse(localStorage.getItem(SENT_KEY) || '[]')).toEqual(['h1']))
+  })
+
+  it('queues in Queue mode', async () => {
+    setMode('queue')
+    await submitWith({ running: true })
+    expect(steerArg()).toBeUndefined()
+  })
+
+  it('carries steer=auto in Auto mode while a turn runs and Jev is consented', async () => {
+    setMode('auto')
+    await submitWith({ running: true }, { consent: true })
+    expect(steerArg()).toBe('auto')
+  })
+
+  it('keeps the batch pending when the steer is refused', async () => {
+    vi.mocked(api).sendChat = vi.fn().mockResolvedValue(refused())
+    await submitWith({ running: true })
+    expect(steerArg()).toBe(true)
+    expect(await screen.findByText(/slot agent mismatch/)).toBeInTheDocument()
+    expect(localStorage.getItem(SENT_KEY)).toBeNull()
   })
 })

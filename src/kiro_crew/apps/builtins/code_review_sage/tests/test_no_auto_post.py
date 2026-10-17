@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -20,6 +21,22 @@ from unittest import mock
 from sage_lib import results
 from sage_lib import review_driver as D
 from sage_lib import store
+
+
+def _worker_response(task: str, record: dict) -> str:
+    """The bounded JSON envelope a reviewer returns, echoing its issued capability.
+
+    The driver persists a review from the worker's RESPONSE, not from a file the
+    worker wrote, so a fake that writes a record directly is indistinguishable
+    from a sibling worker planting one and is refused.
+    """
+    capability = re.search(r'"capability": "([^"]+)"', task)
+    assert capability is not None
+    return json.dumps({
+        "schema": D._RESPONSE_SCHEMA, "version": D._RESPONSE_VERSION,
+        "capability": capability.group(1), "change_id": record["change_id"],
+        "record": record,
+    })
 
 
 class _Base(unittest.TestCase):
@@ -47,7 +64,7 @@ class _Base(unittest.TestCase):
         def dispatch(task: str, timeout: int = 0):
             tasks.append(task)
             if "SINGLE thorough pass" in task:
-                results.write_result({
+                return {"ok": True, "error": "", "output": _worker_response(task, {
                     "schema": "code-review-sage-result", "version": 1,
                     "change_id": "CR-1", "platform": "github",
                     "repo_identity": "github.com/o/r", "revision": "1",
@@ -61,7 +78,7 @@ class _Base(unittest.TestCase):
                                   "suggestion": "s"}],
                     "deep_reviewed": True, "title": "CR-1",
                     "files_covered": ["f"], "coverage_complete": True,
-                }, self.root, run_id)
+                })}
             return {"ok": True, "output": "done", "error": ""}
         return dispatch
 

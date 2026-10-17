@@ -74,11 +74,12 @@ def _yes(p=0.9):
 class _Recorder:
     """A tiny aiohttp app that answers with a canned response and records the request."""
 
-    def __init__(self, *, status=200, body=None, raw=None, delay=0.0):
+    def __init__(self, *, status=200, body=None, raw=None, delay=0.0, resp_headers=None):
         self.status = status
         self.body = body
         self.raw = raw
         self.delay = delay
+        self.resp_headers = resp_headers or {}
         self.requests: list[dict] = []
         self.headers: list[dict] = []
 
@@ -91,8 +92,13 @@ class _Recorder:
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.raw is not None:
-            return web.Response(status=self.status, text=self.raw, content_type="application/json")
-        return web.json_response(self.body or {}, status=self.status)
+            return web.Response(
+                status=self.status,
+                text=self.raw,
+                content_type="application/json",
+                headers=self.resp_headers,
+            )
+        return web.json_response(self.body or {}, status=self.status, headers=self.resp_headers)
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -137,6 +143,24 @@ def _ok_body(answers, *, input_tokens=312):
         "answers": answers,
         "usage": {"input_tokens": input_tokens, "output_tokens": 48},
     }
+
+
+async def _run_oracle(recorder: _Recorder, questions, *, timeout_ms=5000, model="jev-latest"):
+    """Like ``_run`` but returns the ``JevOracle`` so its ``last_response_meta`` can be read."""
+    server = TestServer(recorder.app(), host="127.0.0.1")
+    await server.start_server()
+    try:
+        provider = DecisionProviderConfig(
+            endpoint=f"http://localhost:{server.port}/v1/systemone",
+            api_key=VAULT_REF,
+            model=model,
+            timeout_ms=timeout_ms,
+        )
+        oracle = JevOracle(provider)
+        answers = await oracle.ask("hi", questions)
+        return answers, oracle
+    finally:
+        await server.close()
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +213,11 @@ class TestRequestShape:
         assert sent["model"] == "jev-latest"
         assert sent["state"] == {"messages": ["hello"]}
 
-    def test_choice_criteria_is_a_map_of_option_to_null(self):
-        """Per the API a Choice's ``criteria`` is a MAP; a list would be rejected."""
+    def test_choice_without_criteria_sends_a_map_of_option_to_null(self):
+        """A ``Choice`` that authored no criteria sends the SAME wire as before:
+        a map keyed by every option, each value ``None``. Per the API a Choice's
+        ``criteria`` is a MAP, not a list, and the option-keyed shape is preserved
+        so a point that supplies nothing changes nothing."""
         rec = _Recorder(
             body=_ok_body(
                 {
@@ -208,6 +235,56 @@ class TestRequestShape:
         assert q["type"] == "choice"
         assert q["instructions"] == CHOICE.prompt
         assert q["criteria"] == {"billing": None, "technical": None, "sales": None}
+
+    def test_choice_criteria_are_threaded_per_option_keeping_the_map_shape(self):
+        """Authored criteria reach the provider keyed by option; an option with no
+        text still appears, carrying ``None``, so the option domain is intact."""
+        q = Choice(
+            id="department",
+            prompt="Which team?",
+            options=["billing", "technical", "sales"],
+            criteria={
+                "billing": "payment, invoice or refund questions",
+                "technical": "bug reports and how-to questions",
+            },
+        )
+        rec = _Recorder(
+            body=_ok_body(
+                {
+                    "department": {
+                        "type": "choice",
+                        "choice": "billing",
+                        "probabilities": {"billing": 1.0},
+                    }
+                }
+            )
+        )
+        asyncio.run(_run(rec, [q]))
+        sent = rec.requests[0]["questions"]["department"]["criteria"]
+        assert sent == {
+            "billing": "payment, invoice or refund questions",
+            "technical": "bug reports and how-to questions",
+            "sales": None,
+        }
+
+    def test_choice_criteria_for_an_undeclared_option_is_not_sent(self):
+        """A ``criteria`` key naming an option not in ``options`` is ignored, never
+        sent: the map is built from the option domain, so a stale key carries no text."""
+        q = Choice(
+            id="verdict",
+            prompt="?",
+            options=["A", "B"],
+            criteria={"A": "the first", "Z": "not an option"},
+        )
+        rec = _Recorder(
+            body=_ok_body(
+                {"verdict": {"type": "choice", "choice": "A", "probabilities": {"A": 1.0}}}
+            )
+        )
+        asyncio.run(_run(rec, [q]))
+        sent = rec.requests[0]["questions"]["verdict"]["criteria"]
+        assert sent == {"A": "the first", "B": None}
+        assert "Z" not in sent
 
     def test_an_object_of_no_question_type_is_refused(self):
         """The wire speaks the three question types; any other object is a caller bug."""
@@ -250,10 +327,13 @@ class TestSuccessfulParse:
         assert answer.confidence is None
 
     def test_a_usage_block_is_read_past_rather_than_parsed(self):
-        """``ask`` answers with the answers alone -- no spend column to fill.
+        """``usage`` is read into the row metadata, never into the answers.
 
-        The wire still carries ``usage``; a body that omits it must parse exactly
-        the same, which is what says the field is not on the read path at all.
+        The wire carries ``usage``; a body that omits it must parse to the SAME
+        answers, which is what says the field is not on the answer path. What
+        changed is that the client now also records it as metadata (see
+        ``TestResponseMetadata``) -- the answers themselves are still the only
+        thing ``ask`` returns.
         """
         with_usage = _Recorder(body=_ok_body({"is_urgent": _yes(0.1)}, input_tokens=1900))
         without = _Recorder(body={"model": "jev-latest", "answers": {"is_urgent": _yes(0.1)}})
@@ -265,6 +345,119 @@ class TestSuccessfulParse:
     def test_a_2xx_other_than_200_is_accepted(self):
         rec = _Recorder(status=202, body=_ok_body({"is_urgent": _yes(0.3)}))
         assert asyncio.run(_run(rec, [URGENT]))["is_urgent"].p == pytest.approx(0.3)
+
+
+# ---------------------------------------------------------------------------
+# Response metadata: model, usage and request id, read off a successful call
+# ---------------------------------------------------------------------------
+
+
+class TestResponseMetadata:
+    """``last_response_meta`` carries the provider-stamped fields the gate logs.
+
+    The three fields make a timeout question answerable from the rows: ``model``
+    (``jev-latest`` is an alias that can move under a caller), token ``usage``, and
+    the ``x-typesafe-request-id`` support asks for. The metadata is never answers,
+    carries no conversation text, and is set only on a fully-valid response.
+    """
+
+    def test_model_usage_and_request_id_are_captured(self):
+        rec = _Recorder(
+            body=_ok_body({"is_urgent": _yes()}, input_tokens=312),
+            resp_headers={"x-typesafe-request-id": "req_abc123"},
+        )
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT]))
+        assert oracle.last_response_meta == {
+            "provider_model": "jev-latest",
+            "input_tokens": 312,
+            "output_tokens": 48,
+            "request_id": "req_abc123",
+        }
+
+    def test_a_missing_request_id_header_is_simply_absent(self):
+        """No header, no key -- the metadata holds only what the provider stamped."""
+        rec = _Recorder(body=_ok_body({"is_urgent": _yes()}))
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT]))
+        assert oracle.last_response_meta is not None
+        assert "request_id" not in oracle.last_response_meta
+        assert oracle.last_response_meta["provider_model"] == "jev-latest"
+
+    def test_a_body_without_model_or_usage_yields_none_when_no_header(self):
+        """A response that stamps nothing leaves the metadata ``None``, not an empty dict."""
+        rec = _Recorder(body={"answers": {"is_urgent": _yes()}})
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT]))
+        assert oracle.last_response_meta is None
+
+    def test_metadata_is_not_set_when_the_response_fails_validation(self):
+        """``last_response_meta`` is assigned only after ``_from_wire`` accepts the
+        parse. A body that stamps a model but carries no ``answers`` object fails
+        validation, so the oracle keeps ``None`` and the gate's error row carries no
+        metadata -- without this, setting it before the parse turns no test red."""
+        rec = _Recorder(
+            body={"model": "jev-latest", "usage": {"input_tokens": 1}},
+            resp_headers={"x-typesafe-request-id": "req_should_not_be_kept"},
+        )
+
+        async def _go():
+            server = TestServer(rec.app(), host="127.0.0.1")
+            await server.start_server()
+            try:
+                provider = DecisionProviderConfig(
+                    endpoint=f"http://localhost:{server.port}/v1/systemone",
+                    api_key=VAULT_REF,
+                    model="jev-latest",
+                )
+                oracle = JevOracle(provider)
+                assert oracle.last_response_meta is None
+                with pytest.raises(JevProtocolError, match="no 'answers' object"):
+                    await oracle.ask("hi", [URGENT])
+                return oracle
+            finally:
+                await server.close()
+
+        oracle = asyncio.run(_go())
+        assert oracle.last_response_meta is None
+
+    def test_the_reported_model_can_differ_from_the_requested_alias(self):
+        """``jev-latest`` is an alias; the row records the concrete model answered with."""
+        rec = _Recorder(
+            body={
+                "model": "jev-1.13",
+                "answers": {"is_urgent": _yes()},
+                "usage": {"input_tokens": 10, "output_tokens": 2},
+            },
+            resp_headers={"x-typesafe-request-id": "req_x"},
+        )
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT], model="jev-latest"))
+        assert oracle.last_response_meta["provider_model"] == "jev-1.13"
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            {"input_tokens": -1, "output_tokens": 2},  # negative dropped
+            {"input_tokens": True, "output_tokens": 2},  # bool is not a count
+            {"input_tokens": 1.5, "output_tokens": 2},  # float is not a count
+            {"input_tokens": "10", "output_tokens": 2},  # string is not a count
+        ],
+    )
+    def test_a_malformed_token_count_is_dropped_not_written(self, usage):
+        rec = _Recorder(
+            body={"model": "jev-latest", "answers": {"is_urgent": _yes()}, "usage": usage}
+        )
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT]))
+        meta = oracle.last_response_meta or {}
+        assert "input_tokens" not in meta
+        assert meta.get("output_tokens") == 2
+
+    def test_a_provider_model_string_is_bounded(self):
+        """A misbehaving provider cannot write an unbounded model field onto the row."""
+        from kiro_crew.decisions.impl_jev import _META_STR_MAX
+
+        rec = _Recorder(
+            body={"model": "m" * (_META_STR_MAX + 50), "answers": {"is_urgent": _yes()}}
+        )
+        _answers, oracle = asyncio.run(_run_oracle(rec, [URGENT]))
+        assert len(oracle.last_response_meta["provider_model"]) == _META_STR_MAX
 
 
 # ---------------------------------------------------------------------------

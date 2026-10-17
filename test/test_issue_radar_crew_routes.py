@@ -35,6 +35,7 @@ where crew records land, so pointing it at a ``TemporaryDirectory`` keeps every
 store write inside the test. Nothing here touches the network or a real data home.
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -42,6 +43,7 @@ import time
 import unittest
 import warnings
 from pathlib import Path
+from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -336,7 +338,9 @@ class _CrewRouteCase(unittest.IsolatedAsyncioTestCase):
         the write route resolves. ``live=False`` makes a crew whose slot has no
         live session, so a write has nowhere to record."""
         live = spec.pop("live", True)
-        crew = crew_store.create_crew(OWNER, REPO, {"name": name, **spec}, self.root)
+        # Off the loop, as the write route runs it: an async test calling the store
+        # on the event-loop thread gets one lock attempt, not a short wait.
+        crew = off_loop(crew_store.create_crew, OWNER, REPO, {"name": name, **spec}, self.root)
         if live:
             self.unit(crew)
         return crew
@@ -636,6 +640,130 @@ class TestCrewReadUpdateRetire(_CrewRouteCase):
         self.assertEqual(updated["auto_merge"], False)
         self.assertEqual(updated["avatar_seed"], "Andromeda")
         self.assertNotIn("not_a_field", updated)
+
+    async def test_the_triage_model_is_stored_and_a_bad_id_is_dropped(self):
+        crew = self.crew("Andromeda")
+        self.assertEqual(crew["triage_model"], "")
+        body = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        res = await self.call("PUT", "/crew", body={**body, "triage_model": "claude-haiku-4.5"})
+        self.assertEqual(_payload(res)["crew"]["triage_model"], "claude-haiku-4.5")
+        res = await self.call("PUT", "/crew", body={**body, "triage_model": "not a model"})
+        self.assertEqual(_payload(res)["crew"]["triage_model"], "claude-haiku-4.5")
+        res = await self.call("PUT", "/crew", body={**body, "triage_model": ""})
+        self.assertEqual(_payload(res)["crew"]["triage_model"], "")
+
+    async def test_the_crew_page_names_a_triage_model_the_session_withheld(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_model
+
+        crew = self.crew("Andromeda", triage_model="claude-haiku-4.5")
+        query = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertEqual(page["triage_model_unavailable"], "")
+        crew_model._withheld[crew["id"]] = "claude-haiku-4.5"
+        self.addCleanup(crew_model._withheld.clear)
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertEqual(page["triage_model_unavailable"], "claude-haiku-4.5")
+
+    async def test_the_crew_page_names_a_hand_picked_model_and_resume_releases_it(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_model
+
+        crew = self.crew("Andromeda", model="claude-opus-4.5", triage_model="claude-haiku-4.5")
+        query = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertIs(page["model_held"], False)
+        self.assertEqual(page["held_model"], "")
+
+        slot = _Slot()
+        slot.model = "claude-sonnet-4.5"  # type: ignore[attr-defined]
+        self.state._slot = slot
+        off_loop(
+            crew_store.set_crew_model_held,
+            OWNER,
+            REPO,
+            crew["id"],
+            model="claude-opus-4.5",
+            triage_model="claude-haiku-4.5",
+            seen_releases=crew_store.hold_releases(crew["id"]),
+            root=self.root,
+        )
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertIs(page["model_held"], True)
+        self.assertEqual(page["held_model"], "claude-sonnet-4.5")
+
+        # "Resume switching": a patch may release the hold, in the record and in
+        # process memory, but never set it.
+        crew_model._held[crew["id"]] = ("claude-opus-4.5", "claude-haiku-4.5")
+        self.addCleanup(crew_model._held.clear)
+        body = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        res = await self.call("PUT", "/crew", body={**body, "model_held": False})
+        self.assertIs(_payload(res)["crew"]["model_held"], False)
+        self.assertNotIn(crew["id"], crew_model._held)
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertIs(page["model_held"], False)
+        res = await self.call("PUT", "/crew", body={**body, "model_held": True})
+        self.assertIs(_payload(res)["crew"]["model_held"], False)
+
+    async def test_a_hold_not_yet_recorded_is_not_shown_and_a_release_still_clears_it(self):
+        """The GPT finding: persist a hold before the page offers to release it.
+
+        A hold this process has seen but not yet written is not on the page, and an
+        explicit ``model_held: false`` patch clears it from process memory even though
+        the record never carried it (a false-to-false record update).
+        """
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_model
+
+        crew = self.crew("Andromeda", model="claude-opus-4.5", triage_model="claude-haiku-4.5")
+        query = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        crew_model._held[crew["id"]] = ("claude-opus-4.5", "claude-haiku-4.5")
+        self.addCleanup(crew_model._held.clear)
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertIs(page["model_held"], False)
+        self.assertEqual(page["held_model"], "")
+        body = {"owner": OWNER, "repo": REPO, "id": crew["id"], "model_held": False}
+        res = await self.call("PUT", "/crew", body=body)
+        self.assertIs(_payload(res)["crew"]["model_held"], False)
+        self.assertNotIn(crew["id"], crew_model._held)
+        self.assertFalse(crew_model.is_held(_payload(res)["crew"]))
+
+    async def test_a_hold_write_queued_before_switch_back_does_not_undo_it(self):
+        """The second GPT finding: a hold write that was queued when the person
+        clicked "Switch back" must not land after the release and re-hold the crew.
+
+        Queue the write (capture what it was seen under), release through the page,
+        then flush it: the release wins, on the record and on the page.
+        """
+        crew = self.crew("Andromeda", model="claude-opus-4.5", triage_model="claude-haiku-4.5")
+        query = {"owner": OWNER, "repo": REPO, "id": crew["id"]}
+        settings = {"model": "claude-opus-4.5", "triage_model": "claude-haiku-4.5"}
+        self.assertTrue(
+            off_loop(
+                crew_store.set_crew_model_held,
+                OWNER,
+                REPO,
+                crew["id"],
+                **settings,
+                seen_releases=crew_store.hold_releases(crew["id"]),
+                root=self.root,
+            )
+        )
+        # A second write of the same hold, queued from a snapshot read before the
+        # first one landed.
+        queued = crew_store.hold_releases(crew["id"])
+        body = {"owner": OWNER, "repo": REPO, "id": crew["id"], "model_held": False}
+        res = await self.call("PUT", "/crew", body=body)
+        self.assertIs(_payload(res)["crew"]["model_held"], False)
+        wrote = off_loop(
+            crew_store.set_crew_model_held,
+            OWNER,
+            REPO,
+            crew["id"],
+            **settings,
+            seen_releases=queued,
+            root=self.root,
+        )
+        self.assertFalse(wrote, "a hold seen before the release must not land after it")
+        page = _payload(await self.call("GET", "/crew", query=query))
+        self.assertIs(page["model_held"], False)
 
     async def test_a_rename_onto_a_taken_name_is_409(self):
         first = self.crew("Andromeda")
@@ -1251,6 +1379,101 @@ class TestWorkItems(_CrewRouteCase):
         )
         self.assertEqual(res.status, 409)
         self.assertEqual(_payload(res)["code"], "crew_retired")
+
+
+class TestTheRecordToolEmptiesLabelsWithClear(_CrewRouteCase):
+    """``issue_radar_crew_record`` with ``clear: ["labels_applied"]``, end to end.
+
+    A client that drops empty lists never delivers ``labels_applied: []``, so the
+    tool description points a crew that removed its last label at the ``clear``
+    spelling. The tool runs from its own entry (schema validation and handler) with
+    its two loopback legs bridged onto the registered read and write handlers, which
+    write the real store.
+    """
+
+    def agent(self, crew: dict) -> str:
+        return f"dashboard:{crew['slot_key']}"
+
+    async def record(self, crew: dict, args: dict[str, Any]) -> str:
+        loop = asyncio.get_running_loop()
+
+        def leg(method: str, path: str, body: Any, session_key: Any) -> dict:
+            self.assertTrue(path.startswith(BASE), path)
+            res = asyncio.run_coroutine_threadsafe(
+                self.call(
+                    method, path[len(BASE):], body=body, internal_auth=True, session=session_key
+                ),
+                loop,
+            ).result(timeout=30)
+            payload = _payload(res)
+            # The shape ``mcp_core._send`` hands back for a refusal.
+            return payload if res.status < 400 else {"error": payload.get("error", ""), **payload}
+
+        def get(path: str, session_key: Any = None, **_kw: Any) -> dict:
+            return leg("GET", path, "", session_key)
+
+        def put(path: str, body: Any = None, session_key: Any = None) -> dict:
+            return leg("PUT", path, body, session_key)
+
+        sk = self.agent(crew)
+        with (
+            mock.patch.object(mcp_core, "_resolve_session_key_strict", return_value=sk),
+            mock.patch.object(mcp_core, "_get", side_effect=get),
+            mock.patch.object(mcp_core, "_put", side_effect=put),
+        ):
+            return await asyncio.wait_for(
+                asyncio.to_thread(mcp_core._call_tool, "issue_radar_crew_record", args), timeout=30
+            )
+
+    def stored_labels(self, crew: dict) -> object:
+        item = off_loop(crew_store.read_work_item, OWNER, REPO, crew["id"], 7, self.root)
+        return item["labels_applied"]
+
+    async def test_clear_empties_the_labels_the_crew_applied(self):
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing", labels_applied=["crew: in progress"])
+
+        out = await self.record(
+            crew,
+            {
+                "number": 7,
+                "clear": ["labels_applied"],
+                "event": "handed back",
+                "event_kind": "implement",
+            },
+        )
+
+        self.assertFalse(out.startswith("Error:"), out)
+        self.assertEqual(self.stored_labels(crew), [])
+
+    async def test_a_label_list_is_still_recorded_as_given(self):
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing", labels_applied=["crew: in progress"])
+
+        out = await self.record(
+            crew,
+            {
+                "number": 7,
+                "labels_applied": ["crew: in progress", "crew: needs human"],
+                "event": "asked for a human",
+                "event_kind": "implement",
+            },
+        )
+
+        self.assertFalse(out.startswith("Error:"), out)
+        self.assertEqual(self.stored_labels(crew), ["crew: in progress", "crew: needs human"])
+
+    async def test_a_misspelled_clear_is_refused_and_keeps_the_labels(self):
+        crew = self.crew("Andromeda")
+        self.work(crew["id"], 7, "implementing", labels_applied=["crew: in progress"])
+
+        out = await self.record(
+            crew,
+            {"number": 7, "clear": ["labels"], "event": "handed back", "event_kind": "implement"},
+        )
+
+        self.assertTrue(out.startswith("Error:"), out)
+        self.assertEqual(self.stored_labels(crew), ["crew: in progress"])
 
 
 # ── the shared skip index ───────────────────────────────────────────────────

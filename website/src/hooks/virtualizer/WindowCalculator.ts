@@ -229,6 +229,32 @@ export function tailWindow(itemCount: number, overscan: number): WindowRange {
 }
 
 /**
+ * The window an explicit bottom pin mounts: the tail rows that fill one
+ * viewport at their current prices, plus `overscan` above them -- never fewer
+ * than `tailWindow`. A bare `tailWindow` is `overscan + 1` rows, which in a
+ * chat of short bubbles is a fraction of the viewport: replacing a reader's
+ * window with it unmounted the rows they were looking at, and the spacer's
+ * placeholder bars showed in their place until the pin's scroll recomputed the
+ * window a few frames later (the flash right after a crewmate Send, whose pin
+ * runs just after the bubble is drawn).
+ */
+export function bottomPinWindow(
+  itemCount: number,
+  overscan: number,
+  getH: HeightGetter,
+  viewportHeight: number,
+): WindowRange {
+  const tail = tailWindow(itemCount, overscan)
+  let start = itemCount
+  let covered = 0
+  while (start > 0 && covered < viewportHeight) {
+    start -= 1
+    covered += getH(start)
+  }
+  return { start: Math.min(tail.start, Math.max(0, start - Math.max(0, Math.floor(overscan)))), end: itemCount }
+}
+
+/**
  * Does a jump's window land within the near band of `range`? Near jumps union
  * with the current window; far ones replace it. One predicate for both the
  * caller-facing far/near answer and the state update that acts on it.

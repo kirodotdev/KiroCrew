@@ -3,7 +3,7 @@ import { useInRouterContext, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Bot, Boxes, Check, CircleHelp, Sparkles, Terminal, X } from 'lucide-react'
 
-import { acpBackendName, acpProbeBlocksUse, agentChoiceSaved, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeBlocksUse, agentChoiceSaved, configuredAcpBackend, DEFAULT_ACP_BACKEND, mcpWholeServerDeny, setupMarkerErrorBody, setupMarkerErrorMessage } from '../../api/acpBackend'
 import { api } from '../../api/client'
 import type { AcpBackendProbe } from '../../api/client'
 import ErrorBoundary from '../../components/ErrorBoundary'
@@ -26,14 +26,10 @@ import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 /** The config field the switch owns. Also the schema path the options are gated on. */
 const CONFIG_KEY = 'agent.acp_backend'
 
-/**
- * Backend ids, verbatim from `acp/types.py`. `''` (Kiro CLI) is the shipped
- * default and is a REAL value, not "unset" — the empty string is how the core
- * spells the Kiro backend, so it must round-trip as itself.
- */
-const KIRO = ''
+/** Backend ids in the config vocabulary the schema, probe rows and PATCH share. */
+const KIRO = ACP_BACKEND_KIRO
 const CLAUDE = 'claude'
-const KAS = 'kas'
+const KAS = ACP_BACKEND_KAS
 
 /**
  * The agents this frontend has a translated name and an icon for.
@@ -44,7 +40,15 @@ const KAS = 'kas'
  * flight. An agent absent from this list still gets a row once a server answer
  * names it, labelled with its `policy_id`.
  */
-const NAMED = [KIRO, CLAUDE, KAS]
+const NAMED = [KAS, KIRO, CLAUDE]
+
+/**
+ * The harnesses that never carry the Experimental tag: the default a new install
+ * runs (`DEFAULT_ACP_BACKEND`) and Kiro CLI, the all-supported governance floor.
+ * Only the default gets the "Default." line; keying it on the constant keeps the
+ * page from naming a different harness than the one a new user is on.
+ */
+const stable = (value: string) => value === DEFAULT_ACP_BACKEND || value === KIRO
 
 /**
  * The tool-approval mechanism that means nothing establishes how a harness asks.
@@ -504,11 +508,8 @@ export function AgentBackendTab() {
   /**
    * A failed read is NOT the default value.
    *
-   * `?? KIRO` is right for a config that genuinely omits the key — the shipped
-   * default really is Kiro CLI. It is wrong for a read that FAILED: the value is
-   * then unknown, and defaulting paints Kiro CLI as the active harness, so an
-   * operator running KAS is shown the wrong agent by a control that looks live.
-   * Offer the retry instead of guessing.
+   * A config that omits the key uses KAS. A failed read stays unknown, because
+   * showing any harness as active would be a guess. Offer retry instead.
    */
   if (cfgQ.isError) {
     return (
@@ -533,7 +534,7 @@ export function AgentBackendTab() {
     )
   }
 
-  const current = cfgQ.data?.agent?.acp_backend ?? KIRO
+  const current = cfgQ.data ? configuredAcpBackend(cfgQ.data) : DEFAULT_ACP_BACKEND
 
   /**
    * `undefined` while the schema is in flight — the switch stays enabled rather
@@ -599,11 +600,9 @@ export function AgentBackendTab() {
    * the same mistake as disabling one. `current` joins for the same reason: the saved
    * value must always have a row.
    *
-   * Sorted rather than left in arrival order: the two kiro-family harnesses first —
-   * KIRO because it is the default and the floor, then KAS — and everything else by
-   * `policy_id`, which is the order the probe endpoint already sorts by. Set iteration
-   * order would otherwise follow whichever query resolved first and reshuffle the
-   * list between renders.
+   * Sorted rather than left in arrival order: KAS first because it is the default,
+   * Kiro CLI second, and everything else by `policy_id`. Set iteration order would
+   * otherwise follow whichever query resolved first and reshuffle the list.
    */
   const candidates = Array.from(
     new Set<string>([
@@ -613,17 +612,10 @@ export function AgentBackendTab() {
       ...(probeQ.data?.backends ?? []).map(b => b.id),
     ]),
   ).sort((a, b) => {
-    if (a === KIRO) return -1
-    if (b === KIRO) return 1
-    // KAS second, ahead of the byte order below. It is not an adapter: it is kiro-cli's
-    // own ACP relay, resolved from the same binary and sharing kiro's install verdict
-    // (`_probe_kas` delegates to `_probe_kiro`), so the two harnesses that are really
-    // one install belong adjacent at the head of the list. Under `policy_id` alone it
-    // sorts on 'k' and lands behind every adapter whose name happens to start earlier
-    // ('claude', 'codex'), which reads to the operator as a rank rather than an
-    // alphabet.
     if (a === KAS) return -1
     if (b === KAS) return 1
+    if (a === KIRO) return -1
+    if (b === KIRO) return 1
     // Byte order, not `localeCompare`/`compareText`: these are machine identifiers,
     // and the point of the sort (see above) is to reproduce the order the probe
     // endpoint already returned them in. A collator reads the READER's locale, so
@@ -789,7 +781,6 @@ export function AgentBackendTab() {
     crew_tools: i18nT('pages.developer.agentBackendTab.card_crew_tools'),
     member_thread_tools: i18nT('pages.developer.agentBackendTab.card_member_thread_tools'),
     member_saved_agent: i18nT('pages.developer.agentBackendTab.card_member_saved_agent'),
-    private_member_sessions: i18nT('pages.developer.agentBackendTab.card_private_member_sessions'),
     side_chat_tools: i18nT('pages.developer.agentBackendTab.card_side_chat_tools'),
     subagent_continuation: i18nT('pages.developer.agentBackendTab.card_subagent_continuation'),
     mid_turn_steer: i18nT('pages.developer.agentBackendTab.card_mid_turn_steer'),
@@ -865,10 +856,7 @@ export function AgentBackendTab() {
    * Only the reaches that can cost a whole server get a line. `settings-file` stops
    * the tool it names and nothing else, which costs the reader nothing to know.
    */
-  const mcpDenyRule = (value: string): string => {
-    if (!mcpCanCostWholeServer(value)) return ''
-    return i18nT('pages.developer.agentBackendTab.mcp_deny_rule', { name: nameOf(value) })
-  }
+  const mcpDenyRule = (value: string): string => mcpWholeServerDeny(probe(value)).rule
 
   /**
    * The EXCEPTION to that rule, where the agent has one, or `''`.
@@ -878,13 +866,11 @@ export function AgentBackendTab() {
    * still reply. Rendered directly under the rule and labelled as its exception,
    * because two sentences that qualify each other without saying so read as a
    * contradiction.
+   *
+   * Both sentences come from `mcpWholeServerDeny`, which the MCP Servers tool list
+   * reads too, so the card and the toggle cannot disagree.
    */
-  const mcpDenyException = (value: string): string => {
-    if (probe(value)?.mcp?.per_tool_deny !== 'per-call') return ''
-    return i18nT('pages.developer.agentBackendTab.mcp_deny_exception', {
-      name: nameOf(value),
-    })
-  }
+  const mcpDenyException = (value: string): string => mcpWholeServerDeny(probe(value)).exception
 
   /**
    * The settings in the reader's agent config file that will not take effect here.
@@ -947,8 +933,7 @@ export function AgentBackendTab() {
    * real translated entry in the shared helper; this keeps a plugin-registered one usable until
    * then.
    *
-   * KIRO is the empty string, so the `||` chain must not treat it as absent — it is
-   * always named by the shared helper, before the policy-id fallback.
+   * KIRO is always named by the shared helper, before the policy-id fallback.
    */
   const nameOf = (value: string): string => acpBackendName({ id: value, policy_id: probe(value)?.policy_id })
 
@@ -964,6 +949,68 @@ export function AgentBackendTab() {
    */
   const capabilityLines = (value: string) =>
     (probe(value)?.capabilities ?? []).filter(line => CAPABILITY_LABEL[line.id])
+
+  /**
+   * The card's DETAIL lines for one agent: real differences outside the curated
+   * core, folded behind a disclosure and never in the "supports N of M" count.
+   * Empty from a gateway that sends no `details`, and the disclosure is then absent.
+   */
+  const detailLines = (value: string) =>
+    (probe(value)?.details ?? []).filter(line => CAPABILITY_LABEL[line.id])
+
+  /** One card line: its glyph, its state for a screen reader, its label. */
+  const cardLine = (line: NonNullable<AcpBackendProbe['capabilities']>[number]) => (
+    <li key={line.id} className="flex items-start gap-1.5">
+      {/* The icon is decorative and the STATE is text: a mark that
+          only differs by shape and colour is unreadable to a screen
+          reader and to anyone who cannot tell the two colours apart. */}
+      {/* Three answers, three glyphs, and the unmeasured one borrows
+          neither of the others: a tick would promise what nobody has
+          driven, and the cross a real absence wears is what hides the
+          cell a measurement would pay for. Tested `=== false` rather
+          than for falsiness, so a gateway that sends no flag reads as
+          measured and the card it serves is the card it served. */}
+      {line.measured === false ? (
+        /* 11 and not 12: a ring encloses its ink where a tick and a
+           cross are two strokes, so the same nominal size renders a
+           heavier mark and the third state reads as a badge among ten
+           line glyphs. */
+        <CircleHelp
+          size={11}
+          strokeWidth={1.75}
+          aria-hidden
+          className="mt-1 shrink-0 text-warn"
+        />
+      ) : line.available ? (
+        <Check size={12} aria-hidden className="mt-1 shrink-0 text-ok" />
+      ) : (
+        <X size={12} aria-hidden className="mt-1 shrink-0 text-muted" />
+      )}
+      <span className={line.available ? 'text-text-strong' : 'text-muted'}>
+        <span className="sr-only">
+          {line.measured === false
+            ? i18nT('pages.developer.agentBackendTab.card_not_measured')
+            : line.available
+              ? i18nT('pages.developer.agentBackendTab.card_available')
+              : i18nT('pages.developer.agentBackendTab.card_not_available')}
+        </span>
+        {CAPABILITY_LABEL[line.id]}
+        {line.measured === false && unmeasuredReason(line.unmeasured_reason) && (
+          /* Its OWN line, dimmer and smaller, indented to the label
+             column by sitting inside the label's span. Inline it fused
+             with the label instead -- two blind readers of the rendered
+             card both read "The /compact command works No live run has
+             measured this yet" as one clause, which states the opposite
+             of what the row means. A block also gives the longest text
+             on the card somewhere to wrap to that is not the glyph
+             column. */
+          <span className="mb-0.5 block max-w-[44ch] text-[11px] leading-snug opacity-80">
+            {unmeasuredReason(line.unmeasured_reason)}
+          </span>
+        )}
+      </span>
+    </li>
+  )
 
   /**
    * The SECURITY notes that hold for one agent: which layer confines it, whether
@@ -991,29 +1038,6 @@ export function AgentBackendTab() {
     return (mechanism && APPROVAL_LABEL[mechanism]) || ''
   }
 
-
-
-  /**
-   * Whether a tool-off on this agent can cost a WHOLE server rather than the tool.
-   *
-   * The SERVER's classification, read off the payload rather than re-derived here.
-   * `agent_sdk/backend_mcp_ability.COSTS_WHOLE_SERVER` holds which reaches cost a
-   * whole server, beside the record of which concerns reach a card at all, and a
-   * completeness test holds it against the vocabulary — so a reach added to the core
-   * arrives already classified instead of rendering as ordinary until someone edits
-   * this file. It holds for two of the three today: `whole-server`, and the case that
-   * hid, `per-call`, which stays per tool on Crew's OWN servers and withholds any
-   * other server whole.
-   *
-   * `false` when the payload carried no flag — an older gateway, a 403, a query in
-   * flight — which renders the deny line inside the disclosure, where it sat before
-   * any of this. Compared against `true` rather than coerced, so a reach this
-   * frontend has no label for is never promoted on the strength of a truthy string.
-   */
-  const mcpCanCostWholeServer = (value: string): boolean =>
-    probe(value)?.mcp?.costs_whole_server === true
-
-
   /**
    * The one status sentence a harness carries, derived rather than authored per agent.
    *
@@ -1026,8 +1050,9 @@ export function AgentBackendTab() {
    * into a sentence would put the one string an operator has to run somewhere they
    * cannot click. `unknown` follows and must never read as missing; it reports a
    * failed check, not an absent binary. Only then do the default/experimental lines
-   * apply. KIRO is the all-supported descriptor, so it gets that sentence; anything
-   * else is not, so it gets `Experimental` rather than a claim.
+   * apply. `DEFAULT_ACP_BACKEND` gets the default sentence; Kiro CLI is stable but
+   * not the default, so it says only what the probe measured; anything else gets
+   * `Experimental` rather than a claim.
    *
    * Rendered as the row's screen-reader text as well as in the strip, which is what
    * lets the row's single glyph stay a glyph: the state is a WORD somewhere for
@@ -1059,7 +1084,11 @@ export function AgentBackendTab() {
       return i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', {
         name: nameOf(value),
       })
-    if (value === KIRO) return i18nT('pages.developer.agentBackendTab.default_all_features_supported')
+    if (value === DEFAULT_ACP_BACKEND) return i18nT('pages.developer.agentBackendTab.default_harness')
+    if (stable(value))
+      return row?.installed === 'installed'
+        ? i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name: nameOf(value) })
+        : ''
     return i18nT('pages.developer.agentBackendTab.experimental')
   }
 
@@ -1107,12 +1136,12 @@ export function AgentBackendTab() {
    * before the gateway restart — in first-run setup's own sentence, so the two
    * screens built from one picker give one remedy for one state. Only then do
    * the descriptor lines apply:
-   * KIRO is the all-supported default; anything else installed is ready to use
-   * and marked Experimental rather than given a claim.
+   * `DEFAULT_ACP_BACKEND` gets the default line; anything else installed is ready
+   * to use, and marked Experimental unless it is Kiro CLI, the stable floor.
    *
    * With no probe answer at all (a 404, a 403, a query in flight) the block says
-   * only what it can: the default line for Kiro CLI, Experimental for the rest —
-   * never "installed and ready", which nobody measured.
+   * only what it can: the default line for the default, nothing for Kiro CLI,
+   * Experimental for the rest — never "installed and ready", which nobody measured.
    */
   const lead = (value: string) => {
     const row = probe(value)
@@ -1137,10 +1166,10 @@ export function AgentBackendTab() {
           {i18nT('components.kiroPrerequisiteGate.agent_restart_required_detail', { name })}
         </p>
       )
-    if (value === KIRO)
+    if (value === DEFAULT_ACP_BACKEND)
       return (
         <p className="text-[13px] leading-relaxed text-text">
-          {i18nT('pages.developer.agentBackendTab.default_all_features_supported')}
+          {i18nT('pages.developer.agentBackendTab.default_harness')}
         </p>
       )
     if (row?.installed === 'installed')
@@ -1149,9 +1178,13 @@ export function AgentBackendTab() {
         // paragraph of its own it read as an orphaned second status.
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] leading-relaxed text-text">
           <span>{i18nT('components.kiroPrerequisiteGate.agent_ready_to_use', { name })}</span>
-          <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.experimental')}</Badge>
+          {!stable(value) && (
+            <Badge variant="muted">{i18nT('pages.developer.agentBackendTab.experimental')}</Badge>
+          )}
         </p>
       )
+    // A stable harness with no install verdict has nothing measured to say.
+    if (stable(value)) return null
     return (
       <p className="text-[13px] leading-relaxed text-text">
         {i18nT('pages.developer.agentBackendTab.experimental')}
@@ -1245,59 +1278,21 @@ export function AgentBackendTab() {
               )}
             </div>
             <ul className="mt-1 mb-0 list-none pl-0 space-y-0.5 text-[12px] leading-relaxed">
-              {capabilityLines(value).map(line => (
-                <li key={line.id} className="flex items-start gap-1.5">
-                  {/* The icon is decorative and the STATE is text: a mark that
-                      only differs by shape and colour is unreadable to a screen
-                      reader and to anyone who cannot tell the two colours apart. */}
-                  {/* Three answers, three glyphs, and the unmeasured one borrows
-                      neither of the others: a tick would promise what nobody has
-                      driven, and the cross a real absence wears is what hides the
-                      cell a measurement would pay for. Tested `=== false` rather
-                      than for falsiness, so a gateway that sends no flag reads as
-                      measured and the card it serves is the card it served. */}
-                  {line.measured === false ? (
-                    /* 11 and not 12: a ring encloses its ink where a tick and a
-                       cross are two strokes, so the same nominal size renders a
-                       heavier mark and the third state reads as a badge among ten
-                       line glyphs. */
-                    <CircleHelp
-                      size={11}
-                      strokeWidth={1.75}
-                      aria-hidden
-                      className="mt-1 shrink-0 text-warn"
-                    />
-                  ) : line.available ? (
-                    <Check size={12} aria-hidden className="mt-1 shrink-0 text-ok" />
-                  ) : (
-                    <X size={12} aria-hidden className="mt-1 shrink-0 text-muted" />
-                  )}
-                  <span className={line.available ? 'text-text-strong' : 'text-muted'}>
-                    <span className="sr-only">
-                      {line.measured === false
-                        ? i18nT('pages.developer.agentBackendTab.card_not_measured')
-                        : line.available
-                          ? i18nT('pages.developer.agentBackendTab.card_available')
-                          : i18nT('pages.developer.agentBackendTab.card_not_available')}
-                    </span>
-                    {CAPABILITY_LABEL[line.id]}
-                    {line.measured === false && unmeasuredReason(line.unmeasured_reason) && (
-                      /* Its OWN line, dimmer and smaller, indented to the label
-                         column by sitting inside the label's span. Inline it fused
-                         with the label instead -- two blind readers of the rendered
-                         card both read "The /compact command works No live run has
-                         measured this yet" as one clause, which states the opposite
-                         of what the row means. A block also gives the longest text
-                         on the card somewhere to wrap to that is not the glyph
-                         column. */
-                      <span className="mb-0.5 block max-w-[44ch] text-[11px] leading-snug opacity-80">
-                        {unmeasuredReason(line.unmeasured_reason)}
-                      </span>
-                    )}
-                  </span>
-                </li>
-              ))}
+              {capabilityLines(value).map(cardLine)}
             </ul>
+            {detailLines(value).length > 0 && (
+              /* Folded, and outside the count above: each of these is a real
+                 difference, but not one a reader picks an agent by, so it is one
+                 click away rather than competing with the core list. */
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[12px] font-semibold text-muted">
+                  {i18nT('pages.developer.agentBackendTab.card_more_details')}
+                </summary>
+                <ul className="mt-1 mb-0 list-none pl-0 space-y-0.5 text-[12px] leading-relaxed">
+                  {detailLines(value).map(cardLine)}
+                </ul>
+              </details>
+            )}
           </div>
         )}
 
@@ -1547,7 +1542,7 @@ export function AgentBackendTab() {
           {rows.map(value => (
             <span key={value} id={rowStatusId(value)}>
               {value === current
-                ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`
+                ? `${i18nT('pages.developer.agentBackendTab.in_use')} ${status(value)}`.trim()
                 : status(value)}
             </span>
           ))}

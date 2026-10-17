@@ -760,6 +760,17 @@ test.describe('E2E: sidebar tag columns', () => {
     await page.evaluate(() => {
       window.addEventListener('contextmenu', e => { (window as unknown as { __ctx?: boolean }).__ctx = e.defaultPrevented })
     })
+    // Row B must be clear of the floating search dock before its box is read.
+    // The right-click on row A above can leave the lane scrolled with A at its
+    // top edge: while the rows' enter animation is still running, Playwright's
+    // click retries ("element is not stable") force
+    // `scrollIntoView({ block: 'start' })` on the fourth attempt, and the lane's
+    // scroll-padding then parks A just below the dock — which puts B, the row
+    // above A, UNDER the dock's glass. The backdrop forwards the gesture to what
+    // `elementsFromPoint` finds there, the search input, and no menu opens
+    // (#17941). `block: 'nearest'` honours that same scroll-padding: a no-op
+    // when B already sits below the dock, and otherwise it brings B out.
+    await rowB.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }))
     // Real pointer on row B: the backdrop is what actually receives it, so drive
     // the mouse rather than a locator click (which would refuse the intercepted
     // target). Aim near the row's LEFT edge, not its centre — with the wide
@@ -773,6 +784,20 @@ test.describe('E2E: sidebar tag columns', () => {
     const insideDialog = point.x >= dialog.x && point.x <= dialog.x + dialog.width
       && point.y >= dialog.y && point.y <= dialog.y + dialog.height
     expect(insideDialog, 'test geometry: the click point must be on the backdrop, not the dialog').toBe(false)
+    // And nothing but the backdrop may sit between the pointer and row B, or the
+    // forward never reaches B's trigger. The same walk the backdrop does
+    // (`elementBeneath` in SlotTagPopover), checked up front so a dock, toast or
+    // overlay at this point fails here, by name, instead of as a missing menu.
+    const beneath = await page.evaluate(({ x, y, key }) => {
+      const backdrop = document.querySelector('[data-testid="slot-tag-picker"]')?.parentElement ?? null
+      const el = document.elementsFromPoint(x, y).find(e => !backdrop?.contains(e)) ?? null
+      return el && {
+        inRowB: el.closest(`[data-slot-key="${key}"]`) !== null,
+        tag: el.tagName.toLowerCase(),
+        testid: el.getAttribute('data-testid'),
+      }
+    }, { ...point, key: b.key })
+    expect(beneath?.inRowB, `test geometry: beneath the backdrop at the click point must be row B, got ${JSON.stringify(beneath)}`).toBe(true)
     await page.mouse.click(point.x, point.y, { button: 'right' })
 
     await expect(picker).toBeHidden()

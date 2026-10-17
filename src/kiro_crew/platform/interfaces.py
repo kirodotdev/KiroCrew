@@ -22,6 +22,7 @@ from typing import (
     Awaitable,
     Callable,
     Dict,
+    FrozenSet,
     List,
     Optional,
     Protocol,
@@ -189,7 +190,7 @@ class AgentRuntime(Protocol):
     def run_first_run_setup(self) -> None:
         """One-time install-time provisioning, run once per gateway start.
 
-        WIRED: the gateway boot path (``slack/gateway.py``) calls this through
+        WIRED: the gateway boot path (``slack/gateway_runtime/service_boot.py``) calls this through
         the seam instead of importing ``agent.run_first_run_setup`` directly, so
         an edition can add its own one-time provisioning. The public Default
         delegates to exactly that function (PATH shim + admission-policy seed +
@@ -207,7 +208,7 @@ class AgentRuntime(Protocol):
 class AgentExecutableResolver(Protocol):
     """Resolve an edition-provided agent launcher to its direct executable.
 
-    ``sandbox.py`` calls this before applying KiroCrew's OS-level sandbox so an
+    ``sandbox_argv.py`` calls this before applying Kiro Crew's OS-level sandbox so an
     edition can replace a managed launcher with the executable it ultimately
     invokes, avoiding nested isolation. The public Default is identity: ordinary
     ``kiro-cli`` paths and the explicit ``KIROCREW_KIRO_BIN`` override are used
@@ -221,7 +222,7 @@ class AgentExecutableResolver(Protocol):
 class SandboxPolicy(Protocol):
     """The sandbox *data*: which dirs/files to hide/expose.
 
-    The ``wrap_argv`` mechanism stays in ``sandbox.py``; only the directory and
+    The ``wrap_argv`` mechanism stays in ``sandbox_wrap.py``; only the directory and
     file lists are the extension point. Public default = the open-source
     credential-directory lists; a companion may add edition-specific paths.
     """
@@ -261,6 +262,25 @@ class CredentialPolicy(Protocol):
         """
         ...
 
+    def token_param_exempt_url_prefixes(self) -> "frozenset[str]":
+        """``https://host/path`` prefixes whose ``?token=`` value pass 4 leaves alone.
+
+        WIRED: pass 4 skips only a literal ``?token=`` immediately after a member
+        whose local boundary and preceding text prove it is not nested in another
+        destination (any earlier URL, backslash, scheme, ``&`` or ``<`` is a signal,
+        scanned raw and never decoded), whose value is one URL-safe/base64 run plus
+        closers, and which no earlier pass claimed. A companion must list the host in
+        ``exempt_exact_hosts()`` too, or earlier base64/query heuristics can redact
+        the URL before pass 4. For user-opened approval links whose token is a lookup
+        key rather than a bearer credential. Streaming windows never apply this
+        exemption because they lack the complete preceding destination context.
+
+        Members without a path are ignored (a bare host prefix would match
+        ``host.evil.example``). Public default = ``frozenset()``. Like
+        ``exempt_exact_hosts`` this is NEVER sourced from ``config.json``.
+        """
+        ...
+
 
 class SlackEnterpriseGate(Protocol):
     """Slack enterprise/workspace allowlist + per-message origin gate.
@@ -280,6 +300,11 @@ class SlackEnterpriseGate(Protocol):
     add ids the config does not list -- against the default gate they are
     dropped. It stays in the signature because an edition whose allowlist comes
     from somewhere other than that config key can still use it.
+
+    An implementation that replaces ``validate_enterprise`` must also record the
+    bot's own identity through ``slack.enterprise.set_validated_self_identity``:
+    clear it before re-validating, set it from ``auth.test`` on success. The
+    trusted-bot admission reads it and trusts no peer bot while it is empty.
     """
 
     def validate_enterprise(
@@ -292,15 +317,19 @@ class SlackEnterpriseGate(Protocol):
         """Extra tool names an edition allows during unattended heartbeat polling.
 
         WIRED: ``slack/gateway_runtime/tool_policy.py::_is_heartbeat_safe_tool`` checks this set after
-        the core ``HEARTBEAT_SAFE_TOOLS`` exact-name match. The public default is
+        the core heartbeat allowlist's identity match. The public default is
         ``frozenset()`` (no additions — the heartbeat allowlist is byte-identical
         to today). A companion returns its own read-only tool names so its
-        heartbeat polls can auto-approve them.
+        heartbeat polls can auto-approve them. The ``@server/`` prefix of every pin
+        is also what ``agent_materialization.worker_agent.heartbeat_mirrored_servers``
+        mounts on the heartbeat agent (copied from the default spec, ``autoApprove``
+        dropped; a prefix the default spec does not mount is skipped), so one list
+        names both the servers and the tools.
 
         **Entries MUST be server-qualified ``"@server/Tool"``.** An entry is
-        honored ONLY when it matches that qualified identity; a bare tool name
-        never matches (and a tool-call title with no resolvable server is never
-        auto-approved from this set). This is deliberate: a bare-name allowlist
+        honored ONLY when it matches the event's trusted ``mcp_server_name`` /
+        ``tool_name`` pair (``_meta.kiro``); a bare tool name never matches, and
+        the model-authored title is never consulted. This is deliberate: a bare-name allowlist
         entry would let a *different* (or compromised) MCP server expose a
         destructive tool with the same bare name as an allowlisted read-only one
         and get it auto-approved during an unattended heartbeat — a hole in the
@@ -583,6 +612,18 @@ class McpToolingProvider(Protocol):
         The public Default returns ``[]`` so the core writes the **Kiro scope
         only**; a companion returns e.g. the Claude Code scope
         (``~/.claude.json``) to keep that provider's config in sync.
+        """
+        ...
+
+    def kas_relayed_env_references(self) -> FrozenSet[str]:
+        """Variable names an MCP ``env`` value may reference on the KAS backend.
+
+        WIRED: ``acp.kas_agents`` keeps an entry's ``env`` value that is exactly
+        ``${NAME}`` for a returned *NAME*, on any server, and withholds every
+        other reference. KAS resolves it from its own environment when it
+        spawns the server, so only the name crosses the wire. Return only names
+        whose values carry no secret, such as a launcher's loopback address.
+        The public Default returns an empty set.
         """
         ...
 
@@ -1850,7 +1891,7 @@ class DashboardContributor(Protocol):
     def on_user_message(self, app: "web.Application", message: str) -> None:
         """Observe an inbound user chat message (Default: no-op).
 
-        WIRED: ``dashboard/chat_handlers.py::api_chat`` calls this once per user
+        WIRED: ``dashboard/chat_api/chat_send.py::api_chat`` calls this once per user
         message, just before the turn is scheduled, inside a fail-safe guard so
         an observer error never blocks the chat.  Fire-and-forget by contract:
         the observer must not block (schedule its own task if it needs to do
@@ -1870,7 +1911,7 @@ class DashboardContributor(Protocol):
     ) -> None:
         """Observe a dashboard-session token being consumed on a verified device.
 
-        WIRED: ``dashboard/token_auth.py::bind_token_ip`` calls this once, right
+        WIRED: ``dashboard/token_auth.py::token_auth_middleware`` calls this once, right
         after it binds the token to the consuming IP, inside a fail-safe guard so
         an observer error never blocks token consumption. Fire-and-forget: the
         observer must not block.

@@ -11,6 +11,8 @@ fence; this module owns only their contents.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from collections.abc import Callable
 from dataclasses import fields as fields_of
 from pathlib import Path
@@ -28,6 +30,11 @@ from kiro_crew.artifact_store.model import (
 )
 from kiro_crew.deploy.webapp_types import webapp_metadata_from_dict
 from kiro_crew.publish_provider import DEFAULT_PROVIDER
+
+logger = logging.getLogger(__name__)
+
+#: Shape of a persisted ``content_token``: 256 random bits as lowercase hex.
+_CONTENT_TOKEN_RE = re.compile(r"[0-9a-f]{64}")
 
 #: Allowed lifecycle event types. ``referenced`` records a chat impression of the
 #: artifact; the in-line save/update path emits ``created`` / ``edited`` /
@@ -137,7 +144,21 @@ def backfill_events(art: Artifact) -> bool:
 
 
 def decode_meta(raw: Any, path: Path) -> Artifact:
-    """Build an :class:`Artifact` from a parsed ``meta.json`` (the file at *path*)."""
+    """Build an :class:`Artifact` from a parsed ``meta.json`` (the file at *path*).
+
+    A record whose top level is not a JSON OBJECT is refused as an
+    :class:`ArtifactError`, which is the class every caller already handles: the walk
+    below reads keys off *raw*, so a list or a bare number would raise
+    ``AttributeError`` instead -- and ``ArtifactStore.list`` tolerates
+    ``ArtifactError``, ``OSError``, ``ValueError`` and ``TypeError`` and not that one, so
+    one such file turns a whole listing into an unhandled crash rather than one skipped
+    record. The store cannot write such a file (``_write_meta`` always serializes an
+    object), so this is about a file something else edited.
+    """
+    if not isinstance(raw, dict):
+        raise ArtifactError(
+            f"meta.json is a {type(raw).__name__}, not an object: {path}",
+        )
     # Tolerant load: ignore unknown keys, fill defaults for missing keys.
     slug = raw.get("slug")
     if not slug:
@@ -165,6 +186,13 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         for vk_k, vk_v in raw_vk.items():
             if isinstance(vk_k, str) and isinstance(vk_v, str):
                 version_kinds[vk_k] = vk_v
+    # A malformed token is dropped so the next current read assigns a fresh one.
+    content_token = raw.get("content_token")
+    if content_token is not None and (
+        not isinstance(content_token, str) or _CONTENT_TOKEN_RE.fullmatch(content_token) is None
+    ):
+        logger.warning("artifact meta.json %s: malformed content_token, resetting", path)
+        content_token = None
     return Artifact(
         slug=str(slug),
         name=str(raw.get("name", slug)),
@@ -193,6 +221,7 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         version_kinds=version_kinds,
         webapp_metadata=webapp_metadata_from_dict(raw.get("webapp_metadata")),
         image=image,
+        content_token=content_token,
     )
 
 

@@ -90,6 +90,8 @@ export interface LegacyGoalLoop {
   id: string
   slotKey: string
   message: string
+  /** Epoch seconds when the loop was armed; 0 when an older record omitted it. */
+  createdAt?: number
   idleSecs: number
   maxCycles: number
   cycleCount: number
@@ -105,6 +107,12 @@ export interface LegacyGoalLoop {
   /** The kind of subject that watch observed (`gh-pr`, `work-ledger`), from the
    *  frame's `monitor_kind`; '' with no watch. */
   monitorKind: string
+  /** An active loop holding for an unanswered approval (the REST row's and
+   *  frame's `approval_stalled`). Present only when true. */
+  approvalStalled?: boolean
+  /** An active work-ledger watch holding while every open item waits on a person
+   *  (the REST row's and frame's `waiting_on_person`). Present only when true. */
+  waitingOnPerson?: boolean
   /** The kill-switch file the server substitutes for `{{STOP_FILE}}` at fire
    *  time; '' when the loop was armed with none. Carried by the REST reads
    *  (`asdict(loop)`), not by the websocket frame, which withholds paths -- so
@@ -132,6 +140,8 @@ export interface StructuredMonitor {
   monitorKind: PullRequestMonitorKind | string
   objective: 'review_ready' | string
   target: string
+  /** Epoch seconds when the monitor was armed; 0 when an older record omitted it. */
+  createdAt?: number
   cadenceSecs: number
   nextProbeAt: number
   wakeInstructions: string
@@ -307,6 +317,7 @@ function structuredFallback(
     monitorKind: text(monitor?.kind, 'unknown'),
     objective: text(monitor?.objective, 'unknown'),
     target: text(monitor?.target),
+    createdAt: finite(monitor?.created_ts),
     cadenceSecs: positive(monitor?.cadence_secs, STRUCTURED_MONITOR_DEFAULTS.cadenceSecs),
     nextProbeAt: finite(monitor?.next_probe_at),
     wakeInstructions: text(monitor?.wake_instructions),
@@ -371,6 +382,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       id,
       slotKey,
       message: text(loop.message),
+      createdAt: finite(loop.created_ts),
       idleSecs: count(loop.idle_secs),
       maxCycles: count(loop.max_cycles),
       cycleCount: count(loop.cycle_count),
@@ -381,6 +393,8 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       stoppedReason: text(loop.stopped_reason),
       monitorOutcome: text(loop.monitor_outcome, text(gatedRecord?.outcome)),
       monitorKind: text(loop.monitor_kind, text(gatedRecord?.kind)),
+      ...(loop.approval_stalled === true ? { approvalStalled: true } : {}),
+      ...(loop.waiting_on_person === true ? { waitingOnPerson: true } : {}),
       ...(typeof loop.stop_sentinel_path === 'string'
         ? { stopSentinelPath: loop.stop_sentinel_path }
         : {}),
@@ -477,6 +491,7 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
     monitorKind: text(monitor.kind),
     objective: text(monitor.objective),
     target: text(monitor.target),
+    createdAt: finite(monitor.created_ts),
     cadenceSecs: positive(monitor.cadence_secs, STRUCTURED_MONITOR_DEFAULTS.cadenceSecs),
     nextProbeAt: finite(monitor.next_probe_at) || finite(loop.next_due_ts),
     wakeInstructions: text(monitor.wake_instructions),
@@ -511,6 +526,21 @@ export function normalizeAutomationRecord(raw: unknown): AutomationRecord | null
       stoppedAt: finite(monitor.stopped_at),
     } : null,
   }
+}
+
+export function isAutomationRunning(record: AutomationRecord | null | undefined): boolean {
+  if (!record) return false
+  return record.kind === 'legacy_goal_loop'
+    ? record.active
+    : record.active && record.terminal === null
+}
+
+/** A proven active watch suitable for the avatar and Profile readout.
+ * Close safety is broader: an active future-schema record must still block
+ * close even though this build cannot truthfully animate or describe it. */
+export function isAutomationActive(record: AutomationRecord | null | undefined): boolean {
+  return isAutomationRunning(record)
+    && (record?.kind === 'legacy_goal_loop' || record?.actionable === true)
 }
 
 export function deriveAutomationStatus(record: AutomationRecord): MonitorStatus {

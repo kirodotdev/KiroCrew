@@ -83,3 +83,20 @@ export function removeFollowUpOption(prev: string, owned: OwnedSuffix | null, op
   return { value: renderTail(nextOwned), owned: nextOwned }
 }
 
+
+/**
+ * Pick one option of a SINGLE-select `[OPTION:]` offer: it REPLACES the chips'
+ * previous pick instead of joining it.
+ *
+ * The owned span is rewritten to hold just `option` only when it is still intact
+ * at the tail of the live draft. Otherwise the user edited it, the old pick is no
+ * longer the chips' text to take away, and this appends exactly as a multi-select
+ * pick would, so user-typed text is never removed.
+ */
+export function selectSingleFollowUpOption(prev: string, owned: OwnedSuffix | null, option: string): ToggleResult {
+  if (owned && owned.options.length > 0 && prev === renderTail(owned)) {
+    const nextOwned: OwnedSuffix = { base: owned.base, options: [option] }
+    return { value: renderTail(nextOwned), owned: nextOwned }
+  }
+  return appendFollowUpOption(prev, owned, option)
+}

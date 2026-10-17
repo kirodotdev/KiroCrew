@@ -53,6 +53,7 @@ from kiro_crew.acp.client import AcpClient, JsonRpcMessage  # noqa: E402
 from kiro_crew.acp.runtime import AcpRuntime  # noqa: E402
 from kiro_crew.acp.types import METHOD_SESSION_UPDATE  # noqa: E402
 from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN, POLICY_ID_BY_BACKEND  # noqa: E402
+from kiro_crew.testing.wait import async_wait_until, await_until  # noqa: E402
 
 # Every backend id this build can construct a provider for. The empty string is
 # kiro-cli, and it is deliberately in the list: a test that forgot it would pass
@@ -93,7 +94,9 @@ async def _read_one(backend: str, frame: dict = WIRE_FRAME) -> JsonRpcMessage:
     failure this module exists to catch.
     """
     client = _client_with_wire(backend, frame)
-    msg = await asyncio.wait_for(client._read_message(timeout=5.0), timeout=5.0)
+    msg = await asyncio.wait_for(  # flake-ok: latency assertion – the recorder must not block _read_message; this timeout is the failure the test exists to catch
+        client._read_message(timeout=5.0), timeout=5.0
+    )
     assert msg is not None, f"{backend or 'kiro-cli'}: frame was swallowed"
     assert msg.method == frame["method"], msg
     assert msg.params == frame["params"], msg
@@ -128,7 +131,7 @@ async def test_restricted_runtime_disables_recording_before_start_await(mode, mo
 
     monkeypatch.setattr(runtime, "_session_work_dir", delayed_work_dir)
     task = asyncio.create_task(runtime.create_session(memory_mode=mode))
-    await asyncio.wait_for(entered.wait(), timeout=5)
+    await await_until(entered)
     try:
         assert runtime.recording_allowed is False
     finally:
@@ -140,7 +143,7 @@ async def test_restricted_runtime_disables_recording_before_start_await(mode, mo
 class _LiveRuntime:
     """An ``AcpRuntime`` for *backend* with a fake process and a live reader task.
 
-    Same shape as ``test_acp_runtime._make_runtime``: stdout is a real
+    Same shape as ``acp_runtime_helpers._make_runtime``: stdout is a real
     ``asyncio.StreamReader``, so ``_reader_loop`` runs the genuine decode ->
     record -> route path. ``feed`` pushes a frame; ``expect`` waits for it on
     the session's queue and asserts the runtime survived.
@@ -164,7 +167,7 @@ class _LiveRuntime:
         self.rt._session_queues[session_id] = self.queue
         self.task: asyncio.Task | None = None
 
-    async def __aenter__(self) -> "_LiveRuntime":
+    async def __aenter__(self) -> _LiveRuntime:
         self.task = asyncio.ensure_future(self.rt._reader_loop())
         await asyncio.sleep(0)
         return self
@@ -185,7 +188,7 @@ class _LiveRuntime:
 
     async def expect(self) -> JsonRpcMessage:
         """The frame reached its session; the runtime and its reader survived."""
-        msg = await asyncio.wait_for(self.queue.get(), timeout=5.0)
+        msg = await await_until(asyncio.ensure_future(self.queue.get()))
         assert msg.method == METHOD_SESSION_UPDATE, msg
         assert not self.rt._dead, "runtime was marked dead by a recorder fault"
         assert self.task is not None and not self.task.done(), "reader loop exited"
@@ -334,10 +337,7 @@ async def test_provider_never_waits_on_a_wedged_writer_thread(monkeypatch, tmp_p
     try:
         # Wedge the writer with a first frame, then time the next reads.
         await _read_one(backend)
-        for _ in range(20):
-            await asyncio.sleep(0.01)
-            if _frame_record._writer.in_flight:
-                break
+        await async_wait_until(lambda: _frame_record._writer.in_flight)
         started = time.monotonic()
         for _ in range(50):
             await _read_one(backend)
@@ -527,7 +527,7 @@ async def test_runtime_recorder_fault_does_not_leak_across_sessions(monkeypatch,
         await live.expect()
         assert _frame_record._stood_down
         live.feed(_runtime_frame("sB"))
-        msg = await asyncio.wait_for(q_b.get(), timeout=5.0)
+        msg = await await_until(asyncio.ensure_future(q_b.get()))
         assert msg.params["sessionId"] == "sB"
         assert not live.rt._dead
 

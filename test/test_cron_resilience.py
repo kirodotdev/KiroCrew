@@ -14,6 +14,10 @@ from kiro_crew.acp.client import AcpClient
 from kiro_crew.cron import CronJob, CronService
 from kiro_crew.heartbeat import _HEADER, HeartbeatService
 
+#: These tests fire cron jobs through the due-scan, which defers firings while
+#: the host's memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 
 async def _wait_for(predicate, timeout=5.0, interval=0.05):
     """Poll until predicate is true or timeout."""

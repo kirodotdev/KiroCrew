@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible } from '../../hooks/useFocusMode'
+import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, setFocusModeEnabled, focusModeEnabled } from '../../hooks/useFocusMode'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { computeHeaderDragGaps, type DragGap } from '../../lib/dragGaps'
 import { isEmbeddedPane } from '../../lib/embedded'
 import { isMacElectron } from '../../lib/electron'
-import { setNativeFocusChrome } from '../platform/electronBridge'
+import { setNativeFocusChrome, subscribeNativeFocusModeToggle } from '../platform/electronBridge'
 
 /**
  * Focus mode's chrome: the top bar and the nav rail as edge-summoned overlays
@@ -233,6 +233,9 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
     if (!focusActive) return
     setNativeFocusChrome(focusChromeVisible)
   }, [activeInstanceId, focusActive, focusChromeVisible])
+  // The native View > Toggle Focus Mode item: the exit that stays visible while
+  // the top bar, and its own toggle, are hidden.
+  useEffect(() => subscribeNativeFocusModeToggle(() => setFocusModeEnabled(!focusModeEnabled())), [])
   return {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,

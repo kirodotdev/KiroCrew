@@ -75,6 +75,7 @@ from typing import Callable
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
+from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args_sandboxed
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
@@ -224,9 +225,21 @@ def _run_git(
     ``GIT_TERMINAL_PROMPT=0`` so a credential helper cannot block on an
     interactive prompt.
     """
+    # A hook defined in config (`hook.<name>.command`, git 2.54+) is not reached by the
+    # `core.hooksPath` override, and its name is the repository's choice, so each one git
+    # can see is disabled by name (see `kiro_crew.git_config_hooks`). When the names
+    # cannot be listed safely git does not run, and the call reads as a git failure.
+    try:
+        hook_off = config_hook_disable_args_sandboxed(
+            cwd, spawn_argv=sandboxed_spawn_argv, mode=_SANDBOX_MODE
+        )
+    except ConfigHookScanError as exc:
+        return subprocess.CompletedProcess(["git", *args], 128, "", f"fatal: {exc}")
+    except RuntimeError as exc:  # no sandbox backend and no explicit opt-in (scan path)
+        raise SandboxUnavailable(str(exc)) from exc
     try:
         argv, env, cleanup = sandboxed_spawn_argv(
-            ["git", *_git_no_repo_code(), *args], mode=_SANDBOX_MODE
+            ["git", *_git_no_repo_code(), *hook_off, *args], mode=_SANDBOX_MODE
         )
     except RuntimeError as exc:  # no sandbox backend and no explicit opt-in
         raise SandboxUnavailable(str(exc)) from exc
@@ -616,6 +629,72 @@ def _cleanup_partial(
                 )
 
 
+_IN_USE_UNVERIFIED = "git could not confirm it is unused"
+
+
+def _worktree_in_use(root: str, dest: str, branch: str) -> str:
+    """Why the registered worktree at ``dest`` is not a retry's untouched tree, or "".
+
+    A retry of a request whose session never opened finds the tree exactly as
+    ``worktree add`` left it: a clean working tree, and a branch with no commit
+    beyond the base it is cut from. Anything else means a session has worked
+    there, and handing the tree to a new caller would put two sessions in one
+    checkout. Every probe that cannot answer counts as in use.
+
+    ``status`` runs inside ``dest``, so dest's own config scopes are screened
+    for a filter driver first (:func:`_checkout_filter`), and
+    ``--no-optional-locks`` keeps it from taking the index lock of a tree an
+    agent may be using.
+
+    ``--ignore-submodules=all`` keeps the probe out of every submodule.
+    :func:`_checkout_filter` screens only the superproject's config, so a
+    submodule carrying its own ``filter.<name>.clean``/``.smudge`` in
+    ``.git/modules/<name>/config`` would otherwise run during a recursive
+    ``status`` -- repository-controlled code the superproject screen never saw.
+    A fresh ``worktree add`` does not check submodules out, and a session that
+    advanced a submodule POINTER did so in a commit, which the branch-ahead
+    count below still catches; so ignoring submodule working state loses no
+    signal this check needs.
+    """
+    if _checkout_filter(dest):
+        return _IN_USE_UNVERIFIED
+    status = _run_git(
+        ["--no-optional-locks", "status", "--porcelain", "--ignore-submodules=all"], dest
+    )
+    if status.returncode != 0:
+        return _IN_USE_UNVERIFIED
+    if status.stdout.strip():
+        return "it has uncommitted changes"
+    base = _resolve_base_ref(root)
+    base_sha = _resolve_commit(root, base)
+    if not base_sha:
+        return _IN_USE_UNVERIFIED
+    ahead = _run_git(["rev-list", "--count", f"{base_sha}..refs/heads/{branch}"], root)
+    try:
+        ahead_count = int(ahead.stdout.strip()) if ahead.returncode == 0 else -1
+    except ValueError:
+        ahead_count = -1
+    if ahead_count < 0:
+        return _IN_USE_UNVERIFIED
+    if ahead_count:
+        return f"its branch has commits that are not on {base}"
+    return ""
+
+
+def _in_use_refusal(dest: str, branch: str, reason: str) -> tuple[dict, int]:
+    """The 409 the follow-up card shows when the worktree for ``branch`` is in use."""
+    return (
+        {
+            "error": (
+                f"The worktree for {branch} at {dest} is already in use ({reason}). "
+                "Continue in the session working there instead of starting a second one."
+            ),
+            "code": "worktree_in_use",
+        },
+        409,
+    )
+
+
 def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
     """Blocking half of the endpoint. Returns ``(json_body, http_status)``."""
     parent = os.path.dirname(root)
@@ -640,13 +719,19 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
         return ({"error": "git could not list this repository's worktrees"}, 503)
 
     # Idempotent re-entry: if the destination is ALREADY the registered worktree
-    # for this repo ON THIS BRANCH, this is a retry of a request whose second
+    # for this repo ON THIS BRANCH, this may be a retry of a request whose second
     # half (opening the session) failed. Report success with the existing pair
-    # instead of 409-ing, so the card's retry can complete. Anything else at that
-    # path is someone else's — including a worktree for a DIFFERENT branch that
-    # happens to derive the same directory name — and is refused.
+    # instead of 409-ing, so the card's retry can complete -- but only while the
+    # tree is as `worktree add` left it. A tree with changes or new commits is a
+    # session's work, and the same card offered again must not open a second
+    # session in it. Anything else at that path is someone else's -- including a
+    # worktree for a DIFFERENT branch that happens to derive the same directory
+    # name -- and is refused.
     if os.path.exists(dest):
         if registered.get(_norm_path(dest)) == branch:
+            in_use = _worktree_in_use(root, dest, branch)
+            if in_use:
+                return _in_use_refusal(dest, branch, in_use)
             return (
                 {"ok": True, "path": dest, "branch": branch, "base": "", "reused": True},
                 200,
@@ -892,6 +977,21 @@ async def api_worktree_create(request: web.Request) -> web.Response:
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("worktree_create failed: %s", exc)
         return web.json_response({"error": "worktree creation failed"}, status=500)
+
+    if status == 200 and payload.get("reused") is True:
+        # A clean tree is still in use when a session is already scoped to it or
+        # to a directory inside it: that session opened and may be working there
+        # without having changed anything yet. `roots` holds every slot's
+        # realpath'd project, and the reused path derives from the realpath'd
+        # toplevel, so the two compare as plain normalized strings.
+        reused = _norm_path(str(payload.get("path") or ""))
+        if any(
+            _norm_path(r) == reused or _norm_path(r).startswith(reused.rstrip(os.sep) + os.sep)
+            for r in roots
+        ):
+            payload, status = _in_use_refusal(
+                str(payload["path"]), branch, "a session is already open in it"
+            )
 
     sel().log_api_access(
         caller=caller,

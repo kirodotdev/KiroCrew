@@ -1,9 +1,11 @@
-import type { Dispatch, SetStateAction } from 'react'
+import { Suspense, lazy, type Dispatch, type SetStateAction } from 'react'
 import { X } from 'lucide-react'
 
+import ErrorBoundary from '../../../components/ErrorBoundary'
 import ErrorNotice from '../../../components/ErrorNotice'
 import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
+import { fmtDate } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
 import { selectionCapabilitiesFailed } from '../../../lib/effort'
 import type { useProvider } from '../../../providers'
@@ -12,6 +14,15 @@ import { clearSwitchSlotGone, clearUndeletableHistory, clearUnresumableResume, s
 import { findSurfaceBySlotMode, surfaceLabel } from '../../../surfaces/registry'
 import { slotChannelLabel } from '../../../utils/channelOrigin'
 import { historyDeleteRefusalMessage } from '../../../utils/historyDeleteRefusal'
+import type { ShortNameMatch } from '../../../utils/sessionKeys'
+import type { ErrorReport } from '../../../utils/errorReport'
+
+// Lazy so the notice's code AND its fetch/poll (useUnrestoredTabs) stay out of the
+// always-loaded chat-route chunk. The notice renders nothing in the common case
+// (no tabs were dropped), so a null Suspense fallback is invisible, and an
+// ErrorBoundary keeps a chunk-load hiccup from taking the pane's other notices
+// down with it.
+const UnrestoredTabsNotice = lazy(() => import('./UnrestoredTabsNotice'))
 
 /**
  * Sentence for the unresumable-resume notice, built from the raw facts the chat
@@ -69,14 +80,18 @@ interface ChatPaneNoticesProps {
   setUploadError: (error: string) => void
   sidError: string
   setSidError: (error: string) => void
+  /** The other sessions a short-name link (`?sid=chat-7`) also names. */
+  sidMatches: { name: string; opened: ShortNameMatch; others: ShortNameMatch[] } | null
+  setSidMatches: (matches: null) => void
+  openShortNameMatch: (match: ShortNameMatch) => void
   /** For the effort-options notice: the slot's ACP capability read failed. */
   activeSlot: string | null
   provider: ReturnType<typeof useProvider>
   selectionCapabilitiesQ: { isError: boolean; error?: unknown }
   /** For the model-default notice: the Settings default model read failed. */
   chipDefault: { failed: boolean }
-  actionError: { title?: string; message: string; preserveOnSwitch?: boolean } | null
-  setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean } | null>>
+  actionError: { title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null
+  setActionError: Dispatch<SetStateAction<{ title?: string; message: string; preserveOnSwitch?: boolean; report?: ErrorReport } | null>>
   switchSlotGone: RootState['chat']['switchSlotGone']
   setVoiceRecoverySlot: (slot: string | null) => void
   pinError: string | null
@@ -100,6 +115,9 @@ export default function ChatPaneNotices({
   setUploadError,
   sidError,
   setSidError,
+  sidMatches,
+  setSidMatches,
+  openShortNameMatch,
   activeSlot,
   provider,
   selectionCapabilitiesQ,
@@ -142,6 +160,29 @@ export default function ChatPaneNotices({
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="sid-error"
       />
+      {sidMatches && (
+        <div role="status" data-testid="sid-matches" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+          <div className="text-sm text-text flex-1 min-w-0">
+            <p>{i18nT('pages.chatPage.short_name_also_names', {
+              name: sidMatches.name,
+              title: sidMatches.opened.title,
+              date: fmtDate(sidMatches.opened.mintedAt * 1000),
+            })}</p>
+            {/* Bounded: one name can match many sessions, and the pane does not scroll. */}
+            <ul className="mt-1 space-y-0.5 max-h-40 overflow-y-auto">
+              {sidMatches.others.map(match => (
+                <li key={match.key} className="min-w-0">
+                  <Btn type="button" onClick={() => openShortNameMatch(match)} className="border-none p-0 text-left text-accent hover:underline hover:bg-transparent">
+                    {match.title}
+                  </Btn>
+                  <span className="text-muted"> · <code>{match.key}</code> · {i18nT('pages.chatPage.short_name_started', { date: fmtDate(match.mintedAt * 1000) })}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+          <Btn onClick={() => setSidMatches(null)} aria-label={i18nT('app.dismiss')} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
+        </div>
+      )}
       {/* No hand-off: navigating away would discard the unsent composer draft. */}
       <ErrorNotice
         message={activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)
@@ -159,6 +200,7 @@ export default function ChatPaneNotices({
       <ErrorNotice
         title={actionError?.title}
         message={actionError?.message}
+        report={actionError?.report}
         onDismiss={() => setActionError(null)}
         askAgent
         className="mx-4 mt-2 mb-0 animate-rise"
@@ -220,6 +262,18 @@ export default function ChatPaneNotices({
           />
         </div>
       )}
+      {/* Lazy boundary: the notice and its fetch live in their own chunk (see the
+          import above). The Suspense fallback is null because the notice itself
+          renders null in the common case, so there is nothing to stand in for
+          while the chunk loads. The ErrorBoundary carries NO fallback, so a
+          chunk-load failure renders its default error card rather than silently
+          vanishing -- hiding a notice whose whole job is to report silent data
+          loss would repeat the very defect this change exists to end. */}
+      <ErrorBoundary>
+        <Suspense fallback={null}>
+          <UnrestoredTabsNotice />
+        </Suspense>
+      </ErrorBoundary>
       {undeletableHistory && (
         <div className="mx-4 mt-2 mb-0" data-testid="undeletable-history-error">
           {/* Same site and shape as the unresumable notice above: a sidebar

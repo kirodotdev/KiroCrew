@@ -50,12 +50,12 @@ A one-line comparison against a constant both modules already read from
 
 Only ``claude`` is here
 -----------------------
-``providers.acp`` also exposes ``is_kas_backend`` and ``is_kiro_backend``, and
-they are deliberately not consolidated: both have zero readers outside
-``providers/acp.py``, so there is no second place for them to drift from. And a
-bare ``is_kiro_backend_name`` helper would be an attractive nuisance for the
-empty-string reason above -- it would answer True for every failed lookup. Add
-either one when a real second reader appears, not before.
+``providers.acp`` also exposes ``is_kas_backend`` and ``is_kiro_backend``, and they
+are deliberately not consolidated: both have zero readers outside
+``providers/acp*.py`` (the facade and its owners), so there is no second place for
+them to drift from. And a bare ``is_kiro_backend_name`` helper would be an
+attractive nuisance for the empty-string reason above -- it would answer True for
+every failed lookup. Add either one when a real second reader appears, not before.
 """
 
 from __future__ import annotations

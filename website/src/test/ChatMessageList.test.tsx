@@ -215,7 +215,7 @@ describe('ChatMessageList', () => {
         <ChatMessageList messages={[msg('user', 'Q'), msg('tool_result', 'output')]} running />,
       )
       expect(container.querySelectorAll('.animate-spin').length).toBe(0)
-      expect(container.querySelector('.text-ok')).toBeTruthy()
+      expect(container.querySelector('.text-ok-text')).toBeTruthy()
     })
 
     it('offers a file affordance when the tool input names a safe path', () => {

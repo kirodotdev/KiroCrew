@@ -124,6 +124,16 @@ jobs:
     if: needs.version.outputs.channel == 'insider'
     needs: version
     runs-on: ubuntu-latest
+    # Match ci.yml's whole-file split so every runner carries a bounded part of
+    # the exact-SHA gate while the matrix still covers the full test population.
+    timeout-minutes: 60
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      SHARD_COUNT: 8
     permissions:
       contents: read
     steps:
@@ -172,7 +182,9 @@ jobs:
           # including one printed inside a pytest warning, and never matches a
           # pytest failure. conftest.py emits the real annotations instead.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=120 --no-cov
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --no-cov
 
   resolve-promotion:
     name: Resolve Tested Candidate
@@ -413,6 +425,11 @@ jobs:
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
 
   build-desktop:
     name: Build Desktop
@@ -435,6 +452,11 @@ jobs:
       # is written -- a soft-failed leg here would let the other lanes burn
       # this version on a release that can never complete.
       mac_single_arch: true
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike
@@ -455,6 +477,11 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       soft_fail: true
       use_prod_environment: true
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
     # Explicit passthrough, not `secrets: inherit`: the callee declares
     # the secret it consumes, so this hands over that one and nothing
     # else. Pinned by test_workflow_permissions.py.
@@ -934,7 +961,9 @@ jobs:
           needs.sign-and-notarize-arm64.result == 'success' &&
           needs.sign-and-notarize-x64.result == 'success' }}
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && github.event_name == 'push' && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    # 60, not 20: the assets now upload one at a time (see `preserve_order` on
+    # the Create GitHub Release step), several GB in all.
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -1341,6 +1370,15 @@ jobs:
       # into one separate action taken only once the upload finished.
       # Runs only on the create path. The steps above still ran, but they only
       # assemble locally, so a run the probe told to skip touches nothing remote.
+      #
+      # preserve_order uploads the assets ONE AT A TIME. The action's default is
+      # to start every upload at once, and since 0.9.0 ships three macOS DMG/zip
+      # pairs the set holds six files of about 1 GB each. On v0.9.0-insider.3 the
+      # step stopped with no error line twice, after 16 and then 8 of the assets;
+      # the most likely cause is the parallel upload exhausting the runner. With
+      # overwrite_files (the action's default) a rerun also deletes each asset
+      # just before it re-uploads it, so in parallel a rerun first empties the
+      # page; one at a time, at most one asset is missing at any moment.
       - name: Create GitHub Release
         if: steps.page.outputs.action == 'create'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -1350,6 +1388,8 @@ jobs:
           draft: ${{ steps.page.outputs.draft }}
           prerelease: ${{ needs.version.outputs.channel == 'insider' }}
           files: release/*
+          preserve_order: true
+          fail_on_unmatched_files: true
 
   # Record the exact prerelease deliverables only after every publishing lane
   # succeeds. Stable resolves this immutable GitHub artifact by the successful

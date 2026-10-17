@@ -86,6 +86,10 @@ const ENDPOINTS: Array<{
   { name: 'me', path: '/api/apps/issue-radar/me', run: () => issueRadarApi.me() },
   { name: 'getSettings', path: '/api/apps/issue-radar/settings', run: () => issueRadarApi.getSettings(REF) },
   { name: 'disconnect', path: '/api/apps/issue-radar/repos', method: 'DELETE', run: () => issueRadarApi.disconnect(REF) },
+  { name: 'gitlabGroups', path: '/api/apps/issue-radar/gitlab-groups', run: () => issueRadarApi.gitlabGroups() },
+  { name: 'addGitlabGroup', path: '/api/apps/issue-radar/gitlab-groups', method: 'POST', run: () => issueRadarApi.addGitlabGroup('acme/web') },
+  { name: 'removeGitlabGroup', path: '/api/apps/issue-radar/gitlab-groups', method: 'DELETE', run: () => issueRadarApi.removeGitlabGroup({ host: 'gitlab.com', path: 'acme/web' }) },
+  { name: 'gitlabGroupReviews', path: '/api/apps/issue-radar/gitlab-groups/review-requests', run: () => issueRadarApi.gitlabGroupReviews({ host: 'gitlab.com', path: 'acme/web' }) },
   { name: 'getInvestigation', path: '/api/apps/issue-radar/investigation', run: () => issueRadarApi.getInvestigation(REF, 12) },
   { name: 'saveInvestigation', path: '/api/apps/issue-radar/investigation', method: 'PUT', run: () => issueRadarApi.saveInvestigation(REF, 12, {}) },
   { name: 'getRecommendations', path: '/api/apps/issue-radar/recommendations', run: () => issueRadarApi.getRecommendations(REF) },
@@ -481,6 +485,7 @@ describe('DEFAULT_REPO_SETTINGS', () => {
       unlabeled_is_untriaged: true,
       good_first_issue_labels: [],
       notify_on_new_issue: false,
+      notify_on_own_pr_ci_failure: false,
       workspace_path: '',
       revision: 0,
     })

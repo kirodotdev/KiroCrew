@@ -3,28 +3,19 @@
  * text clipped because the labels were MEASURED in the fallback face and PAINTED
  * in the swap-loaded body face.
  *
- * The body face (Space Grotesk, Google Fonts, `display=swap`) arrives over the
- * network. A diagram drawn while that load is in flight has every label box
+ * The body face (Space Grotesk, `display=swap`) arrives as its own woff2
+ * request. A diagram drawn while that load is in flight has every label box
  * sized for the fallback glyphs; when the face lands, `swap` repaints the text
  * in it -- the SVG's <foreignObject> labels included -- but the boxes keep their
  * measured widths, and every long label is cut at its right edge.
  *
  * The harness reproduces the cold-load timing deterministically: it runs the
  * REAL built SPA through the shared transcript harness (every /api/** call
- * answered from fixtures, no gateway, no token) and DELAYS one of the two things
- * the face needs, chosen with `--hold`:
- *
- *   --hold files (default)  the Google Fonts stylesheet loads normally and the
- *                           font FILES (`fonts.gstatic.com`) arrive late -- the
- *                           face is declared and pending when the transcript
- *                           renders, so `document.fonts.ready` is unsettled
- *   --hold css              the STYLESHEET (`fonts.googleapis.com/css2`) arrives
- *                           late -- no face is declared when the transcript
- *                           renders, `ready` is already settled, and the face is
- *                           declared, loaded and swapped in only afterwards.
- *                           The realistic shape for a dashboard served from a
- *                           local gateway where the font origin is the one slow
- *                           resource
+ * answered from fixtures, no gateway, no token) and DELAYS the brand font FILES
+ * (the hashed `/assets/SpaceGrotesk-*.woff2` / `JetBrainsMono-*.woff2`): the
+ * faces are declared in the bundled stylesheet and pending when the transcript
+ * renders, so `document.fonts.ready` is unsettled. `--hold files` is the only
+ * mode; the faces have no separate stylesheet to hold.
  *
  * It then measures every label: the <foreignObject> box mermaid sized against
  * the width of the text painted inside it. A label whose text is wider than its
@@ -60,10 +51,10 @@ const OUT = positional[0] || process.env.PROBE_OUT || '../temp-screenshots/merma
 const LABEL = flag('--label', 'run')
 const DIST = flag('--dist', undefined)
 const EXPECT = flag('--expect', undefined) // 'clipped' | 'clean' | undefined
-const HOLD = flag('--hold', 'files') // 'files' | 'css'
+const HOLD = flag('--hold', 'files') // 'files'
 const FONT_DELAY_MS = Number(flag('--font-delay-ms', '4000'))
 const PROJECT = '/home/user/workspace/KiroCrew'
-if (HOLD !== 'files' && HOLD !== 'css') throw new Error(`--hold must be files or css, got ${HOLD}`)
+if (HOLD !== 'files') throw new Error(`--hold must be files (the faces have no separate stylesheet), got ${HOLD}`)
 
 mkdirSync(OUT, { recursive: true })
 
@@ -116,20 +107,16 @@ const timeline = []
 const t0 = Date.now()
 const mark = (what) => { timeline.push({ ms: Date.now() - t0, what }); console.log(`  +${Date.now() - t0}ms ${what}`) }
 
-// `files`: the stylesheet comes through untouched so the @font-face rules exist
-// from the start and only the font FILES are late -- the shape a slow connection
-// has when the CSS is a few KB and preloaded and the woff2 files are not.
-// `css`: the stylesheet is the late one, so no face exists until it lands.
-const FONT_FILES = /fonts\.gstatic\.com/
-const FONT_CSS = /fonts\.googleapis\.com\/css/
-const HELD = HOLD === 'css' ? FONT_CSS : FONT_FILES
-await page.route(HELD, async route => {
-  mark(`${HOLD === 'css' ? 'stylesheet' : 'font file'} requested, holding ${FONT_DELAY_MS}ms: ${new URL(route.request().url()).pathname.slice(-24)}`)
+// The stylesheet comes through untouched so the @font-face rules exist from the
+// start and only the font FILES are late -- the shape a slow connection has when
+// the CSS has landed and the woff2 files have not.
+const FONT_FILES = /\/assets\/(?:SpaceGrotesk|JetBrainsMono)-[^/]*\.woff2/
+await page.route(FONT_FILES, async route => {
+  mark(`font file requested, holding ${FONT_DELAY_MS}ms: ${new URL(route.request().url()).pathname.slice(-24)}`)
   await new Promise(r => setTimeout(r, FONT_DELAY_MS))
   await route.continue()
 })
 page.on('requestfinished', req => {
-  if (FONT_CSS.test(req.url())) mark('stylesheet landed')
   if (FONT_FILES.test(req.url())) mark('font file landed')
 })
 
@@ -207,7 +194,7 @@ const shot = async (locator, name) => {
 const report = { label: LABEL, dist: DIST ?? 'website/dist', hold: HOLD, fontDelayMs: FONT_DELAY_MS }
 
 // ── Cold load: the face lands AFTER the transcript rendered ─────────────────
-console.log(`[${LABEL}] cold load, ${HOLD === 'css' ? 'stylesheet' : 'font files'} delayed ${FONT_DELAY_MS}ms`)
+console.log(`[${LABEL}] cold load, font files delayed ${FONT_DELAY_MS}ms`)
 const landed = faceLanded()
 await harness.load('dark', { selector: 'figure', settle: 100 })
 mark('page loaded (figure present)')
@@ -226,7 +213,7 @@ const figure = page.locator('figure').first()
 await shot(figure, `01-${LABEL}-cold.png`)
 
 // ── Warm reload: the face is in the browser cache ───────────────────────────
-await page.unroute(HELD)
+await page.unroute(FONT_FILES)
 timeline.length = 0
 console.log(`[${LABEL}] warm reload`)
 await page.reload({ waitUntil: 'domcontentloaded' })

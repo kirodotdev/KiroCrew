@@ -21,10 +21,12 @@ import shutil
 import threading
 import time
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Callable
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import session_storage
 from kiro_crew.config import paths
 from kiro_crew.history import ConversationLog, transcript_stem
@@ -173,6 +175,33 @@ class TestPairing:
 
         assert report.total_sessions == 2
         assert report.reclaimable_sessions == 2
+
+    @requires_symlinks
+    def test_a_transcript_symlink_is_not_owned_by_the_session(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A symlink planted at the transcript's name is not the session's file.
+
+        _unit_paths feeds the move/restore/delete paths, so following a link here
+        would relocate the link (or read through it) instead of the real file. A
+        link at the transcript name is excluded exactly as a regular file is
+        included; the regular transcript below proves the exclusion is the link's
+        doing, not an empty result.
+        """
+        crew_home, _ = stores
+        sessions = crew_home / "sessions"
+        # An ordinary transcript IS owned.
+        _transcript(crew_home, "dashboard_chat-real", size=10, age_days=40)
+        owned = session_storage._unit_paths("", ("dashboard_chat-real",), archives={}, cli_files={})
+        assert any(p.name == "dashboard_chat-real.jsonl" for p, _rel in owned)
+        # A symlink at the transcript name is NOT.
+        outside = crew_home / "outside.jsonl"
+        outside.write_bytes(b"x" * 10)
+        (sessions / "dashboard_chat-link.jsonl").symlink_to(outside)
+        linked = session_storage._unit_paths(
+            "", ("dashboard_chat-link",), archives={}, cli_files={}
+        )
+        assert not any(p.name == "dashboard_chat-link.jsonl" for p, _rel in linked)
 
 
 def _crew_log(unit_id: str, slot: str, *, closed: bool = True) -> int:
@@ -1075,7 +1104,7 @@ class TestASessionResumedWhileStagingIsLeftAlone:
         assert transcript.is_file()
 
     def test_a_resume_between_the_refresh_and_the_loop_is_caught(
-        self, stores: tuple[Path, Path]
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The anchor is taken before the scan, so this window is covered too.
 
@@ -1090,17 +1119,37 @@ class TestASessionResumedWhileStagingIsLeftAlone:
         victim = crew_home / "sessions" / "dashboard_chat-1.jsonl"
         mapping = {"aaaa1111": "dashboard_chat-1"}
 
+        # The module's own wall clock, moved only by the resume below, so "newer
+        # than the entry anchor" is arithmetic: two real reads milliseconds apart can
+        # return the SAME float on a 15.6 ms Windows tick.
+        wall = [_NOW]
+        monkeypatch.setattr(
+            session_storage,
+            "time",
+            SimpleNamespace(
+                time=lambda: wall[0],
+                monotonic=time.monotonic,
+                gmtime=time.gmtime,
+                strftime=time.strftime,
+            ),
+        )
+        resumed: list[float] = []
+
         def _refresh_and_resume() -> SessionIndex:
             # A real resume writes at the current instant, NOT in the future, and
             # that is the whole point of this test: an mtime of "now" is newer than
             # an anchor taken at entry and OLDER than one taken after these checks,
-            # so only the early anchor catches it. The sleep makes the ordering
-            # measurable rather than trusting sub-microsecond clock resolution.
-            time.sleep(0.01)
-            with victim.open("ab") as fh:
-                fh.write(b"resumed")
-            written = time.time()
-            os.utime(victim, (written, written))
+            # so only the early anchor catches it. Once, on the read before the
+            # loop: a second write from the loop's own re-read would land after any
+            # stamp taken before the loop, and catch a late anchor on its behalf.
+            if not resumed:
+                wall[0] += 1
+                with victim.open("ab") as fh:
+                    fh.write(b"resumed")
+                os.utime(victim, (wall[0], wall[0]))
+                resumed.append(wall[0])
+                # Time moves on: every later reading of the clock is past the write.
+                wall[0] += 1
             # Deliberately reports the session as retired: this pins the mtime
             # guard, not the index re-read that already covers a MAPPED session.
             return _index(mapping)
@@ -1114,7 +1163,11 @@ class TestASessionResumedWhileStagingIsLeftAlone:
                 refresh=_refresh_and_resume,
             )
 
+        # The write it caught sits strictly inside the window only the early anchor
+        # covers: after the entry reading, before every later one.
+        assert resumed == [_NOW + 1]
         assert victim.is_file()
+        assert _NOW < victim.stat().st_mtime < wall[0]
         assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
 
     def test_a_revival_whose_rollback_cannot_finish_is_not_claimed_as_left_alone(

@@ -1,5 +1,6 @@
 """The context a dashboard turn's input carries: the execution context's memory-mode
-fold, the pending context drain, the folder-steering gate and the appended-context split."""
+fold, the pending context drain, the folder-steering gate and the appended-context split,
+the unavailable-agent message, the DM member binding check and the memory assignment."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _CONTEXT_FRAME_CONTRACT,
+        NATIVE_SKILL_ALIAS_PREFIX,
         _ChatSlot,
         _MemoryUnavailable,
         canonical_memory_mode,
@@ -167,3 +169,69 @@ def _detach_appended_context(original: str, expanded: str) -> tuple[str, str]:
         return original, expanded[len(original) :]
     logger.warning("generated request context stopped honoring append-only contract")
     return original, expanded
+
+
+def unavailable_agent_message(agent_name: str) -> str:
+    """What a resumed conversation whose agent does not resolve tells its user.
+
+    A recorded skill-view name the projection cannot map back is not a Crew
+    Member the user can restore: nothing records which agent it was built
+    from, and none can be recovered (the view name is a one-way digest). The
+    remedy that works is to pick the agent again or start a new chat, so that
+    is what it says, rather than naming a generated file as a missing member.
+    """
+    if agent_name.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+        return (
+            "This chat was recorded under a generated skill view from an earlier "
+            f"version ('{agent_name}'), and the agent it was built from is not "
+            "recorded. Pick the agent for this chat again, or start a new chat."
+        )
+    return f"Crew Member '{agent_name}' is unavailable; restore it or choose a member"
+
+
+def _slot_member_slug(slot_key: str) -> str:
+    """The slug a member DM slot key encodes, or ``""`` for a non-member key.
+
+    A member with a persisted identity gets an id-based slug, so its DM slot key
+    (``member-<member_id>``) carries that immutable id directly -- the one
+    identity source that survives BOTH a restart AND the removal of the original
+    member. The ``dm.json`` binding cannot serve this: ``read_dm_binding``
+    reports it absent whenever the encoded id fails to resolve in config (exactly
+    the reassignment case that matters). The transcript line is not consulted
+    either -- it is the operator-editable JSONL the pin must never re-derive
+    identity from. A legacy member's key carries a name-derived slug that equals
+    no member's id, so a caller comparing this against a resolved ``member_id``
+    only ever sees a divergence for a genuine stable-identity thread.
+    """
+    from kiro_crew import members as members_mod
+
+    return members_mod.slug_from_dm_slot_key(slot_key) or ""
+
+
+def _dm_member_binding_changed(bound_member_id: str, slot_key: str) -> bool:
+    """Whether a DM member thread's encoded id differs from the resolved alias.
+
+    The slot KEY is the one un-plantable identity a restored session carries
+    (the session's address, not the agent-writable metadata line). A DM slot
+    key encodes the member_id; when the alias resolves to a member whose id
+    differs, the thread belongs to a member the alias does not name, so the
+    carrier-less re-selection must refuse. Returns ``False`` when the slot key
+    encodes no id (an ordinary ``chat-N`` slot) -- there is nothing to compare,
+    and the leak this guards is specific to a DM thread whose alias has been
+    reassigned to a different member.
+    """
+    slot_member_slug = _slot_member_slug(slot_key)
+    return bool(bound_member_id) and bool(slot_member_slug) and bound_member_id != slot_member_slug
+
+
+def _require_session_memory_assignment(session_key: str, memory_store: str | None) -> None:
+    """A captured execution outranks a later mutable member declaration."""
+    from kiro_crew.execution_context import read_session_execution  # noqa: F811
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    execution = read_session_execution(session_key)
+    if execution is not None and execution.store.store_id != (memory_store or "default"):
+        raise UnknownMemoryStore(
+            "This conversation retains its member memory assignment. "
+            "Restore that member binding or open a new conversation."
+        )

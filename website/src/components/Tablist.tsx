@@ -28,6 +28,7 @@
  */
 import { useRef, type ReactNode } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
+import { usePressActivation } from '../hooks/usePressActivation'
 
 import {
   TABS_COUNT_BASE_CLASS,
@@ -109,6 +110,7 @@ export default function Tablist<T extends string = string>({
 }: Props<T>) {
   const reduceMotion = useReducedMotion()
   const refs = useRef<Array<HTMLButtonElement | null>>([])
+  const bindPress = usePressActivation()
 
   const move = (to: number) => {
     const tab = tabs[to]
@@ -138,9 +140,11 @@ export default function Tablist<T extends string = string>({
             // rail costs one Tab press instead of one per plane.
             tabIndex={isActive ? 0 : -1}
             title={tab.tooltip || tab.label}
-            onClick={() => {
+            // Select on the mouse press, like the Radix tabs in ui/tabs;
+            // keyboard and touch select on click.
+            {...bindPress(() => {
               if (!isDisabled) onChange(tab.key)
-            }}
+            })}
             onKeyDown={e => {
               if (e.key === 'ArrowRight') {
                 e.preventDefault()

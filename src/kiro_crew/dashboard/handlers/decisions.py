@@ -234,7 +234,7 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     authored here or in the frontend: a build that ships another point lists it with
     no edit on either side, and the set the card draws cannot disagree with the set
     the gate will answer for. The card holds a LABEL per id, the same arrangement
-    ``agent_sdk/backend_cards.py`` and the Agent Backend panel use.
+    ``agent_sdk/backend_cards.py`` and the Agent Harness tab use.
 
     ``status`` is the SERVER's verdict for the same reason ``permits`` is: it is
     derived from the keystone and the governance probe the caller already resolved,

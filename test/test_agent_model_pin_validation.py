@@ -235,28 +235,65 @@ class TestNoRedundantConfigLoad:
         monkeypatch.setattr(KiroCrewConfig, "load", staticmethod(counting))
         return calls
 
-    def test_supplied_provider_skips_the_load(self, monkeypatch):
+    @staticmethod
+    def _canonical_key() -> str:
+        from kiro_crew import model_registry
+
+        return next(
+            e["model_name"]
+            for e in model_registry.display_list("claude_code")
+            if model_registry.is_canonical_key(e["model_name"]) and e["model_name"] != "auto"
+        )
+
+    def test_supplied_backend_skips_the_load(self, monkeypatch):
         from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
+        key = self._canonical_key()
         calls = self._counting_load(monkeypatch)
-        _model_rejected_reason("claude-opus-4-8", provider="acp")
+        _model_rejected_reason(key, "")
         assert calls == []
 
-    def test_omitted_provider_still_resolves_it(self, monkeypatch):
-        """The default must preserve the original behaviour for existing callers."""
+    def test_omitted_backend_still_resolves_it(self, monkeypatch):
+        """A canonical key with no backend supplied resolves the configured one."""
         from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
+        key = self._canonical_key()
         calls = self._counting_load(monkeypatch)
-        _model_rejected_reason("claude-opus-4-8")
+        _model_rejected_reason(key)
         assert len(calls) == 1
 
-    def test_validator_forwards_the_provider(self, monkeypatch):
-        from kiro_crew.dashboard.handlers.core import _validate_role_model
+    def test_a_non_canonical_id_never_loads(self, monkeypatch):
+        """Only a canonical key's answer depends on the harness, so only it pays a read."""
+        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
 
         calls = self._counting_load(monkeypatch)
-        request = SimpleNamespace(app={})
-        _validate_role_model("claude-opus-4-8", request, provider="acp")
+        assert _model_rejected_reason("claude-opus-4-8") is None
         assert calls == []
+
+    def test_validator_forwards_the_backend(self, monkeypatch):
+        from kiro_crew.dashboard.handlers.core import _validate_role_model
+
+        key = self._canonical_key()
+        calls = self._counting_load(monkeypatch)
+        request = SimpleNamespace(app={})
+        _validate_role_model(key, request, provider="acp", backend="")
+        assert calls == []
+
+    def test_a_namespace_with_no_id_for_the_key_still_refuses_it(self):
+        """A provider namespace passes a canonical key only when the registry gives
+        it an id there -- the translation ``_wire_model_id`` would send."""
+        from kiro_crew import model_registry
+        from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
+
+        key = self._canonical_key()
+        codex = capabilities_for(ACP_BACKEND_CODEX).model_id_namespace
+        assert not (model_registry.get_entry(key) or {}).get("providers", {}).get(codex)
+
+        assert _model_rejected_reason(key, ACP_BACKEND_CLAUDE) is None
+        reason = _model_rejected_reason(key, ACP_BACKEND_CODEX)
+        assert reason is not None and ACP_BACKEND_CODEX in reason
 
     def test_live_entitlements_preserve_the_registry_correction(self, monkeypatch):
         """A live advertised set must not replace the actionable spelling hint."""

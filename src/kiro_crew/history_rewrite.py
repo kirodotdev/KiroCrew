@@ -98,19 +98,16 @@ class HistoryRewriteCoordinator:
                     continue
                 if normalized not in kept_serialized:
                     dropped.append(line)
-            try:
-                _facade_archive_lines(
-                    key,
-                    dropped,
-                    reason="compact",
-                    base=self._log._dir,
-                )
-            except Exception:
-                _HISTORY_LOGGER.warning(
-                    "Failed to archive dropped lines for %s",
-                    key,
-                    exc_info=True,
-                )
+            # Fail CLOSED, as rotation does: the archive is the precondition of
+            # the replace below, which removes these rows. Until it lands the
+            # transcript holds their only copy, so an archive failure raises and
+            # the transcript is left untouched rather than compacted anyway.
+            _facade_archive_lines(
+                key,
+                dropped,
+                reason="compact",
+                base=self._log._dir,
+            )
 
         # Compaction owns only these four metadata fields.  Rotation identity,
         # retry accounting, and user-facing slot metadata are carried through

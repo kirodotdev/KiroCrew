@@ -253,6 +253,8 @@ def test_the_probe_refusal_becomes_a_recorded_terminal_exit(
         raise rt.PodError("child could not bootstrap (probe)")
 
     monkeypatch.setattr(rt, "_boot_unguarded", _raise)
+    if rt.IS_WINDOWS:
+        rt.win_backend.runs.reserve(cfg, "viability-probe-test")  # The boot claims it first.
 
     code = rt.boot(cfg, "viability-probe-test")
 
@@ -478,6 +480,8 @@ class TestTheProbeIsConfined:
             return 0
 
         monkeypatch.setattr(rt, "_boot_unguarded", _probe_then_raise)
+        if rt.IS_WINDOWS:
+            rt.win_backend.runs.reserve(cfg, "viability-sandbox-test")  # The boot claims first.
 
         code = rt.boot(cfg, "viability-sandbox-test")
 

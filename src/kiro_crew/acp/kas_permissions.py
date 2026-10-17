@@ -51,6 +51,8 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
+
 logger = logging.getLogger(__name__)
 
 #: Marks an MCP server (or one of its tools) in a Crew ``tools``/``allowedTools``
@@ -131,7 +133,14 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 
 #: kiro-cli tool name -> the KAS tool ids that do the same job.
 #:
-#: This is the one kiro-cli <-> KAS tool-name table. A matcher in an agent
+#: DERIVED, not hand-kept: the kiro-cli <-> KAS relationship has ONE table,
+#: :data:`kiro_crew.platform.tool_names.KIRO_CLI_NAME_BY_KAS_TOOL` (the policy
+#: direction: each KAS built-in id -> the kiro-cli name a rule about it is
+#: written under, pinned to the recorded engine registry). This mapping is its
+#: inverse, grouped per kiro-cli name, plus the rows only the hook vocabulary
+#: needs: ``fs_write`` is a KAS id as well as the kiro-cli name (a file create
+#: states it on a permission request), and ``web_fetch`` / ``web_search`` /
+#: ``use_subagent`` reach KAS tools no gate policy names. A matcher in an agent
 #: spec's ``hooks`` names tools in kiro-cli's vocabulary (``execute_bash``,
 #: ``fs_write``). KAS names its own tools differently, and the name it states for
 #: a call is the ``toolId`` of the permission request's ``_meta.kiro``
@@ -148,16 +157,23 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 #: (``use_aws``) meets no KAS call. Read it through
 #: :func:`kas_tool_match_names` and :data:`KAS_TOOL_MATCH_VOCABULARY`; the rows
 #: themselves are for a caller that must go from a kiro-cli name to KAS ids.
-KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
-    "execute_bash": ("run_command",),
-    "fs_read": ("read_file", "list_directory"),
-    "fs_write": ("fs_write", "fs_append", "str_replace", "delete_file"),
-    "grep": ("grep_search",),
-    "glob": ("file_search",),
+_HOOK_ONLY_ROWS: dict[str, tuple[str, ...]] = {
     "web_fetch": ("web_fetch",),
     "web_search": ("remote_web_search",),
     "use_subagent": ("invoke_sub_agent",),
 }
+
+
+def _rows_from_policy_table() -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {"fs_write": ["fs_write"]}
+    for kas_id, kiro_cli_name in KIRO_CLI_NAME_BY_KAS_TOOL.items():
+        grouped.setdefault(kiro_cli_name, []).append(kas_id)
+    rows = {name: tuple(ids) for name, ids in grouped.items()}
+    rows.update(_HOOK_ONLY_ROWS)
+    return rows
+
+
+KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = _rows_from_policy_table()
 
 #: Other spellings of a kiro-cli tool that a spec may use, onto the name in
 #: :data:`KAS_TOOL_IDS_BY_KIRO_TOOL`: kiro-cli's legacy ``shell`` key, and the
@@ -457,6 +473,19 @@ _MAX_PATTERNS_PER_RULE = 64
 _MAX_PATTERN_LENGTH = 1024
 
 
+def _asking_only(refs: str, outcome: str, reason: str) -> None:
+    """The ``audit_decision`` of :func:`projection_accepts`: a question, not a refusal."""
+
+
+def projection_accepts(raw: Any) -> bool:
+    """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
+
+    For a writer checking a block before it lands, so a block it then declines to
+    write is reported nowhere: the refusal it is avoiding never happens.
+    """
+    return parse_user_permissions(raw, audit_decision=_asking_only) is not None
+
+
 def _refuse_block(
     agent_id: str,
     why: str,
@@ -466,6 +495,8 @@ def _refuse_block(
     author's own file being declined rather than a grant quietly narrowed, and in
     the security event log because refusing a block the author wrote withholds
     every grant in it."""
+    if audit_decision is _asking_only:
+        return
     audit_decision("the authored `permissions` block", "withheld", f"refused: {why}")
     logger.warning(
         "agent %r: refusing its whole `permissions` block -- %s. None of it travels; "
@@ -785,6 +816,7 @@ def merge_user_permissions(
     audit_decision: _AuditDecision = lambda refs, outcome, reason: None,
     allowlist_present: bool = True,
     agent_id: str = "",
+    source: str = "authored `permissions`",
 ) -> dict[str, Any] | None:
     """The ``allowedTools``-derived policy, with the author's own block folded in.
 
@@ -868,7 +900,7 @@ def merge_user_permissions(
     audit_decision(
         ", ".join(f"{r['capability']}:{r['effect']}" for r in kept),
         "relayed",
-        "authored `permissions`, ceiling cleared",
+        f"{source}, ceiling cleared",
     )
     base = list(derived["rules"]) if derived else []
     return {"rules": kept + base}
@@ -1023,3 +1055,191 @@ def auto_approved_capabilities(policy: Any) -> frozenset[str]:
         ):
             cancelled.update(capabilities)
     return frozenset(allowed - cancelled)
+
+
+# --- kiro-cli ``toolsSettings`` -> KAS ``permissions`` -------------------------
+#
+# KAS declares ``toolsSettings`` a CLI-only field and replaces it with
+# ``permissions``; its migration guide maps each field onto a capability rule.
+# The translation below follows that guide, with two limits of its own:
+#
+# * Only what can be said faithfully is translated. A kiro-cli regex becomes a
+#   glob only when it is a literal plus ``.*``; anything else is reported, never
+#   guessed at, because a guessed deny can silently stop matching.
+# * No ALLOW is emitted. The gap being closed is lost restrictions; an allow
+#   left behind only means the call keeps prompting, and shell/filesystem allows
+#   are a family Crew never auto-approves here (:data:`WITHHELD_CAPABILITIES`).
+#   Every allow key is reported as not carried instead.
+#
+# The block this produces is fed to :func:`merge_user_permissions` like an
+# authored one, so its denies travel as written.
+
+#: ``toolsSettings`` tool key -> the kiro-cli family it configures.
+_TOOLS_SETTINGS_FAMILY: dict[str, str] = {
+    "execute_bash": "shell",
+    "shell": "shell",
+    "fs_read": "read",
+    "read": "read",
+    "glob": "read",
+    "grep": "read",
+    "fs_write": "write",
+    "write": "write",
+    "web_fetch": "web_fetch",
+    "subagent": "subagent",
+    "use_subagent": "subagent",
+}
+
+#: Characters that keep a regex from being read as a literal. ``*`` is here too:
+#: outside ``.*`` it is a quantifier on the character before it.
+_REGEX_METACHARACTERS = frozenset(".^$*+?()[]{}|\\")
+
+
+def _regex_to_glob(pattern: str) -> str | None:
+    """A kiro-cli regex (anchored ``\\A..\\z``) as a KAS glob, or ``None``.
+
+    Only ``.*`` and backslash-escaped punctuation are understood; any other regex
+    syntax returns ``None`` so the caller reports it instead of guessing. A
+    literal character KAS would read as glob syntax (``*?[]{}!``) has no glob
+    spelling, so it returns ``None`` too.
+    """
+    body = pattern.strip()
+    for prefix in ("\\A", "^"):
+        body = body.removeprefix(prefix)
+    for suffix in ("\\z", "$"):
+        if body.endswith(suffix) and not body.endswith("\\" + suffix):
+            body = body[: -len(suffix)]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if body.startswith(".*", i):
+            out.append("*")
+            i += 2
+        elif ch == "\\" and i + 1 < len(body) and not body[i + 1].isalnum():
+            if body[i + 1] in _GLOB_METACHARACTERS:
+                return None
+            out.append(body[i + 1])
+            i += 2
+        elif ch in _REGEX_METACHARACTERS or ch in _GLOB_METACHARACTERS:
+            return None
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out) or None
+
+
+def _patterns(value: Any) -> list[str]:
+    return (
+        [p.strip() for p in value if isinstance(p, str) and p.strip()]
+        if isinstance(value, list)
+        else []
+    )
+
+
+def _chunked_rules(capability: str, effect: str, patterns: list[str]) -> list[dict[str, Any]]:
+    """One rule per :data:`_MAX_PATTERNS_PER_RULE` patterns, so no rule is refused for size."""
+    step = _MAX_PATTERNS_PER_RULE
+    return [
+        {"capability": capability, "match": patterns[i : i + step], "effect": effect}
+        for i in range(0, len(patterns), step)
+    ]
+
+
+def tools_settings_to_permissions(
+    tools_settings: Any,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Translate a kiro-cli ``toolsSettings`` object into a KAS ``permissions`` block.
+
+    Returns ``(block, not_carried)``: the block (``None`` when no rule came out)
+    and the ``<tool>.<key>`` paths that have no faithful rule, so the caller can
+    name exactly what this session runs without.
+    """
+    if not isinstance(tools_settings, dict):
+        return None, []
+    rules: list[dict[str, Any]] = []
+    lost: list[str] = []
+
+    def converted(where: str, values: Any, convert: Callable[[str], str | None]) -> list[str]:
+        out: list[str] = []
+        for raw in _patterns(values):
+            glob = convert(raw)
+            # An over-long pattern would make the merge refuse the WHOLE block,
+            # so it is dropped and reported here instead.
+            if glob is None or len(glob) > _MAX_PATTERN_LENGTH:
+                lost.append(where)
+            else:
+                out.append(glob)
+        return list(dict.fromkeys(out))
+
+    def url_glob(raw: str) -> str | None:
+        # KAS matches web_fetch rules against the URL's host, so a pattern that
+        # names a scheme or a path can never match there.
+        glob = _regex_to_glob(raw)
+        return glob if glob is not None and not set(glob) & set("/:") else None
+
+    for tool in sorted(tools_settings, key=str):
+        settings = tools_settings[tool]
+        family = _TOOLS_SETTINGS_FAMILY.get(tool) if isinstance(tool, str) else None
+        if not isinstance(settings, dict):
+            if settings:
+                lost.append(str(tool))
+            continue
+        if family is None:
+            lost.extend(f"{tool}.{key}" for key in sorted(settings, key=str) if settings[key])
+            continue
+        # Only plain deny lists are carried: each has been run live on KAS. The
+        # deny-all-but shapes (`denyByDefault`, `fallbackAction: "deny"`,
+        # `availableAgents`) need an `exclude` rule that has not, so they are
+        # named in the notice instead of guessed at.
+        handled: set[str] = set()
+
+        if family == "shell":
+            handled.add("deniedCommands")
+            denied = converted(
+                f"{tool}.deniedCommands", settings.get("deniedCommands"), _regex_to_glob
+            )
+            rules.extend(_chunked_rules("shell", "deny", denied))
+        elif family in ("read", "write"):
+            capability = "fs_read" if family == "read" else "fs_write"
+            handled.add("deniedPaths")
+            # kiro-cli globs and KAS's filesystem globs share one syntax. A path
+            # not already ending in a wildcard also gets a `/**` twin, so a bare
+            # directory denies what is inside it, not just the directory entry.
+            # Denying a file's non-existent subtree is harmless: wider, never looser.
+            denied_paths = converted(f"{tool}.deniedPaths", settings.get("deniedPaths"), str)
+            subtrees = [
+                f"{p.rstrip('/')}/**"
+                for p in denied_paths
+                if not p.endswith("*") and len(p) + 3 <= _MAX_PATTERN_LENGTH
+            ]
+            denied_paths = list(dict.fromkeys(denied_paths + subtrees))
+            rules.extend(_chunked_rules(capability, "deny", denied_paths))
+            if family == "write":
+                # `interactive` is the default: nothing is lost by leaving it out.
+                handled.add("fallbackAction")
+                if settings.get("fallbackAction") not in (None, "", "interactive"):
+                    lost.append(f"{tool}.fallbackAction")
+        elif family == "web_fetch":
+            # `trusted` is an allow: not carried, so those fetches keep prompting.
+            handled.add("blocked")
+            rules.extend(
+                _chunked_rules(
+                    "web_fetch",
+                    "deny",
+                    converted(f"{tool}.blocked", settings.get("blocked"), url_glob),
+                )
+            )
+        elif family == "subagent" and "availableAgents" in settings:
+            # An empty list means "spawn nothing", so it is named even though falsy.
+            handled.add("availableAgents")
+            lost.append(f"{tool}.availableAgents")
+
+        lost.extend(
+            f"{tool}.{key}"
+            for key in sorted(settings, key=str)
+            if key not in handled and settings[key]
+        )
+
+    if len(rules) > _MAX_RULES:
+        return None, sorted(set(lost) | {"(all: too many rules)"})
+    return ({"rules": rules} if rules else None), sorted(set(lost))

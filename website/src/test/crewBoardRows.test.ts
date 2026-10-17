@@ -37,6 +37,7 @@ function item(over: Partial<WorkBoardItem> = {}): WorkBoardItem {
     last_report_at: null,
     created_at: '2026-09-22T09:00:00+00:00',
     closed_at: null,
+    decided_at: null,
     orphaned: false,
     stale: false,
     acceptance_concrete: true,

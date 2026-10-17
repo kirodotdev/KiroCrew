@@ -385,9 +385,16 @@ class TestFireDiscordNudge:
             wake_in_flight=True,
         )
 
-        result = await asyncio.wait_for(
+        # Bounded by the patched 0.01 s turn bound, which is what ends the
+        # wedged turn. The outer wait only exists so a call that never returns
+        # fails instead of hanging, so it uses the load-safe lost-run ceiling
+        # like the sibling nudge-timeout tests: the pre-turn chain makes real
+        # executor hops, and a tight hand-rolled deadline cancelled this call
+        # from the outside on a loaded runner (raw CancelledError) before the
+        # inner bound was reached.
+        result = await _within_lost_run(
             orch._fire_discord_nudge(loop, "[Monitor wake]"),
-            timeout=0.2,
+            "the wedged Discord nudge turn",
         )
 
         assert result is monitor_models.MonitorDispatchResult.DISPATCHED
@@ -1191,7 +1198,7 @@ class TestAutonudgeRouterAndObserver:
         orch.dashboard_state = _mock_dashboard_state()
         _on_fire, observer, _inst = await self._wire(orch)
 
-        loop = _loop("chat-1-1721", cycle_count=2)
+        loop = _loop("chat-1-1721", cycle_count=2, created_ts=1_800_000_000.0)
         observer("armed", loop)
 
         topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
@@ -1200,6 +1207,7 @@ class TestAutonudgeRouterAndObserver:
         assert payload["slot"] == "chat-1-1721"
         assert payload["loop"]["id"] == "loop-1"
         assert payload["loop"]["cycle_count"] == 2
+        assert payload["loop"]["created_ts"] == 1_800_000_000.0
 
     @pytest.mark.asyncio
     async def test_observer_frame_carries_stopped_reason_and_deadline_for_a_plain_loop(self):
@@ -1605,6 +1613,30 @@ class TestOrphanNotifications:
         assert slot.append.call_args.args[0] == "assistant"
         assert slot._pending_subagent_failures == ["agent a1 was orphaned"]
         ds.push_slots_update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_notify_takes_the_notice_tombstone_under_the_queued_text(self, monkeypatch):
+        """The card is the same with a debt as without; the debt is keyed on the text."""
+        cards = []
+        for delivery in (None, _sa.SubagentDelivery("a1", 0.0, 0.0, tombstone={"cause": "x"})):
+            ds = _mock_dashboard_state()
+            slot = MagicMock()
+            slot._pending_subagent_failures = []
+            ds.get_slot.return_value = slot
+            orch = self._orch(ds)
+            monkeypatch.setattr(gw, "dashboard_slot_key", lambda _k: "chat-1")
+            notify = _capture_subagent_kwargs(orch)["on_orphan_notify"]
+            verdict = await notify("dashboard:chat-1", "agent a1 was orphaned", {"k": 1}, delivery)
+            cards.append(slot.append.call_args)
+            if delivery is None:
+                assert verdict is True
+                slot.note_pending_subagent_delivery.assert_not_called()
+            else:
+                assert verdict == _sa.ORPHAN_NOTICE_OWED
+                slot.note_pending_subagent_delivery.assert_called_once_with(
+                    "agent a1 was orphaned", [delivery]
+                )
+        assert cards[0] == cards[1]
 
     @pytest.mark.asyncio
     async def test_notify_returns_false_when_no_tab_shows_the_parent(self, monkeypatch):

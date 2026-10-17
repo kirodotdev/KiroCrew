@@ -2,7 +2,7 @@
  * The pinned-prompt card stands in for a user BUBBLE, not for the whole row.
  *
  * While a prompt is pinned its transcript row is `visibility: hidden` and the
- * PinnedPrompt card is drawn in its place (see ChatPage's row `visibility`,
+ * PinnedPrompt card is drawn in its place (see ChatTranscriptView's row `visibility`,
  * VirtualTranscript's `isRowHidden`, ChatMessageList's `hiddenRow`). The row
  * also holds the message's action strip — copy, copy link, pin, edit, the
  * timestamp — which the card does not carry, so hiding the row wholesale took

@@ -536,6 +536,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "normalize_shell_command",
     "oauth_rejection_is_endpoint_exemptible",
     "oauth_url_contains_credential",
+    "record_discovered_oauth_endpoint",
     "os",
     "parse_qs",
     "path_contains_sensitive",

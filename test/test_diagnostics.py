@@ -25,7 +25,7 @@ import pytest
 import yaml
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import beacon, diagnostics, release_channel
+from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
 
@@ -66,6 +66,14 @@ def _isolate(monkeypatch, home: Path) -> None:
     """Point the collector at a temp home and stub host-specific probes."""
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: home)
+    # The per-process kiro-cli logs are read from the agent scratch root, which
+    # sits under the data home too.
+    monkeypatch.setattr(agent_scratch, "config_dir", lambda: home)
+    # Pin Path.home() too: on Windows the real host home is a PARENT of tmp_path,
+    # so without this the real home would collapse the tmp prefix and the
+    # fixtures' home paths would never match. Both the collector's home and
+    # data-home resolve to this temp dir, so the test controls the full prefix.
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
     monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
     monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
@@ -94,6 +102,275 @@ def test_collect_bundle_redacts_and_zips(tmp_path, monkeypatch):
     assert r.redaction_summary["gateway.log"] >= 3
     assert manifest["total_redactions"] == r.total_redactions
     assert manifest["note"] == "every message fails"
+
+
+def test_home_prefixes_collapse_but_system_and_repo_frames_survive(tmp_path, monkeypatch):
+    """Only the home/data-home prefix is collapsed to ``~`` in bundle members.
+
+    The bundle's stated destination is a public issue, so the OS login must not
+    survive -- but a maintainer still needs the file locations that make a
+    bundle useful. Drive the collector end to end with a traceback whose frames
+    span the data-home, a system path and a repo-relative path, and assert the
+    home frames show as ``~/...`` while ``/usr/lib/...`` and ``src/kiro_crew/...``
+    frames are left intact. The ``versions.txt`` ``data_home`` line collapses the
+    same way.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    # Build the home frame with the OS-native separator so the fixture matches
+    # how a real traceback on this platform would spell it; assert on a
+    # slash-normalized copy so one assertion holds on POSIX and Windows alike.
+    home_frame = f'  File "{home}{os.sep}gateway.log", line 3, in handle'
+    system_frame = '  File "/usr/lib/python3.12/asyncio/events.py", line 80, in _run'
+    repo_frame = '  File "src/kiro_crew/diagnostics.py", line 42, in collect_bundle'
+    (home / "gateway.log").write_text(
+        f"Traceback (most recent call last):\n"
+        f"{home_frame}\n{system_frame}\n{repo_frame}\n"
+        f"a perfectly normal log line\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        gw = z.read("gateway.log").decode()
+        versions = z.read("versions.txt").decode()
+        manifest = json.loads(z.read("manifest.json"))
+
+    gw_slash = gw.replace("\\", "/")
+    # The home/data-home prefix is gone from every text member, replaced by ``~``.
+    assert str(home) not in gw, "home prefix survived in gateway.log"
+    assert str(home) not in versions, "data_home absolute path survived in versions.txt"
+    assert "~/gateway.log" in gw_slash, "home frame should collapse to ~, keeping the tail"
+    assert "data_home: ~" in versions, "data_home should collapse to ~"
+    # System and repo-relative frames are left intact so the trace stays useful.
+    assert "/usr/lib/python3.12/asyncio/events.py" in gw, "system frame must survive"
+    assert "src/kiro_crew/diagnostics.py" in gw, "repo-relative frame must survive"
+    assert ", line 3, in handle" in gw, "the rest of the home frame must survive"
+    assert "a perfectly normal log line" in gw
+    # The data_home collapse in versions.txt is a path collapse, not a secret:
+    # it is tallied in ``path_collapses``, leaving the secret count untouched.
+    assert r.path_collapses >= 1
+    assert manifest["total_redactions"] == r.total_redactions
+
+
+def test_credential_after_a_path_prefix_is_still_redacted(tmp_path, monkeypatch):
+    """A header sitting right after a ``file:line:`` prefix must still be redacted.
+
+    The home collapse runs LAST, after the credential rules, so a ``grep``-shaped
+    line (``<home>/req.txt:12:Authorization: Basic …``) has its credential removed
+    first and the home prefix collapsed to ``~`` second -- the credential never
+    rides along into the output.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    secret = "dXNlcjpwYXNzd29yZA=="
+    (home / "gateway.log").write_text(
+        f"{home}{os.sep}app{os.sep}req.txt:12:Authorization: Basic {secret}\nplain\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        gw = z.read("gateway.log").decode()
+    assert secret not in gw, "credential survived: ordering let the prefix pass run first"
+    assert str(home) not in gw, "home prefix survived"
+    assert "~/app/req.txt" in gw.replace("\\", "/"), "the home prefix should collapse to ~"
+    assert "plain" in gw
+
+
+def test_issue_body_has_no_absolute_zip_path(tmp_path, monkeypatch):
+    """Ruling 1: the pre-filled issue body must not embed the absolute zip path.
+
+    ``result.zip_path`` lives under ``<data_home>/diagnostics``, so printing it
+    into a public issue leaks the OS login -- the exact thing the member scrub
+    strips out. The filename alone matches the attached .zip. The body must carry
+    the login-free ``result.filename`` and NOT the absolute path.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "gateway.log").write_text("a perfectly normal log line\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    body = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+
+    assert str(r.zip_path) not in body, "absolute zip path leaked into the issue body"
+    assert str(home) not in body, "home prefix leaked into the issue body"
+    assert r.filename in body, "the login-free filename should still identify the bundle"
+    assert "secret(s) auto-redacted" in body
+
+
+def test_collapse_skips_root_and_single_segment_and_respects_boundary(monkeypatch):
+    """Ruling 2: a root/single-segment HOME is skipped; a prefix match is segment-bounded.
+
+    A bare root or a single-segment HOME carries no login and must never
+    collapse the leading separator of every path. And a login HOME must not
+    rewrite a longer login it is a strict prefix of -- the prefix collapses when
+    the login segment ends, i.e. the next character does not continue it. A
+    separator, quote, whitespace, end-of-token AND a delimiter such as ``:``,
+    ``,``, ``)`` or a sentence-final ``.`` all end the segment and collapse.
+    """
+    # Home-path strings are assembled from a parent and a segment so no literal
+    # home path appears on a source line (the internal-content scan flags those).
+    parent = "/" + "home"
+    short = f"{parent}/a1"  # a login
+    longer = f"{parent}/a1b2"  # a different login that has `short` as a prefix
+
+    # Root HOME: nothing is a login, so nothing collapses.
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path("/")))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: Path("/"))
+    assert diagnostics._home_prefixes() == []
+    out, n = diagnostics._collapse_home_prefixes("/usr/lib/x and /opt/y")
+    assert out == "/usr/lib/x and /opt/y" and n == 0
+
+    # Single-segment HOME (the shared parent): still skipped.
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(parent)))
+    assert diagnostics._home_prefixes() == []
+
+    # A real login prefix, but a strict-prefix sibling must survive.
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(short)))
+    out, n = diagnostics._collapse_home_prefixes(f"{short}/log and {longer}/log")
+    assert out == f"~/log and {longer}/log", out
+    assert n == 1, "only the bounded login match should collapse"
+    # End-of-token and quote boundaries also count.
+    out, n = diagnostics._collapse_home_prefixes(f'see "{short}" at {short}')
+    assert out == 'see "~" at ~' and n == 2
+    # Non-separator delimiters that end the login segment must also collapse:
+    # a PATH list separator, a trailing comma, a closing paren, a sentence dot.
+    cases = [
+        (f"PATH={short}:/usr/bin", "PATH=~:/usr/bin"),
+        (f"cwd={short},", "cwd=~,"),
+        (f"({short})", "(~)"),
+        (f"logged at {short}.", "logged at ~."),
+    ]
+    for raw, want in cases:
+        out, n = diagnostics._collapse_home_prefixes(raw)
+        assert out == want and n == 1, f"delimiter boundary failed: {raw!r} -> {out!r}"
+    # But a continuing character still protects a longer login: the shorter
+    # prefix must NOT collapse the longer one even next to such a delimiter.
+    out, n = diagnostics._collapse_home_prefixes(f"{longer}:/usr/bin")
+    assert out == f"{longer}:/usr/bin" and n == 0, out
+
+
+def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
+    """Ruling 3: a data home nested under home collapses to ``~/.kiro/crew/...``.
+
+    When data home is nested under home, only the HOME prefix is registered, so
+    ``<home>/.kiro/crew/gateway.log`` collapses to ``~/.kiro/crew/gateway.log``
+    with the ``.kiro/crew`` tail kept rather than swallowed down to a bare ``~``.
+    This drives the collector with a data home that DIFFERS from home.
+    """
+    home = tmp_path / "home"
+    data_home = home / ".kiro" / "crew"
+    data_home.mkdir(parents=True, exist_ok=True)
+    # Pin config_dir to the nested data home and Path.home to home. Set the host
+    # probes directly (not via _isolate, which would pin Path.home to data_home).
+    monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: data_home)
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(diagnostics, "_macos_crash_reports", lambda: [])
+    monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: None)
+    monkeypatch.setattr(diagnostics, "_kiro_cli_extra_logs", lambda: [])
+    monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
+    _pin_provenance(monkeypatch)
+    (data_home / "gateway.log").write_text(
+        f'  File "{data_home}{os.sep}gateway.log", line 3, in handle\n'
+        f"a perfectly normal log line\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    with zipfile.ZipFile(r.zip_path) as z:
+        gw = z.read("gateway.log").decode()
+
+    gw_slash = gw.replace("\\", "/")
+    assert str(home) not in gw, "home prefix survived"
+    assert "~/.kiro/crew/gateway.log" in gw_slash, "nested data-home tail must be preserved"
+    assert "~/gateway.log" not in gw_slash, "the .kiro/crew tail must NOT be swallowed"
+    assert ", line 3, in handle" in gw
+
+
+def test_separate_data_home_collapses_on_its_own(monkeypatch):
+    """Ruling 3 (other branch): a data home NOT under home collapses on its own."""
+    home = "/" + "home" + "/a1"  # assembled so no literal home path is on a line
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(home)))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: Path("/var/lib/kirocrew"))
+    out, n = diagnostics._collapse_home_prefixes(
+        f"{home}/notes.txt and /var/lib/kirocrew/gateway.log and /usr/bin/x"
+    )
+    assert out == "~/notes.txt and ~/gateway.log and /usr/bin/x", out
+    assert n == 2
+
+
+def test_windows_json_escaped_and_case_insensitive(monkeypatch):
+    """Ruling 4: JSON-escaped and case-folded Windows home spellings all collapse.
+
+    Some bundle members (kiro-chat.log, crash.log) embed paths inside JSON
+    strings, where a Windows home path appears with doubled backslashes; tools
+    that normalise separators print the forward-slash form; and the drive/user
+    casing varies. All must collapse so the login never ships.
+    """
+    # Assemble the Windows home base and each spelling from parts so no literal
+    # Windows home path appears on a source line (the internal-content scan
+    # flags those). seg is the login segment.
+    seg = "Nm1"
+    back = "\\"
+    base = "C:" + back + "Users" + back + seg  # native backslash form
+    fwd = base.replace(back, "/")  # forward-slash form
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(base)))
+    monkeypatch.setattr(
+        diagnostics, "config_dir", lambda: Path(base + back + ".kiro" + back + "crew")
+    )
+
+    # Native backslash spelling.
+    out, n = diagnostics._collapse_home_prefixes(base + back + "kiro-chat.log")
+    assert out == "~" + back + "kiro-chat.log" and n == 1
+    # Forward-slash spelling.
+    out, n = diagnostics._collapse_home_prefixes(fwd + "/crash.log")
+    assert out == "~/crash.log" and n == 1
+    # JSON-escaped (doubled backslashes) spelling, as embedded in a JSON string.
+    doubled = base.replace(back, back + back)
+    out, n = diagnostics._collapse_home_prefixes(
+        '{"path": "' + doubled + back + back + 'crash.log"}'
+    )
+    assert out == '{"path": "~' + back + back + 'crash.log"}', out
+    assert n == 1
+    # Case-insensitive drive and user segment.
+    out, n = diagnostics._collapse_home_prefixes(base.lower() + back + "kiro-chat.log")
+    assert out == r"~\kiro-chat.log" and n == 1
+
+
+def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
+    """Ruling 5: path collapses are tallied separately from secret redactions.
+
+    A home-prefix collapse hides an OS login, not a secret, so it must not inflate
+    ``total_redactions`` / the "N secret(s) auto-redacted" line. The collapse count
+    lives in ``result.path_collapses`` and the issue body reports it apart.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    # One real secret + a couple of home-path frames (no secret in them).
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    (home / "gateway.log").write_text(
+        f"AWS key {secret}\n"
+        f'  File "{home}{os.sep}gateway.log", line 1, in a\n'
+        f'  File "{home}{os.sep}app{os.sep}x.py", line 2, in b\n'
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    with zipfile.ZipFile(r.zip_path) as z:
+        gw = z.read("gateway.log").decode()
+        manifest = json.loads(z.read("manifest.json"))
+    body = parse_qs(urlsplit(r.github_issue_url).query)["context"][0]
+
+    assert secret not in gw
+    assert str(home) not in gw
+    # The secret count excludes the path collapses.
+    assert r.redaction_summary["gateway.log"] >= 1, "the AWS key must be counted as a secret"
+    assert r.path_collapses >= 2, "both home frames should be counted as collapses"
+    # The manifest's secret tally excludes the path collapses (no collapse key).
+    assert manifest["total_redactions"] == r.total_redactions
+    assert "path_collapses" not in manifest
+    # The issue body reports secrets and collapses as distinct numbers.
+    assert f"{r.total_redactions} secret(s) auto-redacted" in body
+    assert f"{r.path_collapses} path(s) collapsed" in body
 
 
 def test_authorization_scheme_credential_fully_redacted(tmp_path, monkeypatch):
@@ -313,6 +590,90 @@ def test_symlinked_source_is_not_followed(tmp_path, monkeypatch):
         assert "gateway.log" not in z.namelist()
         joined = "".join(z.read(n).decode(errors="replace") for n in z.namelist())
     assert "TOPSECRETsymlinkVALUE123" not in joined
+
+
+def _scratch_chat_log(root: Path, name: str, body: str, mtime: float) -> None:
+    """Write ``<root>/<name>/kiro-log/kiro-chat.log`` with its mtime pinned."""
+    log = root / name / agent_scratch.KIRO_CLI_LOG_SUBDIR / agent_scratch.KIRO_CLI_CHAT_LOG_NAME
+    log.parent.mkdir(parents=True)
+    log.write_text(body, encoding="utf-8")
+    os.utime(log, (mtime, mtime))
+
+
+def test_bundle_takes_the_newest_per_process_chat_logs(tmp_path, monkeypatch):
+    """The bundle carries the newest per-process kiro-cli chat logs from scratch.
+
+    Each spawned kiro-cli logs into its own scratch dir, which no shared
+    ``kiro-log`` location reaches. The bundle takes the newest of those logs by
+    mtime, up to the cap, as ``kiro-chat/<scratch dir>.log`` beside the shared
+    ``kiro-chat.log``, and scrubs them like every other member.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    shared = tmp_path / "kiro-chat.log"
+    shared.write_text("shared log line\n", encoding="utf-8")
+    monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: shared)
+    monkeypatch.setattr(diagnostics, "_MAX_SCRATCH_CHAT_LOGS", 2)
+    root = agent_scratch.scratch_root()
+    # Neither the name order nor the write order is the newest-first order.
+    _scratch_chat_log(root, "chat-a-00000001", "middle log line\n", 1_700_000_100)
+    _scratch_chat_log(root, "chat-b-00000002", "oldest log line\n", 1_700_000_000)
+    _scratch_chat_log(root, "chat-c-00000003", f"newest log line\n{_GATEWAY}", 1_700_000_200)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert [n for n in z.namelist() if n.startswith("kiro-chat/")] == [
+            "kiro-chat/chat-c-00000003.log",
+            "kiro-chat/chat-a-00000001.log",
+        ]
+        newest = z.read("kiro-chat/chat-c-00000003.log").decode()
+        assert "shared log line" in z.read("kiro-chat.log").decode()
+    assert "newest log line" in newest
+    for secret in _SECRETS:
+        assert secret not in newest, f"secret leaked from a scratch chat log: {secret!r}"
+    assert r.redaction_summary["kiro-chat/chat-c-00000003.log"] >= 3
+
+
+def test_bundle_never_walks_a_linked_scratch_level(tmp_path, monkeypatch):
+    """A linked scratch root, scratch dir or ``kiro-log`` is skipped, never walked.
+
+    ``Path.is_dir()`` follows a link, and the log on its far side is a regular
+    file the per-file check passes, so each DIRECTORY level needs its own guard
+    to keep an off-tree ``kiro-chat.log`` out of a bundle bound for a public
+    issue. ``make_dir_link`` stages a junction on Windows and a directory symlink
+    elsewhere, so the guard is exercised on every platform.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    root = agent_scratch.scratch_root()
+    off_tree = tmp_path / "off-tree"
+    _scratch_chat_log(root, "real-00000001", "kept log line\n", 1_700_000_000)
+    _scratch_chat_log(off_tree, "dir", "OFFTREEscratchDIR\n", 1_700_000_100)
+    _scratch_chat_log(off_tree, "log", "OFFTREEkiroLOG\n", 1_700_000_200)
+    make_dir_link(root / "linked-dir-00000002", off_tree / "dir")
+    (root / "linked-log-00000003").mkdir()
+    make_dir_link(
+        root / "linked-log-00000003" / agent_scratch.KIRO_CLI_LOG_SUBDIR,
+        off_tree / "log" / agent_scratch.KIRO_CLI_LOG_SUBDIR,
+    )
+
+    def scratch_members() -> tuple[list[str], bytes]:
+        r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+        with zipfile.ZipFile(r.zip_path) as z:
+            names = z.namelist()
+            blob = b"".join(z.read(n) for n in names)
+        return [n for n in names if n.startswith("kiro-chat/")], blob
+
+    members, blob = scratch_members()
+    assert members == ["kiro-chat/real-00000001.log"]
+    assert b"OFFTREE" not in blob
+
+    # The same tree reached through a linked ROOT is not walked at all.
+    root.rename(tmp_path / "moved-root")
+    make_dir_link(root, tmp_path / "moved-root")
+    members, _ = scratch_members()
+    assert members == []
 
 
 @pytest.mark.skipif(
@@ -939,6 +1300,48 @@ class TestUsableDirRejectsEveryDirLink:
         monkeypatch.setattr(diagnostics.platform_compat, "is_link_or_junction", lambda p: True)
         assert diagnostics._usable_dir(real) is False
 
+    def test_a_link_is_refused_before_anything_follows_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `is_dir()` follows a link to answer, and on Windows following one whose
+        # target is a UNC share authenticates to that host before the answer is
+        # thrown away, so the link check has to come first.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = tmp_path / "kiro-log"
+        make_dir_link(link, outside)
+        followed: list[Path] = []
+        real_is_dir = Path.is_dir
+
+        def recording_is_dir(self, *args, **kwargs):
+            followed.append(self)
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+        assert diagnostics._usable_dir(link) is False
+        assert link not in followed
+
+
+@requires_symlinks
+def test_a_linked_log_is_refused_before_anything_follows_it(tmp_path, monkeypatch):
+    """``_usable_log`` checks for a link before ``is_file()``, which follows one."""
+    target = tmp_path / "real.log"
+    target.write_text("log line\n", encoding="utf-8")
+    link = tmp_path / "kiro-chat.log"
+    link.symlink_to(target)
+    followed: list[Path] = []
+    real_is_file = Path.is_file
+
+    def recording_is_file(self, *args, **kwargs):
+        followed.append(self)
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", recording_is_file)
+
+    assert diagnostics._usable_log(link) is False
+    assert link not in followed
+
 
 # ── API handlers (mode-independent: stub request + asyncio.run) ──────────────
 
@@ -1038,6 +1441,10 @@ def test_collect_handler_returns_download_url(tmp_path, monkeypatch):
     assert body["download_url"] == "/api/diagnostics/download/b.zip"
     assert body["github_issue_url"].startswith("https://github.com/")
     assert body["filename"] == "b.zip"
+    # The response carries the secret tally but not the path-collapse count:
+    # no client reads a collapse key, so it is kept out of the payload shape.
+    assert "total_redactions" in body
+    assert "path_collapses" not in body
 
 
 def test_note_is_redacted_everywhere(tmp_path, monkeypatch):

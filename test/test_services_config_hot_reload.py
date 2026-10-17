@@ -188,9 +188,9 @@ class TestEpisodicMaxCountIsConsumed:
     def test_the_gateway_passes_the_configured_count_into_the_store(self) -> None:
         """Pinned at the call site: the field is only useful if boot threads it in."""
         source = Path(
-            live.__file__.replace("config/live.py", "slack/gateway.py").replace(
-                "config\\live.py", "slack\\gateway.py"
-            )
+            live.__file__.replace(
+                "config/live.py", "slack/gateway_runtime/service_boot.py"
+            ).replace("config\\live.py", "slack\\gateway_runtime\\service_boot.py")
         ).read_text(encoding="utf-8")
         assert "config=self._cfg" in source
 

@@ -4,7 +4,7 @@ import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import { useAnchoredTriggerRect } from '../../../hooks/useAnchoredTriggerRect'
 import { useFolderSortMode } from '../../../hooks/useFolderSortMode'
-import { useSessionControls, useSessionControlStatuses } from '../../../hooks/useSessionControls'
+import { dashboardSessionKey, SESSION_CONTROL_STATUS_KEY, useSessionControls, useSessionControlStatuses } from '../../../hooks/useSessionControls'
 import type { ChatFolder, ChatSlot } from '../../../types'
 
 /** One shared empty list, so an absent folder cache keeps a stable identity. */
@@ -34,10 +34,12 @@ export function useComposerSessionControls({ activeSlot, currentSlot, queryClien
     !!openSessionControl && openSessionControl.slot === activeSlot,
   )
   // Re-poll a control's status when its popover closes: that is when the user
-  // has most likely just changed the thing the chip reports. React Query owns
-  // the cache, so this is an invalidation rather than a token the hook watches.
+  // has most likely just changed the thing the chip reports. A finished turn
+  // re-polls too, from the socket layer (refreshSessionControlStatusesAfterTurn).
+  // React Query owns the cache, so this is an invalidation rather than a token
+  // the hook watches.
   const refreshSessionControlStatuses = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['session-control-status'] })
+    queryClient.invalidateQueries({ queryKey: [SESSION_CONTROL_STATUS_KEY] })
   }, [queryClient])
   // Drop the open-control state when the chat changes. Correctness does not
   // depend on this effect: the host render is gated on the captured opening
@@ -83,7 +85,7 @@ export function useComposerSessionControls({ activeSlot, currentSlot, queryClien
   // skill slot and workflows/runModel use. Handing an app the bare slot would
   // key its per-session state on a string nothing else uses, which is precisely
   // the mis-binding this feature exists to remove.
-  const sessionControlKey = activeSlot ? `dashboard:${activeSlot}` : ''
+  const sessionControlKey = dashboardSessionKey(activeSlot)
   const { statuses: sessionControlStatuses, error: sessionControlStatusError } =
     useSessionControlStatuses(
       sessionControls,

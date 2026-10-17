@@ -237,8 +237,9 @@ def test_three_seconds_of_loop_lag_leaves_the_subagent_cap_unchanged() -> None:
         seen_signals.update(d.signals)
         assert d.effective_exec_cap == 32, d
     assert SIGNAL_LOOP_LAG in seen_signals
-    # The spawn gate is a host question and still backs off on the same lag.
-    assert pol.gate_cap == 1 and pol.paused
+    # The gateway's loop lag is no evidence about the MCP daemon's forks
+    # either: the spawn gate holds at its fresh start, unpaused.
+    assert pol.gate_cap == pol.params.gate_start and not pol.paused
 
 
 def test_memory_at_the_critical_line_leaves_the_subagent_cap_unchanged() -> None:

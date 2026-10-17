@@ -45,6 +45,7 @@ from kiro_crew.monitoring.models import (
     monitor_state_to_dict,
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
+from kiro_crew.testing.wait import await_until
 
 #: Every function, class and constant the pre-split ``autonudge.py`` defined.
 _BASE_DEFINED = frozenset(
@@ -165,9 +166,9 @@ _BASE_REACHED_IMPORTS = frozenset(
 _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "__init__": ("method", "38ac57f125dd"),
     "_acquire_mutation_lock": ("method+async", "e26080a5a8bc"),
-    "_add_locked": ("method+async", "923a1f34e18b"),
+    "_add_locked": ("method+async", "4c98efc62188"),
     "_add_monitor_locked": ("method+async", "55179b26aeff"),
-    "_add_unserialized": ("method+async", "923a1f34e18b"),
+    "_add_unserialized": ("method+async", "4c98efc62188"),
     "_append_judge_labels": ("method", "05f9e694d3d7"),
     "_apply_monitor_budget_stop": ("method", "c05b26fec956"),
     "_apply_monitor_user_stop": ("method", "0d02c6c3b88e"),
@@ -223,6 +224,8 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_sidecar_transaction": ("method", "140eaa502228"),
     "_sync_terminal_completion_timer": ("method", "fa9fb3019298"),
     "_terminal_still_holds": ("method+async", "75f382f079fb"),
+    "_extend_for_open_ledger": ("method+async", "1d8c864f30a4"),
+    "_holds_for_person_wait": ("method+async", "3a33d55b099b"),
     "_timer": ("method+async", "e290ef84f151"),
     "_update_locked": ("method+async", "db9765212236"),
     "_update_unserialized": ("method+async", "db9765212236"),
@@ -231,6 +234,8 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_worker_running": ("method", "490393185551"),
     # The close side of the same liveness question, injected the same way.
     "_worker_closed": ("method", "490393185551"),
+    # The loop side of the same liveness question, read from this service's own table.
+    "_worker_looping": ("method", "490393185551"),
     # Reads one loop's monitor kind: the startup resume treats a work-ledger
     # watch differently, because its news arrives by a push a restart loses.
     "_observes_work_ledger": ("method", "3a33d55b099b"),
@@ -239,13 +244,15 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "_write_quarantine_sidecar": ("method", "35d06f40fb45"),
     "_write_quarantine_sidecar_locked": ("method", "35d06f40fb45"),
     "_write_state": ("method", "b02c548f23ec"),
-    "add": ("method+async", "d723f7c062d9"),
+    "add": ("method+async", "d490ef767593"),
     "add_monitor": ("method+async", "b07c1299b741"),
     "apply_monitor_probe": ("method+async", "7e318e77ec64"),
     "clear_terminal_monitor": ("method+async", "82db71923663"),
     "commit_monitor_replacement": ("method", "f7956b1e6531"),
     "deactivate_and_wait": ("method+async", "61dc2e194fa8"),
-    "fire_now": ("method+async", "082992b0b249"),
+    # ``delay`` arms a pulled-forward cycle after a batching window instead of at once,
+    # which is how several worker reports arriving together share one conductor turn.
+    "fire_now": ("method+async", "db9a43f4541c"),
     "get_by_id": ("method", "c7cdaf3c2920"),
     "get_by_slot": ("method", "1a9a46af4d72"),
     "list_all": ("method", "6672df12a725"),
@@ -260,8 +267,10 @@ _BASE_SERVICE_MEMBERS: dict[str, tuple[str, str]] = {
     "notify_cycle_landed": ("method", "2a34976b11b0"),
     "notify_cycle_start_failed": ("method", "2a34976b11b0"),
     "notify_turn_complete": ("method", "295ffab180e4"),
-    "notify_user_input": ("method", "2a34976b11b0"),
+    "notify_user_input": ("method", "fad3ce03aadf"),
+    "pending_wake_briefs": ("method", "45a16f5ce541"),
     "record_monitor_completion_evidence_unavailable": ("method+async", "400845dc24be"),
+    "release_approval_hold": ("method+async", "3e62765820c2"),
     "record_monitor_dispatch_busy": ("method+async", "400845dc24be"),
     "record_monitor_dispatch_failure": ("method+async", "716192392c13"),
     "record_monitor_dispatched": ("method+async", "400845dc24be"),
@@ -317,6 +326,10 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
     ("judge_recent_verdicts", "factory:list"),
     ("stopped_reason", "''"),
     ("approval_stalled", "False"),
+    ("approval_stalled_at", "0.0"),
+    ("ledger_seen_fp", "''"),
+    ("waiting_on_person", "False"),
+    ("waiting_on_person_at", "0.0"),
     ("consecutive_start_failures", "0"),
     ("consecutive_failed_cycles", "0"),
     ("next_due_ts", "0.0"),
@@ -326,6 +339,7 @@ _BASE_NUDGELOOP_FIELDS: list[tuple[str, str | None]] = [
     ("banner", "''"),
     ("self_armed", "False"),
     ("config_generation", "0"),
+    ("default_patrol", "False"),
 ]
 
 
@@ -362,6 +376,10 @@ _GOLDEN_STORE = """\
       "judge_recent_verdicts": [],
       "stopped_reason": "",
       "approval_stalled": false,
+      "approval_stalled_at": 0.0,
+      "ledger_seen_fp": "",
+      "waiting_on_person": false,
+      "waiting_on_person_at": 0.0,
       "consecutive_start_failures": 0,
       "consecutive_failed_cycles": 0,
       "next_due_ts": 1790000300.0,
@@ -369,7 +387,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "",
       "self_armed": false,
-      "config_generation": 0
+      "config_generation": 0,
+      "default_patrol": false
     },
     {
       "id": "claim001",
@@ -393,6 +412,10 @@ _GOLDEN_STORE = """\
       "judge_recent_verdicts": [],
       "stopped_reason": "interrupted_cycle",
       "approval_stalled": false,
+      "approval_stalled_at": 0.0,
+      "ledger_seen_fp": "",
+      "waiting_on_person": false,
+      "waiting_on_person_at": 0.0,
       "consecutive_start_failures": 0,
       "consecutive_failed_cycles": 0,
       "next_due_ts": 0.0,
@@ -401,6 +424,7 @@ _GOLDEN_STORE = """\
       "banner": "",
       "self_armed": false,
       "config_generation": 0,
+      "default_patrol": false,
       "inflight_cycle": 4,
       "inflight_undelivered": true
     },
@@ -431,6 +455,10 @@ _GOLDEN_STORE = """\
       "judge_recent_verdicts": [],
       "stopped_reason": "",
       "approval_stalled": false,
+      "approval_stalled_at": 0.0,
+      "ledger_seen_fp": "",
+      "waiting_on_person": false,
+      "waiting_on_person_at": 0.0,
       "consecutive_start_failures": 0,
       "consecutive_failed_cycles": 0,
       "next_due_ts": 1790000300.0,
@@ -439,7 +467,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "patrol",
       "self_armed": true,
-      "config_generation": 0
+      "config_generation": 0,
+      "default_patrol": false
     },
     {
       "id": "struct01",
@@ -463,6 +492,10 @@ _GOLDEN_STORE = """\
       "judge_recent_verdicts": [],
       "stopped_reason": "",
       "approval_stalled": false,
+      "approval_stalled_at": 0.0,
+      "ledger_seen_fp": "",
+      "waiting_on_person": false,
+      "waiting_on_person_at": 0.0,
       "consecutive_start_failures": 0,
       "consecutive_failed_cycles": 0,
       "next_due_ts": 1790000900.0,
@@ -471,7 +504,8 @@ _GOLDEN_STORE = """\
       "terminal_notification_stopped_at": 0.0,
       "banner": "",
       "self_armed": false,
-      "config_generation": 0
+      "config_generation": 0,
+      "default_patrol": false
     },
     {
       "id": "broken01",
@@ -765,7 +799,7 @@ class TestModuleSeamsReachTheCodeThatReadsThem:
         monkeypatch.setattr(svc, "_reconcile_once", passed.set)
         task = asyncio.create_task(svc._reconcile_forever())
         try:
-            await asyncio.wait_for(passed.wait(), 10)
+            await await_until(passed, what="reconcile pass")
         finally:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -944,7 +978,7 @@ class TestInstanceSeamsReachEveryInternalCaller:
 
         monkeypatch.setattr(svc, "_persist_locked", _persist)
         svc._persist_soon()
-        await asyncio.wait_for(persisted.wait(), 10)
+        await await_until(persisted, what="persistence callback")
 
     @pytest.mark.asyncio
     async def test_mutations_go_through_emit_cancel_and_the_mutation_lock(
@@ -1088,6 +1122,7 @@ _BINDINGS = {
     "deactivate_and_wait": "maintenance",
     "_deactivate_and_wait_unserialized": "maintenance",
     "notify_approval_stalled": "timers",
+    "release_approval_hold": "timers",
     "notify_cycle_start_failed": "timers",
     "notify_cycle_failed": "timers",
     "notify_cycle_landed": "timers",
@@ -1111,6 +1146,8 @@ _BINDINGS = {
     "_append_judge_labels": "judge_tick",
     "_persist_judge_state": "judge_tick",
     "_timer": "firing",
+    "_extend_for_open_ledger": "firing",
+    "_holds_for_person_wait": "firing",
     "_run_fire_cycle": "firing",
     "fire_now": "firing",
     "add": "mutations",

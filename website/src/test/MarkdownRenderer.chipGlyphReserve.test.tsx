@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 /**
  * REGRESSION GUARD — a path chip's glyph must not change the paragraph's width.
@@ -42,9 +43,7 @@ function stubMissing() {
 }
 
 function stubKind(kind: 'file' | 'dir') {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': kind }) } as Response),
-  ) as unknown as typeof fetch
+  stubPathKinds(() => kind)
 }
 
 /** The leading icon inside the code span, reserve or real glyph alike. */
@@ -105,6 +104,17 @@ describe('path chip glyph reserve', () => {
     // Ordinary inline code far outnumbers path chips; a reserve here would put a
     // 16px hole in front of every one of them.
     expect(glyphOf(container)).toBeNull()
+  })
+
+  it('reserves nothing for a command line whose last argument is a path', () => {
+    stubNeverResolves()
+    // The whole span passed the path pre-filter on `Xcode.app`'s extension, so
+    // the copy chip carried a permanent blank glyph slot before `sudo`.
+    const { container } = render(
+      <MarkdownRenderer content={'Run `sudo xcode-select -s /Applications/Xcode.app` first.'} />,
+    )
+    expect(glyphOf(container)).toBeNull()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
   it('swaps the reserve for a visible glyph once the path is confirmed', async () => {

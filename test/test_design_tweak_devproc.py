@@ -242,20 +242,24 @@ class TestNodeBinDirs:
         real_dir = tmp_path / "bindir"
         real_dir.mkdir()
         monkeypatch.setattr(server, "_NODE_BIN_DIRS", (str(real_dir), "/nonexist/abc"))
-        monkeypatch.setattr(server, "_NVM_GLOB", "/nonexist/nvm/*/bin")
+        monkeypatch.setattr(server, "_nvm_version_bin_dirs", lambda: ("/nonexist/nvm/v1/bin",))
         result = server._node_bin_dirs()
         assert real_dir in result
         assert Path("/nonexist/abc") not in result
 
     def test_nvm_dirs_sorted_newest_first(self, tmp_path, monkeypatch):
         """nvm versions sorted descending -- v20 is preferred over v18."""
-        nvm_base = tmp_path / "nvm"
+        home = tmp_path / "home"
+        nvm_base = home / ".nvm" / "versions" / "node"
         v18 = nvm_base / "v18.0.0" / "bin"
         v20 = nvm_base / "v20.0.0" / "bin"
         v18.mkdir(parents=True)
         v20.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         monkeypatch.setattr(server, "_NODE_BIN_DIRS", ())
-        monkeypatch.setattr(server, "_NVM_GLOB", str(nvm_base / "*/bin"))
         result = server._node_bin_dirs()
         v18_idx = result.index(v18)
         v20_idx = result.index(v20)

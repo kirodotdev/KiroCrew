@@ -397,7 +397,7 @@ def test_redaction_runs_exfil_before_credentials() -> None:
     for: it replaces the whole URL, DESTINATION included. Redacting the
     credential first leaves ``?token=[REDACTED: credential]`` -- a URL with
     nothing suspicious left in it, so the host the agent was posting to
-    survives on the wire. ``subagent.py``'s ``_redact`` and
+    survives on the wire. ``subagent_parts/run_output.py``'s ``_redact`` and
     ``security.redact_and_truncate`` both order it this way.
     """
     scrubbed = tasks_mod._scrub_prose(_EXFIL_URL)

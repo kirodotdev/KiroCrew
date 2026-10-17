@@ -80,7 +80,6 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
-import { PREVIEW_DASHBOARD, setPreviewFlag } from '../utils/previewFlags'
 
 function renderSidebar() {
   const slots = [{ key: 'k1', title: 'a session', running: false, messages: 2 }]
@@ -143,21 +142,15 @@ describe('sidebar icon controls: 44px touch hit area', () => {
   })
 })
 
-describe('sidebar header menu: All Dashboards behind the Dynamic Dashboard preview', () => {
+describe('sidebar header menu: All Dashboards', () => {
   const openHeaderMenu = () => act(() => { fireEvent.keyDown(screen.getAllByLabelText('More options')[0], { key: 'Enter' }) })
 
-  it('offers no All Dashboards item while the preview is off, and does once it is on', async () => {
+  it('offers the All Dashboards item beside the rest of the menu', async () => {
     mobile.value = false
     renderSidebar()
     openHeaderMenu()
     const menu = await screen.findByRole('menu')
-    expect(within(menu).queryByRole('menuitem', { name: /All Dashboards/ })).toBeNull()
-    // The rest of the menu is untouched: only the preview's door is withheld.
+    expect(within(menu).getByRole('menuitem', { name: /All Dashboards/ })).toBeTruthy()
     expect(within(menu).getByRole('menuitem', { name: /board view/ })).toBeTruthy()
-    act(() => { fireEvent.keyDown(menu, { key: 'Escape' }) })
-    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
-    openHeaderMenu()
-    const again = await screen.findByRole('menu')
-    expect(within(again).getByRole('menuitem', { name: /All Dashboards/ })).toBeTruthy()
   })
 })

@@ -281,13 +281,21 @@ class TestEffectiveModelPrecedence:
         cfg = _cfg({"crew": {"kiro_agent": "kirocrew", "model": ""}}, "auto")
         assert resolve_effective_model(cfg, "crew") != "auto"
 
-    def test_unknown_agent_falls_back_to_the_default_agent(self, specs_dir: Path) -> None:
+    def test_unknown_agent_never_takes_the_default_crewmates_pin(self, specs_dir: Path) -> None:
+        # Not a crewmate: a template session, which carries no crew pin.
+        # The global decides; the default crewmate's own pin is not consulted.
         cfg = _cfg({"crew": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "")
-        assert resolve_effective_model(cfg, "no-such-agent") == "claude-opus-5"
+        assert resolve_effective_model(cfg, "no-such-agent") != "claude-opus-5"
+        cfg.agent.model = "claude-haiku-4.5"
+        assert resolve_effective_model(cfg, "no-such-agent") == "claude-haiku-4.5"
 
-    def test_blank_agent_resolves_the_default_agent(self, specs_dir: Path) -> None:
+    def test_blank_agent_is_the_default_template_on_the_global(self, specs_dir: Path) -> None:
+        # A plain session is the default template, never the default crewmate:
+        # its pin must not leak into every chat that picked nobody.
         cfg = _cfg({"crew": {"kiro_agent": "kirocrew", "model": "claude-opus-5"}}, "")
-        assert resolve_effective_model(cfg, None) == "claude-opus-5"
+        assert resolve_effective_model(cfg, None) != "claude-opus-5"
+        cfg.agent.model = "claude-haiku-4.5"
+        assert resolve_effective_model(cfg, None) == "claude-haiku-4.5"
 
 
 class TestSessionModelCoversEverySurface:

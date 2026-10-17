@@ -451,14 +451,18 @@ async def api_workflow_author(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.author")
     if refusal is not None:
         return refusal
-    out = await svc.author(
-        intent,
-        author=author,
-        expected_store=request.get("workflow_expected_store"),
-        # The dashboard owner waits on the Create-draft spinner; an app token or an
-        # agent's internal call does not (kiro_crew.start_priority).
-        start_priority=owner_start_priority(request),
-    )
+    try:
+        out = await svc.author(
+            intent,
+            author=author,
+            expected_store=request.get("workflow_expected_store"),
+            # The dashboard owner waits on the Create-draft spinner; an app token or an
+            # agent's internal call does not (kiro_crew.start_priority).
+            start_priority=owner_start_priority(request),
+        )
+    except Exception:
+        logger.exception("workflow author failed")
+        return _error("could not author workflow", "workflow_author_failed", 500)
     return web.json_response(_redact_obj(out))
 
 
@@ -507,16 +511,20 @@ async def api_workflow_run(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.run")
     if refusal is not None:
         return refusal
-    out = await svc.start(
-        source,
-        name=body.get("name", "") or "",
-        args=body.get("args") if isinstance(body.get("args"), dict) else {},
-        author=request.headers.get("X-Session-Key", ""),
-        session_key=request.headers.get("X-Session-Key", ""),
-        expected_store=request.get("workflow_expected_store"),
-        budget_total=budget_total,
-        timeout_secs=_opt_int(body.get("timeout_secs")),
-    )
+    try:
+        out = await svc.start(
+            source,
+            name=body.get("name", "") or "",
+            args=body.get("args") if isinstance(body.get("args"), dict) else {},
+            author=request.headers.get("X-Session-Key", ""),
+            session_key=request.headers.get("X-Session-Key", ""),
+            expected_store=request.get("workflow_expected_store"),
+            budget_total=budget_total,
+            timeout_secs=_opt_int(body.get("timeout_secs")),
+        )
+    except Exception:
+        logger.exception("workflow run failed")
+        return _error("could not start workflow", "workflow_run_failed", 500)
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
 
@@ -560,16 +568,20 @@ async def api_workflow_run_intent(request: web.Request) -> web.Response:
     refusal = await _private_memory_refusal(request, "workflow.run_intent")
     if refusal is not None:
         return refusal
-    out = await svc.start_from_intent(
-        intent,
-        name=body.get("name", "") or "",
-        args=body.get("args") if isinstance(body.get("args"), dict) else {},
-        author=request.headers.get("X-Session-Key", ""),
-        session_key=request.headers.get("X-Session-Key", ""),
-        expected_store=request.get("workflow_expected_store"),
-        budget_total=budget_total,
-        timeout_secs=_opt_int(body.get("timeout_secs")),
-    )
+    try:
+        out = await svc.start_from_intent(
+            intent,
+            name=body.get("name", "") or "",
+            args=body.get("args") if isinstance(body.get("args"), dict) else {},
+            author=request.headers.get("X-Session-Key", ""),
+            session_key=request.headers.get("X-Session-Key", ""),
+            expected_store=request.get("workflow_expected_store"),
+            budget_total=budget_total,
+            timeout_secs=_opt_int(body.get("timeout_secs")),
+        )
+    except Exception:
+        logger.exception("workflow run_intent failed")
+        return _error("could not start workflow", "workflow_run_intent_failed", 500)
     status = 200 if "run_id" in out else 400
     return web.json_response(_redact_obj(out), status=status)
 
@@ -715,6 +727,14 @@ async def api_workflow_run_cancel(request: web.Request) -> web.Response:
 
 async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     """POST /api/workflows/runs/{id}/rerun — restart, replaying the prefix."""
+    # A rerun launches a new run under the prior run's origin session, optionally
+    # with an edited script, so it is gated like the other launch routes above.
+    if request.get("internal_auth") is not True and request.get("app") == "":
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        owner_denied = await require_owner_dashboard_request(request, "workflow.rerun")
+        if owner_denied is not None:
+            return owner_denied
     svc = _svc(request)
     if svc is None:
         return web.json_response({"error": "workflows not available"}, status=503)
@@ -734,13 +754,17 @@ async def api_workflow_run_rerun(request: web.Request) -> web.Response:
     refusal = await _run_scope_refusal(request, run_id)
     if refusal is not None:
         return refusal
-    out = await svc.rerun_subtree(
-        run_id,
-        from_index,
-        source=edited_source,
-        caller_session=request.headers.get("X-Session-Key", ""),
-        owner=request.get("app") == "" and request.get("internal_auth") is not True,
-    )
+    try:
+        out = await svc.rerun_subtree(
+            run_id,
+            from_index,
+            source=edited_source,
+            caller_session=request.headers.get("X-Session-Key", ""),
+            owner=request.get("app") == "" and request.get("internal_auth") is not True,
+        )
+    except Exception:
+        logger.exception("workflow rerun failed")
+        return _error("could not rerun workflow", "workflow_rerun_failed", 500)
     # 400 on validation error (bad edited script), 404 when the run is missing.
     if "run_id" in out:
         status = 200

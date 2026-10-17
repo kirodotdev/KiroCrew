@@ -674,3 +674,97 @@ def test_a_fact_edit_invalidates_the_resident_semantic_scoring_set(tmp_path):
         assert "@old.example" not in refreshed
     finally:
         store.close()
+
+
+def _edit(store, key, operation):
+    row = memory_edit.list_records(store, {"q": key})["entries"][0]
+    selection = {"items": [{name: row[name] for name in ("kind", "id", "revision")}]}
+    preview = memory_edit.preview_edit(
+        store, "chosen", b"secret", body(selection=selection, operation=operation)
+    )
+    return preview, memory_edit.apply_edit(store, "chosen", b"secret", preview["preview_id"])
+
+
+def _accepted_with(store, record_id, value):
+    history = memory_edit.record_history(store, {"kind": "fact", "id": record_id})
+    for entry in history["entries"]:
+        if entry["status"] == "accepted" and entry["after_json"]:
+            if json.loads(json.loads(entry["after_json"])["value_json"]) == value:
+                return entry
+    raise AssertionError(f"no accepted version holds {value!r}")
+
+
+def test_restore_writes_an_older_version_as_a_new_accepted_revision(store):
+    assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    _edit(store, "user.city", {"type": "set", "value": "Portland"})
+    _edit(store, "user.city", {"type": "set", "value": "Boston"})
+    first = _accepted_with(store, "user.city", "Seattle")
+    count_before = len(
+        memory_edit.record_history(store, {"kind": "fact", "id": "user.city"})["entries"]
+    )
+
+    preview, applied = _edit(store, "user.city", {"type": "restore", "revision_id": first["id"]})
+
+    entry = preview["entries"][0]
+    assert entry["operation"] == "restore"
+    assert json.loads(entry["before"]["value_json"]) == "Boston"
+    assert json.loads(entry["after"]["value_json"]) == "Seattle"
+    assert "_restore" not in entry["after"]
+    assert applied["changed_count"] == 1
+    assert json.loads(store.get_semantic("user.city")["value_json"]) == "Seattle"
+    history = memory_edit.record_history(store, {"kind": "fact", "id": "user.city"})
+    # Restoring adds a version; it never removes the ones it went back past.
+    assert len(history["entries"]) == count_before + 1
+    assert history["entries"][0]["operation"] == "restore"
+    assert history["entries"][0]["status"] == "accepted"
+    assert _accepted_with(store, "user.city", "Boston")["id"] < history["entries"][0]["id"]
+
+
+def test_restore_refuses_a_version_that_is_not_kept_for_that_record(store):
+    assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    assert store.set_semantic("user.team", "Platform", 1.0, "user_explicit") is None
+    _edit(store, "user.team", {"type": "set", "value": "Runtime"})
+    other = _accepted_with(store, "user.team", "Platform")
+    for revision_id in (other["id"], 999999):
+        with pytest.raises(memory_edit.MemoryEditError) as error:
+            _edit(store, "user.city", {"type": "restore", "revision_id": revision_id})
+        assert error.value.code == "memory_revision_missing"
+        assert error.value.status == 404
+    assert json.loads(store.get_semantic("user.city")["value_json"]) == "Seattle"
+
+
+@pytest.mark.parametrize("stored", ["Infinity", "-Infinity", "NaN", "[1e400]"])
+def test_restore_refuses_a_version_whose_value_is_not_finite_json(store, stored):
+    assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    _edit(store, "user.city", {"type": "set", "value": "Boston"})
+    first = _accepted_with(store, "user.city", "Seattle")
+    saved = json.loads(first["after_json"])
+    saved["value_json"] = stored
+    store.db.execute(
+        "UPDATE memory_revisions SET after_json = ? WHERE id = ?",
+        (json.dumps(saved), first["id"]),
+    )
+    with pytest.raises(memory_edit.MemoryEditError) as error:
+        _edit(store, "user.city", {"type": "restore", "revision_id": first["id"]})
+    assert error.value.code == "memory_revision_unreadable"
+    assert error.value.status == 409
+    assert json.loads(store.get_semantic("user.city")["value_json"]) == "Boston"
+
+
+@pytest.mark.parametrize("revision_id", [0, -1, True, "3", None, 2**63])
+def test_restore_requires_a_positive_integer_version(store, revision_id):
+    assert store.set_semantic("user.city", "Seattle", 1.0, "user_explicit") is None
+    with pytest.raises(memory_edit.MemoryEditError) as error:
+        _edit(store, "user.city", {"type": "restore", "revision_id": revision_id})
+    assert error.value.status == 400
+
+
+def test_restore_applies_to_exactly_one_record(store):
+    seed(store, 2)
+    with pytest.raises(memory_edit.MemoryEditError, match="exactly one"):
+        memory_edit.preview_edit(
+            store,
+            "chosen",
+            b"secret",
+            body(operation={"type": "restore", "revision_id": 1}),
+        )

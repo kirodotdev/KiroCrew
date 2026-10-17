@@ -17,6 +17,7 @@ import os
 import time
 
 import pytest
+from test_gate_tiers import gate_world  # noqa: F401
 
 from kiro_crew import name_grant, platform_compat
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, HookManager, HooksConfig
@@ -261,15 +262,58 @@ class TestLoopSafety:
         # And it is the only thread dispatch in the module.
         assert inspect.getsource(name_grant).count("asyncio.to_thread(name_grant_refusal") == 1
 
-    def test_the_loop_bound_hook_no_longer_resolves_anything(self):
-        # `HookManager.on_tool_call` is synchronous and called on the loop, so it
-        # must not reach this module at all: not `shutil.which`, not a digest.
-        import inspect
+    @pytest.mark.usefixtures("gate_world")
+    def test_the_loop_bound_gate_never_resolves_a_name(self):
+        # `HookManager.judge` is synchronous and called on the loop, so it must not
+        # reach this module at all: not `shutil.which`, not a digest. Every entry
+        # point a resolution starts from raises here, and the gate still reaches the
+        # same verdict for a call decided by each of its rows and branches.
+        import shutil
+        import sys
 
-        from kiro_crew import hooks
+        from test_gate_tiers import ALL_SCENARIOS, judge_scenario
 
-        source = inspect.getsource(hooks.HookManager.on_tool_call)
-        assert "name_grant" not in source
+        def judge_all():
+            for param in ALL_SCENARIOS:
+                (scenario,) = param.values
+                verdict = judge_scenario(scenario)
+                assert (verdict.action, verdict.tier) == (scenario.action, scenario.tier), param.id
+
+        # One pass BEFORE the stubs go in. A row may import a module lazily (the
+        # read-only tier imports ``kiro_crew.slack.gateway``, which loads the
+        # dashboard chat runner), and a module first imported while a stub is
+        # installed binds it by name for good -- ``from kiro_crew.name_grant import
+        # ...`` -- where the undo never reaches, so every later test that module
+        # serves would call the stub.
+        judge_all()
+
+        def resolves(*_args, **_kwargs):
+            raise AssertionError("the gate resolved a program name on the loop")
+
+        with pytest.MonkeyPatch.context() as patch:
+            for entry in (
+                "name_grant_refusal",
+                "refusal_for_command_off_loop",
+                "refusal_for_event",
+                "program_names",
+                "environment_refusal",
+                "_program_refusal",
+            ):
+                patch.setattr(name_grant, entry, resolves)
+            patch.setattr(shutil, "which", resolves)
+            judge_all()
+
+        # Nothing kept a stub past the undo.
+        kept = sorted(
+            f"{name}.{attr}"
+            for name, module in list(sys.modules.items())
+            for attr, value in list(getattr(module, "__dict__", {}).items())
+            if value is resolves
+        )
+        assert kept == []
+        from kiro_crew.dashboard import chat_runner
+
+        assert chat_runner._name_grant_refusal_off_loop is name_grant.refusal_for_command_off_loop
 
 
 class TestShadowedResolution:
@@ -289,6 +333,63 @@ class TestShadowedResolution:
         assert refusal.code == name_grant.SHADOWED
         assert shim in refusal.detail
         assert str(system_dir / "head") in refusal.detail
+
+    def test_nix_store_shadow_is_hard_refused_and_names_the_store_path(self, world):
+        # A gateway PATH that leads with `~/.nix-profile/bin` resolves a coreutils
+        # name into an immutable /nix/store copy. Reaching the REAL shadow decision
+        # through `_program_refusal` (no monkeypatched predicate): the store copy is
+        # NOT the trusted-directory file, so it shadows the system program and is hard
+        # SHADOWED. On a multi-user Nix any user can `nix-store --add` a payload, so an
+        # unwritable store file is not an identity -- it is never auto-approved and
+        # never offered for a pin. The refusal names the resolved STORE path so the
+        # person at the approval card sees which file shadows the system program.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        store = user_dir.parent / "nix" / "store" / "abcd-coreutils-9.11" / "bin"
+        store.mkdir(parents=True)
+        store_file = _program(store, "coreutils")
+        # The profile symlink Nix puts on PATH: `~/.nix-profile/bin/head` -> store.
+        (user_dir / "head").symlink_to(store_file)
+        refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert refusal is not None
+        assert refusal.code == name_grant.SHADOWED
+        # Point 2: the store path (the realpath target), not just the profile
+        # symlink, is in the detail, and it says it shadows the system program.
+        assert store_file in refusal.detail
+        assert str(system_dir / "head") in refusal.detail
+        # A human approval does not turn the store shadow into an auto-approve: it
+        # stays SHADOWED on every later use, so the read-only allowlist cannot pin it.
+        name_grant.pin_human_approval("head -5 /etc/hosts")
+        again = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert again is not None and again.code == name_grant.SHADOWED
+
+    def test_nix_store_name_repointed_at_a_different_store_path_stays_refused(self, world):
+        # The repoint case point 3 asks for, with NO earlier pin: a name pointed at
+        # one store binary and then at a DIFFERENT unpinned store path. Because a
+        # store shadow never pins, repointing it is still a plain SHADOWED refusal --
+        # "unwritable store" never establishes identity, so a swapped target is not
+        # silently honoured.
+        system_dir, user_dir = world
+        _program(system_dir, "head")
+        store = user_dir.parent / "nix" / "store"
+        first_dir = store / "aaaa-coreutils-9.11" / "bin"
+        second_dir = store / "bbbb-perl-5.40" / "bin"
+        first_dir.mkdir(parents=True)
+        second_dir.mkdir(parents=True)
+        first = _program(first_dir, "coreutils")
+        second = _program(second_dir, "perl")
+        link = user_dir / "head"
+        link.symlink_to(first)
+        first_refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert first_refusal is not None and first_refusal.code == name_grant.SHADOWED
+        # Repoint the same name at a different store binary: still SHADOWED, now
+        # naming the new store path.
+        link.unlink()
+        link.symlink_to(second)
+        second_refusal = name_grant.name_grant_refusal("head -5 /etc/hosts")
+        assert second_refusal is not None
+        assert second_refusal.code == name_grant.SHADOWED
+        assert second in second_refusal.detail
 
     def test_shim_in_a_later_pipeline_stage_is_refused(self, world):
         system_dir, user_dir = world

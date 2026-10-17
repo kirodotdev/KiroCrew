@@ -12,6 +12,7 @@ import {
   ancestorsOf,
   buildLineage,
   descendantsOf,
+  closedCreatorCitation,
   nestsUnder,
   orphanCitation,
   type LineageRow,
@@ -30,6 +31,12 @@ const child = (key: string, parentKey: string): LineageRow => ({
 const orphan = (key: string, citedSlot: string): LineageRow => ({
   key,
   parent: { slot: citedSlot, key: null },
+})
+
+/** A row the backend re-parented: its creator closed, `key` is an open ancestor. */
+const reparented = (key: string, citedSlot: string, ancestorKey: string): LineageRow => ({
+  key,
+  parent: { slot: citedSlot, key: ancestorKey, ancestor: true },
 })
 
 describe('nestsUnder', () => {
@@ -112,6 +119,31 @@ describe('buildLineage', () => {
 
   it('reports no citation for a row nobody created', () => {
     expect(orphanCitation(root('a'), null)).toBeNull()
+  })
+
+  it('nests a re-parented row under the open ancestor the backend resolved', () => {
+    // `lead -> mid (closed) -> worker`: the payload carries the lead as the key, so
+    // the worker is placed one level in rather than becoming a root.
+    const rows = [root('lead'), reparented('worker', 'mid', 'lead')]
+    const { roots, parentOf, depth } = buildLineage(rows)
+    expect(roots).toEqual(['lead'])
+    expect(parentOf.get('worker')).toBe('lead')
+    expect(depth.get('worker')).toBe(1)
+  })
+
+  it('still cites the closed creator of a row it placed', () => {
+    const row = reparented('worker', 'mid', 'lead')
+    // Not an orphan -- it was placed -- and the closed creator is named all the same.
+    expect(orphanCitation(row, 'lead')).toBeNull()
+    expect(closedCreatorCitation(row, 'lead')).toBe('mid')
+  })
+
+  it('reports no closed creator for an ordinary edge or an orphan', () => {
+    // An ordinary edge's key IS the creator, and an orphan is `orphanCitation`'s to
+    // name: a row answering both would wear the citation glyph twice.
+    expect(closedCreatorCitation(child('b', 'a'), 'a')).toBeNull()
+    expect(closedCreatorCitation(orphan('b', 'closed-one'), null)).toBeNull()
+    expect(closedCreatorCitation(reparented('worker', 'mid', 'lead'), null)).toBeNull()
   })
 
   it('makes both members of a cycle roots', () => {

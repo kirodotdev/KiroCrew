@@ -10,10 +10,15 @@ Developer identity. The bundle identifier and team ID are required by Apple's
 code signing infrastructure and are not secrets — they're embedded in every
 signed `.app` bundle users download.
 
-These files are gated behind `CDSIGNER_API_ENDPOINT` and `AWS_SIGNER_ROLE_ARN`
-secrets that only the upstream repository has. Forks without these secrets
-skip signing entirely (the workflow produces unsigned builds that work but
-trigger macOS Gatekeeper warnings).
+These files are used by `.github/workflows/sign-and-notarize.yml`, which declares
+four optional secrets that only the upstream repository has:
+`AWS_SIGNING_ROLE_ARN`, `AWS_SIGNING_BUCKET`, `AWS_SIGNER_ACCESS_ROLE_ARN` and
+`CDSIGNER_API_ENDPOINT`. Signing is gated on two of them: `HAS_SIGNING_SECRETS`
+reads `AWS_SIGNING_ROLE_ARN` and `HAS_CDSIGNER` reads `CDSIGNER_API_ENDPOINT`
+(`AWS_SIGNER_ROLE_ARN` is only a step environment variable, mapped from
+`AWS_SIGNER_ACCESS_ROLE_ARN`). Forks without these secrets skip signing entirely
+(the workflow produces unsigned builds that work but trigger macOS Gatekeeper
+warnings).
 
 ## Files
 
@@ -21,8 +26,14 @@ trigger macOS Gatekeeper warnings).
   JIT + disable-library-validation are required for V8/Node.js + native addons.
 - `manifest-template.json` — signing manifest with embedded requirements
   for all Electron helper processes and frameworks.
+- `generate-manifest.py` — builds the app signing manifest from the template and
+  the actual `.app` at sign time, listing every nested Mach-O binary (notarization
+  rejects any that is not Developer-ID signed); `sign.sh` runs it.
 - `sign.sh` — CI script that packages, uploads, submits to the signing
   service, polls, downloads, and verifies the signed artifact.
+- `sign-dmg.sh` — the second signing task: Developer-ID signs the rebuilt DMG
+  through the signing service with a `type: dmg` manifest, so Gatekeeper accepts
+  it and it can be stapled. Mirrors `sign.sh`'s flow.
 - `cdsigner-submit.sh` — the sign-task submission `sign.sh` and `sign-dmg.sh`
   source. A throttled answer (HTTP 429, `Too Many Requests`) is resubmitted with
   jittered doubling backoff, five attempts and at most 300s of waiting; any other
@@ -48,8 +59,8 @@ trigger macOS Gatekeeper warnings).
   layers its defenses: `-nobrowse` keeps the volume out of Finder, and the
   eject gets bounded retries with a synced force fallback (see
   `hdiutil-detach.sh`). hdiutil calls run without `-quiet`, because
-  that flag suppresses stderr too and previously reduced failures of this
-  script to bare exit codes.
+  that flag suppresses stderr too and would reduce failures of this script to
+  bare exit codes.
 - `hdiutil-detach.sh` — the detach retry loop `build-dmg.sh` sources. It
   addresses the device node (`/dev/diskN`, read from `hdiutil attach -plist`)
   rather than the mount path, and after every failed attempt asks `hdiutil info`
@@ -83,9 +94,15 @@ trigger macOS Gatekeeper warnings).
 ## Prerequisites
 
 Access to the signing service must be onboarded (a security review plus
-sign-off). See `docs/build/release.md` for the full onboarding runbook.
+sign-off). Onboarding is an external process, not documented in this repository;
+in-repo signing operations are in
+[`docs/build/signing-runbook.md`](../../docs/build/signing-runbook.md).
 
 ## CLI artifact manifests (separate trust domain)
+
+`cli-manifest.py` builds and verifies the signed envelope, and
+`cli-manifest-public.pem` is the committed public key (see *Trust-root
+configuration* below).
 
 The wheel installer does **not** reuse Apple/CDSigner. `publish-cli.yml` signs a
 canonical JSON artifact manifest with an asymmetric AWS KMS key and publishes the

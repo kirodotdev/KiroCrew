@@ -18,7 +18,7 @@ and inside `«…»` guillemets.
 
 | character | spacing | example |
 |---|---|---|
-| `;` `:` `?` `!` | U+202F before | `Êtes-vous sûr\u202f?` |
+| `;` `:` `?` `!` | U+202F before | `Tu es sûr\u202f?` |
 | `«` | U+202F after | `«\u202fOui\u202f»` |
 | `»` | U+202F before | |
 | `.` `,` | no space before | `Enregistré.` |
@@ -27,6 +27,9 @@ and inside `«…»` guillemets.
   `?` alone at the start of a line.
 - Existing catalog debt is baselined. When CI supplies `I18N_BASE_REF`, changed values
   are hard-gated for U+202F before `;` `:` `?` `!`; guillemet spacing remains review-only.
+- A literal the reader types or pastes keeps its colon as is: a URL or URI scheme
+  (`skill://`), a Windows drive path (`D:\`), an AWS IAM action
+  (`transcribe:StartStreamTranscription`). The gate skips these.
 - Apostrophe: use typographic `’` (U+2019), not ASCII `'` (U+0027): `l’utilisateur`.
 - Quotation marks: `«\u202f…\u202f»` (outer), `"…"` (inner/nested).
 - No trailing period on buttons/labels.

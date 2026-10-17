@@ -31,10 +31,14 @@ describe('file-explorer at phone widths', () => {
 
   it('closes the drawer on pick, so the full-width tree is not a one-way door', async () => {
     const s = await app('file-explorer/FileExplorerPage.tsx')
-    const fn = s.match(/const openFile = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\)/)
-    expect(fn, 'expected openFile').not.toBeNull()
+    // The pick lives in `openFileInFolder`, the folder-addressed primitive every
+    // open goes through (`openFile` and the `?path=` deep link both delegate to
+    // it), so one close-on-pick covers them all.
+    const fn = s.match(/const openFileInFolder = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\)/)
+    expect(fn, 'expected openFileInFolder').not.toBeNull()
     expect(fn![0]).toContain('if (isMobile) setTreeOpen(false)')
     expect(fn![0], 'the callback must depend on isMobile').toContain('isMobile]')
+    expect(s, 'openFile must route through the primitive').toMatch(/const openFile = useCallback\([\s\S]*?openFileInFolder\(activeFolder\.id, path\)/)
   })
 
   it('stacks the divider and hides panes without unmounting them', async () => {

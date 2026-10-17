@@ -782,6 +782,7 @@ class TestNoCronsFlag:
                 json_ready=False,
                 approval_mode=None,
                 test_mode=False,
+                credentials=cfg.load_credentials.return_value,
             )
 
     def test_cli_gateway_passes_no_crons(self, monkeypatch, tmp_path) -> None:

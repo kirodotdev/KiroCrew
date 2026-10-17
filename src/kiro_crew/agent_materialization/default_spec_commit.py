@@ -176,13 +176,13 @@ def write_default_spec(
         # late read alone cannot tell "its app is gone" from "no app ever owned
         # this", and the second of those is the permissive answer. The snapshot
         # taken before this rebuild's work is what keeps the difference readable.
-        _app_owned_now, _ownership_full_now = mcp_sources._app_owned_mcp_keys()
+        _app_owned_now = mcp_sources._app_owned_mcp_keys()
         _ever_app_owned = set(_app_owned_at_start) | set(_app_owned_now)
-        # An app claim that could not be READ is not a claim of nothing. The
+        # A name neither ownership read claims is not proof that nobody owns it:
+        # an app whose manifest or enablement does not read names no owner. The
         # rendered config carries a prior rebuild's app entry forward, so the name
-        # still holds a grant after the manifest stops being readable, and the
-        # "nobody owns this" branch would hand it the permissive answer on the one
-        # list that never reaches the PreToolUse gate.
+        # still holds a grant, and the "nobody owns this" branch would hand it the
+        # permissive answer on the one list that never reaches the PreToolUse gate.
         #
         # Narrowed to what no readable source vouches for. ``gated_off`` comes from
         # the managed table and the three scopes from files this rebuild read, so an

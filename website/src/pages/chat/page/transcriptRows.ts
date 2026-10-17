@@ -131,7 +131,7 @@ export function useTranscriptRows({ messages, slotRunning, activeSlot, appToolCa
   // fire before React flushes a PASSIVE effect — so with useEffect the pin
   // recompute could read fresh DOM indices against a stale list, mis-deriving
   // `pinned.idx` by one row (the row-hide is identity-keyed as a second guard,
-  // see ChatPage's row map). A layout effect runs in the commit phase, before that rAF, so
+  // see ChatTranscriptView's row map). A layout effect runs in the commit phase, before that rAF, so
   // the ref is caught up by the time the recompute reads it. Still a passive
   // side effect, not render-body mutation, so React's rules of render hold.
   useLayoutEffect(() => { displayItemsRef.current = renderedDisplayItems }, [renderedDisplayItems, displayItemsRef])

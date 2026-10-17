@@ -109,7 +109,7 @@ export interface WebhookTestResult {
   error?: string
 }
 
-export function createHooksEndpoints({ post, put, del, j }: ClientTransport) {
+export function createHooksEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const triggers = {
     // Hooks
     hooks: () => fetch('/api/hooks').then(j),

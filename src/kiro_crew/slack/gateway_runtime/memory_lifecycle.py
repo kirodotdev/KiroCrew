@@ -4,8 +4,8 @@ The one gateway-lifetime preparation worker behind ``MemoryStartup`` and its fen
 the paced member-store repair loop, in-process embeddings with the model download,
 and the one-shot legacy markdown-to-vector migration with its re-embed sweep.
 
-The service construction itself (``_init_services``) stays in the facade: the
-memory-store seam and hot-reload audits read it there.
+The service construction itself (``_init_services``) lives in ``service_boot.py``,
+where the memory-store seam and hot-reload audits read it.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -49,6 +49,18 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
         return False
     try:
         with startup.worker():
+            # The first recall after readiness embeds its query, and an embed
+            # off the loop waits for a cold model load rather than answering
+            # keyword-only, so that recall would pay the whole load. Boot never loads the model on its own (see
+            # _wait_then_backfill), so start the load now, beside preparation;
+            # it never blocks, and a gateway that never recalls unloads the
+            # model on the usual idle clock. Only when vector memory has a
+            # model to use (no model file: keyword-only recall).
+            if getattr(self.vector_memory, "embed_fn", None) is not None:
+                try:
+                    get_shared_embedder().prefetch()
+                except Exception:  # noqa: BLE001 -- a hint; recall makes the same attempt
+                    logger.debug("Embedding model prefetch skipped", exc_info=True)
             try:
                 assert self.ctx_builder is not None
                 memory = self.ctx_builder.memory
@@ -78,6 +90,29 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                 )
                 if startup.stopped:
                     return False
+                # Preparation walks every memory row through SQLite's B-tree, one
+                # page at a time out of file order; on a cold page cache that is
+                # a random read per page. Read the files front to back first, and
+                # then the knowledge library, whose first search reads every
+                # item's vector the same way (14.2 s on a 435 MB library, against
+                # 1.3 s in order). Started after readiness, so the read never
+                # competes with the boot path, and after the pending restores,
+                # which rename these files: on Windows an open read handle would
+                # make that rename fail.
+                try:
+                    from kiro_crew.page_cache import prefetch as _prefetch_pages
+
+                    _knowledge = getattr(self.dashboard_state, "_knowledge_store", None)
+                    _prefetch_pages(
+                        (
+                            getattr(self.vector_memory, "_db_path", None),
+                            getattr(memory, "_index_db", None),
+                            getattr(_knowledge, "_db_path", None),
+                        ),
+                        name="kc-memory-prefetch",
+                    )
+                except Exception:  # noqa: BLE001 -- a hint only
+                    logger.debug("Memory page prefetch skipped", exc_info=True)
                 if "default" not in startup.store_errors:
                     try:
                         memory.init()

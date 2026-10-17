@@ -367,10 +367,11 @@ async def test_user_only_keeps_a_taskrunner_row_as_the_declared_residual() -> No
 
 @pytest.mark.asyncio
 async def test_user_only_drops_the_workflow_siblings_the_registry_never_listed() -> None:
-    """``wf-unpooled``, ``wf-worker`` and ``wf-scope`` are minted as session keys but
-    are absent from ``_TELEMETRY_LOCAL_PREFIXES``, so a filter derived from that
-    registry silently missed them. The literal list is what closes that gap, and
-    ``_in_namespace`` requires a separator so ``wf`` cannot swallow its own siblings.
+    """``wf-unpooled`` and ``wf-worker`` are minted as session keys, and ``wf-scope``
+    names a workflow run's memory anchor; all three are absent from
+    ``_TELEMETRY_LOCAL_PREFIXES``, so a filter derived from that registry cannot see
+    them. The literal list is what closes that gap, and ``_in_namespace`` requires a
+    separator so ``wf`` cannot swallow its own siblings.
     """
     sessions = [
         {"key": "wf_run7_1"},

@@ -785,7 +785,7 @@ describe('RemoteCrewPanel — launching', () => {
 
 describe('RemoteCrewPanel — disabled feature gate', () => {
   it('enables the feature, reports progress, then asks for a restart', async () => {
-    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
+    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     let release: (v: unknown) => void = () => {}
     vi.mocked(api.patchConfig).mockReturnValue(new Promise(r => { release = r }) as never)
     const u = setup()
@@ -803,7 +803,7 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
   })
 
   it('surfaces a failure to write the config', async () => {
-    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
+    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     vi.mocked(api.patchConfig).mockRejectedValue(new ApiError(423, 'config is locked'))
     const u = setup()
     renderWithProviders(<RemoteCrewPanel />)
@@ -812,8 +812,18 @@ describe('RemoteCrewPanel — disabled feature gate', () => {
     expect(await screen.findByText(/config is locked/, undefined, { timeout: 5_000 })).toBeInTheDocument()
   })
 
+  it('keys the disabled card on the instances_disabled code, not on the message text', async () => {
+    // A 403 that says "disabled" without the code is not the feature gate: it
+    // shows as a load error. The code alone opens the enable card.
+    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'account disabled by policy'))
+    const first = renderWithProviders(<RemoteCrewPanel />)
+    expect(await screen.findByText('account disabled by policy', undefined, { timeout: 5_000 })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable remote crew management/ })).not.toBeInTheDocument()
+    first.unmount()
+  })
+
   it('treats a non-403 failure as a load error, not a disabled feature', async () => {
-    // Only a 403 mentioning "disabled" is the gate. Any other failure must keep
+    // Only the instances_disabled 403 is the gate. Any other failure must keep
     // the panel intact so the user is not told to enable something already on.
     vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'owner only'))
     const u = setup()

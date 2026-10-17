@@ -93,6 +93,14 @@ _resolved_home: Path | None = None
 # breadcrumb write effectively once-per-process rather than once-per-call.
 _config_dir_memo: tuple[str | None, Path | None, Path] | None = None
 
+#: The mode :func:`config_dir` creates the data home with. ``0o700`` on POSIX.
+#: Windows keeps the default: CPython maps a ``0o700`` ``mkdir`` there to a
+#: protected DACL (SYSTEM, Administrators, OWNER RIGHTS), which would replace
+#: the user-SID grant ``ensure_data_home`` applies through
+#: ``restrict_dir_to_owner``. Same test as ``platform_compat.IS_WINDOWS``, which
+#: this module does not import at load.
+_HOME_CREATE_MODE = 0o777 if sys.platform == "win32" else 0o700
+
 
 def _default_home() -> Path:
     """Resolve the default (non-override) data root: ``~/.kiro/crew``."""
@@ -250,6 +258,81 @@ def _is_unsafe_home(p: Path) -> bool:
     return p.parts[:3] in _UNSAFE_RESOLVED_PREFIXES
 
 
+def _windows_system_dirs() -> list[Path]:
+    """The Windows system directories a relocated scratch root must never be, or sit under.
+
+    Read from the environment with the standard defaults as fallback: ``%SystemRoot%`` /
+    ``%WINDIR%`` (``C:\\Windows``), ``%ProgramData%`` (``C:\\ProgramData``), ``%ProgramFiles%``
+    (``C:\\Program Files``) and ``%ProgramFiles(x86)%`` (``C:\\Program Files (x86)``). These are
+    owned by ``SYSTEM`` / ``Administrators`` / ``TrustedInstaller``, so the owner trust check
+    would accept one under an elevated gateway and the owner-only lock would then REWRITE its
+    ACL -- stripping ordinary users' access to shared application data. The POSIX-shaped
+    :func:`_is_unsafe_home` predicate does not know these paths, so this is the Windows arm of
+    the same "never adopt a system directory" rule, applied only to the scratch override.
+    """
+    raw = [
+        os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows",
+        os.environ.get("ProgramData") or "C:\\ProgramData",
+        os.environ.get("ProgramFiles") or "C:\\Program Files",
+        os.environ.get("ProgramFiles(x86)") or "C:\\Program Files (x86)",
+    ]
+    dirs: list[Path] = []
+    for value in raw:
+        if not value:
+            continue
+        try:
+            dirs.append(Path(value))
+        except Exception:  # pragma: no cover - defensive; a malformed env value is skipped
+            continue
+    return dirs
+
+
+def _is_windows_system_dir(p: Path) -> bool:
+    """Whether *p* equals, or sits inside, any Windows system directory.
+
+    Case-insensitive (Windows paths are case-insensitive, so a lowercase
+    ``c:\\programdata`` must match ``C:\\ProgramData``): both sides are run through
+    :func:`os.path.normcase` AND lowered, since ``normcase`` only lowercases on Windows and
+    this predicate is exercised by tests that pin ``sys.platform`` on a POSIX runner. Prefix
+    match on the ``\\``-delimited components, so everything under a system directory is refused
+    with it.
+
+    *p* arrives already ``resolve()``-d (the validator resolves the override once). The
+    system directories are resolved the SAME way before comparing, so on a POSIX runner --
+    where ``Path('C:\\ProgramData').resolve()`` prepends the cwd and keeps the backslashes in
+    one component -- both sides carry the identical cwd prefix and the suffix match still
+    holds, while on real Windows ``resolve()`` is a no-op on an absolute ``C:\\`` path and the
+    comparison is exact. Returns ``False`` when *p* cannot be compared.
+    """
+
+    def _norm_parts(value: "str | os.PathLike[str]") -> list[str] | None:
+        try:
+            resolved = Path(os.fspath(value)).expanduser().resolve()
+            text = os.path.normcase(str(resolved)).lower().replace("/", "\\")
+            # Strip the Windows extended-length namespace prefix before splitting. On real
+            # Windows ``resolve()`` can keep a ``\\?\`` (or ``\\?\unc\``) prefix, which would
+            # otherwise leave ``?`` as the leading component so ``\\?\c:\programdata\...`` never
+            # matches the protected ``c:\programdata`` list and its ACL rewrite is not refused.
+            # Normalising both sides the same way keeps the suffix comparison exact.
+            if text.startswith("\\\\?\\unc\\"):
+                text = "\\\\" + text[len("\\\\?\\unc\\") :]
+            elif text.startswith("\\\\?\\"):
+                text = text[len("\\\\?\\") :]
+            text = text.rstrip("\\")
+        except Exception:  # pragma: no cover - defensive
+            return None
+        return [part for part in text.split("\\") if part]
+
+    target = _norm_parts(p)
+    if target is None:
+        return False
+    for system_dir in _windows_system_dirs():
+        base = _norm_parts(system_dir)
+        if base and target[: len(base)] == base:
+            return True
+    return False
+
+
 def _valid_override_home() -> Path | None:
     """Return the resolved ``KIROCREW_HOME`` override iff it is set AND valid.
 
@@ -266,6 +349,383 @@ def _valid_override_home() -> Path | None:
     if _is_unsafe_home(p):
         return None
     return p
+
+
+#: Environment override pointing the managed scratch root at an explicit
+#: directory, INDEPENDENT of ``KIROCREW_HOME``. The scratch tree is bulky,
+#: disposable per-process data (staged self-update installers, clones, build
+#: logs) that on Windows otherwise fills the system drive, so an operator may
+#: want it on a data drive without relocating the whole data home.
+SCRATCH_ROOT_ENV = "KIROCREW_SCRATCH_ROOT"
+
+#: Process-lifetime pin for the validated, resolved scratch-root override. The override
+#: is validated and ``realpath``-resolved exactly ONCE, on the first ``scratch_root()``
+#: call, and every later allocation, sweep and sandbox-plan reads this pinned value
+#: instead of re-reading the environment or re-resolving the path. That closes a
+#: time-of-check/time-of-use hole: if the override named a writable symlink alias, an
+#: agent could repoint it between calls so allocation and the sandbox mask resolved to
+#: different roots, exposing one session's scratch to another. The pin is keyed on the
+#: raw env string so a legitimately CHANGED variable (a different relocation) is honoured
+#: -- only a repoint of the SAME string's target is frozen out. ``_UNSET`` means "not yet
+#: computed"; ``None`` means "computed, no valid override" (fall back to the default).
+_UNSET: object = object()
+_scratch_root_override_pin: object = _UNSET
+
+
+def valid_scratch_root_override() -> Path | None:
+    """The validated, resolved ``KIROCREW_SCRATCH_ROOT`` override, pinned per process.
+
+    Validates and ``realpath``-resolves the override exactly ONCE (via
+    :func:`_validate_scratch_root_override`) and PINS the result for the process
+    lifetime, keyed on the raw env string. Every later ``scratch_root()`` call --
+    allocation, sweep, sandbox plan -- reads the pinned value instead of re-reading the
+    environment or re-resolving the path. That is the time-of-use half of the symlink
+    defence: even if the override named a symlink alias (already refused outright by
+    :func:`_validate_scratch_root_override`), nothing re-resolves it later, so an alias
+    repointed after the first call cannot make allocation and the sandbox mask diverge.
+
+    A legitimately CHANGED variable is still honoured: the pin is keyed on the raw string,
+    so setting ``KIROCREW_SCRATCH_ROOT`` to a different directory recomputes; only a
+    repoint of the SAME string's target is frozen out, which is exactly the attack. Tests
+    reset the pin through the ``config.paths`` cache-reset fixture, like ``_resolved_home``.
+    """
+    return _resolve_scratch_root_override()
+
+
+def _resolve_scratch_root_override() -> Path | None:
+    """Validate the override once and pin ``(raw, resolved)`` for the process.
+
+    The time-of-use defence (resolve/validate exactly ONCE, then freeze) and its rationale
+    live in :func:`valid_scratch_root_override`'s docstring. The refusal reason is not pinned
+    -- no caller reads it back -- but it is still logged once, at compute time, so an operator
+    can tell WHY the override was dropped.
+    """
+    global _scratch_root_override_pin
+    raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
+    pin = _scratch_root_override_pin
+    if pin is not _UNSET and isinstance(pin, tuple) and pin[0] == raw:
+        return pin[1]
+    resolved, reason = _validate_scratch_root_override()
+    _scratch_root_override_pin = (raw, resolved)
+    # Warn exactly once per distinct raw value when a SET override was refused: the pin is
+    # keyed on the raw string and recomputed only when that string changes, so emitting the
+    # warning here -- at compute time -- fires once per offending value even though
+    # ``scratch_root()`` is called on every allocation, sweep and log-cap pass. A repointed
+    # (changed) value recomputes and warns again, which is what an operator fixing it needs.
+    if raw and resolved is None and reason is not None:
+        logger.warning("%s=%s is %s, ignoring", SCRATCH_ROOT_ENV, raw, reason)
+    return resolved
+
+
+def scratch_root_owner_refusal(root: Path) -> str | None:
+    """Return a refusal reason if *root*'s OWNER is not safe to adopt, else ``None``.
+
+    This is the PRE-ADOPT, owner-only half of the two-step adoption the relocated root goes
+    through (:func:`agent_scratch.allocate_scratch`): decide the owner here, apply the
+    owner-only lock, then run the writer check (:func:`scratch_root_writer_refusal`) AFTER
+    the lock. The writer check is deliberately NOT run here: a fresh directory under a
+    secondary NTFS drive inherits ``Authenticated Users: Modify`` (a replaceable-writer
+    right), which the writer check would refuse -- but the lock removes that ACE, so the
+    writer question is only meaningful once the directory is locked. Running it before the
+    lock refused the documented ``D:\\kirocrew-scratch`` case and silently kept scratch on
+    ``C:``.
+
+    ``None`` means the owner is safe to adopt: the current user, OR ``BUILTIN\\Administrators``
+    (``S-1-5-32-544``) when the volume is LOCAL -- a root an elevated session created on this
+    host. This is the SAME owner-trust rule the workflow allocator applies
+    (:func:`workflow_memory._allocator_owner`), reused verbatim so there is ONE rule for this
+    question rather than two that can drift apart: the identical Administrators SID on a
+    UNC/mapped share belongs to the FILE SERVER, not this machine, so a share root owned by
+    that remote Administrators group is refused. Everything else is refused by owner:
+
+    * ``"volume has no access control (FAT/exFAT)"`` -- the descriptor is unreadable or
+      carries a NULL DACL. Such a volume cannot be owner-locked by
+      :func:`platform_compat.restrict_dir_to_owner` either, so adopting it would leave
+      scratch world-writable; it stays refused regardless.
+    * ``"not owned by current user"`` -- any other owner (a different ordinary account,
+      ``NT AUTHORITY\\SYSTEM``, ``TrustedInstaller``), an Administrators-owned root on a
+      non-local volume (a UNC/mapped share), or a SID that cannot be read. Fail-closed: an
+      owner that cannot be verified is never trusted.
+
+    Shared by the validator (:func:`_validate_scratch_root_override`), which refuses an
+    EXISTING relocated override up front, and the allocation re-check, which runs it AFTER
+    its own ``mkdir`` (the validator may have accepted a not-yet-created root -- its result is
+    cached -- so another local user could have created the directory in the window before
+    allocation). Windows-only in effect; callers guard on ``win32`` (the override is refused
+    on every other platform), so a POSIX call reads as a refusal and is never reached on the
+    real path. Lazy, in-function imports keep this module an import-time leaf.
+    """
+    from kiro_crew import platform_compat, windows_acl
+
+    try:
+        security = windows_acl.describe(root)
+    except windows_acl.AclUnavailable:
+        return "volume has no access control (FAT/exFAT)"
+    except Exception:
+        return "not owned by current user"
+    owner_sid = security.owner_sid
+
+    current_sid = platform_compat.current_user_sid()
+    # The ONE shared owner-trust rule (:func:`windows_acl.owner_is_trusted_allocator`), the
+    # same definition the workflow allocator calls (:func:`workflow_memory._allocator_owner`),
+    # so the two cannot drift: the current user's own SID, OR ``BUILTIN\Administrators``
+    # (``S-1-5-32-544``) WHEN the volume is LOCAL. An elevated session's new directory is owned
+    # by Administrators rather than the user's own SID, so a strict ``owner == me`` compare
+    # would refuse a root this host just created and silently keep scratch on C:;
+    # ``volume_is_local`` keeps that trust honest, because the identical Administrators SID on
+    # a UNC/mapped share belongs to the FILE SERVER, a different machine.
+    if windows_acl.owner_is_trusted_allocator(
+        owner_sid, security.volume_is_local, current_sid or ""
+    ):
+        return None
+    # Everything else -- a different ordinary account, SYSTEM, TrustedInstaller, an
+    # Administrators-owned root on a non-local volume (a UNC/mapped share), or a SID that
+    # cannot be read -- is refused. Fail-closed: an owner that cannot be verified as this
+    # host's current user or local Administrators is never trusted.
+    return "not owned by current user"
+
+
+def scratch_root_writer_refusal(root: Path) -> str | None:
+    """Return a refusal reason if a foreign writer can still replace *root*, else ``None``.
+
+    The POST-LOCK half of the adoption: run AFTER
+    :func:`platform_compat.restrict_dir_to_owner` has rewritten *root*'s ACL to owner-only.
+    It is the SAME vetted writer check the source-tarball relocation uses
+    (:func:`kiro_crew.github_runner.check_provider_path_component_windows` with
+    ``strict=False, trust_owner_rights=True``) -- but the owner question it also answers is
+    already settled by :func:`scratch_root_owner_refusal`, so what matters here is its writer
+    verdict: once the lock is applied, the inherited ``Authenticated Users: Modify`` ACE that
+    a secondary-drive directory starts with is gone, so the documented ``D:\\kirocrew-scratch``
+    case passes. If a foreign writer somehow survives the lock, this refuses fail-closed with
+    ``"a foreign writer can replace it"`` and allocation falls back to the guarded default.
+
+    The check runs over *root* AND its RESOLVED ANCESTOR CHAIN, not the leaf alone: locking
+    the scratch leaf owner-only protects nothing above it, so a parent a foreign principal can
+    rename aside (a nested override under an operator-created directory that still carries an
+    inherited ``Authenticated Users: Modify`` ACE) is a swap vector the walk now catches. The
+    volume-root node keeps its exception, since a drive root cannot be renamed.
+    """
+    from kiro_crew import github_runner, platform_compat
+
+    me_sid = platform_compat.current_user_sid()
+    if not me_sid:
+        return "not owned by current user"
+    resolved = root.resolve()
+    # The leaf first, then each resolved ancestor up to and including the drive root. Locking
+    # the leaf owner-only does nothing for a PARENT above it: a nested override like
+    # ``D:\shared\scratch`` under an operator-created ``D:\shared`` leaves that parent with its
+    # inherited ``Authenticated Users: Modify`` ACE, so another local user who can replace
+    # ``D:\shared`` can rename it aside after validation and recreate the path, redirecting
+    # every later child-scratch read and write into peer-controlled storage. Walk the resolved
+    # parents with the same component validator; a swappable component refuses and allocation
+    # falls back to the guarded default. A component that is its own anchor (``D:\``) is a
+    # VOLUME ROOT: it cannot be renamed or deleted, so a plain DELETE grant on it is no swap
+    # vector -- the same exception the source-tarball staging walk gives the drive-root node.
+    components = [resolved, *github_runner.path_parents(resolved)]
+    for component in components:
+        try:
+            github_runner.check_provider_path_component_windows(
+                component,
+                label=f"'{component}'",
+                me_sid=me_sid,
+                strict=False,
+                trust_owner_rights=True,
+                volume_root=component == Path(component.anchor),
+            )
+        except Exception:
+            return "a foreign writer can replace it"
+    return None
+
+
+def demote_scratch_root_override(reason: str) -> None:
+    """Drop the pinned scratch-root override so :func:`scratch_root` returns the default.
+
+    The override is validated and pinned on the FIRST ``scratch_root()`` call. The
+    validator caches an ACCEPT for a root that does not exist yet (the boot sweep calls
+    ``scratch_root()`` before any ``mkdir``), so the owner cannot be checked then.
+    :func:`agent_scratch.allocate_scratch` therefore re-runs the owner decision AFTER its
+    own ``mkdir`` via :func:`scratch_root_owner_refusal`, and when the created directory
+    reads as foreign it falls allocation back to ``config_dir()/scratch``. That re-check is
+    the ONLY place the refusal can be made, so this is where the pin must learn it: without
+    this, the still-accepting pin keeps :func:`valid_scratch_root_override` (and thus
+    ``scratch_root()``) returning the override, and the sweep, the log cap and the
+    shared-window join all read ``scratch_root()`` and keep operating on the refused
+    directory while allocations land in the default -- a split root.
+
+    Rewrites the pin to ``(raw, None)``, keyed on the CURRENT raw env string, so
+    ``scratch_root()`` returns the default from here on. Keying on the raw string keeps the
+    normal recompute-on-change contract intact: a later legitimately CHANGED
+    ``KIROCREW_SCRATCH_ROOT`` has a different raw string, misses this pin and is validated
+    afresh. *reason* is the operator-facing phrase from :func:`scratch_root_owner_refusal`
+    (or the lock/writer refusal); it is not stored -- no caller reads a refusal reason back --
+    but it is logged here so an operator can tell why the override was dropped at allocation
+    time, the same visibility the validation path gets in :func:`_resolve_scratch_root_override`.
+    This is the small helper :mod:`kiro_crew.agent_scratch` calls instead of poking the
+    private pin name, so the two stay in one module.
+    """
+    global _scratch_root_override_pin
+    raw = os.environ.get(SCRATCH_ROOT_ENV) or ""
+    _scratch_root_override_pin = (raw, None)
+    if raw:
+        logger.warning("%s=%s is %s, ignoring", SCRATCH_ROOT_ENV, raw, reason)
+
+
+def _validate_scratch_root_override() -> tuple[Path | None, str | None]:
+    """Return ``(resolved override, refusal reason)``: the path iff set AND valid.
+
+    The second element is ``None`` when the override is unset or accepted, else a short
+    operator-facing phrase naming why it was refused (so the caller can log the real cause).
+
+    Mirrors :func:`_valid_override_home`: a filesystem/drive root or a known
+    system directory is refused via the SAME :func:`_is_unsafe_home` predicate,
+    so the scratch override and the data-home override agree on what is too
+    dangerous to write under. When refused, ``agent_scratch.scratch_root()``
+    ignores it and falls back to ``config_dir()/scratch`` with a one-line
+    warning, exactly as :func:`config_dir` does for an unsafe ``KIROCREW_HOME``.
+
+    Called once per distinct env value through :func:`_resolve_scratch_root_override`,
+    which pins the result; do not call this directly from allocation/sweep/plan.
+
+    This is the supported alternative to junctioning the scratch directory onto
+    another drive, which the auto-improvement clone-setup refuses for safety.
+    The returned path is used AS the managed root (not with a ``scratch``
+    subcomponent appended), which keeps ``agent_scratch``'s own link/junction
+    refusal on the managed root intact: the override names a real directory,
+    not a link planted at the ``scratch`` leaf.
+
+    It refuses a SYMLINKED override (its ``realpath`` differs from its lexical path): a
+    writable alias at the override name could be repointed to another session's root after
+    the first resolve, so only a real directory is accepted. It refuses an override that
+    EQUALS, CONTAINS, or lies INSIDE any crew-home spelling --
+    the active data home (:func:`config_dir`), the default ``~/.kiro/crew``, AND the legacy
+    ``~/.kirocrew`` -- and one that equals or contains the workspace base: the OS sandbox
+    masks the resolved scratch root as a hidden tree under BOTH the default and legacy home
+    spellings regardless of which is active, so an override that is an ancestor of a crew
+    home would hide the governance ceiling below it (turning a tightest-wins policy into the
+    permissive default), and an override INSIDE one would hide whatever governance tree sits
+    there -- e.g. ``<data home>/profiles`` masks the read-only profile seal -- or, inside the
+    legacy home while another is active, produce a redundant nested mask that aborts the
+    launcher. A path on a different drive or a sibling of the data home is fine; only a
+    symlinked override, an ancestor-or-equal of the protected trees, or a path inside any
+    crew home is refused.
+    """
+    override = os.environ.get(SCRATCH_ROOT_ENV)
+    if not override:
+        return None, None
+    # The override applies on Windows only. The relocated scratch root is masked by a
+    # pathname-anchored rule, and the mask protects the tree it is bound over, not a LATER
+    # allocation created after the root's own ancestor is renamed: on a non-Windows platform,
+    # under an operator-writable parent, an agent that renames an ancestor of the relocated
+    # root and recreates it makes ``allocate_scratch`` build subsequent sessions' scratch at
+    # the original pathname while the existing mask stays beneath the renamed-aside tree, so
+    # those later trees are reachable from another session. The ancestor-rename guards that
+    # close this cover only the default home, so the override is honoured only on Windows,
+    # whose scratch is a per-session private window the launcher opens directly rather than a
+    # pathname mask over an operator-writable tree. On every other platform the override is
+    # refused and ``scratch_root()`` falls back to the guarded default (``config_dir()/scratch``),
+    # which carries those guards.
+    if sys.platform != "win32":
+        return None, "unsupported platform"
+    # Resolve the override, refusing fail-safe on any resolution failure. ``Path.resolve()``
+    # raises ``RuntimeError`` on a self-referential symlink loop (CPython 3.12), and
+    # ``allocate_scratch``'s fallback catches only ``OSError``/``ScratchBoundaryError``, so an
+    # uncaught resolution error here would propagate out of ``scratch_root()`` and abort agent
+    # startup. Refusing instead (fall back to the guarded default root) keeps a misconfigured
+    # override a loud log line rather than a crash.
+    try:
+        p = Path(override).expanduser().resolve()
+    except Exception:
+        return None, "unresolvable"
+    if _is_unsafe_home(p):
+        return None, "a system directory"
+    # The Windows system directories (%SystemRoot%/%WINDIR%, %ProgramData%, %ProgramFiles%,
+    # %ProgramFiles(x86)%) are owned by SYSTEM / Administrators / TrustedInstaller, which the
+    # owner trust check accepts -- so without this an elevated gateway pointed at e.g.
+    # C:\ProgramData would adopt it and the owner-only lock would rewrite its ACL, stripping
+    # ordinary users' access to shared application data. _is_unsafe_home is POSIX-shaped and
+    # does not know these paths, so refuse them here, BEFORE any adopt or lock.
+    if _is_windows_system_dir(p):
+        return None, "a system directory"
+    # Refuse a SYMLINKED or JUNCTIONED override NAME. The override is used AS the managed
+    # root and is masked by the sandbox as a hidden tree; a writable link AT the override
+    # name could be repointed to another session's root between the resolve here and a
+    # later allocation/sweep/plan, so allocation and the mask would diverge and one
+    # session's scratch would be exposed to another. A real directory cannot be repointed
+    # that way, so refusing a linked override (fall back to the default) closes the alias
+    # entirely. The resolve-ONCE pin in :func:`valid_scratch_root_override` is the second
+    # half of the same defence.
+    #
+    # Detect the link with ``platform_compat.is_link_or_junction`` on the override name,
+    # NOT a ``realpath`` vs ``abspath`` compare: on Windows ``ntpath.realpath`` normalises
+    # the on-disk casing, upper-cases the drive letter and expands short 8.3 names, so a
+    # plain REAL directory typed as ``d:\scratch`` resolves to ``D:\scratch`` and the
+    # lexical compare refused it -- silently keeping scratch on the system drive, on the
+    # one platform this override exists for. It also treated an ordinary SYSTEM symlink in
+    # an ancestor (e.g. ``/home`` -> ``/local/home``, macOS ``/tmp`` -> ``/private/tmp``)
+    # as grounds to refuse a perfectly real relocation. ``os.path.islink`` alone reports
+    # False for a Windows junction, so pairing it with the junction check keeps symlink AND
+    # junction refusal fail-safe on every OS while a real directory -- whatever its casing,
+    # and wherever ordinary system links sit above it -- is accepted. The repoint attack is
+    # a link AT the name the operator controls, which is exactly what this tests. A lazy,
+    # in-function import keeps this module an import-time leaf (see the module docstring).
+    from kiro_crew import platform_compat
+
+    if platform_compat.is_link_or_junction(os.path.abspath(os.path.expanduser(override))):
+        return None, "a link"
+    # Refuse a root that equals, CONTAINS, or lies INSIDE a protected tree. Masking an
+    # ancestor of the data home hides the policy ceiling and the operator's files below
+    # it; masking a path INSIDE the data home hides whatever governance tree sits there --
+    # the sandbox exposes ``profiles``, ``security_policy.json`` and the rest of the
+    # read-only governance leaves under ``config_dir()``, and a scratch override pointing
+    # at e.g. ``<data home>/profiles`` would mask that leaf as a HIDDEN tree, dropping its
+    # read-only seal so the policy silently resolves to the permissive default. The
+    # workspace base is refused equal-or-above only: it holds the operator's own work, not
+    # policy, so a path merely under it is their choice. The override is meant to RELOCATE
+    # scratch to a different drive or a sibling of the data home, never to shadow or
+    # tunnel into the home, the governance ceiling, or the workspace.
+    #
+    # The refusal covers EVERY crew-home spelling, not only the active one: the active data
+    # home (``config_dir()``, which may be a custom ``KIROCREW_HOME``), the default
+    # ``~/.kiro/crew``, AND the pre-move legacy ``~/.kirocrew``. The sandbox masks the crew
+    # hidden leaves under both the default and legacy home spellings regardless of which one
+    # is active, so an override inside the OLD ``~/.kirocrew`` home (while a different
+    # ``KIROCREW_HOME`` is active) would still be masked twice -- the legacy-home mask and
+    # the override's own -- and the redundant nested mask aborts the launcher's mount pin.
+    # Refusing an override at, under, or above any of these homes closes that at the source
+    # (the module that owns the override) and falls back to the safe default.
+    crew_homes: list[Path] = []
+    for home_fn in (config_dir, _default_home, _legacy_home):
+        try:
+            crew_homes.append(home_fn().resolve())
+        except Exception:  # pragma: no cover - defensive; never block resolution on this
+            continue
+    for home_resolved in crew_homes:
+        if p == home_resolved or p in home_resolved.parents or home_resolved in p.parents:
+            return None, "a crew home"
+    try:
+        workspace_resolved = _default_workspace_base().resolve()
+    except Exception:  # pragma: no cover - defensive
+        workspace_resolved = None
+    if workspace_resolved is not None and (
+        p == workspace_resolved or p in workspace_resolved.parents
+    ):
+        return None, "the workspace"
+    # Refuse an EXISTING override root the current user does not own. The relocated root is
+    # locked to its owner at allocation (``restrict_dir_to_owner``), but that pins whatever
+    # principal already owns it. On Windows a second local user can create the override path
+    # first (the documented ``D:\\kirocrew-scratch`` example) and own it, so adopting it
+    # would cement THEIR control over every session's scratch. Deciding this HERE -- in the
+    # validator -- makes ``scratch_root()`` the single place that resolves the override, so a
+    # refusal falls back to the guarded default consistently for allocation, the sweep, the
+    # log cap and the shared-window join alike. A not-yet-created root has no foreign owner
+    # to inherit (allocation creates it owner-only), so only an existing one is checked.
+    # Fail-closed: an owner that cannot be read is an owner that cannot be trusted. A lazy,
+    # in-function import keeps this module an import-time leaf (see the module docstring).
+    if p.exists():
+        reason = scratch_root_owner_refusal(p)
+        if reason is not None:
+            return None, reason
+    return p, None
 
 
 def shared_kiro_settings_writable() -> bool:
@@ -341,7 +801,10 @@ def config_dir() -> Path:
         return memo[2]
     p = _valid_override_home()
     if p is not None:
-        p.mkdir(parents=True, exist_ok=True)
+        # 0o700 at creation: the home is owner-only from the moment it exists,
+        # not only after ``ensure_data_home`` tightens it. Applies to the leaf
+        # only -- missing parents are not the data home and keep their default.
+        p.mkdir(parents=True, exist_ok=True, mode=_HOME_CREATE_MODE)
         _config_dir_memo = (override_raw, _resolved_home, p)
         return p
     if os.environ.get("KIROCREW_HOME"):
@@ -350,7 +813,7 @@ def config_dir() -> Path:
             os.environ.get("KIROCREW_HOME"),
         )
     d = _resolve_default_home()
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True, mode=_HOME_CREATE_MODE)  # as above
     # Drop the recovery-pointer breadcrumb outside ~/.kiro/ (default path only).
     # Best-effort + idempotent; guarded so a breadcrumb failure never blocks the
     # data-home resolution the whole app depends on.
@@ -423,11 +886,17 @@ def peek_data_home() -> Path:
     tool that reports state should not create it. Applies the SAME override
     predicate :func:`config_dir` gates on, so a valid ``KIROCREW_HOME`` and the
     default home agree between reader and writer, and reads nothing else.
+
+    It reads the process's resolution cache but never fills it. Filling it would
+    make the next :func:`data_home` take its "already resolved" branch, so the
+    first real resolution would skip the maintenance it owes the process start
+    (the ``mkdir`` and the recovery breadcrumb). That matters because the
+    owner-only file helpers peek on every write that might be in the data home.
     """
     override = _valid_override_home()
     if override is not None:
         return override
-    return _resolve_default_home()
+    return _resolved_home if _resolved_home is not None else _default_home()
 
 
 def ensure_data_home() -> Path:
@@ -732,13 +1201,13 @@ def kiro_home() -> Path:
     SCOPE CAVEAT — read before setting this. ``KIRO_HOME`` redirects kiro-cli's
     WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
     but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
-    (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp.py``
+    (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp_*.py``
     / ``dashboard/handlers/usage.py``, and the ``settings/mcp.json`` registry).
     Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
     moving where KiroCrew READS them, which breaks session resume. Only the agents
     directory follows it today, so this is not yet a supported way to isolate an
-    instance — ``build_pod_env()`` deliberately does not set it. Bringing the
-    remaining readers through this resolver is the prerequisite.
+    instance. (``build_pod_env()`` does set it, to ``<pod home>/kiro``.) Bringing
+    the remaining readers through this resolver is the prerequisite.
 
     Rejects the same unsafe targets as :func:`_valid_override_home` (a
     filesystem/drive root, or a known POSIX system directory) so a malformed

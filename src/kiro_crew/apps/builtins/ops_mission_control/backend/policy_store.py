@@ -31,8 +31,8 @@ from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import CorruptDocumentError
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.hidden_leaf_staging import publish_through_auth_store_staging
 
 logger = logging.getLogger(__name__)
 
@@ -281,14 +281,20 @@ def _write(data: dict[str, Any]) -> None:
     # ``restrict_on_error="raise"`` refuses to publish a ceiling it cannot
     # protect.
     #
-    # No cleanup on failure: every failure inside ``atomic_write`` happens
+    # No cleanup on failure: every failure inside the publish happens
     # BEFORE the final path is touched, so an unprotectable file never exists
     # at ``policy_path()`` at all. The unlink the old code ran on lockdown
     # failure existed to remove a NEW file already PUBLISHED at a wide DACL;
     # that state is unreachable now, and keeping the unlink would instead
     # delete the PREVIOUS, healthy governance ceiling on one transient lockdown
     # failure — silently resetting the operator's autonomy policy.
-    atomic_write(policy_path(), payload, restrict_to_owner=True)
+    #
+    # Staged in the masked auth-store staging directory, not beside the
+    # ceiling: this file is a hidden leaf masked by its exact name, so a
+    # sibling temp sits at a name no sandbox mask covers. A same-uid agent
+    # could link(2) it during the write and, because the rename publishes that
+    # same inode, keep a WRITABLE second name for the live ceiling.
+    publish_through_auth_store_staging(policy_path(), payload)
 
 
 def read_mode(default: str) -> str:

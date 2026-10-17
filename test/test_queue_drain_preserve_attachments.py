@@ -207,11 +207,17 @@ class TestQueuePushFrameCarriesTheLists:
         assert frame["meta"] == {"files": [_PATH], "dirs": [_DIR]}
 
     @pytest.mark.asyncio
-    async def test_busy_slot_frame_without_attachments_has_no_meta_key(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("send_id", [None, "s-2"])
+    async def test_busy_slot_frame_without_attachments_carries_only_send_identity(
+        self, tmp_path, monkeypatch, send_id
+    ):
         state, slot = _busy_state(tmp_path, monkeypatch)
-        await _post_busy(state, "busy-chat", "plain text", {"sendId": "s-2"})
+        await _post_busy(state, "busy-chat", "plain text", {"sendId": send_id})
         (frame,) = _queue_push_frames(state)
-        assert "meta" not in frame
+        if send_id:
+            assert frame["meta"] == {"sendId": send_id}
+        else:
+            assert "meta" not in frame
 
     @pytest.mark.asyncio
     async def test_sub_agent_hold_frame(self, tmp_path, monkeypatch):

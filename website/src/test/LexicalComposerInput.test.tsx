@@ -110,7 +110,7 @@ describe('LexicalComposerInput', () => {
       value: { getData: (type: string) => type === 'text/plain' ? payload : '', types: ['text/plain'] },
     })
     await dispatchAtEnd(editorRef.current!, PASTE_COMMAND, event)
-    await waitFor(() => expect(screen.getByTestId('value').textContent).toMatch(/\[ Paste #1 · 4 lines \]/))
+    await waitFor(() => expect(screen.getByTestId('value').textContent).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/))
     expect(screen.getByTestId('blocks').textContent).toContain(payload.replaceAll('\n', '\\n'))
     expect(screen.getByTestId('paste-token-1')).toBeInTheDocument()
   })
@@ -473,12 +473,12 @@ describe('LexicalComposerInput', () => {
     await waitFor(() => expect(controlRef.current!.getSelection()).toEqual({ start: 5, end: 5 }))
   })
 
-  function pressArrow(editor: LexicalEditor, key: 'ArrowUp' | 'ArrowDown'): boolean {
+  function pressArrow(editor: LexicalEditor, key: 'ArrowUp' | 'ArrowDown', init: KeyboardEventInit = {}): boolean {
     let handled = false
     act(() => {
       handled = editor.dispatchCommand(
         key === 'ArrowUp' ? KEY_ARROW_UP_COMMAND : KEY_ARROW_DOWN_COMMAND,
-        new KeyboardEvent('keydown', { key }),
+        new KeyboardEvent('keydown', { key, ...init }),
       )
     })
     return handled
@@ -538,6 +538,48 @@ describe('LexicalComposerInput', () => {
     act(() => controlRef.current!.setSelection('second!'.length))
     expect(pressArrow(editorRef.current!, 'ArrowDown')).toBe(false)
     expect(screen.getByTestId('value')).toHaveTextContent('second!')
+  })
+
+  it('ignores an auto-repeat ↑ that reaches the start of a typed draft', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    expect(pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })).toBe(false)
+    expect(screen.getByTestId('value')).toHaveTextContent(/^draft$/)
+    // Letting go and pressing again is a deliberate recall.
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+  })
+
+  it('keeps walking history on auto-repeat once a prompt is recalled', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial="draft" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp')
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent(/^first$/))
+  })
+
+  it('recalls on an auto-repeat ↑ from an empty composer', async () => {
+    const editorRef = createRef<LexicalEditor>()
+    const controlRef: MutableRefObject<ComposerControl | null> = { current: null }
+    render(
+      <ControlledHost initial="" editorRef={editorRef} controlRef={controlRef} sentMessages={['first', 'second']} />,
+    )
+    await waitFor(() => expect(controlRef.current).not.toBeNull())
+    act(() => controlRef.current!.setSelection(0))
+    pressArrow(editorRef.current!, 'ArrowUp', { repeat: true })
+    await waitFor(() => expect(screen.getByTestId('value')).toHaveTextContent('second'))
   })
 
   it('fires the edit-last-message request on ⌘↑/Ctrl+↑ from an empty composer (#11402)', async () => {

@@ -214,6 +214,17 @@ function stubGateway(
   // and never holds the credential. Stubbed in every case so no test reaches the
   // network for a field most of them do not open.
   vi.spyOn(api, 'secretsList').mockResolvedValue({ names: [] } as never)
+  // The KAS engine card shares this section; answered so its own read-failure
+  // notice does not add a second alert beside this card's.
+  vi.spyOn(api, 'kasBundleStatus').mockResolvedValue({
+    enabled: false,
+    pinned_version: '0.66.33',
+    runs_version: '0.66.33',
+    installed: null,
+    installing: false,
+    progress: { done: 0, total: 0 },
+    error: '',
+  } as never)
   // The provider picker's own read answers "no such route" unless a case stubs a
   // provider, so the cases below see the card as an older gateway draws it.
   vi.spyOn(api, 'getDecisionsProvider').mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
@@ -379,8 +390,11 @@ describe('Decisions (Jev) preview card', () => {
     })
     decisionsSwitch().click()
     await waitFor(() => {
-      expect(screen.getByText(/could not save this setting/i)).toBeInTheDocument()
+      expect(screen.getByText(/could not save this change/i)).toBeInTheDocument()
     })
+    // The same notice serves the tier pickers, the history number box and the key
+    // field, none of which is a switch, so its words name no control.
+    expect(screen.getByTestId('decisions-save-error').textContent ?? '').not.toMatch(/switch/i)
     // The switch shows the keystone's value, not the click's, so a refused write
     // cannot leave the card claiming the preview is on.
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
@@ -509,6 +523,37 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(pointRow('invented.point')).toBeInTheDocument()
     })
+  })
+
+  it('links to the Releases page when the gateway lists no points', async () => {
+    // An older gateway projects no rows. The notice tells the reader to update, so
+    // the place it names is a link there, not plain text.
+    stubGateway(consentOf(true, { points: [] }))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/does not list what Jev decides yet/i)).toBeInTheDocument()
+    })
+    const link = screen.getByRole('link', { name: 'Settings › Releases' })
+    expect(link.getAttribute('href')).toBe('/settings/releases')
+  })
+
+  it('says where Auto (Jev) is chosen for the model.route point', async () => {
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(pointRow("Model for the turn's difficulty")).toBeInTheDocument()
+    })
+    openPoint("Model for the turn's difficulty")
+    // The panel sits behind the lazy `DecisionsPointPanel` boundary, so its chunk
+    // may still be loading on a cold run: give it an explicit deadline.
+    await waitFor(
+      () => {
+        expect(screen.getByRole('tabpanel').textContent ?? '').toContain(
+          "whose own model picker shows Auto (Jev)",
+        )
+      },
+      { timeout: 5000 },
+    )
   })
 
   it('carries the status as the EFFECTIVE answer, with its own word for a missing scope', async () => {
@@ -1175,9 +1220,12 @@ describe('Decisions (Jev) preview card', () => {
     expect(screen.getByText(/Turn this off and on again/i)).toBeInTheDocument()
     // Styled as a warning, not a paragraph: the switch is on and the truth is
     // "nothing is sent", so the state must read as wrong before it is read.
-    const alert = screen.getByRole('alert')
+    // Picked by text: the section also draws the KAS engine card, whose restart pill
+    // reports its own unreadable schema as an alert in this unstubbed render.
+    const alert = screen.getAllByRole('alert').find(el => /nothing is being sent/i.test(el.textContent ?? ''))
+    expect(alert).toBeDefined()
     expect(alert).toHaveTextContent(/nothing is being sent/i)
-    expect(alert.className).toContain('text-warn')
+    expect(alert?.className).toContain('text-warn')
   })
 
   it('shows no moved-address notice while consent is off or matches', async () => {
@@ -1356,7 +1404,7 @@ describe('Decisions (Jev) preview card', () => {
       // A sibling card proves the section rendered, so an absent switch is the
       // gate and not a failed render.
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
       // Not merely hidden: nothing about the feature is on screen to act on.
@@ -1369,7 +1417,7 @@ describe('Decisions (Jev) preview card', () => {
       stubGateway({ enabled: true }, { decisions: { bucket: 100 } }, {})
       renderSection()
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
     })
@@ -1401,7 +1449,7 @@ describe('Decisions (Jev) preview card', () => {
       vi.spyOn(api, 'dashboardConfig').mockReturnValue(new Promise(() => {}) as never)
       renderSection()
       await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Crewmates/i })).toBeInTheDocument()
+        expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
       })
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
       expect(screen.queryByText(/could not read the settings/i)).toBeNull()

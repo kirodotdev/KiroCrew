@@ -31,10 +31,11 @@ import functools
 import os
 import socket
 import stat
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -45,6 +46,7 @@ from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
 from kiro_crew.browser_cli import token as browser_cli_token
 from kiro_crew.dashboard import server as srv
+from kiro_crew.testing.wait import async_wait_until
 
 requires_unix_socket = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
@@ -436,13 +438,76 @@ def _release_process_handles(state: Any) -> None:
         store._close_all_for_tests()
 
 
+#: Bound on joining the loop's default executor in :func:`_cancel_stray_tasks`.
+#: A tmp-path store's one-time builds and orphan sweep finish in well under a
+#: second. The regression test below makes two bounded waits on this value back
+#: to back (for the job to start, then the join), so its worst case is about
+#: 50 s plus the boot and the wait helper's final read. Every failure path
+#: therefore stays under the suite's ``--timeout=120`` and fails by name instead
+#: of at the runner's kill. Distinct from the rootdir conftest's own, shorter
+#: join bound.
+_HARNESS_EXECUTOR_JOIN_SECS = 25.0
+
+
+def _pool_threads(pool: Any) -> Any:
+    """Return a ``ThreadPoolExecutor``'s worker threads, or ``()`` for no pool.
+
+    The threads are read from the pool's private ``_threads`` set, which the
+    standard library does not promise to keep. A missing attribute fails by
+    name: a silent empty default would make every "is a pool thread alive"
+    check here pass vacuously, and the teardown would close the store under
+    a live query again.
+    """
+    if pool is None:
+        return ()
+    assert hasattr(pool, "_threads"), (
+        f"{type(pool).__name__} has no '_threads' attribute, so this harness can no "
+        "longer tell whether a default-pool thread is still running; update "
+        "_pool_threads for this Python version"
+    )
+    return pool._threads
+
+
 async def _cancel_stray_tasks() -> None:
-    """Cancel every task other than the caller's own, then await them."""
+    """Cancel every task other than the caller's own, await them, then join the executor.
+
+    Cancelling a task that awaits ``asyncio.to_thread`` does not stop the
+    thread: the job keeps running on the loop's default executor. The boot
+    starts two such jobs against the knowledge store (the orphan reclaim with
+    its one-time FTS and search-index builds, and the source watcher's first
+    sweep), each on its own thread-local SQLite connection. The callers close
+    every one of those connections next (:func:`_release_process_handles`),
+    and closing a connection while its thread is inside ``execute`` is
+    undefined: it is a segfault or access violation that takes the xdist
+    worker down, seen on Linux (Python 3.12) and on Windows. So the executor is
+    joined here, before anything is closed, and a job that outlives the bound
+    fails the test by name.
+
+    The join latches the loop into refusing new executor work; the latch and
+    the pool reference are cleared afterwards, as the rootdir conftest's own
+    teardown join does, so a later ``to_thread`` on this loop builds a fresh pool.
+    """
     stray = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
     for task in stray:
         task.cancel()
     if stray:
         await asyncio.gather(*stray, return_exceptions=True)
+    # ``timeout`` is on BaseEventLoop's signature, not AbstractEventLoop's stub.
+    loop = cast(asyncio.BaseEventLoop, asyncio.get_running_loop())
+    executor = getattr(loop, "_default_executor", None)
+    if executor is None:
+        return
+    await loop.shutdown_default_executor(timeout=_HARNESS_EXECUTOR_JOIN_SECS)
+    for name, reset in (("_executor_shutdown_called", False), ("_default_executor", None)):
+        if hasattr(loop, name):
+            setattr(loop, name, reset)
+    still_running = [t.name for t in _pool_threads(executor) if t.is_alive()]
+    assert not still_running, (
+        f"default-executor threads {still_running} were still running "
+        f"{_HARNESS_EXECUTOR_JOIN_SECS:.0f}s after their tasks were cancelled; they keep "
+        "running into later tests on this worker, and closing the knowledge store's "
+        "connections now would close them under a live query"
+    )
 
 
 def _record_states(monkeypatch) -> list[Any]:
@@ -549,7 +614,7 @@ class TestReserveDashboardPort:
             # the ordinary Linux shards are not such a host. Without a pin that every
             # lane evaluates, deleting `server.py`'s
             # `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` would red nothing -- the hosted
-            # `backend-test-ipv6` lane runs a bounded five-case population out of two
+            # `backend-test-ipv6` lane runs a bounded five-case population out of three
             # other files, so it does not cover this one either.
             assert "IPV6_V6ONLY" in inspect.getsource(srv._bind_once)
             assert "SO_EXCLUSIVEADDRUSE" in inspect.getsource(srv._bind_once)
@@ -1082,6 +1147,29 @@ class TestStartDashboardWiring:
             assert state.resume_channel_agents is None
 
     @pytest.mark.asyncio
+    async def test_the_knowledge_store_is_built_off_the_loop(self, tmp_path, monkeypatch) -> None:
+        """Its constructor prepares and opens SQLite files, which must not run on the loop.
+
+        Route registration reads the lazy store, so the boot builds it on a
+        worker first; this records which thread ran the constructor.
+        """
+        import kiro_crew.dashboard.state as _st
+
+        loop_thread = threading.get_ident()
+        built_on: list[int] = []
+        real_open = _st.KnowledgeStore.open_recovering
+
+        def _recording_open(*args: Any, **kwargs: Any) -> Any:
+            built_on.append(threading.get_ident())
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(_st.KnowledgeStore, "open_recovering", _recording_open)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+            assert state._knowledge_store is not None
+        assert len(built_on) == 1
+        assert built_on[0] != loop_thread
+
+    @pytest.mark.asyncio
     async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -1535,3 +1623,133 @@ async def test_non_time_wait_outcomes_keep_the_short_ladder_on_windows(
             reclaim=AsyncMock(return_value=outcome),
         )
     assert len(calls) == 3
+
+
+# ── the harness's own teardown order ────────────────────────────────────
+
+
+class TestTheHarnessJoinsStoreJobsBeforeClosing:
+    """The teardown closes the store's connections only after the default pool has joined.
+
+    The boot's orphan reclaim runs the store's one-time builds on a
+    default-executor thread. Cancelling the task that awaits it leaves that
+    thread running, and ``_release_process_handles`` closes every connection
+    the store opened, the running thread's included. That close under a live
+    ``execute`` is a segfault or access violation (seen on Linux 3.12 and on
+    Windows) that kills the xdist worker, reported against whichever startup
+    test was running.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_build_held_across_the_join_has_returned_before_the_close(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Hold the job until the harness starts joining the pool, then check at each close.
+
+        The job is released by the pool's own ``shutdown`` (the join), never
+        earlier, so it is still running when teardown begins. A harness that
+        drops the join, bounds it too tightly, or joins after the close
+        reaches ``_close_all_for_tests`` while the default pool's jobs are
+        still running.
+
+        "Still running" means the held build has not returned or any thread of
+        the default pool is alive: after the held build the same job goes on
+        to the orphan sweeps, which also query the store. The close spy
+        records first. While any default-pool thread is alive it frees the
+        held build and skips the real close, because a close under a live
+        ``execute`` is the crash this test guards against: a wedged job or a
+        broken harness stays a named failure.
+        """
+        import concurrent.futures
+
+        from kiro_crew.knowledge.store import KnowledgeStore
+
+        entered = threading.Event()
+        release = threading.Event()
+        done = threading.Event()
+        job_errors: list[BaseException] = []
+        joined_at_close: list[bool] = []
+        pools: list[Any] = []
+        real_build = KnowledgeStore.ensure_fts_index_current
+        real_close = KnowledgeStore._close_all_for_tests
+        real_shutdown = concurrent.futures.ThreadPoolExecutor.shutdown
+        loop = asyncio.get_running_loop()
+
+        def _held_build(store: KnowledgeStore) -> None:
+            try:
+                entered.set()
+                if not release.wait(_HARNESS_EXECUTOR_JOIN_SECS):
+                    job_errors.append(
+                        TimeoutError(
+                            f"the harness did not join the default pool within "
+                            f"{_HARNESS_EXECUTOR_JOIN_SECS:.0f}s, so the held build was never released"
+                        )
+                    )
+                real_build(store)
+            except BaseException as exc:  # noqa: BLE001 - recorded, asserted below
+                job_errors.append(exc)
+            finally:
+                done.set()
+
+        def _shutdown(self: Any, *args: Any, **kwargs: Any) -> Any:
+            # Only the loop's default pool: the join is what releases the job.
+            if self is getattr(loop, "_default_executor", None):
+                pools.append(self)
+                release.set()
+            return real_shutdown(self, *args, **kwargs)
+
+        def _pool_running() -> bool:
+            # The pool the join shut down, or the live one if the harness never joined.
+            pool = pools[0] if pools else getattr(loop, "_default_executor", None)
+            return not done.is_set() or any(t.is_alive() for t in _pool_threads(pool))
+
+        def _spy_close(store: KnowledgeStore) -> None:
+            running = _pool_running()
+            joined_at_close.append(not running)
+            if running:
+                # The harness reached the close while a default-pool thread is alive,
+                # which the assertion below reports. Free the held build and leave the
+                # connections open: a close now would land under a live ``execute``,
+                # the crash this test is about.
+                release.set()
+                return None
+            return real_close(store)
+
+        monkeypatch.setattr(KnowledgeStore, "ensure_fts_index_current", _held_build)
+        monkeypatch.setattr(KnowledgeStore, "_close_all_for_tests", _spy_close)
+        monkeypatch.setattr(concurrent.futures.ThreadPoolExecutor, "shutdown", _shutdown)
+        runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
+        try:
+            await async_wait_until(
+                entered.is_set,
+                timeout=_HARNESS_EXECUTOR_JOIN_SECS,
+                describe=lambda: "the boot never reached the knowledge store's one-time builds",
+            )
+            await runner.cleanup()
+            await _cancel_stray_tasks()
+        finally:
+            _release_process_handles(state)
+        assert joined_at_close and all(joined_at_close), (
+            f"the harness reached the knowledge store's close while the default pool's "
+            f"jobs were still running (pool joined at each close: {joined_at_close!r})"
+        )
+        assert not job_errors, f"the held build failed under the harness: {job_errors!r}"
+
+    def test_a_pool_without_its_thread_set_fails_by_name(self) -> None:
+        """A pool missing ``_threads`` is a named failure, never an empty thread list."""
+        import concurrent.futures
+
+        assert _pool_threads(None) == ()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        try:
+            pool.submit(lambda: None).result()
+            assert list(_pool_threads(pool)), "a pool that ran a job has a worker thread"
+            threads = pool._threads
+            del pool._threads
+            try:
+                with pytest.raises(AssertionError, match="no '_threads' attribute"):
+                    _pool_threads(pool)
+            finally:
+                pool._threads = threads
+        finally:
+            pool.shutdown(wait=True)

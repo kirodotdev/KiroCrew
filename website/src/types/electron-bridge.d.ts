@@ -60,6 +60,8 @@ declare global {
     getAppMenuItems: (id: string) => Promise<ElectronAppMenuItem[]>
     executeAppMenuItem: (id: string, index: number) => void
     onNavigate: (cb: (path: string) => void) => () => void
+    /** View > Toggle Focus Mode. Optional: absent on a shell older than the menu item. */
+    onToggleFocusMode?: (cb: () => void) => () => void
     onFullScreenChanged: (cb: (isFullScreen: boolean) => void) => () => void
     setBadgeCount: (count: number) => void
     reportMicDenied: () => void
@@ -98,6 +100,17 @@ declare global {
 
   interface WslAPI {
     detect: () => Promise<WslDetectResult>
+  }
+
+  /**
+   * The OS-native folder chooser (desktop shell only). Neither call takes an
+   * argument: the dialog's options are fixed in the main process.
+   */
+  interface FolderPickAPI {
+    /** Whether this window's gateway runs on this machine, so a pick can work. */
+    available: () => Promise<boolean>
+    /** The chosen absolute folder, or null when the user cancels; rejects when no dialog could be shown. */
+    pick: () => Promise<string | null>
   }
 
   interface ZoomAPI {
@@ -208,6 +221,9 @@ declare global {
     phase?: 'check' | 'download' | 'install'
     code?: string
     httpStatus?: number
+    // Set with code 'gateway-still-running': the command that stops the
+    // gateway the install was refused for.
+    stopCommand?: string
     percent?: number
     bytesPerSecond?: number
     installHandoff?: 'windows-installer' | 'automatic-relaunch'
@@ -255,6 +271,7 @@ declare global {
     localGatewayAPI?: LocalGatewayAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
+    folderPickAPI?: FolderPickAPI
     zoomAPI?: ZoomAPI
     browserAPI?: BrowserAPI
     updateAPI?: UpdateAPI

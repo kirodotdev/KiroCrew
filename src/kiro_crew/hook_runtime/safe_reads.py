@@ -6,6 +6,7 @@ Composed onto ``kiro_crew.hooks``; see :mod:`kiro_crew.hook_runtime`.
 
 from __future__ import annotations
 
+import enum
 import errno
 import os
 import stat as _stat
@@ -34,20 +35,45 @@ if TYPE_CHECKING:
     )
 
 
-def validate_file_path(raw: str) -> str | None:
-    """Validate and canonicalize a file path for dashboard file I/O.
+class PathDecline(enum.Enum):
+    """Why :func:`screen_file_path` declined a path.
+
+    ``REFUSED`` is lasting: the same path is declined again on every later call.
+    ``UNCHECKED`` is a check that did not complete, so a later call can pass.
+    """
+
+    REFUSED = "refused"
+    UNCHECKED = "unchecked"
+
+
+def screen_file_path(raw: str, *, classify_sensitive: bool = True) -> str | PathDecline:
+    """Validate and canonicalize a file path, or say why it is declined.
 
     Enforces: representability in the OS path layer (BEFORE any syscall sees the
     string), the Windows UNC trusted-root gate (BEFORE any resolution --
     ``realpath`` on a UNC path is itself the outbound SMB probe), the Windows
     link-target screen (a link can launder the same probe past the
     lexical UNC check), is_sensitive_path(), realpath canonicalization.
-    Returns the canonical path or None if rejected.
+    Returns the canonical path, or a :class:`PathDecline` when it is rejected.
+
+    The decline is :attr:`PathDecline.REFUSED` for a failed fixed check and for a
+    confirmed match on the sensitive-path list. It is
+    :attr:`PathDecline.UNCHECKED` when a check did not complete: a Windows link
+    whose own target could not be read, or a sensitive-path check that ran out of
+    time. A caller that keeps state per path (registration, pruning) can retry an
+    unchecked path and keep what it has. Every caller still treats both as a
+    refusal for the current call.
+
+    Telling a sensitive-path match from a stall reads the sensitive-path list a
+    second time, and only after the first reading refused. With
+    ``classify_sensitive=False`` that second reading is skipped and the decline is
+    :attr:`PathDecline.REFUSED`; :func:`validate_file_path` uses that form because
+    it reports every decline as ``None``.
     """
     if not raw:
-        return None
+        return PathDecline.REFUSED
     if not _is_representable_path(raw):
-        return None
+        return PathDecline.REFUSED
     if os.name == "nt":
         # Fold a ``\\?\<drive>:\...`` extended-length LOCAL path down to its
         # plain ``<drive>:\...`` spelling BEFORE any gate below.
@@ -68,7 +94,7 @@ def validate_file_path(raw: str) -> str | None:
         # fold later in this function.
         raw = _fold_extended_length_local(raw)
     if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
-        return None
+        return PathDecline.REFUSED
     expanded = os.path.expanduser(raw)
     target = expanded
     if os.name == "nt":
@@ -90,17 +116,36 @@ def validate_file_path(raw: str) -> str | None:
         # expanded form too. Mirrors the both-forms screening in
         # dashboard/handlers/themes.py::_resolve_local_source.
         if is_unc_shape(target) and not unc_probe_allowed(target):
-            return None
-        screened = _screen_windows_links(target)
+            return PathDecline.REFUSED
+        link_read_errors: list[OSError] = []
+        screened = _screen_windows_links(target, link_read_errors)
         if screened is None:
-            return None
+            return PathDecline.UNCHECKED if link_read_errors else PathDecline.REFUSED
         target = screened
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
     if is_sensitive_path(path):
-        return None
+        if not classify_sensitive:
+            return PathDecline.REFUSED
+        # The refusal stands. Its wording says which kind it is: only a
+        # confirmed match is lasting. A stall, or no refusal at all on this
+        # second reading, means the first check did not complete.
+        reason = sensitive_path_refusal(path)
+        if reason is not None and not is_unverifiable_path_refusal(reason):
+            return PathDecline.REFUSED
+        return PathDecline.UNCHECKED
     return path
+
+
+def validate_file_path(raw: str) -> str | None:
+    """Validate and canonicalize a file path for dashboard file I/O.
+
+    :func:`screen_file_path` with every decline returned as ``None``. Returns the
+    canonical path or None if rejected.
+    """
+    screened = screen_file_path(raw, classify_sensitive=False)
+    return screened if isinstance(screened, str) else None
 
 
 def safe_read_file(path: str) -> str:

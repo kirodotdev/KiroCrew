@@ -17,111 +17,40 @@ user pressed. Four things pin the behaviour:
 
 Fakes only: a mock provider whose ``/compact`` blocks until released or raises, no
 real harness.
+
+This module pins the in-place ``/compact`` arm, the dashboard Stop, the shared
+channel stop's forcing repeat and its per-presser decline markers, and the queue a
+forced Stop carries to the successor. How the other Stop surfaces leave their work
+in place on a decline is pinned in ``test_compaction_stop_declined_surfaces.py``, the
+marker and parked-queue bounds, arming only after delivery and the restart notices
+in ``test_compaction_stop_declined_escalation.py``, and the Claude arm and the
+uncompactable restart in ``test_compaction_stop_declined_claude_and_restart.py``.
+The fakes they share live in ``compaction_stop_declined_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+from compaction_stop_declined_helpers import _clear_channel_decline_markers  # noqa: F401
+from compaction_stop_declined_helpers import (
+    KEY,
+    _Compact,
+    _dashboard_state,
+    _factory,
+    _settle,
+    _setup,
+)
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
-from kiro_crew.session_compaction import (
-    COMPACT_OUTCOME_CANCELLED,
-    COMPACT_OUTCOME_RECYCLED,
-)
-
-KEY = "dashboard:chat-14841"
-
-
-@pytest.fixture(autouse=True)
-def _clear_channel_decline_markers():
-    from kiro_crew import session_lifecycle as sl
-
-    sl._stop_declined_markers.clear()
-    sl._parked_queue.clear()
-    yield
-    sl._stop_declined_markers.clear()
-    sl._parked_queue.clear()
-
-
-class _Compact:
-    """A ``/compact`` turn the test controls: it blocks until released or is failed."""
-
-    def __init__(self) -> None:
-        self.release = asyncio.Event()
-        self.fail_with: BaseException | None = None
-        self.started = asyncio.Event()
-
-    async def stream(self, _command: str):
-        self.started.set()
-        await self.release.wait()
-        if self.fail_with is not None:
-            raise self.fail_with
-        if False:  # pragma: no cover - makes this an async generator
-            yield None
-
-
-def _factory(compact: _Compact, order: list[str]):
-    def factory(session_key=None, agent=None, channel_id=None, **kwargs):
-        m = AsyncMock()
-        m.cwd = ""
-        m.disown_work_dir = MagicMock()
-        m.memory_mode = "persistent"
-        m.is_process_alive = lambda: True
-        m.context_usage_pct = lambda: 90.0
-        m.context_usage_unknown = lambda: False
-        m.context_window_tokens = lambda: 0
-        m.has_active_turn = lambda: True
-        m.runtime_info = lambda: (None, None)
-        m.stream_command = MagicMock(side_effect=compact.stream)
-        m.wait_for_compaction = AsyncMock(return_value={"type": "failed"})
-
-        # A cooperative cancel is what a soft Stop does to a live turn; here it
-        # ends the /compact turn the way the harness would: the stream raises.
-        async def _cancel(*, wait_ack_timeout: float = 0.0):
-            compact.fail_with = RuntimeError("compaction reported no result")
-            compact.release.set()
-            return "acked"
-
-        m.cancel = AsyncMock(side_effect=_cancel)
-        m.shutdown = AsyncMock(side_effect=lambda: order.append("shutdown"))
-        return m
-
-    return factory
-
-
-async def _setup():
-    order: list[str] = []
-    compact = _Compact()
-    mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory(compact, order))
-    await mgr.get_or_create(KEY)
-    key = mgr._fold_key(KEY)
-    mgr.release(key)
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps,
-        compact_wait_timeout_secs=lambda: 5.0,
-        compact_result_wait_secs=lambda _elapsed, _budget: 0.05,
-        compact_failure_cooldown_secs=123.0,
-    )
-    notices: list[tuple[bool, str]] = []
-
-    async def _cb(key, pct, *, success, outcome="compacted"):
-        notices.append((success, outcome))
-
-    mgr.set_compact_callback(_cb)
-    return mgr, key, compact, order, notices
-
-
-async def _settle() -> None:
-    for _ in range(20):
-        await asyncio.sleep(0)
-
+from kiro_crew.session_compaction import COMPACT_OUTCOME_CANCELLED, COMPACT_OUTCOME_RECYCLED
+from kiro_crew.session_lifecycle import compaction_in_flight
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # -- 1. a cooperative Stop is declined while compacting --
 
@@ -133,7 +62,7 @@ async def test_a_cooperative_stop_during_compaction_is_declined_and_not_recorded
     before = mgr.stop_generation(key)
 
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     # The trigger paths add the key; _compact_in_place alone does not. Mirror
     # the state a real threshold trigger leaves.
     mgr._compacting.add(key)
@@ -149,7 +78,7 @@ async def test_a_cooperative_stop_during_compaction_is_declined_and_not_recorded
     finally:
         mgr._compacting.discard(key)
         compact.release.set()
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="the compaction settling")
     # The compaction ran to its own (failed) end and recycled -- the ordinary
     # failure arm, untouched by the declined Stop.
     assert order == ["shutdown"]
@@ -163,7 +92,7 @@ async def test_a_force_stop_during_compaction_is_never_declined():
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     mgr._compacting.add(key)
     try:
         outcome = await mgr.stop_turn(KEY, force=True)
@@ -172,7 +101,7 @@ async def test_a_force_stop_during_compaction_is_never_declined():
         compact.fail_with = RuntimeError("compaction reported no result")
         compact.release.set()
     assert outcome == "hard"
-    result = await asyncio.wait_for(task, timeout=5)
+    result = await await_until(task, what="the compaction settling")
     # The force stop reset the session; the compaction that was running on it
     # settles as CANCELLED rather than recycling a provider the reset already
     # replaced and telling the user compaction "didn't succeed".
@@ -189,7 +118,7 @@ async def test_a_force_stop_hands_the_permit_to_the_waiter_and_the_compaction_do
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
 
     # A claimant parked on the held permit, as ``_reacquire_and_validate`` does.
     async def _claimant():
@@ -209,8 +138,10 @@ async def test_a_force_stop_hands_the_permit_to_the_waiter_and_the_compaction_do
         mgr._compacting.discard(key)
         compact.fail_with = RuntimeError("compaction reported no result")
         compact.release.set()
-    assert await asyncio.wait_for(task, timeout=5) == "cancelled"
-    assert await asyncio.wait_for(claimant, timeout=5) == "released-cleanly"
+    assert await await_until(task, what="the compaction settling") == "cancelled"
+    assert (
+        await await_until(claimant, what="the claimant releasing the permit") == "released-cleanly"
+    )
     await mgr.close_all()
 
 
@@ -221,6 +152,184 @@ async def test_stop_turn_is_unchanged_when_nothing_is_compacting():
     # No compaction and a mock provider that acks: the ordinary soft path.
     assert await mgr.stop_turn(KEY, force=False) == "soft"
     assert mgr.stop_generation(key) == 1
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_on_the_turn_a_compaction_waits_behind_is_a_soft_cancel():
+    """The threshold trigger commits a compaction while the turn it was triggered
+    from still holds the turn permit, and the compaction then waits for it. Until
+    it has the permit that turn owns the session, so a cooperative Stop cancels it
+    as usual, and the probe every channel runs first agrees."""
+    mgr, key, compact, order, notices = await _setup()
+    await mgr.get_or_create(KEY)  # the user's turn takes the permit
+    session = mgr._sessions[key]
+    session.provider.context_usage_pct = lambda: 95.0
+    session.provider.cancel = AsyncMock(return_value="acked")
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    async with asyncio.timeout(30):
+        while not session.semaphore._waiters:  # the compaction parks on the permit
+            await asyncio.sleep(0)
+    assert mgr.is_compacting(KEY) is True
+    assert not compact.started.is_set(), "premise: /compact has not started"
+
+    # What a channel reads first, then the Stop itself.
+    probe = compaction_in_flight(mgr, KEY)
+    outcome = await mgr.stop_turn(KEY, force=False)
+    observed = (probe, outcome, session.provider.cancel.await_count)
+    assert observed == (False, "soft", 1), (
+        "a cooperative Stop on the turn the compaction waits behind was declined: "
+        f"(compaction_in_flight, stop_turn, cancels) = {observed}"
+    )
+    assert mgr.stop_generation(key) == before + 1
+
+    mgr.release(key)
+    compact.release.set()
+    await async_wait_until(
+        lambda: not mgr.is_compacting(KEY),
+        describe=lambda: f"is_compacting({KEY!r}) is still true",
+    )
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_once_the_triggered_compaction_holds_the_session_is_still_declined():
+    """Control: once the triggered compaction has the permit and runs ``/compact``,
+    a cooperative Stop is declined and not recorded, as before."""
+    mgr, key, compact, order, notices = await _setup()
+    session = mgr._sessions[key]
+    session.provider.context_usage_pct = lambda: 95.0
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    await asyncio.wait_for(compact.started.wait(), timeout=30)
+    assert compaction_in_flight(mgr, KEY) is True
+
+    assert await mgr.stop_turn(KEY, force=False) == "compacting"
+    session.provider.cancel.assert_not_called()
+    assert mgr.stop_generation(key) == before
+
+    compact.release.set()
+    await async_wait_until(
+        lambda: not mgr.is_compacting(KEY),
+        describe=lambda: f"is_compacting({KEY!r}) is still true",
+    )
+    await mgr.close_all()
+
+
+class _ParkSignal(asyncio.BoundedSemaphore):
+    """A session turn permit that sets ``parked`` when a claimant has to wait on it.
+
+    The event is set in the claimant's own step, just before it parks, so a test
+    awaiting it resumes only after the claimant is queued on the permit."""
+
+    def __init__(self) -> None:
+        super().__init__(1)
+        self.parked = asyncio.Event()
+
+    async def acquire(self) -> bool:
+        if self.locked():
+            self.parked.set()
+        return await super().acquire()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_while_the_turn_hands_the_permit_to_the_compaction_is_declined():
+    """The turn the compaction waits behind releases the permit, and the semaphore
+    hands it to the parked compaction, whose task has not run yet. The permit is the
+    compaction's from that release on, although the turn's task is still alive, so
+    a cooperative Stop in the hand-off is declined and not recorded, and the probe
+    every channel runs first agrees."""
+    mgr, key, compact, order, notices = await _setup()
+    session = mgr._sessions[key]
+    permit = _ParkSignal()
+    session.semaphore = permit  # idle: _setup released it
+    await mgr.get_or_create(KEY)  # this task's turn takes the permit
+    session.provider.context_usage_pct = lambda: 95.0
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    task = mgr._compaction.state.compaction_tasks[key]
+    try:
+        await asyncio.wait_for(permit.parked.wait(), timeout=30)
+        assert compaction_in_flight(mgr, KEY) is False, "premise: the turn holds the session"
+
+        # The turn releases and this task runs on. From here to the asserts
+        # nothing awaits, so the compaction's task cannot run in between.
+        mgr.release(key)
+        assert permit.locked() and not task.done(), "premise: the hand-off is pending"
+        probe = compaction_in_flight(mgr, KEY)
+        outcome = await mgr.stop_turn(KEY, force=False)
+        observed = (probe, outcome, session.provider.cancel.await_count)
+        assert not compact.started.is_set(), "premise: the Stop ran inside the hand-off"
+        assert observed == (True, "compacting", 0), (
+            "a cooperative Stop during the permit hand-off to the compaction was not "
+            f"declined: (compaction_in_flight, stop_turn, cancels) = {observed}"
+        )
+        assert mgr.stop_generation(key) == before
+    finally:
+        compact.release.set()
+        await asyncio.wait_for(task, timeout=30)
+        await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_after_the_turn_releases_before_the_compaction_ran_is_declined():
+    """Control: the turn releases before the triggered compaction's task has run at
+    all, so nobody holds the permit and no turn is left for the Stop to reach. The
+    decline applies, as it does once the compaction holds the session."""
+    mgr, key, compact, order, notices = await _setup()
+    await mgr.get_or_create(KEY)  # this task's turn takes the permit
+    session = mgr._sessions[key]
+    session.provider.context_usage_pct = lambda: 95.0
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    task = mgr._compaction.state.compaction_tasks[key]
+    mgr.release(key)  # no await since the trigger: the compaction's task has not run
+    try:
+        assert not session.semaphore.locked(), "premise: nobody holds the permit"
+        probe = compaction_in_flight(mgr, KEY)
+        outcome = await mgr.stop_turn(KEY, force=False)
+        observed = (probe, outcome, session.provider.cancel.await_count)
+        assert observed == (True, "compacting", 0), (
+            "a cooperative Stop with the permit free and the compaction committed was "
+            f"not declined: (compaction_in_flight, stop_turn, cancels) = {observed}"
+        )
+        assert mgr.stop_generation(key) == before
+    finally:
+        compact.release.set()
+        await asyncio.wait_for(task, timeout=30)
+        await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_release_leaves_no_holder_named_on_the_session():
+    """The record ends with the holding: a turn's release clears ``turn_owner``, and
+    so does an awaited compaction, which holds the permit in its caller's task, a
+    task that keeps running after the compaction."""
+    mgr, key, compact, order, notices = await _setup()
+    session = mgr._sessions[key]
+    await mgr.get_or_create(KEY)
+    assert session.turn_owner is asyncio.current_task(), "premise: the turn named itself"
+    mgr.release(key)
+    assert session.turn_owner is None, "the turn's release left its record"
+
+    levels = [95.0]
+    provider = session.provider
+    provider.context_usage_pct = lambda: levels[0]
+
+    def _completed(*_args, **_kwargs):
+        levels[0] = 10.0
+        return {"type": "completed"}
+
+    provider.wait_for_compaction = AsyncMock(side_effect=_completed)
+    compact.release.set()
+    assert await asyncio.wait_for(mgr.compact_if_needed(KEY), timeout=30) == "ok"
+    assert mgr._sessions.get(key) is session, "premise: compacted in place"
+    assert session.turn_owner is None, "the compaction's release left its record"
     await mgr.close_all()
 
 
@@ -238,13 +347,13 @@ async def test_a_stop_that_ends_the_compact_turn_does_not_recycle():
     mgr, key, compact, order, notices = await _setup()
     session = mgr._sessions[key]
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
 
     assert mgr.note_stop(KEY) is True
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
 
-    assert await asyncio.wait_for(task, timeout=5) == "cancelled"
+    assert await await_until(task, what="the compaction settling") == "cancelled"
     # No recycle: the provider is still the session's provider and was not shut down.
     assert order == []
     assert mgr._sessions[key] is session
@@ -292,7 +401,7 @@ async def test_a_stop_recorded_during_the_recycle_window_does_not_strand_a_claim
         mgr._compaction._deps, cotenant_wait_secs=30.0, cotenant_poll_secs=0.01
     )
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
     await asyncio.sleep(0.05)  # inside _await_cotenants now
@@ -311,9 +420,9 @@ async def test_a_stop_recorded_during_the_recycle_window_does_not_strand_a_claim
     # recycling; the permit this task still owns is released, so the parked
     # claimant wakes.
     assert mgr.note_stop(KEY) is True
-    assert await asyncio.wait_for(task, timeout=5) == "cancelled"
+    assert await await_until(task, what="the compaction settling") == "cancelled"
     assert not gate.is_set(), "the sub-agent was not cancelled"
-    await asyncio.wait_for(woke.wait(), timeout=2)
+    await await_until(woke, what="the parked claimant waking")
     gate.set()
     await claimant
     await mgr.close_all()
@@ -357,7 +466,7 @@ async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_spares
         mgr._compaction._deps, cotenant_wait_secs=30.0, cotenant_poll_secs=0.01
     )
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
     await asyncio.sleep(0.05)  # inside _await_cotenants now
@@ -378,10 +487,12 @@ async def test_a_hard_stop_during_the_cotenant_wait_settles_cancelled_and_spares
     # The Stop already reset the parent and respawned its successor; this
     # compaction's restart is stale, so it settles as cancelled WITHOUT waiting
     # out the cotenants or cancelling them: the sub-agent stays live.
-    assert await asyncio.wait_for(task, timeout=5) == "cancelled"
+    assert await await_until(task, what="the compaction settling") == "cancelled"
     assert not gate.is_set(), "the live sub-agent was not cancelled"
     assert notices[-1] == (False, COMPACT_OUTCOME_CANCELLED)
-    assert await asyncio.wait_for(claimant, timeout=5) == "released-cleanly"
+    assert (
+        await await_until(claimant, what="the claimant releasing the permit") == "released-cleanly"
+    )
     gate.set()
     await mgr.close_all()
 
@@ -394,11 +505,11 @@ async def test_a_stop_before_the_semaphore_is_held_is_not_this_compactions_cance
     # The Stop happened earlier, on some other turn.
     assert mgr.note_stop(KEY) is True
     task = asyncio.ensure_future(mgr._compact_in_place(key, session, 90.0))
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
     # Genuine failure: the ordinary recycle arm.
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert await await_until(task, what="the compaction settling") == "recycled"
     assert order == ["shutdown"]
     assert notices == [(True, COMPACT_OUTCOME_RECYCLED)]
     await mgr.close_all()
@@ -416,7 +527,7 @@ async def test_channel_decline_markers_die_with_the_compaction_that_armed_them()
     mgr, key, compact, order, notices = await _setup()
     provider = mgr._sessions[key].provider
     assert mgr._compaction._trigger_compaction(key, "test", 90.0, provider) is None
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     # Declined during A, under the live key and under an alias a channel may
     # press with, which the probe folds onto the live key.
     sl.note_stop_declined(key, "bob")
@@ -426,10 +537,9 @@ async def test_channel_decline_markers_die_with_the_compaction_that_armed_them()
     mgr._fold_key = lambda k: key if k == "alias-of-" + key else real_fold(k)
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
-    for _ in range(200):
-        if not mgr.is_compacting(KEY):
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not mgr.is_compacting(KEY), describe=lambda: f"compacting={mgr._compacting!r}"
+    )
     mgr._fold_key = real_fold
     assert sl.consume_stop_declined("alias-of-" + key, "alice") is False, "alias died with A"
     assert sl.consume_stop_declined(key, "bob") is False
@@ -478,15 +588,14 @@ async def test_the_compacting_observer_sees_enter_and_leave_once_each():
     provider = session.provider
     decline = mgr._compaction._trigger_compaction(key, "test", 90.0, provider)
     assert decline is None, decline
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     assert seen == [(key, True)]
     assert mgr.is_compacting(KEY) is True
     compact.fail_with = RuntimeError("compaction reported no result")
     compact.release.set()
-    for _ in range(200):
-        if not mgr.is_compacting(KEY):
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not mgr.is_compacting(KEY), describe=lambda: f"compacting={mgr._compacting!r}"
+    )
     assert seen == [(key, True), (key, False)]
     await mgr.close_all()
 
@@ -502,30 +611,16 @@ async def test_a_raising_observer_does_not_fail_the_compaction():
     session = mgr._sessions[key]
     decline = mgr._compaction._trigger_compaction(key, "test", 90.0, session.provider)
     assert decline is None
-    await asyncio.wait_for(compact.started.wait(), timeout=2)
+    await await_until(compact.started, what="the compaction starting")
     assert mgr.is_compacting(KEY) is True
     compact.release.set()  # completes with no status -> failed -> recycled
     compact.fail_with = RuntimeError("compaction reported no result")
-    for _ in range(200):
-        if not mgr.is_compacting(KEY):
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not mgr.is_compacting(KEY), describe=lambda: f"compacting={mgr._compacting!r}"
+    )
     assert mgr.is_compacting(KEY) is False
     assert notices == [(True, COMPACT_OUTCOME_RECYCLED)]
     await mgr.close_all()
-
-
-_TEST_DIR = str(Path(__file__).resolve().parent)
-
-
-def _dashboard_state(tmp_path):
-    import sys
-
-    if _TEST_DIR not in sys.path:
-        sys.path.insert(0, _TEST_DIR)
-    from chat_test_helpers import _make_state
-
-    return _make_state(tmp_path)
 
 
 def test_the_slot_payload_carries_compacting_beside_running(tmp_path):
@@ -1082,12 +1177,16 @@ async def test_parked_entries_are_adopted_by_the_next_ordinary_allocation(tmp_pa
 
 
 async def _until_registered(mgr, key, old) -> object:
-    for _ in range(200):
+    """Wait for a successor of *old* to be registered under *key*, and return it."""
+
+    def _succeeded() -> bool:
         current = mgr._sessions.get(key)
-        if current is not None and current is not old:
-            return current
-        await asyncio.sleep(0.01)
-    raise AssertionError("no successor registered under the key")
+        return current is not None and current is not old
+
+    await async_wait_until(
+        _succeeded, describe=lambda: f"no successor registered under the key: {mgr._sessions!r}"
+    )
+    return mgr._sessions[key]
 
 
 @pytest.mark.asyncio
@@ -1234,1081 +1333,3 @@ async def test_the_release_after_an_adopting_claim_wakes_the_adopted_entries_dra
     assert woke == [(key, ["telegram"])]
     mgr.release(key) if mgr._sessions[key].semaphore.locked() else None
     await mgr.close_all()
-
-
-def test_a_parked_entry_past_the_field_bounds_is_refused_not_retained(caplog):
-    from unittest.mock import MagicMock
-
-    from kiro_crew import session_lifecycle as sl
-
-    sessions = MagicMock()
-    sessions._fold_key = lambda k: k
-    big_text = ("t1", "x" * (sl.PARKED_ENTRY_TEXT_MAX_CHARS + 1), {})
-    big_kwargs = ("t2", "ok", {"blob": "y" * (sl.PARKED_ENTRY_KWARGS_MAX_CHARS + 1)})
-    big_ts = ("t" * (sl.PARKED_ENTRY_TS_MAX_CHARS + 1), "ok", {})
-    fine = ("t3", "ok", {})
-    with caplog.at_level("WARNING", logger=sl.__name__):
-        sl._park_queue(sessions, "k", (big_text, big_kwargs, big_ts, fine))
-    assert sl._parked_queue["k"] == [fine]
-    assert sessions.clear_queue.call_count == 3, "refused entries have their files unlinked"
-    assert sum("field bounds" in r.message for r in caplog.records) == 3
-
-
-@pytest.mark.asyncio
-async def test_a_reset_that_raises_after_the_pop_parks_the_detached_queue():
-    """The restore has no session to land on once the reset popped it; the
-    detached entries are parked for the next start instead of unwinding away."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew import session_lifecycle as sl
-
-    sessions = MagicMock()
-    bob = ("ts-b", "bob's", {})
-    sessions.detach_queue = MagicMock(return_value=(bob,))
-    sessions.stop_turn = AsyncMock(side_effect=RuntimeError("shutdown raised after the pop"))
-    sessions.has_session = MagicMock(return_value=False)
-    with pytest.raises(RuntimeError):
-        await sl.force_stop_keeping_others(sessions, "k", lambda _kw: False)
-    sessions.restore_queue.assert_not_called()
-    assert sl._parked_queue["k"] == [bob]
-    # With the session still there, the ordinary restore is taken instead.
-    sl._parked_queue.clear()
-    sessions.has_session = MagicMock(return_value=True)
-    with pytest.raises(RuntimeError):
-        await sl.force_stop_keeping_others(sessions, "k", lambda _kw: False)
-    sessions.restore_queue.assert_called_once_with("k", (bob,))
-    assert "k" not in sl._parked_queue
-
-
-@pytest.mark.asyncio
-async def test_clear_queue_only_unlinks_the_handles_even_when_the_session_is_gone(tmp_path):
-    """A hard stop pops the session between the detach and the clear; the
-    detached entries were never on the popped queue, so this is the one place
-    their files can be unlinked."""
-    mgr, key, compact, order, notices = await _setup()
-    tmp = tmp_path / "gone.png"
-    tmp.write_bytes(b"x")
-    assert mgr.enqueue(key, "ts-1", "at press", force=True, image_temp_paths=[str(tmp)])
-    taken = mgr.detach_queue(key)
-    assert await mgr.stop_turn(KEY, force=True) == "hard"
-    mgr.clear_queue(key, only=taken)
-    assert not tmp.exists()
-    await mgr.close_all()
-
-
-def test_decline_markers_are_count_bounded_and_the_overflow_is_counted(caplog):
-    from kiro_crew import session_lifecycle as sl
-
-    with caplog.at_level("WARNING", logger=sl.__name__):
-        for i in range(sl.STOP_DECLINED_MARKERS_MAX + 3):
-            sl.note_stop_declined(f"k{i}", "u", now=100.0)
-    assert len(sl._stop_declined_markers) == sl.STOP_DECLINED_MARKERS_MAX
-    # Oldest evicted, newest kept; the evicted presser's repeat is declined again.
-    assert sl.consume_stop_declined("k0", "u", now=110.0) is False
-    assert sl.consume_stop_declined(f"k{sl.STOP_DECLINED_MARKERS_MAX + 2}", "u", now=110.0)
-    assert sum("evicted" in r.message for r in caplog.records) == 3
-    assert "3 dropped so far" in caplog.records[-1].message
-
-
-def test_expired_decline_markers_are_swept_on_the_next_write():
-    from kiro_crew import session_lifecycle as sl
-
-    for i in range(10):
-        sl.note_stop_declined(f"k{i}", "u", now=100.0)
-    sl.note_stop_declined("fresh", "u", now=100.0 + sl.STOP_DECLINED_ESCALATION_SECS)
-    assert list(sl._stop_declined_markers) == [("fresh", "u")]
-
-
-def test_a_decline_marker_key_past_the_string_bound_is_refused_not_retained(caplog):
-    from kiro_crew import session_lifecycle as sl
-
-    long_key = "k" * (sl.STOP_DECLINED_KEY_MAX_CHARS + 1)
-    with caplog.at_level("WARNING", logger=sl.__name__):
-        sl.note_stop_declined(long_key, "u", now=100.0)
-        sl.note_stop_declined("k", "u" * (sl.STOP_DECLINED_KEY_MAX_CHARS + 1), now=100.0)
-    assert sl._stop_declined_markers == {}
-    assert sl.consume_stop_declined(long_key, "u", now=101.0) is False
-    assert sum("refused" in r.message for r in caplog.records) == 2
-
-
-def test_the_escalation_window_is_one_constant_for_dashboard_and_channels():
-    from kiro_crew import session_lifecycle as sl
-    from kiro_crew.dashboard import slot_projection as sp
-
-    assert sp.STOP_DECLINED_ESCALATION_SECS is sl.STOP_DECLINED_ESCALATION_SECS
-
-
-def test_an_ordinary_second_press_escalation_still_discards_the_session_queue(
-    tmp_path, monkeypatch
-):
-    """Control: a hard kill that is NOT the escape from a compaction decline keeps
-    its "discard everything" contract, session queue included."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
-
-    state = _dashboard_state(tmp_path)
-    slot = state.get_or_create_slot("chat-14841")
-    task = MagicMock()
-    task.done.return_value = False
-    slot.task = task
-    slot._stop_state = "soft_pending"  # a cooperative cancel is already pending
-    state.sessions.is_compacting = MagicMock(return_value=False)
-    state.sessions.stop_turn = AsyncMock(return_value="hard")
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-
-    asyncio.run(stop_slot_turn(state, slot))
-
-    assert state.sessions.stop_turn.await_args.kwargs["force"] is True
-    assert state.sessions.stop_turn.await_args.kwargs["preserve_queue"] is False
-
-
-def test_a_stale_decline_does_not_turn_a_later_first_press_into_a_force_stop(tmp_path, monkeypatch):
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
-    from kiro_crew.dashboard.slot_projection import STOP_DECLINED_ESCALATION_SECS
-
-    state = _dashboard_state(tmp_path)
-    slot = state.get_or_create_slot("chat-14841")
-    task = MagicMock()
-    task.done.return_value = False
-    slot.task = task
-    state.sessions.is_compacting = MagicMock(return_value=False)
-    state.sessions.stop_turn = AsyncMock(return_value="soft")
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-    import time as _time
-
-    slot._stop_declined_at = _time.monotonic() - STOP_DECLINED_ESCALATION_SECS - 1
-    assert slot.to_dict()["stop_declined"] is False
-
-    asyncio.run(stop_slot_turn(state, slot))
-
-    assert state.sessions.stop_turn.await_args.kwargs["force"] is False
-
-
-def test_the_shared_channel_stop_keeps_the_queue_while_compacting():
-    """Discord/Telegram/Teams stop through ``stop_running_turn``, which cancels the
-    provider itself and clears the queue; a declined Stop must do neither."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.messaging.commands import STOP_REPLY_COMPACTING, stop_running_turn
-
-    sessions = MagicMock()
-    sessions.is_compacting = MagicMock(return_value=True)
-    sessions.is_busy = MagicMock(return_value=True)
-    sessions.get_provider = MagicMock(return_value=MagicMock(cancel=AsyncMock()))
-    queue = MagicMock()
-    queue.lock = asyncio.Lock()
-    queue.finish_cancelled_locked = AsyncMock()
-
-    reply = asyncio.run(
-        stop_running_turn(
-            sessions,
-            "telegram:1",
-            queue=queue,
-            surface=MagicMock(label="telegram"),
-            owner="u1",
-            deliver=AsyncMock(),
-        )
-    )
-
-    assert reply == STOP_REPLY_COMPACTING
-    sessions.note_stop.assert_not_called()
-    sessions.clear_queue.assert_not_called()
-    sessions.get_provider.return_value.cancel.assert_not_awaited()
-    queue.finish_cancelled_locked.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_the_claude_arm_ignores_a_stop_that_ended_the_previous_turn():
-    """The Claude compaction waits for the semaphore; a Stop recorded BEFORE it is
-    held ended that earlier turn and must settle a genuine failure as failed, not
-    cancelled."""
-    mgr, key, compact, order, notices = await _setup()
-    session = mgr._sessions[key]
-    session.provider.compact = AsyncMock(side_effect=RuntimeError("provider failed"))
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
-    # A turn holds the session; the compaction queues behind it. The Stop lands
-    # on THAT turn, after the compaction task started but before it holds the
-    # permit -- the window a counter read before the wait mistakes for its own.
-    await session.semaphore.acquire()
-    task = asyncio.ensure_future(mgr._compaction._compact_session(key, 90.0))
-    await _settle()
-    assert mgr.note_stop(KEY) is True
-    session.semaphore.release()
-    result = await asyncio.wait_for(task, timeout=5)
-    assert result == "failed"
-    assert notices == [(False, "compacted")]
-    await mgr.close_all()
-
-
-@pytest.mark.asyncio
-async def test_the_claude_arm_times_out_behind_a_live_turn_as_a_failure_not_a_cancel():
-    """A session with an old Stop in its history (the counter is never popped)
-    whose compaction waits out its budget behind a live turn: a timeout, not
-    "Stop ended the compaction"."""
-    mgr, key, compact, order, notices = await _setup()
-    session = mgr._sessions[key]
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps,
-        is_claude_backend=lambda _p: True,
-        compact_wait_timeout_secs=lambda: 0.05,
-    )
-    assert mgr.note_stop(KEY) is True  # an earlier Stop, long settled
-    await session.semaphore.acquire()  # a live turn the compaction parks behind
-    try:
-        result = await mgr._compaction._compact_session(key, 90.0)
-    finally:
-        session.semaphore.release()
-    assert result == "failed"
-    assert notices == [(False, "compacted")]
-    await mgr.close_all()
-
-
-@pytest.mark.asyncio
-async def test_the_claude_arm_hands_the_permit_to_the_waiter_on_a_force_stop():
-    """Same contract as the in-place arm: a hard Stop pops the session and hands
-    the permit to a woken claimant; the compaction must not release it again."""
-    mgr, key, compact, order, notices = await _setup()
-    session = mgr._sessions[key]
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _compact():
-        started.set()
-        await release.wait()
-        raise RuntimeError("cancelled by the harness")
-
-    session.provider.compact = AsyncMock(side_effect=_compact)
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
-    task = asyncio.ensure_future(mgr._compaction._compact_session(key, 90.0))
-    await asyncio.wait_for(started.wait(), timeout=2)
-
-    async def _claimant():
-        await session.semaphore.acquire()
-        await asyncio.sleep(0.05)
-        session.semaphore.release()  # must not raise
-        return "released-cleanly"
-
-    claimant = asyncio.ensure_future(_claimant())
-    await _settle()
-    assert not claimant.done()
-    mgr._compacting.add(key)
-    try:
-        assert await mgr.stop_turn(KEY, force=True) == "hard"
-    finally:
-        mgr._compacting.discard(key)
-        release.set()
-    assert await asyncio.wait_for(task, timeout=5) == "cancelled"
-    assert await asyncio.wait_for(claimant, timeout=5) == "released-cleanly"
-    await mgr.close_all()
-
-
-@pytest.mark.asyncio
-async def test_the_claude_arm_settles_cancelled_when_the_stop_lands_on_its_turn():
-    mgr, key, compact, order, notices = await _setup()
-    session = mgr._sessions[key]
-
-    async def _compact_then_stopped():
-        mgr.note_stop(KEY)
-        raise RuntimeError("cancelled by the harness")
-
-    session.provider.compact = AsyncMock(side_effect=_compact_then_stopped)
-    mgr._compaction._deps = dataclasses.replace(
-        mgr._compaction._deps, is_claude_backend=lambda _p: True
-    )
-    result = await mgr._compaction._compact_session(key, 90.0)
-    assert result == "cancelled"
-    assert notices == [(False, COMPACT_OUTCOME_CANCELLED)]
-    await mgr.close_all()
-
-
-def _slack_orch():
-    """The Slack orchestrator double the events suite uses, with a live !stop target."""
-    import sys
-    from unittest.mock import AsyncMock, MagicMock
-
-    if _TEST_DIR not in sys.path:
-        sys.path.insert(0, _TEST_DIR)
-    from test_slack_events_coverage import _make_orch
-
-    orch = _make_orch()
-    orch.sessions.has_session = MagicMock(return_value=True)
-    orch.sessions.get_session_for_thread = MagicMock(return_value=None)
-    orch.sessions.note_stop = MagicMock(return_value=True)
-    orch.sessions.clear_queue = MagicMock()
-    orch.sessions.detach_queue = MagicMock(return_value=())
-    orch.sessions.restore_queue = MagicMock()
-    task = MagicMock()
-    task.done.return_value = False
-    orch._session_tasks = {"100.0": task}
-    orch._pending_queue = {"100.0": [("ts", "text", {"paths": []})]}
-    orch.slack.post_ephemeral = AsyncMock()
-    return orch, task
-
-
-def _callers(ts):
-    """A queue entry the presser of ``_run_slack_stop`` queued, tagged as Slack tags it."""
-    from kiro_crew.slack import events as ev
-
-    return (ts, "text", {"paths": [], **ev._queue_tags("U_OWNER", "D1")})
-
-
-def _run_slack_stop(orch):
-    from unittest.mock import patch
-
-    from kiro_crew.slack import events as ev
-
-    with patch("kiro_crew.slack.events.is_allowed_user", return_value=True):
-        with patch("kiro_crew.slack.events.is_owner", return_value=True):
-            with patch("kiro_crew.slack.events.unlink_queued_temp_paths") as unlink:
-                from test_slack_events_coverage import _event
-
-                asyncio.run(ev._route_message(orch, _event(text="!stop"), ev.SeenCache()))
-    return unlink
-
-
-def test_slack_stop_declined_by_the_precheck_touches_nothing():
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=True)
-    orch.sessions.stop_turn = AsyncMock()
-    unlink = _run_slack_stop(orch)
-    orch.sessions.stop_turn.assert_not_awaited()
-    orch.sessions.note_stop.assert_not_called()
-    orch.sessions.clear_queue.assert_not_called()
-    unlink.assert_not_called()
-    assert orch._session_tasks == {"100.0": task}
-    assert "100.0" in orch._pending_queue
-    task.cancel.assert_not_called()
-
-
-def test_slack_stop_declined_by_stop_turn_keeps_queue_pending_files_and_task():
-    """The race the pre-check cannot close: a compaction commits during the
-    ephemeral post, and ``stop_turn`` declines. Nothing queued may be lost."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    orch.sessions.stop_turn = AsyncMock(return_value="compacting")
-    unlink = _run_slack_stop(orch)
-    orch.sessions.stop_turn.assert_awaited_once()
-    orch.sessions.clear_queue.assert_not_called()
-    unlink.assert_not_called()
-    assert orch._session_tasks == {"100.0": task}
-    assert "100.0" in orch._pending_queue
-    task.cancel.assert_not_called()
-
-
-def test_slack_stop_leaves_a_successor_started_from_a_newer_message_alone():
-    """A message admitted during the stop's awaits is newer intent. If it is
-    already running as the tracked task, the stop neither pops nor cancels it."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    successor = MagicMock()
-    successor.done.return_value = False
-
-    async def _stop(*_a, **_k):
-        orch._session_tasks["100.0"] = successor  # dispatched mid-await
-        return "soft"
-
-    orch.sessions.stop_turn = AsyncMock(side_effect=_stop)
-    _run_slack_stop(orch)
-    assert orch._session_tasks == {"100.0": successor}
-    successor.cancel.assert_not_called()
-    task.cancel.assert_called_once()
-
-
-def test_slack_stop_detaches_at_the_press_and_drops_only_that():
-    """What was queued at the press is taken out of the live queue BEFORE the first
-    await (so the cancelled turn's drain cannot start it), then dropped once the
-    stop went through. A message admitted mid-stop is newer intent and stays."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = (_callers("q-at-press"),)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-    orch._pending_queue = {"100.0": [_callers("ts")]}
-    late = ("ts-late", "sent during the stop", {"paths": []})
-
-    async def _stop(*_a, **_k):
-        # By now the press-time pending entry is detached; a later one arrives.
-        assert "100.0" not in orch._pending_queue
-        orch._pending_queue["100.0"] = [late]
-        return "soft"
-
-    orch.sessions.stop_turn = AsyncMock(side_effect=_stop)
-    dispatched = AsyncMock()
-    with patch("kiro_crew.slack.events._dispatch_queued", new=dispatched):
-        unlink = _run_slack_stop(orch)
-    orch.sessions.detach_queue.assert_called_once_with("100.0")
-    orch.sessions.clear_queue.assert_called_once_with("100.0", only=at_press)
-    orch.sessions.restore_queue.assert_not_called()
-    # Kept, and the next thing dispatched once the stop is done.
-    assert [call.args[2] for call in dispatched.await_args_list] == ["ts-late"]
-    assert unlink.call_count == 1  # the press-time pending entry's files
-
-
-def test_slack_stop_tells_stop_turn_to_keep_the_queue_it_did_not_detach():
-    """What the Stop drops was detached at the press and is cleared by identity
-    after the outcome. ``stop_turn``'s own whole-queue clear would take a message
-    admitted between the detach and the cancel: newer intent, never this Stop's."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = (_callers("q-at-press"),)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-    orch.sessions.stop_turn = AsyncMock(return_value="soft")
-    _run_slack_stop(orch)
-    assert orch.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
-    orch.sessions.clear_queue.assert_called_once_with("100.0", only=at_press)
-
-
-def test_slack_stop_declined_in_the_race_restores_what_it_detached():
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = ("q-at-press",)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-    pending_at_press = list(orch._pending_queue["100.0"])
-    late = ("ts-late", "sent during the stop", {"paths": []})
-
-    async def _stop(*_a, **_k):
-        orch._pending_queue["100.0"] = [late]
-        return "compacting"
-
-    orch.sessions.stop_turn = AsyncMock(side_effect=_stop)
-    unlink = _run_slack_stop(orch)
-    orch.sessions.restore_queue.assert_called_once_with("100.0", at_press)
-    orch.sessions.clear_queue.assert_not_called()
-    unlink.assert_not_called()
-    # Press-time pending entries go back AHEAD of the later arrival.
-    assert orch._pending_queue["100.0"] == pending_at_press + [late]
-    assert orch._session_tasks == {"100.0": task}
-    # The reply promised that a repeat forces, so the race decline armed the
-    # marker for this presser, the same as the pre-check decline does.
-    from kiro_crew.session_lifecycle import consume_stop_declined
-
-    assert consume_stop_declined("100.0", "U_OWNER") is True
-
-
-def test_slack_stop_that_goes_through_still_clears_and_cancels():
-    """The control: an ordinary soft stop keeps the destructive half."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    orch.sessions.stop_turn = AsyncMock(return_value="soft")
-    unlink = _run_slack_stop(orch)
-    orch.sessions.clear_queue.assert_called_once()
-    unlink.assert_called_once()
-    assert orch._session_tasks == {}
-    assert "100.0" not in orch._pending_queue
-    task.cancel.assert_called_once()
-
-
-def _interrupt_state():
-    """The interrupt route's state double, as ``test_chat_slot_interrupt`` builds it."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-
-    slot = _ChatSlot("test")
-    task = MagicMock()
-    task.done.return_value = False
-    slot.task = task
-    slot.queue_append("msg")
-    fut = asyncio.get_event_loop_policy().new_event_loop().create_future()
-    slot._approval_futures["req-1"] = fut
-    state = MagicMock(spec=DashboardState)
-    state._slots = {"test": slot}
-    state.push_slots_update = MagicMock()
-    state.sessions = MagicMock()
-    state.sessions.stop_turn = AsyncMock(return_value="soft")
-    state.broadcast_ws = MagicMock()
-    return state, slot, fut
-
-
-async def _post_interrupt(state):
-    from aiohttp import web
-    from aiohttp.test_utils import TestClient, TestServer
-
-    from kiro_crew.dashboard.chat import api_chat_slot_interrupt
-
-    app = web.Application()
-    app["state"] = state
-    app.router.add_post("/api/chat/slots/{slot}/interrupt", api_chat_slot_interrupt)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/api/chat/slots/test/interrupt", json={})
-        return resp.status, await resp.json()
-
-
-@pytest.mark.asyncio
-async def test_interrupt_declined_by_the_precheck_leaves_the_turn_untouched(monkeypatch):
-    """Pending approvals stay pending, no cancel is sent."""
-    from unittest.mock import MagicMock
-
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-    state, slot, fut = _interrupt_state()
-    state.sessions.is_compacting = MagicMock(return_value=True)
-
-    status, data = await _post_interrupt(state)
-
-    assert status == 200 and data["outcome"] == "compacting"
-    state.sessions.stop_turn.assert_not_awaited()
-    assert not fut.done(), "a declined interrupt must not reject the turn's approvals"
-    assert slot._stop_state == "idle"
-    assert slot._stop_declined_at == 0.0, "an interrupt is not a Stop and arms no hard kill"
-    cards = [m for m in slot.messages if '"kind": "stop_event"' in (m.get("cls") or "")]
-    assert len(cards) == 1 and '"state": "stop_declined_compacting"' in cards[0]["cls"]
-
-
-@pytest.mark.asyncio
-async def test_interrupt_declined_after_the_body_read_keeps_the_pending_approval(monkeypatch):
-    """The pre-check passes, then a compaction commits during the request-body
-    await. The second probe, right before the pending waits would be rejected,
-    declines: the approval stays pending and the claim is released."""
-    from unittest.mock import MagicMock
-
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-    state, slot, fut = _interrupt_state()
-    # First probe (pre-check) says no; every later probe says a compaction holds it.
-    state.sessions.is_compacting = MagicMock(side_effect=[False, True, True, True])
-
-    status, data = await _post_interrupt(state)
-
-    assert status == 200 and data["outcome"] == "compacting"
-    state.sessions.stop_turn.assert_not_awaited()
-    assert not fut.done(), "the approval must not be rejected by a Stop that ended nothing"
-    assert slot._stop_state == "idle"
-    assert slot._stop_event_id is None
-    cards = [m for m in slot.messages if '"kind": "stop_event"' in (m.get("cls") or "")]
-    assert len(cards) == 1 and '"state": "stop_declined_compacting"' in cards[0]["cls"]
-
-
-@pytest.mark.asyncio
-async def test_interrupt_race_outcome_leaves_the_turn_and_settles_idle(monkeypatch):
-    from unittest.mock import AsyncMock, MagicMock
-
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-    state, slot, _fut = _interrupt_state()
-    state.sessions.is_compacting = MagicMock(return_value=False)
-    state.sessions.stop_turn = AsyncMock(return_value="compacting")
-
-    status, data = await _post_interrupt(state)
-
-    assert status == 200 and data["outcome"] == "compacting"
-    assert slot._stop_state == "idle"
-    assert slot._stop_declined_at == 0.0
-    assert slot._stop_event_id is None
-
-
-class _SpecSlot:
-    """The spec-builder worker slot as ``_halt_active_turn`` reads it."""
-
-    key = "spec-builder-live"
-    _app = "spec-builder"
-    running = True
-
-    def __init__(self):
-        from unittest.mock import MagicMock
-
-        self.task = MagicMock()
-        self.task.done.return_value = False
-        self._queue = [{"id": "q1", "content": "next prompt"}]
-        self._pending_steers = ["steer-1"]
-        self._pending_synthesis = True
-
-
-def _spec_state(slot, *, compacting: bool, stop_outcome: str):
-    from unittest.mock import AsyncMock, MagicMock
-
-    state = MagicMock()
-    state.get_slot = lambda key: slot if key == slot.key else None
-    state.sessions.is_compacting = MagicMock(return_value=compacting)
-    state.sessions.stop_turn = AsyncMock(return_value=stop_outcome)
-    return state
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_while_compacting_skips_the_stop_but_still_halts_the_worker():
-    """The cooperative stop would be declined, so it is not sent; the WORKER task
-    (this app's own run loop, not the compaction turn) is still cancelled, so a
-    Pause the route reports as halted has halted, and its queued work is dropped
-    as on any Pause."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=True, stop_outcome="soft")
-    assert await runtime._halt_active_turn(state, "live") is True
-    state.sessions.stop_turn.assert_not_awaited()
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-    assert slot._pending_synthesis is False
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_declined_in_the_race_still_halts_the_worker():
-    """The race: the probe passed, the compaction committed, ``stop_turn`` declined.
-    The worker task is ours to cancel regardless, so the Pause still halts it."""
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=False, stop_outcome="compacting")
-    assert await runtime._halt_active_turn(state, "live") is True
-    state.sessions.stop_turn.assert_awaited_once()
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-
-
-@pytest.mark.asyncio
-async def test_spec_builder_pause_that_goes_through_still_discards_and_cancels():
-    from kiro_crew.apps.builtins.spec_builder.backend import runtime
-
-    slot = _SpecSlot()
-    state = _spec_state(slot, compacting=False, stop_outcome="soft")
-    assert await runtime._halt_active_turn(state, "live") is True
-    slot.task.cancel.assert_called_once()
-    assert slot._queue == [] and slot._pending_steers == []
-    assert slot._pending_synthesis is False
-
-
-@pytest.mark.asyncio
-async def test_detach_then_restore_puts_press_time_entries_ahead_of_newer_ones():
-    mgr, key, compact, order, notices = await _setup()
-    assert mgr.enqueue(key, "ts-1", "at press", force=True)
-    taken = mgr.detach_queue(key)
-    assert [e[0] for e in mgr._sessions[key].queue] == []
-    assert mgr.enqueue(key, "ts-2", "admitted later", force=True)
-    mgr.restore_queue(key, taken)
-    assert [e[0] for e in mgr._sessions[key].queue] == ["ts-1", "ts-2"]
-    await mgr.close_all()
-
-
-@pytest.mark.asyncio
-async def test_detach_then_clear_only_drops_the_detached_entries_and_keeps_newer():
-    mgr, key, compact, order, notices = await _setup()
-    assert mgr.enqueue(key, "ts-1", "at press", force=True)
-    taken = mgr.detach_queue(key)
-    assert mgr.enqueue(key, "ts-2", "admitted later", force=True)
-    mgr.clear_queue(key, only=taken)
-    assert [e[0] for e in mgr._sessions[key].queue] == ["ts-2"]
-    await mgr.close_all()
-
-
-def test_force_true_on_an_idle_stop_state_reaches_the_hard_stop_not_the_decline(
-    tmp_path, monkeypatch
-):
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
-
-    state = _dashboard_state(tmp_path)
-    slot = state.get_or_create_slot("chat-14841")
-    task = MagicMock()
-    task.done.return_value = False
-    slot.task = task
-    state.sessions.is_compacting = MagicMock(return_value=True)
-    state.sessions.stop_turn = AsyncMock(return_value="hard")
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-
-    asyncio.run(stop_slot_turn(state, slot, force=True))
-
-    state.sessions.stop_turn.assert_awaited_once()
-    assert state.sessions.stop_turn.await_args.kwargs["force"] is True
-    # The escape from a compaction decline keeps the SESSION queue (a linked
-    # channel's, on a linked slot); the slot's own queue is still discarded.
-    assert state.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
-
-
-def test_force_true_on_an_idle_state_with_no_compaction_stays_cooperative(tmp_path, monkeypatch):
-    """A retried first press whose original was lost on the wire arrives as
-    ``force=True`` on an idle state. Without a compaction there is nothing to
-    escape from, so it keeps the cooperative path and the queue."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.dashboard.chat_handlers import stop_slot_turn
-
-    state = _dashboard_state(tmp_path)
-    slot = state.get_or_create_slot("chat-14841")
-    task = MagicMock()
-    task.done.return_value = False
-    slot.task = task
-    slot._queue.append({"id": "q1", "content": "keep me"})
-    state.sessions.is_compacting = MagicMock(return_value=False)
-    state.sessions.stop_turn = AsyncMock(return_value="soft")
-    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.sel", lambda: MagicMock())
-
-    asyncio.run(stop_slot_turn(state, slot, force=True))
-
-    state.sessions.stop_turn.assert_awaited_once()
-    assert state.sessions.stop_turn.await_args.kwargs["force"] is False
-    assert list(slot._queue) == [{"id": "q1", "content": "keep me"}]
-
-
-def test_slack_stop_restores_detached_work_when_the_ephemeral_post_raises():
-    """The detached work lives only in locals across the awaits; a Slack error
-    must not leave the queue emptied with no stop performed."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = ("q-at-press",)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-    pending_at_press = list(orch._pending_queue["100.0"])
-    orch.slack.post_ephemeral = AsyncMock(side_effect=RuntimeError("ratelimited"))
-    orch.sessions.stop_turn = AsyncMock(return_value="soft")
-
-    with pytest.raises(RuntimeError):
-        _run_slack_stop(orch)
-
-    orch.sessions.restore_queue.assert_called_once_with("100.0", at_press)
-    assert orch._pending_queue["100.0"] == pending_at_press
-    orch.sessions.clear_queue.assert_not_called()
-    orch.sessions.stop_turn.assert_not_awaited()
-
-
-def test_slack_stop_hands_the_detached_queue_on_when_the_raising_stop_already_popped_the_session():
-    """A forced stop whose reset raised after the pop: no session to restore onto,
-    so the detached entries go to the successor (or are parked) instead of being
-    dropped -- they may be co-tenants' messages."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=False)
-    at_press = ("q-at-press",)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-
-    async def _stop(*_a, **_k):
-        orch.sessions.has_session = MagicMock(return_value=False)  # the pop happened
-        raise RuntimeError("shutdown raised after the pop")
-
-    orch.sessions.stop_turn = AsyncMock(side_effect=_stop)
-    with patch("kiro_crew.slack.events.hand_queue_to_successor", new=AsyncMock()) as hand:
-        with pytest.raises(RuntimeError):
-            _run_slack_stop(orch)
-    orch.sessions.restore_queue.assert_not_called()
-    orch.sessions.clear_queue.assert_not_called()
-    hand.assert_awaited_once_with(orch.sessions, "100.0", at_press)
-
-
-def test_slack_forced_repeat_carries_the_detached_queue_to_the_successor():
-    """On the forced repeat (hard reset) everything detached at the press goes to
-    the successor instead of being dropped, the presser's own included: the Stop
-    was aimed at the compaction, not at the shared queue. The pending stash goes
-    back too, and is the next thing the stop's drain dispatches."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    from kiro_crew.session_lifecycle import note_stop_declined
-
-    orch, task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=True)
-    at_press = ("q-at-press",)
-    orch.sessions.detach_queue = MagicMock(return_value=at_press)
-    pending_at_press = list(orch._pending_queue["100.0"])
-    orch.sessions.stop_turn = AsyncMock(return_value="hard")
-    note_stop_declined("100.0", "U_OWNER")  # the first press was declined
-    dispatched = AsyncMock()
-    with patch("kiro_crew.slack.events.hand_queue_to_successor", new=AsyncMock()) as hand:
-        with patch("kiro_crew.slack.events._dispatch_queued", new=dispatched):
-            unlink = _run_slack_stop(orch)
-    assert orch.sessions.stop_turn.await_args.kwargs["force"] is True
-    hand.assert_awaited_once_with(orch.sessions, "100.0", at_press)
-    orch.sessions.clear_queue.assert_not_called()
-    unlink.assert_not_called()
-    assert [call.args[2:] for call in dispatched.await_args_list] == [tuple(pending_at_press[0])]
-
-
-@pytest.mark.asyncio
-async def test_a_cancelled_successor_handoff_parks_the_entries_before_unwinding():
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew import session_lifecycle as sl
-
-    sessions = MagicMock()
-    sessions._fold_key = lambda k: k
-    sessions.get_or_create = AsyncMock(side_effect=asyncio.CancelledError())
-    bob = ("ts-b", "bob's", {})
-    with pytest.raises(asyncio.CancelledError):
-        await sl.hand_queue_to_successor(sessions, "k", (bob,))
-    assert sl._parked_queue["k"] == [bob]
-
-
-@pytest.mark.asyncio
-async def test_clear_queue_only_drops_the_detached_entries():
-    mgr, key, compact, order, notices = await _setup()
-    assert mgr.enqueue(key, "ts-1", "at press", force=True)
-    taken = mgr.detach_queue(key)
-    assert mgr.enqueue(key, "ts-2", "admitted later", force=True)
-    mgr.restore_queue(key, taken)
-    assert [e[0] for e in mgr._sessions[key].queue] == ["ts-1", "ts-2"], "restored ahead"
-    mgr.clear_queue(key, only=taken)
-    left = [e[0] for e in mgr._sessions[key].queue]
-    assert left == ["ts-2"]
-    await mgr.close_all()
-
-
-# -- 4. the notices --
-
-
-def test_the_cancelled_notice_names_the_users_stop_as_the_cause_of_the_restart():
-    from kiro_crew.dashboard.chat_compaction_notice import notice_text
-    from kiro_crew.dashboard.state import (
-        _AUTO_COMPACT_CANCELLED_NOTICE,
-        _AUTO_COMPACT_FAILED_NOTICE,
-        _AUTO_RECYCLE_NOTICE,
-    )
-
-    dashboard = _AUTO_COMPACT_CANCELLED_NOTICE.format(pct=87)
-    assert "Stop" in dashboard
-    assert "87% of the context limit" in dashboard, "the percentage names its referent"
-    # The only Stop that reaches a compacting session is the forced one, and a
-    # forced stop resets the session: the notice says so, and says what the
-    # next reply is built from.
-    assert dashboard.startswith("⏹ Your forced Stop"), "leads with the actor"
-    assert "was restarted" in dashboard, "one verb with the restart notices"
-    assert "reset" not in dashboard
-    assert "kept running" not in dashboard
-    assert "recent excerpt" in dashboard
-    assert "didn't succeed" not in dashboard, "nothing failed; the user ended it"
-    assert dashboard != _AUTO_COMPACT_FAILED_NOTICE.format(pct=87)
-    assert dashboard != _AUTO_RECYCLE_NOTICE.format(pct=87)
-
-    channel = notice_text("slack", 87.0, success=False, outcome=COMPACT_OUTCOME_CANCELLED)
-    assert "stop" in channel.lower()
-    assert "87% of the context limit" in channel
-    assert channel.startswith("Your forced stop"), "leads with the actor"
-    assert "was restarted" in channel
-    assert "reset" not in channel
-    assert "kept running" not in channel
-    assert "`!new`" in channel, "the channel's own start-fresh command"
-    assert "{" not in channel, "every placeholder filled"
-    assert channel != notice_text("slack", 87.0, success=False, outcome="compacted")
-
-
-# ── the decline is delivered before the escalation is armed ──────────────────
-
-
-def test_decline_stop_arms_only_after_the_warning_is_delivered():
-    """The marker is what makes the next press a hard reset; the sentence is what
-    makes that press informed. Send first, arm second."""
-    import kiro_crew.session_lifecycle as sl
-
-    order: list[str] = []
-
-    async def _deliver() -> bool:
-        order.append("sent")
-        assert sl._stop_declined_markers == {}, "nothing armed while the send is in flight"
-        return True
-
-    assert asyncio.run(sl.decline_stop("k", "u", _deliver, now=100.0)) is True
-    assert order == ["sent"]
-    assert sl.consume_stop_declined("k", "u", now=101.0) is True
-
-
-def test_decline_stop_arms_nothing_when_the_send_raises():
-    """A transport error is ordinary, and it makes the retry MORE likely: a user
-    who saw no answer presses again within seconds. That retry must be a first
-    press, not a silent session reset."""
-    import kiro_crew.session_lifecycle as sl
-
-    async def _deliver() -> bool:
-        raise RuntimeError("transport down")
-
-    with pytest.raises(RuntimeError):
-        asyncio.run(sl.decline_stop("k", "u", _deliver, now=100.0))
-    assert sl._stop_declined_markers == {}
-    assert sl.consume_stop_declined("k", "u", now=101.0) is False
-
-
-def test_decline_stop_arms_nothing_when_the_send_reports_it_could_not_run():
-    """Some sends are conditional on a client or a message id rather than on an
-    exception, and some swallow their own transport error. Those report False."""
-    import kiro_crew.session_lifecycle as sl
-
-    async def _no_client() -> bool:
-        return False
-
-    assert asyncio.run(sl.decline_stop("k", "u", _no_client, now=100.0)) is False
-    assert sl._stop_declined_markers == {}
-    assert sl.consume_stop_declined("k", "u", now=101.0) is False
-
-
-@pytest.mark.parametrize("reported", [None, "", 0, "ts-1", object()])
-def test_decline_stop_arms_nothing_unless_delivery_is_reported_as_true(reported):
-    """Only ``True`` arms. ``None`` is what a send that swallows its own error
-    returns when nothing landed, so reading an unknown value as success would
-    reset the session of a user who was never warned; anything that is not the
-    explicit yes leaves the next press a first press."""
-    import kiro_crew.session_lifecycle as sl
-
-    async def _sent():
-        return reported
-
-    assert asyncio.run(sl.decline_stop("k", "u", _sent, now=100.0)) is False
-    assert sl._stop_declined_markers == {}
-    assert sl.consume_stop_declined("k", "u", now=101.0) is False
-
-
-def test_the_shared_channel_decline_sends_before_it_arms():
-    """``stop_running_turn`` owns the send for exactly this reason: a channel
-    that posted the text after the arm could leave the escalation live."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    import kiro_crew.session_lifecycle as sl
-    from kiro_crew.messaging.commands import STOP_REPLY_COMPACTING, stop_running_turn
-
-    sessions = MagicMock()
-    sessions.is_compacting = MagicMock(return_value=True)
-    queue = MagicMock()
-    queue.lock = asyncio.Lock()
-    queue.finish_cancelled_locked = AsyncMock()
-
-    sent: list[str] = []
-
-    async def _deliver(text: str) -> int:
-        sent.append(text)
-        assert sl._stop_declined_markers == {}, "armed before the user was told"
-        return 4242  # what a transport hands back: the id of the message it sent
-
-    reply = asyncio.run(
-        stop_running_turn(
-            sessions,
-            "telegram:1",
-            queue=queue,
-            surface=MagicMock(label="telegram"),
-            owner="u1",
-            deliver=_deliver,
-        )
-    )
-    assert reply == STOP_REPLY_COMPACTING
-    assert sent == [STOP_REPLY_COMPACTING]
-    assert sl.consume_stop_declined("telegram:1", "u1") is True
-
-
-def test_the_shared_channel_decline_arms_nothing_when_its_send_fails():
-    from unittest.mock import AsyncMock, MagicMock
-
-    import kiro_crew.session_lifecycle as sl
-    from kiro_crew.messaging.commands import stop_running_turn
-
-    sessions = MagicMock()
-    sessions.is_compacting = MagicMock(return_value=True)
-    queue = MagicMock()
-    queue.lock = asyncio.Lock()
-    queue.finish_cancelled_locked = AsyncMock()
-
-    async def _deliver(_text: str) -> int:
-        raise RuntimeError("telegram 502")
-
-    with pytest.raises(RuntimeError):
-        asyncio.run(
-            stop_running_turn(
-                sessions,
-                "telegram:1",
-                queue=queue,
-                surface=MagicMock(label="telegram"),
-                owner="u1",
-                deliver=_deliver,
-            )
-        )
-    assert sl._stop_declined_markers == {}, "the retry is a first press again"
-    assert sessions.note_stop.call_count == 0
-    sessions.clear_queue.assert_not_called()
-
-
-def test_the_shared_channel_stop_delivers_every_reply_itself():
-    """The non-decline replies go through the same send, so a channel has one
-    path and cannot answer a Stop twice."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from kiro_crew.messaging.commands import STOP_REPLY_CANCELLED, stop_running_turn
-
-    sessions = MagicMock()
-    sessions.is_compacting = MagicMock(return_value=False)
-    sessions.is_busy = MagicMock(return_value=True)
-    sessions.get_provider = MagicMock(return_value=MagicMock(cancel=AsyncMock()))
-    queue = MagicMock()
-    queue.lock = asyncio.Lock()
-    queue.finish_cancelled_locked = AsyncMock()
-    deliver = AsyncMock()
-
-    reply = asyncio.run(
-        stop_running_turn(
-            sessions,
-            "telegram:1",
-            queue=queue,
-            surface=MagicMock(label="telegram"),
-            owner="u1",
-            deliver=deliver,
-        )
-    )
-    assert reply == STOP_REPLY_CANCELLED
-    deliver.assert_awaited_once_with(STOP_REPLY_CANCELLED)
-
-
-def test_slack_stop_arms_nothing_when_the_decline_post_never_lands():
-    """``post_message`` hands back the ts of what landed. A falsy one is a warning
-    this member never saw, so their retry stays a first press rather than the
-    forcing second press the unseen warning would have promised."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    import kiro_crew.session_lifecycle as sl
-
-    sl._stop_declined_markers.clear()
-    orch, _task = _slack_orch()
-    orch.sessions.is_compacting = MagicMock(return_value=True)
-    orch.sessions.stop_turn = AsyncMock()
-    orch.slack.post_message = AsyncMock(return_value=None)
-    _run_slack_stop(orch)
-    orch.slack.post_message.assert_awaited()
-    assert sl._stop_declined_markers == {}, "the retry is a first press again"
-    assert sl.consume_stop_declined("100.0", "U123") is False
-    sl._stop_declined_markers.clear()
-
-
-def test_the_shared_channel_decline_arms_nothing_when_the_send_reports_nothing_landed():
-    """A transport whose send swallows its own error hands back no message id. That
-    is not a delivered warning, so the escalation stays unarmed."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    import kiro_crew.session_lifecycle as sl
-    from kiro_crew.messaging.commands import STOP_REPLY_COMPACTING, stop_running_turn
-
-    sl._stop_declined_markers.clear()
-    sessions = MagicMock()
-    sessions.is_compacting = MagicMock(return_value=True)
-    queue = MagicMock()
-    queue.lock = asyncio.Lock()
-    queue.finish_cancelled_locked = AsyncMock()
-    sent: list[str] = []
-
-    async def _deliver(text: str) -> None:
-        sent.append(text)  # logged its own failure and returned nothing
-
-    reply = asyncio.run(
-        stop_running_turn(
-            sessions,
-            "telegram:2",
-            queue=queue,
-            surface=MagicMock(label="telegram"),
-            owner="u1",
-            deliver=_deliver,
-        )
-    )
-    assert reply == STOP_REPLY_COMPACTING
-    assert sent == [STOP_REPLY_COMPACTING]
-    assert sl._stop_declined_markers == {}
-    assert sl.consume_stop_declined("telegram:2", "u1") is False
-    sessions.clear_queue.assert_not_called()

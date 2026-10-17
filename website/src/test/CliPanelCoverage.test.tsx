@@ -28,6 +28,7 @@ import {
 const xt = vi.hoisted(() => {
   interface FakeOptions {
     cursorBlink?: boolean
+    cursorStyle?: string
     fontSize?: number
     fontFamily?: string
     theme?: Record<string, string>
@@ -138,7 +139,7 @@ import CliPanel, {
   isThemeSignal,
   useDeleteTerminalSession,
 } from '../components/CliPanel'
-import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { setTerminalFontSize, setTerminalCursorStyle, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 import { setTerminalCloseFailed, useTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
@@ -1031,6 +1032,19 @@ describe('CliPanel theme and font sync', () => {
     // Only the plain family assignment — no monospace/restore re-measure toggle.
     expect(term.fontFamilyWrites).toHaveLength(writesBefore + 1)
     expect(fit.fit).not.toHaveBeenCalled()
+  })
+
+  it('constructs a terminal with the default block cursor', () => {
+    const { term } = mount()
+    expect(term.options.cursorStyle).toBe('block')
+  })
+
+  it('pushes a cursor-style preference change onto every live terminal', () => {
+    const { term } = mount()
+    act(() => { setTerminalCursorStyle('bar') })
+    expect(term.options.cursorStyle).toBe('bar')
+    act(() => { setTerminalCursorStyle('underline') })
+    expect(term.options.cursorStyle).toBe('underline')
   })
 })
 

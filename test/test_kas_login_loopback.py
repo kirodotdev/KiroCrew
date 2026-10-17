@@ -21,6 +21,7 @@ import urllib.parse
 import aiohttp
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.auth.login import portal
 from kiro_crew.auth.service import (
     LOOPBACK_TIMEOUT_SECS,
@@ -420,3 +421,72 @@ def test_bind_allowed_port_reports_when_every_port_is_taken(monkeypatch):
     finally:
         for s in holders:
             s.close()
+
+
+@pytest.mark.parametrize("posix", [True, False], ids=["posix", "windows"])
+def test_bind_allowed_port_sets_the_platform_exclusivity_option(monkeypatch, posix):
+    """POSIX sets SO_REUSEADDR (a TIME_WAIT rebind); Windows sets SO_EXCLUSIVEADDRUSE alone.
+
+    On Windows two listeners that both set SO_REUSEADDR share one address, so the
+    busy-port skip does not see a port held by another SO_REUSEADDR listener as busy.
+    """
+    exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", -5)
+    monkeypatch.setattr(socket, "SO_EXCLUSIVEADDRUSE", exclusive, raising=False)
+    monkeypatch.setattr(platform_compat, "IS_POSIX", posix)
+    # Port 0: the OS picks the port at bind time, so no other listener can take it first.
+    monkeypatch.setattr(portal, "CALLBACK_PORTS", (0,))
+    options: list[int] = []
+    real_setsockopt = socket.socket.setsockopt
+
+    def spy(self, level, opt, value, *rest):
+        options.append(opt)
+        # The Windows-only option is recorded, never applied: other platforms may not define it.
+        if opt == socket.SO_REUSEADDR:
+            real_setsockopt(self, level, opt, value, *rest)
+
+    monkeypatch.setattr(socket.socket, "setsockopt", spy)
+    sock, _port = portal.bind_allowed_port()
+    sock.close()
+    assert options == ([socket.SO_REUSEADDR] if posix else [exclusive])
+
+
+def _shares_the_port_with_a_reuseaddr_listener(port: int) -> bool:
+    """Whether a second SO_REUSEADDR socket can bind *port* beside a live listener."""
+    twin = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    twin.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        twin.bind(("127.0.0.1", port))
+    except OSError:
+        return False
+    finally:
+        twin.close()
+    return True
+
+
+def test_a_sign_in_skips_a_port_another_reuseaddr_listener_holds(monkeypatch):
+    """Real sockets: the held port is skipped on every platform, including Windows.
+
+    The control states what the option does: a second SO_REUSEADDR socket shares the
+    address on Windows and is refused on POSIX. Without the Windows branch in
+    ``bind_allowed_port`` the Windows run takes the held port, so the returned candidate
+    is ``taken`` instead of 0 and the assertion fails there.
+    """
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
+    held.listen(1)
+    taken = held.getsockname()[1]
+    try:
+        assert _shares_the_port_with_a_reuseaddr_listener(taken) is platform_compat.IS_WINDOWS
+        # Port 0 as the next candidate: the OS picks the port at bind time, so no other
+        # listener can take it first.
+        monkeypatch.setattr(portal, "CALLBACK_PORTS", (taken, 0))
+        sock, port = portal.bind_allowed_port()
+        try:
+            # The binder returns the candidate it bound, not the port the OS assigned.
+            assert port == 0
+            assert sock.getsockname()[1] not in (0, taken)
+        finally:
+            sock.close()
+    finally:
+        held.close()

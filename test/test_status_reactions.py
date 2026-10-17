@@ -27,6 +27,7 @@ from kiro_crew.slack.handler import (
     StatusReactionController,
     _tool_to_phase,
 )
+from kiro_crew.testing.wait import await_until
 
 # ── FakeSlack helper ────────────────────────────────────────────────────
 
@@ -900,7 +901,7 @@ class TestSharedLadderClose:
         # swallows -- would park here forever instead of failing at the two
         # assertions below. This runs on the real clock, so the ceiling is generous
         # against the 0.1s debounce and 1.0s soft-stall timers left armed.
-        await asyncio.wait_for(sink.started.wait(), 5.0)
+        await await_until(sink.started, what="the reaction sink started")
 
         await ladder.close()
 
@@ -1096,7 +1097,7 @@ class TestConcurrentSwapsAreSerialized:
         # swap's remove leg sets ``first_remove``, and ``_sink_call`` swallows the
         # exception a protocol change would raise, so a swap that stops removing
         # would park here rather than fail at the two assertions below.
-        await asyncio.wait_for(sink.first_remove.wait(), 5.0)
+        await await_until(sink.first_remove, what="the first reaction removal")
         # The turn finishes while the first swap is still mid-flight.
         done = asyncio.create_task(ladder._swap_emoji("white_check_mark"))
         await asyncio.sleep(0)

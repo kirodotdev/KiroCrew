@@ -20,8 +20,9 @@
  *
  * The browser polls every 10 s. No agent wakes to render this, no turn is spent,
  * and nothing is pushed: the RFC's push half is PR A (the wake hook), which lands
- * separately. `channels_available` arrives `false` until the RFC's Phase 5 ships
- * the channel records, so that band turns on server-side with no edit here.
+ * separately. The payload carries no `channels_available` field and this page
+ * renders no channel band: both belong to the change that ships the RFC's
+ * Phase 5 channel records.
  *
  * ## Status badges render the store's own tokens
  *
@@ -147,11 +148,12 @@ function httpStatus(err: unknown): number {
  * That is the whole reason an action route exists rather than the page reusing the
  * ordinary Stop button.
  *
- * Take-over renders DISABLED on main. Nothing on the gateway performs one —
- * `session_control` has no re-own verb and `CONDUCTOR_ACTIONS` has no transfer —
- * so the button states why instead of being wired to something invented here. The
- * reason comes from the server as a CODE which this maps to a translated string,
- * so the page and the route cannot drift into disagreeing about what is possible.
+ * Take-over renders only when the server sends `take_over_available: true`, and
+ * on main it sends `false`, so no Take-over control renders at all. Nothing on the
+ * gateway performs one — `session_control` has no re-own verb and
+ * `CONDUCTOR_ACTIONS` has no transfer — so the page does not wire a button to
+ * something invented here. The server's flag is the one switch, so the page and
+ * the route cannot drift into disagreeing about what is possible.
  */
 function RowActions({
   item,

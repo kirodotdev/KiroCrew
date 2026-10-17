@@ -40,7 +40,9 @@ interface UserMessageProps {
   canEdit?: boolean
   messageIndex?: number
   messageTs?: string
-  onEditResend?: (index: number, ts: string, newContent: string) => void
+  /** Returns `false` when the host could not take the edit right now: the
+   *  editor then stays open with the text, so nothing typed is lost. */
+  onEditResend?: (index: number, ts: string, newContent: string) => void | boolean
   /** Opt-in: a double-click on the read-only bubble opens the editor. Off by
    *  default because the gesture replaces native double-click word selection
    *  on the bubble. The pencil button is the edit path for everyone. Wired
@@ -67,6 +69,13 @@ interface UserMessageProps {
    *  send while the member works is a steer), the badge would label every
    *  such send with the mechanics the surface exists to hide. */
   hideSteerBadge?: boolean
+  /** Bubble colour. `default` is the single-chat page's neutral `bg-card`
+   *  surface. `accent` fills the bubble with the theme accent and sets its text
+   *  to `--accent-fg` — the iMessage pairing a crewmate's chat uses (#17839),
+   *  where the crewmate's gray bubble sits opposite. The `user-bubble-accent`
+   *  hook recolours inline code and links onto `--accent-fg` (index.css), since
+   *  the message-wide code and link colours assume the neutral surface. */
+  tone?: 'default' | 'accent'
   /** ⌘↑ / Ctrl+Up edit request: a monotonically increasing sequence
    *  number. ChatPage passes a NEW value when the keyboard requests an edit of
    *  THIS row (the session's last user message); the rising edge opens the
@@ -92,7 +101,7 @@ interface UserMessageProps {
   onJumpToQuote?: (quote: MessageQuote) => void
 }
 
-const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote }: UserMessageProps) {
+const UserMessage = memo(function UserMessage({ content, meta, timestamp, timestampTitle, renderContent, canEdit, messageIndex, messageTs, onEditResend, doubleClickToEdit = false, slotKey, slotTitle, mode, pinned, onTogglePin, onReplyInThread, slotRunning, hideSteerBadge, tone = 'default', editRequest, onEditConsumed, onQuoteMessage, onJumpToQuote }: UserMessageProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const ime = useImeGuard()
@@ -156,7 +165,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // what both doors carry -- the live `steer_push` / `queue_push` reconcile and a
   // row reloaded from history -- so the line survives a reload without a fetch.
   // Absent on every ordinary send, and that absence is what draws nothing.
-  const steerDecision = readSteerRecord((meta as { decisions_strip?: unknown } | undefined)?.decisions_strip)
+  const steerDecision = hideSteerBadge ? null : readSteerRecord((meta as { decisions_strip?: unknown } | undefined)?.decisions_strip)
   const steerState = (meta as { steerState?: string } | undefined)?.steerState
   const steerOptimistic = !!(meta as { optimistic?: boolean } | undefined)?.optimistic
   const isSteer = !hideSteerBadge
@@ -272,7 +281,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // The block the editor hid goes back on the head, so the resent text
     // still carries the quoted message the user wrote the reply to.
     const resend = carriedQuote && content.startsWith(quoteBlock(carriedQuote)) ? prependQuote(trimmed, carriedQuote) : trimmed
-    onEditResend?.(messageIndex ?? 0, messageTs ?? '', resend)
+    if (onEditResend?.(messageIndex ?? 0, messageTs ?? '', resend) === false) return
     setEditing(false)
   }, [draft, onEditResend, messageIndex, messageTs, carriedQuote, content])
 
@@ -384,7 +393,9 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
         </div>
         {/* Actions sit BELOW the bubble (like the read-only action row) so they
             never impose a min-width floor on the auto-sized bubble. */}
-        <div className="flex justify-end gap-2 mt-1">
+        <div className="flex justify-end items-center gap-2 mt-1">
+          {/* Send rewinds: say what it costs, beside the button that does it. */}
+          <span className="text-[12px] leading-4 text-muted">{i18nT('pages.chat.userMessage.edit_replaces_below')}</span>
           <button onClick={cancel} className="px-3 py-1 text-[13px] leading-5 text-muted hover:text-text rounded border border-border hover:bg-bg-hover transition-colors" title={i18nT('pages.chat.userMessage.cancel_esc')}>
             {i18nT('pages.chat.userMessage.cancel')}
           </button>
@@ -471,7 +482,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Disable is safe: the keyboard-accessible edit path is the aria-labelled
     // pencil button in the action row below, not this bubble.
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${isSteer ? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
+    <div ref={userRef} onCopy={handleCopy} onDoubleClick={dblClickEdits ? handleDoubleClick : undefined} className={`message-bubble mc-message-font-scope msg-content px-4 py-2 leading-relaxed rounded-xl overflow-hidden min-w-0 w-fit max-w-full ${carriedQuote ? 'min-w-64' : ''} ${isSteer ? 'bg-accent-subtle text-text' : tone === 'accent' ? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'}`} style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}>
       {/* `messageTs` FIRST, `clientTs` only as a fallback. The opposite order is
           correct for the audio key above, which wants the optimistic bubble's own
           identity, but this value is COMPARED against server-clock slot mint
@@ -483,10 +494,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
       {renderContent(renderedBody, meta, messageTs || ((meta as { clientTs?: string })?.clientTs))}
     </div>
   )
-  // The right-click / long-press menu wraps the bubble only when Quote is
-  // offered (the menu's reason to exist); otherwise `MessageContextMenu`
+  // The right-click menu wraps the bubble only when Quote is offered (the
+  // menu's reason to exist) on a pointer device; otherwise `MessageContextMenu`
   // renders the bubble bare.
-  const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn}>{bubble}</MessageContextMenu>
+  const bubbleWithMenu = <MessageContextMenu items={menuItems} onOpenChange={readStandIn} onCopyFailed={() => setCopyFailed(true)}>{bubble}</MessageContextMenu>
 
   return (
     // Every box between the content column and the bubble is a fit-content flex

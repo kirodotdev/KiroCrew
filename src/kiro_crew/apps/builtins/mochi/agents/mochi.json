@@ -1,6 +1,6 @@
 {
   "name": "mochi",
-  "description": "Mochi desktop pet companion — concise, friendly, can spawn subagents, learn from corrections, schedule tasks, and read internal resources",
+  "description": "Mochi desktop pet companion — concise, friendly, can spawn subagents, learn from corrections, schedule tasks, and use connected tools when available",
   "model": "auto",
   "tools": [
     "execute_bash",

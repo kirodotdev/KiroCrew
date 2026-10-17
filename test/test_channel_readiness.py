@@ -275,11 +275,16 @@ def _credentials_the_gateway_requires() -> dict[str, set[str]]:
 
     import kiro_crew as kiro_crew_pkg
 
-    src = (Path(kiro_crew_pkg.__file__).parent / "slack" / "gateway.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    # The facade and the owners it composes (the hoists live in
+    # gateway_runtime/channel_boot.py), read as one.
+    facade = Path(kiro_crew_pkg.__file__).parent / "slack" / "gateway.py"
+    trees = [
+        ast.parse(path.read_text(encoding="utf-8"))
+        for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
+    ]
     cred_of: dict[str, str] = {}
     required: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
+    for node in (node for tree in trees for node in ast.walk(tree)):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         name = getattr(node.targets[0], "attr", None)

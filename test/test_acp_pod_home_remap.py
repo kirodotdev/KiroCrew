@@ -21,6 +21,34 @@ import pytest
 from kiro_crew.acp.client import _apply_pod_home_remap
 
 
+def _remap_calls(module, backend: str, tmp_path: Path, *extra_patches) -> list[bool]:
+    """Every ``pod_home_remap`` answer the driver in *module* handed the shared helper.
+
+    Drives the real launch of *backend* through the launch capture, with the
+    driver's own ``_apply_pod_home_remap`` binding -- the one its launch tools hand
+    the tail -- replaced by a recorder that changes nothing.
+    """
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
+
+    answers: list[bool] = []
+
+    def _record(env, *, pod_home_remap):
+        answers.append(pod_home_remap)
+        return env
+
+    capture_mod.capture(
+        backend,
+        tmp_path,
+        extra_patches=(
+            patch.object(module, "_apply_pod_home_remap", side_effect=_record),
+            *extra_patches,
+        ),
+    )
+    return answers
+
+
 def _base_pod_env(tmp_path: Path) -> dict[str, str]:
     """A KIROCREW_POD=1 env with KIROCREW_OS_HOME set, as build_pod_env emits."""
     return {
@@ -115,19 +143,25 @@ class TestTheCapabilitySetIsItsOwnDecision:
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_POD_HOME_REMAP
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_POD_HOME_REMAP
 
-    def test_the_client_spawn_does_not_gate_the_remap_on_the_sandbox_set(self) -> None:
-        """The regression: reusing ACP_BACKENDS_INTERNAL_SANDBOX for this gate
-        is the conflation, so the call site may not name it for the remap."""
-        import inspect
+    def test_the_client_spawn_does_not_gate_the_remap_on_the_sandbox_set(self, tmp_path) -> None:
+        """The regression: reusing ACP_BACKENDS_INTERNAL_SANDBOX for this gate is
+        the conflation, so the client's answer must follow the remap set ALONE.
+
+        The two sets have the same members today, so they are pulled apart here:
+        kiro-cli stays a member of the sandbox set while the remap set is emptied,
+        and the spawn must stop asking for the remap.
+        """
+        from unittest.mock import patch
 
         from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp_backends import ACP_BACKEND_KIRO, ACP_BACKENDS_INTERNAL_SANDBOX
 
-        source = inspect.getsource(client_mod.AcpClient._spawn)
-        remap_call = source.split("_apply_pod_home_remap(")[1].split(")")[0]
-        assert "ACP_BACKENDS_POD_HOME_REMAP" in remap_call
-        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+        assert ACP_BACKEND_KIRO in ACP_BACKENDS_INTERNAL_SANDBOX
+        assert _remap_calls(client_mod, ACP_BACKEND_KIRO, tmp_path / "member") == [True]
+        emptied = patch.object(client_mod, "ACP_BACKENDS_POD_HOME_REMAP", frozenset())
+        assert _remap_calls(client_mod, ACP_BACKEND_KIRO, tmp_path / "emptied", emptied) == [False]
 
-    def test_the_shared_process_spawn_asks_a_question_of_its_own(self) -> None:
+    def test_the_shared_process_spawn_asks_a_question_of_its_own(self, tmp_path) -> None:
         """The same conflation, closed one layer down.
 
         The shared-process spawn asks its host, and the host answers from the
@@ -137,14 +171,22 @@ class TestTheCapabilitySetIsItsOwnDecision:
         pin than a spawn method that mentions both sets for unrelated reasons.
         """
         import inspect
+        from unittest.mock import PropertyMock, patch
 
         from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.harness import CodexHarness
         from kiro_crew.acp.harness._common import MembershipHarness
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 
-        spawn = inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted)
-        remap_call = spawn.split("_apply_pod_home_remap(")[1].split(")")[0]
-        assert "self._harness.pod_home_remap" in remap_call
-        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+        # The runtime hands the tail its harness's own answer, whatever the sandbox
+        # answer is.
+        for answer in (True, False):
+            asked = patch.object(
+                CodexHarness, "pod_home_remap", new_callable=PropertyMock, return_value=answer
+            )
+            assert _remap_calls(runtime_mod, ACP_BACKEND_CODEX, tmp_path / str(answer), asked) == [
+                answer
+            ]
 
         answer = inspect.getsource(MembershipHarness.pod_home_remap.fget)
         assert "ACP_BACKENDS_POD_HOME_REMAP" in answer
@@ -372,23 +414,29 @@ class TestBothSpawnTransportsApplyItIdentically:
     harness-parity-correct classification -- never a hand-rolled copy that
     could drift between the two transports."""
 
-    def test_acp_client_spawn_calls_the_shared_helper(self) -> None:
-        import inspect
-
+    def test_acp_client_spawn_calls_the_shared_helper(self, tmp_path) -> None:
+        """Once per spawn, with the remap set's answer for the host it launches."""
         from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp_backends import (
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_KIRO,
+            ACP_BACKENDS_POD_HOME_REMAP,
+        )
 
-        source = inspect.getsource(client_mod.AcpClient._spawn)
-        assert "_apply_pod_home_remap(" in source
-        assert "ACP_BACKENDS_POD_HOME_REMAP" in source
+        for backend in (ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE):
+            assert _remap_calls(client_mod, backend, tmp_path / (backend or "kiro")) == [
+                backend in ACP_BACKENDS_POD_HOME_REMAP
+            ]
 
-    def test_acp_runtime_spawn_calls_the_same_shared_helper(self) -> None:
-        import inspect
-
+    def test_acp_runtime_spawn_calls_the_same_shared_helper(self, tmp_path) -> None:
+        """The runtime's spawn reaches the same helper once, with its host's answer."""
         from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.harness import harness_for
+        from kiro_crew.acp_backends import ACP_BACKEND_CODEX
 
-        source = inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted)
-        assert "_apply_pod_home_remap(" in source
-        assert "ACP_BACKENDS_POD_HOME_REMAP" in source
+        assert _remap_calls(runtime_mod, ACP_BACKEND_CODEX, tmp_path) == [
+            harness_for(ACP_BACKEND_CODEX).pod_home_remap
+        ]
 
     def test_runtime_imports_the_client_defined_function_rather_than_a_copy(self) -> None:
         """Import identity, not merely name equality — a copy-pasted function

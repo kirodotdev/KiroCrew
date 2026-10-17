@@ -70,6 +70,8 @@ except ImportError:  # pragma: no cover - non-Linux platforms lack fcntl
 # the reader module rather than bound here at import: the facade mirrors a patch
 # onto the owning module's namespace, so a name bound into THIS namespace would
 # keep resolving the unpatched object and the instrument would count nothing.
+from kiro_crew.atomic_write import on_event_loop as _event_loop_running
+
 from . import shell_normalizer as _shell_normalizer
 from .denied_rules import _GIT_PUBLISH_UNGATED
 from .host_addresses import (  # noqa: F401  (parser re-imported as a test entry point)
@@ -888,15 +890,15 @@ def _is_self_kill(text_lower: str) -> bool:
             # out of the match (``pkill other; echo kirocrew`` is not a self-kill).
             depth = 0
             for arg in tokens[i + 1 :]:
-                # Search the raw arg AND its normalized form.  Normalizing alone is
-                # not enough: a pkill pattern is an ERE, so a ``>`` inside it is part
-                # of the TARGET (``pkill -f '>kirocrew'``) and stripping it as a
-                # redirect would discard the name.  Raw alone is not enough either --
-                # an empty substitution (``kiro$()crew``) only reads as the name once
-                # removed.  Either match is a hit.
-                if _SELF_NAME_RE.search(_debracket(arg)) or _SELF_NAME_RE.search(
-                    _shell_normalizer._normalize_operand(arg)
-                ):
+                # Search the raw arg, its normalized form, and its resolved-word view.
+                # Normalizing alone is not enough: a pkill pattern is an ERE, so a ``>``
+                # or ``|`` in it is part of the TARGET (``'>kirocrew'``, ``zz|kirocrew``)
+                # and the operand view cuts there.  Raw alone misses an empty
+                # substitution or a default (``kiro$()crew``, ``zz|kiro${x:-crew}``), which
+                # the construct-only ``_resolved_word_view`` resolves.  Any hit counts.
+                n = _shell_normalizer
+                views = (_debracket(arg), n._normalize_operand(arg), n._resolved_word_view(arg))
+                if any(_SELF_NAME_RE.search(view) for view in views):
                     return True
                 depth += _substitution_depth_delta(arg)
                 if depth <= 0 and _ends_argv(arg):
@@ -961,7 +963,7 @@ def _is_self_kill(text_lower: str) -> bool:
         # a name needing TWO transforms sits in the seam between
         # single-transform searches), while the bare search reaches a name the
         # transform DESTROYS (``${PATH/usr/|'kiro''crew'|zz-}``; the ``pkill``
-        # leg's sibling seam is tracked in the module spec).  See the helper's docstring for
+        # leg searches the same view per argument).  See the helper's docstring for
         # why the transform is not ``_normalize_operand``.
         for body in _bare_kill_raw_bodies(source):
             if _SELF_NAME_RE.search(_debracket(body)) or _SELF_NAME_RE.search(
@@ -1427,9 +1429,9 @@ _HOSTS_FILE_READ_CHUNK = 64 * 1024
 
 # path -> (key, {name -> maps-to-local}), key = (mtime, ctime, size, content
 # digest or None, published, own set).  Background threads parse
-# (``_warm_hosts_file_cache``).  On a miss the gate path parses in the
-# same call only a file no larger than one read chunk; a larger file
-# answers pending and schedules one warm thread.
+# (``_warm_hosts_file_cache``).  On a miss the gate path on an event loop
+# parses in the same call only a file no larger than one read chunk; a larger
+# file answers pending and schedules one warm thread.
 # A changed file, publication or own-address set is a new key, so an own
 # address learned later re-marks an alias.  Two threads
 # (the enrichment worker and the on-demand warm) may parse at once without a
@@ -1544,14 +1546,25 @@ def _parse_and_cache_for_key(
     parsed or cached here.
 
     Returns the table, or a status string when nothing was cached:
-    ``"changed"`` when the key moved mid-parse (the enrichment worker can
-    publish the address table or grow the own set, and a table built across
-    that change could mark an alias for the new address remote),
+    ``"changed"`` when the FILE moved mid-parse (stat identity or digest),
     ``"too-large"`` when the file holds more than *limit*, and ``"failed"``
     when it could not be read or decoded.  A failed parse is never cached,
     so the next gate call reads again; the gate answers it pending (fail
     closed), since a hosts-file alias for this machine cannot be ruled out
     while the file cannot be read.  May raise OSError from the second stat.
+
+    When only the own-address half of the key moved mid-parse (the
+    enrichment worker publishes the address table or grows the own set --
+    on a cold worker that happens within the first ssh vet, because that
+    vet is what starts the worker), the table is returned but NOT cached:
+    it was judged against the older own set, so a remote entry could be an
+    alias for the newly learned address, and the gate's own-state re-check
+    holds exactly those entries pending.  The file itself is the one the
+    key names, so the table's NAME SET is exact: a local entry stays local
+    under a grown own set, and a name absent from the file is absent under
+    any own set.  Answering those two from the uncached table is what keeps
+    an everyday ``ssh user@dev-dsk`` from being refused by a worker thread
+    this same call started.
 
     When *key* carries a digest (Windows), the bytes are read once, hashed,
     and parsed from that same buffer, so the digest names exactly the
@@ -1572,10 +1585,15 @@ def _parse_and_cache_for_key(
     except (OSError, ValueError):
         return "failed"
     try:
-        if _hosts_file_key(path) != key:
-            return "changed"
+        current = _hosts_file_key(path)
     except _HostsFileUnreadable:
         return "changed"
+    if current[:4] != key[:4]:
+        return "changed"
+    if current != key:
+        # Only the publication flag or the own set moved: hand the table
+        # back for the local/absent answers, cache nothing.
+        return table
     _HOSTS_FILE_CACHE[path] = (key, table)
     return table
 
@@ -1658,7 +1676,11 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     refusal lasts only while the file cannot be read.  A larger file is
     not parsed here: the answer is True, a pending refusal, checked before
     any path's verdict is used, and one single-flight warm thread is
-    started; the same command succeeds once the warm lands.
+    started; the same command succeeds once the warm lands.  A thread with
+    no running event loop (a cron-launched MCP server, or a gateway worker
+    thread such as the cron fire-time vet) has no loop to keep free, so it
+    parses a larger file in the call exactly as the warm would, read up to
+    ``_HOSTS_FILE_READ_CAP`` and truncated past it.
 
     A same-size rewrite that restores mtime is a new key: on POSIX through
     ``st_ctime``, with no extra read; on Windows, where ``st_ctime`` is
@@ -1667,8 +1689,11 @@ def _hosts_file_verdict(host: str) -> "bool | None":
     A Windows file over one chunk cannot be verified without reading past
     that bound, so every dotless name is pending there (True), with no
     stale window; the refusal note tells the agent to use the full
-    hostname or an IP address.  An in-call parse whose key changed
-    while it ran is also pending.  A remote answer is given
+    hostname or an IP address.  An in-call parse whose FILE changed
+    while it ran is also pending; one whose own-address state moved (the
+    enrichment worker publishing mid-parse) still answers a local or an
+    absent name from the table it built, and holds a remote entry pending
+    through the own-state check below.  A remote answer is given
     only if publication and the own set still match the table's key at the
     moment of return.  A name on several lines is local if ANY of them maps
     local (deny-floor direction).
@@ -1686,13 +1711,15 @@ def _hosts_file_verdict(host: str) -> "bool | None":
             return True
         cached = _HOSTS_FILE_CACHE.get(path)
         if cached is None or cached[0] != key:
-            if key[2] > _HOSTS_FILE_READ_CHUNK:
+            on_loop = _event_loop_running()
+            if key[2] > _HOSTS_FILE_READ_CHUNK and on_loop:
                 # Every call on an uncached key re-schedules the warm, so a
                 # retry does not hang on one thread that failed to start.
                 _schedule_hosts_file_warm()
                 return True
+            limit = _HOSTS_FILE_READ_CHUNK if on_loop else None
             try:
-                result = _parse_and_cache_for_key(path, key, limit=_HOSTS_FILE_READ_CHUNK)
+                result = _parse_and_cache_for_key(path, key, limit=limit)
             except OSError:
                 result = "changed"
             if isinstance(result, str):

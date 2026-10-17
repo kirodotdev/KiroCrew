@@ -17,10 +17,20 @@
         "cwd": "/pinned/work/dir",
         "mcpServers": [
           {
+            "_meta": {
+              "kiro": {
+                "versionNegotiation": "legacy"
+              }
+            },
             "command": "pinned-core",
             "name": "kirocrew-core"
           },
           {
+            "_meta": {
+              "kiro": {
+                "versionNegotiation": "legacy"
+              }
+            },
             "command": "pinned-cron",
             "name": "kirocrew-cron"
           }
@@ -57,6 +67,11 @@
         "cwd": "/pinned/work/dir",
         "mcpServers": [
           {
+            "_meta": {
+              "kiro": {
+                "versionNegotiation": "legacy"
+              }
+            },
             "command": "pinned-core",
             "env": [
               {
@@ -67,6 +82,11 @@
             "name": "kirocrew-core"
           },
           {
+            "_meta": {
+              "kiro": {
+                "versionNegotiation": "legacy"
+              }
+            },
             "command": "pinned-cron",
             "env": [
               {

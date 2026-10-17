@@ -10,9 +10,24 @@ install, no `--extra-index-url`, and no external Ollama server. License:
 What was changed relative to the upstream wheel:
 
 - `llama_cpp/lib/` (bundled native libs) removed — per-platform libraries live
-  in `llama_cpp_libs/<platform>/` instead and are selected at runtime via the
-  `LLAMA_CPP_LIB_PATH` env var (upstream-supported override, see
-  `llama_cpp/llama_cpp.py`).
+  in `llama_cpp_libs/<platform>/` instead. `kiro_crew.embeddings` hands the
+  selected directory to the loader through a process-local seam (a module it
+  registers in `sys.modules` as `_kiro_crew_llama_cpp_lib_path`, carrying
+  `LIBS_DIR`; see the divergence in `llama_cpp/llama_cpp.py` below), never
+  through the environment: a variable set even for the duration of the import
+  is inherited by every child spawned in that window — an MCP server, a
+  session, the gateway an in-app restart execs into. The upstream-supported
+  `LLAMA_CPP_LIB_PATH` env var remains the operator's override (a GPU build, a
+  hand-assembled lib dir), and the embedding loader never writes it. A value
+  shaped like ANY install's bundled directory
+  (`…/kiro_crew/_vendor/llama_cpp_libs/<platform>`) is read as inherited from
+  another Kiro Crew process, not as an operator's choice. Each entry prelude
+  removes and records that value on the main thread before any thread or child
+  process exists; a process that bypasses those preludes reaches a loader that
+  classifies and ignores the value without mutating the environment. Shape alone
+  decides, whatever the directory holds, since a complete one may be a
+  still-present previous install's: point the override at a directory of your
+  own, whose path does not end in that shape.
 - `llama_cpp/server/` removed (FastAPI server — unused, heavy deps).
 - `llama_cpp.llama_cache`'s module-level `import diskcache` is satisfied by a
   `sys.modules` stub installed in `kiro_crew.embeddings._install_diskcache_stub`
@@ -48,20 +63,24 @@ optimized GEMM/repack kernels instead.
 
 These libs are loaded by ctypes at runtime, so a single absent file makes the
 whole runtime unusable and memory silently falls back to keyword search behind
-one WARNING — nothing fails loudly. Three packaging lanes select these files by
-two different mechanisms, and each can drop them alone:
+one WARNING — nothing fails loudly. Two packaging lanes select these files, each
+by its own mechanism, and each can drop them alone:
 
 | Lane | Mechanism | Gotcha |
 |---|---|---|
 | sdist | `MANIFEST.in` | `global-exclude *.so` strips exactly `libllama.so` (other Linux libs end `.so.0`; macOS/Windows use `.dylib`/`.dll`). The re-include MUST stay after every exclude — later rules win. `python -m build` builds the wheel FROM the sdist, so a loss here reaches every pip install |
 | wheel | `setup.cfg [options.package_data]` | explicit per-platform globs, because setuptools' `**` recursion has varied across versions |
 
-The desktop bundle has no rules of its own: `packaging/build-desktop.sh` pip-installs
-the project into the bundled python-build-standalone interpreter, so that lane
-inherits the wheel's `package_data` and cannot drift from it.
+The desktop bundle has no selection rules of its own: `packaging/build-desktop.sh`
+pip-installs the project into the bundled python-build-standalone interpreter, so
+it inherits the wheel's `package_data`. It does remove files afterwards: the
+Windows bundle's prune step deletes the foreign-platform `llama_cpp_libs/`
+directories (`linux_*`, `macos_*`), keeping only `win_amd64/`.
 
-`embeddings._REQUIRED_VENDORED_LIBS` is the single declaration of what must
-ship. `test/test_vendored_llama_payload.py` asserts each lane against it, and
+`_llama_lib_path._REQUIRED_VENDORED_LIBS` is the single declaration of what must
+ship (`embeddings` re-exports it; it lives in that stdlib-only leaf so the
+build-time verifier can read it with `ast` alone).
+`test/test_vendored_llama_payload.py` asserts each lane against it, and
 both `build.yml` (per PR) and `build-wheel.yml` (release/nightly) re-check the
 built wheel **and** sdist by running the shared
 `scripts/verify_vendored_payload.py` (one script, so the two lanes cannot drift
@@ -81,15 +100,20 @@ from the sha256-pinned PyPI sdist on macOS under Rosetta with an x86_64
 CPython (uv-managed python-build-standalone) and:
 
 ```
-CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_METAL=OFF -DGGML_NATIVE=OFF
+CMAKE_ARGS="-DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF
   -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew -DLLAMA_BUILD_COMMON=OFF
   -DLLAMA_OPENSSL=OFF -DHTTPLIB_USE_OPENSSL_IF_AVAILABLE=OFF -DLLAMA_CURL=OFF"
 ```
 
+The Metal backend stays at its default (on): the shipped closure includes
+`libggml-metal.0.dylib`, which `embeddings._REQUIRED_VENDORED_LIBS` requires, so a
+rebuild must not pass `-DGGML_METAL=OFF`; a builder should confirm the rebuilt
+closure still contains that dylib.
+
 `GGML_NATIVE=OFF` avoids `-march=native`, but the enabled upstream x86 CPU
 kernels still require AVX, AVX2, BMI2, F16C, FMA, SSE3, and SSSE3. The loader
-checks that baseline before using the bundled Linux x86_64 runtime and degrades
-to keyword search when the host cannot execute it. An operator-set
+checks that baseline before using the bundled Linux x86_64 or macOS x86_64
+runtime and degrades to keyword search when the host cannot execute it. An operator-set
 `LLAMA_CPP_LIB_PATH` bypasses that bundled-runtime gate so a compatible custom
 build remains usable.
 `LLAMA_BUILD_COMMON=OFF` + the OpenSSL/curl switches drop llama-common (not
@@ -150,6 +174,15 @@ source with a `kiro_crew DIVERGENCE FROM UPSTREAM` comment, so
   `(n_batch, n_vocab)` float32, which for the shipped Qwen3-Embedding-0.6B is
   ~1.24 GB that the embedding path never reads. `test/test_embed_scores_buffer.py`
   parses this file and fails if the divergence goes missing.
+- `llama_cpp/llama_cpp.py`, module level — the library directory is resolved
+  from the process-local seam first (`sys.modules["_kiro_crew_llama_cpp_lib_path"].LIBS_DIR`,
+  registered by `kiro_crew.embeddings._publish_lib_path_for_import`), then from
+  `LLAMA_CPP_LIB_PATH`, then upstream's `<package>/lib` default. Without the
+  seam the module behaves exactly as upstream. It exists so the host never has
+  to put the bundled directory in the environment, where a child spawned during
+  the import would inherit it (see the first bullet under "What was changed").
+  `test/test_vendored_llama_payload.py::TestVendoredLoaderLibPathPrecedence`
+  executes this file's prefix and fails if the order changes or the key drifts.
 
 ### Updating the vendored tree (checksum manifest)
 
@@ -157,7 +190,7 @@ Everything under `_vendor/` is excluded from source-level content review
 (semgrep, the AI reviewers' diff, and the lint/format configs all skip it), so
 CI verifies the tree's CONTENT against a committed checksum manifest instead:
 `scripts/vendor_manifest.sha256` pins the SHA-256 of every file here, and the
-`vendor-manifest` job in `.github/workflows/ci.yml` fails any PR whose
+`vendor-manifest` job in `.github/workflows/fast-gate.yml` fails any PR whose
 `_vendor/` contents differ from it — modified, missing, or added files alike.
 
 After a legitimate vendored bump:

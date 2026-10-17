@@ -4150,3 +4150,44 @@ class TestBackupRetentionRoute:
         body = _payload(resp)
         assert body["remote"] is None
         assert body["retentionUnrecorded"] == {}
+
+    def test_the_status_read_reports_how_the_last_sweep_ended(self):
+        # Beside the count, never folded into it. `retentionKeep` says what a sweep
+        # would act on; this says whether one has, so a sweep refused every night stops
+        # looking identical to a working one. Local and free, so it rides the unpolled
+        # half like the other retention fields.
+        last = {
+            "snapshot": {
+                "result": "refused",
+                "skipped": "authorization refused",
+                "retired": 0,
+                "versions": 0,
+                "at": "2026-01-01T00:00:00+00:00",
+            }
+        }
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            _consent_ok(),
+            _drive_found(),
+            mock.patch.object(routes_mod.backup_mod, "nightly_enabled", return_value=False),
+            mock.patch.object(routes_mod.backup_mod, "last_runs", return_value={}),
+            mock.patch.object(routes_mod.backup_mod, "retention_keep", return_value=3),
+            mock.patch.object(
+                routes_mod.backup_mod, "retention_last_sweep", return_value=last
+            ) as reader,
+        ):
+            resp = asyncio.run(
+                handlers[("GET", "/backup/{account}")](  # type: ignore[operator]
+                    _request("GET", f"/backup/{ACCOUNT}", match_info={"account": ACCOUNT})
+                )
+            )
+        body = _payload(resp)
+        assert body["remote"] is None
+        assert body["retentionLastSweep"] == last
+        assert body["retentionKeep"] == 3
+        # Per account, like every other field here.
+        reader.assert_called_once_with(ACCOUNT)

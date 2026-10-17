@@ -313,6 +313,60 @@ export function createLevelMeter(
 }
 
 /**
+ * The deviceId Chromium (and so Electron) gives its "follow the OS default"
+ * pseudo-device. Safari and Firefox list no such entry.
+ */
+export const DEFAULT_PSEUDO_DEVICE_ID = 'default'
+
+/** Chromium's label for the pseudo-device: "Default - <real device name>". */
+const DEFAULT_LABEL_PREFIX = /^default\s*[-\u2013\u2014:]\s*/i
+
+/**
+ * A device label with Chromium's "Default - " prefix removed, so a track opened
+ * on the system default is named the same way the picker names it.
+ */
+export function stripDefaultPrefix(label: string): string {
+  const trimmed = label.trim()
+  return DEFAULT_LABEL_PREFIX.test(trimmed) ? trimmed.replace(DEFAULT_LABEL_PREFIX, '').trim() : trimmed
+}
+
+/**
+ * Name of the microphone the system default currently resolves to, or `''`
+ * when the browser does not say.
+ *
+ * Chromium labels its `default` entry "Default - <name>" and gives it the real
+ * device's groupId, so the prefix is stripped, or else the sibling sharing that
+ * groupId supplies the name. A label with neither shape (Chromium's fake capture
+ * device reads "Fake Default Audio Input") is used as is. Safari and Firefox
+ * have no `default` entry, and labels are blank before mic permission, so both
+ * answer `''` and the caller shows plain "System default".
+ */
+export function defaultMicName(devices: MediaDeviceInfo[]): string {
+  const pseudo = devices.find(d => d.deviceId === DEFAULT_PSEUDO_DEVICE_ID)
+  const label = pseudo?.label.trim() ?? ''
+  if (!pseudo || !label) return ''
+  if (DEFAULT_LABEL_PREFIX.test(label)) return stripDefaultPrefix(label)
+  const sibling = pseudo.groupId
+    ? devices.find(d => d !== pseudo && d.groupId === pseudo.groupId && d.label.trim())
+    : undefined
+  return sibling ? sibling.label.trim() : label
+}
+
+/**
+ * The devices a picker offers as their own rows, beside its "System default" row.
+ *
+ * Chromium's `default` pseudo-device follows the OS default, which is the same
+ * choice as "System default", so it names that row (see `defaultMicName`)
+ * instead of being a second one. Before mic permission a device can have an
+ * empty deviceId, which is also what "System default" saves, so it cannot be
+ * picked separately either. Both pickers, Settings and the composer's
+ * `MicSourceMenu`, read their rows from here.
+ */
+export function selectableMicrophones(devices: MediaDeviceInfo[]): MediaDeviceInfo[] {
+  return devices.filter(d => d.deviceId !== '' && d.deviceId !== DEFAULT_PSEUDO_DEVICE_ID)
+}
+
+/**
  * List audio input devices. Device labels are only populated after the page
  * has been granted microphone access at least once; before that, labels are
  * empty strings (callers should show a fallback name or a grant affordance).

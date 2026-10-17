@@ -146,16 +146,18 @@ describe('avatar builder — Library tier', () => {
     expect(saved(onSave)).toEqual({ kind: 'pack', id: 'aurora' })
   })
 
-  it('offers the Reactions tab only while the ghost is the selected tier', async () => {
-    mount({ kind: 'image', v: 3 })
+  it('offers the Reactions tab only on a ghost crew, with Ghost face no longer reachable from another tier', async () => {
+    // A non-ghost crew: neither the Ghost face tab nor its Reactions tab exists.
+    const { unmount } = mount({ kind: 'image', v: 3 })
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).toBeNull()
     expect(screen.queryByRole('radio', { name: 'Reactions' })).toBeNull()
-    gotoTier('Ghost face')
-    expect(screen.getByRole('radio', { name: 'Reactions' })).toBeInTheDocument()
+    unmount()
+
+    // A crew that already wears a ghost opens on the face tier, so both the
+    // Ghost face and Reactions tabs are offered for the pre-existing edit.
+    mount({ kind: 'ghost', traits: {} })
+    expect(screen.getByRole('radio', { name: 'Ghost face' })).toBeInTheDocument()
     gotoTier('Reactions')
-    // The hint covers all THREE rows it renders: it promised two moments while a
-    // Working row was on screen, and a first-run reader guessed at that row. It
-    // also says the working cue fires when work STARTS -- "while it works" read
-    // as a sound that runs for the whole turn, where it plays once on the edge.
     expect(
       screen.getByText(
         'Pick a motion and a sound for when a turn finishes or fails, and the sound it makes when work starts.',
@@ -180,23 +182,33 @@ describe('avatar builder — Library tier', () => {
 
     mount({ kind: 'image', v: 3 })
     expect(screen.getByTestId('avatar-reactions-absent-picture')).toHaveTextContent(NOTE)
-    // The ghost tier has the tab, so it needs no such line.
-    gotoTier('Ghost face')
-    expect(screen.queryByTestId('avatar-reactions-absent-picture')).toBeNull()
+    // Ghost face is not reachable from the picture tier for a non-ghost crew,
+    // so there is no tab to switch to here.
+    expect(screen.queryByRole('radio', { name: 'Ghost face' })).toBeNull()
   })
 
-  it('reset puts the crew back on its own face, pack included', async () => {
+  it('reset puts a non-ghost crew on the icon tier, not the ghost builder, pack included', async () => {
     const { onSave } = mount({ kind: 'pack', id: 'aurora' })
     await screen.findByTestId('avatar-library-pane')
 
     fireEvent.click(screen.getByTestId('avatar-builder-reset'))
+    // A pack crew wears no ghost, so Reset returns to the icon tier — never the
+    // ghost trait builder, which would be a path to author a new ghost (#18616).
+    expect(await screen.findByTestId('avatar-icon-pane')).toBeInTheDocument()
     apply()
 
-    expect(saved(onSave)).toBeNull()
+    // Reset on a crew that does NOT wear a ghost commits the name-seeded icon
+    // default it previews — NOT `null`. `null` renders the name's ghost, and a
+    // crew that never chose a ghost must never reset INTO one (#18616). The
+    // preview and the saved record are therefore the same icon.
+    expect(saved(onSave)).toMatchObject({ kind: 'icon' })
   })
 
   it('switching tiers keeps each tier\u2019s draft, so a pack pick survives a look at Ghost face', async () => {
-    const { onSave } = mount()
+    // Mount from an existing ghost so the Ghost face tier is reachable (a new
+    // ghost is no longer authorable); the pack draft must still survive a trip
+    // back to it.
+    const { onSave } = mount({ kind: 'ghost', traits: {} })
     gotoTier('Library')
     fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
 
@@ -211,8 +223,9 @@ describe('avatar builder — Library tier', () => {
 
   it('a ghost pick wins once the ghost tier is the selected one', async () => {
     // The tier decides what Apply commits; a pack id held from an earlier click
-    // must not leak into a face the user then chose.
-    const { onSave } = mount()
+    // must not leak into a face the user then chose. Mount from an existing
+    // ghost so the face tier is reachable.
+    const { onSave } = mount({ kind: 'ghost', traits: {} })
     gotoTier('Library')
     fireEvent.click(await screen.findByTestId('avatar-pack-select-aurora'))
     gotoTier('Ghost face')

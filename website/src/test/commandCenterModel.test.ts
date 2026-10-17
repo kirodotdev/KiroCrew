@@ -184,6 +184,19 @@ describe('command center projection', () => {
     expect(model.running).toBe(1)
     expect(model.nodes.find(n => n.id === 'subagent:done')?.state).toBe('done')
   })
+  it('asks for input only while a spawn approval is still awaited', () => {
+    const model = buildCommandCenter(sources({ subagents: { root: {
+      parked: agent('parked', { status: 'pending', approval_id: 'spawn:parked' }),
+      // The approval was found gone: no surface may say the user still owes it.
+      gone: agent('gone', { status: 'pending', approval_id: 'spawn:gone', approvalGone: 'spawn:gone' }),
+      // Approved and launched: the frame keeps approval_id, the run is running.
+      launched: agent('launched', { status: 'running', approval_id: 'spawn:launched' }),
+    } } }))
+    const state = (id: string) => model.nodes.find(n => n.id === `subagent:${id}`)?.state
+    expect(state('parked')).toBe('needs_input')
+    expect(state('gone')).toBe('waiting')
+    expect(state('launched')).toBe('running')
+  })
   it('keeps backend errors separate from ordinary activity details', () => {
     const model = buildCommandCenter(sources({
       subagents: { root: { failed: agent('failed', { status: 'error', error: 'Worker failed', lastTool: 'Reading files' }) } },

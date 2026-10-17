@@ -1,0 +1,14 @@
+{
+  "name": "workflows",
+  "version": "1.0.0",
+  "displayName": "Workflows",
+  "enabled": true,
+  "installedAt": "2026-01-15T09:00:00Z",
+  "source": "builtin",
+  "origin": "builtin",
+  "resources": "gateway",
+  "lifecycle": "locked",
+  "schemaVersion": 2,
+  "dev": false,
+  "defaultOnBackfilled": false
+}

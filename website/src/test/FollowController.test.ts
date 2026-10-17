@@ -15,6 +15,8 @@ import {
   resolveUserScrollStick,
   evaluateAutoPin,
   atBottomEpsilon,
+  followAnchorMode,
+  isEngineClampBelowWrite,
   SELF_SCROLL_EPSILON,
   DEFAULT_BOTTOM_THRESHOLD,
   FOLLOW_REENGAGE_PX,
@@ -1058,5 +1060,41 @@ describe('resolveUserScrollStick — a clamp under an upward user input is the r
       readerIntent: 1,
       upwardInputWithinSettle: false,
     })).toBe(true)
+  })
+})
+
+describe('followAnchorMode — native scroll anchoring vs the bottom pin', () => {
+  // While follow is armed the app's bottom pin owns the position, so native
+  // scroll anchoring must stand down -- on Firefox it holds a node above the
+  // tail and drags scrollTop up off the end as new output streams, which the
+  // follow guard then reads as a user scroll-up and releases the pin.
+  it('turns native anchoring OFF while the pin owns the position', () => {
+    expect(followAnchorMode(true)).toBe('none')
+  })
+  // Scrolled up, the reader owns the position and native anchoring is the
+  // mechanism that keeps their view steady as height changes above them.
+  it('hands native anchoring back ON when the reader is scrolled up', () => {
+    expect(followAnchorMode(false)).toBe('auto')
+  })
+})
+
+describe('isEngineClampBelowWrite — a late clamp event must not read as a scroll-up', () => {
+  // Content shrank under a followed reader and the layout clamped them flush to
+  // the new end, 40px below the pin's last write.
+  const clamped = { scrollTop: 1560, scrollHeight: 1960, clientHeight: 400 }
+  const base = { stick: true, geom: clamped, lastWriteTop: 1600, upwardInputWithinSettle: false }
+  it('takes a flush landing below the last write as the engine clamp', () => {
+    expect(isEngineClampBelowWrite(base)).toBe(true)
+  })
+  it('leaves a reader off the bottom to the scroll handler', () => {
+    expect(isEngineClampBelowWrite({ ...base, geom: { ...clamped, scrollHeight: 2100 } })).toBe(false)
+  })
+  it('leaves the call to the scroll handler when an upward input is in flight', () => {
+    expect(isEngineClampBelowWrite({ ...base, upwardInputWithinSettle: true })).toBe(false)
+  })
+  it('does nothing for a released reader, a reader on the write, or no write yet', () => {
+    expect(isEngineClampBelowWrite({ ...base, stick: false })).toBe(false)
+    expect(isEngineClampBelowWrite({ ...base, lastWriteTop: 1561 })).toBe(false)
+    expect(isEngineClampBelowWrite({ ...base, lastWriteTop: -1 })).toBe(false)
   })
 })

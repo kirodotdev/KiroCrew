@@ -32,11 +32,11 @@ if TYPE_CHECKING:
 async def api_chat_slot_source_links(request: web.Request) -> web.Response:
     """GET /api/chat/slots/{slot}/source-links — every PR/issue link, unbudgeted.
 
-    The slots payload caps chips per kind, so the sidebar's "+N" overflow chip
-    has nothing on the client to expand into. This is the lazy read behind that
-    expand, kept off the slots broadcast on purpose: widening the budget would
-    put up to ``_MAX_SOURCE_LINKS_PER_SLOT`` links per slot on the wire for every
-    row nobody expanded, on every push.
+    The slots payload caps a card's chips in total, so the sidebar's "+N"
+    overflow chip has nothing on the client to expand into. This is the lazy
+    read behind that expand, kept off the slots broadcast on purpose: widening
+    the budget would put up to ``_MAX_SOURCE_LINKS_PER_SLOT`` links per slot on
+    the wire for every row nobody expanded, on every push.
     """
     # circular import: source_providers imports chat state helpers, so a
     # top-level import would close a cycle (same pattern as the owner-only

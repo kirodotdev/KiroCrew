@@ -397,25 +397,43 @@ class TelegramTransport(MessagingTransport):
 
         Telegram can answer this authoritatively, which is why it does: a private
         ``chat_id`` IS the peer's ``user_id``, so the persisted link carries the
-        very principal ``authorize`` checks. A forum Topic carries a supergroup
-        ``chat_id`` instead, so it is routed through the same
+        very principal ``authorize`` checks. A supergroup forum Topic carries a
+        supergroup ``chat_id`` instead, so it is routed through the same
         :func:`forum_gate_outcome` predicate the inbound and callback paths use --
         a third call site rather than a second copy, so an outbound send can never
         be permitted into a Topic that inbound would refuse.
 
-        ``thread_id`` is what distinguishes the two: Telegram private chats carry
-        no ``message_thread_id``, so a link with one is a forum Topic.
+        ``thread_id`` distinguishes a 1:1 DM from a Topic, but a threaded link is
+        not necessarily a *group* Topic: Telegram carries ``message_thread_id``
+        in a **private** chat too (direct-message forum topics). Those are
+        still a 1:1 DM with an allow-listed user -- their ``chat_id`` IS that
+        user_id, which a supergroup chat_id never is -- so a threaded link whose
+        chat_id is on the user roster is a private topic and is authorized on the
+        same roster test as a threadless DM. Only a threaded link whose chat_id is
+        NOT a known user is a supergroup Topic, and that goes through the fail-closed
+        forum gate. (A proactive send still THREADS into the private topic; this
+        predicate only decides whether it may be sent at all.)
         """
         if not conversation_id:
             return False
         if thread_id:
-            # Forum Topic. int() because the shared predicate matches numeric
+            # Threaded link. int() because the shared predicate matches numeric
             # chat_ids; a non-numeric id is malformed, and refusing is the
             # fail-closed answer at an egress boundary.
             try:
                 chat_id, topic_id = int(conversation_id), int(thread_id)
             except (TypeError, ValueError):
                 return False
+            # Private-chat forum Topic: the chat_id IS the peer's user id, so the
+            # conversation attests its own peer. ``direct_peer_of`` is that one
+            # attestation -- a positive, roster-listed id reads as the peer; a
+            # supergroup chat_id (negative, never on the user roster) reads "",
+            # so a negative id pasted into the user allow-list still falls through
+            # to the fail-closed forum gate rather than waving a group Topic
+            # through here. One predicate, shared with the owner-DM exemption.
+            if self.direct_peer_of(conversation_id):
+                return True
+            # Otherwise a supergroup forum Topic -> fail-closed forum gate.
             return (
                 forum_gate_outcome(
                     "supergroup",

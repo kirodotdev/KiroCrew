@@ -1,11 +1,14 @@
 import type * as React from 'react'
 import { useId, useState, useRef } from 'react'
-import { ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, Trash2, Star, ExternalLink, Loader2, X, Share2, FileText, FolderOpen, Folder as FolderIcon } from 'lucide-react'
+import { ChevronRight, ChevronDown, ChevronUp, MoreVertical, Pencil, PenLine, Trash2, Star, ExternalLink, Loader2, X, Share2, FileText, FolderOpen, Folder as FolderIcon } from 'lucide-react'
 import { openPopout } from '../../utils/artifactPopout'
 import { Badge, Btn, Input, IconButton } from '../ui'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../ui/dropdown-menu'
 import { timeAgo as _timeAgo } from '../../utils/timeAgo'
 import FolderMoveSubmenu from '../FolderMoveSubmenu'
+import OfflineMenuReason, { OfflineReasonRow } from '../OfflineMenuReason'
+import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { useConnected } from '../../hooks/useConnected'
 import { DndDraggable, DndDroppable } from '../dnd'
 import { childFolders, isDescendantFolder, folderSubtreeStats } from '../../utils/artifactFolderTree'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -13,6 +16,11 @@ import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { i18nT } from '../../i18n/t'
 import { publishNoticeKey } from '../PublishHub'
+import ErrorNotice from '../ErrorNotice'
+import { useOpenInEditor } from '../FilePathMenu'
+import { canOpenFileInEditor, editorAcceptsPath } from '../../lib/electron'
+import { usePathKind } from '../../hooks/usePathKind'
+import { useBranding } from '../../hooks/useBranding'
 import type { Artifact, ArtifactFolder, SessionDoc } from '../../types'
 
 export type SortKey = 'name' | 'slug' | 'kind' | 'source' | 'version' | 'tags' | 'updated'
@@ -27,6 +35,14 @@ export const KIND_BADGE: Record<Artifact['kind'], 'ok' | 'err' | 'warn' | 'aim'>
   text: 'ok',
   webapp: 'aim',
   image: 'warn',
+  // A crewmate's dashboard package. `aim` with `widget` and `webapp`, the other
+  // two kinds whose content is a thing that RUNS rather than a document someone
+  // reads: a package is what a dashboard page is composed from.
+  //
+  // Without an entry the lookup in the row below answers `undefined` and the badge
+  // falls back to its default tone, so a package reads as an ordinary document in
+  // the one place its versions and its revert live.
+  dashboard: 'aim',
 }
 
 export function isoToTs(iso: string): number {
@@ -65,9 +81,11 @@ export type FolderActions = {
  *  The palette is the shared folder catalog (folderColorCatalog.tsx), so
  *  artifact folders and chat folders offer the same hues and the aria labels
  *  reuse the localized color names. */
-export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: string; onPick: (color: string) => void; size?: number }) {
+export function FolderColorSwatches({ value, onPick, size = 16, disabled = false }: { value?: string; onPick: (color: string) => void; size?: number; disabled?: boolean }) {
   return (
-    <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
+    // Nested opacity MULTIPLIES: a per-button `disabled:` dim on top of this row's
+    // would render the strip at 0.4 × 0.4 ≈ 16%, reading as absent rather than inert.
+    <div className={`flex items-center gap-1.5 flex-wrap ${disabled ? 'opacity-40' : ''}`} role="radiogroup" aria-label={i18nT('pages.artifactsPage.folder_color')}>
       {FOLDER_COLOR_PALETTE.map(({ value: c, label }) => (
         <button
           key={c}
@@ -76,9 +94,10 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
           aria-checked={value === c}
           aria-label={label()}
           title={label()}
-          onClick={(e) => { e.stopPropagation(); onPick(c) }}
+          disabled={disabled}
+          onClick={(e) => { e.stopPropagation(); if (disabled) return; onPick(c) }}
           onPointerDown={(e) => e.stopPropagation()}
-          className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue ${
+          className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue disabled:cursor-not-allowed ${
             value === c ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border'
           }`}
           style={{ width: size, height: size, background: c }}
@@ -90,9 +109,10 @@ export function FolderColorSwatches({ value, onPick, size = 16 }: { value?: stri
         aria-checked={!value}
         aria-label={i18nT('pages.artifactsPage.no_color')}
         title={i18nT('pages.artifactsPage.no_color')}
-        onClick={(e) => { e.stopPropagation(); onPick('') }}
+        disabled={disabled}
+        onClick={(e) => { e.stopPropagation(); if (disabled) return; onPick('') }}
         onPointerDown={(e) => e.stopPropagation()}
-        className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue flex items-center justify-center text-muted bg-transparent ${
+        className={`rounded-full border cursor-pointer hover:brightness-125 swatch-cue disabled:cursor-not-allowed flex items-center justify-center text-muted bg-transparent ${
           !value ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg border-transparent' : 'border-border hover:border-border-strong'
         }`}
         style={{ width: size, height: size }}
@@ -137,30 +157,64 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
 }) {
   const [value, setValue] = useState(initial)
   const cancelledRef = useRef(false)
+  const noteId = useId()
+  const connected = useConnected()
   const ime = useImeGuard()
   return (
-    <Input
-      autoFocus
-      value={value}
-      placeholder={placeholder}
-      aria-label={placeholder}
-      onChange={(e) => setValue(e.target.value)}
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      onPointerDown={(e) => e.stopPropagation()}
-      className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-hidden text-sm select-text focus-ring"
-      {...ime.bindEnter<HTMLInputElement>({
-        onFocus: (e) => (e.target as HTMLInputElement).select(),
-        onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
-        onEscape: () => { cancelledRef.current = true; onCancel() },
-        onBlur: () => {
-          if (cancelledRef.current) { cancelledRef.current = false; return }
-          const name = value.trim()
-          if (name) onCommit(name)
-          else onCancel()
-        },
-      })}
-    />
+    <>
+      <Input
+        autoFocus
+        value={value}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        // NOT `offlineProps`: this textbox still ACCEPTS typing while offline, so its
+        // aria-disabled and "… disabled" name would deny the draft it is holding.
+        aria-describedby={connected ? undefined : noteId}
+        title={connected ? undefined : i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.save_folder_names') })}
+        onChange={(e) => setValue(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-hidden text-sm select-text focus-ring"
+        {...ime.bindEnter<HTMLInputElement>({
+          onFocus: (e) => (e.target as HTMLInputElement).select(),
+          onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
+          onEscape: () => { cancelledRef.current = true; onCancel() },
+          onBlur: () => {
+            if (cancelledRef.current) { cancelledRef.current = false; return }
+            const name = value.trim()
+            // Gating the control that OPENS this editor only covers the open. A
+            // gateway that drops while it is open still reaches this commit, whose
+            // caller closes the editor before mutating — so the typed name would go
+            // to a write that cannot land and vanish with the field. Returning here
+            // leaves the caller's editing flag set, which keeps this input mounted
+            // and its draft intact until the connection is back. An empty field has
+            // no draft to keep, so it still abandons: holding it would strand the
+            // editor with Escape as the only exit, which a coarse pointer lacks.
+            if (!connected) {
+              if (!name) onCancel()
+              return
+            }
+            if (name) onCommit(name)
+            else onCancel()
+          },
+        })}
+      />
+      {/* A held draft the user cannot see reads as a dead field, which is the
+          silent refusal this gating exists to end. It has to be visible rather
+          than a `title`: a coarse pointer opens no tooltip, and the gallery this
+          field also serves carries no surface-wide reason row.
+
+          The copy promises only what the draft actually has. It survives for as
+          long as this input stays mounted and no longer — unmounting the host
+          discards it, and from the folder menu that happens as soon as the menu
+          closes (characterized in ArtifactsPageCoverage's rename case). So the
+          note names that cost outright instead of asking for the field to be
+          kept open and leaving the consequence unsaid. */}
+      {!connected && (
+        <OfflineReasonRow id={noteId} testId="folder-name-offline-held" className="mt-1" message={i18nT('utils.offline.name_not_saved_keep_field_open')} />
+      )}
+    </>
   )
 }
 
@@ -168,6 +222,7 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
  * excludes the folder's own subtree — a folder can't become its own descendant. */
 export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; folders: ArtifactFolder[]; actions: FolderActions }) {
   const moveTargets = folders.filter(f => !isDescendantFolder(folders, folder.id, f.id))
+  const connected = useConnected()
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -182,26 +237,37 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-        <DropdownMenuItem onSelect={() => actions.onRename(folder)}>
+        <DropdownMenuItem
+          {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'), () => actions.onRename(folder))}
+        >
           <Pencil size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.rename')}
         </DropdownMenuItem>
         <FolderMoveSubmenu
           variant="dropdown"
           folders={moveTargets}
           currentFolderId={folder.parent_id || null}
-          onPick={(pid) => actions.onMove(folder, pid || '')}
+          // Dimmed with its siblings; the pick is refused here, at the sink.
+          offline={!connected}
+          offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
+          onPick={(pid) => { if (!connected) return; actions.onMove(folder, pid || '') }}
         />
         <DropdownMenuSeparator />
         {/* Color swatches live inline (not a menu item) so picking one doesn't
             navigate — the menu closes after the pick via the row's own click. */}
         <div className="px-2 py-1.5">
           <div className="text-[11px] text-muted mb-1.5">{i18nT('pages.artifactsPage.color')}</div>
-          <FolderColorSwatches value={folder.color} onPick={(c) => actions.onSetColor(folder, c)} />
+          <FolderColorSwatches value={folder.color} disabled={!connected} onPick={(c) => actions.onSetColor(folder, c)} />
         </div>
         <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-danger" onSelect={() => actions.onDelete(folder)}>
+        <DropdownMenuItem
+          className="text-danger"
+          {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.artifactsPage.delete'), () => actions.onDelete(folder))}
+        >
           <Trash2 size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.delete')}
         </DropdownMenuItem>
+        {/* LAST, and only while offline: a row arriving mid-menu would shift Delete
+            under a mid-aim pointer. */}
+        <OfflineMenuReason testId="artifact-folder-offline-reason" />
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -356,6 +422,8 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
   /** True while the active drag hovers anywhere over this row's folder region. */
   dropHighlight?: boolean
 }) {
+  // The row's own writes go to the gateway, so they gate like every other sink.
+  const rowConnected = useConnected()
   const inner = (setDropRef?: (el: HTMLElement | null) => void) => (
     <DndDraggable id={`artifact-row:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
       {({ setNodeRef, listeners, isDragging }) => (
@@ -376,10 +444,11 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
             <button
               type="button"
               disabled={pinningSlug === a.slug}
-              onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
-              className={`p-0.5 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted/40 hover:text-accent'}`}
-              title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
+              onClick={(e) => { e.stopPropagation(); if (!rowConnected) return; onTogglePin(a) }}
+              className={`p-0.5 rounded transition-colors bg-transparent border-none disabled:cursor-default ${rowConnected ? 'cursor-pointer ' : 'opacity-40 cursor-not-allowed '}${a.pinned ? 'text-accent' : rowConnected ? 'text-muted/40 hover:text-accent' : 'text-muted'}`}
               aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
+              title={rowConnected ? (a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')) : undefined}
+              {...offlineProps(rowConnected, i18nT('utils.offline.star_artifacts'), a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact'))}
               aria-pressed={!!a.pinned}
             >
               <Star size={14} className={a.pinned ? 'fill-current' : ''} />
@@ -441,10 +510,11 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
               <button
                 type="button"
                 disabled={deletingSlug === a.slug}
-                onClick={(e) => { e.stopPropagation(); onDelete(a) }}
-                className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-                title={i18nT('pages.artifactsPage.remove_from_library')}
+                onClick={(e) => { e.stopPropagation(); if (!rowConnected) return; onDelete(a) }}
+                className={`p-1 rounded text-muted transition-colors bg-transparent border-none disabled:cursor-default${rowConnected ? ' cursor-pointer hover:text-danger disabled:opacity-60' : ' opacity-40 cursor-not-allowed'}`}
                 aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
+                title={rowConnected ? i18nT('pages.artifactsPage.remove_from_library') : undefined}
+                {...offlineProps(rowConnected, i18nT('utils.offline.delete_artifacts'), i18nT('pages.artifactsPage.remove_from_artifacts_library'))}
               >
                 {deletingSlug === a.slug ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
               </button>
@@ -467,19 +537,86 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
  * gallery section, so the two views cannot drift (this PR is already the
  * second "feature existed in one view only" fix of this class). */
 export function SessionDocStar({ d, busy, onMaterialize }: { d: SessionDoc; busy: boolean; onMaterialize: (path: string, sessionKey?: string) => void }) {
+  const connected = useConnected()
+  // `IconButton` dims itself while disabled and nested opacity multiplies, so adding
+  // this layer while busy would render the star at ~12%; its own dim already refuses.
+  const offlineCue = `cursor-not-allowed hover:text-muted hover:bg-transparent${busy ? '' : ' opacity-40'}`
   return (
     <IconButton
       variant="accent"
       disabled={busy}
       // stopPropagation: the star sits inside rows that open the read-only
-      // preview on click — starring must not ALSO open the preview.
-      onClick={(e) => { e.stopPropagation(); onMaterialize(d.path, d.session_key) }}
-      title={i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume')}
+      // preview on click — starring must not ALSO open the preview. It runs
+      // before the offline return, or a refused click would bubble and open it.
+      onClick={(e) => { e.stopPropagation(); if (!connected) return; onMaterialize(d.path, d.session_key) }}
+      title={connected ? i18nT('pages.artifactsPage.star_creates_a_starred_artifact_from_this_docume') : undefined}
       aria-label={i18nT('pages.artifactsPage.star_document')}
-      className="shrink-0"
+      {...offlineProps(connected, i18nT('utils.offline.star_artifacts'), i18nT('pages.artifactsPage.star_document'))}
+      className={`shrink-0${connected ? '' : ` ${offlineCue}`}`}
     >
       {busy ? <Loader2 size={14} className="animate-spin" /> : <Star size={14} />}
     </IconButton>
+  )
+}
+
+/**
+ * A session document's path, shared by the table/tree rows and the gallery
+ * section for the same reason as `SessionDocStar`.
+ *
+ * In the desktop shell, once the gateway's path probe confirms a regular file,
+ * the path is a button that opens the file in the user's editor through the
+ * same shell bridge the file-path menu's "Open in editor" row uses
+ * (`useOpenInEditor`). The probe is the gate that bridge relies on: it answers
+ * `missing` for a sensitive or absent path, so a path the gateway would refuse
+ * to read never becomes a launch. Only an absolute path of a type the shell
+ * opens is probed (`editorAcceptsPath`), so a PDF, a spreadsheet or a relative
+ * path is never offered a launch the shell would refuse. A plain browser tab
+ * has no bridge, and a desktop window on a remote or tunnelled gateway is not
+ * `directLocal` (the shell refuses to launch for a non-local dashboard, and the
+ * probe describes the gateway's disk, not this machine's); neither probes, and
+ * the path stays the static text it is everywhere else.
+ *
+ * A launch the shell still refuses (no handler app, file gone) renders in place
+ * through the shared `ErrorNotice`, naming the shell's reason and pointing at
+ * the preview. Both the button and the notice stop propagation: they sit inside
+ * rows whose click opens the preview.
+ */
+export function SessionDocPath({ path, className = '' }: { path: string; className?: string }) {
+  const errorId = useId()
+  const { directLocal } = useBranding()
+  const launchable = directLocal && canOpenFileInEditor() && editorAcceptsPath(path)
+  const kind = usePathKind(launchable ? path : null)
+  const { openInEditor, editorError, clearEditorError } = useOpenInEditor(path, 'file')
+  if (!launchable || kind !== 'file') return <span className={className}>{path}</span>
+  const label = i18nT('pages.artifactsPage.open_doc_in_editor', { path })
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); void openInEditor() }}
+        title={label}
+        aria-label={label}
+        aria-describedby={editorError ? errorId : undefined}
+        className={`${className} text-left bg-transparent border-none p-0 cursor-pointer rounded-sm hover:underline hover:text-text-strong focus-ring-accent`}
+      >
+        <PenLine size={11} className="lucide-inline mr-1" aria-hidden="true" />
+        {path}
+      </button>
+      {editorError && (
+        <span role="presentation" className="block basis-full min-w-0" onClick={(e) => e.stopPropagation()}>
+          {/* The hand-off is on: this list holds no unsaved input. */}
+          <ErrorNotice
+            id={errorId}
+            variant="inline"
+            className="whitespace-normal"
+            message={i18nT('pages.artifactsPage.open_doc_in_editor_failed', { reason: editorError })}
+            onDismiss={clearEditorError}
+            askAgent
+            testId="session-doc-editor-error"
+          />
+        </span>
+      )}
+    </>
   )
 }
 
@@ -511,7 +648,7 @@ export function SessionDocRow({ d, busy, onMaterialize, onPreview, edgeRight = f
           <FileText size={13} className="text-ok shrink-0" />
           <span className="text-sm text-text-strong font-medium truncate">{d.name}</span>
         </div>
-        <div className="text-[11px] text-muted truncate max-w-[420px]">{d.path}</div>
+        <SessionDocPath path={d.path} className="block text-[11px] text-muted truncate max-w-[420px]" />
       </td>
       <td className="px-2.5 py-2 border-b border-border"><code className="text-[12px] text-muted">—</code></td>
       <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted">{ftype}</td>
@@ -568,20 +705,36 @@ export function LibraryTable({
   // rows, a locale switch re-labelling headers, a webfont load), none of which
   // resize the scroller's own box — so the table is the observed content node.
   const [attachScroller, edges, , attachTable] = useScrollEdges<HTMLDivElement>()
+  const connected = useConnected()
   return (
-    <div ref={attachScroller} className="overflow-x-auto">
-      <table ref={attachTable} className="w-full border-collapse table-striped">
-        <LibraryTableHead sort={sort} onSort={onSort} edgeRight={edges.right} />
-        <tbody>
-          {items.map((a) => (
-            <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} edgeRight={edges.right} />
-          ))}
-          {onMaterialize && sessionDocs.map((d) => (
-            <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} onPreview={onPreviewDoc} edgeRight={edges.right} />
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <>
+      <div ref={attachScroller} className="overflow-x-auto">
+        <table ref={attachTable} className="w-full border-collapse table-striped">
+          <LibraryTableHead sort={sort} onSort={onSort} edgeRight={edges.right} />
+          <tbody>
+            {items.map((a) => (
+              <ArtifactRow key={a.slug} a={a} onOpen={onOpen} onDelete={onDelete} deletingSlug={deletingSlug} onTogglePin={onTogglePin} pinningSlug={pinningSlug} edgeRight={edges.right} />
+            ))}
+            {onMaterialize && sessionDocs.map((d) => (
+              <SessionDocRow key={d.path} d={d} busy={materializingPath === d.path} onMaterialize={onMaterialize} onPreview={onPreviewDoc} edgeRight={edges.right} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {/* The dimmed row controls carry their reason in a `title`, which a coarse
+          pointer never shows, so the reason needs a visible channel. LAST for the
+          same reason the folder menu's row is last: arriving on disconnect above
+          the rows would shift one under a mid-aim pointer, and here that misses
+          the control and opens the artifact instead. Outside the horizontal
+          scroller so panning the columns cannot carry it off screen. */}
+      {/* Sticky because last-in-DOM alone puts it below the fold in a long
+          library: the row travels up to the scrollport's bottom edge and only
+          settles when the region's end scrolls in. `bg-bg` must stay opaque —
+          while travelling it covers `bg-card` rows. */}
+      {!connected && (
+        <OfflineReasonRow testId="artifact-table-offline-reason" className="sticky bottom-0 z-[1] bg-bg px-2.5 py-1.5" />
+      )}
+    </>
   )
 }
 
@@ -737,8 +890,10 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
   walk('', 0, new Set())
   const unfiled = byFolder.get('') || []
   const unfiledHot = overFolderId === ''
+  const connected = useConnected()
   return (
-    <div ref={attachScroller} className="overflow-x-auto">
+    <>
+      <div ref={attachScroller} className="overflow-x-auto">
       <table ref={attachTable} className="w-full border-collapse table-striped">
         <LibraryTableHead sort={sort} onSort={onSort} edgeRight={edges.right} />
         <tbody>
@@ -794,7 +949,14 @@ export function LibraryTree({ items, sort, onSort, folders, expandedIds, onToggl
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+      {/* See LibraryTable: LAST, so arriving on disconnect cannot shift a row
+          under a mid-aim pointer, and outside the scroller so panning keeps it.
+          Sticky for the same below-the-fold reason, on the same opaque token. */}
+      {!connected && (
+        <OfflineReasonRow testId="artifact-table-offline-reason" className="sticky bottom-0 z-[1] bg-bg px-2.5 py-1.5" />
+      )}
+    </>
   )
 }
 

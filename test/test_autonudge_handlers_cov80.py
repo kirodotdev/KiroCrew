@@ -1,6 +1,6 @@
 """Coverage tests for the auto-nudge HTTP mapping (``dashboard/handlers/autonudge.py``).
 
-``test_autonudge.py`` drives ``AutoNudgeService`` itself and ``test_autonudge_stop_auth.py``
+``test_autonudge*.py`` drives ``AutoNudgeService`` itself and ``test_autonudge_stop_auth.py``
 drives the transport-agnostic authorizer. What neither touches is the thin HTTP layer
 between them: the read routes (list / get), the "service is absent" 503+``enabled: false``
 shapes, the malformed-body 400s, and the DELETE route's audit record — which has to name
@@ -381,6 +381,50 @@ async def test_monitor_browser_routes_require_dashboard_owner(
         response = await handler(request)
         assert response.status == 403, handler.__name__
         assert _body(response)["code"] == "dashboard_owner_required"
+
+
+@pytest.mark.asyncio
+async def test_monitor_slot_read_refuses_non_owner_sessions_without_leaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Profile reads one slot's record; no non-owner caller gets its contents."""
+    loop = _monitor_loop(slot_key="member-other")
+    assert loop.monitor is not None
+    loop.monitor.wake_instructions = "WAKE-MARKER"
+    loop.message = "PROMPT-MARKER"
+    _svc(monkeypatch, _FakeSvc([loop]))
+    state = MagicMock(owner_id="U_OWNER")
+    callers = [
+        {"user": "U_OTHER"},
+        {"user": "U_OWNER", "app_claim": "some-app"},
+        {
+            "user": None,
+            "headers": {"X-Session-Key": "member-mine"},
+            "internal_auth": True,
+        },
+    ]
+    for caller in callers:
+        request = _mk(
+            "GET",
+            "/api/monitors/slot/member-other",
+            match={"slot_key": "member-other"},
+            state=state,
+            **caller,
+        )
+        response = await h.api_monitor_slot_get(request)
+        assert response.status == 403, caller
+        text = json.dumps(_body(response))
+        for marker in ("WAKE-MARKER", "PROMPT-MARKER", "acme/widgets", "member-other"):
+            assert marker not in text, (caller, marker)
+
+    owner = _mk(
+        "GET",
+        "/api/monitors/slot/member-other",
+        match={"slot_key": "member-other"},
+        state=state,
+        user="U_OWNER",
+    )
+    assert (await h.api_monitor_slot_get(owner)).status == 200
 
 
 @pytest.mark.asyncio
@@ -1160,6 +1204,14 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "gate",
         "stopped_reason",
         "approval_stalled",
+        # When that hold began; same class, and 0 on a structured monitor.
+        "approval_stalled_at",
+        # The person-wait hold: the same class as ``approval_stalled`` (the loop's
+        # own reading of whether it can act). Only a work-ledger watch sets them, so a
+        # structured monitor carries "" and False truthfully.
+        "ledger_seen_fp",
+        "waiting_on_person",
+        "waiting_on_person_at",
         # Same class as ``approval_stalled``: the automation's own reading of
         # whether it can act, not a fact about what it watches. A structured
         # monitor never writes it, so the row carries 0 truthfully.
@@ -1171,6 +1223,10 @@ async def test_structured_legacy_row_carries_exactly_the_entitled_keys(
         "consecutive_failed_cycles",
         "next_due_ts",
         "self_armed",
+        # Same class as ``self_armed``: who armed the loop, not what it watches.
+        # It is what lets a reader tell the gateway's default conductor patrol
+        # from a loop the agent armed itself.
+        "default_patrol",
         "terminal_notification_outcome",
         "terminal_notification_stopped_at",
         # Mapped from the monitor's own accounting, not withheld -- withholding

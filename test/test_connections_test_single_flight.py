@@ -19,6 +19,7 @@ from dashboard_owner_helpers import as_owner
 
 from kiro_crew.connections import tool_test
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.testing.wait import await_until
 
 
 async def _client() -> TestClient:
@@ -78,10 +79,10 @@ def controlled_test(monkeypatch: pytest.MonkeyPatch):
 
     async def await_running() -> None:
         # Bounded: a hang here must fail this test rather than park the worker.
-        await asyncio.wait_for(started.wait(), timeout=10.0)
+        await await_until(started, what="command handler started")
 
     async def release() -> None:
-        await asyncio.wait_for(started.wait(), timeout=10.0)
+        await await_until(started, what="command handler started")
         gate.set()
 
     return await_running, release, calls

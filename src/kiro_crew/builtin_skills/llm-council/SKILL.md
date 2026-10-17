@@ -84,15 +84,15 @@ bias by the task:
 **Chairman:** the main session by default; use a top-tier synthesizer (an Anthropic
 Opus/Sonnet-class model) when the panel diverges or stakes are high.
 
-**Agent selection (only when the conductor skill is enabled).** If Kiro Crew's
-**conductor skill** is on — you will see its agent-roster routing table loaded in your
-context — a member may be an **(agent, model) tuple** rather than a bare model: pass
-`spawn_run(agent="<roster-name>", model="<id>")` to run a specialist agent (e.g. a code
-reviewer or security agent) on a chosen vendor model. Use it for domain panels where
-specialist context beats a generic reasoner (e.g. `adversarial` code review). Rules:
-pick agents ONLY from the conductor roster (never invent names); set `model=` explicitly
-so vendor diversity is preserved (it overrides the agent's default model). If the
-conductor skill is NOT enabled, use model-only members — do not attempt agent selection.
+**Agent selection (optional).** A member may be an **(agent, model) tuple** rather
+than a bare model: pass `spawn_run(agent="<name>", model="<id>")` to run a specialist
+agent (e.g. a code reviewer or security agent) on a chosen vendor model. Use it for
+domain panels where specialist context beats a generic reasoner (e.g. `adversarial`
+code review). Rules: pick agents ONLY from the names `spawn_run`'s `agent` parameter
+description lists (or `spawn_list`) — an unknown name is refused, never replaced by
+the default, so never invent one; set `model=` explicitly so vendor diversity is
+preserved (it overrides the agent's default model). With no fitting agent installed,
+use model-only members.
 
 ## Mode: synthesis (default)
 

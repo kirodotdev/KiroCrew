@@ -9,6 +9,20 @@ import type { KiroUsageState } from '../api/kiroUsage'
 import { installSoftNavigate, __resetNavSeamForTests } from '../utils/errorReport'
 import { renderWithProviders } from './helpers'
 
+const { KIRO_USAGE_EMPTY } = vi.hoisted(() => ({
+  KIRO_USAGE_EMPTY: {
+    sessions: {
+      total_sessions: 0,
+      today: { sessions: 0, messages: 0, tool_calls: 0 },
+      this_week: { sessions: 0, messages: 0, tool_calls: 0 },
+      this_month: { sessions: 0, messages: 0, tool_calls: 0 },
+      avg_msgs_per_session: 0,
+      daily_history: [],
+    },
+    billing: {},
+  },
+}))
+
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
   return {
@@ -16,11 +30,13 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
+      kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
     },
   }
 })
 
 const refreshMock = vi.mocked(api.sessionsUsageRefresh)
+const kiroUsageMock = vi.mocked(api.kiroUsage)
 
 const BASE_USAGE: KiroCreditUsage = {
   used: 10,
@@ -89,6 +105,113 @@ describe('KiroAccountModal', () => {
     expect(manage).toHaveAttribute('href', 'https://app.kiro.dev/settings/account')
     expect(manage).toHaveAttribute('target', '_blank')
     expect(manage).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  describe('run-out forecast', () => {
+    beforeEach(() => {
+      // Only Date is faked: React Query and testing-library keep real timers.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date(2026, 9, 14))
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+      kiroUsageMock.mockReset()
+      kiroUsageMock.mockImplementation(async () => KIRO_USAGE_EMPTY)
+    })
+
+    it('names the projected run-out date under the meter', async () => {
+      // 1,300 used over 13 days of an Oct 1 -> Nov 1 cycle: 100/day, 1,700 left.
+      renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByTestId('kiro-credit-forecast')).toHaveTextContent(
+        "At this cycle's pace, you'll run out around Oct 30, before the reset.",
+      )
+    })
+
+    it('reads the weekday shape from the Usage report and can say it lasts', async () => {
+      // Same 1,300 used, but all history spend sits on Tuesdays: two Tuesdays
+      // remain before the reset, so the shaped projection lasts.
+      const days = []
+      for (let i = 1; i <= 28; i++) {
+        const d = new Date(2026, 9, 14 - i)
+        const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        days.push({ date, sessions: 0, messages: 0, tool_calls: 0, credits: d.getDay() === 2 ? 700 : 0 })
+      }
+      kiroUsageMock.mockImplementation(async () => ({
+        ...KIRO_USAGE_EMPTY,
+        sessions: { ...KIRO_USAGE_EMPTY.sessions, daily_history: days },
+      }))
+      renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByTestId('kiro-credit-forecast')).toHaveTextContent(
+        "At this cycle's pace, your credits should last until the reset.",
+      )
+    })
+
+    it('shows no line while the Usage report is still refreshing', async () => {
+      kiroUsageMock.mockImplementation(async () => ({ ...KIRO_USAGE_EMPTY, refreshing: true }))
+      const { queryClient } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      // Wait until the refreshing report is actually in the cache, so the
+      // absence below is the guard's doing and not a still-pending fetch.
+      await waitFor(() => {
+        const cached = queryClient.getQueriesData<{ refreshing?: boolean }>({ queryKey: ['provider-usage'] })
+        expect(cached.some(([, d]) => d?.refreshing === true)).toBe(true)
+      })
+      expect(screen.queryByTestId('kiro-credit-forecast')).toBeNull()
+    })
+
+    it('says the plan lasts when the pace reaches the reset', async () => {
+      renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 5_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByTestId('kiro-credit-forecast')).toHaveTextContent(
+        "At this cycle's pace, your credits should last until the reset.",
+      )
+    })
+
+    it('reports a failed refetch even while an earlier report is cached', async () => {
+      const { queryClient } = renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByTestId('kiro-credit-forecast')).toBeInTheDocument()
+      kiroUsageMock.mockImplementation(async () => { throw new Error('boom') })
+      await queryClient.refetchQueries({ queryKey: ['provider-usage'] })
+      expect(await screen.findByText("Could not load recent usage, so the run-out date can't be shown.")).toBeInTheDocument()
+      expect(screen.queryByTestId('kiro-credit-forecast')).toBeNull()
+    })
+
+    it('retries the forecast read from the modal Refresh', async () => {
+      refreshMock.mockResolvedValue({ usage: { credits_plan: 3000, credits_used: 1300, resets: '2026-11-01' } })
+      kiroUsageMock.mockImplementation(async () => { throw new Error('boom') })
+      renderWithProviders(
+        <KiroAccountModal open onClose={vi.fn()} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByText("Could not load recent usage, so the run-out date can't be shown.")).toBeInTheDocument()
+      kiroUsageMock.mockImplementation(async () => KIRO_USAGE_EMPTY)
+      fireEvent.click(screen.getByRole('button', { name: /^Refresh$/ }))
+      expect(await screen.findByTestId('kiro-credit-forecast')).toBeInTheDocument()
+    })
+
+    it('reports a failed per-day read through ErrorNotice with the hand-off', async () => {
+      kiroUsageMock.mockImplementation(async () => { throw new Error('boom') })
+      const onClose = vi.fn()
+      renderWithProviders(
+        <KiroAccountModal open onClose={onClose} usage={{ ...BASE_USAGE, used: 1_300, limit: 3_000, resets: '2026-11-01' }} />,
+      )
+      expect(await screen.findByText(
+        "Could not load recent usage, so the run-out date can't be shown.",
+        {}, { timeout: 10_000 },
+      )).toBeInTheDocument()
+      expect(screen.queryByTestId('kiro-credit-forecast')).toBeNull()
+      expect(screen.getByText(/Remaining credit balance/)).toBeInTheDocument()
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /Ask the agent/i }))
+      expect(onClose).toHaveBeenCalled()
+    }, 15_000)
   })
 
   it('caps the bar and remaining credits when usage exceeds the plan', async () => {
@@ -460,7 +583,9 @@ describe('KiroAccountModal refresh', () => {
       fireEvent.click(refreshButton)
       expect(refreshMock).toHaveBeenCalledTimes(1)
 
-      expect(invalidate).not.toHaveBeenCalled()
+      // The click retries the forecast's Usage report; the pill's reading is
+      // not re-read until the other refresh has had time to finish.
+      expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
       await vi.advanceTimersByTimeAsync(3100)
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kiro-usage'] })
       // The re-read has landed: the notice has done its job and Refresh is offered again.

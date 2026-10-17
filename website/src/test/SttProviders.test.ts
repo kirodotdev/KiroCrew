@@ -26,6 +26,8 @@ import {
   STREAM_ERROR_CODE_KEY,
   UNAVAILABLE_CODE_KEY,
   downloadLabel,
+  localeLanguage,
+  nextTranscribeLanguages,
   streamErrorMessage,
 } from '../lib/sttProviders'
 import EN_MANUAL from '../i18n/locales/en.manual.json'
@@ -200,18 +202,21 @@ describe('a streaming session that failed', () => {
   const streamLeaf = (key: string) => key.replace('lib.sttProviders.', '')
 
   it('names every code the streaming socket can only report itself', () => {
-    // `_CODE_MAX_DURATION`, `_CODE_SESSION_FAILED` and `_CODE_VOCABULARY_REJECTED` in
-    // `dashboard/stt_stream.py`, `CODE_DECODE_FAILED` in `stt/engine.py`, plus
-    // `stt_model_missing`, which the socket also sends and which needs different
-    // words below the composer than in the settings panel, and `stt_consent_required`,
-    // the AWS consent gate's refusal of a Transcribe stream. An omission renders the
-    // backend's English sentence.
+    // `_CODE_MAX_DURATION`, `_CODE_SESSION_FAILED`, `_CODE_VOCABULARY_REJECTED`,
+    // `_CODE_SDK_OUTDATED` and `_CODE_AWS_ACCESS_DENIED` in
+    // `dashboard/stt_stream.py`, `CODE_DECODE_FAILED` in
+    // `stt/engine.py`, plus `stt_model_missing`, which the socket also sends and which
+    // needs different words below the composer than in the settings panel, and
+    // `stt_consent_required`, the AWS consent gate's refusal of a Transcribe stream.
+    // An omission renders the backend's English sentence.
     expect(Object.keys(STREAM_ERROR_CODE_KEY).sort()).toEqual([
+      'stt_aws_access_denied',
       'stt_consent_required',
       'stt_decode_failed',
       'stt_max_duration_exceeded',
       'stt_model_missing',
       'stt_session_failed',
+      'stt_transcribe_sdk_outdated',
       'stt_transcribe_vocabulary_rejected',
     ])
   })
@@ -274,5 +279,26 @@ describe('a streaming session that failed', () => {
     // The caller supplies the generic last resort, so an empty answer has to be
     // falsy for that `||` to reach it.
     expect(streamErrorMessage('', '')).toBe('')
+  })
+})
+
+describe('the mixed-language candidates', () => {
+  it('reads the language part of a locale, including a three-letter one', () => {
+    expect(localeLanguage('vi-VN')).toBe('vi')
+    expect(localeLanguage('ckb-IQ')).toBe('ckb')
+  })
+
+  it('appends a ticked language in the order it was ticked', () => {
+    expect(nextTranscribeLanguages(['vi-VN'], 'en-US', true)).toEqual(['vi-VN', 'en-US'])
+  })
+
+  it('swaps a second dialect of a picked language in, at the end', () => {
+    // A stream may carry one dialect per language: en-US beside en-GB fails it.
+    expect(nextTranscribeLanguages(['en-US', 'vi-VN'], 'en-GB', true)).toEqual(['vi-VN', 'en-GB'])
+  })
+
+  it('drops an unticked language and never duplicates a ticked one', () => {
+    expect(nextTranscribeLanguages(['vi-VN', 'en-US'], 'vi-VN', false)).toEqual(['en-US'])
+    expect(nextTranscribeLanguages(['vi-VN', 'en-US'], 'en-US', true)).toEqual(['vi-VN', 'en-US'])
   })
 })

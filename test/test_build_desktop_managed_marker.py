@@ -142,6 +142,7 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
         (json.dumps({**VALID, "extra": "x"}), "unknown field"),
         (json.dumps({**VALID, "updateCommand": 7}), "must be a string"),
         (json.dumps({"managedBy": "x"}), "no updateCommand"),
+        (json.dumps({"managedBy": "x", "updateCommand": "/usr/bin/update"}), "no checkCommand"),
         (json.dumps({**VALID, "managedBy": "x" * 9000}), "caps at 8192"),
         # The reader trims and caps each field; the value it would SEE is what
         # is validated, or a whitespace-only command turns the marker bare and
@@ -157,6 +158,7 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
         "unknown-field",
         "non-string",
         "no-updateCommand",
+        "no-checkCommand",
         "over-cap",
         "whitespace-only-command",
         "padded-command",

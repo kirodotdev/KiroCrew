@@ -33,7 +33,7 @@ Publication records the process
 incarnation (``platform_compat.get_process_start_id`` — the same identity
 ``session_pid.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
 records) and BOTH readers refuse on a proven mismatch, while an absent
-(legacy file) or unreadable (Windows) token stays "unknown", never a
+(legacy file) token stays "unknown", never a
 mismatch. Same-uid only: this is a robustness/misattribution guard, not a
 privilege boundary — the recycled process already runs as the same user.
 
@@ -594,7 +594,7 @@ def _on_disk_bytes(body: str) -> int:
 _MAX_MAPPING_FILE_BYTES = 4096
 
 
-def _read_regular_nofollow(path: Path) -> str | None:
+def _read_regular_nofollow(path: Path, *, expected: os.stat_result | None = None) -> str | None:
     """Read *path* as UTF-8, refusing symlinks, non-regular and oversized files.
 
     The mapping directory is same-uid agent-writable, so an agent could
@@ -613,7 +613,10 @@ def _read_regular_nofollow(path: Path) -> str | None:
       the vetted regular file — and the read is refused. This closes the
       TOCTOU race without platform-specific open flags (``st_ino`` is the
       NTFS file index on Windows since Python 3.5).
-    * ``fstat``/``S_ISREG``: rejects FIFOs/devices.
+    * ``O_NONBLOCK`` (POSIX) + ``fstat``/``S_ISREG``: a FIFO or device is opened
+      without waiting for a writer, then rejected.
+    * *expected*, when given: the opened file must be that ``(st_dev, st_ino)``,
+      for a caller that already vetted the path and must read the same inode.
     * Size bound (:data:`_MAX_MAPPING_FILE_BYTES`, checked against both
       ``fstat`` and the actual bytes read): rejects oversized files so
       verification can never buffer unbounded agent-controlled data.
@@ -627,7 +630,7 @@ def _read_regular_nofollow(path: Path) -> str | None:
             pre = os.lstat(path)
             if stat.S_ISLNK(pre.st_mode):
                 return None
-        fd = os.open(path, os.O_RDONLY | nofollow)
+        fd = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0))
     except (OSError, ValueError):
         # ``ValueError`` too: a ``str`` pid names the path, and one holding a NUL
         # or a surrogate the filesystem encoding cannot carry is refused by the
@@ -640,6 +643,11 @@ def _read_regular_nofollow(path: Path) -> str | None:
             # the handle points at a different file than the one vetted as a
             # non-symlink — a symlink planted in that window would open its
             # TARGET, which can never share the vetted file's identity.
+            return None
+        if expected is not None and (st.st_dev, st.st_ino) != (
+            expected.st_dev,
+            expected.st_ino,
+        ):
             return None
         if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_MAPPING_FILE_BYTES:
             return None

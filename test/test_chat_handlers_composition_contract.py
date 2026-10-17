@@ -2,7 +2,7 @@
 
 ``kiro_crew.dashboard.chat_handlers`` is the dashboard chat API's import path and its
 patch surface. Part of what it defined now lives in the modules of
-``kiro_crew.dashboard.chat_api``, one responsibility each, and ``chat_api.compose``
+``kiro_crew.dashboard.chat_api``, one responsibility each, and ``_facade_compose.compose``
 runs every function they define on the facade's globals. These tests pin:
 
 * the surface: every name the facade bound before the split still resolves on it, the
@@ -38,124 +38,152 @@ from chat_test_helpers import _make_state
 from source_corpus import repo_files_named, repo_root
 
 import kiro_crew.dashboard.chat_handlers as ch
+from kiro_crew._facade_compose import compose as facade_compose
 from kiro_crew.dashboard import chat_api, slot_ownership
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _FACADE = ch.__name__
 _FACADE_PATH = Path(ch.__file__).resolve()
 
-#: Every module-level name ``chat_handlers`` bound at the base the split was cut
-#: from: what it defined and what it imported, private names included, because tests
-#: and production read private names off it too. The per-slot app ownership helpers
-#: that ``slot_ownership`` holds instead are not all in it.
+#: Every module-level name ``chat_handlers`` bound at the base this split was cut
+#: from (30bb0b3da2): what it defined and what it imported, private names included,
+#: because tests and production read private names off it too. Names bound to a
+#: standard-library or third-party module are not its surface and are left out.
 _BASE_NAMES = frozenset("""
-        ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ADOPT_PEER_MODE_UNKNOWN ADOPT_TARGET_UNKNOWN
-        ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider
-        AdoptBackfill AdoptTargetUnknown Any Awaitable COLOR_HEX_RE Callable
+        ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS ARTIFACT_SLUG_RE AUTOCOMPACT_PCT_MAX
+        AUTOCOMPACT_PCT_MIN AcpModelUnavailable AcpProvider Any Awaitable
+        CHAT_TURN_TIMEOUT_MAX CHAT_TURN_TIMEOUT_MIN COLOR_HEX_RE Callable
         ClientConnectionResetError DashboardState DeferredHoldFull DeferredHoldRebound
-        HUMAN_TURN_META_KEY JEV_ROUTE_MODEL KiroCrewConfig LLMProvider MAX_COLOR_INDEX
-        MAX_DEFERRED_NOTES MAX_DEFERRED_NOTE_CHARS MODEL_NAMESPACE_ACP MemoryStartupUnavailable
-        NamedTuple OversizedRecord Path RESERVED_ROW_META_KEYS RemoteTurnError ResumeOutcome
-        ResumeRefusal SESSION_RELOAD_KIND SESSION_START_FAILED_KIND SLOT_DETAIL_MAX_LIMIT
-        STEER_AUTO STEER_REQUEUED STEER_STEERED SUGGEST_FOLLOWUP_SCHEMA SYNTHETIC_RECOVERY_KIND
-        SelectionChange SlotCloseError SplitlinesBoundaryRecord TURN_ACTOR_META_KEY
+        FavoritesUnreadable GrantDeadline HUMAN_TURN_META_KEY Iterable JEV_ROUTE_MODEL
+        KiroCrewConfig LLMProvider MAX_COLOR_INDEX MAX_DEFERRED_NOTES
+        MAX_DEFERRED_NOTE_CHARS MAX_SOURCE_LABEL_LEN MODEL_NAMESPACE_ACP Mapping
+        MemoryStartupUnavailable NamedTuple OversizedRecord Path RESERVED_ROW_META_KEYS
+        ResumeOutcome ResumeRefusal SESSION_CONTROL_DENIED SESSION_RELOAD_KIND
+        SESSION_START_FAILED_KIND SLOT_DETAIL_MAX_LIMIT SOURCE_LABEL_CTRL_RE STEER_AUTO
+        STEER_REQUEUED STEER_STEERED SUGGEST_FOLLOWUP_SCHEMA SYNTHETIC_RECOVERY_KIND
+        SelectionChange SessionFolderError SlotAgentSwitchCaller SlotCloseError
+        SlotContinueRefusal SplitlinesBoundaryRecord TURN_ACTOR_META_KEY TURN_END_WIRE_CLS
         TYPE_CHECKING TranscriptRevisionChanged UnknownMemoryStore ValidationError
         _CREATABLE_MODES _ChatSlot _CommitToken _DEFERRED_PLAIN_CREATE_KNOWN_KEYS
         _DurablePrefixMismatch _FLUSH_SNAPSHOT_RETRIES _FOLLOWUP_TEXT_FIELDS
-        _GUARDED_WRITE_WAIT_SECS _HandoverDrainResult _MANUAL_CONTINUE_MSG _MANUAL_RESUME_MSG
-        _MAX_CONTEXT_CONTENT _MAX_CONTEXT_PER_SOURCE _MAX_DEFERRED_NOTES
-        _MAX_DISMISSED_SOURCE_LINKS _MAX_RECENT_PROJECTS _MAX_SOURCE_LEN _NOTE_CONTEXT_MAX_AGE
-        _NudgeRetireFailed _SESSION_RELOAD_NOTICE _SESSION_START_REPEAT_REFUSAL_AT
-        _SLOT_SCOPED_TRUST_MODES _SOURCE_CTRL_RE _STRUCTURED_CONTENT_MAX_CHARS
+        _GUARDED_WRITE_WAIT_SECS _HandoverDrainResult _MANUAL_CONTINUE_MSG
+        _MANUAL_RESUME_MSG _MAX_CONTEXT_CONTENT _MAX_CONTEXT_PER_SOURCE _MAX_DEFERRED_NOTES
+        _MAX_DISMISSED_SOURCE_LINKS _MAX_RECENT_PROJECTS _MAX_SOURCE_LEN
+        _MemberMemoryRequiresNewConversation _NOTE_CONTEXT_MAX_AGE _NudgeRetireFailed
+        _REOPEN_REREAD_EXTRA_ATTEMPTS _REOPEN_REREAD_RETRY_SECS _RESUME_APP_NOT_FOUND
+        _SESSION_RELOAD_NOTICE _SESSION_START_REPEAT_REFUSAL_AT _SLOT_SCOPED_TRUST_MODES
+        _SOURCE_CTRL_RE _SSE_WRITE_DEADLINE_SECS _STRUCTURED_CONTENT_MAX_CHARS
         _STRUCTURED_CONTENT_PLACEHOLDER _TEARDOWN_INCOMPLETE_WARNING _TRANSIENT_ROLES
         _TURN_OPENER_ROLES _TURN_OPENING_INJECT_KINDS _UNOWED_WINDOW_ROLES _UNPINNED _UNSET
-        _app_cancel_denied _app_may_send_to_slot
-        _append_unflushed_tail _append_unflushed_tail_from_offset _apply_remote_pick
-        _apply_remote_pick_locked _apply_source_link_unlink _attach_variants
-        _audit_source_link_unlink _autocompact_txn_lock _autocompact_txn_locks
-        _await_guarded_history_write _bounded_slot_page _broadcast_context_reset
-        _broadcast_expired_oauth_banners _build_pending_context_entry _build_stream_chunk
-        _bump_slot_tags_revision _cancel_target _close_slot
-        _coerce_requested_mode _collapse_wire_rows _compaction_in_flight
-        _configured_backend_for_slot _context_reading _context_snapshot_fields
-        _context_snapshot_fields_inner _context_usage_payload _deny_app_yolo _deny_approval_mode
-        _deny_trust_pattern _discard_held_note
-        _durable_prefix_counter _edit_queued_by_id _emit_agent_assignment _end_trust_scope
-        _end_trust_scopes _enqueue_pending_context _finite_number _generate_state
-        _get_pattern_from_pending _has_conversation _has_validated_effort_marker
-        _history_key_for _hydrate_slot_from_history _is_answered_permission _is_interrupted
-        _is_jev_route_pick _is_stop_event _live_child_instance _live_slot_for_resume
-        _live_slot_resume_payload _load_redacted _load_restore_cfg _local_turn_generation
-        _local_turn_prompt _make_stop_resolver _mark_permission_resolved
-        _materialise_slot_from_history _maybe_auto_title _model_rejected_reason
-        _normalise_structured_content _normalize_model _normalize_slot_key _normalize_source
-        _note_already_durable _note_delivered_live _open_stop_event_card _orphan_in_current_turn
-        _owed_prompts_lost_on_line _owner_denial_response _pending_guarded_history_writes
+        _acquired_slot_was_judged _add_favorite_project _app_acquisition_conflict
+        _app_cancel_denied _app_claim_refused _app_may_send_to_slot _app_resume_refusal
+        _app_slot_acquisition_denial _app_slot_acquisition_recheck _append_unflushed_tail
+        _append_unflushed_tail_from_offset _apply_source_link_unlink
+        _approval_target_required _attach_variants _audit_source_link_unlink
+        _autocompact_txn_lock _autocompact_txn_locks _await_guarded_history_write
+        _bounded_slot_page _broadcast_context_reset _broadcast_expired_oauth_banners
+        _build_pending_context_entry _build_stream_chunk _bump_slot_tags_revision
+        _cancel_target _close_slot _coerce_requested_mode _collapse_wire_rows
+        _compaction_in_flight _configured_backend_for_slot _context_reading
+        _context_snapshot_fields _context_snapshot_fields_inner _context_usage_payload
+        _default_template_stamp _deny_app_session_settings _deny_app_yolo
+        _deny_approval_mode _deny_trust_pattern _discard_held_note _durable_prefix_counter
+        _edit_queued_by_id _emit_agent_assignment _end_trust_scope _end_trust_scopes
+        _enqueue_pending_context _favorite_projects_lock _favorite_projects_path
+        _favorites_unreadable_response _finite_number _generate_state
+        _get_pattern_from_pending _grant_deadline _has_conversation
+        _has_validated_effort_marker _history_key_for _hydrate_slot_from_history
+        _internal_session_approval_refusal _is_answered_permission _is_interrupted
+        _is_jev_route_pick _is_secret_shaped_context _is_stop_event _live_child_instance
+        _live_slot_for_resume _live_slot_resume_payload _load_favorite_projects
+        _load_redacted _load_restore_cfg _local_turn_generation _local_turn_prompt
+        _make_stop_resolver _mark_permission_resolved _materialise_slot_from_history
+        _maybe_auto_title _model_rejected_reason _normalise_structured_content
+        _normalize_model _normalize_slot_key _normalize_source _note_already_durable
+        _note_delivered_live _note_owner_focus _open_stop_event_card
+        _orphan_in_current_turn _owed_prompts_lost_on_line _owner_denial_response
+        _pending_guarded_history_writes _persist_app_agent_owner
         _persist_deferred_note_hold _persist_handover_tail _prepare_messages
-        _reapply_effort_after_live_switch _rearm_stop_event _reauthorize_after_await
-        _rebase_rehydrated_refresh_mark _recent_projects_path _reconcile_local_turn_marker
-        _reconcile_slot_window _record_explicit_agent_selection _redact_followup_item
-        _redact_for_display _redact_history_rows _redact_meta _redact_meta_for_role
-        _rehydrate_slot_title _reject_pending_approvals _release_closed_execution
-        _remember_reasoning_effort_for_restore _remove_queued_by_id
-        _replacement_shares_transcript _report_lost_queued_prompts _reset_slot_session
-        _reset_slot_session_or_warn _resettle_restricted_key _resolve_stop_event
-        _restore_dismissed_source_links _restore_model_fields _restore_slot_nudge_loop
-        _restored_agent_name _restored_mode _resume_refusal_response _resume_session_identity
-        _retire_slot_nudge_loop _run_chat _same_persisted_body _save_recent_project
-        _settle_discarded_stage_deliveries _slot_not_found _slot_replaced_while_queued
-        _slot_still_ours _slot_switch_session_lock _slots_serialization_note
-        _snapshot_slot_window _source_cap_reached _source_link_txn_lock _source_link_txn_locks
-        _source_link_unlink_tasks _start_next_queued_turn _still_owning
-        _subagents_attached_response _sweep_stale_permissions _switch_target_busy
-        _sync_dashboard_slots _sync_served_model _test_interleave
-        _tighten_replacement_to_restricted_original _try_live_model_switch
+        _probe_favorite_candidate _read_favorite_projects _reapply_effort_after_live_switch
+        _rearm_stop_event _reauthorize_after_await _rebase_rehydrated_refresh_mark
+        _recent_projects_path _reconcile_local_turn_marker _reconcile_slot_window
+        _record_explicit_agent_selection _redact_followup_item _redact_for_display
+        _redact_history_rows _redact_meta _redact_meta_for_role
+        _refuse_secret_shaped_context _rehydrate_slot_title _reject_pending_approvals
+        _release_closed_execution _remember_reasoning_effort_for_restore
+        _remove_favorite_project _remove_queued_by_id _replacement_shares_transcript
+        _report_lost_queued_prompts _reset_slot_session _reset_slot_session_or_warn
+        _resettle_restricted_key _resolve_stop_event _restore_dismissed_source_links
+        _restore_model_fields _restore_slot_nudge_loop _restored_agent_name _restored_mode
+        _resume_refusal_response _resume_session_identity _retire_slot_nudge_loop _run_chat
+        _same_persisted_body _save_recent_project _send_binds_agent _send_harness_command
+        _send_writes_persona _settle_discarded_stage_deliveries
+        _slot_agent_autocompact_fields _slot_next_agent_autocompact_default _slot_not_found
+        _slot_replaced_while_queued _slot_still_ours _slot_switch_session_lock
+        _slots_serialization_note _snapshot_slot_window _source_cap_reached
+        _source_link_txn_lock _source_link_txn_locks _source_link_unlink_tasks
+        _start_next_queued_turn _still_owning _subagents_attached_response
+        _sweep_stale_permissions _switch_target_busy _sync_dashboard_slots
+        _sync_served_model _test_interleave _tighten_replacement_to_restricted_original
+        _try_live_model_switch _turn_timeout_body_value _turn_timeout_payload
         _unblock_pending_waits _unhide_folder _validate_autocompact_pct _validate_content
-        _validate_max_age _validate_source _wake_conductor_for_closed_worker _wire_model_id
-        _workspace_name_for_dir adopted_slot_for annotations api_chat api_chat_mode
-        api_chat_slot_agent api_chat_slot_approve api_chat_slot_autocompact api_chat_slot_color
-        api_chat_slot_context api_chat_slot_continue api_chat_slot_create api_chat_slot_delete
-        api_chat_slot_detail api_chat_slot_end_wait api_chat_slot_followup
-        api_chat_slot_interrupt api_chat_slot_model api_chat_slot_note api_chat_slot_project
+        _validate_max_age _validate_source _wire_model_id _workspace_name_for_dir
+        _write_favorite_projects agent_switch_outcome annotations api_chat api_chat_mode
+        api_chat_slot_agent api_chat_slot_approve api_chat_slot_autocompact
+        api_chat_slot_color api_chat_slot_context api_chat_slot_continue
+        api_chat_slot_create api_chat_slot_delete api_chat_slot_detail
+        api_chat_slot_end_wait api_chat_slot_followup api_chat_slot_interrupt
+        api_chat_slot_model api_chat_slot_note api_chat_slot_project
         api_chat_slot_queue_cancel api_chat_slot_queue_edit api_chat_slot_queue_reorder
-        api_chat_slot_reasoning_effort api_chat_slot_reload api_chat_slot_reset_conversation
-        api_chat_slot_resume api_chat_slot_selection_capabilities
-        api_chat_slot_source_link_unlink api_chat_slot_source_links api_chat_slot_stop
-        api_chat_slot_summary api_chat_slot_summary_generate api_chat_slot_workspace
-        api_chat_slots api_chat_slots_cleanup api_chat_slots_model api_recent_projects
-        apply_adopted_backfill approval_mode_permitted asyncio attachment_meta
+        api_chat_slot_reasoning_effort api_chat_slot_reload
+        api_chat_slot_reset_conversation api_chat_slot_resume
+        api_chat_slot_selection_capabilities api_chat_slot_source_link_unlink
+        api_chat_slot_source_links api_chat_slot_stop api_chat_slot_summary
+        api_chat_slot_summary_generate api_chat_slot_turn_timeout api_chat_slot_workspace
+        api_chat_slots api_chat_slots_cleanup api_chat_slots_model
+        api_chat_slots_unrestored api_favorite_project_add api_favorite_project_remove
+        api_favorite_projects api_recent_projects app_may_control_session
+        app_new_key_refusal app_owns_slot_session app_owns_transcript_meta
+        app_slot_is_local_user_session apply_approval_mode approval_mode_permitted
+        attachment_meta audit_app_slot_denial bare_approval_decide_allowed
         base_consent_pattern base_trust_patterns cached_project_agent_names canonical_key
         cap_effort_capability_levels capabilities_of carry_provenance channel_slot_name
-        chat_message_frame close_slot compaction_in_flight config_dir context_entry_expired
-        contextlib count_user_turns_in_records create_peer_slot datetime
-        decided_message_handling default_project_dir deny_non_dashboard_caller
-        deny_non_owner_remote_operation deny_session_approval_caller drained_to_thread
-        durable_row_count effective_session_key ensure_version_parity exact_trust_pattern
-        fetch_adopted_backfill forward_peer_selection forward_peer_stop generate_session_summary
-        get_reasoning_effort_ordered get_reasoning_effort_values history_corpus_unreadable
-        is_channel_session_key is_claude_code is_incognito_transcript is_owner_dashboard_request
+        chat_message_frame chat_turn_timeout_secs chunk_generation clear_slot_model_binding
+        close_slot compaction_in_flight config_dir context_entry_expired continue_slot_turn
+        count_user_turns_in_records create_session_folder crew_autocompact_pct
+        cron_creator_admission cron_mode_refusal cron_slot_creator datetime
+        decided_message_handling default_project_dir default_template
+        deny_app_session_control deny_app_slot_access deny_app_slot_session_access
+        deny_non_dashboard_caller deny_session_approval_caller dispatch_kiro_agent
+        drained_to_thread durable_row_count effective_session_key exact_trust_pattern
+        generate_session_summary get_reasoning_effort_ordered get_reasoning_effort_values
+        grant_deadline history_corpus_unreadable is_channel_session_key is_claude_code
+        is_harness_slash_command is_incognito_transcript is_owner_dashboard_request
         is_registered_agent_name is_sensitive_path is_stop_event_row is_system_notice
-        is_turn_interrupted islice json logger logging math maybe_auto_tag members_mod
-        model_registry normalize_send_id normalize_theme_consent_sha note_crew_log_class
-        note_hold_durable note_slot_closed os owner_start_priority parse_cls_meta peer_is_connected
-        peer_row_metadata
-        persist_deferred_notes_sync pick_epoch_host pin_private_agent_store
-        published_autocompact_pct queue_entry_is_user_origin queue_entry_view
-        queue_for_next_turn queued_text_for_display read_bounded_json
-        read_cached_intent_summary record_agent_selection redact_credentials
-        redact_exfiltration_urls redact_peer_text register_reasoning_effort_values
-        relay_remote_turn release_prewarmed_session reload_slot_session remote_bound_refusal
-        remote_mirror request_slot_origin resolve_adopt_target resolve_agent_bindings
-        resolve_folder_project_dir_off_loop resolve_session_agent_bindings resolved_row_identity
-        restore_agent_selection restore_replacement_if_handover_did_not_land
-        resume_slot_from_history row_mid safety_override save_slot_off_loop schedule_eager_spawn
-        sel session_agent_selection_name session_start_failure_streak slot_history_key
-        slot_switch_session_lock spawn_guarded_turn start_queue_persist
-        steer_into_running_turn steer_is_auto stop_declined_armed stop_slot_turn
-        subagents_attached_async tags_write_lock tempfile tighten_live_slot_memory_mode time
-        timezone uuid validate_folder_tag_ids validate_tool_args
-        voice_runtime_workspace_conflict wait_for_memory_preparation warm_project_agent_names
-        warn_if_not_durable weakref web yolo_policy_permits
+        is_turn_interrupted islice load_window_off_loop logger loop_slot_keys
+        maybe_auto_link_slack maybe_auto_tag members_mod model_registry normalize_send_id
+        normalize_theme_consent_sha note_crew_log_class note_hold_durable note_slot_closed
+        own_session_key owner_start_priority parse_cls_meta parse_grant_ttl
+        persist_deferred_notes_sync person_priority pick_epoch_host pin_private_agent_store
+        provider_model_pin_refused published_autocompact_pct queue_entry_is_user_origin
+        queue_entry_view queue_for_next_turn queued_text_for_display quote_meta
+        read_bounded_json read_cached_intent_summary read_session_grant
+        record_agent_selection record_trust_grant redact_credentials
+        redact_exfiltration_urls register_reasoning_effort_values relay_archive_refusal
+        release_prewarmed_session reload_slot_session remember_unknown_row_fields
+        request_slot_origin resolve_agent_bindings resolve_folder_project_dir_off_loop
+        resolve_session_agent_bindings resolved_row_identity restore_agent_selection
+        restore_replacement_if_handover_did_not_land resume_slot_from_history row_mid
+        safety_override save_slot_off_loop schedule_eager_spawn sel select_idle_slot_keys
+        session_agent_selection_name session_grant session_start_failure_streak
+        slot_history_key slot_is_live slot_not_found slot_switch_session_lock
+        slot_transcript_key spawn_guarded_turn start_queue_persist steer_into_running_turn
+        steer_is_auto stop_declined_armed stop_slot_turn subagents_attached_async
+        subagents_hold_user_messages switch_announcement switch_slot_agent tags_write_lock
+        tighten_live_slot_memory_mode timezone transcript_acquisition_reason
+        validate_folder_tag_ids validate_tool_args voice_runtime_workspace_conflict
+        wait_for_memory_preparation warm_project_agent_names warn_if_not_durable
+        write_sse_or_abort yolo_policy_permits
     """.split())
 
 #: Every route the gateway registers whose handler is a ``chat_handlers`` object, as
@@ -169,6 +197,7 @@ _BASE_ROUTES = (
         "api_chat_slot_source_link_unlink",
     ),
     ("GET", "/api/chat/slots", "api_chat_slots"),
+    ("GET", "/api/chat/slots/unrestored", "api_chat_slots_unrestored"),
     ("GET", "/api/chat/slots/{slot}", "api_chat_slot_detail"),
     ("GET", "/api/chat/slots/{slot}/autocompact", "api_chat_slot_autocompact"),
     (
@@ -178,7 +207,11 @@ _BASE_ROUTES = (
     ),
     ("GET", "/api/chat/slots/{slot}/source-links", "api_chat_slot_source_links"),
     ("GET", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary"),
+    ("GET", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
     ("GET", "/api/recent-projects", "api_recent_projects"),
+    ("GET", "/api/favorite-projects", "api_favorite_projects"),
+    ("POST", "/api/favorite-projects", "api_favorite_project_add"),
+    ("DELETE", "/api/favorite-projects", "api_favorite_project_remove"),
     ("PATCH", "/api/chat/slots/{slot}/color", "api_chat_slot_color"),
     ("PATCH", "/api/chat/slots/{slot}/queue/{queue_id}", "api_chat_slot_queue_edit"),
     ("POST", "/api/chat", "api_chat"),
@@ -203,6 +236,7 @@ _BASE_ROUTES = (
     ("POST", "/api/chat/slots/{slot}/resume", "api_chat_slot_resume"),
     ("POST", "/api/chat/slots/{slot}/stop", "api_chat_slot_stop"),
     ("POST", "/api/chat/slots/{slot}/summary", "api_chat_slot_summary_generate"),
+    ("POST", "/api/chat/slots/{slot}/turn-timeout", "api_chat_slot_turn_timeout"),
     ("POST", "/api/chat/slots/{slot}/workspace", "api_chat_slot_workspace"),
     ("PUT", "/api/chat/slots/{slot}/queue/order", "api_chat_slot_queue_reorder"),
 )
@@ -224,7 +258,7 @@ _RUNNER_SEAMS = (
 def test_every_name_the_handlers_bound_at_the_base_still_resolves() -> None:
     """Callers, the ``dashboard.chat`` facade and tests read private names off the
     handlers module as well as public ones, so every module-level binding survives."""
-    assert len(_BASE_NAMES) > 380
+    assert len(_BASE_NAMES) > 350
     assert sorted(name for name in _BASE_NAMES if not hasattr(ch, name)) == []
 
 
@@ -232,7 +266,7 @@ def test_a_fresh_interpreter_sees_every_base_public_name(tmp_path: Path) -> None
     """The public names resolve in a process that imports nothing else first, and the
     ``dashboard.chat`` re-exports are the facade's own objects there too."""
     public = sorted(name for name in _BASE_NAMES if not name.startswith("_"))
-    assert len(public) > 200
+    assert len(public) > 180
     script = """
         import sys
         import kiro_crew.dashboard.chat_handlers as ch
@@ -414,19 +448,22 @@ def _closing_state(tmp_path):
 
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "rows-lost"])
 @pytest.mark.asyncio
-async def test_the_handover_exit_wakes_the_conductor_only_after_a_committed_drain(
+async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
     tmp_path, monkeypatch, committed: bool
 ) -> None:
-    """A close that yields its archive to a recreated slot drains the tail OPEN; the
-    conductor is told once the drain committed, and never when the rows were lost."""
+    """A close that yields its archive to a recreated slot drains the tail OPEN.
+
+    A committed drain returns success and no archival save runs; a drain whose rows
+    were lost raises, because that frame was their last chance at durability and
+    nothing retries it. The exit reaches no further step either way -- it pushed a
+    conductor wake while a close was a wake trigger, and the whole close path now
+    carries none.
+    """
     events: list[str] = []
 
     async def _drain(_state, name, _slot):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
-
-    async def _wake(name: str) -> None:
-        events.append(f"wake:{name}")
 
     async def _save(*_a, **_kw) -> None:
         events.append("archival-save")
@@ -434,17 +471,15 @@ async def test_the_handover_exit_wakes_the_conductor_only_after_a_committed_drai
     monkeypatch.setattr(ch, "_replacement_shares_transcript", lambda *_a: True)
     monkeypatch.setattr(ch, "_persist_handover_tail", _drain)
     monkeypatch.setattr(ch, "_resettle_restricted_key", lambda *_a: None)
-    monkeypatch.setattr(ch, "_wake_conductor_for_closed_worker", _wake)
     monkeypatch.setattr(ch, "save_slot_off_loop", _save)
     state, slot = _closing_state(tmp_path)
     if committed:
         await ch.close_slot(state, slot, "w1")
-        assert events == ["drain:w1", "wake:w1"]
     else:
         with pytest.raises(ch.SlotCloseError) as raised:
             await ch.close_slot(state, slot, "w1")
         assert (raised.value.code, raised.value.status) == ("history_save_failed", 500)
-        assert events == ["drain:w1"]
+    assert events == ["drain:w1"]
 
 
 def _module_level_imports(tree: ast.Module) -> set[str]:
@@ -465,33 +500,31 @@ def _handler_files() -> list[Path]:
     return [_FACADE_PATH, *sorted(owners.glob("*.py"))]
 
 
-def test_conductor_wake_is_imported_where_it_wakes() -> None:
-    """``conductor_wake`` imports the dashboard back, so a module-scope import of it
-    would close a cycle; the close path's wake helper imports it in its own body."""
-    holders = []
+def test_no_handler_module_reaches_the_conductor_wake() -> None:
+    """A worker's session closing is not a statement by the worker, so a close wakes
+    nobody and no handler module needs the wake at all.
+
+    Read at module scope AND inside every function body, because the close path's
+    helper held its import in its own body to keep an import cycle open-ended:
+    ``conductor_wake`` imports the dashboard back. A module-scope test alone would
+    pass while a function-local import kept the push alive.
+    """
     for path in _handler_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        module_level = {
-            name
-            for node in tree.body
-            if isinstance(node, (ast.Import, ast.ImportFrom, ast.If, ast.Try))
-            for name in _module_level_imports(ast.Module(body=[node], type_ignores=[]))
+        source = path.read_text(encoding="utf-8")
+        assert "conductor_wake" not in source, path.name
+        tree = ast.parse(source)
+        reached = {
+            f"{node.module}.{alias.name}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        } | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
         }
-        assert "kiro_crew.conductor_wake" not in module_level, path.name
-        for node in tree.body:
-            if (
-                isinstance(node, ast.AsyncFunctionDef)
-                and node.name == "_wake_conductor_for_closed_worker"
-            ):
-                local = {
-                    f"{inner.module}.{alias.name}"
-                    for inner in ast.walk(node)
-                    if isinstance(inner, ast.ImportFrom)
-                    for alias in inner.names
-                }
-                assert "kiro_crew.conductor_wake" in local
-                holders.append(path.name)
-    assert len(holders) == 1
+        assert "kiro_crew.conductor_wake" not in reached, path.name
 
 
 # ── the composition ───────────────────────────────────────────────────────────
@@ -503,7 +536,33 @@ _GLOBAL_OPS = frozenset({"LOAD_GLOBAL", "STORE_GLOBAL", "DELETE_GLOBAL"})
 
 #: The owners the facade composes. Adding or removing one changes the composition,
 #: so the set is spelled out rather than globbed.
-_OWNER_MODULES = frozenset({"resume", "slot_detail", "slot_lifecycle", "source_links"})
+_OWNER_MODULES = frozenset(
+    {
+        "agent_switch",
+        "app_admission",
+        "chat_send",
+        "continue_turn",
+        "followup_card",
+        "handover_drain",
+        "pending_context",
+        "project_lists",
+        "prompt_queue",
+        "resume",
+        "session_relaunch",
+        "slot_approval",
+        "slot_create",
+        "slot_detail",
+        "slot_effort",
+        "slot_guards",
+        "slot_lifecycle",
+        "slot_model",
+        "slot_note",
+        "slot_settings",
+        "slot_summary",
+        "source_links",
+        "turn_stop",
+    }
+)
 
 #: Each moved name, the owner that holds it, and its kind and signature in the
 #: one-module file (captured from it before the split).
@@ -533,6 +592,11 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
     ),
     "slot_detail": (
         ("api_chat_slots", "async function", "(request: 'web.Request') -> 'web.Response'"),
+        (
+            "api_chat_slots_unrestored",
+            "async function",
+            "(request: 'web.Request') -> 'web.Response'",
+        ),
         ("_finite_number", "function", "(value: 'Any') -> 'float | None'"),
         (
             "_context_reading",
@@ -650,7 +714,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async function",
             "(slot: \"'_ChatSlot'\", name: 'str') -> 'bool'",
         ),
-        ("_wake_conductor_for_closed_worker", "async function", "(name: 'str') -> 'None'"),
         (
             "close_slot",
             "async function",
@@ -665,6 +728,157 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("api_chat_slots_cleanup", "async function", "(request: 'web.Request') -> 'web.Response'"),
     ),
 }
+
+
+#: The same record for every name this split moves into the owners it adds, as one
+#: ``owner | name | kind | signature`` row each, captured at the base this split was
+#: cut from (30bb0b3da2). A table rather than a tuple per name keeps this file under
+#: the line cap.
+_MOVED_SURFACE = """
+agent_switch | clear_slot_model_binding | function | (slot: 'Any') -> 'None'
+agent_switch | _MemberMemoryRequiresNewConversation | class
+agent_switch | SlotAgentSwitchCaller | class
+agent_switch | api_chat_slot_agent | async function | (request: 'web.Request') -> 'web.Response'
+agent_switch | agent_switch_outcome | function | (resp: 'web.Response') -> 'tuple[bool, dict[str, Any]]'
+agent_switch | switch_slot_agent | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', agent_name: 'Any', agent_kind: 'Any', caller: 'SlotAgentSwitchCaller') -> 'web.Response'
+followup_card | _redact_followup_item | function | (item: 'dict') -> 'dict'
+followup_card | api_chat_slot_followup | async function | (request: 'web.Request') -> 'web.Response'
+pending_context | _validate_content | function | (content: 'object') -> 'web.Response | None'
+pending_context | _is_secret_shaped_context | function | (content: 'str') -> 'bool'
+pending_context | _refuse_secret_shaped_context | function | (content: 'str') -> 'web.Response | None'
+pending_context | _normalize_source | function | (source: 'object') -> 'str'
+pending_context | _validate_source | function | (source: 'object') -> 'web.Response | None'
+pending_context | _validate_max_age | function | (max_age: 'object') -> 'web.Response | None'
+pending_context | _source_cap_reached | function | (slot: '_ChatSlot', source: 'str') -> 'bool'
+pending_context | _enqueue_pending_context | function | (slot: '_ChatSlot', content: 'str', source: 'str', ephemeral: 'bool', max_age: 'int | float | None') -> 'web.Response | None'
+pending_context | _build_pending_context_entry | function | (slot: '_ChatSlot', content: 'str', source: 'str', ephemeral: 'bool', max_age: 'int | float | None') -> 'tuple[dict[str, object] | None, web.Response | None]'
+pending_context | api_chat_slot_context | async function | (request: 'web.Request') -> 'web.Response'
+project_lists | _recent_projects_path | function | () -> 'Path'
+project_lists | _save_recent_project | function | (path: 'str') -> 'None'
+project_lists | api_recent_projects | async function | (request: 'web.Request') -> 'web.Response'
+project_lists | _favorite_projects_path | function | () -> 'Path'
+project_lists | FavoritesUnreadable | class
+project_lists | _load_favorite_projects | function | (*, strict: 'bool' = False) -> 'list[str]'
+project_lists | _read_favorite_projects | function | () -> 'list[str]'
+project_lists | _write_favorite_projects | function | (paths: 'list[str]') -> 'None'
+project_lists | _probe_favorite_candidate | function | (path: 'str') -> 'tuple[str, bool, bool]'
+project_lists | _add_favorite_project | function | (path: 'str') -> 'list[str]'
+project_lists | _remove_favorite_project | function | (path: 'str') -> 'list[str]'
+project_lists | _favorites_unreadable_response | function | () -> 'web.Response'
+project_lists | api_favorite_projects | async function | (request: 'web.Request') -> 'web.Response'
+project_lists | api_favorite_project_add | async function | (request: 'web.Request') -> 'web.Response'
+project_lists | api_favorite_project_remove | async function | (request: 'web.Request') -> 'web.Response'
+session_relaunch | api_chat_slot_reload | async function | (request: 'web.Request') -> 'web.Response'
+session_relaunch | reload_slot_session | async function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', *, still_ours: 'Callable[[bool], bool]', denied: 'Callable[[str], web.Response | None]', busy: 'Callable[[str], bool]', notice: 'str') -> 'web.Response'
+session_relaunch | api_chat_slot_workspace | async function | (request: 'web.Request') -> 'web.Response'
+session_relaunch | api_chat_slot_project | async function | (request: 'web.Request') -> 'web.Response'
+slot_approval | _internal_session_approval_refusal | async function | (request: 'web.Request', operation: 'str') -> "'web.Response | None'"
+slot_approval | deny_session_approval_caller | async function | (request: 'web.Request', operation: 'str') -> 'web.Response | None'
+slot_approval | bare_approval_decide_allowed | function | (request: 'web.Request') -> 'bool'
+slot_approval | _approval_target_required | function | () -> 'web.Response'
+slot_approval | _end_trust_scopes | async function | (slots: 'list[Any]', audit_caller: 'Callable[[str], str]') -> 'None'
+slot_approval | _still_owning | function | (state: 'Any', slots: 'list[Any]', key: 'str') -> 'list[Any]'
+slot_approval | _end_trust_scope | async function | (scope: 'str', caller: 'str') -> 'None'
+slot_approval | api_chat_mode | async function | (request: 'web.Request') -> 'web.Response'
+slot_approval | apply_approval_mode | async function | (state: 'DashboardState', *, mode: 'str', slot: '_ChatSlot | None', slot_key: 'str | None', request_app: 'str', cron_creator: 'str', audit_caller: 'Callable[[str], str]') -> 'web.Response'
+slot_approval | _get_pattern_from_pending | function | (slot: '_ChatSlot', request_id: 'str', field: 'str') -> 'str'
+slot_approval | _deny_approval_mode | function | (*, caller: 'str', operation: 'str', mode: 'str', resource: 'str' = '') -> 'web.Response'
+slot_approval | _grant_deadline | function | (ttl: 'int | None') -> 'GrantDeadline | None'
+slot_approval | _deny_trust_pattern | function | (name: 'str', request_id: 'str', action: 'str', code: 'str') -> 'web.Response'
+slot_approval | api_chat_slot_approve | async function | (request: 'web.Request') -> 'web.Response'
+slot_effort | _configured_backend_for_slot | async function | (slot: '_ChatSlot') -> 'str'
+slot_effort | api_chat_slot_selection_capabilities | async function | (request: 'web.Request') -> 'web.Response'
+slot_effort | api_chat_slot_reasoning_effort | async function | (request: 'web.Request') -> 'web.Response'
+slot_guards | _record_explicit_agent_selection | async function | (session_key: 'str', agent_name: 'str | None', bindings: 'ResolvedBindings', *, config: 'KiroCrewConfig', memory_mode: 'str' = 'persistent', app: 'str' = '') -> 'SelectionChange | None'
+slot_guards | _CommitToken | class
+slot_guards | _slot_replaced_while_queued | function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', request: 'web.Request | Mapping[str, Any]', operation: 'str') -> 'bool'
+slot_guards | _switch_target_busy | function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', provider: 'object', *, own_turn: 'bool' = False) -> 'bool'
+slot_guards | _subagents_attached_response | async function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', operation: 'str') -> 'web.Response | None'
+slot_guards | _reset_slot_session_or_warn | async function | (state: 'DashboardState', slot: '_ChatSlot', session_key: 'str', *, switch_kind: 'str') -> 'bool | None'
+slot_model | _model_rejected_reason | function | (model_name: 'str', backend: 'str | None' = None, *, session_keys: 'Iterable[str | None] | None' = None) -> 'str | None'
+slot_model | _is_jev_route_pick | function | (raw: 'object') -> 'bool'
+slot_model | _wire_model_id | function | (provider: 'AcpProvider', model_name: 'str') -> 'str'
+slot_model | _reapply_effort_after_live_switch | async function | (name: 'str', slot: '_ChatSlot', provider: 'AcpProvider') -> 'bool'
+slot_model | _try_live_model_switch | async function | (name: 'str', slot: '_ChatSlot', provider: 'LLMProvider | None', model_name: 'str') -> 'bool'
+slot_model | _broadcast_context_reset | function | (state: "'DashboardState'", slot_key: 'str', provider: 'Any') -> 'None'
+slot_model | api_chat_slot_model | async function | (request: 'web.Request') -> 'web.Response'
+slot_model | api_chat_slots_model | async function | (request: 'web.Request') -> 'web.Response'
+slot_note | _discard_held_note | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'None'
+slot_note | _note_delivered_live | function | (slot: '_ChatSlot', note: 'dict[str, object]') -> 'bool'
+slot_note | _persist_deferred_note_hold | async function | (state: 'DashboardState', slot: '_ChatSlot', note: 'dict[str, object]', authorized_history_key: 'str') -> 'web.Response | None'
+slot_note | _note_already_durable | async function | (conversation_log: 'object', authorized_history_key: 'str', note: 'dict[str, object]') -> 'bool'
+slot_note | api_chat_slot_note | async function | (request: 'web.Request') -> 'web.Response'
+slot_settings | _autocompact_txn_lock | function | (history_key: 'str') -> 'asyncio.Lock'
+slot_settings | api_chat_slot_autocompact | async function | (request: 'web.Request') -> 'web.Response'
+slot_settings | _slot_agent_autocompact_fields | async function | (state: 'DashboardState', slot: 'Any') -> 'dict[str, Any]'
+slot_settings | _slot_next_agent_autocompact_default | function | (session_key: 'str', slot: 'Any') -> 'tuple[str, float] | None'
+slot_settings | _turn_timeout_body_value | function | (body: 'dict[str, Any]') -> 'tuple[int | None, web.Response | None]'
+slot_settings | _turn_timeout_payload | async function | (secs: 'int | None') -> 'dict[str, Any]'
+slot_settings | api_chat_slot_turn_timeout | async function | (request: 'web.Request') -> 'web.Response'
+slot_settings | api_chat_slot_color | async function | (request: 'web.Request') -> 'web.Response'
+chat_send | _sweep_stale_permissions | function | (slot: "'_ChatSlot'") -> 'None'
+chat_send | _send_binds_agent | function | (agent: 'str', slot: 'Any') -> 'bool'
+chat_send | _send_writes_persona | function | (body: 'dict') -> 'bool'
+chat_send | _send_harness_command | async function | (message: 'str') -> 'str'
+chat_send | steer_is_auto | function | (value: 'object') -> 'bool'
+chat_send | decided_message_handling | async function | (slot: 'Any', message: 'str') -> 'tuple[bool, dict | None]'
+chat_send | api_chat | async function | (request: 'web.Request') -> 'web.StreamResponse'
+chat_send | write_sse_or_abort | async function | (request: 'web.Request', resp: 'web.StreamResponse', data: 'bytes') -> 'None'
+app_admission | _app_slot_acquisition_denial | async function | (request: 'web.Request', state: "'DashboardState'", request_app: 'str', slot_name: 'str', operation: 'str', *, session_grant_route: 'bool') -> 'tuple[web.Response | None, Any]'
+app_admission | _app_slot_acquisition_recheck | async function | (state: "'DashboardState'", request_app: 'str', key: 'str', judged: 'Any', operation: 'str') -> 'web.Response | None'
+app_admission | _acquired_slot_was_judged | function | (state: "'DashboardState'", key: 'str', judged: 'Any') -> 'bool'
+app_admission | _app_acquisition_conflict | function | (state: "'DashboardState'", request_app: 'str', key: 'str', judged: 'Any', exc: 'ValueError') -> 'web.Response'
+app_admission | _deny_app_yolo | function | (request_app: 'str', operation: 'str') -> 'web.Response'
+app_admission | _deny_app_session_settings | function | (request_app: 'str', slot_key: 'str', trigger: 'str') -> 'web.Response'
+app_admission | _slot_not_found | function | () -> 'web.Response'
+app_admission | _app_may_send_to_slot | async function | (request_app: 'str', slot: 'Any') -> 'bool'
+app_admission | _app_claim_refused | async function | (state: 'DashboardState', request_app: 'str', operation: 'str', keys: 'Iterable[str]') -> 'bool'
+app_admission | _app_cancel_denied | function | (request: 'web.Request | Mapping[str, Any]', slot: '_ChatSlot', operation: 'str', target_key: 'str') -> 'web.Response | None'
+app_admission | _app_resume_refusal | async function | (state: "'DashboardState'", request_app: 'str', name: 'str', history_key: 'str', meta: 'dict') -> 'ResumeRefusal | None'
+app_admission | _reauthorize_after_await | function | (state: 'DashboardState', slot: '_ChatSlot', name: 'str', request_app: 'str', operation: 'str') -> 'web.Response | None'
+turn_stop | _reject_pending_approvals | function | (slot: '_ChatSlot') -> 'None'
+turn_stop | _resolve_stop_event | function | (slot: '_ChatSlot', outcome: 'str') -> 'None'
+turn_stop | _rearm_stop_event | function | (slot: '_ChatSlot', stop_data: 'dict[str, Any]') -> 'bool'
+turn_stop | _open_stop_event_card | function | (slot: '_ChatSlot', state_label: 'str') -> 'str'
+turn_stop | _make_stop_resolver | function | (state: 'DashboardState', slot: '_ChatSlot', outcome: 'str', card_id: 'str | None') -> 'Callable[[], Awaitable[None]]'
+turn_stop | _cancel_target | function | (slot: '_ChatSlot') -> 'str'
+turn_stop | _settle_discarded_stage_deliveries | async function | (state: "'DashboardState'", slot: "'_ChatSlot'", contents: 'list[str]') -> 'None'
+turn_stop | stop_slot_turn | async function | (state: "'DashboardState'", slot: "'_ChatSlot'", *, force: 'bool' = False, source: 'str' = 'dashboard', cancel_key: 'str' = '', escalate: 'bool' = True) -> 'dict[str, Any]'
+turn_stop | _compaction_in_flight | function | (state: 'DashboardState', cancel_key: 'str') -> 'bool'
+turn_stop | api_chat_slot_stop | async function | (request: 'web.Request') -> 'web.Response'
+turn_stop | api_chat_slot_interrupt | async function | (request: 'web.Request') -> 'web.Response'
+continue_turn | api_chat_slot_continue | async function | (request: 'web.Request') -> 'web.Response'
+continue_turn | SlotContinueRefusal | class
+continue_turn | continue_slot_turn | async function | (state: 'DashboardState', slot: '_ChatSlot', *, directive_user_origin: 'bool', via: 'str' = '', require_interrupted: 'bool' = False, before_dispatch: 'Callable[[], None] | None' = None, extra_meta: 'dict[str, Any] | None' = None, replaced: 'Callable[[], bool] | None' = None) -> 'str'
+continue_turn | session_start_failure_streak | function | (messages: 'list[dict]') -> 'int'
+continue_turn | _is_stop_event | function | (m: 'dict') -> 'bool'
+continue_turn | _is_interrupted | function | (slot: '_ChatSlot') -> 'bool'
+continue_turn | api_chat_slot_end_wait | async function | (request: 'web.Request') -> 'web.Response'
+prompt_queue | api_chat_slot_queue_cancel | async function | (request: 'web.Request') -> 'web.Response'
+prompt_queue | api_chat_slot_queue_edit | async function | (request: 'web.Request') -> 'web.Response'
+prompt_queue | api_chat_slot_queue_reorder | async function | (request: 'web.Request') -> 'web.Response'
+slot_create | _default_template_stamp | function | (cfg: 'KiroCrewConfig') -> 'str'
+slot_create | _persist_app_agent_owner | async function | (state: 'DashboardState', slot: '_ChatSlot') -> 'bool'
+slot_create | api_chat_slot_create | async function | (request: 'web.Request') -> 'web.Response'
+handover_drain | _HandoverDrainResult | class
+handover_drain | _owed_prompts_lost_on_line | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot', history_key: 'str') -> 'int'
+handover_drain | _report_lost_queued_prompts | function | (state: 'DashboardState', name: 'str', count: 'int', history_key: 'str') -> 'None'
+handover_drain | _persist_handover_tail | async function | (state: 'DashboardState', name: 'str', slot: '_ChatSlot') -> '_HandoverDrainResult'
+slot_summary | api_chat_slot_summary | async function | (request: 'web.Request') -> 'web.Response'
+slot_summary | _generate_state | function | (cfg: 'KiroCrewConfig', slot: 'Any') -> 'str'
+slot_summary | api_chat_slot_summary_generate | async function | (request: 'web.Request') -> 'web.Response'
+"""
+
+
+def _moved_surface() -> dict[str, tuple[tuple[str, str, str], ...]]:
+    rows: dict[str, list[tuple[str, str, str]]] = {}
+    for line in _MOVED_SURFACE.strip().splitlines():
+        stem, name, kind, signature = (line.split(" | ", 3) + [""])[:4]
+        rows.setdefault(stem, []).append((name, kind, signature))
+    return {stem: tuple(found) for stem, found in rows.items()}
+
+
+_BASE_SURFACE.update(_moved_surface())
 
 
 def _owner(stem: str) -> types.ModuleType:
@@ -757,20 +971,10 @@ _FACADE_STATE = (
     "logger",
 )
 
-#: Definitions that stay in the facade file: the summary routes the
-#: session-summary spec names there, the Continue predicate the session spec
-#: mirrors, the shared protocol records, the hand-over drain several guards read by
-#: path, ``api_chat_slot_create`` and ``reload_slot_session``, whose eager-spawn
-#: priority ``test_start_priority`` reads by function name in this file, and the
-#: reload route kept beside its ``reload_slot_session`` core.
+#: Definitions that stay in the facade file: the Continue predicate the session
+#: spec mirrors, and the shared protocol records.
 _FACADE_DEFS = (
-    "api_chat_slot_summary",
-    "api_chat_slot_summary_generate",
     "_has_conversation",
-    "_persist_handover_tail",
-    "api_chat_slot_create",
-    "api_chat_slot_reload",
-    "reload_slot_session",
     "ResumeRefusal",
     "ResumeOutcome",
     "SlotCloseError",
@@ -801,7 +1005,7 @@ def test_the_owners_log_as_the_facade() -> None:
     readers = [
         label for label, fn in _owner_functions() if "logger" in set(_global_names(fn.__code__))
     ]
-    assert len(readers) >= 14
+    assert len(readers) >= 13
 
 
 def test_every_owner_function_runs_on_the_facade_globals() -> None:
@@ -1361,7 +1565,6 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
         "sel",
         "save_slot_off_loop",
         "_retire_slot_nudge_loop",
-        "_wake_conductor_for_closed_worker",
         "_reauthorize_after_await",
         "resume_slot_from_history",
         "_GUARDED_WRITE_WAIT_SECS",
@@ -1377,58 +1580,58 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 # ── the path-keyed guards keep their reach ────────────────────────────────────
 
-#: Constructs repository guards read in ``dashboard/chat_handlers.py`` by path or
-#: through the facade's module source: the agent-SDK boundary's three baselined
-#: imports, the approval-mode writers, the remote peer gate and pick chokepoint, the
-#: queue-clear the session-control doc counts, the app-actor turn kwargs, the
-#: hold-branch persist, the remote-down refusal text, the stop chokepoints, the
-#: synthesis boundary the frontend mirrors, the permission-resolution sites with
-#: their dirty flags, and the approval-resolved broadcasts. An owner that grew one
-#: would move it out of such a guard's sight, so each stays in the facade.
-_STAYS_IN_THE_FACADE = (
-    r"(?m)^from kiro_crew\.acp\.client import AcpModelUnavailable$",
-    r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$",
-    r"(?m)^from kiro_crew\.providers\.base import LLMProvider$",
-    r"safety_override\(\)\.activate",
-    r"deny_non_owner_remote_operation\(",
-    r"_apply_remote_pick\(\s*request",
-    r"\._queue\.clear\(\)",
-    r'_turn_kwargs\["_turn_actor"\]',
-    r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)",
-    r"reconnecting to the crew running this session",
-    r"(?m)^def _unblock_pending_waits\(",
-    r"(?m)^async def _reset_slot_session\(",
-    r"(?m)^def _orphan_in_current_turn\(",
-    r"_mark_permission_resolved\(",
-    r'"approval_resolved"',
-    r"issued_by_the_retraction=True",
-)
+#: Constructs repository guards read by path or through module source, each mapped
+#: to the files that hold it -- the facade (``chat_handlers``) or an owner -- which
+#: are the files those guards read: the agent-SDK boundary's three baselined
+#: imports, the stop chokepoints and the synthesis boundary the frontend mirrors in
+#: the facade; the app-actor turn kwargs and the hold-branch persist in
+#: ``chat_api/chat_send.py``; the queue-clear the session-control doc counts in
+#: ``chat_api/turn_stop.py``; the hand-over drain's fence opt-out in
+#: ``chat_api/handover_drain.py``; the approval-mode writers
+#: ``test_approval_modes_enforcement``'s ``WRITERS`` keys to
+#: ``chat_api/slot_approval.py``; and the permission-resolution sites with their
+#: dirty flags and the approval-resolved broadcasts, whose guards read
+#: ``chat_api/turn_stop.py`` and ``chat_api/slot_approval.py``. A holder that grew
+#: one, or lost one, would move it out of such a guard's sight, so each set is
+#: exact.
+_GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
+    r"(?m)^from kiro_crew\.acp\.client import AcpModelUnavailable$": frozenset({"chat_handlers"}),
+    r"(?m)^from kiro_crew\.providers\.acp import AcpProvider$": frozenset({"chat_handlers"}),
+    r"(?m)^from kiro_crew\.providers\.base import LLMProvider$": frozenset({"chat_handlers"}),
+    r"safety_override\(\)\.activate": frozenset({"slot_approval"}),
+    r"\._queue\.clear\(\)": frozenset({"turn_stop"}),
+    r'_turn_kwargs\["_turn_actor"\]': frozenset({"chat_send"}),
+    r"warn_if_not_durable\(slot\._queue, qid, slot\.key\)": frozenset({"chat_send"}),
+    r"(?m)^def _unblock_pending_waits\(": frozenset({"chat_handlers"}),
+    r"(?m)^async def _reset_slot_session\(": frozenset({"chat_handlers"}),
+    r"(?m)^def _orphan_in_current_turn\(": frozenset({"chat_handlers"}),
+    r"_mark_permission_resolved\(": frozenset({"slot_approval", "turn_stop"}),
+    r'"approval_resolved"': frozenset({"slot_approval"}),
+    r"issued_by_the_retraction=True": frozenset({"handover_drain"}),
+}
 
 
-@pytest.mark.parametrize("pattern", _STAYS_IN_THE_FACADE)
-def test_a_construct_a_guard_reads_in_the_facade_stays_there(pattern: str) -> None:
-    assert re.search(pattern, _FACADE_PATH.read_text(encoding="utf-8"))
-    holders = [stem for stem, source in _owner_sources().items() if re.search(pattern, source)]
-    assert holders == []
+def _holder_sources() -> dict[str, str]:
+    """The facade's and every owner's source, keyed by stem."""
+    return {"chat_handlers": _FACADE_PATH.read_text(encoding="utf-8"), **_owner_sources()}
 
 
-#: Calls guards check through the facade's own module source or file only: the
-#: peer sinks the remote owner gate sweeps, the turn dispatch the turn-ceiling
-#: scan counts, and the gate, pick and permission-resolution sites beside them.
-#: The facade makes each call and no owner may, so a moved caller cannot slip past
-#: a guard that never reads ``chat_api``.
-_FACADE_ONLY_CALLS = frozenset(
-    {
-        "relay_remote_turn",
-        "forward_peer_stop",
-        "forward_peer_selection",
-        "deny_non_owner_remote_operation",
-        "_apply_remote_pick",
-        "_run_chat",
-        "spawn_guarded_turn",
-        "_mark_permission_resolved",
-    }
-)
+@pytest.mark.parametrize("pattern", sorted(_GUARDED_CONSTRUCT_HOMES))
+def test_a_construct_a_guard_reads_stays_where_the_guard_reads_it(pattern: str) -> None:
+    holders = {stem for stem, source in _holder_sources().items() if re.search(pattern, source)}
+    assert holders == _GUARDED_CONSTRUCT_HOMES[pattern]
+
+
+#: Calls guards check by reading the files that make them, mapped to those files:
+#: the turn dispatch the turn-ceiling scan counts in ``chat_api/chat_send.py``, and
+#: the permission-resolution sites, whose guard reads ``chat_api/turn_stop.py`` and
+#: ``chat_api/slot_approval.py``. A caller anywhere else would slip past the guard
+#: that counts it.
+_GUARDED_CALL_SITES: dict[str, frozenset[str]] = {
+    "_run_chat": frozenset({"chat_send"}),
+    "spawn_guarded_turn": frozenset({"chat_send"}),
+    "_mark_permission_resolved": frozenset({"slot_approval", "turn_stop"}),
+}
 
 #: Harness-identity reads the agent-SDK ratchets ban in ``dashboard/chat_handlers.py``
 #: (``test_agent_sdk_capabilities`` and ``test_agent_sdk_provider_identity`` read
@@ -1461,14 +1664,14 @@ def _identity_reads(tree: ast.AST) -> list[str]:
     return found
 
 
-def test_a_call_a_facade_guard_reads_is_made_only_by_the_facade() -> None:
-    facade = _called_names(ast.parse(_FACADE_PATH.read_text(encoding="utf-8")))
-    assert sorted(_FACADE_ONLY_CALLS - facade) == []
+@pytest.mark.parametrize("name", sorted(_GUARDED_CALL_SITES))
+def test_a_call_a_guard_counts_is_made_only_where_the_guard_reads(name: str) -> None:
     callers = {
-        stem: sorted(_FACADE_ONLY_CALLS & _called_names(ast.parse(source)))
-        for stem, source in _owner_sources().items()
+        stem
+        for stem, source in _holder_sources().items()
+        if name in _called_names(ast.parse(source))
     }
-    assert {stem: names for stem, names in callers.items() if names} == {}
+    assert callers == _GUARDED_CALL_SITES[name]
 
 
 def test_no_owner_reads_a_harness_identity() -> None:
@@ -1480,6 +1683,87 @@ def test_no_owner_reads_a_harness_identity() -> None:
     assert len(_identity_reads(ast.parse(planted))) == 4
     reads = {stem: _identity_reads(ast.parse(source)) for stem, source in _owner_sources().items()}
     assert {stem: found for stem, found in reads.items() if found} == {}
+
+
+# ── the sync-io gate keeps its reach ──────────────────────────────────────────
+
+#: Module names ``scripts/check_sync_io_in_async.py`` resolves, and only from an
+#: ``import <module>`` in the same file: an owner that took one through the facade's
+#: import would drop its coroutines out of that gate. Patched ones (``time``) are
+#: imported under ``TYPE_CHECKING``, which the gate reads and the capture scan skips.
+_SYNC_IO_MODULES = frozenset({"time", "os", "subprocess", "socket", "requests", "httpx"})
+
+#: One call per module that the gate reports as blocking.
+_SYNC_IO_PLANTS = {"time": "time.sleep(1)", "os": 'os.system("true")'}
+
+#: Owners that still take a gated module through the facade's import. Both predate
+#: this split and sit outside it; each row goes when its owner is respelled.
+_SYNC_IO_REACH_PENDING = frozenset({"resume", "slot_lifecycle"})
+
+
+def _sync_io_gate() -> types.ModuleType:
+    path = _SRC.parent / "scripts" / "check_sync_io_in_async.py"
+    spec = importlib.util.spec_from_file_location("check_sync_io_in_async_probe", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _from_imported_sync_io_modules(source: str) -> set[str]:
+    return {
+        alias.asname or alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if (alias.asname or alias.name) in _SYNC_IO_MODULES
+    }
+
+
+def test_no_owner_takes_a_sync_io_module_through_an_import_the_gate_cannot_read() -> None:
+    blind = {
+        stem: sorted(found)
+        for stem, source in _owner_sources().items()
+        if (found := _from_imported_sync_io_modules(source))
+    }
+    assert set(blind) == _SYNC_IO_REACH_PENDING, blind
+
+
+def _with_blocking_call(source: str, call: str) -> tuple[str, int]:
+    """*source* with *call* as the first statement of its first top-level coroutine,
+    and the call's line."""
+    coroutine = next(n for n in ast.parse(source).body if isinstance(n, ast.AsyncFunctionDef))
+    first = coroutine.body[0]
+    lines = source.splitlines(keepends=True)
+    lines.insert(first.lineno - 1, " " * first.col_offset + call + "\n")
+    return "".join(lines), first.lineno
+
+
+@pytest.mark.parametrize("module", sorted(_SYNC_IO_PLANTS))
+@pytest.mark.parametrize("stem", sorted(_OWNER_MODULES - _SYNC_IO_REACH_PENDING))
+def test_the_sync_io_gate_reports_a_blocking_call_planted_in_an_owner(
+    stem: str, module: str
+) -> None:
+    """Every owner's coroutines are in the gate's reach: a blocking call planted in
+    its first one, beside the ``import <module>`` the rule above requires, is reported."""
+    planted, line = _with_blocking_call(_owner_sources()[stem], _SYNC_IO_PLANTS[module])
+    planted += f"\nimport {module}\n"
+    reported = {
+        found for found, _family, _provenance in _sync_io_gate()._violations_in_source(planted)
+    }
+    assert line in reported
+
+
+def test_the_gate_reach_check_tells_a_blind_spelling_from_a_seen_one() -> None:
+    """The two checks above can fail: the gate misses a call whose module came
+    through a facade import, and reports it once ``import <module>`` is present."""
+    blind = "from kiro_crew.dashboard.chat_handlers import time\n\n\nasync def f():\n    pass\n"
+    assert _from_imported_sync_io_modules(blind) == {"time"}
+    planted, line = _with_blocking_call(blind, "time.sleep(1)")
+    gate = _sync_io_gate()
+    assert line not in {found for found, _f, _p in gate._violations_in_source(planted)}
+    seen = planted + "\nimport time\n"
+    assert line in {found for found, _f, _p in gate._violations_in_source(seen)}
 
 
 # ── compose, on its own ───────────────────────────────────────────────────────
@@ -1529,7 +1813,7 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     )
     namespace = {"__name__": "chat_api_compose_host_probe", "VALUE": "host"}
     namespace["helper"] = owner.helper
-    chat_api.compose(namespace, (owner,))
+    facade_compose(namespace, (owner,))
 
     assert namespace["helper"]() == "host" and owner.helper is namespace["helper"]
     assert owner.outer()() == "host"
@@ -1543,5 +1827,5 @@ def test_compose_rebinds_functions_and_class_members(tmp_path: Path) -> None:
     assert namespace["helper"]() == "patched"
 
     fresh = {"__name__": "chat_api_compose_host_probe", "VALUE": "fresh"}
-    chat_api.compose(fresh, (owner,))
+    facade_compose(fresh, (owner,))
     assert owner.helper() == "fresh"

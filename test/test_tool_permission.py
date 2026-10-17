@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,11 +26,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from kiro_crew import llm_helpers, name_grant, task_executor, tool_permission
+from kiro_crew import llm_helpers, name_grant, permission_floor, task_executor, tool_permission
+from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.runtime import AcpRuntime
+from kiro_crew.acp.session_handle import AcpSessionHandle
+from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_AUTO_APPROVE, TOOL_DENY, ToolHookResult
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.subagent import (
     _HEADLESS_DENY_REASON,
@@ -80,7 +86,7 @@ class RecordingWire:
         self.log = log
         self.floor_refuses = floor_refuses
 
-    async def allow(self, ask: Ask) -> bool:
+    async def allow(self, ask: Ask, stopping=None) -> bool:
         self.log.append(("allow", ask.request_id))
         return not self.floor_refuses
 
@@ -296,6 +302,26 @@ async def test_a_host_refusal_is_narrated_then_audited_then_steered_then_rejecte
 
 
 @pytest.mark.asyncio
+async def test_settle_judges_the_gate_on_the_tool_gate_pool_not_the_loop():
+    """The gate's path tier waits on the resolver child on the calling thread, so
+    settle must not run it on the event loop's thread."""
+    import threading
+
+    log: list = []
+    seen: list[str] = []
+
+    class _Recording(Judges):
+        def judge(self, ask: Ask) -> Refusal | Hit | None:
+            seen.append(threading.current_thread().name)
+            return super().judge(ask)
+
+    policy = _policy(log, gate=_Recording(log, Refusal.host("hook_deny", "denied: rm", "policy")))
+    settled = await settle(Ask(_event(), RecordingWire(log), "k"), policy)
+    assert settled.rung == "hook_deny"
+    assert seen and seen[0].startswith("mc-toolgate"), seen
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("policy_kw", "rung", "outcome"),
     [
@@ -328,6 +354,210 @@ async def test_bail_audits_and_rejects_bare():
         ("reject", "req-1"),
     ]
     assert settled == Settled("bailed", "turn_limit", "teardown")
+
+
+class _Stop:
+    """A run's stop, read live through ``Policy.stopping``."""
+
+    def __init__(self, on: bool = False) -> None:
+        self.on = on
+
+    def __call__(self) -> bool:
+        return self.on
+
+
+class LandsStop:
+    """A floor, gate, grant or responder that the stop lands in while it runs."""
+
+    name = "callback"
+    attended = True
+
+    def __init__(self, log: list, stop: _Stop, *, hit: Hit | None = None) -> None:
+        self.log = log
+        self.stop = stop
+        self.hit = hit
+
+    async def refuse(self, ask: Ask) -> Refusal | None:
+        self.log.append(("check", "lands_stop"))
+        self.stop.on = True
+        return None
+
+    def judge(self, ask: Ask) -> Hit | None:
+        self.log.append(("gate",))
+        self.stop.on = True
+        return self.hit
+
+    async def offer(self, ask: Ask) -> Hit | None:
+        self.log.append(("offer", "lands_stop"))
+        self.stop.on = True
+        return self.hit
+
+    async def ask(self, ask: Ask) -> Answer:
+        self.log.append(("ask", self.name, ask.event.title))
+        self.stop.on = True
+        return Answer(approved=True)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_read_at_entry_bails_before_any_stage():
+    log: list = []
+    policy = _policy(
+        log,
+        floors=(Refuses(log, "floor", None),),
+        grants=(GATE_GRANT, Offers(log, "parent", Hit("parent_policy_auto", Evidence.NONE))),
+        responders=(Scripted(log, "callback", True),),
+        stopping=_Stop(on=True),
+    )
+    settled = await settle(Ask(_event(), RecordingWire(log), "k"), policy)
+    assert log == [
+        ("narrate", "refusing", "stopped"),
+        ("audit", "refused", "stopped"),
+        ("reject", "req-1"),
+    ]
+    assert settled == Settled("bailed", "stopped", "teardown")
+
+
+def _stop_landings(log: list, stop: _Stop) -> dict[str, Policy]:
+    """One policy per stage a stop can land in; each would approve the request."""
+    auto = Hit("parent_policy_auto", Evidence.NONE)
+    gate_hit = Hit("hook_auto_approve", Evidence.NAME, vouch=True)
+    person = (Scripted(log, "callback", True),)
+    return {
+        "floor": _policy(log, floors=(LandsStop(log, stop),), responders=person, stopping=stop),
+        "gate": _policy(log, gate=LandsStop(log, stop, hit=gate_hit), stopping=stop),
+        "grant": _policy(log, grants=(GATE_GRANT, LandsStop(log, stop, hit=auto)), stopping=stop),
+        "person": _policy(log, responders=(LandsStop(log, stop),), stopping=stop),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["floor", "gate", "grant", "person"])
+async def test_a_stop_landing_in_any_stage_bails_the_request_not_an_approval(names, stage):
+    """Each policy would approve; the stop lands while the named stage runs, and
+    the ladder's later reads (before the person, at the commit point) bail it."""
+    log: list = []
+    wire = RecordingWire(log)
+    settled = await settle(Ask(_event(), wire, "k"), _stop_landings(log, _Stop())[stage])
+    assert wire.answers() == [("reject", "req-1")], log
+    assert ("audit", "refused", "stopped") in log, log
+    assert settled == Settled("bailed", "stopped", "teardown")
+    if stage == "floor":
+        assert not [entry for entry in log if entry[0] == "ask"], "no person is asked after a stop"
+
+
+#: A ceiling that only names a hang; every wait below ends on an event.
+_TRANSPORT_WAIT_SECS = 30.0
+
+_ALLOW_ONCE = {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+_REJECT_ONCE = {"outcome": {"outcome": "selected", "optionId": "reject_once"}}
+
+
+class _QueuedLock(asyncio.Lock):
+    """A transport's write lock that counts its takers and signals one queuing behind it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queued = asyncio.Event()
+        self.acquisitions = 0
+
+    async def acquire(self) -> bool:  # type: ignore[override]
+        self.acquisitions += 1
+        if self.locked():
+            self.queued.set()
+        return await super().acquire()
+
+
+def _acp_stack(kind: str, tmp_path: Path) -> SimpleNamespace:
+    """A real provider over its real ACP transport, writing to a fake backend's stdin.
+
+    ``records`` keeps the request's permission records, ``writer`` owns the
+    stdin write lock: the session handle and the shared runtime for ``shared``,
+    the one client for ``dedicated``.
+    """
+    process = MagicMock()
+    process.stdin.write = MagicMock()
+    process.stdin.drain = AsyncMock()
+    process.returncode = None
+    if kind == "shared":
+        runtime = AcpRuntime(work_dir=tmp_path)
+        runtime._process = process
+        runtime._initialized = True
+        handle = AcpSessionHandle("s1", asyncio.Queue(), runtime)
+        provider: object = AcpSessionProvider(handle, runtime)
+        records, writer = handle, runtime
+    else:
+        client = AcpClient(work_dir=tmp_path)
+        client._process = process
+        provider = AcpProvider.__new__(AcpProvider)
+        provider._client = client  # type: ignore[attr-defined]
+        records = writer = client
+    return SimpleNamespace(provider=provider, records=records, writer=writer, process=process)
+
+
+def _frames(process: MagicMock) -> list[tuple[object, dict]]:
+    """Every JSON-RPC response written to the backend's stdin, in order."""
+    frames = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
+    return [(frame["id"], frame["result"]) for frame in frames]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("window", ["floor", "write_lock", "none"])
+@pytest.mark.parametrize("kind", ["shared", "dedicated"])
+async def test_a_stop_landing_in_the_transport_awaits_writes_no_approval(
+    monkeypatch, tmp_path, kind, window
+):
+    """A grant approves; the stop lands after the ladder's last read, in an await
+    of the ACP transport itself: the security floor's thread hop, or the wait for
+    the write lock behind another frame. Red before the fix: the allow frame went
+    out after the stop. The transport reads the stop again after each, so no
+    approval is written: the request is bailed as ``stopped``, audited, and
+    answered once, with the reject option the agent advertised."""
+    log: list = []
+    stop = _Stop()
+    stack = _acp_stack(kind, tmp_path)
+    event = _event()
+    stack.records._permission_gate_events[event.request_id] = event
+    stack.records._permission_options[event.request_id] = {
+        "once": "allow_once",
+        "reject": "reject_once",
+    }
+
+    def _floor(_gate_event: object, **_kw: object) -> None:
+        if window == "floor":
+            stop.on = True  # on the floor's worker thread, after the ladder's reads
+        return None
+
+    monkeypatch.setattr(permission_floor, "refusal_for", _floor)
+    lock = _QueuedLock()
+    stack.writer._stdin_lock = lock
+    policy = _policy(
+        log,
+        grants=(GATE_GRANT, Offers(log, "parent", Hit("parent_policy_auto", Evidence.NONE))),
+        stopping=stop,
+    )
+    ask = Ask(event, AcpWire(stack.provider), "k")
+
+    if window == "write_lock":
+        await lock.acquire()  # another frame holds the pipe
+        settling = asyncio.ensure_future(settle(ask, policy))
+        await asyncio.wait_for(lock.queued.wait(), _TRANSPORT_WAIT_SECS)
+        stop.on = True
+        lock.release()
+        settled = await asyncio.wait_for(settling, _TRANSPORT_WAIT_SECS)
+    else:
+        settled = await settle(ask, policy)
+
+    if window == "none":
+        assert _frames(stack.process) == [("req-1", _ALLOW_ONCE)]
+        assert settled == Settled("auto_approved", "parent_policy_auto", "rule")
+        return
+    assert _frames(stack.process) == [("req-1", _REJECT_ONCE)], "one answer, the agent's reject"
+    assert ("audit", "refused", "stopped") in log, log
+    assert not [entry for entry in log if entry[:2] == ("audit", "approved")], log
+    assert settled == Settled("bailed", "stopped", "teardown")
+    assert event.request_id not in stack.records._permission_options, "the reject answered it"
+    if window == "floor":
+        assert lock.acquisitions == 1, "read after the floor: only the reject takes the pipe"
 
 
 @pytest.mark.asyncio

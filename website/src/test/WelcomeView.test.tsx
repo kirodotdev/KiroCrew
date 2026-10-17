@@ -58,7 +58,7 @@ describe('WelcomeView', () => {
 
   describe('suggestion pills', () => {
     // Falls back to FALLBACK_SUGGESTIONS when api.suggestions is unmocked.
-    const FALLBACK_PILL = 'Check my pipeline status'
+    const FALLBACK_PILL = 'Set up a daily reminder'
 
     it('pill is type=button and prevents mousedown default so the textarea keeps focus', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
@@ -131,8 +131,9 @@ describe('WelcomeView', () => {
 
     it('fallback cards carry their mapped kind', () => {
       renderWithProviders(<WelcomeView {...defaultProps} />)
-      expect(screen.getByRole('button', { name: FALLBACK_PILL })).toHaveAttribute('data-kind', 'ops')
-      expect(screen.getByRole('button', { name: 'Review my latest CR' })).toHaveAttribute('data-kind', 'review')
+      expect(screen.getByRole('button', { name: FALLBACK_PILL })).toHaveAttribute('data-kind', 'schedule')
+      expect(screen.getByRole('button', { name: 'What should I work on next?' })).toHaveAttribute('data-kind', 'tasks')
+      expect(screen.getByRole('button', { name: 'Review my latest changes' })).toHaveAttribute('data-kind', 'review')
     })
   })
 

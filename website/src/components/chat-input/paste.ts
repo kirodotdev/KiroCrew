@@ -37,6 +37,41 @@ function isBlockquotePrefix(linePrefix: string): boolean {
   return sawMarker
 }
 
+/** The last paste this composer saw: the clipboard text, the exact string it
+ *  put in the box, and when. */
+export interface LastPaste { text: string; inserted: string; at: number }
+
+/** How soon after a keyboard keydown a paste has to arrive to count as caused
+ *  by that key. Measured on device at ~30ms. */
+export const REPASTE_KEY_WINDOW_MS = 300
+
+/** True when a paste is iOS replaying the previous one, not a new paste.
+ *
+ *  The iOS 27 keyboard offers the clipboard as a one-tap Paste suggestion.
+ *  After that Paste lands in a web textarea the suggestion stays armed, and the
+ *  next space "accepts" it: the keydown (keyCode 229) is followed ~30ms later
+ *  by a second `paste` with the same text, then the space's own `insertText`.
+ *  A bare textarea with no handlers does the same, so the keyboard is the
+ *  source. This drops that second copy. The keyboard's own state is out of
+ *  the page's reach: the suggestion stays up and pinyin stops composing until
+ *  the keyboard is closed.
+ *
+ *  Every condition is needed to keep a real second paste working: the same
+ *  text, a keyboard keydown between the two pastes and just before this one,
+ *  and a caret that still sits right after the first paste's text. */
+export function isKeyboardRepaste({ last, text, keyDown, now, valueBeforeCaret }: {
+  last: LastPaste | null
+  text: string
+  keyDown: { keyCode: number; at: number } | null
+  now: number
+  valueBeforeCaret: string
+}): boolean {
+  if (!last || !keyDown || last.text !== text || last.inserted === '') return false
+  if (keyDown.keyCode !== 229) return false
+  if (keyDown.at < last.at || now - keyDown.at > REPASTE_KEY_WINDOW_MS) return false
+  return valueBeforeCaret.endsWith(last.inserted)
+}
+
 export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime }: {
   value: string
   onChange: (v: string) => void
@@ -64,6 +99,13 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
   // handlePaste inserts the full text inline instead of collapsing it to a
   // `[ Paste #N ]` chip. Set on that keydown, cleared on any other keydown.
   const rawPasteRef = useRef(false)
+  // Read by `isKeyboardRepaste` to drop the iOS suggestion-bar replay.
+  const lastPasteRef = useRef<LastPaste | null>(null)
+  const lastKeyDownRef = useRef<{ keyCode: number; at: number } | null>(null)
+  /** Called from the textarea's keydown; only the keyCode and time are kept. */
+  const noteKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    lastKeyDownRef.current = { keyCode: e.keyCode, at: performance.now() }
+  }, [])
 
   /** The paste-token keys: a token deletes, and the caret and selection step,
    *  as one unit. True when the key was consumed here; a word, line or
@@ -275,6 +317,20 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
     const before = value.slice(0, start)
     const after = value.slice(end)
 
+    const now = performance.now()
+    if (start === end && isKeyboardRepaste({
+      last: lastPasteRef.current, text: pasted, keyDown: lastKeyDownRef.current, now,
+      valueBeforeCaret: ta.value.slice(0, start),
+    })) {
+      // Drop the replay; the space that caused it still lands on its own.
+      e.preventDefault()
+      lastPasteRef.current = null
+      return
+    }
+    // What this paste puts in the box, for the check above on the next one.
+    // Each branch below that inserts something else overwrites `inserted`.
+    lastPasteRef.current = { text: pasted, inserted: pasted, at: now }
+
     // Big paste → collapse into a `[ Paste #N ]` chip. Uses the cleaned text so
     // the chip's line count and stored content exclude the stripped blanks.
     // `showFullPastes` opts out for every paste, the same way forceRaw opts out
@@ -295,6 +351,7 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
       const leadingNewline = before && !before.endsWith('\n') && !isBlockquotePrefix(linePrefix) ? '\n' : ''
       const trailingNewline = after && !after.startsWith('\n') ? '\n' : ''
       const insert = leadingNewline + token + trailingNewline
+      lastPasteRef.current = { text: pasted, inserted: insert, at: now }
       valueFromUserRef.current = true // a paste is a real user edit, not a draft restore
       onChange(before + insert + after)
       onPasteBlocksChange([...pasteBlocks, block])
@@ -313,6 +370,7 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
     // the browser so the paste is never a silent no-op.
     if (cleaned !== pasted && cleaned !== '') {
       e.preventDefault()
+      lastPasteRef.current = { text: pasted, inserted: cleaned, at: now }
       const next = before + cleaned + after
       // Insert through the native input path so the textarea's own onChange runs:
       // that fires the /, @, $ picker detection, marks the edit user-driven, and
@@ -494,14 +552,9 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
     e.preventDefault()
   }, [expandSelectionForClipboard, value, onChange])
 
-  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || [])
-    if (files.length && onUploadFiles) onUploadFiles(files)
-    e.target.value = '' // reset so same file can be re-selected
-  }, [onUploadFiles])
 
   return {
-    mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef,
-    handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut, handleFileInputChange,
+    mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef, noteKeyDown,
+    handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut,
   }
 }

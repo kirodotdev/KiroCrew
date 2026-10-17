@@ -31,6 +31,13 @@ absence is carried in WORDS:
 Those two are never collapsed: a zero standing in for an unknown is the one failure a
 reader cannot recover from.
 
+EVERY VALUE IS ALSO A PHRASE. The English is rendered from a :class:`Phrase` -- a catalog
+id and the counts it reads -- and the card's data carries those phrases too, under
+:data:`PHRASES_FIELD`. The dashboard renders them through its catalog, so the panel reads
+in the reader's language; the counts in a phrase are the fold's own, so the browser
+formats a number and picks a plural form and still computes none. Anything without the
+catalog (the model's facts, another surface) reads the English.
+
 NO PERCENTAGES, and every count carries its denominator in words where one exists. A bare
 ``3`` invites the reader to supply the total, and the total they supply is wrong.
 
@@ -42,8 +49,9 @@ ARE folds appear instead (``approvals_open`` from ``approvals``, ``items_questio
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, Literal, NamedTuple, TypeAlias, TypedDict, cast
 
 from kiro_crew.work_vocab import WorkBoardView
 
@@ -53,14 +61,17 @@ __all__ = [
     "JUDGMENT_FIELDS",
     "JUDGMENT_TEXT_LIMIT",
     "NOT_RECORDED",
+    "PHRASES_FIELD",
     "UNREADABLE",
     "CrewMainData",
     "CrewMainDerived",
     "CrewMainJudgment",
     "CrewMainReads",
     "FoldUnreadable",
+    "Phrase",
     "build_crew_main",
     "card_data_payload",
+    "crew_main_phrases",
     "merge_crew_main",
 ]
 
@@ -74,6 +85,13 @@ NOT_RECORDED: Final[str] = "not recorded"
 
 UNREADABLE: Final[str] = "could not be read"
 """The fold could not be read. NOT the same fact as nothing being recorded."""
+
+PHRASES_FIELD: Final[str] = "crew-main-phrases"
+"""The data key carrying :func:`crew_main_phrases`, beside the English it describes.
+
+Not a binding name: it is outside :data:`CARD_FIELDS`, so a layout that binds it is
+refused, and the dashboard reads it to render the derived fields in its own language.
+"""
 
 
 FoldUnreadable = Literal["__unreadable__"]
@@ -240,9 +258,156 @@ def merge_crew_main(derived: CrewMainDerived, judgment: CrewMainJudgment) -> Cre
     }
 
 
-def card_data_payload(data: CrewMainData) -> dict[str, str]:
-    """*data* as the flat string map ``normalize_card`` accepts. The single exit."""
-    return {key: str(value) for key, value in data.items()}
+def card_data_payload(data: CrewMainData, phrases: str) -> dict[str, str]:
+    """*data* as the flat string map ``normalize_card`` accepts. The single exit.
+
+    *phrases* is :func:`crew_main_phrases` for the same reads, carried under
+    :data:`PHRASES_FIELD` beside the English it describes.
+    """
+    payload = {key: str(value) for key, value in data.items()}
+    payload[PHRASES_FIELD] = phrases
+    return payload
+
+
+# --------------------------------------------------------------------------
+# phrases -- every derived value as a catalog id and the counts it reads
+# --------------------------------------------------------------------------
+
+
+class Phrase(NamedTuple):
+    """One derived value as parts: a catalog id and the counts it is built from.
+
+    The English on the card is rendered from this by :func:`_english`, and the dashboard
+    renders the same parts through its catalog in the reader's language. Both come from
+    ONE value, so the two can only differ in language, never in what they say.
+    """
+
+    #: A key of :data:`_ENGLISH`, and the last segment of the dashboard's catalog key.
+    id: str
+    #: The counts, as the fold produced them. ``amount`` is a credit charge already
+    #: rounded to two places; ``rows`` is the approvals breakdown as ``[name, count]``.
+    params: Mapping[str, object]
+
+
+_Value: TypeAlias = Phrase | str
+"""A field's value: a :class:`Phrase`, or text the log recorded, shown verbatim."""
+
+
+_ENGLISH: Final[Mapping[str, str | tuple[str, str]]] = {
+    "not_recorded": NOT_RECORDED,
+    "unreadable": UNREADABLE,
+    "session_open": "session open",
+    "session_closed": "session closed",
+    # The fold's own third state: retention removed the entry that opened the session,
+    # so the log cannot say. Not the same as the key being absent.
+    "session_unknown": "no longer in the log",
+    "turn_running": "a turn is running now",
+    "no_turn": "no turn running",
+    "stop_end_turn": "last turn finished",
+    "stop_max_tokens": "last turn hit its length limit",
+    "stop_max_turn_requests": "last turn hit its step limit",
+    "stop_refusal": "last turn was refused",
+    "stop_cancelled": "last turn was stopped",
+    "stop_failed": "last turn failed",
+    "stop_timeout": "last turn timed out",
+    "stop_interrupted": "last turn was cut off",
+    "stop_other": "last turn stopped",
+    "turns": ("{n} turn finished", "{n} turns finished"),
+    # "refused" alone named nothing a reader could place. These count ``turn/refused``
+    # entries, so what refused is the backend -- and saying "approval" here would point
+    # at the approvals tile, a different thing on this same card.
+    "turns_refused": (
+        "{n} turn finished, {refused} refused by the backend",
+        "{n} turns finished, {refused} refused by the backend",
+    ),
+    "entries": ("{n} entry in the log", "{n} entries in the log"),
+    # A real answer, not an absence: this crew folded a board and it has no items.
+    "no_items": "no work items on this board",
+    "items_open": "{open} of {total} items not yet done",
+    "items_progress": "{k} of {open} open items reporting progress",
+    "items_progress_none": "no open items in progress",
+    "items_blocked": "{k} of {open} open items blocked",
+    "items_blocked_none": "no open items to block",
+    "items_accepted": "{k} of {total} items accepted",
+    "items_question": "{k} of {open} open items waiting on you",
+    "items_question_none": "no items waiting on you",
+    "omitted_none": "no entries dropped, so these counts cover every log entry",
+    "omitted": (
+        "{n} entry dropped, so these counts are a floor",
+        "{n} entries dropped, so these counts are a floor",
+    ),
+    "credits": "{amount} credits billed to this crew",
+    # Two places would round this to "0.00", and a charge shown as zero reads as no
+    # charge at all -- the one thing a spend field must never say while spending.
+    "credits_tiny": "less than {amount} credits billed to this crew",
+    "subagent_none": "no sub-agent charge reported",
+    "subagent": (
+        "{amount} of that from {n} sub-agent charge",
+        "{amount} of that from {n} sub-agent charges",
+    ),
+    "subagent_tiny": (
+        "less than {amount} of that from {n} sub-agent charge",
+        "less than {amount} of that from {n} sub-agent charges",
+    ),
+    "tokens_none": "no tokens reported",
+    "tokens": ("{n} token measured", "{n} tokens measured"),
+    "approvals_open": ("{n} tool approval still waiting", "{n} tool approvals still waiting"),
+    "approvals_open_of": "{k} of {total} tool approvals still waiting",
+    "approvals_decided": "{n} answered",
+    "approvals_decided_by": "{n} answered ({breakdown})",
+}
+"""Every phrase in English. A pair is ``(one, other)``, picked by the ``n`` param.
+
+The dashboard's catalog holds the same ids under ``commandCenter.crewMain``, and its
+English values are these, placeholder for placeholder. The two renderings differ only in
+number formatting: the dashboard groups digits for the reader's locale (``1,480``), while
+this English keeps the plain digits (``1480``) that the model's ``facts`` carry.
+"""
+
+_DECISION_WORDS: Final[Mapping[str, str]] = {
+    "approved": "approved",
+    "rejected": "rejected",
+    "rejected_once": "rejected once",
+    "unknown": "unknown",
+}
+"""The approval decisions the dashboard's catalog can name, in English.
+
+The vocabulary is open (the resolving surface words a decision), so a name outside this
+table is shown as recorded and its field carries English rather than a phrase.
+"""
+
+_STOP_WORDS: Final[Mapping[str, str]] = {
+    "end_turn": "stop_end_turn",
+    "max_tokens": "stop_max_tokens",
+    "max_turn_requests": "stop_max_turn_requests",
+    "refusal": "stop_refusal",
+    "cancelled": "stop_cancelled",
+    "failed": "stop_failed",
+    "error": "stop_failed",
+    "timeout": "stop_timeout",
+    "interrupted": "stop_interrupted",
+}
+"""The ACP stop reasons, as phrases. ``_phase`` shows these, never the enum."""
+
+_NOT_RECORDED: Final[Phrase] = Phrase("not_recorded", {})
+_UNREADABLE: Final[Phrase] = Phrase("unreadable", {})
+
+
+def _english(value: _Value) -> str:
+    """*value* as the card's English. Recorded text is returned as it is."""
+    if isinstance(value, str):
+        return value
+    template = _ENGLISH[value.id]
+    if isinstance(template, tuple):
+        template = template[0] if value.params.get("n") == 1 else template[1]
+    params = dict(value.params)
+    rows = params.pop("rows", None)
+    if isinstance(rows, list):
+        params["breakdown"] = ", ".join(
+            f"{count} {_DECISION_WORDS.get(name, name)}"
+            for name, count in cast("list[tuple[str, int]]", rows)
+        )
+    return template.format(**params)
 
 
 # --------------------------------------------------------------------------
@@ -253,7 +418,7 @@ def card_data_payload(data: CrewMainData) -> dict[str, str]:
 class _StatusFields(TypedDict):
     """What the ``status`` fold answers for. A TypedDict so mypy checks the branches.
 
-    The four section types below exist for one reason: a helper with an early return
+    The section types below exist for one reason: a helper with an early return
     for an unreadable fold has as many branches as it has outcomes, and a plain
     ``dict[str, str]`` return lets one of those branches forget a key. The forgotten key
     then reaches the card as an absent binding, which shows an EMPTY cell -- the
@@ -262,52 +427,123 @@ class _StatusFields(TypedDict):
     blocking mypy run instead.
     """
 
-    state: str
-    phase: str
-    turns: str
-    entries: str
-    agent: str
-    model: str
+    state: _Value
+    phase: _Value
+    turns: _Value
+    entries: _Value
+    agent: _Value
+    model: _Value
 
 
 class _WorkFields(TypedDict):
     """What the ``work`` fold answers for."""
 
-    items_open: str
-    items_progress: str
-    items_blocked: str
-    items_done: str
-    items_question: str
-    board_omitted: str
+    items_open: _Value
+    items_progress: _Value
+    items_blocked: _Value
+    items_done: _Value
+    items_question: _Value
+    board_omitted: _Value
 
 
 class _UsageFields(TypedDict):
     """What the ``usage`` fold answers for."""
 
-    credits: str
-    credits_subagents: str
-    tokens: str
+    credits: _Value
+    credits_subagents: _Value
+    tokens: _Value
 
 
 class _ApprovalFields(TypedDict):
     """What the ``approvals`` fold answers for."""
 
-    approvals_open: str
-    approvals_decided: str
+    approvals_open: _Value
+    approvals_decided: _Value
+
+
+class _CrewMainValues(TypedDict):
+    """:class:`CrewMainDerived` before it is English: one :data:`_Value` per field."""
+
+    state: _Value
+    phase: _Value
+    turns: _Value
+    entries: _Value
+    agent: _Value
+    model: _Value
+    items_open: _Value
+    items_progress: _Value
+    items_blocked: _Value
+    items_done: _Value
+    items_question: _Value
+    board_omitted: _Value
+    credits: _Value
+    credits_subagents: _Value
+    tokens: _Value
+    approvals_open: _Value
+    approvals_decided: _Value
+
+
+if set(_CrewMainValues.__annotations__) != DERIVED_FIELDS:  # pragma: no cover - import-time
+    raise RuntimeError(
+        "every derived field has exactly one value: "
+        f"{sorted(set(_CrewMainValues.__annotations__) ^ DERIVED_FIELDS)}"
+    )
 
 
 def build_crew_main(reads: CrewMainReads) -> CrewMainDerived:
-    """Map four fold renders onto the card's derived half.
+    """Map four fold renders onto the card's derived half, in English.
 
     The signature is the contract: fold renders in, a checked field set out, and mypy
     checks both ends. Every branch answers in words -- no key here is ever left to a
     caller to fill in, and no absence is ever answered with a zero.
 
-    Every field is NAMED rather than gathered by ``**`` expansion. Expansion
-    reads shorter and checks nothing: mypy cannot verify a ``dict`` spread against a
-    TypedDict's required keys, so a section helper that dropped a field would produce a
-    value missing that key with no error anywhere. Named, the assignment is checked.
+    Every field is NAMED rather than gathered by ``**`` expansion or a comprehension.
+    Those read shorter and check nothing: mypy cannot verify a ``dict`` built that way
+    against a TypedDict's required keys, so a section helper that dropped a field would
+    produce a value missing that key with no error anywhere. Named, the assignment is
+    checked.
     """
+    values = _crew_main_values(reads)
+    return {
+        "state": _english(values["state"]),
+        "phase": _english(values["phase"]),
+        "turns": _english(values["turns"]),
+        "entries": _english(values["entries"]),
+        "agent": _english(values["agent"]),
+        "model": _english(values["model"]),
+        "items_open": _english(values["items_open"]),
+        "items_progress": _english(values["items_progress"]),
+        "items_blocked": _english(values["items_blocked"]),
+        "items_done": _english(values["items_done"]),
+        "items_question": _english(values["items_question"]),
+        "board_omitted": _english(values["board_omitted"]),
+        "credits": _english(values["credits"]),
+        "credits_subagents": _english(values["credits_subagents"]),
+        "tokens": _english(values["tokens"]),
+        "approvals_open": _english(values["approvals_open"]),
+        "approvals_decided": _english(values["approvals_decided"]),
+    }
+
+
+def crew_main_phrases(reads: CrewMainReads) -> str:
+    """The derived fields as phrases, for the dashboard to render in its own language.
+
+    A JSON object mapping a field name to ``[id]`` or ``[id, params]``. A field whose
+    value is recorded text (an agent or model name, an approval decision the catalog
+    cannot name) is left out, so the dashboard shows it exactly as the English half has
+    it. Every count here is one the fold produced: the dashboard formats it and picks a
+    plural form with it, and computes nothing from it.
+    """
+    values = _crew_main_values(reads)
+    phrases: dict[str, list[object]] = {}
+    for field, value in values.items():
+        if isinstance(value, Phrase):
+            phrases[field] = [value.id, dict(value.params)] if value.params else [value.id]
+    return json.dumps(phrases, ensure_ascii=True, separators=(",", ":"))
+
+
+def _crew_main_values(reads: CrewMainReads) -> _CrewMainValues:
+    """The four sections' values, every field named (see :func:`build_crew_main`)."""
     status = _status_fields(reads["status"])
     work = _work_fields(reads["work"])
     usage = _usage_fields(reads["usage"], _turns_completed(reads["status"]))
@@ -337,62 +573,42 @@ def _status_fields(status: Mapping[str, Any] | FoldUnreadable) -> _StatusFields:
     """The ``status`` fold's six fields, or six honest refusals."""
     if status == FOLD_UNREADABLE:
         return {
-            "state": UNREADABLE,
-            "phase": UNREADABLE,
-            "turns": UNREADABLE,
-            "entries": UNREADABLE,
-            "agent": UNREADABLE,
-            "model": UNREADABLE,
+            "state": _UNREADABLE,
+            "phase": _UNREADABLE,
+            "turns": _UNREADABLE,
+            "entries": _UNREADABLE,
+            "agent": _UNREADABLE,
+            "model": _UNREADABLE,
         }
     fold = cast("Mapping[str, Any]", status)
     lifecycle = fold.get("lifecycle")
     if lifecycle == "open":
-        state = "session open"
+        state = Phrase("session_open", {})
     elif lifecycle == "closed":
-        state = "session closed"
+        state = Phrase("session_closed", {})
     elif lifecycle == "unknown":
-        # The fold's own third state: retention removed the entry that opened the
-        # session, so the log cannot say. Not the same as the key being absent.
-        state = "the log no longer says"
+        state = Phrase("session_unknown", {})
     else:
-        state = NOT_RECORDED
+        state = _NOT_RECORDED
     completed = _count(fold.get("turns_completed"))
     refused = _count(fold.get("turns_refused"))
+    if completed is None:
+        turns = _NOT_RECORDED
+    elif refused:
+        turns = Phrase("turns_refused", {"n": completed, "refused": refused})
+    else:
+        turns = Phrase("turns", {"n": completed})
     return {
         "state": state,
         "phase": _phase(fold),
-        "turns": (
-            NOT_RECORDED
-            if completed is None
-            # "refused" alone named nothing a reader could place. These count
-            # ``turn/refused`` entries, so what refused is the backend -- and saying
-            # "approval" here would point at the approvals tile, a different thing on
-            # this same card.
-            else _noun(completed, "turn", "turns")
-            + " finished"
-            + ("" if not refused else f", {refused} refused by the backend")
-        ),
-        "entries": _plain(fold.get("entries"), "entry in the log", "entries in the log"),
+        "turns": turns,
+        "entries": _plain(fold.get("entries"), "entries"),
         "agent": _text(fold.get("agent")),
         "model": _text(fold.get("model")),
     }
 
 
-_STOP_WORDS: Final[dict[str, str]] = {
-    "end_turn": "the last turn finished",
-    "max_tokens": "the last turn hit its length limit",
-    "max_turn_requests": "the last turn hit its step limit",
-    "refusal": "the last turn was refused",
-    "cancelled": "the last turn was stopped",
-    "failed": "the last turn failed",
-    "error": "the last turn failed",
-    "timeout": "the last turn timed out",
-    "interrupted": "the last turn was cut off",
-}
-"""The ACP stop reasons, in words. ``_phase`` shows these, never the enum."""
-
-
-def _phase(fold: Mapping[str, Any]) -> str:
+def _phase(fold: Mapping[str, Any]) -> Phrase:
     """What the crew is doing, from the fold's open turn or its last stop.
 
     ``turn_open`` is read rather than ``turn``: the fold REPORTS an open turn and never
@@ -401,15 +617,15 @@ def _phase(fold: Mapping[str, Any]) -> str:
     thing the log has to a phase.
     """
     if fold.get("turn_open") is True:
-        return "a turn is running now"
+        return Phrase("turn_running", {})
     reason = fold.get("last_stop_reason")
     if isinstance(reason, str) and reason.strip():
         # The fold keeps the provider's enum; a reader is shown words. An enum this
         # table does not know is still a real stop, so it is named as one, not echoed.
-        return _STOP_WORDS.get(reason.strip(), "the last turn stopped")
+        return Phrase(_STOP_WORDS.get(reason.strip(), "stop_other"), {})
     if "turn_open" not in fold and "last_stop_reason" not in fold:
-        return NOT_RECORDED
-    return "no turn running"
+        return _NOT_RECORDED
+    return Phrase("no_turn", {})
 
 
 def _work_fields(work: WorkBoardView | FoldUnreadable) -> _WorkFields:
@@ -423,64 +639,71 @@ def _work_fields(work: WorkBoardView | FoldUnreadable) -> _WorkFields:
     ruling -- and says the word, rather than promoting a claim to a result.
     """
 
-    def same(text: str, omitted: str) -> _WorkFields:
-        """All five item counts reading *text*, with ``board_omitted`` its own answer.
+    def same(value: Phrase, omitted: Phrase) -> _WorkFields:
+        """All five item counts reading *value*, with ``board_omitted`` its own answer.
 
-        ``board_omitted`` is never folded into *text*: it counts log entries the fold
+        ``board_omitted`` is never folded into *value*: it counts log entries the fold
         DROPPED, which stays answerable when the item list does not, so a board whose
         items cannot be read can still say how many entries went missing.
         """
         return {
-            "items_open": text,
-            "items_progress": text,
-            "items_blocked": text,
-            "items_done": text,
-            "items_question": text,
+            "items_open": value,
+            "items_progress": value,
+            "items_blocked": value,
+            "items_done": value,
+            "items_question": value,
             "board_omitted": omitted,
         }
 
     if work == FOLD_UNREADABLE:
-        return same(UNREADABLE, UNREADABLE)
+        return same(_UNREADABLE, _UNREADABLE)
     board = cast("WorkBoardView", work)
     items = board.get("items")
     omitted = _dropped_entries(board.get("omitted"))
     if not isinstance(items, list):
-        return same(NOT_RECORDED, omitted)
-    total = len(items)
+        return same(_NOT_RECORDED, omitted)
+    # Closed items the fold forgot (past its closed window) are still this board's:
+    # their counts ride beside the list, so the totals cover the board's whole life.
+    forgotten = board.get("forgotten")
+    forgotten_total = _forgotten_count(forgotten, "items")
+    total = len(items) + forgotten_total
     if not total:
         # A real answer, not an absence: this crew folded a board and it has no items.
         # Saying "not recorded" here would hide a fact the fold does carry.
-        return same("no work items on this board", omitted)
+        return same(Phrase("no_items", {}), omitted)
     open_items = [item for item in items if item.get("state") == "open"]
-    accepted = sum(1 for item in items if item.get("state") == "accepted")
+    accepted = sum(1 for item in items if item.get("state") == "accepted") + _forgotten_count(
+        forgotten, "accepted"
+    )
     open_total = len(open_items)
 
-    def of_open(count: int, tail: str, empty: str) -> str:
-        return f"{count} of {open_total} open items {tail}" if open_total else empty
+    def of_open(status: str, phrase: str) -> Phrase:
+        if not open_total:
+            return Phrase(phrase + "_none", {})
+        count = sum(1 for item in open_items if item.get("status") == status)
+        return Phrase(phrase, {"k": count, "open": open_total})
 
     return {
-        "items_open": f"{open_total} of {total} items not yet done",
-        "items_progress": of_open(
-            sum(1 for item in open_items if item.get("status") == "progress"),
-            "reporting progress",
-            "no open items in progress",
-        ),
-        "items_blocked": of_open(
-            sum(1 for item in open_items if item.get("status") == "blocked"),
-            "blocked",
-            "no open items to block",
-        ),
-        "items_done": f"{accepted} of {total} items accepted",
-        "items_question": of_open(
-            sum(1 for item in open_items if item.get("status") == "question"),
-            "waiting on you",
-            "no items waiting on you",
-        ),
+        "items_open": Phrase("items_open", {"open": open_total, "total": total}),
+        "items_progress": of_open("progress", "items_progress"),
+        "items_blocked": of_open("blocked", "items_blocked"),
+        "items_done": Phrase("items_accepted", {"k": accepted, "total": total}),
+        "items_question": of_open("question", "items_question"),
         "board_omitted": omitted,
     }
 
 
-def _dropped_entries(value: object) -> str:
+def _forgotten_count(block: object, key: str) -> int:
+    """A non-negative integer count from a fold block, 0 when it is absent or bad."""
+    if not isinstance(block, dict):
+        return 0
+    value = block.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _dropped_entries(value: object) -> Phrase:
     """How many entries the fold dropped, and what that does to every count beside it.
 
     The qualifier rides HERE rather than in the model's ``notes``, because a reader deciding
@@ -494,10 +717,10 @@ def _dropped_entries(value: object) -> str:
     """
     count = _count(value)
     if count is None:
-        return NOT_RECORDED
+        return _NOT_RECORDED
     if not count:
-        return "no entries dropped, so these counts cover every log entry"
-    return _noun(count, "entry", "entries") + " dropped, so these counts are a floor"
+        return Phrase("omitted_none", {})
+    return Phrase("omitted", {"n": count})
 
 
 def _usage_fields(
@@ -512,7 +735,11 @@ def _usage_fields(
     nothing reported reads as unmetered rather than as free.
     """
     if usage == FOLD_UNREADABLE:
-        return {"credits": UNREADABLE, "credits_subagents": UNREADABLE, "tokens": UNREADABLE}
+        return {
+            "credits": _UNREADABLE,
+            "credits_subagents": _UNREADABLE,
+            "tokens": _UNREADABLE,
+        }
     fold = cast("Mapping[str, Any]", usage)
     charge = fold.get("credits")
     by_source = fold.get("credits_by_source")
@@ -533,7 +760,7 @@ def _turns_completed(status: Mapping[str, Any] | FoldUnreadable) -> int | None:
     return _count(cast("Mapping[str, Any]", status).get("turns_completed"))
 
 
-def _tokens(total: object, turns_completed: int | None) -> str:
+def _tokens(total: object, turns_completed: int | None) -> Phrase:
     """The token total, or that no turn reported one.
 
     A completed turn cannot cost zero tokens, so a total of zero after one is an
@@ -542,35 +769,39 @@ def _tokens(total: object, turns_completed: int | None) -> str:
     zero is a true zero and is stated as one.
     """
     if _count(total) == 0 and turns_completed:
-        return "no tokens reported"
-    return _plain(total, "token measured", "tokens measured")
+        return Phrase("tokens_none", {})
+    return _plain(total, "tokens")
 
 
-def _crew_credits(charge: object) -> str:
+def _crew_credits(charge: object) -> Phrase:
     """The crew's whole charge, or why there is no number for it."""
     if not isinstance(charge, (int, float)) or isinstance(charge, bool):
-        return NOT_RECORDED
-    if _credits(charge) is None:
-        return UNREADABLE
-    return f"{_credits(charge)} credits billed to this crew"
+        return _NOT_RECORDED
+    shown = _credits(charge)
+    if shown is None:
+        return _UNREADABLE
+    tiny, amount = shown
+    return Phrase("credits_tiny" if tiny else "credits", {"amount": amount})
 
 
-def _subagent_credits(bucket: object) -> str:
+def _subagent_credits(bucket: object) -> Phrase:
     """The sub-agent bucket, or why there is no number for it."""
     if not isinstance(bucket, Mapping):
-        return NOT_RECORDED
+        return _NOT_RECORDED
     charge = bucket.get("credits")
     reported = bucket.get("reported")
     if not isinstance(charge, (int, float)) or isinstance(charge, bool):
-        return NOT_RECORDED
-    if _credits(charge) is None:
-        return UNREADABLE
+        return _NOT_RECORDED
+    shown = _credits(charge)
+    if shown is None:
+        return _UNREADABLE
     if not isinstance(reported, int) or isinstance(reported, bool) or reported <= 0:
         # Zero charges reported is not a charge of zero: an unmetered provider writes no
         # credits key at all, and folding that in as 0.0 would state a measurement
         # nobody made.
-        return "no sub-agent charge reported"
-    return f"{_credits(charge)} of that from {reported} sub-agent charges"
+        return Phrase("subagent_none", {})
+    tiny, amount = shown
+    return Phrase("subagent_tiny" if tiny else "subagent", {"amount": amount, "n": reported})
 
 
 def _approval_fields(approvals: Mapping[str, Any] | FoldUnreadable) -> _ApprovalFields:
@@ -581,41 +812,47 @@ def _approval_fields(approvals: Mapping[str, Any] | FoldUnreadable) -> _Approval
     fold behind it and therefore not a field in this contract at all.
     """
     if approvals == FOLD_UNREADABLE:
-        return {"approvals_open": UNREADABLE, "approvals_decided": UNREADABLE}
+        return {"approvals_open": _UNREADABLE, "approvals_decided": _UNREADABLE}
     fold = cast("Mapping[str, Any]", approvals)
     pending = _count(fold.get("pending"))
     requested = _count(fold.get("requested"))
     decided = _count(fold.get("decided"))
     if pending is None:
-        open_text = NOT_RECORDED
+        open_value = _NOT_RECORDED
     elif requested is None:
-        open_text = f"{pending} tool approvals still waiting"
+        open_value = Phrase("approvals_open", {"n": pending})
     else:
-        open_text = f"{pending} of {requested} tool approvals still waiting"
+        open_value = Phrase("approvals_open_of", {"k": pending, "total": requested})
     return {
-        "approvals_open": open_text,
-        "approvals_decided": (
-            NOT_RECORDED if decided is None else f"{decided} answered{_decisions(fold)}"
-        ),
+        "approvals_open": open_value,
+        "approvals_decided": _NOT_RECORDED if decided is None else _decided(decided, fold),
     }
 
 
-def _decisions(fold: Mapping[str, Any]) -> str:
-    """The decided count's own breakdown, in words, or nothing.
+def _decided(decided: int, fold: Mapping[str, Any]) -> _Value:
+    """The decided count with its own breakdown by decision, when the fold has one.
 
     Sorted by DECISION NAME rather than by count, so two reads of the same board put
     the same words in the same order: ordering by count would reshuffle the sentence
     every time one of them moved, which reads as a change that did not happen.
+
+    A decision the catalog cannot name keeps the whole field in English, with that name
+    as recorded: translating the rest around a raw name would only move the English.
     """
     by_decision = fold.get("by_decision")
-    if not isinstance(by_decision, Mapping):
-        return ""
-    rows = [
-        f"{count} {name}"
-        for name, count in sorted(by_decision.items())
-        if isinstance(name, str) and name and _count(count)
-    ]
-    return f" ({', '.join(rows)})" if rows else ""
+    rows: list[list[object]] = []
+    if isinstance(by_decision, Mapping):
+        rows = [
+            [name, count]
+            for name, count in sorted(by_decision.items())
+            if isinstance(name, str) and name and _count(count)
+        ]
+    if not rows:
+        return Phrase("approvals_decided", {"n": decided})
+    phrase = Phrase("approvals_decided_by", {"n": decided, "rows": rows})
+    if all(name in _DECISION_WORDS for name, _ in rows):
+        return phrase
+    return _english(phrase)
 
 
 # --------------------------------------------------------------------------
@@ -634,26 +871,24 @@ def _count(value: object) -> int | None:
     return value
 
 
-def _plain(value: object, one: str, many: str) -> str:
-    """``"<n> <noun>"``, or :data:`NOT_RECORDED`. No bare number ever reaches a field."""
+def _plain(value: object, phrase: str) -> Phrase:
+    """*phrase* with the count ``n``, or :data:`NOT_RECORDED`. Never a bare number."""
     count = _count(value)
-    return NOT_RECORDED if count is None else _noun(count, one, many)
+    return _NOT_RECORDED if count is None else Phrase(phrase, {"n": count})
 
 
-def _noun(count: int, one: str, many: str) -> str:
-    """*count* with the noun in its English number: ``1 turn``, ``2 turns``, ``0 turns``."""
-    return f"{count} {one if count == 1 else many}"
-
-
-def _text(value: object) -> str:
+def _text(value: object) -> _Value:
     """A recorded string, or :data:`NOT_RECORDED`. Bounded, because it is displayed."""
     if not isinstance(value, str) or not value.strip():
-        return NOT_RECORDED
+        return _NOT_RECORDED
     return value.strip()[:80]
 
 
-def _credits(charge: float) -> str | None:
+def _credits(charge: float) -> tuple[bool, str] | None:
     """A credit charge as a reader budgets in it, and never in scientific notation.
+
+    Returns ``(tiny, amount)``: *tiny* says the charge is below the smallest amount two
+    places can show, and *amount* is then that smallest amount.
 
     ``repr`` of a small float is exponential (``1e-05``), which on a panel reads as a
     different order of magnitude than it is.
@@ -670,5 +905,5 @@ def _credits(charge: float) -> str | None:
         # Two places would round this to "0.00", and a charge shown as zero reads as no
         # charge at all -- the one thing a spend field must never say while spending. So
         # the SMALLEST charge is described instead of rounded, still to two places.
-        return "less than 0.01"
-    return f"{charge:.2f}"
+        return True, "0.01"
+    return False, f"{charge:.2f}"

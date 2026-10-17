@@ -18,10 +18,18 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 
 ### From the dashboard
 
-Both live on the **Developer** page (sidebar → **Developer**):
+Both live on the **Developer** page (sidebar → **Developer**), which appears once
+Developer Mode is on:
 
-1. **Route the server through the gateway** in MCP Management. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
-2. **Share MCP Backends** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
+1. **Route the server through the gateway** in MCP Management. Turning the switch on shows the exact command, arguments and environment the server will launch with, and you approve that launch there. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
+2. **Share backends across sessions** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
+
+Routing needs that approval. The approval is tied to the server's launch
+(command, arguments and environment), so a server listed in
+`mcp_gateway.stub_servers` by hand-editing config, or one whose command changed
+since you approved it, is refused: it is left unwrapped, runs directly inside each
+session, and its results render as plain text. MCP Management lists it as needing
+approval (`added_outside_dashboard`) or re-approval (`changed_needs_reapproval`).
 
 Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 
@@ -40,7 +48,7 @@ For scripted or headless setups:
 }
 ```
 
-`stub_servers` is empty by default, so an untouched config renders no apps and runs no broker. Routing a server is the opt-in.
+`stub_servers` is empty by default, so an untouched config renders no apps and runs no broker. Routing a server is the opt-in, and a name listed here still needs its launch approved in MCP Management before it is wrapped.
 Backend sharing is a separate, opt-in decision:
 
 ```json
@@ -48,23 +56,19 @@ Backend sharing is a separate, opt-in decision:
 ```
 
 `mcp_gateway.stub_servers` is the only thing that gives a server a stub. A
-`poolable: true` on the server's own MCP entry used to work as a second way in,
-and no longer does:
+`poolable: true` on the server's own MCP entry is ignored and stripped before the
+entry reaches kiro-cli:
 
 ```json
 { "mcpServers": { "excalidraw": { "command": "...", "poolable": true } } }
 ```
 
-That key is now ignored and stripped before the entry reaches kiro-cli. It could
-not be honoured coherently — the broker's start gate and the session's overlay
-both read the config list, so a spec-level opt-in produced a stub nothing pointed
-at. List the server instead, from the config above or from MCP Management.
+List the server instead, from the config above or from MCP Management.
 
-MCP Apps has no switch of its own any more. Capability follows THE STUB: the stub a
+MCP Apps has no switch of its own. Capability follows THE STUB: the stub a
 stubbed server gets is what carries the render and callback path, so stubbing the
 server is what grants the feature. There is no way to *grant* Apps with a
-preference — but the two ways to say **no** still hold, so nobody who already
-turned it off starts rendering server-authored UI on upgrade:
+preference, but two ways to say **no** hold:
 
 | Condition | Result |
 |---|---|
@@ -74,10 +78,10 @@ turned it off starts rendering server-authored UI on upgrade:
 | `KIROCREW_MCP_APPS` = `1`/`true`/`yes`, no stored opt-out | enabled (explicit override — tests, e2e harness) |
 | nothing set | enabled — reaching the gate already means the server was stubbed |
 
-`apps_enabled` is **retired going forward**: nothing writes it, MCP Management does
-not surface it, and a fresh install never has it. It is read in exactly one
-direction — an operator-written `false` keeps withholding the feature. Absent
-defaults to on, so "not configured" is not an opt-out.
+Nothing writes `apps_enabled`, MCP Management does not surface it, and a fresh
+install never has it. It is read in exactly one direction: an operator-written
+`false` withholds the feature. Absent defaults to on, so "not configured" is not
+an opt-out.
 
 Read live per call, so toggling the feature takes effect without restarting the
 daemon.
@@ -171,8 +175,7 @@ Two paths still lose in-canvas edits, by design rather than oversight:
 - **Navigating away from Chat and back** (e.g. to Settings). The panel's tree is
   owned by the chat page, so leaving the route unmounts it.
 
-In both cases the diagram returns; the canvas edits do not. Closing that class
-properly means hosting app frames above the router, which is not done yet.
+In both cases the diagram returns; the canvas edits do not.
 
 
 
@@ -226,7 +229,6 @@ these being absent, per the spec's own graceful-degradation rule:
 
 | Method | Status |
 |---|---|
-| `ui/message` | not implemented |
 | `ui/update-model-context` | answered `-32601` |
 | `ui/resource-teardown` | not sent |
 | `ui/notifications/tool-cancelled` | not sent |
@@ -310,20 +312,23 @@ app HTML is **server-controlled code running in your dashboard**.
 - **Missing, corrupt, or oversized spool files are tolerated**, so a bad payload
   cannot crash a turn.
 - **The dashboard CSP allows `https://esm.sh`.** `srcdoc` iframes inherit the parent's CSP header, and apps commonly load their module graph from esm.sh via importmap — without that allowance the app's scripts never execute and you get a blank frame.
-- **Per-app CSP is additive and sanitized.** Resource metadata can request `resourceDomains`, `connectDomains`, `frameDomains`, and `baseUriDomains`; the host accepts only `https://` origin tokens, emits a CSP meta tag before app HTML, and otherwise starts from a deny-by-default policy. The parent response CSP can only further restrict that policy.
+- **Per-app CSP is additive and sanitized.** Resource metadata can request `resourceDomains`, `connectDomains`, `frameDomains`, and `baseUriDomains`; the host accepts only `https://` origin tokens, emits a CSP meta tag before app HTML, and otherwise starts from a deny-by-default policy. Web Workers created from `blob:` URLs are always allowed (`worker-src 'self' blob:`); remote worker scripts are not. The parent response CSP can only further restrict that policy.
 - The host declares a limited capability set to the app (`serverTools`,
-  `openLinks`). Link opening is gated to `https://` only.
+  `openLinks`, and `message` for text-only `ui/message`). Link opening is gated
+  to `https://` only.
 
 ## Troubleshooting
 
 | Symptom | Most likely cause |
 |---|---|
 | Tool output renders as plain text | the server has no stub in MCP Management, or `KIROCREW_MCP_APPS` is set to an off value |
-| Still text with both of those right | the broker did not start — check the gateway log for `mcp-gateway: broker ready`, which names the switch that started it |
+| MCP Management says the server needs approval | it was listed in `mcp_gateway.stub_servers` outside the dashboard, so its launch was never approved and it runs unwrapped — check the command shown and approve it |
+| MCP Management says the command changed | the server's command, arguments or environment differ from what you approved — review the new launch and approve it again |
+| Still text with all of those right | the broker did not start — check the gateway log for `mcp-gateway: broker ready`, which reports how many servers are stubbed and whether backend sharing is on |
 | The gateway toggle is unavailable | confirm the gateway process and local IPC endpoint can start; the broker supports macOS, Linux, and Windows |
 | A server cannot be routed | only command-based stdio entries can receive a stub; URL-based HTTP/SSE entries stay direct |
 | Frame mounts but the canvas is blank | the app's scripts did not execute — check the browser console for CSP or network errors reaching its CDN |
-| Feature toggle missing from Settings | stale frontend bundle — hard-refresh the dashboard |
+| **MCP Apps in Side Panel** missing from Settings → Chat | stale frontend bundle — hard-refresh the dashboard |
 | A new render appears inline despite `mcp_app_panel: true` | the flag is read at render time; diagrams already in scrollback do not move |
 | Panel shows "This app render is no longer available" | the payload was evicted (bounded per slot) — ask the agent to render it again |
 | Agent sessions all restarted unexpectedly | expected: routing a server, or flipping backend sharing, re-routes MCP and interrupts in-flight work |

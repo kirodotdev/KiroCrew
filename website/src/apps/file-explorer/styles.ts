@@ -18,6 +18,10 @@ export const FE_CSS = `
 .mc-fe-tab-rename { background:var(--bg); border:1px solid var(--border); color:var(--text); padding:0 4px; font-size:12px; width:160px; outline:none; border-radius:3px; }
 .mc-fe-tab-sep { width:1px; background:var(--border); margin:4px 6px; align-self:stretch; opacity:.6; flex-shrink:0; }
 .mc-fe-banner { padding:6px 12px; background:color-mix(in srgb, var(--warn) 18%, transparent); color:var(--warn); font-size:12px; display:flex; align-items:center; gap:6px; border-bottom:1px solid var(--border); }
+.mc-fe-banner-text { flex:1; min-width:0; overflow-wrap:anywhere; }
+.mc-fe-banner-text code { font-family:var(--mono, ui-monospace, monospace); font-size:11px; }
+.mc-fe-banner-dismiss { color:var(--warn); flex-shrink:0; }
+.mc-fe-banner-dismiss:hover:not(:disabled) { color:var(--warn); }
 .mc-fe-pathbar { padding:6px 12px; border-bottom:1px solid var(--border); background:var(--bg); }
 .mc-fe-pathbar-row { display:flex; align-items:center; gap:8px; min-height:32px; }
 .mc-fe-pathbar-edit { position:relative; flex:1; min-width:0; }

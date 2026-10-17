@@ -10,7 +10,9 @@ import FilePathMenu, { useRevealFailure } from '../FilePathMenu'
 import { i18nT } from '../../i18n/t'
 import { InsideLinkCtx, PathActionCtx, PathProbeCtx, SessionActionCtx, SidebarFolderCtx } from './contexts'
 import { activatePath, basenameOf, usePathResolution } from './pathReferences'
-import { folderSegmentsOf, resolveFolderChip, resolveSessionChip } from './linkTargets'
+import { folderSegmentsOf, resolveFolderChip, useSessionChip } from './linkTargets'
+import { ClosedSessionNotice } from './ClosedSessionNotice'
+import { SESSION_REF_TRAILING } from './treeTransforms'
 import { CopyFailedNotice, useCopiedFlash, useTitleCuedCopy } from './copyFeedback'
 import { ELEMENT_OVERRIDES, isElementWithProps } from './elements'
 
@@ -474,7 +476,12 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
   const gatewayPlatform = useGatewayPlatform()
   const { directLocal } = useBranding()
   const raw = codeStr.trim()
-  const pathResolution = usePathResolution(raw, probeEnabled)
+  // Inside a link to a web page the span never becomes a chip (see the early
+  // return below), so it never asks the backend whether its text names a path.
+  const pathResolution = usePathResolution(raw, probeEnabled && insideLink !== 'external')
+  // Before the early returns below (rules of hooks): a closed session's chip
+  // waits on a gateway probe. Same text the chip branch below would see.
+  const sessionTarget = useSessionChip(visibleText === null || raw === '' ? null : raw, sessionActions)
   // Failure state for the chip's reveal (Shift+click / no handler wired); rendered
   // beside the chip. Declared before the early returns below (rules of hooks).
   const reveal = useRevealFailure(raw)
@@ -495,6 +502,25 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
       return !name.startsWith('data-path') && !name.startsWith('data-session') && !name.startsWith('data-folder') && name !== 'data-chip-action'
     }),
   )
+  // Sentence punctuation `rehypeSessionRefPunctuation` lifted off the text after
+  // a backticked session key. It is the sentence's own, so whatever this span
+  // renders as, it goes back right after it: on a session chip between the chip
+  // and its notice, so the notice follows the sentence instead of splitting it.
+  // Read from `props`, not `safeProps`: the filter above drops every inbound
+  // `data-session*`, and this one must never reach the DOM either.
+  const trailing = typeof props[SESSION_REF_TRAILING] === 'string' ? props[SESSION_REF_TRAILING] : undefined
+  const keep = (el: React.ReactElement) => (trailing ? <>{el}{trailing}</> : el)
+
+  // Inside a link to a web page (or any other scheme) a code span used as its
+  // label is plain code text: never a chip, whatever its text names. Any chip's
+  // handler calls preventDefault, which cancels the enclosing anchor's
+  // navigation — a copy chip copied instead of navigating (#5730), and a
+  // confirmed path chip opened the local file instead (#5745). Stated ahead of
+  // every chip branch, so no resolution outcome can bring a chip back, and no
+  // glyph reserve, since no chip will ever arrive to fill it. It IS a link
+  // label, so it keeps the link colour (`navigate`: the stylesheet's actionable
+  // rule — the class alone loses to the Kiro inline-code colour).
+  if (insideLink === 'external') return keep(<code className={`${CHIP_BASE} text-accent`} {...safeProps} data-chip-action="navigate">{children}</code>)
 
   if (pathResolution.probePending
     || (pathResolution.kind !== 'file' && pathResolution.kind !== 'dir')) {
@@ -521,28 +547,33 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     const folderChipPossible = !!(folderActions.onFolderReveal && folderActions.folders)
     const folderReserve = folderChipPossible && folderSegmentsOf(raw) !== null ? <FolderGlyphReserve /> : null
     const reserve = pathResolution.shaped ? <ChipGlyphReserve path={pathResolution.splitPath} /> : folderReserve
-    // Inside an anchor the link owns the click, so stay the inert span this was
-    // before #4433 rather than cancelling the navigation to copy. Nothing is
-    // lost: the browser's own "Copy link address" still reaches the URL. It IS
-    // a link label, so it keeps the link colour (`navigate`: the stylesheet's
-    // actionable rule — the class alone loses to the Kiro inline-code colour).
-    if (insideLink) return <code className={`${CHIP_BASE} text-accent`} {...safeProps} data-chip-action="navigate">{reserve}{children}</code>
+    // Inside a link to a local address (a path, a `#heading`, an in-app route)
+    // the link still owns the click unless the label is a confirmed path, so
+    // stay the inert span this was before #4433 rather than cancelling the
+    // navigation to copy. A confirmed path falls through to its chip below: the
+    // href is often that same file, and the anchor cannot open every local
+    // spelling of it itself. Same link colour as the early return above.
+    if (insideLink) return keep(<code className={`${CHIP_BASE} text-accent`} {...safeProps} data-chip-action="navigate">{reserve}{children}</code>)
     // Nothing a chip could honestly act on: the tree cannot vouch that its text
     // is what the reader sees (`codeTextOf` -> null: a styled or collapsible
     // raw child, an image), or there is no visible text at all (an image-only
     // span, where a button would write '' — clearing the clipboard — and then
     // confirm it). Stay an inert, selectable code span.
-    if (visibleText === null || raw === '') return <code className={CHIP_BASE} {...safeProps}>{reserve}{children}</code>
-    const session = resolveSessionChip(raw, sessionActions)
+    if (visibleText === null || raw === '') return keep(<code className={CHIP_BASE} {...safeProps}>{reserve}{children}</code>)
+    const session = sessionTarget
     if (session) {
       return (
-        <SessionChip
-          sessionKey={session.key}
-          sessionTitle={session.title}
-          label={raw}
-          safeProps={safeProps}
-          onOpen={sessionActions.onSessionOpen!}
-        >{children}</SessionChip>
+        <>
+          <SessionChip
+            sessionKey={session.key}
+            sessionTitle={session.title}
+            label={raw}
+            safeProps={safeProps}
+            onOpen={session.open}
+          >{children}</SessionChip>
+          {trailing}
+          <ClosedSessionNotice failure={session.failure} name={session.key} />
+        </>
       )
     }
     // A sidebar folder named by its full human path. After the session chip (a
@@ -557,14 +588,14 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // cannot reveal a folder the probe is about to overrule.
     const folder = pathResolution.probePending ? null : resolveFolderChip(raw, folderActions)
     if (folder) {
-      return (
+      return keep(
         <FolderChip
           folderId={folder.id}
           folderPath={folder.path}
           label={raw}
           safeProps={safeProps}
           onReveal={folderActions.onFolderReveal!}
-        >{children}</FolderChip>
+        >{children}</FolderChip>,
       )
     }
     // A span whose WHOLE text matches an operator-configured autolink rule is
@@ -577,7 +608,7 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     // below.
     const patternHref = wholeMatchAutolinkHref(raw)
     if (patternHref) {
-      return (
+      return keep(
         <a
           href={patternHref}
           target="_blank"
@@ -589,10 +620,10 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
               rest: without it the two are pixel-identical and the click
               outcome (open a tab vs copy) is a surprise. */}
           <code className={CHIP_ACTIONABLE} {...safeProps} data-chip-action="navigate">{reserve}{children}<ExternalLink className="lucide-inline ml-1" aria-hidden /></code>
-        </a>
+        </a>,
       )
     }
-    return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>
+    return keep(<CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{reserve}{children}</CopyableCode>)
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution
@@ -620,14 +651,19 @@ export function InlineCode({ children, ...props }: { children?: React.ReactNode 
     activatePath(path, kind, e.shiftKey, actions, reveal.onError, targetLine, targetEndLine)
   }
   // Right-click opens the shared file-path menu (Open in default app / reveal /
-  // copy path), additive to the existing click/shift-click activation. The menu
-  // items self-gate on directLocal, so a remote session sees only Copy path.
+  // copy path), additive to the existing click/shift-click activation. The
+  // native items self-gate on directLocal; the in-app items ("Open in side
+  // panel", "Show folder in side panel") come from this host's own handlers,
+  // so a remote session still gets an entry that works on the viewer's screen.
   // `kind` is threaded through so a directory chip hides "Open with default
   // app" — the reveal endpoint 400s an `open` on a directory, which would land
   // the user on an error for a click they cannot fix.
+  const openFileFromMenu = actions.onFileOpen
+    ? () => activatePath(path, kind, false, actions, reveal.onError, targetLine, targetEndLine)
+    : undefined
   return (
     <>
-    <FilePathMenu filePath={path} kind={kind}>
+    <FilePathMenu filePath={path} kind={kind} onFileOpen={openFileFromMenu} onFolderOpen={actions.onFolderOpen}>
       <code
         className={CHIP_ACTIONABLE}
         // eslint-disable-next-line jsx-a11y/no-noninteractive-element-to-interactive-role -- <code> is intentionally interactive (click-to-open path chip), same pattern as CopyableCode

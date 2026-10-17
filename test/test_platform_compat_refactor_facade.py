@@ -67,6 +67,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         "current_user_sid",
         "make_owner_only_dir",
         "local_user_id",
+        "stat_owned_by_current_user",
         "stat_writable_by_current_user",
         "path_writable_by_current_user",
         "restrict_to_owner",
@@ -100,6 +101,7 @@ _SEAM_IMPORTS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
     (_OWNER, "process_owner_sid"): (_PC, ("IS_POSIX",)),
     (_OWNER, "restrict_dir_to_owner"): (_PC, ("IS_POSIX",)),
     (_OWNER, "restrict_to_owner"): (_PC, ("IS_POSIX",)),
+    (_OWNER, "stat_owned_by_current_user"): (_PC, ("IS_POSIX",)),
     (_OWNER, "stat_writable_by_current_user"): (_PC, ("IS_POSIX",)),
 }
 
@@ -201,8 +203,15 @@ def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
 _PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path"})
 
 
-def test_a_patched_name_bound_by_the_facade_and_an_owner_is_a_listed_one() -> None:
-    shared.check_shared_bindings(platform_compat, _SEAM_IMPORTS, _PC_SHARED_BINDINGS_PATCHED)
+@pytest.mark.parametrize("part", range(shared.CENSUS_PARTS))
+def test_a_patched_name_bound_by_the_facade_and_an_owner_is_a_listed_one(part: int) -> None:
+    shared.check_shared_bindings(platform_compat, _SEAM_IMPORTS, _PC_SHARED_BINDINGS_PATCHED, part)
+
+
+def test_every_listed_shared_binding_is_still_patched() -> None:
+    shared.check_listed_bindings_are_patched(
+        platform_compat, _SEAM_IMPORTS, _PC_SHARED_BINDINGS_PATCHED
+    )
 
 
 # --------------------------------------------------------------------------- #

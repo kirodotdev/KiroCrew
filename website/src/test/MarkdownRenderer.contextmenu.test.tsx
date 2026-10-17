@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, fireEvent, waitFor } from '@testing-library/react'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -39,11 +40,8 @@ import { copyToClipboard } from '../utils/clipboard'
 
 const realFetch = globalThis.fetch
 
-function stubKind(kind: 'file' | 'dir', ok = true) {
-  const headers = new Headers(kind ? { 'X-Path-Kind': kind } : {})
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok, status: ok ? 200 : 404, headers } as Response),
-  ) as unknown as typeof fetch
+function stubKind(kind: 'file' | 'dir', _ok = true) {
+  stubPathKinds(() => kind)
 }
 
 function rightClick(el: Element) {

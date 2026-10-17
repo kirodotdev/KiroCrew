@@ -246,6 +246,29 @@ def _mcp_spec_gate_open(name: str, spec: dict) -> bool:
         return False
 
 
+def _spec_gate_answers_closed(name: str) -> bool:
+    """Whether *name*'s ``spec_gate`` ANSWERS closed right now, without raising.
+
+    The diagnostic counterpart of :func:`_mcp_spec_gate_open`, and the one
+    implementation every diagnostic uses (``kirocrew doctor`` and the session's
+    unresolved-ref report). It fails the opposite way: a gate that raises, an
+    entry that is not a dict, or an unreadable registry all report NOT closed,
+    because "closed" is what silences a missing-entry finding, and a broken gate
+    must stay visible. A server without a gate is never closed.
+    """
+    try:
+        spec = agent_mod._MANAGED_MCP_SERVERS.get(name) or {}
+        gate = spec.get("spec_gate")
+        if gate is None:
+            return False
+        return not gate()
+    except Exception:
+        agent_mod.logger.debug(
+            "spec gate for %s unreadable; diagnostics treat it as open", name, exc_info=True
+        )
+        return False
+
+
 def _mcp_server_emission_eligible(
     name: str, spec: object, *, gated_off: "frozenset[str] | None" = None
 ) -> bool:
@@ -595,6 +618,26 @@ def _enforce_managed_mcp_ownership(
             entry.pop("autoApprove", None)
     elif auto_approve == "seed" and "autoApprove" in spec:
         entry["autoApprove"] = list(spec["autoApprove"])
+
+
+def managed_member_transport(name: str) -> dict[str, Any] | None:
+    """The entry a fresh default spec carries for managed server *name*, without approvals.
+
+    Built by the same two steps :func:`emit_managed_servers` takes for
+    ``kirocrew.json`` (the live invocation, then
+    :func:`_enforce_managed_mcp_ownership`), so a crewmate's private copy that
+    gains the server carries the default template's exact entry. ``autoApprove``
+    is left out: the capability editor keeps approvals as rows of their own.
+    ``None`` when a fresh build would not emit the server (``opt_in`` or a closed
+    gate) or its invocation cannot be resolved.
+    """
+    spec = agent_mod._MANAGED_MCP_SERVERS.get(name)
+    entry = managed_mcp_spec_entry(name)
+    if entry is None or not isinstance(spec, dict):
+        return None
+    _enforce_managed_mcp_ownership(entry, spec, _mcp_registry_mode(), auto_approve="own")
+    entry.pop("autoApprove", None)
+    return entry
 
 
 def emit_managed_servers(mcp: dict, *, gated_off: frozenset[str], registry_mode: bool) -> None:

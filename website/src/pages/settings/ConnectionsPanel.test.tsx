@@ -218,6 +218,22 @@ describe('ConnectionsPanel — saving a client', () => {
     expect(within(gh).getByText('invalid_client_id')).toBeInTheDocument()
   })
 
+  it('says the saved app did not reach the agent spec when the rebuild declined', async () => {
+    saveMock.mockResolvedValue({
+      ok: true,
+      client: github({ client_id: 'abc', client_id_source: 'config' }),
+      agent_spec_rewritten: false,
+    })
+    await mount()
+    const gh = cardFor('github')
+    fireEvent.change(within(gh).getByLabelText('Client ID'), { target: { value: 'abc' } })
+    fireEvent.click(within(gh).getByRole('button', { name: 'Save' }))
+
+    const notice = await within(gh).findByTestId('agent-spec-not-rewritten')
+    // No hand-off: it would unmount the card's unsaved drafts.
+    expect(within(notice).queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('names the confidential requirement per provider', async () => {
     await mount([github(), asana({ confidential: false, client_secret_set: false, client_secret_source: null })])
     expect(within(cardFor('github')).getByText(/GitHub requires a client secret at the token endpoint/)).toBeInTheDocument()

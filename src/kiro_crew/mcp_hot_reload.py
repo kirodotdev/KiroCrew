@@ -67,8 +67,12 @@ class DeclaresMcpHotReload(Protocol):
 MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION: tuple[int, int, int] = (2, 21, 0)
 
 # The leading dotted-integer run of a version token: ``2.21.0``, and also the
-# ``2.21.0-rc.1`` / ``2.21.0+build`` spellings a prerelease build prints.
-_VERSION_RE = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+# ``2.21.0-rc.1`` / ``2.21.0+build`` spellings a prerelease build prints. Each
+# component is at most nine digits and must end there (the lookahead): the
+# token is harness-written (``agentInfo.version`` on the ACP handshake), and
+# ``int()`` on a longer run raises past CPython's digit limit, so a component
+# past the bound is never handed to ``int()``, for every caller alike.
+_VERSION_RE = re.compile(r"(\d{1,9})\.(\d{1,9})(?:\.(\d{1,9}))?(?!\d)")
 
 
 def parse_kiro_cli_version(text: str) -> tuple[int, int, int] | None:

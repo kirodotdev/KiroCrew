@@ -11,17 +11,24 @@ wait costs one held request, not a poll interval.
 
 ``/api/spawn/lanes`` exposes the fairness dispatcher's per-lane view for the
 Tasks/Health panel and ``kirocrew doctor``. ``/api/spawn/adaptive`` exposes the
-adaptive controller's snapshot for a reader outside the gateway process.
+adaptive controller's snapshot for a reader outside the gateway process, and
+beside it the ``throttle`` reading the chat header renders while a cut is in
+force (:func:`throttle_view`).
 """
 
 from __future__ import annotations
 
+import logging
 import math
+from collections.abc import Mapping
+from typing import Any
 
 from aiohttp import web
 
 from kiro_crew import resource_status
 from kiro_crew.dashboard.state import DashboardState
+
+logger = logging.getLogger(__name__)
 
 #: Longest server-side hold per request. The MCP client's GET timeout is 10 s;
 #: staying well under it keeps a held request from ever reading as a hang.
@@ -110,8 +117,85 @@ async def api_spawn_adaptive(request: web.Request) -> web.Response:
     ``{}`` rather than 404/503 when no controller runs: "no controller here" is
     an answer, and the caller already renders a missing state as "the cap could
     not be read".
+
+    ``throttle`` is :func:`throttle_view` over the same snapshot: the chat
+    header's chip polls this route for it, so a session whose work waits behind
+    a reduced cap does not read as a dead one.
     """
-    return web.json_response({"adaptive": resource_status.adaptive_state() or {}})
+    state = resource_status.adaptive_state() or {}
+    exec_start, gate_start = _start_caps()
+    return web.json_response(
+        {
+            "adaptive": state,
+            "throttle": throttle_view(state, exec_start=exec_start, gate_start=gate_start),
+        }
+    )
+
+
+def _count(value: object) -> int | None:
+    """A non-negative integer count, or ``None`` for anything else (a bool too)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value)
+
+
+def _start_caps() -> tuple[int | None, int | None]:
+    """The live controller's fresh-start caps ``(exec, gate)``; ``None`` each without one.
+
+    A fresh process starts the execution cap at ``exec_start`` (the user's
+    ceiling in production) and the spawn gate at ``gate_start``
+    (``spawn_concurrency_initial``); both are read from the policy's live
+    parameters, so a hot-reloaded ceiling moves them with it.
+    """
+    try:
+        from kiro_crew.adaptive import controller as adaptive_controller
+
+        ctl = adaptive_controller.current()
+        if ctl is None:
+            return None, None
+        params = ctl.policy.params
+        return _count(params.exec_start), _count(params.gate_start)
+    except Exception:  # noqa: BLE001 - a read for a chip must never fail the route
+        logger.debug("adaptive start caps unavailable", exc_info=True)
+        return None, None
+
+
+def throttle_view(
+    state: Mapping[str, Any] | None,
+    *,
+    exec_start: int | None = None,
+    gate_start: int | None = None,
+) -> dict[str, Any]:
+    """Whether the adaptive controller holds a concurrency cut right now.
+
+    A cut is a cap below the value a fresh process starts it at: the execution
+    cap below ``exec_start`` (``exec_ceiling`` when no start is given), or the
+    spawn gate paused or below ``gate_start``. A gate below its CEILING is not a
+    cut -- it starts at its initial capacity and grows from there -- so without
+    ``gate_start`` only a pause reads as a gate cut.
+
+    ``queued`` is the work the controller's last sample saw waiting for an
+    execution slot. A missing, disabled or ``fixed``-mode controller (which pins
+    both caps) answers ``{"cut": False}`` and nothing else.
+    """
+    if not state or not state.get("enabled") or state.get("mode") == "fixed":
+        return {"cut": False}
+    exec_cap = _count(state.get("effective_exec_cap"))
+    exec_configured = exec_start if exec_start is not None else _count(state.get("exec_ceiling"))
+    gate_cap = _count(state.get("spawn_gate_capacity"))
+    paused = bool(state.get("paused"))
+    exec_cut = exec_cap is not None and exec_configured is not None and exec_cap < exec_configured
+    gate_cut = paused or (gate_cap is not None and gate_start is not None and gate_cap < gate_start)
+    last = state.get("last_sample")
+    queued = _count(last.get("queued")) if isinstance(last, Mapping) else None
+    return {
+        "cut": exec_cut or gate_cut,
+        "exec": {"cap": exec_cap, "configured": exec_configured, "cut": exec_cut},
+        "gate": {"cap": gate_cap, "configured": gate_start, "cut": gate_cut, "paused": paused},
+        "queued": queued or 0,
+    }
 
 
 async def api_spawn_lanes(request: web.Request) -> web.Response:

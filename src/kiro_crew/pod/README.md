@@ -31,7 +31,7 @@ kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
 kirocrew pod up   <wt> --approval reads  # boot its gateway in an approval mode
 kirocrew pod up   <wt> --crons          # boot its gateway with the cron scheduler on
 kirocrew pod up   <wt> --no-embeddings  # boot without the embedding model (keyword-search fallback)
-kirocrew pod up   <wt> --wait-secs N    # override the 90s health-wait budget
+kirocrew pod up   <wt> --wait-secs N    # override the 90s readiness budget
 kirocrew pod up   <wt> --seed minimal  # pre-populate its HOME from a named scenario
 kirocrew pod scenarios [--json]        # list named scenarios and their descriptions
 kirocrew pod api  <wt> GET sessions    # authenticated request → fixed-key JSON
@@ -60,14 +60,25 @@ and collapses them, honoring their very different costs:
 
 | Prereq | Cost | Who builds it |
 |---|---|---|
-| **venv** | ~1 min, idempotent | `pod up` **auto-builds** it on demand |
+| **venv** | ~1 min, idempotent | `pod up` **auto-builds** it on demand; set `KIROCREW_PROVISION_USE_UV` to build it with `uv` from its shared cache instead of `python -m venv` + pip (opt-in; falls back to pip when `uv` cannot be found) |
 | **dist** | minutes (Vite SPA build) | only on **explicit consent** |
 
-The venv is built with Python 3.12, found as `python3.12` in the usual POSIX
-locations and then on `PATH`. A python.org install on Windows ships `python.exe`
-and never a `python3.12.exe`, so there the `py` launcher is asked next
-(`py -3.12`): it is the platform's own index of installed interpreters, and it
-picks the right one on a host that has several.
+The venv is built with the first Python >= 3.12 (the package's `requires-python`)
+that can actually build one. Candidates, in order: the interpreter running the
+gateway or CLI, so a pod gets the version its operator already runs; then
+`python3.N` by name, the gateway's minor first and then 3.12 upward, in the usual
+POSIX locations and on `PATH`, then `python3`; on Windows, where python.org ships
+`python.exe` and never a `python3.12.exe`, the `py` launcher per minor (`py -3.12`);
+finally `uv python find '>=3.12'`, which never downloads.
+
+Each candidate is PROBED rather than trusted because it exists: a venv without pip
+is created in a temp dir and that venv's own interpreter must start and import
+`ensurepip`. That rejects a version-manager shim with no install behind it (mise,
+pyenv, asdf), a relocatable interpreter that only starts through a launcher that
+passes its library path (the Builder Toolbox build: a venv made from it cannot find
+`libpython`), and a bundled interpreter stripped of `ensurepip` (the desktop app).
+Every rejection is printed with its reason; when none passes, provisioning says so
+and suggests `uv python install 3.12`.
 
 So plain `pod up <wt>` builds the cheap venv for you but **fails loud** if the
 dist is missing — pointing you at the slow build — while `pod up <wt> --provision`
@@ -349,7 +360,7 @@ worktree build, and pinning a colliding pod's own `PORT=` remains the manual way
 | `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | service-manager unit/task prefix |
 | `KIROCREW_POD_PATH` | generated standard executable path | `PATH` handed to the booted gateway |
-| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` health-wait budget; `--wait-secs` wins and the result is clamped to 5–3600 seconds |
+| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |
 | `KIROCREW_POD_BIN` | (auto) | binary baked into the Linux template unit; `pod up` replaces it with the worktree binary through a per-instance drop-in |
 | `KIROCREW_POD_KIRO_BIN` | (unset) | agent backend pinned into the service definition as `KIROCREW_KIRO_BIN` |
 
@@ -425,7 +436,8 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
 - **No restart policy.** A crashed pod stays down, which removes launchd's
   restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
   no exit-0 translation) but means the crash signal has to be recorded: the
-  wrapper writes the boot's exit code to `<prefix>.<name>.winresult`, and
+  `pod _run` producer writes the boot's exit code to `<prefix>.<name>.winresult`
+  on every exit of a claimed boot (the wrapper writes no sidecar), and
   `unit_state` reports `failed` when that code is non-zero and the supervised
   process is gone.
 - **No PID from the service manager, and no `exec`.** `schtasks /Query` reports
@@ -557,16 +569,32 @@ A pod started by a build without the lifetime-Job protocol has no `.winrun`
 proof. Updating the build cannot retroactively contain that process tree.
 `pod down` and a new `pod up` deliberately refuse its remaining task, HOME or
 sidecars. This also applies to an unresolved reservation after an uncertain
-`/Run`, or when startup cancellation could not be persisted. A scheduled boot
-that refuses a missing checkout, venv or built dist also leaves `reserved`:
-those checks run before the publisher claims the generation. The producer can
-still be writing its refusal note, and the outer wrapper writes `.winresult`
-after Python returns. Neither file proves generation-bound producer retirement.
-These failed boots still require the verified retirement below; deleting only
-`.winrun` is neither safe retirement nor sufficient to clear the other evidence.
-By contrast, a persisted `cancelled` start has never attempted `/Run`: fix the
-reported cleanup error and repeat `pod up` to finish its generation-checked
-cleanup and retry.
+`/Run`, or when startup cancellation could not be persisted.
+
+A scheduled boot claims its reservation as the producer's first act, before the
+checkout, venv and dist checks, so the record names the `pod _run` process (pid
+plus creation time). A refusal then ends with that producer writing `.winresult`
+and a `finished` receipt; `pod down` retires the generation once the kernel
+reports that exact process gone, and `pod up` admits a fresh generation. A
+producer still provisioning (`preparing`) is waited for, never killed; one that
+has already published its `finished` receipt is given the stop budget to exit
+on its own, because the receipt is its last write to the record but the boot's
+failure audit is logged after it, and it is ended only if it outlives that
+budget. The task wrapper writes no sidecar, so no write can land after the
+producer is proven gone. Two shapes still need the
+manual procedure: a `reserved` record nobody claimed (the task never launched
+Python, or was killed during interpreter start-up), and a `preparing` record
+whose producer died after creating the HOME without its receipt, because the
+boot did not reach the point where it could say what it left running there. A
+`finished` receipt is that statement: the boot spawned no gateway and ended on
+its orderly refusal path, so its HOME is reclaimed. It does not cover a
+descendant of a process the boot started before any lifetime Job existed (the
+`kiro-cli` child-viability probe, which on Windows is killed but whose own
+children are not), the same residual the ready path's Job proof accepts for
+outside launch brokers. Deleting only `.winrun` is neither
+safe retirement nor sufficient to clear the other evidence. By contrast, a
+persisted `cancelled` start has never attempted `/Run`: fix the reported cleanup
+error and repeat `pod up` to finish its generation-checked cleanup and retry.
 
 For an uncontained or otherwise unprovable run, use this conservative manual
 procedure. It deletes the disposable pod's data, not the checkout. Save anything

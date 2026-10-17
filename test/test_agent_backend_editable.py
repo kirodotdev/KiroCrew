@@ -80,7 +80,17 @@ def test_the_allowlist_resolves_the_set_and_never_carries_a_literal():
     spec = _EDITABLE_CONFIG[FIELD]
     assert "values" not in spec, "a frozen list here is exactly the drift being removed"
     assert callable(spec["values_fn"])
-    assert set(spec["values_fn"]()) == set(acp_backends.selectable_backends())
+    # The config-file vocabulary: Kiro CLI is "kiro", and "" stores "no choice".
+    assert set(spec["values_fn"]()) == {
+        acp_backends.backend_to_stored(b) for b in acp_backends.selectable_backends()
+    } | {""}
+
+
+def test_the_allowlist_speaks_the_stored_vocabulary():
+    """A Kiro CLI pick is written as "kiro"; "" is "no choice", never Kiro CLI."""
+    allowed = _EDITABLE_CONFIG[FIELD]["values_fn"]()
+    assert acp_backends.STORED_BACKEND_KIRO in allowed
+    assert acp_backends.STORED_BACKEND_KIRO == acp_backends.POLICY_ID_KIRO
 
 
 def test_the_default_backend_is_accepted_by_its_own_allowlist():
@@ -128,7 +138,10 @@ def test_the_schema_endpoint_serves_the_same_set_as_the_allowlist():
     """
     entry: Dict[str, Any] = {"path": FIELD, "enumValues": None}
     _supply_live_enum(entry)
-    assert entry["enumValues"] == _EDITABLE_CONFIG[FIELD]["values_fn"]()
+    # The PATCH also takes "" ("no choice"), which is not an option to render.
+    assert entry["enumValues"] == sorted(set(_EDITABLE_CONFIG[FIELD]["values_fn"]()) - {""})
+    assert acp_backends.STORED_BACKEND_KIRO in entry["enumValues"]
+    assert "" not in entry["enumValues"]
 
 
 def test_the_schema_endpoint_leaves_other_fields_alone():

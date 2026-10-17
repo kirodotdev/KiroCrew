@@ -128,6 +128,7 @@ function renderSidebar(opts: {
   history?: ChatHistoryItem[]
   defaultAgent?: string
   installedAgents?: { name: string; source: string }[]
+  rowAgents?: { name: string; source: string }[]
 } = {}) {
   const slots = opts.slots ?? PAIR_SLOTS
   const history = opts.history ?? []
@@ -157,6 +158,7 @@ function renderSidebar(opts: {
               history={history} historyHasMore={false}
               defaultAgent={opts.defaultAgent ?? DEFAULT_AGENT}
               installedAgents={opts.installedAgents ?? []}
+              rowAgents={opts.rowAgents}
             />
           </MemoryRouter>
         </ThemeProvider>
@@ -276,5 +278,24 @@ describe('chat sidebar history row — inherited-default marker', () => {
     const pinned = label(historyMetaLine(container, 'h-pinned'))
     expect(pinned).toBe(DEFAULT_AGENT)
     expect(label(historyMetaLine(container, 'h-inherited'))).not.toBe(pinned)
+  })
+})
+
+describe('chat sidebar — row tint survives a session switch (#17814)', () => {
+  // On a session switch the host empties the scoped `installedAgents` until the
+  // new slot's catalog lands, and passes the last LOADED roster as `rowAgents`.
+  // Rows must tint from `rowAgents`, or every package agent's label flashes
+  // muted and back on each click.
+  const PKG = [{ name: DEFAULT_AGENT, source: 'package' }]
+
+  it('tints a session row from rowAgents while installedAgents is empty', () => {
+    const { container } = renderSidebar({ installedAgents: [], rowAgents: PKG })
+    expect(sessionMetaLine(container, 'pinned').className).toContain('text-[var(--aim)]')
+  })
+
+  it('tints a history row from rowAgents while installedAgents is empty', () => {
+    window.history.replaceState({}, '', '/chat?history=1')
+    const { container } = renderSidebar({ slots: [], history: PAIR_HISTORY, installedAgents: [], rowAgents: PKG })
+    expect(historyMetaLine(container, 'h-pinned').className).toContain('text-[var(--aim)]')
   })
 })

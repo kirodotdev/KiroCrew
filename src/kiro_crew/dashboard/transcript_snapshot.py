@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, Literal, TypeVar, cast
 
 from kiro_crew.dashboard.chat_persistence import _FLUSH_SNAPSHOT_RETRIES, session_was_deleted
+from kiro_crew.dashboard.state import load_window_off_loop
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -314,6 +315,9 @@ async def read_consistent_transcript(
         raise TypeError("a purpose that saves a pending rewrite needs a rewrite callable")
     if (purpose.persist_dirty or purpose.boundary_ahead == "resync") and persist is None:
         raise TypeError("a purpose that persists the slot needs a persist callable")
+    # Every observation below reads the slot's rows: a tab restored as a sidebar
+    # row loads its window first, with the read off the loop, before the first.
+    await load_window_off_loop(slot)
     _refuse_untrusted_disk(slot, purpose)
     # Carries a SUSPICION across attempts. The rewrite save clears ``_pending_rewrite``
     # unconditionally once the archive-safe rewrite succeeds, with no check that the

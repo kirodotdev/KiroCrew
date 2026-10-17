@@ -1,5 +1,5 @@
-"""Recovery from an AcpError a dashboard turn raised: the post-token CONTINUE re-prompt
-and the poisoned-conversation verdict.
+"""Recovery from an AcpError a dashboard turn raised: the post-token CONTINUE re-prompt,
+the poisoned-conversation verdict and its canary's settings.
 
 The turn's except arm keeps the classification (which arm applies), every redaction
 of error text and every retry-budget reset a repository guard counts in
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         TRANSIENT_NOTICE_RESUMING,
         TRANSIENT_RESUMING_TEXT,
         TRANSIENT_RETRY_KIND,
+        DashboardState,
         RecoveryPayload,
         _ChatSlot,
         _has_user_queued_followup,
@@ -34,6 +35,9 @@ async def _recover_posttoken_transient(
     slot: _ChatSlot,
     _msg: str,
     *,
+    state: DashboardState,
+    session_key: str,
+    _first_turn_history_assembled: bool,
     _prompt_depth: int,
     _queue_recovery: Callable[..., str],
     _stop_pressed: Callable[[], bool],
@@ -44,6 +48,25 @@ async def _recover_posttoken_transient(
     session is queued after a short backoff, unless the user intervened during the
     wait; the one-shot allowance is spent only by a real enqueue.
     """
+    # The live session already holds this turn's assembled prompt and history
+    # (tokens streamed — ``_turn_emitted`` — and the ACP process stays alive across
+    # the post-token 5xx). Settle the FRESH first-turn history debt NOW, before
+    # branching on recover / Stop-suppress / nested-turn / follow-up takeover:
+    # whichever way this resolves, the NEXT turn runs on the same live session, and
+    # leaving the debt armed makes that turn (``_context_is_new`` while armed —
+    # including a queued follow-up that suppresses recovery) rebuild and re-prepend
+    # the full replay the provider already retained. Guard on
+    # ``_first_turn_history_assembled``: a slash first turn (``/help``) streams
+    # native output and can reach this arm, but it assembled no history, so it must
+    # not settle a debt it never paid — the next ordinary prompt pays it.
+    if _first_turn_history_assembled:
+        try:
+            state.sessions.consume_first_turn_history_owed(session_key)
+        except Exception:
+            logger.debug(
+                "settling first-turn history debt on post-token 5xx failed",
+                exc_info=True,
+            )
     # Surface a brief recovery notice (one append). Only when the requeue
     # below will actually happen is the row a PENDING one (retry kind +
     # resuming token); otherwise nothing resumes — Stop is active or this
@@ -139,3 +162,19 @@ async def _recover_posttoken_transient(
     # (_prompt_depth != 0) — do NOT requeue; partial + notice already
     # shown, so the streamed answer survives in the transcript. The
     # allowance is left UNconsumed so a later turn can still recover once.
+
+
+# Canary probe for the poisoned-conversation escalation: before any discard,
+# ONE tool-free prompt is run through an ephemeral fresh background session
+# (run_bg_oneliner). Only a canary that SUCCEEDS while this conversation keeps
+# failing constitutes conversation-specific rejection evidence — the exact
+# incident signature ("a fresh session works instantly while this session
+# fails every prompt"). A canary that also fails means the backend itself is
+# down/throttled, so no discard fires and nothing is consumed; the next
+# user-initiated exhausted cycle re-probes. This replaces any error-text
+# classification: the ACP classifier contract forbids branching on formatted
+# message wording, and the canary needs no classification at all.
+_POISON_CANARY_PROMPT = "Reply with the single word OK."
+
+
+_POISON_CANARY_TIMEOUT_SECS = 30.0

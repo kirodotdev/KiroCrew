@@ -112,37 +112,83 @@ def _cli_path() -> str | None:
     cannot establish trusted provenance. POSIX keeps the stricter local check
     below; Windows reuses the shared executable validator, which reads the
     binary and parent ACLs because mode bits carry no useful signal there. A
-    refusal degrades exactly like a missing binary: the feature contributes
-    nothing and the documented ``dashboard.url`` fallback still works.
+    refusal degrades exactly like a missing binary for what runs: the feature
+    contributes nothing and the documented ``dashboard.url`` fallback still
+    works. What the operator is TOLD differs — see :func:`_refused_cli_path`.
     """
-    # getattr: os.geteuid does not exist on Windows, and tests exercise this
-    # path with IS_POSIX patched True on every platform.
     for candidate in _CLI_CANDIDATE_PATHS:
-        if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+        if not _candidate_present(candidate):
             continue
-        validated = candidate
-        if IS_POSIX:
-            if not _posix_candidate_trusted(candidate):
-                logger.debug(
-                    "tailscale CLI at %s is in a location this deployment cannot "
-                    "trust; refusing to execute it (planted-binary defence). Use "
-                    "an explicit dashboard.url instead.",
-                    candidate,
-                )
-                continue
-        else:
-            try:
-                validated = github_runner.validate_provider_executable(candidate)
-            except ValueError as exc:
-                logger.debug(
-                    "tailscale CLI at %s failed executable trust validation: %s. "
-                    "Use an explicit dashboard.url instead.",
-                    candidate,
-                    exc,
-                )
-                continue
-        return validated
+        validated = _trusted_candidate(candidate)
+        if validated is not None:
+            return validated
     return None
+
+
+def _candidate_present(candidate: str) -> bool:
+    """Whether *candidate* is an executable file, trusted or not."""
+    return os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+
+
+def _trusted_candidate(candidate: str) -> str | None:
+    """The path to execute for a present *candidate*, or ``None`` when refused."""
+    if IS_POSIX:
+        if not _posix_candidate_trusted(candidate):
+            logger.debug(
+                "tailscale CLI at %s is in a location this deployment cannot "
+                "trust; refusing to execute it (planted-binary defence). Use "
+                "an explicit dashboard.url instead.",
+                candidate,
+            )
+            return None
+        return candidate
+    try:
+        return github_runner.validate_provider_executable(candidate)
+    except ValueError as exc:
+        logger.debug(
+            "tailscale CLI at %s failed executable trust validation: %s. "
+            "Use an explicit dashboard.url instead.",
+            candidate,
+            exc,
+        )
+        return None
+
+
+def _refused_cli_path() -> str:
+    """The first vetted-location CLI that is present but refused, or ``""``.
+
+    :func:`_cli_path` treats a refused candidate exactly like a missing one,
+    which is right for what it executes and wrong for what the operator reads:
+    "install Tailscale" sends the owner of a user-owned install (Homebrew) to
+    download a product that is already running. This names the binary that was
+    found so a message can point at the remedy that works for it,
+    ``dashboard.url``. It only reports; nothing it returns is ever executed.
+    """
+    for candidate in _CLI_CANDIDATE_PATHS:
+        if _candidate_present(candidate) and _trusted_candidate(candidate) is None:
+            return candidate
+    return ""
+
+
+def refused_cli_detail() -> str:
+    """Why a present tailscale CLI is not run, or ``""`` when none was refused.
+
+    One sentence shared by the onboarding card and the ``kirocrew tailnet``
+    verbs, so every surface names the same binary and the same reason. Callers
+    append their own remedy, because "set ``dashboard.url``" means a different
+    next command on each surface.
+    """
+    return _refused_cli_sentence(_refused_cli_path())
+
+
+def _refused_cli_sentence(path: str) -> str:
+    """The :func:`refused_cli_detail` sentence for *path*, or ``""`` for none."""
+    if not path:
+        return ""
+    return (
+        f"Tailscale is installed at {path}, but that file or its folder can be "
+        "changed without administrator rights, so Kiro Crew will not run it."
+    )
 
 
 def _posix_candidate_trusted(candidate: str) -> bool:
@@ -335,6 +381,8 @@ class DaemonProbe:
     rendered as one "Tailscale not working":
 
     * ``installed=False`` — install Tailscale.
+    * ``installed=False`` with ``refused_cli`` set — Tailscale IS installed, at
+      a vetted path the ownership check refuses; set ``dashboard.url``.
     * ``reachable=False`` — the daemon is not answering; start it.
     * ``stopped=True`` — the daemon answers but Tailscale is stopped
       (``BackendState "Stopped"``, e.g. after ``tailscale down``); bring it up.
@@ -365,6 +413,11 @@ class DaemonProbe:
     #: because the remedy differs — start Tailscale, not sign in — and folding it
     #: into ``reachable`` would misname the state: the daemon IS answering.
     stopped: bool = False
+    #: Path of a CLI that sits at a vetted location but fails the planted-binary
+    #: check, so it is never run; ``""`` otherwise. ``installed`` stays ``False``
+    #: because nothing here can use it; this field keeps the remedy apart from a
+    #: machine with no Tailscale, and the card shows the path itself.
+    refused_cli: str = ""
     #: Login owning this machine, validated from ``Self.UserID`` -> ``User``.
     #: Kept server-side; the status API does not expose it to the renderer.
     login: str = ""
@@ -405,12 +458,17 @@ def probe_daemon() -> DaemonProbe:
     the allowlist.
     """
     if _cli_path() is None:
+        refused = _refused_cli_path()
         return DaemonProbe(
             name="",
             installed=False,
             reachable=False,
             logged_in=False,
-            detail="Tailscale is not installed in a standard location.",
+            detail=(
+                _refused_cli_sentence(refused)
+                or "Tailscale is not installed in a standard location."
+            ),
+            refused_cli=refused,
         )
     status, _transient = _run_json_detail(["status", "--json"])
     if not isinstance(status, dict):

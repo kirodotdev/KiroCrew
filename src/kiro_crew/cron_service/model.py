@@ -75,6 +75,14 @@ class CronJob:
     # read solely where a one-shot would otherwise be consumed by a run it never
     # had. Reset at the start of every run.
     run_never_started: bool = False
+    # Runtime-only (never serialized): set by the gateway, with
+    # ``run_never_started``, when THIS run was refused for a reason in the job's
+    # own configuration that a retry cannot clear (an empty ``agent_sequence``
+    # step). A plain one-shot refused this way is parked as a one-shot that ran
+    # is, instead of retrying on every floor for as long as the gateway runs; a
+    # ``delete_after_run`` one-shot is still retained by ``run_never_started``.
+    # Reset at the start of every run.
+    refusal_cannot_clear: bool = False
     last_result: str | None = None
     # Epoch at which ``last_result`` was produced, written by
     # :meth:`set_run_result` and PERSISTED. Carries the run's identity for
@@ -123,6 +131,13 @@ class CronJob:
     # (e.g. a delivery-path exception) and then overran its deadline during
     # cleanup is counted once, not twice.
     failure_recorded: bool = False
+    # Runtime-only: ``auto_paused`` as it stood when THIS run started, stamped by
+    # _run_job_isolated and carried on the run's record. A store whose
+    # ``auto_paused`` differs from it was changed by someone else while the
+    # run was in flight (a ``cron resume``), so the run's merge and the reaper
+    # leave the store's pause state and failure count as they find them. None
+    # for a record no run stamped: the run's pause state is applied as is.
+    auto_paused_at_start: bool | None = None
     context_enabled: bool = False
     agent_id: str = ""
     # Member identity is distinct from the provider template in agent_id.
@@ -159,6 +174,26 @@ class CronJob:
     # Such a job simply never shows the hint.
     source_preset: str = ""
     source_template_prompt: str = ""
+    # Install-time provenance: the namespaced key an external installer owns
+    # this job under (``kirocrew cron add --managed-by <key>``), e.g.
+    # ``"<system>:owner/asset-name"``. Unique across the store by construction
+    # -- the only writer, :meth:`CronService.add_managed_job`, refuses a second
+    # job with the same key. It is how an installer finds its own job again
+    # without knowing the random ``id``: uninstall removes it
+    # (``kirocrew cron remove --managed-by <key>``) and a re-install is remove
+    # then add. Create-only: no update path accepts it, so a user edit on the
+    # Schedule page never detaches a job from its installer. ``""`` means "not
+    # installer-managed".
+    managed_by: str = ""
+    # The digest of the ``app.json`` cron fields the app bridge last applied to
+    # this job (``kiro_crew.apps.bridges.app_cron_manifest_digest``). Stamped
+    # when the bridge creates an app's job and rewritten each time it re-applies
+    # a changed manifest entry; ``""`` is "no manifest applied yet" -- a person's
+    # job, or an app job from before the field existed -- which the bridge
+    # treats as changed once. Only the bridge writes it: no dashboard, MCP or
+    # CLI update forwards the key, so a hand edit cannot forge "already applied"
+    # and make the next manifest change skip the job.
+    app_manifest_digest: str = ""
     silent: bool = False  # suppress auto-delivery; agent sends via send_message
     session_key: str = ""  # session that created this job (for scoped removal)
     last_posted_hash: str = ""  # hash of last result posted to Slack (dedup)
@@ -350,9 +385,19 @@ class CronJob:
         distinct from a user pause), so the pause survives a reload. Single-sourced
         here so the many script/command failure branches can't drift on how a pause
         is recorded — mirroring how the effective-enabled derivation reads it back.
+
+        A run that started auto-paused and finds the pause lifted under it (a
+        resume made in this process, on the job object the run executes on)
+        counts nothing: the resume gave the job fresh attempts, and a run from
+        before it does not spend one. A pause the run lifted itself
+        (:meth:`record_success`) clears the stamp, so it is not mistaken for
+        that resume. ``failure_recorded`` is still set, so the
+        timeout arm and the reaper treat this run's failure as handled.
         """
-        self.consecutive_failures += 1
         self.failure_recorded = True
+        if self.auto_paused_at_start and not self.auto_paused:
+            return
+        self.consecutive_failures += 1
         if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
@@ -380,7 +425,13 @@ class CronJob:
         backstop) routes through here, so putting the reset at any single call
         site would silence a relapse on the others for up to
         ``_FAILURE_REMINDER_SECS``.
+
+        Also drops ``auto_paused_at_start``: a pause this run lifts itself is
+        not a pause changed from outside the run, so a later failure of the
+        same run counts (:meth:`record_failure`) and the run's merge and the
+        reaper apply its pause state and count as they stand.
         """
+        self.auto_paused_at_start = None
         self.consecutive_failures = 0
         self.last_failure_hash = ""
         self.last_failure_at = 0.0

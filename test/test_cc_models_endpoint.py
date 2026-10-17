@@ -3,7 +3,8 @@
 The dropdown is scoped to what the account can actually use: the backend's
 advertised set is authoritative when present and the static registry is filtered
 down to it, so a free-tier account is not offered flagship models it cannot run.
-When nothing is advertised (no session yet) the registry is shown unfiltered,
+With no session live the last advertised snapshot stands in for it; only when
+nothing was ever advertised (a first run) is the registry shown unfiltered,
 since an empty advertised set cannot be told apart from "entitled to nothing".
 "auto" always leads and is never filtered -- it is the configured-default
 sentinel, not a served model.
@@ -124,10 +125,78 @@ class TestAdvertisedCcModels:
         assert out == []
 
 
+class TestColdPickerReadsTheSnapshot:
+    """ "No live session" is not "nothing advertised".
+
+    Every advertising session writes its list to the cross-session snapshot
+    (``model_registry.advertised_models``). A cold dashboard, a gateway restart
+    or a cold-start timeout must read it, or the picker offers registry rows the
+    account cannot run and hides an id only the advertised half carries.
+    """
+
+    _UNCATALOGUED = "claude-not-in-the-registry-9[1m]"
+
+    @staticmethod
+    def _served_and_unserved() -> tuple[str, str]:
+        """One registry row whose provider id is served, and one that is not."""
+        rows = [
+            r["model_name"]
+            for r in model_registry.display_list("claude_code")
+            if model_registry.to_provider_id(r["model_name"], "claude_code")
+        ]
+        return rows[0], rows[1]
+
+    def _snapshot(self, monkeypatch, served_key: str) -> str:
+        served_id = model_registry.to_provider_id(served_key, "claude_code")
+        monkeypatch.setattr(
+            model_registry,
+            "_ADVERTISED_MODELS",
+            {"claude_code": ["default", served_id, self._UNCATALOGUED]},
+        )
+        return served_id
+
+    def test_cold_picker_filters_to_the_snapshot(self, monkeypatch):
+        served, unserved = self._served_and_unserved()
+        served_id = self._snapshot(monkeypatch, served)
+
+        names = [m["model_name"] for m in _cc_models(_request_with_providers({}))]
+
+        assert names[0] == "auto"
+        assert served_id in names
+        assert self._UNCATALOGUED in names
+        assert unserved not in names
+
+    def test_no_dashboard_state_reads_the_snapshot_too(self, monkeypatch):
+        served, _ = self._served_and_unserved()
+        served_id = self._snapshot(monkeypatch, served)
+        request = MagicMock()
+        request.app.__getitem__.side_effect = KeyError("state")
+
+        names = [m["model_name"] for m in _advertised_cc_models(request, "claude_code")]
+
+        assert names == ["default", served_id, self._UNCATALOGUED]
+
+    def test_a_live_session_beats_the_snapshot(self, monkeypatch):
+        served, _ = self._served_and_unserved()
+        self._snapshot(monkeypatch, served)
+        prov = _FakeProvider([{"modelId": "claude-live-only-1", "name": "Live"}])
+
+        out = _advertised_cc_models(_request_with_providers({"s": prov}), "claude_code")
+
+        assert [m["model_name"] for m in out] == ["claude-live-only-1"]
+
+    def test_the_snapshot_is_read_per_namespace(self, monkeypatch):
+        served, _ = self._served_and_unserved()
+        self._snapshot(monkeypatch, served)
+
+        assert _advertised_cc_models(_request_with_providers({}), "codex") == []
+
+
 class TestCcModelsMerge:
     def test_registry_set_always_present_even_without_session(self):
-        # No live provider → nothing is advertised, so entitlement is UNKNOWN and
-        # the full canonical registry is shown unfiltered. An empty advertised set
+        # No live provider and no snapshot (a first run) → nothing was ever
+        # advertised, so entitlement is UNKNOWN and the full canonical registry is
+        # shown unfiltered. An empty advertised set
         # cannot be distinguished from "this account gets nothing", and an empty
         # picker on a cold dashboard is worse than a superset.
         out = _cc_models(_request_with_providers({}))

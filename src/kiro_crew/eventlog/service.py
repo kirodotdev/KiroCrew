@@ -39,6 +39,7 @@ from kiro_crew.eventlog import members_projections, types
 from kiro_crew.eventlog.log import APPEND_CONTENTION_SECONDS, MemberLog
 from kiro_crew.eventlog.members_projections import all_units
 from kiro_crew.eventlog.types import Event
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE, mkdirs_owner_only
 from kiro_crew.projection import EMPTY_WATERMARK, DirectoryCheckpointStore, ProjectionRegistry
 
 logger = logging.getLogger(__name__)
@@ -88,14 +89,26 @@ def _redact_projection_value(value: object) -> object:
     reads use, recursively, so a credential- or presigned-URL-shaped value an
     operator planted in an activity ``project`` (or any nested string) cannot
     reach the browser through the live projection push.
+
+    The string branch also applies the URL-secret-parameter layer
+    (``external_text.redact_url_secret_params``) that the sibling roster/agents
+    egress chain (``external_text.redact_external_text``, via ``_roster_mask``)
+    carries, so the two chains agree by construction. That layer catches a short
+    URL-embedded credential such as ``https://h.example/v1?api_key=abc123`` -- a
+    query under the exfiltration pass's length floor whose value is not
+    credential-shaped -- which the exfiltration and credential passes leave
+    untouched. Both the roster projection block (``GET /api/members``) and the
+    live member-projection WS push fold this function, and the roster ROW masks
+    the same leaf, so projection and row render it the same way.
     """
+    from kiro_crew.external_text import redact_url_secret_params
     from kiro_crew.security.exfil import redact_exfiltration_urls
     from kiro_crew.security.redaction import redact_credentials
 
     if isinstance(value, str):
         text, _ = redact_exfiltration_urls(value)
         text, _ = redact_credentials(text)
-        return text
+        return redact_url_secret_params(text)
     if isinstance(value, dict):
         # Redact keys too, not just values: a contributed projection key is
         # app-authored (`<app>/<name>`) and a nested data key can be arbitrary
@@ -352,19 +365,12 @@ def _remove_legacy_activity(slug: str) -> bool:
 LEGACY_PROVENANCE_KEY = "legacy_unverified"
 """Marks an activity record imported from the pre-fold legacy file.
 
-The event log is fenced, ordered and append-only, and a reader is entitled to
-treat what is in it as having been written through those guarantees. Rows folded
-in from the legacy activity file were NOT: that file is agent-writable and is read
-on the first ``ensure`` for a member, so anything able to write it before the fold
-chooses what the fold imports. Without a marker those rows become
-indistinguishable from records this service itself appended, which presents
-unauthenticated content with the ledger's own authority.
-
-The marker does not drop them -- they are that member's real history as far as
-anyone can tell, and discarding them would lose activity the dashboard has always
-shown. It records that their provenance is the file, not this log, so a consumer
-that needs the stronger claim can tell the two apart. :func:`_activity_key`
-strips it, so adding it changes no row's migration identity.
+The legacy activity file is agent-writable and is read on every ``ensure`` for a
+member until the fenced completion marker exists, so rows folded in from it carry
+this key: their provenance is the file, not this log. They are kept, not dropped.
+:func:`_activity_key` strips the key, so adding it changes no row's migration
+identity. The full rationale is ``docs/system-specs/modules/member-event-log.md``
+section 8.
 """
 
 
@@ -379,9 +385,9 @@ def _activity_key(row: object) -> str:
     the marker be added at all. Identity here is the whole row, so a marked stored
     event and the unmarked file row it came from would otherwise be two different
     rows -- and every later pass would re-append the file's rows as new. Stripping
-    also covers the other direction: rows a pass before this change appended bare
-    still match the marked ones a pass after it writes, so no member gets a
-    duplicate for having been migrated by the older code.
+    also gives a stored row without the key, such as a live ``record_activity``
+    entry, the same identity as that row with the key added, so a stored row of
+    either shape is one match for the same legacy row.
     """
     if isinstance(row, dict) and LEGACY_PROVENANCE_KEY in row:
         row = {k: v for k, v in row.items() if k != LEGACY_PROVENANCE_KEY}
@@ -392,7 +398,7 @@ def _activity_key(row: object) -> str:
 
 
 def _open_legacy_regular_file(path: Path) -> TextIO | None:
-    """*path* opened for reading, or ``None`` unless it is a plain regular file.
+    """*path* opened for reading, or ``None`` if what it opened is not a regular file.
 
     The legacy path is AGENT-WRITABLE -- that is this module's own premise for
     keeping the completion marker in the fenced log root instead -- and the fold
@@ -416,8 +422,11 @@ def _open_legacy_regular_file(path: Path) -> TextIO | None:
     file passes ``S_ISREG`` while the read has already been redirected. On a
     regular file ``O_NONBLOCK`` changes nothing about the reads.
 
-    ``None`` means ONLY "this file is not something to migrate from" -- it does not
-    exist, or it is not a regular file. A genuine I/O FAILURE is raised instead of
+    ``None`` means ONLY "this file is not something to migrate from" -- what the
+    open reached is not a regular file. A missing file raises ``FileNotFoundError``,
+    a reparse point at the name (on POSIX, a symlink) raises ``OSError``
+    (``ELOOP``), and on Windows a directory raises ``IsADirectoryError``. A
+    genuine I/O FAILURE is raised instead of
     being folded into ``None``, and the difference decides whether rows are lost:
     the caller keeps ``complete`` true when there is nothing to migrate, and the
     retirement it then writes is permanent and never re-runs the fold. If a transient
@@ -426,12 +435,10 @@ def _open_legacy_regular_file(path: Path) -> TextIO | None:
     The caller already separates the two: ``FileNotFoundError`` continues, any other
     ``OSError`` sets ``complete = False``.
     """
-    try:
-        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
-    except OSError:
-        # Raised on, not swallowed. FileNotFoundError is an OSError subclass and the
-        # caller catches it FIRST, so a genuinely absent file still reads as absence.
-        raise
+    # An OSError from the open propagates rather than being swallowed.
+    # FileNotFoundError is an OSError subclass and the caller catches it FIRST, so a
+    # genuinely absent file still reads as absence.
+    fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             logger.warning(
@@ -463,7 +470,7 @@ def _read_legacy_activity_files(slug: str) -> tuple[list[dict], bool]:
     """Rows from the pre-log ``activity.jsonl.1`` then ``activity.jsonl``, oldest first.
 
     Deliberately reads the files by hand rather than through
-    ``members.read_activity``: that function now reads the event log, and the
+    ``members.read_activity``: that function reads the event log, and the
     only caller here holds the per-slug lock it would need. Unparseable lines
     are skipped — the legacy writer was best-effort and never fsync'd, so a
     torn tail is expected, not corruption.
@@ -486,10 +493,9 @@ def _read_legacy_activity_files(slug: str) -> tuple[list[dict], bool]:
         # The fact is read from the FENCED log directory, never from a marker beside
         # the legacy file. A marker in the member directory is writable by the same
         # party the check defends against, so deleting it and writing a fresh
-        # ``activity.jsonl`` reopened the whole path -- a guard an adversary can
-        # remove is not a guard. Retiring the source by rename stays, but as hygiene
-        # and to keep the byte budget off a file already folded, not as the
-        # protection.
+        # ``activity.jsonl`` would reopen the whole path -- a guard an adversary can
+        # remove is not a guard. Retiring the source by rename is hygiene, and keeps
+        # the byte budget off a file already folded; it is not the protection.
         return rows, True
     for path in (base.with_name(base.name + ".1"), base):
         try:
@@ -515,7 +521,7 @@ def _read_legacy_activity_files(slug: str) -> tuple[list[dict], bool]:
                     budget -= len(line)
                     if budget < 0:
                         logger.warning(
-                            "legacy activity at %s exceeds %d bytes; the rest is not " "migrated",
+                            "legacy activity at %s exceeds %d bytes; the rest is not migrated",
                             path,
                             MAX_LEGACY_ACTIVITY_BYTES,
                         )
@@ -563,15 +569,15 @@ def _retire_legacy_activity(slug: str) -> bool:
     # and the un-renamed file is simply never read again.
     #
     # Written for every member whose fold completed, including one with no legacy
-    # file at all. A member with nothing to migrate is exactly the case an earlier
-    # rename-gated marker missed, which left the members with the LEAST to migrate as
-    # the only ones whose legacy name stayed open for whoever wrote it next.
+    # file at all. A member with nothing to migrate is exactly the case a
+    # rename-gated marker would miss, leaving the members with the LEAST to migrate
+    # as the only ones whose legacy name would stay open for whoever writes it next.
     fenced = _legacy_folded_marker_path(slug)
     if fenced is None:
         return False
     try:
-        fenced.parent.mkdir(parents=True, exist_ok=True)
-        fenced.touch(exist_ok=True)
+        mkdirs_owner_only(fenced.parent)
+        fenced.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
         # touch() puts the directory entry in the page cache only. Without this the
         # entry can be absent after a crash while the rename below has already
         # landed, which is the one combination the ordering above rules out.
@@ -1120,11 +1126,12 @@ class MemberEventLogService:
 
         try:
             directory = crew_log_dir(KIND_MEMBER, slug)
-            # Owner-only, and mkdir masks rather than widens, so this cannot grant
-            # more than 0o700 whatever the umask is. These directories hold
-            # conversation bodies once a writer uses one, and a peer's create would
-            # inherit this mode rather than set its own.
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Owner-only at every level it creates, the parent ``crew-log/members``
+            # included (``mkdir(parents=True, mode=...)`` applies the mode to the
+            # leaf only). These directories hold conversation bodies once a writer
+            # uses one, and a peer's create would inherit this mode rather than set
+            # its own.
+            mkdirs_owner_only(directory)
         except OSError:
             logger.warning(
                 "crew log: cannot hold the unit lease for %r; keeping its legacy activity",
@@ -1271,7 +1278,7 @@ class MemberEventLogService:
                 self._append_locked(slug, log, types.MEMBER_RULES, {"text": text})
 
         # 3. activity.jsonl(.1) -> activity/record, oldest first.
-        # Read the legacy FILES directly: ``members.read_activity`` now reads
+        # Read the legacy FILES directly: ``members.read_activity`` reads
         # from this very log through ``history()``, which takes the per-slug
         # lock the caller already holds. Going through it here deadlocks.
         # Per ROW, not per type: a crash after the first append leaves the log
@@ -1476,7 +1483,6 @@ class MemberEventLogService:
                 type,
             )
             raise CloserTailContention(slug, type)
-            return None
 
     def _fold_gap_locked(self, slug: str, log: MemberLog, *, below: int | None = None) -> None:
         """Fold events on disk that this process has not folded; caller holds the lock.

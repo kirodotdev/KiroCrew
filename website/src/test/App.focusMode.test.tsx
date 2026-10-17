@@ -225,20 +225,37 @@ describe('focus mode — shell layout', () => {
     // jsdom applies no stylesheet, so the rules are pinned against index.css
     // source the same way the side-panel corner masks are.
     const css = cssSource()
+
+    // Windows: the reserve is zoom-aware. The docked header and the focus-mode
+    // reserve both reference the single --mc-win-caption-reserve custom
+    // property, which the main process sets inline on <html> from its own zoom
+    // factor (142/zoom px, so it paints to a constant 142 DIP). :root defaults
+    // that property to a static 142px for the first paint and non-Electron
+    // contexts. The default MUST be on :root, not .win-electron: .win-electron
+    // sits on the inner shell div, so a default there would shadow the inline
+    // <html> value for the header subtree and defeat the zoom fix.
+    const rootDefault = css.match(/:root\{--mc-win-caption-reserve:142px\}/)
+    expect(rootDefault, 'the 142px default is on :root, not .win-electron').not.toBeNull()
+    const winHeader = css.match(
+      /\.win-electron header\.topbar-glass\{\s*padding-right:var\(--mc-win-caption-reserve\)/,
+    )
+    const winReserve = css.match(
+      /body\.mc-focus-mode \.win-electron \.focus-caption-reserve\{padding-right:var\(--mc-win-caption-reserve\)\}/,
+    )
+    expect(winHeader, 'win-electron docked header uses the shared reserve var').not.toBeNull()
+    expect(winReserve, 'win-electron focus-mode reserve uses the shared reserve var').not.toBeNull()
+
+    // Linux: a fixed-width injected caption cluster, so the reserve stays a
+    // static px value. The docked header and the focus reserve must not drift.
     const reserve = (platform: string) => css.match(
       new RegExp(`body\\.mc-focus-mode \\.${platform}-electron \\.focus-caption-reserve\\{padding-right:(\\d+)px\\}`),
     )
     const header = (platform: string) => css.match(
       new RegExp(`\\.${platform}-electron header\\.topbar-glass\\{[\\s\\S]*?padding-right:(\\d+)px`),
     )
-
-    for (const platform of ['win', 'linux']) {
-      const rule = reserve(platform)
-      expect(rule, `${platform}-electron focus-mode caption reserve`).not.toBeNull()
-      // Same band the DOCKED header clears: this reserve exists only because
-      // focus mode takes that header out of flow, so the two must not drift.
-      expect(rule![1]).toBe(header(platform)![1])
-    }
+    const linuxReserve = reserve('linux')
+    expect(linuxReserve, 'linux-electron focus-mode caption reserve').not.toBeNull()
+    expect(linuxReserve![1]).toBe(header('linux')![1])
 
     // Deliberately NO platform-agnostic rule. It would out-specify the strip's
     // Tailwind px-2 (0,2,1 vs 0,1,0) and zero the gutter on macOS and in the
@@ -280,6 +297,32 @@ describe('focus mode — shell layout', () => {
       }
       expect(document.body.classList.contains('mc-focus-chrome')).toBe(true)
       expect(setFocusModeChrome).toHaveBeenLastCalledWith(true)
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI
+    }
+  })
+
+  it('flips focus mode from the native View menu item, and unsubscribes on unmount', async () => {
+    let fromMenu: (() => void) | null = null
+    const unsubscribe = vi.fn()
+    const onToggleFocusMode = vi.fn((cb: () => void) => { fromMenu = cb; return unsubscribe })
+    ;(window as Window & { electronAPI?: unknown }).electronAPI = { setFocusModeChrome: vi.fn(), onToggleFocusMode }
+    try {
+      const { unmount } = renderWithProviders(<App />, { route: '/chat' })
+      await screen.findByTestId('focus-mode-toggle')
+      expect(onToggleFocusMode).toHaveBeenCalledTimes(1)
+
+      // The way back out is the case the item exists for: with the top bar
+      // hidden, the menu is the only visible control left.
+      await act(async () => { fromMenu!() })
+      expect(focusModeEnabled()).toBe(true)
+      expect(document.body.classList.contains('mc-focus-mode')).toBe(true)
+      await act(async () => { fromMenu!() })
+      expect(focusModeEnabled()).toBe(false)
+      expect(document.body.classList.contains('mc-focus-mode')).toBe(false)
+
+      unmount()
+      expect(unsubscribe).toHaveBeenCalled()
     } finally {
       delete (window as Window & { electronAPI?: unknown }).electronAPI
     }

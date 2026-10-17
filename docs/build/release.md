@@ -47,7 +47,8 @@ mechanism:
 
 - **A successful prerelease run clears the candidate commit.** After every
   publish lane succeeds, and after the insider-only `release-candidate-tests`
-  job has run the test suite on the exact tagged SHA, `record-promotion` assembles the wheel/sdist, all six
+  matrix has run all eight whole-file shards on the exact tagged SHA,
+  `record-promotion` assembles the wheel/sdist, all six
   Linux artifacts, all three notarized macOS zip/DMG pairs (universal,
   arm64-only, x86_64-only), the optional Windows installer pair, and
   the attested OCI manifest digest into a
@@ -221,7 +222,13 @@ code.
    `test_stable_version_display.py` + the `version_display` tests — a stamped
    stable build must show `X.Y.Z` on the version chip, the Settings footer, the
    available-update line, AND the update popup); no existing bare
-   `vX.Y.Z` tag. Then tag `vX.Y.Z-rc.N`.
+   `vX.Y.Z` tag. Also run `cd website && npm ci && npm run gen:ui -- --check`
+   on the target commit: release builds are strict about the committed find_ui
+   index (`ui_index_strict: true`), while `main` and nightly only warn, so a
+   release branch cut from a `main` that merged past a regen fails every build
+   lane. If it reports stale, run `npm run gen:ui`, commit the two regenerated
+   files to `release/X.Y` and target THAT commit, all before tagging the RC:
+   step 3 allows no pushes between soak and release. Then tag `vX.Y.Z-rc.N`.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
    change to the release branch between soak and release** — stable is rebuilt
    from this commit, so a commit that lands after the soak ships code nobody ran.
@@ -277,7 +284,7 @@ Release-adjacent, deliberately outside the release path:
 | `ota-test.yml` | End-to-end macOS auto-update proof: builds two real app versions signed with one throwaway self-signed identity in a temp keychain, serves a local feed, drives consent over the Chrome DevTools Protocol, and asserts the on-disk bundle version flips. Nightly at `40 8 * * *` plus dispatch. Proves the **swap mechanism**, not Gatekeeper acceptance. Needs no secrets. |
 | `docker-smoke.yml` | PR gate on the container contract (amd64, load-to-daemon, no push). |
 | `pages.yml` | Deploys the marketing site in `site/` to GitHub Pages on `main`, path-scoped to `site/**`. |
-| `ship-report.yml` | Twice-daily merged-PR summary to Slack. Not a release step. |
+| `ship-report.yml` | Daily (3am PDT) merged-PR summary to Slack. Not a release step. |
 
 ## Where artifacts land
 
@@ -400,6 +407,16 @@ never become release assets. Windows remains optional: when present, exactly one
 installer is attached as `KiroCrew-<version>-Setup-x64.exe`; its blockmap stays
 on the update feed path rather than becoming a human download. The release is
 marked `prerelease` when the channel is insider, and notes are generated.
+
+The `Create GitHub Release` step uploads the assets one at a time
+(`preserve_order: true`) rather than all at once, the action's default. The
+three macOS pairs make the set several GB, and with `overwrite_files` (also the
+action's default) a rerun deletes each asset just before it re-uploads it, so a
+parallel rerun would first empty the page; serially, at most one asset is missing
+at any moment. `fail_on_unmatched_files: true` fails the step when `release/*`
+matches nothing, and the job's `timeout-minutes` is 60 to fit the serial upload.
+`test_release_promotion_contract.py::test_release_assets_upload_one_at_a_time`
+pins all three.
 
 `github-release` and `record-stable-promotion` are the two jobs that need
 `contents: write`, and they are the only ones that have it: the signing jobs hold
@@ -535,7 +552,8 @@ with the matching `*-mac.zip`.
    credentials are configured, so a drifted release of it can never observe the
    signing credentials.
 2. **notarize** (macos-15). `packaging/signing/notarize.sh` submits and polls
-   within a 30-minute budget, retrying transient status errors; `stapler staple`
+   within a 60-minute budget (`NOTARIZE_BUDGET_SECS` in `sign-and-notarize.yml`),
+   retrying transient status errors; `stapler staple`
    then runs before a
    fail-closed `spctl --assess` that must report `Notarized Developer ID`. On an
    `Invalid` verdict the itemized Apple log is printed. The branded
@@ -613,18 +631,13 @@ pair an old-day date with a new-day time, which would move the version backward.
 
 The nightly semver shape is not cosmetic. Date and time are **one alphanumeric
 identifier separated by `t`** (`<YYYYMMDD>t<HHMMSS>`), never a bare 14-digit run
-and never two dot-separated numeric identifiers. Two independent constraints
-force it, both proven live on `windows-latest`:
-
-- Squirrel.Windows derives each release entry's version from the nupkg
-  *filename* and Int32-parses digit runs when sorting, so a run above
-  2147483647 makes `Update.com --releasify` die with an overflow. The bound is
-  magnitude, not digit count. Dot-splitting does not help: electron-builder
-  concatenates the identifiers back into the filename. A letter between the
-  digit runs is what survives that concatenation.
-- SemVer forbids leading zeros in a purely numeric prerelease identifier, and
-  the 06:00 cron yields `HHMMSS=060000`. Inside an alphanumeric identifier the
-  leading zero is legal.
+and never two dot-separated numeric identifiers. One constraint forces it:
+SemVer forbids leading zeros in a purely numeric prerelease identifier, and the
+06:00 cron yields `HHMMSS=060000`. Inside an alphanumeric identifier the leading
+zero is legal. (The Int32 digit-run overflow Squirrel.Windows imposed on a bare
+timestamp no longer applies: the Windows target is NSIS, and `nightly.yml`
+records the retired constraint.) The `t` separator is kept so the stamp stays a
+single fixed-width identifier.
 
 Ordering still works: the identifier is fixed-width and semver compares
 alphanumeric identifiers lexically, which for a zero-padded `YYYYMMDDtHHMMSS` is

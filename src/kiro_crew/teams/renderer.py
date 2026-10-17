@@ -88,7 +88,7 @@ _PROGRESS_THROTTLE_S = 3.0
 
 #: How often the typing indicator is re-posted while a turn runs. A Teams typing
 #: activity expires after a few seconds; the reference middleware refreshes every
-#: 2 s. Teams' per-thread budget is 7 requests/second, so this spends ~1% of it.
+#: 2 s. Teams' per-thread budget is 7 requests/second, so this spends about 4% of it.
 _TYPING_REFRESH_S = 4.0
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."

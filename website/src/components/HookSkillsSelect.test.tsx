@@ -90,6 +90,21 @@ describe('HookSkillsSelect', () => {
     })
   })
 
+  it('resolves a chip saved under a twin key the catalog lists as an alias', async () => {
+    // /api/skills lists one row per file; the dropped kiro-user/ key rides along
+    // as an alias, so a hook saved under it keeps its catalog name and description.
+    vi.mocked(api.skills).mockResolvedValue([
+      { key: 'tracker', name: 'pti-tracker', description: 'Track requests', aliases: ['kiro-user/tracker'] },
+    ] as never)
+    renderWithProviders(
+      <HookSkillsSelect selected={['kiro-user/tracker']} onChange={vi.fn()} />,
+    )
+    await waitFor(() => {
+      const chip = screen.getByText('pti-tracker').closest('span')
+      expect(chip).toHaveAttribute('title', 'Track requests')
+    })
+  })
+
   it('shows chip title with key when no description', async () => {
     vi.mocked(api.skills).mockResolvedValue([
       { key: 'no-desc/skill', name: 'no-desc' },

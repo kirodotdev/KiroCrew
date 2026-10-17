@@ -472,7 +472,7 @@ class TestLoadSteeringResources:
     every platform: Windows ``expanduser`` reads ``USERPROFILE``, so setting
     ``HOME`` alone left the real profile dir in play, the marker could never
     load, and the refusal assertion passed vacuously while the valid-spec one
-    failed (same ``setattr(Path, "home", ...)`` shape as test_acp_client.py).
+    failed (same ``setattr(Path, "home", ...)`` shape as test_acp_client_binary_resolution.py).
     """
 
     @staticmethod
@@ -1067,7 +1067,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("auto_improvement_assignment", "unknown")
     ],
     "kiro_crew/cli_doctor.py": [("doctor", "cli"), ("doctor", "cli"), ("doctor", "cli")],
-    "kiro_crew/config/loader.py": [("load_config", "unknown")],
+    "kiro_crew/config/loader_snapshots.py": [("load_config", "unknown")],
     "kiro_crew/connections/mint.py": [
         ("connections_mint", "dashboard"),
         ("connections_mint", "dashboard"),
@@ -1076,7 +1076,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("connections_warm_mint", "dashboard"),
         ("connections_warm_mint", "dashboard"),
     ],
-    "kiro_crew/context.py": [
+    "kiro_crew/context_assembly/agent_spec.py": [
         ("agent_prompt", "context"),
         ("steering_resources", "unknown"),
     ],
@@ -1110,6 +1110,9 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("api_agent_template_delete", "dashboard"),
     ],
     "kiro_crew/dashboard/handlers/hooks.py": [("api_kiro_hooks", "dashboard")],
+    # One read: the configured-server mint resolves the server's URL from the
+    # owner's main spec, so the caller never supplies it.
+    "kiro_crew/dashboard/handlers/connections.py": [("connections_mint", "dashboard")],
     "kiro_crew/dashboard/handlers/mcp.py": [
         ("api_mcp_active", "dashboard"),
         ("mcp_find_server_spec", "dashboard"),
@@ -1122,12 +1125,18 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The first read is not the side turn's: it words an ACP "Agent mode ... is
     # not available" refusal by checking the derived file's owner marker, on
     # whatever channel's session raised it -- hence its own label and "unknown".
+    # ``side_readonly_reap`` is the reaper's read of a derived file it may
+    # remove: gateway maintenance no channel asked for, so "unknown" as well.
     "kiro_crew/dashboard/side_readonly_spec.py": [
         ("agent_mode_refusal", "unknown"),
+        ("side_readonly_reap", "unknown"),
         ("side_readonly_spec", "dashboard"),
         ("side_readonly_spec", "dashboard"),
     ],
     "kiro_crew/mcp_discovery.py": [("mcp_discovery_agent_config", "unknown")],
+    # The installed spec as an OAuth discovery trust anchor; any chat interface
+    # can raise the banner that triggers it.
+    "kiro_crew/mcp_oauth_discovery.py": [("mcp_oauth_discovery", "unknown")],
     "kiro_crew/member_essential_context.py": [
         ("member_essentials", "context"),
         ("member_essentials", "context"),
@@ -1139,8 +1148,27 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The spawn gate walks every spec for the PARENT agent's
     # ``toolsSettings.subagent.availableAgents`` allowlist, and keeps a file the
     # reader refuses as unreadable (refuse) rather than as "no spec"; a denial
-    # there belongs to the sub-agent surface that asked to spawn.
-    "kiro_crew/subagent.py": [("spawn_available_agents", "subagent")],
+    # there belongs to the sub-agent surface that asked to spawn. The second
+    # label is the same walk over the parent session's ``<project>/.kiro/agents``.
+    "kiro_crew/subagent_parts/agent_policy.py": [
+        ("spawn_available_agents", "subagent"),
+        ("spawn_available_agents_project", "subagent"),
+    ],
+    # `list_apps` confirms a contributed command's agent was actually registered by
+    # reading the app's materialized `<app>--<agent>.json` -- a user-writable dir, so
+    # it goes through the hardened reader; a denial belongs to the app listing.
+    # A turn refused for an app-owned agent labels the refusal with the app's
+    # `displayName`, read from the app-writable `app.json` the same way.
+    # A session whose agent has no spec left names the app that declares it,
+    # from that app's own source specs in its app-writable root.
+    "kiro_crew/apps/manager.py": [
+        ("app_agent_owner", "unknown"),
+        ("app_command_agent_label", "unknown"),
+        ("list_apps_command_agent", "unknown"),
+    ],
+    # A manifest's `commands[].agent` is checked against the names its own source
+    # specs declare; those live in the app root, which the app can rewrite.
+    "kiro_crew/apps/manifest.py": [("app_manifest_agent_names", "unknown")],
 }
 
 
@@ -1154,7 +1182,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
-    "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
+    "kiro_crew/config/loader_snapshots.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
 }
 
@@ -1171,6 +1199,9 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
     ],
+    # No ``kiro_crew/apps/manager.py`` entry: the app-command guard scans the
+    # checkout through ``acp.managed_agent_shadow.project_claims_agent_name``,
+    # the screened recursive walk, not through these roster helpers.
     # No ``kiro_crew/agent_discovery.py`` entry on purpose. The two in-module
     # readers (``list_agents``, ``project_agent_names``) decide this scope's
     # sensitivity THEMSELVES -- pinned in
@@ -1198,11 +1229,11 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # highest-traffic route to the scan (a chat turn's ``slot.project`` reaches it
 # every turn), so it is exactly where attribution matters most.
 _EXPECTED_WARM_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/dashboard/chat_handlers.py": [
-        ("api_chat", "dashboard"),
+    "kiro_crew/dashboard/chat_api/agent_switch.py": [
         ("api_chat_slot_agent", "dashboard"),
         ("api_chat_slot_agent", "dashboard"),
     ],
+    "kiro_crew/dashboard/chat_api/chat_send.py": [("api_chat", "dashboard")],
     "kiro_crew/dashboard/chat_runner.py": [("chat_turn", "unknown")],
     "kiro_crew/dashboard/chat_threads.py": [("thread_reply", "dashboard")],
     "kiro_crew/dashboard/handlers/side.py": [("side_panel", "dashboard")],
@@ -1299,8 +1330,11 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The named-agent model resolver runs on the event loop from the provider
     # factory; it reads the snapshot so a warm call re-parses nothing, and keeps
     # the label its per-file hardened read carried.
-    "kiro_crew/config/loader.py": [("load_config", "unknown")],
+    "kiro_crew/config/loader_config.py": [("load_config", "unknown")],
     "kiro_crew/dashboard/handlers/_shared.py": [("skills_loaded_by_agents", "dashboard")],
+    # The guide's diagnose probe lists the models agent specs pin; a refused spec
+    # pins nothing usable, so the folding snapshot is the right reader.
+    "kiro_crew/diagnose_probes.py": [("diagnose", "dashboard")],
     # Export/import warn about crew rows whose template this machine lacks.
     "kiro_crew/portability.py": [("portability", "dashboard")],
 }
@@ -1334,6 +1368,7 @@ _EXPECTED_DECLARED_NAME_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # the delete, so that read needs the failure to surface rather than fold to None.
 _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/kas_agents.py": [("kas_agent_projection", "unknown")],
+    "kiro_crew/acp/managed_agent_shadow.py": [("managed_agent_shadow", "unknown")],
     "kiro_crew/agent_materialization/conductor_agents.py": [
         ("conductor_spec_regeneration", "unknown"),
     ],
@@ -1360,6 +1395,9 @@ _EXPECTED_SCOPE_GUARD_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("forward:operation", "forward:source"),
         ("list_agents", "unknown"),
     ],
+    # The reaper decides a recorded checkout's sensitivity once, then lists it
+    # itself, so a failed listing keeps the file instead of reading as "no agents".
+    "kiro_crew/dashboard/side_readonly_spec.py": [("side_readonly_reap", "unknown")],
 }
 
 

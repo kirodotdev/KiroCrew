@@ -25,6 +25,7 @@ import re
 import threading
 from pathlib import Path
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 
 _LOCK = threading.RLock()
@@ -153,7 +154,7 @@ def _write(data: dict[str, list[str]]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
     global _snapshot
     _snapshot = (path, {ws: list(hosts) for ws, hosts in data.items()})
 

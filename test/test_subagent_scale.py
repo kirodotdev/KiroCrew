@@ -17,13 +17,16 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import pathlib
 import re
+import threading
 import time
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from overload_fakes import settle_depth_emits, settle_store_writes
+from overload_fakes import ManagerHarness, settle_depth_emits, settle_store_writes, wait_taskq_open
 
 from kiro_crew import subagent as subagent_module
 from kiro_crew.subagent import (
@@ -33,6 +36,13 @@ from kiro_crew.subagent import (
     SubagentManager,
 )
 from kiro_crew.subagent_scale import SubagentEventCoalescer
+from kiro_crew.testing.wait import async_wait_until, await_until
+
+# Ceiling for a wait on an announce task that only the test ends (a release, a
+# cancel or ``cancel_all``). It is far above what the in-memory work needs, so a
+# regression that keeps an announce running fails at that wait by name instead
+# of hanging the worker.
+_ANNOUNCE_WAIT_SECS = 60.0
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -305,9 +315,11 @@ class TestBatchIdentity:
         """
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         announced: list[SubagentInfo] = []
+        registered: list[bool] = []
 
         async def _on_done(info):  # type: ignore[no-untyped-def]
             announced.append(info)
+            registered.append(f"reject-{info.id}" in mgr._tasks)
 
         mgr._on_done = _on_done
         mgr._queue = [
@@ -332,9 +344,11 @@ class TestBatchIdentity:
 
         # The pump is a coroutine on a running loop; await one pass.
         await mgr._drain_queue_async()
-        assert "reject-q-reject" in mgr._tasks, "a rejection at drain time was dropped on the floor"
-        await mgr._tasks["reject-q-reject"]
-        assert [i.id for i in announced] == ["q-reject"]
+        await asyncio.sleep(0)  # the announce runs
+        await asyncio.sleep(0)  # its done callback runs
+        assert [i.id for i in announced] == ["q-reject"], "a rejection at drain time was dropped"
+        assert registered == [True]  # held in _tasks while in flight, so shutdown can cancel it
+        assert "reject-q-reject" not in mgr._tasks, "a finished announce stayed registered"
 
     def test_a_drained_batch_rejection_is_not_double_announced(self):
         """`_announce_rejection` announces batch members ITSELF, from inside spawn.
@@ -703,6 +717,48 @@ class TestBatchIdentity:
         assert got.outcome == "failed"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("exit_kind", ["returns", "raises", "cancelled"])
+    async def test_record_lost_submission_announce_leaves_task_registry(self, exit_kind):
+        """The synthetic member's announce stays in ``_tasks`` while it is in
+        flight, so shutdown can cancel it, and leaves on every exit: the
+        announce returns, ``on_done`` raises, or the task is cancelled."""
+        release = asyncio.Event()
+
+        async def _on_done(info):
+            await asyncio.wait_for(release.wait(), _ANNOUNCE_WAIT_SECS)
+            if exit_kind == "raises":
+                raise RuntimeError("delivery failed")
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), on_done=_on_done)
+        with patch("kiro_crew.subagent.sel"):
+            mgr.record_lost_submission("wvL", 2, "connection refused")
+        (task,) = mgr._tasks.values()
+        await asyncio.sleep(0)
+        assert not task.done()  # in flight and registered
+        if exit_kind == "cancelled":
+            task.cancel()
+        else:
+            release.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_finished_announce_keeps_a_newer_task_under_its_key(self):
+        """The done callback drops the key only while it still maps to the
+        finished task, so it never drops a task registered later under it."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        first = asyncio.ensure_future(asyncio.sleep(0))
+        mgr._waves._hold_announce_task("lost-x", first)
+        newer = asyncio.ensure_future(asyncio.Event().wait())
+        mgr._tasks["lost-x"] = newer
+        await asyncio.wait_for(first, _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._tasks == {"lost-x": newer}
+        newer.cancel()
+        await asyncio.wait_for(asyncio.gather(newer, return_exceptions=True), _ANNOUNCE_WAIT_SECS)
+
+    @pytest.mark.asyncio
     async def test_reaper_stuck_wave_sweep_reconciles(self):
         """The reaper backstop force-reconciles a wave with lost submissions:
         submitted < expected, all registered members terminal, nothing
@@ -804,6 +860,126 @@ class TestBatchIdentity:
         assert info.batch_id == "" and info.batch_total == 0
 
 
+@contextlib.contextmanager
+def _record_running_count(mgr: SubagentManager) -> Iterator[list[int]]:
+    """Record every value written to ``mgr._running_count`` while the block runs."""
+    writes: list[int] = []
+    current = {"count": mgr.__dict__.pop("_running_count")}
+
+    def _get(self: SubagentManager) -> int:
+        return current["count"] if self is mgr else self.__dict__["_running_count"]
+
+    def _set(self: SubagentManager, value: int) -> None:
+        if self is mgr:
+            writes.append(value)
+            current["count"] = value
+        else:
+            self.__dict__["_running_count"] = value
+
+    with patch.object(SubagentManager, "_running_count", property(_get, _set), create=True):
+        try:
+            yield writes
+        finally:
+            mgr.__dict__["_running_count"] = current["count"]
+
+
+class TestSecondStopOfAQueuedRun:
+    """A second Stop of a run stopped while it waited frees no slot and reaps nothing.
+
+    The first Stop registers the queued stop's terminal record (``queued=True``,
+    ``done=False`` until its report task runs). A second Stop in that window, the
+    same tick (a double click) or the next await, must answer "not running"
+    instead of reaping that record as a live run, which would free a lane slot
+    two running agents still hold and let the pump start a third.
+    """
+
+    CAP = 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("concurrent", [True, False], ids=["concurrent", "sequential"])
+    async def test_second_stop_frees_no_slot_and_starts_nothing(self, concurrent: bool) -> None:
+        h = ManagerHarness(max_concurrent=self.CAP)
+        reports: list[str] = []
+
+        async def on_done(info):  # type: ignore[no-untyped-def]
+            reports.append(info.id)
+
+        h.mgr._on_done = on_done
+        try:
+            await wait_taskq_open(h.mgr)
+            running = [h.spawn(f"running-{i}") for i in range(self.CAP)]
+            waiting = h.spawn("waiting")
+            await h.settle()
+            assert h.started == [info.id for info in running], "premise: two run, one waits"
+            assert h.mgr.running_count == self.CAP
+
+            with _record_running_count(h.mgr) as writes:
+                if concurrent:
+                    answers = list(
+                        await asyncio.gather(h.mgr.cancel(waiting.id), h.mgr.cancel(waiting.id))
+                    )
+                else:
+                    answers = [await h.mgr.cancel(waiting.id), await h.mgr.cancel(waiting.id)]
+                await h.settle()
+                assert h.mgr.running_count == self.CAP, "two runs still hold both slots"
+                assert answers == [True, False], "a second Stop of a stopped row is not running"
+                assert h.mgr._release_slot(h.mgr._agents[waiting.id]) is False
+
+                extra = h.spawn("extra")
+                await h.settle()
+                assert extra.id not in h.started, "a third run started with a cap of two"
+
+                for info in running:
+                    await h.end(info)
+                await h.end(extra)
+                await asyncio.gather(*list(h.mgr._report_tasks))
+
+            assert h.started == [*(info.id for info in running), extra.id]
+            assert h.mgr.running_count == 0
+            assert writes and 0 <= min(writes) and max(writes) <= self.CAP, writes
+            assert reports.count(waiting.id) == 1, reports
+            h.mgr._sessions.reset.assert_not_awaited()  # no run was reaped
+        finally:
+            h.close()
+
+    @pytest.mark.asyncio
+    async def test_second_stop_makes_no_store_call(self) -> None:
+        """The second Stop answers from the registered record alone.
+
+        Its row already ended with the first Stop, so there is nothing for the
+        store to cancel, and a store call here would run on the event loop.
+        """
+        h = ManagerHarness(max_concurrent=self.CAP)
+        try:
+            await wait_taskq_open(h.mgr)
+            running = [h.spawn(f"running-{i}") for i in range(self.CAP)]
+            waiting = h.spawn("waiting")
+            await h.settle()
+            assert await h.mgr.cancel(waiting.id) is True
+            assert h.mgr._agents[waiting.id].queued, "premise: the stop's record is registered"
+
+            admission_type = type(h.mgr._admission)
+            real_cancel = admission_type.taskq_cancel_queued
+            store_cancels: list[str] = []
+
+            def _counting(self: object, agent_id: str, *args: object, **kwargs: object) -> object:
+                store_cancels.append(agent_id)
+                return real_cancel(self, agent_id, *args, **kwargs)
+
+            loop_calls = h.store.loop_thread_calls
+            with patch.object(admission_type, "taskq_cancel_queued", _counting):
+                assert await h.mgr.cancel(waiting.id) is False
+            assert store_cancels == [], "the second Stop asked the store to cancel the row again"
+            assert h.store.loop_thread_calls == loop_calls, "a store call ran on the event loop"
+
+            for info in running:
+                await h.end(info)
+            await asyncio.gather(*list(h.mgr._report_tasks))
+            assert h.mgr.running_count == 0
+        finally:
+            h.close()
+
+
 # ── 3. Stall two-sweep confirmation ──────────────────────────────────
 
 
@@ -889,12 +1065,7 @@ async def _settle(predicate, what: str, timeout: float = 5.0) -> None:
     every call site here settles within one 0.02 s poll, so reaching the
     ceiling is a stall and not a slow runner.
     """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() >= deadline:
-            raise AssertionError(f"never settled within {timeout}s: {what}")
-        await asyncio.sleep(0.02)
+    await async_wait_until(predicate, timeout=timeout, describe=lambda: what)
 
 
 async def _drain_injections(orch) -> None:
@@ -1309,6 +1480,74 @@ class TestWaveDigest:
         assert "wave finished" in body
         assert "This run is complete" in body
         assert "All results delivered" in body
+        assert "never started" not in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("nested_live", [False, True])
+    async def test_wave_close_digest_names_members_that_never_started(self, nested_live):
+        """A member ended "never started" is a failure the parent must
+        resubmit, not done work. The wave-close line says how many of the
+        failures a memory wait ended, after the tally sentence the card parsers
+        anchor on. A member that failed after it ran is not counted, and
+        neither is a refusal, which resubmitting would only repeat."""
+        import re
+
+        from kiro_crew.subagent_wait_reasons import QUEUED_WAIT_EXPIRED_TEXT
+
+        orch = _make_orchestrator()
+        orch.sessions = _mock_sessions()
+        orch.ctx_builder = MagicMock()
+        orch.ctx_builder.hooks = MagicMock()
+        orch.dashboard_state = _mock_dashboard_state()
+        slot = MagicMock()
+        slot.mode = "chat"
+        slot.running = False
+        slot.task = None
+        slot._subagent_deliveries_inflight = 0
+        orch.dashboard_state.get_slot = MagicMock(return_value=slot)
+        mgr, on_done = self._capture_on_done(orch)
+        total = 4
+        injected: list[str] = []
+
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
+            injected.append(text)
+
+        ran = self._member(0, total)
+        failed_after_running = self._member(1, total, error="tool crashed")
+        failed_after_running._exec_started = 1.0
+        never_started = self._member(2, total, error=QUEUED_WAIT_EXPIRED_TEXT)
+        never_started.result = ""
+        never_started.result_path = ""
+        refused = self._member(3, total, error="spawn refused: approval denied")
+        refused.result = ""
+        refused.result_path = ""
+        with (
+            patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat),
+            patch("kiro_crew.subagent_persistence.mark_delivered"),
+        ):
+            # Outstanding until the last member reports, which closes the wave
+            # by its own count.
+            mgr.batch_members_pending = MagicMock(return_value=True)
+            mgr.wave_has_live_nested_spawns = MagicMock(return_value=nested_live)
+            for member in (ran, failed_after_running, never_started, refused):
+                await on_done(member)
+                await asyncio.sleep(0)
+            await _settle(lambda: len(injected) >= 1, what="the wave-close digest injected")
+            await _drain_injections(orch)
+
+        body = "\n".join(injected)
+        assert "1 ✅ · 3 ❌ · 0 ⏹" in body
+        assert "1 of the ❌ never started" in body
+        # A member the spent episode ended is counted too, so the advice waits
+        # for memory to ease rather than resubmitting into the same episode.
+        assert "resubmit them once memory eases" in body
+        if not nested_live:
+            # The card's own parser still reads the tally line.
+            assert re.search(
+                r"^Batch results \d+/\d+ — wave finished: 1 ✅ · 3 ❌ · 0 ⏹ of 4 agents\.",
+                body,
+                re.M,
+            )
 
     @pytest.mark.asyncio
     async def test_digest_chunks_inject_in_fifo_order_despite_delayed_dispatch_hop(self):
@@ -1335,10 +1574,12 @@ class TestWaveDigest:
         mgr, on_done = self._capture_on_done(orch)
         total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
         injected: list[str] = []
+        injected_event = threading.Event()
 
         async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin, **_kw):
             assert _directive_user_origin is False
             injected.append(text)
+            injected_event.set()
 
         hop_calls: list[int] = []
 
@@ -1350,9 +1591,7 @@ class TestWaveDigest:
             # where the later chunk is parked and can never land here.
             hop_calls.append(1)
             if len(hop_calls) == 1:
-                deadline = time.monotonic() + 2.0
-                while not injected and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                injected_event.wait(timeout=2.0)
             return 60.0
 
         with (
@@ -1514,14 +1753,15 @@ class TestWaveDigest:
         # Structural guarantee: the settle call sits AFTER the awaited
         # _on_done inside the same try-block, so an _on_done exception
         # (routing failure / crash) skips it entirely. The terminal report
-        # (subagent_done + _on_done + settle) now lives in _report_terminal,
-        # which `_run` runs on a shielded task — the ordering invariant is
-        # unchanged, only its owning function moved.
+        # (subagent_done + _on_done + settle) lives in
+        # _report_terminal_guarded (the body of _report_terminal past the
+        # done-flip, so the in-flight hold's try/finally wraps it), which
+        # `_run` runs on a shielded task.
         import inspect
 
         from kiro_crew.subagent_manager.terminal import TerminalCoordinator
 
-        src = inspect.getsource(TerminalCoordinator._report_terminal_impl)
+        src = inspect.getsource(TerminalCoordinator._report_terminal_guarded_impl)
         on_done_pos = src.index("await asyncio.wait_for(self._manager._on_done(info)")
         settle_pos = src.index("await self._manager._settle_digest_holds(info)")
         assert settle_pos > on_done_pos
@@ -1998,9 +2238,11 @@ class TestDigestHoldDeadline:
         assert age >= DIGEST_HOLD_SECS + 10 - 1
 
     def test_closing_wave_is_not_force_flushed(self):
-        """When no member is outstanding the real wave-close digest (counts +
-        release guidance) is already in flight; forcing a partial one here would
-        race it and could double-deliver the same members."""
+        """When no member is outstanding AND a terminal report is in flight the
+        real wave-close digest (counts + release guidance) lands when that
+        report is consumed; forcing a partial one here would race it and could
+        double-deliver the same members. (Without the in-flight hold this
+        aged-hold state is the STRANDED one — the sweep force-flushes it.)"""
         from kiro_crew.subagent import DIGEST_HOLD_SECS
 
         mgr = self._mgr(pending=False)
@@ -2008,6 +2250,7 @@ class TestDigestHoldDeadline:
         m = self._held_member(0)
         m._digest_held_at = now - (DIGEST_HOLD_SECS + 60)
         mgr._agents["h0"] = m
+        mgr.arm_report_in_flight(m)
         with patch.object(mgr, "force_digest_flush") as forced:
             mgr._sweep_digest_holds(now)
         forced.assert_not_called()
@@ -2058,6 +2301,42 @@ class TestDigestHoldDeadline:
         assert rec.batch_id == "wv" and rec.batch_total == 3
         assert rec.done is True and rec.error == ""
         assert "200s" in rec.task
+
+    @pytest.mark.asyncio
+    async def test_force_digest_flush_announce_leaves_task_registry(self):
+        """A finished flush announce leaves ``_tasks``, so a long-lived gateway
+        does not keep one finished task per forced flush."""
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel"):
+            for i in range(3):
+                mgr.force_digest_flush(f"wv{i}", "dashboard:main", 3, 200.0)
+        tasks = list(mgr._tasks.values())
+        assert len(tasks) == 3  # registered while pending, so shutdown can cancel them
+        await asyncio.wait_for(asyncio.gather(*tasks), _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._on_done.await_count == 3
+        assert mgr._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_still_cancels_a_pending_flush_announce(self):
+        """The registration is what lets shutdown cancel and await a flush
+        announce that is still in flight; dropping finished entries must not
+        take that away from a pending one."""
+        mgr = self._mgr()
+        release = asyncio.Event()
+
+        async def _blocked(info):
+            await asyncio.wait_for(release.wait(), _ANNOUNCE_WAIT_SECS)
+
+        mgr._on_done = _blocked
+        with patch("kiro_crew.subagent.sel"):
+            mgr.force_digest_flush("wv", "dashboard:main", 3, 200.0)
+        (task,) = mgr._tasks.values()
+        await asyncio.sleep(0)
+        assert not task.done()  # the announce is in flight
+        await asyncio.wait_for(mgr.cancel_all(), _ANNOUNCE_WAIT_SECS)
+        assert task.cancelled()
+        assert mgr._tasks == {}
 
     @pytest.mark.asyncio
     async def test_flush_only_settles_holds_only_after_on_done(self):
@@ -2396,24 +2675,18 @@ async def _await_drained(mgr, store, started: list[str], expected: int) -> None:
     """
     from kiro_crew.taskq import model
 
-    t0 = time.monotonic()
-    deadline = t0 + _DRAIN_CEILING_SECS
-    while time.monotonic() < deadline:
-        # The in-memory half of the conjunction gates the store read: a
-        # ``count()`` here takes the store's connection ON the event loop
-        # (``on_loop_db`` warns for exactly this), and one contended with the
-        # writer thread blocks the loop for the connection's whole busy
-        # timeout — including the drain this is waiting for.
-        if len(started) >= expected and not mgr._queue and mgr._running_count == 0:
-            if store.count(state=model.DONE) >= expected:
-                return
-        await asyncio.sleep(0.005)
-    raise AssertionError(
-        f"drain unfinished after {time.monotonic() - t0:.1f}s: "
-        f"{len(started)} of {expected} rows started, "
-        f"{store.count(state=model.DONE)} DONE, "
-        f"{len(mgr._queue)} still in the window, "
-        f"running_count={mgr._running_count}"
+    await async_wait_until(
+        lambda: len(started) >= expected
+        and not mgr._queue
+        and mgr._running_count == 0
+        and store.count(state=model.DONE) >= expected,
+        timeout=_DRAIN_CEILING_SECS,
+        describe=lambda: (
+            f"drain unfinished after {_DRAIN_CEILING_SECS:.1f}s: {len(started)} of {expected} rows started, "
+            f"{store.count(state=model.DONE)} DONE, "
+            f"{len(mgr._queue)} still in the window, "
+            f"running_count={mgr._running_count}"
+        ),
     )
 
 
@@ -2558,6 +2831,8 @@ class TestRunIdMinting:
             assert len({d[pos] for d in drawn}) > 1, pos
 
     def test_one_draw_site_owns_the_width(self):
+        import inspect
+
         import kiro_crew.subagent_manager as manager_pkg
 
         package = pathlib.Path(manager_pkg.__file__).parent
@@ -2572,10 +2847,14 @@ class TestRunIdMinting:
         # collision at whatever width it picked, so none of them may draw.
         assert component_draws == []
 
-        source = pathlib.Path(subagent_module.__file__).read_text(encoding="utf-8")
-        assert source.count("os.urandom(") == 1
-        assert "uuid4()" not in source
-        mint = source.split("def _mint_agent_id", 1)[1].split("\n    def ", 1)[0]
+        facade = pathlib.Path(subagent_module.__file__)
+        family = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (facade, *sorted(facade.with_name("subagent_parts").glob("*.py")))
+        )
+        assert family.count("os.urandom(") == 1
+        assert "uuid4()" not in family
+        mint = inspect.getsource(subagent_module.SubagentManager._mint_agent_id)
         assert "os.urandom(_RUN_ID_HEX_CHARS // 2).hex()" in mint
 
 
@@ -2629,14 +2908,12 @@ class TestQueuedDepthReachesZero:
         ):
             for i in range(5):
                 mgr.spawn(f"t{i}", parent_session_key="dashboard:s1", batch_id="b1")
-            deadline = time.monotonic() + 15.0
-            while time.monotonic() < deadline:
-                await asyncio.sleep(0.02)
-                if len(started) == 5 and mgr._running_count == 0 and not mgr._queue:
-                    # let the in-flight depth emits land
-                    for _ in range(5):
-                        await asyncio.sleep(0.02)
-                    break
+            await async_wait_until(
+                lambda: len(started) == 5 and mgr._running_count == 0 and not mgr._queue,
+                timeout=15.0,
+                describe=lambda: f"started={len(started)}, running={mgr._running_count}, queued={len(mgr._queue)}",
+            )
+            await settle_depth_emits(mgr)
         assert len(started) == 5
         assert mgr.queued_count_for("dashboard:s1") == 0
         assert mgr._dispatching_ids == set()
@@ -2705,7 +2982,7 @@ class TestQueuedDepthReachesZero:
             await settle_depth_emits(mgr)
             popped_at = len(depths)
             mgr._drain_queue()
-            await asyncio.wait_for(hold.wait(), 5)
+            await await_until(hold)
             assert second.id in mgr._dispatching_ids and not mgr._queue
             # The guards' reading: the row is still this parent's work.
             assert await mgr.has_pending_work_for_async("dashboard:s1") is True
@@ -2760,15 +3037,14 @@ class TestQueuedDepthReachesZero:
             assert mgr._release_slot(first)
             mgr._running_count -= 1
             mgr._drain_queue()
-            await asyncio.wait_for(hold.wait(), 5)
+            await await_until(hold)
             # Popped, marked, unclaimed, and invisible to the in-memory sweeps.
             assert second.id in mgr._dispatching_ids
             assert not mgr._queue
             assert second.id not in mgr._agents or mgr._agents[second.id].queued
             _running, queued_stopped = await mgr.cancel_for_parent("dashboard:s1")
             released.set()
-            for _ in range(25):
-                await asyncio.sleep(0.02)
+            await settle_store_writes(mgr._taskq, rounds=4)
         assert queued_stopped == 1, "Stop all did not reach the popped row"
         row = mgr._taskq.get(second.id)
         assert row is not None and row.state not in (
@@ -2830,10 +3106,10 @@ class TestQueuedDepthReachesZero:
             if mgr._release_slot(first):
                 mgr._running_count -= 1
                 mgr._drain_queue()
-            for _ in range(50):
-                await asyncio.sleep(0.02)
-                if depths and depths[-1][0] == 1 and not mgr._dispatching_ids:
-                    break
+            await async_wait_until(
+                lambda: bool(depths and depths[-1][0] == 1 and not mgr._dispatching_ids),
+                describe=lambda: f"depths={depths[-3:] if depths else []}, dispatching={mgr._dispatching_ids}",
+            )
         assert mgr._dispatching_ids == set(), "mark leaked past a failed claim"
         assert depths and depths[-1][0] == 1, f"failed claim published {depths[-3:]}"
         assert mgr.queued_count_for("dashboard:s1") == 1

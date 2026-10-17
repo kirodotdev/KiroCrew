@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
@@ -53,12 +53,18 @@ class PointerState:
     target (``live_target.read_previous_target``) or ``None``. One value object rather
     than four calls so a backend fetching it over the broker pays one round trip and
     cannot see a torn view.
+
+    ``live_verified`` is False when ``live`` came from the pointer alone: the gateway
+    runs from a packaged / site-packages install, so ``_running_checkout()`` cannot
+    confirm the pointer's checkout is the code being executed. The fleet view shows
+    that row as "live?" rather than "live".
     """
 
     live: str | None
     staged: str | None
     staged_cancel_available: bool
     previous: str | None = None
+    live_verified: bool = True
 
 
 class PointerUnavailable(RuntimeError):
@@ -87,6 +93,16 @@ def install_pointer_provider(provider: PointerProvider | None) -> None:
     _POINTER_PROVIDER = provider
 
 
+def running_in_backend() -> bool:
+    """True in the sandboxed Dev Fleet backend, False in the gateway.
+
+    ``server.main()`` installs a pointer provider unconditionally, so its presence is
+    this process's identity — the same test :func:`_make_live` refuses on. Callers use
+    it to keep host-namespace work (a pod token mint) out of the sandbox.
+    """
+    return _POINTER_PROVIDER is not None
+
+
 async def pointer_state(*, fresh: bool = False) -> PointerState:
     """The pointer state this process is entitled to: local in the gateway, brokered
     in the backend. ``fresh`` bypasses display caches on both sides.
@@ -99,6 +115,9 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
         return await _POINTER_PROVIDER(fresh)
     loop = asyncio.get_running_loop()
     live_path = await _live_worktree_path(fresh=fresh)
+    # Set in the same synchronous step as ``_LIVE_WORKTREE`` and read before the next
+    # await, so it describes the path just returned.
+    live_verified = _LIVE_VERIFIED
 
     def _pointer_fields() -> tuple[str | None, str | None]:
         # Staged target and undo history come from the same pointer read: one hop,
@@ -112,7 +131,11 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
     # exists — with none, the control it gates cannot render and the answer is False.
     cancel = await _staged_cancel_available() if staged is not None else False
     return PointerState(
-        live=live_path, staged=staged, staged_cancel_available=cancel, previous=previous
+        live=live_path,
+        staged=staged,
+        staged_cancel_available=cancel,
+        previous=previous,
+        live_verified=live_verified,
     )
 
 
@@ -142,7 +165,8 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
 #: (``removal_lease`` heartbeats at a third of the TTL, through ``_GIT_MUTATION_LOCK``
 #: queueing and the ``git worktree remove`` itself); a forgotten lease therefore expires
 #: on its own, while a live one never lapses mid-removal. The gateway refuses a NEW lease
-#: while a cutover is in flight, and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
+#: while a cutover is in flight or a pod start on its worktree is running in the gateway
+#: (:func:`pod_start_reservation`), and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
 #: while any lease is live.
 _REMOVAL_LEASE_TTL_SECS = 30.0
 _REMOVAL_LEASE_RENEW_SECS = _REMOVAL_LEASE_TTL_SECS / 3
@@ -206,8 +230,14 @@ def acquire_removal_lease(path: str, *, check_cutover: bool = True) -> str | Non
     ``check_cutover=False`` is for a caller that HOLDS ``_MAKE_LIVE_LOCK`` itself (an
     in-process removal): the lock is what excludes cutovers there, so re-checking it
     would refuse the very holder.
+
+    Also refused while a pod start on *path* is running in this process
+    (:func:`pod_start_reservation`): the pod would run from the checkout the removal
+    deletes. The removal refuses itself and is retried later, as for a cutover.
     """
     if check_cutover and (_MAKE_LIVE_LOCK.locked() or _MAKE_LIVE_COMMITTED):
+        return None
+    if _POD_STARTS.get(_worktree_key(path)):
         return None
     now = _sweep_removal_leases()
     if len(_REMOVAL_LEASES) >= _REMOVAL_LEASE_MAX_OUTSTANDING:
@@ -277,6 +307,59 @@ async def _local_renew(token: str) -> bool:
 
 async def _local_release(token: str) -> None:
     release_removal_lease(token)
+
+
+#: Normalized worktree path -> pod starts running on it in THIS process. Gateway state,
+#: beside the leases and for the same reason: an agent's pod start (``agent_pod_api``)
+#: runs in the gateway while every removal runs in the backend, so the two see each
+#: other only through state the gateway holds. An entry lives only while its start runs,
+#: and a start reserves only a worktree its caller has already resolved, so this holds
+#: at most one entry per existing worktree.
+_POD_STARTS: dict[str, int] = {}
+
+
+def _worktree_key(path: str) -> str:
+    """One spelling of a checkout path for the lease and pod-start registries."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _lease_names(path: str) -> bool:
+    """Gateway-local: whether a removal lease on *path* is live or inside its grace barrier."""
+    _sweep_removal_leases()
+    key = _worktree_key(path)
+    return any(_worktree_key(lease.path) == key for lease in _REMOVAL_LEASES.values())
+
+
+@contextlib.contextmanager
+def pod_start_reservation(path: str) -> Iterator[bool]:
+    """Hold the checkout at *path* against removal leases while a pod start runs.
+
+    Yields whether the start may go ahead. In the gateway (no lease client installed)
+    it yields ``False`` while a removal lease names *path*, live or lapsed inside its
+    grace barrier; otherwise it records the start in ``_POD_STARTS`` until the block
+    exits, and :func:`acquire_removal_lease` refuses a removal of that worktree in the
+    meantime. The check and the record are adjacent with no await between them, on the
+    loop that also serves the lease routes.
+
+    In the backend (a lease client is installed) the pod start and every removal already
+    take ``worktree_ops._wt_lock``, so this yields ``True`` and records nothing.
+    """
+    if _REMOVAL_LEASE_CLIENT is not None:
+        yield True
+        return
+    if _lease_names(path):
+        yield False
+        return
+    key = _worktree_key(path)
+    _POD_STARTS[key] = _POD_STARTS.get(key, 0) + 1
+    try:
+        yield True
+    finally:
+        remaining = _POD_STARTS.get(key, 0) - 1
+        if remaining > 0:
+            _POD_STARTS[key] = remaining
+        else:
+            _POD_STARTS.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -420,6 +503,9 @@ async def confirm_removal_lease(path: str) -> bool:
 # Which checkout powers the live gateway (the upstream reference showed this
 # per-row as is_live; users need to see what occupies the main instance).
 _LIVE_WORKTREE: str | None = None
+# False only when ``_LIVE_WORKTREE`` is the pointer's target taken on trust because
+# the running checkout could not be resolved (see ``_live_worktree_path``).
+_LIVE_VERIFIED: bool = True
 _LIVE_CHECK_AT: float = 0.0
 _LIVE_TTL = 30.0
 
@@ -525,7 +611,7 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     """
     if _POINTER_PROVIDER is not None:
         return (await _POINTER_PROVIDER(fresh)).live
-    global _LIVE_WORKTREE, _LIVE_CHECK_AT
+    global _LIVE_WORKTREE, _LIVE_CHECK_AT, _LIVE_VERIFIED
     now = time.monotonic()
     if not fresh and _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
         return _LIVE_WORKTREE
@@ -545,22 +631,29 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     # prevent. ``_running_checkout()`` is authoritative for what is executing, so
     # the pointer is only "live" when the two agree; otherwise it is staged
     # (see ``_staged_target``) and resolution falls through to the definition.
-    def _resolve_from_pointer() -> str | None:
+    #
+    # A packaged install has no running checkout to compare with. The pointer is
+    # still the best answer for which row is live (removal guards keep protecting
+    # it), but it is unverified: ``_LIVE_VERIFIED`` goes False so the fleet view
+    # says "live?" instead of asserting it.
+    def _resolve_from_pointer() -> tuple[str | None, bool]:
         # Pointer read, ``_running_checkout`` (resolves this process's path) and the
         # comparison all touch the filesystem: one executor hop for the lot.
         pointed = live_target.read_target()
         if pointed is None:
-            return None
+            return None, True
         running = _running_checkout()
-        if running is None or repository._same_path(str(pointed), str(running)):
-            return str(pointed)
-        return str(running)
+        if running is None:
+            return str(pointed), False
+        if repository._same_path(str(pointed), str(running)):
+            return str(pointed), True
+        return str(running), True
 
-    resolved = await asyncio.get_running_loop().run_in_executor(
+    resolved, verified = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(), _resolve_from_pointer
     )
     if resolved is not None:
-        _LIVE_WORKTREE = resolved
+        _LIVE_WORKTREE, _LIVE_VERIFIED = resolved, verified
         return _LIVE_WORKTREE
 
     def _service_manager() -> str | None:
@@ -580,12 +673,13 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         # the agent's ProgramArguments symlink currently points at. Reading the
         # link is authoritative, needs no service query, and reflects a make-live
         # swap immediately.
-        _LIVE_WORKTREE = await asyncio.get_running_loop().run_in_executor(
+        launchd_path = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _launchd_live_worktree
         )
+        _LIVE_WORKTREE, _LIVE_VERIFIED = launchd_path, True
         return _LIVE_WORKTREE
     if manager != "systemd":
-        _LIVE_WORKTREE = None
+        _LIVE_WORKTREE, _LIVE_VERIFIED = None, True
         return None
     # Prefer WorkingDirectory: make-live always writes it alongside ExecStart,
     # and the baseline unit sets it too. ``--value`` prints the bare path with
@@ -630,9 +724,8 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         except OSError:
             return None
 
-    _LIVE_WORKTREE = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), _normalise
-    )
+    normalised = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _normalise)
+    _LIVE_WORKTREE, _LIVE_VERIFIED = normalised, True
     return _LIVE_WORKTREE
 
 
@@ -2077,6 +2170,7 @@ __all__ = (
     "acquire_removal_lease",
     "confirm_removal_lease",
     "install_removal_lease_client",
+    "pod_start_reservation",
     "release_removal_lease",
     "removal_lease_lost",
     "renew_removal_lease",

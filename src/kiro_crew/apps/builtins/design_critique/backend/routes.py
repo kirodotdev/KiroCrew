@@ -472,7 +472,9 @@ def _sweep_clones() -> None:
     for child in victims:
         try:
             if now - child.stat().st_mtime > _CLONE_TTL_SEC:
-                shutil.rmtree(child, ignore_errors=True)
+                # Counted as swept even if a file survives: the probe-cache purge below
+                # keys on this list, and a half-removed directory must not stay served.
+                platform_compat.rmtree_force(child)
                 removed.append(str(child))
         except OSError:
             continue
@@ -1090,7 +1092,7 @@ async def _discover_repo_job(value: str, vetted: list[str], git_bin: str) -> dic
         # now instead of waiting for the TTL sweep, so repeated failures cannot
         # accumulate and exhaust disk (ENOSPC). This does not change the success
         # path — a good clone is kept and rendered as before.
-        await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+        await asyncio.to_thread(platform_compat.rmtree_force, target)
         # GitHub says "Repository not found" for both a missing repo and a private
         # one you cannot read; do not guess which.
         return {

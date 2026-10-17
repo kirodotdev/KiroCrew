@@ -8,9 +8,10 @@
  * screen at all. The one sanctioned way back in is the reveal row at the bottom of a
  * container, which is the person asking to look.
  *
- * The lanes are ENUMERATED OUT OF THE SOURCE rather than listed here, because the way
- * this defect comes back is a lane nobody has written yet. A new member of the
- * `SidebarLane` union with no entry in `LANE_COVERAGE` fails this file before it can
+ * The lanes are ENUMERATED rather than listed here, because the way this defect comes
+ * back is a lane nobody has written yet: the `SidebarLane` union is read out of its
+ * declaration, and the renderers are every answer the lane selection (`renderedLane`)
+ * can give. A new lane with no entry in `LANE_COVERAGE` fails this file before it can
  * ship, which a hand-written list of today's lanes would not do.
  *
  * Both directions are asserted for every lane. "Hidden stays hidden" alone would pass
@@ -89,12 +90,13 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { renderedLane } from '../pages/chat-sidebar/lanes'
+import type { SidebarLane } from '../pages/chat-sidebar/types'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatSlot } from '../types'
 
-// ── the lane universe, read out of the sidebar's own source ──────────────────
+// ── the lane universe: the declared union, and what the lane selection can draw ──
 
-const SIDEBAR_SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatSidebar.tsx'), 'utf8')
 /** The sidebar's shared view types, where the `SidebarLane` union is declared. */
 const SIDEBAR_TYPES_SRC = readFileSync(join(__dirname, '..', 'pages', 'chat-sidebar', 'types.ts'), 'utf8')
 
@@ -228,22 +230,48 @@ describe('sidebar lanes honour the folder hide — enumerated from source', () =
     }
   })
 
-  it('still preempts the union with the board lane', () => {
-    // Why `board` is in LANE_COVERAGE without being a SidebarLane. If this gate moves,
-    // the board entry is either misnamed or no longer reachable, and the reader of this
-    // file needs to know which.
-    expect(SIDEBAR_SRC).toMatch(/conductorLaneActive\s*=\s*!boardLaneActive/)
+  it('reaches, from the lane selection, exactly the renderers this file covers', () => {
+    // Every combination of the inputs `renderedLane` reads. A renderer it can return
+    // that LANE_COVERAGE does not name is a lane nobody proved honours the hide, and a
+    // LANE_COVERAGE entry it can never return is photographing a renderer that is gone.
+    // The board is in that set without being a SidebarLane because columns PREEMPT the
+    // preference whenever any are configured.
+    const drawn = new Set<string>()
+    for (const lane of DECLARED_LANES) {
+      for (const boardColumns of [0, 2]) {
+        for (const folders of [0, 3]) {
+          for (const lineageAvailable of [false, true]) {
+            drawn.add(renderedLane({ lane: lane as SidebarLane, boardColumns, folders, lineageAvailable }))
+          }
+        }
+      }
+    }
+    expect([...drawn].sort()).toEqual(Object.keys(LANE_COVERAGE).sort())
   })
 
-  it('still reaches the board lane flat mode through the flat pref', () => {
-    // What makes the `board-flat` entry above a real renderer rather than a guess: the
-    // board reads the same pref the flat lane does, so columns plus 'flat' is the mode
-    // that renders a column's rows with no folder block. If this derivation changes,
-    // that entry is photographing the wrong renderer.
-    expect(SIDEBAR_SRC).toMatch(/const flatView\s*=\s*lane === 'flat'/)
+  it('lets a configured board preempt every lane preference', () => {
+    // Why `board` is in LANE_COVERAGE without being a SidebarLane: with columns
+    // configured, no preference -- not even a conductor lane that could draw -- shows
+    // anything but the board, which only the flat pref switches to its flat mode.
+    for (const lane of DECLARED_LANES) {
+      expect(renderedLane({ lane: lane as SidebarLane, boardColumns: 1, folders: 3, lineageAvailable: true }), lane)
+        .toBe(lane === 'flat' ? 'board-flat' : 'board')
+    }
+  })
+
+  it('puts each LANE_COVERAGE setup on the renderer it is named for', () => {
+    // What makes each entry a real renderer rather than a guess: the board reads the
+    // same pref the flat lane does, so columns plus 'flat' is the mode that renders a
+    // column's rows with no folder block. The fixture has folders and a creator
+    // citation, so every lane has what it needs to draw.
+    for (const [name, setup] of Object.entries(LANE_COVERAGE)) {
+      expect(renderedLane({
+        lane: setup.lanePref as SidebarLane, boardColumns: setup.columns ? 1 : 0,
+        folders: FOLDERS.length, lineageAvailable: true,
+      }), name).toBe(name)
+    }
   })
 })
-
 describe('what a lane derives from the concealed population', () => {
   it('counts the board column badge over the rows the column shows', () => {
     // The badge is the population's most silent reader: a count taken before the hide

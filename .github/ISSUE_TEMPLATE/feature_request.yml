@@ -55,3 +55,11 @@ body:
       description: Mockups, prior art in other tools, or links to related discussion.
     validations:
       required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        Want to build this yourself? Once the issue is triaged as `tier:T1` or
+        `tier:T2`, comment `/claim` on it so nobody else starts the same work. A
+        `tier:T3` or `tier:T4` needs a design first. See
+        [Claiming an issue](https://github.com/kirodotdev/KiroCrew/blob/main/CONTRIBUTING.md#claiming-an-issue).

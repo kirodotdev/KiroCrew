@@ -51,15 +51,22 @@ export function writeSlotPage(
   messages: ChatMessage[],
   hasMore: boolean | undefined,
   boundedLen?: number,
+  nextBefore?: number,
 ): void {
   const k = safeKey(key)
   state.slotMessages[k] = messages
   if (!state.slotPaneBounded) state.slotPaneBounded = {}
   if (boundedLen === undefined) delete state.slotPaneBounded[k]
   else state.slotPaneBounded[k] = boundedLen
+  // An undefined marker means the array's head is retained older rows, so the
+  // cursor that addressed them still does. Any other write re-describes the
+  // head: it keeps a cursor only if it brought one, never the old head's.
   if (hasMore === undefined) return
   if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
   state.slotPaneHasMore[k] = hasMore
+  if (!state.slotPaneNextBefore) state.slotPaneNextBefore = {}
+  if (hasMore && nextBefore !== undefined && nextBefore > 0) state.slotPaneNextBefore[k] = nextBefore
+  else delete state.slotPaneNextBefore[k]
 }
 
 /** Cache the ACTIVE slot's on-screen transcript under its key before
@@ -86,7 +93,10 @@ export function parkActiveTranscript(state: ChatState): void {
   const k = safeKey(slot)
   writeSlotPage(state, slot, state.messages,
     viewIsProvisional ? undefined : state.slotHasMore,
-    viewIsProvisional ? state.slotPaneBounded?.[k] : undefined)
+    viewIsProvisional ? state.slotPaneBounded?.[k] : undefined,
+    // The active cursor travels with the view it addresses, so the parked
+    // pane can keep paging from where the full page left off.
+    !viewIsProvisional && state.slotCursorKey === slot ? state.slotOldestIndex : undefined)
 }
 
 /** SINGLE writer for the retained per-slot server count, so the three reducers

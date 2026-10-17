@@ -82,6 +82,25 @@ def _compress_assistant_message(text: str) -> str:
 # walked past.
 _TURN_OPENER_ROLES = frozenset({"user", "nudge", "subagent"})
 
+# Prefix that marks a mid-turn steer inside a restored turn's partial output.
+_STEER_LABEL = "[Steered mid-turn]"
+
+# The ``meta.steerState`` of a steer the turn never took: its teardown moved it to
+# the queue, where it runs as its own turn (``STEER_STATE_REQUEUED`` in the
+# dashboard's chat delivery). Spelled here because this layer does not import the
+# dashboard; a test pins the two together.
+_STEER_STATE_REQUEUED = "requeued"
+
+
+def _is_steer_row(row: dict) -> bool:
+    """Whether *row* is a mid-turn steer: a ``user`` row whose ``meta.steer`` is True.
+
+    A steer is delivered into a turn that is already running, so it never opens a
+    turn even though its role is ``user``.
+    """
+    meta = row.get("meta")
+    return row.get("role") == "user" and isinstance(meta, dict) and meta.get("steer") is True
+
 
 def _interrupted_opener_kind(row: dict) -> str:
     """A short name for the automated delivery that opened an interrupted turn."""
@@ -122,6 +141,10 @@ def build_interrupted_turn_preamble(
     turn-in-flight marker restores its opener after a restart). Walk back from
     *current* -- the resume row this turn is running, excluded -- to the row that
     opened the interrupted turn, collecting the assistant text it had streamed.
+    A mid-turn steer (:func:`_is_steer_row`) is walked past rather than taken as
+    the opener, and is carried in the partial output, in the order it was sent,
+    under ``[Steered mid-turn]`` -- unless its ``steerState`` is ``requeued``,
+    which means the turn never took it and it runs as its own turn.
     Returns "" when no opener is found. The caller mints the result AFTER the
     prompt's egress scrub (its markers are in ``_STRUCTURAL_MARKER_RES``); the
     payload is scrubbed here instead.
@@ -136,7 +159,7 @@ def build_interrupted_turn_preamble(
     for i in range(end - 1, -1, -1):
         role = messages[i].get("role")
         meta = messages[i].get("meta")
-        if role in _TURN_OPENER_ROLES or (
+        if (role in _TURN_OPENER_ROLES and not _is_steer_row(messages[i])) or (
             role == "inject"
             and isinstance(meta, dict)
             and meta.get("injectKind") in opener_inject_kinds
@@ -148,16 +171,45 @@ def build_interrupted_turn_preamble(
     user_text = str(messages[opener_idx].get("content") or "").strip()
     if not user_text:
         return ""
-    assistant_parts = [
-        str(m.get("content") or "").strip()
-        for m in messages[opener_idx + 1 : end]
-        if m.get("role") == "assistant" and str(m.get("content") or "").strip()
-    ]
+    # *assist_cap* bounds the assistant text alone, measured as if its chunks were
+    # joined on their own, so a turn with no steer is cut exactly where it always
+    # was. A steer line never spends that budget: a redirect the user sent after a
+    # long stream is the line the model most needs, and a head cut would drop it.
+    assistant_parts: list[str] = []
+    assist_used = 0
+    assist_full = False
+    last_assist = -1
+    for m in messages[opener_idx + 1 : end]:
+        text = str(m.get("content") or "").strip()
+        if not text:
+            continue
+        if m.get("role") == "assistant":
+            if assist_full:
+                continue
+            start = assist_used + (1 if last_assist >= 0 else 0)
+            if start + len(text) <= assist_cap:
+                assistant_parts.append(text)
+                assist_used = start + len(text)
+                last_assist = len(assistant_parts) - 1
+                continue
+            assist_full = True
+            keep = assist_cap - start
+            if keep >= 0:
+                assistant_parts.append(text[:keep] + "… [truncated]")
+            else:
+                # The cap fell on the separator itself: the kept text ends with the
+                # previous chunk, so the marker closes that chunk.
+                assistant_parts[last_assist] += "… [truncated]"
+        elif _is_steer_row(m) and m["meta"].get("steerState") != _STEER_STATE_REQUEUED:
+            # A requeued steer did not redirect this turn: it waits in the queue as
+            # its own turn, or the user dismissed it. Carrying it would have the
+            # model act on it here and again when it drains.
+            if len(text) > user_cap:
+                text = text[:user_cap] + "… [truncated]"
+            assistant_parts.append(f"{_STEER_LABEL} {text}")
     assistant_text = "\n".join(assistant_parts)
     if len(user_text) > user_cap:
         user_text = user_text[:user_cap] + "… [truncated]"
-    if len(assistant_text) > assist_cap:
-        assistant_text = assistant_text[:assist_cap] + "… [truncated]"
     # The frame is minted outside the prompt's egress scrub, so its payload is
     # scrubbed here: a transcript row must not carry a structural marker past it.
     from kiro_crew import context as ctx  # circular import: the facade imports this owner

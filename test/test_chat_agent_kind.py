@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -144,18 +143,14 @@ async def test_same_name_switch_persists_agent_and_kind_together(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_remote_switch_forwards_and_persists_the_selection_kind(tmp_path, monkeypatch):
-    """The gateway and peer must agree which same-name namespace was selected."""
+async def test_agent_switch_on_a_relay_archive_is_refused(tmp_path, monkeypatch):
+    """A relay archive is read-only: the switch answers 409 and changes nothing."""
     state, _private_store = await _same_name_state(tmp_path, monkeypatch)
     slot = state.get_or_create_slot("remote-kind")
     slot.executor = "remote"
     slot.instance_id = "peer-1"
     slot.remote_slot = "peer-chat-1"
-    forward = AsyncMock(return_value={})
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.chat_handlers.forward_peer_selection",
-        forward,
-    )
+    before = (slot.agent, slot.agent_kind)
 
     app = _make_app_with_agent_routes(state)
     async with TestClient(TestServer(as_owner(app))) as client:
@@ -163,16 +158,10 @@ async def test_remote_switch_forwards_and_persists_the_selection_kind(tmp_path, 
             "/api/chat/slots/remote-kind/agent",
             json={"agent": TEMPLATE, "agent_kind": "template"},
         )
-        assert response.status == 200, await response.text()
+        assert response.status == 409, await response.text()
+        assert (await response.json())["code"] == "relay_archive_read_only"
 
-    forward.assert_awaited_once_with(
-        state,
-        slot,
-        "agent",
-        {"agent": TEMPLATE, "agent_kind": "template"},
-    )
-    metadata = state.conversation_log.get_metadata("dashboard:remote-kind")
-    assert (slot.agent_kind, metadata["agent_kind"]) == ("template", "template")
+    assert (slot.agent, slot.agent_kind) == before
 
 
 @pytest.mark.asyncio

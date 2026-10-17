@@ -13,6 +13,9 @@ layout below can change without touching a caller.
 * :mod:`.mcp_aliases` -- MCP server-key aliasing and the Connections tool aliases.
 * :mod:`.auto_approve` -- what a spec may auto-approve under the governance ceiling,
   and the KAS ``permissions`` block derived from it.
+* :mod:`.skill_resources` -- the ``skill://`` mapping a generated spec's own prompt
+  requires, derived from the live skills directory and merged into the resources a
+  person saved.
 * :mod:`.mcp_sources` -- projecting the app, global and dashboard-store MCP sources
   into the default spec during a rebuild.
 * :mod:`.default_spec_commit` -- the rebuild's locked write of the default spec.
@@ -21,6 +24,10 @@ layout below can change without touching a caller.
 * :mod:`.conductor_agents` -- the four conductor specs.
 * :mod:`.worker_agent` -- the worker's mirror of the default spec and its spawn-time
   freshness gate.
+* :mod:`.guide_platform` -- the one-time platform guide grant on an existing
+  default spec.
+* :mod:`.first_crewmate` -- the one-time first crewmate on the ordinary crewmate
+  template.
 
 Importing this package imports the facade first, and the facade imports every owner
 once its own names are bound, so no owner can be observed half-built whichever module

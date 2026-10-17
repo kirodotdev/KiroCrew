@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import type { ComputerUseConfigData } from '../../api/client'
 
@@ -67,6 +67,43 @@ describe('ComputerUsePanel', () => {
     expect(screen.queryByText(/chat sessions were restarted/i)).not.toBeInTheDocument()
     fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
     expect(await screen.findByText(/chat sessions were restarted/i)).toBeInTheDocument()
+  })
+
+  it('says the enable is not live when the agent spec was not rewritten', async () => {
+    await renderPanel()
+    ;(api.saveComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ enabled: true, sessions_reset: 0, agent_spec_rewritten: false }),
+    )
+    fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
+    const notice = await screen.findByTestId('agent-spec-not-rewritten')
+    // No hand-off here: it would navigate away from the panel's unsaved drafts.
+    expect(within(notice).queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('still says the sessions were restarted beside the not-rewritten notice', async () => {
+    await renderPanel()
+    ;(api.saveComputerUseConfig as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ enabled: true, sessions_reset: 2, agent_spec_rewritten: false }),
+    )
+    fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
+    await screen.findByTestId('agent-spec-not-rewritten')
+    // The restart happened, so the user must be told why their chats were torn down,
+    // without the claim that it made the change take effect.
+    expect(screen.getByText(/chat sessions were restarted/i)).toBeInTheDocument()
+    expect(screen.queryByText(/takes effect/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps the notice through a later save that did not touch the enable', async () => {
+    await renderPanel()
+    const save = api.saveComputerUseConfig as ReturnType<typeof vi.fn>
+    save.mockResolvedValueOnce(snapshot({ enabled: true, sessions_reset: 0, agent_spec_rewritten: false }))
+    fireEvent.click(await screen.findByRole('switch', { name: ENABLE_LABEL }))
+    await screen.findByTestId('agent-spec-not-rewritten')
+    // A save of another field carries no verdict, so the spec is still stale.
+    save.mockResolvedValueOnce(snapshot({ enabled: true, attach_screenshot: false }))
+    fireEvent.click(await screen.findByRole('switch', { name: /screenshot/i }))
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2))
+    expect(screen.getByTestId('agent-spec-not-rewritten')).toBeInTheDocument()
   })
 
   it('stays silent when the save restarted nothing', async () => {

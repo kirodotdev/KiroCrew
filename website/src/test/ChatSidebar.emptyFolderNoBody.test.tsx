@@ -96,10 +96,15 @@ const slots: ChatSlot[] = [{ key: SLOT, title: 'Worker', messages: 3, running: f
 const tags: ChatTag[] = [{ id: TAG, name: 'Working', color: '#1a1', order: 0, status: true }]
 const columns: TagColumn[] = [{ id: COL, name: 'Working', tag_ids: [TAG], mode: 'any', order: 0 }]
 
-function renderSidebar(folderData: ChatFolder[] = folders, slotData: ChatSlot[] = slots) {
+/** `connected` stays false by default: every case here is about DISCLOSURE — is the
+ *  row a button, does it announce expanded — which does not need a gateway, and
+ *  offline the toggle now flips the cached flag rather than refusing. Two cases opt
+ *  in: the one asserting collapse PERSISTS to the server (a real write, which only
+ *  happens online) and the one counting a control by its online accessible name. */
+function renderSidebar(folderData: ChatFolder[] = folders, slotData: ChatSlot[] = slots, connected = false) {
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: slotData, approvalMode: 'normal',
+      status: {}, connected, slots: slotData, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',
@@ -172,8 +177,12 @@ describe('sidebar: a folder with nothing in it has no body', () => {
     expect(clusterOf(container, `folder-new-chat-${EMPTY_FOLDER}`).className).toContain('opacity-0')
   })
 
+  // Connected, uniquely in this file: this case counts the quick-create control by
+  // its ONLINE accessible name, and offline that name becomes "... disabled —
+  // gateway offline". The claim is structural (one control, not two), so the fixture
+  // declares the condition under which the name it matches on is the one rendered.
   it('renders no body and no placeholder row for an empty folder', () => {
-    const { container } = renderSidebar()
+    const { container } = renderSidebar(folders, slots, true)
     expect(bodyOf(container, EMPTY_FOLDER)).toBeNull()
     // The placeholder was the whole second row. It is gone, not hidden: a
     // collapsed body would still be in the DOM, aria-hidden.
@@ -203,7 +212,9 @@ describe('sidebar: a folder with nothing in it has no body', () => {
     // button element, no tab stop, no expanded state to announce, and clicking it
     // writes nothing. A focusable control that looks clickable and does nothing
     // is the failure this pins - it reads as broken rather than as empty.
-    const { container } = renderSidebar()
+    // Connected: the last assertion here is that a folder WITH a body still
+    // persists its collapse, which is a gateway write.
+    const { container } = renderSidebar(folders, slots, true)
     const shellOf = (id: string) =>
       container.querySelector(`[data-testid="folder-collapse-${id}"]`)?.parentElement as HTMLElement
 

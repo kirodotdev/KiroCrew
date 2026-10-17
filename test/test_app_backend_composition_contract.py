@@ -290,6 +290,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "signal_orphaned_spawn_group",
     "socket",
     "spawned_backend_names",
+    "spawned_backend_owner",
     "spawned_backend_owns_pid",
     "start_app_backend",
     "start_deferred_app_backends",
@@ -360,7 +361,7 @@ GUARDED_FACADE_TEXT: tuple[tuple[str, str], ...] = (
     ("test_dev_fleet_app.py", '"KIROCREW_PROJECT_DIR"'),
     ("test_sandbox_dev_fleet_live_target.py", "_shipped_md_notebook"),
     ("test_app_bridges.py", "resolve_app_python("),
-    ("test_app_backend.py", '_platform_extra["KIROCREW_DEVFLEET_REPO"]'),
+    ("test_app_backend_spawn_env.py", '_platform_extra["KIROCREW_DEVFLEET_REPO"]'),
 )
 
 #: Text the same guards require to be ABSENT from the facade's source. They read only

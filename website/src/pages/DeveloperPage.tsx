@@ -85,7 +85,7 @@ export default function DeveloperPage() {
   const { pathname, search } = useLocation()
 
   // Serves the default-crewmate deep link: the Crewmates roster's `default`
-  // badge (`ChangeDefaultLink` in KiroCrewAgentsPage.tsx) points at
+  // badge (`ChangeDefaultLink` in KiroCrewAgentsPageRoster.tsx) points at
   // `DEFAULT_CREWMATE_PATH`, `/developer?tab=config&highlight=key:default-crewmate`,
   // and this hook rings the Default crewmate row on the Config tab.
   //

@@ -82,7 +82,7 @@ export default function CoAuthorPanel({
           onClick={onClose}
           title={i18nT('apps.papyrus.coAuthor.close_panel')}
           aria-label={i18nT('apps.papyrus.coAuthor.close_co_author_panel')}
-          className="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
+          className="p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors"
         >
           <X className="lucide-inline" />
         </button>

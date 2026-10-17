@@ -1,4 +1,9 @@
-"""Run the three independent browser lanes after CI's private-MCP prerequisite.
+"""Run the two gateway-backed browser lanes of the E2E job side by side.
+
+Smoke (``setup.py test_e2e``, the Playwright suite) and the memory UI evidence
+suite. The i18n render gate is ci.yml's own ``i18n-render`` job: it needs no
+gateway, and its two DEV builds plus a two-tree Chromium render starve the
+Playwright suite past its wall-clock ceiling on a hosted 4-vCPU runner.
 
 Linux CI only. Each lane is a subreaper: harness gateways start new sessions,
 so a process-group signal alone cannot drain them after pytest is interrupted.
@@ -17,7 +22,6 @@ from pathlib import Path
 
 MEMORY_UI_TIMEOUT = 12 * 60
 COMMANDS = {
-    "i18n": ["npm", "--prefix", "website", "run", "i18n:render"],
     "smoke": [sys.executable, "setup.py", "test_e2e"],
     "memory-ui": [
         sys.executable,
@@ -147,10 +151,7 @@ def main() -> int:
         lane = sys.argv[1]
         # Keep pytest temporary roots (and their retention sweeps) disjoint.
         # Harnesses still choose fresh homes/ports; no live HOME is substituted.
-        root = (
-            Path(os.environ["RUNNER_TEMP"])
-            / {"smoke": "e2e-s", "memory-ui": "e2e-u", "i18n": "e2e-i"}[lane]
-        )
+        root = Path(os.environ["RUNNER_TEMP"]) / {"smoke": "e2e-s", "memory-ui": "e2e-u"}[lane]
         root.mkdir(parents=True, exist_ok=True)
         os.environ["TMPDIR"] = str(root)
         if lane == "memory-ui":
@@ -160,7 +161,7 @@ def main() -> int:
             timeout=MEMORY_UI_TIMEOUT if lane == "memory-ui" else None,
         )
     if len(sys.argv) != 1:
-        raise SystemExit("usage: ci_e2e_parallel.py [smoke|memory-ui|i18n]")
+        raise SystemExit("usage: ci_e2e_parallel.py [smoke|memory-ui]")
     script = str(Path(__file__).resolve())
     # Separate supervisors give the UI its own unchanged 12-minute cap without
     # cancelling the smoke lane or losing adopted grandchildren from either.

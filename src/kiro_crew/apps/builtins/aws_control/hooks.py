@@ -1,18 +1,21 @@
 """Lifecycle hooks — the nightly backup loop.
 
-One background task, started on enable, that wakes every half hour and runs
-the snapshot backup when it is due (nightly toggle on AND >23 h since the
-last run AND not inside the retry backoff a run of failed attempts earns --
-see ``backup.due_for_nightly``). Every AWS-reaching step keeps
-the same guards the HTTP path has: consent fails closed (a silent skip plus
-a log line, never an unconfirmed charge), and the drive is tag-discovered
-per run rather than trusted from memory.
+One background task, started on enable, that wakes every half hour and CLAIMS
+the snapshot backup through the Job SDK when it is due (nightly toggle on AND
+>23 h since the last run AND not inside the retry backoff -- see
+``backup.due_for_nightly``). The due-check keeps the same guards the HTTP path
+has: consent fails closed (a silent skip plus a log line, never an unconfirmed
+charge), and the account is resolved through the same healthy-first policy.
 
-The wake interval is a due-CHECK interval and never a retry interval. A failed
-attempt is recorded, by ``_failed_attempt``, so the due-check can tell a fault it
-has already met from a first one; without that record the loop re-attempted a
-deterministic failure on every wake forever, because recording only successes left
-the state file with nothing to distinguish "never ran" from "keeps breaking".
+Claiming the run through ``sdk.start_async`` rather than running the backup on
+a bare thread is what makes a nightly a RECORDED run: it dedupes against a
+manual click for the same account (both share the SDK's ``(kind, dedupe_key)``
+index, so they do not both do the paid upload), and it is visible to the Backup
+row, which derives its busy state from SDK records. The shared runner re-resolves
+the drive per run and applies the unattended gates, because the loop names
+``CALLER_SCHEDULED`` in the start's ``params``.
+
+The wake interval is a due-CHECK interval and never a retry interval.
 
 The loop runs against the REGISTRY DEFAULT account only — the same account
 the consent card confirms, resolved through the same healthy-first policy, so
@@ -28,94 +31,71 @@ would leave one machine silently un-backed-up, which is the worse failure.
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
 from typing import Any
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control.backend import accounts as accounts_mod
 from kiro_crew.apps.builtins.aws_control.backend import backup as backup_mod
-from kiro_crew.apps.builtins.aws_control.backend import storage as storage_mod
-from kiro_crew.sel import sel
+from kiro_crew.apps.job_sdk import JobError, UnknownJobKind, get_sdk
 
 logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECS = 30 * 60
 
+
+def _nightly_setup_failure(account: str, kind: str, exc: BaseException, witness: Any) -> None:
+    """Record and audit one scheduled wake that failed BEFORE a run was claimed.
+
+    The loop resolves the drive itself, before it claims any run (see
+    :func:`_run_once`), so a lookup that *raises* there never reaches the runner's
+    own ``failed`` handler -- it would escape the wake into :func:`_loop`'s
+    catch-all warning with no backoff and no audit, the one failure shape that
+    re-attempts every wake forever. This is the loop-side equivalent of the
+    runner's post-claim ``except`` branch, and it is deliberately the SAME two
+    writes, through the SAME helpers the runner uses: the ``failed`` SEL audit via
+    :func:`backup._nightly_audit` under :func:`backup._nightly_subject` -- so a
+    setup failure and a push failure for one kind never land under different
+    subjects or through a second copy of the audit call -- and
+    :func:`backup.record_nightly_failure`, so ``due_for_nightly`` can tell a fault
+    it has already met from a new one.
+
+    ``witness`` is :func:`backup.nightly_run_witness` read BEFORE the lookup, so the
+    recorder refuses to write over a run slot that moved since. Never raises: it is
+    already on a failed-wake path, and the audit is best-effort.
+    """
+    backup_mod._nightly_audit(
+        "backup_nightly", backup_mod._nightly_subject(kind), "failed", error=str(exc)
+    )
+    backup_mod.record_nightly_failure(account, kind, str(exc), run_witness=witness)
+
+
+def _nightly_setup_cancelled(kind: str) -> None:
+    """Audit one scheduled wake that was CANCELLED before a run was claimed.
+
+    A cancel is teardown, not a fault: unlike :func:`_nightly_setup_failure` this
+    writes only the ``cancelled`` SEL record and does NOT back off, so an
+    interrupted wake leaves a trail that it was stopped without poisoning the next
+    one. It mirrors the per-kind ``cancelled`` audit the loop-side setup emitted
+    before the backup moved to the Job SDK, kept so teardown during the drive
+    lookup stays visible in the SEL trail -- through the same
+    :func:`backup._nightly_audit` the fault path uses, so there is one audit call,
+    not a second copy. Never raises: the audit is best-effort and the
+    ``CancelledError`` must propagate regardless.
+    """
+    backup_mod._nightly_audit("backup_nightly", backup_mod._nightly_subject(kind), "cancelled")
+
+
 _task: asyncio.Task[None] | None = None
 
 
-def _audit(operation: str, resources: str, outcome: str, *, error: str = "") -> None:
-    """SEL record for an UNATTENDED backup step.
+async def _run_once(sdk: Any) -> None:
+    """One due-check + claim of each due backup through the Job SDK.
 
-    The HTTP handlers get their audit from the dashboard layer; this loop has no
-    request, so without this the only unattended S3 mutation in the app would be
-    the one operation with no trail. Best-effort by the same rule the handlers
-    use: an audit failure must never abort the backup.
+    Takes the SDK rather than reaching for it, so the due-check and claim stay
+    testable without a live app context. The loop fetches the live SDK each wake
+    (see :func:`_loop`); a direct caller passes one in.
     """
-    try:
-        sel().log_api_access(
-            caller="aws-control-nightly",
-            operation=f"aws_control.{operation}",
-            outcome=outcome,
-            source=backup_mod.APP_NAME,
-            resources=resources[:200],
-            error=error[:200],
-        )
-    except Exception:
-        logger.debug("aws-control nightly SEL audit failed", exc_info=True)
-
-
-async def _note_shared_drive(profile: str, region: str, bucket: str, account: str) -> None:
-    """Record that another install also backs up here. Then carry on.
-
-    A NOTICE, not a gate, and that is a deliberate departure from the reported
-    issue's own suggestion that the loop refuse. Refusing would make the drive
-    single-owner, and single-owner scheduling means exactly one machine keeps
-    getting backed up while the other silently stops -- discovering that at
-    restore time is worse than the unattributed pile this change replaces. Once
-    the keys carry an install id there is nothing left to collide: two installs
-    write to two prefixes, and two machines each keeping their own memory backed
-    up is what the owner asked for by pointing both at one account.
-
-    So the value here is EVIDENCE, and specifically evidence a later panel view
-    cannot reconstruct. The console's ``others`` count is LIVE: it says what the
-    drive looks like when a human opens the page. This record says what the
-    UNATTENDED run observed at the moment it spent the owner's money -- and the
-    nightly is the one path in this app that spends it with nobody present, so "at
-    this run, the drive already held another install's archives" is an audit fact
-    about that spend rather than a line for someone to read. The consumer is a human
-    after the fact, which is what the whole SEL trail is for.
-
-    ONE list call, against the snapshot prefix only. This loop uploads snapshots
-    and nothing else, so sweeping the sessions prefix too would have cost a second
-    paid call per scheduled run to answer a question about a run that is not
-    happening.
-
-    Never raises. A listing failure must not stop the backup it was only
-    annotating; the outcome is one less log line, not a missed nightly.
-    """
-    try:
-        others = await asyncio.to_thread(
-            backup_mod.other_install_ids, profile, region, bucket, account=account
-        )
-    except Exception:
-        logger.debug("aws-control nightly: shared-drive check failed", exc_info=True)
-        return
-    if not others:
-        return
-    logger.warning(
-        "aws-control nightly: %d other install(s) also back up to this drive (%s); "
-        "each writes under its own prefix, so this run proceeds -- restore attributes "
-        "archives by that prefix",
-        len(others),
-        ", ".join(others[:5]),
-    )
-    _audit("backup_shared_drive", f"installs={len(others)}", "invoked")
-
-
-async def _run_once() -> None:
-    """One due-check + backup attempt. Every failure is a log line, not a crash."""
     # Same resolution the consent card and the HTTP handlers use, so the key this
     # unattended loop runs under is the key the grant was recorded for. A raw
     # registry-default read would pick an unhealthy default over the account's
@@ -170,13 +150,8 @@ async def _run_once() -> None:
     )
     if not allowed:
         return  # refuse_and_log already logged + audited
-    # The kinds this wake is actually for, derived once. The shared setup below
-    # can fail before any push, and a failure there must name the kinds that were
-    # due rather than one fixed kind: a transcripts-only wake reaches the same
-    # block, so a hardcoded `backup/snapshots` would record a snapshot that was
-    # never due, and the SEL trail is append-only. Deriving the list here also
-    # means the subjects a failure is audited against and the kinds actually
-    # pushed below cannot drift apart -- they are the same list.
+    # The kinds this wake is actually for. A transcripts-only wake must not claim
+    # a snapshot run, so each due bit gates its own kind independently.
     due_kinds = [
         kind
         for kind, is_due in (
@@ -185,156 +160,100 @@ async def _run_once() -> None:
         )
         if is_due
     ]
-    # The run slot's identity per due kind, read BEFORE anything is attempted. This is
-    # the window a failure write has to be judged against: a run recorded inside it is
-    # positive evidence that backups are reaching the drive, and the recorder refuses to
-    # write a failure over it. Captured here rather than inside the handler because by
-    # then the window has closed.
+    # Check the drive BEFORE claiming any run, as the loop did before this change.
+    # The drive is tag-discovered per wake, not trusted from memory; until one
+    # exists there is nowhere to push, so no run is claimed. Claiming one anyway
+    # would leave a `done` SDK run on the Backup row every 30 minutes for a backup
+    # that uploaded nothing -- and that newest `done` run would clear an owner's
+    # earlier `lastFailed` (e.g. their own "no drive yet" click). A missing drive
+    # is "nothing to attempt yet", so the wake simply returns, recording nothing.
+    #
+    # A drive lookup that RAISES is a different fact from one that returns no drive.
+    # It is a fault, and because it happens here -- before any run is claimed -- the
+    # runner's own failure handler never sees it. Left unhandled it escapes into
+    # `_loop`'s catch-all warning with no backoff and no audit, so a deterministically
+    # failing lookup re-attempts every wake forever (the exact shape
+    # `record_nightly_failure` exists to close). So each due kind's run slot is
+    # witnessed BEFORE the lookup -- the window a failure write is judged against,
+    # which has closed by the time the handler runs -- and a raise records+audits a
+    # `failed` attempt per due kind, matching the runner's post-claim branch. A
+    # CancelledError is teardown, not a fault, so it audits a `cancelled` trail per
+    # due kind -- so the interrupt stays visible in the SEL record -- but does NOT
+    # back off.
     witnesses = {
         kind: await asyncio.to_thread(backup_mod.nightly_run_witness, account, kind)
         for kind in due_kinds
     }
     try:
-        bucket = await asyncio.to_thread(storage_mod.find_drive, profile, region, account=account)
-        if not bucket:
-            logger.info("aws-control nightly: no drive bucket yet; skipping")
-            return
-        await _note_shared_drive(profile, region, bucket, account)
+        bucket = await asyncio.to_thread(
+            backup_mod.storage.find_drive, profile, region, account=account
+        )
     except asyncio.CancelledError:
         for kind in due_kinds:
-            _audit("backup_nightly", _audit_subject(kind), "cancelled")
+            _nightly_setup_cancelled(kind)
         raise
     except Exception as exc:
         for kind in due_kinds:
-            await _failed_attempt(kind, account, exc, witnesses[kind])
-        logger.warning("aws-control nightly backup failed", exc_info=True)
+            await asyncio.to_thread(_nightly_setup_failure, account, kind, exc, witnesses[kind])
+        logger.warning("aws-control nightly: drive lookup failed", exc_info=True)
         return
+    if not bucket:
+        logger.info("aws-control nightly: no drive yet; skipping")
+        return
+    # Claim each due kind through the Job SDK, the SAME call the owner click makes,
+    # rather than running the backup on a bare thread. Claiming through the SDK
+    # is what makes the run recorded and dedupable:
+    #
+    #   * dedupe_key=account makes a nightly run and a manual click for one account
+    #     adopt one another through the SDK's (kind, dedupe_key) index, so they do
+    #     not both do the paid upload.
+    #   * a claimed run is what the Backup row reads, so a nightly is visible like
+    #     any other run instead of leaving the row idle while it uploads.
+    #   * params names CALLER_SCHEDULED so the shared runner applies the
+    #     unattended-only gates and attributes the spend to the schedule, not to a
+    #     dashboard owner who is not present.
+    #
+    # Fire-and-forget: start_async returns once the run is claimed, and the SDK
+    # record carries the outcome (done / failed) that the row and the audit trail
+    # read. A refused start (mid-teardown, or no runner registered) is a logged
+    # skip, not a crash -- the next wake tries again.
     for kind in due_kinds:
-        await _push_nightly(kind, account, profile, region, bucket)
-
-
-def _audit_subject(kind: str) -> str:
-    """The SEL subject for one backup kind.
-
-    One spelling, used by the shared setup's failure handlers and by
-    :func:`_push_nightly` alike. Two copies of this expression is how a run's
-    setup failure and its push end up filed under different subjects for the
-    same kind, which is exactly the misattribution this exists to prevent.
-    """
-    return f"backup/{backup_mod.KIND_SUBPATHS[kind]}"
-
-
-async def _failed_attempt(
-    kind: str,
-    account: str,
-    exc: BaseException,
-    run_witness: Any,
-) -> None:
-    """Audit one kind's failed unattended attempt AND record it. One spelling.
-
-    The two live together because they are two halves of the same fact, and they had
-    different fates before this existed: the audit went to SEL, where a human reads
-    it after the event, and nothing at all went to state, where the loop reads it on
-    the next wake. So a nightly failing deterministically produced a growing pile of
-    ``failed`` audit records and a due-check that could not see any of them, and
-    re-attempted every half hour indefinitely -- staging the whole data home into a
-    fresh temporary directory each time, and burying every other warning in the
-    gateway log at that cadence.
-
-    ONE helper rather than the same pair written at each site, for the reason
-    :func:`_audit_subject` itself gives: this module has two places a nightly attempt
-    can fail -- the shared setup, and each kind's own push -- and two copies is how
-    one of them ends up auditing a failure it never counted, or counting one it never
-    audited. The backoff would then depend on WHICH way the run broke.
-
-    ``run_witness`` is ``backup.nightly_run_witness`` read BEFORE the attempt began, and
-    the recorder refuses to write when the run slot has moved since. Every caller reads
-    it at the top of its own attempt rather than here, because by the time this helper
-    runs the attempt is already over and the window it has to witness has closed.
-
-    Cancellation deliberately does NOT come here. A cancelled attempt is teardown,
-    not a fault: the owner disabled the app or the gateway is stopping, and counting
-    that as a failed attempt would have a clean shutdown push the next night out.
-    Those branches keep their own audit call and record nothing.
-    """
-    _audit("backup_nightly", _audit_subject(kind), "failed", error=str(exc))
-    # Off the loop, like every other state read in this module: the recorder takes
-    # the sidecar lock and rewrites the document, which is real blocking file I/O.
-    await asyncio.to_thread(
-        functools.partial(
-            backup_mod.record_nightly_failure,
-            account,
-            kind,
-            str(exc),
-            run_witness=run_witness,
-        )
-    )
-
-
-async def _push_nightly(kind: str, account: str, profile: str, region: str, bucket: str) -> None:
-    """Push one due nightly kind, audited around the call.
-
-    Each kind gets its OWN try/except rather than sharing one. The two payloads
-    have nothing in common but the drive they land in, so a snapshot that fails
-    must not cost the transcripts their window, and the reverse. A shared handler
-    would turn one failure into two skipped nights.
-    """
-    subject = _audit_subject(kind)
-    # Read before the attempt, for the reason `_run_once` gives at its own capture:
-    # the window this witnesses is the attempt's whole duration, so it cannot be
-    # read from the handler after the attempt has ended.
-    run_witness = await asyncio.to_thread(backup_mod.nightly_run_witness, account, kind)
-    runner = (
-        backup_mod.run_snapshot_backup
-        if kind == backup_mod.KIND_SNAPSHOT
-        else backup_mod.run_sessions_backup
-    )
-    try:
-        # The nightly path never touches an HTTP handler, so the audit the
-        # dashboard layer adds to every owner-driven mutation is simply absent
-        # here -- an unattended export would leave no SEL trace of having run,
-        # succeeded or failed. Emit the same three-part record the handlers do,
-        # around the call, so the trail does not depend on who triggered it.
-        _audit("backup_nightly", subject, "invoked")
-        record = await asyncio.to_thread(
-            functools.partial(
-                runner,
-                account,
-                profile,
-                region,
-                bucket,
-                # Nobody is at the keyboard at 03:00. An upload refused here must
-                # not be recorded against the dashboard owner, which is what a
-                # hardcoded interactive caller inside the gate would have done.
-                caller=backup_mod.CALLER_SCHEDULED,
+        try:
+            await sdk.start_async(
+                kind,
+                dedupe_key=account,
+                params={
+                    backup_mod.JOB_PARAM_CALLER: backup_mod.CALLER_SCHEDULED,
+                    # The profile/region this loop JUST verified live
+                    # (`probe_identity(use_cache=False)` above). The runner
+                    # re-resolves per run, but its sync cache returns None once the
+                    # snapshot is past the TTL -- and `start_async` is
+                    # fire-and-forget, so the runner resolves later than this check.
+                    # Carrying the verified pair lets the scheduled path fall back to
+                    # it rather than audit a just-verified nightly as failed. The
+                    # live account re-check in `_authorize_upload` still guards wrong
+                    # accounts.
+                    backup_mod.JOB_PARAM_PROFILE: profile,
+                    backup_mod.JOB_PARAM_REGION: region,
+                },
             )
-        )
-        if record.get("uploaded") is False:
-            # A run that found the tree unchanged sent nothing, so recording it as a
-            # push would put a SEL entry and a log line against a key no bytes reached
-            # tonight -- indistinguishable, to whoever reads the audit trail, from an
-            # ordinary upload. The key is still named because it is the archive this
-            # run stood on: it is what the drive still holds for this kind.
-            _audit("backup_nightly", str(record.get("key", "")), "unchanged")
-            logger.info(
-                "aws-control nightly backup: tree unchanged since %s, nothing uploaded",
-                record.get("key", ""),
-            )
-        else:
-            _audit("backup_nightly", str(record.get("key", "")), "succeeded")
-            logger.info("aws-control nightly backup pushed: %s", record.get("key", ""))
-    except asyncio.CancelledError:
-        _audit("backup_nightly", subject, "cancelled")
-        raise
-    except Exception as exc:
-        await _failed_attempt(kind, account, exc, run_witness)
-        logger.warning("aws-control nightly backup failed: %s", kind, exc_info=True)
+        except (JobError, UnknownJobKind):
+            logger.warning("aws-control nightly: could not claim %s run", kind, exc_info=True)
 
 
 async def _loop() -> None:
     while True:
         try:
-            await _run_once()
+            # Fetch the LIVE SDK each wake rather than capturing one: a re-enable
+            # builds a fresh AppContext and therefore a fresh JobSDK, and the loop
+            # outlives that cycle. `get_sdk` returns whichever SDK is registered
+            # under this app right now (the same one the route reads), so the loop
+            # never holds a stale handle. Absent means the `jobs` permission is not
+            # granted; `_register_job_runners` already logged that, so here it is a
+            # quiet skip until the next wake.
+            sdk = get_sdk(backup_mod.APP_NAME)
+            if sdk is not None:
+                await _run_once(sdk)
         except asyncio.CancelledError:
             raise
         except Exception:

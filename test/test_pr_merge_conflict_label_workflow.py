@@ -131,6 +131,23 @@ def test_label_workflows_bind_no_jq_keyword(name: str) -> None:
     assert not set(bound) & set(JQ_KEYWORDS), f"{name}: jq keyword bound as a variable: {bound}"
 
 
+# `... as $end` is the other way a jq program binds a name, and jq 1.6 rejects a
+# keyword there exactly as it does after `--arg`. Shell code never writes
+# `as $name`, so this pattern only matches jq source embedded in a workflow.
+AS_BINDING = re.compile(r"\bas\s+\$([A-Za-z_]\w*)")
+
+
+@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.y*ml")), ids=lambda p: p.name)
+def test_no_workflow_binds_a_jq_keyword(path: Path) -> None:
+    # Any job can move to a runner whose jq is 1.6, so every workflow is held to
+    # the 1.6 lexer, not only the ones that run there today.
+    offenders = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        names = ARG_BINDING.findall(line + " ") + AS_BINDING.findall(line)
+        offenders += [f"{lineno}: {name}" for name in names if name in JQ_KEYWORDS]
+    assert not offenders, f"{path.name}: jq keyword bound as a variable: {offenders}"
+
+
 @needs_posix
 def test_definitive_states_add_and_remove_the_label(tmp_path: Path) -> None:
     calls, bodies, _ = _sweep(

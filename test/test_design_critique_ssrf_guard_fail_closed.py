@@ -134,8 +134,15 @@ class TestGetPlaywrightVersionGate:
 
     def test_stale_cache_is_not_returned(self, tmp_path):
         cache = self._fake_cache(tmp_path / "cache", "1.47.2")
+        # getPlaywright resolves "playwright" by climbing node_modules from the script's own
+        # directory. A copy whose nearest node_modules holds a stale build is answered there,
+        # so a playwright above the checkout or above tmp_path is never reached. The script
+        # imports only Node built-ins and playwright, so the one file is enough.
+        script_dir = self._fake_cache(tmp_path / "script", "1.47.2")
+        ensure_pw = script_dir / ENSURE_PW.name
+        shutil.copy2(ENSURE_PW, ensure_pw)
         script = f"""
-            const {{ getPlaywright }} = await import({str(ENSURE_PW.as_uri())!r})
+            const {{ getPlaywright }} = await import({str(ensure_pw.as_uri())!r})
             const m = await getPlaywright({{ autoInstall: false }})
             process.exit(m === null ? 0 : 1)
         """

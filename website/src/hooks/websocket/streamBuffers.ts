@@ -88,6 +88,8 @@ export interface StreamBuffersDeps {
 }
 
 export interface StreamBuffers {
+  /** Whether this slot has received buffered stream content in this connection. */
+  hasPendingChunks(slot: string): boolean
   /** Land every buffered chat chunk now: one batched dispatch per slot. Runs
    *  once per animation frame, and synchronously before a `chat_message` row,
    *  a steer echo, a segment or a turn end so buffered text lands above it.
@@ -231,6 +233,7 @@ export function useStreamBuffers({ dispatch, socket, onActiveSlotFlushed }: Stre
     }
 
     return {
+      hasPendingChunks(slot) { return chunkBufRef.current.has(slot) },
       flushChunks,
       bufferChunk(slot, seq, text, gen) {
         const buf = chunkBufRef.current

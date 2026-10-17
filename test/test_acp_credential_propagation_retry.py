@@ -20,7 +20,7 @@ burst still fails:
    ``_TRANSIENT_MARKERS`` alone would be unreachable. The check has to sit ABOVE
    the exclusion list.
 3. ``is_auth_failure_output`` — the runtime latches any auth-shaped kiro-cli
-   stderr into ``_saw_auth_failure``, which ``providers/acp.py`` converts into
+   stderr into ``_saw_auth_failure``, which ``providers/acp_runtime_start.py`` converts into
    ``AcpAuthRequired`` ("non-retryable, skip the retry ladder"). A cold-start
    burst is exactly when that line appears on stderr, so without this seam the
    turn fails with "run kiro-cli login" no matter what the classifier says.

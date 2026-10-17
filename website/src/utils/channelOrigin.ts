@@ -69,8 +69,8 @@ export function isLegacySlackSlotKey(slotKey?: string): boolean {
  * a slot persisted under it is restored server-side as the default surface,
  * so it never reaches this predicate.)
  *
- * Single source of truth for that set: `ChatPage.tsx`'s `filteredSlots` and
- * `ChatSidebar.tsx`'s resume-from-history handler both need the identical
+ * Single source of truth for that set: `chat/page/pageEnvironment.ts`'s `filteredSlots` and
+ * `chat-sidebar/HistoryPane.tsx`'s resume-from-history handler both need the identical
  * answer to "can the chat page show this slot", and having two independent
  * copies is exactly how #3624 happened — the sidebar offered every history
  * row unconditionally, the page silently couldn't display some of them, and

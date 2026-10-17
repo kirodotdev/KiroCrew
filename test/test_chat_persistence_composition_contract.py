@@ -76,7 +76,6 @@ _FACADE_DEFINED = frozenset(
         "_LOCAL_TURN_PROMPT_MAX_FIELD_CHARS",
         "_LOCAL_TURN_PROMPT_META_KEYS",
         "_LOCAL_TURN_PROMPT_ROLES",
-        "_MAX_HISTORY_CHARS",
         "_META_LAST_USER_AT",
         "_PENDING_MEMORY_MODE_LOCK",
         "_REASONING_EFFORT_FALLBACK",
@@ -378,8 +377,8 @@ _MOVED: dict[str, str] = {
 
 #: The signature of every function the facade defined, as it was at that base.
 _SIGNATURES: dict[str, str] = {
-    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False) -> 'None'",
-    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None) -> 'int'",
+    "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, pending_backfills: 'list[tuple[str, dict]] | None' = None) -> 'None'",
+    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, tail: 'list[dict] | None' = None, dropped: 'set[str] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
     "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
@@ -394,7 +393,7 @@ _SIGNATURES: dict[str, str] = {
     "_effort_marker_path": "(directory: 'Path', level: 'str') -> 'Path'",
     "_entry_cache_bounds": "() -> 'tuple[int, int]'",
     "_foreign_tail_ts": "(foreign_lines: 'list[str]') -> 'str | None'",
-    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True) -> 'tuple[str, list[str], list[str]]'",
+    "_frozen_prefix_and_foreign_appends": "(slot: '_ChatSlot', path, disk_older: 'int', window_entries: 'list[dict]', *, collect_foreign: 'bool' = True, bound_prefix: 'Callable[[list[str]], list[str]] | None' = None, archive_dedup: 'Callable[[list[str]], object] | None' = None) -> 'tuple[str, list[str], list[str]]'",
     "_has_validated_effort_marker": "(raw: 'object') -> 'bool'",
     "_interleave_foreign_lines": "(window_entries: 'list[dict]', window_lines: 'list[str]', foreign_lines: 'list[str]') -> 'list[str]'",
     "_is_app_owned_channel_row": "(meta: 'dict', history_key: 'str') -> 'bool'",
@@ -422,7 +421,7 @@ _SIGNATURES: dict[str, str] = {
     "_record_pending_memory_mode": "(slot: '_ChatSlot', memory_mode: 'str') -> 'None'",
     "_recover_mcp_app_claims": "(slot: '_ChatSlot') -> 'None'",
     "_recover_mcp_app_claims_async": "(slot: '_ChatSlot') -> 'None'",
-    "_rehydrate_slot_from_history": "(state: 'DashboardState', slot_name: 'str', *, kiro_model_map: 'dict[str, str] | None' = None, adopt_closed: 'bool' = False, _prefetched_meta: 'dict | None' = None, _prefetched_messages: 'list[dict] | None' = None, _prefetched_member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), _prefetched_agent: 'str | None' = None, _prefetched_effort_marker: 'bool' = False) -> '_ChatSlot | None'",
+    "_rehydrate_slot_from_history": "(state: 'DashboardState', slot_name: 'str', *, kiro_model_map: 'dict[str, str] | None' = None, adopt_closed: 'bool' = False, _prefetched_meta: 'dict | None' = None, _prefetched_messages: 'list[dict] | None' = None, _prefetched_member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), _prefetched_agent: 'str | None' = None, _prefetched_effort_marker: 'bool' = False, _lazy_tail: 'list[dict] | None' = None) -> '_ChatSlot | None'",
     "_rehydrate_slot_title": "(slot: '_ChatSlot', raw_title: 'str', *, titled: 'bool', metadata: 'Mapping[str, object]') -> 'None'",
     "_rehydrate_title_low_signal": "(stored: 'object') -> 'bool'",
     "_rehydrate_title_origin": "(titled: 'bool', stored: 'object') -> 'str'",
@@ -435,7 +434,7 @@ _SIGNATURES: dict[str, str] = {
     "_restored_mode": "(raw: 'object') -> 'str'",
     "_retain_reasoning_effort_values": "(acp_levels: 'list[str]', *, source: 'str') -> 'list[str]'",
     "_sanitize_open_slot_key": "(raw: 'object') -> 'str | None'",
-    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None) -> 'bool'",
+    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, refuse_stale_empty_merge: 'bool' = False, turn_timeout_override: 'tuple[int | None] | None' = None) -> 'bool'",
     "_stable_durable_queue": "(slot: '_ChatSlot') -> 'tuple[list[dict], int]'",
     "_tighten_carried_execution": "(meta_line: 'dict', mode: 'str') -> 'None'",
     "_validate_autocompact_pct": "(raw: 'object') -> 'float | None'",
@@ -457,7 +456,7 @@ _SIGNATURES: dict[str, str] = {
     "restore_recent_sessions": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "restore_recent_sessions_async": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "save_all_slots_to_history": "(state: 'DashboardState') -> 'None'",
-    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False) -> 'bool'",
+    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, turn_timeout_override: 'tuple[int | None] | None' = None) -> 'bool'",
     "session_transcript_remains": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "session_was_deleted": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "update_reasoning_effort_values": "(acp_levels: 'list[str]') -> 'None'",
@@ -1313,7 +1312,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "turn_timeout_secs": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "app_agent_owner": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },

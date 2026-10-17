@@ -472,9 +472,30 @@ class TestDoctorStrictIdentity:
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(self._Cfg(["aws-mcp"]))
         out = capsys.readouterr().out
-        assert "no identity channel" in out
+        assert "not routed through the gateway" in out
         assert "kirocrew-core" in out and "kirocrew-dashboard" in out
         assert "monitor_start" in out and "session_ledger" in out
+
+    def test_unrouted_is_not_reported_as_a_missing_identity_channel(
+        self, monkeypatch, capsys
+    ) -> None:
+        """An unrouted server is the stock topology, not a refusal cause.
+
+        Each session's managed MCP element carries a signed per-session token
+        that the strict resolver reads with no gateway, so "no identity channel"
+        / "are refused while a server is unrouted" sent a reader to blame routing
+        for a cron_add refusal. The note must say routing is optional, point at
+        the refusal's own diagnosis, and stop asserting a refusal it cannot see.
+        """
+        self._darwin(monkeypatch)
+        cli_doctor._doctor_strict_identity(self._Cfg([]))
+        out = capsys.readouterr().out
+        lowered = " ".join(out.lower().split())
+        assert "no identity channel" not in lowered
+        assert "are refused while" not in lowered
+        assert "needs no change" in lowered
+        assert "per-session token" in lowered
+        assert "cron_add" in out
 
     def test_it_never_makes_doctor_exit_nonzero(self, monkeypatch, capsys) -> None:
         """The line is a NOTE, not a problem. ``stub_servers`` is empty by
@@ -521,14 +542,16 @@ class TestDoctorStrictIdentity:
 
         self._darwin(monkeypatch)
         cli_doctor._doctor_strict_identity(_Broken())
-        assert "no identity channel" in capsys.readouterr().out
+        assert "not routed through the gateway" in capsys.readouterr().out
 
 
 def test_no_new_dependency_on_a_running_gateway() -> None:
     """The diagnosis is pure inspection of this process's own state: it must not
     reach the gateway, because it runs on the failure path of a tool that could
     not even identify its session."""
-    src = Path(mcp_core.__file__).read_text(encoding="utf-8")
+    src = (Path(mcp_core.__file__).parent / "mcp_core_parts" / "identity.py").read_text(
+        encoding="utf-8"
+    )
     body = src.split("def strict_identity_diagnosis(")[1].split("\ndef ")[0]
     for forbidden in ("_api_urlopen", "_get(", "_post(", "urlopen", "requests."):
         assert forbidden not in body, f"diagnosis must not call {forbidden}"

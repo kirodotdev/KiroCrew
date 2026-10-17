@@ -2,84 +2,21 @@
 
 from __future__ import annotations
 
-import errno
 import os
-import shutil
 import stat
-import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
 import pytest
+from group_privacy_helpers import _ACL_USER, _acl_xattr, _serve_acl
 
 from conftest import make_dir_link
+from kiro_crew import github_runner, platform_compat, windows_acl
 from kiro_crew.cloud import aws, source
-
-
-class _FakeGroup:
-    """A ``grp`` record with a chosen member list, for the group-privacy pins.
-
-    Named tuples from ``grp`` cannot be constructed with an arbitrary member list
-    without also supplying a real gid that exists on the host, and the point of
-    these pins is to state the membership rather than inherit the host's.
-    """
-
-    def __init__(self, name: str, members: list[str]) -> None:
-        self.gr_name = name
-        self.gr_gid = -1
-        self.gr_mem = members
-
-
-class _FakeUser:
-    """A ``pwd`` record, for asserting a passwd enumeration that omits this account."""
-
-    def __init__(self, name: str, gid: int) -> None:
-        self.pw_name = name
-        self.pw_gid = gid
-
-
-_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_GROUP, _ACL_MASK, _ACL_OTHER = (
-    0x01,
-    0x02,
-    0x04,
-    0x08,
-    0x10,
-    0x20,
-)
-
-
-def _acl_xattr(*named: tuple[int, int, int], mask: int = 0o7, group_obj: int = 0o0) -> bytes:
-    """A ``system.posix_acl_access`` value in the kernel's on-disk layout.
-
-    ``named`` holds ``(tag, perm, id)`` entries for named users and groups; the
-    owner, owning-group, mask and other entries every extended ACL carries are
-    filled in around them.
-    """
-    unset = 0xFFFFFFFF
-    entries = [(_ACL_USER_OBJ, 0o7, unset), *named, (_ACL_GROUP_OBJ, group_obj, unset)]
-    entries += [(_ACL_MASK, mask, unset), (_ACL_OTHER, 0o0, unset)]
-    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
-
-
-def _serve_acl(monkeypatch, node: Path, value) -> None:
-    """Make ``os.getxattr`` answer ``value`` for ``node``'s access ACL.
-
-    ``value`` is the bytes to return, or an ``OSError`` to raise. Every other
-    path and attribute goes to the real call, so the rest of the chain reads as
-    the host has it.
-    """
-    real = os.getxattr
-
-    def _fake(path, attribute, *a, **kw):
-        if Path(path) == node and attribute == "system.posix_acl_access":
-            if isinstance(value, OSError):
-                raise value
-            return value
-        return real(path, attribute, *a, **kw)
-
-    monkeypatch.setattr(os, "getxattr", _fake)
+from kiro_crew.config import ensure_data_home
 
 
 class TestRepoRoot:
@@ -754,7 +691,7 @@ class TestTarballStagingDirectory:
         # very hole the shared-group pin below covers.
         if os.name != "posix":
             pytest.skip("POSIX mode bits")
-        monkeypatch.setattr(source, "_group_shared_with_another_account", lambda gid: None)
+        monkeypatch.setattr(platform_compat, "_group_shared_with_another_account", lambda gid: None)
         shared = tmp_path / "group-writable-parent"
         home = shared / "data-home"
         home.mkdir(mode=0o700, parents=True)
@@ -778,7 +715,7 @@ class TestTarballStagingDirectory:
         if os.name != "posix":
             pytest.skip("POSIX mode bits")
         monkeypatch.setattr(
-            source,
+            platform_compat,
             "_group_shared_with_another_account",
             lambda gid: "group 'peers', shared with 3 other account(s)",
         )
@@ -814,7 +751,7 @@ class TestTarballStagingDirectory:
         def _must_not_run(gid):
             raise AssertionError("sticky already settles it; the group lookup ran anyway")
 
-        monkeypatch.setattr(source, "_group_shared_with_another_account", _must_not_run)
+        monkeypatch.setattr(platform_compat, "_group_shared_with_another_account", _must_not_run)
         shared = tmp_path / "sticky-group-writable-parent"
         home = shared / "data-home"
         home.mkdir(mode=0o700, parents=True)
@@ -826,127 +763,31 @@ class TestTarballStagingDirectory:
         os.chmod(shared, 0o1775)  # noqa: S103 - sticky + group write is the fixture. lockdown-ok.
         assert source._staging_dir() == home / source._STAGING_DIR_LEAF
 
-    def test_group_privacy_fails_closed_when_the_host_will_not_enumerate(self, monkeypatch):
-        # Drives the REAL helper. A directory backend that resolves the group but
-        # will not enumerate passwd cannot show that no other account shares the gid,
-        # so privacy is UNPROVEN and that must read as shared. The account's own
-        # absence from the enumeration is the control: a non-empty list that does not
-        # contain this account is still not an enumeration.
+    def test_a_group_writable_ancestor_asks_the_shared_group_write_question(
+        self, monkeypatch, tmp_path
+    ):
+        # The provider-CLI resolver asks platform_compat the same question of the
+        # directories a link's path reads, so the guard must ask it too rather than
+        # a copy that could drift: one directory, one answer.
         if os.name != "posix":
-            pytest.skip("POSIX group databases")
-        import grp
-        import pwd
+            pytest.skip("POSIX mode bits")
+        asked = []
 
-        me = pwd.getpwuid(os.geteuid())
-        mine = grp.getgrgid(me.pw_gid)
+        def _admits(path, gid):
+            asked.append((path, gid))
+            return "an ACL entry for another account (uid 4242)"
 
-        monkeypatch.setattr(grp, "getgrgid", lambda gid: _FakeGroup("solo", []))
-        monkeypatch.setattr(grp, "getgrall", lambda: [])
-        monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
-        monkeypatch.setattr(pwd, "getpwall", lambda: [])
-        empty = source._group_shared_with_another_account(mine.gr_gid)
-        assert empty is not None and "will not enumerate" in empty, empty
-
-        monkeypatch.setattr(pwd, "getpwall", lambda: [_FakeUser("somebody-else", 4242)])
-        no_control = source._group_shared_with_another_account(mine.gr_gid)
-        assert no_control is not None and "will not enumerate" in no_control, no_control
-
-        monkeypatch.setattr(pwd, "getpwall", lambda: [me])
-        proven = source._group_shared_with_another_account(mine.gr_gid)
-        assert proven is None, f"a group holding only this account is private, got {proven}"
-
-    def test_both_halves_of_group_membership_are_load_bearing(self, monkeypatch):
-        # Drives the REAL helper. On a corporate host BOTH halves fire at once, so a
-        # single case cannot tell which one is carrying the verdict and a mutation
-        # deleting either would survive. Each case here makes exactly one half fire.
-        if os.name != "posix":
-            pytest.skip("POSIX group databases")
-        import grp
-        import pwd
-
-        me = pwd.getpwuid(os.geteuid())
-        gid = me.pw_gid
-        monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
-        monkeypatch.setattr(grp, "getgrall", lambda: [])
-
-        # Supplementary half alone: gr_mem names somebody else, and passwd shows this
-        # account as the only holder of the gid.
-        monkeypatch.setattr(grp, "getgrgid", lambda g: _FakeGroup("shared", [me.pw_name, "peer"]))
-        monkeypatch.setattr(pwd, "getpwall", lambda: [me])
-        by_gr_mem = source._group_shared_with_another_account(gid)
-        assert by_gr_mem is not None and "shared with 1 other" in by_gr_mem, by_gr_mem
-
-        # Primary half alone: gr_mem is empty, which is exactly how a group shared by
-        # primary membership presents itself, and passwd holds the other account.
-        monkeypatch.setattr(grp, "getgrgid", lambda g: _FakeGroup("shared", []))
-        monkeypatch.setattr(pwd, "getpwall", lambda: [me, _FakeUser("peer", gid)])
-        by_primary = source._group_shared_with_another_account(gid)
-        assert by_primary is not None and "primary group of 1 other" in by_primary, by_primary
-
-        # And a peer on a DIFFERENT gid proves the primary half discriminates on the
-        # gid rather than merely on the enumeration holding more than one row.
-        monkeypatch.setattr(pwd, "getpwall", lambda: [me, _FakeUser("peer", gid + 1)])
-        unrelated = source._group_shared_with_another_account(gid)
-        assert unrelated is None, f"a peer in another group is not a sharer, got {unrelated}"
-
-    def test_group_privacy_matches_this_hosts_own_databases(self):
-        # The real helper against the real host, checked against membership computed
-        # independently here rather than against the helper's own answer. Either
-        # verdict is a pass; disagreeing with the databases is the failure.
-        if os.name != "posix":
-            pytest.skip("POSIX group databases")
-        import grp
-        import pwd
-
-        me = pwd.getpwuid(os.geteuid())
-        entry = grp.getgrgid(me.pw_gid)
-        same_gid = [g for g in grp.getgrall() if g.gr_gid == me.pw_gid]
-        supplementary = {
-            name for g in [entry, *same_gid] for name in g.gr_mem if name != me.pw_name
-        }
-        everyone = pwd.getpwall()
-        enumerates = any(p.pw_name == me.pw_name for p in everyone)
-        primary = {p.pw_name for p in everyone if p.pw_gid == me.pw_gid and p.pw_name != me.pw_name}
-        expected_private = not supplementary and enumerates and not primary
-        verdict = source._group_shared_with_another_account(me.pw_gid)
-        assert (verdict is None) == expected_private, (
-            f"helper said {verdict!r} for gid {me.pw_gid} ({entry.gr_name}), but the "
-            f"databases say supplementary={sorted(supplementary)} "
-            f"enumerates={enumerates} other_primary={len(primary)}"
-        )
-
-    def test_a_second_group_entry_with_the_same_gid_counts_as_shared(self, monkeypatch):
-        # Drives the REAL helper. getgrgid answers with the first entry carrying the
-        # gid, and a second entry with that gid hands its members the same group, so
-        # an empty first entry must not read as private.
-        if os.name != "posix":
-            pytest.skip("POSIX group databases")
-        import grp
-        import pwd
-
-        me = pwd.getpwuid(os.geteuid())
-        gid = me.pw_gid
-        twin = _FakeGroup("twin", ["peer"])
-        twin.gr_gid = gid
-        monkeypatch.setattr(pwd, "getpwuid", lambda uid: me)
-        monkeypatch.setattr(pwd, "getpwall", lambda: [me])
-        monkeypatch.setattr(grp, "getgrgid", lambda g: _FakeGroup("first", []))
-        monkeypatch.setattr(grp, "getgrall", lambda: [_FakeGroup("first", []), twin])
-        verdict = source._group_shared_with_another_account(gid)
-        assert verdict is not None and "shared with 1 other" in verdict, verdict
-
-        # The same entry on ANOTHER gid shares nothing with this one.
-        twin.gr_gid = gid + 1
-        assert source._group_shared_with_another_account(gid) is None
-
-        # A group database that will not enumerate cannot show there is no second
-        # entry, so privacy is unproven and reads as shared.
-        def _no_enumeration():
-            raise OSError(errno.EIO, os.strerror(errno.EIO))
-
-        monkeypatch.setattr(grp, "getgrall", _no_enumeration)
-        unproven = source._group_shared_with_another_account(gid)
-        assert unproven is not None and "will not enumerate" in unproven, unproven
+        monkeypatch.setattr(platform_compat, "group_write_admits_another_account", _admits)
+        shared = tmp_path / "group-writable-parent"
+        home = shared / "data-home"
+        home.mkdir(mode=0o700, parents=True)
+        monkeypatch.setenv("KIROCREW_HOME", str(home))
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(shared, 0o775)  # noqa: S103 - group-writable fixture. lockdown-ok.
+        with pytest.raises(aws.AWSError) as caught:
+            source._staging_dir()
+        assert "writable by an ACL entry for another account (uid 4242)" in str(caught.value)
+        assert (shared.resolve(), shared.stat().st_gid) in asked, asked
 
     def test_an_acl_entry_for_another_account_refuses_a_private_group_writable_parent(
         self, monkeypatch, tmp_path
@@ -956,7 +797,7 @@ class TestTarballStagingDirectory:
         # membership answer alone would accept a directory the peer can write.
         if not hasattr(os, "getxattr"):
             pytest.skip("POSIX ACL xattrs")
-        monkeypatch.setattr(source, "_group_shared_with_another_account", lambda gid: None)
+        monkeypatch.setattr(platform_compat, "_group_shared_with_another_account", lambda gid: None)
         shared = tmp_path / "acl-parent"
         home = shared / "data-home"
         home.mkdir(mode=0o700, parents=True)
@@ -978,7 +819,7 @@ class TestTarballStagingDirectory:
         # backup or web account is an ordinary layout. Nobody else can write it.
         if not hasattr(os, "getxattr"):
             pytest.skip("POSIX ACL xattrs")
-        monkeypatch.setattr(source, "_group_shared_with_another_account", lambda gid: None)
+        monkeypatch.setattr(platform_compat, "_group_shared_with_another_account", lambda gid: None)
         shared = tmp_path / "acl-parent"
         home = shared / "data-home"
         home.mkdir(mode=0o700, parents=True)
@@ -987,104 +828,6 @@ class TestTarballStagingDirectory:
         os.chmod(shared, 0o770)  # noqa: S103 - the ACL mask shape is the fixture. lockdown-ok.
         _serve_acl(monkeypatch, shared, _acl_xattr((_ACL_USER, 0o5, 4242), group_obj=0o7))
         assert source._staging_dir() == home / source._STAGING_DIR_LEAF
-
-    def test_acl_entries_count_only_an_effective_write_by_another_account(
-        self, monkeypatch, tmp_path
-    ):
-        if not hasattr(os, "getxattr"):
-            pytest.skip("POSIX ACL xattrs")
-        node = tmp_path / "acl-node"
-        node.mkdir()
-        me = os.geteuid()
-
-        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, me), (_ACL_USER, 0o7, 0)))
-        assert (
-            source._acl_admits_another_account(node, os.geteuid()) is None
-        ), "this account and root"
-
-        # The mask caps every named entry, so rwx under an r-x mask writes nothing.
-        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, 4242), mask=0o5))
-        assert source._acl_admits_another_account(node, os.geteuid()) is None, "masked write"
-
-        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_USER, 0o7, 4242)))
-        verdict = source._acl_admits_another_account(node, os.geteuid())
-        assert verdict is not None and "uid 4242" in verdict, verdict
-
-    def test_a_named_group_acl_entry_asks_that_groups_membership(self, monkeypatch, tmp_path):
-        if not hasattr(os, "getxattr"):
-            pytest.skip("POSIX ACL xattrs")
-        node = tmp_path / "acl-node"
-        node.mkdir()
-        asked = []
-
-        def _shared_only_for_4343(gid):
-            asked.append(gid)
-            return "group 'peers', shared with 2 other account(s)" if gid == 4343 else None
-
-        monkeypatch.setattr(source, "_group_shared_with_another_account", _shared_only_for_4343)
-        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_GROUP, 0o7, 4343)))
-        verdict = source._acl_admits_another_account(node, os.geteuid())
-        assert verdict is not None and "shared with 2 other" in verdict, verdict
-
-        _serve_acl(monkeypatch, node, _acl_xattr((_ACL_GROUP, 0o7, 4444)))
-        assert (
-            source._acl_admits_another_account(node, os.geteuid()) is None
-        ), "a private named group"
-        assert asked == [4343, 4444], asked
-
-    def test_no_acl_leaves_the_mode_bits_as_the_test(self, monkeypatch, tmp_path):
-        if not hasattr(os, "getxattr"):
-            pytest.skip("POSIX ACL xattrs")
-        node = tmp_path / "acl-node"
-        node.mkdir()
-        for code in (errno.ENODATA, errno.ENOTSUP):
-            _serve_acl(monkeypatch, node, OSError(code, os.strerror(code)))
-            assert source._acl_admits_another_account(node, os.geteuid()) is None, code
-        monkeypatch.delattr(os, "getxattr")
-        assert (
-            source._acl_admits_another_account(node, os.geteuid()) is None
-        ), "no ACL API on this host"
-
-    def test_an_acl_that_cannot_be_read_or_parsed_fails_closed(self, monkeypatch, tmp_path):
-        if not hasattr(os, "getxattr"):
-            pytest.skip("POSIX ACL xattrs")
-        node = tmp_path / "acl-node"
-        node.mkdir()
-        good = _acl_xattr()
-        for value in (
-            struct.pack("<I", 3) + good[4:],  # an unknown version
-            good[:-3],  # a torn entry
-            b"\x02\x00",  # shorter than the header
-            OSError(errno.EACCES, os.strerror(errno.EACCES)),
-        ):
-            _serve_acl(monkeypatch, node, value)
-            verdict = source._acl_admits_another_account(node, os.geteuid())
-            assert verdict == "an ACL this host cannot read", (value, verdict)
-
-    def test_a_real_acl_entry_is_read_from_the_filesystem(self, tmp_path):
-        # The other ACL pins serve crafted bytes. This one asks the kernel, so the
-        # parser is checked against the layout the host really writes.
-        if not hasattr(os, "getxattr") or shutil.which("setfacl") is None:
-            pytest.skip("needs setfacl and POSIX ACL xattrs")
-        node = tmp_path / "acl-node"
-        node.mkdir(mode=0o700)
-
-        def _setfacl(entry: str) -> bool:
-            done = subprocess.run(
-                ["setfacl", "-m", entry, str(node)], capture_output=True, check=False
-            )
-            return done.returncode == 0
-
-        # An entry for this account is trusted, so a parser that reads the real
-        # layout answers None here rather than failing closed on it.
-        if not _setfacl(f"u:{os.geteuid()}:rwx"):
-            pytest.skip("this filesystem will not take a named ACL entry")
-        assert source._acl_admits_another_account(node, os.geteuid()) is None
-        peer = 65534 if os.geteuid() != 65534 else 65533
-        if not _setfacl(f"u:{peer}:rwx"):
-            pytest.skip("this namespace maps no other uid")
-        verdict = source._acl_admits_another_account(node, os.geteuid())
-        assert verdict is not None and f"uid {peer}" in verdict, verdict
 
     def test_a_sticky_ancestor_is_accepted(self, monkeypatch, tmp_path):
         # The sticky bit is exactly the rule that only an entry's owner may rename
@@ -1313,6 +1056,378 @@ class TestTarballStagingDirectory:
         leaked = [p for p in staged if Path(p).exists()]
         assert not leaked, f"an interrupted archive leaked staged tarball(s): {leaked}"
         assert list((home / source._STAGING_DIR_LEAF).iterdir()) == []
+
+
+class TestWindowsStagingAncestorWalk:
+    """The Windows arm of the staging ancestor walk (:func:`source._first_replaceable_windows`).
+
+    The arm reuses :func:`github_runner.check_provider_path_component_windows` per
+    node, so these pins drive that shared policy by injecting a fake ``describe`` on
+    the module it reads through and the launcher SID. The decision is a pure
+    function of the ``ComponentSecurity`` dataclass, so it runs on the Linux CI
+    runner with no real Windows host.
+
+    Not run on a real Windows host.
+    """
+
+    _ME = "S-1-5-21-1-2-3-1001"
+    _PEER = "S-1-5-21-1-2-3-1002"
+    _OWNER_RIGHTS = "S-1-3-4"
+
+    def _clean(self, owner_sid: str = _ME, **over):
+        """A ``ComponentSecurity`` that passes the policy, overridable per field."""
+        fields = dict(
+            owner_sid=owner_sid,
+            owner_name="DOMAIN\\me",
+            null_dacl=False,
+            writers=(),
+            unparsable_ace_types=(),
+            volume_is_local=True,
+        )
+        fields.update(over)
+        return windows_acl.ComponentSecurity(**fields)
+
+    @pytest.fixture
+    def _on_windows(self, monkeypatch):
+        """Pretend to be on Windows with a verifiable launcher SID."""
+        monkeypatch.setattr(source.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(source.platform_compat, "current_user_sid", lambda: self._ME)
+
+    def _serve(self, monkeypatch, by_node: dict):
+        """Make ``describe`` answer from ``by_node`` keyed on resolved path.
+
+        Patched on the module the shared policy reads through
+        (``github_runner.windows_acl``). A value may be a ``ComponentSecurity`` to
+        return or an exception to raise. A node not in the map gets a clean,
+        launcher-owned descriptor, so a test states only the ancestor it is about.
+        """
+
+        def _describe(path):
+            value = by_node.get(Path(path), self._clean())
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        monkeypatch.setattr(github_runner.windows_acl, "describe", _describe)
+
+    def _chain(self, monkeypatch, tmp_path):
+        """A two-level chain (home / data-home) scoped by ``_chain_the_launcher_owns``."""
+        home = tmp_path / "home"
+        data_home = home / "data-home"
+        data_home.mkdir(parents=True)
+        monkeypatch.setattr(source.Path, "home", staticmethod(lambda: home))
+        return home, data_home
+
+    def test_a_clean_chain_is_accepted(self, monkeypatch, tmp_path, _on_windows):
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {})
+        assert source._first_replaceable(data_home) is None
+
+    def test_a_foreign_owned_ancestor_is_refused(self, monkeypatch, tmp_path, _on_windows):
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {home.resolve(): self._clean(owner_sid=self._PEER)})
+        result = source._first_replaceable(data_home)
+        assert result is not None
+        node, reason = result
+        assert node == home.resolve()
+        assert "owned by another account" in reason
+
+    def test_a_peer_writer_on_an_ancestor_is_refused(self, monkeypatch, tmp_path, _on_windows):
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        peer = windows_acl.Writer(
+            sid=self._PEER, name="DOMAIN\\peer", rights=("FILE_DELETE_CHILD",)
+        )
+        self._serve(monkeypatch, {home.resolve(): self._clean(writers=(peer,))})
+        result = source._first_replaceable(data_home)
+        assert result is not None
+        node, reason = result
+        assert node == home.resolve()
+        assert self._PEER in reason and "replaced" in reason
+
+    def test_the_launchers_own_write_is_not_a_foreign_swap(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # The relaxed-mode analog of trusting ``uid``: the launcher is answerable
+        # for the chain, so its own substitution-capable right on a directory it
+        # owns is not a hostile writer.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        me = windows_acl.Writer(sid=self._ME, name="DOMAIN\\me", rights=("WRITE_DAC",))
+        self._serve(monkeypatch, {data_home.resolve(): self._clean(writers=(me,))})
+        assert source._first_replaceable(data_home) is None
+
+    def test_well_known_system_sids_are_trusted(self, monkeypatch, tmp_path, _on_windows):
+        # SYSTEM / Administrators / TrustedInstaller stand in for root, as both
+        # owner and writer -- a principal already owning the host does not need a
+        # directory to substitute the tarball.
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        system = next(iter(windows_acl.WELL_KNOWN_TRUSTED_SIDS))
+        admin = windows_acl.Writer(
+            sid="S-1-5-32-544", name="BUILTIN\\Administrators", rights=("WRITE_OWNER",)
+        )
+        self._serve(
+            monkeypatch,
+            {home.resolve(): self._clean(owner_sid=system, writers=(admin,))},
+        )
+        assert source._first_replaceable(data_home) is None
+
+    def test_owner_rights_from_the_data_home_lockdown_is_trusted(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # ensure_data_home locks the data home with an inheritable owner-only DACL
+        # whose grants are (S-1-3-4, me), so every node on this chain carries an
+        # Owner Rights full-control ACE. It is this account's own lockdown, not a
+        # foreign writer -- refusing on it would reject the ordinary locked-down
+        # home on every Windows launch. The provider-executable walk leaves
+        # trust_owner_rights off, which is why the staging walk must set it.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        owner_rights = windows_acl.Writer(
+            sid=self._OWNER_RIGHTS, name="NT AUTHORITY\\OWNER RIGHTS", rights=("WRITE_DAC",)
+        )
+        self._serve(monkeypatch, {data_home.resolve(): self._clean(writers=(owner_rights,))})
+        assert source._first_replaceable(data_home) is None
+
+    def test_the_policy_is_the_shared_github_runner_check(self, monkeypatch, tmp_path, _on_windows):
+        # The per-node decision must BE
+        # github_runner.check_provider_path_component_windows, not a second copy. If
+        # that function is not called, the walk cannot have asked the policy -- so a
+        # peer-writable ancestor would wrongly pass.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        calls: list = []
+        real = github_runner.check_provider_path_component_windows
+
+        def _spy(path, **kw):
+            calls.append((Path(path), kw.get("strict"), kw.get("trust_owner_rights")))
+            return real(path, **kw)
+
+        monkeypatch.setattr(github_runner, "check_provider_path_component_windows", _spy)
+        self._serve(monkeypatch, {})
+        source._first_replaceable(data_home)
+        assert calls, "the shared github_runner check was never called"
+        # Relaxed mode, and Owner Rights trusted on this chain.
+        assert all(strict is False for _, strict, _ in calls)
+        assert all(tor is True for _, _, tor in calls)
+
+    def test_a_null_dacl_ancestor_is_refused(self, monkeypatch, tmp_path, _on_windows):
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {home.resolve(): self._clean(null_dacl=True)})
+        result = source._first_replaceable(data_home)
+        assert result is not None and "NULL DACL" in result[1]
+
+    def test_an_unparsable_ace_type_refuses(self, monkeypatch, tmp_path, _on_windows):
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {home.resolve(): self._clean(unparsable_ace_types=(9,))})
+        result = source._first_replaceable(data_home)
+        assert result is not None and "cannot evaluate" in result[1]
+
+    def test_a_remote_volume_ancestor_is_refused(self, monkeypatch, tmp_path, _on_windows):
+        # The trusted SIDs are machine-local alias SIDs; off a local volume they
+        # name a different principal, so trusting them would be unsound.
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {home.resolve(): self._clean(volume_is_local=False)})
+        result = source._first_replaceable(data_home)
+        assert result is not None and "local volume" in result[1]
+
+    def test_an_unreadable_descriptor_fails_closed(self, monkeypatch, tmp_path, _on_windows):
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(
+            monkeypatch,
+            {home.resolve(): windows_acl.AclUnavailable("GetNamedSecurityInfo failed")},
+        )
+        result = source._first_replaceable(data_home)
+        assert result is not None and "unreadable" in result[1]
+
+    def test_an_unverifiable_launcher_sid_fails_closed(self, monkeypatch, tmp_path):
+        # The POSIX arm cannot reach this (geteuid always answers), but the Windows
+        # token read can fail, and an unverifiable launcher is not a trusted one.
+        _, data_home = self._chain(monkeypatch, tmp_path)
+        monkeypatch.setattr(source.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(source.platform_compat, "current_user_sid", lambda: None)
+        self._serve(monkeypatch, {})
+        result = source._first_replaceable(data_home)
+        assert result is not None and "SID" in result[1]
+
+    def test_a_windows_chain_with_a_peer_writable_ancestor_is_refused(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # The core guarantee: a Windows chain is walked, not waved through, so a
+        # peer-writable ancestor is caught rather than returning None.
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        peer = windows_acl.Writer(sid=self._PEER, name="DOMAIN\\peer", rights=("DELETE",))
+        self._serve(monkeypatch, {home.resolve(): self._clean(writers=(peer,))})
+        assert source._first_replaceable(data_home) is not None
+
+    def _relocated_chain(self, monkeypatch, tmp_path):
+        """A data home relocated OUTSIDE the operator's home, so the whole resolved
+        chain -- drive root included -- is in scope and ``_chain_the_launcher_owns``
+        returns the anchor as its first node.
+
+        ``Path.home()`` is pinned to a sibling of the data home (not an ancestor),
+        matching the relocated shape the live test uses. Returns ``(root, data_home)``
+        where ``root`` is the anchor node the walk visits first.
+        """
+        sibling_home = tmp_path / "elsewhere-home"
+        sibling_home.mkdir()
+        data_home = tmp_path / "relocated" / "data-home"
+        data_home.mkdir(parents=True)
+        monkeypatch.setattr(source.Path, "home", staticmethod(lambda: sibling_home))
+        root = Path(data_home.resolve().anchor)
+        return root, data_home
+
+    def test_a_delete_only_grant_on_the_volume_root_is_accepted(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # A volume root cannot be renamed or deleted, so a writer whose only right
+        # on the root is DELETE grants no swap vector. The stock secondary-NTFS
+        # ACL (Authenticated Users: Modify, which carries DELETE but not
+        # FILE_DELETE_CHILD) must not refuse a data home relocated under D:\.
+        root, data_home = self._relocated_chain(monkeypatch, tmp_path)
+        au = windows_acl.Writer(
+            sid="S-1-5-11", name="NT AUTHORITY\\Authenticated Users", rights=("DELETE",)
+        )
+        self._serve(monkeypatch, {root: self._clean(writers=(au,))})
+        assert source._first_replaceable(data_home) is None
+
+    def test_file_delete_child_on_the_volume_root_is_still_refused(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # The root exemption is DELETE-only: FILE_DELETE_CHILD on the root is the
+        # right that actually lets a peer swap a child of the root, so it refuses.
+        root, data_home = self._relocated_chain(monkeypatch, tmp_path)
+        peer = windows_acl.Writer(
+            sid=self._PEER, name="DOMAIN\\peer", rights=("FILE_DELETE_CHILD",)
+        )
+        self._serve(monkeypatch, {root: self._clean(writers=(peer,))})
+        result = source._first_replaceable(data_home)
+        assert result is not None
+        node, reason = result
+        assert node == root
+        assert self._PEER in reason and "replaced" in reason
+
+    def test_a_delete_right_on_a_non_root_node_is_still_refused(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # The exemption applies ONLY to the volume root. A peer with DELETE on a
+        # non-root ancestor can rename that entry away, so it must still refuse --
+        # the ordinary peer-writable-ancestor hazard this PR exists to catch.
+        root, data_home = self._relocated_chain(monkeypatch, tmp_path)
+        mid = data_home.resolve().parent
+        assert mid != root  # a genuine intermediate node, not the anchor
+        peer = windows_acl.Writer(sid=self._PEER, name="DOMAIN\\peer", rights=("DELETE",))
+        self._serve(monkeypatch, {mid: self._clean(writers=(peer,))})
+        result = source._first_replaceable(data_home)
+        assert result is not None
+        node, reason = result
+        assert node == mid
+        assert self._PEER in reason and "replaced" in reason
+
+    def test_only_the_volume_root_is_passed_volume_root_true(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # Pin that the walk marks exactly the anchor node volume_root=True and
+        # every other node volume_root=False, so the exemption cannot silently
+        # widen to intermediate directories.
+        root, data_home = self._relocated_chain(monkeypatch, tmp_path)
+        seen: dict = {}
+        real = github_runner.check_provider_path_component_windows
+
+        def _spy(path, **kw):
+            seen[Path(path)] = kw.get("volume_root")
+            return real(path, **kw)
+
+        monkeypatch.setattr(github_runner, "check_provider_path_component_windows", _spy)
+        self._serve(monkeypatch, {})
+        source._first_replaceable(data_home)
+        assert seen.get(root) is True
+        assert all(flag is False for node, flag in seen.items() if node != root)
+
+    def test_an_unexpected_describe_exception_fails_closed(
+        self, monkeypatch, tmp_path, _on_windows
+    ):
+        # describe() can raise something other than AclUnavailable (e.g. an OSError
+        # from the volume probe). The shared check only maps AclUnavailable to a
+        # ValueError, so the walk must catch the rest and fail closed on the node
+        # rather than let a raw exception escape the launch prologue.
+        home, data_home = self._chain(monkeypatch, tmp_path)
+        self._serve(monkeypatch, {home.resolve(): OSError("volume probe failed")})
+        result = source._first_replaceable(data_home)
+        assert result is not None
+        node, reason = result
+        assert node == home.resolve()
+        assert "could not be checked" in reason and "OSError" in reason
+
+    def test_the_windows_refusal_carries_the_icacls_remedy(self, monkeypatch, tmp_path):
+        # Mutation guard: the refusal message on Windows must give icacls guidance,
+        # not the POSIX chmod/setfacl remedy, and must break inheritance first
+        # because the offending ACE on these chains is usually inherited.
+        monkeypatch.setattr(source.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            source, "_first_replaceable", lambda base: (Path("D:\\crew"), "is peer-writable")
+        )
+        monkeypatch.setattr(source, "config_dir", lambda: tmp_path)
+        with pytest.raises(aws.AWSError) as excinfo:
+            source._staging_dir()
+        message = str(excinfo.value)
+        assert "icacls" in message and "/inheritance:d" in message
+        assert "chmod" not in message and "setfacl" not in message
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="real Windows security descriptors")
+    @pytest.mark.parametrize("relocated", [False, True])
+    def test_a_real_data_home_passes_the_live_descriptor_walk(
+        self, monkeypatch, tmp_path, relocated
+    ):
+        """The walk accepts a real, freshly-locked-down data home on a Windows host.
+
+        This is the one case the synthetic-descriptor tests cannot cover: it runs
+        the live ``windows_acl.describe`` read (``advapi32``) against a data home
+        that ``ensure_data_home`` actually created and tightened with its
+        inheritable owner-only DACL, with NOTHING mocked. It is the proof that the
+        trusted set -- the launcher's SID plus Owner Rights (``S-1-3-4``) plus the
+        well-known machine SIDs -- matches the entries the real lockdown and the
+        real profile chain carry, rather than the author's model of them. A missing
+        trusted principal would refuse the ordinary launch, and only a real
+        descriptor would reveal it.
+
+        Two shapes, because they walk different chains
+        (:func:`source._chain_the_launcher_owns`): the default-shaped home nested
+        under the operator's own home stops the walk at that home, while a home
+        relocated outside it is walked whole, ancestors included.
+
+        Skipped off Windows: ``describe`` raises ``AclUnavailable`` on a platform
+        with no security API, so this asserts nothing there. It runs on the Windows
+        CI shard, which is the only place the live read exists.
+        """
+        if relocated:
+            # Outside the operator's profile home, so the whole resolved chain --
+            # up to the drive root -- is in scope and every ancestor's real
+            # descriptor is read. Path.home() is pinned to a SIBLING of the data
+            # home (not an ancestor), so the home is genuinely outside it; without
+            # this, on a Windows runner tmp_path sits under %TEMP% inside the real
+            # profile, _chain_the_launcher_owns stops at the profile, and this
+            # case would walk the same short chain as the one below.
+            sibling_home = tmp_path / "elsewhere-home"
+            sibling_home.mkdir()
+            monkeypatch.setattr(source.Path, "home", staticmethod(lambda: sibling_home))
+            base = tmp_path / "relocated-data-home"
+        else:
+            # Under a stand-in profile home, the default shape: the walk stops at
+            # that home.
+            profile = tmp_path / "profile"
+            profile.mkdir()
+            monkeypatch.setattr(source.Path, "home", staticmethod(lambda: profile))
+            base = profile / ".kiro" / "crew"
+        monkeypatch.setenv("KIROCREW_HOME", str(base))
+
+        # Build and lock down the real data home exactly as the gateway prologue
+        # does, then walk it with the live descriptor read and no mocks. For the
+        # relocated shape, assert the walk reached the drive root, so a passing run
+        # proves a full above-profile chain returns None rather than a short one.
+        home = ensure_data_home()
+        if relocated:
+            chain = source._chain_the_launcher_owns(home)
+            assert chain[0] == Path(
+                home.resolve().anchor
+            ), "relocated chain must start at the drive root"
+        assert source._first_replaceable_windows(home) is None
 
 
 class TestSourceChecksumPin:
@@ -1831,6 +1946,54 @@ class TestEnsureInstanceBoundary:
         monkeypatch.setattr(aws, "run_aws", fake_run)
         with pytest.raises(aws.AWSError, match="iam:CreatePolicy"):
             source.ensure_instance_boundary("dev", "us-east-1")
+
+    def test_read_denied_names_the_read_verb_and_skips_create(self, monkeypatch):
+        # A DENIED get-policy is not an absent boundary. Reaching create-policy
+        # here would surface the CREATE verb as the missing grant, sending an
+        # operator who lacks only the read to grant iam:CreatePolicy — a write they
+        # do not want and which does not fix the launch. The read verb is named and
+        # create is never attempted.
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        calls = []
+
+        def fake_run(args, *a, **k):
+            calls.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (
+                    255,
+                    "",
+                    "An error occurred (AccessDenied): User: "
+                    "arn:aws:sts::123456789012:assumed-role/launcher/s is not "
+                    "authorized to perform: iam:GetPolicy on resource: "
+                    "arn:aws:iam::123456789012:policy/kirocrew-ec2-boundary",
+                )
+            raise AssertionError(f"must not run {args[:2]} after a denied read")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        with pytest.raises(aws.AWSError, match="iam:GetPolicy") as excinfo:
+            source.ensure_instance_boundary("dev", "us-east-1")
+        assert excinfo.value.missing_action == "iam:GetPolicy"
+        assert "iam:CreatePolicy" not in str(excinfo.value)
+        assert ["iam", "create-policy"] not in calls
+
+    def test_absent_boundary_still_falls_through_to_create(self, monkeypatch):
+        # The denied-read branch must not swallow the ordinary absent case: a
+        # boundary that does not exist answers NoSuchEntity, not AccessDenied, and
+        # is created as before.
+        from kiro_crew.cloud import iam
+
+        monkeypatch.setattr(source, "_account_id", lambda *a: _ACCT12)
+        calls = []
+
+        def fake_run(args, *a, **k):
+            calls.append(list(args[:2]))
+            if args[:2] == ["iam", "get-policy"]:
+                return (255, "", "An error occurred (NoSuchEntity): cannot be found.")
+            return (0, "{}", "")
+
+        monkeypatch.setattr(aws, "run_aws", fake_run)
+        assert source.ensure_instance_boundary("dev", "us-east-1") == iam.boundary_arn(_ACCT12)
+        assert ["iam", "create-policy"] in calls
 
     def test_raises_without_account_id(self, monkeypatch):
         monkeypatch.setattr(source, "_account_id", lambda *a: "")

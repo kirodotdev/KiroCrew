@@ -6,7 +6,7 @@
  *   → addSlotOptimistic → switchSlot → slot state updates.
  *
  * Complements unit tests in src/test/AssistantMessage.test.tsx (button rendering)
- * and src/test/chatSlice.test.ts (thunk isolated).
+ * and src/test/chatSlice.slots.test.ts (thunk isolated).
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { Provider } from 'react-redux'
@@ -137,7 +137,7 @@ describe('Fork Session Integration', () => {
     // Option B: forking must NOT pick up the composer text. The fork request
     // carries no prompt, so nothing is auto-submitted into the new session and
     // the unsent draft stays parked in the source slot. Mirrors the post-fix
-    // ChatPage.handleFork (fork + switchSlot only — the composer is untouched).
+    // useForkSession.handleFork (fork + switchSlot only — the composer is untouched).
     const store = createTestStore()
     let forkBody: Record<string, unknown> | null = null
     server.use(

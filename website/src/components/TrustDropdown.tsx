@@ -1,12 +1,15 @@
 import { useState, type ReactNode } from 'react'
-import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown } from 'lucide-react'
+import { Handshake, Shield, ShieldPlus, ShieldCheck, BookOpen, ChevronDown, Clock } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem
 } from './ui/dropdown-menu'
 import { baseCommandLabel, trustBasePattern } from '../utils/trustPatterns'
+import { GRANT_DURATIONS, grantEndsAt, grantTtlSeconds, type GrantDuration } from '../utils/grantDuration'
+import { fmtTime } from '../i18n/format'
 
 import { i18nT } from '../i18n/t'
+import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
@@ -50,24 +53,52 @@ interface TrustDropdownProps {
   trustBaseLabelKey?: string
   /** Extra interpolation values for the tier labels (e.g. `role`). */
   labelValues?: Record<string, string>
-  onAction: (action: string, pattern?: string) => void
+  /** Offers each command-scoped tier a second and third time with a lifetime
+      (an hour, the rest of today) beside its chat-long row, which then names
+      its own lifetime ("for this session", the word the session-wide row
+      already uses) so no row reads as permanent. Only a surface whose endpoint
+      records `ttl_seconds` on the grant sets it; elsewhere the timed rows do
+      not render, because a label naming a lifetime the backend never records
+      would be consent to a grant that is not the one made. */
+  timedGrants?: boolean
+  /** `ttlSeconds` is present only for a timed row, and is the grant's
+      lifetime in whole seconds. */
+  onAction: (action: string, pattern?: string, ttlSeconds?: number) => void
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, onAction }: TrustDropdownProps) {
+const COMMAND_TIMED_KEYS: Record<GrantDuration, string> = {
+  hour: 'components.trustDropdown.trust_this_command_hour',
+  today: 'components.trustDropdown.trust_this_command_today',
+}
+
+const BASE_TIMED_KEYS: Record<GrantDuration, string> = {
+  hour: 'components.trustDropdown.trust_all_base_hour',
+  today: 'components.trustDropdown.trust_all_base_today',
+}
+
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, trustReadsLabelKey, showTrustAll = true, showTrustBase = true, trustCommandLabelKey, trustBaseLabelKey, labelValues, timedGrants = false, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
   // tiered trust grants an identical scope for the same click.
   const basePattern = trustBasePattern(baseCommand)
   const baseLabel = baseCommandLabel(baseCommand)
-  const commandKey = trustCommandLabelKey ?? 'components.trustDropdown.trust_this_command'
-  const baseKey = trustBaseLabelKey ?? 'components.trustDropdown.trust_all_base'
+  // A timed row names the clock time its grant ends, as of this render, so
+  // "for an hour" and "until midnight" read as a time and not a guess.
+  const endsAt = (duration: GrantDuration) => fmtTime(grantEndsAt(duration, new Date()))
+  const commandKey = trustCommandLabelKey
+    ?? (timedGrants ? 'components.trustDropdown.trust_this_command_session' : 'components.trustDropdown.trust_this_command')
+  const baseKey = trustBaseLabelKey
+    ?? (timedGrants ? 'components.trustDropdown.trust_all_base_session' : 'components.trustDropdown.trust_all_base')
 
   // One list, built once, so the count below and the items rendered can never
   // disagree. The command label is interpolated INTO a whole sentence rather
   // than glued between two fragments: word order around a quoted operand
   // differs per language, and a fragment pair can only express the English one.
   const tiers: {
+    /** The row's React key. A timed row shares its tier's `action`, so the
+     *  action alone cannot key the list. */
+    id: string
     action: string
     /** Fires this tier's decision. A closure rather than an (action, pattern)
      *  pair so a pattern-less tier calls ``onAction`` with ONE argument, the
@@ -79,8 +110,32 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
     body: ReactNode
     plain: string
   }[] = []
+  // A command row's body, shared by the chat-long row and its timed rows. Why
+  // it renders the whole command, wrapped, is set out on the command row below.
+  const commandBody = (key: string, extra: Record<string, string> = {}) => (
+    <span className="min-w-0 whitespace-pre-wrap" title={fullCommand}>
+      <Trans
+        i18nKey={key}
+        values={{ cmd: fullCommand, ...extra, ...labelValues }}
+        components={{ mono: <span className="font-mono break-all" /> }}
+      />
+    </span>
+  )
+  // A family row's body. The timed rows' labels carry a lifetime after the
+  // scope, so they wrap instead of truncating: a clipped tail would hide the
+  // very lifetime the row grants.
+  const baseBody = (key: string, extra: Record<string, string> = {}) => (
+    <span className={timedGrants ? 'min-w-0' : 'truncate'}>
+      <Trans
+        i18nKey={key}
+        values={{ base: baseLabel, ...extra, ...labelValues }}
+        components={{ mono: <span className="font-mono" /> }}
+      />
+    </span>
+  )
   if (hasCommand) {
     tiers.push({
+      id: 'trust_command',
       action: 'trust_command',
       fire: () => onAction('trust_command', fullCommand),
       icon: <Shield size={12} className="shrink-0 text-accent" />,
@@ -109,41 +164,55 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       // two letters ("until Kiro Crew rest / arts") is prose the reader has to
       // reassemble on the consent surface; those words wrap at spaces, and
       // only the command -- which may have none -- breaks anywhere.
-      body: (
-        <span className="min-w-0 whitespace-pre-wrap" title={fullCommand}>
-          <Trans
-            i18nKey={commandKey}
-            values={{ cmd: fullCommand, ...labelValues }}
-            components={{ mono: <span className="font-mono break-all" /> }}
-          />
-        </span>
-      ),
+      body: commandBody(commandKey),
       // No `aria-label` beside the visible text: the row's accessible name is
       // its own content, which is now the whole command, so an added label
       // could only duplicate it -- and would silently stop matching the visible
       // one the day either changes (WCAG 2.5.3).
       plain: i18nT(commandKey, { cmd: fullCommand, ...labelValues }),
     })
+    if (timedGrants) {
+      for (const duration of GRANT_DURATIONS) {
+        const key = COMMAND_TIMED_KEYS[duration]
+        tiers.push({
+          id: `trust_command_${duration}`,
+          action: 'trust_command',
+          // The lifetime is measured at the click, so "the rest of today" ends
+          // at the midnight the user is in when they choose it.
+          fire: () => onAction('trust_command', fullCommand, grantTtlSeconds(duration, new Date())),
+          icon: <Clock size={12} className="shrink-0 text-accent" />,
+          body: commandBody(key, { time: endsAt(duration) }),
+          plain: i18nT(key, { cmd: fullCommand, time: endsAt(duration), ...labelValues }),
+        })
+      }
+    }
   }
   if (hasCommand && isShell && showTrustBase) {
     tiers.push({
+      id: 'trust_base',
       action: 'trust_base',
       fire: () => onAction('trust_base', basePattern),
       icon: <ShieldPlus size={12} className="shrink-0 text-ok" />,
-      body: (
-        <span className="truncate">
-          <Trans
-            i18nKey={baseKey}
-            values={{ base: baseLabel, ...labelValues }}
-            components={{ mono: <span className="font-mono" /> }}
-          />
-        </span>
-      ),
+      body: baseBody(baseKey),
       plain: i18nT(baseKey, { base: baseLabel, ...labelValues }),
     })
+    if (timedGrants) {
+      for (const duration of GRANT_DURATIONS) {
+        const key = BASE_TIMED_KEYS[duration]
+        tiers.push({
+          id: `trust_base_${duration}`,
+          action: 'trust_base',
+          fire: () => onAction('trust_base', basePattern, grantTtlSeconds(duration, new Date())),
+          icon: <Clock size={12} className="shrink-0 text-ok" />,
+          body: baseBody(key, { time: endsAt(duration) }),
+          plain: i18nT(key, { base: baseLabel, time: endsAt(duration), ...labelValues }),
+        })
+      }
+    }
   }
   if (trustReadsLabelKey) {
     tiers.push({
+      id: 'trust_reads',
       action: 'trust_reads',
       fire: () => onAction('trust_reads'),
       icon: <BookOpen size={12} className="shrink-0 text-accent" />,
@@ -156,6 +225,7 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
       ? i18nT(trustAllLabelKey)
       : i18nT('components.trustDropdown.trust_all_tools')
     tiers.push({
+      id: 'trust',
       action: 'trust',
       fire: () => onAction('trust'),
       icon: <ShieldCheck size={12} className="shrink-0 text-warn" />,
@@ -190,27 +260,31 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
   }
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <button disabled={disabled} className={className}>
-          <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
-        </button>
-      </DropdownMenuTrigger>
-      {/* The width cap is viewport-aware: a flat max-w overflows a narrow screen
-          (measured at 320px, the menu reached 440px and ran off the right edge),
-          which hides the very label this menu exists to make readable. */}
-      <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]">
-        {tiers.map(tier => (
-          <DropdownMenuItem
-            key={tier.action}
-            className="gap-2 text-[12px]"
-            onSelect={tier.fire}
-          >
-            {tier.icon}
-            {tier.body}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+    // A trust grant is the agent's own ceiling, wherever the menu is used:
+    // the provider marks what it portals, the content says so itself as well.
+    <GuideTrustRootProvider>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
+          <button disabled={disabled} className={className}>
+            <Handshake size={12} className="shrink-0" />{i18nT('components.trustDropdown.trust')}<ChevronDown size={10} className="shrink-0 opacity-70" />
+          </button>
+        </DropdownMenuTrigger>
+        {/* The width cap is viewport-aware: a flat max-w overflows a narrow screen
+            (measured at 320px, the menu reached 440px and ran off the right edge),
+            which hides the very label this menu exists to make readable. */}
+        <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]" {...guideTrustRoot}>
+          {tiers.map(tier => (
+            <DropdownMenuItem
+              key={tier.id}
+              className="gap-2 text-[12px]"
+              onSelect={tier.fire}
+            >
+              {tier.icon}
+              {tier.body}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </GuideTrustRootProvider>
   )
 }

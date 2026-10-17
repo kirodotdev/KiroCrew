@@ -39,7 +39,9 @@
       "last_run_ts": null,
       "last_status": null,
       "last_error": null,
-      "created_ts": 1737000000.0
+      "created_ts": 1737000000.0,
+      "source_preset": "pr-review-followthrough",
+      "source_template_prompt": "stale template text"
     },
     {
       "id": "fixture-cron-paused",

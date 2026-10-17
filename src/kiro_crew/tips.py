@@ -22,7 +22,7 @@ from aiohttp import web
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
-from kiro_crew.context import ContextBuilder
+from kiro_crew.context import ContextBuilder, ui_language_tag
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -101,7 +101,7 @@ rather than inventing one)
 - doc: the doc filename from the catalog
 - cta_prompt: a ready-to-send chat message demonstrating the feature
 
-Feature catalog:
+{language}Feature catalog:
 ---
 {catalog}
 ---
@@ -116,6 +116,22 @@ Dismissed tip IDs (never suggest): {dismissed_ids}
 
 Respond with ONLY a JSON array. No explanation, no markdown fences.
 """
+
+# Filled into the ``{language}`` slot of ``_PROMPT_TEMPLATE`` when the workspace has
+# an explicit UI language. A tip renders beside chrome in that language, so it
+# follows the configured tag and not the language of the user context
+# (``chat_title._TITLE_LANGUAGE_TEMPLATE``). ``id``, ``feature`` and ``doc`` stay as
+# given: ``doc`` is matched against the catalog and doubles as the dismissal
+# identity. The tag is shape- and catalog-validated by ``context.ui_language_tag``
+# before it reaches the prompt.
+_LANGUAGE_TEMPLATE = (
+    'LANGUAGE: Write each tip\'s "title", "body" and "why" in the language of BCP-47 '
+    "tag {lang}. That is the language the dashboard around the tip is rendered in, so "
+    "the text must be in it even when the user context below is in another language. "
+    "Keep code, commands, key names, Settings paths and product names verbatim. The "
+    '"id" stays a kebab-case ASCII identifier, and "feature" and "doc" stay exactly as '
+    "the catalog gives them.\n\n"
+)
 
 
 # ── Catalog ──
@@ -1104,17 +1120,19 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         return []
 
     st = cache.state
+    loop2 = asyncio.get_running_loop()
+    cfg = await loop2.run_in_executor(None, KiroCrewConfig.load)
+    tips_model = cfg.dashboard.tips_model
+    ui_language = ui_language_tag(cfg)
     prompt = _PROMPT_TEMPLATE.format(
         max_tips=_MAX_GENERATED_TIPS,
         catalog=catalog_text,
         context=context or "(no user context available)",
         shown_ids=", ".join(st.shown.keys()) or "none",
         dismissed_ids=", ".join(_active_pool_dismissals(st)) or "none",
+        language=_LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else "",
     )
 
-    loop2 = asyncio.get_running_loop()
-    cfg = await loop2.run_in_executor(None, KiroCrewConfig.load)
-    tips_model = cfg.dashboard.tips_model
     # Delegate acquire / pin-model / drive / reject-tools / destroy — and the
     # reactive model-rejection fallback — to run_bg_oneliner.
     # tips_model (default "auto") is resolved at the wire chokepoint; a rejected

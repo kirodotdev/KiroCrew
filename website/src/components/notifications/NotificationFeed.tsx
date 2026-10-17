@@ -19,8 +19,10 @@ import {
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
+import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 /** localStorage key for app channels the user has already decided on (keep or
  *  mute) via the first-notification prompt. System channels never prompt. */
 export const SEEN_CHANNELS_STORAGE_KEY = 'mc:notif:seenChannels'
@@ -95,6 +97,15 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     }
     return list
   }, [items, filter, showMuted])
+
+  // Only a feed showing a crewmate's note reads the roster, so only that feed
+  // can report the roster read failing. While a crewmate note is selected its
+  // detail panel reports the failure, so the feed leaves it to that one copy.
+  const showsCrewmate = useMemo(() => filtered.some(n => noteMember(n)), [filtered])
+  const detailReportsRoster = useMemo(
+    () => !!selectedTs && items.some(n => n.ts === selectedTs && noteMember(n)),
+    [items, selectedTs],
+  )
 
   // First notification from a new app channel gets an inline keep/mute prompt
   // (attached to the newest such row). System channels never prompt; a channel
@@ -260,8 +271,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   const searchRow = (
     <div className="flex gap-2 mb-2 items-center shrink-0">
       <div className="flex-1"><SearchInput className="[&>input]:!bg-bg-elevated/40 [&>input]:!border-border/60" placeholder={i18nT('components.notifications.notificationFeed.search')} value={filter} onChange={e => setFilter(e.target.value)} /></div>
-      {!mac && unread > 0 && <button className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.all')}</button>}
-      {!mac && items.length > 0 && <button className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
+      {!mac && unread > 0 && <button {...uiLocation('notifications.page-mark-all-read')} className="px-2 py-1 rounded-md border border-ok/40 bg-ok/10 text-ok-text text-[12px] font-semibold cursor-pointer hover:bg-ok/20 transition-all font-body whitespace-nowrap" onClick={() => dispatch(ackAllNotifications())}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.all')}</button>}
+      {!mac && items.length > 0 && <button {...uiLocation('notifications.page-clear-all')} className="px-2 py-1 rounded-md border border-danger/40 bg-transparent text-danger hover:text-danger-text text-[12px] font-medium cursor-pointer hover:bg-danger/10 transition-all font-body whitespace-nowrap" onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}><X className="lucide-inline" /> {i18nT('components.notifications.notificationFeed.clear')}</button>}
     </div>
   )
 
@@ -280,6 +291,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
         type="button"
         className="px-2.5 py-1 rounded-md text-[12px] font-medium cursor-pointer bg-transparent text-muted border border-border-strong hover:text-text transition-colors font-body whitespace-nowrap"
         onClick={() => muteChannel(pc.channel)}
+        {...uiLocation('notifications.mute-channel')}
       >{i18nT('components.notifications.notificationFeed.mute_channel')}</button>
     </>
   )
@@ -297,7 +309,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
               <button
                 title={i18nT('components.notifications.notificationFeed.mark_all_as_read')}
                 aria-label={i18nT('components.notifications.notificationFeed.mark_all_as_read')}
-                className="w-6 h-6 rounded-md flex items-center justify-center text-ok bg-transparent border-none cursor-pointer hover:bg-ok/10 transition-colors shrink-0"
+                {...uiLocation('notifications.mark-all-read')}
+                className="w-6 h-6 rounded-md flex items-center justify-center text-ok hover:text-ok-text bg-transparent border-none cursor-pointer hover:bg-ok/10 transition-colors shrink-0"
                 onClick={() => dispatch(ackAllNotifications())}
               ><CheckCheck className="lucide-inline" /></button>
             )}
@@ -305,7 +318,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
               <button
                 title={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
                 aria-label={i18nT('components.notifications.notificationFeed.clear_all_notifications')}
-                className="w-6 h-6 rounded-md flex items-center justify-center text-muted bg-transparent border-none cursor-pointer hover:bg-danger/10 hover:text-danger transition-colors shrink-0"
+                {...uiLocation('notifications.clear-all')}
+                className="w-6 h-6 rounded-md flex items-center justify-center text-muted bg-transparent border-none cursor-pointer hover:bg-danger/10 hover:text-danger-text transition-colors shrink-0"
                 onClick={() => { if (confirm(i18nT('components.notifications.notificationFeed.clear_all_notifications'))) dispatch(clearNotifications()) }}
               ><Trash2 className="lucide-inline" /></button>
             )}
@@ -333,6 +347,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           child needs one or the other. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- delegates Up/Down from the rows' own buttons; the list itself is not a control */}
       <div ref={listRef} onKeyDown={stepSelectionWithArrowKeys} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+        {showsCrewmate && !detailReportsRoster && <CrewmateRosterError className="mb-2 px-1" />}
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
@@ -343,6 +358,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 : 'text-[11px] font-semibold text-muted uppercase tracking-[.04em] mb-1.5 px-1'}>{group}</div>
               {rows.map(({ n, stackKey, stackCount, stackExpanded, isStackChild }) => {
                 const km = KIND_META[n.kind] || DEFAULT_META
+                const member = noteMember(n)
+                const kindIcon = <span className="text-[13px] shrink-0">{km.icon}</span>
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
                 const silenced = !!n.silenced
@@ -448,8 +465,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
                         className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
                       >
-                        <span className="text-[13px] shrink-0">{km.icon}</span>
+                        {member ? <CrewmateNoteFace member={member} size={18} fallback={kindIcon} /> : kindIcon}
                         <div className="flex-1 min-w-0">
+                          {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight" />}
                           <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
                           {approvalBody ?? (
                             <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>

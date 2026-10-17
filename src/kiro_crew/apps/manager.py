@@ -10,6 +10,7 @@ registration (agents, skills, crons) to bridge functions.
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import json
 import logging
@@ -17,12 +18,14 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import urlparse
 
 from kiro_crew import platform_compat
@@ -37,6 +40,8 @@ from kiro_crew.apps.manifest import (
     RESERVED_APP_NAME_CODE,
     AppManifest,
     app_name_error,
+    contain_command_agents,
+    cron_permission_error,
     is_reserved_app_name,
 )
 from kiro_crew.atomic_write import atomic_write
@@ -49,6 +54,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.pinned_fs import supports_pinned_walk
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform_compat import is_link_or_junction
@@ -58,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 APP_MANIFEST_FILENAME = "app.json"
 INSTALLED_META_FILENAME = "installed.json"
+# The approved ``permissions.api`` / ``permissions.events`` set, beside the
+# record but in its own file so only the grant-owning paths ever write it.
+APPROVED_GRANTS_FILENAME = "approved-grants.json"
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +87,7 @@ def app_dir(name: str) -> Path:
 def app_data_dir(name: str) -> Path:
     """Return the app-scoped data directory: ``~/.kiro/crew/apps/{name}/data/``."""
     d = app_dir(name) / "data"
-    d.mkdir(parents=True, exist_ok=True)
+    ensure_directory(d)  # 0700 in the data home, apps/ and apps/<name>/ included
     return d
 
 
@@ -156,6 +165,13 @@ class InstalledApp:
     # consent moment. Kept separate from ``enabled`` so a normal manual disable
     # never shows the re-consent warning.
     sessionApprovalConsentPending: bool = False  # noqa: N815
+    # True once this app's approved-grants file has been written. That file
+    # sits in the app tree, which an update swaps out before the new set is
+    # written, so a reader can find no file for a moment. A record carrying
+    # this flag reads that absence as "nothing approved"; only a record without
+    # it (an install from before the set was stored) approves what its
+    # manifest declares.
+    approvedGrantsStored: bool = False  # noqa: N815
 
     def validate_fields(self) -> list[str]:
         """Validate classification field values. Returns error list (empty = valid)."""
@@ -193,6 +209,7 @@ class InstalledApp:
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
+            approvedGrantsStored=data.get("approvedGrantsStored") is True,
         )
         # Migrate old "managed" field to new classification fields
         if inst.schemaVersion < 2 and "origin" not in data:
@@ -273,12 +290,17 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     only an explicit remote URI is sanitized; treating arbitrary ``:...@...:``
     text as SCP would corrupt valid POSIX filenames.
 
+    ``approvedGrantsStored`` is kept set while the app's approved-grants file
+    exists, so a writer holding a record read before the set was stored cannot
+    clear it.
+
     The import is deferred because ``apps.registry`` imports this module.
     """
     from kiro_crew.apps.registry import _strip_git_target_userinfo
 
     credential_free_meta = replace(
         meta,
+        approvedGrantsStored=meta.approvedGrantsStored or _approved_grants_path(name).is_file(),
         source=_credential_free_source_metadata(str(meta.source or "")),
         sourceUrl=_strip_git_target_userinfo(str(meta.sourceUrl or "")),
         sourceRegistry=_credential_free_source_metadata(str(meta.sourceRegistry or "")),
@@ -286,6 +308,333 @@ def _write_installed(name: str, meta: InstalledApp) -> None:
     meta_path = app_dir(name) / INSTALLED_META_FILENAME
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(meta_path, json.dumps(credential_free_meta.to_dict(), indent=2) + "\n")
+
+
+# Grant families held back on a widening update. ``sessionApproval`` is a flag
+# with its own disable-until-consent path below; these two are entry lists.
+STAGED_GRANT_FAMILIES = ("api", "events")
+
+
+def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
+    """Read the parsed contents of an approved-grants file, failing closed.
+
+    Anything but a mapping approves nothing, so a damaged file holds the app to
+    none of its declared api/events entries rather than to all of them.
+    """
+    record = raw if isinstance(raw, dict) else {}
+    parsed: dict[str, list[str]] = {}
+    for family in STAGED_GRANT_FAMILIES:
+        entries = record.get(family)
+        parsed[family] = (
+            [e for e in entries if isinstance(e, str)] if isinstance(entries, list) else []
+        )
+    return parsed
+
+
+def _approved_grants_path(name: str) -> Path:
+    return app_dir(name) / APPROVED_GRANTS_FILENAME
+
+
+def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
+    """Read *name*'s approved api/events set, fresh from disk, failing closed.
+
+    ``None`` means no file; ``_effective_approved_grants`` decides what that
+    approves for the app's install record. A file that cannot be read or
+    parsed approves nothing.
+    """
+    path = _approved_grants_path(name)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("Failed to read %s: %s", path, exc)
+        return {family: [] for family in STAGED_GRANT_FAMILIES}
+    try:
+        return _parse_approved_grants(json.loads(text))
+    except json.JSONDecodeError:
+        return {family: [] for family in STAGED_GRANT_FAMILIES}
+
+
+def _effective_approved_grants(
+    name: str, meta: InstalledApp | None
+) -> dict[str, list[str]] | None:
+    """*name*'s approved set as *meta* (its install record) qualifies it.
+
+    A missing file approves what the manifest declares (``None``) only for a
+    record that has never stored a set. Once one was stored, a missing file
+    approves nothing: it is a file an update's tree swap has not put back yet,
+    or one that was lost, and neither is the owner's approval.
+    """
+    grants = _read_approved_grants(name)
+    if grants is None and meta is not None and meta.approvedGrantsStored:
+        return {family: [] for family in STAGED_GRANT_FAMILIES}
+    return grants
+
+
+def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> None:
+    """Atomically store *name*'s approved set; ``None`` removes the file.
+
+    Only the grant-owning paths call this: install, update, registration and
+    an owner approval. Every other record write leaves the set alone because it
+    never touches this file.
+    """
+    path = _approved_grants_path(name)
+    if grants is None:
+        path.unlink(missing_ok=True)
+        return
+    body = {family: list(grants.get(family, ())) for family in STAGED_GRANT_FAMILIES}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(path, json.dumps(body, indent=2) + "\n")
+
+
+def _declared_grant_entries(permissions: Any) -> dict[str, list[str]]:
+    """``api``/``events`` entries from a manifest's permissions (object or raw dict)."""
+    declared: dict[str, list[str]] = {}
+    for family in STAGED_GRANT_FAMILIES:
+        if isinstance(permissions, dict):
+            entries = permissions.get(family)
+        else:
+            entries = getattr(permissions, family, None)
+        declared[family] = (
+            [e for e in entries if isinstance(e, str) and e] if isinstance(entries, list) else []
+        )
+    return declared
+
+
+def _approved_grants_after_manifest_change(
+    *,
+    existing_approved: dict[str, list[str]] | None,
+    old_permissions: Any,
+    new_permissions: Any,
+) -> dict[str, list[str]]:
+    """Return the approved set to store after an update or re-registration.
+
+    The baseline is what the owner approved. A record from before the field
+    approves what the replaced manifest declared; with no readable replaced
+    manifest there is no known approval, so the baseline is empty. The result
+    keeps only baseline entries the new manifest still declares: an entry the
+    new manifest adds is not approved, and one it drops must be approved again
+    if a later version brings it back.
+    """
+    if existing_approved is not None:
+        baseline = existing_approved
+    elif old_permissions is not None:
+        baseline = _declared_grant_entries(old_permissions)
+    else:
+        baseline = {}
+    declared = _declared_grant_entries(new_permissions)
+    return {
+        family: [e for e in declared[family] if e in set(baseline.get(family, ()))]
+        for family in STAGED_GRANT_FAMILIES
+    }
+
+
+def _held_back_entries(
+    approved: dict[str, list[str]] | None, permissions: Any
+) -> dict[str, list[str]]:
+    """Declared api/events entries the approved set does not cover."""
+    declared = _declared_grant_entries(permissions)
+    if approved is None:
+        return {family: [] for family in STAGED_GRANT_FAMILIES}
+    return {
+        family: [e for e in declared[family] if e not in set(approved.get(family, ()))]
+        for family in STAGED_GRANT_FAMILIES
+    }
+
+
+def _update_retired_tree_prefix(name: str) -> str:
+    """Name prefix of the tree ``update_app`` moves *name*'s live tree to."""
+    return f".{name}-update-old-"
+
+
+# Tree-swap fencing for this process. ``update_app`` holds a swap open from
+# before it moves an app's tree aside until the moved-aside tree is gone. Each
+# swap start and end takes the next value of a process-wide sequence; an app's
+# last value is kept in a bounded LRU, and its in-flight count only while one
+# is open. A grant read that sees a swap in flight, or a change across its
+# reads, grants nothing.
+_TREE_SWAP_LAST_CAP = 256
+# (swaps in flight, the app's last sequence value, the process sequence)
+_SwapState = tuple[int, int | None, int]
+_tree_swap_guard = threading.Lock()
+_tree_swap_seq = 0
+_tree_swaps_active: dict[str, int] = {}
+_tree_swap_last: OrderedDict[str, int] = OrderedDict()
+
+
+def _tree_swap_mark(name: str, delta: int) -> None:
+    """Record a swap start (+1) or end (-1) for *name*; caller holds the guard."""
+    global _tree_swap_seq
+    _tree_swap_seq += 1
+    active = _tree_swaps_active.get(name, 0) + delta
+    if active > 0:
+        _tree_swaps_active[name] = active
+    else:
+        _tree_swaps_active.pop(name, None)
+    _tree_swap_last[name] = _tree_swap_seq
+    _tree_swap_last.move_to_end(name)
+    while len(_tree_swap_last) > _TREE_SWAP_LAST_CAP:
+        _tree_swap_last.popitem(last=False)
+
+
+@contextmanager
+def _tree_swap(name: str) -> Iterator[None]:
+    with _tree_swap_guard:
+        _tree_swap_mark(name, 1)
+    try:
+        yield
+    finally:
+        with _tree_swap_guard:
+            _tree_swap_mark(name, -1)
+
+
+def _tree_swap_state(name: str) -> _SwapState:
+    """``(in flight, last sequence value, process sequence)`` for *name*."""
+    with _tree_swap_guard:
+        return (_tree_swaps_active.get(name, 0), _tree_swap_last.get(name), _tree_swap_seq)
+
+
+def _tree_swap_spanned(before: _SwapState, after: _SwapState) -> bool:
+    """Whether a swap of the app was in flight at, or ran between, two states.
+
+    An app whose last value is absent at both ends may have had it evicted in
+    between; that takes at least ``_TREE_SWAP_LAST_CAP`` sequence steps.
+    """
+    if before[0] or after[0] or before[1] != after[1]:
+        return True
+    return after[1] is None and after[2] - before[2] >= _TREE_SWAP_LAST_CAP
+
+
+def _update_marker_dir(name: str) -> Path:
+    """Directory that exists while any process's update of *name* is in flight."""
+    return app_dir(name).parent / f".{name}-update-inflight"
+
+
+class _UpdateMarker:
+    """One update's token in ``_update_marker_dir``, held across the tree swap.
+
+    Each update adds its own file and, when done, removes it and then the
+    directory, which stays while another update still holds a token. A reader
+    asks one question of the directory -- does it exist -- so the check is a
+    single stat rather than a listing. A crash leaves the directory behind,
+    which only withholds grants from an app with nothing else on disk.
+    """
+
+    def __init__(self, token: Path) -> None:
+        self._token = token
+
+    @classmethod
+    def hold(cls, name: str) -> _UpdateMarker:
+        root = _update_marker_dir(name)
+        token = root / f"{os.getpid()}-{os.urandom(4).hex()}"
+        for _attempt in range(8):
+            root.mkdir(parents=True, exist_ok=True)
+            try:
+                token.touch(exist_ok=False)
+            except FileNotFoundError:
+                # Another update's cleanup removed the directory in between.
+                continue
+            return cls(token)
+        raise OSError(f"could not mark the update of {name!r} in progress")
+
+    def __enter__(self) -> _UpdateMarker:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        try:
+            self._token.unlink()
+        except OSError:
+            logger.warning("Could not remove update marker %s", self._token, exc_info=True)
+        try:
+            self._token.parent.rmdir()
+        except OSError:
+            pass  # another update still holds a token, or the directory is gone
+
+
+def _update_in_progress(name: str) -> bool:
+    """Whether an update of *name* (in any process) may have its tree moved aside."""
+    try:
+        return os.path.lexists(_update_marker_dir(name))
+    except (OSError, ValueError):
+        return True
+
+
+def staged_app_grants(
+    name: str, family: str, read_declared: Callable[[], Sequence[str] | None]
+) -> list[str]:
+    """Return *name*'s declared ``permissions.<family>`` entries that are approved.
+
+    The enforcement points (``token_auth._app_api_allowlist``,
+    ``ws_event_scope._read_declared_events``, the hook context) grant exactly
+    this: declared by the live manifest (*read_declared*, ``None`` when there is
+    none) and in the app's approved-grants file, both read fresh. An install
+    whose record has never stored the file approves what is declared. An app
+    with nothing on disk passes the declared entries unchanged (callers gate on
+    installation themselves); an app directory without a readable record, or
+    a tree an update has moved aside and not yet replaced, is not evidence of
+    approval and grants nothing.
+    """
+    swap_before = _tree_swap_state(name)
+    if swap_before[0]:
+        return []
+    declared = read_declared()
+    if declared is None:
+        return []
+    meta = _read_installed(name)
+    if meta is None:
+        # The moved-aside tree first, then the live one: an update that ends
+        # between the two checks has put the live tree back by the second.
+        if _update_in_progress(name):
+            return []
+        root = app_dir(name)
+        if (root / INSTALLED_META_FILENAME).exists() or (root / APP_MANIFEST_FILENAME).exists():
+            return []
+        granted = list(declared)
+    else:
+        grants = _effective_approved_grants(name, meta)
+        if grants is None:
+            # No set file beside a record that never stored one. The record
+            # must still be the one read, with still no file, or an update
+            # (in this process or another) moved the tree in between.
+            if _read_installed(name) != meta or _approved_grants_path(name).exists():
+                return []
+            granted = list(declared)
+        else:
+            approved = set(grants.get(family, ()))
+            granted = [entry for entry in declared if entry in approved]
+    if _tree_swap_spanned(swap_before, _tree_swap_state(name)):
+        return []
+    return granted
+
+
+def _approved_grants_row(name: str) -> dict[str, Any]:
+    """The ``approvedGrants`` key for an app row, absent when no set is stored."""
+    grants = _effective_approved_grants(name, _read_installed(name))
+    return {} if grants is None else {"approvedGrants": grants}
+
+
+def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
+    """``app_info``'s manifest permissions limited to approved api/events entries.
+
+    For the hook-context builders, which start from a ``get_app``/``list_apps``
+    row; the live manifest and record are re-read through ``staged_app_grants``.
+    """
+    name = str(app_info.get("name", ""))
+    manifest = app_info.get("manifest") or {}
+    permissions = dict(manifest.get("permissions") or {})
+    for family in STAGED_GRANT_FAMILIES:
+        if family not in permissions:
+            continue
+
+        def _read(family: str = family) -> list[str] | None:
+            live = get_app_manifest(name)
+            if live is None:
+                return None
+            return [e for e in getattr(live.permissions, family) if e]
+
+        permissions[family] = staged_app_grants(name, family, _read)
+    return permissions
 
 
 def _pending_session_approval_after_manifest_change(
@@ -433,6 +782,7 @@ _COPY_IGNORE = (
     "__pycache__",
     ".venv",
     INSTALLED_META_FILENAME,
+    APPROVED_GRANTS_FILENAME,
     ".kirocrew-deps",
     ".kirocrew-deps-staging",
     ".kirocrew-deps-prior",
@@ -1056,6 +1406,7 @@ def install_app(
         displayName=manifest.displayName,
         enabled=False,  # installed but not enabled until explicitly enabled
         sessionApprovalConsentPending=bool(manifest.permissions.sessionApproval),
+        approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=str(source),
         # Persist the server-resolved repository at the first durable metadata
@@ -1064,6 +1415,9 @@ def install_app(
         # runtime admission must still remain bound to what was installed.
         sourceUrl=source_repository.strip(),
     )
+    # Installing is the consent moment for everything the manifest declares.
+    # Written before the record, so no record ever sits beside a missing set.
+    _write_approved_grants(name, _declared_grant_entries(manifest.permissions))
     _write_installed(name, meta)
 
     # Create data directory
@@ -1184,6 +1538,17 @@ def update_app(
         requested_session_approval
         and not (old_manifest and old_manifest.permissions.sessionApproval)
     )
+    # ``permissions.api`` / ``permissions.events`` are read live too. An added
+    # entry is held back instead of disabling the app: it keeps running on the
+    # set the owner approved until they approve the new one.
+    # Read before the tree swap: the file lives in the tree the swap retires.
+    existing_approved = _effective_approved_grants(name, existing)
+    approved_grants = _approved_grants_after_manifest_change(
+        existing_approved=existing_approved,
+        old_permissions=old_manifest.permissions if old_manifest else None,
+        new_permissions=manifest.permissions,
+    )
+    widened_grants = any(_held_back_entries(approved_grants, manifest.permissions).values())
 
     # Carry every persisted field forward from ``existing``, overriding only
     # what the update changes. Keeping this metadata inside the file transaction
@@ -1204,13 +1569,16 @@ def update_app(
         sourceRegistry="",
         sourceCommit="",
         sourceSigner="",
+        approvedGrantsStored=True,
     )
     # Preserve data directory and app secret
     data_dir = dest / "data"
     secret_file = dest / ".app_secret"
     tmp_data = dest.parent / f".{name}-data-tmp"
     tmp_secret = dest.parent / f".{name}-secret-tmp"
-    retired = dest.parent / f".{name}-update-old-{os.getpid()}-{os.urandom(4).hex()}"
+    retired = dest.parent / (
+        f"{_update_retired_tree_prefix(name)}{os.getpid()}-{os.urandom(4).hex()}"
+    )
     preserved_data = False
     preserved_secret = False
 
@@ -1261,70 +1629,83 @@ def update_app(
         tmp_secret.unlink()
 
     try:
-        if _owned_data_dir(data_dir):
-            shutil.move(str(data_dir), str(tmp_data))
-            preserved_data = True
-        if secret_file.is_file():
-            shutil.move(str(secret_file), str(tmp_secret))
-            preserved_secret = True
-
-        # Keep the complete old tree until the replacement and its metadata are
-        # durable. Source-owned installed.json never reaches the live tree.
-        os.replace(dest, retired)
-        _copy_app_tree(source, dest)
-        # ``.app_secret`` is the gateway's whether or not one is preserved: the
-        # copied entry goes, unfollowed, before the preserved file moves back
-        # (see install_app; the same removal the preview copy applies).
-        _remove_any_shape(dest / ".app_secret")
-
-        if _owned_data_dir(tmp_data):
-            restored = dest / "data"
-            _remove_any_shape(restored)
-            shutil.move(str(tmp_data), str(restored))
-        if tmp_secret.is_file():
-            shutil.move(str(tmp_secret), str(dest / ".app_secret"))
-        # Before the record: a root `data` that is not a directory (nothing
-        # preserved was put back over it) would fail app_data_dir() below, after
-        # the new metadata was durable -- refused here instead, and the rollback
-        # restores the old tree and record (see install_app).
-        refusal = gateway_data_dir_obstruction(dest)
-        if refusal:
-            raise InstalledTreeRefused(refusal)
-        _write_installed(name, meta)
-    except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
-        rollback_error = ""
+        update_marker = _UpdateMarker.hold(name)
+    except OSError as exc:
+        return AppResult(ok=False, name=name, error=f"failed to update app files: {exc}")
+    with _tree_swap(name), update_marker:
         try:
-            if retired.is_dir():
-                restored_data = dest / "data"
-                restored_secret = dest / ".app_secret"
-                if preserved_data and not _owned_data_dir(tmp_data) and restored_data.is_dir():
-                    shutil.move(str(restored_data), str(tmp_data))
-                if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
-                    shutil.move(str(restored_secret), str(tmp_secret))
-                _remove_any_shape(dest)
-                os.replace(retired, dest)
+            # The swap below takes the approved-set file with the old tree. A record
+            # that stored a set must say so before then, or a reader meeting it
+            # beside the missing file would approve everything declared.
+            if not existing.approvedGrantsStored and _approved_grants_path(name).is_file():
+                _write_installed(name, existing)
+            if _owned_data_dir(data_dir):
+                shutil.move(str(data_dir), str(tmp_data))
+                preserved_data = True
+            if secret_file.is_file():
+                shutil.move(str(secret_file), str(tmp_secret))
+                preserved_secret = True
+
+            # Keep the complete old tree until the replacement and its metadata are
+            # durable. Source-owned installed.json never reaches the live tree.
+            os.replace(dest, retired)
+            _copy_app_tree(source, dest)
+            # ``.app_secret`` is the gateway's whether or not one is preserved: the
+            # copied entry goes, unfollowed, before the preserved file moves back
+            # (see install_app; the same removal the preview copy applies).
+            _remove_any_shape(dest / ".app_secret")
+
             if _owned_data_dir(tmp_data):
                 restored = dest / "data"
                 _remove_any_shape(restored)
                 shutil.move(str(tmp_data), str(restored))
             if tmp_secret.is_file():
-                restored_secret = dest / ".app_secret"
-                _remove_any_shape(restored_secret)
-                shutil.move(str(tmp_secret), str(restored_secret))
-            _write_installed(name, existing)
-        except (OSError, shutil.Error, ValueError) as rollback_exc:
-            rollback_error = f"; rollback failed: {rollback_exc}"
-            logger.error("Failed to restore app %s after update error", name, exc_info=True)
-        return AppResult(
-            ok=False,
-            name=name,
-            error=f"failed to update app files: {exc}{rollback_error}",
-        )
+                shutil.move(str(tmp_secret), str(dest / ".app_secret"))
+            # Before the record: a root `data` that is not a directory (nothing
+            # preserved was put back over it) would fail app_data_dir() below, after
+            # the new metadata was durable -- refused here instead, and the rollback
+            # restores the old tree and record (see install_app).
+            refusal = gateway_data_dir_obstruction(dest)
+            if refusal:
+                raise InstalledTreeRefused(refusal)
+            # The new tree carries no set (the copy skips the file); a rollback
+            # restores the old tree's file with it.
+            _write_approved_grants(name, approved_grants)
+            _write_installed(name, meta)
+        except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
+            rollback_error = ""
+            try:
+                if retired.is_dir():
+                    restored_data = dest / "data"
+                    restored_secret = dest / ".app_secret"
+                    if preserved_data and not _owned_data_dir(tmp_data) and restored_data.is_dir():
+                        shutil.move(str(restored_data), str(tmp_data))
+                    if preserved_secret and not tmp_secret.is_file() and restored_secret.is_file():
+                        shutil.move(str(restored_secret), str(tmp_secret))
+                    _remove_any_shape(dest)
+                    os.replace(retired, dest)
+                if _owned_data_dir(tmp_data):
+                    restored = dest / "data"
+                    _remove_any_shape(restored)
+                    shutil.move(str(tmp_data), str(restored))
+                if tmp_secret.is_file():
+                    restored_secret = dest / ".app_secret"
+                    _remove_any_shape(restored_secret)
+                    shutil.move(str(tmp_secret), str(restored_secret))
+                _write_installed(name, existing)
+            except (OSError, shutil.Error, ValueError) as rollback_exc:
+                rollback_error = f"; rollback failed: {rollback_exc}"
+                logger.error("Failed to restore app %s after update error", name, exc_info=True)
+            return AppResult(
+                ok=False,
+                name=name,
+                error=f"failed to update app files: {exc}{rollback_error}",
+            )
 
-    try:
-        _remove_any_shape(retired)
-    except OSError:
-        logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
+        try:
+            _remove_any_shape(retired)
+        except OSError:
+            logger.warning("Could not remove retired app tree for %s", name, exc_info=True)
 
     # Ensure data directory exists
     app_data_dir(name)
@@ -1353,6 +1734,23 @@ def update_app(
                 "control -- review it on the app page and enable again"
             ),
             notice="session_approval_reconsent",
+        )
+    if widened_grants:
+        sel().log_api_access(
+            caller="app_update",
+            operation="grants_widened",
+            outcome="staged",
+            resources=f"name={name!r}",
+            error="update added permissions.api/events entries; approve to grant them",
+        )
+        return AppResult(
+            ok=True,
+            name=name,
+            message=(
+                f"updated {name} v{old_version} -> v{manifest.version}; "
+                "this version requests new permissions, which stay off until you "
+                "approve them on the app page"
+            ),
         )
     return AppResult(
         ok=True,
@@ -1513,7 +1911,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                 # Same creator election as the provisioner: uninstall can race
                 # its first open before either caller holds the dependency lock.
                 _lfd = platform_compat.open_create_or_existing(
-                    _lock_name, _lflags, 0o644, dir_fd=_data_pin.fd,
+                    _lock_name, _lflags, 0o600, dir_fd=_data_pin.fd,
                 )
                 _deps_lock = contextlib.ExitStack()
                 _lf = _deps_lock.enter_context(os.fdopen(_lfd, "r+"))
@@ -1782,6 +2180,16 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         remove_dev_app(name)
     except Exception:
         logger.debug("dev-mode cleanup on uninstall of %r failed", name, exc_info=True)
+    # Deregistration unlinked the app's agent specs, but the per-agent lock file
+    # beside each and the MCP gateway's overlay copy of it are named after the
+    # same spec and would otherwise outlive the app. Lazy import: bridges imports
+    # this module at load.
+    try:
+        from kiro_crew.apps.bridges import purge_uninstalled_agent_residue
+
+        purge_uninstalled_agent_residue(name)
+    except Exception:
+        logger.debug("agent residue cleanup on uninstall of %r failed", name, exc_info=True)
     # The orphan set may have named this app; a successor installed under the
     # same name must not inherit its stale `orphaned` flag.
     invalidate_orphan_cache()
@@ -2189,8 +2597,20 @@ def _app_activation_denied(name: str, *, fail_closed: bool = False) -> str | Non
         return None
 
 
-def enable_app(name: str, *, session_approval_consent: bool = False) -> AppResult:
-    """Enable an installed app."""
+def enable_app(
+    name: str,
+    *,
+    session_approval_consent: bool = False,
+    grants_consent: dict[str, list[str]] | None = None,
+) -> AppResult:
+    """Enable an installed app.
+
+    ``grants_consent`` names the held-back ``permissions.api``/``events``
+    entries the owner was shown and approved (see ``approvedGrants``). Only
+    those, and only while the live manifest still declares them, join the
+    approved set; an entry added after the owner looked stays held back.
+    Without it the app is enabled on the approved set.
+    """
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     meta = _read_installed(name)
@@ -2245,16 +2665,52 @@ def enable_app(name: str, *, session_approval_consent: bool = False) -> AppResul
             error_code="session_approval_consent_required",
         )
 
-    if meta.enabled:
+    current_grants = (
+        _effective_approved_grants(name, meta) if grants_consent is not None else None
+    )
+    approve_grants = grants_consent is not None and current_grants is not None
+    if meta.enabled and not approve_grants:
         return AppResult(ok=True, name=name, message=f"{name} is already enabled")
 
+    still_staged = False
+    if approve_grants and grants_consent is not None and current_grants is not None:
+        live = get_app_manifest(name)
+        if live is None:
+            # Nothing declared can be approved; say so rather than report an
+            # approval that changed nothing.
+            return AppResult(
+                ok=False,
+                name=name,
+                error="the app manifest cannot be read right now; try approving again",
+                error_code="grants_manifest_unreadable",
+            )
+        declared = _declared_grant_entries(live.permissions)
+        approved: dict[str, list[str]] = {}
+        for family in STAGED_GRANT_FAMILIES:
+            shown = {e for e in grants_consent.get(family, ()) if isinstance(e, str)}
+            kept = list(current_grants.get(family, ()))
+            kept += [e for e in declared[family] if e in shown and e not in kept]
+            approved[family] = kept
+            still_staged = still_staged or any(e not in kept for e in declared[family])
+        _write_approved_grants(name, approved)
+        meta.approvedGrantsStored = True
+        sel().log_api_access(
+            caller="app_enable",
+            operation="grants_approved",
+            outcome="partial" if still_staged else "success",
+            resources=f"name={name!r}",
+        )
     meta.enabled = True
     meta.sessionApprovalConsentPending = False
     meta.updatedAt = _now_iso()
     _write_installed(name, meta)
 
     logger.info("Enabled app %s", name)
-    return AppResult(ok=True, name=name, message=f"enabled {name}")
+    return AppResult(
+        ok=True,
+        name=name,
+        message=f"enabled {name}",
+    )
 
 
 def disable_app(name: str) -> AppResult:
@@ -2280,6 +2736,320 @@ def disable_app(name: str) -> AppResult:
 # ---------------------------------------------------------------------------
 
 
+def _app_registered_agent(app_name: str, agent: str) -> bool:
+    """Whether registration wrote *app_name*'s own agent *agent* into the agents dir.
+
+    True only when :func:`_app_agent_registration` reports ``"ok"``.
+    """
+    return _app_agent_registration(app_name, agent)[0] == "ok"
+
+
+def _app_agent_registration(app_name: str, agent: str) -> tuple[str, tuple[str, ...]]:
+    """Whether *app_name*'s own agent *agent* is registered, and the clashing files.
+
+    The status is ``"ok"``, ``"missing"``, ``"ambiguous"`` or ``"unverifiable"``.
+    The second item names a competing file for ``"ambiguous"`` and carries the
+    refusal reason for ``"unverifiable"``.
+
+    Judged from the namespaced config ``_register_agents`` writes (``app--agent.json``)
+    and the bare ``name`` it carries, so every skip reason registration has -- an
+    unresolved template, an unsafe name, a malformed spec -- counts, including ones
+    added later. Anything unreadable reads as not registered.
+
+    Read through the hardened agent-spec reader, never a bare ``read_text``: the agents
+    dir is user-writable, so this file may be a symlink to a sensitive path, and the
+    reader refuses (and audits) that before any byte is read.
+
+    The name must also be UNIQUE in the agents dir. Sessions select an agent by its
+    bare declared ``name``, so if a host spec (or another app's) declares the same
+    name, which file a session resolves to is not this app's to decide, and the
+    app-authored prompt could run with that other spec's tools and auto-approvals.
+    An ambiguous name is refused rather than guessed at.
+
+    This listing checks only the USER-level agents dir: it does not know which
+    project a session will run in. Project-level shadowing is refused per turn by
+    :func:`app_command_agent_refusal`, which the session the command opens carries
+    as ``app_agent_owner``.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_sdk import agents_dir_competing_claim
+    from kiro_crew.apps import bridges  # bridges imports this module
+
+    agents_dir = bridges._kiro_agents_dir()
+    path = agents_dir / (bridges._safe_link_name(bridges._namespace(app_name, agent)) + ".json")
+    # Screened before the reader resolves it: the reader's ``resolve()`` would follow
+    # a link to wherever it points (on Windows, a UNC share is probed by the resolve
+    # itself), so the link's own target is checked first and a refused one is reported
+    # rather than followed.
+    screened = _screened_spec_path(path)
+    if screened is None:
+        return "unverifiable", (
+            f"the agent entry at {path} could not be verified, so Kiro Crew cannot "
+            "confirm it is the app's agent. Fix or remove that entry, then run the "
+            "command again from the command palette.",
+        )
+    data = _read_agent_spec(screened, operation="list_apps_command_agent", source="unknown")
+    if not (isinstance(data, dict) and data.get("name", path.stem) == agent):
+        return "missing", ()
+    claim = agents_dir_competing_claim(agent, agents_dir, path)
+    if claim is None:
+        return "ok", ()
+    if claim.kind == "claimed":
+        return "ambiguous", (Path(claim.detail).name,)
+    return "unverifiable", (claim.detail,)
+
+
+def _app_display_name(app_name: str) -> str:
+    """The ``displayName`` the dashboard shows for *app_name*, or the id when unreadable.
+
+    ``app.json`` is app-writable, so it is read through the hardened
+    ``_read_agent_spec`` reader: a symlink whose resolved target is sensitive is
+    refused and audited before any byte is read, and a refusal falls back to the id.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    try:
+        screened = _screened_spec_path(app_dir(app_name) / APP_MANIFEST_FILENAME)
+        if screened is None:
+            return app_name
+        data = _read_agent_spec(screened, operation="app_command_agent_label", source="unknown")
+    except Exception:  # noqa: BLE001 - a label must never fail the refusal it labels
+        return app_name
+    label = data.get("displayName") if isinstance(data, dict) else None
+    return label if isinstance(label, str) and label.strip() else app_name
+
+
+def _screened_spec_path(path: Path) -> Path | None:
+    """*path* as the screened canonical path to read, or None when the screen refuses.
+
+    :func:`kiro_crew.hooks.validate_file_path` reads a link's own target before
+    anything resolves it, so a link into a protected location or an untrusted share
+    is refused without being followed; the hardened reader then reads the canonical
+    path the screen returned.
+    """
+    from kiro_crew import hooks
+
+    try:
+        screened = hooks.validate_file_path(str(path))
+    except (OSError, ValueError):
+        return None
+    return None if screened is None else Path(screened)
+
+
+def _same_dir_key(path: Path) -> str | None:
+    """A screened canonical comparison key, or None when the path is refused."""
+    from kiro_crew import hooks
+
+    try:
+        screened = hooks.validate_file_path(str(path))
+        return None if screened is None else os.path.normcase(screened)
+    except (OSError, ValueError):
+        return None
+
+
+def app_command_agent_refusal(owner: str, agent: str, *projects: str | None) -> str | None:
+    """Why a session bound to app *owner*'s agent must not run as *agent* now, or None.
+
+    The bare ``agent`` name is what the provider resolves, project-first, by declared
+    ``name`` or by filename stem. A turn on a session a palette command opened for the
+    app's own agent therefore runs only when that name still means the app's
+    registered spec: no directory in *projects* -- every directory the session's
+    provider can start in -- declares it or carries a ``.kiro/agents/<agent>`` spec,
+    and the app's materialized ``<app>--<agent>.json`` is the only user-level spec
+    declaring it. The first entry is the session's own project; the rest are the
+    directories the provider falls back to without one. Checked on every turn, so a
+    project switched or cleared later, or a spec dropped in later, is caught too. Does
+    filesystem I/O; call it off the event loop.
+    """
+    from kiro_crew.agent_sdk import project_claims_agent_name
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    app = _app_display_name(owner)
+    # A skill-view name is never launched as itself: the spawn maps it to the host
+    # agent its view was built from, even after the view file is pruned, so it can
+    # never mean the app's own spec.
+    if agent.startswith(NATIVE_SKILL_ALIAS_PREFIX):
+        return (
+            f"{app} can't run: it has a setup problem its author needs to fix "
+            f"(its agent \"{agent}\" uses a name Kiro Crew reserves). "
+            f"Ask {app}'s author to rename that agent."
+        )
+    from kiro_crew.apps import bridges  # bridges imports this module
+    from kiro_crew.config.paths import project_agents_dir
+
+    user_agents_dir = _same_dir_key(bridges._kiro_agents_dir())
+    for project in dict.fromkeys(p for p in projects if p):
+        # A project whose ``.kiro/agents`` IS the user-level agents dir (the home
+        # directory as the project) holds the app's own registered spec, so it is
+        # the registration check below, not a shadow: scanning it here would
+        # refuse every turn and tell the user to rename the app's own agent.
+        if (
+            user_agents_dir is not None
+            and _same_dir_key(project_agents_dir(Path(project).expanduser())) == user_agents_dir
+        ):
+            continue
+        claim = project_claims_agent_name(agent, project)
+        if claim is None:
+            continue
+        if claim.kind == "unverifiable":
+            return f"{app} can't run here: {claim.detail}"
+        if project == projects[0]:
+            return (
+                f"{app} can't run here: this project has its own agent named \"{agent}\". "
+                f"Run the command again from the command palette in another project, "
+                f"or rename \"{agent}\" in this project's .kiro/agents folder."
+            )
+        return (
+            f"{app} can't run here: this session's folder {project} has its own agent "
+            f"named \"{agent}\". Start the command again from the command palette in a "
+            f"project session, or rename \"{agent}\" in that folder's .kiro/agents."
+        )
+    registration, others = _app_agent_registration(owner, agent)
+    if registration == "unverifiable":
+        return f"{app} can't run: {others[0]}"
+    if registration == "ambiguous":
+        where = ", ".join(others) if others else f"the other agent named \"{agent}\""
+        return (
+            f"{app} can't run: another agent in ~/.kiro/agents is also named \"{agent}\", "
+            f"so {app}'s agent can't be told apart from it. Rename or remove {where} "
+            "in ~/.kiro/agents, then run the command again from the command palette."
+        )
+    if registration != "ok":
+        return (
+            f"{app} can't run: its agent \"{agent}\" isn't installed. Re-enable {app} "
+            "in Apps \u203a Library, then run the command again from the command palette."
+        )
+    return None
+
+
+@dataclass(frozen=True)
+class AgentOwner:
+    """The installed app whose manifest declares an agent, and whether it is switched on."""
+
+    app: str
+    label: str
+    enabled: bool
+
+
+def _owner_json(path: Path) -> dict[str, Any] | None:
+    """*path* parsed as a JSON object for the owner lookup, or None when refused.
+
+    Every file the lookup reads -- an app's ``installed.json``, its ``app.json``
+    and its agent specs -- sits in a tree the app can write, so each is screened
+    before anything follows a link (:func:`_screened_spec_path`) and read through
+    the hardened, audited agent-spec reader. A link into a protected location, an
+    oversized file and a document that is not an object all read as None.
+    """
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    screened = _screened_spec_path(path)
+    if screened is None:
+        return None
+    data = _read_agent_spec(screened, operation="app_agent_owner", source="unknown")
+    return data if isinstance(data, dict) else None
+
+
+def _app_agent_names(app_name: str, manifest: AppManifest, app_root: Path) -> set[str]:
+    """Every name *app_name*'s own agents are selected by, for attributing a binding.
+
+    Each agent's declared ``name`` (its file stem when it declares none), plus the
+    ``<app>--<name>`` stem registration writes the spec under, so a binding that
+    names either is recognised. Attribution only, never an authorization: a
+    templated spec still names its agent here, unlike the command-agent check in
+    :mod:`kiro_crew.apps.manifest`. A path escaping the app root, and a spec the
+    screened read refuses (:func:`_owner_json`), contribute nothing.
+    """
+    from kiro_crew.apps import bridges  # bridges imports this module
+    from kiro_crew.apps.manifest import _app_path_refusal, screen_app_path
+
+    names: set[str] = set()
+    screened_root = screen_app_path(app_root) if manifest.agents else None
+    for rel in manifest.agents:
+        rel = str(rel)
+        if not rel or _app_path_refusal(rel, app_root, screened_root):
+            continue
+        data = _owner_json(app_root / rel)
+        if data is None:
+            continue
+        name = data.get("name", Path(rel.replace("\\", "/")).stem)
+        if isinstance(name, str) and name:
+            names.add(name)
+            names.add(bridges._safe_link_name(bridges._namespace(app_name, name)))
+    return names
+
+
+def owning_app_for_agent(agent: str) -> AgentOwner | None:
+    """The installed app that declares *agent*, enabled or not, or None when none does.
+
+    Read from each installed app's own manifest and agent files, never from the
+    agents directory: disabling an app removes the specs it registered there, so
+    that directory cannot say who owned a name absent from it. The manifest and the
+    agent files come from where registration reads them: a shipped builtin's
+    immutable package root, every other app's installed tree
+    (``bridges._registration_source``). Apps are visited in name order and the
+    first that declares the agent answers. Every read is screened
+    (:func:`_owner_json`). Blocking file I/O; call it off the event loop. Never
+    raises: an app that cannot be read is skipped.
+    """
+    if not agent:
+        return None
+    # No ``is_dir`` filter: it would follow an entry that is a link before the
+    # screen sees it. Each entry is screened through its ``installed.json`` read
+    # instead, which refuses a link to a protected location or an untrusted share
+    # and reads nothing for an entry that is not an app directory.
+    try:
+        entries = sorted(apps_dir().iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        try:
+            raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
+            if raw_meta is None:
+                continue
+            root = shipped_builtin_app_root(entry.name) or entry
+            raw_manifest = _owner_json(root / APP_MANIFEST_FILENAME)
+            if raw_manifest is None:
+                continue
+            manifest = AppManifest.from_dict(raw_manifest)
+            if not manifest.agents or agent not in _app_agent_names(entry.name, manifest, root):
+                continue
+            label = manifest.displayName.strip() or entry.name
+            enabled = bool(InstalledApp.from_dict(raw_meta).enabled)
+            return AgentOwner(entry.name, label, enabled)
+        except Exception:  # noqa: BLE001 - one unreadable app must not hide the others
+            logger.debug("agent owner lookup skipped app %s", entry.name, exc_info=True)
+    return None
+
+
+def missing_agent_reason(agent: str, *, member: str = "") -> str:
+    """Why a session cannot start on *agent*, whose definition is gone, and the fix.
+
+    *member* is the Crew Member the session belongs to, when there is one; the
+    reason then names the member rather than the agent. Blocking file I/O through
+    :func:`owning_app_for_agent`; call it off the event loop.
+    """
+    owner = owning_app_for_agent(agent)
+    subject = f'Crew member "{member}"' if member else f'The agent "{agent}"'
+    target = "this crew member" if member else "it"
+    if owner is None:
+        if member:
+            return (
+                f'{subject} can\'t start: its agent template "{agent}" is missing. '
+                "Pick another template on its Agent Template tab."
+            )
+        return f"{subject} can't start: its agent definition is missing."
+    if not owner.enabled:
+        return (
+            f"{subject} comes from the {owner.label} app, which is disabled. "
+            f"Enable {owner.label} in Apps \u203a Library to use {target}."
+        )
+    return (
+        f"{subject} comes from the {owner.label} app, but its agent definition "
+        f'"{agent}" is missing. Disable and re-enable {owner.label} in Apps \u203a Library '
+        f"to register it again."
+    )
+
+
 def list_apps() -> list[dict[str, Any]]:
     """Return metadata for all installed apps."""
     root = apps_dir()
@@ -2299,7 +3069,15 @@ def list_apps() -> list[dict[str, Any]]:
         if manifest_path.is_file():
             try:
                 manifest = AppManifest.from_json_file(manifest_path)
-                manifest_data = manifest.to_dict()
+                # A command may only name one of this app's own agents. Re-checked here,
+                # against the files, because a self-managed app's app.json never passes
+                # through install-time validation.
+                manifest_data = contain_command_agents(
+                    manifest.to_dict(),
+                    manifest.agents,
+                    entry,
+                    is_registered=functools.partial(_app_registered_agent, entry.name),
+                )
                 # For self-managed apps, the app may update its own
                 # app.json without going through update_app().  Reflect
                 # the manifest version in the RETURNED metadata only, so
@@ -2308,9 +3086,9 @@ def list_apps() -> list[dict[str, Any]]:
                 # callers run it concurrently from worker threads, and a
                 # persisted read-modify-write of installed.json from a
                 # listing would race real mutators (install/enable/
-                # register) and silently overwrite their fields. The
-                # durable repair happens on the single-app paths
-                # (get_app / update_app).
+                # register) and silently overwrite their fields. get_app
+                # is read-only for the same reason; the record's version is
+                # rewritten by update_app / register_external_app.
                 if (
                     meta.lifecycle == "app"
                     and manifest.version
@@ -2321,6 +3099,7 @@ def list_apps() -> list[dict[str, Any]]:
                 pass
         app_info: dict[str, Any] = {
             **meta.to_dict(),
+            **_approved_grants_row(entry.name),
             "manifest": manifest_data,
         }
         # Include migratedTo if non-empty
@@ -2331,120 +3110,6 @@ def list_apps() -> list[dict[str, Any]]:
             app_info["orphaned"] = True
         result.append(app_info)
     return result
-
-
-class AppsListing(NamedTuple):
-    """What :func:`list_apps` returned, and whether it saw every app on disk."""
-
-    #: Exactly what :func:`list_apps` returns, unchanged.
-    apps: list[dict[str, Any]]
-    #: False when at least one entry in the apps root stood for an app that
-    #: :func:`list_apps` dropped. An app absent from ``apps`` then carries no
-    #: information: it cannot be read as "no such app is installed".
-    complete: bool
-
-
-def _path_is_occupied(path: Path) -> bool:
-    """Whether something is AT *path*, judged without resolving it.
-
-    ``Path.exists`` follows a symlink, so a dangling ``installed.json`` link reads
-    absent while :func:`_read_installed` still fails on it -- and the two answers
-    together say "no such app" about an app that is on disk. ``is_symlink`` does not
-    close it either: it is False for a Windows directory junction, so a dangling
-    junction stays invisible to every predicate that resolves its target.
-
-    Anything uninspectable counts as present, the same fail-to-unknown direction
-    :func:`_absence_is_genuine` takes.
-    """
-    try:
-        return path.exists() or path.is_symlink() or is_link_or_junction(path)
-    except OSError:
-        return True
-
-
-def _entry_stands_for_a_dropped_app(entry: Path) -> bool:
-    """Whether a root entry :func:`list_apps` did not return still holds an app's claim.
-
-    A DIRECTORY that still has its record file counts: :func:`list_apps` reaches
-    ``if not meta: continue`` for a record that does not read and drops the app
-    silently, so the directory is the only remaining evidence the app is there.
-
-    A non-directory entry counts when it is link-ish or uninspectable.
-    :func:`list_apps` skips any entry that is not a readable directory, so an app
-    root replaced by a dangling symlink or junction is not a dir, is not listed, and
-    its record is unreachable -- every resolving predicate agrees the app is absent
-    when something is plainly occupying its name.
-
-    An entry that inspects cleanly as a plain FILE is deliberately NOT counted. It
-    cannot be told apart from an ordinary non-app file in this directory, and
-    treating every such file as a dropped app would leave the listing permanently
-    incomplete, which costs every caller that reads completeness as doubt. An app
-    root overwritten by a plain file is the residue that leaves.
-    """
-    try:
-        if entry.is_dir():
-            return _path_is_occupied(entry / INSTALLED_META_FILENAME)
-        return entry.is_symlink() or is_link_or_junction(entry)
-    except OSError:
-        return True
-
-
-def list_apps_with_skips() -> AppsListing:
-    """:func:`list_apps`, plus whether it dropped an app that is on disk.
-
-    :func:`list_apps` drops an app whose installed record does not read, and drops
-    it SILENTLY rather than raising, so its return value on its own cannot separate
-    "no such app is installed" from "that app's record went unread". A caller that
-    must tell those apart -- one deciding whether an absent app means a name is
-    genuinely unclaimed -- has no way to ask, and the wrong answer is on the
-    unrecoverable side.
-
-    This reports the second case, so the decision belongs to the module that owns
-    the skip rules. ``agent.py``'s rebuild consumed a copy of this walk before, in a
-    module where a change to ``list_apps``'s record layout or skip behaviour would
-    have left the copy stale with nothing failing.
-
-    ``complete`` is a property of the LISTING, not of any one app: it says only that
-    something on disk stood for an app the list does not carry. It does not name
-    which, because the dropped record is exactly the thing that could not be read.
-
-    Raises only what :func:`list_apps` raises, so an unreadable registry stays
-    distinguishable from an empty one. A root that cannot be WALKED is reported as an
-    incomplete listing instead, because the apps it would have vouched for are
-    already in ``apps``.
-    """
-    apps = list_apps()
-    try:
-        named = {app.get("name") for app in apps if isinstance(app, dict)}
-        root = apps_dir()
-        if not root.is_dir():
-            # Nothing can be enumerated here, so the two shapes are told apart by
-            # whether anything is AT the root rather than by walking it.
-            #
-            # An ABSENT root is the ordinary "nothing installed" case, and
-            # :func:`list_apps` returns the same empty list for it, so the listing is
-            # complete and an app missing from it really is not installed.
-            #
-            # A root something else OCCUPIES is the opposite answer. Every installed
-            # app's record is underneath it and none of them can be reached, while no
-            # entry can stand for them either because the walk cannot run at all. So
-            # completeness is unknown, and reporting it as unknown is what stops a
-            # caller pruning a claim it merely could not read.
-            #
-            # A plain FILE counts here, where :func:`_entry_stands_for_a_dropped_app`
-            # deliberately does not count one. The reason is the position, not the
-            # shape: a file BESIDE the app directories is an ordinary member of a
-            # healthy apps root, and counting it would hold every normal listing
-            # incomplete, whereas a file standing WHERE the root belongs has replaced
-            # the whole directory and no healthy installation looks like that.
-            return AppsListing(apps, not _path_is_occupied(root))
-        dropped = any(
-            entry.name not in named and _entry_stands_for_a_dropped_app(entry)
-            for entry in root.iterdir()
-        )
-    except Exception:  # noqa: BLE001 — a root that cannot be read vouches for nothing
-        return AppsListing(apps, False)
-    return AppsListing(apps, not dropped)
 
 
 def get_app(name: str) -> dict[str, Any] | None:
@@ -2458,14 +3123,16 @@ def get_app(name: str) -> dict[str, Any] | None:
         try:
             manifest = AppManifest.from_json_file(manifest_path)
             manifest_data = manifest.to_dict()
-            # Sync version for self-managed apps (same as list_apps)
+            # Reflect a self-managed app's own manifest version in the RETURNED
+            # row only, as list_apps does. The record here was read before the
+            # manifest, so writing it back would overwrite whatever a
+            # registration landing between the two reads stored -- an approval,
+            # a disable-for-consent -- with the stale snapshot.
             if meta.lifecycle == "app" and manifest.version and manifest.version != meta.version:
                 meta.version = manifest.version
-                meta.updatedAt = _now_iso()
-                _write_installed(name, meta)
         except Exception:
             pass
-    return {**meta.to_dict(), "manifest": manifest_data}
+    return {**meta.to_dict(), **_approved_grants_row(name), "manifest": manifest_data}
 
 
 def get_app_manifest(name: str) -> AppManifest | None:
@@ -2601,6 +3268,24 @@ def is_app_enabled(name: str) -> bool:
     """
     meta = _read_installed(name)
     return bool(meta and meta.enabled)
+
+
+# The builtin that owns the Task Runner page. Its routes are host-owned, so the
+# start paths read this app's switch themselves (see ``app_disabled``).
+TASK_RUNNER_APP = "projects"
+TASK_RUNNER_DISABLED_MESSAGE = "Task Runner is disabled. Enable it in Library to start tasks."
+
+
+def app_disabled(name: str) -> bool:
+    """True only when the app is installed and switched off.
+
+    Not ``not is_app_enabled(name)``: that is also True when no record exists,
+    and a host-owned surface (Task Runner on a headless host or in tests) runs
+    without one. Only an explicit ``enabled: false`` reads as disabled here.
+    Read-only, like :func:`is_app_enabled`.
+    """
+    meta = _read_installed(name)
+    return meta is not None and not meta.enabled
 
 
 def set_app_source(name: str, source: str) -> bool:
@@ -2813,6 +3498,34 @@ def register_external_app(
             ),
         )
 
+    # Self-registration admits a new manifest the way install and update do, so it
+    # applies the same cron-grant rule. A re-registration at the version already on
+    # record, whose recorded manifest already scheduled crons without the grant, is
+    # a routine relaunch of an app registered before the rule rather than an
+    # update: it keeps registering so the app's crons keep firing, and the rule
+    # reaches the app with its next version.
+    if admission_manifest is not None:
+        cron_grant_error = cron_permission_error(admission_manifest)
+        if cron_grant_error and existing:
+            recorded = get_app_manifest(name)
+            if (
+                recorded is not None
+                and recorded.version == admission_manifest.version
+                and cron_permission_error(recorded)
+            ):
+                cron_grant_error = ""
+        if cron_grant_error:
+            sel().log_api_access(
+                caller="app_register_external",
+                operation="manifest",
+                outcome="rejected",
+                resources=f"name={name!r}",
+                error=cron_grant_error,
+            )
+            return AppResult(
+                ok=False, name=name, error=f"invalid manifest: {cron_grant_error}"
+            )
+
     # Self-registration is routine (self-managed apps re-register on every
     # launch) and the app authors its own manifest, so this path can widen the
     # session-approval grant without any user moment -- the same gap
@@ -2828,6 +3541,33 @@ def register_external_app(
     prior_manifest = get_app_manifest(name) if existing else None
     widened_session_approval = requested_session_approval and not (
         prior_manifest and prior_manifest.permissions.sessionApproval
+    )
+    # Same holding back as ``update_app`` for added api/events entries. A first
+    # registration approves what it declares: there is no earlier approval to
+    # widen, as with an install.
+    new_permissions = (
+        manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
+    )
+    prior_grants = _effective_approved_grants(name, existing) if existing else None
+    prior_grants_present = _approved_grants_path(name).is_file() if existing else False
+    approved_grants: dict[str, list[str]] | None
+    if not manifest_data:
+        if existing:
+            approved_grants = _effective_approved_grants(name, existing)
+        elif (on_disk := get_app_manifest(name)) is not None:
+            approved_grants = _declared_grant_entries(on_disk.permissions)
+        else:
+            approved_grants = None
+    elif existing:
+        approved_grants = _approved_grants_after_manifest_change(
+            existing_approved=prior_grants,
+            old_permissions=prior_manifest.permissions if prior_manifest else None,
+            new_permissions=new_permissions,
+        )
+    else:
+        approved_grants = _declared_grant_entries(new_permissions)
+    widened_grants = bool(manifest_data) and any(
+        _held_back_entries(approved_grants, new_permissions).values()
     )
 
     if existing:
@@ -2850,6 +3590,7 @@ def register_external_app(
             ),
             resources=resources,
             lifecycle=lifecycle,
+            approvedGrantsStored=existing.approvedGrantsStored or bool(manifest_data),
         )
         if not preserve_server_provenance:
             if source:
@@ -2866,9 +3607,13 @@ def register_external_app(
         )
         manifest_text = json.dumps(manifest_data, indent=2) + "\n" if manifest_data else ""
         try:
-            if manifest_data and widened_session_approval:
-                # Disable first when adding the grant so the new manifest is
-                # never live beside metadata that still authorizes the app.
+            if manifest_data:
+                # Narrowing first: the new set is a subset of the old one, so
+                # it is safe beside either manifest.
+                _write_approved_grants(name, approved_grants)
+            if manifest_data and (widened_session_approval or widened_grants):
+                # Disable (or hold back) first when adding a grant so the new
+                # manifest is never live beside metadata that authorizes it.
                 _write_installed(name, meta)
                 atomic_write(manifest_path, manifest_text)
             else:
@@ -2879,6 +3624,10 @@ def register_external_app(
         except (OSError, ValueError) as exc:
             rollback_errors: list[str] = []
             try:
+                # The set first: the record write keeps the stored flag only
+                # while a set file is present.
+                if manifest_data:
+                    _write_approved_grants(name, prior_grants if prior_grants_present else None)
                 _write_installed(name, existing)
             except OSError as rollback_exc:
                 rollback_errors.append(f"metadata rollback failed: {rollback_exc}")
@@ -2912,7 +3661,10 @@ def register_external_app(
             origin=origin,
             resources=resources,
             lifecycle=lifecycle,
+            approvedGrantsStored=approved_grants is not None,
         )
+        if approved_grants is not None:
+            _write_approved_grants(name, approved_grants)
         _write_installed(name, meta)
         # Persist manifest if provided (so dashboard can show full info).
         if manifest_data:
@@ -2961,6 +3713,14 @@ def register_external_app(
             ),
             secret=secret if is_new_secret else "",
             notice="session_approval_reconsent",
+        )
+    if widened_grants:
+        sel().log_api_access(
+            caller="app_register",
+            operation="grants_widened",
+            outcome="staged",
+            resources=f"name={name!r}",
+            error="registration added permissions.api/events entries; approve to grant them",
         )
     result = AppResult(
         ok=True,
@@ -3651,7 +4411,7 @@ def register_builtin_apps() -> int:
         existing = _read_installed(name)
 
         dest = app_dir(name)
-        dest.mkdir(parents=True, exist_ok=True)
+        ensure_directory(dest)  # apps/<name>/ is born 0700 in the data home
 
         # A pre-existing entry this function did not write belongs to the USER:
         # they installed an app that happens to share this builtin's name. Taking

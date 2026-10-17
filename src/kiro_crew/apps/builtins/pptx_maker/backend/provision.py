@@ -44,7 +44,7 @@ from kiro_crew.apps.manager import app_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.env import resolve_uv as _shared_resolve_uv
 from kiro_crew.platform_compat import ensure_owner_rwx_dirs, rmtree_force
-from kiro_crew.sandbox import cgroup_scope_argv, run_limited, sandboxed_spawn_argv
+from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
@@ -198,8 +198,10 @@ def _run(argv: list[str], *, cwd: str, timeout: int) -> tuple[int, str]:
     # git-over-SSH. Provisioning runs a build backend over a freshly-downloaded
     # third-party tree, which is exactly the code least entitled to either. No
     # sandbox mode restricts network, so uv still reaches the index.
+    # The chokepoint already applies the cgroup scope as its outermost layer.
+    # Wrapping again nests a second ``systemd-run --scope`` that inherits the
+    # first one's PID and collides on its auto-named unit.
     wrapped, env, cleanup = sandboxed_spawn_argv(argv, mode="strict", strip_python_env=True)
-    wrapped = cgroup_scope_argv(wrapped)  # cgroup DoS ceiling
     try:
         proc = run_limited(  # noqa: S603 - fixed argv, no request-derived values
             wrapped,

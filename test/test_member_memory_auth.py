@@ -21,7 +21,7 @@ async def test_internal_request_captures_one_member_before_other_work(env):
     req = request(env, internal=True)
     scope = await _shared.member_request_scope(req)
     assert scope.store == "member-alice"
-    env.bind_session("dashboard:bob", "member-bob")
+    await env.bind_session_async("dashboard:bob", "member-bob")
     bind_session_execution(
         "dashboard:alice", read_session_execution("dashboard:bob"), replace_existing=True
     )
@@ -162,8 +162,97 @@ def test_owner_bootstrap_keeps_host_or_tracked_backend_permission(
     monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
     monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
     monkeypatch.setattr(auth, "_verified_host_process", lambda pid: host)
-    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: backend)
+    monkeypatch.setattr(
+        auth, "_gateway_spawned_app_backend", lambda pid: "demo-app" if backend else None
+    )
     assert auth.local_owner_bootstrap_allowed(SimpleNamespace()) is allowed
+
+
+def test_owner_bootstrap_provenance_names_the_spawned_backend_that_owns_the_caller(
+    monkeypatch,
+):
+    """A caller owned by a gateway-spawned backend is attributed to that app."""
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: False)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: "demo-app")
+    assert auth.local_owner_bootstrap_provenance(SimpleNamespace()) == auth.LocalOwnerProvenance(
+        app="demo-app"
+    )
+
+
+def test_owner_bootstrap_provenance_prefers_the_app_name_over_an_anonymous_host_verdict(
+    monkeypatch,
+):
+    """An unsandboxed backend also passes as a host process; the app name still wins.
+
+    The registry answer is what the audit record needs, so the attribution does
+    not depend on which leg happens to be consulted first.
+    """
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: True)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: "demo-app")
+    provenance = auth.local_owner_bootstrap_provenance(SimpleNamespace())
+    assert provenance is not None
+    assert provenance.app == "demo-app"
+
+
+def test_owner_bootstrap_provenance_leaves_a_host_process_unattributed(monkeypatch):
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: True)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: None)
+    assert auth.local_owner_bootstrap_provenance(SimpleNamespace()) == auth.LocalOwnerProvenance(
+        app=None
+    )
+
+
+def test_owner_bootstrap_provenance_is_none_when_neither_leg_admits(monkeypatch):
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: False)
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", lambda pid: None)
+    assert auth.local_owner_bootstrap_provenance(SimpleNamespace()) is None
+
+
+@pytest.mark.parametrize("host", [True, False])
+def test_owner_bootstrap_provenance_lets_the_host_leg_decide_when_the_registry_raises(
+    monkeypatch, host
+):
+    """A registry that cannot answer names no app and widens nothing.
+
+    Admission then rests on the host leg alone, exactly as for a caller no
+    backend owns: the attribution is lost, the verdict is unchanged.
+    """
+    monkeypatch.setattr(auth, "_request_peer_pid", lambda req: 123)
+    monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: "start-id")
+    monkeypatch.setattr(auth, "_verified_host_process", lambda pid: host)
+
+    def _boom(pid):
+        raise RuntimeError("registry unavailable")
+
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", _boom)
+    provenance = auth.local_owner_bootstrap_provenance(SimpleNamespace())
+    if host:
+        assert provenance == auth.LocalOwnerProvenance(app=None)
+    else:
+        assert provenance is None
+    assert auth.local_owner_bootstrap_allowed(SimpleNamespace()) is host
+
+
+def test_gateway_spawned_app_backend_names_no_app_when_the_registry_cannot_import(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _refuse_backend(name, *args, **kwargs):
+        if name == "kiro_crew.apps.backend":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _refuse_backend)
+    assert auth._gateway_spawned_app_backend(123) is None
 
 
 def test_unknown_process_incarnation_never_bootstraps_owner(monkeypatch):
@@ -171,8 +260,11 @@ def test_unknown_process_incarnation_never_bootstraps_owner(monkeypatch):
     monkeypatch.setattr(auth.platform_compat, "get_process_start_id", lambda pid: None)
     provenance = Mock(return_value=True)
     monkeypatch.setattr(auth, "_verified_host_process", provenance)
+    backend = Mock(return_value="demo-app")
+    monkeypatch.setattr(auth, "_gateway_spawned_app_backend", backend)
     assert not auth.local_owner_bootstrap_allowed(SimpleNamespace())
     provenance.assert_not_called()
+    backend.assert_not_called()
 
 
 @pytest.mark.parametrize(

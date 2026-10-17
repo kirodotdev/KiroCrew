@@ -140,6 +140,112 @@ class TestAChangedSourceReachesTheGeneratedSpec:
         assert "timeout" not in _kiro(tmp_path, cfg_dir, {"command": cmd})[SERVER]
 
 
+class TestTheCommandsUnitFollowsAnUnchangedCommand:
+    """An ``env`` added AFTER the first rebuild reaches the server the entry runs.
+
+    The reporter's shape exactly: the variables declared when the entry was first
+    written reached the child, the two added later in the same ``env`` block did
+    not, and nor did two new ``args``. ``command`` is not reconciled (the xfail
+    above), so these pin that ``args`` and ``env`` follow a command the source has
+    NOT changed -- and stay put when it has, because pairing one program's env
+    with another program's command is what the as-a-unit rule forbids.
+    """
+
+    def test_an_env_key_added_later_lands(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        first = _kiro(tmp_path, cfg_dir, {"command": cmd, "env": {"FIREFOX_BIN": "/ff"}})
+        assert first[SERVER]["env"] == {"FIREFOX_BIN": "/ff"}
+
+        later = {"FIREFOX_BIN": "/ff", "CONNECT_EXISTING": "true", "MARIONETTE_PORT": "2828"}
+        second = _kiro(tmp_path, cfg_dir, {"command": cmd, "env": later})
+        assert second[SERVER]["env"] == later, (
+            "the entry the previous pass wrote kept its first-pass env, so the "
+            "variables added to the source later never reached the spawned server"
+        )
+
+    def test_changed_args_land(self, tmp_path: Path) -> None:
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "args": ["-y", "pkg"]})
+        new_args = ["-y", "pkg", "--connect-existing", "--marionette-port", "2828"]
+        assert _kiro(tmp_path, cfg_dir, {"command": cmd, "args": new_args})[SERVER]["args"] == (
+            new_args
+        )
+
+    def test_a_dropped_env_is_removed(self, tmp_path: Path) -> None:
+        """The unit is projected, not merged: a key the source dropped goes too."""
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "env": {"OLD": "1"}})
+        assert "env" not in _kiro(tmp_path, cfg_dir, {"command": cmd})[SERVER]
+
+    def test_the_env_follows_a_bare_command_the_entry_holds_resolved(self, tmp_path: Path) -> None:
+        """The agent entry pins the RESOLVED path of the source's bare name.
+
+        ``npx`` in mcp.json becomes ``/…/bin/npx`` in the generated spec, so a
+        string comparison would read every stdio server as a changed program and
+        the fix would never apply to the case it was written for.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        resolved = _exe(tmp_path, "npx")
+
+        def _which(c, **kw):
+            return resolved if c == "npx" else c
+
+        def _rebuild(env: dict) -> dict:
+            return _run_install_mcp_merge(
+                tmp_path,
+                cfg_dir,
+                cc_servers={},
+                kiro_servers={SERVER: {"command": "npx", "env": env}},
+                which_side_effect=_which,
+            )["mcpServers"]
+
+        first = _rebuild({"A": "1"})
+        assert first[SERVER]["command"] == resolved
+        assert first[SERVER]["env"] == {"A": "1"}
+
+        assert _rebuild({"A": "1", "B": "2"})[SERVER]["env"] == {"A": "1", "B": "2"}
+
+    def test_the_env_does_not_follow_a_source_that_switched_programs(self, tmp_path: Path) -> None:
+        """The as-a-unit guard: a new program's env must not run under the old one.
+
+        The command is not reconciled (see the xfail above), so the entry keeps
+        running ``old-srv``; adopting ``other-srv``'s env onto it would pair one
+        source's environment with a different program, which is the mis-pairing the
+        merge order documents as forbidden. The old pairing stays whole instead.
+        """
+        cfg_dir = _bundled_defaults(tmp_path)
+        old, other = _exe(tmp_path, "old-srv"), _exe(tmp_path, "other-srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": old, "env": {"FOR": "old"}})
+        second = _kiro(tmp_path, cfg_dir, {"command": other, "env": {"FOR": "other"}})[SERVER]
+        assert second["command"] == old
+        assert second["env"] == {"FOR": "old"}
+
+    def test_a_user_grant_survives_the_env_reconcile(self, tmp_path: Path, monkeypatch) -> None:
+        """Adopting the unit touches ``args``/``env`` only; the user's keys stay."""
+        from kiro_crew.config import live as _live
+        from kiro_crew.config.loader import KiroCrewConfig as _Cfg
+
+        _cfg = _Cfg()
+        _cfg.mcp.honour_auto_approve = True
+        monkeypatch.setattr(_live, "snapshot", lambda: _cfg)
+        cfg_dir = _bundled_defaults(tmp_path)
+        cmd = _exe(tmp_path, "srv")
+
+        _kiro(tmp_path, cfg_dir, {"command": cmd, "env": {"A": "1"}})
+        _grant(tmp_path, ["safe_tool"])
+
+        merged = _kiro(tmp_path, cfg_dir, {"command": cmd, "env": {"A": "2"}})[SERVER]
+        assert merged["env"] == {"A": "2"}
+        assert merged["autoApprove"] == ["safe_tool"]
+
+
 class TestAUserFieldOnTheEntrySurvives:
     """The risk the fixed key list bounds: an overwrite that revokes a grant."""
 

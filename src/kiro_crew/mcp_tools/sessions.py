@@ -116,8 +116,8 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "List your recent conversation sessions in this workspace so you "
                 "can see the work in flight and what you've been doing — titles, "
-                "owning agent, message volume, and last-activity time, newest "
-                "first. Use this when the user asks 'what are you working on?', "
+                "owning agent, approximate message volume, and created time, "
+                "ordered by newest activity first. Use this when the user asks 'what are you working on?', "
                 "'what sessions are open?', 'what have we been doing?', or when you "
                 "need a bird's-eye view of your own workspace before acting. This "
                 "is a READ — it never modifies memory or history. It complements "

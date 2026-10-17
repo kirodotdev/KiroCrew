@@ -125,7 +125,10 @@ function renderSidebar() {
   } as Slot
   const store = createTestStore({
     dashboard: {
-      status: {}, connected: false, slots: [slot], slotsLoaded: true, approvalMode: 'normal',
+      // connected: every case here drives a re-parent, which PATCHes the folder, and
+      // that write is refused offline at its sink. createTestStore() defaults to
+      // disconnected, so this must be explicit or the whole file runs the refusal.
+      status: {}, connected: true, slots: [slot], slotsLoaded: true, approvalMode: 'normal',
       channelTrusted: false, refreshTrigger: 0, unreadSlots: [], updateProgress: null,
       subagentRunning: {}, subagentDetails: {}, subagentText: {},
       sessionDefaultColor: null, sessionColorsMode: 'tint', sessionColorsPalette: 'horizon', sessionColorsIntensity: 'clear',

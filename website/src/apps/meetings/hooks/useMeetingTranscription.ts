@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { MeetingsApiError, meetingsApi, type TranscriptSegment } from '../api'
 import { reportIfMicDenied } from '../../../hooks/mic'
 import { dictationSeparator, joinTranscript, transcriptTail } from '../../../lib/dictationText'
+import { withBase } from '../../../lib/basePath'
 
 /** Feature detection mirroring `useStreamingStt` — the dashboard's own hook. */
 export const transcriptionSupported =
@@ -381,7 +382,7 @@ export function useMeetingTranscription({
     const ctx = new AudioContext()
     ctxRef.current = ctx
     try {
-      await ctx.audioWorklet.addModule('/pcm-worklet.js')
+      await ctx.audioWorklet.addModule(withBase('/pcm-worklet.js'))
     } catch {
       onErrorRef.current?.('worklet')
       cleanup()

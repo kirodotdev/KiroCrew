@@ -43,7 +43,118 @@ def loads_user_json(text: str) -> Any:
     return json.loads(strip_utf8_bom(text))
 
 
-def loads_mcp_config(text: str) -> dict[str, Any]:
+def strip_json_comments(text: str) -> str:
+    """Drop ``//`` and ``/* */`` comments outside string literals.
+
+    String-aware: a ``//`` inside a quoted value (a URL, say) is kept, and so are
+    escaped quotes. An unterminated block comment runs to the end of the text.
+    """
+    output: list[str] = []
+    index = 0
+    quote = ""
+    while index < len(text):
+        char = text[index]
+        if quote:
+            output.append(char)
+            if char == "\\" and index + 1 < len(text):
+                index += 1
+                output.append(text[index])
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in ('"', "'"):
+            quote = char
+            output.append(char)
+            index += 1
+            continue
+        if text[index : index + 2] == "//":
+            index += 2
+            while index < len(text) and text[index] not in "\r\n":
+                index += 1
+            continue
+        if text[index : index + 2] == "/*":
+            end = text.find("*/", index + 2)
+            index = len(text) if end < 0 else end + 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _drop_trailing_commas(text: str) -> str:
+    """Drop a comma that only whitespace separates from a closing ``}`` or ``]``.
+
+    Runs on comment-free text and skips string literals, so a comma inside a
+    value is never touched.
+    """
+    output: list[str] = []
+    index = 0
+    in_string = False
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            output.append(char)
+            if char == "\\" and index + 1 < len(text):
+                index += 1
+                output.append(text[index])
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+        elif char == ",":
+            ahead = index + 1
+            while ahead < len(text) and text[ahead] in " \t\r\n":
+                ahead += 1
+            if ahead < len(text) and text[ahead] in "}]":
+                index += 1
+                continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def loads_user_jsonc(text: str) -> Any:
+    """:func:`loads_user_json` that also accepts JSONC: comments and trailing commas.
+
+    Kiro's own tools read ``mcp.json`` as JSONC, so a person may comment out a
+    server there. Strict JSON is tried first; only when it fails is the text
+    parsed again with comments and trailing commas removed. If that fails too,
+    the ORIGINAL strict error is raised, so its line numbers match the file.
+
+    For READ paths only. A writer must not parse with this and write the result
+    back: the plain JSON it emits would drop every comment. See
+    :func:`has_json_comments`.
+    """
+    try:
+        return loads_user_json(text)
+    except json.JSONDecodeError as exc:
+        try:
+            return json.loads(_drop_trailing_commas(strip_json_comments(strip_utf8_bom(text))))
+        except json.JSONDecodeError:
+            raise exc from None
+
+
+def has_json_comments(text: str) -> bool:
+    """Whether *text* parses only as JSONC (see :func:`loads_user_jsonc`).
+
+    A writer that would rewrite such a file as plain JSON refuses instead.
+    """
+    try:
+        loads_user_json(text)
+        return False
+    except json.JSONDecodeError:
+        pass
+    try:
+        loads_user_jsonc(text)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+def loads_mcp_config(text: str, *, jsonc: bool = False) -> dict[str, Any]:
     """Parse an MCP config document, refusing a shape its readers cannot index.
 
     The root must be an object, and ``mcpServers``, when present, must be one
@@ -55,8 +166,13 @@ def loads_mcp_config(text: str) -> dict[str, Any]:
     falls back to an empty document and writes it back parses with
     :func:`loads_user_json`, so a wrong shape fails at the mutation and the
     file survives.
+
+    ``jsonc=True`` also accepts comments and trailing commas
+    (:func:`loads_user_jsonc`), as Kiro does for these files. Only a read-only
+    caller asks for it: a writer that parsed a commented file would rewrite it
+    as plain JSON and drop the comments.
     """
-    data = loads_user_json(text)
+    data = loads_user_jsonc(text) if jsonc else loads_user_json(text)
     if not isinstance(data, dict):
         raise json.JSONDecodeError("top-level JSON is not an object", text, 0)
     if not isinstance(data.get("mcpServers", {}), dict):
@@ -81,12 +197,12 @@ def load_user_json_object(path: Path) -> dict[str, Any]:
     """Load a hand-edited JSON object, returning ``{}`` on any error or non-dict root.
 
     The same contract as ``kiro_crew.agent._load_json``, with
-    :func:`loads_user_json` as the parser, for callers that read an MCP config.
+    :func:`loads_user_jsonc` as the parser, for callers that read an MCP config.
     """
     if not path.is_file():
         return {}
     try:
-        data = loads_user_json(path.read_text(encoding="utf-8"))
+        data = loads_user_jsonc(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as exc:
         logger.warning("Ignoring invalid %s: %s", path, exc)
         return {}
@@ -125,3 +241,80 @@ def exceeds_nesting(value: object, limit: int = MAX_DOCUMENT_NESTING) -> bool:
             return True
         stack.extend((child, depth) for child in children)
     return False
+
+
+def strict_json_equal(a: object, b: object) -> bool:
+    """Type-strict equality over two decoded JSON documents: ``1 != True``,
+    ``1 != 1.0``.
+
+    Python's ``==`` conflates ``bool`` with ``int`` and ``int`` with ``float``,
+    so a plain compare of two decoded documents calls ``true`` and ``1`` the
+    same value. A reader that parses the file itself does not, so a caller
+    deciding whether two documents are ONE document (an unchanged stored value,
+    two spec files claiming one name) must require identical types. Erring
+    toward "different" is the safe side for every such caller: an update or a
+    conflict instead of a silent skip, a refusal instead of an arbitrary pick.
+    Containers are compared member by member, scalars by type then value.
+
+    Iterative, like :func:`exceeds_nesting`: the documents come from files a
+    person or a tool wrote, and a recursive walk over one nested a few hundred
+    levels deep would raise ``RecursionError`` out of the caller, which is
+    neither of the answers a comparison has. An explicit stack makes depth cost
+    memory the document already paid for, never interpreter frames.
+    """
+    stack: list[tuple[object, object]] = [(a, b)]
+    while stack:
+        x, y = stack.pop()
+        if type(x) is not type(y):
+            return False
+        if isinstance(x, dict):
+            assert isinstance(y, dict)
+            if x.keys() != y.keys():
+                return False
+            stack.extend((x[k], y[k]) for k in x)
+        elif isinstance(x, list):
+            assert isinstance(y, list)
+            if len(x) != len(y):
+                return False
+            stack.extend(zip(x, y))
+        elif x != y:
+            return False
+    return True
+
+
+def copy_json_document(value: Any) -> Any:
+    """A deep copy of a decoded JSON document the caller may mutate freely.
+
+    ``copy.deepcopy`` recurses several frames per nesting level, so a document
+    a few hundred levels deep (well inside the size caps the spec readers
+    apply) raises ``RecursionError`` out of whoever hands a memoized parse to
+    a caller. This walks an explicit stack instead, like :func:`exceeds_nesting`
+    and :func:`strict_json_equal`. Containers (``dict``, ``list``) are rebuilt;
+    scalars are shared, which is safe because every JSON scalar is immutable.
+    """
+    if isinstance(value, dict):
+        root: Any = {}
+    elif isinstance(value, list):
+        root = []
+    else:
+        return value
+    stack: list[tuple[Any, Any]] = [(value, root)]
+    while stack:
+        src, dst = stack.pop()
+        if isinstance(src, dict):
+            for key, item in src.items():
+                if isinstance(item, (dict, list)):
+                    child: Any = {} if isinstance(item, dict) else []
+                    dst[key] = child
+                    stack.append((item, child))
+                else:
+                    dst[key] = item
+        else:
+            for item in src:
+                if isinstance(item, (dict, list)):
+                    child = {} if isinstance(item, dict) else []
+                    dst.append(child)
+                    stack.append((item, child))
+                else:
+                    dst.append(item)
+    return root

@@ -53,10 +53,6 @@ class _FakeSlot:
         self._dirty = False
         self.source_links_invalidated = 0
 
-    @property
-    def is_remote(self) -> bool:
-        return bool(self.executor == "remote" and self.instance_id and self.remote_slot)
-
     def append(self, role, content, cls_meta):
         self.messages.append({"role": role, "content": content, "cls": cls_meta})
 

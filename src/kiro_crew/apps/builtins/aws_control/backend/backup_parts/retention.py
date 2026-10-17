@@ -17,6 +17,9 @@ from typing import Any
 from kiro_crew.apps.builtins.aws_control.backend import storage
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts import _FACADE_MODULE
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.catalog import _archive_sort_key
+from kiro_crew.apps.builtins.aws_control.backend.backup_parts.fingerprints import (
+    _is_provable_version_id,
+)
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.identity import (
     KEY_SEP,
     KIND_SUBPATHS,
@@ -36,6 +39,7 @@ from kiro_crew.apps.builtins.aws_control.backend.backup_parts.state import (
     a_retained_archive_carries_conversations,
 )
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts.uploads import (
+    _TEARDOWN_REFUSAL,
     SEL_OP_RETENTION,
     _authorize_upload,
 )
@@ -136,6 +140,52 @@ RETENTION_UNCLAIMED_STATE_KEY = "retention_unclaimed"
 #: the same reason: a listing the sweep refused to trust about age cannot be trusted
 #: about what it omitted either.
 RETENTION_UNRECORDED_STATE_KEY = "retention_unrecorded"
+
+
+#: Where the last sweep's terminal result lives in ``backup.json``: per account, then
+#: per kind, ``{"result": str, "skipped": str, "retired": int, "versions": int,
+#: "at": iso8601}``.
+#:
+#: A sweep ends in one of a handful of terminal states, and the SEL event and a log
+#: line are not where an operator reads whether retention is working. Without this
+#: record the status read serves the configured ``keep`` count and nothing about
+#: whether any sweep acted on it, so a sweep refused every night reads exactly like a
+#: working one -- retention enabled, the bill not falling, and nothing in the app
+#: naming why.
+#:
+#: Written on EVERY terminal path, the refusing ones included. That is the one place
+#: this record differs from :data:`RETENTION_UNCLAIMED_STATE_KEY`, which is written
+#: only past the trusted-listing gate: a measurement taken from a listing the sweep
+#: refused cannot be trusted, but the refusal itself is a fact, and it is exactly the
+#: fact worth publishing. A later sweep's record replaces an earlier one per kind, so a
+#: success is never left standing after the sweep starts to refuse.
+#:
+#: ``result`` is the sweep's own verdict, in three words:
+#:
+#: * ``successful`` -- the sweep did what its configuration asked: it retired what
+#:   ``keep`` allowed, found nothing to retire, or had nothing to do because retention
+#:   is not enabled or the owner changed the count while it ran.
+#: * ``refused`` -- an authorization gate DECIDED against it before anything was
+#:   deleted: consent withdrawn, the app disabled, the connection repointed. The gate
+#:   files its own audit event for that decision.
+#: * ``failed`` -- anything else that kept it from finishing: an unreadable setting, a
+#:   credential or cloud error at a gate, the gate's teardown refusal during a
+#:   shutdown, a listing it would not act on, a declined sessions sweep, or a cloud
+#:   error later on. A cloud error after deletion began may still have erased
+#:   versions, which ``versions`` says. The split is the audit event's own, so the two
+#:   never disagree about one ending.
+#:
+#: ``skipped`` is the sweep's own fixed reason text, ``""`` when it had none. It is
+#: never an exception message: an error's text stays in the audit event, where it is
+#: redacted for that record, rather than being served to every reader of a polled
+#: endpoint. ``retired`` and ``versions`` are the same two counts the audit event
+#: carries.
+#:
+#: Stamped with when the sweep ENDED, for the reason the unclaimed pair is: this is the
+#: last sweep's result and not a live read, and without the stamp a reader cannot tell
+#: last night's refusal from one a month old. An absent kind means no sweep has ended
+#: for it yet, never "nothing happened".
+RETENTION_LAST_SWEEP_STATE_KEY = "retention_last_sweep"
 
 
 def _clamp_retention_keep(raw: Any) -> int | None:
@@ -388,11 +438,21 @@ def _current_version_is_ours(rows: list[dict[str, Any]], recorded: str) -> bool:
     be ours, which is the fail-closed end. Note this is the same input that makes
     recovery unavailable, so the two agree rather than merely coinciding.
 
+    The recorded id and the current version's id are each worth comparing only when
+    each identifies ONE version. :func:`_is_provable_version_id` is false for the
+    empty string and for ``"null"`` -- the id S3 gives every object written while the
+    bucket's versioning is SUSPENDED, where an overwrite REPLACES that version rather
+    than adding one, so a co-writer's object and ours both report ``"null"`` at a
+    shared key. Both sides run through it before the equality, the same reading the
+    nightly skip applies, so an unprovable id on either side reads as not-ours rather
+    than letting two ``"null"`` ids compare equal and a foreign object pass as our
+    archive.
+
     It is a question about the CURRENT version rather than the newest-by-timestamp
     one, so a key ordered by `_newest_first` also carries our version as its newest
     -- one rule, not two that can drift.
     """
-    if not recorded:
+    if not _is_provable_version_id(recorded):
         return False
     current = [row for row in rows if row.get("latest")]
     if not current:
@@ -400,7 +460,10 @@ def _current_version_is_ours(rows: list[dict[str, Any]], recorded: str) -> bool:
     row = current[0]
     if row.get("deleteMarker"):
         return False
-    return str(row.get("versionId", "")) == recorded
+    current_id = row.get("versionId", "")
+    if not _is_provable_version_id(current_id):
+        return False
+    return str(current_id) == recorded
 
 
 def _audit_retention(
@@ -482,7 +545,7 @@ def _audit_unfiled_authorization(
     is not an access decision, and filing it as a denial would devalue the real
     ones.
     """
-    if isinstance(exc, RuntimeError):
+    if _filed_by_the_gate(exc):
         return
     _audit_retention(
         account,
@@ -491,6 +554,35 @@ def _audit_unfiled_authorization(
         result="failed",
         error=redact_log_via_context(str(exc)),
     )
+
+
+def _filed_by_the_gate(exc: BaseException) -> bool:
+    """Whether :func:`_refuse_upload` already filed the refusal ``exc`` carries.
+
+    The exception TYPE is the discriminator, for the reason
+    :func:`_audit_unfiled_authorization` gives: ``_refuse_upload`` always ends in a
+    ``RuntimeError``, and nothing else the gate can raise is one.
+    """
+    return isinstance(exc, RuntimeError)
+
+
+def _authorization_ending(exc: BaseException) -> str:
+    """The last-sweep ``result`` for a sweep an authorization gate stopped.
+
+    ``refused`` only for an access decision :func:`_refuse_upload` made, and
+    ``failed`` for everything else -- an expired credential or a dead STS call, which
+    never reached ``_refuse_upload``, and the teardown refusal, which it files as
+    ``failed`` because a restart is not an access decision. The teardown refusal is
+    told apart by its own fixed text, :data:`_TEARDOWN_REFUSAL`, rather than by the
+    stop flag: the flag stays set for the rest of a shutdown, so reading it would also
+    relabel an access decision the gate made just before the teardown check. So the
+    status read and the audit event agree about the same ending: a credential to
+    renew or a restart is not a consent somebody withdrew, and reporting either as one
+    points the operator at the wrong fix.
+    """
+    if _filed_by_the_gate(exc) and str(exc) != _TEARDOWN_REFUSAL:
+        return "refused"
+    return "failed"
 
 
 def _record_unclaimed(account: str, kind: str, outcome: dict[str, Any]) -> None:
@@ -568,6 +660,52 @@ def _record_unrecorded(account: str, kind: str, outcome: dict[str, Any]) -> None
     except Exception:
         logger.debug(
             "aws-control: recording the unrecorded object count for %s failed",
+            account,
+            exc_info=True,
+        )
+
+
+def _record_last_sweep(account: str, kind: str, outcome: dict[str, Any], result: str) -> None:
+    """Persist how this kind's sweep ended, so the status read can say so.
+
+    Called once on every terminal path of the sweep, the refusing ones included -- see
+    :data:`RETENTION_LAST_SWEEP_STATE_KEY` for why that is the one difference from
+    :func:`_record_unclaimed`. ``result`` is ``successful``, ``refused`` or ``failed``.
+
+    Best-effort and never raising, like the recorders beside it: the archive is already
+    off-host and the run already recorded, so nothing this write can fail at is worth
+    turning a successful backup into a failed one. The audit event carries the same
+    outcome regardless, which is why this logs at debug.
+
+    The stamp is taken INSIDE the locked mutation, unlike the measurement recorders'.
+    This record is replaced rather than accumulated, so whichever write commits last is
+    the one a reader sees, and two same-kind sweeps in separate processes can reach the
+    sidecar lock in either order. A stamp taken before the wait would let the write that
+    commits second carry the EARLIER time, so the standing record would claim to be
+    older than the one it replaced. Taken under the lock, commit order and stamp order
+    are the same order.
+    """
+
+    def mutate(state: dict[str, Any]) -> None:
+        entry = _account_state(state, account)
+        last = entry.setdefault(RETENTION_LAST_SWEEP_STATE_KEY, {})
+        if not isinstance(last, dict):
+            # Repaired rather than crashed, for the reason `_record_unclaimed` repairs
+            # its own level: this runs after an upload that already succeeded.
+            last = entry[RETENTION_LAST_SWEEP_STATE_KEY] = {}
+        last[kind] = {
+            "result": result,
+            "skipped": str(outcome["skipped"]),
+            "retired": int(outcome["retired"]),
+            "versions": int(outcome["versions"]),
+            "at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds"),
+        }
+
+    try:
+        _locked_state_update(mutate)
+    except Exception:
+        logger.debug(
+            "aws-control: recording the last retention sweep for %s failed",
             account,
             exc_info=True,
         )
@@ -690,7 +828,9 @@ def _prune_remote_archives(
     every terminal outcome files one event through :func:`_audit_retention` --
     including the ones that deleted nothing -- while a refusal by the gate is left
     to :func:`_refuse_upload`, which already recorded it where the decision was
-    made.
+    made. Every terminal outcome is ALSO published, refusals included, through
+    :func:`_record_last_sweep`: the audit trail is not where an operator reads
+    whether retention is working, and the status read is.
 
     Three scoping rules, each made load-bearing by the shape of this bucket:
 
@@ -770,6 +910,7 @@ def _prune_remote_archives(
                 RETENTION_KEEP_STATE_KEY,
             )
             _audit_retention(account, outcome, caller=caller, result="successful")
+            _record_last_sweep(account, kind, outcome, "successful")
             return outcome
         logger.warning(
             "aws-control: skipping %s retention for %s: the app's state file could not "
@@ -780,6 +921,7 @@ def _prune_remote_archives(
             account,
         )
         _audit_retention(account, outcome, caller=caller, result="failed", error=outcome["skipped"])
+        _record_last_sweep(account, kind, outcome, "failed")
         return outcome
     # Re-authorized, like the archive PUT itself. These are DELETES of the
     # owner's data running after a build that may have taken minutes, and
@@ -821,6 +963,7 @@ def _prune_remote_archives(
             redact_log_via_context(str(exc)),
         )
         _audit_unfiled_authorization(account, outcome, exc, caller=caller)
+        _record_last_sweep(account, kind, outcome, _authorization_ending(exc))
         return outcome
     try:
         sub = f"{KIND_SUBPATHS[kind]}/{install_id}"
@@ -980,6 +1123,7 @@ def _prune_remote_archives(
             _audit_retention(
                 account, outcome, caller=caller, result="failed", error=outcome["skipped"]
             )
+            _record_last_sweep(account, kind, outcome, "failed")
             return outcome
         # Past the gate above, so the listing showed the archive this run uploaded as
         # the current version of its key -- which is the only point in this function
@@ -1040,6 +1184,7 @@ def _prune_remote_archives(
                 keep,
             )
             _audit_retention(account, outcome, caller=caller, result="successful")
+            _record_last_sweep(account, kind, outcome, "successful")
             return outcome
         # The SECOND gate, immediately before the only irreversible call in this
         # function. The one at the top is separated from here by a
@@ -1085,6 +1230,7 @@ def _prune_remote_archives(
                 redact_log_via_context(str(cause)),
             )
             _audit_unfiled_authorization(account, outcome, cause, caller=caller)
+            _record_last_sweep(account, kind, outcome, _authorization_ending(cause))
             return outcome
         except _RetentionCountWithdrawn as exc:
             # Nothing has been deleted: the gate checked the count and refused before
@@ -1103,8 +1249,10 @@ def _prune_remote_archives(
             # is, which is the same split the first read files.
             if exc.audit_as_failure or exc.reason == "the retention setting could not be read":
                 _audit_retention(account, outcome, caller=caller, result="failed", error=exc.reason)
+                _record_last_sweep(account, kind, outcome, "failed")
             else:
                 _audit_retention(account, outcome, caller=caller, result="successful")
+                _record_last_sweep(account, kind, outcome, "successful")
             return outcome
         except storage.PartialVersionDelete as exc:
             # Those bytes are already gone, so the count has to survive into the
@@ -1131,6 +1279,7 @@ def _prune_remote_archives(
             removed,
         )
         _audit_retention(account, outcome, caller=caller, result="successful")
+        _record_last_sweep(account, kind, outcome, "successful")
         return outcome
     except Exception as exc:
         # Deliberately broad, and it is the whole point of this function's
@@ -1175,6 +1324,7 @@ def _prune_remote_archives(
         # `outcome` carries whatever the sweep got through -- an entry saying
         # nothing happened would be the one shape an auditor must not be handed.
         _audit_retention(account, outcome, caller=caller, result="failed", error=reason)
+        _record_last_sweep(account, kind, outcome, "failed")
         return outcome
 
 
@@ -1314,6 +1464,33 @@ def retention_unrecorded(account: str) -> dict[str, Any]:
     stated here so someone deciding whether to build the panel finds it.
     """
     measured = _account_view(account).get(RETENTION_UNRECORDED_STATE_KEY, {})
+    if not isinstance(measured, dict):
+        return {}
+    # Shape-safe per kind for the reason :func:`retention_unclaimed` is: a polled
+    # endpoint must read a hand-edited document as nothing measured rather than raise.
+    return {str(kind): dict(row) for kind, row in measured.items() if isinstance(row, dict)}
+
+
+def retention_last_sweep(account: str) -> dict[str, Any]:
+    """Per kind, how the last retention sweep ended.
+
+    ``{kind: {"result": str, "skipped": str, "retired": int, "versions": int,
+    "at": iso8601}}``, and absent for a kind no sweep has ended for yet. ``result`` is
+    ``successful``, ``refused`` or ``failed``; see
+    :data:`RETENTION_LAST_SWEEP_STATE_KEY` for what each covers.
+
+    Read it BESIDE :func:`retention_keep`. That one says what the sweep WOULD act on;
+    this says what the last one did, and a refusal is recorded like any other ending,
+    so a count that no sweep has honoured for a week reads as exactly that instead of
+    looking live.
+
+    AS OF ``at``, never live, for the reason :func:`retention_unclaimed` is: this
+    endpoint is polled and nothing here makes a cloud call.
+
+    NO console renderer ships with this; the surface is HTTP only, and the absence is
+    stated here so someone deciding whether to build the panel finds it.
+    """
+    measured = _account_view(account).get(RETENTION_LAST_SWEEP_STATE_KEY, {})
     if not isinstance(measured, dict):
         return {}
     # Shape-safe per kind for the reason :func:`retention_unclaimed` is: a polled

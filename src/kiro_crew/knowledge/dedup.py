@@ -31,6 +31,7 @@ import json
 import logging
 import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from difflib import SequenceMatcher
@@ -51,6 +52,26 @@ PERSISTENT_SOURCE_TYPES = frozenset({"local_folder", "obsidian_vault", "quip"})
 # version-drift copies land at cosine >= 0.95, while same-topic-but-different docs
 # top out around 0.89 -- so 0.95 separates them with margin.
 DEFAULT_FUZZY_THRESHOLD = 0.95
+
+# Scheduled-sweep guard for a pathological single-signature bucket. The fuzzy
+# near-stem adjacency build is O(d^2) in the number of DISTINCT cross-source stems
+# that share one embedding_sig (see _near_stem_adjacency). When a settled Library
+# has re-embedded so the whole corpus lands in one signature, that build holds the
+# GIL in the gateway's worker thread for a noticeable time (about 20 s at 4,000
+# documents in one signature). Above this many distinct stems in a single signature
+# bucket, the SCHEDULED sweep skips that bucket's near-stem adjacency (and logs one
+# warning); exact-content duplicates and equal-stem fuzzy matches in the bucket are
+# unaffected, as is the O(n) per-ingest ``dedup_document`` path.
+#
+# The cap is chosen so the worst case it still ALLOWS is a few seconds, not the
+# multi-second stall a pathological Library hits: measured single-signature build
+# times are about 3 s at 2,000 distinct stems and about 19 s at 4,000, so a cap at
+# 4,000 would still permit a ~19 s stall. 2,000 bounds the allowed build to about
+# 3 s while sitting well above a normal Library (hundreds to low thousands of
+# documents), so no realistic Library changes behaviour; only a pathological
+# single-signature corpus does. CLI/MCP backfill passes ``max_fuzzy_bucket=None``
+# so a human-invoked full sweep is never capped.
+SCHEDULED_FUZZY_BUCKET_CAP = 2000
 
 # Filename near-match floor: ratio on the normalized stem for names that are not
 # exactly equal after normalization (tolerates minor edits/typos).
@@ -110,6 +131,11 @@ def _norm_year(value: int) -> int:
     return 2000 + value if value < 100 else value
 
 
+def _valid_iso_match(match: re.Match[str]) -> bool:
+    """Return whether an ISO-shaped token has an accepted month and day."""
+    return 1 <= int(match.group(2)) <= 12 and 1 <= int(match.group(3)) <= 31
+
+
 @dataclass
 class DocRef:
     """A single de-dup unit: a folder file, or a whole upload/chat source."""
@@ -124,6 +150,19 @@ class DocRef:
     resident_since: float   # earliest item created_at epoch (tiebreak)
     file_path: str | None = None  # set only for folder-file docs
     embedding: list[float] | None = field(default=None, repr=False)
+    _norm_stem: str | None = field(default=None, repr=False, compare=False)
+
+    def norm_stem(self) -> str:
+        """``normalize_filename(self.filename)``, computed once and cached.
+
+        The fuzzy tier compares normalized stems for every candidate pair, so
+        normalizing on each comparison is O(n^2) string work. Caching it on the
+        document makes it O(n). Cleared automatically whenever a fresh DocRef is
+        built, since the cache lives on the instance.
+        """
+        if self._norm_stem is None:
+            self._norm_stem = normalize_filename(self.filename)
+        return self._norm_stem
 
     @property
     def key(self) -> tuple[str, str]:
@@ -163,12 +202,23 @@ def _extract_dates(name: str) -> list[tuple[int | None, int, int | None]]:
     stem = name.rsplit("/", 1)[-1]
     out: list[tuple[int | None, int, int | None]] = []
 
+    iso_spans: list[tuple[int, int]] = []
     for m in _ISO_DATE_RE.finditer(stem):
         iyear, imonth, iday = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= imonth <= 12 and 1 <= iday <= 31:
+        if _valid_iso_match(m):
             out.append((iyear, imonth, iday))
+            iso_spans.append(m.span())
 
+    # A valid ISO date's month/day suffix is not a second, yearless date, so a
+    # numeric match that falls WHOLLY inside a valid ISO span is dropped -- keeping
+    # it would let reports from different years pass the date gate. The scan runs
+    # on the original stem (not a masked copy) so a numeric date that only partly
+    # overlaps an over-matched ISO span keeps its own explicit year, and an invalid
+    # ISO-shaped token still reaches the generic numeric guard.
     for m in _NUM_DATE_RE.finditer(stem):
+        ns, ne = m.span()
+        if any(ns >= istart and ne <= iend for istart, iend in iso_spans):
+            continue
         g1, g2 = int(m.group(1)), int(m.group(2))
         nyear: int | None = _norm_year(int(m.group(3))) if m.group(3) else None
         nmonth, nday = (g2, g1) if g1 > 12 and g2 <= 12 else (g1, g2)  # tolerate DD/MM
@@ -227,7 +277,23 @@ def filename_near_match(a: str, b: str) -> bool:
     a high difflib ratio), AND -- when both carry dates -- those dates are within
     _DATE_MATCH_MAX_DAYS. The date gate stops distinct instances of a series that
     share an identical stem (e.g. "...Apr 2026" vs "...Dec25") from collapsing."""
-    na, nb = normalize_filename(a), normalize_filename(b)
+    return _stems_near_match(normalize_filename(a), normalize_filename(b), a, b)
+
+
+# A difflib ratio is 2*M/(La+Lb) with M <= min(La, Lb), so ratio <= 2*min/(La+Lb).
+# For ratio >= _FILENAME_RATIO_FLOOR the two lengths must satisfy
+# min/max >= floor/(2-floor). Any candidate outside that length band cannot clear
+# the floor, so the bucketed sweep can skip it without changing any result.
+_FILENAME_LEN_RATIO = _FILENAME_RATIO_FLOOR / (2.0 - _FILENAME_RATIO_FLOOR)
+
+
+def _stems_near_match(na: str, nb: str, a: str, b: str) -> bool:
+    """``filename_near_match`` on already-normalized stems ``na``/``nb``.
+
+    Takes the raw names ``a``/``b`` too, only for the date-compatibility gate.
+    Lets a caller that normalizes each stem once (the O(n) bucketed sweep) reuse
+    the result instead of re-normalizing per pair.
+    """
     if not na or not nb:
         return False
     if na == nb or SequenceMatcher(None, na, nb).ratio() >= _FILENAME_RATIO_FLOOR:
@@ -369,7 +435,7 @@ def enumerate_docs(store) -> list[DocRef]:
         try:
             state_rows = store.db.execute(
                 f"SELECT st.source_id, st.slug, st.item_ids, st.updated_at, "  # noqa: S608
-                f"st.{name_col} AS label, s.source_type "
+                f"st.content_hash AS row_hash, st.{name_col} AS label, s.source_type "
                 f"FROM {table} st JOIN sources s ON s.id = st.source_id").fetchall()
         except Exception:  # pragma: no cover - table absent on an old schema
             continue
@@ -381,6 +447,14 @@ def enumerate_docs(store) -> list[DocRef]:
             if not ids:
                 continue  # a row that owns nothing is not a document to dedup
             claimed.update(ids)
+            if table == "agent_item_state" and not r["row_hash"]:
+                # Recovered crash residue (``_adopt_agent_sole_copy_residue``):
+                # the group may mix chunks of several attempts and none is proven
+                # complete, so no single hash describes it and a match on any one
+                # of them could delete a version nothing else holds. It stays
+                # claimed, so the hash fallback below does not enumerate it
+                # either, until the document's next add replaces the group.
+                continue
             doc = _build_doc(
                 store, source_id=r["source_id"], source_type=r["source_type"],
                 filename=(r["label"] or r["slug"]), item_ids=ids, file_path=None,
@@ -500,7 +574,7 @@ def _match_reason(store, a: DocRef, b: DocRef, threshold: float) -> str | None:
         return None
     if a.content_hash and b.content_hash and a.content_hash == b.content_hash:
         return "exact"
-    if not filename_near_match(a.filename, b.filename):
+    if not _stems_near_match(a.norm_stem(), b.norm_stem(), a.filename, b.filename):
         return None
     if not a.embedding_sig or a.embedding_sig != b.embedding_sig:
         return None
@@ -518,18 +592,38 @@ class DedupAction:
     reason: str
 
 
-def find_duplicates(store, docs: list[DocRef], threshold: float) -> list[DedupAction]:
+def find_duplicates(store, docs: list[DocRef], threshold: float,
+                    *, max_fuzzy_bucket: int | None = None) -> list[DedupAction]:
     """Greedy pairwise collapse. Each loser is removed from further consideration, and a
     document that has already won a collapse is protected from later becoming a loser --
     so a deleted document's designated survivor is never itself deleted, and content
-    always survives in exactly one copy."""
+    always survives in exactly one copy.
+
+    Candidates are generated per document and consumed immediately, instead of
+    comparing (or storing) every one of the ``n*(n-1)/2`` pairs. A ``_CandidateIndex``
+    built once in O(n) memory yields, for each ``i`` in order, the ``j > i`` that
+    could match: documents sharing ``i``'s ``content_hash`` (the exact tier) or,
+    within ``i``'s ``embedding_sig`` bucket, documents whose filename stem near-matches
+    (the fuzzy tier). Every surfaced pair is still fully re-checked by
+    ``_match_reason``, and no pair that would collapse is ever skipped, so the action
+    list is identical to the dense O(n^2) scan -- same pairs, same order. The whole
+    pair graph is never retained, so a corpus of thousands of same-stem cross-source
+    files cannot exhaust memory. See ``_CandidateIndex``.
+
+    ``max_fuzzy_bucket`` is the one exception to "identical to the dense scan": on a
+    scheduled pass it drops the near-filename-match tier for a single ``embedding_sig``
+    bucket with more distinct stems than the cap (exact-content and identical-stem
+    matches are kept). Left ``None`` -- the default, used by the CLI/MCP backfill --
+    the result is exactly the dense scan's.
+    """
     actions: list[DedupAction] = []
     removed: set[tuple[str, str]] = set()
     survivors: set[tuple[str, str]] = set()  # designated winners; must not be deleted
+    index = _CandidateIndex(docs, max_fuzzy_bucket=max_fuzzy_bucket)
     for i in range(len(docs)):
         if docs[i].key in removed:
             continue
-        for j in range(i + 1, len(docs)):
+        for j in index.candidates_after(i):
             if docs[j].key in removed:
                 continue
             reason = _match_reason(store, docs[i], docs[j], threshold)
@@ -547,6 +641,166 @@ def find_duplicates(store, docs: list[DocRef], threshold: float) -> list[DedupAc
             if docs[i].key in removed:
                 break  # docs[i] itself lost; stop pairing it
     return actions
+
+
+class _CandidateIndex:
+    """Generates, per document, the higher-indexed documents worth comparing to it.
+
+    Built once in O(n) memory. ``candidates_after(i)`` returns the sorted ``j > i``
+    that are the UNION of the only two ways ``_match_reason`` can return a reason:
+
+      * exact tier -- ``j`` shares ``i``'s non-empty ``content_hash`` (a hash bucket);
+      * fuzzy tier -- ``j`` shares ``i``'s non-empty ``embedding_sig`` AND their
+        filename stems near-match. Equal stems share a stem bucket; non-equal stems
+        are linked through an adjacency map built once per sig bucket with a chain of
+        exact upper bounds on ``SequenceMatcher.ratio()`` (length band, then a
+        character-multiset bound, then ``max(ratio(a,b), ratio(b,a))``).
+
+    A candidate is dropped when ``_match_reason``'s own cheap guards would reject it
+    anyway -- same source, or shared item id. Those checks are exact and
+    name-independent, so dropping changes no result. The list for a single ``i`` is
+    the only pair collection that exists at once: the full ``n*(n-1)/2`` graph is
+    never materialized, so thousands of same-stem cross-source files cannot exhaust
+    memory the way retaining every pair would.
+    """
+
+    def __init__(self, docs: list[DocRef], *, max_fuzzy_bucket: int | None = None) -> None:
+        self._docs = docs
+        self._item_sets = [set(d.item_ids) for d in docs]
+
+        # Exact tier: content hash -> ascending member indices.
+        self._by_hash: dict[str, list[int]] = {}
+        for idx, d in enumerate(docs):
+            if d.content_hash:
+                self._by_hash.setdefault(d.content_hash, []).append(idx)
+
+        # Fuzzy tier: (sig -> stem -> ascending member indices). The stem map is
+        # O(n) in size. The per-sig adjacency map (stem -> near-but-not-equal stems)
+        # stores only stem->stem links, never document pairs, but its link count is
+        # worst-case quadratic in the number of DISTINCT near-matching stems that
+        # share a signature and span more than one source (see _near_stem_adjacency).
+        self._sig_stems: dict[str, dict[str, list[int]]] = {}
+        # Per sig, the set of source ids each stem's documents come from. A stem whose
+        # documents all live in one source can only pair with another stem in a
+        # DIFFERENT source: _can_match rejects same-source pairs. So the adjacency
+        # matcher is run only when two stems' combined source set has more than one
+        # source, which keeps a watched folder of similarly named same-source files
+        # (dated notes, numbered exports) out of the quadratic SequenceMatcher work.
+        self._sig_stem_sources: dict[str, dict[str, set[str]]] = {}
+        for idx, d in enumerate(docs):
+            if not d.embedding_sig:
+                continue
+            s = d.norm_stem()
+            if not s:
+                continue
+            self._sig_stems.setdefault(d.embedding_sig, {}).setdefault(s, []).append(idx)
+            self._sig_stem_sources.setdefault(d.embedding_sig, {}).setdefault(
+                s, set()).add(d.source_id)
+        self._sig_adjacency: dict[str, dict[str, list[str]]] = {}
+        for sig, stems in self._sig_stems.items():
+            distinct_stems = len(stems)
+            if max_fuzzy_bucket is not None and distinct_stems > max_fuzzy_bucket:
+                # Pathological single-signature bucket on a SCHEDULED pass: the
+                # near-stem adjacency build is O(distinct_stems^2) and would hold the
+                # GIL for a noticeable time. Skip it for this bucket (equal-stem and
+                # exact-content matches still collapse); warn once naming the count
+                # and threshold so the skip is observable.
+                logger.warning(
+                    "Scheduled knowledge dedup: skipping the near-filename-match pass "
+                    "for an embedding-signature group of %d distinct document names "
+                    "(above the %d cap) to avoid stalling the gateway; exact-content "
+                    "and identical-name duplicates in this group are still collapsed. "
+                    "Run `kiro-crew knowledge dedup` manually for a full near-match "
+                    "pass.", distinct_stems, max_fuzzy_bucket)
+                self._sig_adjacency[sig] = {}
+                continue
+            self._sig_adjacency[sig] = _near_stem_adjacency(
+                list(stems), self._sig_stem_sources[sig])
+
+    def _can_match(self, a: int, b: int) -> bool:
+        da, db = self._docs[a], self._docs[b]
+        if da.source_id == db.source_id:
+            return False
+        return not (self._item_sets[a] & self._item_sets[b])
+
+    def candidates_after(self, i: int) -> list[int]:
+        d = self._docs[i]
+        found: set[int] = set()
+
+        if d.content_hash:
+            for j in self._by_hash.get(d.content_hash, ()):
+                if j > i and self._can_match(i, j):
+                    found.add(j)
+
+        if d.embedding_sig:
+            buckets = self._sig_stems.get(d.embedding_sig)
+            if buckets is not None:
+                stem = d.norm_stem()
+                near = self._sig_adjacency.get(d.embedding_sig, {}).get(stem, ())
+                for other_stem in (stem, *near):
+                    for j in buckets.get(other_stem, ()):
+                        if j > i and self._can_match(i, j):
+                            found.add(j)
+
+        return sorted(found)
+
+
+def _near_stem_adjacency(
+        stems: list[str], stem_sources: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Map each stem to the OTHER, non-equal stems whose filename near-matches it.
+
+    ``stem_sources`` maps each stem to the set of ``source_id``s its documents come
+    from. A stem pair is only worth comparing when the UNION of the two stems' source
+    sets holds more than one source: ``_match_reason`` rejects same-source pairs
+    before any filename work, so a pair of stems that live entirely in one source can
+    never collapse. Skipping those keeps a watched folder of similarly named files
+    (dated meeting notes, numbered exports), all in one source, out of the
+    ``SequenceMatcher`` work and out of the adjacency map -- the regression this guard
+    fixes, where such a folder went quadratic in both CPU and stored links.
+
+    Candidates are found with a chain of filters, each an EXACT upper bound or
+    necessary condition on the value ``_match_reason`` tests, so no near-match is
+    dropped:
+
+      1. length band ``2*min/(la+lb) >= floor`` (``real_quick_ratio``, an upper
+         bound) -- found by sorting the stems by length and walking a window;
+      2. a character-multiset bound ``2*|A&B|/(la+lb) >= floor`` -- an upper bound on
+         ``ratio`` (difflib's matched count ``M <= |Counter(a) & Counter(b)|``),
+         symmetric and cheaper than running the matcher;
+      3. ``max(ratio(sa, sb), ratio(sb, sa)) >= floor``.
+
+    Step 3 takes the MAX of both argument orders on purpose. ``SequenceMatcher.ratio``
+    is NOT symmetric, and ``_match_reason`` compares the stems in doc-index order,
+    not length order -- so a single-order gate could drop a pair ``_match_reason``
+    collapses. autojunk (names >= 200 chars) only lowers ``ratio``, so the chain
+    still holds. The map is symmetric (each near pair is linked both ways) so a
+    lookup from either stem finds the other.
+    """
+    adjacency: dict[str, list[str]] = {}
+    distinct = sorted(set(stems), key=len)
+    counts = {s: Counter(s) for s in distinct}
+    for p, sa in enumerate(distinct):
+        la = len(sa)
+        max_len = la / _FILENAME_LEN_RATIO if _FILENAME_LEN_RATIO else float("inf")
+        ca = counts[sa]
+        sources_a: set[str] = stem_sources.get(sa, set())
+        for q in range(p + 1, len(distinct)):
+            sb = distinct[q]
+            lb = len(sb)
+            if lb > max_len:
+                break  # length-sorted: every later stem is out of band too
+            # Same-source-only pairs are rejected by _match_reason anyway; never pay
+            # for the matcher (or store a link) when both stems share one source.
+            if len(sources_a | stem_sources.get(sb, frozenset())) <= 1:
+                continue
+            if (sum((ca & counts[sb]).values()) * 2.0) / (la + lb) < _FILENAME_RATIO_FLOOR:
+                continue
+            if max(SequenceMatcher(None, sa, sb).ratio(),
+                   SequenceMatcher(None, sb, sa).ratio()) < _FILENAME_RATIO_FLOOR:
+                continue
+            adjacency.setdefault(sa, []).append(sb)
+            adjacency.setdefault(sb, []).append(sa)
+    return adjacency
 
 
 def _source_is_now_empty(store, source_id: str) -> bool:
@@ -706,7 +960,8 @@ def _audit_collapse(action: DedupAction) -> None:
 
 
 def dedup_sweep(store, *, threshold: float = DEFAULT_FUZZY_THRESHOLD,
-                apply: bool = False, certain_only: bool = False) -> list[dict]:
+                apply: bool = False, certain_only: bool = False,
+                max_fuzzy_bucket: int | None = None) -> list[dict]:
     """Find (and optionally collapse) all cross-source duplicate documents.
 
     O(n^2) full-corpus pass intended for the one-time backfill (CLI/MCP) and the
@@ -722,9 +977,17 @@ def dedup_sweep(store, *, threshold: float = DEFAULT_FUZZY_THRESHOLD,
     document its unique text -- and a filename-plus-cosine match is a judgement, not a
     fact: two same-named weekly reports can clear the threshold while saying different
     things. Every result is still returned either way, so nothing is hidden.
+
+    ``max_fuzzy_bucket`` guards the SCHEDULED pass against a pathological
+    single-signature bucket: above that many distinct filename stems in one
+    ``embedding_sig`` group, the near-filename-match pass for that group is skipped
+    (and logged once) so the O(d^2) adjacency build cannot stall the gateway;
+    exact-content and identical-name duplicates there still collapse. ``None`` (the
+    default, used by the CLI/MCP backfill) never caps -- a human-invoked full sweep
+    always does the complete near-match pass.
     """
     docs = enumerate_docs(store)
-    actions = find_duplicates(store, docs, threshold)
+    actions = find_duplicates(store, docs, threshold, max_fuzzy_bucket=max_fuzzy_bucket)
     results = [_action_dict(a) for a in actions]
     if apply:
         for action in actions:

@@ -29,6 +29,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_json_body
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactFolderStore, ArtifactStore
@@ -76,7 +77,7 @@ def _request(
     req.match_info = match or {}
     req.query = query or {}
     encoded = json.dumps(body).encode() if isinstance(body, dict) else b""
-    req.read = AsyncMock(return_value=encoded)
+    attach_json_body(req, encoded)
     req.app = {"state": MagicMock(), "_restricted_session": False}
     return req
 

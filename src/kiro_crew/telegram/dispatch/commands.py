@@ -28,7 +28,6 @@ from kiro_crew.messaging.commands import (
     task_arg_reply,
 )
 from kiro_crew.messaging.link import (
-    CHAT_TYPE_DIRECT,
     rebind_conversation_location,
     release_conversation_location,
 )
@@ -75,7 +74,7 @@ async def _handle_dashboard(
     from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
 
     thread = self._route_thread(route)
-    if route[0] != CHAT_TYPE_DIRECT:
+    if not self._is_private_route(route):
         await self._reply(
             chat_id,
             "🔒 Dashboard links are only sent in a direct message — "
@@ -277,7 +276,7 @@ async def _require_direct_chat(
     """
     from kiro_crew.telegram import transport_dispatch as facade
 
-    if route[0] == CHAT_TYPE_DIRECT:
+    if self._is_private_route(route):
         # A DM is the right AUDIENCE, and for a host-wide listing it also has to
         # be the right PERSON. `allowed_user_ids` is a list of people permitted
         # to talk to the agent, not a claim that any one of them is the operator,

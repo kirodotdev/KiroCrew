@@ -23,13 +23,16 @@ import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import PureWindowsPath
-from typing import Any
+from typing import Any, Iterable
+
+from kiro_crew import member_goals as _goals
 
 # The artifact tag rule lives with the store's other field grammar and is read
 # here so the tool gate and the store cannot disagree about a tag. Import-safe:
 # ``artifact_store.rules`` loads the record dataclasses and the slug hash
 # fallback, never ``kiro_crew.artifacts`` (the service module whose import from
 # here would close the ``artifacts -> hooks -> webhooks -> validation`` cycle).
+from kiro_crew.artifact_store.rules import ALLOWED_KINDS as _ARTIFACT_KINDS
 from kiro_crew.artifact_store.rules import MAX_TAG_LEN as ARTIFACT_TAG_MAX
 from kiro_crew.artifact_store.rules import normalize_tag as _normalize_artifact_tag
 
@@ -77,7 +80,14 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_objectives,
 )
 from kiro_crew.project_scope import SCOPE_FRAGMENT_RE
-from kiro_crew.work_vocab import WORK_ITEM_STATES, WORK_VERDICTS, WORK_WORKER_STATUSES
+from kiro_crew.session_directive import MAX_TOOL_RESULT_CHARS
+from kiro_crew.work_vocab import (
+    WORK_BLOCKED_REASONS,
+    WORK_ITEM_STATES,
+    WORK_REASON_STATUSES,
+    WORK_VERDICTS,
+    WORK_WORKER_STATUSES,
+)
 
 # ── Constants ──
 
@@ -236,6 +246,23 @@ LESSON_LIST_LIMIT_MAX = 500
 # empty anyway.
 LESSON_LIST_OFFSET_MAX = 100_000_000
 
+
+def clamp_query_offset(offset: int) -> int:
+    """``offset`` folded into ``[0, LESSON_LIST_OFFSET_MAX]``.
+
+    The one clamp every dashboard route applies before it hands a query
+    ``offset`` to a store that binds it as a SQLite parameter. The bind, not
+    the query, is what makes the ceiling necessary: ``sqlite3`` raises
+    ``OverflowError`` on an int past the signed 64-bit range, which a route
+    that only parsed ``int(...)`` surfaces as a 500 where the caller asked for
+    a page that is simply empty. A negative value is folded to ``0`` for the
+    same reason -- a list route would slice from the end, a bound one would
+    error. Routes that slice a Python list need no clamp: slicing already
+    treats an out-of-range index as the empty tail.
+    """
+    return max(0, min(offset, LESSON_LIST_OFFSET_MAX))
+
+
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 
@@ -298,8 +325,20 @@ def is_registered_agent_name(value: object) -> bool:
 # end of the string.
 ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 
-# Valid model name pattern — alphanumerics, hyphens, dots (e.g. "claude-opus-4.8", "deepseek-3.2")
-_MODEL_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+# Valid model names are an ordinary dotted and dashed identifier with at most one
+# trailing bounded qualifier (``gpt-6-astra[high]``), or a provider-qualified id as a
+# backend that resolves its model from its advertised list spells it
+# (``provider/org/model``, ``ollama/qwen3:8b``). Every segment starts alphanumeric, so
+# an id is never an option flag, an absolute path or a ``.``/``..`` hop; only the last
+# segment may carry a ``:tag``. The Settings model pins share the qualified branch.
+_MODEL_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+QUALIFIED_MODEL_PATTERN = rf"{_MODEL_SEGMENT}(?:/{_MODEL_SEGMENT})+(?::{_MODEL_SEGMENT})?"
+# The bound ``model_registry`` keeps on an advertised id.
+_QUALIFIED_MODEL_MAX_CHARS = 256
+_MODEL_NAME_RE = re.compile(
+    rf"(?:{_MODEL_SEGMENT}(?:\[[A-Za-z0-9._-]+\])?"
+    rf"|(?=.{{1,{_QUALIFIED_MODEL_MAX_CHARS}}}\Z){QUALIFIED_MODEL_PATTERN})\Z"
+)
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64
 # lowercase hex chars. This value flows into hmac.compare_digest at the
@@ -515,10 +554,14 @@ class FieldSpec:
     allowed: frozenset[str] | None = None  # enum allow-list
     pattern: re.Pattern[str] | None = None  # regex pattern
     default: Any = None
-    item_type: type | None = None  # type: ignore[valid-type]  # for list fields: expected type of each element
+    item_type: type | tuple[type, ...] | None = None  # type: ignore[valid-type]  # for list fields: expected type(s) of each element
     item_max_len: int = 0  # for list fields: max length of each string element
     item_pattern: re.Pattern[str] | None = None  # for list fields: regex for each string element
     max_items: int = 0  # for list fields: max number of items (0 = no limit)
+    # For list fields whose items may be objects: the ToolSchema each dict item
+    # is validated against (unknown keys refused, like a top-level call). Only
+    # consulted when ``item_type`` admits ``dict``.
+    item_schema: Any = None
     # Opt-in, and DELIBERATELY narrow: when a string field is over ``max_len``,
     # truncate it to the cap instead of rejecting the whole call. For a field
     # whose only job is to EXPLAIN a request — ``autonudge_stop`` /
@@ -568,6 +611,138 @@ def clamp_to_max_len(value: str, max_len: int) -> str:
         return value[:max_len]
     head = value[:keep].rstrip()
     return head + _CLAMP_NOTE.format(n=len(value) - len(head))
+
+
+# An int above this magnitude cannot be a value a numeric-looking string
+# argument was meant to carry: JavaScript numbers (and JSON parsers that back
+# them with IEEE-754 doubles) only represent integers exactly up to 2**53, so a
+# larger int that reached a string field was either never a round-trippable id
+# (it already lost precision upstream) or is an outright wrong value. The PR
+# rejects a float on a string field for exactly this reason — a value that
+# cannot be the author's original text is a louder, safer failure than a
+# silently-wrong coercion — and this applies the same bound to the int case.
+_MAX_EXACT_INT = 2**53
+
+
+def _coerce_number_to_string_for_string_field(value: Any, spec: FieldSpec) -> Any:
+    """Repair an integer that reached a string field as a number.
+
+    Some agent runtimes defer a tool's schema and load it on demand; a few of
+    those, when they later marshal the model's ``arguments``, re-type a
+    top-level argument whose VALUE looks like a number (``"42"``) into a JSON
+    number — even though the loaded tool schema declared that field a string.
+    By the time the call reaches a validator the type has already been lost
+    upstream, so a field that says ``str`` sees an ``int`` and the call is
+    rejected when the author clearly meant a string.
+
+    This repair belongs ONLY at the MCP tool-call entry points (where that
+    upstream re-typing happens), NOT in the shared ``validate_field`` — the
+    dashboard HTTP endpoints also validate through that function and never see
+    the re-typing, so coercing there would silently change their contract and
+    let an int slip through a field a caller reads from the raw body.
+
+    This is a NARROW, EXACT repair, not a general coercion:
+
+    * It fires ONLY for a field whose declared type is EXACTLY ``str`` (not a
+      tuple like ``(int, float)`` that legitimately accepts a number) — a field
+      that wanted a number keeps getting one.
+    * It converts an ``int`` to its string form and NOTHING else: a ``str``
+      stays a ``str``, a ``bool`` (an ``int`` subclass) is left for the normal
+      type check to reject, and a ``float`` / list / dict / ``None`` is
+      untouched.
+    * An ``int`` whose magnitude exceeds ``2**53`` is REFUSED (``ValidationError``)
+      rather than coerced: past that bound it is a precision-loss or
+      outright-wrong id, the same hazard this repair declines to paper over for
+      floats.
+
+    A ``float`` is DELIBERATELY not converted. ``str(float)`` is the shortest
+    round-tripping form, which is NOT the author's original text whenever that
+    text carried a digit the float cannot distinguish: ``"1790284307.156620"``
+    becomes the float ``1790284307.15662`` and then ``"1790284307.15662"`` — a
+    DIFFERENT, still-schema-valid value (it still matches a ``^\\d+\\.\\d+$``
+    timestamp pattern), so a Slack reply would silently go to the wrong thread
+    instead of failing loudly. For a value the author meant as a string, a loud
+    ``expected str`` is strictly safer than a silently-wrong one, so a float on
+    a string field is left to the ordinary type error. Only ``int`` round-trips
+    exactly (``str(42) == "42"``, within the exact-integer bound), so only
+    ``int`` is repaired here.
+    """
+    if spec.type is not str:
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if abs(value) > _MAX_EXACT_INT:
+            raise ValidationError(
+                spec.name,
+                f"integer {value} exceeds the exact-integer bound ({_MAX_EXACT_INT}); "
+                "a numeric id this large cannot be a precise string value",
+            )
+        return str(value)
+    return value
+
+
+def coerce_mcp_tool_args(args: dict[str, Any], schema: ToolSchema) -> dict[str, Any]:
+    """Return ``args`` with int-on-string-field values repaired, for MCP entry points.
+
+    Apply this at an MCP tool-call entry point (``mcp_core._validate_args`` and
+    the other MCP servers' equivalents) BEFORE :func:`validate_tool_args`. It
+    walks the schema's string-typed fields and runs the narrow int->str repair
+    (see :func:`_coerce_number_to_string_for_string_field`) on each present
+    argument, leaving every other value — and every argument the schema does
+    not name — untouched. An out-of-range int raises ``ValidationError`` here,
+    so the entry point rejects it exactly as the schema's own checks would.
+
+    This is intentionally NOT part of :func:`validate_field`: the dashboard HTTP
+    endpoints validate through the same function and must keep their original
+    contract, so the repair lives only where the upstream re-typing occurs.
+    """
+    if not isinstance(args, dict):
+        return args
+    repaired = dict(args)
+    for spec in schema.fields:
+        if spec.name in repaired:
+            repaired[spec.name] = _coerce_number_to_string_for_string_field(
+                repaired[spec.name], spec
+            )
+    return repaired
+
+
+def coerce_mcp_tool_args_json_schema(args: dict[str, Any], input_schema: Any) -> dict[str, Any]:
+    """JSON-Schema counterpart of :func:`coerce_mcp_tool_args`, for MCP servers
+    that validate through :func:`validate_mcp_tool_arguments`.
+
+    Repair a top-level argument an upstream deferred-schema runtime re-typed
+    from a numeric-looking string ("42" -> 42) back to its string form, BEFORE
+    validation, for a property the inputSchema types EXACTLY ``"string"``. The
+    same narrow rules as the ``FieldSpec`` path apply: only an ``int`` is
+    coerced, a ``bool`` and a ``float`` are left for the type check, and an int
+    beyond the exact-integer bound raises ``ValidationError``.
+
+    Only top-level properties are considered — the re-typing hits top-level
+    arguments, and walking nested subschemas would risk changing values the
+    schema never typed as string.
+    """
+    if not isinstance(args, dict) or not isinstance(input_schema, dict):
+        return args
+    props = input_schema.get("properties")
+    if not isinstance(props, dict):
+        return args
+    repaired = dict(args)
+    for key, value in args.items():
+        sub = props.get(key)
+        if isinstance(sub, dict) and sub.get("type") == "string":
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                if abs(value) > _MAX_EXACT_INT:
+                    raise ValidationError(
+                        key,
+                        f"integer {value} exceeds the exact-integer bound ({_MAX_EXACT_INT}); "
+                        "a numeric id this large cannot be a precise string value",
+                    )
+                repaired[key] = str(value)
+    return repaired
 
 
 def validate_field(value: Any, spec: FieldSpec) -> Any:
@@ -633,10 +808,20 @@ def validate_field(value: Any, spec: FieldSpec) -> Any:
         if spec.item_type:
             for i, item in enumerate(value):
                 if not isinstance(item, spec.item_type):
+                    item_types: tuple[type, ...] = (
+                        spec.item_type if isinstance(spec.item_type, tuple) else (spec.item_type,)
+                    )
+                    expected = " or ".join(t.__name__ for t in item_types)
                     raise ValidationError(
                         spec.name,
-                        f"item[{i}]: expected {spec.item_type.__name__}, got {type(item).__name__}",
+                        f"item[{i}]: expected {expected}, got {type(item).__name__}",
                     )
+                if isinstance(item, dict) and spec.item_schema is not None:
+                    try:
+                        value[i] = validate_tool_args(item, spec.item_schema)
+                    except ValidationError as exc:
+                        raise ValidationError(f"{spec.name}[{i}].{exc.field}", exc.message) from exc
+                    continue
                 if isinstance(item, str):
                     item = sanitize_string(item)
                     value[i] = item
@@ -1096,14 +1281,7 @@ def strip_hidden_unicode(text: str) -> str:
     # Testing against the raw input let a stripped character vouch for a mark
     # (``AKIA<ZWSP><ZWJ>IOSF…``: the ZWSP is removed, but the ZWJ saw it as a
     # non-ASCII neighbour and stayed, leaving the credential unredactable).
-    kept: list[str] = []
-    for ch in text:
-        if (
-            ch in _ALLOWED_CONTROL
-            or ch in _ALLOWED_FORMAT
-            or unicodedata.category(ch) not in _HIDDEN_CATEGORIES
-        ):
-            kept.append(ch)
+    kept = _drop_hidden_except_marks(text)
     # Pass 2: a shaping mark survives only if the nearest surviving
     # NON-MARK character on one side is non-ASCII. Skipping over adjacent
     # marks is what stops a run of them from vouching for each other —
@@ -1128,16 +1306,60 @@ def strip_hidden_unicode(text: str) -> str:
     return "".join(out)
 
 
+def _drop_hidden_except_marks(text: str) -> list[str]:
+    """Drop every hidden character except the shaping marks in ``_ALLOWED_FORMAT``."""
+    return [
+        ch
+        for ch in text
+        if ch in _ALLOWED_CONTROL
+        or ch in _ALLOWED_FORMAT
+        or unicodedata.category(ch) not in _HIDDEN_CATEGORIES
+    ]
+
+
 def normalize_unicode(text: str) -> str:
     """NFC-normalize Unicode text to canonical form."""
     return unicodedata.normalize("NFC", text)
 
 
 def sanitize_string(text: str) -> str:
-    """Full sanitization pipeline: normalize → strip hidden chars → strip edges."""
-    text = normalize_unicode(text)
-    text = strip_hidden_unicode(text)
-    return text.strip()
+    """Full sanitization pipeline: drop hidden → normalize → strip hidden → trim edges.
+
+    Dropping hidden characters first lets combining marks compose across a
+    removed character. The shaping marks are judged only after NFC, because
+    NFC changes their neighbours (``e`` + U+0301 becomes non-ASCII ``é``, and
+    U+212A KELVIN SIGN becomes ASCII ``K``).
+    """
+    text = normalize_unicode("".join(_drop_hidden_except_marks(text)))
+    return _trim_edges(strip_hidden_unicode(text))
+
+
+def _trim_edges(text: str) -> str:
+    """Trim edge whitespace and the shaping marks it would strand, in one pass.
+
+    A shaping mark in an edge run survives only when it touches the kept text
+    and that text's edge character is non-ASCII. Trimming whitespace alone can
+    leave a mark beside ASCII only, which the next ``sanitize_string`` call
+    would then remove.
+    """
+
+    def trimmable(ch: str) -> bool:
+        return ch.isspace() or ch in _ALLOWED_FORMAT
+
+    start, end = 0, len(text)
+    while start < end and trimmable(text[start]):
+        start += 1
+    while end > start and trimmable(text[end - 1]):
+        end -= 1
+    if start == end:
+        return ""
+    if not text[start].isascii():
+        while start > 0 and text[start - 1] in _ALLOWED_FORMAT:
+            start -= 1
+    if not text[end - 1].isascii():
+        while end < len(text) and text[end] in _ALLOWED_FORMAT:
+            end += 1
+    return text[start:end]
 
 
 def sanitize_json_values(value: Any) -> Any:
@@ -1250,15 +1472,50 @@ def validate_jsonrpc_request(req: dict[str, Any]) -> tuple[str, Any, dict[str, A
 
 # ── Tool Schemas (MCP Core) ──
 
+#: One ``spawn_run`` ``tasks[]`` entry in object form. A string
+#: entry is the plain prompt; an object entry carries the prompt plus the
+#: per-task overrides that win over the call's batch-wide value. Kept to the
+#: fields a caller varies across one wave in practice (model, effort); a
+#: per-task template is ``agents``. The rest stay batch-wide and can join this
+#: object later without changing the shape again.
+#: A backend's policy-facing name ("kiro", "claude", "codex"): lowercase id
+#: characters only, so a request can never smuggle anything past the endpoint's
+#: membership check into a log line or an error message.
+_BACKEND_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
+    tool_name="spawn_run.tasks[]",
+    fields=[
+        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
+        FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
+        FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
+    ],
+)
+
+#: Members one spawn batch may carry (``spawn_run.tasks``, ``spawn_run.agents``,
+#: ``spawn_sub_agents.agents``). A parked step retains its member list until
+#: submission finishes, so the count is bounded where it is retained, by one
+#: name shared by both tools. Twice the configured sub-agent ceiling of 64.
+SPAWN_BATCH_MEMBERS_MAX = 128
+
 SPAWN_RUN_SCHEMA = ToolSchema(
     tool_name="spawn_run",
     fields=[
         FieldSpec("task", str, max_len=MAX_MEDIUM_STRING),
-        FieldSpec("tasks", list, item_type=str, item_max_len=MAX_MEDIUM_STRING),
+        FieldSpec(
+            "tasks",
+            list,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
+            item_type=(str, dict),
+            item_max_len=MAX_MEDIUM_STRING,
+            item_schema=SPAWN_RUN_TASK_ITEM_SCHEMA,
+        ),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=REGISTERED_AGENT_NAME_RE),
         FieldSpec(
             "agents",
             list,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
             item_type=str,
             item_max_len=MAX_SHORT_STRING,
             item_pattern=REGISTERED_AGENT_NAME_RE,
@@ -1279,6 +1536,11 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # Batch-wide, like ``model``. ``""`` (in EFFORT_VALUES) means "unset —
         # defer to the role_efforts['subagent'] pin, else the provider default".
         FieldSpec("reasoning_effort", str, allowed=EFFORT_VALUES),
+        # Optional backend (harness) for the subagent(s), spelled the way a
+        # governance rule spells it ("kiro", "claude", "codex", ...). Shape only
+        # here: whether it is selectable on this gateway is the spawn endpoint's
+        # answer, which refuses with the selectable list.
+        FieldSpec("backend", str, max_len=MAX_SHORT_STRING, pattern=_BACKEND_NAME_RE),
         # keep=True makes the run a continuable conversation: its session
         # persists (hibernated on disk) after completion, and spawn_continue
         # can dispatch follow-up turns into it with full prior context.
@@ -1348,7 +1610,13 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # Each item is a dict with prompt (required, max MAX_MEDIUM_STRING) and
         # agent_or_mode (optional, max MAX_SHORT_STRING). Per-field validation
         # enforced in handler (no item_schema support in FieldSpec).
-        FieldSpec("agents", list, required=True, item_type=dict),
+        FieldSpec(
+            "agents",
+            list,
+            required=True,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
+            item_type=dict,
+        ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
@@ -1730,21 +1998,68 @@ _ASK_MAX_HEADER_LEN = 50
 _ASK_MAX_LABEL_LEN = 200
 _ASK_MAX_DESC_LEN = 500
 # The answer side is bounded too: answers are echoed verbatim into the agent's
-# transcript, so an oversized custom answer would consume model context.
-_ASK_MAX_ANSWER_LEN = 2000
+# transcript, so an oversized custom answer would consume model context. The
+# bound is derived so that the worst-case tool result (the header line, then
+# one '"<question>" -> "<answer>"' line per question at the max question length)
+# fits MAX_TOOL_RESULT_CHARS; the aggregate guard in the answer handler stays
+# as the backstop for JSON escaping or redaction growing the text past this.
+_ASK_ANSWERS_HEADER = "User has answered your questions:"
+#: Between the two JSON strings of a pair. Neither `=` nor `:`: the transport
+#: scrub's key=value patterns accept a quote and either of those after a key
+#: name, so they would join a question ending in a key name to its answer.
+_ASK_PAIR_SEPARATOR = " -> "
+# Newline, the quotes around key and answer, and the separator between them.
+_ASK_ANSWER_LINE_OVERHEAD = len(f'\n""{_ASK_PAIR_SEPARATOR}""') + _ASK_MAX_QUESTION_LEN
+_ASK_MAX_ANSWER_LEN = (
+    MAX_TOOL_RESULT_CHARS
+    - len(_ASK_ANSWERS_HEADER)
+    - _ASK_MAX_QUESTIONS * _ASK_ANSWER_LINE_OVERHEAD
+) // _ASK_MAX_QUESTIONS
 
-# ask_question requests a NON-BLOCKING dashboard question card: the MCP tool
-# returns a session directive and the agent ends its turn, so no tool call is
-# held open (see mcp_tools.control.ask_question). `questions` is only
-# shape-checked here (a bounded list); the per-question/per-option limits are
-# enforced server-side by validate_ask_user_question, which is the single
-# source of truth for the card payload.
+#: One wait slice of a blocking ask, fixed server-side and shared by the
+#: gateway's wait route and the MCP tool's deferred ask step. A step holds one
+#: of DEFERRED_STEP_WORKERS threads for one slice, so with DEFERRED_PARKED_MAX
+#: cards parked the worst gap between two polls of one card is
+#: ceil(64 / 8) * 5 = 40s, well under the dashboard's 120s answer grace
+#: (_AGENT_ASK_STALE_SECS); at 20s the same queue would take 160s and an answer
+#: could go stale before its card was polled again. At 2s an idle card would cost a
+#: request every 2s, 32 requests a second at 64 cards; at 5s it is one request
+#: every 5s. The keepalive between slices still resets the ACP tool-stall
+#: watchdog long before its 600s.
+ASK_WAIT_SLICE_SECS = 5
+
+
+def format_ask_answers(pairs: Iterable[tuple[str, str]]) -> str:
+    """The answered tool result: the header, then one ``"<question>" -> "<answer>"`` line per pair."""
+    # Imported here: kiro_crew.agent_sdk pulls in the ACP stack this module otherwise avoids.
+    # The transport scrubs the serialized result again, and a scrub that cuts through
+    # a JSON escape leaves a line that does not decode. Scrubbing the decoded values
+    # first leaves it nothing to match, and the size guard sizes this same text.
+    from kiro_crew.agent_sdk import tool_row_text as _scrub
+
+    lines = [_ASK_ANSWERS_HEADER]
+    for q, a in pairs:
+        # JSON-escaped so a quote or newline in either side cannot forge another pair.
+        lines.append(
+            json.dumps(_scrub(q), ensure_ascii=False)
+            + _ASK_PAIR_SEPARATOR
+            + json.dumps(_scrub(a), ensure_ascii=False)
+        )
+    return "\n".join(lines)
+
+
+# ask_question opens a BLOCKING dashboard question card: the MCP tool holds the
+# call open and returns the answers as its result (see
+# mcp_tools.control.ask_question). `questions` is only shape-checked here (a
+# bounded list); the per-question/per-option limits are enforced server-side by
+# validate_ask_user_question, which is the single source of truth for the card
+# payload.
 ASK_QUESTION_SCHEMA = ToolSchema(
     tool_name="ask_question",
     fields=[
         FieldSpec("questions", list, required=True, max_items=_ASK_MAX_QUESTIONS),
-        # Accepted but IGNORED: the directive the tool returns carries only
-        # `questions`, so nothing downstream reads a timeout. The bound still
+        # Accepted but IGNORED: the tool opens the card with only `questions`,
+        # so nothing downstream reads a timeout. The bound still
         # mirrors DashboardState._QUESTION_TIMEOUT_MAX, which governs the legacy
         # blocking POST /api/ask-question path. Kept lenient rather than removed
         # so a caller still passing it gets its card instead of a validation
@@ -2033,6 +2348,17 @@ SUGGEST_FOLLOWUP_SCHEMA = ToolSchema(
     custom_validator=_validate_followup_items,
 )
 
+NOTHING_TO_DO_SCHEMA = ToolSchema(
+    tool_name="nothing_to_do",
+    fields=[
+        # Clamped, not rejected, for the same reason as ``autonudge_stop``'s
+        # ``reason``: the note selects no behavior — the consumer only records
+        # it on the quiet transcript step — so a long note must not cost the
+        # quiet end itself and fire the consumer's lost-marker WARNING.
+        FieldSpec("note", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
+    ],
+)
+
 # --- Dynamic Workflows (M6) ---
 _WF_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
@@ -2083,12 +2409,42 @@ WORKFLOW_RERUN_SCHEMA = ToolSchema(
 # only the tag count and length caps as fields and check each tag's characters
 # in ``_validate_artifact_tags`` through the store's own ``normalize_tag``.
 _ARTIFACT_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$")
-_ARTIFACT_KIND_RE = re.compile(r"^(widget|html|markdown|svg|json|text|image|webapp)$")
+# BUILT FROM THE STORE'S OWN SET, not spelled again. This pattern decides only
+# whether a kind REACHES the store, so a name the store accepts and this list
+# omits is a kind advertised nowhere and refused "invalid format" with no rule
+# behind it. Sorted so the pattern is stable whatever order the frozenset
+# iterates in, and ``re.escape`` because the alternation is built rather than
+# written: a kind carrying a regex metacharacter would otherwise change what
+# this matches instead of being rejected by the store's own name rules.
+#
+# What the content has to be stays the store's question. ``kind="dashboard"``
+# is a layout package, and ``ArtifactStore.create`` / ``.update`` run every one
+# of those writes through ``artifact_store.dashboard_package``, which is the
+# single gate on it; spelling any of those rules here would make a second
+# vocabulary that could drift from the gate that holds.
+_ARTIFACT_KIND_RE = re.compile(
+    "^(" + "|".join(re.escape(k) for k in sorted(_ARTIFACT_KINDS)) + ")$"
+)
 
 # Model identifiers passed to kiro-cli ``--model`` (AcpRuntime). First char
 # must be alphanumeric so a value can never be parsed as a CLI flag, and the
 # charset covers real model ids (gpt-5.6-sol, claude-sonnet-4.6) only.
 MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
+# Model identifiers stored in the model-picker VISIBILITY list
+# (``dashboard.model_picker_hidden_models``). Unlike ``MODEL_ID_RE`` these are
+# never passed to a CLI; they are display-only state that mirrors a provider's
+# OWN advertised catalog, which carries fully-qualified ids the CLI grammar
+# forbids -- ``provider/model``, ``vendor/~profile/model``, ``model:batch``,
+# ``model[1m]`` and dotted/colon inference-profile ids such as
+# ``anthropic.claude-sonnet-4-20250514-v1:0``. So the charset is widened to the
+# punctuation those catalog ids use, while still barring whitespace and control
+# characters (first char alphanumeric, bounded length) so a value can never be
+# an empty/blank entry or a control-character injection.
+MODEL_PICKER_HIDDEN_MODEL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/~\[\]@-]{0,254}$")
+#: Upper bound on entries in a single model-picker visibility delta. Large
+#: adapter catalogs can hold many hundreds of models; this bound stays generous
+#: while keeping the request size finite.
+MODEL_PICKER_HIDDEN_MODELS_MAX = 2048
 _ARTIFACT_SOURCE_RE = re.compile(r"^(chat|cron|subagent|manual|import)$")
 # Single source of truth: the MCP save/update field cap MUST equal the store's
 # own content cap, else the tool path rejects content the store would accept
@@ -2300,7 +2656,7 @@ ARTIFACT_SAVE_SCHEMA = ToolSchema(
     custom_validator=_validate_artifact_save,
     tool_name="artifact_save",
     fields=[
-        FieldSpec("name", str, required=True, max_len=200),
+        FieldSpec("name", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("content", str, required=True, max_len=ARTIFACT_CONTENT_MAX),
         FieldSpec("slug", str, max_len=80, pattern=_ARTIFACT_SLUG_RE),
         FieldSpec("kind", str, max_len=20, pattern=_ARTIFACT_KIND_RE),
@@ -2341,6 +2697,7 @@ ARTIFACT_UPDATE_SCHEMA = ToolSchema(
             item_max_len=ARTIFACT_TAG_MAX,
             max_items=16,
         ),
+        FieldSpec("clear_tags", bool),
         FieldSpec("webapp_metadata", dict),
     ],
 )
@@ -2516,6 +2873,19 @@ CHAT_FOLDER_MOVE_SCHEMA = ToolSchema(
     ],
 )
 
+CHAT_FOLDER_UPDATE_SCHEMA = ToolSchema(
+    tool_name="chat_folder_update",
+    fields=[
+        FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("name", str, max_len=_ARTIFACT_FOLDER_NAME_MAX),
+        # One emoji grapheme or "" to clear; the endpoint's ``_is_single_emoji``
+        # is the authority, so only the length is bounded here (it caps at 16).
+        FieldSpec("icon", str, max_len=16),
+        # A palette value or "" to clear; the endpoint's allowlist decides.
+        FieldSpec("color", str, max_len=16),
+    ],
+)
+
 CHAT_FOLDER_MOVE_SESSION_SCHEMA = ToolSchema(
     tool_name="chat_folder_move_session",
     fields=[
@@ -2530,6 +2900,19 @@ CHAT_FOLDER_DELETE_SCHEMA = ToolSchema(
     tool_name="chat_folder_delete",
     fields=[
         FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+CHAT_SESSION_PIN_MOVE_SCHEMA = ToolSchema(
+    tool_name="chat_session_pin_move",
+    fields=[
+        # Session references share chat_folder_move_session's shape: a slot key,
+        # a ``dashboard:`` session key, or an exact title -- only bound the length.
+        # Exactly one of ``before`` / ``after`` is required; the handler owns that
+        # rule, since it is not expressible as a field constraint.
+        FieldSpec("session", str, required=True, max_len=512),
+        FieldSpec("before", str, max_len=512),
+        FieldSpec("after", str, max_len=512),
     ],
 )
 
@@ -2607,6 +2990,16 @@ CHAT_SESSION_PIN_SCHEMA = ToolSchema(
         # A real JSON boolean: the string "false" is truthy, so a coerced value
         # would pin a session the caller asked to unpin.
         FieldSpec("pinned", bool, required=True),
+    ],
+)
+
+SESSION_MOVE_TO_COLUMN_SCHEMA = ToolSchema(
+    tool_name="session_move_to_column",
+    fields=[
+        # Same session-reference shape as ``chat_session_pin.session``, and the
+        # column-reference bound the ``chat_tag_column_*`` schemas use.
+        FieldSpec("session", str, required=True, max_len=512),
+        FieldSpec("column", str, required=True, max_len=_CHAT_TAG_REF_MAX),
     ],
 )
 
@@ -2730,6 +3123,53 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
         FieldSpec("body_json", str, max_len=_OMC_MAX_BODY, default=""),
     ],
     custom_validator=_validate_omc_api,
+)
+
+# ── Tool Schema (Design Tweak app) ──
+#
+# ``design_tweak_update_thread`` is the agent's ONLY credentialed path to the
+# Design Tweak app's ``POST /thread`` route (same pattern as
+# ``ops_mission_control_api`` and ``issue_radar_record_investigation``: the MCP
+# server process holds the internal secret; the agent never sees a credential).
+# The app hands the agent batched click-anchored comments to apply, but the
+# agent cannot update the preview's thread bubbles — posting to ``/thread``
+# needs the dashboard credential an agent session is deliberately denied — so
+# it reported progress inline in chat and the dots never changed.
+#
+# Both ids are value-position only: the schema URL-quotes them with
+# ``safe=''`` so neither can carry a '/', '?' or '#' that would rewrite the
+# single ``/thread`` route, and the backend's own ``_ID_RE``
+# (``^[A-Za-z0-9._-]+$``) is the authority that rejects a malformed id. The
+# tool boundary therefore bounds only length, not grammar. ``status`` is
+# restricted to the one FORWARD-progress value ``done`` — the agent may mark a
+# comment it finished, but the tool exposes no destructive thread action
+# (``/clear`` archives a request and removes its pins, and is NOT reachable
+# here). The ``text or status`` rule is likewise the backend's
+# (``_h_thread``): an empty call is refused there, so it is not restated here.
+# The one thread status the tool may set: forward progress only. The backend's
+# full set is ``new | sent | done`` (COMMENT_STATUSES); ``new``/``sent`` are
+# the app's own lifecycle, not something an agent reports, so the scoped tool
+# admits only ``done``.
+_DESIGN_TWEAK_ALLOWED_STATUSES = frozenset({"done"})
+# Bounds one progress note. The backend caps a thread at MAX_THREAD_ENTRIES
+# short lines; 2 KiB is well above one legitimate note and keeps an unbounded
+# string from being carried further.
+_DESIGN_TWEAK_MAX_TEXT = 2_048
+
+
+DESIGN_TWEAK_UPDATE_THREAD_SCHEMA = ToolSchema(
+    tool_name="design_tweak_update_thread",
+    fields=[
+        FieldSpec(
+            "request_id",
+            str,
+            required=True,
+            max_len=200,
+        ),
+        FieldSpec("comment_id", str, max_len=200, default=""),
+        FieldSpec("text", str, max_len=_DESIGN_TWEAK_MAX_TEXT, default=""),
+        FieldSpec("status", str, allowed=_DESIGN_TWEAK_ALLOWED_STATUSES, default=""),
+    ],
 )
 
 # Dev Fleet pod lifecycle (agent surface). A pod name is a git worktree basename,
@@ -3596,6 +4036,15 @@ SESSION_CREATE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("title", str, required=False, default="", max_len=200),
         FieldSpec("agent", str, required=False, default="", max_len=MAX_SHORT_STRING),
+        # The selection namespace for ``agent``, one value: ``template``. It
+        # exists for a template that a same-named crew member shadows (the stock
+        # ``kirocrew-worker`` on installs where an older sync enrolled it as a
+        # member): ``template`` dispatches the template on the caller's own
+        # memory instead of selecting the member, which a bare name already does.
+        # Omitted keeps name-first resolution; an empty string is not a namespace
+        # and is refused. No ``default``: validation runs twice per call, and a
+        # defaulted empty string would meet the allow-list on the second pass.
+        FieldSpec("agent_kind", str, required=False, allowed=frozenset({"template"})),
         # A sidebar-folder reference — a folder id OR a ``/``-separated human
         # path, the same shape ``chat_folder_move_session.folder`` takes — so
         # filing is atomic with creation instead of a create-then-move pair a
@@ -3614,6 +4063,12 @@ SESSION_CREATE_SCHEMA = ToolSchema(
             max_len=MAX_SHORT_STRING,
             pattern=_MODEL_NAME_RE,
         ),
+        # Reasoning effort the new session starts at, the same five levels
+        # ``session_set_model`` takes; the verb refuses anything else. No
+        # ``default``: an absent level means "inherit the dispatching
+        # crewmate's", which an empty string would also read as, so the
+        # schema leaves absence to the handler rather than spelling it.
+        FieldSpec("reasoning_effort", str, required=False, max_len=32),
     ],
 )
 
@@ -3647,18 +4102,63 @@ SESSION_END_WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_RETRY_SCHEMA = ToolSchema(
+    tool_name="session_retry",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+SESSION_CONTINUE_SCHEMA = ToolSchema(
+    tool_name="session_continue",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+
+def _validate_session_set_model(args: dict[str, Any]) -> None:
+    # Both are optional, but a call naming neither changes nothing. Only
+    # absence counts here; the gateway refuses an empty value for either.
+    if "model" not in args and "reasoning_effort" not in args:
+        raise ValidationError("model", "required unless reasoning_effort is given")
+
+
 SESSION_SET_MODEL_SCHEMA = ToolSchema(
     tool_name="session_set_model",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("model", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("model", str, required=False, max_len=MAX_SHORT_STRING),
+        # The gateway validates the level against the set the effort dropdown
+        # accepts; this cap only keeps an oversized argument off the wire.
+        FieldSpec("reasoning_effort", str, required=False, max_len=32),
     ],
+    custom_validator=_validate_session_set_model,
 )
 
 SESSION_RELOAD_SCHEMA = ToolSchema(
     tool_name="session_reload",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+SESSION_GENERATE_TITLE_SCHEMA = ToolSchema(
+    tool_name="session_generate_title",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+SESSION_RENAME_SCHEMA = ToolSchema(
+    tool_name="session_rename",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        # A transport bound only. The 200-character title rule is applied by the
+        # route AFTER surrounding whitespace is stripped
+        # (``session_control._clean_rename_title``), so a padded title that is
+        # short once stripped is not refused here.
+        FieldSpec("title", str, required=True, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -3679,6 +4179,16 @@ SESSION_REVIVE_SCHEMA = ToolSchema(
         # would leave the session revived and unfiled when the move refused.
         # Filing itself runs after the revive has committed and is best-effort.
         FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+SESSION_HISTORY_LIST_SCHEMA = ToolSchema(
+    tool_name="session_history_list",
+    fields=[
+        # A folder id or path, resolved read-only (never created): a filter
+        # naming a folder that does not exist is refused, not silently widened.
+        FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("limit", int, required=False, default=20, min_val=1, max_val=100),
     ],
 )
 
@@ -3792,6 +4302,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "monitor_start": MONITOR_START_SCHEMA,
     "monitor_update": MONITOR_UPDATE_SCHEMA,
     "ask_question": ASK_QUESTION_SCHEMA,
+    "nothing_to_do": NOTHING_TO_DO_SCHEMA,
     "delete_message": DELETE_MESSAGE_SCHEMA,
     "update_message": UPDATE_MESSAGE_SCHEMA,
     "local_knowledge_search": LOCAL_KNOWLEDGE_SEARCH_SCHEMA,
@@ -3839,6 +4350,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    "design_tweak_update_thread": DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
     "pod_up": POD_UP_SCHEMA,
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,
@@ -3850,6 +4362,24 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
     "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
 }
+
+
+def _validate_cron_secret_request(cleaned: dict[str, Any]) -> None:
+    """``secrets`` is required unless the call withdraws the pending request.
+
+    ``withdraw: true`` spells the empty mapping for a client that drops ``{}`` before
+    it reaches the server, so it stands in for ``secrets`` and is refused beside a
+    mapping that names a grant. A call with neither gets the refusal any missing
+    required field gets.
+    """
+    withdraw = cleaned.get("withdraw") is True
+    if withdraw and cleaned.get("secrets"):
+        raise ValidationError(
+            "withdraw", "withdraws the pending request, so pass it without secrets"
+        )
+    if cleaned.get("secrets") is None and not withdraw:
+        raise ValidationError("secrets", "required")
+
 
 MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
     "cron_list": CRON_LIST_SCHEMA,
@@ -3877,6 +4407,7 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
                 max_items=366,
                 item_pattern=re.compile(r"^\d{4}-\d{2}-\d{2}$"),
             ),
+            FieldSpec("clear_skip_dates", bool),
             FieldSpec("timezone", str, max_len=50, pattern=re.compile(r"^[A-Za-z0-9_/+-]+$")),
             FieldSpec("folder", str, max_len=MAX_SHORT_STRING),
             FieldSpec("persistent_session", bool),
@@ -3901,9 +4432,11 @@ MCP_CRON_SCHEMAS: dict[str, ToolSchema] = {
     # (cron_script.validate_secret_env_grant) — this schema bounds shape/size.
     "cron_secret_request": ToolSchema(
         tool_name="cron_secret_request",
+        custom_validator=_validate_cron_secret_request,
         fields=[
             FieldSpec("job_id", str, required=True, max_len=16, pattern=_JOB_ID_RE),
-            FieldSpec("secrets", dict, required=True),
+            FieldSpec("secrets", dict),
+            FieldSpec("withdraw", bool),
         ],
     ),
 }
@@ -4000,10 +4533,15 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_fork": SESSION_FORK_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
     "session_end_wait": SESSION_END_WAIT_SCHEMA,
+    "session_retry": SESSION_RETRY_SCHEMA,
+    "session_continue": SESSION_CONTINUE_SCHEMA,
     "session_set_model": SESSION_SET_MODEL_SCHEMA,
     "session_reload": SESSION_RELOAD_SCHEMA,
+    "session_rename": SESSION_RENAME_SCHEMA,
+    "session_generate_title": SESSION_GENERATE_TITLE_SCHEMA,
     "session_close": SESSION_CLOSE_SCHEMA,
     "session_revive": SESSION_REVIVE_SCHEMA,
+    "session_history_list": SESSION_HISTORY_LIST_SCHEMA,
     "session_send": SESSION_SEND_SCHEMA,
     "session_broadcast": SESSION_BROADCAST_SCHEMA,
     "session_status": SESSION_STATUS_SCHEMA,
@@ -4014,9 +4552,11 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
+    "chat_folder_update": CHAT_FOLDER_UPDATE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     "chat_folder_delete": CHAT_FOLDER_DELETE_SCHEMA,
     "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
+    "chat_session_pin_move": CHAT_SESSION_PIN_MOVE_SCHEMA,
     "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
     "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
     "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,
@@ -4025,6 +4565,7 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_tag_column_list": CHAT_TAG_COLUMN_LIST_SCHEMA,
     "chat_tag_column_create": CHAT_TAG_COLUMN_CREATE_SCHEMA,
     "chat_tag_column_move": CHAT_TAG_COLUMN_MOVE_SCHEMA,
+    "session_move_to_column": SESSION_MOVE_TO_COLUMN_SCHEMA,
 }
 
 # ── Tool Schemas (MCP crew log — server ``kirocrew-crew-log``) ──
@@ -4231,8 +4772,12 @@ WORK_REPORT_SCHEMA = ToolSchema(
         FieldSpec("summary", str, required=True, max_len=500, clamp_to_max=True),
         FieldSpec("artifacts", dict),
         FieldSpec("pr", int, min_val=1, max_val=1_000_000_000),
+        # Why a blocked/question report is stuck. Typed so the patrol can tell a
+        # wait on a person (which holds it) from one on a build (which does not);
+        # the pairing with ``status`` is ``_validate_work_report``'s check.
+        FieldSpec("reason", str, allowed=frozenset(WORK_BLOCKED_REASONS)),
     ],
-    custom_validator=lambda cleaned: _validate_work_artifacts(cleaned.get("artifacts")),
+    custom_validator=lambda cleaned: _validate_work_report(cleaned),
 )
 
 #: Every parameter of ``work_ledger_read`` narrows or shapes the read; none is
@@ -4270,8 +4815,23 @@ WORK_LEDGER_RECORD_SCHEMA = ToolSchema(
         FieldSpec("goal", str, max_len=2000),
         FieldSpec("round", int, min_val=0, max_val=1_000_000),
         FieldSpec("fails", int, min_val=0, max_val=1_000_000),
+        # The store re-checks the same ranges; refusing here names the field early.
+        FieldSpec("item_cap", int, min_val=1, max_val=256),
+        FieldSpec("concurrency_cap", int, min_val=1, max_val=32),
+        FieldSpec("new_goal", bool),
     ],
 )
+
+
+def _validate_work_report(cleaned: dict[str, Any]) -> None:
+    """A report's cross-field checks: the artifacts map, and ``reason``'s status.
+
+    ``reason`` says why a report is stuck, so it rides only on ``blocked`` or
+    ``question``; on ``progress`` or ``done`` it would claim a wait that is not one.
+    """
+    _validate_work_artifacts(cleaned.get("artifacts"))
+    if cleaned.get("reason") is not None and cleaned.get("status") not in WORK_REASON_STATUSES:
+        raise ValidationError("reason", "is allowed only with status blocked or question")
 
 
 def _validate_work_artifacts(artifacts: object) -> None:
@@ -4328,9 +4888,355 @@ PANEL_PUBLISH_SCHEMA = ToolSchema(
 # would pass it through unvalidated.
 PANEL_TEMPLATES_SCHEMA = ToolSchema(tool_name="panel_templates")
 
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason: the tool takes no
+#: arguments, and an empty registered schema REJECTS an unexpected one where no
+#: schema at all would pass it through unvalidated.
+DASHBOARD_FIELDS_SCHEMA = ToolSchema(tool_name="dashboard_fields")
+
+DASHBOARD_WRITE_SCHEMA = ToolSchema(
+    tool_name="dashboard_write",
+    fields=[
+        FieldSpec("field", str, required=True, max_len=64),
+        # EVERY JSON SCALAR AND CONTAINER, spelled out, because the field's type is
+        # the MANIFEST's to declare and not this schema's. A schema that pinned one
+        # type would either contradict the manifest or restate it, and a value may
+        # be a number, a phrase, a boolean, a list or an object depending on which
+        # field it is.
+        #
+        # ``bool`` is listed FIRST and separately from the rest for a reason that
+        # bit once already: a bare ``object`` here rejects ``True``, so a crewmate
+        # writing into a ``boolean`` field was refused by the schema -- with a
+        # message about an expected object, which is neither the real problem nor
+        # something the agent could act on. ``dashboard_agentic.check_write`` is
+        # the one place that knows what each field wants, and it refuses with a
+        # code the mistake book can group and teach; this schema's only job is to
+        # reject an unexpected ARGUMENT.
+        FieldSpec("value", (bool, int, float, str, list, dict), required=True),
+    ],
+)
+
+#: Why a ``dashboard_write`` call with nothing to write is refused at the MCP entry.
+#: It opens with the ``value: required`` text any missing required field gets, then
+#: names the remedy for the case that produces it most: an MCP client that drops an
+#: empty list, an empty object or a top-level null from the arguments before they
+#: reach this server, so ``value: []`` arrives as no value at all.
+DASHBOARD_WRITE_NO_VALUE = (
+    "required -- nothing reached this tool to write. An empty list, an empty object "
+    "or null can be dropped by the MCP client before it arrives; to empty an array or "
+    "object field, call dashboard_write with clear: true and no value"
+)
+
+
+def _validate_dashboard_write_tool(cleaned: dict[str, Any]) -> None:
+    """``value`` is required unless ``clear`` is true, and the two do not mix.
+
+    ``clear: true`` stands for the field's empty value, so a ``value`` beside it is
+    accepted only when it says the same thing (``[]`` or ``{}``); the server then
+    writes the empty value of the field's declared type. Any other value contradicts
+    it, and which of the two the caller meant is not this check's to guess.
+    """
+    value = cleaned.get("value")
+    if cleaned.get("clear") is True:
+        if value is not None and value != [] and value != {}:
+            # Reads as "clear: true writes ..." once the field name is put in front.
+            raise ValidationError(
+                "clear", "true writes the field's empty value, so pass it without a value"
+            )
+        return
+    if value is None:
+        raise ValidationError("value", DASHBOARD_WRITE_NO_VALUE)
+    if isinstance(value, str) and not value:
+        # The refusal a REQUIRED string spec gives a value that sanitizes to nothing,
+        # kept word for word: ``value`` is optional in this schema only so that
+        # ``clear`` can stand in for it.
+        raise ValidationError("value", "required (empty after sanitization)")
+
+
+#: ``dashboard_write`` as the MCP server accepts it. The gateway route validates its
+#: body with ``DASHBOARD_WRITE_SCHEMA``, where ``value`` is required: the server
+#: turns ``clear: true`` into the field's empty value before it posts, so the route
+#: sees an ordinary write. ``clear`` exists because a boolean survives the MCP clients
+#: that drop an empty container from a tool call's arguments, and array and object
+#: fields have no other way to be emptied through them.
+DASHBOARD_WRITE_TOOL_SCHEMA = ToolSchema(
+    tool_name="dashboard_write",
+    fields=[
+        FieldSpec("field", str, required=True, max_len=64),
+        FieldSpec("value", (bool, int, float, str, list, dict)),
+        FieldSpec("clear", bool),
+    ],
+    custom_validator=_validate_dashboard_write_tool,
+)
+
+#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason. The catalog is the
+#: same for every caller except for the seq numbers, and those come from the calling
+#: session's own identity -- so there is no argument that could narrow or widen it, and
+#: an accepted one would be a filter the tool does not apply.
+DASHBOARD_TYPES_SCHEMA = ToolSchema(tool_name="dashboard_types")
+
+DASHBOARD_SAVE_SCHEMA = ToolSchema(
+    tool_name="dashboard_save",
+    fields=[
+        # The THREE declarations and nothing else. Every other key a package has --
+        # ``kind`` and ``bound_to`` -- is the gateway's to fill from the vetted
+        # caller, so a caller that sends one is refused HERE by the unknown-key
+        # rule every ToolSchema enforces. That refusal is the point: silently
+        # dropping a caller-sent ``bound_to`` would tell an agent its page was
+        # saved where it asked while the page went somewhere else.
+        #
+        # Typed only as objects, with no inner shape. The shape is
+        # ``artifact_store.dashboard_package``'s, which holds the closed catalog
+        # of data types and block types and is the one place that can name what
+        # was wrong; a second shape here would either contradict it or restate it,
+        # and a restatement goes stale the day the catalog grows.
+        FieldSpec("model", dict, required=True),
+        FieldSpec("view", dict, required=True),
+        FieldSpec("theme", dict, required=True),
+    ],
+)
+
+DASHBOARD_TEMPLATES_SCHEMA = ToolSchema(
+    tool_name="dashboard_templates",
+    fields=[
+        # Optional, and the absence is a real case rather than a default: no query
+        # means "list them all", which is what an agent asks for when the person has
+        # not said what they want to see yet.
+        FieldSpec("query", str, max_len=200),
+    ],
+)
+
+DASHBOARD_PREVIEW_SCHEMA = ToolSchema(
+    tool_name="dashboard_preview",
+    fields=[
+        # ``template_id`` is the only argument this tool acts on, and it is NOT marked
+        # required: a missing one is refused by the tool with the sentence that names
+        # what to call instead, where a schema refusal would name only the field.
+        FieldSpec("template_id", str, max_len=64),
+        # ``manifest`` and ``html`` are still ACCEPTED here, and refused one layer up.
+        # A page the caller wrote cannot be previewed or adopted -- see
+        # ``instance.AUTHORED_PAGE_REFUSAL`` -- and dropping these two specs would make
+        # that refusal read "unknown field", which tells a caller to try a different
+        # spelling rather than that the whole capability is a later change. The caps
+        # bound only what reaches the refusal: ``html`` is held to 64 KiB, far under the
+        # page ceiling ``MAX_INSTANCE_HTML_BYTES``, because a page sent here is refused
+        # whatever its size and so never needs the room a template page does.
+        FieldSpec("manifest", dict),
+        FieldSpec("html", str, max_len=64 * 1024),
+    ],
+)
+
+DASHBOARD_APPLY_SCHEMA = ToolSchema(
+    tool_name="dashboard_apply",
+    fields=[
+        # Optional. Present, that template goes live -- a preview is an optional
+        # look, not a gate. Absent, the crewmate's own saved package goes live.
+        FieldSpec("template_id", str, max_len=64),
+    ],
+)
+
+DASHBOARD_ROLLBACK_SCHEMA = ToolSchema(
+    tool_name="dashboard_rollback",
+    fields=[
+        # No upper bound: the ceiling is whatever version this instance has reached,
+        # which this schema cannot know. The store refuses a version above the current
+        # one with a sentence naming the current one, which is the number the caller
+        # needs; a fixed maximum here would refuse with a limit that means nothing.
+        FieldSpec("to_version", int, required=True, min_val=1),
+    ],
+)
+
 MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_publish": PANEL_PUBLISH_SCHEMA,
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
+    "dashboard_fields": DASHBOARD_FIELDS_SCHEMA,
+    "dashboard_types": DASHBOARD_TYPES_SCHEMA,
+    "dashboard_write": DASHBOARD_WRITE_TOOL_SCHEMA,
+    "dashboard_save": DASHBOARD_SAVE_SCHEMA,
+    "dashboard_templates": DASHBOARD_TEMPLATES_SCHEMA,
+    "dashboard_preview": DASHBOARD_PREVIEW_SCHEMA,
+    "dashboard_apply": DASHBOARD_APPLY_SCHEMA,
+    "dashboard_rollback": DASHBOARD_ROLLBACK_SCHEMA,
+}
+
+
+# ── Tool Schemas (MCP Guide — server ``kirocrew-guide``) ──
+#
+# Its own registry because the guide tools ship in an opt-in server. The shape
+# checked here is the envelope only: which action ids exist and what their params
+# mean is the gateway's catalog (``guide_catalog.validate_actions``), which is the
+# one place that can resolve a setting id against the packaged registry.
+_GUIDE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+GUIDE_LIST_ACTIONS_SCHEMA = ToolSchema(tool_name="guide_list_actions")
+GUIDE_START_SCHEMA = ToolSchema(
+    tool_name="guide_start",
+    fields=[
+        FieldSpec("actions", list, required=True, item_type=dict, max_items=8),
+        # Content rules (no links, markup, control characters) are the gateway's
+        # (``guide_catalog.validate_intro``); this is only the envelope.
+        FieldSpec("intro", str, max_len=200),
+    ],
+)
+GUIDE_STATUS_SCHEMA = ToolSchema(
+    tool_name="guide_status",
+    fields=[FieldSpec("guide_id", str, max_len=64, pattern=_GUIDE_ID_PATTERN)],
+)
+GUIDE_CANCEL_SCHEMA = ToolSchema(
+    tool_name="guide_cancel",
+    fields=[FieldSpec("guide_id", str, required=True, max_len=64, pattern=_GUIDE_ID_PATTERN)],
+)
+
+MCP_GUIDE_SCHEMAS: dict[str, ToolSchema] = {
+    "guide_list_actions": GUIDE_LIST_ACTIONS_SCHEMA,
+    "guide_start": GUIDE_START_SCHEMA,
+    "guide_status": GUIDE_STATUS_SCHEMA,
+    "guide_cancel": GUIDE_CANCEL_SCHEMA,
+    "list_change_kinds": ToolSchema(tool_name="list_change_kinds"),
+    "find_setting": ToolSchema(
+        tool_name="find_setting",
+        fields=[FieldSpec("query", str, required=True, max_len=200)],
+    ),
+    "get_member_capabilities": ToolSchema(
+        tool_name="get_member_capabilities",
+        fields=[FieldSpec("member", str, required=True, max_len=128)],
+    ),
+    "diagnose_settings": ToolSchema(
+        tool_name="diagnose_settings",
+        fields=[FieldSpec("topic", str, max_len=200)],
+    ),
+    "propose_change": ToolSchema(
+        tool_name="propose_change",
+        fields=[
+            FieldSpec("kind", str, required=True, max_len=64),
+            FieldSpec("params", dict, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "get_change_status": ToolSchema(
+        tool_name="get_change_status",
+        fields=[
+            FieldSpec("change_id", str, max_len=48, pattern=re.compile(r"^cc_[A-Za-z0-9_-]{8,40}$"))
+        ],
+    ),
+    "search_docs": ToolSchema(
+        tool_name="search_docs",
+        fields=[
+            FieldSpec("query", str, max_len=200),
+            FieldSpec("page", str, max_len=80),
+            FieldSpec("offset", int, min_val=0, max_val=10_000_000),
+        ],
+    ),
+    "find_ui": ToolSchema(
+        tool_name="find_ui",
+        fields=[
+            # Optional: a call passes `query` to search or `area` to browse.
+            FieldSpec("query", str, max_len=200),
+            FieldSpec(
+                "lang",
+                str,
+                max_len=16,
+                pattern=re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,8})?$"),
+            ),
+            FieldSpec("surface", str, max_len=64, pattern=re.compile(r"^[a-z][a-z0-9-]{0,63}$")),
+            FieldSpec(
+                "area",
+                str,
+                max_len=82,
+                pattern=re.compile(r"^[a-z][a-z0-9-]{0,40}(?:\.[a-z0-9-]{1,40})?$"),
+            ),
+            FieldSpec("offset", int, min_val=0, max_val=100_000),
+        ],
+    ),
+}
+
+# ── Tool Schemas (MCP Mate — server ``kirocrew-mate``) ──
+#
+# A crewmate's own record. The envelope only, as for the guide: what a trait
+# value means is the avatar validator's business (``config.sections._safe_avatar``),
+# and a card-backed ask is validated by the change-card catalog once the gateway
+# has fixed its kind and member.
+MCP_MATE_SCHEMAS: dict[str, ToolSchema] = {
+    "update_self": ToolSchema(
+        tool_name="update_self",
+        fields=[
+            FieldSpec("display_name", str, max_len=MAX_SHORT_STRING),
+            FieldSpec("description", str, max_len=4000),
+            FieldSpec("avatar", dict),
+        ],
+    ),
+    "set_model": ToolSchema(
+        tool_name="set_model",
+        fields=[
+            FieldSpec("model", str, max_len=64),
+            FieldSpec("reasoning_effort", str, max_len=16),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "set_approval_mode": ToolSchema(
+        tool_name="set_approval_mode",
+        fields=[
+            FieldSpec(
+                "approval_mode",
+                str,
+                required=True,
+                max_len=16,
+                allowed=frozenset({"normal", "trust_reads", "trust"}),
+            ),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "request_capabilities": ToolSchema(
+        tool_name="request_capabilities",
+        fields=[
+            FieldSpec("draft", dict, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "goal_read": ToolSchema(tool_name="goal_read", fields=[]),
+    "set_goal": ToolSchema(
+        tool_name="set_goal",
+        fields=[
+            FieldSpec("long_term", str, required=True, max_len=_goals.LONG_TERM_MAX_CHARS),
+            FieldSpec("goal_id", str, max_len=9),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "set_key_results": ToolSchema(
+        tool_name="set_key_results",
+        fields=[
+            FieldSpec("items", list, required=True),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "set_check_ins": ToolSchema(
+        tool_name="set_check_ins",
+        fields=[
+            FieldSpec("daily", bool),
+            FieldSpec("weekly", bool),
+            FieldSpec("monthly", bool),
+            FieldSpec("weekday", int),
+            FieldSpec("month_day", int),
+            FieldSpec("time", str, max_len=5),
+            FieldSpec("reason", str, max_len=500),
+        ],
+    ),
+    "key_result_progress": ToolSchema(
+        tool_name="key_result_progress",
+        fields=[
+            FieldSpec("id", str, required=True, max_len=16),
+            FieldSpec("current", str, required=True, max_len=_goals.KR_READING_MAX_CHARS),
+        ],
+    ),
+    "save_goal_report": ToolSchema(
+        tool_name="save_goal_report",
+        fields=[
+            FieldSpec(
+                "kind", str, required=True, max_len=8, allowed=frozenset({"weekly", "monthly"})
+            ),
+            FieldSpec("title", str, required=True, max_len=_goals.REPORT_TITLE_MAX_CHARS),
+            FieldSpec("markdown", str, required=True, max_len=_goals.REPORT_MAX_CHARS),
+        ],
+    ),
 }
 
 MCP_COMPUTER_SCHEMAS: dict[str, ToolSchema] = {

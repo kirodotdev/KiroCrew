@@ -11,6 +11,13 @@ from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.config.loader as loader
 from kiro_crew.dashboard.handlers.messaging import _mask_secret, _write_env_updates
+from kiro_crew.secrets import SecretVault
+
+
+def _vault_value(env: Path, key: str) -> str | None:
+    """The vault secret a channel save stored beside *env* under *key*."""
+    stored = SecretVault(env.parent).get(key)
+    return stored.reveal() if stored is not None else None
 
 
 def test_mask_secret_keeps_prefix_and_tail() -> None:
@@ -34,8 +41,11 @@ def test_write_env_updates_adds_and_preserves(tmp_path: Path, monkeypatch) -> No
     lines = env.read_text(encoding="utf-8").splitlines()
     assert "# creds" in lines  # comment preserved
     assert "OTHER=keepme" in lines  # unrelated key untouched
-    assert "SLACK_BOT_TOKEN=xoxb-new" in lines  # updated in place
-    assert "SLACK_APP_TOKEN=xapp-new" in lines  # new key appended
+    # Updated in place / new key appended, each as its vault reference.
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in lines
+    assert "SLACK_APP_TOKEN=secret://SLACK_APP_TOKEN" in lines
+    assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-new"
+    assert _vault_value(env, "SLACK_APP_TOKEN") == "xapp-new"
     # Credential file hardened to owner-only perms.
     assert (env.stat().st_mode & 0o077) == 0
 
@@ -85,7 +95,8 @@ def test_write_env_updates_is_atomic_and_owner_only(tmp_path: Path, monkeypatch)
     _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
 
     text = env.read_text(encoding="utf-8")
-    assert "SLACK_BOT_TOKEN=xoxb-new" in text
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in text
+    assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-new"
     assert "WECOM_SECRET=other" in text  # unrelated credential preserved
     assert (env.stat().st_mode & 0o077) == 0  # owner-only
     # No stray temp files left behind in the dir. The persistent `.env.lock`
@@ -181,9 +192,12 @@ def test_save_syncs_process_environ(tmp_path: Path, monkeypatch) -> None:
             return resp.status
 
     assert asyncio.run(_run()) == 200
-    assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-NEW"  # replaced in-process
+    # Replaced in-process with the value the .env line now holds.
+    assert os.environ["SLACK_BOT_TOKEN"] == "secret://SLACK_BOT_TOKEN"
     assert "KIROCREW_OWNER_ID" not in os.environ  # cleared key removed
-    assert "SLACK_BOT_TOKEN=xoxb-NEW" in env.read_text(encoding="utf-8")
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in env.read_text(encoding="utf-8")
+    assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-NEW"
+    assert loader.KiroCrewConfig().load_credentials()["SLACK_BOT_TOKEN"] == "xoxb-NEW"
 
 
 def _client_put(mod, monkeypatch, tmp_path, body):
@@ -235,7 +249,8 @@ def test_save_proceeds_with_warning_when_slack_unreachable(tmp_path, monkeypatch
     status, body = status_body
     assert status == 200
     assert body["verify_warning"]
-    assert "SLACK_BOT_TOKEN=xoxb-offline" in env.read_text(encoding="utf-8")
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in env.read_text(encoding="utf-8")
+    assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-offline"
 
 
 def test_manifest_endpoint_renders_alias_and_url(monkeypatch) -> None:
@@ -548,6 +563,7 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
     assert (
         "new-pass" not in env_text
     ), f"new-pass must not appear in .env when config write failed; got: {env_text!r}"
+    assert _vault_value(env, "MICROSOFT_APP_PASSWORD") is None
 
     # config.json must be unchanged (the atomic write raised before persisting).
     saved = json.loads(cfg.read_text(encoding="utf-8"))
@@ -636,6 +652,7 @@ def test_teams_config_write_failure_preserves_process_only_credential(
     assert "new-pass" not in env.read_text(
         encoding="utf-8"
     ), ".env must not be written when config write fails (config-first ordering)"
+    assert _vault_value(env, "MICROSOFT_APP_PASSWORD") is None
 
 
 def test_teams_legacy_config_only_password_preserved_on_metadata_only_save(
@@ -822,5 +839,62 @@ def test_teams_cancellation_after_successful_env_write_does_not_rollback_config(
     # .env must have the new password (the write actually committed).
     env_text = env.read_text(encoding="utf-8")
     assert (
-        "new-pass" in env_text
-    ), f"Expected .env to contain new-pass after successful write; got: {env_text!r}"
+        "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in env_text
+    ), f"Expected .env to reference the new password after successful write; got: {env_text!r}"
+    assert _vault_value(env, "MICROSOFT_APP_PASSWORD") == "new-pass"
+
+
+def test_slack_cancellation_after_successful_env_write_does_not_rollback_config(
+    tmp_path, monkeypatch
+) -> None:
+    """A Slack save cancelled AFTER its .env write committed keeps the config.
+
+    The token landed, so rolling ``config.json`` back would pair the new token
+    with the old settings, the split the rollback exists to prevent. Only a
+    write that itself failed is rolled back.
+    """
+    import json
+
+    import kiro_crew.dashboard.handlers.messaging as mod
+
+    env = tmp_path / ".env"
+    env.write_text("SLACK_BOT_TOKEN=xoxb-OLD\n", encoding="utf-8")
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"slack": {"command": "old"}}), encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+    monkeypatch.setattr(loader, "config_path", lambda: cfg)
+    monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
+
+    async def _accept(key, token):
+        return None
+
+    monkeypatch.setattr(mod, "_validate_slack_token", _accept)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-OLD")
+    real_write = mod._write_env_updates
+
+    async def _write_then_cancel(updates):
+        real_write(updates)
+        raise asyncio.CancelledError("cancelled after the write committed")
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _write_then_cancel)
+
+    class _FakeRequest:
+        app: dict = {"state": None}
+
+        async def json(self) -> dict:
+            return {"bot_token": "xoxb-NEW", "command": "new"}
+
+        def get(self, key, default=None):
+            return default
+
+    async def _run() -> bool:
+        try:
+            await mod.api_slack_config_save(_FakeRequest())
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert asyncio.run(_run()) is True
+    assert "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN" in env.read_text(encoding="utf-8")
+    assert _vault_value(env, "SLACK_BOT_TOKEN") == "xoxb-NEW"
+    assert json.loads(cfg.read_text(encoding="utf-8"))["slack"]["command"] == "new"

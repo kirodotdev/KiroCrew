@@ -103,12 +103,21 @@ class InProcessEmbedder:
         if cached is not None:
             return cached
         embedder = self._get_embedder()
+        can_load = getattr(embedder, "can_load_on_demand", None)
         if embedder.is_ready():
+            self._available = True
+        elif callable(can_load) and can_load():
+            # Not in memory, but an embed will load it. Reported available so a
+            # search gets semantic results (its embed waits for the load once)
+            # rather than a keyword-only answer. No load is started here: status
+            # and listing pages ask this too, and must not pull in ~1 GB.
             self._available = True
         else:
             # Non-blocking probe: kicks a background load if the model file
             # just landed; returns None (→ unavailable) until the load finishes.
-            vec = embedder.embed("_availability_probe")
+            # Bulk class so it never waits for the load (only interactive
+            # embeds do).
+            vec = embedder.embed("_availability_probe", priority=_embeddings.PRIORITY_BULK)
             self._available = vec is not None
         self._last_check = time.time()
         if not self._available:
@@ -130,6 +139,18 @@ class InProcessEmbedder:
         self._available = bool(ready)
         self._last_check = time.time()
         return self._available
+
+    async def model_resident_async(self) -> bool:
+        """True only when the model is in memory now. Never starts a load.
+
+        For bulk corpus work (the watcher's self-heal re-embed). Its embeds use
+        the bulk class, which never waits for a load, so a sweep started while
+        the model is only loadable would fail every row. It must not start a
+        load either: the watcher asks on every pass, so a load here would bring
+        back an idle-unloaded model within one watcher interval. The sweep runs
+        on a later pass once a search or memory write has loaded the model.
+        """
+        return self._get_embedder().is_ready()
 
     async def is_available_async(self) -> bool:
         """Loop-safe :meth:`is_available` — runs the probe off-loop.
@@ -159,6 +180,18 @@ class InProcessEmbedder:
             self._available = True
             self._last_check = time.time()
         return self._available
+
+    def prefetch(self) -> None:
+        """Let the shared model start loading before this search's embed. Never blocks.
+
+        Only a hint to the backend (see ``EmbeddingBackend.prefetch``): no result
+        changes, and any error is swallowed because the embed that follows makes
+        the same attempt and reports it the usual way.
+        """
+        try:
+            self._get_embedder().prefetch()
+        except Exception:  # noqa: BLE001
+            logger.debug("embedding prefetch failed", exc_info=True)
 
     def embed(self, text: str, *, priority: int = PRIORITY_NORMAL) -> list[float] | None:
         """Embed a single text. Returns float list or None on failure.

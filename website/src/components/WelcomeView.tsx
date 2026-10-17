@@ -18,11 +18,11 @@ interface WelcomeViewProps {
 /** Icon and tint per suggestion kind. */
 export const SUGGESTION_KIND_STYLE: Record<SuggestionKind, { Icon: LucideIcon; tile: string }> = {
   code: { Icon: Code2, tile: 'bg-accent-subtle text-accent' },
-  review: { Icon: Eye, tile: 'bg-info-subtle text-info' },
-  ops: { Icon: Activity, tile: 'bg-danger-subtle text-danger' },
-  tasks: { Icon: ListChecks, tile: 'bg-ok-subtle text-ok' },
-  write: { Icon: FileText, tile: 'bg-warn-subtle text-warn' },
-  research: { Icon: Search, tile: 'bg-info-subtle text-info' },
+  review: { Icon: Eye, tile: 'bg-info-subtle text-info-text' },
+  ops: { Icon: Activity, tile: 'bg-danger-subtle text-danger-text' },
+  tasks: { Icon: ListChecks, tile: 'bg-ok-subtle text-ok-text' },
+  write: { Icon: FileText, tile: 'bg-warn-subtle text-warn-text' },
+  research: { Icon: Search, tile: 'bg-info-subtle text-info-text' },
   schedule: { Icon: Clock, tile: 'bg-accent-subtle text-accent' },
   general: { Icon: Sparkles, tile: 'bg-accent-subtle text-accent' },
 }
@@ -84,12 +84,12 @@ function SuggestedCards({ setInput }: { setInput: (v: string) => void }) {
   // Built at render (not module scope) so each i18nT() reads the active language;
   // the App remounts on a language switch, re-evaluating these.
   const fallbackSuggestions: Suggestion[] = [
-    { text: i18nT('components.welcomeView.suggestion_pipeline_status'), kind: 'ops' },
-    { text: i18nT('components.welcomeView.suggestion_triage_tickets'), kind: 'tasks' },
+    { text: i18nT('components.welcomeView.suggestion_daily_reminder'), kind: 'schedule' },
+    { text: i18nT('components.welcomeView.suggestion_what_next'), kind: 'tasks' },
     { text: i18nT('components.welcomeView.suggestion_search_code'), kind: 'research' },
     { text: i18nT('components.welcomeView.suggestion_summarize_chat'), kind: 'general' },
     { text: i18nT('components.welcomeView.suggestion_write_design_doc'), kind: 'write' },
-    { text: i18nT('components.welcomeView.suggestion_review_cr'), kind: 'review' },
+    { text: i18nT('components.welcomeView.suggestion_review_changes'), kind: 'review' },
   ]
   // Filter first, then fall back: a payload whose every item is malformed would
   // otherwise leave the grid blank while a curated set exists for exactly that.
@@ -177,7 +177,7 @@ export default function WelcomeView({ setInput }: WelcomeViewProps) {
     ? <img src={brandLogo} alt="" aria-hidden="true" className="w-12 h-12 drop-shadow-lg shrink-0 animate-float rounded-md object-contain" />
     : <KiroGhost size={48} className="drop-shadow-lg shrink-0 animate-float" />
 
-  // The memory chip sits above the composer (ChatPage renders it).
+  // The memory chip sits above the composer (ComposerDockView renders it).
   return (
     // Unprefixed = phones: a safe-centred column (falls back to top-aligned when it
     // overflows, so nothing clips). Short wide windows stack from the top. Wide and tall

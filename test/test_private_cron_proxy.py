@@ -128,6 +128,52 @@ async def test_private_direct_cron_lifecycle_uses_host_store(env, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_clear_spellings_cross_the_proxy_to_the_host_store(env, monkeypatch):
+    """The boolean clears reach the host dispatch unchanged through the real route.
+
+    ``clear_skip_dates`` and ``withdraw`` exist because a client that drops empty
+    containers never delivers ``skip_dates: []`` or ``secrets: {}``; a proxy that
+    dropped or renamed them on the way would bring that loss back.
+    """
+    loop = asyncio.get_running_loop()
+    async with TestClient(TestServer(app_for(env))) as client:
+
+        def post(path, body, *, session_key):
+            assert path == "/api/crons/tools"
+            # A lost-run ceiling, not a wait: the route answers as soon as it runs.
+            status, payload = asyncio.run_coroutine_threadsafe(
+                invoke(client, env, body["name"], body["arguments"]), loop
+            ).result(timeout=30)
+            assert status == 200, payload
+            return payload
+
+        monkeypatch.setattr(mcp_core, "_post", post)
+
+        async def tool(name, arguments):
+            return await asyncio.wait_for(
+                asyncio.to_thread(mcp_cron._call_tool, name, arguments), timeout=30
+            )
+
+        result = await tool(
+            "cron_add",
+            {"name": "holidays", "message": "go", "every": 120, "skip_dates": ["2026-12-25"]},
+        )
+        assert result.startswith("Added job"), result
+        # The store is read off the loop: its lock takes one attempt on the loop thread.
+        jobs = await asyncio.to_thread(lambda: CronService(base_dir=env.home).list_jobs())
+        job = jobs[0]
+        assert job.skip_dates == ["2026-12-25"]
+
+        result = await tool("cron_update", {"job_id": job.id, "clear_skip_dates": True})
+        assert result.startswith("Updated job"), result
+        cleared = await asyncio.to_thread(lambda: CronService(base_dir=env.home).get_job(job.id))
+        assert cleared is not None and cleared.skip_dates == []
+
+        result = await tool("cron_secret_request", {"job_id": job.id, "withdraw": True})
+        assert result == "Withdrew the pending secret request.", result
+
+
+@pytest.mark.asyncio
 async def test_proxy_preserves_validation_governance_and_member_scope(env, monkeypatch):
     async with TestClient(TestServer(app_for(env))) as client:
         for member in ("alice", "bob"):

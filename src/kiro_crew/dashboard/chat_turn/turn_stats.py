@@ -1,15 +1,23 @@
-"""The per-turn stats footer, its first-token clock and the context meter payload."""
+"""The per-turn stats footer, its first-token clock and the context meter payload, the
+turn outcome, the turn metric and the recovery-outcome counter."""
 
 from __future__ import annotations
 
+import math
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _ChatSlot,
-        turn_stats_meta,
+        emit_turn_duration,
+        emit_turn_usage,
+        get_recorder,
+        logger,
+        row_mid,
+        turn_outcome,
     )
+    from kiro_crew.dashboard.chat_turn.mcp_session import _redact_acp_string
 
 
 def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
@@ -92,6 +100,35 @@ def _attach_turn_stats(
     with the failed turn's numbers. No-op when the turn produced no assistant
     message or when there is nothing to show.
     """
+    return _attach_owned_turn_stats(
+        slot,
+        elapsed_ms,
+        credits,
+        cost_usd,
+        turn_boundary=turn_boundary,
+        model=model,
+        ttft_ms=ttft_ms,
+        reply_mids=None,
+    )
+
+
+def _attach_owned_turn_stats(
+    slot: "_ChatSlot",
+    elapsed_ms: int,
+    credits: float,
+    cost_usd: float,
+    *,
+    turn_boundary: int,
+    model: str,
+    ttft_ms: int,
+    reply_mids: list[str] | None,
+) -> bool:
+    """``_attach_turn_stats``, narrowed to rows the runner in flight appended.
+
+    ``reply_mids`` is ``slot._turn_reply_mids``: a workflow or sub-agent result
+    another writer appends into the window mid-turn is skipped, so it never
+    takes this turn's figures. ``None`` keeps the plain boundary scan.
+    """
     stats = turn_stats_meta(elapsed_ms, credits, cost_usd, model)
     if stats is None:
         return False
@@ -99,9 +136,12 @@ def _attach_turn_stats(
         stats["ttft_ms"] = int(ttft_ms)
     boundary = max(0, turn_boundary)
     for m in reversed(slot.messages[boundary:]):
-        if m.get("role") == "assistant":
-            m.setdefault("meta", {})["turn_stats"] = stats
-            return True
+        if m.get("role") != "assistant":
+            continue
+        if reply_mids is not None and row_mid(m) not in reply_mids:
+            continue
+        m.setdefault("meta", {})["turn_stats"] = stats
+        return True
     return False
 
 
@@ -159,3 +199,144 @@ def _turn_clock(
     clock = _FirstVisibleClock(t0)
     slot._carried_ttft_clock = clock
     return clock
+
+
+def _turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
+    """Map an EVENT_COMPLETE stop_reason to a low-cardinality turn outcome.
+
+    Thin delegate to :func:`kiro_crew.metrics.turns.turn_outcome`, which is the
+    single source of truth shared by every dispatch surface. Kept as a name here
+    because this module's own tests and the stop-reason branches below read it,
+    and because the mapping is part of what ``_run_chat`` decides (it is the only
+    surface that can say ``exhausted``).
+    """
+    return turn_outcome(stop_reason, exhausted=exhausted)
+
+
+def _emit_turn_metric(
+    duration_ms: int | float | None,
+    stop_reason: str | None,
+    slot_key: str,
+    *,
+    elapsed_ms: int | float | None = None,
+    exhausted: bool = False,
+    usage: object = None,
+    model: str = "",
+    provider: str = "",
+) -> None:
+    """Emit this turn's OTEL samples (best-effort).
+
+    Thin delegate to :func:`kiro_crew.metrics.turns.emit_turn_duration` and
+    :func:`~kiro_crew.metrics.turns.emit_turn_usage`. The family is emitted for
+    EVERY dispatch surface, and by two owners that between them sample each turn
+    exactly once — see :mod:`kiro_crew.metrics.turns`.
+
+    ``_run_chat`` DOES call this, and is the only production caller. Its persist
+    call passes ``emit_metric=False`` so the shared boundary does not also sample
+    the turn, because two things about this surface the boundary cannot serve:
+    that persist sits behind ``usage_has_billing`` (a turn that timed out having
+    billed nothing writes no row, and the sample must survive that), and only
+    here are the EFFECTIVE session key and the spent-recovery-budget
+    ``exhausted`` flag available.
+
+    ``usage`` is therefore read HERE rather than left to the boundary: with
+    ``emit_metric=False`` the boundary emits nothing at all, so a usage emit that
+    lived only there would leave the dashboard — the surface carrying most of the
+    traffic — contributing no token or spend samples whatsoever. Fields are read
+    defensively because a turn can complete without one (an errored turn's
+    ``usage`` may be absent), and ``emit_turn_usage`` drops non-positive values.
+
+    Every other surface is sampled by ``persist_token_record_async`` itself,
+    which is what ended this metric being a dashboard-only reading.
+    """
+    emit_turn_duration(
+        duration_ms,
+        session_key=slot_key,
+        outcome=turn_outcome(stop_reason, exhausted=exhausted),
+        elapsed_ms=elapsed_ms,
+        model=model,
+        provider=provider,
+    )
+    emit_turn_usage(
+        input_tokens=getattr(usage, "input_tokens", 0),
+        output_tokens=getattr(usage, "output_tokens", 0),
+        credits=getattr(usage, "credits", 0.0),
+        cost_usd=getattr(usage, "cost_usd", 0.0),
+        model=model,
+        provider=provider,
+    )
+
+
+def _emit_recovery_outcome(mechanism: str, outcome: str, attempts: int) -> None:
+    """Emit kirocrew.watchdog.recovery.outcome (best-effort).
+
+    One counter point per RESOLVED recovery cycle, derived from the per-slot
+    retry budgets the stop-reason branches already maintain
+    (``slot._stale_recovery_retries`` / ``slot._tool_stall_retries``):
+
+    - ``outcome=recovered`` — a synthetic recovery turn completed ``ok`` while
+      a budget was armed (emitted at the budget-reset block, which is the one
+      place a completed cycle and its attempt count coexist).
+    - ``outcome=exhausted`` — the budget hit its cap and the slot surfaced
+      "start a new chat" (emitted in the stall branches themselves).
+
+    ``attempt_bucket`` is the attempt count clamped to the budget cap (1-3) —
+    a closed enum per the metrics/schema.py cardinality rule, mirroring the
+    CLI's ``attempt_number_bucket`` precedent. Single source of truth shared
+    with its unit test so the mapping cannot silently drift.
+    """
+    try:
+        get_recorder().counter(
+            "kirocrew.watchdog.recovery.outcome",
+            attrs={
+                "mechanism": mechanism,
+                "outcome": outcome,
+                "attempt_bucket": max(1, min(int(attempts), 3)),
+            },
+        )
+    except Exception:
+        logger.debug("recovery outcome metric emit failed", exc_info=True)
+
+
+def turn_stats_meta(
+    elapsed_ms: int, credits: float, cost_usd: float, model: str = ""
+) -> dict[str, Any] | None:
+    """The ``meta.turn_stats`` value the footer renders, or None for nothing to show.
+
+    One shape for every writer: a chat turn (``_attach_turn_stats``) and a cron
+    run's result row (the gateway passes it to ``inject_cron_result_to_dashboard``).
+    Zero/empty fields are omitted so the footer shows only what was reported.
+    A non-finite number is omitted too: ``json.dumps`` writes it as a bare
+    ``Infinity``/``NaN`` that no browser parses. The provider-reported model id is
+    scrubbed like every ACP-controlled string (``_redact_acp_string``) and dropped past ``_MAX_MODEL_ID_LEN``, because the row is retained.
+    """
+    if elapsed_ms <= 0:
+        return None
+    stats: dict[str, Any] = {"elapsed_ms": int(elapsed_ms)}
+    if math.isfinite(credits) and credits > 0:
+        stats["credits"] = round(credits, 4)
+    if math.isfinite(cost_usd) and cost_usd > 0:
+        stats["cost_usd"] = round(cost_usd, 6)
+    if model:
+        safe_model = _redact_acp_string(model)
+        if len(safe_model) <= _MAX_MODEL_ID_LEN:
+            stats["model"] = safe_model
+    return stats
+
+
+# Longest provider-SUPPLIED model id the reactive access-denial fallback will
+# adopt. Both ids it handles come off the provider's error -- the rejected one
+# from ``exc.rejected_model`` and the replacement from ``exc.advertised`` via
+# ``first_advertised_fallback``, which checks only type and emptiness -- and both
+# are RETAINED: in the persisted transcript notice, in
+# ``slot._active_fallback_model``, and in the session log. So the bound is
+# applied at that entry, before anything retains either value, rather than at the
+# notice that displays them: a bound at the display site would leave the store
+# unbounded.
+#
+# REFUSED rather than truncated, because the same value is passed to set_model to
+# move the live session: a truncated id is a different model, or none. An id this
+# long is not a real one, so the guard simply goes false and the terminal
+# entitlement error surfaces instead -- the already-bounded path this branch
+# exists to improve on.
+_MAX_MODEL_ID_LEN = 256

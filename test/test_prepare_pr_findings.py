@@ -1217,6 +1217,121 @@ class TestWholeDesignItems:
         assert "DESIGN: verdict=PASS" in out
         assert "no Blockers/Watch/Subtraction/Suggestion items" in out
 
+    def test_a_pass_lane_prints_its_punchline_as_its_one_ask(self, capsys) -> None:
+        """No item section carries a PASS lane's punchline, so without this line
+        the loop reads the lane as having nothing to say."""
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: PASS\n\n"
+                "**Check that a timed-out run still stops its kept servers.**\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        verdict_at = out.index("DESIGN: verdict=PASS")
+        punchline_at = out.index(
+            "    punchline: Check that a timed-out run still stops its kept servers."
+        )
+        assert verdict_at < punchline_at
+        assert "(a PASS lane's punchline is its one ask: it still needs an answer)" in out
+
+    def test_a_concerns_punchline_prints_without_the_pass_hint(self, capsys) -> None:
+        module = _load_script()
+        design = {"user": {"type": "Bot", "login": "github-actions[bot]"}, "body": _design_body()}
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "    punchline: The win32 predicate depends on a macOS-only settings file." in out
+        assert "one ask" not in out
+
+    def test_a_token_in_a_punchline_is_redacted(self, capsys) -> None:
+        module = _load_script()
+        token = "ghp_" + "a" * 30
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: PASS\n\n"
+                "**Check the sample that quotes " + token + " before merge.**\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "    punchline: Check the sample that quotes [REDACTED] before merge." in out
+        assert token not in out
+
+    def test_nothing_to_check_prints_no_punchline(self, capsys) -> None:
+        module = _load_script()
+        design = {
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+            "body": (
+                "<!-- design-review -->\n"
+                "Design-Verdict: PASS\n\n"
+                "**Nothing to check.**\n\n"
+                "[DESIGN-REVIEWED] " + _HEAD
+            ),
+        }
+        _run_findings(module, [design])
+
+        module.main(["pr_findings.py", "42"])
+
+        out = capsys.readouterr().out
+        assert "DESIGN: verdict=PASS" in out
+        assert "punchline:" not in out
+        assert "one ask" not in out
+
+    @pytest.mark.parametrize(
+        ("after_verdict", "expected"),
+        [
+            ("\n\n**One bold sentence.**\n\n### Watch\n- an item", "One bold sentence."),
+            ("\n\nAn unbolded sentence.\n", "An unbolded sentence."),
+            ("\n\n**Wrapped over\ntwo lines.**\n\nNext paragraph.", "Wrapped over two lines."),
+            (
+                " (advisory)\n\n**The rest of the verdict line is skipped.**",
+                "The rest of the verdict line is skipped.",
+            ),
+            ("\n\n**Bold** then **bold**", "**Bold** then **bold**"),
+            ("\n\n### Watch\n- an item, not a punchline", ""),
+            ("\n\n[DESIGN-REVIEWED] " + _HEAD, ""),
+            ("", ""),
+        ],
+    )
+    def test_lane_punchline_reads_the_paragraph_under_the_verdict(
+        self, after_verdict: str, expected: str
+    ) -> None:
+        module = _load_script()
+        body = "<!-- design-review -->\nDesign-Verdict: PASS" + after_verdict
+        assert module._review_contract.lane_punchline(body) == expected
+
+    def test_a_body_without_a_verdict_line_has_no_punchline(self) -> None:
+        module = _load_script()
+        assert module._review_contract.lane_punchline("**A bold line.**\n") == ""
+
+    def test_only_a_lane_stamped_for_the_head_contributes_a_punchline(self) -> None:
+        module = _load_script()
+        bindings = dict(module.DEFAULT_MARKER_BINDINGS)
+        bot = {"type": "Bot", "login": "github-actions[bot]"}
+        fresh = {"user": bot, "body": _design_body()}
+        stale = {"user": bot, "body": _design_body(head=_OLD)}
+
+        assert module.design_lane_punchlines([fresh], _HEAD, bindings) == {
+            "DESIGN": "The win32 predicate depends on a macOS-only settings file."
+        }
+        assert module.design_lane_punchlines([stale], _HEAD, bindings) == {}
+
     def test_control_characters_in_an_item_are_stripped(self, capsys) -> None:
         """Item text is untrusted, model-authored bytes printed to a terminal."""
         module = _load_script()
@@ -1266,12 +1381,16 @@ class TestWholeDesignItems:
         for name in (
             "extract_design_items",
             "design_lane_verdicts",
+            "design_lane_punchlines",
+            "redact",
             "CLEARS_WHEN_RE",
         ):
             assert getattr(findings, name) is getattr(findings._review_contract, name), name
         for name in (
             "extract_design_items",
             "design_lane_verdicts",
+            "design_lane_punchlines",
+            "redact",
             "unanswered_concern_lanes",
             "unanswered_concerns_reason",
             "WHOLE_DESIGN_LANES",

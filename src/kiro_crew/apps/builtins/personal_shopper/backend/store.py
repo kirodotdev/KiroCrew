@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from kiro_crew.apps.manager import app_data_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
 
 APP_NAME = "personal-shopper"
 
@@ -66,12 +67,26 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _embedder_can_serve(embedder: object) -> bool:
+    """Whether an embed can produce a vector: loaded now, or loadable on demand.
+
+    Loadable counts: the model is unloaded after an idle hour, and gating on
+    ``is_ready()`` alone would then store every new preference without a vector
+    and keep search on keywords until something else reloaded it. An embed off
+    the event loop waits for that reload once.
+    """
+    if embedder.is_ready():  # type: ignore[attr-defined]
+        return True
+    can_load = getattr(embedder, "can_load_on_demand", None)
+    return bool(callable(can_load) and can_load())
+
+
 def _embed(text: str) -> bytes | None:
     """Embed *text* as packed float32, or None when no model is serving."""
     if get_shared_embedder is None:
         return None
     embedder = get_shared_embedder()
-    if not embedder.is_ready():
+    if not _embedder_can_serve(embedder):
         return None
     vec = embedder.embed(text)
     if vec is None:
@@ -123,7 +138,8 @@ class PreferenceStore:
 
     def __init__(self, db_path: Path | None = None):
         self.db_path = db_path or _default_db_path()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdirs_owner_only(self.db_path.parent)
+        prepare_owner_only_sqlite(self.db_path)
         # One connection shared across the worker threads that `asyncio.to_thread`
         # hands route handlers, so every write goes through `_lock`: sqlite allows
         # a single writer, and the multi-statement FTS sync below must not
@@ -303,7 +319,7 @@ class PreferenceStore:
         query_vec = None
         if get_shared_embedder is not None:
             embedder = get_shared_embedder()
-            if embedder.is_ready():
+            if _embedder_can_serve(embedder):
                 query_vec = embedder.embed(query)
 
         if query_vec is not None:

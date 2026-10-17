@@ -206,6 +206,31 @@ describe('FolderBody defers layout suppression until the collapse has animated',
     expect(inner().getAttribute('style')).toContain('content-visibility: visible')
   })
 
+  it('stops the rows painting the moment it closes, with opacity on the box itself', () => {
+    // `visibility` is inherited, and a row control that transitions `all`
+    // carries the inherited value through its own 150ms transition, so with
+    // `visibility: hidden` alone the rows would paint for the whole close.
+    // `opacity` is not inherited, so one value on this box hides them at once.
+    // jsdom runs no transitions, so this pins only the style; the PR's
+    // filmstrips are the evidence for the painting itself.
+    const { rerender } = render(<FolderBody open><div>rows</div></FolderBody>)
+    expect(inner().style.opacity).toBe('1')
+    rerender(<FolderBody open={false}><div>rows</div></FolderBody>)
+    expect(inner().style.opacity).toBe('0')
+    expect(inner().style.visibility).toBe('hidden')
+  })
+
+  it('instantClose drops the transition only for the close, so opening still animates', () => {
+    const box = () => inner().parentElement as HTMLElement
+    const { rerender } = render(<FolderBody open instantClose><div>rows</div></FolderBody>)
+    expect(box().style.transition).toMatch(/grid-template-rows/)
+    rerender(<FolderBody open={false} instantClose><div>rows</div></FolderBody>)
+    expect(box().style.transition).toBe('none')
+    expect(box().style.gridTemplateRows).toBe('0fr')
+    rerender(<FolderBody open={false}><div>rows</div></FolderBody>)
+    expect(box().style.transition).toMatch(/grid-template-rows/)
+  })
+
   it('cancels a pending suppression when reopened mid-collapse', () => {
     const { rerender } = render(<FolderBody open><div>rows</div></FolderBody>)
     rerender(<FolderBody open={false}><div>rows</div></FolderBody>)

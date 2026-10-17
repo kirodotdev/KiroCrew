@@ -242,6 +242,15 @@ async def _respawn_backend_for_stub_unrecorded(
     old_surface: Optional[tool_surface.ToolSurface] = None
     with contextlib.suppress(Exception):
         old_surface = old_backend.served_tool_surface(stub_uuid)
+    # Also BEFORE detach, and for the third time for the same reason: the
+    # Register frame is long gone by here, so the dead backend is the only thing
+    # that still knows which agent this stub attached under -- and detach prunes
+    # it with the inbox. Reading it after would carry "" onto the replacement,
+    # and an app render spooled through the respawned backend would then name no
+    # producing agent and have its callbacks refused.
+    old_agent = ""
+    with contextlib.suppress(Exception):
+        old_agent = old_backend.agent_for_stub(stub_uuid)
     # The principal this respawn is FOR, as of when the failing request arrived.
     # Both rekey gates below re-check the live owner against it.
     captured_key = caller.session_key if caller is not None else ""
@@ -295,6 +304,13 @@ async def _respawn_backend_for_stub_unrecorded(
             # shared bucket: the replacement inherits the original binding,
             # unless the ledger has since argued against sharing it at all.
             exclusive_stub_uuid=respawn_exclusive_uuid,
+            # Travels WITH ``exclusive_stub_uuid``, and must: a private
+            # backend's declared-env sidecar is named for the agent that
+            # declared it, so a respawn that named the stub but not its agent
+            # would spawn the replacement with no declared env and die at prime
+            # on every server that needs one. Captured before the detach for
+            # the same reason it is read there -- see ``old_agent`` above.
+            declaring_agent=old_agent,
             admission=admission,
             wait_deadline=(
                 None if admission is None else time.monotonic() + admission.spawn_queue_wait_secs
@@ -373,7 +389,7 @@ async def _respawn_backend_for_stub_unrecorded(
                 # and legitimately, so tearing it down would punish every
                 # future session for this one's frozen view.
                 _refuse_replacement(stub_uuid, pool_key, captured_key, drift)
-        new_inbox = await new_backend.attach_stub(stub_uuid)
+        new_inbox = await new_backend.attach_stub(stub_uuid, agent=old_agent)
         if replay_uris and conn is not None:
             # Rekey race: a ``claim`` frame can retarget this connection's
             # identity during the awaits above (acquire + prime). The
@@ -456,10 +472,13 @@ async def _respawn_backend_for_stub_unrecorded(
         name=f"mcp-gateway-stub-writer-{stub_uuid[:8]}",
     )
     logger.info(
-        "transparent respawn: stub=%s rebound to fresh backend pid=%s pool=%s",
+        "transparent respawn: stub=%s rebound to fresh backend pid=%s pool=%s %s "
+        "previous_backend_generation_id=%s",
         stub_uuid,
         new_backend.pid,
         pool_key.human_readable(),
+        new_backend.lifecycle_fields("reconnect_succeeded", "success"),
+        old_backend.backend_generation_id,
     )
     # Audited HERE, not at the comparison: this is the point the replacement
     # actually gains authority to serve the session — stub attached,

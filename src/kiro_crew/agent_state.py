@@ -18,6 +18,14 @@ rather than the kiro spec:
 - ``forked_from`` / ``private_to`` (str): recorded on a template that is one
   crew's private copy of another template (blueprint semantics — editing a
   crew's definition forks a copy instead of mutating the shared file).
+- ``managed_digest`` (str): the SHA-256 of the exact spec bytes the installer
+  last wrote at an OWNED filename whose stem was a user-creatable name before it
+  became owned (today only ``kirocrew-dashboard-author``). It is the installer's
+  record that THIS file is its own managed write: a rebuild overwrites the spec
+  only when the file on disk reproduces this digest, so a user artefact that
+  happens to sit at the stem -- or a copy of another agent renamed onto it -- is
+  never read as managed and overwritten. Smallest possible ownership record: one
+  string per owned name, in this one file, no second store.
 
 State file (``~/.kiro/crew/agent_model_state.json``, honoring ``KIROCREW_HOME``)::
 
@@ -34,6 +42,7 @@ This is a near-leaf module: it imports only the stdlib plus the leaf
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import math
@@ -57,6 +66,17 @@ _MIRRORED_FROM = "mirrored_from"
 _MIRRORED_STAT = "mirrored_stat"
 _FORKED_FROM = "forked_from"
 _PRIVATE_TO = "private_to"
+# Installer-recorded ownership for a spec at an owned filename that was a
+# user-creatable name before it became owned (today: kirocrew-dashboard-author).
+# Holds the SHA-256 of the exact spec bytes the installer last wrote there, so
+# "is this file our own managed write?" is answered by a digest the installer
+# recorded, not by marks a user artefact could carry by coincidence.
+_MANAGED_DIGEST = "managed_digest"
+# The digest of the bytes a managed writer is ABOUT to write, recorded before the spec
+# file is replaced and promoted to _MANAGED_DIGEST once the write lands. Two slots make the
+# write crash-safe: the file reproduces one of them at every instant (see
+# ``managed_digest_matches``).
+_MANAGED_DIGEST_PENDING = "managed_digest_pending"
 
 # Guards in-process read-modify-write races (e.g. dashboard PATCH vs gateway
 # refresh). ``atomic_write`` makes each WRITE atomic, but two processes can
@@ -379,6 +399,26 @@ def set_model_managed(name: str, value: bool) -> None:
         _write(data)
 
 
+def claim_model_managed_if_unset(name: str) -> bool:
+    """Record *name* as managed only when it holds no managed flag; True if claimed.
+
+    The read and the write share one cross-process lock, so an explicit pick a
+    model editor records concurrently is never overwritten. Strict: an
+    unreadable sidecar raises rather than reading as unset.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if _MODEL_MANAGED in entry:
+            return False
+        entry[_MODEL_MANAGED] = True
+        data[name] = entry
+        _write(data)
+        return True
+
+
 def get_cc_model(name: str) -> str | None:
     """Return the agent's claude_code-provider model, or ``None`` when unset."""
     with _lock:
@@ -462,6 +502,141 @@ def set_mirrored_stat(name: str, value: str | None) -> None:
             entry[_MIRRORED_STAT] = str(value)
         else:
             entry.pop(_MIRRORED_STAT, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def spec_digest(config: MutableMapping[str, object] | dict) -> str:
+    """SHA-256 of a spec's CANONICAL bytes, as the installer writes them.
+
+    The ownership record is a digest of the exact bytes
+    :func:`kiro_crew.agent._atomic_json_write` lands on disk --
+    ``json.dump(data, indent=2)`` then a trailing newline -- so a spec read back
+    from the file and re-serialized the same way hashes to the value the installer
+    recorded when it wrote it. Any field reorder, retype or edit changes the digest,
+    which is the point: a file whose bytes do not reproduce the recorded digest is
+    not this installer's last managed write and must not be overwritten.
+
+    ``sort_keys`` is deliberately NOT set: the installer does not sort, so the digest
+    is taken over the bytes actually written, not a normalized form that would differ
+    from the file on disk.
+    """
+    payload = json.dumps(config, indent=2) + "\n"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_managed_digest(name: str, *, strict: bool = False) -> str | None:
+    """Return the installer-recorded digest of *name*'s last managed write, or ``None``.
+
+    ``None`` means NO ownership was recorded for this name -- there is no managed write to
+    confirm the on-disk file against, so the file is treated as a user artefact. ``strict``
+    propagates an unreadable sidecar instead of degrading it to ``None``, for the reason
+    :func:`get_fork_info` gives: a caller whose answer decides an OVERWRITE must not read
+    "the sidecar will not parse" as "no ownership recorded" -- an unverifiable file is a
+    user file. Display/read callers stay lenient.
+    """
+    with _lock:
+        value = _entry(_read(strict=strict), name).get(_MANAGED_DIGEST)
+    return value if isinstance(value, str) and value else None
+
+
+def set_managed_digest(name: str, value: str | None) -> None:
+    """Record (or clear, when *value* is falsy) the FINALIZED digest of *name*'s last
+    managed write. Prefer the two-phase :func:`begin_managed_write` /
+    :func:`finalize_managed_write` pair for a writer that replaces the spec: a bare
+    finalized set recorded AFTER the file write leaves a crash window where the bytes and
+    the record disagree permanently. This stays for callers that only need to seed or clear
+    the record.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if value:
+            entry[_MANAGED_DIGEST] = str(value)
+        else:
+            entry.pop(_MANAGED_DIGEST, None)
+        if entry:
+            data[name] = entry
+        else:
+            data.pop(name, None)
+        _write(data)
+
+
+def managed_digest_matches(name: str, candidate: str, *, strict: bool = False) -> bool:
+    """Does *candidate* reproduce EITHER the finalized or the pending managed digest of
+    *name*? This is the ownership confirmation every reader uses.
+
+    Two recorded values, because a managed writer replaces the spec in a step distinct from
+    recording its digest, and either step can be interrupted (process death, or a strict
+    sidecar read/write raising). :func:`begin_managed_write` records the NEW bytes' digest as
+    PENDING before the file is replaced; :func:`finalize_managed_write` promotes it to the
+    finalized slot after. So at every instant between a managed write starting and finishing,
+    the file on disk reproduces one of the two recorded digests:
+
+    * before the file is replaced -- the OLD bytes still match the finalized digest;
+    * after the file is replaced, before finalize -- the NEW bytes match the pending digest;
+    * after finalize -- the NEW bytes match the finalized digest (pending cleared).
+
+    A crash in any window therefore leaves the file still confirmable, so a later rebuild
+    refreshes it (re-filtering its grants against the live ceiling) instead of reading its
+    own file as foreign and freezing it. ``strict`` propagates an unreadable sidecar, for
+    the reason :func:`get_managed_digest` gives.
+    """
+    with _lock:
+        entry = _entry(_read(strict=strict), name)
+    for key in (_MANAGED_DIGEST, _MANAGED_DIGEST_PENDING):
+        recorded = entry.get(key)
+        if isinstance(recorded, str) and recorded and recorded == candidate:
+            return True
+    return False
+
+
+def begin_managed_write(name: str, pending: str, *, current: str | None = None) -> None:
+    """Record *pending* (the digest of the bytes about to be written) BEFORE the spec file
+    is replaced. *current* is the digest of the spec CURRENTLY on disk, which the caller has
+    just read and confirmed; it is written to the finalized slot so the on-disk file matches
+    a recorded digest no matter how a prior or this write was interrupted. Call under the
+    same spec lock as the write.
+
+    Why *current* and not "promote the prior pending": a prior write can be interrupted in
+    two ways, and only the caller knows which the file reflects. If its file replace landed,
+    the file matches the prior pending; if it failed before the replace, the file still
+    matches the prior finalized. Writing the digest of the ACTUAL on-disk bytes to finalized
+    here covers both: this write's own replace failing then leaves finalized=current (still
+    matching the unchanged file) and pending=the-new-digest, so the spec stays confirmable
+    and the next rebuild refreshes it rather than freezing. When *current* is omitted (a
+    first install, nothing on disk) only the pending slot is set.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            entry = {}
+        if isinstance(current, str) and current:
+            entry[_MANAGED_DIGEST] = current
+        entry[_MANAGED_DIGEST_PENDING] = str(pending)
+        data[name] = entry
+        _write(data)
+
+
+def finalize_managed_write(name: str) -> None:
+    """Promote the pending digest to the finalized slot and clear pending, AFTER the spec
+    file has been replaced. A no-op finalized value is left untouched when no pending exists
+    (nothing was begun). Call under the same spec lock as the write.
+    """
+    with _locked():
+        data = _read(strict=True)
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            return
+        pending = entry.pop(_MANAGED_DIGEST_PENDING, None)
+        if isinstance(pending, str) and pending:
+            entry[_MANAGED_DIGEST] = pending
         if entry:
             data[name] = entry
         else:

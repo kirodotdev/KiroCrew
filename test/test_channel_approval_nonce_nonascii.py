@@ -120,7 +120,7 @@ class TestChannelPressPaths:
     @pytest.mark.asyncio
     async def test_shared_widget_resolve_refuses_a_non_ascii_nonce(self) -> None:
         pending = PendingApprovals("webex")
-        task = asyncio.create_task(pending.decide("s1-nonascii", _event()))
+        task = asyncio.create_task(pending.decide_with_cause("s1-nonascii", _event()))
         await _until(lambda: pending.has_pending("s1-nonascii"))
         pending.reserve("s1-nonascii", 1)
 
@@ -134,4 +134,4 @@ class TestChannelPressPaths:
         assert task.done() is False
 
         pending.resolve("s1-nonascii", False, request_id=1)
-        assert await task is False
+        assert (await task)[0] is False

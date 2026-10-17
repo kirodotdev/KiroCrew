@@ -1,7 +1,7 @@
 /**
  * Quote a whole reply: the row reads seat + Copy + More on every reply shape
  * (the seat is Quote, or Regenerate / Fork / Reply in thread when one holds
- * it), and the bubble's right-click / long-press menu.
+ * it), and the bubble's right-click menu (pointer devices only).
  */
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
@@ -35,7 +35,7 @@ describe('AssistantMessage row with Quote offered', () => {
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     expect(screen.queryByTestId('toggle-raw-view')).not.toBeInTheDocument()
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw markdown'])
     fireEvent.click(screen.getByTestId('quote-message-menu-item'))
     expect(onQuote).toHaveBeenCalledTimes(1)
   })
@@ -44,7 +44,7 @@ describe('AssistantMessage row with Quote offered', () => {
     render(<AssistantMessage content="Reply text long enough for the raw toggle." isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onFork={() => {}} forkIndex={1} forkMessageId="m1" onQuoteMessage={() => {}} />)
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).not.toContain('Copy text')
+    expect(screen.queryByTestId('copy-message-menu-item')).not.toBeInTheDocument()
   })
 
   it('on the newest reply Regenerate takes the seat and Copy is still a visible row button right after it', () => {
@@ -55,7 +55,7 @@ describe('AssistantMessage row with Quote offered', () => {
     fireEvent.click(screen.getByLabelText('Copy'))
     expect(copyToClipboard).toHaveBeenCalledWith('Reply text long enough for the raw toggle.')
     openMore()
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy link to message', 'Pin message', 'Show raw markdown', 'Read aloud'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw markdown', 'Read aloud'])
   })
 
   it('in a loaded window Fork takes the seat and Copy follows it', () => {
@@ -144,18 +144,79 @@ describe('AssistantMessage quotes what the reader sees', () => {
 })
 
 describe('AssistantMessage context menu', () => {
-  it('is absent when Quote is not offered', () => {
-    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} />)
+  it('without Quote, is absent while the reply streams or has no footer', () => {
+    const { rerender } = render(<AssistantMessage content={LONG} isStreaming slotRunning />)
+    fireEvent.contextMenu(screen.getByTestId('message-bubble'))
+    expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
+    rerender(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} showFooter={false} />)
     fireEvent.contextMenu(screen.getByTestId('message-bubble'))
     expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
   })
 
-  it('opens on right-click: Quote first, then Copy, Copy link, Pin', () => {
+  it('opens on right-click: Quote first, then both copy formats, Copy link, Pin', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={onQuote} />)
     fireEvent.contextMenu(screen.getByTestId('message-bubble'))
-    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy text', 'Copy link to message', 'Pin message', 'Show raw markdown'])
+    expect(screen.getAllByRole('menuitem').map(i => i.textContent)).toEqual(['Quote message', 'Copy as MarkdownKeeps ** and # symbols, for Markdown editors and chat apps', 'Copy as rich textKeeps formatting in email and documents', 'Copy link to message', 'Pin message', 'Show raw markdown'])
     fireEvent.click(screen.getByTestId('message-context-copy'))
     expect(copyToClipboard).toHaveBeenCalledWith(LONG)
+  })
+})
+
+/**
+ * On a touch device the bubble belongs to the platform's own long-press
+ * selection: Radix's 700 ms long-press menu (which opened over the fresh
+ * selection and collapsed it) is not drawn, and the selection actions dock
+ * above the composer instead of floating over the platform's handles.
+ */
+describe('AssistantMessage on a touch device', () => {
+  beforeEach(() => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query === '(pointer: coarse)' || query === '(hover: none)',
+      media: query, onchange: null,
+      addListener: () => {}, removeListener: () => {},
+      addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    }) as MediaQueryList)
+    if (!Range.prototype.getBoundingClientRect) {
+      Range.prototype.getBoundingClientRect = () => new DOMRect(10, 10, 100, 20)
+    }
+  })
+  afterEach(() => { vi.mocked(window.matchMedia).mockRestore(); window.getSelection()?.removeAllRanges() })
+
+  it('draws no bubble menu and leaves the platform callout enabled', () => {
+    render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} messageTs="t1" slotKey="chat-1" onTogglePin={() => {}} onQuoteMessage={() => {}} />)
+    const bubble = screen.getByTestId('message-bubble')
+    // The callout opt-out is the trigger's own inline style, so a bare bubble
+    // carries no style attribute from it at all.
+    expect(bubble.getAttribute('style') ?? '').not.toMatch(/touch-callout/i)
+    fireEvent.contextMenu(bubble)
+    expect(screen.queryByTestId('message-context-menu')).not.toBeInTheDocument()
+  })
+
+  it('docks Quote / Ask above the composer instead of floating at a touch selection, and leaves Copy to the platform', () => {
+    render(
+      <>
+        <AssistantMessage content={LONG} isStreaming={false} slotRunning={false} onQuote={() => {}} onAsk={() => {}} />
+        <div data-testid="composer-area" className="input-area" />
+      </>
+    )
+    const composer = screen.getByTestId('composer-area')
+    composer.getBoundingClientRect = () => new DOMRect(0, 700, 400, 80)
+    const md = screen.getByTestId('md')
+    const range = document.createRange()
+    range.selectNodeContents(md)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    act(() => { document.dispatchEvent(new Event('selectionchange')) })
+    act(() => { vi.advanceTimersByTime(400) })
+    const dock = screen.getByTestId('selection-dock')
+    expect(screen.getByRole('button', { name: 'Ask about this' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quote' })).toBeInTheDocument()
+    // Copy is the platform callout's job on touch.
+    expect(dock.querySelector('button[aria-label="Copy"]')).toBeNull()
+    // Bottom edge above the composer's top (700), not hung off the selection rect (y 10..30).
+    const box = dock.parentElement as HTMLElement
+    expect(parseFloat(box.style.top)).toBeGreaterThan(30)
+    expect(parseFloat(box.style.top)).toBeLessThan(700)
   })
 })

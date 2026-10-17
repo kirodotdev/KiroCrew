@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import config_dir
 from kiro_crew.validation import sanitize_string
 
@@ -231,7 +231,7 @@ def _read_json(path: Path, default: Any) -> Any:
     to inspect or restore, at the cost of erroring the surface until they do.
     """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_bytes_with_retry(path).decode("utf-8"))
     except FileNotFoundError:
         return default
     except (ValueError, OSError) as exc:

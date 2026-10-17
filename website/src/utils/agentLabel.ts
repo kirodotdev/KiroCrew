@@ -1,4 +1,19 @@
 import { i18nT } from '../i18n/t'
+import type { MemorySource } from '../lib/agentMemorySource'
+
+/**
+ * An agent label marked with the memory it runs on, for a session whose agent
+ * shares its name with the other kind (#19472): `reviewer · own memory` on the
+ * crewmate, `reviewer · shared memory` on the custom agent. `source` comes from
+ * `sessionMemoryTag`, which is null for every name without a same-name pair, so
+ * the label is unchanged then.
+ */
+export function withMemorySource(label: string, source: MemorySource | null): string {
+  if (!source) return label
+  return source === 'own'
+    ? i18nT('components.agentDropdownList.label_own_memory', { label })
+    : i18nT('components.agentDropdownList.label_shared_memory', { label })
+}
 
 /**
  * Display label for an agent field that may be empty (issue #6495).

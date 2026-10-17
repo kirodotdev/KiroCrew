@@ -1,8 +1,8 @@
 """The knowledge store's orphan sweep runs after the bind, not inside ``__init__``.
 
 Boot cost is the reason: the orphan sweep is writer-locked and data-scaled,
-and the constructor runs on the event-loop thread before the socket binds
-(``setup_knowledge_routes`` reads the lazy store at route registration). A
+and the constructor runs on the boot path before the socket binds
+(``start_dashboard`` builds the lazy store just before route registration). A
 sweep inside ``_migrate()`` would, on a large store, stall boot long enough for
 the runtime's timeouts to kill the gateway. These tests pin four
 properties: construction does not sweep, ``reclaim_orphans`` does the
@@ -27,6 +27,7 @@ from kiro_crew.knowledge import ingestion as ingestion_mod
 from kiro_crew.knowledge import store as store_mod
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import await_until
 
 # The store binds ``pysqlite3`` when it is installed, so both the raw reads and
 # the connect patch below go through the SAME module the store uses.
@@ -264,6 +265,9 @@ class TestReclaimOrphansStillSweeps:
             finally:
                 release.set()
                 sweeper.join(5)
+        # ``_close_all_for_tests`` below closes the sweep thread's connection; a
+        # sweep still inside a statement would have it closed under a live query.
+        assert not sweeper.is_alive(), "the sweep outlived its join before the close"
         assert read_result and read_result[0] is not None
         assert not _source_exists(path, "orphan")
         # The sweep ran on its own thread and opened its own connection; ``close()``
@@ -279,6 +283,12 @@ class _QuiescentStore:
     @contextlib.contextmanager
     def maintenance_window(self, timeout=None):
         yield True
+
+    def reclaim_agent_source_residue(self):
+        # The kicker calls this in the same window as reclaim_orphans; the stub
+        # provides it so a test subclass that overrides only reclaim_orphans does
+        # not have the residue call raise and get swallowed as a sweep failure.
+        return 0
 
 
 class TestGatewayKick:
@@ -301,6 +311,28 @@ class TestGatewayKick:
         assert len(seen) == 1
         assert seen[0] != loop_thread, "the sweep ran on the event-loop thread"
         assert state._background_tasks == set()
+
+    def test_kick_also_runs_the_agent_residue_sweep_in_the_window(self):
+        # The residue sweep runs in the SAME drained maintenance window as
+        # reclaim_orphans, so it only ever sees fully-settled ingests.
+        seen: list[str] = []
+
+        class _Store(_QuiescentStore):
+            def reclaim_orphans(self):
+                seen.append("orphans")
+
+            def reclaim_agent_source_residue(self):
+                seen.append("residue")
+                return 0
+
+        state = SimpleNamespace(_knowledge_store=_Store(), _background_tasks=set())
+
+        async def run():
+            srv._kick_knowledge_orphan_reclaim(state)
+            await asyncio.gather(*state._background_tasks)
+
+        asyncio.run(run())
+        assert seen == ["orphans", "residue"]
 
     def test_kick_does_not_build_a_store_nobody_constructed(self):
         built: list[int] = []
@@ -730,7 +762,7 @@ class TestHandoffJoinsTheHoldersAdmission:
                 assert window_waiting.wait(2)
                 await asyncio.sleep(0.1)  # the window is now waiting on this hold
                 task = asyncio.create_task(child(), context=ingestion_mod.handoff_gate_context())
-                await asyncio.wait_for(taken.wait(), timeout=2.0)
+                await await_until(taken, what="taken event")
             await task
             th.join(timeout=10)
             return time.monotonic() - started
@@ -758,5 +790,123 @@ class TestHandoffJoinsTheHoldersAdmission:
 
         try:
             assert asyncio.run(scenario()) is False
+        finally:
+            store._close_all_for_tests()
+
+
+class TestFtsMigrationRunsPostBind:
+    """The one-time FTS re-index runs in the post-bind kick, not in the first search."""
+
+    @staticmethod
+    def _legacy_store(tmp_path):
+        path = str(tmp_path / "kb.db")
+        seed = KnowledgeStore(path)
+        seed.add_item("How the gateway starts", "project notes on boot", "doc")
+        seed.db.execute("PRAGMA user_version = 0")  # an index from before format v1
+        seed.db.commit()
+        seed._close_all_for_tests()
+        return KnowledgeStore(path)
+
+    def test_kick_migrates_and_the_first_search_does_not(self, tmp_path, monkeypatch):
+        from kiro_crew.knowledge.retrieval import HybridRetriever
+
+        store = self._legacy_store(tmp_path)
+        try:
+            assert store.db.execute("PRAGMA user_version").fetchone()[0] == 0
+            state = SimpleNamespace(_knowledge_store=store, _background_tasks=set())
+
+            async def run():
+                srv._kick_knowledge_orphan_reclaim(state)
+                await asyncio.gather(*state._background_tasks)
+
+            asyncio.run(run())
+            version = store.db.execute("PRAGMA user_version").fetchone()[0]
+            assert version == store_mod.FTS_INDEX_VERSION
+            assert store._fts_index_current is True
+
+            def no_second_migration():
+                raise AssertionError("the first search re-ran the FTS migration")
+
+            monkeypatch.setattr(store, "_migrate_fts_index", no_second_migration)
+            hits = HybridRetriever(store)._keyword_search("gateway", limit=5)
+            assert hits, "the migrated index must still match"
+        finally:
+            store._close_all_for_tests()
+
+    def test_a_migration_failure_is_logged_and_left_to_the_next_reader(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        store = self._legacy_store(tmp_path)
+        try:
+
+            def boom():
+                raise RuntimeError("disk gone")
+
+            monkeypatch.setattr(store, "ensure_fts_index_current", boom)
+            state = SimpleNamespace(_knowledge_store=store, _background_tasks=set())
+
+            async def run():
+                srv._kick_knowledge_orphan_reclaim(state)
+                await asyncio.gather(*state._background_tasks)
+
+            asyncio.run(run())
+            assert "FTS index migration failed" in caplog.text
+            assert store._fts_index_current is False
+        finally:
+            store._close_all_for_tests()
+
+    def test_the_one_time_builds_run_with_ingestion_held_off(self, tmp_path, monkeypatch):
+        store = self._legacy_store(tmp_path)
+        try:
+            seen: list[tuple[str, bool]] = []
+            gate = store._ingestion_gate
+            real_idx, real_fts = store.ensure_search_indexes, store.ensure_fts_index_current
+
+            def idx():
+                seen.append(("indexes", gate._maintenance))
+                real_idx()
+
+            def fts():
+                seen.append(("fts", gate._maintenance))
+                real_fts()
+
+            monkeypatch.setattr(store, "ensure_search_indexes", idx)
+            monkeypatch.setattr(store, "ensure_fts_index_current", fts)
+            state = SimpleNamespace(_knowledge_store=store, _background_tasks=set())
+
+            async def run():
+                srv._kick_knowledge_orphan_reclaim(state)
+                await asyncio.gather(*state._background_tasks)
+
+            asyncio.run(run())
+            assert seen == [("indexes", True), ("fts", True)]
+        finally:
+            store._close_all_for_tests()
+
+    def test_builds_run_after_the_window_when_ingestion_never_drains(self, tmp_path, monkeypatch):
+        """A window that did not drain yields while holding the gate's condition
+        lock, and ingestion releases the gate on the event loop. The builds must
+        therefore run after the window is left, never under that lock."""
+        store = self._legacy_store(tmp_path)
+        try:
+            seen: list[tuple[str, bool, bool]] = []
+            gate = store._ingestion_gate
+            real_idx, real_fts = store.ensure_search_indexes, store.ensure_fts_index_current
+
+            def idx():
+                seen.append(("indexes", gate._maintenance, gate._cond._is_owned()))
+                real_idx()
+
+            def fts():
+                seen.append(("fts", gate._maintenance, gate._cond._is_owned()))
+                real_fts()
+
+            monkeypatch.setattr(store, "ensure_search_indexes", idx)
+            monkeypatch.setattr(store, "ensure_fts_index_current", fts)
+            worker = _kick_worker(store, timeout=0.2)
+            with store.ingestion_in_flight():
+                worker()
+            assert seen == [("indexes", False, False), ("fts", False, False)]
+            assert store._fts_index_current is True
         finally:
             store._close_all_for_tests()

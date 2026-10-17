@@ -9,6 +9,7 @@ multipart and auth paths are the ones a client actually hits.
 from __future__ import annotations
 
 import importlib
+import json
 from typing import Any
 
 import pytest
@@ -86,7 +87,7 @@ async def test_export_failure_is_coded_and_stays_opaque(monkeypatch) -> None:
     audit = _AuditLog()
     private_detail = "/Users/alice/.kiro/crew/secrets.json"
 
-    def fail():
+    def fail(**_kwargs):
         raise RuntimeError(private_detail)
 
     monkeypatch.setattr(module, "create_export_zip", fail)
@@ -104,6 +105,79 @@ async def test_export_failure_is_coded_and_stays_opaque(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("", False),
+        ("?include_sessions=true", True),
+        ("?include_sessions=1", True),
+        ("?include_sessions=no", False),
+    ],
+)
+async def test_export_includes_chats_only_when_the_request_asks(
+    monkeypatch, query, expected
+) -> None:
+    module = _handler_module()
+    seen: list[bool] = []
+
+    def export(*, include_sessions: bool = False, memory_only: bool = False):
+        seen.append(include_sessions)
+        return b"PK", {"created_at": "t", "contents": {"session_count": 2}}
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "contents", "header", "audit"),
+    [
+        ("?include_sessions=true", {"session_count": 2, "sessions_skipped_size": 3}, "3", 3),
+        ("?include_sessions=true", {"session_count": 2}, "0", 0),
+        ("?include_sessions=true", {"sessions_skipped_size": "9\r\nX-Injected: 1"}, "0", 0),
+        ("?include_sessions=true", {"sessions_skipped_size": -1}, "0", 0),
+        ("", {}, None, None),
+    ],
+)
+async def test_export_reports_chats_left_out_for_size(
+    monkeypatch, query, contents, header, audit
+) -> None:
+    """The count rides a bare-integer header and the audit line, only for a chat export."""
+    module = _handler_module()
+    log = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: log)
+    monkeypatch.setattr(
+        module,
+        "create_export_zip",
+        lambda **_kwargs: (b"PK", {"created_at": "t", "contents": contents}),
+    )
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert response.headers.get(module.SESSIONS_SKIPPED_SIZE_HEADER) == header
+    assert "X-Injected" not in response.headers
+    (event,) = [e for e in log.events if e.get("outcome") == "ok"]
+    if audit is None:
+        assert "sessions_skipped_size" not in event["resources"]
+    else:
+        assert f",sessions_skipped_size={audit}" in event["resources"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("templates", "header"),
     [
         ((["a", "b\nX-Injected: 1"], 0), '["a", "b\\nX-Injected: 1"]'),
@@ -117,7 +191,7 @@ async def test_export_names_the_unbundled_templates_in_a_header(
     """The body is the archive, so the warning rides a header -- JSON-escaped."""
     module = _handler_module()
     monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
-    monkeypatch.setattr(module, "create_export_zip", lambda: (b"PK", {"created_at": "t"}))
+    monkeypatch.setattr(module, "create_export_zip", lambda **_kwargs: (b"PK", {"created_at": "t"}))
     monkeypatch.setattr(module, "unbundled_agent_templates", lambda: templates)
 
     async with TestClient(TestServer(_make_app(module))) as client:
@@ -258,3 +332,262 @@ async def test_every_refusal_carries_a_code(monkeypatch) -> None:
             assert response.status >= 400, body
             assert isinstance(body.get("code"), str) and body["code"], body
             assert isinstance(body.get("error"), str) and body["error"], body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "memory_only", "sessions"),
+    [
+        ("?components=memory", True, False),
+        ("?components=memory&include_sessions=true", True, False),
+        ("?include_sessions=true", False, True),
+        ("", False, False),
+    ],
+)
+async def test_export_memory_only_when_asked(monkeypatch, query, memory_only, sessions) -> None:
+    module = _handler_module()
+    seen: list[tuple[bool, bool]] = []
+
+    def export(*, include_sessions: bool = False, memory_only: bool = False):
+        seen.append((memory_only, include_sessions))
+        return b"PK", {"created_at": "t", "contents": {}}
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert seen == [(memory_only, sessions)]
+    assert ("memory-export" in response.headers["Content-Disposition"]) is memory_only
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "templates"),
+    [
+        ("", False),
+        ("?include_agent_templates=true", True),
+        ("?include_agent_templates=1", True),
+        ("?include_agent_templates=no", False),
+        ("?components=memory&include_agent_templates=true", False),
+    ],
+)
+async def test_export_carries_agent_templates_only_when_asked(
+    monkeypatch, query, templates
+) -> None:
+    module = _handler_module()
+    seen: list[bool] = []
+
+    def export(
+        *,
+        include_sessions: bool = False,
+        memory_only: bool = False,
+        include_agent_templates: bool = False,
+    ):
+        seen.append(include_agent_templates)
+        manifest: dict = {"created_at": "t", "contents": {}}
+        if include_agent_templates:
+            manifest["agent_templates"] = ["carried"]
+        return b"PK", manifest
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+
+    def unbundled(bundled=()):
+        names = [n for n in ["carried", "left"] if n not in set(bundled)]
+        return names, 0
+
+    monkeypatch.setattr(module, "unbundled_agent_templates", unbundled)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            f"/api/portability/export{query}", headers={"X-Test-User": "owner"}
+        )
+
+    assert response.status == 200
+    assert seen == [templates]
+    if "components=memory" in query:
+        assert module.UNBUNDLED_TEMPLATES_HEADER not in response.headers
+    else:
+        warned = json.loads(response.headers[module.UNBUNDLED_TEMPLATES_HEADER])
+        assert warned == (["left"] if templates else ["carried", "left"])
+
+
+@pytest.mark.asyncio
+async def test_export_counts_templates_past_the_cap_in_the_warning(monkeypatch) -> None:
+    module = _handler_module()
+
+    def export(
+        *,
+        include_sessions: bool = False,
+        memory_only: bool = False,
+        include_agent_templates: bool = False,
+    ):
+        manifest: dict = {
+            "created_at": "t",
+            "contents": {"agent_templates_past_cap": 2},
+            "agent_templates": ["carried"],
+        }
+        return b"PK", manifest
+
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", export)
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda bundled=(): ([], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.get(
+            "/api/portability/export?include_agent_templates=true",
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert json.loads(response.headers[module.UNBUNDLED_TEMPLATES_HEADER]) == ["+2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("picked", ["../escape", "a/b", ".hidden", ",".join(["t"] * 201)])
+async def test_import_refuses_a_bad_agent_template_pick(picked: str) -> None:
+    module = _handler_module()
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import",
+            params={"agent_templates": picked},
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "invalid_agent_templates"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/portability/export", "/api/portability/import"])
+async def test_an_unknown_component_is_coded(path: str) -> None:
+    module = _handler_module()
+    async with TestClient(TestServer(_make_app(module))) as client:
+        method = client.get if path.endswith("export") else client.post
+        kwargs = {} if path.endswith("export") else {"data": _zip_upload()}
+        response = await method(
+            f"{path}?components=config", headers={"X-Test-User": "owner"}, **kwargs
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "invalid_components"
+
+
+@pytest.mark.asyncio
+async def test_memory_only_import_is_merge_only() -> None:
+    module = _handler_module()
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=replace&components=memory",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "memory_only_merge_only"
+
+
+@pytest.mark.asyncio
+async def test_a_memory_bundle_refuses_replace(monkeypatch) -> None:
+    """Replace from a memory bundle would reset everything it does not carry."""
+    module = _handler_module()
+    applied: list[Any] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(
+        module,
+        "validate_import_zip",
+        lambda p: (True, "", {"version": 2, "components": ["memory"]}),
+    )
+    monkeypatch.setattr(module, "apply_import_zip", lambda *a, **k: applied.append(a))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=replace",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["code"] == "memory_only_merge_only"
+    assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_memory_only_import_passes_the_flag(monkeypatch) -> None:
+    module = _handler_module()
+    seen: list[bool] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "validate_import_zip", lambda p: (True, "", {"version": 2}))
+
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+        seen.append(memory_only)
+        return {"items": [], "components": ["memory"]}
+
+    monkeypatch.setattr(module, "apply_import_zip", apply)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=merge&components=memory",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_validated_memory_manifest_scopes_the_import(monkeypatch) -> None:
+    """Without ?components the validated declaration alone turns the filter on."""
+    module = _handler_module()
+    seen: list[bool] = []
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(
+        module,
+        "validate_import_zip",
+        lambda p: (True, "", {"version": 2, "components": ["memory"]}),
+    )
+
+    def apply(zip_path, mode, *, channel_settings=None, memory_only=False):
+        seen.append(memory_only)
+        return {"items": []}
+
+    monkeypatch.setattr(module, "apply_import_zip", apply)
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await client.post(
+            "/api/portability/import?mode=merge",
+            data=_zip_upload(),
+            headers={"X-Test-User": "owner"},
+        )
+
+    assert response.status == 200
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_memory_export_names_no_unbundled_templates(monkeypatch) -> None:
+    module = _handler_module()
+    monkeypatch.setattr(module, "_sel", lambda: _AuditLog())
+    monkeypatch.setattr(module, "create_export_zip", lambda **_k: (b"PK", {"created_at": "t"}))
+    monkeypatch.setattr(module, "unbundled_agent_templates", lambda: (["reviewer"], 0))
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        memory = await client.get(
+            "/api/portability/export?components=memory", headers={"X-Test-User": "owner"}
+        )
+        whole = await client.get("/api/portability/export", headers={"X-Test-User": "owner"})
+
+    assert module.UNBUNDLED_TEMPLATES_HEADER not in memory.headers
+    assert whole.headers.get(module.UNBUNDLED_TEMPLATES_HEADER) == '["reviewer"]'

@@ -1,6 +1,6 @@
 # Investigation: Gateway memory climb (issue #6827)
 
-> Archived analysis; owning spec: [metrics](../../../../system-specs/modules/metrics.md).
+> Archived analysis; owning spec: [vendored packages, local divergences from upstream](../../../../../src/kiro_crew/_vendor/README.md#local-divergences-from-upstream-re-apply-on-every-upgrade).
 ## Summary
 
 Issue #6827 reports the Kiro Crew Python Gateway (`python.exe`) climbing from a

@@ -9,7 +9,9 @@ import { i18nT } from '../i18n/t'
 // dashboard served from a build newer than the gateway it talks to reads the
 // field the gateway does not send yet, and `undefined` in arithmetic renders NaN
 // across the card. Absent reads as zero for one release.
-type Backend = { server: string; agent: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }
+// No `agent` field: the agent is not a pool dimension, so a row describes a
+// process one or several agents share and the gateway stopped sending one.
+type Backend = { server: string; pid: number | null; stubs?: number; idle_s: number; rss_kb: number }
 type Metrics = {
   running: boolean; size?: number; max_backends?: number; backends: Backend[]
   // Present only when prewarming is enabled (gatewayd folds in the warm-pool

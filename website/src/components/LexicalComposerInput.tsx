@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { LexicalComposer } from '@lexical/react/LexicalComposer'
 import { ContentEditable } from '@lexical/react/LexicalContentEditable'
 import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin'
@@ -24,6 +24,7 @@ import {
   COMMAND_PRIORITY_HIGH,
   COPY_COMMAND,
   CUT_COMMAND,
+  DELETE_CHARACTER_COMMAND,
   type EditorState,
   type ElementNode,
   type LexicalEditor,
@@ -38,6 +39,9 @@ import {
   KEY_ENTER_COMMAND,
   KEY_MODIFIER_COMMAND,
   PASTE_COMMAND,
+  REDO_COMMAND,
+  UNDO_COMMAND,
+  COMMAND_PRIORITY_CRITICAL,
 } from 'lexical'
 import { INPUT_TYPO } from './PasteHighlightLayer'
 import { MacLineEdgePlugin } from './composerLineEdge'
@@ -51,7 +55,7 @@ import {
   hasPlainClipboardText,
   stripTrailingBlankLines,
 } from './composerPastePolicy'
-import { listLineBreakEdit } from './composerListContinuation'
+import { listLineBreakEdit, listMarkerBackspaceEdit, type ListLineBreakEdit } from './composerListContinuation'
 import {
   $createPasteTokenNode,
   $isPasteTokenNode,
@@ -66,6 +70,7 @@ import {
   type PasteBlock,
 } from '../utils/pasteTokens'
 import type { SendMode } from '../pages/chat/ChatSettings'
+import InlineMarkdownPlugin, { INLINE_MARKDOWN_THEME } from './InlineMarkdownPlugin'
 
 const CONTROLLED_SYNC_TAG = 'kirocrew-controlled-composer-sync'
 
@@ -78,7 +83,14 @@ interface LexicalComposerInputProps {
    *  paste-token chip. Defaults false; Cmd/Ctrl+Shift+V is the per-paste
    *  equivalent when it is off. */
   showFullPastes?: boolean
-  onSend: () => void
+  /** Fire a send. `alternate` is true for Cmd/Ctrl+Enter in the `enter` send
+   *  mode, which the host reads as "perform the OTHER busy action" (steer vs
+   *  queue) for this one send, exactly as the textarea's key handler does. */
+  onSend: (alternate?: boolean) => void
+  /** Cmd/Ctrl+Shift+Enter. When set, the chord is claimed and this runs
+   *  instead of a send; when unset the chord falls through to the send rules
+   *  (a host with no Optimize affordance). */
+  onOptimizeChord?: () => void
   ariaLabel: string
   placeholder: string
   disabled?: boolean
@@ -87,11 +99,22 @@ interface LexicalComposerInputProps {
   /** Draw the browser's red spellcheck underlines under the input. Default true
    *  (Chromium's own default); the Settings composer toggle drives it off. */
   spellCheck?: boolean
+  /** Style bold, italic, strikethrough and inline code as the user types.
+   *  Display only: the value stays the markdown they typed. Default false. */
+  inlineMarkdown?: boolean
   className?: string
   controlRef?: React.MutableRefObject<ComposerControl | null>
   editorRef?: React.RefCallback<LexicalEditor> | React.RefObject<LexicalEditor | null | undefined>
   onReady?: () => void
   onSelectionChange?: (selection: ComposerSelection) => void
+  /** Take over undo/redo. The composer is controlled, so every value the
+   *  host pushes in clears Lexical's own history; a host that keeps its own
+   *  snapshot history answers here and returns true when it handled the step.
+   *  Without it Lexical's HistoryPlugin handles undo as usual. */
+  onHistoryStep?: (direction: 'undo' | 'redo') => boolean
+  /** Close the host's coalescing typing burst, so a structural edit the
+   *  composer makes (a list-marker Backspace) gets its own undo step. */
+  onEndUndoBurst?: () => void
   onUploadFiles?: (files: File[]) => void
   sentMessages?: PromptHistoryItem[]
   /** Owner of `sentMessages` (the slot); a change ends prompt-history browsing. */
@@ -219,12 +242,48 @@ function $applyListLineBreak(): boolean {
   })
   const edit = listLineBreakEdit($getRoot().getTextContent(), $pointOffset(selection.anchor), chips)
   if (!edit) return false
+  $applyRenumber(edit)
   const range = $createRangeSelection()
   $setPointAtOffset(range.anchor, edit.start)
   $setPointAtOffset(range.focus, edit.end)
   $setSelection(range)
   if (edit.insert) range.insertRawText(edit.insert)
   else range.removeText()
+  return true
+}
+
+// The number rewrites below the edited item, last to first: each sits after
+// the edit, so writing them never moves an offset still to be used.
+function $applyRenumber(edit: ListLineBreakEdit): void {
+  for (const write of [...(edit.renumber ?? [])].reverse()) {
+    const digits = $createRangeSelection()
+    $setPointAtOffset(digits.anchor, write.start)
+    $setPointAtOffset(digits.focus, write.end)
+    $setSelection(digits)
+    digits.insertRawText(write.insert)
+  }
+}
+
+// Remove the list marker in front of a collapsed caret in one Backspace
+// (listMarkerBackspaceEdit); false leaves the one-character delete to
+// PlainTextPlugin. One editor update, one undo step: `endUndoBurst` runs
+// before the edit so the host's typing snapshot is kept, not overwritten.
+function $applyListMarkerBackspace(endUndoBurst?: () => void): boolean {
+  const selection = $getSelection()
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return false
+  const chips = $nodesOfType(PasteTokenNode).map(node => {
+    const start = $nodeStartOffset(node)
+    return { start, end: start + node.getTextContentSize() }
+  })
+  const edit = listMarkerBackspaceEdit($getRoot().getTextContent(), $pointOffset(selection.anchor), chips)
+  if (!edit) return false
+  endUndoBurst?.()
+  $applyRenumber(edit)
+  const range = $createRangeSelection()
+  $setPointAtOffset(range.anchor, edit.start)
+  $setPointAtOffset(range.focus, edit.end)
+  $setSelection(range)
+  range.removeText()
   return true
 }
 
@@ -294,7 +353,10 @@ function ControlledValuePlugin({
 }) {
   const [editor] = useLexicalComposerContext()
 
-  useEffect(() => {
+  // Layout effect: a parent-pushed value reaches the editor in the commit
+  // that renders it, before the host's undo recorder (a layout effect of an
+  // ancestor, so it runs after this one) reads the caret for that value.
+  useLayoutEffect(() => {
     const emitted = lastEmittedRef.current
     if (emitted.value === value && sameBlocks(emitted.blocks, blocks)) return
     let current = { value: '', blocks: [] as PasteBlock[] }
@@ -308,6 +370,23 @@ function ControlledValuePlugin({
     editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined)
   }, [blocks, editor, lastEmittedRef, value])
 
+  return null
+}
+
+/** Routes UNDO/REDO to the host's snapshot history ahead of HistoryPlugin.
+ *  The step is handled either way: when the host has nothing to step to, the
+ *  command is still consumed, because Lexical's own history was cleared by the
+ *  last controlled update and would otherwise undo into a stale state. */
+function HostHistoryPlugin({ onHistoryStep }: { onHistoryStep: (direction: 'undo' | 'redo') => boolean }) {
+  const [editor] = useLexicalComposerContext()
+  const stepRef = useRef(onHistoryStep)
+  stepRef.current = onHistoryStep
+  // Layout effect, like Lexical's own plugins: see InteractionPlugin.
+  useLayoutEffect(() => {
+    const offUndo = editor.registerCommand(UNDO_COMMAND, () => { stepRef.current('undo'); return true }, COMMAND_PRIORITY_CRITICAL)
+    const offRedo = editor.registerCommand(REDO_COMMAND, () => { stepRef.current('redo'); return true }, COMMAND_PRIORITY_CRITICAL)
+    return () => { offUndo(); offRedo() }
+  }, [editor])
   return null
 }
 
@@ -330,6 +409,7 @@ function InteractionPlugin({
   onBlocksChange,
   onChange,
   onSend,
+  onOptimizeChord,
   onUploadFiles,
   sentMessages,
   historyScope,
@@ -338,8 +418,11 @@ function InteractionPlugin({
   readOnly,
   sendOnEnter,
   showFullPastes,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
+  onEndUndoBurst,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onOptimizeChord' | 'onUploadFiles' | 'sentMessages' | 'historyScope' | 'onEditLastRequest' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes' | 'onEndUndoBurst'>) {
   const [editor] = useLexicalComposerContext()
+  const endUndoBurstRef = useRef(onEndUndoBurst)
+  endUndoBurstRef.current = onEndUndoBurst
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
   const historyCursorRef = useRef<PromptHistoryCursor | null>(null)
@@ -355,7 +438,14 @@ function InteractionPlugin({
   if (!imeLatchRef.current) imeLatchRef.current = createImeLatch()
   blocksRef.current = blocks
 
-  useEffect(() => {
+  // A layout effect, not a passive one, for the same reason Lexical registers
+  // its own plain-text handlers in one (usePlainTextSetup): the editor root
+  // takes keydown from the moment ContentEditable's ref sets it, during this
+  // same commit, while a passive effect waits for the scheduler's next task.
+  // On the lazy first mount that task is a separate macrotask, so between the
+  // two an Enter chord reaches only Lexical's default handler and inserts a
+  // line break instead of sending or optimizing (#18193).
+  useLayoutEffect(() => {
     const latch = imeLatchRef.current!
     // Track composition on the editor root itself, with the same stranded-latch
     // recovery the textarea binding carries: a composition abandoned without
@@ -478,6 +568,13 @@ function InteractionPlugin({
         // break from the same keypress.
         if (!latch.claimKey(event)) return true
         const commandKey = event.metaKey || event.ctrlKey
+        // Cmd/Ctrl+Shift+Enter optimizes, before any send or newline rule, as
+        // in the textarea's handler. The host gates the action itself.
+        if (onOptimizeChord && commandKey && event.shiftKey) {
+          event.preventDefault()
+          onOptimizeChord()
+          return true
+        }
         if (sendOnEnter === 'enter-ctrl-newline' && commandKey) {
           event.preventDefault()
           editor.dispatchCommand(INSERT_LINE_BREAK_COMMAND, false)
@@ -490,7 +587,7 @@ function InteractionPlugin({
         event.preventDefault()
         // Auto-repeat of a held key is not a second send (it would confirm an
         // over-limit prompt the user never chose to send).
-        if (!disabled && !readOnly && !event.repeat) onSend()
+        if (!disabled && !readOnly && !event.repeat) onSend(sendOnEnter === 'enter' && commandKey)
         return true
       },
       COMMAND_PRIORITY_HIGH,
@@ -509,6 +606,18 @@ function InteractionPlugin({
     const unregisterParagraph = editor.registerCommand(
       INSERT_PARAGRAPH_COMMAND,
       () => continueList(false),
+      COMMAND_PRIORITY_HIGH,
+    )
+    // Backspace (its keydown and the `deleteContentBackward` beforeinput)
+    // arrives as a backward DELETE_CHARACTER_COMMAND. Android Chrome is the
+    // exception: Lexical leaves a collapsed delete to the browser there,
+    // because Chromium Android ignores preventDefault on that event, so this
+    // handler never runs and the marker deletes one character at a time.
+    // Claiming the beforeinput instead would delete the marker and then one
+    // more character natively.
+    const unregisterMarkerBackspace = editor.registerCommand(
+      DELETE_CHARACTER_COMMAND,
+      isBackward => isBackward && !editor.isComposing() && $applyListMarkerBackspace(() => endUndoBurstRef.current?.()),
       COMMAND_PRIORITY_HIGH,
     )
 
@@ -544,6 +653,9 @@ function InteractionPlugin({
       const cursor = livePromptHistoryCursor(historyCursorRef.current, current)
       historyCursorRef.current = cursor
       if (direction === 'up' && current !== '' && selection.start !== 0) return false
+      // A held ↑ scrolling up through the user's own draft stops at its start;
+      // a fresh press recalls, and a held ↑ keeps walking recalled prompts.
+      if (direction === 'up' && event.repeat && !cursor && current !== '') return false
       if (direction === 'down' && selection.end !== current.length) return false
       const step = stepPromptHistory(sentMessages, cursor, direction === 'up' ? 'older' : 'newer', current)
       if (!step) return false
@@ -574,6 +686,7 @@ function InteractionPlugin({
       unregisterEnter()
       unregisterLineBreak()
       unregisterParagraph()
+      unregisterMarkerBackspace()
       unregisterArrowUp()
       unregisterArrowDown()
       rootListeners()
@@ -581,7 +694,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
+  }, [disabled, editor, onBlocksChange, onChange, onEditLastRequest, onOptimizeChord, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -593,17 +706,21 @@ export default function LexicalComposerInput({
   onBlocksChange,
   showFullPastes = false,
   onSend,
+  onOptimizeChord,
   ariaLabel,
   placeholder,
   disabled = false,
   readOnly = false,
   sendOnEnter = 'enter',
   spellCheck = true,
+  inlineMarkdown = false,
   className = '',
   controlRef,
   editorRef,
   onReady,
   onSelectionChange,
+  onHistoryStep,
+  onEndUndoBurst,
   onUploadFiles,
   sentMessages,
   historyScope,
@@ -614,6 +731,7 @@ export default function LexicalComposerInput({
   const initialConfig = useMemo(() => ({
     namespace: 'KiroCrewComposer',
     nodes: [PasteTokenNode],
+    theme: INLINE_MARKDOWN_THEME,
     editable: !disabled && !readOnly,
     editorState: () => $replaceComposerValue(initialValueRef.current.value, initialValueRef.current.blocks),
     onError(error: Error, _editor: LexicalEditor) {
@@ -649,13 +767,15 @@ export default function LexicalComposerInput({
             /* Not a real `::placeholder`, so it carries the same hook as the
                editor: on a coarse pointer both get the 16px floor together and
                the overlay stays metric-identical to the text it stands in for. */
-            <div data-composer-typo="" className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
+            <div data-composer-typo="" data-composer-placeholder="" className={`pointer-events-none absolute inset-0 overflow-hidden text-muted ${INPUT_TYPO}`}>
               {placeholder}
             </div>
           }
           ErrorBoundary={LexicalErrorBoundary}
         />
         <HistoryPlugin />
+        {onHistoryStep && <HostHistoryPlugin onHistoryStep={onHistoryStep} />}
+        <InlineMarkdownPlugin enabled={inlineMarkdown} />
         <ComposerControlPlugin
           controlRef={controlRef}
           onReady={onReady}
@@ -672,6 +792,7 @@ export default function LexicalComposerInput({
           showFullPastes={showFullPastes}
           onChange={onChange}
           onSend={onSend}
+          onOptimizeChord={onOptimizeChord}
           onUploadFiles={onUploadFiles}
           sentMessages={sentMessages}
           historyScope={historyScope}
@@ -679,6 +800,7 @@ export default function LexicalComposerInput({
           disabled={disabled}
           readOnly={readOnly}
           sendOnEnter={sendOnEnter}
+          onEndUndoBurst={onEndUndoBurst}
         />
       </div>
     </LexicalComposer>

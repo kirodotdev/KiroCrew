@@ -41,10 +41,20 @@ A campaign can instead use **workflow** mode, which runs the Dynamic Workflow te
 
 ```
 ~/.kiro/crew/workspace/research/<campaign_id>/
-├── brief.md               # question + sub-questions (written at launch)
+├── brief.md               # question + sub-questions (written at launch; rewritten when
+│                          #   a question is added or emergent questions activate)
 ├── status.json            # backend writes, agent reads each cycle
 ├── guidance.txt           # user nudge: agent reads + incorporates each cycle
 ├── emergent_questions.json # agent writes findings-driven follow-ups; ingested + consumed
+├── questions.json         # agent's clarification question (or the 24h expiry prompt)
+├── worker_done.json       # agent mode: the worker's own "research is done" signal
+├── workflow_run.json      # workflow mode: run id + cycle offset, so a resume appends
+├── grill_tree.json        # the grill tree saved at campaign creation
+├── subquestion_queue.json # sub-questions pending investigation, and those already done
+├── finalize.flag          # set once when the run nears its cycle budget
+├── findings_for_knowledge.md # scrubbed copy exported to the Knowledge Library
+├── parent_findings.md     # a fork's copy of its parent's FINDINGS.md
+├── STOP                   # stop file for the worker's monitor loop
 ├── findings/
 │   ├── cycle_000.json      # { cycle, summary, key_insight, sources_checked, sources_empty,
 │   ├── cycle_001.json      #   new_findings_count, evidence_strength, verification }
@@ -63,10 +73,12 @@ beginning with `cycle_000.json`.
 | `running` | Loop active, cycling |
 | `paused` | User-paused or loop temporarily stopped |
 | `stagnant` | 5 consecutive cycles with zero new findings |
-| `needs_input` | Agent asked a clarification question (attended mode) |
+| `needs_input` | Agent asked a clarification question (attended mode), or the 24h tool auto-approval expired |
 | `complete` | Success criteria met OR max_cycles reached |
 | `failed` | Unresponsive (no activity past deadline) or execution failure |
-| `stopped` | User-stopped (terminal) |
+| `stopped` | You pressed Stop, or the worker ended the run itself |
+
+`complete` and `stopped` are not final: you can resume either one, or fork it.
 
 In agent mode, pause/resume pauses/resumes the autonudge loop. In workflow mode, pause
 cancels the workflow run and resume starts a new one that appends to the same findings.
@@ -77,7 +89,8 @@ cancels the workflow run and resume starts a new one that appends to the same fi
   nudge with guidance, export, delete.
 - **The watchdog**, on its own: it moves a running campaign to `complete`, `stagnant`,
   `needs_input`, `stopped` (the worker ended the run itself) or `failed`. After 24 hours it
-  withdraws the worker's tool auto-approval and waits in `needs_input` until you resume.
+  withdraws the worker's tool auto-approval and waits in `needs_input`. Either **Resume**
+  or a **Nudge** with guidance restarts it and grants a fresh 24 hours of auto-approval.
   While the app is disabled it pauses every research loop and withdraws that approval.
 - **One status change at a time.** Your status actions and the watchdog's decisions on the
   same campaign wait their turn, and a decision the watchdog reached about a run you have

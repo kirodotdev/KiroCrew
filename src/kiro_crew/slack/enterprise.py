@@ -741,6 +741,21 @@ def validated_self_user_id() -> str:
     return _validated_self_user_id
 
 
+def set_validated_self_identity(bot_id: str = "", user_id: str = "") -> None:
+    """Record the gateway's own Slack identity from an edition gate's auth.test.
+
+    An edition whose :class:`~kiro_crew.platform.interfaces.SlackEnterpriseGate`
+    replaces :func:`validate_enterprise` never runs this module's own caching, so
+    :func:`validated_self_bot_id` stays empty and the trusted-bot admission refuses
+    every listed peer bot. Such a gate calls this with no arguments before it
+    re-validates, so a failed re-validation cannot keep a stale identity, and with
+    the ``auth.test`` ``bot_id``/``user_id`` once the workspace is verified.
+    """
+    global _validated_self_bot_id, _validated_self_user_id
+    _validated_self_bot_id = str(bot_id or "")
+    _validated_self_user_id = str(user_id or "")
+
+
 def trusted_bot_admission(bot_id: str, trusted_ids: Container[str]) -> tuple[bool, str]:
     """Decide whether a bot-authored event is admitted, and why it is not.
 

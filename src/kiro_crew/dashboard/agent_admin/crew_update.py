@@ -16,7 +16,6 @@ if TYPE_CHECKING:
         _avatar_stem,
         _carries_mask,
         _carry_motions_through_motionless_save,
-        _carry_pack_through_faceless_save,
         _commit_promoted_avatar,
         _crew_effort_rejected,
         _crew_memory_store_rejected,
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
         _ForeignPrivateCopy,
         _get_config_lock,
         _is_ghost_shaped,
+        _lineage_unverifiable_error,
         _live_avatar_file,
         _model_pin_rejected,
         _pin_entitlement_backend,
@@ -66,6 +66,38 @@ def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
     if crew is None:
         return None
     return (crew.kiro_agent, coerce_effort(crew.reasoning_effort))
+
+
+async def _apply_member_approval_to_live_thread(request: web.Request, name: str, mode: str) -> None:
+    """Put crewmate ``name``'s live DM slot on ``mode`` through ``/api/chat/mode``'s path."""
+    from kiro_crew import members as members_mod
+    from kiro_crew.dashboard.chat_handlers import apply_approval_mode
+
+    state = request.app.get("state")
+    if state is None:
+        return
+    slot = next(
+        (
+            s
+            for s in list(state._slots.values())
+            if s.mode == members_mod.DM_SLOT_MODE and s.agent == name
+        ),
+        None,
+    )
+    if slot is None:
+        # No live thread: the next thread open seeds from the record.
+        return
+    await apply_approval_mode(
+        state,
+        mode=mode,
+        slot=slot,
+        slot_key=slot.key,
+        request_app="",
+        cron_creator="",
+        audit_caller=lambda label: "dashboard:member_profile",
+    )
+    # The thread now holds the record's choice; the open-time seed must not redo it.
+    slot._member_approval_seeded = True
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
@@ -169,10 +201,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except _UnverifiableLineage:
+        except _UnverifiableLineage as exc:
             return web.json_response(
                 {
-                    "error": f"Cannot verify whether '{new_target}' is a private copy; retry.",
+                    "error": _lineage_unverifiable_error(new_target, exc),
                     "code": "lineage_unverifiable",
                 },
                 status=409,
@@ -199,11 +231,52 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": effort_reason, "code": "invalid_reasoning_effort"}, status=400
             )
+    # The dispatched-worker pair takes the crew pin's own validators: the same
+    # five levels, and the same model guard (which passes "auto" and "").
+    if "worker_reasoning_effort" in body:
+        effort_reason = _crew_effort_rejected(body["worker_reasoning_effort"])
+        if effort_reason:
+            return web.json_response(
+                {
+                    "error": effort_reason.replace("reasoning_effort", "worker_reasoning_effort"),
+                    "code": "invalid_worker_reasoning_effort",
+                },
+                status=400,
+            )
+    if "worker_model" in body:
+        if not isinstance(body["worker_model"], str):
+            return web.json_response(
+                {"error": "worker_model must be a string", "code": "invalid_worker_model"},
+                status=400,
+            )
+        # Stripped, NOT normalized: "auto" stays a pin here (workers on the
+        # backend default) where the crew's own `model` would fold it to "".
+        pending_worker_model = body["worker_model"].strip()
     # Same placement rule as reasoning_effort: validated up here, before the
     # lock and before any field or avatar-file mutation. A body that pairs a
     # bad `starred` with an avatar promotion would otherwise move the staged
     # picture and then 400 without rolling it back. Strictly a bool: a string
     # "false" from a hand-typed request must not read as truthy and star the crew.
+    # Local: ``compose`` rebinds this module's functions onto the agents
+    # handler namespace, so a module-level import here is not in scope.
+    from kiro_crew.config.sections import MEMBER_APPROVAL_MODES
+
+    if "approval_mode" in body and body["approval_mode"] not in MEMBER_APPROVAL_MODES:
+        return web.json_response(
+            {
+                "error": "approval_mode must be one of " + ", ".join(MEMBER_APPROVAL_MODES),
+                "code": "invalid_approval_mode",
+            },
+            status=400,
+        )
+    if "expected_approval_mode" in body and not isinstance(body["expected_approval_mode"], str):
+        return web.json_response(
+            {
+                "error": "expected_approval_mode must be a string",
+                "code": "invalid_expected_approval_mode",
+            },
+            status=400,
+        )
     if "starred" in body and not isinstance(body["starred"], bool):
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
@@ -226,6 +299,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         pending_reason = await _revalidate_crew_pin(pending_model, request)
         if pending_reason:
             return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
+    if "worker_model" in body:
+        pending_reason = await _revalidate_crew_pin(pending_worker_model, request, for_workers=True)
+        if pending_reason:
+            return web.json_response(
+                {"error": pending_reason, "code": "invalid_worker_model"}, status=400
+            )
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
@@ -243,7 +322,41 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 return web.json_response(
                     {"error": model_reason, "code": "invalid_model"}, status=400
                 )
+        if "worker_model" in body:
+            # Judged against the WORKER's harness, not the crewmate's: a session
+            # the crewmate dispatches is never a member DM, so it runs on
+            # `agent.acp_backend`, and `create_session` trusts this pin for
+            # exactly that harness (`_inherited_pin_foreign_to_child`).
+            model_reason = _model_pin_rejected(
+                pending_worker_model,
+                request,
+                cfg.agent.provider,
+                backend=cfg.agent.acp_backend,
+            )
+            if model_reason:
+                return web.json_response(
+                    {"error": model_reason, "code": "invalid_worker_model"}, status=400
+                )
         agent = cfg.agents[name]
+        # A change card's Undo arms the crewmate its apply wrote to. A
+        # same-name recreate in another process is caught by
+        # ``persist_member_config``'s locked memory-store check below (a new
+        # crewmate gets a new store). An ordinary update carries no key.
+        from kiro_crew.dashboard.handlers.undo_identity_guard import (
+            REQ_CARD_UNDO_CREWMATE_EXPECT,
+            UNDO_IDENTITY_CHANGED_CODE,
+            UNDO_IDENTITY_CHANGED_MESSAGE,
+            identity_mismatch,
+        )
+
+        undo_expect = request.get(REQ_CARD_UNDO_CREWMATE_EXPECT)
+        if isinstance(undo_expect, str) and identity_mismatch(
+            undo_expect or None, getattr(agent, "member_id", None) or None
+        ):
+            return web.json_response(
+                {"error": UNDO_IDENTITY_CHANGED_MESSAGE, "code": UNDO_IDENTITY_CHANGED_CODE},
+                status=409,
+            )
         if "kiro_agent" in body and body["kiro_agent"] != agent.kiro_agent:
             new_target = body["kiro_agent"]
             if not isinstance(new_target, str) or not TEMPLATE_NAME_RE.fullmatch(new_target):
@@ -290,11 +403,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 owner = await asyncio.to_thread(
                     _foreign_private_copy_owner, name, body["kiro_agent"]
                 )
-            except _UnverifiableLineage:
+            except _UnverifiableLineage as exc:
                 return web.json_response(
                     {
-                        "error": f"Cannot verify whether '{body['kiro_agent']}' is a "
-                        "private copy; retry.",
+                        "error": _lineage_unverifiable_error(body["kiro_agent"], exc),
                         "code": "lineage_unverifiable",
                     },
                     status=409,
@@ -323,6 +435,33 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above; "" is the inherit sentinel and clears a pin.
             agent.reasoning_effort = body["reasoning_effort"].strip()
             changed.append("reasoning_effort")
+        if "worker_model" in body:
+            # Validated above. "" = workers run the crewmate's own model;
+            # "auto" is kept verbatim as a real pin (see the field's doc).
+            agent.worker_model = pending_worker_model
+            changed.append("worker_model")
+        if "worker_reasoning_effort" in body:
+            agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
+            changed.append("worker_reasoning_effort")
+        if "approval_mode" in body:
+            # Compare-and-set: the profile sends the value it last read, and a
+            # write made from a stale read is refused with the current value,
+            # so the server, not the browser, decides which pick wins. Checked
+            # under the config lock against the record loaded inside it.
+            expected_mode = body.get("expected_approval_mode")
+            if expected_mode is not None and expected_mode != agent.approval_mode:
+                return web.json_response(
+                    {
+                        "error": "the permission changed since it was read",
+                        "code": "approval_mode_conflict",
+                        "approval_mode": agent.approval_mode,
+                    },
+                    status=409,
+                )
+            # Validated above. Only ever a real choice: the profile never sends
+            # "" back, so a pinned mode cannot fall back to the trust default.
+            agent.approval_mode = body["approval_mode"]
+            changed.append("approval_mode")
         if "description" in body:
             agent.description = body["description"]
             changed.append("description")
@@ -373,7 +512,6 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     },
                     status=400,
                 )
-            _av = _carry_pack_through_faceless_save(agent.avatar, _raw_av, _av)
             _av = _carry_motions_through_motionless_save(agent.avatar, _raw_av, _av)
             if _av.get("kind") == "image":
                 # THE commit point for pictures, under this same config lock.
@@ -467,11 +605,31 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         # arrive after the drained worker published the new avatar pin. Store
         # cleanup independently checks the current locked config, so a landed
         # memory binding survives even when the request was cancelled.
+        from kiro_crew.memory_stores import MemberApprovalConflict
+
+        expected_on_disk = body.get("expected_approval_mode") if "approval_mode" in body else None
         try:
             await _drained_to_thread(
                 lambda: persist_member_config(
-                    cfg, name, expected_store=prior_memory_store, changed_fields=set(changed)
+                    cfg,
+                    name,
+                    expected_store=prior_memory_store,
+                    changed_fields=set(changed),
+                    expected_approval_mode=expected_on_disk,
                 )
+            )
+        except MemberApprovalConflict as conflict:
+            # Lost to a write from another process: nothing was saved and the
+            # live thread is not touched.
+            if _avatar_promoted:
+                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
+            return web.json_response(
+                {
+                    "error": "the permission changed since it was read",
+                    "code": "approval_mode_conflict",
+                    "approval_mode": conflict.current,
+                },
+                status=409,
             )
         except BaseException as exc:
             if isinstance(exc, Exception) and _avatar_promoted:
@@ -481,6 +639,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
         if _remove_files_after_save:
             await _drained_to_thread(_remove_avatar_files, name)
+        if "approval_mode" in changed:
+            # The server owns both writes: the crewmate's live DM thread takes
+            # the saved permission here, under the same config lock as the
+            # compare-and-set above, so no browser write can land out of order.
+            await _apply_member_approval_to_live_thread(request, name, agent.approval_mode)
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:

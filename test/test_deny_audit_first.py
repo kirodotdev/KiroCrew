@@ -349,7 +349,11 @@ class TestEveryDenySiteAuditsBeforeTheWire:
     AUDIT = "log_tool_invocation("
 
     def _lines(self) -> list[str]:
-        return self.RUNNER.read_text(encoding="utf-8").splitlines()
+        return "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(self.RUNNER.with_name("chat_turn").glob("*.py")), self.RUNNER]
+            if turn_file.name != "__init__.py"
+        ).splitlines()
 
     def _reject_sites(self, lines: list[str]) -> list[int]:
         sites, owner = [], ""

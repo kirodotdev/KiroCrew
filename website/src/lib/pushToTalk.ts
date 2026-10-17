@@ -37,6 +37,14 @@ export interface PttBinding {
 }
 
 export interface PttConfig {
+  /**
+   * Whether a key starts dictation at all. `true` is the historical behaviour —
+   * the key trigger has always been on — so a stored config that predates this
+   * field, or one with the field missing, reads as enabled (see
+   * `normalizeConfig`). Turning it off leaves the mic button as the only way in,
+   * for users who keep triggering recording by accident on the bound modifier.
+   */
+  enabled: boolean
   mode: PttMode
   binding: PttBinding
   /** Hold duration that separates a tap from a hold, in ms. Hybrid mode only. */
@@ -92,7 +100,7 @@ export function defaultBinding(mac: boolean = IS_MAC): PttBinding {
 }
 
 export function defaultConfig(mac: boolean = IS_MAC): PttConfig {
-  return { mode: 'hybrid', binding: defaultBinding(mac), holdMs: HOLD_MS_DEFAULT }
+  return { enabled: true, mode: 'hybrid', binding: defaultBinding(mac), holdMs: HOLD_MS_DEFAULT }
 }
 
 /**
@@ -311,7 +319,11 @@ export function normalizeConfig(raw: unknown, mac: boolean = IS_MAC): PttConfig 
   if (!raw || typeof raw !== 'object') return base
   const o = raw as Record<string, unknown>
   const mode = MODES.includes(o.mode as PttMode) ? (o.mode as PttMode) : base.mode
-  return { mode, binding: normalizeBinding(o.binding, mac), holdMs: clampHoldMs(o.holdMs) }
+  // Only an explicit `false` turns the key off. A missing field (a config
+  // written before this one existed) or any non-boolean reads as ENABLED, so the
+  // historical default — the key has always been on — survives the upgrade.
+  const enabled = o.enabled !== false
+  return { enabled, mode, binding: normalizeBinding(o.binding, mac), holdMs: clampHoldMs(o.holdMs) }
 }
 
 /**

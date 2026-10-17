@@ -314,8 +314,9 @@ class TestThreadParentTextInjection:
 
     def test_no_parent_falls_back_to_mcp_hint(self, tmp_path):
         """When fetch_message returns None (API failure or empty channel),
-        the context block falls back to suggesting batch_get_thread_replies
-        so the LLM can still retrieve thread history manually."""
+        the context block falls back to suggesting the Slack MCP server's
+        thread-reading tool so the LLM can still retrieve thread history
+        manually."""
         builder = _make_builder(tmp_path)
         msg, _ = builder.build_message(
             "tell me more",
@@ -324,7 +325,7 @@ class TestThreadParentTextInjection:
             thread_ts="1234.5678",
             thread_parent_text=None,
         )
-        assert "batch_get_thread_replies" in msg
+        assert "thread-reading tool (e.g. get_thread)" in msg
 
     def test_parent_text_injected_alongside_channel_history(self, tmp_path):
         """Thread parent text is injected even when channel_history exists
@@ -366,7 +367,7 @@ class TestThreadParentTextInjection:
         assert "SLACK THREAD CONTEXT" in msg
         assert "channel_id: C123" in msg
         assert "thread_ts: 1234.5678" in msg
-        assert "batch_get_thread_replies" in msg
+        assert "thread-reading tool (e.g. get_thread)" in msg
         assert "some context" in msg
 
 
@@ -733,7 +734,7 @@ class TestThreadContextInjectionScreening:
         # Bare thread metadata still injects so the LLM knows it's in a thread.
         assert "SLACK THREAD CONTEXT" in msg
         assert "channel_id: C123" in msg
-        assert "batch_get_thread_replies" in msg
+        assert "thread-reading tool (e.g. get_thread)" in msg
 
     def test_injection_variants_in_parent_dropped(self, tmp_path):
         builder = _make_builder(tmp_path)

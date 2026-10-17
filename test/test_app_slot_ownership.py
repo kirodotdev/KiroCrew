@@ -578,7 +578,11 @@ def test_the_cold_start_chokepoint_consumes_the_persisted_flag():
     persisted half cannot be honoured on one path and ignored on the other.
     """
     src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "session.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "session_parts"
+        / "turn_context.py"
     ).read_text(encoding="utf-8")
     consume = src.split("def consume_replay_suppression", 1)[1].split("\n    def ", 1)[0]
 
@@ -650,7 +654,11 @@ def test_both_suppression_markers_are_consumed_together():
     a fix for stale history turned into amnesia about live history.
     """
     src = (
-        pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "session.py"
+        pathlib.Path(__file__).resolve().parents[1]
+        / "src"
+        / "kiro_crew"
+        / "session_parts"
+        / "turn_context.py"
     ).read_text(encoding="utf-8")
     consume = src.split("def consume_replay_suppression", 1)[1].split("\n    def ", 1)[0]
 
@@ -838,7 +846,7 @@ async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_p
     ``discard_conversation`` clears the sid and sets the in-memory suppression INSIDE
     its registry lock, and only then awaits ``provider.shutdown()`` — whose own
     ``finally`` deliberately lets an exception propagate rather than carry it past the
-    child cancel (``session_lifecycle.py``). So by the time this can raise, the pointer
+    child cancel (``session_lifecycle_parts/teardown.py``). So by the time this can raise, the pointer
     is already gone and the ONLY thing standing between the user and the bug this step
     exists to prevent is the suppression flag.
 

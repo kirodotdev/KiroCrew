@@ -24,6 +24,7 @@ import pytest
 from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead
+from kiro_crew.testing.wait import await_until
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -103,7 +104,7 @@ async def test_exit_watcher_fires_on_real_root_death_with_descendant_holding_std
         # Every post-spawn step is inside this try: a timeout on the stderr
         # read, the int-unpack, or the runtime construction would otherwise
         # leak the root and its 60s-sleeping child. The finally reaps the group.
-        line = await asyncio.wait_for(proc.stderr.readline(), timeout=5.0)
+        line = await await_until(asyncio.ensure_future(proc.stderr.readline()))
         root_pid, _child_pid = (int(x) for x in line.split())
 
         rt = AcpRuntime(work_dir="/tmp")
@@ -128,7 +129,9 @@ async def test_exit_watcher_fires_on_real_root_death_with_descendant_holding_std
         # The watcher must observe the root's exit and fail the pending request
         # well before the surviving child exits (60s). A generous ceiling that
         # still proves fail-fast relative to the ~1h idle-expiry backstop.
-        await asyncio.wait_for(watch_task, timeout=10.0)
+        await await_until(  # flake-ok: fail-fast bound – proves watcher fires before child's 60 s hold
+            watch_task, timeout=10.0, what="the exit watcher"
+        )
 
         assert rt._dead
         assert pending.done()
@@ -147,8 +150,8 @@ async def test_exit_watcher_fires_on_real_root_death_with_descendant_holding_std
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except (asyncio.TimeoutError, ProcessLookupError):
+            await await_until(asyncio.ensure_future(proc.wait()))
+        except (AssertionError, ProcessLookupError):
             pass
 
 
@@ -180,7 +183,7 @@ async def test_exit_watcher_drains_a_real_final_frame_before_marking_dead():
     reader_task = None
     watch_task = None
     try:
-        line = await asyncio.wait_for(proc.stderr.readline(), timeout=5.0)
+        line = await await_until(asyncio.ensure_future(proc.stderr.readline()))
         root_pid, _child_pid = (int(x) for x in line.split())
 
         rt = AcpRuntime(work_dir="/tmp")
@@ -195,7 +198,9 @@ async def test_exit_watcher_drains_a_real_final_frame_before_marking_dead():
 
         # The watcher observes the root's self-exit; the drain window lets the
         # reader pull the final frame the root flushed before dying.
-        await asyncio.wait_for(watch_task, timeout=10.0)
+        await await_until(  # flake-ok: fail-fast bound – proves watcher fires before child's 60 s hold
+            watch_task, timeout=10.0, what="the exit watcher"
+        )
 
         assert rt._dead
         assert pending.done()
@@ -215,8 +220,8 @@ async def test_exit_watcher_drains_a_real_final_frame_before_marking_dead():
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except (asyncio.TimeoutError, ProcessLookupError):
+            await await_until(asyncio.ensure_future(proc.wait()))
+        except (AssertionError, ProcessLookupError):
             pass
 
 
@@ -269,7 +274,7 @@ async def test_exit_watcher_marks_dead_when_root_exits_with_stdout_open():
 
     # The watcher must observe the exit and fail the pending request promptly,
     # WITHOUT waiting for the stream to reach EOF.
-    await asyncio.wait_for(watch_task, timeout=2.0)
+    await await_until(watch_task)
 
     assert rt._dead
     assert pending.done()
@@ -305,7 +310,7 @@ async def test_exit_watcher_is_a_noop_when_reader_already_marked_dead():
     # The process then reaps: returncode is set. The watcher's poll wakes, keeps
     # the already-announced reason, and only fills in the real returncode.
     proc.returncode = 1
-    await asyncio.wait_for(watch_task, timeout=2.0)
+    await await_until(watch_task)
 
     summary = rt.death_summary() or ""
     assert summary.startswith("process exited (rc=0)")  # reason not relabelled
@@ -336,7 +341,7 @@ async def test_exit_watcher_retires_tracking_even_when_already_marked_dead():
 
     # The root exits for real (returncode set). The retirement is still owed.
     proc.returncode = 0
-    await asyncio.wait_for(watch_task, timeout=2.0)
+    await await_until(watch_task)
 
     rt._retire_tracking_after_exit.assert_awaited_once()
 
@@ -374,7 +379,7 @@ async def test_exit_watcher_drains_a_final_readable_frame_before_marking_dead():
     rt._process.stdout.feed_data(b'{"id": 1, "result": {"ok": true}}\n')
     proc.returncode = 0
 
-    await asyncio.wait_for(watch_task, timeout=2.0)
+    await await_until(watch_task)
 
     # The final frame was routed before the mark: the request carries its result,
     # not the dead-runtime error.

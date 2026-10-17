@@ -19,10 +19,19 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     build_provider_factory,
     config_path,
+    crew_autocompact_pct,
+    resolve_agent_bindings,
+    resolve_crew_identity,
     update_config_locked,
 )
 from kiro_crew.config.paths import data_home
-from kiro_crew.constants import BANNER
+from kiro_crew.constants import (
+    BANNER,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+    DENY_CAUSE_AUDIT_UNAVAILABLE,
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_POLICY,
+)
 from kiro_crew.hooks import (
     TOOL_DENY,
     HookManager,
@@ -30,6 +39,9 @@ from kiro_crew.hooks import (
     mcp_identity_ref,
     target_paths,
 )
+from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
+from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -274,6 +286,24 @@ def _build_tool_gate(agent: str = "") -> _ToolGate:
     )
 
 
+def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None, str]:
+    """Map ``--agent``'s name to ``(kiro_agent, crew_agent, member_model)``.
+
+    ``--agent`` takes a crew member or a kiro agent. A ``config.agents`` key is a
+    member, checked first as the dashboard and the cron path do: it starts its
+    bound kiro agent under its own crew identity, with its model pin. A member
+    bound to no kiro agent runs the built-in one. Any other name is a kiro agent
+    and passes through with no crew identity and no model pin.
+
+    Blocking: resolving a member's bound agent may scan the agents directory, so
+    an ``async`` caller runs this on a worker thread.
+    """
+    if name not in cfg.agents:
+        return name, None, ""
+    bindings = resolve_agent_bindings(cfg, name, validate_memory_files=False)
+    return bindings.kiro_agent or _DEFAULT_KIRO_AGENT, name, bindings.model
+
+
 async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
     """Run a single message or interactive chat session."""
     cfg = KiroCrewConfig.load()
@@ -284,8 +314,24 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # resolves an omitted agent to ``kirocrew``; passing an empty string only to
     # the gate would therefore run that agent while bypassing its task profile.
     agent_name = agent or cfg.agent.default_agent or _DEFAULT_KIRO_AGENT
+    # Only ``--agent`` names a member: ``agent.default_agent`` is a template name.
+    kiro_agent, crew_agent, member_model = agent_name, None, ""
+    if agent:
+        try:
+            kiro_agent, crew_agent, member_model = await asyncio.to_thread(
+                _resolve_cli_agent, cfg, agent
+            )
+        except UnknownMemoryStore as exc:
+            print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+            sys.exit(1)
     provider: LLMProvider = build_provider_factory(cfg)(
-        _CLI_SESSION_KEY, agent=agent_name, channel_id=channel_id
+        _CLI_SESSION_KEY,
+        agent=kiro_agent,
+        crew_agent=crew_agent,
+        channel_id=channel_id,
+        # A member's session takes ``--model`` first, then the member's pin, as a
+        # dashboard session does; a plain kiro agent keeps the global model path.
+        model_override=(model or member_model or None) if crew_agent else None,
     )
     # The person at the terminal waits on every start (kiro_crew.start_priority).
     provider.start_priority = StartPriority.FOREGROUND
@@ -337,7 +383,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             # than blocking a caller that may be a script.
             await _send_and_print(provider, message, interactive=False, gate=gate)
         else:
-            await _interactive(provider, cfg, gate=gate)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name)
     finally:
         try:
             await provider.shutdown()
@@ -711,12 +757,49 @@ async def _audit_refusal(gate: _ToolGate, event: LLMEvent, *, error: str) -> Non
         logger.warning("SEL audit failed for a refusal; refusing anyway", exc_info=True)
 
 
+async def _refuse_host_deny(
+    provider: LLMProvider,
+    gate: _ToolGate,
+    event: LLMEvent,
+    *,
+    error: str,
+    cause: str,
+    reason: str,
+) -> None:
+    """Refuse a request the HOST declined, and tell the model so first.
+
+    kiro-cli hands the model "User denied tool execution" for every rejection,
+    which is false on every path through here: the person at the terminal was
+    never asked, or said yes. Without a correction the reply they read next
+    apologises for a refusal they never made, contradicting the notice printed
+    above it. The in-band notice is steered while the request is still
+    unanswered, which is what gets it queued into the running turn (see
+    ``kiro_crew.deny_notice``).
+
+    Audit first, then the notice, then the wire. *cause* and *reason* are what
+    the MODEL reads; the audit carries only the stable *error* code, and the
+    terminal notice each caller prints afterwards is the person's. Best-effort:
+    a backend without a steer channel, or a steer that fails, leaves the reject
+    exactly as it was. A cancellation inside the steer still answers the wire
+    without waiting on it (``_steer_host_deny`` schedules the reject and
+    re-raises), so the session-abort contract is unchanged.
+
+    The person's own refusal must NOT come through here: there kiro-cli's
+    wording is the truth.
+    """
+    await _audit_refusal(gate, event, error=error)
+    await _steer_host_deny(provider, event, reason, cause=cause)
+    await provider.reject_tool(event.request_id)
+
+
 async def _reject_internal_failure(
     provider: LLMProvider,
     gate: _ToolGate,
     event: LLMEvent,
     *,
     error: str,
+    cause: str,
+    reason: str,
     notice: str,
 ) -> None:
     """Answer a request whose gate or consent UI failed before a decision.
@@ -725,8 +808,7 @@ async def _reject_internal_failure(
     transport response comes before the notice so a broken output stream cannot
     leave the backend waiting on a question nobody can answer.
     """
-    await _audit_refusal(gate, event, error=error)
-    await provider.reject_tool(event.request_id)
+    await _refuse_host_deny(provider, gate, event, error=error, cause=cause, reason=reason)
     _print_permission_notice(notice)
 
 
@@ -839,8 +921,17 @@ async def _answer_permission(
     # ``AcpEvent.child_unconditional_grant_eligible`` hoists for the grant
     # paths, so consume the property rather than re-spelling it.
     if not event.child_unconditional_grant_eligible:
-        await _audit_refusal(gate, event, error=_CHILD_UNVERIFIED_CODE)
-        await provider.reject_tool(event.request_id)
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_CHILD_UNVERIFIED_CODE,
+            cause=DENY_CAUSE_POLICY,
+            reason=(
+                "it came from a subagent without verifiable security context, "
+                "so it cannot be shown for approval"
+            ),
+        )
         try:
             safe_title = _for_consent(title, stream=sys.stderr)
             _print_permission_notice(
@@ -880,6 +971,8 @@ async def _answer_permission(
             gate,
             event,
             error=_GATE_FAILURE_CODE,
+            cause=DENY_CAUSE_HOOK_ERROR,
+            reason="the CLI's security gate raised while deciding this call",
             notice=(
                 "\nDenied automatically: the security gate could not verify this tool call.\n"
                 "   Fix the gate error, then retry the tool call."
@@ -890,8 +983,14 @@ async def _answer_permission(
         # Not a question for the user: a policy denial is not theirs to
         # override from here. The audit carries a stable code; the reason is
         # for the person at the terminal, and is sanitised on the way there.
-        await _audit_refusal(gate, event, error=_HOOK_DENY_CODE)
-        await provider.reject_tool(event.request_id)
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_HOOK_DENY_CODE,
+            cause=DENY_CAUSE_POLICY,
+            reason=decision.reason or "blocked by security policy",
+        )
         try:
             reason = (
                 _for_consent(decision.reason, stream=sys.stderr) or "blocked by security policy"
@@ -906,8 +1005,17 @@ async def _answer_permission(
         # Refusing to ASK, not a gate rejection: with no trusted shell signal
         # the only thing left to show the human is the LLM-authored title, and
         # consent to a description is not consent to what runs.
-        await _audit_refusal(gate, event, error=_UNVERIFIED_SHELL_CODE)
-        await provider.reject_tool(event.request_id)
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_UNVERIFIED_SHELL_CODE,
+            cause=DENY_CAUSE_POLICY,
+            reason=(
+                "what it runs could not be verified, so it cannot be shown for "
+                "approval by its description alone"
+            ),
+        )
         try:
             safe_title = _for_consent(title, stream=sys.stderr)
             # Name what actually failed. A request whose kind reads as a command
@@ -934,6 +1042,8 @@ async def _answer_permission(
             gate,
             event,
             error=_PROMPT_FAILURE_CODE,
+            cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+            reason="the terminal permission prompt could not be opened",
             notice=(
                 "\nDenied automatically: the permission prompt could not be opened.\n"
                 "   Retry from a usable terminal."
@@ -942,8 +1052,14 @@ async def _answer_permission(
         return
 
     if not can_prompt:
-        await _audit_refusal(gate, event, error=_NONINTERACTIVE_CODE)
-        await provider.reject_tool(event.request_id)
+        await _refuse_host_deny(
+            provider,
+            gate,
+            event,
+            error=_NONINTERACTIVE_CODE,
+            cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+            reason="this CLI invocation has no terminal to ask the person for approval",
+        )
         try:
             safe_title = _for_consent(title, stream=sys.stderr)
             _print_permission_notice(
@@ -995,6 +1111,8 @@ async def _answer_permission(
             gate,
             event,
             error=_PROMPT_FAILURE_CODE,
+            cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+            reason="the terminal permission prompt could not be rendered or read",
             notice=(
                 "\nDenied automatically: the permission prompt could not be rendered or read.\n"
                 "   Retry the tool call from a usable terminal."
@@ -1025,8 +1143,17 @@ async def _answer_permission(
             await _audit_off_loop(gate, event, OUTCOME_PENDING_APPROVAL, critical=True)
         except Exception:
             logger.warning("SEL audit unwritable; refusing the approved call", exc_info=True)
-            await _audit_refusal(gate, event, error=_UNAUDITABLE_CODE)
-            await provider.reject_tool(event.request_id)
+            await _refuse_host_deny(
+                provider,
+                gate,
+                event,
+                error=_UNAUDITABLE_CODE,
+                cause=DENY_CAUSE_AUDIT_UNAVAILABLE,
+                reason=(
+                    "the person approved it, but the security event log could not "
+                    "record the approval"
+                ),
+            )
             try:
                 safe_title = _for_consent(title, stream=sys.stderr)
                 _print_permission_notice(
@@ -1046,6 +1173,9 @@ async def _answer_permission(
         # the deny paths audit-or-deny would trade availability for no security
         # gain -- it would turn a refusal into an error. Fail-closed only has
         # meaning where the alternative is execution.
+        #
+        # The one bare reject in this module: the person said no, so kiro-cli's
+        # "User denied tool execution" is true and no host notice is owed.
         await _audit_refusal(gate, event, error=_USER_DENY_CODE)
         await provider.reject_tool(event.request_id)
 
@@ -1078,6 +1208,11 @@ async def _send_and_print(
                 # never ends.
                 await _answer_permission(provider, event, interactive=interactive, gate=gate)
             elif event.kind == EVENT_COMPLETE:
+                # The text was printed as it streamed, so the error carries
+                # none: the timeout branch below must not print it twice.
+                unfinished = unfinished_turn_error(event, "")
+                if unfinished is not None:
+                    raise unfinished
                 break
         print()  # final newline
     except AcpTimeoutError as e:
@@ -1090,10 +1225,29 @@ async def _send_and_print(
         sys.exit(1)
 
 
+def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> float:
+    """The context percentage the REPL compacts at for a run of *agent*.
+
+    The crew the run resolves to (the provider factory's rule) may declare its
+    own number; otherwise the global ``session.autocompact_pct`` applies.
+    """
+    declared = crew_autocompact_pct(cfg, resolve_crew_identity(cfg, agent, None))
+    return cfg.session.autocompact_pct if declared is None else declared
+
+
 async def _interactive(
-    provider: LLMProvider, cfg: KiroCrewConfig, *, gate: _ToolGate | None = None
+    provider: LLMProvider,
+    cfg: KiroCrewConfig,
+    *,
+    gate: _ToolGate | None = None,
+    agent: str = "",
 ) -> None:
-    """REPL loop — read user input, stream responses, auto-compact at configured threshold."""
+    """REPL loop — read user input, stream responses, auto-compact at configured threshold.
+
+    The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
+    resolved from *agent* by the same rule the provider factory keys the run on,
+    else the global ``session.autocompact_pct``.
+    """
     print(BANNER)
     print()
 
@@ -1120,19 +1274,23 @@ async def _interactive(
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
-        needs_compact = pct >= cfg.session.autocompact_pct
+        compact_at = _repl_compact_at(cfg, agent)
+        needs_compact = pct >= compact_at
         # Warn one margin BELOW the compaction point. An absolute warn level
         # would be dead code here: the compact arm is tested first and claims
         # the whole range above the configured threshold.
-        warn_at = cfg.session.autocompact_pct - CONTEXT_WARN_MARGIN_PCT
+        warn_at = compact_at - CONTEXT_WARN_MARGIN_PCT
 
         if needs_compact:
             reason = f"context at {pct:.0f}%"
             print(f"\n🔄 Compacting — {reason}", file=sys.stderr)
-            try:
-                await provider.compact()
-            except Exception:
-                pass
+            # The restart below is what frees the context; a backend that cannot
+            # serve /compact would only read the command as text first.
+            if not compact_unsupported_backend(provider):
+                try:
+                    await provider.compact()
+                except Exception:
+                    pass
             await provider.shutdown()
             await provider.start()
         elif warn_at > 0 and pct >= warn_at:

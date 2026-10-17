@@ -127,16 +127,22 @@ class TestPrivacyFlagsAndPrune:
 
     @staticmethod
     def _log(*, seed: bool, mode: str | None = None, key: str | None = None):
-        """The thread's default-directory transcript: seeded with a turn, optionally stamped."""
-        from kiro_crew import history as history_mod
+        """The thread's default-directory transcript: seeded with a turn, optionally stamped.
+
+        Call it off the event loop -- ``await asyncio.to_thread(self._log, ...)``
+        from an ``async def`` test -- the way every production header writer
+        reaches ``update_metadata_if``. The stamp swaps a temp file over the
+        transcript, and ``replace_with_retry`` retries the Windows sharing
+        violation (a scanner holding the just-written destination) only when no
+        loop runs on the calling thread; on the loop it re-raises at once.
+        """
         from kiro_crew.history import ConversationLog
 
         key = key or TestPrivacyFlagsAndPrune.KEY
         log = ConversationLog()
         log.init()
         if seed:
-            with history_mod.allow_on_loop_persist():
-                log.append(key, "user", "a pre-modifier turn")
+            log.append(key, "user", "a pre-modifier turn")
         if mode is not None:
             log.update_metadata_if(key, {"memory_mode": mode}, lambda _m: True)
         return log
@@ -168,7 +174,7 @@ class TestPrivacyFlagsAndPrune:
     async def test_a_row_whose_header_already_carries_the_mode_is_kept(self, patched, flag):
         """The header is complete and the row STILL stays: it is what the
         channel gate hydrates from, whatever the header says."""
-        self._log(seed=True, mode=flag)
+        await asyncio.to_thread(self._log, seed=True, mode=flag)
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
         sm.set_flag(self.KEY, flag, True)
@@ -186,7 +192,7 @@ class TestPrivacyFlagsAndPrune:
         """A row flagged before headers were stamped: the mode moves into the
         existing transcript's header -- the record the memory readers refuse on
         -- and the row stays for the channel gate."""
-        log = self._log(seed=True)
+        log = await asyncio.to_thread(self._log, seed=True)
         assert "memory_mode" not in log.get_metadata(self.KEY), "premise: legacy header"
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
@@ -201,7 +207,7 @@ class TestPrivacyFlagsAndPrune:
     async def test_a_stricter_flag_tightens_the_header(self, patched):
         """``!incognito`` then ``!temporary`` with the header still saying incognito:
         the header is tightened to temporary; the row stays with both flags."""
-        log = self._log(seed=True, mode="incognito")
+        log = await asyncio.to_thread(self._log, seed=True, mode="incognito")
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
         sm.set_flag(self.KEY, "incognito", True)
@@ -222,7 +228,7 @@ class TestPrivacyFlagsAndPrune:
         with plain ``strictest`` -- the second boot rewrites the header again."""
         from kiro_crew.history import ConversationLog
 
-        log = self._log(seed=True)  # legacy header: no mode
+        log = await asyncio.to_thread(self._log, seed=True)  # legacy header: no mode
         writes: list[str] = []
         real_write = ConversationLog._update_metadata_locked
 
@@ -254,7 +260,7 @@ class TestPrivacyFlagsAndPrune:
         compare the raw string -- the header reads ``incognito``."""
         from kiro_crew.history import transcript_privacy_mode
 
-        log = self._log(seed=True, mode="Temporary")
+        log = await asyncio.to_thread(self._log, seed=True, mode="Temporary")
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
         sm.set_flag(self.KEY, "incognito", True)
@@ -284,7 +290,7 @@ class TestPrivacyFlagsAndPrune:
         """Unreadable is not "recorded": the count says so, and the row stays."""
         from kiro_crew.history import ConversationLog
 
-        self._log(seed=True, mode="incognito")
+        await asyncio.to_thread(self._log, seed=True, mode="incognito")
         monkeypatch.setattr(
             ConversationLog,
             "update_metadata_if",
@@ -303,7 +309,7 @@ class TestPrivacyFlagsAndPrune:
         that happens to serve it: a row whose session is live is a candidate as
         well, stamped and left exactly as it was."""
         tmp, kiro = patched
-        log = self._log(seed=True)
+        log = await asyncio.to_thread(self._log, seed=True)
         _make_kiro_session(kiro, "sid-alive")
         sm = SessionMap()
         sm.set(self.KEY, "sid-alive")
@@ -319,7 +325,7 @@ class TestPrivacyFlagsAndPrune:
         """A Slack-bound private thread: the binding already keeps the row; the
         header is ensured for it like for any other flagged row."""
         bound = "slack:1700000000.000100"
-        log = self._log(seed=True, key=bound)
+        log = await asyncio.to_thread(self._log, seed=True, key=bound)
         sm = SessionMap()
         sm.set_slack_link(bound, "1700000000.000100", "C0BOUND")
         sm.set_flag(bound, "temporary", True)
@@ -366,7 +372,7 @@ class TestPrivacyFlagsAndPrune:
             seen.append(threading.current_thread())
             return real_update(self, *a, **kw)
 
-        self._log(seed=True, mode="incognito")
+        await asyncio.to_thread(self._log, seed=True, mode="incognito")
         monkeypatch.setattr(ConversationLog, "get_metadata", _recording_get)
         monkeypatch.setattr(ConversationLog, "update_metadata_if", _recording_update)
         sm = SessionMap()
@@ -396,7 +402,7 @@ class TestPrivacyFlagsAndPrune:
         from kiro_crew import session_map as session_map_mod
         from kiro_crew.messaging import privacy_mode
 
-        log = self._log(seed=True, mode="incognito")
+        log = await asyncio.to_thread(self._log, seed=True, mode="incognito")
         sm = SessionMap()
         sm.set(self.KEY, "sid-reclaimed-by-kiro-cli")
         sm.set_flag(self.KEY, "incognito", True)
@@ -464,8 +470,8 @@ class TestPrivacyFlagsAndPrune:
         from kiro_crew.messaging import privacy_mode
 
         first, second = self.KEY, "telegram:kirocrew:direct:4343"
-        log = self._log(seed=True, mode="incognito")
-        self._log(seed=True, key=second)
+        log = await asyncio.to_thread(self._log, seed=True, mode="incognito")
+        await asyncio.to_thread(self._log, seed=True, key=second)
         sm = SessionMap()
         sm.set_flag(first, "incognito", True)
         sessions = SimpleNamespace(_session_map=sm)
@@ -591,16 +597,12 @@ class TestStartPoolPrunesOffTheLoop:
         import threading
         from unittest.mock import AsyncMock, MagicMock
 
-        from kiro_crew import history as history_mod
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.history import ConversationLog
         from kiro_crew.session import SessionManager
 
         key = TestPrivacyFlagsAndPrune.KEY
-        log = ConversationLog()
-        log.init()
-        with history_mod.allow_on_loop_persist():
-            log.append(key, "user", "a pre-modifier turn")
+        await asyncio.to_thread(TestPrivacyFlagsAndPrune._log, seed=True)
         seeded = SessionMap()
         seeded.set(key, "sid-reclaimed-by-kiro-cli")
         seeded.set_flag(key, "incognito", True)  # a legacy row: map flag, no header mode
@@ -717,14 +719,10 @@ class TestANonBlockingStartDoesNotWaitForTheSweep:
         header is stamped on a worker thread, and the row is kept."""
         import threading
 
-        from kiro_crew import history as history_mod
         from kiro_crew.history import ConversationLog
 
         key = TestPrivacyFlagsAndPrune.KEY
-        log = ConversationLog()
-        log.init()
-        with history_mod.allow_on_loop_persist():
-            log.append(key, "user", "a pre-modifier turn")
+        await asyncio.to_thread(TestPrivacyFlagsAndPrune._log, seed=True)
         seeded = SessionMap()
         seeded.set(key, "sid-reclaimed-by-kiro-cli")
         seeded.set_flag(key, "incognito", True)  # a legacy row: map flag, no header mode
@@ -821,20 +819,24 @@ class TestPrivacyRowsAcrossARestart:
         from types import SimpleNamespace
 
         from kiro_crew import execution_context
-        from kiro_crew import history as history_mod
         from kiro_crew.config import KiroCrewConfig
         from kiro_crew.history import ConversationLog, transcript_withholds_derivation
         from kiro_crew.messaging import privacy_mode, upload_gate
         from kiro_crew.session import SessionManager
 
         key = self.KEY
-        log = ConversationLog()
-        log.init()
-        if state != "no-transcript":
-            with history_mod.allow_on_loop_persist():
+
+        def _seed_transcript() -> None:
+            # Off the loop, like every production header writer: the stamp's
+            # rename retries a Windows sharing violation only there.
+            log = ConversationLog()
+            log.init()
+            if state != "no-transcript":
                 log.append(key, "user", "a turn written before the modifier")
-        if state == "header-carries-mode":
-            log.update_metadata_if(key, {"memory_mode": "incognito"}, lambda _m: True)
+            if state == "header-carries-mode":
+                log.update_metadata_if(key, {"memory_mode": "incognito"}, lambda _m: True)
+
+        await asyncio.to_thread(_seed_transcript)
         seeded = SessionMap()
         if owned_a_sid:
             seeded.set(key, "sid-reclaimed-by-kiro-cli")  # no such file under the kiro dir

@@ -241,7 +241,7 @@ export function useErrorHandoffIntake({
     try {
       let slotKey: string
       try {
-        const slot = await dispatch(createSlot({ mode: errorHandoffModeRef.current, activate: false })).unwrap()
+        const slot = await dispatch(createSlot({ mode: errorHandoffModeRef.current, activate: false, sessionFolder: false })).unwrap()
         if (!slot?.key) throw new Error('the server returned no session')
         slotKey = slot.key
       } catch (e) {

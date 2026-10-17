@@ -263,10 +263,16 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
             # so a value the policy just removed is still on this instance while
             # every later ``KiroCrewConfig.load()`` (which re-reads from disk) sees
             # the narrowed answer. Re-run the SAME single gate on that one field
-            # rather than adding a second one anywhere.
+            # rather than adding a second one anywhere. An undeclared field holds the
+            # load's resolved DEFAULT, not a user choice, so it goes back in as absent:
+            # passing it through would warn about a value nobody wrote.
             from kiro_crew.acp_backends import resolve_selected_backend
+            from kiro_crew.config.loader import acp_backend_declared
 
-            cfg.agent.acp_backend = resolve_selected_backend(cfg.agent.acp_backend)
+            declared = acp_backend_declared()
+            cfg.agent.acp_backend = resolve_selected_backend(
+                cfg.agent.acp_backend if declared else None
+            )
     except Exception:
         logger.warning("agent_backend policy narrowing failed; continuing", exc_info=True)
 
@@ -282,3 +288,64 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
         logger.warning("register_publish_providers failed; continuing", exc_info=True)
 
     return ctx
+
+
+#: The notice a host on a too-old kiro-cli gets when KAS is configured. Logged at
+#: WARNING, and the same reason rides on the KAS row of the dashboard's backend
+#: panel through ``agent_sdk.backends.host_unservable_reason``.
+KAS_CLI_FLOOR_NOTICE = (
+    "KAS is selected, but {reason}. Kiro Crew is using kiro-cli instead. "
+    "Update kiro-cli and restart Kiro Crew to use KAS."
+)
+
+
+def apply_kas_cli_floor(cfg: "KiroCrewConfig") -> str | None:
+    """Fall back to kiro-cli when KAS is configured but this kiro-cli cannot serve it.
+
+    The same ``acp --help`` probe ``kirocrew doctor`` reports from, turned into a
+    runtime floor. When the probe RAN and the engine is missing, KAS is marked
+    unservable on this host, which drops it from the one selectable registry every
+    later config load reads; ``cfg``'s own already-resolved field is re-resolved
+    through the same gate. Returns the notice it logged, or ``None`` when nothing
+    changed.
+
+    Probes only when KAS is what this install would run — the main or member
+    backend — and still selectable. An unknown verdict (no pinned kiro-cli, a
+    failed spawn) leaves KAS selected: the floor never acts on a fact it could not
+    establish.
+
+    Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
+    policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
+    every ``kirocrew`` process (each MCP server, app server and script cron), and
+    the KAS sessions this floor protects are spawned only by the gateway. Keeping
+    it out also leaves ``kirocrew doctor`` reading the configured backend, so its
+    KAS block still prints the engine diagnosis. Blocking: the gateway runs it in a
+    background thread, off the boot path.
+    """
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KAS,
+        mark_backend_unservable,
+        resolve_selected_backend,
+        selectable_backends,
+    )
+
+    agent = cfg.agent
+    if ACP_BACKEND_KAS not in (agent.acp_backend, agent.member_acp_backend):
+        return None
+    if agent.kas_bundle:
+        # The bundle route spawns Kiro Crew's own engine and never runs kiro-cli,
+        # so kiro-cli's engine support is not a fact about this host's KAS. Acting
+        # on it would silently move a bundle-route user back onto kiro-cli.
+        return None
+    if ACP_BACKEND_KAS not in selectable_backends():
+        return None
+    from kiro_crew.agent_sdk import kas_engine_unsupported_reason
+
+    reason = kas_engine_unsupported_reason()
+    if reason is None:
+        return None
+    mark_backend_unservable(ACP_BACKEND_KAS, reason)
+    agent.acp_backend = resolve_selected_backend(agent.acp_backend)
+    notice = KAS_CLI_FLOOR_NOTICE.format(reason=reason)
+    logger.warning(notice)
+    return notice

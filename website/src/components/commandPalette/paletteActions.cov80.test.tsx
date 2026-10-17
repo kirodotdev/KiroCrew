@@ -128,6 +128,6 @@ describe('navigate', () => {
   it('forwards an in-app route to the router', () => {
     const { result } = harness('zzq-slot-1')
     act(() => result.current.navigate('/zzq-route'))
-    expect(navigateSpy).toHaveBeenCalledWith('/zzq-route')
+    expect(navigateSpy).toHaveBeenCalledWith('/zzq-route', { state: { leaveGranted: true } })
   })
 })

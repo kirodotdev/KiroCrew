@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
-import { sessionKeyFrom, sessionKeyFromShort } from '../../utils/sessionKeys'
-import { LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
+import { classifyShortName, sessionKeyFrom } from '../../utils/sessionKeys'
+import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
  * Where a rendered link or chip points: an in-app artifact route, whether an
@@ -107,13 +107,232 @@ export function soleLinkInParagraph(node?: HastElement): { href: string; text: s
  * answer for is refused by the second rule above, like any other unknown key.
  */
 export function resolveSessionChip(raw: string, actions: SessionActions): { key: string; title: string } | null {
-  if (!actions.onSessionOpen || !actions.sessions) return null
-  const key = sessionKeyFrom(raw)
-    ?? sessionKeyFromShort(raw, actions.sessions.keys(), actions.writtenAtEpoch)
-  if (!key || key === actions.activeSession) return null
-  const title = actions.sessions.get(key)
-  if (title === undefined) return null
-  return { key, title }
+  // Delegate to the one classifier, the same way `sessionKeyFromShort` delegates
+  // to `classifyShortName`: the chip is exactly the switchable case, so there is
+  // no second copy of the handler / roster / active-key guard to drift from.
+  const c = classifySessionLink(raw, actions)
+  return c.kind === 'open' ? { key: c.key, title: c.title } : null
+}
+
+/**
+ * What a `?sid=` link's sid IS, from the ONE roster lookup — the SINGLE place the
+ * handler / roster / active-key guard lives. `MdAnchor` reads the affordance
+ * (muted vs live) and the hover tooltip off this, and `resolveSessionChip`
+ * returns its `open` case, so a link, a bare key and a chip naming one session
+ * can never disagree. A second copy drifts: a key spelling added to one lookup
+ * alone would leave the other saying the opposite, which is exactly the false
+ * "not open" tooltip this fixes.
+ *
+ *   - `open`      — resolves to a switchable session (the chip case). Live link.
+ *   - `active`    — resolves to the session the reader is already in. Muted, and
+ *                   NO "not open" tooltip: it is open, so that would be false.
+ *   - `not-open`  — a full key the roster does not hold, or a short name whose
+ *                   number no open slot answers to. Muted, and the only case that
+ *                   earns the "not open" tooltip, because here it is TRUE.
+ *   - `unresolved`— a short name we cannot pin to one open slot though it may name
+ *                   one: ambiguous (two open slots share the number) or no message
+ *                   timestamp. Muted, but SILENT — "not open" would be a guess.
+ *   - `not-routing`— the renderer cannot route sessions (handler or roster not
+ *                   wired). The link stays an ordinary navigating anchor.
+ */
+export type SessionLinkClass =
+  | { kind: 'open'; key: string; title: string }
+  | { kind: 'active' }
+  | { kind: 'not-open' }
+  | { kind: 'unresolved' }
+  | { kind: 'not-routing' }
+
+export function classifySessionLink(raw: string, actions: SessionActions): SessionLinkClass {
+  if (!actions.onSessionOpen || !actions.sessions) return { kind: 'not-routing' }
+  const roster = actions.sessions
+  // A full key names its generation exactly, independent of any write time. A
+  // short name goes through the roster ONCE, and its outcome also says WHY it did
+  // not resolve — the distinction a "not open" tooltip needs.
+  const fullKey = sessionKeyFrom(raw)
+  const short = fullKey ? null : classifyShortName(raw, roster.keys(), actions.writtenAtEpoch)
+  const key = fullKey ?? (short!.kind === 'resolved' ? short!.key : null)
+  if (key) {
+    if (key === actions.activeSession) return { kind: 'active' }
+    const title = roster.get(key)
+    // A key the roster does not hold is a session that is not open.
+    return title === undefined ? { kind: 'not-open' } : { kind: 'open', key, title }
+  }
+  // No key, so this is a short name (a full key always yields a key above).
+  // Distinguish "no open slot has this number" (truly not open) from "cannot pin
+  // to one" (ambiguous / no write time — may well be open, so stay silent).
+  return short!.kind === 'no-match' ? { kind: 'not-open' } : { kind: 'unresolved' }
+}
+
+type ClosedRow = { key: string; title: string }
+/** A probe's answer: the row, a definite "no such session", or a failed request. */
+type ClosedAnswer = ClosedRow | null | 'failed'
+
+/**
+ * One probe per key per page life. A found row and a definite "no such
+ * session" are both kept; a failed request is not, so a later mount retries.
+ * A session resumed from here becomes open and resolves through the roster
+ * first, so a kept row never shadows a live tab.
+ */
+const closedProbes = new Map<string, Promise<ClosedAnswer>>()
+const closedAnswers = new Map<string, ClosedRow | null>()
+/** Every mounted `useSessionChip`, told when a shared answer turns definite
+ *  "gone", so each reference to that key drops together with the one whose
+ *  click or retry found it deleted, notice included. */
+const closedListeners = new Set<() => void>()
+function markGone(key: string): void {
+  closedProbes.delete(key)
+  closedAnswers.set(key, null)
+  for (const notify of closedListeners) notify()
+}
+
+function probeClosed(key: string, lookup: (key: string) => Promise<ClosedRow | null>, fresh = false): Promise<ClosedAnswer> {
+  let pending = fresh ? undefined : closedProbes.get(key)
+  if (!pending) {
+    pending = lookup(key).then(
+      (row): ClosedAnswer => { closedAnswers.set(key, row); return row },
+      (): ClosedAnswer => { closedProbes.delete(key); return 'failed' },
+    )
+    closedProbes.set(key, pending)
+  }
+  return pending
+}
+
+/** Test seam: forget every probe answer. */
+export function resetClosedSessionProbes(): void {
+  closedProbes.clear()
+  closedAnswers.clear()
+  closedListeners.clear()
+}
+
+/**
+ * Set on a closed-session target whose check failed (the background probe, or
+ * the check a click runs). The probe itself says nothing; the reader learns of
+ * the failure only when they click, through an inline notice at that spot.
+ */
+export type ClosedSessionFailure = {
+  /** The reader clicked, so the inline notice is up. */
+  shown: boolean
+  /** A retry is in flight. */
+  busy: boolean
+  /** Check again; open the session if it is there. */
+  retry: () => void
+}
+
+export type SessionChipTarget = {
+  key: string
+  /** The session as the reader should see it named: its title when a probe has
+   *  one, else the caller's visible label for it, else the raw key. */
+  title: string
+  open: (key: string) => void
+  /** Present only while the closed session's check is failing. */
+  failure?: ClosedSessionFailure
+}
+
+/**
+ * `resolveSessionChip`, widened to a CLOSED session the page can resume.
+ *
+ * An open session resolves exactly as before, and opens through
+ * `onSessionOpen`. A miss falls back to `ClosedSessionCtx.lookup` for a FULL key
+ * only (a short name like `chat-7` has no timestamp, so it cannot say which past
+ * session it means), and only when the open roster is wired, so an offline or
+ * no-controller render stays as it was. Until the probe answers there is no
+ * target, and a key the gateway says does not exist never gets one.
+ *
+ * A probe that FAILED (not a 404) still gives a target, carrying `failure`: its
+ * click shows the inline notice instead of opening, and the notice's retry asks
+ * again. `open` is the activation the caller must use, since the kinds of target
+ * act differently.
+ *
+ * `label` is what the reader sees standing for the session (a link's prose
+ * text). A failed target has no probed title to name itself by, so its `title`
+ * falls back to the label before the raw key: the notice then says "Couldn't
+ * open the old run" rather than quoting a key the reader never saw.
+ */
+export function useSessionChip(raw: string | null, actions: SessionActions, label?: string): SessionChipTarget | null {
+  const closed = useContext(ClosedSessionCtx)
+  const live = raw ? resolveSessionChip(raw, actions) : null
+  const full = !live && raw && closed.lookup && closed.open && actions.onSessionOpen && actions.sessions ? sessionKeyFrom(raw) : null
+  const candidate = full && full !== actions.activeSession && !actions.sessions!.has(full) ? full : null
+  const [answer, setAnswer] = useState<{ for: string; value: ClosedAnswer } | null>(null)
+  const [notice, setNotice] = useState<{ for: string; busy: boolean } | null>(null)
+  const [, bump] = useState(0)
+  useEffect(() => {
+    const notify = () => bump(n => n + 1)
+    closedListeners.add(notify)
+    return () => { closedListeners.delete(notify) }
+  }, [])
+  useEffect(() => {
+    if (!candidate || !closed.lookup || closedAnswers.has(candidate)) return
+    let current = true
+    void probeClosed(candidate, closed.lookup).then((value) => { if (current) setAnswer({ for: candidate, value }) })
+    return () => { current = false }
+  }, [candidate, closed.lookup])
+  if (live) {
+    // Open now: the roster speaks for it. Forget a closed-time answer, so a
+    // title it had then is not shown if the session is closed again later.
+    const key = live.key
+    if (closedAnswers.has(key)) { closedAnswers.delete(key); closedProbes.delete(key) }
+    return { ...live, open: actions.onSessionOpen! }
+  }
+  if (!candidate || !closed.open || !closed.lookup) return null
+  // A definite "gone" in the shared answer wins over everything: the session
+  // is deleted, whichever reference found out. Then this chip's own failed
+  // check; otherwise the shared answer, then ours.
+  const mine = answer?.for === candidate ? answer : null
+  const shared = closedAnswers.has(candidate) ? closedAnswers.get(candidate)! : undefined
+  const value: ClosedAnswer = shared === null
+    ? null
+    : mine?.value === 'failed'
+      ? 'failed'
+      : shared !== undefined ? shared : mine ? mine.value : null
+  if (value === null) return null
+  const openClosed = closed.open
+  const lookup = closed.lookup
+  const key = candidate
+  const settle = (next: ClosedAnswer) => setAnswer({ for: key, value: next })
+  // `open` checks again that the session still exists: the cached answer can
+  // be older than a delete. Gone since: the target drops. Check failed: the
+  // inline notice comes up at the spot the reader clicked.
+  const openRow = (row: ClosedRow) => {
+    void openClosed(row).then((outcome) => {
+      if (outcome === 'gone') {
+        markGone(key)
+        setNotice(null)
+        settle(null)
+      } else if (outcome === 'failed') {
+        // Local to this chip: the shared answer stays, so another chip for the
+        // same key is not dropped by this one's failed check.
+        settle('failed')
+        setNotice({ for: key, busy: false })
+      } else {
+        setNotice(null)
+      }
+    })
+  }
+  if (value !== 'failed') return { key, title: value.title, open: () => openRow(value) }
+  // Named for the reader: the title a probe found (a click-time check can fail
+  // after the background probe answered), else the visible label, else the key.
+  const title = closedAnswers.get(key)?.title ?? (label?.trim() || key)
+  const shown = notice?.for === key
+  const failure: ClosedSessionFailure = {
+    shown,
+    busy: shown && notice!.busy,
+    retry: () => {
+      setNotice({ for: key, busy: true })
+      void probeClosed(key, lookup, true).then((next) => {
+        if (next === 'failed') { setNotice({ for: key, busy: false }); return }
+        // A definite "no such session" on retry: the session was deleted since
+        // the reader first saw the link. Hand it to the page's `open` under the
+        // name the reader knows, so its check says "was deleted" the way a click
+        // on a deleted chip does, and the target then drops through `gone`.
+        // Dropping here silently would leave Try again answered by nothing.
+        if (next === null) { openRow({ key, title }); return }
+        settle(next)
+        openRow(next)
+      })
+    },
+  }
+  return { key, title, open: () => setNotice({ for: key, busy: false }), failure }
 }
 
 /**

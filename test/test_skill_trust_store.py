@@ -1411,8 +1411,8 @@ class TestOneEnforcementPointForEnumeratedReads:
         import ast
         import pathlib
 
-        src_path = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/skills.py"
-        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+        src_dir = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew"
+        tree = ast.parse((src_dir / "skills_body_reads.py").read_text(encoding="utf-8"))
 
         wanted = {"_cached_frontmatter", "load_skill", "_read_enumerated_skill_bytes"}
         found: dict[str, ast.FunctionDef] = {}
@@ -1421,7 +1421,7 @@ class TestOneEnforcementPointForEnumeratedReads:
                 found[node.name] = node
 
         # Canary: a rename or a moved file must fail loudly, not pass silently.
-        assert set(found) == wanted, f"missing {sorted(wanted - set(found))} in skills.py"
+        assert set(found) == wanted, f"missing {sorted(wanted - set(found))} in skills_body_reads"
 
         def calls(fn):
             out = []

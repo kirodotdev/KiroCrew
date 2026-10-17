@@ -454,14 +454,14 @@ def open_routes(monkeypatch) -> None:
     predictable unit.
     """
     _SLOTS.clear()
-    routes._BOARD_LOCKS.clear()
+    routes._BOARD_LOCKS._locks.clear()
 
     async def _recognized(*a: Any, **k: Any) -> None:
         return None
 
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: f"unit:{key}")
     monkeypatch.setattr(routes.crew_log_emit, "on_work_recorded", lambda unit, data: True)
     yield
@@ -536,7 +536,9 @@ async def test_only_the_bind_action_records_a_dispatch(open_routes):
 async def test_a_worker_report_through_the_route_records_the_answer(open_routes):
     _seed_session(entries=4)
     item_id = await _bound_item()
-    status, body = await _report(WORKER, {"status": "done", "summary": "shipped it"})
+    status, body = await _report(
+        WORKER, {"status": "done", "summary": "shipped it", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200, body
     entries = _crew_entries()
     assert [entry["type"] for entry in entries] == [emit.CREW_DISPATCH, emit.CREW_REPORT]
@@ -571,7 +573,9 @@ async def test_a_board_on_an_ordinary_chat_slot_records_no_crew_entry(open_route
     chat_conductor = "chat-9-conductor"
     _seed_session(entries=2)
     item_id = await _bound_item(chat_conductor)
-    status, body = await _report(WORKER, {"status": "done", "summary": "shipped it"})
+    status, body = await _report(
+        WORKER, {"status": "done", "summary": "shipped it", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200, body
     assert item_id
     assert not lg.crew_log_dir(lg.KIND_CREW, CREW).exists()

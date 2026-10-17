@@ -11,7 +11,7 @@ candidates, 25 were referenced by an OPEN pull request - 86% of what the queue
 build emitted was work somebody was already doing.
 
 ``claim_preflight.py`` already refuses those items, one at a time, at claim time
-(check 1, ``SKIP open-pr``). That script is the authority on one candidate and it
+(rule 2, ``SKIP open-pr``). That script is the authority on one candidate and it
 stays the authority. What it cannot also be is the QUEUE filter: its evidence is
 the item's own timeline, so it costs one timeline read plus one detail read per
 referencing PR, FOR EACH item. Paid across a whole backlog on every cycle, that
@@ -78,8 +78,8 @@ Deliberately boring properties, do not weaken:
     than intended: this script never labels, assigns, comments or closes. The
     helpers below mirror ``claim_preflight.py`` rather than importing it - a
     skill script runs as a bare file with ``kiro_crew`` off the import path and
-    with no sibling on it either, which is why ``ledger.py`` and
-    ``credit_spend.py`` carry their own copies of the same shapes.
+    with no sibling on it either, which is why each script in this directory
+    carries its own copy of the shapes it needs.
   * ONE forge call for the whole batch, up to ``MAX_ITEMS`` candidates. A
     per-item call here would reinstate the cost that keeps the check downstream.
     A larger batch is REFUSED (exit 2) rather than truncated, because a silently
@@ -92,7 +92,7 @@ Deliberately boring properties, do not weaken:
     for this item.
   * A DRAFT pull request that claims closure counts as coverage, and so does a
     fork PR. Both are work in flight, and both are what ``claim_preflight.py``'s
-    check 1 counts: the two rules answer the same question from different
+    rule 2 counts: the two rules answer the same question from different
     evidence, so a difference in what they count would be drift rather than
     nuance. The closing-keyword condition is now part of that agreement -- that
     script's rule 2 suppresses on a closing keyword and reports a bare reference,

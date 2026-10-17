@@ -36,6 +36,7 @@ gate. The functions are sync (subprocess-bound) — call via
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import mimetypes
@@ -43,7 +44,9 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
@@ -593,6 +596,52 @@ def inline_content_type(key: str) -> str:
     return ""
 
 
+#: The body spelling that makes the CLI child read OUR descriptor instead of
+#: re-resolving a name. ``/dev/stdin`` is a symlink to ``/proc/self/fd/0`` on
+#: Linux and a character device with the same meaning on macOS, so the child
+#: opens whatever descriptor it inherited as fd 0 -- here, the descriptor this
+#: process opened and checked. The Linux sandbox is a user + mount namespace
+#: that bind-mounts empty directories over the trees it hides (see
+#: ``sandbox.wrap_argv``); it does not remount ``/proc`` or ``/dev``, and
+#: Seatbelt remounts nothing, so the spelling survives both backends.
+_DESCRIPTOR_BODY = "/dev/stdin"
+
+#: Whether the CLI can be handed a descriptor rather than a name for its body.
+#: Windows has no ``/dev/stdin``; that platform takes the pinned-name arm in
+#: :func:`put_file`, which is sound there for a reason POSIX cannot borrow -- a
+#: held directory handle blocks a rename of the directory and of every directory
+#: above it, so the name cannot be re-pointed while we hold it.
+_CAN_PASS_BODY_DESCRIPTOR = platform_compat.IS_POSIX
+
+
+def _assert_uploadable_handle(fd: int) -> os.stat_result:
+    """Refuse *fd* unless it is a regular file. The only check a HANDED-OVER fd gets.
+
+    A caller that created its payload exclusively and has held the descriptor ever
+    since has already established which inode this is, and holding it is what keeps
+    that true: no rename, unlink or hard link can make a descriptor point somewhere
+    else. So the link count says nothing here, and re-checking it would be actively
+    wrong in both directions -- a same-UID process that merely UNLINKS the staging
+    name leaves the held inode at zero links, and one that adds a second name
+    leaves it at two, and in both cases the bytes about to be sent are still the
+    ones the caller built and measured. Refusing them would let anyone who can
+    write the staging directory cancel a scheduled backup by touching a name
+    nothing reads any more.
+
+    ``S_ISREG`` is kept because it is about the descriptor's own kind rather than
+    about its names: a pipe or a character device handed here would make the upload
+    send an unbounded stream under a size taken from ``fstat``, which is a
+    correctness failure whatever its provenance.
+    """
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise AWSError(
+            "the upload body is not a regular file, so the bytes that would be sent are "
+            "not this file's; refusing rather than uploading whatever it resolves to"
+        )
+    return info
+
+
 def put_file(
     profile: str,
     region: str,
@@ -603,6 +652,7 @@ def put_file(
     *,
     account: str,
     timeout: int = 600,
+    body_fd: int | None = None,
 ) -> str:
     """Upload one local file to ``section/key``, pinned to the bucket's owner.
 
@@ -610,6 +660,26 @@ def put_file(
     A caller that does not care may ignore it; backup retention records it, because
     on a versioned bucket the version id is the only thing identifying WHICH bytes
     under a key an uploader wrote.
+
+    **The bytes uploaded are one inode's, and it is the inode this function
+    checked.** The backup ARCHIVE is staged in a directory a same-UID process can
+    write, so on ``main`` a NAME handed to the CLI was resolved again: a size taken
+    from one resolution, the CLI's ``--body`` open from another, and a caller's own
+    fingerprint from a third were three answers about three moments, and a process
+    that replaced the file between any two of them made the object carry bytes
+    nothing checked -- off-host, unattended, with no recall. So the archive callers
+    now open the file ONCE, check the descriptor, and hand it over as *body_fd*; the
+    size, the fingerprints and the upload all read that one descriptor.
+
+    *body_fd* lets a caller that has already opened and checked the payload hand
+    that same descriptor over, so its own measurements and this upload describe
+    one inode rather than two resolutions that agreed. It stays the caller's to
+    close. The backup archive and the snapshot payload hand over a descriptor their
+    producer pinned with :func:`kiro_crew...backup._open_pinned_archive_fd`
+    (O_NOFOLLOW + S_ISREG + st_nlink == 1 + owner, plus a Windows deny-write open).
+    Omitted, the body is the bare NAME -- the path the label sidecar, the library
+    push and the drive spool take. Those bodies are held only by the name, not by a
+    checked descriptor.
 
     ``s3api put-object`` rather than ``s3 cp``: the high-level ``aws s3`` commands
     do not accept ``--expected-bucket-owner`` (checked against their own help
@@ -626,13 +696,68 @@ def put_file(
     surface depends on the browser trusting this header. An extension
     ``mimetypes`` cannot place keeps the S3 default rather than guessing.
     """
-    size = os.path.getsize(local_path)
+    if body_fd is None:
+        # No descriptor handed over: a bare-name body (the label sidecar, the library
+        # push, the drive spool). The size is taken from the name and the name is the
+        # CLI's ``--body``. These bodies are held only by the name; the descriptor
+        # pin is used for the backup ARCHIVE, which the archive callers hand over via
+        # ``body_fd``.
+        size = os.path.getsize(local_path)
+        if size > _MAX_PINNED_TRANSFER_BYTES:
+            raise AWSError(
+                f"{size} bytes exceeds the {_MAX_PINNED_TRANSFER_BYTES}-byte limit for a "
+                "single owner-pinned upload; refusing rather than transferring without "
+                "the bucket-owner check"
+            )
+        args = [
+            "s3api",
+            "put-object",
+            "--bucket",
+            bucket,
+            "--key",
+            section_key(section, key),
+            "--body",
+            local_path,
+        ]
+        content_type = inline_content_type(key)
+        if content_type:
+            args += ["--content-type", content_type]
+        args += ["--expected-bucket-owner", account]
+        args += ["--output", "json"]
+        out = _checked(args, profile, action="s3:PutObject", timeout=timeout)
+        return _put_version_id(out)
+
+    # A descriptor handed over by the caller: the backup archive / snapshot payload,
+    # pinned by its producer with ``_open_pinned_archive_fd`` (O_NOFOLLOW + S_ISREG +
+    # st_nlink == 1 + owner, plus a Windows deny-write open). The size, the caller's
+    # fingerprints and this upload all read THAT one descriptor, so no step
+    # re-resolves the name. The content is NOT held unrewritable in place against a
+    # same-UID writer for the whole transfer: the descriptor fixes which inode the
+    # name reaches, not that its bytes cannot be rewritten under it.
+    fd = body_fd
+    _assert_uploadable_handle(fd)
+    size = os.fstat(fd).st_size
     if size > _MAX_PINNED_TRANSFER_BYTES:
         raise AWSError(
             f"{size} bytes exceeds the {_MAX_PINNED_TRANSFER_BYTES}-byte limit for a "
             "single owner-pinned upload; refusing rather than transferring without "
             "the bucket-owner check"
         )
+    if _CAN_PASS_BODY_DESCRIPTOR:
+        # POSIX: hand the descriptor to the child as its stdin and spell ``--body``
+        # as ``/dev/stdin``, so the CLI resolves no path at all. Set the position to
+        # 0 first -- it arrives wherever the caller's last fingerprint read left it,
+        # and an upload started mid-file would send a truncated object.
+        body = _DESCRIPTOR_BODY
+        stdin_fd: int | None = fd
+        os.lseek(fd, 0, os.SEEK_SET)
+    else:
+        # Windows (no ``/dev/stdin``): the CLI re-resolves the NAME, held by the
+        # caller's pinned directory (a pinned directory can be neither renamed nor
+        # deleted) and the producer's deny-write open on the file. ``_assert_same_file``
+        # below is the post-transfer inode backstop.
+        body = local_path
+        stdin_fd = None
     args = [
         "s3api",
         "put-object",
@@ -641,7 +766,7 @@ def put_file(
         "--key",
         section_key(section, key),
         "--body",
-        local_path,
+        body,
     ]
     content_type = inline_content_type(key)
     if content_type:
@@ -656,8 +781,43 @@ def put_file(
         profile,
         action="s3:PutObject",
         timeout=timeout,
+        stdin_fd=stdin_fd,
     )
+    if not _CAN_PASS_BODY_DESCRIPTOR:
+        _assert_same_file(fd, local_path)
     return _put_version_id(out)
+
+
+def _assert_same_file(fd: int, local_path: str) -> None:
+    """Refuse unless *local_path* still names the file *fd* holds.
+
+    Only the pinned-name arm needs this, and it is a BACKSTOP rather than the
+    protection: the deny-write guard taken before the transfer is what stops the
+    bytes changing, and this says whether the NAME still reaches the same inode. It
+    cannot do more than report -- the bytes are already in the bucket by the time it
+    runs -- but reporting is worth having, because the alternative is recording a
+    successful upload of bytes this process never read, and a restore would then
+    hand those bytes back as the owner's own archive.
+
+    Inode identity only, deliberately. An in-place content rewrite would pass this
+    check, and that gap is closed by refusing the writer rather than by widening the
+    comparison: a digest taken here would still be a digest taken after the object
+    was sent.
+    """
+    held = os.fstat(fd)
+    try:
+        landed = os.stat(local_path)
+    except OSError as exc:
+        raise AWSError(
+            f"the upload body could not be re-checked after the transfer: {exc.strerror}"
+        ) from exc
+    if (landed.st_dev, landed.st_ino) != (held.st_dev, held.st_ino):
+        raise AWSError(
+            "the upload body was replaced during the transfer, so the object now in the "
+            "bucket may not be the file that was checked"
+        )
+    if landed.st_nlink != 1:
+        raise AWSError("the upload body was linked elsewhere during the transfer")
 
 
 def _put_version_id(out: str) -> str:
@@ -798,8 +958,16 @@ _STAGING_READ_CHUNK = 64 * 1024
 _S3_INVALID_RANGE_CODE = "InvalidRange"
 
 
-def _preview_staging_parent() -> Path:
-    """The agent-masked root that preview staging directories are cut under.
+def staging_root() -> Path:
+    """The agent-masked root that every AWS Control staging directory is cut under.
+
+    Shared by the preview staging (:func:`_preview_staging_parent`) and by the
+    backup archive staging, because both need the same property and there should
+    be one place that establishes it: a directory a SIBLING agent cannot reach.
+    The system temp directory is not that place -- it is shared, same-UID
+    writable, and carries no mask -- so an archive staged there can be rewritten
+    in place between being built and being uploaded, and a descriptor pin does not
+    help because pinning fixes which inode a name reaches, not that inode's bytes.
 
     On a sandboxed host the root already exists by the time any agent runs: the
     sandbox materialises it before every namespace spawn
@@ -833,6 +1001,77 @@ def _preview_staging_parent() -> Path:
     else:
         platform_compat.restrict_dir_to_owner(str(staging))
     return staging
+
+
+def _preview_staging_parent() -> Path:
+    """The root preview staging directories are cut under. See :func:`staging_root`.
+
+    Kept as its own name because the preview path is what the sandbox-mask tests
+    address, and because the two callers are otherwise unrelated -- a change to
+    where previews stage should not silently move where backups stage.
+    """
+    return staging_root()
+
+
+@contextlib.contextmanager
+def pinned_staging(prefix: str) -> Iterator[tuple[Path, int]]:
+    """Cut a private staging directory under :func:`staging_root`, PIN it, and
+    yield ``(path, dir_fd)`` for the scope; release both on exit.
+
+    Every upload body this app stages goes through here, because the pin is the
+    whole basis on which :func:`put_file` may hand the AWS CLI a NAME. Where no
+    descriptor can be passed to the child -- Windows has no ``/dev/stdin`` -- the
+    name is all the child gets, and a name is re-resolved at the child's open. A
+    pinned directory cannot be renamed or deleted, and neither can any directory
+    above it, so the path the child walks cannot be re-pointed at a planted
+    junction between our check and its open.
+
+    Two properties, and a caller needs both:
+
+    * the masked root removes the WRITER -- a sibling agent's namespace has an
+      empty directory bound over that leaf, so the body has no name there to
+      rewrite in place, which no pin can prevent. Detection is not an
+      alternative: a rewrite of the held inode is read by every later check as
+      well as by the upload, so the digests and the bytes sent agree with each
+      other and the run records a successful upload of a body it never built;
+    * the pin fixes the PATH -- on POSIX the descriptor is a resolution root for
+      our own opens, and on Windows holding the directory is what blocks the
+      rename.
+
+    ``mkdtemp`` for the unique name and the 0700 mode, then
+    :func:`platform_compat.pin_directory`, which refuses a link or reparse point
+    at the name rather than following it. On exit the descriptor is closed
+    before the tree is removed: on Windows the pin is exactly what would make
+    the removal fail.
+
+    The staging ROOT is pinned FIRST, before ``mkdtemp`` names a child under it
+    -- as :func:`get_object_head_bytes` does. ``mkdtemp(dir=...)`` re-resolves
+    the root by name, so without this a watcher that swaps the root for a link
+    (or, on Windows, a reparse point to a remote share) between validation and
+    this call would have the child created under the planted target. Holding the
+    root open refuses a link at its name and blocks its rename for the scope, so
+    the child is cut under the directory we checked. The root descriptor is held
+    until the tree is removed, released in the same ``finally``.
+    """
+    root_fd = platform_compat.pin_directory(str(staging_root()))
+    try:
+        tmp = tempfile.mkdtemp(prefix=prefix, dir=str(staging_root()))
+    except BaseException:
+        os.close(root_fd)
+        raise
+    try:
+        dir_fd = platform_compat.pin_directory(tmp)
+    except BaseException:
+        os.close(root_fd)
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    try:
+        yield Path(tmp), dir_fd
+    finally:
+        if dir_fd >= 0:
+            os.close(dir_fd)
+        os.close(root_fd)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def get_object_head_bytes(

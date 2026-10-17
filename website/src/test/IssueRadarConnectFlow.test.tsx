@@ -14,14 +14,32 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mockConnect = vi.fn()
 const mockRecentRepos = vi.fn()
+const mockDashboardConfig = vi.fn()
 vi.mock('../apps/issue-radar/api', () => ({
   issueRadarApi: {
     connect: (...a: unknown[]) => mockConnect(...a),
     recentRepos: (...a: unknown[]) => mockRecentRepos(...a),
   },
 }))
+// The panel reads the operator's GitLab allowlist from the shared dashboard
+// config; stubbed so each test decides which instances exist.
+vi.mock('../api/dashboardConfigQuery', () => ({
+  fetchDashboardConfig: () => mockDashboardConfig(),
+}))
+// SimpleSelect is Radix-backed on non-touch devices; driving its portal menu in
+// jsdom tests the library, not this panel. A native stand-in keeps the test on
+// the panel's own wiring (options in, value out).
+vi.mock('../components/SimpleSelect', () => ({
+  default: ({ options, value, onChange, 'aria-label': ariaLabel }: {
+    options: string[]; value: string; onChange: (v: string) => void; 'aria-label'?: string
+  }) => (
+    <select aria-label={ariaLabel} value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+  ),
+}))
 
-const { default: ConnectPanel, useConnectFlow, repoIdentity, parseRepoRef } = await import('../apps/issue-radar/ConnectPanel')
+const { default: ConnectPanel, useConnectFlow, repoIdentity, parseRepoRef, gitlabHostOptions } = await import('../apps/issue-radar/ConnectPanel')
 const { markAutoSelectFirstIssue, consumeAutoSelectFirstIssue } = await import(
   '../apps/issue-radar/lib/format'
 )
@@ -61,7 +79,7 @@ function renderHost(props: Parameters<typeof Host>[0] = {}) {
       <Host {...props} />
     </QueryClientProvider>,
   )
-  return { ...utils, invalidate }
+  return { ...utils, invalidate, qc }
 }
 
 /** Open the GitHub provider and wait for the repo picker to resolve. */
@@ -74,6 +92,254 @@ beforeEach(() => {
   mockConnect.mockReset()
   mockRecentRepos.mockReset()
   mockRecentRepos.mockResolvedValue({ repos: [repo('o/alpha'), repo('o/beta')], truncated: false })
+  mockDashboardConfig.mockReset()
+  mockDashboardConfig.mockResolvedValue({ gitlab_hosts: [] })
+})
+
+describe('GitLab instance selection', () => {
+  // Every wait in this block sits behind a two-query chain: the recent-repos
+  // query is only enabled once dashboardConfig has resolved (hostReady), so the
+  // picker, its rows, the config-error alert and the connect calls all land two
+  // async round trips after the click. Testing Library's implicit 1s deadline
+  // is load-dependent for that chain on a shared coverage runner; name the
+  // chain and give it an explicit budget instead.
+  const CHAINED = { timeout: 4000 }
+
+  it('lists a self-managed instance from the allowlist, and connects ticks there', async () => {
+    // A self-managed user's projects live on THEIR instance. Asking with no host
+    // (or gitlab.com) gave them an empty or failing picker, leaving only the
+    // one-at-a-time URL field.
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['code.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [repo('grp/one'), repo('grp/two')], truncated: false })
+    mockConnect.mockResolvedValue({ owner: 'grp', repo: 'one', provider: 'gitlab', host: 'code.example.com' })
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    // Visible text, not just an aria-label: a bare host reads as a fixed value.
+    expect(await screen.findByText('GitLab instance', {}, CHAINED)).toBeVisible()
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled(), CHAINED)
+    expect(mockRecentRepos).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      { provider: 'gitlab', host: 'code.example.com' },
+    )
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED))
+    await user.click(screen.getByRole('checkbox', { name: 'Select grp/two' }))
+    await user.click(screen.getByRole('button', { name: 'Connect 2' }))
+    await waitFor(() => expect(mockConnect).toHaveBeenCalledTimes(2), CHAINED)
+    expect(mockConnect.mock.calls.map((c) => c[0])).toEqual([
+      'https://code.example.com/grp/one',
+      'https://code.example.com/grp/two',
+    ])
+  })
+
+  it('sends gitlab.com as the host when no instance is allowlisted', async () => {
+    // The server refuses a GitLab call with no host, so even the public-only
+    // case must name it.
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled(), CHAINED)
+    expect(mockRecentRepos).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      { provider: 'gitlab', host: 'gitlab.com' },
+    )
+    // One instance means nothing to choose, so no selector is drawn.
+    expect(screen.queryByRole('combobox', { name: 'GitLab instance' })).toBeNull()
+  })
+
+  it('adds https:// to a scheme-less link that names a different instance', async () => {
+    // With a self-managed host selected, `gitlab.com/grp/proj` is not shorthand
+    // for the selected instance, but it is still a URL. Sent scheme-less the
+    // backend 400s on the missing scheme before its allowlist sees the host.
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['code.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [], truncated: false })
+    mockConnect.mockResolvedValue({ owner: 'grp', repo: 'proj' })
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled(), CHAINED)
+
+    await user.type(screen.getByLabelText('Repository URL'), 'gitlab.com/grp/proj')
+    await user.click(screen.getByRole('button', { name: 'Connect 1' }))
+    await waitFor(() => expect(mockConnect).toHaveBeenCalledWith('https://gitlab.com/grp/proj'), CHAINED)
+  })
+
+  it('surfaces a dashboard-config failure without querying public GitLab', async () => {
+    mockDashboardConfig.mockRejectedValue(new Error('Dashboard config unavailable'))
+    const user = userEvent.setup()
+    renderHost()
+
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+
+    const alert = await screen.findByRole('alert', {}, CHAINED)
+    expect(alert).toHaveTextContent("Your dashboard settings didn't load")
+    expect(alert).toHaveTextContent('Dashboard config unavailable')
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect 0' })).toBeDisabled()
+    expect(mockRecentRepos).not.toHaveBeenCalled()
+  })
+
+  it('still connects a pasted URL verbatim while the config load is failing', async () => {
+    // A pasted URL never needed the instance list; the server's allowlist is the
+    // honest judge. A bare `grp/proj` must NOT be rebuilt onto the gitlab.com fallback.
+    mockDashboardConfig.mockRejectedValue(new Error('Dashboard config unavailable'))
+    mockConnect.mockResolvedValue({ owner: 'grp', repo: 'proj', provider: 'gitlab', host: 'code.example.com' })
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await screen.findByRole('alert', {}, CHAINED)
+    await user.type(screen.getByLabelText('Repository URL'), 'grp/proj')
+    await user.click(screen.getByRole('button', { name: 'Connect 1' }))
+    await waitFor(() => expect(mockConnect).toHaveBeenCalledWith('grp/proj'), CHAINED)
+  })
+
+  it('says why the selection vanished when the instance changes', async () => {
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['a.example.com', 'b.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [repo('grp/one')], truncated: false })
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await user.click(await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'GitLab instance' }), 'b.example.com')
+    expect(await screen.findByRole('status', {}, CHAINED)).toHaveTextContent('Selection cleared: those projects are on the previous GitLab instance.')
+    await user.click(await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('shows a later config failure instead of a cached glab setup notice', async () => {
+    // The recent-repos answer stays cached while hostReady drops; the setup
+    // notice suppresses the picker's error and retry, hiding the real problem.
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['code.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [], setup_required: 'not_authenticated', error: 'glab: not logged in' })
+    const user = userEvent.setup()
+    const { qc } = renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await screen.findByText(/set up the GitLab CLI/i, {}, CHAINED)
+
+    mockDashboardConfig.mockRejectedValue(new Error('Dashboard config unavailable'))
+    await qc.invalidateQueries({ queryKey: ['dashboardConfig'] })
+
+    expect(await screen.findByRole('alert', {}, CHAINED)).toHaveTextContent('Dashboard config unavailable')
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+    expect(screen.queryByText(/set up the GitLab CLI/i)).not.toBeInTheDocument()
+  })
+
+  it('hides the selected count while a later config failure empties the submit list', async () => {
+    // Ticks are kept for recovery, but targets drop to [] (Connect 0), so a
+    // "2 selected" header would contradict the button.
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['code.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [repo('g/one'), repo('g/two')], truncated: false })
+    const user = userEvent.setup()
+    const { qc } = renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await user.click(await screen.findByRole('checkbox', { name: 'Select g/one' }, CHAINED))
+    await user.click(screen.getByRole('checkbox', { name: 'Select g/two' }))
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+
+    mockDashboardConfig.mockRejectedValue(new Error('Dashboard config unavailable'))
+    await qc.invalidateQueries({ queryKey: ['dashboardConfig'] })
+
+    expect(await screen.findByRole('alert', {}, CHAINED)).toHaveTextContent('Dashboard config unavailable')
+    expect(screen.getByRole('button', { name: 'Connect 0' })).toBeDisabled()
+    expect(screen.queryByText('2 selected')).not.toBeInTheDocument()
+  })
+
+  it('switching instance re-lists repos and drops ticks from the old one', async () => {
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['code.example.com'] })
+    mockRecentRepos.mockImplementation(async (_d: number, scope: { host?: string }) => ({
+      repos: scope.host === 'gitlab.com' ? [repo('pub/x')] : [repo('grp/one')],
+      truncated: false,
+    }))
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await user.click(await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED))
+    expect(screen.getByRole('button', { name: 'Connect 1' })).toBeEnabled()
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'GitLab instance' }), 'gitlab.com')
+    await screen.findByRole('checkbox', { name: 'Select pub/x' }, CHAINED)
+    expect(screen.queryByRole('checkbox', { name: 'Select grp/one' })).toBeNull()
+    // The grp/one tick named a project on the OTHER instance; keeping it would
+    // connect https://gitlab.com/grp/one, a different project or none.
+    expect(screen.getByRole('button', { name: 'Connect 0' })).toBeDisabled()
+  })
+
+  it('resolves a hostless shorthand against the selected instance', () => {
+    expect(parseRepoRef('grp/sub/proj', 'gitlab', 'code.example.com')).toEqual({ owner: 'grp/sub', repo: 'proj' })
+    expect(parseRepoRef('https://code.example.com/grp/proj/-/issues', 'gitlab', 'code.example.com'))
+      .toEqual({ owner: 'grp', repo: 'proj' })
+    // A URL on a different instance is not guessed at — it is submitted verbatim.
+    expect(parseRepoRef('https://gitlab.com/grp/proj', 'gitlab', 'code.example.com')).toBeNull()
+  })
+
+  it('recognises an instance on a non-default port as the selected one', () => {
+    // The allowlist stores `host:port`; comparing a port-less hostname against it
+    // made every URL on that instance look foreign, so shorthand was sent raw.
+    expect(parseRepoRef('grp/proj', 'gitlab', 'code.example.com:8443')).toEqual({ owner: 'grp', repo: 'proj' })
+    expect(parseRepoRef('https://code.example.com:8443/grp/proj', 'gitlab', 'code.example.com:8443'))
+      .toEqual({ owner: 'grp', repo: 'proj' })
+    expect(parseRepoRef('https://code.example.com/grp/proj', 'gitlab', 'code.example.com:8443')).toBeNull()
+  })
+
+  it('keeps www. on a self-managed host, folding it only for gitlab.com', () => {
+    // The backend preserves a self-managed `www.` name; stripping it here would
+    // query a host the allowlist does not carry.
+    expect(gitlabHostOptions(['www.code.example.com', 'www.gitlab.com'])).toEqual([
+      'www.code.example.com',
+      'gitlab.com',
+    ])
+    expect(parseRepoRef('https://www.code.example.com/grp/proj', 'gitlab', 'www.code.example.com'))
+      .toEqual({ owner: 'grp', repo: 'proj' })
+  })
+
+  it('drops ticks when an allowlist refresh removes the chosen instance', async () => {
+    // The same `grp/one` path exists on both instances. Keeping the tick after
+    // the fallback would connect the OTHER instance's project.
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['a.example.com', 'b.example.com'] })
+    mockRecentRepos.mockResolvedValue({ repos: [repo('grp/one')], truncated: false })
+    const user = userEvent.setup()
+    const { qc } = renderHost()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'GitLab instance' }, CHAINED), 'b.example.com')
+    await user.click(await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED))
+    expect(screen.getByRole('button', { name: 'Connect 1' })).toBeEnabled()
+
+    mockDashboardConfig.mockResolvedValue({ gitlab_hosts: ['a.example.com'] })
+    await qc.invalidateQueries({ queryKey: ['dashboardConfig'] })
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      { provider: 'gitlab', host: 'a.example.com' },
+    ), CHAINED)
+    await screen.findByRole('checkbox', { name: 'Select grp/one' }, CHAINED)
+    expect(screen.getByRole('button', { name: 'Connect 0' })).toBeDisabled()
+  })
+
+  it('drops ticks when the provider changes', async () => {
+    // A GitHub tick is a bare `owner/repo`; carried into GitLab it would be
+    // rebuilt as a GitLab URL for an unrelated project.
+    const user = userEvent.setup()
+    renderHost()
+    await openGithub(user)
+    await user.click(await screen.findByRole('checkbox', { name: 'Select o/alpha' }, CHAINED))
+    expect(screen.getByRole('button', { name: 'Connect 1' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: /GitLab/ }))
+    await screen.findByRole('checkbox', { name: 'Select o/alpha' }, CHAINED)
+    expect(screen.getByRole('button', { name: 'Connect 0' })).toBeDisabled()
+    // The notice names the provider, not the instance: the user clicked a
+    // provider row, and no instance picker was involved.
+    expect(screen.getByRole('status')).toHaveTextContent('Selection cleared: those repos belong to the previous provider.')
+  })
+
+  it('orders allowlisted hosts first and de-duplicates spellings', () => {
+    // Same rule as `gitlabHostSet`: case folded, default :443 dropped.
+    expect(gitlabHostOptions(['Code.Example.com:443', 'code.example.com', 'gitlab.com', 7, ''])).toEqual([
+      'code.example.com',
+      'gitlab.com',
+    ])
+    expect(gitlabHostOptions(undefined)).toEqual(['gitlab.com'])
+  })
 })
 
 describe('ConnectPanel provider rows', () => {

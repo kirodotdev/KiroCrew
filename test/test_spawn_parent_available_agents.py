@@ -548,7 +548,7 @@ class TestGateWiring:
         loop_thread = threading.get_ident()
         seen: list[int] = []
 
-        def resolver(parent_template: str) -> Any:
+        def resolver(parent_template: str, *_args: Any, **_kwargs: Any) -> Any:
             seen.append(threading.get_ident())
             assert parent_template == "orchestrator"
             return (("agent1", "agent2", "agent3"),)
@@ -720,3 +720,210 @@ class TestToolDescriptionRoster:
         monkeypatch.setattr(spawn_tools, "_parent_template_for_roster", lambda: "orchestrator")
         hint = spawn_tools._agent_roster_hint()
         assert "rogue" in hint and "availableAgents" not in hint
+
+
+class TestProjectScopeParent:
+    """A parent whose spec lives in ``<project>/.kiro/agents``.
+
+    kiro-cli loads ``--agent <name>`` from the session's project first, so the
+    gate resolves the parent's declaration there too -- but only ever ADDS it to
+    the user-level lists, so the project scope can narrow what a parent may
+    spawn and never widen it.
+    """
+
+    @pytest.fixture
+    def project(self, tmp_path: Path, agents_dir: Path) -> Path:
+        root = tmp_path / "repo"
+        (root / ".kiro" / "agents").mkdir(parents=True)
+        for name in ("agent1", "rogue"):
+            _write_spec(agents_dir, name)
+        return root
+
+    @pytest.fixture
+    def resolver(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        asked: list[str] = []
+
+        def _resolve(key: str) -> list[str]:
+            asked.append(key)
+            return [str(project)] if key == "dashboard:repo" else []
+
+        monkeypatch.setattr(sa, "_parent_project_resolver", _resolve)
+        return asked
+
+    def test_a_project_only_parent_declaration_refuses_rogue(
+        self, project: Path, resolver: list[str]
+    ) -> None:
+        _write_spec(
+            project / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        with patch.object(
+            sa, "read_session_execution", return_value=_parent_execution("proj-lead")
+        ):
+            policy = sa.parent_spawn_policy("dashboard:repo")
+        assert policy == ("proj-lead", (("agent1",),))
+        assert resolver == ["dashboard:repo"]
+        denial = sa._vet_parent_available_agents(policy, "rogue")
+        assert denial is not None and "availableAgents" in denial
+        assert sa._vet_parent_available_agents(policy, "agent1") is None
+
+    def test_a_project_spec_cannot_widen_the_user_level_declaration(
+        self, project: Path, agents_dir: Path, resolver: list[str]
+    ) -> None:
+        """The project spec of the same name OMITS the key ("allow all"): the
+        user-level list still applies."""
+        _write_spec(agents_dir, "lead", toolsSettings={"subagent": {"availableAgents": ["agent1"]}})
+        _write_spec(project / ".kiro" / "agents", "lead")
+        lists = sa.parent_template_allowlists("dashboard:repo", "lead")
+        assert lists == (("agent1",),)
+        assert sa._vet_parent_available_agents(("lead", lists), "rogue") is not None
+
+    def test_a_project_spec_narrows_a_wider_user_level_declaration(
+        self, project: Path, agents_dir: Path, resolver: list[str]
+    ) -> None:
+        _write_spec(
+            agents_dir,
+            "lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1", "rogue"]}},
+        )
+        _write_spec(
+            project / ".kiro" / "agents",
+            "lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        lists = sa.parent_template_allowlists("dashboard:repo", "lead")
+        assert lists == (("agent1", "rogue"), ("agent1",))
+        assert sa._vet_parent_available_agents(("lead", lists), "rogue") is not None
+        assert sa._vet_parent_available_agents(("lead", lists), "agent1") is None
+
+    def test_no_declaration_in_either_scope_admits_everything(
+        self, project: Path, resolver: list[str]
+    ) -> None:
+        _write_spec(project / ".kiro" / "agents", "lead")
+        assert sa.parent_template_allowlists("dashboard:repo", "lead") == ()
+
+    def test_an_unreadable_project_spec_is_unknown(
+        self, project: Path, resolver: list[str]
+    ) -> None:
+        (project / ".kiro" / "agents" / "lead.json").write_text("{not json", encoding="utf-8")
+        assert sa.parent_template_allowlists("dashboard:repo", "lead") is None
+        assert sa._vet_parent_available_agents(("lead", None), "agent1") is not None
+
+    def test_another_sessions_project_is_not_read(self, project: Path, resolver: list[str]) -> None:
+        """The resolver answers only the session's OWN project: a different
+        session key resolves the user scope alone."""
+        _write_spec(
+            project / ".kiro" / "agents",
+            "proj-lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        with patch.object(sa, "sel"):
+            assert sa.parent_template_allowlists("dashboard:other", "proj-lead") == ()
+
+    def test_an_unresolved_project_parent_is_surfaced(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No project dir and no user-level spec: admitted as today, but logged
+        at WARNING and audited, never silent."""
+        monkeypatch.setattr(sa, "_parent_project_resolver", None)
+        monkeypatch.setattr(sa, "_UNRESOLVED_PARENT_WARNED", set())
+        audit = MagicMock()
+        with patch.object(sa, "sel", return_value=audit), caplog.at_level("WARNING"):
+            assert sa.parent_template_allowlists("dashboard:x", "proj-only") == ()
+            assert sa.parent_template_allowlists("dashboard:x", "proj-only") == ()
+        warnings = [r for r in caplog.records if "project directory is unknown" in r.getMessage()]
+        assert len(warnings) == 1, "warned once per name"
+        calls = audit.log_tool_invocation.call_args_list
+        assert len(calls) == 2, "audited every time"
+        assert calls[0].kwargs["outcome"] == "parent_spec_unresolved"
+        assert calls[0].kwargs["session_key"] == "dashboard:x"
+
+    def test_a_user_level_parent_is_not_surfaced(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sa, "_parent_project_resolver", None)
+        _write_spec(agents_dir, "lead")
+        audit = MagicMock()
+        with patch.object(sa, "sel", return_value=audit):
+            assert sa.parent_template_allowlists("dashboard:x", "lead") == ()
+        audit.log_tool_invocation.assert_not_called()
+
+    def test_a_raising_resolver_is_unknown_not_a_crash(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(key: str) -> str:
+            raise RuntimeError("state gone")
+
+        monkeypatch.setattr(sa, "_parent_project_resolver", _boom)
+        assert sa.parent_project_dirs("dashboard:x") == ()
+
+    def test_every_project_directory_applies(
+        self, tmp_path: Path, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live runtime's cwd and the staged slot project both apply: a
+        restrictive spec in either one refuses, so a stale binding never widens."""
+        live, staged = tmp_path / "live", tmp_path / "staged"
+        for root in (live, staged):
+            (root / ".kiro" / "agents").mkdir(parents=True)
+        _write_spec(
+            live / ".kiro" / "agents",
+            "lead",
+            toolsSettings={"subagent": {"availableAgents": ["agent1"]}},
+        )
+        _write_spec(staged / ".kiro" / "agents", "lead")
+        monkeypatch.setattr(sa, "_parent_project_resolver", lambda key: [live, staged, live])
+        lists = sa.parent_template_allowlists("dashboard:repo", "lead")
+        assert lists == (("agent1",),)
+        assert sa._vet_parent_available_agents(("lead", lists), "rogue") is not None
+
+
+class TestSessionProjectForSpawnGate:
+    @staticmethod
+    def _state(slots: dict[str, Any], live_cwd: str = "") -> MagicMock:
+        state = MagicMock(_slots=slots)
+        state.sessions.get_provider = MagicMock(
+            return_value=MagicMock(cwd=live_cwd) if live_cwd else None
+        )
+        return state
+
+    def test_a_slot_answers_its_own_project_only(self, tmp_path: Path) -> None:
+        from kiro_crew.dashboard.handlers._shared import session_project_for_spawn_gate
+
+        slot = MagicMock(project=str(tmp_path), project_dir=None)
+        state = self._state({"a": slot})
+        with patch(
+            "kiro_crew.dashboard.chat_utils.effective_session_key",
+            side_effect=lambda s: "dashboard:a" if s is slot else "",
+        ):
+            assert session_project_for_spawn_gate(state, "dashboard:a") == [tmp_path]
+            # Not active_project_dir's "the one shared project" fallback.
+            assert session_project_for_spawn_gate(state, "dashboard:b") == []
+
+    def test_a_cleared_project_keeps_the_live_runtime_cwd(self, tmp_path: Path) -> None:
+        """``set_project(clear=true)`` stages an empty project and resets the
+        runtime only on the next message: the running agent still loaded its
+        spec from the old directory, so that directory is still returned."""
+        from kiro_crew.dashboard.handlers._shared import session_project_for_spawn_gate
+
+        old, new = tmp_path / "old", tmp_path / "new"
+        cleared = MagicMock(project="", project_dir=None)
+        moved = MagicMock(project=str(new), project_dir=None)
+        with patch(
+            "kiro_crew.dashboard.chat_utils.effective_session_key",
+            side_effect=lambda s: "dashboard:a",
+        ):
+            state = self._state({"a": cleared}, live_cwd=str(old))
+            assert session_project_for_spawn_gate(state, "dashboard:a") == [old]
+            state = self._state({"a": moved}, live_cwd=str(old))
+            assert session_project_for_spawn_gate(state, "dashboard:a") == [old, new]
+
+    def test_a_subagent_parent_answers_its_run_cwd(self, tmp_path: Path) -> None:
+        from kiro_crew.dashboard.handlers._shared import session_project_for_spawn_gate
+
+        state = self._state({})
+        state.subagents._agents = {"abc": MagicMock(cwd=str(tmp_path)), "nocwd": MagicMock(cwd="")}
+        assert session_project_for_spawn_gate(state, "subagent:abc") == [tmp_path]
+        assert session_project_for_spawn_gate(state, "subagent:nocwd") == []
+        assert session_project_for_spawn_gate(state, "subagent:missing") == []
+        assert session_project_for_spawn_gate(state, "") == []

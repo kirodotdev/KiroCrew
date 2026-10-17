@@ -354,6 +354,8 @@ def test_seeded_home_importable_without_pytest(
         "seeded_home_fixture leaked into pytest-absent build"
     )
     assert "seeded_home_fixture" not in fresh.__all__
+    assert not hasattr(fresh, "one_pool_thread")
+    assert "one_pool_thread" not in fresh.__all__
 
     # Smoke: the CM still works end-to-end.
     with fresh.seeded_home("empty") as home:

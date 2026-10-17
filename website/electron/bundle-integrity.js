@@ -187,6 +187,23 @@ const INSTALLED_DIALOG_TITLE = "Kiro Crew — installation finished";
 // dialog vanishing mid-sentence.
 const BUNDLE_COMPLETE_MESSAGE = "Installation finished — starting Kiro Crew…";
 
+// The dialog's copy when the backend tree this app was running from is gone
+// after a stale-bundle incident: an install manager pruned the running
+// version's directory, so nothing is installing and waiting cannot help. The
+// remedy is the one instruction, with the accent on Quit; reopening starts the
+// installed version. The probe stays armed but the copy promises nothing about
+// it: a reader told both to quit and that the app may start by itself cannot
+// tell which to do. "App files" rather than "backend": the reader is a user.
+// The reinstall names the user's own route because the app ships through more
+// than one (the installer, an install manager), and says the data survives:
+// chats and settings live in the Kiro Crew home, outside the app's install
+// directory, so a reinstall does not touch them.
+const PRUNED_DIALOG_TITLE = "Kiro Crew — app files missing";
+const PRUNED_BACKEND_MESSAGE = "Some of Kiro Crew's app files were removed, likely "
+  + "by an update. Quit and reopen Kiro Crew. If it still doesn't start after "
+  + "reopening, reinstall Kiro Crew the same way you installed it; your chats and "
+  + "settings are kept.";
+
 /**
  * Which bundle parts would make spawnGateway REFUSE to launch `bin` right now.
  *
@@ -238,9 +255,16 @@ function launchBlockingBundleParts(fs, path, bin) {
  * @param {string[]|null} missing  from launchBlockingBundleParts. null (launcher
  *   not resolvable yet) is still installing with an unknown count; only an
  *   empty ARRAY is complete.
+ * @param {{pruned?: boolean}} [options]  `pruned` when the refusal followed a
+ *   stale-bundle incident: the backend tree was removed, so the dialog keeps the
+ *   pruned copy until the probe finds a complete tree, and only then paints the
+ *   completion frame.
  * @returns {{complete: boolean, title: string, message: string}}
  */
-function nextInstallingDialogState(missing) {
+function nextInstallingDialogState(missing, { pruned = false } = {}) {
+  if (pruned && !(Array.isArray(missing) && missing.length === 0)) {
+    return { complete: false, title: PRUNED_DIALOG_TITLE, message: PRUNED_BACKEND_MESSAGE };
+  }
   if (!Array.isArray(missing)) {
     // Still the auto-retry dialog: the probe is armed and will fire, so the
     // copy must keep promising that rather than switching to a manual "retry".
@@ -409,5 +433,7 @@ module.exports = {
   describeIncompleteBundle,
   nextInstallingDialogState,
   INSTALLING_DIALOG_TITLE,
+  PRUNED_BACKEND_MESSAGE,
+  PRUNED_DIALOG_TITLE,
   shouldReclassifyAsInstalling,
 };

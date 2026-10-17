@@ -94,13 +94,11 @@ def _captured_daemon_env(monkeypatch, tmp_path: Path, inherited_path: str) -> di
 def _pool_key(tmp_path: Path) -> PoolKey:
     return PoolKey(
         server_name="declared-path-mcp",
-        agent_name="daemon-path-test",
         command_args_hash="a" * 8,
         effective_env_hash="e" * 8,
         work_dir=str(tmp_path),
         binary_version="1.0",
         os_uid=1000,
-        config_snapshot_hash="c" * 8,
     )
 
 

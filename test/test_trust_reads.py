@@ -1295,13 +1295,39 @@ class TestIsReadOnlyBash:
     def test_devnull_prefix_is_not_a_real_file_sink(self):
         r"""`/dev/null` must match the literal device, not a path prefix.
 
-        Without the `(?![\w./-])` guard the scrub would strip the redirect in
-        `>/dev/nullx` (a write to file `nullx`) and misclassify it read-only.
+        The scrub ends each discard idiom where its shell word ends, so it
+        leaves `>/dev/nullx` (a write to file `nullx`) for the unsafe check.
         """
         assert is_read_only_bash("echo x >/dev/nullx") is False
         assert is_read_only_bash("echo p > /dev/null/../../etc/passwd") is False
         assert is_read_only_bash("echo x &>/dev/nullfoo") is False
         assert is_read_only_bash("echo x 2>/dev/null.bak") is False
+
+    def test_a_discard_idiom_continued_by_more_word_is_a_write(self):
+        """Quoting, an escape or a non-digit after the idiom continues the word.
+
+        bash opens `>&2x` as the file `2x` (both streams), and `>/dev/null"x"`
+        as `/dev/nullx`: neither is a discard, so neither is read-only.
+        """
+        assert is_read_only_bash("ls >&2x") is False
+        assert is_read_only_bash("ls 2>&1x") is False
+        assert is_read_only_bash('ls >&2"x"') is False
+        assert is_read_only_bash('ls >/dev/null"x"') is False
+        assert is_read_only_bash("ls >/dev/null'x'") is False
+        assert is_read_only_bash("ls >/dev/null\\x") is False
+        # bash ends a word only at space, tab or newline, and reads only ASCII
+        # digits as a descriptor: anything else continues the word.
+        for glue in ("\u00a0", "\r", "\v", "\f", "\u2003"):
+            assert is_read_only_bash(f"ls >&2{glue}report") is False, repr(glue)
+            assert is_read_only_bash(f"ls 2>/dev/null{glue}report") is False, repr(glue)
+            assert is_read_only_bash(f"ls >{glue}/dev/null") is False, repr(glue)
+        assert is_read_only_bash("ls >&\u0662") is False
+        assert is_read_only_bash("ls 2>&1\u0662") is False
+        # Ending at whitespace, an operator or the end of the line stays a discard.
+        assert is_read_only_bash("ls >&2") is True
+        assert is_read_only_bash("ls 2>&1|head") is True
+        assert is_read_only_bash("ls 2>/dev/null;ls") is True
+        assert is_read_only_bash("ls 2>\t/dev/null\t-a") is True
 
     def test_command_substitution_rejected(self):
         assert is_read_only_bash("echo $(rm -rf /)") is False

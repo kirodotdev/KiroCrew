@@ -73,6 +73,14 @@ export function fileTypeForKind(kind: Artifact['kind']): FileType {
     // content — it never flows through ContentRenderer, but map it explicitly
     // so a stray call can't misroute image bytes into the markdown path.
     case 'image':    return 'image'
+    // A dashboard artifact's content is a layout PACKAGE, not a document:
+    // `artifact_store/dashboard_package.py` canonicalises every dashboard write
+    // into a JSON object (`bound_to` / `model` / `view` / `theme`), so the
+    // stored bytes are always JSON and the json view is the renderer that
+    // already matches them. Without this case it took the default branch and
+    // the package was flowed through the prose renderer, which collapsed its
+    // newlines and interpreted markup inside a label instead of showing it.
+    case 'dashboard': return 'json'
     // widget / html shouldn't reach here, but fall back to markdown rather
     // than throwing — keeps the page survivable for unexpected enum values.
     default:         return 'markdown'

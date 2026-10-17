@@ -13,7 +13,7 @@ from aiohttp import web
 
 from kiro_crew.config.loader import ConfigReadError, coerce_dict_section, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
-from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec, require_owner_dashboard_request
 from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
@@ -566,11 +566,9 @@ def _log_backfill_result(task: asyncio.Future[int]) -> None:
         logger.info("Embedded %d imported memories in the background", embedded)
 
 
-def _rebuild_agent_config() -> None:
-    # Circular import: agent imports dashboard handlers during gateway startup.
-    from kiro_crew.agent import rebuild_agent_config
-
-    rebuild_agent_config()
+def _rebuild_agent_config() -> bool:
+    """Rebuild the agent spec after an MCP import; True only when it was rewritten."""
+    return rebuild_agent_spec("MCP import")
 
 
 def _persist_state(completed: bool) -> None:
@@ -642,6 +640,8 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
             config_selected = {pair for pair in selected if pair[1] != "mcp_servers"}
             mcp_selected = {pair for pair in selected if pair[1] == "mcp_servers"}
             results: list[object] = []
+            # None when nothing touched MCP, so no rebuild ran to report on.
+            spec_rewritten: bool | None = None
             if config_selected:
                 # run_config_write, not a manual lock + bare to_thread: the
                 # config-category importer read-modify-writes config.json, and
@@ -673,9 +673,12 @@ async def api_onboarding_import_apply(request: web.Request) -> web.Response:
                         conflict_strategy,
                     )
                 )
-                await asyncio.to_thread(_rebuild_agent_config)
+                spec_rewritten = await asyncio.to_thread(_rebuild_agent_config)
             result = _merge_import_results(results, conflict_strategy)
-            response = web.json_response(_apply_response(result))
+            payload = _apply_response(result)
+            if spec_rewritten is not None:
+                payload["agent_spec_rewritten"] = spec_rewritten
+            response = web.json_response(payload)
             # Import wrote episodic rows without vectors so this request could
             # return in ~1s instead of minutes. Embed them on a worker thread now
             # — inside the import lock's scope but not awaited, so the response

@@ -186,6 +186,65 @@ describe('crew capability draft editor with mocked HTTP', () => {
     expect(result.dirty).toHaveBeenLastCalledWith(false)
   })
 
+  it('warns on review and after save when the member backend cannot apply the spec, and still saves', async () => {
+    view = { ...view, backend_warning: null }
+    server.use(http.post(`${endpoint}/preview`, async ({ request }) => {
+      const body = await request.json() as CapabilityDraft
+      previewBodies.push(body)
+      return HttpResponse.json({ ...view, backend_warning: { code: 'tool_limits_unsupported', backend: 'kas', setting: 'agent.member_acp_backend', servers: ['search'] }, preview_token: 'signed-preview', impact: [] })
+    }), http.put(endpoint, async ({ request }) => {
+      saveBodies.push(await request.json() as CapabilityDraft & { preview_token: string })
+      view = { ...view, revision: 'r2', backend_warning: { code: 'harness_unsupported', backend: 'codex', setting: 'agent.member_acp_backend' } }
+      return HttpResponse.json(view)
+    }))
+    const result = mount(); await ready()
+    expect(screen.queryByTestId('capability-backend-warning')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
+    await pickState('Search read', 'Removed')
+    await review()
+    expect(screen.getByTestId('capability-backend-warning')).toHaveTextContent("Saving works, but new chats with crewA won't start. Their backend (kas) can't turn off individual tools inside the search connection. To fix it, go to MCP Servers and turn that whole connection off, or turn those tools back on.")
+    expect(screen.queryByTestId('capability-backend-command')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save reviewed changes' }))
+    await waitFor(() => expect(result.saved).toHaveBeenCalledOnce())
+    expect(saveBodies).toHaveLength(1)
+    const notes = screen.getAllByTestId('capability-backend-warning')
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toHaveAttribute('role', 'note')
+    expect(notes[0]).toHaveTextContent("Saving works, but new chats with crewA won't start. They use a backend (codex) that ignores saved capabilities. To fix it, run the command below in a terminal, then start a new chat.")
+    // The command sits on its own line as a copy button, never inside the sentence.
+    expect(within(screen.getByTestId('capability-backend-command')).getByRole('button')).toHaveTextContent('kirocrew config set agent.member_acp_backend kas')
+  })
+
+  it('names the second fix when the harness fix would hit the tool limits next', async () => {
+    view = { ...view, backend_warning: { code: 'harness_unsupported', backend: 'codex', setting: 'agent.member_acp_backend', servers: ['search'] } }
+    mount(); await ready()
+    const note = screen.getByTestId('capability-backend-warning')
+    expect(within(screen.getByTestId('capability-backend-command')).getByRole('button')).toHaveTextContent('kirocrew config set agent.member_acp_backend kas')
+    expect(note).toHaveTextContent('Then go to MCP Servers and turn the search connection off, or turn its tools back on')
+    expect(screen.getByTestId('capability-backend-open-tab')).toHaveTextContent('MCP Servers')
+  })
+
+  it('scopes a default-backend refusal to Slack, scheduled and spawned work and offers no one-line switch', async () => {
+    view = { ...view, backend_warning: { code: 'harness_unsupported', backend: 'claude', setting: 'agent.acp_backend', servers: ['search'] } }
+    mount(); await ready()
+    const note = screen.getByTestId('capability-backend-warning')
+    expect(note).toHaveTextContent("Saving works, but crewA's Slack threads, scheduled jobs and spawned tasks won't start. They use the default backend (claude), which ignores saved capabilities. Chats with crewA are not affected.")
+    expect(screen.queryByTestId('capability-backend-command')).not.toBeInTheDocument()
+    expect(note).not.toHaveTextContent('Then go to')
+    expect(screen.queryByTestId('capability-backend-open-tab')).not.toBeInTheDocument()
+  })
+
+  it('scopes a default-backend tool-limit refusal to the same entry points and opens MCP Servers', async () => {
+    view = { ...view, backend_warning: { code: 'tool_limits_unsupported', backend: 'kas', setting: 'agent.acp_backend', servers: ['search'] } }
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
+    const note = screen.getByTestId('capability-backend-warning')
+    expect(note).toHaveTextContent("Saving works, but crewA's Slack threads, scheduled jobs and spawned tasks won't start. Their default backend (kas) can't turn off individual tools inside the search connection. Chats with crewA are not affected.")
+    expect(note).not.toHaveTextContent('new chats with crewA')
+    fireEvent.click(screen.getByTestId('capability-backend-open-tab'))
+    expect(screen.getByRole('tab', { name: 'MCP Servers', exact: true })).toHaveAttribute('aria-selected', 'true')
+  })
+
   it('keeps drafts and previews through pane hiding and invalidates preview after an edit', async () => {
     const result = mount(); await ready()
     fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
@@ -202,13 +261,13 @@ describe('crew capability draft editor with mocked HTTP', () => {
     view.mode = 'legacy_snapshot'
     mount(); await ready()
     expect(screen.getByRole('combobox', { name: 'Source for Search' })).toBeDisabled()
-    expect(screen.getByTestId('capability-enroll-to-edit')).toHaveTextContent('Checked: edit overrides below. Unchecked: read-only.')
+    expect(screen.getByTestId('capability-enroll-to-edit')).toHaveTextContent("Check this box to follow the parent and add this member's own overrides on top. While it is unchecked, the fields below are read-only.")
     expect(screen.queryByText('Tick “Follow the parent template” above to edit.')).toBeNull()
-    expect(screen.getByText('Not following parent (independent legacy snapshot)')).toBeInTheDocument()
+    expect(screen.getByText('Not following parent (own copy)')).toBeInTheDocument()
     const enroll = screen.getByRole('checkbox', { name: 'Follow the parent template' })
     // The guarantee is next to the checkbox, not buried in a long helper.
     expect(enroll.closest('label')).toHaveTextContent('Nothing changes until you save. Following keeps your values and empty fields.')
-    expect(enroll).toHaveAccessibleDescription('Nothing changes until you save. Following keeps your values and empty fields. Checked: edit overrides below. Unchecked: read-only.')
+    expect(enroll).toHaveAccessibleDescription("Nothing changes until you save. Following keeps your values and empty fields. Check this box to follow the parent and add this member's own overrides on top. While it is unchecked, the fields below are read-only.")
     expect(enroll.closest('label')).toHaveAttribute('for', enroll.id)
     expect(enroll.id).toBe('crew-capabilities-enroll')
     fireEvent.click(screen.getByText('Follow the parent template', { selector: 'span' }))
@@ -216,7 +275,7 @@ describe('crew capability draft editor with mocked HTTP', () => {
     // The badge names the SAVED state, so a ticked Follow box beside it reads
     // as a draft, not as a contradiction.
     expect(enroll).toBeChecked()
-    expect(screen.getByText('Not following parent (independent legacy snapshot)')).toBeInTheDocument()
+    expect(screen.getByText('Not following parent (own copy)')).toBeInTheDocument()
     // The pane calls its pending edits a draft everywhere (footer, confirm, stale
     // notice), so the badge uses the same word instead of the editor's generic one.
     expect(screen.getByText('Unsaved draft')).toBeInTheDocument()
@@ -225,6 +284,155 @@ describe('crew capability draft editor with mocked HTTP', () => {
     await review()
     expect(previewBodies[0].enroll).toBe(true)
     expect(previewBodies[0].operations).toEqual([])
+  })
+
+  it('says a shared member runs the parent template as-is and names checking the box as the way to add overrides', async () => {
+    view.mode = 'shared'
+    mount(); await ready()
+    // A shared member runs the parent template's own file with no overrides of
+    // its own, so the badge says that rather than "Not following parent", and
+    // it must not read as the following badge beside the unchecked Follow box.
+    expect(screen.getByText('Parent template as-is (no overrides)')).toBeInTheDocument()
+    expect(screen.queryByText('Not following parent')).toBeNull()
+    expect(screen.queryByText('Following parent')).toBeNull()
+    const enroll = screen.getByRole('checkbox', { name: 'Follow the parent template' })
+    expect(enroll).not.toBeChecked()
+    expect(screen.getByTestId('capability-enroll-to-edit')).toHaveTextContent("Check this box to follow the parent and add this member's own overrides on top. While it is unchecked, the fields below are read-only.")
+    expect(screen.getByRole('combobox', { name: 'Source for Search' })).toBeDisabled()
+    fireEvent.click(enroll)
+    expect(screen.getByRole('combobox', { name: 'Source for Search' })).not.toBeDisabled()
+  })
+
+  it('lets a following member stop following the parent after a confirm', async () => {
+    const detachBodies: unknown[] = []
+    server.use(http.post(`${endpoint}/detach`, async ({ request }) => {
+      detachBodies.push(await request.json())
+      view = { ...view, mode: 'legacy_snapshot', revision: 'r2', parent_changes: [] }
+      return HttpResponse.json(view)
+    }))
+    const { saved } = mount(); await ready()
+    const stop = screen.getByRole('button', { name: 'Stop following the parent' })
+    // The help names the way back, so the button does not read as a one-way door.
+    expect(stop).toHaveAccessibleDescription("Keeps the current values as this member's own. Parent changes stop arriving. You can follow the parent again any time.")
+    // Keep following closes the confirm and sends nothing.
+    fireEvent.click(stop)
+    expect(await screen.findByText('Stop following the parent for crewA?')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep following' }))
+    await waitFor(() => expect(screen.queryByText('Stop following the parent for crewA?')).toBeNull())
+    expect(detachBodies).toEqual([])
+    fireEvent.click(stop)
+    // The confirm names where the kept copy is edited afterwards: the crew editor's template pane.
+    // The dialog names the way back and where the values are edited afterwards.
+    expect(await screen.findByText(/crewA keeps every value it uses now, as its own copy\. Changes to atlas will no longer reach it\. To edit those values later, open the “Built from” tab of this same editor\. Afterwards a “Follow the parent template” checkbox appears on this page, so you can follow atlas again any time\./)).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('capability-detach-confirm'))
+    await waitFor(() => expect(detachBodies).toEqual([{ revision: 'r1' }]))
+    await waitFor(() => expect(saved).toHaveBeenCalled())
+    // Back to an independent copy: the way back in is the enroll checkbox again.
+    expect(await screen.findByRole('checkbox', { name: 'Follow the parent template' })).not.toBeChecked()
+    expect(screen.queryByRole('button', { name: 'Stop following the parent' })).toBeNull()
+    expect(saveBodies).toEqual([])
+  })
+
+  it('offers stop following only on a clean pane, and never to a member that does not follow', async () => {
+    mount(); await ready()
+    await pickState('Search', 'Inherited')
+    expect(screen.getByRole('button', { name: 'Stop following the parent' })).toBeDisabled()
+    expect(screen.getByText('Save or discard your draft first.')).toBeInTheDocument()
+  })
+
+  it.each([
+    { code: 'detach_tool_limits_unkept' as const, text: 'crewA launches a server with single-tool limits, which only a saved setup can enforce. Remove the limit (set the whole server to allowed), save, then stop following.' },
+  ])('disables stop following up front and says why when the view reports $code', async ({ code, text }) => {
+    view.detach_blocked = code
+    mount(); await ready()
+    const stop = screen.getByRole('button', { name: 'Stop following the parent' })
+    expect(stop).toBeDisabled()
+    expect(stop).toHaveAccessibleDescription(text)
+  })
+
+  it('asks the owner to confirm turning the global mcp.json off, and sends the confirmation', async () => {
+    view.detach_mcp_json_loss = true
+    const detachBodies: unknown[] = []
+    server.use(http.post(`${endpoint}/detach`, async ({ request }) => {
+      detachBodies.push(await request.json())
+      view = { ...view, mode: 'legacy_snapshot', revision: 'r2', detach_mcp_json_loss: false }
+      return HttpResponse.json(view)
+    }))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    expect(await screen.findByTestId('capability-detach-mcp-json')).toHaveTextContent('crewA also loads servers from the global mcp.json. Stopping turns that off for its own copy, so it stops loading them.')
+    fireEvent.click(screen.getByTestId('capability-detach-confirm'))
+    await waitFor(() => expect(detachBodies).toEqual([{ revision: 'r1', accept_mcp_json: true }]))
+  })
+
+  it('sends no confirmation, and shows no warning, for a member that does not read the global mcp.json', async () => {
+    const detachBodies: unknown[] = []
+    server.use(http.post(`${endpoint}/detach`, async ({ request }) => {
+      detachBodies.push(await request.json())
+      view = { ...view, mode: 'legacy_snapshot', revision: 'r2' }
+      return HttpResponse.json(view)
+    }))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    await screen.findByTestId('capability-detach-confirm')
+    expect(screen.queryByTestId('capability-detach-mcp-json')).toBeNull()
+    fireEvent.click(screen.getByTestId('capability-detach-confirm'))
+    await waitFor(() => expect(detachBodies).toEqual([{ revision: 'r1' }]))
+  })
+
+  it('disables stop following after a refusal that names a save, with the reason as its help', async () => {
+    server.use(http.post(`${endpoint}/detach`, () => HttpResponse.json({ error: 'detach_removal_unkept', code: 'detach_removal_unkept' }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    fireEvent.click(await screen.findByTestId('capability-detach-confirm'))
+    const text = 'crewA removed something from a template Crew owns, and the copy would get it back. Set each removed row back to Inherited, save, then stop following.'
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop following the parent' })).toBeDisabled())
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    // The help line ("follow again any time") would contradict the notice, so it steps aside.
+    expect(screen.queryByText(/follow the parent again any time/)).toBeNull()
+  })
+
+  it('shows no stop following control on an independent member', async () => {
+    view.mode = 'shared'
+    mount(); await ready()
+    expect(screen.queryByRole('button', { name: 'Stop following the parent' })).toBeNull()
+  })
+
+  it('says a refused stop following changed nothing, without a raw code, and keeps the member following', async () => {
+    server.use(http.post(`${endpoint}/detach`, () => HttpResponse.json({ error: 'materialization_pending', code: 'materialization_pending' }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    fireEvent.click(await screen.findByTestId('capability-detach-confirm'))
+    expect(await screen.findByText('Stopping was refused. Nothing changed and the member still follows the parent. Reload and try again.')).toBeInTheDocument()
+    expect(screen.queryByText(/materialization_pending/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop following the parent' })).toBeInTheDocument()
+  })
+
+  it.each(['materialization_changed', 'foreign_private_copy', 'stale_revision'])('shows no draft advice for a refused stop following with %s', async (code) => {
+    server.use(http.post(`${endpoint}/detach`, () => HttpResponse.json({ error: code, code }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    fireEvent.click(await screen.findByTestId('capability-detach-confirm'))
+    expect(await screen.findByText('Stopping was refused. Nothing changed and the member still follows the parent. Reload and try again.')).toBeInTheDocument()
+    expect(screen.queryByText(new RegExp(code))).toBeNull()
+    expect(screen.queryByText(/Your draft is kept/)).toBeNull()
+  })
+
+  it.each([
+    { code: 'detach_tool_limits_unkept', text: 'crewA launches a server with single-tool limits, which only a saved setup can enforce. Remove the limit (set the whole server to allowed), save, then stop following.' },
+    { code: 'detach_removal_unkept', text: 'crewA removed something from a template Crew owns, and the copy would get it back. Set each removed row back to Inherited, save, then stop following.' },
+  ])('names the save that clears a $code refusal instead of draft advice', async ({ code, text }) => {
+    server.use(http.post(`${endpoint}/detach`, () => HttpResponse.json({ error: code, code }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop following the parent' }))
+    fireEvent.click(await screen.findByTestId('capability-detach-confirm'))
+    // The reason is shown once, in the error notice; error text stays out of the help line.
+    expect(await screen.findByText(text)).toBeInTheDocument()
+    // No draft exists when stopping is refused, so the draft-refusal copy must not show.
+    expect(screen.queryByText(/Your draft is kept/)).toBeNull()
+    expect(screen.queryByText(new RegExp(code))).toBeNull()
+    // The reason names a save, so the button waits for it instead of inviting a second refusal.
+    expect(screen.getByRole('button', { name: 'Stop following the parent' })).toBeDisabled()
   })
 
   it('keeps tool exposure, agent approvals and MCP approvals separate', async () => {
@@ -238,6 +446,58 @@ describe('crew capability draft editor with mocked HTTP', () => {
       { section: 'autoApprove', id: '@search/list', action: 'set', value: true },
     ])
     expect(screen.getByText('This change grants more automatic approval.')).toBeInTheDocument()
+  })
+
+  it('names each approval the save will withhold, and why, before the save', async () => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ ...view, preview_token: 'signed-preview', impact: [], withheld_approvals: [
+      { section: 'autoApprove', id: '@search/list', reason: 'governed' },
+      { section: 'allowedTools', id: '@absent/tool', reason: 'not_connected' },
+      { section: 'autoApprove', id: '@kirocrew-mate/ask', reason: 'managed' },
+      { section: 'autoApprove', id: '@other/ask', reason: 'unexplained' },
+    ] })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Auto-Approved' }))
+    await pickState('Search list', 'Override')
+    fireEvent.change(screen.getByLabelText('Exact tool reference, such as @server/tool'), { target: { value: '@absent/tool' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add to draft' }))
+    await review()
+    const note = screen.getByTestId('capability-preview-withheld')
+    expect(note).toHaveTextContent('Saving will not auto-approve these tools for crewA, so calls to them will still ask for approval.')
+    expect(note).toHaveTextContent('@search/list: A security profile governs this server, so Kiro Crew withholds the approval.')
+    expect(note).toHaveTextContent('@absent/tool: crewA has no enabled connection to this server. Add or enable it in the MCP Servers tab.')
+    expect(note).toHaveTextContent('@kirocrew-mate/ask: Kiro Crew rebuilds this connection itself, and the rebuilt connection keeps no approvals.')
+    // The note leads the review, so the per-member summary follows from it.
+    const members = screen.getByTestId('capability-preview-members')
+    expect(note.compareDocumentPosition(members) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The not-connected fix opens the tab it names.
+    expect(note).toHaveTextContent('@other/ask: Kiro Crew will not save this approval, and no known setting explains why. Report this as a bug.')
+    // The member name renders as code, and a fully withheld draft's summary says why nothing changes.
+    expect(within(note).getAllByText('crewA', { selector: 'code' }).length).toBeGreaterThan(0)
+    expect(members).toHaveTextContent('crewA: saving changes nothing, because none of these approvals can be kept.')
+    expect(members).not.toHaveTextContent('no effective value changes')
+    fireEvent.click(within(note).getByRole('button', { name: 'Open the MCP Servers tab (keeps your draft)' }))
+    expect(screen.getByRole('tab', { name: 'MCP Servers', exact: true })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('names a refused approval reference instead of the generic retry copy', async () => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ error: 'invalid_approval_ref', code: 'invalid_approval_ref', ref: '@search' }, { status: 400 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Auto-Approved' }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Approval list' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'MCP server approval list' }))
+    fireEvent.change(screen.getByLabelText('Exact tool reference, such as @server/tool'), { target: { value: '@search' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add to draft' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes', exact: true }))
+    expect(await screen.findByText(/^@search is not a valid approval entry\. An MCP server approval needs the @server\/tool form/)).toBeInTheDocument()
+    expect(screen.queryByText('The capabilities request failed. Your draft is kept. Reload from server and retry.')).toBeNull()
+  })
+
+  it('names the code of any other refused draft shape', async () => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ error: 'invalid_set_value', code: 'invalid_set_value' }, { status: 400 })))
+    mount(); await ready()
+    await pickState('Search', 'Removed')
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes', exact: true }))
+    expect(await screen.findByText('The server refused this draft (invalid_set_value). Your draft is kept. Reloading will not change this: edit or discard the draft.')).toBeInTheDocument()
   })
 
   it('hides an empty approval heading without removing the list choice or draft rows', async () => {
@@ -634,6 +894,43 @@ describe('crew capability draft editor with mocked HTTP', () => {
     await review()
     expect(previewBodies[1].revision).toBe('r3')
     expect(previewBodies[1].operations).toEqual(previewBodies[0].operations)
+  })
+
+  it('names a permissions refusal on review instead of sending the user round a reload loop', async () => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ error: 'alternate_permissions_require_review', code: 'alternate_permissions_require_review' }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
+    await pickState('Search read', 'Removed')
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+    await screen.findByText(/This page cannot change approvals for crewA: its agent file in ~\/\.kiro\/agents has hand-written permission settings/)
+    expect(screen.queryByText(/The saved version changed/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Use the new version for this draft' })).not.toBeInTheDocument()
+  })
+
+  it('reports any other non-stale 409 by its code, not as a changed version', async () => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ error: 'approval_exclusion_overlaps', code: 'approval_exclusion_overlaps' }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
+    await pickState('Search read', 'Removed')
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+    await screen.findByText('The server refused this draft (approval_exclusion_overlaps). Your draft is kept. Reloading will not change this: edit or discard the draft.')
+    expect(screen.queryByText(/The saved version changed/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the load copy for a 409 on the load itself, where there may be no draft to refuse', async () => {
+    server.use(http.get(endpoint, () => HttpResponse.json({ error: 'parent_missing', code: 'parent_missing' }, { status: 409 })))
+    mount()
+    await screen.findByText(/The saved version changed/)
+    expect(screen.queryByText(/refused this draft/)).not.toBeInTheDocument()
+  })
+
+  it.each(['stale_revision', 'stale_preview', 'stale_binding', 'governance_changed', 'source_changed', 'parent_identity_changed', 'project_identity_changed', 'source_identity_changed', 'materialization_changed'])('keeps the reload copy for the stale code %s', async code => {
+    server.use(http.post(`${endpoint}/preview`, () => HttpResponse.json({ error: code, code }, { status: 409 })))
+    mount(); await ready()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tools', exact: true }))
+    await pickState('Search read', 'Removed')
+    fireEvent.click(screen.getByRole('button', { name: 'Review changes' }))
+    await screen.findByText(/The saved version changed/)
   })
 
   it('confirms before discarding every draft change and leaves the server untouched', async () => {

@@ -295,6 +295,57 @@ describe('TailnetMobileCard — occupied', () => {
   })
 })
 
+describe('TailnetMobileCard — untrusted_cli', () => {
+  // Tailscale IS installed here, at a path the gateway will not run (a
+  // user-owned Homebrew prefix), so a Download button would send the operator
+  // to fetch what is already running.
+  const refused = () =>
+    data({
+      step: 'untrusted_cli',
+      detail: 'zzz probe sentence',
+      refused_cli: '/opt/homebrew/bin/tailscale',
+      serve_command: 'tailscale serve --bg --https=443 http://127.0.0.1:7788',
+    })
+
+  it('starts as a one-line row under the card title that says Tailscale was found', async () => {
+    // Nothing the card can probe changes once the operator takes the
+    // dashboard.url route, so a full card would never leave Overview. The row
+    // carries the card's own title so opening it reads as the same thing.
+    await mount(refused())
+    expect(screen.getByRole('button', { name: 'Phone access' })).toBeInTheDocument()
+    expect(screen.getByText('Tailscale found but blocked')).toBeInTheDocument()
+    expect(screen.queryByText('needs Tailscale')).toBeNull()
+    expect(screen.queryByText('Download Tailscale')).toBeNull()
+  })
+
+  it('expanded, names the binary and links the setting instead of offering a download', async () => {
+    window.localStorage.setItem(LS_KEY, '1')
+    await mount(refused())
+    expect(screen.getByText('Tailscale is installed, but Kiro Crew will not run it')).toBeInTheDocument()
+    expect(screen.getByText('/opt/homebrew/bin/tailscale')).toBeInTheDocument()
+    // The publish the gateway will not run, for the operator to run by hand.
+    expect(
+      screen.getByText('tailscale serve --bg --https=443 http://127.0.0.1:7788'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('dashboard.url')).toBeInTheDocument()
+    expect(screen.getByText(/click it for the command/)).toBeInTheDocument()
+    expect(screen.getByText(/my-mac\.example\.ts\.net/)).toBeInTheDocument()
+    // The path line replaces the probe's sentence, which repeats the body.
+    expect(screen.queryByText('zzz probe sentence')).toBeNull()
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Re-check/ })).toBeInTheDocument()
+    expect(screen.queryByText('Download Tailscale')).toBeNull()
+  })
+
+  it('collapses again from Hide', async () => {
+    window.localStorage.setItem(LS_KEY, '1')
+    await mount(refused())
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
+    expect(await screen.findByText('Tailscale found but blocked')).toBeInTheDocument()
+    expect(window.localStorage.getItem(LS_KEY)).toBe('0')
+  })
+})
+
 describe('TailnetMobileCard — ready', () => {
   it('shows the address, the sleep note, and both actions', async () => {
     await mount()

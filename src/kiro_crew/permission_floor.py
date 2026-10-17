@@ -19,12 +19,20 @@ stays the consumer's job; the transport floor is the part that needs no
 identity. A consumer that has an identity (the Agent-Channels loop) calls the
 same :func:`refusal_for` with it and ``security_only=False``, so there is one
 gate-consultation body for both.
+
+A caller can also withdraw an approval it asked for. Both ``approve_tool``
+methods take an optional ``withdraw_if`` predicate and read it after each of
+their own awaits: after the floor's thread hop, and under the write lock right
+before the answer is written. Once it holds, nothing is written, the request's
+records are put back as they were, and :class:`ApprovalWithdrawn` is raised, so
+the request is still pending and the caller answers it once.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from kiro_crew import hooks as hooks_mod
@@ -46,6 +54,20 @@ REASON_NO_EVENT = "Blocked: no permission request was recorded for this id"
 #: Refusal when the gate itself cannot be built or consulted.
 REASON_GATE_UNAVAILABLE = "Blocked: the tool security gate could not be consulted"
 REASON_LOG_UNAVAILABLE = "[reason unavailable]"
+
+
+class ApprovalWithdrawn(Exception):
+    """An approval its caller withdrew before any of it was written.
+
+    Raised by ``approve_tool`` when its ``withdraw_if`` holds (see the module
+    docstring). The request is still pending: the caller answers it.
+    """
+
+
+def raise_if_withdrawn(withdraw_if: Callable[[], bool] | None) -> None:
+    """Raise :class:`ApprovalWithdrawn` when *withdraw_if* is given and holds."""
+    if withdraw_if is not None and withdraw_if():
+        raise ApprovalWithdrawn
 
 
 def _redacted_label(value: Any) -> str:

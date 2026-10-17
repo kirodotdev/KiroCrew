@@ -5,118 +5,125 @@
       "name": "status",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": null,
       "answers": "Is this session open, what agent and model is it on, how many turns has it taken, and what stopped it last",
       "fields": [
         {
           "name": "agent",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "close_reason",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "closed_at",
-          "type": "unknown",
-          "optional": true
+          "type": "number",
+          "optional": true,
+          "integer": true
         },
         {
           "name": "cwd",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "dropped",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "entries",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "last_error",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "last_stop_reason",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "last_time",
-          "type": "unknown",
-          "optional": true
+          "type": "number",
+          "optional": true,
+          "integer": true
         },
         {
           "name": "lifecycle",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "model",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "opened_at",
-          "type": "unknown",
-          "optional": true
+          "type": "number",
+          "optional": true,
+          "integer": true
         },
         {
           "name": "owner",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "previous",
-          "type": "unknown",
+          "type": "string",
           "optional": true
         },
         {
           "name": "provider",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "resumed",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "seeded",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "slot",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "turn",
-          "type": "unknown",
+          "type": "object",
           "optional": true
         },
         {
           "name": "turn_open",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "turns_completed",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "turns_refused",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     },
@@ -124,6 +131,7 @@
       "name": "usage",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "background/completed",
         "compaction/applied",
@@ -140,57 +148,60 @@
       "fields": [
         {
           "name": "by_model",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "compactions",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "context",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "credits",
-          "type": "float",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": false
         },
         {
           "name": "credits_by_source",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "duration_ms",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "models_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "models_omitted_saturated",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "steps",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "tokens",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "turns",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -199,6 +210,7 @@
       "name": "timeline",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "approval/decided",
         "approval/requested",
@@ -219,27 +231,31 @@
       "fields": [
         {
           "name": "dropped",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "first_seq",
-          "type": "unknown",
-          "optional": true
+          "type": "number",
+          "optional": true,
+          "integer": true
         },
         {
           "name": "last_seq",
-          "type": "unknown",
-          "optional": true
+          "type": "number",
+          "optional": true,
+          "integer": true
         },
         {
           "name": "limit",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "moments",
-          "type": "list",
+          "type": "array",
           "optional": false
         }
       ]
@@ -248,6 +264,7 @@
       "name": "tools",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "tool/called",
         "tool/completed"
@@ -256,68 +273,78 @@
       "fields": [
         {
           "name": "by_name",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "calls",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "completed",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "elapsed_ms",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "errors",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "names_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "names_omitted_saturated",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "open",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "open_calls",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "open_calls_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "open_dropped",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "unidentified_calls",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "unmatched_completions",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     },
@@ -325,6 +352,7 @@
       "name": "approvals",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "approval/decided",
         "approval/requested"
@@ -333,53 +361,60 @@
       "fields": [
         {
           "name": "by_decision",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "decided",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "last",
-          "type": "unknown",
+          "type": "object",
           "optional": true
         },
         {
           "name": "pending",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "pending_dropped",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "pending_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "pending_requests",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "requested",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "unidentified_requests",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "unmatched_decisions",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     },
@@ -387,6 +422,7 @@
       "name": "subagents",
       "mode": "session",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "subagent/completed",
         "subagent/dismissed",
@@ -397,32 +433,35 @@
       "fields": [
         {
           "name": "by_id",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "dismissed",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "running",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "running_exact",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "totals",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -431,47 +470,105 @@
       "name": "class",
       "mode": "session",
       "advertised": false,
+      "package_only": false,
       "affects": null,
       "answers": "What KIND of session this log belongs to, over the log's whole life",
       "fields": [
         {
           "name": "app",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "channel",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "complete",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "damaged",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "memory",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "recorded",
-          "type": "bool",
+          "type": "boolean",
           "optional": false
         },
         {
           "name": "workspace",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "workspace_moved",
-          "type": "bool",
+          "type": "boolean",
+          "optional": false
+        }
+      ]
+    },
+    {
+      "name": "outline",
+      "mode": "session",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "message/received",
+        "message/sent",
+        "turn/completed",
+        "turn/refused",
+        "turn/started"
+      ],
+      "answers": "The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output",
+      "fields": [
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "first_turn",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "last_turn",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "prompt_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "reply_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "turns",
+          "type": "array",
           "optional": false
         }
       ]
@@ -480,6 +577,7 @@
       "name": "ledger",
       "mode": "slot",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "ledger/recorded"
       ],
@@ -487,52 +585,53 @@
       "fields": [
         {
           "name": "artifacts",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "created_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "events",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "finished_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "goal",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "last_progress_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "next",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "phase",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "tried",
-          "type": "list",
+          "type": "array",
           "optional": false
         }
       ]
@@ -541,6 +640,7 @@
       "name": "radar",
       "mode": "slot",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "radar/recorded"
       ],
@@ -548,47 +648,48 @@
       "fields": [
         {
           "name": "counts",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "crew_id",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "events",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "items",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "owner",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "phase_lines",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "repo",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "schema",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "skips",
-          "type": "dict",
+          "type": "object",
           "optional": false
         }
       ]
@@ -597,6 +698,7 @@
       "name": "work",
       "mode": "slot",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "work/recorded"
       ],
@@ -604,18 +706,24 @@
       "fields": [
         {
           "name": "conductor",
-          "type": "dict",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "forgotten",
+          "type": "object",
           "optional": false
         },
         {
           "name": "items",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     },
@@ -623,6 +731,7 @@
       "name": "panel",
       "mode": "slot",
       "advertised": true,
+      "package_only": false,
       "affects": [
         "panel/published"
       ],
@@ -630,63 +739,254 @@
       "fields": [
         {
           "name": "crew",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "crew_key",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "data",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "history",
-          "type": "list",
+          "type": "array",
           "optional": false
         },
         {
           "name": "history_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "owners",
-          "type": "dict",
+          "type": "object",
           "optional": false
         },
         {
           "name": "owners_omitted",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "published_at",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "publishes",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "schema",
-          "type": "int",
-          "optional": false
+          "type": "number",
+          "optional": false,
+          "integer": true
         },
         {
           "name": "template",
-          "type": "str",
+          "type": "string",
           "optional": false
         },
         {
           "name": "title",
-          "type": "str",
+          "type": "string",
           "optional": false
+        }
+      ]
+    },
+    {
+      "name": "agentic",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/agentic_value"
+      ],
+      "answers": "Which dashboard fields this crewmate filled itself, with what value, of what declared type and when",
+      "fields": [
+        {
+          "name": "fields",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "fields_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "mistakes",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/agentic_refused"
+      ],
+      "answers": "Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead",
+      "fields": [
+        {
+          "name": "groups",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "groups_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "refused",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "workstreams",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "background/completed",
+        "session/opened",
+        "subagent/completed",
+        "subagent/failed",
+        "turn/completed",
+        "work/recorded"
+      ],
+      "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
+      "fields": [
+        {
+          "name": "items",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "last_entry_at",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "schema",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "series",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "slot",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "spenders_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "unattributed",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "units_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
+      "name": "worktree",
+      "mode": "tree",
+      "advertised": false,
+      "package_only": true,
+      "affects": [
+        "work/recorded"
+      ],
+      "answers": "The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots",
+      "fields": [
+        {
+          "name": "boards",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "cycles",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "goal_chars",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "owner_limit",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "root",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "roots",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "unresolved",
+          "type": "number",
+          "optional": false,
+          "integer": true
         }
       ]
     }

@@ -866,3 +866,130 @@ class TestSanitizeForLog:
         # A forged-line payload via U+2028 is neutralized.
         result = _sanitize_for_log("ok\u2028WARNING forged")
         assert "\u2028" not in result and "\\u2028" in result, repr(result)
+
+
+# A proxied request: loopback peer, but a forwarding header, so
+# ``is_direct_local_request`` reads it as a remote or tunnelled session.
+_REMOTE = {"X-Forwarded-For": "203.0.113.7"}
+
+
+class TestApiSecretsChannelCredentialRemote:
+    """A remote owner cannot set or delete a vault entry a channel token resolves from.
+
+    The channel settings panels accept a save only from the machine running the
+    gateway; the generic secrets route must not be a way around that gate.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_channel_env(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        from kiro_crew.dashboard.handlers.secrets import _CHANNEL_ENV_KEYS
+
+        for key in _CHANNEL_ENV_KEYS:
+            _floor_monkeypatch.delenv(key, raising=False)
+
+    @staticmethod
+    async def _call(
+        home: Path, method: str, name: str, *, headers: dict[str, str] | None = None
+    ) -> tuple[int, dict]:
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(home)):
+            async with TestClient(TestServer(_app())) as client:
+                if method == "set":
+                    resp = await client.post(
+                        "/api/secrets",
+                        json={"name": name, "value": "planted"},
+                        headers=headers or {},
+                    )
+                else:
+                    resp = await client.delete(f"/api/secrets/{name}", headers=headers or {})
+                return resp.status, await resp.json()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["set", "delete"])
+    async def test_remote_write_to_channel_key_name_is_refused(
+        self, tmp_path: Path, method: str
+    ) -> None:
+        SecretVault(tmp_path)._set_sync("SLACK_BOT_TOKEN", "xoxb-original")
+
+        status, data = await self._call(tmp_path, method, "SLACK_BOT_TOKEN", headers=_REMOTE)
+
+        assert status == 409
+        assert data["code"] == "managed_by_channels"
+        assert "Channels" in data["error"]
+        assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN").reveal() == "xoxb-original"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["set", "delete"])
+    async def test_remote_write_to_name_a_channel_env_line_references_is_refused(
+        self, tmp_path: Path, method: str
+    ) -> None:
+        (tmp_path / ".env").write_text(
+            "# channel\nTELEGRAM_BOT_TOKEN = secret://MY_TG_TOKEN\n", encoding="utf-8"
+        )
+        SecretVault(tmp_path)._set_sync("MY_TG_TOKEN", "tg-original")
+
+        status, data = await self._call(tmp_path, method, "MY_TG_TOKEN", headers=_REMOTE)
+
+        assert status == 409
+        assert data["code"] == "managed_by_channels"
+        assert SecretVault(tmp_path).get("MY_TG_TOKEN").reveal() == "tg-original"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["set", "delete"])
+    async def test_remote_write_to_name_a_channel_env_var_references_is_refused(
+        self, tmp_path: Path, method: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "secret://MY_DC_TOKEN")
+        SecretVault(tmp_path)._set_sync("MY_DC_TOKEN", "dc-original")
+
+        status, data = await self._call(tmp_path, method, "MY_DC_TOKEN", headers=_REMOTE)
+
+        assert status == 409
+        assert SecretVault(tmp_path).get("MY_DC_TOKEN").reveal() == "dc-original"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_env_fails_closed_for_remote_write(self, tmp_path: Path) -> None:
+        (tmp_path / ".env").mkdir()
+
+        status, data = await self._call(tmp_path, "set", "ANY_NAME", headers=_REMOTE)
+
+        assert status == 409
+        assert data["code"] == "managed_by_channels"
+        assert SecretVault(tmp_path).get("ANY_NAME") is None
+
+    @pytest.mark.asyncio
+    async def test_direct_local_set_and_delete_of_channel_name_still_work(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / ".env").write_text(
+            "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN\n", encoding="utf-8"
+        )
+
+        status, _ = await self._call(tmp_path, "set", "SLACK_BOT_TOKEN")
+        assert status == 200
+        assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN").reveal() == "planted"
+
+        status, _ = await self._call(tmp_path, "delete", "SLACK_BOT_TOKEN")
+        assert status == 200
+        assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN") is None
+
+    @pytest.mark.asyncio
+    async def test_remote_set_and_delete_of_non_channel_name_still_work(
+        self, tmp_path: Path
+    ) -> None:
+        # A non-channel credential's reference (the Jira token the Secrets panel
+        # manages) does not make its vault name channel-owned.
+        (tmp_path / ".env").write_text(
+            "TELEGRAM_BOT_TOKEN=secret://MY_TG_TOKEN\nJIRA_API_TOKEN=secret://MY_JIRA\n",
+            encoding="utf-8",
+        )
+
+        for name in ("MY_JIRA", "OTHER_KEY"):
+            status, _ = await self._call(tmp_path, "set", name, headers=_REMOTE)
+            assert status == 200, name
+            assert SecretVault(tmp_path).get(name).reveal() == "planted"
+
+            status, _ = await self._call(tmp_path, "delete", name, headers=_REMOTE)
+            assert status == 200, name
+            assert SecretVault(tmp_path).get(name) is None

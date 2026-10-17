@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         _SKILLS_ONLY_EVENTS,
         HOOK_EVENTS_ALL,
         HOOK_EVENTS_KAS_ONLY,
+        HOOK_MATCHER_MODES,
         HOOK_TIMEOUT_DEFAULT,
         HOOK_TIMEOUT_MAX,
         HOOK_TIMEOUT_MIN,
@@ -65,6 +66,9 @@ def validate_hook_fields(
       those, so no payload exists for a matcher to filter and the field's subject
       is undefined; storing one now would hand the round that defines the payload
       a filter written against a different subject than the one it picks;
+    * ``matcher_mode`` is not one of ``HOOK_MATCHER_MODES`` -- the matcher reads
+      any other value as ``glob``, so a typo such as ``regexp`` would save and
+      then quietly match as a glob;
     * ``matcher_mode`` is ``regex`` with a syntactically invalid ``matcher``.
     """
     if event not in HOOK_EVENTS_ALL:
@@ -94,6 +98,11 @@ def validate_hook_fields(
         raise ValueError(
             f"a matcher cannot be set on {event} — no event fires it, so there is "
             "no payload to filter; leave the matcher empty"
+        )
+    if matcher_mode not in HOOK_MATCHER_MODES:
+        raise ValueError(
+            f"invalid matcher_mode: {matcher_mode!r} — choose one of "
+            + ", ".join(HOOK_MATCHER_MODES)
         )
     if matcher_mode == "regex" and matcher:
         try:

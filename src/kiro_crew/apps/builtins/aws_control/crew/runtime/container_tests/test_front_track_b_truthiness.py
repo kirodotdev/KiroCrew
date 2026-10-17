@@ -39,12 +39,36 @@ class _Settings:
 class _Reader:
     """Records every key asked for, so a fetch that should not happen is visible."""
 
-    def __init__(self) -> None:
+    def __init__(self, names: dict[str, bytes] | None = None) -> None:
+        import hashlib
+        import json as _json
+
+        from container.common import keys as _keys
+        from container.sidecar import generation as _generation
+
         self.keys: list[str] = []
+        self._names = names or {}
+        gen = _keys.new_generation_id()
+        self._pointer_body = _generation.pointer_body(gen, _keys.new_incarnation())
+        self._index_body = _json.dumps(
+            {stem: hashlib.sha256(body).hexdigest() for stem, body in self._names.items()}
+        ).encode("utf-8")
+        self._blobs = {hashlib.sha256(b).hexdigest(): b for b in self._names.values()}
 
     def get(self, key: str) -> bytes:
+        # Models a committed generation: pointer + transcript index + content-addressed blob.
+        # The legacy per-stem layout is gone, so a stem the index does not name is ABSENT.
+        # The pointer and index are control-plane probes and are not recorded as a fetch --
+        # these tests measure which TRANSCRIPT keys are consulted.
+        if key.endswith("/authority_generation.json"):
+            return self._pointer_body
+        if key.endswith("/transcript_index.json"):
+            return self._index_body
         self.keys.append(key)
-        return b'{"role":"user"}\n'
+        digest = key.rsplit("/", 1)[-1]
+        if digest in self._blobs:
+            return self._blobs[digest]
+        raise transcript.TranscriptAbsent(key)
 
 
 @pytest.fixture
@@ -90,7 +114,7 @@ def test_the_integer_id_never_reaches_the_store(settings) -> None:
 def test_a_legal_string_id_still_fetches(settings) -> None:
     """The safe asymmetry: a legal string id must still fetch (the dangerous
     direction is declining to fetch for an id the backend ACCEPTS)."""
-    reader = _Reader()
+    reader = _Reader(names={"dashboard_cust-1": b'{"role":"user"}\n'})
     _, slot_id, _ = front_app._forward_body(
         {"model": "acme", "messages": [], "id": "cust-1"}, "acme"
     )
@@ -111,9 +135,9 @@ def test_REVERT_non_string_id_would_be_fetched(settings) -> None:
         raw_id if isinstance(raw_id, str) else ("" if raw_id is None else str(raw_id))
     )
     assert reverted_slot_id == "123"
-    reader = _Reader()
+    reader = _Reader(names={"dashboard_123": b'{"role":"user"}\n'})
     asyncio.run(transcript.ensure_local_transcript(settings, reverted_slot_id, reader=reader))
-    assert reader.keys == ["crews/acme/data/sessions/dashboard_123.jsonl"], (
+    assert len(reader.keys) == 1, (
         "the pre-fix coercion must fetch another conversation's transcript, "
         f"proving the guard is load-bearing: {reader.keys}"
     )

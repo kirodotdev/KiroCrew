@@ -32,16 +32,17 @@ from conftest import make_dir_link, requires_symlinks
 from kiro_crew import mcp_cron, mcp_shared
 from kiro_crew.mcp_cron import (
     _CRON_MAX_COMMAND_SCAN,
+    _EXTGLOB_MAX_EXPANSIONS,
     _SENSITIVE_HOME_DIRS,
     _call_tool_inner,
+    _extglob_expansions,
+    _extglob_superset,
     _glob_could_reach_credentials,
     _has_bash_brace_expansion,
     _matched_sensitive_name,
     _not_found,
     _protected_path_refusal,
     _quote_states,
-    _shell_quote_removal,
-    _substitute_local_assignments,
     _unidentified_caller_refusal,
     _unowned_row_refusal,
     _vet_script_contents,
@@ -306,18 +307,158 @@ MALICIOUS_COMMANDS = [
     # at the first `}` regardless of the separator reads this as separator-free.
     "cat ~/.a{w},w}s/credentials",
     "cp ~/.ss{h},h}/id_rsa /tmp/k",
+    # BASH EXTGLOB: a group composes a credential path the literal text never
+    # holds. Each one below reads a dummy key in real bash under a throwaway HOME.
+    "bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss?(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss+(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss*(h)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss!(x)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.@(ssh|rsa)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.a@(ws)/credentials'",
+    "bash -O extglob -c 'cat ~/.@(git-credentials)'",
+    "bash -O extglob -c 'cat ~/.+(s)h/id_rsa'",
+    "bash -O extglob -c 'cat ~/.s?h?(x)/id_rsa'",
+    r"bash -O extglob -c 'cat ~/.@(\)|ssh)/id_rsa'",
+    # A quoted `)` inside the group is literal, not the group's close.
+    "bash -O extglob -c 'cat ~/.@(\")\"|ssh)/id_rsa'",
+    "shopt -s extglob; eval 'cat ~/.ss@(h)/id_rsa'",
+    # Whitespace inside an alternative: the group is still one shell word.
+    "bash -O extglob -c 'cat ~/.ss@(h| x)/id_rsa'",
+    "bash -O extglob -c 'cat ~/.ss@(h|x\\ y)/id_rsa'",
+    # A group starting a relative segment, after `cd ~`; one nested.
+    "bash -O extglob -O dotglob -c 'cd ~; cd @(.ss)h; cat id_rsa'",
+    "bash -O extglob -O dotglob -c 'cd ~; cd +(.ss)h; cat id_rsa'",
+    "bash -O extglob -O dotglob -c 'cd ~; cat +(@(.ss))h/id_rsa'",
+    # Glued to a redirection, and a backslash standing in for `/`.
+    "cd ~ && bash -O extglob -c 'cat <.ss@(h)/id_rsa'",
+    'bash -O extglob -c "cat ~/.ss@(h)\\\\/id_rsa"',
+    # Extglob switched on by text built at run time: no word names it.
+    "cd ~ && echo ex tglob | tr -d ' ' | xargs -I% bash -O % -c 'cat .ss@(h)/id_rsa'",
+    "cd ~ && printf 'shop%s -s ex%s\\ncat .ss@(h)/id_rsa\\n' t tglob | source /dev/stdin",
+    # Padding groups toward the leaf budget does not hide the real one.
+    "bash -O extglob -c 'echo @(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b)@(a|b); cat ~/.ss@(h)/id_rsa'",
+    # The plain forms the widened literal matcher now catches too.
+    "cd ~; cd .ssh; cat id_rsa",
+    "cd ~ && cat <.ssh/id_rsa",
+    # A negated group must not hide a sensitive path main judged by its text.
+    "!(cat ~/.ssh/id_rsa)",
+    "echo '!('; cat ~/.ssh/id_rsa; echo ')'",
+    # A stray quoted `!(` … `)` pair must not swallow a real group between them.
+    "echo '!('; bash -O extglob -c 'cat ~/.ss@(h)/id_rsa'; echo ')'",
+    # THREE SHAPES THE RESOLVER CANNOT MODEL, refused by shape rather than by what
+    # they reach. Each reads a key under real sh while the RESOLVED form scans
+    # clean. A local assignment is not in the nested shell's environment, so the
+    # single-quoted `$A` is EMPTY there and the path is `.ssh`; the resolver fills
+    # in `s` and scans `.sshs`.
+    "A=s; sh -c 'cat ~/.ssh$A/id_rsa'",
+    "A=s; bash -c 'cat ~/.ssh$A/id_rsa'",
+    "A=ws; sh -c 'cat ~/.aws$A/credentials'",
+    "A=h; B=s; sh -c 'cat ~/.ssh$B${A}/id_rsa'",
+    # `eval` runs in the shell that made the assignment, so it is not a nested
+    # shell; the single-quoted `$A` it re-expands is the literal-`$` rule's.
+    "A=s; eval 'cat ~/.ssh$A/id_rsa'",
+    # No `-c` at all: a shell re-parses its stdin.
+    "A=s; echo 'cat ~/.ssh$A/id_rsa' | bash",
+    # The shell word spelled past this level is a plain word on the projection the
+    # nested shell receives.
+    "A=s; s\"\"h -c 'cat ~/.ssh$A/id_rsa'",
+    r"A=s; \sh -c 'cat ~/.ssh$A/id_rsa'",
+    # A re-parser that is not a shell at all: the single-quoted `$A` reaches
+    # `os.system`, which hands it to a shell where `A` is unset.
+    "A=s; python3 -c 'import os; os.system(\"cat ~/.ssh$A/id_rsa\")'",
+    # A PREFIX assignment binds for the command's environment, not for the
+    # expansion of its own words, so `$A` is the INHERITED value (verified: with
+    # `A=h` in the environment the key is read). The resolver fills in `s`.
+    "A=s cat ~/.ss$A/id_rsa",
+    "A=w cat ~/.aw$A/credentials",
+    "A=h; </dev/null A=s cat ~/.ss$A/id_rsa",
+    # A quoted `;` does not end the command, so a lexer that ignored quote state
+    # would separate the assignment from the reference and admit this.
+    'A=s cat ~/.ss"x;" ~/.ss$A/id_rsa',
+    # A quoted value with a space, or a redirection with its target, between the
+    # assignment and its command word. Verified under real sh with `A=h` inherited.
+    "A=h; Z='x y' A=s cat ~/.ss$A/id_rsa",
+    "A=h; 2>& 1 A=s cat ~/.ss$A/id_rsa",
+    "A=h; >| /tmp/o A=s cat ~/.ss$A/id_rsa",
+    "A=h; A=s >| /tmp/o cat ~/.ss$A/id_rsa",
+    # The prefix never set the name for the commands AFTER it either.
+    "A=s true; cat ~/.ss$A/id_rsa",
+    "A=s true | cat ~/.ss$A/id_rsa",
+    "A=s | cat ~/.ss$A/id_rsa",
+    # Shell control syntax puts the prefix where a "command word" walk does not look.
+    # Each reads the key under real sh with `A=h` inherited (verified).
+    "A=h; if true; then A=s cat ~/.ss$A/id_rsa; fi",
+    "A=h; { A=s cat ~/.ss$A/id_rsa; }",
+    "A=h; (A=s; true); cat ~/.ss$A/id_rsa",
+    "A=h; if false; then A=s; fi; cat ~/.ss$A/id_rsa",
+    "A=h; ! A=s cat ~/.ss$A/id_rsa",
+    # A conditional or subshell-local assignment, and the builtins that rewrite the value
+    # the resolver tracked. Each reads the key under real sh (verified, `A=h` inherited).
+    "A=h; false && A=s; cat ~/.ss$A/id_rsa",
+    "A=h; (true; A=s; true); cat ~/.ss$A/id_rsa",
+    "A=s; eval A=h; cat ~/.ss$A/id_rsa",
+    "A=s; A+=h; cat ~/.ss${A#s}/id_rsa",
+    "A=s; read A <<< h; cat ~/.ss$A/id_rsa",
+    "A=s; export A=h; cat ~/.ss$A/id_rsa",
+    "A=s; unset A; cat ~/.ss${A}h/id_rsa",
+    "A=s; printf -v A h; cat ~/.ss$A/id_rsa",
+    "A=s; declare A=h; cat ~/.ss$A/id_rsa",
+    # A literal `$` stored in a value SPELLS an expansion once glued to a name or a
+    # digit: `${DOLLAR}A` is `$A` to the nested shell, and `${DOLLAR}1` is `$1`,
+    # which `sh -c "..." sh h` binds to `h` (verified: the key is read).
+    r'DOLLAR=\$; sh -c "cat ~/.ssh${DOLLAR}A/id_rsa"',
+    r'DOLLAR=\$; sh -c "cat ~/.ss${DOLLAR}1/id_rsa" sh h',
+    r'D=$; sh -c "cat ~/.ss${D}1/id_rsa" sh h',
+    "D='$'; sh -c \"cat ~/.ssh${D}A/id_rsa\"",
+    r'D="\$"; sh -c "cat ~/.ssh${D}A/id_rsa"',
+    r"A=\$B; sh -c 'cat ~/.ssh${A}/id_rsa'",
+    # The same literal `$` with no assignment and no shell word: escaped in double
+    # quotes, it reaches the re-parser as a live reference.
+    r'python3 -c "import os; os.system(\"cat ~/.ss\$A/id_rsa\")"',
+    # The character after the literal `$` is a quote delimiter or an escape
+    # backslash that quote removal deletes, so what the nested shell sees after
+    # the `$` is the character AFTER those: `$1`, `$A`, `$(`. Verified under real
+    # sh with a fake key: the first spelling prints it. Neither `$1` nor `$(` is
+    # adjacent in the text as written or in the resolved form.
+    "sh -c \"cat ~/.ss\\$\"'1/id_rsa' sh h",
+    'sh -c "cat ~/.ss\\$""1/id_rsa" sh h',
+    r"sh -c cat\ ~/.ss\$\1/id_rsa sh h",
+    "sh -c \"cat ~/.ss\\$\"'A/id_rsa'",
+    "sh -c \"cat ~/.\\$\"'(printf ss)h/id_rsa'",
+    # An UNESCAPED `$` that closes a double-quoted run (or precedes a backslash) is
+    # literal to this shell because nothing that starts an expansion follows it;
+    # quote removal then puts it in front of `{X}` / `1` for the nested shell.
+    # Verified under real sh with a fake key: each prints it.
+    'sh -c "cat ~/.ss$"{X}h/id_rsa',
+    'sh -c "cat ~/.ss$"1/id_rsa sh h',
+    r"sh -c cat\ ~/.ss$\1/id_rsa sh h",
+    # A literal `$` stored with a trailing quote, then spliced in front of `A` by a
+    # `${D}` that a later reader expands; and a single-quoted `$` whose successor is a
+    # quote delimiter or backslash two levels down (verified under real sh with fake
+    # keys: the second prints the credentials file).
+    'D="x; A=h; cat ~/.ss\\$"; python3 -c "import os; os.system(\'cat ${D}A/id_rsa\')"',
+    "sh -c 'sh -c \"cat ~/.aw$\"1/credentials sh s'",
+    # The body of a QUOTED heredoc is handed whole to whatever reads stdin, so a
+    # `$A` in it is a literal one that a non-shell re-parser expands later.
+    "A=s; cat <<'E' | python3 -c 'import os,sys; os.system(sys.stdin.read())'\ncat ~/.ssh$A/id_rsa\nE",
+    'cat <<"E" | python3 -c "import os,sys; os.system(sys.stdin.read())"\ncat ~/.ss${X}h/id_rsa\nE',
+    "cat <<\\E | python3 -c 'import os,sys; os.system(sys.stdin.read())'\ncat ~/.ss$1/id_rsa\nE",
+    # sh treats the delimiter as quoted when ANY part of the word is, so the body is
+    # literal for `<<E''`, `<<E"x"` and `<<E\x` too (verified: `<<E''` reads the key).
+    "A=s; cat <<E'' | python3 -c 'import os,sys; os.system(sys.stdin.read())'\ncat ~/.ssh$A/id_rsa\nE",
+    'A=s; cat <<E"x" | python3 -c "import os,sys; os.system(sys.stdin.read())"\ncat ~/.ssh$A/id_rsa\nEx',
+    "A=s; cat <<E\\x | python3 -c 'import os,sys; os.system(sys.stdin.read())'\ncat ~/.ssh$A/id_rsa\nEx",
 ]
 
 # Shapes that LOOK like the smuggling patterns above but cannot actually reach a
 # credential path, so blocking them would be a false positive.
 BENIGN_LOOKALIKE_COMMANDS = [
     # An ordinary assignment used for an ordinary path.
-    "A=logs; tar czf /tmp/x.tgz ~/$A",
     # A PLAIN ${NAME} reference composes nothing and must stay usable — refusing
     # it would break ordinary cron one-liners for no security gain.
     "echo ${HOME}",
     "cd ${HOME} && ls",
-    "MYVAR=hello; echo ${MYVAR}",
     # $HOME is the one allowlisted unresolved reference: the documented way a
     # cron names the home dir, a fixed prefix that cannot smuggle a fragment.
     "cat $HOME/notes/todo.md",
@@ -328,7 +469,6 @@ BENIGN_LOOKALIKE_COMMANDS = [
     # input is worse than one that misses it, so the value is substituted via a
     # callable and this command is simply clean.
     r"A='\q'; echo x",
-    r"A=C:\Users\me; echo $A",
     # An env-var PREFIX is the same syntax as a smuggling assignment list and is
     # entirely routine — widening the assignment scan to walk a list must not
     # start rejecting these.
@@ -339,7 +479,6 @@ BENIGN_LOOKALIKE_COMMANDS = [
     # reads `xsh` and no credential path is reachable. Resolution must be
     # ORDER-SENSITIVE in both directions — a scan that just unions every value
     # a name ever held would block this, which is a false positive.
-    "A=x; B=$A; A=.s; C=sh; cp ~/${B}${C}/id_rsa /tmp/key",
     # Ordinary globs are how a great many real cron one-liners are written. The
     # credential-reaching ones above are refused by expanding the metacharacter
     # and re-scanning, NOT by banning `*`/`?`/`[` — banning them would take these
@@ -352,6 +491,32 @@ BENIGN_LOOKALIKE_COMMANDS = [
     # A glob in a MIDDLE segment of an ordinary path composes nothing sensitive —
     # resolving `..` and matching segment-wise must not start flagging these.
     "tar czf /tmp/a.tgz ~/projects/*/dist",
+    # The three refused SHAPES, each with the one piece that makes it a shape
+    # removed. A nested shell with no assignment anywhere; `$HOME` inside it is the
+    # one quoted reference that is exempt.
+    "sh -c 'echo hi'",
+    "sh -c 'ls $HOME'",
+    "bash -c 'date'",
+    # A prefix assignment whose command does not read the name it sets.
+    "TZ=UTC date",
+    "PYTHONUNBUFFERED=1 python3 ~/.kiro/crew/crons/report.py",
+    # A prefix assignment and a reference to a DIFFERENT, locally set name: the
+    # resolver models that one correctly.
+    # A literal `$` followed by something no shell expands.
+    "echo 'a $ b'",
+    "sed 's/a$/b/' /tmp/f",
+    r"grep '\$HOME' /tmp/f",
+    # An assignment-only simple command referencing an earlier name stays with the
+    # resolver: no command word, so it is not a prefix.
+    # A `NAME=` word inside another command is an option or a prefix assignment the
+    # shell EXPORTS to the child, so it hides nothing from a nested shell. Only an
+    # assignment that is a command of its own is local.
+    "ssh -o ConnectTimeout=10 backup@host uptime",
+    "TZ=UTC bash /home/u/report.sh",
+    "docker run --rm -e TZ=UTC alpine sh -c 'date'",
+    "env LANG=C sh -c 'date'",
+    # `eval` and `exec` run in the shell that made the assignment, so an assignment
+    # beside them is not the nested-shell shape.
 ]
 
 BENIGN_COMMANDS = [
@@ -404,6 +569,38 @@ BENIGN_COMMANDS = [
     # script line `echo a\\<newline>b` prints `a\` and then reports `b: command not
     # found`, two commands. The halves must not be joined.
     "echo .s\\\\\nsh",
+    # Extglob-looking text that reaches no sensitive path stays allowed: code,
+    # arithmetic and regex strings, `(1)` file names, groups over ordinary paths.
+    "python3 -c 'print(3*(4+5))'",
+    "python3 -c 'print(2*(3)*(4)*(5)*(6)*(7)*(8)*(9))'",
+    # Past the leaf budget the superset form is judged, not refused.
+    "python3 -c 'print(2*(3)*(4)*(5)*(6)*(7)*(8)*(9)*(10)*(11))'",
+    "node -e 'if(!(x)) process.exit(1)'",
+    "awk '{s+=(NF*(2))} END {print s}' /tmp/a.log",
+    "awk '!(NR%2)' /tmp/x",
+    "awk '/.*(fail|error)/ {n++} END {print n}' /var/log/app.log",
+    "echo 'Done!(ok)'",
+    "grep -E '.*(error|warn)' /var/log/app.log",
+    "grep -E '.+(INFO|WARN)' logs/app.log",
+    "grep -E '.+(s|h)' /var/log/app.log",
+    "grep -oE 'took .*(s|ms)' /var/log/app.log",
+    "grep -E '.*(k|m|g)' /tmp/sizes",
+    "grep -cE '.+(timeout|refused)' /var/log/app.log",
+    "journalctl -u app --since today | grep -E '.*(panic|fatal)'",
+    "grep -E '^(a|b)?(c|d)?(e|f)?(g|h)?(i|j)?' /tmp/f",
+    "grep -E 'a+(b)' /var/log/app.log",
+    "sed -E 's/x*(y)/z/' /tmp/f",
+    "find ~/Downloads -name '*(1).jpg' -print",
+    "find ~ -name '.*(1)'",
+    "ls ~/pics/*(1).jpg",
+    "rm /tmp/@(a|b).txt",
+    "find /tmp -name '@(*.log|*.tmp)' -delete",
+    "tar czf /tmp/b.tgz ~/projects/!(node_modules)",
+    "ls ~/!(Downloads)",
+    "bash -O extglob -c 'ls /tmp/@(a|b).log'",
+    "bash -O extglob -c 'ls ~/.+(cache)'",
+    "shopt -s extglob; rm -f /tmp/!(keep).tmp",
+    "curl -O https://example.com/f.csv && python3 -c 'print(2*(3))'",
 ]
 
 
@@ -423,50 +620,38 @@ def test_vet_shell_command_blocks_malicious(cmd):
     assert err is not None and err.startswith("Error:"), f"should block: {cmd!r}"
 
 
-def test_chained_assignments_cannot_exhaust_memory_or_time():
-    """A hostile `cron_add` must not OOM or stall the gateway.
+def test_chained_assignments_are_refused_without_being_expanded():
+    """A hostile `cron_add` of 700 chained assignments is refused, never expanded.
 
-    Each assignment may reference earlier ones, so `A0=ab; A1=$A0$A0;
-    A2=$A1$A1; ...` DOUBLES the stored value per assignment: 24 assignments
-    measured 67 MB, and the `command` field allows 5000 chars (~700 assignments),
-    which is ~1 TiB. That OOM-kills the single-process gateway from inside a gate
-    whose whole job is to REFUSE hostile input, before the credential scan even
-    runs. A value cap alone left the cost quadratic (`_expand` rewrites a segment
-    once per known name — 700 assignments still took 97s), hence the second cap
-    on the number of tracked assignments.
-
-    Both caps can only NARROW what the scan sees: a truncated value or an
-    unresolved `$X` stays literal, and a literal cannot match a credential path.
+    `A0=ab; A1=$A0$A0; A2=$A1$A1; ...` DOUBLES a value per assignment if it is
+    substituted, which would OOM the single-process gateway from inside the gate whose
+    job is to refuse it. Nothing is substituted: the assignment count is refused, and so
+    is every `$NAME` read.
     """
 
     def chained(count: int) -> str:
         parts = ["A0=ab"] + [f"A{i}=$A{i - 1}$A{i - 1}" for i in range(1, count + 1)]
         return "; ".join(parts) + "; echo done"
 
-    began = time.monotonic()
-    out = _substitute_local_assignments(chained(700))
-    elapsed = time.monotonic() - began
-
-    # Unbounded this is ~1 TiB; the caps keep it within a small multiple of the
-    # input. Generous bounds so this cannot flake on a loaded runner while still
-    # failing loudly if either cap is removed.
-    assert len(out) < 5_000_000, f"resolver produced {len(out):,} chars — a cap is gone"
-    assert elapsed < 20, f"resolver took {elapsed:.1f}s — the assignment cap is gone"
-
-    # The caps must not have cost the detection they exist alongside.
+    refusal = _vet_shell_command(chained(700))
+    assert refusal is not None and "ceiling" in refusal
+    refusal = _vet_shell_command(chained(70))
+    assert refusal is not None and "too many variable assignments" in refusal
+    refusal = _vet_shell_command(chained(30))
+    assert refusal is not None and "variable reference" in refusal
     assert _vet_shell_command("A=.s; B=sh; cp ~/$A$B/id_rsa /tmp/key") is not None
-    assert _vet_shell_command("A=logs; tar czf /tmp/x.tgz ~/$A") is None
+    # A variable the command both sets and reads is refused (see
+    # `ASSIGNED_AND_READ_COMMANDS`), so even the ordinary one is.
+    assert _vet_shell_command("A=logs; tar czf /tmp/x.tgz ~/$A") is not None
 
 
 def test_assignment_limit_fails_closed_not_open():
-    """Padding past the assignment cap must REFUSE, not silently under-resolve.
+    """Padding a command past the assignment cap must REFUSE, not scan a prefix.
 
-    The resolver caps the tracked environment to bound its cost, but that cap
-    must fail CLOSED at the vet gate: otherwise a hostile command pads with
-    harmless assignments until the cap is reached, then adds the real
-    `A=.s; B=sh; cp ~/$A$B/id_rsa` — which goes untracked, so `$A$B` stays
-    literal and the credential path is missed. The command is refused outright
-    when it carries more assignments than the resolver tracks.
+    A hostile command pads with harmless assignments, then adds the real
+    `A=.s; B=sh; cp ~/$A$B/id_rsa`. The command is refused outright when it carries
+    more assignments than the cap, and the real one is refused again as a variable
+    read.
     """
     pad = "; ".join(f"Z{i}=x" for i in range(70))
     smuggled = pad + "; A=.s; B=sh; cp ~/$A$B/id_rsa /tmp/key"
@@ -532,7 +717,7 @@ def test_long_prefix_never_hides_later_assignments(prefix, separator):
     assert list(mcp_cron._iter_local_assignments(prefix)) == []
     command = prefix + separator + "A=.s B=sh; cat ~/$A$B/id_rsa"
     assert list(mcp_cron._iter_local_assignments(command)) == [("A", ".s"), ("B", "sh")]
-    assert _substitute_local_assignments(command).endswith("cat ~/.ssh/id_rsa")
+    assert _vet_shell_command(command) is not None
 
 
 @pytest.mark.parametrize("cmd", BENIGN_COMMANDS)
@@ -549,6 +734,143 @@ def test_vet_shell_command_allows_smuggling_lookalikes(cmd):
     surface where the model has no way to appeal.
     """
     assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
+
+
+# A command that ASSIGNS a variable and READS it anywhere is refused, with no model of the
+# shell around it. The first group is the documented cost (ordinary commands that set a
+# variable and read it); the second group is shapes that read ~/.ssh/id_rsa under real sh
+# with `A=h` inherited (verified).
+ASSIGNED_AND_READ_COMMANDS = [
+    # The documented cost: an ordinary assignment that the command then reads.
+    "A=logs; tar czf /tmp/x.tgz ~/$A",
+    "A=logs; B=$A; tar czf /tmp/x.tgz ~/$B",
+    "MYVAR=hello; echo ${MYVAR}",
+    "DIR=/tmp; LANG=C ls $DIR",
+    "LOG=/tmp/x; exec tool --log $LOG",
+    "DIR=/srv/app; tar czf /tmp/a.tgz -C $DIR .",
+    r"A=C:\Users\me; echo $A",
+    'PAT="[0-9]\\{1,3\\}"; grep "$PAT" /tmp/notes.txt',
+    # Shapes found by review: a comment or heredoc body with an apostrophe that a quote
+    # tracker reads as an opening quote, so `perl -e '...$A...'` looks double-quoted.
+    "A=s; true #it's\nperl -e 'system \"cat ~/.ssh$A/id_rsa\"'",
+    "A=s; cat <<E\nit's\nE\nperl -e 'system \"cat ~/.ssh$A/id_rsa\"'",
+    # Two levels of escaping (a nested `sh -c "..."` removes one more layer): verified under real
+    # sh, this prints the key.
+    'sh -c "export HO\\\\ME=\\$HOME/.s; export HO\\\\ME=\\${HOME}sh; cat ~/id_rsa"',
+    # The name split by quotes or a backslash: a builtin receives its arguments after quote
+    # removal, so these rebind HOME while the raw text never holds the letters together.
+    "read HO''ME <<E\n$HOME/.s\nE\nread HO''ME <<E\n${HOME}sh\nE\ncat ~/id_rsa",
+    'printf -v HO\\ME %s "$HOME/.s"; printf -v HO"M"E %s "${HOME}sh"; cat ~/id_rsa',
+    # `$!` is empty before any background job and no other rule owns it, so it splits a name
+    # (verified under real sh: the first prints the key).
+    "cat ~/.ss$!h/id_rsa",
+    "export HO$!ME=$HOME/.ss$!h; cat ~/id_rsa",
+    # `HOME` rebound by a builtin that needs no `=`, so the credential directory is composed
+    # from fragments of `$HOME` (verified under real sh: each prints the key). The literal
+    # path rows are refused as well, by the path scan.
+    "read HOME <<E\n$HOME/.s\nE\nread HOME <<E\n${HOME}sh\nE\ncat $HOME/id_rsa",
+    'printf -v HOME %s "$HOME/.s"; printf -v HOME %s "${HOME}sh"; cat ~/id_rsa',
+    "read HOME <<E\n/home/u/.ssh\nE\ncat ~/id_rsa",
+    "HOME=/home/u/.ssh; cat ~/id_rsa",
+    "export HOME=/home/u/.ssh; cat ~/id_rsa",
+    "env HOME=/home/u/.ssh cat ~/id_rsa",
+    # An unmatched `[` before the assignment must not make the scan skip it, and a
+    # `NAME=` inside a subscript is still an assignment.
+    "echo 'x[' ; A=s; sh -c 'cat ~/.ssh$A/id_rsa'; echo ']'",
+    "echo '[' ; A=s cat ~/.ss$A/id_rsa; echo ']'",
+    "A[B=s]=1; cat ~/.ss${B}h/id_rsa",
+    # An assignment spelled inside a quoted value (or escaped) that the resolver would
+    # treat as a real one; sh leaves `$B` empty and reads .ssh.
+    "A='x; B=s'; cat ~/.ss${B}h/id_rsa",
+    "echo x\\;B=s; cat ~/.ss${B}h/id_rsa",
+    # Conditional, subshell, pipeline, prefix and builtin forms.
+    "A=h; false && A=s; cat ~/.ss$A/id_rsa",
+    "A=h; (true; A=s; true); cat ~/.ss$A/id_rsa",
+    "A=h; if true; then A=s cat ~/.ss$A/id_rsa; fi",
+    "A=s true | cat ~/.ss$A/id_rsa",
+    "A=s; eval A=h; cat ~/.ss$A/id_rsa",
+    "A=s; A+=h; cat ~/.ss${A#s}/id_rsa",
+    "A=s; export A=h; cat ~/.ss$A/id_rsa",
+    "A=s; declare A=h; cat ~/.ss$A/id_rsa",
+    "A[0]=h; cat ~/.ss${A[0]}/id_rsa",
+]
+
+
+@pytest.mark.parametrize("cmd", ASSIGNED_AND_READ_COMMANDS)
+def test_a_variable_that_is_assigned_and_read_is_refused(cmd):
+    err = _vet_shell_command(cmd)
+    assert err is not None and err.startswith("Error:"), f"should refuse: {cmd!r}"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        # An assignment nothing reads, and reads of $HOME, stay ordinary.
+        "TZ=UTC date",
+        "TZ=UTC bash /home/u/report.sh",
+        "ssh -o ConnectTimeout=10 backup@host uptime",
+        "docker run --rm -e TZ=UTC alpine sh -c 'date'",
+        "A=hello; echo from cron",
+        "cd $HOME && ls",
+        "A='\\q'; echo x",
+    ],
+)
+def test_an_assignment_nothing_reads_is_ordinary(cmd):
+    assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A `$` before a quote or a backslash is joined to what follows by quote removal.
+        ("sh -c \"cat ~/.ss\\$\"'1/id_rsa' sh h", True),
+        ('sh -c "cat ~/.ss$"{X}h/id_rsa', True),
+        (r"sh -c cat\ ~/.ss$\1/id_rsa", True),
+        ('python3 -c "print(1)"; echo "$"', True),
+        ("echo $[1+1]", True),
+        ("echo $%", True),
+        # An anchor, a price, an expansion (judged by its own rule) and a bare end.
+        ("sed 's/x$/y/' f", False),
+        ("grep 'a$|b' f", False),
+        ("echo 'cost: 5$ each'", False),
+        ("echo done$", False),
+        ("echo $HOME $A ${B} $1 $@ $#", False),
+        # `$!` expands to nothing before a background job, and no other rule owns `$!`, `$-`,
+        # `$?` or `$$`, so they are refused rather than guessed at.
+        ("cat ~/.ss$!h/id_rsa", True),
+        ("echo $-", True),
+        ("echo $?", True),
+        ("echo $$", True),
+        ("grep -c x f", False),
+    ],
+)
+def test_has_unplain_dollar(text, expected):
+    assert mcp_cron._has_unplain_dollar(text) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("read HOME", True),
+        ("HOME=/x; cat ~/y", True),
+        ("export HOME=/x", True),
+        ("unset HOME", True),
+        ("printf -v HOME x", True),
+        ("read HO''ME", True),
+        ("read HO\\ME", True),
+        ('sh -c "export HO\\\\ME=x"', True),
+        ("sh -c 'read HO\"\"ME'", True),
+        ('printf -v "HOME" x', True),
+        ("echo $HO''ME", False),
+        ("echo $HOME ${HOME}/notes", False),
+        ("cd $HOME && ls", False),
+        ("echo MYHOME HOMEDIR _HOME HOME2", False),
+        ("ls ~/notes", False),
+        ("", False),
+    ],
+)
+def test_rebinds_home(text, expected):
+    assert mcp_cron._rebinds_home(text) is expected
 
 
 # (word, some shell in the chain expands it, the scan must refuse it). Every row
@@ -1576,6 +1898,9 @@ class _CronLoopHarness:
         monkeypatch.setattr(mcp_shared, "respond", self._record)
         resolved = policy or mcp_shared.ToolPolicy(frozenset(), "")
         monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", lambda *a, **k: resolved)
+        # The handlers here are defined in this test file, which stands in for the
+        # cron server's own code; the policy applies to it as it does in production.
+        monkeypatch.setattr(mcp_shared, "serves_managed_tools", lambda _fn: True)
         monkeypatch.setattr(mcp_shared, "sel", lambda: MagicMock())
         self._thread = threading.Thread(
             target=mcp_shared.run_mcp_stdio_loop,
@@ -1911,18 +2236,88 @@ def test_brace_scan_follows_every_nested_shell_level(command):
 
 
 def test_brace_group_built_from_local_assignments_is_refused():
-    """`A={; B=}` then `${A}s,s${B}` gives a nested shell a group the raw text lacks."""
+    """`A={; B=}` then `${A}s,s${B}` gives a nested shell a group the raw text lacks.
+
+    The brace scan sees no group in the raw text; the references to the assigned names
+    are what the vet refuses.
+    """
 
     command = 'A={; B=}; sh -c "cat /tmp/.q${A}s,s${B}h/notes.txt"'
     assert _has_bash_brace_expansion(command) is False
     verdict = _vet_shell_command(command)
-    assert verdict is not None and "brace expansion" in verdict
+    assert verdict is not None and "variable reference" in verdict
 
 
-def test_plain_command_with_a_local_assignment_is_stored():
-    """Resolving assignments for the brace scan does not refuse an ordinary command."""
+def test_plain_command_with_a_local_assignment_is_refused_when_it_reads_it():
+    """The documented cost: a command that sets a variable and reads it is refused.
 
-    assert _vet_shell_command("A=hello; echo $A from cron") is None
+    An assignment nothing reads stays ordinary, and so does a read with no assignment
+    when it is `$HOME`.
+    """
+
+    assert _vet_shell_command("A=hello; echo $A from cron") is not None
+    assert _vet_shell_command("A=hello; echo from cron") is None
+    assert _vet_shell_command("echo $HOME from cron") is None
+
+
+@pytest.mark.parametrize(
+    "refused,fix_text,rewrite",
+    [
+        pytest.param(
+            "DIR=~/projects; tar czf /tmp/projects.tgz $DIR",
+            "write the value in place of the `$NAME`",
+            "tar czf /tmp/projects.tgz ~/projects",
+            id="variable-reference",
+        ),
+        pytest.param(
+            'grep "ERROR$" /var/log/app.log',
+            "`grep -e x$ f`",
+            "grep -e ERROR$ /var/log/app.log",
+            id="unplain-dollar-anchor",
+        ),
+        pytest.param(
+            'grep "fatal error$" /var/log/app.log',
+            '`grep -e "two words"$ f`',
+            'grep -e "fatal error"$ /var/log/app.log',
+            id="unplain-dollar-anchor-with-space",
+        ),
+        pytest.param(
+            "ls -la ~ > /tmp/listing.txt # HOME listing",
+            "a comment or a quoted string included",
+            "ls -la ~ > /tmp/listing.txt # home listing",
+            id="bare-home-in-comment",
+        ),
+    ],
+)
+def test_refusal_names_its_one_step_fix_and_the_fix_is_stored(refused, fix_text, rewrite):
+    """Each raw-text refusal names the rewrite, and that rewrite passes the same vet."""
+
+    verdict = _vet_shell_command(refused)
+    assert verdict is not None and fix_text in verdict, verdict
+    assert _vet_shell_command(rewrite) is None
+
+
+def test_unplain_dollar_refusal_sends_special_parameters_to_a_script_job():
+    """`$?`, `$!`, `$$`, `$-` and `$\\` have no inline rewrite: the message says `script` job."""
+
+    for command in (
+        "myjob; echo $? >> /tmp/rc",
+        "myjob & echo $! > /tmp/pid",
+        "mktemp /tmp/j.$$.X",
+        "echo $- > /tmp/flags",
+        "echo a$\\b > /tmp/out",
+    ):
+        verdict = _vet_shell_command(command)
+        assert verdict is not None and "anything else" in verdict, verdict
+        assert "need a `script` job" in verdict, verdict
+
+
+def test_variable_reference_refusal_keeps_secrets_out_of_the_command():
+    """Inlining a token stores it in crons.json, so the message names the vault grant."""
+
+    verdict = _vet_shell_command('TOKEN=abc; curl -H "Authorization: Bearer $TOKEN" https://x')
+    assert verdict is not None and "a secret belongs in a `script` job" in verdict, verdict
+    assert "`cron_secret_request`" in verdict and "never as a literal" in verdict, verdict
 
 
 @pytest.mark.parametrize(
@@ -1935,9 +2330,6 @@ def test_plain_command_with_a_local_assignment_is_stored():
         'flock -n /tmp/x.lock timeout 60 grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
         'env timeout 5 grep "[0-9]\\{1,3\\}" /tmp/notes.txt',
         'find /tmp -name "*.log" | xargs grep "[0-9]\\{1,3\\}"',
-        # Inside double quotes the assignment keeps both backslashes, so the
-        # resolved form is the same escaped interval.
-        'PAT="[0-9]\\{1,3\\}"; grep "$PAT" /tmp/notes.txt',
     ],
 )
 def test_escaped_bre_interval_in_double_quotes_is_stored(command):
@@ -1951,18 +2343,29 @@ def test_escaped_bre_interval_in_double_quotes_is_stored(command):
     assert _vet_shell_command(command) is None
 
 
-def test_resolved_form_over_the_ceiling_is_refused_fast():
-    """A short command whose local variables multiply its length is refused before scanning."""
+def test_brace_refusal_names_the_bare_space_rewrite_and_the_rewrite_is_stored():
+    """The refusal for a spaceless jq group names the space rewrite, and that rewrite passes.
 
-    import time
+    A plain space after the comma, in the same quotes as the braces, leaves the group
+    literal for bash at every level, and jq reads `{id, name}` as `{id,name}`.
+    """
+
+    verdict = _vet_shell_command("jq '{id,name}' /tmp/rows.json")
+    assert verdict is not None and "brace expansion" in verdict
+    assert "`jq '{id, name}'`" in verdict
+    assert _vet_shell_command("jq '{id, name}' /tmp/rows.json") is None
+
+
+def test_a_long_value_repeated_by_references_is_refused_without_expansion():
+    """A short command whose references would multiply its length is refused as a read.
+
+    Nothing is substituted, so the 5000-character value is never repeated 1590 times.
+    """
 
     command = "A=" + "a" * 5000 + "; echo " + "$A" * 1590
     assert len(command) <= 8192
-    started = time.monotonic()
     verdict = _vet_shell_command(command)
-    elapsed = time.monotonic() - started
-    assert verdict is not None and "local variables filled in" in verdict
-    assert elapsed < 2.0, f"refusal took {elapsed:.1f}s"
+    assert verdict is not None and "variable reference" in verdict
 
 
 @pytest.mark.parametrize(
@@ -1982,20 +2385,43 @@ def test_composition_hidden_from_the_raw_text_is_refused(command):
     assert _vet_shell_command(command) is not None
 
 
-@pytest.mark.parametrize(
-    "word,value",
-    [
-        # Each row is what `A=<word>; printf %s "$A"` prints under bash.
-        ("s\\h", "sh"),
-        ('"s\\h"', "s\\h"),
-        ("'s\\h'", "s\\h"),
-        ('"a\\"b"', 'a"b'),
-        ('"[0-9]\\{1,3\\}"', "[0-9]\\{1,3\\}"),
-        ("a\\\\b", "a\\b"),
-        ("s\\,s", "s,s"),
-    ],
-)
-def test_assignment_values_get_the_shells_quote_removal(word, value):
-    """A resolved value keeps exactly the backslashes the shell keeps."""
+def test_extglob_expansions_rewrite_groups_into_plain_glob_text():
+    """Each group becomes plain strings whose union covers what the group matches."""
+    assert _extglob_expansions("cat ~/.ss@(h|x)/id") == ["cat ~/.ssh/id", "cat ~/.ssx/id"]
+    assert _extglob_expansions("a?(b)c") == ["ac", "abc"]
+    # One occurrence spelled out, the rest widened: the leading dot stays explicit.
+    assert _extglob_expansions("+(.ss)h") == [".ssh"]
+    assert _extglob_expansions("x*(a|b)y") == ["xy", "xay", "xby"]
+    assert _extglob_expansions("~/.+(s)h") == ["~/.sh", "~/.s*h"]
+    assert _extglob_expansions("~/!(Downloads)") == ["~/*", "~/Downloads"]
+    # Whole-command text: a space inside an alternative is kept, not split on.
+    assert _extglob_expansions("cat @(h| x)/f") == ["cat h/f", "cat  x/f"]
+    # A backslash-escaped `)` is literal; an unmatched `(` is not a group.
+    assert _extglob_expansions(r"@(\)|s)") == [r"\)", "s"]
+    assert _extglob_expansions("a*(b") == ["a*b"]
 
-    assert _shell_quote_removal(word) == value
+
+def test_extglob_expansion_budget_falls_back_to_the_superset():
+    """Past the leaf budget the rewrite returns None and the vet judges the
+    superset form (every group -> `*`) instead: harmless text stays allowed,
+    a credential path behind the padding is still refused, and thousands of
+    lone `(` or empty groups end as a verdict, not a RecursionError (main
+    refuses those two as well: the widened word is over the glob-word cap)."""
+    word = "@(a|b)" * 10  # 1024 leaves
+    assert 2**10 > _EXTGLOB_MAX_EXPANSIONS
+    assert _extglob_expansions(word)[-1] is None
+    assert _vet_shell_command(f"echo {word}") is None
+    assert _vet_shell_command(f"echo {word}; cat ~/.ss@(h)/id_rsa") is not None
+    assert _vet_shell_command("echo " + "*()" * 1000) is not None
+    assert _vet_shell_command("echo " + "*(" * 1500) is not None
+    assert _extglob_superset("a@(b|c)d+(e)f") == "a*d*f"
+    assert _extglob_superset("x!(@(y)|z)w") == "x*w"
+    # A group that can start with a dot keeps it, so the fallback still
+    # reaches a dotfile through the plain-glob matcher.
+    assert _extglob_superset("~/@(a|.ssh)/id") == "~/.*/id"
+    assert _extglob_superset("~/@(x|@(.s)h)/id") == "~/.*/id"
+    assert _extglob_superset("~/@(z|?(x).ssh)/id") == "~/.*/id"
+    # 2**11 leaves, reads the key in real bash: the fallback must still refuse.
+    padded = "@(a|)" * 8
+    assert _vet_shell_command(f"cat ~/@(z|?(x).ssh)/id_rsa; echo {padded}@(a|b)") is not None
+    assert _vet_shell_command(f"cat ~/.@(s|x)@(s|y)@(h|z){padded}/id_rsa") is not None

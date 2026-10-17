@@ -1217,3 +1217,32 @@ def test_every_shipped_template_stays_off_the_docked_frame():
     falls back to it; the native summary is the default for those."""
     for template_id in SHIPPED:
         assert agent_panel.docked_height(agent_panel.resolve_template(template_id)) is None
+
+
+# ------------------------------------------------- conductor board fields
+
+
+def _board_fields() -> list[str]:
+    from kiro_crew.conductor_board_contract import ConductorBoardPanel
+
+    return list(ConductorBoardPanel.__annotations__)
+
+
+def test_a_conductor_board_naming_none_of_its_fields_is_refused():
+    """The board would render empty while the tool said "Published"."""
+    with pytest.raises(agent_panel.PanelError) as err:
+        _publish(template="kirocrew-conductor", data={"cycle": 47, "fleet": 3})
+    assert err.value.code == "no_known_keys"
+    for field in _board_fields():
+        assert field in str(err.value), f"the refusal does not name {field!r}"
+    assert agent_panel.read(CREW) is None, "a refused publish still wrote a record"
+
+
+def test_a_conductor_board_with_one_known_field_is_stored_whole():
+    _publish(template="kirocrew-conductor", data={"done": "1 of 2", "cycle": 47})
+    assert agent_panel.read(CREW)["data"] == {"done": "1 of 2", "cycle": 47}
+
+
+def test_a_template_with_no_contract_accepts_any_keys():
+    _publish(template="default", data={"anything": 1, "at": "all"})
+    assert agent_panel.read(CREW)["data"] == {"anything": 1, "at": "all"}

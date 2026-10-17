@@ -547,6 +547,40 @@ describe('how the composer is found', () => {
   })
 })
 
+describe('the Lexical composer (a contenteditable div) is found the same way', () => {
+  // The Style Markdown While Typing setting renders the Lexical composer, a
+  // contenteditable <div data-composer-input>, instead of the textarea. Every
+  // focus intent must still reach it.
+  let rich: HTMLDivElement
+  beforeEach(() => {
+    composer.remove()
+    rich = document.createElement('div')
+    rich.setAttribute('data-composer-input', '')
+    rich.contentEditable = 'true'
+    rich.tabIndex = 0
+    document.body.appendChild(rich)
+  })
+  afterEach(() => { rich.remove() })
+
+  it('queryComposer resolves the rich composer', () => {
+    expect(queryComposer()).toBe(rich)
+  })
+
+  it('focusComposer focuses the rich composer', async () => {
+    focusComposer()
+    await flushFrame()
+    expect(document.activeElement).toBe(rich)
+  })
+
+  it('a keyboard switch blurs the rich composer too', () => {
+    rich.focus()
+    expect(document.activeElement).toBe(rich)
+    releaseComposerForKeyboardSwitch()
+    expect(document.activeElement).not.toBe(rich)
+    consumeComposerRelease()
+  })
+})
+
 describe('split view: the lookup is scoped to the pane holding focus', () => {
   // The session grid mounts one composer PER pane, so a document-global
   // first-match lookup would always land on the first pane regardless of

@@ -2386,3 +2386,44 @@ class TestFdRealPathHome:
         # freshly-closed real fd would race reuse by another thread in the
         # test process, so the impossible number is the deterministic probe.
         assert pinned_fs.fd_real_path(2**30) is None
+
+
+@pytest.mark.parametrize("fail", [False, True], ids=["success", "mid-write-failure"])
+def test_copy_reports_opened_identity_before_writing(tmp_path, monkeypatch, fail):
+    src = tmp_path / "source.txt"
+    src.write_bytes(b"complete source")
+    dst = tmp_path / "destination.txt"
+    opened = []
+    published = []
+    copy_bytes = pinned_fs.shutil.copyfileobj
+
+    def checked_copy(fsrc, fdst):
+        assert len(opened) == 1
+        actual = os.fstat(fdst.fileno())
+        assert (opened[0].st_dev, opened[0].st_ino) == (actual.st_dev, actual.st_ino)
+        assert opened[0].st_size == 0
+        assert not published, "the existing callback stays success-only"
+        if fail:
+            fdst.write(fsrc.read(4))
+            fdst.flush()
+            raise OSError(errno.ENOSPC, "injected disk full")
+        copy_bytes(fsrc, fdst)
+
+    monkeypatch.setattr(pinned_fs.shutil, "copyfileobj", checked_copy)
+    if fail:
+        with pytest.raises(OSError, match="injected disk full"):
+            pinned_fs.copy_file_pinned(
+                str(src), str(dst), on_opened=opened.append, on_created=published.append
+            )
+        assert dst.read_bytes() == b""
+        assert published == []
+    else:
+        assert pinned_fs.copy_file_pinned(
+            str(src), str(dst), on_opened=opened.append, on_created=published.append
+        )
+        assert dst.read_bytes() == src.read_bytes()
+        assert len(published) == 1
+        assert published[0].st_size == len(b"complete source")
+    actual = dst.stat()
+    assert len(opened) == 1
+    assert (opened[0].st_dev, opened[0].st_ino) == (actual.st_dev, actual.st_ino)

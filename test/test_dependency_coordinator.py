@@ -1095,6 +1095,17 @@ def test_a_wait_that_did_not_persist_is_not_reported_as_a_wait(
     assert _coord(store, clock).rebuild() == 0
 
 
+def test_a_report_with_no_row_at_all_says_so(store: TaskStore, clock: Clock) -> None:
+    """A task the store holds no row for (a run whose memory mode keeps none) is
+    answered ``no_row``: nothing records the wait, and nothing else owns the work."""
+    coord = _coord(store, clock)
+    verdict = coord.report("sa-none", _signal(), generation=None, from_state=model.RUNNING)
+    assert verdict.outcome == "no_row"
+    assert verdict.retry_at is not None
+    assert store.state_of("sa-none") is None
+    assert coord.schedule(GH) is None
+
+
 def test_the_wake_event_names_the_state_the_row_actually_reached(
     store: TaskStore, clock: Clock
 ) -> None:

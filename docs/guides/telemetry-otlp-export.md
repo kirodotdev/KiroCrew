@@ -349,6 +349,16 @@ once per process. If you see process metrics from a host but no inventory metric
 the gateway on that host is not running or not exporting — that is the signal, not
 a gap in collection.
 
+### Traces are not exported
+
+Kiro Crew emits the OpenTelemetry **metrics** signal only. There are no spans
+and no log records, so a trace-oriented backend (Langfuse, Jaeger, Tempo, or a
+vendor's trace view) receives nothing from it, and nothing in this page turns
+traces on. Pointing `otlp_endpoint` at a `/v1/traces` or `/v1/logs` URL does not
+change that: the collector rejects every metric batch. The gateway logs a
+warning naming the destination when the endpoint's path is one of those routes.
+Trace support is tracked in issue #1643.
+
 ### What is deliberately not exported
 
 Reading these metrics should not tell you what a user is working on:
@@ -446,6 +456,7 @@ the collector, or temporality — not collection.
 | No `telemetry OTLP export active` line | `otlp_endpoint` empty, or the OTLP exporter package is not installed — check for the warning naming the missing package. |
 | `OTLP exporter init failed` warning | Malformed endpoint. The message deliberately omits the URL, since it can carry a credential. |
 | Local shards fill, nothing at the backend | Endpoint missing `/v1/metrics`, collector on 4317 (gRPC) instead of 4318 (HTTP), or the collector's `http` protocol not enabled. |
+| `points at an OTLP traces route` warning | The endpoint ends in `/v1/traces` (or `/v1/logs`). Kiro Crew exports metrics only, so a trace backend such as Langfuse receives nothing. See "Traces are not exported". |
 | Metrics arrive but counters look like resets | Temporality mismatch. See the temporality section. |
 | `unknown type: "awsemf"` at collector startup | Running the core `otelcol`; vendor exporters need `otelcol-contrib`. |
 | One expected series is absent | That probe could not read its source. Absence is a gap, never a zero. |

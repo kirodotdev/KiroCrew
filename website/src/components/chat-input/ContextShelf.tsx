@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Trans } from 'react-i18next'
 import { Bot } from 'lucide-react'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
@@ -8,8 +9,15 @@ import { effortLabel } from '../../lib/effort'
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
+import { usePressActivation } from '../../hooks/usePressActivation'
+import { useActionShortcutHint } from '../../hooks/useActionShortcutHint'
+import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import type { ChatInputProps } from './props'
+import type { MemorySource } from '../../lib/agentMemorySource'
+import { withMemorySource } from '../../utils/agentLabel'
 import type { useAutoCompactThreshold } from './autoCompact'
+import { uiLocation } from '../../uiLocations/uiLocation'
+import { useGuidePredicate } from '../../guide/guidePredicates'
 
 /* The context shelf under the composer: its measured width (which collapses
    the chips to icons) and the controls that stand on it -- app session
@@ -139,40 +147,58 @@ export function SessionControlChips({ sessionControls, shelfCompact, onSessionCo
 }
 
 /** The agent chip. Chrome type: an agent name is a label, not code. `font-mono`
- *  would pin `var(--mono)`, which Settings → Display → Font Family never
- *  writes, so it would make the shelf ignore the user's typeface. */
-export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agentSource, isRunning, shelfCompact, onAgentClick }: {
+ *  would pin `var(--mono)`, which Settings → Display → Font Family writes only
+ *  for OpenDyslexic, so for every other family it would make the shelf ignore
+ *  the user's typeface. */
+export function AgentChip({ agentName, agentLabel, agentIsInheritedDefault, agentMemory, agentSource, isRunning, shelfCompact, onAgentClick }: {
   agentName: string
   agentLabel?: string
   agentIsInheritedDefault?: boolean
+  agentMemory?: MemorySource | null
   agentSource?: string
   isRunning: boolean
   shelfCompact: boolean
   onAgentClick: NonNullable<ChatInputProps['onAgentClick']>
 }) {
+  // Opens on the mouse press (usePressActivation); keyboard and touch on click.
+  const bindPress = usePressActivation()
+  const press = bindPress<HTMLButtonElement>(el => onAgentClick(el.getBoundingClientRect(), el))
+  // Inherited default: explain what the ` . default` marker means, on
+  // hover (title) AND keyboard focus / screen readers (aria-label),
+  // because the marker alone reads as opaque. No glyph, no
+  // layout change -- text on demand. A pinned chip keeps the plain
+  // switch hint; it has nothing to explain.
+  // A same-name crewmate and custom agent read alike, so the chip says which
+  // memory this session runs on, in the visible text and the spoken name both.
+  // Null for every other agent, which leaves both unchanged.
+  const spokenName = withMemorySource(agentName, agentMemory ?? null)
+  const label = isRunning
+    ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
+    : agentIsInheritedDefault
+      ? i18nT('components.chatInput.agent_inherited_default', { name: spokenName })
+      : i18nT('components.chatInput.agent', { name: spokenName })
+  // The chip is the only visible place an agent switch happens, so it is where
+  // the keyboard route to the same switch gets taught: a second tooltip line
+  // naming the cycle chords. Spelled by a catalog string per platform, so it
+  // is shown only while both chords are still the factory defaults; the live
+  // chord reaches assistive tech through aria-keyshortcuts either way. Hidden
+  // while a turn runs, when the chip itself is disabled.
+  const nextHint = useActionShortcutHint('cycle-agent')
+  const prevHint = useActionShortcutHint('cycle-prev-agent')
+  const cycleLine = !isRunning && nextHint?.isFactory && prevHint?.isFactory
+    ? i18nT(IS_MAC ? 'components.chatInput.agent_cycle_hint_mac' : 'components.chatInput.agent_cycle_hint')
+    : null
   return (
     <button
       className={`inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent ${agentSource === 'package' ? 'text-[var(--aim)] hover:text-[var(--aim)]' : 'text-muted hover:text-text disabled:hover:text-muted'}`}
-      onClick={e => onAgentClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
+      {...press}
       disabled={isRunning}
-      // Inherited default: explain what the ` . default` marker means, on
-      // hover (title) AND keyboard focus / screen readers (aria-label),
-      // because the marker alone reads as opaque (#8770 UX). No glyph, no
-      // layout change -- text on demand. A pinned chip keeps the plain
-      // switch hint; it has nothing to explain.
-      title={isRunning
-        ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
-        : agentIsInheritedDefault
-          ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
-          : i18nT('components.chatInput.agent', { name: agentName })}
-      aria-label={isRunning
-        ? i18nT('components.chatInput.stop_the_current_response_to_switch_agents')
-        : agentIsInheritedDefault
-          ? i18nT('components.chatInput.agent_inherited_default', { name: agentName })
-          : i18nT('components.chatInput.agent', { name: agentName })}
+      title={cycleLine ? `${label}\n${cycleLine}` : label}
+      aria-label={label}
+      aria-keyshortcuts={!isRunning && nextHint ? nextHint.ariaKeyshortcuts : undefined}
     >
       <Bot size={13} className="shrink-0 opacity-70" />
-      {!shelfCompact && <span className="truncate max-w-[160px]">{agentLabel ?? agentName}</span>}
+      {!shelfCompact && <span className="truncate max-w-[160px]">{withMemorySource(agentLabel ?? agentName, agentMemory ?? null)}</span>}
     </button>
   )
 }
@@ -193,6 +219,12 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
+  // The agent default's labels name the crew in mono so it reads as a name, and
+  // their tooltip says where that number is set (config only, no UI edits it).
+  const agentName = <span className="font-mono">{autoCompact?.agent ?? ''}</span>
+  const agentDefaultSource = autoCompact?.agent_pct != null
+    ? i18nT('components.chatInput.agent_default_source', { agent: autoCompact.agent ?? '' })
+    : undefined
   const pct = Math.round(contextPct)
   const win = contextWindowTokens || 0
   const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
@@ -213,6 +245,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
       onClick={() => setCtxPopoverOpen(o => !o)}
       title={contextTip(contextPct)}
       aria-label={i18nT('components.chatInput.context_usage')}
+      {...uiLocation('composer.context-usage')}
     >
       <ContextBar pct={contextPct} width={40} height={3} />
       {showAnyReadout && <span className="text-[11px] ml-1.5 tabular-nums whitespace-nowrap" style={{ color: pctColor }}>{readout}</span>}
@@ -266,10 +299,10 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                   <div className="mt-2 pt-2 border-t border-border">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-[11px] text-muted">{i18nT('components.chatInput.auto_compact_at')}</span>
-                      <span className="text-[12px] font-mono font-bold text-accent">{fmtPercent(Math.round(autoCompact.pct ?? autoCompact.global_pct) / 100)}</span>
+                      <span className="text-[12px] font-mono font-bold text-accent">{fmtPercent(Math.round(autoCompact.pct ?? autoCompact.agent_pct ?? autoCompact.global_pct) / 100)}</span>
                     </div>
                     <Slider
-                      value={autoCompact.pct ?? autoCompact.global_pct}
+                      value={autoCompact.pct ?? autoCompact.agent_pct ?? autoCompact.global_pct}
                       onChange={v => pushAutoCompact(v)}
                       min={autoCompact.min}
                       max={autoCompact.max}
@@ -281,11 +314,18 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                       <Btn
                         className="mt-1 px-0 py-0 border-none text-[10px] text-muted underline hover:text-text hover:bg-transparent"
                         onClick={() => pushAutoCompact(null)}
+                        title={agentDefaultSource}
                       >
-                        {i18nT('components.chatInput.reset_to_global', { pct: Math.round(autoCompact.global_pct) })}
+                        {autoCompact.agent_pct != null
+                          ? <span><Trans i18nKey="components.chatInput.reset_to_agent_default" values={{ pct: Math.round(autoCompact.agent_pct) }} components={{ agent: agentName }} /></span>
+                          : i18nT('components.chatInput.reset_to_global', { pct: Math.round(autoCompact.global_pct) })}
                       </Btn>
                     ) : (
-                      <div className="mt-1 text-[10px] text-muted">{i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}</div>
+                      <div className="mt-1 text-[10px] text-muted" title={agentDefaultSource}>
+                        {autoCompact.agent_pct != null
+                          ? <Trans i18nKey="components.chatInput.following_agent_default" values={{ pct: Math.round(autoCompact.agent_pct) }} components={{ agent: agentName }} />
+                          : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
+                      </div>
                     )}
                   </div>
                 )}
@@ -298,7 +338,7 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
 /** The model chip. It names the level in force beside the model; the level is
  *  CHANGED inside the model picker the chip opens (model and effort are one
  *  control, docs/decisions/2026-06-14-chat-composer-model-and-effort-are-one-control.md). */
-export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfCompact, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
+export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault, modelIsAutoChosen, reasoningEffort, effortIsDefault, hasEffort, isRunning, shelfTiny, composerControl, modelChipPressedFromComposerRef, onModelClick }: {
   modelName: string
   modelIsJevRouted?: boolean
   modelIsInheritedDefault?: boolean
@@ -307,7 +347,6 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   effortIsDefault: boolean
   hasEffort?: boolean
   isRunning: boolean
-  shelfCompact: boolean
   shelfTiny: boolean
   composerControl: () => ComposerControl | null
   /** Owned by the composer, so a press outlives a remount of the chip exactly as it did. */
@@ -322,6 +361,8 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
   const effortShown = effortIsDefault
     ? i18nT('components.reasoningEffortDropdown.default_with_level', { level: effortLabel(reasoningEffort || '') })
     : effortLabel(reasoningEffort || '')
+  // The chip is disabled while a response runs: a guide to it says so.
+  useGuidePredicate('no_response_running', !isRunning)
   const effortSuffix = hasEffort
     ? ` · ${i18nT('components.reasoningEffortDropdown.reasoning_effort')}: ${effortShown}`
     : ''
@@ -334,24 +375,31 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         : modelIsAutoChosen
           ? `${i18nT('components.chatInput.model_2', { name: modelName })} · ${i18nT('components.jobForm.auto')}`
           : i18nT('components.chatInput.model_2', { name: modelName })}${effortSuffix}`
+  // Opens on the mouse press (usePressActivation); keyboard and touch on click.
+  const bindPress = usePressActivation()
+  const press = bindPress<HTMLButtonElement>(el => {
+    const composerHadFocus = modelChipPressedFromComposerRef.current
+    modelChipPressedFromComposerRef.current = false
+    onModelClick(el.getBoundingClientRect(), el, composerHadFocus)
+  })
   return (
   <button
     className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-    onMouseDown={() => {
+    onPointerDown={e => {
+      // Read before the press moves focus to the chip: the picker hands focus
+      // back to the composer on close only when the composer had it. Pointer-
+      // down precedes that focus move for mouse, touch and pen alike.
       const editor = composerControl()?.getRootElement()
       modelChipPressedFromComposerRef.current = !!editor && editor.contains(document.activeElement)
+      press.onPointerDown(e)
     }}
-    onClick={e => {
-      const composerHadFocus = modelChipPressedFromComposerRef.current
-      modelChipPressedFromComposerRef.current = false
-      onModelClick(e.currentTarget.getBoundingClientRect(), e.currentTarget, composerHadFocus)
-    }}
+    onClick={press.onClick}
     disabled={isRunning}
     data-testid="composer-model-chip"
-    // Inherited default: mirror the agent chip -- ` · default` marker on
-    // the label, and the explanation on hover (title) AND keyboard
-    // focus / screen readers (aria-label), because a bare served id
-    // reads exactly like a pin. A pinned chip keeps the plain hint.
+    {...uiLocation('chat.model-picker')}
+    // Inherited default: the explanation rides on hover (title) AND keyboard
+    // focus / screen readers (aria-label); the chip itself shows only the id.
+    // A pinned chip keeps the plain hint.
     // The effort level rides along on both: `aria-label` REPLACES the
     // chip's content in the accessible name, so without it a screen
     // reader never hears the level the chip shows, and the tooltip is
@@ -366,30 +414,27 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         ellipsize its own tail, never the marker beside it. A routed chip
         takes NO marker -- its label is already the policy, and a second
         word next to it would be a marker on a name that is not a model.
-        So the two unpinned states differ by KIND (a policy vs an id with
-        a marker), not by two adjectives a reader has to tell apart. */}
-    {!modelIsJevRouted && (modelIsInheritedDefault || modelIsAutoChosen) && (
+        A model the user picked for themselves -- a pin, or the default
+        they set -- takes no marker either: the id already names the
+        model they chose, and the hover / accessible name above still
+        says it is the inherited default. Only `auto` is marked, because
+        there the id is one the user never chose. */}
+    {!modelIsJevRouted && !modelIsInheritedDefault && modelIsAutoChosen && (
       <>
         <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-        <span className="opacity-60 shrink-0">{modelIsInheritedDefault
-          ? i18nT('components.agentSelector.default')
-          : i18nT('components.jobForm.auto')}</span>
+        <span className="opacity-60 shrink-0">{i18nT('components.jobForm.auto')}</span>
       </>
     )}
-    {/* A default and an override show the same level, and a glance
-        at "High" alone could not tell which one set it. So the chip
-        says so where there is room -- the picker's own "Default ·
-        High" -- and keeps the bare level only in a compact shelf,
-        where the hover / accessible name above still carries it.
-        An inherited-default MODEL already put one "Default" on the
-        chip; a second, meaning the effort, right after it would be
-        the same word twice for two unrelated facts, so that chip
-        keeps the bare level as well (the name above still says
-        "Reasoning effort: Default · High"). */}
-    {hasEffort && !shelfTiny && (
+    {/* The chip shows the concrete level in force and never the word
+        "Default": whether a default or an override set it is not
+        something the user needs at a glance, and the hover / accessible
+        name above still says which. With no level known (the model
+        decides), there is nothing concrete to show, so the segment is
+        left out. */}
+    {hasEffort && !shelfTiny && !!reasoningEffort && (
       <>
         <span className="opacity-30 select-none shrink-0" aria-hidden="true">·</span>
-        <span className="opacity-60 shrink-0">{shelfCompact || modelIsInheritedDefault ? effortLabel(reasoningEffort || '') : effortShown}</span>
+        <span className="opacity-60 shrink-0">{effortLabel(reasoningEffort)}</span>
       </>
     )}
   </button>

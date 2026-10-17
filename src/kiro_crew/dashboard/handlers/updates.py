@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import functools
 import hmac
 import json
 import logging
@@ -13,8 +12,9 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 from aiohttp import web
@@ -87,6 +87,7 @@ from kiro_crew.platform_compat import (
     reexec_launcher,
     reexec_python_module,
 )
+from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -797,6 +798,48 @@ async def _can_arm_this_install() -> bool:
         return False
 
 
+#: Policy applies started from the dashboard (``POST /api/update`` on a host
+#: whose policy names an ``apply_command``) that are still running. Each runs as
+#: its own task rather than inline in the request handler: aiohttp cancels
+#: handlers only after its own shutdown timeout, which the gateway's graceful cap
+#: exits ahead of, so an inline apply would never receive the cancel that stops
+#: its installer with SIGTERM. The gateway's shutdown reads this set through
+#: :func:`policy_applies_in_flight` and cancels + awaits them alongside the
+#: update coordinator, within its installer-stop budget.
+_policy_apply_tasks: set["asyncio.Task[bool | None]"] = set()
+
+
+def policy_applies_in_flight() -> list["asyncio.Task[bool | None]"]:
+    """The dashboard-started policy applies still running, for the shutdown path."""
+    return [task for task in _policy_apply_tasks if not task.done()]
+
+
+class _PolicyApplyStopped(Exception):
+    """The gateway's shutdown cancelled a dashboard-started policy apply."""
+
+
+async def _run_tracked_policy_apply(
+    apply: Callable[[], Coroutine[Any, Any, bool | None]],
+) -> bool | None:
+    """Run ``apply`` as a tracked task the gateway's shutdown can stop.
+
+    A caller that stops waiting (the browser closed the request) still cancels the
+    apply, as an inline await would. A cancel that reaches the apply from the
+    shutdown path, with this caller still waiting, is reported as
+    :class:`_PolicyApplyStopped` so the handler can answer it rather than die.
+    """
+    task = asyncio.create_task(apply(), name="dashboard-policy-apply")
+    _policy_apply_tasks.add(task)
+    task.add_done_callback(_policy_apply_tasks.discard)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task.cancelled() and current is not None and not current.cancelling():
+            raise _PolicyApplyStopped from None
+        raise
+
+
 def _release_update_check_task(task: asyncio.Task[None]) -> None:
     """Drop ownership even when every caller stopped waiting for the worker."""
     global _check_task, _check_task_generation
@@ -973,15 +1016,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         _, fetch_err = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(proc)
+        raise
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.communicate()
+        await platform_compat.kill_and_reap(proc)
         logger.warning("git fetch timed out")
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_FETCH_FAILED)
         return
@@ -1001,15 +1045,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         local_out, _ = await asyncio.wait_for(local.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(local)
+        raise
     except asyncio.TimeoutError:
-        try:
-            local.kill()
-        except ProcessLookupError:
-            pass
-        await local.communicate()
+        await platform_compat.kill_and_reap(local)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     remote = await asyncio.create_subprocess_exec(
@@ -1019,15 +1064,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         remote_out, _ = await asyncio.wait_for(remote.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(remote)
+        raise
     except asyncio.TimeoutError:
-        try:
-            remote.kill()
-        except ProcessLookupError:
-            pass
-        await remote.communicate()
+        await platform_compat.kill_and_reap(remote)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
 
@@ -1075,15 +1121,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         show_out, _ = await asyncio.wait_for(show.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(show)
+        raise
     except asyncio.TimeoutError:
-        try:
-            show.kill()
-        except ProcessLookupError:
-            pass
-        await show.communicate()
+        await platform_compat.kill_and_reap(show)
         _set_update_info(**base, check_status=CHECK_FAILED, error_code=ERR_GIT_READ_FAILED)
         return
     match = re.search(r'__version__\s*=\s*"(.+?)"', show_out.decode(errors="replace"))
@@ -1142,15 +1189,16 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
             cwd=proj,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=platform_compat.IS_POSIX,
+            creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
         )
         try:
             diff_out, _ = await asyncio.wait_for(diff.communicate(), timeout=10)
+        except asyncio.CancelledError:
+            await platform_compat.kill_and_reap(diff)
+            raise
         except asyncio.TimeoutError:
-            try:
-                diff.kill()
-            except ProcessLookupError:
-                pass
-            await diff.communicate()
+            await platform_compat.kill_and_reap(diff)
             # The version comparison already succeeded — report the update and
             # simply omit the changelog rather than discarding a good verdict.
             diff_out = b""
@@ -1659,23 +1707,81 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
         # handler below, which emits from arbitrary logger threads.
         loop.call_soon_threadsafe(_publish, "error" if error else "building", message)
 
-    rc = await loop.run_in_executor(
+    # Supervised: cancelling this coroutine (a gateway shutdown does) also cancels
+    # the install, so one still queued, or cancelled before its last check ahead
+    # of pip, never starts pip. A pip already running is left to finish (see
+    # dep_sync.sync_or_reinstall_supervised for the exact window).
+    rc = await dep_sync.sync_or_reinstall_supervised(
         subprocess_executor(),
-        functools.partial(
-            dep_sync.sync_or_reinstall,
-            Path(proj),
-            Path(sys.executable),
-            _emit,
-            # 600s rather than 120s on `pip install -e .`: the bound covers a
-            # dependency install that may be resolving and downloading a set this
-            # venv has never seen — and building a wheel for one of them — where
-            # 120s is a routine, not an exceptional, overrun.
-            # It is a real bound either way: dep_sync kills the pip child on
-            # expiry rather than letting the step hang on a wedged index.
-            timeout=600,
-        ),
+        Path(proj),
+        Path(sys.executable),
+        _emit,
+        # 600s rather than 120s on `pip install -e .`: the bound covers a
+        # dependency install that may be resolving and downloading a set this
+        # venv has never seen — and building a wheel for one of them — where
+        # 120s is a routine, not an exceptional, overrun.
+        # It is a real bound either way: dep_sync kills the pip child on
+        # expiry rather than letting the step hang on a wedged index.
+        timeout=600,
     )
     return rc == 0
+
+
+async def _resolve_restart_target(
+    resolver: Callable[[], str] | None = None,
+) -> tuple[str | None, str | None, tuple[str, str] | None]:
+    """Return ``(launcher, exe, refusal)``: what a restart would exec, or why it cannot.
+
+    ``refusal`` is ``(code, sentence)``: a machine-readable code and the
+    sentence the progress push and the 409 body carry.
+
+    The refusals a restart makes BEFORE its drain, in one place, so
+    ``POST /api/restart`` can answer them before its 200 (every restart
+    control then shows them as a failure) and ``_restart_gateway`` still
+    re-checks at the moment it commits.
+    """
+    # Resolve off-loop. An explicit broken launcher must not fall back to the
+    # running bundle's interpreter and import path.
+    try:
+        launcher = await asyncio.to_thread(resolve_restart_launcher)
+    except (ValueError, OSError) as exc:
+        logger.warning("Gateway launcher unavailable: %s", exc)
+        return (
+            None,
+            None,
+            ("restart_launcher_invalid", "Cannot restart: invalid gateway launcher path"),
+        )
+    if launcher is not None:
+        return launcher, None, None
+    # Applying callers load this resolver before the install can replace
+    # their import tree. A plain restart has no apply, so load it here.
+    if resolver is None:
+        from kiro_crew.platform.wheel_engine import respawn_executable
+
+        resolver = respawn_executable
+    exe = await asyncio.to_thread(resolver)
+    # ONE hop for both syscalls, the contract this helper's docstring
+    # states: the pathname can be a stalled mount, and this function is
+    # on the event loop -- the await above proves it -- so a bare stat
+    # here would hold every session while the restart decides.
+    if not await asyncio.to_thread(platform_compat.execv_target_available, exe):
+        # The interpreter this process ran under is gone, which is what an
+        # apply that prunes the previous versioned tree leaves behind.
+        # REFUSE HERE, while this process is still serving: the drain is the
+        # point of no return, and main reached its exec only after
+        # ``close_all()``, where the failure left the gateway alive with
+        # admission shut and nothing able to reopen it. Refusing before the
+        # drain keeps every session answerable and leaves the operator a
+        # repair-then-relaunch they can actually perform. The pruned tree
+        # took the bundle too, so a deferred restart into an applied update
+        # does not hold the watchdog's exit.
+        update_ownership.clear_restart_deferral()
+        return (
+            None,
+            exe,
+            ("restart_interpreter_missing", "Cannot restart: invalid Python executable path"),
+        )
+    return None, exe, None
 
 
 @update_ownership.owning(update_ownership.Step.RESTART)
@@ -1701,47 +1807,15 @@ async def _restart_gateway(
     state._gateway_restart_in_progress = True
     try:
         state.push_update_progress("restarting", "Restarting server…")
-        # Resolve off-loop and before saving/draining. An explicit broken launcher
-        # must not fall back to the running bundle's interpreter and import path.
-        try:
-            launcher = await asyncio.to_thread(resolve_restart_launcher)
-        except (ValueError, OSError) as exc:
-            logger.warning("Gateway launcher unavailable: %s", exc)
-            state.push_update_progress("error", "Cannot restart: invalid gateway launcher path")
+        launcher, exe, refusal = await _resolve_restart_target(resolver)
+        if refusal is not None:
+            state.push_update_progress("error", refusal[1])
             return False
-        exe = None
-        if launcher is None:
-            # Applying callers load this resolver before the install can replace
-            # their import tree. A plain restart has no apply, so load it here.
-            if resolver is None:
-                from kiro_crew.platform.wheel_engine import respawn_executable
-
-                resolver = respawn_executable
-            exe = await asyncio.to_thread(resolver)
-            # ONE hop for both syscalls, the contract this helper's docstring
-            # states: the pathname can be a stalled mount, and this function is
-            # on the event loop -- the await above proves it -- so a bare stat
-            # here would hold every session while the restart decides.
-            if not await asyncio.to_thread(platform_compat.execv_target_available, exe):
-                # The interpreter this process ran under is gone, which is what an
-                # apply that prunes the previous versioned tree leaves behind.
-                # REFUSE HERE, while this process is still serving: the drain
-                # below is the point of no return, and main reached its exec only
-                # after ``close_all()``, where the failure left the gateway alive
-                # with admission shut and nothing able to reopen it. Refusing
-                # before the drain keeps every session answerable and leaves the
-                # operator a repair-then-relaunch they can actually perform.
-                # The pruned tree took the bundle too, so a deferred restart
-                # into an applied update does not hold the watchdog's exit.
-                update_ownership.clear_restart_deferral()
-                state.push_update_progress(
-                    "error", "Cannot restart: invalid Python executable path"
-                )
-                return False
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports this module), so this
         # must stay inline to avoid an import cycle at module load.
         from kiro_crew.dashboard.chat import save_all_slots_to_history
+        from kiro_crew.dashboard.chat_persistence import wait_for_unwinding_turns
         from kiro_crew.executors import subprocess_executor
 
         try:
@@ -1766,6 +1840,10 @@ async def _restart_gateway(
             await state.sessions.close_all()
         except Exception:
             logger.debug("Session cleanup before restart failed", exc_info=True)
+        # close_all() cut every turn that was mid-reply, and each one saves the text
+        # its user watched stream as it unwinds, after the save above. The exec
+        # below would beat that save.
+        await wait_for_unwinding_turns(state)
         # The broker this gateway spawned dies with it, the same as on a clean
         # shutdown; an adopted daemon belongs to its own owner and is left alone,
         # as ``GatewayManager.shutdown`` already does. The exec below does not run
@@ -1786,6 +1864,10 @@ async def _restart_gateway(
                 # Past the point of no return: a broker that will not stop must
                 # not strand a gateway whose sessions are already closed.
                 logger.debug("MCP broker stop before restart failed", exc_info=True)
+        # The exec skips the cleanup hooks that stop supervised children too, and
+        # a child whose parent pid survives the exec is never reclaimed. Each
+        # such owner registers its stop with the pre-exec seam.
+        await run_pre_exec_stops()
         sys.stdout.flush()
         sys.stderr.flush()
         # The safety-override record publishes on a worker thread (its callers sit
@@ -1836,7 +1918,17 @@ async def api_update_apply(request: web.Request) -> web.Response:
     from kiro_crew.platform.update_provider import apply_policy_update
     from kiro_crew.platform.wheel_engine import respawn_executable
 
-    applied = await apply_policy_update()
+    # As a tracked task, not inline: the gateway's shutdown cancels it first and
+    # waits for its installer to stop (``policy_applies_in_flight``). Inline, the
+    # handler is cancelled only by aiohttp's own teardown, which the graceful
+    # cap exits ahead of, and the installer would be left running unsupervised.
+    try:
+        applied = await _run_tracked_policy_apply(apply_policy_update)
+    except _PolicyApplyStopped:
+        state.push_update_progress("failed", "Update stopped: the gateway is shutting down")
+        return web.json_response(
+            {"error": "The gateway is shutting down", "code": "shutting_down"}, status=503
+        )
     if applied is not None:
         if not applied:
             # A configured provider's failure is a failure. Falling through to
@@ -1892,23 +1984,32 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         dirty_out, _ = await asyncio.wait_for(dirty.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(dirty)
+        raise
     except asyncio.TimeoutError:
-        try:
-            dirty.kill()
-        except ProcessLookupError:
-            pass
-        await dirty.communicate()
+        await platform_compat.kill_and_reap(dirty)
         return web.json_response(
             {"error": "Timed out checking working tree status"},
             status=500,
         )
     if dirty_out and dirty_out.strip():
         logger.warning("Update skipped: working tree has uncommitted changes")
+        # ``code`` lets the UI show guided copy; ``changed`` is a count only, so
+        # no local paths leave the gateway. ``error`` keeps its wording for
+        # clients that predate the code.
+        changed = sum(1 for line in dirty_out.splitlines() if line.strip())
         return web.json_response(
-            {"error": "Working tree has uncommitted changes — commit or stash first"},
+            {
+                "error": "Working tree has uncommitted changes — commit or stash first",
+                "code": "dirty_worktree",
+                "changed": changed,
+            },
             status=409,
         )
 
@@ -1927,15 +2028,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         await asyncio.wait_for(fetch.communicate(), timeout=30)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(fetch)
+        raise
     except asyncio.TimeoutError:
-        try:
-            fetch.kill()
-        except ProcessLookupError:
-            pass
-        await fetch.communicate()
+        await platform_compat.kill_and_reap(fetch)
         return web.json_response(
             {
                 "error": "Timed out refreshing the remote before updating",
@@ -1997,15 +2099,16 @@ async def api_update_apply(request: web.Request) -> web.Response:
         cwd=proj,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
         target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+    except asyncio.CancelledError:
+        await platform_compat.kill_and_reap(target_proc)
+        raise
     except asyncio.TimeoutError:
-        try:
-            target_proc.kill()
-        except ProcessLookupError:
-            pass
-        await target_proc.communicate()
+        await platform_compat.kill_and_reap(target_proc)
         return web.json_response(
             {"error": "Timed out resolving the upstream revision", "code": "git_read_failed"},
             status=500,
@@ -2077,18 +2180,22 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=platform_compat.IS_POSIX,
+                creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
             # Only a merge that started can have moved the tree: a spawn that
             # raised wrote nothing.
             tree_moved = True
+            # No cancel arm here, unlike the read-only git calls: a cancelled
+            # apply does not kill git merge --ff-only, because a SIGKILL in
+            # mid-checkout can leave .git/index.lock and a half-moved tree. The
+            # cancel also ends the wait that carries its 60 s timeout, so nothing
+            # stops the merge after that; a bounded TERM-first stop would be a
+            # separate change.
             try:
                 await asyncio.wait_for(pull.communicate(), timeout=60)
             except asyncio.TimeoutError:
-                try:
-                    pull.kill()
-                except ProcessLookupError:
-                    pass
-                await pull.communicate()
+                await platform_compat.kill_and_reap(pull)
                 state.push_update_progress(
                     "error", f"Fast-forward to {target[:12]} timed out (git merge --ff-only)"
                 )
@@ -2339,6 +2446,10 @@ async def _safe_ws_send(ws: web.WebSocketResponse, msg: str, state: DashboardSta
         if not state._ws_client_allowed(ws, "log", {}):
             state._ws_log_subscribers.discard(ws)
             return
+        # The hub's stalled-tab limit applies here too, because this stream
+        # bypasses its fan-out: a tab over the limit is dropped and aborted.
+        if state._drop_if_stalled(ws) is True:
+            return
         await ws.send_str(msg)
     except Exception:
         state._ws_log_subscribers.discard(ws)
@@ -2463,6 +2574,33 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
 # ── Dashboard SSE ──
 
 
+def _without_pin_ranks(payload: str) -> str:
+    """The SSE slots frame with every row's pinned-order fields removed.
+
+    A rank is a place in the person's whole pinned order, which is the
+    person's own; a scoped stream client gets none of it, as on the app
+    WebSocket and the slots GET.
+    """
+    from kiro_crew.dashboard.pinned_session_order import PIN_ORDER_FIELDS
+
+    try:
+        rows = json.loads(payload)
+    except (TypeError, ValueError):
+        return payload
+    if not isinstance(rows, list):
+        return payload
+    return json.dumps(
+        [
+            (
+                {k: v for k, v in row.items() if k not in PIN_ORDER_FIELDS}
+                if isinstance(row, dict)
+                else row
+            )
+            for row in rows
+        ]
+    )
+
+
 async def api_stream(request: web.Request) -> web.StreamResponse:
     """SSE endpoint — pushes status + notifications to each connected client.
 
@@ -2499,6 +2637,8 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                     msg_type = note.get("_type", "")
                     if msg_type == "slots":
                         payload = note["slots"]
+                        if not is_dashboard_user:
+                            payload = _without_pin_ranks(payload)
                         await resp.write(f"event: slots\ndata: {payload}\n\n".encode())
                     elif msg_type == "slot_title":
                         payload = json.dumps({"key": note["key"], "title": note["title"]})
@@ -2720,9 +2860,14 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     ``X-Local-Secret``, compared in constant time. This is a CLI-only endpoint —
     the dashboard panel reconciles through ``GET /api/update/check`` — so it does
     NOT use the browser owner gate, whose identity the raw local-secret request
-    never carries.
+    never carries. A kernel-attested same-user AF_UNIX peer
+    (``core._unix_peer_is_self``) is admitted beside loopback, because the CLI's
+    owner-verified send prefers the dashboard's owner-only socket, where
+    ``request.remote`` is empty; the secret check is unchanged on both.
     """
-    if not is_loopback(request.remote or ""):
+    from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+
+    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )
@@ -2778,6 +2923,16 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     if owner_denied is not None:
         return owner_denied
     state: DashboardState = request.app["state"]
+
+    # Refuse a restart that cannot run BEFORE the 200, while the client still
+    # holds the request: after it, a refusal reaches the user only as a
+    # progress step, which a restart control waiting for the reload never
+    # reads. ``_restart_gateway`` re-checks when it commits. Before the latch
+    # below, so no await separates its check from the task it records.
+    _launcher, _exe, refusal = await _resolve_restart_target()
+    if refusal is not None:
+        code, sentence = refusal
+        return web.json_response({"ok": False, "error": sentence, "code": code}, status=409)
 
     # Coalesce repeat clicks/requests BEFORE the response-flush sleep below.
     # Without this latch, every POST creates a restart task and they all reach

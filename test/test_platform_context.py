@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import string
+
 import pytest
 
 from kiro_crew import security
@@ -477,3 +479,67 @@ class TestRedactLogViaContext:
                 "A converged site routes its gate-side text through the context spelling, "
                 "so a companion host is not scanned with the weaker pass."
             )
+
+
+class TestRedactCodeViaContext:
+    """``redact_code_via_context`` -- ``redact_via_context`` minus the bare-secret guess.
+
+    It must stay the SAME shim underneath: a companion's extra reach still applies to
+    code text, and a policy that cannot be composed still refuses rather than
+    degrading. Only core pass 3 differs, and ``test_redaction_code_text_scope`` pins
+    that half.
+    """
+
+    COMPANION_SHAPE = "SSO-COOKIE"
+
+    #: 62 distinct letters and digits: a literal pass 3 reads as a key.
+    PALETTE = string.ascii_lowercase + string.ascii_uppercase + string.digits
+
+    @staticmethod
+    def _install(policy, cfg: KiroCrewConfig):
+        import dataclasses
+
+        from kiro_crew.platform import set_context
+
+        set_context(
+            dataclasses.replace(
+                build_default_context(cfg, profile=PROFILE_ENTERPRISE),
+                credentials=policy,
+            )
+        )
+
+    @pytest.fixture(autouse=True)
+    def _restore_context(self):
+        from kiro_crew.platform import reset_context
+
+        yield
+        reset_context()
+
+    def test_a_companion_pattern_still_applies_to_code_and_the_literal_is_kept(
+        self, cfg: KiroCrewConfig
+    ) -> None:
+        from kiro_crew.platform.context import redact_code_via_context, redact_via_context
+
+        class _Policy:
+            def redact(self, text: str) -> str:
+                return security.redact(text).replace(
+                    TestRedactCodeViaContext.COMPANION_SHAPE, "[REDACTED-SSO]"
+                )
+
+        self._install(_Policy(), cfg)
+        code = f"var cookie = '{self.COMPANION_SHAPE}'; var A = '{self.PALETTE}';"
+        assert self.PALETTE not in redact_via_context(code), "the premise: pass 3 fires"
+        out = redact_code_via_context(code)
+        assert self.COMPANION_SHAPE not in out
+        assert f"var A = '{self.PALETTE}';" in out
+
+    def test_a_policy_that_cannot_be_composed_still_refuses(self, cfg: KiroCrewConfig) -> None:
+        from kiro_crew.platform.context import redact_code_via_context
+
+        class _Unprovable:
+            def redact(self, text: str) -> str:
+                raise PlatformCompositionError("companion could not be composed")
+
+        self._install(_Unprovable(), cfg)
+        with pytest.raises(PlatformCompositionError):
+            redact_code_via_context("var a = 1;")

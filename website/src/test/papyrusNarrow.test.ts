@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const src = () => readFile(join(__dirname, '..', 'apps', 'papyrus', 'PapyrusPage.tsx'), 'utf8')
@@ -85,7 +85,15 @@ describe('papyrus at phone widths', () => {
   })
 
   it('keeps the viewport-anchored sessions opener out of an embedded host', async () => {
-    const s = await readFile(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+    // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pin reads the page and those owners.
+    const pages = join(__dirname, '..', 'pages')
+    const ownerDir = join(pages, 'chat', 'page')
+    const files = [
+      join(pages, 'ChatPage.tsx'),
+      ...(await readdir(ownerDir)).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort().map(f => join(ownerDir, f)),
+      ...(await readdir(pages)).filter(f => /^useChatPage\w*\.ts$/.test(f)).sort().map(f => join(pages, f)),
+    ]
+    const s = (await Promise.all(files.map(f => readFile(f, 'utf8')))).join('\n')
     // The floating opener is `fixed top-[42px] left-2`, i.e. anchored to the
     // VIEWPORT rather than to the host's pane, so inside Papyrus's co-author panel
     // it lands on the toolbar's back button -- two overlapping tap targets on the

@@ -15,15 +15,41 @@ const HOSTS = {
   ChatEmbed: read('../app-sdk/ChatEmbed.tsx'),
 }
 
+/** What the "nothing of its own" pins read: ChatPane with the owner modules its
+ *  code lives in, the other hosts as they are. */
+const OWN_CODE: Record<keyof typeof HOSTS, string> = {
+  ...HOSTS,
+  ChatPane: [HOSTS.ChatPane, ...[
+    'ChatPanePickerMenus.tsx',
+    'ChatPaneProps.ts',
+    'ChatPaneTranscript.tsx',
+    'useChatPaneDraft.ts',
+    'useChatPanePickers.ts',
+    'useChatPaneSend.ts',
+    'useChatPaneTurnControl.ts',
+    'useChatPaneUploads.ts',
+  ].map(f => read(`../components/${f}`))].join('\n'),
+}
+
 describe('chat-core transcript contract', () => {
   it('every non-page host mounts ChatMessageList with the transcript wiring instead of its own scroller', () => {
     // The hook the hosts used to wear is gone with its last consumer.
     expect(existsSync(resolve(__dirname, '../app-sdk/useChatScrollFollow.ts'))).toBe(false)
     for (const [name, src] of Object.entries(HOSTS)) {
       expect(src, `${name} mounts the transcript`).toContain('transcript={{')
-      expect(src, `${name} has no follow hook of its own`).not.toContain('useChatScrollFollow')
-      expect(src, `${name} has no transcript scroll div of its own`).not.toMatch(/className="[^"]*overflow-y-auto[^"]*"[^>]*>\s*\n?\s*<div ref=\{follow\.contentRef\}/)
+      expect(OWN_CODE[name as keyof typeof HOSTS], `${name} has no follow hook of its own`).not.toContain('useChatScrollFollow')
+      expect(OWN_CODE[name as keyof typeof HOSTS], `${name} has no transcript scroll div of its own`).not.toMatch(/className="[^"]*overflow-y-auto[^"]*"[^>]*>\s*\n?\s*<div ref=\{follow\.contentRef\}/)
     }
+  })
+
+  it('the embed and the pane mount their list and earlier bar with the hand-off off', () => {
+    // Both hold state the hand-off's navigation would drop: the embed's whole
+    // composer, the pane's staged message quote.
+    for (const name of ['ChatEmbed', 'ChatPane'] as const) {
+      expect(HOSTS[name], `${name} turns the list's hand-off off`).toMatch(/<ChatMessageList\b[^>]*?\bhandOff=\{false\}/s)
+    }
+    expect(HOSTS.ChatPane).toContain('onLoad: loadOlder, handOff: false }')
+    expect(HOSTS.ChatPane).toContain('onLoad: loadOlderPane, handOff: false }')
   })
 
   it('each host partitions the height/anchor caches under its own prefix', () => {
@@ -33,7 +59,9 @@ describe('chat-core transcript contract', () => {
   })
 
   it('ChatEmbed polls a bounded page and pages earlier history through the transcript bar', () => {
-    expect(HOSTS.ChatEmbed).toContain("'?limit=' + limit")
+    // The read path is built by the incremental-read helper, still bounded by `limit`.
+    expect(HOSTS.ChatEmbed).toContain('api.get<ChatSlotData>(embedReadPath(key, lim, sent))')
+    expect(read('../app-sdk/embedIncrementalRead.ts')).toContain("'?limit=' + limit")
     expect(HOSTS.ChatEmbed).toContain('earlier: { hasMore: canWiden')
     // A rejected widen keeps the settled page on screen and offers a retry.
     expect(HOSTS.ChatEmbed).toContain('const shown = slotData ?? settled')

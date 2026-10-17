@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from typing import TYPE_CHECKING
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
         _TEAMS_CREDENTIAL_REJECT_STATUSES,
         _TOKEN_VERIFY_TIMEOUT,
         DashboardState,
+        _channel_sdk_status,
         _clean_id_list,
         _CredentialTupleChanged,
         _hot_apply_after_write,
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
         _sel,
         _threshold_pct_rejection,
         _ThresholdPairInverted,
-        _write_env_off_loop,
+        _write_env_or_roll_back,
         channel_restart_required,
         clean_session_folder,
         ensure_channel_folder,
@@ -47,11 +49,19 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
     from kiro_crew.teams.client import HAS_JWT  # noqa: F811
 
     cfg = KiroCrewConfig.load()
-    creds = cfg.load_credentials()
+    # Off-loop: a secret:// reference is read and decrypted from the vault.
+    creds = await asyncio.to_thread(cfg.load_credentials)
+    # Off-loop too: find_spec and the PEP 668 marker check touch the filesystem.
+    # find_spec locates PyJWT without importing it, so this keeps the boot-path
+    # rule above.
+    sdk_installed, sdk_supported, sdk_command = await asyncio.to_thread(
+        _channel_sdk_status, "teams"
+    )
     tc = cfg.teams
-    # Credential resolution mirrors the boot path (slack/gateway.py) exactly: the
-    # env credential wins over config.json for all three values, so the panel
-    # reports the identity the channel will actually run as.
+    # Credential resolution mirrors the boot path (``_hoist_teams`` in
+    # slack/gateway_runtime/channel_boot.py) exactly: the env credential wins over
+    # config.json for all three values, so the panel reports the identity the
+    # channel will actually run as.
     app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or tc.app_id
     app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or tc.app_password
     tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or tc.tenant_id
@@ -75,6 +85,13 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
             # validation is impossible. Reported so an operator sees the reason
             # instead of a channel that silently never starts.
             "jwt_available": bool(HAS_JWT),
+            # The shared optional-SDK card's fields (see _channel_sdk_status):
+            # the install command names THIS gateway's interpreter, and is empty
+            # where no in-place install can work, so the panel never shows a
+            # bare ``pip install`` that could target another environment.
+            "sdk_installed": sdk_installed,
+            "sdk_install_supported": sdk_supported,
+            "sdk_install_command": sdk_command,
             "enabled": tc.enabled,
             # Non-secret: blank means a multi-tenant bot, a value means
             # single-tenant. The operator needs it to tell those apart.
@@ -178,6 +195,7 @@ async def _teams_config_save(request: web.Request) -> web.Response:
         _threshold_pct,
         config_path,
         read_env_file_credential,
+        resolve_env_credential,
     )
 
     caller = request.get("user", "dashboard")
@@ -286,8 +304,9 @@ async def _teams_config_save(request: web.Request) -> web.Response:
     # The fallbacks come from a config snapshot taken OUTSIDE the config lock and
     # are advisory only: they decide what to verify, never what to write. The
     # authoritative read-modify-write is still Phase 2 under the lock. Resolution
-    # order mirrors the boot path (slack/gateway.py) — the env credential wins —
-    # so the check exercises the credentials the channel will actually use.
+    # order mirrors the boot path (``_hoist_teams`` in
+    # slack/gateway_runtime/channel_boot.py) — the env credential wins — so the
+    # check exercises the credentials the channel will actually use.
     verify_warning = ""
     #: The exact (app_id, password, tenant) Azure accepted, or None when nothing was
     #: verified. Re-confirmed under the config lock before anything is written.
@@ -332,6 +351,8 @@ async def _teams_config_save(request: web.Request) -> web.Response:
         _c_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _c_pw
         _c_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _c_app_id
         _c_tenant = os.environ.get(CRED_MICROSOFT_APP_TENANT_ID, "") or _c_tenant
+        # A secret:// reference reads as the vault secret it names.
+        _c_pw = await asyncio.to_thread(resolve_env_credential, CRED_MICROSOFT_APP_PASSWORD, _c_pw)
         # ENV-first: env_updates wins, then .env/os.environ (_c_pw).  When the
         # password lives ONLY in legacy config.json (not in .env or os.environ,
         # so _c_pw is empty), fall back to the raw legacy value so verification
@@ -403,6 +424,9 @@ async def _teams_config_save(request: web.Request) -> web.Response:
             _f_pw = os.environ.get(CRED_MICROSOFT_APP_PASSWORD, "") or _f_pw
             _f_app_id = os.environ.get(CRED_MICROSOFT_APP_ID, "") or _f_app_id
             _f_tenant = os.environ.get(CRED_MICROSOFT_APP_TENANT_ID, "") or _f_tenant
+            _f_pw = await asyncio.to_thread(
+                resolve_env_credential, CRED_MICROSOFT_APP_PASSWORD, _f_pw
+            )
             now_password = env_updates.get(
                 CRED_MICROSOFT_APP_PASSWORD,
                 _f_pw or str(teams_cfg.get("app_password", "")),
@@ -471,11 +495,15 @@ async def _teams_config_save(request: web.Request) -> web.Response:
         # entry, no env_update) — that would erase the sole credential copy and
         # produce a dead pair at the next restart.
         # _c_pw is only populated inside ``if credential_touched`` (Phase 1.5).
-        # For metadata-only saves (credential_touched=False) fall back to a
-        # synchronous os.environ check — load_credentials() seeds os.environ from
-        # .env at startup, so the key is present when .env holds the credential.
-        _pw_in_env_or_environ = locals().get("_c_pw") or os.environ.get(
-            CRED_MICROSOFT_APP_PASSWORD, ""
+        # For metadata-only saves (credential_touched=False) fall back to the
+        # os.environ value — load_credentials() seeds os.environ from .env at
+        # startup, so the key is present when .env holds the credential. That
+        # value counts only once resolved: a secret:// reference the vault
+        # cannot answer is no copy of the password at all.
+        _pw_in_env_or_environ = locals().get("_c_pw") or await asyncio.to_thread(
+            resolve_env_credential,
+            CRED_MICROSOFT_APP_PASSWORD,
+            os.environ.get(CRED_MICROSOFT_APP_PASSWORD, ""),
         )
         _pw_safe_in_env = bool(
             CRED_MICROSOFT_APP_PASSWORD in env_updates  # being written this save
@@ -536,9 +564,20 @@ async def _teams_config_save(request: web.Request) -> web.Response:
                         "nothing was saved — reload and try again",
                     )
 
-            # Create the configured session folder now, on this user-initiated save,
-            # so the reconcile path never has to write the folder store. Best-effort:
-            # a failure leaves conversations unfiled until the next save.
+            if env_updates:
+                # A failed .env write undoes the config commit above, so a refused
+                # save changes nothing (see _write_env_or_roll_back).
+                rollback = (
+                    functools.partial(_cfg_write.rollback, "Teams")
+                    if changes or blank_keys
+                    else None
+                )
+                await _write_env_or_roll_back(env_updates, rollback)
+
+            # Create the configured session folder only once the .env write above has
+            # landed, so a refused save leaves no new or renamed folder. Doing it on this
+            # user-initiated save means the reconcile path never writes the folder store.
+            # Best-effort: a failure leaves conversations unfiled until the next save.
             _folder_name = stored_folder_name(teams_cfg.get("session_folder"))
             if _folder_name:
                 _state = request.app.get("state")
@@ -549,46 +588,6 @@ async def _teams_config_save(request: web.Request) -> web.Response:
                         _folder_name,
                         relabel="session_folder" in changes,
                     )
-            if env_updates:
-                # Off-loop: the .env write is blocking file IO (lock, temp write,
-                # owner-only lockdown, replace) that would stall the gateway loop
-                # if run inline.
-                #
-                # Cancellation guard: _write_env_off_loop shields + drains its
-                # worker, so a CancelledError from it means the .env write has
-                # already finished (either succeeded or failed). Roll config back
-                # ONLY when the write actually failed; if it succeeded, the pair
-                # is consistent and rolling back would create a mismatch.
-                _env_write_task: asyncio.Task[None] = asyncio.ensure_future(
-                    _write_env_off_loop(env_updates)
-                )
-                try:
-                    await asyncio.shield(_env_write_task)
-                except asyncio.CancelledError:
-                    # Drain to completion WITHOUT propagating, so we can inspect the
-                    # outcome and roll back before re-raising (a second shield() would
-                    # re-raise CancelledError before the rollback ran).
-                    await asyncio.gather(_env_write_task, return_exceptions=True)
-                    _env_exc = (
-                        _env_write_task.exception() if not _env_write_task.cancelled() else None
-                    )
-                    if _env_exc is not None:
-                        # .env write failed — roll config back for consistency.
-                        if changes or blank_keys:
-                            await _cfg_write.rollback("Teams")
-                    raise
-                except BaseException:
-                    # Genuine .env write failure — roll the config metadata back so
-                    # a failed write cannot leave the NEW metadata paired with the
-                    # OLD credential on disk.
-                    if changes or blank_keys:
-                        await _cfg_write.rollback("Teams")
-                    raise
-                for key, new_val in env_updates.items():
-                    if new_val is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,

@@ -49,6 +49,7 @@ from kiro_crew import validation as _validation
 from kiro_crew.decisions.log import MAX_VERDICT_ID_CHARS as _MAX_VERDICT_ID_CHARS
 from kiro_crew.decisions.points import nudge_wake as point
 from kiro_crew.hooks import _HOST_READ_ONLY_BUILTIN_TOOLS
+from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,9 @@ MAX_TARGETS = _validation.MAX_JUDGE_TARGETS
 EVIDENCE_ROLES = frozenset({"assistant"})
 
 
-def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str]:
+def parse_targets(
+    spec: Mapping[str, Any] | None, message: str = "", *, watched: str = ""
+) -> list[str]:
     """The targets to collect from: the spec's own list, else what *message* names.
 
     An explicit ``targets`` list adds or narrows; without one the loop's
@@ -100,6 +103,15 @@ def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str
     :data:`SESSION_TARGET_RE`, or a string a pull-request target can be inferred
     from. Anything else is dropped rather than passed to a reader, because these
     strings come from the owner's tool call.
+
+    *watched* is the subject the loop's gh-pr monitor is bound to (see
+    :func:`watched_pr_subject`). It is used for ONE shape: an instruction naming its
+    pull request by number alone (``PR <number>``), whose repository the monitor's
+    resolver took from the session's own log. The text cannot be re-inferred here --
+    the log is not -- so without this the probe would read the pull request and the
+    collector would ask about nothing, and no comment would ever reach the judge.
+    Only when the number in the instruction IS the monitor's number, so it can never
+    put a pull request into the brief that the instruction did not name.
     """
     raw: list[str] = []
     narrowed = False
@@ -143,7 +155,43 @@ def parse_targets(spec: Mapping[str, Any] | None, message: str = "") -> list[str
         stripped = message.strip()
         if stripped not in out:
             out.append(stripped)
+    elif _is_bare_subject_of(message, watched) and watched.strip() not in out:
+        out.append(watched.strip())
     return out
+
+
+def watched_pr_subject(loop: Any) -> str:
+    """The subject *loop*'s gh-pr monitor is bound to, or ``""``. Never raises."""
+    monitor = getattr(loop, "monitor", None)
+    if monitor is None:
+        return ""
+    try:
+        from kiro_crew.probes import GH_PR
+
+        if getattr(monitor, "kind", "") != GH_PR:
+            return ""
+    except Exception:
+        return ""
+    target = getattr(monitor, "target", "")
+    return target if isinstance(target, str) else ""
+
+
+def _is_bare_subject_of(message: str, watched: str) -> bool:
+    """Whether *message* names *watched*'s pull request by its number alone."""
+    value = (watched or "").strip()
+    if not value or not message:
+        return False
+    try:
+        from kiro_crew.probes import targets as _targets
+
+        number = _targets.bare_pull_request_number(message)
+    except Exception:
+        logger.debug("nudge.wake: target inference unavailable", exc_info=True)
+        return False
+    if number is None:
+        return False
+    slug, sep, tail = value.rpartition("#")
+    return bool(sep) and "/" in slug and tail == str(number)
 
 
 def is_session_target(value: str) -> bool:
@@ -191,6 +239,8 @@ def session_evidence(
         if not isinstance(row, Mapping):
             continue
         if str(row.get("role", "") or "") not in EVIDENCE_ROLES:
+            continue
+        if is_warm_task_brief_message(row):
             continue
         text = row.get("content", "")
         if not isinstance(text, str) or not text.strip():
@@ -486,6 +536,30 @@ def take_pr_bodies(loop_id: str) -> tuple[dict[str, str], bool]:
             _PR_BODIES_FORGOTTEN = 0
             _PR_BODIES_FORGOTTEN_TAKES = 0
     return bodies, dropped
+
+
+def forget_pr_bodies(loop_id: str) -> None:
+    """Drop whatever this module holds under *loop_id*: its stash and its loss notice.
+
+    For the loop remover, once a removal has COMMITTED. A loop that is gone from the
+    store never takes again, so without this its stash sits in the queue until the
+    cap evicts it and its notice counts as pending until the store rotates past it --
+    the dropped total overstates real losses and the forgotten state, when set,
+    stays live for up to a rotation of takes it did not need. A loop a failed write
+    puts back is not gone: it still owes its next tick whatever is held here, so the
+    caller forgets only after the store has agreed the loop is out.
+
+    Only the two loop-id-keyed structures are touched. The forgotten state and its
+    take counter exist for a notice whose OWNER is unknown, and a caller that names a
+    loop id knows the owner; spending that state here would end it for a loss that
+    still belongs to someone else. The dropped total is history, not a queue, and
+    stays counted. The rotation backstop in :func:`take_pr_bodies` is unchanged.
+    """
+    key = str(loop_id or "")
+    if not key:
+        return
+    _PR_BODIES.pop(key, None)
+    _PR_BODIES_DROPPED.pop(key, None)
 
 
 def with_remark_bodies(
@@ -962,6 +1036,18 @@ def criteria_of(spec: Mapping[str, Any] | None) -> tuple[str, str]:
 #: which tells the judge it already answered on a comparable amount of evidence. That
 #: is a weaker signal than a delta and is the honest limit of it.
 #:
+#: A fully settled board whose every check has passed is named for the same reason as
+#: the failing one, and it is the harder case to leave out: the state an owner arming
+#: a plain watch is most often waiting FOR is the board going green -- the thing they
+#: watched is done -- yet a green board asks nothing of "a blocker" or "a failing
+#: check", so without this clause a briefless loop sleeps through the settle and the
+#: owner learns of it only when the starvation backstop happens to fire. A missed
+#: "it is green now" strands the owner; a spurious wake costs one turn and is
+#: self-correcting, so the clause errs on the cheap side. ``last_verdict`` gives the
+#: judge the context to answer quiet on a settled board it already woke on -- an
+#: outcome and an item count, the same advisory signal the failing case leans on,
+#: not a hard stop.
+#:
 #: The quiet side carries a THIRD clause the two criteria do not, because the loops
 #: this brief covers have no author to write it: a comment, a review and a fetched
 #: page are content a third party wrote, and a sentence inside one saying there is
@@ -972,7 +1058,8 @@ def criteria_of(spec: Mapping[str, Any] | None) -> tuple[str, str]:
 #: skill would get it.
 DEFAULT_WAKE_WHEN = (
     "the subject needs its owner: a blocker, a failing check or one whose "
-    "reading is not whole, a question or ruling addressed to it, a new comment or "
+    "reading is not whole, a fully settled board whose every check has passed, a "
+    "question or ruling addressed to it, a new comment or "
     "review whose body asks for a change or asks a question, a terminal state, or "
     "the loop message's own exit condition"
 )

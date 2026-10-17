@@ -199,15 +199,16 @@ const run = async () => {
         console.log(`  ${theme}/${scene} -> ${note}; collapsed + expanded + search` )
       } else if (scene === 'folder-truncated') {
         // Before: the capped tree with its limit notice. During: the query typed,
-        // the line above the results already saying the search also covers items
-        // not listed, and the tree's own matches already shown while the server's
-        // are in flight (so no "Searching…" is waited for). After: the server's
-        // matches merged in.
+        // the line above the results saying they can include files past the limit,
+        // and the tree's own matches already shown above a "Searching…" status
+        // while the server's are in flight (#16743). After: the server's
+        // matches merged in and the status gone.
         await page.getByText(/limit of 10,000 items reached/).waitFor()
         await target.screenshot({ path: `${OUT}/${theme}-${scene}-before.png` })
         await page.getByLabel('Search files').fill('read')
         const takeover = page.getByTestId('folder-search-beyond-tree')
         await takeover.waitFor()
+        await page.getByRole('status').filter({ hasText: 'Searching' }).waitFor()
         await target.screenshot({ path: `${OUT}/${theme}-${scene}-during.png` })
         await page.getByText('readme.txt').waitFor()
         // The tree stays mounted (hidden) behind the results so its expansion

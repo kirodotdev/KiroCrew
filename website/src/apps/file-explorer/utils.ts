@@ -2,6 +2,7 @@ import { safeSetItem } from '../../utils/safeStorage'
 import { STORAGE_KEY } from './constants'
 import { fmtBytes, fmtDateTimeNumeric } from '../../i18n/format'
 import { hasCommandModifier } from '../../utils/commandModifier'
+import { pathBasename, stripTrailingSeparators } from '../../utils/pathBasename'
 
 export const extOf = (p: string) => {
   const slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -11,11 +12,7 @@ export const extOf = (p: string) => {
   return base.slice(i).toLowerCase()
 }
 
-export const basename = (p: string) => {
-  const s = p.replace(/\/+$/, '')
-  const i = s.lastIndexOf('/')
-  return i < 0 ? s : s.slice(i + 1)
-}
+export const basename = (p: string) => pathBasename(stripTrailingSeparators(p))
 
 export const dirname = (p: string) => {
   const s = p.replace(/\/+$/, '')
@@ -23,6 +20,12 @@ export const dirname = (p: string) => {
   if (i <= 0) return '/'
   return s.slice(0, i)
 }
+
+/** Label for one `parentChain` crumb. The chain is built by splitting on `/`
+ *  only, so its label splits on `/` only too: a Windows root stays one crumb
+ *  showing the whole path, exactly as before #14581. Breadcrumb navigation for
+ *  Windows roots is a separate change. */
+export const crumbLabel = (p: string) => p.replace(/\/+$/, '').split('/').at(-1) ?? ''
 
 export const parentChain = (p: string) => {
   const out: string[] = []

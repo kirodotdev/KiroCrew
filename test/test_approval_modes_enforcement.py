@@ -45,6 +45,7 @@ from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform import governance_profiles as gp
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.governance import parse_policy
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -1151,7 +1152,7 @@ class TestTheRevocationNoticeReachesTheLoopItWasInstalledOn:
             _deny("yolo")
 
         await asyncio.to_thread(_install)
-        await asyncio.wait_for(notified.wait(), timeout=5)
+        await await_until(notified, what="the policy-revocation notification")
 
         # Which THREAD each half ran on is the timing-independent form of "one is
         # inline and the other is deferred": sampling the ordering mid-flight would
@@ -1326,7 +1327,7 @@ class TestTheRevocationNoticeReachesTheLoopItWasInstalledOn:
         # The teardown is NOT deferred: it is done by the time the install returns.
         assert override.has_grant() is False
 
-        await asyncio.wait_for(fired.wait(), timeout=5)
+        await await_until(fired, what="the loop-affine expiry callback")
         assert threads == [main_thread], (
             "the handler must run on the loop it was installed from, not on the "
             "worker thread that installed the ceiling"
@@ -1493,7 +1494,7 @@ class TestOnlyOneSurfaceWritesGrantDerivedTrust:
 
     #: ``<path under src/kiro_crew>`` -> why its grant-derived write is safe.
     WRITERS = {
-        "dashboard/chat_handlers.py": (
+        "dashboard/chat_api/slot_approval.py": (
             "api_chat_slot_approve's action=yolo branch writes approval_policy='auto' "
             "onto every slot from the ActivationResult, then re-reads the verdict and "
             "clears what it just set if policy now denies -- preserving standing trust "
@@ -1510,13 +1511,22 @@ class TestOnlyOneSurfaceWritesGrantDerivedTrust:
         runtime = src / "dashboard" / "server_runtime"
         owners = sorted(runtime.glob("[!_]*.py"))
         assert owners, "expected the server_runtime owners beside server.py"
+        # taskrunner.py binds TaskRunner's members from its taskrunner_parts owners, so
+        # those are read as one file with it too.
+        runner_parts = src / "taskrunner_parts"
+        runner_owners = sorted(runner_parts.glob("[!_]*.py"))
+        assert runner_owners, "expected the taskrunner_parts owners beside taskrunner.py"
         found: set[str] = set()
         for path in src.rglob("*.py"):
-            if "_vendor" in path.parts or path.parent == runtime:
+            if "_vendor" in path.parts or path.parent in (runtime, runner_parts):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             if path == src / "dashboard" / "server.py":
                 text += "".join(o.read_text(encoding="utf-8", errors="replace") for o in owners)
+            if path == src / "taskrunner.py":
+                text += "".join(
+                    o.read_text(encoding="utf-8", errors="replace") for o in runner_owners
+                )
             arms = "safety_override().activate" in text
             grants = "set_approval_policy(" in text and '"auto"' in text
             if arms and grants:
@@ -1682,7 +1692,13 @@ class TestArmingIsStillOffloadedByItsAsyncCallers:
         # case either fails for the wrong reason or, worse, silently inspects a
         # different file and passes without checking anything.
         repo_root = _pl.Path(__file__).resolve().parents[1]
-        src = (repo_root / "src" / "kiro_crew" / "taskrunner.py").read_text(encoding="utf-8")
+        src = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                repo_root / "src" / "kiro_crew" / "taskrunner.py",
+                *sorted((repo_root / "src" / "kiro_crew" / "taskrunner_parts").glob("*.py")),
+            ]
+        )
         bare = [
             line.strip()
             for line in src.splitlines()

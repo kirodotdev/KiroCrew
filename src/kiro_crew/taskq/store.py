@@ -47,9 +47,17 @@ from typing import Any, Callable, Iterable, Sequence
 from kiro_crew import platform_compat
 from kiro_crew.metrics.events import TASKQ_COMPLETIONS, emit_counter
 from kiro_crew.on_loop_db import OnLoopDBGuard
+from kiro_crew.owner_only_files import prepare_owner_only_sqlite
+from kiro_crew.sqlite_quarantine import is_damaged_database_error, quarantine_sqlite_file
 
 from . import lanes as _lanes
 from . import migrate
+from . import store_events as _store_events
+from . import store_reads as _store_reads
+from . import store_waits as _store_waits
+from .model import ADOPTED_RESUME_EVENT  # noqa: F401
+from .model import RUNNING  # noqa: F401
+from .model import TaskEvent  # noqa: F401
 from .model import (
     ACTIVE,
     ADMITTED,
@@ -59,19 +67,41 @@ from .model import (
     QUEUED,
     RECOVERING,
     RETRY_WAIT,
-    RUNNING,
     TERMINAL,
     WAITING,
     WAITING_INFRA,
     InvalidTransition,
-    TaskEvent,
     TaskRecord,
     check_transition,
     is_terminal,
     steps_to,
 )
+from .store_reads import _SQL_CHILD_ONLY  # noqa: F401
+from .store_vocab import (
+    _SQL_ACTIVE,
+    _SQL_CLAIMABLE,
+    _SQL_TERMINAL,
+    _SQL_UNSTARTED,
+    _UNSTARTED,
+    TaskStoreUnavailable,
+    _typed_read,
+)
+from .store_waits import _SQL_WAITING  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+#: The modules ``TaskStore`` is composed from, lowest layer first. ``store_vocab`` holds
+#: the SQL fragments several owners share and ``TaskStoreUnavailable``; each other owner
+#: holds methods the class binds by name (``events = _store_events.events``), so the class
+#: attribute IS the owner's function and every field stays on the instance. An owner
+#: imports only modules listed before it, never this one at run time, and a name a test
+#: patches through this module is read only by code this module keeps.
+_STORE_OWNERS = (
+    "kiro_crew.taskq.store_vocab",
+    "kiro_crew.taskq.store_events",
+    "kiro_crew.taskq.store_waits",
+    "kiro_crew.taskq.store_reads",
+)
 
 #: Default bound on the in-memory dispatch window (``agent.task_dispatch_window``).
 DEFAULT_DISPATCH_WINDOW = 64
@@ -161,17 +191,6 @@ NETWORK_FS_TYPES: frozenset[str] = frozenset(
 
 _DARWIN_MNT_LOCAL = 0x00001000
 
-_SQL_CLAIMABLE = "(" + ",".join(f"'{s}'" for s in sorted(CLAIMABLE)) + ")"
-_SQL_TERMINAL = "(" + ",".join(f"'{s}'" for s in sorted(TERMINAL)) + ")"
-_SQL_ACTIVE = "(" + ",".join(f"'{s}'" for s in sorted(ACTIVE)) + ")"
-_SQL_WAITING = "(" + ",".join(f"'{s}'" for s in sorted(WAITING)) + ")"
-#: Claimable rows plus ``admitted`` ones: every row accepted and not yet started.
-#: A caller that subtracts the rows this process has registered as runs is left
-#: with exactly the accepted work no run exists for yet (``include_admitted``).
-_UNSTARTED: frozenset[str] = CLAIMABLE | {ADMITTED}
-_SQL_UNSTARTED = "(" + ",".join(f"'{s}'" for s in sorted(_UNSTARTED)) + ")"
-#: The ``children_only`` filter the dispatch reads and their wake share: nested rows.
-_SQL_CHILD_ONLY = " AND parent_id IS NOT NULL AND parent_id <> ''"
 #: Ids per ``IN (...)`` list in a multi-row event read: under the 999
 #: host-parameter ceiling of an older SQLite build.
 _EVENT_ID_CHUNK = 500
@@ -183,92 +202,6 @@ _EVENT_REPORTED = "reported"
 
 class _CorruptStore(Exception):
     """Internal: the file is not a usable SQLite database (see ``TaskStore.open``)."""
-
-
-#: SQLite's own verdicts that the FILE is damaged. Exact phrases: a bare
-#: substring such as ``corrupt`` could match a path or a wrapped message.
-#: The ``integrity_check`` verdict is the fourth trigger (``_open_connection``).
-_CORRUPTION_MARKERS = (
-    "file is not a database",
-    "database disk image is malformed",
-    "malformed database schema",
-)
-#: Messages that mean another writer or the host, never the file: keep refusing.
-_TRANSIENT_MARKERS = ("locked", "busy", "disk is full", "database or disk is full", "readonly")
-
-
-def _is_corruption(exc: BaseException) -> bool:
-    """Only SQLite's own damage verdicts count. Anything else that is not a
-    lock / full-disk / read-only condition -- a schema version newer than this
-    build (``migrate.apply_schema``), a permission error -- stays a refusal:
-    quarantining a VALID newer file would be a downgrade destroying data."""
-    if not isinstance(exc, sqlite3.DatabaseError):
-        return False
-    text = str(exc).lower()
-    if any(marker in text for marker in _TRANSIENT_MARKERS):
-        return False
-    return any(marker in text for marker in _CORRUPTION_MARKERS)
-
-
-def _move_without_overwrite(src: Path, dst: Path) -> None:
-    """Rename that FAILS on an existing destination on every platform.
-
-    POSIX ``rename`` replaces silently and Windows refuses, so neither is the
-    portable form. A hard link never replaces anywhere: link, then unlink the
-    source. A filesystem without links gets a rename behind an existence
-    check, which is the best that filesystem offers.
-    """
-    try:
-        os.link(src, dst)
-    except FileExistsError:
-        raise
-    except OSError:
-        if dst.exists():
-            raise FileExistsError(str(dst))
-        src.rename(dst)
-        return
-    src.unlink()
-
-
-class TaskStoreUnavailable(RuntimeError):
-    """The store could not answer; a write did not commit.
-
-    Raised for a locked or unwritable database, a schema the build cannot
-    write, or a full disk. Never raised for a row the transition table
-    refuses -- that is a ``False`` return, because the store is fine.
-
-    It is the ONE error type every public method of :class:`TaskStore` reports a
-    database failure as, reads included (:func:`_typed_read`). A read that let
-    ``sqlite3.Error`` through would be indistinguishable from a bug in this
-    module at every call site, and ``journal_mode=delete`` -- what a data home
-    on a network filesystem gets -- blocks readers behind a competing writer,
-    so a bare ``SELECT`` is exactly as failure-prone there as a transaction.
-    """
-
-
-def _typed_read(fn: "Callable[..., Any]") -> "Callable[..., Any]":
-    """Report a read's database failure as :class:`TaskStoreUnavailable`.
-
-    Every WRITE on this class already converts ``sqlite3.Error`` at its own
-    boundary; a read must too, because a caller cannot act on a distinction it
-    did not choose. That the gap was an omission and not a design is visible in
-    the callers: ``except TaskStoreUnavailable`` already guards ``state_of`` /
-    ``get`` / ``events`` / ``count_pending`` / ``list_rows`` / ``active_rows``
-    reads across the runner adapter, the dependency coordinator and the
-    admission bridge -- arms that cannot fire for a read raising
-    ``sqlite3.OperationalError`` instead. Wrapping HERE makes those arms live
-    once; an ``except sqlite3.Error`` per call site would be the same rule
-    restated at every read in those three subsystems, each copy free to drift.
-    """
-
-    @functools.wraps(fn)
-    def _wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            return fn(*args, **kwargs)
-        except sqlite3.Error as exc:
-            raise TaskStoreUnavailable(f"task store read failed: {exc}") from exc
-
-    return _wrapper
 
 
 @dataclass(frozen=True)
@@ -594,6 +527,7 @@ class TaskStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             platform_compat.restrict_dir_to_owner(self._path.parent)
+            prepare_owner_only_sqlite(self._path)
             conn = sqlite3.connect(
                 str(self._path),
                 timeout=self._busy_timeout_secs,
@@ -618,86 +552,34 @@ class TaskStore:
         except (sqlite3.Error, OSError) as exc:
             if conn is not None:
                 conn.close()
-            if _is_corruption(exc):
+            if is_damaged_database_error(exc):
                 raise _CorruptStore(str(exc)) from exc
             raise TaskStoreUnavailable(f"cannot open task store {self._path}: {exc}") from exc
         return conn
 
-    #: Sidecars SQLite may leave beside the file: the DELETE-mode rollback
-    #: journal, and the WAL pair. A hot ``-journal`` left beside a recreated
-    #: database would be rolled into it at the next open, so it moves too.
-    _SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
-
     def _quarantine_corrupt_file(self, reason: str) -> Path:
-        """Move the corrupt file and its sidecars aside under a name nothing else holds.
+        """Move the corrupt file and its sidecars aside (``sqlite_quarantine``).
 
-        Never overwrites: a crash loop quarantines several times a second, and
-        each copy is recovery evidence. The base name (UTC stamp to the
-        microsecond, pid, then a counter) is RESERVED by exclusive creation
-        before anything moves, so two boots -- or two processes -- cannot pick
-        the same one. The moves are not atomic as a group; they run sidecars
-        first and the database LAST, because the database's absence is what
-        the reopen keys on: a sidecar left behind is logged and reported,
-        never a reason to keep the corrupt database in place or to raise into
-        the reopen path.
+        Never overwrites, and a sidecar left behind is logged and reported,
+        never a reason to keep the corrupt database in place.
         """
-        target = self._reserve_quarantine_name()
-        moved: list[str] = []
-        left: list[str] = []
-        for suffix in self._SIDECAR_SUFFIXES:
-            src = self._path.with_name(self._path.name + suffix)
-            if not src.exists():
-                continue
-            dst = target.with_name(target.name + suffix)
-            try:
-                _move_without_overwrite(src, dst)
-                moved.append(dst.name)
-            except OSError as exc:
-                left.append(f"{src.name} ({exc})")
         try:
-            # Onto the placeholder this call created: the one replace that is
-            # ours to make.
-            os.replace(self._path, target)
-            moved.append(target.name)
+            moved = quarantine_sqlite_file(self._path)
         except OSError as exc:
-            try:
-                target.unlink()
-            except OSError:
-                pass
             raise TaskStoreUnavailable(
                 f"task store {self._path} is corrupt ({reason}) and could not be "
                 f"quarantined: {exc}"
             ) from exc
         message = (
-            f"task store {self._path} was corrupt ({reason}); quarantined as {target.name} "
-            f"({', '.join(moved)}) and recreated empty. Accepted work that "
+            f"task store {self._path} was corrupt ({reason}); quarantined as {moved.target.name} "
+            f"({', '.join(moved.moved)}) and recreated empty. Accepted work that "
             "only lived in the old file is NOT recovered: inspect the quarantined copy."
         )
-        if left:
-            message += f" Sidecar(s) still beside the recreated file: {', '.join(left)}."
+        if moved.left:
+            message += f" Sidecar(s) still beside the recreated file: {', '.join(moved.left)}."
         logger.warning("taskq: %s", message)
         self.warnings.append(message)
-        return target
-
-    def _reserve_quarantine_name(self) -> Path:
-        """Create the quarantine's base path exclusively and return it.
-
-        ``O_EXCL`` is the collision check: an existing name -- an earlier boot
-        in the same microsecond, an operator's copy -- fails the create, and
-        the counter suffix moves on to the next name.
-        """
-        now = time.time()
-        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now))
-        base = f"{self._path.name}.corrupt-{stamp}.{int((now % 1) * 1_000_000):06d}Z-{os.getpid()}"
-        for n in range(10_000):
-            candidate = self._path.with_name(base if n == 0 else f"{base}-{n}")
-            try:
-                fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            except FileExistsError:
-                continue
-            os.close(fd)
-            return candidate
-        raise TaskStoreUnavailable(f"task store {self._path} is corrupt; no free quarantine name")
+        return moved.target
 
     def close(self) -> None:
         with self._lock:
@@ -823,105 +705,6 @@ class TaskStore:
 
     def now(self) -> float:
         return float(self._clock())
-
-    # -- events --------------------------------------------------------------
-
-    def _append_event_in_tx(
-        self, conn: sqlite3.Connection, task_id: str, kind: str, data: dict[str, Any]
-    ) -> None:
-        seq_row = conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM task_events WHERE task_id=?", (task_id,)
-        ).fetchone()
-        seq = int(seq_row[0]) if seq_row else 1
-        conn.execute(
-            "INSERT INTO task_events(task_id, seq, ts, kind, data_json) VALUES(?,?,?,?,?)",
-            (task_id, seq, self.now(), kind, json.dumps(data, sort_keys=True, default=str)),
-        )
-
-    def append_event(self, task_id: str, kind: str, data: dict[str, Any] | None = None) -> None:
-        """Append one event outside any state change (progress, ``deliver``)."""
-        with self._lock:
-            conn = self._c()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                self._append_event_in_tx(conn, task_id, kind, data or {})
-                conn.execute("COMMIT")
-            except sqlite3.Error as exc:
-                self._rollback(conn)
-                raise TaskStoreUnavailable(f"task event write failed: {exc}") from exc
-
-    @_typed_read
-    def events(self, task_id: str, *, limit: int = 200) -> list[TaskEvent]:
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    "SELECT task_id, seq, ts, kind, data_json FROM task_events "
-                    "WHERE task_id=? ORDER BY seq DESC LIMIT ?",
-                    (task_id, int(limit)),
-                )
-                .fetchall()
-            )
-        out: list[TaskEvent] = []
-        for r in reversed(rows):
-            try:
-                data = json.loads(r["data_json"])
-            except (TypeError, ValueError):
-                data = {}
-            out.append(
-                TaskEvent(
-                    task_id=r["task_id"],
-                    seq=int(r["seq"]),
-                    ts=float(r["ts"]),
-                    kind=str(r["kind"]),
-                    data=data if isinstance(data, dict) else {},
-                )
-            )
-        return out
-
-    @_typed_read
-    def latest_events(
-        self, task_ids: Sequence[str], kinds: Sequence[str]
-    ) -> dict[tuple[str, str], TaskEvent]:
-        """The newest event of each of *kinds* for each of *task_ids*, in ONE query.
-
-        Keyed ``(task_id, kind)``; a pair with no such event is absent. For a
-        reader that needs one fact per row of a page (the queued listing),
-        where one :meth:`events` call per row would serialize a query per row
-        on the writer thread.
-        """
-        ids = [str(i) for i in task_ids if i]
-        if not ids or not kinds:
-            return {}
-        id_marks = ", ".join("?" for _ in ids)
-        kind_marks = ", ".join("?" for _ in kinds)
-        with self._lock:
-            # SQLite fills the bare columns of a MAX() aggregate from the row
-            # holding that maximum, so each group yields its newest event.
-            rows = (
-                self._c()
-                .execute(
-                    "SELECT task_id, MAX(seq) AS seq, ts, kind, data_json FROM task_events "
-                    f"WHERE task_id IN ({id_marks}) AND kind IN ({kind_marks}) "
-                    "GROUP BY task_id, kind",
-                    [*ids, *kinds],
-                )
-                .fetchall()
-            )
-        out: dict[tuple[str, str], TaskEvent] = {}
-        for r in rows:
-            try:
-                data = json.loads(r["data_json"])
-            except (TypeError, ValueError):
-                data = {}
-            out[(str(r["task_id"]), str(r["kind"]))] = TaskEvent(
-                task_id=str(r["task_id"]),
-                seq=int(r["seq"]),
-                ts=float(r["ts"]),
-                kind=str(r["kind"]),
-                data=data if isinstance(data, dict) else {},
-            )
-        return out
 
     @_typed_read
     def deferred_longer_than(
@@ -1096,7 +879,9 @@ class TaskStore:
         claimable state, eligible now (``next_run_at``), and either unleased
         or past its lease. The generation is bumped and ``attempts`` counts
         this dispatch, so every callback the run makes afterwards can be
-        fenced against a later re-dispatch.
+        fenced against a later re-dispatch. The earlier attempt's progress
+        marker is cleared in the same statement, so the new attempt starts
+        with none.
         """
         ts = self.now()
         lease = self._lease_secs if lease_secs is None else float(lease_secs)
@@ -1108,7 +893,7 @@ class TaskStore:
                 cur = conn.execute(
                     "UPDATE tasks SET state=?, lease_owner=?, lease_expires_at=?, "
                     "generation=generation+1, attempts=attempts+1, next_run_at=NULL, "
-                    "updated_at=? "
+                    "progress_json=NULL, updated_at=? "
                     f"WHERE id=? AND state IN {_SQL_CLAIMABLE} "
                     "AND (next_run_at IS NULL OR next_run_at<=?) "
                     "AND (lease_expires_at IS NULL OR lease_expires_at<?)",
@@ -1465,14 +1250,21 @@ class TaskStore:
         emit_counter(TASKQ_COMPLETIONS, {"outcome": CANCELLED})
         return old
 
-    def defer(self, task_id: str, until: float, *, reason: str) -> bool:
-        """Keep a waiting row waiting, but not eligible before *until*.
+    def defer(self, task_id: str, *, wait: float, reason: str) -> bool:
+        """Keep a waiting row waiting, but not eligible for *wait* more seconds.
 
-        The memory-posture gate uses this instead of refusing: the row stays
+        The spawn gate's memory floor uses this instead of refusing: the row stays
         accepted, holds nothing, and the dispatcher skips it until the clock
         passes ``next_run_at``.
+
+        ``next_run_at`` is the event's own ``ts`` plus *wait*, both from one
+        clock read, so the park spans exactly *wait* in
+        :meth:`deferred_longer_than`, for whole-second waits on an epoch clock.
+        A caller-computed ``now() + wait`` could not promise that: the clock
+        moves between the caller's read and this one.
         """
         ts = self.now()
+        until = ts + float(wait)
         with self._lock:
             conn = self._c()
             try:
@@ -1484,7 +1276,11 @@ class TaskStore:
                 )
                 if cur.rowcount == 1:
                     self._append_event_in_tx(
-                        conn, task_id, "deferred", {"until": float(until), "reason": reason}
+                        conn,
+                        task_id,
+                        "deferred",
+                        {"until": float(until), "reason": reason},
+                        ts=ts,
                     )
                 conn.execute("COMMIT")
             except sqlite3.Error as exc:
@@ -1492,213 +1288,45 @@ class TaskStore:
                 raise TaskStoreUnavailable(f"task defer failed: {exc}") from exc
         return cur.rowcount == 1
 
-    # -- waits (taskq.waits) ------------------------------------------------
+    def expedite(self, task_ids: Sequence[str]) -> int:
+        """Make the deferred rows among *task_ids* eligible now; how many were.
 
-    def enter_wait(
-        self, task_id: str, record: dict[str, Any], *, generation: int | None = None
-    ) -> bool:
-        """``running -> <record["state"]>`` with the wait record on the row.
-
-        One write: the state, the record and a ``wait`` event land together or
-        not at all. The lane slot is the caller's to release (admission owns
-        it); the generation is NOT bumped, because the same run continues.
+        The early end of a :meth:`defer`: a waiting row whose ``next_run_at`` is
+        still ahead is brought to now, so the next dispatch read may take it.
+        It appends NO event. The deferral's own ``deferred`` event stays the
+        record of the park, and :meth:`deferred_longer_than` counts only a row
+        parked now, so a row brought forward and then claimed is never counted.
+        One brought forward and parked AGAIN before its old ``until`` is
+        charged the gap between the two: that span is cut at the next
+        deferral, not at this call, so at most what was left of the deferral
+        counts. The memory wake brings forward only rows that now fit, so that
+        gap is a re-check that lost a race. A row that is not waiting, or not
+        deferred, is left as it is.
         """
-        state = str(record.get("state") or "")
-        if state not in WAITING:
-            raise InvalidTransition("?", state)
-        return self.transition(
-            task_id,
-            state,
-            generation=generation,
-            wait=record,
-            detail={
-                "wait": True,
-                "reason": str(record.get("reason") or "")[:200],
-                "resume": (record.get("resume_condition") or {}).get("kind"),
-                "slot_released": bool(record.get("slot_released", True)),
-                "residency_charged": bool(record.get("residency_charged", True)),
-            },
-        )
-
-    def update_wait(
-        self, task_id: str, record: dict[str, Any], *, generation: int | None = None
-    ) -> bool:
-        """Rewrite the wait record of a row already in ``record["state"]``.
-
-        For a children wait that gains an awaited child after entry. Same
-        state, same generation: no transition, one ``wait_updated`` event.
-        """
-        state = str(record.get("state") or "")
+        ids = [str(i) for i in task_ids if i]
+        if not ids:
+            return 0
         ts = self.now()
+        changed = 0
         with self._lock:
             conn = self._c()
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                args: list[Any] = [
-                    json.dumps(record, sort_keys=True, default=str),
-                    ts,
-                    task_id,
-                    state,
-                ]
-                sql = "UPDATE tasks SET wait_json=?, updated_at=? WHERE id=? AND state=?"
-                if generation is not None:
-                    sql += " AND generation=?"
-                    args.append(int(generation))
-                cur = conn.execute(sql, args)
-                if cur.rowcount == 1:
-                    self._append_event_in_tx(
-                        conn,
-                        task_id,
-                        "wait_updated",
-                        {"ids": list((record.get("resume_condition") or {}).get("ids") or [])},
+                for i in range(0, len(ids), _EVENT_ID_CHUNK):
+                    chunk = ids[i : i + _EVENT_ID_CHUNK]
+                    marks = ", ".join("?" for _ in chunk)
+                    cur = conn.execute(
+                        "UPDATE tasks SET next_run_at=?, updated_at=? "
+                        f"WHERE id IN ({marks}) AND state IN {_SQL_CLAIMABLE} "
+                        "AND next_run_at>?",
+                        (ts, ts, *chunk, ts),
                     )
+                    changed += max(0, cur.rowcount)
                 conn.execute("COMMIT")
             except sqlite3.Error as exc:
                 self._rollback(conn)
-                raise TaskStoreUnavailable(f"wait update failed: {exc}") from exc
-        return cur.rowcount == 1
-
-    def wake_wait(
-        self,
-        task_id: str,
-        *,
-        reason: str,
-        generation: int | None = None,
-        to: str = RETRY_WAIT,
-        only_from: frozenset[str] | None = None,
-        detail: dict[str, Any] | None = None,
-    ) -> int | None:
-        """End a wait under generation+1; returns the new generation.
-
-        ``to`` is where the row goes: ``running`` ONLY when the caller holds
-        the lane slot and the runtime is resident (admission's ``resume_grant``,
-        called after the pump granted the slot); every other wake -- a runner
-        coroutine that still has to reacquire its lane, a parked row whose run
-        is gone, an answer delivered to a ``waiting_input`` row -- lands in
-        ``retry_wait`` with ``next_run_at = now`` and no lease: claimable at
-        once, so the dispatcher / the runner's re-admission claims it and writes
-        ``running`` only when capacity was actually granted. A crash in that
-        gap leaves a claimable row, not a ``running`` row with a dead owner
-        that reconciles to ``unknown_side_effect``.
-
-        ``only_from`` narrows the default fence -- any state in
-        :data:`model.WAITING` -- to the wait the caller's wake ANSWERS, exactly
-        as :meth:`cancel`'s does for a cancel: a wake carries the answer to ONE
-        question, and ``waiting_input`` / ``waiting_dependency`` /
-        ``waiting_children`` are different questions, so a caller that read one
-        of them names it here and a row that moved to another between the read
-        and this call is refused instead of having the wrong wait ended. The
-        refusal is the ``rejected_transition`` the default fence already
-        records, and the predicate is tested in THIS transaction.
-
-        The bump is the re-admission fence (RFC §14.2): callbacks issued during
-        the wait carry the old generation and are rejected as ``stale_result``.
-        None when the row is missing, not waiting (or not in ``only_from``), or
-        the generation is stale.
-        """
-        if to not in (RUNNING, RETRY_WAIT):
-            raise ValueError(f"wake target must be running or retry_wait, not {to!r}")
-        ts = self.now()
-        with self._lock:
-            conn = self._c()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT state, generation FROM tasks WHERE id=?", (task_id,)
-                ).fetchone()
-                if row is None:
-                    conn.execute("COMMIT")
-                    return None
-                old, gen = str(row["state"]), int(row["generation"])
-                if generation is not None and int(generation) != gen:
-                    self._append_event_in_tx(
-                        conn,
-                        task_id,
-                        "stale_result",
-                        {"from_generation": int(generation), "current": gen, "wanted": to},
-                    )
-                    conn.execute("COMMIT")
-                    return None
-                fence = WAITING if only_from is None else (WAITING & only_from)
-                if old not in fence:
-                    self._append_event_in_tx(
-                        conn, task_id, "rejected_transition", {"from": old, "to": to}
-                    )
-                    conn.execute("COMMIT")
-                    return None
-                if to == RUNNING:
-                    conn.execute(
-                        "UPDATE tasks SET state=?, generation=generation+1, wait_json=NULL, "
-                        "lease_owner=?, lease_expires_at=?, updated_at=? "
-                        "WHERE id=? AND state=? AND generation=?",
-                        (RUNNING, self._incarnation, ts + self._lease_secs, ts, task_id, old, gen),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE tasks SET state=?, generation=generation+1, wait_json=NULL, "
-                        "lease_owner=NULL, lease_expires_at=NULL, next_run_at=?, updated_at=? "
-                        "WHERE id=? AND state=? AND generation=?",
-                        (RETRY_WAIT, ts, ts, task_id, old, gen),
-                    )
-                data: dict[str, Any] = {
-                    "from": old,
-                    "to": to,
-                    "reason": reason[:200],
-                    "generation": gen + 1,
-                }
-                if detail:
-                    data.update(detail)
-                self._append_event_in_tx(conn, task_id, "wake", data)
-                conn.execute("COMMIT")
-            except sqlite3.Error as exc:
-                self._rollback(conn)
-                raise TaskStoreUnavailable(f"task wake failed: {exc}") from exc
-        self._note_state(task_id, to)
-        return gen + 1
-
-    @_typed_read
-    def children_of(self, parent_id: str) -> list[TaskRecord]:
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    "SELECT * FROM tasks WHERE parent_id=? ORDER BY created_at, rowid",
-                    (parent_id,),
-                )
-                .fetchall()
-            )
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def waiting_rows(self, *, state: str | None = None) -> list[TaskRecord]:
-        """Rows in a ``WAITING`` state (one state when given), oldest first."""
-        if state is not None:
-            if state not in WAITING:
-                return []
-            sql, args = "SELECT * FROM tasks WHERE state=? ORDER BY created_at, rowid", [state]
-        else:
-            sql, args = (
-                f"SELECT * FROM tasks WHERE state IN {_SQL_WAITING} ORDER BY created_at, rowid",
-                [],
-            )
-        with self._lock:
-            rows = self._c().execute(sql, args).fetchall()
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def orphaned_children(self) -> list[TaskRecord]:
-        """Non-terminal rows whose parent row is terminal: nothing will collect them."""
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    "SELECT c.* FROM tasks c JOIN tasks p ON p.id=c.parent_id "
-                    f"WHERE c.state NOT IN {_SQL_TERMINAL} AND p.state IN {_SQL_TERMINAL} "
-                    "ORDER BY c.created_at, c.rowid"
-                )
-                .fetchall()
-            )
-        return [TaskRecord.from_row(r) for r in rows]
+                raise TaskStoreUnavailable(f"task expedite failed: {exc}") from exc
+        return changed
 
     def record_progress(self, task_id: str, generation: int, progress: dict[str, Any]) -> bool:
         """Store the latest progress marker; stale generations are ignored."""
@@ -1741,37 +1369,6 @@ class TaskStore:
                 raise TaskStoreUnavailable(f"accepted_by restamp failed: {exc}") from exc
         return cur.rowcount == 1
 
-    # -- reads ---------------------------------------------------------------
-
-    @_typed_read
-    def get(self, task_id: str) -> TaskRecord | None:
-        with self._lock:
-            row = self._c().execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        return TaskRecord.from_row(row) if row is not None else None
-
-    @_typed_read
-    def state_of(self, task_id: str) -> str | None:
-        with self._lock:
-            row = self._c().execute("SELECT state FROM tasks WHERE id=?", (task_id,)).fetchone()
-        return str(row["state"]) if row is not None else None
-
-    @staticmethod
-    def _admitted_exclusion(ids: Sequence[str]) -> tuple[str, list[Any]]:
-        ids = [str(i) for i in ids if i]
-        if not ids:
-            return "", []
-        return (
-            f" AND NOT (state='{ADMITTED}' AND id IN ({', '.join('?' for _ in ids)}))",
-            ids,
-        )
-
-    @staticmethod
-    def _exclusion(exclude_ids: Sequence[str]) -> tuple[str, list[Any]]:
-        ids = [str(i) for i in exclude_ids if i]
-        if not ids:
-            return "", []
-        return f" AND id NOT IN ({', '.join('?' for _ in ids)})", ids
-
     # -- fairness lanes (``taskq.lanes``) ---------------------------------------
 
     @staticmethod
@@ -1794,365 +1391,6 @@ class TaskStore:
                 return str(row[0])
         return _lanes.lane_key_for(rec.session_key)
 
-    @_typed_read
-    def pending_lanes(
-        self,
-        kind: str,
-        *,
-        exclude_ids: Sequence[str] = (),
-        children_only: bool = False,
-    ) -> dict[str, int]:
-        """Eligible (claimable now) row count per lane, for the fair dispatcher."""
-        ts = self.now()
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = _SQL_CHILD_ONLY if children_only else ""
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    f"SELECT lane, COUNT(*) FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
-                    "AND (next_run_at IS NULL OR next_run_at<=?) "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at<?)"
-                    f"{child_sql}{excl_sql} GROUP BY lane",
-                    [kind, ts, ts, *excl_args],
-                )
-                .fetchall()
-            )
-        return {str(r[0] or ""): int(r[1]) for r in rows}
-
-    @_typed_read
-    def fetch_dispatchable_fair(
-        self,
-        kind: str,
-        *,
-        limit: int,
-        scheduler: "_lanes.LaneScheduler",
-        exclude_ids: Sequence[str] = (),
-        children_only: bool = False,
-        lanes: Sequence[str] | None = None,
-        per_lane_limit: int | None = None,
-    ) -> list[TaskRecord]:
-        """Claimable-now rows of *kind* in weighted round-robin order across lanes.
-
-        Each lane contributes its oldest eligible rows (FIFO by ``created_at``
-        inside the lane, at most *per_lane_limit* of them); *scheduler*
-        interleaves the lanes, carrying its credit across calls. ``lanes``
-        restricts the read to those lanes; ``children_only`` to nested rows
-        (``parent_id`` set) -- the rows allowed to take the reserved child
-        slot. With one lane pending this is exactly the FIFO order of
-        :meth:`fetch_dispatchable`.
-        """
-        if limit <= 0:
-            return []
-        if lanes is not None and not lanes:
-            return []
-        ts = self.now()
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = _SQL_CHILD_ONLY if children_only else ""
-        lane_sql, lane_args = ("", [])
-        if lanes is not None:
-            lane_sql = f" AND lane IN ({', '.join('?' for _ in lanes)})"
-            lane_args = [str(x) for x in lanes]
-        rank = int(limit if per_lane_limit is None else max(1, per_lane_limit))
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    "SELECT * FROM ("
-                    "SELECT *, ROW_NUMBER() OVER (PARTITION BY lane ORDER BY created_at, rowid) "
-                    f"AS lane_rank FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
-                    "AND (next_run_at IS NULL OR next_run_at<=?) "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at<?)"
-                    f"{child_sql}{lane_sql}{excl_sql}) WHERE lane_rank<=? ORDER BY lane, lane_rank",
-                    [kind, ts, ts, *lane_args, *excl_args, rank],
-                )
-                .fetchall()
-            )
-        by_lane: dict[str, list[TaskRecord]] = {}
-        for r in rows:
-            rec = TaskRecord.from_row(r)
-            by_lane.setdefault(rec.lane, []).append(rec)
-        return scheduler.interleave(by_lane, limit=limit, age_of=lambda rec: rec.created_at)
-
-    @_typed_read
-    def fetch_dispatchable(
-        self,
-        kind: str,
-        *,
-        limit: int,
-        exclude_ids: Sequence[str] = (),
-        session_key: str | None = None,
-    ) -> list[TaskRecord]:
-        """Oldest-first rows of *kind* that a claim would succeed on right now."""
-        ts = self.now()
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        sess_sql, sess_args = ("", [])
-        if session_key is not None:
-            sess_sql, sess_args = " AND session_key=?", [session_key]
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    f"SELECT * FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
-                    "AND (next_run_at IS NULL OR next_run_at<=?) "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at<?)"
-                    f"{excl_sql}{sess_sql} ORDER BY created_at, rowid LIMIT ?",
-                    [kind, ts, ts, *excl_args, *sess_args, int(limit)],
-                )
-                .fetchall()
-            )
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def list_pending(
-        self,
-        kind: str,
-        *,
-        session_key: str | None = None,
-        exclude_ids: Sequence[str] = (),
-        limit: int | None = None,
-        include_admitted: bool = False,
-        exclude_admitted_ids: Sequence[str] = (),
-        app: str | None = None,
-    ) -> list[TaskRecord]:
-        """Every waiting row of *kind* (deferred ones included), oldest first.
-
-        Unbounded by default, like :meth:`fetch_pending_by_batch` and
-        :meth:`active_rows`: the caller is the Stop-all cascade
-        (``cancellation.cancel_for_parent_impl`` through
-        ``taskq_pending_ids_for``), which stops the rows this answer names and
-        nothing else -- so a row past a cap is one the user stopped that stays
-        queued and dispatchable. A caller that wants a page (a listing, a probe)
-        passes *limit* and gets the oldest that many.
-
-        *include_admitted* adds ``admitted`` rows (claimed, not started); see
-        :data:`_SQL_UNSTARTED`, and *exclude_admitted_ids* drops the ``admitted``
-        ones among those ids (a claim whose run is registered). *app* keeps only
-        rows whose params name that owning app, applied before *limit* so a page
-        is that app's own rows.
-        """
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        adm_sql, adm_args = self._admitted_exclusion(exclude_admitted_ids)
-        sess_sql, sess_args = ("", [])
-        if session_key is not None:
-            sess_sql, sess_args = " AND session_key=?", [session_key]
-        app_sql, app_args = ("", [])
-        if app is not None:
-            app_sql, app_args = " AND COALESCE(json_extract(params_json, '$.app'), '')=?", [app]
-        lim_sql, lim_args = ("", [])
-        if limit is not None:
-            lim_sql, lim_args = " LIMIT ?", [int(limit)]
-        states = _SQL_UNSTARTED if include_admitted else _SQL_CLAIMABLE
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    f"SELECT * FROM tasks WHERE kind=? AND state IN {states}"
-                    f"{sess_sql}{app_sql}{excl_sql}{adm_sql} ORDER BY created_at, rowid{lim_sql}",
-                    [kind, *sess_args, *app_args, *excl_args, *adm_args, *lim_args],
-                )
-                .fetchall()
-            )
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def fetch_pending_by_batch(
-        self, kind: str, batch_id: str, *, exclude_ids: Sequence[str] = ()
-    ) -> list[TaskRecord]:
-        """Waiting rows of *kind* whose params name *batch_id* (wave accounting)."""
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        with self._lock:
-            rows = (
-                self._c()
-                .execute(
-                    f"SELECT * FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
-                    f"AND json_extract(params_json, '$.batch_id')=?{excl_sql} "
-                    "ORDER BY created_at, rowid",
-                    [kind, batch_id, *excl_args],
-                )
-                .fetchall()
-            )
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def next_eligible_at(
-        self,
-        kind: str,
-        *,
-        exclude_ids: Sequence[str] = (),
-        children_only: bool = False,
-    ) -> float | None:
-        """When the earliest waiting row of *kind* that time alone holds back
-        becomes claimable; None when no row is held by time.
-
-        A row is held by time while it is deferred (``next_run_at``) or leased
-        (``lease_expires_at``), and claimable at the later of the two -- the
-        same eligibility the dispatch reads apply (``pending_lanes``,
-        ``fetch_dispatchable_fair``), over the same rows: one they may not
-        claim (excluded, or not a child on a ``children_only`` pass) has no
-        wake to offer them. A row with neither is not a wake: no time has to
-        pass for it, so a pass that found nothing left it out for a reason the
-        clock does not change. Read as "due at 0", it would re-arm that empty
-        pass at once, on every pass, for as long as the row is held.
-        """
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        child_sql = _SQL_CHILD_ONLY if children_only else ""
-        with self._lock:
-            row = (
-                self._c()
-                .execute(
-                    "SELECT MIN(MAX(COALESCE(next_run_at, 0), COALESCE(lease_expires_at, 0))) "
-                    f"FROM tasks WHERE kind=? AND state IN {_SQL_CLAIMABLE} "
-                    "AND (next_run_at IS NOT NULL OR lease_expires_at IS NOT NULL)"
-                    f"{child_sql}{excl_sql}",
-                    [kind, *excl_args],
-                )
-                .fetchone()
-            )
-        if not row or row[0] is None:
-            return None
-        return float(row[0])
-
-    @_typed_read
-    def count_pending(
-        self,
-        kind: str | None = None,
-        *,
-        exclude_ids: Sequence[str] = (),
-        session_key: str | None = None,
-        eligible_only: bool = False,
-        include_admitted: bool = False,
-        exclude_admitted_ids: Sequence[str] = (),
-        include_recovering: bool = True,
-    ) -> int:
-        """Rows waiting for dispatch (claimable states), optionally per session.
-
-        ``eligible_only`` drops rows deferred past now; the default counts a
-        deferred row too, because it is still accepted work the parent is owed.
-        ``include_admitted`` counts claimed, not started rows as well
-        (:data:`_SQL_UNSTARTED`), less the ``admitted`` ones among
-        *exclude_admitted_ids*. ``include_recovering=False`` drops
-        ``recovering`` rows: claimable, but each one a run that had started and
-        lost its owner (a restart) and is being rebuilt, so a count of spawns
-        waiting for their FIRST start -- the queue-depth chip's -- leaves them
-        out, while every count of work still owed keeps them.
-        """
-        excl_sql, excl_args = self._exclusion(exclude_ids)
-        adm_sql, adm_args = self._admitted_exclusion(exclude_admitted_ids)
-        where = [f"state IN {_SQL_UNSTARTED if include_admitted else _SQL_CLAIMABLE}"]
-        if not include_recovering:
-            where.append(f"state <> '{RECOVERING}'")
-        args: list[Any] = []
-        if kind is not None:
-            where.append("kind=?")
-            args.append(kind)
-        if session_key is not None:
-            where.append("session_key=?")
-            args.append(session_key)
-        if eligible_only:
-            where.append("(next_run_at IS NULL OR next_run_at<=?)")
-            args.append(self.now())
-        with self._lock:
-            row = (
-                self._c()
-                .execute(
-                    f"SELECT COUNT(*) FROM tasks WHERE {' AND '.join(where)}{excl_sql}{adm_sql}",
-                    [*args, *excl_args, *adm_args],
-                )
-                .fetchone()
-            )
-        return int(row[0]) if row else 0
-
-    @_typed_read
-    def count(self, *, state: str | None = None, kind: str | None = None) -> int:
-        where, args = [], []
-        if state is not None:
-            where.append("state=?")
-            args.append(state)
-        if kind is not None:
-            where.append("kind=?")
-            args.append(kind)
-        sql = "SELECT COUNT(*) FROM tasks"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        with self._lock:
-            row = self._c().execute(sql, args).fetchone()
-        return int(row[0]) if row else 0
-
-    @_typed_read
-    def count_by_state(self, *, kind: str | None = None) -> dict[str, int]:
-        sql = "SELECT state, COUNT(*) AS n FROM tasks"
-        args: list[Any] = []
-        if kind is not None:
-            sql += " WHERE kind=?"
-            args.append(kind)
-        sql += " GROUP BY state"
-        with self._lock:
-            rows = self._c().execute(sql, args).fetchall()
-        return {str(r["state"]): int(r["n"]) for r in rows}
-
-    @_typed_read
-    def list_rows(
-        self,
-        *,
-        state: str | None = None,
-        kind: str | None = None,
-        session_key: str | None = None,
-        lane: str | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[TaskRecord]:
-        """Rows oldest-first, optionally filtered; ``lane`` is the stored
-        fairness lane (every row carries one: derived at accept, backfilled by
-        the v3 migration), so the filter is a SQL predicate on ``tasks_lane``."""
-        where, args = [], []
-        if state is not None:
-            where.append("state=?")
-            args.append(state)
-        if kind is not None:
-            where.append("kind=?")
-            args.append(kind)
-        if session_key is not None:
-            where.append("session_key=?")
-            args.append(session_key)
-        if lane is not None:
-            where.append("lane=?")
-            args.append(lane)
-        sql = "SELECT * FROM tasks"
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at, rowid LIMIT ? OFFSET ?"
-        with self._lock:
-            rows = self._c().execute(sql, [*args, int(limit), int(offset)]).fetchall()
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def active_rows(self, *, exclude_owner: str | None = None) -> list[TaskRecord]:
-        """Rows some incarnation owns; optionally only those NOT owned by *exclude_owner*."""
-        sql = f"SELECT * FROM tasks WHERE state IN {_SQL_ACTIVE}"
-        args: list[Any] = []
-        if exclude_owner is not None:
-            sql += " AND (lease_owner IS NULL OR lease_owner<>?)"
-            args.append(exclude_owner)
-        sql += " ORDER BY created_at, rowid"
-        with self._lock:
-            rows = self._c().execute(sql, args).fetchall()
-        return [TaskRecord.from_row(r) for r in rows]
-
-    @_typed_read
-    def oldest_wait_secs(self, *, kind: str | None = None) -> float:
-        """Age of the oldest row still waiting for dispatch; 0 when none."""
-        sql = f"SELECT MIN(created_at) FROM tasks WHERE state IN {_SQL_CLAIMABLE}"
-        args: list[Any] = []
-        if kind is not None:
-            sql += " AND kind=?"
-            args.append(kind)
-        with self._lock:
-            row = self._c().execute(sql, args).fetchone()
-        if not row or row[0] is None:
-            return 0.0
-        return max(0.0, self.now() - float(row[0]))
-
     def doctor_lines(self) -> list[str]:
         """Human-readable status for ``kirocrew doctor``: depth, oldest wait, warnings."""
         by_state = self.count_by_state()
@@ -2164,3 +1402,40 @@ class TaskStore:
         ]
         lines.extend(f"  warning: {w}" for w in self.warnings)
         return lines
+
+    # The members below are bound from the ``store_*`` owners (``_STORE_OWNERS``). A
+    # ``_typed_read`` member's binding declares the type its decorator gives it, so a module
+    # mypy checks before this class body reads that type instead of waiting on the inference.
+
+    # The task event log: ``kiro_crew.taskq.store_events``.
+    _append_event_in_tx = _store_events._append_event_in_tx
+    append_event = _store_events.append_event
+    lost_owner_recoveries: Callable[..., Any] = _store_events.lost_owner_recoveries
+    events: Callable[..., Any] = _store_events.events
+    latest_events: Callable[..., Any] = _store_events.latest_events
+
+    # Wait rows: ``kiro_crew.taskq.store_waits``.
+    enter_wait = _store_waits.enter_wait
+    update_wait = _store_waits.update_wait
+    wake_wait = _store_waits.wake_wait
+    children_of: Callable[..., Any] = _store_waits.children_of
+    waiting_rows: Callable[..., Any] = _store_waits.waiting_rows
+    orphaned_children: Callable[..., Any] = _store_waits.orphaned_children
+
+    # Row reads, dispatch reads and counts: ``kiro_crew.taskq.store_reads``.
+    get: Callable[..., Any] = _store_reads.get
+    state_of: Callable[..., Any] = _store_reads.state_of
+    _admitted_exclusion = staticmethod(_store_reads._admitted_exclusion)
+    _exclusion = staticmethod(_store_reads._exclusion)
+    pending_lanes: Callable[..., Any] = _store_reads.pending_lanes
+    fetch_dispatchable_fair: Callable[..., Any] = _store_reads.fetch_dispatchable_fair
+    fetch_dispatchable: Callable[..., Any] = _store_reads.fetch_dispatchable
+    list_pending: Callable[..., Any] = _store_reads.list_pending
+    fetch_pending_by_batch: Callable[..., Any] = _store_reads.fetch_pending_by_batch
+    next_eligible_at: Callable[..., Any] = _store_reads.next_eligible_at
+    count_pending: Callable[..., Any] = _store_reads.count_pending
+    count: Callable[..., Any] = _store_reads.count
+    count_by_state: Callable[..., Any] = _store_reads.count_by_state
+    list_rows: Callable[..., Any] = _store_reads.list_rows
+    active_rows: Callable[..., Any] = _store_reads.active_rows
+    oldest_wait_secs: Callable[..., Any] = _store_reads.oldest_wait_secs

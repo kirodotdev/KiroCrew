@@ -9,7 +9,7 @@
  * WHAT IS FAITHFUL is the CONTAINMENT, since that is the whole claim: the card
  * is the real component, expanded on a real long digest (one block per agent),
  * inside the literal host column wrapper (`px-4 mx-auto w-full py-1` under
- * `--mc-content-width`, ChatPage.tsx), with a sibling row below it standing in
+ * `--mc-content-width`, ChatTranscriptView.tsx), with a sibling row below it standing in
  * for the tool calls the unbounded card used to paint over.
  *
  * The `before` scene neutralizes exactly the two containment classes the fix
@@ -118,7 +118,7 @@ const BATCH = [
 
 const COLUMN = { maxWidth: 'var(--mc-content-width, 900px)' } as const
 
-/** One transcript row in the literal host wrapper (ChatPage.tsx). */
+/** One transcript row in the literal host wrapper (ChatTranscriptView.tsx). */
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <>

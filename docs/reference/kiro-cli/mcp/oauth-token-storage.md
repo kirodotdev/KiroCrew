@@ -1,5 +1,7 @@
 # kiro-cli MCP OAuth Token Storage
 
+> **Not a mirror.** This page has no upstream published reference: the file layout is read from the `aws/amazon-q-developer-cli` source and the rest from Kiro Crew's own implementation. Preserve it across a re-fetch.
+
 Where kiro-cli writes MCP OAuth credentials on disk, how Kiro Crew identifies
 the exact pair without reading token bytes, and how to disconnect safely. The file
 layout is derived from `aws/amazon-q-developer-cli`'s

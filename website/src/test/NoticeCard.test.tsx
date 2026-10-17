@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import NoticeCard, { parseNotice } from '../pages/chat/NoticeCard'
@@ -172,7 +172,17 @@ describe('NoticeCard', () => {
 describe('registry wiring', () => {
   it("ChatPage renders the notice role through the registry's NoticeCard entry, not a copy of its own", () => {
     const here = dirname(fileURLToPath(import.meta.url))
-    const src = readFileSync(resolve(here, '../pages/ChatPage.tsx'), 'utf8')
+    // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+    // so the pins read the page and those owners.
+    const pagesDir = resolve(here, '../pages')
+    const ownerDir = resolve(pagesDir, 'chat/page')
+    const src = [
+      readFileSync(resolve(pagesDir, 'ChatPage.tsx'), 'utf8'),
+      ...readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+        .map(f => readFileSync(resolve(ownerDir, f), 'utf8')),
+      ...readdirSync(pagesDir).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+        .map(f => readFileSync(resolve(pagesDir, f), 'utf8')),
+    ].join('\n')
     // Since chat-core P5-a the page dispatches through the app-sdk registry;
     // since P5-c it keeps NO `notice` entry of its own -- the default entry
     // below is the one row both the page and every pane draw. A page entry

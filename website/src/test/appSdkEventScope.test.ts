@@ -80,7 +80,11 @@ describe('checkSubscribeAllowed', () => {
       'utf-8',
     )
     const names = (block: string): string[] => {
-      const m = py.match(new RegExp(`${block}[^{]*\\{([\\s\\S]*?)\\}\\)`))
+      // `\\}\\s*\\)` rather than `\\}\\)`: black writes `frozenset(\n    {...}\n)` and the
+      // compact `frozenset({...})` interchangeably, and an adjacency-only match on a
+      // reformatted file runs PAST the block's own close to the next `})` in the file --
+      // which silently captures the following table and asserts the SDK against it.
+      const m = py.match(new RegExp(`${block}[^{]*\\{([\\s\\S]*?)\\}\\s*\\)`))
       if (!m) throw new Error(`block ${block} not found in ws_event_scope.py`)
       // Strip `#` comment lines first: a quoted word inside a comment (a payload
       // shape, a cross-reference) is prose, not a member, and reading it as one

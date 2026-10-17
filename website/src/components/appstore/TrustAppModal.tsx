@@ -18,9 +18,9 @@
  * install result — the SSE stream reports a refused install as a `done` payload
  * carrying the code, not as a rejection.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, GitBranch, Loader2, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -29,7 +29,7 @@ import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import SessionApprovalModes from './SessionApprovalModes'
 import { i18nT } from '../../i18n/t'
-import { findReport } from '../../utils/errorReport'
+import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
 import { sourceLabel, type RegistryApp } from './types'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
@@ -54,6 +54,51 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   displayName?: string
   trustRepository?: string
   sessionApproval?: boolean
+  /**
+   * True when confirming re-runs the registry INSTALL rather than the enable.
+   * An install lands the app switched off (enabling is its own step), so the
+   * confirm button must not promise "and enable" on that path, and the outcome,
+   * Cancel and failure sentences use their `install_*` keys.
+   */
+  retryInstalls?: boolean
+  /**
+   * True when that install REPLACES an app that is already installed (an
+   * Update). The `install_*` sentences say nothing is installed yet, which is
+   * false there, and the enable path's say trusting "turns it on" and that the
+   * app is "switched off", which may be false too (the app may be on). So an
+   * update uses its own `update_*` Cancel and failure sentences.
+   */
+  replacesInstalled?: boolean
+  /**
+   * `community` when the registry that LISTED this app is a community one
+   * (`registryTierFor`): a negative claim, the listing was not vetted, which is
+   * the fact the user needs at the moment they say yes. No other tier is
+   * carried: a `curated` listing review is not a code review, and an
+   * endorsement beside `not_reviewed` would contradict that sentence. Display
+   * only: it never selects the grant, the retry or any consent step.
+   */
+  registryReview?: 'community'
+  /**
+   * That registry's credential posture (`trust`). The not-vetted sentence names
+   * whether apps clone with the user's Git credentials, and that fact is read
+   * from here, never inferred from `registryReview`.
+   */
+  registryTrust?: string
+}
+
+/**
+ * Which refused action the dialog's confirm re-runs. Each path owns its exit
+ * (Cancel) sentence and its failure headlines, because what confirming does and
+ * what Cancel leaves behind differ: enabling turns an installed app on; a first
+ * install lands an app switched off; an update replaces an app that is already
+ * there, possibly running.
+ */
+type TrustPath = 'enable' | 'install' | 'update'
+
+/** The path a target's flags describe: an Update is an install over an installed app. */
+function trustPath(app: Pick<TrustAppTarget, 'retryInstalls' | 'replacesInstalled'> | null): TrustPath {
+  if (!app?.retryInstalls) return 'enable'
+  return app.replacesInstalled ? 'update' : 'install'
 }
 
 /** Mirror the backend's credential-free Git coordinate projection. */
@@ -432,17 +477,36 @@ function terminalState({ failed, granted, detail, detailCode }: {
  * the sentence says that instead of describing a Cancel button the reader
  * cannot find.
  */
-function terminalCopy(state: TerminalState, app: string): {
+function terminalCopy(state: TerminalState, app: string, path: TrustPath): {
   headline: string | null
   help: string | null
   exit: string
 } {
+  // Each path has its own headline and exit sentences. The enable path's say
+  // trusting "turns it on" and that the app "stays in place, switched off":
+  // before a first install nothing is in place, and on an update the app may be
+  // on. `permanent` is already install-only copy, so it needs no second row.
   switch (state) {
     case 'granted':
-      return {
-        headline: i18nT('components.appstore.trustAppModal.failed', { app }),
-        help: null,
-        exit: i18nT('components.appstore.trustAppModal.on_cancel_granted', { app }),
+      switch (path) {
+        case 'install':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.install_failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.install_on_cancel_granted', { app }),
+          }
+        case 'update':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.update_failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.update_on_cancel_granted', { app }),
+          }
+        case 'enable':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.failed', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.on_cancel_granted', { app }),
+          }
       }
     case 'permanent':
       return {
@@ -451,16 +515,34 @@ function terminalCopy(state: TerminalState, app: string): {
         exit: i18nT('components.appstore.trustAppModal.on_close_desktop_unsupported', { app }),
       }
     case 'failed_generic':
-      return {
-        headline: i18nT('components.appstore.trustAppModal.failed_generic', { app }),
-        help: null,
-        exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }),
+      switch (path) {
+        case 'install':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.install_failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }),
+          }
+        case 'update':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.update_failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }),
+          }
+        case 'enable':
+          return {
+            headline: i18nT('components.appstore.trustAppModal.failed_generic', { app }),
+            help: null,
+            exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }),
+          }
       }
     case 'consent':
-      return {
-        headline: null,
-        help: null,
-        exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }),
+      switch (path) {
+        case 'install':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.install_on_cancel', { app }) }
+        case 'update':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.update_on_cancel', { app }) }
+        case 'enable':
+          return { headline: null, help: null, exit: i18nT('components.appstore.trustAppModal.on_cancel', { app }) }
       }
   }
 }
@@ -492,8 +574,29 @@ export default function TrustAppModal({
 }) {
   const name = app ? (app.displayName || app.name) : ''
   const state = terminalState({ failed, granted, detail, detailCode })
-  const copy = terminalCopy(state, name)
+  const path = trustPath(app)
+  // A first install only: an Update re-runs the install over an app that is
+  // already there, where "nothing is installed" would be false.
+  const freshInstall = path === 'install'
+  const copy = terminalCopy(state, name, path)
   const permanentRefusal = state === 'permanent'
+  // The not-saved state's next step, shared by every path. It names the retry
+  // and the notice's Ask the agent hand-off only while both can be used: the
+  // hand-off reads the same gateway-connection store and hides while the
+  // gateway is unreachable, the retry is off then (below), and a sentence
+  // pointing at a control the reader cannot use is a dead end. So the
+  // headline above it names no control.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  const nextStep = state !== 'failed_generic'
+    ? null
+    : gatewayConnected
+      ? i18nT('components.appstore.trustAppModal.failed_generic_next_ask')
+      : i18nT('components.appstore.trustAppModal.failed_generic_next_offline')
+  // That offline next step says the retry stays off until the gateway is back,
+  // so the button is off for exactly that long: a retry while unreachable can
+  // only fail the same way. Cancel stays on. Only the not-saved state: it is the
+  // one whose copy names the wait.
+  const retryWaitsForGateway = state === 'failed_generic' && !gatewayConnected
   // When the refusal turns permanent the footer swaps Cancel + confirm for Close.
   // The user's focus was on the confirm button they just pressed; unmounting it
   // drops focus to the document, so a keyboard user's next Tab starts from
@@ -508,6 +611,7 @@ export default function TrustAppModal({
       open={!!app}
       onClose={onCancel}
       maxWidth={560}
+      guideTrustRoot
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
       footer={
         permanentRefusal ? (
@@ -523,12 +627,28 @@ export default function TrustAppModal({
             <Btn onClick={onCancel} disabled={pending}>
               {i18nT('components.appstore.trustAppModal.cancel')}
             </Btn>
-            <Btn primary onClick={onConfirm} disabled={pending}>
+            <Btn primary onClick={onConfirm} disabled={pending || retryWaitsForGateway}>
+              {/* Each path names what confirming runs. A first install only
+                  installs (the app lands switched off), so its labels name the
+                  trust alone, never "and enable"; an Update names the update.
+                  After a failure the retry label follows the state: with trust
+                  already saved it just tries again, so it does not say "Trust". */}
               {pending
-                ? <><Loader2 size={14} className="animate-spin" /> {i18nT('components.appstore.trustAppModal.working')}</>
+                ? <><Loader2 size={14} className="animate-spin" /> {path === 'update'
+                    ? i18nT('components.appstore.trustAppModal.working_update')
+                    : path === 'install'
+                      ? i18nT('components.appstore.trustAppModal.working_install')
+                      : i18nT('components.appstore.trustAppModal.working')}</>
                 : failed
-                  ? <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
-                  : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm')}</>}
+                  ? state === 'granted'
+                    // No new trust is asked here, so no trust (shield) icon either.
+                    ? <><RotateCcw size={14} /> {i18nT('components.appstore.trustAppModal.confirm_retry_granted')}</>
+                    : <><ShieldAlert size={14} /> {i18nT('components.appstore.trustAppModal.confirm_after_failure')}</>
+                  : <><ShieldAlert size={14} /> {path === 'update'
+                      ? i18nT('components.appstore.trustAppModal.confirm_update')
+                      : path === 'install'
+                        ? i18nT('components.appstore.trustAppModal.confirm_install')
+                        : i18nT('components.appstore.trustAppModal.confirm')}</>}
             </Btn>
           </>
         )
@@ -613,6 +733,33 @@ export default function TrustAppModal({
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.not_reviewed')}
           </p>
+          {/* A community registry's listing was not vetted by the team. Below the
+              not-an-endorsement line, so that line stays next to the badge it
+              explains and the two review statements read in order. Said on the
+              gate itself, because this is where the user decides; the
+              credential clause is chosen by the registry's `trust`, never by
+              its review tier (the same whole-sentence rule as `reviewTip` in
+              RegistryManager), and both sentences name this one app, in plain
+              words, because the user is judging it and not the registry.
+              Display only: no consent step depends on it. */}
+          {app.registryReview === 'community' && (
+            <div
+              data-testid="trust-app-registry-community"
+              className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3"
+            >
+              {/* A plain bold label, not a pill: inside the box a rounded chip
+                  read as a button or a filter tag (UX review), and nothing here
+                  is clickable. */}
+              <strong data-testid="trust-app-registry-community-label" className="font-semibold text-warn-text">
+                {i18nT('components.appstore.registryTier.community')}
+              </strong>
+              <p className="text-text leading-relaxed">
+                {app.registryTrust === 'owner'
+                  ? i18nT('components.appstore.trustAppModal.registry_community_credentialed', { app: name })
+                  : i18nT('components.appstore.trustAppModal.registry_community', { app: name })}
+              </p>
+            </div>
+          )}
           {/* Consent needs an exit: what leaving does, and that this is reversible
               plus where. Without these the dialog is a one-way door. The exit
               sentence comes from the state's own row of `terminalCopy`, never
@@ -620,6 +767,26 @@ export default function TrustAppModal({
               this state's footer actually offers (Cancel, or Close on the
               permanent refusal) and the state that control LEAVES, which differs
               per state -- see the table. */}
+          {/* The install path's confirm button says "Trust this app" and nothing
+              more, so this line says where confirming leaves the app: installed
+              and switched off. Only before an attempt: once a failure headline
+              shows, it states what happened and this promise no longer applies. */}
+          {freshInstall && !failed && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.install_outcome', { app: name })}
+            </p>
+          )}
+          {/* The Update path's own outcome line, so the dialog says this is an
+              update and not a first install: the title and the scope line read
+              the same on every path. It stays after a retryable failure, because
+              the footer's retry label is shared by every path and this line is
+              what says the retry still runs the update. A permanent refusal
+              offers Close alone and nothing was changed, so the line goes. */}
+          {path === 'update' && !permanentRefusal && (
+            <p className="text-text leading-relaxed">
+              {i18nT('components.appstore.trustAppModal.update_outcome', { app: name })}
+            </p>
+          )}
           <p className="text-muted leading-relaxed">{copy.exit}</p>
           <p className="text-muted leading-relaxed">
             {i18nT('components.appstore.trustAppModal.revocable')}
@@ -672,7 +839,12 @@ export default function TrustAppModal({
             <ErrorNotice
               message={copy.headline}
               report={detail ? findReport(detail) : undefined}
-              footer={detail ? <span className="font-mono text-[12px]">{detail}</span> : undefined}
+              footer={nextStep || detail ? (
+                <>
+                  {nextStep && <div>{nextStep}</div>}
+                  {detail && <div className="font-mono text-[12px]">{detail}</div>}
+                </>
+              ) : undefined}
               askAgent
             />
           )}

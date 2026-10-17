@@ -210,6 +210,15 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
+    id: 'notifications.sound-category-dictation',
+    params: { sub: 'percategory' },
+    labelKey: 'pages.settings.notificationsPanel.category_dictation',
+    descriptionKey: 'pages.settings.notificationsPanel.category_dictation_description',
+    tab: 'notifications',
+    type: 'select',
+    occurrence: 1,
+  },
+  {
     id: 'notifications.sound-category-cron',
     params: { sub: 'percategory' },
     labelKey: 'pages.settings.notificationsPanel.category_cron',

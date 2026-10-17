@@ -43,10 +43,10 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from kiro_crew import mcp_core
-from kiro_crew.browser_cli import install
+from kiro_crew.browser_cli import install, own_browser
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.security import canonicalize_ip, redact_credentials, redact_exfiltration_urls
 
@@ -104,16 +104,37 @@ _DEFAULT_OP_TIMEOUT_MS = 15000
 
 _LOOPBACK_HOST_NAMES = {"localhost", "ip6-localhost", "ip6-loopback"}
 
+# Code points a browser refuses in a host once it is percent-decoded.
+_FORBIDDEN_DECODED_HOST_CHARS = frozenset("%/@?#[]:\\<>^| ")
+
+
+def _percent_decoded_host(host: str) -> str | None:
+    """Decode ``host`` once, as the browser's URL parser does.
+
+    ``urlsplit`` keeps ``%31%32%37.0.0.1`` encoded, but the browser decodes it
+    to ``127.0.0.1``. Returns None when the browser would reject the decoded
+    host (invalid UTF-8, or a char a host may not carry).
+    """
+    try:
+        decoded = unquote_to_bytes(host).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if any(
+        ch in _FORBIDDEN_DECODED_HOST_CHARS or ord(ch) < 0x21 or ord(ch) == 0x7F for ch in decoded
+    ):
+        return None
+    return decoded
+
 
 def _navigate_target_is_public(url: str) -> bool:
     """True iff ``url`` is an ordinary public http(s) page.
 
-    Mirrors the playwright-cli path's gate (``chat_runner._is_remote_navigable_host``):
-    the built-in Electron panel accepts ANY http(s) URL, so without this a
+    The built-in Electron panel accepts ANY http(s) URL, so without this a
     ``navigate`` op could drive a loopback control plane (this dashboard
-    included) or the ``169.254.169.254`` metadata endpoint -- an SSRF the CLI
-    path holds behind interactive approval. Kept LOCAL (not imported from the
-    dashboard) so the ``kirocrew-core`` shim stays free of dashboard deps.
+    included) or the ``169.254.169.254`` metadata endpoint -- an SSRF the
+    playwright-cli path holds behind the ordinary shell approval ladder. Kept
+    LOCAL (not imported from the dashboard) so the ``kirocrew-core`` shim stays
+    free of dashboard deps.
 
     ``is_global`` subsumes loopback/link-local/private/CGNAT/reserved in one
     predicate, applied to the address and any embedded IPv4 (``ipv4_mapped`` /
@@ -124,6 +145,9 @@ def _navigate_target_is_public(url: str) -> bool:
     names are NOT resolved (a blocking call + rebinding TOCTOU on the hot path);
     the residual public-name->private-IP risk is accepted, exactly as the CLI
     gate documents.
+
+    A percent-encoded host (``%31%32%37.0.0.1``, ``loc%61lhost``) is decoded
+    first, as the browser does, so every check below sees the browser's host.
     """
     raw = url.strip()
     # Parser-differential SSRF: reject backslash (Chromium treats it as '/'),
@@ -137,7 +161,13 @@ def _navigate_target_is_public(url: str) -> bool:
     parts = urlsplit(raw)
     if parts.scheme.lower() not in ("http", "https"):
         return False
-    host = (parts.hostname or "").lower().rstrip(".")
+    host = parts.hostname or ""
+    if "%" in host and ":" not in host:  # bracketed IPv6 keeps its own path
+        decoded = _percent_decoded_host(host)
+        if decoded is None:
+            return False
+        host = decoded
+    host = host.lower().rstrip(".")
     if not host or host in _LOOPBACK_HOST_NAMES or host.endswith(".localhost"):
         return False
     # Reject non-ASCII hosts: a fullwidth-digit / IDN form the browser may
@@ -155,6 +185,59 @@ def _navigate_target_is_public(url: str) -> bool:
         if embedded is not None:
             candidates.append(embedded)
     return all(c.is_global for c in candidates)
+
+
+def _allowed_local_origins() -> frozenset[str]:
+    """The operator's ``dashboard.browser_local_origins``, read fresh each call.
+
+    Already canonical ``host:port`` entries (``config.sections`` drops every
+    other shape). Fail-CLOSED to empty: a config read error must not widen the
+    navigate gate, the opposite polarity from ``_use_builtin_browser``.
+    """
+    try:
+        raw = getattr(KiroCrewConfig.load().dashboard, "browser_local_origins", [])
+    except Exception:
+        return frozenset()
+    return frozenset(e for e in raw if isinstance(e, str)) if isinstance(raw, list) else frozenset()
+
+
+def _navigate_target_is_allowed_local(url: str, allowed: frozenset[str]) -> bool:
+    """True iff ``url`` is a loopback origin the operator listed, exactly.
+
+    The exception to :func:`_navigate_target_is_public`, never a relaxation of
+    it: the same parser-differential refusals run first, then the URL's own
+    ``host:port`` (default port filled in from the scheme) must equal an entry
+    byte for byte. Only the three spellings ``config.sections`` admits can ever
+    match, so an alternate IPv4 encoding (``0x7f000001``, ``2130706433``) or a
+    ``*.localhost`` name stays refused even when ``localhost:<port>`` is listed.
+    Userinfo is refused outright so ``http://localhost:5173@host/`` cannot be
+    read two ways. The gateway's own port is refused even when listed: it is
+    the control plane this gate exists to keep the panel away from.
+    """
+    if not allowed:
+        return False
+    raw = url.strip()
+    if "\\" in raw or " " in raw or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return False
+    parts = urlsplit(raw)
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https") or "@" in parts.netloc:
+        return False
+    host = (parts.hostname or "").lower()
+    if host == "::1":
+        host = "[::1]"
+    try:
+        port = parts.port
+    except ValueError:
+        return False
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    if f"{host}:{port}" not in allowed:
+        return False
+    try:
+        return port != mcp_core._api_port()
+    except Exception:
+        return False  # gateway port unknowable -> cannot prove this is not it
 
 
 def _args_are_scalar(op_args: dict[str, Any]) -> bool:
@@ -210,9 +293,13 @@ def schemas() -> list[dict[str, Any]]:
                 "op='navigate' args={'url': 'https://…'}, op='click' "
                 "args={'ref': '<snapshot-ref>'}, op='type' args={'ref': '…', "
                 "'text': '…', 'submit': true}. Call op='snapshot' first to get "
-                "element refs. When no native panel is serving this session "
-                "(remote gateway / plain-browser dashboard) the tool tells you to "
-                "use the playwright-cli browser verbs directly instead."
+                "element refs. The panel is NOT the user's own Chrome and carries "
+                "none of their logins: for a page that needs their login, or when "
+                "they ask for their Chrome, attach it with "
+                f"`{own_browser.attach_command()}` (the browser-auth skill) instead. "
+                "When no native panel is serving this session (remote gateway / "
+                "plain-browser dashboard) the tool tells you to use the "
+                "playwright-cli browser verbs directly instead."
             ),
             "inputSchema": {
                 "type": "object",
@@ -326,6 +413,16 @@ def _use_builtin_browser() -> bool:
         return True
 
 
+def _with_own_browser_step(text: str) -> str:
+    """*text* plus which browser to drive when the page needs the user's logins.
+
+    Both fallback texts name the headless ``playwright-cli open``, which is the
+    wrong browser for a task that needs the user's own session; without the
+    second sentence the agent answers "use my Chrome" with a sign-in page.
+    """
+    return f"{text} {own_browser.next_step()}"
+
+
 def browser(name: str, args: dict[str, Any]) -> str:
     # Re-checked here as well as in ``schemas()``: kiro-cli caches the tool list
     # for a session's life, so a session that started with the CLI installed
@@ -352,7 +449,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: built-in browser disabled by setting -> playwright-cli fallback"
         )
-        return _DISABLED_TEXT
+        return _with_own_browser_step(_DISABLED_TEXT)
     op = args.get("op")
     if not isinstance(op, str) or op not in BROWSER_OPS:
         return f"Error: op must be one of: {', '.join(BROWSER_OPS)}"
@@ -366,16 +463,29 @@ def browser(name: str, args: dict[str, Any]) -> str:
     # loopback/private/link-local target could drive a local control plane (this
     # dashboard included) or the cloud-metadata endpoint. Only public http(s) is
     # auto-driven here; route non-public targets through playwright-cli, whose
-    # path prompts for the required approval (matching the CLI gate).
+    # commands go through the ordinary shell approval ladder. The one
+    # exception is a loopback origin the OPERATOR listed in
+    # dashboard.browser_local_origins (exact host:port, never the gateway's
+    # port); config.json is read-only inside the sandbox, so the agent cannot
+    # add to that list itself.
     if op == "navigate":
         url = op_args.get("url")
-        if not isinstance(url, str) or not _navigate_target_is_public(url):
+        if not isinstance(url, str) or not (
+            _navigate_target_is_public(url)
+            or _navigate_target_is_allowed_local(url, _allowed_local_origins())
+        ):
             return (
                 "Error: the browser tool only opens public http(s) URLs in the "
-                "built-in panel. For a localhost/loopback/private/link-local "
-                "address (e.g. a local dev server or an internal host), use "
+                "built-in panel, plus loopback origins the user listed under "
+                "Built-in Browser Local Origins (dashboard.browser_local_origins, "
+                "exact host:port such as localhost:5173). For any other "
+                "localhost/loopback/private/link-local address, use "
                 "playwright-cli, which prompts for the required approval: "
-                "`playwright-cli open <url>`."
+                "`playwright-cli open <url>`. Do not edit the setting yourself; "
+                "if the user wants the panel to open it, give them this command "
+                "to run (it replaces the whole list, so include any origins "
+                "already listed): `kirocrew config set "
+                "dashboard.browser_local_origins '[\"localhost:5173\"]'`."
             )
 
     # Resolve the caller's session key the SAME way every other X-Session-Key
@@ -415,7 +525,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         # route's peer check with a hard 403, masking the clean fallback. Route
         # to playwright-cli instead, exactly like the no-panel (503) case below.
         logger.debug("browser-cmdbus/tool: unresolved session -> playwright-cli fallback")
-        return _FALLBACK_TEXT
+        return _with_own_browser_step(_FALLBACK_TEXT)
     header_err = mcp_core._session_key_header_error(session_key)
     if header_err:
         return f"Error: {header_err}"
@@ -443,7 +553,7 @@ def browser(name: str, args: dict[str, Any]) -> str:
         logger.debug(
             "browser-cmdbus/tool: no native panel (status=%s) -> playwright-cli fallback", status
         )
-        return _FALLBACK_TEXT
+        return _with_own_browser_step(_FALLBACK_TEXT)
     code = payload.get("code") if isinstance(payload, dict) else None
     err = payload.get("error") if isinstance(payload, dict) else None
     return f"Error: browser command failed (HTTP {status}{f', {code}' if code else ''}): {err or 'no detail'}"

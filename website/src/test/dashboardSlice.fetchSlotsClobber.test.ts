@@ -279,6 +279,22 @@ describe('a fetchSlots reply cannot clobber a write that raced it', () => {
     const settled = reducer(reducer(written, started('r1')), reply([mk('b')], 'r1'))
     expect(stampOf(settled, 'a')).toBeGreaterThan(0)
   })
+
+  it('keeps an optimistically added row that a reply sent before the add omits', () => {
+    // An app creates a session and adds it before the list has it. A reply to a
+    // request already in flight was serialized without it and must not drop it.
+    const base = loaded(mk('a'))
+    const added = reducer(reducer(base, started('r1')), addSlotOptimistic(mk('new')))
+    const settled = reducer(added, reply([mk('a')], 'r1'))
+    expect(settled.slots.map(s => s.key)).toEqual(['a', 'new'])
+  })
+
+  it('lets a reply sent after the optimistic add remove a row the server lacks', () => {
+    const base = loaded(mk('a'))
+    const added = reducer(base, addSlotOptimistic(mk('bogus')))
+    const settled = reducer(reducer(added, started('r2')), reply([mk('a')], 'r2'))
+    expect(settled.slots.map(s => s.key)).toEqual(['a'])
+  })
 })
 
 /**

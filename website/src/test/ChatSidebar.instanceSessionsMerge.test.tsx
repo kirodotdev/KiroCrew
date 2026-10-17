@@ -7,7 +7,7 @@
  * ChatSidebar.offline.test.tsx, the owner of the mock setup).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -15,6 +15,9 @@ import { createTestStore } from './helpers'
 import { requestSlotReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
+
+vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
+import { isEmbeddedPane } from '../lib/embedded'
 
 // Local history rows genuinely carry `modified` in epoch SECONDS. A remote slot
 // does NOT: it carries the peer's ISO ladder and no derived sort key at all, so
@@ -110,6 +113,7 @@ globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.res
 import ChatSidebar from '../pages/ChatSidebar'
 import { closeCrewWindow } from '../pages/chat/crew-window/crewWindowStore'
 import { api } from '../api/client'
+import { ApiError } from '../api/apiError'
 import type { ChatSlot, ChatHistoryItem } from '../types'
 import type { RootState } from '../store'
 
@@ -131,6 +135,7 @@ function renderSidebar({
   onOpenSlotInNewTab,
   onOpenPeerSession,
   warmInstances = false,
+  initialPath,
 }: {
   onOpenPeerSession?: (instanceId: string, key: string) => void
   activeSlot?: string
@@ -152,6 +157,8 @@ function renderSidebar({
    *  produces and the merge must resolve to one row. */
   localNewerRowIdentity?: string
   onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
+  /** Router location, for the top-level /embed/* layouts that mount no top bar. */
+  initialPath?: string
 } = {}) {
   // LIVE slots carry the ISO ladder, same as a remote row — that is what lets the
   // two interleave. The remote row's last activity sits between these two.
@@ -205,7 +212,7 @@ function renderSidebar({
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={initialPath ? [initialPath] : undefined}>
             <ChatSidebar
               slots={slots}
               activeSlot={active}
@@ -240,6 +247,7 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     listInstancesMock.mockReset().mockResolvedValue({ instances: [DEFAULT_INSTANCE] })
     chatFoldersMock.mockReset().mockResolvedValue([])
     selectInstanceMock.mockReset()
+    vi.mocked(isEmbeddedPane).mockReturnValue(false)
     localStorage.clear()
   })
 
@@ -658,6 +666,89 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
       .find(row => row.textContent?.includes('LIVE newer slot'))
     expect(localRow).toBeTruthy()
     expect(localRow!.querySelector('[data-testid="session-peer-destination"]')).toBeNull()
+  })
+
+  function chipOfRemoteExecutedRow(container: HTMLElement) {
+    const localRow = Array.from(container.querySelectorAll('[data-session-row]'))
+      .find(row => row.textContent?.includes('LIVE newer slot'))
+    expect(localRow).toBeTruthy()
+    return within(localRow as HTMLElement).getByTestId('remote-crew-chip')
+  }
+
+  it('names the crew on a remote-executed row in an embedded pane', async () => {
+    // Reporting the failure must not cost the name: the embedded pane still
+    // reads the crew list, so the chip shows the name whenever the read works.
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    const { container } = renderSidebar({ localNewerRemoteExecutor: 'inst-a' })
+
+    await waitFor(() => expect(container.textContent).toContain('LIVE newer slot'))
+    await waitFor(() => expect(chipOfRemoteExecutedRow(container)).toHaveTextContent('astro'))
+    expect(screen.queryByTestId('remote-crew-names-error')).toBeNull()
+  })
+
+  it.each([
+    ['an embedded pane', true, undefined],
+    ['a top-level /embed route', false, '/embed/sessions'],
+  ])('reports a failed crew-name read once in %s, where no top bar shows it', async (_label, embedded, initialPath) => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(embedded)
+    listInstancesMock.mockRejectedValue(new Error('crew refused to list instances'))
+    const { container } = renderSidebar({ localNewerRemoteExecutor: 'inst-a', initialPath })
+
+    const notices = await screen.findAllByTestId('remote-crew-names-error')
+    expect(notices).toHaveLength(1)
+    expect(notices[0].textContent).toContain('crew refused to list instances')
+    // The id stays visible: it is less friendly than the name but it is true.
+    expect(chipOfRemoteExecutedRow(container)).toHaveTextContent('inst-a')
+  })
+
+  it('stays quiet in an embedded pane when the instances feature is simply off', async () => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    listInstancesMock.mockRejectedValue(new ApiError(
+      403, 'instances feature is disabled',
+      JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' }),
+    ))
+    const { container } = renderSidebar({ localNewerRemoteExecutor: 'inst-a' })
+
+    await waitFor(() => expect(listInstancesMock).toHaveBeenCalled())
+    await waitFor(() => expect(chipOfRemoteExecutedRow(container)).toHaveTextContent('inst-a'))
+    expect(screen.queryByTestId('remote-crew-names-error')).toBeNull()
+  })
+
+  it('reports an owner-only 403 in an embedded pane, since only instances_disabled is routine', async () => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    listInstancesMock.mockRejectedValue(new ApiError(
+      403, 'non-owner identity rejected',
+      JSON.stringify({ error: 'non-owner identity rejected' }),
+    ))
+    renderSidebar({ localNewerRemoteExecutor: 'inst-a' })
+
+    const notices = await screen.findAllByTestId('remote-crew-names-error')
+    expect(notices).toHaveLength(1)
+    expect(notices[0].textContent).toContain('non-owner identity rejected')
+    // Leads with the product sentence; the server's text follows it.
+    expect(notices[0].textContent).toContain('Couldn’t load the remote crews.')
+  })
+
+  it('stays quiet in an embedded pane when the preview banner already reports the failed read', async () => {
+    // With the merged-sessions preview on, the sidebar's instance-sessions banner
+    // fires on the same failed ['instances'] read, so a second notice would
+    // report one failure twice.
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    listInstancesMock.mockRejectedValue(new Error('crew refused to list instances'))
+    renderSidebar({ localNewerRemoteExecutor: 'inst-a' })
+
+    await screen.findByTestId('instance-sessions-error')
+    expect(screen.queryByTestId('remote-crew-names-error')).toBeNull()
+  })
+
+  it('leaves a failed crew-name read to the top bar on the full dashboard', async () => {
+    listInstancesMock.mockRejectedValue(new Error('crew refused to list instances'))
+    const { container } = renderSidebar({ localNewerRemoteExecutor: 'inst-a' })
+
+    await waitFor(() => expect(listInstancesMock).toHaveBeenCalled())
+    await waitFor(() => expect(container.textContent).toContain('LIVE newer slot'))
+    expect(screen.queryByTestId('remote-crew-names-error')).toBeNull()
   })
 
   it('says it is checking remote crews while the first remote fetch is outstanding', async () => {

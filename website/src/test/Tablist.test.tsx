@@ -116,6 +116,22 @@ describe('Tablist selection', () => {
     expect(onChange).not.toHaveBeenCalled()
   })
 
+  it('selects on the mouse press, before the release, and only once', () => {
+    const onChange = setup('a')
+    const gamma = screen.getByRole('tab', { name: /Gamma/ })
+    fireEvent.pointerDown(gamma, { pointerType: 'mouse', button: 0 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith('c')
+    fireEvent.click(gamma, { detail: 1 })
+    expect(onChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a mouse press on a disabled tab', () => {
+    const onChange = setup('a')
+    fireEvent.pointerDown(screen.getByRole('tab', { name: /Beta/ }), { pointerType: 'mouse', button: 0 })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it('moves with the arrow keys, skipping the disabled tab', () => {
     const onChange = setup('a')
     fireEvent.keyDown(screen.getAllByRole('tab')[0], { key: 'ArrowRight' })

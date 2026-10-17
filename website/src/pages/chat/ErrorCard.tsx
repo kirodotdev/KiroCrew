@@ -1,6 +1,13 @@
-import { memo, type ReactNode } from 'react'
-import { ExternalLink, KeyRound, Loader2, RotateCw, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { memo, useState, type ReactNode } from 'react'
+import { useMutation } from '@tanstack/react-query'
+import { ExternalLink, KeyRound, Loader2, MessageSquarePlus, RotateCw, Settings, ShieldCheck, SlidersHorizontal } from 'lucide-react'
 
+import { ApiError, apiErrorCode } from '../../api/apiError'
+import ErrorNotice from '../../components/ErrorNotice'
+// The shared two-step restart control. Its module holds only the About panel's
+// update actions (shared components and the api client), not the Settings page.
+import { RestartGatewayButton } from '../settings/AboutPanelUpdateFlow'
+import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
@@ -8,6 +15,7 @@ import { isStopEvent } from '../../lib/stopEvent'
 import { isSystemNoticeKind } from '../../lib/systemNotice'
 import type { ChatMessage } from '../../types'
 import { withOriginLink } from '../../components/withOriginLink'
+import { SessionTurnLimitButton } from '../../components/SessionTurnLimitMenu'
 import { injectOpensTurn } from './RecoveryCard'
 
 /** Error code the backend stamps (`meta.code`) when a crew member's private
@@ -57,6 +65,36 @@ const SESSION_START_FAILED_KIND = 'session_start_failed'
 export const isSessionStartFailed = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === SESSION_START_FAILED_KIND || (m.meta as { kind?: string } | undefined)?.kind === SESSION_START_FAILED_KIND
 
+/** Row kind the backend stamps on the error row a turn that hit its time limit
+ *  leaves (`turn_dispatch.TURN_TIMEOUT_KIND`). The limit is a setting, so the
+ *  row links to it beside Resume. Same two carriers as above. */
+const TURN_TIMEOUT_KIND = 'turn_timeout'
+
+export const isTurnTimeout = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === TURN_TIMEOUT_KIND || (m.meta as { kind?: string } | undefined)?.kind === TURN_TIMEOUT_KIND
+
+/** Row kind the backend stamps on the terminal error a CONTEXT OVERFLOW
+ *  produces (`chat_utils.CONTEXT_OVERFLOW_KIND`): the conversation does
+ *  not fit in one request ("Input is too long"). A retry, a Resume or another
+ *  model re-sends the same history, so the row offers a fresh session instead.
+ *  Same two carriers as above. */
+const CONTEXT_OVERFLOW_KIND = 'context_overflow'
+
+export const isContextOverflow = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === CONTEXT_OVERFLOW_KIND || (m.meta as { kind?: string } | undefined)?.kind === CONTEXT_OVERFLOW_KIND
+
+/** Where the fresh-session press on a `context_overflow` row stands. */
+export type FreshSessionState = 'idle' | 'pending' | 'done'
+
+/** Row kind the backend stamps on a refused app-owned agent turn
+ *  (`chat_utils.APP_AGENT_REFUSED_KIND`): the app's agent is shadowed,
+ *  ambiguous or not installed. A retry re-runs the same check, so the row
+ *  offers no Resume. Same two carriers as above. */
+const APP_AGENT_REFUSED_KIND = 'app_agent_refused'
+
+export const isAppAgentRefused = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
+  m.kind === APP_AGENT_REFUSED_KIND || (m.meta as { kind?: string } | undefined)?.kind === APP_AGENT_REFUSED_KIND
+
 /** Consecutive tagged session-start failures at which the card stops offering
  *  Resume and the server refuses the re-run (`session_start_repeat`). Two, not
  *  one: a single timed-out start is host weather and the first Resume is the
@@ -69,7 +107,7 @@ export const SESSION_START_REPEAT_REFUSAL_AT = 2
  * How many session starts in a row failed at the tail of the transcript.
  *
  * Mirrors `session_start_failure_streak` in
- * `src/kiro_crew/dashboard/chat_handlers.py` -- the two must agree, or the card
+ * `src/kiro_crew/dashboard/chat_api/continue_turn.py` -- the two must agree, or the card
  * hides a Resume the server would honour (or offers one it refuses). Walks back
  * from the newest row counting `error` rows of the `session_start_failed` kind.
  * Rows that are not the conversation's floor are walked past -- tool rows,
@@ -201,6 +239,17 @@ export interface ErrorCardProps {
    */
   sessionStartRepeat?: boolean
   /**
+   * The in-product remedy for a `sessionStartRepeat` row: restart the gateway
+   * (`POST /api/restart`) through the shared two-step `RestartGatewayButton`.
+   * Omitted on a surface that cannot drive the gateway (embed, popout); the
+   * card then keeps the terminal hint, with a copy control on its command chip.
+   *
+   * Only the server's 200 means the restart was accepted: any rejection (the
+   * endpoint's own refusal of a restart that cannot run, or a gateway that
+   * never answered) is shown as a failure, never as a restart under way.
+   */
+  onRestartGateway?: () => Promise<unknown>
+  /**
    * The non-inference exit for a `usage_limit` row in a slot the header's
    * "Request a Feature" action created (#13342): the repo's feature-request
    * issue form. That action is an agent turn by design, so a spent allowance
@@ -218,6 +267,30 @@ export interface ErrorCardProps {
    * Omitted on a surface with no crew editor route (embed, popout).
    */
   onOpenCapabilities?: () => void
+  /**
+   * The fix affordance for a `turn_timeout` row: open Settings → Chat →
+   * Advanced on the Turn Time Limit field, the setting that decides how long
+   * a turn may run. Offered BESIDE Resume, not instead of it: resuming is
+   * still the way to finish this turn, and the setting is how the next long
+   * one avoids the cut. Omitted on a surface with no settings route.
+   */
+  onOpenTurnLimit?: () => void
+  /**
+   * The other fix for a `turn_timeout` row: the session whose turn stopped.
+   * With it, the card's limit control becomes a menu offering that session's
+   * own turn time limit, with the Settings link (every session) inside it.
+   */
+  turnLimitSlot?: string
+  /**
+   * The fix for the newest `context_overflow` row: drop this slot's native
+   * conversation so the next message starts a fresh one, seeded from a text
+   * recap of the transcript (images left out). Offered INSTEAD of Resume, which
+   * would re-send the history that overflowed. Omitted on a settled row.
+   */
+  onFreshSession?: () => void
+  /** Where that press stands: `pending` while the request runs, `done` once the
+   *  session was reset (the card then says to send the message again). */
+  freshSession?: FreshSessionState
 }
 
 // No `shrink-0` and no `truncate`: every action sits in a flex row, and a
@@ -237,9 +310,23 @@ const ACTION_BTN =
  *  translation put `{{command}}`; a catalog that dropped the placeholder
  *  renders the sentence unchanged rather than nothing. The two `i18nT` calls
  *  are the only place the command text lives in this module. */
-function restartHint(): ReactNode {
-  const text = i18nT('pages.chat.errorCard.session_start_repeat_hint', { command: 'kirocrew restart' })
-  const marked = i18nT('pages.chat.errorCard.session_start_repeat_hint', { command: '\u0000' })
+// Literal keys so `check-i18n-keys.mjs` resolves them statically: the terminal
+// hint for whoever reads the card; the refused variant, addressed to the
+// person who runs the gateway (a refused viewer cannot run the command); and
+// the retry variant beside a button that can still work.
+const RESTART_HINT_KEYS = {
+  terminal: 'pages.chat.errorCard.session_start_repeat_hint',
+  refused: 'pages.chat.errorCard.restart_gateway_refused_hint',
+  retry: 'pages.chat.errorCard.restart_gateway_retry_hint',
+} as const
+
+function restartHint(variant: keyof typeof RESTART_HINT_KEYS = 'terminal'): ReactNode {
+  const key = RESTART_HINT_KEYS[variant]
+  // The retry line quotes the button by its own catalog label, so the words
+  // always match what the shared RestartGatewayButton actually shows.
+  const button = i18nT('pages.settings.aboutPanel.restart_gateway')
+  const text = i18nT(key, { command: 'kirocrew restart', button })
+  const marked = i18nT(key, { command: '\u0000', button })
   const at = marked.indexOf('\u0000')
   if (at < 0) return text
   const tail = marked.length - at - 1
@@ -251,8 +338,151 @@ function restartHint(): ReactNode {
       <code className="font-mono text-[12px] px-1 py-0.5 rounded bg-bg-elevated ring-1 ring-inset ring-border" data-testid="error-card-restart-command">
         {command}
       </code>
+      {/* The shared command copy control (SettingRef's): it paints a tick only
+          when the clipboard took the text, and a cross when it did not. */}
+      <span className="inline-flex align-middle ml-1" data-testid="error-card-restart-command-copy">
+        <CopyCommandButton text={command} />
+      </span>
       {text.slice(text.length - tail)}
     </>
+  )
+}
+
+/**
+ * The repeat-start card on a surface that can drive the gateway. The restart
+ * is the shared `RestartGatewayButton` (Settings → About and the speech
+ * settings use the same one), so the press is the same two-step arm
+ * everywhere: a restart interrupts everything running on the gateway, so one
+ * stray click must not do it.
+ *
+ * Phases: offered → restarting (button gone, so a second press cannot queue a
+ * second restart); or failed. A real restart always pushes a `restarting`
+ * progress step, which arms the update reload latch, so the page reloads on
+ * reconnect and that reload ends the flow, as it does for Settings → About.
+ *
+ * A `useMutation`: while the browser is offline the mutation waits paused
+ * instead of failing, so the card never claims a restart it has not sent.
+ * Only the server's 200 counts as accepted: the endpoint refuses a restart
+ * that cannot run (a broken launcher or interpreter) before it answers, so
+ * any rejection is a failure, shown through `ErrorNotice` with no agent
+ * hand-off.
+ */
+/** `POST /api/restart`'s refusal codes for a restart that cannot run on this
+ *  install (`_resolve_restart_target`): pressing again meets the same refusal. */
+const CANNOT_RUN_CODES: ReadonlySet<string> = new Set(['restart_launcher_invalid', 'restart_interpreter_missing'])
+
+function RestartGatewayCard({ displayText, onRestartGateway }: {
+  displayText: string
+  onRestartGateway: () => Promise<unknown>
+}) {
+  const [restarting, setRestarting] = useState(false)
+  // The failure, and the one next step it leaves. `owner`: the owner gate
+  // refused this viewer, so only whoever runs the gateway can act. `terminal`:
+  // the endpoint refused a restart that cannot run here (its 409 codes for a
+  // broken launcher or interpreter), so pressing again fails the same way. Both drop
+  // the button. `retry`: anything else, where a second press can work.
+  const [failure, setFailure] = useState<{ title: string; detail: string; next: 'owner' | 'terminal' | 'retry' } | null>(null)
+  const restart = useMutation({
+    mutationFn: onRestartGateway,
+    onMutate: () => setFailure(null),
+    onSuccess: () => setRestarting(true),
+    onError: (e: unknown) => {
+      // The owner gate's 403 only. A lapsed dashboard cookie also answers 403
+      // (`authRequired`), but the client refreshes that in the background, so
+      // the next press can pass and the button must stay.
+      const refused = e instanceof ApiError && e.status === 403 && !e.authRequired
+      const cannotRun = CANNOT_RUN_CODES.has(apiErrorCode(e))
+      setFailure({
+        title: refused ? i18nT('pages.chat.errorCard.restart_gateway_refused_title') : i18nT('pages.chat.errorCard.restart_gateway_failed'),
+        detail: e instanceof ApiError ? e.message : '',
+        next: refused ? 'owner' : cannotRun ? 'terminal' : 'retry',
+      })
+    },
+  })
+  const button = (
+    <div className="flex flex-wrap items-center gap-2">
+      <RestartGatewayButton
+        primary
+        pending={restart.isPending}
+        restarting={false}
+        onConfirm={() => restart.mutate()}
+        testId="error-card-restart-gateway"
+      />
+    </div>
+  )
+  let body: ReactNode
+  if (restarting) {
+    body = (
+      <div className="text-[13px] leading-5 text-text flex items-center gap-1.5" role="status" data-testid="error-card-restarting">
+        <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+        {i18nT('pages.chat.errorCard.restart_gateway_restarting')}
+      </div>
+    )
+  } else if (failure) {
+    // The plain-words title leads; the server's own sentence (the diagnostic)
+    // follows below it. One next step under it, never two that disagree: a
+    // refused viewer gets the line for whoever runs the gateway, a restart
+    // that cannot run here gets the terminal, anyone else gets "try again, or
+    // use a terminal" beside the button. With no server
+    // sentence (a network error) the title alone is the message, said once.
+    const hasDetail = Boolean(failure.detail) && failure.detail !== failure.title
+    body = (
+      <>
+        <ErrorNotice
+          title={hasDetail ? failure.title : undefined}
+          message={hasDetail ? failure.detail : failure.title}
+          messagePlacement="below"
+          variant="inline"
+          noHandoffReason="This card exists because this chat's agent session cannot start; an Ask-the-agent chat would need the same start and fail the same way."
+          testId="error-card-restart-failed"
+        />
+        {failure.next === 'owner' ? (
+          <div className="text-[13px] leading-5 text-text" data-testid="error-card-restart-refused-hint">
+            {restartHint('refused')}
+          </div>
+        ) : failure.next === 'terminal' ? (
+          <div className="text-[13px] leading-5 text-text" data-testid="error-card-session-start-repeat-hint">
+            {restartHint('terminal')}
+          </div>
+        ) : (
+          <>
+            {/* The cost line stays wherever the button does: a retry is the
+                same disruptive restart, so it must be decided with the same
+                warning in view. */}
+            <div className="text-[13px] leading-5 text-text" data-testid="error-card-session-start-restart-hint">
+              {i18nT('pages.chat.errorCard.session_start_repeat_restart_hint')}
+            </div>
+            <div className="text-[13px] leading-5 text-text" data-testid="error-card-restart-retry-hint">
+              {restartHint('retry')}
+            </div>
+            {button}
+          </>
+        )}
+      </>
+    )
+  } else {
+    body = (
+      <>
+        <div className="text-[13px] leading-5 text-text" data-testid="error-card-session-start-restart-hint">
+          {i18nT('pages.chat.errorCard.session_start_repeat_restart_hint')}
+        </div>
+        {button}
+      </>
+    )
+  }
+  return (
+    <div
+      className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+      data-testid="error-card"
+      data-session-start-repeat="true"
+    >
+      {/* Muted once the restart is accepted: the failure it reports is being
+          fixed, and red text above the restarting line reads as still broken. */}
+      <div className={`${restarting ? 'text-muted' : 'text-danger'} text-[13px] leading-5 min-w-0`} style={{ overflowWrap: 'anywhere' }} data-testid="error-card-session-start-prose">
+        {withOriginLink(displayText)}
+      </div>
+      {body}
+    </div>
   )
 }
 /**
@@ -283,7 +513,12 @@ export const ErrorCard = memo(function ErrorCard({
   unentitledElsewhere,
   featureRequestFormUrl,
   sessionStartRepeat,
+  onRestartGateway,
   onOpenCapabilities,
+  onOpenTurnLimit,
+  turnLimitSlot,
+  onFreshSession,
+  freshSession = 'idle',
 }: ErrorCardProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Swap the gateway's "please retry" wording ONLY on a row that renders the
@@ -380,6 +615,52 @@ export const ErrorCard = memo(function ErrorCard({
     )
   }
   const displayText = chatErrorDisplayText(content, meta)
+  if (onFreshSession) {
+    // The conversation is too big for the model: the fix is a fresh session
+    // that carries a text recap of this chat. The prose (the backend's own
+    // sentence) stays first; the hint says what the press keeps and drops, so
+    // "fresh" does not read as "lose everything".
+    // Once the reset landed the failure is over: the card drops its danger
+    // colours so it reads as recovered, and the ready line becomes the body.
+    const done = freshSession === 'done'
+    const pending = freshSession === 'pending'
+    return (
+      <div
+        className={`${done ? 'bg-bg-elevated ring-border' : 'bg-danger-subtle ring-danger/20'} ring-1 ring-inset forced-colors:border rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in`}
+        data-testid="error-card"
+        data-context-overflow="true"
+        data-fresh-session={freshSession}
+      >
+        {/* The error sentence ends by telling the reader to start a fresh
+            session, so once that is done it would ask for a step already
+            taken: the recovered card shows only the ready line. */}
+        {!done && (
+          <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+            {withOriginLink(displayText)}
+          </div>
+        )}
+        <div className={`text-[12px] leading-5 ${done ? 'text-text font-medium' : 'text-muted'}`} data-testid="error-card-fresh-session-hint" aria-live="polite">
+          {done ? i18nT('pages.chat.errorCard.fresh_session_done') : i18nT('pages.chat.errorCard.fresh_session_hint')}
+        </div>
+        {!done && (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onFreshSession}
+              disabled={pending}
+              className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+              data-testid="error-card-fresh-session"
+            >
+              {pending
+                ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+                : <MessageSquarePlus size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+              {i18nT('pages.chat.errorCard.fresh_session')}
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
   const unentitledActions = onPickModel || onOpenDefaultModel
   // Name only the affordance THIS surface lacks: a pane has neither, an
   // embed/popout has the picker but not the settings route. Saying "the
@@ -447,10 +728,71 @@ export const ErrorCard = memo(function ErrorCard({
       </div>
     )
   }
+  const resumeButton = onContinue && (
+    <button
+      type="button"
+      onClick={onContinue}
+      disabled={continuing}
+      className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
+      title={i18nT('pages.chat.errorCard.resume_hint')}
+      data-testid="error-card-continue"
+    >
+      {continuing
+        ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
+        : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
+      {i18nT('pages.chat.errorCard.resume')}
+    </button>
+  )
+  if (onOpenTurnLimit || turnLimitSlot) {
+    const secondaryBtn = `${ACTION_BTN} bg-transparent text-text ring-1 ring-inset ring-border hover:bg-bg-elevated`
+    return (
+      <div
+        className="bg-danger-subtle ring-1 ring-inset forced-colors:border ring-danger/20 rounded-md self-center w-full max-w-full min-w-0 px-3 py-2 flex flex-col gap-2 animate-scale-in"
+        data-testid="error-card"
+        data-turn-timeout="true"
+        data-continuable={onContinue ? 'true' : undefined}
+      >
+        <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
+          {withOriginLink(displayText)}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {resumeButton}
+          {/* One limit control beside Resume: with a known session it is a
+              menu holding this session's limit and the Settings link;
+              without one, the Settings link alone. */}
+          {turnLimitSlot ? (
+            <SessionTurnLimitButton slotKey={turnLimitSlot} className={secondaryBtn} onOpenSettings={onOpenTurnLimit} />
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenTurnLimit}
+              className={secondaryBtn}
+              title={i18nT('pages.chat.errorCard.turn_limit_hint')}
+              data-testid="error-card-turn-limit"
+            >
+              <Settings size={12} className="lucide-inline shrink-0" aria-hidden="true" />
+              {i18nT('pages.chat.errorCard.turn_limit')}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+  if (sessionStartRepeat && onRestartGateway && !onContinue) {
+    // The same start failed twice and this surface can drive the gateway: the
+    // remedy is a press on the card, not a trip to a terminal. The backend's
+    // own sentence (with its diagnostic) stays first.
+    return (
+      <RestartGatewayCard
+        displayText={displayText}
+        onRestartGateway={onRestartGateway}
+      />
+    )
+  }
   if (!onContinue) {
     return (
       <div
-        className="bg-danger-subtle text-danger text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in"
+        className="bg-danger-subtle text-danger-text text-[13px] leading-5 px-3 py-2 rounded-md ring-1 ring-inset forced-colors:border ring-danger/15 self-center animate-scale-in"
         data-testid="error-card"
         style={{ overflowWrap: 'anywhere' }}
       >
@@ -465,8 +807,9 @@ export const ErrorCard = memo(function ErrorCard({
           // same way, so the button is gone and this line is the card's ONLY
           // remaining next step. It therefore renders at body weight in the
           // card's own colour, not as a muted footnote, and the command is a
-          // code chip so it reads as a thing to copy. The dashboard has no
-          // restart control on this surface, so the terminal is the next step.
+          // code chip with a copy control. This branch is the fallback for a
+          // surface with no restart action (embed, popout): the terminal is
+          // the next step there.
           <div className="text-[13px] leading-5 mt-1" data-testid="error-card-session-start-repeat-hint">
             {restartHint()}
           </div>
@@ -483,19 +826,7 @@ export const ErrorCard = memo(function ErrorCard({
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
       </div>
-      <button
-        type="button"
-        onClick={onContinue}
-        disabled={continuing}
-        className={`${ACTION_BTN} bg-accent text-accent-fg hover:bg-accent-hover`}
-        title={i18nT('pages.chat.errorCard.resume_hint')}
-        data-testid="error-card-continue"
-      >
-        {continuing
-          ? <Loader2 size={12} className="lucide-inline shrink-0 animate-spin" aria-hidden="true" />
-          : <RotateCw size={12} className="lucide-inline shrink-0" aria-hidden="true" />}
-        {i18nT('pages.chat.errorCard.resume')}
-      </button>
+      {resumeButton}
     </div>
   )
 })

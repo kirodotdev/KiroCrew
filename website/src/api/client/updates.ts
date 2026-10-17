@@ -7,7 +7,7 @@
 import type { UpdateCheckResult } from '../../types'
 import type { ClientTransport } from './transport'
 
-export function createUpdatesEndpoints({ post, del, j }: ClientTransport) {
+export function createUpdatesEndpoints({ post, del, j, jfetch: fetch }: ClientTransport) {
   const lifecycle = {
     // Update
     checkUpdate: () => fetch('/api/update/check').then(j) as Promise<UpdateCheckResult>,

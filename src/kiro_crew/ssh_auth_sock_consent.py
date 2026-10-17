@@ -1,4 +1,10 @@
-"""Owner consent to forward the ssh-agent socket into the agent sandbox.
+"""Owner consent to forward the ssh-agent socket into a sandbox that hides ~/.ssh.
+
+Most agent spawns do not need it. The ``standard`` (``auto``), ``cc`` and
+``off`` tiers leave ``~/.ssh`` readable to the child, and there
+``sandbox._forward_ssh_auth_sock`` keeps ``SSH_AUTH_SOCK`` by default. This
+consent decides the remaining spawns: the ``strict`` tier, and an enforced
+harness whose credential mask hides ``~/.ssh``.
 
 Keeping ``SSH_AUTH_SOCK`` in the agent subprocess environment lets git commit
 signing and git-over-SSH inside the sandbox reach the ssh-agent the operator

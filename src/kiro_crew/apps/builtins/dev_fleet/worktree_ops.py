@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import functools
 import hashlib
 import json
@@ -12,11 +13,12 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypeGuard
 
 from kiro_crew import dep_sync, frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, npm_preflight, repository, runtime
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.git_config_hooks import ConfigHookScanError
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import sandboxed_spawn_argv, shielded_prepare_off_loop
 
@@ -121,7 +123,10 @@ def _read_pin_strict(cfg: Any, name: str) -> tuple[bool, str | None]:
         # hooks gate refused (symlink/hardlink/containment/sensitive/IO):
         # "exists but cannot be positively read" is a DENY, never "unpinned".
         raise OSError(f"pin file refused by hooks read gate: {env_path}")
-    text = data.decode("utf-8", errors="replace")
+    # A leading UTF-8 byte-order mark (a Windows editor's "UTF-8") would
+    # otherwise ride on the first key, so a CHECKOUT pin on line one reads as
+    # absent -- the same mark ``rt._parse_env_text`` drops.
+    text = data.decode("utf-8", errors="replace").removeprefix("\ufeff")
     for ln in text.splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#") or "=" not in ln:
@@ -290,6 +295,46 @@ def _reclaim_pod_locked(
         return "reclaimed", ""
 
 
+def _is_number(value: object) -> TypeGuard[int | float]:
+    """True for an int or a float claim; a bool (an int subclass) is not a number here."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _token_windows(token: str) -> dict[str, int]:
+    """How long a pod token's link and the session it opens last, in seconds.
+
+    A pod token carries two limits: ``exp``, the link window inside which the raw
+    token is accepted, and ``session_exp``, the lifetime of the session cookie the
+    first request that carries it is given. They differ by design (minutes versus
+    hours), so a caller that is told only one of them is told the wrong thing
+    about the other.
+
+    The claims are read WITHOUT verifying the signature: the token is signed with
+    the pod's own secret, which this gateway never holds. That is sound because the
+    numbers are display-only -- they tell the agent when to use the token, and the
+    pod enforces the real limits whatever is reported here. Anything malformed
+    yields an empty dict, so the caller reports no window rather than a wrong one.
+    """
+    try:
+        encoded = token.split(".", 1)[0]
+        data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    iat, exp, session_exp = data.get("iat"), data.get("exp"), data.get("session_exp")
+    if not (_is_number(iat) and _is_number(exp) and _is_number(session_exp)):
+        return {}
+    try:
+        link_secs = round(exp - iat)
+        session_secs = round(session_exp - iat)
+    except (ValueError, OverflowError):
+        return {}
+    if link_secs <= 0 or session_secs <= 0:
+        return {}
+    return {"link_ttl_secs": link_secs, "session_ttl_secs": session_secs}
+
+
 def _mint_pod_token_locked(cfg, name: str, expected_checkout: str) -> dict:
     """Revalidate the boot's checkout and mint under one pod-name lock off-loop."""
     outcome, audit_error = "failure", "mint failed"
@@ -338,7 +383,46 @@ def _mint_pod_token_locked(cfg, name: str, expected_checkout: str) -> dict:
             runtime.logger.warning("SEL audit failed for pod.token: %s", runtime._redact(str(exc)))
 
 
+#: What a pod start answers while its worktree is being removed or rebased.
+_POD_START_REFUSAL = (
+    "refusing: this worktree is being removed or rebased -- start its pod once that finishes"
+)
+
+
 async def _pod_up(name: str) -> dict:
+    """Start the worktree's pod while holding the worktree's lock and reservation.
+
+    The pod runs from the checkout a removal deletes, and its unit goes active from
+    the ``pod up`` child at a moment no in-process check can observe. So the start
+    holds ``_wt_lock(name)`` from its guard through its verification: a removal or
+    rebase already holding the lock refuses this start, and a removal that arrives
+    mid-start refuses itself. The check and the acquisition are adjacent with no
+    intervening await, as in ``_worktree_remove``.
+
+    ``_wt_lock`` is per process, and an agent's start runs in the gateway
+    (``agent_pod_api``) while every removal runs in the backend. So the start also holds
+    :func:`live.pod_start_reservation` on the checkout for the same span: the gateway
+    refuses a removal lease on it meanwhile, and refuses this start while a removal
+    holds one. In the backend the reservation grants and records nothing.
+
+    The name is resolved first, because ``_wt_lock`` keeps its row for good: a name
+    that names no worktree gets no row. The guard under the lock resolves it again,
+    so a removal that lands in between still refuses the start.
+    """
+    target, ferr = await repository._find_worktree(name)
+    if target is None:
+        return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
+    worktree_lock = _wt_lock(name)
+    if worktree_lock.locked():
+        return {"ok": False, "error": _POD_START_REFUSAL}
+    async with worktree_lock:
+        with live.pod_start_reservation(target["path"]) as reserved:
+            if not reserved:
+                return {"ok": False, "error": _POD_START_REFUSAL}
+            return await _pod_up_locked(name)
+
+
+async def _pod_up_locked(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
@@ -350,6 +434,11 @@ async def _pod_up(name: str) -> dict:
     # A sandboxed child has its own user namespace, which the pod refuses to
     # certify as the local owner. Let the gateway mint only when it has config;
     # otherwise the CLI owns the whole operation (including Windows pods).
+    # The Dev Fleet BACKEND is itself sandboxed, so a mint from there is refused
+    # the same way: when the dashboard's Up/Restart buttons run this in the
+    # backend, boot with --no-token and leave the token to the gateway's
+    # owner-only POST /api/apps/dev-fleet/pod-token (the Open button).
+    mint_here = not live.running_in_backend()
     expected_checkout = ""
     if cfg is not None:
         target, ferr = await repository._find_worktree(name)
@@ -383,13 +472,17 @@ async def _pod_up(name: str) -> dict:
         handle = {"output": stdout}
     # Use the same config that selects --no-token, so boot and mint cannot
     # disagree about which process supplies the credential.
-    if cfg is not None:
+    if cfg is not None and mint_here:
         minted = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _mint_pod_token_locked, cfg, name, expected_checkout
         )
         if not minted["ok"]:
             return minted
         handle.update(minted)
+    # Both mint paths (the gateway's and the CLI's own) hand back the same token
+    # shape, so the windows are read from whichever token the handle carries.
+    if isinstance(handle.get("token"), str) and handle["token"]:
+        handle.update(_token_windows(handle["token"]))
     handle["ok"] = True
     return handle
 
@@ -461,6 +554,17 @@ async def _pod_restart(name: str) -> dict:
 
 
 async def _pod_token(name: str) -> dict:
+    if live.running_in_backend():
+        # The pod's /api/token/local refuses a caller outside the gateway's
+        # namespaces (member_owner_token_refused), and this backend is sandboxed.
+        return {
+            "ok": False,
+            "code": "wrong_process",
+            "error": (
+                "the pod token must be minted in the gateway process (POST "
+                "/api/apps/dev-fleet/pod-token), not in the Dev Fleet backend"
+            ),
+        }
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
@@ -622,7 +726,7 @@ async def _worktree_remove(
         return {
             "ok": False,
             "error": (
-                "refusing: a rebase is in progress for this worktree -- "
+                "refusing: a rebase or pod start is in progress for this worktree -- "
                 "wait for it to finish or abort it first"
             ),
         }
@@ -1115,7 +1219,8 @@ async def _worktree_remove_locked(
             return {
                 "ok": False,
                 "error": (
-                    "refusing: a Make Live cutover is in progress -- retry once it " "has completed"
+                    "refusing: a Make Live cutover is in progress or this worktree's pod "
+                    "is starting -- retry once it has completed"
                 ),
             }
         # Protection re-check under the lock closes the TOCTOU window between
@@ -2185,6 +2290,22 @@ async def _sync_start_locked() -> dict:
         cleanups += [str(dep_sync_snapshot), str(dep_sync_snapshot.parent)]
     wrapped_steps: list[dict] = []
     for argv, mode, base_env, label in raw_steps:
+        try:
+            argv = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), runtime._with_config_hooks_off, argv, str(repo), base_env
+            )
+        except ConfigHookScanError as exc:
+            for _p in cleanups:
+                try:
+                    os.unlink(_p)
+                except (IsADirectoryError, PermissionError):
+                    try:
+                        os.rmdir(_p)
+                    except OSError:
+                        pass
+                except OSError:
+                    pass
+            return {"ok": False, "error": f"git hook config refused: {exc}"}
         w_argv, w_env, cleanup = await shielded_prepare_off_loop(
             functools.partial(sandboxed_spawn_argv, argv, mode, env=base_env),
             executor=subprocess_executor(),

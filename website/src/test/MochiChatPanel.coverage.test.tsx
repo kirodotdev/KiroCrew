@@ -892,6 +892,16 @@ describe('ChatPanel approval card', () => {
     expect(await screen.findByText('Rejected')).toBeInTheDocument()
   })
 
+  it("decides with the card's own owner-bound target", async () => {
+    // The card keeps the target of the request it showed, so a later request
+    // under the same id is not the one this press decides.
+    const target = { origin: 'native', requestMid: 'mid-a' }
+    await renderPanel()
+    emit('onApprovalRequest', approvalFrame({ target }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    expect(respondApproval).toHaveBeenCalledWith('req-1', 'approve', undefined, false, target)
+  })
+
   it('keeps the card and reports the error when the POST fails', async () => {
     await renderPanel()
     respondApproval.mockResolvedValueOnce({ ok: false })

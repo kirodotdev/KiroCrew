@@ -22,6 +22,7 @@ from urllib.parse import quote  # noqa: F401
 from aiohttp import web
 
 from kiro_crew import platform_compat, port_resolution, shutdown_event  # noqa: F401
+from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.apps.backend import (  # noqa: F401
     start_deferred_app_backends,
     start_enabled_app_backends,
@@ -61,9 +62,7 @@ from kiro_crew.dashboard import (  # noqa: F401
     channel_slots,
     chat,
     handlers,
-)
-from kiro_crew.dashboard import server_runtime as _server_runtime
-from kiro_crew.dashboard import (  # noqa: F401
+    slot_retention,
     tailnet,
     tailnet_serve,
 )
@@ -207,6 +206,7 @@ from kiro_crew.dashboard.server_runtime.crewmate_prune import (  # noqa: F401
     _crewmate_prune_gate_holds_path,
     _kick_crewmate_prune,
     _kick_deferred_transcript_removal,
+    _register_change_card_hook,
     _register_crewmate_prune_gate,
     await_crewmate_prune_settled,
 )
@@ -252,8 +252,10 @@ from kiro_crew.dashboard.server_runtime.listener_claims import (  # noqa: F401
 )
 from kiro_crew.dashboard.server_runtime.maintenance import (  # noqa: F401
     _kick_connections_warm_scavenge,
+    _kick_display_verdicts,
     _kick_knowledge_orphan_reclaim,
     _kick_local_decision_model,
+    _kick_owner_only_sweep,
     _kick_session_search_index,
     _own_host_warm_done,
     _register_connections_warm_lifecycle,
@@ -279,6 +281,7 @@ from kiro_crew.dashboard.server_runtime.owner_notices import (  # noqa: F401
 from kiro_crew.dashboard.server_runtime.prevent_sleep import (  # noqa: F401
     _arm_prevent_sleep_poll,
     _register_prevent_sleep_shutdown,
+    _release_sleep_block,
     _should_prevent_sleep,
 )
 from kiro_crew.dashboard.server_runtime.safety_grants import (  # noqa: F401
@@ -375,12 +378,14 @@ from kiro_crew.metrics.http_metrics import (  # noqa: F401
     make_route_latency_middleware,
     record_boot_to_ready,
 )
+from kiro_crew.owner_only_files import tighten_data_home  # noqa: F401
 from kiro_crew.platform import (
     async_safe_context_call,
     current_context,
     safe_context_call,
 )
 from kiro_crew.power import SleepInhibitor  # noqa: F401
+from kiro_crew.pre_exec_stops import register_pre_exec_stop
 from kiro_crew.safety_override import (  # noqa: F401
     POLICY_REVOKED_SOURCE,
     apply_config_duration,
@@ -392,6 +397,7 @@ from kiro_crew.safety_override import (  # noqa: F401
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F401
 from kiro_crew.security.argv_floor import warm_own_host_names  # noqa: F401
 from kiro_crew.sel import sel, sel_is_warm, warm_sel_singleton  # noqa: F401
+from kiro_crew.sel_request_provenance import bind_request_forwarded  # noqa: F401
 from kiro_crew.skill_usage import register_skill_read_observer
 from kiro_crew.skills import (  # noqa: F401
     SkillsLoader,
@@ -448,6 +454,12 @@ _STT_SWEEP_BOOT_DELAY_SECS = 30.0
 # within seconds. Still non-zero, so the load never competes with binding the
 # listener, serving the first page, or restoring sessions.
 _STT_PREWARM_BOOT_DELAY_SECS = 5.0
+
+# How recent a real decode must be for the boot prewarm to load the speech model.
+# The weights are one anonymous native buffer (1.6 GB for large-v3-turbo) held for
+# `stt.idle_evict_secs`, so a host that does not dictate skips the boot warm and keeps
+# the pointer-down prewarm.
+_STT_BOOT_PREWARM_RECENT_USE_SECS = 14 * 86400
 
 
 async def _prune_browser_snapshots_loop() -> None:
@@ -531,6 +543,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/browser/command",
         "/api/browser/command-drain",
         "/api/browser/command-result",
+        # External terminal grant redemption. Its only caller is the desktop
+        # shell's main process, over the same channel as the browser command
+        # drain above; the browser holds the grant but must never redeem it, so
+        # STRICT (not mixed). The handler re-asserts ``internal_auth`` and
+        # loopback because a ``local_only=False`` deployment reclassifies strict
+        # paths as mixed.
+        "/api/terminal/external-grant",
         # Computer use: the ``kirocrew-computer`` stdio shim's forwarding leg.
         # STRICT (not mixed): no browser calls it, and it is the entry point to
         # accessibility reads and input synthesis into the operator's real
@@ -548,6 +567,13 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Blocking MCP ask_question: open / wait / withdraw. STRICT for the same
+        # reason as the keepalive above -- the only caller is the tool in an MCP
+        # subprocess, and the card is addressed by the attested X-Session-Key,
+        # which a browser bearer must not be able to assert. Its own prefix so
+        # the browser half of /api/ask-question is not swept in by the
+        # prefix-matched strict check.
+        "/api/agent-ask",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the
         # only legitimate caller is a Kiro Crew directive tool in an MCP
@@ -582,9 +608,9 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # runs behind a sandbox with its own user namespace, so its shells cannot
         # connect the systemd user bus every pod verb needs; the gateway holds the
         # host bus and does the systemd part on the agent's behalf. Without these
-        # entries the tools 403: an agent has no dashboard cookie,
-        # ``KIROCREW_INTERNAL_SECRET`` is stripped from its env, and
-        # ``.local_secret`` is on the sensitive-path denylist.
+        # entries the tools 403: an agent has no dashboard cookie, the gateway
+        # mints its internal secret in-process and never puts it in an agent's
+        # env, and ``.local_secret`` is on the sensitive-path denylist.
         #
         # STRICT, not mixed: no browser calls these. The dashboard's own pod
         # buttons go to the app backend through the ``/apps/dev-fleet/api/*``
@@ -664,6 +690,28 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # internal-secret call falls through to cookie auth and every publish
         # fails with 403.
         "/api/agent-panel",
+        # MCP-only (the four kirocrew-guide tools); no browser caller. Prefix
+        # matching covers "/actions", "/start", "/status" and "/cancel". STRICT:
+        # the caller's slot is derived from the X-Session-Key this secret backs,
+        # so a cookie fall-through would let a browser name any session as the one
+        # offering the guide. The browser half ("/api/guide/pending", "/claim",
+        # ...) is deliberately NOT under this prefix and stays on cookie auth.
+        "/api/guide/agent",
+        # MCP-only (the list_change_kinds / propose_change / get_change_status tools); no browser
+        # caller. Prefix matching covers "/kinds", "/propose" and "/status".
+        # STRICT for the same reason as the guide: the card's slot is derived from
+        # the X-Session-Key this secret backs. The browser half ("/api/cards/pending",
+        # "/api/cards/{id}/preview|cancel|dismiss") is deliberately NOT under this
+        # prefix and stays on owner-only cookie auth; applying a card happens only
+        # on the existing settings routes, through the card hook.
+        "/api/cards/agent",
+        # MCP-only (the kirocrew-mate update_self / set_* tools); no browser
+        # caller. STRICT for the same reason as the guide and the cards: the
+        # crewmate acted on is derived from the X-Session-Key this secret backs,
+        # so a cookie fall-through would let a browser change any crewmate as
+        # itself. The undo ("/api/members/{slug}/self-changes/{id}/undo") is the
+        # user's click and stays on owner-only cookie auth, off this prefix.
+        "/api/member/self",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
@@ -685,10 +733,15 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/session-control/fork",
         "/api/session-control/stop",
         "/api/session-control/end-wait",
+        "/api/session-control/retry",
+        "/api/session-control/continue",
         "/api/session-control/set-model",
         "/api/session-control/reload",
+        "/api/session-control/rename",
+        "/api/session-control/generate-title",
         "/api/session-control/close",
         "/api/session-control/revive",
+        "/api/session-control/history",
         "/api/session-control/send",
         "/api/session-control/broadcast",
         "/api/session-control/status",
@@ -716,14 +769,15 @@ _PRE_AUDIT_DENY_STATUSES = frozenset({401, 403})
 #: proxy rather than from the client itself. ``<name>_via_proxy`` means a
 #: forwarder presented it.
 #:
-#: The converse does NOT read across the whole SEL. A plain name means "made
-#: directly" only on the records :func:`audit_actor` reaches: the ok/error rows
-#: of both servers' ``sel_audit_middleware``, and the raised-refusal rows that
-#: go through :func:`_audit_denied`. ``token_auth`` writes its own returned
-#: 401/403 records with its own ``caller`` (``user_id``, ``app_name``,
-#: ``"unattributable"``, ``peer.login``, ...) and never calls this helper, so a
-#: forwarded request refused there is filed under a plain name. Routing those
-#: sites through here would edit a module this change does not touch.
+#: Read provenance from ``metadata["forwarded"]`` (``True`` / ``False``), not
+#: from this suffix. Every ``api_access`` row written while a request is being
+#: served records it: the auth and audit layers pass it explicitly, and a
+#: handler's own row takes the verdict the deny-audit boundary binds for the
+#: request (``kiro_crew.sel_request_provenance``). It means the same thing
+#: whichever of them wrote the row. A row with no ``forwarded`` key has no
+#: provenance recorded (one written outside any request, or by a background task
+#: after its request ended), which is never "made directly". The suffix is kept,
+#: unchanged, so existing readers and queries keyed on it keep matching.
 _VIA_PROXY_SUFFIX = "_via_proxy"
 
 
@@ -783,8 +837,8 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Issue Radar investigation record — the ONE app route reachable with the
         # internal secret, for the ``issue_radar_record_investigation`` MCP tool.
         # An investigating chat agent has no dashboard token (cookies are
-        # httpOnly, ``KIROCREW_INTERNAL_SECRET`` is stripped from agent env by
-        # ``sandbox._AGENT_DENIED_ENV_KEYS``, and ``.local_secret`` is on the
+        # httpOnly, the gateway mints its internal secret in-process and never
+        # puts it in an agent's env, and ``.local_secret`` is on the
         # ``security.py`` sensitive-path denylist), so the PUT the Investigate
         # seed prompt asks for would 403 unconditionally and no investigation
         # could record its findings. Deliberately the FULL path, not the
@@ -844,6 +898,36 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Redundant under the prefix match above; kept explicit so a reader sees
         # both routes the crew tools actually call.
         "/api/apps/issue-radar/crew/work",
+        # Design Tweak thread progress — the ONE app route reachable with the
+        # internal secret, for the ``design_tweak_update_thread`` MCP tool. The
+        # app hands the agent batched click-anchored comments and the agent
+        # applies them, but it cannot update the preview's comment-thread
+        # bubbles: posting to ``/thread`` needs a dashboard credential, and an
+        # agent session holds none (cookies are httpOnly, the gateway mints its
+        # internal secret in-process and never puts it in an agent's env, and
+        # the CLI credential mint is denied by the
+        # builtin ``credential-exfil`` rules — the same trust model as the
+        # ``/api/apps/issue-radar/investigation`` and Ops Mission Control
+        # entries above). So the documented raw POST 403s unconditionally and
+        # the dots never change; this admission is what lets the scoped tool
+        # carry progress through.
+        #
+        # ONE path, never the ``/apps/design-tweak`` prefix. ``internal_path_matches``
+        # admits an entry AND its children (``path == p or path.startswith(p + "/")``),
+        # so this entry admits ``/thread`` and ``/thread/<x>`` — but NOT the app's
+        # sibling state-mutating routes ``/submit``, ``/send``, ``/clear`` (archives
+        # a request and removes its pins), ``/delete``, ``/delete-comment`` or the
+        # project/dev-server management routes, which are separate entries this set
+        # does not list. A ``/thread/<x>`` child is harmless: Design Tweak's backend
+        # matches ``route == "/thread"`` exactly, so a child path 404s there. The
+        # agent only needs to append thread progress, so only ``/thread`` is admitted.
+        #
+        # The path is the gateway's reverse-proxy route ``/apps/{name}/api/{path}``
+        # (``apps/routes.py`` ``handle_app_api_proxy``), NOT ``/api/apps/...``:
+        # Design Tweak runs its ``_h_thread`` in its own backend process reached
+        # only through that proxy, unlike Issue Radar / Ops Mission Control which
+        # register aiohttp routes directly under ``/api/apps/<name>``.
+        "/apps/design-tweak/api/thread",
         # Registry skill discovery — the READ leg only, for the
         # ``skill_discover`` / ``skill_fetch`` MCP tools. The Skills page calls
         # the same two routes with cookie auth, hence mixed rather than strict.
@@ -890,17 +974,13 @@ _BASE_CSP = (
     "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' "
     "https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com "
     "https://esm.sh; "
-    # https://fonts.googleapis.com + https://fonts.gstatic.com: index.html loads
-    # the UI's two brand faces (Space Grotesk, JetBrains Mono) from Google Fonts.
-    # Without these the stylesheet is refused and BOTH families fall through the
-    # stack. macOS lands on -apple-system and looks deliberate; Windows has no
-    # such entry, so it drops to the generic sans-serif/monospace and the whole
-    # dashboard renders in a face the design never targeted (metrics tuned for
-    # Space Grotesk/JetBrains Mono then mis-fit, so chrome text also mis-sizes).
+    # The UI's two brand faces (Space Grotesk, JetBrains Mono) are served from
+    # this origin (website/src/assets/fonts/, hashed into /assets/ by Vite), so
+    # style-src and font-src name no third-party font host; 'self' covers them.
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net "
-    "https://esm.sh https://fonts.googleapis.com; "
+    "https://esm.sh; "
     "img-src 'self' data: blob: https:; "
-    "font-src 'self' data: https://esm.sh https://fonts.gstatic.com; "
+    "font-src 'self' data: https://esm.sh; "
     # Loopback http(s) origins ({connect_src_extra}) mirror the frame-src note
     # below: WebPreviewPanel does not merely FRAME the local dev server, it also
     # polls it with a no-cors `fetch` liveness probe (a cross-origin iframe
@@ -1100,7 +1180,11 @@ SECONDARY_LOOPBACK_FOR = {"127.0.0.1": "::1", "::1": "127.0.0.1"}
 AMBIGUOUS_LOOPBACK_HOSTS = frozenset({"localhost", "kirocrew.localhost"})
 
 
-async def _retake_hops_then_revive(registry: InstancesRegistry, manager: SshTunnelManager) -> None:
+async def _retake_hops_then_revive(
+    registry: InstancesRegistry,
+    manager: SshTunnelManager,
+    state: DashboardState | None = None,
+) -> None:
     """Re-take the lent hop ports, then revive. Both off the boot path, in this order.
 
     A hop lease is PERSISTED and the listening socket that enforces it is not, so a
@@ -1133,11 +1217,13 @@ async def _retake_hops_then_revive(registry: InstancesRegistry, manager: SshTunn
                 len(unheld),
                 sorted(unheld),
             )
-    await _revive_intended_instances(registry, manager)
+    await _revive_intended_instances(registry, manager, state)
 
 
 async def _revive_intended_instances(
-    registry: InstancesRegistry, manager: SshTunnelManager
+    registry: InstancesRegistry,
+    manager: SshTunnelManager,
+    state: DashboardState | None = None,
 ) -> None:
     """Auto-reconnect every instance the operator left connected.
 
@@ -1160,12 +1246,22 @@ async def _revive_intended_instances(
     Extracted to module level (rather than an inline closure) so the revive
     policy — which instances are picked and the per-instance failure isolation —
     is unit-testable without standing up the whole app.
+
+    Stops at the first instance it reaches once a gateway restart has claimed
+    ``state``: the restart's pre-exec seam has already stopped every tunnel, and
+    one connected now would outlive the exec as an orphaned forwarder. The
+    intent flag is untouched, so the next gateway revives the rest.
     """
-    intended = [inst for inst in registry.list() if inst.was_connected]
+    # A disabled crew keeps its intent so enabling it brings it back, but it is
+    # not revived while it stays disabled.
+    intended = [inst for inst in registry.list() if inst.was_connected and not inst.disabled]
     if not intended:
         return
     logger.info("Auto-reconnecting %d instance(s) on startup", len(intended))
     for inst in intended:
+        if getattr(state, "_gateway_restart_in_progress", False) is True:
+            logger.info("Gateway restart in progress; startup auto-reconnect stops")
+            return
         try:
             st = await manager.connect(inst.id)
             if st.state == TunnelState.CONNECTED:
@@ -1324,6 +1420,18 @@ _CREWMATE_PRUNE_GATE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CREWMATE_PRUNE_GATE_HELD_PREFIXES = ("/api/members",)
 
 
+def _kick_pinned_order_load(state: DashboardState) -> None:
+    """Read the pinned-session order after the bind, as a tracked background task.
+
+    Off the boot path (``no-new-work-on-gateway-boot-path``): the file is
+    read after the listener accepts requests, and every writer reads it first
+    if it has not landed (``chat_folders.ensure_pinned_order_loaded``).
+    """
+    task = asyncio.create_task(chat.load_pinned_order_after_listen(state))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_browser_install_cleanup(app: web.Application, state: DashboardState) -> None:
     """Stop any browser install owned by this gateway during shutdown."""
 
@@ -1414,7 +1522,11 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
     instance page.
     """
 
+    # The startup hook's pre-exec registration, undone by the cleanup hook.
+    unregister_pre_exec_stop: Callable[[], None] | None = None
+
     async def _instances_startup(app_: web.Application) -> None:
+        nonlocal unregister_pre_exec_stop
         _cfg = KiroCrewConfig.load()
         if not _cfg.instances.enabled:
             return
@@ -1436,6 +1548,11 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         )
         state.instances_registry = registry
         state.instances_manager = manager
+        # An in-place restart's exec skips _instances_shutdown below but keeps
+        # the pid, so every ssh/SSM forwarder child would outlive it still
+        # parented to the new image, which then refuses to reclaim it. The
+        # restart runs this same teardown first through the pre-exec seam.
+        unregister_pre_exec_stop = register_pre_exec_stop("Instance tunnels", manager.shutdown)
         # First-party cookies: embedded instances load from
         # http://127.0.0.1:<port>, so the hub itself should be reached at
         # http://127.0.0.1:<port> (NOT localhost / kirocrew.localhost) — mixing
@@ -1457,11 +1574,13 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         # the port bind immediately; tunnels reconnect (or surface their error
         # on the instance tab, which persists on failure) without gating
         # startup.
-        revive_task = asyncio.create_task(_retake_hops_then_revive(registry, manager))
+        revive_task = asyncio.create_task(_retake_hops_then_revive(registry, manager, state))
         state._background_tasks.add(revive_task)
         revive_task.add_done_callback(state._background_tasks.discard)
 
     async def _instances_shutdown(app_: web.Application) -> None:
+        if unregister_pre_exec_stop is not None:
+            unregister_pre_exec_stop()
         manager = getattr(state, "instances_manager", None)
         if manager is not None:
             await manager.shutdown()
@@ -1641,6 +1760,11 @@ async def start_dashboard(
         assume_ready=assume_kiro_ready,
     )
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
+    # error; the ACP layer asks this service's whoami verdict to tell it apart.
+    from kiro_crew.kiro_prerequisite import register_turn_auth_service
+
+    register_turn_auth_service(state.kiro_prerequisite_service)
     # Seed the retirement baseline with the account on disk RIGHT NOW, before
     # anything can spawn a kiro-backed child. Every child postdates this read,
     # so the once-per-lifetime unset-baseline boot sweep -- which on a live
@@ -1736,7 +1860,11 @@ async def start_dashboard(
     # Offloaded: copytree/rmtree/stat are blocking filesystem calls.
     await asyncio.to_thread(_register_deploy_skills)
 
-    # Knowledge Library
+    # Knowledge Library. ``setup_knowledge_routes`` reads the lazy store, whose
+    # constructor prepares and opens SQLite files (owner-only preparation,
+    # schema DDL, migrations): that is file I/O, so it is built on a worker
+    # here and route registration finds it ready. Same work, off the loop.
+    await asyncio.to_thread(lambda: state.knowledge_store)
     setup_knowledge_routes(app)
     setup_weixin_routes(app)
     setup_feedback_routes(app)
@@ -1953,6 +2081,7 @@ async def start_dashboard(
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
         _register_crewmate_prune_gate(app, state)
+        _register_change_card_hook(app)
 
         # Unix-socket cleanup hook — registered before runner.setup freezes the
         # signal lists; the path itself only becomes known after the site starts
@@ -1995,6 +2124,7 @@ async def start_dashboard(
     # awaits it -- while the gate armed before the bind holds every mutating
     # request until it settles.
     _kick_crewmate_prune(state)
+    _kick_pinned_order_load(state)
     # (No _export_bound_port republish here: the reservation above already
     # exported this same socket's name before the spawn pass — the one
     # authoritative write on this path. The headless entrypoint, which binds
@@ -2071,6 +2201,10 @@ async def start_dashboard(
     # the constructor (which runs pre-bind, on the loop) and runs here on a
     # worker thread once requests are already being served.
     _kick_knowledge_orphan_reclaim(state)
+    # And for the data home's owner-only mode repair, whose walk grows with the
+    # files the user has accumulated.
+    _kick_owner_only_sweep(state)
+    _kick_display_verdicts(state)
     # Bind the crew-log push to this loop and register it with the session emitter,
     # once the listener is serving: installing it imports and builds the publisher,
     # which the crew log's default-on flag would otherwise put in front of the bind.
@@ -2124,7 +2258,7 @@ async def start_dashboard(
     # handshake subprocess per configured MCP server, so under cautious boot it
     # gets its own launch window instead of landing on top of the app backends.
     await cautious_boot.pause_before("MCP server probe")
-    asyncio.create_task(handlers._bg_mcp_probe())
+    asyncio.create_task(handlers._bg_mcp_probe(state.sessions))
 
     # Refresh config.json's meta stamp when an upgrade left it naming the
     # previous build. Post-bind and fire-and-forget (never awaited on
@@ -2400,6 +2534,11 @@ async def start_api_server(
         assume_ready=assume_kiro_ready,
     )
     state.kiro_prerequisite_service = app["kiro_prerequisite_service"]
+    # A signed-out bundled kiro-cli-chat fails a prompt as a bare connection
+    # error; the ACP layer asks this service's whoami verdict to tell it apart.
+    from kiro_crew.kiro_prerequisite import register_turn_auth_service
+
+    register_turn_auth_service(state.kiro_prerequisite_service)
     # Seed the retirement baseline with the account on disk RIGHT NOW, before
     # anything can spawn a kiro-backed child. Every child postdates this read,
     # so the once-per-lifetime unset-baseline boot sweep -- which on a live
@@ -2573,6 +2712,7 @@ async def start_api_server(
     # Same listener guard as start_dashboard: a headless gateway loses its
     # listener to a failed accept() exactly the same way.
     _arm_listener_guard(state, runner, site)
+    _kick_pinned_order_load(state)
     # Export the actually-bound port for child processes (parity with
     # start_dashboard — headless gateways spawn the same MCP stdio children).
     _export_bound_port(runner, port)
@@ -2643,6 +2783,8 @@ async def start_api_server(
     _kick_session_search_index(state)
     _kick_config_watch(app, state)
     _kick_local_decision_model(state)
+    _kick_owner_only_sweep(state)
+    _kick_display_verdicts(state)
 
     logger.info("API-only server listening on %s:%d", bind_addr, port)
 
@@ -2671,7 +2813,7 @@ async def start_api_server(
 # ``kiro_crew.dashboard.server.<name>`` reaches it wherever it lives; see
 # ``kiro_crew.dashboard.server_runtime``. Run once, after this body has bound every
 # name.
-_server_runtime.compose(
+_facade_compose(
     globals(),
     (
         _owner_app_platform,

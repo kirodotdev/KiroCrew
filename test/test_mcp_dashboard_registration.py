@@ -283,7 +283,12 @@ class TestTheNameAloneIsNotOwnership:
     def test_an_opt_in_name_is_not_in_the_purge_set(self) -> None:
         assert DASH_SERVER not in mcp_cleanup.STALE_MANAGED_MCP_SERVERS
         for name in mcp_cleanup.ALWAYS_ON_BIN_MCP_SERVERS:
-            assert name in mcp_cleanup.STALE_MANAGED_MCP_SERVERS
+            # The guide and member sets became always-on after the last install
+            # method that wrote the global file, so no residue of ours can carry
+            # their names.
+            assert (name in mcp_cleanup.STALE_MANAGED_MCP_SERVERS) is (
+                name not in ("kirocrew-guide", "kirocrew-mate")
+            )
 
     def test_a_hand_written_grant_survives_cleanup(self, tmp_path: Any, monkeypatch: Any) -> None:
         """Including one whose invocation is byte-for-byte what we would write."""
@@ -337,6 +342,9 @@ class TestWhatThisSetGrants:
         "chat_folder_tree",
         "chat_folder_create",
         "chat_folder_move",
+        # Rename / icon / color only; the fields that would reach every future
+        # session in the folder are refused by name (see test_mcp_dashboard_folder_update).
+        "chat_folder_update",
         "chat_folder_move_session",
         "chat_folder_file_self",
         # Empty-only and creator-only: the endpoint's ``if_empty`` mode refuses
@@ -356,12 +364,17 @@ class TestWhatThisSetGrants:
         "chat_tag_update",
         "chat_tag_assign",
     }
-    #: Pinning. Same posture as tag assignment: one metadata flag on a live
-    #: session the caller may already file and tag, nothing deleted.
-    PIN_TOOLS = {"chat_session_pin"}
+    #: Pinning and pinned-session ordering. Same posture as tag assignment:
+    #: one metadata flag, or the display order the person already sees, on a
+    #: live session the caller may already file and tag; nothing deleted. The
+    #: gateway refuses a reorder from app and crew-member callers.
+    PIN_TOOLS = {"chat_session_pin", "chat_session_pin_move"}
     #: Board columns. Same posture as the tag tools: read, append and reorder;
     #: no delete and no retag, so nothing the person put on the board is lost.
     COLUMN_TOOLS = {"chat_tag_column_list", "chat_tag_column_create", "chat_tag_column_move"}
+    #: Moving a card between columns. Same posture as tag assignment: it is the
+    #: status-tag swap chat_tag_assign could send, through the board's own route.
+    MOVE_TOOLS = {"session_move_to_column"}
     #: The session-control half. Granted by the SAME assignment as the folder
     #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
     #: why the two classes ride together rather than in two servers.
@@ -372,10 +385,17 @@ class TestWhatThisSetGrants:
         # Wakes a created session from `wait` through the same parked request
         # the End-wait button writes; nothing discarded, same target fence.
         "session_end_wait",
+        "session_retry",
+        "session_continue",
         "session_set_model",
         "session_reload",
+        # Relabels a session the caller may already stop, or itself; same gate.
+        "session_rename",
+        # Regenerates a title on a session the caller created; same gate, narrower.
+        "session_generate_title",
         "session_close",
         "session_revive",
+        "session_history_list",
         "session_send",
         # The fan-out verb. In the SAME granted set as `session_send` and not a
         # server of its own, because it grants no reach that one does not: it
@@ -391,7 +411,7 @@ class TestWhatThisSetGrants:
         "session_read_message",
         "session_summary",
     }
-    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | PIN_TOOLS | SESSION_TOOLS
+    GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard
@@ -428,7 +448,7 @@ class TestWhatThisSetGrants:
         session = {n for n in names if n.startswith("session_")}
         assert folder, "the folder-organization tools left this set"
         assert tags, "the tag-organization tools left this set"
-        assert pins, "the pin tool left this set"
+        assert pins, "the pin and pinned-order tools left this set"
         assert session, "the session-control tools left this set"
         # Nothing else rides along unannounced.
         assert names == folder | tags | pins | session, (

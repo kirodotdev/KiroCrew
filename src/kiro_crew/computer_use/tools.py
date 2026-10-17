@@ -154,7 +154,12 @@ from kiro_crew.computer_use.types import (
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.sel import sel
-from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError, validate_tool_args
+from kiro_crew.validation import (
+    MCP_COMPUTER_SCHEMAS,
+    ValidationError,
+    coerce_mcp_tool_args,
+    validate_tool_args,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +406,10 @@ def _dispatch(
             agent=agent,
             tool_name=tool_name,
         )
-    clean = validate_tool_args(dict(args), MCP_COMPUTER_SCHEMAS[tool_name])
+    clean = validate_tool_args(
+        coerce_mcp_tool_args(dict(args), MCP_COMPUTER_SCHEMAS[tool_name]),
+        MCP_COMPUTER_SCHEMAS[tool_name],
+    )
 
     svc = service.get_shared_service()
 
@@ -750,11 +758,11 @@ def _run(
     #
     # Redacting the two parts separately rather than the joined string is deliberate:
     # ``render_tree`` deliberately appends the screenshot note AFTER its own
-    # redaction, because the per-user temp path contains a long random segment that
-    # the bare-secret-key heuristic masks — re-running redaction over the joined text
-    # would destroy every screenshot path (verified live, documented in
-    # ``render._render_image_note``). So the header is redacted on its own and the
-    # already-redacted body is left untouched.
+    # redaction, because its spool path must reach the model byte-exact and the
+    # bare-secret-key heuristic reads a path as one base64-alphabet run —
+    # re-running redaction over the joined text would expose every screenshot path
+    # to it (documented in ``render._render_image_note``). So the header is
+    # redacted on its own and the already-redacted body is left untouched.
     return f"{ACTION_RESULT_HEADER.format(detail=policy.redact_result(detail))}\n{body}"
 
 

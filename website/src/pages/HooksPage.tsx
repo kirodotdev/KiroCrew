@@ -39,15 +39,15 @@ const MATCHER_MODES = ['glob', 'regex', 'contains']
 
 const EVENT_STYLE: Record<string, string> = {
   AgentSpawn: 'bg-accent/15 text-accent border-accent/30',
-  UserPromptSubmit: 'bg-ok-subtle text-ok border-ok/30',
+  UserPromptSubmit: 'bg-ok-subtle text-ok-text border-ok/30',
   PreToolUse: 'bg-aim-subtle text-aim border-aim/30',
   PostToolUse: 'bg-aim-subtle text-aim border-aim/30',
-  Stop: 'bg-warn-subtle text-warn border-warn/30',
+  Stop: 'bg-warn-subtle text-warn-text border-warn/30',
   PreTaskExecution: 'bg-aim-subtle text-aim border-aim/30',
   PostTaskExecution: 'bg-aim-subtle text-aim border-aim/30',
-  FileCreated: 'bg-ok-subtle text-ok border-ok/30',
-  FileEdited: 'bg-ok-subtle text-ok border-ok/30',
-  FileDeleted: 'bg-warn-subtle text-warn border-warn/30',
+  FileCreated: 'bg-ok-subtle text-ok-text border-ok/30',
+  FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
+  FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
 }
 
@@ -114,6 +114,20 @@ const dormantOnNote = (event: string): string | undefined =>
     : AGENT_REQUESTED_EVENTS.includes(event)
       ? i18nT('pages.hooksPage.on_but_nothing_fires')
       : i18nT('pages.hooksPage.on_but_never_fires')
+
+/** Why a configured hook was not handed to the provider, from the gateway's
+ *  reason code. The codes are the gateway's own decision
+ *  (`hook_document_unsent_reason`); a code this page does not know, from a newer
+ *  gateway, still says the hook was left out rather than nothing. */
+const unsentReason = (code: string): string => {
+  switch (code) {
+    case 'trigger': return i18nT('pages.hooksPage.unsent_reason_trigger')
+    case 'agent_action': return i18nT('pages.hooksPage.unsent_reason_agent_action')
+    case 'disabled': return i18nT('pages.hooksPage.unsent_reason_disabled')
+    case 'confirm': return i18nT('pages.hooksPage.unsent_reason_confirm')
+    default: return i18nT('pages.hooksPage.unsent_reason_unknown')
+  }
+}
 
 /** One row cell's classes, faded when the hook is switched off.
  *
@@ -272,7 +286,7 @@ function HookForm({ hook, onSave, onCancel }: {
           </div>
         )}
         {inertSkills && (
-          <div className="flex items-start gap-2 text-[13px] text-warn bg-warn-subtle border border-warn/30 rounded-lg px-3 py-2">
+          <div className="flex items-start gap-2 text-[13px] text-warn-text bg-warn-subtle border border-warn/30 rounded-lg px-3 py-2">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
             <span>
               {i18nT('pages.hooksPage.skills_inert_warning', { skills: skills.join(', ') })}
@@ -330,6 +344,14 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryKey: ['provider-hooks', provider.id],
     queryFn: () => provider.fetchProviderHooks(),
     enabled: provider.capabilities.hooks,
+  })
+  // Configured hooks the gateway accepted but did not hand the provider. Its own
+  // request, so its failure is reported beside the provider read's: a silent
+  // empty list would read as "every configured hook was sent".
+  const { data: unsentHooks = [], error: unsentHookErr, refetch: refetchUnsentHooks } = useQuery({
+    queryKey: ['provider-hooks-unsent', provider.id],
+    queryFn: () => provider.fetchUnsentProviderHooks?.() ?? Promise.resolve([]),
+    enabled: provider.capabilities.hooks && !!provider.fetchUnsentProviderHooks,
   })
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -789,6 +811,21 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         {provider.capabilities.hooks && (
         <Card>
           <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
+          {/* The unsent-hooks read is its own request. When only it fails, the
+              sent hooks below still render, so its notice sits above them rather
+              than replacing the table; an empty list would read as "everything
+              was sent". Same draft rule as the notice below. */}
+          {!providerHookErr && unsentHookErr && (
+            <div className="flex items-start gap-2 mb-3" data-testid="unsent-hooks-error">
+              <ErrorNotice
+                title={i18nT('pages.hooksPage.failed_to_load_unsent')}
+                message={unsentHookErr instanceof Error ? unsentHookErr.message : String(unsentHookErr)}
+                askAgent={handoffSafe}
+                className="flex-1"
+              />
+              <Btn onClick={() => refetchUnsentHooks()} className="shrink-0">{i18nT('pages.hooksPage.retry')}</Btn>
+            </div>
+          )}
           {providerHookErr ? (
             <div className="flex items-start gap-2">
               {/* A read failure dressed as an empty state hid the cause. No
@@ -800,9 +837,9 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                 askAgent={handoffSafe}
                 className="flex-1"
               />
-              <Btn onClick={() => refetchProviderHooks()} className="shrink-0">{i18nT('pages.hooksPage.retry')}</Btn>
+              <Btn onClick={() => { void refetchProviderHooks(); void refetchUnsentHooks() }} className="shrink-0">{i18nT('pages.hooksPage.retry')}</Btn>
             </div>
-          ) : Object.values(providerHooks).some(entries => entries.length > 0) ? (
+          ) : Object.values(providerHooks).some(entries => entries.length > 0) || unsentHooks.length > 0 ? (
             // Focusable, named scrollport. This table is read-only — every cell
             // is plain text — and its columns reserve 700px, so at phone width
             // ~412px of the Command column is clipped and can only be reached by
@@ -853,6 +890,39 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                       })
                     )
                   })()}
+                  {/* Hooks the user wrote that the provider was never handed. Same
+                      columns, after the ones it was, so a reader looking for their
+                      hook finds it in the list they expected. No order number: it
+                      holds no place in the provider's list. The mark is the Hooks
+                      table's own `never fires` pill, with the reason in place of
+                      that table's "only Test runs it" -- here nothing runs it. The
+                      reason is also visible text under the command, because a
+                      `title` reaches a pointer and nothing else. */}
+                  {unsentHooks.map((u, i) => {
+                    const reason = unsentReason(u.reason)
+                    return (
+                      <tr key={`unsent-${i}`} data-testid="unsent-hook-row" className="hover:bg-bg-hover transition-colors">
+                        <td className="px-2.5 py-2 border-b border-border text-[12px] text-muted font-mono"><span className="italic">—</span></td>
+                        <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="muted">{u.trigger}</Badge></td>
+                        <td className="px-2.5 py-2 border-b border-border text-sm">
+                          <span className="inline-flex flex-col items-start gap-0.5">
+                            <Badge variant="warn">{i18nT('pages.hooksPage.user')}</Badge>
+                            <Badge
+                              variant="muted"
+                              title={reason}
+                              aria-label={`${i18nT('pages.hooksPage.stored_only')} — ${reason}`}
+                              className="whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] bg-transparent border border-dashed border-border"
+                            >{i18nT('pages.hooksPage.stored_only')}</Badge>
+                          </span>
+                        </td>
+                        <td className="px-2.5 py-2 border-b border-border text-sm text-muted">{u.matcher ? u.matcher : <span className="italic">—</span>}</td>
+                        <td className="px-2.5 py-2 border-b border-border text-sm">
+                          <div className="truncate max-w-[400px] font-mono text-text/80" title={u.command}>{u.command}</div>
+                          <div className="text-[11px] text-muted mt-0.5">{reason}</div>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

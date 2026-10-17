@@ -47,6 +47,7 @@ export default function PersonalShopperPage() {
       await dispatch(createSlot({
         agent: ADVISOR_AGENT,
         memory_mode: 'persistent',
+        sessionFolder: false,
       })).unwrap()
       navigate('/chat')
     } catch (e) {

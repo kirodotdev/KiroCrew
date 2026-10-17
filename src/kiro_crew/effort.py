@@ -98,7 +98,7 @@ def model_supports_effort(model: str | None) -> bool:
 # models use ``reasoning`` (verified against ~/.kiro/settings/cli.json written
 # by kiro 2.13).  Writing the wrong key is silently ignored by kiro, so a
 # GPT model's effort would survive a live ``/effort`` push but be dropped on the
-# next spawn.  The overlay helpers in ``providers/acp.py`` resolve the key here.
+# next spawn.  The overlay helpers in ``providers/acp_cli_overlay.py`` resolve the key here.
 _EFFORT_KEY_GPT = "reasoning"
 _EFFORT_KEY_DEFAULT = "output_config"
 

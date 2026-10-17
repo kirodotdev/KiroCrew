@@ -25,7 +25,6 @@ Two failure modes shaped the assertions:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -457,7 +456,7 @@ class TestTheSettingsPromiseHasWiringBehindIt:
     repository already asserts this for the same reason -- see
     ``test_agent_backend_editable.py`` ("must be PATCH-able or the switch cannot
     save"), and the membership pins in ``test_computer_use_api.py`` and
-    ``test_trusted_apps_api.py``.
+    ``test_trusted_apps_api_withdrawal.py``.
     """
 
     def test_the_key_is_patchable_from_settings(self) -> None:
@@ -470,18 +469,20 @@ class TestTheSettingsPromiseHasWiringBehindIt:
         assert _EDITABLE_CONFIG[_KEY]["type"] == "bool"
 
 
-class TestNothingReadsConfigOnTheGatewayLoop:
-    """The descriptor build must not charge a config read to the event loop.
+class TestNothingReadsConfigOnTheNamesOnlyPath:
+    """The names-only descriptor read must not perform a config read.
 
-    A running loop means the caller is
-    ``mcp_discovery._managed_tools_in_process``, reaching ``_list_tools()`` from
-    ``async def probe_server``. That caller keeps only tool NAMES and discards
-    every description, so the preference cannot be observed there and reading it
-    would buy nothing for the cost. ``mcp_tools/spawn.py::_agent_roster_hint``
-    applies the identical rule for the identical caller.
+    ``mcp_discovery._managed_tools_in_process`` keeps only tool NAMES and reads
+    them through ``schemas(names_only=True)``. The structured-arming preference
+    and the monitor runtime ceiling only shape descriptions a names-only caller
+    discards, so neither is read on that path — and because the path never
+    reaches them, neither needs a ``get_running_loop`` skip of its own. The full
+    descriptor build (what the stdio server serves a model) still reads them.
     """
 
-    def test_a_running_loop_skips_the_read_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_the_names_only_build_skips_the_config_read_entirely(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         loads: list[int] = []
 
         def _counted(cls: type) -> KiroCrewConfig:
@@ -490,44 +491,36 @@ class TestNothingReadsConfigOnTheGatewayLoop:
 
         monkeypatch.setattr(control.KiroCrewConfig, "load", classmethod(_counted))
 
-        async def _on_loop() -> tuple[bool, str]:
-            start = next(
-                item["description"] for item in control.schemas() if item["name"] == "monitor_start"
-            )
-            return control._prefers_structured_arming(), start
-
-        preferred, start = asyncio.run(_on_loop())
-
-        assert preferred is False
-        assert _CONDITIONAL_MARK in start
-        assert loads == [], (
-            "the descriptor build read config while an event loop was running; on "
-            "that path the caller discards every description, so the read is pure "
-            "cost on the gateway's loop"
+        start = next(
+            item["description"]
+            for item in control.schemas(names_only=True)
+            if item["name"] == "monitor_start"
         )
 
-    def test_the_same_call_off_loop_does_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The serving process has no loop, so the preference is not dead.
+        assert _CONDITIONAL_MARK in start
+        assert loads == [], (
+            "the names-only descriptor build read config; on that path the caller "
+            "discards every description, so the read is pure cost on the gateway's "
+            "loop — which is why the former running-loop skip was removed in favour "
+            "of not reaching the read at all"
+        )
 
-        ``mcp_shared.run_mcp_stdio_loop`` is a plain select/readline loop that
-        never imports asyncio, so this is the branch that reaches a model.
-        """
+    def test_the_full_build_still_reads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The full descriptor path (the stdio server serving a model) is not dead:
+        it still reads the preference."""
         _pin(monkeypatch, on=True)
 
         assert control._prefers_structured_arming() is True
         assert _BY_DEFAULT_MARK in _descriptions()[0]
 
-    def test_the_serving_loop_module_never_imports_asyncio(self) -> None:
-        """Pins the premise the branch above rests on, in the module itself."""
-        import kiro_crew.mcp_shared as mcp_shared
-
-        source = Path(mcp_shared.__file__).read_text(encoding="utf-8")
-
-        assert "import asyncio" not in source, (
-            "mcp_shared now imports asyncio; if the stdio serving loop ever runs "
-            "one, the on-loop skip above would silence the preference on the path "
-            "that actually reaches a model"
-        )
+    def test_the_names_only_build_matches_the_full_build_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Faithful substitute: same tool names, same order."""
+        _pin(monkeypatch, on=True)
+        full = [item["name"] for item in control.schemas()]
+        names_only = [item["name"] for item in control.schemas(names_only=True)]
+        assert full == names_only
 
 
 def _spec_paragraph_about(needle: str) -> str:

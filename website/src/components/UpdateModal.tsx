@@ -4,6 +4,9 @@ import { AlertTriangle, Download, Loader2, X } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import type { UpdateState } from '../hooks/useUpdateSubscription'
+import { gatewayStopCommand } from '../hooks/useUpdateSubscription'
+import { CopyCommand } from './agentHarness/CopyCommand'
+import ErrorNotice from './ErrorNotice'
 /**
  * In-app "update ready" modal for the packaged desktop app.
  *
@@ -106,6 +109,23 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
   // a dismiss affordance — the gateway is being restored by the main process
   // (onInstallFailed), so dismissing returns to a working dashboard.
   const installFailed = update?.state === 'error' && update.phase === 'install'
+  // A refusal because the gateway kept running names the command that stops
+  // it: without that step every retry is refused the same way.
+  const refusedStopCommand = installFailed ? gatewayStopCommand(update) : null
+  const refusalNotice = refusedStopCommand ? (
+    <div className="w-full max-w-sm px-6 flex flex-col gap-1">
+      {/* The hand-off navigates to chat UNDER this z-[100] overlay, so it
+          also dismisses the overlay -- the same clear as Back to dashboard. */}
+      <ErrorNotice
+        variant="inline"
+        askAgent
+        onHandoff={() => setDismissed(true)}
+        message={i18nT('pages.settings.aboutPanel.update_error_gateway_still_running')}
+        testId="update-modal-gateway-refusal"
+      />
+      <CopyCommand><code data-testid="update-modal-gateway-stop-command">{refusedStopCommand}</code></CopyCommand>
+    </div>
+  ) : null
   const showsWindowsInstaller = update?.installHandoff === 'windows-installer'
   if ((update?.state === 'installing' || installFailed) && !dismissed) {
     return (
@@ -121,9 +141,17 @@ export default function UpdateModal({ held = false }: { held?: boolean } = {}) {
           <>
             <span className="text-3xl text-danger"><AlertTriangle className="lucide-inline" /></span>
             <div className="text-lg font-bold text-text-strong">{i18nT('components.updateModal.install_failed')}</div>
-            <p className="text-sm text-muted max-w-sm text-center px-6">
-              {i18nT('components.updateModal.install_failed_body')}
-            </p>
+            {refusalNotice ?? (
+              <div className="w-full max-w-sm px-6">
+                <ErrorNotice
+                  variant="inline"
+                  askAgent
+                  onHandoff={() => setDismissed(true)}
+                  message={i18nT('components.updateModal.install_failed_body')}
+                  testId="update-modal-install-failed"
+                />
+              </div>
+            )}
             <button
               type="button"
               className="mt-1 px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"

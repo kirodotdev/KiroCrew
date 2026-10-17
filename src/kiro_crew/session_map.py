@@ -16,11 +16,12 @@ import secrets
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 from kiro_crew.acp.types import PROVIDER_LABEL_DEFAULT
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir, kiro_sessions_dir
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
@@ -79,6 +80,17 @@ def _jsonl_holds_a_turn(sessions_dir: Path, sid: str) -> bool:
     return size >= _RESUMABLE_JSONL_MIN_BYTES
 
 
+def resume_decided_by_load(provider: str = "") -> bool:
+    """Whether a sid mapped under *provider* is validated by ``session/load`` alone.
+
+    True for a backend that records its own provider label: its transcripts are
+    not at a path this process can stat, so :meth:`SessionMap.get` honours the
+    unlanded marker for it and nothing else. The kiro-cli label (or no label)
+    answers False: its ``.jsonl`` already shows whether a turn landed.
+    """
+    return (provider or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT
+
+
 def session_files_resumable(sid: str, provider: str = "") -> bool:
     """Whether *sid*'s on-disk files still let ``session/load`` resume it.
 
@@ -115,10 +127,28 @@ MIRROR_OPT_OUT_FLAG = "mirror_opt_out"
 #: it is consumed, by the first cold start that honours it.
 SUPPRESS_REPLAY_FLAG = "suppress_replay"
 
+#: The sid of a fresh native session that still owes its Kiro Crew history: the
+#: session was mapped at creation, but no turn has delivered the history to it yet
+#: (``SessionManager.mark_first_turn_history_owed`` writes it, the settle in
+#: ``consume_first_turn_history_owed`` clears it). It is the on-disk copy of that
+#: in-memory debt, because the debt itself is gone after a restart. kiro-cli needs
+#: no copy: :meth:`SessionMap.get` already prunes a sid whose ``.jsonl`` holds no
+#: turn. A backend whose transcript this process cannot stat would instead be
+#: resumed, and a ``session/load`` that succeeds on the unused session hands the
+#: next turn no history at all. So ``get`` refuses a sid named here, without
+#: touching the entry. Scoped to the sid rather than a bare flag, so a
+#: later mapping of a different sid can never inherit the verdict.
+UNLANDED_SID_FIELD = "unlanded_sid"
+
 # Highest explicit DM generation acknowledged before its first provider turn.
 # Stored on the stable bucket entry so repeated /new commands cost one integer,
 # not one immortal map row per empty generation.
 GENERATION_FLOOR_FIELD = "generation_floor"
+
+# A rewind's request that the key's next cold start fork the native session it
+# discarded: ``{"sid": <source sid>, "message_id": <fork point>}``. It stands in
+# for an empty ``sid``, so every write or clear of ``sid`` drops it.
+NATIVE_FORK_FIELD = "native_fork"
 
 # Flags that are durable SETTINGS rather than session-scoped state, and so keep
 # their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
@@ -141,11 +171,15 @@ _DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG})
 # ``privacy_mode.strictest`` uses; pinned by the same test). A privacy flag
 # keeps its entry through BOTH stale paths (``prune`` and the per-read repair
 # clear only a dead ``sid``), and no collection step removes such a row
-# either: the flag is the record the channel's inbound gate reads --
-# ``privacy_mode.hydrate`` restores the trackers from this map alone, never
-# from the transcript header -- so a row removed for any reason, however
-# complete the header, leaves that gate reading the thread as persistent after
-# the next restart: its turns persisted and agent memory writes admitted again.
+# either. The flag is a record the channel gates read: the sync gates restore
+# the trackers from this map alone (``privacy_mode.hydrate``), the async
+# inbound gates from this map AND the transcript header together
+# (``privacy_mode.hydrate_inbound``, the stricter of the two standing). The
+# header alone is not enough to retire a row on: a transcript can be deleted
+# or recreated apart from its row, and the sync gates never read it -- so a
+# row removed for any reason, however complete the header, can leave a gate
+# reading the thread as persistent after the next restart: its turns persisted
+# and agent memory writes admitted again.
 # The transcript header (``memory_mode``, the field every memory reader refuses
 # on) is still ENSURED for every flagged row whose transcript exists, off the
 # event loop and off the map lock, by :meth:`SessionMap.stamp_privacy_headers`,
@@ -158,9 +192,8 @@ _DURABLE_FLAGS = frozenset({MIRROR_OPT_OUT_FLAG, SUPPRESS_REPLAY_FLAG})
 # is refused fail-closed (``set_flag`` raises :class:`PrivacyRowRefused`; the
 # modifier tells the user the message was not processed), while every row
 # already retained stays -- evicting one would run that thread as persistent,
-# the leak the flag closes. Retiring rows once the header carries the mode
-# needs that gate to read the header, a separate change; until then a row's
-# removal is a privacy leak, not housekeeping, and nothing here performs one.
+# the leak the flag closes. A row's removal is a privacy leak, not
+# housekeeping, and nothing here performs one.
 _PRIVACY_STRICTNESS = ("temporary", "incognito")
 
 #: How many privacy-flagged rows the map RETAINS -- the same bound the
@@ -317,10 +350,14 @@ def _stash_and_clear_sid(entry: dict) -> bool:
     as the key's last store, citing a predecessor two links back and orphaning
     the one between them. Which path emptied the field is not a distinction any
     reader of it can use, so the field cannot be written by only some of them.
+
+    A pending native fork is dropped too, even with no ``sid`` to stash: it
+    would otherwise restore a conversation the caller has just cleared.
     """
+    fork_dropped = entry.pop(NATIVE_FORK_FIELD, None) is not None
     sid = entry.get("sid")
     if not sid:
-        return False
+        return fork_dropped
     entry["discarded_sid"] = sid
     entry["sid"] = ""
     return True
@@ -987,7 +1024,7 @@ class SessionMap:
             try:
                 with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                     f.write(payload)
-                os.replace(tmp_path, str(self._path))
+                replace_with_retry(tmp_path, str(self._path))
             except Exception:
                 try:
                     os.unlink(tmp_path)
@@ -1040,7 +1077,18 @@ class SessionMap:
         # For every other backend the sid's validity is decided by session/load
         # itself, so skip the file check rather than pruning a live session.
         # An absent label means kiro-cli, so normalize before comparing.
-        if (entry.get("provider") or PROVIDER_LABEL_DEFAULT) != PROVIDER_LABEL_DEFAULT:
+        if resume_decided_by_load(entry.get("provider") or ""):
+            # The one thing this process does know about such a sid: whether a
+            # turn ever delivered its history (:data:`UNLANDED_SID_FIELD`). One
+            # that never did is refused, so the next cold start replays the
+            # conversation instead of loading an empty native session. The entry
+            # is left as it is: ``get`` also runs while that session is still
+            # live (an export resolving the sid mid-turn), and repairing the entry
+            # there would drop the marker that ``close_all``'s write-back of the
+            # same sid relies on to keep refusing it after a restart.
+            if sid and entry.get(UNLANDED_SID_FIELD) == sid:
+                logger.info("Session %s never landed its history — not resuming %s", sid, key)
+                return None
             return sid
         sessions_dir = _kiro_sessions_dir()
         if sid and (sessions_dir / f"{sid}.json").exists():
@@ -1279,7 +1327,10 @@ class SessionMap:
         key = canonical_key(key)
         existing = self._data.get(key)
         if existing:
+            if existing.get(UNLANDED_SID_FIELD) not in (None, sid):
+                existing.pop(UNLANDED_SID_FIELD, None)
             existing["sid"] = sid
+            existing.pop(NATIVE_FORK_FIELD, None)
             if provider:
                 existing["provider"] = provider
             if cwd:
@@ -1328,6 +1379,43 @@ class SessionMap:
             self._save()
             return True
         return False
+
+    @_guarded
+    def mark_sid_unlanded(self, key: str, sid: str) -> bool:
+        """Record that *sid*, *key*'s current mapping, has not received its history.
+
+        Written only over the sid the entry already holds: a stale caller naming an
+        older or newer sid writes nothing, so the marker can never describe a
+        session other than the mapped one. Written only for an entry whose resume
+        :meth:`get` gates on it (:func:`resume_decided_by_load`). Returns whether
+        it was written. See :data:`UNLANDED_SID_FIELD`.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not sid or not entry or entry.get("sid") != sid:
+            return False
+        if not resume_decided_by_load(entry.get("provider") or ""):
+            return False
+        if entry.get(UNLANDED_SID_FIELD) == sid:
+            return True
+        entry[UNLANDED_SID_FIELD] = sid
+        self._save()
+        return True
+
+    @_guarded
+    def sid_unlanded_pending(self, key: str) -> bool:
+        """Whether *key*'s mapped sid carries the unlanded marker right now."""
+        entry = self._data.get(canonical_key(key))
+        return bool(entry and entry.get("sid") and entry.get(UNLANDED_SID_FIELD) == entry["sid"])
+
+    @_guarded
+    def clear_sid_unlanded(self, key: str) -> bool:
+        """Drop *key*'s unlanded marker once a turn has delivered the history."""
+        entry = self._data.get(canonical_key(key))
+        if not entry or UNLANDED_SID_FIELD not in entry:
+            return False
+        entry.pop(UNLANDED_SID_FIELD, None)
+        self._save()
+        return True
 
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.
@@ -1906,7 +1994,7 @@ class SessionMap:
         ``TransportCapabilities.supports_session_resume`` makes its conversations
         inbound-committable, and therefore makes this refusal reachable from that
         transport's own in-channel link handler. Translate it there into a
-        followable message, as ``discord/transport_dispatch.py`` does — an uncaught
+        followable message, as ``discord/transport_dispatch_commands.py`` does — an uncaught
         raise inside a channel handler is a dropped task and a silent no-reply.
         """
         key = canonical_key(key)
@@ -2206,6 +2294,40 @@ class SessionMap:
         if binding_token(current, self.mirror_link_nonce(key)) != token:
             return False
         return self.clear_mirror_link(key, reason=reason)
+
+    @_guarded
+    def replace_mirror_link_if(self, key: str, expected: ChannelLink, link: ChannelLink) -> bool:
+        """Store *link* as *key*'s mirror iff the stored row is still exactly *expected*.
+
+        A repair, not a rebind: the compare (whole row, :meth:`ChannelLink.same_row`,
+        on the row stored under the canonical key itself) and the write are one
+        guarded step, so a rebind landing between the caller's read and this write
+        is kept and False is returned. The row's inbound flag and mute are carried
+        over in the same step. Bytes are stored verbatim, as by :meth:`set_mirror_link`.
+        """
+        canon = canonical_key(key)
+        entry = self._data.get(canon)
+        if not entry:
+            return False
+        stored = entry.get("mirror")
+        if not isinstance(stored, dict) or not ChannelLink.from_dict(stored).same_row(expected):
+            return False
+        inbound = entry.get("mirror_accepts_inbound") is True
+        paused = entry.get("mirror_paused") is True
+        try:
+            # On a loop each save is a deferred off-loop flush that sees both
+            # mutations; a batch there would write inline on the loop.
+            asyncio.get_running_loop()
+            batch: AbstractContextManager[None] = nullcontext()
+        except RuntimeError:
+            # Off a loop each save writes inline, so batch the pair into one write.
+            batch = self.batched_save()
+        with batch:
+            self.set_mirror_link(canon, link, accepts_inbound=inbound)
+            if paused:
+                entry["mirror_paused"] = True
+                self._save()
+        return True
 
     @_guarded
     def clear_slack_link_if(self, key: str, channel_type: str, token: str) -> bool:
@@ -2526,3 +2648,35 @@ class SessionMap:
         """Return the per-thread project-dir override for *key*, or None."""
         entry = self._data.get(canonical_key(key))
         return entry.get("project_override") if entry else None
+
+    @_guarded
+    def set_native_fork(self, key: str, source_sid: str, message_id: str) -> None:
+        """Ask *key*'s next cold start to fork *source_sid* at *message_id*."""
+        self._ensure_entry(canonical_key(key))[NATIVE_FORK_FIELD] = {
+            "sid": source_sid,
+            "message_id": message_id,
+        }
+        self._save()
+
+    def get_native_fork(self, key: str) -> tuple[str, str] | None:
+        """The pending ``(source_sid, message_id)`` fork for *key*, or None."""
+        entry = self._data.get(canonical_key(key))
+        fork = entry.get(NATIVE_FORK_FIELD) if entry else None
+        if not isinstance(fork, dict):
+            return None
+        source_sid, message_id = fork.get("sid"), fork.get("message_id")
+        if not (
+            source_sid
+            and isinstance(source_sid, str)
+            and message_id
+            and isinstance(message_id, str)
+        ):
+            return None
+        return source_sid, message_id
+
+    @_guarded
+    def clear_native_fork(self, key: str) -> None:
+        """Drop *key*'s pending native fork, if any."""
+        entry = self._data.get(canonical_key(key))
+        if entry and entry.pop(NATIVE_FORK_FIELD, None) is not None:
+            self._save()

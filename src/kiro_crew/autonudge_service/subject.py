@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from kiro_crew.monitoring.models import MonitorCreationSurface, MonitorState
 from kiro_crew.monitoring.registry import REVIEW_READY
@@ -93,6 +93,103 @@ def _pr_facts_digest(facts: Mapping[str, Any]) -> str:
     return hashlib.sha256(rendered.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _transcript_key(slot_key: str) -> str:
+    """The transcript key of the session a loop is bound to.
+
+    The inverse of ``autonudge.binding_key_for``: a dashboard loop binds on the BARE
+    slot key while its transcript is logged under ``dashboard:<slot>``; a channel
+    loop binds on the session key itself.
+    """
+    from kiro_crew.autonudge_service.model import is_channel_key
+
+    return slot_key if is_channel_key(slot_key) else f"dashboard:{slot_key}"
+
+
+def _session_texts(slot_key: str) -> list[str]:
+    """Every message body in *slot_key*'s own transcript. Never raises.
+
+    Read through ``derive_messages``, the guarded read: the rows feed a decision
+    rather than the transcript's own rendering, so a restricted transcript is
+    withheld and the loop simply stays on its timer.
+    """
+    try:
+        from kiro_crew.history import ConversationLog
+
+        rows = ConversationLog().derive_messages(_transcript_key(slot_key))
+    except Exception:
+        logger.debug("AutoNudge: could not read the session log for %s", slot_key, exc_info=True)
+        return []
+    return [
+        row["content"]
+        for row in rows
+        if isinstance(row, Mapping) and isinstance(row.get("content"), str)
+    ]
+
+
+def needs_session_texts(message: str, slot_key: str, watch: str = "") -> bool:
+    """Whether deciding *message*'s subject needs its session's log at all.
+
+    Only an instruction naming its pull request by number alone does, and only when
+    there is a session to read and the watch is not the work ledger.
+    """
+    if str(watch or "").strip() == targets.WORK_LEDGER:
+        return False
+    if not str(slot_key or "").strip():
+        return False
+    return targets.bare_pull_request_number(message) is not None
+
+
+def read_session_texts(message: str, slot_key: str, watch: str = "") -> list[str] | None:
+    """The session-log bodies :func:`infer_subject` needs for *message*, or ``None``.
+
+    BLOCKING: it reads the whole transcript. An async caller runs it with
+    ``asyncio.to_thread`` and passes the result as ``session_texts``; inference itself
+    never reads a transcript, so no path through it can block the event loop.
+    """
+    if not needs_session_texts(message, slot_key, watch):
+        return None
+    return _session_texts(str(slot_key).strip())
+
+
+def _resolve_instruction(
+    message: str,
+    slot_key: str,
+    watch: str,
+    monitor_target: str | None,
+    session_texts: Sequence[str] | None = None,
+) -> "targets.Target | None":
+    """:func:`targets.infer` for *message*, with a context for a bare ``PR <number>``.
+
+    A loop naming its pull request only as ``PR <number>`` takes the repository from
+    its OWN session's log -- a full URL or ``owner/name#<number>`` with that number --
+    and when the log names none, or names two, no repository is guessed and the loop
+    keeps its timer.
+
+    The log is consulted only when the subject is being DECIDED: on arm and on
+    retarget, where *monitor_target* is ``None``, and only as *session_texts* the
+    caller already read off the event loop with :func:`read_session_texts`. Without
+    them a bare number resolves nothing. A stored loop passes the target its monitor
+    was bound to instead, which is the arm's own answer persisted, so the binding
+    cannot drift as the log grows. A monitor naming a different number resolves
+    nothing, which fires.
+    """
+    if targets.bare_pull_request_number(message) is None:
+        return targets.infer(message, watch=watch, slot_key=slot_key)
+    if monitor_target is not None:
+        stored = [monitor_target] if monitor_target else []
+        return targets.infer(message, watch=watch, slot_key=slot_key, context=lambda: stored)
+    if session_texts is None:
+        return targets.infer(message, watch=watch, slot_key=slot_key)
+    texts = list(session_texts)
+    resolved = targets.infer(message, watch=watch, slot_key=slot_key, context=lambda: texts)
+    if resolved is not None:
+        logger.info(
+            "AutoNudge: a bare pull-request number resolved to %s from the session's own log",
+            resolved.subject,
+        )
+    return resolved
+
+
 def _judge_pr_targets(judge: Mapping[str, Any] | None) -> list[str]:
     """The pull-request targets a judge brief names. Never raises.
 
@@ -117,6 +214,8 @@ def infer_subject(
     *,
     watch: str = "",
     slot_key: str = "",
+    monitor_target: str | None = None,
+    session_texts: Sequence[str] | None = None,
 ) -> "targets.Target | None":
     """WHICH pull request a loop is about: its judge brief first, then its instruction.
 
@@ -162,6 +261,11 @@ def infer_subject(
     the text came from -- ``#123`` is equally an issue reference, and a slug carries
     no host -- so a brief naming ``owner/name#123`` selects nothing here, exactly as
     the collector drops that entry.
+
+    One source is added for the INSTRUCTION only: when it names its pull request by
+    number alone (``PR <number>``), the repository is taken from the loop's own session
+    log, through :func:`targets.resolve_bare` -- see :func:`_resolve_instruction`, which
+    also says what *monitor_target* is for.
     """
     listed: list["targets.Target"] = []
     if str(watch or "").strip() == targets.WORK_LEDGER:
@@ -179,7 +283,7 @@ def infer_subject(
         identity = (found.kind, found.subject, found.host_key)
         if all(identity != (other.kind, other.subject, other.host_key) for other in listed):
             listed.append(found)
-    from_message = targets.infer(message, watch=watch, slot_key=slot_key)
+    from_message = _resolve_instruction(message, slot_key, watch, monitor_target, session_texts)
     if len(listed) == 1:
         only = listed[0]
         if not targets.names_pull_request(message):
@@ -235,6 +339,9 @@ def loop_subject(loop: Any) -> "targets.Target | None":
         _judge.spec_of(loop),
         watch=_watch_kind or "",
         slot_key=getattr(loop, "slot_key", "") or "",
+        # A STORED loop: its subject was decided when it was armed, so a bare number
+        # is resolved against the monitor that decision bound, never the log.
+        monitor_target=_judge.watched_pr_subject(loop),
     )
 
 
@@ -246,6 +353,7 @@ def infer_monitor(
     judge: Mapping[str, Any] | None = None,
     watch: str = "",
     slot_key: str = "",
+    session_texts: Sequence[str] | None = None,
 ) -> MonitorState | None:
     """Build a monitor for this loop's subject, or ``None`` to stay ungated.
 
@@ -276,7 +384,9 @@ def infer_monitor(
     controller reads, would stop working watches early -- a regression wearing a
     budget's clothing.
     """
-    target = infer_subject(message, judge, watch=watch, slot_key=slot_key)
+    target = infer_subject(
+        message, judge, watch=watch, slot_key=slot_key, session_texts=session_texts
+    )
     if target is None:
         return None
     try:

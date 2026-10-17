@@ -55,3 +55,13 @@ EMPTY_TURN_NOTICE_UNCLOSED = f"⚠️ The turn ended without a reply. {EMPTY_TUR
 EMPTY_TURN_NOTICE_UNCLOSED_AFTER_WORK = (
     f"⚠️ The turn ended without a closing reply. {EMPTY_TURN_CONTINUE}"
 )
+#: Posted after whatever text streamed when the session handle ended a turn the
+#: backend never finished: its own turn ceiling ("timeout") or a stale turn its
+#: probe confirmed wedged (``STOP_REASON_STALE_RECOVER``). The runtime still reads alive after
+#: either one, so the dispatcher books the turn a failure and resets the
+#: session; the next message starts the agent again. The stop reasons that mark
+#: such a turn are ``messaging.driver.UNFINISHED_STOP_REASONS``.
+UNFINISHED_TURN_NOTICE = (
+    "⏱️ The agent did not finish its answer before this turn's time limit, so the "
+    "turn was stopped. Your next message starts the agent again."
+)

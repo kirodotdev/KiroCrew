@@ -1,10 +1,12 @@
-"""The Strands Decider launcher's request rewrite: null rubrics reach it as ``""``.
+"""The Strands Decider launcher's ASGI wrappers: null rubrics and one decision at a time.
 
 Kiro Crew's wire format types each option's rubric as nullable and sends ``null``
 for an option with none; Strands Decider's server types every rubric as a string
 and answers 422 to a null one, so without the rewrite every decision would be
-skipped. The launcher runs in the model's own environment and imports torch and
-strands_decider at module level, so these tests load only its two rewrite
+skipped. Its endpoint also runs every request concurrently on a thread pool, so
+the launcher admits one decision at a time and refuses one that cannot start in
+time. The launcher runs in the model's own environment and imports torch and
+strands_decider at module level, so these tests load only its wrapper
 definitions from source and drive them as plain ASGI with no server.
 """
 
@@ -18,6 +20,7 @@ from typing import Any
 
 from kiro_crew.decisions.impl_jev import _to_wire
 from kiro_crew.decisions.types import Choice
+from kiro_crew.testing.wait import await_until
 
 _LAUNCHER = (
     Path(__file__).resolve().parents[1]
@@ -27,7 +30,7 @@ _LAUNCHER = (
     / "local_servers"
     / "strands_decider_cpu.py"
 )
-_NAMES = {"_blank_null_criteria", "_NullCriteriaToEmpty"}
+_NAMES = {"_blank_null_criteria", "_NullCriteriaToEmpty", "_OneAtATime"}
 
 
 def _load() -> dict:
@@ -41,11 +44,11 @@ def _load() -> dict:
     # The launcher's own imports are not lifted, so the names its definitions
     # use are seeded here; compiling with dont_inherit keeps this module's
     # __future__ flags from deciding whether its annotations evaluate.
-    namespace: dict = {"json": json, "Any": Any}
+    namespace: dict = {"json": json, "Any": Any, "asyncio": asyncio}
     code = compile(
         ast.Module(body=defs, type_ignores=[]), str(_LAUNCHER), "exec", dont_inherit=True
     )
-    # Executes two definitions parsed from a tracked repository file, no external input.
+    # Executes definitions parsed from a tracked repository file, no external input.
     # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
     exec(code, namespace)  # noqa: S102
     return namespace
@@ -54,6 +57,7 @@ def _load() -> dict:
 _NS = _load()
 _blank = _NS["_blank_null_criteria"]
 _Wrapper = _NS["_NullCriteriaToEmpty"]
+_Gate = _NS["_OneAtATime"]
 
 
 def _request(criteria: dict) -> dict:
@@ -130,3 +134,118 @@ def test_other_routes_are_not_touched() -> None:
     body, _ = _drive("/kirocrew-attest", [raw])
 
     assert body == raw
+
+
+#: Admission wait for a request that must be admitted. It only bounds a run that
+#: has lost its release; every ordering below is driven by events, not by time.
+_LOST_RUN_SECS = 30.0
+#: How long a held decision waits for its release before failing the test, so a
+#: gate that admits a second decision fails instead of blocking the run.
+_HOLD_BOUND_SECS = 5.0
+_DECIDE = "/v1/systemone"
+
+
+class _Inference:
+    """Stand-in app: a decision holds until ``release`` is set; other routes do not."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.now = 0
+        self.peak = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        self.now += 1
+        self.peak = max(self.peak, self.now)
+        self.entered.set()
+        try:
+            if scope["path"] == _DECIDE:
+                await await_until(self.release, what="release signal")
+            if self.fail:
+                raise RuntimeError("inference failed")
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+        finally:
+            self.now -= 1
+
+
+async def _call(gate: Any, path: str) -> Any:
+    sent: list = []
+
+    async def send(message):  # type: ignore[no-untyped-def]
+        sent.append(message)
+
+    try:
+        await gate({"type": "http", "path": path, "headers": []}, None, send)
+    except RuntimeError:
+        return "raised"
+    return sent[0]["status"]
+
+
+async def _yield_to_others() -> None:
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+
+def test_a_decision_that_cannot_start_in_time_is_refused_with_503() -> None:
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, 0.01)
+        first = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        # The first decision holds the gate until both others have been refused.
+        refused = await asyncio.gather(_call(gate, _DECIDE), _call(gate, _DECIDE))
+        app.release.set()
+        return await first, list(refused), app.peak
+
+    first, refused, peak = asyncio.run(main())
+
+    assert first == 200
+    assert refused == [503, 503]
+    assert peak == 1
+
+
+def test_decisions_that_fit_in_the_wait_run_one_after_another() -> None:
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, _LOST_RUN_SECS)
+        first = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        second = asyncio.create_task(_call(gate, _DECIDE))
+        await _yield_to_others()
+        running_while_held = app.now
+        app.release.set()
+        return list(await asyncio.gather(first, second)), running_while_held, app.peak
+
+    outcomes, running_while_held, peak = asyncio.run(main())
+
+    assert outcomes == [200, 200]
+    assert running_while_held == 1
+    assert peak == 1
+
+
+def test_a_failed_inference_releases_the_gate() -> None:
+    async def main() -> list:
+        app = _Inference(fail=True)
+        app.release.set()
+        gate = _Gate(app, _LOST_RUN_SECS)
+        return [await _call(gate, _DECIDE), await _call(gate, _DECIDE)]
+
+    assert asyncio.run(main()) == ["raised", "raised"]
+
+
+def test_other_routes_bypass_the_gate() -> None:
+    async def main() -> tuple:
+        app = _Inference()
+        gate = _Gate(app, 0.01)
+        held = asyncio.create_task(_call(gate, _DECIDE))
+        await app.entered.wait()
+        # The decision still holds the gate, so a gated health check could only 503.
+        health = await _call(gate, "/health")
+        app.release.set()
+        return await held, health, app.peak
+
+    held, health, peak = asyncio.run(main())
+
+    assert (held, health) == (200, 200)
+    assert peak == 2

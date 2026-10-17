@@ -241,7 +241,21 @@ export const CHUNK_BUDGETS = {
   // set from a stale-low pre-merge build and never had headroom. Back to the ~5%
   // convention over the true merged measurement (2,041,857 B * 1.05 = 2,143,950 B),
   // so ordinary first-party growth does not re-trip this on the next PR.
-  App: 2094 * KB, // measured 2,041,857 B on main @ 2d4278a18 with route-only pages lazy (~5% headroom)
+  // Re-measured 2026-10-11 on pristine main @ f07162523a, whose tip alone -- no PR
+  // code in the tree -- builds this chunk at 2,144,668 B (2094.4 KB, 504 modules)
+  // against the 2094 KB (2,144,256 B) ceiling, so it exceeds it by 412 B on its
+  // own and the gate fails on the merge ref of every PR that touches website/
+  // rather than on the new library or surface it exists to catch. That is the
+  // recurrence the notes above document, and the headroom the line below used to
+  // carry (102,399 B, 5% over its 2,041,857 B measurement) is spent: eleven days
+  // of ordinary first-party growth added 102,811 B to the always-loaded shell and
+  // chat route. The growth is spread across that shell rather than concentrated in
+  // one surface, and the route-only pages are already behind React.lazy in their
+  // own chunks, so no lazy `import()` boundary is available to move it out. Back
+  // to the ~5% convention over the new measurement (2,144,668 B * 1.05 =
+  // 2,251,901 B), rounded up to this table's whole-KB unit, which leaves
+  // 108,132 B (5.04%) of headroom.
+  App: 2200 * KB, // measured 2,144,668 B on main @ f07162523a with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.

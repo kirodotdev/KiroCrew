@@ -51,9 +51,11 @@ class _ShortReadBuffer:
         self._pos = 0
         self._chunk = chunk
 
-    def readline(self) -> bytes:
+    def readline(self, size: int = -1) -> bytes:
         nl = self._data.find(b"\n", self._pos)
         end = len(self._data) if nl == -1 else nl + 1
+        if size >= 0:
+            end = min(end, self._pos + size)
         line = self._data[self._pos : end]
         self._pos = end
         return line
@@ -211,6 +213,57 @@ class TestReadMessageContentLength:
         [(args, kwargs)] = answered
         assert args[0] == 1
         assert kwargs["error"]["code"] == mcp_shared.JSONRPC_INVALID_REQUEST
+
+    @pytest.mark.parametrize(
+        "big",
+        [
+            {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"pad": "x" * 64}},
+            {
+                "method": "ping",
+                "params": {"pad": "x" * 64, "id": "nested"},
+                "jsonrpc": "2.0",
+                "id": 1,
+            },
+        ],
+        ids=["id-first", "id-last"],
+    )
+    def test_a_bare_line_over_the_cap_is_drained_and_answered(self, monkeypatch, big):
+        """A bare-JSON line is held to the same ceiling as a Content-Length
+        body: drained in bounded reads, never parsed or returned, and answered
+        with its top-level id. The next line still reads whole."""
+        answered: list = []
+        monkeypatch.setattr(mcp_shared, "respond", lambda *a, **k: answered.append((a, k)))
+        monkeypatch.setattr(mcp_shared, "MAX_CONTENT_LENGTH_BYTES", 60)
+        monkeypatch.setattr(mcp_shared, "_DRAIN_CHUNK_BYTES", 5)
+        monkeypatch.setattr(mcp_shared, "ID_PROBE_BYTES", 48)
+        good = {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+        stdin = _make_stdin((json.dumps(big) + "\n" + json.dumps(good) + "\n").encode("utf-8"))
+        assert _read_message(stdin) is SKIP
+        assert _read_message(stdin) == good
+        [(args, kwargs)] = answered
+        assert args[0] == 1
+        assert kwargs["error"]["code"] == mcp_shared.JSONRPC_INVALID_REQUEST
+
+    @pytest.mark.parametrize("end", [b"\n", b"\r\n", b""], ids=["lf", "crlf", "eof"])
+    def test_a_bare_line_at_the_cap_is_read_whole(self, monkeypatch, end):
+        """The ceiling counts the body, not its terminator."""
+        monkeypatch.setattr(mcp_shared, "respond", lambda *a, **k: None)
+        msg = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
+        body = json.dumps(msg).encode("utf-8")
+        monkeypatch.setattr(mcp_shared, "MAX_CONTENT_LENGTH_BYTES", len(body))
+        assert _read_message(_make_stdin(body + end)) == msg
+
+    @pytest.mark.parametrize("end", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+    def test_a_bare_line_one_past_the_cap_is_refused(self, monkeypatch, end):
+        answered: list = []
+        monkeypatch.setattr(mcp_shared, "respond", lambda *a, **k: answered.append((a, k)))
+        body = json.dumps({"jsonrpc": "2.0", "id": 4, "method": "ping"}).encode("utf-8")
+        monkeypatch.setattr(mcp_shared, "MAX_CONTENT_LENGTH_BYTES", len(body) - 1)
+        good = {"id": 5, "method": "x"}  # shorter than the cap
+        stdin = _make_stdin(body + end + json.dumps(good).encode("utf-8") + b"\n")
+        assert _read_message(stdin) is SKIP
+        assert _read_message(stdin) == good
+        assert [a[0] for a, _ in answered] == [4]
 
     def test_the_body_cap_is_the_gateways_read_limit(self):
         """The constant's comment says so; a copy could drift without a test."""
@@ -842,12 +895,9 @@ class TestCallToolWithLoggingKind:
 #
 # A tools/call arriving while a worker is busy must not be silently dropped:
 # with no response ever written, the client waits forever. These tests
-# drive the real loop over a pipe-backed stdin (select() needs a real fd)
-# and assert queued calls are answered FIFO once the worker frees. The
-# worker-thread + select() interleave is POSIX-only (the Windows loop
-# dispatches synchronously), so gate the class accordingly.
-
-from kiro_crew import platform_compat  # noqa: E402
+# drive the real loop over a pipe-backed stdin (select() needs a real fd;
+# on Windows the loop's stdin pump thread reads the same pipe) and assert
+# queued calls are answered FIFO once the worker frees.
 
 
 class _LoopHarness:
@@ -858,7 +908,13 @@ class _LoopHarness:
     """
 
     def __init__(
-        self, monkeypatch, call_tool_fn, loop_kwargs: dict | None = None, list_tools_fn=None
+        self,
+        monkeypatch,
+        call_tool_fn,
+        loop_kwargs: dict | None = None,
+        list_tools_fn=None,
+        *,
+        managed: bool = True,
     ):
         import os
         import sys
@@ -875,6 +931,12 @@ class _LoopHarness:
             "_resolve_tool_policy",
             lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), ""),
         )
+        # The test's handlers stand in for a managed server's own code, so the
+        # tool policy applies to them as it does to Kiro Crew's servers.
+        # ``managed=False`` keeps the real classifier, for a handler the test
+        # deliberately places outside the package.
+        if managed:
+            monkeypatch.setattr(mcp_shared, "serves_managed_tools", lambda _fn: True)
         self.sel_mock = MagicMock()
         monkeypatch.setattr(mcp_shared, "sel", lambda: self.sel_mock)
         self._os = os
@@ -951,10 +1013,6 @@ def _slow_then_echo():
     return call_tool, started, release
 
 
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX,
-    reason="worker-thread + select() interleave is POSIX-only",
-)
 class TestStdioLoopBusyQueue:
     def test_tools_call_while_busy_is_queued_and_answered_fifo(self, monkeypatch):
         import time
@@ -1045,6 +1103,26 @@ class TestStdioLoopBusyQueue:
             assert harness.wait_for(lambda: any(r[0] == 599 for r in harness.responses))
             release.set()
             assert harness.wait_for(lambda: any(r[0] == 501 for r in harness.responses))
+        finally:
+            release.set()
+            harness.close()
+
+    @pytest.mark.parametrize("method", ["server/discover", "resources/list"])
+    def test_unknown_method_gets_method_not_found_while_busy(self, monkeypatch, method):
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(601, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send({"jsonrpc": "2.0", "id": 699, "method": method, "params": {}})
+            # Answered while the slow call still holds the worker, not after it.
+            assert harness.wait_for(lambda: any(r[0] == 699 for r in harness.responses))
+            assert not any(r[0] == 601 for r in harness.responses)
+            answer = next(r for r in harness.responses if r[0] == 699)
+            assert answer[2] is not None
+            assert answer[2]["code"] == mcp_shared.JSONRPC_METHOD_NOT_FOUND
+            release.set()
+            assert harness.wait_for(lambda: any(r[0] == 601 for r in harness.responses))
         finally:
             release.set()
             harness.close()
@@ -1175,10 +1253,6 @@ class TestStdioLoopStrayFrames:
         finally:
             harness.close()
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="worker-thread + select() interleave is POSIX-only",
-    )
     def test_a_worker_that_cannot_start_costs_that_call(self, monkeypatch):
         """``Thread.start`` raises at the scope's task ceiling. Nothing holds the
         unstarted thread afterwards: joining it raises, and would end the server
@@ -1228,10 +1302,6 @@ class TestStdioLoopStrayFrames:
         finally:
             harness.close()
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="worker-thread + select() interleave is POSIX-only",
-    )
     @pytest.mark.parametrize("stray", ["undecodable", "null", "list"])
     def test_a_finished_tool_is_answered_after_a_stray_frame_with_nothing_after_it(
         self, monkeypatch, stray
@@ -1255,10 +1325,6 @@ class TestStdioLoopStrayFrames:
             release.set()
             harness.close()
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="worker-thread + select() interleave is POSIX-only",
-    )
     @pytest.mark.parametrize(
         "before", ["stray", "request"], ids=["after-a-stray-line", "after-a-request"]
     )
@@ -1280,10 +1346,6 @@ class TestStdioLoopStrayFrames:
             release.set()
             harness.close()
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="worker-thread + select() interleave is POSIX-only",
-    )
     def test_a_busy_tools_call_without_a_usable_name_is_refused_not_queued(self, monkeypatch):
         """The busy path refuses it exactly as the idle one, so it is never
         queued, busy-rejected, or audited as a call to a tool named by whatever
@@ -1309,10 +1371,6 @@ class TestStdioLoopStrayFrames:
             release.set()
             harness.close()
 
-    @pytest.mark.skipif(
-        not platform_compat.IS_POSIX,
-        reason="worker-thread + select() interleave is POSIX-only",
-    )
     def test_a_busy_cancel_with_non_object_params_cancels_nothing(self, monkeypatch):
         spy = _ReadSpy(monkeypatch)
         call_tool, started, release = _slow_then_echo()
@@ -1337,6 +1395,12 @@ class TestStdioLoopStrayFrames:
 
 
 # --- Caller-identity extension through the stdio loop -----------------------
+
+
+#: What the loop advertises under ``capabilities.experimental`` when it is
+#: started with ``reports_inflight=True`` (only ``kirocrew-core``), independent
+#: of the caller-identity opt-in: the in-flight report.
+_LOOP_OWN_CAPABILITIES: dict = {mcp_shared.INFLIGHT_CAPABILITY_KEY: {}}
 
 
 def _initialize(req_id) -> dict:
@@ -1643,7 +1707,6 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
-    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="select interleave uses a POSIX pipe")
     def test_listing_while_busy_does_not_borrow_the_running_members_identity(self, monkeypatch):
         from kiro_crew.mcp_caller import CallerContext, build_caller_meta
 
@@ -1691,9 +1754,30 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
+    def test_initialize_advertises_the_inflight_report_only_when_opted_in(self, monkeypatch):
+        # Exact pin: this dict is what gatewayd reads to decide pooling
+        # eligibility (caller identity) and the recycle ceiling (in-flight
+        # report), so an added or misspelled key must fail here.
+        harness = _LoopHarness(
+            monkeypatch,
+            lambda n, a: "ok",
+            {"advertise_caller_identity": True, "reports_inflight": True},
+        )
+        try:
+            harness.send(_initialize(1))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            caps = harness.responses[0][1]["capabilities"]
+            assert caps["experimental"] == {
+                "kirocrew.caller-identity": {"schemaVersion": 1},
+                **_LOOP_OWN_CAPABILITIES,
+            }
+        finally:
+            harness.close()
+
     def test_initialize_omits_capability_by_default(self, monkeypatch):
         # kirocrew-cron does NOT consume per-call identity — it must stay
         # single-session (gatewayd refuses to pool non-advertising backends).
+        # Nor does it park calls, so it does not opt into the in-flight report.
         harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
         try:
             harness.send(_initialize(1))
@@ -1828,6 +1912,35 @@ class TestStdioLoopCallerIdentity:
         finally:
             harness.close()
 
+    def test_the_unreadable_policy_refusal_rules_out_a_connection_problem(self, monkeypatch):
+        """``policy_unreadable`` is an answer from the gateway, so its text says so.
+
+        It shares its symptom -- every call refused -- with an unreachable
+        gateway, and an operator who reads it as an outage restarts healthy
+        processes while the spec stays broken. The text therefore rules out
+        reachability, and names every condition the endpoint answers this code
+        for (an unreadable or unparseable spec, a duplicate name, a wrong-shape
+        ``managedToolPolicy``) rather than only the parse.
+        """
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(frozenset(), "policy_unreadable"),
+        )
+        try:
+            harness.send(_tools_call_with_caller(45, "echo", "dashboard:chat-7"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            body = json.dumps(harness.responses[0][1])
+            assert "the gateway answered" in body
+            assert "This is not a connection problem" in body
+            assert "a restart will not clear it" in body
+            assert "two specs declare the same name" in body
+            assert "could not be read or parsed" in body
+            assert "managedToolPolicy has the wrong shape" in body
+        finally:
+            harness.close()
+
     def test_unresolved_policy_refusal_names_the_file_the_gateway_named(self, monkeypatch):
         """The gateway's ``reason`` reaches the caller, defanged and redacted.
 
@@ -1942,6 +2055,24 @@ class TestStdioLoopCallerIdentity:
                 c.kwargs.get("operation") for c in harness.sel_mock.log_api_access.call_args_list
             ]
             assert "tool_policy.unenforced_call" not in ops
+        finally:
+            harness.close()
+
+    def test_the_unreachable_gateway_refusal_names_the_exception_class(self, monkeypatch):
+        """The agent sees WHICH failure blocked it, not just that one happened."""
+        harness = _LoopHarness(monkeypatch, lambda n, a: "ok")
+        monkeypatch.setattr(
+            mcp_shared,
+            "_resolve_tool_policy",
+            lambda *a, **k: mcp_shared.ToolPolicy(
+                frozenset(), "resolution_failed", "ConnectionRefusedError"
+            ),
+        )
+        try:
+            harness.send(_tools_call_with_caller(57, "echo", "dashboard:chat-17"))
+            assert harness.wait_for(lambda: len(harness.responses) >= 1)
+            body = json.dumps(harness.responses[0][1])
+            assert "(cause: ConnectionRefusedError)" in body
         finally:
             harness.close()
 
@@ -2200,10 +2331,6 @@ class TestPerSessionToolPolicy:
         assert len(calls) == n
 
 
-@pytest.mark.skipif(
-    not platform_compat.IS_POSIX,
-    reason="worker-thread + select() interleave is POSIX-only",
-)
 class TestStdioLoopExitsWhenItsInstallIsPruned:
     """A backend whose install an update removed must be replaced, not limp on.
 

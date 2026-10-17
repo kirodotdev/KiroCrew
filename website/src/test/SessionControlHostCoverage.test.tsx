@@ -160,7 +160,7 @@ describe('SessionControlHost — the bridge handed to the control', () => {
 
 describe('SessionControlHost — a control that crashes', () => {
   it('does not carry a crashed control\'s error into a sibling control', () => {
-    // ChatPage renders this host with `key={sc.key}`, and that key is what makes
+    // ComposerDockView renders this host with `key={sc.key}`, and that key is what makes
     // switching controls safe: the boundary holds `state.error` and nothing
     // clears it on a prop change, so a shared instance would show control B the
     // error control A threw and never mount B. This pins the contract the key

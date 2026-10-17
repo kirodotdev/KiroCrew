@@ -216,7 +216,7 @@ export default function DraftReviewActions(
                   onKeyDown={e => { if (e.key === 'Escape') setConfirming(null) }}
                   onClick={() => { const ev = confirming; setConfirming(null); publishMut.mutate(ev) }}
                   disabled={publishMut.isPending}
-                  className="text-xs px-2.5 py-1.5 rounded-md border border-danger text-danger hover:bg-danger-subtle disabled:opacity-30 cursor-pointer bg-transparent"
+                  className="text-xs px-2.5 py-1.5 rounded-md border border-danger text-danger hover:text-danger-text hover:bg-danger-subtle disabled:opacity-30 cursor-pointer bg-transparent"
                 >
                   {i18nT(PUBLISH_LABEL_KEY[confirming])}
                 </button>

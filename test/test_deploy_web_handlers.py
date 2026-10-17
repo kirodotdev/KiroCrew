@@ -1904,6 +1904,47 @@ def test_reaper_remediation_survives_an_unresolvable_skills_root(monkeypatch):
     assert cmd == "install-reaper.sh --profile p --region r"
 
 
+def test_base_remediation_names_the_template_by_absolute_path(monkeypatch, tmp_path):
+    import kiro_crew.skills as skills_mod
+
+    fake_skills = tmp_path / "skills"
+    monkeypatch.setattr(skills_mod, "skills_dir", lambda: fake_skills)
+    cmd = handlers._base_remediation("myprofile", "us-west-2")
+    template = str(fake_skills / "artifact-deploy" / "templates" / "base-stack.yaml")
+    assert f"--template-file {template} " in cmd
+    assert cmd.endswith("install-reaper.sh --profile myprofile --region us-west-2")
+
+
+def test_base_remediation_survives_an_unresolvable_skills_root(monkeypatch):
+    import kiro_crew.skills as skills_mod
+
+    def boom():
+        raise RuntimeError("no skills root")
+
+    monkeypatch.setattr(skills_mod, "skills_dir", boom)
+    cmd = handlers._base_remediation("", "")
+    assert cmd == (
+        "aws cloudformation deploy --stack-name kirocrew-deploy-base "
+        "--template-file templates/base-stack.yaml --no-fail-on-empty-changeset "
+        "--tags kirocrew:managed=true && install-reaper.sh")
+
+
+def test_base_remediation_matches_deploy_sh_base_step():
+    """The 409 hint repeats deploy.sh's base-stack step; keep the two in sync."""
+    import re
+
+    script = (Path(handlers.__file__).parent / "skills" / "artifact-deploy"
+              / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    block = script.split('"${AWS[@]}" cloudformation deploy', 1)[1].split("\n\n", 1)[0]
+    script_flags = re.findall(r"--[a-z-]+", block)
+    hint = handlers._base_remediation("", "").split(" && ")[0]
+    hint_flags = re.findall(r"--[a-z-]+", hint)
+    assert hint_flags == script_flags
+    assert "'kirocrew:managed=true'" in block and "kirocrew:managed=true" in hint
+    assert '--template-file "$TEMPLATE"' in block
+    assert 'TEMPLATE="$SCRIPT_DIR/../templates/base-stack.yaml"' in script
+
+
 def test_finite_ttl_without_base_stack_returns_a_keyed_409(monkeypatch, webapp_tree):
     """The dashboard keys its two affordances off `code`, not the sentence."""
     _set_profile(monkeypatch)

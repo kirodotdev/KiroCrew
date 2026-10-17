@@ -35,9 +35,11 @@ import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
-import RecoveryCard, { injectOpensTurn, resolveInjectCard } from './RecoveryCard'
+import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
+import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
+import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAppAgentRefused, isAuthRequired, isCapabilitiesChanged, isContextOverflow, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak, type FreshSessionState } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -46,11 +48,14 @@ import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './Subage
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import SubagentCompletionCard from './SubagentCompletionCard'
 import { isSubagentCompletionMessage, type ParsedSubagentCompletion } from './subagentCompletion'
-import { REASONING_ROLES, TURN_OPENER_ROLES, hasReasoningContent } from './groupDisplayItems'
+import { REASONING_ROLES, hasReasoningContent } from './groupDisplayItems'
 import { FileCard } from '../../components/FileCard'
+import { parseFileRecord } from '../../lib/fileRecord'
 import UserMessage from './UserMessage'
 import CrewmateMessage, { type CrewmateIdentity } from './CrewmateMessage'
-import { crewmateBubbleClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
+import { crewmateBubbleClass, crewmateCornerClass, crewmateRunPosition } from '../../components/chat/crewmateBubbles'
+import { CardCornersContext } from '../../cards/cardCorners'
+import { CardAuthorContext } from '../../cards/cardAuthor'
 import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, threadFooterFor, type MessageRenderer, type MessageRenderContext } from '../../app-sdk/messageRenderers'
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
@@ -87,9 +92,10 @@ export interface TranscriptRendererOptions {
   /** The transcript is scrolling / streaming hard; tool rows defer their
    *  heavier work. */
   transcriptHot?: boolean
-  /** What to draw for a `file` row whose content is not JSON. Default: nothing
-   *  (a pane); the single-chat surface has always fallen through to its
-   *  conversational bubble for one and passes that. */
+  /** What to draw for a `file` row whose content is not a file record (see
+   *  lib/fileRecord.ts: not JSON, or no non-empty `filename`, or malformed
+   *  metadata). Default: nothing (a pane); the single-chat surface falls
+   *  through to its conversational bubble for one and passes that. */
   renderUnparsedFile?: (m: ChatMessage, ctx: MessageRenderContext) => React.ReactNode
   /** Session routing for EVERY row this factory draws: open a session chip, and
    *  the title map + active key the chip resolver needs. The completion cards
@@ -110,6 +116,10 @@ export interface TranscriptRendererOptions {
   onFolderOpen?: (path: string) => void
   /** "Show in side panel" on a sub-agent completion card. Same #3300 blocker. */
   onOpenSubagentPanel?: (parsed: ParsedSubagentCompletion) => void
+  /** How this host opens its Subagents view, for the `spawn_run` launch card.
+   *  Unset on the chat page (the card drives the chat store itself); the
+   *  Members page passes its own panel's opener. */
+  onOpenSubagents?: () => void
   /** Expanded-state map for tool rows, held ABOVE the row: a virtualised or
    *  remounted transcript unmounts the row and would otherwise forget it. */
   toolDisclosure?: Record<string, boolean>
@@ -127,9 +137,9 @@ export interface TranscriptRendererOptions {
   onOpenNudgeLoop?: () => void
   /** Turn-recovery state for the error row's Continue button. Omitted → the
    *  row renders without one, which is correct for a surface that cannot
-   *  continue a turn. A pane cannot supply these until `selectContinuable` /
-   *  `selectTurnInterrupted` become slot-aware — both read the active slot
-   *  today, so a pane cannot ask whether ITS turn was interrupted. */
+   *  continue a turn. ChatPage hands over the active slot's; a pane hands over
+   *  its own slot's (`useChatPaneContinue`), since `selectContinuable` /
+   *  `selectTurnInterrupted` take the slot to ask about. */
   continuable?: boolean
   interrupted?: boolean
   continuing?: boolean
@@ -154,6 +164,20 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for a `materialization_changed` row: open the named crew
    *  member's Capabilities pane. Omitted on a surface with no crew editor. */
   onOpenCapabilities?: (member: string) => void
+  /** Fix affordance for a `turn_timeout` row: deep-link to the Turn Time Limit
+   *  setting. Omitted on a surface with no settings route. */
+  onOpenTurnLimit?: () => void
+  /** Fix affordance for the newest `session_start_failed` row once the same
+   *  start failed twice in a row: restart the gateway after a confirmation.
+   *  Omitted on a surface that cannot drive the gateway (embed, popout, a
+   *  pane); the card then keeps its terminal hint with a copyable command. */
+  onRestartGateway?: () => Promise<unknown>
+  /** Fix affordance for the newest `context_overflow` row: reset this slot's
+   *  native conversation so the next message starts fresh from a text recap.
+   *  Omitted on a surface that cannot reset a session. */
+  onFreshSession?: () => void
+  /** Where that press stands, for the card's spinner and its "done" line. */
+  freshSession?: FreshSessionState
   /** Draw the assistant rows as a CREWMATE speaking: avatar + name + time on
    *  the first message of a run, one bordered bubble per message, grouped
    *  corners (components/chat/crewmateBubbles). Set by the Members page for a
@@ -162,33 +186,13 @@ export interface TranscriptRendererOptions {
    *  with `filterCrewmateChat` — this option only changes how what remains is
    *  drawn. */
   crewmate?: CrewmateIdentity
-  /** The UNFILTERED transcript behind a crewmate's chat. The rows the pane
-   *  draws are `ctx.messages`; the rows the pane dropped (the `inject` row a
-   *  policy block writes among them) are only here. Read for the steer-chip
-   *  decision, never for layout. Meaningless without `crewmate`. */
-  crewmateTranscript?: ChatMessage[]
-}
-
-/** Whether `row` OPENS a turn, for the two feature-request scans below. Read
- *  from the transcript's own row-kind vocabulary, not a role list of this
- *  module's: the opener ROLES (`TURN_OPENER_ROLES`: a typed row, an auto-nudge
- *  cycle, a drained sub-agent completion) minus a STEER, plus the inject KINDS
- *  the gateway stamps as a prompt of their own (`injectOpensTurn`: a cron
- *  notification, a fan-out synthesis -- a `recovery` or `user_replay` continues
- *  the request above it, and an unstamped inject dispatches nothing). A steer is
- *  persisted as a `user` row with `meta.steer` (chat_delivery.py) and appended
- *  optimistically in the same shape (ChatPage `steer()`), but it was injected
- *  INTO a running turn, so it cannot begin one. Same answer as the store's
- *  `isTurnBoundaryUser`, `selectSlotPendingApproval`'s walk and the turn-head
- *  walk in `app-sdk/turnPolicyBlock.ts`. Every steer row is exempt, the
- *  optimistic bubble included: a bubble the server turned into a NEW turn is
- *  reconciled by the echo that carries its `sendId` (the store deletes its
- *  `steer` flag), and until then a misread here only moves a link between two
- *  rows -- it never splices content, which is the one reason
- *  `isTurnBoundaryUser` keeps its optimistic exception. */
-function opensTurn(row: ChatMessage): boolean {
-  if (row.role === 'user') return !row.meta?.steer
-  return TURN_OPENER_ROLES.has(row.role) || injectOpensTurn(row)
+  /** Reads the UNFILTERED transcript behind a crewmate's chat. The rows the
+   *  pane draws are `ctx.messages`; the turn boundaries the pane dropped (a
+   *  patrol wake, a cron or sub-agent envelope between two replies) are only
+   *  here. Read for the run position, never for layout. Meaningless without
+   *  `crewmate`. A getter, called on every row render, so the host can keep
+   *  this renderer set's identity while the transcript streams. */
+  crewmateTranscript?: () => ChatMessage[] | undefined
 }
 
 /** True when the error row at `index` is the seeded feature-request turn's own
@@ -220,10 +224,10 @@ export function isFeatureRequestRefusal(messages: readonly ChatMessage[], index:
 /** True when the composer's Resume would replay the feature-request refusal:
  *  the newest error row is a `usage_limit` row that `isFeatureRequestRefusal`
  *  claims, and neither an assistant row nor a turn opener (`opensTurn`) follows
- *  it (a later turn is the composer's business, not this row's). ChatPage reads
- *  it to suppress the composer's Resume and its "press Resume" hint beside a
- *  card that has just withheld Resume for the same reason -- the two must not
- *  argue. */
+ *  it (a later turn is the composer's business, not this row's).
+ *  `newestErrorOwnsRecovery` reads it to suppress the composer's Resume and its
+ *  "press Resume" hint beside a card that has just withheld Resume for the same
+ *  reason -- the two must not argue. */
 export function featureRequestRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
   const idx = lastErrorIndex(messages)
   if (idx < 0) return false
@@ -238,10 +242,10 @@ export function featureRequestRefusalIsNewest(messages: readonly ChatMessage[]):
  *  `SESSION_START_REPEAT_REFUSAL_AT` times in a row: the newest error row is a
  *  `session_start_failed` row, nothing after it opens a new turn, and the
  *  streak scan reaches the threshold. The same predicate the error row uses
- *  to withhold its Resume; ChatPage reads it to suppress the composer's Resume
- *  and its "press Resume" hint beneath that card, because a composer urging
- *  the press the card just withheld (and the server refuses with
- *  `session_start_repeat`) would argue with it. Typing still works. */
+ *  to withhold its Resume; `newestErrorOwnsRecovery` reads it to suppress the
+ *  composer's Resume and its "press Resume" hint beneath that card, because a
+ *  composer urging the press the card just withheld (and the server refuses
+ *  with `session_start_repeat`) would argue with it. Typing still works. */
 export function sessionStartRepeatIsNewest(messages: readonly ChatMessage[]): boolean {
   const idx = lastErrorIndex(messages)
   if (idx < 0) return false
@@ -250,6 +254,47 @@ export function sessionStartRepeatIsNewest(messages: readonly ChatMessage[]): bo
     if (row.role === 'assistant' || opensTurn(row)) return false
   }
   return isSessionStartFailed(messages[idx]) && sessionStartFailureStreak(messages) >= SESSION_START_REPEAT_REFUSAL_AT
+}
+
+/** True when the transcript's newest state is a context overflow: the newest
+ *  error row is a `context_overflow` row and nothing after it opens a new
+ *  turn. The card withholds Resume there (it re-sends the history that
+ *  overflowed); `newestErrorOwnsRecovery` reads this to withhold the
+ *  composer's Resume too. */
+export function contextOverflowIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isContextOverflow(messages[idx])
+}
+
+/** True when the newest error row is a refused app-owned agent turn
+ *  (`isAppAgentRefused`) and nothing after it opens a new turn. The row
+ *  withholds Resume (a retry re-runs the same refusal); `newestErrorOwnsRecovery`
+ *  reads this to drop the composer's Resume and "press Resume" hint beneath it.
+ *  Typing still works. */
+export function appAgentRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isAppAgentRefused(messages[idx])
+}
+
+/** True when the newest error row is one of the four above: its card has
+ *  withheld Resume (a retry replays the rejection) and names a remedy of its
+ *  own, so the composer must not urge the press beneath it either. The one
+ *  place that spells the set for the composer: ChatPage's and every pane's
+ *  (`useChatPaneContinue`) both read this, so a fifth remedy card joins the
+ *  composer's gate by joining it here. Typing still works. */
+export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
+  return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
+    || contextOverflowIsNewest(messages) || appAgentRefusalIsNewest(messages)
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -284,10 +329,29 @@ export function createTranscriptRenderers(
   // Narrowed once here so the crewmate entry below can close over a definite
   // identity instead of re-asserting `o.crewmate` inside its render.
   const crewmate = o.crewmate
-  const crewmateTranscript = o.crewmateTranscript
+  // Read at render time, so this renderer set (and every settled row drawn by
+  // it) stays stable across streaming flushes.
+  const crewmateTranscriptOf = (): ChatMessage[] | undefined => o.crewmateTranscript?.()
 
   return [
+    {
+      id: 'warm_task_brief_claim',
+      roles: ['notice'],
+      match: m => m.meta?.kind === 'warm_task_brief_claim',
+      render: () => null,
+    },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
+    {
+      // A dollar-picked skill is gateway-authored context, not a conversational
+      // reply. Its metadata carries the exact redacted body that entered this
+      // turn, so the card remains truthful after the source skill changes.
+      id: 'skill_load',
+      roles: ['system'],
+      match: isSkillLoadRow,
+      render: (m, ctx) => ctx.row(
+        <SkillLoadCard key={ctx.key} message={m} disclosureKey={ctx.key} />,
+      ),
+    },
     {
       // Replaces the default: same card, but wired to open a folder and the
       // side panel the way the single-chat surface does.
@@ -334,7 +398,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => {
         const launch = extractSpawnRunLaunch(m)
         if (!launch) return toolLine(m, ctx)
-        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} />, true)
+        return ctx.row(<SubagentRunCard key={ctx.key} launch={launch} slot={o.slot ?? ''} onOpenPanel={o.onOpenSubagents} />, true)
       },
     },
     {
@@ -376,17 +440,42 @@ export function createTranscriptRenderers(
       render: (m, ctx) => (hasReasoningContent(m) ? ctx.row(<ThinkingBlock content={m.content} disclosureKey={ctx.key} />) : null),
     },
     {
-      // Replaces the default's null with the player / download card.
+      // Same card and the same record check as the default (lib/fileRecord.ts);
+      // only the fallback differs: a row that is not a file record goes to
+      // renderUnparsedFile instead of drawing nothing.
       id: 'file',
       roles: ['file'],
       render: (m, ctx) => {
-        let file
-        try {
-          file = JSON.parse(m.content)
-        } catch {
-          return o.renderUnparsedFile ? o.renderUnparsedFile(m, ctx) : null
-        }
+        const file = parseFileRecord(m.content)
+        if (!file) return o.renderUnparsedFile ? o.renderUnparsedFile(m, ctx) : null
         return ctx.row(<FileCard file={file} />)
+      },
+    },
+    {
+      // Mate's change card or guide offer, at the point it was proposed. The
+      // row holds a reference; the live card is the card / guide store's, so it
+      // updates in place (cards/ConversationCard). The SDK default draws nothing
+      // for this role, which is right for a store-free surface.
+      id: 'conversation_card',
+      roles: [CARD_ROLE],
+      // In a crewmate's chat the card is the crewmate's own message: it joins
+      // the run of the reply that explains it, in the same column and exactly
+      // as wide as a reply.
+      render: (m, ctx) => {
+        if (!crewmate) return ctx.row(<ConversationCard message={m} slot={o.slot} />)
+        const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
+        return ctx.row(
+          <CrewmateMessage pos={pos}>
+            {/* Same cap as a crewmate bubble (72ch at the message font size). */}
+            <div className="max-w-[72ch]" style={{ fontSize: 'var(--mc-message-font-size, 14px)' }}>
+              <CardCornersContext.Provider value={crewmateCornerClass(pos)}>
+                <CardAuthorContext.Provider value={crewmate.label || crewmate.name}>
+                  <ConversationCard message={m} slot={o.slot} />
+                </CardAuthorContext.Provider>
+              </CardCornersContext.Provider>
+            </div>
+          </CrewmateMessage>,
+        )
       },
     },
     {
@@ -421,6 +510,20 @@ export function createTranscriptRenderers(
         if (!parsed) return null
         return ctx.row(<RecoveryCard parsed={parsed} disclosureKey={ctx.key} />)
       },
+    },
+    {
+      // A re-routed automation refusal (`injectKind: 'automation_notice'`,
+      // session_directive_apply._deliver_refusal_to_crewmate) exists ONLY to
+      // carry the refusal into the crewmate's next turn for the model; the
+      // person-facing surface is the `notice` bar the same refusal already
+      // wrote. The crewmate DM hides this inject row via MACHINERY_ROLES; every
+      // other surface (the Sessions page) suppresses it here too, so the raw
+      // `[Automation notice] …` text never draws as a second row beside the
+      // notice bar. Must precede the generic inject bubble.
+      id: 'automation_notice_inject',
+      roles: ['inject'],
+      match: m => (m.meta as { injectKind?: unknown } | undefined)?.injectKind === 'automation_notice',
+      render: () => null,
     },
     {
       // Refines `assistant`: a gateway system notice (kind=compaction or
@@ -473,17 +576,17 @@ export function createTranscriptRenderers(
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             // Run position reads turn boundaries off the UNFILTERED transcript
             // (a patrol wake between two replies is filtered from `ctx.messages`).
-            const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscript)
+            const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that
-            // carries the hover actions. The policy-block read goes to
-            // the unfiltered transcript — see `crewmateTranscript`; the row is
-            // located by identity, since the filter keeps the same objects.
-            const full = crewmateTranscript
-            const fullIndex = full ? full.indexOf(m) : -1
+            // carries the hover actions. No "Steered" chip on any bubble: in a
+            // DM with one named peer every send while it works is a steer, so
+            // the ack kiro-cli emits would close nearly every reply with the
+            // mechanics this surface hides (#17838). The marker is still
+            // stripped from the prose.
             const bubble = renderAssistantBubble(m, ctx, crewmateBubbleClass(pos), {
               forceFooter: pos === 'single' || pos === 'end',
-              policyBlockTranscript: full && fullIndex >= 0 ? { messages: full, index: fullIndex } : undefined,
+              suppressSteerAck: true,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves
@@ -495,7 +598,7 @@ export function createTranscriptRenderers(
             })
             if (bubble === null) return null
             return ctx.row(
-              <CrewmateMessage pos={pos}>{bubble}</CrewmateMessage>,
+              <CrewmateMessage pos={pos} author={crewmate.label || crewmate.name}>{bubble}</CrewmateMessage>,
               true,
             )
           },
@@ -540,6 +643,11 @@ export function createTranscriptRenderers(
         // keeps today's card exactly: Resume, same words.
         const sessionStartRepeat =
           newest && isSessionStartFailed(m) && sessionStartFailureStreak(ctx.messages) >= SESSION_START_REPEAT_REFUSAL_AT
+        // A context overflow never offers Resume (it re-sends the history that
+        // overflowed). The fresh-session press is offered only while this row
+        // is the transcript's newest state: an older row, or one a later turn
+        // already answered past, is settled and its session may already be new.
+        const overflow = isContextOverflow(m)
         return ctx.row(
           <ErrorCard
             content={transient ? transient.text : m.content}
@@ -550,11 +658,12 @@ export function createTranscriptRenderers(
             // signed-out wall, or the same spent allowance, or the same start
             // that already failed twice).
             onContinue={
-              !unentitled && !authRequired && !featureRequestFormUrl && !sessionStartRepeat && !isCapabilitiesChanged(m) && o.onContinue && o.continuable && o.interrupted && newest
+              !unentitled && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !isCapabilitiesChanged(m) && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
                 ? o.onContinue
                 : undefined
             }
             sessionStartRepeat={sessionStartRepeat}
+            onRestartGateway={sessionStartRepeat ? o.onRestartGateway : undefined}
             continuing={o.continuing}
             onPickModel={unentitled ? o.onPickModel : undefined}
             onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
@@ -562,15 +671,24 @@ export function createTranscriptRenderers(
             unentitledElsewhere={unentitled}
             featureRequestFormUrl={featureRequestFormUrl}
             onOpenCapabilities={openCapabilities}
+            onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
+            turnLimitSlot={isTurnTimeout(m) ? o.slot : undefined}
+            onFreshSession={overflow && newest && contextOverflowIsNewest(ctx.messages) ? o.onFreshSession : undefined}
+            freshSession={o.freshSession}
           />,
         )
       },
     },
     // Replaces the SDK's `user` entry (same id) ONLY when the host asks for it:
     // identical content path (renderUserContent — paste chips, inline images
-    // and file cards included), one prop different. Absent the flag no entry is emitted, so every other
-    // surface keeps the SDK row byte-for-byte.
-    ...(o.hideSteerBadge
+    // and file cards included), one or two props different. Two hosts ask: a
+    // steer-only surface (no badge) and a crewmate's chat (the accent fill,
+    // #17839). The crewmate case is its own trigger, not a consequence of the
+    // badge flag: the Members page left `steer-only` in #16684, so gating the
+    // accent on `hideSteerBadge` alone left #17918's fill unreachable on the
+    // one surface it was built for (#18361). Absent both no entry is emitted,
+    // so every other surface keeps the SDK row byte-for-byte.
+    ...(o.hideSteerBadge || crewmate
       ? [{
           id: 'user',
           roles: ['user'],
@@ -593,7 +711,12 @@ export function createTranscriptRenderers(
                   activeSession: o.activeSession,
                   messageTs: m.ts,
                 })}
-                hideSteerBadge
+                // Delivery mechanics stay in Sessions, including old scrollback.
+                hideSteerBadge={!!crewmate || o.hideSteerBadge}
+                // The accent fill pairs with the crewmate's gray bubble above
+                // (#17839); a host that hides the steer badge without a
+                // crewmate keeps the neutral surface.
+                tone={crewmate ? 'accent' : 'default'}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />

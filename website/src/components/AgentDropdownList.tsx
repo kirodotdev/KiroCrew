@@ -4,9 +4,14 @@ import { SourceBadge } from './SourceBadge'
 import ErrorNotice from './ErrorNotice'
 import { PanelSectionHeader } from './ui'
 import CrewAvatar from './CrewAvatar'
+import { crewDisplayName } from './AgentSelector'
+import { MarkdownOnlyBadge } from './MarkdownOnlyBadge'
+import type { MarkdownBlock } from '../lib/markdownAgents'
 import { Star, Check, Users } from 'lucide-react'
+import { isCrewmateChat, rowMemoryTag, type MemorySource } from '../lib/agentMemorySource'
 
 import { i18nT } from '../i18n/t'
+import { withMemorySource } from '../utils/agentLabel'
 
 export type AgentItemKind = 'member' | 'template'
 
@@ -22,6 +27,15 @@ export interface AgentItem {
    *  member row has one; a template is a definition, not a crewmate, and
    *  wears no face. */
   avatar?: unknown
+  /** A member row's label, when its owner set one; the row shows it in place
+   *  of the name. */
+  display_name?: string
+  /** A member row's store id, read only for whether it is the shared default
+   *  (see `rowMemoryTag`); never rendered. */
+  memory_store?: string
+  /** Set by `useAgents` when this markdown-only agent cannot run on the
+   *  harness this chat uses; the row wears the "KAS only" pill. */
+  markdown_block?: MarkdownBlock
 }
 
 /** Row identity for React keys and the active match: JSON so no separator a
@@ -29,10 +43,13 @@ export interface AgentItem {
 const itemKey = (a: AgentItem) => JSON.stringify([a.selection_kind ?? '', a.name])
 
 // ── Single agent row ──
-function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, filter }: {
+function AgentButton({ a, active, isDefault, memoryTag, showSource, activeRef, onSelect, filter }: {
   a: AgentItem
   active: boolean
   isDefault: boolean
+  /** Set only when the list holds a crewmate AND a custom agent of this name:
+   *  the row's second line then says which memory the pick runs on. */
+  memoryTag: MemorySource | null
   /** The flat (name-only) list tells rows apart by origin; the grouped list
    *  already says what a row IS in its header, so the badge is noise there. */
   showSource: boolean
@@ -46,6 +63,9 @@ function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, fi
     if (idx === -1) return text
     return <>{text.slice(0, idx)}<mark className="bg-warn/30 text-text rounded-sm">{text.slice(idx, idx + filter.length)}</mark>{text.slice(idx + filter.length)}</>
   }
+  // A crewmate reads under its label, like every other surface that names it;
+  // a template has no label.
+  const label = a.selection_kind === 'template' ? a.name : crewDisplayName(a)
 
   return (
     <button
@@ -66,21 +86,31 @@ function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, fi
           <CrewAvatar seed={a.name} avatar={a.avatar} size={20} className="shrink-0" />
         )}
         <span className={`text-[13px] font-mono font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>
-          {highlight(a.name)}
+          {highlight(label)}
         </span>
         {isDefault ? (
-          <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full text-[11px] font-semibold bg-warn-subtle text-warn" title={i18nT('components.agentDropdownList.new_sessions_start_with_this_agent')}>
+          <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-[1px] rounded-full text-[11px] font-semibold bg-warn-subtle text-warn-text" title={i18nT('components.agentDropdownList.new_sessions_start_with_this_agent')}>
             <Star className="lucide-inline" />{i18nT('components.agentDropdownList.default')}
           </span>
         ) : showSource ? (
           <SourceBadge source={a.source}>{highlight(a.source)}</SourceBadge>
         ) : null}
+        <MarkdownOnlyBadge block={a.markdown_block} />
         {active && (
           <span className="text-accent text-[12px]" title={i18nT('components.agentDropdownList.active_in_this_session')}>
             <Check className="lucide-inline" />
           </span>
         )}
       </div>
+      {memoryTag && (
+        // The row's second line, ahead of the author's description: the two rows
+        // of a same-name pair read the same name, and this is what they differ in.
+        <span data-testid="agent-row-memory-tag" className="text-[11px] font-medium text-muted leading-tight">
+          {memoryTag === 'own'
+            ? i18nT('components.agentDropdownList.own_memory')
+            : i18nT('components.agentDropdownList.shared_memory')}
+        </span>
+      )}
       {a.description && (
         <span className="text-[12px] text-muted leading-tight line-clamp-2" title={a.description}>
           {a.description}
@@ -90,6 +120,20 @@ function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, fi
   )
 }
 
+// `isCrewmateChat` lives with the other kind rules in `lib/agentMemorySource`;
+// re-exported here so its existing importers keep this path.
+export { isCrewmateChat }
+
+/**
+ * The namespace the ★ row writes in: `template` only when the slot says so.
+ * A kind-less slot sends none, and the server routes a non-alias name to the
+ * template default and an alias to the roster's default crewmate -- never a
+ * same-named template behind a crewmate's back.
+ */
+export function defaultWriteKind(slotKind: string | undefined): 'template' | undefined {
+  return slotKind === 'template' ? 'template' : undefined
+}
+
 /**
  * Footer row that promotes an agent to the global default, mirroring the model pop-up's
  * own pin row. It acts on the agent the row selection has already made active, which is
@@ -97,44 +141,65 @@ function AgentButton({ a, active, isDefault, showSource, activeRef, onSelect, fi
  * a tooltip, and this pop-up's other job is switching the agent for THIS session, so an
  * unqualified "default" reads as session-scoped.
  *
- * Set-only: once an agent holds the default the row reports that state instead of
- * offering a no-op write, and clearing lives on the Agent Templates page, where the
- * control is labelled and the outcome is visible in a summary card.
+ * Set-only: once an agent holds the default the row is a STATUS line, not a control:
+ * a disabled button in the same spot read as a switch that might undo the default by
+ * accident, and there is nothing to undo here. Clearing lives on the Agent Templates
+ * page, where the control is labelled and the outcome is visible in a summary card.
  */
-export function DefaultAgentRow({ agentName, isDefault, onSetDefault }: {
+export function DefaultAgentRow({ agentName, isDefault, onSetDefault, memoryTag = null }: {
   agentName: string
   isDefault: boolean
   onSetDefault: () => void
+  /** Set when a crewmate and a custom agent share `agentName` (#19472): the
+   *  label then says which one it names, matching the row the badge marks. */
+  memoryTag?: MemorySource | null
 }) {
+  const shownName = withMemorySource(agentName, memoryTag)
+  // Wraps rather than truncates. The label's whole job is to name WHICH agent the
+  // write targets, and that identifier sits mid-string — an ellipsis eats exactly
+  // the part that carries the meaning. The pop-up caps at 340px and agent names
+  // are unbounded, so a second line has to be free rather than clipped.
+  const labelCls = 'min-w-0 text-left break-words'
+  if (isDefault) {
+    return (
+      <div
+        role="status"
+        data-testid="agent-dropdown-default-state"
+        // A caption, not a row: smaller, italic, no hover state, so it cannot be
+        // read as the control it replaced.
+        className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-1.5 text-[11px] italic text-muted"
+      >
+        <span className={labelCls}>
+          <Trans
+            i18nKey="components.agentDropdownList.agent_is_the_default_for_new_sessions"
+            components={{ agent: <span className="font-mono">{shownName}</span> }}
+          />
+        </span>
+        <Check size={13} className="text-accent" aria-hidden="true" />
+      </div>
+    )
+  }
   return (
     <button
       type="button"
-      onClick={isDefault ? undefined : onSetDefault}
-      disabled={isDefault}
-      aria-pressed={isDefault}
-      // `data-option` + tabIndex enrol the actionable row in the listbox's
-      // roving-focus ring (`useListboxKeyboard` moves real focus across
-      // `[data-option],[role="option"]`). Without it the row is pointer-only: the
-      // hook consumes Tab to close the pop-up, so a plain button in the footer can
-      // never receive focus. Enter/Space then work natively — the hook leaves a
-      // focused option's activation to the button itself. Omitted while disabled,
-      // so the ring never stops on a row that cannot be actuated.
-      {...(isDefault ? {} : { 'data-option': true, tabIndex: -1 })}
-      className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover focus:text-text focus:bg-bg-hover focus:outline-hidden focus-ring transition-colors disabled:cursor-default disabled:hover:bg-transparent"
+      onClick={onSetDefault}
+      // `data-option` + tabIndex enrol the row in the listbox's roving-focus ring
+      // (`useListboxKeyboard` moves real focus across `[data-option],[role="option"]`).
+      // Without it the row is pointer-only: the hook consumes Tab to close the
+      // pop-up, so a plain button in the footer can never receive focus. Enter/Space
+      // then work natively — the hook leaves a focused option's activation to the
+      // button itself.
+      data-option
+      tabIndex={-1}
+      className="shrink-0 border-t border-border flex items-center justify-between gap-2 px-3 py-2 text-[12px] cursor-pointer bg-transparent border-x-0 border-b-0 text-muted hover:text-text hover:bg-bg-hover focus:text-text focus:bg-bg-hover focus:outline-hidden focus-ring transition-colors"
     >
-      {/* Wraps rather than truncates. The label's whole job is to name WHICH agent the
-          write targets, and that identifier sits mid-string — an ellipsis eats exactly
-          the part that carries the meaning. The pop-up caps at 340px and agent names
-          are unbounded, so a second line has to be free rather than clipped. */}
-      <span className="min-w-0 text-left break-words">
-        {isDefault
-          ? i18nT('components.agentDropdownList.default_agent_for_new_sessions')
-          : <Trans
-              i18nKey="components.agentDropdownList.set_default_agent"
-              components={{ agent: <span className="font-mono">{agentName}</span> }}
-            />}
+      <span className={labelCls}>
+        <Trans
+          i18nKey="components.agentDropdownList.set_default_agent"
+          components={{ agent: <span className="font-mono">{shownName}</span> }}
+        />
       </span>
-      {isDefault ? <Check size={13} className="text-accent" /> : <Star size={13} />}
+      <Star size={13} />
     </button>
   )
 }
@@ -149,7 +214,40 @@ export function DefaultAgentRow({ agentName, isDefault, onSetDefault }: {
  * rather than on `DefaultAgentRow` so the alert lands directly beneath the control that
  * failed.
  */
-export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; error?: boolean }) {
+/**
+ * The failed default-write, as one line that says what to do. The server's
+ * reason code picks the line; an unknown or absent code falls back to the plain
+ * failure. `name` is the agent the write named.
+ */
+export type DefaultWriteFailure = { code?: string; name?: string }
+
+export function defaultWriteFailureText(failure: DefaultWriteFailure): string {
+  const name = failure.name ?? ''
+  switch (failure.code) {
+    case 'default_template_not_installed':
+      return i18nT('components.agentDropdownList.default_write_failed_not_installed', { name })
+    case 'default_template_overlaid':
+      return i18nT('components.agentDropdownList.default_write_failed_overlaid')
+    case 'stale_binding':
+      return i18nT('components.agentDropdownList.default_write_failed_stale', { name })
+    default:
+      return i18nT('components.agentDropdownList.could_not_change_the_default_custom_agent')
+  }
+}
+
+/** The reason code out of a rejected `setDefaultAgent` call, when the body carries one. */
+export function defaultWriteFailureOf(err: unknown, name: string): DefaultWriteFailure {
+  const body = (err as { body?: unknown } | null)?.body
+  if (typeof body === 'string') {
+    try {
+      const code = (JSON.parse(body) as { code?: unknown }).code
+      if (typeof code === 'string') return { code, name }
+    } catch { /* not JSON: the plain failure line */ }
+  }
+  return { name }
+}
+
+export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; error?: boolean | DefaultWriteFailure }) {
   return (
     <>
       {error && (
@@ -160,7 +258,7 @@ export function ManageAgentsFooter({ onManage, error }: { onManage: () => void; 
           <ErrorNotice
             askAgent
             testId="agent-dropdown-default-error"
-            message={i18nT('components.agentDropdownList.could_not_change_the_default_agent')}
+            message={defaultWriteFailureText(error === true ? {} : error)}
           />
         </div>
       )}
@@ -218,12 +316,14 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
   const kinds = new Set(agents.map(a => a.selection_kind ?? 'member'))
   const showGroupChrome = kinds.size > 1
   const row = (a: AgentItem) => (
-    <AgentButton key={itemKey(a)} a={a} active={isActive(a)} isDefault={a.name === defaultAgent && a.selection_kind !== 'template'} showSource={!grouped} activeRef={activeRef} onSelect={onSelect} filter={filter} />
+    // The badge marks the default for NEW SESSIONS: the template a session
+    // created without a crewmate runs. A crewmate row is never that default.
+    <AgentButton key={itemKey(a)} a={a} active={isActive(a)} isDefault={a.name === defaultAgent && (a.selection_kind ?? 'template') === 'template'} memoryTag={rowMemoryTag(a, agents)} showSource={!grouped} activeRef={activeRef} onSelect={onSelect} filter={filter} />
   )
 
   return (
     // Plain flex column: scrolling is owned by the host's listbox wrapper
-    // (ChatPage / ChatPane render this inside `overflow-y-auto max-h-[280px]`).
+    // (ComposerDockView / ChatPane render this inside `overflow-y-auto max-h-[280px]`).
     // A second overflow container here nests two scrollbars (#6375), and
     // `scrollIntoView` on the active row scrolls the nearest scrollable
     // ancestor, so the host-owned scroller keeps that behavior intact.
@@ -232,7 +332,9 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
     <div role="presentation" className="flex flex-col">
       {!grouped
         ? agents.map(row)
-        : (['member', 'template'] as const).map(kind => {
+        // Templates lead: a session created without a crewmate runs the default
+        // template, so the group that holds the way back is the one read first.
+        : (['template', 'member'] as const).map(kind => {
           const rows = agents.filter(a => (a.selection_kind ?? 'member') === kind)
           if (!rows.length) return null
           const label = kind === 'member'
@@ -244,8 +346,8 @@ export default function AgentDropdownList({ agents, activeAgent, activeKind, def
                 <PanelSectionHeader label={label} count={rows.length} className="px-2.5 pt-2 pb-1" />
               )}
               {showGroupChrome && kind === 'template' && (
-                // What a template pick IS, said where the pick happens: it runs the
-                // shared template on the shared default memory and enrols nothing.
+                // What a template IS, said where the pick happens, in one sentence:
+                // a reusable agent setup. Where it runs is the row's own business.
                 <p className="px-2.5 pb-1 text-[11px] leading-snug text-muted">
                   {i18nT('components.agentDropdownList.group_templates_hint')}
                 </p>

@@ -61,6 +61,9 @@ export interface PillActivity {
   kind: PillActivityKind
   /** Present on `tool` / `thinking`: the clamped shared label. */
   text?: string
+  /** Present on `tool`: the label before the clamp, for a host with room to
+   *  show it (the chat's status line truncates by CSS, `title` carries it). */
+  fullText?: string
 }
 
 export interface PillActivityInput {
@@ -75,6 +78,11 @@ export interface PillActivityInput {
   running: boolean
   /** Sub-agents are running while the main turn is not. */
   delegatedOnly: boolean
+  /** The slots frame's own stopping flag: a Stop that reaches this host only
+   *  as the frame (pressed in another tab, or on a background slot), which
+   *  the stream state does not carry. Folded with `streamState === 'stopping'`
+   *  so every reader of this seam names that moment the same way. */
+  stopping?: boolean
   /** The shared label seam — `toolStatusLabel` bound to the user's
    *  `simplifiedToolNames` preference and the UI language. Injected so this
    *  module stays pure and the test can pin what it hands the seam. */
@@ -100,10 +108,10 @@ const THINKING: ToolStatusDetail = { kind: 'thinking' }
 
 /** Resolve the one line the pill shows from the slot's live readings. */
 export function resolvePillActivity(input: PillActivityInput): PillActivity {
-  const { streamState, detail, toolReturned, running, delegatedOnly, labelOf } = input
+  const { streamState, detail, toolReturned, running, delegatedOnly, stopping = false, labelOf } = input
   // The run-state phases the status seam has no word for.
   if (streamState === 'compacting') return { kind: 'compacting' }
-  if (streamState === 'stopping') return { kind: 'stopping' }
+  if (streamState === 'stopping' || stopping) return { kind: 'stopping' }
   // Busy is either signal: the slots frame's flag or a run state that has
   // not settled. A stale status from the last turn is never painted on a
   // resting slot.
@@ -114,7 +122,7 @@ export function resolvePillActivity(input: PillActivityInput): PillActivity {
       if (toolReturned) return { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
       const label = labelOf(detail)
       return label
-        ? { kind: 'tool', text: clampActivityText(label) }
+        ? { kind: 'tool', text: clampActivityText(label), fullText: label.replace(/\s+/g, ' ').trim() }
         : { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
     }
     case 'thinking':
@@ -124,4 +132,16 @@ export function resolvePillActivity(input: PillActivityInput): PillActivity {
     default:
       return { kind: delegatedOnly ? 'delegated' : 'working' }
   }
+}
+
+/** Catalog keys for the phases that carry no text of their own. `tool` and
+ *  `thinking` carry `text`; `idle` is the host's to phrase (the pill adds the
+ *  resting age). */
+export const PILL_ACTIVITY_KEY: Record<Exclude<PillActivityKind, 'tool' | 'thinking'>, string> = {
+  writing: 'pages.membersPage.pill_writing',
+  compacting: 'pages.membersPage.pill_compacting',
+  stopping: 'pages.membersPage.pill_stopping',
+  working: 'pages.membersPage.drawer_working',
+  delegated: 'pages.membersPage.drawer_delegated_working',
+  idle: 'pages.membersPage.pill_idle',
 }

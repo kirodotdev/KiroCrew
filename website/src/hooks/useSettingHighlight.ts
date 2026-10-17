@@ -3,6 +3,8 @@ import { useLocation, useSearchParams } from 'react-router-dom'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
 import { setSettingsDeepLinkTarget } from '../components/settings'
 import { i18nT } from '../i18n/t'
+import { inUntrustedContent } from '../guide/guideMarkers'
+import type { SettingEntry } from '../components/commandPalette/settingsTypes'
 
 /**
  * Deep-link target for the "Crewmates" card in Settings → Developer →
@@ -53,10 +55,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // prior ids land on the current one.
   'developer.crew-members-and-crew-mode': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
   'developer.crew-members': SETTINGS_CREW_MEMBERS_PREVIEW_ID,
-  // The peer-session card was relabeled from "Remote instance sessions" back to
-  // "Remote crew sessions" when the remote-crew vocabulary was restored. Same
-  // flag, same card — only the label, and so the derived id, moved.
-  'developer.remote-instance-sessions': 'developer.remote-crew-sessions',
+  // The peer-session card ("Remote instance sessions", then "Remote crew
+  // sessions") folded into "Chat on a crew": one switch now holds both halves.
+  'developer.remote-instance-sessions': 'developer.chat-on-a-crew',
+  'developer.remote-crew-sessions': 'developer.chat-on-a-crew',
   // The two About update switches shared one "Auto-update on restart" label,
   // and the gateway's row was registered under its notify wording; each is now
   // labelled by what it does.
@@ -72,7 +74,10 @@ const REGISTRY_IDS = new Set(SETTINGS_REGISTRY.map(e => e.id))
 
 /** Rewrite a legacy highlight id to its current form (identity for current ids). */
 export function resolveLegacyHighlightId(id: string): string {
-  if (LEGACY_ID_EXACT[id]) return LEGACY_ID_EXACT[id]
+  // A current id is never rewritten: a retired label can be reused by a new
+  // row ("Fallback Model" now names the throttle fallback), and that row
+  // must keep its own highlight.
+  if (LEGACY_ID_EXACT[id] && !REGISTRY_IDS.has(id)) return LEGACY_ID_EXACT[id]
   if (id.startsWith('slack.')) id = `channels.${id.slice('slack.'.length)}`
   // Per-channel rows gained a "(<Channel>)" label suffix so their ids are
   // channel-qualified and order-stable. Every pre-suffix `channels.*` id in a
@@ -83,6 +88,39 @@ export function resolveLegacyHighlightId(id: string): string {
     return `${id}-slack`
   }
   return id
+}
+
+/**
+ * The ONE rendered control a registry entry names, or `null`.
+ *
+ * The same attribute contract the highlight probe below uses
+ * (`data-setting-id` > `data-setting-key` > `data-setting-label`), minus both of
+ * its forgiving fallbacks: a duplicate label resolves only at its exact
+ * `occurrence` (never "the first match instead"), and a label match that carries
+ * ANOTHER control's key or id never stands in. A caller that points at the
+ * control it returns (the registered-action guide's arrow) must be able to say
+ * "not here" rather than point at a neighbour.
+ */
+export function resolveSettingElementStrict(entry: SettingEntry): HTMLElement | null {
+  // Content an agent or a file controls (a markdown reply, an SVG artifact)
+  // can carry the same attribute strings: it is never a settings row, and it
+  // never counts toward a label's occurrence either.
+  const trusted = (sel: string) => Array.from(document.querySelectorAll<HTMLElement>(sel)).filter(el => !inUntrustedContent(el))
+  if (entry.settingId) {
+    return trusted(settingAnchorSelector('data-setting-id', entry.settingId))[0] ?? null
+  }
+  if (entry.configKey) {
+    const byKey = trusted(settingAnchorSelector('data-setting-key', entry.configKey))[0]
+    if (byKey) return byKey
+  }
+  const label = entry.labelKey ? i18nT(entry.labelKey) : entry.label
+  const matches = trusted(settingAnchorSelector('data-setting-label', label))
+  const candidate = matches[entry.occurrence - 1]
+  if (!candidate) return null
+  const foreignKey = candidate.getAttribute('data-setting-key')
+  if (candidate.hasAttribute('data-setting-id')) return null
+  if (foreignKey !== null && foreignKey !== entry.configKey) return null
+  return candidate
 }
 
 /**
@@ -97,8 +135,16 @@ export function resolveLegacyHighlightId(id: string): string {
 export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
 
 /**
- * `data-setting-key` anchor of the Kiro sign-in card on Settings → Coding
- * Agent, the target of the chat error row's "Sign in to Kiro" link
+ * Deep-link target for the Turn Time Limit row in Settings → Chat → Advanced,
+ * the field a `turn_timeout` error row links to. Keyed on the config path the
+ * row writes, not its label, so rewording the label cannot break the link.
+ */
+export const SETTINGS_TURN_TIME_LIMIT_KEY = 'agent.chat_turn_timeout_secs'
+export const SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT = `key:${SETTINGS_TURN_TIME_LIMIT_KEY}`
+
+/**
+ * `data-setting-key` anchor of the Kiro sign-in card on Settings → Agent
+ * Harness, the target of the chat error row's "Sign in to Kiro" link
  * (`KIRO_SIGN_IN_PATH` in `pages/developer/kiroSignInLink.ts`). A pseudo key,
  * not a config path: nothing reads it as a setting. Declared HERE, beside the
  * other deep-link ids, because the hook has to know it: the card mounts LATE

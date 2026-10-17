@@ -117,7 +117,7 @@ def _acp_server_entry(
 
     ``channel_id`` is APPENDED as an encoded ``--channel-id <value>`` pair
     rather than prepended: the overlay entry runs the interpreter, so ``args``
-    opens with the helper's optional ``-s`` followed by
+    opens with the helper's optional ``-s`` and ``-P`` followed by
     ``-m kiro_crew.mcp_gateway.stub``. Anything inserted ahead
     of the module target would be eaten by the interpreter instead of the stub.
     argparse does not care about the order of the appended stub flags. The value

@@ -21,11 +21,24 @@ from pathlib import Path
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.slack.gateway import _FAILURE_REMINDER_SECS, GatewayOrchestrator
 
+#: A class-body binding of an owner's method (``name = _owner.name``): it names the
+#: method without spelling the mechanism, so it is not a site.
+_BINDING = re.compile(r"^    \w+ = (?:staticmethod\(|classmethod\()?_\w+\.\w+\)?$")
+
 
 def _source() -> str:
     import kiro_crew.slack.gateway as mod
 
-    return Path(mod.__file__).read_text(encoding="utf-8")
+    slack_dir = Path(mod.__file__).resolve().parent
+    return "\n".join(
+        line
+        for path in [
+            slack_dir / "gateway.py",
+            *sorted((slack_dir / "gateway_runtime").glob("*.py")),
+        ]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not _BINDING.match(line)
+    )
 
 
 def _job(**kw) -> CronJob:

@@ -180,11 +180,11 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
     The rows above answer for the selected harness only when something about it is
     wrong. This answers what a reader asks before switching, and what the selected
     harness is doing to their agent file right now: these harnesses are not
-    interchangeable, and every way they differ over the spec has until now lived in
-    source, in a spec document, or in a log line nobody reads.
+    interchangeable, and this section is where a terminal reader sees how they
+    differ over the spec.
 
     **Two lines on a stock run, not a table.** The full per-harness comparison is the
-    dashboard's job -- it has the room, the labels in thirteen languages, and a reader
+    dashboard's job -- it has the room, the labels in every shipped language, and a reader
     who came to compare. A terminal report is read by someone diagnosing one install,
     and a row apiece for six harnesses on every run is a section people learn to skip,
     which costs the report more than the comparison was worth. So exactly two facts
@@ -264,7 +264,7 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
         if not ability.projection:
             continue
         # The DECLARATION's own words, not a second English gloss of them. The panel
-        # already phrases these for a reader who wants prose, in thirteen languages; a
+        # already phrases these for a reader who wants prose, in every shipped language; a
         # rival wording here would be one declaration with two voices, and the one
         # nobody could review. Scrubbed because a plugin-registered backend authors its
         # own values.
@@ -300,9 +300,10 @@ def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
 #: MCP servers that host strict-identity tools — the reflexive verbs
 #: (``monitor_start``, ``session_ledger_*``, ``set_project``, ``ask_question``)
 #: and the authorization-subject ones (session control, ``chat_folder_*``).
-#: Mirrors ``mcp_core._STRICT_IDENTITY_SERVERS``; ``kirocrew-dashboard`` and
-#: ``kirocrew-panel`` are opt-in per agent, so each is reported only when an
-#: agent actually references it.
+#: A doctor-local tuple. On macOS and Windows every member missing from
+#: ``mcp_gateway.stub_servers`` is reported; no agent spec is read, so an
+#: opt-in server (``kirocrew-dashboard``, ``kirocrew-panel``) is reported even
+#: when no agent references it.
 _STRICT_IDENTITY_SERVERS = (
     "kirocrew-core",
     "kirocrew-dashboard",
@@ -310,7 +311,24 @@ _STRICT_IDENTITY_SERVERS = (
     "kirocrew-crew-log",
     "kirocrew-debug",
     "kirocrew-panel",
+    "kirocrew-guide",
+    "kirocrew-mate",
 )
+
+
+#: How Doctor names a probe that could not verify the daemon. "unreachable"
+#: is a transport that did not answer; "unverified" is an answer that could not
+#: be trusted or read. Only ``absent`` prints "not running".
+_DAEMON_PROBE_REASONS: dict[str, tuple[str, str]] = {
+    "connect_timeout": ("unreachable", "connect timed out"),
+    "connect_error": ("unreachable", "connect failed"),
+    "response_timeout": ("unreachable", "no reply in time"),
+    "connection_lost": ("unreachable", "connection closed before a reply"),
+    "refused_principal": ("unverified", "endpoint owner not confirmed"),
+    "malformed_response": ("unverified", "malformed reply"),
+    "not_pong": ("unverified", "reply was not a pong"),
+    "invalid_context": ("unverified", "probe ran inside an event loop"),
+}
 
 
 def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
@@ -326,13 +344,20 @@ def _doctor_mcp_gateway_daemon(issues: list[str]) -> None:
     """
     try:
         from kiro_crew.code_fingerprint import code_fingerprint
-        from kiro_crew.mcp_gateway.daemon_control import describe_daemon
+        from kiro_crew.mcp_gateway import daemon_control as dc
 
-        info = describe_daemon()
+        probe = dc.describe_daemon_detailed()
     except Exception:
         return
+    info = probe.info
     if info is None:
-        print("  mcp gateway daemon: ⏹ not running (pooling off, or no session has started one)")
+        if probe.outcome == dc.PROBE_ABSENT:
+            print(
+                "  mcp gateway daemon: ⏹ not running (pooling off, or no session has started one)"
+            )
+            return
+        label, reason = _DAEMON_PROBE_REASONS.get(probe.outcome, ("unverified", probe.outcome))
+        print(f"  mcp gateway daemon: ⚠ {label}: {reason} after {probe.elapsed_secs:.1f}s")
         return
     mine = code_fingerprint()
     owner = (
@@ -362,11 +387,16 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
     On the kiro backend a session's process is an ``AcpRuntime``, which is
     session-UNBOUND by design (one process multiplexes N sessions, so it cannot
     carry one session's key in its environment — ``acp/runtime.py`` injects
-    none). The gateway's per-call caller injection is therefore the ONLY
-    identity channel for that backend, and it exists only for servers listed in
-    ``mcp_gateway.stub_servers``. An unrouted server means every strict tool on
-    it is refused — silently, once per call, with no hint that the cause is
-    topology rather than the calling session.
+    none). The gateway's per-call caller injection is one strict-identity
+    channel, and it exists only for servers listed in
+    ``mcp_gateway.stub_servers``. It is not the only one:
+    :func:`kiro_crew.mcp_core._resolve_session_key_strict` also accepts the
+    signed per-session token that ``AcpRuntime`` mints unconditionally for its
+    control-plane elements, and the verified host-pid sidecar. An unrouted
+    server is therefore "not routed through the gateway", not "without an
+    identity channel"; its strict tools are refused only when none of those
+    channels resolves, and the refusal then names the cause
+    (:func:`kiro_crew.mcp_core.strict_identity_diagnosis`).
 
     Reports only, and deliberately appends NO entry to doctor's ``issues``:
     ``mcp_gateway.stub_servers`` is empty by default because routing starts a
@@ -395,17 +425,17 @@ def _doctor_strict_identity(cfg: KiroCrewConfig) -> None:
         )
         return
     names = ", ".join(unrouted)
-    print(f"  strict identity: ⏹ no identity channel for {names}")
+    print(f"  strict identity: ⏹ not routed through the gateway: {names}")
     render._print_wrapped(
-        "Tools that must know which session is calling (monitor_start, "
-        "session_ledger_*, set_project, ask_question, session control, "
-        "chat_folder_*) are refused while a server is unrouted: on the kiro "
-        "backend the session's AcpRuntime carries no session key in its "
-        "environment by design, so the gateway's per-call caller injection is "
-        "the only channel, and it covers routed servers only. Route them from "
-        "MCP Management (or add them to mcp_gateway.stub_servers and restart) "
-        "if you use those tools. Leaving them unrouted is a valid choice — "
-        "routing starts a broker and one stub process per server — so this is "
-        "a note, not a problem to fix; the tools' own refusal now names the "
-        "same cause."
+        "This is the default and needs no change. Tools that must know which "
+        "session is calling (monitor_start, cron_add, session_ledger_*, "
+        "set_project, ask_question, session control, chat_folder_*) identify it "
+        "from a signed per-session token on the session's MCP element, which "
+        "needs no routing and no gateway. This check reads config only and does "
+        "not verify a live session. If one of those tools is refused, its error "
+        "names the identity channel that failed; route the server from MCP "
+        "Management (or add it to mcp_gateway.stub_servers and restart) only "
+        "when that error says the element carried no session token. Leaving "
+        "servers unrouted is a valid choice — routing starts a broker and one "
+        "stub process per server."
     )

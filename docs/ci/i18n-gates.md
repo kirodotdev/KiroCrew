@@ -18,11 +18,18 @@ cd website && npm run i18n:check
 |---|---|---|
 | `frontend-lint` | Check i18n extraction, key references and plurals | `npm run i18n:check` (the runner below) |
 | `frontend-test` | Unit tests | `npx vitest run --coverage`, sharded across a matrix with each shard's coverage merged by `frontend-coverage-merge`; it includes the diff-scoped `localeFormatting.test.ts` gates and the catalog duplicate-key guard `duplicateKeys.test.ts` (see below) |
-| `e2e` | Run E2E and dedicated memory UI evidence in parallel | `python scripts/ci_e2e_parallel.py`; its `i18n` lane runs `npm --prefix website run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
+| `i18n-render` | Render every surface under en-XA, head vs base | `npm run i18n:render` (`scripts/check-i18n-render.mjs --build`) |
 
-The render gate lives in the `e2e` job to reuse the Chromium install that job
-already pays for. It needs no gateway, no token and no backend: it serves the
-build over loopback and answers every `/api/**` call from fixtures.
+The render gate is its own job (`i18n Render Gate (en-XA, head vs base)`), on the
+default-size Linux runner, path-filtered like `frontend-lint` (skipped on a
+backend-only diff). It needs no gateway, no token and no backend: it serves the
+build over loopback and answers every `/api/**` call from fixtures, and the
+Chromium it installs is the same exact-version cached download the `e2e` job
+makes. It is not a lane of the `e2e` job because it cannot share that job's CPU:
+two DEV builds plus a Chromium render of every surface for two trees is about
+13 minutes on a hosted 4-vCPU runner (the runner a fork PR gets), and run
+alongside the 330-spec Playwright suite it pushed the suite past its 1020 s
+ceiling on 27% of fork-PR runs, against 2.5% on the fleet's large instance.
 
 ## `npm run i18n:check` is a RUNNER, not an `&&` chain
 
@@ -178,9 +185,12 @@ disabled for the whole PR. An unavailable base ref is a CI problem to fix, not a
 reason to stop checking. The render scanner and the diff-scoped vitest gates exit
 non-zero on an unresolvable configured ref for the same reason.
 
-A local run normally has no `I18N_BASE_REF`, and the table says so
+A bare local run normally has no `I18N_BASE_REF`, and the table says so
 (`NOT RUN: no base commit supplied`) rather than accusing the diff-scoped checks
-of having stopped measuring.
+of having stopped measuring. `scripts/local-gate.py` sets it to the merge-base with
+its `--base` when the caller has not, because the `[changed-values]` style tests
+skip themselves green without it and a local gate run would otherwise pass a
+catalog value CI then fails.
 
 ## Why a separate ESLint invocation
 

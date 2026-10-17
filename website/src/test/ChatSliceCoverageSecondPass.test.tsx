@@ -33,6 +33,7 @@ import chatReducer, {
   clearUndeletableHistory,
   createSlot,
   deleteHistorySession,
+  clearHistorySessions,
   deleteSlot,
   fetchHistory,
   finalizeAssistant,
@@ -67,6 +68,7 @@ import dashboardReducer, { addSlotOptimistic, setSidebarOrder } from '../store/d
 import notificationsReducer from '../store/notificationsSlice'
 import instancesReducer from '../store/instancesSlice'
 import { SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
+import { ASK_ANSWERED_HEADER, ASK_QUESTION_SERVER, MAX_TOOL_RESULT_CHARS } from '../utils/askQuestionTool'
 import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
 import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
@@ -78,6 +80,7 @@ const apiMock = vi.hoisted(() => ({
   createChatSlot: vi.fn(),
   deleteChatSlot: vi.fn(),
   deleteSession: vi.fn(),
+  clearSessions: vi.fn(),
   resumeChatSlot: vi.fn(),
   sessions: vi.fn(),
   setSlotColor: vi.fn(),
@@ -1244,6 +1247,57 @@ describe('chatSlice message patching', () => {
     expect(outs[2]).toBeUndefined()
     expect(outs[1]).toBeUndefined()
   })
+
+  it('does not copy answered output onto a third-party ask_question row', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: 'third-party' },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n"Question" -> "Answer"`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBe(output)
+    expect(chat(store).messages[1].meta?.output).toBeUndefined()
+  })
+
+  it('copies answered output onto a kirocrew-core ask_question row', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n"Question" -> "Answer"`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBe(output)
+  })
+
+  it('does not copy oversized answered output into message meta', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('A'))
+    store.dispatch(replaceMessages([
+      msg({
+        role: 'tool',
+        content: '🔧 ask_question',
+        meta: { tool_call_id: 'tc-ask', tool_name: 'ask_question', mcp_server: ASK_QUESTION_SERVER },
+      }),
+    ]))
+    const output = `${ASK_ANSWERED_HEADER}\n${'x'.repeat(MAX_TOOL_RESULT_CHARS)}`
+    store.dispatch(sseToolResult({ slot: 'A', tool_call_id: 'tc-ask', output }))
+    expect(chat(store).messages[0].meta?.output).toBeUndefined()
+  })
 })
 
 describe('chatSlice approval and permission reducers', () => {
@@ -1627,6 +1681,61 @@ describe('chatSlice thunks', () => {
     await store.dispatch(deleteHistorySession('h1'))
     expect(chat(store).undeletableHistory).toBeNull()
     expect(chat(store).history).toEqual([])
+  })
+
+  // "Delete all". The gateway answers a partial clear with 200 and
+  // `ok: false`, so the thunk must read the body, not just the status: both a
+  // refused request and a 200 shortfall land on the same refused-delete notice.
+  it('records nothing when Delete all left nothing behind', async () => {
+    apiMock.clearSessions.mockResolvedValueOnce({ ok: true, cleared: 2, skipped: 0, failed: 0, undeletable: [] })
+    const store = makeStore()
+    await store.dispatch(clearHistorySessions())
+    expect(chat(store).undeletableHistory).toBeNull()
+  })
+
+  it('names the rows a 200 Delete all left behind and counts the failed ones', async () => {
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1', title: 'Nightly digest' }, { key: 'h2' }], has_more: false })
+    apiMock.clearSessions.mockResolvedValueOnce({
+      ok: false,
+      cleared: 0,
+      skipped: 0,
+      failed: 2,
+      undeletable: [
+        { id: 'h1', code: 'cron_ownership_unknown' },
+        { id: 'gone', code: 'ledger_exclusion_unwritable' },
+      ],
+    })
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    await store.dispatch(clearHistorySessions())
+    expect(chat(store).undeletableHistory).toEqual({
+      key: '',
+      title: '',
+      code: '',
+      bulk: {
+        left: 4,
+        cleared: 0,
+        rows: [
+          { key: 'h1', title: 'Nightly digest', code: 'cron_ownership_unknown' },
+          { key: 'gone', title: '', code: 'ledger_exclusion_unwritable' },
+        ],
+      },
+    })
+  })
+
+  it('records a refused Delete all by code and clears it on the next attempt', async () => {
+    apiMock.clearSessions.mockRejectedValueOnce(Object.assign(new Error('conflict'), {
+      status: 409,
+      body: JSON.stringify({ ok: false, error: 'busy', code: 'cron_store_busy', cleared: 0 }),
+    }))
+    const store = makeStore()
+    await store.dispatch(clearHistorySessions())
+    expect(chat(store).undeletableHistory).toEqual({
+      key: '', title: '', code: 'cron_store_busy', bulk: { left: null, cleared: 0, rows: [] },
+    })
+    apiMock.clearSessions.mockResolvedValueOnce({ ok: true, cleared: 0, skipped: 0, failed: 0, undeletable: [] })
+    await store.dispatch(clearHistorySessions())
+    expect(chat(store).undeletableHistory).toBeNull()
   })
 
   // The older-page REQUEST is exercised at the reducer boundary rather than

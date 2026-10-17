@@ -30,16 +30,19 @@ def test_ledger_reads_and_appends_as_utf8():
     either alone, so both call sites are pinned together."""
     src = _src("ledger.py")
     assert 'read_text(encoding="utf-8", errors="replace")' in src
-    assert 'self.path.open("a", encoding="utf-8")' in src
+    assert 'self.path, "a", encoding="utf-8"' in src
     assert "self.path.read_text()" not in src
     assert 'self.path.open("a")' not in src
+    assert 'self.path, "a")' not in src
 
 
 def test_discovery_diagnostic_log_is_utf8():
     """`errors="replace"` is deliberately absent: this is a write of our own
     JSON, and silently replacing a character would corrupt a diagnostic."""
     src = _src("agent_discovery.py")
-    assert '"agent_discovery.log", "a", encoding="utf-8"' in src
+    assert 'log_path = log_dir / "agent_discovery.log"' in src
+    assert 'open(log_path, "a", encoding="utf-8"' in src
+    assert 'log_path, "a")' not in src
     assert '"agent_discovery.log", "a")' not in src
 
 

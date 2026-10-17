@@ -16,10 +16,16 @@ import { recentErrors, recordError, redactSecrets, type ErrorReport } from '../.
 import { chatSlotDetailPath } from '../../api/chatSlotPaths'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, floorForGen, olderHeadAbovePage, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq } from './transcript'
+import { deduplicateByMid, finalizePageStreaming, floorForGen, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, raiseChunkSeq, sameTranscript, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage } from './transcript'
 import { abortActiveOlderFetch, pagingCursorAfterKeptHead, slotCoverageShortfall, slotSwitchFetchLimit } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans, type ThinkingAnchor } from './thinking'
-import { bumpRunEpoch, enterActiveSlot, pushHistory } from './runState'
+import {
+  bumpRunEpoch,
+  enterActiveSlot,
+  historyReportsRunning,
+  pushHistory,
+  recordEndedTurn,
+} from './runState'
 import { parkActiveTranscript, retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { loadSlotActivity } from './activity'
@@ -58,6 +64,18 @@ export type SwitchSlotArg = string | { key: string; keepTargetOnMissing?: boolea
  *  `meta.arg` entirely (see the fulfilled reducer's requestId note), and the
  *  reducers' pre-existing tolerance of that must survive this indirection. */
 const switchSlotKey = (arg: SwitchSlotArg): string => typeof arg === 'object' && arg !== null ? arg.key : arg
+
+/** Whether a switchSlot settlement belongs to a request a later switch
+ *  superseded. The live claim cannot answer this once the later switch has
+ *  settled and nulled it, and the thunk never aborts an earlier read of the
+ *  same slot: that read can land after the newer one, carrying a page captured
+ *  before everything the pane now shows. `slotSwitchLatestRequestId` survives
+ *  settlement for exactly this. A hand-rolled dispatch without a requestId is
+ *  never superseded. */
+const supersededSwitch = (state: ChatState, requestId: string | undefined): boolean => {
+  const latest = state.slotSwitchLatestRequestId
+  return typeof requestId === 'string' && typeof latest === 'string' && requestId !== latest
+}
 
 /** The structured report behind a localized switch failure, so the pane notice's
  *  "ask the agent" hand-off carries the request and the real error, not just the
@@ -101,9 +119,21 @@ const switchSlotFailureReport = (
   const raw = errMessage(error)
   const endpoint = chatSlotDetailPath(key)
   // Same key normalization `findReport` applies (the journal stores redacted
-  // messages), newest first.
+  // messages), newest first. Transport-rejection entries (`code` network /
+  // timeout) are skipped: those share the browser's one `Failed to fetch`
+  // message across every endpoint, so a journal match on one is not evidence it
+  // is THIS request's — the notice must record its own entry carrying the
+  // localized sentence as the message and the raw error in `detail`, exactly as
+  // the journal-less path below does. (A transport rejection is still available
+  // to the hand-off through the report pinned on the error, but that entry's
+  // message is the bare `Failed to fetch`, not the sentence the pane shows.)
   const needle = redactSecrets(raw).trim()
-  const found = needle ? recentErrors().find(r => r.endpoint === endpoint && r.message.trim() === needle) : undefined
+  const found = needle
+    ? recentErrors().find(r =>
+        r.endpoint === endpoint
+        && r.code !== 'network' && r.code !== 'timeout'
+        && r.message.trim() === needle)
+    : undefined
   if (found) return { report: found }
   const status = (error as { status?: unknown } | null)?.status
   const cls = (error as { name?: unknown } | null)?.name
@@ -401,6 +431,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // -- including a same-key switch, where the key alone still looks valid.
       state.slotCursorKey = null
       state.slotSwitchRequestId = action.meta?.requestId ?? null
+      state.slotSwitchLatestRequestId = state.slotSwitchRequestId
       state.slotSwitchTarget = target
       // Save current slot's activity
       if (state.activeSlot) {
@@ -470,21 +501,39 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         state.slotLoading = true
       }
       state._wsChunkedDuringFetch = false
+      // Everything past this length is appended while the fetch is in flight.
+      state._switchLiveFrom = state.messages.length
     })
     .addCase(switchSlot.fulfilled, (state, action) => {
+      // A later switch owns the pane: its own fulfilment, or the cache its
+      // `pending` restored, already set the view this older page predates.
+      // Applied, a page from a turn this tab has seen end finalizes the live
+      // turn that followed it. The claim below is never this request's: it is
+      // null or the newest request's.
+      if (supersededSwitch(state, action.meta?.requestId)) return
       // Before the guards below, so an early return still ends this claim. Keyed
       // on requestId, which a hand-rolled dispatch may omit, so read it safely.
       if (state.slotSwitchRequestId !== null && state.slotSwitchRequestId === action.meta?.requestId) { state.slotSwitchRequestId = null; state.slotSwitchTarget = null; state.slotSwitchOrigin = null }
-      const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+      const { key, messages: fetchedMessages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away during fetch
+      const reportedRunning = action.payload.running
+      const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+      const endedTurnHistory = reportedRunning && !running
+      // A page captured before this turn ended, copied so the writes below
+      // never land in the action. Its rows keep their roles through the merge,
+      // which drops the page's streaming rows wherever it re-attaches a newer
+      // local reply; the ones it keeps are finalized after it.
+      const messages = endedTurnHistory
+        ? fetchedMessages.map(message => ({ ...message }))
+        : fetchedMessages
+      if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       // A payload carrying `comparableTotal` came from the coverage walk: the
       // carried count is the first bounded read's settled one, and only that
       // may become the baseline.
       const comparable = (action.payload as { comparableTotal?: number }).comparableTotal
       retainServerTotal(state, key, comparable ?? action.payload.total, running,
         undefined, comparable !== undefined || action.payload.boundedRead)
-      state.slotState = running ? 'streaming' : 'idle'
       // Mark stale permissions as resolved so ApprovalBar ignores them
       if (!running) {
         for (const m of messages) {
@@ -514,6 +563,23 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       // Hold the pre-fetch array so the assignment below can be skipped when
       // the fetched history turns out to be redundant (see sameTranscript).
       const existing = state.messages
+      // The user's own sends that landed while this fetch was in flight. A
+      // deep link opens a slot (`pending`, composer live) and the fetch for
+      // its page is still out when the user sends: the optimistic bubble -- or
+      // its echo, which has already given it the server `mid` -- sits in
+      // `existing` past the `pending` baseline, and the page, read BEFORE the
+      // send, does not carry it. Replacing wholesale would drop the user's
+      // message from the view until the end-of-turn refresh. Keep exactly
+      // those rows: live (past the baseline), the user's (a `sendId` only a
+      // send mints), not already on the page by identity (`tailNotInPage`),
+      // so a cached row the server since dropped cannot ride along and a page
+      // that already caught the send cannot double it. The trailing reply has
+      // its own re-attach below; these go in front of it, in send order.
+      const liveFrom = Math.min(state._switchLiveFrom ?? existing.length, existing.length)
+      const liveSends = tailNotInPage(
+        existing.slice(liveFrom).filter(m => m.role === 'user' && typeof m.meta?.sendId === 'string' && m.meta.sendId),
+        preserved,
+      )
       let next: ChatMessage[]
       if (
         state._wsChunkedDuringFetch
@@ -521,7 +587,7 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         && lastLocal.content.length > 0
       ) {
         // WS chunks arrived during fetch — use fetched history + local streaming
-        next = [...preserved.filter(m => m.role !== 'streaming'), lastLocal]
+        next = [...preserved.filter(m => m.role !== 'streaming'), ...liveSends, lastLocal]
       } else if (
         lastLocal
         && (lastLocal.role === 'assistant' || lastLocal.role === 'streaming')
@@ -549,10 +615,15 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         const finalized: ChatMessage = (lastLocal.role === 'streaming' && !running)
           ? { ...lastLocal, role: 'assistant' }
           : lastLocal
-        next = [...preserved.filter(m => m.role !== 'streaming'), finalized]
+        next = [...preserved.filter(m => m.role !== 'streaming'), ...liveSends, finalized]
       } else {
-        next = preserved
+        next = liveSends.length ? [...preserved, ...liveSends] : preserved
       }
+      // None of the ended turn's live segments may stay the append target for
+      // the next turn. Finalized after the merge, not before it: a fetched
+      // partial finalized first reads as a reply, passes the streaming filter
+      // above beside the newer local reply, and the reply renders twice.
+      if (endedTurnHistory) next = finalizePageStreaming(next, preserved)
       /* switchSlot fetches a BOUNDED page (OLDER_PAGE_LIMIT), and `pending`
        * restored this slot's cached transcript into `state.messages`, so
        * assigning the page wholesale collapsed a window the reader had paged in
@@ -568,28 +639,50 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       const priorServerRows = existing.filter(m => m.role !== 'thinking')
       const { olderHead } = olderHeadAbovePage(priorServerRows, preserved)
       if (olderHead.length) next = [...olderHead, ...next]
+      // The page's run verdict. An idle page that does not carry a send made
+      // while it was in flight (`liveSends`) was read BEFORE that send: it
+      // describes the slot as it was before the turn the send opened, so its
+      // `running: false` is stale, not an observation. Taking it idled the
+      // slot (`slotRunning`, `pendingTurnSlot`) under a turn the server was
+      // already running; nothing re-asserted the run until its first chunk,
+      // and for those seconds the transcript read "user row last, slot
+      // idle" -- the shape `selectTurnInterrupted` offers Resume on, so the
+      // composer swapped its placeholder for the interrupted-turn one while
+      // the reply was on its way. Keep the local run state the send (or a
+      // live `slots` frame) established; a page that caught the send, or
+      // one that reports running, is current and lands as before.
+      //
       // The active slot's server snapshot flipping to running is a turn
       // start (see `ChatState.runEpoch`), as it is in
       // syncSlotRunningFromServer; the hand-back in `enterActiveSlot` reads
       // the epoch to tell a turn that ran on screen from a slot that saw
       // nothing.
-      if (running && !state.slotRunning) bumpRunEpoch(state, key)
-      state.slotRunning = running
-      state.slotStopping = action.payload.stopping ?? false
-      state.pendingTurnSlot = null
+      const pagePredatesLiveSend = !running && liveSends.length > 0
+      if (!pagePredatesLiveSend) {
+        state.slotState = running ? 'streaming' : 'idle'
+        if (running && !state.slotRunning) bumpRunEpoch(state, key)
+        state.slotRunning = running
+        state.slotStopping = action.payload.stopping ?? false
+        state.pendingTurnSlot = null
+      }
       // Seed the replay guard from the PURE fetched page: its trailing
       // streaming row carries the newest chunk seq the server folded into
       // it, so a live chunk racing this snapshot is dropped, not re-appended.
       // Seqs are the slot's and never restart, so a snapshot from an earlier
       // turn can only sit at or below the live floor (raise, never lower). A
-      // snapshot of a slot that is NOT running says no stream is in flight:
-      // the floor is cleared, so a gateway restart (which does restart the
-      // counter) cannot leave a stale floor over the next turn's chunks.
-      if (running) {
+      // page this tab knows was captured before its turn ended seeds it too:
+      // the floor survives a turn end, as `_done` leaves it, so a redelivered
+      // chunk of the ended turn cannot reopen its reply. A snapshot of a slot
+      // that is NOT running says no stream is in flight: the floor is
+      // cleared, so a gateway restart (which does restart the counter) cannot
+      // leave a stale floor over the next turn's chunks. A
+      // page that predates a live send has no say on that stream either: the
+      // floor its chunks raised stays.
+      if (reportedRunning) {
         const snapGen = snapshotChunkGen(messages)
         state.lastChunkSeq = raiseChunkSeq(floorForGen(state.lastChunkSeq, state.lastChunkGen, snapGen), snapshotChunkSeq(messages))
         if (snapGen !== undefined) state.lastChunkGen = snapGen
-      } else {
+      } else if (!pagePredatesLiveSend) {
         state.lastChunkSeq = undefined
       }
       /* The cursor is a row OFFSET, not the array's first row, so keeping a head
@@ -632,17 +725,24 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
       next = reseated.list
       parked[safeKey(key)] = [...reseated.remaining, ...orphaned]
       next = hydrateQueuedBubbles(next, queue)
+      next = preserveSettledMcpOauth(existing, next)
       next = deduplicateByMid(next)
+      next = preserveSettledStopState(existing, next)
       // Switching back to an already-loaded slot re-fetches a history that is
       // usually identical; skipping the write keeps every existing reference.
       if (!sameTranscript(existing, next)) state.messages = next
       // Update cache and clear loading state. This is the active view, so the
       // marker is slotHasMore -- writing the array alone left a stale flag.
-      writeSlotPage(state, key, state.messages, hasMore)
+      writeSlotPage(state, key, state.messages, hasMore, undefined,
+        state.slotCursorKey === key ? state.slotOldestIndex : undefined)
       state.slotLoading = false
       seedContextUsage(state, key, action.payload.context)
     })
     .addCase(switchSlot.rejected, (state, action) => {
+      // As in `fulfilled`: a later switch owns the pane, so an older read of
+      // the same slot failing after it must not empty the transcript and run
+      // state that switch put on screen (the transient branch below).
+      if (supersededSwitch(state, action.meta?.requestId)) return
       // Only the CURRENT claim may unwind: a stale rejection (a newer switch
       // already took the requestId) must not fight the switch in flight.
       const target = switchSlotKey(action.meta.arg)

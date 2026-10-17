@@ -11,7 +11,7 @@ import type { ChatMessage } from '../types'
  * composer — mirroring `_has_conversation` in
  * `src/kiro_crew/dashboard/chat_handlers.py`, which authorizes the press under
  * the slot lock. `selectTurnInterrupted` only decides what the button SAYS,
- * mirroring `_is_interrupted`, which makes the same split to pick the
+ * mirroring `_is_interrupted` (`chat_api/continue_turn.py`), which makes the same split to pick the
  * continuation body handed to the model.
  *
  * These tests pin both so the pairs cannot drift apart silently — a drift on the
@@ -151,16 +151,15 @@ describe('selectContinuable', () => {
   })
 
   it('is false on a crew-bound slot — the server refuses Continue there', () => {
-    // `remote_bound_refusal` answers 409 `remote_action_unsupported` for
+    // `relay_archive_refusal` answers 409 `relay_archive_read_only` for
     // `executor == "remote"`, so an offer here is a button that cannot work.
     expect(selectContinuable(state({ messages: [msg('user')] }, [{ key: 'slot-1', executor: 'remote' }]))).toBe(false)
   })
 
   it('is false on a crew-bound slot whose relayed turn died mid-stream', () => {
-    // The reported shape, and the reason the guard is not merely defensive:
-    // `relay_remote_turn`'s failure path appends this trailing `error` row, so
-    // without the guard a dropped tunnel leaves the composer offering a
-    // guaranteed-409 Resume. `selectTurnInterrupted` still reads it as
+    // An archive whose last relayed turn died ends on this trailing `error`
+    // row, so without the guard the composer would offer a guaranteed-409
+    // Resume. `selectTurnInterrupted` still reads it as
     // interrupted — that half is true and unchanged; only availability moves.
     const bound = state({ messages: [
       msg('user', 'what shall we do?'),
@@ -169,6 +168,75 @@ describe('selectContinuable', () => {
     ] }, [{ key: 'slot-1', executor: 'remote' }])
     expect(selectTurnInterrupted(bound)).toBe(true)
     expect(selectContinuable(bound)).toBe(false)
+  })
+
+  it('a quiet end (nothing_to_do tool row) is a finished turn, not an interruption', () => {
+    // Mirrors `is_quiet_end_row` / `test_not_interrupted_after_a_quiet_end`:
+    // [user, tool, tool] is the crash tail too, so only the row's persisted
+    // trusted identity may close the turn.
+    const quietMeta = { tool_call_id: 'b', tool_name: 'nothing_to_do', mcp_server: 'kirocrew-core', ends_turn: true }
+    const quiet = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 gh pr view', { tool_call_id: 'a' }),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', quietMeta),
+    ] })
+    expect(selectTurnInterrupted(quiet)).toBe(false)
+    // Same identity, no `ends_turn`: the applier refused (a person opened the
+    // turn), so the turn is unanswered.
+    const refused = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', { tool_call_id: 'b', tool_name: 'nothing_to_do', mcp_server: 'kirocrew-core' }),
+    ] })
+    expect(selectTurnInterrupted(refused)).toBe(true)
+    // A tool row AFTER the quiet end: the model kept working past it, so the
+    // quiet-end row no longer closes the turn.
+    const laterWork = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', quietMeta),
+      msg('tool', '🔧 gh pr view', { tool_call_id: 'c' }),
+    ] })
+    expect(selectTurnInterrupted(laterWork)).toBe(true)
+    const titleOnly = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 echo nothing_to_do', { tool_call_id: 'a' }),
+    ] })
+    expect(selectTurnInterrupted(titleOnly)).toBe(true)
+    const foreign = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 nothing_to_do', { tool_call_id: 'a', tool_name: 'nothing_to_do', mcp_server: 'other-mcp', ends_turn: true }),
+    ] })
+    expect(selectTurnInterrupted(foreign)).toBe(true)
+  })
+
+  it('a quiet end on a backend that names no tool (KAS) is still a finished turn', () => {
+    // KAS states the server and no tool name, so the applied row carries
+    // `mcp_server` + `ends_turn` and nothing else. This is the persisted shape
+    // that offered Resume after every patrol quiet end.
+    const kasMeta = { tool_call_id: 'b', mcp_server: 'kirocrew-core', done: true, ends_turn: true }
+    const kas = state({ messages: [
+      msg('nudge', '[auto-nudge cycle 25] patrol'),
+      msg('tool', '🔧 @kirocrew-work/work_ledger_read', { tool_call_id: 'a', mcp_server: 'kirocrew-work' }),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', kasMeta),
+    ] })
+    expect(selectTurnInterrupted(kas)).toBe(false)
+    // A real interruption on the same backend still offers Resume: the turn
+    // died after an ordinary tool, or the quiet end was refused (no stamp).
+    const died = state({ messages: [
+      msg('nudge', '[auto-nudge cycle 25] patrol'),
+      msg('tool', '🔧 @kirocrew-work/work_ledger_read', { tool_call_id: 'a', mcp_server: 'kirocrew-work' }),
+    ] })
+    expect(selectTurnInterrupted(died)).toBe(true)
+    const refused = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 @kirocrew-core/nothing_to_do', { tool_call_id: 'b', mcp_server: 'kirocrew-core', done: true }),
+    ] })
+    expect(selectTurnInterrupted(refused)).toBe(true)
+    // A present identity half that names another tool never closes the turn.
+    const wrongTool = state({ messages: [
+      msg('user', 'patrol'),
+      msg('tool', '🔧 Run Command', { tool_call_id: 'b', tool_name: 'execute_bash', mcp_server: 'kirocrew-core', ends_turn: true }),
+    ] })
+    expect(selectTurnInterrupted(wrongTool)).toBe(true)
   })
 
   it('still offers Continue on a local slot while another slot is crew-bound', () => {
@@ -271,7 +339,7 @@ describe('selectTurnInterrupted', () => {
   })
 
   // The completed-/compact shapes, mirroring `is_turn_interrupted` in
-  // `src/kiro_crew/dashboard/state.py` (test_is_interrupted.py pins the same
+  // `src/kiro_crew/dashboard/state_parts/transcript_rows.py` (test_is_interrupted.py pins the same
   // five tails). Only the PAIR -- a /compact user row whose compaction result
   // row is present -- reads as finished; the tag alone must not decide (the
   // auto-compaction case above is a real interruption carrying the same row).
@@ -438,7 +506,7 @@ describe('selectTurnInterrupted', () => {
  * The shared crew-bound predicate. `selectContinuable` (above) and ChatPage's
  * regenerate / edit-resend gates both route through this ONE spelling, so the
  * two client surfaces cannot drift from each other or from the server's
- * `remote_bound_refusal`. The `selectContinuable` cases above already exercise
+ * `relay_archive_refusal`. The `selectContinuable` cases above already exercise
  * it end-to-end (executor: 'remote' -> not continuable); these pin the predicate
  * itself, including the keying that a slot-object test could otherwise leave
  * ambiguous.

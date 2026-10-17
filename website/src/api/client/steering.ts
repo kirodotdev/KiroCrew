@@ -13,7 +13,7 @@ import type { ClientTransport } from './transport'
 const projectHeader = (projectKey?: string): HeadersInit | undefined =>
   projectKey ? { 'X-Steering-Project': projectKey } : undefined
 
-export function createSteeringEndpoints({ post, put, del, j, sessionKeyHeader: _sk }: ClientTransport) {
+export function createSteeringEndpoints({ post, put, del, j, jfetch: fetch, sessionKeyHeader: _sk }: ClientTransport) {
   const files = {
     // Steering (Kiro steering files — ~/.kiro/steering + <project>/.kiro/steering)
     // sessionKey names the CHAT SLOT whose project `workspace/` keys resolve

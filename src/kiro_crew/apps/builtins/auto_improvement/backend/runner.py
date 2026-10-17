@@ -9,9 +9,11 @@ cannot make a blocking ``pytest`` run yield — or would let concurrent work
 contaminate the very timings the ruler exists to trust.
 
 So the driver runs on ONE ``threading.Thread`` and the async gateway never touches
-it directly. Routes call :meth:`RunSupervisor.start` / :meth:`status` / :meth:`stop`,
-which are cheap, lock-guarded, non-blocking operations over in-memory state; the
-thread pushes progress INTO that state through the driver's ``on_progress`` sink.
+it directly. Routes call :meth:`RunSupervisor.start` / :meth:`status` / :meth:`stop`
+inside ``asyncio.to_thread``. They are cheap, lock-guarded operations over in-memory
+state, except that building the supervisor, and :meth:`status` for a run live outside
+this supervisor, read the run record back from disk. The thread pushes progress INTO
+that state through the driver's ``on_progress`` sink.
 The only synchronization is one :class:`threading.Lock` around a small mutable
 :class:`RunState`, held for microseconds and never across a subprocess call.
 
@@ -35,12 +37,15 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
 from . import clone_setup, store
 
@@ -95,11 +100,20 @@ TERMINAL_RECORD_NAME = "run.state.json"
 
 #: Statuses a persisted record is allowed to claim when it is read back at startup.
 #:
-#: The record is written only at a TERMINAL transition, so any other value in the file is
-#: stale or hand-edited. Restoring ``running`` from disk would make a fresh process report a
-#: live run with no thread behind it -- the same "UI spins forever" lie ``status()`` already
-#: guards against for a torn-down thread -- so a non-terminal record is ignored, not restored.
+#: A record is written twice per run: by ``start()`` before the run's thread exists, marked
+#: ``in_flight`` and naming the process that wrote it, and at the TERMINAL transition, which
+#: overwrites it. Restoring ``running`` from disk would make a fresh process report a live run
+#: with no thread behind it -- the same "UI spins forever" lie ``status()`` already guards
+#: against for a torn-down thread -- so a non-terminal record is never restored as this
+#: process's own run. An ``in_flight`` record whose run has nothing behind it any more -- its
+#: writer is gone, or it names this process but no run of this process wrote it -- is a run a
+#: restart cut off and is read back as an error; one whose run is still live elsewhere is
+#: reported as running; any other non-terminal record is stale, hand-edited or unjudgeable here
+#: and is ignored. See :func:`_in_flight_writer_alive`.
 _PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_ERROR})
+
+#: The error a run reports after a restart cut it off before its terminal transition.
+INTERRUPTED_BY_RESTART = "interrupted by a restart before it finished"
 
 
 class _CalibrationStopped(Exception):
@@ -166,6 +180,19 @@ class RunState:
     #: same instant as the driver's ``archive_root``, so the record and the archive can never
     #: land in different workspaces. Raised by the GPT review of this branch.
     record_path: Path | None = None
+    #: True when this state was read back from the in-flight record of a run that is live
+    #: outside this supervisor.
+    #:
+    #: That is a DIFFERENT live process -- the gateway, when this one is the stdio MCP server, or
+    #: an old gateway still alive during an overlapping restart -- or, only where one process
+    #: builds more than one supervisor, a run another supervisor of this process started (see
+    #: :data:`_LIVE_RUNS`). A record naming this process with no such run behind it is never this
+    #: state: it reads as interrupted. The owner holds the run's thread, so
+    #: :meth:`RunSupervisor.status` does not apply its "no thread behind it" guard to this state,
+    #: and re-reads the record instead of serving it from memory: the answer then follows the run
+    #: to its terminal record, or to the interrupted error once the writer is gone. A run this
+    #: process starts replaces the state, which clears this.
+    owned_elsewhere: bool = False
 
 
 #: Stands in for one activity string the redactor could not scan. A placeholder rather than a
@@ -227,6 +254,91 @@ def _terminal_record_path() -> Path:
     outcome to another repository between the terminal transition and the write.
     """
     return store.results_dir() / TERMINAL_RECORD_NAME
+
+
+#: The ``pid_t`` ceiling. A larger PID on disk is not a process, and ``os.kill`` overflows on it.
+_PID_MAX = 2**31 - 1
+
+
+class _LiveRuns:
+    """Run ids THIS process image started whose terminal record is not written yet.
+
+    The in-app restart ends in ``os.execv``, which replaces the image but keeps the PID and the
+    process start time, so the in-flight record of a run it cut off still names this process,
+    and :func:`pid_identity_alive` calls that writer alive. A fresh import is the one thing an
+    exec guarantees (``safety_override._IMAGE_TOKEN`` relies on the same fact), so this registry
+    is empty in the new image: a record naming this process whose run is not here has no thread
+    behind it. Counted, because two supervisors of one process can mint the same id in one second.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = {}
+
+    def add(self, run_id: str) -> None:
+        with self._lock:
+            self._counts[run_id] = self._counts.get(run_id, 0) + 1
+
+    def discard(self, run_id: str) -> None:
+        with self._lock:
+            left = self._counts.get(run_id, 0) - 1
+            if left > 0:
+                self._counts[run_id] = left
+            else:
+                self._counts.pop(run_id, None)
+
+    def __contains__(self, run_id: object) -> bool:
+        with self._lock:
+            return run_id in self._counts
+
+
+#: Added by :meth:`RunSupervisor.start` before it writes the in-flight record, discarded only
+#: after the run's terminal record is written, so a reader never finds the in-flight record of a
+#: live run of this process without its entry.
+_LIVE_RUNS = _LiveRuns()
+
+
+def _in_flight_writer_alive(record: dict[str, Any]) -> bool | None:
+    """Whether the run an in-flight record names is still live: ``True``, ``False`` or ``None``.
+
+    ``False`` when nothing is behind the run any more, which is a run a restart cut off: the
+    writer is confirmed gone -- its PID names no process, or names a later one -- or the record
+    names THIS process but no run of this process image wrote it, as after an in-place restart
+    (see :class:`_LiveRuns`). ``True`` while the run is live elsewhere: a reader in another
+    process (the stdio MCP server reads this same file) is looking at that process's run, or a
+    second supervisor of this process at a run the first started. ``None`` when nothing here can
+    tell: the PID belongs to another PID domain (another host sharing the data home, a replaced
+    container), or the record names no writer this module would have written. The judgement of
+    another process is :func:`pid_identity_alive`, the one
+    ``cron_inflight.RunningMarker.owner_alive`` makes for a cron run's in-flight marker.
+    """
+    pid = record.get("pid")
+    domain = record.get("pid_domain")
+    start = record.get("pid_start")
+    if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= _PID_MAX:
+        return None
+    if not isinstance(domain, str) or not (start is None or isinstance(start, str)):
+        return None
+    alive = pid_identity_alive(pid, domain, start)
+    if alive and pid == os.getpid():
+        return str(record.get("run_id") or "") in _LIVE_RUNS
+    return alive
+
+
+def _left_by_this_process(record: dict[str, Any]) -> bool:
+    """Whether a record names exactly this process: its PID, PID domain and start identity.
+
+    Only this process image, or the one an in-place restart replaced with it, can write all
+    three. For an in-flight record with no run of this image behind it, that is the exec case.
+    """
+    if record.get("pid") != os.getpid():
+        return False
+    domain, start = current_process_identity()
+    return (
+        start is not None
+        and record.get("pid_domain") == domain
+        and record.get("pid_start") == start
+    )
 
 
 def _as_count(value: Any) -> int:
@@ -310,6 +422,10 @@ class RunSupervisor:
         self._reserved = False
         self._driver: Any = None
         self._stop_requested = False
+        #: Bumped under ``_lock`` by every :meth:`stop`. A start records it when it is
+        #: admitted and launches only if it is unchanged, so a stop that lands while the
+        #: driver is still being built (no thread to signal yet) still holds.
+        self._stop_seq = 0
         #: WHY the last :meth:`_build_runner` call produced no agent runner, or ``""``.
         #: Written on EVERY call so it is self-clearing: a previous offline run cannot leak
         #: its reason into a later run whose runner came online. Read by :meth:`start`, which
@@ -317,17 +433,28 @@ class RunSupervisor:
         self._offline_reason = ""
         self._hydrate_terminal_record()
 
-    def _hydrate_terminal_record(self) -> None:
-        """Seed ``_state`` from the last run's persisted terminal record.
+    def _hydrate_terminal_record(self, *, replacing: RunState | None = None) -> None:
+        """Seed ``_state`` from the last run's persisted record.
 
-        Called ONCE, from ``__init__``, which is what keeps :meth:`status` honest about being
-        a cheap in-memory read (this module's header promises exactly that). Without it the
-        record would be written and never shown: a gateway restart after a failed run reports
-        ``idle``, which is the "nothing persisted, no trace after a restart" half of the
-        reported defect -- persisting a record nobody reads back fixes nothing.
+        Called from ``__init__``, and again from :meth:`status` only while ``_state`` is a run
+        that is live outside this supervisor (``replacing`` is that state). Reading once at
+        construction is what keeps :meth:`status` a cheap in-memory read for every run of this
+        supervisor. Without it the record would be
+        written and never shown: a gateway restart after a failed run reports ``idle``, which is
+        the "nothing persisted, no trace after a restart" half of the reported defect --
+        persisting a record nobody reads back fixes nothing.
 
-        Best-effort by construction. A missing, unreadable, malformed or non-terminal record
-        leaves the supervisor idle, which is the pre-existing behaviour, and this NEVER raises:
+        An ``in_flight`` record is judged by :func:`_in_flight_writer_alive`. Nothing behind it --
+        its writer gone, or the record naming this process with no run of this process behind
+        it, as after an in-place restart -- it is a run a restart cut off and reads as an error.
+        Live elsewhere -- the stdio MCP server reading during a gateway run -- it reads as
+        running, re-read on each :meth:`status`. Not judgeable here, it is ignored. A record
+        naming exactly this process from before an in-place restart is also written back as the
+        interrupted terminal record, since only this image can tell that its writer is gone.
+
+        Best-effort by construction. A missing, unreadable or malformed record, a non-terminal
+        one not marked ``in_flight``, or an ``in_flight`` one whose writer cannot be judged leaves
+        the supervisor idle, which is the pre-existing behaviour, and this NEVER raises:
         it runs inside the process-wide singleton every run route resolves through, so a
         failure here would take out run reporting entirely rather than degrade it -- and
         because ``get_supervisor()`` caches only on success, one raise would 500 EVERY
@@ -336,20 +463,32 @@ class RunSupervisor:
         (``int(float('inf'))`` raising ``OverflowError`` was exactly that) degrades to idle
         instead of wedging the app.
 
-        COST, stated plainly: this is the only I/O in the supervisor's construction, and
-        ``get_supervisor()`` builds the singleton lazily -- so the first request to reach it (a
-        ``GET /run`` handler, on the event loop) pays two small reads and the ``store``
-        directory ``mkdir``s. Once per process, on a document of a few hundred bytes. The
-        alternative -- reading on the idle path of :meth:`status` -- pays it on every poll and
-        makes that method's documented "cheap, in-memory" contract false.
+        COST, stated plainly: this is the only I/O in the supervisor's construction. The
+        gateway builds the singleton once, in the app's startup hook, and any other first caller
+        of ``get_supervisor()`` pays the same: two small reads, the ``store`` directory
+        ``mkdir``s and, for an in-flight record, a PID probe, plus one write after an in-place
+        restart. Once per process, on a document of a few hundred bytes, and off the event loop:
+        every coroutine that resolves the supervisor does so inside ``asyncio.to_thread``. The
+        alternative -- reading on the idle path of :meth:`status` -- pays it on every poll. Only a
+        run that is live outside this supervisor pays it per :meth:`status` call: the MCP server
+        while the gateway's run is live, and a gateway only while another process that wrote the
+        record is still alive, as in an overlapping restart.
         """
         try:
             record = store.read_json(_terminal_record_path(), None)
             if not isinstance(record, dict):
+                self._adopt(RunState(), replacing)
                 return
             status = str(record.get("status") or "")
-            if status not in _PERSISTABLE_STATUSES:
+            in_flight = record.get("in_flight") is True
+            writer_alive = _in_flight_writer_alive(record) if in_flight else None
+            if (in_flight and writer_alive is None) or (
+                not in_flight and status not in _PERSISTABLE_STATUSES
+            ):
+                self._adopt(RunState(), replacing)
                 return
+            interrupted = writer_alive is False
+            owned_elsewhere = writer_alive is True
             numbers = (
                 record.get("cycle"),
                 record.get("kept"),
@@ -369,22 +508,50 @@ class RunSupervisor:
                     "%s: ignoring the terminal run record -- it carries a non-finite number",
                     store.APP_NAME,
                 )
+                self._adopt(RunState(), replacing)
                 return
-            self._state = RunState(
-                status=status,
-                run_id=str(record.get("run_id") or ""),
-                cycle=_as_count(record.get("cycle")),
-                kept=_as_count(record.get("kept")),
-                drafted=_as_count(record.get("drafted")),
-                error=str(record.get("error") or ""),
-                started_at=_pos_float(record.get("started_at"), 0.0),
-                finished_at=_pos_float(record.get("finished_at"), 0.0),
-                offline_reason=str(record.get("offline_reason") or ""),
+            if interrupted:
+                # A run a restart cut off is reported as failed, never as live: no thread of any
+                # process is behind it, and it is not resumed.
+                status = STATUS_ERROR
+            elif owned_elsewhere:
+                status = STATUS_RUNNING
+            self._adopt(
+                RunState(
+                    status=status,
+                    run_id=str(record.get("run_id") or ""),
+                    cycle=_as_count(record.get("cycle")),
+                    kept=_as_count(record.get("kept")),
+                    drafted=_as_count(record.get("drafted")),
+                    error=INTERRUPTED_BY_RESTART if interrupted else str(record.get("error") or ""),
+                    started_at=_pos_float(record.get("started_at"), 0.0),
+                    finished_at=_pos_float(record.get("finished_at"), 0.0),
+                    offline_reason=str(record.get("offline_reason") or ""),
+                    owned_elsewhere=owned_elsewhere,
+                ),
+                replacing,
             )
+            if interrupted and replacing is None and _left_by_this_process(record):
+                # The record names this very image: an in-place restart cut the run off and kept
+                # the PID and start time, so for a reader in another process (the stdio MCP
+                # server) that writer is alive and the run reads as live. Only this image knows it
+                # is not, so it saves the outcome it just read, once, from its first read.
+                self._persist_terminal_state()
         except Exception:  # noqa: BLE001 -- see docstring: must not break every run route
             logger.warning(
                 "%s: could not restore the terminal run record", store.APP_NAME, exc_info=True
             )
+
+    def _adopt(self, restored: RunState, replacing: RunState | None) -> None:
+        """Install a state read back from disk, unless a run of this supervisor owns ``_state``.
+
+        ``replacing`` is the state a re-read in :meth:`status` was taken for. The record is read
+        outside the lock, and a run this supervisor starts meanwhile replaces that state and may
+        already have written the record, so the read is dropped instead of filed over it.
+        """
+        with self._lock:
+            if replacing is None or self._state is replacing:
+                self._state = restored
 
     # ── progress sink (called from the worker thread) ─────────────────────────
 
@@ -681,18 +848,29 @@ class RunSupervisor:
 
     # ── the public API the routes call ────────────────────────────────────────
 
-    def start(self, config: dict[str, Any]) -> dict[str, Any]:
+    def stop_seq(self) -> int:
+        """The current stop count. Pass it to :meth:`start` as ``admitted_at``."""
+        with self._lock:
+            return self._stop_seq
+
+    def start(self, config: dict[str, Any], *, admitted_at: int | None = None) -> dict[str, Any]:
         """Build the driver and launch the loop on a worker thread.
 
         Returns ``{"run_id", "status"}`` on success. Raises :class:`RuntimeError` when a
-        run is already active, :class:`ValueError` when no repository is configured, and
+        run is already active or a :meth:`stop` landed after admission,
+        :class:`ValueError` when no repository is configured, and
         :class:`PermissionError` when the clone's push is not disabled — the routes map
         each to a 409 with the message intact.
+
+        ``admitted_at`` is a :meth:`stop_seq` reading taken when the caller admitted the
+        request; omitted, admission is the entry to this call.
 
         Order matters: the driver is built (and every refusal raised) BEFORE the thread
         is created, so a refusal leaves the supervisor exactly as it was.
         """
         with self._lock:
+            if admitted_at is None:
+                admitted_at = self._stop_seq
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
 
@@ -710,6 +888,9 @@ class RunSupervisor:
             # above while the slow _build_driver ran outside it.
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            if self._stop_seq != admitted_at:
+                # A stop (or the app being disabled) landed while the driver was built.
+                raise RuntimeError("the run was stopped before it started")
             self._driver = driver
             self._stop_requested = False
             self._state = RunState(
@@ -742,18 +923,40 @@ class RunSupervisor:
                 )
             thread = threading.Thread(
                 target=self._run_loop,
-                args=(driver,),
+                args=(driver, run_id),
                 name=f"auto-improvement-{run_id}",
                 daemon=True,  # never block gateway shutdown on a long measurement
             )
             self._thread = thread
             self._reserved = True
+        # Written before the thread exists, so the run's own terminal write always lands after
+        # it and overwrites it. A restart in between leaves this record, and the next process
+        # reports the run as interrupted instead of showing nothing. The record names this
+        # process, so a reader in another one (the stdio MCP server) sees a live run, not that.
+        # Registered first, so no reader finds this record while the run is missing from
+        # `_LIVE_RUNS` and calls it the leftover of an in-place restart.
+        _LIVE_RUNS.add(run_id)
+        self._persist_terminal_state(in_flight=True)
         try:
             thread.start()
-        except BaseException:
-            # A spawn failure must not wedge the supervisor as permanently busy.
+        except BaseException as exc:
+            # A spawn failure must not wedge the supervisor as permanently busy, and must not
+            # leave the in-flight record behind: the next process would report a run that never
+            # started as cut off by a restart. Record the failure as the run's terminal state.
+            # The reservation is released only once that record is written. A `calibrate()` or
+            # `start()` admitted earlier would own `_state`: `_fail` would mark the newcomer
+            # failed, and the write would file the newcomer's snapshot as this run's record.
+            # The thread is dropped first because it never ran: a `stop()` meanwhile finds no
+            # run, rather than writing `stopping` over the failure before it is saved.
             with self._lock:
-                self._reserved = False
+                self._thread = None
+            try:
+                self._fail(exc)
+                self._persist_terminal_state()
+            finally:
+                _LIVE_RUNS.discard(run_id)
+                with self._lock:
+                    self._reserved = False
             raise
         return {"run_id": run_id, "status": STATUS_RUNNING}
 
@@ -1057,8 +1260,15 @@ class RunSupervisor:
         with self._lock:
             self._state.activity.append({"t": time.time(), "note": text})
 
-    def _persist_terminal_state(self) -> None:
+    def _persist_terminal_state(self, *, in_flight: bool = False) -> None:
         """Write this run's terminal status/error/counters to disk. Call WITHOUT ``_lock``.
+
+        With ``in_flight`` it is the record ``start()`` writes before the run's thread starts:
+        the same fields with the run's live status, plus ``in_flight: true`` and the writer's
+        ``pid``, ``pid_domain`` and ``pid_start`` -- the identity ``cron_inflight`` records for
+        a cron run. :meth:`_hydrate_terminal_record` reads it back as a run a restart cut off
+        once that writer is gone, and as that process's live run while it is alive. The terminal
+        write overwrites it with a record that carries none of those keys.
 
         The half of the fix that outlives the process. :class:`RunState` is in-memory only, so
         before this a run's terminal status and error died with the gateway: a restart reported
@@ -1098,16 +1308,29 @@ class RunSupervisor:
                 "finished_at": st.finished_at,
                 "offline_reason": st.offline_reason,
             }
+            if in_flight:
+                record["in_flight"] = True
         try:
+            if in_flight:
+                # Read outside the lock: the start identity is a read of this process's own
+                # kernel record, and `_lock` is never held across I/O.
+                pid_domain, pid_start = current_process_identity()
+                record.update(pid=os.getpid(), pid_domain=pid_domain, pid_start=pid_start)
             store.write_json_atomic(path or _terminal_record_path(), record)
         except Exception:  # noqa: BLE001 -- a durability failure must not mask the outcome
             logger.warning(
-                "%s: could not persist the terminal run record", store.APP_NAME, exc_info=True
+                "%s: could not persist the %s run record",
+                store.APP_NAME,
+                "in-flight" if in_flight else "terminal",
+                exc_info=True,
             )
 
-    def _run_loop(self, driver: Any) -> None:
+    def _run_loop(self, driver: Any, run_id: str) -> None:
         """The worker thread body. Catches EVERYTHING: an escaping exception here would
-        kill the thread silently and leave the UI reporting ``running`` forever."""
+        kill the thread silently and leave the UI reporting ``running`` forever.
+
+        ``run_id`` leaves :data:`_LIVE_RUNS` only after the terminal record is written, so the
+        in-flight record is never on disk with the run already gone from the registry."""
         with self._lock:
             # The thread is RUNNING now, so `is_alive()` can carry the answer from here and the
             # reservation is not needed. Released first so an early return or raise below
@@ -1153,13 +1376,25 @@ class RunSupervisor:
             logger.exception("%s: run failed", store.APP_NAME)
             self._fail(exc)
             self._persist_terminal_state()
+        finally:
+            _LIVE_RUNS.discard(run_id)
 
     def status(self) -> dict[str, Any]:
-        """A JSON-ready snapshot. Cheap, lock-guarded, safe to poll on the event loop.
+        """A JSON-ready snapshot. Cheap and lock-guarded for this supervisor's own runs.
 
         ``activity`` is copied out as a list so the caller can serialize it without
         racing the worker thread's next append.
+
+        A run that is live outside this supervisor (``RunState.owned_elsewhere``) is re-read
+        first rather than served from memory: its truth is its owner's record, so the answer
+        follows it to the run's outcome, or to the interrupted error once the writer is gone.
+        Only that state pays the read (see :meth:`_hydrate_terminal_record`), and because it can
+        happen, a coroutine calls this inside ``asyncio.to_thread``, as every route does.
         """
+        with self._lock:
+            observed = self._state if self._state.owned_elsewhere else None
+        if observed is not None:
+            self._hydrate_terminal_record(replacing=observed)
         with self._lock:
             st = self._state
             alive = self._thread is not None and self._thread.is_alive()
@@ -1167,9 +1402,10 @@ class RunSupervisor:
             # interpreter tore it down) must not be reported as still running. An OFFLINE run
             # is not `done` on this path either: the thread never reached the terminal
             # transition, but the run still had no agent runner, and reporting the same lie
-            # here would just move it one branch over.
+            # here would just move it one branch over. A run live outside this supervisor has its
+            # thread there, so a missing thread here says nothing about it.
             status = st.status
-            if status in (STATUS_RUNNING, STATUS_STOPPING) and not alive:
+            if status in (STATUS_RUNNING, STATUS_STOPPING) and not alive and not st.owned_elsewhere:
                 clean = not st.error and not st.offline_reason
                 status = STATUS_DONE if clean else STATUS_ERROR
             return {
@@ -1198,9 +1434,11 @@ class RunSupervisor:
         fifteen-minute suite would just time out at the proxy.
         """
         with self._lock:
+            self._stop_seq += 1
             thread = self._thread
             driver = self._driver
-            if thread is None or not thread.is_alive():
+            # `_reserved` covers a thread assigned but not yet started (see `_in_flight`).
+            if thread is None or not (thread.is_alive() or self._reserved):
                 return {
                     "status": self._state.status,
                     "run_id": self._state.run_id,
@@ -1218,7 +1456,11 @@ class RunSupervisor:
             except Exception:  # noqa: BLE001 — a stop must never raise at the caller
                 logger.debug("request_stop failed", exc_info=True)
 
-        thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+        try:
+            thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+        except RuntimeError:
+            # Not started yet; `_stop_requested` is already set for it to read.
+            pass
         stopped = not thread.is_alive()
         with self._lock:
             return {

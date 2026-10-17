@@ -56,10 +56,22 @@ export default function TeamGroupHeader({
       {/* Under width pressure the NAME wins: the rule gives way first, then the
           count truncates, and only then the name -- the group's identifier must
           not lose to its ancillary text, or two similarly named teams read as
-          one. */}
-      <span className={cn('text-[11.5px] font-semibold truncate min-w-0 [flex-shrink:1]', nameCls)}>{name}</span>
+          one. `shrink-0`, not a small flex-shrink: flex shrinks every shrinkable
+          item at once in proportion to its basis, so a 4px squeeze still took a
+          fraction of a pixel off the name, and `truncate` turns ANY overflow into
+          an ellipsis ("Inta…" beside "1 crewma…"). The cap bites only under
+          pressure: it is the header's width less what MUST stay beside the name
+          -- the icon (13), the four `gap-2`s (32) and "Open team" (~55) -- so at
+          any width the name may take every pixel the count and the rule can give
+          up, and a long name truncates only once the row is too narrow for it.
+          (A percentage cap truncated long names at every width, beside an empty
+          rule.) At the roster's minimum (200 - 44 pad = 156) that leaves 56px,
+          enough for "Intake" (35). */}
+      <span className={cn('text-[11.5px] font-semibold truncate min-w-0 shrink-0 max-w-[calc(100%-100px)]', nameCls)}>{name}</span>
       <span className="text-[10.5px] text-muted font-mono tabular-nums truncate min-w-0 [flex-shrink:8]">{count}</span>
-      <span className="flex-1 min-w-2 h-px bg-border [flex-shrink:100]" />
+      {/* The rule is decoration: it gives way to nothing (`min-w-0`) before a
+          letter of the count does. */}
+      <span className="flex-1 min-w-0 h-px bg-border [flex-shrink:100]" />
     </>
   )
   if (isNoTeam) {

@@ -56,7 +56,7 @@ function AssociationBadge({ assoc }: { assoc?: string | null }) {
   const label = i18nT(ASSOC_LABEL_KEY[assoc])
   const isFirst = assoc === 'FIRST_TIME_CONTRIBUTOR' || assoc === 'FIRST_TIMER'
   const isMaint = assoc === 'OWNER' || assoc === 'MEMBER' || assoc === 'COLLABORATOR'
-  const cls = isFirst ? 'bg-warn-subtle text-warn' : isMaint ? 'bg-accent-subtle text-accent' : 'bg-bg-elevated text-muted'
+  const cls = isFirst ? 'bg-warn-subtle text-warn-text' : isMaint ? 'bg-accent-subtle text-accent' : 'bg-bg-elevated text-muted'
   return <span className={`text-[10.5px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{label}</span>
 }
 

@@ -38,6 +38,7 @@ import Modal from '../../../components/Modal'
 import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
+import { guideCaution } from '../../../guide/trustRoot'
 export interface ReviewComment {
   id: string
   file: string
@@ -680,6 +681,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
                   </DropdownMenuItem>
                   <DropdownMenuItem
                     aria-label={i18nT('apps.specBuilder.components.specDetail.delete_spec_named', { name })}
+                    {...guideCaution}
                     disabled={deleteMutation.isPending}
                     onSelect={() => {
                       // A failure from a previous attempt would otherwise greet

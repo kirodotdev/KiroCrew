@@ -475,7 +475,7 @@ async def link_slot_to_slack(
             # → neutral default. Redaction runs on the full snippet text before
             # truncation so a truncation boundary can never split (and hide) a
             # credential. Slots initialize title to their raw key
-            # (state.py), so gate on display_title — a slot still showing
+            # (state_parts/chat_slot.py), so gate on display_title — a slot still showing
             # NEW_SESSION_TITLE has no real title, while cron/plan/handoff slots
             # (real titles, _titled unset) pass their title through.
             base = slot.title if slot.display_title != dashboard_state.NEW_SESSION_TITLE else ""
@@ -668,7 +668,7 @@ def auto_link_eligible(state: DashboardState, slot: Any) -> bool:  # noqa: ANN00
     # does not prove a person started the session, the marker does.
     if getattr(slot, "_created_by", ""):
         return False
-    if getattr(slot, "channel_origin", False) or getattr(slot, "is_remote", False):
+    if getattr(slot, "channel_origin", False) or getattr(slot, "executor", "") == "remote":
         return False
     if getattr(slot, "memory_mode", "persistent") != "persistent":
         return False

@@ -111,7 +111,7 @@ async def test_v1_base_visible_matrix(env, monkeypatch, binding, vectors, mode):
     if name:
         # Internal recall resolves a named store from the session's recorded
         # execution, never from transcript metadata alone.
-        env.bind_session(session, name)
+        await env.bind_session_async(session, name)
     env.metadata[session] = {
         "memory_store": name or "default",
         "memory_mode": mode,

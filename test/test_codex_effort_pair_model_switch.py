@@ -34,15 +34,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import model_registry
-from kiro_crew.acp.client import AcpClient, AcpError, AcpModelUnavailable
+from kiro_crew.acp.client import (
+    AcpClient,
+    AcpError,
+    AcpModelUnavailable,
+    resolve_usable_model,
+)
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    JsonRpcMessage,
     effort_config_option_id,
 )
 from kiro_crew.providers.acp import AcpProvider
@@ -540,6 +547,37 @@ class TestTheSessionHandleTakesTheSameSplit:
         assert applied_id == "openai.gpt-6-astra[max]"
 
     @pytest.mark.asyncio
+    async def test_a_refusal_is_recorded_and_the_next_call_overwrites_it(self) -> None:
+        """The handle never raises on an exhausted ladder; it records the refused
+        spelling in ``model_pin_refused`` and resets that record at the start of
+        every call, so a reader sees the verdict of the call it just made."""
+        handle = MagicMock()
+        handle._runtime = MagicMock()
+        handle._runtime.acp_backend = ACP_BACKEND_CODEX
+        handle._advertised_model_ids = MagicMock(return_value=["gpt-6.1-sol[high]"])
+        handle._resolved_model_id = "gpt-6-luna[high]"
+        handle.model_pin_refused = ""
+        handle.set_config_option = AsyncMock(
+            side_effect=AcpError("JSON-RPC error: Invalid params", code=-32602)
+        )
+        handle._push_model_config_option = lambda model_id, *, strict: (
+            AcpSessionHandle._push_model_config_option(handle, model_id, strict=strict)
+        )
+
+        await AcpSessionHandle.set_model(handle, "gpt-6.1-sol")
+        assert handle.model_pin_refused == "gpt-6.1-sol"
+
+        # An id the list does not serve resolves to "inherit the default": no
+        # ladder runs, and the earlier refusal must not be read as this call's.
+        await AcpSessionHandle.set_model(handle, "gpt-7-nova")
+        assert handle.model_pin_refused == ""
+
+        handle.set_config_option = AsyncMock(return_value=None)
+        await AcpSessionHandle.set_model(handle, "gpt-6.1-sol")
+        assert handle.model_pin_refused == ""
+        assert handle._model == "gpt-6.1-sol"
+
+    @pytest.mark.asyncio
     async def test_a_non_member_handle_never_takes_the_split(self) -> None:
         handle = MagicMock()
         handle._runtime = MagicMock()
@@ -646,6 +684,7 @@ def test_refusal_of_an_advertised_id_is_not_blamed_on_the_account() -> None:
         "gpt-6-astra[max]",
         ["gpt-6-astra[high]", "gpt-6-astra[max]"],
         advertised_but_refused=True,
+        backend=ACP_BACKEND_CODEX,
     )
     assert "advertised" in str(exc)
     assert "not an account restriction" in str(exc)
@@ -653,7 +692,7 @@ def test_refusal_of_an_advertised_id_is_not_blamed_on_the_account() -> None:
 
 
 def test_refusal_of_an_unadvertised_id_keeps_the_entitlement_hint() -> None:
-    exc = AcpModelUnavailable("claude-opus-5", ["gpt-6-astra[high]"])
+    exc = AcpModelUnavailable("claude-opus-5", ["gpt-6-astra[high]"], backend=ACP_BACKEND_KIRO)
     assert "not available on your account" in str(exc)
     assert "whoami" in str(exc)
 
@@ -662,7 +701,7 @@ def test_an_advertised_id_alone_does_not_earn_the_mismatch_wording() -> None:
     """ "Advertised implies entitled" is established for codex-acp only. A harness
     that lists models an account cannot run must keep the entitlement wording, or
     a user on the wrong tier is told their account is fine and given no probe."""
-    exc = AcpModelUnavailable("some-model", ["some-model", "other-model"])
+    exc = AcpModelUnavailable("some-model", ["some-model", "other-model"], backend=ACP_BACKEND_KIRO)
     assert "not available on your account" in str(exc)
     assert "whoami" in str(exc)
     assert "not an account restriction" not in str(exc)
@@ -688,6 +727,30 @@ async def test_a_codex_refusal_of_an_advertised_pair_reports_the_mismatch(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_codex_refusal_of_a_bare_id_served_by_the_pairs_reports_the_mismatch(
+    tmp_path,
+) -> None:
+    """A live pick arrives BARE (``openai.gpt-6-astra``) against a pair-only list,
+    so exact membership alone would deny it the mismatch wording and fall through
+    to the entitlement reading. The ladder's verdict folds the pair test in."""
+    client = _codex_client(tmp_path)
+
+    async def _refuse_all(config_id: str, value: str) -> None:
+        raise AcpError("JSON-RPC error: Invalid params", code=-32602)
+
+    client.set_config_option = _refuse_all  # type: ignore[method-assign]
+
+    with pytest.raises(AcpModelUnavailable) as caught:
+        await client.set_model("openai.gpt-6-astra")
+
+    message = str(caught.value)
+    assert "openai.gpt-6-astra" not in client._advertised_model_ids()
+    assert "not an account restriction" in message
+    assert "not among the models" not in message
+    assert "whoami" not in message
+
+
+@pytest.mark.asyncio
 async def test_a_non_member_refusal_of_an_advertised_id_keeps_the_entitlement_wording(
     tmp_path,
 ) -> None:
@@ -707,9 +770,11 @@ async def test_a_non_member_refusal_of_an_advertised_id_keeps_the_entitlement_wo
         await client.set_model("claude-opus-5-premium")
 
     assert "claude-opus-5-premium" in client._advertised_model_ids()
-    assert "not available on your account" in str(caught.value)
+    # Still an entitlement reading, not the pair-harness mismatch one ...
+    assert "may not be available to the account" in str(caught.value)
     assert "not an account restriction" not in str(caught.value)
-    assert "whoami" in str(caught.value)
+    # ... but without the kiro-cli sign-in advice, which a claude user cannot act on.
+    assert "whoami" not in str(caught.value)
 
 
 # ── a BARE pin on the pair-id harness: the second vocabulary ──
@@ -937,3 +1002,291 @@ class TestABarePinOnAPairIdHarness:
         with pytest.raises(AcpModelUnavailable):
             await provider.set_model("anthropic.claude-opus-9")
         handle.set_model.assert_not_awaited()
+
+
+# ── explicit picks on the shared-session path ──
+#
+# Dashboard codex chats run on ``AcpSessionProvider`` (codex shares runtimes).
+# Whether a bare codex id is served is ``resolve_pin_spelling_on``'s answer
+# (tested above). What these cover is the explicit pick after that answer: the
+# handle applies the model non-strictly and records an adapter refusal in
+# ``model_pin_refused``; ``chat_handlers._try_live_model_switch`` reads that
+# record after the call and raises the same ``AcpModelUnavailable`` the dedicated
+# runtime raises, so the dashboard answers 400 and keeps the old model instead of
+# reporting a switch the session never made.
+
+#: The catalog from the reported gateway log, trimmed to two models.
+CODEX_PAIR_CATALOG = [
+    *(f"gpt-6.1-sol[{e}]" for e in ("low", "medium", "high", "xhigh", "max", "ultra")),
+    *(f"gpt-6-luna[{e}]" for e in ("low", "medium", "high", "xhigh", "max")),
+]
+
+CLAUDE_CATALOG = ["claude-opus-4-8", "claude-sonnet-4-6"]
+
+
+def _shared_codex_provider(
+    advertised: list[str] = CODEX_PAIR_CATALOG, *, backend: str = ACP_BACKEND_CODEX
+):
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    handle = MagicMock()
+    handle.session_id = "codex-shared-1"
+    handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+    handle.set_model = AsyncMock()
+    handle.cancel = AsyncMock()
+    handle.refresh_available_models = AsyncMock(return_value=[])
+    runtime = MagicMock()
+    runtime.acp_backend = backend
+    runtime.is_alive.return_value = True
+    return AcpSessionProvider(handle, runtime), handle
+
+
+class TestSharedSessionExplicitPick:
+    @pytest.mark.asyncio
+    async def test_a_bare_pick_reaches_the_handle_without_a_probe(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        await provider.set_model("gpt-6.1-sol")
+
+        handle.set_model.assert_awaited_once_with("gpt-6.1-sol")
+        handle.refresh_available_models.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_model_codex_does_not_serve_is_refused_without_kiro_advice(self) -> None:
+        provider, handle = _shared_codex_provider()
+
+        with pytest.raises(AcpModelUnavailable) as caught:
+            await provider.set_model("gpt-7-nova")
+
+        handle.set_model.assert_not_awaited()
+        msg = str(caught.value)
+        assert "gpt-6.1-sol[low]" in msg
+        assert "whoami" not in msg
+        assert "Builder ID" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_refusal_keeps_the_sign_in_hint(self) -> None:
+        """A harness on the host kiro-cli identity store keeps exact membership
+        and the `whoami` hint."""
+        provider, handle = _shared_codex_provider(backend=ACP_BACKEND_KIRO)
+
+        with pytest.raises(AcpModelUnavailable) as caught:
+            await provider.set_model("gpt-6.1-sol")
+
+        handle.set_model.assert_not_awaited()
+        assert "whoami" in str(caught.value)
+
+
+def _shared_runtime_provider(
+    backend: str, advertised: list[str], *, refuse: bool = True
+) -> AcpProvider:
+    """An ``AcpProvider`` on a shared runtime whose adapter refuses every model value.
+
+    The handle runs the real ``AcpSessionHandle.set_model`` and model ladder over a
+    ``set_config_option`` that answers the bare ``-32602`` codex emits for a value
+    it will not take (or accepts everything when ``refuse`` is False).
+    """
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    handle = MagicMock()
+    handle.session_id = "shared-refusing-1"
+    handle._runtime = MagicMock()
+    handle._runtime.acp_backend = backend
+    handle.available_models = [{"modelId": m, "name": m} for m in advertised]
+    handle._advertised_model_ids = MagicMock(return_value=list(advertised))
+    handle._resolved_model_id = advertised[0]
+    handle.model_pin_refused = ""
+    handle.is_turn_active = False
+    handle.cancel = AsyncMock()
+    handle.refresh_available_models = AsyncMock(return_value=[])
+    handle.set_config_option = AsyncMock(
+        side_effect=AcpError("JSON-RPC error: Invalid params", code=-32602) if refuse else None
+    )
+    handle._push_model_config_option = lambda model_id, *, strict: (
+        AcpSessionHandle._push_model_config_option(handle, model_id, strict=strict)
+    )
+    handle.set_model = lambda model_id: AcpSessionHandle.set_model(handle, model_id)
+    runtime = MagicMock()
+    runtime.acp_backend = backend
+    runtime.is_alive.return_value = True
+    with patch("kiro_crew.providers.acp.AcpClient"):
+        provider = AcpProvider(acp_backend=backend)
+    provider._client = AcpSessionProvider(handle, runtime)  # type: ignore[assignment]
+    return provider
+
+
+def _shared_handle(provider: AcpProvider) -> MagicMock:
+    return provider._client._handle  # type: ignore[attr-defined]
+
+
+class TestSubstituteCallersDoNotRaiseOnTheSharedRuntime:
+    """``resolve_substitute_set_model`` is the seam the refusal-fallback swap, its
+    restore probe, the Auto route and the throttle walk all take. On a shared
+    runtime it reaches ``AcpSessionProvider.set_model`` through
+    ``AcpProvider.set_model``, and none of those callers can be made to raise by
+    an adapter refusal: they pre-filter, witness the swap, and read "stayed on
+    the default" themselves."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend", "advertised", "pick"),
+        [
+            (ACP_BACKEND_CODEX, CODEX_PAIR_CATALOG, "gpt-6.1-sol"),
+            (ACP_BACKEND_CLAUDE, CLAUDE_CATALOG, "claude-opus-4-8"),
+        ],
+    )
+    async def test_the_substitute_seam_does_not_raise_on_a_refusal(
+        self, backend: str, advertised: list[str], pick: str
+    ) -> None:
+        from kiro_crew.llm_helpers import resolve_substitute_set_model
+
+        provider = _shared_runtime_provider(backend, advertised)
+        set_model_fn = resolve_substitute_set_model(provider)
+        assert set_model_fn is not None
+
+        await set_model_fn(pick)
+
+        handle = _shared_handle(provider)
+        assert handle.model_pin_refused == resolve_usable_model(pick, advertised, backend=backend)
+        assert handle.set_config_option.await_count >= 1
+
+
+class TestTheDashboardPickReadsTheRefusalBack:
+    """The path ``_try_live_model_switch`` takes on a shared runtime: a plain
+    ``provider.client.set_model`` followed by a read of ``model_pin_refused``."""
+
+    @staticmethod
+    def _switch(provider: AcpProvider, wire: str):
+        from kiro_crew.dashboard import chat_handlers as ch
+        from kiro_crew.dashboard.chat_handlers import _ChatSlot
+
+        return (
+            patch.object(ch, "_wire_model_id", return_value=wire),
+            patch.object(ch, "_reapply_effort_after_live_switch", AsyncMock(return_value=True)),
+            lambda: ch._try_live_model_switch("s1", _ChatSlot("s1"), provider, wire),
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("backend", "advertised", "pick", "mismatch"),
+        [
+            # A bare id the advertised pairs serve: the adapter contradicts its
+            # own list, so the mismatch wording, not the account one.
+            (ACP_BACKEND_CODEX, CODEX_PAIR_CATALOG, "gpt-6.1-sol", True),
+            (ACP_BACKEND_CLAUDE, CLAUDE_CATALOG, "claude-opus-4-8", False),
+        ],
+    )
+    async def test_a_refused_explicit_pick_raises_and_keeps_the_old_model(
+        self, backend: str, advertised: list[str], pick: str, mismatch: bool
+    ) -> None:
+        provider = _shared_runtime_provider(backend, advertised)
+        handle = _shared_handle(provider)
+        handle._model = advertised[0]
+        wire_patch, effort_patch, switch = self._switch(provider, pick)
+
+        with wire_patch, effort_patch, pytest.raises(AcpModelUnavailable) as caught:
+            await switch()
+
+        assert caught.value.transient is False
+        assert caught.value.model_id == pick
+        msg = str(caught.value)
+        assert "whoami" not in msg
+        assert ("not an account restriction" in msg) is mismatch
+        assert handle._model == advertised[0]
+
+    @pytest.mark.asyncio
+    async def test_a_later_successful_pick_is_not_reported_as_refused(self) -> None:
+        provider = _shared_runtime_provider(ACP_BACKEND_CODEX, CODEX_PAIR_CATALOG)
+        handle = _shared_handle(provider)
+        wire_patch, effort_patch, switch = self._switch(provider, "gpt-6.1-sol")
+
+        with wire_patch, effort_patch, pytest.raises(AcpModelUnavailable):
+            await switch()
+        assert handle.model_pin_refused == "gpt-6.1-sol"
+
+        # The adapter now takes the value: the same pick lands, and the stale
+        # refusal above must not turn it into a false 400.
+        handle.set_config_option = AsyncMock(return_value=None)
+        with wire_patch, effort_patch:
+            assert await switch() is True
+        assert handle.model_pin_refused == ""
+        assert handle._model == "gpt-6.1-sol"
+
+    @pytest.mark.asyncio
+    async def test_a_pick_the_adapter_takes_is_not_reported_as_refused(self) -> None:
+        provider = _shared_runtime_provider(ACP_BACKEND_CLAUDE, CLAUDE_CATALOG, refuse=False)
+        wire_patch, effort_patch, switch = self._switch(provider, "claude-sonnet-4-6")
+
+        with wire_patch, effort_patch:
+            assert await switch() is True
+        assert _shared_handle(provider).model_pin_refused == ""
+
+    @pytest.mark.asyncio
+    async def test_a_refused_set_model_on_kiro_answers_unavailable_without_a_reset(
+        self,
+    ) -> None:
+        """An error reply to ``session/set_model`` reaches the user as a refused
+        pick: the handler raises ``AcpModelUnavailable`` (a 4xx), it does not
+        return False (which would reset and tear down the conversation), and the
+        session keeps the model it serves."""
+        from kiro_crew.acp.transport_errors import AcpError
+
+        provider = _shared_runtime_provider(ACP_BACKEND_KIRO, ["claude-sonnet-4.6", "glm-5"])
+        handle = _shared_handle(provider)
+        handle._model = "claude-sonnet-4.6"
+        handle._session_id = "kiro-shared-1"
+        handle._send_awaited = AsyncMock(return_value=1)
+        handle._wait_for_response = AsyncMock(side_effect=AcpError("Method not found"))
+        wire_patch, effort_patch, switch = self._switch(provider, "glm-5")
+
+        with wire_patch, effort_patch, pytest.raises(AcpModelUnavailable) as caught:
+            await switch()
+
+        assert caught.value.model_id == "glm-5"
+        assert handle._model == "claude-sonnet-4.6"
+        provider._client._handle.cancel.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_is_never_reported_as_refused(self) -> None:
+        """``_wire_model_id`` answers ``"auto"`` only on the native namespace and
+        only when the session advertised it; the handle then sends it over
+        ``session/set_model`` (no config-option ladder), so there is no refusal
+        to read. A codex or claude session cannot express Auto as a set_model at
+        all and falls back to a reset before any call."""
+        from kiro_crew.dashboard import chat_handlers as ch
+        from kiro_crew.dashboard.chat_handlers import _ChatSlot
+
+        kiro = _shared_runtime_provider(ACP_BACKEND_KIRO, ["auto", "claude-sonnet-4.6"])
+        handle = _shared_handle(kiro)
+        # session/set_model is awaited; this double answers it as kiro-cli does.
+        handle._send_awaited = AsyncMock(return_value=1)
+        handle._wait_for_response = AsyncMock(return_value=JsonRpcMessage(id=1, result={}))
+        handle._session_id = "kiro-shared-1"
+        handle.model_pin_refused = "claude-opus-4.8"  # a stale record from earlier
+        kiro.available_models = MagicMock(return_value=handle.available_models)  # type: ignore[method-assign]
+        with patch.object(ch, "_reapply_effort_after_live_switch", AsyncMock(return_value=True)):
+            assert await ch._try_live_model_switch("s1", _ChatSlot("s1"), kiro, "") is True
+        assert handle.model_pin_refused == ""
+        handle.set_config_option.assert_not_awaited()
+
+        codex = _shared_runtime_provider(ACP_BACKEND_CODEX, CODEX_PAIR_CATALOG)
+        codex.available_models = MagicMock(  # type: ignore[method-assign]
+            return_value=_shared_handle(codex).available_models
+        )
+        assert await ch._try_live_model_switch("s1", _ChatSlot("s1"), codex, "") is False
+        _shared_handle(codex).set_config_option.assert_not_awaited()
+
+
+def test_unavailable_wording_keeps_the_kiro_sign_in_hint_for_host_sign_in_backends() -> None:
+    # The hint follows host_auth: a harness on the host kiro-cli identity store
+    # (kiro, KAS) keeps it, one that signs in separately (codex) does not.
+    kiro = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_KIRO)
+    kas = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_KAS)
+    codex = AcpModelUnavailable("gpt-7-nova", CODEX_PAIR_CATALOG, backend=ACP_BACKEND_CODEX)
+
+    assert "whoami" in str(kiro)
+    assert "whoami" in str(kas)
+    assert str(kas) == str(kiro)
+    assert "whoami" not in str(codex)
+    assert "Builder ID" not in str(codex)
+    assert "gpt-6.1-sol[low]" in str(codex)

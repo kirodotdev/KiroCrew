@@ -42,6 +42,7 @@ from kiro_crew.perf_sampler import (
     sanitize_profile,
     shorten_frame_paths,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Ceiling on a single run. A sampler left running for hours produces an artifact
 # nobody can load; a maintainer asking a user to profile wants a short window.
@@ -218,7 +219,7 @@ def _sample_out_of_process(args: argparse.Namespace, pid: int) -> int:
                 return 3
             try:
                 completed = subprocess.run(
-                    argv, capture_output=True, text=True, timeout=args.seconds + 60
+                    argv, capture_output=True, timeout=args.seconds + 60, **UTF8_TEXT
                 )
             except subprocess.TimeoutExpired:
                 print("py-spy did not finish within its duration plus 60s.", file=sys.stderr)

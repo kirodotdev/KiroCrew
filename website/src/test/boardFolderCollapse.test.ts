@@ -4,8 +4,8 @@
  *  is unrepresentable. Clearing is collapsed-only: an expand override survives
  *  a programmatic expansion, so a failed-and-rolled-back server expand cannot
  *  surprise-collapse a column that was explicitly opened. */
-import { describe, it, expect, beforeEach } from 'vitest'
-import { boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides } from '../utils/boardFolderCollapse'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { boardColumnFromDroppableId, loadBoardFolderCollapse, persistBoardOverride, persistClearFolderOverrides, clearFolderOverrides, boardFolderCollapseBackup, adoptBoardFolderCollapse } from '../utils/boardFolderCollapse'
 
 beforeEach(() => localStorage.clear())
 
@@ -120,5 +120,141 @@ describe('boardColumnFromDroppableId', () => {
   it('returns null for list-view and non-folder droppables', () => {
     expect(boardColumnFromDroppableId('folder-drop:folder-zzzz')).toBeNull()
     expect(boardColumnFromDroppableId('root-unnest-hint')).toBeNull()
+  })
+})
+
+describe('host backup of the override family', () => {
+  const BACKUP_KEY = 'kc-board-folder-collapsed'
+
+  it('projects nothing while no override exists', () => {
+    expect(boardFolderCollapseBackup()).toBeNull()
+    expect(localStorage.getItem(BACKUP_KEY)).toBeNull()
+  })
+
+  it('projects the per-key family as one sorted JSON object without writing it', () => {
+    persistBoardOverride('col-b', 'f1', false)
+    persistBoardOverride('col-a', 'f2', true)
+    persistBoardOverride('col-a', 'f1', true)
+    expect(boardFolderCollapseBackup()).toBe('{"col-a:f1":true,"col-a:f2":true,"col-b:f1":false}')
+    // The projection is read-only: the family stays the only thing stored.
+    expect(localStorage.getItem(BACKUP_KEY)).toBeNull()
+    expect(localStorage.length).toBe(3)
+  })
+
+  it('projects the same string regardless of the order the overrides were written in', () => {
+    persistBoardOverride('col-a', 'f1', true)
+    persistBoardOverride('col-b', 'f1', false)
+    const first = boardFolderCollapseBackup()
+    localStorage.clear()
+    persistBoardOverride('col-b', 'f1', false)
+    persistBoardOverride('col-a', 'f1', true)
+    expect(boardFolderCollapseBackup()).toBe(first)
+  })
+
+  it('drops the projection once the last override is cleared', () => {
+    persistBoardOverride('col-a', 'f1', true)
+    persistClearFolderOverrides('f1')
+    expect(boardFolderCollapseBackup()).toBeNull()
+  })
+
+  it('adopts a host value as per-key entries without storing the wire key', () => {
+    expect(adoptBoardFolderCollapse('{"col-a:f1":true,"col-b:f2":false}')).toBe(true)
+    expect(localStorage.getItem('kc-board-folder-collapsed:col-a:f1')).toBe('1')
+    expect(localStorage.getItem('kc-board-folder-collapsed:col-b:f2')).toBe('0')
+    expect(localStorage.getItem(BACKUP_KEY)).toBeNull()
+    expect(localStorage.length).toBe(2)
+    expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': true, 'col-b:f2': false })
+    // The adopted family projects the very string the host restored.
+    expect(boardFolderCollapseBackup()).toBe('{"col-a:f1":true,"col-b:f2":false}')
+  })
+
+  it('a host value replaces the family: shared pairs take its value, pairs it lacks are removed', () => {
+    persistBoardOverride('col-a', 'f1', false)
+    persistBoardOverride('col-c', 'f3', true)
+    expect(adoptBoardFolderCollapse('{"col-a:f1":true,"col-a:f2":true}')).toBe(true)
+    expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': true, 'col-a:f2': true })
+    expect(localStorage.getItem('kc-board-folder-collapsed:col-c:f3')).toBeNull()
+    expect(localStorage.length).toBe(2)
+  })
+
+  it('skips malformed entries of a host value and adopts the rest', () => {
+    expect(adoptBoardFolderCollapse('{"col-a:f1":"1","no-colon":true,"col-b:f2":true}')).toBe(true)
+    expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-b:f2': true })
+    expect(localStorage.length).toBe(1)
+  })
+
+  it('refuses a host value with no usable pair and leaves the family alone', () => {
+    persistBoardOverride('col-a', 'f1', true)
+    for (const unusable of ['garbage', '{}', '[]', '{"no-colon":true,"col-b:f2":"1"}']) {
+      expect(adoptBoardFolderCollapse(unusable)).toBe(false)
+      expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': true })
+      expect(localStorage.length).toBe(1)
+    }
+  })
+
+  it('a refused per-key write leaves the family as it was and reports the adoption as dropped', () => {
+    // Quota refuses the third per-key write. The entry added before it must
+    // go. The entry overwritten before it must come back. The entry the host
+    // value does not list must stay.
+    const refused = 'kc-board-folder-collapsed:col-b:f2'
+    persistBoardOverride('col-a', 'f1', false)
+    persistBoardOverride('col-c', 'f3', true)
+    const realSet = Storage.prototype.setItem
+    const setSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (this: Storage, k: string, v: string) {
+        if (k === refused) throw new DOMException('full', 'QuotaExceededError')
+        return realSet.call(this, k, v)
+      })
+    try {
+      expect(adoptBoardFolderCollapse('{"col-a:f1":true,"col-a:f2":true,"col-b:f2":true}')).toBe(false)
+    } finally {
+      setSpy.mockRestore()
+    }
+    expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-a:f1': false, 'col-c:f3': true })
+    expect(localStorage.getItem('kc-board-folder-collapsed:col-a:f2')).toBeNull()
+    expect(localStorage.getItem(refused)).toBeNull()
+    expect(localStorage.length).toBe(2)
+  })
+
+  it('a rollback that cannot write a longer corrupt value back removes the entry instead', () => {
+    // The first per-key write replaces a corrupt entry with one byte. Quota
+    // then refuses the second write and the write-back of the longer corrupt
+    // value. The read skipped that entry before the call. The family must
+    // read the same with the entry gone.
+    const corrupt = 'kc-board-folder-collapsed:col-a:f1'
+    const refused = 'kc-board-folder-collapsed:col-b:f2'
+    localStorage.setItem(corrupt, 'garbage')
+    persistBoardOverride('col-c', 'f3', true)
+    const realSet = Storage.prototype.setItem
+    const setSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (this: Storage, k: string, v: string) {
+        if (k === refused || v.length > 1) throw new DOMException('full', 'QuotaExceededError')
+        return realSet.call(this, k, v)
+      })
+    try {
+      expect(adoptBoardFolderCollapse('{"col-a:f1":true,"col-b:f2":true}')).toBe(false)
+    } finally {
+      setSpy.mockRestore()
+    }
+    expect(Object.fromEntries(loadBoardFolderCollapse())).toEqual({ 'col-c:f3': true })
+    expect(localStorage.getItem(corrupt)).toBeNull()
+    expect(localStorage.getItem(refused)).toBeNull()
+    expect(localStorage.length).toBe(1)
+  })
+
+  it('adopting the same host value twice changes nothing the second time', () => {
+    const value = '{"col-a:f1":true,"col-b:f2":false}'
+    expect(adoptBoardFolderCollapse(value)).toBe(true)
+    const setSpy = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      expect(adoptBoardFolderCollapse(value)).toBe(true)
+      expect(setSpy).not.toHaveBeenCalled()
+    } finally {
+      setSpy.mockRestore()
+    }
+    expect(boardFolderCollapseBackup()).toBe(value)
+    expect(localStorage.length).toBe(2)
   })
 })

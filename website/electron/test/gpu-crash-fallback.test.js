@@ -384,6 +384,14 @@ test("initGpuCrashFallback: a cold boot applies nothing and registers both liste
   assert.deepEqual(app.removed, []);
   assert.ok(app.listeners.has("child-process-gone"));
   assert.ok(app.listeners.has("web-contents-created"));
+  // The latch is handed out for other consumers (the dead-renderer dialog) so
+  // the app keeps one "dashboard loaded" fact, not two.
+  assert.equal(typeof res.dashboardLoaded, "function");
+  assert.equal(res.dashboardLoaded(), false);
+  const contents = fakeContents(`${BACKEND}/?token=t`);
+  app.emit("web-contents-created", null, contents);
+  contents.finishLoad();
+  assert.equal(res.dashboardLoaded(), true);
 });
 
 test("initGpuCrashFallback: an armed boot applies the software switches before ready and says how to undo it", () => {

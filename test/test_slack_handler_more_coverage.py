@@ -33,6 +33,7 @@ import kiro_crew.voice_reply as voice_reply
 from conftest import MockSlackClient
 from kiro_crew.acp.client import AcpProcessDied, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
+    EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -1093,6 +1094,57 @@ class TestCompactionReinjection:
             MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
         )
         assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert sessions.failures, "the turn was recorded a failure"
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    async def test_a_backend_compaction_arms_the_flag_for_the_next_turn(self, status, marks):
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though this turn landed, so the next turn must send it.
+        sessions = FakeSessions(
+            FakeProvider(
+                [
+                    AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+                    AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status),
+                ]
+            )
+        )
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+        await handle_message(
+            MockSlackClient(),
+            sessions,
+            "C1",
+            "go",
+            None,
+            "m1",
+            "U1",
+            context_builder=_RecordingBuilder(),
+        )
+        assert sessions.failures == [], "the turn landed"
+        assert ledger["marks"] == marks and ledger["armed"] is bool(marks)
+
+    @pytest.mark.asyncio
+    async def test_a_backend_compaction_arms_the_flag_when_the_turn_then_dies(self):
+        sessions = FakeSessions(
+            FakeProvider(
+                [AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed")],
+                raises=AcpProcessDied("agent died"),
+            )
+        )
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+        await handle_message(
+            MockSlackClient(),
+            sessions,
+            "C1",
+            "go",
+            None,
+            "m1",
+            "U1",
+            context_builder=_RecordingBuilder(),
+        )
         assert sessions.failures, "the turn was recorded a failure"
         assert ledger["marks"] == 1 and ledger["armed"] is True
 

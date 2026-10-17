@@ -27,9 +27,11 @@ if TYPE_CHECKING:
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
+        effort_pending_note,
         internal_memory_scope,
-        parent_spawn_allowlists,
+        parent_template_allowlists,
         parent_work_supported,
+        spawn_parent_claim,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
@@ -64,6 +66,115 @@ def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
         if candidate is canonical or effective_session_key(candidate) == parent
     )
     return canonical or (same_parent[0] if same_parent else None)
+
+
+async def _requested_backend(raw: object) -> tuple[str | None, web.Response | None]:
+    """The backend a spawn request names, as a backend id, or its refusal.
+
+    ``(None, None)`` when the request names none: the run starts on the gateway
+    default exactly as before. The request spells backends the way a governance
+    rule does (``"kiro"``, not the empty id), so an agent can name every backend
+    and a falsy value is never mistaken for one.
+
+    A backend is available when governance allows it AND this machine has it
+    installed (``probe_backend``; a probe that could not decide does not block).
+    Refused rather than degraded: the factory's gate would fall back to Kiro, and
+    a sub-agent the orchestrator sent to another harness silently running on Kiro
+    -- or failing at cold start on a harness that is not there -- is the failure
+    this parameter exists to rule out. The refusal lists only what can start, so
+    an agent's retry picks a backend that works.
+    """
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND, selectable_backend_values
+    from kiro_crew.agent_sdk.backend_install import MISSING, probe_backend
+
+    if raw is None or raw == "":
+        return None, None
+    by_name = {name: backend for backend, name in POLICY_ID_BY_BACKEND.items()}
+    selectable = selectable_backend_values()
+    # Off the loop: a probe shells out and walks the filesystem (cached briefly).
+    states = await asyncio.to_thread(lambda: {b: probe_backend(b) for b in selectable})
+    # Installed after the gateway started (``restart_required``): the gateway
+    # still holds the cached absence, so a start now would fail like a missing one.
+    available = [
+        b for b in selectable if states[b].installed != MISSING and not states[b].restart_required
+    ]
+    names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
+    backend = by_name.get(raw) if isinstance(raw, str) else None
+    if backend is not None and backend in available:
+        return backend, None
+    if backend not in states:
+        return None, web.json_response(
+            {
+                "error": f"backend {raw!r} is not available; choose one of {names}",
+                "code": "unknown_backend",
+                "backends": names,
+            },
+            status=400,
+        )
+    state = states[backend]
+    if state.restart_required:
+        return None, web.json_response(
+            {
+                "error": (
+                    f"backend {raw!r} was installed after the gateway started;"
+                    f" restart the gateway to use it. Choose one of {names}"
+                ),
+                "code": "backend_restart_required",
+                "backends": names,
+            },
+            status=400,
+        )
+    # Allowed here but not installed on this machine: say how to install it.
+    missing = ", ".join(state.missing_components) or "unknown"
+    error = (
+        f"backend {raw!r} is not installed on this machine (missing: {missing});"
+        f" choose one of {names}"
+    )
+    return None, web.json_response(
+        {
+            "error": error,
+            "code": "backend_not_installed",
+            "backends": names,
+            # "" when the probe names no installer for this backend.
+            "install_command": state.install_command,
+        },
+        status=400,
+    )
+
+
+def _qualified_model_refusal(
+    request: web.Request, model: str, backend: str | None, raw_backend: object
+) -> web.Response | None:
+    """Refuse a ``provider/model`` id that the backend this request names cannot take.
+
+    Bare and bracketed names, and a request that names no backend, keep the shape
+    check alone. Only a backend that resolves its model from an advertised list takes
+    such ids; once it has advertised one, the id must be on it, read as the models
+    picker reads it. An empty list is trusted.
+    """
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.dashboard.handlers.agents import _advertised_backend_models
+
+    if backend is None or "/" not in model:
+        return None
+    if not capabilities_for(backend).resolves_model_from_advertised_list:
+        return web.json_response(
+            {
+                "error": f"backend {raw_backend!r} does not take provider-qualified model ids",
+                "code": "model_unavailable",
+            },
+            status=400,
+        )
+    advertised = {row["model_name"] for row in _advertised_backend_models(request, backend)}
+    if advertised - {"auto"} and model not in advertised:
+        return web.json_response(
+            {
+                "error": f"model {model!r} is not among the models backend {raw_backend!r} advertises",
+                "code": "model_unavailable",
+            },
+            status=400,
+        )
+    return None
 
 
 async def api_spawn(request: web.Request) -> web.Response:
@@ -116,6 +227,7 @@ async def api_spawn(request: web.Request) -> web.Response:
                 # store resolution all ran off a value that was always None.
                 "crew": body.get("crew", ""),
                 "target_member": body.get("target_member", ""),
+                "backend": body.get("backend", ""),
             },
             SPAWN_RUN_SCHEMA,
         )
@@ -124,6 +236,14 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
+    backend, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    if backend_refusal is not None:
+        return backend_refusal
+    model_refusal = _qualified_model_refusal(
+        request, cleaned.get("model") or "", backend, cleaned.get("backend")
+    )
+    if model_refusal is not None:
+        return model_refusal
     parent_session = body.get("parent_session", "")
     if not isinstance(parent_session, str):
         return web.json_response(
@@ -131,7 +251,7 @@ async def api_spawn(request: web.Request) -> web.Response:
             status=400,
         )
     _, refusal = await internal_memory_scope(
-        request, "spawn.create", claimed_session=parent_session
+        request, "spawn.create", claimed_session=spawn_parent_claim(request, parent_session)
     )
     if refusal is not None:
         return refusal
@@ -197,7 +317,9 @@ async def api_spawn(request: web.Request) -> web.Response:
         parent_spawn_policy = (
             (
                 parent_execution.template_id,
-                await asyncio.to_thread(parent_spawn_allowlists, parent_execution.template_id),
+                await asyncio.to_thread(
+                    parent_template_allowlists, parent_session, parent_execution.template_id
+                ),
             )
             if parent_execution is not None
             else ("", ())
@@ -235,7 +357,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
     try:
         batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         batch_total = 0
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
@@ -250,6 +372,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         cwd=cwd,
         model=model or None,
         reasoning_effort=reasoning_effort,
+        backend=backend,
         approval_mode=approval_mode or None,
         silent=silent,
         batch_id=batch_id,
@@ -336,6 +459,7 @@ async def api_spawn(request: web.Request) -> web.Response:
             selection = None
 
         def _effort_verdict() -> tuple[str, str]:
+            """The receipt field for this request's effort and its text, or ``("", "")``."""
             if (
                 not isinstance(selection, tuple)
                 or len(selection) != 2
@@ -346,19 +470,26 @@ async def api_spawn(request: web.Request) -> web.Response:
                 return "", ""
             kind, verdict_agent = selection
             claim = verdict_agent if kind == "member" else ""
-            d = effort_drop_reason(model, reasoning_effort, verdict_agent, crew_agent=claim)
-            if d:
-                return d, ""
-            return "", effort_applied_note(model, reasoning_effort, verdict_agent, crew_agent=claim)
+            # Judged on the backend the run starts on, not the gateway default.
+            # At most one of the three is non-empty for a requested effort.
+            for field, verdict in (
+                ("effort_dropped", effort_drop_reason),
+                ("effort_applied", effort_applied_note),
+                ("effort_pending", effort_pending_note),
+            ):
+                text = verdict(
+                    model, reasoning_effort, verdict_agent, crew_agent=claim, backend=backend
+                )
+                if text:
+                    return field, text
+            return "", ""
 
         # The resolvers read config and glob ~/.kiro/agents — file I/O that
         # must not run on the gateway event loop (the same reason
         # get_or_create runs _session_model in an executor).
-        drop, applied = await asyncio.to_thread(_effort_verdict)
-        if drop:
-            resp["effort_dropped"] = drop
-        elif applied:
-            resp["effort_applied"] = applied
+        field, text = await asyncio.to_thread(_effort_verdict)
+        if field:
+            resp[field] = text
     if keep:
         # The conversation id is the FIRST run's id: spawn_continue targets it.
         resp["conversation"] = info.id
@@ -416,7 +547,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
-    refusal = await _spawn_scope_refusal(request, claimed_session=parent_session)
+    refusal = await _spawn_scope_refusal(
+        request, claimed_session=spawn_parent_claim(request, parent_session)
+    )
     if refusal is not None:
         return refusal
     try:
@@ -433,7 +566,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     model = str(body.get("model", "") or "")
     try:
         max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         max_turns = 0
     # The run's own cwd, resolved OFF the event loop: a continuation has to run
     # where the run ran (a project-local agent does not resolve against the pool

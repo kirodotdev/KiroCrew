@@ -21,7 +21,7 @@ import argparse
 from typing import Any, Iterable, Iterator, Mapping
 
 # The dashboard port a default install binds. Duplicated as a STRING for help
-# text only; the runtime value is config/loader.py's ``_DEFAULT_PORT``.
+# text only; the runtime value is config/loader_credentials.py's ``_DEFAULT_PORT``.
 _DEFAULT_PORT_TEXT = "5476"
 
 # Ordered sections -> ordered (command, one-line summary) pairs. Order here is
@@ -41,6 +41,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("status", "Show runtime stats"),
             ("restart", "Restart a running gateway (service-aware)"),
             ("stop", "Stop a running gateway"),
+            ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
             ("logout", "Revoke all active dashboard sessions"),
@@ -54,6 +55,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("setup", "Install agent config and run the setup wizard"),
             ("config", "Get or set configuration values"),
             ("sandbox", "Manage the AppArmor profile the agent sandbox needs (Linux)"),
+            ("kas", "Install Kiro Crew's own KAS engine bundle (no kiro-cli needed)"),
             ("manifest", "Generate a Slack app manifest with your alias"),
         ),
     ),

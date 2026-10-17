@@ -14,7 +14,15 @@ mixin over :class:`ManagerComponent` with no state of its own:
 * :mod:`.types` -- the value types (settings, prepared row, claim and defer
   points, capacity reading) and the constants importers read.
 * :mod:`.gate` -- ``spawn_impl``: every policy and capacity check between a
-  request and its row, plus the typed refusal.
+  request and its row, plus the typed refusal. ``_GateMixin`` binds its other
+  members by name from three sibling owners:
+
+  * :mod:`.gate_execution` -- ``resolve_spawn_execution``, the execution a spawn
+    runs under (store, identity, template, app).
+  * :mod:`.gate_pressure` -- the macOS kernel memory-pressure hold.
+  * :mod:`.gate_reporting` -- the done-callback announce (``_safe_announce_impl``,
+    ``_announce_rejection_impl``) and the crew-log pin and entries of a dispatch,
+    a start and a spawn approval prompt.
 * :mod:`.pump` -- stagger, drain and the atomic claim -> dispatch -> register
   -> reservation-release unit (``taskq_claim``, ``claim_and_start``,
   ``release_reservation``, ``_drain_queue_sync_impl`` live together: the
@@ -23,6 +31,8 @@ mixin over :class:`ManagerComponent` with no state of its own:
   and its refill, and the single owner of off-loop store writes
   (``_post_store_write`` / ``track_store_task``).
 * :mod:`.fairness` -- lanes, the child reserve, the capacity view.
+* :mod:`.memory_wake` -- the starts waiting for memory: their record, the
+  event wake and sampler that re-check them, and each lane's memory share.
 * :mod:`.waits` -- yielding the lane slot, resuming through admission, child
   registration and wait deadlines.
 
@@ -45,10 +55,12 @@ from types import FunctionType
 from .._component import ManagerComponent
 from .fairness import _FairnessMixin
 from .gate import _GateMixin
+from .memory_wake import _MemoryWakeMixin
 from .pump import _PumpMixin
 from .taskq_bridge import _TaskqBridgeMixin
 from .types import (
     FAIRNESS_SETTINGS_TTL_SECS,
+    MEMORY_CAUSE_LANE_SHARE,
     MEMORY_WAIT_UNTIL_KEY,
     TASK_STORE_UNAVAILABLE_CODE,
     WINDOW_ENTRY_RECOVERING,
@@ -66,7 +78,13 @@ from .waits import _WaitsMixin
 
 
 class SpawnAdmissionCoordinator(
-    _GateMixin, _PumpMixin, _TaskqBridgeMixin, _FairnessMixin, _WaitsMixin, ManagerComponent
+    _GateMixin,
+    _PumpMixin,
+    _TaskqBridgeMixin,
+    _FairnessMixin,
+    _MemoryWakeMixin,
+    _WaitsMixin,
+    ManagerComponent,
 ):
     #: Whether the pump runs as a coroutine on a running loop (its store reads
     #: on the writer thread). Production keeps it on. Deterministic harnesses
@@ -89,6 +107,7 @@ class SpawnAdmissionCoordinator(
     TASK_STORE_UNAVAILABLE_CODE = TASK_STORE_UNAVAILABLE_CODE
     WINDOW_ENTRY_RECOVERING = WINDOW_ENTRY_RECOVERING
     MEMORY_WAIT_UNTIL_KEY = MEMORY_WAIT_UNTIL_KEY
+    MEMORY_CAUSE_LANE_SHARE = MEMORY_CAUSE_LANE_SHARE
 
 
 def _hoist_impls(cls: type) -> None:
@@ -108,6 +127,7 @@ _hoist_impls(SpawnAdmissionCoordinator)
 
 __all__ = [
     "FAIRNESS_SETTINGS_TTL_SECS",
+    "MEMORY_CAUSE_LANE_SHARE",
     "MEMORY_WAIT_UNTIL_KEY",
     "TASK_STORE_UNAVAILABLE_CODE",
     "WINDOW_ENTRY_RECOVERING",

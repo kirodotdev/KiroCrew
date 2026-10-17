@@ -23,6 +23,7 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -103,9 +104,13 @@ class TestGatewayUpdateCheckIsBackgrounded:
             "the fire-and-forget task must be strongly referenced or it can be "
             "garbage-collected mid-flight"
         )
-        shutdown_src = inspect.getsource(GatewayOrchestrator._shutdown)
+        # Dedented, so the body reads the same whether the method is defined in the
+        # class body or composed from a gateway_runtime owner.
+        shutdown_src = textwrap.dedent(inspect.getsource(GatewayOrchestrator._shutdown))
         assert "update_task = self._update_check_task" in shutdown_src
-        assert "update_task.cancel()" in shutdown_src
+        # Cancelled with the dashboard-started policy applies, as one set.
+        assert "installer_tasks.add(update_task)" in shutdown_src
+        assert "for task in installer_tasks:\n        task.cancel()" in shutdown_src
         assert "_cancel_update_check()" in shutdown_src
 
 

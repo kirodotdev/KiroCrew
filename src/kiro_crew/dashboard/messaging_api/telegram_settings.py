@@ -10,8 +10,8 @@ token values are write-only (rotate at @BotFather if ever needed).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
-import os
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -27,11 +27,12 @@ if TYPE_CHECKING:
         _mask_secret,
         _sel,
         _threshold_pct_rejection,
-        _write_env_off_loop,
+        _write_env_or_roll_back,
         channel_restart_required,
         clean_session_folder,
         ensure_channel_folder,
         is_direct_local_request,
+        live,
         read_config_text,
         run_to_completion,
         stored_folder_name,
@@ -49,9 +50,20 @@ async def _validate_telegram_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
+    from kiro_crew.telegram.client import _api_base
+
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    # Built from the SAME TELEGRAM_API_BASE_URL resolver the client uses
+    # (``_api_base`` — read at call time, scheme-validated), so a proxied
+    # install verifies its token through the proxy too and the dashboard can
+    # never target a different host than the live channel; unset falls back to
+    # the public host.
+    verify_url = _api_base().format(token=token, method="getMe")
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(f"https://api.telegram.org/bot{token}/getMe") as resp:
+        # verify_url carries the bot token; refuse a proxy redirect to a
+        # plaintext http:// Location rather than follow it off-box, matching the
+        # client's own method calls.
+        async with session.get(verify_url, allow_redirects=False) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and data.get("ok"):
                 return None
@@ -69,7 +81,8 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
     )
 
     cfg = KiroCrewConfig.load()
-    creds = cfg.load_credentials()
+    # Off-loop: a secret:// reference is read and decrypted from the vault.
+    creds = await asyncio.to_thread(cfg.load_credentials)
     token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
     tg = cfg.telegram
     state: DashboardState = request.app["state"]
@@ -133,6 +146,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_TELEGRAM_BOT_TOKEN,
         ConfigReadError,
+        coerce_config_field,
         config_path,
     )
 
@@ -239,7 +253,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             uid = int(s)
             if uid not in new_ids:
                 new_ids.append(uid)
-        if new_ids != list(tg_cfg.get("allowed_user_ids", [])):
+        if new_ids != list(coerce_config_field(tg_cfg, "allowed_user_ids", list, [])):
             staged["allowed_user_ids"] = new_ids
             applied.append("allowed_user_ids")
 
@@ -322,7 +336,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             cid = int(s)
             if cid not in new_chat_ids:
                 new_chat_ids.append(cid)
-        if new_chat_ids != list(tg_cfg.get("allowed_forum_chat_ids", [])):
+        if new_chat_ids != list(coerce_config_field(tg_cfg, "allowed_forum_chat_ids", list, [])):
             staged["allowed_forum_chat_ids"] = new_chat_ids
             applied.append("allowed_forum_chat_ids")
 
@@ -367,20 +381,33 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     # ``.env`` slot cannot leave a fallback behind. Absent, the drop is a no-op
     # and the write is skipped.
     purge_legacy_token = CRED_TELEGRAM_BOT_TOKEN in env_updates
-    if staged or purge_legacy_token:
-        tg_cfg.update(staged)
-        # Through ``update_config_locked``: it holds the advisory lock on the
-        # sidecar ``<path>.lock`` across the whole read-modify-write, so a writer
-        # in ANOTHER PROCESS cannot land between our read and our write, and the
-        # staged keys (plus the legacy ``bot_token`` purge) are merged into the
-        # file as re-read inside that lock. Off-loop: file IO, and it may wait on
-        # another holder of the lock.
-        try:
-            await _LockedSectionWrite(
+    cfg_write: _LockedSectionWrite | None = None
+    # Hold the live-config watcher across the config+credential pair: a failed
+    # .env write rolls the config back, so nothing in between may be applied
+    # to the running gateway.
+    with live.hold():
+        if staged or purge_legacy_token:
+            tg_cfg.update(staged)
+            # Through ``update_config_locked``: it holds the advisory lock on the
+            # sidecar ``<path>.lock`` across the whole read-modify-write, so a writer
+            # in ANOTHER PROCESS cannot land between our read and our write, and the
+            # staged keys (plus the legacy ``bot_token`` purge) are merged into the
+            # file as re-read inside that lock. Off-loop: file IO, and it may wait on
+            # another holder of the lock.
+            cfg_write = _LockedSectionWrite(
                 path, "telegram", staged, drop_keys=("bot_token",) if purge_legacy_token else ()
-            ).commit()
-        except ConfigReadError:
-            return _deny("config.json is corrupt", status=500)
+            )
+            try:
+                await cfg_write.commit()
+            except ConfigReadError:
+                return _deny("config.json is corrupt", status=500)
+        if env_updates:
+            # A failed .env write undoes the config commit above, so a refused
+            # save changes nothing (see _write_env_or_roll_back).
+            rollback = (
+                functools.partial(cfg_write.rollback, "Telegram") if cfg_write is not None else None
+            )
+            await _write_env_or_roll_back(env_updates, rollback)
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:
@@ -395,18 +422,6 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
                 _folder_name,
                 relabel="session_folder" in staged,
             )
-    if env_updates:
-        # Off-loop: the .env write is blocking file IO (lock, temp write,
-        # owner-only lockdown, replace) and must not block the event loop.
-        await _write_env_off_loop(env_updates, config_kept=True)
-        # Keep the live process environment in sync with the new .env state
-        # (load_credentials() lets os.environ win over .env — see the Slack
-        # save handler for the full rationale).
-        for key, new_val in env_updates.items():
-            if new_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,

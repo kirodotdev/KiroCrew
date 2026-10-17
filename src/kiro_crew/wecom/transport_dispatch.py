@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config import live
@@ -39,7 +40,10 @@ from kiro_crew.messaging.commands import (
     COMPACT_TIMED_OUT_REPLY_ZH,
     compact_unsupported_backend,
     compact_unsupported_reply_zh,
+    context_recycle_warning_zh,
     note_user_stop,
+    recycle_backend,
+    recycle_warning_should_send,
 )
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
@@ -63,6 +67,7 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
+from kiro_crew.mirror_admission import sign_mirror_admission
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -535,6 +540,12 @@ class WeComDispatcher:
         userid = inbound.userid
         pct = self.sessions.check_context_usage(session_key, provider)
         soft, hard = self._thresholds()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(self.sessions, self._conv, userid, session_key, pct):
+                await self._notice_bubble(inbound, context_recycle_warning_zh())
+            return
         if pct >= soft:
             # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
@@ -681,10 +692,14 @@ class WeComDispatcher:
         # whose loop-aware branch marks the map dirty and schedules ONE debounced
         # flush that itself writes in a worker thread. Wrapping THOSE in a batch
         # would reintroduce the inline write this line exists to avoid.
+        # The conversation's own authorized peer is binding the chat it writes
+        # from, so this link MINTS the row's admission (``kiro_crew.mirror_admission``).
+        location = self._origin_mirror_link(inbound)
+        location = replace(location, admission=sign_mirror_admission(key, location) or None)
         await asyncio.to_thread(self.sessions.set_mirror_opt_out, key, False)
         self.sessions.set_mirror_link(
             key,
-            self._origin_mirror_link(inbound),
+            location,
             reason=UNBIND_REASON_ORIGIN_REBIND,
         )
         # Drop any pre-unification row so a stale binding cannot outlive the rebind.

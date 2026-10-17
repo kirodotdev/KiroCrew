@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
+import { Trans } from 'react-i18next'
 import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
 import { AlertTriangle, CircleDot } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import { SettingsLink } from '../../components/SettingsLink'
 import { Suspense, lazy } from 'react'
 import { SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
@@ -785,7 +787,13 @@ export function DecisionsCard() {
       {/* ── OVERVIEW + DETAIL ───────────────────────────────────────────────── */}
       {view.supported && rows.length === 0 && (
         <p className="text-[12px] text-muted">
-          {i18nT('pages.developer.featurePreviewsTab.decisions_points_unavailable')}
+          {/* The notice says where to update, so the place it names is a link to
+              it. One catalog string carries the anchor, so a translation can put
+              it wherever its grammar needs. */}
+          <Trans
+            i18nKey="pages.developer.featurePreviewsTab.decisions_points_unavailable"
+            components={[<SettingsLink key="l" tab="releases" />]}
+          />
         </p>
       )}
       {view.supported && rows.length > 0 && (

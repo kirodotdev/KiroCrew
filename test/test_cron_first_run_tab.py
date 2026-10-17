@@ -274,7 +274,8 @@ class TestPreCreateGuard:
     """The pre-create must never cost the run — or the job — its life.
 
     A review lane convicted the bare ``await ensure_cron_slot(...)`` at the
-    gateway callsite: ``_execute`` (cron.py) clears ``run_never_started``
+    gateway callsite: ``_execute`` (``cron_service/service/run_execution.py``) clears
+    ``run_never_started``
     BEFORE the callback and its ``except`` arm never re-arms it, so an error
     propagating out of the pre-dispatch window reached the delete site with
     the retention marker down and a ``delete_after_run`` one-shot — the
@@ -283,7 +284,7 @@ class TestPreCreateGuard:
     contract: armed for exactly the await, ordinary failure contained,
     cancellation escaping WITH the marker, linear clear before dispatch.
 
-    The delete-decision assertions mirror cron.py's own expression verbatim
+    The delete-decision assertions mirror the cron service's own expression verbatim
     (``delete_owed = job.delete_after_run and not (job.fire_time_denied or
     job.run_never_started)``) so a drift in either side breaks a test, not a
     user's scheduled job.
@@ -291,7 +292,7 @@ class TestPreCreateGuard:
 
     @staticmethod
     def _delete_owed(job) -> bool:
-        # Verbatim mirror of cron.py's delete site decision.
+        # Verbatim mirror of the cron service's delete site decision.
         return bool(job.delete_after_run and not (job.fire_time_denied or job.run_never_started))
 
     @staticmethod
@@ -305,7 +306,7 @@ class TestPreCreateGuard:
     @pytest.mark.asyncio
     async def test_attack_slot_failure_is_contained_and_run_proceeds(self):
         """A transcript/store error during the pre-create must NOT propagate:
-        at the unguarded callsite it reached cron.py's except arm and the run
+        at the unguarded callsite it reached ``_execute``'s except arm and the run
         died for an amenity. Contained, the run proceeds; having actually
         dispatched, a one-shot is then legitimately consumed."""
         from kiro_crew.slack.gateway import _pre_create_cron_slot

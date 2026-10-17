@@ -20,7 +20,9 @@ from typing import Any, ClassVar, cast
 # include its directory, because `npm run dev` shells out to `node` itself.
 # POSIX-only by nature: these are macOS/Linux install prefixes, and a directory
 # that does not exist is simply dropped by `node_bin_dirs`, so on Windows the
-# tuple contributes nothing and resolution falls back to PATH.
+# tuple contributes nothing and resolution falls back to PATH. nvm is not listed
+# here: its per-version dirs come from `kiro_crew.env.nvm_version_bin_dirs`
+# (both `~/.nvm` and the XDG root), read through `server._nvm_version_bin_dirs`.
 NODE_BIN_DIRS = (
     "/opt/homebrew/bin",  # homebrew, Apple silicon
     "/usr/local/bin",  # homebrew (Intel) / manual installs
@@ -32,8 +34,6 @@ NODE_BIN_DIRS = (
     "~/.local/share/fnm/aliases/default/bin",
     "~/Library/pnpm",
 )
-# nvm keeps a directory per version; prefer the newest.
-NVM_GLOB = "~/.nvm/versions/node/*/bin"
 
 # Environment this backend holds that the user's dev script must NEVER see.
 # `KIROCREW_PROXY_SECRET` is the whole of this backend's authentication: the
@@ -111,15 +111,10 @@ def node_bin_dirs(runtime: Any) -> list[Any]:
     """Return existing Node toolchain directories in lookup order."""
 
     dirs = [runtime.Path(directory).expanduser() for directory in runtime._NODE_BIN_DIRS]
-    try:
-        nvm = sorted(
-            runtime.glob.glob(runtime.os.path.expanduser(runtime._NVM_GLOB)),
-            reverse=True,
-        )
-        dirs = [runtime.Path(path) for path in nvm] + dirs
-    except OSError:
-        pass
-    return [directory for directory in dirs if directory.is_dir()]
+    # nvm first, newest version first: the shared core scan, which also covers
+    # the XDG root (`$XDG_CONFIG_HOME/nvm`, default `~/.config/nvm`).
+    nvm = [runtime.Path(path) for path in runtime._nvm_version_bin_dirs()]
+    return [directory for directory in nvm + dirs if directory.is_dir()]
 
 
 def resolve_bin(runtime: Any, name: str) -> Any | None:
@@ -777,7 +772,7 @@ def start_inject_proxy(runtime: Any, dev_url: str) -> tuple[object | None, str]:
         ),
     )
     try:
-        server = runtime.ThreadingHTTPServer(("127.0.0.1", 0), bound)
+        server = runtime._Server(("127.0.0.1", 0), bound)
     except OSError:
         return None, ""
     server.daemon_threads = True
@@ -841,7 +836,6 @@ __all__ = [
     "DEV_SCRIPTS",
     "LOCKFILES",
     "NODE_BIN_DIRS",
-    "NVM_GLOB",
     "PROC_TREE_MAX_DEPTH",
     "DevProxyHandlerBase",
     "auto_dev_server",

@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import { Badge } from './ui'
 import ErrorNotice from './ErrorNotice'
+import AskAgentButton from './AskAgentButton'
+import { buildCronRunReport, isFailedRunStatus } from '../utils/cronRunReport.prompt'
 import { api } from '../api/client'
 import { errMessage } from '../utils/thunkError'
 
@@ -25,7 +27,7 @@ function fmtDuration(ms?: number | null) {
   return fmtDurationParts([[Math.floor(s / 60), 'minute'], [s % 60, 'second']])
 }
 
-export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId: string }) {
+export default function LogEntry({ entry, jobId, jobName }: { entry: LogEntryData; jobId: string; jobName?: string }) {
   const [open, setOpen] = useState(false)
 
   const { data: trace, isLoading, error: traceError } = useQuery({
@@ -76,7 +78,29 @@ export default function LogEntry({ entry, jobId }: { entry: LogEntryData; jobId:
               testId="log-entry-trace-error"
             />
           ) : (
-            <pre className="p-2.5 bg-bg-elevated border border-border rounded-md text-[12px] font-mono whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto leading-relaxed">{trace}</pre>
+            <>
+              <pre className="p-2.5 bg-bg-elevated border border-border rounded-md text-[12px] font-mono whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto leading-relaxed">{trace}</pre>
+              {/* #7403: a failed or timed-out run hands its own trace to the
+                  agent, so debugging it is one click instead of copy-paste into
+                  a new chat. The run's trace is in hand here (the row is open
+                  and loaded), and a history row holds no draft to lose. */}
+              {isFailedRunStatus(entry.status) && (
+                <div className="mt-2">
+                  <AskAgentButton
+                    report={buildCronRunReport({
+                      jobId,
+                      jobName,
+                      runId: entry.run_id,
+                      status: entry.status,
+                      startedAt: entry.started_at,
+                      trigger: entry.trigger,
+                      summary: entry.summary,
+                      trace,
+                    })}
+                  />
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

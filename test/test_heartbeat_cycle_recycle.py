@@ -342,15 +342,15 @@ class TestHeartbeatAgentInstall:
         assert "@kirocrew-core" in config["tools"]
         assert "@builder-mcp" not in config["tools"]
         # Description references the SEL audit gateway-side responsibility.
-        assert "HEARTBEAT_SAFE_TOOLS" in config["description"]
+        assert "_heartbeat_approval" in config["description"]
 
     def test_strips_include_tools_filters_from_main_config(self, tmp_path, monkeypatch):
         """The main kirocrew config may narrow a server via ``--include-tools``
         / ``--include-tool-tags`` / ``--exclude-tools``; those filters are
         fragile (a typo silently surfaces zero tools to the agent) and the
         heartbeat allowlist is enforced gateway-side anyway. Strip them so
-        the heartbeat agent always sees the full catalog and
-        ``HEARTBEAT_SAFE_TOOLS`` is the sole gate. (Asserted on kirocrew-core —
+        the heartbeat agent always sees the full catalog and the heartbeat
+        allowlist (``_heartbeat_approval``) is the sole gate. (Asserted on kirocrew-core —
         the only server the public installer pulls.)
         """
         import json

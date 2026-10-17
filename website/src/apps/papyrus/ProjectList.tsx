@@ -16,10 +16,11 @@ import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, type Project } from './api'
-import { pruneSlots } from './lib'
+import { projectErrorText, pruneSlots } from './lib'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { guideCaution } from '../../guide/trustRoot'
 
 export interface ProjectListProps {
   onOpenProject: (name: string) => void
@@ -117,7 +118,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
       await invalidate()
       onOpenProject(result.name)
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => setError(projectErrorText(err)),
   })
 
   const cloneMutation = useMutation({
@@ -128,7 +129,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
       await invalidate()
       onOpenProject(result.name)
     },
-    onError: (err: Error) => setError(err.message),
+    onError: (err: Error) => setError(projectErrorText(err)),
   })
 
   const deleteMutation = useMutation({
@@ -340,6 +341,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                       <button
                         type="button"
                         aria-label={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
+                        {...guideCaution}
                         title={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
                         onClick={() => {
                           // Deleting a paper is `rmtree` on the server with no
@@ -356,7 +358,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                           }
                         }}
                         disabled={deleteMutation.isPending}
-                        className="p-1 rounded text-muted hover:text-danger hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors disabled:opacity-40"
+                        className="p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors disabled:opacity-40"
                       >
                         <Trash2 className="lucide-inline" />
                       </button>

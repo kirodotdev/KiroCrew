@@ -29,9 +29,10 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
+from body_stream_helpers import attach_json_body
 
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import (
@@ -109,11 +110,11 @@ def _req(
     req.query = query or {}
     req.rel_url.query = query or {}
     if isinstance(body, dict):
-        req.read = AsyncMock(return_value=json.dumps(body).encode())
+        attach_json_body(req, json.dumps(body).encode())
     elif isinstance(body, bytes):
-        req.read = AsyncMock(return_value=body)
+        attach_json_body(req, body)
     else:
-        req.read = AsyncMock(return_value=b"")
+        attach_json_body(req, b"")
     state = MagicMock()
     if conversation_log != "unset":
         state.conversation_log = conversation_log

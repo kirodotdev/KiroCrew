@@ -69,7 +69,7 @@ Key properties, each load-bearing:
 
 `publish` is a separate ubuntu job on purpose: a transient publish failure retries
 as a roughly-two-minute job rather than repeating two Apple submissions with
-30-minute budgets each, and the expensive macOS runner never burns minutes on S3
+60-minute budgets each, and the expensive macOS runner never burns minutes on S3
 uploads. Linux publishing takes no part in this trust chain; the AppImage ships
 from `publish-linux.yml`.
 
@@ -83,8 +83,10 @@ be stapled at all (`stapler` Error 73), so first-install verification would need
 network access.
 
 So the DMG is built **from the already-stapled app**, then signed by a second
-CDSigner task with a `type: dmg` manifest
-(`packaging/signing/sign-dmg.sh`), then notarized and stapled itself. The script
+CDSigner task (`packaging/signing/sign-dmg.sh`), then notarized and stapled
+itself. That task submits a `type: "app"` manifest with the DMG as the output
+path: the live API enumerates the valid types and `dmg` is not one of them, so a
+`type: dmg` submission comes back as a 400. The script
 fails closed: it runs `codesign --verify --strict` and requires an
 `Authority=Developer ID Application` line on the result. The `spctl --type install`
 gate in the workflow is exactly the check that catches an adhoc regression.

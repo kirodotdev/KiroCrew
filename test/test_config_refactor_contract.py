@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew.config as config_pkg
-from kiro_crew.config import loader, migration, section_builders, sections
+from kiro_crew.config import loader, loader_builders, migration, section_builders, sections
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
 
 # Every name each facade module held before the section/loader owners were split
@@ -67,7 +67,7 @@ TaskRunnerConfig TeamsConfig TelegramAccountConfig TelegramConfig TelemetryConfi
 WakaTimeConfig WatchdogConfig WeComConfig WebexConfig WeixinConfig WhatsAppConfig
 WorkspaceConfig YOLO_UNTIL_SHUTDOWN _AVATAR_EXPRESSION_AXES _AVATAR_FILE_PIN_RE
 _AVATAR_GHOST_BOOL_TRAITS _AVATAR_GHOST_STR_TRAITS _AVATAR_IMAGE_EXTS _AVATAR_MOTIONS
-_AVATAR_SOUNDS _AVATAR_STATES _AVATAR_TRAIT_MAX_LEN _BOT_NAME_MAX _BOT_NAME_RE _COLOR_HEX_RE
+_AVATAR_SOUNDS _AVATAR_STATES _AVATAR_TRAIT_MAX_LEN _BOT_NAME_MAX _COLOR_HEX_RE
 _CONNECT_TIMEOUT_CEILING _CU_DEFAULT_ATTACH_SCREENSHOT _CU_DEFAULT_MAX_TREE_DEPTH
 _CU_DEFAULT_MAX_TREE_NODES _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY _CU_DEFAULT_SCREENSHOT_MAX_PX
 _CU_DEFAULT_TEXT_LIMIT _DEFAULT_BACKOFF_MAX _DEFAULT_BEACON_ENDPOINT
@@ -137,7 +137,7 @@ SlackConfig SttConfig SupersededDefault TELEGRAM_ACTIVATIONS THRESHOLD_PCT_MAX T
 TOOL_APPROVAL_TIMEOUT_MAX TOOL_APPROVAL_TIMEOUT_MIN TailscaleConfig TaskRunnerConfig TeamsConfig
 TelegramAccountConfig TelegramConfig TelemetryConfig TunnelConfig WakaTimeConfig WatchdogConfig
 WeComConfig WebexConfig WeixinConfig WhatsAppConfig WorkspaceConfig WorkspaceDirUnusable
-YOLO_UNTIL_SHUTDOWN _BOT_NAME_MAX _BOT_NAME_RE _COLOR_HEX_RE _CONFIG_AGENT_ALIAS_SNAPSHOT
+YOLO_UNTIL_SHUTDOWN _BOT_NAME_MAX _COLOR_HEX_RE _CONFIG_AGENT_ALIAS_SNAPSHOT
 _CONFIG_AUTOCOMPACT_ISSUED _CONFIG_AUTOCOMPACT_LOCK _CONFIG_AUTOCOMPACT_PCT
 _CONFIG_AUTOCOMPACT_TICKET _CONFIG_CACHE _CONFIG_CACHE_LOCK _CONFIG_TIMEZONE
 _CONFIG_TIMEZONE_LOCK _CONFIG_TIMEZONE_TICKET _CONNECT_TIMEOUT_CEILING
@@ -187,7 +187,7 @@ _read_hardened_agent_spec _read_skip_permissions _refuse_unpublishable
 _report_superseded_defaults _resolution _resolve_agent_selection _resolve_stt_model
 _resolve_stub_overrides _resolve_stub_roster _resolve_stub_servers _resolve_workspace_root
 _safe_bool _safe_color _safe_dict _safe_dir_name _safe_float _safe_int _safe_list
-_safe_nonnegative_int _sanitize_bot_name _scan_materialized_agents _sections _session_work_dir
+_safe_nonnegative_int _sanitize_bot_name _scan_materialized_agents _sections _session_sort_from _session_work_dir
 _shadowed_base_sections _stat _store_validated_data _subagent_timeout_from _subtract_overlay
 _tailscale_config_from _threshold_pct _urlsplit _validate_activation _validate_config_data
 _validate_telegram_activation _validate_tracking_channels _validated_completion_keep
@@ -481,8 +481,8 @@ class TestLoaderSeamsReachTheOwners:
         assert [n for n in moved if getattr(loader, n) is not getattr(section_builders, n)] == []
         loader_owned = sorted(
             n
-            for n, v in vars(loader).items()
-            if n.startswith("_build_") and getattr(v, "__module__", "") == loader.__name__
+            for n, v in vars(loader_builders).items()
+            if n.startswith("_build_") and getattr(v, "__module__", "") == loader_builders.__name__
         )
         assert loader_owned == [
             "_build_agent_config",

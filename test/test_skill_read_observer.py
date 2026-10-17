@@ -1,7 +1,9 @@
 """Skill-read observation at the ACP layer.
 
-The ACP client is the only place that sees every surface's tool calls, so the
-observer lives there rather than in each surface's event handler. These tests
+The ACP layer is the only place that sees every surface's tool calls, so the
+observer lives there rather than in each surface's event handler -- in one
+``SkillReadTracker`` that both transports (``AcpClient`` and the shared
+runtime's ``AcpSessionHandle``) own and feed. These tests
 pin the properties that make it safe: the cheap gate that keeps unrelated tool
 calls off the filesystem, the dedup that stops one read being credited twice
 when both the initial ``tool_call`` and its refinement carry arguments, and the
@@ -86,26 +88,23 @@ class _Observer:
 
 
 class _FakeClient:
-    """Binds the real observation methods to only the state they touch.
+    """One session's share of the observation: the tracker both transports own.
 
-    Exercises production logic without booting a kiro-cli subprocess; if those
-    methods later reach for more client state the test fails loudly rather than
-    passing against a fiction.
+    Exercises production logic without booting a harness subprocess. The
+    wiring of each transport's dispatch loop to this tracker is pinned
+    elsewhere (``test_acp_session_handle_skill_reads``, the client coverage).
     """
 
     def __init__(self):
-        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.skill_reads import SkillReadTracker
 
-        self._skill_read_noted: set[str] = set()
-        self._pending_skill_reads: dict[str, list[str]] = {}
-        self._note = AcpClient._maybe_note_skill_read.__get__(self)
-        self._credit = AcpClient._maybe_credit_skill_read.__get__(self)
+        self._tracker = SkillReadTracker()
 
     async def call(self, event):
-        await self._note(event)
+        await self._tracker.note(event)
 
     def result(self, event):
-        self._credit(event)
+        self._tracker.credit(event)
 
 
 def _call_event(tool_call_id="t1", raw=None, command=None, tool_name="fs_read"):
@@ -242,6 +241,38 @@ class TestObserveSkillRead:
         client = _FakeClient()
         await client.call(_call_event(raw=SKILL_ARGS))
         client.result(_result_event())
+        client.result(_result_event())
+        assert obs.credited == [["alpha"]]
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_tool_call_id_is_retained_as_a_fixed_size_key(self):
+        # toolCallId is backend-authored with no length bound; the tracker keys
+        # its rows by a digest so the count cap bounds memory, and the completion
+        # frame still finds the row its call wrote.
+        obs = _Observer()
+        set_global_skill_read_observer(obs)
+        client = _FakeClient()
+        huge = "x" * 4096
+        await client.call(_call_event(huge, raw=SKILL_ARGS))
+        tracker = client._tracker
+        assert all(len(k) == 64 for k in tracker.noted)
+        assert all(len(k) == 64 for k in tracker.pending)
+        client.result(_result_event(huge))
+        assert obs.credited == [["alpha"]]
+        assert tracker.pending == {}
+
+    @pytest.mark.asyncio
+    async def test_a_non_string_tool_call_id_is_tolerated_and_credits_nothing(self):
+        # toolCallId is backend-authored and the result event carries it
+        # unconverted; an integer must neither abort the dispatch loop nor
+        # match a noted call.
+        obs = _Observer()
+        set_global_skill_read_observer(obs)
+        client = _FakeClient()
+        await client.call(_call_event(raw=SKILL_ARGS))
+        client.result(_result_event(7))  # type: ignore[arg-type]
+        await client.call(_call_event(7, raw=SKILL_ARGS))  # type: ignore[arg-type]
+        assert obs.credited == []
         client.result(_result_event())
         assert obs.credited == [["alpha"]]
 

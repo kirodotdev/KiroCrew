@@ -9,7 +9,7 @@ import {
   issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
   type RepoSettings, type RepoLabel, type Issue, type RepoMember, type RepoRef,
 } from '../../api'
-import { repoWebUrl, userUrlFor, membersUrlFor, providerTerms, repoScopeKey, sameRepoRef } from '../../lib/links'
+import { repoWebUrl, userUrlFor, membersUrlFor, providerKeyOf, providerTerms, repoScopeKey, sameRepoRef } from '../../lib/links'
 import { useIssueRadar } from '../../context'
 import ReadOnlyTag, { isReadOnly } from '../../components/ReadOnlyTag'
 import LabelPicker from '../../components/LabelPicker'
@@ -419,6 +419,20 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
         </StatLine>
+        {providerKeyOf(repoRef) === 'github' && (
+          <div className="mt-4 pt-3 border-t border-border">
+            <SettingToggle
+              on={settings.notify_on_own_pr_ci_failure}
+              disabled={!settingsReady}
+              onClick={() => update({ notify_on_own_pr_ci_failure: !settings.notify_on_own_pr_ci_failure })}
+            >
+              {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_ci_fails_on_my_pull_request', { repo: `${owner}/${repo}` })}
+            </SettingToggle>
+            <StatLine>
+              {i18nT('apps.issueRadar.views.settings.repoSettings.ci_failure_alerts_read_only_your_own_open_pull_requests')}
+            </StatLine>
+          </div>
+        )}
       </Card>
 
       <Card
@@ -664,7 +678,7 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         ) : (
           <button
             onClick={() => setConfirmingDelete(true)}
-            className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-danger/50 text-danger hover:bg-danger/10 cursor-pointer bg-transparent"
+            className="inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border border-danger/50 text-danger hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent"
           >
             <Trash2 size={13} /> {i18nT('apps.issueRadar.views.settings.repoSettings.disconnect')}
           </button>

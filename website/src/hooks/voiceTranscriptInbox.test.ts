@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { subscribeTranscripts, beginTranscription, settleTranscription, redeliverPending, _subscriberCount, _heldCount, type TranscriptSink } from './voiceTranscriptInbox'
+import { subscribeTranscripts, beginTranscription, settleTranscription, redeliverPending, failedCapture, discardFailedCapture, takeFailedCapture, _subscriberCount, _heldCount, type TranscriptSink, type TranscriptResult } from './voiceTranscriptInbox'
 
 /* chat-core P3-b: the inbox used to hold ONE subscriber (the later mount
  * silently detached the earlier). Composers now co-mount — ChatPage's hook stays
@@ -25,6 +25,7 @@ const unsubs: Array<() => void> = []
 beforeEach(() => {
   while (unsubs.length) unsubs.pop()!()
   expect(_subscriberCount()).toBe(0)
+  discardFailedCapture()
   // Drain anything a previous test left held.
   const drain = sink(() => true)
   const u = subscribeTranscripts(drain)
@@ -145,5 +146,129 @@ describe('voiceTranscriptInbox — many subscribers, one delivery', () => {
     const req = beginTranscription('slot-a')
     expect(a.begins).toEqual([])
     expect(b.begins).toEqual([req.id])
+  })
+})
+
+/* A failed batch transcription keeps its audio in the tab, one capture at a
+ * time, so the notice can offer it back: Retry posts the same bytes under a new
+ * request, Discard and a new recording let it go. */
+describe('voiceTranscriptInbox — the audio of a failed request', () => {
+  const capture = (retryable = true) => ({ blob: new Blob(['x'.repeat(200)], { type: 'audio/webm' }), ext: 'webm', retryable })
+  type R = S & { released: number[]; results: TranscriptResult[] }
+  function keeper(): R {
+    const s = sink(() => true) as R
+    s.released = []
+    s.results = []
+    s.settle = vi.fn((r: TranscriptResult, deliver: boolean) => { s.settles.push([r.id, deliver]); s.results.push(r) })
+    s.release = vi.fn((id: number) => { s.released.push(id) })
+    return s
+  }
+
+  it('a failed result carries its blob, and the inbox holds it', () => {
+    const s = keeper()
+    unsubs.push(subscribeTranscripts(s))
+    const req = beginTranscription('slot-a')
+    const c = capture()
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: c })
+    expect(s.results[0].capture?.blob).toBe(c.blob)
+    expect(failedCapture(req.id)).toBe(c)
+  })
+
+  it('a retry takes the same blob back, releases it, and posts under a new request id', () => {
+    const s = keeper()
+    unsubs.push(subscribeTranscripts(s))
+    const req = beginTranscription('slot-a')
+    const c = capture()
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: c })
+
+    const taken = takeFailedCapture(req.id)
+    expect(taken?.capture.blob).toBe(c.blob)
+    expect(taken?.sessionId).toBe('slot-a')
+    expect(failedCapture(req.id)).toBeNull()
+    expect(s.released).toEqual([req.id])
+
+    const retry = beginTranscription(taken!.sessionId)
+    expect(retry.id).not.toBe(req.id)
+    // A retry that succeeds leaves nothing behind.
+    settleTranscription({ id: retry.id, text: 'hello', sessionId: 'slot-a' })
+    expect(failedCapture(retry.id)).toBeNull()
+  })
+
+  it('refuses a retry while another transcription is in flight', () => {
+    const req = beginTranscription('slot-a')
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    const other = beginTranscription('slot-b')
+    expect(takeFailedCapture(req.id)).toBeNull()
+    expect(failedCapture(req.id)).not.toBeNull()
+    settleTranscription({ id: other.id, text: 'x', sessionId: 'slot-b' })
+  })
+
+  it('Discard releases it; a stale id leaves a newer failure alone', () => {
+    const s = keeper()
+    unsubs.push(subscribeTranscripts(s))
+    const first = beginTranscription('slot-a')
+    settleTranscription({ id: first.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    discardFailedCapture(first.id + 1000)
+    expect(failedCapture(first.id)).not.toBeNull()
+    discardFailedCapture(first.id)
+    expect(failedCapture(first.id)).toBeNull()
+    expect(s.released).toEqual([first.id])
+  })
+
+  it('a new recording (discard with no id) releases it', () => {
+    const req = beginTranscription('slot-a')
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    discardFailedCapture()
+    expect(failedCapture(req.id)).toBeNull()
+  })
+
+  it('holds only one: a newer failure replaces and releases the older', () => {
+    const s = keeper()
+    unsubs.push(subscribeTranscripts(s))
+    const first = beginTranscription('slot-a')
+    settleTranscription({ id: first.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    const second = beginTranscription('slot-a')
+    const c2 = capture(false)
+    settleTranscription({ id: second.id, error: 'failed', sessionId: 'slot-a', capture: c2 })
+    expect(failedCapture(first.id)).toBeNull()
+    expect(failedCapture(second.id)).toBe(c2)
+    expect(s.released).toEqual([first.id])
+  })
+
+  it('a failure waiting for a composer arrives without audio that was let go meanwhile', async () => {
+    const req = beginTranscription('slot-a')
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    expect(_heldCount()).toBe(1)
+    discardFailedCapture()
+    const s = keeper()
+    unsubs.push(subscribeTranscripts(s))
+    await new Promise<void>(r => queueMicrotask(r))
+    expect(s.results).toHaveLength(1)
+    expect(s.results[0].error).toBe('failed')
+    expect(s.results[0].capture).toBeUndefined()
+  })
+
+  it('shows a delivered failure again to a subscriber that mounts while its audio is held', async () => {
+    const a = keeper()
+    const unsubA = subscribeTranscripts(a)
+    const req = beginTranscription('slot-a')
+    settleTranscription({ id: req.id, error: 'failed', sessionId: 'slot-a', capture: capture() })
+    expect(a.results).toHaveLength(1)
+    expect(_heldCount()).toBe(0)
+    unsubA()
+
+    const b = keeper()
+    unsubs.push(subscribeTranscripts(b))
+    expect(b.results).toHaveLength(0)
+    await new Promise<void>(r => queueMicrotask(r))
+    expect(b.results.map(r => [r.id, r.error])).toEqual([[req.id, 'failed']])
+    expect(b.settles).toEqual([[req.id, true]])
+
+    // Once the audio is gone there is nothing to show again.
+    discardFailedCapture(req.id)
+    const c = keeper()
+    unsubs.push(subscribeTranscripts(c))
+    await new Promise<void>(r => queueMicrotask(r))
+    expect(c.results).toHaveLength(0)
   })
 })

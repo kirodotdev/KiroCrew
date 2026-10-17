@@ -10,10 +10,10 @@ export type MemoryRecordRef = { kind: MemoryRecordKind; id: string }
 export type MemoryRecordSelection = { items: (MemoryRecordRef & { revision: string })[] }
   | { query: MemoryRecordQuery; exclude: MemoryRecordRef[] }
 export type MemoryEditOperation = { type: 'replace_text'; find: string; replacement: string; match_case?: boolean }
-  | { type: 'set'; value?: unknown; text?: string } | { type: 'forget' }
+  | { type: 'set'; value?: unknown; text?: string } | { type: 'forget' } | { type: 'restore'; revision_id: number }
 export type MemoryEditPreview = {
   preview_id: string; expires_at: string; matched_count: number; changed_count: number; unchanged_count: number
-  entries: { before: MemoryRecord; after: MemoryRecord | null; operation?: 'resolve' | 'correct' | 'forget' }[]
+  entries: { before: MemoryRecord; after: MemoryRecord | null; operation?: 'resolve' | 'correct' | 'forget' | 'restore' }[]
   preview_offset: number; preview_limit: number; preview_has_more: boolean; warnings: string[]
 }
 export type MemoryRecordRevision = { id: number; revision: number; base_revision: number; status: string; operation: string; source: string; before_json: string | null; after_json: string | null; metadata_json: string; created_at: string }

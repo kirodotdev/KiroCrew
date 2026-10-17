@@ -223,7 +223,7 @@ def test_create_aws_profile_writes_only_allowlisted_keys(monkeypatch, tmp_path):
     )
     fake_aws.chmod(0o755)
     env = dict(os.environ, PATH=f"{fakebin}:{os.environ['PATH']}")
-    proc = subprocess.run(parts, capture_output=True, text=True, env=env)
+    proc = subprocess.run(parts, capture_output=True, text=True, encoding="utf-8", env=env)
     assert proc.returncode == 0, proc.stderr
     out = json.loads(proc.stdout)
     assert out == {

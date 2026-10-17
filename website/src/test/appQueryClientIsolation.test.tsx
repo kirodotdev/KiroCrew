@@ -53,6 +53,7 @@ import {
   invalidateAcrossQueryClients,
   recoverableQueryClients,
 } from '../api/queryClient'
+import { vendorImportMap } from '../../scripts/lib/basePath.mjs'
 
 /** A host key with real consequences: `api/client.ts` invalidates this one by name. */
 const HOST_KEY = ['auth-me'] as const
@@ -221,8 +222,11 @@ describe('external app query-cache isolation', () => {
     // Isolation is a property of which client the app's context resolves. It would
     // fall the moment the host's own client became importable from an app bundle,
     // and the two surfaces an app can resolve are the import map and the SDK stub.
-    const config = read('../../vite.config.ts')
-    const importMapKeys = [...config.matchAll(/'([^']+)': '\/vendor\/([^']+)'/g)]
+    const importMapKeys = Object.entries(vendorImportMap('/').imports).map(([spec, url]) => [
+      spec,
+      spec,
+      url.replace(/^\/vendor\//, ''),
+    ])
     expect(importMapKeys.length).toBeGreaterThan(5)
     for (const [, , filename] of importMapKeys) {
       expect(read(`../../public/vendor/${filename}`)).not.toContain('queryClient')

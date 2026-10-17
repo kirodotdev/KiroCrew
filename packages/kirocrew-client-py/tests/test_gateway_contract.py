@@ -29,6 +29,11 @@ class StubGateway:
         self.requests: list[dict[str, Any]] = []
         self.responses: dict[tuple[str, str], Any] = {}
         self.statuses: list[int] = []  # consumed one per request when non-empty
+        # Optional per-status JSON error bodies, keyed by status code. When a
+        # popped status has an entry here it is returned verbatim instead of the
+        # generic ``{"error": ...}`` body, so a test can assert on a code field
+        # like ``context_not_queued``.
+        self.status_bodies: dict[int, Any] = {}
         self.break_stream = False
         self.omit_stream_done = False
         self.chat_response: dict[str, Any] | None = None
@@ -67,7 +72,8 @@ class StubGateway:
         if self.statuses:
             status = self.statuses.pop(0)
             if status >= 400:
-                return web.json_response({"error": f"status {status}"}, status=status)
+                body = self.status_bodies.get(status, {"error": f"status {status}"})
+                return web.json_response(body, status=status)
         if request.method == "POST" and request.path == "/api/chat":
             if self.chat_response is not None:
                 return web.json_response(self.chat_response)
@@ -172,6 +178,134 @@ class TestAuthCookie:
         async with _client(gw, token="stale", on_auth_expired=refresh) as mc:
             assert await mc.get_status() == {"version": "x"}
         assert gw.last["cookie"].endswith("=fresh")
+
+
+class TestContextNotQueued:
+    """A full pending-context queue answers 429 ``context_not_queued``. It is not
+    transient (only a turn drains the queue), so the client must fail fast on it
+    instead of retrying, and a full queue must not block an unrelated send."""
+
+    _FULL = {
+        "error": "pending context could not be queued for this session",
+        "code": "context_not_queued",
+    }
+
+    async def test_context_not_queued_is_not_retried(self, gw):
+        gw.statuses = [429]
+        gw.status_bodies = {429: self._FULL}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            with pytest.raises(KiroCrewError) as exc:
+                await mc.inject_context("slot-1", "c", source="s")
+        assert exc.value.code == ErrorCode.CONTEXT_NOT_QUEUED
+        assert len(gw.requests) == 1, "a full queue must fail fast, not retry"
+
+    async def test_a_plain_429_is_still_retried(self, gw):
+        # Guard the carve-out boundary: a 429 without the code stays retryable.
+        gw.statuses = [429]
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            await mc.ack_all_notifications()
+        assert len(gw.requests) == 2
+
+    async def test_flush_drops_a_full_queue_entry_without_raising(self, gw):
+        gw.statuses = [429]
+        gw.status_bodies = {429: self._FULL}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            await mc.inject_context(None, "a", source="s")
+            dropped = await mc.flush_pending_context("slot-1")
+        assert dropped == 1, "the refused entry is counted as dropped"
+        assert mc.pending_context_count == 0, "a full-queue entry is dropped, not re-buffered"
+
+    async def test_flush_still_re_buffers_a_transient_failure(self, gw):
+        # A plain 429 (no code) is transient — with no retries left it is put
+        # back and raised, exactly as before, so a retry can resend it.
+        gw.statuses = [429]
+        async with _client(gw, max_retries=0) as mc:
+            await mc.inject_context(None, "a", source="s")
+            with pytest.raises(KiroCrewError) as exc:
+                await mc.flush_pending_context("slot-1")
+        assert exc.value.code == ErrorCode.RATE_LIMITED
+        assert mc.pending_context_count == 1
+
+    async def test_full_queue_does_not_block_an_unrelated_send(self, gw):
+        # send_message flushes the default slot's buffer first; a full queue
+        # must not stop the /api/chat POST, since only that turn drains the queue.
+        gw.statuses = [429]  # the one /context flush post is refused
+        gw.status_bodies = {429: self._FULL}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            mc.set_default_slot("slot-1")
+            await mc.inject_context(None, "ctx", source="s")
+            await mc.send_message("slot-1", "hello")  # must not raise
+            assert mc.last_flush_dropped == 1, "the dropped entry is reported to the caller"
+            await mc.send_message("slot-1", "again")  # nothing buffered this time
+            assert mc.last_flush_dropped == 0, "each send reports only its own drops"
+        posts = [r for r in gw.requests if r["method"] == "POST"]
+        assert any(r["path"] == "/api/chat" for r in posts), "the turn send went through"
+        assert mc.pending_context_count == 0
+
+
+class TestContextSecretShaped:
+    """A credential-shaped pending-context payload answers 400
+    ``context_secret_shaped``. The same bytes are refused on every attempt, so a
+    buffered entry the Gateway refused this way is dropped rather than re-buffered,
+    and it must not block an unrelated send."""
+
+    _REFUSED = {
+        "error": "pending context must not carry credentials",
+        "code": "context_secret_shaped",
+    }
+
+    async def test_refusal_has_its_own_code_and_is_not_retried(self, gw):
+        gw.statuses = [400]
+        gw.status_bodies = {400: self._REFUSED}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            with pytest.raises(KiroCrewError) as exc:
+                await mc.inject_context("slot-1", "c", source="s")
+        assert exc.value.code == ErrorCode.CONTEXT_SECRET_SHAPED
+        assert len(gw.requests) == 1
+
+    async def test_a_plain_400_keeps_the_validation_code(self, gw):
+        gw.statuses = [400]
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            with pytest.raises(KiroCrewError) as exc:
+                await mc.inject_context("slot-1", "c", source="s")
+        assert exc.value.code == ErrorCode.VALIDATION_ERROR
+
+    async def test_flush_drops_a_refused_entry_without_raising(self, gw):
+        gw.statuses = [400]
+        gw.status_bodies = {400: self._REFUSED}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            await mc.inject_context(None, "a", source="s")
+            dropped = await mc.flush_pending_context("slot-1")
+        assert dropped == 1
+        assert mc.pending_context_count == 0, "a refused entry is dropped, not re-buffered"
+
+    async def test_refused_entry_does_not_block_an_unrelated_send(self, gw):
+        gw.statuses = [400]  # the one /context flush post is refused
+        gw.status_bodies = {400: self._REFUSED}
+        async with _client(gw, max_retries=3, retry_base_delay=0) as mc:
+            mc.set_default_slot("slot-1")
+            await mc.inject_context(None, "ctx", source="s")
+            await mc.send_message("slot-1", "hello")  # must not raise
+            assert mc.last_flush_dropped == 1, "the refused entry is reported to the caller"
+        posts = [r for r in gw.requests if r["method"] == "POST"]
+        assert any(r["path"] == "/api/chat" for r in posts), "the turn send went through"
+        assert mc.pending_context_count == 0
+
+    async def test_drops_before_a_transient_failure_are_still_reported(self, gw):
+        # The first entry is refused for good and dropped; the second hits a
+        # plain 429 with no retries left, so the flush raises. The drop that
+        # happened before the raise must still be visible.
+        gw.statuses = [400, 429]
+        gw.status_bodies = {400: self._REFUSED}
+        async with _client(gw, max_retries=0) as mc:
+            mc.set_default_slot("slot-1")
+            await mc.inject_context(None, "secret-shaped", source="s")
+            await mc.inject_context(None, "ok", source="s")
+            with pytest.raises(KiroCrewError) as exc:
+                await mc.send_message("slot-1", "hello")
+            assert exc.value.code == ErrorCode.RATE_LIMITED
+            assert mc.last_flush_dropped == 1
+            assert mc.pending_context_count == 1, "the transient entry is re-buffered"
 
 
 class TestRequestRetries:

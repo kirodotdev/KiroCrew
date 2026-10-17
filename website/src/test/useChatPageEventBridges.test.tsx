@@ -248,6 +248,22 @@ describe('redaction-card bridges', () => {
     expect(opts.dispatch).toHaveBeenCalledWith(expect.any(Function))
   })
 
+  it('asks the reload to re-serve the card\'s own reply when the event names it (#17023)', () => {
+    const { opts } = harness()
+    act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: '2026-01-01T00:00:00Z' } })) })
+    act(() => { window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 'slot-b', messageTs: 7 } })) })
+    // The thunk's own pending action carries the argument it was created with.
+    const argOf = (i: number): unknown => {
+      const thunk = (opts.dispatch as unknown as { mock: { calls: unknown[][] } }).mock.calls[i][0] as
+        (d: (a: unknown) => unknown, g: () => unknown, x: unknown) => unknown
+      const seen: { meta?: { arg?: unknown } }[] = []
+      void thunk(a => { seen.push(a as never); return a }, () => ({ chat: { activeSlot: null } }), undefined)
+      return seen[0]?.meta?.arg
+    }
+    expect(argOf(0)).toEqual({ key: 'slot-b', reachTs: '2026-01-01T00:00:00Z' })
+    expect(argOf(1)).toBe('slot-b')
+  })
+
   it('removes every listener on unmount', () => {
     const { opts, hook } = harness()
     hook.unmount()
@@ -256,6 +272,24 @@ describe('redaction-card bridges', () => {
       window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: 's' } }))
     })
     expect(opts.dispatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('Run-in-terminal scope', () => {
+  it('returns the page scope, answers it and unscoped requests, and leaves another host\'s alone', () => {
+    const dock = renderHook(() => useBottomTerminal())
+    const { hook } = harness()
+    const scope = hook.result.current.runInTerminalScope
+    expect(scope).toEqual(expect.any(String))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'a', reqId: 'r1', scope: `${scope}-other` } }))
+    })
+    expect(dock.result.current.tabs).toHaveLength(0)
+    act(() => {
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'b', reqId: 'r2', scope } }))
+      window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'c', reqId: 'r3' } }))
+    })
+    expect(dock.result.current.tabs).toHaveLength(2)
   })
 })
 

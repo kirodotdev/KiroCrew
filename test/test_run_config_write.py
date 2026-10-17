@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.dashboard.chat_utils import run_config_write
+from kiro_crew.testing.wait import await_until
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
@@ -63,7 +64,7 @@ class TestRunConfigWrite:
             task = asyncio.create_task(_write())
             await asyncio.sleep(0.05)
             assert not ran.is_set(), "write started while a legacy writer held the lock"
-        await asyncio.wait_for(task, timeout=5)
+        await await_until(task, what="config write to complete")
         assert ran.is_set()
 
     @pytest.mark.asyncio

@@ -31,6 +31,8 @@ vi.mock('../api/client', () => ({
       { model_name: 'claude-sonnet-5', description: 'Sonnet 5' },
     ]),
     patchConfig: patchConfigMock,
+    // The Model page's Apps group reads the installed apps; none here.
+    listApps: () => Promise.resolve([]),
     updateDashboardConfig: () => Promise.resolve({}),
     tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),
     tipsFeedback: () => Promise.resolve({ ok: true }),

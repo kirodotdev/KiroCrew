@@ -1,4 +1,4 @@
-"""Tests for issue_radar investigation records (store.py).
+"""Tests for issue_radar investigation records (store_ai.py).
 
 Locks in the "Investigate" persistence contract: one small per-issue record
 (``investigation-{n}.json`` under the repo cache dir — no shared ledger), keyed

@@ -1,6 +1,6 @@
 """The dashboard re-encodes this module's tier semantics, so pin the two together.
 
-`McpManagement.tsx` maps every ``Strength`` to a label and names the subset that
+`mcpManagementModel.ts` maps every ``Strength`` to a label and names the subset that
 argues against sharing. Enforcement of a verdict is deliberately unwired, so that
 display is the only thing standing between an operator and a shared backend the
 evidence rejects -- and a tier this module gains without a matching frontend entry
@@ -24,7 +24,7 @@ _VIEW = (
     / "src"
     / "pages"
     / "settings"
-    / "McpManagement.tsx"
+    / "mcpManagementModel.ts"
 )
 
 

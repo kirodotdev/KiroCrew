@@ -23,11 +23,23 @@
  *     so a live app tab's iframe is not torn down by the overlay conversion.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { readMembersPage } from './membersPageFamily'
 
 const app = readFileSync(resolve(__dirname, '../App.tsx'), 'utf8')
-const chat = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+// the pins read the page and those owners.
+const PAGES_DIR = resolve(__dirname, '../pages')
+const OWNER_DIR = resolve(PAGES_DIR, 'chat', 'page')
+const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+const chat = [
+  readFileSync(resolve(PAGES_DIR, 'ChatPage.tsx'), 'utf8'),
+  ...readdirSync(OWNER_DIR).filter(isSource).sort().map(f => readFileSync(resolve(OWNER_DIR, f), 'utf8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage/.test(f) && isSource(f)).sort()
+    .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf8')),
+].join('\n')
+const members = readMembersPage()
 const hook = readFileSync(resolve(__dirname, '../hooks/useDrawerSwipe.ts'), 'utf8')
 
 describe('mobile nav drawer (left) — compositor pairing', () => {
@@ -287,7 +299,7 @@ describe('a panel with a gesture is bound LIVE to its offset', () => {  // The d
     // arm on one touch. App.tsx is the shell instance itself, so it declares
     // nothing — everyone else must. A new page that adds a drawer gesture and
     // forgets the attribute trips this rather than shipping a fight.
-    const consumers = { 'App.tsx': app, 'ChatPage.tsx': chat }
+    const consumers = { 'App.tsx': app, 'ChatPage.tsx': chat, 'MembersPage.tsx': members }
     for (const [name, src] of Object.entries(consumers)) {
       if (!/useDrawerSwipe\(/.test(src)) continue
       const isShellInstance = /useDrawerSwipe\(shellRef, \{/.test(src)

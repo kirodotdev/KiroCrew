@@ -25,9 +25,16 @@ vi.mock('../pages/overview', () => ({ UsageTab: () => null, WakaTimeTab: () => n
 vi.mock('../api/client', () => ({
   api: {
     memorySettings: vi.fn().mockResolvedValue({ migrated: true }),
-    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
+    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'kiro' } }),
     wakatimeStats: vi.fn().mockResolvedValue({ configured: false }),
+    usageSeries: vi.fn().mockResolvedValue({ dates: [], series: [], total: 0, truncated: false, dropped_rows: 0, complete_from: null }),
   },
+}))
+// The Usage tab's spend chart colours its layers from the session palette,
+// which reads the theme context; a fixed palette keeps these tests on the tab's
+// own behaviour.
+vi.mock('../hooks/useSessionPalette', () => ({
+  useSessionPalette: () => ({ paletteColors: ['#ff0000', '#00ff00', '#0000ff'] }),
 }))
 
 function report(plan = 'Cached plan', refreshing = false): NormalizedUsage {

@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 import aiohttp
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.auth.login.endpoints import (
     CALLBACK_PORTS,
     USER_AGENT,
@@ -74,7 +75,14 @@ def bind_allowed_port() -> tuple[socket.socket, int]:
     last_err: OSError | None = None
     for port in CALLBACK_PORTS:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if platform_compat.IS_POSIX:
+            # Lets a restart rebind through TIME_WAIT; a live listener still refuses it.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        elif hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # On Windows two listeners that both set SO_REUSEADDR share one address, so the
+            # browser's callback can reach either. SO_EXCLUSIVEADDRUSE makes a held port fail
+            # the bind, and the loop moves on to the next allowlisted port.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         try:
             sock.bind(("127.0.0.1", port))
             # Listen immediately: the browser can be redirected back before the

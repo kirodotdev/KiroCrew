@@ -8,6 +8,7 @@ nothing here reaches the network.
 """
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -16,6 +17,23 @@ from typing import Any
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
+def _torch_threads() -> int:
+    # Half the CPUs this process may run on, at most 16: one inference keeps the
+    # model fast while the owner's sessions keep the other half of the machine.
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    return max(1, min(16, (cpus or 2) // 2))
+
+
+TORCH_THREADS = _torch_threads()
+# Read by the OpenMP runtime when torch loads, so it must be set before the import.
+os.environ.setdefault("OMP_NUM_THREADS", str(TORCH_THREADS))
+os.environ.setdefault("MKL_NUM_THREADS", str(TORCH_THREADS))
+# How long a decision waits for the one in progress before it is refused. The
+# client's own timeout is 5 s and one CPU inference takes about 3 s, so a request
+# queued longer than this would be answered after its caller gave up.
+QUEUE_WAIT_SECS = 1.0
 # The gateway counts this server ready only once it echoes this secret, so a
 # program that took the port while the weights loaded is never mistaken for it.
 ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "")
@@ -31,10 +49,14 @@ def _exit_when_gateway_lets_go() -> None:
 
 threading.Thread(target=_exit_when_gateway_lets_go, daemon=True).start()
 
+import torch  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi.responses import PlainTextResponse  # noqa: E402
 from strands_decider import modeling  # noqa: E402
 from strands_decider.server import create_app  # noqa: E402
+
+torch.set_num_threads(TORCH_THREADS)
+torch.set_num_interop_threads(1)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--weights", required=True)
@@ -113,4 +135,51 @@ class _NullCriteriaToEmpty:
         await self.inner(dict(scope, headers=headers), replay, send)
 
 
-uvicorn.run(_NullCriteriaToEmpty(app), host="127.0.0.1", port=args.port, log_level="warning")
+class _OneAtATime:
+    """ASGI wrapper running one decision request at a time.
+
+    Strands' endpoint is synchronous, so its framework runs each request on a
+    thread pool of about 40 with no lock, and every inference uses
+    ``TORCH_THREADS`` cores. Concurrent requests then oversubscribe the CPU until
+    each takes longer than the client waits, and an abandoned request is still
+    computed to the end. A request that cannot start within ``QUEUE_WAIT_SECS``
+    is answered 503 at once; the gate records it as a provider error and the
+    caller falls back as it does for any refused decision.
+    """
+
+    def __init__(self, inner: Any, wait_secs: float) -> None:
+        self.inner = inner
+        self.wait_secs = wait_secs
+        self.lock = asyncio.Lock()
+
+    async def __call__(self, scope, receive, send):  # type: ignore[no-untyped-def]
+        if scope["type"] != "http" or scope.get("path") != "/v1/systemone":
+            return await self.inner(scope, receive, send)
+        try:
+            await asyncio.wait_for(self.lock.acquire(), timeout=self.wait_secs)
+        except asyncio.TimeoutError:
+            body = b'{"detail": "busy: another decision is running"}'
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+        try:
+            await self.inner(scope, receive, send)
+        finally:
+            self.lock.release()
+
+
+uvicorn.run(
+    _OneAtATime(_NullCriteriaToEmpty(app), QUEUE_WAIT_SECS),
+    host="127.0.0.1",
+    port=args.port,
+    log_level="warning",
+)

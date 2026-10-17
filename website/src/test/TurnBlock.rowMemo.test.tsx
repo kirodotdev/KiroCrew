@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import React from 'react'
-import { readFileSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import path from 'path'
 import { useState } from 'react'
 import { render, fireEvent, screen } from '@testing-library/react'
@@ -107,8 +107,17 @@ describe('TurnBlock — memo survives a flush-shaped host re-render', () => {
 // memo(TurnBlock) on every streaming flush.
 describe('ChatPage renderMessage dep hygiene', () => {
   it('renderMessage does not depend on flush-volatile positional state', () => {
-    const src = readFileSync(
-      path.join(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+    // so the pins read the page and those owners.
+    const pagesDir = path.join(__dirname, '../pages')
+    const ownerDir = path.join(pagesDir, 'chat/page')
+    const src = [
+      readFileSync(path.join(pagesDir, 'ChatPage.tsx'), 'utf8'),
+      ...readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+        .map(f => readFileSync(path.join(ownerDir, f), 'utf8')),
+      ...readdirSync(pagesDir).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+        .map(f => readFileSync(path.join(pagesDir, f), 'utf8')),
+    ].join('\n')
     const depMatch = src.match(/\}, (\[[^\]]*handleFileOpen[^\]]*\])\)\n\n  \/\/ Hoisted out of the row map/)
     expect(depMatch, 'renderMessage dep array not found — update this ratchet if the anchor moved').toBeTruthy()
     const deps = depMatch![1]

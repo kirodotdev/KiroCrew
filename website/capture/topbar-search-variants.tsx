@@ -47,12 +47,14 @@
  * ?fade=on      re-inject the retired alpha mask across the row's last 18px
  *               (before state for the cut-edge cue)
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown, Download } from 'lucide-react'
+import { Home, Search, Bell, Lightbulb, Bug, Coins, AudioWaveform, ChevronDown, Download, Fullscreen, ArrowLeft, ArrowRight } from 'lucide-react'
 
 import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
+import { Glass } from '../src/components/Glass'
+import { useTopbarCollapse } from '../src/lib/useTopbarCollapse'
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') || 'dark'
@@ -61,12 +63,33 @@ const pins = Number(params.get('pins') || '0')
 const unread = Number(params.get('unread') || '0')
 const rowW = params.get('roww')
 const update = params.get('update') === 'on'
+// ?layout=measured renders the desktop form (`tb-measured` + the measured
+// collapse ladders); ?lang=en swaps the hard-coded zh-CN labels (update pill included)
+// for the en ones; ?chip=off drops the prerelease "Report problem" half of the
+// feedback pill; ?pill=real renders the three pills as App.tsx ships them
+// (#15523: the search trigger, the readout capsule and FeedbackPill.tsx, each a
+// Liquid Glass pane) instead of the drifted copies below; ?focus=off and ?nav=off drop the
+// focus-mode toggle and the Back/Forward arrows, for A/B measurements only
+// (App.tsx always renders both on desktop); ?crews=off renders no crew
+// switcher, as when no remote crew exists.
+const measured = params.get('layout') === 'measured'
+const en = params.get('lang') === 'en'
+const chip = params.get('chip') !== 'off'
+const realPill = params.get('pill') === 'real'
+const focusToggle = params.get('focus') !== 'off'
+const navArrows = params.get('nav') !== 'off'
+const crews = params.get('crews') !== 'off'
+// Verbatim from NavHistoryArrows.tsx.
+const NAV_BTN = 'flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none text-muted hover:text-text shrink-0 cursor-pointer disabled:opacity-30 disabled:pointer-events-none'
+const L = en
+  ? { home: 'Local', search: '⌘K — Search anything…', used: '71.8K', limit: '/10K', req: 'Request a Feature', rep: 'Report problem' }
+  : { home: '本地', search: '⌘K — 搜索任何内容…', used: '12.2万', limit: '/1万', req: '申请功能', rep: '反馈问题' }
 // The metrics readout's state, and the before/after switch for the state that had
 // no segment at all. Separate params for the same reason as `?fix` above: the
 // scene and its regression have to be selectable independently.
 const metricsState = params.get('metrics') === 'pending' ? 'pending' : 'loaded'
 const metricsFix = params.get('metricsfix') !== 'off'
-const updateLabel = params.get('updatelabel') || '有可用更新'
+const updateLabel = params.get('updatelabel') || (en ? 'Update available' : '有可用更新')
 // The before states for the update-pill budget fix, separable because the fix
 // has two independent halves and evidence must attribute the effect to the
 // right one (same convention as ?fix=off above):
@@ -122,38 +145,102 @@ const seg = 'flex items-center gap-1 -my-0.5 px-1.5 py-0.5 rounded-md text-muted
  *  `?roww` pins the CLIP width. In production that width is whatever flex-shrink
  *  leaves the row after the active chip and the trailing dropdown, i.e. a
  *  continuous value — pinning it is how one specific cut gets photographed twice
- *  under identical geometry. `data-cut` is forced on for the same reason: the
- *  shipped attribute comes from a ResizeObserver measurement this harness does
- *  not run. */
+ *  under identical geometry, so `data-cut` is forced on under `?roww` and
+ *  measured otherwise. */
 function PinnedChipRow() {
   const names = ['prod-us-east-1', 'staging-eu-west-1', 'sandbox'].slice(0, pins)
+  // `data-cut` is measured, as the shipped row's ResizeObserver does, except
+  // under `?roww`, where one pinned cut is being photographed.
+  const rowRef = useRef<HTMLDivElement>(null)
+  const [cut, setCut] = useState(!!rowW)
+  useLayoutEffect(() => {
+    const el = rowRef.current
+    if (!el || rowW) return
+    const measure = () => setCut(el.scrollWidth > el.clientWidth + 1)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   return (
     <div
+      ref={rowRef}
       data-testid="crew-chip-row"
-      data-cut="true"
+      data-cut={cut ? 'true' : undefined}
       className="crew-chip-row relative flex flex-nowrap items-center gap-1 min-w-0 overflow-hidden"
       style={rowW ? { width: Number(rowW), flex: 'none' } : undefined}
     >
-      {names.map((name, i) => (
+      {names.map((name, i) => {
+        // A connected pinned chip is `shrinkable` in InstanceTabBar: it trades
+        // name width down to a 5ch floor (30px of fixed parts, 54px with a badge)
+        // before the row cuts it.
+        const badge = i === names.length - 1 && unread > 0
+        return (
+          <button
+            key={name}
+            type="button"
+            data-chip={i === names.length - 1 ? 'last' : undefined}
+            aria-label={name}
+            className={
+              'flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors border focus-ring ' +
+              (badge ? 'min-w-[calc(5ch+54px)] ' : 'min-w-[calc(5ch+30px)] ') +
+              'border-border text-text'
+            }
+          >
+            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--ok)]" aria-hidden />
+            <span className="tb-drop-crew-name truncate max-w-[140px]">{name}</span>
+            {badge ? (
+              <span
+                data-badge-chip
+                className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 text-center font-bold shrink-0 bg-accent text-accent-fg"
+              >
+                {unread}
+              </span>
+            ) : null}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** The crew switcher, verbatim from InstanceTabBar's inline variant (SwitcherChip
+ *  and SwitcherMenu class strings), which App.tsx mounts in the identity group on
+ *  desktop and on phones alike. InstanceTabBar renders nothing until a remote
+ *  crew exists; `?crews=off` reproduces that. */
+function CrewSwitcher() {
+  return (
+    <div className="instance-tab-bar-inline flex items-center h-full gap-1 min-w-0">
+      <div className="tb-crew-grow flex items-center gap-1 min-w-0 ">
+      <div className="tb-crew-grow flex items-center gap-1 min-w-0">
         <button
-          key={name}
           type="button"
-          data-chip={i === names.length - 1 ? 'last' : undefined}
-          aria-label={name}
-          className="flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap transition-colors shrink-0 border focus-ring border-border text-text"
+          aria-current="true"
+          aria-label={L.home}
+          className="tb-crew-active-chip flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap shrink-0 border bg-accent-subtle text-accent font-bold border-transparent"
         >
-          <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--ok)]" aria-hidden />
-          <span className="tb-drop-crew-name truncate max-w-[140px]">{name}</span>
-          {i === names.length - 1 && unread > 0 ? (
+          <Home className="lucide-inline shrink-0" />
+          <span className="tb-drop-crew-name truncate max-w-[140px]">{L.home}</span>
+        </button>
+        {pins > 0 ? <PinnedChipRow /> : null}
+        <button
+          type="button"
+          aria-label="切换 crew"
+          className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted"
+        >
+          <ChevronDown className="lucide-inline shrink-0" />
+          {pins > 0 && unread > 0 ? (
             <span
-              data-badge-chip
-              className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] leading-4 text-center font-bold shrink-0 bg-accent text-accent-fg"
+              data-badge-trigger
+              aria-hidden
+              className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-accent-fg text-[10px] font-semibold leading-[14px] text-center pointer-events-none"
             >
               {unread}
             </span>
           ) : null}
         </button>
-      ))}
+      </div>
+      </div>
     </div>
   )
 }
@@ -196,66 +283,133 @@ function UpdatePillLookalike() {
       className="flex items-center gap-1.5 h-7 px-2.5 rounded-xl shrink-0 cursor-pointer text-[12px] whitespace-nowrap border border-accent/30 bg-accent-subtle text-accent hover:opacity-90 transition-opacity"
     >
       <Download size={13} className="lucide-inline" />
-      <span className="hidden sm:inline">{updateLabel}</span>
+      <span className="tb-drop-update-label hidden sm:inline">{updateLabel}</span>
     </button>
   )
 }
 
-function TopBar() {
+function FeedbackPillLookalike() {
+  if (realPill) {
+    const btn = 'flex items-center gap-1.5 h-full px-2.5 text-muted transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0'
+    return (
+      <Glass variant="chip" radius={12} className="glass-shadow flex items-center h-7 shrink-0" data-feedback-pill>
+        <button type="button" className={btn}><Lightbulb size={13} className="lucide-inline" /> <span className="tb-drop-feedback-label">{L.req}</span></button>
+        {chip ? <><span className="w-px h-3.5 bg-border shrink-0" /><button type="button" data-chip className={btn}><Bug size={13} className="lucide-inline" /> <span className="tb-drop-feedback-label">{L.rep}</span></button></> : null}
+      </Glass>
+    )
+  }
   return (
-    <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
+    <span className="flex items-center gap-2 h-7 rounded-xl border border-border bg-card px-3 text-[12px] text-muted" data-feedback-pill>
+      <span className="flex items-center gap-1"><Lightbulb size={13} className="lucide-inline" /> {L.req}</span>
+      {chip ? <span className="border-l border-border pl-2 flex items-center gap-1"><Bug size={13} className="lucide-inline" /> {L.rep}</span> : null}
+    </span>
+  )
+}
+
+function TopBar() {
+  const headerRef = useRef<HTMLElement>(null)
+  useTopbarCollapse(headerRef, measured)
+  const capsuleSegments = (
+    <>
+      <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
+      <span className="w-px h-3.5 bg-border shrink-0" />
+      {/* Verbatim from the two open states in shell/topbar/metricsReadout.tsx. `pending` is dimmed and
+          carries an em dash per metric rather than a spinner, which holds the
+          capsule at the loaded width -- so the frame's arrival does not
+          reflow the group, and the container-query rungs are calibrated
+          against ONE width for both states. `metricsfix=off` pushes nothing,
+          which is the defect: an open readout whose toggle is not on screen. */}
+      {metricsState === 'pending' && !metricsFix ? null : (
+        <button data-seg data-metrics className={`${seg} gap-2 text-[11px] font-mono${metricsState === 'pending' ? ' opacity-60' : ''}`}>
+          <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+          <span className={`tb-drop-metrics flex items-center gap-2${metricsState === 'pending' ? ' text-muted' : ''}`}>
+            {metricsState === 'pending'
+              ? <><span>CPU —</span><span>MEM —</span><span>DSK —</span></>
+              : <><span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span></>}
+          </span>
+        </button>
+      )}
+      {metricsState === 'pending' && !metricsFix ? null : <span className="w-px h-3.5 bg-border shrink-0" />}
+      <button data-seg className={seg}>
+        <Coins size={12} />
+        <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">{L.used}<span className="text-muted">{L.limit}</span></span>
+      </button>
+    </>
+  )
+  return (
+    <header ref={headerRef} className={`topbar topbar-glass relative pl-3 pr-3${measured ? ' tb-measured' : ''}`} data-topbar style={{ height: 42 }}>
       <div className="tb-left relative h-full">
-        <span className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
-          <Home size={15} className="lucide-inline" /> 本地
-        </span>
-        <span className="flex items-center gap-1.5 rounded-md bg-accent-subtle px-2 py-1 text-[13px] font-medium text-accent shrink-0">
-          <span className="w-1.5 h-1.5 rounded-full bg-ok" />
-          <Layers size={14} className="lucide-inline" /> devdesk
-          <span className="rounded bg-accent px-1.5 text-[11px] text-accent-fg">3</span>
-        </span>
+        <div className="tb-measure">
+        {/* NavHistoryArrows.tsx's markup (#9550), which App.tsx renders first in
+            this group on desktop. It landed after this harness was written.
+            Forward is disabled, as after a single navigation. `?nav=off`
+            drops the arrows. */}
+        {navArrows && (
+          <div className="tb-drop-navhistory flex items-center shrink-0">
+            <button type="button" className={NAV_BTN} aria-label="Back"><ArrowLeft size={15} /></button>
+            <button type="button" className={NAV_BTN} aria-label="Forward" disabled><ArrowRight size={15} /></button>
+          </div>
+        )}
+        {crews && <CrewSwitcher />}
+        </div>
       </div>
 
-      <button
-        type="button"
-        className="h-7 w-full px-3 rounded-md border border-border bg-card text-muted flex items-center justify-center gap-2 cursor-pointer shadow-none"
-      >
-        <span className="text-[13px] truncate min-w-0">⌘K — 搜索任何内容…</span>
-      </button>
+      {/* Centre cell as App.tsx renders it: the search trigger plus the
+          focus-mode toggle, which landed (#4590) after this harness was
+          written. `?focus=off` drops the toggle. Under `?pill=real` the
+          trigger is the Liquid Glass pane App.tsx renders (#15523). */}
+      <div data-topbar-overlay className="flex items-center gap-1.5 min-w-0">
+        {realPill ? (
+          <Glass
+            as="button"
+            type="button"
+            variant="chip"
+            radius={12}
+            className="glass-shadow glass-hover h-7 flex-1 min-w-0 px-3 text-muted hover:text-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <span className="text-[13px] truncate min-w-0" data-search>{L.search}</span>
+          </Glass>
+        ) : (
+          <button
+            type="button"
+            className="h-7 flex-1 min-w-0 px-3 rounded-md border border-border bg-card text-muted flex items-center justify-center gap-2 cursor-pointer shadow-none"
+          >
+            <span className="text-[13px] truncate min-w-0" data-search>{L.search}</span>
+          </button>
+        )}
+        {focusToggle && (
+          <button
+            type="button"
+            className="flex items-center justify-center w-7 h-7 rounded-md bg-transparent border-none cursor-pointer shrink-0 text-muted"
+            aria-label="Focus mode"
+            aria-pressed={false}
+          >
+            <Fullscreen size={15} />
+          </button>
+        )}
+      </div>
 
       <div className={`tb-right relative${hasUpdateClass ? ' tb-has-update' : ''}`}>
-        <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
-          <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
-          <span className="w-px h-3.5 bg-border shrink-0" />
-          {/* Verbatim from the two open states in shell/topbar/metricsReadout.tsx. `pending` is dimmed and
-              carries an em dash per metric rather than a spinner, which holds the
-              capsule at the loaded width -- so the frame's arrival does not
-              reflow the group, and the container-query rungs are calibrated
-              against ONE width for both states. `metricsfix=off` pushes nothing,
-              which is the defect: an open readout whose toggle is not on screen. */}
-          {metricsState === 'pending' && !metricsFix ? null : (
-            <button data-seg data-metrics className={`${seg} gap-2 text-[11px] font-mono${metricsState === 'pending' ? ' opacity-60' : ''}`}>
-              <AudioWaveform size={12} className="tb-narrow-only text-accent" />
-              <span className={`tb-drop-metrics flex items-center gap-2${metricsState === 'pending' ? ' text-muted' : ''}`}>
-                {metricsState === 'pending'
-                  ? <><span>CPU —</span><span>MEM —</span><span>DSK —</span></>
-                  : <><span>CPU 1%</span><span>MEM 42%</span><span>DSK 20%</span></>}
-              </span>
-            </button>
-          )}
-          {metricsState === 'pending' && !metricsFix ? null : <span className="w-px h-3.5 bg-border shrink-0" />}
-          <button data-seg className={seg}>
-            <Coins size={12} />
-            <span className="tb-drop-usage font-mono text-[11px] whitespace-nowrap tabular-nums">12.2万<span className="text-muted">/1万</span></span>
-          </button>
-        </div>
+        <div className="tb-measure">
+        {realPill ? (
+          // As App.tsx renders it (#15523): the capsule IS a Liquid Glass pane
+          // whose effect layers are its FIRST children, inside a plain wrapper.
+          <div className="flex items-center shrink-0">
+            <Glass variant="chip" radius={12} className="tb-capsule glass-shadow flex items-center gap-2 h-7 px-2.5">
+              {capsuleSegments}
+            </Glass>
+          </div>
+        ) : (
+          <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
+            {capsuleSegments}
+          </div>
+        )}
         {update ? <UpdatePillLookalike /> : null}
         <span className="tb-drop-feedback flex items-center">
-          <span className="flex items-center gap-2 h-7 rounded-xl border border-border bg-card px-3 text-[12px] text-muted">
-            <span className="flex items-center gap-1"><Lightbulb size={13} className="lucide-inline" /> 申请功能</span>
-            <span className="border-l border-border pl-2 flex items-center gap-1"><Bug size={13} className="lucide-inline" /> 反馈问题</span>
-          </span>
+          <FeedbackPillLookalike />
         </span>
         <BellButton />
+        </div>
       </div>
     </header>
   )
@@ -275,6 +429,7 @@ function TopBarMobile() {
   return (
     <header className="topbar topbar-glass relative pl-3 pr-3" data-topbar style={{ height: 42 }}>
       <div className="tb-left relative h-full px-2">
+        <div className="tb-measure">
         {/* The nav button, verbatim from App.tsx. `/logo.png` is a GATEWAY route, so
             the harness serves nothing for it and the shot shows an empty rounded box:
             the layout under test is the 24px box the classes fix, which `object-contain`
@@ -282,41 +437,14 @@ function TopBarMobile() {
         <button className="group p-2 rounded-md bg-transparent border-none text-muted shrink-0" aria-label="nav">
           <img src="/logo.png" alt="" aria-hidden="true" className="w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]" />
         </button>
-        <div className="instance-tab-bar-inline flex items-center h-full gap-1 min-w-0">
-          <div className="flex items-center gap-1 min-w-0">
-            <button
-              type="button"
-              aria-current="true"
-              aria-label="本地"
-              className="tb-crew-active-chip flex items-center gap-1.5 h-6 px-2 rounded-md text-[12px] whitespace-nowrap shrink-0 border bg-accent-subtle text-accent font-bold border-transparent"
-            >
-              <Home className="lucide-inline shrink-0" />
-              <span className="tb-drop-crew-name truncate max-w-[140px]">本地</span>
-            </button>
-            {pins > 0 ? <PinnedChipRow /> : null}
-            <button
-              type="button"
-              aria-label="切换 crew"
-              className="relative flex items-center justify-center h-6 w-6 shrink-0 rounded-md border border-transparent text-muted"
-            >
-              <ChevronDown className="lucide-inline shrink-0" />
-              {pins > 0 && unread > 0 ? (
-                <span
-                  data-badge-trigger
-                  aria-hidden
-                  className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-accent-fg text-[10px] font-semibold leading-[14px] text-center pointer-events-none"
-                >
-                  {unread}
-                </span>
-              ) : null}
-            </button>
-          </div>
+        {crews && <CrewSwitcher />}
         </div>
       </div>
       <button className="h-7 w-7 rounded-md border border-border bg-card text-muted flex items-center justify-center shrink-0">
         <Search size={14} />
       </button>
       <div className={`tb-right relative${hasUpdateClass ? ' tb-has-update' : ''}`}>
+        <div className="tb-measure">
         <div className="tb-capsule flex items-center gap-2 h-7 px-2.5 rounded-xl bg-card">
           <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
           <span className="w-px h-3.5 bg-border shrink-0" />
@@ -333,6 +461,7 @@ function TopBarMobile() {
         </div>
         {update ? <UpdatePillLookalike /> : null}
         <BellButton />
+        </div>
       </div>
     </header>
   )

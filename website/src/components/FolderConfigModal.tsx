@@ -5,7 +5,7 @@ import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
 import FolderGlyph from './FolderGlyph'
 import ProjectPicker from './ProjectPicker'
-import SimpleSelect from './SimpleSelect'
+import SearchableSelect, { SearchableSelectOption } from './SearchableSelect'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { ApiError } from '../api/apiError'
@@ -263,14 +263,20 @@ export default function FolderConfigModal({
     ? draft.defaultAgent
     : ''
 
-  // Values and display labels as two PARALLEL arrays, orphan first so it keeps
-  // the position its <option> held. The '' ("None" / "Inherit (x)") row is
-  // SimpleSelect's `clearLabel` rather than a member of these arrays.
-  const agentNames = installedAgents.map(a => a.name)
-  const agentOptions = orphanAgent ? [orphanAgent, ...agentNames] : agentNames
-  const agentOptionLabels = orphanAgent
-    ? [i18nT('components.folderConfigModal.agent_not_installed', { agent: orphanAgent }), ...agentNames]
-    : agentNames
+  // The '' ("None" / "Inherit (x)") row first, then the orphan, then the
+  // installed agents. '' is a real choice here: it restores inheritance.
+  const agentOptions: SearchableSelectOption[] = [
+    {
+      value: '',
+      label: inheritedAgent
+        ? i18nT('components.folderConfigModal.inherit_named', { agent: inheritedAgent })
+        : i18nT('components.folderConfigModal.none'),
+    },
+    ...(orphanAgent
+      ? [{ value: orphanAgent, label: i18nT('components.folderConfigModal.agent_not_installed', { agent: orphanAgent }) }]
+      : []),
+    ...installedAgents.map(a => ({ value: a.name, label: a.name })),
+  ]
 
   const submit = useCallback(async () => {
     if (!canSubmit || saving) return
@@ -663,17 +669,19 @@ export default function FolderConfigModal({
             <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.steering_dirs_hint')}</span>
           </div>
 
-          {/* Default agent. SimpleSelect renders a <button>, not a <select>, so
-           *  this block is a plain div like the project-directory one above and
-           *  the heading's own key doubles as the control's aria-label — an
+          {/* Default agent. SearchableSelect renders a <button>, not a <select>,
+           *  so this block is a plain div like the project-directory one above
+           *  and the heading's own key doubles as the control's aria-label — an
            *  external <label htmlFor> cannot associate with it. Its popup
            *  portals at z-[9999], above the modal's z-[101], the same way
-           *  ProjectPicker's does below. */}
+           *  ProjectPicker's does below. A Radix Popover is safe here because
+           *  Modal's focus trap only acts on Tab; a Radix Dialog's trap would
+           *  pull focus back out of the portaled popup and dismiss it. */}
           <div className="flex flex-col gap-1.5">
             <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
               <Zap size={12} className="shrink-0" /> {i18nT('components.folderConfigModal.default_agent')}
             </span>
-            <SimpleSelect
+            <SearchableSelect
               aria-label={i18nT('components.folderConfigModal.default_agent')}
               // Bind the orphan notice to the control so a screen reader reaches
               // the reason WITH the field, not as text that merely sits near it:
@@ -683,10 +691,7 @@ export default function FolderConfigModal({
               // describe, and a dangling id here would drop the description.
               aria-describedby={orphanAgent ? 'folder-config-agent-notice' : undefined}
               options={agentOptions}
-              optionLabels={agentOptionLabels}
-              clearLabel={inheritedAgent
-                ? i18nT('components.folderConfigModal.inherit_named', { agent: inheritedAgent })
-                : i18nT('components.folderConfigModal.none')}
+              searchPlaceholder={i18nT('components.agentSelector.type_to_filter')}
               value={draft.defaultAgent}
               onChange={v => setDraft(d => ({ ...d, defaultAgent: v }))}
             />

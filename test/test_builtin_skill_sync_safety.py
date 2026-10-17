@@ -19,12 +19,16 @@ on the startup path.
 from __future__ import annotations
 
 import os
+import stat
 import time
 from pathlib import Path
 
 import pytest
+from windows_sim import replace_sharing_violation
 
 from conftest import requires_symlinks
+from kiro_crew import atomic_write as aw
+from kiro_crew import platform_compat
 from kiro_crew import skills as skills_mod
 from kiro_crew.skills import (
     _PROVENANCE_MARKER,
@@ -48,9 +52,17 @@ def _make_skill(root: Path, name: str, body: str, extra: dict[str, str] | None =
     return skill_dir
 
 
+def _now() -> float:
+    """This module's own clock seam, so a test can freeze time by patching
+    THIS attribute (``monkeypatch.setattr(module, "_now", ...)``) instead of
+    the shared stdlib ``time.time``, which other workers' readers (e.g.
+    ``logging.LogRecord.created``) see until teardown."""
+    return time.time()
+
+
 def _bump_mtime(path: Path, seconds: float = 60.0) -> None:
     """Make *path* strictly newer than any file written so far."""
-    future = time.time() + seconds
+    future = _now() + seconds
     os.utime(path, (future, future))
 
 
@@ -349,6 +361,25 @@ class TestLegitimateUpdatesStillHappen:
         # one cycle (never deleted while writes could still be landing in it).
         parked = base / ".helper.superseded"
         assert "v1" in (parked / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_update_lands_when_the_claim_rename_is_contended(
+        self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On Windows, a scanner or indexer holding a file in the installed copy
+        # makes the claim rename fail for a moment. The update must still land.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        src = _make_skill(builtin_root, "helper", "v1")
+        _ensure_builtin_skills(base)
+        (src / "SKILL.md").write_text("---\nname: helper\n---\nv2\n", encoding="utf-8")
+        _bump_mtime(src / "SKILL.md")
+
+        with replace_sharing_violation(match=".helper.sync-claim", times=2) as sim:
+            _ensure_builtin_skills(base)
+
+        assert sim["n"] > 2
+        assert "v2" in (base / "helper" / "SKILL.md").read_text(encoding="utf-8")
+        assert not os.path.lexists(base / ".helper.sync-claim")
 
     def test_clean_install_records_provenance(self, builtin_root: Path, base: Path) -> None:
         _make_skill(builtin_root, "helper", "v1")
@@ -1320,3 +1351,567 @@ class TestMarkerNameCollision:
 
         assert "packaged" in (base / "deploy" / "SKILL.md").read_text(encoding="utf-8")
         assert not list(base.glob(".deploy.user-backup*"))
+
+
+def _inject_on_trigger_off(dest_dir: Path) -> bool:
+    """Does the installed SKILL.md carry the budget-switch opt-out?
+
+    Mirrors how the loader reads it (`_dest_opted_out_of_injection`): a
+    top-level ``inject_on_trigger: false`` frontmatter line.
+    """
+    from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+
+    meta = parse_frontmatter((dest_dir / "SKILL.md").read_text(encoding="utf-8"), SKILL_LOADER)
+    return str(meta.get("inject_on_trigger", "")).strip().lower() == "false"
+
+
+def _switch_off(dest_dir: Path) -> None:
+    """Flip the Context-budget switch off the way the dashboard toggle does.
+
+    Goes through the real ``SkillsLoader.set_inject_on_trigger`` — which writes
+    via ``atomic_write`` — not a bare ``write_text``, so the test exercises the
+    toggle's actual on-disk behavior (mode included), not a stand-in that keeps
+    whatever mode the file already had.
+    """
+    name = dest_dir.name
+    loader = skills_mod.SkillsLoader(skills_path=dest_dir.parent, install_builtins=False)
+    assert loader.set_inject_on_trigger(name, False) is True
+
+
+def _ship_version(src: Path, version: str, newline: str | None = None) -> None:
+    """Ship packaged *version* of the skill at *src*, newer than the install.
+
+    *newline* is passed to ``write_text`` (``"\\r\\n"`` ships a CRLF manifest).
+    The mtime advances from the previous version's own mtime, not from the
+    clock alone: two versions shipped inside one coarse clock tick would
+    otherwise get the same mtime, and the update gate would skip the second.
+    """
+    skill_md = src / "SKILL.md"
+    previous = skill_md.stat().st_mtime
+    skill_md.write_text(
+        f"---\nname: {src.name}\ndescription: {version}\n---\n{version} body\n",
+        encoding="utf-8",
+        newline=newline,
+    )
+    newer = max(previous, _now()) + 60.0
+    os.utime(skill_md, (newer, newer))
+
+
+def _recorded(dest_dir: Path) -> str:
+    marker = dest_dir / _PROVENANCE_MARKER
+    return marker.read_text(encoding="utf-8").strip()
+
+
+def _packaged(src: Path) -> str:
+    fingerprint = _skill_tree_fingerprint(src, assume_owner_rwx_dirs=True)
+    assert fingerprint is not None
+    return f"{skills_mod._PROVENANCE_FORMAT}:{fingerprint}"
+
+
+@pytest.fixture()
+def currency_base(base: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ``installed_skill_currency`` at the same install the sync writes."""
+    monkeypatch.setattr(skills_mod, "skills_dir", lambda: base)
+    monkeypatch.setattr(skills_mod, "_project_skills_dir", lambda: None)
+    return base
+
+
+def _currency(name: str) -> str:
+    # installed_skill_currency() is POSIX-only: on Windows it returns [] by
+    # design (it needs O_NOFOLLOW / dir_fd, which the platform lacks), so a
+    # currency assertion cannot run there. Skip rather than assert an empty
+    # result as a failure — the carry behaviour these tests cover is exercised
+    # on Linux and macOS.
+    if os.name == "nt":
+        pytest.skip("installed_skill_currency is POSIX-only (returns [] on Windows)")
+    states = [e.state for e in skills_mod.installed_skill_currency() if e.name == name]
+    assert len(states) == 1, states
+    return states[0]
+
+
+class TestContextBudgetSwitchSurvivesUpdate:
+    """The per-skill Context-budget switch must survive a Kiro Crew update.
+
+    The switch is the one user-mutable setting on a built-in skill: turning it
+    off writes ``inject_on_trigger: false`` into the installed SKILL.md
+    (``set_inject_on_trigger``). An update ships a packaged SKILL.md that never
+    carries that line, so a naive reinstall turns full-body injection back on —
+    the switch reverting itself behind an unrelated app update.
+    The sync must carry the opt-out onto the freshly installed copy, record the
+    PACKAGED fingerprint as provenance, and treat exactly the carried line as
+    unchanged in every ownership and currency check.
+    """
+
+    def test_opt_out_survives_a_builtin_update(self, builtin_root: Path, base: Path) -> None:
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        assert _inject_on_trigger_off(base / "web-verify")
+
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+
+        # The packaged v2 body is installed AND the switch is still off.
+        installed = (base / "web-verify" / "SKILL.md").read_text(encoding="utf-8")
+        assert "v2 body" in installed
+        assert _inject_on_trigger_off(base / "web-verify")
+
+    def test_carry_records_the_packaged_fingerprint(self, builtin_root: Path, base: Path) -> None:
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+
+        dest = base / "web-verify"
+        assert _recorded(dest) == _packaged(src)
+        # The live tree really differs (it holds the carried line), so the
+        # equality above is the packaged tree's, not the destination's.
+        assert _recorded(dest) != f"{skills_mod._PROVENANCE_FORMAT}:{_skill_tree_fingerprint(dest)}"
+
+        # The toggled v1 tree differed from its record only by the carried
+        # line, so it was retired as sync-owned, not quarantined as user data;
+        # and a follow-up sync with the same package is a steady state.
+        assert not list(base.glob(".web-verify.user-backup*"))
+        _ensure_builtin_skills(base)
+        assert not list(base.glob(".web-verify.user-backup*"))
+        assert _inject_on_trigger_off(dest)
+        assert _recorded(dest) == _packaged(src)
+
+    def test_carried_install_reports_in_sync(self, builtin_root: Path, currency_base: Path) -> None:
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        # Toggled but not yet updated: the record is v1's packaged tree.
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+        dest = base / "web-verify"
+        assert skills_mod._verified_unchanged_fingerprint(dest, src) is not None
+
+    def test_user_edit_on_top_of_carried_line_still_diverges(
+        self, builtin_root: Path, currency_base: Path
+    ) -> None:
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+
+        dest = base / "web-verify"
+        skill_md = dest / "SKILL.md"
+        skill_md.write_text(skill_md.read_text(encoding="utf-8") + "MY EDIT\n", encoding="utf-8")
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_EDITED
+        assert skills_mod._verified_unchanged_fingerprint(dest, src) is None
+
+        # The next update preserves the edit and still carries the switch.
+        _ship_version(src, "v3")
+        _ensure_builtin_skills(base)
+        backups = list(base.glob(".web-verify.user-backup*"))
+        assert len(backups) == 1
+        assert "MY EDIT" in (backups[0] / "SKILL.md").read_text(encoding="utf-8")
+        assert "v3 body" in skill_md.read_text(encoding="utf-8")
+        assert _inject_on_trigger_off(dest)
+
+    def test_only_the_exact_carried_line_is_tolerated(
+        self, builtin_root: Path, currency_base: Path
+    ) -> None:
+        base = currency_base
+        _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        skill_md = base / "web-verify" / "SKILL.md"
+        packaged_text = skill_md.read_text(encoding="utf-8")
+
+        # A `true` value, an indented occurrence and a line placed anywhere but
+        # where the rewrite puts it are edits, not the carried opt-out.
+        for edited in (
+            packaged_text.replace("\n---\n", "\ninject_on_trigger: true\n---\n", 1),
+            packaged_text.replace("\n---\n", "\n  inject_on_trigger: false\n---\n", 1),
+            packaged_text.replace("---\n", "---\ninject_on_trigger: false\n", 1),
+        ):
+            skill_md.write_text(edited, encoding="utf-8")
+            assert _currency("web-verify") == skills_mod.SKILL_INSTALL_EDITED, edited
+
+    def test_late_write_after_copy_is_not_blessed(
+        self, builtin_root: Path, currency_base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A user write landing in the fresh copy between copytree and the
+        # marker write must not be recorded as sync-owned: the marker holds the
+        # PACKAGED fingerprint, so the late file reads as a divergence and the
+        # next update preserves it instead of deleting it.
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+
+        real_repair = skills_mod.ensure_owner_rwx_dirs
+
+        def repair_then_race(dest_dir: Path) -> None:
+            real_repair(dest_dir)
+            (dest_dir / "late.txt").write_text("user bytes", encoding="utf-8")
+
+        monkeypatch.setattr(skills_mod, "ensure_owner_rwx_dirs", repair_then_race)
+        _ensure_builtin_skills(base)
+        monkeypatch.setattr(skills_mod, "ensure_owner_rwx_dirs", real_repair)
+
+        dest = base / "web-verify"
+        assert _recorded(dest) == _packaged(src)
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_EDITED
+        assert skills_mod._verified_unchanged_fingerprint(dest, src) is None
+
+        _ship_version(src, "v3")
+        _ensure_builtin_skills(base)
+        backups = list(base.glob(".web-verify.user-backup*"))
+        assert len(backups) == 1
+        assert (backups[0] / "late.txt").read_text(encoding="utf-8") == "user bytes"
+        assert _inject_on_trigger_off(dest)
+
+    def test_parked_carried_copy_is_disposed_not_backed_up(
+        self, builtin_root: Path, base: Path
+    ) -> None:
+        # Two carried updates in a row: the first parks the toggled v1 copy in
+        # the retirement slot, the second re-verifies and disposes of it. The
+        # carried line must not turn that re-verification into a user backup.
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+        slot = base / ".web-verify.superseded"
+        assert "v1" in (slot / "SKILL.md").read_text(encoding="utf-8")
+
+        _ship_version(src, "v3")
+        _ensure_builtin_skills(base)
+        assert "v2 body" in (slot / "SKILL.md").read_text(encoding="utf-8")
+        assert not list(base.glob(".web-verify.user-backup*"))
+        assert _inject_on_trigger_off(base / "web-verify")
+
+    def test_packaged_opt_out_is_installed_verbatim(
+        self, builtin_root: Path, currency_base: Path
+    ) -> None:
+        # A packaged SKILL.md that already ships the opt-out (mid-block, as
+        # some builtins do) must not be rewritten by the carry: the install
+        # stays byte-identical to the package and reads as in sync.
+        base = currency_base
+        src = builtin_root / "web-verify"
+        src.mkdir()
+        packaged_md = "---\nname: web-verify\ninject_on_trigger: false\ndescription: v1\n---\nv1\n"
+        (src / "SKILL.md").write_text(packaged_md, encoding="utf-8")
+        _ensure_builtin_skills(base)
+        (src / "SKILL.md").write_text(packaged_md.replace("v1", "v2"), encoding="utf-8")
+        _bump_mtime(src / "SKILL.md")
+        _ensure_builtin_skills(base)
+
+        installed = (base / "web-verify" / "SKILL.md").read_text(encoding="utf-8")
+        assert installed == packaged_md.replace("v1", "v2")
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+        assert not list(base.glob(".web-verify.user-backup*"))
+
+    def test_switch_on_default_is_not_rewritten(self, builtin_root: Path, base: Path) -> None:
+        # The carry fires ONLY when the user had opted out. An ordinary update
+        # of an untouched builtin installs the packaged SKILL.md verbatim —
+        # no stray inject_on_trigger line appended.
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _ship_version(src, "v2")
+        _ensure_builtin_skills(base)
+
+        installed = (base / "web-verify" / "SKILL.md").read_text(encoding="utf-8")
+        assert "inject_on_trigger" not in installed
+        assert _recorded(base / "web-verify") == _packaged(src)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics")
+    @pytest.mark.parametrize("packaged_mode", [0o644, 0o640], ids=["0644", "0640"])
+    def test_carried_skill_md_keeps_the_packaged_mode(
+        self, builtin_root: Path, currency_base: Path, packaged_mode: int
+    ) -> None:
+        # The fingerprint hashes file modes and the carried-line tolerance
+        # substitutes only the size, so a carried SKILL.md written with any
+        # mode but the packaged one (an owner-only temp file, say) reads as
+        # an edit and is quarantined by the next update.
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        (src / "SKILL.md").chmod(packaged_mode)
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+        (src / "SKILL.md").chmod(packaged_mode)
+        _ensure_builtin_skills(base)
+
+        dest = base / "web-verify"
+        installed_mode = stat.S_IMODE((dest / "SKILL.md").stat().st_mode)
+        assert installed_mode == stat.S_IMODE((src / "SKILL.md").stat().st_mode)
+        assert installed_mode == packaged_mode
+        assert _inject_on_trigger_off(dest)
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+        assert skills_mod._verified_unchanged_fingerprint(dest, src) is not None
+
+        # The next update retires the carried copy as sync-owned.
+        _ship_version(src, "v3")
+        (src / "SKILL.md").chmod(packaged_mode)
+        _ensure_builtin_skills(base)
+        assert not list(base.glob(".web-verify.user-backup*"))
+        assert _inject_on_trigger_off(dest)
+
+    def test_save_after_publish_is_not_overwritten_by_the_carry(
+        self, builtin_root: Path, currency_base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A dashboard save replacing the just-published SKILL.md must survive:
+        # the carry is staged into the copy, so nothing reads the published
+        # file and writes it back over that save.
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+
+        saved = "---\nname: web-verify\ndescription: mine\n---\nuser save\n"
+        real_repair = skills_mod.ensure_owner_rwx_dirs
+
+        def repair_then_save(dest_dir: Path) -> None:
+            # The published file already holds the carried opt-out here.
+            assert _inject_on_trigger_off(dest_dir)
+            assert "v2 body" in (dest_dir / "SKILL.md").read_text(encoding="utf-8")
+            (dest_dir / "SKILL.md").write_text(saved, encoding="utf-8")
+            real_repair(dest_dir)
+
+        monkeypatch.setattr(skills_mod, "ensure_owner_rwx_dirs", repair_then_save)
+        _ensure_builtin_skills(base)
+        monkeypatch.setattr(skills_mod, "ensure_owner_rwx_dirs", real_repair)
+
+        dest = base / "web-verify"
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == saved
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_EDITED
+
+    def test_carry_reads_only_the_packaged_skill_md(
+        self, builtin_root: Path, base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The carried bytes come from the immutable packaged file. The
+        # installed SKILL.md is never read once the packaged copy is published.
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        _switch_off(base / "web-verify")
+        _ship_version(src, "v2")
+
+        dest_skill_md = os.path.normcase(str(base / "web-verify" / "SKILL.md"))
+        published = {"done": False}
+        late_reads: list[str] = []
+        real_read = skills_mod.safe_read_file_bytes_nolink
+        real_repair = skills_mod.ensure_owner_rwx_dirs
+
+        def tracking_read(path: str, *args: object, **kwargs: object) -> bytes | None:
+            if published["done"] and os.path.normcase(str(path)) == dest_skill_md:
+                late_reads.append(str(path))
+            return real_read(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        def mark_published(dest_dir: Path) -> None:
+            published["done"] = True
+            real_repair(dest_dir)
+
+        monkeypatch.setattr(skills_mod, "safe_read_file_bytes_nolink", tracking_read)
+        monkeypatch.setattr(skills_mod, "ensure_owner_rwx_dirs", mark_published)
+        _ensure_builtin_skills(base)
+
+        assert published["done"]
+        assert late_reads == []
+        assert _inject_on_trigger_off(base / "web-verify")
+
+    def test_copy_keeps_a_skill_md_created_before_it(self, tmp_path: Path) -> None:
+        # Something that creates SKILL.md in the fresh destination before the
+        # copy reaches it keeps its file: the carry never overwrites.
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_text("packaged", encoding="utf-8")
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        (dest / "SKILL.md").write_text("theirs", encoding="utf-8")
+
+        copy = skills_mod._copy_with_carried_skill_md(dest, b"carried")
+        copy(str(src / "SKILL.md"), os.path.join(dest, "SKILL.md"))
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == "theirs"
+
+        # Any other file goes through copy2 unchanged.
+        (src / "other.txt").write_text("other", encoding="utf-8")
+        copy(str(src / "other.txt"), os.path.join(dest, "other.txt"))
+        assert (dest / "other.txt").read_text(encoding="utf-8") == "other"
+
+    def test_toggle_landing_in_the_claim_window_is_not_lost(
+        self, builtin_root: Path, currency_base: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The opt-out is read from the CLAIMED tree, after the atomic rename
+        # aside, not from the live destination before it. A dashboard toggle
+        # that lands in that window (modelled here as a flip just before the
+        # real claim renames the tree) is therefore reflected in the carry,
+        # not read stale as ON and then discarded by retiring the OFF tree.
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ensure_builtin_skills(base)
+        # The install starts with the switch ON (packaged default).
+        assert not _inject_on_trigger_off(base / "web-verify")
+        _ship_version(src, "v2")
+
+        real_claim = skills_mod._claim_dir_for_replacement
+        flipped = {"done": False}
+
+        def flip_then_claim(dest_dir: Path):
+            # Model the concurrent dashboard save landing right before the
+            # claim: the switch goes OFF on the live tree the claim is about
+            # to rename aside.
+            if not flipped["done"] and dest_dir.name == "web-verify":
+                flipped["done"] = True
+                _switch_off(dest_dir)
+            return real_claim(dest_dir)
+
+        monkeypatch.setattr(skills_mod, "_claim_dir_for_replacement", flip_then_claim)
+        _ensure_builtin_skills(base)
+        monkeypatch.setattr(skills_mod, "_claim_dir_for_replacement", real_claim)
+
+        dest = base / "web-verify"
+        assert flipped["done"]
+        # The toggle that landed in the window survived: the published skill
+        # carries the opt-out and the packaged v2 body installed.
+        assert _inject_on_trigger_off(dest)
+        assert "v2 body" in (dest / "SKILL.md").read_text(encoding="utf-8")
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+
+    def test_successive_versions_get_strictly_increasing_mtimes(
+        self, builtin_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A frozen clock models two versions shipped inside one coarse clock
+        # tick: each version must still be strictly newer than the last, or
+        # the update gate skips it and the test reads the older version.
+        # Freeze THIS module's own clock seam (_now), never the shared stdlib
+        # time.time — patching the stdlib would hand the frozen timestamp to
+        # every worker-wide reader (logging.LogRecord.created and others)
+        # until teardown (tests-are-deterministic D2/D11).
+        import test_builtin_skill_sync_safety as mod
+
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        frozen = time.time()
+        monkeypatch.setattr(mod, "_now", lambda: frozen)
+        _ship_version(src, "v2")
+        v2_mtime = (src / "SKILL.md").stat().st_mtime
+        _ship_version(src, "v3")
+        assert (src / "SKILL.md").stat().st_mtime > v2_mtime
+
+    def test_rewrite_keeps_the_file_newline_style(self) -> None:
+        from kiro_crew.skill_runtime.authoring import rewrite_inject_on_trigger
+
+        lf = "---\nname: x\ndescription: d\n---\nbody\n"
+        crlf = lf.replace("\n", "\r\n")
+        assert rewrite_inject_on_trigger(lf, False) == (
+            "---\nname: x\ndescription: d\ninject_on_trigger: false\n---\nbody\n"
+        )
+        carried = rewrite_inject_on_trigger(crlf, False)
+        assert carried == (
+            "---\r\nname: x\r\ndescription: d\r\ninject_on_trigger: false\r\n---\r\nbody\r\n"
+        )
+        assert rewrite_inject_on_trigger(carried, True) == crlf
+        stripped = skills_mod._strip_carried_opt_out(carried.encode("utf-8"))
+        assert stripped == crlf.encode("utf-8")
+
+    def test_crlf_packaged_manifest_carries_the_opt_out(
+        self, builtin_root: Path, currency_base: Path
+    ) -> None:
+        # A Windows checkout ships CRLF manifests. The carry must apply the
+        # opt-out to them too, keep CRLF, and verify the carried copy as
+        # sync-owned on the next update.
+        base = currency_base
+        src = _make_skill(builtin_root, "web-verify", "v1")
+        _ship_version(src, "v1", newline="\r\n")
+        _ensure_builtin_skills(base)
+        dest = base / "web-verify"
+        _switch_off(dest)
+        toggled = (dest / "SKILL.md").read_bytes()
+        assert toggled.count(b"\n") == toggled.count(b"\r\n")
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+
+        _ship_version(src, "v2", newline="\r\n")
+        _ensure_builtin_skills(base)
+        installed = (dest / "SKILL.md").read_bytes()
+        assert b"v2 body\r\n" in installed
+        assert b"\r\ninject_on_trigger: false\r\n---\r\n" in installed
+        assert installed.count(b"\n") == installed.count(b"\r\n")
+        assert _inject_on_trigger_off(dest)
+        assert _recorded(dest) == _packaged(src)
+        assert _currency("web-verify") == skills_mod.SKILL_INSTALL_IN_SYNC
+        assert skills_mod._verified_unchanged_fingerprint(dest, src) is not None
+
+        _ship_version(src, "v3", newline="\r\n")
+        _ensure_builtin_skills(base)
+        assert not list(base.glob(".web-verify.user-backup*"))
+        assert _inject_on_trigger_off(dest)
+
+    def test_toggle_writes_through_the_access_control_carrying_writer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The toggle replaces SKILL.md through _write_skill_md, and a target
+        # that writer rejects is a failed toggle with the file untouched.
+        _make_skill(tmp_path, "web-verify", "v1")
+        skill_md = tmp_path / "web-verify" / "SKILL.md"
+        before = skill_md.read_bytes()
+        calls: list[Path] = []
+
+        def rejecting(skill_file: Path, content: str, *, dir_fd: int | None) -> bool:
+            calls.append(skill_file)
+            return False
+
+        monkeypatch.setattr(skills_mod.SkillsLoader, "_write_skill_md", staticmethod(rejecting))
+        loader = skills_mod.SkillsLoader(skills_path=tmp_path, install_builtins=False)
+        assert loader.set_inject_on_trigger("web-verify", False) is False
+        assert [p.resolve() for p in calls] == [skill_md.resolve()]
+        assert skill_md.read_bytes() == before
+
+    @pytest.mark.skipif(not hasattr(os, "setxattr"), reason="needs POSIX xattrs")
+    def test_toggle_keeps_a_named_user_acl(self, tmp_path: Path) -> None:
+        # A named-user deny on SKILL.md must survive the toggle: carrying the
+        # mode bits alone keeps 0644 but drops the entry, so the denied
+        # principal regains read access.
+        import struct
+
+        _make_skill(tmp_path, "web-verify", "v1")
+        skill_md = tmp_path / "web-verify" / "SKILL.md"
+        # POSIX ACL xattr: version 2, then (tag, perm, id) entries in order.
+        undefined = 0xFFFFFFFF
+        acl = struct.pack("<I", 2) + b"".join(
+            struct.pack("<HHI", tag, perm, ident)
+            for tag, perm, ident in (
+                (0x01, 6, undefined),  # user::rw-
+                (0x02, 0, 65534),  # user:65534:--- (named-user deny)
+                (0x04, 4, undefined),  # group::r--
+                (0x10, 4, undefined),  # mask::r--
+                (0x20, 4, undefined),  # other::r--
+            )
+        )
+        try:
+            os.setxattr(str(skill_md), "system.posix_acl_access", acl)
+        except OSError:
+            pytest.skip("filesystem has no POSIX ACL support")
+        expected = os.getxattr(str(skill_md), "system.posix_acl_access")
+
+        loader = skills_mod.SkillsLoader(skills_path=tmp_path, install_builtins=False)
+        assert loader.set_inject_on_trigger("web-verify", False) is True
+        assert _inject_on_trigger_off(tmp_path / "web-verify")
+        assert os.getxattr(str(skill_md), "system.posix_acl_access") == expected
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
+
+    @pytest.mark.skipif(not hasattr(os, "setxattr"), reason="needs POSIX xattrs")
+    def test_toggle_keeps_extended_attributes(self, tmp_path: Path) -> None:
+        # The same carry that keeps a POSIX ACL keeps every carriable xattr,
+        # so a user.* attribute observes it on filesystems without ACLs.
+        _make_skill(tmp_path, "web-verify", "v1")
+        skill_md = tmp_path / "web-verify" / "SKILL.md"
+        try:
+            os.setxattr(str(skill_md), "user.kirocrew_test", b"keepme")
+        except OSError:
+            pytest.skip("filesystem has no user xattr support")
+
+        loader = skills_mod.SkillsLoader(skills_path=tmp_path, install_builtins=False)
+        assert loader.set_inject_on_trigger("web-verify", False) is True
+        assert _inject_on_trigger_off(tmp_path / "web-verify")
+        assert os.getxattr(str(skill_md), "user.kirocrew_test") == b"keepme"

@@ -75,7 +75,7 @@ function renderWithQuery() {
 
 beforeEach(() => {
   Object.values(mockApi).forEach(m => 'mockReset' in m && m.mockReset())
-  mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody' })
+  mockApi.skill.mockResolvedValue({ name: 'x', content: '---\nname: x\n---\nbody', hash: 'h-x' })
 })
 
 describe('SkillsTab', () => {
@@ -210,7 +210,7 @@ describe('SkillsTab', () => {
     mockApi.skills.mockResolvedValue([
       { key: 'doomed', name: 'doomed', description: 'will go', source: 'kirocrew', loaded_by_agents: [] },
     ])
-    mockApi.skill.mockResolvedValue({ name: 'doomed', content: '---\nname: doomed\n---\n' })
+    mockApi.skill.mockResolvedValue({ name: 'doomed', content: '---\nname: doomed\n---\n', hash: 'h-doomed' })
     mockApi.deleteSkill.mockResolvedValue({ ok: true })
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
@@ -230,13 +230,15 @@ describe('SkillsTab', () => {
     mockApi.skill.mockResolvedValue({
       name: 'editable',
       content: '---\nname: editable\ndescription: fixme\n---\nbody text',
+      hash: 'h-editable',
     })
 
     renderWithQuery()
 
-    // The Edit button is disabled while content loads.  Wait for it to enable.
+    // Edit starts the content read when clicked.
     const editBtn = await screen.findByText('Edit')
-    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    expect(editBtn).toBeEnabled()
+    expect(mockApi.skill).not.toHaveBeenCalled()
     fireEvent.click(editBtn)
 
     // In edit mode, Save + Cancel surface.
@@ -254,6 +256,7 @@ describe('SkillsTab', () => {
     mockApi.skill.mockResolvedValue({
       name: 'editable',
       content: '---\nname: editable\ndescription: fixme\n---\nbody text',
+      hash: 'h-editable',
     })
 
     renderWithQuery()
@@ -282,6 +285,19 @@ describe('SkillsTab', () => {
     renderWithQuery()
 
     // Browser renders, but read-only sources lose Edit/Delete entirely.
+    await waitFor(() => expect(screen.getByTestId('dir-browser')).toBeInTheDocument())
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument()
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument()
+  })
+
+  it('does NOT show Edit/Delete for a Kiro Crew row outside the skills folder (owned: false)', async () => {
+    // A skill reached through skills.extra_paths lists as source 'kirocrew',
+    // but Edit/Delete write into the skills folder, so the row is read-only.
+    mockApi.skills.mockResolvedValue([
+      { key: 'x', name: 'x', description: 'extra-x', source: 'kirocrew', owned: false, loaded_by_agents: [] },
+    ])
+    renderWithQuery()
+
     await waitFor(() => expect(screen.getByTestId('dir-browser')).toBeInTheDocument())
     expect(screen.queryByText('Edit')).not.toBeInTheDocument()
     expect(screen.queryByText('Delete')).not.toBeInTheDocument()
@@ -519,7 +535,49 @@ describe('SkillsTab update/delete failure surfacing', () => {
   }
 
   beforeEach(() => {
-    mockApi.skill.mockResolvedValue({ name: 'fragile', content: '---\nname: fragile\n---\nbody' })
+    mockApi.skill.mockResolvedValue({ name: 'fragile', content: '---\nname: fragile\n---\nbody', hash: 'h-seeded' })
+  })
+
+  it('keeps the conflict notice in the form scroller and the header outside it', async () => {
+    mockApi.skills.mockResolvedValue(SKILL)
+    mockApi.updateSkill.mockRejectedValue(new StubApiError(409, 'File changed', JSON.stringify({ code: 'content_conflict' })))
+
+    await enterEditor()
+    const body = screen.getByDisplayValue('body')
+    fireEvent.change(body, { target: { value: 'unsaved draft' } })
+    mockApi.skill.mockResolvedValue({ name: 'fragile', content: 'Current file\n'.repeat(80), hash: 'h-current' })
+    const save = screen.getByRole('button', { name: 'Save' })
+    fireEvent.click(save)
+
+    const notice = await screen.findByTestId('skill-disk-conflict')
+    const scroller = body.closest('.overflow-y-auto')
+    expect(scroller).not.toBeNull()
+    expect(scroller).toHaveClass('flex-1', 'min-h-0')
+    expect(notice.closest('.overflow-y-auto')).toBe(scroller)
+    expect(body).toHaveValue('unsaved draft')
+    expect(scroller).not.toContainElement(save)
+    expect(scroller).not.toContainElement(screen.getByRole('button', { name: 'Cancel' }))
+    expect(save).toBeDisabled()
+    const choices = within(notice).getAllByRole('button')
+    expect(choices).toHaveLength(2)
+    for (const choice of choices) expect(choice.closest('.overflow-y-auto')).toBe(scroller)
+    // Neither choice is the wrong answer, so neither carries the destructive tint.
+    for (const choice of choices) expect(choice).not.toHaveClass('text-danger')
+  })
+
+  it('keeps the save-failure notice in the fixed strip outside the form scroller', async () => {
+    mockApi.skills.mockResolvedValue(SKILL)
+    mockApi.updateSkill.mockRejectedValue(new Error('disk full'))
+
+    await enterEditor()
+    const body = screen.getByDisplayValue('body')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    const notice = await screen.findByTestId('skill-update-failure')
+    const scroller = body.closest('.overflow-y-auto')
+    expect(scroller).not.toBeNull()
+    expect(scroller).not.toContainElement(notice)
+    expect(notice.closest('.shrink-0')).not.toBeNull()
   })
 
   it('surfaces an update failure next to the editor and keeps the draft', async () => {
@@ -705,6 +763,188 @@ describe('SkillsTab update/delete failure surfacing', () => {
     const notice = await screen.findByTestId('skill-update-failure')
     expect(notice.textContent).toMatch(/managed on disk/)
     expect(notice.textContent).not.toMatch(/read-only territory/)
+  })
+
+  it('Edit seeds the form from a fresh read, not the cached copy, and saves against it', async () => {
+    // A cached copy can predate an agent's on-disk edit with no push.
+    mockApi.skills.mockResolvedValue(SKILL)
+    mockApi.skill.mockResolvedValue({ name: 'fragile', content: '---\nname: fragile\n---\nagent body', hash: 'h-agent' })
+    mockApi.updateSkill.mockResolvedValue({ ok: true })
+
+    const { qc } = renderWithQuery()
+    qc.setQueryData(['skill-detail', 'fragile'], { content: '---\nname: fragile\n---\nold body', hash: 'h-old' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    expect(await screen.findByDisplayValue('agent body')).toBeInTheDocument()
+    expect(mockApi.skill).toHaveBeenCalledExactlyOnceWith('fragile')
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalledTimes(1))
+    expect(mockApi.updateSkill.mock.calls[0][2]).toBe('h-agent')
+  })
+
+  it('keeps Edit enabled after an initial detail failure, reports a fresh read failure, and opens on retry', async () => {
+    mockApi.skills.mockResolvedValue(SKILL)
+    let resolveRead!: (detail: { content: string; hash: string }) => void
+    const retryRead = new Promise<{ content: string; hash: string }>(resolve => { resolveRead = resolve })
+    mockApi.skill
+      .mockRejectedValueOnce(new Error('initial read failed'))
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockReturnValueOnce(retryRead)
+    const { qc } = renderWithQuery()
+    const edit = await screen.findByRole('button', { name: 'Edit' })
+    expect(edit).toBeEnabled()
+    expect(mockApi.skill).not.toHaveBeenCalled()
+    // Seed a failed initial GET in the shared cache; Edit owns its fresh read.
+    await act(async () => {
+      await expect(qc.fetchQuery({ queryKey: ['skill-detail', 'fragile'], queryFn: () => mockApi.skill('fragile') })).rejects.toThrow('initial read failed')
+    })
+    expect(qc.getQueryState(['skill-detail', 'fragile'])?.status).toBe('error')
+    expect(edit).toBeEnabled()
+    fireEvent.click(edit)
+
+    const notice = await screen.findByTestId('skill-edit-read-failure')
+    expect(mockApi.skill).toHaveBeenNthCalledWith(2, 'fragile')
+    expect(notice).toHaveTextContent("Couldn't open the editor")
+    expect(notice).toHaveTextContent('gateway restarting')
+    // The raw error sits on its own line under the title, not run into it.
+    const rawLine = [...notice.querySelectorAll('span')].find(el => el.textContent === 'gateway restarting')
+    expect(rawLine).toBeTruthy()
+    expect(rawLine!.className).toContain('block')
+    expect(rawLine!.textContent).not.toContain("Couldn't open the editor")
+    expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(edit).toBeEnabled()
+    fireEvent.click(edit)
+    await waitFor(() => expect(mockApi.skill).toHaveBeenCalledTimes(3))
+    expect(screen.queryByTestId('skill-edit-read-failure')).not.toBeInTheDocument()
+    expect(edit).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Create New Skill' })).toBeDisabled()
+
+    await act(async () => { resolveRead({ content: '---\nname: fragile\n---\nfresh body', hash: 'h-fresh' }) })
+    await screen.findByRole('button', { name: 'Save' })
+    expect(screen.getByDisplayValue('fresh body')).toBeInTheDocument()
+    expect(screen.queryByTestId('skill-edit-read-failure')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('skill-edit-read-failure')).not.toBeInTheDocument()
+  })
+
+  it.each(['dismiss', 'select row'] as const)('clears the Edit read failure on %s', async action => {
+    mockApi.skills.mockResolvedValue(SKILL)
+    mockApi.skill.mockRejectedValueOnce(new Error('gateway restarting'))
+    renderWithQuery()
+    const edit = await screen.findByRole('button', { name: 'Edit' })
+    await waitFor(() => expect(edit).toBeEnabled())
+    fireEvent.click(edit)
+    const notice = await screen.findByTestId('skill-edit-read-failure')
+
+    fireEvent.click(action === 'dismiss'
+      ? within(notice).getByRole('button', { name: 'Dismiss' })
+      : screen.getByRole('button', { name: 'Select Fragile' }))
+    expect(screen.queryByTestId('skill-edit-read-failure')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  describe('a save refused because the file was edited after the form opened', () => {
+    const ON_DISK = '---\nname: fragile\n---\nagent rewrote this'
+    const conflict = () => new StubApiError(
+      409,
+      'the skill changed on disk after the edit was started',
+      JSON.stringify({ error: 'the skill changed on disk after the edit was started', code: 'content_conflict' }),
+    )
+
+    async function refuseFirstSave() {
+      mockApi.skills.mockResolvedValue(SKILL)
+      mockApi.updateSkill.mockRejectedValueOnce(conflict()).mockResolvedValue({ ok: true, hash: 'h-saved' })
+      await enterEditor()
+      // The refusal re-reads the file; from here on the read serves the agent's edit.
+      mockApi.skill.mockResolvedValue({ name: 'fragile', content: ON_DISK, hash: 'h-current' })
+      fireEvent.change(screen.getByDisplayValue('body'), { target: { value: 'my draft' } })
+      fireEvent.click(screen.getByText('Save'))
+      return screen.findByTestId('skill-disk-conflict')
+    }
+
+    it('shows the current file, keeps the draft, and blocks Save until the user picks', async () => {
+      const notice = await refuseFirstSave()
+      expect(mockApi.updateSkill.mock.calls[0][2]).toBe('h-seeded')
+      expect(notice.textContent).toMatch(/edited after you opened it/)
+      expect(notice.textContent).toMatch(/An agent or another app changed this file\. Your edits are still in the form below\. Choose which version to keep; Save works again once you choose\./)
+      expect(within(notice).getByText('The other version (now in the file)')).toBeInTheDocument()
+      expect(within(notice).getByTestId('skill-disk-conflict-current').textContent).toBe(ON_DISK)
+      expect(within(notice).getByText('Discard my edits and use the current file')).toBeInTheDocument()
+      expect(within(notice).getByText('Keep my edits (the other version is replaced)')).toBeInTheDocument()
+      // Nothing was written, so the editor and the draft stay.
+      expect(screen.getByDisplayValue('my draft')).toBeInTheDocument()
+      expect(screen.getByText('Save').closest('button')).toBeDisabled()
+      expect(screen.queryByTestId('skill-update-failure')).not.toBeInTheDocument()
+    })
+
+    it('Discard reseeds the form from the current file and saves against its hash', async () => {
+      const notice = await refuseFirstSave()
+      fireEvent.click(within(notice).getByText('Discard my edits and use the current file'))
+
+      expect(screen.queryByTestId('skill-disk-conflict')).not.toBeInTheDocument()
+      expect(screen.getByDisplayValue('agent rewrote this')).toBeInTheDocument()
+      fireEvent.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalledTimes(2))
+      expect(mockApi.updateSkill.mock.calls[1][2]).toBe('h-current')
+    })
+
+    it('Discard from raw-markdown mode shows the current file, not an empty raw editor', async () => {
+      mockApi.skills.mockResolvedValue(SKILL)
+      mockApi.updateSkill.mockRejectedValueOnce(conflict()).mockResolvedValue({ ok: true })
+      await enterEditor()
+      mockApi.skill.mockResolvedValue({ name: 'fragile', content: ON_DISK, hash: 'h-current' })
+      fireEvent.click(screen.getByText('Edit raw markdown'))
+      const raw = screen.getByDisplayValue(/name: fragile/)
+      fireEvent.change(raw, { target: { value: '---\nname: fragile\n---\nmy raw draft' } })
+      fireEvent.click(screen.getByText('Save'))
+      const notice = await screen.findByTestId('skill-disk-conflict')
+      fireEvent.click(within(notice).getByText('Discard my edits and use the current file'))
+
+      // The editor shows the current file's body; no blank raw textarea is
+      // left to be typed into and saved over the file.
+      expect(screen.getByDisplayValue('agent rewrote this')).toBeInTheDocument()
+      expect(screen.queryByDisplayValue(/my raw draft/)).not.toBeInTheDocument()
+      fireEvent.click(screen.getByText('Save'))
+      await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalledTimes(2))
+      expect(mockApi.updateSkill.mock.calls[1][1]).toMatch(/agent rewrote this/)
+    })
+
+    it('Keep writes the draft against the current file hash', async () => {
+      const notice = await refuseFirstSave()
+      fireEvent.click(within(notice).getByText('Keep my edits (the other version is replaced)'))
+
+      await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalledTimes(2))
+      const [key, content, base] = mockApi.updateSkill.mock.calls[1]
+      expect(key).toBe('fragile')
+      expect(content).toMatch(/my draft/)
+      expect(base).toBe('h-current')
+      await waitFor(() => expect(screen.queryByText('Save')).not.toBeInTheDocument())
+    })
+
+    it('reports the ordinary save failure when the current file cannot be read', async () => {
+      mockApi.skills.mockResolvedValue(SKILL)
+      mockApi.updateSkill.mockRejectedValueOnce(conflict())
+      await enterEditor()
+      mockApi.skill.mockRejectedValue(new Error('read failed'))
+      fireEvent.change(screen.getByDisplayValue('body'), { target: { value: 'my draft' } })
+      fireEvent.click(screen.getByText('Save'))
+
+      const notice = await screen.findByTestId('skill-update-failure')
+      expect(notice.textContent).toMatch(/Save failed/)
+      expect(screen.queryByTestId('skill-disk-conflict')).not.toBeInTheDocument()
+      expect(screen.getByDisplayValue('my draft')).toBeInTheDocument()
+    })
+  })
+
+  it('every [\'skills\'] reader on the tab refetches on mount (none keeps a page-lifetime copy)', async () => {
+    // The pending panel reads the same key to tell "approved" from "dismissed";
+    // on the global staleTime: Infinity it would answer from the first fetch.
+    mockApi.skills.mockResolvedValue(SKILL)
+    const { qc } = renderWithQuery()
+    await screen.findByText('Edit')
+    const observers = qc.getQueryCache().find({ queryKey: ['skills'] })!.observers
+    expect(observers.length).toBeGreaterThan(1)
+    for (const o of observers) expect(o.options.staleTime).toBe(0)
   })
 
   it('clears the update failure when the editor is re-entered', async () => {
@@ -1252,6 +1492,99 @@ describe('SkillsTab update/delete failure surfacing', () => {
     } finally {
       isMobileMock.value = false
     }
+  })
+
+  it('surfaces a save failure on the list when a viewport crossing hides the editor mid-save', async () => {
+    // Desktop, detail never explicitly opened: the editor shows only because
+    // the viewport is wide. Crossing to a phone mid-save hides it (the edit
+    // session stays latched), so the PUT's later rejection must report on
+    // the list instead of vanishing.
+    try {
+      mockApi.skills.mockResolvedValue(SKILL)
+      let rejectUpdate: (e: Error) => void = () => {}
+      mockApi.updateSkill.mockImplementation(() => new Promise((_, rej) => { rejectUpdate = rej }))
+
+      renderWithQuery()
+      const editBtn = await screen.findByText('Edit')
+      await waitFor(() => expect(editBtn).not.toBeDisabled())
+      fireEvent.click(editBtn)
+      fireEvent.click(await screen.findByText('Save'))
+      await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalled())
+
+      // Cross to a phone; a state-bearing interaction re-renders the tab.
+      isMobileMock.value = true
+      fireEvent.change(screen.getByPlaceholderText(/filter skills/i), { target: { value: 'f' } })
+      await waitFor(() => expect(screen.queryByText('Saving…')).not.toBeInTheDocument())
+
+      await act(async () => { rejectUpdate(new Error('disk full')) })
+      const notice = await screen.findByTestId('skill-update-failure-list')
+      expect(notice.textContent).toMatch(/disk full/)
+
+      // A row tap reopens the latched editor, which shows the failure inline.
+      fireEvent.click(screen.getByText('fragile'))
+      await screen.findByTestId('skill-update-failure')
+      expect(screen.queryByTestId('skill-update-failure-list')).not.toBeInTheDocument()
+
+      // Back to the list: dismiss retires it.
+      fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
+      const again = await screen.findByTestId('skill-update-failure-list')
+      fireEvent.click(within(again).getByLabelText('Dismiss'))
+      await waitFor(() => expect(screen.queryByTestId('skill-update-failure-list')).not.toBeInTheDocument())
+    } finally {
+      isMobileMock.value = false
+    }
+  })
+
+  it('names a disk conflict on the list when a viewport crossing hides the editor mid-save', async () => {
+    try {
+      mockApi.skills.mockResolvedValue(SKILL)
+      let rejectUpdate: (e: Error) => void = () => {}
+      mockApi.updateSkill.mockImplementation(() => new Promise((_, rej) => { rejectUpdate = rej }))
+
+      renderWithQuery()
+      const editBtn = await screen.findByText('Edit')
+      await waitFor(() => expect(editBtn).not.toBeDisabled())
+      fireEvent.click(editBtn)
+      fireEvent.click(await screen.findByText('Save'))
+      await waitFor(() => expect(mockApi.updateSkill).toHaveBeenCalled())
+
+      isMobileMock.value = true
+      fireEvent.change(screen.getByPlaceholderText(/filter skills/i), { target: { value: 'f' } })
+      await waitFor(() => expect(screen.queryByText('Saving…')).not.toBeInTheDocument())
+
+      await act(async () => {
+        rejectUpdate(new StubApiError(409, 'changed on disk', JSON.stringify({
+          error: 'changed on disk', code: 'content_conflict',
+        })))
+      })
+      const notice = await screen.findByTestId('skill-disk-conflict-list')
+      expect(notice.textContent).toMatch(/edited after you opened it/)
+      expect(notice.textContent).toContain('changed the file for “Fragile”')
+
+      // A row tap reopens the latched editor, which carries the choices.
+      fireEvent.click(screen.getByText('fragile'))
+      await screen.findByTestId('skill-disk-conflict')
+      expect(screen.queryByTestId('skill-disk-conflict-list')).not.toBeInTheDocument()
+    } finally {
+      isMobileMock.value = false
+    }
+  })
+
+  it('keeps Create New Skill off while Edit re-reads the file, so a late seed cannot overwrite a new draft', async () => {
+    mockApi.skills.mockResolvedValue(SKILL)
+    renderWithQuery()
+    const editBtn = await screen.findByText('Edit')
+    await waitFor(() => expect(editBtn).not.toBeDisabled())
+    let resolveRead: (v: { name: string; content: string; hash: string }) => void = () => {}
+    mockApi.skill.mockImplementation(() => new Promise(res => { resolveRead = res }))
+
+    fireEvent.click(editBtn)
+    const create = screen.getByText('Create New Skill').closest('button')!
+    await waitFor(() => expect(create).toBeDisabled())
+
+    await act(async () => { resolveRead({ name: 'fragile', content: '---\nname: fragile\n---\nbody', hash: 'h-seeded' }) })
+    await screen.findByText('Save')
+    expect(create).not.toBeDisabled()
   })
 
   it('disables Cancel while a save is in flight, so its outcome cannot report nowhere', async () => {

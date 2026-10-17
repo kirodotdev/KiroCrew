@@ -7,7 +7,7 @@
  * Frames:
  *   01-cached.png       part of the release on disk, downloads permitted — counts,
  *                       release, and the manual control.
- *   02-downloading.png  a clip in flight: the line names it, the control is
+ *   02-downloading.png  a clip in flight: the line names it by title, the control is
  *                       unavailable so the same pass cannot be queued twice.
  *   03-policy-off.png   downloads forbidden: the line says so and there is NO
  *                       control, greyed included.
@@ -48,7 +48,6 @@ async function scene(query) {
   await page.goto(`${BASE}/capture/feature-video-cache-row.html?${query}`, { waitUntil: 'load' })
   await page.waitForSelector('[data-testid="feature-video-status"]')
   await page.waitForTimeout(STAGGER_SETTLE_MS)
-  // The row sits inside the Messages card, below the fold at this viewport.
   await page.locator('[data-testid="feature-video-status"]').scrollIntoViewIfNeeded()
   await page.waitForTimeout(200)
   return page
@@ -73,7 +72,10 @@ const DOWNLOAD_BTN = 'button:has-text("Download all now")'
 {
   const page = await scene('scene=downloading')
   const line = await page.locator('[data-testid="feature-video-status"]').innerText()
-  if (!line.includes('monitor-loops')) fail(`in-flight line "${line}" does not name the clip`)
+  if (!line.includes('Let one session watch a pull request')) {
+    fail(`in-flight line "${line}" does not name the clip by its title`)
+  }
+  if (line.includes('monitor-loops')) fail(`in-flight line "${line}" still shows the catalog id`)
   if (!await page.locator(DOWNLOAD_BTN).isDisabled()) {
     fail('manual control still available while a fetch is in flight')
   }

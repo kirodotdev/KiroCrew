@@ -1,19 +1,19 @@
 ---
 title: Goal popover Pause/Play controls — a readable loop state, one press to resume, a spent bound resets only its own counter
-status: in-progress
+status: implemented
 author: pepmach
 created: 2026-10-01
-last-audited: 2026-10-02
-audited-at: bc80d8d8a2
+last-audited: 2026-10-06
+audited-at: ea7e91c8e6
 doc-pr: 16030
-implementation-prs: [16030]
+implementation-prs: [16030, 16353]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: Goal popover Pause/Play controls
 
-- Status: in-progress. The design was decided by the product owner (pepmach / Stan) on 2026-10-01 on the thread of the superseded [#11478](https://github.com/kirodotdev/KiroCrew/pull/11478) and recorded here; the implementation is [#16030](https://github.com/kirodotdev/KiroCrew/pull/16030), which carries this document. The First Principles lane reads an RFC's status off the base branch, so until this document is on main it reads as `draft` to that lane; clearing the lane is a maintainer's call (an override on the final head, or merging this document first), not this PR's.
+- Status: implemented ([#16030](https://github.com/kirodotdev/KiroCrew/pull/16030), [#16353](https://github.com/kirodotdev/KiroCrew/pull/16353)). The design was decided by the product owner (pepmach / Stan) on 2026-10-01 on the thread of the superseded [#11478](https://github.com/kirodotdev/KiroCrew/pull/11478) and recorded here; the implementation is [#16030](https://github.com/kirodotdev/KiroCrew/pull/16030), which carries this document. The First Principles lane reads an RFC's status off the base branch, so until this document is on main it reads as `draft` to that lane; clearing the lane is a maintainer's call (an override on the final head, or merging this document first), not this PR's.
 - Author: pepmach (product owner); written up by the crew worker that implements it.
 - Created: 2026-10-01
 - Related: [`../system-specs/modules/learn-cron-dashboard.md`](../system-specs/modules/learn-cron-dashboard.md) (AutoNudge: the loop service, `stopped_reason`, the runtime budget and the revival rule), [`../system-specs/modules/monitor-architecture.md`](../system-specs/modules/monitor-architecture.md) (the loop paradigm), [rfc-perpetual-agent.md](rfc-perpetual-agent.md) (the sibling decision on an uncapped loop), [`../../website/AUTOSDE.yaml`](../../website/AUTOSDE.yaml) (`max-two-buttons-per-row`, `icon-buttons-need-labels`).

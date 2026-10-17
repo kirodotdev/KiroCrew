@@ -27,6 +27,7 @@ from kiro_crew.dashboard.handlers._shared import (
     _expand_agent_globs,
     _expand_resource_uri,
     _load_parsed_agents,
+    _one_row_per_skill_file,
     _parse_skill_description,
     _resolve_loaded_by_agents,
     _resolve_skill_root,
@@ -92,6 +93,14 @@ class TestParseSkillDescription:
         desc, always = _parse_skill_description(f)
         assert desc == ""
         assert always is False
+
+    def test_nested_description_does_not_replace_top_level(self, tmp_path):
+        f = tmp_path / "SKILL.md"
+        f.write_text(
+            "---\nname: x\ndescription: the skill\ninputs:\n"
+            "  - name: a\n    description: one input\n\tdescription: tabbed\n---\n"
+        )
+        assert _parse_skill_description(f) == ("the skill", False)
 
     def test_strips_quotes_from_description(self, tmp_path):
         f = tmp_path / "SKILL.md"
@@ -502,6 +511,148 @@ class TestCollectSkillsBlocking:
     def test_empty_everything(self, fake_home):
         loader = self._loader_with()
         assert collect_skills_blocking(loader, [], project_dir=None) == []
+
+
+class TestOneRowPerSkillFile:
+    """Two sources reaching ONE SKILL.md list it once, and only a row from the
+    user-writable skills folder stays editable."""
+
+    def test_extra_paths_over_kiro_user_lists_once(self, fake_home, close_skills_loaders):
+        """Real loader: ``skills.extra_paths`` naming ``~/.kiro/skills`` reaches
+        the file as a Kiro Crew row AND as a ``kiro-user`` row; one is listed."""
+        from kiro_crew.config import KiroCrewConfig
+        from kiro_crew.skills import SkillsLoader
+
+        user_root = fake_home / ".kiro" / "skills"
+        skill_dir = user_root / "tracker"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: tracker\ndescription: top level\n"
+            "inputs:\n  - name: x\n    description: nested input\n---\nbody\n"
+        )
+        cfg = KiroCrewConfig()
+        cfg.skills.extra_paths = [str(user_root)]
+        loader = SkillsLoader(
+            skills_path=fake_home / ".kiro" / "crew" / "skills",
+            install_builtins=False,
+            config=cfg,
+        )
+
+        rows = [r for r in collect_skills_blocking(loader, [], project_dir=None)
+                if r["name"] == "tracker"]
+
+        assert len(rows) == 1
+        # Neither row is editable, so the row keyed by the file's own folder
+        # stays: its key is the one an agent-skill mapping saves.
+        assert rows[0]["key"] == "kiro-user/tracker"
+        assert rows[0]["description"] == "top level"
+        assert rows[0]["aliases"] == ["tracker"]
+
+    def test_editable_row_wins_and_agents_merge(self, tmp_path):
+        md = tmp_path / "s" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("---\nname: s\n---\n")
+        alias = tmp_path / "alias"
+        alias.symlink_to(md.parent)  # a second spelling of the same file
+        rows = [
+            {"key": "s", "source": "kirocrew", "owned": False,
+             "path": str(alias / "SKILL.md"), "loaded_by_agents": ["a"]},
+            {"key": "s2", "source": "kirocrew", "owned": True,
+             "path": str(md), "loaded_by_agents": ["b"]},
+            {"key": "kiro-user/s", "source": "kiro-user",
+             "path": str(md), "loaded_by_agents": ["a", "c"]},
+        ]
+
+        out = _one_row_per_skill_file(rows)
+
+        assert [r["key"] for r in out] == ["s2"]
+        assert out[0]["loaded_by_agents"] == ["b", "a", "c"]
+        # The dropped keys stay resolvable for key lookups.
+        assert out[0]["aliases"] == ["s", "kiro-user/s"]
+
+    def test_inode_zero_never_merges(self, tmp_path, monkeypatch):
+        """A filesystem that reports inode 0 for every file gives no identity."""
+        import os as _os
+
+        a = tmp_path / "a" / "SKILL.md"
+        b = tmp_path / "b" / "SKILL.md"
+        for p in (a, b):
+            p.parent.mkdir()
+            p.write_text("---\nname: s\n---\n")
+        real_stat = _os.stat
+
+        def zero_ino(path, *args, **kwargs):
+            st = real_stat(path, *args, **kwargs)
+            return _os.stat_result((st.st_mode, 0, st.st_dev, *st[3:]))
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers._shared.os.stat", zero_ino
+        )
+        rows = [
+            {"key": "a", "source": "kirocrew", "path": str(a)},
+            {"key": "kiro-user/b", "source": "kiro-user", "path": str(b)},
+        ]
+        assert [r["key"] for r in _one_row_per_skill_file(rows)] == ["a", "kiro-user/b"]
+
+    def test_kept_row_carries_the_dropped_rows_usage(self, tmp_path):
+        md = tmp_path / "s" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("---\nname: s\n---\n")
+        rows = [
+            {"key": "s", "source": "kirocrew", "owned": False, "path": str(md),
+             "deliveries": 7, "last_used_at": 1700000000.0,
+             "size_bytes": 42, "inject_on_trigger": False},
+            {"key": "kiro-user/s", "source": "kiro-user", "path": str(md)},
+        ]
+        out = _one_row_per_skill_file(rows)
+        assert [r["key"] for r in out] == ["kiro-user/s"]
+        assert out[0]["deliveries"] == 7
+        assert out[0]["last_used_at"] == 1700000000.0
+        assert out[0]["size_bytes"] == 42
+        # A pointer-only skill stays pointer-only on the kept row.
+        assert out[0]["inject_on_trigger"] is False
+
+    def test_unowned_crew_row_yields_to_the_folder_owner(self, tmp_path):
+        """An edition root is walked by the loader too; its ``package/`` row stays."""
+        md = tmp_path / "s" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("---\nname: s\n---\n")
+        rows = [
+            {"key": "s", "source": "kirocrew", "owned": False, "path": str(md)},
+            {"key": "package/s", "source": "package", "path": str(md)},
+        ]
+        out = _one_row_per_skill_file(rows)
+        assert [r["key"] for r in out] == ["package/s"]
+        assert out[0]["aliases"] == ["s"]
+
+    def test_directory_path_compares_by_its_skill_md(self, tmp_path):
+        md = tmp_path / "s" / "SKILL.md"
+        md.parent.mkdir()
+        md.write_text("---\nname: s\n---\n")
+        rows = [
+            {"key": "package/s", "source": "package", "path": str(md.parent)},
+            {"key": "kiro-user/s", "source": "kiro-user", "path": str(md)},
+        ]
+        assert [r["key"] for r in _one_row_per_skill_file(rows)] == ["package/s"]
+
+    def test_distinct_files_and_workspace_rows_are_kept(self, tmp_path):
+        a = tmp_path / "a" / "SKILL.md"
+        b = tmp_path / "b" / "SKILL.md"
+        for p in (a, b):
+            p.parent.mkdir()
+            p.write_text("---\nname: s\n---\n")
+        rows = [
+            {"key": "s", "source": "kirocrew", "path": str(a)},
+            {"key": "kiro-user/s", "source": "kiro-user", "path": str(b)},
+            # A workspace row is consent-gated, so it never merges, even
+            # when it names a file another row lists.
+            {"key": "kiro-workspace/s", "source": "kiro-workspace", "path": str(a)},
+            {"key": "no-path", "source": "kirocrew", "path": ""},
+            {"key": "gone", "source": "kirocrew", "path": str(tmp_path / "missing")},
+        ]
+        assert [r["key"] for r in _one_row_per_skill_file(rows)] == [
+            "s", "kiro-user/s", "kiro-workspace/s", "no-path", "gone",
+        ]
 
 
 # ── _expand_agent_globs (annotation O(n²) reduction) ──
@@ -1530,6 +1681,37 @@ class TestSymlinkedSkillLeafContainment:
         assert _resolve_skill_root("demo-app/appy", state) == app_skill.resolve()
         catalog = enumerate_skill_catalog(state)
         assert "appy" in catalog and "demo-app/appy" in catalog
+
+    def test_shipped_builtin_skill_resolves_when_dir_and_manifest_names_differ(self, fake_home):
+        """A shipped builtin's package dir need not match its manifest name.
+
+        ``auto_improvement/app.json`` declares ``"name": "auto-improvement"``.
+        The bridge links its declared skills by manifest name, so the browse
+        side must find the app from the package root it resolves into, not by
+        treating the directory name as the app name.
+        """
+        from kiro_crew.apps.execution import _BUILTINS_DIR
+
+        pkg_root = (_BUILTINS_DIR / "auto_improvement").resolve()
+        assert json.loads((pkg_root / "app.json").read_text(encoding="utf-8"))["name"] == (
+            "auto-improvement"
+        )
+        app_skill = (pkg_root / "skills" / "ai-discover").resolve()
+        assert (app_skill / "SKILL.md").is_file()
+
+        skills_root = fake_home / ".kiro" / "crew" / "skills"
+        (skills_root / "auto-improvement").mkdir(parents=True)
+        (skills_root / "ai-discover").symlink_to(app_skill, target_is_directory=True)
+        (skills_root / "auto-improvement" / "ai-discover").symlink_to(
+            app_skill, target_is_directory=True
+        )
+
+        state = MagicMock(_slots={})
+        assert _resolve_skill_root("ai-discover", state) == app_skill
+        assert _resolve_skill_root("auto-improvement/ai-discover", state) == app_skill
+        # Still the declared skill dirs only, never the rest of the package.
+        (skills_root / "peek-pkg").symlink_to(pkg_root, target_is_directory=True)
+        assert _resolve_skill_root("peek-pkg", state) is None
 
     def test_a_link_into_an_apps_private_files_is_refused(self, fake_home, monkeypatch):
         """The exception is the DECLARED skill directories, not the app root.

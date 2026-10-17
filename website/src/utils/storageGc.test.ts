@@ -140,8 +140,9 @@ describe('gcOrphanedStorage', () => {
   })
 
   it('collects an orphaned dashboard-dismissed flag and keeps a live one', () => {
-    // `CommandCenterDock` writes one flag per slot on click. Without this
-    // family in SESSION_PREFIXES every dismissed session left a key behind.
+    // The retired status-tile dock wrote one flag per slot on click, and a
+    // browser that ran it still holds them. Without this family in
+    // SESSION_PREFIXES every dismissed session left a key behind.
     localStorage.setItem(`${DASHBOARD_DISMISSED}chat-1-1`, '1')
     localStorage.setItem(`${DASHBOARD_DISMISSED}chat-2-2`, '1')
 

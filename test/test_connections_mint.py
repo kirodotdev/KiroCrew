@@ -28,6 +28,7 @@ from kiro_crew import hooks, mcp_grant
 from kiro_crew.connections import mint
 from kiro_crew.dashboard.handlers import connections
 from kiro_crew.runtime_ownership import RUNTIME_TENANCY, release_runtime_tenancy
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 _URL = "https://mcp.example.com/mcp"
 _AUTHORIZE = (
@@ -321,7 +322,7 @@ async def test_validation_bounds_readiness_and_both_commands_with_one_deadline(
     attempts = iter([_SlowCommand, _FakeClient])
     monkeypatch.setattr(mint, "_acp_client_factory", lambda: next(attempts))
 
-    await asyncio.wait_for(mint.start_oauth_mint("notion", _URL), timeout=5)
+    await finished(mint.start_oauth_mint("notion", _URL), "start_oauth_mint", timeout=5)
 
     # The deadline fired inside the commands, the verdict read as unproven, and the
     # flow fell through to a real consent mint instead of hanging.
@@ -390,7 +391,7 @@ async def test_the_watcher_reports_granted_once_the_disproven_artifact_changes(
     later = time.time() + 5
     os.utime(token_path, (later, later))
 
-    await asyncio.wait_for(entry["watcher"], timeout=5)
+    await await_until(entry["watcher"])
 
     assert mint._mints["notion"]["state"] == "granted"
 
@@ -453,9 +454,42 @@ async def test_no_baseline_grants_only_on_a_positive_revalidation(
         mint, "_validate_existing_grant", lambda slug, url: _async_value(next(verdicts))
     )
 
-    await asyncio.wait_for(entry["watcher"], timeout=5)
+    await await_until(entry["watcher"])
 
     assert mint._mints["notion"]["state"] == "granted"
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_mint_revalidates_against_the_pinned_entry(
+    monkeypatch: pytest.MonkeyPatch, protected_pids: set[int]
+):
+    # The no-baseline revalidation of a pinned mint must check the entry the
+    # owner record validated, never a fresh read of the main spec.
+    monkeypatch.setattr(mint, "_MINT_GRANT_POLL_SECONDS", 0.001)
+    _write_paired_grant_artifacts(_URL)
+    _FakeClient.command_results["/mcp"] = {
+        "data": {"servers": [{"name": "notion", "status": "failed", "toolCount": 0}]}
+    }
+    monkeypatch.setattr(mint, "grant_fingerprint", lambda url, **kw: None)
+    pinned = {"url": _URL}
+
+    await mint.start_oauth_mint("notion", _URL, pinned=pinned)
+    entry = mint._mints["notion"]
+    assert entry["state"] == "waiting"
+
+    monkeypatch.setattr(mint, "_GRANT_REVALIDATION_INTERVAL_SECONDS", 0.0)
+    seen: list[object] = []
+
+    async def _validate(slug: str, url: str, pinned: object = None) -> bool:
+        seen.append(pinned)
+        return True
+
+    monkeypatch.setattr(mint, "_validate_existing_grant", _validate)
+
+    await await_until(entry["watcher"])
+
+    assert mint._mints["notion"]["state"] == "granted"
+    assert seen and all(p is pinned for p in seen)
 
 
 @pytest.mark.asyncio
@@ -797,7 +831,7 @@ async def test_the_watcher_completes_teardown_when_it_disposes_its_own_row(
 
     if terminal == "grant":
         monkeypatch.setattr(mcp_grant, "grant_presence", lambda url, **kw: True)
-    await asyncio.wait_for(entry["watcher"], timeout=5)
+    await await_until(entry["watcher"])
 
     # Cancelling the calling task would land the cancellation inside the client
     # teardown and abandon it, leaking the process tree and the listener.
@@ -850,7 +884,7 @@ async def test_a_watcher_never_writes_to_a_row_it_does_not_own(monkeypatch: pyte
     # row the slug now points at, so it must leave that row alone.
     stale_token = "f" * 32
     assert live["token"] != stale_token
-    await asyncio.wait_for(mint._mint_watcher("notion", _URL, stale_token), timeout=5)
+    await finished(mint._mint_watcher("notion", _URL, stale_token), "mint watcher")
 
     assert mint._mints["notion"] is live
     assert live["state"] == "waiting"
@@ -911,7 +945,7 @@ async def test_row_identity_survives_a_coarse_clock(monkeypatch: pytest.MonkeyPa
     live = mint._mints["notion"]
 
     gate.set()
-    await asyncio.wait_for(first, timeout=5)
+    await await_until(first)
 
     assert mint._mints["notion"] is live
     assert live["state"] == "waiting"
@@ -937,7 +971,7 @@ async def test_a_late_failure_does_not_clobber_the_live_row(monkeypatch: pytest.
     assert live["state"] == "waiting"
 
     gate.set()
-    await asyncio.wait_for(first, timeout=5)
+    await await_until(first)
 
     # The superseded flow's failure must not replace the row that holds a live
     # client, watcher and spec -- that would strand all three.
@@ -1337,7 +1371,7 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
         # claim above took on the process-global ``RUNTIME_TENANCY`` table, and
         # ``_SlowReady`` answers neither ``is_alive`` nor ``is_process_alive``, so
         # the table would hold pid 4242 "alive" for the rest of the worker: every
-        # later test on it that asks the kill gate about 4242 (``test_cron_reaper``
+        # later test on it that asks the kill gate about 4242 (``test_cron_reaper_failed_kill``
         # fabricates that pid) is then refused with "runtime still leased by
         # another tenant". Stubbing the releaser means owing the release.
         release_runtime_tenancy(holdings.pop("tenancy", "") or None)
@@ -1346,10 +1380,10 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
     flow = asyncio.get_running_loop().create_task(mint.start_oauth_mint("notion", _URL))
     try:
         # Readiness has NOT completed, yet the PID is already shielded.
-        await asyncio.wait_for(_until(lambda: protected == [4242]), timeout=5)
+        await async_wait_until(lambda: protected == [4242])
     finally:
         ready.set()
-        await asyncio.wait_for(flow, timeout=5)
+        await await_until(flow)
         mint._mints.pop("notion", None)
     assert RUNTIME_TENANCY.claims_on_pid(4242) == 0, "the mint's tenancy outlived the mint"
 
@@ -1408,7 +1442,11 @@ def test_a_hard_stop_between_the_row_and_the_file_leaves_only_a_harmless_row(mon
     class _HardStop(BaseException):
         pass
 
+    # Both writers are patched: the manifest row goes through the guarded
+    # primitive and the spec through the authorized entry point, and this test
+    # needs the first to land and the second to die.
     real_write = mint._agent._atomic_json_write
+    real_spec_write = mint._agent.write_owner_derived_spec
 
     def _die_on_the_spec(path, data, *a, **k):
         # Only the spec publish dies; the manifest write must still land, which is
@@ -1417,7 +1455,13 @@ def test_a_hard_stop_between_the_row_and_the_file_leaves_only_a_harmless_row(mon
             raise _HardStop()
         return real_write(path, data, *a, **k)
 
+    def _die_on_the_spec_write(path, data, *a, **k):
+        if Path(path).name.startswith("kirocrew-mint-"):
+            raise _HardStop()
+        return real_spec_write(path, data, *a, **k)
+
     monkeypatch.setattr(mint._agent, "_atomic_json_write", _die_on_the_spec)
+    monkeypatch.setattr(mint._agent, "write_owner_derived_spec", _die_on_the_spec_write)
     with pytest.raises(_HardStop):
         mint._write_mint_agent_spec("notion")
 
@@ -1820,13 +1864,13 @@ async def test_the_watcher_reads_a_real_grant_off_the_loop(
     # above can still complete after the write below. The watcher polls
     # sequentially, so once one recorded (necessarily negative) read has landed,
     # no un-instrumented poll remains in flight and the grant may become visible.
-    deadline = time.monotonic() + 5
-    while not seen and time.monotonic() < deadline:
-        await asyncio.sleep(0.001)
+    await async_wait_until(
+        lambda: bool(seen), describe=lambda: "no recorded watcher poll arrived before the deadline"
+    )
     assert seen, "no recorded watcher poll arrived before the deadline"
     _write_paired_grant_artifacts(_URL)
 
-    await asyncio.wait_for(entry["watcher"], timeout=5)
+    await await_until(entry["watcher"])
 
     assert mint._mints["notion"]["state"] == "granted"
     assert seen and threading.get_ident() not in seen
@@ -2167,6 +2211,7 @@ _FS_ATTRS = frozenset(
         "scandir",
         "home",
         "_atomic_json_write",
+        "write_owner_derived_spec",
         "_load_json",
         "kiro_agents_dir_path",
         # Reaches the filesystem through the SEL singleton (see ``sel`` below):
@@ -2232,6 +2277,7 @@ def test_no_coroutine_in_the_mint_module_touches_the_filesystem_directly():
         "_record_mint_spec",
         "_forget_mint_spec",
         "_write_mint_agent_spec",
+        "_write_pinned_mint_spec",
         "_remove_mint_agent_spec",
         "_agent_spec_entry_missing",
         "_log_mint_outcome",

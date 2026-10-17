@@ -1,0 +1,657 @@
+{
+ "agentic": {
+  "drafts": {
+   "it_7843001": {
+    "file": "MBR-2026-09-pack.pptx",
+    "type": "deck"
+   },
+   "it_7843002": {
+    "file": "MBR-2026-09-leadership-note.eml",
+    "type": "mail"
+   },
+   "it_7843003": {
+    "file": "MBR-2026-09-variance.xlsx",
+    "type": "sheet"
+   },
+   "it_7843004": {
+    "file": "MBR-2026-09-one-pager.docx",
+    "type": "doc"
+   },
+   "it_78450120": {
+    "file": "Q4-board-summary-slide.pptx",
+    "type": "deck"
+   },
+   "it_78450121": {
+    "file": "Q4-segment-appendix.xlsx",
+    "type": "sheet"
+   },
+   "it_78450196": {
+    "file": "Q4-board-deck-v7.pptx",
+    "type": "deck"
+   },
+   "it_78450197": {
+    "action": "Lead with the segment framing",
+    "file": "Q4-pre-read-memo-v4.docx",
+    "meta": "Two framings written; the segment one is shorter and the chair asked for it",
+    "type": "doc"
+   }
+  },
+  "steps": {
+   "it_dd_kanban": "Closed out; the last sign-off is filed",
+   "it_dd_round4": "Rebuilding the appendix from the new segment numbers, then one proofread"
+  }
+ },
+ "agentic_written_at": {
+  "drafts": "2026-10-04T17:11:00Z",
+  "steps": "2026-10-04T17:11:30Z"
+ },
+ "folds": {
+  "workstreams": {
+   "seq": 412,
+   "value": {
+    "items": [
+     {
+      "accepted": 2,
+      "credits": 18.42,
+      "credits_reported": true,
+      "goal": "Q4 board review: the deck, the pre-read and the follow-up mail",
+      "id": "it_dd_round4",
+      "last_activity_at": "2026-10-03T15:31:08+00:00",
+      "needs_you": 1,
+      "open": 3,
+      "parent": null,
+      "round": 4,
+      "series": [
+       {
+        "accepted": 0,
+        "credits": 0.4,
+        "hour": "2026-10-03T08:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 1.8,
+        "hour": "2026-10-03T09:00"
+       },
+       {
+        "accepted": 1,
+        "credits": 3.2,
+        "hour": "2026-10-03T10:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 2.4,
+        "hour": "2026-10-03T11:00"
+       },
+       {
+        "accepted": 1,
+        "credits": 1.1,
+        "hour": "2026-10-03T12:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 3.9,
+        "hour": "2026-10-03T13:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 3.1,
+        "hour": "2026-10-03T14:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 2.52,
+        "hour": "2026-10-03T15:00"
+       }
+      ],
+      "tasks": [
+       {
+        "credits": 7.31,
+        "credits_reported": true,
+        "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+        "duration_ms": 4260000,
+        "events": [
+         {
+          "at": "2026-10-04T17:10:00Z",
+          "kind": "report",
+          "status": "progress",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T16:10:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T15:10:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_78450196",
+        "last_report_at": "2026-10-04T17:10:00Z",
+        "pr": "",
+        "round": 4,
+        "spender": "1",
+        "state": "open",
+        "status": "progress",
+        "summary": "Slides 1-9 are drafted against the approved outline; the appendix is being rebuilt from the new segment numbers",
+        "title": "Q4 board deck: the 14-slide narrative plus the appendix",
+        "verdict": ""
+       },
+       {
+        "credits": 5.08,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 3180000,
+        "events": [
+         {
+          "at": "2026-10-04T16:41:00Z",
+          "kind": "report",
+          "status": "question",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T15:41:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T14:41:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_78450197",
+        "last_report_at": "2026-10-04T16:41:00Z",
+        "pr": "",
+        "round": 4,
+        "spender": "2",
+        "state": "open",
+        "status": "question",
+        "summary": "Both framings are written and defensible; which one leads the memo is your call",
+        "title": "Pre-read memo: which of the two revenue framings to lead with",
+        "verdict": ""
+       },
+       {
+        "credits": 1.94,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 900000,
+        "events": [
+         {
+          "at": "2026-10-04T15:32:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T14:32:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T13:32:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_78450198",
+        "last_report_at": "2026-10-04T15:32:00Z",
+        "pr": "14982",
+        "round": 4,
+        "spender": "3",
+        "state": "open",
+        "status": "done",
+        "summary": "Drafted and proofread, with the three attachments named in the body",
+        "title": "Follow-up mail to the regional leads",
+        "verdict": ""
+       },
+       {
+        "credits": 2.17,
+        "credits_reported": true,
+        "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+        "duration_ms": 720000,
+        "events": [],
+        "events_seen": 14,
+        "item_id": "it_78450120",
+        "last_report_at": "2026-10-04T17:07:00Z",
+        "pr": "14961",
+        "round": 3,
+        "spender": "4",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Rebuilt as a single slide with the three numbers the chair asked for",
+        "title": "Board deck: the one-page summary slide",
+        "verdict": "pass"
+       },
+       {
+        "credits": 1.92,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 660000,
+        "events": [
+         {
+          "at": "2026-10-04T16:19:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T15:19:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T14:19:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_78450121",
+        "last_report_at": "2026-10-04T16:19:00Z",
+        "pr": "14960",
+        "round": 3,
+        "spender": "5",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Every figure traced back to the source report and footnoted",
+        "title": "Appendix sheet: the segment numbers behind slide 9",
+        "verdict": "pass"
+       },
+       {
+        "credits": 0,
+        "credits_reported": false,
+        "decision": "",
+        "duration_ms": 0,
+        "events": [
+         {
+          "at": "2026-10-04T17:10:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T16:10:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T15:10:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_78450099",
+        "last_report_at": "2026-10-04T17:10:00Z",
+        "pr": "14940",
+        "round": 3,
+        "spender": null,
+        "state": "rejected",
+        "status": "done",
+        "summary": "Three competing narratives in one deck; refused as unreadable for a board",
+        "title": "Board deck v2: three narratives in one deck",
+        "verdict": "fail"
+       }
+      ],
+      "tasks_omitted": 0,
+      "total": 6
+     },
+     {
+      "accepted": 4,
+      "credits": 5.3,
+      "credits_reported": true,
+      "goal": "Monthly business review pack: closing it out",
+      "id": "it_dd_kanban",
+      "last_activity_at": "2026-10-03T12:58:41+00:00",
+      "needs_you": 0,
+      "open": 0,
+      "parent": {
+       "board": "it_dd_round4",
+       "item_id": "it_78450196",
+       "title": "project-report template: global view + stage-column workstream board + one-workstream view"
+      },
+      "round": 2,
+      "series": [
+       {
+        "accepted": 2,
+        "credits": 2.1,
+        "hour": "2026-10-03T10:00"
+       },
+       {
+        "accepted": 1,
+        "credits": 2.3,
+        "hour": "2026-10-03T11:00"
+       },
+       {
+        "accepted": 1,
+        "credits": 2.2,
+        "hour": "2026-10-03T12:00"
+       }
+      ],
+      "tasks": [
+       {
+        "credits": 2.6,
+        "credits_reported": true,
+        "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+        "duration_ms": 1080000,
+        "events": [
+         {
+          "at": "2026-10-04T16:41:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T15:41:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T14:41:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_7843001",
+        "last_report_at": "2026-10-04T16:41:00Z",
+        "pr": "14902",
+        "round": 2,
+        "spender": "6",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Full pack built from the monthly template with the new cover",
+        "title": "MBR deck: the 22-slide pack",
+        "verdict": "pass"
+       },
+       {
+        "credits": 1.4,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 540000,
+        "events": [],
+        "events_seen": 14,
+        "item_id": "it_7843002",
+        "last_report_at": "2026-10-04T15:32:00Z",
+        "pr": "14903",
+        "round": 2,
+        "spender": "7",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Sent-ready draft with the pack linked and the two asks called out",
+        "title": "MBR mail to the leadership list",
+        "verdict": "pass"
+       },
+       {
+        "credits": 1.3,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 480000,
+        "events": [
+         {
+          "at": "2026-10-04T17:07:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T16:07:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T15:07:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_7843003",
+        "last_report_at": "2026-10-04T17:07:00Z",
+        "pr": "14904",
+        "round": 2,
+        "spender": "8",
+        "state": "accepted",
+        "status": "done",
+        "summary": "Variance against plan per segment, with the two outliers flagged",
+        "title": "MBR variance sheet",
+        "verdict": "pass"
+       },
+       {
+        "credits": 1.3,
+        "credits_reported": true,
+        "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+        "duration_ms": 420000,
+        "events": [
+         {
+          "at": "2026-10-04T16:19:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T15:19:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T14:19:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_7843004",
+        "last_report_at": "2026-10-04T16:19:00Z",
+        "pr": "14905",
+        "round": 2,
+        "spender": "8",
+        "state": "accepted",
+        "status": "done",
+        "summary": "One page, five numbers, no appendix",
+        "title": "MBR one-pager for the CEO",
+        "verdict": "pass"
+       }
+      ],
+      "tasks_omitted": 0,
+      "total": 4
+     },
+     {
+      "accepted": 0,
+      "credits": 1.72,
+      "credits_reported": true,
+      "goal": "Headcount plan: the model and the memo",
+      "id": "it_dd_record",
+      "last_activity_at": "2026-10-03T14:12:03+00:00",
+      "needs_you": 2,
+      "open": 2,
+      "parent": null,
+      "round": 1,
+      "series": [
+       {
+        "accepted": 0,
+        "credits": 0,
+        "hour": "2026-10-03T13:00"
+       },
+       {
+        "accepted": 0,
+        "credits": 0,
+        "hour": "2026-10-03T14:00"
+       }
+      ],
+      "tasks": [
+       {
+        "credits": 1.1,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 1920000,
+        "events": [
+         {
+          "at": "2026-10-04T15:00:00Z",
+          "kind": "report",
+          "status": "blocked",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T16:10:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T15:10:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_7846001",
+        "last_report_at": "2026-10-04T15:00:00Z",
+        "pr": "",
+        "round": 1,
+        "spender": "9",
+        "state": "open",
+        "status": "blocked",
+        "summary": "Waiting on the finance extract; the scenarios cannot be built without it",
+        "title": "Headcount model: the three-scenario sheet",
+        "verdict": ""
+       },
+       {
+        "credits": 0.62,
+        "credits_reported": true,
+        "decision": "",
+        "duration_ms": 600000,
+        "events": [],
+        "events_seen": 14,
+        "item_id": "it_7846002",
+        "last_report_at": "2026-10-04T16:41:00Z",
+        "pr": "",
+        "round": 1,
+        "spender": "10",
+        "state": "open",
+        "status": "progress",
+        "summary": "Argument drafted; the cost table is being pulled from the model",
+        "title": "Headcount memo: the case for the two senior roles",
+        "verdict": ""
+       },
+       {
+        "credits": 0,
+        "credits_reported": false,
+        "decision": "Cost counts only what a worker reported. A lead's own spend is the lead's, and billing it to a task its worker never ran is the one error a spend report cannot be corrected out of.",
+        "duration_ms": 0,
+        "events": [
+         {
+          "at": "2026-10-04T15:32:00Z",
+          "kind": "report",
+          "status": "done",
+          "text": "pushed 495c102, waiting on CI"
+         },
+         {
+          "at": "2026-10-04T14:32:00Z",
+          "kind": "decide",
+          "status": null,
+          "text": "rebase onto main and re-run the lane"
+         },
+         {
+          "at": "2026-10-04T13:32:00Z",
+          "kind": "create",
+          "status": null,
+          "text": "created from the round plan"
+         }
+        ],
+        "events_seen": 3,
+        "item_id": "it_7846003",
+        "last_report_at": "2026-10-04T15:32:00Z",
+        "pr": "",
+        "round": 1,
+        "spender": null,
+        "state": "abandoned",
+        "status": "done",
+        "summary": "Dropped: the memo covers it and a deck would repeat the memo",
+        "title": "Headcount deck for the all-hands",
+        "verdict": ""
+       }
+      ],
+      "tasks_omitted": 2,
+      "total": 5
+     }
+    ],
+    "last_entry_at": "2026-10-04T17:09:00Z",
+    "omitted": 0,
+    "schema": 1,
+    "series": [
+     {
+      "accepted": 0,
+      "credits": 0.4,
+      "hour": "2026-10-03T08:00"
+     },
+     {
+      "accepted": 0,
+      "credits": 1.8,
+      "hour": "2026-10-03T09:00"
+     },
+     {
+      "accepted": 3,
+      "credits": 5.3,
+      "hour": "2026-10-03T10:00"
+     },
+     {
+      "accepted": 1,
+      "credits": 4.7,
+      "hour": "2026-10-03T11:00"
+     },
+     {
+      "accepted": 2,
+      "credits": 3.3,
+      "hour": "2026-10-03T12:00"
+     },
+     {
+      "accepted": 0,
+      "credits": 3.9,
+      "hour": "2026-10-03T13:00"
+     },
+     {
+      "accepted": 0,
+      "credits": 3.1,
+      "hour": "2026-10-03T14:00"
+     },
+     {
+      "accepted": 0,
+      "credits": 2.52,
+      "hour": "2026-10-03T15:00"
+     }
+    ],
+    "spenders_omitted": 0,
+    "unattributed": {
+     "credits": 0.0,
+     "credits_reported": false
+    }
+   }
+  }
+ },
+ "note": "Sample data for the `office` built-in. The `workstreams` fold value is sample_workstreams.json's, with every board goal, task title and task summary rewritten to the kind of thing an exec's crewmate makes -- a deck, a mail, a sheet, a memo -- and every key, state, status, verdict, stamp, count and credit figure copied through untouched, so the shape is the shape the fold serves. The `agentic` half is this page's own two fields. One review row (it_78450198) carries no drafts entry and one board (it_dd_record) carries no step, on purpose: the screenshots then show the written path and the page's fallback side by side. Screenshots taken from this file are named *-sample-data.png.",
+ "now": "2026-10-04T17:12:00Z",
+ "slot": "member-dash-demo.memory-member-dash-demo-0b8cb229c0e240c9964e01eaddaf0e57"
+}

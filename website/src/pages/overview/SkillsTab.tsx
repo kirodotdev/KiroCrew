@@ -5,7 +5,7 @@ import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
-import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
+import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
@@ -25,6 +25,7 @@ import { Trans } from 'react-i18next'
 
 import { fmtBytes, fmtCompact, fmtDateTime, fmtNumber, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
@@ -74,6 +75,15 @@ function skillUsage(s: Skill): { id: string; text: string; title: string } | nul
 const canControlInjection = (s: Skill) =>
   s.source === 'kirocrew' && !s.always && s.owned !== false
 
+/** Edit and Delete write into the Kiro Crew skills folder, so only a row
+ *  from that folder gets them. A `kirocrew` row reached through
+ *  `skills.extra_paths` reports `owned: false` and stays read-only, like
+ *  every other source. */
+const canEditSkill = (s: Skill) => s.source === 'kirocrew' && s.owned !== false
+
+/** The skill-detail query's value: SKILL.md text and its sha256, the edit base. */
+type SkillDetail = { content: string; hash: string }
+
 /** Short, human label for a skill's provenance — drives the source badge. */
 function sourceLabel(source: Skill['source']): string | null {
   switch (source) {
@@ -94,6 +104,7 @@ export default function SkillsTab() {
   const [skillSort, setSkillSort] = useState<SkillSort>('default')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [detailEditing, setDetailEditing] = useState(false)
+  const [editReadError, setEditReadError] = useState('')
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -109,6 +120,20 @@ export default function SkillsTab() {
   // endpoint/status/code context. Recovered once at onError time and passed
   // through the `report` prop; both halves clear together.
   const [deleteError, setDeleteError] = useState<{ message: string; report?: ErrorReport } | null>(null)
+  // The hash of the SKILL.md the open edit session was seeded from. Save sends
+  // it as the base, so the server refuses when an agent rewrote the file in
+  // the meantime instead of silently reverting that edit.
+  const [editBase, setEditBase] = useState<string | null>(null)
+  // The file as it is now, read fresh after a save was refused for that
+  // reason; the editor shows it and lets the user pick which version to keep.
+  const [diskConflict, setDiskConflict] = useState<SkillDetail | null>(null)
+  // Edit re-reads SKILL.md before seeding the form; true while that read runs.
+  const [seeding, setSeeding] = useState(false)
+  // A refused save re-reads the file to show it; Save stays off meanwhile, so
+  // the stale base cannot be sent again before the conflict is on screen.
+  const [conflictReading, setConflictReading] = useState(false)
+  // Bumped when a conflict's Discard reseeds the editor, to remount SkillForm.
+  const [formGen, setFormGen] = useState(0)
 
   // Deep-linkable view param: ?view=budget swaps to the control plane.
   // Entering the budget view PUSHES a history entry so browser Back returns to
@@ -132,15 +157,14 @@ export default function SkillsTab() {
     refetchOnMount: 'always',
   })
 
-  // Content of the selected skill's SKILL.md — only needed to seed the edit
-  // form.  The directory browser fetches its own copy for display.
-  const { data: skillDetail } = useQuery({
-    queryKey: ['skill-detail', selectedKey],
-    queryFn: () => api.skill(selectedKey!).then(d => d.content || ''),
-    enabled: !!selectedKey,
-  })
-  const detailContent = skillDetail ?? ''
-  const detailReady = skillDetail !== undefined
+  // Edit and conflict recovery fetch the current text and hash on demand.
+  // The directory browser fetches its own copy for display.
+  const fetchSkillDetail = (key: string): Promise<SkillDetail> =>
+    api.skill(key).then(d => ({ content: d.content || '', hash: d.hash }))
+  // The live selection, for beginEdit's await: a row clicked while the read
+  // runs must not open an editor on the skill the user just left.
+  const selectedKeyRef = useRef(selectedKey)
+  useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
 
   const createSkill = useMutation({
     mutationFn: ({ name, content }: { name: string; content: string }) => api.createSkill(name, content),
@@ -165,10 +189,11 @@ export default function SkillsTab() {
   })
 
   const updateSkill = useMutation({
-    mutationFn: ({ key, content }: { key: string; content: string }) => api.updateSkill(key, content),
+    mutationFn: ({ key, content, base }: { key: string; content: string; base: string }) => api.updateSkill(key, content, base),
     onSuccess: () => {
       setDetailEditing(false)
       setUpdateError('')
+      setDiskConflict(null)
       // Deliberately NO setDeleteError(null) here: a delete failure that
       // arrived while this editor was open was suppressed the whole time, and
       // clearing it now would drop it unseen — the rolled-back row would sit
@@ -185,13 +210,70 @@ export default function SkillsTab() {
     // translated hint. Every other failure keeps the server's own message;
     // the notice's translated "Save failed" title carries the frame, so the
     // message stays the raw actionable half (and the journal's lookup key).
-    onError: (e: Error) => {
+    onError: (e: Error, { key }) => {
       const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      // The file was edited after the form was seeded. Nothing was written;
+      // keep the draft, read the file as it is now and show both. A failed
+      // read leaves nothing to compare against, so it is reported as the
+      // ordinary save failure.
+      if (code === 'content_conflict') {
+        setUpdateError('')
+        setConflictReading(true)
+        queryClient.fetchQuery({ queryKey: ['skill-detail', key], queryFn: () => fetchSkillDetail(key), staleTime: 0 })
+          .then(
+            current => { if (selectedKeyRef.current === key) setDiskConflict(current) },
+            () => setUpdateError(e.message),
+          )
+          .finally(() => setConflictReading(false))
+        return
+      }
       setUpdateError(code === 'readonly_skill_prefix'
         ? i18nT('pages.overview.skillsTab.readonly_skill_error')
         : e.message)
     },
   })
+
+  /** Open the editor only after a fresh read of SKILL.md succeeds. A failed
+   *  read keeps the detail pane open and reports the error beside Edit.
+   *  Create New Skill is off while the read runs: both forms share formData,
+   *  so a late seed would overwrite a new-skill draft. */
+  const beginEdit = async (key: string) => {
+    if (seeding) return
+    setEditReadError(''); setUpdateError(''); setDeleteError(null)
+    setSeeding(true)
+    let detail: SkillDetail
+    try {
+      detail = await queryClient.fetchQuery({ queryKey: ['skill-detail', key], queryFn: () => fetchSkillDetail(key), staleTime: 0 })
+    } catch (error) {
+      if (selectedKeyRef.current === key) setEditReadError(error instanceof Error ? error.message : String(error))
+      return
+    } finally {
+      setSeeding(false)
+    }
+    if (selectedKeyRef.current !== key) return
+    setEditReadError('')
+    setDiskConflict(null)
+    setEditBase(detail.hash)
+    setFormData(parseSkillContent(detail.content, key))
+    setDetailEditing(true)
+  }
+
+  /** Resolve a conflict. `discard` reseeds the form from the current file and
+   *  drops the draft; otherwise the draft replaces the current file, which the
+   *  notice showed. Either way the current file's hash is the next base. */
+  const resolveConflict = (key: string, discard: boolean) => {
+    if (diskConflict === null) return
+    const current = diskConflict
+    setDiskConflict(null)
+    setEditBase(current.hash)
+    if (discard) {
+      setFormData(parseSkillContent(current.content, key))
+      // Remount the form: its raw/structured mode is initialized from the
+      // data it mounts with, so a raw-mode editor would otherwise keep
+      // showing an empty raw textarea over the reseeded structured fields.
+      setFormGen(g => g + 1)
+    } else updateSkill.mutate({ key, content: assembleSkillContent(formData), base: current.hash })
+  }
 
   const deleteSkill = useMutation({
     mutationFn: (key: string) => api.deleteSkill(key),
@@ -305,6 +387,7 @@ export default function SkillsTab() {
     // so a dead latch falls through to the normal select path instead.
     if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
     if (!(detailEditing && showDetail)) setDeleteError(null)
+    setEditReadError('')
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
@@ -338,7 +421,7 @@ export default function SkillsTab() {
           {s.source === 'package'
             ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-aim-subtle text-aim border border-aim/30 font-bold shrink-0">{i18nT('pages.overview.skillsTab.package')}</span>
             : s.always
-              ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok font-bold shrink-0">{i18nT('pages.overview.skillsTab.auto')}</span>
+              ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-ok-subtle text-ok-text font-bold shrink-0">{i18nT('pages.overview.skillsTab.auto')}</span>
               : s.inject_on_trigger === false
                 ? <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent border border-accent/30 font-bold shrink-0">{i18nT('pages.overview.skillsTab.pointer')}</span>
                 : <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">{i18nT('pages.overview.skillsTab.on_demand')}</span>}
@@ -413,7 +496,7 @@ export default function SkillsTab() {
       * null when nothing is pending — this heading moves in and out of
       * `:first-child` with the pending count, so a positional rule would make
       * the gap depend on it. */}
-    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary onClick={() => { setFormData(EMPTY_FORM); setCreateError(''); setCreating(true) }}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
+    <h4 className="text-sm font-semibold text-text-strong mb-2 flex flex-wrap items-center gap-2">{i18nT('pages.overview.skillsTab.skills_count', { count: skills.length })} <InfoTip text={i18nT('pages.overview.skillsTab.skills_tip')} /> <span className="w-full md:w-auto md:ml-auto flex flex-col md:flex-row items-stretch md:items-center [&>button]:justify-center md:[&>button]:justify-start gap-2"><Btn onClick={showBudget} className="text-accent border-accent/30 bg-accent/5 hover:bg-accent/10">{i18nT('pages.overview.skillsTab.budget_doorway_static')}</Btn><Btn onClick={() => setSkillBrowserOpen(true)} {...uiLocation('skills.add')}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn><Btn primary disabled={seeding} onClick={() => { if (seeding) return; setFormData(EMPTY_FORM); setCreateError(''); setCreating(true) }} {...uiLocation('skills.create')}>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></span></h4>
     <p className="text-[12px] text-muted mb-2"><Trans i18nKey="pages.overview.skillsTab.auto_create_hint" components={{ settingRef: <SettingRef configKey="skills.auto_create_from_sessions" /> }} /></p>
     <Card>
       {/* Wraps instead of squeezing the search: beside the sort and refresh
@@ -439,7 +522,7 @@ export default function SkillsTab() {
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 
@@ -462,6 +545,22 @@ export default function SkillsTab() {
            of that draft. The hand-off returns as soon as no session holds a
            draft. */
         <ErrorNotice className="mb-3" askAgent={!detailEditing} message={deleteError?.message} report={deleteError?.report} onDismiss={() => setDeleteError(null)} testId="skill-delete-failure" />
+      )}
+      {/* A save failure whose editor is NOT mounted: a viewport crossing
+        * (desktop -> phone) can hide the detail pane while the edit session
+        * stays latched, so a PUT that rejects afterwards has no editor to
+        * report in. Show the retained failure here instead. Same retire rules
+        * as the in-editor notice (dismiss, Edit re-entry, a later success);
+        * a row tap reopens the latched editor, which then shows it inline.
+        * No hand-off: the latched draft is still the only copy of the edit. */}
+      {detailEditing && !showDetail && updateError && (
+        <ErrorNotice className="mb-3" variant="inline" title={i18nT('pages.overview.skillsTab.update_failed_title')} message={updateError} onDismiss={() => setUpdateError('')} testId="skill-update-failure-list" />
+      )}
+      {/* Same latched case for a disk conflict: its choices live in the
+        * editor, which a row tap reopens, so the list only names it.
+        * No hand-off: the latched formData is still the only copy of the draft. */}
+      {detailEditing && !showDetail && diskConflict !== null && (
+        <ErrorNotice className="mb-3" variant="inline" messagePlacement="below" title={i18nT('pages.overview.skillsTab.disk_conflict_title')} message={i18nT('pages.overview.skillsTab.disk_conflict_list_message', { name: selectedSkill ? displayName(selectedSkill) : '' })} testId="skill-disk-conflict-list" />
       )}
 
       {skills.length === 0 ? <EmptyState icon={<Sparkles className="lucide-inline" />} title={i18nT('pages.overview.skillsTab.no_skills_yet')} subtitle={i18nT('pages.overview.skillsTab.empty_subtitle')} action={<Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn>} /> : (
@@ -512,7 +611,7 @@ export default function SkillsTab() {
                   <span className="text-sm font-mono font-bold text-text-strong truncate">{selectedSkill.key}</span>
                   <div className="flex gap-2 shrink-0">
                     <Btn disabled={updateSkill.isPending} onClick={() => setDetailEditing(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
-                    <Btn primary disabled={updateSkill.isPending} onClick={() => updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData) })}>{updateSkill.isPending ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.overview.skillsTab.saving')}</> : i18nT('pages.overview.skillsTab.save')}</Btn>
+                    <Btn primary disabled={updateSkill.isPending || diskConflict !== null || conflictReading} onClick={() => { if (editBase === null) return; updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData), base: editBase }) }}>{updateSkill.isPending ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.overview.skillsTab.saving')}</> : i18nT('pages.overview.skillsTab.save')}</Btn>
                   </div>
                 </div>
                 {updateError && (
@@ -529,12 +628,40 @@ export default function SkillsTab() {
                   </div>
                 )}
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
-                  <SkillForm data={formData} onChange={setFormData} hideIdentity />
+                  {diskConflict !== null && (
+                    <div className="mb-4">
+                      {/* Save was refused: the file was edited after the form
+                          was seeded, and writing would revert that edit. The
+                          current file is shown so neither choice acts on text
+                          the user has not seen.
+                          No hand-off: the form holds the only copy of the draft.
+                          No dismiss either: Save stays off until the user picks
+                          which version to keep. */}
+                      <ErrorNotice
+                        title={i18nT('pages.overview.skillsTab.disk_conflict_title')}
+                        message={i18nT('pages.overview.skillsTab.disk_conflict_message')}
+                        messagePlacement="below"
+                        testId="skill-disk-conflict"
+                        footer={
+                          <>
+                            <div className="text-[12px] font-semibold mt-1 mb-1" id="skill-disk-conflict-current-label">{i18nT('pages.overview.skillsTab.disk_conflict_current_label')}</div>
+                            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- keyboard users must be able to scroll the current file. */}
+                            <pre role="region" aria-labelledby="skill-disk-conflict-current-label" tabIndex={0} data-testid="skill-disk-conflict-current" className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-[12px] font-mono text-text bg-bg-elevated border border-border rounded-md p-2 mb-2">{diskConflict.content}</pre>
+                            <div className="flex gap-2 flex-wrap">
+                              <Btn disabled={updateSkill.isPending} onClick={() => resolveConflict(selectedSkill.key, true)}>{i18nT('pages.overview.skillsTab.disk_conflict_discard')}</Btn>
+                              <Btn disabled={updateSkill.isPending} onClick={() => resolveConflict(selectedSkill.key, false)}>{i18nT('pages.overview.skillsTab.disk_conflict_keep')}</Btn>
+                            </div>
+                          </>
+                        }
+                      />
+                    </div>
+                  )}
+                  <SkillForm key={formGen} data={formData} onChange={setFormData} hideIdentity />
                 </div>
               </div>
             ) : (
               <div className="flex flex-col h-full min-h-0">
-                {/* Detail header: name, source badge, Edit/Delete (kirocrew only) */}
+                {/* Detail header: name, source badge, Edit/Delete (Kiro Crew skills folder only) */}
                 {/* Own row, same reason as the edit header: Edit and Delete
                     already fill this row's two-control budget. */}
                 {isMobile && (
@@ -549,7 +676,7 @@ export default function SkillsTab() {
                       <span className={`text-[11px] px-1.5 py-[1px] rounded-full font-bold shrink-0 ${selectedSkill.source === 'package' ? 'bg-aim-subtle text-aim border border-aim/30' : 'bg-bg-elevated text-muted border border-border'}`}>{sourceLabel(selectedSkill.source)}</span>
                     )}
                   </div>
-                  {selectedSkill.source === 'kirocrew' && (
+                  {canEditSkill(selectedSkill) && (
                     <div className="flex gap-2 shrink-0">
                       {/* Entering the editor retires a delete banner the user
                           can SEE right now (Edit is only reachable from the
@@ -557,7 +684,7 @@ export default function SkillsTab() {
                           the same acknowledged-by-navigation rule as a row
                           click. A failure arriving later, while the editor is
                           open, is retained instead and displays after close. */}
-                      <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setUpdateError(''); setDeleteError(null); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
+                      <Btn disabled={seeding} onClick={() => { void beginEdit(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
                       {/* isPending gate: two overlapping deletes cross their
                           hook-level callbacks — the first delete's onSuccess
                           would clear the second's failure notice, and the
@@ -567,6 +694,11 @@ export default function SkillsTab() {
                     </div>
                   )}
                 </div>
+                {editReadError && (
+                  <div className="px-4 pt-2.5 shrink-0">
+                    <ErrorNotice askAgent title={i18nT('pages.overview.skillsTab.edit_read_failed_title')} message={editReadError} messagePlacement="below" onDismiss={() => setEditReadError('')} testId="skill-edit-read-failure" />
+                  </div>
+                )}
                 <InjectionRow skill={selectedSkill} />
                 <div className="flex-1 min-h-0 p-3">
                   <SkillDirectoryBrowser key={selectedSkill.key} skillKey={selectedSkill.key} skill={selectedSkill} />
@@ -785,13 +917,18 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             {isUpdate && (
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">{i18nT('pages.overview.skillsTab.update')}</span>
             )}
+            {!isUpdate && (
+              /* A generated skill that does not exist yet: approving it adds a
+                 skill, where an update changes one that is already live. */
+              <Badge variant="ok" className="ml-2 text-[10px] px-1.5 py-[1px] font-bold font-body">{i18nT('pages.overview.skillsTab.new_candidate')}</Badge>
+            )}
             {p.has_scripts && (
               /* Plain badge: the always-requires-review explanation renders as
                  visible text in the expanded panel (and the panel hint carries
                  the same caveat), so a hover title here would be a third
                  rendering of one sentence — and a tooltip BUTTON would be a
                  fourth control in the row (AUTOSDE max-two-buttons-per-row). */
-              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn-text font-bold">{i18nT('pages.overview.skillsTab.script')}</span>
             )}
             {p.script_validation?.ok === false && (
               /* The server will refuse Approve for this candidate as-is; warn
@@ -799,7 +936,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                  WARN amber, not danger red: this is a prediction, and red is
                  reserved for refusals that already happened — a mixed panel
                  otherwise stacks five red surfaces at once. */
-              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn font-bold">{i18nT('pages.overview.skillsTab.fails_validation')}</span>
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-warn-subtle text-warn-text font-bold">{i18nT('pages.overview.skillsTab.fails_validation')}</span>
             )}
           </div>
           <div className="text-[12px] text-muted truncate">
@@ -937,7 +1074,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                the stale one indistinguishable from the fresh one. A refusal
                with any OTHER code has not superseded the prediction, so the
                box stays. */
-            <details className="text-[11px] p-2 rounded border border-border bg-warn-subtle text-warn">
+            <details className="text-[11px] p-2 rounded border border-border bg-warn-subtle text-warn-text">
               <summary className="cursor-pointer font-semibold">
                 {i18nT('pages.overview.skillsTab.validation_findings')}
               </summary>
@@ -969,12 +1106,12 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                stages for manual review even with skills.approval_required off.
                Without this note a user who disabled approval sees the row and
                has no idea why the setting "didn't work". */
-            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
+            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn-text border border-border">
               {i18nT('pages.overview.skillsTab.scripts_always_require_review')}
             </div>
           )}
           {isUpdate && detail.stale_base && (
-            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
+            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn-text border border-border">
               {i18nT('pages.overview.skillsTab.this_skill_changed_after_this_update_was_written')}
             </div>
           )}
@@ -1025,6 +1162,12 @@ function PendingSkillsPanel() {
   } = useQuery<Skill[]>({
     queryKey: ['skills'],
     queryFn: () => api.skills(),
+    // Not the global staleTime: Infinity. Approvals and dismissals happen
+    // elsewhere with no push, so a page-lifetime list would answer the
+    // not-found question wrongly. Same freshness as the tab's own list; the
+    // focus refetch this opts into is accepted — this read holds no draft.
+    staleTime: 0,
+    refetchOnMount: 'always',
   })
   const [params, setParams] = useSearchParams()
   const reviewParam = params.get('review')

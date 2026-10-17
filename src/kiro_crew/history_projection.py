@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, AbstractSet, Any, Literal, overload
+from typing import IO, TYPE_CHECKING, AbstractSet, Any, Literal, overload
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
@@ -37,6 +37,8 @@ from kiro_crew.jsonl_util import (
     strict_raw_records_with_offsets,
 )
 from kiro_crew.preview_text import speech_preview
+from kiro_crew.transcript_count import count_messages, message_row
+from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
@@ -71,8 +73,11 @@ METADATA_LINE_CORRUPT = "corrupt"
 #: skips them, as does memory consolidation and auto-skill detection
 #: (``history_consolidation``), and every other model-bound reader already filters
 #: to conversation roles. The Slack thread-parent row, in particular, is untrusted
-#: text whose only route to the model is a fenced, injection-screened block.
-DISPLAY_ONLY_ROLES = frozenset({"notice"})
+#: text whose only route to the model is a fenced, injection-screened block. A
+#: ``card`` row is an agent's change card or guide offer drawn at the point it was
+#: proposed: the card store owns its state, and the agent hears an outcome only
+#: through its own reporting path, never by reading this row back.
+DISPLAY_ONLY_ROLES = frozenset({"notice", "card"})
 
 
 def _history_facade() -> Any:
@@ -94,6 +99,41 @@ _TRANSCRIPT_PAGE_INDEX_STRIDE = 128
 #: where the stride is the smallest power-of-two multiple of the base that fits.
 _TRANSCRIPT_PAGE_INDEX_MAX_CHECKPOINTS = 1024
 _TRANSCRIPT_PAGE_READ_ATTEMPTS = 2
+
+#: Characters per text read in ``_read_messages_locked``. One whole-file
+#: ``read()`` or ``splitlines()`` is a single C call that holds the GIL for the
+#: whole file (0.45 s and 0.67 s on a 400 MB transcript), so even a reader in a
+#: worker thread froze the event loop that long. A megabyte per call keeps each
+#: hold to about a millisecond.
+_TRANSCRIPT_READ_CHUNK = 1 << 20
+
+
+def _iter_splitlines(handle: IO[str]) -> Iterator[str]:
+    """Yield ``handle.read().splitlines(keepends=True)``, one bounded read at a time.
+
+    Exactly the same pieces: a piece is cut only at a boundary character, so the
+    last piece of a read is carried into the next one unless it ends on a
+    boundary. The text read has already turned ``\\r\\n`` into one ``\\n`` and
+    holds back a trailing ``\\r`` until it sees the next character, so no
+    two-character boundary can straddle two reads.
+    """
+    carry: list[str] = []
+    while chunk := handle.read(_TRANSCRIPT_READ_CHUNK):
+        pieces = chunk.splitlines(keepends=True)
+        last = pieces.pop()
+        for piece in pieces:
+            if carry:
+                carry.append(piece)
+                piece = "".join(carry)
+                carry.clear()
+            yield piece
+        carry.append(last)
+        if last.splitlines()[0] != last:  # it ends on a boundary, so it is whole
+            yield "".join(carry)
+            carry.clear()
+    if carry:
+        yield "".join(carry)
+
 
 #: ``(key, file stamp or None when the file does not exist, generation)`` per chain member.
 ChainRevision = tuple[tuple[str, FileStamp | None, int], ...]
@@ -196,6 +236,7 @@ class TranscriptReadProjection:
         messages = self._log._read_messages(key)
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
+        messages = [message for message in messages if not is_warm_task_brief_message(message)]
         if roles:
             messages = [message for message in messages if message["role"] in roles]
         return [
@@ -215,6 +256,7 @@ class TranscriptReadProjection:
         messages = self._log.read_messages_chained(key)
         if exclude_last_n > 0:
             messages = messages[:-exclude_last_n]
+        messages = [message for message in messages if not is_warm_task_brief_message(message)]
         if roles:
             messages = [message for message in messages if message["role"] in roles]
         return [
@@ -237,7 +279,9 @@ class TranscriptReadProjection:
         cited = [
             item
             for item in messages
-            if item.get("source_thread") and item.get("role") not in DISPLAY_ONLY_ROLES
+            if item.get("source_thread")
+            and item.get("role") not in DISPLAY_ONLY_ROLES
+            and not is_warm_task_brief_message(item)
         ]
         for message in cited[-max_messages:]:
             content = message["content"]
@@ -298,6 +342,7 @@ class TranscriptReadProjection:
                 continue
             included += 1
             candidates.extend(self._log._read_tail_messages(path, 50, None))
+        candidates = [message for message in candidates if not is_warm_task_brief_message(message)]
         candidates.sort(key=lambda message: message.get("ts", ""))
         return [
             {"role": message["role"], "content": message["content"]}
@@ -400,6 +445,26 @@ class TranscriptReadProjection:
         for chained_key in keys:
             messages.extend(self._log._read_messages(chained_key))
         return messages or self._log._read_messages(key)
+
+    def read_messages_chained_tail(self, key: str, limit: int) -> list[dict]:
+        """The newest *limit* rows of :meth:`read_messages_chained`, read from the end.
+
+        Reads only the end of the chain's newest file, growing back as far as
+        *limit* rows need, and skips the lines the full read skips, so the cost
+        follows *limit* and not the transcript's size. Bytes that are not UTF-8
+        are replaced where the full read would raise, which suits a display
+        tail; anything that needs the rows themselves reads them in full. When
+        that file alone cannot fill *limit* and the chain holds other files, the
+        exact chained page read answers instead.
+        """
+        if limit <= 0:
+            return []
+        keys = self._chain_keys(key)
+        if self._log._tail_reads:
+            newest = self._log._read_tail_messages(self._log._path(keys[-1]), limit, None)
+            if len(newest) >= limit or keys == [key]:
+                return newest
+        return self.read_messages_chained_page(key, limit=limit).messages
 
     def read_rotated_messages(self, key: str) -> list[dict]:
         """Messages size-rotation archived out of *key*'s transcript, oldest first.
@@ -1052,6 +1117,56 @@ class TranscriptReadProjection:
                 self._log._msg_cache.pop(key, None)
             return messages
 
+    def _count_messages(self, key: str, *, hold_writer_lock: bool = True) -> int:
+        """``len(self._read_messages(key))`` without parsing into or filling the cache.
+
+        A warm cache entry answers for free. Otherwise the file is streamed
+        one line at a time (:func:`kiro_crew.transcript_count.count_messages`),
+        under the same best-effort writer lock and transient-retry contract as
+        the full read, and nothing is published: a caller that only counts
+        (the startup idle-seed scan over every recent transcript) must not
+        leave each parsed transcript resident in the message cache.
+
+        ``hold_writer_lock=False`` never takes the per-file writer lock. The
+        consolidator counts in a worker thread, and holding the lock for the
+        whole stream there would make an event-loop writer, which acquires it
+        blocking, wait out the count anyway. The count is the same: nothing is
+        published, so no memo depends on the lock.
+        """
+        path = self._log._path(key)
+        try:
+            identity = self._log._cache_identity(path.stat())
+        except OSError:
+            identity = None
+        if identity is not None:
+            cached = self._log._msg_cache.get(key)
+            if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
+                return len(cached[2])
+        fill_lock = (
+            self._log._cache_fill_lock(key) if hold_writer_lock else contextlib.nullcontext(False)
+        )
+        with fill_lock:
+            if not path.exists():
+                return 0
+            attempts = _history_facade()._METADATA_READ_ATTEMPTS
+            for attempt in range(attempts):
+                try:
+                    return count_messages(path)
+                except FileNotFoundError:
+                    return 0
+                except OSError:
+                    if attempt + 1 < attempts:
+                        self._log._pause_for_transient_retry()
+                        continue
+                    _HISTORY_LOGGER.warning(
+                        "history: could not count messages for %s after %d attempts",
+                        key,
+                        attempts,
+                        exc_info=True,
+                    )
+                    raise
+        return 0
+
     @contextlib.contextmanager
     def _cache_fill_lock(self, key: str) -> Iterator[bool]:
         """Best-effort bounded hold of the owner's per-file writer lock."""
@@ -1097,8 +1212,12 @@ class TranscriptReadProjection:
                 cached = self._log._msg_cache.get(key)
                 if cached and cached[0] == identity and cached[1] == self._log._cache_gen(key):
                     return cached[2]
+                messages: list[dict] = []
                 with open(path, encoding="utf-8") as handle:
-                    raw = handle.read()
+                    for line in _iter_splitlines(handle):
+                        data = message_row(line)
+                        if data is not None:
+                            messages.append(data)
             except FileNotFoundError:
                 # A delete racing the read is a definitive empty answer, not a
                 # transient sharing failure worth retrying.
@@ -1116,20 +1235,6 @@ class TranscriptReadProjection:
                     exc_info=True,
                 )
                 raise
-
-            messages: list[dict] = []
-            for line in raw.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(data, dict):
-                    continue
-                if data.get("_type") != "metadata":
-                    messages.append(data)
 
             entry_generation = self._log._cache_gen(key) if gen is None else gen
             if gen is None or (
@@ -1162,7 +1267,11 @@ class TranscriptReadProjection:
         if recent is not None and recent[0] == identity and recent[1] == self._log._cache_gen(key):
             return [dict(message) for message in recent[2]]
         tail = self._log._read_tail_messages(path, max_messages, roles)
-        formatted = [{"role": message["role"], "content": message["content"]} for message in tail]
+        formatted = [
+            {"role": message["role"], "content": message["content"]}
+            for message in tail
+            if not is_warm_task_brief_message(message)
+        ]
         self._log._publish_if_current(
             self._log._recent_cache,
             recent_key,
@@ -1840,9 +1949,15 @@ class SessionMetadataProjection:
         guard: Callable[[dict], bool],
         *,
         require_existing: bool = False,
+        require_write: bool = False,
         after_commit_under_lock: Callable[[], None] | None = None,
     ) -> bool:
         """Merge fields only when the locked on-disk metadata passes a guard.
+
+        *require_write* refuses a skipped write on a legacy message-first file.
+        By default, a passing guard still returns True for that no-op; callers
+        requiring durable fields must read them back. The commit callback runs
+        only when the metadata line was actually written.
 
         *require_existing* additionally refuses a session that has no file at
         all. The guard cannot express that itself: :meth:`_read_metadata_status`
@@ -1885,6 +2000,9 @@ class SessionMetadataProjection:
         with self._log._locked(key):
             if require_existing and not self._log._path(key).exists():
                 return False
+            # Peer metadata writes can preserve mtime; CAS must read disk under
+            # the writer lock even when the local cache identity still matches.
+            self._log._meta_cache.pop(key, None)
             metadata, readable = self._log._read_metadata_status(key)
             if not readable:
                 if self._log.metadata_line_state(key) != METADATA_LINE_CORRUPT:
@@ -1892,15 +2010,23 @@ class SessionMetadataProjection:
                 metadata = {"memory_mode": STRICTEST_MEMORY_MODE}
             if not guard(metadata):
                 return False
-            self._log._update_metadata_locked(key, fields)
+            if not self._log._update_metadata_locked(key, fields):
+                # Legacy callers use read-back to distinguish a skipped write;
+                # lease callers require a persisted claim before reporting success.
+                return not require_write
             if after_commit_under_lock is not None:
                 after_commit_under_lock()
         if "tab_id" in fields:
             self._log.invalidate_tab_id_cache()
         return True
 
-    def _update_metadata_locked(self, key: str, fields: dict) -> None:
+    def _update_metadata_locked(self, key: str, fields: dict) -> bool:
         """Merge or upsert one metadata line while the owner lock is held.
+
+        Returns True when the line was written, False when the write was
+        SKIPPED — a first line that is JSON but not a metadata object (a
+        legacy row-first file) is left as it was, as before, and the caller's
+        CAS can require a write rather than report a claim that is not on disk.
 
         A first line that is not JSON is REWRITTEN rather than left alone: the
         old bytes are dropped, the rows after them are kept, and the new line
@@ -1934,9 +2060,9 @@ class SessionMetadataProjection:
                     "memory_mode": STRICTEST_MEMORY_MODE,
                 }
             if not isinstance(metadata, dict):
-                return
+                return False
             if metadata.get("_type") != "metadata":
-                return
+                return False
         else:
             self._log._dir.mkdir(parents=True, exist_ok=True)
             metadata = {
@@ -1978,6 +2104,7 @@ class SessionMetadataProjection:
             raise
         _history_facade()._restore_mtime(path, previous_mtime)
         self._log._invalidate_cache(key)
+        return True
 
     def mtime_of(self, key: str) -> float | None:
         """Return a session file mtime without reading its contents."""

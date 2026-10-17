@@ -12,9 +12,10 @@ Pairing state machine (read by the Settings badge + QR flow):
     connected -> logged_out (phone revoked the link; needs a fresh pairing)
     connected -> banned (WhatsApp temporary ban; reason surfaced verbatim)
 
-The session database (whatsmeow's sqlite store) lives at
-``<data home>/whatsapp/session.db`` unless ``whatsapp.db_path`` overrides it.
-Deleting the file unpairs the device from this side.
+The session database (whatsmeow's sqlite store) always lives at
+``<data home>/whatsapp/session.db`` (:func:`default_db_path`); the
+``whatsapp.db_path`` setting is read-only and does not move it. Deleting the
+file unpairs the device from this side.
 """
 
 from __future__ import annotations

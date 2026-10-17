@@ -1,17 +1,21 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
+import { apiErrorCode, isSlotCapError } from '../api/apiError'
 import { store, useAppDispatch } from '../store'
+import type { MuteFlag } from '../store/dashboardSlice'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
-import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
+import { sessionIsBusyForClose } from '../lib/closeBusyGate'
 import { i18nT } from '../i18n/t'
+import { forkFailureNoticeOffsite } from '../utils/forkFailure'
+import type { ForkFailureNotice } from '../utils/forkFailure'
+import { errMessage } from '../utils/thunkError'
 import type { ChatSlot } from '../types'
-import { compareBySort, readSessionSortKey } from '../pages/chat/sessionOrder'
 
 interface PinMutationEntry {
   key: string
@@ -26,8 +30,10 @@ interface PinMutationEntry {
 }
 
 interface PinMutationBatch {
+  /** Keys pinned before the batch's first mutation. The pinned ORDER is the
+   *  gateway's (it appends and removes on each accepted pin), so the batch
+   *  tracks membership only. */
   baseline: string[]
-  storedBaseline: string[]
   entries: PinMutationEntry[]
   snapshotVersion: number
 }
@@ -42,6 +48,23 @@ export function pinMutationKeysInFlight(): string[] {
 }
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
+
+// Mute-toggle serialization, per flag and slot (`<flag>:<slot>`). `muteMutationTails`
+// chains each one's PATCHes so the backend transaction sees them in INVOCATION order (a delayed
+// older PATCH can otherwise commit after a newer one and persist the opposite
+// of the user's final choice). `muteMutationSeq` stamps each invocation; an
+// `onError` rollback only applies when its stamp is still the latest for the
+// slot, so an older failed mutation never overwrites a newer selection.
+const muteMutationTails = new Map<string, Promise<unknown>>()
+const muteMutationSeq = new Map<string, number>()
+
+/** Resolves once every pin write already sent has settled, whatever its outcome.
+ *  The pinned-order queue waits on it, so a reorder never reaches the gateway
+ *  ahead of a pin the person made first: the reorder names that session, and
+ *  the gateway refuses an order naming a session it has not seen pinned. */
+export function pinWritesSettled(): Promise<void> {
+  return Promise.allSettled([...pinMutationTails.values()]).then(() => undefined)
+}
 
 /** Preserve invocation order at the server for rapid toggles of one session. */
 function setSlotPinInOrder(key: string, pinned: boolean) {
@@ -72,10 +95,20 @@ function setSlotPinInOrder(key: string, pinned: boolean) {
 export interface SessionActions {
   /** Fork/duplicate a session. */
   duplicate: (slotKey: string) => void
+  /** A refused duplicate: the localized line PLUS the structured report, which the
+   * caller passes to `ErrorNotice` so the endpoint/status/code survive the
+   * localization. This hook deliberately raises no dialog of its own. */
+  forkError: (ForkFailureNotice & { slotKey: string }) | null
+  /** Dismiss the refusal above. */
+  clearForkError: () => void
   /** Toggle read/unread. */
   toggleRead: (slotKey: string) => void
   /** Toggle pinned. */
   togglePin: (slotKey: string) => void
+  /** Toggle the "mute sessions it opens" rule on a creating session. */
+  toggleMutesOpened: (slotKey: string) => void
+  /** Toggle the per-row mute of this session. */
+  toggleMuted: (slotKey: string) => void
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
@@ -152,32 +185,6 @@ export function useSessionActions(mode?: string): SessionActions {
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
         if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
       }
-      const currentSlots = store.getState().dashboard.slots
-      const pinnedKeys = new Set(currentSlots.filter(slot => slot.pinned).map(slot => slot.key))
-      const currentKeys = new Set(currentSlots.map(slot => slot.key))
-      const baselineKeys = new Set(batch.storedBaseline)
-      for (const slot of slots) {
-        if (slot.pinned && baselineKeys.has(slot.key) && !currentKeys.has(slot.key)) pinnedKeys.add(slot.key)
-      }
-      const baselineMembership = new Set(batch.baseline)
-      const sortableByKey = new Map<string, ChatSlot>()
-      for (const slot of slots) sortableByKey.set(slot.key, slot)
-      for (const slot of currentSlots) sortableByKey.set(slot.key, slot)
-      const fallbackSort = readSessionSortKey()
-      const newlyPinnedKeys = [...pinnedKeys]
-        .filter(key => !baselineMembership.has(key))
-        .sort((a, b) => compareBySort(
-          sortableByKey.get(a) ?? { key: a },
-          sortableByKey.get(b) ?? { key: b },
-          fallbackSort,
-        ))
-      const authoritativePinnedOrder = [
-        ...batch.baseline.filter(key => pinnedKeys.has(key)),
-        ...newlyPinnedKeys,
-      ]
-      commitPinnedSessionSnapshot(
-        authoritativePinnedOrder, batch.baseline, newlyPinnedKeys, batch.storedBaseline,
-      )
     } catch {
       // A newer request (or an entry that has not settled yet) owns reconciliation.
       if (snapshotVersion !== batch.snapshotVersion
@@ -196,21 +203,11 @@ export function useSessionActions(mode?: string): SessionActions {
         .map(([key]) => key))
       const successfulOperations = batch.entries
         .filter(candidate => candidate.succeeded && ownedKeys.has(candidate.key))
-        .map(({ key, pinned }) => ({ key, pinned }))
       const expected = new Set(batch.baseline)
       for (const { key, pinned } of successfulOperations) {
         if (pinned) expected.add(key)
         else expected.delete(key)
       }
-      const finalMembershipOperations = [...ownedKeys].map(key => ({
-        key,
-        pinned: expected.has(key),
-      }))
-      commitPinnedSessionOperations(
-        [...successfulOperations, ...finalMembershipOperations],
-        batch.baseline,
-        batch.storedBaseline,
-      )
       for (const key of ownedKeys) {
         const pinned = expected.has(key)
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
@@ -227,30 +224,126 @@ export function useSessionActions(mode?: string): SessionActions {
     }
   }, [dispatch, queryClient])
 
+  // Surfaced by the caller through ErrorNotice, not a native dialog: one refusal
+  // rendered three ways teaches three different recoveries for one cause.
+  const [forkError, setForkError] = useState<(ForkFailureNotice & { slotKey: string }) | null>(
+    null,
+  )
   const forkMutation = useMutation({
     mutationFn: (slot: string) => api.forkChatSlot(slot),
     onSuccess: (data) => {
       if (data?.ok && data.key) {
+        // A refusal describes a condition that no longer holds: leaving it under the row
+        // contradicts the tab this success just opened.
+        setForkError(null)
         queryClient.invalidateQueries({ queryKey: ['slots'] })
         dispatch(switchSlot(data.key))
       }
     },
+    // Duplicate goes through this mutation with no per-call handler, so this is
+    // the only place its failure becomes visible -- surfaced the same way
+    // reloadMutation does (alert(); the dashboard has no global toast). Every
+    // message shares one shape: "Couldn't duplicate this session. <cause>.
+    // <next step>." A non-ApiError means fetch itself rejected (nothing was
+    // reached). An ApiError carries the human reason on err.message (apiFailure
+    // sets it to friendlyErrText(status, body) in api/client.ts). Three reasons
+    // are shared guidance that is already a cause plus a next step: a gateway
+    // sign-in denial carries the shared sign-in text (the stale-owner wording
+    // for a stale-owner denial, the no-longer-valid sign-in wording otherwise), the
+    // slot-cap 429 carries the shared slot-cap guidance, and an access-proxy
+    // challenge names the proxy and its own remedy. Each follows the subject
+    // unchanged, so the alert reads the same remedy every other surface shows
+    // for that denial, and no retry sentence is added that cannot succeed
+    // before the user acts. The slot_not_found 404 is matched on the
+    // body's `code` and gets its own keyed copy, because its raw reason ("not
+    // found") says neither what is wrong nor what to do.
+    // Any other reason has its end punctuation (Latin, CJK or Devanagari) dropped
+    // so the template's own full stop follows it.
+    //
+    // The over-capacity refusal (`fork_corpus_too_large`) is the exception: it
+    // has a recovery the user can take right away (fork AT a message), so it
+    // renders through the caller's ErrorNotice with that advice instead of an
+    // alert that ends the conversation.
+    onError: (err, slotKey) => {
+      if (err instanceof ApiError && apiErrorCode(err) === 'fork_corpus_too_large') {
+        const notice = forkFailureNoticeOffsite(
+          err.body,
+          errMessage(err),
+          // Compact and named: the panel is the narrowest surface, and the notice renders at
+          // its root rather than beside the pressed row, so the copy must say which session.
+          true,
+          store.getState().dashboard.slots.find(s => s.key === slotKey)?.title || slotKey,
+        )
+        setForkError({ ...notice, slotKey })
+        return
+      }
+      if (!(err instanceof ApiError)) {
+        alert(i18nT('hooks.useSessionActions.duplicate_unreachable'))
+      } else if (err.authRequired || isSlotCapError(err.status, err.body)) {
+        alert(i18nT('hooks.useSessionActions.duplicate_guided_reason', { reason: err.message }))
+      } else if (err.status === 404 && apiErrorCode(err) === 'slot_not_found') {
+        alert(i18nT('hooks.useSessionActions.duplicate_not_found'))
+      } else {
+        const reason = err.message.trim().replace(/[.。!！।]+$/u, '')
+        alert(i18nT('hooks.useSessionActions.duplicate_failed_reason', { reason }))
+      }
+    },
   })
+
+  // One optimistic toggle for both user-owned mute flags, serialized per flag
+  // and slot. The authoritative value arrives as a `slot_patch` frame (or a
+  // full list on an older gateway), so a success schedules no re-read. PATCHes
+  // for one flag on one slot are chained in invocation order so a delayed older
+  // request cannot commit after a newer one; a failed older mutation's
+  // rollback is suppressed once a newer toggle has superseded it.
+  const muteFlagMutation = useMutation({
+    mutationFn: ({ key, flag, value }: { key: string; flag: MuteFlag; value: boolean }) => {
+      const chain = flag + ':' + key
+      const prior = muteMutationTails.get(chain) ?? Promise.resolve()
+      const next = prior
+        .catch(() => undefined)
+        .then(() => (flag === 'muted' ? api.setSlotMuted(key, value) : api.setSlotMutesOpened(key, value)))
+      muteMutationTails.set(chain, next)
+      // Drop the tail once it settles if it is still the latest (bounded map).
+      void next.catch(() => undefined).finally(() => {
+        if (muteMutationTails.get(chain) === next) muteMutationTails.delete(chain)
+      })
+      return next
+    },
+    onMutate: ({ key, flag, value }) => {
+      const chain = flag + ':' + key
+      const seq = (muteMutationSeq.get(chain) ?? 0) + 1
+      muteMutationSeq.set(chain, seq)
+      const prev = store.getState().dashboard.slots.find(s => s.key === key)?.[flag] ?? false
+      dispatch(updateSlotMuteFlag({ key, flag, value }))
+      return { key, flag, prev, seq }
+    },
+    onError: (err, _vars, ctx) => {
+      if (!ctx) return
+      // Only act if this is still the latest invocation. A newer toggle has
+      // already set the value the user actually wants; rolling an older
+      // failure back on top of it would overwrite that final selection.
+      if (muteMutationSeq.get(ctx.flag + ':' + ctx.key) !== ctx.seq) return
+      // Roll the optimistic flip back to its pre-mutation value...
+      dispatch(updateSlotMuteFlag({ key: ctx.key, flag: ctx.flag, value: ctx.prev }))
+      // ...then surface the failure so it is not swallowed: the row's state now
+      // disagrees with what the user clicked, and the menu renders this through
+      // ErrorNotice (store-backed, so it survives the kebab closing).
+      dispatch(setSlotMuteFlagError({
+        key: ctx.key,
+        flag: ctx.flag,
+        message: err instanceof Error ? err.message : String(err),
+      }))
+    },
+  })
+  const clearForkError = useCallback(() => setForkError(null), [])
 
   const pinMutation = useMutation({
     mutationFn: ({ key, pinned }: { key: string; pinned: boolean }) => setSlotPinInOrder(key, pinned),
     onMutate: ({ key, pinned }) => {
       const dashboard = store.getState().dashboard
-      const fallbackSort = readSessionSortKey()
-      const naturalPinned = dashboard.slots
-        .filter(slot => slot.pinned)
-        .sort((a, b) => compareBySort(a, b, fallbackSort))
-        .map(slot => slot.key)
-      const storedPinnedOrder = readPinnedSessionOrder()
-      const prevPinnedOrder = reconcilePinnedSessionOrder(storedPinnedOrder, naturalPinned)
       const batch = activePinMutationBatch ?? {
-        baseline: prevPinnedOrder,
-        storedBaseline: storedPinnedOrder,
+        baseline: dashboard.slots.filter(slot => slot.pinned).map(slot => slot.key),
         entries: [],
         snapshotVersion: 0,
       }
@@ -305,6 +398,7 @@ export function useSessionActions(mode?: string): SessionActions {
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
   const { mutate: pinMutate } = pinMutation
+  const { mutate: muteFlagMutate } = muteFlagMutation
   const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
@@ -327,6 +421,13 @@ export function useSessionActions(mode?: string): SessionActions {
     pinMutate({ key: slotKey, pinned: !isPinned })
   }, [pinMutate])
 
+  const toggleMuteFlag = useCallback((slotKey: string, flag: MuteFlag) => {
+    const current = store.getState().dashboard.slots.find(s => s.key === slotKey)?.[flag] ?? false
+    muteFlagMutate({ key: slotKey, flag, value: !current })
+  }, [muteFlagMutate])
+  const toggleMutesOpened = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'mutes_opened'), [toggleMuteFlag])
+  const toggleMuted = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'muted'), [toggleMuteFlag])
+
   const copyLink = useCallback((slotKey: string) => {
     const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
     copySessionLink(slotKey, slot?.title, undefined, mode)
@@ -338,9 +439,13 @@ export function useSessionActions(mode?: string): SessionActions {
 
   const reload = useCallback((slotKey: string) => { reloadMutate(slotKey) }, [reloadMutate])
 
+  // The sidebar row ✕ and every session menu close land here. A busy session
+  // always asks, on the same rule as Cmd+W (`sessionIsBusyForClose`); an idle
+  // one keeps the user's `confirmCloseSession` setting.
   const close = useCallback((slotKey: string) => {
-    if (!loadChatConfig().confirmCloseSession || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
+    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, copyLink, move, reload, close }
+  return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
 }

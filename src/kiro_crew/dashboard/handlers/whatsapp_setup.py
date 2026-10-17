@@ -18,7 +18,7 @@ from kiro_crew.dashboard.channel_folders import (
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
-from kiro_crew.dashboard.handlers.messaging import is_direct_local_request
+from kiro_crew.dashboard.handlers.messaging import _channel_sdk_status, is_direct_local_request
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,13 @@ def _live_client(request: web.Request) -> Any:
 
 async def whatsapp_config_get(request: web.Request) -> web.Response:
     """GET /api/whatsapp/config: status + policy (the channel has no secrets)."""
-    wa = (await asyncio.to_thread(KiroCrewConfig.load)).whatsapp
+
+    def _read() -> "tuple[Any, tuple[bool, bool, str]]":
+        # One thread hop for both filesystem reads: the config, and the SDK
+        # probe (find_spec plus the PEP 668 marker check).
+        return KiroCrewConfig.load().whatsapp, _channel_sdk_status("whatsapp")
+
+    wa, (sdk_installed, sdk_supported, sdk_command) = await asyncio.to_thread(_read)
     state = request.app.get("state")
     client = _live_client(request)
     return web.json_response(
@@ -48,6 +54,13 @@ async def whatsapp_config_get(request: web.Request) -> web.Response:
             "allowed_wa_ids": [str(u) for u in wa.allowed_wa_ids],
             "groups": list(wa.groups),
             "session_folder": wa.session_folder,
+            # The shared optional-SDK card's fields (see _channel_sdk_status).
+            # When neonize is missing the panel shows the card -- whose command
+            # names THIS gateway's interpreter -- instead of the log-oriented
+            # MISSING_EXTRA_HINT the gateway leaves in connect_error.
+            "sdk_installed": sdk_installed,
+            "sdk_install_supported": sdk_supported,
+            "sdk_install_command": sdk_command,
         }
     )
 
@@ -187,9 +200,25 @@ async def whatsapp_qr_status(request: web.Request) -> web.Response:
     """GET /api/channels/whatsapp/qr/status — current rotating QR as data URL."""
     client = _live_client(request)
     if client is None:
-        return web.json_response({"state": "disabled", "qr_data_url": None, "detail": ""})
+        return web.json_response(
+            {"state": "disabled", "qr_data_url": None, "qr_expired": False, "detail": ""}
+        )
     qr_data_url = None
     codes = list(getattr(client, "latest_qr", []) or [])
+    detail = str(getattr(client, "state_detail", ""))[:200]
+    # A code is only worth showing while WhatsApp would still accept it. Once
+    # the pairing run stops emitting, the last code stays in `latest_qr` for
+    # good, so its age is the only thing that tells a live code from a dead one.
+    expired = (
+        client.state == "pairing"
+        and bool(codes)
+        and _qr_expired(float(getattr(client, "latest_qr_at", 0.0) or 0.0))
+    )
+    if expired:
+        detail = (
+            "the pairing code expired without being scanned; "
+            "restart the gateway to get a new code"
+        )
     # The rotating code IS the pairing credential: whoever scans it links THEIR
     # phone as a device on the operator's WhatsApp account, with full read and
     # send access to every chat. So it is withheld from anything but a
@@ -198,30 +227,44 @@ async def whatsapp_qr_status(request: web.Request) -> web.Response:
     # Only the code is withheld, not the whole response: `state` is what the
     # panel's read-only remote view polls to render its badge, and a 403 here
     # would leave a remote operator unable to see that the channel is connected.
-    if client.state == "pairing" and codes and is_direct_local_request(request):
-        qr_data_url = await asyncio.to_thread(_render_qr, codes, client.latest_qr_at)
+    if client.state == "pairing" and codes and not expired and is_direct_local_request(request):
+        qr_data_url = await asyncio.to_thread(_render_qr, codes[-1])
     return web.json_response(
         {
             "state": client.state,
             "qr_data_url": qr_data_url,
-            "detail": str(getattr(client, "state_detail", ""))[:200],
+            "qr_expired": expired,
+            "detail": detail,
         }
     )
 
 
-def _render_qr(codes: list, emitted_at: float) -> "str | None":
-    """PNG data URL for the currently-valid rotating code (~20s each).
-    segno ships with the whatsapp extra (a neonize dependency); this path is
-    only reachable while the channel runs, so the import resolves."""
+# The longest WhatsApp keeps any single pairing code alive: the first code of a
+# pairing run is valid for 60s and each later one for 20s. The client hands over
+# one code per emission without saying which of the two it is, so the longer
+# life is the bound: a live code is never withheld, and a dead one stops being
+# served within a minute of its emission instead of never.
+_QR_MAX_LIFE_S = 60.0
+
+
+def _qr_expired(emitted_at: float) -> bool:
+    """True once the newest code is older than any code WhatsApp still accepts.
+    An unknown emission time (0) is not evidence of expiry."""
     import time
 
+    if not emitted_at:
+        return False
+    return time.monotonic() - emitted_at > _QR_MAX_LIFE_S
+
+
+def _render_qr(code: str) -> "str | None":
+    """PNG data URL for the newest pairing code.
+    segno ships with the whatsapp extra (a neonize dependency); this path is
+    only reachable while the channel runs, so the import resolves."""
     import segno
 
-    idx = 0
-    if emitted_at:
-        idx = min(int((time.monotonic() - emitted_at) // 20), len(codes) - 1)
     try:
-        return segno.make(codes[idx]).png_data_uri(scale=6)
+        return segno.make(code).png_data_uri(scale=6)
     except Exception:
         logger.warning("whatsapp: QR render failed", exc_info=True)
         return None

@@ -188,6 +188,8 @@ class TestConductorInstaller:
         for verb in (
             "chat_folder_move_session",
             "chat_folder_move",
+            # Renames or restyles an existing folder, which may be the person's.
+            "chat_folder_update",
             "session_send",
             # The fan-out write, withheld on `session_send`'s reason multiplied by
             # the fleet: one call runs ingested text as a user-role turn in every
@@ -246,8 +248,7 @@ class TestConductorInstaller:
         case, because they reach ``allowed_tools_to_permissions`` as separate
         patterns and a family could classify differently: persistent work
         (``task_run``, the ``workflow_*`` group), agent fan-out (the ``spawn_*``
-        group), session and workspace mutation (``set_project``,
-        ``reset_conversation``), egress (``deploy_artifact``, ``browser``,
+        group), workspace mutation (``set_project``), egress (``deploy_artifact``, ``browser``,
         ``ops_mission_control_api``) and the ``artifact_*`` writes.
 
         Spelled as literals, deliberately: deriving the expectation from
@@ -271,6 +272,11 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
+            # Granted on purpose: the conductor drops its own chat at a round
+            # close. The directive consumer still refuses it from any wake it
+            # cannot vouch for (test_conductor_wake_reset.py).
+            "@kirocrew-core/reset_conversation",
         }
         # The bare server is what this test exists to keep out: it would re-grant
         # all 74 registered core tools, including every verb named below.
@@ -287,9 +293,9 @@ class TestConductorInstaller:
             "spawn_sub_agents",
             "spawn_steer",
             "spawn_continue",
-            # Mutating the caller's own session or project out from under it.
+            # Mutating the caller's own project out from under it.
+            # (``reset_conversation`` moved to the granted set above, on purpose.)
             "set_project",
-            "reset_conversation",
             # Egress and machine reach.
             "deploy_artifact",
             "browser",
@@ -547,17 +553,26 @@ class TestConductorInstaller:
             assert "Can I pick a default?" not in text
 
     def test_back_to_back_rounds_keep_a_spend_bound(self, tmp_path, monkeypatch):
-        """Without a pause between rounds, a default item cap and a no-progress
-        back-off are the only spend gates when the user set no budget.
+        """Without a pause between rounds, a default concurrency cap and a no-progress
+        back-off are the only hard spend gates when the user set no bound; the item
+        total is a line the conductor reports, not a refusal it asks about.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
         for text in (prompt, body):
             assert "spend is bounded" in text
             assert "two rounds in a row" in text
-            assert "re-plan may add items only" in text
-        assert "at most 20 ledger items" in prompt
-        assert "at most **20 ledger items**" in body
+            assert "goal_concurrency_cap_reached" in text
+            assert "concurrency_cap=<N>" in text
+            assert "items used: N of <item_cap>" in text
+            assert "cap_exceeded" in text
+            # The old refusal is gone from both, so neither tells the conductor to
+            # stop and ask when the total is passed.
+            assert "goal_item_cap_reached" not in text
+        assert "at most 6 ledger items OPEN at once" in prompt
+        assert "at most 20 ledger items in all" in prompt
+        assert "at most **6 ledger items open at once**" in body
+        assert "at most **20 ledger items** in total" in body
 
     def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
         """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a
@@ -568,16 +583,49 @@ class TestConductorInstaller:
         assert "`goal-conductor`" in prompt
         assert "goal-ledger-conductor" not in prompt
 
-    def test_skill_body_matches_the_prompt_on_the_load_bearing_rules(self):
+    def test_skill_body_matches_the_prompt_on_the_load_bearing_rules(self, tmp_path, monkeypatch):
         """The prompt is the summary and the skill is the procedure; a disagreement
         between them is resolved nondeterministically by whichever the model weighs
         more. These four are the rules that make this flow what it is.
+
+        The read-first rule is asserted on BOTH sides, because that is the one a
+        wake can contradict: a wake carries a pointer to the ledger rather than a
+        copy of it, so a surface telling the conductor a turn may arrive holding the
+        board has it act on a one-line notification as if it were the state.
         """
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         assert "Bind BEFORE you seed" in body
         assert "Never leave `agent` unset" in body
-        assert "work_ledger_read` with `compact=true` first, every cycle" in body
         assert "action=accept" in body
+        for surface, text in (("skill", body), ("prompt", prompt)):
+            assert "Read the ledger first, every cycle" in text, surface
+            assert "already carries the board" not in text, (
+                f"the {surface} still tells the conductor a turn can arrive holding "
+                "the board; a wake carries a pointer to work_ledger_read"
+            )
+
+    def test_prompt_and_skill_name_the_template_dispatch_for_a_shadowed_worker(
+        self, tmp_path, monkeypatch
+    ):
+        """On installs where an older agent sync enrolled ``kirocrew-worker`` as a crew
+        member with private memory, a conductor running as a crew member on the
+        shared store (or a child a parent conductor created) is refused
+        ``memory_delegation_denied`` for every leaf dispatch. Left unsaid, the
+        conductor invents a remedy that does not exist (a memory-store setting), so
+        both the summary and the procedure name the real one -- ``agent_kind:
+        "template"`` -- as the way EVERY worker is dispatched, not as a retry after
+        the refusal, and say the binding is not a setting.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        for text in (prompt, body):
+            assert 'Always dispatch `kirocrew-worker` with `agent_kind: "template"`' in text
+            assert "Re-send" not in text
+            assert "memory_delegation_denied" in text
+            assert "needs no memory of its own" in text
+        assert "no setting can change" in prompt
+        assert "immutable and Settings offers no control" in body
 
     def test_prompt_and_skill_close_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
         """A conductor that stops an item's loop and leaves its session open leaves a
@@ -677,6 +725,8 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
+            "@kirocrew-core/reset_conversation",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/chat_folder_file_self",
@@ -707,6 +757,8 @@ class TestConductorInstaller:
             "kirocrew-core/list_sessions",
             "kirocrew-core/monitor_start",
             "kirocrew-core/monitor_update",
+            "kirocrew-core/nothing_to_do",
+            "kirocrew-core/reset_conversation",
             "kirocrew-core/resource_status",
             "kirocrew-core/select_crew",
             "kirocrew-core/send_message",
@@ -871,6 +923,8 @@ class TestConductorInstaller:
             "@kirocrew-core/send_message",
             "@kirocrew-core/send_notification",
             "@kirocrew-core/ask_question",
+            "@kirocrew-core/nothing_to_do",
+            "@kirocrew-core/reset_conversation",
             "@kirocrew-dashboard/chat_folder_tree",
             "@kirocrew-dashboard/chat_folder_create",
             "@kirocrew-dashboard/chat_folder_file_self",

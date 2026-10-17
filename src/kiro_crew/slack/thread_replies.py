@@ -141,7 +141,7 @@ def _line(msg: dict, own_bot_id: str, *, session_key: str, channel: str, thread_
 def _omitted_header(omitted: int) -> str:
     return (
         f"[{omitted} earlier repl{'y' if omitted == 1 else 'ies'} not shown — "
-        "use batch_get_thread_replies to read them]"
+        "use the Slack MCP server's thread-reading tool (e.g. get_thread) to read them]"
     )
 
 

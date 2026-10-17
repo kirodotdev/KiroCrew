@@ -64,6 +64,13 @@ describe('textarea composer continues markdown lists on a new line', () => {
     expect(onSend).not.toHaveBeenCalled()
   })
 
+  it('Return before an item\'s text renumbers the items below it', () => {
+    const { ta, value } = mount('1. foo\n2. bar', 'ctrl-enter', '1. '.length)
+    expect(newLine(ta)).toBe(true)
+    expect(value()).toBe('1. \n2. foo\n3. bar')
+    expect(ta.selectionStart).toBe('1. \n2. '.length)
+  })
+
   it('insertParagraph (some Android keyboards) continues the list too', () => {
     const { ta, value } = mount('9) item')
     expect(newLine(ta, 'insertParagraph')).toBe(true)
@@ -247,5 +254,85 @@ describe('textarea composer continues markdown lists on a new line', () => {
     ta.setSelectionRange('1. '.length, '1. test'.length)
     expect(newLine(ta)).toBe(false)
     expect(value()).toBe('1. test more')
+  })
+})
+
+/** One Backspace as the browser delivers it (a desktop key and an Android
+ *  keyboard's delete both end here). Returns true when the composer cancelled
+ *  the native one-character delete. */
+function backspace(ta: HTMLTextAreaElement, isComposing = false) {
+  const event = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'deleteContentBackward', isComposing })
+  act(() => { ta.dispatchEvent(event) })
+  return event.defaultPrevented
+}
+
+describe('textarea composer clears a list marker in one Backspace', () => {
+  it('clears the number a numbered-list continuation just made', () => {
+    const { ta, value } = mount('1. test')
+    expect(newLine(ta)).toBe(true)
+    expect(value()).toBe('1. test\n2. ')
+    expect(backspace(ta)).toBe(true)
+    expect(value()).toBe('1. test\n')
+    expect(ta.selectionStart).toBe('1. test\n'.length)
+  })
+
+  it('moves the items below back up when it clears a mid-list item', () => {
+    const { ta, value } = mount('1. foo\n2. bar', 'ctrl-enter', '1. foo'.length)
+    expect(newLine(ta)).toBe(true)
+    expect(value()).toBe('1. foo\n2. \n3. bar')
+    expect(backspace(ta)).toBe(true)
+    expect(value()).toBe('1. foo\n\n2. bar')
+    expect(ta.selectionStart).toBe('1. foo\n'.length)
+  })
+
+  it('clears an indented task marker in one press', () => {
+    const { ta, value } = mount('  - [ ] a\n  - [ ] ')
+    expect(backspace(ta)).toBe(true)
+    expect(value()).toBe('  - [ ] a\n')
+  })
+
+  it('removes only the marker in front of item text', () => {
+    const { ta, value } = mount('3. step', 'ctrl-enter', '3. '.length)
+    expect(backspace(ta)).toBe(true)
+    expect(value()).toBe('step')
+    expect(ta.selectionStart).toBe(0)
+  })
+
+  it('leaves an ordinary Backspace to the browser off the marker boundary', () => {
+    const { ta, value } = mount('- item')
+    expect(backspace(ta)).toBe(false)
+    expect(value()).toBe('- item')
+  })
+
+  it('leaves a composing delete to the IME', () => {
+    const { ta, value } = mount('1. a\n2. ')
+    expect(backspace(ta, true)).toBe(false)
+    expect(value()).toBe('1. a\n2. ')
+  })
+
+  it('leaves the delete to the browser on Android, where the cancel can be ignored', () => {
+    const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/129.0 Mobile')
+    try {
+      const { ta, value } = mount('1. a\n2. ')
+      expect(backspace(ta)).toBe(false)
+      expect(value()).toBe('1. a\n2. ')
+    } finally {
+      ua.mockRestore()
+    }
+  })
+
+  it('leaves a non-cancelable delete to the browser', () => {
+    const { ta, value } = mount('1. a\n2. ')
+    const event = new InputEvent('beforeinput', { bubbles: true, cancelable: false, inputType: 'deleteContentBackward' })
+    act(() => { ta.dispatchEvent(event) })
+    expect(value()).toBe('1. a\n2. ')
+  })
+
+  it('one undo restores the marker', () => {
+    const { ta, value } = mount('- a\n- ')
+    expect(backspace(ta)).toBe(true)
+    expect(value()).toBe('- a\n')
+    fireEvent.keyDown(ta, { key: 'z', ctrlKey: true })
+    expect(value()).toBe('- a\n- ')
   })
 })

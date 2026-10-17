@@ -1,6 +1,6 @@
 ---
 title: Dashboard chrome shell — one continuous surface with a fixed desktop rail
-status: draft
+status: accepted
 author: krewworker
 created: 2026-10-02
 last-audited: 2026-10-02
@@ -14,7 +14,13 @@ superseded-by: []
 
 # RFC: Dashboard chrome shell — one continuous surface with a fixed desktop rail
 
-- Status: draft — nothing implemented on main. The implementation is
+> **Status:** `accepted` on 2026-10-02 by maintainer dodgeblaster (see
+> Acceptance). Nothing is on main yet; the document lands first because the
+> fixed-collapsed desktop rail removes a user-facing capability and the First
+> Principles review lane reads that decision off the base branch. The
+> implementation is [#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
+
+- Status: accepted — nothing implemented on main yet. The implementation is
   [#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
 - Author: krewworker
 - Related: `website/docs/page-layout.md` (the shell/panel layout this reshapes),
@@ -61,8 +67,6 @@ surface:
   also moved the layout.
 - The sessions sidebar floats as a rounded card with a visible gap below its
   "Older Sessions" footer, not docked into the frame.
-- The top bar's readout capsule and Request-a-Feature pill carry raised
-  liquid-glass, which reads as floating cards on what should be a flat chrome bar.
 
 ## Decision
 
@@ -78,25 +82,41 @@ Adopt the chrome shell as the desktop default:
    and a nav click (or a Web-Preview teardown) never widens it.
 4. **The sessions sidebar docks flush** inside the surface: square resting
    corners, no bottom gap, keeping its right-edge divider.
-5. **The flat top bar's glass pills are flattened** onto the chrome (readout
-   capsule and Request-a-Feature); the search trigger is unchanged.
+5. **The top bar's glass pills keep their liquid-glass.** The readout capsule
+   and Request-a-Feature pill wear the same Liquid Glass as the search trigger,
+   so the three top-bar pills read as one consistent set on the chrome bar.
+6. **Pinned crews appear as rail tiles.** Below the crew switcher the collapsed
+   rail shows a vertical column of tiles for the user's pinned crews (and, from
+   an embedded remote pane, a one-click tile back to Local); clicking a tile
+   switches to that crew, connecting it if it is remembered-but-disconnected. The
+   column is realm-aware — the top-level dashboard reads the user's own pins,
+   while an embedded remote pane reads them from the parent-relayed host model and
+   switches by `postMessage` — and a tile whose connect fails surfaces that
+   failure as an always-on error notice with an agent hand-off, so a rail-initiated
+   connect error is never swallowed.
 
 The product-shape part that needs a recorded decision is **3** — it removes a
 user-facing capability (expanding the desktop rail). The rail's expand/collapse
 machinery and its tests are retained for the mobile rail; only the desktop
-default changes.
+default changes. Decision **6** is additive — it surfaces existing pinned crews
+on the rail and removes nothing.
 
 ## Rollout
 
 One frontend PR, [#16052](https://github.com/kirodotdev/KiroCrew/pull/16052):
 the shell CSS and class hooks in `website/src/index.css`, the rail wiring in
 `website/src/App.tsx` (fixed-collapsed off mobile, toggle removed, switcher in
-the header), the switcher component `website/src/components/InstanceTabBar.tsx`
-+ `website/src/components/CrewIdentityMark.tsx`, and the flush docked sidebar via
-a `flush` prop on `website/src/components/OverlayDrawer.tsx` passed from
+the header) with the rail chrome and nav helpers in `website/src/shell/nav/`
+(`railChrome.tsx`, `appRail.tsx`) and `website/src/hooks/useNavTip.ts`, the
+switcher and pinned-crew rail in `website/src/components/InstanceTabBar.tsx`
++ `website/src/components/CrewIdentityMark.tsx` (the pinned-tile column, its
+realm-aware top-level/embedded variants, and the always-on `RailListError`
+connect-failure surface), and the flush docked sidebar via a `flush` prop on
+`website/src/components/OverlayDrawer.tsx` passed from
 `website/src/pages/ChatPage.tsx`. Tests covering the previously-expandable
 desktop rail are rewritten to the fixed-collapsed reality (collapsed-rail
-role/aria assertions). No backend, agent, or data change.
+role/aria assertions), with `website/src/test/PinnedCrewRail.test.tsx` covering
+the tile column and its connect-error notice. No backend, agent, or data change.
 
 ## Alternatives considered
 
@@ -120,7 +140,18 @@ role/aria assertions). No backend, agent, or data change.
 
 ## Acceptance
 
-Pending a maintainer's decision on the product-shape change (item 3, the
-fixed-collapsed desktop rail). This document records the decision so the First
-Principles review lane can read it off the base branch; the status flips to
-`accepted` when a maintainer records it here.
+**Decided 2026-10-02 by dodgeblaster (maintainer): this design is accepted.**
+The desktop nav rail is fixed to the collapsed icon rail for every user (expand
+stays mobile-only), the brand toggle is replaced by the crew identity switcher,
+the installed theme's rail logo gives way to the favicon, and Report-a-problem
+leaves the rail (kept at Settings › About › Support and the top-bar feedback
+pill). The top bar's readout capsule and Request-a-Feature pill keep their
+Liquid Glass (decision 5) — reversing an earlier development iteration that
+flattened them — so all three top-bar pills wear one material. The collapsed
+rail also carries a column of pinned-crew tiles below the switcher (decision 6),
+an additive one-click way to switch between pinned crews that removes nothing.
+This document
+records the decision so the First Principles review lane can
+read it off the base branch. The implementation is
+[#16052](https://github.com/kirodotdev/KiroCrew/pull/16052).
+

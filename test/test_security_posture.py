@@ -254,22 +254,29 @@ def _gate_side_baseline_log_sites(
 #: nets to zero (both edits land in one reviewed diff), and the scan is
 #: single-scope (see :func:`_gate_side_baseline_log_sites`).
 _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
+    "acp/client_lifecycle.py": 1,
     # +1: model-unavailable warning log in the rejected-model path
-    "acp/client.py": 7,
+    "acp/client_model_selection.py": 2,
+    "acp/client_permissions.py": 1,
+    "acp/client_start.py": 2,
+    "acp/client_transport.py": 1,
     # _format_acp_error's scrubbed-content warning, in the same gateway process as
-    # acp/client.py's sites.
+    # the client owners' sites.
     "acp/transport_errors.py": 1,
     "apps/builtins/pptx_maker/backend/routes.py": 1,
     "dashboard/chat_nav.py": 1,
-    "dashboard/chat_runner.py": 9,
+    "dashboard/chat_runner.py": 8,
     "dashboard/chat_title.py": 1,
+    # The native sub-agent card sync's gate-side log, moved out of chat_runner.py with
+    # its helper; the same gateway process as the runner's sites.
+    "dashboard/chat_turn/native_cards.py": 1,
     "dashboard/handlers/discover.py": 3,
     "dashboard/handlers/files.py": 1,
     "dashboard/handlers/hooks.py": 1,
     "dashboard/handlers/messaging.py": 12,
-    "dashboard/session_control.py": 1,
+    "dashboard/session_control_parts/target_authorization.py": 1,
     "dashboard/session_transfer.py": 1,
-    "dashboard/state.py": 1,
+    "dashboard/state_parts/slot_turns.py": 1,
     "knowledge/agent_fetch.py": 1,
     "mcp_cron.py": 1,
     # The pooled-backend daemon never composes a companion context. Its
@@ -281,7 +288,14 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "mcp_tools/skills.py": 2,
     "messaging/sessions_view.py": 1,
     "slack/events.py": 2,
-    "slack/gateway.py": 7,
+    # Owners composed into slack/gateway.py (the cron script arm, boot-time install
+    # repair, the unattended result delivery, a sub-agent completion's injection
+    # into its parent, the tool-approval callbacks): the gateway process.
+    "slack/gateway_runtime/cron_exec.py": 1,
+    "slack/gateway_runtime/install_repair.py": 2,
+    "slack/gateway_runtime/result_egress.py": 1,
+    "slack/gateway_runtime/subagent_injection.py": 1,
+    "slack/gateway_runtime/turn_approvals.py": 2,
     "slack/handler.py": 3,
     "voice_reply.py": 4,
 }
@@ -916,10 +930,13 @@ class TestOmissionDetection:
     def test_token_auth_controls_name_live_mechanisms(self):
         """Each advertised auth control must have its enforcement present."""
         import inspect
+        import sys
 
         from kiro_crew.dashboard import token_auth
 
-        src = inspect.getsource(token_auth)
+        # The facade and the owner modules it serves the moved code from.
+        family = (token_auth.__name__, *token_auth._OWNERS)
+        src = "\n".join(inspect.getsource(sys.modules[name]) for name in family)
         for marker in (
             "hmac.new",  # HMAC-SHA256 signature
             "bind_peer",  # session pinning (peer-keyed: ip:<addr> / ts:… identity)
@@ -990,6 +1007,20 @@ class TestRedactionSinkRegistry:
             # exfil scanner THEN the credential scanner over every string in a
             # projection view or event `data`, so a sink using it is fully covered.
             "_redact_projection_value",
+            # redact_peer_text (dashboard/peer_redaction.py) IS the pair: it runs
+            # redact_exfiltration_urls THEN redact_credentials in the repo's fixed
+            # order. Its two wrappers reach it for a whole JSON document and for one
+            # SSE event respectively, so a sink calling any of the three is fully
+            # covered. Named here because that module exists so its callers "share
+            # one registered sink instead of each inventing a redactor pair" -- which
+            # means a covered sink need not mention either scanner itself.
+            "redact_peer_text",
+            "_redact_peer_payload",
+            "_redact_sse_event_async",
+            # _redact_for_display (dashboard/chat_utils_display.py) runs redact_exfiltration_urls
+            # THEN redact_credentials, cached by content hash, so a sink calling it is
+            # fully covered; test_the_display_redactor_runs_both_scanners pins that.
+            "_redact_for_display(",
         )
         for label, module, detail in security_posture._REDACTION_SINKS:
             text = (pkg / module).read_text(encoding="utf-8")
@@ -1003,6 +1034,18 @@ class TestRedactionSinkRegistry:
                 "does not disclose that — either say which scanner it runs, or fix "
                 "the sink to run both"
             )
+
+    def test_the_display_redactor_runs_both_scanners(self):
+        """Why ``_redact_for_display(`` is a dual pass above: one input carrying a
+        credential and an exfiltration URL comes back with both removed."""
+        from kiro_crew.dashboard import chat_utils
+
+        chat_utils._clear_display_redaction_cache()
+        url = "https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
+        out = chat_utils._redact_for_display(f"key AKIAIOSFODNN7EXAMPLE then {url}")
+        chat_utils._clear_display_redaction_cache()
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+        assert "corp-laptop" not in out and "attacker.example/?token" not in out
 
     def test_sink_prose_claims_are_true_of_the_named_module(self):
         """A sink's `detail` makes testable claims — pin them to the call site.

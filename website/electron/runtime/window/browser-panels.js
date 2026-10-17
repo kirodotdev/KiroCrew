@@ -170,8 +170,9 @@ function attachBrowserPanels(win, view, {
   win._mcAgentChannel = createAgentCommandChannel({
     fetchFn: (url, init) => fetch(url, init),
     getGatewayUrl: () => win._mcBackendUrl,
-    // Re-read for every call; the secret rotates with each gateway boot.
-    getSecret: () => readInternalSecret(),
+    // Re-read for every call; the secret rotates with each gateway boot. It is
+    // the entry published for the URL being dialed, or none.
+    getSecret: (gatewayUrl) => readInternalSecret(gatewayUrl),
     // The idle host-presence heartbeat must fire ONLY when the gateway is truly
     // on this machine — see isGatewayLocalForWindow for why loopback alone is
     // not sufficient and why the port must be the window's own.

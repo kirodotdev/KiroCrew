@@ -54,6 +54,10 @@ from kiro_crew import platform_compat
 from kiro_crew.computer_use import macos_ffi, snapshot_macos
 from kiro_crew.computer_use.types import ComputerUseUnsupported, SnapshotRequest
 
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
 # Sentinel handle values. Distinct and non-zero so a truthiness bug (treating a
 # valid handle as NULL) shows up as a wrong branch rather than passing by luck.
 _H_STRING = 0x5100

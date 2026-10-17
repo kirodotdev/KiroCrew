@@ -392,7 +392,8 @@ class TestPostAssemblyOpenersAreRecognized:
         assert sum(out.values()) == len(prompt)
 
     def test_hook_context_marker_matches_both_emitted_spellings(self):
-        # context.py emits "[Hook context:]" and chat_runner emits "[Hook context]".
+        # context_assembly/turn_message.py emits "[Hook context:]" and chat_runner
+        # emits "[Hook context]".
         for opener in ("[Hook context:]\nbody\n\n", "[Hook context]\nbody\n\n"):
             prompt = f"{opener}[CURRENT USER REQUEST -- respond]\nhi"
             out = split_blocks(prompt, user_span=(len(prompt) - 2, len(prompt)))
@@ -680,8 +681,8 @@ class TestABlockEndsAtItsOwnCloser:
         assert sum(out.values()) == len(prompt)
 
     def test_both_hook_context_closer_spellings_are_recognised(self):
-        """Two emit sites, two spellings: ``context.py`` writes ``[End of hook
-        context]`` and ``chat_runner.py`` writes ``[End hook context]``. A table
+        """Two emit sites, two spellings: ``context_assembly/turn_message.py`` writes
+        ``[End of hook context]`` and ``chat_runner.py`` writes ``[End hook context]``. A table
         covering only one leaves the other block absorbing what follows it."""
         for closer in ("[End of hook context]", "[End hook context]"):
             block = f"[Hook context]\nsomething a hook added\n{closer}\n\n"

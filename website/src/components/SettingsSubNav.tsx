@@ -5,6 +5,7 @@ import { NavBackBar } from './NavBackBar'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, COARSE_TOUCH_TARGET, SUBNAV_PUSH_STATE, toPathSegment, parsePathSegments } from './subNavParams'
 import { useContainerWidth } from '../hooks/useContainerWidth'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { guideTarget, maybe } from '../uiLocations/targetRegistry'
 
 /** Below this container width the rail and the detail pane stack: the rail
  *  becomes the whole view and choosing an item replaces it (with a back
@@ -67,6 +68,11 @@ interface SettingsSubNavProps<K extends string> {
    *  When ABSENT, the historical ?sub= + legacy-alias behavior is unchanged,
    *  so non-migrated consumers are unaffected. */
   basePath?: string
+  /** The registered location id prefix of the rows (`settings.sub.<tab>.`):
+   *  each row then carries `data-guide-target="<prefix><key>"`, so a guide
+   *  looking a sub-page up by its location id finds the row whatever its
+   *  name reads with a status line under it (`guide/trustRoot.ts`). */
+  guideTargetPrefix?: string
 }
 
 /** Second-level navigation inside one Settings tab: a responsive list-detail
@@ -84,6 +90,7 @@ export function SettingsSubNav<K extends string>({
   backLabel,
   banner,
   basePath,
+  guideTargetPrefix,
 }: SettingsSubNavProps<K>) {
   const [params, setParams] = useSearchParams()
   const location = useLocation()
@@ -244,6 +251,7 @@ export function SettingsSubNav<K extends string>({
         role={twoPane ? 'option' : undefined}
         aria-selected={twoPane ? active : undefined}
         onClick={() => select(item.key)}
+        {...maybe(guideTargetPrefix && `${guideTargetPrefix}${item.key}`, guideTarget)}
         // No title attribute: labels WRAP (line-clamp-2) rather than truncate,
         // and a title mirroring a hardcoded brand name (WeCom, Teams) registers
         // as an untranslated-attribute site on the i18n render gate.

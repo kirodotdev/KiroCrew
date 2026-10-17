@@ -38,14 +38,15 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
-from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     checkpoint_slot_replaced,
     deny_app_slot_access,
     slot_not_found,
 )
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import _TRANSIENT_ROLES, DashboardState
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
 
@@ -87,6 +88,25 @@ async def _delete_orphan_kiro_session(session_id: str) -> None:
             logger.debug("rewind: could not delete %s: %s", candidate, exc)
 
 
+def _native_fork_point(prefix: list[dict]) -> str:
+    """The native message id the retained *prefix* ends on, or ``""``.
+
+    Runtime notices and wire-only rows (the ``done`` every finished turn leaves
+    in the live window) are not part of the native conversation and are skipped.
+    Any other last row -- a tool call cut off mid-turn, a user row -- marks no
+    finished assistant message to fork at, so the rewind starts fresh instead.
+    """
+    for row in reversed(prefix):
+        role, meta = row.get("role"), row.get("meta")
+        if role == "system" or role in _TRANSIENT_ROLES or is_system_notice(role, meta):
+            continue
+        message_id = meta.get("native_message_id") if isinstance(meta, dict) else None
+        if role != "assistant" or not isinstance(message_id, str):
+            return ""
+        return message_id
+    return ""
+
+
 async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/rewind — edit a past message and re-run in place.
 
@@ -94,7 +114,10 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
 
     Effect: replaces the slot's ACP session with a fresh one primed only with
     messages up to (but not including) ``at_message_index``, then runs the
-    edited prompt against it. Slot key, title, folder, sidebar position, and
+    edited prompt against it. On the claude backend the fresh session is a fork
+    of the native one cut at the retained prefix's last assistant message, so it
+    keeps that history whole; elsewhere, or when the fork cannot run, it is
+    primed with the text replay. Slot key, title, folder, sidebar position, and
     color are unchanged.
     """
     # Destructive: this truncates and PERSISTS history before the background
@@ -122,11 +145,9 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    # A crew-bound slot has no local rewind: it would rebuild the LOCAL ACP
-    # session and re-run the edited turn on this machine, diverging from the peer.
-    # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
-    # apart from a missing one via the 409.
-    refusal = remote_bound_refusal(slot)
+    # A relay archive is read-only. AFTER the app-ownership 404 above so a
+    # foreign app cannot tell an archive apart from a missing slot via the 409.
+    refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
 
@@ -267,6 +288,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 orphan_kiro_session_id = state.sessions._session_map.get(session_key) or ""
             except Exception:
                 logger.debug("rewind: failed to read session_map", exc_info=True)
+        native_fork_point = _native_fork_point(slot.messages[:index])
 
         # Prepare the prospective state on a copy. The dirty-slot flush can run
         # while either durable boundary below is pending, so exposing a truncated
@@ -932,6 +954,17 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             # after the commit already happened, stranding a persisted edited
             # prompt that never runs.
             dispatch_commit = True
+
+            # Read by the replacement turn's cold start, which the reserved
+            # dispatch only begins once ``dispatch_ready`` is set below.
+            # Best-effort: a fork that is never armed falls back to the replay.
+            if orphan_kiro_session_id and native_fork_point:
+                try:
+                    state.sessions._session_map.set_native_fork(
+                        session_key, orphan_kiro_session_id, native_fork_point
+                    )
+                except Exception:
+                    logger.debug("rewind: failed to arm the native fork", exc_info=True)
 
             # Best-effort cleanup of the orphaned kiro-cli session JSONL so it
             # does not show up in ``kiro-cli chat -l`` or the resume picker.

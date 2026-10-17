@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FileDiff, ChevronDown, ChevronUp, ChevronRight, Columns2 } from 'lucide-react'
+import { AlertTriangle, FileDiff, ChevronDown, ChevronUp, ChevronRight, Columns2 } from 'lucide-react'
 import type { FileChipStyle } from '../pages/chat/ChatSettings'
 import { useRowDisclosure } from '../pages/chat/rowDisclosure'
 import { PierreFilePair } from '../pierre'
@@ -10,6 +10,7 @@ import {
   ROW_CSS_CLOSING,
   ROW_CSS_OPEN,
 } from './fileChangeChipsCss'
+import ErrorNotice from './ErrorNotice'
 import { countLines } from '../utils/diffLineCounts'
 import { normalizeWindowsPath } from '../utils/fileTokens'
 import { useDiffSplit } from '../hooks/useDiffSplit'
@@ -28,18 +29,48 @@ export interface FileChangeEntry {
    *  the real file. */
   content_omitted?: boolean
   turn_budget_chars?: number
+  /** Why `content_omitted` holds. `older_turn`: the chat keeps copies only for
+   *  its most recent file-changing turns, and this turn is older
+   *  (`transcript_merge.py::FILE_CHANGES_OLDER_TURN`). `unverified_write`: the
+   *  write failed and the file before it is unknown, so no diff is proven.
+   *  Absent: the turn budget. */
+  omitted_reason?: string
 }
 
 const LEGACY_SNAPSHOT_LIMIT_CHARS = 200_000
 
-const turnBudgetSentence = (fc: FileChangeEntry) =>
-  i18nT('components.fileChangeChips.diff_unavailable_turn_snapshot_budget', {
-    limit: fmtNumber(fc.turn_budget_chars ?? LEGACY_SNAPSHOT_LIMIT_CHARS * 2),
-  })
+const OLDER_TURN = 'older_turn'
+/** A write tool reported `failed` and nothing recorded the file before it, so
+ *  no diff can be proven (`file_changes.py::_failed_write_entries`). */
+const UNVERIFIED_WRITE = 'unverified_write'
 
-/* Two reasons a row carries no diff, and they are NOT the same sentence: one
- * file outgrew the per-file cap, or the turn as a whole outgrew its budget and
- * this file's content was dropped to keep the newest changes complete. Telling
+const omittedContentSentence = (fc: FileChangeEntry) =>
+  fc.omitted_reason === OLDER_TURN
+    ? i18nT('components.fileChangeChips.diff_unavailable_older_turn')
+    : fc.omitted_reason === UNVERIFIED_WRITE
+      ? i18nT('components.fileChangeChips.diff_unavailable_unverified_write')
+      : i18nT('components.fileChangeChips.diff_unavailable_turn_snapshot_budget', {
+          limit: fmtNumber(fc.turn_budget_chars ?? LEGACY_SNAPSHOT_LIMIT_CHARS * 2),
+        })
+
+/** One entry per reason the card's notice states. An older turn's sentence
+ *  covers every row the turn budget had already left without content, so it
+ *  replaces the budget sentence. A failed write is an error, not a size limit,
+ *  so its notice stays beside either one; each reason is said once. */
+const noticeEntries = (fileChanges: FileChangeEntry[]): FileChangeEntry[] => {
+  const unverified = fileChanges.find(fc => fc.omitted_reason === UNVERIFIED_WRITE)
+  const older = fileChanges.find(fc => fc.omitted_reason === OLDER_TURN)
+  // A failed write is an error whatever the turn's age, so it keeps its own
+  // notice; the older-turn sentence replaces only the turn-budget one.
+  if (older) return [unverified, older].filter((fc): fc is FileChangeEntry => fc !== undefined)
+  const budget = fileChanges.find(fc => fc.content_omitted && fc.omitted_reason !== UNVERIFIED_WRITE)
+  return [unverified, budget].filter((fc): fc is FileChangeEntry => fc !== undefined)
+}
+
+/* Three reasons a row carries no diff, and they are NOT the same sentence: one
+ * file outgrew the per-file cap, the turn as a whole outgrew its budget and
+ * this file's content was dropped to keep the newest changes complete, or the
+ * turn is older than the chat keeps copies for (`older_turn`). Telling
  * a small file's owner it was "too large to compare" sends them looking for a
  * size problem that is not theirs.
  *
@@ -66,7 +97,12 @@ function TruncatedNotice({ fc }: { fc: FileChangeEntry }) {
  *  badge's `title`, so hovering the tag restates the turn-budget reason the
  *  card's notice row gives once. */
 function DemotedTag({ fc }: { fc: FileChangeEntry }) {
-  return <span data-fcc-demoted-tag title={turnBudgetSentence(fc)} className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium">{i18nT('components.fileChangeChips.file_only')}</span>
+  // A failed write's row wears the failure's colour and icon, so the red
+  // notice above can be traced to its file among other "File only" rows.
+  if (fc.omitted_reason === UNVERIFIED_WRITE) {
+    return <span data-fcc-demoted-tag data-fcc-unverified-write title={omittedContentSentence(fc)} className="shrink-0 inline-flex items-center gap-1 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-danger/40 text-danger font-medium"><AlertTriangle size={10} aria-hidden="true" />{i18nT('components.fileChangeChips.file_only')}</span>
+  }
+  return <span data-fcc-demoted-tag title={omittedContentSentence(fc)} className="shrink-0 text-[10px] leading-none px-1.5 py-0.5 rounded-full border border-border text-muted font-medium">{i18nT('components.fileChangeChips.file_only')}</span>
 }
 
 /** The omitted-files count as a positive integer, or 0 for an absent, zero or
@@ -104,9 +140,21 @@ const NOTICE_ROW_CLASS = 'px-[10px] py-1.5 border-b border-border font-mono text
 const PILL_ROW_NOTICE_CLASS = 'basis-full text-muted text-[11px] italic'
 
 function TurnBudgetNotice({ fc, canOpen, className }: { fc: FileChangeEntry; canOpen: boolean; className: string }) {
+  if (fc.omitted_reason === UNVERIFIED_WRITE) {
+    // A write that FAILED is an error, so it renders through the shared error
+    // surface (`errors-use-error-notice`). The card sits in a persisted
+    // transcript and holds no draft of its own, so the hand-off loses nothing.
+    return (
+      <div data-fcc-turn-notice className={className}>
+        <ErrorNotice variant="inline" askAgent testId="fcc-unverified-write-notice" message={omittedContentSentence(fc)} />
+        {/* Its own line: run on after the hand-off link it reads as part of it. */}
+        {canOpen && <div>{i18nT('components.fileChangeChips.turn_snapshot_budget_open_hint')}</div>}
+      </div>
+    )
+  }
   return (
     <div data-fcc-turn-notice className={className}>
-      {turnBudgetSentence(fc)}
+      {omittedContentSentence(fc)}
       {canOpen && <> {i18nT('components.fileChangeChips.turn_snapshot_budget_open_hint')}</>}
     </div>
   )
@@ -544,9 +592,8 @@ function ExpandedList({ fileChanges, omittedFiles, onFileOpen, artifactPaths, di
   const stats = fileChanges.map(fc => fc.truncated ? { added: 0, removed: 0 } : countLines(fc.before, fc.after))
   const hasTruncatedSnapshot = fileChanges.some(fc => fc.truncated)
   const hasCompleteDiff = fileChanges.some(fc => !fc.truncated)
-  // Every demoted entry in one turn carries the same budget, so the first one
-  // speaks for the card.
-  const demoted = fileChanges.find(fc => fc.content_omitted)
+  // The card says each reason once, for every row without content.
+  const demoted = noticeEntries(fileChanges)
   const totalAdded = stats.reduce((s, x) => s + x.added, 0)
   const totalRemoved = stats.reduce((s, x) => s + x.removed, 0)
   const overflow = n > COLLAPSED_COUNT
@@ -583,7 +630,9 @@ function ExpandedList({ fileChanges, omittedFiles, onFileOpen, artifactPaths, di
             has no hover reveal, unlike DiffBlock's slotted controls. */}
         {hasCompleteDiff && <button onClick={() => setSideBySide(v => !v)} className={`ml-auto flex items-center justify-center w-[22px] h-[22px] rounded-md cursor-pointer transition-colors border-none shrink-0 ${sideBySide ? 'text-accent bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'}`} title={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')} aria-label={sideBySide ? i18nT('components.fileChangeChips.switch_to_unified_view') : i18nT('components.fileChangeChips.switch_to_split_view')}><Columns2 size={13} /></button>}
       </div>
-      {demoted && <TurnBudgetNotice fc={demoted} canOpen={!!onFileOpen} className={NOTICE_ROW_CLASS} />}
+      {demoted.map((fc, i) => (
+        <TurnBudgetNotice key={fc.omitted_reason ?? 'budget'} fc={fc} canOpen={!!onFileOpen && i === demoted.length - 1} className={NOTICE_ROW_CLASS} />
+      ))}
       {omittedFiles > 0 && <OmittedFilesNotice count={omittedFiles} className={NOTICE_ROW_CLASS} />}
       <div className="flex flex-col">
         {fileChanges.slice(0, visibleCount).map((fc, i) => (
@@ -652,7 +701,13 @@ function MinimalChip({ fc, named, onClick }: { fc: FileChangeEntry; named: boole
            every other pill. */
         <button type="button" onClick={onClick} className="glass-surface file-chip inline-flex max-w-full min-w-0 min-h-[22px] h-auto items-center gap-1 px-2.5 py-1 whitespace-normal text-left rounded-full text-[11px] font-medium cursor-pointer" aria-label={fc.path}>
           <span data-fcc-pill-filename className="font-mono text-text">{basename(fc.path)}</span>
-          <span data-fcc-pill-marker className="shrink-0 text-[10px] leading-none text-muted">{i18nT('components.fileChangeChips.file_only')}</span>
+          {fc.omitted_reason === UNVERIFIED_WRITE ? (
+            // The failed write's pill takes the failure's colour and icon, so
+            // the red line under the pills points at it.
+            <span data-fcc-pill-marker data-fcc-unverified-write title={omittedContentSentence(fc)} className="shrink-0 inline-flex items-center gap-0.5 text-[10px] leading-none text-danger"><AlertTriangle size={10} aria-hidden="true" />{i18nT('components.fileChangeChips.file_only')}</span>
+          ) : (
+            <span data-fcc-pill-marker className="shrink-0 text-[10px] leading-none text-muted">{i18nT('components.fileChangeChips.file_only')}</span>
+          )}
         </button>
       ) : fc.truncated ? (
         <button type="button" onClick={onClick} className="glass-surface file-chip inline-flex max-w-full min-w-0 min-h-[22px] h-auto items-center gap-1 px-2.5 py-1 whitespace-normal rounded-full text-[11px] font-medium cursor-pointer" aria-label={fc.path}>
@@ -703,22 +758,23 @@ const FileChangeChips = memo(function FileChangeChips({ fileChanges, omittedFile
   const omitted = omittedFilesOf(omittedFiles)
   // Minimal keeps the wrapping pill row; anything else uses the grouped card.
   if (style === 'minimal') {
-    // Every demoted entry in one turn carries the same budget, so the first
-    // one speaks for the row.
-    const demoted = fileChanges.find(fc => fc.content_omitted)
+    // The pill row says each reason once, for every pill without content.
+    const demoted = noticeEntries(fileChanges)
     return (
       <div className="ft-block-reveal flex flex-wrap items-center gap-1.5 mt-2 mb-1.5">
         {fileChanges.map(fc => (
           <MinimalChip
             key={fc.path}
             fc={fc}
-            named={!!demoted}
+            named={demoted.length > 0}
             onClick={fc.truncated
               ? () => onFileOpen?.(fc.path)
               : () => onOpenDiff?.(fc.path, fc.after, fc.before)}
           />
         ))}
-        {demoted && <TurnBudgetNotice fc={demoted} canOpen={!!onFileOpen} className={PILL_ROW_NOTICE_CLASS} />}
+        {demoted.map((fc, i) => (
+          <TurnBudgetNotice key={fc.omitted_reason ?? 'budget'} fc={fc} canOpen={!!onFileOpen && i === demoted.length - 1} className={PILL_ROW_NOTICE_CLASS} />
+        ))}
         {omitted > 0 && <OmittedFilesNotice count={omitted} className={PILL_ROW_NOTICE_CLASS} />}
       </div>
     )

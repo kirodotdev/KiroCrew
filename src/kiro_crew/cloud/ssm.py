@@ -17,12 +17,14 @@ launcher prerequisites); #1 needs only the ``aws`` CLI.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import platform
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,13 +32,26 @@ from typing import Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import aws
-from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin, resolve_aws_tool_bin
+from kiro_crew.deploy.engine import (
+    aws_spawn_env,
+    resolve_aws_bin,
+    resolve_aws_tool_bin,
+    resolve_aws_tool_bin_with_refusals,
+)
 
 logger = logging.getLogger(__name__)
 
 # How long to wait for a send-command invocation to finish, and the poll gap.
 _CMD_TOTAL_WAIT = 180
 _CMD_POLL_INTERVAL = 3
+
+#: Bound on the captured port-forward stdout (see :func:`open_port_forward`).
+#: Only a short close notice is ever read back; the cap keeps a chatty plugin
+#: from growing the buffer without bound over a long-lived tunnel.
+_MAX_FORWARD_STDOUT = 8192
+#: Read chunk for the stdout drain — small enough that a close notice written
+#: just before exit is observed promptly.
+_FORWARD_STDOUT_READ_CHUNK = 4096
 
 # Indirection so tests can patch out the poll sleep.
 _sleep = time.sleep
@@ -226,6 +241,157 @@ def session_manager_plugin_installed() -> bool:
     return shutil.which(resolve_aws_tool_bin(_SESSION_MANAGER_PLUGIN)) is not None
 
 
+@dataclass(frozen=True)
+class PluginRefusal:
+    """A Session Manager plugin that is installed but failed the provenance check.
+
+    ``path`` is the candidate the resolver found and ``reason`` the check's own
+    words. ``remedy_command`` is a copy-pasteable fix when one is known for this
+    install, else "".
+
+    ``code`` names the kind of refusal so a caller can say it in its own words
+    (see :data:`_REFUSAL_CODES`), "" for a reason no code covers. For an
+    ``other_owner`` refusal, ``owner_uid`` is the owning account's uid and
+    ``owner`` its login name on this host, "" when it has none.
+    """
+
+    path: str
+    reason: str
+    remedy_command: str
+    code: str = ""
+    owner: str = ""
+    owner_uid: Optional[int] = None
+
+
+def session_manager_plugin_refusal() -> Optional[PluginRefusal]:
+    """Why an installed plugin is not used, or None when there is nothing to explain.
+
+    None when the resolver accepted a plugin, and None when it found none at all
+    (the "not installed" case, whose remedy is the install command). Otherwise the
+    first refused candidate: reporting that as "not installed" would send the user
+    to an install command that reinstalls the same refused file.
+
+    Reads the same walk :func:`session_manager_plugin_installed` performs and
+    changes nothing about what is accepted.
+    """
+    resolved, refusals = resolve_aws_tool_bin_with_refusals(_SESSION_MANAGER_PLUGIN)
+    if os.path.isabs(resolved) or not refusals:
+        return None
+    first = refusals[0]
+    remedy = _plugin_ownership_remedy(first.path, first.reason)
+    code, owner_uid = _classify_refusal(first.reason)
+    # With a remedy, name the resolved file: the candidate is often a link from a
+    # bin directory, and the command targets the folder the real file sits in.
+    return PluginRefusal(
+        path=os.path.realpath(first.path) if remedy else first.path,
+        reason=first.reason,
+        remedy_command=remedy,
+        code=code,
+        owner=_account_name(owner_uid) if owner_uid is not None else "",
+        owner_uid=owner_uid,
+    )
+
+
+#: The provenance check's POSIX refusals, each matched against its whole wording
+#: and named by a stable code the dashboard renders in the reader's language.
+#: ``other_owner``: a component belongs to an account that is neither root nor
+#: the gateway user. ``world_writable``: any account can change a component.
+#: ``root_gateway``: the gateway runs as root, which runs no provider program.
+#: ``strict_policy``: the strict policy's own refusals (not root-owned, writable
+#: by the gateway user, reached through a link). Any other reason, Windows ACL
+#: refusals included, has no code and is shown as written.
+_REFUSAL_CODES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "other_owner",
+        re.compile(
+            r"\A(?:executable|executable parent) is owned by another user \(uid (?P<uid>\d+)\)\Z"
+        ),
+    ),
+    ("world_writable", re.compile(r"\A(?:executable|executable parent) is world-writable\Z")),
+    ("root_gateway", re.compile(r"\Aprovider execution is disabled for a root gateway\Z")),
+    (
+        "strict_policy",
+        re.compile(
+            r"\A(?:(?:executable|executable parent) is (?:not root-owned|writable by the gateway user)"
+            r"|path must be canonical and contain no symlinks)\Z"
+        ),
+    ),
+)
+
+
+def _classify_refusal(reason: str) -> tuple[str, Optional[int]]:
+    """``(code, owner uid)`` for a provenance-check *reason*; ``("", None)`` when no
+    code covers it. The uid is set only for ``other_owner``."""
+    for code, pattern in _REFUSAL_CODES:
+        match = pattern.match(reason)
+        if match is not None:
+            uid = match.groupdict().get("uid")
+            return code, int(uid) if uid is not None else None
+    return "", None
+
+
+def _account_name(uid: int) -> str:
+    """The login name of *uid* on this host, or "" when it has none.
+
+    AWS's macOS package stamps its tree with the packager's uid, which usually
+    names no account here; the caller then shows the uid instead.
+    """
+    try:
+        import pwd
+    except ImportError:
+        return ""
+    try:
+        return pwd.getpwuid(uid).pw_name
+    except (KeyError, OverflowError):
+        return ""
+
+
+#: Where AWS's own macOS and Linux packages install the plugin. The macOS ``.pkg``
+#: stamps this tree with the packager's uid rather than root, which the
+#: provenance check refuses as "owned by another user". Only meaningful on POSIX:
+#: :func:`_plugin_ownership_remedy` returns "" where there is no ``geteuid``.
+_AWS_PKG_PLUGIN_PREFIX = os.path.join(os.sep, "usr", "local", "sessionmanagerplugin")
+
+
+def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
+    """``sudo chown -R root:<group> <prefix>`` when a third account owns AWS's install tree.
+
+    Offered only when *reason* is the provenance check's third-account ownership
+    refusal (code ``other_owner`` in :data:`_REFUSAL_CODES`, the only refusal a
+    root-owned tree clears: a root gateway, the strict policy and a world-writable
+    component are refused for reasons ``chown`` does not touch), the candidate
+    resolves inside :data:`_AWS_PKG_PLUGIN_PREFIX`, and some
+    directory or file on the way from that prefix to the binary is owned by an
+    account that is neither root nor the gateway user: exactly the state a stock
+    AWS ``.pkg`` install leaves, and one that making the tree root-owned clears.
+    Anything else returns "" and the caller shows only the reason, rather than a
+    command that would not fix it.
+    """
+    if _classify_refusal(reason)[0] != "other_owner":
+        return ""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return ""
+    try:
+        prefix = Path(os.path.realpath(_AWS_PKG_PLUGIN_PREFIX))
+        real = Path(os.path.realpath(candidate))
+    except OSError:
+        return ""
+    if prefix not in real.parents:
+        return ""
+    allowed = {0, geteuid()}
+    chain = [prefix, *[p for p in reversed(real.parents) if prefix in p.parents], real]
+    for component in chain:
+        try:
+            owner = component.stat().st_uid
+        except OSError:
+            return ""
+        if owner not in allowed:
+            group = "wheel" if platform.system() == "Darwin" else "root"
+            return f"sudo chown -R root:{group} {_AWS_PKG_PLUGIN_PREFIX}"
+    return ""
+
+
 def session_manager_plugin_install_hint() -> str:
     """Human-readable install hint for the local SSM plugin prerequisite."""
     return (
@@ -342,6 +508,8 @@ def open_port_forward(
     local_port: int,
     profile: str = "",
     region: str = "",
+    *,
+    capture_stdout: bool = False,
 ) -> subprocess.Popen:
     """Spawn a background SSM port-forward. Returns the live child process.
 
@@ -358,10 +526,16 @@ def open_port_forward(
     through :func:`cloud.aws.run_aws` because the session streams for its whole
     lifetime rather than returning captured output.
 
-    Output goes to DEVNULL: the plugin logs a line per connection, and no
-    caller drains the pipes (they block on ``wait()``), so PIPE would deadlock
-    the tunnel once the OS pipe buffer fills. Tunnel liveness is verified via
-    :func:`wait_for_local_port`, not by parsing plugin output.
+    stderr goes to DEVNULL. stdout goes to DEVNULL too UNLESS *capture_stdout*,
+    in which case it is piped AND drained concurrently from spawn by a daemon
+    thread into a bounded buffer on the returned process (``stdout_buf``). The
+    bare PIPE alone would deadlock the tunnel — the plugin logs a line per
+    connection and a pipe nobody reads blocks the writer once the OS buffer fills
+    — so the capture is only safe BECAUSE the drain runs for the child's whole
+    life, exactly as the instances-layer forward does. The notice the plugin
+    prints when a forward is closed goes to stdout, so capturing it lets a caller
+    name the cause instead of reporting a bare exit code. Tunnel liveness is
+    still verified via :func:`wait_for_local_port`, never by parsing output.
 
     The child gets :func:`~kiro_crew.deploy.engine.aws_spawn_env` rather than a
     bare inherited env: the ``aws`` head is resolved absolutely, but the CLI then
@@ -380,13 +554,57 @@ def open_port_forward(
     logger.info(
         "opening SSM port-forward %s: local %d -> remote %d", target, local_port, remote_port
     )
-    return subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+    proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
         argv,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
         env=aws_spawn_env(argv[0]),
     )
+    if capture_stdout:
+        _start_stdout_drain(proc)
+    return proc
+
+
+def _start_stdout_drain(proc: subprocess.Popen) -> None:
+    """Drain *proc*'s piped stdout for its whole life into a bounded buffer.
+
+    Attaches a ``stdout_buf`` attribute (``list[str]`` holding at most one entry,
+    the most recent ``_MAX_FORWARD_STDOUT`` characters) that a close-reason reader
+    can inspect after the child exits, and a ``stdout_drain`` attribute holding
+    the daemon thread so a reader can join it once the child has exited (the pipe
+    reaches EOF and the drain returns) rather than guess at a wait. A daemon
+    thread reads so the OS pipe buffer never fills — the deadlock the DEVNULL
+    default avoids — and because it is a daemon it never keeps the interpreter
+    alive. Decoding is lossy-by-design (``"replace"``): a split multi-byte
+    sequence must not raise in a thread whose failure nobody observes.
+    """
+    stdout = proc.stdout
+    if stdout is None:  # pragma: no cover - PIPE was requested
+        return
+    buf: list[str] = [""]
+    # Expose the shared buffer on the process so a later reader (see
+    # cloud.connect._port_forward_error) can pull the captured notice out.
+    proc.stdout_buf = buf  # type: ignore[attr-defined]
+
+    def _drain() -> None:
+        try:
+            while True:
+                chunk = stdout.read(_FORWARD_STDOUT_READ_CHUNK)
+                if not chunk:
+                    return
+                buf[0] = (buf[0] + chunk.decode("utf-8", "replace"))[-_MAX_FORWARD_STDOUT:]
+        except Exception:  # noqa: BLE001 - a background drain must never raise
+            return
+        finally:
+            with contextlib.suppress(Exception):
+                stdout.close()
+
+    thread = threading.Thread(target=_drain, name="ssm-forward-stdout-drain", daemon=True)
+    # Expose the thread so a reader can join it once the child has exited (EOF on
+    # the pipe ends the drain), rather than guessing at how long it needs.
+    proc.stdout_drain = thread  # type: ignore[attr-defined]
+    thread.start()
 
 
 def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:

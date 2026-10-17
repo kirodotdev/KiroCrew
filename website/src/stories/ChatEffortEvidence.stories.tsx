@@ -36,9 +36,9 @@ function ChatEffortEvidence({ state }: { state: State }) {
   }))
   const compact = state === 'compact'
   // 'inherited-default': the slot pinned no model (it runs the agent's
-  // default) AND runs at the configured default effort. The chip already says
-  // "default" for the model, so the effort keeps its bare level ("High"), not
-  // "Default · High" -- the accessible name still carries the full form.
+  // default) AND runs at the configured default effort. The chip shows the
+  // bare model id and the bare level ("High") -- the accessible name says
+  // both are defaults.
   const inheritedDefault = state === 'inherited-default'
   // 'tiny-split-pane-models' is the short pane with its picker OPEN: the pane
   // hangs from the viewport top so its chip sits ~300px down, and the picker
@@ -49,7 +49,7 @@ function ChatEffortEvidence({ state }: { state: State }) {
   // The open picker over the composer. 'models' carries a per-slot override
   // with NO configured default (toggle reads "Use default effort");
   // 'models-configured-default' runs AT the configured default, so the toggle
-  // names its level and the chip says "Default · High";
+  // names its level and the chip says "High";
   // 'models-configured-default-override' has a configured default but the
   // slot pinned elsewhere (switch off), which is the one state where the
   // "Default effort" marker sits on the track beside the switch.
@@ -67,9 +67,9 @@ function ChatEffortEvidence({ state }: { state: State }) {
   }, [tinySplitPaneModels])
   // What the chip is handed: ChatPage/ChatPane pass the effort IN FORCE
   // (per-slot override, else the configured default) plus whether that value
-  // IS the configured default, so a slot running at a configured "high" shows
-  // "Default · High" on the chip and a pinned "high" shows "High" -- never a
-  // bare "· Default". The fixture must hand the chip the same resolved pair or
+  // IS the configured default; the chip shows the bare level ("High") either
+  // way and leaves the word "default" to its accessible name. The fixture must
+  // hand the chip the same resolved pair or
   // the screenshot shows a state the product never renders.
   const chipEffort = overridesDefault ? 'medium' : selected || configuredDefault ? 'high' : ''
   const chipEffortIsDefault = configuredDefault && !overridesDefault

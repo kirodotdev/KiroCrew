@@ -32,7 +32,7 @@ The file lives in its own data-home directory, ``crew-teams/``, and NOT under
 ``trust/``: ``trust`` is a declared sandbox READ-WRITE exception (in-sandbox code
 appends to the audit log there), so a record under it stays writable by a
 sandboxed command that builds the path at runtime -- the ``crew-panels`` lesson
-in ``sandbox.py``. ``crew-teams`` is instead masked from every sandboxed process
+in ``sandbox_leaves.py``. ``crew-teams`` is instead masked from every sandboxed process
 (``sandbox._CREW_HIDDEN_LEAVES``, pre-created before each spawn so the mask is
 never vacuous) and fenced from agent file tools (``security._CREW_SECRET_LEAVES``).
 Two trusted writers open it, both owner-invoked: the gateway on a dashboard

@@ -629,3 +629,73 @@ class TestRedactionNotice:
         await r.on_done()  # must not raise
         delivered = [m for _room, m in client.sent] + [m for _mid, _room, m in client.edits]
         assert any("[REDACTED: credential]" in m for m in delivered)
+
+
+class TestApprovalCardToolLabel:
+    """A tool title, however crafted, cannot put a link in the approval card.
+
+    The card TextBlock renders a markdown subset AND the client autolinks bare
+    URLs, and a tool title is model-influenced text. The text prompt is a code
+    span, which no client links, so it keeps the readable label.
+    """
+
+    @staticmethod
+    async def _card_and_prompt(title: str) -> tuple[str, str]:
+        import json
+
+        c = FakeClient()
+        r = WebexRenderer(c, "ROOM", WEBEX_CAPABILITIES, mint_approval_nonce=lambda rid: "N")
+        await r.on_prompt_choice([{"label": "yes"}], "rq", tool_title=title)
+        _room, prompt, kw = c.sent_full[-1]
+        body = kw["attachments"][0]["content"]["body"]
+        return json.dumps(body[1]["text"], ensure_ascii=False), prompt
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "approve https://evil.example/phish",
+            "［x］（https://e.x）",
+            "ｈｔｔｐｓ：／／evil.example",
+            "https:\u200b//evil.example",
+            "approve [x](https://e.x)",
+            "see www.evil.example now",
+            "mailto:a@evil.example",
+            "javascript:alert(1)",
+            "visit xn--80ak6aa92e.com",
+            "visit пример。рф",
+            "visit evil｡example",
+            "visit evil．example",
+            "<https://evil.example>",
+            "https&#58;//evil&#46;example",
+            "x " * 200 + "https://evil.example",
+        ],
+    )
+    async def test_no_link_shape_survives_into_the_card(self, title: str) -> None:
+        text, _prompt = await self._card_and_prompt(title)
+        assert "://" not in text
+        assert "](" not in text
+        assert "www." not in text
+        for sep in (":", "&", ".", "\u3002"):
+            for i, ch in enumerate(text):
+                if ch != sep:
+                    continue
+                # Every colon and ``&`` is followed, and every dot preceded, by a
+                # word joiner, so no token the client scans is a link or entity.
+                if sep in ":&":
+                    assert text[i + 1] == "\u2060", text
+                else:
+                    assert text[i - 1] == "\u2060", text
+
+    @pytest.mark.asyncio
+    async def test_card_label_reads_the_same(self) -> None:
+        text, prompt = await self._card_and_prompt("approve https://evil.example/phish")
+        assert text.strip('"').replace("\u2060", "") == "approve https://evil.example/phish"
+        # The code-span prompt is unchanged: no word joiners there.
+        assert "`approve https://evil.example/phish`" in prompt
+
+    @pytest.mark.asyncio
+    async def test_plain_tool_name_is_untouched(self) -> None:
+        text, prompt = await self._card_and_prompt("mcp__server__fs_write")
+        assert text == '"mcp__server__fs_write"'
+        assert "`mcp__server__fs_write`" in prompt

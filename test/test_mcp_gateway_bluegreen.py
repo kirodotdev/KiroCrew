@@ -33,16 +33,14 @@ from kiro_crew.mcp_gateway.pool import (
 logger = logging.getLogger(__name__)
 
 
-def _make_pool_key(server: str = "test-server", agent: str = "test-agent") -> PoolKey:
+def _make_pool_key(server: str = "test-server") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name=agent,
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
         binary_version="1.0",
         os_uid=1000,
-        config_snapshot_hash="jkl012",
     )
 
 
@@ -315,9 +313,9 @@ async def test_drain_and_rewarm_skips_prewarm_on_drain_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_backend_pids_includes_draining() -> None:
+async def test_live_backend_identities_include_draining() -> None:
     """Draining backends keep running as live session leaders for up to the
-    deadline, so their PIDs MUST appear in live_backend_pids() — otherwise a
+    deadline, so their PIDs MUST appear in live_backend_identities() — otherwise a
     gatewayd SIGKILLed during the drain window orphans them."""
     pool = BackendPool(max_backends=10)
     drain_key = _make_pool_key(server="draining-server")
@@ -336,7 +334,7 @@ async def test_live_backend_pids_includes_draining() -> None:
     active.process.pid = 111
     await pool.add(active_key, active)
 
-    pids = pool.live_backend_pids()
+    pids = [pid for pid, _ in pool.live_backend_identities()]
     assert 111 in pids  # active
     assert 222 in pids  # draining — must not be dropped
 

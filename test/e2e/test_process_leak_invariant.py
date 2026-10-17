@@ -6,9 +6,9 @@ closes every one of them, and then asks the kernel and the product's own
 registry what survived. Four populations must be empty:
 
 * live pids inside the instance's own agent slice that any SESSION created --
-  the gateway's own background runtimes (``EXPECTED_BACKGROUND_RUNTIMES``) are
-  the one documented residue, bounded by count and identified by the agent they
-  run, never by argv shape or age,
+  the gateway's own background runtime (``EXPECTED_BACKGROUND_RUNTIMES``) is
+  the one documented residue, bounded by count and identified by the agent it
+  runs, never by argv shape or age,
 * managed MCP stub processes,
 * registry entries naming a process that is gone,
 * crew-log write handles held by the gateway process.
@@ -63,7 +63,9 @@ from typing import Any, Iterator
 
 import pytest
 from e2e.process_inventory import (
+    RUNTIME_AGENT_ENV,
     Inventory,
+    ProcessFact,
     SliceCleanupError,
     assert_slice_contract,
     crew_log_write_handles,
@@ -112,53 +114,99 @@ QUIET_POLL_SECS = 1.0
 EXPECTED_POOL_SIZE = 0
 
 #: How many runtimes the GATEWAY itself may still hold after every slot is
-#: closed. These are not session residue: the persistent ``_bg`` background
-#: session is created at boot by ``start_pool()`` and is never idle-expired, and
-#: the multiplexed ``_bg_runtime`` behind ``get_bg_session()`` (auto-titles,
-#: suggestions) is spawned lazily and retired only by staleness, a backend
-#: switch, or ``close_all()`` -- see ``docs/system-specs/modules/session.md``,
-#: "Background Session" and "Multiplexed _bg runtime". Both run the background
-#: agent (``session.BACKGROUND_AGENT``) and neither belongs to a slot, so a slot
-#: close is not supposed to end them. EXACTLY one of each, pinned as an equality
-#: so the ratchet cannot loosen in either direction: a third background-agent
-#: runtime is a parked drain that never drained, or a leak, and one missing means
-#: the gateway lost a holder it depends on (every slot's first turn generates a
-#: title, so the lazy one is always spawned by the time the slots close).
-#: Anything running another agent is session residue and fails regardless of
-#: count.
-EXPECTED_BACKGROUND_RUNTIMES = 2
+#: closed. This is not session residue: the multiplexed ``_bg_runtime`` behind
+#: ``get_bg_session()`` (auto-titles, tags, folders, suggestions) is spawned on
+#: its first one-liner and retired only by staleness, a backend switch, or
+#: ``close_all()`` -- see ``docs/system-specs/modules/session.md``, "Multiplexed
+#: _bg runtime". It runs the background agent (``session.BACKGROUND_AGENT``) and
+#: belongs to no slot, so a slot close is not supposed to end it. EXACTLY one,
+#: pinned as an equality so the ratchet cannot loosen in either direction: a
+#: second background-agent runtime is a parked drain that never drained, a leak,
+#: or the persistent ``_bg`` session spawned by a path this test does not drive
+#: (on the shared-runtime backend the gateway boots here, ``start_pool()`` leaves
+#: that session to ``get_or_create`` on its first background turn -- messaging
+#: auto-titles, consolidation, lesson extraction -- and a dashboard chat turn
+#: plus its one-liners never take one, see "Background Session"); zero means the
+#: gateway lost the one holder it depends on (every slot's first turn generates
+#: a title, so the multiplexed runtime is always spawned by the time the slots
+#: close). Anything running another agent is session residue and fails
+#: regardless of count.
+EXPECTED_BACKGROUND_RUNTIMES = 1
 
 
-def _authored_agent(home: Path, argv: str) -> str:
-    """The agent a runtime was spawned FOR, from the ``--agent`` it was spawned with.
+@contextlib.contextmanager
+def _pinned_homes(home: Path) -> Iterator[None]:
+    """Point the product's path resolvers at the homes the gateway under test runs on.
 
-    The product hands the backend a projected skill-view alias
-    (``kirocrew-skill-view-<hash>``), not the authored name, and the same
-    authored agent yields the same alias, so the alias alone cannot say whether
-    a process is the background agent. The projection writes a sidecar per
-    alias into the agents directory the harness pins (``KIRO_HOME`` is
-    ``<home>/kiro`` -- ``harness_environment``), and that sidecar names the
-    authored agent. An un-aliased ``--agent`` is returned as written; a runtime
-    with no ``--agent`` at all, or an alias with no sidecar, answers ``""`` so
-    the caller classifies it as foreign rather than guessing.
+    The projection lookup reads this home's side files through ``data_home()``
+    (``KIROCREW_HOME``) and the legacy agents directory through
+    ``kiro_agents_dir()`` (``KIRO_HOME``), both resolved from the process
+    environment on every call. The harness pins the gateway's copies in
+    ``harness_environment``; this pins the same two for the test process while
+    one lookup runs, then restores whatever was there.
     """
-    from kiro_crew.acp.skill_projection import _MANAGED_AGENT, _PROJECTION_METADATA_DIR_NAME
-    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+    pinned = {"KIROCREW_HOME": str(home), "KIRO_HOME": str(home / "kiro")}
+    previous = {key: os.environ.get(key) for key in pinned}
+    os.environ.update(pinned)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
-    words = argv.split()
+
+def _authored_agent(home: Path, fact: ProcessFact) -> str:
+    """The agent a runtime was spawned FOR, from the product's own record of it.
+
+    The product names the authored agent in every runtime child's environment
+    (``KIROCREW_RUNTIME_AGENT``, read back as ``ProcessFact.runtime_agent``), and
+    that is the answer whenever it is present: it is the one record a host that
+    binds its agent over the wire (the KAS relay, whose argv carries no
+    ``--agent``) leaves on the process at all.
+
+    A runtime spawned with ``--agent`` in argv is read through that word when
+    the environment says nothing. The product hands such a backend a projected
+    skill-view alias (``kirocrew-skill-view-<hash>``), not the authored name,
+    and the same authored agent yields the same alias, so the alias alone cannot
+    say whether a process is the background agent. The product records which
+    authored agent each alias projects (a sidecar and a view ledger under the
+    data home's ``skill-projection`` side directory, with a legacy copy in the
+    agents directory), and ``source_agent_name`` is its own answer for that
+    question, so this reads through it rather than naming a file layout of its
+    own. An un-aliased ``--agent`` is returned as written.
+
+    A runtime with neither record, or an alias nothing on this home records,
+    answers ``""`` so the caller classifies it as foreign rather than guessing.
+    """
+    from kiro_crew.acp.skill_projection import RetiredSkillView, source_agent_name
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+    from kiro_crew.constants import KIROCREW_RUNTIME_AGENT_ENV
+
+    # The inventory restates the variable's name so it stays product-free; a
+    # rename on either side must fail here by name, not read every runtime as
+    # foreign.
+    assert RUNTIME_AGENT_ENV == KIROCREW_RUNTIME_AGENT_ENV, (
+        f"process_inventory reads {RUNTIME_AGENT_ENV!r} but the product sets "
+        f"{KIROCREW_RUNTIME_AGENT_ENV!r}; update RUNTIME_AGENT_ENV to match"
+    )
+    if fact.runtime_agent:
+        return fact.runtime_agent
+
+    words = fact.argv.split()
     try:
         agent = words[words.index("--agent") + 1]
     except (ValueError, IndexError):
         return ""
     if not agent.startswith(NATIVE_SKILL_ALIAS_PREFIX):
         return agent
-    sidecar = home / "kiro" / "agents" / _PROJECTION_METADATA_DIR_NAME / f"{agent}.json"
-    try:
-        record = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    authored = record.get(_MANAGED_AGENT) if isinstance(record, dict) else None
-    return authored if isinstance(authored, str) else ""
+    with _pinned_homes(home):
+        try:
+            return source_agent_name(agent)
+        except RetiredSkillView:
+            return ""
 
 
 def _split_background_runtimes(home: Path, alive: tuple) -> tuple[list, list]:
@@ -170,7 +218,7 @@ def _split_background_runtimes(home: Path, alive: tuple) -> tuple[list, list]:
     """
     from kiro_crew.session import BACKGROUND_AGENT
 
-    background = [f for f in alive if _authored_agent(home, f.argv) == BACKGROUND_AGENT]
+    background = [f for f in alive if _authored_agent(home, f) == BACKGROUND_AGENT]
     foreign = [f for f in alive if f not in background]
     return background, foreign
 
@@ -370,16 +418,16 @@ def test_closing_every_session_leaves_nothing(real_user_session: Any) -> None:
         assert not foreign, (
             f"{len(foreign)} tracked process(es) that are not the gateway's own "
             "background runtimes survived closing every session: "
-            + ", ".join(
-                f"pid={f.pid} agent={_authored_agent(home, f.argv) or '?'}" for f in foreign
-            )
+            + ", ".join(f"pid={f.pid} agent={_authored_agent(home, f) or '?'}" for f in foreign)
             + f"\n{final.render()}"
         )
         assert len(background) == EXPECTED_BACKGROUND_RUNTIMES, (
             f"{len(background)} background-agent runtime(s) alive after every session "
-            f"closed, expected exactly {EXPECTED_BACKGROUND_RUNTIMES}: the persistent _bg "
-            "session and one multiplexed _bg runtime. More means displaced runtimes "
-            "nothing reaped; fewer means the gateway lost a holder it still depends on."
+            f"closed, expected exactly {EXPECTED_BACKGROUND_RUNTIMES}: the multiplexed "
+            "_bg runtime that served the slots' auto-titles. More means displaced "
+            "runtimes nothing reaped, or the persistent _bg session was spawned by a "
+            "background turn this test does not drive; fewer means the gateway lost "
+            "the holder it still depends on."
             f"\n{final.render()}"
         )
         assert not final.owned_dead, (

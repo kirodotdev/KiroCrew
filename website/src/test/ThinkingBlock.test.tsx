@@ -22,14 +22,36 @@ describe('ThinkingBlock live preview', () => {
   })
 
   it('shows the tail of the trace as one line while chunks arrive', () => {
+    vi.useFakeTimers()
     const { rerender } = render(<ThinkingBlock content="checking the config" />)
     rerender(<ThinkingBlock content={'checking the config\nnow the handler'} />)
+    // The smoothing buffer reveals the burst over a few frames; well inside the
+    // 1.2s idle window it has caught up.
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(liveLine()?.textContent).toBe('checking the config now the handler')
   })
 
+  it('reveals a burst over several frames instead of all at once', () => {
+    // The defect this pins: reasoning chunks land a word or more at a time, and
+    // rendering them raw makes the trace jump per chunk while the answer below
+    // flows per character.
+    vi.useFakeTimers()
+    const { rerender } = render(<ThinkingBlock content="start" />)
+    const burst = 'start of a fairly long reasoning chunk that lands in one go'
+    rerender(<ThinkingBlock content={burst} />)
+    expect(liveLine()?.textContent).toBe('start')
+
+    act(() => { vi.advanceTimersByTime(200) })
+    const mid = liveLine()?.textContent ?? ''
+    expect(mid.length).toBeGreaterThan('start'.length)
+    expect(mid.length).toBeLessThan(burst.length)
+  })
+
   it('bounds the preview to the newest slice of a long trace', () => {
+    vi.useFakeTimers()
     const { rerender } = render(<ThinkingBlock content="x" />)
     rerender(<ThinkingBlock content={'ab'.repeat(400)} />)
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(liveLine()?.textContent).toHaveLength(240)
   })
 

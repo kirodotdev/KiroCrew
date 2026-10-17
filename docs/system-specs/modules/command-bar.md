@@ -45,7 +45,9 @@ request.
 
 The folders view is the cheapest of the four, and its shape follows from that. Its corpus is
 the folder tree the sidebar already holds under `['chat-folders']`, so a keystroke costs a local
-filter rather than a request: it has no minimum query length, where the two views above each
+filter rather than a request. The view's own query key nests under that prefix
+(`['chat-folders', 'command-bar', 'view', sort, q]`), so every sidebar folder write that
+invalidates `['chat-folders']` invalidates the view too: it has no minimum query length, where the two views above each
 hold their first characters back, and no row cap, because the count is the reader's own filing
 rather than a corpus that grows on its own. Entering the view pays for at most one folder read,
 on a cold cache. The folder list used to be spread through the root as its own group instead —
@@ -221,12 +223,15 @@ that.
   label, and the group header above the row already names it. Under a query there is no header
   (see the group bullet above), so a `recent` row whose session is idle — no pill, no dot, no
   kind word — would carry no naming at all; it renders its group's own name,
-  `group_recent_sessions`, in that otherwise empty column. An `attention` row needs no such
-  substitution: it reaches that group only because its status is a pill, so the column is never
-  empty. `view` is named separately from its group because it opens a surface instead of acting
+  `group_recent_sessions`, in that otherwise empty column. An `attention` row gets no such
+  substitution: a session row reaches that group only because its status is a pill, so its
+  column always shows one. The group's `+N more blocked` overflow row (below) is not a session
+  and carries no status, so its column renders empty; its title already names what it is.
+  `view` is named separately from its group because it opens a surface instead of acting
   and closing.
-- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page;
-  settings carry a second, tighter `SETTINGS_WEAK_LIMIT = 2` on WEAK matches whether or not a
+- `PER_GROUP_LIMIT = 6` caps each group so one group cannot push the others off the page
+  (`attention` keeps the cap but ends on an overflow row that can lift it -- see the known gap
+  below); settings carry a second, tighter `SETTINGS_WEAK_LIMIT = 2` on WEAK matches whether or not a
   query is present, and `recent` is capped ahead of ranking by the overlay at
   `RECENT_SESSION_ROWS = 3` rather than by this limit. A weak settings match is one that does not
   name the setting — an empty query (every row is weak), or a typed query that is not a substring
@@ -238,10 +243,18 @@ that.
   DIRECT settings hit (the query is a substring of the title) is the user naming the setting, so
   it ranks up to `PER_GROUP_LIMIT` like any row and searching settings on their own name surfaces
   every one of them. The full settings corpus stays one `view` row away regardless.
-  **Known gap:** rows past a root cap are dropped silently. The artifacts view does not share
-  that gap — it renders a `+N more` line under its list, outside the listbox so it cannot become
-  an option that Enter does nothing with — and that line is the shape to copy when this one is
-  closed.
+  **Known gap:** rows past a root cap are dropped silently for the `commands`, `apps` and
+  `settings` groups. The `attention` group no longer shares it (#12622): a session waiting on
+  the reader has no `view` to recover it from, so past `PER_GROUP_LIMIT` `rankRootRows` counts
+  the held-back rows and ends the group on a `+N more blocked` overflow row
+  (`attentionOverflowRow`, id `attention:more`). That row is a selectable option, not a
+  passive line: pressing it, or Enter while it is selected, sets `attentionExpanded`, which
+  lifts the cap for that group in place without recording frecency or closing the bar.
+  Expansion is opt-in per opening: the overlay resets `attentionExpanded` to false every time
+  the bar opens, so each opening starts capped again. The
+  artifacts view does not share the remaining gap either — it renders a `+N more` line under its
+  list, outside the listbox so it cannot become an option that Enter does nothing with — and that
+  line is the shape to copy when the other root caps are closed.
 - `idleDemote` sorts a row to the end of its group while the query is EMPTY, at a cost sized
   to lose to a single real use. The empty-query order is frecency, so on a cold install every
   score is zero and the alphabet alone decides what the launcher opens on. It is DERIVED, not
@@ -321,6 +334,13 @@ debounced query already matches the new ones.
 - The gesture is the host's quick-search chord; the topbar trigger's label, `aria-label` and
   `title` all follow slot ownership, so it never promises a corpus search the launcher does not
   do.
+- The bar closes when the visible pane changes (`hooks/useCommandPalette.ts`,
+  keyed on `host.activeId` in an embedded pane, else `activeId`); a host model
+  arriving or disappearing only sets a new baseline, so relay initialization never
+  dismisses it. The current-session rows the bar takes from `useRecentsProvider` are ordered
+  by `recentsProvider.prepareCurrentSlots`: the empty new session first (one at
+  most), then by recency, with no pinned-first ordering — a pin still renders on
+  its row.
 - Escape is owned by the dialog, not the input, so it works from any focusable child. In a
   scope the first Escape pops back to the root and only the second closes.
 - The input is `role="combobox"` with `aria-activedescendant`; rows are `role="option"` with
@@ -348,12 +368,20 @@ debounced query already matches the new ones.
   page's mount-time `switchSlot(activeSlot)` when the bar was used from another page); when the
   older read lands first, the caret waits for the newer claim to settle — placed once it clears
   with the slot still active, dropped when its 404 unwinds the selection. In split view (a
-  session-grid pane is mounted) the bar places no caret at all: every pane's composer is bound to
-  that pane's own slot and the grid's focus model never follows the active slot, so the only
-  composer on offer belongs to a session the gesture did not open — the pre-existing behaviour,
-  until a lookup can resolve the pane bound to the opened key.
+  session-grid pane is mounted) the caret goes to the composer of the pane whose
+  `data-pane-slot` equals the opened or resumed key (`queryComposerForSlot`); when no pane
+  renders that key, or the gesture named no key, no caret is placed, because every other
+  pane's composer belongs to a session the gesture did not open.
   Touch devices are skipped and a collapsed composer stays collapsed, exactly as the sidebar's
   autofocus leaves them; a resume the chat page cannot display focuses nothing.
+
+- ⌘C / Ctrl+C copies the selected row's address (`components/commandPalette/copyTarget.ts`
+  `resolveCopyTarget`): a row's address is derived from what it opens, or from an explicit
+  `copyUrl` validated as an http(s) URL; a dashboard route that starts with `//` yields no
+  address. The bar declines the chord, leaving the browser's own copy, while the input holds a
+  text selection or a command argument is being typed. A row with no address answers with a
+  notice instead of copying. The footer names the chord only while the selected row has an
+  address, and a failed clipboard write shows an error notice naming the address.
 
 ## Invariants pinned by tests
 
@@ -394,6 +422,8 @@ debounced query already matches the new ones.
 | the caret moves only once the opened session's `switchSlot` has fulfilled; a refused switch gets none from the bar | keystrokes typed during the gateway round trip filed under a slot the 404 unwind then evicts |
 | an older same-key read landing first defers the caret to the newer claim | a stale fulfilment focusing while the live read is still out, then its 404 stranding the typed text |
 | the `apps` query is a pure cache consumer (`enabled: false`) | a second identical fetch per open |
+| the folders view's query key nests under `['chat-folders']` (`CommandBarOverlay.folders.test.tsx`) | a sidebar folder write leaves the bar listing folders that were renamed, moved or deleted |
+| in split view the caret goes only to the pane whose `data-pane-slot` is the opened key (`paletteOpenSessionFocusesPaneComposer.test.tsx`) | keystrokes land in a pane bound to a session the gesture did not open |
 | every `['apps']` reader goes through the one api call | a divergent shape silently poisons the shared cache |
 | no builtin declares both `ui.overlays` and `ui.entry` | origin downgrade on restart refuses its own slot |
 | a rejected lazy chunk falls back to the legacy palette | the gesture dead-ends after a bad deploy |
@@ -431,6 +461,7 @@ A contribution is **data, not code**:
 | `argument` | the ONE value the command collects: `kind` (`url` / `text`), `hosts` for `url`, plus `placeholder`, `hint`, `patternError` |
 | `prompt` | the action — the text a new session is seeded with, interpolating `{argument}` |
 | `autoSend` | send that text immediately rather than leaving it in the composer |
+| `agent` | the agent the seeded session runs as (`createSlot({ agent, agent_kind: 'template', appAgentOwner })`; the backend stamps `app_agent_owner` and refuses any turn on which the bare name resolves to another spec, by declared name or filename stem, in the session's project or, with none, in every directory the provider falls back to); install refuses one the app does not itself ship, `list_apps` drops one its agent files do not register, and the launcher clamps anything outside `[A-Za-z0-9._-]{1,120}` to the default |
 
 **No app-supplied code, and no app-supplied image.** A contributed function would be
 third-party JavaScript running inside the host's own surface, on every keystroke,

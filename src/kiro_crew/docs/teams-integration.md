@@ -31,8 +31,10 @@ Framework **pushes** activities to a messaging endpoint you host. Kiro Crew:
 - A public HTTPS URL that reaches your gateway. Options:
   - A reverse proxy (nginx/Caddy) terminating TLS in front of the gateway.
   - Hosting the gateway on a VM/App Service with a public hostname. Set
-    `dashboard.host` (or `dashboard_url`) to that hostname — the gateway rejects a
-    `Host` header it does not serve, as a DNS-rebinding barrier.
+    `dashboard.url` to the public URL (for example `https://bot.example.com`).
+    Its hostname joins the `Host` allowlist, which is derived from the allowed
+    origins; the gateway rejects a `Host` header it does not serve, as a
+    DNS-rebinding barrier.
   - A dev tunnel for local testing: `devtunnel host -p 5476` (Microsoft Dev
     Tunnels) or `ngrok http 5476`.
 
@@ -162,12 +164,13 @@ Transport capabilities: streaming and reactions are disabled; editing, inbound a
 
 ## Commands
 
-Send `/help` in the chat for the current list. Today:
+Send `/help` in the chat for the current list.
 
 | Command | Effect |
 |---|---|
 | `/new` (`/start`) | Start a fresh conversation, dropping anything still queued |
 | `/compact` | Compress the conversation context |
+| `/agent [name]` | Show the agent and the ones you can pick; `/agent <name>` switches, `/agent default` goes back |
 | `/stop` (`/cancel`) | Stop the reply in progress and clear the queue |
 | `/yolo on\|off\|renew` | Auto-approve tools **everywhere** until it expires — see below |
 | `/link` / `/unlink` | Resume / stop mirroring dashboard replies into this chat |
@@ -178,6 +181,13 @@ Send `/help` in the chat for the current list. Today:
 Right-click → **Reply** works: Teams prepends the quoted message to what it sends,
 so the quoted text is stripped and only your own words reach the agent — which is
 also why a quote-replied `/stop` still stops the reply.
+
+A message that carries a file is never a command: its text is the caption, so
+"/stop here is the log" goes to the agent with the file instead of stopping the
+reply and dropping it. For the same reason a message with a file sent mid-turn is
+queued rather than folded into the running reply. Only a real file counts — the copy
+of your message that the Teams client attaches as rich text does not, so a typed
+`/help` is always a command and a plain mid-turn message can still be folded in.
 
 While a reply is running, prefix a message to control it: `/queue <message>`
 answers it after the current reply, `/steer <message>` folds it into the reply in
@@ -195,6 +205,13 @@ message content as well as titles, so a phrase you remember from the conversatio
 it. `/unlink` comes back to your own Teams conversation. `/new` leaves the resumed
 session and durably records the fresh generation before replying; its first real turn
 adds it to `/sessions`.
+
+If you message a resumed session while the dashboard is in the middle of a turn, the
+message goes to that dashboard session rather than to this chat's own queue: it is
+folded into the running turn ("↪️ Steering that session") or queued on the session
+("⏳ Queued for that session") and runs when that turn finishes. Attachments are not
+carried into a dashboard turn, so a message with files is refused with a note to resend
+it afterwards.
 
 It is **owner-only**: a dashboard session is your whole working transcript, so the list
 is available only when `teams.allowed_emails` holds exactly one address. With more than
@@ -298,8 +315,9 @@ of auto-approval, so anything denied by policy stays denied.
   and images do not. Long replies are split without breaking code fences.
 - No emoji reaction on a steered message (a bot cannot add reactions in Teams), so
   a folded-in message is acknowledged with a short reply instead.
-- **No model picker yet.** Telegram can switch models from chat; Teams cannot. Use the
-  dashboard. (`/sessions` — continuing a dashboard chat here — IS supported; see below.)
+- **Teams has no model picker.** Telegram can switch models from chat; Teams cannot. Use
+  the dashboard. (`/sessions` — continuing a dashboard chat here — is supported; see
+  [Continuing an earlier conversation](#continuing-an-earlier-conversation) above.)
 - **The `send_message` agent tool reaches Teams two ways**: `session="teams"` DMs this
   channel's own configured owner, which needs exactly one reachable address on
   `allowed_emails` and otherwise falls back to a dashboard notification and says so;
@@ -308,6 +326,9 @@ of auto-approval, so anything denied by policy stays denied.
   binds). What is Slack-only is `channel`, `user`, `blocks`, `thread_ts`,
   `reply_broadcast`, `unfurl_links` and `unfurl_media` — Slack protocol options, so
   combining any of them with a Teams target is refused rather than ignored.
+  `unfurl_links` and `unfurl_media` are deprecated even on Slack: an explicit `true`
+  is refused (HTTP 400 `unfurl_disabled`), `false` or absent is accepted, and neither
+  is forwarded, because a bot post never makes the platform fetch a link preview.
 
 ## Related docs
 

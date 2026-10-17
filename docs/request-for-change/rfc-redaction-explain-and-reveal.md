@@ -3,10 +3,10 @@ title: Redaction that explains itself
 status: partial
 author: rayrayxu
 created: 2026-09-21
-last-audited: 2026-09-25
-audited-at: 8d47ac90d
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
-implementation-prs: [13685]
+implementation-prs: [12684, 13685]
 tracking-issues: [13741]
 supersedes: []
 superseded-by: []
@@ -197,7 +197,9 @@ value in a mode-0600 file, which only the owner's account can read, and
 the owner can then open that file in the dashboard with the file-view switch
 off (#13685); because this creates another secret copy on disk, the card must
 say so. A
-false-positive report sends only the rule name and session id, and the card
+false-positive report is a prefilled GitHub issue the reader reviews before
+sending; it carries only the rule name and the card kind, with no session id,
+value or URL. The card
 clearly says when the source is gone. Each placeholder stores the rule and
 source for that specific removed value.
 
@@ -231,8 +233,8 @@ source. Your messages are saved exactly as typed." Keep extra details under
 ### 3 · Suspicious links: blocked, but visible
 
 Keep a suspicious URL visible as a **Link blocked** chip, but never make it
-an anchor. Show the site name and path immediately, and the length of the
-query. *See link* opens a details card that explains why the link was blocked
+an anchor. Show the site name immediately, and nothing else (see the chip
+rule below). *See link* opens a details card that explains why the link was blocked
 and shows the full URL as text, with *Open once* and *Copy link* beside it.
 That card is the confirmation: nothing opens until the reader has the whole
 destination in front of them and clicks *Open once*, which opens it in a new
@@ -266,12 +268,41 @@ in the saved conversation instead of being destroyed, and anyone who can read
 that conversation can read the link.
 
 What is shown on the chip itself, before anyone asks, follows a stricter rule:
-**the chip shows only what the removers themselves would pass.** It would be
-wrong to assume the query is the dangerous part and the path is safe — a link
-can carry smuggled data in its path just as easily — so the path appears on
-the chip only when it passes the same checks that blocked the link; otherwise
-the chip shows the site name and the length of the query. The full address is
-shown only inside the details card, after the reader asks for it. There is one
+**the chip shows only what is proven about that chip, which is the site
+name.** The saved placeholder names the site and nothing else, so nothing ties
+a chip to one kept record. A placeholder can have no record of its own (a
+presigned link split at its query leaves a placeholder the removers never
+recorded), and the rendered text can hold more chips than the saved text has
+placeholders (an entity-encoded or backslash-escaped bracket renders to
+placeholder text), so neither a record count nor a single record proves which
+record a chip stands for. The chip therefore never shows a path or a query
+length, even when the host has exactly one record. The details card lists
+each record of the host under its own address, with its reason and actions,
+and a kept full address is shown only there, after the reader asks for it. A
+lone record is listed the same way as several: the card's title speaks of the
+host's blocked links in the reply ("Blocked links to this host in this reply")
+and never says "this link", because one record on the host does not prove it
+is the link clicked. Pairing placeholders with records is not a goal: proving
+that order cannot be made sound on the production redaction pipeline. The
+path a record carries (kept only when it passes the same checks that blocked
+the link, since a link can carry smuggled data in its path as easily as in its
+query) therefore appears only in that list, where no entry is presented as
+the link clicked.
+
+A link removed in parts can leave the rest of its query glued to the
+placeholder: a presigned link split at `&X-Amz-Date` is redacted up to the
+split, and `&X-Amz-Date=…&X-Amz-Signature=…` follows the placeholder as text.
+That tail is the rest of the removed link, not prose, so the renderer takes it
+into the chip: text that starts right after a placeholder with `?` or `&`, a
+parameter name and `=`, up to whitespace, an angle bracket, a quote or a
+square bracket, without the punctuation that closes a sentence. It is not
+shown beside the chip, it is never an anchor, and the card does not show it
+either. Anything else after a placeholder stays as written, and when the host
+has no record the placeholder and its tail stay as written text. The fold is
+display only and redacts nothing: the saved reply, a copied message and channel
+posts still carry the tail exactly as they do without it, and the redaction and
+the credential checks are unchanged. Removing the tail from the saved text is
+redactor work, tracked separately. There is one
 precedent for keeping a URL in meta: the consent link for a connected server
 (`oauth_url`) is preserved only when it passes two checks. Anything kept is
 still text an agent wrote, so the chip escapes it and never makes it an
@@ -439,6 +470,13 @@ explains.
 
 ## Rollout
 
+Status: [#12684](https://github.com/kirodotdev/KiroCrew/pull/12684) shipped
+steps 1, 2 and 3, including the per-workspace allowed-hosts list and its revoke
+control in Settings → Security; #13685 shipped step 6's file-view switch. The
+percent-decode fix of step 5 and step 6's read-only rules and hosts view are not
+built. [security.md](../system-specs/modules/security.md) owns the shipped
+contract.
+
 1. Add the three display rules first, because they stop web requests that
    would otherwise happen without a click.
 2. Store each match's rule name and source with its placeholder, then add the
@@ -471,8 +509,8 @@ they have today.
 
 ### Step 1 design
 
-What step 1 ships, and the invariants review should hold it to (nothing
-here is on main yet except the widget-frame CSP):
+What step 1 ships, and the invariants review should hold it to (shipped in
+#12684; the widget-frame CSP predates it):
 
 - **Widget frame CSP** was already on main: `buildSrcdoc`
   (`website/src/lib/widgetSrcdoc.ts`, `cspFor`) sets `default-src 'none'` with

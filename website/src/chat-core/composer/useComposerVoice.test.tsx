@@ -175,4 +175,30 @@ describe('useComposerVoice — one microphone across instances', () => {
     // And B's prewarm is withheld — a pointer-down must not open a second stream.
     expect(bProps.onVoicePrewarm).toBeUndefined()
   })
+
+  it("holds a kept recording's Retry while any composer holds the microphone", async () => {
+    const { composerVoiceInputProps } = await import('./useComposerVoice')
+    const a = mountInstance(0, 'slot-a')
+    const b = mountInstance(1, 'slot-b')
+    const retry = vi.fn()
+    // A's engine holds the audio of a failed transcription.
+    ;(engines[0] as Engine & { keptRecording: unknown }).keptRecording = { retryable: true, retry, save: vi.fn(), discard: vi.fn() }
+    a.rerender()
+    expect(composerVoiceInputProps(a.result.current).voiceKeptRecording?.retryDisabled).toBe(false)
+
+    // B starts a recording: until it is over, a retry would run beside its upload.
+    await act(async () => { await b.result.current.startVoice() })
+    a.rerender(); b.rerender()
+    const held = composerVoiceInputProps(a.result.current).voiceKeptRecording
+    expect(held?.retryDisabled).toBe(true)
+    act(() => { held?.retry() })
+    expect(retry).not.toHaveBeenCalled()
+
+    act(() => { b.result.current.stopVoice() })
+    b.rerender(); a.rerender()
+    const free = composerVoiceInputProps(a.result.current).voiceKeptRecording
+    expect(free?.retryDisabled).toBe(false)
+    act(() => { free?.retry() })
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
 })

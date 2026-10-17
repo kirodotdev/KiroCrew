@@ -489,11 +489,72 @@ def test_every_page_is_walked_and_the_first_page_sends_no_cursor(monkeypatch, ca
     assert "3 pull requests, 3 GraphQL pages" in err
 
 
+def test_the_newest_review_is_taken_across_the_timeline_window(monkeypatch, capsys, fast) -> None:
+    # A review sits in the timeline where it was STARTED, so the newest stamp can
+    # be an earlier node; a draft review has no submission time and is ignored.
+    assert "timelineItems(last: 10," in scan.PR_PAGE_QUERY
+    assert "itemTypes: [PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT]" in scan.PR_PAGE_QUERY
+    pr = _pr(40, statuses=[])
+    pr["timelineItems"] = {
+        "nodes": [
+            {"__typename": "PullRequestReview", "submittedAt": "2026-09-15T06:00:00Z"},
+            {"__typename": "ReviewDismissedEvent", "createdAt": "2026-09-15T05:30:00Z"},
+            {"__typename": "PullRequestReview", "submittedAt": None},
+        ]
+    }
+    unreviewed = _pr(41, statuses=[])
+    records, _, rc = _run(monkeypatch, FakeGh([_page([pr, unreviewed])]), capsys)
+    assert rc == 0
+    by_number = {r["number"]: r for r in records}
+    assert by_number[40]["newest_review_at"] == "2026-09-15T06:00:00Z"
+    assert by_number[41]["newest_review_at"] is None
+
+
+def test_a_nulled_review_timeline_is_partial_evidence_not_a_dropped_pr(
+    monkeypatch, capsys, fast
+) -> None:
+    # A timeline error must not cost the pull request its check evidence: it is
+    # emitted, with whatever check evidence was read.
+    pr = _pr(50, statuses=[], checks=[_check("SUCCESS", "2026-09-15T05:00:00Z")])
+    pr["timelineItems"] = None
+    page = _page([pr])
+    page["errors"] = [
+        {
+            "message": "timedout",
+            "path": ["repository", "pullRequests", "nodes", 0, "timelineItems"],
+        }
+    ]
+    records, _, rc = _run(monkeypatch, FakeGh([page]), capsys)
+    assert rc == 0
+    assert [r["number"] for r in records] == [50]
+    assert "reviews_complete" not in records[0]
+    assert records[0]["checks_complete"] is True
+    assert records[0]["newest_review_at"] is None
+    assert records[0]["newest_completed_check_at"] == "2026-09-15T05:00:00Z"
+
+
 def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = doc["jobs"]["sweep"]["steps"]
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
-    assert checkout["with"]["sparse-checkout"] == ".github/scripts/readiness_sweep_scan.py"
+    # The scan script, the withheld-verdict republisher, and the
+    # disposition gate the republisher shells out to plus the two sibling
+    # modules pr_status.py loads. All are required at run time, so a dropped
+    # entry here is a run-time ImportError the sweep would only hit in
+    # production.
+    sparse = {
+        line.strip()
+        for line in str(checkout["with"]["sparse-checkout"]).splitlines()
+        if line.strip()
+    }
+    assert sparse == {
+        ".github/scripts/readiness_sweep_scan.py",
+        ".github/scripts/republish_withheld_verdict.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py",
+    }
+    assert checkout["with"]["sparse-checkout-cone-mode"] is False
     assert checkout["with"]["persist-credentials"] is False
     run = "\n".join(str(s.get("run", "")) for s in steps)
     # Comments may name the old shape; the assertions are on code lines only.
@@ -506,3 +567,6 @@ def test_the_workflow_runs_this_script_from_a_sparse_checkout() -> None:
     assert "gh pr list" not in code
     assert "issues/$pr_number/comments" in code
     assert "gh workflow run pr-readiness.yml" in code
+    # The withheld-verdict recovery re-runs the owing lane via the republisher,
+    # not by dispatching the aggregator.
+    assert "python3 .github/scripts/republish_withheld_verdict.py" in code

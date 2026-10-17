@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.9.0",
+  "version": "0.11.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -155,13 +155,16 @@
       "native-theme.js",
       "zoom.js",
       "instance-guard.js",
+      "singleton-lock.js",
       "context-menu.js",
       "find-bin.js",
+      "external-terminal.js",
       "gateway-env.js",
       "mac-env.js",
       "bundle-integrity.js",
       "data-home.js",
       "auto-update.js",
+      "auth-allowlist.js",
       "runtime/update/state-reporter.js",
       "runtime/update/managed-lane.js",
       "runtime/update/feed-lane.js",
@@ -188,6 +191,7 @@
       "gateway-liveness.js",
       "gateway-recovery.js",
       "renderer-recovery.js",
+      "renderer-exhausted-notice.js",
       "hang-recovery.js",
       "native-logging.js",
       "crash-collector.js",
@@ -207,6 +211,8 @@
       "perf-metrics.js",
       "host-config.js",
       "open-path.js",
+      "download-handler.js",
+      "download-expectations.js",
       "store-rename.js",
       "upgrade-cache.js",
       "remote-token.js",
@@ -253,7 +259,8 @@
       "icon-nightly.png",
       "trayTemplate.png",
       "trayTemplate@2x.png",
-      "EXTERNALLY-MANAGED"
+      "EXTERNALLY-MANAGED",
+      "AUTH-SERVER-ALLOWLIST"
     ],
     "extraResources": [
       {

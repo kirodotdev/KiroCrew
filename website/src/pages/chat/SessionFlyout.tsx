@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react'
 import type { ChatSlot } from '../../types'
 import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
-import { PINNED_SESSION_ORDER_CHANGED_EVENT, PINNED_SESSION_ORDER_KEY, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
+import { rankedPinnedKeys, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
 import { LIST_TITLE_CLS } from '../../components/listShell'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
@@ -20,8 +20,8 @@ export const FLYOUT_MAX_ROWS = 8
  * One definition because three animations must agree on it: the drawer's
  * collapse clip, the drawer's expand clip, and this flyout's open clip. When it
  * was inline at each call site, "the same button" was three literals that could
- * drift. Keep it in sync with the button's own Tailwind classes in ChatPage
- * (`top-[9px] left-2 w-7 h-7`).
+ * drift. Keep it in sync with the button's own Tailwind classes in
+ * SessionsSidebarChrome (`top-[9px] left-2 w-7 h-7`).
  */
 export const TOGGLE_RECT = { x: 8, y: 9, size: 28 } as const
 
@@ -126,7 +126,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
 
   const unread = useMemo(() => new Set(unreadSlots), [unreadSlots])
   const pinned = useMemo(() => new Set(slots.filter(s => s.pinned).map(s => s.key)), [slots])
-  const [storedPinnedOrder, setStoredPinnedOrder] = useState(readPinnedSessionOrder)
+  const storedPinnedOrder = useMemo(() => rankedPinnedKeys(slots), [slots])
   const naturalPinnedOrder = useMemo(
     () => slots.filter(s => s.pinned).sort((a, b) => compareBySort(a, b, 'date-desc')).map(s => s.key),
     [slots],
@@ -136,18 +136,6 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
     [storedPinnedOrder, naturalPinnedOrder],
   )
   const pinnedRank = useMemo(() => new Map(pinnedOrder.map((key, index) => [key, index])), [pinnedOrder])
-  useEffect(() => {
-    const refresh = () => setStoredPinnedOrder(readPinnedSessionOrder())
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === PINNED_SESSION_ORDER_KEY) refresh()
-    }
-    window.addEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
-    window.addEventListener('storage', onStorage)
-    return () => {
-      window.removeEventListener(PINNED_SESSION_ORDER_CHANGED_EVENT, refresh)
-      window.removeEventListener('storage', onStorage)
-    }
-  }, [])
 
   // Always date-desc, regardless of the sidebar's saved sort. This surface is
   // "what was I just doing" — a name-sorted flyout would answer a different

@@ -20,13 +20,15 @@ per-instance (`connection_method`) — see §13.
 > this spec's prose below uses "instance" wherever it is describing the
 > registry, the tunnel or the EC2 box rather than the surface.
 
-> **Section numbers in this document are an API.** `src/kiro_crew/cloud/connect.py`
-> cites "instances.md §9" from two docstrings (the module docstring and
-> `ssm_proxy_ssh_host`). Do not renumber existing sections; append new material as
-> new trailing sections.
+> **Section numbers in this document are an API.** Code cites them:
+> `dashboard/handlers_instances.py` cites §6, and `dashboard/session_transfer.py`
+> cites §1 and §14. Do not renumber existing sections; append new material as new
+> trailing sections.
 
 Code: `src/kiro_crew/instances/` (registry, tunnel manager, port allocator, token
-mint, diagnostics, injection validation, run-marker) plus
+mint, diagnostics, injection validation, run-marker, shared constants
+(`constants.py`), the warm set (`warm_set.py`), the tunnel keeper
+(`tunnel_keeper.py`) and the chained-hop port guard (`hop_port_guard.py`, §17)) plus
 `src/kiro_crew/dashboard/handlers_instances.py` (control plane) and the frontend
 `InstanceTabBar` / `InstancesViewport` / `Settings → Remote Crew` surfaces.
 
@@ -58,8 +60,8 @@ mint, diagnostics, injection validation, run-marker) plus
 
 A Kiro Crew gateway normally binds the dashboard to loopback only. The Instances
 feature lets the hub reach *other* gateways running on remote hosts by opening an
-SSH `-L` forward to each remote's loopback dashboard port, minting (for the `ssh`
-and `ssm` methods; the `fargate` method mints nothing, §16) a short-lived
+SSH `-L` forward to each remote's loopback dashboard port, minting (for a crew
+that runs a gateway; a headless crew mints nothing, §16) a short-lived
 dashboard token on the remote, and embedding the remote dashboard in an
 `<iframe>`. You switch panes from a dropdown (`InstanceTabBar`, plus
 Cmd/Ctrl+digit in the Electron shell); the hub keeps the most-recently-used set
@@ -75,8 +77,9 @@ destinations they actually use — see [Pinned crew chips](#pinned-crew-chips).
 
 - **Opt-in.** Nothing changes until `instances.enabled=true`, and the flag is
   read at gateway startup, so it also needs a restart.
-- **Owner-only.** The control plane is never reachable via Slack and requires an
-  authenticated dashboard session.
+- **Owner-only.** The control plane is never reachable via Slack and requires the
+  dashboard owner's identity: an unauthenticated caller gets `401`, and any other
+  authenticated identity, an app token included, gets `403 owner_only`.
 - **Loopback-only.** Tunnels forward `127.0.0.1:<local>` to remote
   `127.0.0.1:<remote>`.
 - **Warm, not persistent.** Tokens are short-lived (20h cap) and re-minted
@@ -107,8 +110,8 @@ Loopback origins (`http://127.0.0.1:*`, `http://localhost:*`, plus the https and
 `0.0.0.0` forms) are in `frame-src` **unconditionally** because the Web Preview
 panel needs them; only the `*.localhost` wildcard is instances-gated.
 
-With the flag off, `/api/instances/*` returns `403` and the panel shows an
-opt-in card. `GET /api/instances` also reports `active`, which is true only when
+With the flag off, `/api/instances/*` returns `403` with a `{code: "instances_disabled"}` body and the panel shows an
+opt-in card. The SPA keys its silent handling on that `code`, not on the `403` status: the route's other `403`s (`owner_only`, Slack-origin) share the status but are real authorization failures the UI still surfaces, so `isInstancesDisabledError` matches only the `instances_disabled` code. `GET /api/instances` also reports `active`, which is true only when
 the SSH manager actually exists: `enabled && !active` means the flag was set
 after startup and a restart is still pending.
 
@@ -133,6 +136,7 @@ after startup and a restart is still pending.
  |   |- validation.py       injection-safe ssh_host / remote_bin guards  |
  |   |- run_marker.py       <home>/run/gateway-<port>.bin launcher hint  |
  |   |- ssh_tunnel_manager  supervised ssh -N -L, probe, self-heal, refresh|
+ |   |- ssh_tunnel_manager_*  its owner modules (table below)            |
  |   +- diagnostics.py      ssh -> remote-dashboard -> local-forward ladder|
  +-----------------------------------------------------------------------+
         | ssh -N [-C] -L 127.0.0.1:<local>:127.0.0.1:<remote> <ssh_host>
@@ -153,9 +157,50 @@ Module responsibilities:
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder and mints nothing (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder, and a headless crew mints nothing whatever its method (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
+
+`ssh_tunnel_manager.py` stays the import path, and `SshTunnelManager`'s behaviour lives in
+sibling `instances/ssh_tunnel_manager_*.py` owner modules, one responsibility each; new work
+goes to the owner of its responsibility. A member's body is a module-level function there
+whose first parameter is `self` (annotated `SshTunnelManager` for type checkers only, so
+`typing.get_type_hints` or `inspect.signature(eval_str=True)` on a bound member needs
+`SshTunnelManager` passed in through `localns`, and raises `NameError` without it), and
+the class binds it by name under one comment header per owner (`connect =
+_lifecycle.connect`, `staticmethod(...)` for a static method), ahead of `__init__`, the one
+member whose body stays in the class. Every member therefore stays an attribute of the one
+class: a patch of a method on the class or on an instance reaches every caller, a
+`SshTunnelManager.__new__` build works, and the manager's state stays on the instance. Each
+owner's docstring names the instance fields its members write and read. A bound member's
+`__qualname__` and `__module__` name its owner (no reader keys on them).
+
+A class an owner defines keeps `kiro_crew.instances.ssh_tunnel_manager` as its
+`__module__`, so a traceback and `gateway.log` name the path callers import it from.
+Introspection that follows `__module__` therefore resolves through the facade:
+`typing.get_type_hints` evaluates the class's annotations in the facade's namespace, which
+binds every name they spell (`TunnelState`, for `TunnelStatus`), and `inspect.getsource` on
+the class looks in `ssh_tunnel_manager.py`, which holds no class body, and raises `OSError`,
+so read a moved class's source from its owner module. The module-level helpers, constants and classes
+live in the owners: the facade keeps every import it had bound, and serves each moved
+definition from the owner that defines it, so a write through it reaches every owner binding
+the same object (`kiro_crew._facade_mirror`). Owners log under the
+`kiro_crew.instances.ssh_tunnel_manager` logger, import only owners listed before them in
+`_OWNERS`, and never import the facade at run time.
+`test/test_ssh_tunnel_manager_bindings.py` pins the member inventory, the binding and the
+reach.
+
+| Tunnel manager owner | Owns |
+|---|---|
+| `ssh_tunnel_manager_child_text.py` | the forwarder child's text contract: the loopback argv builders (`_build_ssh_tunnel_argv`, `_build_ssm_tunnel_argv`), the ssh and SSM stderr signals, the SSM stdout close-reason anchors (`_ssm_close_reason`), and the banner and stdout sanitizers |
+| `ssh_tunnel_manager_child.py` | supervising one forwarder child: `_SshTunnel` (spawn, readiness wait, health probe, stdout and stderr drains, exit errors, stop), `TunnelState`, `TunnelStatus` |
+| `ssh_tunnel_manager_peer.py` | requests over a connected crew's forward: resolving the forward and refusing one that moved, the far-end identity gate, the link-to-cookie exchange, `token_validates`, `proxy_request`, `send_session_bundle`, `peer_capability`, `peer_version`, `search_sessions_remote`, `ProxyRequestError` |
+| `ssh_tunnel_manager_transport.py` | reaching a crew and minting its credential: `_TransportParams`, `_Mint`, the per-transport timeouts, `_resolve_transport` and the chained resolver, the `/api/health` gateway-id probes (`_peer_identity`, `_peer_gateway_id`) and the cycle check, `_mint_for`, `_mint_through_parent` |
+| `ssh_tunnel_manager_ports.py` | who owns a local forward port: `_reserved_ports`, the lent-hop holds and `hop_ownership_violations`, the forwarder identity record, `_reclaim_orphan_forwarder` and `_verify_and_reclaim_forwarder` |
+| `ssh_tunnel_manager_tokens.py` | credential custody after a mint: `_store_token`, `_credential_forward_moved`, the proactive refresh loop, chained retirement, `get_token` and the TTL readers, and lending a credential to another pane (`mint_embed_token`) |
+| `ssh_tunnel_manager_lifecycle.py` | the manager-lock lifecycle: `connect`, `disconnect`, `_teardown_locked`, `reconfigure`, `shutdown`, the status readers, `apply_config`, `_persist_hint` |
+| `ssh_tunnel_manager_self_heal.py` | the two-tier self-heal: `_on_tunnel_exit`, `_recover_after`, `_rebuild`, `_recover`, `_mark_recovered` and the recovery tasks |
+| `ssh_tunnel_manager_remote_ops.py` | operations on a crew's own gateway: `diagnose`, `restart_remote`, `start_remote_update` and its version check |
 
 **The local forward port is allocated, not mirrored.** `connect()` takes a free
 loopback port from `PortAllocator` (from `tunnel_base_port`, skipping ports the
@@ -170,13 +215,13 @@ does not weaken CSE SEC-016: a malicious local page on an arbitrary port sends
 its own `Origin` while `Host` stays the gateway's, so the two differ and the
 request is rejected; browsers forbid scripts from forging either header.
 
-Earlier revisions mirrored the port (`local_port = inst.remote_port`) for the
-Origin reason above, which imposed a hard constraint that every
-simultaneously-connected instance use a distinct remote port. The shipped
-defaults contradicted it — a stock gateway binds the same default port on both
-ends, so a stock hub already held the port a stock remote reported and two stock
-installs could never connect (#1972). Reconnects reuse the instance's own
-previous port so the iframe origin and its cookie stay stable — with one
+Mirroring the port (`local_port = inst.remote_port`) would require every
+simultaneously-connected instance to use a distinct remote port, which stock
+defaults contradict: a stock gateway binds the same default port on both ends.
+Reconnects prefer the instance's own recorded port so the iframe origin and its
+cookie stay stable, but only while that port is free, not covered by a live hop
+lease, and not recorded by another row; otherwise the crew takes the first free
+port this cycle — with one
 deliberate exception: a **rebuild** (`connect?rebuild=1`, §4 step 1) excludes the
 port it just freed from the allocation, so the rebuilt forwarder lands on a
 different port. Rebuild exists to escape a tunnel that passes every probe yet
@@ -206,8 +251,8 @@ strip.
 1. **Connect.** `POST /api/instances/{id}/connect` validates the ssh inputs,
    allocates a free local forward port, starts
    `ssh -N -L`, waits until the local forward accepts a TCP connection, mints a
-   dashboard token on the remote over SSH (for the `ssh` and `ssm` methods; a
-   `fargate` connect mints nothing, §16), and returns the live status plus the
+   dashboard token on the remote over SSH (for a crew that runs a gateway; a
+   headless crew's connect mints nothing, §16), and returns the live status plus the
    token. Connect is **idempotent**: an already-connected instance returns its
    current status, and the handler then *probes* the stored token before handing
    it over (see below). Two opt-in query flags bend that in opposite directions,
@@ -234,7 +279,10 @@ strip.
      `connect/declined`. Decided under the same lock `disconnect` holds, so an
      auto-warm racing an explicit disconnect can never re-open the tunnel the
      user just closed. Auto-warm pre-mounts panes for tunnels that are already
-     up; bringing one up is the fan-out's and the click's job.
+     up; bringing one up is the fan-out's and the click's job. The client keeps
+     the mounted pane's token when the port is unchanged
+     (`keepTokenIfPortUnchanged`), so an auto-warm never reloads a pane; a select,
+     a retry and an auto-connect always take the fresh token.
 
    The browser loads
    `http://<dashboard-hostname>:<local>/?token=...` in an iframe, deliberately
@@ -279,11 +327,12 @@ strip.
    response within `DEFAULT_PROBE_HEALTH_TIMEOUT_SECS` (4s). Any status line
    counts as alive — a status code proves bytes traversed to the far end and
    back — so the code itself is not inspected. The path is the far end's: a
-   gateway forward answers `/api/health` credential-free, and a fargate crew's
-   container answers `FARGATE_HEALTH_PATH` (`/health`); the probe picks the
-   fargate path when `turn_url` is set. It matters that the path is the far
-   end's own liveness route rather than a fixed one, because the fargate
-   container authorises before it routes and would emit a `control` deny record
+   gateway forward answers `/api/health` credential-free, and a headless crew's
+   front answers `FARGATE_HEALTH_PATH` (`/health`); the probe picks the
+   headless path when `turn_url` is set, which it is for every headless crew
+   (§16). It matters that the path is the far end's own liveness route rather
+   than a fixed one, because the headless front authorises before it routes and
+   would emit a `control` deny record
    for every probe aimed at a path it does not serve. Only a timeout or
    connection error (no response) fails a probe; after `probe_failure_threshold`
    (3) *consecutive* failures the child is terminated so recovery fires. A
@@ -324,7 +373,8 @@ strip.
    connect/disconnect/shutdown.
 5. **Proactive token refresh.** A per-instance loop re-mints the token at
    `DEFAULT_TOKEN_REFRESH_FRACTION` (0.8) of its TTL, ahead of the 20h cap. The
-   frontend mirrors the same 0.8 threshold from `token_ttl_remaining` and skips
+   frontend mirrors the same 0.8 threshold, comparing `token_ttl_remaining` with
+   the status field `token_ttl_total` (the minted token's full TTL), and skips
    the *active* pane, so a reload never interrupts the pane in use.
 6. **Stored-token liveness probe.** A token can go stale while the tunnel stays
    CONNECTED (a failed self-heal re-mint, or a remote `kirocrew restart` that
@@ -341,13 +391,15 @@ strip.
    self-heals.
 
 **Startup revive.** When the feature is on, the startup hook reconnects every
-instance with `was_connected` set, serially (so they do not race to bind their
-mirrored ports) and each wrapped, so one unreachable host neither aborts the rest
+instance with `was_connected` set, serially (so they do not contend for allocated
+forward ports) and each wrapped, so one unreachable host neither aborts the rest
 nor crashes startup. It runs as a background task rather than awaited, because
 `on_startup` fires *before* the HTTP port is bound and serial SSH connects would
 delay the bind past the desktop app's gateway-wait window. A failed revive leaves
 `was_connected` true and records the failure reason, so the entry persists showing
-why it is down.
+why it is down. A crew whose `disabled` flag is set is skipped with its
+`was_connected` intact, and one chained behind a disabled crew is refused by
+`connect()` and spawns nothing.
 
 **The same supervisor without a gateway: `kirocrew desktop tunnel`.** The desktop
 app's client-only mode runs no local gateway, so nothing above is running there,
@@ -448,14 +500,18 @@ commands, so there is nothing to gain).
 ```
 id, name, ssh_host, remote_port (default 5476), local_port (0 = unallocated),
 ttl (default "20h"), remote_bin, was_connected, forwarder_pid (0 = none),
-forwarder_start ("" = unknown), forwarder_sig ("" = unsigned)
+forwarder_start ("" = unknown), forwarder_sig ("" = unsigned),
+forwarder_argv_sig ("" = not recorded), disabled (false = on)
 ```
 
-plus a top-level `last_active_id`. `id` is a slug (`^[a-z0-9][a-z0-9-]{0,62}$`)
+That is the SSH core; the SSM fields are in §13, `provisioner_id` in §8, and the
+`via_*` chain fields in §17.
+
+plus a top-level `last_active_id`. `id` is a slug (`^[a-z0-9][a-z0-9-]{0,62}\Z`)
 derived from `name` when not given, with a numeric suffix on collision. The file
 holds **connection coordinates only**: no credentials or tokens are ever written
 there. Every anchored validator in this package ends with `\Z`, never `$`: Python's `$` also matches just before a trailing newline, so a `"20h\n"` would pass a `$`-anchored check and then reach an ssh/ssm argument list carrying an embedded newline. `ttl` is validated against the SAME bound the token minters enforce
-(`^[1-9][0-9]{0,3}[hm]$`): a value this layer accepted but they rejected would
+(`^[1-9][0-9]{0,3}[hm]\Z`): a value this layer accepted but they rejected would
 persist and then fail at the next connect, blaming the tunnel for a bad edit.
 
 Two persisted hints drive lazy reconnect:
@@ -472,6 +528,67 @@ Two persisted hints drive lazy reconnect:
   not just one, and the active pane is frontend state. `get_last_active()` is the
   only reader and has no production caller.
 
+An in-place restart tears the tunnels down before it execs. The dashboard
+restart (`dashboard/handlers/updates.py::_restart_gateway`) and the update
+restart (`slack/gateway_runtime/update_schedule.py::_restart_after_update_claimed`) replace the image
+with `os.execv`, which skips the cleanup hook that runs `shutdown()`. The exec
+keeps the pid, so a forwarder left running would still name the gateway as its
+live parent: the orphan reclaim below refuses it and the allocator routes around
+its port for the life of the process. So the instances startup hook in
+`dashboard/server.py` registers `shutdown()` with the pre-exec seam
+(`pre_exec_stops.register_pre_exec_stop`) when it creates the manager, and its
+cleanup hook unregisters it. Both restarts call `run_pre_exec_stops()` once,
+after the sessions close and the MCP broker stops. The seam runs every
+registered stop concurrently under one 10 s bound and never raises, because the
+sessions are already closed and a wedged child must not strand the restart. The
+teardown must not block the event loop while it runs, or the bound could not
+fire: an SSM forwarder's tree kill is awaited through
+`platform_compat.kill_process_tree_async`, which runs Windows' `taskkill /T` off
+the loop, and the synchronous form is kept only for the orphan reclaim, which
+already runs in a worker thread. `shutdown()` keeps the hints above and the hop
+leases, so the new image's startup revive re-takes the lent hop ports and
+reconnects each intended instance on its recorded port. A refused or deferred
+restart returns before the seam runs and leaves the tunnels up.
+
+The HTTP server keeps serving between the seam and the exec, and a forwarder
+started in that window would outlive the exec like the ones the seam just
+stopped. Both restarts hold `state._gateway_restart_in_progress` from before any
+teardown work until the exec returns or is refused. The two routes that start a
+tunnel read it. `POST /api/instances/{id}/connect` answers `409` with
+`code: restarting` before the manager is called, and the startup revive stops
+at the next instance (the `was_connected` intent stays, so the new image
+revives the rest). `?only_if_connected=1` starts nothing and is answered as
+usual. The seam stops the tunnels one after another inside `shutdown()`, so its
+10 s bound covers about two forwarders that ignore SIGTERM (each costs its 5 s
+wait), not an arbitrary number.
+
+The seam is for owners that supervise a child process. A cleanup hook whose
+resources end with the exec (in-memory state, files, sockets the exec closes)
+does not register. The dashboard tunnel does not register: its provider stop
+spawns and supervises no process. The sleep inhibitor registers too
+(`dashboard/server_runtime/prevent_sleep.py`): its `caffeinate -i -w <pid>` /
+`systemd-inhibit` helper (`power.py`) watches the gateway pid, which the exec
+keeps, so the helper would hold the block for the new image as well. Its stop
+cancels the prevent-sleep poll, so the poll cannot engage the block again, and
+releases the block. The poll arms it after setup and the prevent-sleep cleanup
+hook unregisters it. The browser view child (#19140) is the next owner that
+should register.
+
+A restart that lands while a `connect()` holds the manager lock across a slow
+`tunnel.start()` can cut `shutdown()` off at the bound while it still waits for
+that lock, so it stops nothing. The connect gate above stops new connects from
+starting, but a connect already in flight keeps its lock. Making `shutdown()`
+independent of that lock is separate work.
+
+A forwarder the seam does not stop in time (the lock wait above, or more
+forwarders ignoring SIGTERM than the bound covers) outlives the exec as before
+this seam existed, and that leak is accepted. The new image does not reclaim it
+at startup. On POSIX the exec keeps both the pid and the process start time, so kernel facts cannot tell
+a child of the old image from one of the new image. Telling them apart would
+need an in-process boot mark compared against each platform's start token, on
+a path that signals processes. Getting that wrong kills a forwarder this image
+still owns, which is worse than the leak.
+
 A third hint pair, `forwarder_pid` + `forwarder_start`, exists for crash
 recovery rather than reconnect intent: `connect()` records the spawned
 forwarder child's pid and its opaque `platform_compat.process_start_time`
@@ -482,7 +599,8 @@ port and its session to the remote. The next `connect()` reclaims exactly that
 child, best-effort (a failed reclaim never fails the connect). The registry is
 agent-writable state, so a recorded claim is honored only when it
 authenticates: the record must carry `forwarder_sig`, the gateway's own HMAC
-over (instance id, pid, start time, port) under a key derived from the SEL
+over (instance id, pid, start time, port, and, when `forwarder_argv_sig` is
+set, that fingerprint plus the spawn transport `ssh`/`ssm`) under a key derived from the SEL
 trust root (`sel_hmac_key_path()`, domain-separated exactly like the
 `session_pid_sig` sidecar protocol) — a root an agent can neither read nor
 replace, so a record written, edited, or re-pointed by anything but the
@@ -499,12 +617,25 @@ before the forwarder, or any order that cannot be settled, is refused. A
 refused orphan test is logged. Then, iff
 the recorded
 `local_port` probes occupied AND both identity halves are recorded AND the
-pid's live start time equals the recorded one AND its **full argv exactly
-equals** the forward command line the manager would construct for the recorded
-port (`platform_compat.process_argv_matches_exact`; on Windows, where a
+pid's live start time equals the recorded one AND its argv is confirmed, it is
+signalled. The argv half has two forms. A record carrying `forwarder_argv_sig`
+(the sha256 `platform_compat.process_argv_fingerprint` took of the child's
+kernel-reported argv right after spawn: `/proc/<pid>/cmdline` on Linux, the
+`KERN_PROCARGS2` vector on macOS; Windows records none) must have the live
+process fingerprint to the same value. Recorded
+and observed share one basis, so a shebang `aws` v1 entrypoint (the kernel
+shows `<interpreter> /path/aws ...`) or a compression/host/port setting edited
+since spawn is still reclaimed. Because the fingerprint is
+inside the MAC, erasing it from a signed record fails verification rather than
+falling back. The spawn transport is signed with it because it picks the signal
+scope (pid for ssh, process group for SSM): a record whose settings switched
+transport since spawn fails verification and is never signalled. A record without one (written by an older gateway, or whose argv
+was unreadable at spawn; its MAC is the four-field form) keeps the older check:
+the **full argv exactly equals** the forward command line the manager would
+construct for the recorded port (`platform_compat.process_argv_matches_exact`; on Windows, where a
 process has one command-line string rather than an argv vector, the live
 `Win32_Process.CommandLine` must equal `subprocess.list2cmdline(argv)`
-character for character), it is signalled — SIGTERM
+character for character). The signal is SIGTERM
 escalating to SIGKILL on a bounded grace, with the start-time identity
 **re-verified before the SIGKILL** (the grace window is exactly where a pid can
 exit and be recycled); pid-scoped for ssh, whose child shares the dead
@@ -520,7 +651,7 @@ recorded pointing at it. It is logged and its port stays excluded. The Windows
 check proves the command-line string, not the vector: a process that rewrote
 its own command line to that exact string would pass, so the start-time pin is
 what rules out pid reuse; a target launched through a `.cmd`/`.bat` shim runs
-under `cmd.exe`, never matches, and is left alone (#16916). Anything short of
+under `cmd.exe`, never matches, and is left alone. Anything short of
 full identity — either hint missing, start time differing or unreadable, argv
 or command line unreadable, or any argv element differing — means the identity
 cannot be confirmed: the process is left alone (logged, and SEL-audited when
@@ -528,7 +659,7 @@ anything was signalled) and allocation simply skips its port; the freed port
 returns to the pool at the next allocation rather than being re-taken by the
 same connect. Reclamation is keyed on the manager's OWN recorded identity,
 never a process-table scan — matching the table by argv pattern is what once
-SIGTERMed forwards operators had opened themselves (#1972).
+SIGTERMed forwards operators had opened themselves.
 
 `disconnect()` resets `local_port` to the unallocated sentinel together with
 `was_connected` and the forwarder identity pair in one write, so a freed port
@@ -541,24 +672,31 @@ checks.
 
 All routes are gated by `_guard()`: **deny-by-default**. It rejects a
 Slack-origin request (an `X-Session-Key` starting `slack:`) with `403`, rejects a
-request with no `request["user"]` with `401`, and rejects a disabled feature with
-`403`. Every call, success and denial alike, emits a SEL audit event
+request with no `request["user"]` with `401`, rejects any authenticated identity
+that is not the dashboard owner (`is_owner_dashboard_request`; app tokens included)
+with `403 owner_only`, and rejects a disabled feature with `403`. Every call, success and denial alike, emits a SEL audit event
 (`instances_<operation>`).
 
 | Method and path | Purpose |
 |---|---|
 | `GET /api/instances` | List instances + live status + `warm_set_cap` + `active`. |
-| `POST /api/instances` | Add an instance. A rejection carries a machine-readable `code` beside its human message, so a client can branch without parsing prose: `invalid_json` / `invalid_body` (unreadable request), `invalid_field` (a named field failed validation), `instance_duplicate` (the name is taken), `instance_invalid` (the record as a whole is not addressable) and `instances_manager_unavailable`. The dashboard forwards the code into its error → agent hand-off, which is why it has to be on the wire rather than derived from the message. |
-| `PATCH /api/instances/{id}` | Edit `name`/`ssh_host`/`remote_port`/`ttl`/`remote_bin`/`connection_method`/`ssm_target`/`ssm_run_as`/`aws_profile`/`aws_region` (`id` and internal hints are not editable). Editing a field the tunnel is BUILT from (everything except `name` and `ttl`) disconnects a live tunnel first, because it would otherwise keep forwarding the old port to the old host under the new label; the teardown passes `keep_intent=True` so it does not touch `was_connected` — that flag records a USER disconnect, so a reconfiguration leaves it alone and a real disconnect arriving mid-edit still wins. The crew therefore keeps its switcher entry and reconnects in one click. The teardown and the coordinate rewrite happen as ONE operation, `SshTunnelManager.reconfigure()`, which holds the manager lock across both. Done as two steps a `connect` can read the OLD record in between, and whether its tunnel is already CONNECTED or still CONNECTING when the write lands decides whether any after-the-fact sweep would notice it — so the window is removed rather than narrowed: a racing `connect` either completes before (and is torn down inside the section) or starts after (and reads the new coordinates). It also cancels and AWAITS that instance's in-flight self-heal first: recovery reads the record before it takes the lock, so a recovery already running carries the pre-edit coordinates and would reinstall a tunnel to the old machine. Because that cancellation itself awaits, a reconfiguration additionally raises a per-instance BARRIER before its first await; while the barrier is up the scheduling seams refuse to start work — `_on_tunnel_exit` will not begin a self-heal, a backed-off one returns without acting, and `_schedule_token_refresh` will not restart a mint loop — so nothing can slip into the window. Self-heal is cancelled AND awaited before the coordinates move, because it rebuilds from the record it read. The token-refresh loop is unwound by the teardown instead — after the stop succeeds — so a REJECTED edit leaves the live tunnel holding both its credential and its refresh; in both cases the cancellation is awaited, since a mint already in flight would otherwise store a token for a tunnel that is being replaced. A teardown that raises ABORTS the edit with `503` / `code: tunnel_teardown_failed` and persists nothing: a stop that failed leaves the old forward live, so advancing the record would describe one machine while the still-open tunnel serves another — and that tunnel is the one the user reaches. Nothing is discarded unless the stop succeeded — the tunnel keeps its place in `_tunnels` along with its token and refresh task — so a failed stop can neither leave an untracked process holding the port nor a live forward without a credential. The registry write is also shielded from cancellation: a client hanging up mid-write must not unwind the `async with` and free the lock while the write is still in flight. An edit sends only the fields that DIFFER from an IMMUTABLE snapshot of the record taken when its form opened (not the live polled record, which a concurrent CLI edit would move under the user), so the later of two concurrent saves cannot revert the earlier one's corrections; optional fields travel as explicit empty values, so emptying one clears it instead of being read as "leave as-is". The dashboard does NOT reconnect afterwards: any automatic reconnect races an explicit Disconnect arriving mid-save, so the row offers **Connect** instead. A crew CORRELATED to a cloud stack has its `connection_method`/`ssm_target`/`aws_profile`/`aws_region` frozen in the edit form and omitted from the request — Stop/Start/Delete resolve the machine through those, so editing them would strand a billing instance. That freeze is now enforced **server-side too**: this endpoint rejects the four addressing fields for a correlated cloud instance with `400` / `code: cloud_instance_addressing_locked`, so a non-dashboard caller (CLI, script, the agent driving this owner-only API) can no longer rewrite the coordinates and strand a billing instance. Correlation is resolved against the cloud launch store via `_is_correlated_cloud_instance()`, checked against the record already fetched for the edit. An SSM crew that cannot be correlated is offered no lifecycle action, so its fields stay editable — that identity is how the dashboard finds the machine to stop or delete, and editing it away would strand a billing instance. |
+| `POST /api/instances` | Add an instance. A rejection carries a machine-readable `code` beside its human message, so a client can branch without parsing prose: `invalid_json` / `invalid_body` (unreadable request), `invalid_field` (a named field failed validation), `instance_duplicate` (the name is taken), `instance_invalid` (the record as a whole is not addressable) and `instances_manager_unavailable`, plus the chain refusals for a chained crew (`chain_parent_unknown`, `chain_duplicate`, `chain_too_deep`, `chain_parent_full`, `chain_parent_not_ssh`; see §17.4). The dashboard forwards the code into its error → agent hand-off, which is why it has to be on the wire rather than derived from the message. |
+| `PATCH /api/instances/{id}` | Edit `name`/`ssh_host`/`remote_port`/`ttl`/`remote_bin`/`connection_method`/`ssm_target`/`ssm_run_as`/`aws_profile`/`aws_region`/`via_remote_port`/`disabled` (`id`, `via_instance_id` and internal hints are not editable). `disabled` is the owner's per-crew off switch. `disabled: true` goes through the same `reconfigure()` teardown as a built-field edit (below) on every request, even when the record already reads off: the record is read before the lock, so an enable and a connect can land in between, and on an idle crew the teardown changes nothing. `disabled: false` only clears the flag; the dashboard then connects the crew itself. Editing a built field of a crew that others chain through tears its chained crews down first, and aborts the edit when one will not stop (§17.4). Editing a field the tunnel is BUILT from (everything except `name` and `ttl`) disconnects a live tunnel first, because it would otherwise keep forwarding the old port to the old host under the new label; the teardown passes `keep_intent=True` so it does not touch `was_connected` — that flag records a USER disconnect, so a reconfiguration leaves it alone and a real disconnect arriving mid-edit still wins. The crew therefore keeps its switcher entry and reconnects in one click. The teardown and the coordinate rewrite happen as ONE operation, `SshTunnelManager.reconfigure()`, which holds the manager lock across both. Done as two steps a `connect` can read the OLD record in between, and whether its tunnel is already CONNECTED or still CONNECTING when the write lands decides whether any after-the-fact sweep would notice it — so the window is removed rather than narrowed: a racing `connect` either completes before (and is torn down inside the section) or starts after (and reads the new coordinates). It also cancels and AWAITS that instance's in-flight self-heal first: recovery reads the record before it takes the lock, so a recovery already running carries the pre-edit coordinates and would reinstall a tunnel to the old machine. Because that cancellation itself awaits, a reconfiguration additionally raises a per-instance BARRIER before its first await; while the barrier is up the scheduling seams refuse to start work — `_on_tunnel_exit` will not begin a self-heal, a backed-off one returns without acting, and `_schedule_token_refresh` will not restart a mint loop — so nothing can slip into the window. Self-heal is cancelled AND awaited before the coordinates move, because it rebuilds from the record it read. The token-refresh loop is unwound by the teardown instead — after the stop succeeds — so a REJECTED edit leaves the live tunnel holding both its credential and its refresh; in both cases the cancellation is awaited, since a mint already in flight would otherwise store a token for a tunnel that is being replaced. A teardown that raises ABORTS the edit with `503` / `code: tunnel_teardown_failed` and persists nothing: a stop that failed leaves the old forward live, so advancing the record would describe one machine while the still-open tunnel serves another — and that tunnel is the one the user reaches. Nothing is discarded unless the stop succeeded — the tunnel keeps its place in `_tunnels` along with its token and refresh task — so a failed stop can neither leave an untracked process holding the port nor a live forward without a credential. The registry write is also shielded from cancellation: a client hanging up mid-write must not unwind the `async with` and free the lock while the write is still in flight. An edit sends only the fields that DIFFER from an IMMUTABLE snapshot of the record taken when its form opened (not the live polled record, which a concurrent CLI edit would move under the user), so the later of two concurrent saves cannot revert the earlier one's corrections; optional fields travel as explicit empty values, so emptying one clears it instead of being read as "leave as-is". The dashboard does NOT reconnect afterwards: any automatic reconnect races an explicit Disconnect arriving mid-save, so the row offers **Connect** instead. A crew CORRELATED to a cloud stack has its `connection_method`/`ssm_target`/`aws_profile`/`aws_region` frozen in the edit form and omitted from the request — Stop/Start/Delete resolve the machine through those, so editing them would strand a billing instance. That freeze is enforced **server-side too**: this endpoint rejects the four addressing fields for a correlated cloud instance with `400` / `code: cloud_instance_addressing_locked`, so a non-dashboard caller (CLI, script, the agent driving this owner-only API) can no longer rewrite the coordinates and strand a billing instance. Correlation is resolved against the cloud launch store via `_is_correlated_cloud_instance()`, checked against the record already fetched for the edit. An SSM crew that cannot be correlated is offered no lifecycle action, so its fields stay editable — that identity is how the dashboard finds the machine to stop or delete, and editing it away would strand a billing instance. |
 | `DELETE /api/instances/{id}` | Disconnect then remove, cascading over the crews chained behind this one. Every captured crew comes down first, deepest first, and a stop that raises answers `409 remove_teardown_failed` with NOTHING deleted: rows removed over a live forwarder strand it with its minted token and take the `forwarder_pid` reclaim hint with them. `404` when no row has that id, decided before any deletion so a missing parent cannot take its orphaned descendants with it. On success the body carries `removed` and nothing else. A second pass follows the deletion and cannot refuse, because the removal has already happened, so a forward a racing connect re-established after the rows went is written to the gateway's warning log rather than into the response -- see §17.4. |
-| `POST /api/instances/{id}/connect` | Open tunnel + mint token. Returns the token. Idempotent by default; `?rebuild=1` (Retry after a load-watchdog verdict: tear down and re-spawn on a different local port) and `?only_if_connected=1` (auto-warm: answer an up tunnel, never bring one up — a down tunnel is a `200` with `code: instance_not_connected`) are the two opt-in exceptions, mutually exclusive (`400`), described in §4 step 1. A failure carries a machine-readable `code`, and that code is the failure-diagnosis ladder's OWN verdict (`ssh_unreachable`, `remote_down`, `tunnel_down`, …) promoted to the top level, so a client reads which link broke without walking into `diagnosis`. Only a verdict that is present AND **negative** is promoted: the stored diagnosis is the last ladder RUN, so a stale `ok` from before the failure would otherwise be published as this call's reason. With no usable verdict the stage that failed names itself — `instance_connect_failed`, or `instance_token_unconfirmed` when the tunnel came up but its credential did not confirm, which also covers the forward MOVING while the credential was being confirmed: the probe and any re-mint both await for seconds while the response's port is already frozen, so the live status is re-read before the token is attached and a port or state that has changed is refused rather than answered with half a pair. The frontend applies the same present-AND-negative rule before quoting a verdict or its probe chain into the agent hand-off, for the same staleness reason. |
+| `POST /api/instances/{id}/connect` | Open tunnel + mint token. Returns the token. Idempotent by default; `409` with `code: restarting` while a gateway restart is under way (nothing is started); `409` with `code: instance_disabled` when the crew, or a crew up its chain, is disabled (nothing is started), its `error` naming the crew that is off by id; `?rebuild=1` (Retry after a load-watchdog verdict: tear down and re-spawn on a different local port) and `?only_if_connected=1` (auto-warm: answer an up tunnel, never bring one up — a down tunnel is a `200` with `code: instance_not_connected`) are the two opt-in exceptions, mutually exclusive (`400`), described in §4 step 1. A failure carries a machine-readable `code`, and that code is the failure-diagnosis ladder's OWN verdict (`ssh_unreachable`, `remote_down`, `tunnel_down`, …) promoted to the top level, so a client reads which link broke without walking into `diagnosis`. Only a verdict that is present AND **negative** is promoted: the stored diagnosis is the last ladder RUN, so a stale `ok` from before the failure would otherwise be published as this call's reason. With no usable verdict the stage that failed names itself — `instance_connect_failed`, or `instance_token_unconfirmed` when the tunnel came up but its credential did not confirm, which also covers the forward MOVING while the credential was being confirmed: the probe and any re-mint both await for seconds while the response's port is already frozen, so the live status is re-read before the token is attached and a port or state that has changed is refused rather than answered with half a pair. The frontend applies the same present-AND-negative rule before quoting a verdict or its probe chain into the agent hand-off, for the same staleness reason. |
 | `POST /api/instances/{id}/refresh-token` | Force a fresh mint and return the new token. See below. |
 | `POST /api/instances/{id}/embed-token` | Mint that crew's token for ANOTHER gateway's pane, carrying the caller's own dashboard port as the embed-parent claim. Called by a hub that reaches the crew by riding one of OUR forwards and so holds no key for it. Stores nothing -- our own credential for the crew is untouched. Refuses a crew we reach through a further hop (`chain_too_deep`), which is the depth cap seen from this end, and a crew whose forward moved while its token was in flight (`instance_hop_changed`): the token and the port it is paired with are one claim, and the mint is taken without the manager lock. See §17.3. |
 | `POST /api/instances/{id}/disconnect` | Tear down one tunnel. |
-| `GET /api/instances/{id}/status[?diagnose=1]` | Live status; `?diagnose=1` runs the failure ladder and merges the result. |
-| `POST /api/instances/{id}/restart` | Restart the remote gateway over SSH. |
-| `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, for a local session bound to it: `version` (+ `local_version` and the `version_match` gate the relay enforces), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy above, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models` + up to 3s entitlement revalidation, ~18s worst case — the named production bounds `_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS`, `_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS` and `_READ_PATH_PROBE_DEADLINE_SECS`), so an 8s budget killed every cold read and reported a healthy peer as `capability_unreachable` (#10621). One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, `capability_peer_revalidating`, …), so the frontend disables exactly that control. A peer whose `/api/models` answers its deliberate `503 model_list_revalidating` (an entitlement revalidation in flight) maps to `capability_peer_revalidating`; any other non-2xx is `capability_peer_refused`. The dashboard (`useRemoteCapabilities`) re-polls a partial document every 8s while the peer is version-compatible and the per-field code is transient (`capability_unreachable` or `capability_peer_revalidating`) — never for version-skewed, disconnected, or terminally-failing peers — and its model pickers render a loading row (`aria-busy`) rather than an empty list while the model roster is pending, and an inline `ErrorNotice` with in-place retry when the read itself fails — an empty list would claim the peer offers no models. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
-| `ANY /api/instances/{id}/proxy/{path}` | Generic chat proxy — the carrier for the remote-crew chat view. Forwards a **bounded slice** of a CONNECTED peer's `/api/` surface over the already-open tunnel via `SshTunnelManager.proxy_request`, relaying the reply redacted (a proxied chat turn streams SSE for minutes, so the client timeout is connect + read-idle, never total). Credential rules match the federated search: the manager-held token travels as the port-scoped cookie and never reaches the browser; a `401/403` gets exactly one transparent re-mint retry; `allow_redirects=False` (a compromised peer answering 30x must not steer the hub — SSRF). Path policy is a **canonicalization**, not a pattern check, and runs before any URL is built: the caller's path is percent-decoded to a fixed point (bounded by `PROXY_PATH_MAX_DECODE_PASSES`, a deeper chain is refused), then every segment must be a plainly-named token — no empty segment, no all-dots segment, and only unreserved/sub-delim characters — and the forwarded path is **rebuilt from exactly those vetted segments**. Vetting the decoded form and forwarding the rebuilt one is what closes encoded traversal at any depth: a half-decoded `%252e%252e` matches no denylist rule yet still normalizes back into the control plane. On that canonical form the vet policy is a **positive prefix allowlist** (`_PROXY_ALLOWED_PREFIXES`, `api/chat` + `api/stream` today): only the peer's `api/chat` subtree and its `api/stream` event feed are forwarded — each a prefix grant, so every route under one is reachable, which is the chat feature's own wire surface — and everything outside the named prefixes is refused by default: the peer's own `api/instances` plane (one hub cannot chain through a peer into a third machine's SSH control plane), the peer's token-minting routes (whose JSON replies would carry a minted peer credential back through the hub in-band), and any endpoint the peer grows outside the allowlisted prefixes. `api/stream` is the peer's own SSE broadcast endpoint and the out-of-turn half of the chat view: the per-turn reply streams back from `api/chat`, while session-list and slot-state changes arrive on `api/stream`. It is deliberately that endpoint and **not** its WebSocket sibling `api/ws` — a WS row would need a `101 Switching Protocols` to cross this proxy, and the reply content-type gate below exists precisely to stop a peer serving anything but JSON/SSE onto the authenticated hub origin, so an upgrade would tunnel straight through it. Note what the row admits: that feed is per-client but not per-slot, so a hub holding it receives the peer's whole notification/slot broadcast rather than only the session on screen — peer content crossing to a hub user who is already the peer's owner (this route is owner-only), so it widens volume, not privilege, and is the reason it is a named row rather than a blanket `api/` grant. A new prefix is added to the constant explicitly, never by widening back to deny-only; the constant's exact value is pinned by a test so widening is always a reviewed act. Methods limited to GET/POST/PUT/PATCH/DELETE; inbound bodies capped at `PROXY_REQUEST_BODY_MAX_BYTES` before buffering. No browser Origin or cookies are forwarded to the peer (the hub presents as a same-origin loopback client), and the hub's own `?token=` credential is **stripped from the forwarded query** — the browser may authenticate the proxy request with it, and forwarding it would hand the peer a replayable hub credential. Replies are gated to an **allowlist**: only `application/json` and `text/event-stream` content types are forwarded (a compromised peer must not serve active content that executes on the hub origin), and only allowlisted headers (`Content-Type`, `Cache-Control`, `X-Accel-Buffering`) cross back on an SSE reply — `Set-Cookie` and everything else is dropped, with `X-Content-Type-Options: nosniff` added. **Every reply is redacted before the browser sees it** (the crew window renders peer text directly), with the relay's `redact_peer_text` chain: an `application/json` body is buffered whole and redacted as one decoded document, then re-sent as a fresh JSON response; an SSE stream is cut into events (CR/CRLF normalised, an event's `data:` lines joined into one payload, the way the browser reads it) and each event is redacted before it is written. Both are bounded by `PROXY_REDACT_BUFFER_MAX_BYTES`: a JSON reply past it is refused with `proxy_reply_too_large` (502), an SSE event past it ends the stream; a reply nested past the recursion limit is refused as `proxy_reply_unredactable`. Nothing is ever forwarded unredacted, and the allowed content types are pinned to exactly the two with a redaction path. Typed failures (`proxy_peer_not_connected`, `proxy_no_credential`, `proxy_unauthorized`, `proxy_peer_unreachable`) map to 5xx with a machine-readable `code`. |
+| `GET /api/instances/{id}/status[?diagnose=1]` | Live status; `?diagnose=1` runs the failure ladder and merges the result. For a chained crew it probes the parent hop and can answer `chain_parent_missing`. |
+| `POST /api/instances/{id}/restart` | Restart the remote gateway over SSH. Refused for a chained crew, which this dashboard cannot run commands on ("Restart it from that crew"). |
+| `GET /api/instances/versions` | Every CONNECTED crew's version beside this gateway's: `{local_version, instances: [{id, name, version, behind, updatable, error}]}`. One `/api/version` read per connected crew through `SshTunnelManager.peer_capability` (the closed path set capabilities uses), run concurrently. `behind` is `_remote_is_behind(local, peer)`: strictly older by the update checker's own pre-release-aware ordering (`_is_newer`), so `0.9.0rc3` is behind `0.9.0`; an empty or unparseable version is never behind. A crew that does not answer reports `version: ""` and its read failure in `error` (the carrier's code, e.g. `capability_unreachable`), which the row and the post-update offer report. `updatable` is false for a chained, fargate or headless crew (`_can_run_remote_commands`, the display side of the manager's refusals), so the dashboard offers Update only where the gateway would run it. The capabilities reply carries the same `behind` beside `version_match`, which the crew-window header reads. Strings cross `_cap_str` (redact + clamp). Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`. |
+| `POST /api/instances/{id}/update` | The explicit "Update remote" action. Starts a background job (`SshTunnelManager.start_remote_update`) that runs the fixed literal `kirocrew update` on the remote through `_run_remote_subcommand` -- the same SSH / SSM runner `restart` uses, resolved through the same run-marker launcher -- with a `REMOTE_UPDATE_TIMEOUT_SECS` (600s) budget and a redacted stdout tail on failure, then `kirocrew restart` only when the update exits 0. A zero exit does not prove an install (`kirocrew update` also exits 0 when it is already current or managed elsewhere, and the running gateway reports a new version only after its restart), so the job then reads the crew's own `/api/version` through `peer_capability` until it differs from the version read before the update, for up to `REMOTE_UPDATE_VERIFY_SECS` (180s, every 5s): a different version is `succeeded`, the same one `unchanged`, no answer `unverified`. Peer version strings are kept only when version-shaped (`clean_version`) and unchanged by the credential redactor. The request takes no body and nothing from it reaches the command. Refused before anything runs, by the gate `restart` shares (`_remote_command_target`): `404 not_found`, `400 invalid_transport`, `409 chained`, `409 headless` (fargate or a headless provisioner), and `409 already_running` while this crew's job runs. Answers `202 {ok, job}`. The remote's own update policy provider, install layout and updater decide what `update` does; an expired transport credential surfaces as the runner's own error. Owner-only: `_guard` plus an explicit `is_owner_dashboard_request`, so an app token is refused. Nothing schedules it: it runs only on this request. |
+| `GET /api/instances/{id}/update` | The latest update job for this crew (`instances/remote_update.py`): `{job: {state: running/succeeded/unchanged/unverified/failed, phase: updating/restarting/verifying/done, started_at, finished_at, elapsed_secs, error, version_before, version_after}}`, or `{job: null}` when none ran since the gateway started. A failed job keeps the phase it failed in and a redacted, clamped error tail; an exception in the job body records only its type name. The job outlives the crew's restart and reconnect, so the dashboard reads the outcome here, not from the tunnel state. Gateway shutdown cancels a running job. Same owner gate as the POST, and every allowed read is audited. |
+| `POST /api/instances/{id}/crew-turn` | One chat turn against a CONNECTED headless crew on the MicroVM lane (`src/kiro_crew/dashboard/handlers_crew_turn.py`). Body `{"thread", "message", "stream"}`: `thread` is the crew's slot id, so the same id continues one conversation for as long as the VM holds its transcript; `stream` defaults to `true`. Owner-only, like the proxy: it runs with the owner's AWS credentials and sends the crew's control secret. Only `TURN_LANE` (`microvm`) is served; any other lane, Fargate included, is refused `409 crew_lane_not_served` BEFORE any secret is read, and its crew stays reachable at the turn URL its card shows. The gateway resolves the target from the live status's `turn_url` (`409 crew_not_connected` when there is none), reads the per-crew control secret named by the lane's crew record through the AWS CLI off the event loop (`503 crew_secret_unavailable` when the reference is unrecorded or unreadable), addresses the turn to the crew name the deployment serves rather than the instance's display name (`503 crew_name_unavailable`), and sends the secret in the control header. The reply passes the peer redactor on the way out: a non-streamed body that cannot be redacted is refused `502 crew_reply_unredactable`, and a streamed reply is reassembled into whole SSE events, each redacted before it is relayed, with an event too large to scrub ending the stream. An unreachable crew answers `502 crew_unreachable`. Request validation answers `400 bad_request`, `413 message_too_large`, `404 instance_unknown` and `503 instances_unavailable`. |
+| `GET /api/instances/{id}/capabilities` | What a CONNECTED peer can do, read by New chat on crew and the crew window: `version` (+ `local_version` and `version_match`, which is `versions_compatible(local, peer)`: same major.minor, exact string equality for a non-semver build id, false for an empty peer version), `agents` + `default_agent`, `models`, `effort_levels`, `workspaces` + `default_workspace`. Aggregates five fixed peer reads (`/api/version`, `/api/agents`, `/api/models`, `/api/effort-levels`, `/api/workspaces`) through `SshTunnelManager.peer_capability` — a closed path set, deliberately NOT the prefix-fenced proxy below, which would have granted the peer's mutating `PUT /api/agents/{name}` in the same stroke. The reads fan out concurrently, each under `DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS` (8s) except `/api/models`, which gets `DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS` (20s): the model list is the one read whose COLD path runs bounded subprocess work on the peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat --list-models` + up to 3s entitlement revalidation, ~18s worst case — the named production bounds `_SANDBOX_BACKEND_PROBE_TIMEOUT_SECS`, `_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS` and `_READ_PATH_PROBE_DEADLINE_SECS`), so an 8s budget would kill every cold read and report a healthy peer as `capability_unreachable`. One failed read does not fail the request: the reply is a PARTIAL document with the miss named per-field in `unavailable` (`capability_unreachable`, `capability_unauthorized`, `capability_peer_too_old`, `capability_peer_revalidating`, …), so the frontend disables exactly that control. A peer whose `/api/models` answers its deliberate `503 model_list_revalidating` (an entitlement revalidation in flight) maps to `capability_peer_revalidating`; any other non-2xx is `capability_peer_refused`. The dashboard reads it in two places: New chat on crew (`chat-sidebar/create.ts`) refuses to create a session on a peer whose `version_match` is false, and the crew window (`CrewChatWindow`) re-reads it every 5s until `version_match` is true, so a reconnect unlocks the window; the window's model picker (`useCrewWindowModelPicker`) marks the model list failed when `unavailable.models` is set rather than showing an empty list. Replies are untrusted input: every string crosses the redact + clamp chain (`_cap_str` / `_cap_rows`, row cap 500) before reaching a picker. Owner-only, like the proxy and the federated search. |
+| `GET /api/instances/{id}/approval-state` | A CONNECTED peer's machine-wide YOLO flag, for the crew window's approval-mode picker: `yolo` (bool; `null` when the read failed or carried no boolean). Reads the peer's `/api/status` through the same closed `SshTunnelManager.peer_capability` carrier and forwards that one field and nothing else. A route of its own so the window's 30 s poll reads one peer endpoint, not the roster. A failed or raising read answers 200 with `yolo: null`. Owner-only, like the capability read. |
+| `GET /api/instances/{id}/chat-slots` | A CONNECTED peer's live sessions for the merged Sessions sidebar (`read_peer_slots`). Read-only. Each row is re-shaped to an allowlist of fields (`_clean_peer_slot`), a `parent` citation keeps only its string `slot` and `key` halves (`_clean_peer_parent`), and the server stamps each keyed row's `row_identity` as `<instance_id>:<key>`. Every peer row is listed, including the peer's own row for a local relay archive's chat; the archive projects its own local key, so the two never share a sidebar identity. See the feature map's merged-sessions row. |
+| `ANY /api/instances/{id}/proxy/{path}` | Generic chat proxy — the carrier for the remote-crew chat view. Forwards a **bounded slice** of a CONNECTED peer's `/api/` surface over the already-open tunnel via `SshTunnelManager.proxy_request`, relaying the reply redacted (a proxied chat turn streams SSE for minutes, so the client timeout is connect + read-idle, never total). Credential rules match the federated search: the manager-held token travels as the port-scoped cookie and never reaches the browser; a `401/403` gets exactly one transparent re-mint retry; `allow_redirects=False` (a compromised peer answering 30x must not steer the hub — SSRF). Path policy is a **canonicalization**, not a pattern check, and runs before any URL is built: the caller's path is percent-decoded to a fixed point (bounded by `PROXY_PATH_MAX_DECODE_PASSES`, a deeper chain is refused), then every segment must be a plainly-named token — no empty segment, no all-dots segment, and only unreserved/sub-delim characters — and the forwarded path is **rebuilt from exactly those vetted segments**. Vetting the decoded form and forwarding the rebuilt one is what closes encoded traversal at any depth: a half-decoded `%252e%252e` matches no denylist rule yet still normalizes back into the control plane. On that canonical form the vet policy is a **positive prefix allowlist** (`_PROXY_ALLOWED_PREFIXES`, `api/chat` + `api/stream` today): only the peer's `api/chat` subtree and its `api/stream` event feed are forwarded — each a prefix grant, so every route under one is reachable, which is the chat feature's own wire surface — and everything outside the named prefixes is refused by default: the peer's own `api/instances` plane (one hub cannot chain through a peer into a third machine's SSH control plane), the peer's token-minting routes (whose JSON replies would carry a minted peer credential back through the hub in-band), and any endpoint the peer grows outside the allowlisted prefixes. `api/stream` is the peer's own SSE broadcast endpoint and the out-of-turn half of the chat view: the per-turn reply streams back from `api/chat`, while session-list and slot-state changes arrive on `api/stream`. It is deliberately that endpoint and **not** its WebSocket sibling `api/ws` — a WS row would need a `101 Switching Protocols` to cross this proxy, and the reply content-type gate below exists precisely to stop a peer serving anything but JSON/SSE onto the authenticated hub origin, so an upgrade would tunnel straight through it. Note what the row admits: that feed is per-client but not per-slot, so a hub holding it receives the peer's whole notification/slot broadcast rather than only the session on screen — peer content crossing to a hub user who is already the peer's owner (this route is owner-only), so it widens volume, not privilege, and is the reason it is a named row rather than a blanket `api/` grant. A new prefix is added to the constant explicitly, never by widening back to deny-only; the constant's exact value is pinned by a test so widening is always a reviewed act. Methods limited to GET/POST/PUT/PATCH/DELETE; inbound bodies capped at `PROXY_REQUEST_BODY_MAX_BYTES` before buffering. No browser Origin or cookies are forwarded to the peer (the hub presents as a same-origin loopback client), and the hub's own `?token=` credential is **stripped from the forwarded query** — the browser may authenticate the proxy request with it, and forwarding it would hand the peer a replayable hub credential. Replies are gated to an **allowlist**: only `application/json` and `text/event-stream` content types are forwarded (a compromised peer must not serve active content that executes on the hub origin), and only allowlisted headers (`Content-Type`, `Cache-Control`, `X-Accel-Buffering`) cross back on an SSE reply — `Set-Cookie` and everything else is dropped, with `X-Content-Type-Options: nosniff` added. **Every reply is redacted before the browser sees it** (the crew window renders peer text directly), with the `redact_peer_text` chain (`dashboard/peer_redaction.py`): an `application/json` body is buffered whole and redacted as one decoded document, then re-sent as a fresh JSON response; an SSE stream is cut into events (CR/CRLF normalised, an event's `data:` lines joined into one payload, the way the browser reads it) and each event is redacted before it is written. Both are bounded by `PROXY_REDACT_BUFFER_MAX_BYTES`: a JSON reply past it is refused with `proxy_reply_too_large` (502), an SSE event past it ends the stream; a reply nested past the recursion limit is refused as `proxy_reply_unredactable`. Nothing is ever forwarded unredacted, and the allowed content types are pinned to exactly the two with a redaction path. Typed failures (`proxy_peer_not_connected`, `proxy_no_credential`, `proxy_unauthorized`, `proxy_peer_unreachable`) map to 5xx with a machine-readable `code`. |
 
 **Three routes cross the token boundary, and they are the only three.** `connect`,
 `refresh-token` and `embed-token` each return a minted dashboard token in their
@@ -617,8 +755,8 @@ mismatch between the record and the live forward.
 
 The machinery is also not paid for by this feature alone. Every piece exists
 because a tunnel's coordinates can change under a task that already read them —
-which is equally true of the pre-existing self-heal and token-refresh loops, and
-is where two of the bugs found during this PR's review actually lived. Making the
+which is equally true of the self-heal and token-refresh loops, where the same
+coordinate-staleness hazard lives. Making the
 edit path safe hardened those seams rather than adding a new hazard: the barrier
 is what stops a backed-off self-heal from reinstalling a tunnel to a machine the
 user has moved on from, with or without an edit in flight.
@@ -632,9 +770,11 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 
 ## 7. Security model
 
-- **Owner-only, never via Slack.** A Slack-origin `X-Session-Key` is rejected;
-  an authenticated dashboard session (`request["user"]`, set by the token-auth
-  middleware) is positively required rather than assumed.
+- **Owner-only, never via Slack.** A Slack-origin `X-Session-Key` is rejected.
+  `_guard` then checks in two steps: no `request["user"]` (set by the token-auth
+  middleware) answers `401`, and an authenticated identity that is not the
+  dashboard owner (`is_owner_dashboard_request`; app tokens and the per-user
+  tokens messaging transports mint) answers `403 owner_only`.
 - **Loopback-only forwards.** `ssh -N -L 127.0.0.1:<local>:127.0.0.1:<remote>`,
   with `AddressFamily=inet` to avoid an unexpected `::1` bind, `BatchMode=yes`
   so a missing credential fails fast instead of prompting, and
@@ -654,11 +794,30 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 - **postMessage relay.** The parent validates every embedded-frame
   `event.origin` against an exact loopback http origin (`127.0.0.1`, `localhost`,
   or a single-label `*.localhost`) **and** requires the port to belong to a
-  currently-warm tunnel before trusting any message. Only four message kinds
-  cross the boundary: an unread count, an auth-expired signal, a switch-pane
-  request (whose target is re-validated against the known instance list), and a
-  readiness ping. The parent's outbound `postMessage` is addressed to the pane's
-  exact origin, never `*`.
+  currently-warm tunnel before trusting any message. The kinds it accepts are
+  the ones `InstancesViewport`'s `onMessage` handles (unread slots, auth expired,
+  switch instance, readiness and boot, chained-crew, crew pin, stable order,
+  focus mode and chrome, cursor-away watch and cancel, drag gaps, native notify,
+  pane active slot);
+  a switch target is re-validated against the known instance list. `mc-native-notify`
+  carries user-visible text, so it is accepted only from a resolved tunnel origin
+  and only when every field has exactly the expected type
+  (`parseNativeNotifyEnvelope`), with title, body and tag bounded.
+  `mc-pane-active-slot` is accepted only from a resolved warm tunnel origin, and
+  its key is shape-checked (`isPaneSlotKey`, `[A-Za-z0-9._:-]{1,128}`) before it
+  is stored under the instance id that origin resolved to. The parent's outbound
+  `postMessage` is addressed to the pane's exact origin, never `*`.
+- **Last-chat hint on reconnect.** A pane's own `mc-active-slot-<mode>`
+  lives in its origin, which carries the tunnel's local port, so a reconnect on a
+  new port starts the pane with empty storage. The pane therefore reports its
+  active chat (`mc-pane-active-slot`), and the hub keeps one last chat per
+  instance id in its own storage (`lib/paneLastSlot.ts`). The hub adds
+  `lastSid=<chat>` to the pane URL only when it next loads that pane: the src is
+  computed once per port, token and Retry count, so recording a new chat never
+  changes the src of a pane that is already loaded. The pane uses the hint once,
+  for its first automatic pick, and only if that chat is still in its own slot
+  list. It is not a `?sid=` deep link: a gone chat falls back to the stored chat,
+  then the first chat, with no error banner.
 - **CSP.** `frame-ancestors` is `'self'` plus the exact parent origin carried in
   the minted token's signed `embed_parent_port` claim, never a wildcard and never
   a hardcoded port, so a local page with no validly-signed token can never frame
@@ -995,11 +1154,10 @@ transport** — `connection_method="ssm"` with the EC2 instance id as `ssm_targe
 plus the launcher's `aws_profile`/`aws_region` (`cloud/connect.py:register_instance`).
 The dashboard then tunnels, refreshes tokens, and self-heals the box over SSM with
 no SSH key, no inbound port, and no hand-edited `~/.ssh/config`. `kirocrew cloud
-destroy` unregisters it (matched by `ssm_target`) after deletion confirms. This is
-why `cloud/connect.py` cites this section, and why its numbering must not move.
+destroy` unregisters it (matched by `ssm_target`) after deletion confirms.
 The legacy `ssm_proxy_ssh_host` helper (registering the id as `ssh_host` behind an
-`~/.ssh/config` `ProxyCommand`) is retained for reference only and is no longer
-used by the managed path.
+`~/.ssh/config` `ProxyCommand`) is retained for reference only; the managed
+path does not use it.
 
 ### Provisioning from the dashboard (`/api/cloud/*`)
 
@@ -1024,15 +1182,16 @@ its real jobs.
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |
+| `GET /api/cloud/identity` | The launching machine's own Kiro sign-in (from `kiro-cli whoami`), so the launch form can preselect a sign-in target. A suggestion only: never a credential and never the launch's authority. |
 | `GET /api/cloud/iam-policy` | The minimum IAM policy document to paste into the user's account. |
 | `GET /api/cloud/provisioners` | The lanes the Set-up tab may offer: `{id, kind, label, posix_only, steps}` per provisioner, from the CPP `remote_provisioners` seam ([platform-context.md](platform-context.md)). The stock build lists the single `aws_ec2` lane. Answers on every platform, like the two history routes: the tab needs it to pick a form, and each row's `posix_only` carries the platform answer for that lane. Adding a lane: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md). |
 | `GET /api/cloud/launch` | List launch jobs, in progress and finished. |
-| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key}`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. The job carries `provider_id`, and its step labels are the provisioner's. |
+| `POST /api/cloud/launch` | Start a launch job; returns the job immediately. `409` when one is already in flight. Body `{provider_id?, profile, region, size_key, subnet_id?, login_target?, confirm_recipient?}`; `provider_id` defaults to `aws_ec2`, and an id the seam does not list or cannot back answers `400 unknown_provisioner` before any job file exists. `subnet_id` pins a built-in EC2 launch to that subnet; an invalid one, or one sent with any other provisioner, answers `400 invalid_subnet`. The job carries `provider_id` and `subnet_id`, and its step labels are the provisioner's. |
 | `GET /api/cloud/launch/{id}` | Poll one job: per-step state plus the device-code prompt while signing in. |
 | `GET /api/cloud/launch/{id}/task` | The current ECS state of the container task a finished Fargate launch recorded: one `describe-tasks` for that ARN, answered as `{job_id, task_arn, read_at, task}` where `task` is the sighting (cluster, task id, `last_status`, `desired_status`, `started_at`, `stopped_at`, `stopped_reason`) or `null` when ECS does not list the ARN, and `read_at` is when this read happened. Read-only and owner-only; POSIX-gated like every route here that runs the AWS CLI. Refusals name their cause: `launch_job_not_found` (404), `launch_task_not_recorded` and `unknown_provisioner` (400), `provisioner_cannot_describe` (400, a lane without this read, by capability rather than by id), `aws_call_failed` (502). |
 | `POST /api/cloud/launch/{id}/cancel` | Request cancellation; honored between steps and inside the sign-in wait. A cancel during provisioning is acted on when the deploy returns, and the stack it created is rolled back. It also stops the remote `kiro-cli login` **before** that rollback and regardless of whether the rollback confirms: teardown can end in `DELETE_FAILED`, and an instance that survives with a login still polling would sign the crew in minutes after the owner cancelled. Stopping the login is deliberately not a `logout` — the box may hold an older session the cancelled attempt never touched. |
 | `POST /api/cloud/launch/{id}/signin` | Acknowledge the device-code prompt (`409` when none is pending). |
-| `POST /api/cloud/launch/{id}/signin/restart` | Re-run **only** the sign-in step on a crew that already exists, for a launch that finished unsigned: a fresh device code, run with the job's stored `login_target` so a company-SSO crew is not retried through a Builder ID prompt. Owner-only; never re-provisions. `400` when the job never created a crew, `409` while any launch or sign-in is already running on it. The RUNNING transition is persisted under the launch lock that admitted the request, so a second restart arriving in that window cannot pass the same check. |
+| `POST /api/cloud/launch/{id}/signin/restart` | Re-run **only** the sign-in step on a crew that already exists, for a launch that finished unsigned: a fresh device code, run with the job's stored `login_target` so a company-SSO crew is not retried through a Builder ID prompt. Owner-only; never re-provisions. `400` when the job never created a crew, `409` while a launch or sign-in is already running on the same instance, or while a launch has not created its instance yet; a job on another crew's instance does not block it. The RUNNING transition is persisted under the launch lock that admitted the request, so a second restart arriving in that window cannot pass the same check. That lock is one for every crew and covers only the check and the claim, not the remote login, so two restarts on one crew still serialize. |
 | `POST /api/cloud/{tag}/stop` | Stop the instance behind a stack tag. |
 | `POST /api/cloud/{tag}/start` | Start it again. |
 | `DELETE /api/cloud/{tag}` | Terminate the stack (`wait=False`; a denied human-action check surfaces as `403`). |
@@ -1101,6 +1260,9 @@ whose current variable parts are all charset-bound literals.
 | Settings → Remote Crew shows the opt-in card | `instances.enabled` is false. Set it and restart. |
 | Enabled but the panel says "not active" | The flag was set after the gateway started; the SSH manager is created at startup only. Restart. |
 | Iframe is blank or black | On a loopback dashboard origin, the pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. On a non-loopback origin the CSP `frame-src` refuses the frame outright, so no iframe is mounted and no watchdog runs: the pane shows the "needs a local dashboard" card (see §4 step 1), and Retry would not help — open the dashboard on a loopback origin instead. |
+| Connect fails with `ssh tunnel transport drop (… check this instance's ssh_host)` | The ssh child died before the forward ever came up, which is how a proxy answers for a host that no longer exists under that name (rebuilt, renamed, decommissioned). Fix `ssh_host` in the instance's settings. A drop on a tunnel that was up does not carry this hint — that host was reachable. |
+| Token mint fails with `exited 127` / `kirocrew binary not found` | The remote's `kirocrew` is in none of the candidate paths (§12.1). The stderr names the override: set the instance's `remote_bin` to its path in `~/` form. |
+| Token mint fails with `Could not reach gateway on port N` | Nothing is listening on the remote: an installer put the binary there but never started a gateway. The stderr names the remedy: `kirocrew gateway` for this login, or `kirocrew service install` for one that survives logout. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
 | "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
@@ -1172,7 +1334,12 @@ unrelated consumers, and separating them is the point of the module.
 ### Consumer 1: remote token mint targets the running gateway's install
 
 Token mint SSHes to the remote and resolves `kirocrew` from a fixed PATH
-candidate list whose first entry is `$HOME/.local/bin/kirocrew`. When that
+candidate list (`REMOTE_BIN_CANDIDATES`) whose first entry is
+`$HOME/.local/bin/kirocrew`; the one-liner installer's venv and the managed
+launcher directory `~/.toolbox/bin` (the same one `env._EXTRA_PATH_DIRS` searches
+locally) follow it. When no candidate is executable the snippet exits 127 after
+a per-candidate diagnosis and a last line naming the `remote_bin` instance field
+as the override, in `~/` form (the validator refuses `$`). When that first
 launcher symlinks into an *uninstalled* checkout (no `.venv`), every mint fails
 even though the gateway itself is healthy, because the gateway runs from a
 different venv. Rebuilding and restarting the gateway does not fix mint, since
@@ -1215,8 +1382,8 @@ The marker's filename advertises which port a gateway serves, so `marker_ports()
 lets a local client command (`token` / `status` / `logout` / `stop`, via
 `port_resolution.resolve_client_port`) find a gateway on a non-default port with no
 configuration. That path reads only the filename and ignores marker *contents*
-entirely. Resolution order is `--port`, then `KIROCREW_PORT`, then a port named
-by `dashboard.url`, then the sole gateway-owned marker, then the default 5476.
+entirely. Resolution order is `--port`, then `KIROCREW_PORT`, then `KIROCREW_BOUND_PORT`
+(below `KIROCREW_PORT`, for pod isolation), then a port named by `dashboard.url`, then the sole gateway-owned marker, then the default 5476.
 
 **A marker is not proof a gateway is there.** `clear_marker()` runs only on
 graceful shutdown, so a crash or SIGKILL leaves the file behind and an unrelated
@@ -1261,6 +1428,19 @@ Deletion touches the filesystem, so a coroutine offloads `clear_marker()`
 (`asyncio.to_thread`) rather than calling it inline; a repo-wide AST test holds
 that.
 
+**Publication lifecycle.** Marker reads and writes for one port serialise on a
+per-port lock, `run/gateway-<port>.lock` (`marker_lock_path`), because a pid-record
+check and the write it authorises must not be separable. `write_marker` declines
+when the pid record names another live gateway. A gateway that loses one bound
+address while it keeps serving the others retracts that address's listener
+credential and its in-memory record together (`withdraw_published_listener`, via
+`listener_claims._withdraw_listener_sidecar`) before it rebinds, and publishes it
+again once it holds the address. On Windows the secondary-family listener has its
+own guard against a failed `accept()`, reconciled against the live socket. A late
+`write_marker` that lands after shutdown cleared is undone by
+`clear_late_marker_write`, which never deletes a credential and touches nothing
+when the pid record names another process.
+
 ### 12.1 The internal-API credential is keyed to one listener
 
 `<data-home>/run/gateway-<port>.secret` holds the internal-API credential of the
@@ -1300,8 +1480,13 @@ loopback names AND literals for the SPA's per-origin settings, since every
 spelling in that set reaches this same gateway. What it never does is move a
 CREDENTIAL: a navigation carrying `?token=` is served where it was addressed
 rather than redirected, because a 302 preserves the query. That gate does not
-depend on which families are bound, which is why it holds even when the second
-bind degraded. A caller that names the loopback ADDRESS it dials reads the
+depend on which families are bound. The redirect itself does: when the canonical
+host is an ambiguous loopback name, the 302 is withheld while this gateway does not
+hold every loopback family that name resolves to
+(`build_host_canonical_redirect(holds_every_family=...)`), because the browser
+would follow it carrying the host-only session cookie. The document is then served
+in place, with a `not canonicalizing` warning, at the cost of split per-origin
+settings while a family is uncovered. A caller that names the loopback ADDRESS it dials reads the
 address-keyed entry and refuses when the family that address reaches is uncovered
 (`config/loader.read_local_secret(port, dial_host=...)`, mirroring the app's
 `listenerSecretsFor`); it falls back to the port-keyed file only for a gateway that
@@ -1312,11 +1497,11 @@ nothing finer, still reads the port-keyed file, which is why it stays published.
 
 The credential is generated per gateway start (`os.urandom(16).hex()`) and kept in
 memory as the value the auth middleware compares against, so it identifies ONE
-generation. Published only to the single shared `<data-home>/.local_secret`, it
-was last-writer-wins per home: a second gateway starting in the same home replaced
-the file while the first kept serving the port, the incumbent went on comparing
-against its own in-memory value, and every internal caller then sent the
-newcomer's credential to the incumbent. The whole internal channel answers 403
+generation. Published only to one shared `<data-home>/.local_secret`, it would be
+last-writer-wins per home: a second gateway starting in the same home would replace
+the file while the first kept serving the port, the incumbent would go on comparing
+against its own in-memory value, and every internal caller would send the
+newcomer's credential to the incumbent. The whole internal channel would answer 403
 with a body of exactly `Forbidden` until one of them restarts: `learn_add`,
 `spawn`, `session-keepalive`, artifact writes, the task runner, all at once, with
 no warning and no metric.
@@ -1398,7 +1583,9 @@ consumer matching on text misdiagnoses one as the other. It also names both side
 fingerprint (a short SHA-256 prefix plus length, never the value), so a
 cross-generation mismatch is distinguishable from a forged header and from a caller
 that had no credential at all; without it a real desync is unattributable from the
-log.
+log. An empty provided value also carries its own code (`internal_secret_missing`),
+because the gateway received no credential from that client; a mask that withholds
+the credential or a listener desync are possible causes, not a pairing one.
 
 ### Why `run/` is on the sensitive-path floor
 
@@ -1427,14 +1614,17 @@ using either alone costs a platform:
   PIDs use, in-process (no subprocess), and microsecond resolution on macOS, where
   `process_start_time`'s `ps -o lstart=` spelling is only 1-second granular, so a
   PID recycled inside the same second would reproduce an identical value.
-- `platform_compat.process_start_time()` is the fallback, and it is what keeps
-  **Windows** working: it reads the process creation `FILETIME` (100-ns units)
-  through a query-only handle, while `get_process_start_id()` implements Linux and
-  macOS only and answers `None` everywhere else. Without this leg the token is
-  empty on every Windows host, so a pod there could never prove ownership — an
-  unsatisfiable requirement rather than a strict one. `metrics.md` records the same
-  trap reached from the other direction: `get_process_start_id` used alone as a
-  liveness test "judged every owner dead on that entire platform".
+- `platform_compat.process_start_time()` is the fallback, and on **Windows** it is
+  what `get_process_start_id()` dispatches to: it reads the process creation
+  `FILETIME` (100-ns units) through a query-only handle. `get_process_start_id()`
+  implements all three platforms — Linux `/proc` field 22, macOS libproc, and
+  the Windows `process_start_time()` leg — and answers `None` only on an
+  unrecognised host or a failed read, never on Windows categorically.
+  Without the Windows leg the token would be empty on every Windows host, so a pod
+  there could never prove ownership — an unsatisfiable requirement rather than a
+  strict one. `metrics.md` records the complementary trap: `get_process_start_id`
+  must not be used alone as a *liveness* test, because a `None` (a process it may
+  not introspect) must read as "identity unknown", never as "owner dead".
 
 The fallback's value is whitespace-collapsed, because the macOS `ps` spelling is
 space-padded and the reader requires a single token; Windows returns a bare
@@ -1480,6 +1670,20 @@ port, no sshd and no distributed key — reachability is an IAM decision
 
 Records are back-compatible: an `instances.json` written before this feature has
 no `connection_method` and loads as `"ssh"`.
+
+**A method this build does not know is refused, never dialled as SSH.** Records
+load without full validation, so a hand-edited value or one written by a newer
+build (`outbound`) reaches the gateway. `SshTunnelManager._resolve_transport`
+normalises the method (trimmed, lower-cased; absent or blank means `ssh`) and
+raises `validation.UnsupportedConnectionMethodError` for anything outside
+`CONNECTION_METHODS`. It subclasses `SshValidationError`, so every caller that
+already catches transport-validation errors (self-heal, token refresh, the
+remote verbs, the lent hop) refuses the crew. `connect()` re-raises it instead of
+storing an error status, like `InstanceDisabledError`, and spawns nothing;
+`POST /api/instances/{id}/connect` answers `409` / `code:
+connection_method_unsupported`. `diagnose()` returns that same code as its
+verdict and runs no probe, since the SSH ladder would dial whatever `ssh_host`
+the record holds.
 
 SSM-only registry fields: `ssm_target` (an EC2 `i-…` or SSM managed-instance
 `mi-…` id), plus optional `aws_profile`, `aws_region` and `ssm_run_as`. Only the
@@ -1532,7 +1736,7 @@ Stderr is not the only input. The plugin exits `0` with an empty stderr whether
 the session went idle, the transport was lost, or the session never started, so
 those three would otherwise collapse into one bare exit-code message. The close
 notice that tells them apart is on stdout, which the forward therefore captures
-under the rules in §Security. `_ssm_close_reason` reads that buffer and returns
+under the rules in §7. `_ssm_close_reason` reads that buffer and returns
 one shape -- idle, closed, resume-timeout, start-failed, or nothing matched --
 and `_ssm_exit_error` composes its own message and remedy from the shape. A real
 stderr signal still outranks the close notice, and a stop this code initiated is
@@ -1549,7 +1753,7 @@ offline agent is not reported as a dead remote gateway:
 2. remote dashboard up? (`send-command` + curl on the remote loopback) → no ⇒ `remote_down`
 3. local forward reachable? → no ⇒ `tunnel_down`, else `ok`
 
-`ssm_unreachable` is a new diagnosis code; the shared rungs reuse SSM-worded
+`ssm_unreachable` is an SSM-specific diagnosis code; the shared rungs reuse SSM-worded
 reasons so the copy never tells an SSM user to "check SSH access".
 
 ### Reuse of the launcher's SSM primitives
@@ -1585,7 +1789,8 @@ which is not an egress boundary.
 `ProxyCommand` — still valid as a manual option, and still `connection_method="ssh"`:
 the reachability lives in ssh config and Kiro Crew is unaware of it.
 `connection_method="ssm"` is the direct alternative, requiring neither sshd nor a
-key on the remote — and it is now what `cloud/connect.py`'s registry integration
+key on the remote — and it is what
+`cloud/connect.py`'s registry integration
 uses (`register_instance` sets `connection_method="ssm"`, `ssm_target=<instance-id>`).
 The legacy `ssm_proxy_ssh_host` helper is kept for reference only.
 
@@ -1643,9 +1848,9 @@ while the **conversation payload travels byte-exact**. That distinction is
 forced, not stylistic: thinking blocks inside `conversation_metadata` carry a
 provider `signature` over their own content, which is validated when the
 conversation is replayed, so rewriting any covered byte makes the peer's *next
-turn* fail — long after the import reported success. An earlier revision scrubbed
-Layer B on both boundaries and, measured against one developer machine's 704 real
-sessions, altered a signature in **41%** of them. Redacting this artifact and
+turn* fail — long after the import reported success. Scrubbing
+Layer B on both boundaries alters a signature in **41%** of one developer
+machine's 704 measured real sessions. Redacting this artifact and
 transplanting it cannot both hold; what bounds the exposure is the destination
 (the operator's own peer, over a tunnel they authenticated, stored `0600`), not a
 scrub of the payload. **Layer A keeps its redaction** — that text is rendered and
@@ -1695,12 +1900,12 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | Method and path | Purpose |
 |---|---|
 | `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>"}`. Bundles the local session and delivers it over that instance's open tunnel. |
-| `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. |
+| `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. `?format=md` streams it as a human-readable Markdown transcript instead; see §14.7a. |
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. See §14.5a. |
 
 `send-session` goes through the same `_guard()` as every other route in §6
 (owner-only, never Slack, feature-gated, SEL-audited as
-`instances_send_session`). It returns `{ok, instance, remote_key, messages}`.
+`instances_send_session`). It returns `{ok, instance, remote_key, messages, resume_mode}` (`resume_mode` is the peer's, `""` from an older peer).
 
 Status codes: `404` unknown instance or unknown local slot, `400` a
 non-persistent source session or a malformed body, `503` the manager is not
@@ -1716,14 +1921,15 @@ meanwhile, so `send_session_bundle` runs the same revalidation again (its
 the request; a line tightened there is the same `400` / `503`, with nothing
 sent. The transmit itself is the accepted residual window.
 
-**`send-session` is NOT a third token-crossing route.** §6's invariant holds:
-`connect` and `refresh-token` remain the only two routes whose response carries a
-minted token. The chat proxy cannot become a third one in-band either: its
+**`send-session` is NOT another token-crossing route.** §6's invariant holds:
+`connect`, `refresh-token` and `embed-token` remain the only routes whose response
+carries a minted token (§6 owns that set). The chat proxy cannot join them in-band
+either: its
 allowlist (§6) forwards only the peer's `api/chat` and `api/stream` surfaces —
 neither of which mints anything — so the peer's own token-minting routes are
 unreachable through it. That is a property of the allowlist, so it must be
 re-checked whenever a prefix is added: a new row that reached a minting route
-would make the proxy a third token-crossing route without touching this file.
+would make the proxy a token-crossing route without touching this file.
 The transfer needs the
 credential but the browser does not, so the
 request is issued **inside `SshTunnelManager.send_session_bundle`** — the token
@@ -1733,7 +1939,7 @@ link, which the peer refuses as a cookie, so the manager trades it once at
 cannot land in the peer's access log). The trade runs as soon as the link is
 stored (connect, re-mint, self-heal), inside the link's click window, and the
 session is cached against that link. Any audit of where tokens leave the gateway
-still finds exactly two routes.
+still finds exactly the routes §6 names.
 
 ### 14.5 Trust model for an inbound session
 
@@ -2198,8 +2404,8 @@ dashboard owner is unaffected, being entitled to both.
 
 **Export is never blocked by size.** There is no producer-side reject preflight:
 a session of any size exports, carrying the FULL conversation and (when the
-operator opted in) the FULL Layer B. The old "refuse a bundle the importer would
-reject" gate is gone, because the importer no longer refuses on size either — the
+operator opted in) the FULL Layer B. There is no "refuse a bundle the importer would
+reject" preflight, because the importer does not refuse on size either — the
 two halves agree by both dropping the ceiling, not by consulting one shared bound.
 The only structural refusals left are an empty transcript (`export_bundle_empty`)
 and the non-persistent/ownership guards above.
@@ -2230,8 +2436,7 @@ the transfer, and it is cleared once the body is sent.
 
 **An older peer still refuses on size, and the send falls back.** A receiver on
 an earlier release enforces the ceilings this side dropped and answers
-`transfer_layer_b_too_large` or `transfer_bundle_too_large`. That session used to
-arrive transcript-only, because the sender trimmed Layer B itself, so
+`transfer_layer_b_too_large` or `transfer_bundle_too_large`, so
 `send_session_bundle` resends once without Layer B and the peer answers `prefix`
 ("Sent (transcript only)"). A bundle with no Layer B to drop is refused as it was.
 
@@ -2246,10 +2451,11 @@ Three properties worth stating because they are easy to lose:
   export can be shared with another person, unredacted context must not ride
   along unasked: `rfc-s3-backup.md` O1 assigns that risk to the operator, not the
   exporter, and its minimum bar for a sensitive payload in a bundle is
-  conjunctive (`rfc-s3-backup.md`:317-319) -- a config key OFF by default AND an
-  explicit per-invocation flag. So Layer B travels only when BOTH
-  `dashboard.export_include_layer_b` is enabled (standing permission, default
-  `false`) AND the request carries `?include_layer_b=true` (this export asked).
+  conjunctive (`rfc-s3-backup.md`, Security considerations) -- a config key OFF by default AND an
+  explicit per-invocation flag. So Layer B travels only when the caller is
+  the dashboard operator AND `dashboard.export_include_layer_b` is enabled
+  (standing permission, default `false`) AND the request carries
+  `?include_layer_b=true` (this export asked).
   A default-on would ship the implementer's decision to everyone who never chose,
   the opposite of what O1 assigns, so the default withholds: the export sets
   `layer_b_skipped`, the loss is stated rather than inferred from an absent key,
@@ -2282,6 +2488,85 @@ Three properties worth stating because they are easy to lose:
   rather than exporting when that write fails. Reading such a file back is
   `ImportSessionItem` beside this row, which posts the file's bytes unchanged to
   `/api/chat/slots/import` — see §14.5a for what that route accepts.
+
+### 14.7a The Markdown rendering (`?format=md`)
+
+The same endpoint, the same assembled bundle, written as a document for a person
+instead of for the importer. Code:
+`src/kiro_crew/dashboard/session_markdown.py`; `?format=md` answers
+`<title-slug>-<stamp>.kcsession.md` as `text/markdown; charset=utf-8`.
+Both formats are mounted as sibling rows of `ExportSessionItem`, the JSON one
+first, each naming what its file is for rather than sharing a label split by a
+format suffix — the Install row directly below reads one of the two back, and a
+row that only names its file type leaves the reader to work out which.
+
+**Why a query parameter and not a second route.** Every guard on the JSON path
+has to hold identically — the app-scope ownership checks, the
+incognito/temporary refusal, the transcript locking, the empty-transcript
+refusal, the publication hold, the SEL audit. A second route is a second place
+for one of them to be forgotten. The handler normalises surrounding whitespace
+and ASCII case before matching `md`; every other `format` value falls back to the
+JSON bundle rather than erroring. The two formats share those route guards and
+the bundle's egress redaction, which scrubs the assistant turns, the title and the
+provenance paths and leaves user turns verbatim, but not an identical payload
+privacy shape: Markdown excludes Layer B, while JSON may carry unredacted Layer B
+after §14.7's explicit twofold opt-in. The audit entry records which format was
+served.
+
+**It never carries Layer B, whatever the operator opted into.** The format gate
+sits AHEAD of §14.7's twofold opt-in, so `?format=md&include_layer_b=true`
+resolves `include_layer_b=False` and the context window is never even read.
+Markdown installs nowhere, so byte-exact unredacted context has no job in it —
+and a document whose purpose is being pasted into a review, a ticket or a chat
+is the last place it may appear.
+
+**Message content is written verbatim.** Transcript content already IS Markdown —
+that is what the dashboard renders — so escaping it would destroy the fenced code
+blocks, tables and lists this format exists to preserve. Assistant content is
+already egress-redacted, because it is the same bundle text §14.7 ships; user
+turns are written verbatim, as in the JSON bundle, because redacting what the
+person typed would corrupt their own words. The one structural consequence is
+handled: a message ending inside an unterminated code
+fence, or inside an HTML block that runs to its own terminator past any blank line
+(`<pre`, `<script`, `<style`, `<textarea`, `<!--`, a `<?` processing instruction, a
+`<!` declaration, `<![CDATA[`: CommonMark §4.6, conditions 1-5), would otherwise
+render as code or hide every later turn — silent loss at read time — so the
+renderer closes it at the message boundary. Detection matters in BOTH directions,
+because a manufactured closer is itself content and a bare fence line is a valid
+opener: closing a construct that was never open swallows the rest of the document
+just as surely. So the renderer never guesses what is open: it parses each message
+with a CommonMark reference implementation (`markdown-it-py`, a runtime dependency
+for this reason) exactly as it will land in the file, followed by the separator and
+a stand-in for the next heading, and adds a closer only when the parser reports
+that heading swallowed — the closer the swallowing block itself names. Every closer
+is re-verified by the same parse before it is accepted. A fence inside a list item
+or block quote therefore draws no closer, and needs none: the `---` separator
+before the next heading ends the container and the fence with it, and the parser
+says so. A message the parse cannot settle is written as plain text inside a
+backtick fence longer than any backtick run it holds, verified by the same parse
+as a closer: that one message reads as its source instead of rendered, and no
+other turn is touched. Only a message even that cannot settle fails the export
+with the ordinary audited `export_failed` rather than shipping a guess. The guard
+stops where the parser does: raw HTML that CommonMark treats as ended (an element
+on a line of its
+own, an unfinished tag, a comment that a list item or quote ended without its
+`-->`) is a downstream HTML renderer's contract, and this export names no
+renderer. The title is collapsed
+to one line for the same reason: a heading is one line, so a newline in a
+user-renamed title would otherwise put a second, unescaped block beneath it. The
+provenance table is the only place a value is escaped, since an unescaped `|` there
+shifts every later column.
+
+**Streamed, never assembled.** `write_markdown_file` writes a message at a time
+into a temp file in the same `data_home()/tmp/session-export` staging directory
+the gzip path uses, and the response streams from that file — so a long session's
+rendered text is never resident, and both formats are reclaimed by one sweep.
+
+**What it does not carry.** Tool calls are not in the bundle: `messages` holds
+only `session_transfer._VISIBLE_ROLES` (`user`, `assistant`), and the transcript's
+`tool` rows are filtered out before the bundle exists. Rendering them means
+widening the egress boundary with its own redaction pass over tool inputs, which
+is its own change.
 
 ### 14.8 The `source` provenance record — recorded, never applied
 
@@ -2350,18 +2635,22 @@ The search reuses the transfer's transport shape exactly: the hub GETs a peer's
 own `/api/sessions/search` **over the already-open forward** — no SSH spawn, no
 new port, no reverse reachability. `SshTunnelManager.search_sessions_remote`
 follows `send_session_bundle`'s credential rules to the letter: **the token
-never leaves the manager** (§6's invariant holds — `connect` and `refresh-token`
-remain the only routes whose response carries one), it travels as the
+never leaves the manager** (§6's invariant holds — `connect`, `refresh-token` and
+`embed-token` remain the only routes whose response carries one), it travels as the
 port-scoped cookie so it cannot land in the peer's access log, and a `401/403`
 gets exactly one transparent re-mint retry, because a retained credential can go
 stale while the tunnel stays `CONNECTED`.
 
-"Follows the same rules" is now **enforced rather than asserted**: all three
+"Follows the same rules" is **enforced rather than asserted**: all three
 peer-request methods — `send_session_bundle`, `search_sessions_remote` and
 `proxy_request` — resolve their target and credential through one shared private
 pair, `_peer_target` (connected-only, loopback target, port-scoped cookie name)
 and `_peer_cookie_header` (credential re-read per attempt, sent as a cookie,
 never logged). A fourth caller inherits the invariant instead of copying it.
+Every peer carrier also refuses when the resolved forward's `(port, generation)`
+moved before the credential is spent (`_require_peer_forward`): a teardown in the
+await window frees the port, and the next connect may take that exact port for
+another crew.
 What is deliberately *not* shared is each method's error contract: the
 `proxy_`/`transfer_`/`search_` code families belong to three separate route
 contracts, so the helper reports a neutral reason and each caller names its own
@@ -2470,6 +2759,23 @@ stock dashboard port, so a `fargate` record sets it.
 `registry.SSM_TRANSPORT_METHODS` is `{"ssm", "fargate"}`: the two methods whose
 forwarder is `aws ssm start-session` and which share the `ssm_target` /
 `aws_profile` / `aws_region` coordinates.
+
+**Headless crews on other methods.** "No dashboard" is a property of the CREW,
+not of the `fargate` method. `registry.HEADLESS_CREW_PROVISIONERS` is
+`{"aws_fargate", "microvm"}`, and `registry.is_headless_provisioner(provisioner_id)`
+is the one judge of it. A MicroVM crew (`provisioner_id = "microvm"`, see
+[cloud.md](cloud.md)) is reached over the plain `ssm` method, aimed at the
+guest's `mi-` managed-node id, yet it runs the same headless front as a Fargate
+task. So every rule below that this section states for `fargate` is keyed on
+`method == "fargate" or is_headless_provisioner(...)` in the code, and holds for
+a headless crew on any method: `_TransportParams.headless` carries the answer to
+the sites that have no instance row in scope; `_mint_for`, `connect()`'s mint
+step and `restart_remote` refuse or skip; `turn_url()` is set, so the health
+probe aims at `FARGATE_HEALTH_PATH` (`/health`) and the pane reads the turn URL
+from the status. One difference: the MicroVM front runs the strict posture,
+which requires the per-crew secret on `/health` too, so a probe that sends no
+secret is answered `403` (alive, because any status line counts) and the front
+records a `control` deny for it.
 
 ### 16.1 Registry (`src/kiro_crew/instances/registry.py`)
 
@@ -2662,23 +2968,15 @@ path exists to avoid.
 
 Real setups are multi-hop. The machine showing the dashboard (A) connects a dev
 machine (B), and B -- not A -- is the one that can reach a third box (C): a freshly
-provisioned desktop, a host whose key lives on B. Before chaining, reaching C meant
-backing out to A and connecting from there, which fails when only B holds C's key.
+provisioned desktop, a host whose key lives on B. Connecting from A fails when only B
+holds C's key, so B connects to C and A shows C.
 
-**The decision to allow this is recorded in issue #13744**, which this section
-implements. Chaining reverses a stated property of Remote Crew -- "a connected
-instance cannot connect onward to another instance" -- and that issue is where the
-reversal was asked for, in those words, with the reason above it: B, not A, is the
+Chaining reverses a stated property of Remote Crew -- "a connected
+instance cannot connect onward to another instance" -- because B, not A, is the
 one that can reach C.
 
-Worth stating plainly, because the previous behaviour reads like a design decision
-and was not one: no sentence in this spec tree ever declared Remote Crew
-single-level. The constraint lived entirely in the frontend -- `SettingsPage.tsx`
-dropped the Remote Crew tab from `baseTabs` when `isEmbeddedPane()` -- with no
-depth check, no cycle check and no width check on the gateway side at all. Inside a
-pane the tab simply vanished with no explanation, so what looked like a boundary
-read to a user as a missing feature. Chaining therefore adds the server-side guards
-that a real single-level rule would have needed in the first place (§17.4).
+Remote Crew is present inside an embedded pane, and the depth, cycle and width rules
+are enforced on the gateway (§17.4), not by hiding a tab in the frontend.
 
 **C is not nested inside B's pane. C becomes a top-level tab of A.** B does the
 connecting; A does the showing. Every crew and further crew sits in one tab bar,
@@ -2689,16 +2987,17 @@ CSP `frame-ancestors` chain, and a level-2 tunnel port the top browser cannot re
 
 ### 17.1 The record
 
-`Instance` gains two fields, which travel as a pair:
+A chained `Instance` carries three fields, which travel together:
 
 | Field | Meaning |
 |---|---|
 | `via_instance_id` | The crew in THIS registry whose hop this record rides. |
 | `via_remote_port` | The loopback port ON THAT CREW where its own forward to this one listens. |
+| `via_remote_id` | The parent's own id for this crew, which addresses the parent's embed-token mint (§17.4). Required on a chained record. |
 
-Both empty is a top-level crew, which is every record written before chaining
-existed -- the loader defaults them, so an existing `instances.json` reads unchanged.
-Either half alone is refused rather than half-applied: every consumer would read it
+All three empty is a top-level crew -- the loader defaults them, so an
+`instances.json` with none of them reads as top-level. A partial set is refused
+rather than half-applied: every consumer would read it
 as top-level while the record plainly means something else.
 
 A chained record keeps its own `ssh_host` and `remote_port`. They describe the crew
@@ -2893,7 +3192,7 @@ steal an ACTIVE listener, and omitting it is not enough either, so the non-POSIX
 sets `SO_EXCLUSIVEADDRUSE` instead -- the same branch, for the same reason, as
 `browser_cli.view` and the dashboard's own listener. Setting `SO_REUSEADDR`
 unconditionally holds nothing at all on Windows, which is a platform-specific no-op of
-exactly the kind #9731 exists to catch.
+exactly the kind that is easy to miss.
 
 So the handshake completes and a stale client does transmit -- "the credential is never
 sent" is not reachable -- and what is reachable is that nothing reads it. The guard
@@ -3017,7 +3316,7 @@ worth stating because those two fields arrive in the announcing pane's payload, 
 untrusted -- and an origin check cannot help, since the sender is the remote gateway the
 owner deliberately connected to and therefore holds the correct origin. What makes a
 forged value harmless is the branch, not a check on the value. In
-`ssh_tunnel_manager.py`: `_resolve_transport` returns `_resolve_chained_transport` as its
+`ssh_tunnel_manager_transport.py`: `_resolve_transport` returns `_resolve_chained_transport` as its
 FIRST branch whenever `via_instance_id` is set, that resolver builds its
 `_TransportParams` with `ssh_host=validate_ssh_host(parent.ssh_host)`, and the
 `via_instance_id` field's own declaration states the rule. The branch that reads
@@ -3042,7 +3341,11 @@ a field the rest of the list uses for something this gateway actually dials.
 
 All four are decided SERVER-SIDE on the hub, because the request can originate
 inside an embedded pane whose code the hub does not control. The frontend displays
-the reason and decides nothing.
+the reason and enforces none of them. The pane's announce does skip two cases the
+hub cannot see: a crew with no dashboard pane (`hasDashboardPane`) and a crew the
+pane itself reaches over a hop (`via_instance_id` set), since the hub would persist
+such a row before any refusal. A caller other than the pane can still create that
+residual row.
 
 **Depth cap.** `MAX_VIA_HOPS` is 2 -- A to B to C, three levels counting the hub --
 and `api_instances_add` refuses a deeper chain before anything is written or dialled
@@ -3085,11 +3388,9 @@ all -- a forward a racing connect re-established after the rows were deleted, wh
 the second pass could not stop. The removal itself succeeded, so the response says
 so and the residual goes to the gateway's warning log naming the crew.
 
-It is deliberately NOT a field on the success body. An earlier revision published a
-`stranded` list there, and nothing read it: both callers of `removeInstance` await
-without touching the body, and no component references the name. A field on a public
-response with no reader is a contract to keep with nothing depending on it, and it
-let a real gap look answered. The honest surface for this is a persistent warning
+It is deliberately NOT a field on the success body: both callers of `removeInstance`
+await without touching the body, so a field there would be a public contract with no
+reader, and it would let a real gap look answered. The honest surface for this is a persistent warning
 about a forward with no row -- a notification affordance, not a line in a panel that
 is about to lose the row it would hang off -- and until that exists the log is where
 an operator reads it.
@@ -3104,7 +3405,10 @@ is what tells two dashboard ports apart. After a chained forward comes up, the h
 reads the far end's id: equal to its own, or to any ancestor's, and the forward is
 torn down and the connect refused. Ids are compared, never `ssh_host` strings -- one
 machine answers to many spellings, so a string comparison would refuse unrelated
-crews and still admit real loops.
+crews and still admit real loops. The file is a READONLY sandbox leaf (`sandbox._CREW_READONLY_LEAVES`; the Linux spawn
+mints the real id before sealing, so the seal has a name to bind) and write-protected on
+the agent file tools, so a sandboxed process cannot write the `gateway_id` name. The
+mint itself still writes a temp file beside it in the data home, which is not sealed.
 
 Two deliberate limits. A crew that reports no id is allowed: the loop it cannot rule
 out is a nested pane, not an escape from a boundary, and the depth cap already bounds
@@ -3119,15 +3423,13 @@ does not introduce.
 
 ### 17.5 What the user sees
 
-Remote Crew is reachable inside a pane. The tab used to disappear there, which read
-as a missing feature or a stale build rather than an intentional limit; now it is
-present and a refused connect explains itself.
+Remote Crew is present inside a pane, and a refused connect explains itself.
 
 The switcher draws the tree: a chained crew renders under its parent, indented one
 step with a connector glyph, and its subtitle names the crew it goes through as well
 as the machine. Children grey out with their parent, because they share its tunnel.
 The tab bar itself stays flat -- a chained crew's chip carries the path
-(`parent > child`) instead of an indent, so it does not read as just another
+(`parent › child`) instead of an indent, so it does not read as just another
 top-level crew.
 
 ### 17.6 Out of scope

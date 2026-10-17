@@ -19,8 +19,8 @@ every tool in it. That is the unit to keep in mind when adding one — a capabil
 that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
-folder, reparent a folder, file a live session into one, and delete a folder
-that is EMPTY. No rename. The delete asks the endpoint for its empty-only mode
+folder, reparent a folder, rename or restyle one (name, icon, color), file a
+live session into one, and delete a folder that is EMPTY. The delete asks the endpoint for its empty-only mode
 (``?if_empty=true``), which refuses a folder holding a subfolder or a live or
 archived session instead of unfiling them, so nothing here can lose a
 conversation. It also
@@ -81,9 +81,11 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
+from kiro_crew.conductor_patrol import reply_line
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES
-from kiro_crew.dashboard.chat_folders import (
+from kiro_crew.constants import CHANNEL_SESSION_NAMESPACES
+from kiro_crew.dashboard.folder_ownership import (
     _folder_owner_app,
     _subtree_holds_foreign_folder,
 )
@@ -102,6 +104,7 @@ from kiro_crew.validation import (
     BROADCAST_TARGET_ALLOWANCE_SECS,
     MAX_BROADCAST_TARGETS,
     MCP_DASHBOARD_SCHEMAS,
+    SLACK_THREAD_TS_RE,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,9 +141,13 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "mode the listing says so and warns that an anchor sets the stored "
                 "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
-                "agent, and a hidden flag; "
+                "agent, a hidden flag, and the steering directories it DECLARES "
+                "(``steering=[…]``; a folder inherits its ancestors' too, "
+                "root-first, so read up the tree for the full set); "
                 "then one line per live session (slot key + title) nested under it, "
-                "and an '(unfiled)' group for sessions at the top level. Use this to "
+                "and an '(unfiled)' group for sessions at the top level. In each group "
+                "the pinned sessions come first, in the order the sidebar draws them, "
+                "which is the order chat_session_pin_move's anchors refer to. Use this to "
                 "get folder ids/paths and session keys before calling "
                 "chat_folder_create / chat_folder_move / chat_folder_move_session / "
                 "chat_folder_delete, or when the user asks what their tree looks like. This is the "
@@ -243,6 +250,58 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "GET /api/chat/folders",
                 "PATCH /api/chat/folders/{folder}",
                 "POST /api/chat/folders/reorder",
+            ),
+        ),
+        Tool(
+            name="chat_folder_update",
+            description=(
+                "Rename a sidebar folder and/or set its icon or color. ``folder`` "
+                "is a folder id or '/'-separated human path from chat_folder_tree. "
+                "Pass any of ``name`` (max 100 chars, no '/', like "
+                "chat_folder_create), ``icon`` (exactly one emoji; '' restores the "
+                "default glyph) or ``color`` (a folder palette value such as "
+                "'#22c55e'; '' clears it). A name a sibling folder already has is "
+                "refused, since the two could not be told apart by path. Metadata "
+                "only: sessions and subfolders stay where they are. To reparent or "
+                "reorder use chat_folder_move. This tool deliberately cannot set "
+                "project_dir, default_agent or steering_dirs (they are unknown "
+                "fields here): those fields change the working directory, agent, "
+                "memory boundary or standing instructions of every future session "
+                "filed in the folder, which is the person's call in the folder "
+                "settings, not an agent's. To ask for a steering_dirs change, "
+                "propose_change(kind='folder.steering') puts a card in front of "
+                "the person. An app agent or crew member may update "
+                "only a folder it created. Refused in a session linked to a channel "
+                "(a resumed channel conversation, a channel mirror or a linked Slack "
+                "thread)."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "folder": {"type": "string", "description": "Folder to update (id or path)."},
+                    "name": {
+                        "type": "string",
+                        "description": "New name (max 100 chars, cannot contain '/').",
+                    },
+                    "icon": {
+                        "type": "string",
+                        "description": "One emoji for the folder glyph; '' restores the default.",
+                    },
+                    "color": {
+                        "type": "string",
+                        "description": (
+                            "Folder palette color ('#rrggbb' from the palette); '' clears it."
+                        ),
+                    },
+                },
+                "required": ["folder"],
+            },
+            run=_run_chat_folder_update,
+            identity="attribution",
+            routes=(
+                "GET /api/chat/slots",
+                "GET /api/chat/folders",
+                "PATCH /api/chat/folders/{folder}",
             ),
         ),
         Tool(
@@ -519,6 +578,54 @@ def _tag_tools() -> tuple[Tool, ...]:
             identity="attribution",
             routes=("GET /api/chat/slots", "PATCH /api/chat/slots/{slot}/pin"),
         ),
+        Tool(
+            name="chat_session_pin_move",
+            description=(
+                "Reorder a PINNED session among the pinned sessions of its sidebar "
+                "group (the folder it is filed in, or the top level). Pass "
+                "``before`` or ``after`` (exactly one) naming another pinned session "
+                "in the same group to sit next to. ``session`` and the anchor are "
+                "each a slot key, a 'dashboard:<slot>' session key, or an exact "
+                "unique title. chat_folder_tree lists each group's pinned sessions "
+                "first, in the order the sidebar draws them, so read it first to "
+                "pick the anchor. Pinned sessions the person never reordered follow "
+                "in most-recent-activity order, the sidebar's default sort. This "
+                "call stores a position for EVERY pinned session, so ones that had "
+                "none keep that most-recent-activity order from then on, even for a "
+                "person whose sidebar sorts some other way (that sort choice lives "
+                "only in their browser). "
+                "It only reorders: it does not pin, unpin or move a session between "
+                "folders. The pinned order is the person's own sidebar preference, "
+                "so an app agent or a crew member cannot change it."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "The pinned session to move (slot key, 'dashboard:<slot>' key, or exact unique title).",
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately BEFORE this pinned session in the same "
+                            "group. Mutually exclusive with 'after'."
+                        ),
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately AFTER this pinned session in the same "
+                            "group. Mutually exclusive with 'before'."
+                        ),
+                    },
+                },
+                "required": ["session"],
+            },
+            run=_run_chat_session_pin_move,
+            identity="attribution",
+            routes=("GET /api/chat/slots", "GET /api/chat/folders", "POST /api/chat/pinned-order"),
+        ),
     )
 
 
@@ -603,6 +710,51 @@ def _board_tools() -> tuple[Tool, ...]:
                 "PUT /api/chat/tag-columns/order",
             ),
         ),
+        Tool(
+            name="session_move_to_column",
+            description=(
+                "Move a LIVE session's card into a sidebar board column, the same as "
+                "dragging it there. ``session`` is a slot key or 'dashboard:<slot>' "
+                "session key from chat_folder_tree, or a session's exact title when "
+                "that title is unique. ``column`` is a column id or a column name, "
+                "matched case-insensitively (see chat_tag_column_list); a name two "
+                "columns share is refused. The session takes the one status tag the "
+                "column filters on and loses its other status tags; plain labels "
+                "stay. A column with no single status tag, and a live-state lane, "
+                "cannot take a card, and the result says so. The rules of chat_tag "
+                "set_state apply: the column's status must be one an agent may both "
+                "add and remove, so a status the person reserved or made add-only "
+                "is refused (tag_policy_denied). An "
+                "app agent may move only its own sessions; a crew member only a "
+                "session it owns or created."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Slot key, 'dashboard:<slot>' session key, or exact unique session title.",
+                    },
+                    "column": {
+                        "type": "string",
+                        "description": "Column id, or column name (case-insensitive).",
+                    },
+                },
+                "required": ["session", "column"],
+            },
+            run=_run_session_move_to_column,
+            # A ``session_*`` row: the table's strict gate verifies the caller
+            # before the body runs and hands it over as ``ctx.caller_key``,
+            # and ``SESSION_CONTROL_TOOLS`` (hence the channel containment
+            # check) picks it up.
+            identity="strict",
+            routes=(
+                "GET /api/chat/tag-columns",
+                "GET /api/chat/tags",
+                "GET /api/chat/slots",
+                "POST /api/chat/slots/{slot}/drop",
+            ),
+        ),
     )
 
 
@@ -644,6 +796,20 @@ def _session_tools() -> tuple[Tool, ...]:
                             "explicitly \u2014 kirocrew-worker for a leaf work item."
                         ),
                     },
+                    "agent_kind": {
+                        "type": "string",
+                        "enum": ["template"],
+                        "description": (
+                            "Pass 'template' to run the shared template `agent` names "
+                            "on YOUR OWN memory, even when a crew member carries the "
+                            "same name. Omit for the usual name-first resolution (a "
+                            "member wins, with its own memory). Always pass 'template' "
+                            "for kirocrew-worker: a worker needs no memory of its own, "
+                            "and on installs where an older agent sync enrolled a crew "
+                            "member of that name the bare name selects that member and "
+                            "is refused `memory_delegation_denied`. Requires `agent`."
+                        ),
+                    },
                     "folder": {
                         "type": "string",
                         "description": (
@@ -658,12 +824,24 @@ def _session_tools() -> tuple[Tool, ...]:
                         "description": (
                             "Model the new session starts on, pinned exactly as if the "
                             "person had picked it in the session's model dropdown: an id "
-                            "from that same list, or 'auto'. Omit to use the agent's or "
-                            "the global default. A well-formed id the account cannot serve "
-                            "is accepted here but withheld at the session's first turn: "
-                            "the turn succeeds on the account's default model, and the only "
-                            "signal is a notice in that session's transcript. The person "
-                            "can still change it later."
+                            "from that same list, or 'auto'. Omit to inherit: when YOU are "
+                            "a crewmate, the child takes your profile's worker model (or "
+                            "your own model when none is set); otherwise it uses the "
+                            "agent's or the global default. A well-formed id the account "
+                            "cannot serve is accepted here but withheld at the session's "
+                            "first turn: the turn succeeds on the account's default model, "
+                            "and the only signal is a notice in that session's transcript. "
+                            "The person can still change it later."
+                        ),
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": (
+                            "Reasoning effort the new session starts at, one of the five "
+                            "standard levels: 'low', 'medium', 'high', 'xhigh', 'max'. "
+                            "Omit to inherit the same way as `model`: a crewmate's child "
+                            "takes the profile's worker effort (or the crewmate's own); "
+                            "anyone else's child keeps the model's default."
                         ),
                     },
                 },
@@ -713,7 +891,8 @@ def _session_tools() -> tuple[Tool, ...]:
                         "type": "string",
                         "description": (
                             "Short name for the new session, shown in the sidebar. Omit to "
-                            "keep the fork's own `Fork of <source title>`."
+                            "start from `Fork of <source title>`, which is then renamed "
+                            "automatically after the latest question the copy holds."
                         ),
                     },
                     "folder": {
@@ -806,17 +985,74 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/end-wait",),
         ),
         Tool(
+            name="session_retry",
+            description=(
+                "Re-run another session's last turn when it FAILED: it ended in an "
+                "error (for example 'Request initialize timed out' at start) or with no "
+                "reply. Does the same thing as pressing Resume in that tab: the session "
+                "picks up its most recent request, and no second copy of the prompt is "
+                "added. Use this instead of re-sending the prompt with session_send. "
+                "Refused while the target is running, busy or has queued messages, and "
+                "refused when its last turn finished normally or was stopped, so it "
+                "cannot regenerate a good answer. After two failed starts in a row it is "
+                "refused with session_start_repeat: the host needs attention, not a "
+                "third retry."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_retry,
+            identity="strict",
+            routes=("POST /api/session-control/retry",),
+        ),
+        Tool(
+            name="session_continue",
+            description=(
+                "Hand another session's thread back to its agent, the same as pressing "
+                "Continue in that tab. Use it when a turn was cut short by a gateway "
+                "restart or a killed process: such a turn leaves no error row and looks "
+                "finished, so session_retry refuses it. The session is sent one of two "
+                "fixed messages and the result says which: 'resumed' (its last turn was "
+                "interrupted, pick it up) or 'continued' (its last turn ended cleanly, "
+                "carry on). Takes no prompt text; to ask for something new use "
+                "session_send. Refused while the target is running, busy or has queued "
+                "messages, and after two failed session starts in a row "
+                "(session_start_repeat)."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_continue,
+            identity="strict",
+            routes=("POST /api/session-control/continue",),
+        ),
+        Tool(
             name="session_set_model",
             description=(
-                "Change the model another session runs on. Only an IDLE session takes "
-                "the change: if the target has a turn or sub-agents in flight the call "
-                "fails with 'session busy, model not changed' and nothing changes. To "
-                "force it, stop the target with session_stop first, then retry. The "
-                "model is applied when the target's next turn starts, after the same "
-                "permission check runs again; if the target has become channel-linked "
-                "or otherwise out of reach by then, the change is dropped. The "
-                "conversation is kept. 'auto', 'Auto (Jev)' and sessions bound to a "
-                "remote crew are refused."
+                "Change the model and/or reasoning effort another session runs on; "
+                "pass either or both. Only an IDLE session takes the change: if the "
+                "target has a turn or sub-agents in flight the call fails with "
+                "'session busy, model not changed' and nothing changes. To force it, "
+                "stop the target with session_stop first, then retry. The change is "
+                "applied when the target's next turn starts, after the same permission "
+                "check runs again; if the target has become channel-linked or otherwise "
+                "out of reach by then, the change is dropped. A model or effort the "
+                "user picks in the meantime wins. The conversation is kept. 'auto', "
+                "'Auto (Jev)' and sessions bound to a remote crew are refused."
             ),
             schema={
                 "type": "object",
@@ -829,11 +1065,21 @@ def _session_tools() -> tuple[Tool, ...]:
                         "type": "string",
                         "description": (
                             "Model to switch to: a canonical key or provider id, e.g. "
-                            "'sonnet' or 'opus'. 'auto' is owner-only."
+                            "'sonnet' or 'opus'. 'auto' is owner-only. Omit it to keep "
+                            "the target's model and change only reasoning_effort."
+                        ),
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": (
+                            "Reasoning effort for the target, one of the five standard "
+                            "levels: 'low', 'medium', 'high', 'xhigh', 'max'. Omit it to "
+                            "keep the target's current level. Other levels, and going "
+                            "back to the model's default, are set from the dropdown."
                         ),
                     },
                 },
-                "required": ["target", "model"],
+                "required": ["target"],
             },
             run=_run_session_set_model,
             identity="strict",
@@ -868,6 +1114,70 @@ def _session_tools() -> tuple[Tool, ...]:
             routes=("POST /api/session-control/reload",),
         ),
         Tool(
+            name="session_rename",
+            description=(
+                "Rename a live session's sidebar title: your own session, or one you "
+                "may control with session_stop. A conductor uses it to relabel the "
+                "workers it created as their work changes. The new title is final, the "
+                "same as a manual rename: the automatic titler stops refreshing that "
+                "session. Metadata only; the transcript, model and any running turn "
+                "are untouched. A crew member or an agent-created session may rename "
+                "only itself and sessions it created; a scheduled run may rename only "
+                "sessions it created, never its own session. ARCHIVED (history) "
+                "sessions are not addressable."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Session key from list_sessions, 'dashboard:<slot>' key, or "
+                            "its exact unique title."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "New title, 1-200 characters after surrounding whitespace is "
+                            "stripped; no control characters."
+                        ),
+                    },
+                },
+                "required": ["target", "title"],
+            },
+            run=_run_session_rename,
+            identity="strict",
+            routes=("POST /api/session-control/rename",),
+        ),
+        Tool(
+            name="session_generate_title",
+            description=(
+                "Regenerate the sidebar title of a live session YOU created, from its "
+                "recent transcript, the same as the sidebar's 'Regenerate title' action. "
+                "Costs one model call on the titling model and waits for it, so the "
+                "reply carries the new title (or the unchanged one when the model had "
+                "nothing better). The new title replaces the current one, including a "
+                "title someone set by hand, and the automatic titler may revise it "
+                "later. Only sessions this session created are reachable, never your "
+                "own. One call per session every 5 minutes; a repeat inside that window "
+                "is refused. To set an exact title instead, use session_rename."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+            run=_run_session_generate_title,
+            identity="strict",
+            routes=("POST /api/session-control/generate-title",),
+        ),
+        Tool(
             name="session_close",
             description=(
                 "Close another session — the same thing as pressing the ✕ on that tab. "
@@ -878,7 +1188,9 @@ def _session_tools() -> tuple[Tool, ...]:
                 "(a finished watcher, a workstream you handed off), not to interrupt one "
                 "you might still need — for that, session_stop only cancels the turn and "
                 "leaves the tab open. Read the session first when you are unsure what it "
-                "is doing."
+                "is doing. You may also pass your OWN session key to close yourself once "
+                "your one job is finished; that cancels this turn, so make it your last "
+                "call and write anything the person should read before it."
             ),
             schema={
                 "type": "object",
@@ -945,6 +1257,47 @@ def _session_tools() -> tuple[Tool, ...]:
                 "GET /api/chat/slots",
                 "GET /api/chat/folders",
                 "POST /api/chat/folders",
+            ),
+        ),
+        Tool(
+            name="session_history_list",
+            description=(
+                "List ARCHIVED (history) sessions the caller could bring back with "
+                "session_revive, newest first: one row per session with the key "
+                "session_revive takes, its title, when it was last active, and the "
+                "folder it is filed in. Read-only. Use it to find the target before "
+                "reviving, e.g. when asked to reopen last week's investigation in a "
+                "folder. Only sessions session_revive would accept for this caller "
+                "are listed: same workspace, not incognito or temporary, not "
+                "app-scoped or channel-linked; a crew member or agent-created "
+                "session sees only sessions it created itself (the same crew-log "
+                "lineage check session_revive applies). Live sessions are not here; "
+                "chat_folder_tree lists those."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Only sessions filed in this sidebar folder: a folder id or "
+                            "a '/'-separated human path from chat_folder_tree. Omit for "
+                            "every folder and the unfiled ones."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Most rows to return (default 20). The reply says when more exist.",
+                    },
+                },
+            },
+            run=_run_session_history_list,
+            identity="strict",
+            routes=(
+                "GET /api/session-control/history",
+                "GET /api/chat/folders",
             ),
         ),
         Tool(
@@ -1066,17 +1419,25 @@ def _session_tools() -> tuple[Tool, ...]:
                 "now — the roster a conductor patrols. Each row is `working` (a "
                 "turn is in flight, wait), `queued` (idle with messages waiting), "
                 "`idle` (open and doing nothing — this is the one that needs a "
-                "decision), `gone` (the crew log remembers the session and the "
-                "dashboard no longer holds it: closed, archived, or lost with the "
-                "process that ran it — re-dispatch it or drop it, there is nothing "
-                "left to message), or `unknown` (birth metadata records that you "
+                "decision), `closed` (the crew log recorded a DELIBERATE tab close "
+                "and the dashboard no longer holds it: a worker that FINISHED and "
+                "closed its tab — ignore it, it carries `closed_at`), `lost` (the "
+                "crew log remembers the session, the dashboard no longer holds it, "
+                "and it did NOT close cleanly — a turn was still open, a process "
+                "recycle or destroy tore it down, or its lifecycle could not be "
+                "read: treat it as lost with the process that ran it and "
+                "re-dispatch it), or `unknown` (birth metadata records that you "
                 "created it, but neither a live session nor an attested crew-log "
                 "edge exists — it was created and its fate is not recorded, so "
-                "read it before you re-dispatch it). `gone` is the reason to use "
-                "this instead of "
+                "read it before you re-dispatch it). A row with "
+                "`pending_approval: true` is parked on a tool approval a person "
+                "must answer (`pending_approval_tool` names the tool when known): "
+                "it still reads `working`, but waiting will not move it. `closed` "
+                "and `lost` are the reason to use this instead of "
                 "reading sessions one at a time: a worker that vanished is absent "
-                "from any live list, so a live list cannot tell a worker that died "
-                "from one you never dispatched. Read both quality fields before "
+                "from any live list, so a live list cannot tell a worker that "
+                "finished from one lost mid-task from one you never dispatched. "
+                "Read both quality fields before "
                 "trusting the count: `tree` describes the crew-log roster and "
                 "`history` describes transcript birth metadata. For either one, "
                 "`readable` means that source was read completely, `incomplete` "
@@ -1159,7 +1520,11 @@ def _session_tools() -> tuple[Tool, ...]:
                 "and you get only what arrived in between, so a poll loop does not re-read "
                 "the same messages. ``running: false`` with nothing new means the target "
                 "finished and is idle, which is the difference between 'not done yet' and "
-                "'done'. READ-only: it never sends anything or changes the target's state."
+                "'done'. ``pending_approval: true`` means the target is parked on a "
+                "tool approval a person must answer (``pending_approval_tool`` names "
+                "the tool when known); it stays ``running`` but will not progress "
+                "until someone decides. READ-only: it never sends anything or changes "
+                "the target's state."
             ),
             schema={
                 "type": "object",
@@ -1555,7 +1920,7 @@ def _chat_folder_siblings(
     return sorted(kids, key=_chat_folder_sort_key(mode))
 
 
-# ``ChatSidebar``'s ``renderFolderBlock`` returns nothing for ``depth > 10``, so a
+# ``chat-sidebar/folderBlocks.tsx``'s ``renderFolderBlock`` returns nothing for ``depth > 10``, so a
 # row nested deeper is not drawn. The store caps folder COUNT but not nesting, so
 # such a tree is legal rather than corrupt. Only the reported DEPTH is clamped
 # here, never the row: this listing is an agent's one view of the tree and it
@@ -2476,6 +2841,20 @@ def _summary_time(value: object) -> str:
         return "at an unknown time"
 
 
+def _closed_at_display(value: object) -> str:
+    """A gone row's ``closed_at`` (crew-log epoch MILLISECONDS) as UTC ISO-8601.
+
+    The close edge stamps ``entry.time`` from ``now_ms()``, so the value is in
+    milliseconds; render it human-readable rather than as a raw epoch number. Falls
+    back to the value's own string form when it is not a finite millisecond count,
+    so a malformed stamp still shows something rather than raising in the renderer.
+    """
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(value) / 1000.0))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError, OSError):
+        return str(value)
+
+
 def _render_session_summary(resp: dict[str, Any]) -> str:
     """Render a ``/api/session-control/summary`` body as compact text.
 
@@ -2547,19 +2926,29 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     payload: dict[str, Any] = {"title": args.get("title", ""), "agent": args.get("agent", "")}
     if args.get("model"):
         payload["model"] = args["model"]
+    if args.get("reasoning_effort"):
+        payload["reasoning_effort"] = args["reasoning_effort"]
+    if args.get("agent_kind"):
+        payload["agent_kind"] = args["agent_kind"]
+
+    def _refused(refused: DashboardError, suffix: str) -> str:
+        return redact(
+            f"could not create a session: {refused.error}{suffix}"
+            f"{_create_refusal_remedy(refused, payload)}"
+        )
 
     def _preflight_create(deepest_id: str) -> str | None:
         # The same create, as a dry run, against the folder the new path
-        # segments would hang from. Its refusal is the real create's.
+        # segments would hang from. Its refusal is the real create's, rendered
+        # WITHOUT the `Error:` prefix: `_resolve_folder_for_new_session` adds
+        # one to whatever the walk returns, and two of them read as a bug.
         probe = {**payload, "dry_run": True}
         if deepest_id:
             probe["folder_id"] = deepest_id
         try:
             ctx.client.post("/api/session-control/create", probe, session_key=ctx.caller_key)
         except DashboardError as refused:
-            return redact(
-                f"Error: could not create a session: {refused.error} " "(no folder was created)"
-            )
+            return _refused(refused, " (no folder was created)")
         return None
 
     fld_id, folder_label, made_note, fld_err = _resolve_folder_for_new_session(
@@ -2579,13 +2968,57 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:
-        return redact(f"Error: could not create a session: {refused.error}{made_note}")
+        return f"Error: {_refused(refused, made_note)}"
     filed = f" filed in `{folder_label}`" if folder_label else ""
     on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
+    if resp.get("reasoning_effort"):
+        on_model += f" at reasoning effort `{resp['reasoning_effort']}`"
+    # Name what the caller did not choose, so a conductor reading its own reply
+    # learns the child runs on its profile's pick rather than the default.
+    inherited = resp.get("inherited") or []
+    if inherited:
+        on_model += f" (inherited from your crewmate profile: {', '.join(inherited)})"
+    if resp.get("inherited_model_dropped"):
+        on_model += (
+            " (your crewmate profile's worker model is not usable here, so the "
+            "session starts on the default model; fix the profile or pass `model`)"
+        )
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         "It is empty and waiting in the user's sidebar; watch it with "
-        "session_read_message."
+        "session_read_message." + reply_line(resp)
+    )
+
+
+def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> str:
+    """The one refusal a caller can act on by itself, with the two real remedies.
+
+    ``memory_delegation_denied`` is deliberately terse on the wire -- it names
+    neither the store nor the member, so a guessed agent name is never confirmed --
+    and that terseness is what left callers inventing remedies that do not exist
+    (a memory-store setting under Settings > Crew: a crew member's memory binding is
+    immutable, and the dashboard offers no such control). The remedy is appended
+    HERE, in the tool reply, because it holds for the whole refusal class and
+    discloses nothing the refusal withholds: dispatch the TEMPLATE of that name on
+    the caller's own memory (what a one-item worker needs), or let the owner's own
+    tab make the create. A request that already asked for the template gets the
+    second remedy alone, since the first is what it just tried.
+    """
+    if refused.code != "memory_delegation_denied":
+        return ""
+    if payload.get("agent_kind") == "template":
+        return (
+            " The template dispatch binds this session's OWN memory, and that binding is "
+            "what could not be verified. A member's memory binding cannot be changed in "
+            "Settings; the owner can re-select this session's agent (which re-binds its "
+            "memory) or run the dispatch from their own chat tab."
+        )
+    return (
+        " The agent you named is a crew member whose private memory this session may "
+        "not bind; a member's memory binding cannot be changed in Settings. Re-send "
+        'with `agent_kind: "template"` to run that agent\'s shared template on your own '
+        "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "
+        "this dispatch from their own chat tab."
     )
 
 
@@ -2660,18 +3093,107 @@ def _run_session_end_wait(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
+def _run_session_retry(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/retry",
+            {"target": args["target"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not retry that session's turn: {refused.error}"
+    target = resp.get("target", args["target"])
+    return redact(
+        f"\U0001f501 Retry started in `{target}`. Its transcript shows the resume row; "
+        "read it with session_read_message."
+    )
+
+
+def _run_session_continue(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/continue",
+            {"target": args["target"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        return f"Error: could not continue that session: {refused.error}"
+    target = resp.get("target", args["target"])
+    body = resp.get("body", "continued")
+    if body == "resumed":
+        how = "its last turn was interrupted, so it was told to pick that turn up"
+    else:
+        how = "its last turn had ended, so it was told to carry on"
+    return redact(
+        f"\u25b6\ufe0f Continue sent to `{target}` ({body}): {how}. "
+        "Read the result with session_read_message."
+    )
+
+
 def _run_session_set_model(args: dict[str, Any], ctx: ToolContext) -> str:
+    payload = {"target": args["target"]}
+    for key in ("model", "reasoning_effort"):
+        if key in args:
+            payload[key] = args[key]
     try:
         resp = ctx.client.post(
             "/api/session-control/set-model",
-            {"target": args["target"], "model": args["model"]},
+            payload,
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:
         return f"Error: could not change that session's model: {refused.error}"
     target = resp.get("target", args["target"])
-    model = resp.get("model") or "auto"
-    return redact(f"\U0001f501 `{target}` will switch to `{model}` when its next turn starts.")
+    effort = resp.get("reasoning_effort")
+    effort_text = f"reasoning effort `{effort}`"
+    if "model" in resp:
+        change = f"`{resp.get('model') or 'auto'}`"
+        if effort is not None:
+            change += f" at {effort_text}"
+    else:
+        change = effort_text
+    return redact(f"\U0001f501 `{target}` will switch to {change} when its next turn starts.")
+
+
+def _run_session_rename(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/rename",
+            {"target": args["target"], "title": args["title"]},
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        resp = refused.body
+    if resp.get("error"):
+        return redact(f"Error: could not rename that session: {resp['error']}")
+    target = resp.get("target", args["target"])
+    return redact(f"Renamed `{target}` to {resp.get('title', args['title'])!r}.")
+
+
+#: The generate-title route waits for one titling-model call, so the client
+#: allows longer than the 30-second default. A transport timeout does not undo
+#: the call: the title can still land, and the target's one-per-window budget
+#: (``create_rate_limit.WINDOW_SECS``, longer than this wait) refuses a retry.
+GENERATE_TITLE_TIMEOUT_SECS = 120
+
+
+def _run_session_generate_title(args: dict[str, Any], ctx: ToolContext) -> str:
+    try:
+        resp = ctx.client.post(
+            "/api/session-control/generate-title",
+            {"target": args["target"]},
+            timeout=GENERATE_TITLE_TIMEOUT_SECS,
+            session_key=ctx.caller_key,
+        )
+    except DashboardError as refused:
+        resp = refused.body
+    if resp.get("error"):
+        return redact(f"Error: could not generate a title for that session: {resp['error']}")
+    target = resp.get("target", args["target"])
+    title = resp.get("title", "")
+    if resp.get("changed"):
+        return redact(f"Retitled `{target}` to {title!r}.")
+    return redact(f"`{target}` keeps its title {title!r}; the model offered nothing new.")
 
 
 def _run_session_reload(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -2746,6 +3268,60 @@ def _run_session_revive(args: dict[str, Any], ctx: ToolContext) -> str:
         f"{resp.get('messages', 0)} messages{filed}.{unfiled_note}{made_note} It is open and idle "
         "in the user's sidebar; session_send starts its next turn."
     )
+
+
+def _run_session_history_list(args: dict[str, Any], ctx: ToolContext) -> str:
+    limit = int(args.get("limit") or 20)
+    query = f"limit={limit}"
+    folder_label = ""
+    folder_ref = str(args.get("folder") or "").strip()
+    if folder_ref:
+        # Read-only resolution: a filter must never create the folder it
+        # names, and an unknown one is refused rather than widened to "all".
+        chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+        if folders_err:
+            return f"Error: {folders_err}"
+        fid, folder_err = _resolve_chat_folder_id(folder_ref, chat_folders)
+        if folder_err:
+            return redact(f"Error: {folder_err}")
+        if fid:  # "root" resolves to the top level, which filters nothing
+            query += f"&folder_id={quote(fid)}"
+            folder_label = _chat_folder_paths(chat_folders).get(fid, fid)
+    try:
+        resp = ctx.client.get(f"/api/session-control/history?{query}", session_key=ctx.caller_key)
+    except DashboardError as refused:
+        return redact(f"Error: could not list archived sessions: {refused.error}")
+    hist_rows = resp.get("sessions") or []
+    where = f" in `{folder_label}`" if folder_label else ""
+    notes: list[str] = []
+    if resp.get("lineage_unknown"):
+        notes.append(
+            "Some sessions you created may be missing: the crew log's session-tree "
+            "lineage could not vouch for them (log off, or not seeded yet), and "
+            "session_revive would refuse them for the same reason."
+        )
+    more = " (more exist; raise `limit` or narrow by `folder`)" if resp.get("more") else ""
+    if not hist_rows:
+        # Rows kept by the scan can be revived before the answer is built
+        # while older rows remain unread, so an empty page is not an empty
+        # archive whenever ``more`` is set.
+        if more:
+            empty = f"\U0001f5c4\ufe0f No archived sessions on this page{where}{more}."
+        else:
+            empty = f"\U0001f5c4\ufe0f No archived sessions you can revive{where}."
+        return redact(" ".join([empty, *notes]))
+    hist_lines = [
+        f"\U0001f5c4\ufe0f {len(hist_rows)} archived session(s){where}, newest first{more}:"
+    ]
+    for row in hist_rows:
+        bits = [str(row.get("last_active") or "")]
+        if row.get("folder_id") and not folder_label:
+            bits.append(f"folder {row['folder_id']}")
+        meta = f" — {', '.join(b for b in bits if b)}" if any(bits) else ""
+        hist_lines.append(f"  `{row.get('target', '')}` ({row.get('title', '')}){meta}")
+    hist_lines.append("Pass a key to session_revive to reopen it.")
+    hist_lines.extend(notes)
+    return redact("\n".join(hist_lines))
 
 
 def _run_session_send(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -2915,10 +3491,20 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     for row in rows:
         target = str(row.get("target", ""))
         status = str(row.get("status", ""))
-        if status == "gone":
+        if status == "closed":
+            closed_at = row.get("closed_at")
+            when = f" at {_closed_at_display(closed_at)}" if closed_at else ""
             status_lines.append(
-                f"  \U0001faa6 `{target}` — gone (the crew log has it, the "
-                "dashboard does not: closed, archived, or lost)"
+                f"  \u2705 `{target}` — closed (finished and closed its tab{when}; "
+                "nothing to re-dispatch)"
+            )
+            continue
+        if status == "lost":
+            status_lines.append(
+                f"  \U0001faa6 `{target}` — lost (the crew log has it, the "
+                "dashboard does not, and it did not close cleanly — a turn was "
+                "open, a recycle or destroy tore it down, or the lifecycle could "
+                "not be read: re-dispatch it)"
             )
             continue
         title = str(row.get("title", ""))
@@ -2936,6 +3522,12 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             )
             continue
         mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+        if row.get("pending_approval"):
+            status_lines.append(
+                f"  \u270b `{target}` ({title}) — {status}, "
+                f"{_pending_approval_phrase(row)}{queued}"
+            )
+            continue
         status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}")
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
@@ -2980,6 +3572,12 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
     )
 
 
+def _pending_approval_phrase(resp: dict[str, Any]) -> str:
+    """The state words for a session parked on a tool approval."""
+    tool = str(resp.get("pending_approval_tool") or "")
+    return "waiting on a tool approval" + (f": {redact(tool)}" if tool else "")
+
+
 def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
     query = f"target={quote(str(args['target']))}&limit={args.get('limit', 20)}"
     if args.get("since") is not None:
@@ -2990,6 +3588,8 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
         return f"Error: could not read that session: {refused.error}"
     msg_rows = resp.get("messages") or []
     state_line = "still working" if resp.get("running") else "idle"
+    if resp.get("pending_approval"):
+        state_line = _pending_approval_phrase(resp)
     queued = resp.get("queue_depth", 0)
     if queued:
         state_line += f", {queued} message(s) queued"
@@ -2997,6 +3597,11 @@ def _run_session_read_message(args: dict[str, Any], ctx: ToolContext) -> str:
         state_line += f", model {redact(str(resp['model']))}"
     if resp.get("pending_model"):
         state_line += f", pending model {redact(str(resp['pending_model']))} for its next turn"
+    if resp.get("reasoning_effort"):
+        state_line += f", reasoning effort {redact(str(resp['reasoning_effort']))}"
+    if resp.get("pending_reasoning_effort"):
+        pending_effort = redact(str(resp["pending_reasoning_effort"]))
+        state_line += f", pending reasoning effort {pending_effort} for its next turn"
     head_line = (
         f"\U0001f4d6 `{resp.get('target', '')}` — {resp.get('title', '')} "
         f"({state_line}; total={resp.get('total', 0)})"
@@ -3128,6 +3733,11 @@ def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:
             meta_bits.append(f"project={row['project_dir']}")
         if row.get("default_agent"):
             meta_bits.append(f"agent={row['default_agent']}")
+        # What the folder DECLARES, so an agent proposing a folder.steering
+        # card sees the list it replaces. An ancestor's line above is the
+        # inherited part: the tree is already root-first.
+        if isinstance(row.get("steering_dirs"), list) and row.get("steering_dirs"):
+            meta_bits.append(f"steering=[{', '.join(str(p) for p in row['steering_dirs'])}]")
         # No archived count. The invariant this server holds is that nothing it
         # emits discloses a non-persistent session — and the folders endpoint's
         # ``history_count`` covers archived transcripts with no memory_mode to
@@ -3139,12 +3749,12 @@ def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:
             meta_bits.append("hidden")
         meta = f"  ({' · '.join(meta_bits)})" if meta_bits else ""
         tree_lines.append(f"{'  ' * depth}{fid}  {fpath}{meta}")
-        for slot_row in by_folder.get(fid, []):
+        for slot_row in _sidebar_group_order(by_folder.get(fid, [])):
             tree_lines.append(_session_line(slot_row, "  " * depth + "  "))
     unfiled = by_folder.get("", [])
     if unfiled:
         tree_lines.append("(unfiled — top level)")
-        for slot_row in unfiled:
+        for slot_row in _sidebar_group_order(unfiled):
             tree_lines.append(_session_line(slot_row, "  "))
     if not chat_folders and not chat_slots:
         return "No sidebar folders and no live sessions."
@@ -3455,6 +4065,100 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
             f"Moved folder (id={fld_id}) to `{dest_path}`, positioned {side} " f"`{anchor_path}`."
         )
     return redact(f"Moved folder (id={fld_id}) to `{dest_path}`.")
+
+
+def _run_chat_folder_update(args: dict[str, Any], ctx: ToolContext) -> str:
+    # The body is built from these three fields only, so no other folder field
+    # can reach the PATCH even if the schema later grows one. The schema does
+    # not list the keep-off fields, so validation refuses them as unknown.
+    folder_changes: dict[str, Any] = {}
+    # Test the VALUE, not the key: the schema keeps an explicit JSON null as
+    # ``None``, and ``str(None)`` would rename the folder to "None".
+    if args.get("name") is not None:
+        # Same rules as chat_folder_create: no '/', redact before the write, and
+        # check the stored (redacted) length, because the endpoint keeps
+        # ``name[:100]`` and a truncated name no later path lookup matches.
+        if "/" in str(args["name"]):
+            return (
+                "Error: a folder name cannot contain '/' — it would render "
+                "identically to a nested path and become unaddressable by path."
+            )
+        safe_name = redact(str(args["name"])).strip()
+        if not safe_name:
+            return "Error: folder name must not be empty"
+        if len(safe_name) > _MAX_FOLDER_NAME:
+            return (
+                f"Error: folder name too long after redaction ({len(safe_name)} "
+                f"chars): `{safe_name[:40]}…` — keep it to {_MAX_FOLDER_NAME} "
+                "characters or fewer"
+            )
+        folder_changes["name"] = safe_name
+    # Icon and color pass through as given: '' clears, and the endpoint's
+    # single-emoji check and palette allowlist are the authority for the rest.
+    if args.get("icon") is not None:
+        folder_changes["icon"] = str(args["icon"])
+    if args.get("color") is not None:
+        folder_changes["color"] = str(args["color"]).lower()
+    if not folder_changes:
+        return "Error: pass at least one of ``name``, ``icon`` or ``color``"
+    caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "updating a folder")
+    if gate:
+        return gate
+    # Channel callers are refused by the endpoint (403 ``channel_reachable_caller``),
+    # which sees every channel-shaped key and the channel bindings of a dashboard
+    # session; the CHANNEL_AGENT_BLOCKED_TOOLS entry hides the tool at the
+    # permission prompt.
+    chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+    if folders_err:
+        return f"Error: {folders_err}"
+    fld_id, fld_err = _resolve_chat_folder_id(args["folder"], chat_folders)
+    if fld_err:
+        return f"Error: {fld_err}"
+    if not fld_id:
+        return "Error: 'root' is not a folder — name the folder to update."
+    before = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
+    before_path = _chat_folder_paths(chat_folders).get(fld_id) or str(before.get("name") or fld_id)
+    # Ownership (an app or crew member may update only a folder it created) and
+    # the sibling-name rule are the endpoint's, decided under the folder-store
+    # lock over the whole tree rather than the part this caller can read.
+    try:
+        ctx.client.patch(
+            f"/api/chat/folders/{quote(fld_id, safe='')}", folder_changes, session_key=caller_key
+        )
+    except DashboardError as refused:
+        if refused.code == "folder_name_exists":
+            return (
+                "Error: a sibling folder already has that name. Two folders "
+                "with one name under the same parent cannot be told apart by "
+                "path, so the rename is refused."
+            )
+        if refused.code == "folder_not_owned":
+            return (
+                "Error: this caller does not own that folder. An app agent or "
+                "crew member may update only a folder it created; ask the "
+                "person to rename or restyle theirs."
+            )
+        if refused.code == "channel_reachable_caller":
+            # A channel conversation resumed into this dashboard session runs
+            # under its ``dashboard:`` key, so only the endpoint's reachability
+            # check can see it.
+            return (
+                "Error: this session is linked to a channel conversation, so its "
+                "turns may come from thread text other people wrote and "
+                "chat_folder_update is refused. Unlink the channel, or rename "
+                "the folder in the sidebar."
+            )
+        return redact(f"Error: {refused.error}")
+    # Report what was written, not the response row: the endpoint returns the
+    # folder object it looked up before taking the store lock.
+    parts = []
+    if "name" in folder_changes:
+        parts.append(f"renamed to `{folder_changes['name']}`")
+    if "icon" in folder_changes:
+        parts.append(f"icon {folder_changes['icon'] or '(default)'}")
+    if "color" in folder_changes:
+        parts.append(f"color {folder_changes['color'] or '(default)'}")
+    return redact(f"Updated folder `{before_path}` (id={fld_id}): {'; '.join(parts)}.")
 
 
 def _run_chat_folder_move_session(args: dict[str, Any], ctx: ToolContext) -> str:
@@ -3872,6 +4576,173 @@ def _run_chat_session_pin(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(f"{verb} session `{slot_key}`.")
 
 
+def _slot_group(row: dict, known_folder_ids: set[str]) -> str:
+    """The sidebar group a session row renders in: its folder id, or ``""``.
+
+    A folder id with no folder row renders at the top level, the same fallback
+    ``chat_folder_tree`` uses.
+    """
+    fid = str(row.get("folder_id") or "")
+    return fid if fid in known_folder_ids else ""
+
+
+def _pinned_sidebar_order(rows: list[dict]) -> list[dict]:
+    """The pinned rows of one group in the order the sidebar draws them.
+
+    Rows with a stored ``pin_rank`` come first, by rank. Pinned rows without
+    one (the person never reordered, or pinned before the order was in use)
+    follow newest activity first, which is the sidebar's default sort.
+    """
+    pinned = [r for r in rows if r.get("pinned")]
+    ranked = sorted(
+        (r for r in pinned if isinstance(r.get("pin_rank"), int)), key=lambda r: r["pin_rank"]
+    )
+    unranked = sorted(
+        (r for r in pinned if not isinstance(r.get("pin_rank"), int)),
+        key=lambda r: str(r.get("last_turn_ts") or r.get("last_ts") or r.get("created") or ""),
+        reverse=True,
+    )
+    return [*ranked, *unranked]
+
+
+def _sidebar_group_order(rows: list[dict]) -> list[dict]:
+    """*rows* of one group with the pinned ones first, in sidebar order."""
+    pinned = _pinned_sidebar_order(rows)
+    return [*pinned, *(r for r in rows if not r.get("pinned"))]
+
+
+def _is_messaging_caller(caller_key: str) -> bool:
+    """True when *caller_key* is a channel agent or a messaging-channel session.
+
+    Reads the namespace roster from ``constants`` rather than
+    ``messaging.link``: importing anything from ``messaging`` runs its package
+    init, which this stdio server does not need.
+    """
+    prefixes = ("channel:",) + tuple(
+        f"{ns}{sep}" for ns in CHANNEL_SESSION_NAMESPACES for sep in (":", "_")
+    )
+    return caller_key.startswith(prefixes) or bool(SLACK_THREAD_TS_RE.fullmatch(caller_key))
+
+
+def _run_chat_session_pin_move(args: dict[str, Any], ctx: ToolContext) -> str:
+    """Reposition one pinned session next to another pinned session in its group."""
+    before_ref = str(args.get("before") or "").strip()
+    after_ref = str(args.get("after") or "").strip()
+    if bool(before_ref) == bool(after_ref):
+        return (
+            "Error: pass exactly one of `before` or `after`, naming the pinned "
+            "session to sit next to."
+        )
+    caller_key, strict_err = ctx.caller.require_strict_session_key(
+        "Error: cannot verify which session is calling, so this reorder is refused "
+        "- the pinned order is the person's, and only a caller the gateway can "
+        "vouch for may change it."
+    )
+    if not caller_key:
+        return strict_err
+    # Messaging containment at dispatch: a channel agent or a messaging-thread
+    # session acts on text other people wrote, it reads as the person below,
+    # and an auto-approved call never reaches the blocked-name permission
+    # prompt. Every messaging key form is refused: the channel agent's
+    # ``channel:``, each transport's ``<ns>:``/``<ns>_`` key, and a bare Slack
+    # thread timestamp.
+    if _is_messaging_caller(caller_key):
+        try:
+            sel().log_tool_invocation(
+                session_key=caller_key,
+                source="mcp",
+                tool_name="chat_session_pin_move",
+                tool_kind=SERVER_NAME,
+                outcome="rejected_blocked_tool",
+            )
+        except Exception:
+            # Stdio-silent: stderr would corrupt the JSON-RPC stream. The
+            # refusal below holds either way.
+            pass
+        return (
+            "Error: chat_session_pin_move is not available to channel agents or "
+            "messaging-channel sessions — the pinned order is the person's sidebar, "
+            "and those sessions act on text other people wrote."
+        )
+    rows, rows_err = _get_rows(ctx.client, "/api/chat/slots")
+    if rows_err:
+        return redact(f"Error: {rows_err}")
+    scope = _caller_app_scope(caller_key, rows)
+    if scope is None or scope:
+        return (
+            "Error: the pinned order is the person's own sidebar preference and "
+            "spans sessions no app owns, so an app-scoped or delegated caller cannot "
+            "reorder it. Ask the person to drag the session in the sidebar."
+        )
+    visible = [r for r in rows if str(r.get("memory_mode") or "persistent") == "persistent"]
+    slot_key, slot_err = _resolve_chat_slot_key(args["session"], visible)
+    if slot_err:
+        return redact(f"Error: {slot_err}")
+    anchor_key, anchor_err = _resolve_chat_slot_key(before_ref or after_ref, visible)
+    if anchor_err:
+        return redact(f"Error: anchor: {anchor_err}")
+    if anchor_key == slot_key:
+        return "Error: the anchor is the session being moved; name a different pinned session."
+    by_key = {str(r.get("key") or ""): r for r in visible}
+    moving, anchor = by_key[slot_key], by_key[anchor_key]
+    if not moving.get("pinned"):
+        return redact(
+            f"Error: `{slot_key}` is not pinned. Only pinned sessions have an order; "
+            "pin it in the sidebar first."
+        )
+    if not anchor.get("pinned"):
+        return redact(f"Error: the anchor `{anchor_key}` is not pinned; name a pinned session.")
+    chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+    if folders_err:
+        return redact(f"Error: {folders_err}")
+    known_ids = set(_chat_folder_paths(chat_folders))
+    group = _slot_group(moving, known_ids)
+    if _slot_group(anchor, known_ids) != group:
+        return redact(
+            f"Error: `{anchor_key}` is pinned in a different sidebar group than "
+            f"`{slot_key}`. Pinned sessions are ordered within their folder (or the "
+            "top level); name an anchor in the same group."
+        )
+    # Send the WHOLE pinned order, the way a sidebar drag does, so every pinned
+    # session ends up ranked. Sending only this group would leave the other
+    # groups unranked, and a session pinned there later would be appended
+    # ranked and jump ahead of its unranked neighbours. The order is built from
+    # every row, incognito and temporary ones included, so their places in the
+    # person's sidebar stay where they were; their keys go only to the gateway
+    # and never into this tool's reply.
+    order = [str(r.get("key") or "") for r in _pinned_sidebar_order(rows)]
+    order.remove(slot_key)
+    at = order.index(anchor_key) + (0 if before_ref else 1)
+    order.insert(at, slot_key)
+    # Each key's ``created`` pins the reorder to the slot generation this read
+    # saw, as ``expected_created`` does for chat_session_pin: a key closed and
+    # recreated in between is refused instead of ranked.
+    named = set(order)
+    expected_created = {
+        str(r.get("key") or ""): str(r.get("created") or "")
+        for r in rows
+        if str(r.get("key") or "") in named and r.get("created")
+    }
+    try:
+        ctx.client.post(
+            "/api/chat/pinned-order",
+            {"keys": order, "expected_created": expected_created},
+            session_key=caller_key,
+        )
+    except DashboardError as refused:
+        return redact(f"Error: could not reorder pinned sessions: {refused.error}")
+    where = f"before `{anchor_key}`" if before_ref else f"after `{anchor_key}`"
+    group_label = _chat_folder_paths(chat_folders).get(group, group) if group else "the top level"
+    in_group = [
+        key for key in order if key in by_key and _slot_group(by_key[key], known_ids) == group
+    ]
+    position = in_group.index(slot_key) + 1
+    return redact(
+        f"Moved pinned session `{slot_key}` {where} in {group_label}; it is now "
+        f"pinned #{position} of {len(in_group)} there."
+    )
+
+
 def _run_chat_tag_column_list(args: dict[str, Any], ctx: ToolContext) -> str:
     # Like the tag vocabulary, the board is one shared layout that names no
     # session, so the read needs no caller scoping.
@@ -4006,6 +4877,91 @@ def _run_chat_tag_column_move(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact(f"Moved column `{names[move_id]}` {side} `{names[anchor_id]}`.")
 
 
+#: ``/drop`` rejection codes that are answers, not failures: the card stays
+#: where it is and calling again changes nothing, so they read as "Not moved".
+_DROP_NOT_MOVED = {
+    "not_status_lane": "that column does not filter on exactly one status tag, so "
+    "no tag change can place a card there",
+    "state_lane": "that column follows the session's live state, which no tag " "change can set",
+}
+
+
+def _run_session_move_to_column(args: dict[str, Any], ctx: ToolContext) -> str:
+    # This writes to a session OTHER than the caller's, so the row is strict:
+    # the table verified the caller before this ran, and that key rides on
+    # every request unchanged.
+    caller_key = ctx.caller_key
+    channel_err = _refuse_channel_board_write("session_move_to_column", caller_key)
+    if channel_err:
+        return channel_err
+    columns, cols_err = _get_rows(ctx.client, "/api/chat/tag-columns")
+    if cols_err:
+        return f"Error: {cols_err}"
+    column_id, col_err = _resolve_chat_tag_column(str(args["column"]), columns)
+    if col_err:
+        return redact(f"Error: {col_err}")
+    column_name = (
+        next((str(c.get("name") or "").strip() for c in columns if c.get("id") == column_id), "")
+        or column_id
+    )
+    chat_slots, slots_err = _visible_chat_slots(ctx)
+    if slots_err:
+        return f"Error: {slots_err}"
+    slot_key, slot_err = _resolve_chat_slot_key(args["session"], chat_slots)
+    if slot_err:
+        return redact(f"Error: {slot_err}")
+    slot_row = next((s for s in chat_slots if str(s.get("key") or "") == slot_key), {})
+    # ``expected_created`` pins the drop to the slot generation resolved above,
+    # as chat_session_pin does: a slot key recreated for another conversation
+    # in between is refused instead of retagged.
+    body: dict[str, Any] = {"column_id": column_id}
+    slot_created = str(slot_row.get("created") or "")
+    if slot_created:
+        body["expected_created"] = slot_created
+    # The tags revision read with the slot above: the drop compares-and-sets
+    # against it like chat_tag_assign's PUT, so a tag toggled in between is
+    # not judged or written on a list this call never saw.
+    base_rev = str(slot_row.get("tags_revision") or "")
+    if base_rev:
+        body["base_tags_revision"] = base_rev
+    try:
+        d = ctx.client.post(
+            f"/api/chat/slots/{quote(slot_key, safe='')}/drop",
+            body,
+            session_key=caller_key,
+        )
+    except DashboardError as refused:
+        if refused.code == "column_not_found":
+            return redact(
+                f"Error: column `{column_name}` was removed before the move. Nothing "
+                "was written — call chat_tag_column_list for the current columns."
+            )
+        if refused.code == "stale_base":
+            return redact(
+                f"Error: the tags on `{slot_key}` changed while this call was "
+                "resolving the session. Nothing was written — call "
+                "session_move_to_column again; it re-reads the session."
+            )
+        return redact(f"Error: {refused.error}")
+    if d.get("ok") is not True:
+        code = str(d.get("code") or "")
+        if code == "session_gone":
+            return redact(
+                f"Error: session `{slot_key}` closed or was replaced after it was "
+                "resolved. Nothing was written — call chat_folder_tree to see the "
+                "current sessions."
+            )
+        why = _DROP_NOT_MOVED.get(code) or str(d.get("reason") or "the board refused it")
+        return redact(f"Not moved: session `{slot_key}` stays put — {why}.")
+    tags, tags_err = _get_rows(ctx.client, "/api/chat/tags")
+    names_by_id = (
+        {} if tags_err else {str(t.get("id") or ""): str(t.get("name") or "?") for t in tags}
+    )
+    final = [str(t) for t in (d.get("tags") or []) if isinstance(t, str)]
+    shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
+    return redact(f"Moved session `{slot_key}` into column `{column_name}`. Tags now: {shown}.")
+
+
 #: Every tool this server has, one row each, in the order ``tools/list`` advertises
 #: them. A new dashboard tool is one more row in the family it belongs to: its
 #: descriptor, its identity, the routes it reaches, and its ``_run_*`` body.
@@ -4038,7 +4994,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
 #: the caller through :func:`mcp_core._resolve_session_key_strict`, whose first
 #: source is that block.
 #:
-#: Advertising is not cosmetic. ``mcp_gateway/backend.py`` strips any client-forged
+#: Advertising is not cosmetic. ``mcp_gateway/backend_stubs.py`` strips any client-forged
 #: caller block from EVERY forwarded request and re-injects its own only when the
 #: backend advertised this capability — so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how

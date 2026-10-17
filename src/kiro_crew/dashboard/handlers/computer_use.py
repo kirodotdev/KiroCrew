@@ -768,6 +768,8 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
     # are read per call and need no restart, and re-saving the same value must not
     # tear down the user's session.
     sessions_reset = 0
+    # None when the enable did not change, so no rebuild ran to report on.
+    spec_rewritten: bool | None = None
     if STATE_KEY_ENABLED in state_patch and state_patch[STATE_KEY_ENABLED] != enabled_before:
         # REBUILD THE AGENT SPEC FIRST. The enable is also a spec-emission gate
         # (``agent._computer_use_spec_gate``): while it is off the server is not in
@@ -787,24 +789,21 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
         # its own acquisition, and ``rebuild_agent_config`` never takes this lock,
         # so this cannot self-deadlock.
         #
-        # A rebuild failure must not fail the SAVE: the write already landed and
-        # was audited. The fallback is the un-rebuilt spec — the tool surface
-        # appears on the next gateway start.
+        # A rebuild that fails or declines to write must not fail the SAVE: the
+        # write already landed and was audited. The response says the spec was
+        # not rewritten; the tool surface then appears on the next gateway start.
         #
-        # The import is function-local and must STAY function-local, which is not
-        # a style choice: it makes the name resolve at CALL time, so
-        # ``kiro_crew.agent`` is the single place a test can substitute the
-        # rebuild. Hoisting it to module scope binds the name here at import time,
-        # and the test guard that keeps the suite from rewriting the operator's
-        # real ``~/.kiro/agents`` would silently stop reaching this call site.
+        # ``rebuild_agent_spec`` resolves ``kiro_crew.agent`` at CALL time, so that
+        # module is the single place a test can substitute the rebuild, and the
+        # test guard that keeps the suite from rewriting the operator's real
+        # ``~/.kiro/agents`` reaches this call site.
         # Pinned by ``test_patching_the_agent_module_REACHES_the_handler``.
-        try:
-            from kiro_crew.agent import rebuild_agent_config
+        from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
 
-            async with _get_config_lock():
-                await asyncio.to_thread(rebuild_agent_config)
-        except Exception:
-            logger.exception("computer-use enable saved, but agent config rebuild failed")
+        async with _get_config_lock():
+            spec_rewritten = await asyncio.to_thread(
+                rebuild_agent_spec, "computer-use enable change"
+            )
 
         from kiro_crew.dashboard.handlers.sessions import _reset_all_sessions
 
@@ -818,6 +817,8 @@ async def api_computer_use_config_save(request: web.Request) -> web.Response:
 
     payload = await _full_payload()
     payload["sessions_reset"] = sessions_reset
+    if spec_rewritten is not None:
+        payload["agent_spec_rewritten"] = spec_rewritten
     return web.json_response(payload)
 
 

@@ -152,6 +152,23 @@ describe('sidebar in-flow "Show all older sessions" row', () => {
     expect(screen.getAllByText('Show all older sessions')).toHaveLength(1)
   })
 
+  it('gives the dormant expander the same text size and hover fill as this row', () => {
+    // A first-time user read the dormant expander as a grey caption and did
+    // not see it as a control; this row, the other in-list text control, did
+    // read as one. Both now share one look, so the expander carries every
+    // size/colour/hover class this row does.
+    renderSidebar([...FRESH, DORMANT])
+    const tokens = (el: HTMLElement) => new Set(el.className.split(/\s+/))
+    const hint = tokens(screen.getByTestId('older-sessions-hint-root'))
+    const expander = tokens(screen.getByTestId('stale-expander-root'))
+    const look = ['text-[12px]', 'text-muted', 'hover:text-accent', 'hover:bg-accent-subtle', 'rounded-md', 'cursor-pointer']
+    for (const cls of look) {
+      expect(hint.has(cls), `hint lacks ${cls}`).toBe(true)
+      expect(expander.has(cls), `expander lacks ${cls}`).toBe(true)
+    }
+    expect(expander.has('text-[11px]')).toBe(false)
+  })
+
   it('opens the Older Sessions pane and fetches history on click, then hides itself', async () => {
     renderSidebar(FRESH)
     expect(footer).not.toThrow()

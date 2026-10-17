@@ -405,7 +405,14 @@ def _hook_fire_block() -> str:
     """The hook-result loop in chat_runner's ``_fire`` closure, by its anchors."""
     import kiro_crew.dashboard.chat_runner as chat_runner
 
-    text = Path(chat_runner.__file__).read_text(encoding="utf-8")
+    text = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [
+            *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+            Path(chat_runner.__file__),
+        ]
+        if turn_file.name != "__init__.py"
+    )
     start = text.index('logger.info("Hook %s stdout: %s", r.hook_name, r.stdout[:200])')
     end = text.index('logger.warning("Hook %s warning: %s", r.hook_name, r.stderr[', start)
     return text[start : text.index("\n", end)]
@@ -430,7 +437,11 @@ def test_slack_pip_failure_logs_keep_the_redacted_tail() -> None:
     """Both pip-failure logs in the Slack gateway bound the REDACTED text at its tail."""
     import kiro_crew.slack.gateway as slack_gateway
 
-    text = Path(slack_gateway.__file__).read_text(encoding="utf-8")
+    facade = Path(slack_gateway.__file__)
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (facade, *sorted((facade.parent / "gateway_runtime").glob("*.py")))
+    )
     assert 'logger.error("Dep repair failed: %s", dep_err[-500:])' in text
     assert 'redact_log_via_context(fb_err.decode(errors="replace"))[-300:]' in text
     assert 'fb_err.decode(errors="replace")[:300]' not in text

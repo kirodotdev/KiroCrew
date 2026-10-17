@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from kiro_crew.security import redact
+from kiro_crew.warm_task_brief_contract import is_warm_task_brief_message
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ _INJECTED_PREFIXES = (
 # A pasted stack trace or log dump under role "user" is not a goal either, but
 # it is only recognizable by shape. Cap user text so one paste cannot crowd out
 # the rest of the session; intent survives truncation, volume does not help.
-_MAX_USER_CHARS = 4000
+MAX_USER_CHARS = 4000
 
 
 @dataclass
@@ -110,7 +111,7 @@ def extract_turns(
     records: list[dict],
     *,
     assistant_excerpt_chars: int = 400,
-    max_user_chars: int = _MAX_USER_CHARS,
+    max_user_chars: int = MAX_USER_CHARS,
 ) -> list[TranscriptTurn]:
     """Reduce raw transcript *records* to the rows a summarization pass reads.
 
@@ -125,6 +126,8 @@ def extract_turns(
 
     for rec in records:
         if not isinstance(rec, dict):
+            continue
+        if is_warm_task_brief_message(rec):
             continue
         role = rec.get("role")
         if role not in _READ_ROLES:

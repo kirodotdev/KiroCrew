@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import (
+    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     _redact_for_display,
     _redact_meta,
@@ -333,6 +334,7 @@ async def steer_into_running_turn(
     decision_strip: dict | None = None,
     attachments: dict | None = None,
     delivery_id: str | None = None,
+    responsive: bool = False,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -407,6 +409,11 @@ async def steer_into_running_turn(
     reconciliation reads identity and never content: the same text can recur in
     a restored transcript, and only an id names THIS delivery.
     """
+    # Only api_chat's owner/member gate grants this mode. Keep the wire prefix
+    # out of pending identity, transcript rows, mirrors and send receipts.
+    from kiro_crew.dashboard import responsive_chat
+
+    responsive = responsive and user_origin and not channel_origin
     send_id = normalize_send_id(send_id)
     quote = quote_meta(attachments)
     attachments = attachment_meta(attachments)
@@ -468,6 +475,7 @@ async def steer_into_running_turn(
             slot._steer_channel_origin,
             slot._steer_admissions,
             slot._steer_attachment_meta,
+            slot._steer_act_now,
             slot._steer_decision_strips,
         )
     )
@@ -524,6 +532,12 @@ async def steer_into_running_turn(
         # wrong, and a requeued text runs as its own channel-origin turn anyway;
         # ``chat_runner`` resets it at the turn's end and at the next turn's start.
         slot._turn_channel_narrowed = True
+    if not user_origin:
+        # The same narrowing for "the person sent this turn": a peer's or an
+        # app's text steered into it can ask the model for a user-only action
+        # (``update_self``), so the turn counts as one the user did not send.
+        # Set before the RPC for the reason above; ``chat_runner`` resets it.
+        slot._turn_user_sent = False
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments or quote:
@@ -532,6 +546,14 @@ async def steer_into_running_turn(
         # rebuilt from this map -- without the quote here it would render its
         # blockquote as text instead of the card.
         slot._steer_attachment_meta[message] = {**attachments, **quote}
+    if user_origin and not channel_origin:
+        # The composer's own human asked this to act now. Held for the requeue
+        # with the attachment lists rather than in the lockstep origin maps,
+        # which the persisting tail drops while the steer is still unconsumed: a
+        # steer the turn ends before taking keeps its intent past the sub-agent
+        # hold (``STEER_INTENT_META``) instead of parking behind a wave its
+        # sender chose not to wait for.
+        slot._steer_act_now.add(message)
     if decision_strip:
         # Recorded for the REQUEUE, like the maps above: the three `STEER_REQUEUED`
         # returns below all come back before the stamp on the persisted row, and the
@@ -543,7 +565,8 @@ async def steer_into_running_turn(
     possibly_delivered = False
     slot._steer_rpc_in_flight.add(message)
     try:
-        steered = await client.steer(message)
+        wire_message = responsive_chat.steer_message(slot, message) if responsive else message
+        steered = await client.steer(wire_message)
     except Exception as exc:  # best-effort — the caller falls back to the queue
         logger.warning("steer failed for slot %s: %s", slot.key, exc)
         steered = False
@@ -616,6 +639,7 @@ async def steer_into_running_turn(
         slot._steer_channel_origin.pop(message, None)
         slot._steer_admissions.pop(message, None)
         slot._steer_attachment_meta.pop(message, None)
+        slot._steer_act_now.discard(message)
         slot._steer_decision_strips.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
@@ -648,12 +672,14 @@ async def steer_into_running_turn(
             # above means this is the only matching entry, which is why this is a
             # plain remove and not an index dance over possible duplicates.
             slot._pending_steers.remove(message)
+            responsive_chat.forget_steer(slot, message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
             slot._steer_user_origin.pop(message, None)
             slot._steer_channel_origin.pop(message, None)
             slot._steer_admissions.pop(message, None)
             slot._steer_attachment_meta.pop(message, None)
+            slot._steer_act_now.discard(message)
             slot._steer_decision_strips.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
@@ -763,6 +789,7 @@ async def steer_into_running_turn(
     # turn that ends without the echo still requeues the text.
     if not still_registered:
         slot._steer_attachment_meta.pop(message, None)
+        slot._steer_act_now.discard(message)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the
@@ -936,11 +963,17 @@ def queue_for_next_turn(
     channel_recipient: dict[str, Any] | None = None,
     quote: dict[str, Any] | None = None,
     commands_off: bool = False,
+    steer_intent: bool = False,
 ) -> str:
     """Append *message* to the slot's queue and announce it; return the queue id.
 
     The running turn's teardown drains the queue, so this is how a message
     reaches a busy slot when steering is unavailable or not asked for.
+
+    *steer_intent* stamps :data:`STEER_INTENT_META`: the session's own human asked
+    this send to act now and the running turn could not take it, so the sub-agent
+    hold releases it at the turn's end rather than parking it behind the wave.
+    Only the composer's steer fallback passes it.
 
     *commands_off* stamps :data:`COMMANDS_OFF_META_KEY` on the entry: the drained
     turn hands the text to the model as content and never runs its first word as a
@@ -1022,6 +1055,8 @@ def queue_for_next_turn(
         meta["decisions_strip"] = decision_strip
     if commands_off:
         meta[COMMANDS_OFF_META_KEY] = True
+    if steer_intent:
+        meta[STEER_INTENT_META] = True
     qid = slot.queue_append(
         message,
         meta=meta,
@@ -1062,6 +1097,9 @@ def queue_for_next_turn(
         push["meta"] = attachments
     if quote:
         push.setdefault("meta", {})[QUOTE_META_KEY] = quote
+    push_identity = normalize_send_id(send_id)
+    if push_identity:
+        push.setdefault("meta", {})["sendId"] = push_identity
     state.broadcast_ws("queue_push", push)
     # Accepted, and possibly not persisted: the write ceilings refuse an entry
     # past the count cap or the byte budget and the send is still accepted, so
@@ -1076,7 +1114,7 @@ def start_queue_persist(state: "DashboardState", slot: "_ChatSlot") -> None:
     """Begin the durable write for a just-queued prompt, off the event loop.
 
     Called from both places a prompt is accepted onto a slot queue: the busy-slot
-    path in this module, and the sub-agent hold branch in ``chat_handlers``. Both
+    path in this module, and the sub-agent hold branch in ``chat_api/chat_send``. Both
     answer the sender a receipt saying whether the entry is durable, so both must
     start the write that makes it so; a receipt from one path and a write from
     only the other is the asymmetry this seam exists to prevent.
@@ -1307,9 +1345,12 @@ def queue_entry_view(item: dict[str, Any]) -> dict[str, Any]:
             item["content"], user_origin=queue_entry_is_user_origin(item)
         ),
     }
+    send_id = normalize_send_id((item.get("meta") or {}).get("sendId"))
+    if send_id:
+        view["meta"] = {"sendId": send_id}
     attachments = attachment_meta(item.get("meta"))
     if attachments:
-        view["meta"] = attachments
+        view.setdefault("meta", {}).update(attachments)
     # Redacted unless the entry is the session's own human's (an entry restored
     # from disk carries no origin stamp and so stays redacted), the same rule
     # the entry's text follows in `queued_text_for_display`.

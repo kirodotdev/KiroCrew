@@ -39,6 +39,54 @@ def agent_sequence_dispatches(seq: list[str]) -> bool:
     return len(seq) > 1
 
 
+def split_cron_agent_member(agent_id: str, member_id: str) -> tuple[str, str]:
+    """Classify a cron create's agent name as a provider template OR a member.
+
+    ``--agent`` / the ``agent`` field is the one slot every create surface offers
+    for naming either a provider template or a crew member. The dashboard's own UI
+    resolves a member pick client-side and sends a separate ``member_id``; the CLI,
+    the MCP ``cron_add`` tool and a scripted dashboard POST do not, so a member name
+    arrives in ``agent_id`` and is captured as ``selection_kind='template'`` with the
+    member name mistaken for a provider template -- which the cron chat's reply path
+    then cannot resolve, failing to bind the agent on every reply.
+
+    Resolve that split ONCE, here, so every entry point agrees: when ``member_id`` is
+    not already given, defer the classification to the live resolver
+    (:func:`kiro_crew.config.loader._resolve_agent_selection`) and read its result,
+    rather than re-coding the precedence. The resolver checks the crew-member alias
+    FIRST -- a name in ``config.agents`` is an alias hit regardless of whether a
+    materialized provider template of the same name also exists -- so a member whose
+    name also ships a ``~/.kiro/agents/<name>.json`` spec (e.g. ``kirocrew-conductor``)
+    still classifies as a member, not a template. When the resolver reports an alias
+    hit carrying a durable ``member_id`` we return it as the member (``agent_id``
+    cleared, ``member_id`` set); a name that resolves to a bare provider template, and
+    an explicit ``member_id`` the caller already resolved, are returned unchanged.
+
+    This is a CREATE-only fix: it runs at the three owner-driven create callers
+    (CLI ``cron add``, MCP ``cron_add``, dashboard ``POST /api/crons``) that know
+    the user just picked an agent. The App Kit SDK (``ctx.cron.add_job``)
+    deliberately does NOT call this -- apps are confined and must not reach a
+    member's private memory by naming it. It leaves ``bind_cron_memory``'s
+    record-level ``agent_id``-is-a-template contract untouched -- the promotion
+    never happens inside ``add_job`` -- so editing an existing schedule's
+    ``agent`` field to a member name still records a template (the update paths
+    are out of scope).
+
+    A name to classify loads the configuration from disk on every call, so an
+    ``async`` caller hands this function to ``asyncio.to_thread``.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, _resolve_agent_selection
+
+    if member_id or not agent_id:
+        return agent_id, member_id
+    config = KiroCrewConfig.load()
+    _record, alias, _passthrough, _resolved = _resolve_agent_selection(config, agent_id)
+    aliased = config.agents.get(alias) if alias == agent_id else None
+    if aliased is not None and aliased.member_id:
+        return "", agent_id
+    return agent_id, member_id
+
+
 def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 
@@ -378,15 +426,8 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
     Only the stable single-agent key is reconciled. A per-run key is fresh on
     every fire, and the sequential path reads the record and replaces it itself.
     """
-    from dataclasses import replace
-
-    from kiro_crew.execution_context import (
-        EXECUTION_CONTEXT_KEY,
-        bind_session_execution,
-        read_session_execution,
-    )
+    from kiro_crew.execution_context import EXECUTION_CONTEXT_KEY
     from kiro_crew.history import ConversationLog
-    from kiro_crew.memory_stores import MissingExecutionIdentity
 
     if agent_sequence_dispatches(job.agent_sequence) or not job.persistent_session:
         return
@@ -416,13 +457,36 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
     ):
         logger.info("Cron '%s': its pre-identity session record now carries its capture", job.name)
         return
+    rebind_cron_session_template(session_key, execution, job.name)
+
+
+def rebind_cron_session_template(
+    session_key: str, execution: ExecutionContext, job_name: str
+) -> None:
+    """Make the schedule's own session record name the template it now captures.
+
+    Dispatch publishes the capture under the job's stable key with a plain
+    ``bind_session_execution``, which refuses a record that differs. A record
+    that differs from the capture in its template alone -- same member, store,
+    mode, app and selection -- is this schedule's own, left by a run under the
+    template the capture named before (a startup upgrade, or an agent change
+    through ``cron update``). It is rewritten under a compare-and-set against
+    the value just read. Any other record is left as it is and logged, and
+    dispatch refuses it with its own reason. Not vouched: a cron key is never
+    the caller slot of an own-store admission.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+    from kiro_crew.memory_stores import MissingExecutionIdentity
+
     try:
         current = read_session_execution(session_key)
     except MissingExecutionIdentity:
         logger.warning(
             "Cron '%s': its session record cannot be attributed to the schedule and was "
             "left as it is; archive that session or recreate the schedule",
-            job.name,
+            job_name,
         )
         return
     if current is None or current == execution:
@@ -431,13 +495,76 @@ def _reconcile_legacy_cron_session(job: CronJob, execution: ExecutionContext) ->
         logger.warning(
             "Cron '%s': its session record belongs to another execution and was left as it "
             "is; archive that session or recreate the schedule",
-            job.name,
+            job_name,
         )
         return
     bind_session_execution(
         session_key, execution, replace_existing=True, expected=current, vouch=False
     )
-    logger.info("Cron '%s': its session record now carries the agent it names", job.name)
+    logger.info("Cron '%s': its session record now carries the agent it names", job_name)
+
+
+def recapture_cron_template(job: CronJob, agent_id: str) -> dict[str, Any] | None:
+    """*job*'s captured execution re-pointed at a newly chosen *agent_id*.
+
+    Dispatch runs the captured ``execution_context.template_id``
+    (:func:`resolve_cron_memory`), not ``agent_id``, so an update that changes
+    the agent must move the capture with it or the job keeps running the agent
+    it was created with. The template is chosen as :func:`bind_cron_memory`
+    chooses it at creation: the named agent, else the member's own template for
+    a member schedule, else the ``kirocrew`` floor that dispatch maps to the
+    configured default. Store, member, mode and app are left as captured.
+
+    An owner update that names a crew member in ``agent_id`` is REFUSED rather
+    than silently recorded as a non-resolving template. Re-pointing an existing
+    schedule at a member is not supported: it would change the capture's store
+    and identity under the schedule's stable ``cron:<id>`` session key, which the
+    first run binds and the next fire's rebind cannot reconcile. The member split
+    is run here only to DETECT that case and refuse it clearly; the create paths
+    are the supported way to run a schedule as a member. An app-owned job is not
+    classified -- the App Kit SDK (:meth:`AppCronSDK.update_job`) forwards
+    ``agent_id`` after only an ownership check, and an app must not even name a
+    member here -- so for an app, and for a real provider template name,
+    ``agent_id`` is re-pointed verbatim.
+
+    Returns ``None`` when nothing moves: no capture yet (an uncaptured record
+    dispatches from ``agent_id`` already), an ``agent_id`` equal to the stored
+    one (the job form resubmits the field on every edit, and a schedule made
+    from a template chat names its template only in the capture), or a template
+    the capture already names.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import derive_execution, execution_from_record
+
+    if job.execution_context is None or agent_id == job.agent_id:
+        return None
+    execution = execution_from_record({"execution_context": job.execution_context})
+    app_owned = (job.created_by or "").startswith("app:")
+    already_member = execution.member_id is not None or execution.selection_kind == "member"
+    if agent_id and not app_owned and not already_member:
+        # Classify the name the same way create does, but only to REFUSE a member
+        # name: re-pointing an existing schedule at a member is unsupported (it
+        # cannot be done without changing the stable session's identity, which
+        # the next fire refuses). Refusing beats recording a member name as a
+        # non-resolving template -- which the create-path fix removed -- so the
+        # name is never silently mis-recorded. A provider template falls through.
+        _resolved_agent, member_name = split_cron_agent_member(agent_id, "")
+        if member_name:
+            raise ValueError(
+                "re-pointing an existing schedule to a crew member isn't "
+                f"supported; create a new schedule to run as {agent_id}"
+            )
+    if agent_id:
+        template_id = agent_id
+    elif already_member:
+        member = job.member_id or execution.member_id or execution.selection_name
+        template_id = derive_execution(execution, target_member=member).template_id
+    else:
+        template_id = "kirocrew"
+    if template_id == execution.template_id:
+        return None
+    return replace(execution, template_id=template_id).to_record()
 
 
 def bind_cron_memory(job: CronJob) -> None:

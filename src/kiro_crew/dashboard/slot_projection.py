@@ -11,6 +11,18 @@ from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 
 
+def summary_rows(slot: Any) -> list[Any]:
+    """The rows a slot's sidebar summary reads, without loading a pending window.
+
+    A restored row whose transcript window is still pending answers with the
+    bounded tail read at restore (``_ChatSlot.sidebar_messages``); every other
+    slot, including a duck-typed one, answers with its window.
+    """
+    if getattr(slot, "window_pending", False) is True:
+        return slot.sidebar_messages()
+    return slot.messages
+
+
 def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     """Whether a recent declined Stop makes the next press a force stop.
 
@@ -27,28 +39,11 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
 
 
 def resolved_row_identity(slot: Any) -> str:
-    """The identity the sidebar renders this slot under.
+    """The identity the sidebar renders this slot under: its own local key.
 
-    A purely local session is its own key. A remote-bound one -- minted through
-    ``create_peer_slot`` or adopted from a peer row -- is ``<instance_id>:<peer_key>``,
-    the same identity the peer row carries before anything is bound to it.
-
-    That equality is the whole point. The sidebar keys rows on this value (React
-    key, ``layoutId``, ``data-session-row``, the hover-hold seats), so a binding
-    that preserves it re-renders ONE row where a fresh key would mount a second
-    element beside the row the user clicked and leave the browser to notice they
-    are the same conversation.
-
-    The invariant that buys, and the trap in it: for a remote-bound session this
-    identity is NOT the local slot key, and never becomes it. Read ``key`` when you
-    need the local slot -- switching sessions, loading a transcript, addressing the
-    slot on the wire. Splitting this string to recover that key yields the PEER's
-    key, which is routable only inside a request sent back through that instance.
+    A relay archive is a local row too, so it never shares an identity with the
+    peer crew's own row for the same conversation.
     """
-    instance_id = getattr(slot, "instance_id", "") or ""
-    remote_slot = getattr(slot, "remote_slot", "") or ""
-    if getattr(slot, "is_remote", False) and instance_id and remote_slot:
-        return f"{instance_id}:{remote_slot}"
     return str(getattr(slot, "key", "") or "")
 
 
@@ -144,7 +139,7 @@ class SlotProjection:
         # Charge every parse attempt, including rejected and duplicate URLs, so
         # one accepted oversized message cannot monopolize the event loop.
         parse_budget = max_links * 64
-        for msg in reversed(slot.messages):
+        for msg in reversed(summary_rows(slot)):
             if len(found) >= max_links or parse_budget <= 0:
                 break
             if not isinstance(msg, dict) or msg.get("role") in non_durable_roles:
@@ -238,15 +233,21 @@ class SlotProjection:
         input the slot reads as idle while its owner is parked on an approval.
         Oldest first; the projection reads only the first one for the card.
         """
+        # Local import avoids the state -> slot_projection -> chat_utils -> state
+        # cycle at module import time. The value is process-local and cheap to
+        # read; it pairs the slot's restarting turn counter with its gateway.
+        from kiro_crew.dashboard.chat_utils import chunk_generation
+
         # The newest DURABLE row: a transient row (the turn-end ``done`` row
         # among them) is never persisted, so a slot rebuilt from disk after a
         # gateway restart lacks it. Projecting from one would move ``last_ts``
         # backwards across the restart, and the dashboard stores ``last_ts`` as
         # the unread watermark it can only clear with a covering ``last_ts``.
+        rows = summary_rows(slot)
         last_ts = next(
             (
                 message.get("ts", "")
-                for message in reversed(slot.messages)
+                for message in reversed(rows)
                 if message.get("role") not in transient_roles
             ),
             "",
@@ -259,7 +260,7 @@ class SlotProjection:
         last_conv_role = ""
         last_activity_ts = ""
         found_conv = False
-        for message in reversed(slot.messages):
+        for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
@@ -299,7 +300,7 @@ class SlotProjection:
             prompt_ts = next(
                 (
                     message.get("ts") or ""
-                    for message in reversed(slot.messages)
+                    for message in reversed(rows)
                     if message.get("role") in prompt_roles
                 ),
                 "",
@@ -313,18 +314,18 @@ class SlotProjection:
             not slot.turn_running
             and not has_options
             and not pending_approval
-            and bool(slot.messages)
+            and bool(rows)
             and last_conv_role == "assistant"
         )
         needs_input = bool(slot._question_pending)
-        interrupted = not slot.turn_running and is_turn_interrupted(slot.messages)
+        interrupted = not slot.turn_running and is_turn_interrupted(rows)
 
         pending_approval_info: dict[str, str] | None = None
         if slot_pending:
             # The transcript row is consulted only for a SLOT-registry future:
             # a coordinator approval writes no row, and a stale unresolved row
             # from an earlier turn must not describe it.
-            for message in reversed(slot.messages):
+            for message in reversed(rows):
                 if message.get("role") != "permission":
                     continue
                 meta = parse_cls_meta(message.get("cls") or "") or {}
@@ -406,30 +407,27 @@ class SlotProjection:
             "surface": slot.mode,
             "workspace": slot.workspace,
             "project": slot.project,
-            # Remote-execution binding. Shipped on every slot (not just remote
-            # ones) so the frontend can branch on a field that is always
-            # present: an absent key and "runs locally" would be the same
-            # reading, and a stale client would then render a peer session as
-            # local. The binding's third field, `remote_slot`, is still NOT
-            # projected: it is the PEER's slot key, routable only inside a
-            # request sent back through that instance, and shipping a routable
-            # peer key to a browser buys nothing.
-            #
-            # What the browser does need from it is the row's IDENTITY, so that
-            # is projected instead, already resolved. A remote-bound session --
-            # minted through `create_peer_slot` or adopted from a peer row --
-            # identifies as `<instance_id>:<peer_key>`, which is exactly the
-            # identity the peer row carried before it was bound. Same identity
-            # before and after means the sidebar re-renders ONE row rather than
-            # replacing the row the user clicked with a sibling, and it means a
-            # log line, a `data-session-row` selector and a trace all stay
-            # continuous across the adopt instead of splitting in two.
+            # Relay-archive marker. Shipped on every slot so the frontend can
+            # branch on a field that is always present: an absent key and "runs
+            # locally" would be the same reading. The binding's third field,
+            # `remote_slot`, is NOT projected: it is the PEER's slot key, and
+            # shipping it to a browser buys nothing.
             "executor": slot.executor,
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
-            "messages": len(slot.messages),
+            "messages": len(rows),
             "running": slot.turn_running,
+            # A loop wake is opening this running turn and its row is not in the
+            # transcript yet: a structured monitor writes that row only once the
+            # runner accepts the turn. Rides the same frame as `running`, so a
+            # reader can tell the wake from a turn the user started before the
+            # row lands.
+            "wake_starting": bool(
+                slot.turn_running and getattr(slot, "_wake_starting_task", None) is slot.task
+            ),
+            "turn": slot._turn_generation,
+            "turn_gen": chunk_generation(),
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads
             # idle while it holds the session, which without this field looks
@@ -478,6 +476,8 @@ class SlotProjection:
             "slack_thread_ts": slot._slack_thread_ts,
             "folder_id": slot.folder_id,
             "pinned": slot.pinned,
+            "mutes_opened": slot.mutes_opened,
+            "muted": slot.muted,
             "tags": list(slot.tags),
             "tags_revision": getattr(slot, "tags_revision", ""),
             "color_index": slot.color_index,
@@ -498,4 +498,13 @@ class SlotProjection:
             # ``slots`` frames on it. A member caller is ownership-fenced to the
             # slots it created (``authorize_target``), so created == driven.
             "created_by": getattr(slot, "_created_by", ""),
+            # Whether THIS gateway process stamped ``created_by`` at mint, as
+            # opposed to rehydrating it from the transcript. The field above is
+            # restored from a metadata line an agent's file tools can edit, so on
+            # its own it is a claim; this says whether it is the gateway's own
+            # witness. Carried onto the row because the one reader that DECIDES
+            # on it -- the sidebar's lineage join -- gets rows and no slots, and
+            # a join that trusted the claim alone would nest a session under
+            # whoever a transcript happened to name.
+            "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
         }

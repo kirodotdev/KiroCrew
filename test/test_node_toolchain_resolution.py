@@ -267,6 +267,8 @@ def test_no_toolchain_anywhere_returns_empty(isolated_home):
     ".nvm/versions/node/{v}/bin",
     ".local/share/fnm/node-versions/{v}/installation/bin",
     ".fnm/node-versions/{v}/installation/bin",
+    # macOS default: fnm uses ~/Library/Application Support/fnm, not XDG.
+    "Library/Application Support/fnm/node-versions/{v}/installation/bin",
 ])
 def test_each_version_manager_layout_is_found(isolated_home, layout):
     d = _fake_node_bin(isolated_home / layout.format(v="v20.1.0"))
@@ -405,3 +407,98 @@ def test_npm_and_npx_resolve_through_a_standalone_tree(isolated_home):
         found = env_mod.find_node_tool(tool, "")
         assert found is not None, tool
         assert Path(found).parent == d
+
+
+# --- nvm under the XDG layout ---
+#
+# nvm's installer puts its root at ``$XDG_CONFIG_HOME/nvm`` when that variable is
+# set, so a host can hold every Node and every ``npm i -g`` adapter under
+# ``~/.config/nvm`` with no ``~/.nvm`` at all. A gateway launched from the desktop
+# app inherits neither ``XDG_CONFIG_HOME`` nor ``NVM_DIR``, so it has to find that
+# root from the candidate list alone. Both consumers read the same list:
+# ``node_bin_dirs`` (``find_node_tool``, the browser panel's Node check) and
+# ``node_all_bin_dirs`` (folded into ``augmented_path``, the ACP adapter lookup).
+
+
+def _xdg_nvm_bin(config_root: Path, version: str) -> Path:
+    return _fake_node_bin(config_root / "nvm" / "versions" / "node" / version / "bin")
+
+
+@pytest.fixture
+def nvm_home(isolated_home, tmp_path, monkeypatch):
+    """``isolated_home`` with no Homebrew node kegs, which a macOS runner can carry
+    and which ``node_all_bin_dirs`` would append to the exact tuples below."""
+    monkeypatch.setattr(env_mod, "_HOMEBREW_NODE_KEG_ROOT", str(tmp_path / "no-homebrew"))
+    return isolated_home
+
+
+def test_xdg_default_nvm_root_is_found_by_both_consumers(nvm_home, monkeypatch):
+    """No ``XDG_CONFIG_HOME`` (the desktop-app gateway's env): ``~/.config/nvm``."""
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    d = _xdg_nvm_bin(nvm_home / ".config", "v26.3.1")
+
+    assert str(d) in env_mod.node_bin_dirs()
+    found = env_mod.find_node_tool("node", "")
+    assert found is not None
+    assert Path(found).parent == d
+    assert str(d) in env_mod.node_all_bin_dirs()
+    assert str(d) in env_mod.augmented_path("").split(os.pathsep)
+
+
+def test_xdg_config_home_overrides_the_default_nvm_root(nvm_home, tmp_path, monkeypatch):
+    """A set ``XDG_CONFIG_HOME`` is where nvm lives; ``~/.config/nvm`` is not."""
+    xdg = tmp_path / "xdg-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    chosen = _xdg_nvm_bin(xdg, "v22.9.0")
+    ignored = _xdg_nvm_bin(nvm_home / ".config", "v24.0.0")
+
+    assert str(chosen) in env_mod.node_bin_dirs()
+    assert str(ignored) not in env_mod.node_bin_dirs()
+    all_dirs = env_mod.node_all_bin_dirs()
+    assert str(chosen) in all_dirs
+    assert str(ignored) not in all_dirs
+
+
+def test_a_relative_xdg_config_home_is_ignored(nvm_home, tmp_path, monkeypatch):
+    """The XDG spec says a relative value is invalid and must be ignored. Taking
+    it would glob against the gateway's cwd and put a cwd-relative entry on a
+    spawned subprocess's PATH."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", "relative-config")
+    monkeypatch.chdir(tmp_path)
+    _xdg_nvm_bin(tmp_path / "relative-config", "v22.0.0")
+    default = _xdg_nvm_bin(nvm_home / ".config", "v20.0.0")
+
+    assert env_mod.node_bin_dirs() == (str(default),)
+    assert env_mod.node_all_bin_dirs() == (str(default),)
+
+
+def test_xdg_nvm_versions_are_ordered_newest_first(nvm_home, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    old = _xdg_nvm_bin(nvm_home / ".config", "v18.20.0")
+    new = _xdg_nvm_bin(nvm_home / ".config", "v26.3.1")
+
+    assert env_mod.node_bin_dirs() == (str(new),)
+    assert env_mod.node_all_bin_dirs() == (str(new), str(old))
+
+
+def test_legacy_nvm_root_keeps_its_precedence_over_the_xdg_root(nvm_home, monkeypatch):
+    """``~/.nvm`` is found exactly as before and still comes first when both
+    roots exist, even when the XDG root holds the newer Node."""
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    legacy = _fake_node_bin(nvm_home / ".nvm" / "versions" / "node" / "v20.1.0" / "bin")
+    xdg = _xdg_nvm_bin(nvm_home / ".config", "v26.3.1")
+
+    assert env_mod.node_bin_dirs() == (str(legacy), str(xdg))
+    assert env_mod.node_all_bin_dirs() == (str(legacy), str(xdg))
+
+
+def test_the_all_versions_cache_is_keyed_on_the_xdg_root(nvm_home, tmp_path, monkeypatch):
+    """A changed ``XDG_CONFIG_HOME`` is a different scan, the same way a changed
+    HOME is, so a caller never reads the previous root's dirs from the cache."""
+    first = tmp_path / "xdg-a"
+    second = tmp_path / "xdg-b"
+    d = _xdg_nvm_bin(first, "v22.0.0")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(first))
+    assert env_mod.node_all_bin_dirs() == (str(d),)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(second))
+    assert env_mod.node_all_bin_dirs() == ()

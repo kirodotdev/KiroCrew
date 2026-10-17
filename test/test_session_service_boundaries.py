@@ -153,7 +153,9 @@ async def test_hard_stop_orders_abort_reset_respawn_and_hook(cfg: KiroCrewConfig
     )
     manager._sessions["key"] = session
 
-    manager.clear_queue = MagicMock(side_effect=lambda _key: events.append("queue-cleared"))
+    manager.clear_queue = MagicMock(
+        side_effect=lambda _key, _owned_by=None: events.append("queue-cleared")
+    )
     manager._send_abort_for_session = AsyncMock(  # type: ignore[method-assign]
         side_effect=lambda *_: events.append("abort-sent")
     )
@@ -294,3 +296,43 @@ async def test_conversation_clearing_reset_suppresses_the_successor_replay(
     await manager.reset("key", clear_conversation=clear_conversation)
 
     assert manager.consume_replay_suppression("key") is suppressed
+
+
+@pytest.mark.asyncio
+async def test_remove_of_a_live_session_emits_no_close_edge(cfg: KiroCrewConfig) -> None:
+    """``remove`` must NOT write a ``session/closed`` crew-log edge, for a live
+    session or any other. ``remove`` has many callers that are not a worker
+    finishing -- archive-cleanup sweeps, a mid-handshake eager-spawn teardown,
+    Slack command paths -- and stamping ``END_REASON_REMOVED`` from inside it would
+    make a reaped or torn-down worker read ``closed`` in ``session_status``, the
+    fail-open mistake. The deliberate-close edge is written by the ONE deliberate
+    caller (``close_slot``) instead, pinned in ``test_slot_lifecycle*``; this test
+    is the fence that keeps the generic teardown silent.
+    """
+    provider = _provider()
+    provider.session_id = "sid-live-worker"
+    manager = SessionManager(cfg, provider_factory=lambda **_: _provider())
+    manager.release_subagent_runtime = AsyncMock()  # type: ignore[method-assign]
+    manager._sessions["key"] = _Session(
+        provider=provider,
+        first_turn=FirstTurnState.NOTHING_ARMED,
+    )
+
+    with patch("kiro_crew.crew_log.emit.on_session_closed") as on_closed:
+        await manager.remove("key")
+
+    on_closed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remove_of_a_missing_key_emits_no_close_edge(cfg: KiroCrewConfig) -> None:
+    """``remove`` on a key this gateway never held must touch nothing -- the same
+    contract the persistence matrix pins -- so it writes no ``session/closed`` edge.
+    """
+    manager = SessionManager(cfg, provider_factory=lambda **_: _provider())
+    manager.release_subagent_runtime = AsyncMock()  # type: ignore[method-assign]
+
+    with patch("kiro_crew.crew_log.emit.on_session_closed") as on_closed:
+        await manager.remove("missing")
+
+    on_closed.assert_not_called()

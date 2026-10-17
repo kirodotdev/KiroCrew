@@ -543,14 +543,23 @@ def probe_live(socket_path: str | os.PathLike[str]) -> bool:
     """Blocking check for a server currently listening on the endpoint.
 
     Runs in a thread at every call site (it blocks for up to a second) and
-    never raises: an inconclusive probe reports ``True`` so callers, which use
+    never raises.
+
+    On POSIX an inconclusive probe reports ``True`` so callers, which use
     this to decide whether it is safe to clobber an endpoint, err toward
     leaving it alone. Only a *conclusive* negative -- a refused connect or a
     name that does not exist -- reports ``False``; every other failure is
     inconclusive and reports live.
 
-    A full accept backlog is the case this protects: the daemon is healthy but
-    overloaded, so ``connect()`` neither succeeds nor is refused. Which OSError
+    On Windows the rule is an allowlist instead: only ``ERROR_SEM_TIMEOUT``
+    and ``ERROR_PIPE_BUSY`` (a server exists but has no free instance) report
+    live, and any other error reports ``False``. That answer feeds only the
+    readiness polls through :func:`endpoint_exists`; :func:`remove_stale`
+    unlinks nothing on Windows, so no clobber decision depends on it.
+
+    A full accept backlog is the POSIX case the live default protects: the
+    daemon is healthy but overloaded, so ``connect()`` neither succeeds nor is
+    refused. Which OSError
     that surfaces as is kernel-dependent -- a ``settimeout``-armed socket is
     non-blocking, so on Linux the connect fails at once with ``EAGAIN``
     (``BlockingIOError``) rather than raising ``socket.timeout`` (that fires

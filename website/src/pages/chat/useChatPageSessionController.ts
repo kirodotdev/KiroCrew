@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { NavigateFunction, NavigationType } from 'react-router-dom'
 
+import { api } from '../../api/client'
 import type { ChatLaunchOptions } from '../../app-sdk'
 import { i18nT } from '../../i18n/t'
 import { useSessionTabs } from '../../hooks/useSessionTabs'
@@ -21,7 +22,9 @@ import { writePrefill } from '../../utils/navIntent'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import { isSafeReload } from '../../lib/safeReload'
 import { safeSetItem } from '../../utils/safeStorage'
+import { PANE_SLOT_HINT_PARAM, relayActiveSlotToParent } from '../../lib/paneLastSlot'
 import { shouldReplaceSessionUrl, popMaySwitchSession } from '../../utils/sessionUrlHistory'
+import { sessionShortNameFrom, shortNameMatches, type ShortNameMatch } from '../../utils/sessionKeys'
 import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
 
@@ -29,12 +32,18 @@ import { focusComposer } from './composerFocus'
 export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | null): T | undefined {
   return key && Object.prototype.hasOwnProperty.call(closing, key) ? closing[key] : undefined
 }
+// How long after the not-found deadline a slots frame may still be treated as
+// the gateway finishing its restore. The deadline itself is 5s; the recovery
+// path exists for gateway restarts and large session restores, which settle on
+// the same seconds scale. Past this bound a frame carrying the key still proves
+// the banner false — but it no longer proves the user is waiting for that link,
+// so it may only retire the notice, never move them.
+const SID_RECOVERY_WINDOW_MS = 30_000
 
 interface UseChatPageSessionControllerArgs {
   activeSlot: string | null
   activeSlotRef: MutableRefObject<string | null>
   connected: boolean
-  defaultAgent?: string
   dispatch: AppDispatch
   drafts: MutableRefObject<Record<string, string>>
   embedMode?: 'chat' | 'sessions'
@@ -76,7 +85,6 @@ export function useChatPageSessionController({
   activeSlot,
   activeSlotRef,
   connected,
-  defaultAgent,
   dispatch,
   drafts,
   embedMode,
@@ -105,7 +113,7 @@ export function useChatPageSessionController({
 }: UseChatPageSessionControllerArgs) {
   // Older-sessions history is fetched lazily, not on mount: the
   // sidebar's "Older sessions" section self-fetches when expanded (see
-  // ChatSidebar's footer toggle -- the section starts collapsed and its open
+  // chat-sidebar/HistoryPane.tsx's footer toggle -- the section starts collapsed and its open
   // state is not persisted, so it can never be open at mount), which leaves
   // the welcome-screen "Continue a previous chat?" suggestions as the only
   // consumer that can need the payload before that. They need it only once
@@ -131,8 +139,11 @@ export function useChatPageSessionController({
   useEffect(() => {
     if (activeSlot && filteredSlots.some(s => s.key === activeSlot)) {
       safeSetItem(slotStorageKey, activeSlot)
+      // In a remote-crew pane this storage dies with the tunnel's port, so the
+      // hub keeps a copy and hands it back as ?lastSid= (lib/paneLastSlot).
+      if (!embedded) relayActiveSlotToParent(activeSlot)
     }
-  }, [activeSlot, slotStorageKey, filteredSlots])
+  }, [activeSlot, slotStorageKey, filteredSlots, embedded])
   useEffect(() => () => { if (activeSlotRef.current && filteredSlotsRef.current.find(s => s.key === activeSlotRef.current)) safeSetItem(slotStorageKeyRef.current, activeSlotRef.current) }, [activeSlotRef, filteredSlotsRef])
 
   /* ── Session tabs ───────────────────────────────────────────────────────
@@ -657,6 +668,7 @@ export function useChatPageSessionController({
     activeSlot: string | null
     activeSlotChanged: boolean
     error: string
+    deniedAt: number
   } | null>(null)
   // Equality at recovery time cannot distinguish "stayed on A" from A -> B -> A.
   // Latch the first committed change while a denied link is pending; returning
@@ -677,7 +689,9 @@ export function useChatPageSessionController({
   useEffect(() => {
     if (!connected || !slotsLoaded) return
     const urlSlot = initialSidRef.current
-    if (!urlSlot) return
+    // A short name is never in the roster under that spelling; its own lookup
+    // below gives the verdict, so a slow answer is not pre-empted as missing.
+    if (!urlSlot || sessionShortNameFrom(urlSlot)) return
     const timer = setTimeout(() => {
       if (initialSidRef.current) {
         const error = i18nT('pages.chatPage.session_not_found', { name: urlSlot })
@@ -686,6 +700,7 @@ export function useChatPageSessionController({
           activeSlot: activeSlotRef.current,
           activeSlotChanged: false,
           error,
+          deniedAt: Date.now(),
         }
         initialSidRef.current = null
         pendingSidRef.current = false
@@ -712,6 +727,15 @@ export function useChatPageSessionController({
     const denied = deniedSidRef.current
     if (!denied || !filteredSlots.some(slot => slot.key === denied.key)) return
     deniedSidRef.current = null
+    // "Active slot unchanged" reads as "still waiting for the link" only while
+    // the restore it was denied by could still be running. The record outlives
+    // that window — no expiry, and reconnects re-deliver the full list — so a
+    // frame arriving minutes later would otherwise yank a user who has been
+    // reading or composing here the whole time. Retire the false banner, stay put.
+    if (Date.now() - denied.deniedAt > SID_RECOVERY_WINDOW_MS) {
+      setSidError(current => current === denied.error ? '' : current)
+      return
+    }
     if (denied.activeSlotChanged || activeSlotRef.current !== denied.activeSlot) {
       setSidError(current => current === denied.error ? '' : current)
       return
@@ -731,6 +755,90 @@ export function useChatPageSessionController({
   const basePath = popout ? '/popout/chat' : embedMode === 'chat' || embedMode === 'sessions' ? '/embed/chat' : '/chat'
   const searchParamsRef = useRef(searchParams)
   searchParamsRef.current = searchParams
+
+  // A deep link that names a session by its SHORT name (`?sid=chat-7`), which is
+  // how the sidebar, agent tools and people name it. The mount effect above
+  // matches `?sid=` exactly, so it holds URL sync and waits; this asks the
+  // gateway for every transcript under that name, adds the open roster, and
+  // opens the oldest. A slot number is reused across gateway generations, so the
+  // rest are listed in a notice. No match says so; nothing opens or is created.
+  // A full key never takes this path.
+  const [sidMatches, setSidMatches] = useState<{ name: string; opened: ShortNameMatch; others: ShortNameMatch[] } | null>(null)
+  const shortSidLookupRef = useRef<string | null>(null)
+  const unmountedRef = useRef(false)
+  // Guard component lifetime, not lookup-effect reruns: the once-per-link lookup must keep its answer.
+  useEffect(() => {
+    unmountedRef.current = false
+    return () => { unmountedRef.current = true }
+  }, [])
+  const queryClient = useQueryClient()
+  const openShortNameMatch = useCallback((match: ShortNameMatch) => {
+    if (!connectedRef.current) return
+    // The roster is read at click time: a listed closed session may have been
+    // resumed since the notice appeared, and an open one is switched to.
+    const open = filteredSlotsRef.current.some(s => s.key === match.key)
+    if (match.stem && !open) void dispatch(resumeFromHistory({ key: match.stem, title: match.title }))
+    else dispatch(switchSlot({ key: match.key, announceOnMissing: true }))
+  }, [dispatch, filteredSlotsRef])
+  useEffect(() => {
+    if (embedded && !embedMode) return
+    if (!connected || !slotsLoaded) return
+    const urlSlot = initialSidRef.current
+    const short = urlSlot ? sessionShortNameFrom(urlSlot) : null
+    if (!urlSlot || !short || shortSidLookupRef.current === urlSlot) return
+    shortSidLookupRef.current = urlSlot
+    // One attempt, never cached: a retry would hold the link open on a dead
+    // gateway, and a cached list would miss a session created since.
+    void queryClient.fetchQuery({
+      queryKey: ['sessions-named', short],
+      queryFn: () => api.sessionsNamed(short),
+      retry: false,
+      staleTime: 0,
+      gcTime: 0,
+    }).then(r => r.sessions ?? [], () => null).then(onDisk => {
+      if (unmountedRef.current) return
+      // The mount effect clears the ref when the user picked a session first.
+      if (initialSidRef.current !== urlSlot) return
+      initialSidRef.current = null
+      const matches = shortNameMatches(short, filteredSlotsRef.current, onDisk ?? [])
+      if (!matches.length) {
+        // Keep the URL held while no session is active; a user switch releases
+        // pendingSidRef in URL sync without letting a slots frame auto-select.
+        popInFlightRef.current = false
+        // A failed lookup cannot say no session has this name.
+        setSidError(onDisk
+          ? i18nT('pages.chatPage.no_session_named', { name: short })
+          : i18nT('pages.chatPage.session_not_found', { name: short }))
+        return
+      }
+      const [target, ...others] = matches
+      const mine = others.length ? { name: short, opened: target, others } : null
+      setSidMatches(mine)
+      // Name the full key before activating it: URL sync stays held until
+      // `activeSlot` equals `?sid=`, and a short name never does.
+      const next = new URLSearchParams(searchParamsRef.current)
+      next.set('sid', target.key)
+      next.delete('slot')
+      navigate({ pathname: locationPathname, search: `?${next}`, hash: locationHash }, { replace: true })
+      if (!target.stem) {
+        dispatch(switchSlot(target.key))
+        return
+      }
+      void dispatch(resumeFromHistory({ key: target.stem, title: target.title })).then(result => {
+        // A refused, renamed or off-surface resume never reaches `?sid=`
+        // (the reducer leaves activeSlot alone off-surface); release URL sync.
+        const resumed = resumeFromHistory.fulfilled.match(result) && result.payload.ok
+          && result.payload.key === target.key && isChatPageSurface(result.payload.surface)
+        if (resumed) return
+        popInFlightRef.current = false
+        // "Opened <title>" would name a session that never opened; the
+        // unresumable notice explains why. Leave a later link's notice alone.
+        setSidMatches(cur => (cur === mine ? null : cur))
+      })
+    })
+    // Read once per link: the refs carry the live roster and URL into the answer.
+  }, [connected, slotsLoaded, embedded, embedMode, dispatch, navigate, locationPathname, locationHash, filteredSlotsRef, queryClient])
+
   useEffect(() => {
     if (embedded && !embedMode) return
     // noUrlSync (artifact companion chat panel): the host page owns the URL
@@ -891,9 +999,13 @@ export function useChatPageSessionController({
   // If no slots exist at all, auto-create one so the user lands in a ready chat
   const autoCreatedRef = useRef(false)
   const hadActiveSlotRef = useRef(false)
+  // The hub's record of this pane's last chat (#16009), used for the first
+  // pick only. A soft hint, unlike ?sid=: a chat that is gone falls through.
+  const slotHintRef = useRef(embedded ? null : searchParams.get(PANE_SLOT_HINT_PARAM))
   useEffect(() => {
     if (activeSlot) {
       hadActiveSlotRef.current = true
+      slotHintRef.current = null
       return
     }
     // Don't auto-select/auto-create while the challenge-redirect token effect
@@ -910,14 +1022,19 @@ export function useChatPageSessionController({
     if (filteredSlots.length > 0 && isSafeReload() && !hadActiveSlotRef.current) return
     if (filteredSlots.length > 0) {
       const saved = localStorage.getItem(slotStorageKey)
-      const target = saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
+      const hint = slotHintRef.current
+      slotHintRef.current = null
+      const target = hint && filteredSlots.some(s => s.key === hint) ? hint
+        : saved && filteredSlots.find(s => s.key === saved) ? saved : filteredSlots[0].key
       dispatch(switchSlot(target))
     } else if (connected && slotsLoaded && !autoCreatedRef.current) {
       // Connected, slots fetched, and truly empty — auto-create one
       autoCreatedRef.current = true
-      dispatch(createSlot({ agent: defaultAgent || undefined, mode }))
+      // Agent-less: the server stamps the default custom agent (a template),
+      // never the default crewmate alias.
+      dispatch(createSlot({ mode }))
     }
-  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, defaultAgent, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
+  }, [activeSlot, filteredSlots, searchParams, dispatch, slotStorageKey, connected, slotsLoaded, mode, newSlotFailed, newSessionRef, tokenConsumingRef])
 
   // Slot switch: the virtualizer (keyed on sessionId = activeSlot) owns entry
   // placement — it force-pins to the bottom (arming follow) or restores a
@@ -966,5 +1083,8 @@ export function useChatPageSessionController({
     setNewSlotFailed,
     setSidError,
     sidError,
+    sidMatches,
+    setSidMatches,
+    openShortNameMatch,
   }
 }

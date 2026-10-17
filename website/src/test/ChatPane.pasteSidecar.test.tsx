@@ -90,7 +90,7 @@ import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
 const PASTED = 'line1\nline2\nline3\nline4\nline5' // >= PASTE_THRESHOLD_LINES
-const TOKEN = /\[ Paste #1 · 5 lines \]/
+const TOKEN = /\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/
 
 function makeStore(slotKeys: string[], busy = false) {
   return configureStore({
@@ -191,7 +191,7 @@ describe('ChatPane paste sidecar', () => {
     // and the next send carries that paste alone.
     await waitFor(() => expect(box.value).toBe(''))
     await pasteInto(box, PASTED)
-    await waitFor(() => expect(box.value).toBe('[ Paste #1 · 5 lines ]'))
+    await waitFor(() => expect(box.value).toMatch(/^\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]$/))
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(2))
     const [secondWire, , , , secondMeta] = vi.mocked(api.sendChat).mock.calls[1]
@@ -238,13 +238,13 @@ describe('ChatPane paste sidecar', () => {
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(box.value).toBe(''))
     await pasteInto(box, SECOND)
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · 4 lines \]/))
+    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/))
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(settle).toHaveLength(2))
     const refused = { ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) }
     await act(async () => { settle[0](refused); settle[1](refused) })
     // Both tokens are back, re-numbered apart (two blocks cannot share #1).
-    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1 · \d lines \][\s\S]*\[ Paste #2 · \d lines \]/))
+    await waitFor(() => expect(box.value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · \d lines \][\s\S]*\[ Paste #2(?:\u2063[\u200b\u200c]+\u2063)? · \d lines \]/))
     vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) } as never)
     fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(3))

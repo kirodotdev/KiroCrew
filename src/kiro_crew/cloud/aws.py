@@ -22,6 +22,7 @@ import subprocess
 from typing import Any, Optional
 
 from kiro_crew.deploy.engine import aws_spawn_env, resolve_aws_bin
+from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,41 @@ def _build_argv(args: list[str], profile: str, region: str) -> list[str]:
     return cmd
 
 
+# Bound on the drain after a timed-out CLI is killed. ``proc.kill()`` stops only the
+# CLI, and a process it started that inherited the piped stdout/stderr keeps their
+# write ends open, so a drain with no bound lasts until that process exits.
+_POST_KILL_DRAIN_SECS = 5
+
+
+def _drain_killed_call(proc: "subprocess.Popen[str]") -> str:
+    """Collect a killed CLI's stdout, waiting at most :data:`_POST_KILL_DRAIN_SECS`.
+
+    Returns "" when the bound expires. A process the CLI started still holds the
+    pipes then, and it is not signalled: it runs until it exits. Reaching it would
+    need the CLI in a group of its own, and neither form is safe here. A new session
+    has no controlling terminal, so a prompt on ``/dev/tty`` cannot open it. A new
+    group in the terminal's session is a background group, which the terminal stops
+    when it reads (``SIGTTIN``), so the prompt would wait out the timeout instead.
+
+    On POSIX our read ends are closed when the bound expires, so the descriptors do
+    not stay open for that process. On Windows ``communicate`` leaves a reader thread
+    on each pipe after a timeout, and each closes its pipe when its read ends; a pipe
+    another thread is reading is not closed from here.
+    """
+    try:
+        out, _ = proc.communicate(timeout=_POST_KILL_DRAIN_SECS)
+    except subprocess.TimeoutExpired:
+        if IS_POSIX:
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+        return ""
+    return out or ""
+
+
 def run_aws(
     args: list[str],
     profile: str = "",
@@ -200,6 +236,7 @@ def run_aws(
     *,
     timeout: int = DEFAULT_TIMEOUT,
     proc_sink: Optional[Any] = None,
+    visible_dirs: tuple[str, ...] = (),
 ) -> tuple[int, str, str]:
     """Run a single ``aws`` CLI command. Returns ``(returncode, stdout, stderr)``.
 
@@ -222,10 +259,19 @@ def run_aws(
     Chokepoint guard: refuses non-read-only calls from an agent session (see
     :func:`assert_chokepoint_allowed`), so importing this function from a Python
     snippet can't run mutations or mint tokens behind the shell denylist.
+
+    ``visible_dirs`` names gateway-owned directories under a sandbox-masked root
+    that this one child must still read (a staged secret or payload file). They
+    are passed to the sandbox as ``extra_visible_dirs``, which lifts the mask for
+    this child only.
     """
     assert_chokepoint_allowed(args)
     argv = _build_argv(args, profile, region)
-    sandboxed, cleanup = wrap_argv(argv, mode="standard")
+    # Passed only when set, so every existing call is unchanged.
+    if visible_dirs:
+        sandboxed, cleanup = wrap_argv(argv, mode="standard", extra_visible_dirs=visible_dirs)
+    else:
+        sandboxed, cleanup = wrap_argv(argv, mode="standard")
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
     proc: Optional[subprocess.Popen[str]] = None
     try:
@@ -263,8 +309,8 @@ def run_aws(
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            out, err = proc.communicate()
-            return 124, out or "", f"aws call timed out after {timeout}s: {' '.join(args[:2])}"
+            out = _drain_killed_call(proc)
+            return 124, out, f"aws call timed out after {timeout}s: {' '.join(args[:2])}"
         return proc.returncode or 0, out or "", err or ""
     except KeyboardInterrupt:
         if proc is not None and proc.poll() is None:
@@ -335,6 +381,7 @@ def checked(
     *,
     action: str,
     timeout: int = DEFAULT_TIMEOUT,
+    visible_dirs: tuple[str, ...] = (),
 ) -> str:
     """Run an ``aws`` call, raising :class:`AWSError` on failure.
 
@@ -342,7 +389,8 @@ def checked(
     on an authorization failure the precise denied action is attached as
     ``missing_action`` so the UI can tell the user exactly what to grant.
     """
-    rc, out, err = run_aws(args, profile, region, timeout=timeout)
+    run_extra = {"visible_dirs": visible_dirs} if visible_dirs else {}
+    rc, out, err = run_aws(args, profile, region, timeout=timeout, **run_extra)
     if rc != 0:
         missing = map_missing_action(err)
         hint = ""
@@ -367,6 +415,7 @@ def checked_json(
     *,
     action: str,
     timeout: int = DEFAULT_TIMEOUT,
+    visible_dirs: tuple[str, ...] = (),
 ) -> Any:
     """Run a ``--output json`` ``aws`` call and parse the result.
 
@@ -374,7 +423,8 @@ def checked_json(
     """
     if "--output" not in args:
         args = [*args, "--output", "json"]
-    out = checked(args, profile, region, action=action, timeout=timeout)
+    check_extra = {"visible_dirs": visible_dirs} if visible_dirs else {}
+    out = checked(args, profile, region, action=action, timeout=timeout, **check_extra)
     try:
         return json.loads(out or "null")
     except json.JSONDecodeError as exc:

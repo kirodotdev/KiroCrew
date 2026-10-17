@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import shutil
 
@@ -634,3 +635,192 @@ class TestDoctor:
         assert "aws CLI found" in out
         assert resolved in probed
         assert "aws" not in probed  # the bare-name probe is the defect
+
+    def test_doctor_reports_a_refused_plugin_as_refused_not_missing(self, monkeypatch, capsys):
+        monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: "/opt/aws-cli/aws")
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(
+            cli_cloud.ssm,
+            "session_manager_plugin_refusal",
+            lambda: cli_cloud.ssm.PluginRefusal(
+                path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+                reason="executable is owned by another user (uid 1501)",
+                remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+            ),
+        )
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": False, "note": ""},
+        )
+
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        out = capsys.readouterr().out
+        assert (
+            "found at /usr/local/sessionmanagerplugin/bin/session-manager-plugin but refused" in out
+        )
+        assert "owned by another user (uid 1501)" in out
+        assert "sudo chown -R root:wheel /usr/local/sessionmanagerplugin" in out
+        # The command makes whatever binary is in the tree an accepted credential
+        # receiver, so the remedy asks for AWS provenance before it.
+        assert "reinstall it from AWS first" in out
+        assert out.index("reinstall it from AWS first") < out.index("sudo chown -R root:wheel")
+        assert "session-manager-plugin not found" not in out
+
+
+_ACCT = "123456789012"
+_DENIED_CREATE = (
+    "An error occurred (AccessDenied) when calling the CreatePolicy operation: "
+    "User: arn:aws:iam::123456789012:user/launcher is not authorized to perform: "
+    "iam:CreatePolicy on resource: policy {name}"
+)
+
+
+class _FakeIam:
+    """An in-memory IAM policy store behind the two ``aws`` chokepoints the
+    boundary sequence calls: ``run_aws`` (get-policy, create-policy) and
+    ``checked_json`` (the content read before reuse). No network, no account."""
+
+    def __init__(self, existing=None, deny_create=()):
+        self.policies = dict(existing or {})
+        self.deny_create = set(deny_create)
+        self.calls: list[list[str]] = []
+
+    @staticmethod
+    def _flag(args, flag):
+        return args[args.index(flag) + 1]
+
+    def run_aws(self, args, *_a, **_k):
+        self.calls.append(list(args))
+        if args[:2] == ["iam", "get-policy"]:
+            if self._flag(args, "--policy-arn") in self.policies:
+                return (0, "{}", "")
+            return (254, "", "An error occurred (NoSuchEntity) when calling GetPolicy")
+        if args[:2] == ["iam", "create-policy"]:
+            name = self._flag(args, "--policy-name")
+            arn = f"arn:aws:iam::{_ACCT}:policy/{name}"
+            if name in self.deny_create:
+                return (254, "", _DENIED_CREATE.format(name=name))
+            if arn in self.policies:
+                return (254, "", "An error occurred (EntityAlreadyExists)")
+            self.policies[arn] = json.loads(self._flag(args, "--policy-document"))
+            return (0, "{}", "")
+        raise AssertionError(f"unexpected aws call {args[:2]}")
+
+    def checked_json(self, args, *_a, **_k):
+        self.calls.append(list(args))
+        arn = self._flag(args, "--policy-arn")
+        if args[:2] == ["iam", "get-policy"]:
+            return {"Policy": {"DefaultVersionId": "v1"}}
+        if args[:2] == ["iam", "get-policy-version"]:
+            return {"PolicyVersion": {"Document": self.policies[arn]}}
+        raise AssertionError(f"unexpected checked_json {args[:2]}")
+
+    def verbs(self):
+        return [c[1] for c in self.calls if c[:1] == ["iam"]]
+
+    def created_names(self):
+        return [self._flag(c, "--policy-name") for c in self.calls if c[1] == "create-policy"]
+
+
+def _expected_boundaries():
+    """Every boundary the admin step owns, as ``{arn: content-fixed document}``."""
+    from kiro_crew.cloud import iam
+
+    return {
+        iam.boundary_arn(_ACCT): iam.boundary_policy_document(_ACCT),
+        iam.crew_boundary_arn(_ACCT): iam.crew_boundary_policy_document(),
+        iam.crew_exec_boundary_arn(_ACCT): iam.crew_exec_boundary_policy_document(),
+    }
+
+
+class TestIamBoundary:
+    """``kirocrew cloud iam-boundary`` drives the real create-once-and-verify
+    sequence in ``cloud.source`` against a fake IAM store."""
+
+    @pytest.fixture
+    def fake_iam(self, monkeypatch):
+        from kiro_crew.cloud import aws, source
+
+        def install(**kw):
+            fake = _FakeIam(**kw)
+            monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+            monkeypatch.setattr(source, "_account_id", lambda *_a: _ACCT)
+            monkeypatch.setattr(source, "_audit_iam_policy_change", lambda *_a, **_k: None)
+            monkeypatch.setattr(aws, "run_aws", fake.run_aws)
+            monkeypatch.setattr(aws, "checked_json", fake.checked_json)
+            return fake
+
+        return install
+
+    def test_creates_all_three_boundaries_from_their_fixed_documents(self, fake_iam, capsys):
+        from kiro_crew.cloud import iam
+
+        fake = fake_iam()
+        assert cli_cloud.handle_cloud(_args(cloud_action="iam-boundary")) == 0
+        assert fake.created_names() == [
+            iam.BOUNDARY_NAME,
+            iam.CREW_BOUNDARY_NAME,
+            iam.CREW_EXEC_BOUNDARY_NAME,
+        ]
+        assert fake.policies == _expected_boundaries()
+        # Create-once: nothing that could re-version or remove a ceiling.
+        for verb in ("create-policy-version", "delete-policy", "set-default-policy-version"):
+            assert verb not in fake.verbs()
+        out = capsys.readouterr().out
+        for arn in _expected_boundaries():
+            assert arn in out
+        assert "now that all three boundaries exist" in out
+
+    def test_a_rerun_leaves_matching_boundaries_untouched(self, fake_iam, capsys):
+        fake = fake_iam(existing=_expected_boundaries())
+        assert cli_cloud.handle_cloud(_args(cloud_action="iam-boundary")) == 0
+        assert "create-policy" not in fake.verbs()
+        # Each existing boundary was read back and compared before it counted.
+        assert fake.verbs().count("get-policy-version") == 3
+        assert fake.policies == _expected_boundaries()
+        assert capsys.readouterr().out.count(" ready: arn:aws:iam::") == 3
+
+    @pytest.mark.parametrize("drifted", ["kirocrew-crew-boundary", "kirocrew-crew-exec-boundary"])
+    def test_a_drifted_crew_boundary_is_refused_not_overwritten(self, fake_iam, capsys, drifted):
+        permissive = {
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }
+        existing = _expected_boundaries()
+        drifted_arn = f"arn:aws:iam::{_ACCT}:policy/{drifted}"
+        existing[drifted_arn] = permissive
+        fake = fake_iam(existing=existing)
+
+        assert cli_cloud.handle_cloud(_args(cloud_action="iam-boundary")) == 1
+        assert fake.policies[drifted_arn] == permissive
+        assert "create-policy" not in fake.verbs()
+        out = capsys.readouterr().out
+        assert f"'{drifted}' does NOT match" in out
+        # The other two are still verified and reported.
+        assert out.count(" ready: arn:aws:iam::") == 2
+        # A refusal must not be followed by advice to drop the create grant.
+        assert "now that all three boundaries exist" not in out
+        assert "Keep the iam:CreatePolicy action" in out
+
+    def test_a_denied_create_names_the_admin_step_and_the_rest_still_run(self, fake_iam, capsys):
+        from kiro_crew.cloud import iam
+
+        fake = fake_iam(deny_create={iam.CREW_BOUNDARY_NAME})
+        assert cli_cloud.handle_cloud(_args(cloud_action="iam-boundary")) == 1
+        assert iam.crew_boundary_arn(_ACCT) not in fake.policies
+        assert iam.crew_exec_boundary_arn(_ACCT) in fake.policies
+        out = capsys.readouterr().out
+        head = out[out.index("could not create the permissions boundary") :][:200]
+        assert "kirocrew cloud iam-boundary" in head
+        assert "Grant `iam:CreatePolicy` and retry." in out
+
+    def test_an_unresolved_account_is_reported_once(self, fake_iam, monkeypatch, capsys):
+        from kiro_crew.cloud import source
+
+        fake = fake_iam()
+        monkeypatch.setattr(source, "_account_id", lambda *_a: "")
+        assert cli_cloud.handle_cloud(_args(cloud_action="iam-boundary")) == 1
+        assert fake.calls == []
+        assert capsys.readouterr().out.count("could not resolve the AWS account id") == 1

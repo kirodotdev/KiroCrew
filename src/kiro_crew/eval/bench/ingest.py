@@ -12,8 +12,9 @@ Three properties of the real store shape this module, and each one is a trap tha
 would silently corrupt a score if ignored.
 
 **1. The embedder loads in the background and returns ``None`` until resident.**
-``make_sync_embed_fn`` never blocks (embeddings.py) — callers get ``None`` while
-the model is still loading. A harness that starts writing immediately would store
+``make_sync_embed_fn`` waits at most ``_COLD_LOAD_WAIT_SECS`` for a cold load
+(embeddings.py) and returns ``None`` if the model is still not resident. A harness
+that starts writing immediately could store
 rows with NULL embeddings, degrade ``search_episodic`` to its FTS5 ``LIKE``
 keyword fallback, and report a "retrieval score" that measured substring matching.
 :func:`prepare_embedder` therefore blocks on ``wait_ready`` and refuses to ingest

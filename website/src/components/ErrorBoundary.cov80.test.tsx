@@ -11,6 +11,7 @@ vi.mock('../utils/errorReport', async importOriginal => {
 vi.mock('./AskAgentButton', () => ({
   default: ({ message }: { message?: string }) => <button type="button">zzq-ask|{message}</button>,
   askAgentHard: vi.fn(),
+  askAgentLabel: () => 'Ask the agent',
 }))
 
 const { askAgentHard } = await import('./AskAgentButton')

@@ -13,7 +13,8 @@ Security: :meth:`authorize` is **deny-by-default** and owner-only.  An empty
 Group-chat access is an explicit opt-in gated on both ``allow_group=True``
 AND the group's ``chat_id`` appearing in ``allowed_group_ids``; every other
 context (unknown group, or a group chat when ``allow_group`` is False) is
-denied with a SEL audit record.
+denied with a SEL audit record. Inside an allowed group a message is served
+only when it @-mentions this app's bot (``LarkInbound.bot_mentioned``).
 """
 
 from __future__ import annotations
@@ -297,8 +298,9 @@ class FeishuTransport(MessagingTransport):
         The low-level client parses inbound WS frames into ``LarkInbound`` and
         routes them here (already in the async event loop via
         ``run_coroutine_threadsafe``).  We apply the group-chat gate first
-        (fail-closed for non-p2p contexts), then the user allow-list, and
-        finally hand an authorised message to the dispatcher.
+        (fail-closed for non-p2p contexts, and for a group message that does
+        not mention the bot), then the user allow-list, and finally hand an
+        authorised message to the dispatcher.
         """
         if not isinstance(raw_envelope, LarkInbound):
             return
@@ -335,6 +337,20 @@ class FeishuTransport(MessagingTransport):
                     operation="feishu_transport.receive",
                     outcome="denied_group_not_allowed",
                     source="feishu",
+                )
+                return
+            # Addressed-to-the-bot gate (fail closed). An app that holds a
+            # broader read grant receives every message in the group, and the
+            # sender allow-list says who MAY drive a turn, not that this
+            # message asked for one. Only a message whose mentions name this
+            # bot's open_id is served; an unresolved bot id reads as "not
+            # mentioned". Chatter not addressed to the bot is no access
+            # attempt, so it is dropped before ``authorize`` and leaves no
+            # audit record.
+            if not inbound.bot_mentioned:
+                logger.debug(
+                    "Feishu group message ignored: the bot is not mentioned (message_id=%s)",
+                    inbound.message_id,
                 )
                 return
 

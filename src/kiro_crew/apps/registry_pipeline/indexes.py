@@ -293,8 +293,11 @@ async def _fetch_external_registry_index(
                 git_url,
                 tmp_root,
             ]
+            # An owner-configured registry row, never an index entry: ask for the
+            # ssh-agent socket and let wrap_argv re-judge it against the tier.
+            mode = _context_clone_sandbox_mode(git_url)
             sandboxed_cmd, _ = await wrap_argv_async(
-                clone_cmd, mode=_context_clone_sandbox_mode(git_url), _prepare=wrap_argv
+                clone_cmd, mode=mode, forward_ssh_auth_sock=True, _prepare=wrap_argv
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             proc = await create_subprocess_limited(
@@ -305,8 +308,11 @@ async def _fetch_external_registry_index(
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
-            _, _ = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
+            _, stderr = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
+                text = stderr.decode(errors="replace")
+                tail = _loggable_git_transport_output(text, credentialed=False)[-400:]
+                logger.warning("external registry clone failed: %r", tail)
                 _sel_outcome("failed")
                 return None
 

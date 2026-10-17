@@ -3,6 +3,10 @@ import * as TabsPrimitive from '@radix-ui/react-tabs'
 import { motion, useReducedMotion } from 'framer-motion'
 
 import { cn } from '../../lib/utils'
+import { autoSiteRef } from '../../uiLocations/targetRegistry'
+import { MaybeGuideRevealScope } from '../../guide/GuideRevealScope'
+import type { GuideRevealScopeId } from '../../uiLocations/guidePlans.gen'
+import { useProbeTarget } from '../../guide/probeRegistry'
 import {
   TABS_COUNT_BASE_CLASS,
   TABS_INDICATOR_CLASS,
@@ -60,15 +64,30 @@ import {
  * its own value in a private context, so the sliding indicator needs this one to
  * know which trigger should be mounting it.
  */
-const TabsValueContext = React.createContext<{ current?: string; layoutId: string } | null>(null)
+interface TabsValue {
+  current?: string
+  layoutId: string
+  /** `guideProbe="local"` rails only: what a guide's probe drives. */
+  probe?: { currentRef: React.MutableRefObject<string | undefined>; select: (value: string) => void }
+}
+
+const TabsValueContext = React.createContext<TabsValue | null>(null)
 
 interface TabsProps extends React.ComponentPropsWithoutRef<typeof TabsPrimitive.Root> {
   /** Distinguishes this rail's sliding indicator from another rail's on the same page. */
   layoutId?: string
+  /**
+   * `local`: the selected tab lives in component state only, never in the
+   * address or history, so a guide's `ui.find` probe may select another tab
+   * to look inside and select this one back (`guide/probeRegistry.ts`).
+   * Left unset, the probe never touches the rail: a tab that navigates is
+   * the person's to press.
+   */
+  guideProbe?: 'local'
 }
 
 const Tabs = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Root>, TabsProps>(
-  function Tabs({ layoutId = 'tabs-indicator', value, defaultValue, onValueChange, ...props }, ref) {
+  function Tabs({ layoutId = 'tabs-indicator', value, defaultValue, onValueChange, guideProbe, ...props }, ref) {
     // Mirrors the value for the UNCONTROLLED case too, so a caller using
     // `defaultValue` still gets the sliding indicator rather than silently
     // falling back to no marker at all.
@@ -78,14 +97,19 @@ const Tabs = React.forwardRef<React.ComponentRef<typeof TabsPrimitive.Root>, Tab
       setInternal(next)
       onValueChange?.(next)
     }, [onValueChange])
-    const ctx = React.useMemo(() => ({ current, layoutId }), [current, layoutId])
+    const currentRef = React.useRef(current)
+    currentRef.current = current
+    const local = guideProbe === 'local'
+    const probe = React.useMemo(() => (local ? { currentRef, select: handleValueChange } : undefined), [local, handleValueChange])
+    const ctx = React.useMemo(() => ({ current, layoutId, probe }), [current, layoutId, probe])
 
+    // Radix is always handed the value, so a probe's selection (state, not a
+    // press) is what the rail shows.
     return (
       <TabsValueContext.Provider value={ctx}>
         <TabsPrimitive.Root
           ref={ref}
-          value={value}
-          defaultValue={defaultValue}
+          value={current}
           onValueChange={handleValueChange}
           {...props}
         />
@@ -112,10 +136,29 @@ const TabsTrigger = React.forwardRef<
   const ctx = React.useContext(TabsValueContext)
   const reduceMotion = useReducedMotion()
   const isActive = ctx?.current === value
+  const el = React.useRef<HTMLButtonElement | null>(null)
+  const setRef = React.useCallback((node: HTMLButtonElement | null) => {
+    el.current = node
+    if (typeof ref === 'function') ref(node)
+    else if (ref) ref.current = node
+  }, [ref])
+  const uiAuto = (props as Record<string, unknown>)['data-ui-auto']
+  const registeredRef = autoSiteRef<HTMLButtonElement>(uiAuto, setRef)
+  const probe = ctx?.probe
+  useProbeTarget(!!probe && !props.disabled, {
+    kind: 'tab',
+    trigger: () => el.current,
+    isOpen: () => probe?.currentRef.current === value,
+    open: () => {
+      const prior = probe?.currentRef.current
+      probe?.select(value)
+      return () => { if (prior !== undefined && probe?.currentRef.current === value) probe.select(prior) }
+    },
+  })
 
   return (
     <TabsPrimitive.Trigger
-      ref={ref}
+      ref={registeredRef}
       value={value}
       className={cn(
         TABS_SEGMENT_CLASS,
@@ -148,17 +191,27 @@ TabsTrigger.displayName = TabsPrimitive.Trigger.displayName
 
 const TabsContent = React.forwardRef<
   React.ComponentRef<typeof TabsPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content>
->(function TabsContent({ className, ...props }, ref) {
+  React.ComponentPropsWithoutRef<typeof TabsPrimitive.Content> & {
+    /**
+     * The compiled reveal scope this panel is (`tab:<trigger location id>`):
+     * it reports selected/not to a running guide. The owner wraps the Radix
+     * panel, so it reports "closed" while an inactive panel is unmounted.
+     */
+    guideScope?: GuideRevealScopeId
+  }
+>(function TabsContent({ className, guideScope, ...props }, ref) {
+  const ctx = React.useContext(TabsValueContext)
   return (
-    <TabsPrimitive.Content
-      ref={ref}
-      // Radix puts `tabindex=0` on the panel so the rail's one tab stop leads
-      // into it; that makes the panel itself focusable, and the global outline
-      // would then ring the entire page body.
-      className={cn('focus-visible:outline-hidden', className)}
-      {...props}
-    />
+    <MaybeGuideRevealScope id={guideScope} open={ctx?.current === props.value}>
+      <TabsPrimitive.Content
+        ref={ref}
+        // Radix puts `tabindex=0` on the panel so the rail's one tab stop leads
+        // into it; that makes the panel itself focusable, and the global outline
+        // would then ring the entire page body.
+        className={cn('focus-visible:outline-hidden', className)}
+        {...props}
+      />
+    </MaybeGuideRevealScope>
   )
 })
 TabsContent.displayName = TabsPrimitive.Content.displayName

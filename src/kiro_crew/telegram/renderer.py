@@ -80,6 +80,7 @@ from kiro_crew.messaging.split import (
     repaired_for_delivery,
     split_markdown_safe,
 )
+from kiro_crew.messaging.tables import display_width
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.sel import sel
 from kiro_crew.telegram.client import (
@@ -180,6 +181,9 @@ _THINKING_SCAFFOLD = "<blockquote expandable>💭 </blockquote>"
 # ``close(failure_reason=...)`` so the user is never told to retry an error
 # that says retrying will not help.
 _GENERIC_ERROR_TEXT = "⚠️ Error — please try again"
+#: Sent in place of a part of a reply whose every send failed, so the later parts
+#: do not read as the whole reply.
+_LOST_PART_NOTICE = "Part of this reply may not have been delivered."
 
 
 def _display_safe(text: str) -> str:
@@ -371,6 +375,13 @@ def _strip_hr(text: str) -> str:
     return out.strip()
 
 
+# Widest label that still shows whole on a half-width inline button on a
+# narrow phone, in display cells: a CJK ideograph or fullwidth form counts as
+# two, a combining mark as none. Still approximate, since proportional fonts
+# vary by phone.
+_HALF_WIDTH_LABEL_CELLS = 16
+
+
 def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     """Build an InlineKeyboardMarkup from ``[OPTIONS:]`` labels.
 
@@ -378,7 +389,16 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     the payload because Telegram caps it at 64 bytes and a multi-byte CJK/emoji
     label could overflow. The compact deterministic tag binds a later press to
     the session that posted the keyboard; the label is recovered from the button
-    text at callback time. Two buttons per row keeps the keyboard mobile-friendly.
+    text at callback time.
+
+    Rows hold two buttons while every label fits a half-width button, and one
+    button each as soon as any label is wider than ``_HALF_WIDTH_LABEL_CELLS``
+    display cells: a phone truncates a half-width button mid-label, so two
+    choices that differ late in their text would read the same. Width is
+    measured with ``display_width``, so a CJK label counts its rendered width,
+    not its code points. The rule covers the whole keyboard, not one row, so
+    the buttons stay a uniform width. Keyboard height is bounded by the
+    25-button ceiling, not by this rule.
 
     A label is MODEL-authored text that Telegram renders, so it is a display sink
     like the answer body: the driver's byte-level scan can see a credential as
@@ -392,12 +412,16 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     if not options:
         return None
     origin_tag = session_provenance_tag(session_key)
+    labels: list[str] = []
+    for opt in options:
+        safe, _ = redact_for_display(opt, _default_redactor)
+        labels.append(safe[:64])
+    per_row = 1 if any(display_width(label) > _HALF_WIDTH_LABEL_CELLS for label in labels) else 2
     buttons: list[list[dict]] = []
     row: list[dict] = []
-    for i, opt in enumerate(options):
-        safe, _ = redact_for_display(opt, _default_redactor)
-        row.append({"text": safe[:64], "callback_data": f"opt:{i}:{origin_tag}"})
-        if len(row) == 2:
+    for i, label in enumerate(labels):
+        row.append({"text": label, "callback_data": f"opt:{i}:{origin_tag}"})
+        if len(row) == per_row:
             buttons.append(row)
             row = []
     if row:
@@ -1768,7 +1792,7 @@ class TelegramRenderer(Renderer):
         else:
             await self._client.edit_message(self._chat_id, self._stream_mid, text)
 
-    async def _seal_without_rich(self, text: str) -> tuple[str, str]:
+    async def _seal_without_rich(self, text: str) -> tuple[str, str, int | None]:
         """HTML for a seal that cannot use Rich Messages, plus the tail segment.
 
         Pipe blocks are wrapped in ``<pre>`` so a block Rich Markdown would
@@ -1786,15 +1810,26 @@ class TelegramRenderer(Renderer):
 
         Returns the HTML to seal with and the tail segment it renders, which the
         caller seals through its normal path so the keyboard lands on the final
-        message.
+        message. The third value is the streamed bubble the chunks were sent
+        below because it could not be edited, for the caller to delete once the
+        tail has landed too. It is None when there is no such bubble, and when a
+        chunk did not land: the bubble may then show rows that no sent message
+        carries.
         """
         html_text = _seal_table_fallback(text)
+        replaced: int | None = None
         if len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(text)
             if len(html_text) > self._rendered_limit():
                 chunks = await asyncio.to_thread(self._degraded_table_chunks, text)
+                all_landed = True
                 for ch in chunks[:-1]:
-                    await self._seal_chunk_html(ch)
+                    landed, frame = await self._seal_chunk_html(ch)
+                    all_landed = all_landed and landed
+                    if frame is not None:
+                        replaced = frame
+                if not all_landed:
+                    replaced = None
                 if chunks:
                     text = chunks[-1]
                 # The tail sits under the last chunk this method just sealed, and
@@ -1804,7 +1839,7 @@ class TelegramRenderer(Renderer):
                 html_text = _seal_table_fallback(text)
                 if len(html_text) > self._rendered_limit():
                     html_text = _md_to_telegram_html(text)
-        return html_text, text
+        return html_text, text, replaced
 
     # ── Outbound image upload ──────────────────────────────────────────────
 
@@ -2043,6 +2078,26 @@ class TelegramRenderer(Renderer):
         except Exception:
             logger.debug("Telegram: retiring the live frame failed", exc_info=True)
 
+    async def _delete_replaced_frame(self, mid: int | None) -> None:
+        """Delete a live frame whose content landed in new messages instead.
+
+        Both seal edits can fail while the frame still exists (the per-chat edit
+        budget, or two timeouts), and the content is then sent as new messages
+        below it. The frame is an older plain draft, so it is deleted, as the rich
+        path deletes the bubble it supersedes. Call it only once every part of the
+        segment has landed: until then the frame may show rows of the parts still
+        missing that no sent message carries.
+        Best-effort: a frame the user deleted cannot be deleted again. The
+        callers hold ``_frame_lock``, so it takes no lock of its own, unlike
+        ``_retire_live_frame``.
+        """
+        if mid is None:
+            return
+        try:
+            await self._client.delete_message(self._chat_id, mid)
+        except Exception:
+            logger.debug("Telegram: deleting the replaced live frame failed", exc_info=True)
+
     async def _seal_text(self, text: str, keyboard: dict | None, *, footer: str = "") -> None:
         """Land one segment's text: replace its live plaintext with the formatted
         HTML (and optional keyboard). Edits the streamed message in place, or
@@ -2123,14 +2178,14 @@ class TelegramRenderer(Renderer):
                     logger.debug(
                         "sendRichMessage failed for chat %s, falling back to HTML", self._chat_id
                     )
-                    html_text, text = await self._seal_without_rich(text)
+                    html_text, text, stale_mid = await self._seal_without_rich(text)
                 else:
                     # No conforming table, which includes pipe markup GFM rejects -- a
                     # header row whose cell count disagrees with its delimiter. Rich
                     # Markdown renders that as one paragraph with the newlines collapsed,
                     # so it must not take the rich path; the monospace seal shows every
                     # row verbatim on its own line instead.
-                    html_text, text = await self._seal_without_rich(text)
+                    html_text, text, stale_mid = await self._seal_without_rich(text)
                 if self._stream_mid is not None:
                     ok = await self._client.edit_message(
                         self._chat_id,
@@ -2152,9 +2207,12 @@ class TelegramRenderer(Renderer):
                         self._record_sent(text)
                         return
                     # Both edits failed — the live message is gone (e.g. the user
-                    # deleted it mid-turn). Fall through and SEND the final content so
-                    # the completed answer (and its keyboard) is never silently lost.
-                    self._stream_mid = None
+                    # deleted it mid-turn), or it is still there and could not be
+                    # edited (the per-chat edit budget, or two timeouts). Fall
+                    # through and SEND the final content so the completed answer
+                    # (and its keyboard) is never silently lost; once that send
+                    # lands, the frame it replaces is deleted.
+                    stale_mid, self._stream_mid = self._stream_mid, None
                 mid = await self._client.send_message(
                     self._chat_id,
                     html_text,
@@ -2174,6 +2232,10 @@ class TelegramRenderer(Renderer):
                 if mid is not None:
                     self._tally_redactions(text)
                     self._record_sent(text)
+                    # Every part has landed: ``stale_mid`` is None when a chunk did not.
+                    await self._delete_replaced_frame(stale_mid)
+                else:
+                    await self._send_lost_part_notice()
 
             finally:
                 # Retire the live message: this segment is final, so nothing
@@ -2543,7 +2605,7 @@ class TelegramRenderer(Renderer):
                 out.append(c)
         return out
 
-    async def _seal_chunk_html(self, chunk: str) -> None:
+    async def _seal_chunk_html(self, chunk: str) -> tuple[bool, int | None]:
         """Seal one leading chunk of an overflowing degraded segment as HTML.
 
         The first chunk re-uses the streamed bubble (it is the OLDEST message,
@@ -2555,11 +2617,18 @@ class TelegramRenderer(Renderer):
         is a separate sink from ``_seal_text``, so it carries the seam repair itself
         rather than relying on the other one, and records the predecessor only where
         a delivery reports success.
+
+        Returns whether the chunk landed and, when both edits of the streamed
+        bubble failed and the chunk went out below it, that bubble's id. This
+        method never deletes it: the chunks and the tail still to come are not
+        sent yet, and the bubble may show rows of theirs that no sent message
+        carries.
         """
         chunk = await asyncio.to_thread(self._seam_safe, chunk)
         html_text = _seal_table_fallback(chunk)
         if len(html_text) > self._rendered_limit():
             html_text = _md_to_telegram_html(chunk)
+        stale_mid: int | None = None
         if self._stream_mid is not None:
             mid = self._stream_mid
             self._stream_mid = None
@@ -2568,10 +2637,12 @@ class TelegramRenderer(Renderer):
             )
             if ok:
                 self._record_sent(chunk)
-                return
+                return True, None
             if await self._client.edit_message(self._chat_id, mid, _strip_md(chunk)):
                 self._record_sent(chunk)
-                return
+                return True, None
+            # The frame may still exist; the chunk goes out below it.
+            stale_mid = mid
         mid2 = await self._client.send_message(
             self._chat_id,
             html_text,
@@ -2584,8 +2655,26 @@ class TelegramRenderer(Renderer):
                 self._chat_id, _strip_md(chunk), message_thread_id=self._thread_id
             ):
                 self._record_sent(chunk)
-            return
+                return True, stale_mid
+            await self._send_lost_part_notice()
+            return False, None
         self._record_sent(chunk)
+        return True, stale_mid
+
+    async def _send_lost_part_notice(self) -> None:
+        """Mark the place of a part whose every send failed.
+
+        The later parts of the reply still go out, so without a mark the reply
+        reads as complete. Best-effort: a notice that cannot be sent either is
+        logged, never raised.
+        """
+        logger.warning("Telegram: a part of the reply to chat %s was not delivered", self._chat_id)
+        try:
+            await self._client.send_message(
+                self._chat_id, _LOST_PART_NOTICE, message_thread_id=self._thread_id
+            )
+        except Exception:
+            logger.debug("Telegram: the lost-part notice failed", exc_info=True)
 
     def _chip_for_seal(self, i: int) -> str | None:
         """The steer chip (a "> quote" blockquote of the USER's own words) that

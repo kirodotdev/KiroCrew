@@ -53,6 +53,7 @@ vi.mock('../api/client', () => ({
     // The agent switch also names the re-resolved workspace binding.
     chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'researcher', workspace: 'research-ws' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
@@ -242,7 +243,7 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
   it('agent pick writes agent AND workspace to the store without a slot-list round trip (#5120)', async () => {
     const store = await renderChat()
     const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
-    const chip = screen.getByTitle('Agent: kirocrew')
+    const chip = screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
     await act(async () => { fireEvent.click(option) })
@@ -256,20 +257,20 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     // …and not because anything re-fetched the slot list (no websocket
     // exists in this harness to push one either).
     expect(vi.mocked(api.chatSlots).mock.calls.length).toBe(slotsFetchesBeforePick)
-    expect(await waitFor(() => screen.getByTitle('Agent: researcher'))).toBeTruthy()
+    expect(await waitFor(() => screen.getByTitle(/^Agent: researcher(?:\s|$)/))).toBeTruthy()
   })
 
   it('keeps the pre-switch agent when the agent switch fails (#5120)', async () => {
     vi.mocked(api.chatSlotAgent).mockRejectedValueOnce(new Error('boom'))
     const store = await renderChat()
-    const chip = screen.getByTitle('Agent: kirocrew')
+    const chip = screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
     await act(async () => { fireEvent.click(option) })
 
     await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalled())
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.agent).toBe('kirocrew')
-    expect(screen.getByTitle('Agent: kirocrew')).toBeTruthy()
+    expect(screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)).toBeTruthy()
   })
 })
 
@@ -318,13 +319,15 @@ describe('ChatPage — a model pick returns focus to the composer only if it had
   const composer = () => document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
   // `focusComposer` focuses on the next animation frame.
   const nextFrame = () => act(() => new Promise<void>(r => requestAnimationFrame(() => r())))
-  // A real pointer press: `mousedown` (where the chip reads focus) moves focus
-  // onto the button as the browser would, then `click` opens the picker.
+  // A real mouse press, in the browser's event order: `pointerdown` (where the
+  // chip reads focus and opens the picker), `mousedown`, focus moving onto the
+  // button, then the `click` the chip swallows because the press already acted.
   const pressChip = async (chip: HTMLElement) => {
     await act(async () => {
+      fireEvent.pointerDown(chip, { pointerType: 'mouse', button: 0 })
       fireEvent.mouseDown(chip)
       chip.focus()
-      fireEvent.click(chip)
+      fireEvent.click(chip, { detail: 1 })
     })
   }
 

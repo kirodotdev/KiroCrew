@@ -52,7 +52,7 @@ outbound-only mirror. Slack never sets it, because Slack has its own inbound leg
 ## In-memory projection on the dashboard side
 
 `_ChatSlot` mirrors the persisted link into `_slack_linked`, `_slack_channel`,
-`_slack_thread_ts` (`dashboard/state.py`), serialized to the frontend as
+`_slack_thread_ts` (`dashboard/state_parts/slot_session.py`), serialized to the frontend as
 `slack_linked` / `slack_channel` / `slack_thread_ts`. `DashboardState` keeps
 `_slack_to_slot` (thread_ts -> slot name) for the inbound Slack lookup.
 

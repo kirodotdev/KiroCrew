@@ -456,6 +456,32 @@ class TestRuntimeSnapshotDurability:
         assert _book(tmp_path) == {"200:100:s200"}
 
     @pytest.mark.asyncio
+    async def test_a_capture_whose_start_id_changed_before_the_confirm_is_dropped(self, tmp_path):
+        """The second walk still finds the number, but under another identity.
+
+        The pid exited after the capture and a new descendant took it, so the
+        captured identity names a process that has exited. Recorded, it makes
+        the teardown read the live child as recycled and skip it. The same rule
+        holds for ``AcpClient.refresh_process_tree``: both run one guarded pass.
+        """
+        r = _snapshot_runtime()
+        reads = {200: iter(["captured", "reread"])}
+
+        with (
+            patch("kiro_crew.acp.runtime._get_child_pids", return_value=[200]),
+            patch(
+                "kiro_crew.platform_compat.get_process_start_id",
+                side_effect=lambda p: next(reads[p]),
+            ),
+            patch("kiro_crew.acp.client._read_basename", return_value=b"proc200"),
+            patch("kiro_crew.session_pid.config_dir", return_value=tmp_path),
+        ):
+            await r._snapshot_descendants()
+
+        assert r._child_pids == {}, "a capture that does not read back was recorded"
+        assert not (tmp_path / "kiro_pids.txt").exists()
+
+    @pytest.mark.asyncio
     async def test_a_live_pid_outside_the_tree_keeps_its_record(self, tmp_path):
         """The walk cannot reach a child that left the process group. Its record
         is the only handle teardown and the sweeps have on it."""
@@ -599,6 +625,35 @@ class TestRuntimeSnapshotDurability:
         # Each pass walks twice, so one pass alone reaches 2; a second pass
         # entering before the first wrote would reach 3.
         assert peak <= 2, "a second pass walked before the first one wrote"
+
+
+class TestOneGuardedPassServesBothPaths:
+    """The runtime snapshot and the client refresh run the same guarded pass, so a
+    guard added to one cannot be missing from the other."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_and_client_both_run_the_shared_pass(self):
+        from kiro_crew.acp import runtime_process_tree
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.testing.ids import UNALLOCATABLE_PID
+
+        modes: list[bool] = []
+
+        async def _spy(pid, recorded, **kwargs):
+            modes.append(kwargs["replace"])
+            return runtime_process_tree.TreePass("empty")
+
+        client = AcpClient.__new__(AcpClient)
+        client._process = MagicMock(pid=UNALLOCATABLE_PID, returncode=None)
+        client._pid = UNALLOCATABLE_PID
+        client._start_time = "111"
+        client._child_pids = {}
+
+        with patch.object(runtime_process_tree, "guarded_tree_pass", new=_spy):
+            await _snapshot_runtime()._snapshot_descendants()
+            await client.refresh_process_tree()
+
+        assert modes == [True, False], "a path walks its tree outside the shared pass"
 
 
 class TestRuntimeRootIdentity:

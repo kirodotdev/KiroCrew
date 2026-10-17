@@ -4,7 +4,8 @@ The daemon (``mcp_gateway.gatewayd``) is spawned by a gateway process and, since
 it carries ``--owner-pid``, exits on its own once that process is gone. This
 module is the belt to that suspender: ``kirocrew stop`` / ``kirocrew restart``
 call :func:`stop_daemon` so the daemon is gone BEFORE the replacement gateway
-starts probing the socket, and ``kirocrew doctor`` calls :func:`describe_daemon`
+starts probing the socket, and ``kirocrew doctor`` calls
+:func:`describe_daemon_detailed`
 so an operator can see which code revision the daemon runs next to the one the
 gateway runs. Both are synchronous, because the CLI is.
 
@@ -46,6 +47,34 @@ _PING_TIMEOUT_SECS = 2.0
 #: pong names is verified against this before any signal is sent, so a pong
 #: forged by something else listening on the path cannot aim a SIGTERM.
 _DAEMON_ARGV_MARKER = "kiro_crew.mcp_gateway.gatewayd"
+
+#: Every way one probe can end. ``ok`` decoded a pong and ``absent`` found
+#: nothing listening; every other value is a probe that could not verify the
+#: daemon either way, so it is never reported as absence.
+PROBE_OK = "ok"
+PROBE_ABSENT = "absent"
+PROBE_CONNECT_TIMEOUT = "connect_timeout"
+PROBE_CONNECT_ERROR = "connect_error"
+PROBE_REFUSED_PRINCIPAL = "refused_principal"
+PROBE_RESPONSE_TIMEOUT = "response_timeout"
+PROBE_CONNECTION_LOST = "connection_lost"
+PROBE_MALFORMED = "malformed_response"
+PROBE_NOT_PONG = "not_pong"
+PROBE_INVALID_CONTEXT = "invalid_context"
+PROBE_OUTCOMES = frozenset(
+    {
+        PROBE_OK,
+        PROBE_ABSENT,
+        PROBE_CONNECT_TIMEOUT,
+        PROBE_CONNECT_ERROR,
+        PROBE_REFUSED_PRINCIPAL,
+        PROBE_RESPONSE_TIMEOUT,
+        PROBE_CONNECTION_LOST,
+        PROBE_MALFORMED,
+        PROBE_NOT_PONG,
+        PROBE_INVALID_CONTEXT,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +125,18 @@ def _ping(socket_path: Path) -> Optional[dict[str, Any]]:
     beyond the confidentiality reason it was written for -- the pong names the pid
     and start token :func:`stop_daemon` signals, so an unauthenticated server
     would get to choose the process an operator kills.
+
+    :func:`_ping_detailed` carries the same probe with its outcome kept, for the
+    one reader that can render an inconclusive answer (Doctor).
+    """
+    return _ping_detailed(socket_path)[1]
+
+
+def _ping_detailed(socket_path: Path) -> tuple[str, Optional[dict[str, Any]]]:
+    """The probe behind :func:`_ping`: ``(outcome, pong)``, never raises.
+
+    *outcome* is one of :data:`PROBE_OUTCOMES`; the pong is set only on
+    ``PROBE_OK``.
     """
     try:
         return asyncio.run(_ping_async(socket_path))
@@ -108,11 +149,18 @@ def _ping(socket_path: Path) -> Optional[dict[str, Any]]:
             "use manager's async probe there",
             socket_path,
         )
-        return None
+        return PROBE_INVALID_CONTEXT, None
 
 
-async def _ping_async(socket_path: Path) -> Optional[dict[str, Any]]:
-    """One ping round-trip over the shared transport client; pong or ``None``.
+def _refused_outcome() -> str:
+    # transport.connect raises ConnectionRefusedError on Windows when the pipe's
+    # server principal is not our own; on POSIX it is ECONNREFUSED on a socket
+    # file with no listener, which is absence.
+    return PROBE_REFUSED_PRINCIPAL if platform_compat.IS_WINDOWS else PROBE_ABSENT
+
+
+async def _ping_async(socket_path: Path) -> tuple[str, Optional[dict[str, Any]]]:
+    """One ping round-trip over the shared transport client; ``(outcome, pong)``.
 
     Every step is bounded by ``_PING_TIMEOUT_SECS`` rather than the whole trip
     sharing one budget, matching ``manager._ping_raw``'s fast path: a loaded
@@ -123,29 +171,32 @@ async def _ping_async(socket_path: Path) -> Optional[dict[str, Any]]:
         reader, writer = await asyncio.wait_for(
             transport.connect(socket_path), timeout=_PING_TIMEOUT_SECS
         )
-    except (asyncio.TimeoutError, OSError):
-        # OSError covers both halves of "no daemon here": FileNotFoundError when
-        # nothing is listening, and the ConnectionRefusedError transport.connect
-        # raises when a Windows pipe server is not our own principal.
-        return None
+    except asyncio.TimeoutError:
+        return PROBE_CONNECT_TIMEOUT, None
+    except FileNotFoundError:
+        return PROBE_ABSENT, None
+    except ConnectionRefusedError:
+        return _refused_outcome(), None
+    except OSError:
+        return PROBE_CONNECT_ERROR, None
     try:
         writer.write(b'{"type":"ping"}\n')
         try:
             await asyncio.wait_for(writer.drain(), timeout=_PING_TIMEOUT_SECS)
             line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=_PING_TIMEOUT_SECS)
-        except (
-            asyncio.TimeoutError,
-            asyncio.IncompleteReadError,
-            asyncio.LimitOverrunError,
-            ConnectionError,
-            OSError,
-        ):
-            return None
+        except asyncio.TimeoutError:
+            return PROBE_RESPONSE_TIMEOUT, None
+        except asyncio.LimitOverrunError:
+            return PROBE_MALFORMED, None
+        except (asyncio.IncompleteReadError, ConnectionError, OSError):
+            return PROBE_CONNECTION_LOST, None
         try:
             msg = json.loads(line.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            return None
-        return msg if isinstance(msg, dict) and msg.get("type") == "pong" else None
+            return PROBE_MALFORMED, None
+        if isinstance(msg, dict) and msg.get("type") == "pong":
+            return PROBE_OK, msg
+        return PROBE_NOT_PONG, None
     finally:
         writer.close()
         with contextlib.suppress(Exception):
@@ -175,7 +226,44 @@ def configured_socket_path() -> Path:
 def describe_daemon(socket_path: Optional[Path] = None) -> Optional[DaemonInfo]:
     """The daemon serving *socket_path* (default: the configured one), or None."""
     path = Path(socket_path) if socket_path else configured_socket_path()
-    pong = _ping(path)
+    return _info_from_pong(path, _ping(path))
+
+
+@dataclass(frozen=True)
+class DaemonProbe:
+    """One probe's outcome, for a reader that must tell absence from doubt.
+
+    The probe fields carry no endpoint path, principal, command line, or reply
+    payload; ``info`` is the :class:`DaemonInfo` a successful probe decoded.
+    """
+
+    outcome: str
+    elapsed_secs: float
+    #: ``"named_pipe"`` on Windows, ``"unix_socket"`` elsewhere.
+    transport: str
+    pong_decoded: bool
+    info: Optional[DaemonInfo] = None
+
+
+def describe_daemon_detailed(socket_path: Optional[Path] = None) -> DaemonProbe:
+    """:func:`describe_daemon` with the probe's outcome kept; never raises.
+
+    The probe itself -- deadlines, the principal check -- is the one
+    :func:`describe_daemon` and :func:`stop_daemon` use.
+    """
+    path = Path(socket_path) if socket_path else configured_socket_path()
+    started = time.monotonic()
+    outcome, pong = _ping_detailed(path)
+    return DaemonProbe(
+        outcome=outcome,
+        elapsed_secs=time.monotonic() - started,
+        transport="named_pipe" if platform_compat.IS_WINDOWS else "unix_socket",
+        pong_decoded=pong is not None,
+        info=_info_from_pong(path, pong),
+    )
+
+
+def _info_from_pong(path: Path, pong: Optional[dict[str, Any]]) -> Optional[DaemonInfo]:
     if pong is None:
         return None
     pid = pong.get("pid")

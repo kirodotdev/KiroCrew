@@ -108,16 +108,16 @@ def test_goose_compacts_inline_on_a_driven_capture() -> None:
     assert GOOSE not in recycle
 
 
-def test_goose_takes_no_effort_channel_while_its_option_is_per_model() -> None:
-    """goose advertises ``thinking_effort`` and is still kept out of the effort channel.
+def test_goose_takes_effort_through_its_own_advertised_option() -> None:
+    """goose joins the effort channel under ``thinking_effort``, and its option decides.
 
-    The option is offered per model. On a model with no extended thinking it offers
-    only ``off``, accepts ``high`` without error and reads back ``off``, so a write
-    there changes nothing and says nothing. Joining waits for a capture of the levels
-    a thinking model is offered.
+    ``effort-live.jsonl`` is the evidence: a thinking model is offered off through max
+    and a write of ``high`` reads back ``high``.
     """
-    assert GOOSE not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
-    assert GOOSE not in sdk_backends.ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+    assert GOOSE in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+    assert GOOSE in sdk_backends.ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+    assert sdk_backends.effort_config_option_id(GOOSE) == "thinking_effort"
+    assert sdk_backends.effort_config_option_value(GOOSE, "high") == "high"
 
 
 def test_goose_serves_session_load_so_it_needs_no_load_workaround() -> None:
@@ -1712,3 +1712,152 @@ def test_a_keyring_only_goose_is_told_how_to_store_its_key_where_it_can_read_it(
     assert "GOOSE_DISABLE_KEYRING=true goose configure" in text
     assert "keyring" in text
     assert "secrets.yaml" in text
+
+
+# ── Reasoning effort, per model ──────────────────────────────────────────────
+
+
+def _effort_frames() -> list[dict]:
+    """Every frame of ``effort-live.jsonl``, header excluded."""
+    lines = (CORPUS / "effort-live.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines[1:]]
+
+
+def _config_option_sets() -> list[list[dict]]:
+    """Each ``configOptions`` array the capture carries, in wire order."""
+    sets = []
+    for frame in _effort_frames():
+        result = frame.get("result") or {}
+        update = (frame.get("params") or {}).get("update") or {}
+        options = result.get("configOptions") or update.get("configOptions")
+        if options:
+            sets.append(options)
+    return sets
+
+
+def _thinking_effort(options: list[dict]) -> tuple[str, list[str]]:
+    for option in options:
+        if option.get("id") == "thinking_effort":
+            return option["currentValue"], [v["value"] for v in option["options"]]
+    raise AssertionError("no thinking_effort option in this configOptions array")
+
+
+def _goose_provider(tmp_path, options: list[dict]):
+    """An ``AcpProvider`` on goose with one captured ``configOptions`` array stored."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider(acp_backend=GOOSE, work_dir=tmp_path, model="claude-sonnet-4")
+    provider._client._acp_config_options = options
+    return provider
+
+
+class TestGooseEffortReachesAThinkingModel:
+    """The capture is one live session: thinking model, a write, then a model switch."""
+
+    def test_the_capture_shows_the_option_following_the_model(self) -> None:
+        """The premise: goose offers levels on a thinking model and ``off`` alone otherwise."""
+        sets = [_thinking_effort(options) for options in _config_option_sets()]
+        full = ["off", "low", "medium", "high", "max"]
+        assert sets[0] == ("off", full)
+        # The write of ``high`` on the thinking model, as update then result.
+        assert sets[1] == ("high", full)
+        assert sets[2] == ("high", full)
+        # The switch to a model with no extended thinking, and a write there.
+        assert sets[3:] == [("off", ["off"])] * 4
+
+    def test_a_thinking_session_offers_the_control(self, tmp_path) -> None:
+        provider = _goose_provider(tmp_path, _config_option_sets()[0])
+
+        assert provider.supports_effort() is True
+        assert provider.get_valid_effort_levels() == ["off", "low", "medium", "high", "max"]
+        assert provider.accepts_effort_level("high") is True
+        # Absent from goose's vocabulary, so hidden rather than folded.
+        assert provider.accepts_effort_level("xhigh") is False
+
+    @pytest.mark.asyncio
+    async def test_the_level_is_written_under_thinking_effort(self, tmp_path) -> None:
+        from unittest.mock import AsyncMock
+
+        provider = _goose_provider(tmp_path, _config_option_sets()[0])
+        provider._client.set_config_option = AsyncMock()
+
+        await provider._set_effort_config_option("high")
+
+        provider._client.set_config_option.assert_awaited_once_with("thinking_effort", "high")
+
+    def test_a_non_thinking_model_offers_no_control(self, tmp_path) -> None:
+        """``off`` alone: every write reads back ``off``, so no dropdown is offered."""
+        provider = _goose_provider(tmp_path, _config_option_sets()[-1])
+
+        assert provider.supports_effort() is False
+
+    def test_a_model_switch_update_withdraws_the_control(self, tmp_path) -> None:
+        """The live update after the switch is what moves the answer, not a re-spawn."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        provider = _goose_provider(tmp_path, _config_option_sets()[0])
+        assert provider.supports_effort() is True
+        switch = [
+            frame
+            for frame in _effort_frames()
+            if ((frame.get("params") or {}).get("update") or {}).get("sessionUpdate")
+            == "config_option_update"
+        ][1]
+
+        provider._client._handle_config_option_update(
+            JsonRpcMessage(method=switch["method"], params=switch["params"])
+        )
+
+        assert provider.supports_effort() is False
+
+    @pytest.mark.asyncio
+    async def test_a_live_set_model_withdraws_the_control(self, tmp_path) -> None:
+        """``AcpProvider.set_model`` reads goose's answer to the ``model`` write itself.
+
+        The real path, not the notification handler: the switch goes through
+        ``AcpClient.set_config_option``, whose wait only buffers the
+        ``config_option_update`` that arrives first, so the answer must come from
+        the result's own ``configOptions``. The wire frames are the capture's.
+        """
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        frames = _effort_frames()
+        # The model switch: goose's update, then the result of request id 5.
+        switch_update, switch_result = frames[4], frames[5]
+        assert switch_result["id"] == 5
+        assert _thinking_effort(switch_result["result"]["configOptions"]) == ("off", ["off"])
+        provider = _goose_provider(tmp_path, _config_option_sets()[0])
+        client = provider._client
+        client._session_id = "goose-session-1"
+        assert provider.supports_effort() is True
+
+        sent: list[tuple[str, dict]] = []
+        wire = [JsonRpcMessage.from_dict(switch_update), JsonRpcMessage.from_dict(switch_result)]
+
+        async def _send_request(method, params, **_kwargs):
+            sent.append((method, params))
+            return 5
+
+        async def _read_message(timeout=None):
+            return wire.pop(0) if wire else None
+
+        client._send_request = _send_request
+        client._read_message = _read_message
+
+        await provider.set_model("llama3.2:3b")
+
+        assert sent[0] == (
+            "session/set_config_option",
+            {"sessionId": "goose-session-1", "configId": "model", "value": "llama3.2:3b"},
+        )
+        assert provider.supports_effort() is False
+        # The off-only model takes no effort write after the switch.
+        assert [params["configId"] for _method, params in sent] == ["model"]
+
+    def test_the_knowledge_pool_sends_nothing_on_an_off_only_option(self) -> None:
+        from kiro_crew.knowledge.llm_pool import _select_effort_level
+
+        assert _select_effort_level("high", ["off"]) is None
+        assert _select_effort_level("high", ["off", "low", "medium", "high", "max"]) == "high"
+        # An option with no recognisable level at all keeps the lazy-backend attempt.
+        assert _select_effort_level("high", ["minimal"]) == "high"

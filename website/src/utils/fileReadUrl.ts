@@ -66,8 +66,11 @@ export function fileDownloadUrl(filePath: string): string {
  * siblings emit) -- NOT by the bare 400, which the endpoint also returns for an
  * invalid or out-of-project path. So a flagged file reads "blocked by the
  * credential scan" while a rejected path reads the generic "Download failed"
- * the user may retry. Either way the refusal is surfaced through `onError`,
- * never defeated -- the bytes are not reached another way.
+ * the user may retry. The credential copy names the Security panel's
+ * flagged-file delivery setting: the endpoint honours that owner grant, so it
+ * is how the owner releases a flagged file of their own. Either way the
+ * refusal is surfaced through `onError`, never defeated -- the bytes are not
+ * reached another way.
  */
 export async function downloadFileToDisk(
   filePath: string,

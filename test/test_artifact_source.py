@@ -255,6 +255,29 @@ class TestNonGitProjectsLink:
         # And a loose file directly in home is a COPY, not a link.
         assert classify_source(_file(fake_home / "notes.md")) == (COPY, "")
 
+    @requires_symlinks
+    def test_a_symlinked_home_is_never_a_project_root(
+        self, narrow_tempdir, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Home reached through a symlink is still home, under both spellings.
+
+        The walk runs on the resolved path, so the resolved home must be known
+        as home too, or its ``~/.kiro`` marker makes it a project root.
+        """
+        real_home = tmp_path / "local" / "home" / "user"
+        (real_home / ".kiro" / "crew").mkdir(parents=True)
+        link_home = tmp_path / "home-user"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        monkeypatch.setattr(artifact_source, "_home", lambda: str(link_home))
+        monkeypatch.setenv("HOME", str(link_home))
+        monkeypatch.delenv("USERPROFILE", raising=False)
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(str(link_home))))
+        _file(real_home / "sub" / "notes.md")
+        for home in (link_home, real_home):
+            assert classify_source(str(home / "sub" / "notes.md")) == (COPY, "")
+            assert project_root_marker(str(home)) is None
+            assert is_verifiable_root(str(home)) is False
+
     def test_every_home_spelling_is_rejected(
         self, narrow_tempdir, fake_home: Path, tmp_path: Path, monkeypatch
     ) -> None:

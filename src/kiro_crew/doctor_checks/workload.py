@@ -2,12 +2,18 @@
 
 Cron job health and the task queue are read off disk rather than from the
 gateway's API, so they still answer when the gateway is the thing that is wedged.
+The adaptive controller's caps and cap history are the one exception: they exist
+only inside the gateway process, so they are read from the running gateway's
+loopback API and reported as unread when it does not answer.
 """
 
 from __future__ import annotations
 
+import json
 import sys
-from typing import TYPE_CHECKING
+import urllib.error
+import urllib.request
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
@@ -24,6 +30,15 @@ if TYPE_CHECKING:
 #: stall as a past incident. Within a day a stall is still the operator's news,
 #: restarts notwithstanding.
 _STALL_CURRENT_SECS = 24 * 3600
+
+#: Ceiling on the loopback read of the running gateway's controller snapshot,
+#: the same bound the other doctor probes of the local gateway use: a wedged
+#: gateway costs a short pause, never a hung diagnostic.
+_ADAPTIVE_READ_TIMEOUT_SECS = 2
+
+#: The loopback host the controller read dials. The local credential is
+#: resolved for this same host, so it pairs with the listener actually reached.
+_LOOPBACK_HOST = "127.0.0.1"
 
 
 # ── cron job health ───────────────────────────────────────────────────────────
@@ -126,20 +141,34 @@ def _doctor_task_store(issues: list[str]) -> None:
 def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
     """Print the overload-resilience contract this install runs under.
 
-    Configuration and static platform facts only: the live gate counts, the
-    adaptive caps and the per-scope dependency schedules are gateway-process
-    state, served by ``GET /api/sessions/health`` — a doctor process cannot
-    read them and must not pretend to. What it CAN state is the bound each
-    mechanism is configured to (so a stuck queue can be read against its
-    budget) and which liveness evidence this host's platform provides.
+    Configuration and static platform facts, plus one live block: the running
+    gateway's adaptive-controller snapshot (:func:`_doctor_adaptive_live`),
+    read from the gateway rather than computed here. The live gate counts and
+    the per-scope dependency schedules stay gateway-process state, served by
+    ``GET /api/sessions/health``, and a doctor process does not print them.
+    What it CAN state is the bound each mechanism is configured to (so a stuck
+    queue can be read against its budget) and which liveness evidence this
+    host's platform provides.
     """
+    from kiro_crew.cold_start_sizing import describe_cold_start_limits
     from kiro_crew.recovery.ladder import configure_default_ladder
+    from kiro_crew.session_start_sizing import resolve_session_start_sizing
 
     agent = cfg.agent
     gw = cfg.mcp_gateway
+    # Doctor is its own process: "auto" here is what this host sizes to NOW. The
+    # width a running gateway's gate uses is its boot log line.
+    try:
+        sizing = resolve_session_start_sizing(agent.session_start_concurrency)
+        start_width = sizing.describe()
+        if sizing.host is not None:
+            start_width += " [probed now; running gateway: boot log]"
+    except Exception:
+        start_width = f"{agent.session_start_concurrency} (unresolved)"
     print(
         "  admission: session_start_concurrency="
-        f"{agent.session_start_concurrency} "
+        f"{start_width} "
+        f"{describe_cold_start_limits(agent)} "
         f"spawn_gate={gw.spawn_concurrency_initial} "
         f"[{gw.spawn_concurrency_min}..{gw.spawn_concurrency_max}] "
         f"queue_wait={gw.spawn_queue_wait_secs}s "
@@ -152,6 +181,7 @@ def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
         f"  adaptive concurrency: {mode} floor={agent.adaptive_floor} "
         f"sample={agent.controller_sample_secs}s"
     )
+    _doctor_adaptive_live()
     print("  recovery ladder:")
     # Through the boot seam a gateway uses, on this process's own ladder: these
     # rows are the CONFIGURED schedule, so they cannot disagree with the
@@ -177,6 +207,95 @@ def _doctor_overload_resilience(cfg: KiroCrewConfig) -> None:
         '(live count: GET /api/sessions/health "uncharged")'
     )
     print(f"  liveness evidence: {_liveness_platform_line()}")
+
+
+def _gateway_adaptive_state() -> tuple[int, dict[str, Any] | None, str]:
+    """Read the running gateway's adaptive-controller snapshot.
+
+    Returns ``(port, state, why)``. *state* is the snapshot the controller's
+    ``state()`` builds (mode, caps against their ceilings, ``last_cut`` with
+    its ``age_secs``, ``recent_decisions`` newest last), or ``None`` with *why*
+    naming what stopped the read.
+
+    The controller exists only in the gateway process, so the snapshot comes
+    from ``GET /api/spawn/adaptive``: the route the gateway serves for exactly
+    this out-of-process reader, under the internal-API prefix a loopback
+    ``X-Internal-Secret`` caller reaches. The credential and transport are the
+    ones the other CLI clients of the local gateway use: the local secret
+    resolved for the loopback host this request dials, and the gateway's unix
+    socket when it is present, TCP loopback otherwise. Without a credential
+    nothing is sent at all. Read-only: a GET, and the route only reads the
+    controller.
+    """
+    from kiro_crew.config.loader import read_local_secret
+    from kiro_crew.dashboard.urls import dashboard_socket_path
+    from kiro_crew.loopback_http import loopback_urlopen
+    from kiro_crew.port_resolution import resolve_client_port
+
+    port = resolve_client_port(None)
+    secret = read_local_secret(port, dial_host=_LOOPBACK_HOST)
+    if not secret:
+        return port, None, "no local gateway credential for this port (gateway not running?)"
+    req = urllib.request.Request(
+        f"http://{_LOOPBACK_HOST}:{port}/api/spawn/adaptive",
+        headers={"X-Internal-Secret": secret},
+    )
+    try:
+        socket_path: str | None = str(dashboard_socket_path(port))
+    except Exception:
+        socket_path = None
+    try:
+        with loopback_urlopen(
+            req, timeout=_ADAPTIVE_READ_TIMEOUT_SECS, unix_socket_path=socket_path
+        ) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return port, None, f"the gateway refused the read (HTTP {exc.code})"
+    except (urllib.error.URLError, OSError):
+        return port, None, "no gateway answered"
+    except ValueError:
+        return port, None, "the gateway's answer was not JSON"
+    state = payload.get("adaptive") if isinstance(payload, dict) else None
+    if not isinstance(state, dict):
+        return port, None, "the gateway's answer carried no controller snapshot"
+    if not state:
+        return port, None, "the running gateway has no adaptive controller"
+    return port, state, ""
+
+
+def _doctor_adaptive_live() -> None:
+    """Print the running gateway's adaptive controller: caps, last cut, cap history.
+
+    The configured line above it states the bounds; this states what the
+    controller did inside them: the mode, the execution cap and the spawn gate
+    against their ceilings, the last pressure cut with its signals and age
+    while the execution cap is below its ceiling, the last decision, and the
+    recent cap changes, newest last, each stamped with the ``gateway.log``
+    clock so it can be matched against the log line it produced.
+
+    Rendered by ``resource_status.adaptive_summary_lines``, the renderer the
+    ``resource_status`` tool prints the same snapshot with, so the two surfaces
+    cannot describe one controller two ways. Every line goes through
+    :func:`~kiro_crew.terminal_safe.safe_terminal_line`, since it arrives over
+    a socket. Advisory: an unread state is one line and never an issue, because
+    the Connectivity section already reports a gateway that is down.
+    """
+    from kiro_crew.resource_status import adaptive_summary_lines
+    from kiro_crew.terminal_safe import safe_terminal_line
+
+    try:
+        port, state, why = _gateway_adaptive_state()
+    except Exception as exc:
+        print(f"  adaptive controller: not read (check failed: {safe_terminal_line(str(exc))})")
+        return
+    if state is None:
+        print(f"  adaptive controller: not read on port {port}: {why}")
+        return
+    print(f"  adaptive controller (running gateway on port {port}):")
+    # The renderer's first line is its own heading; the line above replaces it
+    # with the source of the snapshot.
+    for line in adaptive_summary_lines(state)[1:]:
+        print(f"  {safe_terminal_line(line)}")
 
 
 def _liveness_platform_line() -> str:

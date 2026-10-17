@@ -13,7 +13,7 @@ supported integration paths step by step:
 
 - No more guessing endpoint paths and response shapes
 - Permission-scoped API access declared in `app.json` (UI hooks)
-- Built-in retry with exponential backoff (5xx, 429, network errors) — `kirocrew-client`
+- Built-in retry with exponential backoff (5xx and network errors for GET/PUT/DELETE, 429 for every method) — `kirocrew-client`
 - Auth handling (localhost skip, token injection, explicit app-secret exchange)
 - Host-managed WebSocket subscriptions for dashboard UI apps
 - Context injection with local buffering
@@ -40,8 +40,8 @@ Keep abort and stream-reader cleanup in the component that owns the request.
 
 Declared API patterns follow the backend's matcher, including trailing `/*` and
 `*`. Use `/api/example/*` rather than a bare trailing slash when declaring a
-subtree. This makes previously client-rejected declared wildcards usable; it
-neither changes app-token authorization nor adds manifest grants. Review broad
+subtree. The client applies the same matcher as app-token authorization and adds
+no manifest grants. Review broad
 trailing `*` declarations because they deliberately match sibling string prefixes.
 
 Replace direct Redux chat handoff with `useChatLauncher`: pass `slotKey` for an
@@ -49,9 +49,11 @@ existing session and `autoSend: false` for a draft. Do not replace a draft hando
 with the default automatic send. `agent` applies only to a newly created session.
 The host remains responsible for session activation and backend authorization.
 
-Python cron callers use `set_enabled` / `set_enabled_async` for pause and resume.
-Passing `enabled` to an update method raises instead of silently doing nothing.
-Only owned tasks can be toggled; IDs, history and existing execution gates remain.
+In-process app backends use `CronSDK.set_enabled` / `set_enabled_async` for pause
+and resume; `kirocrew_client` callers use `pause_cron` / `resume_cron`. Passing
+`enabled` to `CronSDK.update_job` raises instead of silently doing nothing.
+`CronSDK` toggles only the app's own jobs; IDs, history and existing execution
+gates remain.
 
 ### Step 1: Import the hooks
 
@@ -122,7 +124,8 @@ ws.onmessage = (e) => {
 // After — useAppEvents subscribes via the host's shared WebSocket and
 // auto-unsubscribes on unmount (no manual reconnect or connection management)
 useAppEvents('chat_chunk', (data) => {
-  if (data.slot === mySlot) handleChunk(data.content)
+  const chunk = data as { slot?: string; content?: string }
+  if (chunk.slot === mySlot) handleChunk(chunk.content ?? '')
 })
 useAppEvents('chat_done', () => handleDone())
 ```
@@ -163,8 +166,8 @@ async with KiroCrewClient(app_name="my-tool") as mc:
 
 Key differences:
 
-> **Note:** `kiro_crew.apps.sdk` no longer ships — it was removed in a prior
-> release. Do not try to import it; use `kirocrew_client` for all Python apps.
+> **Note:** `kiro_crew.apps.sdk` does not exist. Do not try to import it; use
+> `kirocrew_client` for all Python apps.
 
 | | Old (`kiro_crew.apps.sdk`, removed) | New (`kirocrew_client`) |
 |---|---|---|

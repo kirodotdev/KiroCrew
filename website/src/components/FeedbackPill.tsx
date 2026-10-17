@@ -114,6 +114,19 @@ export default function FeedbackPill({
   // still cost that click, so the action may take a second tap; that is the
   // cost of having read the warning.
   const { tip, tipHandlers, tipId } = useInstantTip({ placement: 'below', openOnTap: true })
+  // The report chip's tip: its OWN hook instance, because each anchor owns one
+  // bubble and the two buttons sit side by side -- shared, one button's tip
+  // would answer for both. It carries `actionDescription`, the one string that
+  // is also the chip's accessible name, so the lane the report is tagged against
+  // is readable by hover AND by keyboard: from rung 2 of the desktop actions ladder the
+  // chip is an icon alone (`tb-drop-feedback-label` hidden), and keyboard focus
+  // never shows a native `title`. No `title` beside it, so the two can never
+  // stack on hover (mirrors the sibling).
+  const {
+    tip: reportTip,
+    tipHandlers: reportTipHandlers,
+    tipId: reportTipId,
+  } = useInstantTip({ placement: 'below' })
 
   return (
     // The pill IS a Liquid Glass pane (components/Glass.tsx, chip recipe): the
@@ -130,10 +143,13 @@ export default function FeedbackPill({
         type="button"
         className="flex items-center gap-1.5 h-full px-2.5 text-muted hover:text-text transition-colors cursor-pointer text-[12px] whitespace-nowrap bg-transparent border-0"
         onClick={onRequestFeature}
+        // Named explicitly: the desktop top bar can hide the label (see
+        // `tb-drop-feedback-label` in index.css), leaving only the icon.
+        aria-label={i18nT('app.request_a_feature_2')}
         {...tipHandlers}
       >
         <Lightbulb size={13} className="lucide-inline" />{' '}
-        {i18nT('app.request_a_feature_2')}
+        <span className="tb-drop-feedback-label">{i18nT('app.request_a_feature_2')}</span>
       </button>
       <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(22rem,calc(100vw-1rem))] whitespace-normal">
         <div className="text-text" data-testid="feedback-pill-request-feature-tip">
@@ -162,13 +178,23 @@ export default function FeedbackPill({
             onClick={onReportProblem}
             // The LANE lives here and only here. Which build a report will be
             // tagged against is useful but secondary, so it is supplementary
-            // hover detail — not a word competing with the action for the eye.
-            title={actionDescription}
+            // detail in the tip below -- not a word competing with the action
+            // for the eye. The same string is the accessible name, so the two
+            // can never drift.
             aria-label={actionDescription}
+            {...reportTipHandlers}
+            // The tip shows the same sentence as the accessible name, so it is
+            // not also the description: a screen reader would read it twice.
+            aria-describedby={undefined}
           >
             <Bug size={13} className="lucide-inline" />{' '}
-            {i18nT('components.feedbackPill.report_problem')}
+            <span className="tb-drop-feedback-label">{i18nT('components.feedbackPill.report_problem')}</span>
           </button>
+          <InstantTip tip={reportTip} tipId={reportTipId} className="w-max max-w-[min(22rem,calc(100vw-1rem))] whitespace-normal">
+            <div className="text-text" data-testid="feedback-pill-report-problem-tip">
+              {actionDescription}
+            </div>
+          </InstantTip>
         </>
       )}
     </Glass>

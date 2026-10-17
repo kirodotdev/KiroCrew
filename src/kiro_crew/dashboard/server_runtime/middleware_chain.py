@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         build_host_canonical_redirect,
         degraded_config_files,
         handlers,
+        is_proxied_request,
         logger,
         make_route_latency_middleware,
         mark_audit_claimed,
@@ -183,6 +184,7 @@ def _install_dashboard_middlewares(
                 resp = await handler(request)  # type: ignore[operator]
                 sel().log_api_access(
                     caller=actor,
+                    forwarded=is_proxied_request(request),
                     operation=f"{request.method} {request.path}",
                     outcome="ok" if resp.status < 400 else "error",
                     resources=request.path,
@@ -191,6 +193,7 @@ def _install_dashboard_middlewares(
             except Exception as exc:
                 sel().log_api_access(
                     caller=actor,
+                    forwarded=is_proxied_request(request),
                     operation=f"{request.method} {request.path}",
                     outcome="error",
                     resources=request.path,
@@ -300,6 +303,7 @@ def _install_api_middlewares(
                 resp = await handler(request)  # type: ignore[operator]
                 sel().log_api_access(
                     caller=actor,
+                    forwarded=is_proxied_request(request),
                     operation=f"{request.method} {request.path}",
                     outcome="ok" if resp.status < 400 else "error",
                     resources=request.path,
@@ -308,6 +312,7 @@ def _install_api_middlewares(
             except Exception as exc:
                 sel().log_api_access(
                     caller=actor,
+                    forwarded=is_proxied_request(request),
                     operation=f"{request.method} {request.path}",
                     outcome="error",
                     resources=request.path,

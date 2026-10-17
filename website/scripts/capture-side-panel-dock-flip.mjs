@@ -40,7 +40,7 @@ const slots = [{
 }]
 
 /** Read the portal container, the motion wrapper, and the panel root together.
- *  The wrapper is `#activity-bar-slot > div` — ChatPage portals the motion.div
+ *  The wrapper is `#activity-bar-slot > div` — ChatSidePanels portals the motion.div
  *  into the App shell's actbar grid area, and the panel root is its only child. */
 async function measure(page) {
   return page.evaluate(() => {

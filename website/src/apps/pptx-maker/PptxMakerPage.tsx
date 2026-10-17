@@ -307,6 +307,7 @@ export default function PptxMakerPage() {
     mutationFn: async (agent: string) => {
       const result = await api.createChatSlot(
         undefined, agent, undefined, undefined, 'persistent',
+        undefined, undefined, undefined, undefined, true,
       )
       return result as { key?: string }
     },

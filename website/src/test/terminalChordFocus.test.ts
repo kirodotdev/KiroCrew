@@ -13,8 +13,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-import { toggleTerminalByChord, __resetTerminalChordFocus } from '../lib/terminalChordFocus'
-import { isBottomTerminalOpen, __resetBottomTerminal } from '../hooks/useBottomTerminal'
+import { newTerminalByChord, toggleTerminalByChord, __resetTerminalChordFocus } from '../lib/terminalChordFocus'
+import { isBottomTerminalOpen, useBottomTerminal, __resetBottomTerminal, MAX_TERMINALS } from '../hooks/useBottomTerminal'
+import { renderHook } from '@testing-library/react'
 
 /** A stand-in for the docked panel: an `.xterm` subtree with a focusable node,
  *  removed on close the way React's `{open && …}` removes the real one. */
@@ -101,5 +102,48 @@ describe('toggleTerminalByChord: focus after a close-from-shell', () => {
     expect(isBottomTerminalOpen()).toBe(true)
     toggleTerminalByChord()
     expect(isBottomTerminalOpen()).toBe(false)
+  })
+})
+
+describe('newTerminalByChord: VS Code\'s Create New Terminal', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    __resetBottomTerminal()
+    __resetTerminalChordFocus()
+    document.body.replaceChildren()
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0 })
+  })
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren() })
+
+  const tabCount = () => renderHook(() => useBottomTerminal()).result.current.tabs.length
+
+  it('opens the panel and adds a tab on every press, never closing it', () => {
+    newTerminalByChord('/proj')
+    expect(isBottomTerminalOpen()).toBe(true)
+    expect(tabCount()).toBe(1)
+    newTerminalByChord('/proj')
+    expect(isBottomTerminalOpen()).toBe(true)
+    expect(tabCount()).toBe(2)
+  })
+
+  it('stops adding at the terminal cap but keeps the panel open', () => {
+    for (let i = 0; i < MAX_TERMINALS + 2; i++) newTerminalByChord()
+    expect(isBottomTerminalOpen()).toBe(true)
+    expect(tabCount()).toBe(MAX_TERMINALS)
+  })
+
+  it('remembers where it opened from, so the toggle chord closing from a shell returns there', () => {
+    const composer = document.createElement('textarea')
+    document.body.appendChild(composer)
+    composer.focus()
+
+    newTerminalByChord()                          // open + add, from the composer
+    const term = mountFakeTerminal()
+    term.shellInput.focus()
+
+    toggleTerminalByChord()                       // close, from inside the shell
+    term.unmount()
+    expect(isBottomTerminalOpen()).toBe(false)
+    expect(document.activeElement).toBe(composer)
   })
 })

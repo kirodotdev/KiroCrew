@@ -566,6 +566,15 @@ class StreamRedactor:
         self._discard_kind: str | None = None
         self._discarded = 0
 
+    def _redact_window(self, text: str) -> str:
+        """Redact one context-incomplete window without URL-prefix exemptions."""
+        redaction = _submodule("redaction")
+        suspension = redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.set(True)
+        try:
+            return self._redact(text)
+        finally:
+            redaction._TOKEN_PARAM_EXEMPT_SUSPENDED.reset(suspension)
+
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
         # Owners of the re-exported names read below, resolved through the
@@ -730,10 +739,10 @@ class StreamRedactor:
                 if complete_token_crossing is not None and not credential_reaches_end:
                     drop_end = complete_token_crossing.end(1)
                 commit, self._buf = self._buf[:i], self._buf[drop_end:]
-                out = self._redact(commit) if commit else ""
+                out = self._redact_window(commit) if commit else ""
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
-
             i = len(self._buf) - cap
+            i -= self._buf.startswith("${", i - 1)  # keep a JS/TS `${` placeholder whole
 
             # The floor was computed after Phase A, so re-check complete token
             # parameters against the actual cut. Advancing through the value is
@@ -754,7 +763,7 @@ class StreamRedactor:
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
-        return self._redact(commit)
+        return self._redact_window(commit)
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
@@ -763,9 +772,19 @@ class StreamRedactor:
             self._discarding = False
             self._discard_kind = None
             return ""
-        out = self._redact(self._buf) if self._buf else ""
+        out = self._redact_window(self._buf) if self._buf else ""
         self._buf = ""
         return out
+
+    @property
+    def held(self) -> str:
+        """The raw run withheld so far (``""`` while a value is being dropped)."""
+        return self._buf
+
+    @property
+    def discarding(self) -> bool:
+        """True while the rest of a value is being dropped."""
+        return self._discarding
 
     def reset(self) -> None:
         """Discard the buffer without emitting (segment abandoned/cleared)."""
@@ -863,27 +882,21 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
     view standing.  A failure can therefore lose the EXTRA match but never the raw
     one, so it cannot turn a denied command into an allowed one.
 
+    ── Whitespace-only words ──
+    A quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) is a real operand, so
+    a fourth view drops it: an argv one operand short, matched against and
+    nothing more.  It is additive -- an exception excusing one view's match only
+    moves on to the next pattern -- so it can add a denial, never remove one.
+    A token with any non-whitespace character stays whole (``"a b"``).
+
     ── Residual ──
-    Three shapes stay outside every view.  A token split by BOTH quoting and a
+    Two shapes stay outside every view.  A token split by BOTH quoting and a
     separator-shaped glue construct (``"rm"$(echo ' ')-rf /``) is in none of them:
     the raw text is not contiguous and the glue lands on its own segment — the
     whole-string raw pass covers the glue-ONLY spelling (``git$(echo ' ')push``),
     and closing the combination needs a normalizer that models substitution,
     which a re-join is not.  A variable spelling of a path operand
     (``rm -rf $HOME``) is by construction not expanded here, per the note above.
-    And a quoted WHITESPACE-ONLY word (``rm -rf " " /home/x``) still renders an
-    extra separator.  Adding a render without it would be additive like the one
-    above and so could not lose a denial, but it is not the same claim: an empty
-    element carries no characters, so a view without it is still the argv the
-    shell hands over; a whitespace-only element is a real operand naming a file
-    that can exist, so a view without it is an argv ONE OPERAND SHORT of the one
-    that runs.  Widening the render to elements that do carry characters changes
-    what a view is permitted to assert -- and ``is_denied``'s exception machinery
-    (present, and ``_DENY_EXCEPTIONS`` empty today) is matched against views, so
-    the direction it would open is ALLOW, not deny.  Recognizing this shape wants
-    rules matched against argv STRUCTURE rather than against a rendered line,
-    which is what ``_SELF_PROTECTION_FLOOR_PATTERNS`` already does for the six
-    self-protection rules — and is why those are not fooled by either shape.
     """
     # Owners of the re-exported names read below, resolved through the
     # import system so the value is read from the one place it lives.
@@ -953,6 +966,10 @@ def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]
             elided = " ".join(token for token in tokens if token)
             if elided and elided != view:
                 candidates.append(elided)
+            # Whitespace-only tokens dropped; appended, never substituted.
+            stripped = " ".join(token for token in tokens if token.strip())
+            if stripped and stripped not in candidates:
+                candidates.append(stripped)
             for candidate in candidates:
                 if not (is_root and not emit_self) and candidate not in seen_views:
                     seen_views.add(candidate)
@@ -1192,7 +1209,6 @@ def is_denied(
     # cost flat -- one import-system lookup per owner, not one per name read.
     _rules = _submodule("denied_rules")
     _argv = _submodule("argv_floor")
-    _shell = _submodule("shell_normalizer")
     _diag = _submodule("diagnostics")
 
     lower = tool_name.lower()
@@ -1445,6 +1461,42 @@ def is_denied(
                 component="argv-floor",
             )
 
+    # ── Pattern passes (shared with the synthesized tier's ``segments=True``) ──
+    pattern_denial = _deny_pattern_passes(tool_name, lower, all_patterns, _reason)
+    if pattern_denial is not None:
+        return pattern_denial
+    # All windows cleared the deny passes — the input is allowed.  If it was a
+    # feature-branch push, emit the deferred allow audit now (final outcome).
+    #
+    # The RAW input is audited, never ``lower``.  ``lower`` exists for MATCHING;
+    # nothing matched on an allow, so the case fold buys the record nothing and
+    # costs it two things.  Faithfulness: branch names and remote URLs are
+    # case-sensitive, so folding records a push to ``Feature-ABC`` as a push to
+    # ``feature-abc``.  And redaction: the credential scrubber inside
+    # ``redact_and_truncate`` matches an AWS key ID case-SENSITIVELY on purpose
+    # (widening it would false-positive on ordinary prose — ``asia`` is a word —
+    # across every egress surface; see ``credential_patterns``), so a key handed
+    # in already case-folded slips past the pre-slice redaction, gets cut by the
+    # 200-char clip, and the surviving prefix is short enough to escape SEL's own
+    # any-case write-path net too — a partial key persisting in the durable log.
+    if push_allow_pending:
+        _schedule_push_allow_audit(tool_name)
+    return None
+
+
+def _deny_pattern_passes(
+    tool_name: str,
+    lower: str,
+    all_patterns: list[tuple[str, bool]],
+    reason: "Callable[[str], str]",
+) -> str | None:
+    """Run :func:`is_denied`'s whole-string and per-segment passes over *all_patterns*.
+
+    Exceptions and the perm-verb narrowing apply as there; no floor runs here.
+    """
+    _rules = _submodule("denied_rules")
+    _shell = _submodule("shell_normalizer")
+
     # Memoizes the argv-structural mention walk per view: the same view is asked
     # about once per matching pattern, and every opted-in pattern can match.
     mention_cache: dict[str, bool] = {}
@@ -1457,15 +1509,12 @@ def is_denied(
     # The regex tier matches the FULL, untruncated string via ``_DenyMatcher``
     # (linear-time, no length bound — see the ReDoS-mitigation notes above), so
     # a destructive needle at any offset within a single un-separated segment is
-    # caught here.  ``_is_git_publish`` / the always-on floors also run on the
-    # full string before this point.
+    # caught here.  In ``is_denied``, ``_is_git_publish`` / the always-on floors
+    # also run on the full string before this call.
     for pattern, is_regex in all_patterns:
         if _rules._deny_pattern_matches(pattern, lower, is_regex):
-            exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
-            whole_string_exception_match = (
-                exceptions
-                and _rules._exception_eligible(lower)
-                and any(fnmatch.fnmatch(lower, e.lower()) for e in exceptions)
+            whole_string_exception_match = _rules._exception_applies(
+                lower, _rules._DENY_EXCEPTIONS.get(pattern, [])
             )
             if not whole_string_exception_match and _perm_verb_mention_narrows(
                 pattern, lower, mention_cache
@@ -1480,7 +1529,7 @@ def is_denied(
                     whole_string_exception_match = True
             if not whole_string_exception_match:
                 _emit_deny_event(tool_name, pattern, lower)
-                return _reason(pattern)
+                return reason(pattern)
 
     # ── Pass 2: per-segment (re-)evaluation ──
     # Split into segments and check each.  This runs UNCONDITIONALLY: besides
@@ -1535,11 +1584,8 @@ def is_denied(
         for view in segment_views:
             for pattern, is_regex in all_patterns:
                 if _rules._deny_pattern_matches(pattern, view, is_regex):
-                    exceptions = _rules._DENY_EXCEPTIONS.get(pattern, [])
-                    if (
-                        exceptions
-                        and _rules._exception_eligible(view)
-                        and any(fnmatch.fnmatch(view, e.lower()) for e in exceptions)
+                    if _rules._exception_applies(
+                        view, _rules._DENY_EXCEPTIONS.get(pattern, [])
                     ) or _perm_verb_mention_narrows(pattern, lower, mention_cache):
                         # ``lower``, not ``view``: the mention reading is a
                         # WHOLE-COMMAND judgement and a Pass 2 segment is not
@@ -1564,30 +1610,14 @@ def is_denied(
                             tool_name, pattern, _perm_verb_mechanism_for(pattern)
                         ):
                             _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
-                            return _reason(pattern)
+                            return reason(pattern)
                         # Exception granted for this pattern on this segment;
                         # continue to evaluate any remaining patterns against
                         # the same segment (a different pattern without an
                         # exception must still cause a deny).
                         continue
                     _emit_deny_event(tool_name, pattern, view, raw_segment=seg_lower)
-                    return _reason(pattern)
-    # All windows cleared the deny passes — the input is allowed.  If it was a
-    # feature-branch push, emit the deferred allow audit now (final outcome).
-    #
-    # The RAW input is audited, never ``lower``.  ``lower`` exists for MATCHING;
-    # nothing matched on an allow, so the case fold buys the record nothing and
-    # costs it two things.  Faithfulness: branch names and remote URLs are
-    # case-sensitive, so folding records a push to ``Feature-ABC`` as a push to
-    # ``feature-abc``.  And redaction: the credential scrubber inside
-    # ``redact_and_truncate`` matches an AWS key ID case-SENSITIVELY on purpose
-    # (widening it would false-positive on ordinary prose — ``asia`` is a word —
-    # across every egress surface; see ``credential_patterns``), so a key handed
-    # in already case-folded slips past the pre-slice redaction, gets cut by the
-    # 200-char clip, and the surviving prefix is short enough to escape SEL's own
-    # any-case write-path net too — a partial key persisting in the durable log.
-    if push_allow_pending:
-        _schedule_push_allow_audit(tool_name)
+                    return reason(pattern)
     return None
 
 
@@ -1597,6 +1627,7 @@ def is_denied_synthesized_target(
     *,
     extra_patterns: list[str] | None = None,
     reason_notes: dict[str, str] | None = None,
+    segments: bool = False,
 ) -> str | None:
     """Evaluate a SYNTHESIZED target against the patterns that participate in one.
 
@@ -1641,6 +1672,12 @@ def is_denied_synthesized_target(
       splitting it only manufactures pseudo-commands out of path substrings -- the same
       collision class, one layer down.
 
+    ``segments=True`` is for a shell title kiro-cli cut short, judged as SENT by the
+    operator's own rules (``hooks.untruncated_shell_title``).  That text is a command
+    line and a rule may be anchored to one chained command of it, so both of
+    :func:`is_denied`'s pattern passes run (``_deny_pattern_passes``); the floors,
+    which misread the cut end, still do not.
+
     Args:
         target: The synthesized target, e.g. ``"file-search path=/srv max_depth=3"``.
         patterns: Regex-tier patterns that participate (the operator's own).  ``None``
@@ -1648,6 +1685,7 @@ def is_denied_synthesized_target(
             to every built-in, which would be the opposite of this tier's contract.
         extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
         reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
+        segments: Also run the per-segment pass (see above).  Default ``False``.
 
     Returns:
         Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
@@ -1660,6 +1698,13 @@ def is_denied_synthesized_target(
     all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
         (p, False) for p in list(extra_patterns or [])
     ]
+    if segments:
+        return _deny_pattern_passes(
+            target,
+            lower,
+            all_patterns,
+            lambda matched: _denied_rules._deny_reason(matched, reason_notes),
+        )
     for pattern, is_regex in all_patterns:
         if not _denied_rules._deny_pattern_matches(pattern, lower, is_regex):
             continue
@@ -2561,12 +2606,12 @@ def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
 #    passes while testing nothing. ``_ReExportModule`` below is what closes that,
 #    so every existing patch site stays as written.
 #
-# Both halves resolve the owner with ``importlib.import_module``, which answers
-# from ``sys.modules``. That leaves one place a value lives (the owner's
-# namespace) and one place a module lives (``sys.modules``), so neither half has
-# a second copy to keep in step.
+# Both halves resolve the owner through ``_submodule``, which reads ``sys.modules`` first and
+# calls ``importlib.import_module`` only on a miss.  That leaves one place a value lives (the
+# owner's namespace) and one place a module lives (``sys.modules``), so neither half has a
+# second copy to keep in step.
 #
-# The table below is in dependency order, lowest layer first, and a name belongs
+# The table below is grouped by owning submodule, groups in alphabetical order, and a name belongs
 # to the submodule that DEFINES it. Names this module imports for its own use
 # from outside the package -- the standard library, and other ``kiro_crew``
 # modules -- are not in the table: no submodule of this package owns them, so
@@ -2803,6 +2848,7 @@ _EXPORTS: dict[str, str] = {
     "exfil_query_min_len": "exfil",
     "oauth_rejection_is_endpoint_exemptible": "exfil",
     "oauth_url_contains_credential": "exfil",
+    "record_discovered_oauth_endpoint": "exfil",
     "redact_exfiltration_urls": "exfil",
     "redact_exfiltration_urls_with_records": "exfil",
     "scan_exfiltration_urls": "exfil",
@@ -3390,6 +3436,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         exfil_query_min_len,
         oauth_rejection_is_endpoint_exemptible,
         oauth_url_contains_credential,
+        record_discovered_oauth_endpoint,
         redact_exfiltration_urls,
         redact_exfiltration_urls_with_records,
         scan_exfiltration_urls,

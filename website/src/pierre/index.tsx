@@ -84,9 +84,15 @@ export const PierreEditor = memo(forwardRef<PierreEditorHandle, {
 /** A surface under this height is still Pierre's pre-highlight empty shell,
  *  not painted content: one rendered line inside body padding exceeds it. */
 const WARM_PAINT_MIN_PX = 24
-/** Fail-safe: swap even if the surface never crosses the threshold (a
- *  legitimately tiny surface, or a broken worker) so nothing wedges on the
- *  fallback forever. */
+/** Fail-safe for a surface that never crosses the threshold. At this deadline
+ *  a hold whose fallback is itself tiny (an empty file, a one-row stub) swaps,
+ *  so nothing wedges on a fallback that shows nothing either. A hold whose
+ *  fallback is readable text keeps it: revealing an impl that has still not
+ *  painted would trade that text for Pierre's empty shell, which is a code
+ *  block with a label and a blank body. Such a hold releases on the impl's
+ *  first rows, or on the plain text the pool hands the surface once its own
+ *  request watchdog gives up on the worker; past the deadline it drops the
+ *  pending cue, because the wait is no longer a short highlight pass. */
 const WARM_SWAP_DEADLINE_MS = 2500
 
 /** Painted height of surfaces that completed a swap this page load, keyed
@@ -153,7 +159,8 @@ function StagedSuspense({ fallback, children }: { fallback: React.ReactNode; chi
  * would collapse to Pierre's empty container until the highlight pool answers.
  * The inner wrapper has no height but the impl's, so it reads 0 until Pierre
  * has applied rows (or a failed pool has handed the surface plain text), and
- * the deadline below is what releases a surface that never paints at all.
+ * the deadline below is what releases a surface whose fallback is too small to
+ * be worth holding (see `WARM_SWAP_DEADLINE_MS`).
  *
  * `header` is a row the caller wants ABOVE the revealed content — it renders
  * outside the measured wrapper, and only once the hold has released. Inside
@@ -169,7 +176,8 @@ function StagedSuspense({ fallback, children }: { fallback: React.ReactNode; chi
  * deliberate display mode rather than as a load in progress (#13937). The cue
  * exists for exactly as long as the hold does — gone the moment `painted`
  * flips true, whether on the first rows, on the plain text a failed pool hands
- * the surface, or on the deadline fail-safe. It lives in a row that exists in
+ * the surface, or on the deadline fail-safe; a hold the deadline keeps for
+ * its readable text drops the cue at the deadline too. It lives in a row that exists in
  * both states (the fallback's header while held, Pierre's own header with its
  * metadata in the same place once painted), so it costs the hold no height and
  * sits outside the measured wrapper. A hold whose fallback has no header row
@@ -188,7 +196,14 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
   onVisible?: () => void
 }) {
   const implRef = useRef<HTMLDivElement | null>(null)
+  // The hold's outer box. While held, the impl sits in an absolute box out of
+  // its flow, so this box is as tall as the fallback on screen (or the frozen
+  // known height, which is only ever recorded above the paint threshold).
+  const holdRef = useRef<HTMLDivElement | null>(null)
   const [painted, setPainted] = useState(false)
+  // The deadline passed with readable fallback text still on screen and the
+  // impl still unpainted: keep the text, drop the pending cue.
+  const [overdue, setOverdue] = useState(false)
   // Measure-farm render: the fallback IS the measured geometry -- mounting the
   // impl invisibly would burn main thread for a surface that is never shown.
   const farm = useContext(PierreFarmHoldContext)
@@ -226,7 +241,19 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
       }
     })
     ro.observe(el)
-    const deadline = setTimeout(() => setPainted(true), WARM_SWAP_DEADLINE_MS)
+    const deadline = setTimeout(() => {
+      if (el.scrollHeight > WARM_PAINT_MIN_PX) {
+        setPainted(true)
+        return
+      }
+      const fallbackH = holdRef.current ? holdRef.current.scrollHeight : 0
+      if (fallbackH > WARM_PAINT_MIN_PX) {
+        // Revealing now would blank readable text; the observer stays armed.
+        setOverdue(true)
+        return
+      }
+      setPainted(true)
+    }, WARM_SWAP_DEADLINE_MS)
     return () => {
       ro.disconnect()
       clearTimeout(deadline)
@@ -238,6 +265,7 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
   if (farm) return <>{fallback}</>
   return (
     <div
+      ref={holdRef}
       className={painted ? undefined : 'relative'}
       // While warming, FREEZE the box at the height this surface painted at
       // last time (exact, overflow clipped): neither the fallback's own
@@ -258,7 +286,7 @@ function WarmSwap({ fallback, header, heldHint = true, children, warmKey, onVisi
           <WarmSwapRevealedContext.Provider value={painted}>{children}</WarmSwapRevealedContext.Provider>
         </div>
       </div>
-      {!painted && <WarmSwapHeldContext.Provider value={heldHint}>{fallback}</WarmSwapHeldContext.Provider>}
+      {!painted && <WarmSwapHeldContext.Provider value={heldHint && !overdue}>{fallback}</WarmSwapHeldContext.Provider>}
     </div>
   )
 }

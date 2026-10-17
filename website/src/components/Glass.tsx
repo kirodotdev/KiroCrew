@@ -10,7 +10,7 @@
  * bell popover's rows and controls card), the list panels' search field
  * (Sessions sidebar, Crew Members roster; components/SearchFilterBar.tsx) and
  * the crewmate DM header's centred identity pill (face + name, itself the
- * "Edit crewmate" button; pages/members/MembersPage.tsx) and the top bar's
+ * "Edit crewmate" button; pages/members/MembersPageThreadHeader.tsx) and the top bar's
  * three pills (the search trigger, the readout capsule and the Request a
  * Feature pill; App.tsx, components/FeedbackPill.tsx) wear the SAME
  * material, from the SAME primitive:
@@ -58,7 +58,8 @@
  * (picked chip, tip card), `glass-warn` (incognito chip) or `glass-danger` (the
  * offline readout capsule), and `glass-hover`
  * brightens an interactive pane a step on hover — all four swap `--glass-tint`
- * on the host (index.css), so the pane stays the same material. Focus changes
+ * on the host (index.css), so the pane stays the same material; the three hue
+ * modifiers swap `--glass-band` as well, so the lit edges carry the hue. Focus changes
  * NOTHING on the pane — no theme colour, no brighter tint, no darker side
  * lines, no deeper shadow (maintainer decision): a focused pane is the same
  * glass as a resting one, and the focus indicator is the caret, or the app's

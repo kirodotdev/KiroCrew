@@ -34,6 +34,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from auto_improvement_member_helpers import MEMBER_BUDGET_SECS
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
 from kiro_crew.apps.builtins.auto_improvement import profiles as profiles_mod
@@ -44,6 +45,7 @@ from kiro_crew.apps.builtins.auto_improvement.spine import agent_discovery as di
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as agent_runner_mod
 from kiro_crew.apps.builtins.auto_improvement.spine import driver as driver_mod
 from kiro_crew.apps.builtins.auto_improvement.spine.crew_runner import CrewRunner
+from kiro_crew.testing.wait import await_until
 
 WAIT_S = 10.0
 
@@ -600,12 +602,29 @@ class TestScoutShellCapability:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("stage", ["prepush", "discovery"])
     async def test_git_request_is_available_but_only_review_can_approve_it(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, stage: str
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        stage: str,
     ) -> None:
         template_path = Path(agent_runner_mod.__file__).parents[1] / "agents" / "scout.json"
         template = json.loads(template_path.read_text(encoding="utf-8"))
         assert "execute_bash" in template["tools"]
         assert template["allowedTools"] == []
+
+        # Pin the PLATFORM governance gate open so this test exercises ONLY the
+        # app-local allowlist/approval path it asserts. ``_governance_denial`` runs
+        # before both decisions and resolves sensitive paths through the subprocess
+        # pool; in a test host that cannot spawn that worker (and whose ``_refuse``
+        # guard forbids it), the resolver cannot finish within its wall-clock budget
+        # and the gate fails closed non-deterministically — refusing ``git diff`` as
+        # a governance deny on a slow or loaded shard before the allowlist branch
+        # runs, so ``approve_tool`` / ``reject_tool`` is never awaited and the
+        # allowlist-deny log line is absent. Allowing the gate here keeps the test
+        # free of that timing and subprocess dependency; the gate is covered by its
+        # own tests.
+        monkeypatch.setattr(agent_runner_mod, "_governance_denial", lambda *a, **k: "")
 
         provider = SimpleNamespace(
             approve_tool=AsyncMock(return_value=None),
@@ -650,23 +669,33 @@ class TestScoutShellCapability:
             driver.clone = tmp_path
             driver.log = logging.getLogger(__name__)
             driver._build_test_pre_push_clean = Mock(return_value=(False, "review unavailable"))
-            verdict = await asyncio.wait_for(
-                asyncio.to_thread(driver._prepush_review_clean, target="feature", base_ref="main"),
-                timeout=WAIT_S,
+            verdict = await await_until(
+                asyncio.ensure_future(
+                    asyncio.to_thread(
+                        driver._prepush_review_clean, target="feature", base_ref="main"
+                    )
+                ),
+                what="the pre-push review",
             )
             assert verdict == (True, "prepush_review clean")
             driver._build_test_pre_push_clean.assert_not_called()
             provider.approve_tool.assert_awaited_once_with("git-diff")
             provider.reject_tool.assert_not_awaited()
         else:
-            surfaces = await asyncio.wait_for(
-                asyncio.to_thread(
-                    discovery_mod.discover_surfaces_via_agent,
-                    runner,
-                    clone=tmp_path,
-                    timeout_s=5,
+            # The discovery budget is a lost-run guard, not the property: the member
+            # assignment before the provider is reached is config and sqlite work
+            # that takes tens of seconds on a loaded Windows shard. A budget near
+            # that work ends discovery before the git request is ever judged.
+            surfaces = await await_until(
+                asyncio.ensure_future(
+                    asyncio.to_thread(
+                        discovery_mod.discover_surfaces_via_agent,
+                        runner,
+                        clone=tmp_path,
+                        timeout_s=MEMBER_BUDGET_SECS,
+                    )
                 ),
-                timeout=WAIT_S,
+                what="agent discovery",
             )
             assert surfaces == []
             provider.reject_tool.assert_awaited_once_with("git-diff")

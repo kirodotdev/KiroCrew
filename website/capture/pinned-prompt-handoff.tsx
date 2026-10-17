@@ -12,9 +12,9 @@
  *   - `PinnedPrompt` is the REAL banner card.
  *   - `UserMessage` is the REAL bubble.
  *   - Rows are wrapped in the literal host wrapper (`px-4 mx-auto w-full py-1`
- *     under `--mc-content-width`, ChatPage.tsx:7066) and hidden by the literal
- *     host rule (`visibility: 'hidden'` matched on message ts, ChatPage.tsx:7089).
- *   - The fold sentinel sits directly under an opaque title row, as in ChatPage.
+ *     under `--mc-content-width`, ChatTranscriptView.tsx) and hidden by the literal
+ *     host rule (`visibility: 'hidden'` matched on message ts, ChatTranscriptView.tsx).
+ *   - The fold sentinel sits directly under an opaque title row, as in ChatTitleOverlay.
  * Nothing about the hand-off decision is reimplemented here.
  *
  *   ?theme=dark|light
@@ -119,7 +119,7 @@ function PinnedHost() {
 
   return (
     <div data-capture-root className="relative h-screen w-screen flex flex-col bg-bg text-text overflow-hidden">
-      {/* Overlay band: title row, fold sentinel, banner — the ChatPage stack. */}
+      {/* Overlay band: title row, fold sentinel, banner — the ChatTitleOverlay stack. */}
       <div className="absolute inset-x-0 top-0 z-20 pointer-events-none">
         <div className="pointer-events-auto bg-bg border-b border-border px-4 py-2 text-sm text-muted">
           Pinned prompt hand-off

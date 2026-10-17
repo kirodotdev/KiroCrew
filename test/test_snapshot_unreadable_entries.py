@@ -265,6 +265,32 @@ class TestABundleWithOmissionsDoesNotPrune:
         assert existing.is_file(), "an incomplete bundle pruned the last complete backup"
         assert "Not pruning" in capsys.readouterr().out
 
+    def test_strict_exits_3_for_an_incomplete_bundle(self, home, deny_victim, tmp_path, capsys):
+        """`--strict` turns a written-but-incomplete bundle into exit 3."""
+        existing = self._seed_complete(tmp_path / "out", tmp_path)
+        (home / "workspace" / VICTIM).write_text("wanted, but unreadable\n")
+        out = tmp_path / "out"
+        rc = snap.snapshot_main(
+            [str(out), "--components", "workspace", "--keep", "1", "--strict", *unpinnable_argv()]
+        )
+        assert rc == snap.EXIT_INCOMPLETE == 3
+        # The bundle is still written and the prune is still held.
+        assert len(sorted(out.glob("kirocrew-snapshot-*.tar.gz"))) == 2
+        assert existing.is_file()
+        assert "--strict: exiting 3" in capsys.readouterr().out
+
+    def test_without_strict_an_incomplete_bundle_still_exits_0(self, home, deny_victim, tmp_path):
+        """The default contract is unchanged: existing callers see 0 for a written bundle."""
+        (home / "workspace" / VICTIM).write_text("wanted, but unreadable\n")
+        out = tmp_path / "out"
+        rc = snap.snapshot_main([str(out), "--components", "workspace", *unpinnable_argv()])
+        assert rc == 0
+
+    def test_strict_exits_0_for_a_complete_bundle(self, home, tmp_path):
+        """`--strict` must not fail an ordinary run."""
+        out = tmp_path / "out"
+        assert snap.snapshot_main([str(out), "--keep", "1", "--strict", *unpinnable_argv()]) == 0
+
     def test_a_clean_run_still_prunes(self, home, tmp_path):
         """The guard must not disable retention generally."""
         existing = self._seed_complete(tmp_path / "out", tmp_path)

@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from kiro_crew.agent import SharedAgentHomeRefused
 from kiro_crew.agent_spec_format import (
     is_agent_spec_name,
     is_markdown_spec,
@@ -43,6 +44,58 @@ logger = logging.getLogger(__name__)
 
 _MIRROR_PREFIX = "mirror:"
 _RENDERED_AGENT_FILE = "kirocrew.json"
+
+# Never a sha256 hexdigest and never None, so the comparisons that read it cannot
+# confuse it with either real answer of :func:`_module_artifact_key`.
+_UNPROVABLE = "\x00unprovable-url"
+_PROVABLE_HOST = re.compile(r"[a-z0-9._-]+")
+_PROVABLE_PATH = re.compile(r"[\x21-\x7e]*")
+# A backslash anywhere, or "." / ".." as a whole path segment -- shapes WHATWG
+# rewrites before hashing while urlsplit keeps them verbatim. See
+# :func:`_module_artifact_key`.
+_URL_DOT_SEGMENT_RE = re.compile(r"\\|(?:\A|/)\.\.?(?:/|\Z)")
+
+
+def _module_artifact_key(url: object) -> str | None:
+    """``grant_key`` of a validated URL, ``None`` when the pair provably is not
+    ours, or ``_UNPROVABLE`` when equality can be neither proven nor refuted.
+
+    The module-level home of the Disconnect judge's own ``_artifact_key`` (which
+    delegates here), so the destructive revoke and the read-only
+    :func:`grant_sharers_map` share ONE definition of grant identity rather than two
+    that can drift. Pure and byte-for-byte identical to the closure it replaced:
+    the string screened is the string hashed, equality is asserted only inside
+    the PROVABLE set (lowercase-ASCII LDH host, printable-ASCII path free of
+    ``%``, backslashes and dot-segments, no scheme-default port spelled out)
+    where urlsplit and kiro-cli's WHATWG parser serialize identically, and
+    outside it the answer is ``_UNPROVABLE`` so the caller fails closed.
+    """
+    from kiro_crew.connections.tool_aliases import normalized_endpoint
+    from kiro_crew.mcp_grant import grant_key
+
+    if not isinstance(url, str):
+        return None
+    candidate = url.strip()
+    if normalized_endpoint(candidate) is None:
+        return None
+    parts = urlsplit(candidate)
+    host = (parts.hostname or "").lower()
+    path = parts.path or "/"
+    provable = (
+        _PROVABLE_HOST.fullmatch(host) is not None
+        and _PROVABLE_PATH.fullmatch(path) is not None
+        and "%" not in path
+        and _URL_DOT_SEGMENT_RE.search(path) is None
+        and not (parts.scheme.lower() == "http" and parts.port == 80)
+    )
+    if not provable:
+        return _UNPROVABLE
+    try:
+        return grant_key(candidate)
+    except ValueError:
+        # UnicodeError (IDNA) is a ValueError; nothing else in grant_key
+        # raises it for a screened provable-charset string.
+        return None
 
 
 def is_scope_label(label: str) -> bool:
@@ -70,6 +123,9 @@ def _census_source_name(label: str) -> str:
 class DisconnectScope:
     """What one Disconnect did, decided and acted on inside a single lock."""
 
+    # Whether the configured entry is actually GONE. False when no scope configured
+    # it and false when the purge was refused, because both end with the file in the
+    # state the caller asked to change -- and the dashboard renders this as "removed".
     entry_removed: bool
     grant_shared_with: tuple[str, ...]
     grant_removed: tuple[str, ...]
@@ -87,6 +143,10 @@ class DisconnectScope:
     # a surviving artifact. Restricting the re-stat to attempts is what makes a
     # survivor unambiguously a FAILED unlink.
     attempted_urls: tuple[str, ...]
+    # Whether the agent-spec rebuild after the purge confirmed a write. False when it
+    # declined (this instance may not write the shared agent home) or raised: new
+    # sessions may still load the entry this Disconnect removed from the config.
+    agent_spec_rewritten: bool
 
 
 def _json_spec_names(spec_dir: Path) -> list[str] | None:
@@ -357,81 +417,26 @@ async def remove_provider_entry(
     wanted = normalized_endpoint(mcp_url)
     wanted_key = grant_key(mcp_url)
 
-    # Never a sha256 hexdigest and never None, so the comparisons below cannot
-    # confuse it with either real answer.
-    _UNPROVABLE = "\x00unprovable-url"
-    _PROVABLE_HOST = re.compile(r"[a-z0-9._-]+")
-    _PROVABLE_PATH = re.compile(r"[\x21-\x7e]*")
-    # A backslash anywhere, or "." / ".." as a whole path segment. Both are shapes
-    # WHATWG rewrites before hashing (backslash folds to "/", dot-segments are
-    # removed) while urlsplit keeps them verbatim. One regex rather than a
-    # `/`-split because splitting a URL path on a literal "/" also reads as
-    # filesystem path assembly to the cross-platform scan, and this is a URL,
-    # where "/" is the only separator RFC 3986 defines.
-    _URL_DOT_SEGMENT_RE = re.compile(r"\\|(?:\A|/)\.\.?(?:/|\Z)")
+    # Module-level constants (``_UNPROVABLE``) and the artifact-key derivation now
+    # live at module scope so the read-only ``grant_sharers_map`` shares this exact
+    # identity rule; the local name is kept so ``_judge`` reads unchanged.
+    _artifact_key = _module_artifact_key
 
-    def _artifact_key(url: object) -> str | None:
-        """``grant_key`` of a validated URL, ``None`` when the pair provably is
-        not ours, or ``_UNPROVABLE`` when equality can be neither proven nor
-        refuted.
+    def _judge(configured: list, specs: dict) -> tuple[
+        tuple[str, ...],
+        dict[str, set[str]],
+        tuple[str, ...],
+        dict[str, str],
+        dict[str, set[str]],
+        tuple[str, ...],
+    ]:
+        """``(owned scopes, sharers PER KEY, unprovable names, owned url per key,
+        mirrored-slug sharers PER KEY, mirrored-slug unprovable names)``.
 
-        ONE pipeline: the string that is screened is BYTE-IDENTICAL to the string
-        that is hashed. One malformed shape -- a trailing space after an explicit
-        port, which ``urlsplit`` lstrips only -- slips through when
-        ``normalized_endpoint`` parses ``value.strip()`` while ``grant_key`` parses
-        the raw value, so the screen's guarantee never transfers unless both parse
-        identical bytes.
-
-        THREE-valued, because two implementations compute this key. kiro-cli
-        derives the artifact pair with the WHATWG url parser, which
-        percent-decodes hostnames, IDNA-maps Unicode hosts, normalizes
-        dot-segments and backslashes, and percent-encodes non-ASCII paths --
-        transformations ``urlsplit`` does not perform. Hashing such a URL here
-        answers a question about different bytes than the ones kiro-cli hashed:
-        ``%6dcp.notion.com`` and ``/a/../mcp`` both name the
-        registry pair over there while missing it here, with no exception
-        anywhere. So key equality is asserted only inside the PROVABLE set --
-        lowercase-ASCII LDH hosts and printable-ASCII paths free of ``%``,
-        backslashes and dot-segments, with no scheme-default port spelled out --
-        where both parsers' serializations are byte-identical by construction.
-        Outside that set the answer is ``_UNPROVABLE`` and the caller fails
-        closed: the grant is kept and the census reported incomplete, because
-        deleting on an unprovable comparison is how a live consent dies.
-
-        Within the provable set, ``None`` still means SKIP, on two premises that
-        stay sound: unparseable junk (the round-3/4 shapes) can hold no pair
-        under either parser, and a provable-charset host that Python's IDNA
-        refuses (empty or >63-char label) is serialized verbatim by kiro-cli and
-        differs from the registry host, so its key provably is not ours.
-        """
-        if not isinstance(url, str):
-            return None
-        candidate = url.strip()
-        if normalized_endpoint(candidate) is None:
-            return None
-        parts = urlsplit(candidate)
-        host = (parts.hostname or "").lower()
-        path = parts.path or "/"
-        provable = (
-            _PROVABLE_HOST.fullmatch(host) is not None
-            and _PROVABLE_PATH.fullmatch(path) is not None
-            and "%" not in path
-            and _URL_DOT_SEGMENT_RE.search(path) is None
-            and not (parts.scheme.lower() == "http" and parts.port == 80)
-        )
-        if not provable:
-            return _UNPROVABLE
-        try:
-            return grant_key(candidate)
-        except ValueError:
-            # UnicodeError (IDNA) is a ValueError; nothing else in grant_key
-            # raises it for a screened provable-charset string.
-            return None
-
-    def _judge(
-        configured: list, specs: dict
-    ) -> tuple[tuple[str, ...], dict[str, set[str]], tuple[str, ...], dict[str, str]]:
-        """``(owned scopes, sharers PER KEY, unprovable names, owned url per key)``.
+        The last two elements name the mirrored ``slug`` entries left out of the
+        sharer set because the purge is expected to remove them; the caller folds
+        them back in (as sharers, and as unprovable holders) when the purge is
+        refused and they survive.
 
         All answers come out of the same walk over the same census, so they
         cannot be taken from two different readings of the store. Only mcp.json
@@ -525,15 +530,37 @@ async def remove_provider_entry(
         # slash-insensitive while the pair is not, so a mirrored variant spelling
         # owns a pair that would otherwise be purged and never revoked.
         purge_will_run = bool(owned)
+        # Mirrored ``slug`` entries that the purge is EXPECTED to remove, keyed by
+        # the artifact pair they hold. They are left out of the sharer set below
+        # on the assumption the purge removes them -- but a purge REFUSED by a
+        # foreign-owned agents dir leaves them on disk still holding the grant, so
+        # the caller folds these back into the sharer set when the purge refused.
+        #
+        # The artifact key is taken for EVERY mirrored entry, not only one whose
+        # endpoint equals ``wanted``: ``grant_key`` drops the query string, so a
+        # mirror at ``?workspace=other`` fails the query-sensitive endpoint test
+        # yet holds the SAME artifact pair -- and if the purge is refused it is a
+        # surviving holder of that pair, so a revoke that skipped it would delete a
+        # token the survivor still needs. ``_UNPROVABLE`` mirrors are tracked too,
+        # so a refusal keeps every owned pair the census could not clear them from.
+        mirror_sharers_by_key: dict[str, set[str]] = {}
+        mirror_unprovable: set[str] = set()
         for label, name, url in mirrored_slug:
             if not purge_will_run:
                 others.append((label, name, url))  # nothing purges it; a real holder
                 continue
+            holder = f"{label}/{name}"
             candidate = url.strip() if isinstance(url, str) else url
             if normalized_endpoint(candidate) == wanted:
-                _collect_owned(url, f"{label}/{name}")
-            # A mirrored slug entry pointing somewhere else is removed by the purge
-            # and names no pair of ours: neither owned nor a sharer.
+                _collect_owned(url, holder)
+            key = _artifact_key(url)
+            if key == _UNPROVABLE:
+                mirror_unprovable.add(holder)
+            elif key is not None:
+                # A would-be survivor of this pair if the purge is refused. Recorded
+                # regardless of the endpoint test above, since the pair is keyed
+                # query-insensitively.
+                mirror_sharers_by_key.setdefault(key, set()).add(holder)
 
         sharers_by_key: dict[str, set[str]] = {}
         for label, name, url in others:
@@ -550,20 +577,67 @@ async def remove_provider_entry(
             sharers_by_key,
             tuple(sorted(unprovable)),
             owned_urls,
+            mirror_sharers_by_key,
+            tuple(sorted(mirror_unprovable)),
         )
 
     async with _get_mcp_lock():
         configured = await asyncio.to_thread(list_servers)
         specs, unreadable = await asyncio.to_thread(spec_census, project_dirs)
-        owned_scopes, sharers_by_key, unprovable, owned_urls = _judge(configured, specs)
+        (
+            owned_scopes,
+            sharers_by_key,
+            unprovable,
+            owned_urls,
+            mirror_sharers_by_key,
+            mirror_unprovable,
+        ) = _judge(configured, specs)
         census_gap = bool(unreadable or unprovable)
         shared = tuple(sorted({name for names in sharers_by_key.values() for name in names}))
+        # Whether the config purge was REFUSED. The revoke below proceeds either way
+        # -- a live credential is worse than a stale entry -- but a refusal means the
+        # entry is still mounted, and ``entry_removed`` is what the dashboard renders
+        # as "removed". Reporting the removal this transaction was not allowed to make
+        # tells the operator to stop looking at the one thing still needing a fix.
+        purge_refused = False
         if owned_scopes:
             # Shielded, not a bare to_thread: a cancelled request task would release
             # the MCP lock while the worker is still rewriting the store, letting a
             # concurrent purge interleave with this stale snapshot. mcp.py ships this
             # helper for exactly that, and its docstring names the hazard.
-            await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            try:
+                await _offload_config_write(_purge_server_config, slug, scopes=owned_scopes)
+            except SharedAgentHomeRefused:
+                # The config purge is cleanup; the grant revoke below is the
+                # security half of a disconnect, and it is local to this data
+                # home. Letting the refusal propagate would skip the revoke and
+                # leave the credential live, which is strictly worse than a
+                # config entry this instance was never allowed to rewrite.
+                purge_refused = True
+                logger.warning(
+                    "Disconnect could not purge the %r entry: another data home owns the "
+                    "shared agent specs, so that entry stays until its owner rewrites it; "
+                    "revoking the grant anyway",
+                    slug,
+                )
+                # The purge was assumed to remove the mirrored ``slug`` entries, so
+                # _judge left them out of the sharer set. The refusal leaves them on
+                # disk still holding their grant, so a revoke that ignored them would
+                # unlink the OAuth artifacts the surviving owner's server still needs
+                # and deauthorize a server this disconnect was never asked to touch.
+                # Fold them back in as sharers of their pairs so those pairs are kept.
+                # A surviving mirror whose pair could not be proven is folded into the
+                # unprovable set instead, which makes census_gap keep EVERY owned pair
+                # -- the fail-safe reading when we cannot say the survivor is not a
+                # holder.
+                for key, holders in mirror_sharers_by_key.items():
+                    sharers_by_key.setdefault(key, set()).update(holders)
+                if mirror_unprovable:
+                    unprovable = tuple(sorted(set(unprovable) | set(mirror_unprovable)))
+                    census_gap = True
+                shared = tuple(
+                    sorted({name for names in sharers_by_key.values() for name in names})
+                )
         else:
             logger.info(
                 "Disconnect left the %r entry alone: no scope configures it at this endpoint",
@@ -635,11 +709,19 @@ async def remove_provider_entry(
         # ``~/.kiro/agents/kirocrew.lock`` (apps/bridges._mcp_lock), so they are
         # different flocks and reentrancy never arises.
         try:
-            from kiro_crew.agent import rebuild_agent_config
+            from kiro_crew.agent import rebuild_agent_config_reporting
 
-            await _offload_config_write(rebuild_agent_config)
+            _spec_path, spec_rewritten = await _offload_config_write(rebuild_agent_config_reporting)
         except Exception:  # noqa: BLE001 — the config write already landed
             logger.warning("agent config rebuild failed after disconnect", exc_info=True)
+            spec_rewritten = False
+        else:
+            if not spec_rewritten:
+                logger.warning(
+                    "agent spec was not rewritten after disconnect of %s: this instance may "
+                    "not write the shared agent home",
+                    slug,
+                )
 
     # OUTSIDE the lock and awaited by nobody. This provider is warmable again precisely
     # because its stored grant is gone, and the pool only premints ahead of need -- so
@@ -658,10 +740,131 @@ async def remove_provider_entry(
         rearm_invalidated_provider(slug)
 
     return DisconnectScope(
-        entry_removed=bool(owned_scopes),
+        entry_removed=bool(owned_scopes) and not purge_refused,
         grant_shared_with=shared,
         grant_removed=tuple(removed),
         census_incomplete=census_gap,
         census_unreadable=tuple(_census_source_name(label) for label in unreadable),
         attempted_urls=tuple(attempted),
+        agent_spec_rewritten=spec_rewritten,
+    )
+
+
+@dataclass(frozen=True)
+class GrantSharing:
+    """Whether a provider's stored grant is also configured by another entry.
+
+    A READ-ONLY view of the same ownership question :func:`remove_provider_entry`
+    answers destructively, so the Connections status feed can say *proactively*
+    that a connection is backed by a shared OAuth grant -- without the user having
+    to attempt a Disconnect to learn it from the refusal.
+
+    ``shared_with`` names the OTHER entries that configure the same grant
+    artifacts (``grant_key`` equality, the artifact-pair identity, not the
+    endpoint identity -- a ``?workspace=`` variant shares the pair). Empty means
+    the grant is this provider's alone, *as far as the census could see*.
+
+    ``census_incomplete`` is why an empty ``shared_with`` must not be read as
+    "definitely not shared": a source the census could not read, or an entry
+    whose URL could not be safely compared, could hide a sharer. The caller is
+    told so it can soften the copy ("could not confirm") rather than assert sole
+    ownership on a partial read -- the same fail-closed stance the destructive
+    path takes, minus the act.
+    """
+
+    shared_with: tuple[str, ...]
+    census_incomplete: bool
+
+
+async def grant_sharers_map(
+    providers: list[tuple[str, str]], project_dirs: tuple[Path, ...] = ()
+) -> dict[str, GrantSharing]:
+    """Who else configures each provider's grant artifacts -- read-only, no lock, no purge.
+
+    Reuses :func:`spec_census` and the SAME provable-key discipline
+    (:func:`_module_artifact_key`, which the Disconnect judge also calls) so the
+    "shared" verdict the status feed shows and the keep decision a later
+    Disconnect makes come from one definition of grant identity rather than two
+    that can drift. It asks the narrower question the feed needs -- is the
+    REGISTRY pair shared -- not the full per-owned-key purge analysis, because
+    nothing here deletes anything.
+
+    Network-free and off the loop: the census stats the user's MCP config and
+    agent spec files, either of which can sit on a network mount, matching the
+    status module's invariant that no filesystem op runs on the event loop. No
+    MCP lock is taken: a read cannot corrupt the store, and the honest answer for
+    a config that changes mid-read is simply the snapshot it saw.
+
+    The census reads the SAME sources no matter which provider is asked, so this
+    runs it ONCE and walks the result per slug -- the status feed answers for
+    every visible provider at once and must not pay N identical file scans.
+    ``providers`` is ``(slug, mcp_url)`` pairs; the result is keyed by slug.
+    """
+    if not providers:
+        return {}
+    specs, unreadable = await asyncio.to_thread(spec_census, project_dirs)
+    unreadable_sources = bool(unreadable)
+    return {
+        slug: _sharers_from_specs(slug, mcp_url, specs, unreadable_sources)
+        for slug, mcp_url in providers
+    }
+
+
+def _sharers_from_specs(
+    slug: str, mcp_url: str, specs: dict[str, dict[str, Any]], unreadable_sources: bool
+) -> GrantSharing:
+    """One provider's sharers from an already-read census. Pure, no I/O.
+
+    Mirrors the destructive judge's ownership-first/sharer-second shape so the two
+    cannot disagree: an entry that IS this provider at this endpoint owns the pair
+    and is never its own sharer, a mirrored ``slug`` row is the owner's reflection
+    the Disconnect strips in the same transaction, and every other entry whose
+    provable key equals the registry key is a sharer. An entry whose URL cannot be
+    safely compared sets ``census_incomplete`` -- the fail-closed stance, so an
+    empty sharer set never reads as proven sole ownership.
+
+    If THIS provider's own registry URL cannot be keyed (``grant_key`` raises on
+    a malformed URL), that is this provider's problem alone: hedge it with
+    ``census_incomplete`` rather than letting the exception escape and drop the
+    hint for every other provider in the same feed.
+    """
+    from kiro_crew.connections.tool_aliases import normalized_endpoint
+    from kiro_crew.mcp_grant import grant_key
+
+    wanted = normalized_endpoint(mcp_url)
+    try:
+        wanted_key = grant_key(mcp_url)
+    except ValueError:
+        # A URL this registry entry cannot be keyed: we cannot prove who shares
+        # it, so hedge THIS entry (census_incomplete) and leave the rest of the
+        # feed's hints intact.
+        return GrantSharing(shared_with=(), census_incomplete=True)
+
+    sharers: set[str] = set()
+    unprovable = False
+    for label, entries in specs.items():
+        for name, spec in entries.items():
+            if not isinstance(spec, dict):
+                continue
+            url = spec.get("url")
+            if name == slug and is_scope_label(label):
+                candidate = url.strip() if isinstance(url, str) else url
+                if normalized_endpoint(candidate) == wanted:
+                    continue  # ours: the owner, not a sharer
+            if name == slug and label.startswith(_MIRROR_PREFIX):
+                # The rendered agent file / provider sidecars REFLECT the scope
+                # entries above; a Disconnect strips the ``slug`` name from them in
+                # the same transaction. So a mirrored ``slug`` row is the owner's
+                # reflection, not an independent holder, and counting it would
+                # report the grant "shared with" its own mirror.
+                continue
+            key = _module_artifact_key(url)
+            if key == _UNPROVABLE:
+                unprovable = True
+            elif key is not None and key == wanted_key:
+                sharers.add(name)
+
+    return GrantSharing(
+        shared_with=tuple(sorted(sharers)),
+        census_incomplete=unreadable_sources or unprovable,
     )

@@ -33,6 +33,33 @@ _RESTART_INTERRUPTION_MSG = (
     "This turn was interrupted when the app restarted. "
     "Review the partial output above, then resume to continue."
 )
+_CLOSE_INTERRUPTION_KIND = "chat_close_interruption"
+_CLOSE_INTERRUPTION_MSG = (
+    "This turn was interrupted when its chat was closed. "
+    "Review the partial output above, then resume to continue."
+)
+
+
+def record_close_interruption(slot: _ChatSlot) -> bool:
+    """Land the interruption row for a turn that closing its chat cut off.
+
+    The same row the restart reconcile lands, with its own wording: closing a tab,
+    the bulk archive and ``close_target`` all cancel a running turn, and without it
+    the chat reopened from history shows the partial reply as a finished answer,
+    with no notice and no Resume control. Nothing is added when the transcript
+    already reads as interrupted (an unanswered opener, a trailing error) or the
+    newest turn ends in the user's own Stop card. Returns whether a row was added.
+    """
+    if is_turn_interrupted(slot.messages) or _latest_turn_was_deliberately_stopped(slot.messages):
+        return False
+    slot.append(
+        "error",
+        _CLOSE_INTERRUPTION_MSG,
+        "msg msg-err",
+        broadcast=False,
+        meta={"kind": _CLOSE_INTERRUPTION_KIND},
+    )
+    return True
 
 
 def _local_turn_generation(meta: Mapping[str, object]) -> int:

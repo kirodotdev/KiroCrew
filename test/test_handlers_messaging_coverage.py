@@ -31,6 +31,7 @@ from aiohttp import web
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
 from conftest import forget_env_at_teardown
+from kiro_crew.secrets import SecretVault
 from kiro_crew.subagent import AGENT_NOT_FOUND_CODE
 
 #: The subject every request double presents, and the id ``_state`` reports as its
@@ -275,6 +276,15 @@ class TestApiSpawn:
         assert _run(mod.api_spawn, req).status == 200
         assert mgr.spawn.call_args.kwargs["batch_total"] == 0
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_infinite_batch_total_falls_back_to_zero(self, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+        mgr = _mgr()
+        mgr.spawn.return_value = _info()
+        body = json.loads('{"task": "x", "batch_id": "b1", "batch_total": %s}' % raw)
+        assert _run(mod.api_spawn, _Req(_state(subagents=mgr), body)).status == 200
+        assert mgr.spawn.call_args.kwargs["batch_total"] == 0
+
     def test_a_deferred_row_answers_queued_with_the_gate_reason(self) -> None:
         """The memory guard parked the row: the caller is told it WAITS and why,
         under the same ``id`` (the wave reconcile and the run card key on it)."""
@@ -436,6 +446,15 @@ class TestApiSpawnContinue:
         assert resp.status == 200
         assert mgr.continue_conversation.call_args.kwargs["max_turns"] == 0
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_infinite_max_turns_falls_back_to_zero(self, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+        mgr = _mgr()
+        mgr.continue_conversation.return_value = _info()
+        body = json.loads('{"task": "x", "max_turns": %s}' % raw)
+        assert _run(mod.api_spawn_continue, self._req(mgr, body)).status == 200
+        assert mgr.continue_conversation.call_args.kwargs["max_turns"] == 0
+
     def test_the_runs_own_cwd_is_resolved_off_loop_and_forwarded(self) -> None:
         """A continuation has to run where the run ran, or a project-local agent
         fails to resolve and the caller respawns from a digest -- losing the
@@ -506,19 +525,21 @@ class TestApiSpawnRelease:
 
     def test_409_while_busy(self) -> None:
         mgr = _mgr()
-        mgr.release_conversation.return_value = (False, "conversation_busy: in flight")
+        mgr.release_conversation_async = AsyncMock(
+            return_value=(False, "conversation_busy: in flight")
+        )
         resp = _run(mod.api_spawn_release, self._req(mgr))
         assert resp.status == 409
         assert _payload(resp)["code"] == "conversation_busy"
 
     def test_404_when_gone(self) -> None:
         mgr = _mgr()
-        mgr.release_conversation.return_value = (False, "conversation_gone")
+        mgr.release_conversation_async = AsyncMock(return_value=(False, "conversation_gone"))
         assert _run(mod.api_spawn_release, self._req(mgr)).status == 404
 
     def test_success(self) -> None:
         mgr = _mgr()
-        mgr.release_conversation.return_value = (True, "")
+        mgr.release_conversation_async = AsyncMock(return_value=(True, ""))
         resp = _run(mod.api_spawn_release, self._req(mgr))
         assert _payload(resp) == {"conversation": "conv1", "status": "released"}
 
@@ -557,6 +578,15 @@ class TestApiSpawnLost:
         args = mgr.record_lost_submission.call_args.args
         assert args[0] == "w1" and args[1] == 0
         assert len(args[2]) == 300
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_infinite_batch_total_reconciles_as_zero(self, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float, which ``int`` cannot convert."""
+        mgr = _mgr()
+        body = json.loads('{"batch_id": "w1", "batch_total": %s}' % raw)
+        resp = _run(mod.api_spawn_lost, _Req(_state(subagents=mgr), body))
+        assert _payload(resp) == {"status": "reconciled", "batch_id": "w1"}
+        assert mgr.record_lost_submission.call_args.args[1] == 0
 
 
 class TestApiSpawnMarkCollected:
@@ -1734,7 +1764,11 @@ class TestTeamsConfigSave:
         resp, env, cfg = self._save(monkeypatch, tmp_path, body)
         assert _payload(resp)["ok"] is True
         assert _payload(resp)["restart_required"] is True
-        assert "MICROSOFT_APP_PASSWORD=super-secret" in env.read_text(encoding="utf-8")
+        assert "MICROSOFT_APP_PASSWORD=secret://MICROSOFT_APP_PASSWORD" in env.read_text(
+            encoding="utf-8"
+        )
+        stored = SecretVault(env.parent).get("MICROSOFT_APP_PASSWORD")
+        assert stored is not None and stored.reveal() == "super-secret"
         data = json.loads(cfg.read_text(encoding="utf-8"))
         assert data["teams"]["app_id"] == "app-1"
         assert data["teams"]["allowed_emails"] == ["kyle@example.com"]
@@ -1912,6 +1946,8 @@ class TestWriteEnvUpdates:
 
         env = tmp_path / ".env"
         monkeypatch.setattr(loader, "env_path", lambda: env)
+        # An existing vault, so the recorded writes are the store and the .env.
+        SecretVault(tmp_path).set_sync("SLACK_BOT_TOKEN", "placeholder-old")
 
         events: list[str] = []
         real_restrict = platform_compat.restrict_to_owner
@@ -1930,8 +1966,9 @@ class TestWriteEnvUpdates:
 
         mod._write_env_updates({"SLACK_BOT_TOKEN": "xoxb-secret"})
 
-        assert events == ["restrict", "write"], events
-        assert env.read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=xoxb-secret\n"
+        # Vault store, then .env: each locked down before its first content byte.
+        assert events == ["restrict", "write", "restrict", "write"], events
+        assert env.read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN\n"
 
     def test_aborts_when_shared_env_lock_is_held(self, monkeypatch, tmp_path: Path) -> None:
         """A channel/token save serializes on the SAME .env.lock the importer

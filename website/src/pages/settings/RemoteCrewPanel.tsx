@@ -60,7 +60,7 @@ import {
   shortenEcsTarget,
   usesSsmTransport,
 } from '../../utils/remoteCrew'
-import { Card, Btn, Badge, IconButton } from '../../components/ui'
+import { Card, Btn, Badge, IconButton, Toggle } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import {
   DropdownMenu,
@@ -85,14 +85,20 @@ import {
 import type { ErrorReport } from '../../utils/errorReport'
 import { parseErrorCode } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { copyToClipboard } from '../../utils/clipboard'
+import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewEditForm } from '../../store/instancesSlice'
+import { setCrewEnabled } from '../../lib/crewEnabled'
 import { i18nT } from '../../i18n/t'
+import { guideCaution } from '../../guide/trustRoot'
 import { AddInstanceForm, StatusBadge } from './InstancesPanel'
+import CrewVersionStatus, { CrewVersionsReadError } from './CrewVersionStatus'
+import { pluginRefusalCopy, pluginRefusalReport } from './remoteCrewPluginRefusal'
 import {
   EditInstanceForm,
   instanceFormFromView,
@@ -128,9 +134,13 @@ const connectionTypeHint = (inst: InstanceView): string =>
  * it is a wall of text, and a button that promised a dashboard would be the
  * defect this field replaces.
  */
-function TurnUrlField({ url, crewName }: { url: string; crewName: string }) {
+export function TurnUrlField({ url, crewName }: { url: string; crewName: string }) {
   const [copied, setCopied] = useState(false)
   const [copyFailed, setCopyFailed] = useState(false)
+  // Same scrollbar-none field as WebhooksPage's CopyField: a hidden scrollbar
+  // leaves a long URL's clipped tail unsignalled, so paint the edge cue. #4074.
+  const [attachEdges, edges, remeasure] = useScrollEdges<HTMLElement>()
+  useEffect(() => { remeasure() }, [url, remeasure])
   const label = i18nT('pages.settings.remoteCrewPanel.copy_turn_url', { name: crewName })
   const handleCopy = async () => {
     if (await copyToClipboard(url)) {
@@ -147,9 +157,20 @@ function TurnUrlField({ url, crewName }: { url: string; crewName: string }) {
         {i18nT('pages.settings.remoteCrewPanel.turn_api')}
       </div>
       <div className="flex items-center gap-2 bg-bg-elevated border border-border rounded-md pl-3 pr-1.5 py-1.5">
-        <code className="flex-1 min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none text-card-fg">
-          {url}
-        </code>
+        {/* Wrapper for the edge cues: the fades anchor to this non-scrolling
+            parent, not the scrolled code element. from-bg-elevated matches the
+            field surface. */}
+        <div className="relative flex-1 min-w-0">
+          <code ref={attachEdges} className="block min-w-0 font-mono text-[12px] overflow-x-auto whitespace-nowrap scrollbar-none text-card-fg">
+            {url}
+          </code>
+          {edges.left && (
+            <div aria-hidden="true" data-testid="turn-url-cue-left" className="pointer-events-none absolute left-0 top-0 bottom-0 w-4 z-10 bg-gradient-to-r from-bg-elevated to-transparent" />
+          )}
+          {edges.right && (
+            <div aria-hidden="true" data-testid="turn-url-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-0 w-4 z-10 bg-gradient-to-l from-bg-elevated to-transparent" />
+          )}
+        </div>
         <IconButton aria-label={label} onClick={handleCopy} title={label}>
           {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
         </IconButton>
@@ -511,7 +532,11 @@ function SigninPromptBlock({ job, onRestart, restarting, onFetch, fetching, noti
         {starting
           ? i18nT('pages.settings.remoteCrewPanel.sign_in_starting')
           : stale
-            ? i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
+            // The "start over" sentence names the link below, so it is shown
+            // only where that link is: a crew that never registered has none.
+            ? canRestart
+              ? `${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')} ${i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed_expired')}`
+              : i18nT('pages.settings.remoteCrewPanel.sign_in_unconfirmed')
             : awaiting
               // Names the two sign-ins as ONE act. The reader could not tell
               // whether the Kiro sign-in step and the company SSO approval were
@@ -810,6 +835,9 @@ function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel:
 
 /** One switchable crew — a cloud-launched instance (Stop / Delete by tag) or a
  *  hand-added machine (Remove). */
+/** The one line that says what a crew's on/off switch does; every switch points at it. */
+const CREW_SWITCH_HINT_ID = 'remote-crew-switch-hint'
+
 function CrewRow({
   inst,
   cloudTag,
@@ -819,6 +847,7 @@ function CrewRow({
   confirmRemove,
   onConnect,
   onDisconnect,
+  onSetEnabled,
   onDiagnose,
   onRemove,
   onStop,
@@ -850,6 +879,7 @@ function CrewRow({
   confirmRemove: boolean
   onConnect: (id: string) => void
   onDisconnect: (id: string) => void
+  onSetEnabled: (id: string, enabled: boolean) => void
   onDiagnose: (id: string) => void
   onRemove: (id: string) => void
   onStop: (tag: string, coords: CloudCoords) => void
@@ -959,12 +989,21 @@ function CrewRow({
               : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <StatusBadge status={inst.status} />
+            {!inst.disabled && <StatusBadge status={inst.status} />}
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
+              <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
+                disabled={!!busy || deleting} describedBy={CREW_SWITCH_HINT_ID}
+                label={i18nT('pages.settings.remoteCrewPanel.crew_enabled_named', { name: inst.name })} />
+              {inst.disabled
+                ? i18nT('pages.settings.remoteCrewPanel.crew_disabled')
+                : i18nT('pages.settings.remoteCrewPanel.crew_enabled')}
+            </span>
             {awaitingSignin && (
               <Badge variant="warn" title={i18nT('pages.settings.remoteCrewPanel.needs_sign_in_hint')}>
                 <KeyRound className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.needs_sign_in')}
               </Badge>
             )}
+            <CrewVersionStatus instanceId={inst.id} name={inst.name} connected={connected && !inst.disabled} />
           </div>
           <div className="text-[11px] text-muted-strong mt-1">
             {isCloud
@@ -994,7 +1033,7 @@ function CrewRow({
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
-        ) : (
+        ) : inst.disabled ? null : (
           <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
@@ -1026,7 +1065,7 @@ function CrewRow({
           </Btn>
         ) : isCloud && confirmDelete ? (
           <>
-            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })}>
+            <Btn danger onClick={() => onDelete(cloudTag, coordsOf(inst))} disabled={!!busy} aria-label={i18nT('pages.settings.remoteCrewPanel.confirm_delete_of', { name: inst.name })} {...guideCaution}>
               {/* Names its target on screen, not only to assistive tech: this click
                   terminates an EC2 instance, and "Confirm delete" beside two other
                   rows does not say WHICH. */}
@@ -1182,6 +1221,11 @@ function PrereqRow({
   rechecking,
   extraAction,
   error,
+  failure,
+  failureDetail,
+  failureReport,
+  steps,
+  commandNote,
 }: {
   ok: boolean
   title: string
@@ -1195,6 +1239,25 @@ function PrereqRow({
   /** A failure of one of this row's own actions, rendered beside the buttons
    *  that caused it rather than in the page-level notices above the fold. */
   error?: string
+  /** The check's own failure diagnostic (a CLI error, a refused binary).
+   *  Shown in place of `detail`, through ErrorNotice, because it is the
+   *  outcome of something that failed rather than status text. */
+  failure?: string
+  /** The tool's own output behind `failure` (the AWS CLI's error line), when
+   *  `failure` is a plain-language sentence written about it. Rendered under
+   *  the sentence, smaller and monospace, so the step to take leads and the
+   *  raw text reads as a detail. It stays the notice's `message`, so the agent
+   *  hand-off carries the CLI's own words. */
+  failureDetail?: string
+  /** What the hand-off on `failure`'s notice carries, when it is more than
+   *  the text on screen. */
+  failureReport?: ErrorReport
+  /** What the reader does about `failure`, set as plain text under its notice
+   *  rather than inside the alert, so the steps do not read as part of the
+   *  error. `link` is an external page that carries out a step. */
+  steps?: { text: string; link?: { href: string; label: string } }
+  /** Under `command`: where it runs and what it changes. */
+  commandNote?: string
 }) {
   return (
     <li className="flex items-start gap-3 py-2.5 border-b border-border last:border-b-0">
@@ -1203,12 +1266,43 @@ function PrereqRow({
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-text-strong">{title}</div>
-        {detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
+        {failure ? (
+          // askAgent ON: the launch form on this tab persists its size and
+          // account, so the navigation loses nothing. showIcon OFF: the row's
+          // warning circle already marks the failed check.
+          <div className="mt-0.5">
+            {failureDetail ? (
+              <ErrorNotice
+                variant="inline"
+                showIcon={false}
+                title={failure}
+                message={failureDetail}
+                messagePlacement="below"
+                messageClassName="font-mono whitespace-pre-wrap"
+                report={failureReport}
+                askAgent
+              />
+            ) : (
+              <ErrorNotice variant="inline" showIcon={false} messageClassName="whitespace-pre-wrap" message={failure} report={failureReport} askAgent />
+            )}
+            {steps ? (
+              <>
+                <p className="mt-1.5 text-[12px] text-text">{steps.text}</p>
+                {steps.link ? (
+                  <a className="mt-1 w-fit flex items-center gap-1 text-[12px] text-accent font-medium hover:underline" href={steps.link.href} target="_blank" rel="noreferrer">
+                    {steps.link.label} <ExternalLink size={12} aria-hidden="true" />
+                  </a>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        ) : detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{detail}</div> : null}
         {command ? (
           <code className="block mt-1.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 font-mono text-[12px] text-accent overflow-x-auto">
             {command}
           </code>
         ) : null}
+        {command && commandNote ? <p className="mt-1 text-[12px] text-muted">{commandNote}</p> : null}
         {(onCopyCommand || onRecheck || extraAction) && (
           <div className="mt-2 flex gap-2 flex-wrap items-center">
             {onCopyCommand && (
@@ -1572,10 +1666,9 @@ export function RemoteCrewPanel() {
     // until an unrelated refetch. Poll while any delete is in flight, then stop.
     refetchInterval: () => (deletingTags.size > 0 ? 4000 : false),
   })
-  const disabled =
-    instancesQuery.error instanceof ApiError &&
-    instancesQuery.error.status === 403 &&
-    /disabled/i.test(instancesQuery.error.message)
+  // Keyed on the gateway's `instances_disabled` code, not the message text, so
+  // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
+  const disabled = isInstancesDisabledError(instancesQuery.error)
   // Any OTHER failure is a load error, not "you have no crews": rendering the
   // empty state over it would tell the user their crews are gone.
   // Both queries gate the crew list: a row's cloud-vs-manual identity comes from the
@@ -1858,6 +1951,15 @@ export function RemoteCrewPanel() {
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.disconnect_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
     onSettled: reloadInstances,
   })
+  const crewToggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => setCrewEnabled(dispatch, id, enabled),
+    onMutate: () => setActionErr(null),
+    onError: (e, { id }) => setActionErr(i18nT('pages.settings.remoteCrewPanel.crew_toggle_failed', {
+      name: instancesQuery.data?.instances?.find(i => i.id === id)?.name || id,
+      error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')),
+    })),
+    onSettled: reloadInstances,
+  })
   const removeMutation = useMutation({
     mutationFn: async (id: string) => { await api.disconnectInstance(id).catch(() => {}); await api.removeInstance(id) },
     onMutate: () => setActionErr(null),
@@ -2025,7 +2127,7 @@ export function RemoteCrewPanel() {
         ? `stop:${stopMutation.variables?.tag}`
         : startMutation.isPending
           ? `start:${startMutation.variables?.tag}`
-          : disconnectMutation.isPending || removeMutation.isPending || deleteMutation.isPending
+          : disconnectMutation.isPending || removeMutation.isPending || deleteMutation.isPending || crewToggleMutation.isPending
             ? 'busy'
             : ''
 
@@ -2076,6 +2178,9 @@ export function RemoteCrewPanel() {
   }, [errMsg])
 
   const preflight: CloudPreflight | undefined = preflightQuery.data
+  // Found but refused is not "not installed": the install command would put the
+  // same refused file back, so the plugin row says why it was refused instead.
+  const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
   const blockingOk = !!preflight
     && preflight.reachable
     && !!preflight.account
@@ -2138,7 +2243,7 @@ export function RemoteCrewPanel() {
         </div>
         <p className="text-[13px] text-muted mb-3">{i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}</p>
         {restartPending && (
-          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
             <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
           </div>
@@ -2218,7 +2323,7 @@ export function RemoteCrewPanel() {
           className={
             'mb-3 flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
             (diagNote.kind === 'ok'
-              ? 'bg-ok/10 text-ok border-ok/30'
+              ? 'bg-ok/10 text-ok-text border-ok/30'
               : 'bg-accent/10 text-accent border-accent/30')
           }
         >
@@ -2262,8 +2367,11 @@ export function RemoteCrewPanel() {
                 <Btn onClick={reloadInstances} aria-label={i18nT('pages.settings.instancesPanel.refresh')}><RefreshCw className="lucide-inline" /></Btn>
               </div>
             </div>
+            <p id={CREW_SWITCH_HINT_ID} className="text-[12px] text-muted mb-1">
+              {i18nT('pages.settings.remoteCrewPanel.crew_switch_hint')}
+            </p>
             {needsRestart && (
-              <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
+              <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
                 <span>{i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>) {i18nT('pages.settings.instancesPanel.to_fully_tear_down_any_tunnels_still_running_fro')}</span>
               </div>
@@ -2296,6 +2404,7 @@ export function RemoteCrewPanel() {
                 {inProgress.filter(job => !isRegistered(job)).map(job => (
                   <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
                 ))}
+                <CrewVersionsReadError anyConnected={instances.some(i => !i.disabled && i.status.state === 'connected')} />
                 {instances.map(inst => (
                   <CrewRow
                     key={inst.id}
@@ -2317,6 +2426,7 @@ export function RemoteCrewPanel() {
                     confirmRemove={confirmRemoveId === inst.id}
                     onConnect={id => connectMutation.mutate(id)}
                     onDisconnect={id => disconnectMutation.mutate(id)}
+                    onSetEnabled={(id, enabled) => crewToggleMutation.mutate({ id, enabled })}
                     onDiagnose={id => diagnoseMutation.mutate(id)}
                     onRemove={id => removeMutation.mutate(id)}
                     onStop={(tag, coords) => stopMutation.mutate({ tag, coords })}
@@ -2525,7 +2635,18 @@ export function RemoteCrewPanel() {
                   title={i18nT('pages.settings.remoteCrewPanel.prereq_credentials')}
                   detail={preflight.reachable && preflight.account
                     ? i18nT('pages.settings.remoteCrewPanel.credentials_ok', { profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'), account: preflight.account })
-                    : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                    : ''}
+                  failure={preflight.reachable && preflight.account
+                    ? undefined
+                    : preflight.credential_helper_missing
+                      // The helper's name is the actionable part, so the sentence
+                      // leads; the CLI's own error sits under it (failureDetail)
+                      // for anything the sentence misses.
+                      ? i18nT('pages.settings.remoteCrewPanel.credentials_helper_missing', { name: preflight.credential_helper_missing })
+                      : (preflight.detail || i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                  failureDetail={preflight.reachable && preflight.account
+                    ? undefined
+                    : (preflight.credential_helper_missing && preflight.detail) || undefined}
                   onRecheck={runCheck}
                   rechecking={preflightQuery.isFetching}
                 />
@@ -2535,7 +2656,14 @@ export function RemoteCrewPanel() {
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
                   title={i18nT('pages.settings.remoteCrewPanel.plugin')}
-                  detail={preflight.session_manager_plugin ? i18nT('pages.settings.remoteCrewPanel.plugin_ok') : i18nT('pages.settings.remoteCrewPanel.plugin_missing')}
+                  detail={preflight.session_manager_plugin
+                    ? i18nT('pages.settings.remoteCrewPanel.plugin_ok')
+                    : i18nT('pages.settings.remoteCrewPanel.plugin_missing')}
+                  failure={pluginRefusal?.failure}
+                  failureDetail={pluginRefusal?.failureDetail}
+                  failureReport={pluginRefusal ? pluginRefusalReport(preflight, pluginRefusal) : undefined}
+                  steps={pluginRefusal?.steps}
+                  commandNote={pluginRefusal?.commandNote}
                   command={preflight.session_manager_plugin ? undefined : (preflight.session_manager_plugin_command || undefined)}
                   onCopyCommand={
                     preflight.session_manager_plugin || !preflight.session_manager_plugin_command
@@ -2757,7 +2885,16 @@ export function RemoteCrewPanel() {
                 launch={input => launchMutation.mutate({
                   provider_id: selectedProvisioner.id,
                   profile: input.profile ?? '',
-                  region: input.region ?? '',
+                  // `||`, not `??`: a provisioner form with no region field sends
+                  // an EMPTY STRING, not undefined, and every provisioner's
+                  // preflight refuses an empty region -- reported as
+                  // `region='' is not a region`, which reads as a malformed value
+                  // rather than an absent one. Falling back to the panel's own
+                  // region means a form that does not ask for one inherits the
+                  // account the reader already chose here. The gateway defaults
+                  // it too, from the operator's config; this is what keeps the
+                  // two from disagreeing about which region the reader picked.
+                  region: input.region || region,
                   size_key: input.size_key,
                 })}
                 launching={launchMutation.isPending}

@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 declare const __APP_VERSION__: string
+/** The find_ui auto tier's build digest, defined by the ui-auto-stamp Vite plugin; absent in tests. */
+declare const __UI_AUTO_BUILD_DIGEST__: string | undefined
 
 // Resolved by the `editionExtensionPlugin` in vite.config.ts: an inert empty
 // module in the stock build, or the downstream edition's composition root when

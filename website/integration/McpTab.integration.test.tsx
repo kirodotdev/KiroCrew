@@ -141,6 +141,41 @@ describe('McpTab Integration Tests', () => {
     })
   })
 
+  it('says the apply did not reach the agent spec instead of a green Applied', async () => {
+    const user = userEvent.setup()
+    server.use(
+      http.get('/api/mcp', () => HttpResponse.json([
+        {
+          name: 'toggle-server',
+          status: 'ok',
+          enabled: true,
+          tools: ['ToggleTool'],
+          disabledTools: [],
+          command: 'node toggle',
+          presence: { kirocrew: true, kiroGlobal: false, ccGlobal: false },
+        },
+      ])),
+      http.post('/api/mcp/apply', () => HttpResponse.json({
+        ok: true, applied: 1, results: [], rebuild: { ok: false, error: 'not rewritten' },
+      })),
+    )
+
+    renderWithProviders(<McpTab />)
+    await waitFor(() => expect(screen.getByText(/1 tools/)).toBeInTheDocument())
+    await user.click(screen.getByText(/1 tools/))
+    await user.click(await screen.findByText('ToggleTool'))
+    await user.click(await screen.findByRole('button', { name: /^apply$/i }))
+
+    const notice = await screen.findByTestId('agent-spec-not-rewritten')
+    expect(screen.queryByText(/Applied 1 change/i)).not.toBeInTheDocument()
+    expect(within(notice).getByRole('button')).toBeInTheDocument()
+
+    // Once a new change is staged, the hand-off would unmount the tab and drop it.
+    await user.click(screen.getByText('ToggleTool'))
+    await waitFor(() => expect(screen.getByText(/pending change/i)).toBeInTheDocument())
+    expect(within(screen.getByTestId('agent-spec-not-rewritten')).queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('stages KiroCrew scope off and commits it via Apply', async () => {
     const user = userEvent.setup()
 
@@ -165,8 +200,8 @@ describe('McpTab Integration Tests', () => {
     )
     expect(builderRow).toBeDefined()
 
-    const mcBadge = within(builderRow as HTMLElement).getByRole('button', {
-      name: /Kiro Crew.*click to disable/i,
+    const mcBadge = within(builderRow as HTMLElement).getByRole('switch', {
+      name: /Kiro Crew.*click to turn off/i,
     })
     await user.click(mcBadge)
 

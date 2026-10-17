@@ -171,3 +171,33 @@ class TestReadinessFailureLifetime:
             await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5.0)
 
         _assert_readiness_cleanup(runtime, send, sibling_queue, resumed=resumed)
+
+
+class TestReadinessReadsTheWireBatch:
+    """The readiness params carry the batch as sent, under the wire id."""
+
+    @pytest.mark.asyncio
+    async def test_a_reserved_crewmate_still_waits_for_its_managed_servers(self, tmp_path):
+        from kiro_crew.acp._dispatch import attach_kas_custom_agents
+        from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+        server = KIROCREW_BIN_MCP_SERVERS[0]
+        runtime = _runtime(tmp_path, ACP_BACKEND_KAS)
+        waited: list = []
+
+        async def wait_mcp_ready(required, *_a, tool_policy=None, **_k):
+            waited.append((tuple(required), tool_policy and tool_policy.get("id")))
+
+        async def drain_init(**_k):
+            waited.append("drain")
+
+        handle = SimpleNamespace(
+            session_id="s", wait_mcp_ready=wait_mcp_ready, drain_init=drain_init
+        )
+        params: dict = {"mcpServers": []}
+        attach_kas_custom_agents(
+            params, [{"id": "default", "prompt": "p", "mcpServers": {server: {"timeout": 5}}}]
+        )
+        await runtime._wait_managed_mcp(handle, params, "default", 30.0, 0)
+        # The barrier, not the non-raising drain, and over the entry KAS holds.
+        assert waited == [((server,), "default-crewmate")]

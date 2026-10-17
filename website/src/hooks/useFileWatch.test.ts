@@ -68,7 +68,10 @@ describe('useFileWatch reconnect guard', () => {
       MockEventSource.instances[0].onmessage?.({ data: JSON.stringify({ content: 'hi' }) })
     })
     expect(result.current.status).toBe('open')
-    expect(onContent).toHaveBeenCalledWith('hi')
+    expect(onContent).toHaveBeenCalledWith('hi', { initial: true })
+    // Every later frame of the same stream follows a write.
+    act(() => { MockEventSource.instances[0].onmessage?.({ data: JSON.stringify({ content: 'hi' }) }) })
+    expect(onContent).toHaveBeenLastCalledWith('hi', { initial: false })
 
     // Clearing the path tears down and returns to idle.
     rerender({ p: null })

@@ -41,8 +41,11 @@ opening message, not from the title.
   runs it with shell escape disabled. It uses `pdflatex` when present, otherwise
   `tectonic`, otherwise a Tectonic install it manages itself. Because the engine
   can be Tectonic, do not assume a TeX Live-only package is available — prefer
-  packages the document already loads. After you edit, tell the author to press
-  Cmd+S (Ctrl+S on Windows/Linux); the PDF pane refreshes.
+  packages the document already loads. When your turn ends the app re-reads the
+  open file and recompiles on its own, so do not ask the author to press Cmd+S.
+  If they had unsaved typing in a file you edited, the editor goes read-only
+  with a "Co-author changed this file" notice until they discard their changes
+  and load yours — say which files you touched so they can expect it.
 - A project may be a git clone (a hosted LaTeX service or a lab repo); the app
   shows the branch and can push commits back. Treat the working tree as shared —
   read before you write, and leave committing and pushing to the author through

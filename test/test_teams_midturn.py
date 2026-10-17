@@ -44,7 +44,13 @@ _SVC = "https://smba.trafficmanager.net/teams"
 _EMAIL = "me@example.com"
 
 
-def _inbound(text: str) -> TeamsInbound:
+#: The ``text/html`` copy of the body the Teams client attaches to every rich-text
+#: message. Not a file: the ingest skips it, and so must every gate that asks
+#: "does this message carry a file?".
+_BODY_ECHO = {"contentType": "text/html", "content": "<p>hi</p>"}
+
+
+def _inbound(text: str, *, attachments: list | None = None) -> TeamsInbound:
     return TeamsInbound(
         conversation_id="CONV",
         conversation_type="personal",
@@ -52,6 +58,7 @@ def _inbound(text: str) -> TeamsInbound:
         text=text,
         user_email=_EMAIL,
         activity_id="act-1",
+        attachments=list(attachments or []),
     )
 
 
@@ -961,3 +968,115 @@ class TestABusyResumedSession:
         d._run_turn.assert_awaited_once()
         assert d._run_turn.await_args.kwargs["resumed_key"] == "dashboard:chat-1"
         route.assert_awaited_once()
+
+
+class TestOnlyAFileBlocksTheSteer:
+    """A FILE-bearing message is never steered (a steer carries text only, so the
+    file would be dropped while the user is told it was folded in) and is refused by
+    a busy resumed session rather than queued there. The ``text/html`` body echo the
+    Teams client attaches to every rich-text message is not a file, so it must not
+    put a plain message on either of those paths."""
+
+    _UPLOAD = {
+        "contentType": "application/vnd.microsoft.teams.file.download.info",
+        "name": "shot.png",
+        "content": {"downloadUrl": "https://contoso.sharepoint.com/dl", "fileType": "png"},
+    }
+
+    @staticmethod
+    def _steering_provider() -> _Provider:
+        provider = _Provider()
+        provider.steered: list[str] = []  # type: ignore[attr-defined]
+
+        async def _steer(text: str) -> bool:
+            provider.steered.append(text)  # type: ignore[attr-defined]
+            return True
+
+        provider.steer = _steer  # type: ignore[method-assign]
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_steer_directive_with_only_the_body_echo_is_folded_in(self) -> None:
+        provider = self._steering_provider()
+        sessions = _Sessions(provider)
+        client = _Client()
+        d = _dispatcher(sessions, client)
+
+        await d.handle_message(_inbound("/steer use python 3.12", attachments=[_BODY_ECHO]))
+
+        assert provider.steered == ["use python 3.12"]  # type: ignore[attr-defined]
+        assert sessions.queues == {}, "a folded-in message is not queued as well"
+        assert any("Folded into the reply" in body for _, body, _ in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_plain_message_with_only_the_body_echo_is_steered_in_steer_mode(
+        self,
+    ) -> None:
+        """The configured ``queue_mode`` is ``steer``; the echo must not demote every
+        mid-turn message to the queue."""
+        provider = self._steering_provider()
+        sessions = _Sessions(provider)
+        d = _dispatcher(sessions, _Client())
+
+        await d.handle_message(_inbound("and the weather?", attachments=[_BODY_ECHO]))
+
+        assert provider.steered == ["and the weather?"]  # type: ignore[attr-defined]
+        assert sessions.queues == {}
+
+    @pytest.mark.asyncio
+    async def test_a_message_with_a_real_file_is_queued_not_steered(self) -> None:
+        provider = self._steering_provider()
+        sessions = _Sessions(provider)
+        client = _Client()
+        d = _dispatcher(sessions, client)
+        key = d._session_key(_EMAIL)
+
+        await d.handle_message(
+            _inbound("/steer here is the log", attachments=[_BODY_ECHO, self._UPLOAD])
+        )
+
+        assert provider.steered == []  # type: ignore[attr-defined]
+        assert [entry[1] for entry in sessions.queues[key]] == ["/steer here is the log"]
+        assert any("Queued" in body for _, body, _ in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_a_queued_entry_carries_only_the_file_descriptors(self) -> None:
+        """The drain collapses queued messages up to the ingest's per-turn file cap by
+        counting the descriptors each entry carries; an echo is not a file and must
+        not use up that cap (or be re-ingested) on every queued message."""
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        key = d._session_key(_EMAIL)
+
+        await d.handle_message(_inbound("/queue first", attachments=[_BODY_ECHO]))
+        await d.handle_message(_inbound("/queue second", attachments=[_BODY_ECHO, self._UPLOAD]))
+
+        assert [entry[2]["attachments"] for entry in sessions.queues[key]] == [[], [self._UPLOAD]]
+
+    @pytest.mark.asyncio
+    async def test_the_resumed_hand_off_sees_no_attachments_for_a_body_echo(
+        self, monkeypatch
+    ) -> None:
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        TestABusyResumedSession._resumed(d)
+        handed: list = []
+        TestABusyResumedSession._hand_off(monkeypatch, ResumedBusyOutcome(HANDOFF_STEERED), handed)
+
+        await d.handle_message(_inbound("and the weather?", attachments=[_BODY_ECHO]))
+
+        assert [(h[1], h[3]) for h in handed] == [("and the weather?", False)]
+
+    @pytest.mark.asyncio
+    async def test_the_resumed_hand_off_still_sees_a_real_file(self, monkeypatch) -> None:
+        sessions = _Sessions(_Provider())
+        d = _dispatcher(sessions, _Client())
+        TestABusyResumedSession._resumed(d)
+        handed: list = []
+        TestABusyResumedSession._hand_off(
+            monkeypatch, ResumedBusyOutcome(HANDOFF_REFUSED, REFUSED_ATTACHMENTS), handed
+        )
+
+        await d.handle_message(_inbound("look", attachments=[_BODY_ECHO, self._UPLOAD]))
+
+        assert [(h[1], h[3]) for h in handed] == [("look", True)]

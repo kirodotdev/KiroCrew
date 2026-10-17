@@ -1,11 +1,16 @@
-import { screen, fireEvent, within } from '@testing-library/react'
+import { onTestFinished } from 'vitest'
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import WelcomeView from './WelcomeView'
 import { MemoryModeChip } from './MemoryModeChip'
 import { api } from '../api/client'
 import { getThemeBranding } from '../themeBranding'
+import { changeLanguage, registerCatalogs } from '../i18n'
+import zhCN from '../i18n/locales/zh-CN.json'
 import { i18nT } from '../i18n/t'
 import { attachReport, sendErrorToChat } from '../utils/errorReport'
+
+registerCatalogs({ 'zh-CN': { translation: zhCN } })
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -57,6 +62,29 @@ describe('WelcomeView', () => {
     })
     fireEvent.click(pill)
     expect(setInput).toHaveBeenCalledWith(i18nT('components.welcomeView.suggestion_search_code'))
+  })
+
+  it('renders the built-in pills in the active language when the server sends none', async () => {
+    // An empty list is what the server sends when it generated nothing (a new
+    // install, a failed call), so these pills are all a new user sees.
+    const keys = [
+      'components.welcomeView.suggestion_daily_reminder',
+      'components.welcomeView.suggestion_what_next',
+      'components.welcomeView.suggestion_search_code',
+      'components.welcomeView.suggestion_summarize_chat',
+      'components.welcomeView.suggestion_write_design_doc',
+      'components.welcomeView.suggestion_review_changes',
+    ]
+    const english = keys.map(k => i18nT(k))
+    onTestFinished(async () => { await changeLanguage('en') })
+    await act(async () => { await changeLanguage('zh-CN') })
+    const chinese = keys.map(k => i18nT(k))
+
+    const { queryClient } = renderWithProviders(<WelcomeView setInput={vi.fn()} />)
+    await waitFor(() => expect(queryClient.getQueryState(['suggestions'])?.status).toBe('success'))
+
+    for (const text of chinese) expect(screen.getByRole('button', { name: text })).toBeInTheDocument()
+    for (const text of english) expect(screen.queryByRole('button', { name: text })).not.toBeInTheDocument()
   })
 
   it('falls back to the built-in pills when every server suggestion is malformed', async () => {

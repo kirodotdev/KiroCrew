@@ -117,4 +117,51 @@ describe('MultiSelect bulk actions', () => {
     expect(deselectAll).toHaveBeenCalledOnce()
     expect(onToggle).not.toHaveBeenCalled()
   })
+
+  it('reports opening and closing, and shows a notice only while open', async () => {
+    const user = userEvent.setup()
+    const onOpenChange = vi.fn()
+    render(
+      <MultiSelect
+        label="Languages"
+        options={[{ value: 'vi-VN', label: 'vi-VN' }]}
+        selected={new Set()}
+        onToggle={vi.fn()}
+        summary="None"
+        onOpenChange={onOpenChange}
+        notice="Limit reached"
+      />,
+    )
+    expect(screen.queryByRole('status')).toBeNull()
+    const trigger = screen.getByRole('button', { name: 'Languages' })
+    await user.click(trigger)
+    expect(onOpenChange).toHaveBeenLastCalledWith(true)
+    expect(screen.getByRole('status')).toHaveTextContent('Limit reached')
+    await user.click(trigger)
+    expect(onOpenChange).toHaveBeenLastCalledWith(false)
+  })
+
+  it('keeps the notice and search row fixed and lets only the option list shrink', async () => {
+    // jsdom has no layout, so this pins the classes that keep a wrapped notice from
+    // pushing the last options below the popover's clipped edge on a narrow screen.
+    const user = userEvent.setup()
+    render(
+      <MultiSelect
+        label="Languages"
+        options={[{ value: 'vi-VN', label: 'vi-VN' }]}
+        selected={new Set()}
+        onToggle={vi.fn()}
+        summary="None"
+        notice="Limit reached. Deselect one to pick another."
+      />,
+    )
+    await user.click(screen.getByRole('button', { name: 'Languages' }))
+    const list = screen.getByRole('group', { name: 'Languages' })
+    const notice = screen.getByRole('status')
+    const popover = list.parentElement as HTMLElement
+    expect(popover).toHaveClass('flex', 'flex-col', 'max-h-[360px]', 'overflow-hidden')
+    expect(notice).toHaveClass('shrink-0')
+    expect(screen.getByRole('textbox').closest('.border-b')).toHaveClass('shrink-0')
+    expect(list).toHaveClass('min-h-0', 'overflow-y-auto')
+  })
 })

@@ -104,6 +104,10 @@ MAX_PROMPT_IMAGE_B64_BYTES = 12 * 1024 * 1024
 #: prompt, so neither the user nor the model takes the picture as seen.
 PROMPT_LIMIT_NOTE = "[image not attached: prompt image limit]"
 IMAGE_SIZE_NOTE = "[image not attached: image size limit]"
+#: Written after a readable picture's path when the agent did not advertise
+#: ``promptCapabilities.image``, so the picture is never sent and never taken
+#: as seen.
+IMAGE_UNSUPPORTED_NOTE = "[image not attached: this agent does not accept images]"
 
 #: A marker-shaped token the USER typed, in any case. Escaped before the builder
 #: writes its own, so only a marker this function produced reads as an
@@ -116,6 +120,7 @@ def build_prompt_blocks(
     message: str,
     *,
     allow_image: bool = True,
+    agent_accepts_image: bool = True,
     max_image_bytes: int = MAX_IMAGE_BYTES,
     max_image_edge: int = MAX_IMAGE_EDGE_PX,
     max_image_b64_bytes: int = MAX_IMAGE_B64_BYTES,
@@ -136,11 +141,14 @@ def build_prompt_blocks(
     blocks or ``max_prompt_image_b64_bytes`` of base64 in one prompt, a further
     picture stays a path in the text.
 
-    ``allow_image=False`` (the agent did not advertise
-    ``promptCapabilities.image``) leaves the path in the text untouched: the file
-    is still on disk, so a tool-capable agent can open it, which is a strictly
-    better fallback than dropping the reference. The result is always at least
-    one text block, so a caller can pass it straight to ``session/prompt``.
+    ``allow_image=False`` (the caller's text is ABOUT a session, not an
+    attachment) leaves the path in the text untouched. ``agent_accepts_image=False``
+    (the agent did not advertise ``promptCapabilities.image``) sends no image
+    block either, but follows each readable picture's path with
+    ``IMAGE_UNSUPPORTED_NOTE`` so the model knows it was not attached; the path
+    stays, so a tool-capable agent can still open the file. The result is always
+    at least one text block, so a caller can pass it straight to
+    ``session/prompt``.
 
     Inlined images are downscaled so their longest edge is at most
     ``max_image_edge`` px -- the server-side backstop for Anthropic's many-image
@@ -222,6 +230,12 @@ def build_prompt_blocks(
                 if not path.is_file():
                     continue
             except OSError:
+                continue
+            if not agent_accepts_image:
+                # Never inlined. A bounded sniff decides whether the note is
+                # true, so the whole file is never read just to refuse it.
+                if _sniffs_as_raster(path):
+                    notes[raw] = IMAGE_UNSUPPORTED_NOTE
                 continue
             try:
                 size = path.stat().st_size

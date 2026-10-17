@@ -17,11 +17,13 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.files import (
         _GIT_FILTER_KEY_RE,
         _GIT_PROBE_STDERR_CAP,
+        ConfigHookScanError,
         DashboardState,
         _match_known_project_for,
         _redact_project_path,
         _sel,
         _slot_project_snapshot,
+        config_hook_disable_args_sandboxed,
         is_sensitive_path,
         popen_limited,
         redact,
@@ -381,6 +383,19 @@ async def api_project_git_status(request: web.Request) -> web.Response:
         if probe_rc != 0:
             if _is_not_a_repo_verdict(probe_err):
                 return {"repo": False, "files": []}
+            return {"_status_unavailable": True}
+
+        # A hook defined in config (`hook.<name>.command`, git 2.54+) is not reached by
+        # `core.hooksPath`, and `status` runs `post-index-change` when it refreshes the
+        # index. Each name git can see is disabled. See `kiro_crew.git_config_hooks`.
+        try:
+            _git_cmd = [
+                *_git_cmd,
+                *config_hook_disable_args_sandboxed(
+                    base, spawn_argv=sandboxed_spawn_argv, mode="strict", env=_env
+                ),
+            ]
+        except (ConfigHookScanError, RuntimeError):
             return {"_status_unavailable": True}
 
         # ``rev-parse --git-dir`` proves this is a repository, not that HEAD is
@@ -759,6 +774,17 @@ async def api_project_git_log(request: web.Request) -> web.Response:
         if probe_rc != 0:
             if _is_not_a_repo_verdict(probe_err):
                 return {"repo": False, "commits": []}
+            return {"_log_unavailable": True}
+
+        # Same config-defined hook disable as the status route.
+        try:
+            _git_cmd = [
+                *_git_cmd,
+                *config_hook_disable_args_sandboxed(
+                    base, spawn_argv=sandboxed_spawn_argv, mode="strict", env=_env
+                ),
+            ]
+        except (ConfigHookScanError, RuntimeError):
             return {"_log_unavailable": True}
 
         # Same filter-driver refusal as the status handler (defense in depth:

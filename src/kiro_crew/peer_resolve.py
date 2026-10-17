@@ -75,8 +75,8 @@ class PeerTenancy:
 
     A proven RECYCLE is deliberately NOT one of these. It is reported only after
     the signature verifies, so it is the publisher's own attested statement that
-    the pid now belongs to a different process, and the orphan sweep leaves such
-    a file for every live recycled pid. It says nothing about whether THIS caller
+    the pid now belongs to a different process, and such a file sits beside every
+    live recycled pid until the next sweep retracts it. It says nothing about whether THIS caller
     shares its pid, so it belongs on the same footing as no record at all.
     """
 
@@ -177,9 +177,9 @@ def resolve_peer_tenancy(
                 # is indistinguishable from forgery. A RECYCLE is the opposite:
                 # it is reported only AFTER the signature verifies, so it is the
                 # publisher's own attested statement that this pid now belongs
-                # to a different process -- knowledge, not ambiguity -- and the
-                # orphan sweep deliberately leaves such a file on disk for every
-                # live recycled pid. Treating it as unverifiable would deny the
+                # to a different process -- knowledge, not ambiguity -- and such
+                # a file sits on disk for every live recycled pid until the next
+                # sweep retracts it. Treating it as unverifiable would deny the
                 # tokenless callers the degrade arm exists for (cron scripts,
                 # pooled MCP backends) for as long as that stale file sits in
                 # their ancestry.

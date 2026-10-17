@@ -19,8 +19,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
+from conftest import host_abs
 from kiro_crew import env as env_mod
 from kiro_crew import platform_compat
 from kiro_crew.instances import run_marker
@@ -28,6 +30,7 @@ from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime as rt
+from kiro_crew.pod import runtime_lifecycle
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import (
     DEFAULT_BASE_PORT,
@@ -38,6 +41,7 @@ from kiro_crew.pod.config import (
     PodConfig,
     _canonical_override,
 )
+from kiro_crew.testing.clock import ManualClock
 
 # The invoking user's REAL home, captured at import time — before the autouse
 # fixture below pins HOME to a tmp dir. Used only to assert that pod host state
@@ -2165,75 +2169,303 @@ class TestProvisionBuildPaths:
         monkeypatch.setattr(prov, "build_dist", lambda c: True)
         assert prov.provision(co, build=True) is True
 
-    def test_find_python_via_which(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
-        monkeypatch.setattr(prov.shutil, "which", lambda exe: "/opt/python3.12")
-        assert prov._find_python() == "/opt/python3.12"
+    # --- interpreter selection: probed, not guessed --------------------------
+    @staticmethod
+    def _only_candidates(monkeypatch: pytest.MonkeyPatch, *cands: str) -> None:
+        monkeypatch.setattr(prov, "_python_candidates", lambda: iter(cands))
 
-    def _windows_without_versioned_exe(self, monkeypatch: pytest.MonkeyPatch, launcher: str | None):
-        """A Windows host as python.org leaves it: ``python.exe`` only, never a
-        ``python3.12.exe``, so the versioned name resolves to nothing."""
-        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", True)
-        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
-        monkeypatch.setattr(prov.shutil, "which", lambda exe: launcher if exe == "py" else None)
-
-    def test_find_python_asks_the_py_launcher_on_windows(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_find_python_takes_the_first_candidate_that_passes_the_probe(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        real = tmp_path / "Python312" / "python.exe"
-        real.parent.mkdir()
-        real.write_bytes(b"")
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
-        calls: list[list[str]] = []
+        shim = host_abs("shim", "python3.12")
+        ok = host_abs("ok", "python3.13")
+        self._only_candidates(monkeypatch, shim, ok, host_abs("later"))
+        probed: list[str] = []
 
-        def fake_check_output(cmd, **kwargs):
-            calls.append(cmd)
-            return f"{real}\n"
+        def probe(c: str) -> str | None:
+            probed.append(c)
+            return "exit 127: no such version" if c == shim else None
 
-        monkeypatch.setattr(prov.subprocess, "check_output", fake_check_output)
-        assert prov._find_python() == str(real)
-        # The launcher is asked for EXACTLY the wanted version: a host with
-        # several interpreters must not hand back whichever is the default.
-        assert calls[0][:2] == [r"C:\Windows\py.exe", "-3.12"]
+        monkeypatch.setattr(prov, "_probe_python", probe)
+        assert prov._find_python() == ok
+        assert probed == [shim, ok]
+        # The rejection is said, so a failed provision names what was tried.
+        assert f"skipping {shim}: exit 127: no such version" in capsys.readouterr().err
 
-    def test_find_python_is_none_when_the_launcher_has_no_such_version(
+    def test_find_python_probes_each_path_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        a = host_abs("a", "python3")
+        b = host_abs("b", "python3")
+        self._only_candidates(monkeypatch, a, a, b)
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or "no")
+        assert prov._find_python() is None
+        assert probed == [a, b]
+
+    def test_find_python_is_none_when_every_candidate_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
+        self._only_candidates(monkeypatch, host_abs("x"))
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or "broken")
+        assert prov._find_python() is None
+        assert probed == [host_abs("x")]
 
-        def no_such_version(cmd, **kwargs):
-            raise prov.subprocess.CalledProcessError(103, cmd)
+    def test_ensure_venv_failure_names_the_floor_not_one_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(prov, "_find_python", lambda: None)
+        assert prov.ensure_venv(tmp_path) is False
+        err = capsys.readouterr().err
+        assert "no Python >= 3.12 that can build a venv" in err
+        assert "uv python install 3.12" in err
 
-        monkeypatch.setattr(prov.subprocess, "check_output", no_such_version)
+    def test_min_python_is_pyproject_requires_python(self) -> None:
+        """The floor the probe enforces is the one the package declares."""
+        import tomllib
+
+        root = Path(__file__).resolve().parents[1]
+        declared = tomllib.loads((root / "pyproject.toml").read_text())["project"][
+            "requires-python"
+        ]
+        assert declared == f">={prov.MIN_PYTHON[0]}.{prov.MIN_PYTHON[1]}"
+
+    @staticmethod
+    def _quiet_host(monkeypatch: pytest.MonkeyPatch, *, windows: bool = False) -> None:
+        """No interpreter anywhere but what a test adds."""
+        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", windows)
+        monkeypatch.setattr(prov.sys, "_base_executable", "", raising=False)
+        monkeypatch.setattr(prov.sys, "executable", "")
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: None)
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None)
+
+    def test_candidates_take_system_dirs_from_the_platform_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The system bin directories are the platform layer's to know, Windows
+        included, so a versioned name is asked of it before ``PATH``."""
+        self._quiet_host(monkeypatch)
+        asked: list[str] = []
+        monkeypatch.setattr(
+            prov.platform_compat,
+            "trusted_system_bin_quiet",
+            lambda name: asked.append(name) or f"/sys/{name}",
+        )
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        got = list(prov._python_candidates())
+        own = f"python3.{sys.version_info[1]}"
+        assert asked[0] == own
+        assert got[:2] == [f"/sys/{own}", f"/path/{own}"]
+
+    def test_find_python_skips_a_relative_candidate_without_probing_it(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        relative = os.path.join("bin", "python3.13")
+        ok = host_abs("ok", "python3.13")
+        self._only_candidates(monkeypatch, relative, ok)
+        probed: list[str] = []
+        monkeypatch.setattr(prov, "_probe_python", lambda c: probed.append(c) or None)
+        assert prov._find_python() == ok
+        assert probed == [ok]
+        assert f"skipping {relative}: found through a relative PATH entry" in (
+            capsys.readouterr().err
+        )
+
+    def test_candidates_start_with_this_processes_own_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov.sys, "_base_executable", "/gw/bin/python3.12", raising=False)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: "/uv/python3.13")
+        got = list(prov._python_candidates())
+        assert got[0] == "/gw/bin/python3.12"
+        assert got[-1] == "/uv/python3.13"
+        assert "/path/python3" in got
+
+    def test_candidates_ask_for_the_gateway_minor_first_then_the_floor_upward(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: f"/path/{exe}")
+        own = f"/path/python3.{sys.version_info[1]}"
+        got = [c for c in prov._python_candidates() if c != "/path/python3"]
+        assert got[0] == own
+        rest = [c for c in got[1:]]
+        assert rest == sorted(rest, key=lambda c: int(c.rsplit(".", 1)[1]))
+        assert rest[0] == ("/path/python3.12" if own != "/path/python3.12" else "/path/python3.13")
+
+    def test_find_python_on_a_host_with_no_python_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(prov, "_probe_python", lambda c: pytest.fail("nothing to probe"))
         assert prov._find_python() is None
 
-    def test_find_python_is_none_when_the_launcher_names_a_missing_file(
+    def test_candidates_ask_the_py_launcher_per_minor_on_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """python.org on Windows ships ``python.exe`` only, so the launcher is the
+        index of installed versions; it is asked for each minor, own one first."""
+        self._quiet_host(monkeypatch, windows=True)
+        asked: list[str] = []
+        monkeypatch.setattr(
+            prov, "_find_python_via_launcher", lambda v: asked.append(v) or rf"C:\Py\{v}.exe"
+        )
+        got = list(prov._python_candidates())
+        assert asked[0] == f"3.{sys.version_info[1]}"
+        assert "3.12" in asked
+        assert got[0] == rf"C:\Py\3.{sys.version_info[1]}.exe"
+
+    def test_candidates_never_run_the_launcher_off_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._quiet_host(monkeypatch)
+        monkeypatch.setattr(
+            prov, "_find_python_via_launcher", lambda v: pytest.fail("POSIX must not probe py")
+        )
+        assert list(prov._python_candidates()) == []
+
+    def test_the_launcher_answer_must_name_a_real_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, r"C:\Windows\py.exe")
+        monkeypatch.setattr(prov.shutil, "which", lambda exe: r"C:\Windows\py.exe")
         gone = tmp_path / "uninstalled" / "python.exe"
         monkeypatch.setattr(prov.subprocess, "check_output", lambda cmd, **kw: f"{gone}\n")
-        assert prov._find_python() is None
-
-    def test_find_python_is_none_on_windows_without_a_launcher(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._windows_without_versioned_exe(monkeypatch, None)
+        assert prov._find_python_via_launcher("3.12") is None
+        real = tmp_path / "python.exe"
+        real.write_bytes(b"")
+        calls: list[list[str]] = []
         monkeypatch.setattr(
-            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("no launcher to run")
+            prov.subprocess, "check_output", lambda cmd, **kw: calls.append(cmd) or f"{real}\n"
         )
-        assert prov._find_python() is None
+        assert prov._find_python_via_launcher("3.13") == str(real)
+        # EXACTLY the wanted version, never whichever is the launcher's default.
+        assert calls[0][:2] == [r"C:\Windows\py.exe", "-3.13"]
 
-    def test_find_python_never_runs_the_launcher_off_windows(
+    def test_uv_lookup_never_downloads_an_interpreter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(prov.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(prov, "resolve_uv", lambda: "/bin/uv")
+        seen: list[list[str]] = []
+        monkeypatch.setattr(
+            prov.subprocess, "check_output", lambda cmd, **kw: seen.append(cmd) or "/uv/py\n"
+        )
+        assert prov._uv_found_python() == "/uv/py"
+        assert seen == [["/bin/uv", "python", "find", "--no-python-downloads", ">=3.12"]]
+        monkeypatch.setattr(prov, "resolve_uv", lambda: None)
+        assert prov._uv_found_python() is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fake interpreters are POSIX shell scripts")
+class TestProbePythonAgainstRealProcesses:
+    """``_probe_python`` runs the candidate; these candidates are real executables."""
+
+    @staticmethod
+    def _script(path: Path, body: str) -> str:
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return str(path)
+
+    def test_a_working_interpreter_passes(self) -> None:
+        assert prov._probe_python(sys.executable) is None
+
+    def test_a_shim_with_no_install_behind_it_is_refused_with_its_reason(
+        self, tmp_path: Path
+    ) -> None:
+        """The mise shape: the file exists and is executable, and running it fails."""
+        shim = self._script(
+            tmp_path / "python3.12",
+            'echo "mise ERROR No version is set for python3.12" >&2\nexit 127\n',
+        )
+        reason = prov._probe_python(shim)
+        assert reason is not None and reason.startswith("exit 127")
+        assert "No version is set" in reason
+
+    def test_an_interpreter_that_starts_only_with_a_loader_path_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The relocatable shape: it runs in an environment carrying a library path,
+        which the provision steps do not carry, so the probe must not either."""
+        cand = self._script(
+            tmp_path / "python3",
+            f'[ -n "$LD_LIBRARY_PATH" ] || {{ echo "libpython3.12.so.1.0: cannot open" >&2; exit 127; }}\n'
+            f'exec {sys.executable} "$@"\n',
+        )
+        monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path))
+        reason = prov._probe_python(cand)
+        assert reason is not None and "libpython3.12.so.1.0" in reason
+
+    def test_a_venv_whose_interpreter_fails_is_refused(self, tmp_path: Path) -> None:
+        """The base starts, the venv built from it does not: the Toolbox case."""
+        broken_venv_python = (
+            'echo "libpython3.12.so.1.0: cannot open shared object file" >&2; exit 127'
+        )
+        cand = self._script(
+            tmp_path / "python3",
+            'for a; do last="$a"; done\n'
+            'mkdir -p "$last/bin"\n'
+            f"printf '#!/bin/sh\\n{broken_venv_python}\\n' > \"$last/bin/python\"\n"
+            'chmod +x "$last/bin/python"\n',
+        )
+        reason = prov._probe_python(cand)
+        assert reason is not None and reason.startswith("exit 127")
+        assert "libpython3.12.so.1.0" in reason
+
+    def test_an_interpreter_below_the_floor_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            prov, "_PROBE_SNIPPET", prov._PROBE_SNIPPET.replace("(3, 12)", "(9, 99)")
+        )
+        assert prov._probe_python(sys.executable) == "older than 3.12"
+
+    def test_a_missing_file_is_refused_not_raised(self, tmp_path: Path) -> None:
+        reason = prov._probe_python(str(tmp_path / "nope"))
+        assert reason is not None and reason.startswith("could not run")
+
+    def test_a_broken_versioned_shim_on_path_loses_to_a_working_newer_python(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reported host: mise's ``python3.12`` shim exists with no 3.12 behind
+        it, a 3.13 works, and the gateway's own interpreter cannot build a venv.
+        Selecting by name picked the shim and provisioning died in ensurepip."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        self._script(bindir / "python3.12", 'echo "No version is set" >&2\nexit 127\n')
+        newer = self._script(bindir / "python3.13", f'exec {sys.executable} "$@"\n')
+        monkeypatch.setenv("PATH", str(bindir))
+        monkeypatch.setattr(prov.Path, "home", lambda: tmp_path / "nohome")
+        monkeypatch.setattr(prov.sys, "_base_executable", str(bindir / "python3.12"), raising=False)
+        # raising=False: the same test runs against the name-only lookup it replaced.
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None, raising=False)
+        monkeypatch.setattr(prov, "_NAMED_MINORS", (12, 13), raising=False)
+        # The host's own system interpreters are not part of this scenario.
         monkeypatch.setattr(prov.Path, "exists", lambda self: False)
-        monkeypatch.setattr(prov.shutil, "which", lambda exe: None)
-        monkeypatch.setattr(
-            prov.subprocess, "check_output", lambda *a, **k: pytest.fail("POSIX must not probe py")
-        )
-        assert prov._find_python() is None
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
+        assert prov._find_python() == newer
+
+    def test_a_python_found_through_a_relative_path_entry_is_not_selected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``PATH=bin`` makes ``shutil.which`` answer ``bin/python3.13``. The probe
+        passes from the caller's cwd, and the provision steps then run it from
+        the checkout, where it does not resolve."""
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        self._script(bindir / "python3.13", f'exec {sys.executable} "$@"\n')
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("PATH", "bin")
+        monkeypatch.setattr(prov.Path, "home", lambda: tmp_path / "nohome")
+        monkeypatch.setattr(prov.sys, "_base_executable", "", raising=False)
+        monkeypatch.setattr(prov.sys, "executable", "")
+        monkeypatch.setattr(prov, "_uv_found_python", lambda: None, raising=False)
+        monkeypatch.setattr(prov, "_NAMED_MINORS", (13,), raising=False)
+        monkeypatch.setattr(prov.Path, "exists", lambda self: False)
+        monkeypatch.setattr(prov.platform_compat, "trusted_system_bin_quiet", lambda name: None)
+        found = prov._find_python()
+        assert found is None or os.path.isabs(found)
 
 
 class TestProvisionDependencyInstall:
@@ -3442,6 +3674,35 @@ class TestCleanupHomeVerifies:
         assert not home.exists()
 
 
+class _DrainClock(ManualClock):
+    """The drain's poll clock: ``on_sleep(seconds)`` runs after each poll sleep.
+
+    That is the unit's process tree shrinking between two reads of
+    ``cgroup.procs``. Installed on :mod:`kiro_crew.pod.runtime_lifecycle` alone,
+    the module whose ``drain_cgroup`` polls. Its ``time`` IS the stdlib module, so
+    patching ``rt.time.sleep`` ran the hook for every other thread's sleep in the
+    worker too.
+    """
+
+    def __init__(self, on_sleep=lambda _s: None) -> None:
+        super().__init__(monotonic_start=0.0)
+        self._on_sleep = on_sleep
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        self._on_sleep(seconds)
+
+
+def _pin_clock(monkeypatch: pytest.MonkeyPatch, on_sleep=lambda _s: None) -> _DrainClock:
+    clock = _DrainClock(on_sleep)
+    clock.install(monkeypatch, runtime_lifecycle)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert_clock_is_private(_pin_clock(monkeypatch), runtime_lifecycle)
+
+
 class TestDrainCgroup:
     """The delete waits for the unit's process tree, because that is the set that
     recreates the HOME behind it."""
@@ -3455,9 +3716,10 @@ class TestDrainCgroup:
         procs = tmp_path / "cgroup.procs"
         procs.write_text("7\n8\n")
         remaining = ["8\n", ""]
-        monkeypatch.setattr(rt.time, "sleep", lambda _s: procs.write_text(remaining.pop(0)))
+        clock = _pin_clock(monkeypatch, lambda _s: procs.write_text(remaining.pop(0)))
         assert rt.drain_cgroup(procs) == []
         assert remaining == [], "it must poll until empty, not sample once"
+        assert len(clock.sleeps) == 2
 
     def test_reports_the_survivors_when_the_window_expires(self, tmp_path: Path) -> None:
         procs = tmp_path / "cgroup.procs"
@@ -3662,7 +3924,7 @@ class TestLinuxTeardownOrdering:
             order.append("deleted")
             return 0
 
-        monkeypatch.setattr(rt.time, "sleep", _last_process_exits)
+        _pin_clock(monkeypatch, _last_process_exits)
         monkeypatch.setattr(rt, "cleanup_home", _delete)
         assert rt.stop_pod(cfg, "demo").returncode == 0
         assert order == ["drained", "deleted"], "deleting first is the original race"
@@ -7797,7 +8059,7 @@ class TestBootTimeSettings:
     ) -> None:
         # Behavioural pin only: each mode in the enforcement tuple round-trips
         # through the env file into argv. This does NOT guard parser drift --
-        # a mode present in cli.py but absent from APPROVAL_MODES is never
+        # a mode present in cli_parser_admin.py but absent from APPROVAL_MODES is never
         # iterated here. test_cli_approval_choices_match_the_enforcement_tuple
         # covers that.
         for mode in rt.APPROVAL_MODES:
@@ -7810,11 +8072,14 @@ class TestBootTimeSettings:
         # encoding is explicit: cli.py contains non-ASCII (emoji in guard
         # messages), and read_text() defaults to the platform locale codec,
         # which is cp1252 on Windows CI and raises UnicodeDecodeError there.
-        src = (Path(rt.__file__).parent.parent / "cli.py").read_text(encoding="utf-8")
+        # The top-level parser is cli.py plus the cli_parser_* registrars it calls.
+        package = Path(rt.__file__).parent.parent
+        files = [package / "cli.py", *sorted(package.glob("cli_parser_*.py"))]
+        src = "\n".join(path.read_text(encoding="utf-8") for path in files)
         return ast.parse(src)
 
     def test_cli_approval_choices_match_the_enforcement_tuple(self) -> None:
-        # cli.py repeats the choices literal instead of importing pod.runtime
+        # cli_parser_admin.py repeats the choices literal instead of importing pod.runtime
         # (the top-level parser must not import pod modules at startup), so the
         # duplication is real. Read the literal argparse actually registers, so a
         # mode added on one side only fails HERE rather than being accepted by

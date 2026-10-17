@@ -270,7 +270,7 @@ class TestQueueEntryAttachmentsAreEchoed:
             body = await resp.json()
 
         assert body["queue"] == [
-            {"id": with_meta, "content": _WIRE, "meta": {"files": [_SPACED]}},
+            {"id": with_meta, "content": _WIRE, "meta": {"sendId": "s-1", "files": [_SPACED]}},
             {"id": bare, "content": "no attachments"},
         ]
 

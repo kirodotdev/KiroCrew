@@ -260,7 +260,22 @@ _EMAIL = "kyle@example.com"
 _SVC = "https://smba.trafficmanager.net/"
 
 
-def _inbound(text: str = "hello", email: str = _EMAIL) -> TeamsInbound:
+#: What the Teams client attaches to EVERY rich-text message: a ``text/html`` copy
+#: of the body. It carries no file, and the ingest skips it as a duplicate of
+#: ``text`` -- so it must not make the message look like an upload either.
+_BODY_ECHO = {"contentType": "text/html", "content": "<p>/help</p>"}
+
+#: A genuine personal-chat upload, which the ingest fetches.
+_FILE_UPLOAD = {
+    "contentType": "application/vnd.microsoft.teams.file.download.info",
+    "name": "log.txt",
+    "content": {"downloadUrl": "https://contoso.sharepoint.com/dl", "fileType": "txt"},
+}
+
+
+def _inbound(
+    text: str = "hello", email: str = _EMAIL, *, attachments: list | None = None
+) -> TeamsInbound:
     return TeamsInbound(
         conversation_id="CONV",
         conversation_type="personal",
@@ -269,6 +284,7 @@ def _inbound(text: str = "hello", email: str = _EMAIL) -> TeamsInbound:
         user_email=email,
         aad_object_id="aad-1",
         activity_id="act-1",
+        attachments=list(attachments or []),
     )
 
 
@@ -417,6 +433,22 @@ class TestCommands:
         assert route.message_id == "act-1"
 
     @pytest.mark.asyncio
+    async def test_closed_admission_counts_only_files_as_dropped(self, monkeypatch) -> None:
+        """The restart notice says "N attachment(s) are not carried over": the body
+        echo is not one of them, a real upload is."""
+        sessions = FakeSessions(FakeProvider([]))
+        sessions.reserve_inbound_callback = lambda: None  # type: ignore[attr-defined]
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        spool = AsyncMock(return_value=True)
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.spool_refused_turn", spool)
+
+        await d.handle_message(_inbound("hello", attachments=[_BODY_ECHO]))
+        await d.handle_message(_inbound("hello", attachments=[_BODY_ECHO, _FILE_UPLOAD]))
+
+        dropped = [call.kwargs["route"].attachments_dropped for call in spool.await_args_list]
+        assert dropped == [0, 1]
+
+    @pytest.mark.asyncio
     async def test_closed_admission_never_spools_a_restricted_resumed_session(
         self, monkeypatch
     ) -> None:
@@ -459,6 +491,66 @@ class TestCommands:
         assert len(client.sent) == 1
         assert "/compact" in client.sent[0][1]
         assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    async def test_help_with_only_the_body_echo_attached_is_a_command(self) -> None:
+        """The Teams client attaches a ``text/html`` copy of every rich-text
+        message, so a gate deciding on the raw attachment list sees an upload on
+        every typed ``/help`` and hands it to the model as a prompt. The echo
+        carries no file; the command must be intercepted."""
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/help", attachments=[_BODY_ECHO]))
+
+        assert len(client.sent) == 1, "the command list must come back, not a model answer"
+        assert "/compact" in client.sent[0][1]
+        assert sessions.begin_turns == 0, "a command never starts a turn"
+        assert sessions.successes == []
+
+    @pytest.mark.asyncio
+    async def test_new_with_only_the_body_echo_attached_rotates(self) -> None:
+        """The same echo must not stop ``/new`` from rotating the conversation."""
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(
+            _inbound("/new", attachments=[{**_BODY_ECHO, "content": "<p>/new</p>"}])
+        )
+
+        assert client.sent == [("CONV", "✅ Started a fresh conversation.", _SVC)]
+        assert d._conv.current_gen(_EMAIL) == 1
+        assert sessions.begin_turns == 0
+
+    @pytest.mark.asyncio
+    async def test_help_with_a_real_file_attached_still_reaches_the_agent(
+        self, monkeypatch
+    ) -> None:
+        """A message carrying a FILE is never a command: its text is a caption, and
+        "/stop here is the log" must not cancel the turn and drop the file. The body
+        echo beside the upload changes nothing about that."""
+        sessions = FakeSessions(FakeProvider([]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+        ingested: list[list] = []
+
+        async def _no_fetch(_client, raw):
+            from kiro_crew.messaging.attachments import IngestResult
+
+            ingested.append(list(raw))
+            return IngestResult()
+
+        monkeypatch.setattr(
+            "kiro_crew.teams.transport_dispatch.process_teams_attachments", _no_fetch
+        )
+
+        await d.handle_message(_inbound("/help", attachments=[_BODY_ECHO, _FILE_UPLOAD]))
+
+        assert sessions.begin_turns == 1, "the caption and its file go to the agent"
+        assert ingested == [[_BODY_ECHO, _FILE_UPLOAD]]
+        assert not any("/compact" in content for (_, content, _) in client.sent)
 
     @pytest.mark.asyncio
     async def test_compact_command(self) -> None:
@@ -560,3 +652,45 @@ class TestInboundGovernance:
         assert sessions.acquired == []
         assert sessions.successes == []
         assert sessions.released == []
+
+
+# ── /agent (show and switch the conversation's agent) ──
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @pytest.mark.asyncio
+    async def test_agent_name_switches_the_next_turn(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent beta"))
+        assert any("Agent set to `beta`" in content for _, content, _ in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_internal_agent_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent kirocrew-worker"))
+        assert any("No agent named" in content for _, content, _ in client.sent)
+        await d.handle_message(_inbound("hi"))
+        assert sessions.last_agent == "kirocrew"

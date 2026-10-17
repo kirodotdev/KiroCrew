@@ -298,6 +298,13 @@ export interface IMessageConfigSave {
    * predates the field sends none, and absent must not read as false.
    */
   jwt_available?: boolean
+  /** Whether the channel's optional SDK (PyJWT, the [teams] extra) is importable by the gateway;
+   *  absent from a gateway that predates the field, which must not read as false. */
+  sdk_installed?: boolean
+  /** False where a pip install cannot work: bundled app, no pip, PEP 668. */
+  sdk_install_supported?: boolean
+  /** Install command naming the gateway's OWN interpreter; "" when not useful. */
+  sdk_install_command?: string
   /** Context percentage at which the channel nudges the user to compact. */
   soft_threshold_pct?: number
   /** Context percentage at which the channel compacts without being asked. */
@@ -391,6 +398,13 @@ export interface WhatsAppConfigData {
   /** Pairing/connection lifecycle: unpaired → pairing → connected, or a terminal
    *  logged_out / banned / error. Drives the status badge. */
   state: 'unpaired' | 'pairing' | 'connected' | 'logged_out' | 'banned' | 'error'
+  /** Whether the channel's optional SDK (neonize, the [whatsapp] extra) is importable by the gateway;
+   *  absent from a gateway that predates the field, which must not read as false. */
+  sdk_installed?: boolean
+  /** False where a pip install cannot work: bundled app, no pip, PEP 668. */
+  sdk_install_supported?: boolean
+  /** Install command naming the gateway's OWN interpreter; "" when not useful. */
+  sdk_install_command?: string
 }
 
 /** Writable WhatsApp config fields sent to PUT /api/whatsapp/config. */
@@ -452,7 +466,9 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
     // starting it (pairing begins inside the channel's own connect()), so a caller
     // that ignores this field renders a wait for a code that will never arrive.
     whatsAppQrStart: () => post('/api/channels/whatsapp/qr/start', {}).then(j) as Promise<{ ok: boolean; state?: string; error?: string }>,
-    whatsAppQrStatus: () => get('/api/channels/whatsapp/qr/status').then(j) as Promise<{ state: string; qr_data_url: string | null; detail: string }>,
+    // `qr_expired` means the newest code is past the life WhatsApp gives it: the
+    // panel must clear the image it is showing, not keep the last one up.
+    whatsAppQrStatus: () => get('/api/channels/whatsapp/qr/status').then(j) as Promise<{ state: string; qr_data_url: string | null; qr_expired?: boolean; detail: string }>,
     // Two distinguishable successes: a bare `ok` means the device is unlinked and
     // the local session is gone, while `code: 'session_file_kept'` means the device
     // IS unlinked but the store holding its keys survived. A refused logout is an

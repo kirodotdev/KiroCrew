@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useLayoutEffect } from 'react'
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext'
 import {
   $createRangeSelectionFromDom,
@@ -80,7 +80,9 @@ function scrollCaretIntoView(root: HTMLElement, selection: Selection): void {
  */
 export function MacLineEdgePlugin() {
   const [editor] = useLexicalComposerContext()
-  useEffect(() => editor.registerCommand(
+  // Layout effect: bound in the commit that mounts the editor, like the other
+  // key-owning plugins (see InteractionPlugin in LexicalComposerInput.tsx).
+  useLayoutEffect(() => editor.registerCommand(
     KEY_DOWN_COMMAND,
     event => {
       const intent = lineEdgeForKey(event, isMacOSPlatform())

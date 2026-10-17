@@ -16,7 +16,8 @@ remover cannot skip the cascade in ANY spelling: the direct filter, the
 two-step ``keep = [...]; self._jobs = keep`` form, ``self._jobs[:] = [...]``,
 a ``.remove()`` loop, ``list(filter(...))``, or a rebuild from an index.
 Out of static reach by nature: mutating through a local alias
-(``jobs = self._jobs; jobs.remove(...)``) -- nothing in cron.py does this, and
+(``jobs = self._jobs; jobs.remove(...)``) -- nothing in cron.py or its
+``cron_service/service`` owners does this, and
 a reviewer seeing an alias of ``self._jobs`` should treat it as the same
 violation.
 """
@@ -24,11 +25,15 @@ violation.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
+import pkgutil
 from pathlib import Path
+from types import ModuleType
 
 import kiro_crew.cron as cron_module
 from kiro_crew.cron import CronService
+from kiro_crew.cron_service import service
 
 SANCTIONED_HELPER = "_remove_job_rows"
 
@@ -72,6 +77,14 @@ def _touches_self_jobs(target: ast.expr) -> bool:
     return _is_self_jobs(target)
 
 
+def _service_owners() -> list[ModuleType]:
+    """The modules ``CronService`` binds its members from, beside ``cron.py`` itself."""
+    return [
+        importlib.import_module(f"{service.__name__}.{info.name}")
+        for info in pkgutil.iter_modules(service.__path__)
+    ]
+
+
 def _jobs_writes_by_function(tree: ast.Module) -> dict[str, list[str]]:
     """Map enclosing function name -> descriptions of self._jobs writes."""
     writes: dict[str, list[str]] = {}
@@ -99,9 +112,12 @@ def _jobs_writes_by_function(tree: ast.Module) -> dict[str, list[str]]:
 
 
 def test_every_self_jobs_write_is_allowlisted():
-    source = inspect.getsource(cron_module)
-    tree = ast.parse(source, filename=str(Path(cron_module.__file__)))
-    writes = _jobs_writes_by_function(tree)
+    writes: dict[str, list[str]] = {}
+    for module in (cron_module, *_service_owners()):
+        source = inspect.getsource(module)
+        tree = ast.parse(source, filename=str(Path(module.__file__)))
+        for name, sites in _jobs_writes_by_function(tree).items():
+            writes.setdefault(name, []).extend(sites)
     assert SANCTIONED_HELPER in writes, (
         "expected the sanctioned helper's own filter assignment to be found; "
         "if it was renamed, update SANCTIONED_HELPER and ALLOWED_WRITERS"

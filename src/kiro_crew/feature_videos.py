@@ -861,9 +861,14 @@ async def api_feature_videos_status(request: web.Request) -> web.Response:
     """GET /api/feature-videos/status — switches, cache progress, and the state map.
 
     Returns ``{"enabled", "download_enabled", "release", "cached", "total",
-    "downloading", "download_state", "state"}`` for the settings panel, which
-    needs to render (and later reset) what has been seen, and to show whether the
-    hosted library has finished arriving.
+    "downloading", "downloading_title", "download_state", "state"}`` for the
+    settings panel, which needs to render (and later reset) what has been seen,
+    and to show whether the hosted library has finished arriving.
+
+    ``downloading`` is the in-flight clip's catalog id and ``downloading_title``
+    its manifest title (``None`` when nothing is in flight or the manifest gave
+    no title). The title is what the panel shows; the id stays on the wire so a
+    client can still tell which clip is moving.
 
     ``state`` keeps its original meaning — the ``{<id>: {"status", "ts"}}``
     engagement map — and the transfer's own step is reported separately as
@@ -898,6 +903,7 @@ async def api_feature_videos_status(request: web.Request) -> web.Response:
         "cached": cached,
         "total": total,
         "downloading": cache.status.get("downloading"),
+        "downloading_title": cache.status.get("downloading_title"),
         "download_state": cache.status.get("download_state"),
         "state": {},
     }

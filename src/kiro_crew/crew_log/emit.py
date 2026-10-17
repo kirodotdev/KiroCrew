@@ -95,7 +95,7 @@ import threading
 import time
 import traceback
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.constants import CREW_LOG_ENV, crew_log_enabled
@@ -252,6 +252,15 @@ _last_class: "OrderedDict[str, tuple[str, str, bool, str]]" = OrderedDict()
 #: OUTLIVES the turn that created it, which is the whole reason it exists -- so it
 #: is bounded FIFO and released by the child's own terminal entry.
 _child_origin: "OrderedDict[str, tuple[str, int, bool]]" = OrderedDict()
+#: Superseded crew logs whose tail THIS process has repaired, oldest first, so a
+#: predecessor walk (:func:`_walk_to_predecessor`) stops at one rather than walking
+#: the slot's whole history again on every supersede. Membership is only a
+#: shortcut: a log in here was repaired and its own walk went on from it, and a
+#: superseded log is never resumed, so nothing reopens a tail this process closed.
+#: Bounded FIFO by :data:`_MAX_REPAIR_WALKED`, and an evicted id costs one more
+#: whole-file scan of a tail already closed, never a wrong outcome. Cleared by
+#: ``reset_caches``, because a new process has repaired nothing yet.
+_repair_walked: "OrderedDict[str, None]" = OrderedDict()
 #: Answers "is this ``agent_id`` still running IN THIS PROCESS", registered by the
 #: gateway because it owns the subagent manager and this module cannot reach it.
 #: Consulted only by the resume repair, to decide whether an unmatched
@@ -551,6 +560,7 @@ def reset_caches(*, limits: "WriterLimits | None" = None) -> None:
         _last_class.clear()
         _child_origin.clear()
         _creation_failed.clear()
+        _repair_walked.clear()
         _lost_child_origins = 0
         _lost_origin_reported = False
 
@@ -1598,6 +1608,122 @@ def on_session_released(
     )
 
 
+def on_session_spawned(
+    creator_sid: str,
+    *,
+    creator_slot: str,
+    child_slot: str,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
+    """Record, on the CREATOR's log, that *creator_slot* created *child_slot*.
+
+    The child has no log yet -- its log is keyed by an ACP session id that only exists
+    after its first turn -- so this is the only durable record of the creating edge
+    before that turn. Without it a gateway restart in between lost the edge for good.
+
+    The creator is the session whose log holds the entry, so the entry names only the
+    child. A creator with no ACP session has no log to write to; ``_handle`` then
+    answers None and nothing is written, which leaves today's in-memory witness as the
+    only record, as before.
+
+    Returns without waiting, and the projection is advanced inside the job AFTER the
+    append succeeds. ``on_settled`` reports the durable outcome the way it does on
+    :func:`on_session_adopted`: called once, off the caller's thread, ``True`` when the
+    entry is on disk and ``False`` when it was given up on or there was no log.
+    """
+    if not creator_sid or not creator_slot or not child_slot or creator_slot == child_slot:
+        if on_settled is not None:
+            on_settled(False)
+        return
+    data: dict[str, Any] = {"child": {"slot": child_slot}}
+
+    settle = _tree_settle_hooks(on_settled)
+
+    def _job() -> None:
+        log = _handle(creator_sid)
+        if log is None:
+            settle.fail()
+            return
+        written = log.append("session/spawned", data, src=_SRC_GATEWAY)
+        settle.wrote()
+        _record_session_tree_spawn(creator_sid, creator_slot, child_slot, written)
+
+    _submit(
+        _job,
+        "appending session/spawned",
+        creator_sid,
+        after=settle.after,
+        on_permanent_drop=settle.fail,
+    )
+
+
+def _record_session_tree_spawn(
+    creator_sid: str, creator_slot: str, child_slot: str, entry: Any
+) -> None:
+    """Fold a just-committed ``session/spawned`` into the in-memory session tree.
+
+    Same contract as :func:`_record_session_tree_decision`: called after the append
+    succeeded, takes ``seq`` and ``time`` from the written line, never raises.
+    """
+    try:
+        from kiro_crew.crew_log.session_tree_projection import record_spawned
+
+        raw = getattr(entry, "time", 0)
+        at = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+        raw_seq = getattr(entry, "seq", 0)
+        seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else 0
+        record_spawned(creator_sid, creator_slot, child_slot, at, seq)
+    except Exception:  # pragma: no cover -- defensive; the door guards itself
+        # Rendered text, never ``exc_info``: the caller is the writer job holding the
+        # live handle (see ``_record_session_tree_decision``).
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "session tree projection not advanced for a spawn by %s:\n%s",
+                creator_sid,
+                traceback.format_exc().rstrip(),
+            )
+
+
+def on_open_tab_unrestored(
+    session_id: str,
+    *,
+    listed: int,
+    restored: int,
+    kept: int,
+) -> None:
+    """Record that this session's tab was listed as open but did not come back.
+
+    The durable account of a dashboard startup that could not rebuild a tab. Before
+    this, a tab that vanished left NOTHING anywhere: no ``session/closed``, because
+    the gateway did not stop serving the session; no delete, because nothing was
+    deleted; and the restore's own ``logger.warning`` goes to a rotated gateway log
+    that is gone long before anyone asks what happened. So the only account of a lost
+    working set was the user noticing it, which is how a loss of sixteen tabs went
+    from happening to being understood with nothing in between.
+
+    It is emitted on the DROPPED session's own log rather than on a gateway-wide one
+    because that is where a reader goes: the question is always "what happened to this
+    conversation", asked of the conversation. The counts put the one tab in context --
+    one of sixteen that did not come back reads differently from one of one.
+
+    ``kept`` is how many listed keys this restore DROPPED -- the shown-missing
+    subset, this tab included. They are not gone from disk: the keys stay in the
+    reopen seed and are re-read next boot. The entry says the tab was not SHOWN,
+    which is the fact the user saw. (A remote-only seed that is expected to sit
+    unrestored across boots is deliberately NOT in this count -- see
+    ``_record_unrestored_open_tabs`` -- so a correctly-behaving system does not
+    raise the notice.)
+    """
+    if not session_id:
+        return
+    _write(
+        session_id,
+        "session/unrestored",
+        {"listed": int(listed), "restored": int(restored), "kept": int(kept)},
+        src=_SRC_GATEWAY,
+    )
+
+
 def _parent_citation(slot: str, sid: str) -> "dict[str, str]":
     """One ``{slot, sid?}`` citation, or ``{}`` when there is no slot to cite.
 
@@ -1722,14 +1848,16 @@ def _durable_previous(session_id: str) -> str:
     return unit_opened_previous(_KIND, session_id) or ""
 
 
-def _queue_tail_repair(previous_sid: str, slot: str) -> None:
+def _queue_tail_repair(previous_sid: str, slot: str, *, walked: "tuple[str, ...]" = ()) -> None:
     """Queue the tail repair for *previous_sid*. The ONE submission site for it.
 
-    Three things reach this: the supersede that names the predecessor, a re-attach
-    recovering a job a crash lost, and a dropped terminal that a stand-down had
-    deferred to. They differ only in what brought them here, never in what is
-    submitted, so the guards, the bucket and the ceiling exemption cannot drift apart
-    between them.
+    Four things reach this: the supersede that names the predecessor, a re-attach
+    recovering a job a crash lost, a dropped terminal that a stand-down had
+    deferred to, and the predecessor walk stepping from a log it just repaired to
+    that log's own predecessor. They differ only in what brought them here, never
+    in what is submitted, so the guards, the bucket and the ceiling exemption cannot
+    drift apart between them. *walked* is the walk's own state -- the logs it has
+    already repaired, newest first -- and is empty for every caller but the walk.
 
     Queued under the PREDECESSOR's id, which IS the deferral: the writer runs a
     session's jobs in submission order, so this cannot run until everything that crew
@@ -1747,7 +1875,7 @@ def _queue_tail_repair(previous_sid: str, slot: str) -> None:
     _hand_over(
         previous_sid,
         WriteJob.follow_on(
-            lambda: _repair_superseded(previous_sid, slot),
+            lambda: _repair_superseded(previous_sid, slot, walked=walked),
             "closing a superseded crew log's interrupted tail",
         ),
     )
@@ -1789,7 +1917,7 @@ def _terminal_dropped(session_id: str) -> "Callable[[], None]":
     return _dropped
 
 
-def _repair_superseded(previous_sid: str, slot: str) -> None:
+def _repair_superseded(previous_sid: str, slot: str, *, walked: "tuple[str, ...]" = ()) -> None:
     """Close *previous_sid*'s interrupted tail. WRITER THREAD, never a caller's.
 
     The repair half of a supersede. The successor's ``session/opened`` only NAMES
@@ -1800,6 +1928,12 @@ def _repair_superseded(previous_sid: str, slot: str) -> None:
     it every gateway restart leaves one permanently open tail per active slot, and
     that turn's cost, duration and outcome are absent from every reading of the
     file for the rest of its life.
+
+    **Then it walks on.** A repair that lands goes on to *previous_sid*'s own
+    predecessor (:func:`_walk_to_predecessor`), so a tail a crash left open further
+    back in the chain is closed by the next cold start rather than never. *walked*
+    is that walk's state, the logs it already repaired, and only the walk passes it.
+    A repair that stands down or refuses below ends the walk with it.
 
     **The deferral is the queue, not a decision.** This job is submitted into
     ``previous_sid``'s OWN bucket, and the writer runs a session's jobs in
@@ -1912,6 +2046,12 @@ def _repair_superseded(previous_sid: str, slot: str) -> None:
     # from one that closed a turn and three calls.
     log = _crew_log().CrewLog.open(_KIND, previous_sid)
     closed = log.repair_interrupted_turn()
+    # Dropping the handle is what releases the write ownership
+    # ``repair_interrupted_turn`` took: the lease is bound to the object's lifetime,
+    # so holding it any longer would keep a crew log nothing is writing owned by
+    # this process. Released BEFORE the walk below queues the next hop, so a long
+    # walk never holds more than the one log it is repairing.
+    del log
     if closed:
         logger.info(
             "session log %s: closed %d dangling entr%s on superseded crew log %s",
@@ -1920,10 +2060,113 @@ def _repair_superseded(previous_sid: str, slot: str) -> None:
             "y" if closed == 1 else "ies",
             previous_sid,
         )
-    # The handle goes out of scope here, which is what releases the write ownership
-    # ``repair_interrupted_turn`` took: the lease is bound to the object's lifetime,
-    # so holding this handle any longer would keep a crew log nothing is writing
-    # owned by this process.
+    _walk_to_predecessor(previous_sid, slot, walked)
+
+
+#: How many crew logs ONE predecessor walk repairs, counting the one it starts on.
+#: Each hop opens and scans a whole crew log on the writer thread, so this is what
+#: keeps one walk's cost finite whatever the chain holds. Far below
+#: :data:`~kiro_crew.crew_log.session_tree.SLOT_CHAIN_CAP`, which bounds a walk over
+#: records already in memory: a tail is left open only when a crash lands between
+#: a supersede's edge and its repair, so reaching a log this far back takes this
+#: many consecutive processes each dying before its own walk finished. A walk that
+#: reaches the bound says so and names the log it stopped before.
+_REPAIR_WALK_HOPS: Final[int] = 32
+#: How many repaired crew logs :data:`_repair_walked` remembers.
+_MAX_REPAIR_WALKED: Final[int] = 4096
+
+
+def _walk_to_predecessor(repaired_sid: str, slot: str, walked: "tuple[str, ...]") -> None:
+    """Queue the repair of *repaired_sid*'s own predecessor. WRITER THREAD.
+
+    The whole durable chain, not one hop. In A -> B -> C, a crash after B's
+    opening entry named A but before A's repair ran loses only the repair: the edge is
+    an append and the repair rode the in-memory buffer. B is never resumed once C
+    supersedes it, so nothing re-queues A's repair from B, and C's supersede names B
+    alone. Following each repaired log's own ``previous`` back is the only way a cold
+    successor reaches A, and a hop whose tail was already closed says nothing about
+    the hop BEFORE it, so the walk goes on past a log that needed no repair.
+
+    The next hop is read from the repaired log's OWN opening entry, the same durable
+    read the re-attach recovery uses, and each hop is a separate job queued into that
+    log's own bucket through :func:`_queue_tail_repair`. So every hop gets every guard
+    the first one got -- the deferral behind what that log still owes, the live-turn
+    stand-down, the same-slot re-check against its immutable header -- and a hop that
+    refuses ends the walk there, because a log not known to be this slot's is not one
+    whose edge may be followed.
+
+    Four stops, checked in this order:
+
+    * **A loop.** The next hop is already on this walk. The emitter refuses to WRITE
+      such an edge, but this reads files any earlier build wrote, and a damaged or
+      hand-edited opening entry can name anything. Logged, because a loop is damage.
+    * **Repaired already in this process** (:data:`_repair_walked`). Its own walk went
+      on from it, so a second supersede on the same slot does not rescan the slot's
+      whole history. Silent, because this is the ordinary case for a long-lived slot.
+    * **The bound** (:data:`_REPAIR_WALK_HOPS`). Logged, naming the log the walk
+      stopped before, so a tail left open past it is reported rather than hidden.
+    * **A hop that is not this slot's.** Its header is read before the hop is
+      queued. A log that is gone, or whose header cannot be read, ends the walk
+      quietly, because retention removing the oldest logs is how an old chain
+      normally ends. A header naming ANOTHER slot is damage and is logged.
+    """
+    walked = (*walked, repaired_sid)
+    with _lock:
+        _repair_walked[repaired_sid] = None
+        _repair_walked.move_to_end(repaired_sid)
+        while len(_repair_walked) > _MAX_REPAIR_WALKED:
+            _repair_walked.popitem(last=False)
+    following = _durable_previous(repaired_sid)
+    if not following:
+        return
+    if following in walked:
+        logger.warning(
+            "session log %s: the predecessor chain loops back on itself -- crew log %s "
+            "names %s, which this walk already repaired -- so the walk stops here; "
+            "the opening entry naming it is damaged",
+            slot,
+            repaired_sid,
+            following,
+        )
+        return
+    with _lock:
+        if following in _repair_walked:
+            return
+    if len(walked) >= _REPAIR_WALK_HOPS:
+        logger.warning(
+            "session log %s: stopped the predecessor walk at the walk's bound of %d "
+            "crew logs, before %s -- its tail, and any older one, is left as it is",
+            slot,
+            _REPAIR_WALK_HOPS,
+            following,
+        )
+        return
+    # The same header comparison `_candidate_is_same_slot` makes, read here so the
+    # two failures can be told apart. The repair re-checks it next to its write.
+    from kiro_crew.crew_log.store import unit_header_slot
+
+    owner = unit_header_slot(_KIND, following)
+    if owner is None:
+        # Retention removing the oldest logs is the ordinary end of a long-lived
+        # slot's chain, so it ends the walk quietly: queueing the hop would only
+        # have the repair warn about a gone log on every restart.
+        logger.debug(
+            "session log %s: the predecessor walk ends at %s -- its crew log is gone "
+            "or its header cannot be read",
+            slot,
+            following,
+        )
+        return
+    if owner != slot:
+        logger.warning(
+            "session log %s: the predecessor walk stops at %s -- crew log %s names it, "
+            "but its own header names another slot, so the edge is not followed",
+            slot,
+            following,
+            repaired_sid,
+        )
+        return
+    _queue_tail_repair(following, slot, walked=walked)
 
 
 def on_session_opened(
@@ -2961,6 +3204,7 @@ def on_context_composed(
     blocks: "dict[str, int] | None" = None,
     total_chars: int = 0,
     phase: str = "",
+    omitted: "dict[str, dict[str, Any]] | None" = None,
 ) -> None:
     """Record what the gateway put in front of the model, block by block.
 
@@ -2987,6 +3231,12 @@ def on_context_composed(
     knows which it built, so the field is recorded here and DERIVED nowhere: an
     unstated phase is left absent, because the nearest available guess -- the first
     composition in a unit -- is wrong for the rebuild a replay triggers mid-session.
+
+    ``omitted`` is what the composer's budgets CUT from this composition, keyed by
+    block kind, as :func:`kiro_crew.context_omissions.collect` gathered it from the
+    decisions that wrote the prompt's omission notices: counts, budgets and a reason,
+    never omitted content. It is written only when something was cut, so a reader
+    treats an absent field as "nothing omitted".
     """
     if not session_id or not enabled() or not blocks:
         return
@@ -3018,6 +3268,10 @@ def on_context_composed(
         data["step"] = int(step)
     if phase:
         data["phase"] = str(phase)
+    if omitted:
+        # ``context_omissions.record`` is the only writer of this mapping and admits
+        # only the vocabulary the entry declares, so it passes through as recorded.
+        data["omitted"] = {str(kind): dict(entry) for kind, entry in omitted.items()}
     _write(session_id, "context/composed", data, src=_SRC_GATEWAY)
 
 
@@ -4199,6 +4453,114 @@ def on_panel_published(session_id: str, data: dict[str, Any], *, timeout: float 
     return False
 
 
+def _append_dashboard(
+    session_id: str, entry_type: str, data: dict[str, Any], timeout: float
+) -> bool:
+    """Append one dashboard entry and report whether it landed. Shared by both types.
+
+    ONE helper for the accepted write and the refusal, because the two differ only
+    in their entry type and must not differ in anything else: a refusal that landed
+    while the write it refused did not, or the reverse, would leave the mistake book
+    and the dashboard disagreeing about what happened.
+
+    WAITS, like :func:`on_panel_published`, and for a sharper reason than that one
+    has: this log IS the dashboard's record. An agentic value lives nowhere else --
+    there is no file beside it, by design, because no host Python computes a
+    dashboard value -- so a caller told its write succeeded when the append did not
+    land would see the cell stay empty with nothing saying why. ``False`` is FINAL:
+    an entry the waiter gave up on is abandoned and will not land later, so one
+    write cannot end up as two values.
+
+    Queued through the same writer as every other entry, for the reason the session
+    ledger gives: an append takes the unit's WRITE OWNERSHIP, and while the emitter
+    holds a running session's handle a second handle in this process is refused.
+    Going through the writer also orders the entry against the turn the crewmate
+    wrote inside, which is what makes the mistake book's own ordering true.
+    """
+    if not session_id or not enabled():
+        return False
+    landed = threading.Event()
+    gate = threading.Lock()
+    outcome = {"ok": False, "abandoned": False}
+
+    def _job() -> None:
+        with gate:
+            # A waiter that gave up has abandoned the entry: it must not land later,
+            # or a write the crewmate was told failed would reappear on the next
+            # fold. Under the gate the two outcomes cannot cross.
+            if outcome["abandoned"]:
+                return
+            log = _handle(session_id)
+            if log is None:
+                return
+            entry = log.append(entry_type, data, src=_SRC_GATEWAY)
+            _note_eager(entry, entry_type, session_id, data)
+            outcome["ok"] = True
+
+    _submit(_job, f"appending {entry_type}", session_id, after=landed.set)
+    if landed.wait(timeout):
+        return outcome["ok"]
+    with gate:
+        if outcome["ok"]:
+            return True
+        outcome["abandoned"] = True
+    return False
+
+
+def on_dashboard_agentic(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One accepted agentic dashboard value, appended to the crewmate's DM log.
+
+    *data* is the ``dashboard/agentic_value`` payload the write path has already
+    checked against the live manifest: the field exists, it is agentic, and the
+    value is of the declared type. This emitter does not re-check -- the caller is
+    the only party holding the manifest -- and the FOLD re-checks on read, which is
+    where a line off disk needs it.
+
+    Each write replaces ONE field. There is no whole-document form of this entry
+    and deliberately so: the fields are independent cells, so a crewmate that
+    learns one number writes that one rather than restating the other twenty-three.
+    """
+    # THE TYPE IS A LITERAL HERE, not the imported constant, and that is the
+    # convention this module already follows (``on_panel_published`` appends
+    # ``"panel/published"`` the same way). It is what makes the declared vocabulary
+    # and the APPENDED vocabulary provably equal: the ratchet in
+    # ``test_crew_log_types`` reads the appended set out of this file's own syntax,
+    # so a type reaching ``log.append`` through a variable is a type it cannot see
+    # -- and a declaration no site provably produces is exactly what that test
+    # exists to refuse.
+    return _append_dashboard(session_id, "dashboard/agentic_value", data, timeout)
+
+
+def on_dashboard_refused(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
+    """One refused agentic write -- or one correction of an earlier refusal.
+
+    TWO shapes on one type, which the fold tells apart by which keys are present: a
+    refusal carries ``code``, and a correction carries ``corrects`` and the field
+    that worked. One type because they are one story -- the mistake and its answer
+    -- and a reader that had to join two types to tell whether a mistake was ever
+    fixed would be joining them on exactly the thing that is hard to get right.
+
+    BEST-EFFORT at the call site, unlike the accepted write: by the time this is
+    called the refusal is already on its way back to the caller, which is the part
+    that matters. A log that is off costs the mistake book this row and nothing
+    else, so a caller treats ``False`` as "not recorded" and never as "not refused".
+    """
+    # A literal, for the reason its sibling above spells out.
+    return _append_dashboard(session_id, "dashboard/agentic_refused", data, timeout)
+
+
+def dashboard_entry_fits(entry_type: str, data: dict[str, Any]) -> bool:
+    """Whether *data* would fit one entry of *entry_type*.
+
+    Asked beside the write rather than inside it, for :func:`panel_entry_fits`'
+    reason: the caller can act on the answer and ``_write`` cannot. An agentic value
+    over the ceiling can never land, so a crewmate told its write succeeded would
+    watch the cell stay empty -- and the refusal it should have had instead is one
+    the mistake book can teach.
+    """
+    return _entry_line_fits(entry_type, data, src=_SRC_GATEWAY)
+
+
 def panel_entry_fits(data: dict[str, Any]) -> bool:
     """Whether *data* would fit one ``panel/published`` entry.
 
@@ -4211,6 +4573,156 @@ def panel_entry_fits(data: dict[str, Any]) -> bool:
     fits.
     """
     return _entry_line_fits("panel/published", data, src=_SRC_GATEWAY)
+
+
+def on_dashboard_instance_changed(session_id: str, data: dict[str, Any]) -> None:
+    """Append ONE ``dashboard/instance_changed`` entry -- a crewmate's dashboard history.
+
+    The history half of the dynamic dashboard instance. The current value is a file
+    under the member's own space and the route has already written it, so this append
+    is the HISTORY: the instance's change log is a fold over these entries.
+
+    Does NOT wait, which is the difference from ``on_panel_published`` and is decided by
+    what the caller can do with the answer. The instance store's caller is told the
+    change landed because the record file landed; the entry is the record of HOW it got
+    there, and a caller that cannot undo the committed version has nothing to do with
+    "the history row is still queued". The store flushes once after the append so the
+    row is durable by the time the call returns in the ordinary case.
+
+    The entry carries what changed and never the page, so it is bounded by construction
+    and no size check is needed beside it -- unlike the ledger's and the panel's, whose
+    payloads are caller-sized.
+
+    *session_id* is the crewmate's own DM session, the unit a dashboard change belongs
+    to. A session with no crew log is a policy no-op here, as it is for every other
+    ``_write``.
+    """
+    _write(session_id, "dashboard/instance_changed", data, src=_SRC_GATEWAY)
+
+
+#: A card title or reason is display text a person reads, never an identity, so a
+#: bounded slice of it is enough for a reader to name the card.
+_CARD_TEXT_MAX = 300
+_CARD_ID_MAX = 64
+
+
+def _card_id(value: Any) -> str:
+    return value if isinstance(value, str) and 0 < len(value) <= _CARD_ID_MAX else ""
+
+
+def on_card_proposed(
+    session_id: str,
+    *,
+    slot: str,
+    card_id: str,
+    kind: str,
+    title: str,
+    risk: str = "",
+    revision: int = 1,
+    mid: str = "",
+) -> None:
+    """The agent proposed a change card in this session's conversation.
+
+    Written at the point the proposal landed in the transcript, so the log orders it
+    against the tool call that made it. ``mid`` is the transcript row the card is
+    drawn at: the row and this entry are the same fact in the two records, and the
+    id is what lets a reader join them. Names only -- a card's parameters are never
+    recorded, and a secret card has no value field to record in the first place.
+    """
+    cid = _card_id(card_id)
+    if not cid:
+        return
+    data: dict[str, Any] = {
+        "slot": slot,
+        "card_id": cid,
+        "kind": str(kind)[:64],
+        "title": _clip(_safe_text(title), _CARD_TEXT_MAX),
+        "revision": int(revision) if isinstance(revision, int) and revision > 0 else 1,
+    }
+    if risk:
+        data["risk"] = str(risk)[:32]
+    turn = live_turn(session_id) if session_id else 0
+    if turn:
+        data["turn"] = turn
+    if mid:
+        data["mid"] = str(mid)[:64]
+    _write(session_id, "card/proposed", data, src=_SRC_GATEWAY)
+
+
+def on_card_finished(session_id: str, *, card_id: str, status: str, revision: int = 1) -> None:
+    """A change card reached a finished status: applied, undone, cancelled, expired...
+
+    One entry per status the card ENTERS, so a failed apply followed by a successful
+    retry is two entries and the newest is the card's outcome. No turn: a card is
+    confirmed by a person, usually between turns, and the turn that proposed it is
+    already on ``card/proposed``.
+    """
+    # Lazy, like OBJECT_PRODUCERS above: this module is the boot-path import gate.
+    from kiro_crew.crew_log.entry_types import CARD_FINISHED_STATUSES
+
+    cid = _card_id(card_id)
+    # Refused rather than coerced: the card store's finished statuses are the one
+    # vocabulary, and a value outside it is a bug at the call site.
+    if not cid or status not in CARD_FINISHED_STATUSES:
+        return
+    data = {
+        "card_id": cid,
+        "status": status,
+        "revision": int(revision) if isinstance(revision, int) and revision > 0 else 1,
+    }
+    _write(session_id, "card/finished", data, src=_SRC_GATEWAY)
+
+
+def on_guide_offered(
+    session_id: str,
+    *,
+    slot: str,
+    guide_id: str,
+    actions: Sequence[str],
+    mid: str = "",
+) -> None:
+    """The agent offered a guide in this session's conversation.
+
+    ``actions`` are the registered action ids only, never their parameters. ``mid``
+    joins the entry to its transcript row, as on ``card/proposed``.
+    """
+    gid = _card_id(guide_id)
+    if not gid:
+        return
+    data: dict[str, Any] = {
+        "slot": slot,
+        "guide_id": gid,
+        "actions": [str(a)[:64] for a in actions if isinstance(a, str)][:16],
+    }
+    turn = live_turn(session_id) if session_id else 0
+    if turn:
+        data["turn"] = turn
+    if mid:
+        data["mid"] = str(mid)[:64]
+    _write(session_id, "guide/offered", data, src=_SRC_GATEWAY)
+
+
+def on_guide_started(session_id: str, *, guide_id: str) -> None:
+    """The person pressed Start on an offered guide and a tab took it over."""
+    gid = _card_id(guide_id)
+    if gid:
+        _write(session_id, "guide/started", {"guide_id": gid}, src=_SRC_GATEWAY)
+
+
+def on_guide_finished(
+    session_id: str, *, guide_id: str, status: str, reason: str | None = None
+) -> None:
+    """A guide ended: completed, cancelled (by the person, the agent or a closed
+    conversation) or expired. *reason* is kept only when it is a known one."""
+    from kiro_crew.crew_log.entry_types import GUIDE_FINISHED_REASONS, GUIDE_FINISHED_STATUSES
+
+    gid = _card_id(guide_id)
+    if not gid or status not in GUIDE_FINISHED_STATUSES:
+        return
+    data: dict[str, Any] = {"guide_id": gid, "status": status}
+    if reason in GUIDE_FINISHED_REASONS:
+        data["reason"] = reason
+    _write(session_id, "guide/finished", data, src=_SRC_GATEWAY)
 
 
 def on_work_recorded(session_id: str, data: dict[str, Any], *, timeout: float = 5.0) -> bool:
@@ -4547,13 +5059,20 @@ def on_crew_report(store: str, data: dict[str, Any], *, cite_unit: str) -> int:
         return 0
 
 
-def on_session_closed(session_id: str, reason: str) -> None:
+def on_session_closed(
+    session_id: str,
+    reason: str,
+    *,
+    on_settled: "Callable[[bool], None] | None" = None,
+) -> None:
     """Record a session teardown and drop its cached state.
 
     ``reason`` is the caller's own word for the teardown, recorded verbatim rather
-    than remapped onto a second vocabulary. The reset route is the caller today,
-    and it passes the same ``end_reason`` it records elsewhere; another teardown
-    path passing its own reason needs no change here.
+    than remapped onto a second vocabulary. Three routes call it: reset,
+    destroy (``destroyed`` or ``destroyed_sid_retained``), and the deliberate tab
+    close (``removed``, from ``_close_slot``), each passing the same
+    ``end_reason`` it records elsewhere; another teardown path passing its own
+    reason needs no change here.
 
     This entry records a TEARDOWN, not the end of the file. A forced reset -- the
     model-switch route called with ``skip_running`` false -- tears a session down
@@ -4575,6 +5094,15 @@ def on_session_closed(session_id: str, reason: str) -> None:
     drops only what a successor must not inherit; the live-turn records and the open
     tool calls of turns still running are left to their own release, so a turn whose
     session closed under it can still close its calls.
+
+    ``on_settled`` lets a caller WAIT for this edge to commit before it publishes on
+    the strength of it -- the same contract as :func:`on_session_adopted`. It is
+    called once, off the caller's thread, with ``True`` once the entry is on disk and
+    ``False`` when the write was dropped or there was no log to write to. Not awaited
+    here (``_submit`` must never block the loop), so the bounding is the caller's --
+    see :func:`awaiting_commit`. The deliberate-close path uses it so the ``removed``
+    edge lands before the conductor is woken; every other caller omits it and keeps
+    the fire-and-forget behaviour.
     """
 
     def _forget() -> None:
@@ -4625,6 +5153,7 @@ def on_session_closed(session_id: str, reason: str) -> None:
         {"reason": reason},
         src=_SRC_GATEWAY,
         after=_forget,
+        on_settled=on_settled,
     )
 
 

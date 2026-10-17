@@ -2,6 +2,7 @@
   "_source": "https://schema.cloudformation.us-east-1.amazonaws.com/CloudformationSchema.zip",
   "_zip_sha256": "de2a6c9477272e0f7b9f650739440c0992fff8ccc6426da9f6611dbee15c3198",
   "_fetched": "2026-09-30",
+  "_amended": "AWS::IAM::RolePolicy added 2026-10-13 from the same _source, zip sha256 b9a992f1d25f67a8d0dce97144334e6f72933862da3640f04668a0bea402d6c3",
   "types": {
     "AWS::IAM::Role": {
       "create": [
@@ -35,6 +36,20 @@
         "iam:ListRolePolicies",
         "iam:TagRole",
         "iam:UntagRole"
+      ]
+    },
+    "AWS::IAM::RolePolicy": {
+      "create": [
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy"
+      ],
+      "update": [
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy"
+      ],
+      "delete": [
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy"
       ]
     },
     "AWS::IAM::InstanceProfile": {

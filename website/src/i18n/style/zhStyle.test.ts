@@ -158,7 +158,7 @@ describe('zh-CN punctuation (style/zh-CN.md §1)', () => {
   })
 })
 
-describe('zh-CN tone (style/zh-CN.md §3)', () => {
+describe('zh-CN tone (style/zh-CN.md §4)', () => {
   it('never uses the honorific 您', () => {
     // The catalog is written in neutral second person 你. Mixing registers
     // mid-product reads worse than either register consistently.

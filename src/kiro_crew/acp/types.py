@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re as _re
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +31,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+    ACP_BACKENDS_FORK_AT_MESSAGE,
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION,
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_HOOKS_LIST,
@@ -44,10 +46,13 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MEMBER_DISPATCH,
     ACP_BACKENDS_MEMBER_PANEL,
+    ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
+    ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_POD_HOME_REMAP,
+    ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
@@ -56,9 +61,11 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE,
     ACP_BACKENDS_STEER,
+    ACP_BACKENDS_STEER_CONCURRENT_PROMPT,
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
     effort_config_option_id,
     effort_config_option_value,
@@ -78,6 +85,8 @@ from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for
 from kiro_crew.recovery.ladder import (  # noqa: E402 - see the re-export note above
     SESSION_RECOVERY_MAX_ATTEMPTS,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── ACP Event Kinds ──
 
@@ -130,6 +139,36 @@ METHOD_REQUEST_PERMISSION = "session/request_permission"
 METHOD_SESSION_UPDATE = "session/update"
 METHOD_METADATA = "_kiro.dev/metadata"
 METHOD_COMMANDS_EXECUTE = "_kiro.dev/commands/execute"
+# The ``_session/steering`` request codex-acp and claude-agent-acp
+# (``ACP_BACKENDS_STEERING_REQUEST``) take a user's mid-turn message on, and the
+# outcomes that decide delivery.
+METHOD_SESSION_STEERING = "_session/steering"
+STEERING_INJECTED = "injected"
+STEERING_STARTED_NEW_TURN = "startedNewTurn"
+# Bounds on what a session holds for steers it has sent and not settled: at most
+# this many at once, each at most this long. A steer past either bound takes the
+# caller's queue path instead, which has its own limits.
+MAX_STEERING_ANSWERS = 16
+MAX_STEERING_TEXT_CHARS = 64_000
+# How long a steer waits for the adapter's answer. The dashboard composer awaits
+# the steer inside its send request, which the browser aborts after 10s
+# (``SEND_ABORT_MS``), so an answer slower than this sends the steer down the
+# caller's queue path instead of leaving the request to time out.
+STEERING_ANSWER_WAIT_SECS = 8.0
+
+
+def steering_outcome(result: object) -> str:
+    """The ``outcome`` of a ``_session/steering`` answer; "" for any other shape.
+
+    The answer is adapter-authored JSON: a result that is not an object is read as
+    no outcome (undelivered) rather than trusted to have ``.get``.
+    """
+    if not isinstance(result, dict):
+        return ""
+    outcome = result.get("outcome")
+    return outcome if isinstance(outcome, str) else ""
+
+
 METHOD_SESSION_LOAD = "session/load"
 #: The other standard restore verb, for an agent that keeps sessions but does not
 #: implement full loading: it restores the session WITHOUT replaying the previous
@@ -137,6 +176,9 @@ METHOD_SESSION_LOAD = "session/load"
 #: which is why one membership set (``ACP_BACKENDS_RESUME_WITHOUT_LOAD``) decides
 #: which of the two a harness is sent rather than each having a restore path.
 METHOD_SESSION_RESUME = "session/resume"
+#: Copies a stored session into a new one and answers the new ``sessionId``; the
+#: source is left untouched. Advertised as ``sessionCapabilities.fork``.
+METHOD_SESSION_FORK = "session/fork"
 # kiro-cli extension: evict a session from the multiplexed process, freeing its
 # transcript/context + reaping its MCP children. Without this the shared
 # kiro-cli process retains every session's state for its whole lifetime, so RSS
@@ -149,6 +191,13 @@ METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
 #: ``terminate`` exists for, and the record is what would otherwise accumulate.
 #: Takes the same ``{"sessionId": ...}`` params and is idempotent.
 METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
+#: KAS's manual compaction verb. A REQUEST with ``{"sessionId": ...}`` params,
+#: answered ``{"success": bool}`` once the summary is committed; a successful run
+#: emits ``summarization_completed`` before the answer. It is how a user's
+#: ``/compact`` reaches KAS: sent as ``session/prompt`` text the model just writes a
+#: summary and the context does not shrink. Advertised in ``initialize``'s
+#: ``_meta.kiro.extensionMethods`` and forwarded by kiro-cli's relay.
+METHOD_KAS_SESSION_COMPACT = "_kiro/session/compact"
 #: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
 #: drops the session from its local map and unsubscribes the Codex thread, so the
 #: sessionId stops answering while the thread's own record survives on the Codex
@@ -437,6 +486,9 @@ STOP_REASON_CONTENT_FILTERED_WIRE = "CONTENT_FILTERED"
 # a done-but-missing-frame turn (which acks and completes normally). The
 # dashboard routes this to reset+resume+continue-nudge auto-recovery.
 STOP_REASON_STALE_RECOVER = "stale_recover"
+# Signalled by the session handle when the backend never finished the turn within
+# the turn ceiling: no complete frame arrived, so the turn's text is cut off.
+STOP_REASON_TIMEOUT = "timeout"
 # Signalled by the per-session watchdog when an in-flight tool was judged dead
 # / stuck / UNKNOWN-past-budget and the session was cancelled. Kept in the
 # "error:" family so callers without a dedicated branch fall back to the
@@ -868,6 +920,19 @@ class AcpEvent:
     #: layer: a consumer that re-parsed the text would be re-deciding a protocol
     #: question it does not own.
     control_notice: bool = False
+    #: True when this ``agent_message_chunk`` named no ``messageId``. Provenance
+    #: only, and only meaningful for a harness in
+    #: ``ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR``: there model text always names
+    #: its item and the adapter's own chunks never do, so the missing id is what
+    #: tells a provider failure written as text apart from the model's answer
+    #: (``AcpSessionHandle._run_turn``). Other harnesses leave the id off model
+    #: text too, and nothing reads the flag for them.
+    unattributed: bool = False
+    #: The backend's id for the model message a text chunk belongs to, from the
+    #: chunk's ``messageId``. claude-agent-acp stamps the provider's API message
+    #: id here, which is what its ``session/fork`` accepts as a fork point. Empty
+    #: when the frame carried none.
+    message_id: str = ""
     #: True when this event was SYNTHESIZED by the client rather than read off a
     #: backend frame. Only the claude compaction terminal sets it: an automatic
     #: compaction sends no terminal of its own, so one is manufactured once the
@@ -932,6 +997,20 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
+    #: mcp_identity_unreadable: the frame PRESENTED an MCP identity half the
+    #: name bound refused (``tool_surface.mcp_identity_unreadable``) -- on the
+    #: preceding tool_call frame (carried per scoped toolCallId) or on this
+    #: permission frame's own ``mcpTool.identity``. Not the same as naming no
+    #: identity: the call names a tool Crew cannot retain, so the exact per-tool
+    #: deny that name is under cannot be checked, and every site that answers a
+    #: permission request refuses it outright instead of judging it by title.
+    mcp_identity_unreadable: bool = False
+    #: kas_builtin_ids: this permission event was built for a member of
+    #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so a bare built-in
+    #: ``tool_name`` is a KAS id (``read_file``) that ``platform.tool_names``
+    #: maps to its kiro-cli policy name. False on every other harness, whose
+    #: bare ids the gate reads under their own name only.
+    kas_builtin_ids: bool = False
     # Canonical, NON-model-authored tool identity from adapter-authored
     # ``_meta.kiro`` or ``_meta.goose`` (see ``_dispatch._kiro_tool_name``).
     # ``title`` is LLM-authored prose — for shell tools ``select_tool_title``
@@ -948,6 +1027,22 @@ class AcpEvent:
     #: on a permission event, and only from that engine-written field, never from
     #: the title or the model's arguments. Empty when the frame carries none.
     harness_tool_id: str = ""
+    #: The kiro-cli read built-in (``fs_read``, ``web_fetch``, ...) a claude
+    #: permission request is for, mapped from the ``_meta.claudeCode.toolName``
+    #: claude-agent-acp stamped on the preceding ``tool_call`` frame. Set only on
+    #: a permission event and only from that cached stamp; empty on every other
+    #: backend and for every other tool.
+    harness_builtin_tool: str = ""
+    #: The DeepSeek Harness tool a permission request is for (``read``, ``bash``),
+    #: as the preceding ``tool_call`` frame stated it in ``title``. Set only on a
+    #: deepseek permission event, only from that cached name, and empty when a
+    #: second ``tool_call`` frame named the same id differently in the turn; empty
+    #: on every other backend.
+    deepseek_tool_name: str = ""
+    #: Why a DeepSeek Harness READ_ONLY turn refuses this request outright: its
+    #: launch did not prove stock dsh registers the read tools. Set only on a
+    #: deepseek permission event; empty once proved and on every other backend.
+    deepseek_read_only_issue: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the
@@ -1177,6 +1272,14 @@ class AcpPromptStats:
     # delta'd against. SESSION state: survives ``carry_over()`` like the
     # context fields, or every turn would re-bill the whole session's spend.
     cost_session_usd: float = 0.0
+    # The ACP session ``cost_session_usd`` was measured on. Lets a restore of
+    # that SAME session keep the baseline (see ``restore_cost_session``).
+    cost_baseline_sid: str = ""
+    # True while the adapter's counter holds spend Crew never saw: a restored
+    # session's ledger is brought back from the harness's own transcript, so
+    # its first reading includes everything billed before this process. The
+    # next reading is adopted as the baseline and bills nothing.
+    cost_baseline_unknown: bool = False
     # True while ``context_pct`` reads 0.0 only because a compaction dropped the
     # counts and no fresh telemetry has re-derived them. Distinguishes "the
     # transcript is empty" from "the transcript's size is unknown" — the two are
@@ -1207,6 +1310,8 @@ class AcpPromptStats:
             context_tokens_from_usage=self.context_tokens_from_usage,
             context_pct_unknown=self.context_pct_unknown,
             cost_session_usd=self.cost_session_usd,
+            cost_baseline_sid=self.cost_baseline_sid,
+            cost_baseline_unknown=self.cost_baseline_unknown,
         )
 
     def reset_context_state(self) -> None:
@@ -1240,6 +1345,7 @@ class AcpPromptStats:
         # under-count the first turns (any new reading below the stale baseline
         # only survives via the monotonic reset guard).
         self.cost_session_usd = 0.0
+        self.cost_baseline_unknown = False
 
     def note_pct_reported(self) -> None:
         """Mark ``context_pct`` as backed by real telemetry.
@@ -1267,20 +1373,71 @@ class AcpPromptStats:
             return STOP_REASON_REFUSAL, self.refusal
         return stop_reason, None
 
+    def begin_cost_session(self, session_id: str) -> None:
+        """Start the cost baseline for a session this process just created.
+
+        A ``session/new`` opens a fresh ledger in the adapter, so its counter
+        starts at zero and every later reading is spend Crew can see.
+        """
+        self.cost_session_usd = 0.0
+        self.cost_baseline_sid = session_id or ""
+        self.cost_baseline_unknown = False
+
+    def restore_cost_session(self, session_id: str) -> None:
+        """Set the cost baseline for a session restored by load or resume.
+
+        The claude harness restores a resumed session's cost ledger from its
+        own transcript, so the counter does NOT restart at zero: it carries the
+        session's whole lifetime spend. A baseline measured on this same session
+        (the adapter process restarted under a live client) still describes
+        that ledger and is kept. Any other baseline -- a fresh client after a
+        gateway restart, or one measured on a different session -- cannot, so
+        the next reading is adopted as the baseline instead of billed.
+        """
+        sid = session_id or ""
+        if sid and sid == self.cost_baseline_sid and not self.cost_baseline_unknown:
+            return
+        self.cost_session_usd = 0.0
+        self.cost_baseline_sid = sid
+        self.cost_baseline_unknown = True
+
     def apply_cost_cumulative(self, cumulative: float) -> None:
         """Fold a session-cumulative cost reading into the per-turn delta.
 
         The adapter reports cost as a running session total, so the per-turn
-        figure is the movement since the last reading. Monotonic guard: a
-        reading BELOW the stored baseline means the adapter's counter reset
-        (process restart) — the new total is then entirely spend since the
-        reset, so it is taken whole rather than producing a negative delta.
-        The caller validates the value (finite, non-negative) at the
+        figure is the movement since the last reading. Two readings carry spend
+        Crew cannot attribute, and both bill nothing and rebase:
+
+        - the first reading after ``restore_cost_session`` found no usable
+          baseline: it includes spend billed before this process;
+        - a reading BELOW the stored baseline: the ledger was restored to a
+          total Crew never saw, so taking it whole would re-bill the lifetime.
+
+        Under-counting one turn is bounded; re-billing a session's lifetime is
+        not. Each case logs a WARNING so a gap in the usage rows explains
+        itself. The caller validates the value (finite, non-negative) at the
         ``parse_usage_cost`` chokepoint.
         """
+        if self.cost_baseline_unknown:
+            logger.warning(
+                "cost baseline unknown for restored session %s: adopting "
+                "cumulative $%.6f as the baseline; this reading bills $0",
+                self.cost_baseline_sid or "(unknown)",
+                cumulative,
+            )
+            self.cost_baseline_unknown = False
+            self.cost_session_usd = cumulative
+            return
         delta = cumulative - self.cost_session_usd
         if delta < 0:
-            delta = cumulative
+            logger.warning(
+                "cost cumulative for session %s fell from $%.6f to $%.6f: "
+                "rebasing; this reading bills $0",
+                self.cost_baseline_sid or "(unknown)",
+                self.cost_session_usd,
+                cumulative,
+            )
+            delta = 0.0
         self.cost_usd += delta
         self.cost_session_usd = cumulative
 
@@ -1356,8 +1513,8 @@ class AcpPromptStats:
         counts. No-op once a real usage_update has
         set authoritative counts. ``model_id`` is the caller's resolved id (the
         kiro-agent ``currentModelId``, else the user-picked alias). Resolves the
-        window through ``model_registry.model_window`` (kiro-list cache >
-        registry > heuristic) and only backfills a KNOWN window, leaving 0 for a
+        window through ``model_registry.model_window`` (operator window > kiro-list
+        cache > registry > heuristic) and only backfills a KNOWN window, leaving 0 for a
         genuinely-unknown model so the frontend's own authoritative window drives
         the meter. A real ``usage_update.size`` always wins. A surviving
         ``context_window_tokens`` (e.g. kept across a compaction reset — the

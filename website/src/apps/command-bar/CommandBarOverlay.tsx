@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowRight,
   Check,
+  ChevronsDown,
   Clock,
   Command,
   Cog,
@@ -79,6 +80,7 @@ import {
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_CREW } from '../../utils/previewFlags'
+import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -152,6 +154,9 @@ const DEBOUNCE_MS = 150
  */
 const RECENT_SESSION_ROWS = 3
 
+/** Row id of the attention group's "+N more blocked" row. */
+const ATTENTION_MORE_ID = 'attention:more'
+
 /**
  * A settings row's matcher: the settings scorer decides whether and how well it
  * matches, and its tier says which field to draw the hit on.
@@ -202,9 +207,10 @@ function kindLabel(
   queryActive = false,
 ): string | null {
   // An attention row's column carries its LIVE STATE, which is both more useful than
-  // a kind word and the reason that section exists. It is never empty: a row reaches
-  // this group only because its status is a pill, so the renderer always has one to
-  // show and never falls through to this label.
+  // a kind word and the reason that section exists. A session row reaches this group
+  // only because its status is a pill, so the renderer always has one to show. The
+  // group's `+N more blocked` overflow row is not a session and has no status, so its
+  // column stays empty: its title already says what it is.
   if (row.group === 'attention') return null
   // A recent row is named by its own group header and its session glyph, and its
   // right-hand column belongs to whatever the session is DOING. Labelling it
@@ -402,6 +408,7 @@ type Slot =
 function actionLabel(slot: Slot): string {
   switch (slot.tag) {
     case 'root':
+      if (slot.row.expand) return i18nT('apps.commandBar.action_show_all_blocked')
       if (slot.row.kind === 'view') return i18nT('apps.commandBar.action_enter')
       // A `prompt` row steps into a field rather than acting, so Enter is named for
       // proceeding. Calling it "Run" would promise that this Enter approves or
@@ -619,6 +626,12 @@ export default function CommandBarOverlay({
   const [previewClipped, setPreviewClipped] = useState(false)
 
   const [selected, setSelected] = useState(0)
+  /**
+   * Whether the reader asked to see every session waiting on them. Until then the
+   * attention group keeps the root's per-group cap and ends on a row counting the
+   * rest, so a seventh blocked session is never dropped without a trace.
+   */
+  const [attentionExpanded, setAttentionExpanded] = useState(false)
   /**
    * A keyboard Enter that landed in the debounce window, held until the rows answer
    * the query it was pressed against -- and no later one.
@@ -934,6 +947,7 @@ export default function CommandBarOverlay({
     setUsage(loadUsage())
     setActionError(null)
     setPendingRow(null)
+    setAttentionExpanded(false)
   }, [open])
 
   useEffect(() => {
@@ -1279,8 +1293,21 @@ export default function CommandBarOverlay({
   // the row selected against the previous query. Debounce exists for the scoped
   // views, which do hit the network.
   const ranked: RankedRow[] = useMemo(
-    () => (scope ? [] : rankRootRows(rootRows, query, usage)),
-    [scope, rootRows, query, usage],
+    () =>
+      scope
+        ? []
+        : rankRootRows(rootRows, query, usage, Date.now(), {
+            attentionExpanded,
+            attentionOverflowRow: hidden => ({
+              id: ATTENTION_MORE_ID,
+              title: i18nT('apps.commandBar.attention_more', { count: hidden }),
+              group: 'attention',
+              kind: 'invoke',
+              icon: <ChevronsDown size={14} className="lucide-inline" />,
+              expand: () => setAttentionExpanded(true),
+            }),
+          }),
+    [scope, rootRows, query, usage, attentionExpanded],
   )
 
   // Sessions view. Enabled only inside the scope, so the root cannot trigger it.
@@ -1396,8 +1423,8 @@ export default function CommandBarOverlay({
   } = useQuery({
     // Nested UNDER the corpus key, like the artifacts view above, because these rows
     // are DERIVED from `['chat-folders']` and every folder write ends in
-    // `invalidateQueries({ queryKey: ['chat-folders'] })` (`ChatSidebar` create,
-    // delete and update). React-Query matches that by key PREFIX, so a key outside
+    // `invalidateQueries({ queryKey: ['chat-folders'] })` (the create, delete and
+    // update mutations in `pages/chat-sidebar/folders.ts`). React-Query matches that by key PREFIX, so a key outside
     // the corpus namespace is a cache no folder write can reach — and this view is
     // unmounted whenever the bar is closed, so its one chance to re-derive is the
     // remount, which refetches nothing that is still fresh. A folder deleted in that
@@ -1437,7 +1464,7 @@ export default function CommandBarOverlay({
    * them is working leaves the count identical, and that is precisely the change that
    * has to reach the screen. Frames that change nothing about the roster's running
    * set — a token tick, another surface's slot — produce the same string and cost
-   * nothing. The catalog fetch stays cached under its own 60s key, so a re-derivation
+   * nothing. The catalog fetch stays cached under its own key (MATES_STALE_MS), so a re-derivation
    * is a local re-map, not a request.
    */
   const mateQuery = scope === 'mates' ? debounced.trim() : ''
@@ -1557,7 +1584,7 @@ export default function CommandBarOverlay({
    * it open with the field intact.
    */
   const seedNewSession = useCallback(
-    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean) => {
+    (pendingKey: string, text: string, failureLabel: string, autoSend: boolean, agent?: string, appName?: string) => {
       const run = dialogRunRef.current
       const owned = () => dialogRunRef.current === run
       // Whether this seed belongs to a CONTRIBUTED command, decided before the awaits.
@@ -1579,8 +1606,17 @@ export default function CommandBarOverlay({
       // to type into it. Leaning on "create makes the new slot active" is only true at
       // the instant it resolves -- and this callback can resolve long after the user
       // has moved on, at which point the seed lands in whatever they moved to.
+      // The contributed row may name the agent the seeded session runs as; ''
+      // and undefined both mean the dashboard default. A named agent is always
+      // selected as a TEMPLATE: it is one the app ships, and without the kind a
+      // host crew member sharing that alias would win resolution and run the
+      // app's prompt with the member's template and private memory. The owning app
+      // rides along so the backend refuses any turn on which the bare name would
+      // resolve to a different spec (a project-local one, say).
       void dispatch(createSlot({
         activate: false,
+        sessionFolder: false,
+        ...(agent ? { agent, agent_kind: 'template' as const, ...(appName ? { appAgentOwner: appName } : {}) } : {}),
         ...(contributed ? { memory_mode: 'persistent' } : {}),
       }))
         .unwrap()
@@ -1636,7 +1672,9 @@ export default function CommandBarOverlay({
                   // WebSocket push that would seed it is not guaranteed to arrive. Left
                   // uninvalidated, the sidebar can keep rendering a tree without the new
                   // folder and the next run reads the same stale list.
-                  () => queryClient.invalidateQueries({ queryKey: ['chat-folders'] }),
+                  // Through the idle gate so the refetch cannot land inside a
+                  // pending optimistic folder write in the sidebar.
+                  () => invalidateFoldersWhenIdle(queryClient),
                 )
               }
             } finally {
@@ -1665,6 +1703,12 @@ export default function CommandBarOverlay({
       // work twice -- two sessions from one intent -- because the bar stays open
       // until the promise settles.
       if (pendingRow) return
+      // Revealing the rest of a list is not a use of any one row, so it records no
+      // frecency and leaves the bar open on the rows it revealed.
+      if (row.expand) {
+        row.expand()
+        return
+      }
       use(row.id)
       if (row.kind === 'view') {
         // Entering is the activation event: the engine's first query happens
@@ -1680,7 +1724,7 @@ export default function CommandBarOverlay({
         if (!cmd) return
         if (!cmd.argument) {
           // Nothing to collect, so this is the whole action: seed and go.
-          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend)
+          seedNewSession(cmd.id, cmd.prompt, cmd.title, cmd.autoSend, cmd.agent, cmd.appName)
           return
         }
         // No work yet -- this row's operation is defined by a value the user has not
@@ -2202,7 +2246,7 @@ export default function CommandBarOverlay({
       return
     }
     setActionError(null)
-    seedNewSession(live.id, now, live.title, live.autoSend)
+    seedNewSession(live.id, now, live.title, live.autoSend, live.agent, live.appName)
   }, [argCommand, commandById, exitArgumentState, pendingRow, query, seedNewSession])
 
   const onKeyDown = useCallback(
@@ -2719,7 +2763,7 @@ export default function CommandBarOverlay({
                 // where you are, what follows is what you type. The focus ring stays,
                 // and unlike the field's it only ever paints on Tab, so it is never the
                 // permanent box.
-                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus:outline-hidden focus-visible:ring-1 focus-visible:ring-accent/40 rounded"
+                className="shrink-0 max-w-[40%] truncate text-[13px] text-text bg-transparent border-none p-0 cursor-pointer focus-ring-accent rounded"
               >
                 {navName}
               </button>
@@ -2920,7 +2964,7 @@ export default function CommandBarOverlay({
                       // halt on inert text.
                       // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
                       tabIndex={0}
-                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-accent"
+                      className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-hover/40 p-2 text-[11px] text-text focus-ring-accent"
                     >
                       {resolvePrompt(argCommand, query)}
                     </pre>

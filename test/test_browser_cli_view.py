@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 
@@ -942,9 +943,41 @@ def test_free_port_is_bindable_loopback() -> None:
         s.bind(("127.0.0.1", port))
 
 
-def test_free_port_is_not_hardcoded() -> None:
-    """A fixed port would collide with whatever else the operator runs."""
-    assert mod._free_port() != mod._free_port()
+def test_free_port_is_not_hardcoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fixed port would collide with whatever else the operator runs.
+
+    So every number must be the kernel's: each call binds port 0 on loopback and
+    returns the port the kernel answered for that bind. That is asserted on the binds
+    and their answers, over two calls so a cached first answer fails too. The two
+    numbers are never compared: once the first socket is closed the kernel may legally
+    hand back the same port.
+    """
+    binds: list[object] = []
+    answers: list[int] = []
+
+    class _RecordingSocket(socket.socket):
+        def bind(self, address: object) -> None:
+            binds.append(address)
+            super().bind(address)
+
+        def getsockname(self) -> object:
+            name = super().getsockname()
+            answers.append(name[1])
+            return name
+
+    # The module's own ``socket`` binding, so the stdlib module stays untouched.
+    monkeypatch.setattr(
+        mod,
+        "socket",
+        SimpleNamespace(
+            socket=_RecordingSocket, AF_INET=socket.AF_INET, SOCK_STREAM=socket.SOCK_STREAM
+        ),
+    )
+
+    first, second = mod._free_port(), mod._free_port()
+
+    assert binds == [(mod.LOOPBACK_HOST, 0)] * 2, "a call did not leave the port to the kernel"
+    assert answers == [first, second], "a returned port is not the kernel's answer to that call"
 
 
 def test_ensure_running_returns_none_without_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1489,6 +1522,40 @@ def test_status_unavailable_without_the_cli(monkeypatch: pytest.MonkeyPatch) -> 
     assert st["port"] is None
     assert st["reason"]
     assert "cli_version" not in st
+
+
+def test_status_unavailable_without_a_launcher_says_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing on disk or PATH: the plain not-installed reason, unchanged."""
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    monkeypatch.setattr(mod, "legacy_launcher_refused", lambda: False)
+
+    st = mod.status()
+
+    assert st["status"] == "unavailable"
+    assert st["reason"] == mod.CLI_NOT_INSTALLED_REASON
+
+
+def test_status_unavailable_with_a_refused_legacy_launcher_explains_the_reinstall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A launcher is present but declined: explain the one-time managed reinstall.
+
+    A ``~/.local/bin`` or version-manager install that sits outside the managed
+    prefix is not run, so the surface must say a reinstall is needed rather than
+    repeat "not installed" as if nothing exists.
+    """
+    monkeypatch.setattr(mod, "cli_path", lambda: None)
+    monkeypatch.setattr(mod, "legacy_launcher_refused", lambda: True)
+
+    st = mod.status()
+
+    assert st["status"] == "unavailable"
+    assert st["reason"] == mod.CLI_LEGACY_UNTRUSTED_REASON
+    assert st["reason"] != mod.CLI_NOT_INSTALLED_REASON
+    # The reason the dashboard renders must name the remedy (reinstall).
+    assert "reinstall" in st["reason"].lower()
 
 
 def test_status_running_reports_the_url(monkeypatch: pytest.MonkeyPatch) -> None:

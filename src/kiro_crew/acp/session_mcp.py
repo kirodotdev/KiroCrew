@@ -101,6 +101,7 @@ from kiro_crew.mcp_cleanup import (
     KIROCREW_BIN_MCP_SERVERS,
     mcp_entry_is_muted,
 )
+from kiro_crew.user_json import loads_user_jsonc
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +354,9 @@ def _read_mcp_settings(path: Path) -> dict[str, Any]:
         # and refuse every search agent's session over a file with nothing in it.
         return {}
     try:
-        settings = json.loads(raw.decode("utf-8"))
+        # JSONC-tolerant, like discovery: a commented file's restrictions
+        # (``disabledTools``, muted servers) must still be enforced.
+        settings = loads_user_jsonc(raw.decode("utf-8"))
     except RecursionError as exc:
         raise ValueError("MCP settings exceed the JSON nesting limit") from exc
     if not isinstance(settings, dict) or not isinstance(settings.get("mcpServers", {}), dict):
@@ -483,6 +486,44 @@ def project_agent_spec(agent: str, work_dir: str | Path | None) -> tuple[bool, d
     return True, _read_agent_spec(project, operation="spec_hooks_project_agent", source="unknown")
 
 
+def trusted_project_agent_spec(agent: str, work_dir: str | Path | None) -> tuple[bool, dict | None]:
+    """:func:`project_agent_spec` as a reader of the spec's ``hooks`` consumes it.
+
+    A hook in that spec is a command Crew runs as the user when a session opens
+    or a prompt is sent, so the checkout's spec answers here only when
+    :func:`_project_mcp_trusted` lets it choose commands -- the same verdict, on
+    the same resolution, that decides whether its ``mcpServers`` launch. Refused,
+    it answers ``(False, None)``: the caller falls through to the user-level spec
+    of that name, the one the session's MCP array falls back to as well. A spec
+    that exists but cannot be read still answers ``(True, None)``, so a caller
+    that fails closed on it keeps doing so.
+    """
+    declared, spec = project_agent_spec(agent, work_dir)
+    if not declared or spec is None or _project_mcp_trusted(work_dir):
+        return declared, spec
+    logger.info(
+        "spec hooks: the project spec for agent %r is not trusted to run commands;"
+        " its hooks are not loaded",
+        agent,
+    )
+    return False, None
+
+
+def project_spec_hooks_withheld(agent: str, work_dir: str | Path | None) -> bool:
+    """Whether the checkout's own spec for *agent* sets ``hooks`` that do not run.
+
+    True when that spec reads, sets a non-empty ``hooks`` field, and
+    :func:`_project_mcp_trusted` refuses it, which is the refusal
+    :func:`trusted_project_agent_spec` applies. The session-start notice asks
+    this, so a repository's hooks never stop running unseen. A spec that cannot
+    be read answers ``False``: that case already fails PreToolUse closed.
+    """
+    declared, spec = project_agent_spec(agent, work_dir)
+    if not declared or not isinstance(spec, dict) or not spec.get("hooks"):
+        return False
+    return not _project_mcp_trusted(work_dir)
+
+
 def _agent_spec_for(agent: str, work_dir: str | Path | None = None) -> dict[str, Any] | None:
     """The materialized kiro spec for *agent*, or ``None`` when unreadable.
 
@@ -503,7 +544,9 @@ def _project_mcp_trusted(work_dir: str | Path | None) -> bool:
     Crew cannot read that verdict, and the project-skills consent covers skill
     files entering context, not commands launching, so neither is borrowed here.
     The answer stays ``False`` until a consent exists whose wording names MCP
-    servers. *work_dir* is the seam such a consent would key on.
+    servers. *work_dir* is the seam such a consent would key on. The same verdict
+    gates the spec's ``hooks`` (:func:`trusted_project_agent_spec`), so a consent
+    for it also admits the checkout's hook commands and must say so.
 
     Refusing the servers does not refuse the spec's restrictions: a project entry's
     switch-off keys (:func:`_project_restrictions`) still apply, because they can
@@ -591,9 +634,9 @@ def _session_spec_and_snapshot_for(
     """:func:`_agent_spec_and_snapshot_for` as a mirrored session's array consumes it.
 
     The array is where an array-backed host gets its MCP servers, so this is the
-    read that applies :func:`_project_mcp_trusted`. Every other reader -- the
-    unresolved-ref diagnostic on every host, Crew-fired spec hooks -- keeps the
-    plain resolution.
+    read that applies :func:`_project_mcp_trusted` to them. Crew-fired spec hooks
+    apply the same verdict through :func:`trusted_project_agent_spec`; the
+    unresolved-ref diagnostic on every host keeps the plain resolution.
     """
     return _agent_spec_and_snapshot_for(agent, work_dir, mirrored_session=True)
 
@@ -632,9 +675,10 @@ def _agent_spec_and_snapshot_for(
     at all, and the claude spawn path -- unlike kiro-cli's ``--agent`` one -- has
     no other reason to write it. Best-effort and never raises.
 
-    A DERIVED agent (``kirocrew-worker``) is answered from the freshness gate's own
-    snapshot and reads nothing here -- see the comment at that branch for why a read
-    after the gate is a second observation rather than a tighter one.
+    A DERIVED agent (``kirocrew-worker``, ``kirocrew-heartbeat``) is answered from the
+    freshness gate's own snapshot and reads nothing here -- see the comment at that
+    branch for why a read after the gate is a second observation rather than a tighter
+    one.
 
     Reads through ``agent_discovery._read_agent_spec``, the module's documented
     ONE reader, rather than parsing the file here: the agents directory is
@@ -971,6 +1015,7 @@ class SessionMcpProjection(NamedTuple):
     #: the harness's own native ones the array has no opinion on. See
     #: ``AcpClient._spec_zero_tools``.
     zero_tools: bool = False
+    agent_spec: dict[str, Any] | None = None
 
 
 def session_mcp_projection(
@@ -1021,6 +1066,7 @@ def session_mcp_projection(
         allowlist=_tools_allowlist(spec)._replace(muted=disabled_servers),
         derived_spec_snapshot=snapshot,
         zero_tools=isinstance(spec_tools, list) and not spec_tools,
+        agent_spec=spec,
     )
 
 
@@ -1211,6 +1257,52 @@ def _managed_element_env(declared: Any) -> dict[str, str]:
         )
     env.update(_agent_mod._managed_mcp_env())
     return env
+
+
+def builtin_app_identity_launches() -> dict[str, dict[str, Any]]:
+    """Builtin app MCP servers that get a per-session identity element, and their launch.
+
+    The app-server half of the population :func:`kiro_control_plane_servers`
+    re-declares. A builtin app server whose shipped manifest runs the host CLI
+    (``mochi:mochi``, ``command: "kirocrew"``) is pinned by
+    ``bridges._pin_host_cli_command`` to this gateway's own interpreter, so it is
+    Kiro Crew's own code and serves through ``mcp_shared.run_mcp_stdio_loop``,
+    whose ``tools/call`` needs the same attestation as the managed servers. Mounted
+    straight from the spec it carries no session token and refuses every call as
+    ``identity_unattested``.
+
+    Maps each such name to ``{"command", "args", "env"}`` re-derived from the
+    IMMUTABLE manifest and pinned exactly as the registration path pins it, so the
+    element's launch is never the spec's. Fail-soft: an unreadable manifest source
+    yields no entry, which leaves that server as it is today.
+    """
+    # circular import: apps.bridges imports agent and config machinery at load.
+    from kiro_crew.apps.bridges import _pin_host_cli_command
+    from kiro_crew.apps.execution import builtin_app_host_cli_mcp_launches
+
+    try:
+        shipped = builtin_app_host_cli_mcp_launches()
+    except Exception:  # noqa: BLE001 -- a manifest read failure must not fail a spawn
+        logger.warning("session MCP: could not read builtin app manifests", exc_info=True)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for name, (app_name, args) in sorted(shipped.items()):
+        try:
+            pinned = _pin_host_cli_command(app_name, {"command": "kirocrew", "args": list(args)})
+        except Exception:  # noqa: BLE001 -- one app's pin failure must not cost the others
+            logger.warning(
+                "session MCP: could not pin %r to the host interpreter", name, exc_info=True
+            )
+            continue
+        command = pinned.get("command")
+        if not isinstance(command, str) or not command or command == "kirocrew":
+            continue
+        out[name] = {
+            "command": command,
+            "args": [str(a) for a in pinned.get("args") or []],
+            "env": {str(k): str(v) for k, v in (pinned.get("env") or {}).items()},
+        }
+    return out
 
 
 def _declared_launch(source: Mapping[str, Any]) -> tuple[str, list[str]]:
@@ -1707,6 +1799,12 @@ def kiro_control_plane_servers(
     server where the writers' emission question would refuse to mint one, and
     still yields ``None`` behind a closed ``spec_gate``.
 
+    Builtin app servers that run Crew's own code (:func:`builtin_app_identity_launches`)
+    are covered the same way and for the same reason: kiro-cli mounts them straight
+    from the spec, so without this element ``mochi:mochi`` refuses every call. Their
+    launch is re-derived from the shipped manifest, never the spec, and an app that
+    ships its own binary is not in that set.
+
     Returns the array AND the verdicts it withheld on
     (:class:`NativeControlPlaneMount`), both from this call's one read of the
     settings files. The verdict is reached before the array is consulted: a name
@@ -1737,14 +1835,29 @@ def kiro_control_plane_servers(
             exc,
             agent,
         )
-        return NativeControlPlaneMount([], {name: exc for name in IDENTITY_BOUND_SERVERS})
+        # The verdict covers the whole population this function mounts, the
+        # builtin app servers included, so a withheld one is named as such.
+        unreadable = (*IDENTITY_BOUND_SERVERS, *builtin_app_identity_launches())
+        return NativeControlPlaneMount([], {name: exc for name in unreadable})
     out: list[dict[str, Any]] = []
     withheld_by_name: dict[str, NativeMountWithholding | NativeSettingsUnreadable] = {}
-    for name in IDENTITY_BOUND_SERVERS:
-        if not allow.grants(name):
-            continue
+    # Crew's managed servers first, in their established order, then the builtin
+    # app servers that run Crew's own code (see builtin_app_identity_launches).
+    # Each carries the launch it must be re-derived from and, for an app server,
+    # the env its pinned launch needs (PYTHONPATH and KIROCREW_HOME).
+    candidates: list[tuple[str, dict[str, Any] | None, dict[str, str]]] = [
+        (name, managed_mcp_spec_entry(name, include_opt_in=True), {})
+        for name in IDENTITY_BOUND_SERVERS
+        if allow.grants(name)
+    ]
+    app_launches = builtin_app_identity_launches()
+    candidates.extend(
+        (name, launch, dict(launch.get("env") or {}))
+        for name, launch in app_launches.items()
+        if name not in IDENTITY_BOUND_SERVERS and allow.grants(name)
+    )
+    for name, managed, pinned_env in candidates:
         entry = spec["mcpServers"].get(name)
-        managed = managed_mcp_spec_entry(name, include_opt_in=True)
         if not isinstance(entry, dict) or not isinstance(managed, dict):
             continue
         withheld = native_mount_withholding(name, entry, settings)
@@ -1788,7 +1901,7 @@ def kiro_control_plane_servers(
             **entry,
             "command": managed_launch[0],
             "args": list(managed_launch[1]),
-            "env": _managed_element_env(entry.get("env")),
+            "env": {**_managed_element_env(entry.get("env")), **pinned_env},
         }
         element = acp_server_element(name, owned)
         if element is not None:

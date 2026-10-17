@@ -16,10 +16,16 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import pinned_fs
+from kiro_crew.dashboard import pinned_session_order
 from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.folder_ownership import (  # re-exported: callers import them here
+    _folder_owner_app,
+    _is_descendant,
+    _subtree_holds_foreign_folder,
+)
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
@@ -41,6 +47,7 @@ from kiro_crew.folder_steering import crosses_memory_silo, memory_silo_fence
 from kiro_crew.hooks import is_unc_shape, unc_probe_allowed, validate_file_path
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sandbox import voice_runtime_workspace_conflict
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -176,7 +183,7 @@ def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | 
 
 
 async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
-    """Ask the cheapest model for ONE emoji representing a folder ``name``.
+    """Ask the background session for ONE emoji representing a folder ``name``.
 
     Shared by chat folders and artifact-library folders. Serialized via a
     module-level lock so concurrent folder creations don't interleave streams
@@ -189,8 +196,9 @@ async def generate_emoji_for_name(state: DashboardState, name: str) -> str:
         "No text, no explanation, just the single emoji character."
     )
 
-    # Folder icon is a trivial single-emoji task — run on the cheapest model via
-    # the shared background one-liner helper (best-effort, 30s bound, denials
+    # Folder icon is a trivial single-emoji task — run on the session's governed
+    # default model (``_FOLDER_ICON_MODEL`` is "auto") via the shared background
+    # one-liner helper (best-effort, 30s bound, denials
     # SEL-logged). The lock serializes icon generation across folders.
     async with _folder_icon_lock:
         try:
@@ -359,6 +367,64 @@ def _folders_with_history_counts(state: DashboardState) -> list[dict]:
     """Folders enriched with a computed, non-persisted `history_count` field."""
     counts = _folder_history_counts(state)
     return [{**f, "history_count": counts.get(f["id"], 0)} for f in state._folders]
+
+
+def chat_folder_subtree_ids(state: DashboardState, folder_id: str) -> frozenset[str]:
+    """*folder_id* and every chat folder nested under it, or empty when it is unknown.
+
+    The sidebar is a tree, so a folder holds the chats filed in its sub-folders
+    too. An id that names no folder in the tree yields an empty set, never the
+    whole tree.
+    """
+    folders = getattr(state, "_folders", None)
+    if not folder_id or not isinstance(folders, list):
+        return frozenset()
+    rows = [f for f in folders if isinstance(f, dict) and isinstance(f.get("id"), str)]
+    if not any(f["id"] == folder_id for f in rows):
+        return frozenset()
+    return frozenset(
+        f["id"] for f in rows if _is_descendant(rows, ancestor_id=folder_id, folder_id=f["id"])
+    )
+
+
+def live_slot_names_in_folders(state: DashboardState, folder_ids: frozenset[str]) -> set[str]:
+    """Names of the open chat slots filed in any of *folder_ids*.
+
+    Reads the live slot table, so it runs on the event loop that mutates it.
+    """
+    slots = getattr(state, "_slots", None)
+    if not folder_ids or not isinstance(slots, dict):
+        return set()
+    return {
+        str(name) for name, slot in list(slots.items()) if _slot_home_folder_id(slot) in folder_ids
+    }
+
+
+def archived_session_names_in_folders(
+    state: DashboardState, folder_ids: frozenset[str]
+) -> set[str]:
+    """Slot names of the on-disk sessions filed in any of *folder_ids*.
+
+    A dashboard transcript is stored as ``dashboard_<slot>`` (stacked prefixes
+    from resume round-trips fold to one), so ``ledger_key`` drops the prefix to
+    get the slot name an artifact's provenance records. A channel transcript's
+    stem is already the folded channel key that provenance compares against, so
+    it passes through unchanged. Scans the transcript directory: call it off the
+    event loop.
+    """
+    from kiro_crew.session_ledger import ledger_key
+
+    log = getattr(state, "conversation_log", None)
+    if not folder_ids or not log:
+        return set()
+    names: set[str] = set()
+    for session in log.list_sessions():
+        if session.get("folder_id") not in folder_ids:
+            continue
+        key = ledger_key(str(session.get("key") or ""))
+        if key:
+            names.add(key)
+    return names
 
 
 def note_folder_filed(state: DashboardState, folder_id: str) -> None:
@@ -661,7 +727,7 @@ MAX_FOLDER_STEERING_DIR_LEN = 4096
 
 
 def _refuse_principal_steering_dirs(
-    request_app: str, steering_dirs: list, *, operation: str, folder_id: str
+    request_app: str, steering_dirs: list, *, operation: str, folder_id: str, agent: bool = False
 ) -> web.Response | None:
     """Only the PERSON may declare steering directories; refuse everyone else.
 
@@ -678,11 +744,16 @@ def _refuse_principal_steering_dirs(
     calls carry the empty principal and are unaffected; a person can still
     declare steering on a folder an app or member owns, and the delivery gate
     then routes it to that principal's chats as before.
+
+    ``agent`` marks a call on the internal credential every MCP tool call
+    carries. It is refused the same way: an agent proposes a ``folder.steering``
+    change card instead, which the person's own browser applies through this
+    route.
     """
-    if not request_app or not steering_dirs:
+    if not (request_app or agent) or not steering_dirs:
         return None
     sel().log_api_access(
-        caller=request_app,
+        caller=request_app or "internal",
         operation=operation,
         outcome="denied",
         source="app_isolation",
@@ -1012,29 +1083,6 @@ def member_slot_write_refused(
     return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
 
-def _folder_owner_app(folder: dict[str, Any]) -> str:
-    """The principal that owns *folder*, or ``""`` when the person owns it.
-
-    The single place the storage rule is expressed. A folder created by a
-    non-person principal carries that principal in ``owner_app``:
-
-    * an APP -> its bare app name (unchanged; every folder written before crew
-      members reached this surface keeps its meaning, so this stayed a field
-      addition rather than a migration); and
-    * an admitted crew MEMBER -> ``"member:<store>"`` (see
-      ``token_auth.folder_principal``). App names are validated identifiers that
-      never begin ``member:``, so the two principal spaces cannot collide.
-
-    An absent or empty key reads as the person's, exactly as before.
-
-    Ownership decides only the tree-shaping verbs (create-into, rename,
-    reparent, delete). Reads stay whole for apps (an app sees the person's
-    folders); a member's reads are scoped to its own folders and sessions (see
-    ``api_chat_folders``).
-    """
-    return str(folder.get("owner_app") or "")
-
-
 def caller_home_slot(state: DashboardState, request: web.Request, principal: str) -> Any:
     """The calling session's OWN slot, when a non-person *principal* may nest from it.
 
@@ -1077,57 +1125,6 @@ def _slot_home_folder_id(slot: Any) -> str:
     """The folder *slot* is filed in, or ``""`` for none (or no slot)."""
     folder_id = getattr(slot, "folder_id", "") if slot is not None else ""
     return folder_id if isinstance(folder_id, str) else ""
-
-
-def _subtree_holds_foreign_folder(
-    folders: list[dict[str, Any]], *, root_id: str, request_app: str
-) -> bool:
-    """True if anything under *root_id* belongs to someone other than *request_app*.
-
-    Reparenting a folder relocates everything beneath it -- that is what "the
-    folder moves with everything in it" means -- so the blast radius of a move is
-    the whole SUBTREE, not the row being written. An app moving a folder it owns
-    would otherwise relocate a folder the person nested inside it, which is the
-    same violation as editing that folder directly, reached one level down.
-
-    Used by the reparent path only. Delete asks a stricter question instead --
-    whether the folder is EMPTY -- because a delete has more kinds of content to
-    account for (sessions, and archived sessions a live scan cannot see), and
-    emptiness answers all of them without an ownership test per content type.
-
-    Scoped to the descendants and not the root: the caller's authority over the
-    root itself is a separate question, answered separately.
-
-    Uses the cycle-guarded walk so a pre-existing corrupt parent chain in
-    folders.json cannot hang the request.
-    """
-    for f in folders:
-        fid = str(f.get("id") or "")
-        if fid == root_id:
-            continue
-        if _folder_owner_app(f) == request_app:
-            continue
-        if _is_descendant(folders, ancestor_id=root_id, folder_id=fid):
-            return True
-    return False
-
-
-def _is_descendant(folders: list[dict], *, ancestor_id: str, folder_id: str) -> bool:
-    """True if `folder_id` is `ancestor_id` or lies anywhere under it.
-
-    Walks parent_id links upward from `folder_id` with a visited-set guard
-    so pre-existing corrupt cycles in folders.json can't hang the request.
-    """
-    by_id = {f["id"]: f for f in folders}
-    seen: set[str] = set()
-    cur: str | None = folder_id
-    while cur and cur not in seen:
-        if cur == ancestor_id:
-            return True
-        seen.add(cur)
-        node = by_id.get(cur)
-        cur = str(node.get("parent_id") or "") if node else None
-    return False
 
 
 class FolderCreateError(ValueError):
@@ -1544,7 +1541,11 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     # the person" stays the one representation (see _folder_owner_app).
     request_app = folder_principal(state, request)
     refused = _refuse_principal_steering_dirs(
-        request_app, steering_dirs, operation="chat.folder_create", folder_id=""
+        request_app,
+        steering_dirs,
+        operation="chat.folder_create",
+        folder_id="",
+        agent=request.get("internal_auth") is True,
     )
     if refused is not None:
         return refused
@@ -1618,6 +1619,51 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         resources=str(folder["id"]),
     )
     return web.json_response(folder, status=201)
+
+
+def _caller_reaches_a_channel(request: web.Request, caller_key: str) -> bool:
+    """Whether a channel can deliver turns into the session behind *caller_key*.
+
+    The mirror and Slack-thread reading is the work-ledger gate's own
+    ``_reaches_a_channel``, called rather than re-composed, so both gates
+    resolve the caller's slot the same way and give one answer per session.
+    It fails closed on an unreadable store.
+
+    Two clauses sit on top of it, because the ledger reaches them elsewhere:
+    a ``channel:`` key (an agent spawned for a channel thread, which
+    ``is_channel_session_key`` does not name) and a channel-born slot
+    (``session_control._channel_link_of``). The ledger's entry gate covers a
+    channel-born caller through ``_caller_admission``; this endpoint has no
+    such gate, so it reads the slot's link here, on the slot found by the
+    ledger's normalisation of the key (``session_ledger.ledger_key``).
+    """
+    # Imported here: session_control (and the handlers that import it) import
+    # this module at load.
+    from kiro_crew import session_ledger
+    from kiro_crew.dashboard import session_control
+    from kiro_crew.dashboard.handlers.work_ledger import _reaches_a_channel
+
+    sk = (caller_key or "").strip()
+    if not sk:
+        return False
+    if sk.startswith("channel:") or is_channel_session_key(sk):
+        return True
+    if _reaches_a_channel(request, sk):
+        return True
+    state: DashboardState = request.app["state"]
+    key = session_ledger.ledger_key(sk)
+    for candidate in (sk, key, f"dashboard_{key}"):
+        slot = state.get_slot(candidate)
+        if slot is not None and session_control._channel_link_of(slot):
+            return True
+    return False
+
+
+def _agent_in_channel_reachable_session(request: web.Request) -> bool:
+    """A conversation resumed from a channel keeps the session's dashboard: key."""
+    return _audit_origin(request)[0] != "dashboard" and _caller_reaches_a_channel(
+        request, request.headers.get("X-Session-Key", "").strip()
+    )
 
 
 async def api_chat_folder_update(request: web.Request) -> web.Response:
@@ -1774,6 +1820,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             raw_steering if isinstance(raw_steering, list) else [raw_steering],
             operation="chat.folder_steering_dirs",
             folder_id=fid,
+            agent=request.get("internal_auth") is True,
         )
         if refused is not None:
             return refused
@@ -1785,6 +1832,26 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
             )
         changes["steering_dirs"] = resolved_steering
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_FOLDER_STEERING_EXPECT
+
+    # Set only by a folder.steering card's Apply/Undo step: the list it
+    # replaces, compared under the store lock in _apply.
+    expect_steering = request.get(REQ_CARD_FOLDER_STEERING_EXPECT)
+    if (
+        expect_steering is not None
+        and "steering_dirs" in changes
+        and changes["steering_dirs"] != body["steering_dirs"]
+    ):
+        # The card carries each directory already resolved, so a step whose
+        # list now resolves elsewhere (a directory swapped for a link after
+        # the person approved it) would store a tree they never saw.
+        return web.json_response(
+            {
+                "error": "a steering directory now resolves to a different path than the card showed",
+                "code": "steering_dirs_changed",
+            },
+            status=409,
+        )
     if "tags" in body:
         # Vocabulary-constrained tag list. An empty list clears the folder's
         # tags; anything else must be ids that exist in the tag vocabulary.
@@ -1801,14 +1868,46 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # persisted name — never from a pre-lock snapshot a concurrent write may
     # have superseded.
     committed_name: list[str] = []
+    origin_source, origin_caller = _audit_origin(request)
+    refuse_duplicate_name = origin_source != "dashboard"
     # A person editing anything beyond layout claims the folder: its agent mark
     # goes, and chat_folder_delete refuses it from then on. ``regenerate_icon``
     # is not in ``changes`` (the icon lands later, from the generator), so it
     # is counted here by name. A person moving a folder INTO another also
     # claims that destination, the same as nesting a new folder under it.
-    by_person = _audit_origin(request)[0] == "dashboard"
+    by_person = origin_source == "dashboard"
     claims_for_person = by_person and (regenerate_icon or bool(set(changes) - _LAYOUT_ONLY_FIELDS))
     claims_parent_for_person = by_person and reparenting and bool(new_parent)
+    # An agent rename or restyle from a session a channel can drive is refused
+    # here, not only in the MCP tool: a conversation resumed from a channel into
+    # a dashboard session keeps that session's ``dashboard:`` key, so no check on
+    # the key can tell the channel's turns from the person's. Reachability is
+    # state this endpoint holds (``_caller_reaches_a_channel``). Moves and
+    # reorders go through chat_folder_move, whose channel rule is its own.
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if (
+        origin_source != "dashboard"
+        and ({"name", "icon", "color"} & changes.keys() or regenerate_icon)
+        and _caller_reaches_a_channel(request, caller_key)
+    ):
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="channel_containment",
+            resources=fid,
+            error="agent rename from a session a channel can drive",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this session can receive turns from a channel conversation, so "
+                    "an agent cannot rename or restyle folders from it"
+                ),
+                "code": "channel_reachable_caller",
+            },
+            status=403,
+        )
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -1819,6 +1918,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # belongs to between validation and the write.
         if request_app and _folder_owner_app(target) != request_app:
             return False, "not_owned"
+        if (
+            expect_steering is not None
+            and list(target.get("steering_dirs") or []) != expect_steering
+        ):
+            return False, "steering_changed"
         if reparenting and new_parent:
             if not any(f["id"] == new_parent for f in folders):
                 return False, "parent_not_found"
@@ -1840,6 +1944,23 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
+        if refuse_duplicate_name and "name" in changes:
+            # Same rule and same place as create_folder_record's: an agent never
+            # makes a same-name sibling, because the two then share one path and
+            # neither can be addressed by it. Decided here, under the lock, over
+            # the whole tree -- a crew member's own GET is filtered, so a check
+            # against what the caller can read would miss a folder it cannot
+            # see. The folder's own row is excluded, so re-casing its own name
+            # is allowed. The browser keeps a person's freedom to name two alike.
+            final_parent = new_parent if reparenting else str(target.get("parent_id") or "")
+            folded = str(changes["name"]).strip().casefold()
+            if any(
+                str(f.get("id")) != fid
+                and str(f.get("parent_id") or "") == final_parent
+                and str(f.get("name") or "").strip().casefold() == folded
+                for f in folders
+            ):
+                return False, "name_exists"
         target.update(changes)
         if claims_for_person:
             target.pop(CREATED_BY_SESSION, None)
@@ -1921,11 +2042,35 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             },
             status=403,
         )
+    if err == "name_exists":
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="duplicate_name",
+            resources=fid,
+            error="agent rename would duplicate a sibling folder name",
+        )
+        return web.json_response(
+            {
+                "error": "a sibling folder already has that name",
+                "code": "folder_name_exists",
+            },
+            status=409,
+        )
     if err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         return web.json_response(
             {"error": "parent folder not found", "code": "folder_parent_not_found"},
             status=400,
+        )
+    if err == "steering_changed":
+        return web.json_response(
+            {
+                "error": "the folder's steering directories changed since this was checked",
+                "code": "steering_dirs_changed",
+            },
+            status=409,
         )
     if err == "cycle":
         # A concurrent reparent moved the target under this folder while this
@@ -2489,7 +2634,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# The authorization-identity helper is homed in ``token_auth`` beside the rule it
+# The authorization-identity helper is homed in ``token_auth_callers`` beside the rule it
 # wraps; this module keeps its historical private name because
 # ``chat_folder_scaffold`` imports it from here and
 # ``test_internal_secret_app_identity_3690`` addresses it as
@@ -2778,6 +2923,7 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
         prior_pinned = slot.pinned
+        prior_rank = state.pin_rank(slot)
         new_pinned = body.get("pinned", False)
         # Do not use Python truthiness for API booleans: JSON strings such as
         # "false" are non-empty and therefore truthy.  The sibling metadata
@@ -2816,8 +2962,92 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
-    state.push_slot_patch(slot.key, ("pinned",))
+        # The order is the person's: a pin made by any other caller does not
+        # move anything in that order. A session with
+        # no stored place stays unranked, one that has a place keeps it, and an
+        # unpin leaves a live, unpinned key that the next person-initiated
+        # write prunes. The writer leaves the order alone for an agent in a
+        # channel-reachable session.
+        person_caller = not folder_principal(state, request)
+        order_changed = False
+        order_saved: bool | None = True
+        # A person's pin whose order cannot be read is answered as an error
+        # below, like a failed write, so the caller retries once the read
+        # works instead of trusting an order this pin never reached.
+        order_readable = not person_caller or await ensure_pinned_order_loaded(state)
+        # An unchanged pin still reconciles when the order disagrees with it:
+        # that is the retry of a pin whose order write failed, and skipping it
+        # would leave the order wrong until the next reorder.
+        if (
+            person_caller
+            and order_readable
+            and (changed or new_pinned != (slot.key in state._pinned_session_order))
+        ):
+            # Still under the metadata lock, so a concurrent reorder cannot
+            # write an order computed before this pin landed. The pin itself is
+            # already durable and stands; a failed order write is published
+            # with the pin and answered as an error below, so the caller
+            # re-reads the slots instead of trusting a rank that was not saved.
+            order_before = list(state._pinned_session_order)
+            order_saved = await _write_pinned_order(
+                state,
+                pinned_session_order.after_pin_change(
+                    list(state._pinned_session_order),
+                    slot.key,
+                    new_pinned,
+                    state.pinned_session_flags(),
+                    state._pinned_session_order_stored,
+                ),
+                request=request,
+            )
+            order_changed = (
+                order_saved is True and list(state._pinned_session_order) != order_before
+            )
+    # A one-row patch carries only ``pinned``, so a pin that moved this row's
+    # own rank (an app re-pinning a slot the person ranked brings its place
+    # back) needs the full list too.
+    if order_changed or state.pin_rank(slot) != prior_rank:
+        # Other rows' ranks moved too, which a one-row patch cannot carry.
+        state.push_slots_update()
+    else:
+        state.push_slot_patch(slot.key, ("pinned",))
     source, caller = _audit_origin(request)
+    if not order_readable:
+        sel().log_api_access(
+            caller=caller,
+            operation="chat.slot_pin",
+            outcome="error",
+            source=source,
+            resources=name,
+            error="pinned order unreadable",
+        )
+        return web.json_response(
+            {
+                "error": "the pin was saved but the gateway could not read its order file",
+                "code": "pinned_order_unreadable",
+                "pinned": slot.pinned,
+                "changed": changed,
+            },
+            status=503,
+        )
+    if order_saved is False:
+        sel().log_api_access(
+            caller=caller,
+            operation="chat.slot_pin",
+            outcome="error",
+            source=source,
+            resources=name,
+            error="pinned order write failed",
+        )
+        return web.json_response(
+            {
+                "error": "the pin was saved but the gateway could not write its order file",
+                "code": "pinned_order_write_failed",
+                "pinned": slot.pinned,
+                "changed": changed,
+            },
+            status=500,
+        )
     sel().log_api_access(
         caller=caller,
         operation="chat.slot_pin",
@@ -2826,6 +3056,577 @@ async def api_chat_slot_pin(request: web.Request) -> web.Response:
         resources=name,
     )
     return web.json_response({"ok": True, "pinned": slot.pinned, "changed": changed})
+
+
+async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/mutes-opened — toggle the "mute sessions it
+    opens" rule on a creating session.
+
+    When set, every session this one opens -- and anything those open, down the
+    durable ``created_by`` chain -- is muted for attention on the client: no
+    turn-done chime, no background-finished toast, no unread badge, starting
+    from the worker's first turn. The creating session itself keeps all
+    of its signals, and a tool-approval prompt from a muted session still
+    surfaces (handled client-side).
+
+    Shaped exactly like :func:`api_chat_slot_pin`, with one deliberate
+    difference: this write is the user's own decision (``session_create``'s
+    contract says an agent must not open sessions already silenced), so this
+    route is NOT in the member-admitted set in ``handlers/_shared.py`` and no
+    MCP tool reaches it. The same three ownership fences still apply.
+    """
+
+    return await _toggle_slot_user_flag(request, "mutes_opened")
+
+
+async def api_chat_slot_muted(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/muted — toggle the per-row mute of THIS session.
+
+    A muted session raises no turn-done chime, background-finished toast or
+    unread badge on the client. A tool-approval prompt from a muted session
+    still surfaces. The user picks the row from its own kebab
+    menu, so it can name a session other than the active one.
+
+    Same contract as :func:`api_chat_slot_mutes_opened`: user-only, the same
+    ownership fences, and persist-before-publish.
+    """
+
+    return await _toggle_slot_user_flag(request, "muted")
+
+
+async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Response:
+    """The shared body of the two user-owned mute toggles (``mutes_opened`` and
+    ``muted``). Each comment below that names ``mutes_opened`` applies to both."""
+
+    operation = f"chat.slot_{field}"
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    slot = state._slots.get(name)
+    if not slot:
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    if (refusal := refuse_unattributable_caller(state, request, operation)) is not None:
+        return refusal
+    if (refusal := member_slot_write_refused(state, request, slot, operation)) is not None:
+        return refusal
+    request_app = _effective_request_app(state, request)
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, operation)) is not None:
+        return denied
+    authorized_history_key = slot_history_key(slot)
+    if not app_owns_transcript(state._slots, request_app, authorized_history_key):
+        audit_app_slot_denial(
+            request_app,
+            operation,
+            slot.key,
+            "app does not own this slot's transcript",
+        )
+        return slot_not_found()
+    # User-only provenance. The feature contract (and docs/feature-map) say this
+    # flag is set by the dashboard USER alone -- no agent or MCP route reaches
+    # it, because session_create's own contract forbids an agent opening
+    # already-silenced sessions. The ownership fences above stop a FOREIGN
+    # caller, but an app or internal-agent caller writing to a slot it owns would
+    # still pass them, so a shipped built-in app holding the /api/chat/slots/*
+    # grant could set the flag with no user action. Require positive evidence of
+    # a dashboard human here -- the same (is_dashboard_user AND not internal_auth)
+    # pair the autonudge user-input notifier uses -- so an app caller
+    # (is_dashboard_user is False) and a loopback MCP/cron caller
+    # (internal_auth is True) are both refused before any mutation.
+    if not (request.get("is_dashboard_user") is True and request.get("internal_auth") is not True):
+        source, caller = _audit_origin(request)
+        sel().log_api_access(
+            caller=caller,
+            operation=operation,
+            outcome="denied",
+            source=source,
+            resources=name,
+            error="mute toggle is a dashboard-user action; app and agent callers are refused",
+        )
+        return web.json_response(
+            {
+                "error": "this setting can only be changed by a dashboard user",
+                "code": f"{field}_user_only",
+            },
+            status=403,
+        )
+    # Shared parse-and-shape guard: a body that is valid JSON but not an object
+    # (a list, string or number) answers 400 body_not_object instead of letting
+    # the .get() below turn a client mistake into a 500. The body is a fixed set
+    # of control fields, so the shared default byte cap applies.
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    expected_created = str(body.get("expected_created") or "")
+    async with _slot_meta_txn_lock(state):
+        if (
+            state._slots.get(name) is not slot
+            or slot_history_key(slot) != authorized_history_key
+            or (expected_created and slot.created_at != expected_created)
+            or not app_owns_transcript(state._slots, request_app, authorized_history_key)
+        ):
+            source, caller = _audit_origin(request)
+            sel().log_api_access(
+                caller=caller,
+                operation=operation,
+                outcome="denied",
+                source=source,
+                resources=name,
+                error="session was deleted or rebound",
+            )
+            return web.json_response(
+                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+            )
+        prior = getattr(slot, field)
+        new_value = body.get(field, False)
+        # JSON strings such as "false" are truthy; validate the type like pin.
+        if not isinstance(new_value, bool):
+            return web.json_response(
+                {"error": f"{field} must be a boolean", "code": f"{field}_not_bool"},
+                status=400,
+            )
+        changed = prior != new_value
+        if changed:
+            # Persist-before-you-publish, done under the lock. The live
+            # ``slot.mutes_opened`` is LEFT at ``prior`` across the whole save:
+            # the NEW value is persisted as a STAGED override that both save
+            # paths honor (the full ``build_full_line`` AND the empty-window
+            # ``merge_empty_window`` branch a message-less newborn takes -- the
+            # latter was the round-1 F1 gap, where the staged value was ignored
+            # and the stale live flag reached disk).
+            #
+            # Because the live flag does not change until the write commits, a
+            # concurrent ``/api/chat/slots`` GET or a worker-completion
+            # ``push_slots_update`` DURING the save window reads the committed
+            # ``prior`` value -- never the provisional one -- so a failed save
+            # leaves nothing to correct and publishes nothing.
+            #
+            # The live flag is flipped by ``after_commit_under_lock``, which the
+            # save invokes right after its ``atomic_write`` (or the merge's
+            # commit) while STILL HOLDING the transcript ``_locked``. A
+            # concurrent dirty-slot flush needs that same lock to serialize the
+            # slot, so it cannot interleave between the commit and the flip and
+            # resurrect ``prior`` (the round-1 F2 race). On a non-raising refuse
+            # or a raising failure the write never commits, so the callback never
+            # runs and the live flag stays ``prior``.
+            #
+            # best_effort=False so a lock timeout / disk-full PROPAGATES rather
+            # than being swallowed and acknowledged as a durable change.
+            #
+            # COMMIT WITNESS: ``save_slot_off_loop`` can return True WITHOUT the
+            # write committing -- the empty-window merge of a line-less tab (a
+            # new incognito session with no metadata line yet) is a by-design
+            # SKIP: its guard runs, sees an empty record, and refuses to
+            # materialize a line, so ``after_commit_under_lock`` never fires yet
+            # the save still reports True. ``committed`` is set INSIDE the hook,
+            # so it is True only if the write genuinely committed. A True save
+            # with ``committed`` still False means the value never reached disk,
+            # which we must not acknowledge as a durable change.
+            committed = False
+
+            def _commit_live_flag() -> None:
+                nonlocal committed
+                committed = True
+                setattr(slot, field, new_value)
+
+            try:
+                saved = await save_slot_off_loop(
+                    state,
+                    slot,
+                    force=True,
+                    best_effort=False,
+                    expected_history_key=authorized_history_key,
+                    mutes_opened_override=new_value if field == "mutes_opened" else None,
+                    muted_override=new_value if field == "muted" else None,
+                    after_commit_under_lock=_commit_live_flag,
+                )
+            except Exception:
+                # The write did not commit, the live flag was never touched, and
+                # nothing provisional was ever published -- so there is no
+                # corrective frame to send. Mark the slot dirty only so an
+                # unrelated flush re-converges the (unchanged) durable record,
+                # and answer 503 so the client retries.
+                slot._dirty = True
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation=operation,
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="could not persist mute setting",
+                )
+                logger.warning(
+                    "%s: durable save of slot=%s failed; " "live flag untouched, nothing published",
+                    operation,
+                    slot.key,
+                    exc_info=True,
+                )
+                return web.json_response(
+                    {
+                        "error": "could not persist the mute setting; please retry",
+                        "code": f"{field}_save_failed",
+                    },
+                    status=503,
+                )
+            if not saved:
+                # A non-raising refuse (the slot was deleted or rebound under the
+                # write). The write never committed, the live flag was never
+                # touched, and nothing provisional was published -- no corrective
+                # frame is owed.
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation=operation,
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="session was deleted or rebound",
+                )
+                return web.json_response(
+                    {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+                )
+            if not committed:
+                # The save reported success WITHOUT the write committing: the
+                # empty-window merge of a line-less tab (a new incognito session
+                # with no metadata line yet) refused to materialize a line, so
+                # ``after_commit_under_lock`` never ran. The value never reached
+                # disk, the live flag was never flipped, and nothing provisional
+                # was published -- so there is nothing to correct. Answer 409 so
+                # the client knows the setting cannot be saved yet (it takes once
+                # the session has written its first line) rather than reporting a
+                # change that never persisted.
+                source, caller = _audit_origin(request)
+                sel().log_api_access(
+                    caller=caller,
+                    operation=operation,
+                    outcome="denied",
+                    source=source,
+                    resources=name,
+                    error="session has no durable record yet",
+                )
+                logger.info(
+                    "%s: slot=%s has no metadata line yet; "
+                    "mute not persisted, live flag untouched, nothing published",
+                    operation,
+                    slot.key,
+                )
+                return web.json_response(
+                    {
+                        "error": "this session cannot be saved yet; try again after it has started",
+                        "code": "session_gone",
+                    },
+                    status=409,
+                )
+    state.push_slot_patch(slot.key, (field,))
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation=operation,
+        outcome="allowed",
+        source=source,
+        resources=name,
+    )
+    return web.json_response({"ok": True, field: getattr(slot, field), "changed": changed})
+
+
+async def ensure_pinned_order_loaded(state: DashboardState) -> bool:
+    """Read the stored pinned order if it has not landed yet; ``True`` once loaded.
+
+    The gateway reads the file after it starts serving (see
+    ``load_pinned_order_after_listen``), so a pin or reorder can arrive first.
+    Every writer calls this before it computes a new order, or it would write
+    one derived from an empty list over the stored one. Returns ``False`` when
+    the file could not be read, and the writer leaves the stored order alone.
+
+    Whichever caller lands the read publishes it when it holds any key: the
+    slots frames sent before it carried no ``pin_rank``, and a writer that then
+    refuses (a 409 hand-off) would otherwise leave every open tab on the plain
+    sort. An empty read changes no rank, so it sends nothing.
+    """
+    if not state._pinned_session_order_loaded:
+        read = await asyncio.to_thread(state.read_pinned_session_order)
+        if state.adopt_pinned_session_order(read) and state._pinned_session_order:
+            state.push_slots_update()
+    return state._pinned_session_order_loaded
+
+
+async def load_pinned_order_after_listen(state: DashboardState) -> None:
+    """Read the pinned order after the listener is up; the read publishes the ranks.
+
+    Kept off the boot path (``no-new-work-on-gateway-boot-path``): until it
+    lands, slot rows carry no ``pin_rank`` and pinned sessions show in the
+    sidebar's own sort for a moment.
+    """
+    try:
+        await ensure_pinned_order_loaded(state)
+    except Exception:  # noqa: BLE001 -- a display preference must not crash startup
+        logger.warning("could not load the pinned session order", exc_info=True)
+
+
+async def _write_pinned_order(
+    state: DashboardState, keys: list[str], *, request: web.Request, explicit: bool = False
+) -> bool | None:
+    """Persist *keys* as the pinned order, then adopt it in memory.
+
+    The order is the person's: a channel-reachable agent returns ``None``
+    without changing disk or memory. Every order write passes here, so the
+    rule holds on every route without refusing the pin itself.
+
+    Memory changes only after the file write succeeds, so the order the
+    sidebar shows is always the one a restart would load. Returns ``False``
+    (logged) when the write fails.
+
+    An unchanged order is skipped, except an *explicit* reorder that has not
+    been stored yet: that request is the person setting an order, even an
+    empty one, and the stored file is what later refuses a stale browser
+    hand-off. A pin change is never explicit, so pinning before any reorder
+    still writes nothing and keeps the plain sort.
+    """
+    if _agent_in_channel_reachable_session(request):
+        return None
+    if keys == list(state._pinned_session_order) and (
+        state._pinned_session_order_stored or not explicit
+    ):
+        return True
+    try:
+        await asyncio.to_thread(state.save_pinned_session_order, keys)
+    except OSError:
+        logger.warning("could not write the pinned session order", exc_info=True)
+        return False
+    state._pinned_session_order = keys
+    state._pinned_session_order_loaded = True
+    state._pinned_session_order_stored = True
+    state.bump_pinned_order_rev()
+    return True
+
+
+#: Longest ``created`` token a reorder may echo per key: an ISO-8601 timestamp
+#: with offset is 32 characters, so this leaves room without leaving it open.
+_MAX_EXPECTED_CREATED_CHARS = 64
+
+
+def _replaced_keys(state: DashboardState, expected_created: dict[str, str]) -> list[str]:
+    """Keys whose live slot carries a different ``created`` than the caller saw.
+
+    A key with no live slot is not counted: the order keeps keys the gateway
+    may still be restoring, and a plain create later starts unpinned.
+    """
+    return [
+        key
+        for key, created in expected_created.items()
+        if (slot := state._slots.get(key)) is not None and created and slot.created_at != created
+    ]
+
+
+#: Byte ceiling for a pinned-order body: every key at its maximum length plus
+#: JSON quoting and separators, once in ``keys`` and once more with its
+#: ``created`` token in ``expected_created``, plus room for the field names.
+_MAX_PINNED_ORDER_BODY_BYTES = (
+    pinned_session_order.MAX_PINNED_ORDER_KEYS
+    * (2 * (pinned_session_order.MAX_PINNED_ORDER_KEY_CHARS + 4) + _MAX_EXPECTED_CREATED_CHARS + 4)
+    + 256
+)
+
+
+def _channel_pinned_order_refusal(request: web.Request) -> web.Response:
+    """Keep both reorder containment gates on the same denial and SEL row."""
+    _, origin_caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=origin_caller,
+        operation="chat.pinned_order",
+        outcome="denied",
+        source="channel_containment",
+        error="agent reorder from a session a channel can drive",
+    )
+    return web.json_response(
+        {
+            "error": (
+                "this session can receive turns from a channel conversation, so "
+                "an agent cannot reorder pinned sessions from it"
+            ),
+            "code": "channel_reachable_caller",
+        },
+        status=403,
+    )
+
+
+async def api_chat_pinned_order(request: web.Request) -> web.Response:
+    """POST /api/chat/pinned-order -- set the order of pinned sessions in one write.
+
+    Body: ``{"keys": [slot_key, ...]}``, the pinned sessions in the order they
+    should appear. The named keys take the places they already held, in the
+    requested order; stored keys the request did not name stay where they are,
+    and named keys that were not stored yet follow. The whole order is
+    one file, replaced atomically, so the reorder lands entirely or not at all.
+
+    ``"only_if_unset": true`` makes the write conditional: it lands only while
+    no order is stored, and is otherwise a 409 ``pinned_order_exists`` carrying
+    the stored order. The sidebar's one-time hand-off of a browser's old local
+    order uses it.
+
+    Every key must name a live, pinned session. One that does not is a 409 for
+    the whole request: the caller computed its order from a sidebar that has
+    since changed, and applying part of it would put sessions where nobody
+    asked. The ``only_if_unset`` hand-off is the exception: it carries a
+    browser's whole old order, which may name sessions the gateway has not
+    restored yet, so its keys are pruned instead of checked. A repeated key is
+    a 400.
+
+    The order is the person's sidebar preference and spans sessions no single
+    app or crew member owns, so an app or member caller is refused with 403.
+    An agent in a session a channel can reach is also refused; the person's
+    browser may still reorder from that session.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := refuse_unattributable_caller(state, request, "chat.pinned_order")) is not None:
+        return refusal
+    principal = folder_principal(state, request)
+    if principal:
+        sel().log_api_access(
+            caller=principal,
+            operation="chat.pinned_order",
+            outcome="denied",
+            source="app_isolation",
+            error="only the person may reorder pinned sessions",
+        )
+        return web.json_response(
+            {
+                "error": "only the person may reorder pinned sessions",
+                "code": "pinned_order_person_only",
+            },
+            status=403,
+        )
+    if _agent_in_channel_reachable_session(request):
+        return _channel_pinned_order_refusal(request)
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_PINNED_ORDER_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    keys = body.get("keys")
+    if not isinstance(keys, list) or not all(
+        isinstance(key, str) and 0 < len(key) <= pinned_session_order.MAX_PINNED_ORDER_KEY_CHARS
+        for key in keys
+    ):
+        return web.json_response(
+            {"error": "keys must be an array of session keys", "code": "keys_invalid"},
+            status=400,
+        )
+    if len(keys) > pinned_session_order.MAX_PINNED_ORDER_KEYS:
+        return web.json_response(
+            {"error": "too many keys in one reorder", "code": "keys_too_many"}, status=400
+        )
+    if len(set(keys)) != len(keys):
+        return web.json_response(
+            {"error": "a key appears more than once", "code": "keys_duplicate"}, status=400
+        )
+    raw_only_if_unset = body.get("only_if_unset", False)
+    if not isinstance(raw_only_if_unset, bool):
+        return web.json_response(
+            {"error": "only_if_unset must be a boolean", "code": "only_if_unset_not_bool"},
+            status=400,
+        )
+    only_if_unset = raw_only_if_unset
+    # Optional per-key generation tokens, the same ``created`` value the pin
+    # route reads as ``expected_created``: a sidebar or the MCP tool read the
+    # slots before sending, and a key can be closed and recreated for another
+    # conversation in between. A named key whose live slot carries a
+    # different ``created`` is refused instead of ranked.
+    raw_expected = body.get("expected_created", {})
+    if not isinstance(raw_expected, dict) or not all(
+        isinstance(key, str)
+        and isinstance(value, str)
+        and len(value) <= _MAX_EXPECTED_CREATED_CHARS
+        for key, value in raw_expected.items()
+    ):
+        return web.json_response(
+            {
+                "error": "expected_created must map session keys to strings",
+                "code": "expected_created_invalid",
+            },
+            status=400,
+        )
+    named = set(keys)
+    expected_created = {key: value for key, value in raw_expected.items() if key in named}
+    async with _slot_meta_txn_lock(state):
+        if not await ensure_pinned_order_loaded(state):
+            return web.json_response(
+                {"error": "the pinned order could not be read", "code": "pinned_order_unreadable"},
+                status=503,
+            )
+        if only_if_unset and state._pinned_session_order_stored:
+            # A browser handing over its old local order: only an order nobody
+            # has set yet may take it, so it cannot replace a newer one saved
+            # from another browser since that browser last read the slots.
+            return web.json_response(
+                {
+                    "error": "a pinned order is already stored",
+                    "code": "pinned_order_exists",
+                    "order": list(state._pinned_session_order),
+                    "rev": state._pinned_order_rev,
+                },
+                status=409,
+            )
+        # Checked under the same lock the pin route holds, so no pin or unpin
+        # can land between this check and the write.
+        flags = state.pinned_session_flags()
+        # A browser's hand-off carries its whole old order, including sessions
+        # the gateway may still be restoring, so it is not checked against the
+        # live set: prune keeps keys with no live slot and drops only live,
+        # unpinned ones. A reorder from a live sidebar must name live pins.
+        missing = [] if only_if_unset else [key for key in keys if not flags.get(key)]
+        if missing:
+            return web.json_response(
+                {
+                    "error": "a session in the reorder is gone or no longer pinned",
+                    "code": "slot_not_pinned",
+                    "keys": missing[:10],
+                },
+                status=409,
+            )
+        replaced = _replaced_keys(state, expected_created)
+        if replaced:
+            return web.json_response(
+                {
+                    "error": "a session in the reorder was replaced by a new one",
+                    "code": "session_gone",
+                    "keys": replaced[:10],
+                },
+                status=409,
+            )
+        order = pinned_session_order.after_reorder(
+            list(state._pinned_session_order), list(keys), flags
+        )
+        while True:
+            saved = await _write_pinned_order(state, order, request=request, explicit=True)
+            if saved is None:
+                return _channel_pinned_order_refusal(request)
+            if not saved:
+                return web.json_response(
+                    {
+                        "error": "the gateway could not write its order file",
+                        "code": "pinned_order_write_failed",
+                    },
+                    status=500,
+                )
+            # The write runs off the loop, and creating or restoring a slot
+            # does not take this lock, so a named session can be replaced
+            # while it runs. Its successor must not keep the place given to
+            # the session it replaced: drop it and write again. Each pass
+            # removes a key, so this ends.
+            stale = set(_replaced_keys(state, expected_created)) & set(order)
+            if not stale:
+                break
+            order = [key for key in order if key not in stale]
+    state.push_slots_update()
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.pinned_order",
+        outcome="allowed",
+        source=source,
+        resources=",".join(keys[:10]),
+    )
+    return web.json_response({"ok": True, "order": order, "rev": state._pinned_order_rev})
 
 
 _VALID_MODES = ("",)
@@ -2886,12 +3687,8 @@ async def api_chat_slot_mode(request: web.Request) -> web.Response:
             {"error": "member thread mode is locked", "code": "member_mode_locked"},
             status=409,
         )
-    # A crew-bound (remote) session runs PLAIN chat only — the same rule
-    # api_chat_slot_create enforces at birth, applied here to the post-create
-    # switch that would otherwise reopen it. A non-plain mode would run
-    # its tools and filesystem work on THIS machine, not on the peer the
-    # session is bound to. Keyed on ``executor`` rather than
-    # ``is_remote`` so even a half-bound slot can never be switched into one.
+    # A relay archive is read-only: a non-plain mode would run its tools and
+    # filesystem work on THIS machine for a chat a peer crew ran.
     if slot.executor == "remote" and mode:
         return web.json_response(
             {

@@ -16,9 +16,16 @@ allowance (hooks.py's write-only tier comment) stays allowed.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+#: An absolute delete target on this host. A delete's one params spelling is
+#: anchored only with a drive on Windows (``tool_paths._is_anchored``), so a
+#: POSIX ``/tmp/...`` would read as drive-relative there.
+_DELETE_ROOT = "C:\\tmp" if os.name == "nt" else "/tmp"
 
 #: In the write-only tier: reads pass the sensitive-path keystone, edits are
 #: denied by the write-protected branch. This is what makes the read-allowance
@@ -168,6 +175,40 @@ class TestADiffBlockRoutesOntoTheWritePlane:
         assert is_edit_call("", "") is False
         assert is_edit_call("read", "") is False
 
+    def test_the_two_write_readings_differ_only_on_delete(self) -> None:
+        """``is_edit_call`` is the gates' write-plane routing and answers True
+        for a KAS ``delete``; ``is_workspace_edit_call`` is the ``tool.risk``
+        caution-badge carve-out's edit-only reading and does not -- a deletion
+        is not "easy to put back". Everywhere else the two agree."""
+        from kiro_crew.platform.tool_paths import (
+            WRITE_PLANE_KINDS,
+            is_edit_call,
+            is_workspace_edit_call,
+        )
+
+        assert is_edit_call("delete", "") is True
+        assert is_workspace_edit_call("delete", "") is False
+        for kind in ("", "read", "edit", "execute", "other"):
+            for diff_path in ("", _WRITE_ONLY):
+                assert is_edit_call(kind, diff_path) is is_workspace_edit_call(kind, diff_path), (
+                    kind,
+                    diff_path,
+                )
+        assert WRITE_PLANE_KINDS == frozenset({"edit", "delete"})
+
+    @pytest.mark.parametrize("bad_kind", [[], {}, 7, None, ["edit"], ("delete",)])
+    def test_a_non_string_kind_classifies_instead_of_raising(self, bad_kind) -> None:
+        """The ACP ``kind`` is an unvalidated frame value from the harness
+        subprocess. An unhashable one in a set-membership test would raise and
+        abort the turn; both readings answer it as "not on the plane by kind",
+        so only a diff block can route it."""
+        from kiro_crew.platform.tool_paths import is_edit_call, is_workspace_edit_call
+
+        assert is_edit_call(bad_kind, "") is False
+        assert is_edit_call(bad_kind, _WRITE_ONLY) is True
+        assert is_workspace_edit_call(bad_kind, "") is False
+        assert is_workspace_edit_call(bad_kind, _WRITE_ONLY) is True
+
     def test_governance_classifies_a_kindless_diff_block_call_as_a_write(self) -> None:
         from kiro_crew.platform.governance import classify_tool_args
 
@@ -266,6 +307,64 @@ class TestTheTwoGatesJudgeTheSameSet:
         assert list(edit_target_candidates({"command": "create"}, "")) == []
         assert edit_target_candidates(None, "") == []
 
+    def test_patch_text_targets_are_in_the_same_union(self) -> None:
+        from kiro_crew.platform.tool_paths import edit_target_candidates
+
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: /tmp/a\n*** Move to: /tmp/b\n@@\n-old\n+new\n"
+            "*** Delete File: /tmp/c\n*** End Patch"
+        )
+        assert list(edit_target_candidates({"patchText": patch}, "/tmp/d")) == [
+            "/tmp/a",
+            "/tmp/b",
+            "/tmp/c",
+            "/tmp/d",
+        ]
+
+    def test_patch_target_is_classified_for_governance(self) -> None:
+        from kiro_crew.platform.governance import classify_tool_args
+
+        patch = "*** Begin Patch\n*** Add File: /tmp/proj/notes.md\n+notes\n*** End Patch"
+        assert ("filesystem.write", "/tmp/proj/notes.md") in classify_tool_args(
+            "edit", {"patchText": patch}
+        )
+
+    def test_patch_text_protected_target_reaches_the_hook(self) -> None:
+        target = os.path.expanduser(_WRITE_ONLY)
+        patch = f"*** Begin Patch\n*** Add File: {target}\n+x\n*** End Patch"
+        decision = _call(raw_params={"patchText": patch})
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            f"*** Begin Patch\n*** Delete File: {os.path.expanduser(_WRITE_ONLY)}\n*** End Patch",
+            f"*** Begin Patch\n*** Update File: /tmp/ok.md\n*** Move to: {os.path.expanduser(_WRITE_ONLY)}\n@@\n-old\n+new\n*** End Patch",
+        ],
+    )
+    def test_delete_and_move_destination_reach_the_hook(self, patch: str) -> None:
+        decision = _call(raw_params={"patchText": patch})
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    def test_oversized_patch_is_unverifiable(self) -> None:
+        from kiro_crew.platform.tool_paths import _PATCH_TEXT_MAX_CHARS, edit_target_candidates
+
+        patch = (
+            "*** Begin Patch\n*** Add File: /tmp/ok.md\n+"
+            + "x" * _PATCH_TEXT_MAX_CHARS
+            + "\n*** End Patch"
+        )
+        assert edit_target_candidates({"patchText": patch}).truncated is True
+
+    def test_update_end_of_file_marker_is_valid(self) -> None:
+        from kiro_crew.platform.tool_paths import edit_target_candidates
+
+        patch = "*** Begin Patch\n*** Update File: /tmp/ok.md\n@@\n-old\n+new\n*** End of File\n*** End Patch"
+        assert list(edit_target_candidates({"patchText": patch})) == ["/tmp/ok.md"]
+
     def test_truncated_flag_survives_the_union(self) -> None:
         from kiro_crew.platform.tool_paths import (
             _TARGET_PATH_MAX_PATHS,
@@ -358,6 +457,138 @@ class TestAnUnanchoredDiffBlockPathIsDenied:
         anchored = edit_target_candidates(None, "/abs/x.md")
         assert anchored.unanchored is False
         assert list(anchored) == ["/abs/x.md"]
+
+
+class TestARelativeParamsPathIsUnverifiableOnlyWhereItIsTheWholeTarget:
+    """A ``delete`` (KAS's ``delete_file``) carries no diff content block: its
+    one ``targetFile`` spelling IS the target, and ``{"targetFile":
+    "../config.json"}`` judged against the gateway CWD is a verdict about a
+    different file from the one the engine deletes. Every write-plane consumer
+    denies that the way it denies a relative diff-block path. An ``edit`` also
+    names its file in the diff block, and its params spellings are judged
+    verbatim as they always were -- an ordinary relative ``file_path`` on an
+    edit is NOT refused (``PARAMS_ONLY_TARGET_KINDS``, read off the ACP kind,
+    never off the backend)."""
+
+    def test_relative_delete_target_is_denied_by_the_hook_gate(self) -> None:
+        decision = _call(raw_params={"targetFile": "../config.json"}, tool_kind="delete")
+        assert decision.action == TOOL_DENY
+        assert "relative target path" in decision.reason
+
+    def test_relative_delete_target_is_denied_even_beside_a_safe_absolute_one(self) -> None:
+        decision = _call(
+            raw_params={"path": "/tmp/ok.md", "targetFile": "../x"}, tool_kind="delete"
+        )
+        assert decision.action == TOOL_DENY
+        assert "relative target path" in decision.reason
+
+    def test_relative_delete_target_is_denied_by_the_always_enforced_tier(self) -> None:
+        from kiro_crew.llm_helpers import _edit_target_denial
+
+        hit = _edit_target_denial({"targetFile": "../.kiro/crew/config.json"}, "", "delete")
+        assert hit is not None
+        assert "relative target path" in hit[1]
+
+    def test_absolute_delete_target_is_judged_on_its_merits(self) -> None:
+        decision = _call(
+            raw_params={"targetFile": os.path.join(_DELETE_ROOT, "scratch", "old.log")},
+            tool_kind="delete",
+        )
+        assert decision.action != TOOL_DENY
+
+    def test_relative_path_on_an_ordinary_edit_is_not_refused(self) -> None:
+        # The edit's params spelling is judged verbatim, as before: a relative
+        # workspace path on an edit is the routine shape on every backend and
+        # the diff block is the write-plane evidence.
+        decision = _call(raw_params={"path": "notes/plan.md", "command": "create"})
+        assert decision.action != TOOL_DENY
+        decision = _call(raw_params={"file_path": "src/app.py"}, tool_kind="edit")
+        assert decision.action != TOOL_DENY
+
+    def test_relative_edit_params_path_is_not_refused_by_the_always_enforced_tier(self) -> None:
+        from kiro_crew.llm_helpers import _edit_target_denial
+
+        assert _edit_target_denial({"path": "notes/plan.md"}, "", "edit") is None
+        assert _edit_target_denial({"path": "notes/plan.md"}, "") is None
+
+    def test_a_relative_edit_params_path_still_cannot_shadow_a_relative_diff_path(self) -> None:
+        # The diff block's rule is unchanged: relative there is unverifiable
+        # whatever the params say.
+        decision = _call(raw_params={"path": "/tmp/ok.md"}, diff_path="notes/plan.md")
+        assert decision.action == TOOL_DENY
+
+    def test_tilde_delete_target_is_anchored_not_denied_as_relative(self) -> None:
+        decision = _call(raw_params={"targetFile": "~/projects/notes.md"}, tool_kind="delete")
+        assert decision.action != TOOL_DENY
+
+    def test_the_flag_is_set_and_the_path_withheld_only_for_the_delete_kind(self) -> None:
+        from kiro_crew.platform.tool_paths import PARAMS_ONLY_TARGET_KINDS, edit_target_candidates
+
+        assert PARAMS_ONLY_TARGET_KINDS == frozenset({"delete"})
+        ok = os.path.join(_DELETE_ROOT, "ok.md")
+        params = {"path": ok, "targetFile": "../x"}
+        as_delete = edit_target_candidates(params, "", tool_kind="delete")
+        assert as_delete.unanchored is True
+        assert list(as_delete) == [ok]
+        as_edit = edit_target_candidates(params, "", tool_kind="edit")
+        assert as_edit.unanchored is False
+        assert list(as_edit) == [ok, "../x"]
+        unknown = edit_target_candidates(params, "")
+        assert unknown.unanchored is False
+        assert list(unknown) == [ok, "../x"]
+
+    def test_governance_emits_the_never_permittable_marker_for_a_delete(self) -> None:
+        from kiro_crew.platform.governance import (
+            _UNANCHORED_TARGET_ITEM,
+            classify_tool_args,
+        )
+
+        pairs = classify_tool_args("delete", {"targetFile": "../config.json"})
+        assert ("filesystem.write", _UNANCHORED_TARGET_ITEM) in pairs
+        assert ("filesystem.write", "../config.json") not in pairs
+        edit_pairs = classify_tool_args("edit", {"path": "notes/plan.md"})
+        assert ("filesystem.write", _UNANCHORED_TARGET_ITEM) not in edit_pairs
+        assert ("filesystem.write", "notes/plan.md") in edit_pairs
+
+    @pytest.mark.parametrize(
+        ("path", "anchored"),
+        [
+            ("\\Users\\me\\config.json", False),  # rooted, no drive: current drive
+            ("/Users/me/config.json", False),  # the same, forward slashes
+            ("C:\\Users\\me\\config.json", True),
+            ("C:/Users/me/config.json", True),
+            ("\\\\server\\share\\config.json", True),  # UNC names its share
+            ("C:config.json", False),  # drive-relative: that drive's CWD
+            ("..\\config.json", False),
+        ],
+    )
+    def test_a_windows_target_is_anchored_only_with_a_drive(self, path, anchored) -> None:
+        """On Windows a rooted path with no drive resolves against the process's
+        current drive, so the gateway and the engine can read it as two
+        different files; it is unanchored like a relative path."""
+        import ntpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored(path, require_drive=True, pathmod=ntpath) is anchored, path
+
+    def test_the_posix_reading_is_unchanged(self) -> None:
+        import posixpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored("/tmp/x", pathmod=posixpath) is True
+        assert _is_anchored("../x", pathmod=posixpath) is False
+        assert _is_anchored("\\foo", require_drive=True, pathmod=posixpath) is False
+
+    def test_an_edit_diff_path_keeps_the_plain_absolute_reading(self) -> None:
+        """The drive check is for a delete's params target only; an edit's
+        diff-block path is read as before on Windows."""
+        import ntpath
+
+        from kiro_crew.platform.tool_paths import _is_anchored
+
+        assert _is_anchored("/Users/me/notes.md", pathmod=ntpath) is True
 
 
 class TestGovernanceClassifiesTheDiffBlockPath:
@@ -456,3 +687,44 @@ class TestEveryEnforcingCallSiteThreadsTheDiffPath:
             "hook edit gate there judges edits params-only and denies benign "
             f"diff-only edits: {offenders}"
         )
+
+
+class TestADeleteIsOnTheWritePlane:
+    """KAS's ``delete_file`` declares the ACP ``delete`` kind and names its
+    target as ``targetFile``. A delete has the write plane's effect -- the file
+    is gone -- so it must reach the same write-protected-config tier an edit
+    does; before, the kind routed nowhere and ``delete_file {"targetFile":
+    "~/.kiro/crew/config.json"}`` skipped the always-on hard deny."""
+
+    def test_deleting_a_write_protected_config_is_denied(self) -> None:
+        decision = _call(
+            tool_kind="delete",
+            raw_params={"targetFile": _WRITE_ONLY, "explanation": "tidy"},
+        )
+        assert decision.action == TOOL_DENY
+        assert "config.json" in decision.reason
+
+    @pytest.mark.parametrize(
+        "protected",
+        ["~/.kiro/crew/cloud.json", "~/.kiro/crew/playwright-cli-config.json"],
+    )
+    def test_other_write_only_files_are_denied_to_a_delete_too(self, protected) -> None:
+        decision = _call(tool_kind="delete", raw_params={"targetFile": protected})
+        assert decision.action == TOOL_DENY
+
+    def test_deleting_an_ordinary_file_is_not_denied(self) -> None:
+        decision = _call(
+            tool_kind="delete",
+            raw_params={"targetFile": os.path.join(_DELETE_ROOT, "notes.md")},
+        )
+        assert decision.action != TOOL_DENY
+
+    def test_a_delete_naming_no_target_is_denied(self) -> None:
+        decision = _call(tool_kind="delete", raw_params={"explanation": "tidy"})
+        assert decision.action == TOOL_DENY
+        assert "no target path" in decision.reason
+
+    def test_the_read_allowance_is_untouched(self) -> None:
+        """Routing ``delete`` onto the write plane must not pull a read along."""
+        decision = _call(tool_kind="read", raw_params={"path": _WRITE_ONLY})
+        assert decision.action != TOOL_DENY

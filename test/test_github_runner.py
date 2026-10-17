@@ -20,9 +20,12 @@ properties that would otherwise drift between the three callers:
 
 from __future__ import annotations
 
+import contextlib
 import os
+import socket
 import subprocess
 import sys
+import urllib.parse
 from unittest import mock
 
 import pytest
@@ -71,7 +74,8 @@ class TestResolveGh:
         component ownership walk depends on who owns the host's tmp ancestry,
         so it is no-opped to keep the suite hermetic on any runner."""
         monkeypatch.setattr(
-            runner, "check_provider_path_component",
+            runner,
+            "check_provider_path_component",
             lambda path, *, label, uid, strict: None,
         )
         # Same reasoning for the Windows walk, which reads a real ACL and so
@@ -241,7 +245,9 @@ class TestPrevalidatedGh:
     def test_world_writable_target_is_refused(self, monkeypatch, tmp_path):
         gh = _fake_gh(tmp_path / "bin")
         # Deliberately world-writable: this test asserts the guard REFUSES it.
-        os.chmod(gh, 0o757)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
+        os.chmod(
+            gh, 0o757
+        )  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
         monkeypatch.setenv(runner.GH_PREVALIDATED_ENV, _prevalidated_value(gh))
         with pytest.raises(runner.SetupError, match="world-writable"):
             runner.resolve_gh()
@@ -282,6 +288,182 @@ class TestPrevalidatedGh:
 # ── gh_env ───────────────────────────────────────────────────────────────────
 
 
+# ``socket.AF_UNIX`` does not exist on Windows CPython; the resolver tests that bind a
+# real socket carry this marker, and the Windows branch is pinned by
+# ``test_no_uid_means_no_variable`` instead.
+_unix_sockets_only = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"), reason="AF_UNIX sockets only"
+)
+
+
+@contextlib.contextmanager
+def _listening_unix_socket(path):
+    """A real AF_UNIX socket at *path* for the duration of the block.
+
+    *path* must be short enough for ``sun_path`` (108 bytes on Linux, ~104 on
+    macOS), which is what the ``short_sock_dir`` fixture guarantees.
+    """
+    path = os.fspath(path)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(path)
+        sock.listen(1)
+        yield sock
+    finally:
+        sock.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+class TestSessionBusAddress:
+    """The parent resolves the user bus ONCE, by its standard paths, and hands the
+    child an explicit answer it cannot widen: the socket when it exists, an inert
+    address otherwise, never a search of its own. Every candidate path is injected;
+    nothing here touches the host's real ``/run/user``."""
+
+    @staticmethod
+    def _unescaped(address):
+        assert address is not None and address.startswith("unix:path=")
+        return urllib.parse.unquote(address[len("unix:path=") :])
+
+    @pytest.fixture(autouse=True)
+    def _no_host_uid_path(self, _floor_monkeypatch, tmp_path):
+        """Pin the uid-derived candidate to an absent path under ``tmp_path`` so no test
+        here can observe the host's own ``/run/user/<uid>/bus``; tests that want the
+        uid candidate to resolve override it explicitly. On the isolation floor's own
+        undo stack (``_floor_monkeypatch``), not the test's shared ``monkeypatch``, so a
+        test's overrides unwind before these pins do."""
+        _floor_monkeypatch.setattr(runner.platform_compat, "effective_uid", lambda: 4242)
+        self.uid_bus = tmp_path / "uid-run" / "bus"
+        _floor_monkeypatch.setattr(
+            runner,
+            "_user_bus_socket_candidates",
+            lambda: _candidates(os.environ.get("XDG_RUNTIME_DIR"), self.uid_bus),
+        )
+
+    @_unix_sockets_only
+    def test_socket_at_the_runtime_dir_is_handed_over_by_path(self, monkeypatch, short_sock_dir):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(short_sock_dir))
+        # The ambient value is not what gets forwarded: the standard path is.
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/somewhere/else/bus")
+        with _listening_unix_socket(short_sock_dir / "bus"):
+            address = runner.session_bus_address()
+        assert self._unescaped(address) == os.fspath(short_sock_dir / "bus")
+
+    def test_missing_socket_is_inert_not_unset(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(tmp_path / "run"))
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/somewhere/else/bus")
+        assert runner.session_bus_address() == runner.INERT_SESSION_BUS_ADDRESS
+        # A regular file at the conventional name is not a bus either.
+        (tmp_path / "run").mkdir()
+        (tmp_path / "run" / "bus").write_text("not a socket", encoding="utf-8")
+        assert runner.session_bus_address() == runner.INERT_SESSION_BUS_ADDRESS
+
+    @_unix_sockets_only
+    def test_uid_path_is_tried_when_the_runtime_dir_has_no_bus(self, monkeypatch, short_sock_dir):
+        """godbus derives ``/run/user/<uid>/bus`` from the uid alone and ignores
+        ``XDG_RUNTIME_DIR``, so a gateway whose runtime dir holds no ``bus`` socket
+        must still hand gh/glab the socket they would have found by uid."""
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(short_sock_dir / "no-bus-here"))
+        (short_sock_dir / "no-bus-here").mkdir()
+        self.uid_bus = short_sock_dir / "bus"
+        assert runner.session_bus_address() == runner.INERT_SESSION_BUS_ADDRESS
+        with _listening_unix_socket(self.uid_bus):
+            address = runner.session_bus_address()
+        assert self._unescaped(address) == os.fspath(self.uid_bus)
+
+    @_unix_sockets_only
+    def test_without_xdg_runtime_dir_the_uid_path_is_used(self, monkeypatch, short_sock_dir):
+        """A system-service gateway has no XDG_RUNTIME_DIR; the standard location
+        is then ``/run/user/<uid>/bus``, derived from the effective uid through
+        platform_compat."""
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        self.uid_bus = short_sock_dir / "bus"
+        assert runner.session_bus_address() == runner.INERT_SESSION_BUS_ADDRESS
+        with _listening_unix_socket(self.uid_bus):
+            address = runner.session_bus_address()
+        assert self._unescaped(address) == os.fspath(self.uid_bus)
+
+    def test_candidate_order_and_shape(self, monkeypatch):
+        monkeypatch.setattr(runner, "_user_bus_socket_candidates", _REAL_CANDIDATES)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+        assert runner._user_bus_socket_candidates() == ("/run/user/4242/bus",)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", "/tmp/other-runtime")
+        assert runner._user_bus_socket_candidates() == (
+            "/tmp/other-runtime/bus",
+            "/run/user/4242/bus",
+        )
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        assert runner._user_bus_socket_candidates() == ("/run/user/4242/bus",)
+
+    def test_no_uid_means_no_variable(self, monkeypatch):
+        """Windows: no uid, no conventional path, and the child must not get a
+        made-up address, so the builder leaves the variable unset."""
+        monkeypatch.setattr(runner, "_user_bus_socket_candidates", _REAL_CANDIDATES)
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.setattr(runner.platform_compat, "effective_uid", lambda: None)
+        assert runner._user_bus_socket_candidates() == ()
+        assert runner.session_bus_address() is None
+        env = runner.apply_session_bus_address(
+            {"DBUS_SESSION_BUS_ADDRESS": "stale", "NO_COLOR": "1"}
+        )
+        assert env == {"NO_COLOR": "1"}
+
+    def test_inert_address_is_a_transport_no_library_registers(self):
+        transport, sep, rest = runner.INERT_SESSION_BUS_ADDRESS.partition(":")
+        assert sep == ":" and rest == ""
+        # Non-empty (every library and cgroup_scope_bus_env read empty as unset),
+        # not ``autolaunch`` (the one method that spawns), and none of the
+        # transports libdbus, godbus or GDBus implement.
+        assert transport not in {
+            "",
+            "autolaunch",
+            "unix",
+            "unixexec",
+            "tcp",
+            "nonce-tcp",
+            "launchd",
+            "systemd",
+        }
+
+    @_unix_sockets_only
+    def test_address_value_is_escaped_per_the_dbus_spec(self, monkeypatch, short_sock_dir):
+        run = short_sock_dir / "r d,w=o"
+        run.mkdir()
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(run))
+        with _listening_unix_socket(run / "bus"):
+            address = runner.session_bus_address()
+        assert address is not None
+        value = address[len("unix:path=") :]
+        assert " " not in value and "," not in value and "=" not in value
+        assert urllib.parse.unquote(value) == os.fspath(run / "bus")
+
+    def test_escaping_survives_an_undecodable_path(self):
+        """A surrogate-escaped name (undecodable bytes in a path) is escaped from
+        its own bytes rather than raising ``UnicodeEncodeError``."""
+        raw = b"/run/user/4242\xff/bus"
+        escaped = runner._escape_bus_address_value(os.fsdecode(raw))
+        assert escaped == "/run/user/4242%FF/bus"
+        assert urllib.parse.unquote_to_bytes(escaped) == raw
+
+    def test_apply_replaces_any_inherited_value(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(tmp_path / "run"))
+        env = runner.apply_session_bus_address({"DBUS_SESSION_BUS_ADDRESS": "unix:path=/ambient"})
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == runner.INERT_SESSION_BUS_ADDRESS
+
+
+_REAL_CANDIDATES = runner._user_bus_socket_candidates
+
+
+def _candidates(runtime_dir, uid_bus):
+    """The resolver's candidate tuple with the uid-derived path replaced by *uid_bus*."""
+    found: list[str] = []
+    if runtime_dir:
+        found.append(os.path.join(runtime_dir, "bus"))
+    found.append(os.fspath(uid_bus))
+    return tuple(dict.fromkeys(found))
+
+
 class TestGhEnv:
     def test_polluted_gateway_env_never_reaches_the_child(self, monkeypatch):
         """The D3 lock-in: gh-scoped auth/network/TLS keys pass, secrets do not."""
@@ -307,13 +489,23 @@ class TestGhEnv:
         env = runner.gh_env()
 
         for secret_key in (
-            "AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "SLACK_BOT_TOKEN",
-            "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH_COMMAND", "KIROCREW_INTERNAL_TOKEN",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "SLACK_BOT_TOKEN",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "GIT_SSH_COMMAND",
+            "KIROCREW_INTERNAL_TOKEN",
         ):
             assert secret_key not in env, secret_key
         for passthrough_key in (
-            "GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_CONFIG_DIR",
-            "ALL_PROXY", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+            "GH_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+            "GH_CONFIG_DIR",
+            "ALL_PROXY",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
         ):
             assert env[passthrough_key] == polluted[passthrough_key]
         # Deterministic output pins, always present.
@@ -330,10 +522,46 @@ class TestGhEnv:
         allowed = (
             set(registry._SAFE_ENV_KEYS)
             | set(runner.GH_ENV_PASSTHROUGH)
-            | {"GH_PAGER", "NO_COLOR", "GH_HOST"}
+            | {"GH_PAGER", "NO_COLOR", "GH_HOST", "DBUS_SESSION_BUS_ADDRESS"}
         )
         for key in runner.gh_env(pin_host="github.com"):
             assert key in allowed, key
+
+    def test_hands_gh_an_explicit_session_bus_address(self, monkeypatch):
+        """gh keeps its token in the OS keyring by default and asks for it over
+        D-Bus. The child is never left to find the bus itself: the parent resolves
+        it once, by its standard path, and the builder pins whichever value that
+        produced. The gateway's own ambient value is never forwarded."""
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+
+        for resolved in (runner.INERT_SESSION_BUS_ADDRESS, "unix:path=/run/user/4242/bus"):
+            monkeypatch.setattr(runner, "session_bus_address", lambda resolved=resolved: resolved)
+            env = runner.gh_env()
+            assert env.get("DBUS_SESSION_BUS_ADDRESS"), "gh must not start with no bus address"
+            assert env["DBUS_SESSION_BUS_ADDRESS"] == resolved
+            assert "/ambient/forwarded/bus" not in env["DBUS_SESSION_BUS_ADDRESS"]
+
+    @_unix_sockets_only
+    def test_gh_env_resolves_a_real_user_bus_socket(self, monkeypatch, short_sock_dir, tmp_path):
+        """End to end through the real resolver: an unreachable standard path is
+        inert rather than an autolaunch, and a listening socket there is handed over."""
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/ambient/forwarded/bus")
+        monkeypatch.setenv("XDG_RUNTIME_DIR", os.fspath(short_sock_dir))
+        # The uid-derived candidate must not reach the host's own /run/user.
+        monkeypatch.setattr(
+            runner,
+            "_user_bus_socket_candidates",
+            lambda: _candidates(os.fspath(short_sock_dir), tmp_path / "uid-run" / "bus"),
+        )
+
+        assert runner.gh_env()["DBUS_SESSION_BUS_ADDRESS"] == runner.INERT_SESSION_BUS_ADDRESS
+        with _listening_unix_socket(short_sock_dir / "bus"):
+            with_bus = runner.gh_env()
+        address = with_bus["DBUS_SESSION_BUS_ADDRESS"]
+        assert address.startswith("unix:path=")
+        assert urllib.parse.unquote(address[len("unix:path=") :]) == os.fspath(
+            short_sock_dir / "bus"
+        )
 
     def test_pin_host_sets_gh_host_and_unpinned_does_not(self, monkeypatch):
         monkeypatch.delenv("GH_HOST", raising=False)
@@ -382,8 +610,10 @@ class TestRunGh:
             captured["kwargs"] = kwargs
             return _proc()
 
-        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run), \
-                mock.patch.object(runner, "_audit_run"):
+        with (
+            mock.patch.object(runner.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(runner, "_audit_run"),
+        ):
             runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test")
 
         assert captured["kwargs"]["env"] == runner.gh_env()
@@ -402,10 +632,14 @@ class TestRunGh:
             captured["kwargs"] = kwargs
             return _proc()
 
-        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run), \
-                mock.patch.object(runner, "_audit_run"):
+        with (
+            mock.patch.object(runner.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(runner, "_audit_run"),
+        ):
             runner.run_gh(
-                ["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test",
+                ["/usr/bin/gh", "api", "user"],
+                timeout=5,
+                audit_caller="core:test",
                 pin_host="github.com",
             )
         assert captured["kwargs"]["env"]["GH_HOST"] == "github.com"
@@ -413,13 +647,12 @@ class TestRunGh:
     def test_audits_an_oserror_spawn_failure_then_reraises(self):
         """A cached binary gone bad (chmod'd, replaced with a non-executable)
         must land in the audit trail, not escape as an unaudited failure."""
-        with mock.patch.object(
-            runner.subprocess, "run", side_effect=PermissionError("denied")
-        ), mock.patch.object(runner, "_audit_run") as audit:
+        with (
+            mock.patch.object(runner.subprocess, "run", side_effect=PermissionError("denied")),
+            mock.patch.object(runner, "_audit_run") as audit,
+        ):
             with pytest.raises(PermissionError):
-                runner.run_gh(
-                    ["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test"
-                )
+                runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test")
         assert audit.call_args_list[-1] == mock.call(
             "core:test", "gh api user", "failure", error="PermissionError"
         )
@@ -434,15 +667,19 @@ class TestRunGh:
         def fake_audit(caller, target, outcome, **kwargs):
             calls.append(("audit", outcome, kwargs.get("critical", False)))
 
-        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run), \
-                mock.patch.object(runner, "_audit_run", side_effect=fake_audit):
+        with (
+            mock.patch.object(runner.subprocess, "run", side_effect=fake_run),
+            mock.patch.object(runner, "_audit_run", side_effect=fake_audit),
+        ):
             runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test")
         # The invoked event is critical and lands BEFORE the child runs.
         assert calls == [("audit", "invoked", True), ("spawn",), ("audit", "ok", False)]
 
     def test_audits_non_zero_exit(self):
-        with mock.patch.object(runner.subprocess, "run", return_value=_proc(returncode=1)), \
-                mock.patch.object(runner, "_audit_run") as audit:
+        with (
+            mock.patch.object(runner.subprocess, "run", return_value=_proc(returncode=1)),
+            mock.patch.object(runner, "_audit_run") as audit,
+        ):
             proc = runner.run_gh(
                 ["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test"
             )
@@ -452,13 +689,14 @@ class TestRunGh:
         )
 
     def test_audits_timeout_then_reraises(self):
-        with mock.patch.object(
-            runner.subprocess, "run", side_effect=subprocess.TimeoutExpired("gh", 5)
-        ), mock.patch.object(runner, "_audit_run") as audit:
+        with (
+            mock.patch.object(
+                runner.subprocess, "run", side_effect=subprocess.TimeoutExpired("gh", 5)
+            ),
+            mock.patch.object(runner, "_audit_run") as audit,
+        ):
             with pytest.raises(subprocess.TimeoutExpired):
-                runner.run_gh(
-                    ["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test"
-                )
+                runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test")
         assert audit.call_args_list[-1] == mock.call(
             "core:test", "gh api user", "failure", error="timeout after 5s"
         )
@@ -489,14 +727,10 @@ class TestRunGh:
 
     def test_unavailable_audit_refuses_the_spawn(self, monkeypatch):
         """Audit-or-deny: with SEL storage unusable, gh must NOT run unaudited."""
-        monkeypatch.setattr(
-            "kiro_crew.sel.sel", mock.Mock(side_effect=RuntimeError("sel down"))
-        )
+        monkeypatch.setattr("kiro_crew.sel.sel", mock.Mock(side_effect=RuntimeError("sel down")))
         with mock.patch.object(runner.subprocess, "run", return_value=_proc()) as spawn:
             with pytest.raises(runner.SetupError, match="refusing to run gh unaudited"):
-                runner.run_gh(
-                    ["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test"
-                )
+                runner.run_gh(["/usr/bin/gh", "api", "user"], timeout=5, audit_caller="core:test")
             spawn.assert_not_called()
 
     def test_outcome_audit_failure_never_breaks_the_call(self, monkeypatch):
@@ -529,13 +763,9 @@ class TestReExports:
     def test_source_providers_validation_is_the_shared_function(self):
         from kiro_crew.dashboard.handlers import source_providers
 
+        assert source_providers._validate_provider_executable is runner.validate_provider_executable
         assert (
-            source_providers._validate_provider_executable
-            is runner.validate_provider_executable
-        )
-        assert (
-            source_providers.provider_executable_candidates
-            is runner.provider_executable_candidates
+            source_providers.provider_executable_candidates is runner.provider_executable_candidates
         )
         assert (
             source_providers._PROVIDER_EXECUTABLE_CANDIDATES

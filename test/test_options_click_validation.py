@@ -133,11 +133,15 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
         Asserted on indentation because that is precisely what went wrong -- the
         block was correct, its scope was not.
         """
-        import inspect
+        from pathlib import Path
 
         from kiro_crew.slack import gateway
 
-        src = inspect.getsource(gateway)
+        # The persist this pins is the AutoNudge channel turn's, which the facade
+        # composes from this owner, one indent level shallower than the class body
+        # it was written in: the bound below is 24 less those 4 columns.
+        owner = Path(gateway.__file__).parent / "gateway_runtime" / "nudge_channel_fire.py"
+        src = owner.read_text(encoding="utf-8")
         persist = src.find("await save_conversation_turn_off_loop(\n", src.find("subagent"))
         assert persist != -1, "the subagent turn must still be persisted"
 
@@ -146,7 +150,7 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
         assert guard != -1, "the persist must stay guarded on conv_log"
         line_start = src.rfind("\n", 0, guard) + 1
         indent = guard - line_start
-        assert indent <= 24, (
+        assert indent <= 20, (
             f"the persist guard is indented {indent} spaces; deeper than the "
             "per-attempt level means it sits inside the Slack-only branch and "
             "non-Slack subagent completions are never written"

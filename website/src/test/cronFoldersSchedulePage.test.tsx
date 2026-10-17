@@ -3,6 +3,7 @@ import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
+import { selectedName, selectionState } from '../guide/guidePredicates'
 
 const mkJob = (id: string, name: string, folderId?: string): CronJob => ({
   id,
@@ -139,6 +140,24 @@ describe('SchedulePage cron folders', () => {
     fireEvent.keyDown(overflow, { key: 'Enter' })
 
     await waitFor(() => expect(screen.getByText('Move to folder')).toBeInTheDocument())
+  })
+
+  it('tells a one-job move guide which single job is ticked, and nothing while two are', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob('j1', 'Job A'), mkJob('j2', 'Job B')] })
+    vi.mocked(api).cronFolders.mockResolvedValue([])
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Job A')).toBeInTheDocument())
+    // Each row carries its own job's name for a guide's pick, never the row's text.
+    expect(document.querySelectorAll('[data-guide-pick="Job A"]')).toHaveLength(1)
+    expect(selectionState('one_job_checked')).toBe('none')
+    fireEvent.click(screen.getByLabelText('Select Job A'))
+    await waitFor(() => expect(selectionState('one_job_checked')).toBe('selected'))
+    expect(selectedName('one_job_checked')).toBe('Job A')
+    // Two ticked: the folder button would move both, so the one-job step is not done.
+    fireEvent.click(screen.getByLabelText('Select Job B'))
+    await waitFor(() => expect(selectionState('one_job_checked')).toBe('none'))
+    expect(selectedName('one_job_checked')).toBeUndefined()
   })
 
   it('delete folder shows inline confirmation row', async () => {

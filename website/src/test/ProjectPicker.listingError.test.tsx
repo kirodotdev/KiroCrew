@@ -42,6 +42,7 @@ beforeEach(() => {
   installSoftNavigate(() => {})
   // No recent projects -> the picker opens straight on the Browse tab.
   vi.spyOn(api, 'recentProjects').mockResolvedValue({ dirs: [] })
+  vi.spyOn(api, 'favoriteProjects').mockResolvedValue({ dirs: [] })
 })
 
 afterEach(() => {
@@ -309,7 +310,7 @@ describe('ProjectPicker: recent-project failure', () => {
   })
 
   // The recents endpoint answers every read error with 200 `{"dirs": []}` and never a
-  // coded body (`api_recent_projects` in chat_handlers.py), so `denied` / `root_missing`
+  // coded body (`api_recent_projects` in chat_api/project_lists.py), so `denied` / `root_missing`
   // are unreachable for it and own no copy. Should a coded refusal ever arrive anyway,
   // the notice degrades to the generic copy rather than a key no locale carries.
   it.each([

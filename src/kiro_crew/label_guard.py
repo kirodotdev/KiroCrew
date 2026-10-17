@@ -31,11 +31,11 @@ TITLE_MAX_WORDS = 12
 #: Codepoint ranges of scripts written WITHOUT spaces between words: kana, Han
 #: (+ extension A and the compatibility block) and Thai. A label in one of them
 #: is a single whitespace token, so the word ceiling can never fire for it --
-#: it needs the character ceiling below instead. Hangul and Cyrillic are
-#: deliberately absent: Korean and Russian do space their words, so the word
-#: ceiling bounds a long sentence in them. A SHORT Korean refusal clears that
-#: ceiling, so it is caught by sentence shape instead -- see
-#: ``KO_SENTENCE_ENDINGS``.
+#: it needs the character ceiling below instead. Hangul, Cyrillic, Devanagari,
+#: Bengali and Latin are deliberately absent: those languages space their
+#: words, so the word ceiling bounds a long sentence in them. A SHORT refusal
+#: clears that ceiling, so it is caught by sentence shape instead -- see
+#: ``ends_like_sentence`` and ``KO_SENTENCE_ENDINGS``.
 _UNSPACED_SCRIPT_RANGES = (
     (0x0E00, 0x0E7F),  # Thai
     (0x3040, 0x30FF),  # Hiragana + Katakana
@@ -54,6 +54,32 @@ TITLE_MAX_UNSPACED_CHARS = 24
 #: Sentence terminators that are NOT followed by a space in the scripts that use
 #: them, so the ASCII rule's whitespace requirement would never fire on them.
 _WIDE_TERMINATORS = "。！？"
+
+#: Sentence terminators that ARE followed by a space, like the ASCII ones: the
+#: Devanagari danda and double danda (Hindi, Bengali), the Arabic question mark,
+#: the Urdu full stop, the Ethiopic full stop and question mark, the Armenian
+#: full stop and the Myanmar section mark. Escapes keep the source ASCII.
+_SPACED_TERMINATORS = ".!?\u0964\u0965\u061f\u06d4\u1362\u1367\u0589\u104b"
+
+#: Every sentence terminator the end-of-reply rule reads, in any script: the
+#: spaced ones above, the full-width/CJK ones and the halfwidth and full-width
+#: full stops.
+_SENTENCE_TERMINATORS = _SPACED_TERMINATORS + _WIDE_TERMINATORS + "\uff0e\uff61"
+
+#: Commas in any script: ASCII, full-width, ideographic, Arabic, small and
+#: halfwidth ideographic, Ethiopic.
+_COMMAS = ",\uff0c\u3001\u060c\ufe50\uff64\u1363"
+
+#: Closing quotes and brackets a model may wrap a sentence in. They are peeled
+#: off before the last character is read, so a quoted sentence still ends in
+#: its terminator.
+_CLOSERS = "\"'\u201d\u2019\u300d\u300f\u300b\u00bb)\uff09"
+
+#: A reply that ends in a terminator AND holds this many words reads as a
+#: sentence. A 3-6 word title asked for "no punctuation" may still carry a
+#: stray final period on a short name ("Fix login bug."), so three words stay
+#: a name; four or more words closed by a terminator is a sentence.
+SENTENCE_MIN_WORDS = 4
 
 # Openers that mark the reply as prose about the model rather than a name. The
 # observed failure was a pasted URL producing "I cannot access external URLs
@@ -126,6 +152,31 @@ def unspaced_script_chars(s: str) -> int:
     return sum(1 for ch in s if any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_SCRIPT_RANGES))
 
 
+def ends_like_sentence(text: str) -> bool:
+    """True when *text* ends in a sentence terminator of any script AND holds
+    a comma of any script or at least ``SENTENCE_MIN_WORDS`` words.
+
+    This is the language-neutral refusal shape. The label prompts ask for a
+    name with no punctuation, and a name is a noun phrase, so it neither ends
+    a sentence nor joins clauses. A refusal is a sentence in whatever language
+    the model was told to write in ("No puedo acceder a ese enlace.",
+    "मैं इस लिंक को नहीं खोल सकता।", "申し訳ありませんが、リンクを開けません。"):
+    it closes with its script's terminator, and it is either a clause or
+    several words long. Reading the shape instead of a phrase list covers every
+    shipped language at once, with no per-locale vocabulary to keep up.
+
+    A path that strips a trailing period before its other checks must call
+    this on the reply line BEFORE that strip, or the terminator is gone.
+    """
+    stripped = text.strip().rstrip(_CLOSERS).rstrip()
+    if not stripped or stripped[-1] not in _SENTENCE_TERMINATORS:
+        return False
+    body = stripped.rstrip(_SENTENCE_TERMINATORS)
+    if any(char in _COMMAS for char in body):
+        return True
+    return len(body.split()) >= SENTENCE_MIN_WORDS
+
+
 def looks_like_prose(
     text: str,
     *,
@@ -151,10 +202,13 @@ def looks_like_prose(
       (``max_unspaced_chars``). Chinese, Japanese and Thai put no spaces
       between words, so a whole sentence in them is ONE word by ``str.split``
       and slips past the word ceiling entirely;
-    - sentence-terminating punctuation with text after it. The ASCII terminator
-      must be followed by whitespace so "Node.js upgrade plan" and "Ship v1.2 to
-      prod" stay valid; the full-width forms must not, because the scripts that
-      use them do not space after punctuation.
+    - sentence-terminating punctuation with text after it. A spaced terminator
+      (ASCII, the danda, the Arabic question mark ...) must be followed by
+      whitespace so "Node.js upgrade plan" and "Ship v1.2 to prod" stay valid;
+      the full-width forms must not, because the scripts that use them do not
+      space after punctuation. A reply that ENDS in a terminator of any script
+      and holds a comma or ``SENTENCE_MIN_WORDS`` words is prose too (see
+      :func:`ends_like_sentence`): the language-neutral refusal shape.
     - Korean sentence shape (see ``KO_SENTENCE_ENDINGS``). Hangul spaces its
       words, but a refusal is short enough to clear the word ceiling, and a
       prefix opener cannot catch an SOV language whose refusal verb comes last
@@ -170,11 +224,12 @@ def looks_like_prose(
     descriptive sentence by contract -- those two signals tell a name from a
     sentence, and cannot tell a summary from a refusal.
 
-    Known false negative: a SHORT refusal in an unspaced script with no
-    terminator ("无法访问该链接") clears every ceiling and lands as the label.
-    That class is inherent to matching prose by shape -- the openers list is
-    the only signal that catches it, and maintaining one per shipped locale is
-    whack-a-mole. It fails to a wrong-but-short label, never to a paragraph.
+    Known false negative: a SHORT refusal in any language other than English
+    or Korean that carries NO terminator ("无法访问该链接", "No puedo acceder a
+    ese enlace") clears every signal and lands as the label. Without the
+    terminator it has the same shape as a name, so only a per-locale phrase
+    list could catch it, and keeping one per shipped locale is whack-a-mole.
+    It fails to a wrong-but-short label, never to a paragraph.
     """
     stripped = text.strip()
     if not stripped:
@@ -192,8 +247,10 @@ def looks_like_prose(
         return False
     if stripped.endswith(KO_SENTENCE_ENDINGS):
         return True
+    if ends_like_sentence(stripped):
+        return True
     for index, char in enumerate(stripped[:-1]):
-        if char in ".!?" and stripped[index + 1].isspace():
+        if char in _SPACED_TERMINATORS and stripped[index + 1].isspace():
             return True
         if char in _WIDE_TERMINATORS:
             return True

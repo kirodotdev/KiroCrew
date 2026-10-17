@@ -1585,3 +1585,31 @@ class TestRerunAcrossMidnight:
         # A DIFFERENT run the next day is a recurrence as before.
         led, _ = friction.merge_ledger(led, [e], date="2026-09-13", run_url="https://r/2")
         assert led["entries"][e["key"]]["count"] == 2
+
+
+class TestOmniboxNavigateWaitsForFocus:
+    """The URL is typed only after the address bar has had time to take focus.
+
+    Typed straight after ``ctrl+l``, the first characters can reach the page's
+    focused chat composer and stay there as that session's draft.
+    """
+
+    def test_pause_sits_between_ctrl_l_and_the_typed_url(self) -> None:
+        events: list[tuple] = []
+
+        class _Recorder:
+            def perform(self, action: str, params: dict) -> str:
+                events.append((action, params.get("text")))
+                return action
+
+        harness.omnibox_navigate(
+            _Recorder(), "http://127.0.0.1:1/chat", sleep=lambda s: events.append(("sleep", s))
+        )
+        assert events == [
+            ("key", "ctrl+l"),
+            ("sleep", harness.OMNIBOX_FOCUS_SECONDS),
+            ("type", "http://127.0.0.1:1/chat"),
+            ("key", "Return"),
+            ("sleep", harness.NAVIGATE_LOAD_SECONDS),
+        ]
+        assert harness.OMNIBOX_FOCUS_SECONDS > 0

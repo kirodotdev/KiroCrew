@@ -5,6 +5,7 @@ import {
 } from './ui/dropdown-menu'
 import { Btn } from './ui'
 import type { CronFolder } from '../utils/cronFolders'
+import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
 
 interface Props {
@@ -24,6 +25,7 @@ export default function CronJobMoveMenu({ folders, currentFolderId, onMove, onNe
         <Btn
           aria-label={i18nT('pages.schedulePage.cronFolders.move_to_folder')}
           title={i18nT('pages.schedulePage.cronFolders.move_to_folder')}
+          {...uiLocation('schedule.move-to-folder')}
         >
           <Folder size={13} />
         </Btn>

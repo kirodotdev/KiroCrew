@@ -15,6 +15,7 @@ import { Download, Check, ExternalLink, Loader2, RefreshCw, ArrowLeft, KeyRound,
 import { api, ApiError } from '../api/client'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
+import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from './AgentSpecNotRewrittenNotice'
 import { errMessage } from '../utils/thunkError'
 import { Btn } from './ui'
 import MarkdownRenderer from './MarkdownRenderer'
@@ -28,12 +29,15 @@ import { useImeGuard } from '../hooks/useImeGuard'
 interface Props {
   open: boolean
   onClose: () => void
+  /** Whether the not-applied notice may offer the agent hand-off; the host turns it
+   *  off while it holds unsaved state the hand-off's navigation would discard. */
+  askAgent?: boolean
 }
 
 /** Per-server install lifecycle for UI feedback. */
 type InstallPhase =
   | { step: 'installing' }
-  | { step: 'done'; name: string; requiredEnv: string[]; enabled: boolean }
+  | { step: 'done'; name: string; requiredEnv: string[]; enabled: boolean; specNotRewritten: boolean }
   | { step: 'conflict' }
   | { step: 'error'; message: string }
 
@@ -85,7 +89,7 @@ function ProviderFailureNotice({
   )
 }
 
-export default function McpBrowserModal({ open, onClose }: Props) {
+export default function McpBrowserModal({ open, onClose, askAgent = true }: Props) {
   const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
@@ -184,6 +188,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
         // Absent (capability installs) means enabled; official installs
         // with required env land disabled until the user configures them.
         enabled: result.enabled !== false,
+        specNotRewritten: agentSpecNotRewritten(result),
       })
       setInstalledOverride(prev => new Set(prev).add(key))
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
@@ -397,6 +402,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
                       installed={isInstalled(selectedServer)}
                       phase={installPhases[serverKey(selectedServer)]}
                       onInstall={handleInstall}
+                      askAgent={askAgent}
                     />
                   </div>
                 </>
@@ -508,11 +514,13 @@ function ServerDetailPanel({
   installed,
   phase,
   onInstall,
+  askAgent,
 }: {
   server: DiscoveredMcpServer
   installed: boolean
   phase: InstallPhase | undefined
   onInstall: (server: DiscoveredMcpServer) => void
+  askAgent: boolean
 }) {
   const { data: detail, isLoading: detailLoading, error: detailError } = useQuery({
     queryKey: ['mcp-discover-detail', server.provider, server.id],
@@ -565,6 +573,7 @@ function ServerDetailPanel({
         )}
       </div>
 
+      {phase?.step === 'done' && phase.specNotRewritten && <AgentSpecNotRewrittenNotice className="mb-3" askAgent={askAgent} />}
       {phase?.step === 'done' && !phase.enabled && (
         <div className="mb-3 p-2 rounded bg-warn-subtle border border-warn/30 text-xs text-[var(--warn)]" data-testid="installed-disabled-note">
           {i18nT('components.mcpBrowserModal.installed_disabled_review_the_entry_in_the_serve')}

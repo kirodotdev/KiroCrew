@@ -1,4 +1,5 @@
-"""Recovery policy for a dashboard turn: empty-turn continuation, error cards, retry delays and stop gates."""
+"""Recovery policy for a dashboard turn: empty-turn continuation, error cards, retry delays and
+stop gates, the refusal card text and the compact-after-turn notice."""
 
 from __future__ import annotations
 
@@ -12,7 +13,9 @@ if TYPE_CHECKING:
         _COMPACTION_CONTINUE_MSG,
         _PROMISE_ONLY_CONTINUE_MSG,
         _SYNTHETIC_RECOVERY_MSGS,
+        APP_AGENT_REFUSED_KIND,
         AUTH_REQUIRED_KIND,
+        CONTEXT_OVERFLOW_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
         MODEL_UNENTITLED_KIND,
         SESSION_START_FAILED_KIND,
@@ -23,10 +26,13 @@ if TYPE_CHECKING:
         USAGE_LIMIT_KIND,
         DashboardState,
         KiroCrewConfig,
+        PoisonedConversationEscalation,
+        RefusalInfo,
         ResetCause,
         _ChatSlot,
         _has_user_queued_followup,
         _remove_queued_by_id,
+        append_and_surface,
         build_recovery_requeue,
         effective_session_key,
         is_synthetic_payload_item,
@@ -244,17 +250,22 @@ async def _note_cycle_failure(
 def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     """Row-level kind for a terminal ACP error, or None for a plain error row.
 
-    Four structural tags, read here without looking at the prose. Three are set
+    Six structural tags, read here without looking at the prose. Four are set
     by ``_raise_acp_error`` from the raw frame: a model-entitlement rejection
-    (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``)
-    and a spent plan allowance (``usage_limit``). The entitlement verdict wins
+    (``rejected_model`` / ``advertised``), a sign-in failure (``auth_required``),
+    a spent plan allowance (``usage_limit``) and a context overflow
+    (``context_overflow``, whose fix is a fresh conversation, not a retry on
+    any model). The entitlement verdict wins
     when it is set, because its fix (pick a served model) is the one the prose
     describes; the other two are exclusive at raise time. The fourth,
     ``session_start_failed``, is set at the ACP session-start timeout raise
     sites on BOTH exception families (``AcpError`` on the dedicated client,
     ``AcpRequestTimeout`` on the shared runtime, which share no base -- hence
-    ``getattr``) and ranks last: a start that failed because the process is
-    signed out has a fix, and that fix is what the card should show.
+    ``getattr``) and ranks below them: a start that failed because the process is
+    signed out has a fix, and that fix is what the card should show. The sixth,
+    ``agent_unavailable``, is set by the session start that finds no definition
+    for its agent (``AcpAgentUnavailable``); its row is the app-agent refusal,
+    because a retry finds the same missing definition and the prose names the fix.
     """
     unentitled = _model_unentitled_meta(exc)
     if unentitled is not None:
@@ -263,8 +274,12 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
         return {"kind": AUTH_REQUIRED_KIND}
     if getattr(exc, "usage_limit", False):
         return {"kind": USAGE_LIMIT_KIND}
+    if getattr(exc, "context_overflow", False) is True:
+        return {"kind": CONTEXT_OVERFLOW_KIND}
     if getattr(exc, "session_start_failed", False) is True:
         return {"kind": SESSION_START_FAILED_KIND}
+    if getattr(exc, "agent_unavailable", False) is True:
+        return {"kind": APP_AGENT_REFUSED_KIND}
     return None
 
 
@@ -389,10 +404,18 @@ def _replay_live(state: DashboardState, slot: _ChatSlot) -> LiveSlot:
     )
 
 
-def _rearm_allowances(slot: _ChatSlot, refunds: tuple[tuple[str, Any], ...]) -> None:
-    """Re-arm the one-shot allowances a cancelled replay had spent."""
+def _rearm_allowances(
+    slot: _ChatSlot, refunds: tuple[tuple[str, Any], ...], *, discard_one_shot: bool = False
+) -> None:
+    """Re-arm the one-shot allowances a cancelled replay had spent.
+
+    The poisoned-conversation discard one-shot is refunded by its owner, never by
+    attribute name.
+    """
     for attr, value in refunds:
         setattr(slot, attr, value)
+    if discard_one_shot:
+        PoisonedConversationEscalation(slot).refund_one_shot()
 
 
 def _drop_queued_replay(state: DashboardState, slot: _ChatSlot, queue_id: str) -> None:
@@ -454,7 +477,9 @@ async def _drop_revoked_replays(state: DashboardState, slot: _ChatSlot) -> bool:
             continue
         _drop_queued_replay(state, slot, entry_id)
         replays.disarm(family)
-        _rearm_allowances(slot, policy.drain_refunds)
+        _rearm_allowances(
+            slot, policy.drain_refunds, discard_one_shot=policy.refunds_discard_one_shot
+        )
         slot.append("notice", cancel_notice(family, revocation), "msg msg-info")
         logger.info(policy.drain_log, slot.key, *log_args(family, revocation))
         if not slot._queue:
@@ -494,7 +519,9 @@ async def _replay_vetoed_at_consume(
         if revocation.revoked or not policy.consume_keeps_record:
             replays.disarm(family)
         if revocation.revoked:
-            _rearm_allowances(slot, policy.consume_refunds)
+            _rearm_allowances(
+                slot, policy.consume_refunds, discard_one_shot=policy.refunds_discard_one_shot
+            )
             slot.append("notice", cancel_notice(family, revocation), "msg msg-info")
             logger.info(policy.consume_log, slot.key, *log_args(family, revocation))
             return True
@@ -524,6 +551,10 @@ async def _refresh_genuine_turn_allowances(
         slot._last_turn_structural_terminal = False
         slot._last_turn_structural_terminal_loop_id = ""
         slot._last_turn_structural_terminal_loop_gen = 0
+        # The refused-cycle verdict follows the same rule: a genuine new turn is
+        # a different context, so the loop it named may fire again.
+        slot._last_turn_model_refused_loop_id = ""
+        slot._last_turn_model_refused_loop_gen = 0
         # Same one-shot discipline for the reactive model-access swap. Its
         # recovery replays the user's ORIGINAL message (their words, so it is
         # NOT a synthetic marker and would reset the flag here like any fresh
@@ -700,13 +731,19 @@ async def _requeue_after_prompt_busy(
     _turn_emitted: bool,
     _is_synthetic: bool,
     _queue_recovery: Callable[..., str],
+    _stop_pressed: Callable[[], bool],
 ) -> None:
     """Re-queue a turn whose provider was reset after prompt-busy retries ran out.
 
     Within the busy budget a top-level turn is re-queued on the fresh provider;
     past it, or nested, the transcript says so instead.
+
+    *_stop_pressed* is ``_run_chat``'s live Stop read: a Stop that already
+    resolved to idle is invisible to ``_should_suppress_requeue`` and
+    ``_queue_recovery`` takes no Stop snapshot of its own, so this gate is the
+    only place it can veto the replay (the same pairing as the other arms).
     """
-    if _should_suppress_requeue(slot):
+    if _should_suppress_requeue(slot) or _stop_pressed():
         pass
     elif _prompt_depth == 0 and slot._prompt_busy_retries <= 3:
         # Single emit: slot.append persists + broadcasts one chat_message
@@ -732,3 +769,157 @@ async def _requeue_after_prompt_busy(
         # depth>0 with budget remaining: no re-queue (mirrors AcpProcessDied),
         # but still surface feedback so the nested turn doesn't fail silently.
         slot.append("error", "⟳ Session busy — please retry.", "msg msg-err")
+
+
+_REFUSAL_CARD_LEAD = "Response declined by the model."
+
+
+def refusal_card_text(
+    refusal: "RefusalInfo | None",
+    *,
+    streamed_text: str = "",
+    fallback_off: bool = False,
+) -> str:
+    """The one refusal card, rendered from whatever the harness reported.
+
+    Every harness lands on the same ``RefusalInfo``; this renders one line per
+    field that carries a value and NOTHING for a field the provider left
+    empty -- an absent category is silence, not "category: unknown". The Kiro
+    service fills category + explanation (+ sometimes a model that would take
+    the request); Anthropic's adapter fills nothing, so its card is the bare
+    lead plus the rephrase hint. Retry is never offered: a refusal is
+    deterministic.
+
+    *streamed_text* is what the turn already showed as assistant text. The Kiro
+    service streams its canned explanation before the terminal, so when that
+    text already carries the explanation the card does not repeat it -- the
+    user reads it once, and the card adds only what the text could not say
+    (the category, the hint).
+
+    *fallback_off* is ``True`` when ``agent.refusal_fallback_model`` is not
+    configured. The card then appends one sentence naming the setting so the
+    user can discover the automatic-recovery feature at the moment they need it.
+    """
+    lines = [_REFUSAL_CARD_LEAD]
+    if refusal is not None and refusal.category:
+        lines.append(f"Content filter: {refusal.category.lower()}.")
+    if refusal is not None and refusal.explanation and refusal.explanation not in streamed_text:
+        lines.append(refusal.explanation)
+    if refusal is not None and refusal.recommended_model:
+        lines.append(f"The provider suggests model '{refusal.recommended_model}' for this request.")
+    else:
+        lines.append(
+            "Try rephrasing your request, or start a new conversation without the "
+            "content that tripped the filter."
+        )
+    if fallback_off:
+        lines.append(
+            "Automatic retry on another model is available but switched off"
+            " (`agent.refusal_fallback_model`)."
+        )
+    return " ".join(lines)
+
+
+#: The chat row shown once per turn when the context crosses the compaction
+#: threshold mid-turn. The frontend's CompactionCard matches this exact shape and
+#: renders it from the catalog, so the English here is the stored form only.
+COMPACT_AFTER_TURN_NOTICE = (
+    "🔄 Context at {pct:.0f}% (limit {limit:.0f}%) — will compact after this turn."
+)
+
+
+#: ``meta["notice"]`` on that row. A notice marker keeps ``is_turn_interrupted``
+#: from reading the row as a ``/compact`` result: nothing has been compacted yet.
+COMPACT_AFTER_TURN_NOTICE_KIND = "compact_after_turn"
+
+
+def _tool_rows_settled(slot: Any) -> bool:
+    """True when no tool row of the trailing tool run is still waiting for its result.
+
+    A notice row appended between a running tool's row and its result would stop the
+    turn's backward scans (the post-tool "mark tools done" walk and
+    ``_flush_segment``'s cleanup) before they reach that tool, so the notice waits
+    for a boundary where every tool above it has finished.
+    """
+    for m in reversed(slot.messages):
+        role = m.get("role")
+        if role == "tool":
+            if not (m.get("meta") or {}).get("done"):
+                return False
+        elif role not in ("permission", "card"):
+            return True
+    return True
+
+
+async def _notice_compaction_after_turn(
+    state: DashboardState, slot: Any, client: Any, session_key: str
+) -> bool:
+    """Tell the person "will compact after this turn", once, while the turn still runs.
+
+    Called at a tool-result boundary of a running turn. Does nothing and returns
+    False unless the end-of-turn check would compact this session right now
+    (:meth:`SessionManager.compaction_due_after_turn`) and the transcript is at a
+    clean boundary. Otherwise appends the notice row and returns True, so the caller
+    can make it once per turn. A display row only: the model is not told anything
+    and the turn runs on unchanged. Never compacts: compaction stays where it was,
+    after the turn. Never raises.
+    """
+    try:
+        # `is not True`: only the manager's own verdict counts, never a truthy stand-in.
+        if state.sessions.compaction_due_after_turn(session_key, client) is not True:
+            return False
+        pct = float(client.context_usage_pct())
+        limit = float(state.sessions.effective_autocompact_pct(session_key))
+    except Exception:
+        logger.debug("compact-after-turn: no context reading", exc_info=True)
+        return False
+    if not _tool_rows_settled(slot):
+        return False
+    try:
+        # Finalize the clients' streaming message first. Pre-tool narration was
+        # persisted without a broadcast, so an open client still holds it as the
+        # streaming row, and an assistant frame arriving now would replace it.
+        state.broadcast_ws("chat_segment", {"slot": slot.key})
+        append_and_surface(
+            state,
+            slot,
+            "assistant",
+            COMPACT_AFTER_TURN_NOTICE.format(pct=pct, limit=limit),
+            "msg msg-a",
+            meta={"kind": "compaction", "notice": COMPACT_AFTER_TURN_NOTICE_KIND},
+        )
+    except Exception:
+        logger.debug("compact-after-turn: notice row failed", exc_info=True)
+    logger.info(
+        "Session %s context at %.0f%% (threshold %.0f%%) mid-turn -- noticed; "
+        "compaction runs after the turn",
+        session_key,
+        pct,
+        limit,
+    )
+    return True
+
+
+# Retries granted to a turn abandoned after a TRANSIENT compaction failure
+# (a throttled or 5xx'd summarization call). Its own budget rather than a share
+# of _acp_pipe_death_retries: charging an unrelated fault to another recovery's
+# budget is what let one false positive burn a whole session's allowance. Two,
+# not three — a throttle still firing after two session resets is not clearing
+# inside this turn, and every attempt costs the summarization call again.
+_COMPACTION_FAILED_RETRIES = 2
+
+
+# Cap the backend-echoed reason interpolated into the "Compaction failed"
+# notice. The notice is a one-line receipt in the transcript, so an unbounded
+# provider string (a stack trace, an echoed payload) would scroll the
+# conversation away instead of explaining it.
+_COMPACT_FAIL_REASON_MAX_CHARS = 300
+
+
+# The answer to a /compact that reached a fresh provider session still owing the
+# Kiro Crew conversation replay. The replay rides the next context-bearing
+# prompt, so that session holds nothing yet and the backend reports no
+# compaction status to wait for.
+COMPACT_REPLAY_PENDING_NOTICE = (
+    "Nothing to compact yet: the restored history is delivered with your next message."
+)

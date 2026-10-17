@@ -32,9 +32,10 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import append_line, replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -449,7 +450,9 @@ class CronHistoryStore:
         Returns True when records can be persisted, False to disable history.
         """
         try:
-            self._dir.mkdir(parents=True, exist_ok=True)
+            from kiro_crew.owner_only_files import ensure_directory
+
+            ensure_directory(self._dir)  # run records: 0700 in the data home
             return True
         except OSError as exc:
             # A denial scoped to this one leaf answers EPERM to BOTH os.mkdir
@@ -556,14 +559,14 @@ class CronHistoryStore:
     async def append(self, record: CronRunRecord) -> None:
         """Write record to job file and index."""
         # Cap fields
-        # The ONE truncation site for a summary: cron.py's run, timeout and
+        # The ONE truncation site for a summary: the cron service's run, timeout and
         # cancel recorders all hand the whole text over uncut, so the
         # configured cap and the keep-the-facts rule apply once, here. A
         # caller that pre-slices defeats both.
         #
         # One boundary this does not reach: a command cron's failure path caps
         # the JOB FIELD it writes (``job.last_error = err_str[:200]`` in
-        # slack/gateway.py), which is a registry-size decision about crons.json,
+        # slack/gateway_runtime/cron_exec.py), which is a registry-size decision about crons.json,
         # not a decision about this record. The recorder still passes that field
         # over whole, so such a summary is simply as long as the field it came
         # from. Lifting that cap belongs to whoever owns the registry's size.
@@ -582,12 +585,14 @@ class CronHistoryStore:
         fd = self._lock()
         try:
             job_path = self._job_path(record.job_id)
-            wfd = os.open(str(job_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(wfd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(include_trace=True)) + "\n")
-            ifd = os.open(str(self._index_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(ifd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(include_trace=False)) + "\n")
+            append_line(
+                job_path, json.dumps(record.to_dict(include_trace=True)), opener=owner_only_opener
+            )
+            append_line(
+                self._index_path,
+                json.dumps(record.to_dict(include_trace=False)),
+                opener=owner_only_opener,
+            )
             # The caps are enforced on the write path, not only by ``rotate_all``.
             # That runs once per process, from ``CronService.start``, so it bounds
             # the history a gateway INHERITS, never the history the gateway itself
@@ -738,6 +743,20 @@ class CronHistoryStore:
             return False
         try:
             return await asyncio.to_thread(self._delete_job_history_sync, job_id)
+        except OSError as exc:
+            self._degrade("delete_job_history", exc)
+            return False
+
+    def delete_job_history_sync(self, job_id: str) -> bool:
+        """Synchronous :meth:`delete_job_history`, for a loop-less caller.
+
+        Blocking filesystem I/O under the history lock, so it never runs on an
+        event loop; there, await :meth:`delete_job_history`.
+        """
+        if not self._enabled:
+            return False
+        try:
+            return self._delete_job_history_sync(job_id)
         except OSError as exc:
             self._degrade("delete_job_history", exc)
             return False

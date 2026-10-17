@@ -36,6 +36,16 @@ function Probe({ onAnswer, opts }: { onAnswer: (ok: boolean) => void; opts?: Par
 }
 
 describe('useConfirm', () => {
+  it("marks its confirm button, and only that one, as the guide's confirm signal", async () => {
+    const user = userEvent.setup()
+    render(<Probe onAnswer={vi.fn()} />)
+    await user.click(screen.getByText('ask'))
+    const dialog = await screen.findByRole('dialog')
+    const marked = dialog.querySelectorAll('[data-guide-confirm]')
+    expect(marked).toHaveLength(1)
+    expect(marked[0]).toBe(screen.getByRole('button', { name: 'Discard draft' }))
+  })
+
   it('renders a themed dialog and never calls window.confirm', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm')
     const onAnswer = vi.fn()

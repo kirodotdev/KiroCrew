@@ -63,6 +63,17 @@ _WS_CLIENT_READY_TIMEOUT_SECS = 5.0
 CHAT_P2P = "p2p"
 CHAT_GROUP = "group"
 
+# The app's own bot identity. A group message drives a turn only when its
+# ``mentions`` list names this open_id, so it is resolved once per start from
+# Feishu's bot-info endpoint. The probe runs on its own SDK client with a
+# request timeout (the reply client has none), so a stalled probe frees its
+# executor thread instead of holding one of the reply workers.
+_BOT_INFO_URI = "/open-apis/bot/v3/info"
+_BOT_INFO_TIMEOUT_SECS = 10.0
+# Backoff between failed probes: doubling from the first delay, capped.
+_BOT_INFO_RETRY_FIRST_SECS = 30.0
+_BOT_INFO_RETRY_MAX_SECS = 600.0
+
 # Bounded dedup window for redelivered WS frames: keep the most recent N
 # message_ids and evict in arrival order (see ``_handle_receive_v1``).
 
@@ -77,14 +88,21 @@ class LarkInbound:
     chat_type: str  # CHAT_P2P | CHAT_GROUP; "" when the frame omitted it
     chat_id: str  # group chat_id (empty for p2p)
     #: The body a slash command is matched against, with the bot's own leading
-    #: @ placeholder removed -- see ``_command_body``. A group message must
-    #: mention the bot, so the resolved ``text`` starts with "@BotName" and a
-    #: whole-string command match would never fire; the dispatcher cannot derive
-    #: this itself because the ``@_user_N`` placeholders are gone by then. Empty
-    #: whenever there is no single leading mention -- a DM (``text`` is already
-    #: mention-free) or a message naming somebody else as well, which must NOT
-    #: be read as a bare command.
+    #: @ placeholder removed -- see ``_command_body``. A group message reaches a
+    #: turn only when it mentions the bot (``bot_mentioned``), so the resolved
+    #: ``text`` starts with "@BotName" and a whole-string command match would
+    #: never fire; the dispatcher cannot derive this itself because the
+    #: ``@_user_N`` placeholders are gone by then. Empty whenever there is no
+    #: single leading mention -- a DM (``text`` is already mention-free) or a
+    #: message naming somebody else as well, which must NOT be read as a bare
+    #: command.
     command_text: str = ""
+    #: True when the event's ``mentions`` list names THIS app's bot by open_id.
+    #: The transport refuses a group message without it, so a plain message
+    #: from an allow-listed sender in an allow-listed group drives nothing.
+    #: False whenever the bot's own open_id is not resolved, which is what
+    #: keeps the group gate closed until the identity is known. DMs ignore it.
+    bot_mentioned: bool = False
     #: Set by the transport's ``receive`` on a message a person sent, so its turn
     #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
     person_origin: bool = False
@@ -141,16 +159,59 @@ def _command_body(raw_text: str) -> str:
     named a third party and was never a bare command. That loss is
     unrecoverable, so ambiguity resolves to "not a command".
 
-    Hence exactly ONE placeholder, and it must lead. A group message always
-    mentions the bot, so a single leading mention IS the bot. Everything else
-    returns "" and the dispatcher falls back to the resolved text, which still
-    carries the mention and therefore cannot match a command.
+    Hence exactly ONE placeholder, and it must lead. The transport serves a
+    group message only when its mentions name the bot, so on a served group
+    message a single leading mention IS the bot. Everything else returns "" and
+    the dispatcher falls back to the resolved text, which still carries the
+    mention and therefore cannot match a command.
     """
     stripped = raw_text.lstrip()
     matches = list(_AT_RE.finditer(stripped))
     if len(matches) != 1 or matches[0].start() != 0:
         return ""
     return stripped[matches[0].end() :].strip()
+
+
+def _mentions_bot(mentions: Any, bot_open_id: str) -> bool:
+    """Whether an event's ``mentions`` list names the bot whose id is *bot_open_id*.
+
+    Matched on ``id.open_id``, never on the display name: any member can carry
+    the bot's name, while the open_id is unique to this app. An unresolved
+    (empty) bot id matches nothing, so a mention entry with no open_id can
+    never read as the bot.
+    """
+    if not bot_open_id:
+        return False
+    for m in mentions or ():
+        ident = getattr(m, "id", None)
+        if ident is not None and getattr(ident, "open_id", None) == bot_open_id:
+            return True
+    return False
+
+
+def _parse_bot_open_id(content: Any) -> str:
+    """The bot's open_id from a bot-info response body; ValueError otherwise.
+
+    Expected shape: ``{"code": 0, "bot": {"open_id": "ou_..."}}``. A non-zero
+    code, a missing or blank open_id, or a body that is not a JSON object is
+    refused rather than read as an identity, because an empty id is what keeps
+    the group gate closed.
+    """
+    if isinstance(content, (bytes, bytearray)):
+        content = bytes(content).decode("utf-8", errors="replace")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("bot info response has no body")
+    payload = json.loads(content)
+    if not isinstance(payload, dict):
+        raise ValueError("bot info response is not a JSON object")
+    code = payload.get("code")
+    if code != 0:
+        raise ValueError(f"bot info refused: code={code!r} msg={payload.get('msg')!r}")
+    bot = payload.get("bot")
+    open_id = bot.get("open_id") if isinstance(bot, dict) else None
+    if not isinstance(open_id, str) or not open_id.strip():
+        raise ValueError("bot info response carries no open_id")
+    return open_id.strip()
 
 
 class LarkClient:
@@ -190,6 +251,11 @@ class LarkClient:
         self.on_state_change: Callable[[bool, str], None] | None = None
         self._healthy: bool | None = None
         self._healthy_reason = ""
+        #: This app's bot open_id, "" until ``_resolve_bot_open_id`` succeeds.
+        #: Written on the event loop, read on the WS thread; a str attribute
+        #: swap is atomic, and the WS thread only ever compares against it.
+        self._bot_open_id = ""
+        self._bot_identity_task: asyncio.Task[None] | None = None
 
         # Build the sync REST client once; it is thread-safe for outbound calls.
         try:
@@ -280,6 +346,76 @@ class LarkClient:
         if not resp.success():
             raise RuntimeError(f"Feishu reply error: code={resp.code} msg={resp.msg}")
 
+    # -- Bot identity --------------------------------------------------------
+
+    def _sync_fetch_bot_open_id(self) -> str:
+        """Blocking bot-info probe; call only from a worker thread.
+
+        A dedicated SDK client carries the request timeout, so a stalled
+        endpoint raises and frees this executor thread rather than holding one
+        of the workers ``send_reply`` shares. The tenant token comes from the
+        same app credentials as the reply client.
+        """
+        lark = self._lark_mod
+        probe = (
+            lark.Client.builder()
+            .app_id(self._app_id)
+            .app_secret(self._app_secret)
+            .timeout(_BOT_INFO_TIMEOUT_SECS)
+            .log_level(lark.LogLevel.WARNING)
+            .build()
+        )
+        req = (
+            lark.BaseRequest.builder()
+            .http_method(lark.HttpMethod.GET)
+            .uri(_BOT_INFO_URI)
+            .token_types({lark.AccessTokenType.TENANT})
+            .build()
+        )
+        resp = probe.request(req)
+        return _parse_bot_open_id(getattr(getattr(resp, "raw", None), "content", None))
+
+    async def _resolve_bot_open_id(self) -> None:
+        """Resolve this app's bot open_id, retrying with capped backoff.
+
+        Until it resolves every group message reads ``bot_mentioned=False`` and
+        the transport refuses it; DMs never consult it. The first failure logs
+        one WARNING naming that consequence, later failures log at DEBUG, and a
+        recovery after a failure logs once more so the operator sees groups
+        return.
+        """
+        loop = asyncio.get_running_loop()
+        delay = _BOT_INFO_RETRY_FIRST_SECS
+        warned = False
+        while not self._closed:
+            try:
+                open_id = await loop.run_in_executor(self._executor, self._sync_fetch_bot_open_id)
+            except Exception as exc:
+                if self._closed:
+                    return
+                if not warned:
+                    warned = True
+                    logger.warning(
+                        "Feishu bot open_id could not be resolved (%s: %s); group "
+                        "messages are refused until it is. Direct messages are "
+                        "unaffected. Retrying with backoff.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                else:
+                    logger.debug("Feishu bot open_id probe failed again", exc_info=True)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, _BOT_INFO_RETRY_MAX_SECS)
+                continue
+            self._bot_open_id = open_id
+            if warned:
+                logger.info(
+                    "Feishu bot open_id resolved after a failure; group messages are served."
+                )
+            else:
+                logger.info("Feishu bot open_id resolved")
+            return
+
     # -- Inbound WS handler (called from daemon thread) --------------------
 
     def _handle_receive_v1(self, data: Any) -> None:
@@ -322,6 +458,10 @@ class LarkClient:
             )
             return
 
+        # Read before the type split so an unreadable message carries it too:
+        # the transport's group gate refuses either kind without it.
+        bot_mentioned = _mentions_bot(getattr(message, "mentions", None), self._bot_open_id)
+
         if message_type != "text":
             # Handed on with an empty ``text`` and the type recorded, so
             # ``FeishuTransport.receive`` can answer an AUTHORISED sender
@@ -340,6 +480,7 @@ class LarkClient:
                     chat_type=message.chat_type or "",
                     chat_id=message.chat_id or "",
                     unsupported_type=message_type,
+                    bot_mentioned=bot_mentioned,
                 )
             )
             return
@@ -391,6 +532,7 @@ class LarkClient:
             chat_type=message.chat_type or "",
             chat_id=message.chat_id or "",
             command_text=command_body,
+            bot_mentioned=bot_mentioned,
         )
 
         self._deliver(inbound)
@@ -504,6 +646,11 @@ class LarkClient:
         # sitting on an optimistic claim indefinitely.
         self._notify_state(True, "")
         logger.info("Feishu WebSocket receiver started (app_id=%s)", self._app_id)
+        # Off the start path: a slow probe must not delay the receiver, and a
+        # message that lands first is a group message refused, never served.
+        self._bot_identity_task = asyncio.create_task(
+            self._resolve_bot_open_id(), name="feishu-bot-identity"
+        )
 
     def _notify_state(self, connected: bool, error: str) -> None:
         """Publish a health transition to the dashboard badge.
@@ -526,6 +673,10 @@ class LarkClient:
     async def close(self) -> None:
         """Signal shutdown and release the SDK-owned receiver loop."""
         self._closed = True
+        identity_task = self._bot_identity_task
+        self._bot_identity_task = None
+        if identity_task is not None and not identity_task.done():
+            identity_task.cancel()
         ws = self._ws_client
         if ws is not None:
             stop = getattr(ws, "stop", None)

@@ -6,8 +6,8 @@
  * Why a second pin beside ChatPage.featureRequestFallback: the shared row set
  * only forwards the route it is HANDED, and ChatPane builds its own registry
  * from the same factory. A pane that forgot the option would leave every
- * ChatPage test green while the pane drew the plain card -- with no Resume
- * (panes never pass one) and no way out.
+ * ChatPage test green while the pane drew the plain card -- no Resume (a retry
+ * replays the refusal, so the card withholds it) and no way out.
  */
 import { describe, it, expect, vi } from 'vitest'
 import type { ReactNode } from 'react'

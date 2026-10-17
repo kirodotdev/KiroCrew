@@ -8,8 +8,11 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { Input, Btn, PanelSectionHeader } from './ui'
 import { SourceBadge } from './SourceBadge'
 import ErrorNotice from './ErrorNotice'
+import { MarkdownOnlyBadge } from './MarkdownOnlyBadge'
 
 import { i18nT } from '../i18n/t'
+import { isAssistantMember } from '../lib/assistantMember'
+import type { MarkdownBlock } from '../lib/markdownAgents'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
@@ -44,15 +47,20 @@ export interface KiroCrewAgent {
   selection_kind?: 'member' | 'template'
   /** `global` or `project`; only catalog rows carry it. */
   scope?: string
+  /** Catalog rows only: defined in markdown, with no JSON spec for its name. */
+  markdown_only?: boolean
+  /** Set by `useAgents` when this chat's harness cannot load the markdown spec. */
+  markdown_block?: MarkdownBlock
 }
 
 /** The label a roster surface shows for a crew: its display name when one is
  *  set, otherwise its name. One helper rather than `a.display_name || a.name`
  *  at each site, so every surface applies the same fallback (and the same
  *  trim — a stored label arrives trimmed, but an in-flight edit draft may
- *  not be). */
-export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'>): string {
-  return a.display_name?.trim() || a.name
+ *  not be). The built-in Assistant (see `isAssistantMember`) with no label of
+ *  its own reads as its localized name rather than its config key. */
+export function crewDisplayName(a: Pick<KiroCrewAgent, 'name' | 'display_name'> & { kiro_agent?: unknown }): string {
+  return a.display_name?.trim() || (isAssistantMember(a) ? i18nT('components.assistantWelcome.default_name') : a.name)
 }
 
 interface Props {
@@ -274,18 +282,13 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         <div className="flex flex-col min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className={`text-[13px] font-mono font-semibold truncate ${isCurrent ? 'text-accent' : 'text-text'}`}>{crewDisplayName(a)}</span>
-            {/* The ID stays visible when a label covers it: `agent=` in
-                spawn params, crons and the CLI all address the ID, so a
-                picker that hid it would strand anyone wiring those up. */}
-            {crewDisplayName(a) !== a.name && (
-              <span className="text-[11px] font-mono text-muted truncate max-w-[9rem]" title={i18nT('components.agentSelector.agent_id_tooltip', { name: a.name })}>{a.name}</span>
-            )}
             {isDefault && <span className="px-1.5 py-[1px] rounded-full text-[10px] font-bold bg-accent-subtle text-accent border border-accent/30 shrink-0">{i18nT('components.agentSelector.default')}</span>}
             {a.source && (
               <SourceBadge source={a.source} className="shrink-0">
                 {a.source}
               </SourceBadge>
             )}
+            <MarkdownOnlyBadge block={a.markdown_block} />
           </div>
           <span className="text-[11px] text-muted truncate">{a.description || provider.resolveAgentTemplate(a)}</span>
         </div>
@@ -307,9 +310,9 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
         )}
         {showGroupChrome && kind === 'template' && (
           // What a template pick IS, said where the pick happens: the job runs
-          // the shared template on the default crew's workspace and memory.
+          // the shared template in the default workspace with shared memory.
           <p className="px-3 pb-1 text-[11px] leading-snug text-muted">
-            {i18nT('components.agentDropdownList.group_templates_hint')}
+            {i18nT('components.agentDropdownList.group_templates_hint_default_workspace')}
           </p>
         )}
         <div className="divide-y divide-border">{rows.map(renderRow)}</div>

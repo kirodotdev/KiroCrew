@@ -205,6 +205,28 @@ export interface AllowHold {
   workspace: string
   records: readonly BlockedLink[]
   outcome: 'allowed' | 'undone'
+  /** The card the host was allowed from. The reloaded reply reopens that
+   *  card id; when no block lists it, no card shows. */
+  cardId: string
+}
+
+/**
+ * The id of a blocked-link card. A card opens under the block holding the
+ * chip that opened it, so the id names that block as well as the host: one
+ * host blocked in four paragraphs has four possible cards, and one click
+ * opens one of them. The block part is `<rendered block>.<top-level block>`.
+ * Allow swaps an inline placeholder for an inline link, so the block keeps
+ * its place across the reload and the held card reopens under it.
+ */
+export function blockedLinkCardId(domain: string, block: string): string {
+  return `rx-link-${domain}~${block}`
+}
+
+/** The host a blocked-link card id names (a host never contains `~`). */
+export function blockedLinkCardDomain(id: string): string {
+  const rest = id.slice('rx-link-'.length)
+  const cut = rest.indexOf('~')
+  return cut < 0 ? rest : rest.slice(0, cut)
 }
 
 const EMPTY_HOLDS: ReadonlyMap<string, AllowHold> = new Map()
@@ -258,6 +280,9 @@ interface RedactionUi {
   slotKey?: string
   /** Names this reply for the allow holds (slot and message time). */
   replyKey?: string
+  /** This reply's message time, so an allow or undo can ask the reload to
+   *  re-serve this row even when it is above the newest page (#17023). */
+  messageTs?: string
   /** This is the session's first reply with removed values: it carries the
    *  coach after the first block it explains. */
   coached: boolean
@@ -279,11 +304,12 @@ const RedactionUiCtx = createContext<RedactionUi>({
 })
 
 /** One per rendered reply: holds its records and which card is open. */
-export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey, coached = false, children }: {
+export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey, messageTs, coached = false, children }: {
   credentials: readonly CredentialRecord[]
   blockedLinks: readonly BlockedLink[]
   slotKey?: string
   replyKey?: string
+  messageTs?: string
   coached?: boolean
   children: React.ReactNode
 }) {
@@ -291,8 +317,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   // after Allow can rebuild the row) reopens that card, so Undo stays up.
   const [openId, setOpenId] = useState<string | null>(() => {
     const held = replyKey ? allowHolds.get(replyKey) : undefined
-    const domain = held ? held.keys().next().value : undefined
-    return domain ? `rx-link-${domain}` : null
+    const first = held ? held.values().next().value : undefined
+    return first ? first.cardId : null
   })
   const triggerRef = useRef<HTMLElement | null>(null)
   const close = useCallback(() => {
@@ -316,7 +342,7 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const holds = useAllowHolds(replyKey)
   useEffect(() => {
     if (!replyKey) return
-    for (const domain of holds.keys()) if (openId !== `rx-link-${domain}`) setAllowHold(replyKey, domain, null)
+    for (const [domain, hold] of holds) if (openId !== hold.cardId) setAllowHold(replyKey, domain, null)
   }, [openId, replyKey, holds])
   useEffect(() => {
     if (openId === null) return
@@ -327,8 +353,8 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -1159,14 +1185,33 @@ function linkReason(record: BlockedLink): string {
   }
 }
 
-/** The Blocked link chip standing where a suspicious URL was removed. */
-export function BlockedLinkChip({ domain, placeholder }: { domain: string; placeholder: string }) {
+/**
+ * The Blocked link chip standing where a suspicious URL was removed.
+ *
+ * The chip names the host and nothing else. The saved placeholder names only
+ * the host, a placeholder can have no record of its own, and the rendered
+ * text can hold more chips than the saved text has placeholders, so neither a
+ * record count nor a single record proves which record a chip stands for. The
+ * card explains each record of the host; with several it lists each under its
+ * own address.
+ *
+ * `block` names the top-level block holding it, so the card opens under that
+ * block alone. Chips of one host in one block share its card.
+ * `rehypeRedactionMarkers` is the only producer and always sets it.
+ */
+export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
+  domain: string
+  placeholder: string
+  block: string
+  /** A query tail written right after the placeholder, which the chip takes
+   *  in (see `blockedLinkQueryTail`). Shown as text only when no chip is. */
+  tail?: string
+}) {
   useLanguageGeneration()
   const { blockedLinks, openId, toggle } = useRedactionUi()
   const group = blockedLinksForDomain(blockedLinks, domain)
-  if (group.length === 0) return <>{placeholder}</>
-  const single = group.length === 1 ? group[0] : null
-  const id = `rx-link-${domain}`
+  if (group.length === 0) return <>{placeholder}{tail}</>
+  const id = blockedLinkCardId(domain, block)
   return (
     <span
       role="group"
@@ -1176,12 +1221,7 @@ export function BlockedLinkChip({ domain, placeholder }: { domain: string; place
     >
       <Link2Off size={12} aria-hidden="true" className="shrink-0" />
       <span className="text-[10px] font-bold tracking-[.04em] text-warn [text-box:trim-both_cap_alphabetic]">{i18nT('components.redaction.link_tag')}</span>
-      <span className="break-all font-mono text-[12px] text-card-fg [text-box:trim-both_cap_alphabetic]" data-testid="blocked-link-target">
-        {single?.path != null ? `${domain}${escapeInvisibleChars(single.path)}` : domain}
-      </span>
-      {single && single.query_chars > 0 && (
-        <span className="text-muted [text-box:trim-both_cap_alphabetic]" data-testid="blocked-link-query">{i18nT('components.redaction.link_query', { chars: single.query_chars })}</span>
-      )}
+      <span className="break-all font-mono text-[12px] text-card-fg [text-box:trim-both_cap_alphabetic]" data-testid="blocked-link-target">{domain}</span>
       <button
         type="button"
         aria-expanded={openId === id}
@@ -1214,8 +1254,8 @@ function MarkedUrl({ url }: { url: string }) {
 type Confirming = null | 'open' | 'allow'
 type Feedback = null | { kind: 'opened' } | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
 
-function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTarget: boolean }) {
-  const { slotKey, replyKey, blockedLinks } = useRedactionUi()
+function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: string }) {
+  const { slotKey, replyKey, messageTs, blockedLinks } = useRedactionUi()
   const hold = useAllowHolds(replyKey).get(record.domain)
   const [confirming, setConfirming] = useState<Confirming>(null)
   // A card that re-renders after the reply reloads picks its outcome up from
@@ -1251,8 +1291,8 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
       setFeedback({ kind: 'allowed', workspace: res.workspace })
       // The reply reloads with this host's links shown as links again; the
       // hold keeps this card open over them with its Undo.
-      if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed' })
-      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId })
+      window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
     } catch {
       setError(i18nT('components.redaction.link_allow_failed'))
     }
@@ -1264,7 +1304,7 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
       setError(null)
       setFeedback({ kind: 'undone' })
       if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
-      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey } }))
+      if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
       setTimeout(() => setFeedback(null), 1600)
     } catch {
       setError(i18nT('components.redaction.link_undo_failed'))
@@ -1272,11 +1312,9 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
   }
   return (
     <div data-testid="blocked-link-entry">
-      {showTarget && (
-        <div className="mt-1 font-mono text-[12px]" data-testid="blocked-link-entry-target">
-          {record.path != null ? `${record.domain}${escapeInvisibleChars(record.path)}` : record.domain}
-        </div>
-      )}
+      <div className="mt-1 font-mono text-[12px]" data-testid="blocked-link-entry-target">
+        {record.path != null ? `${record.domain}${escapeInvisibleChars(record.path)}` : record.domain}
+      </div>
       <div className="mb-2 mt-1 text-[13px] leading-5 text-card-fg">
         <Trans i18nKey="components.redaction.link_destination" components={{ host: <code className={CODE}>{record.domain}</code> }} />
         <br />
@@ -1369,16 +1407,21 @@ function BlockedLinkEntry({ record, showTarget }: { record: BlockedLink; showTar
   )
 }
 
-function BlockedLinkCard({ domain }: { domain: string }) {
+function BlockedLinkCard({ id }: { id: string }) {
   useLanguageGeneration()
   const { blockedLinks } = useRedactionUi()
+  const domain = blockedLinkCardDomain(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
   if (group.length === 0) return null
+  // The host's distinct blocked links in this reply, in record order: nothing the
+  // reply carries ties a chip to one record, so no entry is put first, and a
+  // lone record is listed the same way, under its own address, with a title
+  // that speaks of the host's blocked links rather than "this link".
   return (
-    <CardShell id={`rx-link-${domain}`} title={i18nT('components.redaction.link_title')} testId="blocked-link-card">
+    <CardShell id={id} title={i18nT('components.redaction.link_title_host')} testId="blocked-link-card">
       {group.map((record, i) => (
         <div key={i} className={i > 0 ? 'mt-2 border-t border-border pt-2' : undefined}>
-          <BlockedLinkEntry record={record} showTarget={group.length > 1} />
+          <BlockedLinkEntry record={record} cardId={id} />
         </div>
       ))}
       <Foot>
@@ -1395,8 +1438,12 @@ export function RedactionCardSlot({ ids }: { ids: string }) {
   const list = ids.split(' ')
   // A held card this slot mounts with is the one already on screen before the
   // reload, so it shows without animating open again.
-  const [heldAtMount] = useState(() => openId !== null && list.includes(openId) && !!replyKey
-    && !!allowHolds.get(replyKey)?.has(openId.slice('rx-link-'.length)))
+  const [heldAtMount] = useState(() => {
+    if (openId === null || !list.includes(openId) || !replyKey) return false
+    const domain = blockedLinkCardDomain(openId)
+    const hold = allowHolds.get(replyKey)?.get(domain)
+    return hold?.cardId === openId
+  })
   // The coach follows the first block holding a removed value, before any card.
   const coach = coached && list.includes(`rx-cred-${firstCredential}`)
     ? <RedactionCoach count={credentials.size} slotKey={slotKey} />
@@ -1413,7 +1460,7 @@ export function RedactionCardSlot({ ids }: { ids: string }) {
       const record = credentials.get(Number(renderId.slice('rx-cred-'.length)))
       card = record ? <CredentialCard key={renderId} record={record} /> : null
     } else {
-      card = <BlockedLinkCard key={renderId} domain={renderId.slice('rx-link-'.length)} />
+      card = <BlockedLinkCard key={renderId} id={renderId} />
     }
   }
   if (!coach && !card) return null
@@ -1424,6 +1471,23 @@ export function RedactionCardSlot({ ids }: { ids: string }) {
 
 /** Every credential tag the redactor writes, in the order they occur. */
 export const CREDENTIAL_TAG_RE = /\[REDACTED: (?:encoded )?credential\]/g
+/**
+ * A query tail glued to the end of a blocked-link placeholder: `?` or `&`, a
+ * parameter name and `=`, then everything up to whitespace, an angle bracket,
+ * a quote or a square bracket (so a credential tag after it still renders and
+ * keeps its ordinal). This is what is left when a link is removed in parts,
+ * such as a presigned link split at `&X-Amz-Date`: the rest of the removed
+ * link, not prose of its own.
+ */
+const QUERY_TAIL_RE = /^[?&][A-Za-z0-9._~%+-]+=[^\s<>"'`[\]]*/
+
+/** The query tail right after a placeholder, without the sentence
+ *  punctuation that may close it, or '' when the text goes on otherwise. */
+export function blockedLinkQueryTail(after: string): string {
+  const m = QUERY_TAIL_RE.exec(after)
+  return m ? m[0].replace(/[.,;:!?)]+$/, '') : ''
+}
+
 /** A suspicious-URL placeholder, capturing its domain (a bracketed IPv6
  *  literal first, so the capture never stops inside `[::1]`). */
 export const BLOCKED_LINK_PLACEHOLDER_RE = /\[REDACTED: suspicious URL to (\[[^\]]+\]|[^\]]+)\]/g
@@ -1441,6 +1505,8 @@ export interface RedactionMarkers {
   held?: ReadonlySet<string>
   credentials: ReadonlyMap<number, CredentialRecord>
   base: number
+  /** The block's index in the message; see `rehypeRedactionMarkers`. */
+  block: number
 }
 
 function countCredentialTags(text: string): number {
@@ -1460,10 +1526,21 @@ function countCredentialTags(text: string): number {
  * injected -- a control inside an anchor would follow the anchor -- but the
  * tags there still count, so later ordinals stay aligned.
  */
-export function rehypeRedactionMarkers(options: { ordinals: ReadonlySet<number>; domains: ReadonlySet<string>; held?: ReadonlySet<string>; base: number }) {
-  const { ordinals, domains, held = new Set<string>(), base: start } = options
+export function rehypeRedactionMarkers(options: {
+  ordinals: ReadonlySet<number>
+  domains: ReadonlySet<string>
+  held?: ReadonlySet<string>
+  base: number
+  /** Which rendered block of the message this is, so card ids stay unique
+   *  across the reply's sub-documents. */
+  block: number
+}) {
+  const { ordinals, domains, held = new Set<string>(), base: start, block: blockIndex } = options
   return (tree: HastRoot) => {
     let next = start
+    // The current top-level block, counted before card slots are added.
+    let top = 0
+    const keyOf = () => `${blockIndex}.${top}`
     const walk = (parent: HastParent, mode: 'inject' | 'count', ids: string[]) => {
       const children = parent.children
       for (let i = 0; i < children.length; i++) {
@@ -1489,8 +1566,16 @@ export function rehypeRedactionMarkers(options: { ordinals: ReadonlySet<number>;
               pieces.push({ type: 'element', tagName: 'cred-tag', properties: { ordinal: String(ordinal), placeholder: m[0] }, children: [] })
               ids.push(`rx-cred-${ordinal}`)
             } else {
-              pieces.push({ type: 'element', tagName: 'blocked-link', properties: { domain: m[1], placeholder: m[0] }, children: [] })
-              ids.push(`rx-link-${m[1]}`)
+              // The chip takes in a query tail glued to its placeholder, so the
+              // rest of a link removed in parts does not run on beside it as
+              // text. It is never an anchor and never reaches the card. Display
+              // only: this redacts nothing, and the saved text keeps the tail.
+              const tail = blockedLinkQueryTail(child.value.slice(m.index + m[0].length))
+              pieces.push({ type: 'element', tagName: 'blocked-link', properties: { domain: m[1], placeholder: m[0], block: keyOf(), tail }, children: [] })
+              ids.push(blockedLinkCardId(m[1], keyOf()))
+              last = m.index + m[0].length + tail.length
+              MARKER_RE.lastIndex = last
+              continue
             }
             last = m.index + m[0].length
           }
@@ -1513,16 +1598,18 @@ export function rehypeRedactionMarkers(options: { ordinals: ReadonlySet<number>;
             continue
           }
         }
-        if (child.tagName === 'a') {
-          const domain = heldAnchorDomain(child.properties?.href, held)
-          if (domain !== null) ids.push(`rx-link-${domain}`)
+        if (child.tagName === 'a' || child.tagName === 'img') {
+          // A link or image to a host allowed from a still-open card keeps
+          // that card's slot: Allow turned the placeholder here into it.
+          const domain = heldAnchorDomain(child.tagName === 'a' ? child.properties?.href : child.properties?.src, held)
+          if (domain !== null) ids.push(blockedLinkCardId(domain, keyOf()))
         }
         const inert = child.tagName === 'a' || child.tagName === 'code'
         walk(child, mode === 'count' || inert ? 'count' : 'inject', ids)
       }
     }
     const root = tree.children
-    for (let i = 0; i < root.length; i++) {
+    for (let i = 0; i < root.length; i++, top++) {
       const block = root[i]
       const ids: string[] = []
       if (block.type === 'element') walk({ type: 'root', children: [block] } as HastRoot, 'inject', ids)

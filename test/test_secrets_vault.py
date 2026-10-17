@@ -546,3 +546,22 @@ def test_corrupt_entries_guard_still_works_with_envelope_guard(tmp_path) -> None
     vault = SecretVault(tmp_path)
     with pytest.raises(ValueError, match="Vault store corrupt: 'entries' must be an object"):
         vault._load_entries()
+
+
+@pytest.mark.asyncio
+async def test_a_revisioned_delete_removes_only_the_entry_that_write_stored(
+    vault: SecretVault,
+) -> None:
+    """Undo of a saved secret must never delete a value saved over it since."""
+    from kiro_crew.secrets.vault import entry_revision
+
+    first = await vault.set_with_revision("tok", "one")
+    assert first == entry_revision(vault._load_entries()["tok"])
+    # Same value, new write: a new nonce, so a new revision.
+    second = await vault.set_with_revision("tok", "one")
+    assert second != first
+    assert await vault.delete_if_revision("tok", first) is False
+    assert vault.get("tok") is not None
+    assert await vault.delete_if_revision("tok", second) is True
+    assert vault.get("tok") is None
+    assert await vault.delete_if_revision("tok", second) is False

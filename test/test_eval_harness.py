@@ -421,12 +421,8 @@ class TestPermissionFlow:
             async def reject_tool(self, request_id):
                 rejected.append(request_id)
 
-        scenario = Scenario(
-            name="perm_exact",
-            sessions=[Session(name="s1", turns=[Turn(user="search")])],
-        )
         runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
-        await runner.run_scenario(scenario)
+        await runner._run_turn(PermProvider(), Turn(user="search"), "eval-session")
         assert approved == ["r1"]
         assert rejected == []
 
@@ -493,12 +489,8 @@ class TestPermissionFlow:
             async def reject_tool(self, request_id):
                 rejected.append(request_id)
 
-        scenario = Scenario(
-            name="perm_nopath",
-            sessions=[Session(name="s1", turns=[Turn(user="read")])],
-        )
         runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
-        await runner.run_scenario(scenario)
+        await runner._run_turn(PermProvider(), Turn(user="read"), "eval-session")
         assert approved == []
         assert rejected == ["r1"]
 
@@ -526,12 +518,8 @@ class TestPermissionFlow:
             async def reject_tool(self, request_id):
                 rejected.append(request_id)
 
-        scenario = Scenario(
-            name="perm_unsafe",
-            sessions=[Session(name="s1", turns=[Turn(user="write")])],
-        )
         runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
-        await runner.run_scenario(scenario)
+        await runner._run_turn(PermProvider(), Turn(user="write"), "eval-session")
         assert approved == []
         assert rejected == ["r1"]
 
@@ -559,12 +547,8 @@ class TestPermissionFlow:
             async def reject_tool(self, request_id):
                 rejected.append(request_id)
 
-        scenario = Scenario(
-            name="perm_fs_valid",
-            sessions=[Session(name="s1", turns=[Turn(user="read")])],
-        )
         runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
-        await runner.run_scenario(scenario)
+        await runner._run_turn(PermProvider(), Turn(user="read"), "eval-session")
         assert approved == ["r1"]
         assert rejected == []
 
@@ -593,12 +577,8 @@ class TestPermissionFlow:
             async def reject_tool(self, request_id):
                 rejected.append(request_id)
 
-        scenario = Scenario(
-            name="perm_fs_sensitive",
-            sessions=[Session(name="s1", turns=[Turn(user="read")])],
-        )
         runner = EvalRunner(provider_factory=lambda key, **kw: PermProvider())
-        await runner.run_scenario(scenario)
+        await runner._run_turn(PermProvider(), Turn(user="read"), "eval-session")
         assert approved == []
         assert rejected == ["r1"]
 

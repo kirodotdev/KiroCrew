@@ -1,0 +1,48 @@
+name: Merged PR Readiness Audit
+
+# `PR Readiness` is main's one required status, but the protected-branches
+# ruleset lets its bypass actors merge past it. When that merge lands a red
+# (#11594 over a failing readiness, #11947 and #15150 past a pending one),
+# every open pull request inherits the red with no record of where it came
+# from, and its author debugs a failure their diff never touched.
+#
+# On each push to main this resolves the pull request whose merge commit is the
+# pushed SHA and reads that PR head's readiness at the moment it merged
+# (scripts/audit_bypass_merge.py). A merge past a non-green readiness becomes a
+# ::warning:: on this run naming the PR, who merged it and the state it had. It
+# never fails: the merge already happened, and a red run would only add a
+# second unexplained red. A direct push with no PR is silent.
+#
+# WHY ITS OWN WORKFLOW, NOT A JOB IN main-ratchet-audit.yml: that run's status
+# is main's per-commit ratchet verdict and the merge queue's required check
+# waits on it; a job that reads GitHub's merge metadata belongs to neither.
+#
+# It runs the pushed commit's own copy of the script, so a change to the script
+# takes effect from the push that merges it.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  audit:
+    name: Merged PR's readiness
+    # A fork's main has none of upstream's PRs or readiness statuses.
+    if: ${{ github.repository == 'kirodotdev/KiroCrew' }}
+    runs-on: ubuntu-latest  # two read-only GETs and a stdlib script; no fleet runner needed.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the merged PR's readiness at merge time
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: python3 scripts/audit_bypass_merge.py --repo "$REPO" --commit "$COMMIT_SHA" --annotate

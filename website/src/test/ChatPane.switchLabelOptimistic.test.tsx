@@ -124,7 +124,7 @@ describe('ChatPane — model switch updates the pane label without a slot-list r
 
   it('agent pick writes agent AND workspace to the store on API success (#5120)', async () => {
     const { store } = renderPane('pane-3')
-    const chip = await waitFor(() => screen.getByTitle('Agent: default'))
+    const chip = await waitFor(() => screen.getByTitle(/^Agent: default(?:\s|$)/))
     const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /writer/ }))
@@ -143,7 +143,7 @@ describe('ChatPane — model switch updates the pane label without a slot-list r
   it('keeps the pre-switch agent when the agent switch fails (#5120)', async () => {
     vi.mocked(api.chatSlotAgent).mockRejectedValueOnce(new Error('boom'))
     const { store } = renderPane('pane-4')
-    const chip = await waitFor(() => screen.getByTitle('Agent: default'))
+    const chip = await waitFor(() => screen.getByTitle(/^Agent: default(?:\s|$)/))
     await act(async () => { fireEvent.click(chip) })
     const option = await waitFor(() => screen.getByRole('option', { name: /writer/ }))
     await act(async () => { fireEvent.click(option) })

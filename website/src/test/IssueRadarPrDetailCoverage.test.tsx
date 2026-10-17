@@ -530,7 +530,7 @@ describe('PrDetail — activity errors', () => {
     api.pullDetail.mockRejectedValue(new Error('gh rate limited'))
     const { container } = renderPane()
     await waitFor(() => expect(screen.getByText(/gh rate limited/)).toBeTruthy())
-    expect(container.querySelector('.text-danger')).toBeTruthy()
+    expect(container.querySelector('.text-danger-text')).toBeTruthy()
     // The AI card is not left spinning once the query it is gated on has failed.
     expect(screen.getByTestId('ai-state').textContent).toContain('idle')
     expect(api.pullAi).not.toHaveBeenCalled()

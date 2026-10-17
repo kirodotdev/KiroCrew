@@ -1,19 +1,17 @@
 """Coverage for the aws_control nightly backup lifecycle hooks.
 
-``test_aws_control_app.py::TestRound22Hardening`` already pins the two
-end-of-loop SEL cases (full success emits ``invoked``+``succeeded``; a raising
-backup is audited ``failed``) by patching ``hooks._audit`` wholesale. Those
-leave the interesting parts of the module untested: every EARLY-RETURN guard in
-``_run_once`` that makes the loop fail closed, the ``_audit`` body itself
-(including its best-effort swallow), the ``_loop`` supervisor's error
-swallowing, and ``on_startup`` / ``on_shutdown`` idempotence. This file covers
-exactly those, and never leaves a real background task running past a test.
+The loop CLAIMS each due backup through the Job SDK
+(``start_async(kind, dedupe_key=account, params={caller: scheduled})``) rather
+than running it on a bare thread. This file covers the due-check's early-return
+guards, the claim itself, the ``_loop`` supervisor's error swallowing, and
+``on_startup`` / ``on_shutdown`` idempotence. The runner's own behaviour (reading
+the caller from params, the scheduled failure-backoff) is pinned in
+``test_aws_control_backup_job.py``, where the runner lives.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -21,6 +19,7 @@ import pytest
 
 from kiro_crew import aws_consent
 from kiro_crew.apps.builtins.aws_control import hooks
+from kiro_crew.apps.job_sdk import JobError, UnknownJobKind
 
 ACCOUNT = "111122223333"
 
@@ -36,68 +35,47 @@ async def _never() -> None:
     await asyncio.Event().wait()
 
 
-class TestAuditBody:
-    """The SEL helper the two Round-22 tests patch OUT -- exercised here for real
-    so its success path and its must-never-raise contract are both pinned."""
-
-    def test_audit_forwards_a_three_part_record_to_sel(self):
-        # The unattended loop has no request, so this call is the ONLY audit
-        # trail for a nightly S3 mutation. Confirm every field the handlers rely
-        # on is forwarded, and that resources/error are truncated to 200 chars
-        # so an oversized value cannot blow past the SEL column bound.
-        with mock.patch.object(hooks, "sel") as sel_factory:
-            hooks._audit("backup_nightly", "r" * 300, "invoked", error="e" * 300)
-        call = sel_factory.return_value.log_api_access.call_args
-        assert call.kwargs["operation"] == "aws_control.backup_nightly"
-        assert call.kwargs["outcome"] == "invoked"
-        assert call.kwargs["caller"] == "aws-control-nightly"
-        assert len(call.kwargs["resources"]) == 200
-        assert len(call.kwargs["error"]) == 200
-
-    def test_audit_swallows_a_failing_sel(self):
-        # A broken audit backend must never abort a backup -- the audit is
-        # best-effort by the same rule the HTTP handlers use. A raise here would
-        # crash the loop and silently stop nightly backups.
-        with mock.patch.object(hooks, "sel", side_effect=RuntimeError("sel down")):
-            hooks._audit("backup_nightly", "backup/snapshots", "invoked")  # no raise
-
-
 def _run(coro):
     """Drive one coroutine to completion on a throwaway loop."""
     return asyncio.run(coro)
 
 
+def _fake_sdk():
+    """A JobSDK stand-in whose ``start_async`` records its calls."""
+    sdk = mock.Mock()
+    sdk.start_async = AsyncMock(return_value="run-123")
+    return sdk
+
+
 class TestRunOnceEarlyReturns:
     """Each guard makes the loop fail CLOSED: a missing precondition is a log
-    line and a return, never an unconfirmed AWS call. One test per guard."""
+    line and a return, never a claimed run. One test per guard. ``start_async``
+    must stay untouched in every one."""
 
     def test_no_healthy_registered_key_skips(self):
         # With no working key resolved there is nothing the loop may run under,
         # so it must return before probing identity. The resolution is the one
         # the grant was recorded against, so a key it rejects is a key the
         # consent gate would refuse anyway.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod, "resolve_default_account_profile", AsyncMock(return_value=None)
             ),
             mock.patch.object(hooks.aws_consent, "probe_identity") as probe,
         ):
-            _run(hooks._run_once())
+            _run(hooks._run_once(sdk))
         probe.assert_not_called()
+        sdk.start_async.assert_not_called()
 
     def test_the_nightly_identity_probe_bypasses_the_cache(self):
         """The account this loop keys backups by must not come from memory.
 
-        ``resolve_default_account_profile`` reaches ``_fold_profile``, which probes
-        every registry entry with the cache ON, so a cached probe here answers from
-        an entry primed moments earlier -- the comment's "live probe" would never
-        run live. A repoint inside that window keys ``due_for_nightly``,
-        ``find_drive`` and the snapshot record to the wrong account, unattended.
-
-        Asserted on the KEYWORD rather than on a real cache because the loop's own
-        guards stub the probe out; the cache behaviour itself is pinned where the
-        cache lives.
+        A repoint inside a cached-probe window keys ``due_for_nightly`` and the
+        claim to the wrong account, unattended. Asserted on the KEYWORD because
+        the loop's own guards stub the probe out.
         """
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -110,13 +88,13 @@ class TestRunOnceEarlyReturns:
                 AsyncMock(return_value=aws_consent.Identity(ok=False, account="")),
             ) as probe,
         ):
-            _run(hooks._run_once())
+            _run(hooks._run_once(sdk))
         assert probe.await_args.kwargs.get("use_cache") is False
 
     def test_unresolved_identity_skips(self):
         # A profile NAME is not an account; if the live probe cannot resolve one
-        # (ok False or empty account) the loop cannot key backup state, so it
-        # returns before the due-check.
+        # the loop cannot key backup state, so it returns before the due-check.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -130,12 +108,14 @@ class TestRunOnceEarlyReturns:
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
         ):
-            _run(hooks._run_once())
+            _run(hooks._run_once(sdk))
         due.assert_not_called()
+        sdk.start_async.assert_not_called()
 
     def test_identity_ok_but_no_account_skips(self):
         # ok True with an empty account is still unresolved -- the guard checks
         # both, so this distinct branch must also return before due-check.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -149,13 +129,13 @@ class TestRunOnceEarlyReturns:
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
         ):
-            _run(hooks._run_once())
+            _run(hooks._run_once(sdk))
         due.assert_not_called()
 
     def test_not_due_skips_before_consent(self):
-        # The half-hourly wake is cheap; most wakes are not due. A not-due run
-        # must return before touching consent so a nightly-disabled account is
-        # never even asked to spend money.
+        # Most wakes are not due. A not-due run must return before touching
+        # consent so a nightly-disabled account is never asked to spend money.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -168,15 +148,19 @@ class TestRunOnceEarlyReturns:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=False),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
+            mock.patch.object(hooks.backup_mod, "nightly_sessions_enabled", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log") as refuse,
         ):
-            _run(hooks._run_once())
+            _run(hooks._run_once(sdk))
         refuse.assert_not_called()
+        sdk.start_async.assert_not_called()
 
-    def test_consent_refused_skips_before_drive_lookup(self):
+    def test_consent_refused_skips_before_claiming(self):
         # Consent fails closed: if refuse_and_log returns False the run stops
-        # (it already logged + audited), before find_drive is called, so a
-        # revoked grant produces no S3 read and no upload.
+        # (it already logged + audited), before any run is claimed, so a revoked
+        # grant produces no SDK run and no upload.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -189,16 +173,155 @@ class TestRunOnceEarlyReturns:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=False)),
-            mock.patch.object(hooks.storage_mod, "find_drive") as find,
         ):
-            _run(hooks._run_once())
-        find.assert_not_called()
+            _run(hooks._run_once(sdk))
+        sdk.start_async.assert_not_called()
 
-    def test_no_drive_bucket_skips_before_backup(self):
-        # The drive is tag-discovered per run, not trusted from memory. Until one
-        # exists there is nowhere to push, so the run returns before invoking the
-        # snapshot backup (and before the "invoked" audit).
+
+class TestClaimsTheRunThroughTheSdk:
+    """Past every guard, each due kind is CLAIMED through the SDK. The account is
+    the dedupe key and the scheduled caller rides in params, so a nightly and a
+    manual click adopt one another and the Backup row sees the run."""
+
+    def _drive(self, sdk, *, snapshot_due, sessions_due, bucket="bkt"):
+        with (
+            mock.patch.object(
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
+            ),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=snapshot_due),
+            mock.patch.object(
+                hooks.backup_mod, "due_for_sessions_nightly", return_value=sessions_due
+            ),
+            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
+            mock.patch.object(hooks.backup_mod.storage, "find_drive", return_value=bucket),
+        ):
+            _run(hooks._run_once(sdk))
+
+    def test_a_due_snapshot_is_claimed_with_the_account_and_scheduled_caller(self):
+        sdk = _fake_sdk()
+        self._drive(sdk, snapshot_due=True, sessions_due=False)
+        sdk.start_async.assert_awaited_once()
+        call = sdk.start_async.await_args
+        assert call.args[0] == hooks.backup_mod.KIND_SNAPSHOT
+        # The account is the dedupe key: this is what makes a nightly run and a
+        # manual click for one account adopt one another instead of both paying.
+        assert call.kwargs["dedupe_key"] == ACCOUNT
+        # The scheduled-caller param is what tells the shared runner to apply the
+        # unattended-only gates and to feed the failure backoff. The verified
+        # profile/region the loop just probed ride alongside it, so a scheduled run
+        # can fall back to them if the runner's sync cache has expired past the TTL
+        # by the time the fire-and-forget start reaches it.
+        assert call.kwargs["params"] == {
+            hooks.backup_mod.JOB_PARAM_CALLER: hooks.backup_mod.CALLER_SCHEDULED,
+            hooks.backup_mod.JOB_PARAM_PROFILE: "p",
+            hooks.backup_mod.JOB_PARAM_REGION: "us-west-2",
+        }
+
+    def test_both_due_kinds_are_each_claimed_once(self):
+        # Snapshot and sessions dedupe on (kind, account) independently, so a wake
+        # due for both claims two runs -- one per kind -- not one.
+        sdk = _fake_sdk()
+        self._drive(sdk, snapshot_due=True, sessions_due=True)
+        kinds = [c.args[0] for c in sdk.start_async.await_args_list]
+        assert kinds == [hooks.backup_mod.KIND_SNAPSHOT, hooks.backup_mod.KIND_SESSIONS]
+        assert all(c.kwargs["dedupe_key"] == ACCOUNT for c in sdk.start_async.await_args_list)
+
+    def test_no_drive_yet_claims_no_run(self):
+        # The drive is tag-discovered per wake. Until one exists there is nowhere to
+        # push, so the loop claims NOTHING -- as it did before this change. Claiming
+        # a run anyway would leave a `done` SDK run on the Backup row every wake for
+        # a backup that uploaded nothing, and that newest `done` run would clear an
+        # owner's earlier `lastFailed`. A missing drive is "nothing to attempt yet".
+        sdk = _fake_sdk()
+        self._drive(sdk, snapshot_due=True, sessions_due=True, bucket="")
+        sdk.start_async.assert_not_awaited()
+
+    def test_a_refused_start_is_a_log_line_not_a_crash(self):
+        # The runtime can refuse a start (mid-teardown, or no runner registered).
+        # Nothing reached AWS, so it is a logged skip and the next wake tries
+        # again -- it must not propagate out of the loop body.
+        for exc in (JobError("shutting down"), UnknownJobKind("no runner")):
+            sdk = _fake_sdk()
+            sdk.start_async = AsyncMock(side_effect=exc)
+            self._drive(sdk, snapshot_due=True, sessions_due=False)  # no raise
+            sdk.start_async.assert_awaited_once()
+
+
+class TestADriveLookupThatRaisesIsRecorded:
+    """A drive lookup that RAISES (not returns no drive) is a fault, and it
+    happens in the loop BEFORE any run is claimed, so the runner's own failure
+    handler never sees it. It must still back off and audit per due kind -- or a
+    deterministically failing lookup re-attempts every wake forever. A setup
+    fault and a push fault for one kind are the same invariant: both back off and
+    both audit `failed`. A cancel is teardown, not a fault: it does NOT back off,
+    but it still audits `cancelled` per due kind so the interrupt stays visible."""
+
+    def _run_once_with_raising_find_drive(self, sdk, *, snapshot_due, sessions_due):
+        with (
+            mock.patch.object(
+                hooks.accounts_mod,
+                "resolve_default_account_profile",
+                AsyncMock(return_value=("p", "us-west-2")),
+            ),
+            mock.patch.object(
+                hooks.aws_consent,
+                "probe_identity",
+                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
+            ),
+            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=snapshot_due),
+            mock.patch.object(
+                hooks.backup_mod, "due_for_sessions_nightly", return_value=sessions_due
+            ),
+            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
+            mock.patch.object(
+                hooks.backup_mod.storage,
+                "find_drive",
+                side_effect=RuntimeError("tagging API error"),
+            ),
+            mock.patch.object(hooks.backup_mod, "nightly_run_witness", return_value=("proc", 3)),
+            mock.patch.object(hooks.backup_mod, "record_nightly_failure") as rec,
+            mock.patch.object(hooks.backup_mod, "sel") as sel,
+        ):
+            _run(hooks._run_once(sdk))
+        return rec, sel
+
+    def test_both_due_kinds_each_record_and_audit_the_failure(self):
+        # The lookup raises for a wake due for BOTH kinds. Each due kind must get
+        # its own backoff record AND its own `failed` audit -- a lookup that keeps
+        # failing is otherwise the one failure shape that never backs off.
+        sdk = _fake_sdk()
+        rec, sel = self._run_once_with_raising_find_drive(sdk, snapshot_due=True, sessions_due=True)
+        # No run is claimed -- there is no drive to push to.
+        sdk.start_async.assert_not_awaited()
+        # One backoff record per due kind, each witnessed and carrying the error.
+        kinds_recorded = {c.args[1] for c in rec.call_args_list}
+        assert kinds_recorded == {
+            hooks.backup_mod.KIND_SNAPSHOT,
+            hooks.backup_mod.KIND_SESSIONS,
+        }
+        assert all(c.kwargs["run_witness"] == ("proc", 3) for c in rec.call_args_list)
+        # One `failed` SEL audit per due kind.
+        audits = sel.return_value.log_api_access.call_args_list
+        assert len(audits) == 2
+        assert all(c.kwargs["outcome"] == "failed" for c in audits)
+        assert all(c.kwargs["operation"] == "aws_control.backup_nightly" for c in audits)
+
+    def test_a_cancel_during_the_lookup_audits_cancelled_but_does_not_back_off(self):
+        # Teardown is not a fault: a cancel while resolving the drive is the app
+        # being disabled / the gateway stopping, and counting it as a failed
+        # attempt would push the next night's backup out -- so it does NOT back
+        # off. But teardown must still leave a trail that it was interrupted, so
+        # it audits `cancelled` per due kind before propagating the cancel.
+        sdk = _fake_sdk()
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -211,122 +334,28 @@ class TestRunOnceEarlyReturns:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=True),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value=""),
-            mock.patch.object(hooks.backup_mod, "run_snapshot_backup") as backup,
-            mock.patch.object(hooks, "_audit") as audit,
-        ):
-            _run(hooks._run_once())
-        backup.assert_not_called()
-        audit.assert_not_called()
-
-
-class TestSharedDriveNotice:
-    """A shared drive is a NOTICE, never a gate. Two installs pointed at one
-    account each write under their own prefix, so the nightly loop records the
-    fact and PROCEEDS -- refusing would silently stop backing one machine up."""
-
-    def _proceeding_run(self, *, others):
-        """Run ``_run_once`` past every guard to the backup, with the
-        shared-drive check returning (or raising) ``others``."""
-        others_patch = (
-            mock.patch.object(hooks.backup_mod, "other_install_ids", side_effect=others)
-            if isinstance(others, Exception)
-            else mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=others)
-        )
-        with (
             mock.patch.object(
-                hooks.accounts_mod,
-                "resolve_default_account_profile",
-                AsyncMock(return_value=("p", "us-west-2")),
-            ),
-            mock.patch.object(
-                hooks.aws_consent,
-                "probe_identity",
-                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
-            ),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc"),
-            others_patch,
-            mock.patch.object(
-                hooks.backup_mod, "run_snapshot_backup", return_value={"key": "snapshots/x"}
-            ) as backup,
-            mock.patch.object(hooks, "_audit") as audit,
-        ):
-            _run(hooks._run_once())
-        return backup, audit
-
-    def test_another_install_present_still_backs_up_and_audits_the_shared_drive(self):
-        # The decisive pin: the run does NOT refuse. The backup still runs, and a
-        # `backup_shared_drive` record is emitted so the shared state is visible
-        # in the same SEL trail as the upload it precedes.
-        backup, audit = self._proceeding_run(others=["b" * 32])
-        backup.assert_called_once()
-        shared = [c for c in audit.call_args_list if c.args[0] == "backup_shared_drive"]
-        assert shared, "the shared-drive notice was not audited"
-        assert shared[0].args[2] == "invoked"
-
-    def test_a_failing_shared_drive_check_never_blocks_the_backup(self):
-        # The notice is best-effort: if other_install_ids raises, the check is
-        # one less log line, never a missed nightly. The backup still runs and no
-        # shared-drive record is emitted.
-        backup, audit = self._proceeding_run(others=RuntimeError("list denied"))
-        backup.assert_called_once()
-        assert not [c for c in audit.call_args_list if c.args[0] == "backup_shared_drive"]
-
-    def test_no_other_install_emits_no_shared_drive_record(self):
-        # A drive only this install writes to is not shared, so there is nothing
-        # to record. The backup runs; the shared-drive audit does not fire.
-        backup, audit = self._proceeding_run(others=[])
-        backup.assert_called_once()
-        assert not [c for c in audit.call_args_list if c.args[0] == "backup_shared_drive"]
-
-    def test_the_notice_costs_exactly_one_paid_list_call(self):
-        # One prefix is enough to ANSWER the question the notice asks -- "does
-        # another install write to this drive" -- so the sweep stays at one paid
-        # LIST however many kinds the nightly pushes. Sweeping every prefix spent
-        # an extra paid LIST per scheduled run to re-derive an answer already in
-        # hand, a real cost on the one path that spends without a human present,
-        # which is exactly where an unread call is least defensible.
-        with mock.patch.object(hooks.backup_mod, "_install_folders", return_value=set()) as folders:
-            hooks.backup_mod.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
-        assert folders.call_count == 1
-        assert folders.call_args.args[3] == hooks.backup_mod.KIND_SNAPSHOT
-
-
-class TestRunOnceCancellation:
-    """A cancel during the backup is audited as ``cancelled`` and re-raised, so
-    teardown stops the loop cleanly AND leaves a trail that it was interrupted."""
-
-    def test_cancelled_backup_is_audited_and_reraised(self):
-        with (
-            mock.patch.object(
-                hooks.accounts_mod,
-                "resolve_default_account_profile",
-                AsyncMock(return_value=("p", "us-west-2")),
-            ),
-            mock.patch.object(
-                hooks.aws_consent,
-                "probe_identity",
-                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
-            ),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc"),
-            mock.patch.object(
-                hooks.backup_mod,
-                "run_snapshot_backup",
+                hooks.backup_mod.storage,
+                "find_drive",
                 side_effect=asyncio.CancelledError(),
             ),
-            mock.patch.object(hooks, "_audit") as audit,
+            mock.patch.object(hooks.backup_mod, "nightly_run_witness", return_value=("proc", 3)),
+            mock.patch.object(hooks.backup_mod, "record_nightly_failure") as rec,
+            mock.patch.object(hooks.backup_mod, "sel") as sel,
         ):
             with pytest.raises(asyncio.CancelledError):
-                _run(hooks._run_once())
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        # "invoked" fired before the cancel, then "cancelled" -- never "failed",
-        # because a cancel is not an error to swallow.
-        assert outcomes == ["invoked", "cancelled"]
+                _run(hooks._run_once(sdk))
+        # A cancel is teardown, not a fault: no backoff, no run claimed.
+        rec.assert_not_called()
+        sdk.start_async.assert_not_awaited()
+        # But the interrupt stays visible: one `cancelled` SEL audit per due kind,
+        # never `failed`.
+        audits = sel.return_value.log_api_access.call_args_list
+        assert len(audits) == 2
+        assert all(c.kwargs["outcome"] == "cancelled" for c in audits)
+        assert all(c.kwargs["operation"] == "aws_control.backup_nightly" for c in audits)
 
 
 class TestLoopSupervisor:
@@ -336,17 +365,17 @@ class TestLoopSupervisor:
     def test_loop_swallows_run_once_error_then_sleeps(self):
         # First pass raises (swallowed), so control reaches the sleep; we cancel
         # AT the sleep to break the otherwise-infinite loop deterministically.
-        # Reaching the sleep is the proof the error was swallowed, not raised.
         calls = {"n": 0}
 
-        async def _boom() -> None:
+        async def _boom(_sdk) -> None:
             calls["n"] += 1
             raise RuntimeError("bad night")
 
         async def _drive() -> None:
             with (
+                mock.patch.object(hooks, "get_sdk", return_value=_fake_sdk()),
                 mock.patch.object(hooks, "_run_once", side_effect=_boom),
-                mock.patch.object(
+                mock.patch.object(  # flake-ok: patching asyncio.sleep is the deterministic way to break _loop's infinite wait
                     hooks.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError())
                 ),
             ):
@@ -360,11 +389,36 @@ class TestLoopSupervisor:
         # A cancel raised by _run_once itself must exit the loop, not be caught
         # by the broad Exception handler (CancelledError is re-raised first).
         async def _drive() -> None:
-            with mock.patch.object(hooks, "_run_once", side_effect=asyncio.CancelledError()):
+            with (
+                mock.patch.object(hooks, "get_sdk", return_value=_fake_sdk()),
+                mock.patch.object(hooks, "_run_once", side_effect=asyncio.CancelledError()),
+            ):
                 with pytest.raises(asyncio.CancelledError):
                     await hooks._loop()
 
         _run(_drive())
+
+    def test_loop_skips_run_once_when_no_sdk_is_registered(self):
+        # Without the `jobs` permission the SDK is absent; the loop must not call
+        # _run_once with None -- it waits for the next wake.
+        ran = {"n": 0}
+
+        async def _count(_sdk) -> None:
+            ran["n"] += 1
+
+        async def _drive() -> None:
+            with (
+                mock.patch.object(hooks, "get_sdk", return_value=None),
+                mock.patch.object(hooks, "_run_once", side_effect=_count),
+                mock.patch.object(  # flake-ok: patching asyncio.sleep is the deterministic way to break _loop's infinite wait
+                    hooks.asyncio, "sleep", AsyncMock(side_effect=asyncio.CancelledError())
+                ),
+            ):
+                with pytest.raises(asyncio.CancelledError):
+                    await hooks._loop()
+
+        _run(_drive())
+        assert ran["n"] == 0
 
 
 class TestStartupShutdown:
@@ -380,12 +434,12 @@ class TestStartupShutdown:
             hooks._task = None
             with (
                 mock.patch.object(hooks, "_loop", _never),
+                mock.patch.object(hooks, "_register_job_runners", AsyncMock()),
                 mock.patch.object(hooks.backup_mod, "clear_stop") as clear,
             ):
                 await hooks.on_startup(None)
                 assert hooks._task is not None
                 clear.assert_called_once()
-                # Do not let the created task outlive the test.
                 await hooks.on_shutdown(None)
 
         with mock.patch.object(hooks.backup_mod, "signal_stop"):
@@ -394,11 +448,13 @@ class TestStartupShutdown:
 
     def test_on_startup_is_idempotent_while_running(self):
         # A second enable while the worker is live must be a no-op: it must NOT
-        # spawn a second loop or re-clear the stop, or an enable/disable/enable
-        # cycle could leave two workers or lose a teardown signal.
+        # spawn a second loop or re-clear the stop.
         async def _drive() -> None:
             hooks._task = None
-            with mock.patch.object(hooks, "_loop", _never):
+            with (
+                mock.patch.object(hooks, "_loop", _never),
+                mock.patch.object(hooks, "_register_job_runners", AsyncMock()),
+            ):
                 with mock.patch.object(hooks.backup_mod, "clear_stop"):
                     await hooks.on_startup(None)
                 first = hooks._task
@@ -421,6 +477,7 @@ class TestStartupShutdown:
             hooks._task = done  # a completed task/future: .done() is True
             with (
                 mock.patch.object(hooks, "_loop", _never),
+                mock.patch.object(hooks, "_register_job_runners", AsyncMock()),
                 mock.patch.object(hooks.backup_mod, "clear_stop") as clear,
             ):
                 await hooks.on_startup(None)
@@ -436,15 +493,16 @@ class TestStartupShutdown:
         # upload) AND cancel the task (so the awaiting loop unblocks). Both, and
         # then _task must be cleared so a later enable can start fresh.
         async def _drive() -> None:
-            with mock.patch.object(hooks, "_loop", _never):
+            with (
+                mock.patch.object(hooks, "_loop", _never),
+                mock.patch.object(hooks, "_register_job_runners", AsyncMock()),
+            ):
                 with mock.patch.object(hooks.backup_mod, "clear_stop"):
                     await hooks.on_startup(None)
             task = hooks._task
             with mock.patch.object(hooks.backup_mod, "signal_stop") as signal:
                 await hooks.on_shutdown(None)
             signal.assert_called_once()
-            # Let the just-cancelled task settle: the cancel is a request until
-            # the loop runs it, so awaiting is what proves it actually stops.
             with pytest.raises(asyncio.CancelledError):
                 await task
             assert task.cancelled()
@@ -463,276 +521,3 @@ class TestStartupShutdown:
             assert hooks._task is None
 
         _run(_drive())
-
-
-class TestNightlyOutcomeIsToldApart:
-    """A nightly that sent nothing must not be recorded as a push.
-
-    ``run_snapshot_backup`` now returns a record whose ``uploaded`` is False when the
-    source tree has not changed since the archive already in the drive. The audit trail
-    and the log line are where an operator actually reads what happened, so recording
-    that run as ``succeeded`` with "backup pushed: <key>" would make a night on which no
-    bytes left indistinguishable from an ordinary upload -- against a key that really is
-    in the drive, so nothing downstream looks wrong either.
-
-    Both directions, because an outcome field that always reports one value is not
-    telling anything apart.
-    """
-
-    @staticmethod
-    def _drive(record: dict):
-        """Run one nightly with every precondition satisfied, returning the audit mock."""
-        with (
-            mock.patch.object(
-                hooks.accounts_mod,
-                "resolve_default_account_profile",
-                AsyncMock(return_value=("p", "us-west-2")),
-            ),
-            mock.patch.object(
-                hooks.aws_consent,
-                "probe_identity",
-                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
-            ),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(
-                hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc123def456"
-            ),
-            mock.patch.object(hooks.backup_mod, "run_snapshot_backup", return_value=record),
-            mock.patch.object(hooks, "_audit") as audit,
-        ):
-            _run(hooks._run_once())
-        return audit
-
-    def test_an_unchanged_night_is_audited_as_unchanged_not_succeeded(self):
-        audit = self._drive(
-            {"key": "snapshots/x.tar.gz", "uploaded": False, "bytes": 10, "tree": "t1"}
-        )
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        assert "unchanged" in outcomes
-        assert "succeeded" not in outcomes
-        # The key is still named: it is the archive the drive holds for this kind, which
-        # is what makes the record useful rather than merely honest.
-        keys = [c.args[1] for c in audit.call_args_list]
-        assert "snapshots/x.tar.gz" in keys
-
-    def test_a_real_upload_is_still_audited_as_succeeded(self):
-        audit = self._drive({"key": "snapshots/x.tar.gz", "uploaded": True, "bytes": 10})
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        assert "succeeded" in outcomes
-        assert "unchanged" not in outcomes
-
-    def test_a_record_without_the_field_is_treated_as_a_push(self):
-        # A record from a path that does not set `uploaded` at all must keep the old
-        # meaning rather than silently becoming "unchanged" -- the branch tests
-        # `is False`, so only an explicit skip takes the new wording.
-        audit = self._drive({"key": "snapshots/x.tar.gz"})
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        assert "succeeded" in outcomes
-        assert "unchanged" not in outcomes
-
-
-class TestFailedAttemptIsRecorded:
-    """The loop's failure handlers now WRITE, not only audit.
-
-    Before this the two halves had different fates: the audit went to SEL, where a
-    human reads it after the event, and nothing at all went to state, where the
-    due-check reads it on the next wake. So a nightly failing deterministically
-    produced a growing pile of ``failed`` audit records and a due-check that could
-    not see any of them, and re-attempted every half hour indefinitely.
-
-    State is isolated per test, and the recorder is the REAL one: patching it out
-    would leave these tests asserting that a mock was called, which cannot show that
-    the due-check the loop actually reads has anything to read.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _isolated_state(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(hooks.backup_mod, "_state_path", lambda: tmp_path / "backup.json")
-        yield
-
-    @contextlib.contextmanager
-    def _resolved(self):
-        """The guards up to the due-check, all passed.
-
-        A context manager rather than a tuple of patches: a parenthesized ``with``
-        cannot star-unpack, and the alternative -- returning the tuple and entering
-        it by hand -- would put an ``ExitStack`` in every test for no gain.
-        """
-        with (
-            mock.patch.object(
-                hooks.accounts_mod,
-                "resolve_default_account_profile",
-                AsyncMock(return_value=("p", "us-west-2")),
-            ),
-            mock.patch.object(
-                hooks.aws_consent,
-                "probe_identity",
-                AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
-            ),
-            mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-        ):
-            yield
-
-    def test_a_failing_push_records_the_attempt_and_withholds_the_next_wake(self):
-        # THE regression, driven through the loop rather than through the recorder,
-        # so it covers the wiring as well as the predicate: a deterministic fault
-        # must leave the account NOT due on the wake that follows. With nothing
-        # recorded this assertion reads True, which is the loop re-attempting every
-        # half hour for as long as the fault lasts.
-        hooks.backup_mod.set_nightly(ACCOUNT, True)
-        for _ in range(2):
-            with (
-                self._resolved(),
-                mock.patch.object(hooks.storage_mod, "find_drive", return_value="drive-abc"),
-                mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-                mock.patch.object(
-                    hooks.backup_mod,
-                    "run_snapshot_backup",
-                    side_effect=RuntimeError("snapshot build failed (rc=2)"),
-                ),
-            ):
-                _run(hooks._run_once())
-        recorded = hooks.backup_mod.nightly_failures(ACCOUNT)
-        assert recorded[hooks.backup_mod.KIND_SNAPSHOT]["consecutive"] == 2
-        # The error text is carried, so an operator reading the record learns WHAT
-        # keeps failing rather than only that something does.
-        assert "rc=2" in recorded[hooks.backup_mod.KIND_SNAPSHOT]["error"]
-        assert hooks.backup_mod.due_for_nightly(ACCOUNT) is False
-
-    def test_the_failure_is_audited_and_recorded_together(self):
-        # One helper writes both, so the backoff cannot depend on which way the run
-        # broke. Asserting the pair -- not just the write -- is what pins them as
-        # one fact rather than two that happen to fire today.
-        hooks.backup_mod.set_nightly(ACCOUNT, True)
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="drive-abc"),
-            mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-            mock.patch.object(
-                hooks.backup_mod, "run_snapshot_backup", side_effect=RuntimeError("eio")
-            ),
-            mock.patch.object(hooks, "_audit") as audit,
-        ):
-            _run(hooks._run_once())
-        failed = [c for c in audit.call_args_list if c.args[2] == "failed"]
-        assert len(failed) == 1
-        assert failed[0].args[1] == "backup/snapshots"
-        recorded = hooks.backup_mod.nightly_failures(ACCOUNT)
-        assert recorded[hooks.backup_mod.KIND_SNAPSHOT]["consecutive"] == 1
-
-    def test_a_cancel_records_nothing(self):
-        # A cancelled attempt is teardown -- the owner disabled the app, or the
-        # gateway is stopping -- not a fault. Counting it would let a clean shutdown
-        # push the next night out, and a gateway restarted often enough would keep
-        # the nightly permanently backed off without anything ever having failed.
-        hooks.backup_mod.set_nightly(ACCOUNT, True)
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="drive-abc"),
-            mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-            mock.patch.object(
-                hooks.backup_mod, "run_snapshot_backup", side_effect=asyncio.CancelledError()
-            ),
-        ):
-            with pytest.raises(asyncio.CancelledError):
-                _run(hooks._run_once())
-        assert hooks.backup_mod.nightly_failures(ACCOUNT) == {}
-        assert hooks.backup_mod.due_for_nightly(ACCOUNT) is True
-
-    def test_a_failing_push_on_an_account_with_run_history_still_records(self):
-        # Every other case here starts with an EMPTY run slot, so a `_push_nightly` that passed a constant `None` witness
-        # instead of reading one would still match (absent vs absent) and every test
-        # would pass. With a prior run present, a constant `None` mismatches the real
-        # slot and the recorder refuses -- so the backoff would silently never engage
-        # for any account that has ever backed up successfully, which is most of them.
-        hooks.backup_mod.set_nightly(ACCOUNT, True)
-        hooks.backup_mod._record_run(
-            ACCOUNT, hooks.backup_mod.KIND_SNAPSHOT, "snapshots/i/old.tar.gz", 5, "fp", "v0"
-        )
-        assert hooks.backup_mod.nightly_run_witness(ACCOUNT, hooks.backup_mod.KIND_SNAPSHOT)
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="drive-abc"),
-            mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-            mock.patch.object(
-                hooks.backup_mod, "run_snapshot_backup", side_effect=RuntimeError("eio")
-            ),
-        ):
-            _run(hooks._run_once())
-        recorded = hooks.backup_mod.nightly_failures(ACCOUNT)
-        assert recorded[hooks.backup_mod.KIND_SNAPSHOT]["consecutive"] == 1
-
-    def test_a_shared_setup_failure_records_every_due_kind(self):
-        # The loop has TWO places an attempt can fail, and this is the other one:
-        # the setup shared by both kinds, before either push. It already audited per
-        # due kind; it must record per due kind too, or a drive lookup that keeps
-        # failing is the one failure shape that never backs off.
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=True),
-            mock.patch.object(
-                hooks.storage_mod, "find_drive", side_effect=RuntimeError("tag lookup denied")
-            ),
-        ):
-            _run(hooks._run_once())
-        recorded = hooks.backup_mod.nightly_failures(ACCOUNT)
-        assert set(recorded) == {
-            hooks.backup_mod.KIND_SNAPSHOT,
-            hooks.backup_mod.KIND_SESSIONS,
-        }
-        assert all(row["consecutive"] == 1 for row in recorded.values())
-
-    def test_a_cancelled_shared_setup_records_nothing(self):
-        # The cancel branch of the same handler. It is a separate `except` clause, so
-        # it is separately capable of regressing into recording a teardown.
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(
-                hooks.storage_mod, "find_drive", side_effect=asyncio.CancelledError()
-            ),
-        ):
-            with pytest.raises(asyncio.CancelledError):
-                _run(hooks._run_once())
-        assert hooks.backup_mod.nightly_failures(ACCOUNT) == {}
-
-    def test_a_successful_run_after_failures_clears_the_backoff(self):
-        # End to end through the loop: the fault clears, the next run completes, and
-        # the account is immediately eligible again rather than serving out a wait
-        # measured for a fault that is over. The runner calls the REAL `_record_run`,
-        # because the clear lives inside it -- a stubbed runner could not show the
-        # loop's own success clearing anything.
-        hooks.backup_mod.set_nightly(ACCOUNT, True)
-        for _ in range(3):
-            hooks.backup_mod.record_nightly_failure(
-                ACCOUNT,
-                hooks.backup_mod.KIND_SNAPSHOT,
-                "eio",
-                run_witness=hooks.backup_mod.nightly_run_witness(
-                    ACCOUNT, hooks.backup_mod.KIND_SNAPSHOT
-                ),
-            )
-        assert hooks.backup_mod.due_for_nightly(ACCOUNT) is False
-
-        def _completing(account, profile, region, bucket, *, caller):
-            return hooks.backup_mod._record_run(
-                account,
-                hooks.backup_mod.KIND_SNAPSHOT,
-                "snapshots/i/a.tar.gz",
-                9,
-                "fp",
-                "v1",
-            )
-
-        with (
-            self._resolved(),
-            mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
-            mock.patch.object(hooks.storage_mod, "find_drive", return_value="drive-abc"),
-            mock.patch.object(hooks.backup_mod, "other_install_ids", return_value=[]),
-            mock.patch.object(hooks.backup_mod, "run_snapshot_backup", side_effect=_completing),
-        ):
-            _run(hooks._run_once())
-        assert hooks.backup_mod.nightly_failures(ACCOUNT) == {}

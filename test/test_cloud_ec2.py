@@ -323,7 +323,14 @@ class TestTemplate:
         import re as _re
 
         text = ec2.load_template()
-        for param in ("SourceBucket", "SourceKey", "KirocrewRepo", "KirocrewRef", "AllowSshCidr"):
+        for param in (
+            "SourceBucket",
+            "SourceKey",
+            "KirocrewRepo",
+            "KirocrewRef",
+            "AllowSshCidr",
+            "ExtraPackages",
+        ):
             block = _re.search(rf"  {param}:\n(?:    .+\n)+", text)
             assert block, f"parameter {param} missing"
             assert "AllowedPattern" in block.group(0), f"{param} lacks AllowedPattern"
@@ -575,6 +582,7 @@ class TestUserDataSize:
         "KirocrewRepo": "r" * 255,
         "KirocrewRef": "f" * 128,
         "DashboardPort": "65535",
+        "ExtraPackages": "p" * 256,
         "StackTag": "t" * 51,
         "AWS::AccountId": "1" * 12,
         "AWS::Region": "ap-southeast-99",

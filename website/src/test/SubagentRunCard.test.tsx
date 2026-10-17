@@ -3,6 +3,10 @@ import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from '../pages/chat/SubagentRunCard'
 import { NEVER_STARTED_PREFIX } from '../pages/chat/subagentQueuedReason'
+
+/** The gate's terminal for a start the low-memory wait ended past its bound
+ *  (`QUEUED_WAIT_EXPIRED_TEXT`, backend). */
+const LOW_MEMORY_EXPIRED = `${NEVER_STARTED_PREFIX} (not enough memory freed up in time); retry once memory frees up`
 import type { RootState } from '../store'
 import type { ChatMessage, SubagentActivity } from '../types'
 
@@ -399,7 +403,7 @@ describe('SubagentRunCard rendering', () => {
         subagents: {
           a1: agent('a1', 'done'),
           a2: agent('a2', 'done'),
-          a3: { ...agent('a3', 'error'), error: NEVER_STARTED_PREFIX },
+          a3: { ...agent('a3', 'error'), error: LOW_MEMORY_EXPIRED },
         },
         subagentQueued: {},
       } as unknown as ChatState,
@@ -409,9 +413,33 @@ describe('SubagentRunCard rendering', () => {
     expect(screen.queryByText('3 agents finished')).toBeNull()
     // The member that never started keeps its cause on the card all the same.
     // Counted, so the line binds to the one failed member, not the whole wave.
-    expect(screen.getByTestId('subagent-card-never-started-reason').textContent).toContain(
-      '1 never started — macOS memory pressure did not ease in time',
+    // It names the reason that run ended with: a low-memory expiry is not a
+    // macOS pressure hold.
+    const reason = screen.getByTestId('subagent-card-never-started-reason').textContent ?? ''
+    expect(reason).toBe(
+      '1 never started — not enough memory freed up in time; free up memory, then use “Retry failed” in the Subagents panel',
     )
+    expect(reason).not.toContain('macOS')
+  })
+
+  it('names each reason once when a wave ended both ways', () => {
+    const store = createTestStore({
+      chat: {
+        activeSlot: SLOT,
+        subagents: {
+          a1: { ...agent('a1', 'error'), error: LOW_MEMORY_EXPIRED },
+          a2: { ...agent('a2', 'error'), error: LOW_MEMORY_EXPIRED },
+          a3: { ...agent('a3', 'error'), error: `${NEVER_STARTED_PREFIX} (macOS memory pressure did not ease in time)` },
+        },
+        subagentQueued: {},
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('3 agents never started')).toBeTruthy()
+    const notes = screen.getAllByTestId('subagent-card-never-started-reason').map(n => n.textContent ?? '')
+    expect(notes).toHaveLength(2)
+    expect(notes[0]).toContain('1 never started — macOS memory pressure did not ease in time')
+    expect(notes[1]).toContain('2 never started — not enough memory freed up in time')
   })
 
   it('renders no never-started line for an ordinary settled wave', () => {
@@ -572,6 +600,15 @@ describe('SubagentRunCard — a run parked on a spawn approval is not running', 
     const store = storeWith({ a1: agent('a1', 'pending'), a2: agent('a2', 'running') })
     renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
     expect(screen.getByText('2 agents running')).toBeTruthy()
+    expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
+  })
+  it('neither awaits nor runs a member whose approval is gone', () => {
+    // A terminal refusal withdrew the decision everywhere it is offered, and no
+    // outcome is known: not owed to the user, and not yet proven running.
+    const gone = { ...parked('a1'), approvalGone: 'spawn:a1' } as SubagentActivity
+    const store = storeWith({ a1: gone, a2: agent('a2', 'running') })
+    renderWithProviders(<SubagentRunCard launch={launch} slot={SLOT} />, { store })
+    expect(screen.getByText('1 agent running')).toBeTruthy()
     expect(screen.queryByTestId('subagent-card-awaiting')).toBeNull()
   })
 })

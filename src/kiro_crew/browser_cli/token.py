@@ -27,8 +27,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.hidden_leaf_staging import publish_through_auth_store_staging
 
 #: The variable `playwright-cli` reads. Its name is fixed by the CLI, not by us.
 TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN"
@@ -136,7 +136,10 @@ def set_token(value: str) -> None:
         return
     path = token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, cleaned + "\n", restrict_to_owner=True, restrict_on_error="raise")
+    # Staged in the masked auth-store staging directory, not beside the token: the
+    # token file is a hidden leaf masked by its exact name, so a sibling temp would
+    # hold the token at a name no sandbox mask covers.
+    publish_through_auth_store_staging(path, cleaned + "\n")
 
 
 def clear_token() -> None:

@@ -2,8 +2,9 @@
  * Test: App top-bar connection dot behavior when the auth banner is shown.
  *
  * The connection indicator lives in the unified readout capsule as a small
- * colored dot (green = connected, red = disconnected); when disconnected the
- * whole capsule tints danger. There is no "Offline" text pill.
+ * glyph whose shape carries the state (plug = connected, unplugged plug =
+ * disconnected, colour as a second cue); when disconnected the whole capsule
+ * tints danger. There is no "Offline" text pill.
  *
  * The offline cause is carried on THREE surfaces that must agree: the button
  * `title`, its `aria-label` (accessible name), and the sr-only `role="status"`
@@ -167,5 +168,41 @@ describe('App offline capsule — auth-required accessible name + live region', 
     // The reassuring "Gateway connected" must NOT be announced in this state.
     expect(statusText(dot)).not.toMatch(/^gateway connected/i)
     expect(dot.getAttribute('aria-label')).not.toMatch(/^gateway connected/i)
+  })
+})
+
+describe('App connection indicator — the shape carries the state, not colour alone', () => {
+  // WCAG 1.4.1: colour must not be the only visual cue. The glyph inside the
+  // connection button is a plug when connected and an unplugged plug when
+  // offline, so a reader who cannot tell red from green still sees the state.
+  const connGlyph = () => {
+    const btn = screen.getAllByRole('button').find(b => b.hasAttribute('aria-expanded') && b.querySelector('[role="status"]'))
+    if (!btn) throw new Error('connection button not found')
+    const glyph = btn.querySelector('svg')
+    if (!glyph) throw new Error('connection glyph not found')
+    return glyph
+  }
+
+  it('shows a plug icon when the gateway is connected', () => {
+    const { store } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    const glyph = connGlyph()
+    expect(glyph.getAttribute('aria-hidden')).toBe('true')
+    expect(glyph.getAttribute('data-conn-state')).toBe('connected')
+    expect(glyph.classList.contains('lucide-plug')).toBe(true)
+    expect(glyph.classList.contains('lucide-unplug')).toBe(false)
+  })
+
+  it('shows an unplugged icon when offline, and its pulse stops under reduced motion', () => {
+    renderWithProviders(<App />, {
+      route: '/chat',
+      preloadedState: { dashboard: { connected: false, status: { platform: 'darwin' }, slots: [], approvalMode: 'normal' } as unknown as RootState['dashboard'] },
+    })
+    const glyph = connGlyph()
+    expect(glyph.getAttribute('aria-hidden')).toBe('true')
+    expect(glyph.getAttribute('data-conn-state')).toBe('offline')
+    expect(glyph.classList.contains('lucide-unplug')).toBe(true)
+    expect(glyph.classList.contains('lucide-plug')).toBe(false)
+    expect(glyph.classList.contains('motion-reduce:animate-none')).toBe(true)
   })
 })

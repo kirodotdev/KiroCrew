@@ -42,7 +42,7 @@ _ALLOWED = frozenset(
         # The wrapper's own fallback for a host with no usable shim (non-POSIX, or
         # a truncated install), where dropping the resource caps would be worse
         # than the fork risk.
-        "sandbox.py::create_subprocess_limited",
+        "sandbox_rlimit.py::create_subprocess_limited",
     }
 )
 
@@ -116,8 +116,8 @@ _SYNC_SPAWNS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
 # worse than the fork risk. The async twin of this is in ``_ALLOWED``.
 _SYNC_ALLOWED = frozenset(
     {
-        "sandbox.py::run_limited",
-        "sandbox.py::popen_limited",
+        "sandbox_rlimit.py::run_limited",
+        "sandbox_rlimit.py::popen_limited",
     }
 )
 

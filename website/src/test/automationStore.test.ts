@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { describe, expect, it } from 'vitest'
 import reducer, {
   selectAutomationForSlot,
+  selectSidebarAutomationRunningKeys,
   setAutomations,
   sseAutomation,
 } from '../store/chatSlice'
@@ -36,6 +37,18 @@ describe('automation collection', () => {
 
     expect(selectAutomationForSlot(store.getState(), 'chat-1')).toEqual(legacy)
     expect(selectAutomationForSlot(store.getState(), 'chat-2')).toEqual(terminal)
+  })
+
+  it('keeps an active unsupported monitor busy for close safety', () => {
+    const store = makeStore()
+    const unsupported = normalizeAutomationRecord({
+      id: 'future-monitor', slot_key: 'chat-future', active: true,
+      monitor: { version: 99, kind: 'future_kind' },
+    })!
+    store.dispatch(sseAutomation(unsupported))
+
+    expect(unsupported).toMatchObject({ active: true, actionable: false })
+    expect(selectSidebarAutomationRunningKeys(store.getState())).toContain('chat-future')
   })
 
   it('drops stopped legacy loops but retains terminal structured monitors', () => {

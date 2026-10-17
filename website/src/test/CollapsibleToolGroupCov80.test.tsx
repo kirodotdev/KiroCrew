@@ -199,6 +199,26 @@ describe('CollapsibleToolGroup approval dispatch', () => {
     await waitFor(() => expect(screen.getByText(T('approve'))).toHaveFocus())
   })
 
+  it.each([
+    ['offers', undefined, true],
+    ['drops', false, false],
+  ] as const)('%s the "Ask the agent" hand-off on a failed decision (askAgent=%s)', async (_label, askAgent, offered) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onApprove = vi.fn().mockRejectedValue(new ApiError(500, 'zzq refused'))
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission onApprove={onApprove} askAgent={askAgent}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+
+    fireEvent.click(screen.getByText(T('approve')))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('zzq refused')
+    const handOff = screen.queryByRole('button', { name: i18nT('components.askAgent.ask_the_agent') })
+    expect(handOff !== null).toBe(offered)
+  })
+
   it('pretty-prints a structured tool_input in the preview', () => {
     const { container } = renderWithProviders(
       <CollapsibleToolGroup
@@ -222,15 +242,18 @@ describe('CollapsibleToolGroup approval dispatch', () => {
     expect(container.querySelector('pre')).toBeNull()
   })
 
-  it('truncates a very long preview', () => {
+  it('shows a very long preview in full, in a bounded scrolling box', () => {
+    // A cut preview could hide a destructive suffix behind a benign prefix.
+    const long = 'z'.repeat(400) + ' && zzq-tail'
     const { container } = renderWithProviders(
-      <CollapsibleToolGroup count={1} hasPermission permissionMeta={{ tool_input: 'z'.repeat(400) }} onApprove={() => {}}>
+      <CollapsibleToolGroup count={1} hasPermission permissionMeta={{ tool_input: long }} onApprove={() => {}}>
         <div>zzq-child</div>
       </CollapsibleToolGroup>,
     )
-    const pre = container.querySelector('pre')!.textContent!
-    expect(pre.endsWith('…')).toBe(true)
-    expect(pre.length).toBeLessThan(400)
+    const pre = container.querySelector('pre')!
+    expect(pre.textContent).toBe(long)
+    expect(pre.className).toContain('overflow-y-auto')
+    expect(pre.className).toMatch(/max-h-\[/)
   })
 })
 

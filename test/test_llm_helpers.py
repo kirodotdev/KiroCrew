@@ -6,11 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.client import AcpError, AcpPromptBusy
+from kiro_crew.acp.client import AcpError, AcpPromptBusy, AcpTimeoutError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
     EVENT_COMPACTION_STATUS,
     STOP_REASON_CANCELLED,
+    STOP_REASON_STALE_RECOVER,
     TurnUsage,
 )
 from kiro_crew.llm_helpers import (
@@ -213,6 +214,62 @@ def _make_provider(events=None, error=None):
 
     provider.stream = _stream
     return provider
+
+
+class TestStreamAndCollectUnfinishedTurn:
+    """A turn whose terminal says the backend never finished it is a failure.
+
+    The shared-runtime session handle ends a turn the backend never answered with
+    ``EVENT_COMPLETE`` and ``stop_reason="timeout"``, and an unrecovered stale
+    turn with ``STOP_REASON_STALE_RECOVER``. Neither is a result, so the
+    collector raises the prompt-timeout error (with the text it had) instead of
+    returning that text as the turn's answer.
+    """
+
+    @staticmethod
+    def _provider(stop_reason: str, text: str = "partial") -> MagicMock:
+        async def _stream(msg):
+            if text:
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=text)
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason)
+
+        provider = AsyncMock()
+        provider.stream = _stream
+        return provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    async def test_turn_the_backend_never_finished_raises_prompt_timeout(
+        self, stop_reason: str
+    ) -> None:
+        completed: list = []
+        with patch("asyncio.sleep", new_callable=AsyncMock) as slept:
+            with pytest.raises(AcpTimeoutError) as excinfo:
+                await stream_and_collect(
+                    self._provider(stop_reason), "test", on_complete=completed.append
+                )
+        assert excinfo.value.partial_output == "partial"
+        assert stop_reason in str(excinfo.value)
+        # Not retried: a retry re-sends the prompt to a backend that stopped answering.
+        assert excinfo.value.transient is False
+        slept.assert_not_awaited()
+        # The terminal still reaches the caller's hook before the raise.
+        assert [e.stop_reason for e in completed] == [stop_reason]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_timed_out_turn_raises_rather_than_returning_empty(self) -> None:
+        with pytest.raises(AcpTimeoutError) as excinfo:
+            await stream_and_collect(self._provider("timeout", text=""), "test")
+        assert excinfo.value.partial_output == ""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_reason", ["end_turn", "", STOP_REASON_CANCELLED])
+    async def test_a_finished_or_cancelled_turn_still_returns_its_text(
+        self, stop_reason: str
+    ) -> None:
+        """A normal end returns the answer, and a user-requested stop keeps the
+        partial text, exactly as before."""
+        assert await stream_and_collect(self._provider(stop_reason), "test") == "partial"
 
 
 class TestStreamAndCollectPromptBusy:

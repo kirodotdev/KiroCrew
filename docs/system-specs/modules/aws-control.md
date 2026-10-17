@@ -11,7 +11,7 @@ builtin is declared by `kiro_crew.apps.builtins` and mounted by
 
 Every AWS Control route passes `routes._guarded`. It refuses a disabled app and
 any caller that is not the dashboard owner, and records either denial in SEL.
-`test_aws_control_app.py::TestRouteRegistration.test_every_route_refuses_non_owner_when_enabled`
+`test_aws_control_app.py::TestRouteGates.test_every_route_refuses_non_owner_when_enabled`
 pins the owner boundary.
 
 Every mutating route additionally passes `routes._mutating`. It refuses
@@ -113,8 +113,8 @@ preview-plus-confirm flow. `routes._handle_drive_bootstrap` rechecks the
 account target and S3 consent after confirmation and serializes creation so
 concurrent confirmations cannot create competing drives.
 `test_aws_control_app.py::TestDriveGuards.test_bootstrap_without_confirm_previews_and_creates_nothing`,
-`TestDriveGuards.test_concurrent_bootstrap_confirms_create_exactly_one_drive`,
-and `TestDriveGuards.test_consent_withdrawn_mid_create_refuses_and_creates_nothing`
+`TestRound3Hardening.test_concurrent_bootstrap_confirms_create_exactly_one_drive`,
+and `TestBootstrapReauthorizes.test_consent_withdrawn_mid_create_refuses_and_creates_nothing`
 pin those guarantees.
 
 A created drive is ownership-checked before it becomes discoverable. The storage
@@ -129,7 +129,7 @@ Drive objects live beneath the `artifacts/`, `drive/`, and `backup/` prefixes.
 `storage.validate_key` rejects paths that could escape a section. Folder deletion
 uses a validated, slash-anchored prefix, so it cannot target an empty section,
 the bucket root, or a sibling with a common name prefix.
-`test_aws_control_routes.py::TestFolderDelete.test_delete_rejects_an_empty_path`
+`test_aws_control_routes.py::TestDriveFolderDelete.test_delete_rejects_an_empty_path`
 and `test_aws_control_storage.py::TestDeletePrefix.test_deletes_every_object_and_returns_the_count`
 pin that guard.
 
@@ -291,7 +291,7 @@ The share implementation is a presigned URL and a local metadata ledger only.
 `shares.record_share` stores metadata and expiry but never the URL. A presigned
 URL cannot be revoked by this app before it expires; `shares.forget_share` only
 removes its ledger record. Backup objects are not shareable.
-`test_aws_control_app.py::TestDriveGuards.test_share_of_backup_section_is_refused_outright`
+`test_aws_control_app.py::TestBackupNotShareable.test_share_of_backup_section_is_refused_outright`
 and `test_aws_control_routes.py::TestSharesListForget.test_forget_removes_a_known_share`
 pin those boundaries.
 
@@ -320,7 +320,8 @@ says whether the rows were compared against the drive, because an absent
 `objectMissing` otherwise reads as "the object is there" on a render where the
 drive was never read. WHY the check did not run is logged rather than sent — the
 reason is a backend-authored English sentence and the console is rendered in
-12 production locales plus the development pseudolocale, so it shows a
+every production locale plus the development pseudolocale (the set is owned by
+[website/docs/i18n-catalog.md](../../../website/docs/i18n-catalog.md)), so it shows a
 translated "not checked" line gated on `checked`,
 the same resolution the Library's `remoteError` reaches.
 `storage.list_object_keys` raises rather than degrading to an empty set, and
@@ -333,8 +334,8 @@ row in hand can postdate the listing.
 the unmarked degradation, the logged reason, and the empty-ledger case that takes
 no listing at all.
 
-Existing rows stranded before this shipped are corrected on the next render;
-there is no migration over `shares.json`.
+A stranded row in `shares.json` is corrected on the next render; there is no
+migration over the file.
 
 AWS Control does not create bucket-policy account grants or public CDN shares.
 The IAM-policy endpoint renders `deploy.iam.policy_json` for the operator to
@@ -448,7 +449,7 @@ traversal pinning is available. `backup._authorize_upload` requires the app to
 remain enabled, the S3 grant to still name the target account, and shutdown not
 to be in progress before upload. `backup.restore_download` stages an archive
 locally; it does not restore it into live gateway state.
-`test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
+`test_aws_control_app.py::TestRound17Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
 Both runs build their archive and then decide whether to send it.
@@ -460,6 +461,45 @@ mtimes and a gzip stamp, so two runs over an identical tree produce different by
 an archive-level comparison reports "changed" every night. Reading it from the payload
 rather than by a second walk of the source also means it cannot disagree with what would
 actually be sent, and that a redaction switch changes the fingerprint.
+
+**Every read of the finished archive comes from ONE descriptor, and so does the
+upload.** On `main` the archive was staged by name and then re-resolved from that name
+four times -- the entry-set digest, the recorded size, the AWS CLI `--body` open, and
+the body digest -- so a same-UID process that replaced the file between any two of those
+resolutions made the upload carry bytes nothing checked, off-host and unrecallable
+(#13259). The fix opens the finished archive ONCE through a checked descriptor and reads
+the size, both fingerprints and the upload body all from it, so no step re-resolves the
+name.
+
+Both kinds build the archive BY NAME in a private staging directory this app cuts and
+PINS (`storage.pinned_staging`: `mkdtemp` 0700 under the masked staging root, then a
+pinned directory handle), then take hold of it with `backup._open_pinned_archive_fd` --
+an `O_NOFOLLOW` open relative to that directory handle, plus an `fstat` requiring a
+singly-named regular file this process owns (`S_ISREG` + `st_nlink == 1` + owner), and a
+deny-write open on Windows. From that descriptor `backup._read_at` reads the archive by
+EXPLICIT OFFSET (`os.pread` where the platform has it, otherwise a seek that restores the
+caller's position in a `finally`, since Windows has no `pread`), so the two fingerprints
+and the upload share one descriptor without an `os.dup` sharing the file offset.
+
+`storage.put_file` carries the other half. The archive callers hand it `body_fd` -- the
+checked descriptor -- and it streams THAT descriptor to the AWS CLI as `--body
+/dev/stdin` with the descriptor passed as the child's stdin (`engine.run_aws`'s
+`stdin_fd`), so the child resolves no path at all. Windows has no `/dev/stdin`, so it
+passes the name held by the pinned directory handle and re-verifies the inode against the
+held descriptor afterwards (`_assert_same_file`, a detect-not-prevent backstop). A caller
+with no descriptor of its own (the label sidecar, the library push, the drive spool)
+still passes a bare name exactly as before -- those bodies are not re-hardened by #13259.
+
+This is the whole fix: the archive bytes that are CHECKED are the bytes that are
+UPLOADED, on every platform the backup already ran on -- Linux, macOS, the BSDs, Windows.
+The inode pin fixes WHICH file the descriptor reaches; it does not hold the file's CONTENT
+unrewritable in place against a same-UID writer for the whole (minutes-long) transfer. A
+producer that writes the body into a descriptor it never lets a name reach -- so the
+content is held from creation -- is the larger follow-up tracked in #13550, for both the
+sessions and the snapshot producers. The sessions kind keeps its pre-existing
+descriptor-pinned-traversal requirement (`run_sessions_backup` refuses where the traversal
+cannot be pinned, as it did on `main`); no NEW capability gate is added, so no platform
+loses a backup it had.
 
 Two normalizations are part of the digest's definition, each measured against the real
 engine rather than assumed. `_VOLATILE_MANIFEST_FIELDS` drops `created_at` from
@@ -499,8 +539,8 @@ same pairing, because a bare sequence counts one process's own writes and two pr
 both sit at the same number. Neither `at` nor `key` can stand in for it and neither is
 compared: `datetime.now` resolves to the platform's clock tick, so two writes on a coarse
 clock share one `at` value, while a skip carries the matched run's own `key` and so cannot
-be told from a second skip by key. Windows CI produced both collisions at once and accepted
-a second skip against a baseline the first had already replaced. A record predating these
+be told from a second skip by key. Both collisions can occur at once on a coarse clock, and
+then a second skip would be accepted against a baseline the first had already replaced. A record predating these
 fields carries neither, so the skip is refused and a full copy uploads -- the direction
 every other proof here fails toward, and the reason there is no fallback to `at` alone.
 `test_aws_control_backup_unchanged.py::TestRecordSkipCompareAndSet` pins each term with a
@@ -508,9 +548,9 @@ case no other term can see, including the coarse-clock collision reproduced by h
 two sequence type guards cover each other on a record with no sequence, so they are pinned
 as a pair. If the slot is absent or moved while the archive is
 being built, the skip is refused, the refusal leaves the newer record in place, and the
-run logs the reason before uploading the archive. `hooks._run_once` reads `uploaded` and
-reports and audits a skip as `unchanged` rather than as a push; a record without the field
-reads as a push. Neither the label publish nor the retention sweep runs on a successful
+run logs the reason before uploading the archive. The scheduled run's
+`backup.make_job_runner` runner reads `uploaded` and audits a skip as `unchanged`
+rather than as a push; a record without the field reads as a push. Neither the label publish nor the retention sweep runs on a successful
 skip. Labels follow a push, so a local rename reaches the drive on the next real upload
 rather than on a skip. An unchanged night cannot consume a keep slot or prune the archive
 the next skip depends on.
@@ -539,7 +579,8 @@ cheaper failure and frames the remaining question as "whether operators want an 
 count-based remote prune, which needs a lister and a deleter rather than a lifecycle
 rule". Opt-in, count-based, a lister and a deleter is what this module implements, and
 the by-name protection of the newest archive is that document's own reason. The RFC is
-`status: draft`, so it is cited for SCOPE rather than as an approval; the question it
+`status: partial`, and its retention question (O5) is still open, so it is cited for
+SCOPE rather than as an approval; the question it
 leaves open is whether operators want the prune, which is exactly what shipping off
 leaves open.
 
@@ -596,7 +637,8 @@ reports `retentionKeep` as the EFFECTIVE count the sweep would use, or `null` wh
 retention is off, `retentionUnclaimed` as the last sweep's per-kind count and bytes
 of archives no sweep can ever retire, and `retentionUnrecorded` as its per-kind count and
 bytes of objects under this install's folder that it holds no record of -- a number that
-claims neither ownership nor reclaimability. No console control ships for any of them: the
+claims neither ownership nor reclaimability -- and `retentionLastSweep` as how each kind's
+last sweep ended. No console control ships for any of them: the
 count is set and read over HTTP
 only, and the status field exists so an operator who wrote one can confirm what was
 stored instead of trusting the write. A renderer is a separate surface and is not part
@@ -726,7 +768,8 @@ over every version under such a key, because every version is billed. It is
 reported even when the sweep aborts on an untrustworthy listing, which is the case
 most likely to carry a large one.
 
-`test_aws_control_backup_retention.py` pins the keep-newest rule, the default-off
+The retention suite (`test_aws_control_backup_retention*.py`) pins the keep-newest
+rule, the default-off
 switch including an unconfigured install deleting nothing, every unusable stored
 value reading as off, the refusal to infer the count from `nightly` in either
 direction, a garbled count beside intact upload records still deleting nothing, the
@@ -748,7 +791,9 @@ large to hold rather than returning the part that fits, the unclaimed-archive co
 and bytes reaching the audit event AND the status read, the unrecorded-object count
 beside it, the refusal to persist either pair -- or to prune a version record -- from a
 listing the sweep would not act on, the survival of a version record past its key
-leaving the panel history, the audit events including the
+leaving the panel history, every terminal sweep state reaching `retentionLastSweep`
+with the refusals included and a later refusal replacing an earlier success, the audit
+events including the
 partial-purge count, and the best-effort contract.
 
 What the sweep measures is the keys this install still REMEMBERS whose recorded version
@@ -851,6 +896,25 @@ without the stamp a reader cannot tell a measurement taken before a manual delet
 one taken after. A measured zero is stored like any other count, so an absent kind
 means only that no sweep has measured it.
 
+`retentionLastSweep` (`{kind: {result, skipped, retired, versions, at}}`) is how each
+kind's last sweep ENDED, and it is written on every terminal path, the refusing ones
+included -- the one place it differs from the pair above. Without it every ending
+reaches only the audit event and a log line, so a status read shows a configured
+count and nothing about whether any sweep has acted on it, and a sweep refused every
+night looks identical to a working one. `result` is `successful` when the sweep did
+what its configuration asked (retired what `keep` allowed, found nothing to retire,
+had retention off, or saw the owner change the count mid-sweep), `refused` when an
+authorization gate decided against it before anything was deleted, and `failed`
+otherwise -- an unusable setting, a credential or cloud error at a gate, the gate's
+teardown refusal during a shutdown, a listing it would not act on, a declined sessions
+sweep, or a later cloud error, after which
+`versions` says what was already erased. The refused/failed split is the audit event's
+own, so the two never disagree about one ending. `skipped` is the
+sweep's own fixed reason text and never an exception message: the error text stays
+in the audit event. A later sweep replaces the kind's record, so a success never
+outlives the refusals after it, and the record is stamped with when the sweep ended
+for the same reason the pair above is stamped.
+
 `run_sessions_backup` always archives the crew half (the display transcript under
 the data home). It archives the kiro-cli half -- Layer B, the byte-exact
 unredacted model context window -- only when the operator has granted it for that
@@ -863,8 +927,11 @@ conversation rows carried under `conversations/` -- not from the
 permission: a granted run whose kiro-cli directory is absent or empty adds none,
 and a record is written once, so reading the permission there would state a
 fidelity the object does not hold with nothing afterwards to correct it. Either
-source alone sets it, because either one alone puts unredacted model context in the
-archive.
+source alone sets it, because either one alone puts model context in the archive.
+The two differ in redaction: the `cli/` half is byte-exact and unredacted, while each
+text cell of a conversation row is egress-redacted (`_redacted_row` through
+`_redact_egress`) before it is written, and a cell whose redaction fails or that is
+over its ceiling carries nothing and records a `conversations_skipped` reason.
 Nothing reads the field programmatically -- `restore_download` does not consult
 it -- so it is a record for a human or an incident review, and the two archives
 it distinguishes are otherwise identical by name.
@@ -926,14 +993,15 @@ honoured from there is one settings edit away from being granted by something ot
 than the owner, and an unredacted archive already in a bucket cannot be recalled;
 an authorization that lives beside ordinary settings is not an authorization. The sole writer is the owner-gated
 `POST /api/apps/aws-control/backup/{account}/layer-b`, which opens the state file
-directly rather than through the agent file gate. The grant is per account
+directly rather than through the agent file gate; no console control renders the
+grant or its scope, so that route is also the only way to set them. The grant is per account
 because the risk it prices is the destination bucket, so granting it for one
 account must not grant it for another.
 
 The grant also carries a SCOPE marker, `sessionsLayerBScope`, in the same account
 entry. The permission stays one boolean and the operator gains no second control; the
-marker records which payloads the recorded decision covers, because the grant's meaning
-widened when the conversation export was added. A grant carrying `cli+conversations`
+marker records which payloads the recorded decision covers, because the grant means more
+for an archive that also carries the conversation export. A grant carrying `cli+conversations`
 covers both. A grant with no marker, or with any value this code does not recognise,
 covers the `cli` half only -- reading it as covering the conversation store would ship
 host-wide terminal context off-host on a consent that named this product's session
@@ -950,9 +1018,10 @@ stamp only when the grant goes from off to on -- closes the retry but not a FIRS
 from a stale client, where the operator reads the narrower description and the grant
 covers the whole host. The request is the only place the decision can travel.
 
-An enable whose scope field is ABSENT neither widens nor narrows: the stored marker is
-left exactly as it is, because absence is no statement about scope, and treating it as a
-withdrawal would revoke a real consent on every retry from an older client. An enable
+An enable whose scope field is ABSENT never widens. It keeps the stored marker only when
+the grant was already exactly `true`, so a retry from an older client does not revoke a
+real consent; an off-to-on (or corrupted-to-on) enable with no scope clears the marker,
+because a fresh consent that named nothing covers the narrower half only. An enable
 that NAMES a scope this code does not recognise is a different request and CLEARS the
 marker: the caller said what it wanted and it was not the conversation export, so an
 already-wide grant must not stay wide for it. A disable removes the marker with the
@@ -1025,7 +1094,7 @@ One residue remains and is not closeable by any reader: a run held UNPERSISTED b
 process has its fact in that process's memory alone, so no lock and no overlay can observe
 it. Closing it would mean ordering the upload, the marker write and the remote delete in one
 cross-process protocol, which rewrites shared retention and locking machinery well beyond
-this change.
+this module.
 
 The conversation export's scratch file is read through a DESCRIPTOR, not re-derived from
 its name. It is written into a ``TemporaryDirectory`` and then opened relative to a pinned
@@ -1107,7 +1176,7 @@ same sidecar file lock exclusively, so an exclusive hold across the upload alrea
 orders a revocation wholly before or wholly after it, across processes as well as
 threads. Dropping `_run_lock` therefore keeps the guarantee.
 
-Dropping it there was necessary and not sufficient. The stall arrives through the
+Dropping it there is necessary and not sufficient. The stall arrives through the
 contending WRITER, not through the upload: `_state_lock` took `_run_lock` before
 parking on the sidecar file lock, so a writer meeting an in-flight upload -- a
 mid-upload revocation, or any second account's `_record_run` finishing -- held
@@ -1119,7 +1188,7 @@ definition beside it:
     _RETENTION_GATE -> state sidecar FILE lock -> _run_lock -> leaf locks
 
 Nothing may hold `_run_lock` while waiting for the file lock. `_state_lock` takes
-the file lock first, and `_record_run` and `_record_skip` no longer wrap it in
+the file lock first, and `_record_run` and `_record_skip` do not wrap it in
 `_run_lock` at all -- `_record_run_locked` takes that lock only for the
 `_run_sequence` bump, which cannot park. The bump has to stay under it: the
 callers' outer hold was the only thing serialising it, and `(process, sequence)`
@@ -1258,10 +1327,10 @@ own -- a co-tenant's, one under this install's own prefix with no matching entry
 the upload record, and one predating install ids -- unless the caller passes
 `foreign_ok`. `routes._handle_backup_restore` answers `409 foreign_install_archive`
 carrying both the refused origin and the owning id, because the three cases need
-different words. The rule is uniform on purpose: an earlier revision refused only
-the foreign case and left the other two to a confirmation dialog, which put a
-safety property in one client, so any caller that did not open the dashboard
-restored a planted archive with no override. `ORIGIN_SELF` is the only origin that
+different words. The rule is uniform on purpose: refusing only the foreign case and
+leaving the other two to a confirmation dialog would put a safety property in one
+client, so any caller that did not open the dashboard would restore a planted archive
+with no override. `ORIGIN_SELF` is the only origin that
 needs none, and it is the one the local upload record can vouch for.
 
 An `ORIGIN_SELF` key whose downloaded bytes fail the recorded body fingerprint is
@@ -1282,6 +1351,14 @@ fetching them, so it sits inside the same guard as the transfer rather than esca
 a helper whose every non-matching outcome is that refusal. The recovery can only
 find bytes that already pass; it can never widen what a restore accepts.
 
+A successful recovery still means a co-writer overwrote the key, and that outlives
+the restore: the next upload to it can be overwritten the same way. The reply
+therefore carries `recovered` (true only when the bytes handed back are the recorded
+version, false on every other success, including one under `foreign_ok`), and the
+Drive page's restore success block shows `backup_restore_recovered_note` when it is
+set. Neither the overwritten-copy confirm nor its refusal sentence can say it, since
+both are reached only through the refusal the recovery removes.
+
 The extra read is also the one AWS call in a restore the caller did not ask for, so
 `backup._authorize_recovery_read` authorizes it again immediately before it is made,
 asking the same four questions `backup._authorize_upload` asks of the paid upload and
@@ -1299,9 +1376,9 @@ each half from a different record, turning a refusal into an allow. The parity b
 the two gates is in the four questions they ask, not in the mechanism underneath them.
 They differ in what a refusal does -- the upload raises, because a refused upload is a
 failed run, while this returns a reason, so the recovery does not run and the caller
-keeps exactly the refusal it already had -- and in how the grant is reached: the upload
-gate still asks `is_granted` and then reads the grant again for its account, which is
-a pre-existing race recorded in #12705 for its own review rather than changed here.
+keeps exactly the refusal it already had. Both gates read the grant once: the upload
+gate passes that one record to `is_granted` for profile and region, then checks its
+account.
 
 That further read is authorized against `s3:GetObjectVersion` rather than
 `s3:GetObject` -- S3 treats a version-pinned `GetObject` as a distinct action -- and
@@ -1337,30 +1414,74 @@ the gateway stopped. The panel copy says exactly that, because "share memory
 between my laptop and my cloud desktop" is the request that leads people here.
 
 The nightly toggle records whether an account is eligible for a scheduled
-snapshot. `aws_control.hooks._run_once` resolves an account and drive, checks
-S3 consent, runs only due backups, and SEL-audits invocation, success, and
-failure. It skips unavailable accounts or absent drives rather than creating
-resources itself. When `hooks._note_shared_drive` sees another install's prefix it
-logs and SEL-audits the observation and then PROCEEDS. It does not take ownership
-of the schedule: with the keys namespaced there is nothing left to collide, and a
+snapshot. `aws_control.hooks._run_once` resolves the account, checks S3 consent, and
+checks for the drive; it skips an unavailable account or an absent drive rather than
+creating resources, so when there is nowhere to push it CLAIMS no run at all (as the
+loop did before it went through the SDK — a claimed-but-empty `done` run would clear
+an owner's last failure on the Backup row). Otherwise, for each due kind it claims a
+Job SDK run through the same `start_async(kind, dedupe_key=account, …)` call the
+owner's manual backup uses — so a scheduled and a manual backup of one account dedupe
+on one key and the run shows on the Backup row. The run's `backup.make_job_runner`
+runner SEL-audits invocation, success, the `unchanged` skip, and failure, and feeds a
+failed scheduled run into the backoff `due_for_nightly` reads (minus a
+`ScheduledUploadWithheld` policy refusal, which is audited `withheld` and recorded
+nowhere — see the adopted-caller rule above). A drive lookup that
+RAISES (not one that returns no drive) is a fault that happens in the loop before any
+run is claimed, so the runner never sees it; `hooks._nightly_setup_failure` records and
+SEL-audits it per due kind there, the same two writes the runner makes after a claim,
+so a setup fault backs off exactly like a push fault. When the runner sees
+another install's prefix (checked once, on the snapshot kind only) it logs and
+SEL-audits the observation and then PROCEEDS. It does not take ownership of the
+schedule: with the keys namespaced there is nothing left to collide, and a
 single-owner schedule would leave one machine silently un-backed-up, which is
 discovered at restore time and is worse than the state it replaced.
 
+Because a scheduled and a manual backup of one account share one `(kind,
+dedupe_key)`, an owner's "Back up now" click DURING a nightly adopts the in-flight
+scheduled run: the SDK returns the first caller's run and `start_async` does not
+merge params, so the adopted run keeps `CALLER_SCHEDULED` and still runs the
+scheduled-only re-checks in `backup_parts/uploads.py`. The caller an adopted run
+keeps is therefore the SCHEDULED one, by construction — and the rule that keeps that
+honest for the owner is the backoff split below: a scheduled-only precondition the
+OWNER controls — the per-kind unattended grant withdrawn, or scheduled transcripts no
+longer allowed because outbound redaction was turned on mid-build — raises
+`uploads.ScheduledUploadWithheld` rather than a bare failure, and the runner audits it
+`withheld` and does NOT call `record_nightly_failure`. Without that split, an owner
+who clicked during a nightly and surfaced one of those gates would see a failure they
+did not cause and watch the backoff grow. The unregistered-kind fail-closed (no grant
+DEFINED for a kind) stays a fault that backs off: it is a configuration error, not an
+owner declining the upload.
+
+The scheduled runner re-resolves the drive per run, but it reads `(profile, region)`
+differently from the owner path. `accounts.resolve_account_profile_cached` serves only
+from the warm snapshot and returns `None` once it is past `accounts._PROBE_TTL_SECS`,
+and `start_async` is fire-and-forget, so the runner thread resolves LATER than the
+loop's live `probe_identity`. A gap longer than the TTL would resolve a nightly the
+loop JUST verified to `None` and audit it as failed. So the loop names the
+`(profile, region)` it freshly probed (`use_cache=False`) under `JOB_PARAM_PROFILE` /
+`JOB_PARAM_REGION`, and a scheduled run falls back to that pair when the cache has
+expired. This cannot operate on the wrong account: `_authorize_upload` still re-checks
+the LIVE account with `sts:GetCallerIdentity` before any byte leaves. The owner path
+carries neither param and keeps the cache-only resolve, because its route pre-flight
+has just warmed the snapshot. The bucket is always re-discovered either way.
+
 ### A failed unattended attempt is recorded, so the loop can back off
 
-The half-hourly wake is a due-CHECK interval and never a retry interval. Only
-completed runs used to be recorded, so a deterministic fault — an unreadable file,
-a disconnected mount, a payload database that cannot be shown free of credentials —
-left the state file unable to distinguish
-"never ran" from "keeps breaking": `due_for_nightly` took its never-ran branch on
-every wake, re-staged the whole data home into a fresh temporary directory, and
-repeated the same traceback roughly every half hour for as long as the fault
-lasted.
+The half-hourly wake is a due-CHECK interval and never a retry interval. If only
+completed runs were recorded, a deterministic fault — an unreadable file, a disconnected
+mount, a payload database that cannot be shown free of credentials — would leave the
+state file unable to distinguish "never ran" from "keeps breaking": `due_for_nightly`
+would take its never-ran branch on every wake, re-stage the whole data home into a fresh
+temporary directory, and repeat the same traceback roughly every half hour for as long as
+the fault lasted.
 
-`hooks._failed_attempt` closes that. It is the single place a failed unattended
-attempt is both SEL-audited and recorded, reached from the shared setup's handler
-and from each kind's own push, so the backoff cannot depend on which way the run
-broke.
+A failed unattended attempt is both SEL-audited and recorded in two honest places —
+`backup.make_job_runner`'s post-claim handler for a fault during the push, and
+`hooks._nightly_setup_failure` for a drive lookup that raises before any run is
+claimed — so the backoff cannot depend on which way the run broke. Both make the
+same pair of writes (the `failed` SEL audit under `backup/<subpath>` and
+`record_nightly_failure`), filed under one subject spelling per kind so a setup
+failure and a push failure for one kind never land apart.
 
 It closes that for a fault that leaves the state file writable, which is not every
 fault. A full disk fails the failure-write as well, so nothing is recorded and every
@@ -1371,7 +1492,10 @@ leaves the loop retrying as it does today. So a full disk is still a repeated-tr
 case; what this closes is the larger class where the disk is fine and the backup is not.
 
 Cancellation does not reach it: a cancelled attempt is teardown, and
-counting it would let a clean shutdown push the next night out.
+counting it would let a clean shutdown push the next night out. Neither does a
+`ScheduledUploadWithheld` refusal: the owner withdrawing an unattended grant, or
+turning redaction on, is a policy decision not to upload, not a fault, so counting it
+would let the owner's own setting grow the schedule's backoff.
 
 The record lives under `backup.NIGHTLY_FAILURE_STATE_KEY`, per account then per
 kind, as `{"at": iso8601, "since": iso8601, "consecutive": int, "error": str}`. It is a SEPARATE key
@@ -1445,9 +1569,9 @@ What the raced write costs was measured, not assumed, and the obvious claim is w
 restarts the count at 1, `nightly_retry_delay_secs` answers 0 there, and the fresh run
 record already holds the account not-due for the window, so it withholds no attempt. What
 it produces is a false `nightlyFailures` row for an account that just backed up, plus a
-one-step skew on the next genuine failure. The row is why the guard ships -- making that
-state readable is half of what this change is for -- and a review lane that priced the
-guard against the withheld-attempt claim was right to reject that claim.
+one-step skew on the next genuine failure. That false row is what the guard prevents:
+the failure row exists to make this state readable, so it must not report a failure that
+did not happen.
 
 A run record reaches the document by TWO paths, so the clear sits on both, and on both it
 carries the same condition as the run write beside it. `_record_run_locked` gates it on
@@ -1469,9 +1593,8 @@ attempting the backup like every other one here.
 
 The row carries TWO stamps. `at` is the latest attempt and is what the backoff measures
 from; `since` is when the current run of failures began, carried forward while the streak
-continues and cleared with the row. Both are needed because the issue asks for the second
-by name -- an operator has to see that the nightly has been failing since a particular day
--- and one overwritten stamp cannot say both. A stored `since` is carried only when it
+continues and cleared with the row. Both are needed because an operator has to see that
+the nightly has been failing since a particular day -- and one overwritten stamp cannot say both. A stored `since` is carried only when it
 PARSES as a timestamp, not merely when it is a non-empty string: it is published in an
 operator-facing row and each write carries the previous one forward, so an unparseable
 value would otherwise be rendered as the day the failures began for the whole life of the
@@ -1493,7 +1616,8 @@ unattended upload starts.
 Due-ness is keyed per kind (`backup.due_for_sessions_nightly` against
 `KIND_SESSIONS`), so a snapshot that ran an hour ago does not make the
 transcripts look backed up, and a wake proceeds when EITHER kind is due. Each
-kind is pushed inside its own `hooks._push_nightly` call with its own
+kind is claimed through its own `start_async(kind, dedupe_key=account, …)` call
+in `hooks._run_once`, and `backup.make_job_runner`'s runner gives each its own
 try/except and its own audit subject (`backup/snapshots`, `backup/sessions`), so
 one kind failing costs the other nothing and an incident review can tell which
 bytes left the host. A platform without descriptor-pinned traversal is never due
@@ -1655,7 +1779,9 @@ library, backup status, share metadata, and rendered IAM policy. Its mutations
 are profile registration and unregistration; drive bootstrap, upload, delete,
 move, folder create/delete, and share; share-ledger removal; library push and
 library removal; backup run, the snapshot and sessions nightly toggles,
-retention-count updates, and staged restore; and renaming this install (local,
+the sessions-archive Layer B grant (`POST /backup/{account}/layer-b`, see the
+Layer B paragraphs under the sessions backup), retention-count updates, and staged
+restore; and renaming this install (local,
 display only -- see "Several installs, one drive").
 
 Drive bootstrap is the only API-level preview-plus-confirm flow. Upload, move,
@@ -1751,7 +1877,7 @@ read, because a retry cannot clear it. A confirm strip that already holds
 Cancel and Delete renders its inline notice on its own line (`basis-full`), so
 the hand-off never becomes a third action in that row.
 
-Two classes of failure previously rendered nothing and now render a notice:
+Two classes of failure render a notice rather than nothing:
 every read whose query had no error branch (the Files listing, drive status
 outside the consent 409, the permissions drawer, backup status, the share
 ledger, the local profile scan) and every mutation whose error was never read
@@ -1796,7 +1922,7 @@ the private package `packaging.pipeline`, one owner per responsibility, lowest l
 | Owner | Holds |
 |---|---|
 | `pipeline/contract.py` | the bundle, plan and report versions, `PLAN_FILENAME`, the staging top-level names, the read ceiling, `ExportRefused` |
-| `pipeline/scan.py` | `scan_text` and its detectors: the local hard patterns, the canonical detector and redactor when importable, the bounded base64 decode pass, the bare-secret detector. A finding carries four characters of the match and its length, never the match |
+| `pipeline/scan.py` | `scan_text` and its detectors: the local hard patterns, the canonical detector and redactor when importable, the bounded base64 decode pass, the bare-secret detector. A finding never carries the matched bytes: a pattern finding shows at most four characters and the length, a repo-redactor finding carries the redactor's length-only warning, and a decode-budget overflow carries a not-scanned notice |
 | `pipeline/sensitive.py` | `refused_by_name`, `refused_by_location` and the standalone floor `_looks_sensitive_standalone`, checked with the shared validator and never instead of it |
 | `pipeline/pinned.py` | the platform predicate and the entry refusal, redirect detection, the reparse-safe walk, per-component no-follow directory pins, the leaf readers |
 | `pipeline/destination.py` | the `--out` UNC screen, the parent check before a `mkdir`, and the one no-follow writer every plan, marker, report and staged leaf goes through |
@@ -1890,7 +2016,7 @@ wheel and DMG carry the image's build context and not its test suite.
 
 The image's two review-sensitive fetches are pinned to what was reviewed: the
 base image by manifest-list digest on the explicit `-bookworm` tag (a bare tag
-can move -- `3.12-slim` had already drifted to trixie when the pin was added;
+can move -- `3.12-slim` follows newer Debian releases;
 the digest names the multi-arch index, from which the builder's platform
 selects the per-arch manifest) and the kiro-cli tarball by a per-arch sha256
 recorded in the Dockerfile. The host publishes checksums beside the tarballs,
@@ -1905,13 +2031,14 @@ recorded ahead of the build -- transitive resolution can therefore still
 drift), and apt packages are unpinned, since bookworm point releases drop
 superseded versions and a pin would break on every security update.
 
-### Three processes, one task
+### Four processes, one task
 
 | Process | Owns | Exposure |
 |---|---|---|
-| Supervisor | process order, the crew bundle install, the container's own config, teardown | no listener; it is the task's init process |
+| Supervisor | process order, the crew bundle install, the container's own config, the restore phase, teardown | no listener; it is the task's init process |
 | Front | receiving a turn, stripping any route prefix, forwarding over loopback | the only listener, port 8080 |
 | Kiro Crew backend | sessions, conversations, transcripts, MCP, subagents, skills, memory | loopback only (`127.0.0.1`, not configurable) |
+| Backup sidecar | copying transcripts, archived segments and the two authority files to S3 | no listener; started only when a bucket is configured |
 
 Nothing serves a user interface. `config_dir` equals `data_home`: the gateway's
 `config_dir()` and `data_home()` resolve to the same directory, so
@@ -1927,9 +2054,26 @@ The startup order is a correctness requirement rather than a preference:
 2. Write the container's own configuration. It must land after the bundle, because
    a bundle may ship config and the container's posture has to win on the keys it
    sets, and before the backend, which reads the file at boot.
-3. Start the backend. `wait_until_ready` returns only when the port answers **and**
+3. Claim writer ownership in the bucket, when one is configured. Before it restores
+   anything, the task bumps the committed pointer's incarnation in place, same generation
+   id, marked as a provisional claim, under a compare-and-swap on the pointer's ETag, so a
+   predecessor that is still serving is fenced from that instant. A bucket with no pointer
+   writes nothing and the task mints a base token. The claimed token is exported as
+   `SMC_CLAIMED_INCARNATION` and the sidecar adopts it instead of minting its own. A task
+   that aborts before it is serving (a restore, spawn or readiness failure, or a stop
+   signal) releases the claim by restoring the committed owner's pointer under a
+   compare-and-swap, which is a no-op once a newer claimant has written the pointer.
+4. Restore the two authority files from the bucket, when one is configured. This
+   must finish before the next step: the backend's periodic flush persists its
+   in-memory slot table, so a flush landing before the restore completes writes an
+   empty set over the record of which conversations existed. A restore that fails
+   for any reason other than the objects being absent refuses the boot, because
+   reading a denial as absence is that same empty flush by another route.
+5. Start the backend. `wait_until_ready` returns only when the port answers **and**
    the boot secret file exists; process-alive is not ready.
-4. Start the front process.
+6. Start the front process.
+7. Start the backup sidecar, last, because its first cycle should see a task that
+   is already serving.
 
 **The task owns its agent-spec directory, and that is what lets the backend write
 it.** `KIRO_HOME` is set to `<data home>/kiro`, so the crew's spec and Kiro Crew's own
@@ -1962,20 +2106,140 @@ crew where nothing serves it. A directory that cannot be created is a refusal to
 the alternative is the backend declining for a second reason minutes later with the
 failure attributed to the guard.
 
-There is no backup sidecar and no restore phase. Durability across task
-replacement is a capability the container does not have; the front still fetches a
-slot's transcript from S3 on demand, so `SMC_BACKUP_BUCKET`/`SMC_BACKUP_PREFIX`
-name where it reads. When durability returns it must reinstate the ordering rule
-that made it correct -- a restore must finish before the backend starts, because
-the backend's periodic flush persists its in-memory slot table and a flush landing
-before the restore completes writes an empty set over the record of which
-conversations existed.
+#### What durability covers, and what it does not
+
+Transcripts, archived segments under `sessions/archive/` and the two authority
+files. Each object is copied from ONE open descriptor with the length that
+descriptor's file had when it was opened, so a copy is coherent without a lock and
+without staging a second copy on disk. Nothing is skipped for being large: an
+object above the restore side's read ceiling is uploaded with a warning naming it,
+because the alternative is silent loss. `SMC_BACKUP_INTERVAL_SECS` sets the cadence
+and refuses only a value of zero or less, which is a busy loop rather than a faster
+cadence.
+
+Artifacts are NOT covered: that set is unbounded and the agent writes into it, so it is
+outside the backup set.
+
+**Where it lands.** Keys sit under ``<SMC_BACKUP_PREFIX>/<SMC_CREW_NAME>/``, each part
+optional. The pointer is ``authority_generation.json``. A generation is ``gen/<id>/``
+holding ``session_map.json``, ``open_slots.json`` and ``transcript_index.json``, a
+``stem -> sha256`` map of the live transcripts. A live transcript is
+``data/blob/<sha256 of its bytes>``, written create-only, so two writers of different
+bytes never share a key and identical bytes converge. An archived segment keeps its path
+under ``data/sessions/archive/`` with the digest of its bytes appended, so the owner's
+control plane can still list a conversation's segments by prefix. The cycle carries
+forward the committed index's mappings for every conversation the captured pair still
+names, so a replacement that has not yet fetched a conversation does not drop it from the
+next generation. A merged index above 50,000 entries or half the read ceiling (32 MiB) is
+not published: the pair is withheld, the cycle fails loudly and the previous generation
+stays committed; a sessions directory holding more than 50,000 transcripts is withheld
+the same way.
+
+`session_index.db` is deliberately excluded: it is a search index the backend
+rebuilds, and its own module documents it as safe to be absent, stale or empty.
+
+A cycle uploads in two phases: every transcript, then the two authority files. The
+authority files are the INDEX -- a replacement reads them to decide which
+conversations exist, and the front fetches each named transcript lazily -- so an
+index newer than the bytes it names sends the front to an absent object, which it
+reads as a conversation that never had history: a live conversation served empty,
+with nothing raised. The opposite skew is harmless, because every slot an older
+index names already has bytes in the bucket. For the same reason the authority phase is
+skipped entirely when the transcript phase REFUSED anything -- a refusal is a file that
+should be in the bucket and is not yet, so a later cycle can still put it there, and the
+pair must not name it meanwhile; the pair in the bucket then stays at the last cycle that
+completed, which is older and coherent. An UNREACHABLE entry does not withhold the pair:
+it is a name no cycle will ever upload, so an index that omits it is not an index running
+ahead of its bytes, and withholding on it would freeze the pair for as long as the entry
+stays unreachable. A refused ROOT is a refusal, not an unreachable entry, because nothing
+under it was reached and a later cycle may well reach all of it. A third verdict sits between
+the two. The pair is captured BEFORE the enumeration, so it still names a conversation deleted
+during the cycle; the skew argument says an older index is harmless, but only because every
+slot it names already has bytes in the bucket, and a conversation created and deleted inside
+one interval was never uploaded by any cycle. So a transcript that vanishes between the
+listing and its open withholds the pair when the captured index NAMES it and the bucket does
+not hold it -- membership being the test, since an index that never named it cannot send a
+reader to it, and an owner deleting a conversation is ordinary use. This cannot freeze the
+index the way an unreachable entry would: the verdict is a race within one cycle rather than a
+shape on disk, so a file that is really deleted is not listed by the next cycle at all. A
+captured index that cannot be READ counts every candidate rather than none, because guessing
+"names nothing" would commit an index this cycle could not read against bytes it knows are
+absent.
+
+A cycle that put the WHOLE pair in the bucket then commits ONE pointer object as the last
+thing it does: a single object naming the generation whose pair was just published whole.
+Each cycle publishes into a WRITER-UNIQUE, immutable generation id (``gen/<id>/``),
+so the pair a cycle uploads never overwrites another generation's pair, and a publication
+interrupted halfway damages only an id nothing yet points at. There is no shared ``a``/``b``
+slot and no ``list``: the durability process holds only ``get`` and ``put``, so no cycle
+ever surveys the bucket for an orphaned pair. The pointer is settled by COMPARE-AND-SWAP on
+its ETag -- a cycle writes it ``If-Match`` the ETag it read (or ``If-None-Match: *`` for the
+first pointer) -- so two writers racing to commit cannot both win, and the loser re-reads
+and retries. An INCARNATION fence rides alongside the CAS: the pointer records the incarnation of the
+task that wrote it, and a commit is refused when the committed counter is strictly greater
+than this task's, or equal with a different token. A pointer that carries a provisional
+claim refuses the predecessor's commit as retryable, so a replacement that aborts cannot
+fence a healthy predecessor; once a replacement makes a real commit, the predecessor's
+commit is refused as superseded and its sidecar exits non-zero, which the supervisor
+treats as the end of the task. The sidecar exits non-zero for a configuration it cannot
+work with (2, no bucket), a bucket that cannot be written (3), a committed pointer it
+cannot read at startup (4) and a superseding replacement (5); a failed ordinary cycle is
+logged and retried at the next interval.
+
+The restore reads only the committed generation, by the id the pointer names, and decides
+FOUR cases. (1) No pointer: the bucket is empty and both authority files are absent, which
+is a first boot. Nothing else in the bucket is consulted -- there is no pre-protocol
+``data/`` layout to read and no survey of generation ids, because the durability process
+holds only ``get`` and ``put`` and never a ``list``. A file already on local disk is still
+read, validated and loaded by the backend. (2) A pointer whose generation holds every name
+it was committed with: the ordinary restore, fetched by that id. (3) A pointer whose
+generation is MISSING one committed name: refused, because the pair lost a member, and the
+next complete cycle mints a fresh generation and commits it, repairing the bucket. (4) A
+pointer present but UNUSABLE (unreadable, unparseable, or carrying a malformed
+incarnation): refused, since unusable is not absent. A read that fails for any other
+reason, including a denial, is failure too: reading a denial as absence is the same route
+to booting with an empty slot table.
+
+The ARCHIVE root is the one root whose refusal must not withhold the pair. A link or a
+non-directory there is a SHAPE, so every later cycle meets the identical error and a withholding
+started there never ends: the index would freeze at the moment the name appeared while live
+transcripts keep uploading past it. It buys nothing even once, because the front deliberately
+never fetches archived segments -- finding them would require listing -- so the published pair
+cannot send a reader into the subtree that went unenumerated. Such a refusal is recorded as
+unreachable instead: the cycle still fails loudly and names the entry, and the pointer is free to
+advance. The live root keeps withholding, because the pair does name the transcripts a reader
+fetches. Every error the archive walk itself meets is collected on that same permanence rule
+rather than skipped, since a directory the task's uid cannot open otherwise contributed no
+segments, no refusal and no log, and the archive lives on an ephemeral disk.
+
+One more place the two sides speak different languages. The index names a conversation by its
+SLOT KEY while its transcript file carries a ``dashboard_`` prefix plus a character substitution,
+so anything comparing a filename with an index entry maps the slot keys FORWARD through the
+function that names the file, rather than stripping the prefix off the filename a second time.
+
+Teardown drains the front first, then the backend so it flushes what it holds, then
+the sidecar, whose final cycle BEGINS after it is signalled and must complete before
+the process returns. That ordering is what makes an orderly replacement lossless:
+a cycle already in flight when the signal arrives started before the backend's
+flush, so it cannot contain what that flush wrote. That final cycle's verdict reaches
+the task's exit code, because it is the only copy of the turns in the flush.
+
+An overlapping deployment -- one that starts the replacement task before the old
+task has finished draining -- is outside the lossless guarantee. The replacement claims
+writer ownership before it restores, which fences the old task: its commits are refused as
+retryable while the pointer carries the replacement's provisional claim, and as superseded
+once the replacement makes its first real commit, at which point its sidecar exits
+non-zero. Generations and transcript blobs are writer-unique, so neither task overwrites
+the other's objects, but the turns the old task takes after the replacement's restore are
+in no committed generation. The loss is bounded by that window rather than total, and the
+deployment driver is expected to serialize stop before start; where it cannot, this is the
+residual.
 
 ### The front layer
 
 Two customer routes and nothing else. Everything is classified once, on the path
 AFTER any configured route prefix is stripped, because classifying the prefixed
-path let a control route read as a customer route in an earlier build:
+path would let a control route read as a customer route:
 
 | Route | Auth | What it does |
 |---|---|---|
@@ -2114,6 +2378,15 @@ be told from a larger one. The refusal is a `TranscriptUnavailable`, so an overs
 object fails that turn rather than letting the backend serve one with the conversation
 missing.
 
+The front finds a conversation's transcript through the committed generation: it reads the
+pointer, then that generation's transcript index, then the one blob the index names for
+the slot's stem, three single-key reads and never a listing. A bucket with no pointer is
+empty and a stem the committed index does not name is a new conversation, so both serve
+fresh; no per-stem key is tried. A pointer or index that does not parse, an index the
+pointer references that is absent, or a blob the index references that is absent fails the
+turn with `TranscriptUnavailable`, because serving the conversation empty would let the
+next cycle replace its history. A local transcript is never overwritten by a fetched one.
+
 ### Launching the backend
 
 Verified names only, because the plausible ones are read by nothing:
@@ -2156,8 +2429,8 @@ at `<kiro agents>/crew-<crew_name>.json` and DECLARES `crew-<crew_name>`; `mcp.j
 agents directory -- `kirocrew.json`, `kirocrew-lite.json`, and the `kirocrew-worker.json`
 mirror it rebuilds from the default -- and rewrites them without reading who wrote what,
 so a crew occupying one of those names is installed, digest-checked and then replaced
-before the first turn. A crew called `kirocrew-worker` is not hypothetical: it is the
-crew the first deployment ships.
+before the first turn. A crew called `kirocrew-worker` is not hypothetical: it is a
+crew the deployment ships.
 
 The namespace covers the declared name as well as the filename because only one of them
 dispatches: kiro-cli and the gateway's snapshot of dispatchable agents both enumerate
@@ -2297,12 +2570,16 @@ looking for. The container's own writes into the data home already refuse a link
 the destination (`bundle._write_nofollow`); this is the same guard for a file
 another process writes.
 
-### Sandboxed-only, and why removing the credential does not change that
+### Sandboxed by default, and why removing the credential does not change that
 
 kiro-cli runs the model subprocess inside an unprivileged user namespace, and
-without one `wrap_argv` fails closed. This container is sandboxed-only: the
+without one `wrap_argv` fails closed. This container is sandboxed by default: the
 supervisor refuses to start on a host that cannot provide one, loudly, rather than
-answering its port and failing every turn.
+answering its port and failing every turn. The one exception is a deployment that
+declares the internal-only trust boundary (`SMC_INTERNAL_ONLY`, derived from
+`cloud.json` `fargate.internal_only`; see [cloud](cloud.md#security-model)): there a
+DENIED verdict starts the model subprocess unsandboxed, and
+`INTERNAL_ONLY_AGENT_SETTINGS` sets `sandbox_allow_unsandboxed_exec` to `true`.
 
 The credential is nevertheless kept out of the worker's environment, because that is
 worth doing on every host. `build_backend_env` withholds both shapes. The delivered
@@ -2318,9 +2595,11 @@ credential store before it offers an ACP handshake, so on a store it has never s
 into it exits `rc=1` "You are not logged in" and that token request is never reached:
 the container answers `/health` 200 and every dashboard turn with
 `503 kiro_prerequisite_required`. So `kiro_login.seed_kiro_cli_login` runs immediately
-after `require_model_identity` and writes one row into that store
-(`$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to `$HOME/.local/share/...`;
-table `auth_kv`, plain JSON).
+after `require_model_identity`. It empties that store's `auth_kv` table
+(`DELETE FROM auth_kv`; `$XDG_DATA_HOME/kiro-cli/data.sqlite3`, falling back to
+`$HOME/.local/share/...`, plain JSON), writes one row, and then requires
+`kiro-cli whoami` to accept it; a non-zero exit is a startup refusal. Emptying the
+table first means the check passes on this row and no other.
 
 **That row is a non-secret sentinel, not a copy of the credential.** It carries a
 labelled placeholder access token, no refresh token, and a fixed far-future expiry;
@@ -2349,9 +2628,12 @@ an auto-approved worker is safe is whether it can REACH a credential, not whethe
 is resident in its own environment, and the vault is a route the container cannot
 close. The backend answers the token request from the vault, so the backend's uid must
 be able to decrypt it, and the worker is a child of the backend under that same uid. A
-uid-1000 process reads and decrypts that vault directly. So
-`sandbox_allow_unsandboxed_exec` stays false, and the startup refusal has no
-credential-shaped escape hatch: a clean environment cannot be traded for it.
+uid-1000 process reads and decrypts that vault directly. So a clean environment cannot
+be traded for the sandbox: `sandbox_allow_unsandboxed_exec` stays false unless the
+deployment declares the internal-only boundary, and that declaration accepts exactly
+this exposure — an unsandboxed worker that untrusted content can inject can reach the
+vault and read the model credential. It is the operator's statement that these are their
+own crews and that they bear that risk.
 
 `verify_sandbox` therefore does two separate things, and the split matters. It ASSERTS
 that the environment handed to the backend carries no credential, refusing on any
@@ -2362,7 +2644,9 @@ environment it was handed would be the builder confirming itself: the code that 
 that dictionary is the code that empties it, so the check could never fail.
 
 The probe returns an available verdict, a denied verdict, or an `undetermined: <why>`
-verdict, and only the first proceeds. Undetermined refuses and names what could not be
+verdict. Available proceeds; denied proceeds only under the internal-only boundary,
+because it is a definite answer that boundary can accept. Undetermined refuses on every
+deployment and names what could not be
 determined, and so does any verdict the guard does not recognise. Reading "could not
 determine" as "probably fine" fails open as new hosts appear, which is the same defect
 as reading the environment through a denylist.
@@ -2371,8 +2655,8 @@ Consequence for Fargate: unprivileged user namespaces are not available there
 ([aws/containers-roadmap#2102](https://github.com/aws/containers-roadmap/issues/2102)),
 Fargate offers no `privileged` flag and no custom seccomp profile, and
 `linuxParameters` admits only `CAP_SYS_PTRACE` — so no task-definition field can
-supply one. The crew container does not run on Fargate today. Closing the remaining
-route is not something this module can do: it needs a user namespace, a worker under a
+supply one. The crew container runs on Fargate only under the internal-only boundary,
+unsandboxed. Closing the remaining route is not something this module can do: it needs a user namespace, a worker under a
 different uid from the BACKEND (the gateway's own spawn path, not this container's), or
 a credential not worth stealing — short-lived and narrowly scoped, issued to the task
 rather than to a process. Tracked in
@@ -2385,10 +2669,19 @@ process group and ESCAPES a `killpg` on the backend. Only the backend's own SIGT
 handling reaps it, which makes the drain window load-bearing rather than a
 courtesy: too short a drain SIGKILLs the backend before it finishes reaping and
 orphans a worker that goes on to finish its turn. Teardown order is front, then
-backend -- stop new turns arriving, then let the backend drain and flush -- and
-anything still alive afterwards is an escaped worker, which the teardown sweeps by
+backend, then the backup sidecar -- stop new turns arriving, let the backend drain and
+flush, then let the writer's final cycle upload what that flush produced -- and anything
+still alive afterwards is an escaped worker, which the teardown sweeps by
 process group over bounded rounds, because a killed process's children reparent to
 PID 1 and surface in the next round.
+
+The drain windows are 5 s for the front, 25 s for the backend and 75 s for the sidecar,
+declared in the image's `container/common/config.py`. The platform must wait for all of
+them plus a 10 s reap margin before it SIGKILLs the supervisor, so the task definition
+sets `stopTimeout` to their sum, 115 s, which stays under Fargate's 120 s cap; Fargate's
+30 s default would kill the writer before its final cycle starts. The gateway's
+`CREW_STOP_TIMEOUT_SECS` is a deliberate copy of that total, because the image tree
+cannot be imported there, and a test pins the two equal.
 
 A child in the supervisor's OWN process group is withheld from that discovery. The sweep's
 remedy is a group signal, and on its own group that SIGKILLs the supervisor -- so the
@@ -2412,3 +2705,10 @@ with no scheduler and no further launch, which is the case the launcher's own sw
 cannot reach. Zero, and an absent variable, mean unbounded. A stop on that deadline
 is ORDERLY -- the task ran for as long as it was allowed -- so it exits 0 and says
 why in the log, rather than sitting on the console beside a crash.
+
+An orderly reason is success only when the sidecar's final cycle also committed. That
+cycle runs after the backend's flush and holds the only copy of the turns in it, so a
+non-zero status from it -- a refused upload, or a kill when the drain window elapses
+mid-upload -- exits non-zero, and so does a status that could not be read. This applies
+to a spent lifetime as much as to a signal: both stop a task that was serving turns a
+moment earlier. A task with no bucket has no sidecar and nothing to weigh.

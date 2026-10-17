@@ -5,6 +5,7 @@ import MarkdownRenderer from '../components/MarkdownRenderer'
 import { SidebarFolderCtx, type SidebarFolderActions } from '../components/markdown/contexts'
 import { resolveFolderChip } from '../components/markdown/linkTargets'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 import { copyToClipboard } from '../utils/clipboard'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn(async () => undefined) }))
@@ -31,9 +32,7 @@ function stubMissing() {
 
 /** The probe confirms a directory on disk: the PATH chip wins the span. */
 function stubDir() {
-  globalThis.fetch = vi.fn(() =>
-    Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'dir' }) } as Response),
-  ) as unknown as typeof fetch
+  stubPathKinds(() => 'dir')
 }
 
 /** The tree ChatPage would hand over: `goal` at the top, `worker` under it, and a
@@ -275,11 +274,12 @@ describe('folder chip — a sidebar folder path in prose', () => {
       expect(onFolderReveal).toHaveBeenCalledWith('f-reports-weekly')
     })
 
-    it('offers no chip while the probe is still in flight', () => {
+    it('offers no chip while the probe is still in flight', async () => {
       // A click during the wait must not reveal a folder the probe may overrule.
       globalThis.fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch
       renderWithFolders('`reports/weekly.md`', { folders: SHAPED })
-      expect(globalThis.fetch).toHaveBeenCalled()
+      expect(document.querySelector('code[data-folder-id]')).toBeNull()
+      await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
       expect(document.querySelector('code[data-folder-id]')).toBeNull()
     })
 

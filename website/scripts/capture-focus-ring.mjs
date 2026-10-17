@@ -84,6 +84,24 @@ const fixture = `<!doctype html>
              placeholder:text-muted" placeholder="Filter sessions">
     </div>
   </div>
+  <div class="row">
+    <span class="cap">SELECTED colour swatch (TagManagerList) — must still read as selected under focus</span>
+    <button id="swatch" aria-pressed="true"
+            class="w-4 h-4 rounded-full cursor-pointer border swatch-cue focus-ring-accent ring-1 ring-accent ring-offset-1 ring-offset-bg"
+            style="background:color-mix(in srgb, var(--accent) 30%, var(--bg-elevated));border-color:var(--accent)"></button>
+  </div>
+  <div class="row">
+    <span class="cap">survey option (SessionPulseSurveyCard) — gap ring sits outside the border</span>
+    <button id="survey"
+            class="text-left px-3 py-2 rounded-lg text-[13px] cursor-pointer border font-medium focus-ring-accent-gap border-accent text-text bg-accent-subtle/60"
+            style="width:200px">Very satisfied</button>
+  </div>
+  <div class="row">
+    <span class="cap">completion-card body (Subagent/Workflow) — inset ring hugs the inner edge</span>
+    <div id="inset" tabindex="0"
+         class="px-3 pb-2 pt-1 border-t border-accent/10 bg-bg-elevated rounded-md focus-ring-accent-inset"
+         style="width:270px;height:48px">Agent finished — 3 tool calls</div>
+  </div>
 </body></html>`
 
 const browser = await chromium.launch()
@@ -117,7 +135,7 @@ async function pair(id, names) {
   const kb = await browser.newContext(view)
   const kbPage = await open(kb)
   let target = null
-  for (let i = 0; i < 8 && !target; i++) {
+  for (let i = 0; i < 16 && !target; i++) {
     await kbPage.keyboard.press('Tab')
     await kbPage.waitForTimeout(70)
     const f = await focused(kbPage)
@@ -149,6 +167,31 @@ async function pair(id, names) {
   return true
 }
 
+// A single keyboard-focused frame. The review-fix controls (selected swatch,
+// survey option, completion-card body) are judged by whether their focused
+// state reads correctly, so one real Tab-focused frame per control is the
+// evidence -- there is no pointer-vs-keyboard contrast to draw for them.
+async function keyboardFrame(id, out) {
+  const kb = await browser.newContext(view)
+  const page = await open(kb)
+  let target = null
+  for (let i = 0; i < 16 && !target; i++) {
+    await page.keyboard.press('Tab')
+    await page.waitForTimeout(70)
+    const f = await focused(page)
+    if (f && f.id === id) target = f
+  }
+  if (!target) {
+    console.error(`${out}: Tab never reached #${id}`)
+    await kb.close()
+    return false
+  }
+  await page.screenshot({ path: `${OUT}/${out}`, clip: target.clip })
+  console.log(`${out}  <${target.tag}#${target.id}> :focus-visible=${target.matchesVisible}`)
+  await kb.close()
+  return true
+}
+
 const ok = [
   await pair('btn', ['button-keyboard.png', 'button-pointer.png']),
   await pair('fld', ['focusring-keyboard.png', 'focusring-pointer.png']),
@@ -158,6 +201,16 @@ const ok = [
   // instead of the visible field boundary, so the two would read as a mismatched
   // double ring. Only the wrapper's border should change here.
   await pair('emb', ['embedded-keyboard.png', 'embedded-pointer.png']),
+  // Review-fix controls (UX Review on #17705 asked for real focused frames of
+  // each): the SELECTED swatch must still read as selected under keyboard focus
+  // (the `[aria-pressed="true"]` composite layer), the survey option's gap ring
+  // must sit outside its border, and the completion-card body's inset ring must
+  // hug the inner edge. These are on the app's default dark surface, where the
+  // `--text-strong` hairline is a near-light line (the dark-theme case the mock
+  // never showed).
+  await keyboardFrame('swatch', 'swatch-selected-focus.png'),
+  await keyboardFrame('survey', 'survey-gap-focus.png'),
+  await keyboardFrame('inset', 'inset-body-focus.png'),
 ].every(Boolean)
 
 await browser.close()

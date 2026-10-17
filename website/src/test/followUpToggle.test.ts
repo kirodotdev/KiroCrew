@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { appendFollowUpOption, removeFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
+import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 
 /**
  * Pure-transform tests for the follow-up chip ownership helper (#7616). These
@@ -79,5 +79,27 @@ describe('followUpToggle — removeFollowUpOption', () => {
 
   it('returns the draft unchanged when nothing is owned', () => {
     expect(removeFollowUpOption('anything', null, 'Alpha')).toEqual({ value: 'anything', owned: null })
+  })
+})
+
+describe('followUpToggle — selectSingleFollowUpOption', () => {
+  it('appends onto an empty draft like a first multi-select pick', () => {
+    expect(selectSingleFollowUpOption('', null, 'Go')).toEqual({ value: 'Go', owned: { base: '', options: ['Go'] } })
+  })
+
+  it('replaces the previous pick while the owned tail is intact', () => {
+    const owned: OwnedSuffix = { base: 'note', options: ['Go'] }
+    expect(selectSingleFollowUpOption('note, Go', owned, 'Cancel')).toEqual({
+      value: 'note, Cancel',
+      owned: { base: 'note', options: ['Cancel'] },
+    })
+  })
+
+  it('never removes user text: an edited tail is appended to, not replaced', () => {
+    const owned: OwnedSuffix = { base: '', options: ['Go'] }
+    expect(selectSingleFollowUpOption('Go now please', owned, 'Cancel')).toEqual({
+      value: 'Go now please, Cancel',
+      owned: { base: 'Go now please', options: ['Cancel'] },
+    })
   })
 })

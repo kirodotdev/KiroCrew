@@ -28,6 +28,7 @@ from kiro_crew.taskq.dependency import (
 from kiro_crew.taskq.reconcile import reconcile_on_boot
 from kiro_crew.taskq.store import TaskStore, TaskStoreUnavailable
 from kiro_crew.taskq.waits import WaitLedger, WaitRecord
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 _RUNNER_LOGGER = "kiro_crew.taskq.adapters.runner"
 
@@ -674,13 +675,9 @@ async def test_a_step_granted_after_a_lane_wait_rechecks_memory_pressure(
     b = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task2")
     ha = await adm.admit(a.id)
     waiter = asyncio.create_task(adm.admit(b.id))
-    for _ in range(500):  # b's store reads hop off the loop before it parks
-        if adm.lane.waiting == 1:
-            break
-        await asyncio.sleep(0.01)
-    assert adm.lane.waiting == 1
+    await async_wait_until(lambda: adm.lane.waiting == 1)
     ha.done()  # the grant reaches b while memory is critical
-    hb = await asyncio.wait_for(waiter, 5)
+    hb = await await_until(waiter)
     assert hb.state == m.STARTING
     kinds = [k for k, _ in _events(store, b.id)]
     assert kinds[:3] == ["accepted", "deferred", "claimed"]
@@ -726,13 +723,9 @@ async def test_a_step_refused_at_its_grant_gives_the_slot_back_before_deferring(
     b = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task2")
     ha = await adm.admit(a.id)
     waiter = asyncio.create_task(adm.admit(b.id))
-    for _ in range(500):  # b's store reads hop off the loop before it parks
-        if lane.waiting == 1:
-            break
-        await asyncio.sleep(0.01)
-    assert lane.waiting == 1
+    await async_wait_until(lambda: lane.waiting == 1)
     ha.done()  # the grant reaches b while memory is critical
-    hb = await asyncio.wait_for(waiter, 5)
+    hb = await await_until(waiter)
     assert sleeps.calls == [5.0]
     assert inside_sleep == [(0, False)]
     assert adm.deferred_count == 1
@@ -1385,7 +1378,7 @@ async def test_an_operator_action_from_a_worker_thread_releases_the_parked_run(
             )
             is True
         )
-        assert await asyncio.wait_for(parked, 10) is None
+        assert await await_until(parked) is None
         assert store.state_of(first.id) == m.CANCELLED
         # The answer arm of the same route, from the same kind of worker.
         second = adm.accept(kind=m.KIND_TASKRUNNER_STEP, task_id="taskrunner:r:task2")
@@ -1397,7 +1390,7 @@ async def test_an_operator_action_from_a_worker_thread_releases_the_parked_run(
             await asyncio.to_thread(adm.answer_input, second.id, "yes", generation=h2.generation)
             is True
         )
-        assert await asyncio.wait_for(waiting, 10) == "yes"
+        assert await await_until(waiting) == "yes"
         assert h2.done() is True
     finally:
         loop.set_debug(was_debug)
@@ -1826,6 +1819,144 @@ def test_adopt_declined_resume_fails_the_row(store: TaskStore, clock: Clock) -> 
     report = r.adopt_orphaned_rows(store, resume=lambda _r: False)
     assert report.failed == ["taskrunner:gone"]
     assert store.get("taskrunner:gone").state == m.FAILED
+
+
+def _adopt_on_every_boot(
+    path: Path, clock: Clock, *, claim_after_resume: bool
+) -> tuple[int, r.AdoptReport]:
+    """Boot, reconcile and adopt until a sweep does not resume the row.
+
+    Returns the resumes and the last sweep's report: the one that ended the row
+    once its recoveries were spent.
+
+    With *claim_after_resume* the run's resume claims the row and runs, and the
+    same step takes the gateway down; without it the gateway dies before the
+    resume claims the row, which leaves it ``recovering``.
+    """
+    resumes = 0
+    report = r.AdoptReport()
+    for _ in range(m.RECOVERY_MAX_ATTEMPTS + 4):
+        store = _reopen(path, clock)
+        try:
+            reconcile_on_boot(store)
+            report = r.adopt_orphaned_rows(
+                store, kinds=(m.KIND_TASKRUNNER_STEP,), resume=lambda _rec: True
+            )
+            if report.resumed != ["taskrunner:loops"]:
+                return resumes, report
+            resumes += 1
+            if claim_after_resume:
+                claim = store.claim("taskrunner:loops")
+                assert claim is not None
+                store.transition("taskrunner:loops", m.STARTING, generation=claim.generation)
+                store.transition("taskrunner:loops", m.RUNNING, generation=claim.generation)
+        finally:
+            store.close()  # the gateway stops
+    return resumes, report
+
+
+@pytest.mark.parametrize("claim_after_resume", [True, False], ids=["runs-again", "dies-first"])
+def test_a_run_that_takes_its_gateway_down_is_adopted_a_bounded_number_of_times(
+    tmp_path: Path, clock: Clock, claim_after_resume: bool
+) -> None:
+    """Every gateway life that adopts and resumes a runner row spends one of the
+    row's lost-owner recoveries (``model.RECOVERY_MAX_ATTEMPTS``, the boot
+    reconciler's limit), whether the row was running or still ``recovering``
+    when its gateway stopped. The next boot ends it ``failed`` with the reason
+    instead of resuming it again, and that sweep reports the row in
+    ``AdoptReport.lost_owner_limit``, so a run whose step kills its gateway
+    cannot restart that gateway forever."""
+    path = tmp_path / "tasks.db"
+    store = _reopen(path, clock)
+    _crashed_row(store, "taskrunner:loops", safe=True)
+    store.close()
+    resumes, report = _adopt_on_every_boot(path, clock, claim_after_resume=claim_after_resume)
+    store = _reopen(path, clock)
+    try:
+        rec = store.get("taskrunner:loops")
+        assert (resumes, rec.state) == (m.RECOVERY_MAX_ATTEMPTS, m.FAILED)
+        last = store.events("taskrunner:loops")[-1]
+        assert (last.kind, last.data["to"]) == ("transition", m.FAILED)
+        assert last.data["adopted"] == "lost_owner_limit"
+        assert last.data["lost_owner_recoveries"] == m.RECOVERY_MAX_ATTEMPTS
+        assert "gateway" in last.data["error"]
+        # A settled row stays settled on the next boot.
+        assert r.adopt_orphaned_rows(store, resume=lambda _rec: True).examined == 0
+        # The sweep that spent the row's recoveries listed it, once.
+        assert report.lost_owner_limit == ["taskrunner:loops"]
+    finally:
+        store.close()
+
+
+def test_repeated_sweeps_in_one_gateway_life_spend_one_recovery(
+    store: TaskStore, clock: Clock
+) -> None:
+    """A second sweep in the same gateway life is not a lost owner: the row is
+    resumed again and its recoveries are spent only by earlier lives."""
+    _crashed_row(store, "taskrunner:once", safe=True)
+    for _ in range(m.RECOVERY_MAX_ATTEMPTS + 2):
+        report = r.adopt_orphaned_rows(store, resume=lambda _rec: True)
+        assert report.resumed == ["taskrunner:once"]
+    assert store.lost_owner_recoveries("taskrunner:once") == 0
+    assert store.get("taskrunner:once").state == m.RECOVERING
+
+
+def test_a_gateway_life_that_sweeps_twice_spends_one_recovery(tmp_path: Path, clock: Clock) -> None:
+    """Recoveries are counted per gateway life, not per sweep: the two lives that
+    each swept the row twice have spent two, so the next life still resumes it."""
+    path = tmp_path / "tasks.db"
+    store = _reopen(path, clock)
+    _crashed_row(store, "taskrunner:twice", safe=True)
+    store.close()
+    for _ in range(m.RECOVERY_MAX_ATTEMPTS - 1):
+        store = _reopen(path, clock)
+        try:
+            reconcile_on_boot(store)
+            for _ in range(2):
+                report = r.adopt_orphaned_rows(
+                    store, kinds=(m.KIND_TASKRUNNER_STEP,), resume=lambda _rec: True
+                )
+                assert report.resumed == ["taskrunner:twice"]
+        finally:
+            store.close()
+    store = _reopen(path, clock)
+    try:
+        reconcile_on_boot(store)
+        assert store.lost_owner_recoveries("taskrunner:twice") == m.RECOVERY_MAX_ATTEMPTS - 1
+        report = r.adopt_orphaned_rows(
+            store, kinds=(m.KIND_TASKRUNNER_STEP,), resume=lambda _rec: True
+        )
+        assert report.resumed == ["taskrunner:twice"]
+        assert store.get("taskrunner:twice").state == m.RECOVERING
+    finally:
+        store.close()
+
+
+def test_a_resume_that_takes_the_gateway_down_is_already_counted(
+    tmp_path: Path, clock: Clock
+) -> None:
+    """The recovery is recorded before the row is handed to resume, so a resume
+    that stops the gateway has already spent it."""
+    path = tmp_path / "tasks.db"
+    store = _reopen(path, clock)
+    _crashed_row(store, "taskrunner:down", safe=True)
+    store.close()
+    store = _reopen(path, clock)
+    try:
+        reconcile_on_boot(store)
+
+        def _gateway_stops(_rec: m.TaskRecord) -> bool:
+            raise SystemExit("the gateway stops during the resume")
+
+        with pytest.raises(SystemExit):
+            r.adopt_orphaned_rows(store, kinds=(m.KIND_TASKRUNNER_STEP,), resume=_gateway_stops)
+    finally:
+        store.close()
+    store = _reopen(path, clock)
+    try:
+        assert store.lost_owner_recoveries("taskrunner:down") == 1
+    finally:
+        store.close()
 
 
 def _reopen(path: Path, clock: Clock) -> TaskStore:
@@ -2268,7 +2399,7 @@ async def test_waiting_input_falls_back_to_the_persisted_answer(
         rec.id, reason="input answered", detail={"answer": "yes"}
     )
     adm.on_wake(rec.id)
-    assert await asyncio.wait_for(wait, 2) == "yes"
+    assert await await_until(wait) == "yes"
 
 
 @pytest.mark.asyncio

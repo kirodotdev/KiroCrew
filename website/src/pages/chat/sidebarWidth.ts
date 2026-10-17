@@ -53,8 +53,8 @@ export function sidebarPaintWidth(
 /**
  * The width narrowed to the space the window actually leaves beside the nav
  * rail. Reserves NOTHING for the chat pane: `ChatPage` passes it the width the
- * sidebar root reports it paints at (`sidebarPaintWidth`), which in board view
- * already leaves a minimum chat pane, so drawer and root agree. Subtracting a
+ * sidebar root reports it paints at (`sidebarPaintWidth`), which in every view
+ * beside a chat pane already leaves it its minimum, so drawer and root agree. Subtracting a
  * chat minimum again here would cap the drawer below the root it holds.
  */
 export function clampSidebarWidth(

@@ -40,6 +40,16 @@ def _log(unit_id: str = SESSION, **fields) -> CrewLog:
     return CrewLog.create(lg.KIND_SESSION, unit_id, **fields)
 
 
+@pytest.fixture
+def owned_log():
+    """Refusal tracebacks can retain the writer beyond the test's lifetime."""
+    handle = _log()
+    try:
+        yield handle
+    finally:
+        handle.release_ownership()
+
+
 def _opened(handle: CrewLog, *, resumed: bool = False, model: str = "opus") -> None:
     handle.append(
         "session/opened",
@@ -1506,7 +1516,7 @@ def test_fold_session_continues_from_an_earlier_bundle():
     assert second.projection("usage").value == crew_log.fold_usage(_entries(handle))
 
 
-def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_start():
+def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_start(owned_log):
     """A non-advancing seq in the tail refuses BOTH ways -- never one way only.
 
     The append-only writer cannot produce a duplicate or backward seq, so one
@@ -1517,7 +1527,7 @@ def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_st
     The guard in ``iter_from`` makes the incremental read refuse the same
     damage with the same code.
     """
-    handle = _log()
+    handle = owned_log
     _opened(handle)
     _turn(handle, 1)
     bundle = crew_log.fold_session(SESSION)
@@ -1537,9 +1547,9 @@ def test_fold_session_incremental_refuses_a_backward_seq_like_a_fold_from_the_st
     assert incremental.value.code == lg.CODE_BAD_DATA
 
 
-def test_fold_session_incremental_refuses_a_backward_tail_after_real_growth():
+def test_fold_session_incremental_refuses_a_backward_tail_after_real_growth(owned_log):
     """A regressed physical tail cannot hide valid growth from a cached fold."""
-    handle = _log()
+    handle = owned_log
     _opened(handle)
     _turn(handle, 1)
     bundle = crew_log.fold_session(SESSION)
@@ -1563,9 +1573,9 @@ def test_fold_session_incremental_refuses_a_backward_tail_after_real_growth():
     assert incremental.value.code == lg.CODE_BAD_DATA
 
 
-def test_fold_session_incremental_refuses_same_size_rewrite_of_folded_seq():
+def test_fold_session_incremental_refuses_same_size_rewrite_of_folded_seq(owned_log):
     """A same-size rewrite behind the resume point must invalidate the cache."""
-    handle = _log()
+    handle = owned_log
     _opened(handle)
     _turn(handle, 1)
     bundle = crew_log.fold_session(SESSION)
@@ -2924,7 +2934,7 @@ def test_usage_units_order_by_succession_not_wall_clock(monkeypatch):
     monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("a", "b"))
     monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: created.get(uid))
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
-    assert crew_log._usage_units_in_succession("chat-1") == ("a", "b")
+    assert crew_log.units_in_succession("chat-1") == ("a", "b")
 
 
 def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
@@ -2950,7 +2960,7 @@ def test_usage_units_keep_disconnected_chains_contiguous(monkeypatch):
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: previous.get(uid))
     # A's run (root createdAt 100) precedes B's run (root createdAt 200); each run is
     # predecessor-first and unbroken.
-    assert crew_log._usage_units_in_succession("chat-1") == ("a0", "a1", "b0", "b1", "b2")
+    assert crew_log.units_in_succession("chat-1") == ("a0", "a1", "b0", "b1", "b2")
 
 
 def test_usage_units_unrelated_roots_without_a_clock_keep_store_order(monkeypatch):
@@ -2964,7 +2974,7 @@ def test_usage_units_unrelated_roots_without_a_clock_keep_store_order(monkeypatc
     monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("older", "newer"))
     monkeypatch.setattr(crew_log, "unit_header_created_at", lambda kind, uid: None)
     monkeypatch.setattr(crew_log, "unit_opened_previous", lambda kind, uid: None)
-    assert crew_log._usage_units_in_succession("chat-1") == ("older", "newer")
+    assert crew_log.units_in_succession("chat-1") == ("older", "newer")
 
 
 def test_usage_units_single_unit_skips_the_chain_read(monkeypatch):
@@ -2975,10 +2985,37 @@ def test_usage_units_single_unit_skips_the_chain_read(monkeypatch):
         raise AssertionError("unit_opened_previous must not be read for a single unit")
 
     monkeypatch.setattr(crew_log, "unit_opened_previous", _boom)
-    assert crew_log._usage_units_in_succession("chat-1") == ("only",)
+    assert crew_log.units_in_succession("chat-1") == ("only",)
 
 
 def test_usage_fold_uses_the_succession_order(monkeypatch):
     """The usage fold's unit resolver routes through the durable-succession helper."""
-    monkeypatch.setattr(crew_log, "_usage_units_in_succession", lambda slot: ("x", "y"))
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("x", "y"))
     assert crew_log._slot_units_for_fold("chat-1", "usage") == ("x", "y")
+
+
+def test_agentic_fold_uses_the_succession_order(monkeypatch):
+    """The agentic fold's unit resolver routes through the durable-succession helper.
+
+    This fold keeps the LATEST value per field, so whichever unit is folded last wins
+    each cell. Under the header clock a backward step between two units of one slot
+    sorts the retired unit last, and its stale value would overwrite one the live
+    session wrote and the write path accepted -- silently, because both are well-formed.
+    """
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("x", "y"))
+    assert crew_log._slot_units_for_fold("chat-1", crew_log.DASHBOARD_FOLD_NAME) == ("x", "y")
+
+
+def test_agentic_fold_does_not_fall_through_to_the_header_clock(monkeypatch):
+    """The header fallthrough must not be what answers for this fold.
+
+    Asserted by making the fallthrough the ONLY thing that could answer: if the
+    resolver reached ``session_units_for_slot`` for the agentic fold it would return
+    the clock order below, which is the inversion the succession read exists to undo.
+    """
+    monkeypatch.setattr(crew_log, "session_units_for_slot", lambda slot: ("retired", "live"))
+    monkeypatch.setattr(crew_log, "units_in_succession", lambda slot: ("live", "retired"))
+    assert crew_log._slot_units_for_fold("chat-1", crew_log.DASHBOARD_FOLD_NAME) == (
+        "live",
+        "retired",
+    )

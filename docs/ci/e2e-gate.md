@@ -114,7 +114,7 @@ Config facts worth knowing before you touch a spec:
 | `baseURL` | `process.env.PLAYWRIGHT_BASE_URL` or `http://localhost:5476` | 5476 is the default dashboard port, so an ad-hoc local run against a normal gateway works. |
 | `locale` | `en-US` | Most specs assert English prose. The app resolves language from `navigator.languages` when nothing is stored, and the harness storage state carries no `mc-lang`, so a `zh-*` runner would render the zh-CN catalog and fail those assertions. Pinning makes that an explicit dependency. |
 | `workers` | 1 under `CI` | The harness sets `CI=1`, so the browser leg is serial. |
-| `retries` | 2 under `CI` | A detector, not a fix. A retry lets a flaky spec pass, and the JSON report then counts it under `flaky` (the HTML report lists it too): that is where a retried pass shows up, so read it, fix the spec, and never raise `retries`. |
+| `retries` | 2 under `CI` | A detector, not a fix. A spec that passes only on a retry is counted under `flaky` in the JSON report (the HTML report lists it too), and `MAX_FLAKY_SPECS` then fails the run: fix the spec, never raise `retries`. |
 | `timeout` | 30s per test | Assertion (`expect`/`poll`) timeout stays at Playwright's 5s default so a genuine slowdown surfaces instead of passing inside a wide window. |
 | `grepInvert` | excludes `@needs-agent` unless `PLAYWRIGHT_RUN_AGENT_SPECS` | The default run is the credential-less green set. The harness wires the fake backend, so it opts the agent specs back in. `@needs-live-agent` stays excluded either way and currently tags nothing. |
 | browser | Playwright's own bundled Chromium | This fork vends no browser binary; CI installs it with `npx playwright install chromium`, restored from an `actions/cache` entry keyed on the exact `@playwright/test` version. `--with-deps` is deliberately NOT used — see [what CI does](#what-ci-does-around-the-command). |
@@ -123,10 +123,9 @@ Config facts worth knowing before you touch a spec:
 
 Playwright runs two projects. The `setup` project (`playwright/auth.setup.ts`)
 navigates once to `/?token=<PLAYWRIGHT_TOKEN>`, lets the gateway exchange the
-token for a session cookie, sets two localStorage flags, and persists the whole
-storage state. `mc-onboarded` keeps the first-run theme overlay from
-intercepting clicks; `mc-crewmates-onboarded` keeps the Meet CrewMates chapter
-from covering the `/members` specs. The `chromium` project declares `dependencies: ['setup']` and loads that
+token for a session cookie, sets the `mc-onboarded` localStorage flag, and
+persists the whole storage state. `mc-onboarded` keeps the first-run theme
+overlay from intercepting clicks. The `chromium` project declares `dependencies: ['setup']` and loads that
 state, so raw tokens never appear in test-level traces or videos.
 
 The state path is `PLAYWRIGHT_STORAGE_STATE` or `playwright/.auth/state.json`,
@@ -162,7 +161,7 @@ and never reported as a skip, so a mis-tagged suite reports green while a third
 of it does not run. Every dark spec that was later re-enabled had also rotted:
 stale selectors for UI that had moved, because nothing exercised them.
 
-So `_assert_suite_not_darkened()` reads Playwright's JSON report and asserts two
+So `_assert_suite_not_darkened()` reads Playwright's JSON report and asserts three
 numbers, **even when the run failed** (a red run plus a collapsed count points at
 darkening rather than at the reported failure):
 
@@ -172,6 +171,22 @@ darkening rather than at the reported failure):
   written reason in the commit body, because a drop means specs stopped running.
 - `MAX_SKIPPED_SPECS` is 0. A skip is a silent pass, so a spec should seed its
   preconditions in a fixture rather than skip when they are absent.
+- `MAX_FLAKY_SPECS` is 0 and only shrinks. A spec that passed only on a retry fails
+  the gate with its title; this ceiling is the one place the flaky policy lives, so
+  Playwright itself is not told to fail on one. The counts line and every flaky title
+  are in the log and the assertion message, and also go to `$GITHUB_STEP_SUMMARY`
+  where that file is writable. When a
+  spec your change does not touch fails your run this way, it is someone else's
+  flake: record it in the flake ledger (the open `Flaky: <test name>` issue, labelled
+  `area: tests`, as the `kirocrew-prepare-pr` skill describes) and rerun the job once.
+  Never raise the ceiling or `retries` for it.
+
+The run itself is bounded by `PLAYWRIGHT_RUN_CEILING_SECS` (17 min, so the stop, the
+report and the summary fit inside the job's 25), and the harness stops Playwright as
+soon as the gateway it drives exits, quoting the gateway's own output, so a dead
+gateway is reported as one, not as every remaining spec timing out on retries. A
+stopped run first gets SIGINT so it writes its report, and the failure quotes
+whatever counts that report salvaged.
 
 A missing or unparseable report is a hard `pytest.fail`, not a pass for lack of
 evidence. The floor helper has its own unit tests in the same file, deliberately
@@ -183,22 +198,28 @@ silent darkening is no guard.
 `ci.yml`'s `e2e` job (`E2E (stub ACP backend, offline)`) installs the backend
 with `--group dev`, runs `npm ci` and `npm run build` in `website/`, stages
 `website/dist` into `src/kiro_crew/static/dist` so the specs render the real
-bundled dashboard rather than a 404, installs Chromium, resolves the i18n base,
-then runs `python scripts/ci_e2e_parallel.py`. The separate
-`e2e-private-namespace` job owns the real private-workflow MCP test and does not
-serialize the browser job. The CI-only helper overlaps the unchanged
-`python setup.py test_e2e` command, dedicated Memory UI pytest command and
-`npm --prefix website run i18n:render`. All three outcomes are awaited; no
-failure cancels or hides another lane. All three helper outcomes remain mandatory,
-with the same 25-minute browser-job ceiling. The private namespace coverage is a
-separate mandatory CI job instead of a serial prerequisite, so neither it nor the
-head+base render gate consumes the browser lane's critical path.
+bundled dashboard rather than a 404, installs Chromium, then runs
+`python scripts/ci_e2e_parallel.py`. The separate `e2e-private-namespace` job
+owns the real private-workflow MCP test and does not serialize the browser job.
+The CI-only helper overlaps the unchanged `python setup.py test_e2e` command and
+the dedicated Memory UI pytest command. Both outcomes are awaited; no failure
+cancels or hides the other lane. Both helper outcomes remain mandatory, with the
+same 25-minute browser-job ceiling. The private namespace coverage is a separate
+mandatory CI job instead of a serial prerequisite, so it does not consume the
+browser lane's critical path.
+
+The head+base i18n render gate is its own `i18n-render` job rather than a third
+lane here, for the same reason: it needs no gateway, and on the hosted 4-vCPU
+runner a fork PR gets, its two DEV builds plus a two-tree Chromium render ran
+about 13 minutes alongside the suite and pushed `test_dashboard_playwright_suite`
+past its 1020 s ceiling on 27% of fork-PR runs (2.5% on the fleet's large
+instance, where the same overlap fit). The suite's ceiling is sized for this step
+to hold two browser lanes, not three. [i18n-gates.md](i18n-gates.md) describes
+that job.
 
 The staged production bundle, Python packages, Node modules and Chromium
-install remain read-only inputs. i18n builds its own `website/dist-dev` and a
-separate temporary base tree, retaining the complete locale/surface and vs-base
-checks. Each lane has its own `TMPDIR` under `runner.temp/e2e-s` (smoke),
-`runner.temp/e2e-u` (UI), or `runner.temp/e2e-i` (i18n), with
+install remain read-only inputs. Each lane has its own `TMPDIR` under
+`runner.temp/e2e-s` (smoke) or `runner.temp/e2e-u` (UI), with
 short names to leave room for Unix socket paths; the harness continues to create a
 fresh data home, agent-spec home and random port per gateway. The dedicated UI
 process owns its environment changes, per-scenario authentication files, JSON
@@ -306,6 +327,17 @@ the attempt manifest records that fixture limitation. Only a completed CI run
 supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
+`website/playwright/dashboard-preview-link.spec.ts` opens the link
+`dashboard_preview` hands a crewmate and asserts that it resolves: the Members page
+draws the staged page under its **Preview, not applied** label, and the dashboard read accepts the
+crewmate the link names. Before the browser starts, the harness
+(`test_playwright_e2e._stage_dashboard_preview`) seeds one crewmate in the disposable
+config, stages the `standup` template for it with the production store, and passes
+the link that store's `wire()` returns in `KIROCREW_E2E_DASHBOARD_PREVIEW`. The spec
+never builds the link itself. `standup` is not the default page, so a tab still
+showing the live page fails. The spec guards against a person being asked to approve
+a page they could not open.
+
 When the job fails, a final `if: failure()` step uploads
 `website/test-results/` and `website/playwright-report/` as the
 `e2e-playwright-failures` artifact (7-day retention). `test-results/` holds one
@@ -396,6 +428,11 @@ scenario costs about three minutes; the CI helper enforces a 12-minute ceiling
 for the dedicated UI lane, without imposing that ceiling on the shared suite.
 `harness_environment()` is unit-tested in `test/test_harness.py`: the default
 skip, the drop, and that `KIROCREW_HOME`/`KIRO_HOME` stay pinned either way.
+It also pins `KIROCREW_SKIP_APP_STORE_FETCH=1`, which no caller can drop: the
+app store answers from the bundled seed, so `GET /api/apps/registry` never pays
+the live catalog's uncached HTTPS round trip (bounded by `FETCH_TIMEOUT`, the
+same 10 s the Discover specs wait for their ready signal) or a per-row manifest
+clone. `kiro_crew.apps.official_catalog.SKIP_FETCH_ENV` owns the name.
 The supervisor restart test also verifies that only the download switch changes:
 all other environment values retain the initial launch snapshot. The failed
 mirror port stays bound without listening until teardown, and loopback hosts
@@ -486,10 +523,13 @@ process instead, which is the path
 [windows-install.md](../guides/windows-install.md) describes and the one the
 managed-server invocation resolves.
 
-### `build.yml`'s installer job boots the gateway it installed, on every PR
+### `build.yml`'s installer job boots the gateway it installed, on every qualifying PR
 
 `build.yml`'s `build-windows-installer` job compiles an NSIS installer on every
-qualifying PR, installs it silently, and runs
+qualifying PR (one that changed a Windows-packaging input, per `desktop-matrix`'s
+`windows_installer` filter; a merge group always qualifies, and so does a push
+to main unless `MERGE_QUEUE_ENABLED` is `'true'`),
+installs it silently, and runs
 `.github/scripts/test-windows-installer.ps1` with NO `-SkipGatewayValidation`.
 The script starts the just-installed bundled interpreter against an isolated data
 home and requires `/api/ready` within 50 seconds, so an artifact that installs
@@ -523,9 +563,9 @@ launcher redirecting imports into an empty user cache. Both land near zero.
 SIGNED installer, the Start Menu shortcut's target, the bundled CLI and a silent
 uninstall, none of which the PR lane covers.
 
-Related: [i18n-gates.md](i18n-gates.md) for the render-time gate that shares this
-job, and [ci-and-reviews.md](ci-and-reviews.md) for where `e2e` sits among the
-other PR gates.
+Related: [i18n-gates.md](i18n-gates.md) for the render-time gate (`i18n-render`,
+its own job), and [ci-and-reviews.md](ci-and-reviews.md) for where `e2e` sits
+among the other PR gates.
 
 The private member memory specs use the real gateway and database. They cover
 explicit V1-to-member copying with provenance, correction/reload/forgetting,
@@ -534,9 +574,7 @@ member's exact conversation binding across reload. Desktop and
 390px captures accompany the first flow. Their write guard requires
 `KIROCREW_E2E_EPHEMERAL=1`, which the isolated gateway harness sets; it must never
 be set for an operator gateway. The strict reporter enforces the executed-test
-floor and refuses skips or flaky retries. The same `e2e` job must also pass its
-parallel i18n render lane before the job is green; the render lane does not
-precede these browser scenarios.
+floor and refuses skips or flaky retries.
 
 ## The cross-OS gateway boot matrix
 

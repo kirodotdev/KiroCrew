@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from aiohttp import web
 
+from kiro_crew.members import member_identity_for_session
+
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.messaging import (
         _CHANNEL_TYPE_RE,
@@ -34,6 +36,7 @@ if TYPE_CHECKING:
         PostedOptions,
         _blocks_request_remote_media,
         _channel_delivery_key,
+        _cron_job_for,
         _deliver_channel_dm,
         _deliver_to_channel,
         _is_slack_ts,
@@ -130,9 +133,7 @@ def _resolve_session_target(
     # caller_session is "cron:{job_id}" or "cron:{job_id}:{run_id}" (stateless)
     if not caller_session.startswith("cron:"):
         return None, None
-    cron_id = caller_session.removeprefix("cron:").split(":")[0]
-    jobs = state.crons.list_jobs(include_disabled=True)
-    job = next((j for j in jobs if j.id == cron_id), None)
+    job = _cron_job_for(state, caller_session)
     if not job or not job.session_key:
         return None, None
     # session_key is e.g. "dashboard:chat-3-1712793600" but slot names
@@ -469,6 +470,10 @@ class _SendMessageOutcome:
     slack_ts: str | None = None
     slack_attempted: bool = False
     slack_error: str = ""
+    # How a failed Slack send ended: "" (nothing was posted), "rate_limited" (a
+    # 429; nothing was posted), or "unconfirmed" (an unknown outcome: the message
+    # may be in the conversation).
+    slack_failure: str = ""
     sent_channel: bool = False
     channel_code: str = ""
     channel_detail: str = ""
@@ -730,6 +735,55 @@ async def _read_send_message(
     )
 
 
+#: Longest sender name the source line carries; a chat title can be long.
+_SOURCE_NAME_MAX = 80
+
+
+def _proactive_source_line(
+    state: "DashboardState",
+    caller_session: str,
+    declared_session: str,
+    *,
+    is_cron_caller: bool,
+) -> str:
+    """``Sent by cron: <name>`` or ``Sent by chat: <title>``, or ``""``.
+
+    Read from the same identities the channel legs trust: a cron's validated
+    ``caller_session`` names its job, and any other caller is the attested
+    ``X-Session-Key``. Only a dashboard chat gets a line, because its title is
+    a name the user knows; a channel-born or unknown caller gets none.
+    """
+    if is_cron_caller:
+        try:
+            job = _cron_job_for(state, caller_session)
+        except Exception:
+            logger.warning("send_message: could not read cron jobs for the source line")
+            job = None
+        cron_id = caller_session.removeprefix("cron:").split(":")[0]
+        kind, name = "cron", (getattr(job, "name", "") if job is not None else "") or cron_id
+    elif declared_session.startswith("dashboard:"):
+        # Lazy: the facade rebinds this function onto its own globals, which do
+        # not carry this name.
+        from kiro_crew.dashboard.session_memory import session_title
+
+        info = session_title(declared_session, state.get_slot)
+        kind = "chat"
+        name = str(info["slot_key"] if info["untitled"] else info["title"])
+    else:
+        return ""
+    name = " ".join(str(name).split())
+    name, _ = redact_exfiltration_urls(name)
+    name, _ = redact_credentials(name)
+    if len(name) > _SOURCE_NAME_MAX:
+        name = name[: _SOURCE_NAME_MAX - 1].rstrip() + "…"
+    return f"Sent by {kind}: {name}" if name else ""
+
+
+def _with_source_line(text: str, source_line: str) -> str:
+    """*text* with *source_line* as its last paragraph, or *text* unchanged."""
+    return f"{text}\n\n{source_line}" if source_line else text
+
+
 async def _deliver_send_message_fallback(
     state: "DashboardState",
     body: dict,
@@ -749,6 +803,7 @@ async def _deliver_send_message_fallback(
     channel_type: str,
     caller_session: str,
     declared_session: str,
+    attribution_session: str,
     is_cron_caller: bool,
     send_to_slack: bool,
 ) -> None:
@@ -770,7 +825,12 @@ async def _deliver_send_message_fallback(
         safe_name, _ = redact_credentials(safe_name)
         title = f"⏰ {safe_name}"
         text += "\n\n_(session closed — delivered as notification)_"
-    state.notify("agent", title, text)
+    # Only an attested, non-app caller's key names the publishing crewmate
+    # (``attributable_session_key``); a bare TCP or app-token header does not.
+    member = await asyncio.to_thread(member_identity_for_session, attribution_session)
+    # A message that offers [OPTIONS:] asks the user to choose, so it is not muted.
+    publisher = None if options else attribution_session or None
+    state.notify("agent", title, text, member=member, publisher_session=publisher)
     # No widget on either channel path, so a parsed [OPTIONS:] trailer is
     # re-attached as a numbered list rather than dropped: the user still
     # learns the choices exist and can answer by typing one. Built from the
@@ -778,12 +838,18 @@ async def _deliver_send_message_fallback(
     # hoisted above both legs so neither mechanism drops it.
     if options:
         channel_text = f"{channel_text}\n\n{format_overflow(options, 0)}"
+    # Many sessions and crons share one owner DM, so a proactive message there
+    # says who sent it. The own-conversation leg below labels only a cron: a
+    # chat sending into its own conversation is that conversation talking.
+    source_line = _proactive_source_line(
+        state, caller_session, declared_session, is_cron_caller=is_cron_caller
+    )
     if channel_target:
         outcome.sent_channel, outcome.channel_code, outcome.channel_detail = (
             await _deliver_channel_dm(
                 state,
                 channel_target,
-                channel_text,
+                _with_source_line(channel_text, source_line),
                 # Vet on the CALLER's real identity so the fail-closed
                 # ``channels`` re-vet inside the leg resolves that caller's own
                 # profile rather than the permissive ``HOST_SESSION_KEY``
@@ -811,7 +877,7 @@ async def _deliver_send_message_fallback(
         outcome.sent_channel = await _deliver_to_channel(
             state,
             _channel_delivery_key(state, caller_session, declared_session),
-            channel_text,
+            _with_source_line(channel_text, source_line if is_cron_caller else ""),
             channel_type=channel_type,
         )
     # Opt-in "Open session" deep-link button: resolved (server-side) only
@@ -854,6 +920,42 @@ async def _deliver_send_message_fallback(
         )
 
 
+# Slack documents both of these as "It's possible some aspect of the operation
+# succeeded before the error was raised": an ``ok: false`` answer that is not a
+# refusal.
+_SLACK_ERRORS_WITH_UNKNOWN_OUTCOME = frozenset({"internal_error", "fatal_error"})
+
+
+def _slack_rejected_outright(exc: BaseException) -> bool:
+    """Whether Slack answered and refused the request, so nothing was posted.
+
+    Only an HTTP 200 answer whose JSON body says ``ok: false`` is a refusal.
+    slack_sdk raises the same ``SlackApiError`` for a 5xx, a gateway page, a
+    body that is not JSON, and an ``internal_error`` or ``fatal_error`` answer;
+    after any of those the post may have landed, so a second post can deliver
+    the message twice.
+    """
+    from slack_sdk.errors import SlackApiError
+
+    if not isinstance(exc, SlackApiError):
+        return False
+    response = exc.response
+    # A dict response carries no status; slack_sdk's own responses always do.
+    if getattr(response, "status_code", 200) != 200:
+        return False
+    data = getattr(response, "data", response)
+    if not isinstance(data, dict) or data.get("ok") is not False:
+        return False
+    return data.get("error") not in _SLACK_ERRORS_WITH_UNKNOWN_OUTCOME
+
+
+def _slack_rate_limited(exc: BaseException) -> bool:
+    """Whether Slack answered with a 429: the request was refused, so nothing was posted."""
+    from slack_sdk.errors import SlackApiError
+
+    return isinstance(exc, SlackApiError) and getattr(exc.response, "status_code", None) == 429
+
+
 async def _post_send_message_to_slack(
     state: "DashboardState",
     outcome: _SendMessageOutcome,
@@ -891,14 +993,14 @@ async def _post_send_message_to_slack(
             # best-effort follow-up (see below).
             link_blocks = _session_link_blocks(session_link_url) if session_link_url else []
             # Deferred import, matching the messaging handlers' other slack_sdk
-            # uses. SlackApiError is the ONE failure shape where Slack
-            # ANSWERED (ok=false): the combined post definitively did
-            # not land, so retrying without the button cannot deliver
-            # the caller's message twice. Every other exception
-            # (timeout, connection drop) is ambiguous -- the post may
-            # have landed -- so those propagate to the delivery-failed
-            # path below instead of triggering a duplicate-risking
-            # second post.
+            # uses. The combined post is retried without the button only when
+            # Slack refused the request outright (``_slack_rejected_outright``):
+            # then nothing landed, so the second post cannot deliver the
+            # caller's message twice. Every other failure -- a 5xx, a gateway
+            # page, a body that is not JSON, ``internal_error``, a timeout, a
+            # connection drop -- is an unknown outcome where the post may have
+            # landed, so it propagates to the delivery-failed path below
+            # instead of triggering a duplicate-risking second post.
             from slack_sdk.errors import SlackApiError
 
             button_rode_primary = False
@@ -913,8 +1015,8 @@ async def _post_send_message_to_slack(
                         reply_broadcast=reply_broadcast,
                     )
                     button_rode_primary = bool(link_blocks)
-                except SlackApiError:
-                    if not link_blocks:
+                except SlackApiError as exc:
+                    if not link_blocks or not _slack_rejected_outright(exc):
                         raise
                     # Slack REJECTED the combined post; the caller's
                     # blocks must still post, so retry them alone and
@@ -929,9 +1031,8 @@ async def _post_send_message_to_slack(
             elif link_blocks and not options and 0 < len(text) <= _SLACK_SECTION_TEXT_MAX:
                 # Plain-text send WITH a link: one message carrying a
                 # text section plus the button. Falls back to text-only
-                # (button trails) only when Slack REJECTS the combined
-                # post (SlackApiError = answered ok=false, nothing
-                # landed); an ambiguous transport failure propagates
+                # (button trails) only when Slack refused the combined post
+                # outright, so nothing landed; any other failure propagates
                 # rather than risking the text posting twice.
                 try:
                     outcome.slack_ts = await state.slack_client.post_blocks(
@@ -943,7 +1044,9 @@ async def _post_send_message_to_slack(
                         reply_broadcast=reply_broadcast,
                     )
                     button_rode_primary = True
-                except SlackApiError:
+                except SlackApiError as exc:
+                    if not _slack_rejected_outright(exc):
+                        raise
                     outcome.slack_ts = await state.slack_client.post_message(
                         channel,
                         text,
@@ -1031,6 +1134,12 @@ async def _post_send_message_to_slack(
                         exc_info=True,
                     )
     except Exception as exc:
+        # A 429 and an outright refusal posted nothing. Once a post was sent, any
+        # other failure is an unknown outcome: the message may be in the conversation.
+        if _slack_rate_limited(exc):
+            outcome.slack_failure = "rate_limited"
+        elif outcome.slack_attempted and not _slack_rejected_outright(exc):
+            outcome.slack_failure = "unconfirmed"
         outcome.slack_attempted = True
         outcome.slack_error = str(exc)
         logger.exception("send_message: Slack delivery failed")
@@ -1123,28 +1232,50 @@ def _send_message_response(
             return web.json_response(
                 {"ok": False, "error": detail, "code": outcome.channel_code}, status=403
             )
+        # The DM leg reports a refused send and one whose answer was lost after
+        # the platform stored the message alike, so the text claims neither.
+        unconfirmed = (
+            f"{channel_target} delivery was not confirmed: {safe_detail}; the message "
+            "may or may not be in the conversation, so check it before sending it again"
+        )
         return web.json_response(
-            {"ok": False, "error": detail, "code": outcome.channel_code}, status=502
+            {"ok": False, "error": unconfirmed, "code": outcome.channel_code}, status=502
         )
     if outcome.slack_attempted and not outcome.sent_slack:
         safe_error, _ = redact_credentials(outcome.slack_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
+        # An unknown outcome says so, so the caller checks the conversation
+        # instead of sending a message that may already be there.
+        if outcome.slack_failure == "unconfirmed":
+            error_text = (
+                f"Slack delivery was not confirmed: {safe_error}; the message may have "
+                "been posted, so check the conversation before sending it again"
+            )
+        elif outcome.slack_failure == "rate_limited":
+            error_text = (
+                "Slack delivery failed: the message was not posted because Slack "
+                f"rate-limited the request: {safe_error}"
+            )
+        else:
+            error_text = f"Slack delivery failed: {safe_error}"
         return web.json_response(
-            {"ok": False, "error": f"Slack delivery failed: {safe_error}", "slack": False},
+            {"ok": False, "error": error_text, "slack": False},
             status=502,
         )
     # A named channel that was not reached is a failure, not a notification-only
     # success: the caller asked for a specific conversation, Slack was suppressed
     # as its fallback, and the bell is not a substitute for the surface the user
     # is actually reading. _deliver_to_channel has already audited which of the
-    # refusals it was.
+    # refusals it was. The leg cannot tell a refusal from a send whose answer was
+    # lost after the platform stored it, so the text claims neither.
     if channel_type and not outcome.sent_channel and not sent_session:
         return web.json_response(
             {
                 "ok": False,
                 "error": (
-                    f"channel delivery to {channel_type} failed — the message was "
-                    "not posted to the conversation"
+                    f"channel delivery to {channel_type} was not confirmed; the message "
+                    "may or may not be in the conversation, so check it before sending "
+                    "it again"
                 ),
                 "code": "channel_delivery_failed",
             },

@@ -18,7 +18,10 @@ import pytest
 SRC = Path(__file__).parent.parent / "src" / "kiro_crew"
 HANDLERS = (SRC / "deploy" / "handlers.py").read_text(encoding="utf-8")
 VALIDATION = (SRC / "validation.py").read_text(encoding="utf-8")
-MCP_CORE = (SRC / "mcp_core.py").read_text(encoding="utf-8")
+MCP_CORE = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in [SRC / "mcp_core.py", *sorted((SRC / "mcp_core_parts").glob("*.py"))]
+)
 DEPLOY_INIT = (SRC / "deploy" / "__init__.py").read_text(encoding="utf-8")
 
 

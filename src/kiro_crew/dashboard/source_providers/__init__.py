@@ -7,7 +7,7 @@ order, each owner importing only owners earlier in this list:
 
 * ``contract`` -- the refs, payload shapes, plugin protocol and errors;
 * ``sanitize`` -- redaction of provider text and the aggregate payload cap;
-* ``hosts`` -- the self-managed GitLab/Jira allowlists and the chip switch;
+* ``hosts`` -- the provider host allowlists and the chip switch;
 * ``plugins`` -- the registered-provider seam;
 * ``links`` -- which URLs are source links: validation into refs;
 * ``runner`` -- the bounded, audited provider CLI;
@@ -15,6 +15,7 @@ order, each owner importing only owners earlier in this list:
 * ``github``, ``gitlab`` -- the CLI-backed provider reads;
 * ``adf`` -- Atlassian Document Format to markdown;
 * ``jira`` -- the REST-backed Jira reads;
+* ``bitbucket_server`` -- the REST-backed Bitbucket Server reads, served through the seam;
 * ``chip_status`` -- the sidebar chip cache, its deltas and the visibility gate;
 * ``cache`` -- the coalesced full-payload, checks, issue and contributor reads;
 * ``chip_refresh`` -- the background chip reads;

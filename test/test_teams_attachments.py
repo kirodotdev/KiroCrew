@@ -25,6 +25,7 @@ from kiro_crew.teams.attachments import (
     TEAMS_MAX_INLINE_IMAGE_BYTES,
     TEAMS_MAX_INLINE_IMAGES,
     TEAMS_UPLOAD_LIMITS,
+    file_attachments,
     inline_image_attachment,
     inline_image_name,
     map_inbound_attachments,
@@ -119,6 +120,41 @@ class TestInboundMapping:
     def test_non_dict_entries_are_ignored(self) -> None:
         mapped, unsupported = map_inbound_attachments(["nope", None, 3])
         assert (mapped, unsupported) == ([], [])
+
+    def test_the_body_echo_and_a_card_are_not_file_attachments(self) -> None:
+        """The gates' question, answered by the ingest's own skip set.
+
+        ``bool(activity.attachments)`` is true for every rich-text message Teams
+        sends, so a gate reading the raw list sees an upload on every typed ``/help``
+        and never recognizes a slash command in a 1:1 chat. Whatever the ingest
+        skips in silence must not count here either.
+        """
+        assert file_attachments([]) == []
+        assert (
+            file_attachments(
+                [
+                    {"contentType": "text/html", "content": "<p>/help</p>"},
+                    {"contentType": "TEXT/PLAIN ", "content": "/help"},
+                    {"contentType": "application/vnd.microsoft.card.adaptive", "content": {}},
+                    {"content": "<p>no content type</p>"},
+                    "nope",
+                    None,
+                ]
+            )
+            == []
+        )
+
+    def test_anything_the_ingest_acts_on_is_a_file_attachment(self) -> None:
+        """One upload beside the echo is enough: the message is a caption, not a
+        command. An unrecognized type counts too -- it is reported to the user
+        rather than dropped, exactly as the mapping treats it. The kept entries are
+        returned as they came, so a queue can carry exactly the files."""
+        echo = {"contentType": "text/html", "content": "<p>/stop here is the log</p>"}
+        upload = _download_info_attachment()
+        image = _inline_image_activity_attachment()
+        mystery = {"contentType": "application/x-mystery"}
+        assert file_attachments([echo, upload]) == [upload]
+        assert file_attachments([image, echo, mystery]) == [image, mystery]
 
 
 class _RecordingClient:

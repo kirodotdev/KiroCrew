@@ -81,15 +81,17 @@ POST   /meetings/{id}/tasks/file    file through the task provider  {id}
 POST   /meetings/{id}/tasks/review  {id, review_status} — pending | archived
 ```
 
+**Writes are owner-only.** Every mutating route except two is wrapped by `_common.require_owner`, which refuses any caller but the dashboard owner (a non-owner dashboard subject or any app token) with 403 `dashboard_owner_required` before the body is read, and writes a SEL record for both the denial and the allow; `/meetings/{id}/import` runs the same check inline. The two open writes are `POST /dictionary/reload` and `POST /calendar/sync`.
+
 Every handler is wrapped by `_common.route`, which applies the enable gate and
 turns validation failures into 4xx. `_common.error_response` maps an exception's
 status to a LITERAL `web.json_response(..., status=NNN)` per branch — repetitive on
 purpose, because the error-code contract scanner reads `status=exc.status` as
 `dynamic_status` and cannot prove the contract is met. **A status with no branch
-falls through to 400**, which was a live bug before the import route needed 403:
+falls through to 400**, so every status a route can raise needs its own branch:
 `store.contain` raises `MeetingsPathError(status=403)` for a path escaping the data
-root, and that was reported as "bad request". A containment violation reported as
-400 reads like a typo the caller can fix by retrying.
+root, and a containment violation reported as 400 would read like a typo the caller
+can fix by retrying.
 
 The two transcript PRODUCERS — `…/dispatch` and `…/import` — share
 `_common.dispatch_line`: the live-session check, the transcript append, and the
@@ -348,17 +350,17 @@ Pinned by `::test_flush_now_drains_every_queued_batch`,
 `::test_a_failing_dispatch_does_not_spin_the_drain`.
 
 **Teardown drains; only `set()` may cancel.** `ACTIVE.clear()` calls `cancel_all()`,
-which drops the pending flush timers — so a session torn down with a half-batch
-queued lost that transcript, and the final notes silently omitted whatever had not
-been dispatched. Every teardown path now calls `await ACTIVE.drain_and_clear()`,
+which drops the pending flush timers — so tearing a session down with it would lose a
+queued half-batch, and the final notes would silently omit whatever had not been
+dispatched. Every teardown path therefore calls `await ACTIVE.drain_and_clear()`,
 which flushes first: the expiry path (a long meeting whose next line arrives after
 the session lapsed), gateway shutdown, `status=ENDED`, and `handle_stop_meeting` —
-where it is load-bearing, because the finalize notice is itself enqueued and the old
-cancel would have discarded the very notice just broadcast. A flush failure still
+where it is load-bearing, because the finalize notice is itself enqueued and a
+cancel would discard the very notice just broadcast. A flush failure still
 tears the session down, so a wedged agent cannot block shutdown. **Replacing a session is a teardown too.** `set()` cancels the outgoing session's
 queues, so starting a second meeting while an earlier (typically expired) one still
-held a half-batch discarded that transcript — the same loss by a different route.
-`handle_start_meeting` therefore drains before it replaces. `set()` itself now LOGS
+holds a half-batch would discard that transcript — the same loss by a different route.
+`handle_start_meeting` therefore drains before it replaces. `set()` itself LOGS
 the undispatched count rather than dropping it silently, because a leftover queue at
 replace time always means transcript is about to be lost. `clear()` survives only as
 the second half of `drain_and_clear`.
@@ -366,7 +368,7 @@ the second half of `drain_and_clear`.
 Guarded by AST checks over the route modules: no `ACTIVE.clear()` outside the
 draining helper, and no handler calling `ACTIVE.set()` without a drain — so a new
 teardown OR replace path cannot quietly reintroduce the loss.
-`test_meetings_routes.py::TestTeardownDrainsBeforeClearing`.
+`test_meetings_routes_lifecycle.py::TestTeardownDrainsBeforeClearing`.
 
 **Dispatch is in-process.** Upstream POSTed each batch back to its own gateway
 over authenticated loopback HTTP. Here the routes live ON the gateway, so a batch
@@ -397,7 +399,7 @@ into something unrecognisable, and translated throat-clearing is worse than noth
 Typed lines lose their `[chat]` marker on this path: the prefix is agent context,
 not speech, so the translation source (and the sidebar's source column) carries
 the clean text while the agents keep the prefixed line. A consequence is that
-typed filler ("ok") now falls under the same noise gate as spoken filler — the
+typed filler ("ok") falls under the same noise gate as spoken filler — the
 agents and the transcript still get it, the translation panel does not.
 
 The prompt carries the same injection guard the rest of the app uses — delimiters
@@ -695,8 +697,10 @@ broadcast bar remains available when speech input is unavailable.
 * **Model-generated HTML.** The sketch artist writes HTML *from* the transcript,
   which anyone who speaks in the meeting can influence, so the frame takes three
   independent controls — each one added because the previous one turned out to be
-  insufficient. All three are built by
-  `website/src/apps/meetings/lib/sketchSrcdoc.ts`; the markup is never mounted
+  insufficient. Control 1, the sandbox attribute, is set on the iframe in
+  `website/src/apps/meetings/components/AgentPanel.tsx`; controls 2 and 3 (the
+  CSP and the scrubbed document) are built by
+  `website/src/apps/meetings/lib/sketchSrcdoc.ts`. The markup is never mounted
   into the dashboard's own DOM.
 
   1. **Null-origin sandbox.** `srcDoc` iframe with `sandbox="allow-scripts"` and
@@ -762,14 +766,18 @@ internal-git update-check cron was deleted (a builtin versions with the package)
 `test_meetings_session.py` (dispatcher, breaker, lifecycle, prompts),
 `test_meetings_providers.py` (both registries, the `.ics` parser,
 scheme/address refusals), `test_meetings_routes.py` (the HTTP contract,
-validation, redaction, the enable gate), `test_meetings_calendar_poller.py` (the
+validation, redaction, the enable gate; the lifecycle routes and teardown
+invariants are in `test_meetings_routes_lifecycle.py`, the task and calendar
+routes in `test_meetings_routes_tasks.py`), `test_meetings_calendar_poller.py` (the
 due-event rule, a tick against a real `.ics`, pre-creation as init-not-start, the
 loop surviving a bad tick, the settings round trip), `test_meetings_minutes.py` (the
 editable minutes: sidecar ownership, the read overlay, staleness, the widget
 gate, redaction asymmetry, body caps), `test_meetings_translation.py` (the
 injection guard, the bounded queue, off-by-default), and
 `test_meetings_audio_import.py` (the split's boundary rules, the refusals in
-ORDER, and the shared dispatch transaction), with the shared fixtures and the
+ORDER, and the shared dispatch transaction), `test_meetings_context_fencing.py` (meeting context reaches an agent inside an
+untrusted calendar-event fence), `test_meetings_owner_gate.py` (the owner-only
+write gate), with the shared fixtures and the
 fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
 that fake session manager; no test spawns a process, opens a socket, calls a
 model, or decodes audio.

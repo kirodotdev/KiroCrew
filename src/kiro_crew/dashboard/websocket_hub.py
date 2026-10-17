@@ -11,6 +11,8 @@ from typing import Any, Protocol
 
 from aiohttp import web
 
+from kiro_crew.write_buffer_level import level_is_progress_signal
+
 #: Capability a dashboard tab declares in the ``caps`` query parameter of
 #: ``/api/ws`` when its bundle applies ``slot_patch`` frames.
 SLOT_PATCH_CAPABILITY = "slot_patch"
@@ -18,6 +20,53 @@ SLOT_PATCH_CAPABILITY = "slot_patch"
 #: Socket attribute recording that declaration. Only a dashboard-user socket
 #: carries it; every other socket keeps receiving the full ``slots`` list.
 SLOT_PATCH_WS_FLAG = "_slot_patch"
+
+#: Unsent bytes above which the hub checks whether a tab still reads. A fan-out
+#: send writes its whole frame into the transport before it waits on drain, and
+#: each send is its own task, so a burst can take a tab that still reads past
+#: this. A tab that stays connected but stops reading passes it after about 70
+#: frames of 64 KiB.
+WS_MAX_BUFFERED_BYTES = 4 * 1024 * 1024
+
+#: Seconds a tab may stay over ``WS_MAX_BUFFERED_BYTES`` with its buffer not
+#: shrinking before the hub drops it. A tab that reads drains between sends; one
+#: that stopped reading never does. Dropping it makes the dashboard reconnect and
+#: resync from a fresh snapshot. Applied only where the level shows reading
+#: (``level_is_progress_signal``), so not on the proactor loop Windows runs.
+WS_STALL_SECONDS = 5.0
+
+#: Unsent bytes past which a tab is dropped at once, whatever its window, so the
+#: memory one tab can hold stays bounded.
+WS_HARD_MAX_BUFFERED_BYTES = 4 * WS_MAX_BUFFERED_BYTES
+
+#: Key on a tab's ``WebSocketResponse``: (when its window started, its buffer size
+#: at the last check), kept while the buffer is over ``WS_MAX_BUFFERED_BYTES``.
+_OVER_LIMIT_KEY = "_ws_over_limit"
+
+#: Seconds an awaited owner send (``deliver_ws_owners``) may wait while its tab's
+#: buffer does not shrink. The send returns once that buffer drains, so how long it
+#: takes is the tab's backlog over its link speed: a tab on a slow link that still
+#: reads keeps shrinking its buffer, and one that stopped reading never does. The
+#: same window as ``WS_STALL_SECONDS``, and like it applied only where the level
+#: shows reading (``level_is_progress_signal``).
+WS_OWNER_SEND_TIMEOUT_S = WS_STALL_SECONDS
+
+#: Seconds one awaited owner send may take in all, however its tab's buffer moves,
+#: so a tab that reads too slowly to finish cannot hold its caller past it. Where
+#: the level shows no reading (the proactor loop, or a transport that reports no
+#: level), this is the only limit on the send.
+WS_OWNER_SEND_MAX_S = 30.0
+
+#: Seconds between two reads of the buffer level of a tab an owner send waits on.
+_OWNER_SEND_POLL_S = 0.25
+
+
+def _write_buffer_size(ws: web.WebSocketResponse) -> int | None:
+    """Bytes the tab's transport still holds, or None when that is unknown."""
+    transport = getattr(getattr(ws, "_req", None), "transport", None)
+    size_of = getattr(transport, "get_write_buffer_size", None)
+    size = size_of() if callable(size_of) else None
+    return size if isinstance(size, int) else None
 
 
 class WebSocketHubOwner(Protocol):
@@ -129,10 +178,71 @@ class WebSocketHub:
         # Resolve the provider on-loop as well. DashboardState's provider latches
         # this loop only when startup has not already bound an authoritative one.
         self._serving_loop_provider()
+        if self._drop_if_stalled(ws):
+            return
         task = asyncio.ensure_future(ws.send_str(msg))
         self._owner._background_tasks.add(task)
         done = self._owner_method("_on_ws_send_done", self._on_ws_send_done)
         task.add_done_callback(done)
+
+    def _drop_if_stalled(self, ws: web.WebSocketResponse) -> bool:
+        """Drop a tab that stopped reading.
+
+        Runs on the serving loop, before a send. A tab that stays connected but
+        stops reading keeps every frame in its transport's write buffer, and that
+        buffer never shrinks. A tab that reads can pass ``WS_MAX_BUFFERED_BYTES``
+        after a burst, but its buffer shrinks as it reads. So a tab is dropped
+        when its buffer is over the limit and has not shrunk for
+        ``WS_STALL_SECONDS``, and at once when it passes
+        ``WS_HARD_MAX_BUFFERED_BYTES``. A shrink, or a buffer at or under the
+        limit, restarts the window.
+
+        The window needs a level that falls as the tab reads
+        (:func:`kiro_crew.write_buffer_level.level_is_progress_signal`). The
+        proactor loop Windows runs gives none: its level is the overlapped send in
+        flight plus the bytes queued behind it, flat while a tab that reads takes
+        one large send. There only the ceiling and the owner-send cap
+        (``WS_OWNER_SEND_MAX_S``) drop a tab.
+        """
+        size = _write_buffer_size(ws)
+        if size is None:
+            return False
+        if size <= WS_MAX_BUFFERED_BYTES:
+            ws.pop(_OVER_LIMIT_KEY, None)
+            return False
+        if size <= WS_HARD_MAX_BUFFERED_BYTES:
+            if not level_is_progress_signal():
+                return False
+            now = time.monotonic()
+            mark = ws.get(_OVER_LIMIT_KEY)
+            if not isinstance(mark, tuple) or size < mark[1]:
+                ws[_OVER_LIMIT_KEY] = (now, size)
+                return False
+            ws[_OVER_LIMIT_KEY] = (mark[0], size)
+            if now - mark[0] < WS_STALL_SECONDS:
+                return False
+        self._log.warning(
+            "WS client stopped reading: %d bytes buffered (limit %d, hard limit %d); dropping it",
+            size,
+            WS_MAX_BUFFERED_BYTES,
+            WS_HARD_MAX_BUFFERED_BYTES,
+        )
+        self._drop_ws(ws)
+        return True
+
+    def _drop_ws(self, ws: web.WebSocketResponse) -> None:
+        """Unregister a tab and abort its connection.
+
+        ``abort()`` discards the bytes buffered for the peer and fires
+        ``connection_lost``, which ends every send waiting on the buffer to
+        drain. A ``close()`` would wait for a peer that is not reading.
+        """
+        remove = self._owner_method("_remove_ws", self._remove_ws)
+        remove(ws)
+        transport = getattr(getattr(ws, "_req", None), "transport", None)
+        abort = getattr(transport, "abort", None)
+        if callable(abort):
+            abort()
 
     def _on_ws_send_done(self, task: asyncio.Task[Any]) -> None:
         """Release a completed send task and surface asynchronous failures."""
@@ -425,20 +535,74 @@ class WebSocketHub:
         send_all = self._owner_method("_send_ws_all", self._send_ws_all)
         send_all(msg_type, data, msg)
 
+    async def _await_owner_send(self, ws: web.WebSocketResponse, msg: str) -> None:
+        """Send ``msg`` to one owner tab and wait for as long as the tab reads.
+
+        The send returns once the tab's buffer drains, so how long it takes is the
+        tab's backlog over its link speed, not a sign that the tab stopped reading.
+        While it waits, the buffer level is read every ``_OWNER_SEND_POLL_S``. The
+        level rises only as frames are written and falls only as the tab reads, so
+        a fall between two reads is the tab reading, whenever this frame itself
+        reached the buffer. The wait raises ``TimeoutError`` once the level has not
+        fallen for ``WS_OWNER_SEND_TIMEOUT_S``, the signal ``_drop_if_stalled``
+        reads, or once the send has taken ``WS_OWNER_SEND_MAX_S`` in all. Where the
+        level shows no reading (``level_is_progress_signal``, or a transport that
+        reports no level), only ``WS_OWNER_SEND_MAX_S`` ends it.
+        """
+        send = asyncio.ensure_future(ws.send_str(msg))
+        try:
+            loop = asyncio.get_running_loop()
+            watch = level_is_progress_signal()
+            started = moved = loop.time()
+            last = _write_buffer_size(ws) if watch else None
+            while True:
+                done, _pending = await asyncio.wait({send}, timeout=_OWNER_SEND_POLL_S)
+                if done:
+                    send.result()
+                    return
+                now = loop.time()
+                size = _write_buffer_size(ws) if watch else None
+                if size is not None and last is not None and size < last:
+                    moved = now
+                last = size
+                if size is not None and now - moved >= WS_OWNER_SEND_TIMEOUT_S:
+                    raise TimeoutError(
+                        f"its buffer did not shrink for {WS_OWNER_SEND_TIMEOUT_S:g} s"
+                    )
+                if now - started >= WS_OWNER_SEND_MAX_S:
+                    raise TimeoutError(f"it did not complete in {WS_OWNER_SEND_MAX_S:g} s")
+        finally:
+            if not send.done():
+                send.cancel()
+
     async def deliver_ws_owners(self, msg_type: str, data: WsPayload) -> int:
-        """Await owner-only sends and return the number that completed."""
-        targets = [ws for ws in list(self._owner._owner_ws_clients) if not ws.closed]
+        """Await owner-only sends and return the number that completed.
+
+        Each send waits under its own bound (``_await_owner_send``): a tab that
+        stays connected but stopped reading never completes a send that waits for
+        its buffer to drain. Such a tab counts as not delivered and is dropped, so
+        the call returns for every other tab. A tab that still reads keeps its
+        send however slow its link, up to ``WS_OWNER_SEND_MAX_S``.
+        """
+        targets = [
+            ws
+            for ws in list(self._owner._owner_ws_clients)
+            if not ws.closed and not self._drop_if_stalled(ws)
+        ]
         if not targets:
             return 0
         msg = json.dumps({"type": msg_type, "data": data})
         results = await asyncio.gather(
-            *(ws.send_str(msg) for ws in targets),
+            *(self._await_owner_send(ws, msg) for ws in targets),
             return_exceptions=True,
         )
         delivered = 0
         remove = self._owner_method("_remove_ws", self._remove_ws)
         for ws, result in zip(targets, results):
-            if isinstance(result, BaseException):
+            if isinstance(result, TimeoutError):
+                self._log.warning("Owner WS send ended: %s; dropping the client", result)
+                self._drop_ws(ws)
+            elif isinstance(result, BaseException):
                 self._log.debug("Owner WS send failed (client likely disconnected): %s", result)
                 remove(ws)
             else:

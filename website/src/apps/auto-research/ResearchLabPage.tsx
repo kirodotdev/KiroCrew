@@ -1,6 +1,6 @@
 import { useState, useEffect, useReducer, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
+import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Info, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
@@ -22,7 +22,7 @@ import { copyToClipboard } from '../../utils/clipboard'
 const errMsg = (e: unknown): string => (e instanceof Error && e.message ? e.message : String(e))
 const ACTIVE_STATUSES = ['running', 'paused', 'stagnant', 'needs_input']
 
-interface Campaign { id: string; name: string; question: string; sub_questions: string; sources: string; max_cycles: number; idle_secs: number; status: string; total_cycles: number; findings?: Finding[]; error_message?: string; pending_question?: string; parent_id?: string; parallel_workers?: number }
+interface Campaign { id: string; name: string; question: string; sub_questions: string; sources: string; max_cycles: number; idle_secs: number; status: string; total_cycles: number; findings?: Finding[]; error_message?: string; pending_question?: string; parent_id?: string; parallel_workers?: number; model?: string; model_withheld?: boolean | null; served_model?: string }
 interface Finding { cycle: number; summary: string; sources_checked: string[]; sources_empty: string[]; new_findings_count: number; evidence_strength: string; key_insight: string; verification?: { passed: boolean; detail?: string } }
 interface Validation { can_start: boolean; errors: string[]; warnings: string[]; estimated_cycles: number; estimated_duration_min: number }
 
@@ -143,7 +143,7 @@ function FindingCard({ f }: { f: Finding }) {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.cycle')} {f.cycle}</span>
             <EvidenceBadge s={f.evidence_strength} />
-            {f.verification && <span className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${f.verification.passed ? 'bg-ok/15 text-ok' : 'bg-bg-elevated text-muted'}`}>{f.verification.passed ? <><CheckCircle size={10} /> {i18nT('apps.autoResearch.researchLabPage.goal_met')}</> : i18nT('apps.autoResearch.researchLabPage.goal_not_yet')}</span>}
+            {f.verification && <span className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-0.5 ${f.verification.passed ? 'bg-ok/15 text-ok-text' : 'bg-bg-elevated text-muted'}`}>{f.verification.passed ? <><CheckCircle size={10} /> {i18nT('apps.autoResearch.researchLabPage.goal_met')}</> : i18nT('apps.autoResearch.researchLabPage.goal_not_yet')}</span>}
           </div>
           <div className="text-sm font-medium mt-0.5">{"\u201c"}{f.key_insight || f.summary}{"\u201d"}</div>
         </div>
@@ -357,6 +357,33 @@ function loadForkTree(pid: string): GrillNode[] {
   } catch { return [] }
 }
 
+// The worker's picked model is not served for this account, so the session
+// layer runs it on the backend default and keeps the pick. That session's own
+// notice lands in a transcript this page never shows, so the page says it here,
+// naming both the pick and what actually runs. Info styling, not an error: a
+// plan change is not a failed request. Active campaigns only: the worker slot
+// outlives the run, so a finished campaign's verdict describes a session that
+// is no longer running anything.
+const showsWithheld = (c: Campaign) => !!c.model_withheld && !!c.model && ACTIVE_STATUSES.includes(c.status)
+
+function ModelWithheldNotice({ c, className = '' }: { c: Campaign; className?: string }) {
+  if (!showsWithheld(c)) return null
+  const text = c.served_model
+    ? i18nT('apps.autoResearch.researchLabPage.model_withheld_notice', { requested: c.model, actual: c.served_model })
+    : i18nT('apps.autoResearch.researchLabPage.model_withheld_notice_default', { requested: c.model })
+  return <div role="status" className={`p-2 rounded-md border bg-bg-elevated text-xs flex items-start gap-1 ${className}`} style={{ borderColor: 'color-mix(in srgb, var(--info) 45%, transparent)' }}>
+    <Info size={12} className="mt-0.5 shrink-0 text-info" /> <span>{text}</span>
+  </div>
+}
+
+// The campaign's model pick, labelled as the pick everywhere: a finished
+// campaign may have run on a substitute, and an active withheld one does, so
+// "Model:" would name a model that is not necessarily the one that ran.
+function ModelLine({ c }: { c: Campaign }) {
+  if (!c.model) return null
+  return <span>{i18nT('apps.autoResearch.researchLabPage.model_line_picked', { model: c.model })}</span>
+}
+
 function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: () => void; onDone: () => void }) {
   const [tree, dispatchTree] = useReducer(grillReducer, parentId, loadForkTree)
   const [grilling, setGrilling] = useState(false)
@@ -367,6 +394,13 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
   const { data: parentCampaign } = useQuery<Campaign>({ queryKey: ['research-campaign', parentId], queryFn: () => api.researchCampaign(parentId) })
 
   const question = parentCampaign?.question || ''
+  // The fork starts on the parent's model, shown pre-selected so it never
+  // switches silently; null = untouched, so a late parent load still lands.
+  const availableModels = useAvailableModels()
+  const [forkModel, setForkModel] = useState<string | null>(null)
+  const parentModel = parentCampaign?.model || ''
+  const model = forkModel ?? parentModel
+  const modelOptions = [...new Set([...availableModels.map(m => m.name).filter(n => n !== 'auto'), ...(parentModel ? [parentModel] : [])])]
 
   const clearPersisted = () => {
     try {
@@ -426,7 +460,7 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
       const maxCycles = suggestedMaxCycles(subs.length)
       const r = await api.researchAction(parentId, 'fork', {
         sub_questions: subs, scope_constraints: constraints, max_cycles: maxCycles,
-        grill_tree: tree, question,
+        grill_tree: tree, question, model,
       })
       if (r?.id) {
         // Fork created. Try to start it, but navigate away regardless — a
@@ -444,6 +478,10 @@ function ForkFlow({ parentId, onCancel, onDone }: { parentId: string; onCancel: 
 
   return <div className="max-w-2xl mx-auto space-y-4">
     <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.challenge_the_findings_from_question', { question: question?.slice(0, 60) })}</div>
+    {parentCampaign && <div>
+      <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.model')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.model')} options={modelOptions} clearLabel={i18nT('apps.autoResearch.researchLabPage.model_default_inherit')} value={model} onChange={setForkModel} /></div>
+      {model === parentModel && <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.model_fork_hint')}</div>}
+    </div>}
     {/* No hand-off: the challenge answers typed into the tree below and the
         manual sub-questions are unsaved until the fork is created. */}
     <ErrorNotice message={error} />
@@ -675,7 +713,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       </div>
     })()}
     <div className="flex items-center justify-between mb-4">
-      <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} {i18nT('apps.autoResearch.researchLabPage.findings')}</div>
+      <div className="text-sm text-muted flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} {i18nT('apps.autoResearch.researchLabPage.findings')}</span><ModelLine c={campaign} /></div>
       {isActive && <div className="flex gap-2">
         {campaign.status === 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('pause')}><Pause size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.pause')}</button>}
         {campaign.status !== 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>}
@@ -685,6 +723,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
     </div>
     {/* Pause / resume / stop act on the persisted campaign — nothing on screen is
         a draft, so a refused action offers the hand-off. */}
+    <ModelWithheldNotice c={campaign} className="mb-4" />
     {actionMut.isError && <ErrorNotice message={errMsg(actionMut.error)} askAgent className="mb-4" />}
     {campaign.status === 'stagnant' && <div className="p-3 rounded-md mb-4 border border-warn bg-warn/10">
       <div className="text-sm font-medium text-warn flex items-center gap-1"><AlertTriangle size={14} /> {i18nT('apps.autoResearch.researchLabPage.research_stalled')}</div>
@@ -792,7 +831,8 @@ export default function ResearchLabPage() {
             <StateBadge status={active.status} />
             <div className="font-medium text-sm line-clamp-2 flex-1" title={active.question}>{active.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{active.question}</div>
           </div>
-          <div className="text-xs text-muted mt-1">{i18nT('apps.autoResearch.researchLabPage.cycle')} {active.total_cycles}/{active.max_cycles}</div>
+          <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {active.total_cycles}/{active.max_cycles}</span><ModelLine c={active} /></div>
+          <ModelWithheldNotice c={active} className="mt-2" />
         </Clickable></div>}
       {campaigns.filter((c: Campaign) => !ACTIVE_STATUSES.includes(c.status)).length > 0 && <div>
         <div className="text-xs font-medium text-muted mb-1">{i18nT('apps.autoResearch.researchLabPage.history')}</div>
@@ -802,7 +842,7 @@ export default function ResearchLabPage() {
               <StateBadge status={c.status} />
               <div className="text-sm line-clamp-2 flex-1" title={c.question}>{c.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{c.question}</div>
             </div>
-            <div className="text-xs text-muted mt-1">{c.total_cycles} {i18nT('apps.autoResearch.researchLabPage.cycles_2')}</div>
+            <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{c.total_cycles} {i18nT('apps.autoResearch.researchLabPage.cycles_2')}</span><ModelLine c={c} /></div>
           </Clickable>
         ))}
       </div>}

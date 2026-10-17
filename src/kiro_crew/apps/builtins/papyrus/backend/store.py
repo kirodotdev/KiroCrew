@@ -58,6 +58,14 @@ MAIN_FILE_CANDIDATES = ("main.tex", "paper.tex", "article.tex", "manuscript.tex"
 #: Anchored at ``\Z``: Python's ``$`` matches before a trailing newline, so a
 #: ``$`` anchor would accept ``"name\n"`` and mint a directory whose name
 #: carries the newline into every later ``git``/``pdflatex`` argv.
+#:
+#: ASCII on purpose, not by oversight: the name is the project's directory and an
+#: argument to ``git``/``pdflatex``, so it must mean one thing on every platform
+#: and filesystem (no normalization form, no case folding, no case-insensitive
+#: collision to reason about). A name in another script is refused with
+#: :class:`InvalidProjectName`, which the routes answer with the refused character
+#: so the dashboard can explain the rule in the user's own language. The class is
+#: :data:`kiro_crew.slugs.SLUG_CHARS`, which tests pin it to.
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\Z")
 
 #: Ceiling on how many files ``list_files`` will walk/return. A cloned repo can
@@ -89,6 +97,19 @@ ARTIFACT_SUFFIXES = frozenset(
 
 class PathRejected(Exception):
     """A caller-supplied project name or relative path was refused."""
+
+
+class InvalidProjectName(PathRejected):
+    """A project name is not one :data:`PROJECT_NAME_RE` slug segment.
+
+    Its own type so a route can answer with a coded refusal that names the
+    character the user typed (:func:`kiro_crew.slugs.refused_slug_char` over the
+    name BEFORE :func:`normalize_project_name`); the store only ever sees the
+    normalized name, so it does not compute that character itself.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("invalid project name")
 
 
 @dataclass(frozen=True)
@@ -201,7 +222,7 @@ def safe_project_dir(name: str, root: Path | None = None) -> Path:
     outright.
     """
     if not PROJECT_NAME_RE.match(name or ""):
-        raise PathRejected("invalid project name")
+        raise InvalidProjectName()
     base = projects_dir(root)
     candidate = base / name
     # A LINK at the project entry is illegitimate wherever it points — same

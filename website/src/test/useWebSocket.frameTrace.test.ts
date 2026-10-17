@@ -331,6 +331,18 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   ]],
   ['members_subscribed truncating a torn tail', [{ type: 'member_projection', data: { slug: 'ada', key: 'roster', seq: 9, value: 1 } }], [{ type: 'members_subscribed', data: { lastSeqs: { ada: 3 } } }]],
   ['members_subscribed with nothing to drop', [], [{ type: 'members_subscribed', data: { lastSeqs: { ada: 3 } } }]],
+  // A crewmate filled one of its own dashboard fields. Metadata only, so the only
+  // effect is the tab's re-read; a frame with no slug must do nothing at all.
+  ['dashboard_value_written', [], [
+    { type: 'dashboard_value_written', data: { slug: 'ada' } },
+    { type: 'dashboard_value_written', data: {} },
+  ]],
+  // A crewmate's dashboard PAGE changed (a template applied or rolled back).
+  // Same effect as a value write: the tab re-reads; no slug, nothing happens.
+  ['dashboard_instance_changed', [], [
+    { type: 'dashboard_instance_changed', data: { slug: 'ada' } },
+    { type: 'dashboard_instance_changed', data: {} },
+  ]],
   ['chat_message user row in the active slot', [], [{ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'hi', ts: TS } }]],
   ['chat_message assistant row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'assistant', content: 'done', ts: TS } }]],
   ['chat_message permission row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'permission', content: '[agent] shell', ts: TS } }]],
@@ -579,6 +591,30 @@ describe('useWebSocket lifecycle trace', () => {
     await act(async () => { WS_INSTANCES[1].open() })
     act(() => { drainFrames() })
     expect(trace).toEqual(EXPECTED_LIFECYCLE['reconnect catch-up'])
+  })
+
+  it('hidden reconnect sends no return frame until visibility returns', async () => {
+    const { ws, view } = await mountOpen()
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    try {
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      trace = []
+      vi.useFakeTimers()
+      try {
+        act(() => { ws.drop() })
+        act(() => { vi.advanceTimersByTime(1000) })
+      } finally {
+        vi.useRealTimers()
+      }
+      await act(async () => { WS_INSTANCES[1].open() })
+      expect(trace.some(line => line.includes('slot_focused'))).toBe(false)
+      hidden.mockReturnValue(false)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(trace).toContain('send {"type":"slot_focused","slot":"slot-a"}')
+      view.unmount()
+    } finally {
+      hidden.mockRestore()
+    }
   })
 
   it('reconnect after an update restart reloads', async () => {
@@ -859,6 +895,27 @@ describe('useWebSocket lifecycle trace', () => {
     expect(WS_INSTANCES).toHaveLength(1)
   })
 
+  it('a hidden first connect sends no focus frame; reveal sends the return frame', async () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    try {
+      testStore.dispatch(sseSlots(SLOTS))
+      testStore.dispatch(setActiveSlot(ACTIVE))
+      const view = renderHook(() => useWebSocket(), {
+        wrapper: ({ children }) => createElement(Provider, { store: testStore },
+          createElement(QueryClientProvider, { client: qc }, children)),
+      })
+      const ws = WS_INSTANCES[0]
+      await act(async () => { ws.open() })
+      expect(trace.some(line => line.includes('slot_focused'))).toBe(false)
+      hidden.mockReturnValue(false)
+      act(() => document.dispatchEvent(new Event('visibilitychange')))
+      expect(trace).toContain('send {"type":"slot_focused","slot":"slot-a"}')
+      view.unmount()
+    } finally {
+      hidden.mockRestore()
+    }
+  })
+
   it('focus changes, visibility and the pane-focus emitter share one sender', async () => {
     const { emitSlotFocused } = await import('../hooks/useWebSocket')
     const { view } = await mountOpen()
@@ -977,7 +1034,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'event mc-live-notification {"note":{"kind":"info","title":"Quiet","ts":"1790000003","priority":"passive"}}',
   ],
   "panel_published": [
-    'query invalidateQueries ["member-panel","crew"]',
+    'query invalidateQueries ["member-dashboard","crew"]',
   ],
   "notification ack, unack and clear": [
     'action notifications/ackNotificationByTs "1"',
@@ -1044,6 +1101,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["mcp-tools"]',
     'query invalidateQueries ["kirocrew-agents"]',
     'query invalidateQueries ["default-agent"]',
+    'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
     'query invalidateQueries ["resolved-model"]',
@@ -1059,12 +1117,23 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "slot_agent_switch": [
     'action dashboard/fetchSlots/pending',
   ],
-  "member_projection": [],
+  // Two frames, two invalidations: a fold advancing is what makes a crewmate's open
+  // Dashboard tab stale, and the store apply is silent (it is not a query).
+  "member_projection": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
   "members_subscribed truncating a torn tail": [
     'query resetQueries ["kirocrew-agents","members-roster"]',
     'query resetQueries ["kirocrew-agents","member-projections"]',
   ],
   "members_subscribed with nothing to drop": [],
+  "dashboard_value_written": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
+  "dashboard_instance_changed": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
   "chat_message user row in the active slot": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"user","content":"hi","ts":"2026-09-01T00:00:00.000Z"}',
     'send {"type":"slot_read","slot":"slot-a","read_ts":"2026-09-01T00:00:00.000Z"}',
@@ -1268,6 +1337,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/refreshSlot/pending',
     'query refetchQueries ["pull-request-source"] {"type":"active"}',
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"active"}',
+    'query invalidateQueries ["session-control-status","dashboard:slot-a"] {"refetchType":"active"}',
   ],
   "chat_done in a background slot": [
     'action chat/sseChatMessage {"slot":"slot-b","ts":"2026-09-01T00:00:00.000Z","role":"_done"}',
@@ -1277,6 +1347,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"idle","ts":"<clock>"}',
     'action chat/refreshSlot/pending',
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"none"}',
+    'query invalidateQueries ["session-control-status","dashboard:slot-b"] {"refetchType":"none"}',
   ],
   "chat_done needing input": [
     'action chat/sseChatMessage {"slot":"slot-b","ts":"2026-09-01T00:00:00.000Z","needs_input":true,"continuing":false,"role":"_done"}',
@@ -1286,6 +1357,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"idle","ts":"<clock>"}',
     'action chat/refreshSlot/pending',
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"none"}',
+    'query invalidateQueries ["session-control-status","dashboard:slot-b"] {"refetchType":"none"}',
   ],
   "chat_done still continuing": [
     'action chat/sseChatMessage {"slot":"slot-b","ts":"2026-09-01T00:00:00.000Z","continuing":true,"role":"_done"}',
@@ -1294,6 +1366,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"idle","ts":"<clock>"}',
     'action chat/refreshSlot/pending',
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"none"}',
+    'query invalidateQueries ["session-control-status","dashboard:slot-b"] {"refetchType":"none"}',
   ],
   "autonudge_state update and removal": [
     'query invalidateQueries ["autonudge-loops"]',
@@ -1316,6 +1389,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["mcp-tools"]',
     'query invalidateQueries ["kirocrew-agents"]',
     'query invalidateQueries ["default-agent"]',
+    'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
     'query invalidateQueries ["resolved-model"]',
@@ -1333,6 +1407,7 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query invalidateQueries ["mcp-tools"]',
     'query invalidateQueries ["kirocrew-agents"]',
     'query invalidateQueries ["default-agent"]',
+    'query invalidateQueries ["agent-templates"] {"exact":true}',
     'query invalidateQueries ["workspaces"]',
     'query invalidateQueries ["kirocrewConfig"]',
     'query invalidateQueries ["resolved-model"]',
@@ -1421,6 +1496,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
+    'query invalidateQueries ["guide-pending"]',
+    'query invalidateQueries ["change-cards"]',
     'query removeQueries ["member-thread"]',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1470,6 +1547,8 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query fetchQuery ["credential-redaction"] {"staleTime":0}',
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
+    'query invalidateQueries ["guide-pending"]',
+    'query invalidateQueries ["change-cards"]',
     'query removeQueries ["member-thread"]',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1525,12 +1604,18 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
   ],
   "voice frames for a registered request": [
     'event voice-synthesis-start {"slot":"slot-a","request_id":"r-1"}',
+    'action chat/setVoicePreparing true',
     'action chat/setVoicePlaying true',
     'audio blob:voice',
     'audio play',
+    'action chat/setVoicePreparing false',
     'action chat/setVoiceAudio "QQ=="',
     'event voice-synthesis-start {"slot":"slot-a","request_id":"r-2"}',
+    'action chat/setVoicePreparing true',
+    'action chat/setVoicePreparing false',
     'event voice-synthesis-start {"slot":"slot-a","request_id":"r-3"}',
+    'action chat/setVoicePreparing true',
+    'action chat/setVoicePreparing false',
     'event voice-error {"slot":"slot-a","request_id":"r-3","code":"voice_synthesis_failed","report":"<report>"}',
     'event voice-stop',
     'audio pause',
@@ -1552,6 +1637,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'action chat/setSlotStatusDetail {"slot":"slot-b","kind":"idle","ts":"<clock>"}',
     'action chat/refreshSlot/pending',
     'query invalidateQueries ["pull-request-statuses"] {"refetchType":"none"}',
+    'query invalidateQueries ["session-control-status","dashboard:slot-b"] {"refetchType":"none"}',
   ],
   "an overflowing chunk lands its status before the flush; reasoning after it": [
     'action chat/setSlotStatusDetail {"slot":"slot-a","kind":"streaming","ts":"<clock>"}',
@@ -1564,6 +1650,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'frame',
     'cancel-frame 1',
     'action chat/sseChatMessage {"slot":"slot-a","role":"chunk","content":"First sentence. Second","seq":1,"batched":true,"parts":[{"seq":1,"text":"First sentence. Second"}]}',
+    'action chat/setVoicePreparing true',
     'action chat/sseChatMessage {"slot":"slot-a","role":"_segment"}',
     'frame',
     'cancel-frame 2',

@@ -29,6 +29,12 @@ click that has to be physically real. The agent has to name that route
 explicitly — it is never chosen automatically — and should warn you first,
 because your pointer will jump out from under your hand.
 
+## Linux
+
+Linux has no computer-use driver yet. Every computer-use tool returns a "not
+supported on this platform" refusal, and **Settings → Computer Use** shows the
+reason instead of a switch, so it cannot be turned on there.
+
 ## What is off limits
 
 - **Password fields are redacted.** They render as `<secure>` in the outline, and

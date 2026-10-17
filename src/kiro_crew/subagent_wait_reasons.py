@@ -62,25 +62,34 @@ DEFERRED_QUEUED_REASONS: frozenset[str] = frozenset(
     }
 )
 
+#: The words every terminal of a start that waited for memory and never ran opens
+#: with. A surface that groups terminal runs (the digest's ``not_run`` count, the
+#: run card's ``NEVER_STARTED_PREFIX`` in ``backendPhrases.json``) matches on it
+#: instead of on one terminal's full text.
+NEVER_STARTED_MEMORY_PREFIX = "never started: waiting for memory"
+
 #: The terminal error of a root start the pressure hold kept past its bound: it is
 #: ended, never started under the pressure it waited on. It names both ways out,
-#: the level easing and a running agent finishing, in the run card's own noun. The wording is the owner's;
-#: a surface that groups terminal runs reads the outcome from the code-like
-#: prefix instead of restating it (``NEVER_STARTED_PREFIX``, the run card).
+#: the level easing and a running agent finishing, in the run card's own noun. The wording is the owner's.
 MEMORY_PRESSURE_NEVER_STARTED = (
-    "never started: waiting for memory (macOS memory pressure did not ease in time); "
+    f"{NEVER_STARTED_MEMORY_PREFIX} (macOS memory pressure did not ease in time); "
     "retry once it eases or a running agent finishes"
 )
 
 #: The terminal a deferred spawn ends with once it has waited for memory longer
 #: than ``agent.subagent_queue_max_wait_secs``: its ``error``, delivered to the
-#: parent like any other result. Owner wording; one spelling for the report, the
-#: store row and every test that reads either.
-QUEUED_WAIT_EXPIRED_TEXT = "never started: waiting for memory"
+#: parent like any other result. Owner wording, ending with the next step the
+#: owner asked for; one spelling for the report, the store row and every test
+#: that reads either.
+QUEUED_WAIT_EXPIRED_TEXT = (
+    f"{NEVER_STARTED_MEMORY_PREFIX} (not enough memory freed up in time); "
+    "retry once memory frees up"
+)
 
 __all__ = [
     "DEFERRED_QUEUED_REASONS",
     "MEMORY_PRESSURE_NEVER_STARTED",
+    "NEVER_STARTED_MEMORY_PREFIX",
     "MEMORY_PRESSURE_DETAIL",
     "MEMORY_PRESSURE_PHRASE",
     "MEMORY_PRESSURE_RECHECK_SECS",

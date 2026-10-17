@@ -64,7 +64,7 @@ def store(tmp_path, monkeypatch):
         d.mkdir(parents=True, exist_ok=True)
         shard = d / "shard.jsonl"
         shard.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
-        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days: [shard])
+        monkeypatch.setattr(usage_mod, "_shards_in_window", lambda days, until=None: [shard])
         # The 30s memo would otherwise serve a previous test's answer.
         monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
         monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
@@ -105,6 +105,13 @@ class TestTheTwoVocabulariesAreDifferentSets:
 
 
 class TestSpendKeepsTheSessionKeyAuthoritative:
+    def test_consolidation_spend_stays_in_background(self, store):
+        store([_row(slot="_consolidate", surface="consolidation", credits=3.0)])
+
+        assert usage_mod.session_category("_consolidate") == "bg"
+        out = usage_mod.cost_breakdown(days=1)
+        assert [row["name"] for row in out["by_category"]] == ["bg"]
+
     def test_a_row_claiming_monitor_stays_booked_to_the_conversation_it_nudged(self, store):
         """The ruling's sharpest case, as an assertion.
 

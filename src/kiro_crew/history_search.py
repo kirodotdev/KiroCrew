@@ -9,6 +9,7 @@ lock, and path.
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import json
 import logging
@@ -18,14 +19,25 @@ import re
 import time as _time
 from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs
-from kiro_crew.history_index import INDEX_FILENAME, SessionSearchIndex
+from kiro_crew.history_cache import _SearchTextCache
+from kiro_crew.history_index import (
+    INDEX_FILENAME,
+    ChunkDecodeError,
+    IndexRow,
+    SessionSearchIndex,
+    fold_texts,
+)
 from kiro_crew.jsonl_util import bounded_records
 
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
+
+#: ``_scan_head_title`` outcome for a head that raised while being read; never cached.
+_UNREADABLE = object()
 
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
@@ -1007,6 +1019,53 @@ def needles_match_text(
 _SEARCH_FOLD_BUDGET_BYTES = 96 * 1024 * 1024
 _SEARCH_SNIPPET_BUDGET_BYTES = 64 * 1024 * 1024
 
+#: Byte ceilings for the content-addressed memos below, charged per entry by
+#: :func:`_memo_entry_cost`. ``0`` turns a memo off. Read when a
+#: :class:`SessionCatalogProjection` is built.
+_SEARCH_COUNT_MEMO_BYTES = 8 * 1024 * 1024
+_SEARCH_SNIPPET_MEMO_BYTES = 2 * 1024 * 1024
+
+#: Fixed per-entry overhead charged on top of the key and value strings: the
+#: value tuple, the int, and the dict slot. Set so a full memo's charge is at
+#: least what tracemalloc measures it holding.
+_MEMO_ENTRY_OVERHEAD = 130
+
+#: Hex characters of a memo key that name the session's content digest.
+_DIGEST_HEX_CHARS = 32
+
+#: A memo value: the memoized result and the bytes its entry is charged.
+_MemoValue = tuple[object, int]
+
+
+def _memo_entry_cost(key: str, value: object) -> int:
+    extra = value.__sizeof__() if isinstance(value, str) else 0
+    return _MEMO_ENTRY_OVERHEAD + key.__sizeof__() + extra
+
+
+def _new_memo(max_bytes: int, label: str) -> "_SearchTextCache[_MemoValue] | None":
+    """A content-addressed memo with admission control, or ``None`` when off.
+
+    Admission control rather than LRU for the same reason the fold memo uses
+    it: a search walks its window in the same order every query, and LRU over
+    a cyclic walk larger than the budget evicts each entry just before its
+    next read.
+    """
+    if max_bytes <= 0:
+        return None
+    return _SearchTextCache(max_bytes, lambda v: v[1], label, warn_on_refusal=False)
+
+
+class _LiveDigests:
+    """Memo keys whose content digest is in *digests*, for ``retain``."""
+
+    __slots__ = ("_digests",)
+
+    def __init__(self, digests: set[str]) -> None:
+        self._digests = digests
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and key[:_DIGEST_HEX_CHARS] in self._digests
+
 
 def _facade_search_scan_window() -> int:
     """Read the facade's live scan limit without creating an import cycle.
@@ -1032,12 +1091,132 @@ def _history_lock_timeout() -> type[BaseException]:
     return history_facade.HistoryLockTimeout
 
 
+def _jsonl_stem(name: str) -> str:
+    """``Path(name).stem`` for a directory entry name ending in ``.jsonl``.
+
+    The final suffix is everything from the last dot, unless that dot starts
+    the name, so only a name longer than the six-character suffix loses it.
+    """
+    return name[:-6] if len(name) > 6 else name
+
+
+class _ContentCounts:
+    """Needle counts over one session's folded content, memoized by content digest.
+
+    For a session the index vouches for, every answer the query may need is
+    looked up under the row's digest first. When all are memoized the session
+    is scored without reading its document. Otherwise the document is read at
+    once, and only if the row still carries that digest, before any memoized
+    answer is used, so memoized and computed answers describe one version of
+    the session and a computed answer is filed only under the digest of the
+    text it came from. Every other session folds through ``_folded_for``,
+    exactly as the scan path did, and memoizes nothing.
+    """
+
+    __slots__ = ("_digest", "_memo", "_hits", "_loaded", "doc_chars", "_folded")
+
+    def __init__(
+        self,
+        projection: "SessionCatalogProjection",
+        key: str,
+        rowids: "dict[str, IndexRow]",
+        gate: "_MemoGate",
+        title_folded: str,
+    ) -> None:
+        memo = projection._count_memo
+        row = rowids.get(key)
+        self._memo: "_SearchTextCache[_MemoValue] | None" = None
+        self._hits: dict[str, int] = {}
+        self._digest = ""
+        self._folded = ""
+        self._loaded = True
+        if row is not None and memo is not None:
+            hits: dict[str, int] = {}
+            for memo_key in gate.memo_keys:
+                hit = memo.get(row.digest + memo_key)
+                if hit is not None:
+                    hits[memo_key] = hit[0]  # type: ignore[assignment]
+            if gate.answered_by(hits, title_folded):
+                self._hits = hits
+                self._loaded = False
+                self.doc_chars = row.doc_chars
+                return
+            doc = projection.search_index.document(row.rowid, key, row.digest)
+            if doc is not None:
+                self._memo = memo
+                self._hits = hits
+                self._digest = row.digest
+                self.doc_chars, self._folded = doc
+                return
+        self.doc_chars, self._folded = projection._folded_for(key, rowids)
+
+    def count(self, needle: SearchNeedle, needle_key: str) -> int:
+        """Occurrences of *needle*; *needle_key* is :func:`_needle_memo_key` of it."""
+        hit = self._hits.get(needle_key)
+        if hit is not None:
+            return hit
+        if not self._loaded:
+            raise RuntimeError("the memo gate let scoring reach an unanswered needle")
+        value = count_needle(needle, self._folded)
+        self._remember(needle_key, value)
+        return value
+
+    def count_phrase(self, phrase: str, phrase_key: str) -> int:
+        """Occurrences of *phrase*; *phrase_key* is :func:`_phrase_memo_key` of it."""
+        hit = self._hits.get(phrase_key)
+        if hit is not None:
+            return hit
+        if not self._loaded:
+            raise RuntimeError("the memo gate let scoring reach an unanswered phrase")
+        value = self._folded.count(phrase) if self._folded else 0
+        self._remember(phrase_key, value)
+        return value
+
+    def _remember(self, memo_key: str, value: int) -> None:
+        if self._memo is not None:
+            mkey = self._digest + memo_key
+            self._memo[mkey] = (value, _memo_entry_cost(mkey, value))
+
+
+class _MemoGate:
+    """The complete set of count-memo keys one query may need.
+
+    The document may be skipped only when every answer is already held.
+    Session disqualification belongs to the scoring loop, not this gate.
+    """
+
+    __slots__ = ("needle_keys", "phrase_key", "memo_keys")
+
+    def __init__(self, needles: Sequence[SearchNeedle], phrase: str, multi: bool) -> None:
+        self.needle_keys = [_needle_memo_key(n) for n in needles]
+        self.phrase_key = _phrase_memo_key(phrase)
+        keys = [*self.needle_keys, self.phrase_key] if multi else self.needle_keys
+        self.memo_keys = list(dict.fromkeys(keys))
+
+    def answered_by(self, hits: dict[str, int], _title_folded: str) -> bool:
+        return all(key in hits for key in self.memo_keys)
+
+
+def _needle_memo_key(needle: SearchNeedle) -> str:
+    """The part of a count-memo key after the digest: what ``count_needle`` reads."""
+    return repr(("needle", needle.text, needle.alts, needle.digit_bounded))
+
+
+def _phrase_memo_key(phrase: str) -> str:
+    return repr(("phrase", phrase))
+
+
 class SessionCatalogProjection:
     """List, aggregate, search, and snippet-project conversation sessions."""
 
     def __init__(self, log: "ConversationLog") -> None:
         self._log = log
         self._index: "SessionSearchIndex | None" = None
+        #: ``digest + needle key -> (count, cost)`` over the folded text of a
+        #: session the index vouches for; ``None`` when switched off.
+        self._count_memo = _new_memo(_SEARCH_COUNT_MEMO_BYTES, "count")
+        #: ``digest + repr(query) -> (snippet, cost)`` for the same sessions.
+        self._snippet_memo = _new_memo(_SEARCH_SNIPPET_MEMO_BYTES, "snippet")
 
     @property
     def search_index(self) -> "SessionSearchIndex":
@@ -1076,6 +1255,65 @@ class SessionCatalogProjection:
             stripped = stripped[len("dashboard_") :]
         return f"dashboard_{stripped}" if stripped else key
 
+    @staticmethod
+    def _scan_head_title(path: "str | Path") -> object:
+        """The first user message's content[:80] within the first 21 lines.
+
+        Returns the title, ``None`` when the head holds none, or ``_UNREADABLE``
+        when reading or interpreting the head raised -- that outcome is not
+        cached, so a transient error is retried on the next listing exactly as
+        the uncached read always was.
+        """
+        try:
+            with open(path, encoding="utf-8") as f:
+                for i, ln in enumerate(f):
+                    if i > 20:
+                        break
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        d = json.loads(ln)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("role") == "user" and d.get("content"):
+                        return d["content"][:80]
+        except Exception:
+            return _UNREADABLE
+        return None
+
+    def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
+        """Return up to *max_entries* ``(stem, mtime)`` pairs, newest first.
+
+        A bounded catalog read for callers that walk the archive under a cap.
+        It stats each transcript and keeps only the newest *max_entries* in a
+        heap, so what it holds is bounded by *max_entries* however large the
+        directory is. It reads no file content: no title, no metadata line.
+        Symlinked handoff aliases are skipped, as in :meth:`list_sessions`.
+        Stacked ``dashboard_`` duplicates are NOT folded here; a caller that
+        folds keys and keeps the first one it sees gets the newest copy, which
+        is what :meth:`list_sessions` keeps. The second value is True when more
+        transcripts existed than were returned.
+        """
+        if max_entries < 1 or not self._log._dir.exists():
+            return [], False
+        counted = 0
+
+        def _stats() -> Iterator[tuple[float, str]]:
+            nonlocal counted
+            for path in self._log._dir.glob("*.jsonl"):
+                try:
+                    if path.is_symlink():
+                        continue
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                counted += 1
+                yield mtime, path.stem
+
+        newest = heapq.nlargest(max_entries, _stats())
+        return [(stem, mtime) for mtime, stem in newest], counted > max_entries
+
     def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
         """Return metadata for session files, newest first.
 
@@ -1090,25 +1328,46 @@ class SessionCatalogProjection:
             return sessions
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
-        paths = (
-            self._log._dir.glob("*.jsonl")
-            if keys is None
-            else (self._log._path(key) for key in keys)
-        )
-        for path in paths:
-            key = path.stem
+        if keys is None:
+            # One scandir pass: the entry's d_type answers is_symlink without an
+            # lstat, and the order is the same directory order glob() used
+            # (glob iterates scandir), so ties in the final mtime sort resolve
+            # exactly as before. The suffix test is glob("*.jsonl")'s match:
+            # pathlib matches dot-names and directories, and folds case only
+            # where the platform's paths do (Windows). Entries carry their
+            # path as a string and their stem from the name, so a listing
+            # builds no ``Path`` per file.
+            base = os.fspath(self._log._dir)
+            try:
+                with os.scandir(base) as it:
+                    entries: list[tuple[str, str, os.DirEntry[str] | None]] = [
+                        (e.path, _jsonl_stem(e.name), e)
+                        for e in it
+                        if os.path.normcase(e.name).endswith(".jsonl")
+                    ]
+            except OSError:
+                entries = []
+        else:
+            entries = []
+            for key in keys:
+                p = self._log._path(key)
+                entries.append((os.fspath(p), p.stem, None))
+        for path, key, entry in entries:
             # Snapshot the invalidation generation BEFORE the stat: the
             # The first-line fill records this stat's cache identity. The
             # generation independently proves the stat → read → publish window
             # stayed write-free for this process.
             gen = self._log._cache_gen(key)
             try:
-                stat = path.stat()
+                # Windows DirEntry.stat() reports st_ino as 0, so its cache
+                # identity would never equal the one every other reader takes
+                # from path.stat(); there the entry answers only is_symlink.
+                stat = os.stat(path) if entry is None or os.name == "nt" else entry.stat()
             except OSError:
                 continue
             identity = self._log._cache_identity(stat)
             # Skip symlinks — these are handoff aliases pointing to the real session
-            if path.is_symlink():
+            if os.path.islink(path) if entry is None else entry.is_symlink():
                 continue
             meta: dict = {
                 "key": key,
@@ -1160,6 +1419,18 @@ class SessionCatalogProjection:
                                 key=key,
                                 gen=gen,
                             )
+                        elif isinstance(d, dict):
+                            # A first line that is an object but not metadata
+                            # reads as no metadata, the same ``{}`` that
+                            # ``_read_metadata`` caches for it, so the next
+                            # listing answers from the cache instead of the file.
+                            self._log._publish_if_current(
+                                self._log._meta_cache,
+                                key,
+                                (identity, gen, {}),
+                                key=key,
+                                gen=gen,
+                            )
                 except Exception:
                     pass
             # Ensure memory_mode is always present (old sessions lack it)
@@ -1177,23 +1448,27 @@ class SessionCatalogProjection:
                             meta["title"] = m["content"][:80]
                             break
                 else:
-                    try:
-                        with open(path, encoding="utf-8") as f:
-                            for i, ln in enumerate(f):
-                                if i > 20:
-                                    break
-                                ln = ln.strip()
-                                if not ln:
-                                    continue
-                                try:
-                                    d = json.loads(ln)
-                                except json.JSONDecodeError:
-                                    continue
-                                if d.get("role") == "user" and d.get("content"):
-                                    meta["title"] = d["content"][:80]
-                                    break
-                    except Exception:
-                        pass
+                    scanned = self._log._title_scan_cache.get(key)
+                    if (
+                        scanned is not None
+                        and scanned[0] == (identity, stat.st_size)
+                        and scanned[1] == self._log._cache_gen(key)
+                    ):
+                        if scanned[2] is not None:
+                            meta["title"] = scanned[2]
+                    else:
+                        found = self._scan_head_title(path)
+                        if found is not _UNREADABLE:
+                            if found is not None:
+                                meta["title"] = found
+                            # Guarded like the metadata fill above.
+                            self._log._publish_if_current(
+                                self._log._title_scan_cache,
+                                key,
+                                ((identity, stat.st_size), gen, found),
+                                key=key,
+                                gen=gen,
+                            )
             if "title" not in meta:
                 meta["title"] = key
             # Deduplicate: keep newer entry per canonical key
@@ -1340,6 +1615,13 @@ class SessionCatalogProjection:
             # shared with every unrestricted search.
             window = [m for m in window if m["key"] in keys]
         allowed, rowids = self._index_shortlist(window, needles)
+        if keys is None:
+            # Only an unrestricted search sees every live session's row; a
+            # restricted one would prune entries other callers still reach.
+            self._prune_content_memos(rowids)
+        gate = _MemoGate(needles, phrase, multi)
+        needle_keys = gate.needle_keys
+        phrase_key = gate.phrase_key
         for rank, meta in enumerate(window):
             key = meta["key"]
             if allowed is not None and key not in allowed:
@@ -1349,16 +1631,17 @@ class SessionCatalogProjection:
                 # line below is the unchanged exact evaluation, run on far fewer
                 # sessions.
                 continue
-            doc_chars, folded = self._folded_for(key, rowids)
             title_folded = (meta.get("title") or "").casefold()
+            content = _ContentCounts(self, key, rowids, gate, title_folded)
+            doc_chars = content.doc_chars
             length_norm = math.sqrt(1 + doc_chars / 1024)
             content_hits = 0.0
             saturated_hits = 0.0
             title_hits = 0.0
             adjacency_hits = 0
             disqualified = False
-            for needle in needles:
-                in_content = count_needle(needle, folded)
+            for needle, needle_key in zip(needles, needle_keys):
+                in_content = content.count(needle, needle_key)
                 in_title = count_needle(needle, title_folded)
                 if needle.required and not in_content and not in_title:
                     # AND semantics: one absent required needle disqualifies the
@@ -1397,8 +1680,7 @@ class SessionCatalogProjection:
                 continue
             if multi:
                 # Reward the words appearing together, in order, as typed.
-                if folded:
-                    content_hits += folded.count(phrase) * _PHRASE_BOOST
+                content_hits += content.count_phrase(phrase, phrase_key) * _PHRASE_BOOST
                 title_hits += title_folded.count(phrase) * _PHRASE_BOOST
             score = title_hits * _TITLE_BOOST + content_hits / length_norm + saturated_hits
             # Recency boost: multiplicative and bounded to (1.0, 2.5], so a
@@ -1552,7 +1834,7 @@ class SessionCatalogProjection:
 
     def _index_shortlist(
         self, window: list[dict], needles: list[SearchNeedle]
-    ) -> tuple[set[str] | None, dict[str, int]]:
+    ) -> tuple[set[str] | None, "dict[str, IndexRow]"]:
         """Narrow *window* to the sessions that could satisfy the gate.
 
         Returns ``(allowed, rowids)``. ``allowed`` is ``None`` when the index
@@ -1580,7 +1862,7 @@ class SessionCatalogProjection:
         stats: dict[str, os.stat_result] = {}
         for meta in window:
             try:
-                stats[meta["key"]] = self._log._path(meta["key"]).stat()
+                stats[meta["key"]] = self._stat_key(meta["key"])
             except OSError:
                 continue
         # One snapshot for both answers: read separately, a row dropped by the
@@ -1598,7 +1880,7 @@ class SessionCatalogProjection:
         for key in list(rowids):
             before = stats.get(key)
             try:
-                after = self._log._path(key).stat()
+                after = self._stat_key(key)
             except OSError:
                 del rowids[key]
                 continue
@@ -1625,7 +1907,24 @@ class SessionCatalogProjection:
             allowed = satisfied if allowed is None else (allowed & satisfied)
         return (allowed, rowids)
 
-    def _folded_for(self, key: str, rowids: dict[str, int]) -> tuple[int, str]:
+    def _stat_key(self, key: str) -> os.stat_result:
+        """``self._log._path(key).stat()`` without building a ``Path`` per call.
+
+        A key that is already a safe file name names ``<dir>/<key>.jsonl``
+        whenever that file exists, which is the only case ``_path`` returns it
+        without its legacy fallback; any failure defers to ``_path``, which
+        owns that fallback.
+        """
+        from kiro_crew import history as history_facade
+
+        if history_facade._safe_key(key) == key:
+            try:
+                return os.stat(os.path.join(self._log._dir, key + ".jsonl"))
+            except OSError:
+                pass
+        return self._log._path(key).stat()
+
+    def _folded_for(self, key: str, rowids: "dict[str, IndexRow]") -> tuple[int, str]:
         """Folded text for *key*, from the index when it vouches for the file.
 
         One index read replaces a whole-file read plus a ``json.loads`` per line —
@@ -1638,9 +1937,9 @@ class SessionCatalogProjection:
         whenever the row is missing, unreadable, or belongs to a different
         session, so a degraded or recycled index costs speed and never results.
         """
-        rowid = rowids.get(key)
-        if rowid is not None:
-            doc = self.search_index.document(rowid, key)
+        row = rowids.get(key)
+        if row is not None:
+            doc = self.search_index.document(row.rowid, key)
             if doc is not None:
                 return doc
         return self._log._folded_content(key)
@@ -1654,9 +1953,11 @@ class SessionCatalogProjection:
         change a string's length (``ß`` -> ``ss``).
 
         The folded blob joins the messages' string ``content`` fields in file
-        order with ``\\x00``. That separator cannot appear in a user query, so
-        it prevents a match spanning two messages while still allowing one
-        ``count`` call over the whole session instead of one per message.
+        order with ``FOLD_SEPARATOR``. A user cannot type that character, so it
+        prevents a match spanning two messages while still allowing one
+        ``count`` call over the whole session instead of one per message. It is
+        deliberately not ``\\x00``, which additionally ends the string for
+        SQLite's tokenizers — see the constant for what that cost.
 
         Returns ``(0, "")`` for a missing/unreadable file or a session with no
         textual content. A read failure is deliberately NOT cached — see below.
@@ -1726,6 +2027,22 @@ class SessionCatalogProjection:
             )
             return built
 
+    def _prune_content_memos(self, rowids: "dict[str, IndexRow]") -> None:
+        """Free count and snippet entries whose content no window session has.
+
+        Only runs for a memo that is refusing admissions, like
+        :meth:`_prune_search_memos`. *rowids* holds every window session the
+        index vouches for, so a digest absent from it belongs to text that has
+        changed or left the window, and no search can ask for it again until
+        that exact text returns.
+        """
+        live: _LiveDigests | None = None
+        for memo in (self._count_memo, self._snippet_memo):
+            if memo is not None and memo.refused_since_prune():
+                if live is None:
+                    live = _LiveDigests({row.digest for row in rowids.values()})
+                memo.retain(live)
+
     def _prune_search_memos(self, live_keys: set[str]) -> None:
         """Free budget held by sessions that have left the scan window.
 
@@ -1749,7 +2066,7 @@ class SessionCatalogProjection:
     def _build_folded(
         self,
         key: str,
-        identity: tuple[int, int, int],
+        identity: tuple[int, int, int, int],
         gen: int,
     ) -> tuple[int, str] | None:
         """Parse *key* and fold its content — the cache-miss half of
@@ -1805,7 +2122,7 @@ class SessionCatalogProjection:
         self._log._publish_if_current(
             self._log._snippet_cache, key, (identity, gen, texts), key=key, gen=gen
         )
-        return (sum(len(t) for t in texts), "\x00".join(texts).casefold())
+        return (sum(len(t) for t in texts), fold_texts(texts))
 
     def _iter_message_texts(self, key: str) -> Iterator[str]:
         """Yield each message's non-empty string ``content`` from *key*'s file.
@@ -1869,7 +2186,7 @@ class SessionCatalogProjection:
         cached = self._log._snippet_cache.get(key)
         if cached is not None:
             try:
-                identity_now = self._log._cache_identity(self._log._path(key).stat())
+                identity_now = self._log._cache_identity(self._stat_key(key))
                 if cached[0] == identity_now and cached[1] == self._log._cache_gen(key):
                     return iter(cached[2])
             except OSError:
@@ -1883,18 +2200,30 @@ class SessionCatalogProjection:
         # snippets are built for the returned rows only, and taking one from the
         # file costs a whole-transcript read and parse: 858 ms of a 947 ms query
         # once matching itself is indexed. Freshness is re-checked
-        # inside ``raw_texts`` against this stat, so a file that moved on since
+        # inside ``iter_raw_texts`` against this stat, so a file that moved on since
         # the scoring pass falls through to the read below.
         if self._index is not None and self._index.available:
             try:
-                st = self._log._path(key).stat()
+                st = self._stat_key(key)
             except OSError:
                 st = None
             if st is not None:
-                texts = self._index.raw_texts(key, st)
+                texts = self._index.iter_raw_texts(key, st)
                 if texts is not None:
-                    return iter(texts)
+                    return self._texts_or_file(key, texts)
         return self._log._iter_message_texts(key)
+
+    def _texts_or_file(self, key: str, texts: Iterator[str]) -> Iterator[str]:
+        """Yield *texts*, continuing from the transcript if a stored chunk is unreadable."""
+        served = 0
+        try:
+            for text in texts:
+                served += 1
+                yield text
+            return
+        except ChunkDecodeError:
+            pass
+        yield from itertools.islice(self._log._iter_message_texts(key), served, None)
 
     def _content_snippet(self, key: str, query: str) -> str:
         """Return a match-centered window of *key*'s content around *query*.
@@ -1909,7 +2238,8 @@ class SessionCatalogProjection:
 
         The window is confined to the matching message, which keeps a snippet from
         reading as one sentence when it actually spans two — consistent with
-        :meth:`_folded_content`, where the ``\\x00`` join stops a match from
+        :meth:`_folded_content`, where the
+        :data:`~kiro_crew.history_index.FOLD_SEPARATOR` join stops a match from
         bridging messages in the first place.
 
         Display-only and best effort: ``casefold`` is used for the search so it
@@ -1929,12 +2259,54 @@ class SessionCatalogProjection:
 
         Returns ``''`` when no needle is locatable in any single message, or
         when the file cannot be read (display-only — never raises at the caller).
+
+        For a session the index vouches for, the result is memoized under the
+        row's content digest, and a memoized snippet is built only from the
+        stored text that the same read confirms still carries that digest.
         """
         needles = snippet_needles(query)
         if not needles:
             return ""
+        memo = self._snippet_memo
+        index = self._index
+        if memo is None or index is None or not index.available:
+            return self._build_snippet(key, needles)
         try:
-            for text in self._log._snippet_texts(key):
+            st = self._stat_key(key)
+        except OSError:
+            return self._build_snippet(key, needles)
+        digest = index.fresh_digest(key, st)
+        if digest is None:
+            return self._build_snippet(key, needles)
+        mkey = digest + repr(query)
+        hit = memo.get(mkey)
+        if hit is not None:
+            return hit[0]  # type: ignore[return-value]
+        texts = index.iter_raw_texts(key, st, digest)
+        if texts is None:
+            return self._build_snippet(key, needles)
+        try:
+            snippet = self._snippet_from(texts, needles)
+        except ChunkDecodeError:
+            return self._build_snippet(key, needles)
+        memo[mkey] = (snippet, _memo_entry_cost(mkey, snippet))
+        return snippet
+
+    def _build_snippet(self, key: str, needles: list[str]) -> str:
+        """The match-centered window :meth:`_content_snippet` returns, uncached."""
+        try:
+            return self._snippet_from(self._log._snippet_texts(key), needles)
+        except OSError:
+            return ""
+
+    def _snippet_from(self, texts: Iterable[str], needles: list[str]) -> str:
+        """The window around the first needle found in the first matching text.
+
+        An ``OSError`` while reading *texts* reports as no snippet; any other
+        error propagates.
+        """
+        try:
+            for text in texts:
                 folded = text.casefold()
                 for needle in needles:
                     pos = folded.find(needle)

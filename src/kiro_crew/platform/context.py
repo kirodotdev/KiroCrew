@@ -17,9 +17,12 @@ See ``docs/system-specs/modules/platform-context.md``.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import logging
 import re
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
@@ -282,7 +285,7 @@ class PlatformContext:
     # ── boot-layer extension points ──
     providers: "ProviderRegistry"
     publish: "PublishRegistry"
-    # ``run_first_run_setup`` is wired (slack/gateway.py); ``managed_mcp_servers``
+    # ``run_first_run_setup`` is wired (slack/gateway_runtime/service_boot.py); ``managed_mcp_servers``
     # is [RESERVED] — see RESERVED_METHODS.
     agent_runtime: "AgentRuntime"
     agent_executable: "AgentExecutableResolver"
@@ -608,6 +611,12 @@ def set_context(ctx: PlatformContext) -> None:
 # must contain the phrase ``no-context answer`` so the justification is greppable
 # and cannot dodge the question it exists to answer.
 PEEK_CALLERS: "dict[str, str]" = {
+    "security/redaction.py::_token_param_exempt_prefixes": (
+        "no-context answer is the empty prefix set, which means MORE redaction: "
+        "pass 4 redacts every `token=` URL value. The lookup can only skip a "
+        "value no earlier credential pass claimed, so an absent context cannot "
+        "be the reason a credential survives."
+    ),
     "security/exfil.py::_exempt_exact_hosts": (
         "no-context answer is the empty exempt-host set, which means MORE "
         "redaction: every host runs the base64-blob / query-length heuristics. "
@@ -871,7 +880,9 @@ def redact_via_context(text: str) -> str:
 
     No logging on the degrade path: this shim runs inside stdio MCP servers
     (``mcp_core`` / ``mcp_cron``) whose stray writes would corrupt the JSON-RPC
-    stream.
+    stream. The degrade is COUNTED instead (:func:`_redact_degrades`), so the
+    content-scan verdict cache never keeps an answer the baseline gave in the
+    companion's place.
     """
     # Deferred import: keep ``security`` (which pulls the redaction regex stack)
     # off the platform module-load path; only the fallback path needs it, and
@@ -883,7 +894,24 @@ def redact_via_context(text: str) -> str:
     except Exception:
         from kiro_crew.security import redact as _security_redact
 
+        _REDACT_DEGRADES.count = _redact_degrades() + 1
         return _security_redact(text)
+
+
+#: Per-thread count of :func:`redact_via_context` falling back to the bare
+#: ``security.redact``. Per THREAD because a content scan runs on one thread and
+#: brackets only its own detector calls: another egress site degrading during a
+#: 12-second scan says nothing about that scan's verdict.
+_REDACT_DEGRADES = threading.local()
+
+
+def _redact_degrades() -> int:
+    """This thread's :data:`_REDACT_DEGRADES`; comparison-only, like
+    :func:`governance_generation`. A content scan reads it before and after, and a
+    change means the verdict may be the baseline's rather than the active
+    context's, so it is not cached."""
+    count: int = getattr(_REDACT_DEGRADES, "count", 0)
+    return count
 
 
 #: Wide-encoding projections :func:`binary_content_is_flagged` scans beside its
@@ -929,6 +957,102 @@ def _baseline_symbol_tables_masked(raw_text: str) -> str:
     return mask_baseline_symbol_tables(raw_text)
 
 
+#: Verdicts of the two content scans below, keyed on everything that decides one:
+#: which scan, the bytes (by SHA-256 digest), and the ceiling that scanned them
+#: (:func:`governance_generation`, so installing a context retires every verdict
+#: the old one gave). A bounded LRU holding a digest and a bool per entry.
+#:
+#: The same bytes reach these scans again and again: ``POST /api/outbox/notify``
+#: scans a file at send time, then ``GET /api/outbox/{filename}`` scans it on every
+#: render of its file card and on every Range request the card's ``<video>`` issues.
+#: Each pass is GIL-bound regex work over up to the 50 MB read cap -- a 44 MB MP4
+#: measures about 12 s -- and the answer cannot change while the bytes and the
+#: detectors do not, so every pass after the first is pure cost.
+_SCAN_VERDICTS: "OrderedDict[Tuple[str, bytes, int], bool]" = OrderedDict()
+_SCAN_VERDICTS_MAX = 256
+_SCAN_VERDICTS_LOCK = threading.Lock()
+
+#: Serializes the scans themselves. CPython's ``re`` holds the GIL for the whole of
+#: a match call, so scans in several ``asyncio.to_thread`` workers gain no
+#: parallelism: they pass the GIL between each other while the event loop waits
+#: behind all of them, and the loop's worst gap grows with every pass in flight.
+#: One at a time bounds it by the longest single pass. Measured over four outbox
+#: MP4s of 24-44 MB: worst loop gap 18.7 s concurrent, 7.7 s serialized, both
+#: done in about 38 s. Re-entrant because the binary scan's last leg IS the wide
+#: scan, on the same thread. Never acquired while :data:`_SCAN_VERDICTS_LOCK` is held.
+_SCAN_LOCK = threading.RLock()
+
+
+def _scan_verdict(kind: str, raw: bytes, scan: "Callable[[bytes], bool]") -> bool:
+    """``scan(raw)``, answered from :data:`_SCAN_VERDICTS` when it can be.
+
+    A miss runs the scan under :data:`_SCAN_LOCK` and re-checks the cache once the
+    lock is held, so concurrent callers holding the same bytes pay one scan between
+    them. A verdict is stored only when nothing it depended on moved while it ran:
+    neither the governance generation nor this thread's :func:`_redact_degrades`,
+    whose change means the bare baseline may have answered in the active context's
+    place. An exception -- a :class:`PlatformCompositionError` on a host that could
+    not compose -- propagates and stores nothing, so the scan still fails closed.
+
+    ``hashlib`` releases the GIL while it digests a large buffer, so computing the
+    key costs the event loop nothing even at the read cap.
+    """
+    generation = governance_generation()
+    # Content-addressed cache key, not a security digest: ``raw`` is hashed only to
+    # recognize the same bytes again, never stored or compared as a credential, so
+    # ``usedforsecurity=False`` states that intent and the strength of the hash
+    # guards nothing here -- a collision would at worst reuse a verdict, which the
+    # generation and degrade guards already retire. CodeQL's ``py/weak-sensitive-
+    # data-hashing`` flow heuristic flags the sink because a scanned buffer can
+    # carry credential bytes (that is what these functions exist to FIND); the same
+    # false-positive class is suppressed the repo-standard ``lgtm`` way elsewhere
+    # (see ``auto_improvement/spine/archive.py``).
+    digest = hashlib.sha256(  # noqa: S324 -- content key, not a security digest
+        raw, usedforsecurity=False
+    ).digest()  # lgtm[py/weak-sensitive-data-hashing]
+    key = (kind, digest, generation)
+    with _SCAN_VERDICTS_LOCK:
+        cached = _SCAN_VERDICTS.get(key)
+        if cached is not None:
+            _SCAN_VERDICTS.move_to_end(key)
+            return cached
+    with _SCAN_LOCK:
+        with _SCAN_VERDICTS_LOCK:
+            cached = _SCAN_VERDICTS.get(key)
+        if cached is not None:
+            return cached
+        degrades = _redact_degrades()
+        verdict = scan(raw)
+        if _redact_degrades() == degrades and governance_generation() == generation:
+            with _SCAN_VERDICTS_LOCK:
+                _SCAN_VERDICTS[key] = verdict
+                while len(_SCAN_VERDICTS) > _SCAN_VERDICTS_MAX:
+                    _SCAN_VERDICTS.popitem(last=False)
+    return verdict
+
+
+_Scan = Callable[[bytes], bool]
+
+
+def _kept_and_serialized(kind: str) -> "Callable[[_Scan], _Scan]":
+    """Route a content scan through :func:`_scan_verdict` under the name *kind*.
+
+    A decorator rather than a wrapper call inside each scan, so the scan's own body
+    -- the ``latin-1`` decode and the detector call that make it THE shared egress
+    scan -- stays in the one function every gate imports.
+    """
+
+    def decorate(scan: _Scan) -> _Scan:
+        @functools.wraps(scan)
+        def scan_once(raw: bytes) -> bool:
+            return _scan_verdict(kind, raw, scan)
+
+        return scan_once
+
+    return decorate
+
+
+@_kept_and_serialized("wide")
 def wide_content_is_flagged(raw: bytes) -> bool:
     """Whether *raw* carries credential material written at UTF-16/UTF-32 spacing.
 
@@ -958,7 +1082,8 @@ def wide_content_is_flagged(raw: bytes) -> bool:
     exactly what this leg exists to find in it.
 
     Synchronous, like :func:`binary_content_is_flagged`: an async gate calls it
-    through ``asyncio.to_thread`` rather than on the event loop.
+    through ``asyncio.to_thread`` rather than on the event loop, and the verdict is
+    serialized and kept the same way (:func:`_scan_verdict`).
     """
     lifted = [
         match.group()[offset::stride]
@@ -971,6 +1096,7 @@ def wide_content_is_flagged(raw: bytes) -> bool:
     return redact_via_context(wide) != wide
 
 
+@_kept_and_serialized("binary")
 def binary_content_is_flagged(raw: bytes) -> bool:
     """Whether non-UTF-8 *raw* carries credential material the scanner finds.
 
@@ -987,6 +1113,10 @@ def binary_content_is_flagged(raw: bytes) -> bool:
     text branch too: a buffer whose bytes ARE valid UTF-8 never reaches here, and
     NUL-interleaved ASCII is valid UTF-8, so the wide pass cannot live behind this
     function's decode-failure entry condition alone.
+
+    Latin-1 also splits a UTF-8 multi-byte space after ``Bearer``, so the
+    ``errors="replace"`` UTF-8 projection is joined on and scanned in the same
+    pass, mask and all.
 
     Four gates guard the ``file_send`` delivery path -- the MCP tool before any
     byte is copied, ``POST /api/outbox/notify``, ``GET /api/outbox/{filename}``,
@@ -1021,9 +1151,11 @@ def binary_content_is_flagged(raw: bytes) -> bool:
 
     Synchronous, and deliberately: the scan is CPU work over up to the 50 MB read
     cap, so an async gate must call it through ``asyncio.to_thread`` rather than
-    on the event loop.
+    on the event loop. A worker thread keeps the call off the loop's thread but not
+    off the GIL, which the regex engine holds for a whole match call; that is why
+    scans run one at a time and a verdict is kept (:func:`_scan_verdict`).
     """
-    text = raw.decode("latin-1")
+    text = raw.decode("latin-1") + "\n" + raw.decode("utf-8", errors="replace")
     if redact_via_context(text) != text:
         masked = _baseline_symbol_tables_masked(text)
         if masked is text or redact_via_context(masked) != masked:
@@ -1047,6 +1179,28 @@ def redact_owner_view_via_context(text: str) -> str:
     from kiro_crew.security.redaction_switch import owner_view
 
     with owner_view():
+        return redact_via_context(text)
+
+
+def redact_code_via_context(text: str) -> str:
+    """:func:`redact_via_context` for text known to be CODE: it spares an alphabet and a data URI.
+
+    Runs the same context-aware redaction -- a loaded companion's extra patterns and
+    exfiltration carve-outs apply -- inside a ``redaction_switch.code_text`` scope, where pass 3
+    of the core credential pass leaves alone an ordered alphabet and a data URI payload of 64
+    characters or more, and judges every other run as it does anywhere. That pass reads a run
+    of letters and digits as a key by its entropy and shape: in prose it errs towards masking,
+    in code it rewrites an alphabet or a base64 data URI that the program reads back, which
+    breaks the program with no error. Every other rule still runs, so a key id, a PEM block,
+    a JWT or a prefixed token written into code is masked as anywhere else, and so is a key in
+    any shape a script holds it. Only text that is code may be served as this returns it.
+    ``member_dashboard._template_text_safe`` takes :func:`redact_via_context` over a whole
+    page as its baseline and puts this function's result in place of the baseline's for the
+    text of the page's ``<script>`` and ``<style>`` elements.
+    """
+    from kiro_crew.security.redaction_switch import code_text
+
+    with code_text():
         return redact_via_context(text)
 
 

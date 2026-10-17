@@ -1,6 +1,7 @@
 import { i18nT } from '../../i18n/t'
 import { sourceLabel, type RegistryApp } from './types'
 import { Badge } from '../ui'
+import { findSourceRow } from './registryTier'
 
 export type SourceName = { name: string; label: string; review?: string; builtin?: boolean }
 
@@ -12,17 +13,15 @@ export default function AppSource({ app, sources = [], unlisted = false }: {
 }) {
   // Pinned rows precede operator rows. Keep that collision precedence; a stale
   // case-variant catalog tag still shows its own id, like the source rail.
-  const registry = app._registry
-    ? sources.find(r => !r.builtin && r.name.toLowerCase() === app._registry?.toLowerCase())
-    : undefined
+  const registry = findSourceRow(app._registry, sources)
   const builtin = !app._registry && (app.provenance === 'builtin' || (!app.provenance && app.origin === 'builtin'))
   const label = unlisted && app.origin !== 'builtin'
     ? app.origin === 'local' ? i18nT('appStoreSources.local') : i18nT('appStoreSources.unknown')
-    : registry && registry.name === app._registry
+    : registry
       ? registry.label || app._registry
       : builtin ? i18nT('pages.appsPage.built_in_kirocrew') : sourceLabel(app)
 
-  const review = !unlisted && registry?.name === app._registry ? registry?.review : undefined
+  const review = !unlisted ? registry?.review : undefined
 
   return (
     <span className="block text-[12px] text-muted break-words [overflow-wrap:anywhere]">

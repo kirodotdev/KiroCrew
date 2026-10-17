@@ -314,6 +314,15 @@ def render_prompt(state: dict | str, questions: list[Question]) -> str:
         lines.append(f"type: {kind}")
         lines.append(f"question: {getattr(question, 'prompt', '') or ''}")
         lines.append(f"options: {', '.join(options)}")
+        # Authored per-option rubric reaches this backend too, keyed by the
+        # declared option domain exactly as ``impl_jev._question_to_wire`` keys
+        # it: an option with no text and a key that is not a declared option are
+        # both left out, so a point that authors nothing renders what it did
+        # before and a stale key cannot smuggle text past the domain.
+        criteria = getattr(question, "criteria", None) or {}
+        rubric = [f"{opt}: {criteria[opt]}" for opt in options if criteria.get(opt)]
+        if rubric:
+            lines.append("criteria: " + "; ".join(rubric))
     lines.extend(
         [
             "",

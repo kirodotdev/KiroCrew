@@ -7,10 +7,15 @@ import type { ChatMessage } from '../../types'
 import { mergePreservedPastes } from '../../utils/pasteTokens'
 import type { ChatState } from './state'
 import { fetchSlotDetail, isUnsafeKey, safeKey } from './wire'
-import { deduplicateByMid, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
+import { deduplicateByMid, finalizeAllStreaming, finalizeTrailingStreaming, floorForGen, hasUnidentifiedDurableRow, idAnchorsOneRow, isDurableRow, mergePreservedClientTs, midOccurrences, olderHeadAbovePage, preserveSettledMcpOauth, preserveSettledStopState, raiseChunkSeq, rowIdentities, serverRowCount, snapshotChunkGen, snapshotChunkSeq, tailNotInPage, transcriptTsMs, tsEpoch } from './transcript'
 import { PANE_HYDRATE_LIMIT, REFRESH_LIMIT_CEILING, SLOT_DETAIL_MAX_LIMIT, countMatchedFetchLimit, pagingCursorAfterKeptHead, slotCoverageShortfall } from './paging'
 import { mergePreservedThinking, reinsertThinkingOrphans } from './thinking'
-import { applyWarmRunState, bumpRunEpoch } from './runState'
+import {
+  applyWarmRunState,
+  bumpRunEpoch,
+  historyReportsRunning,
+  recordEndedTurn,
+} from './runState'
 import { retainServerTotal, seedContextUsage, setPagingCursor, writeSlotPage } from './slotCache'
 import { hydrateQueuedBubbles } from './queue'
 import { walkWindowBackTo } from './windowWalk'
@@ -43,14 +48,15 @@ let refreshSeqCounter = 0
 const nextRefreshSeq = (): number => ++refreshSeqCounter
 
 export const refreshSlot = createAsyncThunk<
-  (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number }) | null,
-  string | { key: string; onlyIfUnchanged?: boolean },
+  (Awaited<ReturnType<typeof fetchSlotDetail>> & { refreshSeq: number; liveFrameSeqAtDispatch: number }) | null,
+  string | { key: string; onlyIfUnchanged?: boolean; reachTs?: string },
   { fulfilledMeta: { recoveryRevision?: number } }
 >(
   'chat/refreshSlot',
   async (arg, { getState, fulfillWithValue }) => {
     const key = typeof arg === 'string' ? arg : arg.key
     const onlyIfUnchanged = typeof arg !== 'string' && arg.onlyIfUnchanged
+    const reachTs = typeof arg !== 'string' ? arg.reachTs : undefined
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot !== key) return fulfillWithValue(null, {})
     // Sampled before the first await: the walk below declines when a live frame
@@ -59,7 +65,7 @@ export const refreshSlot = createAsyncThunk<
     // Dispatch order, captured before any await (see `refreshAppliedSeq`).
     const refreshSeq = nextRefreshSeq()
     const finish = (page: Awaited<ReturnType<typeof fetchSlotDetail>> | null) =>
-      fulfillWithValue(page ? { ...page, refreshSeq } : null,
+      fulfillWithValue(page ? { ...page, refreshSeq, liveFrameSeqAtDispatch: liveAtStart } : null,
         onlyIfUnchanged ? { recoveryRevision: state.recoveryRevision ?? 0 } : {})
     const isStale = () => onlyIfUnchanged &&
       ((getState() as { chat: ChatState }).chat.recoveryRevision ?? 0) !== (state.recoveryRevision ?? 0)
@@ -160,8 +166,16 @@ export const refreshSlot = createAsyncThunk<
      * anchor is guarded rather than indexed blind. */
     const spansView = spanIsTrustworthy && serverRowsNow.length > 0 && anchors(serverRowsNow[0].meta?.mid)
     const overlapsView = anchors(page.messages[0]?.meta?.mid)
-    if (!page.hasMore || spansView || overlapsView) return finish(page)
-    const walked = await walkWindowBackTo(key, page, viewNow)
+    /* A caller that changed how ONE held row is served (`reachTs`: a host allowed
+     * or revoked from that reply's link card) needs that row inside the page. An
+     * overlap alone keeps it in the verbatim head above the cut, still showing what
+     * it showed before the change (#17023). The row is resolved to its `meta.mid`
+     * only when exactly one durable row carries that ts: `ts` is not an identity,
+     * and an ambiguous or unidentified match falls back to the plain refresh. */
+    const reachMid = reachMidForTs(viewNow, reachTs)
+    const pageHoldsReach = !reachMid || page.messages.some(m => m.meta?.mid === reachMid)
+    if (!page.hasMore || spansView || (overlapsView && pageHoldsReach)) return finish(page)
+    const walked = await walkWindowBackTo(key, page, viewNow, reachMid)
     /* The walk adds up to `WINDOW_WALK_MAX_PAGES` more awaits, and every row it
      * returns is no newer than the FIRST page. A live chunk or a new row that
      * reduces in that window is in the view but not in the walked payload, and
@@ -182,6 +196,15 @@ export const refreshSlot = createAsyncThunk<
     return finish(walked)
   },
 )
+
+/** The `meta.mid` of the one durable row in `view` whose `ts` is `ts`, or
+ *  undefined when none or more than one row carries it, or the row has no mid. */
+function reachMidForTs(view: ChatMessage[], ts: string | undefined): string | undefined {
+  if (!ts) return undefined
+  const hits = view.filter(m => isDurableRow(m) && m.ts === ts)
+  const mid = hits.length === 1 ? hits[0].meta?.mid : undefined
+  return typeof mid === 'string' && mid.length > 0 ? mid : undefined
+}
 
 let warmSeqCounter = 0
 const nextWarmSeq = (): number => ++warmSeqCounter
@@ -339,7 +362,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // Check the revision here before any recovery write.
       if (action.meta?.recoveryRevision !== undefined &&
           (state.recoveryRevision ?? 0) !== action.meta.recoveryRevision) return
-      const { key, messages, running, hasMore, queue, nextBefore } = action.payload
+      const { key, messages, hasMore, queue, nextBefore } = action.payload
       if (isUnsafeKey(key)) return
       if (state.activeSlot !== key) return  // user switched away
       // An older refresh settling after a newer one already applied describes a
@@ -351,6 +374,19 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         applied[safeKey(key)] = refreshSeq
       }
       if (action.meta?.recoveryRevision !== undefined) state.lastRecoveryRequestId = action.meta.requestId
+      const reportedRunning = action.payload.running
+      const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+      // A page that still reports a turn running after this tab recorded that
+      // turn's end was captured BEFORE the end, so it is older than what the
+      // tab already shows, the same as an older refresh settling after a newer
+      // one (`refreshAppliedSeq` above). It is not applied at all. The refresh
+      // the recorded end dispatches (`chat_done`'s, or the one the idle `slots`
+      // row dispatches when it ends the turn without a `_done`, see
+      // `useSlotListSync`) is captured after the end and carries every row this
+      // page carries.
+      const endedTurnHistory = reportedRunning && !running
+      if (endedTurnHistory) return
+      if (!reportedRunning) recordEndedTurn(state, key, action.payload)
       retainServerTotal(state, key, action.payload.total, running, undefined, action.payload.boundedRead)
       // Merge permission messages: prefer state perms (have frontend resolved flags)
       // but include API perms for any we don't have locally (e.g. arrived while disconnected)
@@ -417,7 +453,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
        * Same value as the `reinsertThinkingOrphans` call below and as
        * `switchSlot.fulfilled` -- the retained head is part of the loaded window,
        * so raw `hasMore` would park reasoning whose anchor is already on screen. */
-      state.messages = deduplicateByMid(mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages, !keptCursor.hasMore))
+      state.messages = preserveSettledStopState(state.messages, deduplicateByMid(preserveSettledMcpOauth(state.messages, mergePreservedThinking(state.messages, mergePreservedClientTs(state.messages, sorted), messages, !keptCursor.hasMore))))
       // A refresh rebuilds `messages` wholesale, so parked reasoning has to be re-seated
       // here too — otherwise it stays invisible until the next slot switch.
       // (Re-seating only ADDS client-only thinking rows, which by contract
@@ -445,7 +481,17 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       if (running && !state.slotRunning) bumpRunEpoch(state, key)
       state.slotRunning = running
       state.slotStopping = action.payload.stopping ?? false
-      if (action.meta?.recoveryRevision !== undefined && !running) {
+      /* A snapshot that says the slot is NOT running settles the stream state
+       * too, not only `slotRunning`. A turn that dies with the gateway sends no
+       * `_done`, so the tab that watched it stream still holds
+       * `slotState === 'streaming'` when the socket reconnects. Left there,
+       * `selectComposerBusy` keeps the composer on Stop and the Resume button
+       * for the restart's interruption row never renders, though the row and
+       * its card did arrive. The live-frame counter guards the one case where
+       * the snapshot is stale: a frame of a NEW turn reduced after this fetch
+       * was dispatched, which owns the stream state from then on. */
+      const noLiveFrameSince = (state.liveFrameSeq ?? 0) === action.payload.liveFrameSeqAtDispatch
+      if (!running && (action.meta?.recoveryRevision !== undefined || noLiveFrameSince)) {
         state.slotState = 'idle'
         state.slotStopping = false
         finalizeTrailingStreaming(state.messages)
@@ -469,13 +515,22 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
     })
     .addCase(warmSlotCache.fulfilled, (state, action) => {
       if (!action.payload) return
-      const { key, messages, queue, hasMore, total, running, warmSeq } = action.payload
+      const { key, messages: fetchedMessages, queue, hasMore, total, warmSeq } = action.payload
       // Set when the thunk's window walk paged older without anchoring the cache.
       const walkUnanchored = (action.payload as { walkUnanchored?: boolean }).walkUnanchored === true
       if (isUnsafeKey(key)) return
       // Slot became active between dispatch and fulfilment — switchSlot now
       // owns its messages, so leave the cache for it to manage.
       if (state.activeSlot === key) return
+      const reportedRunning = action.payload.running
+      const running = historyReportsRunning(state, key, reportedRunning, action.payload)
+      const endedTurnHistory = reportedRunning && !running
+      // Keep an ended turn's fetched stream from becoming the append target for
+      // a successor. Copy first so reducer application never mutates the action.
+      const messages = endedTurnHistory
+        ? fetchedMessages.map(message => ({ ...message }))
+        : fetchedMessages
+      if (endedTurnHistory) finalizeAllStreaming(messages)
       if (!state.slotMessages) state.slotMessages = {}
       if (!state.slotPaneHasMore) state.slotPaneHasMore = {}
       // Preserve permission flags resolved client-side but not yet reflected
@@ -571,11 +626,12 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       // row past the anchor yet, or a client-finalized copy meets a page that
       // still says streaming — is kept: decline, not guess. Kept copies keep
       // the pre-existing behavior (the end-of-turn warm reconciles them).
-      const pageTail = warmAnchorIdx >= 0 ? warmed.slice(warmAnchorIdx + 1) : warmed
-      const pageStreamSeq = snapshotChunkSeq(warmed)
-      const pageFinalReply = !warmed.some(m => m.role === 'streaming') && pageTail.some(m => m.role === 'assistant')
+      const fetchedAnchorIdx = fetchedMessages.findIndex(m => rowIdentities(m).some(id => anchorIds.includes(id)))
+      const pageTail = fetchedAnchorIdx >= 0 ? fetchedMessages.slice(fetchedAnchorIdx + 1) : fetchedMessages
+      const pageStreamSeq = snapshotChunkSeq(fetchedMessages)
+      const pageFinalReply = !fetchedMessages.some(m => m.role === 'streaming') && pageTail.some(m => m.role === 'assistant')
       const priorRun = state.slotRun[safeKey(key)]
-      const clientSeq = floorForGen(priorRun?.lastChunkSeq, priorRun?.lastChunkGen, snapshotChunkGen(warmed))
+      const clientSeq = floorForGen(priorRun?.lastChunkSeq, priorRun?.lastChunkGen, snapshotChunkGen(fetchedMessages))
       const pageStreamCoversClient = pageStreamSeq !== undefined
         && (clientSeq === undefined || pageStreamSeq >= clientSeq)
       const supersededByPage = (m: ChatMessage) => rowIdentities(m).length === 0 && (
@@ -649,9 +705,10 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
         === action.payload.cacheAtDispatch
       if (!walkUnanchored || cacheUnchanged) {
         writeSlotPage(state, key, revived, warmIsPrefix ? hasMore : undefined,
-          warmIsPrefix && hasMore ? boundedLen : undefined)
+          warmIsPrefix && hasMore ? boundedLen : undefined,
+          action.payload.nextBefore)
       }
-      retainServerTotal(state, key, total, running, warmSeq, action.payload.boundedRead)
+      retainServerTotal(state, key, total, reportedRunning, warmSeq, action.payload.boundedRead)
       // The run-state write is ORDERED against the live frame writers by the
       // entry's receipt tick (`ChatState.slotRun`). The warm is a
       // point-in-time snapshot, and the frame writers (chunk -> streaming,
@@ -689,6 +746,7 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
       const ordered = !olderThanApplied && (runAtFulfil?.tick ?? 0) === action.payload.runTickAtDispatch
       if (!running) {
         if (ordered) {
+          if (!reportedRunning) recordEndedTurn(state, key, action.payload)
           const run = (state.slotRun[safeKey(key)] ??= { state: 'idle' })
           applyWarmRunState(run, 'idle', warmSeq)
           run.lastChunkSeq = undefined

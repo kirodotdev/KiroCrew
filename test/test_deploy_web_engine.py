@@ -415,6 +415,62 @@ def test_aws_tool_bin_refused_provenance_falls_back_to_that_tool_s_name(monkeypa
     assert engine.resolve_aws_tool_bin("session-manager-plugin") == "session-manager-plugin"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_resolver_reports_the_candidates_this_walk_refused(monkeypatch, tmp_path):
+    """The refusal list is what lets a caller say "found but refused" instead of
+    "not installed"; it reports the walk's own decision and changes none of it."""
+    refused_dir, good_dir, empty_bin = tmp_path / "brew", tmp_path / "pkg", tmp_path / "e"
+    for d in (refused_dir, good_dir, empty_bin):
+        d.mkdir()
+    refused = refused_dir / "session-manager-plugin"
+    refused.write_text("#!/bin/sh\n")
+    refused.chmod(0o755)
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(refused_dir), str(good_dir)))
+    monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+
+    from kiro_crew import github_runner
+
+    def _validate(candidate):
+        if candidate.startswith(str(refused_dir)):
+            raise ValueError("executable is owned by another user (uid 1501)")
+        return candidate
+
+    monkeypatch.setattr(github_runner, "validate_provider_executable", _validate)
+
+    resolved, refusals = engine.resolve_aws_tool_bin_with_refusals("session-manager-plugin")
+    assert resolved == "session-manager-plugin"
+    assert refusals == (
+        engine.AwsToolRefusal(str(refused), "executable is owned by another user (uid 1501)"),
+    )
+    assert engine._REFUSED_AWS_BIN_DIRS == {("session-manager-plugin", str(refused_dir))}
+
+    accepted = good_dir / "session-manager-plugin"
+    accepted.write_text("#!/bin/sh\n")
+    accepted.chmod(0o755)
+    resolved, refusals = engine.resolve_aws_tool_bin_with_refusals("session-manager-plugin")
+    assert resolved == str(accepted)
+    assert [r.path for r in refusals] == [str(refused)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
+def test_resolver_refusals_come_from_this_walk_not_the_shared_set(monkeypatch, tmp_path):
+    """A candidate removed since an earlier refusal is not reported as refused."""
+    gone_dir, empty_bin = tmp_path / "brew", tmp_path / "e"
+    gone_dir.mkdir()
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+    monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(gone_dir),))
+    monkeypatch.setattr(
+        engine, "_REFUSED_AWS_BIN_DIRS", {("session-manager-plugin", str(gone_dir))}
+    )
+
+    assert engine.resolve_aws_tool_bin_with_refusals("session-manager-plugin") == (
+        "session-manager-plugin",
+        (),
+    )
+
+
 def test_aws_spawn_env_appends_install_dirs_after_inherited_path(monkeypatch, tmp_path):
     """APPEND, never prepend: the inherited PATH keeps first claim on every name.
 

@@ -24,6 +24,7 @@ import logging
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import mcp as _mcp
+from kiro_crew.dashboard.handlers._shared import rebuild_agent_spec
 from kiro_crew.dashboard.handlers.mcp import (
     _find_server_spec_anywhere,
     _get_kirocrew_entry,
@@ -134,7 +135,9 @@ def _validate_spec(spec: object, carried_keys: frozenset[str] = frozenset()) -> 
                 if not isinstance(nested, list) or any(
                     not isinstance(scope, str) or not scope.strip() for scope in nested
                 ):
-                    return f"'{KIRO_OAUTH_KEY}.{KIRO_SCOPES_KEY}' must be a list of non-empty strings"
+                    return (
+                        f"'{KIRO_OAUTH_KEY}.{KIRO_SCOPES_KEY}' must be a list of non-empty strings"
+                    )
         if "headers" in spec:
             headers = spec["headers"]
             if not isinstance(headers, dict) or any(
@@ -192,6 +195,43 @@ def _clean_spec(spec: dict) -> dict:
     if spec.get("env"):
         out["env"] = dict(spec["env"])
     return out
+
+
+def _merge_stored_headers(stored: dict, submitted: object) -> tuple[dict[str, str] | None, str]:
+    """Stored headers updated by a submitted map, or ``None`` and why it is refused.
+
+    The names must match the stored names exactly. Per name, a value that is
+    exactly the placeholder keeps the stored value for that name, and any
+    other value with visible text and without the placeholder in it replaces
+    it. An empty or whitespace-only value, or one that only contains the
+    placeholder, is refused: neither says
+    clearly whether the user meant to keep the value or to replace it. The
+    reason names only stored header names, which a read already shows.
+    """
+    marker = MCP_REDACTED_HEADER_VALUE
+    if not isinstance(submitted, dict) or set(submitted) != set(stored):
+        return None, (
+            "Header names can't change here. Adding, removing or renaming a"
+            " header means removing and re-adding this server, which brings it"
+            " back disabled and without its tool restrictions."
+        )
+    merged: dict[str, str] = {}
+    for name, value in submitted.items():
+        if value == marker:
+            merged[name] = stored[name]
+        elif isinstance(value, str) and value.strip() and marker not in value:
+            merged[name] = value
+        elif not (value.strip() if isinstance(value, str) else value):
+            return None, (
+                f"'{name}' can't be empty. Put back \"{marker}\" exactly to keep"
+                " its saved value, or type a new value."
+            )
+        else:
+            return None, (
+                f"'{name}' mixes \"{marker}\" with other text. Put back"
+                f' "{marker}" exactly to keep its saved value, or type a new value.'
+            )
+    return merged, ""
 
 
 def _resolve_oauth_hints(spec: dict, submitted: dict, existing: dict) -> str | None:
@@ -303,15 +343,29 @@ def _load_kirocrew_config_strict() -> dict | None:
     return data
 
 
-async def _rebuild_agent_config() -> None:
-    """Best-effort agent-config rebuild so changes load on the next session."""
-    try:
-        # circular import: kiro_crew.agent imports dashboard handlers.
-        from kiro_crew.agent import rebuild_agent_config
+async def _record_owner_servers(entries: dict[str, dict]) -> None:
+    """Record the owner's remote servers so the dashboard sign-in can reach them.
 
-        await asyncio.to_thread(rebuild_agent_config)
-    except Exception:
-        logger.warning("rebuild_agent_config failed after MCP custom write", exc_info=True)
+    Best effort: a failed write leaves the server added and working, just not
+    offered an in-place sign-in, and is logged rather than failing the request.
+    """
+    from kiro_crew.config.loader import update_config_locked
+    from kiro_crew.connections.owner_servers import record
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
+    try:
+        await run_config_write(update_config_locked, mutate=lambda cfg: record(cfg, entries))
+    except Exception:  # noqa: BLE001 -- the add itself already landed
+        logger.warning("could not record owner MCP servers %s", sorted(entries), exc_info=True)
+
+
+async def _rebuild_agent_config() -> bool:
+    """Rebuild the agent spec so the change loads on the next session.
+
+    True only when the spec was rewritten; the caller reports a False to the
+    dashboard instead of claiming the change is live.
+    """
+    return await asyncio.to_thread(rebuild_agent_spec, "MCP custom write")
 
 
 async def api_mcp_custom_add(request: web.Request) -> web.Response:
@@ -403,7 +457,8 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         # Windows — blocking filesystem work kept off the event loop.
         await _mcp._offload_config_write(_mcp._atomic_write, _mcp._kirocrew_mcp_json(), data)
 
-    await _rebuild_agent_config()
+    await _record_owner_servers(cleaned)
+    spec_rewritten = await _rebuild_agent_config()
 
     added = sorted(cleaned)
     sel().log_api_access(
@@ -413,7 +468,9 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"custom:{','.join(added)} enabled={enable}",
     )
-    return web.json_response({"ok": True, "added": added, "enabled": enable})
+    return web.json_response(
+        {"ok": True, "added": added, "enabled": enable, "agent_spec_rewritten": spec_rewritten}
+    )
 
 
 async def api_mcp_custom_get(request: web.Request) -> web.Response:
@@ -457,9 +514,12 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
 
     ``headers`` straddles that line: an entry WITHOUT stored headers may
     author them here like a fresh add, but once values exist on disk they
-    join the carried set — reads redact header values, so accepting an
-    edit would let the redaction markers overwrite the real credentials.
-    Changing stored headers means removing and re-adding the server.
+    join the carried set — reads redact header values, so the placeholder
+    a read returns must never overwrite a real credential. A submitted value
+    that is exactly the placeholder keeps the value stored under that same
+    name; any other non-empty value replaces it. Adding, removing or
+    renaming a stored header, or changing ``url``, still means removing and
+    re-adding the server.
 
     The authorship marker is the one exception: it records that Kiro Crew
     wrote an entry into a file it does NOT own, so it has no meaning in the
@@ -518,20 +578,16 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
         if err:
             return web.json_response({"error": err}, status=400)
         assert isinstance(submitted, dict)  # narrowed by _validate_spec
+        replaced_headers: dict[str, str] | None = None
         for key, on_disk in carried.items():
             visible_value = redact_mcp_headers(on_disk) if key == "headers" else on_disk
             if key in submitted and submitted[key] != visible_value:
                 if key == "headers":
+                    replaced_headers, refusal = _merge_stored_headers(on_disk, submitted[key])
+                    if replaced_headers is not None:
+                        continue
                     return web.json_response(
-                        {
-                            "error": "stored header values are hidden and"
-                            " read-only here. To change them, remove this"
-                            " server and re-add it with fresh headers — it"
-                            " starts disabled and your tool restrictions"
-                            " won't carry over, so re-apply them after"
-                            " re-adding.",
-                            "code": "stored_headers_not_editable",
-                        },
+                        {"error": refusal, "code": "stored_headers_not_editable"},
                         status=400,
                     )
                 return web.json_response(
@@ -550,15 +606,17 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
             return web.json_response(
                 {
                     "error": "cannot change 'url' while stored header credentials"
-                    " exist — header values are hidden and read-only here, and"
-                    " they were issued for the current URL. Remove this server"
-                    " and re-add it with the new URL and fresh headers.",
+                    " exist — they were issued for the current URL. Remove"
+                    " this server and re-add it with the new URL and fresh"
+                    " headers.",
                     "code": "url_change_with_stored_headers",
                 },
                 status=400,
             )
         spec = _clean_spec(submitted)
         spec.update(carried)  # preserved verbatim, never dropped
+        if replaced_headers is not None:
+            spec["headers"] = replaced_headers
         _oauth_err = _resolve_oauth_hints(spec, submitted, existing)
         if _oauth_err:
             return web.json_response(
@@ -570,7 +628,8 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     if not replaced:
         return web.json_response({"error": f"server '{name}' not found"}, status=404)
 
-    await _rebuild_agent_config()
+    await _record_owner_servers({name: spec})
+    spec_rewritten = await _rebuild_agent_config()
 
     sel().log_api_access(
         caller="dashboard",
@@ -579,4 +638,4 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"custom:{name}",
     )
-    return web.json_response({"ok": True, "name": name})
+    return web.json_response({"ok": True, "name": name, "agent_spec_rewritten": spec_rewritten})

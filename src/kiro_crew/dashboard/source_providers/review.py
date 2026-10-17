@@ -83,6 +83,7 @@ async def _github_pending_review(ref: SourceRef) -> dict[str, Any]:
         "--paginate",
         "--slurp",
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews",
+        host=ref.host,
     )
     if not isinstance(raw, list):
         raise SourceProviderError("GitHub returned an invalid reviews payload")
@@ -166,6 +167,7 @@ async def _github_pull_request_state(ref: SourceRef) -> dict[str, Any]:
         "gh",
         "api",
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}",
+        host=ref.host,
     )
     if not isinstance(payload, dict):
         raise SourceProviderError("GitHub returned an invalid pull-request payload")
@@ -216,6 +218,7 @@ async def _github_rest_dismisses_stale(ref: SourceRef, base_ref: str) -> bool:
             "gh",
             "api",
             f"repos/{ref.owner}/{ref.repo}/branches/{quote(base_ref, safe='')}/protection",
+            host=ref.host,
         )
     except Exception:
         logger.debug("branch protection unreadable via REST for %s", ref.url, exc_info=True)
@@ -253,6 +256,7 @@ async def _github_graphql_dismisses_stale(ref: SourceRef, base_ref: str) -> bool
             f"owner={ref.owner}",
             "-F",
             f"name={ref.repo}",
+            host=ref.host,
         )
     except Exception:
         logger.debug("branch protection unreadable via GraphQL for %s", ref.url, exc_info=True)
@@ -327,6 +331,7 @@ async def _github_pending_review_comments(ref: SourceRef, review_id: str) -> lis
         "--paginate",
         "--slurp",
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/comments",
+        host=ref.host,
     )
     return _flatten_paginated(raw)
 
@@ -490,6 +495,7 @@ async def submit_pull_request_review(
         f"repos/{ref.owner}/{ref.repo}/pulls/{ref.number}/reviews/{review_id}/events",
         "-f",
         f"event={normalized}",
+        host=ref.host,
     )
     # GitHub's submit-review API takes no expected-head parameter, so the check
     # above and this call cannot be one atomic operation: a force-push landing in
@@ -536,6 +542,7 @@ async def _github_dismiss_review(ref: SourceRef, review_id: str) -> bool:
             "this review was being published, so it applied to unreviewed code.",
             "-f",
             "event=DISMISS",
+            host=ref.host,
         )
         return True
     except Exception:

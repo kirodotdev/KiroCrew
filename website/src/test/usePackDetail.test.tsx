@@ -87,10 +87,11 @@ describe('useInvalidatePackDetail', () => {
   it('re-reads for a subscriber that is still mounted', async () => {
     // The defect the module-level cache could not fix: a roster row wearing the
     // pack must redraw after the Library re-imports it, without remounting.
-    // Lottie, whose bytes the detail keeps: the two versions must be told apart.
+    // The whole-pack read, whose Lottie bytes tell the two versions apart; its key
+    // sits under the pack's, so invalidating the pack reaches it too.
     const clip = (v: number) => ({ animations: { idle: { content: `{"v":${v}}`, format: 'lottie' } } })
     detail.mockResolvedValueOnce(clip(1)).mockResolvedValueOnce(clip(2))
-    const reader = renderHook(() => usePackDetail('aurora'), { wrapper })
+    const reader = renderHook(() => usePackDetail('aurora', { content: true }), { wrapper })
     await waitFor(() => expect(reader.result.current.data?.animations.idle.content).toBe('{"v":1}'))
 
     const invalidator = renderHook(() => useInvalidatePackDetail(), { wrapper })

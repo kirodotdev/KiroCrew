@@ -30,7 +30,7 @@ from kiro_crew.dashboard.handlers import work_ledger as routes
 
 #: The real implementation, captured before the autouse fixture stubs the name.
 #: A test that drives the true branch has to reach past its own default.
-_REAL_REACHES_A_CHANNEL = routes._reaches_a_channel
+_REAL_REACHES_A_CHANNEL = routes.reaches_a_channel
 
 CONDUCTOR_A = "chat-a-conductor"
 CONDUCTOR_B = "chat-b-conductor"
@@ -64,7 +64,7 @@ def _open_route(monkeypatch):
 
     monkeypatch.setattr(routes, "_recognize_session", _recognized)
     monkeypatch.setattr(routes, "_is_restricted_session", lambda *a: False)
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: False)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: False)
     # The routes record every write into the caller's crew log and refuse when
     # they cannot: a ``MagicMock`` state resolves no unit, so the gate is opened
     # here and the append is swallowed. ``test_work_ledger_projection.py`` drives
@@ -338,7 +338,13 @@ async def test_dispatch_table_neither_gets_both_refusals():
 
 @pytest.mark.asyncio
 async def test_a_third_level_conductor_is_refused_at_the_depth_cap():
-    """depth <= 2: a grandchild may work, and may not conduct."""
+    """A grandchild may work, and may not conduct: its ledger never opens.
+
+    The refusal lands at the moment the grandchild tries to open a ledger, not
+    later when it tries to create an item -- a ledger that opens and then refuses
+    every create would read on the parent's board as a child thinking, not as a
+    dispatch that was never viable.
+    """
     await two_by_two()
     assert (await _record(WORKER_A, {"action": "goal", "goal": "level 1", "round": 1}))[0] == 200
     grandchild = "chat-a-grandchild"
@@ -355,18 +361,18 @@ async def test_a_third_level_conductor_is_refused_at_the_depth_cap():
     )[0] == 200
     # The grandchild is a working worker...
     assert (await _report(grandchild, {"status": "progress", "summary": "leaf work"}))[0] == 200
-    # ...and its ledger opens at the cap (depth 2 == MAX_DEPTH) ...
+    # ...whose ledger does not open: depth 2 == MAX_DEPTH is the first level that
+    # may only work, which is what the cap buys -- a summary of summaries of
+    # summaries is not evidence any more.
     status, body = await _record(grandchild, {"action": "goal", "goal": "level 2", "round": 1})
-    assert status == 200, body
-    assert body["conductor"]["depth"] == wl.MAX_DEPTH
-    # ...where it can dispatch nothing, which is what the cap buys: a summary of
-    # summaries of summaries is not evidence any more.
-    status, body = await _record(
-        grandchild,
-        {"action": "create", "title": "great-grandchild", "acceptance": {"kind": "human_approval"}},
-    )
-    assert status == 409
+    assert status == 409, body
     assert body["code"] == wl.CODE_DEPTH_EXCEEDED
+    # Nothing sterile is left behind: no ledger exists for the grandchild to read.
+    status, body = await _read(grandchild)
+    assert status == 404
+    assert body["code"] == wl.CODE_NO_LEDGER
+    # And its worker role is untouched by the refusal.
+    assert (await _report(grandchild, {"status": "progress", "summary": "still working"}))[0] == 200
 
 
 # ── every error code carries its tabulated status ─────────────────────────
@@ -394,7 +400,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "already_bound": 409,
         "item_closed": 409,
         "item_cap_exceeded": 409,
-        "item_store_full": 409,
+        "goal_concurrency_cap_reached": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,
@@ -437,7 +443,9 @@ async def test_item_closed_is_409_for_both_halves():
         CONDUCTOR_A, {"action": "close", "item_id": ids["item_a"], "state": "accepted"}
     )
     assert status == 200
-    status, body = await _report(WORKER_A, {"status": "done", "summary": "too late"})
+    status, body = await _report(
+        WORKER_A, {"status": "done", "summary": "too late", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 409
     assert body["code"] == wl.CODE_ITEM_CLOSED
     status, body = await _record(
@@ -450,6 +458,11 @@ async def test_item_closed_is_409_for_both_halves():
 @pytest.mark.asyncio
 async def test_item_cap_exceeded_is_409():
     await two_by_two()
+    # Past the goal's default concurrency cap of 6, so the store's open cap bites.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "goal", "concurrency_cap": wl.MAX_GOAL_CONCURRENCY_CAP}
+    )
+    assert status == 200
     for n in range(wl.MAX_ITEMS_PER_CONDUCTOR - 1):
         status, _ = await _record(
             CONDUCTOR_A,
@@ -465,33 +478,108 @@ async def test_item_cap_exceeded_is_409():
 
 
 @pytest.mark.asyncio
-async def test_item_store_full_is_409(monkeypatch):
-    """A board full of closed records refuses the next create as a 409 conflict.
-
-    The code is the store's own, ``item_store_full``: the open cap is not what bit,
-    since nothing on the board is open.
-    """
-    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 2)
-    items = await two_by_two()
-    status, _ = await _record(
-        CONDUCTOR_A, {"action": "close", "item_id": items["item_a"], "state": "accepted"}
-    )
+async def test_goal_concurrency_cap_reached_is_409_and_concurrency_cap_raises_it():
+    """The goal's fan-out cap answers 409 with its own code; a goal write raises it,
+    and closing an item frees a seat without any write to the cap."""
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "concurrency_cap": 2})
     assert status == 200
+    acceptance = {"kind": "human_approval"}
+    # two_by_two already created one open item on this board.
     status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "create", "title": "second", "acceptance": {"kind": "human_approval"}},
+        CONDUCTOR_A, {"action": "create", "title": "b", "acceptance": acceptance}
     )
     assert status == 200
-    status, _ = await _record(
-        CONDUCTOR_A, {"action": "close", "item_id": body["item"]["item_id"], "state": "accepted"}
-    )
-    assert status == 200
+    second = body["item"]["item_id"]
     status, body = await _record(
-        CONDUCTOR_A,
-        {"action": "create", "title": "one too many", "acceptance": {"kind": "human_approval"}},
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
     )
     assert status == 409
-    assert body["code"] == wl.CODE_ITEM_STORE_FULL
+    assert body["code"] == wl.CODE_GOAL_CONCURRENCY_CAP_REACHED
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "concurrency_cap": 3})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert status == 200
+    assert read["conductor"]["concurrency_cap"] == 3
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 200
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
+    )
+    assert (status, body["code"]) == (409, wl.CODE_GOAL_CONCURRENCY_CAP_REACHED)
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "close", "item_id": second, "state": "accepted"}
+    )
+    assert status == 200
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "d", "acceptance": acceptance}
+    )
+    assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_the_item_cap_is_advisory_over_http_and_the_read_flags_it():
+    """A create past ``item_cap`` is admitted; ``cap_exceeded`` turns true on the
+    read's ``conductor`` block, compact reads included, and a new goal clears it."""
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 2})
+    assert status == 200
+    acceptance = {"kind": "human_approval"}
+    # two_by_two already created one item on this board.
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "b", "acceptance": acceptance}
+    )
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (2, False)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "create", "title": "c", "acceptance": acceptance}
+    )
+    assert status == 200, body
+    status, read = await _read(CONDUCTOR_A)
+    assert read["conductor"]["item_cap"] == 2
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (3, True)
+    status, compact = await _read_with(CONDUCTOR_A, "compact=true")
+    assert status == 200
+    assert (compact["conductor"]["goal_items_used"], compact["conductor"]["cap_exceeded"]) == (
+        3,
+        True,
+    )
+    # A goal the user replaced, recorded with new_goal, starts the count again.
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "goal": "next", "new_goal": True})
+    assert status == 200
+    status, read = await _read(CONDUCTOR_A)
+    assert (read["conductor"]["goal_items_used"], read["conductor"]["cap_exceeded"]) == (0, False)
+
+
+@pytest.mark.asyncio
+async def test_a_cap_past_its_ceiling_is_refused_400():
+    await two_by_two()
+    status, _ = await _record(CONDUCTOR_A, {"action": "goal", "item_cap": 257})
+    assert status == 400
+    status, _ = await _record(
+        CONDUCTOR_A, {"action": "goal", "concurrency_cap": wl.MAX_GOAL_CONCURRENCY_CAP + 1}
+    )
+    assert status == 400
+
+
+def test_the_tool_schemas_spell_the_stores_cap_ceilings():
+    """The MCP schema and the validator quote the store's own ceilings, so a value the
+    schema admits is never one the store then refuses under a different code."""
+    from kiro_crew import mcp_work
+
+    record = validation.WORK_LEDGER_RECORD_SCHEMA
+    item_cap = next(f for f in record.fields if f.name == "item_cap")
+    concurrency = next(f for f in record.fields if f.name == "concurrency_cap")
+    assert (item_cap.min_val, item_cap.max_val) == (1, wl.MAX_GOAL_ITEM_CAP)
+    assert (concurrency.min_val, concurrency.max_val) == (1, wl.MAX_GOAL_CONCURRENCY_CAP)
+    tool = next(t for t in mcp_work._tool_definitions() if t["name"] == "work_ledger_record")
+    props = tool["inputSchema"]["properties"]
+    assert props["item_cap"]["maximum"] == wl.MAX_GOAL_ITEM_CAP
+    assert props["concurrency_cap"]["maximum"] == wl.MAX_GOAL_CONCURRENCY_CAP
+    assert "concurrency_cap" in mcp_work._RECORD_FIELDS
 
 
 @pytest.mark.asyncio
@@ -706,7 +794,9 @@ async def test_each_batch_entry_carries_the_items_status_unfiltered():
     assert entry["status"] == "progress"
     assert entry["accept"] == {"kind": "human_approval"}
 
-    status, _ = await _report(WORKER_A, {"status": "done", "summary": "met"})
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "met", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200
     _, body = await _read(CONDUCTOR_A)
     entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
@@ -719,7 +809,9 @@ async def test_a_done_item_waiting_on_the_conductor_is_not_stale():
     next move is the conductor's or a human's, so the flag must not point back at the
     reader — a quiet ``done`` item is silent because it is finished."""
     ids = await two_by_two()
-    status, _ = await _report(WORKER_A, {"status": "done", "summary": "opened the pr"})
+    status, _ = await _report(
+        WORKER_A, {"status": "done", "summary": "opened the pr", "artifacts": {"commit": "abc1234"}}
+    )
     assert status == 200
     item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
     assert item is not None
@@ -818,6 +910,34 @@ async def test_a_reported_worker_whose_session_closed_is_stale_at_once(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_a_worker_parked_in_its_own_loop_is_not_stale_on_the_ledger_read(monkeypatch):
+    """``stale`` on the ledger read asks the wake gate's own looping resolver, so the
+    badge and the stall wake agree about a worker waiting inside its monitor loop."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "waiting on CI"})
+    assert status == 200
+    real = wl.is_stale
+    seen: list[str] = []
+
+    def _past_the_window(item, **kwargs):
+        return real(item, **{**kwargs, "window_secs": 0})
+
+    def _looping(_svc: Any, key: str) -> bool:
+        seen.append(key)
+        return key == WORKER_A
+
+    monkeypatch.setattr(routes.work_ledger, "is_stale", _past_the_window)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is True
+    monkeypatch.setattr(routes.ledger_wake, "worker_looping", _looping)
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
+    assert WORKER_A in seen
+
+
+@pytest.mark.asyncio
 async def test_a_running_worker_is_never_stale(monkeypatch):
     """The conjunction is the point: silence alone does not flag an item."""
     ids = await two_by_two()
@@ -827,6 +947,45 @@ async def test_a_running_worker_is_never_stale(monkeypatch):
     row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
     assert row["stale"] is False
     assert row["orphaned"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_pending_run_is_recorded_with_its_stamp_and_read_back_overdue(monkeypatch):
+    """The verdict route stamps the run into the store AND its crew-log entry, so a
+    rebuild keeps it; the fit probe covers the stamp; both reads carry the flag. The
+    run starts at a fixed moment long past, so the read's own clock is beyond it."""
+    entries: list[dict[str, Any]] = []
+    probes: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        routes.crew_log_emit, "on_work_recorded", lambda unit, data: entries.append(data) or True
+    )
+    monkeypatch.setattr(
+        routes.crew_log_emit, "work_entry_fits", lambda entry: probes.append(entry) or True
+    )
+    pr_bar = {"kind": "pr_checks", "pr": 7, "repo": "owner/name"}
+    item_id = await _dispatch(CONDUCTOR_A, WORKER_A, "item A", pr_bar)
+    started = "2001-01-01T00:00:00+00:00"
+    monkeypatch.setattr(wl, "_now_iso", lambda: started)
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "verdict", "item_id": item_id, "verdict": "pending"}
+    )
+    assert status == 200, body
+    assert entries[-1]["pending_since"] == started
+    assert "pending_since" in probes[-1]
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert (row["pending_since"], row["pending_overdue"]) == (started, True)
+    _, body = await _read_with(CONDUCTOR_A, "compact=true")
+    assert next(r for r in body["items"] if r["item_id"] == item_id)["pending_overdue"] is True
+
+    status, body = await _record(
+        CONDUCTOR_A, {"action": "verdict", "item_id": item_id, "verdict": "fail", "fails": 1}
+    )
+    assert status == 200, body
+    assert "pending_since" not in entries[-1]
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert (row["pending_since"], row["pending_overdue"]) == (None, False)
 
 
 def test_the_schema_caps_restate_the_stores_own():
@@ -852,7 +1011,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason"}
     for forbidden in (
         "item_id",
         "session",
@@ -983,7 +1142,7 @@ async def test_an_outbound_mirrored_session_is_refused_like_a_channel_one(monkey
     channel, so its key looks local while the disclosure is identical. The key alone
     is therefore not the test."""
     ids = await two_by_two()
-    monkeypatch.setattr(routes, "_reaches_a_channel", lambda request, sk: True)
+    monkeypatch.setattr(routes, "reaches_a_channel", lambda state, sk: True)
     for status, body in (
         await _brief(WORKER_A),
         await _report(WORKER_A, {"status": "done", "summary": "x"}),
@@ -1007,7 +1166,7 @@ def test_the_mirror_probe_fails_closed_on_an_unreadable_store(monkeypatch):
 
     monkeypatch.setattr(session_control, "_has_channel_mirror", _boom)
     request = _req("GET", "/api/work-ledger", sk="chat-probe")
-    assert _REAL_REACHES_A_CHANNEL(request, "chat-probe") is True
+    assert _REAL_REACHES_A_CHANNEL(request.app["state"], "chat-probe") is True
 
 
 @pytest.mark.asyncio
@@ -1132,12 +1291,12 @@ async def test_a_read_refuses_when_a_mirror_appears_during_the_read(monkeypatch)
     ids = await two_by_two()
     calls = {"n": 0}
 
-    def _mirror_appears_after_entry(request: Any, sk: str) -> bool:
+    def _mirror_appears_after_entry(state: Any, sk: str) -> bool:
         # False for the entry check, True for the post-read re-check.
         calls["n"] += 1
         return calls["n"] > 1
 
-    monkeypatch.setattr(routes, "_reaches_a_channel", _mirror_appears_after_entry)
+    monkeypatch.setattr(routes, "reaches_a_channel", _mirror_appears_after_entry)
     status, body = await _brief(WORKER_A)
     assert status == 403
     assert body["code"] == "channel_session"
@@ -1672,3 +1831,43 @@ def test_the_schema_ceiling_restates_the_route_caps():
     assert state.allowed == wl.ITEM_STATES
     item_id = next(f for f in validation.WORK_LEDGER_READ_SCHEMA.fields if f.name == "item_id")
     assert item_id.pattern is not None and item_id.pattern.pattern == wl._ITEM_ID_RE.pattern
+
+
+# ── a done names its evidence ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_done_with_no_evidence_is_refused_and_writes_nothing():
+    ids = await two_by_two()
+    before = wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "all tests pass"})
+    assert status == 400
+    assert body["code"] == "done_without_evidence"
+    assert body["field"] == "artifacts"
+    assert "not run" in body["error"]
+    assert wl.item_path(CONDUCTOR_A, ids["item_a"]).read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {"artifacts": {"tests": "pytest test/test_x.py exit=0"}},
+        {"artifacts": {"tests": "not run: harness unavailable"}},
+        {"pr": 42},
+    ],
+)
+async def test_a_done_with_one_pointer_is_recorded(evidence):
+    ids = await two_by_two()
+    status, body = await _report(WORKER_A, {"status": "done", "summary": "met", **evidence})
+    assert status == 200, body
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None and item.status == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_value", ["progress", "blocked", "question"])
+async def test_only_done_needs_evidence(status_value):
+    await two_by_two()
+    status, body = await _report(WORKER_A, {"status": status_value, "summary": "still going"})
+    assert status == 200, body

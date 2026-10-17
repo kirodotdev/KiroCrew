@@ -23,6 +23,7 @@ from kiro_crew.imessage.rpc import (
     RpcError,
     RpcTransportError,
 )
+from kiro_crew.testing.wait import await_until
 
 
 class FakeStdin:
@@ -360,7 +361,7 @@ class TestErrors:
         await _until(lambda: bool(proc.stdin.lines))
         proc.stdout.set_exception(OSError(errno.EIO, "Input/output error"))
         with pytest.raises(RpcTransportError):
-            await asyncio.wait_for(task, timeout=5)
+            await await_until(task, what="the RPC call to error")
         await _until(lambda: bool(reasons))
         await peer.close()
 

@@ -6,13 +6,25 @@ import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
+import type { ApprovalModeRemote } from '../ApprovalModePicker'
+import type { MemorySource } from '../../lib/agentMemorySource'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
    props they need as their own parameters, a few by indexed access
    (`ChatInputProps['onFileSelect']`). */
 /** Busy-composer send affordance — see `ChatInputProps.busyMode`. */
-export type ComposerBusyMode = 'split' | 'steer-only'
+export type ComposerBusyMode = 'split' | 'steer-only' | 'responsive'
+
+/** The modifier state a Backspace/Delete keydown carries into `onMentionKey`,
+ *  so the host can tell a plain or Shift-held delete (treated alike) from a
+ *  word-delete chord (Ctrl/Alt), the way the paste-token atom does. */
+export interface MentionKeyMods {
+  meta: boolean
+  ctrl: boolean
+  alt: boolean
+  shift: boolean
+}
 
 export interface ChatInputProps {
   /** The editor text. Omit it under a `<Composer draft>` root, which hands the
@@ -45,8 +57,12 @@ export interface ChatInputProps {
    * message (`steer: "auto"`, `decisions/points/message_steer.py`). It rides this
    * callback rather than a second one because it is the same send down the same
    * route: only the flag differs, and a host that ignores the argument keeps
-   * today's behaviour, which is the steer this callback has always meant. */
-  onSteer?: (opts?: { auto?: boolean }) => void
+   * today's behaviour, which is the steer this callback has always meant.
+   *
+   * `text` is a follow-up chip's own text: steer exactly that, leaving the
+   * composer draft and its staging untouched (the rule an option send follows).
+   * A host that renders follow-up chips while busy must honour it. */
+  onSteer?: (opts?: { auto?: boolean; text?: string }) => void
   /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
    * the gateway reports the Decisions seam as permitted by governance AND
    * consented to. Defaults to false, so a surface that never asks cannot offer a
@@ -61,10 +77,15 @@ export interface ChatInputProps {
    * a person has no "wait until they finish, then they'll listen" step, so
    * offering one would present a console control inside a chat. Needs
    * `canSteer` + `onSteer` exactly like the split button; without a steer
-   * path the busy send still falls back to the queue button. */
+   * path the busy send still falls back to the queue button.
+   * 'responsive' keeps ordinary Send at every runtime state and calls onSend;
+   * the host asks the gateway to prioritize the message, never stops locally. */
   busyMode?: ComposerBusyMode
   disabled?: boolean
   placeholder?: string
+  /** Shown instead of the default "Stopping…" while `disabled` is set, naming
+   *  why the composer is locked. */
+  lockedPlaceholder?: string
   prefillHint?: boolean
   onDismissHint?: () => void
   /** macOS-only screenshot */
@@ -73,8 +94,16 @@ export interface ChatInputProps {
   onUploadFiles?: (files: File[]) => void
   /** Whether file actions are in progress */
   uploading?: boolean
+  /** An attachment for THIS composer is still on its way (upload or
+   *  screenshot). Holds every composer send (Send, Enter, steer, queue): a
+   *  message fired now would leave without the file, which would then land in
+   *  the emptied composer as a stray attachment. */
+  holdSend?: boolean
   /** Abort the upload in flight; turns the upload spinner into a cancel control */
   onCancelUpload?: () => void
+  /** How many uploads `onCancelUpload` aborts. Above one, the cancel control's
+   *  label names the count, since pressing it stops every one of them. */
+  uploadCount?: number
   /** Pending file paths (images + non-images) for preview strip */
   pendingFiles?: string[]
   /** Pending folder references for the preview strip: RELATIVE paths with trailing slash, derived from `@rel/` composer tokens (a path reference handed to the agent, not an upload) */
@@ -83,6 +112,14 @@ export interface ChatInputProps {
   resizedInfo?: Record<string, ResizeInfo>
   /** Remove a pending file by path */
   onRemoveFile?: (path: string) => void
+  /**
+   * Polite screen-reader announcement for a file chip the composer's own
+   * reconciliation un/restaged (a hand-edited or pasted `@mention`), which
+   * moves no focus. `text` is the localized message, `nonce` advances on every
+   * announcement so a repeated message still re-fires the `aria-live` region
+   * (which announces only on a text change). #14597.
+   */
+  attachmentAnnouncement?: { text: string; nonce: number }
   /** Remove a pending folder reference by its relative path (strips its composer token) */
   onRemoveDir?: (path: string) => void
   /** Session references staged by dragging a session onto the chat pane.
@@ -131,6 +168,11 @@ export interface ChatInputProps {
    * marker alone reads as opaque (#8770 UX review). Only the inherited case
    * gets it; a pinned chip has nothing to explain. */
   agentIsInheritedDefault?: boolean
+  /**
+   * The memory the session's agent runs on, set only when a crewmate and a
+   * custom agent share its name (`sessionMemoryTag`, #19472). The chip then
+   * marks its label and spoken name with it. Null or unset: no mark. */
+  agentMemory?: MemorySource | null
   agentSource?: string
   modelName?: string
   /**
@@ -216,6 +258,10 @@ export interface ChatInputProps {
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
   isRunning?: boolean
+  /** Lock the project chip: the composer is busy only because sub-agents are
+   *  attached. A pick there cannot land at the next turn, because the deferred
+   *  session reset stays armed while children share the runtime. */
+  projectLocked?: boolean
   onStop?: () => void
   /**
    * True when an EMPTY composer can hand the thread back to the agent, so the
@@ -249,6 +295,8 @@ export interface ChatInputProps {
    *  compacting; the next press is the force stop and the armed Stop says so. */
   stopDeclined?: boolean
   approvalMode?: string
+  /** The approval-mode picker drives another machine's session (crew window). */
+  approvalModeRemote?: ApprovalModeRemote
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
    *  per-slot pick. Only the chip's hover / accessible name says so: outside
@@ -274,8 +322,36 @@ export interface ChatInputProps {
   /** The host's clamp for a drop offset (out of mentions and pasted chips),
    *  so the drop caret previews where `onTreeEntryDrop` will insert. */
   clampDropOffset?: (text: string, at: number) => number
+  /** Backspace/Delete on or next to a STAGED file mention: the host returns
+   *  the atomic-delete result (new text + caret) that removes the whole
+   *  `@mention` as one unit, or null to let the key do its default edit.
+   *  Keeps an edited mention from leaving a half-reference whose chip then
+   *  silently unstages (#14675). Covers a collapsed Backspace/Delete, a
+   *  Shift-held one, a word-delete chord (Ctrl/Alt, including across the
+   *  whitespace next to the mention), and a selection that overlaps a mention.
+   *  Absent: mentions delete one character at a time, as before.
+   *  KEYBOARD BACKSPACE/DELETE ONLY: it runs on the keydown, so a mention
+   *  erased through the value-change seam — cut, typing over a selection, or
+   *  pasting over one — is NOT caught here (tracked in the #14675 follow-up).
+   *  TEXTAREA ONLY: the plain-textarea composer passes the key here; the
+   *  Lexical composer (`inlineMarkdown` on) edits a node model and does not
+   *  call this (also tracked in the #14675 follow-up). */
+  onMentionKey?: (text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods) => { value: string; caret: number } | null
+  /** The host's file-mention guard for "Optimize prompt", taken with the
+   *  draft when the optimize starts. The check it returns says whether a
+   *  rewrite leaves the draft's file attachments unchanged; a rewrite it
+   *  refuses is discarded like one the optimizer did not change. Absent: no
+   *  file mention is protected. Folder mentions need no host guard: their
+   *  chips derive from the text, so the optimizer checks them itself. */
+  optimizerMentionGuard?: (draft: string) => (rewrite: string) => boolean
   onFileOpen?: (path: string) => void
   project?: string
+  /** The session runs on another machine (the crew window). `project` is
+   *  then that machine's folder: drawn as a plain label, never a picker, and
+   *  nothing on this machine is rooted at it (no `./path` completion, no file
+   *  drop, no `!` shell). The context popover shows the reading only, without
+   *  this machine's auto-compact slider. */
+  sessionOnPeer?: boolean
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
@@ -307,10 +383,14 @@ export interface ChatInputProps {
   /** Select a follow-up option — handler toggles text in input (see ChatPage wiring).
    *  Third arg is `followUpSourceKey` as it was when the chip was CLICKED (the
    *  chip debounces, and the row can advance inside that window); `undefined`
-   *  when no `followUpSourceKey` is supplied. */
-  onFollowUpSelect?: (option: string, event: React.MouseEvent, sourceKeyAtClick?: string | null) => void
-  /** Immediate send (double-click / Send-now). Second arg is the click-time
-   *  row identity FollowUpBar already snapshots for onSelect. */
+   *  when no `followUpSourceKey` is supplied. Fourth arg sends an option the way
+   *  `onFollowUpSend` does after the composer's busy decision (steer or queue,
+   *  per the slot's busy-send mode): the host's quick-send uses it. */
+  onFollowUpSelect?: (option: string, event: React.MouseEvent, sourceKeyAtClick: string | null | undefined, sendNow: (text: string) => void) => void
+  /** A chip's immediate send (double-click / Send-now / quick send) when the
+   *  composer's busy decision does not steer it; a steered chip goes to
+   *  `onSteer` with its text. Second arg is the click-time row identity
+   *  FollowUpBar already snapshots for onSelect. */
   onFollowUpSend?: (text?: string, sourceKeyAtClick?: string | null) => void
   /** Quick Send enabled — clicking sends immediately */
   quickSend?: boolean
@@ -319,6 +399,9 @@ export interface ChatInputProps {
   /** Identity of the transcript row the follow-up options were derived from.
    *  Forwarded to FollowUpBar so a chip click carries the row it acted on. */
   followUpSourceKey?: string | null
+  /** `false` for a single-select `[OPTION:]` row (a pick replaces the previous
+   *  one). Forwarded to FollowUpBar for the chip tooltip. Defaults to `true`. */
+  followUpMulti?: boolean
   /** Labels whose follow-up dispatch is outstanding. Only a host that actually
    *  dispatches a chip passes this. */
   followUpPendingOptions?: ReadonlySet<string> | null
@@ -336,7 +419,8 @@ export interface ChatInputProps {
    *  Cmd/Ctrl+Shift+V still forces one raw paste when this is off. */
   showFullPastes?: boolean
   /** Opt into the first Lexical composer migration slice. Defaults off so the
-   *  established textarea path remains the production fallback until parity is complete. */
+   *  established textarea path remains the production fallback until parity is complete.
+   *  The Style Markdown While Typing setting also turns it on for that user. */
   lexicalComposer?: boolean
   /** Optional knowledge chip rendered above the input */
   knowledgeChip?: React.ReactNode
@@ -360,6 +444,9 @@ export interface ChatInputProps {
    * plain text.
    */
   typedCommandMenus?: boolean
+  /** Slash commands this host refuses, left out of the '/' menu so it never
+   *  offers one a send would turn down (a pane has no knowledge picker). */
+  hiddenCommands?: readonly string[]
   /**
    * The slot's approval chrome (tool-approval bar, spawn-approval banner).
    * Defaults on. These are store-driven for the composer's slot, so a second
@@ -375,6 +462,22 @@ export interface ChatInputProps {
    * switch silently discards the draft it produced.
    */
   promptOptimizer?: boolean
+  /**
+   * One row while the draft fits on one line. The attach button, the text and
+   * the mic / send cluster share a single line until the text wraps (or holds
+   * a newline), or a file, quote or session ref is staged; then the toolbar
+   * moves under the text (the ordinary two-row shape) so the draft gets the
+   * full width, and comes back up when the draft fits the single line again.
+   * The box's height animates between the shapes. Defaults OFF: the ordinary
+   * composer draws session chrome (automation, approval mode) in that toolbar
+   * and keeps its two rows. The Crewmates DM, which strips that chrome, is the
+   * caller.
+   *
+   * Stands down for a pinned manual height (the user asked for a tall box),
+   * the terminal line, hold-to-talk and dictation, each of which owns the
+   * composer's shape itself.
+   */
+  inlineToolbarWhileFits?: boolean
   /**
    * The user-driven collapse: the "put the message box away while I read" entry
    * point, the bar that replaces it, and the persisted preference.
@@ -409,4 +512,9 @@ export interface ChatInputProps {
    *  never silently lost. When the originating session is still on screen,
    *  ChatInput writes the result itself (undoable) and does NOT call this. */
   onOptimizeResult?: (slotId: string | null, optimized: string) => void
+  /** Told whether an optimize started on the session shown here is still in
+   *  flight. The host uses it to hold back a memory-mode switch, which would
+   *  otherwise carry the pre-optimize text and send the rewrite to the
+   *  session it then deletes. */
+  onOptimizingChange?: (optimizing: boolean) => void
 }

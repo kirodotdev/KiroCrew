@@ -24,8 +24,9 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import time
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 
@@ -155,12 +156,33 @@ def resolve_aws_tool_bin(name: str) -> str:
     there is refused; the pair is cleared when that name passes in that dir, so
     repairing the install needs no restart.
     """
+    return resolve_aws_tool_bin_with_refusals(name)[0]
+
+
+class AwsToolRefusal(NamedTuple):
+    """One install-dir candidate the provenance check refused, and why."""
+
+    path: str
+    reason: str
+
+
+def resolve_aws_tool_bin_with_refusals(name: str) -> tuple[str, tuple[AwsToolRefusal, ...]]:
+    """:func:`resolve_aws_tool_bin`, plus the candidates THIS walk refused.
+
+    Same search, same validation and same :data:`_REFUSED_AWS_BIN_DIRS` updates;
+    the second element only reports what the walk already decided, so a caller
+    that has to explain a bare-name result can tell "nothing installed" from
+    "installed but refused" and name the refusal reason. The refusals come from
+    this call alone, never from the shared set, so a candidate removed since an
+    earlier walk is not reported.
+    """
+    refusals: list[AwsToolRefusal] = []
     env_path = os.environ.get("PATH", "")
     found = shutil.which(name, path=env_path) if env_path else None
     if found:
         # Same trust class as the pre-existing behaviour: execvp against the
         # inherited PATH already executed exactly this binary.
-        return found
+        return found, ()
     for directory in _AWS_BIN_DIRS:
         if not directory:
             continue
@@ -171,11 +193,12 @@ def resolve_aws_tool_bin(name: str) -> str:
 
         try:
             resolved = validate_provider_executable(found)
-        except ValueError:
+        except ValueError as exc:
             # This (name, dir) is out — for the argv head AND for the child's
             # PATH. Keyed by name too: a sibling name passing in this dir must not
             # clear THIS name's refusal.
             _REFUSED_AWS_BIN_DIRS.add((name, directory))
+            refusals.append(AwsToolRefusal(found, str(exc)))
             logger.warning(
                 "refusing %s at %s: failed provenance validation; trying the remaining "
                 "install dirs",
@@ -184,8 +207,8 @@ def resolve_aws_tool_bin(name: str) -> str:
             )
             continue
         _REFUSED_AWS_BIN_DIRS.discard((name, directory))
-        return resolved
-    return name
+        return resolved, tuple(refusals)
+    return name, tuple(refusals)
 
 
 def resolve_aws_bin() -> str:
@@ -308,6 +331,7 @@ def run_aws(
     timeout: int = 30,
     *,
     extra_visible_dirs: tuple[str, ...] = (),
+    stdin_fd: int | None = None,
 ) -> tuple[int, str, str]:
     """Run an ``aws`` CLI command. Returns (returncode, stdout, stderr).
 
@@ -326,17 +350,35 @@ def run_aws(
     same-UID agent cannot swap the destination for a link) still needs the CLI
     itself to see that directory. Naming it here lifts the mask for the one
     fixed-argv child, never for the agent.
+
+    ``stdin_fd`` becomes the child's standard input, which is how a caller uploads
+    a file it has already opened and checked rather than a name the child would
+    resolve again: it pairs with ``--body /dev/stdin``, so the bytes the CLI sends
+    come from THAT descriptor and no path is resolved at all. The descriptor stays
+    the caller's to close. Omitted, ``stdin`` is ``DEVNULL`` -- closed, not
+    inherited -- so the CLI and any ``credential_process`` it spawns get no
+    inherited handle, and the dedicated descriptor is the only way a body reaches
+    the child.
     """
     sandboxed, cleanup = wrap_argv(
         _aws(args, profile), mode="standard", extra_visible_dirs=extra_visible_dirs
     )
     sandboxed = cgroup_scope_argv(sandboxed)  # cgroup DoS ceiling
+    # stdin is CLOSED by default rather than inherited. The CLI resolves credentials
+    # through its own provider chain, which can spawn a ``credential_process`` child;
+    # that child would inherit whatever this process's stdin happens to be, so an
+    # inherited handle is a path for one subprocess's input to reach another. A body
+    # upload passes its OWN descriptor here (paired with ``--body /dev/stdin``); every
+    # other call gets ``DEVNULL``, so no inherited handle is exposed to the CLI or to
+    # anything it spawns.
+    stdin_arg: Any = subprocess.DEVNULL if stdin_fd is None else stdin_fd
     try:
         proc = run_limited(  # noqa: S603 — fixed argv, no shell, sandbox-wrapped
             sandboxed,
             capture_output=True,
             text=True,
             timeout=timeout,
+            stdin=stdin_arg,
         )
     finally:
         if cleanup:
@@ -383,17 +425,18 @@ def _checked(
     action: str,
     timeout: int = 30,
     extra_visible_dirs: tuple[str, ...] = (),
+    stdin_fd: int | None = None,
 ) -> str:
     """Run an aws call, raising AWSError (with AccessDenied mapping) on failure."""
     # Forwarded only when set: ``run_aws`` is the chokepoint tests monkeypatch,
-    # and a call without a visible-dir grant keeps the exact call shape those
-    # stubs were written against.
+    # and a call without a visible-dir grant or a body descriptor keeps the exact
+    # call shape those stubs were written against.
+    extra: dict[str, Any] = {}
     if extra_visible_dirs:
-        rc, out, err = run_aws(
-            args, profile, timeout=timeout, extra_visible_dirs=extra_visible_dirs
-        )
-    else:
-        rc, out, err = run_aws(args, profile, timeout=timeout)
+        extra["extra_visible_dirs"] = extra_visible_dirs
+    if stdin_fd is not None:
+        extra["stdin_fd"] = stdin_fd
+    rc, out, err = run_aws(args, profile, timeout=timeout, **extra)
     if rc != 0:
         # Only attach an IAM-statement remediation hint when the failure is a
         # genuine authorization error. Client-side errors (NoRegion,

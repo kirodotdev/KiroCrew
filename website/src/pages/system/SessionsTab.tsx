@@ -155,7 +155,14 @@ export default function SessionsTab({ planeStateRef }: Props) {
   }, [sessions])
   const creatorOf = (r: SessionRow): string | null => {
     if (r.kind !== 'session' || r.parent == null) return null
-    return (r.parent.key != null ? nameOf.get(r.parent.key) : undefined) ?? nameOf.get(r.parent.slot) ?? r.parent.slot
+    // `key` names the CREATOR only on an ordinary edge. On a re-parented row it is
+    // the nearest open ancestor, and naming that one here would credit the creating
+    // to a session that did not do it -- so the citation falls back to `slot`, which
+    // is the creator either way.
+    const named = r.parent.key != null && r.parent.ancestor !== true
+      ? nameOf.get(r.parent.key)
+      : undefined
+    return named ?? nameOf.get(r.parent.slot) ?? r.parent.slot
   }
 
   const columns = useMemo(
@@ -341,7 +348,7 @@ export default function SessionsTab({ planeStateRef }: Props) {
       {isError && data && (
         <div
           data-testid="sessions-stale"
-          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn"
+          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn-text"
         >
           <TriangleAlert size={13} aria-hidden="true" className="lucide-inline shrink-0" />
           <span>{i18nT('pages.sessionsTab.could_not_refresh')}</span>
@@ -689,16 +696,26 @@ export default function SessionsTab({ planeStateRef }: Props) {
                             {/* A created row sitting under its creator needs no
                                 citation: its place in the tree is one, and the
                                 creator's expander names the relation. A created
-                                row that could not be nested (creator not running,
-                                a cycle) says who opened it here, as visible text
-                                and not a title: a keyboard or touch reader never
-                                sees a native tooltip, and this row has nothing
-                                else that says it. `nested` comes from buildTree,
-                                not from the row tree: under a fold a top-level
-                                row's parent row is a group row. */}
-                            {!grouped && creatorOf(r) != null && !r.nested && (
+                                row that could not be nested (nothing open above
+                                it, a cycle) says who opened it here, as visible
+                                text and not a title: a keyboard or touch reader
+                                never sees a native tooltip, and this row has
+                                nothing else that says it. `nested` comes from
+                                buildTree, not from the row tree: under a fold a
+                                top-level row's parent row is a group row.
+
+                                A row placed on an `ancestor` edge is the one
+                                nested row that still needs the line, and the
+                                reason is the rule above: its place in the tree
+                                is NOT its creator. It hangs from the nearest
+                                open ancestor, so the expander above it names a
+                                session that did not open it, and without this
+                                line nothing on screen says the creator closed. */}
+                            {!grouped && creatorOf(r) != null && (!r.nested || r.parent?.ancestor === true) && (
                               <span className="block whitespace-normal break-words leading-tight text-[10.5px] text-muted cursor-default">
-                                {i18nT('pages.sessionsTab.created_by', { name: creatorOf(r) })}
+                                {r.parent?.ancestor === true
+                                  ? i18nT('pages.sessionsTab.created_by_closed', { name: creatorOf(r) })
+                                  : i18nT('pages.sessionsTab.created_by', { name: creatorOf(r) })}
                               </span>
                             )}
                           </span>

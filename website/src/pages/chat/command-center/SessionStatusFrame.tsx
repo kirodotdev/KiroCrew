@@ -9,10 +9,10 @@ import { fmtDateTime } from '../../../i18n/format'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { dashboardDocument } from './dashboardDocument'
-import { TASK_DASHBOARD_SANDBOX } from './TaskDashboardFrame'
+import { localizeCrewMainData } from './crewMainPhrases'
 import type { DynamicDashboardCard } from '../../../types/dynamicDashboard'
 import { useAppSelector } from '../../../store'
-import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
+import { canCarryCard } from './model'
 
 const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, string> = {
   disabled: 'commandCenter.card_disabled', waiting: 'commandCenter.card_waiting',
@@ -21,9 +21,14 @@ const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, 
   unavailable: 'commandCenter.card_unavailable',
 }
 
+/** A presentation surface, deliberately NOT an agent-control bridge: no grant at
+ * all, so the gateway's card can lay itself out but cannot run script, read the
+ * host, or submit or approve on its behalf. */
+export const TASK_DASHBOARD_SANDBOX = ''
+
 /** The host owns freshness and controls. The isolated document owns presentation. */
 export default function SessionStatusFrame({ slot, title, active }: { slot: string; title: string; active: boolean }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const { theme, colorTheme, themeVersion } = useTheme()
   const owner = useAppSelector(s => s.dashboard.slots.find(item => item.key === slot))
   // Mirrors the backend's _derived_allowed on the privacy half (privacy and remoteness),
@@ -33,15 +38,21 @@ export default function SessionStatusFrame({ slot, title, active }: { slot: stri
   // answers 'unavailable', which renders as the unavailable status below. The session-tree
   // `parent` edge stays excluded: an ADOPTED worker is a member of someone else's team and
   // never carries its own board, so it must not fetch at all.
-  const eligible = !isPrivateMemoryMode(owner?.memory_mode) && owner?.executor !== 'remote'
-    && !owner?.parent
+  //
+  // The predicate itself lives in the shared model, because a surface that LISTS cards has
+  // to decide who has one and must decide it the same way this frame does.
+  const eligible = canCarryCard(owner)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const vars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
   const query = useQuery({ queryKey: ['dashboard-card', slot, owner?.linked_session_key ?? '', owner?.memory_mode ?? 'persistent'], queryFn: () => api.dashboardCard(slot),
     enabled: active && eligible, staleTime: Infinity, gcTime: 60_000, retry: false, refetchOnWindowFocus: false })
   const card = eligible ? query.data?.card : null
-  const html = useMemo(() => active && card ? dashboardDocument(card.html, vars, theme, card.data) : null,
-    [active, card, vars, theme])
+  // The crew main card's numbers arrive as English plus phrases; the phrases are rendered
+  // here, in the active language, so the memo re-runs on a language switch.
+  const language = i18n.resolvedLanguage
+  const html = useMemo(() => active && card ? dashboardDocument(card.html, vars, theme, localizeCrewMainData(card.data)) : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [active, card, vars, theme, language])
   const document = useSandboxDoc(html)
   const status = eligible ? query.data?.status ?? 'waiting' : 'unavailable'
   return <section data-testid="session-status-frame" className="space-y-2 min-w-0">

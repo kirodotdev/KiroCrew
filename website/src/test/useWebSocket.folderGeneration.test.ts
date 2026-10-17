@@ -31,6 +31,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ChatFolder } from '../types'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { CHAT_FOLDERS_WRITE_KEY } from '../api/chatFoldersWrite'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -169,6 +170,32 @@ describe('useWebSocket folder-tree generation invalidation', () => {
     act(() => { ws2.simulateOpen() })
     act(() => { ws2.simulateMessage({ type: 'slots', data: [], foldersGeneration: 4 }) })
 
+    expect(folderInvalidations()).toBe(2)
+  })
+
+  it('defers a generation refetch while an optimistic folder write is pending', async () => {
+    const ws = mountOpened()
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], foldersGeneration: 4 }) })
+    expect(folderInvalidations()).toBe(1)
+
+    // The person expands a folder (create-in-folder does this) and the PATCH is
+    // still in flight when an agent's session_create moves the generation.
+    let release!: () => void
+    const pending = qc.getMutationCache().build(qc, {
+      mutationKey: CHAT_FOLDERS_WRITE_KEY,
+      mutationFn: () => new Promise<void>(resolve => { release = resolve }),
+    })
+    const done = pending.execute(undefined as never)
+    await act(async () => { await Promise.resolve() })
+    expect(qc.isMutating({ mutationKey: CHAT_FOLDERS_WRITE_KEY })).toBe(1)
+
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], foldersGeneration: 5 }) })
+    expect(folderInvalidations()).toBe(1)
+
+    release()
+    await act(async () => { await done })
+    // Once nothing is pending, the next move invalidates as usual.
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], foldersGeneration: 6 }) })
     expect(folderInvalidations()).toBe(2)
   })
 

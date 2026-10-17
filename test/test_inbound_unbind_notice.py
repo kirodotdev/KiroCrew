@@ -22,8 +22,20 @@ import pytest
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.messaging.link import ChannelLink
 
-LINK = ChannelLink(channel_type="discord", channel_id="chan-1")
 KEY = "discord:kirocrew:direct:42"
+
+
+def _signed(link: ChannelLink) -> ChannelLink:
+    """*link* as the gateway's own bind stored it: a key-named session's row
+    carries its admission, or the notice ladder refuses the row."""
+    import dataclasses
+
+    from kiro_crew.mirror_admission import sign_mirror_admission
+
+    return dataclasses.replace(link, admission=sign_mirror_admission(KEY, link))
+
+
+LINK = _signed(ChannelLink(channel_type="discord", channel_id="chan-1"))
 
 
 def _has_running_loop() -> bool:
@@ -286,7 +298,9 @@ class TestNoticeIsSafeAndHuman:
     # (``_is_safe_presigned``), so the URL below carries a fixed credential in its
     # query instead — the shape ``_exfil_url_warning`` classifies unconditionally.
     AWS_KEY_ID = "AKIA" "IOSFODNN7EXAMPLE"
-    EXFIL_URL = "https://evil.example.com/collect?t=" + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    EXFIL_URL = (
+        "https://evil.example.com/collect?t=" + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12"
+    )
     ZWSP = "\u200b"
 
     @pytest.mark.parametrize(
@@ -318,9 +332,7 @@ class TestNoticeIsSafeAndHuman:
         assert "detached" in text
 
     @pytest.mark.asyncio
-    async def test_an_ordinary_title_passes_through_untouched(
-        self, state: DashboardState
-    ) -> None:
+    async def test_an_ordinary_title_passes_through_untouched(self, state: DashboardState) -> None:
         """Sanitization is not allowed to mangle the common case."""
         text = await _sent(state, title="Refactor the billing importer")
 
@@ -368,9 +380,7 @@ class TestNoticeIsSafeAndHuman:
         assert UNBIND_REASONS - {UNBIND_REASON_USER_UNLINK} <= set(_INBOUND_UNBIND_WHY)
 
     @pytest.mark.asyncio
-    async def test_a_delivery_failure_logs_at_warning(
-        self, state: DashboardState, caplog
-    ) -> None:
+    async def test_a_delivery_failure_logs_at_warning(self, state: DashboardState, caplog) -> None:
         """A production gateway logs WARNING and above, so DEBUG is invisible."""
         state.channel_transports["discord"] = _Transport(fail=True)
 

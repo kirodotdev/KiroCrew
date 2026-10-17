@@ -80,6 +80,7 @@ from off the loop. Pinned by ``test_papyrus_routes.py``
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from functools import wraps
 from pathlib import Path
@@ -90,6 +91,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, store, tectonic
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.slugs import refused_slug_char
 
 try:
     from kiro_crew.security import redact
@@ -235,6 +237,29 @@ def _str_field(source: dict[str, Any], key: str) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _invalid_name(typed: str) -> web.HTTPBadRequest:
+    """A 400 whose JSON body names the rule and the refused character.
+
+    ``code`` is what the dashboard switches on to explain the rule in the user's
+    own language, and ``char`` lets that copy say which character it was (a name
+    typed in another script is refused at its first letter). *typed* is the name
+    as the caller sent it, before :func:`store.normalize_project_name`, so the
+    character named is one the user typed -- not a lowercased stand-in that can
+    look like an allowed Latin letter. The English ``error`` is for logs and
+    clients without a catalog. Raised, not returned, because the name gate runs
+    inside a worker-thread closure -- see the module docstring.
+    """
+    char = refused_slug_char(typed)
+    error = (
+        "invalid project name: use lowercase a-z, 0-9, '.', '_' or '-', "
+        "starting with a letter or digit, at most 64 characters"
+    )
+    if char:
+        error += f"; {char!r} is not allowed"
+    payload = {"error": error, "code": "invalid_project_name", "char": char}
+    return web.HTTPBadRequest(text=json.dumps(payload), content_type="application/json")
+
+
 def _project(name: str) -> Path:
     """Resolve *name* to an existing project directory, or raise an HTTP error.
 
@@ -250,6 +275,8 @@ def _project(name: str) -> Path:
         raise web.HTTPBadRequest(reason="missing 'name'")
     try:
         project = store.safe_project_dir(name)
+    except store.InvalidProjectName as exc:
+        raise _invalid_name(name) from exc
     except store.PathRejected as exc:
         raise web.HTTPBadRequest(reason=str(exc)) from exc
     if not project.is_dir():
@@ -257,8 +284,11 @@ def _project(name: str) -> Path:
     return project
 
 
-def _project_for_create(name: str) -> Path:
+def _project_for_create(name: str, typed: str) -> Path:
     """Resolve a project directory that must NOT yet exist.
+
+    *name* is the normalized name that is validated and created; *typed* is what
+    the user sent, used only to name the refused character.
 
     BLOCKING — ``Path.resolve()`` plus an ``exists()`` ``stat``. Worker thread only.
     """
@@ -266,6 +296,8 @@ def _project_for_create(name: str) -> Path:
         raise web.HTTPBadRequest(reason="missing 'name'")
     try:
         project = store.safe_project_dir(name)
+    except store.InvalidProjectName as exc:
+        raise _invalid_name(typed) from exc
     except store.PathRejected as exc:
         raise web.HTTPBadRequest(reason=str(exc)) from exc
     if project.exists():
@@ -372,7 +404,8 @@ async def _handle_list_projects(request: web.Request) -> web.StreamResponse:
 
 async def _handle_create_project(request: web.Request) -> web.StreamResponse:
     body = await _json_body(request)
-    name = store.normalize_project_name(_str_field(body, "name"))
+    typed = _str_field(body, "name")
+    name = store.normalize_project_name(typed)
     template = body.get("template")
     content = template if isinstance(template, str) and template.strip() else DEFAULT_TEMPLATE
 
@@ -393,7 +426,7 @@ async def _handle_create_project(request: web.Request) -> web.StreamResponse:
                 max_size=store.MAX_FILE_BYTES,
                 actual_size=len(content.encode("utf-8")),
             )
-        project = _project_for_create(name)
+        project = _project_for_create(name, typed)
         try:
             # `exist_ok=False` (the default) on purpose: the FileExistsError is the
             # authoritative answer to "did someone else take this name", and it is the
@@ -427,7 +460,7 @@ async def _handle_clone_project(request: web.Request) -> web.StreamResponse:
     # subprocess that needs the resolved path, so there is nothing to group it
     # with. The check/use window is unchanged — it was already an `await` wide,
     # and `git clone` refuses a non-empty destination at the syscall regardless.
-    project = await asyncio.to_thread(_project_for_create, name)
+    project = await asyncio.to_thread(_project_for_create, name, requested)
 
     try:
         await gitops.clone(url, project)

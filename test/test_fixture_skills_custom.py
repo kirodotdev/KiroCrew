@@ -46,7 +46,7 @@ def test_skills_custom_fixture_drives_live_and_pending_readers() -> None:
         assert detail["meta"]["slug"] == "flaky-triage"
         assert detail["meta"]["scripts"] == []
 
-        assert loader.approve_pending_skill("flaky-triage") == "auto/flaky-triage"
+        assert loader.approve_pending_skill_checked("flaky-triage") == "auto/flaky-triage"
         assert loader.list_pending_skills() == []
         approved = {entry["key"] for entry in loader.list_skills()}
         assert approved == {"release-notes", "auto/flaky-triage"}

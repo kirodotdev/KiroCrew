@@ -55,6 +55,10 @@ def admit(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle_scripts, "app_execution_denied", lambda *a, **k: None)
     monkeypatch.setattr(lifecycle_scripts, "wrap_argv", lambda argv, **k: (argv, None))
     monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
+    # These tests exercise the POSIX run path (the `/bin/bash` spawn), so pin
+    # IS_POSIX regardless of the host that runs them — otherwise the native-
+    # Windows guard short-circuits every one of them on a Windows CI runner.
+    monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", True)
     calls: list[dict[str, Any]] = []
 
     def _install(proc: _Process) -> list[dict[str, Any]]:
@@ -217,6 +221,7 @@ async def test_sandbox_temp_file_is_removed_after_the_run(monkeypatch, tmp_path)
     monkeypatch.setattr(lifecycle_scripts, "app_execution_denied", lambda *a, **k: None)
     monkeypatch.setattr(lifecycle_scripts, "wrap_argv", lambda argv, **k: (argv, str(scratch)))
     monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", True)
 
     async def _spawn(*argv, **kwargs):
         return _Process(output=b"done\n")
@@ -238,6 +243,7 @@ async def test_temp_file_cleanup_failure_does_not_break_the_result(monkeypatch, 
         lambda argv, **k: (argv, str(tmp_path / "never-written")),
     )
     monkeypatch.setattr(lifecycle_scripts, "cgroup_scope_argv", lambda argv: argv)
+    monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", True)
 
     async def _spawn(*argv, **kwargs):
         return _Process(output=b"survived\n")
@@ -245,3 +251,49 @@ async def test_temp_file_cleanup_failure_does_not_break_the_result(monkeypatch, 
     monkeypatch.setattr(lifecycle_scripts, "create_subprocess_limited", _spawn)
     result = await lifecycle_scripts.run_lifecycle_script("demo-app", "echo survived")
     assert result == {"output": "survived", "failed": False}
+
+
+@pytest.mark.asyncio
+async def test_native_windows_refuses_hook_before_spawning(monkeypatch, tmp_path) -> None:
+    """On a non-POSIX host a lifecycle hook is refused before any process is
+    started: lifecycle scripts always run through ``/bin/bash``, which native
+    Windows does not have. The runner returns its normal failed result carrying
+    an unsupported-platform reason, logs one warning, and spawns nothing."""
+    (tmp_path / "demo-app").mkdir()
+    monkeypatch.setattr(lifecycle_scripts, "apps_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle_scripts, "app_execution_denied", lambda *a, **k: None)
+    monkeypatch.setattr(lifecycle_scripts.platform_compat, "IS_POSIX", False)
+
+    async def _unexpected(*a, **k):
+        pytest.fail("spawned a lifecycle script on native Windows")
+
+    monkeypatch.setattr(lifecycle_scripts, "create_subprocess_limited", _unexpected)
+    warnings: list[tuple] = []
+    monkeypatch.setattr(lifecycle_scripts.logger, "warning", lambda *a, **k: warnings.append(a))
+
+    result = await lifecycle_scripts.run_lifecycle_script("demo-app", "echo hi", action="on_enable")
+
+    assert result["failed"] is True
+    # The reason travels in the existing ``output`` field (the enable route's
+    # ``script_output``); no extra result key is introduced for it.
+    assert "unsupported_platform" not in result
+    assert "native Windows" in result["output"]
+    assert "/bin/bash" in result["output"]
+    # Exactly one warning, naming the app and the action.
+    assert len(warnings) == 1
+    assert "demo-app" in warnings[0]
+    assert "on_enable" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_posix_host_still_runs_the_hook(admit, monkeypatch, tmp_path) -> None:
+    """The guard is non-POSIX only — with IS_POSIX the hook runs unchanged. The
+    `admit` fixture already pins IS_POSIX True, so this holds on any CI host."""
+    (tmp_path / "demo-app").mkdir()
+    assert lifecycle_scripts.platform_compat.IS_POSIX is True
+    calls = admit(_Process(output=b"enabled\n"))
+    result = await lifecycle_scripts.run_lifecycle_script(
+        "demo-app", "echo enabled", action="on_enable"
+    )
+    assert result == {"output": "enabled", "failed": False}
+    assert calls[0]["argv"][:2] == ["/bin/bash", "-c"]

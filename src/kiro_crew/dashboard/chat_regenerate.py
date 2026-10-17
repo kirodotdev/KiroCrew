@@ -19,7 +19,7 @@ from kiro_crew.dashboard.chat_utils import (
     variant_from_row,
 )
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
-from kiro_crew.dashboard.remote_relay import remote_bound_refusal
+from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
     deny_app_slot_session_access,
@@ -96,9 +96,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     if under_construction is not None:
         return under_construction
 
-    # A crew-bound slot has no local regenerate: it would truncate LOCAL history
-    # and re-run the turn on this machine, diverging from the peer.
-    refusal = remote_bound_refusal(slot)
+    # A relay archive is read-only: regenerate would truncate its history and
+    # re-run the turn on this machine.
+    refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
 
@@ -440,11 +440,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
 
-    # A crew-bound slot has no local edit-and-resend: it would truncate LOCAL
-    # history and re-run the edited turn on this machine, diverging from the peer.
-    # AFTER the app-ownership 404 above so a foreign app cannot tell a remote slot
-    # apart from a missing one via the 409.
-    refusal = remote_bound_refusal(slot)
+    # A relay archive is read-only. AFTER the app-ownership 404 above so a
+    # foreign app cannot tell an archive apart from a missing slot via the 409.
+    refusal = relay_archive_refusal(slot)
     if refusal is not None:
         return refusal
 
@@ -975,9 +973,8 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 # ``total_messages`` is a LIFETIME counter that survives
                 # trimming, and the prospective ``append`` bumped only the COPY's
                 # int -- so without this the edited row is invisible to every
-                # reader of it: ``_get_active_workspace`` picks the max-counter
-                # slot to resolve which workspace's lessons to load, and the
-                # Slack mirror compares the counter against its own start value
+                # reader of it: the Slack mirror compares the counter against
+                # its own start value
                 # to decide whether anything happened. Incremented by ONE here
                 # rather than adopted from the copy, whose value predates the
                 # arrived rows above (which bumped the live counter themselves).

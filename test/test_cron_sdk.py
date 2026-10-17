@@ -5,10 +5,12 @@ Properties 3, 4, 5, 6: Cron job creation, ownership, filtering, cleanup.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from hypothesis import given, settings
@@ -16,6 +18,7 @@ from hypothesis import strategies as st
 
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.cron import CronService
+from kiro_crew.llm_helpers import ToolApprovalPolicy
 
 
 def _run(value: Any) -> Any:
@@ -57,6 +60,12 @@ class MockCronJob:
     timezone: str = ""
     skip_dates: list[str] = field(default_factory=list)
     folder_id: str = ""
+    # Mirrors CronJob: "" is hook-based approval, 1800 is _JOB_TIMEOUT_SECS (the
+    # per-wake budget is never stored as 0), and 0 means the per-kind subprocess
+    # default (30s script / 300s command).
+    approval_mode: str = ""
+    timeout_secs: int = 1800
+    timeout: int = 0
 
 
 class MockCronService:
@@ -72,6 +81,10 @@ class MockCronService:
         kwargs["env"] = dict(kwargs.get("env") or {})
         kwargs["skip_dates"] = list(kwargs.get("skip_dates") or [])
         kwargs["timezone"] = kwargs.get("timezone") or ""
+        # _build_job stores the per-wake default rather than 0 when the field is
+        # unset, so a test asserting "default budget" sees the same number here
+        # as it would on a real job.
+        kwargs["timeout_secs"] = int(kwargs.get("timeout_secs") or 0) or 1800
         job = MockCronJob(
             id=f"job-{self._next_id}",
             user_paused=not kwargs.get("enabled", True),
@@ -410,6 +423,365 @@ class TestCronCalendarFieldsAgainstRealService:
             )
 
         assert svc.list_jobs(include_disabled=True) == []
+
+
+class TestCronApprovalAndTimeoutFieldsOnCreate:
+    """``approval_mode``/``timeout_secs``/``timeout`` reach the service from the SDK.
+
+    The gap this closes is the same shape as the calendar-field gap above:
+    ``_add_job_kwargs`` was a closed allowlist, so passing any of these three
+    to an ``add_job*`` method was a ``TypeError`` and an app could only get
+    them onto a job with a SECOND ``update_job`` write.
+
+    For ``approval_mode`` that second write is not merely inelegant. The job
+    exists on disk with hook-based approval until it lands, so a due-scan in
+    that window runs the job under a mode the app did not ask for, and an
+    unattended agent job stalls on a prompt nobody answers.
+    """
+
+    def test_add_job_threads_approval_mode(self) -> None:
+        """The sync create path persists the mode on the job."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/unattended",
+            message="summarise the last 24 hours",
+            every_secs=3600,
+            approval_mode="auto",
+        ))
+
+        assert job.approval_mode == "auto"
+
+    def test_add_job_defaults_leave_hook_based_approval(self) -> None:
+        """Omitting it keeps today's behaviour: hook-based approval."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/attended", message="go", every_secs=3600,
+        ))
+
+        assert job.approval_mode == ""
+
+    @pytest.mark.asyncio
+    async def test_add_job_async_threads_approval_mode(self) -> None:
+        """The loop-native path too -- the one an app hook actually awaits."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_async(
+            name="digest-app/unattended",
+            message="go",
+            every_secs=3600,
+            approval_mode="auto",
+        )
+
+        assert job.approval_mode == "auto"
+
+    @pytest.mark.asyncio
+    async def test_add_job_if_absent_async_threads_approval_mode(self) -> None:
+        """The atomic add-if-absent path, which is what ``bridges`` calls.
+
+        This one carries the most weight: it returns None once the name is
+        present, so an app correcting the mode in a follow-up ``update_job``
+        would skip that correction on every registration after the first.
+        """
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_if_absent_async(
+            name="digest-app/unattended",
+            message="go",
+            every_secs=3600,
+            approval_mode="auto",
+        )
+
+        assert job is not None
+        assert job.approval_mode == "auto"
+
+    def test_add_job_threads_the_timeout_pair(self) -> None:
+        """Both budgets reach the service from one create call."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/probe",
+            message="poll the queue",
+            every_secs=3600,
+            command="/bin/true",
+            timeout_secs=120,
+            timeout=60,
+        ))
+
+        assert job.timeout_secs == 120
+        assert job.timeout == 60
+
+    def test_add_job_defaults_leave_the_budgets_at_their_defaults(self) -> None:
+        """Omitting both keeps the per-wake default and the per-kind default."""
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = _run(sdk.add_job(
+            name="digest-app/probe", message="go", every_secs=3600,
+        ))
+
+        assert job.timeout_secs == 1800
+        assert job.timeout == 0
+
+    @pytest.mark.asyncio
+    async def test_add_job_async_threads_the_timeout_pair(self) -> None:
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_async(
+            name="digest-app/probe",
+            message="go",
+            every_secs=3600,
+            command="/bin/true",
+            timeout_secs=120,
+            timeout=60,
+        )
+
+        assert job.timeout_secs == 120
+        assert job.timeout == 60
+
+    @pytest.mark.asyncio
+    async def test_add_job_if_absent_async_threads_the_timeout_pair(self) -> None:
+        svc = MockCronService()
+        sdk = CronSDK("digest-app", svc)
+
+        job = await sdk.add_job_if_absent_async(
+            name="digest-app/probe",
+            message="go",
+            every_secs=3600,
+            command="/bin/true",
+            timeout_secs=120,
+            timeout=60,
+        )
+
+        assert job is not None
+        assert job.timeout_secs == 120
+        assert job.timeout == 60
+
+
+class TestCronApprovalAndTimeoutFieldsAgainstRealService:
+    """End-to-end against the real ``CronService``: one locked save, validated.
+
+    The mock class above proves the SDK forwards the kwargs; these prove the
+    real persistence owner accepts them at create, writes them in the job's
+    FIRST and only save, and refuses invalid values before anything reaches
+    disk.
+    """
+
+    def _service(self, tmp_path: Path) -> CronService:
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
+        return svc
+
+    def test_approval_mode_lands_in_the_first_persisted_write(
+        self, tmp_path: Path
+    ) -> None:
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        job = sdk.add_job(
+            name="digest-app/unattended",
+            message="summarise the last 24 hours",
+            every_secs=3600,
+            approval_mode="auto",
+        )
+
+        assert job.approval_mode == "auto"
+        # On disk after the single locked save, so the job is never observable
+        # with hook-based approval and no follow-up update_job is needed.
+        on_disk = json.loads(svc._path.read_text())
+        entry = next(j for j in on_disk["jobs"] if j["id"] == job.id)
+        assert entry["approval_mode"] == "auto"
+        assert entry["created_by"] == "app:digest-app"
+
+    def test_invalid_approval_mode_raises_and_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """An app author learns at create time, not at fire time."""
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="Invalid approval_mode"):
+            sdk.add_job(
+                name="digest-app/unattended",
+                message="go",
+                every_secs=3600,
+                approval_mode="yolo",
+            )
+
+        assert svc.list_jobs(include_disabled=True) == []
+
+    def test_the_timeout_pair_lands_in_the_first_persisted_write(
+        self, tmp_path: Path
+    ) -> None:
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        job = sdk.add_job(
+            name="digest-app/probe",
+            message="poll the queue",
+            every_secs=3600,
+            command="/bin/true",
+            timeout_secs=120,
+            timeout=60,
+        )
+
+        on_disk = json.loads(svc._path.read_text())
+        entry = next(j for j in on_disk["jobs"] if j["id"] == job.id)
+        assert entry["timeout_secs"] == 120
+        assert entry["timeout"] == 60
+
+    def test_out_of_range_wake_budget_raises_and_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="timeout_secs must be within"):
+            sdk.add_job(
+                name="digest-app/probe",
+                message="go",
+                every_secs=3600,
+                timeout_secs=99999,
+            )
+
+        assert svc.list_jobs(include_disabled=True) == []
+
+    def test_a_short_wake_budget_needs_its_subprocess_timeout(
+        self, tmp_path: Path
+    ) -> None:
+        """Why ``timeout`` is threaded alongside ``timeout_secs``.
+
+        ``build_job`` cross-checks the wake budget against the subprocess
+        timeout, falling back to 300s for a command when that is unset. So on a
+        command job a short budget is REFUSED unless the pair is set together,
+        and threading only ``timeout_secs`` would leave an app unable to create
+        a command job with a budget under 305s at all. Both arms are asserted:
+        a test that only showed the refusal would also pass if the create path
+        rejected every budget.
+        """
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+
+        with pytest.raises(ValueError, match="must cover the command/script"):
+            sdk.add_job(
+                name="digest-app/probe-refused",
+                message="go",
+                every_secs=3600,
+                command="/bin/true",
+                timeout_secs=60,
+            )
+        assert svc.list_jobs(include_disabled=True) == []
+
+        job = sdk.add_job(
+            name="digest-app/probe-accepted",
+            message="go",
+            every_secs=3600,
+            command="/bin/true",
+            timeout_secs=60,
+            timeout=30,
+        )
+        assert job.timeout_secs == 60
+        assert job.timeout == 30
+
+    def test_an_auto_mode_job_runs_without_an_approval_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """The reason an app wants this field, measured rather than asserted.
+
+        Takes the job the SDK actually persisted and feeds it to the real
+        gateway cron callback, then reads what that callback hands the agent
+        stream. ``auto`` must yield AUTO_APPROVE with no approval callback --
+        that absent callback is what "unattended" means. Both modes are
+        checked, because the auto arm alone would also pass on a callback that
+        never installed an approval hook for anything.
+        """
+        svc = self._service(tmp_path)
+        sdk = CronSDK("digest-app", svc)
+        unattended = sdk.add_job(
+            name="digest-app/unattended", message="go",
+            every_secs=3600, approval_mode="auto",
+        )
+        attended = sdk.add_job(
+            name="digest-app/attended", message="go", every_secs=3600,
+        )
+
+        def _dispatch(job: Any) -> dict[str, Any]:
+            # Local import: pulling the gateway module in at collection time
+            # would cost every other test in this file, which needs none of it.
+            # Same placement as test_cron_approval_mode.py's own harness.
+            from kiro_crew.slack.gateway import GatewayOrchestrator
+
+            gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
+            gw.sessions = MagicMock()
+            gw.sessions.get_pid = MagicMock(return_value=None)
+            gw.ctx_builder = MagicMock()
+            gw.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
+            gw.slack = MagicMock()
+            gw.conv_log = None
+            gw.dashboard_state = None
+            gw._owner_id = "U000"
+            gw.subagent_mgr = None
+            gw._cron_injecting = {}
+            gw._no_crons = False
+            gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+            gw.sessions.release = MagicMock()
+            gw.sessions.reset = AsyncMock()
+            gw.sessions.cancel_current = AsyncMock()
+            gw.ctx_builder.build_message = MagicMock(return_value=("msg", None))
+            gw.ctx_builder.hooks = MagicMock()
+            gw._interactive_approval = MagicMock(return_value="interactive_cb")
+
+            captured: dict[str, Any] = {}
+
+            async def fake_stream(client: Any, msg: Any, **kwargs: Any) -> str:
+                captured.update(kwargs)
+                return "done"
+
+            captured_cb: Any = None
+
+            # The fire-time vet refuses a job whose owning app is not installed
+            # and enabled, which no temp-dir fixture can satisfy. That gate is a
+            # different invariant with its own coverage; neutralising it here is
+            # what lets this test measure the approval decision rather than
+            # re-measure the gate.
+            with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
+                "kiro_crew.slack.gateway.vet_job_at_fire_time", lambda _job: None
+            ), patch(
+                "kiro_crew.slack.gateway.CronService"
+            ) as mock_cron_cls:
+
+                def capture_cron(on_job: Any = None, **kw: Any) -> Any:
+                    nonlocal captured_cb
+                    captured_cb = on_job
+                    stub = MagicMock()
+                    stub.start = AsyncMock()
+                    return stub
+
+                mock_cron_cls.create = AsyncMock(side_effect=capture_cron)
+
+                async def _init_and_run() -> None:
+                    await gw._init_cron()
+                    assert captured_cb is not None
+                    await captured_cb(job)
+
+                asyncio.run(_init_and_run())
+
+            return captured
+
+        auto = _dispatch(unattended)
+        assert auto["approval_policy"] == ToolApprovalPolicy.AUTO_APPROVE
+        assert auto["on_tool_approval"] is None
+
+        hook = _dispatch(attended)
+        assert hook["approval_policy"] == ToolApprovalPolicy.HOOK_BASED
+        assert hook["on_tool_approval"] is not None
 
 
 # ---------------------------------------------------------------------------

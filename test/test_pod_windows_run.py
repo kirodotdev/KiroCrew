@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import os
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew.pod import _windows_run as runs
+from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import windows as win
 from kiro_crew.pod.config import PodConfig
@@ -83,6 +88,18 @@ def model(tmp_path, monkeypatch):
             raise TimeoutError("publisher still running")
 
     monkeypatch.setattr(win.jobs, "retire_identity", retire)
+    # A `finished` producer is given the stop budget to exit on its own before
+    # it is ended; the model's producer outlives that budget unless a test says
+    # it exited. The budget each wait was given is recorded for the ordering test.
+    state.exited = False
+    state.waits = []
+
+    def wait(handle, *, timeout):
+        state.events.append("wait")
+        state.waits.append(timeout)
+        return state.exited
+
+    monkeypatch.setattr(win.jobs, "wait_identity", wait)
 
     def task(*args):
         state.events.append(args[0])
@@ -216,6 +233,7 @@ def test_changed_plane_and_duplicate_boot_cannot_replace_evidence(model):
 def test_boot_assigns_and_publishes_before_resume(model, monkeypatch, tmp_path, failure):
     cfg, state = model
     runs.reserve(cfg, "demo")
+    runs.claim(cfg, "demo")  # The boot claims first; the supervisor checks the claim.
     generation = runs.read(cfg, "demo")["generation"]
     state.failure = failure
 
@@ -748,10 +766,17 @@ def test_unclaimed_records_with_runtime_identity_are_not_cancellation_proof(star
 
 
 @pytest.mark.parametrize("failure", ["checkout", "venv", "dist"])
-def test_scheduled_preclaim_refusal_has_no_producer_retirement_proof(
+def test_scheduled_preclaim_refusal_is_retired_by_down_and_retried_by_up(
     startup, monkeypatch, tmp_path, failure
 ):
-    """A provisioning refusal leaves an unresolved run, not a drain receipt."""
+    """A provisioning refusal is written by a claimed producer `down` can retire.
+
+    The boot claims the reservation before its checkout, venv and dist checks, so
+    the refusal's record names the producer (pid + creation time) and carries its
+    `finished` receipt and exit code. While that producer is still on its call
+    stack `stop` refuses; once it is gone `stop` retires the generation and the
+    next `up` admits a fresh one, with no reboot and no manual deletion.
+    """
     cfg, state = startup
     checkout = tmp_path / "checkout"
     binary = checkout / "gateway"
@@ -764,42 +789,404 @@ def test_scheduled_preclaim_refusal_has_no_producer_retirement_proof(
     monkeypatch.setattr(rt.prov, "venv_bin", lambda *_a: binary)
     scheduler = win.schtasks
     record_refusal = rt._record_refusal
-    snapshots = []
     boot_results = []
 
     def before_refusal_write(config, name, reason):
-        # The scheduled producer is still on its call stack and has a write
-        # ahead of it. Even without a HOME, reserved does not mean retired.
+        # The producer is still running: its record names THIS process, so the
+        # only honest answer is to refuse, never to race its remaining writes.
         record = runs.read(config, name)
-        assert record["state"] == "reserved" and "publisher" not in record
-        snapshots.append(runs.path(config, name).read_bytes())
+        assert record["state"] == "preparing" and record["publisher"][0] == os.getpid()
         stopped = win.stop(config, name, timeout=0)
-        assert stopped.returncode == 1
-        assert runs.path(config, name).read_bytes() == snapshots[-1]
+        assert stopped.returncode == 1 and "calling process" in stopped.stderr
+        assert runs.read(config, name) == record
         assert state.task_exists and not config.home_dir(name).exists()
         record_refusal(config, name, reason)
 
     def run_wrapper(*args):
         response = scheduler(*args)
         if args[0] == "/Run":
-            code = rt.boot(cfg, "demo")
-            boot_results.append(code)
-            # cmd.exe writes this AFTER Python's boot body returns; it carries
-            # neither a generation nor the wrapper's creation identity.
-            win.result_path(cfg, "demo").write_text(f"{code}\n", encoding="utf-8")
+            boot_results.append(rt.boot(cfg, "demo"))
         return response
 
     monkeypatch.setattr(rt, "_record_refusal", before_refusal_write)
     monkeypatch.setattr(win, "schtasks", run_wrapper)
     assert win.start(cfg, "demo").returncode == 0  # Scheduler accepted /Run.
     assert boot_results == [3]
-    assert snapshots and runs.path(cfg, "demo").read_bytes() == snapshots[0]
+    finished = runs.read(cfg, "demo")
+    assert finished["state"] == "finished" and finished["exit"] == 3
+    assert finished["publisher"][0] == os.getpid()
     assert rt.refusal_reason(cfg, "demo")
-    assert win.last_result(cfg, "demo") == 3
+    assert win.last_result(cfg, "demo") == 3  # Written by the producer itself.
     assert win.unit_state(cfg, "demo") == ("failed", 1)
-    assert win.stop(cfg, "demo", timeout=0).returncode == 1
+    # The producer has exited. Model it as a different, gone process.
+    finished["publisher"] = [777, "100"]
+    runs.publish(cfg, "demo", finished)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    monkeypatch.setattr(win, "schtasks", scheduler)
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 0, stopped.stderr
+    assert runs.read(cfg, "demo") is None
+    assert not state.task_exists and not win.task_script_path(cfg, "demo").exists()
+    assert win.last_result(cfg, "demo") is None
+    assert "/End" in state.events and "/Delete" in state.events
+    assert "create_job" not in state.events and "retire" not in state.events
+    assert win.start(cfg, "demo").returncode == 0
+    fresh = runs.read(cfg, "demo")
+    assert fresh["state"] == "reserved" and fresh["generation"] != finished["generation"]
+
+
+def _unspawned(cfg, state="preparing", publisher=(777, "100"), exit_code=3):
+    """A claimed generation whose producer is a different process."""
+    runs.reserve(cfg, "demo")
+    record = runs.claim(cfg, "demo")
+    record["publisher"] = list(publisher)
+    runs.publish(cfg, "demo", record)
+    if state == "finished":
+        runs.finished(cfg, "demo", record, exit_code)
+    return runs.read(cfg, "demo")
+
+
+def test_producer_killed_before_any_result_is_retired_when_nothing_else_remains(
+    startup, monkeypatch
+):
+    """Hard kill right after the claim: no result, no refusal note, no HOME.
+
+    `open_identity` answering None is the kernel's word that the pid is gone or
+    names another process. With no gateway evidence and no HOME the generation is
+    retired, the task deleted, and a new `up` admitted.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    win.task_script_path(cfg, "demo").write_text("rem wrapper", encoding="utf-8")
+    _unspawned(cfg)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 0, stopped.stderr
+    assert runs.read(cfg, "demo") is None
+    assert not state.task_exists and not win.task_script_path(cfg, "demo").exists()
+    assert "retire" not in state.events
+    assert win.start(cfg, "demo").returncode == 0
+    assert runs.read(cfg, "demo")["state"] == "reserved"
+
+
+def test_live_provisioner_is_waited_for_never_terminated(startup, monkeypatch):
+    """`preparing` with a live producer is a boot in progress.
+
+    `stop` waits on the pinned process object up to its timeout. If the object
+    stays live it refuses and leaves everything in place; once the object
+    signals, the same call retires the generation. `retire_identity` is never
+    reached on this path, so an in-flight provisioner cannot be killed.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    record = _unspawned(cfg)
+    before = runs.path(cfg, "demo").read_bytes()
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: 8100)
+    monkeypatch.setattr(win.jobs, "retire_identity", lambda *_a, **_kw: pytest.fail("killed"))
+    exited = {"value": False}
+    monkeypatch.setattr(win.jobs, "wait_identity", lambda *_a, **_kw: exited["value"])
+    refused = win.stop(cfg, "demo", timeout=0)
+    assert refused.returncode == 1 and "still in progress" in refused.stderr
+    assert runs.path(cfg, "demo").read_bytes() == before
+    assert not {"/End", "/Delete"}.intersection(state.events)
+    exited["value"] = True
+    assert win.stop(cfg, "demo", timeout=0).returncode == 0
+    assert runs.read(cfg, "demo")["state"] == "retired"
+    assert runs.read(cfg, "demo")["generation"] == record["generation"]
+    assert "/End" in state.events and "/Delete" in state.events
+
+
+def test_finished_producer_still_exiting_is_retired_not_raced(startup, monkeypatch):
+    """A `finished` producer that outlives the stop budget is ended, then cleaned.
+
+    `stop` retires the exact pinned handle and waits for its object before it
+    touches a sidecar, so the result the producer wrote cannot land after cleanup.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    win.record_result(cfg, "demo", 3)
+    _unspawned(cfg, state="finished")
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: 8100)
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 0, stopped.stderr
+    assert state.events.index("retire") < state.events.index("/Delete")
+    assert runs.read(cfg, "demo") is None and win.last_result(cfg, "demo") is None
+
+
+def test_finished_producer_is_let_exit_before_it_is_ended(startup, monkeypatch):
+    """The receipt is the producer's last write to the record, not its last act.
+
+    `boot` publishes the receipt from its `finally`; the caller then logs the
+    boot's failure audit, which the audit log's writer flushes as the interpreter
+    exits. A `pod up` that reads the receipt and stops the pod at once would end
+    the producer before that event lands. So `stop` first waits on the pinned
+    object for the whole stop budget and never terminates a producer that exits
+    within it; only one that outlives the budget is ended, and the wait comes
+    first. Kernel waits here are modelled, since a real producer's exit timing is
+    what this test removes from the question.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    win.record_result(cfg, "demo", 3)
+    _unspawned(cfg, state="finished")
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: 8100)
+    state.exited = True
+    stopped = win.stop(cfg, "demo", timeout=7.5)
+    assert stopped.returncode == 0, stopped.stderr
+    assert "retire" not in state.events
+    assert state.waits == [7.5]  # The producer gets the full stop budget, not a poll.
+    assert state.events.index("wait") < state.events.index("/End")
+    assert runs.read(cfg, "demo")["state"] == "retired"
+    # A producer that outlives the budget is terminated, but only after the wait.
+    runs.publish(cfg, "demo", {**runs.read(cfg, "demo"), "state": "finished", "exit": 3})
+    state.events.clear()
+    state.waits.clear()
+    state.exited = False
+    assert win.stop(cfg, "demo", timeout=7.5).returncode == 0
+    assert state.waits == [7.5]
+    assert state.events.index("wait") < state.events.index("retire") < state.events.index("/End")
+
+
+@pytest.mark.parametrize(
+    "evidence", ["pid", "handoff", "home", "unreadable", "query", "job_key", "no_exit"]
+)
+def test_unspawned_retirement_fails_closed_on_unprovable_evidence(startup, monkeypatch, evidence):
+    """What a gone producer cannot vouch for stays where it is.
+
+    A supervised pid record or handoff marker means a gateway this record never
+    published. A HOME under a producer that died WITHOUT its receipt may hold an
+    unreaped child's writes. An evidence path that cannot be inspected counts as
+    present: only a clean "not found" is absence. An identity query error is
+    unknown, not death. A receipt carrying gateway keys, or none of its exit
+    code, is malformed.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    record = _unspawned(cfg)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    if evidence == "pid":
+        win.record_supervised_pid(cfg, "demo", 4242)
+    elif evidence == "handoff":
+        win.handoff_marker_path(cfg, "demo").write_text("777\n100\n", encoding="utf-8")
+    elif evidence == "home":
+        cfg.home_dir("demo").mkdir(parents=True)
+    elif evidence == "unreadable":
+        unreadable = win.pid_record_path(cfg, "demo")
+        real_lstat = Path.lstat
+
+        def lstat(self, *args, **kwargs):
+            if self == unreadable:
+                raise PermissionError(13, "denied", str(self))
+            return real_lstat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+    elif evidence == "query":
+        monkeypatch.setattr(
+            win.jobs, "open_identity", lambda *_a: (_ for _ in ()).throw(OSError(5, "denied"))
+        )
+    elif evidence == "job_key":
+        runs.publish(cfg, "demo", {**record, "job": "Global\\KiroCrew.Pod." + "a" * 32})
+    elif evidence == "no_exit":
+        runs.publish(cfg, "demo", {**record, "state": "finished"})
+    before = runs.path(cfg, "demo").read_bytes()
+    result = rt.stop_pod(cfg, "demo")
+    assert result.returncode == 1
+    assert runs.path(cfg, "demo").read_bytes() == before
+    assert "/Delete" not in state.events and state.task_exists
     assert win.start(cfg, "demo").returncode == 1
-    assert runs.path(cfg, "demo").read_bytes() == snapshots[0]
-    assert state.task_exists and win.task_script_path(cfg, "demo").exists()
-    assert not cfg.home_dir("demo").exists()
-    assert not {"/End", "/Delete", "create_job"}.intersection(state.events)
+
+
+def test_finished_producer_with_a_home_is_reclaimed_under_its_receipt(startup, monkeypatch):
+    """A refused seed leaves a HOME; the producer's receipt says it spawned no gateway.
+
+    That receipt is written only on the orderly refusal path, and `finish`
+    consumes it only once the HOME is gone. A descendant of a process the boot
+    started before any lifetime Job existed is outside what it vouches for, the
+    same residual the ready path's Job proof accepts.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    cfg.home_dir("demo").mkdir(parents=True)
+    _unspawned(cfg, state="finished")
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    stopped = rt.stop_pod(cfg, "demo")
+    assert stopped.returncode == 0, stopped.stderr
+    assert not cfg.home_dir("demo").exists() and runs.read(cfg, "demo") is None
+
+
+def test_retired_receipt_survives_cleanup_failure_and_retries(startup, monkeypatch):
+    cfg, state = startup
+    state.task_exists = True
+    cfg.home_dir("demo").mkdir(parents=True)
+    _unspawned(cfg, state="finished")
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: None)
+    real_cleanup = rt.cleanup_home
+    monkeypatch.setattr(rt, "cleanup_home", lambda *_a: 1)
+    first = rt.stop_pod(cfg, "demo")
+    assert first.returncode == 1
+    assert runs.read(cfg, "demo")["state"] == "retired"
+    assert win.start(cfg, "demo").returncode == 1  # A receipt is still prior state.
+    monkeypatch.setattr(rt, "cleanup_home", real_cleanup)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: pytest.fail("already proven"))
+    cfg.home_dir("demo").rmdir()
+    second = rt.stop_pod(cfg, "demo")
+    assert second.returncode == 0, second.stderr
+    assert runs.read(cfg, "demo") is None
+
+
+def test_unspawned_retirement_never_touches_a_newer_generation(startup, monkeypatch):
+    """A record that changes under `stop` belongs to someone else; nothing is deleted."""
+    cfg, state = startup
+    state.task_exists = True
+    _unspawned(cfg)
+
+    def replace_then_gone(*_a):
+        runs.path(cfg, "demo").unlink()
+        runs.reserve(cfg, "demo")
+        return None
+
+    monkeypatch.setattr(win.jobs, "open_identity", replace_then_gone)
+    result = win.stop(cfg, "demo", timeout=0)
+    assert result.returncode == 1 and "changed" in result.stderr
+    assert runs.read(cfg, "demo")["state"] == "reserved"
+    assert not {"/End", "/Delete"}.intersection(state.events) and state.task_exists
+
+
+def test_boot_without_a_reservation_refuses_and_writes_no_result(model, monkeypatch, capsys):
+    """`pod _run` outside a scheduled generation owns nothing to boot or record."""
+    cfg, _state = model
+    assert rt.boot(cfg, "demo") == 78
+    assert "unclaimed run reservation" in capsys.readouterr().out
+    assert runs.read(cfg, "demo") is None
+    assert win.last_result(cfg, "demo") is None
+
+
+def test_boot_withholds_the_receipt_when_the_drain_is_unproven(model, monkeypatch, capsys):
+    """A supervisor that cannot prove its Job empty leaves `preparing` in place.
+
+    The result is still recorded, so `pod up` stops waiting, but no `finished`
+    receipt is published: `stop` must keep refusing while gateway evidence remains.
+    """
+    cfg, _state = model
+    runs.reserve(cfg, "demo")
+    monkeypatch.setattr(
+        rt, "_boot_unguarded", lambda *_a: (_ for _ in ()).throw(win.DrainUnproven("job busy"))
+    )
+    monkeypatch.setattr(rt, "_record_refusal", lambda *_a: None)
+    assert rt.boot(cfg, "demo") == 78
+    assert runs.read(cfg, "demo")["state"] == "preparing"
+    assert win.last_result(cfg, "demo") == 78
+    monkeypatch.setattr(
+        rt, "_boot_unguarded", lambda *_a: (_ for _ in ()).throw(OSError("no built dist"))
+    )
+    runs.path(cfg, "demo").unlink()
+    runs.reserve(cfg, "demo")
+    assert rt.boot(cfg, "demo") == 78
+    assert runs.read(cfg, "demo")["state"] == "finished"
+
+
+def test_every_exit_of_a_claimed_boot_records_a_result(model, monkeypatch, capsys):
+    """`pod up` waits on the recorded result, so a claimed boot never leaves without one.
+
+    An exception that escapes the boot guards ends the process with Python's own
+    exit status 1; the result carries that failure and no receipt is published,
+    because the producer cannot vouch for how it ended. A `pod _run` whose claim is
+    refused owns no generation and writes nothing at all: the record may belong to
+    another producer still booting, and a shared result or refusal note written
+    here would make `pod up` abandon that legitimate boot.
+    """
+    cfg, _state = model
+    runs.reserve(cfg, "demo")
+    monkeypatch.setattr(
+        rt, "_boot_unguarded", lambda *_a: (_ for _ in ()).throw(ValueError("unexpected"))
+    )
+    with pytest.raises(ValueError):
+        rt.boot(cfg, "demo")
+    assert win.last_result(cfg, "demo") == 1
+    owned = runs.read(cfg, "demo")
+    assert owned["state"] == "preparing"
+    # A second claimant while another producer owns the generation: refused, silent.
+    win.result_path(cfg, "demo").unlink()
+    monkeypatch.setattr(
+        rt, "_boot_unguarded", lambda *_a: pytest.fail("a rejected claimant must not boot")
+    )
+    monkeypatch.setattr(rt, "_record_refusal", lambda *_a: pytest.fail("no refusal note"))
+    assert rt.boot(cfg, "demo") == 78
+    assert "unclaimed run reservation" in capsys.readouterr().out
+    assert win.last_result(cfg, "demo") is None
+    assert runs.read(cfg, "demo") == owned
+    assert not cfg.refusal_file("demo").exists()
+
+
+def test_boot_that_publishes_its_gateway_while_waited_for_is_not_retired(startup, monkeypatch):
+    """`preparing` that turns `ready` during the wait is a gateway now, not a refusal.
+
+    The producer is pinned live, then publishes `ready` and exits during the
+    first wait. With no supervised pid record or handoff marker on disk, only the
+    state re-check stands between `stop` and a `retired` receipt over a published
+    gateway; it refuses, leaves the `ready` record exactly as published, and
+    never reaches the task.
+    """
+    cfg, state = startup
+    state.task_exists = True
+    record = _unspawned(cfg)
+    monkeypatch.setattr(win.jobs, "open_identity", lambda *_a: 8100)
+    monkeypatch.setattr(win.jobs, "retire_identity", lambda *_a, **_kw: pytest.fail("killed"))
+    published: dict = {}
+
+    def wait(*_a, **_kw):
+        if not published:
+            published.update(
+                runs.ready(cfg, "demo", record, "Global\\KiroCrew.Pod." + "a" * 32, (4242, "100"))
+            )
+            return False
+        return True
+
+    monkeypatch.setattr(win.jobs, "wait_identity", wait)
+    stopped = win.stop(cfg, "demo", timeout=5)
+    assert stopped.returncode == 1
+    assert "published its gateway (ready)" in stopped.stderr
+    assert runs.read(cfg, "demo") == published
+    assert not {"/End", "/Delete"}.intersection(state.events)
+
+
+def test_retired_receipt_refuses_a_record_that_moved_on(startup):
+    """`retired` is a compare-and-swap: a stale `preparing` view never overwrites `ready`."""
+    cfg, _state = startup
+    record = _unspawned(cfg)
+    ready = runs.ready(cfg, "demo", record, "Global\\KiroCrew.Pod." + "a" * 32, (4242, "100"))
+    with pytest.raises(OSError, match="changed while retiring"):
+        runs.retired(cfg, "demo", record)
+    assert runs.read(cfg, "demo") == ready
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_retire_hint_names_the_manual_procedure_only_on_windows(monkeypatch, windows):
+    """`pod down` can itself refuse on Windows, so only there does the hint go on."""
+    monkeypatch.setattr(rt, "IS_WINDOWS", windows)
+    plain = pod_cli._retire_hint("demo")
+    deliberate = pod_cli._retire_hint("demo", deliberately=True)
+    assert plain.startswith("Retire it with `kirocrew pod down demo`.")
+    assert deliberate.startswith("Retire it deliberately with `kirocrew pod down demo`.")
+    for hint in (plain, deliberate):
+        assert hint.count(win.MANUAL_RETIREMENT_POINTER) == (1 if windows else 0)
+
+
+def test_windows_down_refusal_names_the_manual_procedure_once(startup, monkeypatch, capsys):
+    """The backend's refusal says what is unproven; the CLI alone adds the way out."""
+    cfg, _state = startup
+    refusal = "the boot is still in progress; retry"
+    monkeypatch.setattr(rt, "pod_name_mutex", lambda *_a: contextlib.nullcontext())
+    monkeypatch.setattr(rt, "is_active", lambda *_a: False)
+    monkeypatch.setattr(
+        rt,
+        "stop_pod",
+        lambda *_a: subprocess.CompletedProcess(["stop"], 1, stdout="", stderr=refusal),
+    )
+    monkeypatch.setattr(pod_cli, "_audit", lambda *_a, **_kw: None)
+    with pytest.raises(SystemExit) as exited:
+        pod_cli._down(cfg, argparse.Namespace(name="demo"))
+    assert exited.value.code == 1
+    err = capsys.readouterr().err
+    assert refusal in err
+    assert err.count(win.MANUAL_RETIREMENT_POINTER) == 1

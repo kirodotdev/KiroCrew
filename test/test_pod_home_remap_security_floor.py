@@ -192,7 +192,7 @@ class TestPodMintedGrantsAreFencedFromToolCalls:
     #
     # Consequence worth stating: a pod's posture is strictly NARROWER than the
     # non-pod baseline, where the standard tier leaves the REAL ~/.aws visible to
-    # tools (sandbox.py's _STANDARD_DIRS omits .aws so credential_process can
+    # tools (sandbox_tiers.py's _STANDARD_DIRS omits .aws so credential_process can
     # reach Bedrock auth). A pod denies the pod-local tree at the gate on top of
     # that. Red-first on the target set and on both separators.
     #

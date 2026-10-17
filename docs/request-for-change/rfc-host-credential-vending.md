@@ -47,7 +47,7 @@ Two masks produce those holes, and they reach different children:
 | `opencode`, `goose`, `pi`, `deepseek` | every tier | hidden | hidden |
 
 The tier rows come from `_STANDARD_DIRS`, `_CC_DIRS` and `_STRICT_DIRS` in
-`sandbox.py`: both of the tighter lists carry `.aws`. `~/.ssh` is hidden by a
+`sandbox_tiers.py`: both of the tighter lists carry `.aws`. `~/.ssh` is hidden by a
 separate `hide_ssh` switch in the launcher builders, true only for `strict`, which
 leaves `known_hosts` readable. The `cc` cell is split because
 `_build_seatbelt_profile` drops `.aws` from the `cc` list on purpose — Seatbelt
@@ -136,7 +136,7 @@ Every harness in `ENFORCED_ROUTINGS` therefore qualifies by construction, on eve
 tier, and so does every harness on `strict`, and on `cc` where the launcher hides
 `.aws` (Linux, not macOS) — with one exception the predicate must honour. The mask it reads is the one the launcher ACTUALLY
 applied, not the tier constants: a delegated `kiro-cli` spawn (`delegate_to_kiro`
-in `sandbox.py`, unconditional on Windows for a positively classified kiro
+in `sandbox_wrap.py`, unconditional on Windows for a positively classified kiro
 backend and on macOS when `kiro_internal_sandbox_enabled()` is true) goes to
 `_delegate_to_kiro_internal_sandbox`, which applies the env scrub and no tier
 directory mask, so that child reads the real `~/.aws` and `~/.ssh` and must get

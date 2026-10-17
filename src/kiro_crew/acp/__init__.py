@@ -2,6 +2,7 @@
 
 from kiro_crew.acp.client import (
     AcpClient,
+    AcpConversationBindingMismatch,
     AcpError,
     AcpPermissionNeeded,
     AcpProcessDied,
@@ -13,6 +14,7 @@ from kiro_crew.acp.types import AcpEvent, AcpPromptStats, JsonRpcMessage, JsonRp
 
 __all__ = [
     "AcpClient",
+    "AcpConversationBindingMismatch",
     "AcpError",
     "AcpPermissionNeeded",
     "AcpProcessDied",

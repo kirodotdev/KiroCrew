@@ -97,6 +97,42 @@ class TestPlantedLinkRefusedBeforeTheTreeIsBuilt(unittest.TestCase):
         self.assertTrue(target.is_dir())
         self.assertEqual(first, second)
 
+    def test_standalone_without_the_runtime_still_creates_the_chain(self):
+        """``store.py --ensure`` run by a Python without Kiro Crew must not crash."""
+        target = self.tmp / "data" / "runs" / "r1" / "report"
+
+        with mock.patch.object(store, "_runtime_ensure_directory", None):
+            with _anchor_at(self.tmp):
+                store.mkdir_refusing_links(target)
+
+        self.assertTrue(target.is_dir())
+
+    def test_every_runtime_import_in_store_has_a_standalone_fallback(self):
+        """A ``kiro_crew`` import outside ``try/except ImportError`` breaks ``store.py --ensure``."""
+        import ast
+
+        tree = ast.parse(Path(store.__file__).read_text(encoding="utf-8"))
+        guarded: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try) and any(
+                h.type is None
+                or (
+                    isinstance(h.type, ast.Name)
+                    and h.type.id in ("ImportError", "ModuleNotFoundError", "Exception")
+                )
+                for h in node.handlers
+            ):
+                for inner in node.body:
+                    guarded.update(id(n) for n in ast.walk(inner))
+        unguarded = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("kiro_crew")
+            and id(node) not in guarded
+        ]
+        self.assertEqual(unguarded, [])
+
     def test_a_root_outside_the_data_home_still_works(self):
         """Callers pass their own ``root``, and the tests use a temp directory.
 

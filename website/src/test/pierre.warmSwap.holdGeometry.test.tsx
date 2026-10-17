@@ -200,10 +200,47 @@ describe('WarmSwap holds until the impl has rows of its own', () => {
     expect(onVisible).toHaveBeenCalledTimes(1)
   })
 
-  it('still releases on the deadline when nothing ever paints', async () => {
+  it('keeps the readable fallback past the deadline while nothing paints, then swaps on the rows', async () => {
     // Only the deadline's own timer is faked, and it keeps advancing with real
     // time: the lazy chunk and the polling `findBy` still settle.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    const { container, onVisible } = await mountWithinBudgetPair()
+    fireResize()
+    expect(implHidden()).toBe(true)
+
+    // A pool that is up but slower than the deadline: revealing the impl here
+    // would show Pierre's empty shell in place of readable text.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2600) })
+    expect(fallbackOnScreen(container)).toHaveLength(1)
+    expect(implHidden()).toBe(true)
+    expect(onVisible).not.toHaveBeenCalled()
+
+    // The rows land late: the observer is still armed and releases on them.
+    await setPhase('rows')
+    fireResize()
+    expect(fallbackOnScreen(container)).toHaveLength(0)
+    expect(implHidden()).toBe(false)
+    expect(onVisible).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases on the plain text a pool that gives up after the deadline hands the surface', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    const { container } = await mountWithinBudgetPair()
+    fireResize()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2600) })
+    expect(implHidden()).toBe(true)
+
+    await setPhase('plain')
+    fireResize()
+    expect(implHidden()).toBe(false)
+    expect(fallbackOnScreen(container)).toHaveLength(0)
+    expect(screen.getByTestId('impl-plain')).toBeVisible()
+  })
+
+  it('still releases on the deadline when the fallback itself shows nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    // Nothing on either side has height: holding would only wedge the surface.
+    scrollHeightSpy?.mockImplementation(() => 0)
     const { container, onVisible } = await mountWithinBudgetPair()
     fireResize()
     expect(implHidden()).toBe(true)
@@ -212,5 +249,30 @@ describe('WarmSwap holds until the impl has rows of its own', () => {
     expect(implHidden()).toBe(false)
     expect(container.querySelector('[aria-hidden="true"]')).toBeNull()
     expect(onVisible).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a chat code block behind a slow highlight pool', () => {
+  it('shows its code text, not an empty shell, once the deadline passes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
+    const { PierreCode } = await import('../pierre')
+    const file: FileContents = { name: 'Main.java', contents: 'class Main {}\n' }
+    const { container } = render(<PierreCode file={file} langHint="java" />)
+    // `CodeImpl` is a React.lazy boundary over the `PierreImpl` chunk: a loaded
+    // runner can take past the default 1 s query timeout to resolve it.
+    expect(await screen.findByTestId('impl', undefined, { timeout: 5000 })).toBeInTheDocument()
+    fireResize()
+
+    // The pool is up but has not answered within the deadline.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2600) })
+    const visible = fallbackOnScreen(container)
+    expect(visible).toHaveLength(1)
+    expect(visible[0].textContent).toContain('class Main {}')
+    expect(implHidden()).toBe(true)
+
+    await setPhase('rows')
+    fireResize()
+    expect(fallbackOnScreen(container)).toHaveLength(0)
+    expect(implHidden()).toBe(false)
   })
 })

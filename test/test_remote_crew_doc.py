@@ -185,23 +185,18 @@ def test_the_registry_file_the_page_names_is_where_the_code_writes_it(doc_flat: 
     assert "`~/.kiro/crew/instances.json`" in doc_flat
 
 
-def test_the_two_feature_previews_the_page_sends_users_to_still_exist(doc_flat: str) -> None:
-    """Both peer-session sections start with a Feature Previews toggle, named."""
+def test_the_one_feature_preview_the_page_sends_users_to_still_exists(doc_flat: str) -> None:
+    """Both peer-session sections start with the same Feature Previews toggle, named."""
     flags = (ROOT / "website" / "src" / "utils" / "previewFlags.ts").read_text(encoding="utf-8")
-    for flag in ("PREVIEW_REMOTE_CREW_CHAT", "PREVIEW_INSTANCE_SESSIONS"):
-        assert f"export const {flag}" in flags, f"the page's preview toggle {flag} was removed"
+    assert "export const PREVIEW_REMOTE_CREW_CHAT" in flags
 
     panel = (
         ROOT / "website" / "src" / "pages" / "settings" / "FeaturePreviewsSection.tsx"
     ).read_text(encoding="utf-8")
-    for key in ("chat_on_a_crew", "remote_instance_sessions"):
-        assert (
-            f"featurePreviewsTab.{key}'" in panel
-        ), f"the page names the {key} card, which Feature Previews no longer renders"
-
-    labels = (ROOT / "website" / "src" / "i18n" / "locales" / "en.json").read_text(encoding="utf-8")
-    assert '"remote_instance_sessions": "Remote crew sessions"' in labels
-    assert "Feature Previews → Remote crew sessions" in doc_flat
+    assert "featurePreviewsTab.chat_on_a_crew'" in panel
+    assert "remote_instance_sessions" not in panel, "the retired second card is back"
+    assert doc_flat.count("Feature Previews → Chat on a crew") == 2
+    assert "Remote crew sessions" not in doc_flat
 
     manual = (ROOT / "website" / "src" / "i18n" / "locales" / "en.manual.json").read_text(
         encoding="utf-8"
@@ -210,14 +205,29 @@ def test_the_two_feature_previews_the_page_sends_users_to_still_exist(doc_flat: 
     assert "Feature Previews → Chat on a crew" in doc_flat
 
 
-def test_a_remote_bound_session_still_refuses_a_turn_while_its_tunnel_is_down(
-    doc_flat: str,
-) -> None:
-    """§A session that runs on another machine promises a refusal, not a silent failure."""
-    handlers = (ROOT / "src" / "kiro_crew" / "dashboard" / "chat_handlers.py").read_text(
-        encoding="utf-8"
+def test_the_off_switch_labels_the_page_quotes_are_the_ones_on_screen(doc_text: str) -> None:
+    """§Turning one crew off quotes the switch's two labels and the sidebar's words."""
+    import json
+
+    section = doc_text.split("## Turning one crew off", 1)[1].split("\n## ", 1)[0]
+    section = re.sub(r"\s+", " ", section)
+    en = json.loads(
+        (ROOT / "website" / "src" / "i18n" / "locales" / "en.json").read_text(encoding="utf-8")
     )
-    assert (
-        "reconnecting to the crew running this session" in handlers
-    ), "the page says a remote session refuses a turn and says it is reconnecting"
-    assert "says it is reconnecting" in doc_flat
+    panel = en["pages"]["settings"]["remoteCrewPanel"]
+    sidebar = en["pages"]["chatSidebar"]
+    for label in (
+        panel["crew_enabled"],
+        panel["crew_disabled"],
+        sidebar["crew_status_disabled"],
+        sidebar["crew_enable"],
+    ):
+        assert f"**{label}**" in section, f"the section no longer quotes the label {label!r}"
+
+
+def test_an_old_relay_chat_is_a_read_only_archive(doc_flat: str) -> None:
+    """§A session that runs on another machine names the archive refusal code."""
+    from kiro_crew.dashboard.relay_archive import RELAY_ARCHIVE_CODE
+
+    assert f"answers `{RELAY_ARCHIVE_CODE}`" in doc_flat
+    assert "read-only archive" in doc_flat

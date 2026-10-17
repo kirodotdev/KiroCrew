@@ -534,6 +534,15 @@ class TestEveryPushPathScansContent:
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
+        # The driver is a facade over owner modules; its text is the family's text.
+        family = {
+            "spine/driver.py": (
+                "spine/driver.py",
+                "spine/driver_git.py",
+                "spine/driver_publish.py",
+                "spine/driver_commit.py",
+            ),
+        }
         # ``renders_diff`` says whether the path scans rendered ``git diff`` output (and so
         # must neutralize the external helper with ``--no-ext-diff``) or reads objects
         # directly (and so must not render a diff to scan).
@@ -542,7 +551,9 @@ class TestEveryPushPathScansContent:
             ("spine/driver.py", False),
             ("backend/commit.py", True),
         ):
-            src = (root / rel).read_text(encoding="utf-8")
+            src = "".join(
+                (root / part).read_text(encoding="utf-8") for part in family.get(rel, (rel,))
+            )
             assert "scan_content_for_secrets" in src, f"{rel} does not scan pushed content"
             assert "diff.external=" in src, f"{rel} does not clear the external diff helper"
             if renders_diff:

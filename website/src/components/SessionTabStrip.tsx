@@ -3,10 +3,15 @@ import { X } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import {
+  TAB_GAP,
+  TAB_MAX_WIDTH,
+  TAB_MIN_WIDTH,
   TAB_STATUS_COLOR,
+  freezeAfterPointerClose,
   tabStatus,
   tabStatusPulses,
   truncateTabTitle,
+  type TabFreeze,
   type TabStatus,
 } from '../lib/sessionTabs'
 import { offlineProps } from '../utils/offline'
@@ -96,12 +101,64 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
   // Same reasoning (and same `slots` dependency) as the embed strip.
   useEffect(() => { remeasure() }, [tabs, slots, remeasure])
 
+  /**
+   * Chrome's repeated-close behaviour. A pointer close freezes the tab width
+   * and pads the strip's end so the next tab's close button slides under the
+   * pointer; see `freezeAfterPointerClose`. The freeze lasts until the pointer
+   * leaves the strip, the window resizes, a tab is opened, or a keyboard close
+   * happens. Nothing animates, so there is no in-flight layout for a quick
+   * second click to land on, and reduced motion needs no separate branch.
+   */
+  const [freeze, setFreeze] = useState<TabFreeze | null>(null)
+  const releaseFreeze = useCallback(() => setFreeze(null), [])
+  /**
+   * Which kind of pointer pressed last. Only a MOUSE close freezes: a finger
+   * or pen lifting off the screen fires `pointerleave` BEFORE the click, so a
+   * freeze set by that click would have no leave left to release it. Read at
+   * pointerdown because some engines fire `click` as a plain MouseEvent with
+   * no `pointerType`.
+   */
+  const lastPointerTypeRef = useRef<string>('mouse')
+  useEffect(() => {
+    if (!freeze) return
+    window.addEventListener('resize', releaseFreeze)
+    return () => window.removeEventListener('resize', releaseFreeze)
+  }, [freeze, releaseFreeze])
+  // A tab that was not there before is new content the frozen widths were
+  // never computed for, so the strip goes back to its normal layout.
+  const prevTabsRef = useRef(tabs)
+  useEffect(() => {
+    const prev = new Set(prevTabsRef.current)
+    prevTabsRef.current = tabs
+    if (tabs.some(k => !prev.has(k))) setFreeze(null)
+  }, [tabs])
+
+  const closeByPointer = useCallback((key: string) => {
+    if (lastPointerTypeRef.current !== 'mouse') { setFreeze(null); onClose(key); return }
+    const at = tabs.indexOf(key)
+    const closedEl = tabRefs.current[key]
+    const firstEl = tabRefs.current[tabs[0]]
+    if (at !== -1 && closedEl && firstEl) {
+      const closedRect = closedEl.getBoundingClientRect()
+      const next = freezeAfterPointerClose(
+        freeze,
+        { width: closedRect.width, isLast: at === tabs.length - 1 },
+        { firstLeft: firstEl.getBoundingClientRect().left, closedRight: closedRect.right, count: tabs.length },
+      )
+      if (next.width > 0) setFreeze(next)
+    }
+    onClose(key)
+  }, [tabs, freeze, onClose])
+
   // Keep the active tab on screen: it can be scrolled out by opening tabs, and
   // a keyboard switch would otherwise move the selection somewhere invisible.
+  // Not while frozen: closing the active tab moves the selection, and
+  // scrolling then would pull the next close button out from under the
+  // pointer. Releasing the freeze re-runs this.
   useEffect(() => {
-    if (!activeKey) return
+    if (!activeKey || freeze) return
     tabRefs.current[activeKey]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-  }, [activeKey, tabs])
+  }, [activeKey, tabs, freeze])
 
   /**
    * Roving arrow navigation, WAI-ARIA "tabs with automatic activation": the
@@ -131,6 +188,9 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
         const next = landing[Math.min(at, landing.length - 1)]
         tabRefs.current[next]?.focus()
       }
+      // The pointer freeze is for a pointer resting on a close button; a
+      // keyboard close reflows the strip at once.
+      setFreeze(null)
       onClose(key)
       return
     } else if (e.key === 'Enter' || e.key === ' ') {
@@ -147,7 +207,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
   if (tabs.length < 2) return null
 
   return (
-    // The bottom divider belongs to the shell that mounts the strip (ChatPage):
+    // The bottom divider belongs to the shell that mounts the strip (ChatPaneChrome):
     // while the desktop sidebar is collapsed the shell insets the strip past
     // the stationary toggle, and a border on this root would stop short of
     // the gutter and leave a notch. Drawing it once, on the shell, keeps the
@@ -159,8 +219,13 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
         aria-label={i18nT('components.sessionTabStrip.open_sessions')}
         aria-orientation="horizontal"
         data-testid="session-tab-strip"
-        className="flex items-center gap-1 overflow-x-auto px-1.5 py-1.5"
-        style={{ scrollbarWidth: 'none' }}
+        data-frozen={freeze ? 'true' : undefined}
+        // Leaving the strip ends a close sequence, and the tabs reflow to
+        // fill the room the closed tabs left.
+        onPointerLeave={releaseFreeze}
+        onPointerDownCapture={e => { lastPointerTypeRef.current = e.pointerType || 'mouse' }}
+        className="flex items-center overflow-x-auto px-1.5 py-1.5"
+        style={{ scrollbarWidth: 'none', columnGap: TAB_GAP }}
       >
         {tabs.map(key => {
           const slot = slots.find(s => s.key === key)
@@ -197,7 +262,7 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
               // helper's own contract: last prop wins, so spreading it first
               // would leave the refused click showing only the session name and
               // no reason. Closing still works: it is local.
-              {...offlineProps(connected, 'switch sessions', accessibleName)}
+              {...offlineProps(connected, i18nT('utils.offline.switch_sessions'), accessibleName)}
               onClick={() => onSelect(key)}
               // Middle-click closes, the other half of the convention this PR
               // already imports for OPENING on a sidebar row. A user who learned
@@ -206,16 +271,24 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
               onAuxClick={e => {
                 if (e.button !== 1) return
                 e.preventDefault()
-                onClose(key)
+                closeByPointer(key)
               }}
               onKeyDown={e => onKeyDown(e, key)}
-              style={flash?.key === key ? {
-                outline: '2px solid var(--accent)',
-                outlineOffset: '-2px',
-                transition: `outline-color ${FLASH_FADE_MS}ms`,
-                ...(flash.fading ? { outlineColor: 'transparent' } : {}),
-              } : undefined}
-              className={`group/tab flex items-center gap-2 px-2 py-1.5 rounded-md select-none shrink-0 text-xs border ${connected ? 'cursor-pointer' : 'cursor-not-allowed'} ${
+              style={{
+                // Equal widths: one flex basis for every tab, so they all
+                // shrink by the same amount and the title never sizes a tab.
+                // A frozen strip holds every tab at the width from the close.
+                ...(freeze
+                  ? { flex: '0 0 auto', width: freeze.width }
+                  : { flex: `1 1 ${TAB_MAX_WIDTH}px`, minWidth: TAB_MIN_WIDTH, maxWidth: TAB_MAX_WIDTH }),
+                ...(flash?.key === key ? {
+                  outline: '2px solid var(--accent)',
+                  outlineOffset: '-2px',
+                  transition: `outline-color ${FLASH_FADE_MS}ms`,
+                  ...(flash.fading ? { outlineColor: 'transparent' } : {}),
+                } : {}),
+              }}
+              className={`group/tab flex items-center gap-2 px-2 py-1.5 rounded-md select-none overflow-hidden text-xs border ${connected ? 'cursor-pointer' : 'cursor-not-allowed'} ${
                 active
                   ? 'bg-bg-elevated text-text border-border'
                   : 'text-muted hover:text-text hover:bg-bg-elevated/50 border-transparent'
@@ -227,7 +300,9 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
                 className={`shrink-0 w-1.5 h-1.5 rounded-full ${tabStatusPulses(status) ? 'animate-pulse' : ''}`}
                 style={{ background: TAB_STATUS_COLOR[status] }}
               />
-              <span className="whitespace-nowrap">{truncateTabTitle(title)}</span>
+              {/* flex-1 pins the close button to the tab's right edge, so it
+                  sits at the same offset in every tab. */}
+              <span className="flex-1 min-w-0 truncate whitespace-nowrap">{truncateTabTitle(title)}</span>
               <button
                 type="button"
                 // Closing a TAB is not closing the session — the session stays
@@ -235,8 +310,13 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
                 // sidebar's own destructive "Close session".
                 aria-label={i18nT('components.sessionTabStrip.close_tab_name', { name: title })}
                 title={i18nT('components.sessionTabStrip.close_tab_hint')}
-                onClick={e => { e.stopPropagation(); onClose(key) }}
-                className={`bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
+                onClick={e => {
+                  e.stopPropagation()
+                  // detail 0 is a click synthesized from Enter or Space on the
+                  // focused button: a keyboard close, which must not freeze.
+                  if (e.detail === 0) { setFreeze(null); onClose(key) } else closeByPointer(key)
+                }}
+                className={`shrink-0 bg-transparent border-none p-0 leading-none cursor-pointer transition-opacity ${
                   active
                     ? 'opacity-60 hover:opacity-100 hover:text-text'
                     : 'opacity-0 group-hover/tab:opacity-60 [@media(hover:none)]:opacity-60 group-focus-within/tab:opacity-60 hover:!opacity-100 hover:text-text'
@@ -247,6 +327,12 @@ export default function SessionTabStrip({ tabs, activeKey, cue, connected = true
             </div>
           )
         })}
+        {/* Holds the strip's content width during a close sequence, so a
+            scrolled strip does not jump and the next tab slides in by
+            exactly one slot. */}
+        {freeze && freeze.spacer > TAB_GAP && (
+          <div aria-hidden="true" data-testid="session-tab-spacer" style={{ flex: 'none', width: freeze.spacer - TAB_GAP, height: 1 }} />
+        )}
       </div>
       {/* The scroller hides its scrollbar, so a gradient is the only signal
           that tabs continue past the clipped edge. Same treatment as the

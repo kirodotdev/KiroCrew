@@ -53,6 +53,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     is_channel_session_key,
 )
+from kiro_crew.messaging.renderer import render_options_as_text
 from kiro_crew.messaging.split import bounded_for_delivery, split_markdown_safe
 from kiro_crew.mirror_admission import restorable_link, sign_mirror_admission
 from kiro_crew.platform.context import redact_via_context
@@ -359,16 +360,15 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # rewritten by in-sandbox code (the session map is writable there) fails to
     # verify and is refused. The transport's own record of the DM -- the pairing
     # the ``resolve_configured_target`` call above just left when it opened it --
-    # must agree whenever it exists. Empty for a room or thread target, which
-    # names nobody and is not signed.
+    # must agree whenever it exists. A room or thread target names nobody and is
+    # signed only when the session is key-named, whose every row is signed.
     link = ChannelLink(
         channel_type=channel_type,
         channel_id=conversation_id,
         thread_id=thread_id,
         principal=recipient_principal or None,
     )
-    if link.principal:
-        link = dataclasses.replace(link, admission=sign_mirror_admission(session_key, link))
+    link = dataclasses.replace(link, admission=sign_mirror_admission(session_key, link) or None)
     accepts_inbound = _resumes_inbound(transport, conversation_id, thread_id)
 
     # Refuse an occupied conversation BEFORE anything is posted into it. The
@@ -609,10 +609,8 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # off-window, and that read parses every tab_id sibling file. On the loop
     # thread it would stall every other chat turn and the liveness heartbeat.
     selection = await asyncio.to_thread(select_backfill_messages, state, slot)
-    max_chars = (
-        getattr(getattr(live_transport, "capabilities", None), "max_message_chars", 0)
-        or _FALLBACK_MAX_MESSAGE_CHARS
-    )
+    capabilities = getattr(live_transport, "capabilities", None)
+    max_chars = getattr(capabilities, "max_message_chars", 0) or _FALLBACK_MAX_MESSAGE_CHARS
 
     def _units_for(row: dict) -> list[str]:
         # redact_via_context is the canonical egress shim (a loaded companion's
@@ -629,6 +627,11 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         text, _ = redact_for_display(
             strip_control_comments(backfill_content(row)), redact_via_context
         )
+        if speaker == "Kiro Crew" and capabilities is not None:
+            # ``send_message`` takes no choices, so a backfilled answer builds no
+            # button: number its ``[OPTIONS:]`` choices rather than ship the raw
+            # marker, as the live mirror in ``_deliver_cross_surface_reply`` does.
+            text = render_options_as_text(text, capabilities)
         units = split_markdown_safe(f"{speaker}: {text}", max_chars, redactor=redact_via_context)
         # Re-bound: the splitter declines to cut when no budget is clean, and a
         # transport that caps what it accepts truncates the rest after every

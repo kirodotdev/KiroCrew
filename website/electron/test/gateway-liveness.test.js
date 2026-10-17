@@ -209,3 +209,61 @@ test("the supervisor polls liveness with the wider probe, not the boot poll's ch
   assert.match(body, /probe:\s*createBackendProbe\(\{\s*httpMod:\s*http,\s*url:\s*HEALTH_URL\s*\}\)/);
   assert.doesNotMatch(body, /probe:\s*\(\)\s*=>\s*checkBackend\(/);
 });
+
+// A host suspend, on an injected wall clock: each planned probe holds for
+// `heldMs` before it settles. A probe in flight when the host sleeps fails on
+// wake, so its rejection lands the whole sleep after it started.
+function suspendHarness(plan) {
+  const clock = { t: 0 };
+  const events = [];
+  const m = createLivenessMonitor({
+    probe: () => {
+      const { ok, heldMs } = plan.shift();
+      clock.t += heldMs;
+      return ok ? Promise.resolve() : Promise.reject(new Error("unresponsive"));
+    },
+    onUnresponsive: () => events.push("unresponsive"),
+    now: () => clock.t,
+    intervalMs: 10_000,
+    log: () => {},
+  });
+  return { m, events };
+}
+
+const slept = { ok: false, heldMs: 600_000 }; // in flight through a 10-minute sleep
+const timedOut = { ok: false, heldMs: 8_000 }; // failed at the probe's own budget
+
+test("a probe failure held across a host suspend is not counted", async () => {
+  const { m, events } = suspendHarness([slept, slept, slept]);
+  for (let k = 0; k < 3; k++) await m.tick();
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 0);
+});
+
+test("a real hang still trips on its third failure", async () => {
+  const { m, events } = suspendHarness([timedOut, timedOut, timedOut]);
+  await m.tick();
+  await m.tick();
+  assert.deepStrictEqual(events, []);
+  await m.tick();
+  assert.deepStrictEqual(events, ["unresponsive"]);
+});
+
+test("a suspend neither counts nor resets a run of real failures", async () => {
+  const { m, events } = suspendHarness([timedOut, timedOut, slept, timedOut]);
+  for (let k = 0; k < 3; k++) await m.tick();
+  assert.deepStrictEqual(events, []);
+  assert.strictEqual(m.getState().consecutiveFailures, 2);
+  await m.tick();
+  assert.deepStrictEqual(events, ["unresponsive"]);
+});
+
+test("a failure is read as a suspend only past two intervals", async () => {
+  const atBound = { ok: false, heldMs: 20_000 };
+  const pastBound = { ok: false, heldMs: 20_001 };
+  const { m } = suspendHarness([atBound, pastBound]);
+  await m.tick();
+  assert.strictEqual(m.getState().consecutiveFailures, 1);
+  await m.tick();
+  assert.strictEqual(m.getState().consecutiveFailures, 1);
+});

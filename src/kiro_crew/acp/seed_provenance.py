@@ -38,7 +38,8 @@ Four properties the callers depend on:
   path a LIVE client in this process is seeding stays that client's own.
 
 The sharer registry (:func:`share` / :func:`unshare` / :func:`has_sharers`)
-interleaves with the owner lifecycle in ``acp/client.py``; these are the
+interleaves with the owner lifecycle in ``acp/client_claude_seed.py``,
+``acp/client_seed_ownership.py`` and ``acp/client_lifecycle.py``; these are the
 invariants both modules hold together, each backed by a review ruling on the
 PR that introduced it:
 
@@ -546,6 +547,32 @@ def release_local(path: Path | str, owner: str) -> None:
     key = _key(path)
     if _LIVE.get(key) == owner:
         _LIVE.pop(key, None)
+
+
+def release_held(path: Path | str, owner: str) -> bool:
+    """Hand back whatever *owner* holds on *path* in this process, durably.
+
+    The teardown hand-back for a client whose ``shutdown`` never runs: its owner
+    claim goes through :func:`release`, its reader lease through :func:`unshare`,
+    and a token that holds neither performs no I/O at all. Nothing else is
+    touched -- the record and the file stay, which is the recorded-orphan shape
+    the next session adopts and repairs; a sibling's registrations under another
+    token are not read. Blocking (each withdrawal persists the sidecar), so it
+    belongs on off-loop paths. The in-process registries are read without
+    :data:`_LOCK`, as :func:`has_sharers` reads them: the read only decides
+    whether a withdrawal is owed, and each withdrawal re-reads under the lock and
+    is idempotent, so a concurrent transaction on the same path can at most make
+    this persist a hand-back that already landed. ``False`` when a durable
+    withdrawal was refused; the in-memory half is gone either way and the
+    persisted holder is reclaimable once this process exits.
+    """
+    key = _key(path)
+    done = True
+    if _LIVE.get(key) == owner:
+        done = release(path, owner) and done
+    if owner in _SHARERS.get(key, ()):
+        done = unshare(path, owner) and done
+    return done
 
 
 def held_by_another(path: Path | str, owner: str) -> bool:

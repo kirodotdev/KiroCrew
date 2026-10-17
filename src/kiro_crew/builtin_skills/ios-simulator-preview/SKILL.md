@@ -35,15 +35,17 @@ preview marker (see the `web-preview` skill).
 
 ```bash
 SKILL_DIR="${KIROCREW_HOME:-$HOME/.kiro/crew}/skills/ios-simulator-preview"
+SKILL_DIR="${SKILL_DIR/#\~/$HOME}"   # a literal ~ in KIROCREW_HOME is not expanded inside quotes
 ```
 
 Call the script by path; do not `cd` into the skill folder.
 
-`KIROCREW_HOME`, when set, must be an ABSOLUTE path (`~` is fine — the launcher
-expands it). The launcher is invoked by path from whatever directory the session
-is in, so a relative home would resolve differently per caller and a `start`
-from one project directory would not be visible to a `stop` from another. The
-launcher refuses a relative value with a JSON error rather than splitting state.
+`KIROCREW_HOME`, when set, must be an ABSOLUTE path (a leading `~` is fine — the
+launcher expands it, and the second line above expands it for `SKILL_DIR`, which
+the shell would otherwise leave literal). The launcher is invoked by path from
+whatever directory the session is in, so a relative home would resolve
+differently per caller and a `start` from one project directory would not be
+visible to a `stop` from another. The launcher refuses a relative value with a JSON error rather than splitting state.
 
 ## Workflow
 

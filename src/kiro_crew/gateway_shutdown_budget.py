@@ -27,3 +27,9 @@ UPDATE_INSTALLER_KILL_REAP_SECS = GRACEFUL_SHUTDOWN_SECS * 0.1
 
 #: The most shutdown waits for the update coordinator to stop its installer.
 UPDATE_INSTALLER_STOP_SECS = UPDATE_INSTALLER_TERM_GRACE_SECS + UPDATE_INSTALLER_KILL_REAP_SECS
+
+#: How long shutdown and the in-process restarts wait, after the sessions close, for
+#: dashboard turns that were mid-reply to finish unwinding. Each one saves the text
+#: its user watched stream before it ends, and the exit or exec that follows would
+#: otherwise beat that save.
+DASHBOARD_TURN_UNWIND_SECS = GRACEFUL_SHUTDOWN_SECS * 0.2

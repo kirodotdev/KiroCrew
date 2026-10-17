@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from typing import Any, Collection, Mapping
 
+from kiro_crew.acp.session_mcp import session_mcp_projection
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
 from kiro_crew.providers.mirrors.base import AgentConfigMirror, Concern
 from kiro_crew.providers.mirrors.base import Disposition as _D
 from kiro_crew.providers.mirrors.base import Ruling, SessionProjection
-from kiro_crew.providers.mirrors.opencode import opencode_projection
+from kiro_crew.providers.mirrors.opencode import place_single_binary_array
 
 __all__ = ["GooseMirror", "goose_projection"]
 
@@ -47,25 +48,42 @@ def goose_projection(
 ) -> SessionProjection:
     """The whole goose array -- spec translation AND pooled stubs.
 
-    The sibling harness's projection verbatim, because every rule it applies is a rule
-    this transport needs for the SAME measured reason rather than by resemblance: one
+    Placed by the sibling harness's own function
+    (:func:`~kiro_crew.providers.mirrors.opencode.place_single_binary_array`), because
+    every placement rule is one this transport needs for the SAME measured reason: one
     owner for both halves of the array (a stub appended after the projection withheld
-    that name would un-withhold it, and the stub is the unrestricted server), a
-    third-party server narrowed per tool withheld whole, and Crew's own control plane
-    withheld on the same terms when an operator narrowed it deliberately.
+    that name would un-withhold it, and the stub is the unrestricted server).
 
-    Named here rather than imported at the call site so a reader looking for goose's
-    projection finds goose's name, and so the day the two stop agreeing this is the one
-    function that changes.
+    What differs from opencode is the restriction. Every server the spec narrows per
+    tool is withheld WHOLE, Crew's own control plane included, and ``denied_tools``
+    stays empty. goose's per-call channel is not safe enough to keep a narrowed server
+    mounted: its ``permission.yaml`` can pre-approve a tool so it never asks, and the
+    agent's own shell can write that file mid-session, after any check Crew makes.
+
+    Blocking (parses the agent spec once), so callers run it off the event loop.
     """
-    return opencode_projection(
+    projection = session_mcp_projection(
         agent,
         stub_server_names=stub_server_names,
+        work_dir=work_dir,  # type: ignore[arg-type]
+    )
+    narrowed = frozenset(server for server, _tool in projection.disabled_tools)
+    out = place_single_binary_array(
+        projection,
+        label="goose",
+        unhonoured=narrowed,
         stub_elements=stub_elements,
-        work_dir=work_dir,
         session_key=session_key,
         channel_id=channel_id,
         session_token=session_token,
+    )
+    return SessionProjection(
+        params={"mcpServers": out},
+        disabled_servers=projection.disabled_servers,
+        restricted_servers=narrowed,
+        unhonoured_servers=narrowed,
+        zero_tools=projection.zero_tools,
+        derived_spec_snapshot=projection.derived_spec_snapshot,
     )
 
 
@@ -101,16 +119,16 @@ class GooseMirror(AgentConfigMirror):
                 _D.TRANSLATED,
                 "by withholding the server it narrows, Crew's own control plane "
                 "included, and declared as per_tool_deny=whole-server on the projection "
-                "record. This is a CONSERVATIVE choice, not a forced one. The channel is "
-                "on the wire -- _meta.goose.toolCall.toolName and extensionName on the "
-                "tool_call frame -- and Crew reads it: the identity table in acp._dispatch "
-                "carries a row for it, so a denied (server, tool) pair does match on the "
-                "per-call path. What is missing is the other half of what codex has: a "
-                "PROJECTION that mounts a narrowed server while filtering its denied "
-                "tools out of the array. Until that exists, withholding the whole server "
-                "is the choice that cannot leave a switched-off tool reachable, and it is "
-                "the conservative direction of the two. Follow-up: give this harness a "
-                "per-tool projection and the verdict becomes TRANSLATED per tool",
+                "record. A per-call refusal is reachable -- goose asks for every MCP call "
+                "under GOOSE_MODE=approve and names the pair as "
+                "_meta.goose.toolCall.extensionName and toolName -- but it is not safe to "
+                "keep a narrowed server mounted on it yet. goose's own permission.yaml "
+                "can list a tool under always_allow so goose runs it without asking, and "
+                "the agent's shell can write that file mid-session, after any check Crew "
+                "makes at spawn. Withholding the server is the only form no such write "
+                "can undo. Follow-up: trust only the _meta pair (refuse when absent) AND "
+                "have the sandbox deny writes to goose's config directory; then the "
+                "verdict can become per-call",
             ),
             Concern.MODEL: Ruling(
                 _D.DELIVERED,

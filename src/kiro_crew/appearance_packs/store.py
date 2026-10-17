@@ -37,6 +37,7 @@ from typing import Any
 
 from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
 from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
@@ -263,12 +264,17 @@ class AppearanceStore:
                 logger.warning("appearance-packs: skipping unreadable pack %s", entry.name)
         return packs
 
-    def pack_detail(self, pack_id: str) -> dict[str, Any] | None:
+    def pack_detail(self, pack_id: str, *, include_content: bool = True) -> dict[str, Any] | None:
         """A pack with its animation content inlined, ready to render.
 
         Content is returned inline rather than as URLs because a custom pack's files
         are user data outside the served tree; handing back paths would mean opening
         a file-serving route over that directory.
+
+        ``include_content=False`` is the same answer without any file's bytes: each
+        slot carries only its ``format`` and ``sourceImage`` is absent, so a client
+        can learn which player draws a slot without downloading the pack. The files
+        are still read, so it lists exactly the slots whose art loads.
         """
         ident = _safe_id(pack_id)
         if ident is None:
@@ -349,7 +355,13 @@ class AppearanceStore:
                     slot_fmt = "svg"
                 else:
                     slot_fmt = fmt
-                animations[slot] = {"content": content, "format": slot_fmt}
+                if include_content:
+                    animations[slot] = {"content": content, "format": slot_fmt}
+                elif content:
+                    # An empty file has no art. A client drops such a slot from a
+                    # full answer and falls back past it, so it is left out here,
+                    # where there is no content to show it is empty.
+                    animations[slot] = {"format": slot_fmt}
                 categories[category].append(slot)
                 if category == "random":
                     random_names.append(slot)
@@ -372,7 +384,7 @@ class AppearanceStore:
         # it through the slot map came back empty, which made the sprite editor
         # fall back to strips and an overwrite save silently DROP the sheet.
         source_name = sprite.get("source") if isinstance(sprite, dict) else None
-        if isinstance(source_name, str) and source_name:
+        if include_content and isinstance(source_name, str) and source_name:
             source = self._read_pack_file(pack_dir, source_name)
             if source is not None:
                 detail["sourceImage"] = source
@@ -608,7 +620,8 @@ class AppearanceStore:
             if backup is not None:
                 shutil.rmtree(backup, ignore_errors=True)
             return True
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError covers content UTF-8 cannot encode (a lone surrogate).
             logger.warning("appearance-packs: pack save failed: %s", exc)
             try:
                 if staging.exists():
@@ -884,7 +897,7 @@ class AppearanceStore:
             # modes mean nothing (Windows) instead of raising or silently
             # misleading.
             chmod_safe(tmp, 0o600)
-            os.replace(tmp, self._colour_path)
+            replace_with_retry(tmp, self._colour_path)
         finally:
             try:
                 tmp.unlink(missing_ok=True)

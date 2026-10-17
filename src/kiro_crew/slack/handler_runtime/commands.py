@@ -31,16 +31,20 @@ if TYPE_CHECKING:
         _dashboard_state,
         _discover_project_agents,
         _get_default_agent,
+        _hydrate_thread_overrides,
+        _hydrated_sessions,
         _is_slack_restricted,
         _list_all_agent_names,
         _mark_titled,
         _persist_channel_config,
+        _read_thread_overrides,
         _reload_orch_cfg,
         _resolve_agent_name,
         _set_default_agent,
         _thread_agents,
         _thread_projects,
         _vc,
+        agent_switch_target,
         build_timing_footer,
         compact_unsupported_backend,
         compact_unsupported_reply,
@@ -325,7 +329,21 @@ async def _bang_stop(
     # its queue, which in a shared thread holds co-tenants' messages;
     # ``stop_turn`` parks them for the successor instead.
     _kw = {"force": True, "preserve_queue": True} if force_stop else {}
-    outcome = await sessions.stop_turn(session_key, on_soft=_on_soft, on_hard=_on_hard, **_kw)
+    from kiro_crew.messaging.queue_drain import entries_queued_by
+    from kiro_crew.slack.events import _entry_owner
+
+    # The caller's queued messages, not the thread's: every member of a thread
+    # queues under its one session key, the way events.py's ``!stop`` scopes it.
+    # No stop hold here, unlike the buttons: this ``!stop`` itself runs as the
+    # turn ``_route_message`` registered on the thread's bare key, and every
+    # Slack drain reads that key as busy until this turn ends.
+    outcome = await sessions.stop_turn(
+        session_key,
+        owned_by=entries_queued_by(_entry_owner(user_id, channel)),
+        on_soft=_on_soft,
+        on_hard=_on_hard,
+        **_kw,
+    )
     # If stop_turn returned "idle" (no active turn), neither callback
     # fired — dismiss the stale "Stopping…" ephemeral explicitly.
     if outcome == "idle":
@@ -659,6 +677,8 @@ async def _bang_thread_agent(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
+    from kiro_crew.slack import thread_override_slots
+
     parts = cmd_text.split()
     if len(parts) < 2:
         current = _thread_agents.get(session_key, "")
@@ -685,6 +705,29 @@ async def _bang_thread_agent(
                 )
             except Exception:
                 logger.debug("Failed to clear agent in conversation log", exc_info=True)
+            # Before any further await: a hydration whose read began before this write
+            # landed finds the count moved and reads again (handler_runtime/inbound.py).
+            thread_override_slots.note_command_write()
+        # Hydration prefers a recorded execution template over the cleared field, and reads
+        # the old agent back if the write failed. Such a thread keeps a pin with no agent
+        # set, so eviction cannot undo the reset, and so does one whose metadata cannot be
+        # read back (None); only a read that shows nothing to restore releases the pin.
+        read_back = await asyncio.to_thread(
+            thread_override_slots.read_back, session_key, conversation_log, _read_thread_overrides
+        )
+        # Before the pin or the release, the thread is hydrated again and its agent cleared
+        # again, with no await after the hydration: an evicted thread reads its project back,
+        # and an agent that a hydration published from a read made before the write landed
+        # is cleared.
+        await _hydrate_thread_overrides(session_key, conversation_log)
+        _thread_agents.pop(session_key, None)
+        held = True
+        if read_back is None or read_back[0]:
+            held = thread_override_slots.pin(
+                session_key, "agent", _hydrated_sessions, _thread_agents, _thread_projects
+            )
+        else:
+            thread_override_slots.unpin(session_key, "agent")
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -694,7 +737,11 @@ async def _bang_thread_agent(
             metadata={"user": user_id, "channel": channel, "scope": "thread"},
         )
         await sessions.remove(session_key)
-        await slack.post_message(channel, "🔄 Thread agent reset.", reply_ts)
+        await slack.post_message(
+            channel,
+            "🔄 Thread agent reset." if held else thread_override_slots.unheld_reset_text("agent"),
+            reply_ts,
+        )
         await _add_phase_reaction(slack, channel, msg_ts, "done")
         return ""
     resolved = await asyncio.to_thread(
@@ -706,6 +753,43 @@ async def _bang_thread_agent(
             channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
         return ""
+    # A project agent's name is whatever its spec declares; keep it only within the
+    # maps' per-value limit, checked before anything is pinned or written.
+    too_long = thread_override_slots.setter_refusal("agent", resolved)
+    if too_long:
+        logger.warning(
+            "!ta refused for %s: agent name of %d characters", session_key, len(resolved)
+        )
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="!ta",
+            tool_kind="command",
+            outcome="agent_denied_too_long",
+            metadata={"user": user_id, "channel": channel, "length": len(resolved)},
+        )
+        await slack.post_message(channel, too_long, reply_ts)
+        return ""
+    # Hydrated again, with no await before the pin: a thread evicted while this command
+    # awaited reads both overrides back; if that hydration gives up, the pin leaves the
+    # thread unhydrated, and its next message reads them.
+    await _hydrate_thread_overrides(session_key, conversation_log)
+    # Pinned: hydration might not read this choice back (see thread_override_slots).
+    # Pinned before the write: a refused thread gets no row from this command.
+    if not thread_override_slots.pin(
+        session_key, "agent", _hydrated_sessions, _thread_agents, _thread_projects
+    ):
+        logger.warning("!ta refused for %s: every thread slot is pinned", session_key)
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="!ta",
+            tool_kind="command",
+            outcome="agent_denied_capacity",
+            metadata={"agent": resolved, "user": user_id, "channel": channel, "scope": "thread"},
+        )
+        await slack.post_message(channel, thread_override_slots.refusal_text(), reply_ts)
+        return ""
     _thread_agents[session_key] = resolved
     if conversation_log:
         try:
@@ -714,6 +798,9 @@ async def _bang_thread_agent(
             )
         except Exception:
             logger.debug("Failed to persist agent to conversation log", exc_info=True)
+        # The pin above already keeps a stale read off this thread; counting the write
+        # keeps the hydration rule independent of the pin.
+        thread_override_slots.note_command_write()
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
@@ -743,6 +830,8 @@ async def _bang_project(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
+    from kiro_crew.slack import thread_override_slots
+
     parts = cmd_text.split(maxsplit=1)
     if len(parts) < 2:
         current = _thread_projects.get(session_key, "")
@@ -765,6 +854,25 @@ async def _bang_project(
                 )
             except Exception:
                 logger.debug("Failed to clear project in conversation log", exc_info=True)
+            # Before any further await, as for `!ta off`.
+            thread_override_slots.note_command_write()
+        # As for `!ta off`: a thread hydration would read a project back for (the write
+        # failed), or whose metadata cannot be read back, keeps a pin with no project set;
+        # any other releases its pin.
+        read_back = await asyncio.to_thread(
+            thread_override_slots.read_back, session_key, conversation_log, _read_thread_overrides
+        )
+        # As for `!ta off`, before the pin or the release the thread is hydrated again and
+        # its project cleared again, with no await after the hydration.
+        await _hydrate_thread_overrides(session_key, conversation_log)
+        _thread_projects.pop(session_key, None)
+        held = True
+        if read_back is None or read_back[1]:
+            held = thread_override_slots.pin(
+                session_key, "project", _hydrated_sessions, _thread_agents, _thread_projects
+            )
+        else:
+            thread_override_slots.unpin(session_key, "project")
         sel().log_tool_invocation(
             session_key=session_key,
             source="slack",
@@ -774,9 +882,31 @@ async def _bang_project(
             metadata={"user": user_id, "channel": channel},
         )
         await sessions.remove(session_key)
-        await slack.post_message(channel, "Thread project cleared.", reply_ts)
+        await slack.post_message(
+            channel,
+            (
+                "Thread project cleared."
+                if held
+                else thread_override_slots.unheld_reset_text("project")
+            ),
+            reply_ts,
+        )
         return ""
     resolved = os.path.realpath(os.path.expanduser(raw_path))
+    # Checked first, so no record below ever carries an over-limit path: the maps keep
+    # a value only within their per-value limit (a Windows long path can pass it).
+    too_long = thread_override_slots.setter_refusal("project", resolved)
+    if too_long:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="!project",
+            tool_kind="command",
+            outcome="project_denied_too_long",
+            metadata={"user": user_id, "channel": channel, "length": len(resolved)},
+        )
+        await slack.post_message(channel, too_long, reply_ts)
+        return ""
     if is_sensitive_path(resolved):
         sel().log_tool_invocation(
             session_key=session_key,
@@ -801,6 +931,26 @@ async def _bang_project(
         )
         await slack.post_message(channel, f"Not a directory: `{resolved}`", reply_ts)
         return ""
+    # Hydrated again, with no await before the pin: a thread evicted since its message
+    # hydrated reads both overrides back; if that hydration gives up, the pin leaves the
+    # thread unhydrated, and its next message reads them.
+    await _hydrate_thread_overrides(session_key, conversation_log)
+    # Pinned: hydration might not read this choice back (see thread_override_slots).
+    # Pinned before the write: a refused thread gets no row from this command.
+    if not thread_override_slots.pin(
+        session_key, "project", _hydrated_sessions, _thread_agents, _thread_projects
+    ):
+        logger.warning("!project refused for %s: every thread slot is pinned", session_key)
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="!project",
+            tool_kind="command",
+            outcome="project_denied_capacity",
+            metadata={"user": user_id, "channel": channel, "project": resolved},
+        )
+        await slack.post_message(channel, thread_override_slots.refusal_text(), reply_ts)
+        return ""
     _thread_projects[session_key] = resolved
     if conversation_log:
         try:
@@ -809,6 +959,8 @@ async def _bang_project(
             )
         except Exception:
             logger.debug("Failed to persist project to conversation log", exc_info=True)
+        # As for `!ta <name>`.
+        thread_override_slots.note_command_write()
     sel().log_tool_invocation(
         session_key=session_key,
         source="slack",
@@ -1282,6 +1434,38 @@ async def _route_bang_command(
             )
             await slack.post_message(channel, "⛔ Not authorized to compact.", reply_ts)
             return True  # deny-by-default: do not fall through
+
+    # ── /agent <name>: the thread's agent, switched by Crew ──
+    # The same switch as ``!ta <name>`` and the same owner-only gate as every
+    # other agent command. Without this the words reach the model as a prompt
+    # (or, forwarded to kiro-cli, are refused by the native skill projection).
+    # A thread linked to a dashboard chat never gets here: its message goes to
+    # that chat, whose runner switches the chat's own agent.
+    _agent_target = agent_switch_target(cmd_text)
+    if _agent_target is not None:
+        if not is_owner(user_id):
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.owner_command",
+                outcome="denied",
+                source="slack",
+                resources="/agent",
+                error="unauthorized sender",
+            )
+            await slack.post_message(channel, "⛔ Owner-only command.", reply_ts)
+            return True
+        await _bang_thread_agent(
+            f"!ta {_agent_target}",
+            slack,
+            sessions,
+            channel,
+            reply_ts,
+            msg_ts,
+            session_key,
+            user_id,
+            conversation_log,
+        )
+        return True
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if cmd_text.startswith("!"):

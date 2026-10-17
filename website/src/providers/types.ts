@@ -35,6 +35,14 @@ export interface TokenBreakdown {
   total: number
 }
 
+/** Estimated token use over one period (see `NormalizedUsage.sessions.estimatedTokens`). */
+export interface TokenEstimate {
+  input: number
+  output: number
+  /** Model requests the estimate is built from. */
+  requests: number
+}
+
 export interface NormalizedUsage {
   /** Session analytics are still refreshing; billing data is already usable. */
   refreshing?: boolean
@@ -51,6 +59,17 @@ export interface NormalizedUsage {
      * failure the usage page must not render as a confident zero.
      */
     refusedTranscripts: number
+    /**
+     * Kiro CLI token use estimated from each turn's context size and request
+     * count, because kiro-cli records no token counts. Absent when the provider
+     * does not report it.
+     */
+    estimatedTokens?: {
+      thisMonth: TokenEstimate
+      lastMonth: TokenEstimate
+      /** Some session documents could not be read, so the sums leave those documents out. */
+      incomplete: boolean
+    }
     dailyHistory: {
       date: string
       sessions: number
@@ -58,6 +77,8 @@ export interface NormalizedUsage {
       toolCalls: number
       /** Credits billed that local day; absent when the provider does not report per-day spend. */
       credits?: number
+      /** Estimated input plus output tokens that local day; absent when the provider does not report it. */
+      estTokens?: number
     }[]
   }
   billing: {
@@ -93,6 +114,18 @@ export interface NormalizedProviderHook {
   command: string
   matcher?: string
   source?: string
+}
+
+/** A configured hook that validated but reaches no provider hook config.
+ *  `reason` is a wire value from the gateway (`disabled`, `confirm`,
+ *  `trigger`, `agent_action`); `command` holds an agent action's prompt. */
+export interface NormalizedUnsentHook {
+  name: string
+  trigger: string
+  matcher: string
+  actionType: string
+  command: string
+  reason: string
 }
 
 export interface NormalizedPlugin {
@@ -155,8 +188,9 @@ export interface ProviderAdapter {
   /** The model a NEW session on this KiroCrew agent would run on ('' = the
    *  backend picks). Takes a KiroCrew agent name, not a kiro agent template:
    *  the per-agent default is stored per agent, and several agents can share
-   *  one template. */
-  resolveModel(agentName: string): Promise<string>
+   *  one template. `app` is the app that owns the session, when one does: its
+   *  own model setting is then part of the answer. */
+  resolveModel(agentName: string, app?: string): Promise<string>
   /** The provider-level default model for NEW sessions ('' when none is set).
    *  Distinct from resolveModel, which resolves a specific agent template. */
   resolveDefaultModel(): Promise<string>
@@ -168,6 +202,10 @@ export interface ProviderAdapter {
   fetchUsage(): Promise<NormalizedUsage>
 
   fetchProviderHooks(): Promise<Record<string, NormalizedProviderHook[]>>
+  /** Hooks the user configured that Crew accepted but left out of the
+   *  provider's own hook config, each with the reason. Optional: a provider
+   *  that drops nothing has none to report. */
+  fetchUnsentProviderHooks?(): Promise<NormalizedUnsentHook[]>
 
   listPlugins(): Promise<NormalizedPlugin[]>
   installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>

@@ -3,12 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 vi.mock("@radix-ui/react-popover", async () => await import("./__mocks__/@radix-ui/react-popover"))
 
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { api, ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 import type { RootState } from '../store'
+import { reconcileGoneSubagent } from '../store/chatSlice'
 
 vi.mock('../api/client', () => {
   // Declared INSIDE the factory: vi.mock is hoisted above module-level
@@ -29,6 +30,7 @@ vi.mock('../api/client', () => {
     api: {
       resolveApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
+      spawnList: vi.fn(() => Promise.resolve({ agents: [] })),
     },
     ApiError: MockApiError,
   }
@@ -169,7 +171,7 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
-    const baseBtn = buttons.find(b => b.textContent?.includes('commands'))!
+    const baseBtn = buttons.find(b => /Trust any .+ command/.test(b.textContent ?? ''))!
     fireEvent.click(baseBtn)
     await waitFor(() => {
       expect(api.approveChatSlot).toHaveBeenCalledWith(
@@ -177,6 +179,38 @@ describe('ChatInput approval flow', () => {
       )
     })
     expect(api.resolveApproval).not.toHaveBeenCalled()
+  })
+
+  it('Trust dropdown timed command row sends ttl_seconds and says when it ends', async () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Trust'))
+    const timed = screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust “ls /tmp” for an hour'))!
+    fireEvent.click(timed)
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_command', { request_id: 'ap-123', pattern: 'ls /tmp', ttl_seconds: 3600 }
+      )
+    })
+    expect(api.resolveApproval).not.toHaveBeenCalled()
+    const granted = await screen.findByText(/^Trusted “ls \/tmp” until .+, then it asks again$/)
+    // A landed grant wears the clock, never the warning lock of a refusal.
+    const notice = granted.closest('[role="status"]')!
+    expect(notice.querySelector('svg.lucide-clock')).not.toBeNull()
+    expect(notice.querySelector('svg.lucide-lock')).toBeNull()
+  })
+
+  it('Trust dropdown timed family row names the family it trusted', async () => {
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getAllByRole('menuitem').find(b => b.textContent?.startsWith('Trust any ls command for an hour'))!)
+    await waitFor(() => {
+      expect(api.approveChatSlot).toHaveBeenCalledWith(
+        'slot-1', 'trust_base', { request_id: 'ap-123', pattern: 'ls *', ttl_seconds: 3600 }
+      )
+    })
+    expect(await screen.findByText(/^Trusted any “ls” command until .+, then it asks again$/)).toBeInTheDocument()
   })
 
   it('Trust dropdown entire tool calls approveChatSlot with trust action', async () => {
@@ -324,21 +358,22 @@ describe('ChatInput approval flow', () => {
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     const buttons = screen.getAllByRole('menuitem')
-    expect(buttons.some(b => b.textContent?.includes('ls') && b.textContent?.includes('commands'))).toBe(true)
+    expect(buttons.some(b => b.textContent?.includes('ls') && /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)
   })
 
   it('chat surface offers every trust tier for a read-only shell command (regression guard)', () => {
     // The channels surface deliberately drops the command-scoped tiers
     // (hasCommand={false}); the chat surface must keep every tier — a future
     // change must not silently strip trust_command / trust_base here (#4421).
-    // Four tiers for this fixture, because it is also read-only.
+    // Four tiers for this fixture, because it is also read-only, and each
+    // command-scoped tier carries a timed hour row and rest-of-today row.
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     fireEvent.click(screen.getByText('Trust'))
     const items = screen.getAllByRole('menuitem')
-    expect(items).toHaveLength(4)
+    expect(items).toHaveLength(8)
     expect(items.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)          // trust_command
-    expect(items.some(b => b.textContent?.includes('commands'))).toBe(true)         // trust_base
+    expect(items.some(b => /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)         // trust_base
     expect(items.some(b => b.textContent === 'Trust read-only commands')).toBe(true)             // trust_reads
     expect(items.some(b => b.textContent?.includes('Trust all tools for this session'))).toBe(true)  // trust
   })
@@ -351,7 +386,7 @@ describe('ChatInput approval flow', () => {
     fireEvent.click(screen.getByText('Trust'))
     // Should show base command option (only for shell)
     const buttons = screen.getAllByRole('menuitem')
-    expect(buttons.some(b => b.textContent?.includes('commands'))).toBe(true)
+    expect(buttons.some(b => /Trust any .+ command/.test(b.textContent ?? ''))).toBe(true)
   })
 
   it('non-shell tool hides base command option', () => {
@@ -369,7 +404,7 @@ describe('ChatInput approval flow', () => {
     // Match the base tier's whole shape, not the bare word "commands": the
     // read-only tier also says "commands", so a substring test would pass
     // whatever the base tier does.
-    expect(buttons.some(b => /Trust all .+ commands/.test(b.textContent || ''))).toBe(false)
+    expect(buttons.some(b => /Trust any .+ command/.test(b.textContent || ''))).toBe(false)
   })
 
   it('keeps the session tier when the server cannot prove a command scope', () => {
@@ -693,6 +728,142 @@ describe('ChatInput sub-agent spawn-approval banner', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })
     expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
+  })
+
+  /**
+   * A 404 means the backend holds no future for this approval: it was decided
+   * or expired where this client could not see it (a missed frame across a
+   * reconnect, a gateway restart). The activity panel already classifies that
+   * through `isTerminalApprovalRefusal` (#11180); this banner resolves the SAME
+   * id and must not keep offering a retry that can never succeed, silently.
+   */
+  it('withdraws the banner and says why when the spawn approval is already gone', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+
+    await waitFor(() => {
+      expect(screen.queryByText(/awaiting your approval to run/)).not.toBeInTheDocument()
+    })
+    // A rejected request is an error (AUTOSDE errors-use-error-notice), so it is
+    // an ErrorNotice, not the status strip. This banner sent it, so it is the
+    // one surface that reports it; the panel shows only neutral liveness.
+    expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    const gone = i18nT('components.approvalCard.approval_no_longer_pending')
+    expect(screen.queryAllByRole('status').filter(el => el.textContent?.includes(gone))).toEqual([])
+    expect(api.resolveApproval).toHaveBeenCalledTimes(1)
+    // The empty authoritative process inventory retires the card after the
+    // controls disappear; it does not survive reconnect as pending.
+    await waitFor(() => expect(store.getState().chat.subagents.a1.status).toBe('stopped'))
+    expect(store.getState().chat.subagents.a1.approving).toBe(false)
+  })
+
+  it('reports a failed liveness read after a gone verdict and leaves the card unresolved', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+
+    // The rejected reconciliation is observable, as an error notice of its own.
+    await waitFor(() => {
+      expect(screen.getByTestId('spawn-liveness-error')).toHaveTextContent(
+        i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
+      )
+    })
+    expect(screen.getByTestId('spawn-liveness-error')).toHaveAttribute('role', 'alert')
+    // Beside the refusal, not over it: the failed read lands a microtask after
+    // the refusal is shown, and one shared notice would leave no surface
+    // reporting the refusal this banner sent.
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    expect(screen.getByTestId('approval-decision-error')).not.toHaveTextContent(
+      i18nT('pages.chat.subagentProgressBar.liveness_check_failed'),
+    )
+    expect(api.spawnList).toHaveBeenCalledTimes(1)
+    // A failed read settles nothing: still gone-and-unresolved, never retired,
+    // and the stale approval controls do not come back.
+    const card = store.getState().chat.subagents.a1
+    expect(card.status).toBe('pending')
+    expect(card.approvalGone).toBe('spawn:a1')
+    expect(screen.queryByRole('button', { name: /^Approve$/ })).not.toBeInTheDocument()
+  })
+
+  it('drops the liveness notice once another reader settles the card, keeping the refusal', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    await waitFor(() => expect(screen.getByTestId('spawn-liveness-error')).toBeInTheDocument())
+
+    // The chip's poll (or the card's re-read) answers: the inventory holds no
+    // row, so the card retires and "couldn't check" is no longer true.
+    await store.dispatch(reconcileGoneSubagent({ slot: 'slot-1', id: 'a1', approval_id: 'spawn:a1' }))
+    await waitFor(() => expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument())
+    expect(store.getState().chat.subagents.a1.status).toBe('stopped')
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+  })
+
+  it('dismisses the liveness notice on its own, leaving the refusal and the unresolved card', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    vi.mocked(api.spawnList).mockRejectedValueOnce(new ApiError(503, 'unavailable'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    const notice = await screen.findByTestId('spawn-liveness-error')
+
+    fireEvent.click(within(notice).getByRole('button'))
+    expect(screen.queryByTestId('spawn-liveness-error')).not.toBeInTheDocument()
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.approval_no_longer_pending'),
+    )
+    // Dismissing the notice settles nothing: the chip's poll still owns that.
+    expect(store.getState().chat.subagents.a1.approvalGone).toBe('spawn:a1')
+  })
+
+  it('keeps the buttons and reports the failure after a refusal that is not terminal', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(500, 'boom'))
+    const store = createTestStore(stateWithPendingSpawn(1))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+
+    // The decision was not recorded, so the failure is an error surface
+    // (AUTOSDE errors-use-error-notice) carrying the panel's sentence.
+    await waitFor(() => {
+      expect(screen.getByTestId('approval-decision-error')).toHaveAttribute('role', 'alert')
+    })
+    expect(screen.getByTestId('approval-decision-error')).toHaveTextContent(
+      i18nT('components.approvalCard.decision_not_recorded_error', { error: 'boom' }),
+    )
+    expect(store.getState().chat.subagents.a1.approving).toBe(false)
+    // Not evidence the approval is gone: no gone verdict, and a retry goes out.
+    expect(store.getState().chat.subagents.a1.approvalGone).toBeUndefined()
+    expect(screen.queryByText(i18nT('components.approvalCard.approval_no_longer_pending'))).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Approve$/ }))
+    expect(api.resolveApproval).toHaveBeenCalledTimes(2)
+    expect(store.getState().chat.subagents.a1.approving).toBe(true)
+  })
+
+  it('withdraws only the gone sub-agent from a multi-agent banner', async () => {
+    vi.mocked(api.resolveApproval).mockRejectedValueOnce(new ApiError(404, 'not found or expired'))
+    const store = createTestStore(stateWithPendingSpawn(3))
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve sub-agent: task 2' }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Approve sub-agent: task 2' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText(/2 sub-agents are awaiting your approval to run/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 1' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve sub-agent: task 3' })).toBeInTheDocument()
   })
 })
 

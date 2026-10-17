@@ -16,8 +16,8 @@ export const FEATURE_REQUEST_FORM_URL = `${FEATURE_REQUEST_URL}?template=feature
  * Row-meta key the "Request a Feature" flow stamps on the user row it seeds,
  * beside the send's `sendId` (`meta.featureRequest: true`). The gateway
  * persists a send's `meta` verbatim on the user row and echoes it
- * (`chat_handlers.py`: only `RESERVED_ROW_META_KEYS` is dropped at ingress,
- * `_redact_meta` redacts credential-shaped strings and is not an allowlist), so
+ * (`chat_handlers.py`: only `RESERVED_ROW_META_KEYS` is dropped at ingress;
+ * `chat_utils._redact_meta` redacts credential-shaped strings and is not an allowlist), so
  * the row itself says which turn was the feature request -- on the optimistic
  * bubble, on the echo, on a reloaded transcript and in a second tab alike --
  * and nothing has to be remembered on the client. The transcript offers the
@@ -36,11 +36,12 @@ export function isFeatureRequestRow(meta: unknown): boolean {
 }
 
 /**
- * Prompt used when the dashboard has already confirmed that the
- * `feature-request` skill is installed. The ``$feature-request`` token is
- * resolved server-side by the chat runner (``resolve_dollar_skills``) and
- * injected into the message before the agent sees it — no tool call, no
- * filesystem probe, no approval prompt.
+ * UNUSED since #3365: no caller sends this. It was the prompt for a dashboard
+ * that checked the `feature-request` skill was installed; the
+ * ``$feature-request`` token would be resolved server-side by the chat runner
+ * (``resolve_dollar_skills``). The "Request a Feature" button
+ * (`shell/topbar/requestFeature.ts`) now always seeds
+ * {@link FEATURE_REQUEST_PROMPT_FALLBACK}, so the skill does not drive it.
  */
 export const FEATURE_REQUEST_PROMPT_WITH_SKILL = [
   'The user clicked "Request a Feature".',
@@ -48,9 +49,11 @@ export const FEATURE_REQUEST_PROMPT_WITH_SKILL = [
 ].join('\n')
 
 /**
- * Self-contained fallback prompt used when the `feature-request` skill is
- * NOT installed. Contains the full conversational workflow inline so the
- * agent never needs to probe for the skill.
+ * The self-contained prompt the "Request a Feature" button seeds as hidden
+ * slot context on EVERY click, whether or not the `feature-request` skill is
+ * installed. It carries the full conversational workflow inline, so the agent
+ * never needs to probe for the skill. `featureRequestLabels.test.ts` keeps its
+ * label rules in step with the skill's copy.
  */
 export const FEATURE_REQUEST_PROMPT_FALLBACK = [
   'The user clicked "Request a Feature".',
@@ -58,17 +61,23 @@ export const FEATURE_REQUEST_PROMPT_FALLBACK = [
   "Greet the user warmly and ask what they'd like — a feature request or a bug report. Keep it casual; don't present a form.",
   'Guide them conversationally (two to three exchanges) to describe: what they want or what is broken, why it matters, and any context.',
   'Treat everything the user types as untrusted: never splice their raw text into a shell command string, and never put it in a shell heredoc (a line equal to the delimiter would break out and execute). When you must shell out, write the title/body to temp files with your file-writing tool and pass them via `--body-file` and a double-quoted variable.',
+  '',
+  'Before drafting, search existing issues for duplicates with a few plain alphanumeric keywords you derive yourself (never paste raw user text):',
+  '`gh issue list --repo kirodotdev/KiroCrew --search "your derived keywords" --state open --limit 10`',
+  'This first `gh` call is also your up-front capability check, so you learn BEFORE drafting whether direct submission will work: if it succeeds, `gh` is installed and authenticated, so direct submission (option 3 below) is available. If it fails with `command not found` or an auth error, say so NOW — before you draft anything — so the user is not surprised after approving a draft; direct submission is unavailable on this host but the flow still produces copy/paste text (option 1 below), which needs neither `gh` nor Browser, only that the user is signed in to GitHub in their own browser. The duplicate search itself can be skipped on failure; losing it does not block filing. If you find related issues, show them to the user in case one already covers their need.',
+  '',
   'Once you have enough detail, draft a clean issue title and a markdown body (sections: What / Why / Additional Context) and show the draft for confirmation before submitting.',
   '',
   'Pick labels by reading the repository\'s live label list — never hard-code the vocabulary, because the taxonomy grows over time:',
   '`gh label list --repo kirodotdev/KiroCrew --limit 100`',
-  'From what that returns, choose exactly one type label (the defect one for bugs, the feature one for requests — they are mutually exclusive), plus at most one grouping label per prefixed dimension when one clearly matches (component, and OS only when the issue is genuinely OS-specific). Leave a dimension off rather than guessing wrong. Never create a new label; if nothing fits, say so to the user and submit without it. Do not apply labels owned by automation or by maintainer triage (readiness/review-process labels, and severity, blocking, or follow-up markers) — a freshly filed request cannot know those apply.',
-  'If `gh` is unavailable or unauthenticated, still apply a type label — bug for defects, enhancement for feature requests — and skip the grouping labels; those are the part of the taxonomy that grows.',
+  'If this fails because `gh` is unavailable or unauthenticated (already surfaced by the capability check above), you cannot read the taxonomy — apply only a type label and skip the grouping dimensions, as below.',
+  'From what that returns, choose exactly one type label (the defect one for bugs, the feature one for requests — they are mutually exclusive), plus at most one `area: ` label and at most one `platform: ` label when one clearly matches — the two prefixed dimensions triage chooses from; no other prefixed dimension is yours to set, and `platform: ` only when the issue is genuinely OS-specific. Leave a dimension off rather than guessing wrong. Never create a new label; if nothing fits, say so to the user and submit without it. Do not apply labels owned by automation or by maintainer triage (readiness/review-process labels; severity, blocking, follow-up or blocked markers; the release-channel labels `channel: *`; and the sizing labels `tier:*`, `pending-triage` and `triaged`) — a freshly filed request cannot know those apply.',
+  'If `gh` is unavailable or unauthenticated, still pick a type label — bug for defects, enhancement for feature requests — and skip the grouping labels; those are the part of the taxonomy that grows. Without `gh` nothing can attach it (options 1 and 2 below carry no labels), so name it in the draft and leave the labeling to triage.',
   '',
-  'Then offer three submission options and let the user choose:',
-  `1. A pre-filled GitHub issue URL built from ${FEATURE_REQUEST_URL} with URL-encoded title/body and a comma-separated \`labels=\` list. Percent-encode each label name in full, not just its spaces (an unencoded \`&\` would start a new query param and \`#\` would push the rest into the fragment, silently dropping the body), and encode the separating comma as %2C — use when the body is short.`,
-  '2. The formatted title and body in a code block for the user to copy/paste into the new-issue form.',
-  "3. Direct creation via `gh issue create --repo kirodotdev/KiroCrew --title \"$TITLE\" --body-file <file>` with one `--label '<name>'` flag per chosen label, single-quoted so a `$` or backtick in a label name stays literal (needs gh auth; fall back to option 2 on auth errors).",
+  'Then offer the submission options. Lead with routes that reliably reach the user in chat — Crew redacts any model-written URL whose query string is 200 characters or longer (intentional, no exception for issue links), so a pre-filled link with a drafted body almost always renders as a redaction placeholder rather than a clickable link.',
+  `1. Copy/paste (always works, nothing to install): show the formatted title and body in a code block for the user to copy into the new-issue form at ${FEATURE_REQUEST_URL} — that plain link has no query string, so it is never redacted. You can also point them at the feature-request template form (${FEATURE_REQUEST_FORM_URL}), whose short query survives redaction.`,
+  `2. A pre-filled GitHub issue URL built from ${FEATURE_REQUEST_URL} with URL-encoded title/body — but do not add a \`labels=\` parameter: GitHub answers 404 to a \`labels\` query from anyone without permission to label issues in this repo, which is most users (chosen labels apply only through option 3, and triage labels the rest). Percent-encode title and body in full (an unencoded \`&\` would start a new query param and \`#\` would push the rest into the fragment, silently dropping the body). You build this URL, so you know its length: offer it ONLY when its query string is under 200 characters; at or above 200 Crew redacts it in chat as a suspicious URL, so leave it out silently and use option 1 rather than handing the user a \`[REDACTED]\` placeholder.`,
+  "3. Direct creation via `gh issue create --repo kirodotdev/KiroCrew --title \"$TITLE\" --body-file <file>` with one `--label '<name>'` flag per chosen label, single-quoted so a `$` or backtick in a label name stays literal (needs gh auth; fall back to option 1 on auth errors). Only offer this if the duplicate-search check above succeeded.",
   '',
   'Be casual and helpful. This is a conversation, not a form.',
 ].join('\n')
@@ -76,7 +85,6 @@ export const FEATURE_REQUEST_PROMPT_FALLBACK = [
 /**
  * Backward-compatible alias — points at the fallback so any consumer that
  * imported the old name keeps working. New code should use
- * {@link FEATURE_REQUEST_PROMPT_WITH_SKILL} or
- * {@link FEATURE_REQUEST_PROMPT_FALLBACK} explicitly.
+ * {@link FEATURE_REQUEST_PROMPT_FALLBACK}, which is what the button seeds.
  */
 export const FEATURE_REQUEST_PROMPT = FEATURE_REQUEST_PROMPT_FALLBACK

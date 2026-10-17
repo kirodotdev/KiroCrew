@@ -21,6 +21,16 @@ outside the pooling budget.
   next roster change. A flat resulting list cannot do both — unstubbing one name out
   of a shipped roster means writing back the survivors, and that list then answers the
   question forever.
+- **Managed followers.** When `kirocrew-core` is stubbed (by the roster or an
+  override), Kiro Crew's other caller-aware managed servers are stubbed with it:
+  `MANAGED_STUB_FOLLOWERS` in `config/integration_sections.py` (guide, mate, panel,
+  dashboard, work, crew-log, debug). `_resolve_stub_base` is the roster plus those
+  followers, and it is the layer overrides apply to. `kirocrew-computer` does not
+  follow (tenant-nonce gated), and neither does `kirocrew-cron` (outside what this
+  layer was measured on). The roster on disk never gains the followers. Because
+  a follower's default moves with the leader, MCP Management always stores a
+  follower toggle as an override instead of pruning it, so a later toggle of
+  `kirocrew-core` cannot undo it.
 - **`mcp_gateway.enabled`** — share backends. Global over the stub set; there is no
   per-server sharing switch.
 - **`mcp_gateway.poolable_servers`** — deprecated alias, read only when `stub_servers`

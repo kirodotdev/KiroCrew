@@ -12,6 +12,7 @@ import MarkdownRenderer, {
 } from '../components/MarkdownRenderer'
 import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 import { resetExpandedDiffFences } from '../components/FoldableDiffBlock'
 import { api } from '../api/client'
 
@@ -295,6 +296,39 @@ describe('MarkdownRenderer structural elements', () => {
   })
 })
 
+describe('MarkdownRenderer mid-sentence ``` runs', () => {
+  const labels = (c: HTMLElement) => Array.from(c.querySelectorAll('.code-block')).map(b => b.querySelector('span')?.textContent)
+
+  it('renders the run and the prose after it as prose, beside a real code block', () => {
+    const content = [
+      'Use a ```diff block for file changes.',
+      'This line stays prose.',
+      '',
+      '```text',
+      'separator',
+      '```',
+    ].join('\n')
+    const { container } = render(<MarkdownRenderer content={content} />)
+    expect(labels(container)).toEqual(['text'])
+    expect(container.textContent).toContain('Use a ```diff block for file changes.')
+    expect(container.textContent).toContain('This line stays prose.')
+  })
+
+  it('still renders a streaming glued fence as a code block', () => {
+    const { container } = render(<MarkdownRenderer content={'Here is code:```python\nprint(1)'} streaming />)
+    expect(labels(container)).toEqual(['python'])
+    expect(container.querySelector('.code-block')!.textContent).toContain('print(1)')
+  })
+
+  it('renders an empty fence without the word "undefined"', () => {
+    // parseBlocks keeps the indented fence in the markdown block; the glue pass
+    // moves it to column 0, and it reaches the fenced-code override with no children.
+    const { container } = render(<MarkdownRenderer content={'  ```diff\n  ```'} />)
+    expect(labels(container)).toEqual(['diff'])
+    expect(container.querySelector('.code-block')!.textContent).not.toContain('undefined')
+  })
+})
+
 // ── block routing ──────────────────────────────────────────────────────────
 
 describe('MarkdownRenderer block routing', () => {
@@ -316,6 +350,43 @@ describe('MarkdownRenderer block routing', () => {
     })
     fireEvent.click(chip)
   }
+
+  it('shows the summary after a closing fence glued to it, outside the folded chip', async () => {
+    // The reported shape: the closer glued to bold prose. The summary must be
+    // in the DOM with the patch still folded.
+    const glued = '```diff\n--- /dev/null\n+++ /sample.txt\n@@ -0,0 +1 @@\n+sample\n```**Financial summary**\n\nTotals follow.'
+    const { container } = render(<MarkdownRenderer {...chatProps} content={glued} />)
+    await waitFor(() => expect(container.querySelector('[data-testid="prose-diff-chip"]')).not.toBeNull())
+    expect(container.textContent).toContain('Financial summary')
+    expect(container.textContent).toContain('Totals follow.')
+    expect(container.textContent).not.toContain('+sample')
+    expect(container.querySelector('[data-testid="unclosed-diff"]')).toBeNull()
+  })
+
+  it('opens an unclosed diff under a warning, keeping its chip', async () => {
+    const unclosed = 'Intro\n\n```diff\n@@ -1 +1 @@\n-old line\n+new line\nThe answer the user came for.'
+    const { container } = render(<MarkdownRenderer {...chatProps} content={unclosed} />)
+    await waitFor(() => expect(container.querySelector('[data-testid="unclosed-diff"]')).not.toBeNull())
+    expect(container.querySelector('[data-testid="prose-diff-chip"]')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[role="note"]')?.textContent).toContain('the rest of the reply may appear inside this diff')
+    expect(container.textContent).toContain('The answer the user came for.')
+  })
+
+  it('opens the same chip in place when a streaming unclosed diff is finalized', async () => {
+    const text = 'Intro\n\n```diff\n@@ -1 +1 @@\n-old line\n+new line'
+    const { container, rerender } = render(<MarkdownRenderer {...chatProps} content={text} streaming />)
+    await waitFor(() => expect(container.querySelector('[data-testid="prose-diff-chip"]')).not.toBeNull())
+    const chip = container.querySelector('[data-testid="prose-diff-chip"]')
+    expect(chip?.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[data-testid="unclosed-diff"]')).toBeNull()
+    rerender(<MarkdownRenderer {...chatProps} content={text} />)
+    await waitFor(() => expect(container.querySelector('[data-testid="unclosed-diff"]')).not.toBeNull())
+    // The chip the user was watching is the same element, now expanded: it was
+    // not unmounted and replaced by a different block.
+    expect(container.querySelector('[data-testid="prose-diff-chip"]')).toBe(chip)
+    expect(chip?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).toContain('new line')
+  })
 
   it('collapses a prose diff to a chip until it is opened', async () => {
     const { container } = render(<MarkdownRenderer {...chatProps} content={`Here is the change:\n\n${diff}`} />)
@@ -403,6 +474,28 @@ describe('MarkdownRenderer block routing', () => {
     done.unmount()
     queryClient.clear()
   })
+
+  it('renders the reported glued reply as chip, visible summary and a widget frame', async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    const glued = '```diff\n--- /dev/null\n+++ /sample.txt\n@@ -0,0 +1 @@\n+sample\n'
+      + '```**Financial summary**\n\n<mcwidget title="Summary"><div>Chart</div></mcwidget>'
+    const { container, unmount } = render(
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <MarkdownRenderer {...chatProps} content={glued} messageTs={'2026-10-09T00:00:00Z'} />
+        </ThemeProvider>
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    expect(container.querySelector('[data-testid="prose-diff-chip"]')).not.toBeNull()
+    expect(container.textContent).toContain('Financial summary')
+    // The widget tag is a frame, not literal text inside the patch.
+    expect(container.textContent).not.toContain('<mcwidget')
+    unmount()
+    queryClient.clear()
+  })
 })
 
 // ── path chip activation fallback ──────────────────────────────────────────
@@ -413,9 +506,7 @@ describe('MarkdownRenderer path chip with no file handler', () => {
   afterEach(() => { globalThis.fetch = realFetch; vi.restoreAllMocks() })
 
   it('reveals the file in the OS file manager when no onFileOpen is wired', async () => {
-    globalThis.fetch = vi.fn(() =>
-      Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
-    ) as unknown as typeof fetch
+    stubPathKinds(() => 'file')
     // Resolve the wire shape (the OS handled it, no copy path) so the shared
     // `revealOrOpen` can read `r.copy` without tripping over `undefined`.
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({} as never)

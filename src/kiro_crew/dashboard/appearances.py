@@ -39,7 +39,9 @@ from pathlib import Path
 from typing import Literal
 
 from kiro_crew.appearance_packs import pack_id_key, safe_pack_id
+from kiro_crew.appearance_packs.lottie_safety import text_references_remote_asset
 from kiro_crew.appearance_packs.store import AppearanceStore
+from kiro_crew.appearance_packs.transfer import import_bundle
 from kiro_crew.config.paths import data_home
 from kiro_crew.loop_lock import LoopBoundLock
 
@@ -313,6 +315,52 @@ def bundle_reference_error(payload: object) -> str | None:
     return None
 
 
+def bundle_remote_asset_warnings(payload: object) -> list[str]:
+    """One warning per referenced Lottie clip the player will refuse for fetching.
+
+    The player runs ``referencesRemoteAsset`` before ``loadAnimation`` and draws
+    the seeded ghost for a clip that names a remote image or font, with the
+    reason only in the browser console. This is the same predicate
+    (:func:`~kiro_crew.appearance_packs.lottie_safety.text_references_remote_asset`),
+    so the import answer can name the file to the person who picked it.
+
+    ``PackAvatar`` records the refusal against the whole pack, so from the first
+    time that clip comes up the crew shows the ghost for every state, which is
+    what the message says.
+
+    A WARNING, not a refusal: the pack's other slots still draw until then, a
+    clip only some moods name may never come up, and a pack that was exported
+    must re-import. Only REFERENCED clips are
+    judged, as in :func:`bundle_reference_error`: a carried file no slot names
+    is never played. Run after that check, so every name here is carried.
+    """
+    if not isinstance(payload, dict):
+        return []
+    manifest = payload.get("manifest")
+    files = payload.get("files")
+    if not isinstance(manifest, dict) or not isinstance(files, dict):
+        return []
+    warnings: list[str] = []
+    judged: set[str] = set()
+    for category in _SLOT_CATEGORIES:
+        section = manifest.get(category)
+        if not isinstance(section, dict):
+            continue
+        for filename in section.values():
+            if not isinstance(filename, str) or filename in judged:
+                continue
+            judged.add(filename)
+            if slot_format_for(filename) != "lottie":
+                continue
+            content = files.get(filename)
+            if isinstance(content, str) and text_references_remote_asset(content):
+                warnings.append(
+                    f"That bundle's {filename} names an image or font the player will not fetch, "
+                    "so a crew wearing this pack shows the ghost once that clip comes up"
+                )
+    return warnings
+
+
 #: Slot fallback chains, resolved server-side. Only the three agent lifecycle
 #: states need one: a pack is free to ship just ``idle``, and every richer slot
 #: is an upgrade rather than a requirement. The ``working`` chain carries the
@@ -377,12 +425,6 @@ async def import_pack(payload: object) -> dict:
     and running under ``_drained_to_thread`` means a cancelled request cannot
     release the lock with the write still in flight.
     """
-    # boot path: `appearance_packs.transfer` builds a urllib opener at module
-    # scope, and this module is imported by the dashboard's route table before
-    # the socket binds; importing it here means the first import request pays
-    # that, not the launch. The store itself does no such work, so it is a
-    # normal top-level import.
-    from kiro_crew.appearance_packs.transfer import import_bundle
     from kiro_crew.dashboard.handlers.agents import _drained_to_thread
 
     def _check_then_import(store: AppearanceStore) -> dict:
@@ -393,7 +435,13 @@ async def import_pack(payload: object) -> dict:
         problem = bundle_reference_error(payload)
         if problem is not None:
             return {"ok": False, "error": problem}
-        return import_bundle(store, payload)
+        # Judged BEFORE the write, so nothing this check raises can follow a
+        # pack that is already installed (a retry would then hit the id guard).
+        remote = bundle_remote_asset_warnings(payload)
+        result = import_bundle(store, payload)
+        if result.get("ok") and remote:
+            result["warnings"] = [*result.get("warnings", []), *remote]
+        return result
 
     store = await asyncio.to_thread(get_appearance_store)
     async with _library_lock():

@@ -44,12 +44,24 @@ export const HOVER_NONE_ACTIONS_ROW_CLS =
  * Third shape, for a row of ICON-ONLY buttons (the assistant and user message
  * footers), and the one shape here that also styles the POINTER case. It works
  * the way ChatGPT's response-actions row does: every button is a fixed square
- * cell with its glyph centred, the cells sit flush (`gap-x-0`), a hover paints
- * the whole cell so its extent is visible, and a negative start margin on a
- * leading button pulls its glyph back onto the text column.
+ * cell with its glyph centred, the cells sit flush (`gap-x-0`), and a hover
+ * paints the whole cell so its extent is visible.
  *
- *   pointer: 28x28 cell, 14px glyph, first glyph pulled 7px  (glyph pitch 28)
- *   touch:   36x32 cell, 16px glyph, first glyph pulled 10px (glyph pitch 36)
+ *   pointer: 28x28 cell, 14px glyph  (glyph pitch 28)
+ *   touch:   36x32 cell, 16px glyph  (glyph pitch 36)
+ *
+ * The leading cell starts ON the text column, so its glyph sits a half-cell
+ * in (7px pointer, 10px touch) -- aligned with the cells, not with the text.
+ * ChatGPT pulls that glyph back onto the column with a negative start margin;
+ * here it cannot be done: both footers render inside the transcript's
+ * `.chat-message-body`, which is `overflow-hidden` so a wide bubble cannot
+ * spill out of a phone viewport, and that box clips at its padding edge. A
+ * cell pulled past the column start loses that much hover paint and shows a
+ * flat start edge beside rounded end corners -- on the end-aligned user row
+ * whenever a short bubble makes its column exactly as wide as the row, on the
+ * assistant row whenever a button leads (timestamps off). `overflow-clip-margin`
+ * would make room but WebKit does not implement it, and a start gutter on the
+ * clipping box would tie three host wrappers to this constant's pixel value.
  *
  * The touch cell is wider than it is tall on purpose, the way ChatGPT's is
  * (`touch:w-10 h-8`). Width is what separates NEIGHBOURS: a finger that lands
@@ -76,7 +88,7 @@ export const HOVER_NONE_ACTIONS_ROW_CLS =
  * that carries one keeps `HOVER_NONE_ACTIONS_ROW_CLS`.
  */
 export const ICON_ACTION_ROW_CLS =
-  'gap-x-0 [&_button]:h-7 [&_button]:w-7 [&_button]:p-0 [&_button]:inline-flex [&_button]:items-center [&_button]:justify-center [&_button]:rounded-md [&_button:hover]:bg-bg-hover [&>button:first-child]:-ms-[7px] [@media(hover:none)]:opacity-100 [@media(hover:none)]:flex-wrap [@media(hover:none)]:[&_button]:h-8 [@media(hover:none)]:[&_button]:w-9 [@media(hover:none)]:[&_svg]:h-4 [@media(hover:none)]:[&_svg]:w-4 [@media(hover:none)]:[&>button:first-child]:-ms-2.5'
+  'gap-x-0 [&_button]:h-7 [&_button]:w-7 [&_button]:p-0 [&_button]:inline-flex [&_button]:items-center [&_button]:justify-center [&_button]:rounded-md [&_button:hover]:bg-bg-hover [@media(hover:none)]:opacity-100 [@media(hover:none)]:flex-wrap [@media(hover:none)]:[&_button]:h-8 [@media(hover:none)]:[&_button]:w-9 [@media(hover:none)]:[&_svg]:h-4 [@media(hover:none)]:[&_svg]:w-4'
 
 export const HOVER_NONE_ACTION_BTN_CLS =
   '[@media(hover:none)]:opacity-100 [@media(hover:none)]:p-2.5 [@media(hover:none)]:[&_svg]:h-5 [@media(hover:none)]:[&_svg]:w-5'

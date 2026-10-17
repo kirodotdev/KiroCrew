@@ -35,6 +35,12 @@ MEMBER_BINDING = "member/binding"
 # The member's standing rules text changed.    data: {"text": str}
 MEMBER_RULES = "member/rules"
 
+# A Fresh start cleared this member's pinned DM thread. The transcript and the
+# slot key are unchanged -- the fold is what the client reads back to carry the
+# "earlier conversation" boundary across a reload (`MembersPage`'s
+# `foldBefore`). data: {"reset_at": str}  (ISO-8601, the server's clear time)
+MEMBER_RESET = "member/reset"
+
 # A message landed in the member's DM thread.  data: {"ts": float, "preview": str}
 MEMBER_MESSAGE = "member/message"
 
@@ -58,6 +64,7 @@ ALL_EVENT_TYPES = frozenset(
         MEMBER_CONFIG,
         MEMBER_BINDING,
         MEMBER_RULES,
+        MEMBER_RESET,
         MEMBER_MESSAGE,
         ACTIVITY_RECORD,
         SLOT_OPENED,

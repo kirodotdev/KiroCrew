@@ -5,8 +5,7 @@
  * completion, composer uploads and screenshots.
  */
 
-import { i18nT } from '../../i18n/t'
-import { resizeImageForModel, type ResizeInfo } from '../../utils/resizeImage'
+import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
 import type { ClientTransport } from './transport'
 
 /** Response of POST /api/reveal. When the backend cannot drive a file manager
@@ -14,6 +13,17 @@ import type { ClientTransport } from './transport'
  *  path to write. The caller (`revealOrOpen`) writes the clipboard silently — the
  *  affordance that routed here already promised a copy. */
 type RevealResult = { copy?: string }
+
+/** GET/PUT /api/aws/project-profile. `profile` is the bound name, `boundDir` the mapped directory
+ *  that binds it (the project itself or an ancestor), `status` the sign-in health of a bound
+ *  profile: `expired` is an SSO sign-in that no longer resolves. Names only: no account or ARN. */
+export interface ProjectAwsProfile {
+  path: string
+  profile: string | null
+  boundDir: string | null
+  profiles: string[]
+  status?: 'ok' | 'expired' | 'unavailable' | null
+}
 
 /** Deadline for the whole-tree walks, `api.fileSearch` and `api.projectTree`. Its own literal,
  *  deliberately not an alias of the skills menu's: the two happen to agree today, and retuning
@@ -67,7 +77,7 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
-export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
+export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
     // Resolves with the created path, or rejects with the server's message
@@ -81,6 +91,27 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
         error?: string
       }>,
     recentProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/recent-projects', s => fetch('/api/recent-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+    /** The favourited project directories, in the order the user built. Bounded like the
+     *  recents read beside it: same wedged-gateway failure, same notice path. */
+    favoriteProjects: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/favorite-projects', s => fetch('/api/favorite-projects', { signal: s }).then(j)) as Promise<{ dirs: string[] }>,
+    /** Favourite one directory. Resolves with the WHOLE list as the server now holds it, so a
+     *  caller renders the server's answer rather than a locally-guessed one; rejects with the
+     *  journaled `ApiError` when the path is refused (not a directory, or a sensitive path).
+     *  Unbounded, like every other `post` here: a write is not a read the user is waiting on a
+     *  listing for, and re-sending it is not idempotent in the way re-asking a listing is. */
+    addFavoriteProject: (path: string) => post('/api/favorite-projects', { path }).then(j) as Promise<{ dirs: string[] }>,
+    /** Un-favourite one directory. The path rides the QUERY STRING, not a body: a DELETE body is
+     *  not carried reliably by every client, which is why the endpoint reads it from the query. */
+    removeFavoriteProject: (path: string) => del('/api/favorite-projects?path=' + encodeURIComponent(path)).then(j) as Promise<{ dirs: string[] }>,
+    /** The AWS named profile `path` is bound to (`aws.project_profiles`), its sign-in health and the
+     *  profile names the picker offers. Owner-only on the server, so a non-owner read rejects. */
+    projectAwsProfile: (path: string) =>
+      withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/aws/project-profile', s =>
+        fetch('/api/aws/project-profile?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<ProjectAwsProfile>,
+    /** Bind `path` to `profile`; `''` removes the binding for exactly that directory. Resolves with
+     *  the binding as the server now holds it (no health word: the chip re-reads for that). */
+    setProjectAwsProfile: (path: string, profile: string) =>
+      put('/api/aws/project-profile', { path, profile }).then(j) as Promise<ProjectAwsProfile>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the weakest
     // initiator would decide the bound.
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
@@ -90,8 +121,10 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
-    projectTree: (path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<{ root: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
+    /** `dir` lists one project-relative folder (one the whole listing named in
+     *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
+    projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
+      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
     workspaces: () => fetch('/api/workspaces').then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>
@@ -148,27 +181,12 @@ export function createFilesEndpoints({ post, put, del, j, checkSessionExpired, w
      *  `signal` lets the composer abort an upload still in flight: the
      *  request dies client-side and the server unlinks its partials through
      *  the disconnect path the upload handler already has. */
-    uploadFiles: async (files: File[], signal?: AbortSignal) => {
-      // Downscale oversized images client-side so they fit the model's image
-      // limits before they ever reach the server (see resizeImage.ts).
-      const prepared = await Promise.all(files.map(f => resizeImageForModel(f)))
-      const resized = prepared.map(p => p.info).filter((i): i is ResizeInfo => i !== null)
-      const fd = new FormData()
-      prepared.forEach(p => fd.append('file', p.file))
-      const res = await fetch('/api/upload/file', { method: 'POST', body: fd, ...(signal ? { signal } : {}) })
-      checkSessionExpired(res)
-      let body: { paths?: unknown; error?: string }
-      try { body = await res.json() } catch { body = {} }
-      if (!res.ok) return { paths: [] as string[], error: body.error || res.statusText, resized, resizedByPath: {} as Record<string, ResizeInfo> }
-      if (!Array.isArray(body.paths)) return { paths: [] as string[], error: i18nT('api.client.unexpected_server_response'), resized, resizedByPath: {} as Record<string, ResizeInfo> }
-      // The server appends one path per multipart 'file' part in order, so
-      // paths[i] is prepared[i]'s stored location — zip them to key resize
-      // details by the exact server path the attachment chip renders from.
-      const paths = body.paths as string[]
-      const resizedByPath: Record<string, ResizeInfo> = {}
-      prepared.forEach((p, i) => { if (p.info && paths[i]) resizedByPath[paths[i]] = p.info })
-      return { ...(body as { paths: string[]; error?: string }), resized, resizedByPath }
-    },
+    uploadFiles: async (files: File[], signal?: AbortSignal) =>
+      uploadComposerFiles(files, async body => {
+        const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) })
+        checkSessionExpired(res)
+        return res
+      }),
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
   }
 

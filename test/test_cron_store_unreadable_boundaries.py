@@ -999,6 +999,7 @@ _CRON_WRITES = frozenset(
         "add_job_async",
         "add_job_if_absent",
         "add_job_if_absent_async",
+        "add_managed_job",
         "enable_job",
         "enable_job_async",
         "remove_job",

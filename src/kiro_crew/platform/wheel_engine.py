@@ -737,7 +737,11 @@ def _read_bounded(
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise WheelUpdateError(f"{url} did not finish within {total_secs:.0f}s")
-                if sock is not None:
+                # http.client closes the response, and the socket under it, in the
+                # same read that consumes the last byte of a Content-Length body.
+                # settimeout on that socket raises EBADF; the closed response's
+                # read1 returns b"", which is the clean end below.
+                if sock is not None and not resp.isclosed():
                     sock.settimeout(min(read_timeout, left))  # type: ignore[attr-defined]
                 chunk = resp.read1(65536)
                 # Before EOF is read as "complete": a cancel shuts the socket,

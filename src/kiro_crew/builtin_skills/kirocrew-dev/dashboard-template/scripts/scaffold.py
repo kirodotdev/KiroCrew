@@ -145,14 +145,21 @@ def folds() -> tuple[str, ...]:
 
 
 def counting_fields(fold: str) -> tuple[str, ...]:
-    """The ``int`` fields of *fold*, which are the only ones a fraction can read.
+    """The WHOLE-number fields of *fold*, which are the only ones a fraction can read.
 
     Read from the same generated catalogue as :func:`folds`, for the same reason: a
     denominator named here and absent there renders the words "not said" at every
     render, and nothing in the emitted gates notices because they build the card from an
     EMPTY view, where "not said" is the expected answer.
+
+    ``whole=True`` is what keeps a FLOAT out. The manifest has one number type, so the
+    catalogue reports whether a number is an integer as its own ``integer`` key, and both
+    halves of a fraction are read with ``read_int`` -- which answers "not said" for a
+    float. ``usage.credits`` renders ``0.0``, so a card declaring
+    ``credits:fraction:duration_ms`` would show "not said" at every render, and no gate
+    downstream would say so.
     """
-    return _fold_fields(fold, "int")
+    return _fold_fields(fold, "number", whole=True)
 
 
 def text_fields(fold: str) -> tuple[str, ...]:
@@ -163,16 +170,20 @@ def text_fields(fold: str) -> tuple[str, ...]:
     gates do not notice: they build the card from an EMPTY view, where "not said" IS the
     expected answer.
     """
-    return _fold_fields(fold, "str")
+    return _fold_fields(fold, "string")
 
 
-#: What the catalogue writes for an OPTIONAL field's type. Its real type is not knowable
-#: from an empty fold and the catalogue refuses to guess one, so this is not "no type" --
-#: it is "a type this reader must not assume is wrong".
+#: What the catalogue writes for a field whose type it could not establish: the empty
+#: fold renders ``None`` there and nothing declares what fills it. Not "no type" -- it is
+#: "a type this reader must not assume is wrong".
+#:
+#: The catalogue's types are the MODEL FIELD's words (``string``, ``number``,
+#: ``boolean``, ``object``, ``array``), which is why the two menus above ask for
+#: ``number`` and ``string`` rather than ``int`` and ``str``.
 _UNKNOWN_TYPE = "unknown"
 
 
-def _fold_fields(fold: str, wanted: str) -> tuple[str, ...]:
+def _fold_fields(fold: str, wanted: str, *, whole: bool = False) -> tuple[str, ...]:
     """The names of *fold*'s fields a *wanted*-kind field may read.
 
     Two types answer yes, and the second is the one that matters. A row typed exactly
@@ -184,28 +195,34 @@ def _fold_fields(fold: str, wanted: str) -> tuple[str, ...]:
     which is what ``Unsaid`` is for.
 
     So this menu is not "fields of this type". It is "names this fold has, minus the ones
-    whose type is known and wrong". Read what that does NOT buy, because it is the whole
-    limit of this check: an ``"unknown"`` row whose real type IS wrong is accepted here.
-    ``status.turn`` is optional and the projection writes it as a dict, so
-    ``turn:str|unsaid`` is admitted and the card renders the words "not said" for every
-    active turn.
+    whose type is known and wrong".
 
-    Nothing in this script or in the emitted gates can catch that. The type is not
-    recoverable: the catalogue derives it from a rendered fold, where an absent optional
-    field is ``None`` and nothing else, and looking the name up in the entry-type registry
-    was tried and answered ``status.previous`` with ``dict`` and ``status.turn`` with
-    ``int`` -- which is why the catalogue writes ``unknown`` rather than a guess. The
-    emitted gates build the card from an EMPTY view, where "not said" is the expected
-    answer, so they agree with the wrong render.
+    That second set is wide, because the catalogue renders ``dashboard_types.catalog``,
+    which declares the type of a null leaf wherever one is declarable. ``status.turn`` is
+    optional and declared ``object``, so ``turn:str|unsaid`` is REFUSED here rather than
+    admitted to render the words "not said" at every active turn.
 
-    What is left is to say so, at the moment the choice is made, to the person making it:
-    :func:`parse_fields` prints a line naming every ``unknown``-typed source it admits.
-    A reader deciding whether this check is strong enough should assume it is not, for
-    optional rows, and read the note.
+    The limit is the genuinely untypeable row: the empty fold renders ``None`` and
+    nothing declares what fills it, so an ``"unknown"`` row whose real type IS wrong is
+    accepted. The emitted gates cannot catch it either -- they build the card from an
+    EMPTY view, where "not said" is the expected answer, so they agree with the wrong
+    render. :func:`parse_fields` prints a line naming every ``unknown``-typed source it
+    admits, which is a short list and worth reading.
+
+    With *whole*, a row the catalogue reports as a NON-integer number is dropped as well.
+    That is a type the menu knows and knows is wrong, so it belongs with the refusals
+    rather than with the admitted ones: ``read_int`` answers "not said" for a float. A
+    number the catalogue did not judge keeps the benefit of the doubt, the same posture
+    an ``"unknown"`` row gets, and ``parse_fields`` names it.
     """
     rows = _catalogue_rows(fold)
     return tuple(
-        sorted(name for name, declared in rows if declared == wanted or declared == _UNKNOWN_TYPE)
+        sorted(
+            name
+            for name, declared, is_integer in rows
+            if (declared == wanted or declared == _UNKNOWN_TYPE)
+            and not (whole and declared == wanted and is_integer is False)
+        )
     )
 
 
@@ -216,17 +233,32 @@ def unchecked_sources(fold: str) -> frozenset[str]:
     "this name is allowed and nobody checked it", which are different facts and only the
     second one is worth interrupting an author about.
     """
-    return frozenset(name for name, declared in _catalogue_rows(fold) if declared == _UNKNOWN_TYPE)
+    return frozenset(
+        name for name, declared, _whole in _catalogue_rows(fold) if declared == _UNKNOWN_TYPE
+    )
 
 
-def _catalogue_rows(fold: str) -> tuple[tuple[str, str], ...]:
-    """Every ``(name, declared type)`` pair the catalogue holds for *fold*."""
+def _catalogue_rows(fold: str) -> tuple[tuple[str, str, bool | None], ...]:
+    """Every ``(name, declared type, is integer)`` triple the catalogue holds for *fold*.
+
+    The third member is ``None`` wherever the catalogue says nothing -- every non-number
+    row, and a number whose type it could not establish. ``None`` is not ``False``: a
+    caller that needs a whole number must be able to tell "this is a float" from "nobody
+    knows", and only the first is a refusal it can justify.
+    """
     try:
         document = json.loads(CATALOGUE_PATH.read_text(encoding="utf-8"))
         for entry in document["folds"]:
             if str(entry["name"]) != fold:
                 continue
-            return tuple((str(field["name"]), str(field.get("type"))) for field in entry["fields"])
+            return tuple(
+                (
+                    str(field["name"]),
+                    str(field.get("type")),
+                    None if field.get("integer") is None else bool(field["integer"]),
+                )
+                for field in entry["fields"]
+            )
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ScaffoldError(
             f"cannot read the fold catalogue at {CATALOGUE_PATH} ({exc}); regenerate it "

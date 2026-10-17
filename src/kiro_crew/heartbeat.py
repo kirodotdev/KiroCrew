@@ -24,6 +24,11 @@ from kiro_crew.executors import maintenance_executor
 from kiro_crew.llm_helpers import append_fallback_story
 from kiro_crew.memory import MemoryStore, workspace_dir
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.owner_only_files import (
+    ensure_directory,
+    owner_only_opener_for,
+    write_text_owner_only_in_home,
+)
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:
@@ -77,13 +82,15 @@ def append_heartbeat_task(entry: str, path: Path | None = None) -> None:
     an append from another process.
     """
     target = path or heartbeat_path()
-    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(target.parent)
     lock_path = heartbeat_lock_path(target)
-    with open(lock_path, "a+b") as lock_file:
+    with open(lock_path, "a+b", opener=owner_only_opener_for(lock_path)) as lock_file:
         with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
             if not target.exists():
                 atomic_write(target, _HEADER, fsync=True)
-            with open(target, "a", encoding="utf-8") as heartbeat_file:
+            with open(
+                target, "a", encoding="utf-8", opener=owner_only_opener_for(target)
+            ) as heartbeat_file:
                 heartbeat_file.write(entry.rstrip("\n") + "\n")
                 heartbeat_file.flush()
                 os.fsync(heartbeat_file.fileno())
@@ -96,7 +103,7 @@ def _rewrite_heartbeat_locked(
 ) -> int:
     """Re-read, merge, and atomically replace HEARTBEAT.md under an OS lock."""
     lock_path = heartbeat_lock_path(path)
-    with open(lock_path, "a+b") as lock_file:
+    with open(lock_path, "a+b", opener=owner_only_opener_for(lock_path)) as lock_file:
         with platform_compat.file_lock(lock_file.fileno(), exclusive=True):
             try:
                 current_tasks = _extract_tasks(path.read_text(encoding="utf-8"))
@@ -121,9 +128,9 @@ def _rewrite_heartbeat_locked(
 
 def _ensure_heartbeat_file(path: Path) -> None:
     """Create the workspace dir and seed HEARTBEAT.md. Blocking; call off-loop."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     if not path.exists():
-        path.write_text(_HEADER, encoding="utf-8")
+        write_text_owner_only_in_home(path, _HEADER)
 
 
 def _read_heartbeat_file(path: Path) -> str | None:

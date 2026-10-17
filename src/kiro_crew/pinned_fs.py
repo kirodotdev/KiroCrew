@@ -580,6 +580,7 @@ def copy_file_pinned(
     expected_src_ident: "tuple[int, int] | None" = None,
     on_skip: SkipReporter = _noop_skip,
     on_created: "Callable[[os.stat_result], None] | None" = None,
+    on_opened: "Callable[[os.stat_result], None] | None" = None,
 ) -> bool:
     """Copy one file's bytes from a descriptor pinned to a validated inode.
 
@@ -608,6 +609,12 @@ def copy_file_pinned(
     copy by name later: matching ``(st_dev, st_ino)`` on that reopen proves it
     reached the inode this copy created, not a replacement swapped in at the
     same name between the copy and the reopen.
+
+    ``on_opened`` receives the exclusively created destination descriptor's
+    ``fstat`` BEFORE the first write, including when the copy later fails. A
+    caller rolling back a multi-file install can record this identity without
+    re-reading a mutable path. It does not change ``on_created``'s success-only
+    semantics; cleanup remains the caller's responsibility.
 
     ``max_bytes`` is a size ceiling enforced INSIDE the copy, not after it: the
     ``fstat`` size is checked before the destination is even created (a sparse
@@ -776,6 +783,8 @@ def copy_file_pinned(
         # earlier form unlinked first and left the fragment exactly where cleanup was meant
         # to remove it, which my own Windows shard caught.
         try:
+            if on_opened is not None:
+                on_opened(os.fstat(dst_fd))
             exceeded = False
             with os.fdopen(fd, "rb") as fsrc:
                 fd = -1  # ownership passed to the file object
@@ -930,6 +939,104 @@ def write_file_pinned(
         os.close(dir_fd)
 
 
+def write_new_file_pinned(
+    dir_fd: int,
+    name: str,
+    data: bytes,
+    *,
+    mode: int,
+    fsync: bool = False,
+) -> None:
+    """Create *name* under *dir_fd* with ``O_EXCL`` and write *data*, or leave nothing.
+
+    THE single pinned create-if-absent transaction. The steering create, the skill
+    create and the prompt create's by-name fallback each spelled this ~40-line
+    sequence by hand, and each copy's pinned branch is exercised on one platform
+    only -- so a step wrong in one copy stayed invisible on the platform that ran
+    the others. One review found one step wrong per round: no rollback on a
+    partial body, the close outside the guard, the rollback not identity-verified,
+    the identity probe outside the guard. This function owns the sequence so a
+    fix lands once.
+
+    What it owns, in order, and why each line sits where it does:
+
+    1. ``os.open(name, O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_BINARY, mode, dir_fd=)``.
+       ``O_EXCL`` makes create-if-absent one syscall and refuses a pre-planted
+       leaf, a symlink included; ``O_NOFOLLOW`` refuses a link where the platform
+       distinguishes it; ``O_BINARY`` is Windows-only and unreachable (no
+       ``dir_fd`` there) but belongs on any ``os.open`` this module owns, so the
+       bytes written are the bytes handed in. A ``FileExistsError`` propagates
+       UNCHANGED: the error taxonomy stays at the call site (steering's
+       ``exists``, the skill create's ``False``, the prompt create's 409), because
+       that taxonomy is what differs between callers and a primitive that owned it
+       would flatten three deliberate contracts into one.
+    2. ``os.fstat`` on the descriptor, INSIDE the guarded region and BEFORE the
+       first ``os.write``. The rollback below addresses a NAME, and a rival can
+       unlink ours and create its own inside the failure window, so the inode this
+       call created is what makes the cleanup "remove this object, or nothing".
+       A probe that fails (EIO, ESTALE on a network filesystem) is rolled back like
+       any other failure rather than escaping with the ``O_EXCL`` name on disk.
+    3. The short-write loop, then ``os.fsync(fd)`` when *fsync* is set.
+    4. ``os.close`` INSIDE the guarded region, with ``fd`` cleared first. A
+       deferred write error is reported by ``close()`` (ENOSPC on the last flush,
+       EIO on NFS), so a close in a ``finally`` beside the rollback would raise
+       after the rollback was skipped and strand the partial body under an
+       ``O_EXCL`` name -- the permanent ``exists`` the rollback exists to prevent.
+       Clearing ``fd`` first keeps the rollback's own close from double-closing.
+    5. ``os.fsync(dir_fd)`` when *fsync* is set, still inside the guard: the
+       create made the ENTRY, and a caller whose success claims the file is on
+       disk needs the entry flushed too; a failure here withdraws the publication
+       through the same rollback.
+
+    The rollback: the identity is re-asked THROUGH the descriptor when the first
+    probe failed and the descriptor is still open (a transient EIO usually answers
+    the second time, and a descriptor can never answer with another object), then
+    the descriptor is closed, then :func:`unlink_verified` removes the name only
+    while it still holds that inode. **No unlink runs without an identity.** With
+    both probes failed the name STAYS: removing it would be removing whatever
+    answers to the name, which is a file this code has never read. The cost is
+    bounded, because the probe precedes the first write: a rollback with no
+    identity is one where nothing was written, so what is left is an EMPTY file,
+    never a truncated one. The original exception is re-raised either way.
+
+    The residual is :func:`unlink_verified`'s and is stated there: POSIX has no
+    unlink-by-inode, so the verify and the unlink are two syscalls on one name.
+    """
+    fd = os.open(
+        name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0),
+        mode,
+        dir_fd=dir_fd,
+    )
+    leaf: os.stat_result | None = None
+    try:
+        leaf = os.fstat(fd)
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+        if fsync:
+            os.fsync(fd)
+        fd, open_fd = -1, fd
+        os.close(open_fd)
+        if fsync:
+            os.fsync(dir_fd)
+    except BaseException:
+        identity = leaf
+        if fd >= 0:
+            if identity is None:
+                with suppress(OSError):
+                    identity = os.fstat(fd)
+            with suppress(OSError):
+                os.close(fd)
+        if identity is not None:
+            unlink_verified(dir_fd, name, (identity.st_dev, identity.st_ino))
+        raise
+
+
 def read_file_pinned(
     target: Path | str,
     *,
@@ -1069,6 +1176,37 @@ def is_regular_at(dir_fd: int, name: str) -> bool:
     """True when *name* under *dir_fd* is a plain file -- not a link, FIFO, or directory."""
     st = stat_at(dir_fd, name)
     return st is not None and _stat.S_ISREG(st.st_mode)
+
+
+def create_and_open_dir_at(
+    parent_fd: int,
+    name: str,
+    *,
+    what: str,
+    refusal: type[Exception] = PinnedPathRefusal,
+) -> int:
+    """Create directory *name* under the open *parent_fd* if absent, and open it.
+
+    Both calls are relative to the caller's descriptor, so no path is resolved again:
+    a parent swapped for a link after the caller opened it cannot steer the create
+    elsewhere. The open is ``O_NOFOLLOW`` + ``O_DIRECTORY``, so a link (or a non
+    directory) planted at *name* itself is refused with *refusal*. *name* must be one
+    component. Returns the directory fd; the caller owns it.
+    """
+    if not name or name in (".", "..") or os.sep in name or (os.altsep and os.altsep in name):
+        raise refusal(f"refusing to open the {what}: {name!r} is not a single path component")
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    try:
+        return os.open(name, dir_flags(), dir_fd=parent_fd)
+    except (NotADirectoryError, OSError) as exc:
+        if isinstance(exc, NotADirectoryError) or exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise refusal(
+                f"refusing to open the {what}: {name!r} is a link or not a directory"
+            ) from exc
+        raise
 
 
 def _apply_metadata(

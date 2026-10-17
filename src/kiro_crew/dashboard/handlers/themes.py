@@ -78,6 +78,7 @@ from kiro_crew.platform_compat import (
     first_linked_ancestor,
     is_link_or_junction,
     pin_directory,
+    rmtree_force,
 )
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -751,7 +752,7 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
     finally:
         if source_fd >= 0:
             os.close(source_fd)
-        shutil.rmtree(tmp_root, ignore_errors=True)
+        rmtree_force(tmp_root)
 
 
 def _audit_theme_install_governance(

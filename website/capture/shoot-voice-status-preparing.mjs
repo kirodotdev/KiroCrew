@@ -1,5 +1,5 @@
-// Shoot the speech-model wait on the recording strip via the
-// voice-status-preparing harness.
+// Shoot the speech-model wait and the two audio start-up errors on the
+// recording strip via the voice-status-preparing harness.
 // Run from website/: node capture/shoot-voice-status-preparing.mjs <outdir>
 import { createServer } from 'vite'
 import { chromium } from 'playwright-core'
@@ -24,16 +24,25 @@ const server = await createServer({
 await server.listen()
 const browser = await chromium.launch({ executablePath })
 
+// `width` is the composer's width in the harness; a phone shot narrows the
+// window with it, so the strip wraps the way it does on a 375 px screen.
+const PHONE = { width: 343, viewport: 375 }
 const shots = [
   { name: 'voice-recording-preparing-en', scene: 'recording-preparing', lang: 'en' },
   { name: 'voice-released-preparing-en', scene: 'released-preparing', lang: 'en' },
   { name: 'voice-released-downloading-en', scene: 'released-downloading', lang: 'en' },
   { name: 'voice-released-expired-en', scene: 'released-expired', lang: 'en' },
   { name: 'voice-released-preparing-zh-CN', scene: 'released-preparing', lang: 'zh-CN' },
+  { name: 'voice-audio-module-failed-en', scene: 'audio-module-failed', lang: 'en' },
+  { name: 'voice-audio-module-failed-en-phone', scene: 'audio-module-failed', lang: 'en', ...PHONE },
+  { name: 'voice-audio-start-failed-en', scene: 'audio-start-failed', lang: 'en' },
+  { name: 'voice-audio-start-failed-en-phone', scene: 'audio-start-failed', lang: 'en', ...PHONE },
+  { name: 'voice-audio-module-failed-de-phone', scene: 'audio-module-failed', lang: 'de', ...PHONE },
+  { name: 'voice-audio-start-failed-de-phone', scene: 'audio-start-failed', lang: 'de', ...PHONE },
 ]
 for (const shot of shots) {
   const ctx = await browser.newContext({
-    viewport: { width: 900, height: 320 },
+    viewport: { width: shot.viewport || 900, height: 320 },
     deviceScaleFactor: 2,
     // The spinner would otherwise land at an arbitrary rotation, which makes two
     // shots of the same scene differ for no reason a reviewer cares about.
@@ -41,11 +50,11 @@ for (const shot of shots) {
   })
   const page = await ctx.newPage()
   await page.goto(
-    `http://127.0.0.1:5203/capture/voice-status-preparing.html?scene=${shot.scene}&theme=dark&lang=${shot.lang}`,
+    `http://127.0.0.1:5203/capture/voice-status-preparing.html?scene=${shot.scene}&theme=dark&lang=${shot.lang}${shot.width ? `&width=${shot.width}` : ''}`,
   )
   const marker = shot.scene === 'recording-preparing'
     ? 'text=Recording'
-    : shot.scene === 'released-expired'
+    : shot.scene === 'released-expired' || shot.scene.startsWith('audio-')
       ? '[role="alert"]'
       : '[data-testid="voice-status-download"]'
   await page.waitForSelector(marker, { timeout: 45000 })

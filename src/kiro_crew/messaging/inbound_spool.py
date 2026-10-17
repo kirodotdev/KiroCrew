@@ -116,6 +116,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.messaging.renderer import display_safe_for
 from kiro_crew.messaging.transport import TransportCapabilities, delivery_confirmed
+from kiro_crew.owner_only_files import ensure_directory
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.platform_compat import file_lock, is_link_or_junction
 from kiro_crew.sel import sel
@@ -487,7 +488,7 @@ def _spool_lock(path: Path) -> Any:
     message degrades to the pre-feature drop rather than to a torn file.
     """
     lock = _lock_path(path)
-    lock.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(lock.parent)
     _refuse_links(path)
     # O_NOFOLLOW on the lock too: a link planted between the check above and
     # this open would otherwise lock (and create) a file somewhere else.
@@ -602,7 +603,7 @@ def record_refusal_sync(
             return False
         if not record.text.strip() and not record.attachments_dropped:
             return False
-        target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(target.parent)
         # The lock spans the READ and the replace, not just the write: the cap and
         # the dedupe are both decided from the existing set, so a snapshot taken
         # outside it is stale by the time it is written back and the other
@@ -929,9 +930,9 @@ async def _notify_one(entry: SpooledInbound, transport: Any) -> str:
     message_id = await send(
         entry.conversation_id, _quote(entry, transport), entry.thread_id or None
     )
-    # The shared predicate, not a local re-spelling: it is what knows that WeCom and
-    # Feishu return "" on SUCCESS (``returns_message_id=False``), and a local copy
-    # that forgot that would re-notice those two forever.
+    # The shared predicate, not a local re-spelling: it is what knows that WeCom,
+    # Feishu and iMessage can return "" on SUCCESS (``returns_message_id=False``),
+    # and a local copy that forgot that would re-notice those forever.
     capabilities = getattr(transport, "capabilities", None) or TransportCapabilities()
     if not delivery_confirmed(capabilities, str(message_id or "")):
         raise RuntimeError("notice send returned no message id")

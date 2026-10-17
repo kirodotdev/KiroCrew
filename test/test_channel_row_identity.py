@@ -191,7 +191,7 @@ class TestDiscordMirroredBranchStaysIdempotent:
     """The mirrored write must NOT mint a second identity for a row it already has.
 
     ``append_if_absent`` skips only a body-equal row carrying the SAME ``meta.mid``
-    (``history.py``'s own contract). The mirrored branch runs after
+    (``history_append.py``'s own contract). The mirrored branch runs after
     ``_mirror_turn_to_live_slot`` put the row in a live slot, whose save writes that
     window row under the slot-minted id. Minting a fresh id for the durable copy
     means the check can never match, so the turn lands on disk TWICE under two

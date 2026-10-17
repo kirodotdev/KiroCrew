@@ -186,6 +186,18 @@ describe('the autolink template placeholder is exempt', () => {
   })
 })
 
+describe('the Unicode code-point prefix is exempt', () => {
+  it('stays quiet on U+ before an interpolated hex value', async () => {
+    // Real site: lib/scriptLabel.ts names a refused letter as `U+041E`.
+    expect(await lint('export const label = (hex: string) => `U+${hex}`')).toEqual([])
+  })
+
+  it('still reports copy that merely starts with U+', async () => {
+    const messages = await lint(`export const PROBE = ['U+ is not allowed', 'Use U+']`)
+    expect(messages).toHaveLength(2)
+  })
+})
+
 describe('the goal loop kill-switch placeholder is exempt', () => {
   it('stays quiet on the exact wire token', async () => {
     expect(await lint(`export const STOP_FILE_TOKEN = '{{STOP_FILE}}'`)).toEqual([])

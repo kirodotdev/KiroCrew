@@ -7,10 +7,14 @@ Three illustrative workflow scripts for the DSL specified in
 orchestration shape.
 
 **These are research examples, not tests.** Nothing here asserts anything, and no
-test collects this directory as test cases. All three pass
+test collects this directory as test cases. They are still load-bearing: the
+Workflows app serves these files to its example picker (`handle_examples` in
+`src/kiro_crew/apps/builtins/workflows/server.py`), and `test/test_workflows_app.py`
+and `test/test_workflows_authoring_eval.py` require each one to validate, so moving,
+renaming or editing one changes what users see and can fail those tests. All three pass
 `workflows.validate.validate()`, but validation only proves the sandbox and
 authoring shape, not that a script runs green on the shipped host, so read the
-per-file caveats below before copying one.
+per-file caveats below before copying one. See [`../../workflows.md`](../../workflows.md).
 
 | Script | Shape it demonstrates |
 |--------|-----------------------|
@@ -36,5 +40,5 @@ Caveats worth knowing before you copy one:
   increments (see the Budget open question in the module spec), so on today's
   engine that branch never fires.
 
-Two module docstrings here say the DSL "is not implemented yet". That predates the
-engine; `src/kiro_crew/workflows/` implements it.
+All three module docstrings say the DSL "is not implemented yet". That is out of
+date: `src/kiro_crew/workflows/` implements it.

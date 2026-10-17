@@ -13,16 +13,11 @@ import type { ChatSlot } from '../../types'
  * null when the row cites nobody it could nest under.
  *
  * `parent.key` is a bare slot key in the key space of the row's OWN gateway, so it is
- * resolved among rows of the same `peer_id`. `parent.hub_key` is the one half the hub
- * stamps in ITS key space: a peer row whose creator is a peer slot this hub drives
- * cites the LOCAL row driving it (the peer's own key for that creator never crosses
- * the wire), so it is resolved among local rows -- origin `undefined`. Every reader
- * that asks "does this creator exist" or "which row is it" goes through this, so the
- * two halves cannot be resolved in different spaces by different readers.
+ * resolved among rows of the same `peer_id`. Every reader that asks "does this creator
+ * exist" or "which row is it" goes through this, so no two readers resolve it in
+ * different spaces.
  */
 export function citedCreatorOf(row: Pick<Slot, 'parent' | 'peer_id'>): { origin: string | undefined; key: string } | null {
-  const hubKey = row.parent?.hub_key
-  if (typeof hubKey === 'string' && hubKey !== '') return { origin: undefined, key: hubKey }
   const cited = row.parent?.key
   if (cited == null || cited === '') return null
   return { origin: row.peer_id, key: cited }
@@ -48,11 +43,12 @@ export function useLineageAvailable({ allRows }: { allRows: Slot[] }) {
 }
 
 /** The conductor lane population, lineage tree and open conductors. */
-export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, laneOrder, flatSlots }: {
+export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, isRowFolderHidden, isRowStatusHidden, laneOrder, flatSlots }: {
   conductorLaneActive: boolean
   allRows: Slot[]
   allLiveSlots: ChatSlot[]
   isRowFolderHidden: (s: Slot) => boolean
+  isRowStatusHidden: (s: Slot) => boolean
   laneOrder: (a: Slot, b: Slot) => number
   flatSlots: Slot[]
 }) {
@@ -126,8 +122,8 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
    * merely concealed has a creator that is open and running, so the same glyph would
    * state something false about a live session. Read against the population before any
    * concealment, a present creator means the lane is simply not nesting -- which is what
-   * `citesParent` says. Looked up with the pair `citedCreatorOf` gives, so a hub-stamped
-   * `hub_key` is checked among local rows and a peer `key` among its own origin's.
+   * `citesParent` says. Looked up with the pair `citedCreatorOf` gives, so a peer `key`
+   * is checked among its own origin's rows.
    */
   const citedCreatorExists = useMemo(() => {
     const byOrigin = new Map<string | undefined, Set<string>>()
@@ -171,11 +167,16 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
    * children resolve no parent and fall back to the orphan-root treatment this lane
    * already gives a child whose parent it cannot show. The reveal row at the bottom of
    * the lane stays the way to look inside a hide.
+   *
+   * A status HIDE (the eye on Unread, In progress or Pinned) is the same kind of
+   * statement, so `isRowStatusHidden` applies here too: "hide In progress" must not put
+   * a running conductor back on screen as a dimmed anchor just because a stopped child
+   * under it still matches. The "Hiding ..." chip is the way back for this one.
    */
   const conductorRows = useMemo(() => {
     if (!conductorLaneActive) return []
-    return [...lanePopulation].filter(s => !isRowFolderHidden(s)).sort(laneOrder)
-  }, [conductorLaneActive, lanePopulation, laneOrder, isRowFolderHidden])
+    return [...lanePopulation].filter(s => !isRowFolderHidden(s) && !isRowStatusHidden(s)).sort(laneOrder)
+  }, [conductorLaneActive, lanePopulation, laneOrder, isRowFolderHidden, isRowStatusHidden])
 
   /**
    * Row identities the active filter ADMITS, as the flat lane computed them.
@@ -206,10 +207,7 @@ export function useConductorLane({ conductorLaneActive, allRows, allLiveSlots, i
     // slot key in the key space of the CHILD's own gateway, so the creator is the row
     // carrying that key with the SAME origin. Resolving through this index rather than
     // composing the qualified form keeps that format the server's alone, and makes a
-    // peer row unable to nest under a local row whose key merely matches. The one
-    // citation that DOES cross origins is `parent.hub_key`, which the hub stamps in its
-    // own key space (see `citedCreatorOf`): it resolves among local rows, so a worker
-    // a remote-executed lead opened on the peer hangs from the lead's local row.
+    // peer row unable to nest under a local row whose key merely matches.
     //
     // Nested by origin rather than keyed on one joined string: there is then no
     // separator, so no peer id or slot key containing it can be read as the wrong pair.

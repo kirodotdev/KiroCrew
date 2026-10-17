@@ -8,16 +8,23 @@ actually testable through the dashboard, not silently starved of its context.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew.dashboard.handlers.hooks import api_hook_test
 from kiro_crew.hooks import HOOK_EVENT_STOP, HOOK_EVENT_USER_PROMPT_SUBMIT, ScriptHookStore
 
 
-def _req_with_store(store: ScriptHookStore, hook_id: str, context: str) -> make_mocked_request:
+def _req_with_store(
+    store: ScriptHookStore,
+    hook_id: str,
+    context: str,
+    content_type: str = "application/json",
+) -> make_mocked_request:
     state = MagicMock()
     state._hook_store = store
     # The route is owner-gated
@@ -26,15 +33,17 @@ def _req_with_store(store: ScriptHookStore, hook_id: str, context: str) -> make_
     # ``owner_id == ""`` with the signed local bootstrap subject ``local-app`` is
     # the standalone-local owner shape.
     state.owner_id = ""
+    raw = json.dumps({"context": context}).encode()
     req = make_mocked_request(
         "POST",
         f"/api/hooks/{hook_id}/test",
         match_info={"hook_id": hook_id},
+        headers={"Content-Type": content_type, "Content-Length": str(len(raw))},
+        payload=BodyStreamPayload(raw),
     )
     req.app["state"] = state
     req["user"] = "local-app"
     req["app"] = ""
-    req.json = AsyncMock(return_value={"context": context})
     return req
 
 
@@ -200,3 +209,23 @@ async def test_hook_test_redacts_context_in_sel_metadata(tmp_path):
     metadata = audit.log_tool_invocation.call_args.kwargs["metadata"]
     assert secret not in metadata["context"]
     assert "redacted" in metadata["context"].lower()
+
+
+@pytest.mark.asyncio
+async def test_a_non_json_body_is_refused_415_not_defaulted(tmp_path):
+    """This ``default_empty`` route defaults an absent body, never a refused one."""
+    store = ScriptHookStore(tmp_path)
+    hook = store.create(
+        {"name": "stop-hook", "event": HOOK_EVENT_STOP, "matcher": "", "command": "cat"}
+    )
+    with (
+        patch("kiro_crew.hooks.run_script_hook", new_callable=AsyncMock) as mock_run,
+        patch("kiro_crew.dashboard.handlers.hooks._sel", return_value=MagicMock()),
+    ):
+        resp = await api_hook_test(
+            _req_with_store(store, hook.id, "ctx", content_type="text/plain")
+        )
+
+    assert resp.status == 415
+    assert json.loads(resp.body)["code"] == "unsupported_media_type"
+    mock_run.assert_not_called()

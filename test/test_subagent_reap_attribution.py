@@ -29,6 +29,7 @@ import pytest
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import create_agent_folder
+from kiro_crew.testing.wait import await_until
 
 _DEATH_TEXT = (
     "Runtime process died during prompt — killed (provider shutdown) "
@@ -108,7 +109,7 @@ async def test_a_user_stop_is_reported_as_a_stop_not_a_runtime_death(agent_root,
         run_task = asyncio.create_task(manager._run(info))
         await asyncio.sleep(0)
         assert await manager.cancel("stopecho1") is True
-        await asyncio.wait_for(run_task, timeout=10)
+        await await_until(run_task)
 
     # Neutral record: the death was our own doing.
     assert info.outcome == "stopped"
@@ -141,7 +142,7 @@ async def test_a_parent_end_names_the_verb_that_ended_the_run(agent_root, caplog
             verb="retire_kiro_identity_sessions",
         )
         assert stopped == 1
-        await asyncio.wait_for(run_task, timeout=10)
+        await await_until(run_task)
 
     assert info.outcome == "stopped"
     assert not info.error
@@ -170,7 +171,7 @@ async def test_a_deadline_reap_names_the_deadline_not_the_death(agent_root, capl
         run_task = asyncio.create_task(manager._run(info))
         await asyncio.sleep(0)
         await manager._force_reap("stopecho3", info, elapsed=900.0, reason="reaped")
-        await asyncio.wait_for(run_task, timeout=10)
+        await await_until(run_task)
 
     # A deadline reap IS a failure, but its own one: the error names the reap.
     assert info.outcome == "failed"
@@ -223,7 +224,7 @@ async def test_an_unrelated_exception_under_a_reap_is_still_the_runs_own_failure
         run_task = asyncio.create_task(manager._run(info))
         await asyncio.sleep(0)
         await manager._force_reap("stopecho4", info, elapsed=5.0, reason="reaped")
-        await asyncio.wait_for(run_task, timeout=10)
+        await await_until(run_task)
 
     assert info.outcome == "failed"
     assert info.error == "RuntimeError: a bug of the run's own"
@@ -294,7 +295,7 @@ async def test_a_late_stop_does_not_turn_a_deadline_reap_neutral(agent_root, cap
 
         manager._sessions.reset = _reset_then_late_stop
         await manager._force_reap("stopecho5", info, elapsed=900.0, reason="reaped")
-        await asyncio.wait_for(run_task, timeout=10)
+        await await_until(run_task)
 
     assert info.outcome == "failed"
     assert info.error and "reaped" in info.error

@@ -41,6 +41,19 @@ describe('McpInfoButton', () => {
     })
   })
 
+  // The marks below the header claim nothing about connection, so the count
+  // has to name what it counts.
+  it('labels the header count as enabled servers', async () => {
+    vi.mocked(api.mcpActive).mockResolvedValueOnce([
+      { name: 'builder-mcp', enabled: true },
+      { name: 'github-mcp', enabled: true },
+      { name: 'slack-mcp', enabled: false },
+    ])
+    render(<McpInfoButton />)
+    fireEvent.click(screen.getByTitle('Session MCP servers'))
+    await waitFor(() => expect(screen.getByText('MCP Servers (2/3 enabled)')).toBeInTheDocument())
+  })
+
   it('shows disabled label for disabled servers', async () => {
     render(<McpInfoButton />)
     fireEvent.click(screen.getByTitle('Session MCP servers'))

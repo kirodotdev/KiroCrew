@@ -791,7 +791,7 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('live-wt')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('More actions'))
     // Menu is open (Rebase is always present) but Make live is omitted on the live row.
-    expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
+    expect(await screen.findByText('Rebase onto base branch')).toBeInTheDocument()
     expect(within(await screen.findByRole('menu')).queryByText('Make live')).toBeNull()
   })
 
@@ -879,7 +879,7 @@ describe('DevFleetPage', () => {
     await waitFor(() => expect(screen.getByText('feature-x')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('More actions'))
     // Rebase is platform-neutral and stays -> proves the menu really opened.
-    expect(await screen.findByText('Rebase onto main')).toBeInTheDocument()
+    expect(await screen.findByText('Rebase onto base branch')).toBeInTheDocument()
     const menu = within(await screen.findByRole('menu'))
     for (const gone of ['Spin up pod', 'QA + video', 'Stop pod', 'Restart pod']) {
       expect(menu.queryByText(gone)).toBeNull()
@@ -1034,7 +1034,7 @@ describe('DevFleetPage', () => {
 
   /* ─── Row-actions dropdown: portal + flip ─── */
   // A worktree row whose "More actions" menu has items: non-main, not live,
-  // has_dist & not running → Spin up pod / Rebase onto main / Make live.
+  // has_dist & not running → Spin up pod / Rebase onto base branch / Make live.
   const FLEET_MENU = {
     worktrees: [
       { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
@@ -1060,7 +1060,7 @@ describe('DevFleetPage', () => {
     // container / row Card — this is what lets it escape Card overflow clipping.
     expect(menu.parentElement).toBe(document.body)
     // Items render inside the portaled menu and are reachable.
-    expect(screen.getByText('Rebase onto main')).toBeInTheDocument()
+    expect(screen.getByText('Rebase onto base branch')).toBeInTheDocument()
     expect(within(menu).getByText('Make live')).toBeInTheDocument()
   })
 
@@ -1151,7 +1151,7 @@ describe('DevFleetPage', () => {
     // overflow:hidden previously cut the popover off mid-render.
     expect(pop.parentElement).toBe(document.body)
     expect(pop.getAttribute('aria-label')).toBe('Pull + Build main')
-    expect(within(pop).getByText('Pulls main and rebuilds (~6 min). Does NOT restart.')).toBeInTheDocument()
+    expect(within(pop).getByText('Pulls the base branch and rebuilds (~6 min). Does NOT restart.')).toBeInTheDocument()
   })
 
   it('Start inside the portaled confirm popover still fires the sync request', async () => {

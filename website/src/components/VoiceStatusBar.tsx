@@ -1,13 +1,15 @@
-import { CheckCircle2, Loader2, MicOff, X } from 'lucide-react'
+import { CheckCircle2, Download, Loader2, MicOff, MoreHorizontal, RotateCcw, X } from 'lucide-react'
 import { useId } from 'react'
 
 import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
 import { downloadLabel } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
+import type { KeptRecording } from '../hooks/useVoiceInput'
 interface Props {
   /** True while actively capturing audio. */
   recording: boolean
@@ -21,6 +23,12 @@ interface Props {
   error?: string | null
   /** Dismiss the error. */
   onDismissError?: () => void
+  /**
+   * The audio of the transcription `error` reports, still held in the tab. The
+   * notice then offers Retry (when the failure can clear on its own), Save
+   * recording and Discard, and Discard takes the place of the plain dismiss.
+   */
+  keptRecording?: KeptRecording | null
   /** Change the capture device. Receives a deviceId, or '' for system default. */
   onSelectDevice: (deviceId: string) => void
   /** True when a switch applies immediately rather than to the next recording. */
@@ -95,27 +103,87 @@ function renderNoticeText(notice: NonNullable<Props['notice']>) {
   )
 }
 
-export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId, error, onDismissError, onSelectDevice, deviceSwitchIsLive, download, draining, onCancelDrain, notice }: Props) {
+export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId, error, onDismissError, keptRecording, onSelectDevice, deviceSwitchIsLive, download, draining, onCancelDrain, notice }: Props) {
   /* Addresses the one visible sentence that says what a discard costs, so the
      discard button can point at it. Above the early returns because it is a
      hook, and generated rather than fixed because two panes can each mount a
      strip and a duplicate id would aim both buttons at the first one. */
   const consequenceId = useId()
+  const errorId = useId()
   if (error) {
+    const kept = keptRecording ?? null
+    /* Same footprint as the drain's discard: these are the only exits for the
+       recording on a device without a keyboard, so each is a fingertip-sized
+       target, labelled in text or, for the overflow trigger, by its name. */
+    const keptButton = 'shrink-0 inline-flex items-center gap-1 min-h-[28px] px-2 py-1 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent disabled:opacity-50 disabled:pointer-events-none'
     return (
-      <div className="flex items-center px-3 py-1.5 text-[12px] bg-danger-subtle border-b border-danger-subtle">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-[12px] bg-danger-subtle border-b border-danger-subtle">
         {/* Through ErrorNotice, not a hand-written alert (AUTOSDE
             errors-use-error-notice). No `askAgent` hand-off here: the composer
             this bar sits on holds an unsaved draft, and the hand-off navigates
             away from it — a mic error is fixed in the browser/OS permission
-            prompt, not by the agent. */}
+            prompt, not by the agent. With a kept recording, Discard is the
+            dismissal: the plain ✕ would close the notice without saying that
+            the recording goes with it. */}
         <ErrorNotice
+          id={errorId}
           variant="inline"
           className="flex-1 min-w-0"
           message={error}
-          onDismiss={onDismissError}
+          onDismiss={kept ? undefined : onDismissError}
           testId="voice-status-error"
         />
+        {kept && (
+          /* Two controls at most (AUTOSDE max-two-buttons-per-row). With Retry
+             on offer it leads, since it is what recovers the words, and Save
+             and Discard share one overflow menu; without it, Save and Discard
+             are the row. */
+          <span className="flex items-center gap-1" data-testid="voice-kept-recording">
+            {kept.retryable ? (
+              <>
+                <button type="button" data-testid="voice-kept-retry" onClick={kept.retry} disabled={kept.retryDisabled} aria-describedby={errorId} className={keptButton}>
+                  <RotateCcw size={12} aria-hidden="true" />
+                  {i18nT('components.voiceStatusBar.retry_transcription')}
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid="voice-kept-more"
+                      aria-label={i18nT('components.voiceStatusBar.recording_actions')}
+                      title={i18nT('components.voiceStatusBar.recording_actions')}
+                      aria-describedby={errorId}
+                      className={keptButton}
+                    >
+                      <MoreHorizontal size={14} aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="min-w-[180px]">
+                    <DropdownMenuItem data-testid="voice-kept-save" onSelect={kept.save}>
+                      <Download size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                      <span>{i18nT('components.voiceStatusBar.save_recording')}</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem data-testid="voice-kept-discard" onSelect={kept.discard}>
+                      <X size={13} className="shrink-0 text-muted" aria-hidden="true" />
+                      <span>{i18nT('components.voiceStatusBar.discard_recording')}</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            ) : (
+              <>
+                <button type="button" data-testid="voice-kept-save" onClick={kept.save} aria-describedby={errorId} className={keptButton}>
+                  <Download size={12} aria-hidden="true" />
+                  {i18nT('components.voiceStatusBar.save_recording')}
+                </button>
+                <button type="button" data-testid="voice-kept-discard" onClick={kept.discard} aria-describedby={errorId} className={keptButton}>
+                  <X size={12} aria-hidden="true" />
+                  {i18nT('components.voiceStatusBar.discard_recording')}
+                </button>
+              </>
+            )}
+          </span>
+        )}
       </div>
     )
   }
@@ -261,7 +329,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
   return (
     <div
       aria-live="polite"
-      className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-danger bg-danger-subtle border-b border-danger-subtle"
+      className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-danger-text bg-danger-subtle border-b border-danger-subtle"
     >
       {/* pulsing live dot */}
       <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">

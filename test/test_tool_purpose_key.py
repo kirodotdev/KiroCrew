@@ -25,6 +25,7 @@ from kiro_crew.acp._dispatch import (
     parse_session_update,
     select_tool_title,
 )
+from kiro_crew.acp.client import _select_tool_title
 from kiro_crew.acp.types import EVENT_TOOL_CALL_UPDATE, TOOL_PURPOSE_KEYS
 
 
@@ -187,12 +188,77 @@ def test_refinement_purpose_is_redacted() -> None:
     assert "AKIAIOSFODNN7EXAMPLE" not in event.tool_purpose
 
 
+@pytest.mark.parametrize("select_title", [select_tool_title, _select_tool_title])
+@pytest.mark.parametrize("kind,is_shell", [("other", None), ("execute", False), (None, False)])
+def test_non_shell_description_is_an_argument_not_a_title(select_title, kind, is_shell):
+    raw = {"description": "The issue body contains the steps to reproduce the failure."}
+    assert select_title("Create issue", raw, kind, is_shell=is_shell) == "Create issue"
+
+
+@pytest.mark.parametrize("select_title", [select_tool_title, _select_tool_title])
+def test_cached_shell_description_remains_a_label_without_kind(select_title):
+    raw = {"description": "List temp", "command": "ls /tmp"}
+    assert select_title("Run Command", raw, is_shell=True) == "List temp"
+
+
+def test_client_uses_the_shared_title_selector():
+    assert _select_tool_title is select_tool_title
+
+
+@pytest.mark.parametrize("kind,is_shell", [("other", None), (None, False)])
+def test_subagent_description_remains_a_label(kind, is_shell):
+    raw = {"description": "Find callers", "subagent_type": "Explore", "command": "not a shell"}
+    assert select_tool_title("Task", raw, kind, is_shell=is_shell) == "Find callers"
+
+
+@pytest.mark.parametrize("subagent_type", [None, "", "   ", 42, [], {}])
+def test_invalid_subagent_type_does_not_promote_a_description(subagent_type):
+    raw = {"description": "An issue body", "subagent_type": subagent_type}
+    assert select_tool_title("Create issue", raw, "other") == "Create issue"
+
+
+@pytest.mark.parametrize("description", [None, "", "   ", 42])
+def test_subagent_without_a_description_keeps_the_sdk_title(description):
+    raw = {"description": description, "subagent_type": "Explore", "command": "not a shell"}
+    assert select_tool_title("Task", raw, "other") == "Task"
+
+
+@pytest.mark.parametrize(
+    "raw,title,expected",
+    [
+        ({"description": "An issue body"}, "Create issue", "Create issue"),
+        ({"description": "Find callers", "subagent_type": "Explore"}, "Task", "Find callers"),
+    ],
+)
+def test_non_shell_label_survives_a_kindless_refinement(raw, title, expected):
+    shell_cache: dict[str, bool] = {}
+    raw_params_cache: dict[str, dict] = {}
+    (event,) = parse_session_update(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "label",
+            "kind": "other",
+            "title": title,
+            "rawInput": raw,
+        },
+        shell_cache=shell_cache,
+        raw_params_cache=raw_params_cache,
+    )
+    assert event.title == expected
+    (refinement,) = parse_session_update(
+        {"sessionUpdate": "tool_call_update", "toolCallId": "label", "title": title},
+        shell_cache=shell_cache,
+        raw_params_cache=raw_params_cache,
+    )
+    assert refinement.title == expected
+
+
 class TestSelectToolTitle:
     """The pill label falls back sensibly when a backend omits the SDK title."""
 
-    def test_description_is_preferred(self) -> None:
+    def test_description_ignored_without_kind(self) -> None:
         raw = {"description": "List temp", "command": "ls /tmp"}
-        assert select_tool_title("ls /tmp", raw) == "List temp"
+        assert select_tool_title("ls /tmp", raw) == "ls /tmp"
 
     def test_description_outranks_the_command_for_a_shell_tool(self) -> None:
         """The prose label is the one thing that beats the command."""

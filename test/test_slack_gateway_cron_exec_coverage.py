@@ -1,7 +1,8 @@
 """Coverage for the Kiro Crew gateway's deterministic cron-execution paths.
 
-``test_slack_gateway.py`` and ``test_cron_gateway_integration.py`` drive the
-LLM (``message``) arm of ``_cron_callback`` thoroughly, but the two
+``test_slack_gateway.py``, ``test_cron_gateway_integration.py`` and
+``test_cron_gateway_integration_llm.py`` drive the LLM (``message``) arm of
+``_cron_callback`` thoroughly, but the two
 deterministic arms — ``job.command`` (shell) and ``job.script`` (Python
 callable) — only had their happy paths exercised. Everything reached here was
 uncovered by the whole suite before this file:
@@ -648,17 +649,33 @@ class TestVettingHoldsAtClaimTime:
     def test_the_message_arm_has_no_pool_queue_between_vet_and_dispatch(self):
         """Disposition for the third gate site, by measurement not assertion.
 
-        ``gateway.py`` has exactly three fire-time gate sites and exactly two
+        The gateway (``gateway.py`` and its owners) has exactly four fire-time
+        gate sites and exactly two
         execution-pool dispatches. Both dispatches sit in the command/script
-        blocks, which return before the message gate is reached — so the
-        message arm has no queue between its vet and its LLM dispatch and the
-        defect class cannot apply to it. Pinned here so a future dispatch added
+        blocks, which return before the message gate is reached, and the goal
+        check-in gate returns into its hidden turn before either — so neither
+        LLM arm has a queue between its vet and its dispatch and the defect
+        class cannot apply to them. Pinned here so a future dispatch added
         after the message gate fails this test rather than shipping unnoticed.
         """
-        source = Path(gw.__file__).read_text(encoding="utf-8")
+        slack_dir = Path(gw.__file__).resolve().parent
+        runtime = slack_dir / "gateway_runtime"
+        # The message arm runs on from its gate in cron_fire.py through cron_turn.py,
+        # cron_delivery.py and cron_failure.py, so those, then the facade, come last.
+        message_path = [
+            runtime / f"{n}.py" for n in ("cron_fire", "cron_turn", "cron_delivery", "cron_failure")
+        ]
+        source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in [
+                *(p for p in sorted(runtime.glob("*.py")) if p not in message_path),
+                *message_path,
+                slack_dir / "gateway.py",
+            ]
+        )
         gate_sites = source.count("await _await_cron_fire_time_gate(")
         pool_sites = source.count("await run_in_cron_pool(")
-        assert gate_sites == 3, f"gate-site count changed ({gate_sites}); re-audit the sweep"
+        assert gate_sites == 4, f"gate-site count changed ({gate_sites}); re-audit the sweep"
         assert pool_sites == 2, f"pool-dispatch count changed ({pool_sites}); re-audit the sweep"
         message_gate = source.index('tool_name="cron_message_dispatch"')
         assert (
@@ -1061,7 +1078,7 @@ class TestTheVetIsAnAccountedBudgetTerm:
     def test_every_term_spent_inside_the_run_budget_is_accounted_for(self):
         """Every deadline bounding a run must carry a term for each thing spent inside it.
 
-        ``cron.py``'s own accounting names three: the subprocess bound, the pool
+        The cron service's own accounting names three: the subprocess bound, the pool
         queue wait, and the fire-time gate.  The claim-time vet is a fourth --
         it runs inside the worker, inside the same deadline -- and asserting on
         the helper alone would pass with the term missing from the deadline, so
@@ -1075,36 +1092,54 @@ class TestTheVetIsAnAccountedBudgetTerm:
         exactly that drift.  Parsed with ``ast`` so the assertion survives the
         expression being wrapped across lines.
         """
-        from kiro_crew import cron as cron_mod
+        import importlib
+        import pkgutil
 
-        tree = ast.parse(Path(cron_mod.__file__).read_text(encoding="utf-8"))
+        from kiro_crew.cron_service import service
+
+        # Every module the class binds members from is read: the two sums live in
+        # service owners and read the helpers through the facade (``seams.<name>``),
+        # where tests patch them.
         owed = {"_pool_queue_allowance", "_gate_budget_allowance", "_vet_allowance"}
-        run_deadlines: list[tuple[int, set[str]]] = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
-                continue
-            if not any(isinstance(t, ast.Name) and t.id == "deadline" for t in node.targets):
-                continue
-            called = {
-                child.func.id
-                for child in ast.walk(node.value)
-                if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
-            }
-            # A RUN deadline is one that already accounts for at least one term.
-            # That excludes the file-lock spin deadline (``time.monotonic() +
-            # timeout``), which bounds a lock acquisition rather than a run, and
-            # it needs no magic count that would rot as the file changes.
-            if called & owed:
-                run_deadlines.append((node.lineno, called & owed))
+        run_deadlines: list[tuple[str, int, set[str]]] = []
+        for module in (
+            "kiro_crew.cron",
+            *(f"{service.__name__}.{info.name}" for info in pkgutil.iter_modules(service.__path__)),
+        ):
+            path = Path(importlib.import_module(module).__file__)
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Assign):
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == "deadline" for t in node.targets):
+                    continue
+                called = {
+                    child.func.id if isinstance(child.func, ast.Name) else child.func.attr
+                    for child in ast.walk(node.value)
+                    if isinstance(child, ast.Call)
+                    and (
+                        isinstance(child.func, ast.Name)
+                        or (
+                            isinstance(child.func, ast.Attribute)
+                            and isinstance(child.func.value, ast.Name)
+                            and child.func.value.id == "seams"
+                        )
+                    )
+                }
+                # A RUN deadline is one that already accounts for at least one term.
+                # That excludes the file-lock spin deadline (``time.monotonic() +
+                # timeout``), which bounds a lock acquisition rather than a run, and
+                # it needs no magic count that would rot as the file changes.
+                if called & owed:
+                    run_deadlines.append((path.name, node.lineno, called & owed))
 
         assert len(run_deadlines) >= 2, (
             "expected at least the execution guard and the reaper sweep to bound "
             f"a run; found {len(run_deadlines)} -- this check may have gone vacuous"
         )
-        for lineno, terms in run_deadlines:
+        for filename, lineno, terms in run_deadlines:
             missing = owed - terms
             assert not missing, (
-                f"the run deadline at cron.py:{lineno} does not account for "
+                f"the run deadline at {filename}:{lineno} does not account for "
                 f"{sorted(missing)}; a term spent inside it but absent from it means "
                 "this deadline pre-empts the one that does carry it"
             )
@@ -1285,6 +1320,35 @@ class TestCronMessageDenialAndWiring:
             assert await cb(job) is None
         assert job.fire_time_denied is True
         assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_goal_checkin_denied_at_fire_time_never_fires(self):
+        """A crewmate's goal check-in passes the same gate as a message job."""
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "daily"))
+        fire = AsyncMock(return_value="started")
+        with patch.object(goal_reminder, "fire", fire):
+            async with _cron_cb(orch, gate_reason="capabilities.cron off") as cb:
+                assert await cb(job) is None
+        fire.assert_not_awaited()
+        assert job.fire_time_denied is True
+        assert job.last_status == "error"
+        assert job.consecutive_failures == 0
+
+    @pytest.mark.asyncio
+    async def test_goal_checkin_allowed_by_the_gate_fires(self):
+        from kiro_crew.dashboard import goal_reminder
+
+        orch = _make_orchestrator()
+        job = _job(managed_by=goal_reminder.managed_key("ava", "daily"))
+        fire = AsyncMock(return_value="started")
+        with patch.object(goal_reminder, "fire", fire):
+            async with _cron_cb(orch, gate_reason="") as cb:
+                assert await cb(job) == "started"
+        fire.assert_awaited_once()
+        assert job.fire_time_denied is False
 
     @pytest.mark.asyncio
     async def test_reaper_not_started_without_sessions(self):
@@ -1504,7 +1568,7 @@ def _channel_transport() -> MagicMock:
     # OBJECT, not a number, so ``chunk_for_transport`` cannot compare it and the
     # send never happens. 0 = not byte-capped, which is the character path these
     # tests are about (Webex is the byte-capped one). Same reason the fakes in
-    # test_cross_surface_mirror.py and test_chat_runner_coverage.py declare it.
+    # test_cross_surface_mirror.py and test_chat_runner_coverage_output.py declare it.
     transport.capabilities = MagicMock(max_message_chars=4096, max_message_bytes=0)
     transport.send_message = AsyncMock(return_value="m1")
     transport.resolve_configured_target = AsyncMock(return_value=None)

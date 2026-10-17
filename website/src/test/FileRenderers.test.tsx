@@ -11,6 +11,14 @@ import { consumeChatHandoff, installSoftNavigate, __resetNavSeamForTests } from 
 const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 
+// Every test in this file starts on a local session with a non-Windows
+// gateway, whatever order the tests run in. A test that needs a remote
+// session or a Windows gateway sets that in its own body.
+beforeEach(() => {
+  brandingEnv.directLocal = true
+  platformEnv.value = 'other'
+})
+
 vi.mock('../hooks/useBranding', () => ({
   useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
 }))
@@ -509,8 +517,6 @@ describe('OfficeViewer', () => {
       revealPath.mockReset()
       copy.mockReset()
       copy.mockResolvedValue(true)
-      brandingEnv.directLocal = true
-      platformEnv.value = 'other'
       alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
     })
 

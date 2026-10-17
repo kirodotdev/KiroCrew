@@ -41,6 +41,7 @@ from kiro_crew.dashboard.slot_ownership import (
     slot_route_policy,
 )
 from kiro_crew.dashboard.state import SlotOrigin, _ChatSlot
+from kiro_crew.testing.wait import LoopHop
 
 APP = "crew-keyboard"
 _GRANT = "kiro_crew.apps.permissions.app_can_manage_session_approvals"
@@ -854,6 +855,7 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert not await asyncio.to_thread(log.has_log, destination_key)
         loop = asyncio.get_running_loop()
         loop_thread = threading.get_ident()
+        hop = LoopHop(loop)
         before = {}
         load_cfg = chat_handlers._load_restore_cfg
 
@@ -861,18 +863,21 @@ class TestTranscriptOwnershipWithoutALiveSlot:
             assert "b1" not in state._slots_under_construction
             # The reopen write runs after construction, so the source is still closed.
             assert (await asyncio.to_thread(log.get_metadata, source_key)).get("closed")
+            hop.note("source still closed")
             await _persist_and_close(state, state.get_or_create_slot("b1", origin=SlotOrigin.USER))
+            hop.note("destination persisted and closed")
             before["meta"] = await asyncio.to_thread(log.get_metadata, destination_key)
             before["rows"] = await asyncio.to_thread(log.read_messages, destination_key)
 
         def restore_cfg():
             assert threading.get_ident() != loop_thread
-            asyncio.run_coroutine_threadsafe(create_and_close_destination(), loop).result(timeout=5)
+            hop.run(create_and_close_destination(), "the destination's create-and-close")
             return load_cfg()
 
         monkeypatch.setattr(chat_handlers, "_load_restore_cfg", restore_cfg)
         async with _client(state, caller) as client:
             resp = await client.post("/api/chat/slots/b1/resume", json={"key": source_key})
+            hop.check()
             assert before["meta"]["closed"], "the destination interleaving did not occur"
             assert before["rows"], "the destination must contain the person's persisted rows"
             if caller:
@@ -907,16 +912,19 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         )
         loop = asyncio.get_running_loop()
         loop_thread = threading.get_ident()
+        hop = LoopHop(loop)
         reservations = []
         read_owner = chat_handlers.transcript_acquisition_reason
 
         async def while_destination_is_reserved():
             with pytest.raises(ValueError, match="still being built"):
                 state.get_or_create_slot("b1", origin=SlotOrigin.USER)
+            hop.note("create of the reserved destination refused")
             if source_change == "owner":
                 await asyncio.to_thread(log.update_metadata, source_key, {"app": ""})
             elif source_change:
                 await asyncio.to_thread(log.delete_session, source_key)
+                hop.note("source deleted")
                 if source_change == "identity":
                     await asyncio.to_thread(
                         log.update_metadata, source_key, {"app": APP, "created_at": "replacement"}
@@ -929,14 +937,13 @@ class TestTranscriptOwnershipWithoutALiveSlot:
                 reserved = "b1" in state._slots_under_construction
                 reservations.append(reserved)
                 if reserved:
-                    asyncio.run_coroutine_threadsafe(while_destination_is_reserved(), loop).result(
-                        timeout=5
-                    )
+                    hop.run(while_destination_is_reserved(), f"the source change {source_change!r}")
             return reason
 
         monkeypatch.setattr(chat_handlers, "transcript_acquisition_reason", inspect_destination)
         async with _client(state, APP) as client:
             resp = await client.post("/api/chat/slots/b1/resume", json={"key": source_key})
+            hop.check()
             assert reservations == [False, True]
             if source_change == "owner":
                 assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
@@ -1011,7 +1018,7 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         await asyncio.to_thread(
             log.update_metadata, source_key, {"app": APP, "closed": True, "closed_at": 1.0}
         )
-        loop = asyncio.get_running_loop()
+        hop = LoopHop(asyncio.get_running_loop())
         read_owner = chat_handlers.transcript_acquisition_reason
         published = []
 
@@ -1021,12 +1028,13 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         def inspect_destination(log_arg, key, app):
             reason = read_owner(log_arg, key, app)
             if key == "dashboard:b1" and "b1" in state._slots_under_construction:
-                asyncio.run_coroutine_threadsafe(publish_same_transcript(), loop).result(timeout=5)
+                hop.run(publish_same_transcript(), "the same-transcript publish")
             return reason
 
         monkeypatch.setattr(chat_handlers, "transcript_acquisition_reason", inspect_destination)
         async with _client(state, APP) as client:
             resp = await client.post("/api/chat/slots/b1/resume", json={"key": source_key})
+            hop.check()
             assert resp.status == 200, await resp.text()
             assert (await resp.json())["key"] == "a1"
         assert published and state._slots["a1"] is published[0]
@@ -1118,6 +1126,57 @@ class TestTranscriptOwnershipWithoutALiveSlot:
             assert resp.status != 200, body
             assert "a1" not in state._slots
             assert "a1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
+    async def test_a_lock_outlasting_one_reads_budget_but_not_the_handlers_publishes(
+        self, state, monkeypatch
+    ) -> None:
+        """A reopen re-read waits out a lock longer than one read's own retry budget.
+
+        The post-reopen re-reads open a file this resume just rewrote. On a loaded
+        Windows runner the transient hold can outlast ``get_metadata_status``'s own
+        bounded retry, which then reports unreadable and would refuse. The handler
+        re-reads a few more times off the loop, so a hold that clears within that
+        wider window lets the read succeed and the resume publishes. The fault
+        budget here exceeds one read's attempts but not the handler's, so a read
+        with no extra retries would refuse and the extra retries are what carry it.
+        Not run on a real Windows host.
+        """
+        import builtins
+
+        from kiro_crew.history import _METADATA_READ_ATTEMPTS
+
+        await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
+        log = state.conversation_log
+        target = str(log._path("dashboard:a1"))
+        real_open = builtins.open
+        real_clear = log.clear_closed
+        armed = {"on": False}
+        # More faults than one read's internal budget (so a single read reports
+        # unreadable), but few enough that the handler's extra off-loop re-reads
+        # clear the hold.
+        fail_budget = {"n": _METADATA_READ_ATTEMPTS + 2}
+
+        def clear_closed(key, **kw):
+            out = real_clear(key, **kw)
+            armed["on"] = True
+            return out
+
+        def flaky_open(file, *args, **kwargs):
+            if armed["on"] and str(file) == target and fail_budget["n"] > 0:
+                fail_budget["n"] -= 1
+                raise PermissionError("ERROR_SHARING_VIOLATION (simulated)")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(log, "clear_closed", clear_closed)
+        monkeypatch.setattr(builtins, "open", flaky_open)
+        async with _client(state, APP) as client:
+            resp = await client.post("/api/chat/slots/a1/resume", json={})
+            body = await resp.text()
+        assert fail_budget["n"] == 0, "the simulated transient did not fully clear"
+        assert resp.status == 200, body
+        assert state._slots["a1"]._app == APP
+        assert "a1" not in state._slots_under_construction
 
     @pytest.mark.asyncio
     async def test_a_delete_finishing_inside_the_final_offloop_read_refuses(
@@ -1766,7 +1825,7 @@ class TestModeRereadsTheGrantAfterTheBody:
     @pytest.mark.asyncio
     async def test_a_slot_replaced_during_the_grant_read_is_not_trusted(self, state) -> None:
         state.get_or_create_slot("shared", app=APP)
-        loop = asyncio.get_running_loop()
+        hop = LoopHop(asyncio.get_running_loop())
         replacement = []
         calls = []
 
@@ -1777,12 +1836,13 @@ class TestModeRereadsTheGrantAfterTheBody:
         def grant(_app: str) -> bool:
             calls.append(None)
             if len(calls) == 2:
-                asyncio.run_coroutine_threadsafe(replace(), loop).result(timeout=5)
+                hop.run(replace(), "the slot replacement")
             return True
 
         with patch(_GRANT, grant):
             async with _client(state, APP) as client:
                 resp = await client.post("/api/chat/mode", json={"mode": "trust", "slot": "shared"})
+                hop.check()
                 assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
         assert len(calls) == 2
         assert replacement and not replacement[0]._trust

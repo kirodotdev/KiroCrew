@@ -13,6 +13,9 @@ import { test, expect } from '@playwright/test'
  */
 
 test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
+  // The session each test starts in, so a fork can be told apart from it.
+  let parentKey = ''
+
   test.beforeEach(async ({ page }) => {
     // Auth is handled by the 'setup' project (playwright.config.ts), which
     // exchanges PLAYWRIGHT_TOKEN for a cookie and persists it via storageState.
@@ -39,6 +42,7 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
     expect(created.ok(), await created.text()).toBeTruthy()
     const { key } = await created.json() as { key: string }
     expect(key).toBeTruthy()
+    parentKey = key
     await expect(page).toHaveURL(url => url.searchParams.get('sid') === key)
     await expect(page.getByPlaceholder(/message/i)).toBeVisible({ timeout: 10000 })
     // Let paint settle so the recording isn't black for the first frames.
@@ -70,12 +74,28 @@ test.describe('Fork Session E2E', { tag: '@needs-agent' }, () => {
 
     // GIF-only pauses: skip in normal CI to keep tests fast.
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(1500)
+    const forkResponse = page.waitForResponse(response =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/fork'),
+    )
     await forkButton.click()
+    const forked = await forkResponse
+    expect(forked.ok(), await forked.text()).toBeTruthy()
+    const { key: forkKey, title: bornTitle } = await forked.json() as { key: string; title: string }
+    expect(forkKey).toBeTruthy()
+    // A fork is a new session, never the parent reopened under its own key.
+    expect(forkKey).not.toBe(parentKey)
+    // The fork is born named for its parent, behind the "↳ " fork marker.
+    expect(bornTitle).toMatch(/^↳ Fork of /)
 
-    // New slot should appear with a "Fork of " title. The shipped fork-arrow
-    // feature prefixes the title with "↳ " (↳ Fork of <parent>), so match the
-    // "Fork of " substring rather than anchoring at the start of the string.
-    await expect(page.getByText(/Fork of /).first()).toBeVisible({ timeout: 10000 })
+    // The fork opens as the active session, and its sidebar row carries the
+    // "↳ " fork marker. The birth title "↳ Fork of <parent>" is transient: the
+    // fork's background title pass renames the child after the question it
+    // branched at, and the stub backend answers that pass at once, so the
+    // rename can land before the row first paints. The marker survives the
+    // rename, so the row's title is asserted on the marker alone.
+    await expect(page).toHaveURL(url => url.searchParams.get('sid') === forkKey, { timeout: 10000 })
+    const forkTitle = page.locator(`[data-slot-key="${forkKey}"] [data-session-title]`).first()
+    await expect(forkTitle).toHaveText(/^↳ /, { timeout: 10000 })
     if (process.env.PLAYWRIGHT_VIDEO === '1') await page.waitForTimeout(2000)
   })
 })

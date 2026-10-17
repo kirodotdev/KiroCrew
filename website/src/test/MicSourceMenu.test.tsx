@@ -133,6 +133,54 @@ describe('MicSourceMenu', () => {
     expect(screen.queryByText(/drops about 0.2s/)).toBeNull()
   })
 
+  it('folds Chromium\'s default pseudo-device into System default instead of a second row', async () => {
+    const pseudo = { deviceId: 'default', kind: 'audioinput', label: 'Default - MacBook Pro Microphone', groupId: 'g1' }
+    mockDevices([pseudo, ...DEVICES])
+    render(<MicSourceMenu onSelect={() => {}} />)
+    fireEvent.click(screen.getByRole('button'))
+    const menu = await screen.findByRole('menu')
+    await screen.findByText('AirPods Pro')
+    const labels = Array.from(menu.querySelectorAll('[role="menuitemradio"]')).map(r => r.textContent)
+    expect(labels).toEqual(['MacBook Pro Microphone', 'AirPods Pro', 'System default (MacBook Pro Microphone)'])
+    expect(screen.queryByText(/^Default - /)).toBeNull()
+  })
+
+  it('names the live default track on the trigger without Chromium\'s "Default - " prefix', () => {
+    render(<MicSourceMenu onSelect={() => {}} recording deviceLabel="Default - MacBook Pro Microphone" />)
+    const trigger = screen.getByRole('button')
+    expect(trigger.textContent).toBe('MacBook Pro Microphone')
+    expect(trigger.getAttribute('title')).toBe('MacBook Pro Microphone')
+  })
+
+  it('keeps plain "System default" when the browser lists no default entry', async () => {
+    render(<MicSourceMenu onSelect={() => {}} />)
+    fireEvent.click(screen.getByRole('button'))
+    // The device rows commit after listMicrophones() resolves; wait for them so
+    // the label is read from the loaded list, not the empty first render.
+    await screen.findByText('AirPods Pro')
+    expect(screen.getByRole('menuitemradio', { name: /^system default$/i })).toBeTruthy()
+  })
+
+  it('marks System default while recording on the pseudo-device, and for a saved default id', async () => {
+    const pseudo = { deviceId: 'default', kind: 'audioinput', label: 'Default - MacBook Pro Microphone', groupId: 'g1' }
+    mockDevices([pseudo, ...DEVICES])
+    const { unmount } = render(<MicSourceMenu onSelect={() => {}} recording liveSwitch activeDeviceId="default" />)
+    fireEvent.click(screen.getByRole('button'))
+    await screen.findByText('AirPods Pro')
+    const live = screen.getByRole('menuitemradio', { name: /system default/i })
+    expect(live.getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('menuitemradio', { name: /^macbook pro microphone$/i }).getAttribute('aria-checked')).toBe('false')
+    unmount()
+
+    setPreferredMicId('default')
+    render(<MicSourceMenu onSelect={() => {}} />)
+    fireEvent.click(screen.getByRole('button'))
+    await screen.findByText('AirPods Pro')
+    const idle = screen.getByRole('menuitemradio', { name: /system default/i })
+    expect(idle.getAttribute('aria-checked')).toBe('true')
+    expect(screen.queryByText(/unavailable/)).toBeNull()
+  })
+
   it('says the saved device is unavailable instead of faking a checkmark', async () => {
     // Session-start acquisition falls back to the default when the saved id is
     // stale, so a stale saved id would otherwise render as a happy selection.

@@ -1,6 +1,6 @@
 """Sections that configure the gateway's background services.
 
-Owns the DTOs and defaults for ``taskrunner``, ``orchestrator``, ``messaging``,
+Owns the DTOs and defaults for ``taskrunner``, ``messaging``,
 ``cron_history``, ``monitoring``, ``heartbeat`` and ``watchdog``. The monitoring
 runtime bounds come from ``monitoring.limits``, their single owner.
 ``config.sections`` re-exports every name; this module never imports it, the
@@ -11,12 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from kiro_crew.config.fields import _meta
+from kiro_crew.config.fields import _meta, field_default
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, MAX_RUNTIME_CEILING_SECS
-
-# Ceiling for a WHOLE orchestrator plan. The per-stage timeout multiplies by
-# stage count, so this is the only bound on total unattended runtime.
-
 
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: host memory over the per-agent cost (compute_memory_sized_parallel_cap)
@@ -40,6 +36,23 @@ class TaskRunnerConfig:
             "every execution operates in this folder instead of a per-run scratch "
             "directory, so the task runner works on the intended target location. "
             "Empty = use the default per-run workspace directory.",
+        ),
+    )
+    test_command: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Test Command",
+            'Argument list run after each step, no shell (e.g. ["python", "-m", '
+            '"pytest", "-q"]). Exit 0 verifies the step. Empty = not configured.',
+            restart=True,
+        ),
+    )
+    require_verification: bool = field(
+        default=False,
+        metadata=_meta(
+            "Require Verification",
+            "Fail a step unless its test command exited 0; refuse a run with none to run.",
+            restart=True,
         ),
     )
 
@@ -99,12 +112,14 @@ class MessagingConfig:
 
     def __post_init__(self) -> None:
         # Fail safe on hand-edited values (mirrors WeComConfig): an unknown scope
-        # or mode falls back to the safe default, and the reset windows clamp to
-        # valid ranges so a bad config can't wedge dispatch.
+        # narrows to per-peer sessions whatever the default is, since "unified"
+        # puts two people's DMs in one session; an unknown mode falls back to the
+        # field default; and the reset windows clamp to valid ranges so a bad
+        # config can't wedge dispatch.
         if self.dm_scope not in ("per-channel-peer", "unified"):
             self.dm_scope = "per-channel-peer"
         if self.queue_mode not in ("steer", "queue"):
-            self.queue_mode = "steer"
+            self.queue_mode = field_default(MessagingConfig, "queue_mode")
         self.idle_reset_minutes = max(0, self.idle_reset_minutes)
         if not 0 <= self.daily_reset_hour <= 23:
             self.daily_reset_hour = -1
@@ -135,8 +150,9 @@ class MonitoringConfig:
     """Monitor arming preference and finite wall-clock policy.
 
     The preference changes tool guidance, not eligibility. The runtime ceiling
-    is enforced across tools, API mutations and persistence; raising it never
-    extends an existing loop's stored budget or creation time.
+    is checked whenever a budget is written (monitor tools, API mutations,
+    structured-monitor writes); persisted records are not re-checked on load.
+    Raising it never extends an existing loop's stored budget or creation time.
     """
 
     max_runtime_secs: int = field(
@@ -260,9 +276,11 @@ class WatchdogConfig:
             "Hard cap (s)",
             "Absolute ceiling for UNKNOWN-verdict forbearance (e.g. the extended "
             "probably-thinking window) and for any per-agent "
-            "watchdog_tool_stall_* override. Applies ONLY to UNKNOWN verdicts — "
-            "never to a WORKING session, which is deferred before this cap is "
-            "consulted and is therefore bounded only by the turn's own ceiling. "
+            "watchdog_tool_stall_* override. Also bounds an opaque MCP tool "
+            "whose only WORKING evidence is movement somewhere in the runtime's "
+            "process tree. Every other WORKING reading (a matched shell child, "
+            "a declared wait, a keepalive-pinging core tool) is deferred before "
+            "this cap is consulted and is bounded only by the turn's own ceiling. "
             "Default 2h, clamped against the transport's per-prompt timeout like "
             "the suspect window.",
         ),
@@ -285,17 +303,20 @@ class WatchdogConfig:
             "Idle seconds before an MCP tool that looks blocked on its own remote "
             "call is cancelled and the turn routed to tool-stall recovery. The "
             "shape is a tool whose process tree shows no CPU or IO movement while "
-            "a process below kiro-cli holds an established TCP connection: a "
-            "remote call waiting on a peer that may never answer. The window is "
+            "the tool's own MCP server, or a process it started, holds an "
+            "established TCP connection: a remote call waiting on a peer that may "
+            "never answer. The server is recognized by the command the session "
+            "launched it with, so another server's persistent connection never "
+            "counts; a server that cannot be recognized exactly once (a launcher "
+            "that re-executes under a different command line, or a second copy "
+            "of it on the same runtime) keeps the full window. The window is "
             "measured from the last stream frame or the last probe that saw the "
             "tree move, whichever is later, so a slow stream that moves bytes now "
             "and then keeps the full tool_stall_suspect_secs window. Linux and "
             "macOS only; Windows has no socket view and keeps the full window. "
-            "Off (0) by default: the connection cannot yet be tied to the MCP "
-            "server serving the in-flight tool, so another server's persistent "
-            "connection could cut a quiet tool short. 900 is the suggested value "
-            "when opting in. Clamped against the transport's per-prompt timeout "
-            "like the other windows.",
+            "Off (0) by default; 900 is the suggested value when opting in. "
+            "Clamped against the transport's per-prompt timeout like the other "
+            "windows.",
         ),
     )
     wellness_sample_secs: float = field(

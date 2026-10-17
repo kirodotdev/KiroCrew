@@ -20,7 +20,6 @@ import { act, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { setWarm } from '../store/instancesSlice'
-import { WIN_CAPTION_RESERVE_PX } from '../lib/electron'
 
 // Must run before src/lib/electron.ts is imported (module-level consts).
 vi.hoisted(() => {
@@ -109,6 +108,57 @@ describe('InstancesViewport under a Windows frameless shell', () => {
     )
   })
 
+  it('relays the live caption reserve and re-broadcasts when the main process changes it', async () => {
+    const store = createTestStore({
+      instances: {
+        warm: { 'cd-1': { port: 7778, token: 'tok' } },
+        activeId: 'cd-1',
+        mru: ['cd-1'],
+        unread: {},
+        ready: { 'cd-1': true },
+      },
+    })
+    const root = document.documentElement
+    root.style.setProperty('--mc-win-caption-reserve', '178px')
+    try {
+      renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+      const post = vi.fn()
+      const frame = document.querySelector('iframe') as HTMLIFrameElement
+      Object.defineProperty(frame, 'contentWindow', {
+        get: () => ({
+          postMessage: post,
+          get location() {
+            throw new DOMException('blocked', 'SecurityError')
+          },
+        }),
+      })
+      act(() => {
+        store.dispatch(setWarm({ id: 'cd-1', conn: { port: 7778, token: 'tok' } }))
+      })
+      await waitFor(() =>
+        expect(post).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'mc-host-model', winInset: true, winCaptionReserve: '178px' }),
+          expect.any(String),
+        ),
+      )
+
+      // A zoom step: the main process rewrites the inline property on <html>.
+      post.mockClear()
+      act(() => {
+        root.style.setProperty('--mc-win-caption-reserve', '203px')
+      })
+      await waitFor(() =>
+        expect(post).toHaveBeenCalledWith(
+          expect.objectContaining({ type: 'mc-host-model', winCaptionReserve: '203px' }),
+          expect.any(String),
+        ),
+      )
+    } finally {
+      root.style.removeProperty('--mc-win-caption-reserve')
+    }
+  })
+
   it('insets the panel tab bar clear of the Windows caption buttons', async () => {
     vi.mocked(api.listInstances).mockResolvedValue({
       instances: [
@@ -132,6 +182,12 @@ describe('InstancesViewport under a Windows frameless shell', () => {
     renderWithProviders(<InstancesViewport />, { store })
 
     const bar = await screen.findByRole('group', { name: /Remote crews/i })
-    expect(bar.style.paddingRight).toBe(`${WIN_CAPTION_RESERVE_PX}px`)
+    // The strip reserve reads the live, zoom-aware --mc-win-caption-reserve the
+    // main process maintains on <html>; :root defaults that property to a
+    // static 142px in index.css, so this bare reference is first-paint-safe
+    // (InstancesViewport renders outside the shell div, so it inherits the
+    // :root default — not a .win-electron one) and never drifts from the
+    // zoom-aware header reserve.
+    expect(bar.getAttribute('style') || '').toContain('padding-right: var(--mc-win-caption-reserve)')
   })
 })

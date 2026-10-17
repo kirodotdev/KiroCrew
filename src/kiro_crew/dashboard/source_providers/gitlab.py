@@ -132,7 +132,7 @@ async def _gitlab_settled_merge_state(
     for _ in range(projection._MERGE_STATE_REREADS):
         await asyncio.sleep(projection._MERGE_STATE_REREAD_DELAY_SECS)
         try:
-            data = await runner._run_json("glab", "api", mr_api)
+            data = await runner._run_json("glab", "api", mr_api, host=ref.host)
         except SourceProviderError:
             break
         if not isinstance(data, dict):

@@ -1550,7 +1550,7 @@ class TestTheHoldBranchStartsTheWrite:
 
         # The branch is inside the send handler behind a sub-agent probe; pin the
         # call at the source so the receipt and the write cannot drift apart.
-        src = inspect.getsource(chat_handlers)
+        src = inspect.getsource(chat_handlers.api_chat)
         hold = src.split("warn_if_not_durable(slot._queue, qid, slot.key)", 1)[1]
         hold = hold.split("return web.json_response(", 1)[0]
         assert "start_queue_persist(state, slot)" in hold

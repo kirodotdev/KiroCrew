@@ -30,9 +30,9 @@ from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate, impl_llm
 from kiro_crew.decisions.types import Choice, Noul, Score
 
-#: The judge's own questions. Every one is a ``Choice``, which is the only type the
-#: shipped wire speaks (``impl_jev._to_wire`` refuses anything else), so the RFC's
-#: three questions are a two-option one, a six-option one and an ordered level set.
+#: The judge's own questions. Every one is a ``Choice``: the RFC's three questions
+#: are a two-option one, a six-option one and an ordered level set. (The wire maps
+#: ``Choice``, ``Noul`` and ``Score``; see ``impl_jev._question_to_wire``.)
 WAKE = Choice(id="needs_owner", prompt="Does this need the owner now?", options=["wake", "quiet"])
 OUTCOME = Choice(
     id="outcome",
@@ -376,6 +376,26 @@ class TestPromptRendering:
             assert f"id: {question.id}" in prompt
             for option in question.options:
                 assert option in prompt
+
+    def test_authored_choice_criteria_reach_the_prompt(self) -> None:
+        """An authored per-option rubric is rendered beside its option, so the
+        LLM backend judges with the same text ``impl_jev`` sends on the wire."""
+        question = Choice(
+            id="pick",
+            prompt="Which one?",
+            options=["a", "b", "c"],
+            # "a" authored, "b" left out, "stale" is not a declared option.
+            criteria={"a": "pick a when sure", "stale": "never sent"},
+        )
+        prompt = impl_llm.render_prompt("evidence", [question])
+        assert "criteria: a: pick a when sure" in prompt
+        assert "b:" not in prompt.split("criteria:", 1)[1]
+        assert "never sent" not in prompt and "stale" not in prompt
+
+    def test_a_choice_without_criteria_renders_no_criteria_line(self) -> None:
+        """The field unset -- today's shape -- adds nothing to the prompt."""
+        prompt = impl_llm.render_prompt("evidence", QUESTIONS)
+        assert "criteria:" not in prompt
 
     def test_no_questions_is_refused(self) -> None:
         with pytest.raises(impl_llm.LlmProtocolError):

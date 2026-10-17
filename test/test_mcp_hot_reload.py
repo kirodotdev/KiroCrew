@@ -68,6 +68,29 @@ class TestParse:
     def test_non_version_is_none(self, text: str) -> None:
         assert parse_kiro_cli_version(text) is None
 
+    @pytest.mark.parametrize(
+        "text",
+        ["9" * 5000 + ".0.0", "1234567890.0.0", "2.1234567890.0", "2." + "9" * 10],
+    )
+    def test_a_component_past_nine_digits_is_no_version(self, text: str) -> None:
+        """The token is harness-written (``agentInfo.version`` on the handshake)
+        and ``int()`` raises on a run past CPython's digit limit, so the bound
+        lives in the parser and covers every caller: a major or minor of ten or
+        more digits reads as no version, never as an exception."""
+        assert parse_kiro_cli_version(text) is None
+
+    def test_an_over_long_patch_is_dropped_not_raised(self) -> None:
+        """A patch run past the bound cannot be the patch; the version is read
+        without it (a missing patch is 0) and nothing reaches ``int()``."""
+        assert parse_kiro_cli_version("2.21." + "9" * 5000) == (2, 21, 0)
+
+    def test_nine_digit_components_still_parse(self) -> None:
+        assert parse_kiro_cli_version("999999999.999999999.999999999") == (
+            999999999,
+            999999999,
+            999999999,
+        )
+
 
 class TestAgentVersionFromInit:
     def test_reads_the_kiro_cli_shape(self) -> None:

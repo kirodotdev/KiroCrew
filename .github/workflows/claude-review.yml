@@ -74,7 +74,7 @@ jobs:
     # skipped job's `name:` expression, so while the guard was a job-level `if:`
     # every fork PR published the raw expression source as its check name.
     # Letting the job start with all steps gated costs seconds of runner time and
-    # reports the intended name instead. `test_ai_review_workflows.py` asserts
+    # reports the intended name instead. `test_ai_review_workflows_fork_stage2.py` asserts
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'Opus 5.5 Review' || 'Opus 5.5 Review (same-repo lane, not applicable to forks)' }}"
@@ -95,8 +95,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event.pull_request.head.repo.full_name == github.repository
         with:
-          fetch-depth: 0
+          # The merge ref plus its two parents (the base tip and the PR head),
+          # not the whole history: the next step fetches the one other commit
+          # the diffs need.
+          fetch-depth: 2
           persist-credentials: false
+
+      # The checkout is shallow, so a three-dot `base...head` range has no
+      # history to find its merge-base in. GitHub's compare API names the
+      # merge-base; that one commit is fetched at depth 1, and every diff below
+      # is the two-dot `<merge-base>..<head>`. A two-dot diff compares two
+      # trees and needs no history, and it is the same diff the three-dot
+      # range gave on a full clone.
+      - name: Fetch the merge-base commit (shallow history)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        id: merge_base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # need SHA / merge_base X Y -- see the script's header.
+          . "$GITHUB_WORKSPACE/.github/scripts/review-merge-base.sh"
+          need "$BASE_SHA"
+          need "$HEAD_SHA"
+          pr="$(merge_base "$BASE_SHA" "$HEAD_SHA")"
+          need "$pr"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "merge-base of $BASE_SHA and $HEAD_SHA: $pr"
 
       # Non-blocking size signal: raise a concern when the REVIEWABLE diff is
       # large enough that a single review pass may not cover it reliably. Only
@@ -104,11 +132,11 @@ jobs:
       - name: Flag oversized reviewable diff (non-blocking)
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_BASE: ${{ steps.merge_base.outputs.pr }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MAX_REVIEWABLE_LINES: "15000"
         run: |
-          changed=$(git diff --numstat "$BASE_SHA...$HEAD_SHA" -- . ':(exclude)src/kiro_crew/_vendor' 2>/dev/null \
+          changed=$(git diff --numstat "$MERGE_BASE..$HEAD_SHA" -- . ':(exclude)src/kiro_crew/_vendor' 2>/dev/null \
             | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
           echo "reviewable changed lines (excluding src/kiro_crew/_vendor): ${changed}"
           if [ "${changed:-0}" -gt "$MAX_REVIEWABLE_LINES" ]; then
@@ -226,11 +254,11 @@ jobs:
       - name: Prefetch the reviewable diff (data only)
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_BASE: ${{ steps.merge_base.outputs.pr }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH: ${{ runner.temp }}/pr.diff
         run: |
-          git diff --no-color "$BASE_SHA...$HEAD_SHA" > "$PATCH"
+          git diff --no-color "$MERGE_BASE..$HEAD_SHA" > "$PATCH"
           if [ ! -s "$PATCH" ]; then
             echo "::error::Prefetched diff for $HEAD_SHA is empty; refusing to review nothing."
             exit 1
@@ -488,6 +516,37 @@ jobs:
           fi
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' claude-review-output.md
 
+      # Turn-budget exhaustion is its own outcome (#13296). A stage stopped at
+      # --max-turns writes a `result` message with subtype `error_max_turns`
+      # and no verdict stamp, so it used to land as the same generic failure as
+      # a hang, a bootstrap fault or a credential error. Read it from each
+      # stage's transcript and hand the steps below one fixed-enum value. It
+      # can only make the lane STRICTER: a spent stage is never a pass, even
+      # beside a stamp. Keep in sync with fork-opus-review.yml.
+      - name: Detect turn-budget exhaustion
+        id: budget
+        if: >-
+          github.event.pull_request.head.repo.full_name == github.repository
+          && (
+          always()
+          )
+        env:
+          DISCOVER_EXEC: ${{ steps.discover.outputs.execution_file }}
+          REVIEW_EXEC: ${{ steps.review.outputs.execution_file }}
+        run: |
+          spent=""
+          check_stage() {
+            [ -n "$2" ] && [ -f "$2" ] || return 0
+            hit="$(jq -rs '[ .[] | (if type=="array" then .[] else . end) | select(type=="object" and .type=="result" and .subtype=="error_max_turns") ] | length > 0' "$2" 2>/dev/null)" || hit=""
+            if [ "$hit" = "true" ]; then spent="${spent:+$spent,}$1"; fi
+          }
+          check_stage discovery "${DISCOVER_EXEC:-}"
+          check_stage validation "${REVIEW_EXEC:-}"
+          echo "spent=$spent" >> "$GITHUB_OUTPUT"
+          if [ -n "$spent" ]; then
+            echo "::notice::turn budget spent (error_max_turns) in stage(s): $spent"
+          fi
+
       # Post the review summary for humans (best-effort, NON-gating). Reads the
       # captured review text. UPSERTs a single marker-keyed comment per PR so
       # re-scans update in place. The model text is posted ONLY when the
@@ -510,6 +569,7 @@ jobs:
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
           OVERRIDE_SOURCE: ${{ steps.human_override.outputs.source }}
           ACTOR: ${{ github.actor }}
+          BUDGET_SPENT: ${{ steps.budget.outputs.spent }}
         run: |
           if [ "$ACTOR" = "dependabot[bot]" ] && [ "$HUMAN_OVERRIDE" != "true" ]; then
             echo "Dependabot PR: no review ran; nothing to post."
@@ -530,6 +590,12 @@ jobs:
               kind="clear"
               verdict="✅ no blocking findings"
             fi
+          fi
+          # A stage that spent its turn budget never reached a whole review, so
+          # a clean stamp beside it is not a pass (#13296): post nothing, and the
+          # gate below names the budget.
+          if [ "$kind" = "clear" ] && [ -n "${BUDGET_SPENT:-}" ]; then
+            kind="incomplete"
           fi
           # Incomplete review: post NOTHING (mirrors the old empty-structured-
           # output early-out). A $HEAD-bearing placeholder would masquerade as a
@@ -598,7 +664,7 @@ jobs:
             echo "\`/ai-review override fable $HEAD: <one-sentence reason>\`"
           } > /tmp/claude-summary.md
           # ONE publication primitive for every marker-comment write in this
-          # lane; test_ai_review_workflows.py pins it byte-identical across all
+          # lane; test_ai_review_workflows_comment_writes.py pins it byte-identical across all
           # of them, the way it already pins guarded_comment_upsert, so neither
           # the budget nor the honesty below can drift lane by lane.
           #
@@ -1166,6 +1232,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           HUMAN_OVERRIDE: ${{ steps.human_override.outputs.active }}
           OVERRIDE_ACTOR: ${{ steps.human_override.outputs.actor }}
+          BUDGET_SPENT: ${{ steps.budget.outputs.spent }}
         run: |
           if [ "$HUMAN_OVERRIDE" = "true" ]; then
             echo "Human judgment by $OVERRIDE_ACTOR overrides Opus 5.5 for $HEAD. Passing gate."
@@ -1174,6 +1241,22 @@ jobs:
           if [ "$ACTOR" = "dependabot[bot]" ]; then
             echo "Dependabot PR ($ACTOR): Opus 5.5 AI review skipped (no Bedrock secrets/OIDC). Passing gate."
             exit 0
+          fi
+          # Its own outcome, checked before every verdict read (#13296): a stage
+          # stopped at --max-turns reached no whole review, so it fails whatever
+          # the transcript holds, and says so instead of the generic incomplete.
+          if [ -n "${BUDGET_SPENT:-}" ]; then
+            case "$BUDGET_SPENT" in
+              discovery | validation | discovery,validation) stage="$BUDGET_SPENT" ;;
+              *) stage="unknown" ;;
+            esac
+            echo "::error::Opus 5.5 review: turn budget spent, needs human review. The $stage stage stopped at --max-turns (error_max_turns) for $HEAD, so no verdict was reached. A re-run walks into the same cap; a human reviews this diff, or splits the PR."
+            {
+              echo "### Opus 5.5 Review — turn budget spent, needs human review"
+              echo
+              echo "Stage: \`$stage\` stopped at \`--max-turns\` for \`$HEAD\`. No verdict was reached, so the gate fails."
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
           fi
           if [ "$REVIEW_OUTCOME" != "success" ]; then
             echo "::error::Opus 5.5 review step did not succeed (outcome=$REVIEW_OUTCOME) for $HEAD. Failing closed."

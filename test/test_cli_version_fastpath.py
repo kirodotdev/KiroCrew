@@ -4,8 +4,10 @@ Bare `--version` must print `kirocrew <version>` and exit 0 on both entry
 paths, without paying for `kiro_crew.cli`'s heavy module scope — and importing
 `cli` itself must never exit the process, whatever argv is set (there is
 deliberately no module-scope version guard left in `cli.py`: every real entry
-answers earlier). The `-c` cases run in fresh interpreters so import-time
-behavior is observed directly (same reason as test_cli_lazy_imports).
+answers earlier). `--verbose --version` reaches argparse's `version` action
+instead, and must print the same line as the bare form. The `-c` cases run in
+fresh interpreters so import-time behavior is observed directly (same reason as
+test_cli_lazy_imports).
 """
 
 from __future__ import annotations
@@ -20,10 +22,10 @@ from kiro_crew import __version__
 _EXPECTED_VERSION_LINE = f"kirocrew {__version__}\n"
 
 
-def _run_module_version(tmp_path: Path) -> subprocess.CompletedProcess[str]:
-    """`python -m kiro_crew --version` end to end (the `__main__` guard)."""
+def _run_module_version(tmp_path: Path, *flags: str) -> subprocess.CompletedProcess[str]:
+    """`python -m kiro_crew [flags] --version` end to end (bare: the `__main__` guard)."""
     return subprocess.run(
-        [sys.executable, "-m", "kiro_crew", "--version"],
+        [sys.executable, "-m", "kiro_crew", *flags, "--version"],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -60,6 +62,14 @@ class TestVersionFastPath:
         )
         assert res.returncode == 0, f"bootstrap --version failed:\n{res.stderr}"
         assert res.stdout == _EXPECTED_VERSION_LINE
+
+    def test_argparse_version_matches_fast_path(self, tmp_path: Path) -> None:
+        # `--verbose` is a real top-level flag, so this argv is valid but not
+        # bare: the `__main__` guard lets it through to argparse's `version` action.
+        bare = _run_module_version(tmp_path)
+        full = _run_module_version(tmp_path, "--verbose")
+        assert full.returncode == 0, f"--verbose --version failed:\n{full.stderr}"
+        assert full.stdout == bare.stdout
 
     def test_cli_import_never_exits(self, tmp_path: Path) -> None:
         res = _run_probe(

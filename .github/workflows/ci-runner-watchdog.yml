@@ -192,7 +192,7 @@ name: CI Runner Watchdog
 # `gh run rerun` to type. A re-run refusal that the run's own state does not
 # explain (nobody else re-ran it) reds the tick the same way.
 #
-# Guard rails, all in the script and all unit-tested (test/test_ci_runner_watchdog.py):
+# Guard rails, all in the script and all unit-tested (test/test_ci_runner_watchdog*.py):
 #   - runs younger than the orphan threshold are never actionable, and the two age
 #     bands differ: a run at least a third of that threshold old is what the evidence
 #     reserve is spent on; a younger one is not reserved a read while any run qualifies

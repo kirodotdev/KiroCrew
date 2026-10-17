@@ -14,8 +14,8 @@ import type { ChatFolder } from '../../types'
 import type { FolderMutations } from './folders'
 import type { BoardColumnMutations } from './board'
 import { errMessage } from '../../utils/thunkError'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT } from '../../utils/previewFlags'
+import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../../utils/previewFlags'
 import { settingsPath } from '../../components/settingsPath'
 import { SETTINGS_CREW_MEMBERS_PREVIEW_ID } from '../../hooks/useSettingHighlight'
 import { api } from '../../api/client'
@@ -26,9 +26,10 @@ import { useStore } from 'react-redux'
 import type { RootState } from '../../store'
 
 /** New chat inside a folder, with its inline failure line. */
-export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse }: {
+export function useFolderChatCreate({ folders, mode, dispatch, dropSlotMutation, onOpenSlotInNewTab, updateFolderMutation, clearBoardCollapse, connected, setFolderOfflineNotice }: {
   folders: ChatFolder[]
-  defaultAgent: string
+  connected: boolean
+  setFolderOfflineNotice: Dispatch<SetStateAction<string>>
   mode: string | undefined
   dispatch: AppDispatch
   dropSlotMutation: BoardColumnMutations['dropSlotMutation']
@@ -60,7 +61,10 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
   type CreateChatInFolderVars = { folderId: string; columnId?: string; focus?: boolean; attempt: number; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean }
   const createChatInFolderMutation = useMutation({
     mutationFn: ({ folderId, memoryMode, inNewTab }: CreateChatInFolderVars) => {
-      const agent = resolveFolderAgent(folders, folderId, defaultAgent)
+      // Only a folder's own pin names an agent. Agent-less otherwise: the
+      // server stamps the default custom agent (a template), never the
+      // default crewmate alias.
+      const agent = resolveFolderAgent(folders, folderId, '')
       // Carry folder membership in the create payload so createSlot publishes
       // the new slot to Redux in its final location. Assigning it after create
       // lets the sidebar render one frame at root before moving it.
@@ -130,7 +134,21 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
       setFolderCreateError({ folderId, columnId, message, title, report, offerSettings: isStaleProjectDir })
     },
   })
+  /** The offline create refusal, in one place: the folder-row `+` buttons reach
+   *  it through `createChatInFolder`, and the header split button's primary
+   *  segment calls it directly (its create does not route through that sink). */
+  const refuseCreateOffline = useCallback(() => {
+    setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.create_sessions') }))
+  }, [setFolderOfflineNotice])
   const createChatInFolder = useCallback((folderId: string, opts?: { columnId?: string; focus?: boolean; memoryMode?: 'incognito' | 'temporary'; inNewTab?: boolean }) => {
+    // Refused at the SINK: the menu rows that reach here are gated one by one,
+    // but the folder-row quick-create `+` buttons call it too. Gating here covers
+    // every caller at once, including the ancestor-expanding PATCH loop below,
+    // which would otherwise fire a doomed `collapsed: false` write per ancestor.
+    if (!connected) {
+      refuseCreateOffline()
+      return
+    }
     // A nested folder selected from the create menu may be hidden behind one
     // or more collapsed ancestors. Expand the complete path optimistically so
     // the destination and its new session are visible as creation begins.
@@ -148,17 +166,16 @@ export function useFolderChatCreate({ folders, defaultAgent, mode, dispatch, dro
       currentId = folder.parent_id || undefined
     }
     createChatInFolderMutation.mutate({ folderId, columnId: opts?.columnId, focus: opts?.focus, attempt: ++folderCreateAttemptRef.current, memoryMode: opts?.memoryMode, inNewTab: opts?.inNewTab })
-  }, [createChatInFolderMutation, folders, updateFolderMutation, clearBoardCollapse])
-  return { folderCreateError, setFolderCreateError, createChatInFolder }
+  }, [createChatInFolderMutation, folders, updateFolderMutation, clearBoardCollapse, connected, refuseCreateOffline])
+  return { folderCreateError, setFolderCreateError, createChatInFolder, refuseCreateOffline }
 }
 
 /** The New chat variants and the Crew Members door. */
-export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession }: {
+export function useSessionCreate({ setNewChatError, dispatch, mode, onOpenSlotInNewTab, setRemoteCrewError, setNewChatMenuOpen, onOpenPeerSession }: {
   /** Where a crew window opens on a host with no chat pane (see ChatSidebar). */
   onOpenPeerSession?: (instanceId: string, key: string) => void
   setNewChatError: Dispatch<SetStateAction<string>>
   dispatch: AppDispatch
-  defaultAgent: string
   mode: string | undefined
   onOpenSlotInNewTab: ((key: string, opts?: { background?: boolean | undefined; } | undefined) => void) | undefined
   setRemoteCrewError: Dispatch<SetStateAction<string>>
@@ -192,10 +209,10 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
     navigate(crewPreview ? '/members' : settingsPath({ tab: 'developer', highlight: SETTINGS_CREW_MEMBERS_PREVIEW_ID }))
   }
   // Separate flag, separate feature: this one holds "New chat on crew", which
-  // dispatches a session to another MACHINE. Its toggle is in Settings > Remote
-  // crews rather than Settings > Developer > Feature Previews, because it only means
-  // anything to someone who already has a crew connected.
-  const remoteCrewChatPreview = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
+  // dispatches a session to another MACHINE. The same switch shows the crew
+  // groups in the sidebar (`sessionSources.ts`), so a chat started here has a
+  // group to return to.
+  const remoteCrewChatPreview = useRemoteCrewChat()
   const queryClient = useQueryClient()
   const store = useStore<RootState>()
 
@@ -214,7 +231,7 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
   const createChatMutation = useMutation({
     mutationFn: ({ inNewTab }: { inNewTab: boolean }) => {
       setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', activate: !inNewTab })).unwrap()
+      return dispatch(createSlot({ mode: mode || '', activate: !inNewTab })).unwrap()
     },
     onSuccess: (slot, { inNewTab }) => {
       if (inNewTab && onOpenSlotInNewTab) {
@@ -277,7 +294,7 @@ export function useSessionCreate({ setNewChatError, dispatch, defaultAgent, mode
   const createEphemeralChatMutation = useMutation({
     mutationFn: (memoryMode: 'incognito' | 'temporary') => {
       setNewChatError('')
-      return dispatch(createSlot({ agent: defaultAgent || undefined, mode: mode || '', memory_mode: memoryMode })).unwrap()
+      return dispatch(createSlot({ mode: mode || '', memory_mode: memoryMode })).unwrap()
     },
     onSuccess: focusComposer,
     onError: onNewChatError,

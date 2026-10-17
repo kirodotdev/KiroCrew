@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-const raw = (p: string) => readFile(join(__dirname, '..', p), 'utf8')
+const read = (p: string) => readFile(join(__dirname, '..', p), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+// the ChatPage pins read the page and those owners.
+const CHAT_PAGE = 'pages/ChatPage.tsx'
+const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+const sourcesIn = async (dir: string, keep: (f: string) => boolean) =>
+  (await readdir(join(__dirname, '..', dir))).filter(keep).sort().map(f => `${dir}/${f}`)
+const chatPageAndOwners = async () => (await Promise.all([
+  CHAT_PAGE,
+  ...(await sourcesIn('pages/chat/page', isSource)),
+  ...(await sourcesIn('pages', f => /^useChatPage/.test(f) && isSource(f))),
+].map(read))).join('\n')
+const raw = (p: string) => (p === CHAT_PAGE ? chatPageAndOwners() : read(p))
 // Strip comments before matching. The rules below are explained in prose that
 // quotes the very class names and style keys being asserted against, so a
 // raw-text negative match (`fixed inset-0 z-[46]`) hits the comment that
@@ -57,7 +69,7 @@ describe('mobile sessions drawer overlay', () => {
   it('insets the panel with visual-viewport margins, keeping its safe-area edges', async () => {
     const s = await src('pages/ChatPage.tsx')
     // Scoped to the sessions drawer's OverlayDrawer element, not the whole file:
-    // OTHER mobile surfaces in ChatPage (the floating open-sessions button, the
+    // OTHER mobile surfaces in pages/chat/page/ (the floating open-sessions button, the
     // right-side inline overlay) also carry `top-safe-offset-[42px]`, so a
     // file-wide match would not tell this panel apart from them.
     const start = s.indexOf('<OverlayDrawer open=')

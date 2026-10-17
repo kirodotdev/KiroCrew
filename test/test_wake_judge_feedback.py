@@ -25,9 +25,11 @@ import contextlib
 import json
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
+from test_decisions_gate import _STALLED_APPEND_CEILING_SECS
 
 from kiro_crew import autonudge_judge as judge
 from kiro_crew import irq
@@ -37,7 +39,7 @@ from kiro_crew.autonudge import (
     NudgeLoop,
     _bounded_judge_recent,
 )
-from kiro_crew.config.sections import DecisionsConfig, NudgeWakeConfig
+from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig, NudgeWakeConfig
 from kiro_crew.decisions import gate as decisions_gate
 from kiro_crew.decisions import log as decisions_log
 from kiro_crew.decisions.points import nudge_wake as point
@@ -1263,9 +1265,25 @@ class TestJudgeTickReportsWhetherItAsked:
 
         captured_receipt: dict = {}
         original_decide = decisions_gate.decide
+        original_append = decisions_log.append
+        sweep_release = threading.Event()
+        append_returned = threading.Event()
+        observed: dict = {}
+
+        def _observed_append(row, **kwargs):
+            try:
+                return original_append(row, **kwargs)
+            finally:
+                append_returned.set()
 
         async def _decide(*args, receipt, **kwargs):
-            answers = await original_decide(*args, receipt=receipt, **kwargs)
+            try:
+                answers = await original_decide(*args, receipt=receipt, **kwargs)
+            finally:
+                # The append returns only after its sweep, and the sweep is held until
+                # here, so a decision that came back first took the over-budget path.
+                observed["append_in_flight"] = not append_returned.is_set()
+                sweep_release.set()
             captured_receipt.update(receipt)
             return answers
 
@@ -1274,7 +1292,25 @@ class TestJudgeTickReportsWhetherItAsked:
         monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_oracle", lambda *_args, **_kwargs: _InvalidOracle())
         monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.01)
-        monkeypatch.setattr(decisions_log, "sweep_expired", lambda: time.sleep(0.05))
+        # The real day-file write is what this case observes, and its duration belongs
+        # to the runner. The wait returns the moment the commit signal fires, so the
+        # grace is lifted to the gate suite's lost-append ceiling: the real append's
+        # commit signal measured 257 ms at worst (2,000 appends under 64 CPU spinners
+        # on 32 cores), about 40x inside it, and an append that never commits still
+        # fails this case by name, well before the suite's --timeout=120. The 0.10 s
+        # production grace is untouched in the gate.
+        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", _STALLED_APPEND_CEILING_SECS)
+        # The sweep is held until the decision returns, so "the sweep outlives the write
+        # budget" is a fact, not a 0.05 s sleep racing a 0.01 s budget. Its bound is
+        # twice the grace, as the gate suite bounds its stalled append, so an append
+        # whose commit signal is lost or late runs the grace out while the append is
+        # still in its sweep, and the receipt stays unknown.
+        monkeypatch.setattr(
+            decisions_log,
+            "sweep_expired",
+            lambda: sweep_release.wait(2 * _STALLED_APPEND_CEILING_SECS),
+        )
+        monkeypatch.setattr(decisions_log, "append", _observed_append)
         monkeypatch.setattr(point.core, "decide", _decide)
 
         trace: dict = {}
@@ -1299,9 +1335,107 @@ class TestJudgeTickReportsWhetherItAsked:
             answered=trace["answered"],
             verdict_id="v1" if trace["answered"] else "",
         )
+        assert observed["append_in_flight"] is True
         assert captured_receipt["row_written"] is True
         assert trace["answered"] is True
         assert row["id"] == "v1"
+
+    def test_the_join_key_case_holds_on_a_host_whose_write_outlasts_the_production_grace(
+        self, monkeypatch
+    ):
+        # A slow runner, replayed without a clock: the day-file write is held until the
+        # gate's grace wait has begun, and a grace up to the production one has
+        # already run out by then. The case above must still see its commit. A
+        # grace that runs out never releases the held write, so a regression fails
+        # every time instead of racing the write against the gate's check.
+        production_grace = decisions_gate._LOG_COMMIT_GRACE_SECS
+        grace_started = threading.Event()
+
+        class _SlowHostEvent(threading.Event):
+            def wait(self, timeout=None):
+                if timeout is None or self.is_set():
+                    return super().wait(timeout)
+                if timeout <= production_grace:
+                    return False
+                grace_started.set()
+                return super().wait(timeout)
+
+        real_append_line = decisions_log.append_line
+
+        def _held_append_line(*args, **kwargs):
+            assert grace_started.wait(
+                _STALLED_APPEND_CEILING_SECS
+            ), "the gate never started its grace wait"
+            return real_append_line(*args, **kwargs)
+
+        monkeypatch.setattr(
+            decisions_gate, "threading", types.SimpleNamespace(Event=_SlowHostEvent)
+        )
+        monkeypatch.setattr(decisions_log, "append_line", _held_append_line)
+        self.test_a_committed_row_keeps_the_join_key_when_sweep_outlives_budget(monkeypatch)
+
+    def test_a_write_still_running_when_the_grace_runs_out_keeps_no_join_key(self, monkeypatch):
+        class _Config:
+            decisions = DecisionsConfig(nudge_wake=NudgeWakeConfig(provider="llm"))
+
+        class _InvalidOracle:
+            async def ask(self, *_args, **_kwargs):
+                return None
+
+        captured_receipt: dict = {}
+        original_decide = decisions_gate.decide
+        real_append_line = decisions_log.append_line
+        write_release = threading.Event()
+
+        async def _decide(*args, receipt, **kwargs):
+            try:
+                answers = await original_decide(*args, receipt=receipt, **kwargs)
+            finally:
+                write_release.set()
+            captured_receipt.update(receipt)
+            return answers
+
+        def _held_append_line(*args, **kwargs):
+            # The write lands only after the decision has returned, so neither the
+            # budget nor the zero grace can see it commit: the receipt is unknown.
+            write_release.wait(_STALLED_APPEND_CEILING_SECS)
+            return real_append_line(*args, **kwargs)
+
+        monkeypatch.setattr(decisions_gate, "_snapshot", lambda: _Config())
+        monkeypatch.setattr(decisions_gate, "_consented_for", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(decisions_gate, "_oracle", lambda *_args, **_kwargs: _InvalidOracle())
+        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.01)
+        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", 0)
+        monkeypatch.setattr(decisions_log, "append_line", _held_append_line)
+        monkeypatch.setattr(decisions_log, "sweep_expired", lambda: 0)
+        monkeypatch.setattr(point.core, "decide", _decide)
+
+        trace: dict = {}
+        verdict = asyncio.run(
+            point.judge_tick(
+                "watch it",
+                evidence=[
+                    {
+                        "source": "session:chat-1",
+                        "kind": point.KIND_TRANSCRIPT_TAIL,
+                        "age_s": 1.0,
+                        "text": "new evidence",
+                    }
+                ],
+                trace=trace,
+            )
+        )
+        row = judge.verdict_entry(
+            verdict,
+            trace["evidence_items"],
+            suppressed=False,
+            answered=trace["answered"],
+            verdict_id="v1" if trace["answered"] else "",
+        )
+        assert captured_receipt["row_written"] is None
+        assert trace["answered"] is False
+        assert "id" not in row
 
     def test_a_normalized_row_committing_after_budget_keeps_its_receipt(self, monkeypatch):
         class _Config:
@@ -1426,8 +1560,21 @@ class TestDecisionLogGrace:
     """Only a caller asking for a receipt waits beyond the write budget."""
 
     def test_only_a_receipt_request_pays_the_commit_grace(self, monkeypatch):
+        # A lost-run ceiling on each call, never a race: a call that pays no grace was
+        # measured back in 0.53 s at worst on a loaded Windows runner, and this sits far
+        # under the suite's 120 s ``--timeout``, so a call that DOES wait fails at its
+        # ``wait_for``, by name, instead of taking the worker down.
+        ceiling_secs = 10.0
+        # The grace, the hold on every append worker and the LLM lane's provider budget
+        # (never under 8 s) all outlast the ceiling: a call that waits on any of them
+        # off the loop cannot come back inside it on any host.
+        grace_secs = 15.0
+
         class _Config:
-            decisions = DecisionsConfig(nudge_wake=NudgeWakeConfig(provider="llm"))
+            decisions = DecisionsConfig(
+                provider=DecisionProviderConfig(timeout_ms=int(grace_secs * 1000)),
+                nudge_wake=NudgeWakeConfig(provider="llm"),
+            )
 
         class _InvalidOracle:
             async def ask(self, *_args, **_kwargs):
@@ -1435,6 +1582,7 @@ class TestDecisionLogGrace:
 
         releases: list[threading.Event] = []
         started: list[threading.Event] = []
+        returned: list[threading.Event] = []
 
         def _late_append(_row, *, commit_event=None):
             # The TEST decides when this returns, so the ordering under assertion is
@@ -1442,10 +1590,13 @@ class TestDecisionLogGrace:
             # is only ever set here by the test itself.
             release = threading.Event()
             started_flag = threading.Event()
+            returned_flag = threading.Event()
             releases.append(release)
             started.append(started_flag)
+            returned.append(returned_flag)
             started_flag.set()
-            release.wait(5.0)
+            release.wait(grace_secs)
+            returned_flag.set()
             if commit_event is not None:
                 commit_event.set()
             return True
@@ -1461,8 +1612,11 @@ class TestDecisionLogGrace:
         monkeypatch.setattr(decisions_gate, "_consented_for", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_capability_denied", lambda *_args, **_kwargs: False)
         monkeypatch.setattr(decisions_gate, "_oracle", lambda *_args, **_kwargs: _InvalidOracle())
-        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0.005)
-        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", 0.5)
+        # Zero, not a small value: the budget then expires on its first await, so both
+        # calls take the over-budget branch on every host, and the receipt call's answer
+        # can only come from inside the grace, never from an append that beat the budget.
+        monkeypatch.setattr(decisions_gate, "_LOG_BUDGET_SECS", 0)
+        monkeypatch.setattr(decisions_gate, "_LOG_COMMIT_GRACE_SECS", grace_secs)
         monkeypatch.setattr(decisions_log, "append", _late_append)
 
         async def drive() -> None:
@@ -1470,22 +1624,30 @@ class TestDecisionLogGrace:
                 "session_key": "chat-1",
                 "config": _Config(),
             }
-            # Elapsed time is the only thing that can tell a call that skipped the grace
-            # from one that paid it, since both return with the worker still blocked.
-            # The margin is what makes it sound: the grace is 100x the budget, and the
-            # bar sits halfway, so no scheduler or clock granularity can reach it.
-            started_at = time.monotonic()
-            await decisions_gate.decide(
-                point.POINT,
-                {"loop": {"instruction": "watch it"}},
-                point.build_questions(),
-                **kwargs,
-            )
-            elapsed = time.monotonic() - started_at
-            assert elapsed < 0.25, "a call asking for no receipt waited for the commit"
+            # Nothing here is timed. A call that waited for the commit off the loop
+            # cannot return inside the ceiling, and one that ran the append ON the loop
+            # can return only after the hold ended, which ``returned`` records.
+            loop = asyncio.get_running_loop()
+            asked_at = loop.time()
+            try:
+                await asyncio.wait_for(
+                    decisions_gate.decide(
+                        point.POINT,
+                        {"loop": {"instruction": "watch it"}},
+                        point.build_questions(),
+                        **kwargs,
+                    ),
+                    ceiling_secs,
+                )
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "a call asking for no receipt waited for the commit: not back inside "
+                    f"ceiling_secs ({ceiling_secs:.0f}s), {loop.time() - asked_at:.1f}s spent"
+                )
             await _await_worker(0)
             assert len(releases) == 1
             assert releases[0].is_set() is False
+            assert not returned[0].is_set(), "a call asking for no receipt held the append"
             releases[0].set()
             # Let the handed-off worker retire before the loop closes.
             await asyncio.sleep(0.02)
@@ -1505,8 +1667,15 @@ class TestDecisionLogGrace:
             )
             await _await_worker(1)
             assert len(releases) == 2
+            released_at = loop.time()
             releases[1].set()
-            await pending
+            try:
+                await asyncio.wait_for(pending, ceiling_secs)
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "the receipt call did not come back once its commit landed: not inside "
+                    f"ceiling_secs ({ceiling_secs:.0f}s), {loop.time() - released_at:.1f}s spent"
+                )
             assert receipt["row_written"] is True
 
         asyncio.run(drive())
@@ -1917,7 +2086,16 @@ class TestTurnCompleteLabelling:
             / "dashboard"
             / "chat_runner.py"
         )
-        tree = ast.parse(runner_path.read_text(encoding="utf-8"))
+        tree = ast.parse(
+            "\n".join(
+                turn_file.read_text(encoding="utf-8")
+                for turn_file in [
+                    *sorted(runner_path.with_name("chat_turn").glob("*.py")),
+                    runner_path,
+                ]
+                if turn_file.name != "__init__.py"
+            )
+        )
         # The turn records the facts its tail hands to notify_turn_complete; the
         # helper that makes the call forwards each one under its own name. Each
         # is pinned unique: a second record, or a second notify call (the

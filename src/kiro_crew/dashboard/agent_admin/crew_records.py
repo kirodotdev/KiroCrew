@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
+        AUTO_WORKSPACE,
         DEFAULT_MEMORY_STORE,
         EFFORT_LEVELS,
         EFFORT_VALUES,
@@ -17,11 +18,13 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         MemberAlreadyExists,
         MemberNameError,
+        MemberWorkspaceUnavailable,
         UnknownMemoryStore,
         _drained_to_thread,
         _foreign_private_copy_owner,
         _get_config_lock,
         _is_ghost_shaped,
+        _lineage_unverifiable_error,
         _model_pin_rejected,
         _name_would_be_masked,
         _pin_entitlement_backend,
@@ -39,27 +42,38 @@ if TYPE_CHECKING:
         normalize_agent_model,
         persist_member_config,
         provision_member_memory,
+        provision_member_workspace,
         resolve_agent_identity,
         resolve_effective_model,
         retire_unpublished_allocation,
+        retire_unpublished_workspace,
         teams_mod,
         validate_member_name,
     )
 
 
 async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Response:
-    """GET /api/agents/resolved-model?agent=NAME — the model a new session uses.
+    """GET /api/agents/resolved-model?agent=NAME[&app=APP] — the model a new session uses.
 
     Serves the one backend resolver so the dashboard's model chip does not have
     to re-derive the precedence client-side (and drift from it). ``agent`` is a
     Kiro Crew agent name; omitted falls back to the configured default agent.
-    ``model`` is "" when every tier defers to the backend's own choice.
+    ``app`` names the app that owns the session, so the answer includes that
+    app's own model setting the way the session start does; a value that is not
+    an app name is ignored. ``model`` is "" when every tier defers to the
+    backend's own choice.
     """
     agent_name = request.query.get("agent", "").strip()
+    app_name = request.query.get("app", "").strip()
+    # The manifest's own name grammar, read where the answer is built: this module
+    # takes its names from the agents facade, which carries no app vocabulary.
+    from kiro_crew.apps.manifest import KEBAB_RE
+
+    app_kw = {"app_name": app_name} if KEBAB_RE.fullmatch(app_name) else {}
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     # Globs ~/.kiro/agents and may read the installed agent file — keep the
     # filesystem work off the event loop.
-    model = await asyncio.to_thread(resolve_effective_model, cfg, agent_name or None)
+    model = await asyncio.to_thread(resolve_effective_model, cfg, agent_name or None, **app_kw)
     alias, kiro_agent, model_pin = await asyncio.to_thread(
         resolve_agent_identity, cfg, agent_name or None
     )
@@ -163,8 +177,37 @@ def _crew_memory_store_rejected(raw: object) -> str | None:
     )
 
 
+async def _mark_first_greeting_owed(name: str, cfg: object) -> None:
+    """Record that the crewmate just created opens its chat with its goal question.
+
+    Best-effort: the crewmate exists either way, and a failed record only means
+    its chat opens empty, so :func:`kiro_crew.members.mark_welcome_owed` logs it
+    rather than failing the create. The record lands in the directory of the
+    member's immutable ``member_id`` slug, the one its thread uses.
+    """
+    from kiro_crew.members import WELCOME_KIND_GOAL, mark_welcome_owed
+
+    await asyncio.to_thread(mark_welcome_owed, name, config=cfg, kind=WELCOME_KIND_GOAL)
+
+
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
-    """POST /api/agents — create a new Kiro Crew agent."""
+    """POST /api/agents — create a new Kiro Crew agent.
+
+    Wrapped in the UI-guide commit hook: when the owner's tab names a guide
+    waiting on its ``crewmate.create`` step (``X-Guide-*`` headers), the guide is
+    credited only from THIS handler's own success response and its immutable
+    ``member_id``. Without the headers it is exactly the handler below.
+    """
+    from kiro_crew.dashboard.handlers.guide import run_guided_crewmate_create
+
+    # The hook returns the inner handler's own response object unchanged.
+    return cast(
+        web.Response, await run_guided_crewmate_create(request, _api_kirocrew_agents_create)
+    )
+
+
+async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
+    """The create itself — see :func:`api_kirocrew_agents_create`."""
 
     denied = await _require_owner(request, "agent.create")
     if denied is not None:
@@ -333,6 +376,15 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Absent or empty means a workspace of the crew's own, allocated with the
+    # record (member_workspace.provision_member_workspace); a name is the explicit
+    # opt-in to share one, stored as given like every other create always did.
+    _raw_workspace = body.get("workspace", AUTO_WORKSPACE)
+    if not isinstance(_raw_workspace, str):
+        return web.json_response(
+            {"error": "workspace must be a string", "code": "invalid_workspace"}, status=400
+        )
+    workspace = _raw_workspace.strip()
     pending_reason = await _revalidate_crew_pin(model, request)
     if pending_reason:
         return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
@@ -358,10 +410,10 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # round-34, same shape as the locked rebind's in-mutate check).
         try:
             owner = await asyncio.to_thread(_foreign_private_copy_owner, name, kiro_agent)
-        except _UnverifiableLineage:
+        except _UnverifiableLineage as exc:
             return web.json_response(
                 {
-                    "error": f"Cannot verify whether '{kiro_agent}' is a private copy; retry.",
+                    "error": _lineage_unverifiable_error(kiro_agent, exc),
                     "code": "lineage_unverifiable",
                 },
                 status=409,
@@ -385,7 +437,7 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # A purge that cannot be made refuses the create (409 below).
         new_agent = KiroCrewAgentConfig(
             kiro_agent=kiro_agent,
-            workspace=body.get("workspace", "default"),
+            workspace=workspace,
             memory_store=memory_store,
             model=model,
             reasoning_effort=reasoning_effort,
@@ -396,19 +448,31 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             session_color=session_color,
             avatar=avatar,
         )
-        # Provision against this snapshot; publish the agent and owned store
-        # together through persist_member_config's flocked delta and create guard.
-        # A fresh allocation that never reached config.json is removed on the way
-        # out (retire_unpublished_allocation re-reads the disk under the config
-        # lock first, so a publication that did land is kept).
+        # Provision against this snapshot; publish the agent, its owned store and
+        # its own workspace together through persist_member_config's flocked delta
+        # and create guard. A fresh allocation that never reached config.json is
+        # removed on the way out (retire_unpublished_allocation re-reads the disk
+        # under the config lock first, so a publication that did land is kept; the
+        # workspace retire is in-memory, its directory is only ever made inside
+        # the locked write).
         cfg.agents[name] = new_agent
         previous_store = new_agent.memory_store
         previous_member_id = new_agent.member_id
+        previous_workspace = new_agent.workspace
+        new_workspace = ""
         try:
             try:
                 await _drained_to_thread(provision_member_memory, cfg, name)
-                await _drained_to_thread(lambda: persist_member_config(cfg, name, create=True))
+                new_workspace = await _drained_to_thread(provision_member_workspace, cfg, name)
+                await _drained_to_thread(
+                    lambda: persist_member_config(
+                        cfg, name, create=True, new_workspace=new_workspace
+                    )
+                )
             except BaseException:
+                retire_unpublished_workspace(
+                    cfg, name, new_workspace, previous_workspace=previous_workspace
+                )
                 allocated = cfg.agents[name].memory_store
                 if allocated != previous_store:
                     await _drained_to_thread(
@@ -421,6 +485,11 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
                         )
                     )
                 raise
+        except MemberWorkspaceUnavailable as exc:
+            # A name or directory collision under the lock, or a directory the
+            # host refused: a retry or another choice resolves it, like the
+            # memory-store refusals below.
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         except MemberAlreadyExists:
             return web.json_response(
                 {"error": f"Agent '{name}' already exists", "code": "agent_exists"}, status=409
@@ -439,12 +508,22 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": str(exc), "code": "member_memory_unavailable"}, status=409
             )
+    # A template without the crewmate's own tools gets them on the new member's
+    # private copy (member_mate_tools); the create stands whatever the outcome.
+    from kiro_crew.member_mate_tools import grant_mate_tools_to_new_member
+
+    async with _get_config_lock():
+        mate_tools = await _drained_to_thread(grant_mate_tools_to_new_member, name)
+    if mate_tools != "template_has_it":
+        logger.info("new crewmate %s: mate tools %s", name, mate_tools)
     # A crew APPEARING changes what the effort chain resolves even with no pin of
     # its own: the factory's captured config does not know the crew, so it cannot
     # read the binding the role default keys on, and a scheduled or messaging
     # session naming that crew would take the chat default instead. Creation is
     # therefore always a change by `_effort_inputs` (None -> a tuple).
     await _refresh_session_defaults(request, name)
+    if body.get("first_greeting") is True:
+        await _mark_first_greeting_owed(name, cfg)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
         operation="agent.create",

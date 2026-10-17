@@ -62,9 +62,9 @@ const OCCUPANCY_SITES = [
     times: 1,
   },
   {
-    what: "the boot, liveness and stuck-gateway service-rebind waits, textually identical",
+    what: "the boot, liveness, stuck-gateway and pre-update service-rebind waits, textually identical",
     code: 'isPortBound: async () => (await probeGatewayPortBinding(PORT)) !== "free",',
-    times: 3,
+    times: 4,
   },
   {
     what: "drain completion; carries an identity comparison on the same line",

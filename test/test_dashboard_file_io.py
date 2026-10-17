@@ -327,6 +327,31 @@ class TestFileRead:
             assert await resp.text() == "café au lait\n"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("ext", [".rem", ".ret"])
+    async def test_read_serves_cnab_rem_ret_as_viewable_text(
+        self, ext, tmp_path, mock_sel, home_patch
+    ):
+        # CNAB remittance/return files are fixed-width ASCII/Latin-1 banking
+        # records with no NUL bytes, so the viewer serves them as text/plain
+        # rather than a binary envelope. The accented detail-segment name is
+        # Latin-1, so the decode is lossy (errors="replace") and the viewer
+        # flags that in the header while still showing the body.
+        f = tmp_path / f"cobranca{ext}"
+        f.write_bytes(
+            b"02RETORNO01COBRANCA       EMPRESA EXEMPLO LTDA\n"
+            b"1 JOS\xc9 DA CONCEI\xc7\xc3O                 000012345\n"
+        )
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/plain")
+            body = await resp.json() if resp.content_type == "application/json" else None
+            # Served as text, not the {"binary": True} envelope.
+            text = await resp.text() if body is None else body.get("content", "")
+            assert "RETORNO" in text
+            assert resp.headers.get("X-Lossy-Decode") == "true"
+
+    @pytest.mark.asyncio
     async def test_read_head_on_binary_still_answers_from_the_stat(
         self, tmp_path, mock_sel, home_patch
     ):
@@ -560,7 +585,7 @@ class TestFileReadReservedCharacterPaths:
         Only NUL is exercised here. The other unrepresentable shape -- a lone
         surrogate -- cannot be delivered through this transport, because URL
         decoding never yields one; it is covered against the seam itself in
-        test_hooks_coverage.py.
+        test_hooks_coverage_file_branches.py.
         """
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-read?path=" + encoded)
@@ -592,6 +617,40 @@ class TestFileWrite:
                 outcome="success",
                 resources=str(tmp_file),
             )
+
+    @pytest.mark.asyncio
+    async def test_write_numeric_content_is_rejected_not_coerced(
+        self, tmp_file, mock_sel, home_patch
+    ):
+        """The dashboard file-write endpoint keeps its ORIGINAL contract: a
+        non-string ``content`` is rejected by schema validation (HTTP 400) and
+        no file is written. The int->str repair for a numeric-looking string
+        argument lives ONLY at the MCP tool-call entry points, not in the shared
+        validator the dashboard HTTP endpoints go through, so this endpoint must
+        not silently coerce an int to "42"."""
+        before = tmp_file.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/file-write", json={"path": str(tmp_file), "content": 42}
+            )
+            assert resp.status == 400
+            # The file is untouched: nothing was written on the rejected call.
+            assert tmp_file.read_text(encoding="utf-8") == before
+
+    @pytest.mark.asyncio
+    async def test_write_string_content_is_not_sanitized(self, tmp_file, mock_sel, home_patch):
+        """A string file save must write the author's bytes verbatim: no .strip()
+        of the final newline or leading indentation, no NFC renormalization, and
+        no removal of hidden Cf characters (BOM, soft hyphen). The dashboard
+        endpoint writes the raw request body, never the validator's normalized
+        value."""
+        content = "  indented\nbody \u00e9\ufeff x\u00ad\n\n"
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/file-write", json={"path": str(tmp_file), "content": content}
+            )
+            assert resp.status == 200
+            assert tmp_file.read_text(encoding="utf-8") == content
 
     @pytest.mark.asyncio
     async def test_write_outside_home(self, mock_sel, home_patch):
@@ -773,7 +832,9 @@ class TestSendMessage:
             assert resp.status == 200
             data = await resp.json()
             assert data == {"ok": True, "slack": False, "session": False, "delivered_to": "notification"}
-            state.notify.assert_called_once_with("agent", "Agent Message", "hello")
+            state.notify.assert_called_once_with(
+                "agent", "Agent Message", "hello", member=None, publisher_session=None
+            )
 
     @pytest.mark.asyncio
     async def test_send_message_with_slack(self):
@@ -789,7 +850,9 @@ class TestSendMessage:
             assert resp.status == 200
             data = await resp.json()
             assert data == {"ok": True, "slack": True, "session": False, "delivered_to": "slack", "ts": "1712793600.000001"}
-            state.notify.assert_called_once_with("agent", "Test", "hello")
+            state.notify.assert_called_once_with(
+                "agent", "Test", "hello", member=None, publisher_session=None
+            )
             slack.open_dm.assert_called_once_with("U123")
             slack.post_message.assert_called_once_with(
                 "C123",

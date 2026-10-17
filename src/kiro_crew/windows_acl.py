@@ -102,6 +102,7 @@ __all__ = [
     "owner_only_dacl_matches",
     "owner_only_dacl_matches_parsed",
     "describe",
+    "owner_is_trusted_allocator",
     "volume_is_local",
     "volume_is_remote",
 ]
@@ -214,6 +215,31 @@ class ComponentSecurity:
     #: leaves the policy a pure function of this dataclass, which is what makes
     #: it testable on a non-Windows CI runner.
     volume_is_local: bool
+
+
+#: ``BUILTIN\Administrators``. A directory an elevated Windows session creates is owned by
+#: this group rather than the creator's own SID.
+_BUILTIN_ADMINISTRATORS_SID = "S-1-5-32-544"
+
+
+def owner_is_trusted_allocator(owner_sid: str, volume_is_local: bool, current_sid: str) -> bool:
+    """Whether *owner_sid* is safe for THIS host to adopt as a managed directory's owner.
+
+    The ONE owner-trust rule shared by the workflow allocator
+    (:func:`kiro_crew.workflow_memory._allocator_owner`) and the relocated scratch-root
+    adoption (:func:`kiro_crew.config.paths.scratch_root_owner_refusal`), so the two cannot
+    drift: the current user's own SID, OR ``BUILTIN\\Administrators`` (``S-1-5-32-544``) WHEN
+    the volume is LOCAL. An elevated session's new directory is owned by Administrators
+    rather than the user's own SID, so a strict ``owner == me`` compare would refuse a root
+    this host just created; ``volume_is_local`` keeps that trust honest, because the identical
+    Administrators SID on a UNC/mapped share belongs to the file server, a different machine.
+    Fail-closed: a falsy *current_sid* trusts nothing.
+    """
+    if not current_sid:
+        return False
+    return owner_sid == current_sid or (
+        owner_sid == _BUILTIN_ADMINISTRATORS_SID and volume_is_local
+    )
 
 
 class _ACL(C.Structure):
@@ -419,7 +445,7 @@ def volume_is_local(path: str | os.PathLike) -> bool:
     unbounded SMB round-trip rather than discover it part way through.
 
     Returns ``False`` off Windows, where there is no volume to classify. Callers
-    reach this from inside an already-Windows branch (``config/loader.py``'s
+    reach this from inside an already-Windows branch (``config/loader_document.py``'s
     ``write_config_atomically``), so there is no POSIX-answering wrapper: on POSIX
     ``chmod`` is a local metadata update and there is nothing to rule out.
     """
@@ -485,7 +511,17 @@ def describe(path: Path) -> ComponentSecurity:
     different things for each.
     """
     advapi32, kernel32 = _load()
-    is_dir = path.is_dir()
+    try:
+        is_dir = path.is_dir()
+    except OSError as exc:
+        # `is_dir` stats the path, which reaches the file system. On a network
+        # volume that round-trip can fail transiently -- a disconnected mapped
+        # drive or an unreachable UNC share answers with WinError 64. Fold it
+        # into the same refusal the rest of this function raises: a trust check
+        # that cannot even stat the component has cleared nothing, so refusing
+        # is the fail-safe answer, and the caller turns `AclUnavailable` into a
+        # plain refusal.
+        raise AclUnavailable(f"cannot stat the path (error {exc})") from exc
     volume_is_local = _volume_is_local(kernel32, path)
 
     owner = C.c_void_p()

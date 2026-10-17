@@ -47,6 +47,7 @@ vi.mock('../api/client', () => ({
     agentDetail: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     agentResolvedModel: vi.fn().mockResolvedValue({ model: 'claude-opus-5' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
+    favoriteProjects: vi.fn().mockResolvedValue({ dirs: [] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
@@ -61,7 +62,7 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'kirocrew' }, { name: 'researcher' }], defaultAgent: 'kirocrew' }) }))
 // One app-contributed session control, so the composer renders its chip and
-// ChatPage mounts SessionControlHost against it. The control's bundle does not
+// ComposerDockView mounts SessionControlHost against it. The control's bundle does not
 // exist in this harness; the host's own load-failure notice renders inside the
 // positioned dialog, which is all these tests measure.
 vi.mock('../hooks/useSessionControls', async (importOriginal) => {
@@ -185,7 +186,7 @@ async function keyboardCloses(anchor: ReturnType<typeof anchorChip>, nextY: numb
 describe('ChatPage composer pickers follow their chip while open (#10616)', { timeout: 15_000 }, () => {
   it('agent dropdown remeasures when the visual viewport changes', async () => {
     await renderChat()
-    const chip = screen.getByTitle('Agent: kirocrew')
+    const chip = screen.getByTitle(/^Agent: kirocrew(?:\s|$)/)
     const anchor = anchorChip(chip, 600)
 
     await act(async () => { fireEvent.click(chip) })

@@ -448,7 +448,7 @@ class TestNoSiteRespellsTheConjunction:
                 # The property's own definition is the one legitimate spelling,
                 # and the section parser's config-validation rule is a different
                 # question (is this combination writable), not this one.
-                if path.name in ("tailnet.py", "sections.py"):
+                if path.name in ("tailnet.py", "sections_tailnet.py"):
                     continue
                 offenders.append(f"{path.relative_to(src_root)}:{lineno}")
         assert offenders == [], (

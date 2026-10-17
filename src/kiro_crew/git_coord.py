@@ -46,15 +46,41 @@ async def init_workspace(run: Project) -> None:
     """
     orig_dir = run.work_dir
     branch = f"kirocrew/task/{run.task_id}"
+    # Git stays disabled until this run's own worktree exists. Both callers
+    # treat an exception from here as "continue without git coordination", so
+    # a failure anywhere below must leave the run unable to run git in the
+    # user's checkout -- the default ``git_enabled = True`` would otherwise
+    # survive the failure with ``work_dir`` still naming that checkout.
+    run.git_enabled = False
 
     if not await _is_git_repo(orig_dir):
         # General coding task on a non-git folder — run directly in it, no git.
-        run.git_enabled = False
         return
 
     run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
     repo_root = (await _git(orig_dir, "rev-parse", "--show-toplevel")).strip()
     wt_dir = str(Path(repo_root).parent / ".kirocrew-work" / run.task_id)
+    if await _branch_exists(repo_root, branch):
+        # This run's own branch already exists: an earlier start created the
+        # worktree and stopped before the run recorded it. A plain re-add with
+        # ``-b`` would fail on the existing branch, so recover through the same
+        # ownership checks a retry uses. The fields are tentative until recovery
+        # succeeds: on a refusal, an error or a cancellation they are cleared
+        # again, so ``finalize()`` -- which removes ``run.worktree_path`` with
+        # ``--force`` -- cannot act on a directory recovery did not claim.
+        run.repo_root = repo_root
+        run.branch_name = branch
+        run.worktree_path = wt_dir
+        recovered = False
+        try:
+            recovered = await reinit_workspace_for_retry(run)
+        finally:
+            if not recovered:
+                run.repo_root = run.branch_name = run.worktree_path = ""
+                run.git_enabled = False
+        if recovered:
+            return
+        raise RuntimeError(f"could not recover this run's leftover worktree at {wt_dir}")
     await _git(orig_dir, "worktree", "add", wt_dir, "-b", branch)
     run.work_dir = wt_dir
     run.worktree_path = wt_dir
@@ -63,12 +89,44 @@ async def init_workspace(run: Project) -> None:
     run.git_enabled = True
 
 
+async def _branch_exists(repo_root: str, branch: str) -> bool:
+    """True when ``refs/heads/<branch>`` resolves in ``repo_root``."""
+    try:
+        await _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    except (RuntimeError, OSError):
+        return False
+    return True
+
+
+def _git_runs_in_own_worktree(run: Project) -> bool:
+    """True when a step may run git in ``run.work_dir``.
+
+    Git must be enabled AND ``work_dir`` must be the run's own worktree:
+    ``init_workspace`` and ``reinit_workspace_for_retry`` set ``work_dir`` and
+    ``worktree_path`` to the same path together, so any other state means the
+    directory may be the user's own checkout, where ``git add -A`` would commit
+    their uncommitted work and ``reset --hard`` would discard it. A pure string
+    comparison, so it costs no filesystem call on the event loop.
+    """
+    if not run.git_enabled:
+        return False
+    if run.worktree_path and os.path.normpath(run.work_dir) == os.path.normpath(run.worktree_path):
+        return True
+    logger.warning(
+        "refusing to run git for run %s in %s: it is not the run's own worktree",
+        run.task_id,
+        run.work_dir,
+    )
+    return False
+
+
 async def commit_step(run: Project, step: Task) -> str:
     """Stage all changes and commit. Returns sha or empty string.
 
-    No-op (returns "") when the run has no git workspace.
+    No-op (returns "") when the run has no git workspace, or when ``work_dir``
+    is not the run's own worktree (see :func:`_git_runs_in_own_worktree`).
     """
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     await _git(run.work_dir, "add", "-A")
     head_tree = (await _git(run.work_dir, "rev-parse", "HEAD^{tree}")).strip()
@@ -82,20 +140,92 @@ async def commit_step(run: Project, step: Task) -> str:
     return sha
 
 
+# Bounded retry budget for a ``reset --hard`` that a Windows sharing violation
+# aborts. On Windows an open handle on a tracked file the reset must rewrite
+# (an AV scanner, an editor, a still-running prior step) makes ``git`` fail to
+# unlink that file, so the reset aborts with exit 128 while nothing is actually
+# wrong -- the hold is transient. POSIX unlinks an open file, so there is no
+# such window there and a reset failure is a genuine fault that must surface at
+# once rather than after a second of sleeping. Shape and numbers mirror
+# ``atomic_write.replace_with_retry`` (~0.45s worst-case added latency on a
+# doomed revert); they are a heuristic, not a measured hold-time distribution.
+_REVERT_MAX_ATTEMPTS = 10
+_REVERT_BACKOFF_SECONDS = 0.05
+
+# Signatures git prints to stderr when a held handle blocks the unlink the
+# reset needs (``_git`` folds stderr into the RuntimeError it raises, so the
+# message text is all we have to key off). The reporter's 3/3 probe hit
+# "unable to unlink old ... Invalid argument" / "Could not reset index file";
+# a mid-rewrite hold on NTFS also surfaces as a WinError 32 sharing violation
+# ("being used by another process" / "Permission denied" / "Device or resource
+# busy"). Matched case-insensitively against the whole message.
+_SHARING_VIOLATION_SIGNS = (
+    "unable to unlink",
+    "could not reset index file",
+    "being used by another process",
+    "sharing violation",
+    "permission denied",
+    "device or resource busy",
+)
+
+
+def _is_sharing_violation(exc: Exception) -> bool:
+    """True when *exc* looks like a Windows held-handle unlink failure.
+
+    Windows-only on purpose: on POSIX a ``reset --hard`` can unlink a file held
+    open, so a failure there is a real fault (bad path, corrupt index) that must
+    not be retried into a false success.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return False
+    text = str(exc).casefold()
+    return any(sign in text for sign in _SHARING_VIOLATION_SIGNS)
+
+
 async def revert_step(run: Project) -> None:
-    """Revert the last commit (failed step). No-op if git-disabled or nothing to revert."""
-    if not run.git_enabled or not run.commit_hashes:
+    """Revert the last commit (failed step). No-op if git-disabled or nothing to revert.
+
+    ``commit_hashes.pop()`` runs ONLY after the reset actually succeeds, so the
+    recorded history never diverges from the worktree. A reset blocked by a
+    transient Windows sharing violation (a held handle on a tracked file the
+    reset must rewrite) is retried a bounded number of times; a reset that still
+    fails -- or fails for any other reason -- is surfaced at WARNING, not
+    swallowed at debug, so an operator at default log levels can tell "reverted"
+    from "revert refused" instead of silently proceeding on an un-reverted tree.
+    """
+    if not run.commit_hashes or not _git_runs_in_own_worktree(run):
         return
-    try:
-        await _git(run.work_dir, "reset", "--hard", "HEAD~1")
-        run.commit_hashes.pop()
-    except Exception:
-        logger.debug("git revert failed", exc_info=True)
+    for attempt in range(_REVERT_MAX_ATTEMPTS):
+        try:
+            await _git(run.work_dir, "reset", "--hard", "HEAD~1")
+            run.commit_hashes.pop()
+            return
+        except Exception as exc:
+            if _is_sharing_violation(exc) and attempt < _REVERT_MAX_ATTEMPTS - 1:
+                logger.debug(
+                    "git revert contended at %s (held handle?); retrying (attempt %d/%d)",
+                    run.work_dir,
+                    attempt + 1,
+                    _REVERT_MAX_ATTEMPTS,
+                    exc_info=True,
+                )
+                await asyncio.sleep(_REVERT_BACKOFF_SECONDS)
+                continue
+            # Exhausted the retry window, or a failure that is not a transient
+            # sharing violation: do NOT pop -- commit_hashes stays consistent
+            # with the un-reverted worktree -- and make the failure visible.
+            logger.warning(
+                "git revert failed for %s; leaving commit_hashes unchanged "
+                "(worktree may not be reverted)",
+                run.work_dir,
+                exc_info=True,
+            )
+            return
 
 
 async def get_state_summary(run: Project) -> str:
     """Build context from git log + diff stat. Empty when git-disabled."""
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     try:
         log = await _git(run.work_dir, "log", "--oneline", f"{run.base_branch}..HEAD")
@@ -112,7 +242,7 @@ async def get_state_summary(run: Project) -> str:
 
 async def get_step_diff(run: Project) -> str:
     """Get the diff of the last commit (for review). Empty when git-disabled."""
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     try:
         return await _git(run.work_dir, "diff", "HEAD~1")

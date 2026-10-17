@@ -1,20 +1,8 @@
-# Known macOS test gaps -- burn-down backlog for full macOS parity.
+# Known macOS test gaps: the macOS-only strict-xfail list.
 #
-# EMPTY, and that is a result rather than an oversight: every entry this file
-# was born with reported XPASS(strict) on the macos-15 shards, i.e. the tests
-# PASS there. A strict xfail cannot be satisfied by a test that passes, so the
-# list burned itself down to nothing the first time the shards ran to completion
-# under it. Nothing is marked on macOS today.
-#
-# Worth recording, because the entries came with a rationale that the run
-# falsified: they were grouped under "frame recording is Linux-only BY DESIGN --
-# these suites assert the recorder RUNS, so they cannot pass on darwin". They do
-# pass on darwin. Whatever the reason (the product moved, or the reading of
-# `_frame_record.py`'s gate was wrong), the list is not the place to keep an
-# explanation the machine disagrees with, so it is gone with the entries. If a
-# genuine intended-platform refusal turns up later, a `skipif` AT THE TEST is the
-# right home for it -- a list entry says "this ought to pass and does not", which
-# is a different claim.
+# Currently EMPTY: nothing is marked on macOS. A genuine intended-platform
+# refusal belongs in a `skipif` AT THE TEST, not here -- a list entry says "this
+# ought to pass and does not", which is a different claim.
 #
 # Applied by conftest.py::pytest_collection_modifyitems (rootdir) on macOS ONLY,
 # through the same _apply_tracked_gap_list matcher that applies

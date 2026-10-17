@@ -8,8 +8,10 @@ the secret is never persisted in plaintext outside the vault.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
+from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.secrets import SecretVault
 
 #: Scheme prefix for a vault secret reference. Single source of truth: the
@@ -32,6 +34,48 @@ _SECRET_URI_PREFIX = SECRET_URI_PREFIX  # internal alias for existing call sites
 #: every message names only the operator-declared env-var KEY. With nothing
 #: echoed, a hostile name (bidi override, newline, zero-width) has no text to
 #: forge.
+
+
+def secret_reference_keys(env: object) -> list[str]:
+    """The env-var KEYS of *env* whose value is a ``secret://`` reference, sorted.
+
+    The one predicate every launch path asks before it hands an env block to a
+    child it does not resolve itself. :func:`resolve_secret_uris` -- run on the
+    gateway's backend spawn -- is the only resolver, so any other path that would
+    start the server must refuse instead: passing the literal reference through
+    makes the server start with a wrong credential rather than fail.
+
+    Returns KEYS only, never a value or a secret name, so a caller may name them
+    in a log line or an error (see the note below on why names are never echoed).
+    Anything that is not a mapping of strings answers ``[]``.
+    """
+    if not isinstance(env, Mapping):
+        return []
+    return sorted(
+        str(key)
+        for key, value in env.items()
+        if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
+    )
+
+
+def routed_for_secret_reference(name: str, routed: Collection[str]) -> bool:
+    """True when server *name* counts as routed by *routed*, for a ``secret://`` server.
+
+    The ONE answer to "does the gateway start this server", shared by the
+    agent-spec rebuild (which withholds an unrouted server that carries a
+    reference) and the overlay rewriter (which wraps a routed one). The two
+    must agree exactly: a server the rebuild lets through and the rewriter
+    leaves unwrapped launches with the literal reference, and one the rebuild
+    withholds while the rewriter would wrap it stays off with nothing said.
+
+    Matches the exact name, or the slash-free alias on both sides: the routing
+    list (``mcp_gateway.stub_servers``) may hold a raw name (``npm:@acme/mcp``)
+    while the rebuilt spec keys the same server by its alias (``acme-mcp``).
+    """
+    if name in routed:
+        return True
+    alias = mcp_server_alias(name)
+    return any(mcp_server_alias(r) == alias for r in routed if isinstance(r, str))
 
 
 def _is_valid_secret_name(name: str) -> bool:
@@ -130,3 +174,87 @@ def resolve_secret_uris(
         secret_keys.add(key)
 
     return resolved, secret_keys
+
+
+def header_secret_refs(headers: object) -> list[str]:
+    """Names of the headers whose value carries a ``secret://`` reference.
+
+    Only an MCP server's ``env`` is resolved against the vault. A remote server's
+    ``headers`` are read by the session runtime as written, so a reference there
+    reaches the server as literal text. Callers use this to say so instead of
+    letting the request fail with an authorization error that names nothing.
+
+    Accepts both shapes a header block takes in this codebase: the config mapping
+    (``{"X-Api-Key": "secret://NAME"}``) and the ACP wire list
+    (``[{"name": "X-Api-Key", "value": "secret://NAME"}]``). Anything else yields
+    no names. Matches the prefix anywhere in the value, because a value such as
+    ``Bearer secret://NAME`` is just as unresolved as a bare reference. Never
+    returns a value or a secret name -- only the header names, in first-seen
+    order and de-duplicated.
+    """
+    pairs: list[tuple[object, object]] = []
+    if isinstance(headers, dict):
+        pairs = list(headers.items())
+    elif isinstance(headers, (list, tuple)):
+        pairs = [
+            (item.get("name"), item.get("value")) for item in headers if isinstance(item, dict)
+        ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for name, value in pairs:
+        if (
+            isinstance(name, str)
+            and name
+            and isinstance(value, str)
+            and _SECRET_URI_PREFIX in value
+            and name not in seen
+        ):
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+#: The supported way to supply a remote server's header today, named in every
+#: refusal so the reader has the fix and not only the fault. Limited to kiro-cli
+#: on purpose: kiro-cli expands ``${VAR}`` / ``${env:VAR}`` in a remote server's
+#: headers itself, while Crew hands the other backends their headers as written.
+REMOTE_HEADER_ALTERNATIVE = (
+    "On the kiro-cli backend, use ${env:NAME} in the header value and set NAME in "
+    "the Kiro Crew .env file; kiro-cli expands it at session time. Other backends "
+    "receive the header as written"
+)
+
+#: Bounds on the header names one refusal spells out. A header name is
+#: config-derived text bound for a log line and a dashboard row.
+_HEADER_NAME_CAP = 64
+_HEADER_NAMES_SHOWN = 8
+
+
+def display_header_names(names: list[str]) -> str:
+    """Header names for a message: printable characters only, bounded, quoted."""
+    shown = []
+    for name in names[:_HEADER_NAMES_SHOWN]:
+        clean = "".join(ch for ch in name if ch.isprintable())[:_HEADER_NAME_CAP]
+        shown.append(repr(clean or "?"))
+    text = ", ".join(shown)
+    if len(names) > _HEADER_NAMES_SHOWN:
+        text += f" (+{len(names) - _HEADER_NAMES_SHOWN} more)"
+    return text
+
+
+def remote_header_secret_ref_error(headers: object) -> str:
+    """One sentence explaining why a remote server's header will not authenticate.
+
+    Empty when no header carries a ``secret://`` reference. Names the headers,
+    never their values or the referenced secret names.
+    """
+    names = header_secret_refs(headers)
+    if not names:
+        return ""
+    noun = "Header" if len(names) == 1 else "Headers"
+    return (
+        f"{noun} {display_header_names(names)} use{'s' if len(names) == 1 else ''} a "
+        "secret:// reference, which is not resolved for a remote server: secret "
+        "references are resolved only in a stdio server's env, so the server would "
+        f"receive the reference as written. {REMOTE_HEADER_ALTERNATIVE}."
+    )

@@ -56,6 +56,7 @@ import os
 import subprocess
 import tempfile
 import unicodedata
+from collections import deque
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -181,6 +182,37 @@ def candidate_sources(
     :func:`iter_candidate_sources` or :func:`parsed_candidates` instead.
     """
     return tuple(iter_candidate_sources(require_all, require_any))
+
+
+#: The fields that hold a list of statements, or the handlers and cases whose bodies do.
+_STATEMENT_BLOCKS = frozenset({"body", "orelse", "finalbody", "handlers", "cases"})
+
+
+def iter_statements(tree: ast.AST) -> Iterator[ast.stmt]:
+    """Every statement in *tree*, at any depth, without entering an expression.
+
+    A gate that reads imports, definitions or assignments is reading statements,
+    and no expression holds a statement (a lambda's body is an expression), so a
+    walk that descends only through statement blocks reaches every one of them
+    while visiting about a sixth of the nodes ``ast.walk`` does: the names,
+    constants, calls and operators that make up the rest of a module. The order
+    is ``ast.walk``'s own -- breadth first, children in field order -- so a gate
+    that lets a later binding of a name replace an earlier one keeps the same
+    winner it had under the full walk.
+
+    An ``ExceptHandler`` and a ``match_case`` are not statements but hold a block
+    of them, so the walk passes through both without yielding them.
+    """
+    pending: deque[ast.AST] = deque([tree])
+    while pending:
+        node = pending.popleft()
+        if isinstance(node, ast.stmt):
+            yield node
+        for field in node._fields:
+            if field in _STATEMENT_BLOCKS:
+                block = getattr(node, field)
+                if isinstance(block, list):
+                    pending.extend(block)
 
 
 def parsed_candidates(

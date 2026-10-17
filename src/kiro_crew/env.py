@@ -15,6 +15,7 @@ import sys
 import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
+from typing import Any
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, peek_data_home
@@ -236,8 +237,41 @@ def _extra_mcp_path_dirs() -> list[str]:
     ]
 
 
+def extend_process_path(value: str) -> None:
+    """Append the directories of a data-home ``.env`` ``PATH`` line to this process's ``PATH``.
+
+    The ``.env`` loader seeds the environment with ``setdefault``, and a process
+    always has a ``PATH``, so this key cannot be applied the way every other one
+    is. The line is read as directories to ADD, never as a replacement: each entry
+    goes through the absolute-directory gate the other operator lists use
+    (:func:`_validated_bin_dirs`, so ``~`` expands and a relative or unexpanded
+    entry such as ``$HOME/bin`` is dropped with a warning), and lands behind the
+    ``PATH`` the process already has, so it can add a launcher but never shadow a
+    system tool. The existing string is kept byte for byte and an entry it
+    already holds is skipped, so the repeated loads of the file do not grow it.
+
+    Nothing else about the environment widens. An agent child still receives its
+    environment through the launch tail's scrub, and the terminal completion
+    probe still filters this ``PATH`` through its ownership check.
+    """
+    current = os.environ.get("PATH") or os.defpath
+    held = _dedup_dirs(current.split(os.pathsep))
+    wanted = [entry for entry in value.split(os.pathsep) if entry.strip()]
+    merged = _dedup_dirs([*held, *_validated_bin_dirs(wanted, ".env PATH")])
+    if len(merged) > len(held):
+        os.environ["PATH"] = os.pathsep.join([current, *merged[len(held) :]])
+
+
 # --- node build toolchain -----------------------------------------------------
-#
+
+# nvm's roots, both layouts: ``~/.nvm``, then the XDG root its installer picks
+# when ``XDG_CONFIG_HOME`` is set (:func:`_xdg_config_dir`). ``~/.nvm`` comes
+# first, so a host holding both roots searches it first. The one list every nvm
+# lookup derives from: the version globs below, :func:`nvm_dirs` (the root that
+# holds ``nvm.sh``) and :func:`nvm_version_bin_dirs`.
+_NVM_ROOTS = ("{home}/.nvm", "{xdg_config}/nvm")
+_NVM_VERSION_GLOBS = tuple(f"{root}/versions/node/*/bin" for root in _NVM_ROOTS)
+
 # Directories a Node VERSION MANAGER installs a real ``node``/``npm`` into.
 # Deliberately NARROW and separate from ``_EXTRA_PATH_DIRS``: that list is a
 # broad "where might an MCP binary live" search path (it includes
@@ -253,11 +287,17 @@ _NODE_MANAGER_GLOBS = (
     "{mise_data}/installs/node/*/bin",
     # asdf's nodejs plugin.
     "{home}/.asdf/installs/nodejs/*/bin",
-    # nvm.
-    "{home}/.nvm/versions/node/*/bin",
+    # nvm, both roots, in :data:`_NVM_ROOTS` order.
+    *_NVM_VERSION_GLOBS,
     # fnm, both layouts: XDG default and legacy ``~/.fnm``.
     "{home}/.local/share/fnm/node-versions/*/installation/bin",
     "{home}/.fnm/node-versions/*/installation/bin",
+    # fnm's out-of-the-box location on macOS: fnm does NOT follow XDG there,
+    # it uses the Apple data dir (``~/Library/Application Support/fnm``). This
+    # is the default on a plain macOS install with no ``FNM_DIR``/``XDG_DATA_HOME``
+    # override, so a glob tried on every platform (it harmlessly drops out where
+    # the dir does not exist) is what keeps the probe from a false "no Node".
+    "{home}/Library/Application Support/fnm/node-versions/*/installation/bin",
     # The layout the retired nvm/fnm scan also globbed (``<ver>/bin`` directly
     # under the fnm root). Real fnm never produces it, but keeping the glob
     # makes the consolidated search a strict superset of what it replaced —
@@ -315,6 +355,50 @@ def mise_data_dir(home: str) -> str:
     return os.path.join(base, "mise")
 
 
+def _xdg_config_dir(home: str) -> str:
+    """The XDG config dir: ``XDG_CONFIG_HOME`` when absolute, else ``~/.config``.
+
+    A relative value is ignored, as the XDG Base Directory spec requires: taken
+    as given it would glob against the gateway's cwd and could put a
+    cwd-relative entry on a spawned subprocess's PATH.
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    return xdg if os.path.isabs(xdg) else os.path.join(home, ".config")
+
+
+def nvm_dirs() -> tuple[str, ...]:
+    """nvm's candidate root dirs (:data:`_NVM_ROOTS`), ``~/.nvm`` first.
+
+    For a caller that needs nvm's ROOT rather than a version's ``bin`` -- the
+    app backend sources ``<root>/nvm.sh`` when ``NVM_DIR`` is unset. Neither dir
+    is checked for existence: the caller probes for the file it needs.
+    """
+    home = os.path.expanduser("~")
+    xdg_config = _xdg_config_dir(home)
+    return tuple(
+        os.path.normpath(root.format(home=home, xdg_config=xdg_config)) for root in _NVM_ROOTS
+    )
+
+
+def nvm_version_bin_dirs() -> tuple[str, ...]:
+    """Every existing nvm version ``bin`` dir, across both roots.
+
+    The same scan :func:`node_all_bin_dirs` runs for nvm: root order
+    (:data:`_NVM_ROOTS`), then newest version first within each root. For a
+    builtin app that keeps its own Node search list and needs nvm's share of it.
+    """
+    home = os.path.expanduser("~")
+    return tuple(
+        _manager_version_bin_dirs(
+            home,
+            "",  # nvm's globs never reference {mise_data}
+            _xdg_config_dir(home),
+            all_versions=True,
+            patterns=_NVM_VERSION_GLOBS,
+        )
+    )
+
+
 def _has_node(d: Path) -> bool:
     """True when *d* holds an executable ``node``.
 
@@ -342,8 +426,18 @@ def _node_version_key(name: str) -> tuple[int, tuple[int, ...], str]:
     return (0, (), name)
 
 
-def _manager_version_bin_dirs(home: str, mise_data: str, *, all_versions: bool) -> list[str]:
+def _manager_version_bin_dirs(
+    home: str,
+    mise_data: str,
+    xdg_config: str,
+    *,
+    all_versions: bool,
+    patterns: tuple[str, ...] = _NODE_MANAGER_GLOBS,
+) -> list[str]:
     """Scan the per-version manager roots (:data:`_NODE_MANAGER_GLOBS`).
+
+    *patterns* narrows the scan to a subset of those globs
+    (:func:`nvm_version_bin_dirs` passes nvm's), with the same ordering.
 
     The two callers need DIFFERENT policies, chosen deliberately:
 
@@ -362,8 +456,10 @@ def _manager_version_bin_dirs(home: str, mise_data: str, *, all_versions: bool) 
     (:func:`_node_version_key`: numeric versions outrank alias names).
     """
     out: list[str] = []
-    for pattern in _NODE_MANAGER_GLOBS:
-        root, _, leaf = pattern.format(home=home, mise_data=mise_data).partition("/*")
+    for pattern in patterns:
+        root, _, leaf = pattern.format(
+            home=home, mise_data=mise_data, xdg_config=xdg_config
+        ).partition("/*")
         keep = Path.is_dir if all_versions else _has_node
         try:
             matches = sorted(
@@ -416,7 +512,8 @@ def node_bin_dirs() -> tuple[str, ...]:
        after installing/locating node. Preferred over a bare filesystem scan
        because it names the version that script decided on.
     3. The highest version found under each per-version manager root
-       (mise / asdf / nvm / fnm).
+       (mise / asdf / nvm / fnm; nvm under both ``~/.nvm`` and the XDG config
+       dir).
     4. Shim dirs (mise shims, volta, n).
     5. Standalone Node trees -- the glibc-2.17 build ``ensure-node.sh`` unpacks
        into the data home (:data:`_NODE_TREE_DATA_HOME_DIRS`), then a
@@ -455,7 +552,9 @@ def node_bin_dirs() -> tuple[str, ...]:
     if marker:
         ordered.append(marker)
 
-    ordered.extend(_manager_version_bin_dirs(home, mise_data, all_versions=False))
+    ordered.extend(
+        _manager_version_bin_dirs(home, mise_data, _xdg_config_dir(home), all_versions=False)
+    )
 
     ordered.extend(d.format(home=home, mise_data=mise_data) for d in _NODE_MANAGER_DIRS)
     # Under a KIROCREW_HOME override data_home() mkdirs, so it can raise on an
@@ -516,18 +615,19 @@ def _homebrew_keg_node_bin_dirs() -> list[str]:
 
 
 @functools.lru_cache(maxsize=1)
-def _node_all_bin_dirs(home: str, mise_data: str) -> tuple[str, ...]:
+def _node_all_bin_dirs(home: str, mise_data: str, xdg_config: str) -> tuple[str, ...]:
     """Cached body of :func:`node_all_bin_dirs`, keyed on its inputs.
 
-    Keyed on ``(home, mise_data)`` — matching the retired helper's ``home``
-    keying — so a caller under a different HOME (tests patching
-    ``expanduser``) gets a fresh scan instead of the previous key's dirs,
-    while the steady-state gateway still globs exactly once.
+    Keyed on every root the globs format (``home``, ``mise_data``,
+    ``xdg_config``) — matching the retired helper's ``home`` keying — so a
+    caller under a different HOME or config dir (tests patching ``expanduser``
+    or ``XDG_CONFIG_HOME``) gets a fresh scan instead of the previous key's
+    dirs, while the steady-state gateway still globs exactly once.
     """
     out: list[str] = []
     seen: set[str] = set()
     for d in (
-        *_manager_version_bin_dirs(home, mise_data, all_versions=True),
+        *_manager_version_bin_dirs(home, mise_data, xdg_config, all_versions=True),
         *_homebrew_keg_node_bin_dirs(),
     ):
         d = os.path.normpath(d)
@@ -569,7 +669,7 @@ def node_all_bin_dirs() -> tuple[str, ...]:
     ever needs re-discovery without one.
     """
     home = os.path.expanduser("~")
-    return _node_all_bin_dirs(home, mise_data_dir(home))
+    return _node_all_bin_dirs(home, mise_data_dir(home), _xdg_config_dir(home))
 
 
 def node_augmented_path(base_path: str = "") -> str:
@@ -816,7 +916,7 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
     ]
-    extra += _node_all_bin_dirs(resolved_home, mise_data)
+    extra += _node_all_bin_dirs(resolved_home, mise_data, _xdg_config_dir(resolved_home))
     parts = extra + ([base_path] if base_path else [])
     parts.append(str(Path(sys.executable).parent))
     return os.pathsep.join(parts)
@@ -1029,10 +1129,12 @@ def resolved_command_casing(path: str | None) -> str:
     agent-config resolver, the dashboard probe and gatewayd's rewriter -- route
     their ``shutil.which`` result through this one helper, next to
     :func:`mcp_search_path`, so they agree on WHAT they emit as well as on where
-    they look. Resolvers of Kiro Crew's own binaries are not MCP server
-    commands and stay outside it: the ``kirocrew`` lookup in
-    ``agent._resolve_kirocrew_bin``, and the kiro-cli launch path in
-    ``acp.client``, which keeps its own ``_normalize_exe_casing``.
+    they look. ``kirocrew restart`` also routes its respawn lookup in
+    ``cli_server`` through it. Other resolvers of Kiro Crew's own binaries stay
+    outside it: the ``kirocrew`` lookup in ``agent._resolve_kirocrew_bin``, and
+    the kiro-cli resolver, whose discovery in ``kiro_cli`` does its own Windows
+    ``realpath``. So do the ACP adapter ladders in ``acp.launch`` and
+    ``acp.harness.{claude,pi}``, which call ``acp.launch._normalize_exe_casing``.
 
     Looking up the matching parent-directory entry repairs the spelling while
     retaining the lexical parent route and a file symlink's own name;
@@ -1107,7 +1209,7 @@ def mcp_runtime_path(base_path: str = "") -> str:
 #   ELF/Mach-O binary in the spawn chain, the sandbox wrapper included.
 # * The ``PYTHON`` namespace matters because Kiro Crew's Linux sandbox launcher
 #   IS a Python process: ``sandbox.namespace_argv`` returns
-#   ``[sys.executable, "-I", "-S", <generated script>, *argv]`` (sandbox.py), and
+#   ``[sys.executable, "-I", "-S", <generated script>, *argv]`` (sandbox_argv.py), and
 #   that interpreter starts with the env we hand ``Popen``. A declared
 #   ``PYTHONPATH`` carrying ``sitecustomize.py`` — or a shadowing ``os.py`` —
 #   would be imported at interpreter startup, i.e. before ``unshare`` and before
@@ -1408,6 +1510,41 @@ def emit_env(env: dict) -> dict:
     out = {k: v for k, v in env.items() if not (isinstance(k, str) and k.upper() == "PATH")}
     out["PATH"] = spec_env_path(path)
     return out
+
+
+#: The variables a stdio MCP ``args`` element may reference. Only home and
+#: login-name spellings: kiro-cli expands ``${VAR}`` in a declared ``env`` map
+#: but never in ``args``, so a launch path written as ``${HOME}/...`` reaches
+#: the child literally. Any wider set would put an arbitrary variable's VALUE on
+#: argv (world-readable through ``/proc/<pid>/cmdline``) and into the emitted
+#: agent spec, which agents can write -- a spec naming
+#: ``${AWS_SECRET_ACCESS_KEY}`` must stay a literal.
+_SPEC_ARG_VARS = frozenset({"HOME", "USER", "LOGNAME", "USERPROFILE", "USERNAME"})
+
+
+def expand_spec_args(args: Any, *, server: str | None = None) -> Any:
+    """Resolve home and login-name references in a stdio MCP spec's ``args``.
+
+    Delegates to the gateway's declared-env expander (one grammar, one miss
+    rule) with a source view holding only :data:`_SPEC_ARG_VARS`, so every
+    other name is a miss and stays literal. A set-but-empty variable is left
+    out of that view too, so ``${HOME}/x`` never collapses to ``/x``. Plain
+    text substitution; nothing is ever handed to a shell. The import is
+    function-local because the rewriter imports this module.
+
+    Returns a NEW list for a list input, leaving the caller's (often a source
+    config's own) untouched. Non-string elements and a non-list ``args`` pass
+    through verbatim, so a malformed spec keeps its own error.
+    """
+    if not isinstance(args, list):
+        return args
+    from kiro_crew.mcp_gateway.rewriter import _expand_env_placeholders
+
+    source = {name: value for name in _SPEC_ARG_VARS if (value := os.environ.get(name))}
+    return [
+        _expand_env_placeholders(a, source=source, server=server) if isinstance(a, str) else a
+        for a in args
+    ]
 
 
 @functools.lru_cache(maxsize=1)

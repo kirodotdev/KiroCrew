@@ -5,8 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SecretField } from '../../components/SecretField'
+import { SECRETS_GUIDE_URL as SECRETS_SETUP_GUIDE } from '../../utils/docsLink'
 
-const SECRETS_SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/secrets-env.md'
 const UNUSED_REASON_KEYS = {
   wakatime_disabled: 'settings.secrets.wakatime_unused_hint',
   jira_multi_host: 'settings.secrets.jira_global_unused_multi_host',

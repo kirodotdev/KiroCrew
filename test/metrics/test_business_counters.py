@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from test_gate_tiers import ALL_SCENARIOS, gate_world, judge_scenario  # noqa: F401
 
 from kiro_crew.metrics import events as ev
 
@@ -38,6 +39,18 @@ def _admission_modules():
     """Every module of the admission package, relative to the package root."""
     pkg = Path(ev.__file__).resolve().parent.parent / "subagent_manager" / "admission"
     return sorted(f"subagent_manager/admission/{p.name}" for p in pkg.glob("*.py"))
+
+
+def _artifact_store_modules():
+    """The artifact store's modules: the facade and every ``artifacts_*`` owner."""
+    pkg = Path(ev.__file__).resolve().parent.parent
+    return sorted(p.name for p in pkg.glob("artifacts*.py"))
+
+
+def _cron_service_modules():
+    """Every module ``CronService`` binds its members from, relative to the package root."""
+    pkg = Path(ev.__file__).resolve().parent.parent / "cron_service" / "service"
+    return sorted(f"cron_service/service/{p.name}" for p in pkg.glob("*.py"))
 
 
 def _named(rec, name):
@@ -100,30 +113,48 @@ class TestApprovalDecisions:
         after = len(_named(rec, ev.APPROVAL_DECISIONS))
         assert after == before, "one consultation must count once, not once per object"
 
-    def test_every_gate_exit_is_counted(self):
-        """All 18 returns in on_tool_call go through a factory; nothing else does."""
-        import ast
-        import inspect
+    @pytest.mark.usefixtures("gate_world")
+    @pytest.mark.parametrize("scenario", ALL_SCENARIOS)
+    def test_every_judgement_is_counted_exactly_once(self, rec, scenario):
+        """One consultation, one counted decision, whichever tier decided and by which
+        of its branches (the scenarios reach every reachable verdict of every row):
+        a verdict built directly would count zero and one built twice would count
+        two."""
+        verdict = judge_scenario(scenario)
+        calls = _named(rec, ev.APPROVAL_DECISIONS)
+        assert len(calls) == 1, f"tier {scenario.tier!r} counted {len(calls)} decisions"
+        assert calls[0]["attrs"] == {
+            "decision": verdict.action,
+            "security_deny": verdict.security_deny if verdict.action == "deny" else False,
+        }
 
+    def test_a_refusal_the_gate_makes_of_itself_is_counted_once(self, rec, monkeypatch):
+        """The two verdicts no tier returns -- a crash, and an unsound table -- are
+        counted decisions too."""
         from kiro_crew import hooks
+        from kiro_crew.hooks import HookManager, ToolCall
 
-        tree = ast.parse(inspect.getsource(hooks))
-        factories = set()
-        direct = 0
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "on_tool_call":
-                for call in ast.walk(node):
-                    if not isinstance(call, ast.Call):
-                        continue
-                    fn = call.func
-                    if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
-                        if fn.value.id == "ToolHookResult":
-                            factories.add(fn.attr)
-                    elif isinstance(fn, ast.Name) and fn.id == "ToolHookResult":
-                        direct += 1
-        assert factories, "the gate must return through the counted factories"
-        assert factories <= {"allow", "auto_approve", "deny", "deny_policy"}
-        assert direct == 0, "a direct construction inside the gate would go uncounted"
+        call = ToolCall(title="Running: ls -la", is_shell=True, command="ls -la")
+
+        def boom(*_args, **_kwargs):
+            raise SystemError("boom")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(hooks.current_context().security, "is_denied", boom)
+            HookManager().judge(call)
+        with monkeypatch.context() as patched:
+            patched.setattr(hooks, "_GATE_TABLE_PROBLEMS", ("unsound",))
+            HookManager().judge(call)
+        assert [c["attrs"] for c in _named(rec, ev.APPROVAL_DECISIONS)] == [
+            {"decision": "deny", "security_deny": True}
+        ] * 2
+
+    def test_a_consultation_inside_uncounted_gate_counts_nothing(self, rec):
+        from kiro_crew.hooks import HookManager, ToolCall, uncounted_gate
+
+        with uncounted_gate():
+            HookManager().judge(ToolCall(title="Running: ls -la", is_shell=True, command="ls -la"))
+        assert _named(rec, ev.APPROVAL_DECISIONS) == []
 
 
 class TestSpawnCounterPlacement:
@@ -225,12 +256,12 @@ class TestCallSitesAreWired:
 
     OWNERS = {
         "SUBAGENTS_SPAWNED": "subagent_manager/admission/pump.py",
-        "CRON_FIRES": "cron.py",
-        "ARTIFACTS_CREATED": "artifacts.py",
+        "CRON_FIRES": "cron_service/service/run_execution.py",
+        "ARTIFACTS_CREATED": "artifacts_writes.py",
         "WORKFLOW_RUNS": "workflows/runner.py",
         "CONTEXT_COMPACTIONS": "session_compaction.py",
         "MCP_RECONNECTS": "mcp_gateway/stub.py",
-        "APPROVAL_DECISIONS": "hooks.py",
+        "APPROVAL_DECISIONS": "hook_runtime/hook_types.py",
         "ADAPTIVE_DECISIONS": "adaptive/controller.py",
         # Overload-resilience series (RFC §10). Sampled ones are emitted by the
         # structured health sampler; the recovery ones by the ladder; the
@@ -280,15 +311,20 @@ class TestAttributeValuesAreBounded:
             # leave a sibling's future emit unscanned.
             *_admission_modules(),
             "cron.py",
-            "artifacts.py",
+            *_cron_service_modules(),
+            *_artifact_store_modules(),
             "workflows/runner.py",
             "session_compaction.py",
             "mcp_gateway/stub.py",
             "mcp_gateway/manager.py",
-            "hooks.py",
+            "hook_runtime/hook_types.py",
             "adaptive/controller.py",
             "dashboard/session_health.py",
             "taskq/store.py",
+            "taskq/store_vocab.py",
+            "taskq/store_events.py",
+            "taskq/store_waits.py",
+            "taskq/store_reads.py",
             "recovery/ladder.py",
         ],
     )

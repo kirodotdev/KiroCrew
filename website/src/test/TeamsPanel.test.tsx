@@ -124,16 +124,55 @@ describe('TeamsPanel', () => {
 })
 
 describe('TeamsPanel — the PyJWT dependency', () => {
-  it('explains the missing extra, with the command that installs it', async () => {
+  // The gateway's own interpreter, as `_channel_sdk_status` reports it.
+  const CMD = '/opt/gw/bin/python -m pip install "PyJWT[crypto]==2.13.0"'
+
+  it('explains the missing extra without a bare pip command', async () => {
     getTeamsConfig.mockResolvedValue({ ...BASE, jwt_available: false, configured: true })
     render(ui())
     await screen.findByRole('heading', { name: 'Microsoft Teams' })
     const notice = screen.getByRole('alert')
     expect(notice).toHaveTextContent('PyJWT')
-    expect(notice).toHaveTextContent('pip install "PyJWT[crypto]==2.13.0"')
-    // The command must stay copy-pasteable, so it renders as a code token the
-    // pseudolocale scanner and the reader both treat as literal.
-    expect(notice.querySelector('code')?.textContent).toBe('pip install "PyJWT[crypto]==2.13.0"')
+    // The notice explains WHY; the command comes only from the gateway.
+    expect(notice).not.toHaveTextContent('pip install')
+    expect(notice.querySelector('code')).toBeNull()
+  })
+
+  it('shows the install command naming the gateway interpreter', async () => {
+    getTeamsConfig.mockResolvedValue({
+      ...BASE, jwt_available: false, configured: true,
+      sdk_installed: false, sdk_install_supported: true, sdk_install_command: CMD,
+    })
+    render(ui())
+    await screen.findByRole('heading', { name: 'Microsoft Teams' })
+    expect(screen.getByTestId('sdk-install-command')).toHaveTextContent(CMD)
+    // The card says what the alert would, so the alert stands aside.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    // Never a bare `pip install` anywhere on the panel.
+    expect(document.body.textContent?.replaceAll(CMD, '')).not.toContain('pip install')
+  })
+
+  it('says an in-place install is unavailable when the gateway cannot pip', async () => {
+    getTeamsConfig.mockResolvedValue({
+      ...BASE, jwt_available: false, configured: true,
+      sdk_installed: false, sdk_install_supported: false, sdk_install_command: '',
+    })
+    render(ui())
+    await screen.findByRole('heading', { name: 'Microsoft Teams' })
+    expect(screen.getByText(/cannot install extra packages, so PyJWT cannot be added here/)).toBeInTheDocument()
+    expect(screen.queryByTestId('sdk-install-command')).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('pip install')
+  })
+
+  it('keeps the alert when a jwt module is found but PyJWT is unusable', async () => {
+    getTeamsConfig.mockResolvedValue({
+      ...BASE, jwt_available: false, configured: true,
+      sdk_installed: true, sdk_install_supported: true, sdk_install_command: '',
+    })
+    render(ui())
+    await screen.findByRole('heading', { name: 'Microsoft Teams' })
+    expect(screen.getByRole('alert')).toHaveTextContent('PyJWT')
+    expect(screen.queryByTestId('sdk-install-command')).not.toBeInTheDocument()
   })
 
   it('does not blame a restart while the dependency is what is missing', async () => {

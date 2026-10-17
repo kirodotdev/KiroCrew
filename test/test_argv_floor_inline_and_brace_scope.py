@@ -32,7 +32,12 @@ import pytest
 
 from kiro_crew import security
 from kiro_crew.security import argv_floor, inline_payload
-from kiro_crew.security.shell_normalizer import _glob_could_expand_to, _glob_to_regex
+from kiro_crew.security.shell_normalizer import (
+    _SCRIPT_EXECUTES_RE,
+    _data_consumer_command_disqualified,
+    _glob_could_expand_to,
+    _glob_to_regex,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _MINT = "credential-exfil-kirocrew-token"
@@ -668,7 +673,7 @@ class TestInlinePayloadNamesTheMintSurface:
             return found - seed_names
 
         # Hop 1: the modules that import the key reader, and which of THEIR functions
-        # reach it (in ``token_auth``: ``_sign`` and every ``generate_*`` built on it --
+        # reach it (in ``token_auth_tokens``: ``_sign`` and every ``generate_*`` built on it --
         # not ``validate_token`` or ``is_csrf_exempt``, which never touch the key).
         hop1 = importers_of(seeds)
         hop1_producers: dict[str, set[str]] = {}
@@ -677,7 +682,7 @@ class TestInlinePayloadNamesTheMintSurface:
         for mod, seed_names in list(hop1_producers.items()):
             hop1_producers[mod] = producers_in(mod, seed_names) | seed_names
         assert "generate_token" in hop1_producers.get(
-            "kiro_crew.dashboard.token_auth", set()
+            "kiro_crew.dashboard.token_auth_tokens", set()
         ), hop1_producers
         # Hop 2: every module that imports one of those producers.
         hop2 = [
@@ -782,7 +787,7 @@ class TestInlinePayloadNamesTheMintSurface:
                 if used & file_names:
                     readers.append((mod, node.name))
         # The derivation reaches the two readers the gate was narrowed past.
-        assert ("kiro_crew.config.loader", "read_local_secret") in readers, readers
+        assert ("kiro_crew.config.loader_locations", "read_local_secret") in readers, readers
         assert ("kiro_crew.instances.run_marker", "read_secret") in readers, readers
         # Namers that hand no credential to a caller.  A NEW name landing here has to be
         # added with its reason, or carry ``secret`` / ``token`` so the gate covers it.
@@ -1249,6 +1254,124 @@ class TestAGlobArgumentIsNotAKillProgram:
     )
     def test_a_harmless_substitution_under_a_data_consumer_is_allowed(self, cmd):
         assert _rule_of(cmd) is None, cmd
+
+
+class TestAnOptionDashEIsNotSedsExecuteCommand:
+    """``-e``/``-E`` is an option flag; sed's ``e`` command is a word of the script.
+
+    The data-consumer exemption is withdrawn for a whole command when any word in it
+    can make a consumer run text (``_SCRIPT_EXECUTES_RE``). Reading the bare ``-e``
+    option as sed's ``e`` command withdrew it for every ``grep -E``, ``sed -E``,
+    ``echo -e`` and ``cat -E``, so a glob path among their arguments read as a
+    possible ``pkill`` and a product-named path after it made the command a self-kill.
+    A wildcard word in a position that runs it is still read as a kill program.
+    """
+
+    @pytest.mark.parametrize("word", ["-e", "-E", "-e ", "-ne"])
+    def test_the_option_is_not_an_execute_construct(self, word):
+        assert _SCRIPT_EXECUTES_RE.search(word.lower()) is None, word
+
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "e",
+            "e ",
+            "p;e",
+            "1,2 e",
+            "$!e",
+            "--expression=e",
+            "s/a/b/e",
+            r"\-.-e",
+            r"\- -e",
+            "system(",
+            "print |",
+        ],
+    )
+    def test_the_execute_constructs_are_still_read(self, word):
+        assert _SCRIPT_EXECUTES_RE.search(word) is not None, word
+
+    def test_an_option_alone_keeps_the_exemption(self):
+        tokens = ["grep", "-c", "-e", "a", "/tmp/x/*", "/tmp/kirocrew/y"]
+        assert _data_consumer_command_disqualified(tokens) is False
+        assert _data_consumer_command_disqualified([*tokens[:3], "e", *tokens[3:]]) is True
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            "grep {} x /tmp/a/* /w/kirocrew/log",
+            "cat {} /tmp/x/* /w/kirocrew/gateway.log",
+            "echo {} pkill -f kirocrew",
+            "grep {} x kirocrew token",
+            "sed {} e /tmp/x/* /w/kirocrew/log",
+            "grep {} x /tmp/a/* /w/kirocrew/log | sh",
+            "grep {} x /tmp/a/*; pkill -f kirocrew",
+        ],
+    )
+    def test_the_verdict_does_not_depend_on_the_option(self, shape):
+        # The command's author chooses whether to pass the option, so a verdict it
+        # changed would protect nothing: the same command without it is the bypass.
+        bare = _rule_of(" ".join(shape.format("").split()))
+        for option in ("-e", "-E"):
+            assert _rule_of(shape.format(option)) == bare, (shape, option)
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A read-and-copy routine that ends by counting matches across the copies.
+            "C=/h/.kiro/crew/workspace/kirocrew-session-captures/behavior-$(date -u +%Y%m%dT%H%M%SZ); "
+            'mkdir -p "$C/transcripts" "$C/gateway" && chmod 700 "$C"; '
+            "R='s/eyJ[A-Za-z0-9._-]{10,}/<jwt>/g'; "
+            'sed -E "$R" /h/.kiro/crew/sessions/d.jsonl > "$C/transcripts/d.jsonl"; '
+            'for f in /h/.kiro/crew/gateway.log*; do sed -E "$R" "$f" > "$C/gateway/$(basename "$f")"; done; '
+            'echo "$C"; du -sh "$C" | cut -f1; find "$C" -type f | wc -l; '
+            'grep -c -E \'eyJ[A-Za-z0-9._-]{10,}\' "$C"/transcripts/* "$C"/gateway/* '
+            "| grep -v ':0$' || echo none",
+            'C=/tmp/kirocrew-export; grep -c -E "a" "$C"/transcripts/* "$C"/gateway/*',
+            "grep -e foo -e bar /tmp/a/* /w/kirocrew/state.json",
+            "echo -e 'a b' /tmp/x/* /w/kirocrew/gateway.log",
+            "cat -E /tmp/x/* /w/kirocrew/gateway.log",
+            "tail -n 3 /tmp/x/?* /w/kirocrew/gateway.log",
+        ],
+    )
+    def test_a_wildcard_path_next_to_a_product_path_is_allowed(self, cmd):
+        assert not argv_floor._is_self_kill(cmd.lower()), cmd
+        assert _rule_of(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A wildcard word that RUNS: in program position, or handed to a wrapper.
+            "* -f kirocrew",
+            "/usr/bin/* -f kirocrew",
+            "?* -f kirocrew",
+            "** -f kirocrew",
+            "cd /usr/bin; * -f kirocrew",
+            "sudo * -f kirocrew",
+            "ls /tmp/*; * -f kirocrew",
+            "p* -f kirocrew",
+            "*kill -f kirocrew",
+            "pk?ll -f kirocrew",
+            "[p]kill -f kirocrew",
+            # A kill after a benign wildcard read is judged on its own.
+            "grep -E x /tmp/a/* /w/kirocrew/log; pkill -f kirocrew",
+            "ls /w/kirocrew/* && killall kirocrew",
+            "sh -c 'grep -e x /tmp/x/*; pk?ll -f kirocrew'",
+            # sed's ``e`` command, and output piped into an executor, still withdraw it.
+            "sed -e e /tmp/x/* /w/kirocrew/log",
+            "sed -n 'p;e' /tmp/x/* /w/kirocrew/log",
+            "sed --expression=e /tmp/x/* /w/kirocrew/log",
+            "grep -e x /tmp/a/* /w/kirocrew/log | sh",
+            "echo -e /usr/bin/* -f kirocrew | sh",
+            "echo -e pkill -f kirocrew | xargs",
+            "awk -e 'BEGIN{system(ARGV[1]\" -f \"ARGV[2])}' /usr/bin/* kirocrew",
+            # sed's ``e`` command behind a custom-delimiter address (``-`` is the
+            # delimiter here), which runs the matched file's text.
+            r"sed '\-.-e' /tmp/x/* /w/kirocrew/log",
+            r"sed '\- -e' /tmp/x/* /w/kirocrew/log",
+        ],
+    )
+    def test_a_kill_through_a_wildcard_or_an_executor_is_still_denied(self, cmd):
+        assert _rule_of(cmd) == _KILL, cmd
 
 
 class TestTheOwnHostSeedIsInertHere:

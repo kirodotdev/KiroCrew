@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from kiro_crew.sel import sel
@@ -47,10 +48,7 @@ def _builtin_manifest_sources() -> tuple[Path, ...]:
     try:
         from kiro_crew.platform import current_context
 
-        sources.extend(
-            Path(source)
-            for source in current_context().apps_loader.manifest_sources()
-        )
+        sources.extend(Path(source) for source in current_context().apps_loader.manifest_sources())
     except Exception:  # noqa: BLE001 - unavailable composition must not admit code
         logger.debug("edition builtin manifest sources unavailable", exc_info=True)
 
@@ -75,6 +73,28 @@ def shipped_builtin_app_root(app_name: str) -> Path | None:
     deliberately ignored, and a directory without a valid shipped manifest is
     not a builtin even when its name resembles one.
     """
+    for root, name in _shipped_builtin_apps():
+        if name == app_name:
+            return root
+    return None
+
+
+def shipped_builtin_app_name_at(path: Path) -> str | None:
+    """Return the manifest name of the shipped builtin whose root holds *path*.
+
+    *path* must already be resolved. A package directory need not match its
+    manifest name (``auto_improvement`` ships ``auto-improvement``), so a
+    caller holding a path inside a package asks here instead of reading the
+    directory name.
+    """
+    for root, name in _shipped_builtin_apps():
+        if path == root or root in path.parents:
+            return name
+    return None
+
+
+def _shipped_builtin_apps() -> Iterator[tuple[Path, str]]:
+    """Yield ``(resolved root, manifest name)`` for every shipped builtin."""
     for source in _builtin_manifest_sources():
         try:
             entries = sorted(source.iterdir())
@@ -92,9 +112,8 @@ def shipped_builtin_app_root(app_name: str) -> Path | None:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
-            if isinstance(manifest, dict) and manifest.get("name") == app_name:
-                return root
-    return None
+            if isinstance(manifest, dict) and isinstance(manifest.get("name"), str):
+                yield root, manifest["name"]
 
 
 def builtin_app_names() -> frozenset[str]:
@@ -170,17 +189,29 @@ def builtin_app_mcp_servers() -> frozenset[str]:
     builtin-owned installs exactly like :func:`builtin_app_names`, so a shadowing
     user app cannot contribute declared servers.
 
+    The keys of :func:`_builtin_app_mcp_server_configs`, the one enumeration
+    :func:`builtin_app_host_cli_mcp_launches` also reads, so the two can never
+    disagree on which servers are shipped. Filesystem I/O; callers warm it ONCE
+    off the event loop. A source or manifest that fails to read is skipped
+    (fail-closed), never widening the trusted set.
+    """
+    return frozenset(_builtin_app_mcp_server_configs())
+
+
+def _builtin_app_mcp_server_configs() -> dict[str, tuple[str, object]]:
+    """Map ``"<app>:<server>"`` to ``(app_name, cfg)`` for shipped builtin servers.
+
     Enumerates its own manifest loop (mirroring :func:`builtin_app_names`) rather
     than sharing state with it, to keep that security-sensitive function
-    untouched. Filesystem I/O; callers warm it ONCE off the event loop. A source
-    or manifest that fails to read is skipped (fail-closed), never widening the
-    trusted set.
+    untouched. Every key is a server a shipped, builtin-owned manifest declares,
+    and ``cfg`` is its raw ``mcpServers`` value, unvalidated, so each caller
+    applies its own narrowing on top.
     """
     # Deferred import: manager imports this module at load time (see
     # builtin_app_names), so the reverse edge resolves lazily.
     from kiro_crew.apps.manager import builtin_owns_installed
 
-    servers: set[str] = set()
+    servers: dict[str, tuple[str, object]] = {}
     owned: dict[str, bool] = {}
     for source in _builtin_manifest_sources():
         try:
@@ -208,10 +239,43 @@ def builtin_app_mcp_servers() -> frozenset[str]:
                 owned[name] = builtin_owns_installed(name)
             if not owned[name]:
                 continue
-            for server_name in mcp_servers:
+            for server_name, cfg in mcp_servers.items():
                 if isinstance(server_name, str) and server_name:
-                    servers.add(f"{name}:{server_name}")
-    return frozenset(servers)
+                    servers[f"{name}:{server_name}"] = (name, cfg)
+    return servers
+
+
+def builtin_app_host_cli_mcp_launches() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Builtin app MCP servers that run the gateway's OWN code, with their shipped args.
+
+    Maps ``"<app>:<server>"`` to ``(app_name, args)`` for every server a shipped,
+    builtin-owned manifest declares as ``command: "kirocrew"`` (the host CLI) with
+    a list of string ``args`` and no ``url``. Those are the app servers
+    ``bridges._pin_host_cli_command`` pins to this gateway's interpreter, so they
+    are Kiro Crew's own process exactly as the managed ``kirocrew-*`` servers are,
+    and the only app servers a per-session identity element may be built for.
+
+    The launch comes from the IMMUTABLE manifest, never from the mutable global
+    MCP config or an agent spec, so a hand-edited ``mochi:mochi`` entry naming a
+    different program cannot obtain the element (and with it the session token).
+    An app shipping its own binary is not the gateway's code and is left out.
+
+    Filters :func:`_builtin_app_mcp_server_configs`, the same enumeration
+    :func:`builtin_app_mcp_servers` takes its keys from, so every launch is by
+    construction a server that function trusts. Same sources, same
+    builtin-owned narrowing, same fail-closed skips.
+    """
+    launches: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for key, (name, cfg) in _builtin_app_mcp_server_configs().items():
+        if not isinstance(cfg, dict):
+            continue
+        if cfg.get("command") != "kirocrew" or "url" in cfg:
+            continue
+        args = cfg.get("args") or []
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            continue
+        launches[key] = (name, tuple(args))
+    return launches
 
 
 def builtin_app_agents() -> dict[str, str]:
@@ -326,9 +390,7 @@ def shipped_builtin_module_path(app_name: str, module_name: str) -> Path | None:
     return None
 
 
-def is_builtin_app(
-    *, app_root: Path | None = None, app_name: str | None = None
-) -> bool:
+def is_builtin_app(*, app_root: Path | None = None, app_name: str | None = None) -> bool:
     """Return whether immutable package provenance covers the executed path.
 
     Path-only callers must point inside one of the composed shipped-manifest
@@ -343,10 +405,7 @@ def is_builtin_app(
     except (OSError, ValueError):
         return False
     if app_name is None:
-        return any(
-            resolved.is_relative_to(source)
-            for source in _builtin_manifest_sources()
-        )
+        return any(resolved.is_relative_to(source) for source in _builtin_manifest_sources())
     shipped_root = shipped_builtin_app_root(app_name)
     return shipped_root is not None and resolved.is_relative_to(shipped_root)
 
@@ -418,9 +477,7 @@ def trusted_app_names() -> frozenset[str]:
         )
         raw = raw[:_MAX_GRANT_ENTRIES]
     return frozenset(
-        entry
-        for entry in raw
-        if isinstance(entry, str) and APP_NAME_RE.fullmatch(entry)
+        entry for entry in raw if isinstance(entry, str) and APP_NAME_RE.fullmatch(entry)
     )
 
 
@@ -481,9 +538,7 @@ def trusted_local_app_names() -> frozenset[str]:
     return frozenset(
         name
         for name in raw_local[:_MAX_GRANT_ENTRIES]
-        if isinstance(name, str)
-        and APP_NAME_RE.fullmatch(name)
-        and name in active
+        if isinstance(name, str) and APP_NAME_RE.fullmatch(name) and name in active
     )
 
 
@@ -516,10 +571,8 @@ def _repository_grant_denied_for_binding(
 
                 installed = get_app(app_name)
                 if installed is not None:
-                    resolved, installed_repository = (
-                        resolve_installed_trust_repository(
-                            installed, allow_registry_lookup=False
-                        )
+                    resolved, installed_repository = resolve_installed_trust_repository(
+                        installed, allow_registry_lookup=False
                     )
                     repository_backed = not resolved or bool(installed_repository)
             except Exception:  # noqa: BLE001 - unknown provenance must fail closed
@@ -529,9 +582,7 @@ def _repository_grant_denied_for_binding(
                 # messages can reflect repository coordinates.  Keep the
                 # diagnostic to a compile-time classification: neither value is
                 # needed to make the fail-closed decision below.
-                logger.warning(
-                    "legacy app trust provenance could not be resolved"
-                )
+                logger.warning("legacy app trust provenance could not be resolved")
                 repository_backed = True
         if not repository_backed:
             # Migration compatibility for an old grant over an app that remains
@@ -592,9 +643,7 @@ def _repository_grant_denied_for_binding(
     )
 
 
-def repository_bound_grant_denied(
-    app_name: str, *, repository: str | None = None
-) -> str | None:
+def repository_bound_grant_denied(app_name: str, *, repository: str | None = None) -> str | None:
     """Return why *app_name*'s repository-bound grant does not cover this code.
 
     ``repository`` is the clone target a source-changing caller is about to use.
@@ -645,9 +694,7 @@ def _execution_admission(
     builtin = is_builtin_app(app_name=app_name, app_root=app_root)
     name_granted = not builtin and app_name in trusted_app_names()
     repository_denied = (
-        repository_bound_grant_denied(app_name, repository=repository)
-        if name_granted
-        else None
+        repository_bound_grant_denied(app_name, repository=repository) if name_granted else None
     )
     granted = name_granted and repository_denied is None
     if builtin:
@@ -693,9 +740,7 @@ def app_execution_denied(
     decision plus its audit row. Use THIS at every surface that is about to run
     code, so the admission or the refusal is recorded.
     """
-    reason, provenance = _execution_admission(
-        app_name, app_root=app_root, repository=repository
-    )
+    reason, provenance = _execution_admission(app_name, app_root=app_root, repository=repository)
     if reason is None:
         try:
             sel().log_api_access(

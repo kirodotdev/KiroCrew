@@ -84,7 +84,7 @@ async def _assert_one_done_frame(state: Any, slot: Any) -> None:
     payload = payloads[0]
     assert not inspect.iscoroutine(payload), "chat_done carried an un-awaited coroutine"
     assert isinstance(payload, dict)
-    assert set(payload) == {"slot", "continuing", "needs_input"}
+    assert set(payload) == {"slot", "continuing", "needs_input", "turn", "turn_gen"}
     assert payload["slot"] == slot.key
     assert payload == await cr.chat_done_payload(state, slot)
 

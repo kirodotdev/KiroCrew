@@ -29,7 +29,7 @@
  * treatment `voiceTranscribeActive` already gives a transcription in flight
  * (which is global through the inbox, see voiceTranscriptInbox).
  */
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { i18nT } from '../../i18n/t'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
@@ -617,6 +617,18 @@ export function useComposerVoice(host: ComposerVoiceHost) {
   const micOwnerSessionNow = useSyncExternalStore(subscribeMic, readMicOwnerSession, readMicOwnerSession)
   const micBusyElsewhere = micOwnerNow !== null && micOwnerNow !== instanceId
   const micBusyElsewhereSession = micBusyElsewhere ? micOwnerSessionNow : null
+  /* The kept recording's Retry is a transcription request, so it obeys the same
+     one-at-a-time rule as a start. While any composer holds the mic (starting,
+     capturing, or waiting on its own transcription), a retry would run beside
+     that recording's upload, and whichever failed last would take the held
+     audio slot from the other. Disabled on screen, and checked again at press
+     time, because the owner slot can change between a render and a click. */
+  const voiceKept = voice.keptRecording
+  const keptRecording = useMemo(() => voiceKept ? {
+    ...voiceKept,
+    retryDisabled: micOwnerNow !== null,
+    retry: () => { if (micOwner === null) voiceKept.retry() },
+  } : null, [voiceKept, micOwnerNow])
   // Latch across the async start: the engine flips `recording` only once the
   // stream is live, and a second composer's click inside that window must
   // already see the mic as taken. Generation-scoped: only the start that set
@@ -1004,6 +1016,8 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     cancelVoice,
     disarmForSend,
     micBusyElsewhere,
+    /** The engine's kept recording, with Retry held to the one-mic rule. */
+    keptRecording,
     micBusyElsewhereSession,
     /** True for a moment after a HELD transcript landed in this composer. */
     heldLanded,
@@ -1060,6 +1074,10 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
     // The capture's own error wins: a microphone that never recorded outranks a
     // cleanup pass that did not run.
     voiceError: voice.error ?? polishError,
+    /* Retry, Save and Discard for the audio of a failed transcription. Ungated,
+       like the error it belongs to: every composer showing the notice offers
+       them, and a retried transcript still lands in the session that spoke. */
+    voiceKeptRecording: cv.keptRecording,
     voiceLevel: voiceOwned ? voice.level : 0,
     voiceDeviceLabel: voiceOwned ? voice.deviceLabel : '',
     voiceDeviceId: voiceOwned ? voice.deviceId : '',

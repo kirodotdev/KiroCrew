@@ -46,7 +46,7 @@ from kiro_crew.mcp_core import (
     _vet_memory_writes_governance,
     _vet_messaging_governance,
 )
-from kiro_crew.mcp_shared import ToolCancelled
+from kiro_crew.mcp_shared import DeferredTool, drive_deferred
 
 _GOV = "kiro_crew.platform.governance_profiles"
 
@@ -721,10 +721,12 @@ class TestWaitTool:
         with patch.object(mcp_core, "time", clock):
             with patch.object(mcp_core, "_resolve_session_key_strict", return_value=strict_key):
                 with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
-                    with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=False):
-                        with patch.object(mcp_core, "sel", lambda: rec):
-                            with patch.object(mcp_core, "_post", post) as p:
-                                out = _call_tool_inner("wait", dict(args))
+                    with patch.object(mcp_core, "sel", lambda: rec):
+                        with patch.object(mcp_core, "_post", post) as p:
+                            with patch("kiro_crew.mcp_shared.sel", lambda: rec):
+                                out = mcp_core._call_tool_deferrable("wait", dict(args))
+                                if isinstance(out, DeferredTool):
+                                    out = drive_deferred(out, clock=clock)
         return out, clock, rec, p
 
     def test_an_unidentified_sleep_publishes_nothing_and_pings_slowly(self) -> None:
@@ -743,8 +745,12 @@ class TestWaitTool:
         assert [body for _, body in posts] == [{}, {}]
         # Unidentified sleeps revert to the 60s staleness cadence, not 5s.
         assert clock.slept == [60.0, 60.0]
-        assert rec.tools[0]["tool_name"] == "wait"
-        assert rec.tools[0]["outcome"] == "success"
+        # Two rows, as the blocking tool wrote: the tool's own ``success`` row,
+        # then the audited wrapper's generic ``completed`` row.
+        assert [(r["tool_name"], r["outcome"]) for r in rec.tools] == [
+            ("wait", "success"),
+            ("wait", "completed"),
+        ]
 
     def test_an_identified_sleep_publishes_its_deadline_and_retires_the_card(self) -> None:
         posts: list[tuple[str, dict]] = []
@@ -821,17 +827,27 @@ class TestWaitTool:
         assert out == "Waited 60s. Resuming: x"
         assert calls[-1]["wait_done"] is True
 
-    def test_cancellation_raises_tool_cancelled_with_elapsed_seconds(self) -> None:
+    def test_cancellation_retires_the_card_and_never_reports_success(self) -> None:
+        """A parked sleep is cancelled by the dispatch loop dropping it and
+        running its ``cancel`` hook: the countdown card is retired (an
+        identified sleep published one) and no success row is written."""
         clock = _FakeClock()
         rec = _RecordingSel()
+        posts: list[dict] = []
+
+        def post(path, body=None, **_kw):
+            posts.append(dict(body or {}))
+            return {}
+
         with patch.object(mcp_core, "time", clock):
-            with patch.object(mcp_core, "_resolve_session_key_strict", return_value=""):
-                with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=True):
-                    with patch.object(mcp_core, "sel", lambda: rec):
-                        with patch.object(mcp_core, "_post", lambda *a, **k: {}):
-                            with pytest.raises(ToolCancelled) as ei:
-                                _call_tool_inner("wait", {"seconds": 60, "reason": "x"})
-        assert "wait cancelled after 0s" in str(ei.value)
+            with patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:c"):
+                with patch.object(mcp_core, "sel", lambda: rec):
+                    with patch.object(mcp_core, "_post", post):
+                        parked = _call_tool_inner("wait", {"seconds": 60, "reason": "x"})
+                        assert isinstance(parked, DeferredTool)
+                        assert parked.step() is None  # one keepalive ping
+                        parked.cancel()
+        assert posts[-1].get("wait_done") is True, "the card was not retired"
         # A cancelled sleep never reports success.
         assert rec.tools == []
 
@@ -990,6 +1006,61 @@ class TestSpawnStatusTool:
             out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
         assert "AKIAIOSFODNN7EXAMPLE" not in out
 
+    def test_a_run_that_ended_with_an_error_keeps_its_transcript(self) -> None:
+        # A finished run reports why it ended badly in ``error``, next to the
+        # transcript it retained (a timed-out or reaped run keeps its partial
+        # output on purpose). That is a run record, not a failed request: the
+        # reason heads the output and the transcript stays readable, so the
+        # caller can see what the run did instead of re-running it.
+        payload = {
+            "done": True,
+            "result": "step 1: read config\nstep 2: wrote report.md",
+            "error": "Timed out after 180 minutes [3 turns]",
+            "elapsed": 42,
+            "credits": 0.5,
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        ended, usage, body = out.split("\n", 2)
+        assert ended == "[ENDED WITH ERROR · Timed out after 180 minutes [3 turns]]"
+        assert usage.startswith("[usage: ")
+        assert body == "step 1: read config\nstep 2: wrote report.md"
+
+    def test_a_paged_read_of_a_run_that_ended_with_an_error_keeps_paging(self) -> None:
+        payload = {
+            "done": True,
+            "result": "step 2: wrote report.md",
+            "error": "Timed out after 180 minutes [3 turns]",
+            "result_meta": {
+                "total_lines": 3,
+                "offset": 1,
+                "returned_lines": 1,
+                "has_more": True,
+            },
+        }
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1", "offset": 1, "limit": 1})
+        ended, paged, body = out.split("\n", 2)
+        assert ended == "[ENDED WITH ERROR · Timed out after 180 minutes [3 turns]]"
+        assert "showing lines 1-2 of 3" in paged
+        assert "call again with offset=2" in paged
+        assert body == "step 2: wrote report.md"
+
+    def test_a_run_that_ended_with_an_error_and_no_transcript_reads_as_a_run(self) -> None:
+        # Without the header this would read ``Error: <reason>``, the same
+        # shape as a failed lookup (``Error: HTTP 404``).
+        payload = {"done": True, "result": "", "error": "Orphaned (unknown cause)"}
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out == "[ENDED WITH ERROR · Orphaned (unknown cause)]\n_No result._"
+
+    def test_the_ending_reason_is_redacted(self) -> None:
+        payload = {"done": True, "result": "x", "error": "provider said AKIAIOSFODNN7EXAMPLE"}
+        with patch.object(mcp_core, "_get", return_value=payload):
+            out = _call_tool_inner("spawn_status", {"agent_id": "a1"})
+        assert out.startswith("[ENDED WITH ERROR · ")
+        assert "AKIAIOSFODNN7EXAMPLE" not in out
+
 
 class TestLearnAddTool:
     def test_a_missing_rule_is_refused(self) -> None:
@@ -1061,6 +1132,49 @@ class TestLearnAddTool:
                 "repo_scope": "src/kiro_crew",
             },
         )
+
+    def _saved_payload(self, args: dict[str, Any]) -> dict[str, Any]:
+        with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
+            with self._allowed():
+                with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
+                    _call_tool_inner("learn_add", args)
+        return p.call_args.args[1]
+
+    def test_trailing_tool_call_tags_are_stripped_from_the_rule(self) -> None:
+        # Wrapper markup leaked from the model's tool call must not be saved as
+        # part of the lesson and re-injected into every later session.
+        sent = self._saved_payload({"rule": "always X</rule></invoke>"})
+        assert sent["rule"] == "always X"
+
+    def test_a_leading_parameter_tag_is_stripped_from_the_negative(self) -> None:
+        sent = self._saved_payload(
+            {"rule": "always X", "negative": '<parameter name="negative">never Y</parameter>'}
+        )
+        assert sent["negative"] == "never Y"
+
+    def test_an_angle_bracket_inside_the_sentence_is_kept(self) -> None:
+        rule = "wrap the reply in a <details> block before posting"
+        assert self._saved_payload({"rule": rule})["rule"] == rule
+
+    def test_a_longer_tag_name_at_the_edge_is_kept(self) -> None:
+        rule = "represent each argument with <parameter-list>"
+        assert self._saved_payload({"rule": rule})["rule"] == rule
+
+    def test_a_plain_rule_is_unchanged(self) -> None:
+        assert self._saved_payload({"rule": "always X"})["rule"] == "always X"
+
+    def test_many_inner_tags_do_not_stall_the_strip(self) -> None:
+        # Inner wrapper tags split by runs of spaces once made the edge regex
+        # backtrack exponentially; a few hundred bytes hung the tool. They are
+        # inside the sentence, so they are kept, and the call returns at once.
+        rule = "x" + "  <rule>" * 2000 + "  x"
+        assert self._saved_payload({"rule": rule})["rule"] == rule
+
+    def test_a_rule_that_is_only_wrapper_tags_is_refused(self) -> None:
+        with patch.object(mcp_core, "_post", side_effect=AssertionError("no write")):
+            assert _call_tool_inner("learn_add", {"rule": "</rule></invoke>"}) == (
+                "Error: rule is required"
+            )
 
     def test_the_advertised_repo_scope_cap_tracks_the_enforced_one(self) -> None:
         # The hint must be derived from the field the validator enforces, so a
@@ -1585,3 +1699,30 @@ class TestIssueRadarRecordInvestigation:
         with patch.object(mcp_core, "_put", return_value={"error": "HTTP 409"}):
             out = _call_tool_inner("issue_radar_record_investigation", dict(self._BASE))
         assert out == "Error: HTTP 409"
+
+
+# -- which servers opt into the in-flight report --------------------------------
+
+
+@pytest.mark.parametrize(
+    "module_name, entry_name, expected",
+    [
+        ("kiro_crew.mcp_core", "run_mcp_core_server", True),
+        ("kiro_crew.mcp_cron", "run_mcp_server", False),
+        ("kiro_crew.mcp_work", "run_mcp_server", False),
+        ("kiro_crew.mcp_guide", "run_mcp_server", False),
+        ("kiro_crew.mcp_panel", "run_mcp_server", False),
+    ],
+)
+def test_only_kirocrew_core_opts_into_the_inflight_report(
+    module_name: str, entry_name: str, expected: bool, monkeypatch
+) -> None:
+    """Opting in lowers the gateway's recycle ceiling under a running call, so
+    it is reserved for the one server that parks ``DeferredTool`` calls."""
+    import importlib
+
+    module = importlib.import_module(module_name)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(module, "run_mcp_stdio_loop", lambda *a, **k: captured.update(k))
+    getattr(module, entry_name)()
+    assert captured.get("reports_inflight", False) is expected

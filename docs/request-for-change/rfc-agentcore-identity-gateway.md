@@ -73,7 +73,7 @@ token-vending seam.
 | `McpToolingProvider.extra_mcp_servers()` | ADD-only MCP specs merged into `kirocrew.json` | Static at rebuild time. No per-session `Authorization` |
 | `kiro_oauth_wire_entry` (`mcp_utils.py`) | Translates remote MCP OAuth hints for kiro-cli | Operator-managed client credentials, not AgentCore |
 | MCP `headers` on URL servers (`mcp_discovery.py`) | Static headers from config | A baked bearer is a live credential in an agent-readable file |
-| Dashboard tokens (`dashboard/token_auth.py`) | HMAC-SHA256, IP-pinned, single-use | Not an OIDC JWT. Cannot satisfy Gateway `CUSTOM_JWT` |
+| Dashboard tokens (`dashboard/token_auth_tokens.py`) | HMAC-SHA256, IP-pinned, single-use | Not an OIDC JWT. Cannot satisfy Gateway `CUSTOM_JWT` |
 | Channel session keys (`session.md`) | `slack:…`, `dashboard:…`, cron keys | Surface routing, not a cryptographic user identity |
 | Governance `SCOPE_CATALOG` | `mcp`, `network.egress`, `capabilities.*` | No AgentCore / token-vend row |
 | Credential redaction | AKIA/ASIA floor + bearer-header heuristics | No AgentCore workload-token shape |

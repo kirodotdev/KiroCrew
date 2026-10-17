@@ -30,6 +30,7 @@ from kiro_crew.pipeline_board_contract import (
     UNSAID,
     PipelineBoardJudgment,
     build_pipeline_board,
+    panel_card_data,
     panel_payload,
 )
 from kiro_crew.work_vocab import WORK_ITEM_STATES, WorkBoardItem, WorkBoardView
@@ -60,6 +61,7 @@ def _item(item_id: str, state: str = "open", **over: Any) -> WorkBoardItem:
         "last_report_at": None,
         "created_at": ENTRY_AT,
         "closed_at": None,
+        "decided_at": None,
         "events": [],
     }
     base.update(over)  # type: ignore[typeddict-item]
@@ -267,6 +269,76 @@ def test_items_are_grouped_by_their_own_state() -> None:
     assert counts["open"] == 1 and counts["accepted"] == 2 and counts["rejected"] == 0
 
 
+def test_forgotten_closed_items_join_the_progress_but_draw_no_cards() -> None:
+    """A long board's progress covers its whole life: the closed items the fold let
+    go add to the total and to their state's segment, and the columns still show
+    only what the fold holds."""
+    view = _view([_item("it_0", "open"), _item("it_1", "accepted")])
+    view["forgotten"] = {
+        "created": 300,
+        "items": 298,
+        "accepted": 290,
+        "rejected": 5,
+        "abandoned": 3,
+    }
+    panel = _build(view)
+    counts = {seg["name"]: seg["n"] for seg in panel["progress"]["segments"]}
+    assert panel["progress"]["total"] == 300
+    assert counts == {"open": 1, "accepted": 291, "rejected": 5, "abandoned": 3}
+    assert sum(counts.values()) == panel["progress"]["total"]
+    cards = sum(len(column["cards"]) for column in panel["columns"])
+    assert cards == 2
+
+
+def test_the_column_head_shows_the_whole_state_share_not_just_held_cards() -> None:
+    """On a long board the accepted column head reads its whole share, not its cards.
+
+    The head's numerator is the state's progress segment -- which folds in the closed
+    items the fold let go -- so it matches the denominator (the board's whole-life
+    total). Numbered from ``len(cards)`` it had read ``accepted 1 of 300`` while the
+    progress legend summed to 300, a self-contradiction on the one panel.
+    """
+    view = _view([_item("it_0", "open"), _item("it_1", "accepted")])
+    view["forgotten"] = {
+        "created": 300,
+        "items": 298,
+        "accepted": 290,
+        "rejected": 5,
+        "abandoned": 3,
+    }
+    panel = _build(view)
+    data = panel_card_data(panel)
+    # Columns render in BOARD_COLUMN_NAMES order: open, accepted, rejected, abandoned.
+    assert data["column_0_head"] == "open · 1 of 300"
+    assert data["column_1_head"] == "accepted · 291 of 300"
+    assert data["column_2_head"] == "rejected · 5 of 300"
+    assert data["column_3_head"] == "abandoned · 3 of 300"
+
+
+def test_the_items_tile_and_added_this_round_count_forgotten_items() -> None:
+    """The ``items`` tile and ``+N in round`` cover the whole board, like the total.
+
+    A 300-item board holding two items shows 300 on the tile and in the round
+    line, not the 2 it holds.
+    """
+    view = _view([_item("it_0", "open"), _item("it_1", "accepted")])
+    view["forgotten"] = {
+        "created": 300,
+        "items": 298,
+        "accepted": 290,
+        "rejected": 5,
+        "abandoned": 3,
+        "in_round": 298,
+    }
+    panel = _build(view)
+    assert panel["progress"]["added_since"] == 300
+    tiles = {stat["k"]: stat["v"] for stat in panel["stats"]}
+    assert tiles["items"] == "300"
+    data = panel_card_data(panel)
+    assert data["stat_items"] == "300"
+    assert "+300 in round 1" in data["progress_legend"]
+
+
 def test_a_pull_request_number_becomes_the_row_id() -> None:
     panel = _build(_view([_item("it_0", pr=14111)]))
     ids = [card["id"] for col in panel["columns"] for card in col["cards"]]
@@ -318,6 +390,13 @@ def test_an_item_stamp_is_the_fallback_when_the_fold_carries_no_entry_stamp() ->
     view = _view([_item("it_0"), _item("it_1", last_report_at="2026-09-27T12:30:00+00:00")])
     view["conductor"]["last_entry_at"] = ""
     assert _build(view)["meta"]["age_seconds"] == 1800
+
+
+def test_a_decision_stamp_counts_in_the_item_fallback() -> None:
+    """A conductor's ``decide`` is a board move, so its stamp ages the fallback too."""
+    view = _view([_item("it_0", decided_at="2026-09-27T12:45:00+00:00")])
+    view["conductor"]["last_entry_at"] = ""
+    assert _build(view)["meta"]["age_seconds"] == 900
 
 
 def test_a_board_with_no_items_is_not_a_board_of_zeros() -> None:

@@ -6,7 +6,7 @@
  * Why this is pinned at the ChatPage layer: `ChatInput` is prop-driven and
  * cannot tell the two situations apart, and `selectContinuable` /
  * `selectTurnInterrupted` are deliberately independent (availability vs copy).
- * The composition of the two happens exactly once, where ChatPage passes
+ * The composition of the two happens exactly once, where ComposerDockView passes
  * `continuable={continuable && interrupted}` — so unit tests of either half
  * pass whether or not the gate exists. Without this file the gate can be
  * dropped in a refactor and every other test stays green.

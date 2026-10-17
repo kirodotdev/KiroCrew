@@ -1,7 +1,8 @@
-"""The socket-state tripwire in ``test/conftest.py`` restores a leak and names the test."""
+"""The teardown tripwire in ``test/conftest.py`` restores a leak and names the test."""
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from pathlib import Path
 
@@ -52,3 +53,47 @@ def test_a_leaked_address_family_fails_that_test_and_is_restored(
 def test_a_monkeypatched_socket_attribute_is_not_a_leak(monkeypatch: pytest.MonkeyPatch) -> None:
     # Passes only if this suite's tripwire reads the state after ``monkeypatch`` undoes.
     monkeypatch.setattr(socket, "socketpair", lambda *a, **k: None)
+
+
+def test_a_monkeypatch_over_a_fixture_patch_of_to_thread_fails_that_test_and_is_restored(
+    pytester: pytest.Pytester, request: pytest.FixtureRequest
+) -> None:
+    original = asyncio.to_thread
+    # ``monkeypatch`` is requested first, as this suite's autouse anchor builds it before
+    # every fixture a file declares: the fixture's patch unwinds first, the test's second.
+    pytester.makepyfile("""
+        import asyncio
+        import threading
+        from unittest.mock import patch
+
+        import pytest
+
+        @pytest.fixture
+        def inline_to_thread():
+            async def _inline(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            with patch("asyncio.to_thread", side_effect=_inline):
+                yield
+
+        def test_leaks(monkeypatch, inline_to_thread):
+            async def _recording(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            monkeypatch.setattr(asyncio, "to_thread", _recording)
+
+        def test_a_later_test_runs_its_work_off_the_loop():
+            async def worker():
+                return await asyncio.to_thread(threading.get_ident)
+
+            assert asyncio.run(worker()) != threading.get_ident()
+        """)
+    pytester.makeini("[pytest]\n")
+    result = pytester.runpytest_inprocess(
+        "-p", "no:cacheprovider", "-n0", "-o", "addopts=", plugins=[_tripwire(request.config)]
+    )
+    result.assert_outcomes(passed=2, errors=1)
+    result.stdout.fnmatch_lines(
+        ["*ERROR at teardown of test_leaks*", "*asyncio.to_thread rebound*"]
+    )
+    assert asyncio.to_thread is original

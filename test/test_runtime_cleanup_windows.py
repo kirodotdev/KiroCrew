@@ -13,7 +13,6 @@ import json
 import os
 import sys
 import textwrap
-import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -24,8 +23,29 @@ from kiro_crew import platform_compat as pc
 from kiro_crew import session_pid
 from kiro_crew.acp import runtime
 from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.testing.wait import async_wait_until, await_until, wait_until
 
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="native Windows process trees")
+
+
+async def _bounded(coro, *, what: str):
+    """Await a coroutine the code under test should finish, under the lost-run bound.
+
+    Replacement for ``asyncio.wait_for(coro, <short N>)`` (rule D1): the
+    coroutine runs as its own task and ``await_until`` awaits that task for
+    half the test's timeout, so a hang fails by name instead of betting on the
+    runner's speed. Past the bound the task is cancelled and settled before the
+    error propagates, so a teardown that closes the generator or stops the
+    reader does not meet a step still running.
+    """
+    task = asyncio.ensure_future(coro)
+    try:
+        return await await_until(task, what=what)
+    except AssertionError:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 @pytest.fixture(autouse=True)
@@ -48,17 +68,22 @@ def _isolate_pending_windows_tree_cleanup(monkeypatch):
                 observed = pc._windows_process_handle_identity(handle)
                 if observed is not None and observed[2] is None:
                     pc.terminate_process_handle(handle)
-            deadline = time.monotonic() + 10
-            while True:
-                alive = [
+
+            def _still_alive():
+                return [
                     observed[0]
                     for observed in (pc._windows_process_handle_identity(h) for h in handles)
                     if observed is not None and observed[2] is None
                 ]
-                if not alive or time.monotonic() >= deadline:
-                    survivors.extend(alive)
-                    break
-                time.sleep(0.02)
+
+            try:
+                wait_until(
+                    lambda: not _still_alive(),
+                    timeout=10,
+                )  # flake-ok: 10 s grace for process exit after terminate; cleanup budget before survivor check, not assertion boundary
+            except AssertionError:
+                pass
+            survivors.extend(_still_alive())
             for handle in handles:
                 pc.close_process_handle(handle)
             state.handles.clear()
@@ -113,15 +138,12 @@ def _identity(pid, token, handle):
 
 
 async def _assert_exited(identities):
-    deadline = time.monotonic() + 10
-    while True:
-        alive = [
+    await async_wait_until(
+        lambda: not [
             pid for pid, token, handle in identities if _identity(pid, token, handle)[2] is None
-        ]
-        if not alive:
-            return
-        assert time.monotonic() < deadline, f"owned processes still alive: {alive}"
-        await asyncio.sleep(0.02)
+        ],
+        describe=lambda: f"owned processes still alive: {[pid for pid, token, handle in identities if _identity(pid, token, handle)[2] is None]}",
+    )
 
 
 @asynccontextmanager
@@ -157,16 +179,19 @@ async def _owned_tree(directory, *, depth=2, admitted=False):
         assert handle is not None
         identities.append((process.pid, token, handle))
         parent = process.pid
-        deadline = time.monotonic() + 15
         for level in range(depth - 1, -1, -1):
-            while True:
+
+            async def _level_file(level=level):
                 try:
-                    row = json.loads((directory / f"{level}.json").read_text(encoding="utf-8"))
-                    break
+                    return json.loads((directory / f"{level}.json").read_text(encoding="utf-8"))
                 except (FileNotFoundError, json.JSONDecodeError):
                     assert process.returncode is None, "fixture root exited before ready"
-                    assert time.monotonic() < deadline, "owned process tree did not start"
-                    await asyncio.sleep(0.02)
+                    return None
+
+            row = await async_wait_until(
+                _level_file,
+                describe=lambda level=level: f"owned process tree did not start (waiting for {level}.json)",
+            )
             assert row["parent"] == parent
             child = row["pid"]
             child_token = pc.get_process_start_id(child)
@@ -185,15 +210,29 @@ async def _owned_tree(directory, *, depth=2, admitted=False):
         try:
             try:
                 # A partial startup still owns children we may not have observed.
-                # The worker joins its own child on this cooperative exit path.
-                await asyncio.wait_for(process.wait(), 10)
-            except asyncio.TimeoutError:
+                # The worker joins its own child on this cooperative exit path. A
+                # 10 s grace period gates the force-kill fallback below: the worker
+                # exits in milliseconds once finish is written, so this is a
+                # generous cleanup deadline, not an assertion boundary.
+                _exit_task = asyncio.ensure_future(process.wait())
+                try:
+                    await await_until(
+                        _exit_task,
+                        timeout=10,
+                        what="worker cooperative exit",
+                    )  # flake-ok: cleanup grace period before force-kill; worker exits in ms after finish
+                except AssertionError:
+                    if not _exit_task.done():
+                        _exit_task.cancel()
+                        await asyncio.gather(_exit_task, return_exceptions=True)
+                    raise
+            except AssertionError:
                 for pid, token, handle in reversed(identities):
                     if _identity(pid, token, handle)[2] is None:
                         pc.terminate_process_handle(handle)
                 if process.returncode is None:
                     process.kill()
-                await asyncio.wait_for(process.wait(), 10)
+                await _bounded(process.wait(), what="the worker process to exit after kill")
             await _assert_exited(identities)
         finally:
             for _, _, handle in identities:
@@ -246,14 +285,14 @@ async def test_repeated_windows_provider_shutdown_reclaims_entire_tree(tmp_path,
                     ]
                     assert all(pc.proc_rss_bytes_for_pid(pid) > 0 for pid, _, _ in tree.identities)
 
-                    await asyncio.wait_for(provider.shutdown(), 15)
+                    await _bounded(provider.shutdown(), what="provider shutdown")
                     await _assert_exited(tree.identities)
                     assert rt._dead and rt._process is None
                     assert rt.pid not in session_pid._PROTECTED_PIDS
                     assert _ledger_lines(tmp_path, "kiro_pids.txt") == []
                     assert _ledger_lines(tmp_path, "kiro_session_pids.txt") == []
                     assert _identity(*unrelated.identities[0])[2] is None
-                    await asyncio.wait_for(provider.shutdown(), 5)
+                    await _bounded(provider.shutdown(), what="second provider shutdown (no-op)")
                     assert _identity(*unrelated.identities[0])[2] is None
 
 
@@ -263,7 +302,10 @@ async def test_windows_sync_provider_fallback_reclaims_grandchildren(tmp_path):
         async with _owned_tree(tmp_path / "runtime") as tree:
             pid, start, _ = tree.identities[0]
             provider = SimpleNamespace(_client=SimpleNamespace(_pid=pid, _start_time=start))
-            await asyncio.wait_for(asyncio.to_thread(session_pid._sync_kill_provider, provider), 15)
+            await _bounded(
+                asyncio.to_thread(session_pid._sync_kill_provider, provider),
+                what="sync provider kill",
+            )
             await _assert_exited(tree.identities)
             assert _identity(*unrelated.identities[0])[2] is None
 
@@ -294,7 +336,7 @@ async def test_windows_failed_tree_kill_keeps_live_pid_records(tmp_path, monkeyp
             ]
 
             with pytest.raises(OSError, match="did not drain"):
-                await asyncio.wait_for(rt.kill(expected=True), 5)
+                await _bounded(rt.kill(expected=True), what="rt.kill")
 
             assert calls
             assert rt._process is tree.process
@@ -316,7 +358,9 @@ async def test_windows_sync_cleanup_preserves_unverified_tree(
         if identity_state == "unreadable":
             monkeypatch.setattr(pc, "get_process_start_id", lambda _: None)
 
-        await asyncio.wait_for(asyncio.to_thread(session_pid._sync_kill_provider, provider), 5)
+        await _bounded(
+            asyncio.to_thread(session_pid._sync_kill_provider, provider), what="sync provider kill"
+        )
 
         assert all(_identity(*item)[2] is None for item in tree.identities)
 
@@ -332,11 +376,11 @@ async def test_windows_owner_shutdown_reclaims_children_after_root_exit(tmp_path
             provider = AcpSessionProvider(_persistent_handle(), rt, owns_runtime=True)
             await asyncio.to_thread(_register, rt.pid)
             (tree.directory / "root-exit").touch()
-            assert await asyncio.wait_for(tree.process.wait(), 10) == 0
+            assert await _bounded(tree.process.wait(), what="root process exit") == 0
             assert _identity(*tree.identities[0])[2] is not None
             assert all(_identity(*item)[2] is None for item in tree.identities[1:])
 
-            await asyncio.wait_for(provider.shutdown(), 15)
+            await _bounded(provider.shutdown(), what="provider shutdown after root exit")
 
             await _assert_exited(tree.identities)
             assert _ledger_lines(tmp_path, "kiro_pids.txt") == []
@@ -356,10 +400,10 @@ async def test_windows_direct_client_shutdown_reclaims_children_after_root_exit(
         client._pid, client._start_time, _ = tree.identities[0]
         await asyncio.to_thread(_register, client._pid)
         (tree.directory / "root-exit").touch()
-        assert await asyncio.wait_for(tree.process.wait(), 10) == 0
+        assert await _bounded(tree.process.wait(), what="root process exit") == 0
         assert all(_identity(*item)[2] is None for item in tree.identities[1:])
 
-        await asyncio.wait_for(client.shutdown(), 15)
+        await _bounded(client.shutdown(), what="client shutdown after root exit")
 
         await _assert_exited(tree.identities)
         assert client._process is None
@@ -403,8 +447,7 @@ async def test_windows_failed_owner_drain_recovers_after_owner_drop(tmp_path, mo
                 monkeypatch.setattr(
                     pc, "descendant_termination_handles", transient_discovery_failure
                 )
-                async with asyncio.timeout(15):
-                    await provider.shutdown()
+                await _bounded(provider.shutdown(), what="provider shutdown")
 
                 assert len(pc._PENDING_WINDOWS_TREE_CLEANUPS) == 1
                 pending = next(iter(pc._PENDING_WINDOWS_TREE_CLEANUPS.values()))
@@ -455,9 +498,9 @@ async def test_native_admission_and_owner_shutdown_refund_after_verified_drain(
                 owner = _attach_runtime(tree, tmp_path)
             await asyncio.to_thread(_register, tree.process.pid)
             if direct_client:
-                await asyncio.wait_for(owner.shutdown(), 15)
+                await _bounded(owner.shutdown(), what="owner shutdown")
             else:
-                await asyncio.wait_for(owner.kill(expected=True), 15)
+                await _bounded(owner.kill(expected=True), what="owner kill")
             # Product cleanup must finish BEFORE the independent fixture finalizer.
             await _assert_exited(tree.identities)
             assert not pc._WINDOWS_TREE_ADMISSIONS
@@ -629,7 +672,7 @@ async def test_repeated_cancel_during_pipe_setup_keeps_creation_pin(monkeypatch,
 
     task = asyncio.create_task(pc.create_windows_cleanup_owned_process(factory))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         task.cancel()
         await asyncio.sleep(0)
         task.cancel()
@@ -639,12 +682,12 @@ async def test_repeated_cancel_during_pipe_setup_keeps_creation_pin(monkeypatch,
         assert 987654 not in creation_kernel.closed
         release.set()
         with pytest.raises(PermissionError, match="termination denied"):
-            await asyncio.wait_for(task, 5)
+            await await_until(task)
         assert len(pc._PENDING_WINDOWS_TREE_CLEANUPS) == 1
         assert creation_kernel.alive == [True]
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await _bounded(asyncio.gather(task, return_exceptions=True), what="task cleanup")
     await asyncio.sleep(0)
     assert pc.retry_pending_windows_process_trees() == (123456,)
     assert not pc._WINDOWS_TREE_ADMISSIONS
@@ -672,7 +715,9 @@ async def test_owned_factory_does_not_intercept_untracked_native_spawns(tmp_path
                 subprocess.Popen,
                 loop._make_subprocess_transport.__func__,
             )
-            await asyncio.wait_for(pc.terminate_windows_asyncio_tree(tracked.process), 15)
+            await _bounded(
+                pc.terminate_windows_asyncio_tree(tracked.process), what="tree termination"
+            )
             await _assert_exited(tracked.identities)
             assert _identity(*other.identities[0])[2] is None
             assert not pc._WINDOWS_TREE_ADMISSIONS
@@ -696,17 +741,33 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
     scans, so it is a genuine member the drain must also finish. The ``True``
     case holds it alive deterministically: a helper attached to the child's
     console keeps the console host running after the child exits.
+
+    ``AttachConsole`` refuses a target that has not finished starting with
+    ``ERROR_INVALID_HANDLE`` (6), which the helper reports as ``0 6``, and
+    ``create_subprocess_exec`` returns as soon as the process object exists. So
+    the child announces itself from its own code, which runs only after its
+    console connection is made, and the helper starts on that announcement.
     """
 
     python = getattr(sys, "_base_executable", sys.executable)
     go, attached, release = tmp_path / "go", tmp_path / "attached", tmp_path / "release"
+    ready = tmp_path / "ready"
 
-    async def wait_for_file(path):
-        deadline = time.monotonic() + 15
-        while not path.exists():
-            assert time.monotonic() < deadline, f"fixture never wrote {path.name}"
-            await asyncio.sleep(0.02)
+    async def wait_for_file(path, writer=None):
+        def _ready():
+            if path.exists():
+                return True
+            if writer is not None and writer.returncode is not None:
+                raise AssertionError(
+                    f"fixture exited with {writer.returncode} before writing {path.name}"
+                )
+            return False
 
+        await async_wait_until(_ready, describe=lambda: f"fixture never wrote {path.name}")
+
+    # The child writes `ready` once it runs. The file's existence is the whole
+    # signal and nothing reads its content, so a plain write needs no
+    # stage-and-replace.
     process = await asyncio.create_subprocess_exec(
         python,
         "-I",
@@ -715,11 +776,13 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
         "-c",
         "import pathlib, sys, time\n"
         "go = pathlib.Path(sys.argv[1])\n"
+        "pathlib.Path(sys.argv[2]).write_text('1', encoding='utf-8')\n"
         "deadline = time.monotonic() + 30\n"
         "while not go.exists() and time.monotonic() < deadline:\n"
         "    time.sleep(0.01)\n"
         "raise SystemExit(259)",
         str(go),
+        str(ready),
         cwd=tmp_path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -734,16 +797,20 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
     state = None
     try:
         if console_host_outlives_child:
+            await wait_for_file(ready, process)
             helper = await asyncio.create_subprocess_exec(
                 python,
                 "-I",
                 "-S",
                 "-B",
                 "-c",
-                "import ctypes, pathlib, sys, time\n"
+                "import ctypes, os, pathlib, sys, time\n"
                 "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
                 "attached = kernel32.AttachConsole(int(sys.argv[1]))\n"
-                "pathlib.Path(sys.argv[2]).write_text(str(attached), encoding='utf-8')\n"
+                "error = 0 if attached else ctypes.get_last_error()\n"
+                "staged = pathlib.Path(sys.argv[2] + '.tmp')\n"
+                "staged.write_text(f'{attached} {error}', encoding='utf-8')\n"
+                "os.replace(staged, sys.argv[2])\n"
                 "release = pathlib.Path(sys.argv[3])\n"
                 "deadline = time.monotonic() + 30\n"
                 "while not release.exists() and time.monotonic() < deadline:\n"
@@ -757,20 +824,25 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
                 stderr=asyncio.subprocess.DEVNULL,
                 creationflags=pc.CREATE_NEW_PROCESS_GROUP | 0x00000008,  # DETACHED_PROCESS
             )
-            await wait_for_file(attached)
-            assert attached.read_text(encoding="utf-8") == "1", "helper did not attach"
+            await wait_for_file(attached, helper)
+            outcome = attached.read_text(encoding="utf-8")
+            assert outcome == "1 0", f"helper did not attach (result, error: {outcome})"
         go.touch()
-        assert await asyncio.wait_for(process.wait(), 15) == 259, "fixture chose another status"
+        assert (
+            await _bounded(process.wait(), what="process exit with 259") == 259
+        ), "fixture chose another status"
+
         # The kernel publishes the exit FILETIME just after the status, so read
         # within a bound rather than demanding the first observation carry it.
-        deadline = time.monotonic() + 10
-        while True:
-            observed = pc._windows_process_handle_identity(handle)
-            assert observed is not None and observed[0] == process.pid
-            if observed[2] is not None:
-                break
-            assert time.monotonic() < deadline, "an exit status of 259 reads back as running"
-            await asyncio.sleep(0.02)
+        def _exit_filetime_published():
+            obs = pc._windows_process_handle_identity(handle)
+            assert obs is not None and obs[0] == process.pid
+            return obs if obs[2] is not None else None
+
+        observed = await async_wait_until(
+            _exit_filetime_published,
+            describe=lambda: "an exit status of 259 reads back as running",
+        )
 
         # The harm at the seam that suffers it: this member must reach a terminal
         # scan, so the drain returns instead of raising with capacity held.
@@ -788,7 +860,7 @@ async def test_a_child_exiting_259_reads_as_exited_and_its_drain_finishes(
         release.touch()
         go.touch()
         if helper is not None:
-            await asyncio.wait_for(helper.wait(), 15)
+            await _bounded(helper.wait(), what="console-host helper to exit")
         for member in () if state is None else state.handles.values():
             if member != handle:
                 pc.close_process_handle(member)

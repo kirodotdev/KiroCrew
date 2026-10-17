@@ -16,13 +16,12 @@ export interface Slot {
    * records formed a cycle. A row can therefore cite a creator it cannot nest under,
    * which is the orphan the conductor lane marks with a muted prefix.
    *
-   * `hub_key` appears only on a PEER row (see `useInstanceSessions`): the hub stamps
-   * it when the creator is a peer slot this hub drives, and it names the LOCAL row
-   * that drives that creator. It is the one half of a citation that crosses origins
-   * on purpose -- resolved against local rows, so a worker a remote-executed lead
-   * opened on the peer nests under the lead's local row.
+   * `ancestor` is present and true when `key` names an open ANCESTOR rather than the
+   * creator in `slot` -- the creator closed and the lane nests the row under the
+   * nearest session above it that is still open. The row then wears the same
+   * closed-creator glyph an orphan does, one level in.
    */
-  parent?: { slot?: string; key?: string | null; hub_key?: string } | null
+  parent?: { slot?: string; key?: string | null; ancestor?: boolean } | null
   /** Present and true while the gateway's lineage projection is still seeding for the
    *  current store, which makes THIS frame's `parent` provisional rather than final.
    *  Absent on an ordinary frame, and absent when there is nothing to wait for (the
@@ -53,11 +52,14 @@ export interface Slot {
    *  peer row already carried. Preserving it across the bind is what makes the row
    *  the user clicked BECOME the session instead of a sibling appearing next to it.
    *
-   *  Absent on a peer row and on an older payload; `sessionRowIdentity` falls back
-   *  to `peer_id` + `key` for those. Never parse it to recover the local slot key —
-   *  read `key`. */
+   *  The server stamps it on peer rows too. Absent only on an older payload, where
+   *  `sessionRowIdentity` falls back to the bare `key`. Never parse it to recover
+   *  the local slot key — read `key`. */
   row_identity?: string
   peer_name?: string
+  /** A peer row's folder in the PEER's own tree (`InstanceSessionRow`); read
+   *  only by the crew group's spaces, never as a local `folder_id`. */
+  peer_folder_id?: string
   unread?: boolean
   // `pending_approval` rides on every ChatSlot payload; the sidebar reads it to
   // suppress the "your turn" dot and show the yellow "Needs approval" subtitle.
@@ -89,6 +91,8 @@ export interface Slot {
    *  and opens elsewhere. */
   surface?: string
   agent?: string
+  /** `member` when this is a crewmate's chat (wire `ChatSlot.agent_kind`). */
+  agent_kind?: 'member' | 'template' | ''
   // The agent that will actually answer, when it is NOT `agent`. The backend
   // stores `agent` verbatim — it is the user's intent, and rewriting it on disk
   // was destructive — and reports the divergence here instead. "" / absent means
@@ -122,6 +126,8 @@ export interface Slot {
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   folder_id?: string
   pinned?: boolean
+  /** The per-row mute (see ChatSlot.muted); drawn as a marker at rest. */
+  muted?: boolean
   tags?: string[]
   forked_from?: string | null
   source_links?: Array<{
@@ -174,6 +180,8 @@ export interface AgentInfo {
   /** Default session color (#rrggbb) for this agent, applied at render time to
    *  sessions created by it that carry no explicit per-session color. */
   session_color?: string
+  /** The roster namespace (`/api/agents/catalog`); `member` is a crewmate. */
+  selection_kind?: 'member' | 'template'
 }
 
 export type SessionFilterKey = 'unread' | 'running' | 'pinned' | 'recent'
@@ -200,8 +208,8 @@ export interface RevealBlockingFilter {
   hides: (slot: Slot) => boolean
   clear: (slot: Slot) => void
 }
-/** One sidebar filter dimension, declared exactly once (in the component's
- *  `filterDimensions` memo) and consumed by the three sites that must agree on
+/** One sidebar filter dimension, declared exactly once (in the row model's
+ *  `buildSidebarRows`, `./rows`) and consumed by the three sites that must agree on
  *  which filters exist: `filteredSlots` (which rows render at all),
  *  `listNarrowed` (is anything filtering right now), and
  *  `revealBlockingFilters` (does THIS row fail an active filter). Every field

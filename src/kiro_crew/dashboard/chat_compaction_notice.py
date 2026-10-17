@@ -15,9 +15,9 @@ Delivery reuses the two existing outbound paths rather than adding a third:
 * **every other channel** — the governed cross-surface ladder
   (``chat_runner._resolve_channel_target``), which vets the send against the
   ``channels`` governance scope, records a SEL decision for grant AND denial,
-  and checks ``supports_proactive_send`` before handing off to
-  ``Transport.send_message``. The target is the session's ``origin`` link,
-  recorded by the transport's inbound path.
+  and checks ``supports_proactive_send`` before handing the notice to the
+  shared unattended-egress leg (``messaging.egress``). The target is the
+  session's ``origin`` link, else its ``mirror`` link.
 
 Best-effort by construction: the compaction itself already succeeded and the
 session keeps running, so a failed or impossible delivery is logged and
@@ -30,6 +30,7 @@ import asyncio
 import logging
 from typing import Any
 
+from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import SLACK_NAMESPACE, channel_namespace_of
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import vet_and_audit
@@ -54,8 +55,8 @@ CHANNEL_COMPACT_NOTICE = (
     "summary; this conversation continues where it left off."
 )
 CHANNEL_COMPACT_WAITING_NOTICE = (
-    "Context reached {pct:.0f}% but auto-compact failed. The session is waiting for "
-    "its sub-agents to finish before it restarts; your messages are kept."
+    "Context reached {pct:.0f}%. The session is waiting for its sub-agents to "
+    "finish before it restarts; your messages are kept."
 )
 CHANNEL_COMPACT_FAILED_NOTICE = (
     "Context reached {pct:.0f}% but auto-compact failed. It retries after a "
@@ -276,8 +277,14 @@ async def _deliver_via_transport(
         return
     resolved, transport = target
     text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
+    # Outside the best-effort ``try``: ``redact_via_context`` re-raises an invalid
+    # governance ceiling (``PlatformCompositionError``), which this module never
+    # degrades, the same as the gate above. Only the send itself is best-effort.
+    parts = await channel_egress_parts(text, transport.capabilities)
     try:
-        await transport.send_message(resolved.channel_id, text, thread_id=resolved.thread_id)
+        await send_channel_parts(
+            transport, resolved.channel_id, parts, thread_id=resolved.thread_id
+        )
     except Exception:
         logger.debug(
             "compact notice: %s delivery failed for %s",

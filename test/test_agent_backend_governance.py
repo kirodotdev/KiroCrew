@@ -375,6 +375,194 @@ class TestNoSecondGate:
         abg.narrow_selectable_backends()
         assert acp_backends.resolve_selected_backend("claude") == FLOOR
 
+    def test_the_default_falls_back_to_the_kiro_floor_when_kas_is_denied(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas")
+        _install(_policy({"mode": "deny", "deny": ["kas"]}))
+        abg.narrow_selectable_backends()
+        assert acp_backends.resolve_selected_backend(None) == FLOOR
+
+    def test_only_an_absent_value_selects_kas(self, monkeypatch):
+        # H1/H3: KAS is the default for "no choice made", never the landing spot
+        # for a bad explicit value.
+        _registered(monkeypatch, FLOOR, "kas")
+        assert acp_backends.resolve_selected_backend(None) == "kas"
+        assert acp_backends.resolve_selected_backend("not-a-backend") == FLOOR
+        assert acp_backends.resolve_selected_backend(7) == FLOOR
+
+    def test_an_explicit_denied_kas_choice_takes_the_floor(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas")
+        _install(_policy({"mode": "deny", "deny": ["kas"]}))
+        abg.narrow_selectable_backends()
+        assert acp_backends.resolve_selected_backend("kas") == FLOOR
+
+    def test_a_host_unservable_explicit_choice_takes_the_floor(self, monkeypatch):
+        _registered(monkeypatch, FLOOR, "kas", "claude")
+        monkeypatch.setattr(acp_backends, "_host_unservable", {})
+        acp_backends.mark_backend_unservable("claude", "adapter missing")
+        assert acp_backends.resolve_selected_backend("claude") == FLOOR
+        # KAS is still servable, so an absent choice keeps its default.
+        assert acp_backends.resolve_selected_backend(None) == "kas"
+
+    def test_masked_config_reports_the_floor_when_policy_removes_kas(self, monkeypatch, tmp_path):
+        # Absent on disk + KAS denied: the dashboard must be told Kiro CLI, not KAS,
+        # and save() must still keep the key absent rather than store the floor.
+        import json
+        from unittest.mock import patch
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.handlers.core import _masked_config_dict
+
+        _registered(monkeypatch, FLOOR, "kas")
+        _install(_policy({"mode": "deny", "deny": ["kas"]}))
+        abg.narrow_selectable_backends()
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"agent": {}}), encoding="utf-8")
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+        ):
+            cfg = KiroCrewConfig.load()
+
+            assert cfg.agent.acp_backend == FLOOR
+            # The response speaks the config-file vocabulary: Kiro CLI is "kiro".
+            assert (
+                _masked_config_dict(cfg)["agent"]["acp_backend"] == acp_backends.STORED_BACKEND_KIRO
+            )
+            cfg.save()
+
+        assert "acp_backend" not in json.loads(cfg_file.read_text(encoding="utf-8"))["agent"]
+
+    def test_save_keeps_a_stored_choice_the_policy_denied(self, monkeypatch, tmp_path):
+        """A denied 'kas' resolves to the floor in memory and stays 'kas' on disk.
+
+        Writing the resolved floor back would turn a policy narrowing into a
+        permanent Kiro CLI choice the user never made, which survives the policy
+        being lifted.
+        """
+        import json
+        from unittest.mock import patch
+
+        cfg_file = tmp_path / "config.json"
+        stored = {"acp_backend": "kas", "member_acp_backend": "kas", "streaming": False}
+        cfg = self._load_with_kas_denied(monkeypatch, tmp_path, stored)
+        assert cfg.agent.acp_backend == FLOOR
+        assert cfg.agent.member_acp_backend == FLOOR
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+        ):
+            cfg.save()
+        agent = json.loads(cfg_file.read_text(encoding="utf-8"))["agent"]
+        assert agent["acp_backend"] == "kas"
+        assert agent["member_acp_backend"] == "kas"
+        assert agent["streaming"] is False
+
+    @staticmethod
+    def _load_with_kas_denied(monkeypatch, tmp_path, agent):
+        """Load *agent* as config.json from disk after a policy removed KAS."""
+        import json
+        from unittest.mock import patch
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        _registered(monkeypatch, FLOOR, "kas")
+        _install(_policy({"mode": "deny", "deny": ["kas"]}))
+        abg.narrow_selectable_backends()
+
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"agent": agent}), encoding="utf-8")
+        with (
+            patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
+            patch(
+                "kiro_crew.config.loader.config_local_path",
+                return_value=tmp_path / "config.local.json",
+            ),
+            patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+        ):
+            return KiroCrewConfig.load()
+
+    def test_an_absent_key_loads_the_floor_without_a_warning(self, monkeypatch, tmp_path, caplog):
+        # The load must hand the gate "no choice", not the field default: reading the
+        # default as an explicit 'kas' warns on every load about a value nobody wrote.
+        caplog.set_level("WARNING")
+        cfg = self._load_with_kas_denied(monkeypatch, tmp_path, {})
+        assert cfg.agent.acp_backend == FLOOR
+        assert cfg.agent.member_acp_backend == FLOOR
+        assert "Ignoring agent.acp_backend" not in caplog.text
+
+    @pytest.mark.parametrize("deny_kas", [True, False], ids=["kas-denied", "no-policy"])
+    @pytest.mark.parametrize("backend_key", ["acp_backend", "member_acp_backend"])
+    def test_no_config_files_load_a_selectable_default(
+        self, monkeypatch, tmp_path, caplog, deny_kas, backend_key
+    ):
+        from kiro_crew.config import loader as loader_mod
+
+        _registered(monkeypatch, FLOOR, acp_backends.ACP_BACKEND_KAS)
+        monkeypatch.setattr(loader_mod, "config_path", lambda: tmp_path / "config.json")
+        monkeypatch.setattr(loader_mod, "config_local_path", lambda: tmp_path / "config.local.json")
+        monkeypatch.setattr(loader_mod, "config_dir", lambda: tmp_path)
+        _install(_policy({"mode": "deny", "deny": ["kas"]}) if deny_kas else None)
+        abg.narrow_selectable_backends()
+        expected = FLOOR if deny_kas else acp_backends.DEFAULT_ACP_BACKEND
+        caplog.set_level("WARNING")
+
+        for _ in range(2):
+            cfg = loader_mod.KiroCrewConfig.load()
+            assert getattr(cfg.agent, backend_key) == expected
+        assert "Ignoring agent.acp_backend" not in caplog.text
+        assert not loader_mod.config_path().exists()
+        assert not loader_mod.config_local_path().exists()
+
+    def test_an_explicit_denied_kas_loads_the_floor_with_a_warning(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        caplog.set_level("WARNING")
+        cfg = self._load_with_kas_denied(monkeypatch, tmp_path, {"acp_backend": "kas"})
+        assert cfg.agent.acp_backend == FLOOR
+        assert "Ignoring agent.acp_backend 'kas'" in caplog.text
+
+    @staticmethod
+    def _boot_with_kas_denied(monkeypatch, *, declared):
+        """Run ``bootstrap_context`` on a cfg already resolved to KAS, then deny KAS."""
+        from kiro_crew.config import loader as loader_mod
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        _registered(monkeypatch, FLOOR, "kas")
+
+        def _narrow():
+            return sorted(acp_backends.apply_selectable_denials({"kas"}))
+
+        monkeypatch.setattr(abg, "narrow_selectable_backends", _narrow)
+        monkeypatch.setattr(loader_mod, "acp_backend_declared", lambda: declared)
+        cfg = loader_mod.KiroCrewConfig.load()
+        cfg.agent.acp_backend = "kas"
+        bootstrap_mod.bootstrap_context(cfg)
+        return cfg
+
+    def test_boot_reresolve_of_an_undeclared_default_does_not_warn(self, monkeypatch, caplog):
+        # Absent on disk, the load resolved the field to KAS. The boot re-resolve must
+        # treat it as absent: the floor, with no warning about a value nobody wrote.
+        caplog.set_level("WARNING")
+        cfg = self._boot_with_kas_denied(monkeypatch, declared=False)
+        assert cfg.agent.acp_backend == FLOOR
+        assert "Ignoring agent.acp_backend" not in caplog.text
+
+    def test_boot_reresolve_of_a_declared_denied_choice_warns(self, monkeypatch, caplog):
+        # An explicit KAS choice the policy denied still degrades with the reason (H3).
+        caplog.set_level("WARNING")
+        cfg = self._boot_with_kas_denied(monkeypatch, declared=True)
+        assert cfg.agent.acp_backend == FLOOR
+        assert "Ignoring agent.acp_backend 'kas'" in caplog.text
+
     def test_the_provider_factory_path_gained_no_governance_call(self):
         # H13 names create_provider_factory as a constrained site: the Kiro
         # construction path must gain no conditional in service of an adapter.

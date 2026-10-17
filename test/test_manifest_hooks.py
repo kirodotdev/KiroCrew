@@ -73,6 +73,8 @@ def _cron_entry() -> st.SearchStrategy[CronEntry]:
         skip_dates=st.lists(
             st.sampled_from(["2026-01-01", "2026-12-25", "2027-07-04"]), max_size=3
         ),
+        timeout=st.integers(min_value=0, max_value=86400),
+        timeout_secs=st.integers(min_value=0, max_value=86400),
     )
 
 
@@ -122,6 +124,8 @@ class TestManifestRoundTrip:
             assert rest.silent == orig.silent
             assert rest.timezone == orig.timezone
             assert rest.skip_dates == orig.skip_dates
+            assert rest.timeout == orig.timeout
+            assert rest.timeout_secs == orig.timeout_secs
 
     @settings(max_examples=50)
     @given(hooks=_hooks_config())
@@ -150,6 +154,8 @@ class TestManifestRoundTrip:
         assert restored.silent == cron.silent
         assert restored.timezone == cron.timezone
         assert restored.skip_dates == cron.skip_dates
+        assert restored.timeout == cron.timeout
+        assert restored.timeout_secs == cron.timeout_secs
 
     def test_to_dict_omits_empty_calendar_fields(self) -> None:
         """An entry that names no zone or skip dates serializes exactly as before.

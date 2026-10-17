@@ -36,6 +36,7 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
+from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -45,8 +46,11 @@ from kiro_crew.messaging.commands import (
     YOLO_PHRASING_MARKDOWN,
     compact_unsupported_backend,
     compact_unsupported_reply,
+    context_recycle_warning,
     format_ttl,
     parse_dashboard_ttl,
+    recycle_backend,
+    recycle_warning_should_send,
     run_yolo_command,
     stop_running_turn,
 )
@@ -94,7 +98,11 @@ from kiro_crew.safety_override import safety_override
 from kiro_crew.sel import sel
 from kiro_crew.start_priority import person_priority
 from kiro_crew.teams.approvals import TeamsApprovalDecider
-from kiro_crew.teams.attachments import append_attachment_context, process_teams_attachments
+from kiro_crew.teams.attachments import (
+    append_attachment_context,
+    file_attachments,
+    process_teams_attachments,
+)
 from kiro_crew.teams.cards import (
     DECISION_APPROVE,
     DECISION_DENY,
@@ -361,6 +369,9 @@ class TeamsDispatcher:
         # the reloaded allow-list at it.
         self.transport: "TeamsTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Per-person agent picked with /agent, keyed like _conv (the sender
+        # identity), because the agent is part of the session key.
+        self._agent_picks: ChannelAgentPicks[str] = ChannelAgentPicks()
         # Mid-turn queue receipts. Teams can edit a bot's own activity, so unlike
         # WeCom/Weixin (whose reply is bound to the inbound request) it can carry
         # the single collapsing receipt bubble the shared module implements.
@@ -467,6 +478,11 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         text = inbound.text
         native_session_key = self._session_key(email)
+        # The files this message carries, by the ingest's own classification. Every
+        # "does it carry a file?" decision below reads this, never the raw list:
+        # Teams attaches a ``text/html`` echo of the body to every rich-text
+        # message, so the raw list is non-empty for an ordinary typed ``/help``.
+        files = file_attachments(inbound.attachments)
 
         async def _refused_turn_restricted() -> bool:
             return await refused_resume_is_restricted(
@@ -480,7 +496,7 @@ class TeamsDispatcher:
             text=inbound.text,
             user_id=email,
             message_id=inbound.activity_id,
-            attachments_dropped=len(inbound.attachments),
+            attachments_dropped=len(files),
         )
         if not await admit_inbound_callback(
             self.sessions,
@@ -503,12 +519,12 @@ class TeamsDispatcher:
             return
 
         override_mode: str | None = None
-        # An attachment-bearing message is never a command. Teams puts the caption
-        # in ``text``, so "/stop here is the log" would otherwise cancel the turn AND
+        # A FILE-bearing message is never a command. Teams puts the caption in
+        # ``text``, so "/stop here is the log" would otherwise cancel the turn AND
         # discard the file; and a caption is prose the user wrote about the upload,
         # not an instruction to this dispatcher. Discord and Telegram draw the line
-        # in the same place.
-        cmd = parse_command(text) if (interpret_commands and not inbound.attachments) else None
+        # in the same place. The body echo is not a file (see ``files`` above).
+        cmd = parse_command(text) if (interpret_commands and not files) else None
         # Resume routing runs BEFORE the intercept, and its answer is used by the
         # commands below. `/compact` and `/stop` act on the RESOLVED session, so after a
         # binding was destroyed they would compact or cancel the native Teams session
@@ -525,7 +541,7 @@ class TeamsDispatcher:
                 if await self._reply(inbound, route.refusal):
                     await self._session_resume.settle(inbound.conversation_id, route)
                 return
-        if interpret_commands and not inbound.attachments:
+        if interpret_commands and not files:
             # ── Command intercept (no LLM session needed) ──
             if cmd == "sessions":
                 await self._session_resume.show_picker(
@@ -552,6 +568,9 @@ class TeamsDispatcher:
                 return
             if cmd == "yolo":
                 await self._handle_yolo(inbound, command_argument(text))
+                return
+            if cmd == "agent":
+                await self._handle_agent(inbound, email, text, route.resumed_key)
                 return
             if cmd == "link":
                 await self._handle_link(inbound)
@@ -690,7 +709,9 @@ class TeamsDispatcher:
         # Decided ONCE, upstream, and not re-resolved: re-reading the binding here would
         # let it change between the decision and its use.
         session_key = resumed_key or self._session_key(email)
-        agent = self._resolve_agent()
+        # A resumed session keeps the agent it ran before; a pick is this
+        # conversation's own.
+        agent = self._resolve_agent(None if resumed_key else email)
         session_restricted = await self._session_restricted(session_key)
 
         # Adaptive Card approvals: the decider awaits the click and denies by
@@ -841,7 +862,9 @@ class TeamsDispatcher:
             session_key,
             text,
             mode=mode,
-            has_attachments=bool(inbound.attachments),
+            # Files only: the body echo must not refuse a plain message as one whose
+            # attachments cannot wait in a dashboard queue.
+            has_attachments=bool(file_attachments(inbound.attachments)),
             # Where a drop notice goes if the drain later refuses a queued entry,
             # and the principal the outbound recipient check needs: this user was
             # authorized against the allow-list on inbound, and a dashboard slot's
@@ -917,11 +940,12 @@ class TeamsDispatcher:
             await (rerun() if rerun is not None else self.handle_message(inbound))
             return
         mode = override_mode or self._live_cfg().messaging.queue_mode
-        # An attachment-bearing message is never steered: a steer carries TEXT into
-        # the running turn, so the files would be dropped on the floor while the
-        # user is told their message was folded in. Queue it instead -- the drained
-        # turn ingests the descriptors and the picture actually arrives.
-        if mode != "queue" and not inbound.attachments:
+        # A FILE-bearing message is never steered: a steer carries TEXT into the
+        # running turn, so the files would be dropped on the floor while the user
+        # is told their message was folded in. Queue it instead -- the drained turn
+        # ingests the descriptors and the picture actually arrives. Same
+        # classification as the command gate: the body echo is not a file.
+        if mode != "queue" and not file_attachments(inbound.attachments):
             provider = self.sessions.get_provider(session_key)
             steer = getattr(provider, "steer", None)
             # Only steer a GENUINELY live turn. ``is_busy`` stays true through
@@ -1146,13 +1170,14 @@ class TeamsDispatcher:
         async with self._queue.lock:
             # The RAW attachment descriptors ride with the entry, not downloaded
             # bytes: the drained turn re-ingests them, so a queued picture is fetched
-            # once, when there is finally a turn to read it.
+            # once, when there is finally a turn to read it. Files only: the body echo
+            # is not re-ingested and does not count against the collapse cap.
             if not self.sessions.enqueue(
                 session_key,
                 str(time.time()),
                 text,
                 force=False,
-                attachments=list(inbound.attachments or []),
+                attachments=file_attachments(inbound.attachments),
                 # The sender and their chat ride with the entry too, because the
                 # drain replays it and the reply reaches whoever the replayed
                 # envelope names. Under ``dm_scope = "unified"`` two allow-listed
@@ -1586,8 +1611,38 @@ class TeamsDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, identity: str | None = None) -> str:
+        """The agent *identity*'s conversation runs: its ``/agent`` pick, else the default."""
+        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        return self._agent_picks.resolve(identity, configured)
+
+    async def _handle_agent(
+        self, inbound: "TeamsInbound", email: str, text: str, resumed_key: str | None
+    ) -> None:
+        """Show the agent, or switch it with ``/agent <name>``.
+
+        Refused while this conversation continues a dashboard session: that
+        session's agent is the dashboard's to change.
+        """
+        if resumed_key is not None:
+            await self._reply(
+                inbound,
+                "ℹ️ This conversation continues a dashboard session, so its agent "
+                "is changed from the dashboard. Send `/new` to start one here.",
+            )
+            return
+        await self._reply(
+            inbound,
+            await handle_channel_agent_command(
+                self._agent_picks,
+                email,
+                command_argument(text),
+                conv=self._conv,
+                configured=self._resolve_agent(),
+                sessions=self.sessions,
+                session_key=lambda: self._session_key(email),
+            ),
+        )
 
     @staticmethod
     def _identity(inbound: "TeamsInbound") -> str:
@@ -1625,7 +1680,7 @@ class TeamsDispatcher:
         gen = self._conv.current_gen(email)
         return build_dm_session_key(
             "teams",
-            self._resolve_agent(),
+            self._resolve_agent(email),
             email,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -1635,7 +1690,7 @@ class TeamsDispatcher:
         return seed_generation(
             self.sessions,
             channel="teams",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(email),
             user_id=email,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )
@@ -1681,6 +1736,12 @@ class TeamsDispatcher:
         email = self._identity(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
         soft, hard = self._thresholds()
+        if recycle_backend(provider):
+            # Crew restarts this backend's session at the threshold; warn once
+            # before it, offering a fresh start instead of a compaction.
+            if recycle_warning_should_send(self.sessions, self._conv, email, session_key, pct):
+                await self._reply(inbound, context_recycle_warning("`/new`"))
+            return
         if pct >= soft:
             # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts

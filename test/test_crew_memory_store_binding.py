@@ -414,17 +414,16 @@ class TestTheCliRefusesAMalformedBinding:
 
 
 class TestWhyAMalformedBindingHadToBeRefused:
-    def test_a_non_string_binding_breaks_the_command_that_would_show_it(
-        self, tmp_path: Path
+    def test_a_non_string_binding_is_shown_not_repaired(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """``kirocrew agent list`` formats the field through a width spec.
+        """``kirocrew agent list`` shows the malformed binding; the loader keeps it.
 
-        Characterizes the state the write guard now prevents rather than any
-        behaviour of the guard: a hand-edited ``config.json`` can still reach it,
-        and this is what it costs — the listing raises, so the operator cannot see
-        the binding that is wrong. Nothing sanitizes it on the read side, and
-        nothing should: repairing a name is what would merge two crews' memory
-        into one directory.
+        A hand-edited ``config.json`` can still reach this state. The listing
+        prints ``(invalid: NoneType)`` so the operator can see the binding that
+        is wrong, where a width spec would raise on it. Nothing sanitizes the
+        value on the read side, and nothing should: repairing a name is what
+        would merge two crews' memory into one directory.
         """
         payload = json.loads(_cli_config(tmp_path).read_text(encoding="utf-8"))
         payload["agents"]["default"]["memory_store"] = None
@@ -434,6 +433,7 @@ class TestWhyAMalformedBindingHadToBeRefused:
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("sys.argv", ["kirocrew", "agent", "list"]),
-            pytest.raises(TypeError),
         ):
             main()
+            assert KiroCrewConfig.load().agents["default"].memory_store is None
+        assert "(invalid: NoneType)" in capsys.readouterr().out

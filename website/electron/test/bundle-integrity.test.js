@@ -10,6 +10,8 @@ const {
   describeIncompleteBundle,
   nextInstallingDialogState,
   INSTALLING_DIALOG_TITLE,
+  PRUNED_BACKEND_MESSAGE,
+  PRUNED_DIALOG_TITLE,
   shouldReclassifyAsInstalling,
 } = require("../bundle-integrity");
 
@@ -625,5 +627,36 @@ describe("nextInstallingDialogState", () => {
       assert.match(state.message, /starts on its own/i);
       assert.ok(!/Wait, then retry/.test(state.message), `manual voice leaked: ${state.message}`);
     }
+  });
+
+  // After a stale-bundle incident the backend tree was removed, not half
+  // written: the copy leads with quit-and-reopen and promises no install.
+  it("names the removed backend and leads with quit and reopen when pruned", () => {
+    for (const unknown of [null, undefined]) {
+      const state = nextInstallingDialogState(unknown, { pruned: true });
+      assert.equal(state.complete, false);
+      assert.equal(state.title, PRUNED_DIALOG_TITLE);
+      assert.equal(state.message, PRUNED_BACKEND_MESSAGE);
+      assert.match(state.message, /^Some of Kiro Crew's app files were removed/);
+      assert.ok(!/backend|Quit button below/.test(state.message), `developer wording leaked: ${state.message}`);
+      assert.ok(!/backend/.test(state.title), `developer wording leaked: ${state.title}`);
+      assert.ok(
+        state.message.indexOf("Quit and reopen") < state.message.indexOf("reinstall"),
+        "quit and reopen comes before reinstall",
+      );
+      assert.ok(!/being installed|five minutes|few minutes/.test(state.message), `install wait leaked: ${state.message}`);
+      assert.ok(!/starts on its own|wait/i.test(state.message), `a second, waiting option leaked: ${state.message}`);
+      assert.match(state.message, /If it still doesn't start after reopening, reinstall Kiro Crew the same way you installed it; your chats and settings are kept\./);
+    }
+  });
+
+  // A pruned tree keeps the pruned copy while parts arrive; only a complete
+  // tree paints the ordinary completion frame.
+  it("keeps the pruned copy until the tree is complete", () => {
+    const partial = nextInstallingDialogState(["a", "b"], { pruned: true });
+    assert.equal(partial.complete, false);
+    assert.equal(partial.title, PRUNED_DIALOG_TITLE);
+    assert.equal(partial.message, PRUNED_BACKEND_MESSAGE);
+    assert.deepEqual(nextInstallingDialogState([], { pruned: true }), nextInstallingDialogState([]));
   });
 });

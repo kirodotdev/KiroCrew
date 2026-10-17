@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.acp.types import STOP_REASON_END_TURN
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.context import ui_language_tag
 from kiro_crew.dashboard.chat_utils import (
     apply_pending_slot_memory_mode,
     effective_session_key,
@@ -52,6 +53,10 @@ logger = logging.getLogger(__name__)
 # Role used to pick the model. Summarization is unattended background work, so
 # it must not ride the interactive chat flagship on every turn.
 _SUMMARY_ROLE = "background"
+#: Bound on one summary call. Longer than the 30 s of the title and link-label
+#: calls because the prompt carries the bounded transcript; the same 60 s as the
+#: suggestions and cron contradiction one-liners.
+_SUMMARY_TIMEOUT_SECS = 60.0
 
 _PROMPT = """\
 Summarize this chat session by INTENT, for a panel whose only job is to make \
@@ -138,9 +143,37 @@ early may have changed by the end. Prefer the latest statement.
 9. The session's own title covers only its beginning and is often wrong about \
 the whole. Do not anchor on it.
 
-TRANSCRIPT
+{language}TRANSCRIPT
 
 """
+
+# Filled into the ``{language}`` slot of ``_PROMPT`` when the workspace has an
+# explicit UI language. The panel's headings and labels are rendered in that
+# language, so the summary text beside them follows the configured tag and not the
+# language of the transcript (``chat_title._TITLE_LANGUAGE_TEMPLATE``). The prompt
+# carries literal JSON braces and is joined to the transcript, so the slot is
+# filled with ``str.replace`` on the constant alone: a transcript that quotes
+# ``{language}`` is appended afterwards and cannot restate it. The JSON keys and the
+# ``status`` values are what ``normalize_payload`` reads, so they are never
+# translated.
+_LANGUAGE_TEMPLATE = (
+    'LANGUAGE: Write every free-text value ("title", "initial_intent", "progress", the '
+    '"what", "why" and "expect" of each next step, and "constraints") in the language '
+    "of BCP-47 tag {lang}. That is the language the panel around the summary is "
+    "rendered in, so the text must be in it even when the transcript is in another "
+    'language. The JSON keys and the "status" values stay exactly as written above. '
+    "Keep code, identifiers, paths and product names verbatim.\n\n"
+)
+
+
+def _build_prompt(transcript: str, ui_language: str) -> str:
+    """Render the summary prompt for ``transcript`` in ``ui_language``.
+
+    ``ui_language`` is a validated tag from ``context.ui_language_tag``; ``""``
+    omits the language line, leaving the prompt byte-identical to the unset case.
+    """
+    language = _LANGUAGE_TEMPLATE.format(lang=ui_language) if ui_language else ""
+    return _PROMPT.replace("{language}", language) + transcript
 
 
 def _should_summarize(
@@ -408,13 +441,14 @@ async def _generate_locked(
         slot._summary_turn_mark = user_turns
         return False
 
-    prompt = _PROMPT + render_bounded_input(turns)
+    prompt = _build_prompt(render_bounded_input(turns), ui_language_tag(cfg))
     model = cfg.agent.resolve_model(_SUMMARY_ROLE)
     text = await run_bg_oneliner(
         state.sessions,
         prompt,
         model=model,
         sel_source="session_summary",
+        timeout=_SUMMARY_TIMEOUT_SECS,
         # Charged to the session being summarized, not to the shared background
         # session that ran the call. ``effective_session_key`` rather than the
         # transcript key above: this addresses the SESSION, and a channel-born

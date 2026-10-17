@@ -135,7 +135,9 @@ accept a `script`, so a replacement job has to be created and the original retir
 Do it in THIS order, because the obvious order leaves both jobs running and a job
 with side effects then does its work twice:
 
-1. Write the script to a file under `~/.kiro/crew/crons/`.
+1. Write the script to a file under the `crons/` directory of the data home
+   (`~/.kiro/crew/crons/` by default, `$KIROCREW_HOME/crons/` when that is set).
+   A script anywhere else is refused at registration.
 2. Dry-run it with `kirocrew cron preview` before it is registered anywhere.
 3. **Pause the original** with `cron_pause`. Do this BEFORE creating the
    replacement, not after. Pausing first means there is never a moment when both
@@ -146,8 +148,10 @@ with side effects then does its work twice:
    since a zero-token job has no conversation worth keeping and usually nothing
    worth posting.
 5. Verify the replacement actually works, with `cron_trigger` on the new job id.
-   The script gate can refuse a body at registration time, and a script that
-   registers can still fail on its first real run.
+   `cron_trigger` only starts the run and answers "executing now"; that reply is
+   not the result. Wait, then read the new job with `cron_list` `ids` and check its
+   last status and result. The script gate can refuse a body at registration
+   time, and a script that registers can still fail on its first real run.
 6. Only then remove the original with `cron_remove`. Tell the user this step
    happened, and name the id you removed.
 
@@ -160,7 +164,7 @@ Four rules the script gate enforces, so write to them from the start:
 1. A cron script reads its arguments as `ctx.message`, delivers with `ctx.notify()`, and controls the job by raising `Skip()` to retry quietly, `Done(msg)` to deliver and remove the job, or `Report(msg)` to deliver and keep it.
 2. The script body is scanned before it is stored. Never spell a credential directory name or a protected secret environment variable name anywhere in the file, including inside comments and docstrings, because the scan is a plain regex over the source text and a mention in a comment is refused the same as a real read.
 3. Do not reach a third-party host over plain HTTP from the script. Use the tool surface instead.
-4. Prefer a `script` over a `command`. The command gate refuses substitution, brace expansion, positional parameters, loop keywords and unresolved variables, so anything with real logic in it belongs in a script whose body is scanned in full.
+4. Prefer a `script` over a `command`. The command gate refuses substitution, brace expansion, positional parameters, loop keywords and variable references other than `$HOME`, so anything with real logic in it belongs in a script whose body is scanned in full.
 
 ## Reporting back
 

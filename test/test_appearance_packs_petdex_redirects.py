@@ -70,5 +70,33 @@ class TestRedirectsStayPinned:
         # then calling the module-level `urlopen` anyway would leave the hole open
         # while every test above still passed.
         src = inspect.getsource(pack_transfer._get)  # noqa: SLF001
-        assert "_OPENER.open(" in src
+        assert "_opener().open(" in src
         assert "urllib.request.urlopen(" not in src
+
+    def test_every_fetch_shares_one_pinned_opener(self):
+        first = pack_transfer._opener()  # noqa: SLF001
+        assert pack_transfer._opener() is first  # noqa: SLF001
+        pinned = pack_transfer._PinnedRedirects  # noqa: SLF001
+        assert any(isinstance(h, pinned) for h in first.handlers)
+
+    def test_importing_the_dashboard_modules_does_not_build_the_opener(self):
+        """Proved in a fresh interpreter: the dashboard route table imports
+        these modules before the socket binds, so the opener waits for a fetch."""
+        import subprocess
+        import sys
+
+        code = (
+            "import kiro_crew.dashboard.appearances\n"
+            "import kiro_crew.dashboard.handlers.appearances\n"
+            "from kiro_crew.appearance_packs import transfer\n"
+            "print(transfer._shared_opener is None)\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-B", "-c", code],  # -B: no __pycache__ in the checkout
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=True,
+        )
+        assert out.stdout.strip() == "True", out.stdout

@@ -49,13 +49,21 @@ describe('ICON_ACTION_ROW_CLS (icon-only footers)', () => {
     expect(ICON_ACTION_ROW_CLS).toContain('[&_button]:w-7')
     expect(ICON_ACTION_ROW_CLS).toContain('[&_button]:p-0')
     expect(ICON_ACTION_ROW_CLS).toContain('[&_button:hover]:bg-bg-hover')
-    expect(ICON_ACTION_ROW_CLS).toContain('[&>button:first-child]:-ms-[7px]')
     expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:opacity-100')
     expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:flex-wrap')
     expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&_button]:h-8')
     expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&_button]:w-9')
-    expect(ICON_ACTION_ROW_CLS).toContain('[@media(hover:none)]:[&>button:first-child]:-ms-2.5')
     expect(ICON_ACTION_ROW_CLS).not.toContain('[&_button]:p-3')
+  })
+
+  // The rows live inside the transcript's overflow-hidden `.chat-message-body`,
+  // which clips at its padding edge: a leading cell pulled past the column
+  // start (`[&>button:first-child]:-ms-[7px]`, `-ms-2.5` on touch) lost that
+  // much of its hover paint and showed a flat start edge. The leading cell
+  // starts on the column; no variant of the constant may pull it back out.
+  it('never pulls the leading cell start-side of its clipping column', () => {
+    expect(ICON_ACTION_ROW_CLS).not.toMatch(/first-child\]:-m/)
+    expect(ICON_ACTION_ROW_CLS).not.toMatch(/(^|\s)-m[slx]-/)
   })
 })
 

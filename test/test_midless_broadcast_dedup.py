@@ -92,8 +92,8 @@ class TestAppendAndSurface:
         assert state.chat_frames() == []
         assert delivered == []
 
-    def test_extra_fields_ride_the_reader_frame(self) -> None:
-        """extra= (e.g. kind=compaction) lands on the manual frame only."""
+    def test_route_kind_rides_meta_on_the_reader_frame(self) -> None:
+        """A route kind travels in meta, so both doors carry it the same way."""
         state = _StateStub()
         slot, _ = _slot_with_callback()
         slot._has_reader_flag = True
@@ -104,12 +104,51 @@ class TestAppendAndSurface:
             "compacted",
             "msg msg-a",
             meta={"kind": "compaction"},
-            extra={"kind": "compaction"},  # type: ignore[arg-type]
         )
         frame = state.chat_frames()[0]
-        assert frame["kind"] == "compaction"
+        assert "kind" not in frame  # no top-level field the other door lacks
         assert frame["meta"]["kind"] == "compaction"
         assert frame["meta"]["mid"] == row_mid(msg)  # mid minted alongside caller meta
+
+    def test_no_extra_parameter(self) -> None:
+        """The helper takes no free-form frame fields; meta is the one channel."""
+        import inspect
+
+        assert "extra" not in inspect.signature(append_and_surface).parameters
+
+    def test_reader_frame_matches_append_door_frame(self) -> None:
+        """The reader-suppressed frame is the same frame the append door sends.
+
+        The append door (``_on_message`` -> ``_broadcast_chat_message``) runs the
+        display pass on non-user content; the reader-suppressed frame must run
+        the same pass, so the row reads the same whether or not a stream reader
+        is attached.
+        """
+        content = "token ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        state = _StateStub()
+        slot, _ = _slot_with_callback()
+        slot._has_reader_flag = True
+        msg = append_and_surface(state, slot, "assistant", content, "msg msg-a")  # type: ignore[arg-type]
+        frame = state.chat_frames()[0]
+        assert "ghp_" not in frame["content"]
+
+        from kiro_crew.dashboard.state import chat_message_frame, chat_message_note
+
+        expected = chat_message_frame(
+            chat_message_note(slot.key, msg, workspace=None), include_metadata=True
+        )
+        assert frame == expected
+
+    def test_reader_frame_keeps_user_content_as_typed(self) -> None:
+        """User rows stay as typed on the reader frame, as on the append door."""
+        state = _StateStub()
+        slot, _ = _slot_with_callback()
+        slot._has_reader_flag = True
+        content = "my note ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+        append_and_surface(
+            state, slot, "user", content, "msg msg-u", broadcast_user=True  # type: ignore[arg-type]
+        )
+        assert state.chat_frames()[0]["content"] == content
 
 
 class TestConvertedSites:

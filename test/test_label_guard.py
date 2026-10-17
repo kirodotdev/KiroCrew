@@ -65,6 +65,47 @@ def test_sentence_shape_signals_can_be_switched_off():
     assert looks_like_prose(" ".join(["w"] * 13), sentence_shape=False)
 
 
+def test_a_terminated_sentence_is_prose_in_any_script():
+    """The language-neutral refusal shape: a final terminator of any script
+    plus a comma or four words. Mutation: drop the ``ends_like_sentence``
+    call in ``looks_like_prose`` -- red on every row."""
+    for reply in (
+        "No puedo acceder a ese enlace.",
+        "Ich kann diesen Link nicht öffnen!",
+        "मैं इस लिंक को नहीं खोल सकता।",
+        "لا يمكنني فتح هذا الرابط؟",
+        "申し訳ありませんが、リンクを開けません。",
+        "抱歉，我无法打开链接。",
+    ):
+        assert label_guard.ends_like_sentence(reply), reply
+        assert looks_like_prose(reply), reply
+
+
+def test_a_short_name_is_not_a_sentence_in_any_script():
+    """No terminator, or a terminator on three words with no comma, is a name.
+    Mutation: lower ``SENTENCE_MIN_WORDS`` to 3 -- red on the stray-period
+    rows."""
+    for reply in (
+        "Piano di aggiornamento Node",
+        "Обновление версии Node",
+        "إصلاح خطأ تسجيل الدخول",
+        "লগইন বাগ সংশোধন",
+        "修复会话标题语言",
+        "Fix login bug.",
+        "लॉगिन बग सुधार।",
+        "修复会话标题语言。",
+        "Node.js upgrade plan",
+    ):
+        assert not label_guard.ends_like_sentence(reply), reply
+        assert not looks_like_prose(reply), reply
+
+
+def test_the_sentence_end_is_off_with_the_other_sentence_shape_signals():
+    """The session summary is a sentence by contract and runs with
+    ``sentence_shape=False``; the end-of-sentence rule must not fire there."""
+    assert not looks_like_prose("User tunes redis and adds a retry.", sentence_shape=False)
+
+
 def test_verdict_with_reason_versus_title_opening_with_the_word():
     assert is_verdict_reply("SKIP - too vague", ("SKIP",))
     assert is_verdict_reply("skip: greetings only", ("SKIP",))

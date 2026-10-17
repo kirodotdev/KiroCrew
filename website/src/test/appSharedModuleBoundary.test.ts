@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import * as reactQuery from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
+import { vendorImportMap } from '../../scripts/lib/basePath.mjs'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
 
@@ -31,10 +32,24 @@ function stubExports(source: string): string[] {
 // the host lookup and binding identities without Vite rewriting the vendor module.
 function loadStub(source: string, key: string, host: object): Record<string, unknown> {
   const names = stubExports(source)
-  return runInNewContext(`${source.replace(/export const/g, 'const')}\n;({${names.join(',')}})`, {
+  const body = source.replace(/export const/g, 'const').replace(/export default/g, 'const __default =')
+  const tail = /export default/.test(source) ? `${names.join(',')},default:__default` : names.join(',')
+  return runInNewContext(`${body}\n;({${tail}})`, {
     window: { __kirocrew_modules: { [key]: host } },
   })
 }
+
+// ESM resolves named imports at link time, so a name a stub omits fails the importing
+// app module before any of its code runs. Each React stub must name every runtime export
+// of the package its specifier stands for, and serve a default when the package has one.
+const REACT_STUBS = [
+  // [stub file, package specifier, host registry key, names the stub may add]
+  ['react.mjs', 'react', 'react', []],
+  ['react-dom.mjs', 'react-dom', 'react-dom', []],
+  ['react-dom-client.mjs', 'react-dom/client', 'react-dom', []],
+  // jsxDEV lives in react/jsx-dev-runtime; kept so an app that already imports it still links.
+  ['react-jsx-runtime.mjs', 'react/jsx-runtime', 'react/jsx-runtime', ['jsxDEV']],
+] as const
 
 describe('app shared-module boundaries', () => {
   it('exports exactly the UI barrel values, without phantom or missing components', () => {
@@ -48,12 +63,12 @@ describe('app shared-module boundaries', () => {
   })
 
   it('maps the documented UI specifier and React Query to checked-in vendor stubs', () => {
-    const config = read('../../vite.config.ts')
+    const { imports } = vendorImportMap('/')
     for (const [specifier, filename] of [
       ['@kirocrew/app-sdk/ui', 'kirocrew-ui.mjs'],
       ['@tanstack/react-query', 'tanstack-react-query.mjs'],
     ]) {
-      expect(config).toContain(`'${specifier}': '/vendor/${filename}'`)
+      expect(imports[specifier]).toBe(`/vendor/${filename}`)
       expect(read(`../../public/vendor/${filename}`)).toContain('window.__kirocrew_modules')
     }
   })
@@ -63,6 +78,23 @@ describe('app shared-module boundaries', () => {
     expect(stubExports(source)).toEqual(Object.keys(reactQuery).sort())
     const exported = loadStub(source, '@tanstack/react-query', reactQuery)
     for (const [name, value] of Object.entries(reactQuery)) expect(exported[name]).toBe(value)
+  })
+
+  it.each(REACT_STUBS)('%s names every runtime export of %s', async (file, specifier, key, extras) => {
+    const source = read(`../../public/vendor/${file}`)
+    const pkg = await import(/* @vite-ignore */ specifier) as Record<string, unknown>
+    // Node 24 adds a 'module.exports' key to a CommonJS namespace; it is not a binding
+    // an app imports by name, and the browser host namespace does not carry it.
+    const real = Object.keys(pkg).filter(name => name !== 'default' && name !== 'module.exports').sort()
+    expect(real.length).toBeGreaterThan(0)
+    expect(stubExports(source)).toEqual([...real, ...extras].sort())
+    expect(vendorImportMap('/').imports[specifier]).toBe(`/vendor/${file}`)
+    if ('default' in pkg) expect(source).toMatch(/^export default /m)
+    // The host registers the package's own namespace under `key`; every stub name
+    // must read that host value, not a copy.
+    const host: Record<string, unknown> = Object.fromEntries([...real, ...extras].map(name => [name, { name }]))
+    const exported = loadStub(source, key, host)
+    for (const name of real) expect(exported[name]).toBe(host[name])
   })
 
   it('fails clearly if the host query registry has not initialized', () => {

@@ -37,8 +37,12 @@ function bannerRelayStrings() {
  * default renders everything, which is what every surface without a card does.
  * The message itself is always delivered either way — the card reads its approval
  * URL out of it.
+ *
+ * `handOff` is the list's hand-off switch (`ctx.handOff`): `false` drops the
+ * "Ask the agent" button from the failed state, for a host whose unsaved local
+ * state the hand-off's navigation would drop. Default `true`.
  */
-export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): ReactNode {
+export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, handOff = true): ReactNode {
   if (hideCardOwned && m.meta?.card_owned) return null
   const serverName = (m.meta?.server_name as string) || ''
   const oauthUrl = (m.meta?.oauth_url as string) || ''
@@ -62,6 +66,7 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false): Re
       superseded={superseded}
       expired={expired}
       error={error}
+      askAgent={handOff}
     />
   )
 }
@@ -74,6 +79,7 @@ export default function McpOAuthBanner({
   superseded,
   expired,
   error,
+  askAgent = true,
 }: {
   serverName: string
   oauthUrl: string
@@ -82,6 +88,8 @@ export default function McpOAuthBanner({
   superseded?: boolean
   expired?: boolean
   error?: string
+  /** Offer the "Ask the agent" hand-off on the failed state. */
+  askAgent?: boolean
 }) {
   const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
   // Probe-confirmed grant when `meta.completed` never arrived (gateway hiccup):
@@ -91,15 +99,16 @@ export default function McpOAuthBanner({
 
   if (failed) {
     // A failed OAuth exchange is a backend error the agent can diagnose, so it
-    // takes the shared notice with the hand-off on. This is a transcript row,
-    // but the composer draft is persisted per slot and an in-chat hand-off opens
-    // a fresh slot without navigating away, so nothing here is at risk. The
-    // server name is the bold lead; the sentence stays the journal key.
+    // takes the shared notice with the hand-off on. On the chat page the hand-off
+    // opens a fresh slot without navigating away, so nothing is at risk there.
+    // A host holding state the hand-off's navigation would drop (ChatEmbed,
+    // ChatPane) turns it off through `askAgent`. The server name is the bold
+    // lead; the sentence stays the journal key.
     return (
       <ErrorNotice
         title={label}
         message={`${i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}${error ? `: ${error}` : '.'}`}
-        askAgent
+        askAgent={askAgent}
       />
     )
   }

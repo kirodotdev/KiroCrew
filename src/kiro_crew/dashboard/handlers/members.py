@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import web
@@ -32,6 +33,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     load_config_with_content_stamp,
 )
+from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
@@ -448,6 +450,17 @@ async def api_members(request: web.Request) -> web.Response:
                 "memory_version": version,
                 "memory_owner": _roster_mask(owner),
                 "model": _roster_mask(agent_cfg.model),
+                # The profile card's own settings. The effort is free text like
+                # the model; the approval mode is load-time coerced to a fixed
+                # vocabulary ("" = never chosen, which opens the thread in trust).
+                "reasoning_effort": _roster_mask(agent_cfg.reasoning_effort),
+                "approval_mode": agent_cfg.approval_mode,
+                # The dispatched-worker pair, the profile card's other two
+                # pickers: what `session_create` pins on a child this crewmate
+                # opens without naming a model or effort. Masked like the
+                # crewmate's own model; the effort is load-time coerced.
+                "worker_model": _roster_mask(agent_cfg.worker_model),
+                "worker_reasoning_effort": agent_cfg.worker_reasoning_effort,
                 # Presentation-only, but `_safe_avatar` pins only the SHAPE:
                 # its `traits` and `expressions` values are free text, so the
                 # avatar is masked leaf-by-leaf (`_roster_avatar`) rather than
@@ -622,6 +635,7 @@ async def api_members(request: web.Request) -> web.Response:
 
     observed_rosters = await asyncio.to_thread(_observe_rosters)
     tails = await asyncio.to_thread(_read_transcript_tails)
+    await asyncio.to_thread(_stamp_welcome_claimed, rows)
     # Slot keys whose speech-only read is trustworthy enough to correct the
     # member log with: a non-empty quote, or an empty one from a walk that
     # reached the start of the log -- and, either way, only for a slot whose
@@ -703,8 +717,8 @@ async def api_members(request: web.Request) -> web.Response:
             try:
                 if slug_rows[slug] > 1:
                     logger.warning(
-                        "member slug %r is shared by %d members, so none of them "
-                        "gets a projection; rename one member so their slugs differ",
+                        "member slug %r is shared by %d members, so none of them gets a "
+                        "projection; recreate the one not owning its thread under a new slug",
                         slug,
                         slug_rows[slug],
                     )
@@ -760,8 +774,8 @@ async def api_members(request: web.Request) -> web.Response:
                 logged_name = svc.logged_name(slug)
                 if logged_name is not None and logged_name not in (row["name"], slug):
                     logger.warning(
-                        "member slug %r logs %r, so %r gets no projection; "
-                        "rename one member so their slugs differ",
+                        "member slug %r logs %r, so %r gets no projection; recreate "
+                        "the member not owning this slug's thread under a new slug",
                         slug,
                         logged_name,
                         row["name"],
@@ -845,10 +859,46 @@ async def api_members(request: web.Request) -> web.Response:
 
     for row in rows:
         block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
+        # Fresh start's fold boundary rides in here already: `reset_at` folds
+        # into the roster projection below, and `_roster_only` ships the whole
+        # roster view, so the client reads it off `row["projections"]` (and the
+        # same value arrives live over the `member_projection` WS frame) --
+        # no second, top-level copy of the field on the row.
         row["projections"] = _redact_projection_value(_roster_only(block))
         row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
 
+    # The Recent order and the landing read `last_active_ts`: the last message
+    # in the crewmate's DM thread, whoever sent it (the user, the crewmate, a
+    # scheduled run), as a messages app orders its conversations. Being listed
+    # is `has_dm_message`: the thread holds a message.
+
     return web.json_response({"members": rows})
+
+
+def _stamp_welcome_claimed(rows: list[dict]) -> None:
+    """Mark Mate's row with whether its welcome is owed and its marker claimed.
+
+    The Crewmates page lands on Mate only while its welcome is still coming:
+    owed, the marker unclaimed, and the thread holding no row
+    (rfc-mate-landing-once). A welcome that was claimed and then failed leaves
+    the thread empty for good, and one that was never owed is refused before
+    the claim, so the row count alone would land the user on Mate on every
+    visit. Only Mate's row carries the fields; a marker that cannot be checked
+    leaves ``welcome_claimed`` off and an unreadable owed record reads as not
+    owed, both of which the page treats as "seen" (the ordinary landing).
+    Blocking IO.
+    """
+    from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+    from kiro_crew.dashboard.mate_welcome import greeting_marker_path
+
+    for row in rows:
+        if row.get("name") != ASSISTANT_MEMBER_NAME:
+            continue
+        row["welcome_owed"] = members_mod.welcome_owed(row["slug"], row["name"])
+        try:
+            row["welcome_claimed"] = greeting_marker_path(row["slug"]).exists()
+        except (OSError, ValueError):
+            row.pop("welcome_claimed", None)
 
 
 def _recency_for_row(block: dict, transcript_ts: Any) -> float:
@@ -910,6 +960,106 @@ def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
     if record is None or record.memory_version != 2:
         return members_mod.member_slot_key(slug), ""
     return members_mod.member_slot_key(slug, store), store
+
+
+def _member_workspace_project(cfg: KiroCrewConfig, member: str) -> tuple[str, str]:
+    """Resolve a crew member's bound workspace: ``(workspace name, project dir)``.
+
+    The member's ``workspace`` name, falling back to ``default_workspace`` when
+    that name is undeclared, through the shared ``default_project_dir``
+    validation -- so provider cwd and project essentials refer to the same
+    directory. Blocking filesystem IO (realpath, isdir, sensitive-path fence):
+    callers run it off the event loop.
+    """
+    member_workspace = cfg.agents[member].workspace
+    if member_workspace not in cfg.workspaces:
+        member_workspace = cfg.default_workspace
+    return member_workspace, default_project_dir(member_workspace)
+
+
+async def _bind_member_workspace(
+    state: DashboardState, slot: Any, cfg: KiroCrewConfig, member: str
+) -> None:
+    """Point a member thread at its crew's configured workspace.
+
+    A member chat has no project concept. The slot's ``project`` field is
+    where the dashboard (Files tab, terminal cwd, project essentials) and the
+    provider cwd read a directory from, and for a member thread that directory
+    IS the workspace the crew is bound to in ``agents.<name>.workspace`` --
+    derived from config on every open, never a per-thread choice read back
+    from the transcript. That is what makes a thread written before member
+    slots carried the directory (restored with ``project == ""``, so the
+    pinned Files tab read "no project directory") converge on the right one,
+    and what makes a crew whose binding was later edited follow it.
+
+    Resolution runs off the event loop; the write is a compare-and-set so an
+    already-bound slot is not re-marked dirty, and a changed binding reaches
+    disk through the next periodic flush and the client through a push. When
+    the directory CHANGES -- including from empty to bound: a thread that ran
+    a turn while its workspace directory was missing has a provider warm in
+    the fallback work dir -- the deferred provider reset is armed exactly as
+    every other writer of ``slot.project`` arms it (``_set_project``,
+    ``api_chat_slot_project``): a warm kiro-cli process keeps the cwd it was
+    spawned in, so without the reset the agent would keep writing files in
+    the old directory while the Files tab shows the new one. The reset is
+    deferred, so an active turn is never torn down; the next message
+    cold-starts in the new directory.
+    """
+    member_workspace, project = await asyncio.to_thread(_member_workspace_project, cfg, member)
+    if not project:
+        # The workspace directory is missing or fenced: nothing to point at.
+        # ``default_project_dir`` already logged the fall-through; leave the
+        # thread as it is rather than clearing a directory the user can see.
+        return
+    if slot.workspace == member_workspace and slot.project == project:
+        return
+    old_project = slot.project
+    slot.workspace = member_workspace
+    slot.project = project
+    if old_project != project:
+        slot._pending_reset_history_key = effective_session_key(slot)
+    slot._dirty = True
+    state.push_slots_update()
+
+
+async def _guard_and_pin_private_store(
+    state: "DashboardState",
+    slug_owners: list[str],
+    member_store: str,
+    canonical_key: str,
+    member_name: str,
+    cfg: "KiroCrewConfig",
+) -> "tuple[str, web.Response | None]":
+    """Run the v2 slug-collision guard and private-store pin.
+
+    Returns ``(assigned_store, None)`` on success and ``("", error_response)``
+    when the collision guard fires (409) or the pin raises (503).  The caller
+    is responsible for setting ``slot._memory_assignment_from_history`` and
+    for applying ``slot.memory_store = assigned_store`` on success.
+
+    Both the pre-mint path (no slot yet) and the post-publication lock path
+    (existing slot under ``slot._lock``) call this helper so the collision
+    guard and the 503 mapping stay in one place.
+    """
+    from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    try:
+        if (
+            len(slug_owners) != 1
+            and (await asyncio.to_thread(read_private_session_store, canonical_key)) != member_store
+        ):
+            return "", web.json_response(
+                {
+                    "error": "choose distinct member names before opening this private thread",
+                    "code": "member_pin_mismatch",
+                },
+                status=409,
+            )
+        assigned = await pin_private_agent_store(state, canonical_key, member_name, cfg)
+        return assigned, None
+    except Exception as exc:
+        return "", _store_unavailable_response(member_store, exc)
 
 
 async def api_member_thread(request: web.Request) -> web.Response:
@@ -1059,24 +1209,60 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # adopt_closed: this endpoint IS the deliberate reopen path for a
         # member thread, so a ✕-closed transcript reopens with its history.
         slot = await rehydrate_slot_from_history_async(state, slot_key, adopt_closed=True)
+    minted = False
     if slot is None:
-        member_workspace = cfg.agents[member_name].workspace
-        if member_workspace not in cfg.workspaces:
-            member_workspace = cfg.default_workspace
-        project = await asyncio.to_thread(default_project_dir, member_workspace)
+        member_workspace, project = await asyncio.to_thread(
+            _member_workspace_project, cfg, member_name
+        )
         # Resolve before publication, then re-check: another opener can create
-        # the slot while path validation waits. Its project remains its choice.
+        # the slot while path validation waits; that slot is kept and bound to
+        # the same workspace below (both openers derive it from one config).
         slot = state._slots.get(slot_key)
         if slot is None:
-            with state.suspend_slots_push():
-                slot = state.get_or_create_slot(
-                    name=slot_key,
-                    agent=member_name,
-                    workspace=member_workspace,
-                    mode=members_mod.DM_SLOT_MODE,
-                    origin=request_slot_origin(request.get("app", "")),
+            # Pin the v2 private store BEFORE minting the slot.  A refused
+            # pin returns without ever creating a slot, leaving nothing
+            # registered or broadcast.  A concurrent opener can still create
+            # the slot during the awaits below, so we re-check after them:
+            # if it is already there we fall through to the non-minted path,
+            # which validates it under the slot lock as usual.
+            _pre_member_store = getattr(cfg.agents[member_name], "memory_store", "")
+            _pre_store_record = (
+                cfg.memory_stores.get(_pre_member_store) if _pre_member_store else None
+            )
+            _pre_assigned = ""
+            if _pre_store_record is not None and _pre_store_record.memory_version == 2:
+                _pre_canonical = members_mod.member_thread_session_alias(slug, generation)
+                _pre_assigned, _pre_err = await _guard_and_pin_private_store(
+                    state,
+                    slug_owners,
+                    _pre_member_store,
+                    _pre_canonical,
+                    member_name,
+                    cfg,
                 )
-                slot.project = project
+                if _pre_err is not None:
+                    return _pre_err
+            # Re-check: a concurrent opener may have published the same key
+            # during the awaits above.  If so, fall through to the non-minted
+            # path so the lock does its full existing-slot validation.
+            slot = state._slots.get(slot_key)
+            if slot is None:
+                minted = True
+                with state.suspend_slots_push():
+                    slot = state.get_or_create_slot(
+                        name=slot_key,
+                        agent=member_name,
+                        workspace=member_workspace,
+                        mode=members_mod.DM_SLOT_MODE,
+                        origin=request_slot_origin(request.get("app", "")),
+                    )
+                    slot.project = project
+                    if _pre_assigned:
+                        # Stamp synchronously before the slot is visible:
+                        # no await follows inside this block, so no other
+                        # code can observe the slot before the assignment.
+                        slot._memory_assignment_from_history = True
+                        slot.memory_store = _pre_assigned
     if slot.mode != members_mod.DM_SLOT_MODE:
         # The derived key is already occupied by a foreign slot (mode is set at
         # creation only, so a pre-existing non-member slot keeps its own). Never
@@ -1119,9 +1305,14 @@ async def api_member_thread(request: web.Request) -> web.Response:
             status=409,
         )
 
+    if not minted:
+        # Live (restart-restored) and rehydrated threads alike: the fresh mint
+        # above already carries the binding, every other path converges here.
+        await _bind_member_workspace(state, slot, cfg, member_name)
+
     member_store = getattr(cfg.agents[member_name], "memory_store", "")
     store_record = cfg.memory_stores.get(member_store) if member_store else None
-    if store_record is not None and store_record.memory_version == 2:
+    if store_record is not None and store_record.memory_version == 2 and not minted:
         from kiro_crew.member_memory_auth import read_private_session_store
 
         canonical_key = members_mod.member_thread_session_alias(slug, generation)
@@ -1211,21 +1402,16 @@ async def api_member_thread(request: web.Request) -> web.Response:
                     # The owner selected this slug, not an editable transcript
                     # or DM binding. A collision needs a protected assignment.
                     slot._memory_assignment_from_history = True
-                    if (
-                        len(slug_owners) != 1
-                        and (await asyncio.to_thread(read_private_session_store, canonical_key))
-                        != member_store
-                    ):
-                        return web.json_response(
-                            {
-                                "error": "choose distinct member names before opening this private thread",
-                                "code": "member_pin_mismatch",
-                            },
-                            status=409,
-                        )
-                    assigned_store = await pin_private_agent_store(
-                        state, canonical_key, member_name, cfg
+                    assigned_store, _lock_err = await _guard_and_pin_private_store(
+                        state,
+                        slug_owners,
+                        member_store,
+                        canonical_key,
+                        member_name,
+                        cfg,
                     )
+                    if _lock_err is not None:
+                        return _lock_err
             except Exception as exc:
                 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
@@ -1297,7 +1483,50 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
         await asyncio.to_thread(_emit_binding)
 
+    if not slot._member_approval_seeded:
+        # Re-read, not the snapshot loaded at entry: a profile pick saved during
+        # the awaits above must decide the seed. No await between this read and
+        # the seed, so a later pick's slot write always lands after it.
+        fresh = await asyncio.to_thread(KiroCrewConfig.load)
+        crew = fresh.agents.get(member_name)
+        if crew is not None:
+            _seed_member_approval(state, slot, crew.approval_mode)
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
+
+
+def _seed_member_approval(state: DashboardState, slot: Any, mode: str) -> None:
+    """Give a crewmate's thread the approval mode its profile names, once per live slot.
+
+    ``mode`` is the crew record's ``approval_mode``; ``""`` means the user never
+    chose one, and the thread opens in ``trust``. A slot that already holds a
+    grant keeps it, and the seed runs once per in-memory slot, so a later change
+    on this slot (the profile's own write, an approval card's "trust this
+    session") stands. Slot trust is not persisted: a restart seeds again from
+    the record, which is where the profile writes the user's choice.
+    """
+    if slot._member_approval_seeded:
+        return
+    slot._member_approval_seeded = True
+    effective = mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+    if effective == "normal" or slot._trust or slot._trust_reads or slot._trust_scope:
+        return
+    key = effective_session_key(slot)
+    for sharing in state._slots.values():
+        if effective_session_key(sharing) == key:
+            if effective == "trust":
+                sharing._trust = True
+            else:
+                sharing._trust_reads = True
+    state.sessions.set_approval_policy(key, "auto" if effective == "trust" else "")
+    try:
+        _sel().log_api_access(
+            caller="dashboard:member_profile",
+            operation=f"mode_change:{effective}",
+            outcome="enabled",
+            resources=slot.key,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.warning("SEL audit failed for member approval seed", exc_info=True)
 
 
 async def api_member_projections(request: web.Request) -> web.Response:
@@ -1440,6 +1669,213 @@ async def api_member_projections(request: web.Request) -> web.Response:
             {"error": "member slug logs another member", "code": "member_slug_foreign"}, status=409
         )
     return web.json_response(block)
+
+
+async def api_member_greet(request: web.Request) -> web.Response:
+    """POST /api/members/{slug}/greet — a crewmate's once-only first welcome.
+
+    The dashboard calls this after opening a member thread. It starts a turn
+    only for a crewmate's own pinned thread whose creation recorded a welcome
+    (Mate's, or the goal question of a crewmate made on the New crewmate card),
+    only while that thread is empty, and at most once ever (see
+    :mod:`kiro_crew.dashboard.mate_welcome`). Every other case answers 200 with
+    the outcome that declined it, so the caller never has to branch on errors
+    for an ordinary "nothing to do".
+    """
+    from kiro_crew.dashboard.mate_welcome import maybe_start_first_greeting
+
+    denied = await _deny_app_caller(request, "members.greet")
+    if denied is not None:
+        return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.greet")
+    if owner_denied is not None:
+        return owner_denied
+    state: DashboardState | None = request.app.get("state")
+    if state is None:
+        return web.json_response(
+            {"error": "dashboard state unavailable", "code": "state_unavailable"}, status=503
+        )
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    try:
+        outcome = await maybe_start_first_greeting(state, slug)
+    except Exception:
+        logger.warning("first welcome failed to start for %r", slug, exc_info=True)
+        return web.json_response(
+            {"error": "could not start the greeting", "code": "member_greet_failed"}, status=500
+        )
+    return web.json_response({"outcome": outcome})
+
+
+#: How long each stop phase waits for the turn to end before moving on: the
+#: cooperative cancel first, then the hard-kill escalation.
+_FRESH_START_STOP_WAIT_SECS = 10.0
+_FRESH_START_POLL_SECS = 0.05
+
+
+def _turn_busy(state: DashboardState, slot: Any, key: str) -> bool:
+    """The reset route's two turn probes: the slot's own task, and the session's."""
+    provider = state.sessions.get_provider(key)
+    return bool(slot.running) or (provider is not None and provider.has_active_turn())
+
+
+def _work_pending(slot: Any) -> bool:
+    """Queued messages or unconsumed steers: work the runner starts on its own."""
+    return bool(slot.queue_depth) or bool(getattr(slot, "_pending_steers", None))
+
+
+def _queue_pending(name: str) -> web.Response:
+    return web.json_response(
+        {"error": "queued messages pending", "code": "slot_queue_pending", "slot": name},
+        status=409,
+    )
+
+
+async def _turn_ends_within(state: DashboardState, slot: Any, key: str) -> bool:
+    deadline = asyncio.get_running_loop().time() + _FRESH_START_STOP_WAIT_SECS
+    while _turn_busy(state, slot, key):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(_FRESH_START_POLL_SECS)
+    return True
+
+
+async def api_member_fresh_start(request: web.Request) -> web.Response:
+    """POST /api/members/{slug}/fresh-start — a clean context on the SAME thread.
+
+    Runs existing mechanisms in order and adds none:
+
+    1. A running turn is stopped with ``stop_slot_turn``, the Stop button's own
+       path. A second call while the first is still pending is that function's
+       hard-kill escalation, which is how a stuck process is freed.
+    2. The conversation is cleared through the typed ``/clear`` path
+       (``_answer_slash_without_channel``): discard with replay off, plan
+       dropped, eager respawn, and its transcript line. The discard shuts the
+       agent process down, so the next turn runs in a fresh process.
+
+    The slot key is never changed and no slot is created: monitor loops, the
+    work ledger and the crew log are bound to it. The transcript stays on disk.
+    Same gates as every member route: app tokens get 404, and only the owner's
+    dashboard passes.
+    """
+    from kiro_crew.dashboard import chat_handlers as ch
+    from kiro_crew.dashboard import chat_runner as runner
+
+    denied = await _deny_app_caller(request, "members.fresh_start")
+    if denied is not None:
+        return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.fresh_start")
+    if owner_denied is not None:
+        return owner_denied
+    state: DashboardState | None = request.app.get("state")
+    if state is None:
+        return web.json_response(
+            {"error": "dashboard state unavailable", "code": "state_unavailable"}, status=503
+        )
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+    slot = state._slots.get(binding.get("slot_key", "")) if binding else None
+    if (
+        binding is None
+        or slot is None
+        or slot.mode != members_mod.DM_SLOT_MODE
+        or slot.agent != binding.get("member")
+        or getattr(slot, "executor", "") == "remote"
+    ):
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    name = slot.key
+    key = effective_session_key(slot)
+    from kiro_crew.dashboard.warm_task_brief import cancel_warm_task_brief
+
+    cancel_warm_task_brief(state, name)
+
+    # A soft stop keeps the queue and the unconsumed steers, and the runner
+    # drains them the moment the turn ends: they would start on the conversation
+    # being dropped. Refused up front, and again after every stop wait, since a
+    # message can be queued while the stop waits.
+    if _work_pending(slot):
+        return _queue_pending(name)
+
+    if _turn_busy(state, slot, key):
+        for _attempt in range(2):
+            await ch.stop_slot_turn(
+                state, slot, cancel_key=ch._cancel_target(slot), source="members.fresh_start"
+            )
+            settled = await _turn_ends_within(state, slot, key)
+            if _work_pending(slot):
+                return _queue_pending(name)
+            if settled:
+                break
+        else:
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
+                status=409,
+            )
+        # The stop awaited; a rebind or replacement may have landed meanwhile.
+        if state._slots.get(name) is not slot or effective_session_key(slot) != key:
+            return web.json_response(
+                {"error": "slot changed during the stop", "code": "session_rebound"},
+                status=409,
+            )
+
+    # The same path a typed /clear takes: the discard with replay off, the plan
+    # dropped, the eager respawn, and the transcript line that says the agent no
+    # longer remembers what is above it. A session that still refuses the discard
+    # keeps it queued for its next turn boundary, as /clear does.
+    reset_at = datetime.now(timezone.utc).isoformat()
+    outcome = await runner._answer_slash_without_channel(state, slot, key, "/clear")
+    cleared = outcome == "discarded"
+    # Whether the fold boundary landed in the member's own log, so the client
+    # can tell "durable, survives a reload" from "this session's own fold
+    # only" instead of assuming the write always lands. The CLEAR itself is
+    # never retried on a write failure here: it already happened (the agent
+    # process is gone, the transcript already carries its line), and asking
+    # the client to redo it would discard a second turn's history for a
+    # boundary-recording fault that has nothing to do with the conversation.
+    reset_persisted = False
+    if cleared:
+        # Durable fold so the "earlier conversation" boundary survives a reload:
+        # the roster projection carries `reset_at`, which `GET /api/members`
+        # serves back to the page that otherwise only holds it in React state.
+        # Off-loop; a logging fault never turns a cleared conversation into an
+        # error response, since the clear itself already landed -- but the
+        # outcome IS inspected, so a failed append is reported rather than
+        # silently claimed as durable (the client still folds for this
+        # session from its own optimistic state either way).
+        member_name = binding.get("member") if binding else None
+
+        def _emit_reset() -> bool:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_RESET
+
+            return eventlog_hooks.emit(slug, member_name, MEMBER_RESET, {"reset_at": reset_at})
+
+        reset_persisted = await asyncio.to_thread(_emit_reset)
+        if not reset_persisted:
+            logger.warning(
+                "fresh-start reset_at for %r did not persist to the member log; "
+                "the fold holds only for this client's current session",
+                slug,
+            )
+    return web.json_response(
+        {
+            "slot": name,
+            "reset_at": reset_at,
+            "outcome": "cleared" if cleared else "queued",
+            "reset_persisted": reset_persisted,
+        }
+    )
 
 
 async def api_member_activity(request: web.Request) -> web.Response:
@@ -1618,6 +2054,10 @@ async def api_member_briefing(request: web.Request) -> web.Response:
     fails closed to ``""`` and the panel explains that from the flag rather
     than presenting an empty briefing as "no notes yet". ``updated_ts`` is the
     file's own mtime (epoch seconds) or ``null`` when there is no file.
+    ``upkeep`` is the SYSTEM-owned text beside it (:func:`dashboard_upkeep.view`):
+    the pointer line its ``[DASHBOARD]`` block carries, each agentic field's upkeep
+    text as ``dashboard_fields`` returns it, and its helper script names -- or
+    ``null`` when it has no page.
     ``redacted`` and ``truncated`` each say the wire text shows less than the
     file holds (a secret replaced by its placeholder; a tail past the cap not
     shown), so the panel can say so above the notes instead of leaving
@@ -1714,6 +2154,28 @@ async def api_member_briefing(request: web.Request) -> web.Response:
     # can say so above the notes: ``redacted`` when a placeholder replaced a
     # secret, ``truncated`` when the marker stands in for the tail.
     redacted = bool(url_hits or cred_hits)
+    # The system-owned half of what the crewmate is told about its page: each
+    # agentic field's upkeep text exactly as `dashboard_fields` returns it, plus the
+    # pointer line and the helper names (`dashboard_upkeep.view`). Not the briefing
+    # read, so it does not depend on `supported`, and a read that writes nothing.
+    from kiro_crew import dashboard_upkeep
+
+    upkeep = await asyncio.to_thread(dashboard_upkeep.view, slug)
+    if upkeep is not None:
+        # Field names come from the crewmate's own copy of the manifest, which it can
+        # edit, so every string crosses the same redaction chain as the notes.
+        def _clean(text: str) -> str:
+            nonlocal redacted
+            value, url_hits_u = _h.redact_exfiltration_urls(text)
+            value, cred_hits_u = _h.redact_credentials(value)
+            redacted = redacted or bool(url_hits_u or cred_hits_u)
+            return value
+
+        upkeep["pointer"] = _clean(upkeep["pointer"])
+        upkeep["fields"] = [
+            {key: _clean(value) for key, value in row.items()} for row in upkeep["fields"]
+        ]
+        upkeep["scripts"] = [_clean(name) for name in upkeep["scripts"]]
 
     # Audit the disclosure, as the rules read does: WHO read a crewmate's
     # private notes matters as much as who was refused, and a denied-only
@@ -1739,8 +2201,66 @@ async def api_member_briefing(request: web.Request) -> web.Response:
             "updated_ts": updated_ts,
             "redacted": redacted,
             "truncated": truncated,
+            "upkeep": upkeep,
         }
     )
+
+
+async def api_member_recap(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/recap?member=<name> — the work a crewmate holds.
+
+    Feeds the cold-start welcome (``mateGreeting.ts``): goals left open in the
+    crewmate's thread or a recent session, then its recent sessions
+    (:mod:`kiro_crew.member_recap`). A read that writes nothing; the page
+    decides when to greet. Same owner gate and exact-name posture as the
+    activity read: titles are the owner's own task text.
+    """
+    from kiro_crew import member_recap
+
+    denied = await _deny_app_caller(request, "members.recap")
+    if denied is not None:
+        return denied
+    owner_denied = await require_owner_dashboard_request(request, "members.recap.read")
+    if owner_denied is not None:
+        return owner_denied
+    _audit_owner_read(request, "members.recap.read")
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not members_mod.is_dispatchable_member_name(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    try:
+        if member not in cfg.agents or members_mod.member_slug(member, cfg) != slug:
+            raise MemberSlugError(member)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "no crew member for this slug", "code": "member_not_found"}, status=404
+        )
+    state: DashboardState | None = request.app.get("state")
+    log = getattr(state, "conversation_log", None)
+
+    def _gather() -> dict[str, Any]:
+        from kiro_crew import session_ledger
+
+        binding = members_mod.read_dm_binding(slug)
+        slot_key = binding["slot_key"] if binding and binding.get("member") == member else ""
+        thread_ledger = session_ledger.read_state(slot_key) if slot_key else {}
+        recent = member_recap.recent_sessions(log.list_sessions() if log else [], member)
+        ledgers = [
+            session_ledger.read_state(session_ledger.ledger_key(str(r["key"]))) for r in recent
+        ]
+        return member_recap.recap(thread_ledger, recent, ledgers)
+
+    payload = await asyncio.to_thread(_gather)
+    return web.json_response({"slug": slug, "member": member, **payload})
 
 
 async def api_member_rules_get(request: web.Request) -> web.Response:

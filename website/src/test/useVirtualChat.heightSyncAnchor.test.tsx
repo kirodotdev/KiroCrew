@@ -7,11 +7,12 @@
  * iOS Safari has none, so a reader mid-transcript sees the content slide
  * (measured 13-25px right after a far jump on the pod, and a nondeterministic
  * 170-190px lurch when the anchor was consumed early by the window effect —
- * see heightAnchorPendingRef's doc in useVirtualChat.ts).
+ * see heightAnchorPendingRef's doc in hooks/virtualizer/shiftCompensation.ts).
  *
- * Pins: syncHeightsNow captures the top visible row before bumping
- * heightVersion, and the dedicated heightVersion-keyed layout effect corrects
- * scrollTop by the row's screen-position delta after the commit.
+ * Pins: syncHeightsNow captures the top visible row before the HeightIndex
+ * announces a new version (`heightCommit`), and the `heightCommit`-keyed layout
+ * effect in shiftCompensation.ts corrects scrollTop by the row's
+ * screen-position delta after the commit.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'

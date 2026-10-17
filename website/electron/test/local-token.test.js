@@ -6,6 +6,7 @@ const path = require("node:path");
 const { describe, it } = require("node:test");
 const {
   mintLocalToken,
+  internalSecretFor,
   listenerSecretPath,
 } = require("../local-token");
 
@@ -361,5 +362,77 @@ describe("listenerSecretPath", () => {
       listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path),
       listenerSecretPath(CANONICAL_HOME, "5476", "__1", path),
     );
+  });
+});
+
+describe("internalSecretFor", () => {
+  const read = (gatewayUrl, files, reads = []) =>
+    internalSecretFor({ gatewayUrl, home: CANONICAL_HOME, path, fs: fakeFsOver(files, reads) });
+
+  it("returns the entry the dialed listener published", () => {
+    const files = new Map([
+      [listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path), "listener-secret"],
+      [path.join(CANONICAL_HOME, ".local_secret"), "home-wide-secret"],
+    ]);
+    assert.equal(read("http://127.0.0.1:5476", files), "listener-secret");
+  });
+
+  it("never falls back to the home-wide .local_secret", () => {
+    // A tunnel's local end on this port publishes no entry, so the shared secret
+    // must not be offered to it.
+    const reads = [];
+    const files = new Map([[path.join(CANONICAL_HOME, ".local_secret"), "home-wide-secret"]]);
+    assert.equal(read("http://127.0.0.1:5476", files, reads), "");
+    assert.equal(reads.some((p) => p.endsWith(".local_secret")), false);
+  });
+
+  it("refuses localhost when the gateway holds only one loopback family", () => {
+    const files = new Map([
+      [listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path), "v4-only-secret"],
+    ]);
+    assert.equal(read("http://localhost:5476", files), "");
+  });
+
+  it("picks the most recently written entry when a crashed generation's sits beside it", () => {
+    // The stale exact-address entry is walked first; the live wildcard entry was
+    // written by the current start, so it is the one the channel must send.
+    const stale = listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path);
+    const live = listenerSecretPath(CANONICAL_HOME, "5476", "0.0.0.0", path);
+    const files = new Map([[stale, "stale-secret"], [live, "live-secret"]]);
+    const mtimes = new Map([[stale, 1000], [live, 2000]]);
+    const fs = {
+      ...fakeFsOver(files),
+      statSync(p) {
+        if (!mtimes.has(p)) throw new Error(`ENOENT: ${p}`);
+        return { mtimeMs: mtimes.get(p) };
+      },
+    };
+    assert.equal(
+      internalSecretFor({ gatewayUrl: "http://127.0.0.1:5476", home: CANONICAL_HOME, path, fs }),
+      "live-secret",
+    );
+    // Same files, opposite ages: the walk order alone does not decide.
+    mtimes.set(stale, 3000);
+    assert.equal(
+      internalSecretFor({ gatewayUrl: "http://127.0.0.1:5476", home: CANONICAL_HOME, path, fs }),
+      "stale-secret",
+    );
+  });
+
+  it("keeps the walk's order when entry times cannot be read", () => {
+    const files = new Map([
+      [listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path), "first-secret"],
+      [listenerSecretPath(CANONICAL_HOME, "5476", "0.0.0.0", path), "second-secret"],
+    ]);
+    assert.equal(read("http://127.0.0.1:5476", files), "first-secret");
+  });
+
+  it("returns nothing for a target that is not an http loopback origin", () => {
+    const files = new Map([
+      [listenerSecretPath(CANONICAL_HOME, "5476", "127.0.0.1", path), "listener-secret"],
+    ]);
+    for (const url of ["https://127.0.0.1:5476", "http://192.0.2.1:5476", "", undefined]) {
+      assert.equal(read(url, files), "", String(url));
+    }
   });
 });

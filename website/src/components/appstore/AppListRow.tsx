@@ -21,6 +21,7 @@ import { needsDesktopApp } from '../../lib/electron'
 import { fmtCompact } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
+import { guidePick } from '../../uiLocations/targetRegistry'
 export default function AppListRow({ app, sources, busy, onOpen, onGet, onUpdate, onEnable }: {
   app: RegistryApp
   sources?: SourceName[]
@@ -35,6 +36,9 @@ export default function AppListRow({ app, sources, busy, onOpen, onGet, onUpdate
   return (
     <Clickable
       aria-label={i18nT('components.appstore.appListRow.view_details_for', { name: appDisplayName(app) })}
+      // The app's name: a control drawn on every row (Install) is told apart
+      // by it in a guide's list of matches.
+      {...guidePick(appDisplayName(app))}
       className="flex items-center gap-3.5 px-3.5 py-3 border border-border rounded-xl bg-card mb-2 cursor-pointer hover:border-border-strong transition-colors focus-ring"
       onClick={onOpen}
     >

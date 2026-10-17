@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -20,17 +21,29 @@ from kiro_crew.agent import (
     _shipped_defaults,
     agents_spec_lock,
     kiro_agents_dir_path,
+    unsent_kiro_hook_rows,
 )
+from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
+from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
 from kiro_crew.config.loader import KiroCrewConfig, data_home
+from kiro_crew.constants import (
+    DENY_CAUSE_AUDIT_UNAVAILABLE,
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_POLICY,
+    DENY_CAUSE_SURFACE_POLICY,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
+from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.validation import sanitize_string
 
 logger = logging.getLogger(__name__)
@@ -107,6 +120,10 @@ async def api_hooks(request: web.Request) -> web.Response:
     return web.json_response({"hooks": [h.to_dict() for h in store.list_all()]})
 
 
+#: The ``unsent`` row fields the author wrote, which may hold a credential.
+_UNSENT_AUTHORED = frozenset({"name", "matcher", "command"})
+
+
 @_store_failure_guard
 async def api_kiro_hooks(request: web.Request) -> web.Response:
     """GET /api/kiro-hooks — read-only view of kiro-cli agent hooks from kirocrew.json."""
@@ -169,7 +186,9 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
                 )
         if tagged:
             result[event] = tagged
-    return web.json_response({"hooks": result})
+    unsent = await asyncio.to_thread(unsent_kiro_hook_rows)  # off-loop: reads config.json
+    unsent = [{k: redact(v) if k in _UNSENT_AUTHORED else v for k, v in r.items()} for r in unsent]
+    return web.json_response({"hooks": result, "unsent": unsent})
 
 
 class _StoreUnavailable(Exception):
@@ -371,9 +390,10 @@ async def api_hook_test(request: web.Request) -> web.Response:
     hook = store.get(hook_id)
     if not hook:
         return web.json_response({"error": "not found", "code": "hook_not_found"}, status=404)
-    body = await _json_object(request, default_empty=True)
-    if body is None:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_error = await _json_object(request, default_empty=True)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     raw_context = body.get("context", "test")
     context = sanitize_string(raw_context)
     if len(context) > 10000:  # Max context length for hook test
@@ -670,22 +690,49 @@ def _commit_pinned_token(agent: str, commit: Callable[[], _T]) -> _T:
         return commit()
 
 
-async def _json_object(request: web.Request, *, default_empty: bool = False) -> dict | None:
-    """Parse a JSON **object** body. ``None`` means answer 400.
+async def _json_object(
+    request: web.Request, *, default_empty: bool = False
+) -> tuple[dict | None, web.Response | None]:
+    """Parse a JSON **object** body for the dashboard's hook/webhook routes.
 
-    ``await request.json()`` happily returns a list, string or number for a body
-    that is valid JSON but not an object, and every caller here then calls
-    ``.get()`` on it — which raises and turns a client mistake into a 500.
+    Returns ``(body, None)``, or ``(None, error_response)`` to return as-is.
+
+    Reads through :func:`read_bounded_json`, so a body that is present but not
+    declared JSON is refused 415 before it is read, and the read is capped at
+    ``_HOOK_BODY_MAX_BYTES`` -- the same ceiling the external
+    ``POST /api/hooks/agent`` webhook applies. These routes carry a handful of
+    control fields (a flag, a label, an agent name, a test message), so no
+    dashboard caller needs more than the webhook itself accepts. That route
+    reads through ``_read_hook_body`` instead and is not a caller.
+
+    A list, string or number body is refused with this module's existing
+    ``invalid_json`` 400: every caller calls ``.get()`` on the result, which
+    would turn a client mistake into a 500.
 
     *default_empty* keeps the handlers that treat an absent or unparseable body
     as "use the defaults" doing exactly that, while still rejecting a body the
-    caller clearly meant as data but shaped wrongly.
+    caller clearly meant as data but shaped wrongly. It defaults only the two
+    "no usable document" answers (absent, ``invalid_json``): the 415 and 413 are
+    returned whatever the flag says, so the gate and the cap hold on every route.
     """
-    try:
-        parsed = await request.json()
-    except Exception:
-        return {} if default_empty else None
-    return parsed if isinstance(parsed, dict) else None
+    # Body-scope import, like ``require_owner_dashboard_request`` in this module.
+    from kiro_crew.dashboard.handlers._shared import bounded_json_error_code, read_bounded_json
+
+    body, error = await read_bounded_json(
+        request, max_bytes=_HOOK_BODY_MAX_BYTES, allow_absent=default_empty
+    )
+    if error is None:
+        return body, None
+    code = bounded_json_error_code(error)
+    if default_empty and code == "invalid_json":
+        return {}, None
+    if code == "body_not_object":
+        # This module has always answered a non-object body with its
+        # ``invalid_json`` 400; keep that wire answer for the dashboard client.
+        return None, web.json_response(
+            {"error": "invalid JSON", "code": "invalid_json"}, status=400
+        )
+    return None, error
 
 
 # Deliberately NOT wrapped in @_store_failure_guard. This route is externally
@@ -954,7 +1001,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             {"error": "sessionKey must be a string", "code": "session_key_not_a_string"}, status=400
         )
     if not session_key:
-        session_key = f"hook:default:{int(time.time())}"
+        # Per call, not per second: one turn runs per key, so two deliveries in
+        # the same second that shared a key would have the second refused.
+        session_key = f"hook:default:{int(time.time())}-{secrets.token_hex(6)}"
     if not session_key.startswith(_HOOK_SESSION_PREFIX):
         return web.json_response(
             {
@@ -1170,6 +1219,86 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
 # which compare it to the real event object's kind.
 _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 
+#: What the MODEL is told when the webhook turn refuses a tool call, keyed by
+#: the SEL ``error`` code the deny branch records: (deny cause, reason). A
+#: webhook turn has no person to ask, so every entry is a HOST deny, and each
+#: owes the in-band notice that corrects kiro-cli's "User denied tool
+#: execution". ``hook_deny`` is not here: its reason is the gate's own.
+_WEBHOOK_DENY_NOTICE: dict[str, tuple[str, str]] = {
+    "no_hook_store": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "this webhook turn has no hook gate to authorize a tool call, so every call is refused",
+    ),
+    "gate_error": (
+        DENY_CAUSE_HOOK_ERROR,
+        "the webhook's hook gate raised while deciding this call",
+    ),
+    "no_interactive_approver": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "a webhook turn has no person to approve a tool call, so only a call a hook "
+        "rule auto-approves can run, and no rule auto-approved this one",
+    ),
+    "child_low_fidelity": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "the call came from a subagent without verifiable security context, and a "
+        "webhook turn has no person to approve it instead",
+    ),
+    "name_grant_headless_reject": (
+        DENY_CAUSE_SURFACE_POLICY,
+        "the hook's name-based grant was withheld, and a webhook turn has no person "
+        "to approve the call instead",
+    ),
+}
+
+
+def _webhook_deny_notice(deny_error: str, decision: Any) -> tuple[str, str]:
+    """The (cause, reason) the model reads for a webhook deny recorded as *deny_error*.
+
+    An unknown code still yields a true host notice rather than none: the
+    alternative is kiro-cli's "user denied", which is false on this surface.
+    """
+    if deny_error == "hook_deny":
+        reason = str(getattr(decision, "reason", "") or "")
+        return DENY_CAUSE_POLICY, reason or "a PreToolUse hook denied the call"
+    return _WEBHOOK_DENY_NOTICE.get(
+        deny_error, (DENY_CAUSE_SURFACE_POLICY, "this webhook turn refused the call")
+    )
+
+
+def _capability_refusal_text(
+    exc: CapabilityError | CapabilityStartupError, agent: str | None
+) -> str:
+    """The run result for a member start the capability check stopped.
+
+    Both exception types carry only a bounded machine code, never file bytes,
+    so the code is safe to show. The member comes from the refusal when the
+    check recorded it, otherwise from the hook's own destination agent.
+
+    A ``CapabilityError`` refuses the member's saved spec, which the user fixes
+    in Capabilities. A ``CapabilityStartupError`` can also be a start that raced
+    a save or could not be verified after the process ran, which a resend may
+    clear, so its text asks for a resend first.
+    """
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    if isinstance(exc, CapabilityStartupError):
+        return (
+            f"Hook agent did not run: the start of {member} could not be verified "
+            f"({exc}). Send the webhook again; if it repeats, check {member} > Capabilities."
+        )
+    if exc.code == "materialization_changed":
+        filename = exc.file
+        where = f" ({filename})" if filename else ""
+        return (
+            f"Hook agent did not start: the agent file{where} for {member} was edited "
+            f"outside the Capabilities page. Open {member} > Capabilities, review the "
+            "change and save it, then send the webhook again."
+        )
+    return (
+        f"Hook agent did not start: the capability check for {member} refused the "
+        f"start ({exc.code}). Open {member} > Capabilities to see what needs fixing, "
+        "then send the webhook again."
+    )
+
 
 async def _run_hook_inner(
     state: DashboardState,
@@ -1178,8 +1307,14 @@ async def _run_hook_inner(
     agent: str | None,
     *,
     execution_context: ExecutionContext | None = None,
+    on_client: Callable[[Any], None] | None = None,
 ) -> str:
-    """Inner agent turn — called within timeout wrapper."""
+    """Inner agent turn — called within timeout wrapper.
+
+    ``on_client`` receives the session's provider as soon as it exists, so the
+    caller can still read that session's MCP report when this coroutine is
+    cancelled by the timeout or raises.
+    """
     from dataclasses import replace
 
     from kiro_crew import name_grant
@@ -1191,6 +1326,7 @@ async def _run_hook_inner(
         hook_gate_kwargs,
         identity_grant_covers_child,
     )
+    from kiro_crew.llm_helpers import _steer_host_deny
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
     execution: ExecutionContext = (
@@ -1228,6 +1364,8 @@ async def _run_hook_inner(
         agent = execution.template_id or None
     memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
+    if on_client is not None:
+        on_client(client)
     full_message = message
     # The ContextBuilder prompt is the only text on this path that legitimately
     # MINTS structural boundary markers, so it is the one text the scrub below
@@ -1283,8 +1421,10 @@ async def _run_hook_inner(
             hooks_gate = getattr(state.context_builder, "hooks", None)
             if hooks_gate is not None:
                 try:
-                    decision = hooks_gate.on_tool_call(
+                    decision = await run_in_tool_gate_pool(
+                        hooks_gate.on_tool_call,
                         event.title,
+                        on_queue_timeout=hook_gate_busy,
                         session_key=session_key,
                         agent=agent or "",
                         **hook_gate_kwargs(event),
@@ -1379,6 +1519,13 @@ async def _run_hook_inner(
                         )
                     except Exception:
                         logger.debug("denial record after audit failure also failed", exc_info=True)
+                    await _steer_host_deny(
+                        client,
+                        event,
+                        "a hook rule auto-approved it, but the security event log "
+                        "could not record the approval",
+                        cause=DENY_CAUSE_AUDIT_UNAVAILABLE,
+                    )
                     await client.reject_tool(event.request_id)
                 else:
                     approval_sent = await client.approve_tool(event.request_id)
@@ -1408,6 +1555,10 @@ async def _run_hook_inner(
                     request_id=str(event.request_id),
                     error=deny_error,
                 )
+                # No person is attached to a webhook turn, so every deny here
+                # is the host's: tell the model which one before the wire.
+                _deny_cause, _deny_reason = _webhook_deny_notice(deny_error, decision)
+                await _steer_host_deny(client, event, _deny_reason, cause=_deny_cause)
                 await client.reject_tool(event.request_id)
         elif event.kind == EVENT_COMPLETE:
             _complete_event = event
@@ -1470,6 +1621,8 @@ async def _run_hook_agent(
     result_text = ""
     outcome = "completed"
     detail = ""
+    clients: list[Any] = []
+    mcp_problems = ""
     try:
         # Loading the persisted context (written by the register_hook MCP tool)
         # is INSIDE the try because the caller's permit and the in-flight claim
@@ -1497,9 +1650,22 @@ async def _run_hook_agent(
                 f"{message}"
             )
 
+        # The inner turn's first step opens the session's memory, which the
+        # gateway keeps closed from boot until its startup preparation task has
+        # restored and initialized every store. A dashboard chat turn waits for
+        # that task before it reads memory; this turn takes the same bounded
+        # wait, so a webhook accepted during startup runs once memory is ready
+        # instead of failing on its first read.
+        await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+
         result_text = await asyncio.wait_for(
             _run_hook_inner(
-                state, session_key, message, agent, execution_context=execution_context
+                state,
+                session_key,
+                message,
+                agent,
+                execution_context=execution_context,
+                on_client=clients.append,
             ),
             timeout=timeout_secs,
         )
@@ -1509,6 +1675,24 @@ async def _run_hook_agent(
         detail = result_text
         logger.warning("Hook agent timeout: %s", session_key)
         await state.sessions.record_failure(session_key)
+    except (CapabilityError, CapabilityStartupError) as exc:
+        # The member's capability check stopped the start. The run record and
+        # the delivered result name the refusal and what to do about it, which
+        # the generic arm below cannot.
+        outcome = "error"
+        result_text = _capability_refusal_text(exc, agent)
+        detail = result_text
+        logger.warning("Hook agent %s did not start: %s", session_key, exc)
+        await state.sessions.record_failure(session_key)
+    except MemoryStartupUnavailable as exc:
+        # Memory preparation outlasted the wait, or recovery failed for this
+        # store. The run record and the delivered result name that, so the
+        # caller knows to retry or to inspect memory recovery.
+        outcome = "error"
+        result_text = f"Hook agent did not start: {exc}"
+        detail = result_text
+        logger.warning("Hook agent %s did not start: %s", session_key, exc)
+        await state.sessions.record_failure(session_key)
     except Exception:
         outcome = "error"
         result_text = f"Hook agent error: internal failure (session {session_key})"
@@ -1516,6 +1700,16 @@ async def _run_hook_agent(
         logger.exception("Hook agent failed for %s", session_key)
         await state.sessions.record_failure(session_key)
     finally:
+        # Read before release/reset: the report lives on the session being torn
+        # down. Here rather than in the inner turn so a timeout or crash still
+        # says which servers never started.
+        mcp_problems = session_mcp_problems(clients[0] if clients else None)
+        if mcp_problems:
+            logger.warning(
+                "Hook agent %s: MCP servers unusable in this run — %s",
+                session_key,
+                mcp_problems,
+            )
         try:
             state.sessions.release(session_key)
         except Exception:
@@ -1528,7 +1722,7 @@ async def _run_hook_agent(
             # PERSISTENT only -- `_run_hook_inner` raises for any other mode -- so
             # the bind leaves a vouched entry rather than a live carrier.
             #
-            # Hook session keys are per-request by default (`hook:default:{ts}`),
+            # Hook session keys are per-request by default (`hook:default:{ts}-{hex}`),
             # and per-event keys are the ordinary webhook pattern, so without this
             # the map would gain one permanent entry per authenticated request and
             # grow until the process restarted.
@@ -1549,6 +1743,9 @@ async def _run_hook_agent(
     # history — the only place an operator can check — named a destination that
     # received nothing.
     destinations: list[str] = []
+    mcp_notice = f"MCP servers unusable in this run: {mcp_problems}" if mcp_problems else ""
+    if mcp_notice:
+        result_text = f"{result_text}\n\n{mcp_notice}" if result_text else mcp_notice
     if result_text:
         # Sanitize before delivery.
         result_text, _ = redact_exfiltration_urls(result_text)
@@ -1587,6 +1784,8 @@ async def _run_hook_agent(
             detail = "Delivered to " + " + ".join(destinations)
         else:
             detail = "Delivery failed for every destination"
+    if mcp_notice:
+        detail = f"{mcp_notice} | {detail}" if detail else mcp_notice
     await asyncio.to_thread(
         webhooks.run_store().record,
         outcome=outcome,
@@ -1775,9 +1974,10 @@ async def api_webhooks_switch(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "webhooks.switch")
     if denied is not None:
         return denied
-    body = await _json_object(request)
-    if body is None:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_error = await _json_object(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     enabled = body.get("enabled")
     if not isinstance(enabled, bool):
         return web.json_response(
@@ -1905,9 +2105,10 @@ async def api_webhook_token_create(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "webhooks.token_create")
     if denied is not None:
         return denied
-    body = await _json_object(request)
-    if body is None:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_error = await _json_object(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     require_signature = body.get("require_signature", True)
     if not isinstance(require_signature, bool):
         return web.json_response(
@@ -2013,9 +2214,10 @@ async def api_webhook_token_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    body = await _json_object(request)
-    if body is None:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_error = await _json_object(request)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     allowed = {"agent", "enabled", "label"}
     unknown = sorted(set(body) - allowed)
     if unknown or not body:
@@ -2188,9 +2390,10 @@ async def api_webhook_test(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, "webhooks.test")
     if denied is not None:
         return denied
-    body = await _json_object(request, default_empty=True)
-    if body is None:
-        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    body, body_error = await _json_object(request, default_empty=True)
+    if body_error is not None:
+        return body_error
+    assert body is not None  # (dict, None) on success
     message = sanitize_string(str(body.get("message") or "")).strip()
     if not message:
         message = (

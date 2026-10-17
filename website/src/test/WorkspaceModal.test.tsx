@@ -113,12 +113,12 @@ beforeEach(() => {
 })
 
 /** Open the create dialog. The workspace picker lives inside its Advanced
- *  fold now, so every workspace-modal path goes through here first. */
+ *  settings, so every workspace-modal path goes through here first. */
 async function openCrewSheet(): Promise<HTMLElement> {
   fireEvent.click(screen.getByTestId('new-crew'))
   const dlg = await screen.findByRole('dialog', { name: 'New crewmate' })
-  // Workspace and the other bindings sit behind the Advanced disclosure.
-  fireEvent.click(within(dlg).getByTestId('crewmate-create-advanced-toggle'))
+  // The crew manager's door opens with Advanced settings already unfolded.
+  expect(within(dlg).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
   await within(dlg).findByRole('combobox', { name: 'Workspace' })
   return dlg
 }

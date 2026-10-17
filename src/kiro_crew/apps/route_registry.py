@@ -8,6 +8,7 @@ Supports both exact paths and path parameters (e.g. /tasks/{task_id}/comments).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -220,6 +221,46 @@ class RouteRegistry:
         """Return list of app names with registered routes."""
         return list(self._routes.keys())
 
+    async def _call_handler(
+        self,
+        app_name: str,
+        route: _RegisteredRoute,
+        request: web.Request,
+        ctx: AppContext,
+    ) -> web.Response:
+        """Run an app's route handler behind core's exception boundary.
+
+        An app handler that raises is the app's bug, but without this boundary
+        aiohttp writes a full ``Error handling request`` traceback per request and
+        the dashboard gets an opaque 500. Here it becomes one WARNING naming the
+        app and route and a 502 JSON body. ``HTTPException``
+        is a handler's deliberate response and ``CancelledError`` is a client
+        disconnect or shutdown: both propagate unchanged.
+        """
+        try:
+            return await route.handler(request, ctx)
+        except (web.HTTPException, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            route_name = f"{route.method} {route.path}"
+            logger.warning(
+                "App %s route %s failed: %s: %s",
+                app_name,
+                route_name,
+                type(exc).__name__,
+                exc,
+            )
+            logger.debug("App %s route %s traceback", app_name, route_name, exc_info=True)
+            return web.json_response(
+                {
+                    "error": "app route failed",
+                    "code": "app_route_failed",
+                    "app": app_name,
+                    "route": route_name,
+                },
+                status=502,
+            )
+
     async def dispatch(self, request: web.Request) -> web.Response:
         """Catch-all handler that dispatches to registered app routes.
 
@@ -253,7 +294,7 @@ class RouteRegistry:
                     outcome="ok",
                     resources=f"{method} {path}",
                 )
-                return await route.handler(request, ctx)
+                return await self._call_handler(app_name, route, request, ctx)
 
         # Try pattern match (path params like {task_id})
         for route in app_routes:
@@ -272,7 +313,7 @@ class RouteRegistry:
                     outcome="ok",
                     resources=f"{method} {path}",
                 )
-                return await route.handler(request, ctx)
+                return await self._call_handler(app_name, route, request, ctx)
 
         sel().log_api_access(
             caller=f"app:{app_name}",

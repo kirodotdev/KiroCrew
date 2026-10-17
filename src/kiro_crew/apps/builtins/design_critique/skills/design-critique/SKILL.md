@@ -58,11 +58,15 @@ Use these tags: `image-visible` · `needs-html` · `needs-runtime` · `needs-flo
 
 - **Image:** inspect the actual pixels; treat size and contrast as concerns, not measured failures.
 - **Figma:** obtain design context and a screenshot; use declared values when available.
-- **Code or markup file** (HTML, JSX/TSX, Vue, Svelte, a CSS+HTML pair, etc.): **render it, then
-  critique the pixels.** Use the renderer bundled with this skill. `<skill-dir>` is the directory
+- **Code or markup file:** **render it, then critique the pixels.** Use the renderer bundled with
+  this skill. `render.mjs` opens a URL or a standalone `.html` / `.htm` / `.svg` file as-is; it does
+  not compile JSX/TSX, Vue, or Svelte. For those, capture the project's already-built output with
+  `capture-build.mjs` or a running app with `capture-site.mjs`; otherwise treat the file as not
+  renderable standalone (below). `<skill-dir>` is the directory
   printed by the resolution command (`python3 -c "import kiro_crew, pathlib; print(pathlib.Path(kiro_crew.__file__).parent / 'apps/builtins/design_critique/skills/design-critique')"`), and the scripts live in `<skill-dir>/scripts`:
   `node <skill-dir>/scripts/render.mjs <file-or-url> <out.png> [--width=1280 --height=900 --full]`
-  (prefers Playwright, falls back to headless Chrome). Then **`fs_read` the PNG to actually view
+  (prefers Playwright, falls back to headless Chrome; exit 3 = no engine, exit 5 = blank page, so
+  treat that screen as not seen). Then **`fs_read` the PNG to actually view
   it** and critique those pixels; inspect the DOM/computed styles for exact contrast and sizes.
   **Reading source alone is never a visual evaluation** — code tells you structure, not how it looks.
   - If the file **cannot be rendered standalone** (a lone component needing an app harness, a
@@ -92,6 +96,9 @@ Your critique must be based on pixels you actually saw. Before critiquing any sc
 
 1. **Try to get an image** — render a file, capture a running URL/route (`<skill-dir>/scripts/capture-site.mjs`),
    or use a screenshot the user gave you.
+   Usage: `node <skill-dir>/scripts/capture-site.mjs --base=<url> --routes=/,/a --out=<tmp-dir> [--full]`.
+   Always pass `--out` outside the reviewed project (the default `./shots` writes into the current
+   directory); it prints one JSON line per route (`file`, `ok`) and exits 3 when nothing was captured.
 2. **Check the image is real** — `fs_read` it and confirm it shows real content, not a blank/black
    page, a loading skeleton, an error page, or a login/setup screen.
 3. **If you cannot see it, stop and ask.** When the dev server isn't running, the page is behind a

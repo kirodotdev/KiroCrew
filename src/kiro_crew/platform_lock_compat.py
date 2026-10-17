@@ -361,7 +361,7 @@ def flock_exclusive(fd: int) -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
+def open_lock_file(path: "str | os.PathLike[str]", *, create: bool = True) -> Iterator[int]:
     """Open *path* for locking WITHOUT truncating it (GH-9248).
 
     ``open(path, "w")`` truncates the file before any lock is held. On POSIX
@@ -369,15 +369,30 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
     ``msvcrt.locking`` on the already-truncated file, so a contending process
     can observe or produce an empty lock file and crash out of the critical
     section — the loss lands only on a specific interleaving, which is why it
-    read as shard flake rather than a deterministic failure.
+    read as shard flake rather than a deterministic failure. A truncating open
+    of a file whose first byte another holder already locks can also fail
+    outright on Windows with a sharing violation (``PermissionError``) instead
+    of waiting, so the contender never reaches the acquire at all. The handle
+    is writable because ``msvcrt.locking`` needs one; ``"r"`` is not an option.
     The create-or-open is :func:`open_create_or_existing`, which never
     truncates and is race-safe against a sibling creating the same name.
+
+    ``create=False`` opens an EXISTING lock file only: an absent one raises
+    ``FileNotFoundError`` and nothing is created. It is the form for a caller
+    that must not bring a store into being just by locking it, such as a
+    deleter racing another deleter. The parent directory is never created;
+    a caller that needs it runs its own ``mkdir``.
 
     Yields the raw integer fd, ready for :func:`file_lock` /
     :func:`flock_exclusive`. The lock file's CONTENT is never meaningful to
     the lock itself; this exists so contenders cannot watch it flicker empty.
     """
-    fd = open_create_or_existing(path, os.O_RDWR, 0o644)
+    if create:
+        # 0o600: a lock file is Kiro Crew's own and nobody else's to open; inside
+        # the data home every file is owner-only (kiro_crew.owner_only_files).
+        fd = open_create_or_existing(path, os.O_RDWR, 0o600)
+    else:
+        fd = os.open(os.fspath(path), os.O_RDWR)
     try:
         yield fd
     finally:
@@ -387,7 +402,7 @@ def open_lock_file(path: "str | os.PathLike[str]") -> Iterator[int]:
 def open_create_or_existing(
     path: "str | os.PathLike[str]",
     flags: int,
-    mode: int = 0o644,
+    mode: int = 0o600,
     *,
     dir_fd: int | None = None,
 ) -> int:
@@ -496,7 +511,8 @@ def try_acquire_lock_or_raise(fd: int, *, exclusive: bool = False) -> bool:
     filesystem that cannot lock at all (``ENOLCK``, ``EINVAL`` on some network
     mounts) as permanently busy. A caller that retries on busy would retry
     forever; this one raises that ``OSError`` instead. POSIX busy is
-    ``EWOULDBLOCK``/``EAGAIN``; Windows busy is ``EACCES``/``EDEADLOCK``.
+    ``EWOULDBLOCK``/``EAGAIN``, which Python raises as :class:`BlockingIOError`;
+    Windows busy is ``EACCES``/``EDEADLOCK``.
     """
     from kiro_crew.platform_compat import IS_POSIX
 
@@ -509,10 +525,6 @@ def try_acquire_lock_or_raise(fd: int, *, exclusive: bool = False) -> bool:
             return True
         except BlockingIOError:
             return False
-        except OSError as exc:
-            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                return False
-            raise
     # msvcrt has no shared lock; LK_NBLCK is a non-blocking exclusive lock.
     try:
         os.lseek(fd, 0, os.SEEK_SET)

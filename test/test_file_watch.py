@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -42,9 +43,11 @@ def home_patch(tmp_path):
     def fake_expanduser(p):
         return p.replace("~", str(tmp_path))
 
-    with patch("os.path.expanduser", side_effect=fake_expanduser), patch(
-        "os.path.realpath", side_effect=real_realpath
-    ), patch("pathlib.Path.home", return_value=tmp_path):
+    with (
+        patch("os.path.expanduser", side_effect=fake_expanduser),
+        patch("os.path.realpath", side_effect=real_realpath),
+        patch("pathlib.Path.home", return_value=tmp_path),
+    ):
         yield tmp_path
 
 
@@ -101,4 +104,37 @@ class TestFileWatch:
                 outcome="success",
                 resources=str(tmp_file),
             )
+            resp.close()
+
+    @pytest.mark.asyncio
+    async def test_capped_file_sends_a_frame_for_a_write_past_the_cut(
+        self, tmp_path, mock_sel, home_patch
+    ):
+        # The stream reads at most 512,000 characters. A write past that cut
+        # leaves the frame text unchanged, and must still send a frame: the
+        # panel re-reads on it to refresh git's patch of the file.
+        big = tmp_path / "big.py"
+        head = "x" * 600_000
+        big.write_text(head + "tail\n")
+
+        async def next_frame(resp, buf: bytes) -> tuple[dict, bytes]:
+            # Bound each read so a missing frame fails before the test timeout.
+            while b"\n\n" not in buf:
+                buf += await asyncio.wait_for(resp.content.readany(), timeout=60)
+            event, _, rest = buf.partition(b"\n\n")
+            line = [ln for ln in event.decode().split("\n") if ln.startswith("data: ")][0]
+            return json.loads(line[6:]), rest
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-watch?path={big}")
+            assert resp.status == 200
+            first, buf = await next_frame(resp, b"")
+            assert len(first["content"]) == 512_000
+            big.write_text(head + "tail edited\n")
+            st = big.stat()
+            os.utime(big, (st.st_atime, st.st_mtime + 5))
+            second, _ = await next_frame(resp, buf)
+            # A signal only: the head is unchanged, so no body is resent.
+            assert second["content"] == ""
+            assert second["mtime"] != first["mtime"]
             resp.close()

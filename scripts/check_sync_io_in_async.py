@@ -25,7 +25,7 @@ when you got it wrong. This gate is the thing that fails.
 -- or, better, must not be reachable from the loop at all.** SQLite
 ``busy_timeout`` values in this tree run to 30s
 (``apps/builtins/auto_research/campaign/storage.py``), 10s (``knowledge/store.py``) and
-5s (``vector_memory.py``), none of them chosen against
+5s (``vector_memory_lifecycle.py``), none of them chosen against
 ``dashboard.loop_stall_exit_after_secs=25``. A 30s lock wait REACHABLE FROM THE
 LOOP kills the process by arithmetic, with no bug anywhere else.
 

@@ -178,9 +178,9 @@ function Pill({ tone, children }: { tone: 'accent' | 'warn' | 'danger' | 'muted'
   const cls = tone === 'accent'
     ? 'bg-accent-subtle text-accent'
     : tone === 'warn'
-      ? 'bg-warn-subtle text-warn'
+      ? 'bg-warn-subtle text-warn-text'
       : tone === 'danger'
-        ? 'bg-danger-subtle text-danger'
+        ? 'bg-danger-subtle text-danger-text'
         : 'bg-bg-hover text-muted'
   return <span className={`inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold ${cls}`}>{children}</span>
 }

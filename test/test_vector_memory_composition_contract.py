@@ -63,16 +63,33 @@ STORE_LOGGER = "kiro_crew.vector_memory"
 #: composition, so the set is spelled out rather than globbed.
 RUNTIME_MODULES = frozenset(
     {
+        "bulk_ingest",
+        "derived_state",
         "embedding",
         "embedding_repair",
         "episodic_search",
+        "episodic_write",
         "faiss_index",
+        "lesson_write",
         "lessons",
         "migration",
         "recall",
         "retirement",
         "semantic",
+        "store_bookkeeping",
         "text_scoring",
+        "write_outcomes",
+    }
+)
+
+#: The owners beside the facade. They hold what a runtime module may not (a member-only
+#: relation, the code that opens the connection) and are bound into the store the same way.
+OUT_OWNER_MODULES = frozenset(
+    {
+        "vector_memory_inventory",
+        "vector_memory_lifecycle",
+        "vector_memory_member",
+        "vector_memory_semantic_write",
     }
 )
 
@@ -445,7 +462,11 @@ def _member_row(name: str, raw: object) -> tuple[str, str]:
     if isinstance(raw, property):
         return "property", str(inspect.signature(raw.fget))
     if callable(raw):
-        return "method", str(inspect.signature(raw))
+        # A member bound from its owner module annotates ``self``; the rest of the
+        # signature is the method's own and is compared byte for byte.
+        return "method", str(inspect.signature(raw)).replace(
+            "(self: 'VectorMemoryStore'", "(self", 1
+        )
     return "attr", repr(raw)
 
 
@@ -454,6 +475,13 @@ def _runtime_sources() -> dict[str, str]:
         path.stem: path.read_text(encoding="utf-8")
         for path in sorted(RUNTIME_DIR.glob("*.py"))
         if path.stem != "__init__"
+    }
+
+
+def _out_owner_sources() -> dict[str, str]:
+    return {
+        stem: FACADE_PATH.with_name(f"{stem}.py").read_text(encoding="utf-8")
+        for stem in sorted(OUT_OWNER_MODULES)
     }
 
 
@@ -866,17 +894,20 @@ class TestPlacement:
 
     @staticmethod
     def _delegation_map() -> dict[tuple[str, str], str]:
-        """``(runtime module, function) -> store method`` for every delegate.
+        """``(owner module, function) -> store method`` for every delegate.
 
-        A delegate is a store method whose body forwards to ``<alias>.<function>``
-        where ``<alias>`` is a runtime module the facade imported.
+        A delegate is a store method whose body forwards to ``<alias>.<function>``, or a
+        member bound to that function (``m = <alias>.<function>``,
+        ``staticmethod(<alias>.<function>)``), where ``<alias>`` is a runtime module or an
+        owner beside the facade that the facade imported.
         """
         tree = ast.parse(FACADE_PATH.read_text(encoding="utf-8"))
         aliases = {
             alias.asname or alias.name: alias.name
             for node in tree.body
-            if isinstance(node, ast.ImportFrom) and node.module == RUNTIME_PACKAGE
+            if isinstance(node, ast.ImportFrom) and node.module in (RUNTIME_PACKAGE, "kiro_crew")
             for alias in node.names
+            if node.module == RUNTIME_PACKAGE or alias.name in OUT_OWNER_MODULES
         }
         # A module-level helper the facade also re-exports by name (``_json_value_equal``)
         # is shared code a store method calls, not the implementation it forwards to.
@@ -894,6 +925,18 @@ class TestPlacement:
         )
         mapping: dict[tuple[str, str], str] = {}
         for method in klass.body:
+            if isinstance(method, ast.Assign) and len(method.targets) == 1:
+                value = method.value
+                if isinstance(value, ast.Call) and len(value.args) == 1:
+                    value = value.args[0]
+                if (
+                    isinstance(method.targets[0], ast.Name)
+                    and isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id in aliases
+                ):
+                    mapping.setdefault((aliases[value.value.id], value.attr), method.targets[0].id)
+                continue
             if not isinstance(method, ast.FunctionDef):
                 continue
             for node in ast.walk(method):
@@ -915,13 +958,15 @@ class TestPlacement:
         # Non-vacuous: most of the store's rules are delegated.
         assert len(delegated) > 80
         offenders = []
-        for stem, source in _runtime_sources().items():
+        for stem, source in {**_runtime_sources(), **_out_owner_sources()}.items():
             tree = ast.parse(source)
             aliases = {
                 alias.asname or alias.name: alias.name
                 for node in tree.body
-                if isinstance(node, ast.ImportFrom) and node.module == RUNTIME_PACKAGE
+                if isinstance(node, ast.ImportFrom)
+                and node.module in (RUNTIME_PACKAGE, "kiro_crew")
                 for alias in node.names
+                if node.module == RUNTIME_PACKAGE or alias.name in OUT_OWNER_MODULES
             }
             names = {
                 alias.asname or alias.name: (node.module.rsplit(".", 1)[-1], alias.name)
@@ -1047,7 +1092,11 @@ class TestOneBindingPerSharedName:
 
     @staticmethod
     def _scanned_sources() -> dict[str, str]:
-        return {"vector_memory": FACADE_PATH.read_text(encoding="utf-8"), **_runtime_sources()}
+        return {
+            "vector_memory": FACADE_PATH.read_text(encoding="utf-8"),
+            **_out_owner_sources(),
+            **_runtime_sources(),
+        }
 
     def test_every_shared_name_is_read_through_its_owner(self) -> None:
         assert _split_reads(self._scanned_sources()) == _SPLIT_BY_A_PATCHING_TEST
@@ -1062,12 +1111,12 @@ class TestOneBindingPerSharedName:
         planted["episodic_search"] = sources["episodic_search"].replace(
             "_text_scoring._MMR_MAX_POOL", "_MMR_MAX_POOL"
         )
-        planted["vector_memory"] = sources["vector_memory"].replace(
+        planted["vector_memory_semantic_write"] = sources["vector_memory_semantic_write"].replace(
             "_semantic._json_value_equal(", "_json_value_equal("
         )
         assert _split_reads(planted) == _SPLIT_BY_A_PATCHING_TEST | {
             ("episodic_search", "_MMR_MAX_POOL"),
-            ("vector_memory", "_json_value_equal"),
+            ("vector_memory_semantic_write", "_json_value_equal"),
         }
 
     def test_no_runtime_module_imports_a_value_from_a_sibling(self) -> None:
@@ -1655,8 +1704,9 @@ class TestReadOnlyGuardsReachTheRuntime:
 
     def test_no_runtime_module_calls_a_redactor(self) -> None:
         """A redactor call belongs to ``vector_memory.py``, the registered sink."""
-        for stem in RUNTIME_MODULES:
-            path = RUNTIME_DIR / f"{stem}.py"
+        owners = {stem: RUNTIME_DIR / f"{stem}.py" for stem in RUNTIME_MODULES}
+        owners.update({stem: FACADE_PATH.with_name(f"{stem}.py") for stem in OUT_OWNER_MODULES})
+        for stem, path in owners.items():
             assert not _REDACTOR_CALL_RE.search(path.read_text(encoding="utf-8")), stem
             assert _find_slice_inside_redact_call(path) == []
         assert _REDACTOR_CALL_RE.search(FACADE_PATH.read_text(encoding="utf-8"))
@@ -1668,7 +1718,7 @@ class TestReadOnlyGuardsReachTheRuntime:
         assert _find_slice_inside_redact_call(path)
 
     def test_no_runtime_module_hashes_with_md5(self) -> None:
-        for stem, source in _runtime_sources().items():
+        for stem, source in {**_runtime_sources(), **_out_owner_sources()}.items():
             assert "hashlib.md5(" not in source, stem
         assert "hashlib.md5(" in FACADE_PATH.read_text(encoding="utf-8")
 

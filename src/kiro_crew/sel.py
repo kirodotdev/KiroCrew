@@ -55,6 +55,8 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
+from kiro_crew.executors import subprocess_executor
+from kiro_crew.sel_request_provenance import current_request_forwarded
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +389,7 @@ _MAX_ARG_LEN = 500
 # read so read-after-write stays consistent.
 _QUEUE_DRAIN_BATCH = 256  # max events appended per open() in the writer loop
 _FLUSH_TIMEOUT_SECS = 5.0  # bound on flush() so a stuck writer can't hang reads
+_HARD_EXIT_FLUSH_TIMEOUT_SECS = 3.0  # seconds allowed for the audit tail at hard exit
 
 
 def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
@@ -923,7 +926,7 @@ class SecurityEventLog:
 
         The file's mere EXISTENCE cannot be that gate, which is the trap this
         signature closes. ``sel_hmac.key`` is a sandbox read-write leaf
-        (``sandbox.py``'s ``_CREW_SANDBOX_VISIBLE_LEAVES``, alongside ``trust``),
+        (``sandbox_leaves.py``'s ``_CREW_SANDBOX_VISIBLE_LEAVES``, alongside ``trust``),
         so the audited agent can create one on a perfectly healthy install --
         and the lock path never reads its bytes, so any content will do. Gating
         on existence therefore let that agent arm the fallback at will, then
@@ -1519,7 +1522,7 @@ class SecurityEventLog:
             #   destination whose bytes it knows. Every source that could tell the
             #   planted key from the real one -- the destination itself, the
             #   legacy key, ``security_events.jsonl`` and ``security_events.d``
-            #   -- is read-WRITE for that same agent (``sandbox.py``'s
+            #   -- is read-WRITE for that same agent (``sandbox_leaves.py``'s
             #   ``_CREW_SANDBOX_VISIBLE_LEAVES``), so a check against any of them
             #   authenticates the attacker's own evidence. Making the audit log
             #   the anchor is the worst of those, because a forged newest row
@@ -2636,12 +2639,18 @@ class SecurityEventLog:
         resources: str = "",
         error: str = "",
         critical: bool = False,
+        forwarded: bool | None = None,
     ) -> None:
         """Convenience: log a dashboard/API access event.
 
         Pass ``critical=True`` for fail-closed audits (e.g. safety-override
         activation): the event is written synchronously and a filesystem
         failure is re-raised so the caller can refuse the audited action.
+
+        ``forwarded`` (``origin.is_proxied_request``) lands as ``metadata["forwarded"]``.
+        ``None`` takes the verdict the deny-audit boundary bound for the live request
+        (``sel_request_provenance``); outside one no key is written, which means
+        "not recorded", never "made directly". ``caller_identity`` stays as passed.
 
         ``outcome`` is redacted and clipped like ``resources`` and ``error``,
         even though it reads as a constrained vocabulary. It is not one at this
@@ -2655,6 +2664,8 @@ class SecurityEventLog:
         writer's own pass is not the backstop: ``_REDACTED_TEXT_FIELDS`` omits
         ``outcome`` because identity-shaped fields stay verbatim there.
         """
+        if forwarded is None:
+            forwarded = current_request_forwarded()
         self.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
@@ -2667,6 +2678,7 @@ class SecurityEventLog:
                 outcome=_redact_and_clip(outcome) if outcome else "",
                 resources=_redact_and_clip(resources) if resources else "",
                 error=_redact_and_clip(error) if error else "",
+                metadata={} if forwarded is None else {"forwarded": bool(forwarded)},
             ),
             critical=critical,
         )
@@ -3555,6 +3567,8 @@ def _infer_source(session_key: str) -> str:
         return "taskrunner"
     if session_key == "_bg":
         return "background"
+    if session_key == "_consolidate":
+        return "background"
     if session_key == "_hb":
         return "heartbeat"
     if session_key == "cli_chat":
@@ -3780,6 +3794,32 @@ def _trust_root_key_loads(path: Path) -> bool:
     except OSError:
         return False
     return stat.S_ISREG(st.st_mode) and st.st_size >= _HMAC_KEY_MIN_BYTES
+
+
+def flush_audit_queue(timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS) -> None:
+    """Drain an existing singleton without creating a trust root during exit."""
+    inst = SecurityEventLog._instance
+    if inst is None:
+        return
+    try:
+        inst.flush(timeout=timeout)
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
+
+
+async def flush_audit_queue_before_hard_exit(
+    timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS,
+) -> None:
+    """Offload the bounded drain to the teardown pool with an outer deadline."""
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), flush_audit_queue, timeout
+            ),
+            timeout=timeout + 1.0,
+        )
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
 
 
 def sel_hmac_key_path() -> Path:

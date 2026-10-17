@@ -1,6 +1,6 @@
 /**
  * Stale-session collapse, component level: sessions idle past the threshold
- * collapse behind a per-container "N dormant sessions hidden" expander row — at the
+ * collapse behind a per-container "Show N sleeping sessions" expander row — at the
  * ungrouped root AND inside each folder independently — while pinned, focused,
  * running and needs-input sessions are exempt. localStorage "0" turns the
  * feature off. The pure split predicate is pinned in staleCollapse.test.ts.
@@ -43,12 +43,14 @@ vi.mock('framer-motion', async () => {
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
 const chatFoldersMock = vi.hoisted(() => vi.fn().mockResolvedValue([]))
+const mocks = vi.hoisted(() => ({ config: undefined as unknown }))
 
 vi.mock('../api/client', () => ({
   SEARCH_MIN_CHARS: 2,
   api: new Proxy({} as Record<string, unknown>, {
     get: (_t, prop: string) => {
       if (prop === 'chatFolders') return chatFoldersMock
+      if (prop === 'kirocrewConfig') return vi.fn().mockImplementation(() => Promise.resolve(mocks.config ?? []))
       return vi.fn().mockResolvedValue([])
     },
   }),
@@ -64,6 +66,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { STALE_COLLAPSE_TICK_MS } from '../pages/staleCollapse'
 
 const DAY = 24 * 60 * 60 * 1000
 const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
@@ -83,6 +86,8 @@ function renderSidebar(slots: FixtureSlot[], { folders = [] as FixtureSlot[], ac
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   if (seedFolders) qc.setQueryData(['chat-folders'], folders)
+  // The session sort is read from the gateway config (dashboard.session_sort).
+  if (mocks.config !== undefined) qc.setQueryData(['kirocrewConfig'], mocks.config)
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -105,7 +110,10 @@ const slot = (key: string, title: string, ageHours: number, extra: Record<string
   created: hoursAgo(ageHours + 1), last_turn_ts: hoursAgo(ageHours), ...extra,
 })
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  mocks.config = undefined
+})
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — stale-session collapse', () => {
@@ -183,7 +191,7 @@ describe('chat sidebar — stale-session collapse', () => {
   })
 
   it('goes inert under non-date sorts, where a trailing bucket would lie about position', () => {
-    localStorage.setItem('mc-session-sort', 'name-asc')
+    mocks.config = { dashboard: { session_sort: 'name-asc' } }
     const { getByText, queryByTestId } = renderSidebar([
       slot('fresh', 'alpha fresh', 2),
       slot('old-1', 'beta old', 10 * 24),
@@ -210,9 +218,8 @@ describe('chat sidebar — stale-session collapse', () => {
   })
 
   it('names the hidden count in one sentence, so a folder badge of 2 over one row adds up', () => {
-    // gui-user-test friction: "Demos 2" over one visible row and a bare
-    // "Dormant sessions" + pill left the tester unsure where the second session
-    // was. The row now says "1 dormant session hidden" — the numbers add up.
+    // gui-user-test friction: a folder badge of 2 over one visible row
+    // confused the tester. The row says "Show 1 sleeping session" — the numbers add up.
     const folders = [{ id: 'demos', name: 'Demos', order: 0, collapsed: false }]
     const { container, getByTestId, queryByText } = renderSidebar([
       slot('in-fresh', 'Fix empty-glob crash', 1, { folder_id: 'demos' }),
@@ -222,7 +229,7 @@ describe('chat sidebar — stale-session collapse', () => {
     expect(container.querySelector('[data-folder-row="demos"]')).toHaveTextContent('2')
     // … and the row below now says where the one you cannot see went.
     const expander = getByTestId('stale-expander-demos')
-    expect(expander).toHaveTextContent('1 dormant session hidden')
+    expect(expander).toHaveTextContent('Show 1 sleeping session')
     // No separate count pill: the sentence IS the count.
     expect(expander.querySelector('.rounded-full')).toBeNull()
     expect(queryByText('foldered old')).toBeNull()
@@ -235,13 +242,13 @@ describe('chat sidebar — stale-session collapse', () => {
       slot('b', 'old b', 12 * 24, { folder_id: 'f1' }),
       slot('c', 'root old', 9 * 24),
     ], { folders })
-    expect(getByTestId('stale-expander-f1')).toHaveTextContent('2 dormant sessions hidden')
-    expect(getByTestId('stale-expander-f1')).toHaveAccessibleName('2 dormant sessions hidden Work folder')
-    expect(getByTestId('stale-expander-root')).toHaveTextContent('1 dormant session hidden')
-    expect(getByTestId('stale-expander-root')).toHaveAccessibleName('1 dormant session hidden outside folders')
+    expect(getByTestId('stale-expander-f1')).toHaveTextContent('Show 2 sleeping sessions')
+    expect(getByTestId('stale-expander-f1')).toHaveAccessibleName('Show 2 sleeping sessions Work folder')
+    expect(getByTestId('stale-expander-root')).toHaveTextContent('Show 1 sleeping session')
+    expect(getByTestId('stale-expander-root')).toHaveAccessibleName('Show 1 sleeping session outside folders')
   })
 
-  it('tooltip names the dormancy window and the click action; both flip when expanded', () => {
+  it('tooltip names the inactivity window and the click action; both flip when expanded', () => {
     const { getByTestId } = renderSidebar([
       slot('fresh', 'fresh session', 2),
       slot('old-1', 'old session one', 10 * 24),
@@ -249,7 +256,7 @@ describe('chat sidebar — stale-session collapse', () => {
     // Default window is 7 days; the same compact label the sort/filter menu shows.
     expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to show.')
     fireEvent.click(getByTestId('stale-expander-root'))
-    expect(getByTestId('stale-expander-root')).toHaveTextContent('1 dormant session shown')
+    expect(getByTestId('stale-expander-root')).toHaveTextContent('Hide 1 sleeping session')
     expect(getByTestId('stale-expander-root')).toHaveAttribute('title', 'Not used in over 7d. Click to hide.')
   })
 
@@ -327,6 +334,67 @@ describe('chat sidebar — stale-session collapse', () => {
     // The moved row stays visible; its equally-old neighbor stays collapsed.
     expect(view.getByText('freshly moved old')).toBeInTheDocument()
     expect(view.queryByText('foldered old')).toBeNull()
+  })
+
+  it('keeps the session the user just left visible, so switching never collapses it', () => {
+    const slots = [
+      slot('left-old', 'just left old', 10 * 24),
+      slot('next-old', 'next old', 10 * 24),
+      slot('other-old', 'other old', 10 * 24),
+    ]
+    const view = renderSidebar(slots, { activeSlot: 'left-old' })
+    expect(view.getByText('just left old')).toBeInTheDocument()
+    const rerender = (activeSlot: string | null) => view.rerender(
+      <QueryClientProvider client={view.qc}>
+        <Provider store={view.store}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatSidebar
+                slots={slots as never} activeSlot={activeSlot} unreadSlots={[]}
+                history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+              />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    // The user clicks a different session: the one they left stays in place.
+    rerender('next-old')
+    expect(view.getByText('just left old')).toBeInTheDocument()
+    expect(view.getByText('next old')).toBeInTheDocument()
+    // An equally old session the user never opened still collapses.
+    expect(view.queryByText('other old')).toBeNull()
+    expect(view.getByTestId('stale-expander-root')).toHaveTextContent('Show 1 sleeping session')
+  })
+
+  it('lets a just-left session collapse once a heartbeat interval passes', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    try {
+      const slots = [
+        slot('left-old', 'just left old', 10 * 24),
+        slot('next-old', 'next old', 10 * 24),
+      ]
+      const view = renderSidebar(slots, { activeSlot: 'left-old' })
+      view.rerender(
+        <QueryClientProvider client={view.qc}>
+          <Provider store={view.store}>
+            <ThemeProvider>
+              <MemoryRouter>
+                <ChatSidebar
+                  slots={slots as never} activeSlot="next-old" unreadSlots={[]}
+                  history={[]} historyHasMore={false} defaultAgent="" installedAgents={[]}
+                />
+              </MemoryRouter>
+            </ThemeProvider>
+          </Provider>
+        </QueryClientProvider>,
+      )
+      expect(view.getByText('just left old')).toBeInTheDocument()
+      act(() => { vi.advanceTimersByTime(STALE_COLLAPSE_TICK_MS + 1000) })
+      expect(view.queryByText('just left old')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not mistake cold-load folder hydration for user movement', async () => {

@@ -258,8 +258,9 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
     # the research agent's / backend's default resolution — never a hardcoded
     # id here). If a concrete pick is not served for this account, the session
     # layer's withhold (_pinned_model_verdict) KEEPS the pin and runs the
-    # worker on the backend default — the notice it posts lands in the hidden
-    # research-<cid> transcript, not on the Research Lab page.
+    # worker on the backend default. Its notice lands in the hidden
+    # research-<cid> transcript; the Research Lab page reads the slot's verdict
+    # through the campaign list/detail payloads instead.
     campaign_model = row["model"] or ""
     slot_key = research_slot_key(cid)
     slot = state.get_or_create_slot(

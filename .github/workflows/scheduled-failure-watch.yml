@@ -75,14 +75,17 @@ on:
   workflow_run:
     workflows:
       - "CI Runner Watchdog"
+      - "CodeQL"
       - "Connections L0 Static Metadata Probe"
       - "Connections L1 Authorized-Grant Smoke"
       - "Crew Image Build"
       - "Deferred Findings Audit"
       - "Fork PR Label"
       - "Memory Benchmark (nightly)"
+      - "Merge Queue Ruleset Audit"
       - "Nightly Build"
       - "OTA Update Test (macOS)"
+      - "Playwright CLI Banner Check"
       - "PR Merge-Conflict Label"
       - "PR Readiness Self-Heal Sweep"
       - "Ship Report"

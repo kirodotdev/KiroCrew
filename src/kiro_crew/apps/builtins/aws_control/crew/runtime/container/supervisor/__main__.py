@@ -4,25 +4,31 @@ Run as ``python -m container.supervisor``. This is the task's init process. It
 does not serve anything itself; it enforces the startup order the contract makes
 a correctness requirement and then supervises the children.
 
-The order (``docs/system-specs/modules/aws-control.md``, "Three processes, one task"):
+The order (``docs/system-specs/modules/aws-control.md``, "Four processes, one task"):
 
 1. Gate the environment (layout, model credential, sandbox) and install the crew
    bundle. Nothing has started.
-2. The backend starts and ``wait_until_ready`` returns (port answers AND the
+2. Claim writer ownership in the bucket (``generation.claim_ownership``), so a
+   predecessor's later commit is fenced from this instant. A task that aborts
+   before it is serving releases the claim.
+3. The authority files are restored to completion. This is before the backend on
+   purpose: the backend flushes the slot table from its own memory, so a backend
+   that starts first persists an empty one over the restored files.
+4. The backend starts and ``wait_until_ready`` returns (port answers AND the
    boot secret exists).
-3. The front process starts.
+5. The front process starts, and then the sidecar, whose first cycle copies what
+   the backend has written.
 
-There is no restore phase and no sidecar: the backup subsystem was extracted from
-this PR (durability is tracked separately). When it returns it must reinstate the
-rule that made it correct -- restore to completion before the backend starts, or
-the backend's periodic flush persists an empty slot table over the gap.
+A task with no bucket configured has no durability: steps 2, 3 and the sidecar are
+all no-ops, the front says so once at startup, and the task serves turns.
 
 Shutdown drains process groups, not pids (see ``process.py``): a ``kiro-cli``
 worker is a two-process tree and signalling only the launcher orphans a child
-that finishes its turn. Teardown order is front, then backend: stop new turns
-arriving first, then let the backend drain in-flight work and flush to disk.
-Anything still alive after the backend is gone is an escaped worker it could not
-reap, so the teardown sweeps orphaned process groups directly.
+that finishes its turn. Teardown order is front, then backend, then sidecar: stop
+new turns arriving first, then let the backend drain in-flight work and flush to
+disk, and the sidecar LAST because its final cycle has to see the bytes that
+flush produced. Anything still alive after the backend is gone is an escaped
+worker it could not reap, so the teardown sweeps orphaned process groups directly.
 
 Track boundaries: the front ``__main__`` seam is imported by its documented path,
 lazily, so this module stays importable and testable and never reimplements the
@@ -31,6 +37,7 @@ other track's work.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import functools
 import logging
@@ -44,6 +51,10 @@ from pathlib import Path
 
 from .. import common
 from ..common import Settings
+from ..common.config import BACKEND_DRAIN_SECS, FRONT_DRAIN_SECS, SIDECAR_DRAIN_SECS
+from ..sidecar import generation as generation_mod
+from ..sidecar import restore as restore_mod
+from ..sidecar.store import S3ObjectStore
 from . import backend as backend_mod
 from . import bundle as bundle_mod
 from . import kiro_login as kiro_login_mod
@@ -59,8 +70,11 @@ log = logging.getLogger("container.supervisor")
 # shutdown reaps it. Too short a drain here would SIGKILL the backend before it
 # finishes reaping, orphaning workers that go on to finish their turn. Verified
 # confirmed by reading the real source and booting the real backend.
-FRONT_DRAIN_SECS: float = 5.0
-BACKEND_DRAIN_SECS: float = 25.0
+#
+# The three windows and their sum live in ``common/config.py``, because the sum is a
+# contract this process shares with the task definition the control plane registers:
+# the task's stop timeout has to cover it or the platform SIGKILLs this process
+# mid-drain, and a number duplicated in two subsystems is one that drifts.
 # How many discover-kill rounds the orphan sweep makes at teardown. Each round
 # reaps a layer, and a killed process's own children reparent to PID 1 and surface in the
 # NEXT round, so more than one is required to reach a worker's grandchildren. Bounded so a
@@ -76,6 +90,162 @@ def _start_front(settings: Settings) -> ProcessGroup:
 
 #: The shutdown reason a spent lifetime produces.
 _LIFETIME_REASON: str = "lifetime"
+
+
+def _start_sidecar(settings: Settings) -> ProcessGroup | None:
+    """Launch the backup process, or ``None`` when there is nowhere to write.
+
+    A crew with no bucket has no durability, which the front already says once at
+    startup. Starting a writer with no destination would be worse than not starting one:
+    a process that runs and writes nothing looks exactly like a working backup.
+    """
+    if not settings.backup_bucket:
+        log.warning(
+            "sidecar: no bucket configured, so this task's state is not backed up and "
+            "does not survive replacement. Set SMC_BACKUP_BUCKET to make it durable."
+        )
+        return None
+    child = spawn_process_group("sidecar", [sys.executable, "-m", "container.sidecar"])
+    log.info("sidecar: started")
+    return child
+
+
+def restore_authority(settings: Settings) -> bool:
+    """Bring the authority files back before the backend can flush over them.
+
+    Called from :func:`run` at the point where "before the backend starts" is enforced.
+    A failure RAISES, so the task does not start: booting without the slot table lets
+    the backend persist an empty one, and then the transcripts are still in the bucket
+    while the conversation list is gone.
+
+    With no bucket there is nothing to restore and this is a no-op, which is the same
+    call :func:`_start_sidecar` makes about the writer.
+
+    Returns whether this boot restored its authority from a remote snapshot. When it
+    did, the slot table is on disk but the transcripts are NOT -- they are fetched
+    lazily, per turn -- so the backend must keep a listed slot whose transcript is
+    absent locally as a reopen seed rather than pruning it as a dead tab (the signal
+    is carried to the backend through :data:`backend.ENV_AUTHORITY_RESTORED`).
+    """
+    if not settings.backup_bucket:
+        return False
+    result = restore_mod.restore_authority(settings, S3ObjectStore(settings.backup_bucket))
+    log.info("restore: %s", result.summary())
+    return True
+
+
+class _StartupInterrupted(BaseException):
+    """A stop signal (SIGTERM/SIGINT) arrived DURING startup, before the supervise phase.
+
+    A :class:`BaseException` rather than an ``Exception`` so a stray ``except Exception`` in
+    the startup path cannot swallow it: a shutdown signal must reach the ownership-release
+    abort path, never be absorbed as an ordinary failure. It names the signal so the abort log
+    says a stop ended startup rather than an unexplained error.
+    """
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"startup interrupted by signal {signum}")
+        self.signum = signum
+
+
+class _StartupSignalGuard:
+    """Controller for the startup signal guard: raises on a stop, or DEFERS one on request.
+
+    In its default mode a SIGTERM/SIGINT raises :class:`_StartupInterrupted` at once, so a stop
+    during restore, readiness, or the child spawns aborts promptly into the release path. But
+    the claim acquisition itself must not be interrupted part-way: a stop between the claim's
+    committed PUT and the moment the returned claim is bound would strand the claim (the release
+    path has no claim object to release). So the claim call runs inside :meth:`deferring`, where
+    a stop is RECORDED rather than raised; once the claim is bound inside the release scope,
+    :meth:`raise_pending` re-raises it so the ordinary release-and-teardown handles it.
+    """
+
+    def __init__(self) -> None:
+        self._deferring = False
+        self._pending: int | None = None
+
+    def _on_signal(self, signum, _frame) -> None:
+        if self._deferring:
+            # Hold it: raising here, mid-claim, would escape before the claim is recorded.
+            self._pending = signum
+            return
+        raise _StartupInterrupted(signum)
+
+    @contextlib.contextmanager
+    def deferring(self):
+        """Within this scope a stop is recorded, not raised -- for the claim acquisition."""
+        self._deferring = True
+        try:
+            yield
+        finally:
+            self._deferring = False
+
+    def raise_pending(self) -> None:
+        """Raise a stop that arrived while deferring, now that it is safe to abort."""
+        if self._pending is not None:
+            signum, self._pending = self._pending, None
+            raise _StartupInterrupted(signum)
+
+
+@contextlib.contextmanager
+def _startup_signal_guard():
+    """Make SIGTERM/SIGINT during startup raise rather than kill or escape uncaught.
+
+    From the moment ownership is claimed, the committed incarnation is bumped and a predecessor
+    is fenced; the claim is released only on the abort paths, which are reached by an exception.
+    But the supervise-phase handlers are not installed until after readiness, so until then a
+    SIGTERM takes the process down by its default disposition and a SIGINT raises
+    :class:`KeyboardInterrupt` -- in both cases the release never runs and the predecessor stays
+    fenced into silent loss of its later turns. This guard installs handlers BEFORE the claim
+    that raise :class:`_StartupInterrupted` (or, inside :meth:`_StartupSignalGuard.deferring`,
+    hold it until the claim is recorded), so a stop during the claim, restore, backend readiness,
+    or the child spawns is routed through the same release-and-teardown abort path as any other
+    startup failure. The previous handlers are restored on exit, so the supervise phase installs
+    its own cleanly once startup has succeeded. Yields the :class:`_StartupSignalGuard` so the
+    claim acquisition can defer a mid-claim stop.
+    """
+    guard = _StartupSignalGuard()
+    previous = {
+        signal.SIGTERM: signal.signal(signal.SIGTERM, guard._on_signal),
+        signal.SIGINT: signal.signal(signal.SIGINT, guard._on_signal),
+    }
+    try:
+        yield guard
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _claim_writer_ownership(settings: Settings) -> "generation_mod.ClaimedOwnership":
+    """Claim writer ownership in shared storage BEFORE restoration, so the handoff is one step.
+
+    Calls :func:`generation.claim_ownership`, which bumps the committed pointer's incarnation
+    under a compare-and-swap so a predecessor's later commit is fenced from this instant --
+    closing the window in which an overlapping predecessor adds a slot after this task
+    restores but before its sidecar mints an incarnation. The claimed token is exported in the
+    environment the sidecar inherits (:data:`generation.ENV_CLAIMED_INCARNATION`), so the
+    writer ADOPTS it rather than minting a second one that would leave the committed pointer
+    naming a token no live task holds.
+
+    With no bucket there is nothing to claim and this is a no-op, the same tolerance
+    :func:`restore_authority` and :func:`_start_sidecar` apply. A failure RAISES, like the
+    restore's: a task that cannot establish ownership must not start and silently race a
+    predecessor. Generation 0 (no committed pointer) writes nothing, so there is nothing to
+    release, but it still mints the base token and exports it for the sidecar to adopt.
+
+    Returns the :class:`generation.ClaimedOwnership` the claim produced (an empty one when
+    there was no bucket), so an aborted startup can hand it to :func:`generation.release_ownership`
+    and undo the bump -- otherwise a replacement whose backend never becomes ready would leave
+    the committed incarnation raised and permanently fence a still-healthy predecessor.
+    """
+    if not settings.backup_bucket:
+        return generation_mod.ClaimedOwnership(token="")
+    claim = generation_mod.claim_ownership(settings, S3ObjectStore(settings.backup_bucket))
+    if claim.token:
+        os.environ[generation_mod.ENV_CLAIMED_INCARNATION] = claim.token
+        log.info("ownership: claimed before restore; the sidecar adopts the claimed incarnation")
+    return claim
+
 
 #: Shutdown reasons that mean the task did what was asked of it, so the process
 #: exits zero. Both members are produced by ``_wait_for_shutdown`` a few lines
@@ -284,23 +454,45 @@ def _sweep_orphans_the_backend_cannot_reap(exclude: set[int]) -> None:
 
 
 def _teardown(
-    front: ProcessGroup,
+    front: ProcessGroup | None,
     backend: ProcessGroup,
-) -> None:
-    """Drain the children in order: front, then backend, then sweep orphans.
+    sidecar: ProcessGroup | None = None,
+) -> int | None:
+    """Drain the children in order: front, backend, sidecar, then sweep orphans.
 
-    The backend gets the longer drain so an in-flight turn can finish. Once it is gone,
-    anything of ours still running is a process it could not reap -- an escaped worker in its
-    own process group, which no group signal reached -- so we discover and kill those directly.
+    The backend gets the longer drain so an in-flight turn can finish. The sidecar goes
+    LAST and not first, because its final cycle is what makes an orderly replacement
+    lossless: the front stops new turns arriving, the backend flushes the turns it holds,
+    and only then does the writer get to upload what that flush produced.
+
+    Once the backend is gone, anything of ours still running is a process it could not
+    reap -- an escaped worker in its own process group, which no group signal reached --
+    so we discover and kill those directly.
+
+    Returns the SIDECAR's exit status, because that status is the only evidence that the
+    final cycle actually committed: the writer exits non-zero when its post-shutdown
+    cycle is incomplete, and is killed with a negative status when the drain window
+    elapses mid-upload. ``None`` means there was no sidecar, or that its status could not
+    be read; the caller decides what each of those is worth. The front's and backend's
+    statuses are not returned: they are draining on our own signal, so a non-zero status
+    there is the signal, not a fault.
     """
-    log.info("draining front (%.0fs)", FRONT_DRAIN_SECS)
-    front.terminate(FRONT_DRAIN_SECS)
+    known = {backend.pid}
+    if front is not None:
+        log.info("draining front (%.0fs)", FRONT_DRAIN_SECS)
+        front.terminate(FRONT_DRAIN_SECS)
+        known.add(front.pid)
     log.info("draining backend (%.0fs)", BACKEND_DRAIN_SECS)
     backend.terminate(BACKEND_DRAIN_SECS)
+    sidecar_status: int | None = None
+    if sidecar is not None:
+        log.info("draining sidecar (%.0fs)", SIDECAR_DRAIN_SECS)
+        sidecar_status = sidecar.terminate(SIDECAR_DRAIN_SECS)
+        known.add(sidecar.pid)
     # The backend is gone. Anything of ours still running is a process it cannot reap --
     # an escaped worker in its own process group, which no group signal could reach.
-    known = {front.pid, backend.pid}
     _sweep_orphans_the_backend_cannot_reap(known)
+    return sidecar_status
 
 
 def verify_layout(settings: Settings) -> None:
@@ -726,6 +918,12 @@ def verify_sandbox(
 def run(settings: Settings, *, wait_for_shutdown=None) -> int:
     """Order, supervise and drain the task. Return a process exit code.
 
+    The code is 0 only when BOTH halves of an orderly stop held: the task was asked to
+    go rather than losing a child, and the writer's final backup cycle committed. The
+    second half matters because that cycle runs after the backend's flush and is the
+    only copy of the turns in it, so a task that exits 0 having failed it reports a
+    lossless replacement for a lossy one.
+
     ``wait_for_shutdown`` is injected so tests can drive the supervise phase
     without signals or real processes. It takes the watched children and returns a
     reason; the task's lifetime is bound onto the default here, where the settings
@@ -827,35 +1025,165 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
     # connected by the time anything else could object.
     backend_mod.write_backend_config(settings)
 
-    # 1. Backend, then readiness. Nothing else has started yet.
+    # 1. Claim writer ownership in shared storage, THEN restore, THEN the backend. The
+    #    claim is first because restoration takes the authority pair before any writer
+    #    ownership exists: without it an overlapping predecessor can add a slot after this
+    #    task restores but before its sidecar starts, and the sidecar would then capture
+    #    that stale pair and commit it under a newer incarnation, deleting the predecessor's
+    #    slot from committed history. `claim_ownership` bumps the committed pointer's
+    #    incarnation in place (same generation) under a compare-and-swap, so from this
+    #    instant a predecessor's later commit is fenced -- the handoff is one storage-backed
+    #    step BEFORE restoration rather than the sidecar's own mint after it. The claimed
+    #    token is handed to the sidecar through the environment it inherits, so the writer
+    #    adopts it rather than minting a second one. Generation 0 returns "" and claims
+    #    nothing: there is no committed generation to roll back to.
     #
-    # There is no restore phase: the backup subsystem was extracted from this PR (its
-    # durability design is tracked separately), so the container boots straight into the
-    # backend on a fresh data home. Cross-task-replacement persistence is a capability the
-    # container does not yet have, not a regression -- there is no crew container on main.
-    backend = backend_mod.start_backend(settings, env=env)
-    try:
-        backend_mod.wait_until_ready(
-            settings, backend_mod.DEFAULT_READY_TIMEOUT_SECS, process=backend
-        )
-    except Exception:
-        # Readiness failed or the backend exited: tear the backend down and
-        # abort. The front was never started.
-        log.error("backend did not become ready; aborting")
-        backend.terminate(BACKEND_DRAIN_SECS)
-        raise
-    log.info("backend: ready on %s", settings.backend_base_url)
+    #    The ORDER of restore-before-backend is itself the correctness rule rather than an
+    #    optimisation: the backend flushes the slot table from its own memory, so a backend
+    #    that starts first persists an empty one over the restored files and the conversation
+    #    list comes up blank with nothing to say so. Transcripts are not restored here -- the
+    #    front fetches the one a turn continues, on that turn.
+    # Signal guard spans the whole startup phase: see _startup_signal_guard. From the
+    # claim's incarnation bump until the supervise phase installs its own handlers, a
+    # SIGTERM/SIGINT is raised as _StartupInterrupted so it reaches the release-and-teardown
+    # abort paths rather than killing the process (SIGTERM) or escaping uncaught (SIGINT)
+    # with the claim still raised against a live predecessor.
+    with _startup_signal_guard() as _signal_guard:
+        # The claim acquisition DEFERS a stop: a SIGTERM/SIGINT between the claim's committed
+        # PUT and the moment the returned claim is bound would otherwise escape before the
+        # release scope exists, stranding the claim (there is no claim object to release yet).
+        # With it deferred, the claim is bound first; the pending stop is then raised INSIDE the
+        # release try below, where the ordinary release-and-teardown handles it.
+        with _signal_guard.deferring():
+            claim = _claim_writer_ownership(settings)
+        # Restoration and backend start-up run INSIDE the ownership-release scope. A successful
+        # claim bumped the committed incarnation before this point, so ANY failure between the
+        # claim and readiness -- an authority GET that times out, a backend spawn that fails, or
+        # readiness itself not arriving -- must release the claim, or the bump outlives this
+        # aborting task and permanently fences a still-healthy predecessor. The backend is created
+        # as None and torn down only if it actually started, so a spawn failure does not call
+        # terminate on a backend that never existed. front and sidecar are declared here too,
+        # BEFORE the first try, so no interruptible statement sits between the two cleanup
+        # scopes: a stop at the readiness boundary is caught by one scope or the other rather
+        # than escaping both with the claim unreleased (GPT F1).
+        backend = None
+        front: ProcessGroup | None = None
+        sidecar: ProcessGroup | None = None
+        try:
+            # A stop that arrived DURING the claim was deferred; now that the claim is bound and
+            # the release scope is active, raise it so the release path runs rather than leaving
+            # the claim stranded.
+            _signal_guard.raise_pending()
+            if restore_authority(settings):
+                # The slot table came back from a remote snapshot but the transcripts
+                # did not (they load lazily, per turn), so tell the backend to keep a
+                # listed slot whose transcript is not yet on local disk as a reopen
+                # seed instead of pruning it as a dead tab -- see
+                # chat_persistence._transcripts_may_be_remote_only.
+                env[backend_mod.ENV_AUTHORITY_RESTORED] = "1"
+            backend = backend_mod.start_backend(settings, env=env)
+            backend_mod.wait_until_ready(
+                settings, backend_mod.DEFAULT_READY_TIMEOUT_SECS, process=backend
+            )
+        except (Exception, _StartupInterrupted):
+            # Restore, spawn, or readiness failed -- or a stop signal arrived mid-startup (routed
+            # here as _StartupInterrupted by the signal guard below). Release the ownership claim
+            # and abort. The front was never started. The claim bumped the committed incarnation
+            # BEFORE restoration so a predecessor was fenced from that instant; a task that aborts
+            # here never commits anything, so leaving the bump raised would permanently fence a
+            # still-healthy predecessor into silent loss of every later turn. The release restores
+            # the predecessor's own committed pointer under a CAS and is a no-op if a newer
+            # successor has since claimed on top. Best-effort: a release that cannot run must not
+            # mask the original failure, which still propagates.
+            log.error("startup failed before readiness; releasing ownership claim and aborting")
+            if settings.backup_bucket:
+                try:
+                    generation_mod.release_ownership(
+                        settings, S3ObjectStore(settings.backup_bucket), claim
+                    )
+                except Exception:  # noqa: BLE001 - best-effort; the real failure must propagate
+                    log.exception("ownership: release failed during abort; continuing to abort")
+            if backend is not None:
+                backend.terminate(BACKEND_DRAIN_SECS)
+            raise
 
-    # 2. Front. There is no sidecar: backup was extracted from this PR.
-    front = _start_front(settings)
-    log.info("front: started")
+        # 2. Front, then the sidecar. The sidecar is started last because its first cycle
+        #    reads what the backend has written, and it is absent entirely when no bucket is
+        #    configured: that is a crew running without durability, not a fault.
+        #
+        #    The spawns run INSIDE a cleanup scope that already owns the running backend, so
+        #    a spawn that raises partway through -- a fork/PID failure between these two
+        #    statements, after the front is up -- tears down every child started so far
+        #    rather than leaking it. Without this scope a `_start_sidecar` failure returned
+        #    from `run` with the front and backend still running, orphaned under a PID 1 that
+        #    had not yet exited, and the backend's turns never drained. front and sidecar were
+        #    declared None before the first scope so `_teardown` only drains what started, and
+        #    so no interruptible statement sits between the two scopes.
+        try:
+            # The readiness boundary is INSIDE this cleanup scope (not between the scopes): a
+            # stop here still routes to the release-and-teardown below rather than escaping with
+            # the claim unreleased and the backend undrained (GPT F1).
+            log.info("backend: ready on %s", settings.backend_base_url)
+            front = _start_front(settings)
+            log.info("front: started")
+            sidecar = _start_sidecar(settings)
+        except (Exception, _StartupInterrupted):
+            # A child failed to start -- or a stop signal arrived mid-spawn (routed here as
+            # _StartupInterrupted) -- AFTER readiness, so the task is aborting without ever
+            # serving: tear down every child started so far AND release the ownership claim. The
+            # claim bumped the committed incarnation before restoration, so an abort here that did
+            # not release it would leave the bump raised and permanently fence a still-healthy
+            # predecessor into silent loss of every later turn -- the same hazard the
+            # restore/readiness abort path above guards. Best-effort and the same CAS-protected
+            # release: a release that cannot run must not mask the spawn failure, which propagates.
+            log.error("a child failed to start; tearing down what started and releasing ownership")
+            _teardown(front, backend, sidecar)
+            if settings.backup_bucket:
+                try:
+                    generation_mod.release_ownership(
+                        settings, S3ObjectStore(settings.backup_bucket), claim
+                    )
+                except Exception:  # noqa: BLE001 - best-effort; the real failure must propagate
+                    log.exception("ownership: release failed during spawn abort; continuing")
+            raise
 
-    watched = [backend, front]
-    try:
-        why = wait_for_shutdown(watched)
-        log.info("shutdown: %s", why)
-    finally:
-        _teardown(front, backend)
+        # The handoff from the startup guard to the supervise-phase handlers happens INSIDE
+        # the guard scope, not after it (GPT F1). If the `watched` list build and the
+        # supervise `try` ran after `with _startup_signal_guard()` exited, its finally would
+        # have already restored the default dispositions -- a SIGTERM in that span would then
+        # kill the process and a SIGINT escape as KeyboardInterrupt, in both cases BEFORE
+        # `wait_for_shutdown` installs its own handlers, so the ownership claim stays raised
+        # against a live predecessor and the children are never drained. Built here, a stop in
+        # the span is still the guard's `_StartupInterrupted`, caught below and routed through
+        # the same release-and-teardown abort path. `wait_for_shutdown` installs its own
+        # handlers as its first action, so by the time the guard's finally restores the
+        # defaults on block exit the supervise handlers already own the signals -- no instant
+        # is left unguarded.
+        watched = [child for child in (backend, front, sidecar) if child is not None]
+        sidecar_status: int | None = None
+        try:
+            # A stop that lands between here and wait_for_shutdown taking over its handlers is
+            # raised as _StartupInterrupted (the guard is still active); tear down the children
+            # and release the claim rather than escaping with the bump raised and nothing drained.
+            _signal_guard.raise_pending()
+            why = wait_for_shutdown(watched)
+            log.info("shutdown: %s", why)
+        except (Exception, _StartupInterrupted):
+            # The `finally` below tears the children down on every exit, so release only the
+            # ownership claim here: a stop in the handoff span would otherwise leave the
+            # incarnation bump raised against a live predecessor. Best-effort and CAS-protected,
+            # the same as the startup abort paths; the original stop still propagates.
+            log.error("stop during the supervise handoff; releasing ownership before teardown")
+            if settings.backup_bucket:
+                try:
+                    generation_mod.release_ownership(
+                        settings, S3ObjectStore(settings.backup_bucket), claim
+                    )
+                except Exception:  # noqa: BLE001 - best-effort; the real failure must propagate
+                    log.exception("ownership: release failed during handoff abort; continuing")
+            raise
+        finally:
+            sidecar_status = _teardown(front, backend, sidecar)
     # The exit code has to distinguish the two reasons, because it is the only one
     # the platform reads. `_wait_for_shutdown` returns "signal" for an orderly stop
     # (ECS asked the task to go) and "<name> exited (code N)" when a child died
@@ -871,10 +1199,25 @@ def run(settings: Settings, *, wait_for_shutdown=None) -> int:
     # Anything outside `_ORDERLY_REASONS`, including an empty reason, is reported as
     # a failure: a reason this code cannot account for is not evidence that things
     # went well.
-    if why in _ORDERLY_REASONS:
-        return 0
-    log.error("exiting non-zero: %s", why or "shutdown reason unknown")
-    return 1
+    if why not in _ORDERLY_REASONS:
+        log.error("exiting non-zero: %s", why or "shutdown reason unknown")
+        return 1
+    # An orderly stop is only a SUCCESSFUL stop if the writer's final cycle committed.
+    # That cycle runs after the backend's flush and carries the turns nothing else has
+    # copied, so its failure -- a refused upload, or a kill when the drain window
+    # elapses mid-upload -- is state this task produced and lost. Reporting 0 for it
+    # would hand the platform a clean shutdown for a lossy one, which is the same
+    # mistake as reporting 0 for a crash loop. This applies to a spent lifetime as much
+    # as to a signal: both stop a task that was serving turns a moment earlier.
+    if sidecar is not None and sidecar_status != 0:
+        log.error(
+            "exiting non-zero: the sidecar's final backup cycle did not complete "
+            "(status %s), so state written after the backend's flush is not in the "
+            "bucket",
+            "unknown" if sidecar_status is None else sidecar_status,
+        )
+        return 1
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

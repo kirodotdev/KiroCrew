@@ -92,7 +92,7 @@ chooses, and it keeps the record out of the agent's reach.
 ### 1. Which exits clear trust
 
 The gateway already encodes whether the owner asked for an exit in its exit
-status. `_shutdown_and_exit` in `slack/gateway.py` exits **0** only for an owner
+status. `_shutdown_and_exit` in `slack/gateway_runtime/exit_path.py` exits **0** only for an owner
 stop: SIGTERM or SIGINT (`kirocrew stop`, `kirocrew restart`, Ctrl-C,
 `systemctl stop`, and the SIGTERM a host reboot delivers) and the owner shutdown
 route. Every self-initiated shutdown that exists to be relaunched exits non-zero

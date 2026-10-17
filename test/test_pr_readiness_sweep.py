@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "pr-readiness-sweep.yml"
 SCANNER = REPO_ROOT / ".github" / "scripts" / "readiness_sweep_scan.py"
+REPUBLISHER = REPO_ROOT / ".github" / "scripts" / "republish_withheld_verdict.py"
 
 
 def _gnu_date() -> bool:
@@ -228,6 +230,10 @@ def _pr_page(args):
             "number": pr.get("number"),
             "updatedAt": pr.get("updatedAt"),
             "headRefOid": pr.get("headRefOid"),
+            # Review submissions and dismissals, as `[{"submittedAt": ...}]`.
+            "timelineItems": {
+                "nodes": _read("reviews_timeline.json", []),
+            },
             "commits": {"nodes": [{"commit": _commit(pr)}]},
         }
         for pr in window
@@ -292,6 +298,14 @@ def install_scanner(fixtures: Path, work: Path) -> None:
     scripts = work / ".github" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     (scripts / SCANNER.name).write_text(SCANNER.read_text(encoding="utf-8"), encoding="utf-8")
+    # The withheld-verdict republisher the sweep invokes for a
+    # verdict-unpublished pending. Copied in so the invocation path resolves;
+    # the GH_STUB answers its read-only calls and records its rerun as a
+    # dispatch, so a routing test sees whether the sweep reached it. Its own
+    # logic is unit-tested in test_republish_withheld_verdict.py.
+    (scripts / REPUBLISHER.name).write_text(
+        REPUBLISHER.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     (fixtures / "graphql_stub.py").write_text(GRAPHQL_STUB, encoding="utf-8")
 
 
@@ -341,6 +355,7 @@ class Runner:
         other_comments: list[dict] | None = None,
         description: str = "11 readiness check(s) still pending; waiting on CI (not started)",
         status_read_fails: bool = False,
+        review_at: str | None = None,
     ) -> list[str]:
         """Run the sweep over ONE pull request; return the dispatches recorded.
 
@@ -360,6 +375,8 @@ class Runner:
         so a test opts INTO the read-failure shape rather than out of
         it. `status_read_fails=True` makes that read fail, to pin which way mode 1
         degrades when it cannot classify a pending.
+
+        `review_at` is the newest human review submission or dismissal.
         """
         comment_times = [
             at
@@ -371,6 +388,10 @@ class Runner:
         ]
         if pr_updated_at is None:
             pr_updated_at = max(["2020-01-01T00:00:00Z", *comment_times])
+        reviews = [] if review_at is None else [{"submittedAt": review_at}]
+        (self.fixtures / "reviews_timeline.json").write_text(json.dumps(reviews))
+        if review_at is not None:
+            pr_updated_at = max(pr_updated_at, review_at)
         (self.fixtures / "prs.json").write_text(
             json.dumps([{"number": pr, "headRefOid": sha, "updatedAt": pr_updated_at}])
         )
@@ -692,6 +713,10 @@ def test_the_sweep_runs_at_the_shortest_schedule_github_offers() -> None:
 # ── The read-failure pending: age is its only signal ────────────────────────
 
 READ_FAILURE_TOKEN = "[read-failed]"
+# The token PR Readiness stamps on a pending that an advisory lane owes this
+# head a verdict it withheld. The sweep re-runs the owing lane rather
+# than re-firing the aggregator for it.
+VERDICT_UNPUBLISHED_TOKEN = "[verdict-unpublished]"
 
 TRANSPORT_DESCRIPTION = (
     READ_FAILURE_TOKEN + " Readiness could not be evaluated"
@@ -846,6 +871,90 @@ def test_every_read_failure_pending_the_publisher_writes_is_stamped() -> None:
     assert 'prefix="$READ_FAILURE_TOKEN "' in publisher
 
 
+# ── The withheld advisory verdict: re-run the lane, not the aggregator ─
+
+# The pending shape for a withheld advisory verdict. The lane's own check-run
+# is `success` and PR Readiness stamps the token first, so the sweep must NOT
+# re-fire the aggregator (a recompute re-derives the same named pending) and
+# must instead re-run the owing lane. The token leads the description like the
+# read-failure one; the ordinary pending prose can follow it.
+VERDICT_UNPUBLISHED_DESCRIPTION = (
+    VERDICT_UNPUBLISHED_TOKEN + " 3 readiness check(s) still pending;"
+    " waiting on Design Review (verdict not published, re-run this lane)"
+)
+
+
+def test_a_withheld_verdict_pending_reruns_the_lane_not_the_aggregator(
+    runner: Runner,
+) -> None:
+    """A `[verdict-unpublished]` pending re-runs the owing lane.
+
+    The lane finished `success` and its verdict never reached the comment slot,
+    so there is no check completed AFTER the verdict -- the fixture is the same
+    no-later-evidence shape an ordinary lane-pending has -- and re-firing the
+    aggregator would only re-derive the same named pending. The sweep must route
+    to the lane re-run instead: no `pr-readiness.yml` dispatch, and the recovery
+    is named in the log so a reader can see what fired.
+    """
+    dispatched = runner.sweep(
+        state="pending",
+        status_at="2026-08-07T19:16:13Z",
+        check_completed_at="2026-08-07T19:01:24Z",
+        description=VERDICT_UNPUBLISHED_DESCRIPTION,
+    )
+    assert dispatched == []
+    assert "withheld advisory verdict" in runner.last_stdout
+    assert "republish_withheld_verdict.py" not in runner.last_stdout  # it is invoked, not echoed
+    # The invocation itself: the sweep ran the republisher for this PR.
+    assert "re-running the owing lane(s)" in runner.last_stdout
+
+
+def test_the_publisher_and_the_sweep_agree_on_the_verdict_unpublished_token() -> None:
+    """Pin the token across the two files that must share it.
+
+    PR Readiness stamps it; the sweep classifies on it. Nothing in either file's
+    own tests would catch the two drifting apart, and the cost of drift is the
+    exact freeze this recovery exists to clear -- a withheld verdict never
+    re-run.
+    """
+    publisher = (REPO_ROOT / ".github" / "workflows" / "pr-readiness.yml").read_text(
+        encoding="utf-8"
+    )
+    sweep = WORKFLOW.read_text(encoding="utf-8")
+    declaration = 'VERDICT_UNPUBLISHED_TOKEN="%s"' % VERDICT_UNPUBLISHED_TOKEN
+    assert declaration in sweep
+    assert declaration in publisher
+    assert '*"$VERDICT_UNPUBLISHED_TOKEN"*) return 0 ;;' in sweep
+    # And the publisher leads the pending description with it, like the
+    # read-failure token, so a 140-char truncation cannot strip it.
+    assert 'prefix="$prefix$VERDICT_UNPUBLISHED_TOKEN "' in publisher
+
+
+def test_every_unpublished_verdict_pending_site_sets_the_flag() -> None:
+    """A new `(verdict not published, re-run this lane)` site cannot ship
+    without arming the token.
+
+    Same discipline as the read-failure stamp test: the sweep can only see the
+    token, so a scoring site that forgets to set ``verdict_unpublished=true``
+    would leave its withheld verdict frozen with nothing to re-run it.
+    """
+    publisher = (REPO_ROOT / ".github" / "workflows" / "pr-readiness.yml").read_text(
+        encoding="utf-8"
+    )
+    lines = publisher.splitlines()
+    sites = [
+        number
+        for number, line in enumerate(lines)
+        if "verdict not published, re-run this lane" in line and "pending+=(" in line
+    ]
+    assert sites, "no unpublished-verdict pending site found; the wording has drifted"
+    for number in sites:
+        window = "\n".join(lines[max(0, number - 2) : number + 1])
+        assert (
+            "verdict_unpublished=true" in window
+        ), "line %d scores an unpublished-verdict pending without arming the token" % (number + 1)
+
+
 def test_an_ordinary_lane_pending_still_pays_no_status_read(runner: Runner) -> None:
     """The classifying read is made only where it can change the outcome.
 
@@ -865,6 +974,30 @@ def test_an_ordinary_lane_pending_still_pays_no_status_read(runner: Runner) -> N
         == 1
     )
     assert not runner.status_read.exists()
+
+
+def test_a_young_no_evidence_pending_pays_no_status_read(runner: Runner) -> None:
+    """Both description consumers are aged against STALE_MINUTES, so a pending
+    past the publish lag but younger than that is skipped before the read.
+
+    The fixture carries the withheld-verdict token, which WOULD re-run a lane if
+    the pending were old enough -- so this also proves the age gate, not the
+    classifier, is what leaves it alone.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    published = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    completed = (now - timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    dispatched = runner.sweep(
+        state="pending",
+        status_at=published,
+        check_completed_at=completed,
+        description=VERDICT_UNPUBLISHED_DESCRIPTION,
+    )
+    assert dispatched == []
+    assert not runner.status_read.exists()
+    assert "withheld advisory verdict" not in runner.last_stdout
 
 
 def test_an_unreadable_description_leaves_the_pending_alone(runner: Runner) -> None:
@@ -1669,3 +1802,81 @@ def test_comments_are_not_read_when_the_pr_is_untouched_since_the_verdict(
         == []
     )
     assert not runner.comments_read.exists()
+
+
+# ── Review evidence ──────────────────────────────────────────────────────────
+#
+# Readiness reds a head a reviewer asked changes on. A review reaches the
+# aggregator through the Sensitive Change Review run it starts; the scan's newest
+# review time is what re-fires a terminal verdict when that run never starts or
+# the readiness run it triggers does not publish.
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_review_after_a_terminal_verdict_is_refired(runner: Runner, state: str) -> None:
+    # Green: a changes-requested review would otherwise leave a rejected head
+    # green. Red: an approval or dismissal would otherwise leave it red.
+    dispatched = runner.sweep(
+        state=state,
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        review_at="2026-08-30T19:20:00Z",
+    )
+    assert len(dispatched) == 1
+    assert "a review was submitted or dismissed" in runner.last_stdout
+
+
+def test_a_pending_is_not_refired_by_a_review_alone(runner: Runner) -> None:
+    # A pending verdict already holds merge, and the check completion that
+    # resolves it re-reads the reviews.
+    assert (
+        runner.sweep(
+            state="pending",
+            status_at="2026-08-30T19:01:24Z",
+            check_completed_at="2026-08-30T18:00:00Z",
+            review_at="2026-08-30T19:20:00Z",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_review_inside_the_publish_lag_is_evidence(runner: Runner, state: str) -> None:
+    # Landed 60s before the stamp: inside the evaluate-to-publish gap, so the
+    # verdict may never have read it.
+    dispatched = runner.sweep(
+        state=state,
+        status_at="2026-08-30T19:01:24Z",
+        check_completed_at="2026-08-30T18:55:00Z",
+        review_at="2026-08-30T19:00:24Z",
+    )
+    assert len(dispatched) == 1
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_review_at_the_publish_lag_floor_is_not_evidence(runner: Runner, state: str) -> None:
+    # Exactly 180s before the stamp, which is where a republish lands it: this
+    # is what makes the review nudge self-terminating.
+    assert (
+        runner.sweep(
+            state=state,
+            status_at="2026-08-30T19:01:24Z",
+            check_completed_at="2026-08-30T18:00:00Z",
+            review_at="2026-08-30T18:58:24Z",
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("state", ["success", "failure"])
+def test_a_terminal_verdict_younger_than_the_lag_is_not_examined_for_reviews(
+    runner: Runner, state: str
+) -> None:
+    # Examined from the next tick on instead, so the recompute a fresh review
+    # earns cannot be re-earned by the same review on the tick after it.
+    now = datetime.now(timezone.utc)
+
+    def stamp(seconds_ago: int) -> str:
+        return (now - timedelta(seconds=seconds_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    assert runner.sweep(state=state, status_at=stamp(60), review_at=stamp(30)) == []

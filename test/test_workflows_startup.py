@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.workflows.registry import RunHandle, RunRegistry
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -40,34 +40,33 @@ def _seed(store):
     store.save(handle.run_id, handle.to_store_json())
 
 
-# A hang guard, not the assertion: ``_await_restart_write`` settles on causality
-# and this only turns a lost run into a failed test, well under pytest-timeout.
-_HANG_GUARD_SECS = 60.0
-
-
 async def _await_restart_write(entered: asyncio.Event, startup: asyncio.Task) -> None:
     """Wait for the restart write to begin, or for startup to be unable to reach it.
 
     The write is scheduled only after the real ``start_dashboard`` has bound and
     kicked workflow initialization, which then loads config, constructs the
-    service and hydrates the store off-loop. A fixed wall-clock budget across
-    all of that measured runner speed, not the bind-before-write ordering under
-    test. Settle on causality instead: ``entered`` fires, a failed boot raises
-    its own error, or the initializer finishes without ever writing, which is a
-    deterministic failure.
+    service and hydrates the store off-loop. Settle on causality: ``entered``
+    fires when the write begins, a failed boot raises its own error, or the
+    initializer finishes without writing (a deterministic failure). The
+    default_timeout() lost-run bound from async_wait_until turns a hang into a
+    named failure well before pytest-timeout kills the worker.
     """
-    give_up_at = time.monotonic() + _HANG_GUARD_SECS
     initializer = None
-    while not entered.is_set():
+
+    async def _settled() -> bool:
+        nonlocal initializer
+        if entered.is_set():
+            return True
         if initializer is None and startup.done():
-            _, state, _ = startup.result()
+            _, state, _ = startup.result()  # propagates if startup raised
             initializer = state.workflow_startup_task
             assert initializer is not None, "startup finished without kicking initialization"
         if initializer is not None and initializer.done():
             initializer.result()
             raise AssertionError("workflow initialization settled without the restart write")
-        assert time.monotonic() < give_up_at, "the restart write never began"
-        await asyncio.sleep(0.005)
+        return False
+
+    await async_wait_until(_settled)
 
 
 @pytest.mark.asyncio
@@ -206,7 +205,7 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
     try:
         await _await_restart_write(entered, startup)
         assert bound.is_set(), "restart write delayed socket readiness"
-        runner, state, _ = await asyncio.wait_for(asyncio.shield(startup), 5)
+        runner, state, _ = await await_until(asyncio.shield(startup))
         assert state.ready
         assert len(save_threads) == 1 and save_threads[0] != loop_thread
         assert not finished.is_set()
@@ -221,11 +220,7 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
         if cancel:
             shutdown = asyncio.create_task(runner.cleanup())
 
-            async def cancellation_delivered():
-                while not initializer.cancelling():
-                    await asyncio.sleep(0)
-
-            await asyncio.wait_for(cancellation_delivered(), 5)
+            await async_wait_until(lambda: initializer.cancelling())
             shutdown.cancel()
             await asyncio.sleep(0)
             shutdown.cancel()
@@ -233,9 +228,9 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
             assert not shutdown.done()
             assert not initializer.done()
         release.set()
-        await asyncio.wait_for(asyncio.gather(initializer, return_exceptions=True), 5)
+        await await_until(asyncio.gather(initializer, return_exceptions=True))
         if shutdown is not None:
-            await asyncio.wait_for(shutdown, 5)
+            await await_until(shutdown)
         assert finished.is_set()
         assert (await asyncio.to_thread(store.load_all))[0]["status"] == "failed"
         if cancel:
@@ -254,11 +249,11 @@ async def test_dashboard_binds_before_restart_write_and_owns_initialization(
             driver.attach_workflow_service.assert_called_once()
     finally:
         release.set()
-        outcomes = await asyncio.wait_for(asyncio.gather(startup, return_exceptions=True), 15)
+        outcomes = await await_until(asyncio.gather(startup, return_exceptions=True))
         if runner is None and isinstance(outcomes[0], tuple):
             runner, state = outcomes[0][0], outcomes[0][1]
         if shutdown is not None:
-            await asyncio.wait_for(asyncio.gather(shutdown, return_exceptions=True), 5)
+            await await_until(asyncio.gather(shutdown, return_exceptions=True))
         if runner is not None:
             await runner.cleanup()
         await _cancel_stray_tasks()
@@ -349,7 +344,7 @@ async def test_dashboard_initialization_failure_keeps_workflows_unavailable(
     monkeypatch.setattr(driver, "attach_workflow_service", attach)
     async with _dashboard(tmp_path, monkeypatch, task_runner=driver) as (runner, state, _):
         pending = [t for t in state._background_tasks if t.get_name() == "workflow-initialization"]
-        await asyncio.wait_for(asyncio.gather(*pending), 5)
+        await await_until(asyncio.gather(*pending))
         assert state.ready and state.workflow_service is None
         assert state.task_runner is driver
         assert state.workflow_startup_status == "failed"
@@ -387,19 +382,19 @@ async def test_shutdown_fences_a_factory_that_returns_after_cancellation(tmp_pat
     async with _dashboard(tmp_path, monkeypatch, task_runner=driver) as (runner, state, _):
         shutdown = None
         try:
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             shutdown = asyncio.create_task(runner.cleanup())
-            await asyncio.wait_for(cancelled.wait(), 5)
+            await await_until(cancelled)
             assert not shutdown.done()
             release.set()
-            await asyncio.wait_for(shutdown, 5)
+            await await_until(shutdown)
             assert state.workflow_service is None and state.task_runner is driver
             service.attach_task_runner.assert_not_called()
             driver.attach_workflow_service.assert_not_called()
         finally:
             release.set()
             if shutdown is not None:
-                await asyncio.wait_for(asyncio.gather(shutdown, return_exceptions=True), 5)
+                await await_until(asyncio.gather(shutdown, return_exceptions=True))
 
 
 @pytest.mark.asyncio
@@ -432,31 +427,31 @@ async def test_tunnel_stops_before_workflow_drain_with_early_publication_fence(
         state.tunnel_manager = SimpleNamespace(stop=stop_tunnel)
         shutdown = None
         try:
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             initializer = next(
                 t for t in state._background_tasks if t.get_name() == "workflow-initialization"
             )
             shutdown = asyncio.create_task(runner.cleanup())
-            await asyncio.wait_for(tunnel_entered.wait(), 5)
+            await await_until(tunnel_entered)
             assert not cancelled.is_set(), "workflow drain preceded tunnel teardown"
             if finish_during_tunnel:
                 release.set()
-                await asyncio.wait_for(initializer, 5)
+                await await_until(initializer)
                 assert state.workflow_service is None
                 assert not shutdown.done()
             tunnel_release.set()
             if not finish_during_tunnel:
-                await asyncio.wait_for(cancelled.wait(), 5)
+                await await_until(cancelled)
                 assert not shutdown.done(), "shutdown abandoned workflow initialization"
                 release.set()
-            await asyncio.wait_for(shutdown, 5)
+            await await_until(shutdown)
             assert state.workflow_service is None
             assert initializer.done()
         finally:
             release.set()
             tunnel_release.set()
             if shutdown is not None:
-                await asyncio.wait_for(asyncio.gather(shutdown, return_exceptions=True), 5)
+                await await_until(asyncio.gather(shutdown, return_exceptions=True))
 
 
 @pytest.mark.asyncio
@@ -497,13 +492,13 @@ async def test_channel_task_admission_waits_for_workflow_attachment(
             t for t in state._background_tasks if t.get_name() == "workflow-initialization"
         )
         try:
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             reply = await task_arg_reply(str(spec), orch.task_runner)
             assert "initializing" in reply
             assert driver._runs == {} and driver._tasks == {}
             assert not executed.is_set()
             release.set()
-            await asyncio.wait_for(initializer, 5)
+            await await_until(initializer)
             reply = await task_arg_reply(str(spec), orch.task_runner)
             if init_fails:
                 from kiro_crew.taskrunner import WorkflowInitializing
@@ -524,16 +519,16 @@ async def test_channel_task_admission_waits_for_workflow_attachment(
                 try:
                     standalone_reply = await task_arg_reply(str(spec), standalone)
                     assert "Task started" in standalone_reply
-                    await asyncio.wait_for(executed.wait(), 5)
+                    await await_until(executed)
                     standalone_run = next(iter(standalone._runs.values()))
                     assert standalone_run.workflow_run_id == ""
                 finally:
-                    await asyncio.wait_for(
-                        asyncio.gather(*list(standalone._tasks.values()), return_exceptions=True), 5
+                    await await_until(
+                        asyncio.gather(*list(standalone._tasks.values()), return_exceptions=True)
                     )
             else:
                 assert "Task started" in reply
-                await asyncio.wait_for(executed.wait(), 5)
+                await await_until(executed)
                 run = next(iter(driver._runs.values()))
                 assert run.workflow_run_id
                 assert (
@@ -541,10 +536,8 @@ async def test_channel_task_admission_waits_for_workflow_attachment(
                 )
         finally:
             release.set()
-            await asyncio.wait_for(asyncio.gather(initializer, return_exceptions=True), 5)
-            await asyncio.wait_for(
-                asyncio.gather(*list(driver._tasks.values()), return_exceptions=True), 5
-            )
+            await await_until(asyncio.gather(initializer, return_exceptions=True))
+            await await_until(asyncio.gather(*list(driver._tasks.values()), return_exceptions=True))
 
 
 @pytest.mark.asyncio
@@ -628,7 +621,7 @@ async def test_cancelled_factory_drains_constructor_before_return(
     monkeypatch.setattr(RunRegistry, "load_persisted_async", restore)
     creating = asyncio.create_task(WorkflowService.create(sessions=None, persist=False))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered)
         creating.cancel()
         await asyncio.sleep(0)
         creating.cancel()
@@ -637,12 +630,12 @@ async def test_cancelled_factory_drains_constructor_before_return(
         assert not finished.is_set()
         release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(creating, 5)
+            await await_until(creating)
         assert finished.is_set()
         assert restored == []
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(creating, return_exceptions=True), 5)
+        await await_until(asyncio.gather(creating, return_exceptions=True))
 
 
 @pytest.mark.asyncio
@@ -681,7 +674,7 @@ async def test_dashboard_task_reads_and_cancel_remain_available_during_init(tmp_
                 t for t in state._background_tasks if t.get_name() == "workflow-initialization"
             )
             try:
-                await asyncio.wait_for(entered.wait(), 5)
+                await await_until(entered)
                 response = await api_taskrunner_status(_request(state, "GET"))
                 assert response.status == 200
                 assert _body(response)["available"] is True
@@ -699,13 +692,13 @@ async def test_dashboard_task_reads_and_cancel_remain_available_during_init(tmp_
                 await asyncio.gather(active, return_exceptions=True)
                 assert active.cancelled()
                 release.set()
-                await asyncio.wait_for(initializer, 5)
+                await await_until(initializer)
                 assert state.task_runner is driver
                 assert state.workflow_service is not None
                 assert _body(await api_taskrunner_status(_request(state, "GET")))["available"]
             finally:
                 release.set()
-                await asyncio.wait_for(asyncio.gather(initializer, return_exceptions=True), 5)
+                await await_until(asyncio.gather(initializer, return_exceptions=True))
     finally:
         active.cancel()
         await asyncio.gather(active, return_exceptions=True)

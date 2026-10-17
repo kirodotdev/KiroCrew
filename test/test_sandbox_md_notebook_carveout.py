@@ -26,7 +26,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 
 import pytest
 
@@ -38,13 +37,12 @@ _CREW_PREFIXES = (".kiro/crew", ".kirocrew")
 
 @pytest.fixture(autouse=True)
 def _pin_ssh_accept_new(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin ``_ssh_supports_accept_new`` at the seam ``_build_launcher_script`` reads.
+    """Pin ``_ssh_supports_accept_new`` at the seam the namespace plan reads.
 
     The real probe runs the host's ``ssh -V``. It is ``lru_cache``d, but any test
     that clears the cache (``TestSshSupportsAcceptNew`` does) hands the next
-    launcher-building test in the process a real spawn -- 32 across the three
-    launcher suites on a five-run hygiene sweep, a host program none of them is about
-    (test-hygiene class 7). ``True`` is what a modern host answers.
+    plan-building test in the process a real spawn -- a host program none of these
+    tests is about (test-hygiene class 7). ``True`` is what a modern host answers.
     """
     monkeypatch.setattr("kiro_crew.sandbox._ssh_supports_accept_new", lambda: True)
 
@@ -55,11 +53,9 @@ def _crew_path(prefix: str, leaf: str) -> str:
     return os.path.join(str(Path.home()), *prefix.split("/"), *leaf.split("/"))
 
 
-def _hidden_dirs(mode: str) -> set[str]:
-    script = sb._build_launcher_script(mode)
-    match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-    assert match, "SENSITIVE_DIRS not found in the generated launcher script"
-    return set(json.loads(match.group(1)))
+def _hidden_dirs(mode: str, **kwargs: object) -> set[str]:
+    """The directories the Linux launcher bind-masks for one spawn: the plan's masks."""
+    return set(sb._spawn_plan("namespace", mode, **kwargs).sensitive_dirs)  # type: ignore[arg-type]
 
 
 @pytest.fixture()
@@ -173,13 +169,10 @@ class TestTheStagingDirectoryIsMaskedAndCarvedBack:
             assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) in targets
 
     def test_the_launcher_lifts_the_staging_mask_for_that_spawn(self) -> None:
-        script = sb._build_launcher_script(
+        hidden = _hidden_dirs(
             "standard",
             extra_visible_dirs=sb.app_backend_visible_targets(sb.MD_NOTEBOOK_APP_NAME),
         )
-        match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-        assert match
-        hidden = set(json.loads(match.group(1)))
 
         for prefix in _CREW_PREFIXES:
             assert _crew_path(prefix, sb._MD_NOTEBOOK_STAGING_LEAF) not in hidden

@@ -95,7 +95,7 @@ Each line below is drawn from the app's own manifest description.
 | App | What it does |
 |---|---|
 | **Mochi** (`mochi`) | A desktop companion that lives on your screen, watches pages and feeds for you, and taps you on the shoulder only when something changed. |
-| **Crew Companion** (`crew-companion`) | Paces your day: break nudges, plain-language reminders, a short breathing exercise, and session-finished alerts. |
+| **Crew Companion** (`crew-companion`) | Paces your day: break nudges, plain-language reminders, a short breathing exercise, and session-finished alerts. Reminders are understood in English, Chinese and Korean (picked from the text's script, not the UI language); an unclear time gets a "when?" prompt instead of a guess. |
 | **Agent Worlds** (`agent-worlds`) | Turns your running agents into characters in an animated pixel-art scene, so a glance tells you how busy Kiro Crew is. |
 | **Personal Shopper** (`personal-shopper`) | A personal advisor that researches real stores. It never buys anything — you do. |
 

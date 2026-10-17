@@ -59,8 +59,8 @@ _CACHE_TTL_SECS = 30
 # lifecycle (see `_revalidate_pull_request`), so post-merge comments and a
 # reopen reach the panel within one TTL for one rate-limit-free request.
 # Mutation invalidation still drops these entries, the explicit refresh bypasses
-# them, and the turn-boundary force still re-reads a CLOSED chip, never a merged
-# one.
+# them, and the turn-boundary force still re-reads a CLOSED chip; it does not
+# bypass a merged one's clock (a forced call reads it once that clock runs out).
 _TERMINAL_TTL_SECS = 6 * 60 * 60
 _CLOSED_TTL_SECS = 60 * 60
 # Ceiling on how long conditional revalidation may keep re-stamping one full
@@ -422,12 +422,15 @@ def _trim_revalidators() -> None:
 async def _gh_conditional_get(
     path: str, etag: str, *, max_output_bytes: int = runner._METADATA_OUTPUT_BYTES
 ) -> _ConditionalRead:
-    """One `gh api` GET carrying ``If-None-Match`` when a validator is known."""
+    """One github.com `gh api` GET carrying ``If-None-Match`` when a validator is known."""
     argv = ["gh", "api", path, "-i"]
     if etag:
         argv += ["-H", f"If-None-Match: {etag}"]
     return await runner._run_provider(
-        *argv, max_output_bytes=max_output_bytes, parse=runner._parse_conditional_get("gh")
+        *argv,
+        max_output_bytes=max_output_bytes,
+        host="github.com",
+        parse=runner._parse_conditional_get("gh"),
     )
 
 
@@ -521,8 +524,13 @@ async def _probe_github_payload(ref: SourceRef, payload: dict[str, Any]) -> _Pro
 
 def _revalidation_applies(ref: SourceRef) -> bool:
     """Only a github.com pull request served by the built-in fetcher is probed;
-    GitLab and registered plugins have no conditional read here."""
-    return ref.provider == "github" and plugins._plugin_for_change(ref) is None
+    GitLab, GitHub Enterprise hosts and registered plugins have no conditional
+    read here, since the probes rely on github.com's ETag behaviour."""
+    return (
+        ref.provider == "github"
+        and ref.host == "github.com"
+        and plugins._plugin_for_change(ref) is None
+    )
 
 
 async def _revalidate_pull_request(
@@ -726,6 +734,7 @@ async def _fetch_github_contributors(ref: RepoRef, key: str) -> list[dict[str, s
         "gh",
         "api",
         f"repos/{ref.owner}/{ref.repo}/contributors?per_page={_CONTRIBUTORS_MAX}&anon=false",
+        host=ref.host,
     )
     contributors: list[dict[str, str]] = []
     for row in projection._as_list(raw)[:_CONTRIBUTORS_MAX]:
@@ -736,14 +745,16 @@ async def _fetch_github_contributors(ref: RepoRef, key: str) -> list[dict[str, s
         # safe GitHub handle -- an unexpected value never reaches the API path.
         name = login
         if _GH_LOGIN_RE.fullmatch(login):
-            profile = projection._as_dict(await runner._run_json("gh", "api", f"users/{login}"))
+            profile = projection._as_dict(
+                await runner._run_json("gh", "api", f"users/{login}", host=ref.host)
+            )
             name = str(profile.get("name") or "").strip() or login
         contributors.append(
             {
                 "login": login,
                 "name": name,
                 "avatarUrl": str(row.get("avatar_url") or ""),
-                "profileUrl": f"https://github.com/{login}",
+                "profileUrl": f"https://{ref.host}/{login}",
             }
         )
     # Names and avatar URLs are provider-controlled: redact secrets/exfil URLs

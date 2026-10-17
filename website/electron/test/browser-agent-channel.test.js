@@ -170,6 +170,35 @@ test("the X-Internal-Secret header is sent on drain and result", async () => {
   assert.strictEqual(sawSecretOnResult, "abc123");
 });
 
+// ── the secret is chosen for the URL each request dials ──
+
+test("secret header: getSecret is asked for the exact URL each request dials", async () => {
+  // The backend URL can change between requests. Each request must carry the
+  // secret for the gateway it dials, never one read for another URL.
+  const urls = ["http://127.0.0.1:6777", "http://127.0.0.1:7778"];
+  let urlReads = 0;
+  const command = { id: "c1", session_key: "sess-1", op: "snapshot", args: {} };
+  const ff = fakeFetch((idx) => (idx === 0 ? res(200, command) : res(204)));
+  const pairs = [];
+  const ch = createAgentCommandChannel(
+    baseDeps({
+      getGatewayUrl: () => urls[urlReads++ % urls.length],
+      getSecret: (gatewayUrl) => `secret-for-${gatewayUrl}`,
+      fetchFn: async (url, opts) => {
+        pairs.push([url, opts.headers["X-Internal-Secret"]]);
+        return ff.fetchFn(url, opts);
+      },
+    })
+  );
+  ch.start();
+  await waitFor(() => ff.calls.result >= 1);
+  await ch.stop();
+  assert.ok(pairs.length >= 2);
+  for (const [url, secret] of pairs) {
+    assert.ok(url.startsWith(secret.slice("secret-for-".length) + "/"), `${url} got ${secret}`);
+  }
+});
+
 // ── a rejecting dispatch posts ok:false and the loop survives ──
 
 test("rejecting dispatch: posts ok:false and keeps polling", async () => {

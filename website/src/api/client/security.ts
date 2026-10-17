@@ -406,7 +406,7 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
-export function createSecurityEndpoints({ get, post, put, del, patch, j }: ClientTransport) {
+export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch }: ClientTransport) {
   const posture = {
     // Counts are derived server-side from the controls they describe, so a null
     // means "temporarily unresolvable", never "zero".

@@ -95,6 +95,19 @@ export function MeasureFarm({
   batchRef.current = batch
   const lastScrollRef = useRef(0)
   const lastInputRef = useRef(0)
+  // Rows appended since the last count the farm saw, and when. A tail append
+  // (the reader's own send, a reply's first row) reaches the farm's `count` a
+  // commit BEFORE the window expands to mount it, and nothing marks the
+  // transcript busy for it -- so a tick in that gap reads the new row as
+  // unmeasured and unmounted and renders a second, hidden copy of it into
+  // the transcript column while the real row mounts beside it. An appended
+  // row is either about to mount (reader at the bottom: the observer measures
+  // it) or sits below a reader who scrolled up (the farm reaches it once this
+  // hold passes), so hold the appended indices for one idle window.
+  const appendedRef = useRef<{ from: number; at: number } | null>(null)
+  const prevCountRef = useRef(count)
+  if (count > prevCountRef.current) appendedRef.current = { from: prevCountRef.current, at: Date.now() }
+  prevCountRef.current = count
   // Live mirrors so the tick reads fresh values without re-arming the interval.
   const liveRef = useRef({ enabled, paused, count, originIndex, isMeasured, isMounted, keyAt })
   liveRef.current = { enabled, paused, count, originIndex, isMeasured, isMounted, keyAt }
@@ -147,8 +160,11 @@ export function MeasureFarm({
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       const batchSize = sinceInput >= FARM_DEEP_IDLE_MS ? FARM_BATCH_DEEP : FARM_BATCH
       const next: FarmTarget[] = []
+      const appended = appendedRef.current
+      const holdFrom = appended && Date.now() - appended.at < FARM_IDLE_MS ? appended.from : Infinity
       const consider = (i: number) => {
         if (next.length >= batchSize) return
+        if (i >= holdFrom) return
         if (live.isMeasured(i)) return
         if (live.isMounted?.(i)) return
         const key = live.keyAt(i)

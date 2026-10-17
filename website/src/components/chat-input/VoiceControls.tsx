@@ -5,6 +5,7 @@ import { Btn } from '../ui'
 import type { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /* The composer's voice controls: the capture status (hold-to-talk cancel
    cue, dictation panel or status bar), the hold target, and the mic. State
@@ -17,7 +18,7 @@ const noopSelectDevice = () => {}
 
 /** Above the editor: the hold gesture's cancel cue while a press is live, then
  *  the dictation panel while recording, else the thin status bar. */
-export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
+export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, value, voicePartial, voiceDeviceLabel, voiceDeviceId, onSelectVoiceDevice, voiceDeviceSwitchIsLive, voiceStreaming, voiceDownload, voiceRecording, voiceLevel, voiceError, voiceKeptRecording, onClearVoiceError, voiceDrainCancellable, cancelVoiceDrain, onVoiceToggle, micHeldElsewhere, micHeldElsewhereLabel, micHeldElsewhereAction, voiceHeldLanded }: {
   voiceHoldMode: boolean
   touchPtt: TouchPtt
   showDictation: NonNullable<VoiceInput['voiceSampleRef']> | null
@@ -32,6 +33,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, val
   voiceRecording: boolean
   voiceLevel: number
   voiceError: VoiceInput['voiceError']
+  voiceKeptRecording: VoiceInput['voiceKeptRecording']
   onClearVoiceError: VoiceInput['onClearVoiceError']
   voiceDrainCancellable: boolean
   cancelVoiceDrain?: () => void
@@ -77,7 +79,7 @@ export function VoiceCaptureStatus({ voiceHoldMode, touchPtt, showDictation, val
         <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} download={voiceDownload} />
       ) : (
         <VoiceStatusBar
-          recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
+          recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} keptRecording={voiceKeptRecording} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} download={voiceDownload}
           /* The released utterance's own window. Gated on the transport of the
              request IN FLIGHT, which is what `voiceDrainCancellable` reads: a
              streaming drain is held against an open socket and the discard
@@ -147,7 +149,7 @@ export function HoldToTalkBar({ manualHeight, setHoldTarget, touchPtt, disabled,
         primary={touchPtt.bar === 'holding'}
         className={`flex-1 min-h-[44px] justify-center rounded-xl font-semibold select-none ${
           touchPtt.bar === 'armed-cancel'
-            ? 'border-dashed border-danger bg-danger-subtle text-danger'
+            ? 'border-dashed border-danger bg-danger-subtle text-danger-text'
             : touchPtt.bar === 'holding'
               ? ''
               : 'border-border-strong bg-card text-text-strong'
@@ -188,7 +190,7 @@ export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, tran
         // The recording tint belongs to the RECORD button. As a mode
         // switch (hold mode) this button hands the keyboard back; a red
         // pulse on it read as an alarm on an unexplained control.
-        voiceRecording && !micIsModeSwitch ? 'bg-danger-subtle text-danger animate-pulse' : (!micIsModeSwitch && transcribeInFlight) ? 'bg-accent-subtle text-accent' : voiceHoldMode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
+        voiceRecording && !micIsModeSwitch ? 'bg-danger-subtle text-danger-text animate-pulse' : (!micIsModeSwitch && transcribeInFlight) ? 'bg-accent-subtle text-accent' : voiceHoldMode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
       } disabled:opacity-30`}
       // The mic does whichever voice thing is AVAILABLE right now, which is
       // what keeps it from becoming a dead control. On an empty composer
@@ -222,6 +224,7 @@ export function MicButton({ voiceHoldMode, voiceRecording, micIsModeSwitch, tran
       disabled={disabled || optimizing || (micIsModeSwitch ? false : micBlocked)}
       aria-label={micLabel}
       title={micLabel}
+      {...uiLocation('composer.voice')}
     >
       {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : !micIsModeSwitch && micHeldElsewhere ? <MicOff size={18} /> : voiceHoldMode ? <><Keyboard size={18} /><span className="leading-none">{i18nT('components.chatInput.type_label')}</span></> : <Mic size={18} />}
     </button>

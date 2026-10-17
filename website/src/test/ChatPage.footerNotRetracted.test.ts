@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 /**
@@ -21,7 +21,17 @@ import { join } from 'node:path'
  * condition that makes the footer permanent. Pinned by source scan because the
  * predicate is an inline IIFE inside a 60-prop JSX element with no seam to call.
  */
-const SRC = readFileSync(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+// the pins read the page and those owners.
+const PAGES_DIR = join(__dirname, '..', 'pages')
+const OWNER_DIR = join(PAGES_DIR, 'chat', 'page')
+const SRC = [
+  readFileSync(join(PAGES_DIR, 'ChatPage.tsx'), 'utf8'),
+  ...readdirSync(OWNER_DIR).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(join(OWNER_DIR, f), 'utf8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(join(PAGES_DIR, f), 'utf8')),
+].join('\n')
 
 describe('completed-turn footer', () => {
   it('is not retracted by a run that started later', () => {

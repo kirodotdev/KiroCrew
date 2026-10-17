@@ -15,6 +15,7 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { forwardToMain } from '../utils/artifactPopout'
 import type { Artifact } from '../types'
+import { chooseMore, commentsShown, findMoreItem } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 // Stub the embedded chat page — the companion toggle opens the embedded panel,
@@ -132,5 +133,21 @@ describe('ArtifactDetailPage popout navigation containment', () => {
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await waitFor(() => expect(vi.mocked(api).createChatSlot).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api).createChatSlot.mock.calls[0][6]).toBe('cr-queue')
+  })
+
+  it('popout: send to a session over an unsaved sidebar comment forwards without asking, since nothing is lost', async () => {
+    vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [] })
+    vi.mocked(api).createChatSlot = vi.fn().mockResolvedValue({ key: 'chat-new' })
+    renderPage(true)
+    await waitFor(() => expect(screen.getByText(/Artifact: cr-queue/i)).toBeInTheDocument())
+    if (!(await commentsShown())) await chooseMore(/Show comments/)
+    fireEvent.click(await screen.findByRole('button', { name: /Add comment/ }))
+    fireEvent.change(screen.getByPlaceholderText('Add a comment on the whole artifact…'), { target: { value: 'unsent note' } })
+
+    fireEvent.click(await findMoreItem('Send to a session'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session' }))
+    await waitFor(() => expect(vi.mocked(forwardToMain)).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByPlaceholderText('Add a comment on the whole artifact…')).toHaveValue('unsent note')
   })
 })

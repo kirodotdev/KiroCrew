@@ -396,15 +396,38 @@ describe('useThemeEditor', () => {
 
   it('projects the picker to JSON only once there is something to project', () => {
     const { result } = renderHook(() => useThemeEditor())
-    expect(result.current.pickerToJson).toBe('')
+    act(() => result.current.switchMode('json'))
+    expect(result.current.jsonText).toBe('')
+    act(() => result.current.switchMode('picker'))
 
     act(() => { result.current.setThemeName('Named'); result.current.setThemeEmoji('') })
-    expect(JSON.parse(result.current.pickerToJson)).toEqual({
+    act(() => result.current.switchMode('json'))
+    expect(JSON.parse(result.current.jsonText)).toEqual({
       name: 'Named', emoji: '✨', dark: {}, light: {},
     })
+    act(() => result.current.switchMode('picker'))
 
     act(() => { result.current.setThemeName(''); result.current.updateDarkVar('--bg', '#020202') })
-    expect(JSON.parse(result.current.pickerToJson).name).toBe('My Theme')
+    act(() => result.current.switchMode('json'))
+    expect(JSON.parse(result.current.jsonText).name).toBe('My Theme')
+  })
+
+  it('keeps the picker as it was when leaving the JSON tab on text that does not parse', () => {
+    const { result } = renderHook(() => useThemeEditor())
+    act(() => result.current.setThemeName('Kept'))
+    act(() => result.current.switchMode('json'))
+    act(() => result.current.setJsonText('{"name":'))
+    act(() => result.current.switchMode('picker'))
+
+    expect(result.current.themeName).toBe('Kept')
+    expect(result.current.creatorMode).toBe('picker')
+
+    act(() => result.current.switchMode('json'))
+    act(() => result.current.setJsonText('{"light":{"--bg":"#ffffff"}}'))
+    act(() => result.current.switchMode('picker'))
+    expect(result.current.themeName).toBe('Kept')
+    expect(result.current.lightVars).toEqual({ '--bg': '#ffffff' })
+    expect(result.current.darkVars).toEqual({})
   })
 })
 
@@ -627,5 +650,258 @@ describe('ThemeEditorPanel', () => {
 
     const alert = await screen.findByRole('alert', undefined, { timeout: 5_000 })
     expect(alert).toHaveTextContent('Failed to load theme for editing')
+  })
+})
+
+/* ── ThemeEditorPanel: Paste CSS ─────────────────────────────── */
+
+describe('ThemeEditorPanel Paste CSS', () => {
+  const cssArea = () => screen.getByLabelText('Theme CSS') as HTMLTextAreaElement
+
+  it('prefills the CSS pane with the picker variables as .dark / .light blocks', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+
+    expect(cssArea().value).toMatch(/^\.dark \{/)
+    expect(cssArea().value).toContain('.light {')
+    // The name field stays on this tab: CSS has no place to carry one.
+    expect(screen.getByLabelText('Theme Name')).toBeInTheDocument()
+  })
+
+  it('saves pasted per-mode and shared variables over the picker values', async () => {
+    openNew()
+    fireEvent.change(screen.getByLabelText('Theme Name'), { target: { value: 'Pasted CSS' } })
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), {
+      target: {
+        value: [
+          ':root { --accent: #7c3aed; --bg: #444444; }',
+          '[data-theme="dark"] { --bg: #101010; }',
+          '@media (prefers-color-scheme: light) { :root { --bg: #fefefe !important; } }',
+        ].join('\n'),
+      },
+    })
+
+    expect(screen.getByText('Will set 1 dark, 1 light and 2 shared (both dark and light) colors.')).toBeInTheDocument()
+    fireEvent.click(btn('Save Theme'))
+
+    await waitFor(() => expect(themeStore.addCustomTheme).toHaveBeenCalled(), { timeout: 5_000 })
+    const saved = themeStore.addCustomTheme.mock.calls[0][0] as CustomThemeData
+    expect(saved.name).toBe('Pasted CSS')
+    expect(saved.dark['--bg']).toBe('#101010')
+    expect(saved.light['--bg']).toBe('#fefefe')
+    expect(saved.dark['--accent']).toBe('#7c3aed')
+    expect(saved.light['--accent']).toBe('#7c3aed')
+  })
+
+  it('names declarations it will drop before the user saves', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), {
+      target: { value: ':root { --bg: #000; --brand: red; color: blue; --text: url(x); }' },
+    })
+
+    expect(screen.getByText('Skipped, the dashboard has no color named: --brand, color')).toBeInTheDocument()
+    expect(screen.getByText('Skipped, value not allowed (use a color, size or shadow): --text: url(x)')).toBeInTheDocument()
+    expect(screen.getByText('Save leaves the skipped lines out and keeps everything else.')).toBeInTheDocument()
+    expect(btn('Save Theme')).toBeEnabled()
+  })
+
+  it('shows which value was refused, shortened, and forgets it once the mode redeclares it validly', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    const long = `url(${'a'.repeat(60)})`
+    fireEvent.change(cssArea(), {
+      target: { value: `.dark { --text: #fff; } .light { --text: ${long}; } :root { --bg: url(x); --bg: #000; }` },
+    })
+
+    const line = screen.getByText(/^Skipped, value not allowed/)
+    expect(line).toHaveTextContent(`Skipped, value not allowed (use a color, size or shadow): --text: ${long.slice(0, 40)}…`)
+    expect(line.textContent).not.toContain('--bg')
+  })
+
+  it('hints at letter case only when an unknown name differs from a theme color by case alone', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), { target: { value: ':root { --bg: #000; --brand: red; --Accent: red; }' } })
+    expect(screen.getByText('Names are case-sensitive: use --accent, not --Accent.')).toBeInTheDocument()
+
+    fireEvent.change(cssArea(), { target: { value: ':root { --bg: #000; --brand: red; }' } })
+    expect(screen.queryByText(/case-sensitive/)).toBeNull()
+  })
+
+  it('says where the CSS comes from on the tab itself', () => {
+    openNew()
+    expect(btn(/Paste CSS/)).toHaveTextContent('🖌️ Paste CSS (from AI)')
+  })
+
+  it('promises nothing about Save while a paste has only skipped lines', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), { target: { value: ':root { --brand: red; }' } })
+
+    expect(screen.getByText('Skipped, the dashboard has no color named: --brand')).toBeInTheDocument()
+    expect(screen.queryByText(/keeps everything else/)).toBeNull()
+    expect(btn('Save Theme')).toBeDisabled()
+  })
+
+  it('tells the two paste tabs apart in their tooltips', () => {
+    openNew()
+
+    expect(btn(/Paste JSON/)).toHaveAttribute('title', 'Paste a whole theme as JSON, with its name and its dark and light colors.')
+    expect(btn(/Paste CSS/)).toHaveAttribute('title', 'Paste CSS color variables, for example from an AI reply.')
+  })
+
+  it('holds Save on a paste that sets no theme variable and says why inline', () => {
+    openNew()
+    fireEvent.change(screen.getByLabelText('Theme Name'), { target: { value: 'Empty' } })
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), { target: { value: 'body { color: red; }' } })
+
+    expect(btn('Save Theme')).toBeDisabled()
+    expect(btn('Save Theme')).toHaveAccessibleDescription(/^No theme colors found/)
+    // A validation hint, not a save failure: nothing in the error notice.
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(themeStore.addCustomTheme).not.toHaveBeenCalled()
+
+    fireEvent.change(cssArea(), { target: { value: ':root { --bg: #000; }' } })
+    expect(btn('Save Theme')).toBeEnabled()
+  })
+
+  it('caps a long ignored-name list to one readable line', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    const css = Array.from({ length: 13 }, (_, i) => `--x${i}: red;`).join(' ')
+    fireEvent.change(cssArea(), { target: { value: `:root { --bg: #000; ${css} }` } })
+
+    const line = screen.getByText(/--x9 and 3 more$/)
+    expect(line).toHaveTextContent('Skipped, the dashboard has no color named: --x0, ')
+    expect(line.textContent).not.toContain('--x10')
+  })
+
+  it('carries a paste into the picker and on into the JSON pane', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(cssArea(), { target: { value: '.dark { --bg: #123456; }' } })
+    fireEvent.click(btn(/Paste JSON/))
+
+    const json = JSON.parse((screen.getByLabelText('Theme JSON') as HTMLTextAreaElement).value)
+    expect(json.dark['--bg']).toBe('#123456')
+  })
+})
+
+/* ── ThemeEditorPanel: Design it with AI ─────────────────────── */
+
+const clipboard = vi.hoisted(() => ({ copyToClipboard: vi.fn<(text: string) => Promise<boolean>>() }))
+vi.mock('../utils/clipboard', async importOriginal => ({
+  ...(await importOriginal<typeof import('../utils/clipboard')>()),
+  ...clipboard,
+}))
+
+describe('ThemeEditorPanel AI prompt', () => {
+  beforeEach(() => {
+    clipboard.copyToClipboard.mockReset()
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+  })
+
+  it('copies the design prompt and briefly confirms a copy that landed', async () => {
+    clipboard.copyToClipboard.mockResolvedValueOnce(true)
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+
+    await act(async () => { fireEvent.click(btn('Copy prompt')) })
+    expect(btn('Prompt copied')).toBeInTheDocument()
+    expect(clipboard.copyToClipboard.mock.calls[0][0]).toContain('Design a colour theme for Kiro Crew')
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    act(() => { vi.runOnlyPendingTimers() })
+    expect(btn('Copy prompt')).toBeInTheDocument()
+  })
+
+  it.each([false, true])('keeps copy failures in an alert until success (prior success: %s)', async priorSuccess => {
+    if (priorSuccess) clipboard.copyToClipboard.mockResolvedValueOnce(true)
+    clipboard.copyToClipboard.mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+
+    if (priorSuccess) {
+      await act(async () => { fireEvent.click(btn('Copy prompt')) })
+      expect(btn('Prompt copied')).toBeInTheDocument()
+    }
+    await act(async () => { fireEvent.click(btn(priorSuccess ? 'Prompt copied' : 'Copy prompt')) })
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Couldn’t copy. Select the prompt below instead.')
+    expect(within(alert).queryByRole('button')).toBeNull()
+    expect(btn('Copy prompt')).toBeInTheDocument()
+
+    act(() => { vi.runOnlyPendingTimers() })
+    expect(screen.getByRole('alert')).toBe(alert)
+    await act(async () => { fireEvent.click(btn('Copy prompt')) })
+    expect(screen.getByRole('alert')).toBe(alert)
+
+    await act(async () => { fireEvent.click(btn('Copy prompt')) })
+    expect(btn('Prompt copied')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+    act(() => { vi.runOnlyPendingTimers() })
+    expect(btn('Copy prompt')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('opens the collapsed prompt when a copy fails, and the user can still close it', async () => {
+    clipboard.copyToClipboard.mockResolvedValueOnce(false)
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    const details = screen.getByText('Show prompt').closest('details')!
+    expect(details.open).toBe(false)
+
+    await act(async () => { fireEvent.click(btn('Copy prompt')) })
+    expect(details.open).toBe(true)
+    expect(within(details).getByText('Hide prompt').tagName).toBe('SUMMARY')
+
+    await act(async () => { fireEvent.click(within(details).getByText('Hide prompt')) })
+    expect(details.open).toBe(false)
+    expect(within(details).getByText('Show prompt')).toBeInTheDocument()
+  })
+
+  it('names what the prompt toggle will do next', async () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    const details = screen.getByText('Show prompt').closest('details')!
+
+    await act(async () => { fireEvent.click(within(details).getByText('Show prompt')) })
+    expect(details.open).toBe(true)
+    expect(within(details).getByText('Hide prompt')).toBeInTheDocument()
+    expect(within(details).queryByText('Show prompt')).toBeNull()
+  })
+
+  it('fills the name and emoji from a pasted reply without clobbering a later rename', () => {
+    openNew()
+    fireEvent.click(btn(/Paste CSS/))
+    const area = screen.getByLabelText('Theme CSS')
+    const reply = '/* name: Harbor Dusk */\n/* emoji: ⚓ */\n.dark { --bg: #10151c; }'
+    fireEvent.change(area, { target: { value: reply } })
+
+    expect(screen.getByLabelText('Theme Name')).toHaveValue('Harbor Dusk')
+    expect(screen.getByLabelText('Emoji')).toHaveValue('⚓')
+
+    fireEvent.change(screen.getByLabelText('Theme Name'), { target: { value: 'Mine' } })
+    fireEvent.change(area, { target: { value: `${reply}\n.light { --bg: #f6f8fa; }` } })
+    expect(screen.getByLabelText('Theme Name')).toHaveValue('Mine')
+  })
+
+  it('fills the name again when the same reply is pasted into a reopened editor', () => {
+    openNew()
+    const reply = '/* name: Harbor Dusk */\n/* emoji: ⚓ */\n.dark { --bg: #10151c; }'
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(screen.getByLabelText('Theme CSS'), { target: { value: reply } })
+    fireEvent.click(btn('Cancel'))
+
+    fireEvent.click(screen.getByTestId('open-new'))
+    fireEvent.click(btn(/Paste CSS/))
+    fireEvent.change(screen.getByLabelText('Theme CSS'), { target: { value: reply } })
+
+    expect(screen.getByLabelText('Theme Name')).toHaveValue('Harbor Dusk')
+    expect(screen.getByLabelText('Emoji')).toHaveValue('⚓')
   })
 })

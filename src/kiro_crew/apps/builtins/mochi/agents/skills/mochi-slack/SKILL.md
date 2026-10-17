@@ -39,10 +39,15 @@ Do NOT try to install one. Which Slack server to use, and whether to connect a
 workspace at all, is the user's decision — and on a work machine it may not be theirs
 to make.
 
+Installing a Slack server in Kiro Crew is not enough on its own: I only get the
+servers the user adds in MY settings panel, under **MCP Servers**. Every other server
+is switched off for me, so "no Slack tools" may mean "installed but not added here".
+
 Say so and hand it back:
 
-> "I don't have any Slack tools right now. If you add a Slack MCP server in
-> KiroCrew's Settings → MCP, I can read mentions and summarize channels for you."
+> "I don't have any Slack tools right now. If a Slack MCP server is installed in
+> Kiro Crew, add it under MCP Servers in my settings, and I can read mentions and
+> summarize channels for you."
 
 Then stop. Do not retry, and do not offer again unless the user brings it up.
 
@@ -67,6 +72,14 @@ them. This holds even if the user asks: say you don't read DMs.
    "3 people pinged you — Alice in #oncall about a deploy (looks urgent), Bob in
    #team about sprint planning."
 5. Surface it with `perform_pet_action({ action: "notify", pushToChat: true })`.
+
+### Before you add any Slack watch
+
+A watch is checked later by my background agent, not by me. Adding a server under MCP
+Servers grants it to chat only, unless the user also turns on "Apply to Background"
+for it — and without that, every check of a Slack watch fails. Before adding a
+`slack-channel`, `slack-topic` or Slack-thread watch, tell the user the server needs
+"Apply to Background" on, and add the watch only once they confirm.
 
 ### Channel summary — "summarize #channel", "what was discussed in #channel"
 
@@ -112,6 +125,9 @@ update_watchlist({ add: [{
 If your search tool does not support `in:` / `from:` filters, fall back to a plain
 keyword search and say that the filter was dropped.
 
+Without `maxWatchDurationHours` the watch expires after 7 days. Tell the user that,
+or set it from how long they asked you to keep watching.
+
 ### Thread summary — user pastes a Slack URL or asks about a thread
 
 1. Read the whole thread.
@@ -120,6 +136,7 @@ keyword search and say that the filter was dropped.
 
 ```
 update_watchlist({ add: [{
+  label: '<thread topic> (Slack thread)',
   kind: 'url',
   target: '<thread URL>',
   triggerCondition: 'new replies in thread',

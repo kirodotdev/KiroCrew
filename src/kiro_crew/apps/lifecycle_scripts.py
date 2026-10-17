@@ -73,6 +73,32 @@ async def run_lifecycle_script(
     if not app_root.is_dir():
         return {"output": f"app directory not found: {app_root}", "failed": True}
 
+    # Native-Windows policy: these lifecycle hooks are a POSIX-only capability.
+    # ``run_lifecycle_script`` runs ``onEnable`` / ``onDisable`` / ``onUninstall``
+    # through ``/bin/bash -c`` (``set -euo pipefail`` prepended), and native
+    # Windows has no ``/bin/bash``. Refuse before any spawn with a clear reason —
+    # the same shape as ``backend.py`` refusing an exec (shell launcher) backend
+    # on native Windows — rather than letting the spawn fail opaquely and read as
+    # the app's own script breaking. The reason reaches the user through the
+    # enable response's existing ``script_output`` field; the enable route's
+    # rollback rule is unchanged. (``onInstall`` runs in the install transaction
+    # in ``registry_pipeline/install.py``, a separate spawn site this guard does
+    # not cover.) On Linux and macOS nothing changes.
+    if script and not platform_compat.IS_POSIX:
+        logger.warning(
+            "App %s lifecycle action %s not run: lifecycle hooks are not "
+            "supported on native Windows",
+            app_name,
+            action,
+        )
+        return {
+            "output": (
+                "app lifecycle hooks are not supported on native Windows "
+                "(they run through /bin/bash)"
+            ),
+            "failed": True,
+        }
+
     safe_script = f"set -euo pipefail\n{script}"
     base_cmd = ["/bin/bash", "-c", safe_script]
     sandboxed_cmd, cleanup = await wrap_argv_async(base_cmd, mode="standard", _prepare=wrap_argv)

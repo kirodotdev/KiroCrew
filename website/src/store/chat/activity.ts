@@ -5,6 +5,8 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage, ToolActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
+import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
+import { ASK_QUESTION_SERVER, isAskQuestionToolName, MAX_TOOL_RESULT_CHARS } from '../../utils/askQuestionTool'
 import { persistActivityOpen, type ChatState } from './state'
 import { clampToolOutput, isUnsafeKey, safeKey } from './wire'
 
@@ -52,6 +54,7 @@ function applyToolOutputToMessages(
   slot: string,
   tid: string,
   output: string,
+  askAnswerOnly = false,
 ): void {
   if (isUnsafeKey(slot)) return
   const patch = (msgs: ChatMessage[] | undefined): void => {
@@ -60,6 +63,11 @@ function applyToolOutputToMessages(
       if (m.role !== 'tool') continue
       const meta = m.meta as Record<string, unknown> | undefined
       if (!meta || meta.tool_call_id !== tid) continue
+      if (askAnswerOnly && (
+        output.length > MAX_TOOL_RESULT_CHARS
+        || meta.mcp_server !== ASK_QUESTION_SERVER
+        || !isAskQuestionToolName(typeof meta.tool_name === 'string' ? meta.tool_name : '')
+      )) continue
       m.meta = { ...meta, output }
     }
   }
@@ -153,7 +161,7 @@ export const activityReducers = {
     if (action.payload.approval_type) entry.approval_type = action.payload.approval_type
     log.push(entry)
   },
-  sseToolResult(state: ChatState, action: PayloadAction<{ slot: string; output: string; tool_call_id?: string }>) {
+  sseToolResult(state: ChatState, action: PayloadAction<{ slot: string; output: string; tool_call_id?: string; final?: boolean }>) {
     const tid = action.payload.tool_call_id
     // Land the output on the tool MESSAGE's meta as well as the tool log, for
     // the one consumer that reads scrollback rather than the tool log: the
@@ -178,8 +186,12 @@ export const activityReducers = {
     // for the tool log (positional, single-writer) but would attach output
     // to an arbitrary tool bubble in scrollback. The server applies the same
     // condition (`if _tcid:`), so skipping is parity, not a gap.
-    if (tid && action.payload.output.includes(SPAWN_LAUNCH_MARKER)) {
-      applyToolOutputToMessages(state, action.payload.slot, tid, action.payload.output)
+    // An answered ask result is copied only onto its trusted, bounded tool row.
+    const out = action.payload.output
+    if (tid && out.includes(SPAWN_LAUNCH_MARKER)) {
+      applyToolOutputToMessages(state, action.payload.slot, tid, out)
+    } else if (tid && isAskAnsweredOutput(out)) {
+      applyToolOutputToMessages(state, action.payload.slot, tid, out, true)
     }
     const log = action.payload.slot !== state.activeSlot
       ? state.slotActivity[action.payload.slot]?.toolLog
@@ -201,6 +213,16 @@ export const activityReducers = {
         if (log[i].type === 'tool' && (!tid || !log[i].tool_call_id)) { target = i; break }
       }
     }
-    if (target >= 0) setClampedField(log[target], 'output', action.payload.output)
+    if (target >= 0) {
+      setClampedField(log[target], 'output', action.payload.output)
+      // `final: false` is a mid-stream frame: the call is still running, so
+      // nothing that reads "has this call returned?" may count it. A frame
+      // without the field (an older server) keeps the old reading: returned.
+      // Once a call returned (`output_partial === false`) it stays returned,
+      // even if a late frame follows.
+      const entry = log[target]
+      if (action.payload.final !== false) entry.output_partial = false
+      else if (entry.output_partial === undefined || entry.output_partial) entry.output_partial = true
+    }
   },
 }

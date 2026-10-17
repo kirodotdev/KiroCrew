@@ -79,7 +79,13 @@ def allocate_backend_tmp(pool_digest: str) -> Path:
     path.mkdir(mode=0o700)
     platform_compat.restrict_dir_to_owner(path)
     try:
-        (path / OWNER_FILENAME).write_text(str(os.getpid()), encoding="utf-8")
+        # An explicit ``0600``, not ``write_text``: that takes the umask default
+        # (``0644`` under the usual ``022``). The directory above is ``0700``, so
+        # the bits do not widen what another account can read today; they are
+        # kept owner-only so the tree holds the data home's policy at every
+        # instant, not only after the startup sweep has visited it -- a probe
+        # that is still allocating while the sweep runs is exactly the case.
+        atomic_write(path / OWNER_FILENAME, str(os.getpid()), mode=0o600)
     except OSError:
         shutil.rmtree(path, ignore_errors=True)
         raise

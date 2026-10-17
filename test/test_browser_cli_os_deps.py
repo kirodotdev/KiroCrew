@@ -131,6 +131,8 @@ class TestTheRemedyIsEngineAware:
             assert mod.manual_deps_command(engine) is None
             hint = mod.missing_deps_hint(engine)
             assert title in hint
+            # Fedora was not measured, so both unlisted engines keep the manual
+            # instruction there; the WebKit verdict is Amazon Linux's alone.
             assert "no verified package list" in hint
             # Chromium's package set must not be offered as the fix.
             assert "mesa-libgbm" not in hint
@@ -145,6 +147,115 @@ class TestTheRemedyIsEngineAware:
         _os_release(monkeypatch, {"ID": "alpine"})
         for engine in ("chromium", "firefox", "webkit"):
             assert mod.missing_deps_hint(engine) == ""
+
+
+AMAZON_LINUX_2023 = {"ID": "amzn", "ID_LIKE": "fedora", "VERSION_ID": "2023"}
+
+#: rpm-family hosts no capture was taken on. Fedora, for one, packages several of
+#: the libraries Amazon Linux lacks, so an operator there can follow the manual
+#: instruction; the verdict would tell that operator to stop trying.
+UNMEASURED_RPM_HOSTS = [
+    {"ID": "fedora"},
+    {"ID": "rhel", "ID_LIKE": "fedora"},
+    {"ID": "centos", "ID_LIKE": "rhel fedora"},
+    {"ID": "rocky", "ID_LIKE": "rhel centos fedora"},
+    {"ID": "almalinux", "ID_LIKE": "rhel centos fedora"},
+    {"ID": "opensuse-leap", "ID_LIKE": "suse opensuse"},
+]
+
+
+class TestTheUnsupportedEngineVerdict:
+    """What a host measured not to run an engine is told, and who is not.
+
+    MEASURED on Amazon Linux 2023 (os-release ``ID=amzn``): ``install-browser
+    webkit`` names 27 missing libraries, most with no package in the
+    distribution's repositories, while ``install-browser firefox`` on the same
+    host passes host validation. So the verdict is WebKit's, on that
+    distribution; Firefox keeps the manual instruction, and so does WebKit on
+    every rpm distribution no capture was taken on.
+    """
+
+    def test_webkit_on_amazon_linux_is_unsupported_not_a_library_list(self, monkeypatch):
+        _os_release(monkeypatch, AMAZON_LINUX_2023)
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.engine_unsupported_here("webkit") is True
+        hint = mod.missing_deps_hint("webkit")
+        assert hint.startswith("WebKit is not supported on this operating system")
+        assert "Chromium is the supported browser engine" in hint
+        # Neither a package list nor a retry: there is nothing the operator can run.
+        assert "install -y" not in hint
+        assert "retry" not in hint
+        assert "no verified package list" not in hint
+
+    def test_the_verdict_composes_no_command_so_it_needs_no_package_manager(self, monkeypatch):
+        _os_release(monkeypatch, AMAZON_LINUX_2023)
+        _managers(monkeypatch, set())
+        assert mod.manual_deps_command("chromium") is None
+        assert mod.missing_deps_hint("webkit").startswith("WebKit is not supported")
+
+    @pytest.mark.parametrize("fields", UNMEASURED_RPM_HOSTS, ids=lambda f: f["ID"])
+    def test_every_other_rpm_distribution_keeps_the_manual_instruction(self, monkeypatch, fields):
+        """One host's measurement is that host's verdict. Elsewhere in the family
+        the libraries may well be installable, so the operator is still told how."""
+        _os_release(monkeypatch, fields)
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.linux_family() == mod.FAMILY_RPM
+        assert mod.engine_unsupported_here("webkit") is False
+        hint = mod.missing_deps_hint("webkit")
+        assert hint.startswith("The WebKit browser needs OS libraries")
+        assert "no verified package list for WebKit" in hint
+        assert "then retry the download" in hint
+        assert "not supported" not in hint
+
+    def test_the_verdict_is_keyed_on_the_distribution_id_not_its_lineage(self, monkeypatch):
+        """``amzn`` reports ``ID_LIKE=fedora``; that lineage must not carry the
+        verdict to Fedora, and a derivative naming ``amzn`` only in ``ID_LIKE``
+        was not measured either."""
+        _os_release(monkeypatch, {"ID": "fedora", "ID_LIKE": "amzn"})
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.engine_unsupported_here("webkit") is False
+        assert "no verified package list for WebKit" in mod.missing_deps_hint("webkit")
+
+    @pytest.mark.parametrize(
+        "fields", [AMAZON_LINUX_2023, {"ID": "fedora"}], ids=["amzn", "fedora"]
+    )
+    def test_firefox_keeps_the_manual_instruction(self, monkeypatch, fields):
+        """Firefox's build passes host validation on Amazon Linux 2023, so a
+        missing library there is one the operator can install by name."""
+        _os_release(monkeypatch, fields)
+        _managers(monkeypatch, {"dnf", "sudo"})
+        assert mod.engine_unsupported_here("firefox") is False
+        hint = mod.missing_deps_hint("firefox")
+        assert hint.startswith("The Firefox browser needs OS libraries")
+        assert "no verified package list for Firefox" in hint
+        assert "not supported" not in hint
+
+    @pytest.mark.parametrize(
+        "fields", [AMAZON_LINUX_2023, {"ID": "fedora"}], ids=["amzn", "fedora"]
+    )
+    def test_chromium_keeps_its_remedy(self, monkeypatch, fields):
+        """Chromium has a verified package list, so its failure stays a remedy."""
+        _os_release(monkeypatch, fields)
+        _managers(monkeypatch, {"dnf", "sudo"})
+        hint = mod.missing_deps_hint("chromium")
+        assert hint.startswith("The Chromium browser")
+        assert "sudo dnf install -y " in hint
+
+    def test_apt_family_offers_install_deps_instead(self, monkeypatch):
+        """Playwright's own installer serves every engine there."""
+        _os_release(monkeypatch, {"ID": "ubuntu"})
+        _managers(monkeypatch, {"sudo"})
+        hint = mod.missing_deps_hint("webkit")
+        assert "install-deps webkit" in hint
+        assert "not supported" not in hint
+
+    def test_unknown_linux_and_non_linux_say_nothing(self, monkeypatch):
+        _os_release(monkeypatch, {"ID": "alpine"})
+        assert mod.missing_deps_hint("webkit") == ""
+        mod.linux_family.cache_clear()
+        monkeypatch.setattr(platform_compat, "IS_LINUX", False)
+        assert mod.engine_unsupported_here("webkit") is False
+        assert mod.missing_deps_hint("webkit") == ""
 
 
 class TestTheManualRemedy:

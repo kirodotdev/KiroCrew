@@ -83,6 +83,8 @@ export interface Source {
   summary_topic?: string
   summary_themes?: string
   spend?: SourceSpend
+  /** False when the gateway refuses Sync (409 source_not_syncable), e.g. the Auto-added source. */
+  syncable?: boolean
 }
 
 export interface SourceFileInfo {

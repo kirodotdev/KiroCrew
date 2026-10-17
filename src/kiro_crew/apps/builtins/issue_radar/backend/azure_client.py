@@ -60,6 +60,7 @@ import tempfile  # noqa: F401 -- historical module export
 from urllib.parse import quote, unquote, urlparse
 
 from kiro_crew.apps.registry import minimal_env
+from kiro_crew.github_runner import apply_session_bus_address
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -115,11 +116,28 @@ _API_WIT = "7.1"
 _API_BUILD = "7.1"
 _API_CORE = "7.1"
 # Preview-only resources. The suffix is part of the version string, not a flag.
-_API_WIT_COMMENTS = "7.1-preview.4"
-_API_WIT_TAGS = "7.1-preview.1"
-_API_WIT_STATES = "7.1-preview.1"
-_API_POLICY = "7.1-preview.1"
-_API_IDENTITY = "7.1-preview.1"
+#
+# These are spelled ``{major}.{minor}-preview`` WITHOUT the ``.{resource-version}``
+# revision. The ``azure-devops`` CLI extension parses ``--api-version`` by deleting
+# the substring ``-preview`` and calling ``float()`` on what is left, before any
+# request is sent, so ``7.1-preview.4`` becomes ``7.1.4`` and every call fails
+# with "could not convert string to float". The unrevisioned form is a valid
+# REST API version: the service answers it with the newest preview revision of
+# the 7.1 resource, which for each of these is the revision the 7.1 reference
+# documents (comments .4, the rest .1). ``_PREVIEW_API_VERSIONS`` is what the
+# test suite holds to the extension's parse.
+_API_WIT_COMMENTS = "7.1-preview"
+_API_WIT_TAGS = "7.1-preview"
+_API_WIT_STATES = "7.1-preview"
+_API_POLICY = "7.1-preview"
+_API_IDENTITY = "7.1-preview"
+_PREVIEW_API_VERSIONS = (
+    _API_WIT_COMMENTS,
+    _API_WIT_TAGS,
+    _API_WIT_STATES,
+    _API_POLICY,
+    _API_IDENTITY,
+)
 
 # Azure list responses come back as ``{"count": n, "value": [...]}`` and are
 # paged with ``$top``/``$skip`` rather than a page number.
@@ -281,12 +299,15 @@ _resolve_host = _transport._resolve_host
 
 def _az_env(host: str) -> dict[str, str]:
     """Build the minimal ``az`` environment through the transport helper."""
-    return _transport._az_env(
+    env = _transport._az_env(
         host,
         source_env=os.environ,
         passthrough_keys=_AZ_ENV_PASSTHROUGH,
         minimal_env=minimal_env,
     )
+    # az's encrypted token cache reaches the keyring through libsecret; hand it
+    # an explicit bus or an inert address (see github_runner.session_bus_address).
+    return apply_session_bus_address(env)
 
 
 def _audit(op: str, target: str, outcome: str, *, error: str = "") -> None:
@@ -470,7 +491,7 @@ def _reject_reparsed_launcher_args(az: str, args: list[str]) -> None:
 
 def _az_run(argv: list[str], *, host: str, timeout: float) -> subprocess.CompletedProcess:
     """Single spawn chokepoint for every ``az`` call -- replaces argv[0] with the
-    trusted canonical az and passes the minimal env for the resolved host.
+    validated az and passes the minimal env for the resolved host.
 
     Order matters: the host is re-resolved, the binary is re-validated, the
     arguments are checked against the resolved launcher's parser, and the

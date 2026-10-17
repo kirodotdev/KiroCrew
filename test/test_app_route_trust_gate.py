@@ -28,12 +28,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
+from off_loop_helpers import off_loop
 
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.dashboard import revocation_gen, token_auth
@@ -417,6 +419,14 @@ async def test_dashboard_user_still_resolves_every_approval(state):
 
 
 def _transcript(state, key: str, text: str, app_name: str = "") -> None:
+    # Seeded on a worker thread: on the event-loop thread ``replace_with_retry``
+    # re-raises a Windows sharing violation on the first attempt instead of
+    # sleeping the loop, so a scanner briefly holding the fresh temp file would
+    # fail the seed. The dashboard handlers reach the store off the loop too.
+    off_loop(_write_transcript, state, key, text, app_name)
+
+
+def _write_transcript(state, key: str, text: str, app_name: str) -> None:
     log = state.conversation_log
     log.append(key, "user", text)
     log.append(key, "assistant", "noted")
@@ -428,6 +438,26 @@ def _seed_transcripts(state) -> None:
     _transcript(state, "dashboard:user-chat", "user needle secret")
     _transcript(state, "dashboard:plain-chat", "plain needle note", _PLAIN)
     _transcript(state, "dashboard:other-chat", "other needle note", _OTHER)
+
+
+@pytest.mark.asyncio
+async def test_transcript_seed_replaces_files_off_the_event_loop(state, monkeypatch):
+    real_replace = os.replace
+    on_loop = []
+
+    def _recording_replace(src, dst, *args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", _recording_replace)
+    _transcript(state, "dashboard_plain-chat", "plain note", _PLAIN)
+    monkeypatch.setattr(os, "replace", real_replace)
+    assert on_loop, "the seed must reach an atomic replace for this pin to mean anything"
+    assert not any(on_loop)
 
 
 def _keys(rows: list[dict]) -> set[str]:

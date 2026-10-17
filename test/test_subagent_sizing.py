@@ -16,15 +16,18 @@ from io import StringIO
 from typing import Any
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 from overload_fakes import settle_depth_emits
 
 import kiro_crew.subagent as subagent
 from conftest import absent_sysconf
+from kiro_crew.constants import DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS
 from kiro_crew.subagent import (
     compute_max_subagents,
     compute_memory_sized_parallel_cap,
     resolve_max_subagents,
 )
+from kiro_crew.testing.clock import ManualClock
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -738,6 +741,8 @@ class TestQueuedReasonOnTheEvent:
             "reason": "low_memory",
             "available_gb": 3.2,
             "required_gb": 4.5,
+            # A memory wait names its live bound (the default, on a fresh manager).
+            "max_wait_secs": DEFAULT_SUBAGENT_QUEUE_MAX_WAIT_SECS,
         }
         assert events[:3] == [low_memory, low_memory, {"queued": 0}]
         assert burst == [{"queued": 1, "reason": "posture_critical"}]
@@ -863,6 +868,12 @@ class TestSubtreeCpuJiffies:
         assert sub._subtree_cpu_jiffies(1) == 185
 
 
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch) -> None:
+    clock = ManualClock()
+    clock.install(monkeypatch, subagent)
+    assert_clock_is_private(clock, subagent)
+
+
 class TestSampleLiveCosts:
     """_sample_live_costs: high-water RSS/CPU tracking across polls."""
 
@@ -903,13 +914,12 @@ class TestSampleLiveCosts:
         m._agents = {"a1": info}
         monkeypatch.setattr(sub, "_CLK_TCK", 100)
 
-        # Control wall-clock: poll1 t=10, poll2 t=11 (dt=1s).
-        times = iter([10.0, 11.0])
-        # ``sub.time`` is the process-wide stdlib module, so asyncio and pytest
-        # also observe this patch during teardown. Keep returning the final
-        # timestamp after the two production calls instead of leaking a
-        # StopIteration into unrelated event-loop cleanup.
-        monkeypatch.setattr(sub.time, "monotonic", lambda: next(times, 11.0))
+        # Control the sampling clock: poll1 t=10, poll2 t=11 (dt=1s). On the
+        # subagent module's own ``time`` binding, which the sampler reads; that
+        # binding IS the stdlib module, so a stub on ``sub.time.monotonic`` was
+        # read by every other thread, asyncio and pytest included.
+        clock = ManualClock(monotonic_start=10.0)
+        clock.install(monkeypatch, sub)
         # jiffies: 1000 then 1100 → 100 jiffies / (100 tck * 1s) = 1.0 core.
         # RSS stays -1 so only the CPU half of the sample is under test.
         jiff = iter([1000, 1100])
@@ -919,6 +929,7 @@ class TestSampleLiveCosts:
 
         m._sample_live_costs()  # seeds baseline, no delta
         assert info.peak_cpu_cores == 0.0
+        clock.advance(1.0)
         m._sample_live_costs()  # delta → 1.0 core
         assert info.peak_cpu_cores == pytest.approx(1.0, abs=0.01)
 
@@ -1215,6 +1226,77 @@ class TestSettledRuntimeReading:
         m._learned_settled_dirty = True
         m._refresh_learned_settled()
         assert m._learned_settled_gb == {"kirocrew": 0.7}, "a failed read keeps the map"
+
+    def test_a_stale_settled_figure_ages_out_without_a_new_run(self, monkeypatch, tmp_path) -> None:
+        """A bucket priced out by a figure learned under a heavier roster records
+        no new readings, so the figure must expire with time alone: the next
+        re-read drops it and the bucket is priced at the unlearned default."""
+        import json
+
+        from kiro_crew import subagent_cost as sc
+
+        log = tmp_path / "cost_samples.jsonl"
+        monkeypatch.setattr(sc, "_cost_log_path", lambda: log)
+        wall = [1_000_000_000.0]
+        mono = [5_000.0]
+        log.write_text(
+            "".join(
+                json.dumps({"agent": "kirocrew", "mem_gb": 3.0, "settled_gb": 1.9, "ts": wall[0]})
+                + "\n"
+                for _ in range(3)
+            ),
+            encoding="utf-8",
+        )
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        clock = types.SimpleNamespace(time=lambda: wall[0], monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            pytest.approx(1.9)
+        )
+
+        # Eight days later nothing has run, so no reading was recorded; the map is
+        # re-read on time alone, hourly.
+        wall[0] += 8 * 24 * 3600
+        mono[0] += 3599
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}, "not re-read yet"
+        mono[0] += 2
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            subagent._UNLEARNED_DEDICATED_START_GB
+        )
+
+    def test_an_incomplete_read_keeps_a_figure_only_within_the_horizon(self, monkeypatch) -> None:
+        """A log with an unreadable record makes every read incomplete, and an
+        incomplete read keeps what it could not confirm -- but not past the
+        horizon, or a figure it can never re-check would hold for good."""
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        m._learned_settled_gb = {"kirocrew": 1.9}
+        mono = [5_000.0]
+        clock = types.SimpleNamespace(time=lambda: 1_000_000_000.0, monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"light": 0.4}, False)
+        )
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}
+        mono[0] += 6 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}, "inside the horizon"
+        mono[0] += 2 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"light": 0.4}, "rebuilt from what the read saw"
+
+        def _boom(*_a, **_k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(subagent, "read_learned_costs_checked", _boom)
+        mono[0] += 8 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}, "a failed read keeps nothing past the horizon"
 
 
 # ---------------------------------------------------------------------------

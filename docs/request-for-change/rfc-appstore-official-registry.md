@@ -23,7 +23,9 @@ superseded-by: []
 **Date:** 2026-07-29
 **Status:** partial, **and diverged** — this document's failure mode is the first one the [directory README](README.md) names: *the plan was overtaken.* Rollout step R1 shipped **in the sibling `kirodotdev/KiroCrewApps` repo**, but §4 was reversed on four decisions while it did, so §4 is now a record of what was decided rather than a description of the contract. **Read the note at the head of §4 before trusting anything below about categories.** The schema files in that repository are the current source of truth.
 
-On the Kiro Crew side, R3 and R4 are no longer unstarted as this line previously said, but neither is finished. The official **fetch** is live and so is editorial-driven Discover (`apps/official_catalog.py`, `apps/official_editorial.py`). The **signature gate is not**: that module's own header lists three deliberate omissions, and the first is "No signature verification" — the `.sig` sidecar is published and nothing checks it, so trust is TLS to our own domain, and the consequence is enforced rather than ignored (a curated author does not mint the verified mark while that holds). **Tombstone resolution is absent** on the same terms: a document carrying a non-empty `removed` or `reinstated` list is refused outright rather than half-resolved. The rail order's own document is published but not yet read by any client — the client still resolves category order from the editorial document, so that one URL exists ahead of its consumer by design.
+On the Kiro Crew side, R3 and R4 are both started, and neither is finished. The official **fetch** is live and so is editorial-driven Discover (`apps/official_catalog.py`, `apps/official_editorial.py`). The **signature gate is not**: that module's own header lists three deliberate omissions, and the first is "No signature verification" — the `.sig` sidecar is published and nothing checks it, so trust is TLS to our own domain, and the consequence is enforced rather than ignored (a curated author does not mint the verified mark while that holds). **Tombstone resolution is absent** on the same terms: a document carrying a non-empty `removed` or `reinstated` list is refused outright rather than half-resolved. The rail order has its own published document, and the client reads it: `apps/official_category_order.py::load_category_order` fetches it and `GET /api/apps/registry` returns it as `categoryOrder`. The editorial document carries no order.
+
+What ships differs from the design below in three places, each marked where it appears. The §3.7 manifest additions (`resources`/`lifecycle` in `app.json`, `platform.externalInstall`, `searchAliases`, structured `author`) are not implemented: install reads `resources` from the registry entry, and an entry's `detectInstalled` still runs as a sandboxed probe. The `_tier` refactor of §6 and §7 step 2 is superseded by server-computed `provenance`. The bundled `app-registry.json` is hand-curated, not generated. Each §9 criterion carries a shipped / not-shipped marker.
 
 ---
 
@@ -38,8 +40,9 @@ release. Two concrete gaps:
    fixing a repo URL, pulling a broken one — requires shipping a new app
    release. User-configured *external* registries exist
    (`ExternalRegistryConfig`: `name`/`repo`/`branch`, git-clone based) but are
-   deliberately **untrusted**: `pickFeatured()` in `AppsPage.tsx` drops every
-   `_registry`-marked entry (`a => !a._registry`), and install/browse clone
+   deliberately **untrusted**: `pickFeatured()` in
+   `website/src/pages/apps/useAppsData.ts` drops every external row
+   (`a.provenance === 'external' || !!a._registry`), and install/browse clone
    them credential-free behind the SSRF + kebab-case + subdirectory-containment
    gates. There is no source that is both *remote* (updatable out of band) and
    *trusted* (allowed to drive featuring).
@@ -103,7 +106,7 @@ mechanism*):
 |-------|------|----------|
 | **Contract (schema)** | `KiroCrewApps` *(now; migrates to `KiroCrewAppSDK` later)* | JSON Schema + generated TS types for the registry entry and the editorial document. Starts co-located with the data it validates; extracted to the SDK once there are external consumers (published app-author tooling). |
 | **Data (source of truth)** | `KiroCrewApps` | `official-registry.json` + `editorial.json`, hand-curated. A publish CI workflow validates against the co-located schema and pushes to the distribution CDN. |
-| **Client + fallback** | `KiroCrew` | Fetch / validate / layered-fallback code, **plus** the bundled fallback snapshot `kiro_crew/apps/app-registry.json`, which is **generated** from `KiroCrewApps` at build time (or a bot sync PR) — never hand-authored, so the offline floor cannot drift from canonical. |
+| **Client + fallback** | `KiroCrew` | Fetch / validate / layered-fallback code, **plus** the bundled fallback snapshot `kiro_crew/apps/app-registry.json`. That file is hand-curated today, in the legacy flat `name`/`gitUrl`/`repo`/`branch` shape; no generator exists. The intended end state is a snapshot **generated** from `KiroCrewApps` at build time (or a bot sync PR), never hand-authored, so the offline floor cannot drift from canonical (§8, *snapshot-sync mechanism*). |
 
 Rationale: the entire premise of goal 1 is to decouple catalog + merchandising
 cadence from app releases. Co-locating the data in `KiroCrew` re-couples them —
@@ -487,6 +490,12 @@ view, so there is no way to hold a fresh index against a stale tombstone list.
 
 ### 3.7 What moves to `app.json` (manifest additions)
 
+> **Not implemented.** None of these additions ships. `AppManifest.author` is a
+> `str`; `platform.externalInstall` and `searchAliases` exist nowhere in the code.
+> `install_from_registry` reads `resources` from the registry entry, and
+> `registry_pipeline/catalog.py` still runs an entry's `detectInstalled` as a
+> sandboxed probe for external and edition rows. The section stays as the proposal.
+
 Three fields that were in the registry describe **the app**, not the catalog, and
 belong in the app's own manifest. Two of them are not `AppManifest` fields today,
 which is itself the finding: they were only ever *derived*.
@@ -791,7 +800,14 @@ two documents must not be read as using one shared tier vocabulary.
   reusing the manifest-cache machinery (`_manifest_cache_dir()`, atomic writes,
   TTL, fetch-then-swap). Editorial and official-registry are two files under the
   same cache root. Signature verification (§5) gates acceptance.
-- **Replace the `_registry` boolean with an explicit tier.** This is a
+- **Superseded — the shipped design is server-computed `provenance`.**
+  `registry_pipeline/catalog.py::_apply_trust_fields` stamps every row with
+  `provenance` (`'official'` | `'external'` | `'builtin'`) and `verified`, overwriting
+  any index-published value; `pickFeatured()` and the verified badge read those
+  fields. `_registry` stays in the payload for older clients and legacy readers.
+  No `_tier` field exists. The original bullet follows as the record of the
+  proposal.
+- *(proposal)* **Replace the `_registry` boolean with an explicit tier.** This is a
   prerequisite, not a detail. Today `_registry` is overloaded three ways: it is
   the featuring filter (`!a._registry` in `pickFeatured()`), the verified-badge
   rejection (`isVerified()` in `components/appstore/types.ts` returns `false` on
@@ -827,9 +843,8 @@ two documents must not be read as using one shared tier vocabulary.
   **total-function → lookup** change and needs care: `categoryFor(app.tags)` always
   returns a category today, whereas curator-enumerated `appRefs[]` does not cover
   every app. So the migration must supply (a) a `name → category` map built from
-  the editorial document, since `sort: 'category'` and three card surfaces
-  (`AppListRow`, `FeatureCard`, `FeaturedSpotlight`) currently call `categoryFor`
-  per app, and (b) a defined default bucket for un-enumerated apps — which must
+  the editorial document, since `sort: 'category'` and the card surfaces call
+  `categoryFor` per app, and (b) a defined default bucket for un-enumerated apps — which must
   render as a real, labelled group rather than a blank category, so shipping
   editorial with a partial `appRefs[]` degrades gracefully instead of stripping
   labels off cards. `appstoreCategories.test.ts` pins the current derivation and
@@ -837,7 +852,8 @@ two documents must not be read as using one shared tier vocabulary.
 - **Read runtime shape from the manifest, not the entry** (§3.7):
   `install_from_registry` takes `resources`/`lifecycle` from the `app.json` it
   already fetches, and the registry no longer carries them.
-- **Installed state = local receipt ∪ declarative probe** (§3.7). The shell
+- **Installed state = local receipt ∪ declarative probe** (§3.7; not implemented —
+  an entry's `detectInstalled` still runs sandboxed). The shell
   `detectInstalled` path is deleted **for entries from every source**, not just the
   official document — the same loop serves owner-configured external registries and
   edition-contributed rows, and those are the *less* trusted sources, so leaving the
@@ -877,7 +893,8 @@ two documents must not be read as using one shared tier vocabulary.
    from the current bundled entries) + an initial `editorial.json`. Build the
    validate-normalize-stamp-**sign**-publish workflow (§2) as the *only* path to
    the CDN.
-2. **Tier refactor (prerequisite).** Replace the overloaded `_registry` boolean
+2. **Tier refactor (prerequisite; superseded by server-computed `provenance`, see
+   §6).** Replace the overloaded `_registry` boolean
    with `_tier` and repoint featuring, verified-badging, and credential posture at
    it (§6), updating the tests that encode the old ordering. Doing this first is
    what makes step 3 land as designed instead of shipping official apps as
@@ -965,45 +982,51 @@ relitigated):
 
 ## 9. Success criteria
 
-- Adding/removing/re-featuring an app is a `KiroCrewApps` PR that reaches
+Markers: **[shipped]**, **[partial]**, **[not shipped]**, **[superseded]**, and
+**[KiroCrewApps]** for a criterion enforced by the sibling repository's publish
+pipeline rather than by this client. Tombstones, the signature gate and key
+rotation are not shipped. Re-featuring ships; removal waits on tombstones. The
+mutable-ref criterion is partial: a catalog row's commit pin is honoured or the
+install is refused, while bundled seed rows install from a branch.
+
+- **[partial]** Adding/removing/re-featuring an app is a `KiroCrewApps` PR that reaches
   clients within one cache TTL — **no app release**.
-- A new editorial section `type` renders on new clients and is invisible (not
+- **[shipped]** A new editorial section `type` renders on new clients and is invisible (not
   broken) on old ones.
-- With the CDN unreachable or the doc malformed, the Discover page still renders
+- **[shipped]** With the CDN unreachable or the doc malformed, the Discover page still renders
   from cache → bundled snapshot → heuristic, with no blank state and no
   phantom/spoofed apps.
-- The official registry's `featured` is honored; a user-external registry's is
+- **[shipped]** The official registry's `featured` is honored; a user-external registry's is
   still ignored.
-- **A tombstoned app disappears from Discover even on a client serving a stale
+- **[not shipped]** **A tombstoned app disappears from Discover even on a client serving a stale
   cached index, and is not installable by name either.** An already-installed copy
   surfaces the removal advice. Neither a failed fetch nor a document that merely
   omits the tombstone resurrects it.
-- **An unsigned or signature-failing official document grants no trust** — the
+- **[not shipped]** **An unsigned or signature-failing official document grants no trust** — the
   client falls through to cache/bundled instead of honoring its featuring.
-- **No remotely-fetched entry ever clones with ambient credentials**, regardless
+- **[shipped]** **No remotely-fetched entry ever clones with ambient credentials**, regardless
   of tier — official, edition, and user-external all clone credential-free in a
   strict sandbox.
-- **Official apps are featurable and show as verified**, proving the `_tier`
+- **[superseded]** **Official apps are featurable and show as verified**, proving the `_tier`
   refactor actually landed (the `_registry` boolean would have made both false).
-- **An invalid catalog cannot reach the CDN** — the publish workflow is the only
+  Met through server-computed `provenance` instead of `_tier` (§6).
+- **[KiroCrewApps]** **An invalid catalog cannot reach the CDN** — the publish workflow is the only
   write path and validates first.
-- **No official entry can be installed from a mutable ref** — every
+- **[partial]** **No official entry can be installed from a mutable ref** — every
   such entry carries an immutable pin, enforced at publish AND at install.
-- **Discover renders and searches with zero per-app manifest fetches**, from the
+- **[shipped]** **Discover renders and searches with zero per-app manifest fetches**, from the
   baked fields alone.
-- **The category taxonomy changes without a client release** (closes #581), and an
+- **[shipped]** **The category taxonomy changes without a client release** (closes #581), and an
   unknown category never hides an app.
-- **Signing-key rotation AND revocation require no app release** — publishing new
+- **[not shipped]** **Signing-key rotation AND revocation require no app release** — publishing new
   root-signed key metadata is sufficient, and the superseded key stops being
   accepted. Only root-key compromise needs a client update.
-- **The registry contains no curator-authored presentation and no executable
+- **[not shipped]** **The registry contains no curator-authored presentation and no executable
   string** — re-labelling or re-ordering a category is an editorial edit that never
   touches the catalog, and the client runs no command supplied by a fetched
   document. (Changing an app's own generated `displayName`/`summary` does ride a
   republish, by design — §3.4.)
-- **An app cannot place itself in a curated category** by editing its own
+- **[KiroCrewApps]** **An app cannot place itself in a curated category** by editing its own
   manifest, and an app in two categories fails the publish gate.
-- **Discover renders and searches with zero per-app manifest fetches**, from the
-  baked fields alone.
-- Adding a second `source.type` requires no schema-major bump and no change to
+- **[KiroCrewApps]** Adding a second `source.type` requires no schema-major bump and no change to
   any existing entry.

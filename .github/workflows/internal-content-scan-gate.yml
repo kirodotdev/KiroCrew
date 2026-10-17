@@ -33,6 +33,16 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  # A new push to a PR supersedes the scan of its previous head, and
+  # pr-readiness.yml only reads the current head, so cancelling that run loses
+  # nothing. The replacing run scans the same way: the job-level `if` below
+  # depends only on whether the PR is a fork, which a push cannot change.
+  # Push and merge-group runs key on their commit, so each one gets its own
+  # group and is never cancelled or evicted by the next.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   scan:
     # Same-repo events only. A fork PR has no OIDC token, so scanning it is

@@ -696,7 +696,6 @@ class FolderWatcher:
             # Windows: the `.`-prefix hidden check is POSIX-centric — Windows marks
             # hidden via the NTFS hidden attribute, not a dotfile name, so some
             # dirs that are hidden on Windows aren't pruned (benign over-ingestion).
-            # Tracked as follow-on work.
             dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
             if kiroignore is not None:
                 # Excluded directories are PRUNED, not filtered per file, so a huge
@@ -883,17 +882,12 @@ class FolderWatcher:
             "INSERT OR REPLACE INTO folder_file_state (source_id, file_path, content_hash, text_hash, mtime, item_ids, last_seen, status, error_message, attempts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source_id, file_path, content_hash, text_hash, mtime, item_ids, now, status, error_message, attempts))
 
-    def _update_last_seen(self, source_id: str, file_path: str, now: str):
-        self.store.db.execute(
-            "UPDATE folder_file_state SET last_seen = ? WHERE source_id = ? AND file_path = ?",
-            (now, source_id, file_path))
-
     def _flush_last_seen(self, batch: list[tuple[str, str, str]]):
         """Apply accumulated ``(now, source_id, file_path)`` last_seen touches.
 
         One executemany instead of one execute per unchanged file. Clears
-        *batch* so a caller can flush more than once in a scan (the pause
-        early-return does).
+        *batch* once applied, so flushing the same list again re-applies
+        nothing.
         """
         if not batch:
             return

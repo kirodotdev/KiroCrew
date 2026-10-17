@@ -1,0 +1,87 @@
+name: CodeQL
+
+# CodeQL code scanning, checked in (advanced setup). It replaces GitHub's
+# CodeQL default setup with the same scan, and adds two savings default setup
+# cannot express: a new push to a PR cancels the scan of its previous head, and
+# a draft PR is not scanned until it is marked ready for review.
+#
+# SAME SCAN AS DEFAULT SETUP. The languages, query suite (`default`), threat
+# model (`remote`), build mode (`none`), weekly schedule and hosted runner match
+# what default setup ran (`gh api repos/<repo>/code-scanning/default-setup`).
+# The workflow name `CodeQL` and the job name `Analyze (<language>)` match its
+# check names. Each upload names `category: /language:<language>`, the category
+# default setup used, so alerts keep their history instead of opening twice
+# under a new configuration.
+#
+# SWITCHOVER. GitHub rejects a CodeQL upload while default setup is enabled.
+# Until a repository admin turns default setup OFF and then sets the repository
+# variable `CODEQL_ADVANCED_SETUP` to `true`, every job below is skipped, so
+# the two setups never both spend minutes on one push: default setup keeps
+# producing the alerts and the `CodeQL` results check until the switch.
+#
+# Every language, `actions` included, is scanned on every eligible PR. Skipping
+# a language a PR does not touch was tried and dropped: a category present on
+# main but missing on the PR turns GitHub's `CodeQL` results check neutral
+# ("1 configuration not found"), and PR Readiness holds a neutral result at
+# pending.
+on:
+  pull_request:
+    branches: [main]
+    # The default three, plus `ready_for_review`: a draft is skipped below, so
+    # leaving draft must start the scan that was skipped.
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly full scan of main, as default setup's `schedule: weekly` did.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  # A new push to a PR supersedes the scan of its previous head: pr-readiness
+  # reads only the current head, so the cancelled run loses nothing. Every
+  # other event keys on its own run id, so a main push or a scheduled scan is
+  # never cancelled, and never evicted from the pending slot by the next one
+  # either -- every commit that lands on main is scanned.
+  group: codeql-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    # Skip everything until the switchover (above). Then skip a draft PR
+    # (re-run on `ready_for_review`), and a fork PR: a fork's token cannot
+    # write security events, and default setup did not scan forks either --
+    # pr-readiness lists CodeQL as not eligible for them. Only the PR
+    # Readiness status is required, so a skipped Analyze job blocks nothing.
+    if: >-
+      vars.CODEQL_ADVANCED_SETUP == 'true' &&
+      (github.event_name != 'pull_request' ||
+       (!github.event.pull_request.draft &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        language: [actions, javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:${{ matrix.language }}

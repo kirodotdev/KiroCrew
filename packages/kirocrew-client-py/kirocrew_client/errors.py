@@ -11,6 +11,8 @@ class ErrorCode(str, Enum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
     NOT_FOUND = "NOT_FOUND"
     RATE_LIMITED = "RATE_LIMITED"
+    CONTEXT_NOT_QUEUED = "CONTEXT_NOT_QUEUED"
+    CONTEXT_SECRET_SHAPED = "CONTEXT_SECRET_SHAPED"
     SERVER_ERROR = "SERVER_ERROR"
     NETWORK_ERROR = "NETWORK_ERROR"
     WS_DISCONNECTED = "WS_DISCONNECTED"
@@ -62,4 +64,15 @@ def http_error(status: int, body: Any = None) -> KiroCrewError:
         message = str(body["error"])
     else:
         message = f"HTTP {status}"
+    # A full pending-context queue answers 429 with code ``context_not_queued``.
+    # It is not transient: only a turn drains the queue, and a turn cannot run
+    # while the client is blocked retrying, so retrying is futile. Give it a
+    # distinct non-retryable code the client can carve out.
+    if status == 429 and isinstance(body, dict) and body.get("code") == "context_not_queued":
+        code = ErrorCode.CONTEXT_NOT_QUEUED
+    # A credential-shaped pending-context payload answers 400 with code
+    # ``context_secret_shaped``. Re-sending the same bytes is refused the same
+    # way, so it gets its own code the client can drop instead of re-buffering.
+    if status == 400 and isinstance(body, dict) and body.get("code") == "context_secret_shaped":
+        code = ErrorCode.CONTEXT_SECRET_SHAPED
     return KiroCrewError(code, message, status=status, body=body)

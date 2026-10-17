@@ -194,7 +194,7 @@ function WireNode({ node, side, onSelect }: {
         </span>
       </span>
       {node.tag && (
-        <span className="shrink-0 rounded border border-info bg-info-subtle px-1.5 text-[10px] text-info">
+        <span className="shrink-0 rounded border border-info bg-info-subtle px-1.5 text-[10px] text-info-text">
           {node.tag}
         </span>
       )}

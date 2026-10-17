@@ -149,26 +149,36 @@ describe('useWebSocket artifact_update frame', () => {
     expect(keys).not.toContain(JSON.stringify(['command-center', 'worker', 'work']))
   })
 
-  it('re-reads a board cached below the floor the subscribe frame records', async () => {
-    // A REST read cached revision 4 before the subscribe frame arrived with 5:
-    // nothing else would move that board, so the frame itself re-reads it.
+  it('takes no floor from the subscribe frame, so the frame that delivers 5 still lands', async () => {
+    // A revision the server merely ANNOUNCES is not a number this tab may judge
+    // anything by: it has not received that value. Recorded as a floor, it both
+    // held a cached board hostage and dropped the very frame carrying 5.
     renderHook(() => useWebSocket(), { wrapper })
     const ws = WS_INSTANCES[0]
     await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })
-    qc.setQueryData(['command-center', 'root', 'work'], { value: { items: [] }, revision: 4 })
-    qc.setQueryData(['command-center', 'other', 'work'], { value: { items: [] }, revision: 5 })
+    qc.setQueryData(['command-center', 'root', 'work'], { value: { items: [{ item_id: 'cached' }] }, revision: 4 })
     const spy = vi.spyOn(qc, 'invalidateQueries')
     act(() => {
       ws.simulateMessage({
         type: 'slot_projection/subscribed',
-        data: { revisions: { 'dashboard:root': { work: 5 }, 'dashboard:other': { work: 5 } } },
+        data: { revisions: { 'dashboard:root': { work: 5 } } },
       })
     })
-    const work = spy.mock.calls.filter(c => (c[0]?.queryKey as unknown[] | undefined)?.[2] === 'work')
-    expect(work.map(c => c[0]?.queryKey)).toEqual([['command-center', 'root', 'work']])
+    // Nothing is re-read and nothing is dropped: the frame carries no instruction.
+    expect(spy.mock.calls.filter(c => (c[0]?.queryKey as unknown[] | undefined)?.[2] === 'work')).toEqual([])
+    expect(qc.getQueryData<{ revision: number }>(['command-center', 'root', 'work'])?.revision).toBe(4)
+    // And the announced revision is still free to arrive as a value.
+    act(() => {
+      ws.simulateMessage({
+        type: 'slot_projection',
+        data: { slot: 'dashboard:root', fold: 'work', revision: 5, value: { items: [{ item_id: 'delivered' }] } },
+      })
+    })
+    expect(qc.getQueryData<{ value: { items: { item_id: string }[] } }>(['command-center', 'root', 'work'])?.value.items)
+      .toEqual([{ item_id: 'delivered' }])
   })
 
-  it('a pushed frame above a cached board replaces it, so the floor it raises strands nothing', async () => {
+  it('a pushed frame above a cached board replaces it', async () => {
     renderHook(() => useWebSocket(), { wrapper })
     const ws = WS_INSTANCES[0]
     await act(async () => { ws.simulateOpen(); await new Promise(resolve => setTimeout(resolve, 0)) })

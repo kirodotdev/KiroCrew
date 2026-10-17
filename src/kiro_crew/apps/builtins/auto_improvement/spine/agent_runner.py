@@ -64,7 +64,7 @@ from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,16 @@ CLAUDE_BIN = os.environ.get("AUTO_IMPROVEMENT_CLAUDE_BIN", "claude")
 #: (or planted a hook via `core.hooksPath`) would get host-side, out-of-sandbox execution on the
 #: next status. `-c` overrides on OUR argv beat the repo config. Raised by the GPT review.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
+
+#: The stop reason on the ``EVENT_COMPLETE`` the ACP session handle yields when a prompt
+#: times out before the backend finished the turn (``acp/session_handle.py``). It has no
+#: constant in ``acp.types``.
+_STOP_REASON_PROMPT_TIMEOUT = "timeout"
+
+#: How the error of a turn the backend ended unfinished begins (see ``_run_async``). Bug and
+#: perf authoring read it as a bounded exit, like ``timeout after Ns``: the run was cut off,
+#: so an edit already on disk still goes to the deterministic gate.
+_UNFINISHED_TURN_ERROR = "the backend did not finish the turn"
 
 
 @dataclass
@@ -232,6 +242,39 @@ def _detail_is_richer(refined: str, prior: str) -> bool:
 
 # Shared with the gate — see ``push_policy.strip_credential_env``.
 from .push_policy import strip_credential_env  # noqa: E402
+
+
+def _same_bytes(path: Path, desired: bytes) -> bool:
+    """Does *path* already hold exactly *desired*? An unreadable file does not."""
+    try:
+        return path.read_bytes() == desired
+    except OSError:
+        return False
+
+
+def _install_agent_copy(src: Path, dest: Path, desired: bytes, agent_name: str) -> bool:
+    """Copy *src* to *dest* unless *dest* is a DIFFERENT file; report success.
+
+    ``~/.kiro/agents/<name>.json`` is the user's own agent directory, and a file
+    there that merely shares this app's agent name is theirs: overwriting it
+    destroys their data. So the copy lands only when the destination is absent,
+    and an existing destination counts as registered only when it is already
+    byte-identical. On a real conflict the run proceeds with the default agent,
+    as on any other registration failure: tool scoping is best-effort, not a
+    licence to overwrite.
+    """
+    if dest.exists():
+        if _same_bytes(dest, desired):
+            return True
+        logger.warning(
+            "not self-registering agent %s: %s already exists with different "
+            "content (leaving the user's file intact; using the default agent)",
+            agent_name,
+            dest,
+        )
+        return False
+    shutil.copyfile(src, dest)
+    return True
 
 
 def _unlink_quietly(path: object) -> None:
@@ -1317,34 +1360,20 @@ class SessionAgentRunner:
                 return False
             # kiro_agents_dir() honors KIRO_HOME; hard-coding ~/.kiro would write
             # into the real agent home during tests and break agent-home isolation.
+            from kiro_crew import agent as agent_mod
             from kiro_crew.config.paths import kiro_agents_dir
 
             dest_dir = kiro_agents_dir()
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / f"{self.agent_name}.json"
             desired = src.read_bytes()
-            # Do NOT clobber a DIFFERENT existing file. `~/.kiro/agents/<name>.json` is the
-            # user's own agent directory; overwriting a file they wrote — because it happens
-            # to share this app's agent name — destroys their data. Write only when the file
-            # is absent or already byte-identical (idempotent re-register). On a real
-            # conflict, refuse and warn: the run proceeds with the default agent exactly as
-            # it does on any other registration failure, so tool-scoping is best-effort, not
-            # a licence to overwrite. Raised by the GPT review of this branch.
-            if dest.exists():
-                try:
-                    if dest.read_bytes() == desired:
-                        return True  # already ours — nothing to do
-                except OSError:
-                    pass
-                logger.warning(
-                    "not self-registering agent %s: %s already exists with different "
-                    "content (leaving the user's file intact; using the default agent)",
-                    self.agent_name,
-                    dest,
-                )
-                return False
-            shutil.copyfile(src, dest)
-            return True
+            # The shared agents dir belongs to the instance that owns it: from a data
+            # home that does not, write nothing and run with whatever the owner left,
+            # under the same decision every other writer of that directory asks.
+            with agent_mod.agents_spec_lock(dest_dir):
+                if agent_mod._declined_foreign_spec_write(dest):
+                    return dest.is_file() and _same_bytes(dest, desired)
+                return _install_agent_copy(src, dest, desired, self.agent_name)
         except Exception:  # noqa: BLE001 — never block a run on agent registration
             logger.warning("could not self-register agent %s", self.agent_name, exc_info=True)
             return False
@@ -1452,6 +1481,7 @@ class SessionAgentRunner:
             EVENT_TEXT_CHUNK,
             EVENT_TOOL_CALL,
             EVENT_TOOL_CALL_UPDATE,
+            STOP_REASON_STALE_RECOVER,
         )
 
         # Stable across processes (Python's builtin hash() is per-run salted): the
@@ -1523,6 +1553,12 @@ class SessionAgentRunner:
                     duration_s=time.monotonic() - t0,
                 )
 
+            # Stop reasons with which the backend ends a turn it never finished. Set
+            # ``unfinished`` when the turn ends that way, or when the stream ends with no
+            # EVENT_COMPLETE at all.
+            unfinished_reasons = (_STOP_REASON_PROMPT_TIMEOUT, STOP_REASON_STALE_RECOVER)
+            unfinished = ""
+
             while True:
                 if self._stop_check is not None and self._stop_check():
                     return _finish(ok=False, error="stopped by request")
@@ -1536,6 +1572,7 @@ class SessionAgentRunner:
                 try:
                     ev = await asyncio.wait_for(ait.__anext__(), timeout=remaining)
                 except StopAsyncIteration:
+                    unfinished = f"{_UNFINISHED_TURN_ERROR} (the provider stream ended first)"
                     break
                 except (asyncio.TimeoutError, TimeoutError):
                     # In-turn stall exceeded the budget — force-cancel and harvest text.
@@ -1710,8 +1747,15 @@ class SessionAgentRunner:
                         text_parts.append(txt)  # full text kept for the return value
                         text_buf.feed(txt)  # feed → flushes whole lines to the feed
                 elif kind == EVENT_COMPLETE:
+                    stop_reason = str(getattr(ev, "stop_reason", "") or "")
+                    if stop_reason in unfinished_reasons:
+                        unfinished = f"{_UNFINISHED_TURN_ERROR} (stop reason {stop_reason!r})"
                     break
             text_buf.flush()  # emit any trailing partial line at turn end
+            if unfinished:
+                # Not a success, whatever text arrived. The partial text is kept for the
+                # caller, as the watchdog's timeout keeps it.
+                return _finish(ok=False, error=unfinished)
             return _finish(ok=True)
         finally:
             if not cost_accounted:
@@ -2021,11 +2065,15 @@ def author_bug_fix(
     # until the cap fires): the completed fix is already on disk, so we still harvest it and
     # let the deterministic RED→GREEN gate decide. Both are the runner's bounded "expected"
     # exits — the session path returns ``max_turns (N) reached`` for the ACP turn cap, the
-    # subprocess path returns ``timeout after Ns`` — so they are treated identically. Only a
+    # subprocess path returns ``timeout after Ns`` — so they are treated identically. A turn
+    # the backend ended unfinished (its own prompt timeout, a stale_recover, a stream that
+    # ended first) is cut off the same way, so it is harvested too. Only a
     # genuine failure (provider died, agent binary missing, explicit stop) means there's
     # nothing trustworthy to harvest — bail so we don't gate a half-written tree.
     err = (res.error or "").lower()
-    is_bounded_exit = "timeout after" in err or "max_turns" in err
+    is_bounded_exit = (
+        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
+    )
     if not res.ok and not is_bounded_exit:
         return False
     # Require an ACTUAL change — the agent's prose is not trusted; the worktree state is.
@@ -2042,7 +2090,7 @@ def author_bug_fix(
     require_pinned(worktree)
     where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
         capture_output=True,
         cwd=where,
         **UTF8_TEXT,
@@ -2189,11 +2237,13 @@ def author_perf_fix(
         timeout_s=600,
     )
     # Same harvest rule as the bug track: the WORKTREE, not the agent's prose, is the
-    # source of truth, and a bounded exit (timeout / max_turns) is an EXPECTED outcome
-    # whose finished work is already on disk. Only a genuine runner failure means there
-    # is nothing trustworthy to measure.
+    # source of truth, and a bounded exit (timeout / max_turns / a turn the backend ended
+    # unfinished) is an EXPECTED outcome whose finished work is already on disk. Only a
+    # genuine runner failure means there is nothing trustworthy to measure.
     err = (res.error or "").lower()
-    is_bounded_exit = "timeout after" in err or "max_turns" in err
+    is_bounded_exit = (
+        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
+    )
     if not res.ok and not is_bounded_exit:
         return False
     require_pinned(worktree)
@@ -2201,7 +2251,7 @@ def author_perf_fix(
     # directory must be the worktree, not whatever the gateway inherited.
     where = str(Path(worktree).absolute())
     st = subprocess.run(
-        ["git", "-C", where, *_GIT_SAFE_CONFIG, "status", "--porcelain"],
+        ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), "status", "--porcelain"],
         capture_output=True,
         cwd=where,
         **UTF8_TEXT,

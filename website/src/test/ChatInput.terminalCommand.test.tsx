@@ -929,7 +929,7 @@ describe('direct terminal commands', () => {
 
   it.each(['dialog', 'handoff'] as const)('keeps a replacement paste with the same chip label during the %s', phase => {
     const original = { id: 'original', seq: 1, content: 'pwd\nls\nwhoami', lines: 3 }
-    const replacement = { ...original, id: 'replacement', content: 'echo one\necho two\necho three' }
+    const replacement = { ...original, content: 'echo one\necho two\necho three' } // same id: same chip whose content was swapped underneath
     const { props, rerender } = setup({
       value: `! ${formatToken(original)}`,
       pasteBlocks: [original],

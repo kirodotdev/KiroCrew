@@ -216,7 +216,8 @@ class TestReaders:
         from kiro_crew.service.common import _names_defined_in_env_file
 
         assert "JIRA_API_TOKEN" in _names_defined_in_env_file(_utf8_bom(tmp_path))
-        assert _names_defined_in_env_file(_utf16_bom(tmp_path, utf16_codec)) == set()
+        with pytest.raises(loader.EnvFileWideEncodingError):
+            _names_defined_in_env_file(_utf16_bom(tmp_path, utf16_codec))
 
     def test_service_warning_treats_a_non_utf8_file_as_unreadable(self, tmp_path: Path) -> None:
         # A BOM-less file in a legacy code page must make the caller warn,
@@ -240,6 +241,52 @@ class TestReaders:
         warning = common.headless_auth_warning({"KIRO_API_KEY": "value-not-shown"})
         assert "KIRO_API_KEY is set in this shell" in warning
         assert "value-not-shown" not in warning
+
+    def test_a_wide_file_is_told_to_re_save_not_to_append(
+        self, wide_codec: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Appending UTF-8 after a UTF-16/UTF-32 mark leaves a file the gateway
+        # still reads as unset, so the only remedy for a wide file is the
+        # re-save, worded as the gateway's own decode warning words it.
+        from kiro_crew.service import common
+
+        ep = tmp_path / ".env"
+        ep.write_bytes(_WIDE_BOM_FOR[wide_codec] + "OTHER=x\r\n".encode(wide_codec))
+        monkeypatch.setattr(loader, "env_path", lambda: ep)
+        warning = common.headless_auth_warning({"KIRO_API_KEY": "value-not-shown"})
+        family = "UTF-32" if wide_codec.startswith("utf-32") else "UTF-16"
+        assert (
+            f"Cannot decode {ep} ({family} byte-order mark); treating it as empty."
+            " Save it as UTF-8." in warning
+        )
+        assert ">>" not in warning
+        assert "printf" not in warning
+        assert "value-not-shown" not in warning
+
+    def test_doctor_prints_one_remedy_for_a_wide_file(
+        self,
+        wide_codec: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # Doctor shows the gateway's decode warning (from the credential load)
+        # above the kiro key block, so that block must ask for the same re-save
+        # and not for an append that contradicts it.
+        from kiro_crew import cli_doctor
+
+        ep = tmp_path / ".env"
+        ep.write_bytes(_WIDE_BOM_FOR[wide_codec] + "OTHER=x\r\n".encode(wide_codec))
+        monkeypatch.setattr(loader, "env_path", lambda: ep)
+        monkeypatch.setenv("KIRO_API_KEY", "value-not-shown")
+        monkeypatch.setattr(
+            cli_doctor.service_controller, "installed_unit_path", lambda: tmp_path / "unit"
+        )
+        cli_doctor._doctor_headless_auth([])
+        out = capsys.readouterr().out
+        assert "Save it as UTF-8." in out
+        assert ">>" not in out
+        assert "value-not-shown" not in out
 
 
 class TestRewriters:
@@ -386,11 +433,14 @@ class TestDashboardChannelSave:
         assert payload["error"].endswith("The .env was not changed.")
 
     @pytest.mark.parametrize("channel", ["discord", "telegram"])
-    def test_a_save_that_keeps_its_config_says_the_other_settings_were_saved(
+    def test_a_wide_env_refuses_the_save_and_leaves_the_config_as_it_was(
         self, channel: str, wide_codec: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # These two saves commit config before the .env write and keep it when
-        # that write is refused, so the 409 must not read as "nothing saved".
+        # These two saves write config.json before the .env, and that write
+        # drops the legacy bot_token the gateway falls back to while the .env
+        # reads as unset. A refused .env write must roll that config write
+        # back, so the working legacy token survives and the 409 is true as
+        # worded.
         import asyncio
         import json
 
@@ -402,8 +452,13 @@ class TestDashboardChannelSave:
 
         name, handler_attr, validator_attr, body = next(c for c in CHANNELS if c[0] == channel)
         ep = _wide_bom(tmp_path, wide_codec)
-        before = ep.read_bytes()
+        env_before = ep.read_bytes()
         cfg = tmp_path / "config.json"
+        cfg.write_text(
+            json.dumps({channel: {"enabled": False, "bot_token": "legacy-token-in-use"}}),
+            encoding="utf-8",
+        )
+        section_before = json.loads(cfg.read_bytes())[channel]
         monkeypatch.setattr(loader, "env_path", lambda: ep)
         monkeypatch.setattr(loader, "config_path", lambda: cfg)
         monkeypatch.setattr(messaging, "is_direct_local_request", lambda req: True)
@@ -412,6 +467,12 @@ class TestDashboardChannelSave:
             return None
 
         monkeypatch.setattr(messaging, validator_attr, _accept, raising=False)
+        audits: list[object] = []
+        monkeypatch.setattr(
+            messaging,
+            "_sel",
+            lambda: SimpleNamespace(log_api_access=lambda **kw: audits.append(kw)),
+        )
 
         async def _run() -> tuple[int, str]:
             app = web.Application()
@@ -424,10 +485,132 @@ class TestDashboardChannelSave:
         assert status == 409, text
         error = json.loads(text)["error"]
         assert "Re-save it as UTF-8" in error
-        assert error.endswith("The .env was not changed; your other settings were saved.")
-        assert ep.read_bytes() == before
-        saved = json.loads(cfg.read_text(encoding="utf-8"))
-        assert saved[channel]["enabled"] is True
+        assert error.endswith("The .env was not changed.")
+        assert ep.read_bytes() == env_before
+        assert json.loads(cfg.read_text(encoding="utf-8"))[channel] == section_before
+        assert audits == []
+
+    @pytest.mark.parametrize("channel", ["discord", "telegram"])
+    def test_any_failed_env_write_rolls_the_config_back(
+        self, channel: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The rollback is not specific to the encoding: an OSError from the
+        # .env write also leaves config.json, legacy bot_token included, as it was.
+        import asyncio
+        import json
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        from test_channel_env_write_off_loop import CHANNELS
+
+        from kiro_crew.dashboard.handlers import messaging
+
+        name, handler_attr, validator_attr, body = next(c for c in CHANNELS if c[0] == channel)
+        ep = tmp_path / ".env"
+        ep.write_text("", encoding="utf-8")
+        cfg = tmp_path / "config.json"
+        cfg.write_text(
+            json.dumps({channel: {"enabled": False, "bot_token": "legacy-token-in-use"}}),
+            encoding="utf-8",
+        )
+        section_before = json.loads(cfg.read_bytes())[channel]
+        monkeypatch.setattr(loader, "env_path", lambda: ep)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg)
+        monkeypatch.setattr(messaging, "is_direct_local_request", lambda req: True)
+
+        async def _accept(*_args: object, **_kwargs: object) -> None:
+            return None
+
+        monkeypatch.setattr(messaging, validator_attr, _accept, raising=False)
+
+        def _disk_full(_updates: object) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(messaging, "_write_env_updates", _disk_full)
+
+        async def _run() -> int:
+            app = web.Application()
+            app.router.add_put(f"/api/{name}/config", getattr(messaging, handler_attr))
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(f"/api/{name}/config", json={**body, "enabled": True})
+                return resp.status
+
+        assert asyncio.run(_run()) >= 500
+        assert json.loads(cfg.read_text(encoding="utf-8"))[channel] == section_before
+
+    @pytest.mark.parametrize("write_fails", [True, False], ids=["refused", "landed"])
+    @pytest.mark.parametrize(
+        ("channel", "body", "cred_keys"),
+        [
+            ("teams", {"app_password_clear": True}, ("MICROSOFT_APP_PASSWORD",)),
+            ("webex", {"bot_token_clear": True}, ("WEBEX_BOT_TOKEN",)),
+            ("wecom", {"bot_token_clear": True}, ("WECOM_SECRET",)),
+        ],
+    )
+    def test_the_session_folder_is_filed_only_after_the_env_write_lands(
+        self,
+        channel: str,
+        body: dict[str, object],
+        cred_keys: tuple[str, ...],
+        write_fails: bool,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A refused save changes nothing, the sidebar folder included: the
+        # folder is created (or renamed) only once the .env half has landed.
+        # The landed case proves the folder step is still reached.
+        import asyncio
+        import json
+
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+
+        from kiro_crew.dashboard.handlers import messaging
+
+        ep = tmp_path / ".env"
+        ep.write_text("", encoding="utf-8")
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({channel: {"session_folder": "Old chats"}}), encoding="utf-8")
+        monkeypatch.setattr(loader, "env_path", lambda: ep)
+        monkeypatch.setattr(loader, "config_path", lambda: cfg)
+        monkeypatch.setattr(messaging, "is_direct_local_request", lambda req: True)
+        for key in cred_keys:
+            monkeypatch.delenv(key, raising=False)
+
+        def _write(_updates: object) -> None:
+            if write_fails:
+                raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(messaging, "_write_env_updates", _write)
+        filed: list[tuple[str, str, bool]] = []
+
+        async def _record_folder(
+            _state: object, namespace: str, name: str, *, relabel: bool = False
+        ) -> str:
+            filed.append((namespace, name, relabel))
+            return "folder-id"
+
+        monkeypatch.setattr(messaging, "ensure_channel_folder", _record_folder)
+
+        async def _run() -> int:
+            app = web.Application()
+            app["state"] = SimpleNamespace()
+            app.router.add_put(
+                f"/api/{channel}/config", getattr(messaging, f"api_{channel}_config_save")
+            )
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(
+                    f"/api/{channel}/config", json={**body, "session_folder": "New chats"}
+                )
+                return resp.status
+
+        status = asyncio.run(_run())
+        if write_fails:
+            assert status >= 500
+            assert filed == []
+        else:
+            assert status == 200
+            assert filed == [(channel, "New chats", True)]
 
 
 class TestMigrate:
@@ -447,13 +630,18 @@ class TestMigrate:
         ):
             return migrate_env_secrets(**kwargs)
 
-    def test_utf8_bom_first_key_migrates_and_keeps_the_bom(self, tmp_path: Path) -> None:
+    def test_utf8_bom_first_key_migrates_and_keeps_the_bom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
         ep = _utf8_bom(tmp_path)
         report = self._run(tmp_path, ep, dry_run=False)
-        assert report.migrated == ["JIRA_API_TOKEN"]
+        assert report.migrated == ["JIRA_API_TOKEN", "SLACK_BOT_TOKEN"]
         after = ep.read_bytes()
         assert after.startswith(codecs.BOM_UTF8)
-        assert after[3:] == b"JIRA_API_TOKEN=secret://JIRA_API_TOKEN\r\nSLACK_BOT_TOKEN=xyz\r\n"
+        assert after[3:] == (
+            b"JIRA_API_TOKEN=secret://JIRA_API_TOKEN\r\nSLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN\r\n"
+        )
 
     def test_a_wide_file_migrates_nothing(self, wide_codec: str, tmp_path: Path) -> None:
         ep = _wide_bom(tmp_path, wide_codec)

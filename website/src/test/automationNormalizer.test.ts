@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   deriveAutomationStatus,
+  isAutomationActive,
   normalizeAutomationRecord,
   normalizePullRequestMonitorTarget,
   type StructuredMonitor,
@@ -43,7 +44,7 @@ describe('automation transport normalizer', () => {
 
     expect(record).toEqual({
       kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1',
-      message: 'Keep going', idleSecs: 60, maxCycles: 0, cycleCount: 7,
+      message: 'Keep going', createdAt: 0, idleSecs: 60, maxCycles: 0, cycleCount: 7,
       active: true, lastFireAt: 123, nextDueAt: 0, maxRuntimeSecs: 0,
       stoppedReason: '', monitorOutcome: '', monitorKind: '',
     })
@@ -103,6 +104,27 @@ describe('automation transport normalizer', () => {
     expect(normalizeAutomationRecord(base)).not.toHaveProperty('stopSentinelPath')
     // A malformed store value is dropped rather than stringified.
     expect(normalizeAutomationRecord({ ...base, stop_sentinel_path: null })).not.toHaveProperty('stopSentinelPath')
+  })
+
+  it('carries a held loop\'s approval_stalled, and only when it is true', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: true }))
+      .toMatchObject({ kind: 'legacy_goal_loop', approvalStalled: true })
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: false })).not.toHaveProperty('approvalStalled')
+    expect(normalizeAutomationRecord({ ...base, approval_stalled: 'true' })).not.toHaveProperty('approvalStalled')
+  })
+
+  it('carries a work-ledger watch\'s waiting_on_person, and only when it is true', () => {
+    const base = {
+      id: 'legacy-1', slot_key: 'chat-1', message: 'Keep going', idle_secs: 60,
+      max_cycles: 0, cycle_count: 7, active: true, last_fire_ts: 123,
+    }
+    expect(normalizeAutomationRecord({ ...base, waiting_on_person: true }))
+      .toMatchObject({ kind: 'legacy_goal_loop', waitingOnPerson: true })
+    expect(normalizeAutomationRecord({ ...base, waiting_on_person: false })).not.toHaveProperty('waitingOnPerson')
   })
 
   it('folds channel session keys into dashboard slot keys', () => {
@@ -387,5 +409,26 @@ describe('automation transport normalizer', () => {
     }))
 
     expect(deriveAutomationStatus(record!)).toBe('active')
+  })
+})
+
+describe('shared active-monitor predicate', () => {
+  const structured = normalizeAutomationRecord(structuredLoop()) as StructuredMonitor
+
+  it('accepts only proven live records', () => {
+    expect(isAutomationActive(structured)).toBe(true)
+    expect(isAutomationActive({
+      kind: 'legacy_goal_loop', id: 'legacy-1', slotKey: 'chat-1', message: '',
+      createdAt: 0, idleSecs: 60, maxCycles: 24, cycleCount: 2, active: true,
+      lastFireAt: 0, nextDueAt: 0, maxRuntimeSecs: 3600, stoppedReason: '',
+      monitorOutcome: '', monitorKind: 'work-ledger',
+    })).toBe(true)
+  })
+
+  it('fails closed for missing, stopped, terminal, or malformed records', () => {
+    expect(isAutomationActive(null)).toBe(false)
+    expect(isAutomationActive({ ...structured, active: false })).toBe(false)
+    expect(isAutomationActive({ ...structured, terminal: { outcome: 'success', reason: '', stoppedAt: 1 } })).toBe(false)
+    expect(isAutomationActive({ ...structured, actionable: false })).toBe(false)
   })
 })

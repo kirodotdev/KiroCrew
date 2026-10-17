@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -114,4 +114,5 @@ class TestNoOpenCliFlag:
                 json_ready=False,
                 approval_mode=None,
                 test_mode=False,
+                credentials=ANY,
             )

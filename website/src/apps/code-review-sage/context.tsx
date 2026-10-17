@@ -100,6 +100,10 @@ export interface SageContextValue {
     runId: string,
     groups: { changeId: string; keys: string[] }[],
   ) => Promise<void>
+  /** Dismiss one finding with a reason; `null` undoes the dismissal. */
+  dismissFinding: (
+    runId: string, changeId: string, key: string, reason: string | null,
+  ) => Promise<void>
   posting: boolean
   /** The selection currently being posted: `undefined` when idle, `null` when the
    *  whole review is going out, otherwise the specific comment keys. */
@@ -382,6 +386,19 @@ export function SageProvider({ children, initialRunId }: {
     onSuccess: invalidateRuns,
   })
 
+  const dismissMut = useMutation({
+    mutationFn: ({ runId, changeId, key, reason }: {
+      runId: string; changeId: string; key: string; reason: string | null
+    }) => sageApi.dismissFinding(runId, changeId, key, reason),
+    // A dismissal can move the row to another band: the backend re-bands the
+    // report on read, so the report must be refetched as well as the run list,
+    // or the row keeps the band it had before the finding was dismissed.
+    onSuccess: (_d, { runId }) => {
+      invalidateRuns()
+      void qc.invalidateQueries({ queryKey: ['code-review-sage', 'report', runId] })
+    },
+  })
+
   const archiveMut = useMutation({
     mutationFn: (runId: string) => sageApi.archiveRun(runId),
     onSuccess: (_d, runId) => {
@@ -585,6 +602,9 @@ export function SageProvider({ children, initialRunId }: {
       // group 1 resolved — got `already_posting`, so the comments chosen on
       // every change after the first were never published.
       await postGroupsMut.mutateAsync({ runId, groups })
+    },
+    dismissFinding: async (runId, changeId, key, reason) => {
+      await dismissMut.mutateAsync({ runId, changeId, key, reason })
     },
     posting: postMut.isPending || postGroupsMut.isPending,
     // WHICH comments are in flight, so a per-finding post marks only the card

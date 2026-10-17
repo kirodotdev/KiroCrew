@@ -894,13 +894,13 @@ async def test_an_app_caller_cannot_tell_a_remote_bound_slot_from_a_missing_one(
 
 @pytest.mark.asyncio
 async def test_a_remote_bound_slot_refuses_the_tick() -> None:
-    """The local slot only relays the peer's list; there is nothing to write."""
+    """A relay archive is read-only; its checklist is not written."""
     slot = _slot(tasks=[("a", False)])
     slot.executor = "remote"
     slot.instance_id = "peer-1"
     state = _state(slot)
     status, body = await _patch(_app(state), "s1", _body(slot, "1", True))
-    assert status >= 400
+    assert (status, body["code"]) == (409, "relay_archive_read_only")
     assert slot.todo_payload()["completed"] == 0  # type: ignore[index]
     state.broadcast_ws.assert_not_called()
 
@@ -1070,6 +1070,9 @@ async def test_a_slash_command_does_not_settle_an_undelivered_recovery(
     """The debt is paid by the turn that carries the block. A slash command
     never carries it (the block is not prepended to a command), so its provider
     events must not clear it; the next plain turn still re-sends the block."""
+    from chat_test_helpers import pin_kiro_cli_harness
+
+    pin_kiro_cli_harness()
     from unittest.mock import AsyncMock
 
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent

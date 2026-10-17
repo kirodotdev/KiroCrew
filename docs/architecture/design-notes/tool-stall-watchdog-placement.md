@@ -87,10 +87,13 @@ distinguished because they need different remedies:
 
 - **(a) Consumer parked at a `yield`.** Any await in the `async for` body. The
   approval future is the one that bit us, but it is not the only await in that
-  branch: `post_linked_approval` is a network call, `hooks.on_tool_call` runs
-  arbitrary user hook code, and the MCP Apps spool read is thread-offloaded.
-  Each is a candidate for the same freeze, and each new await added to a
-  consumer branch enlarges this class silently.
+  branch: `post_linked_approval` is a network call, and both `hooks.on_tool_call`
+  and the MCP Apps spool read are thread-offloaded: `hooks.on_tool_call` runs its
+  arbitrary user hook code through `executors.run_in_tool_gate_pool` on the
+  dedicated `mc-toolgate` pool, under a bounded `_TOOL_GATE_QUEUE_WAIT_SECS` wait
+  with a fail-closed `hook_gate_busy` refusal. Each remaining loop-resident await
+  is a candidate for the same freeze, and each new await added to a consumer
+  branch enlarges this class silently.
 - **(b) Consumer task gone or never resuming.** `slot.task` cancelled without
   draining, an exception swallowed above the loop, a slot lock held by a turn
   that will not finish.
@@ -200,14 +203,14 @@ no defined lifetime.
 
 **Not reachable at all, structurally.** Anything in `DashboardState`. The
 watchdog is in the session layer; slots, `slot.running`, `slot._approval_futures`,
-`slot._tool_stall_retries` are in `dashboard/state.py`, and `SessionManager`
+`slot._tool_stall_retries` are in `dashboard/state_parts/slot_ladder.py`, and `SessionManager`
 holds no reference to it. The session layer must not import the dashboard.
 
 **The blind spot that matters — and why it was not a plumbing problem.** From
 outside, a healthy 40-minute turn and a turn parked on an approval for 40 minutes
 look identical: `semaphore.locked()` is True for both, and `last_used` advances
 only on the allocation paths and on `touch()`, not on every LLM round-trip
-(`session.py`'s module docstring), so it does not track a turn's progress.
+(`session_parts/sweeps.py`'s module docstring), so it does not track a turn's progress.
 
 The tempting reading is that the signal has to be *injected* from the layer that
 can see it — a consumer-supplied reader in the shape of
@@ -370,5 +373,5 @@ diagnostic gap that this was written to close.
 
 Still open, and belonging to the *cause* rather than the detection: every
 transport's per-event outbound send is an unbounded network await inside the turn
-path, and `hooks.on_tool_call` is synchronous on the event loop. Both widen class
+path. It widens class
 (a) — and (c), which as noted above no loop-resident observer can cover.

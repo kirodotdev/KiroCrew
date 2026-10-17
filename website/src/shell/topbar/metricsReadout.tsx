@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AudioWaveform } from 'lucide-react'
+import { AudioWaveform, Monitor } from 'lucide-react'
 import { api } from '../../api/client'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { safeSetItem } from '../../utils/safeStorage'
 import { metricColor } from '../../utils/metricColor'
 import { isMetricNumber, metricNumber } from '../../utils/metrics'
+import { machineIdentity, type MachineIdentity } from '../../utils/machineIdentity'
 import { fmtNumber, fmtPercent, fmtUnit } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
@@ -35,6 +36,9 @@ export type SysMetricsFrame = {
   posture?: 'ample' | 'tight' | 'critical' | 'unknown'
   availableGb?: number
   subagentCap?: number
+  /** Which machine the frame describes, proven from the untyped payload by
+   *  `machineIdentity`; null when the frame names nothing. */
+  identity?: MachineIdentity | null
 }
 
 /**
@@ -65,7 +69,7 @@ export function readMetricsFrame(raw: SysMetricsFrame) {
  * the system-metrics control — the inline readings, the narrow-band popover, the
  * hover card and the metrics query they all read.
  */
-export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean) {
+export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean, actionsLevel: number) {
   const [metricsOpen, setMetricsOpen] = useState(() => localStorage.getItem('mc-topbar-metrics') === '1')
   // The inline metric readings are dropped by a CSS container-query rung when
   // the actions group runs out of room (the ladder in index.css, whose rungs
@@ -117,7 +121,12 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean) {
   const metricsCardAnchor = metricsPopoverAnchor ?? metricsHoverAnchor
   const metricsCardOpen = metricsCardAnchor !== null
   const metricsCardId = 'topbar-metrics-card'
-  const { data: sysMetrics, isError: sysMetricsError, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined })), refetchInterval: metricsOpen || metricsCardOpen ? 30_000 : 60_000, enabled: true })
+  const { data: sysMetrics, isError, errorUpdatedAt, dataUpdatedAt: sysMetricsUpdatedAt } = useQuery({ queryKey: ['system-metrics'], queryFn: () => api.system().then((d): SysMetricsFrame => ({ memUsed: d.mem_used_gb, memTotal: d.mem_total_gb, cpuPct: d.cpu_pct, diskTotal: d.disk_total_gb, diskFree: d.disk_free_gb, posture: d.resource_posture as 'ample' | 'tight' | 'critical' | 'unknown' | undefined, availableGb: d.resource_available_gb as number | undefined, subagentCap: d.subagent_cap as number | undefined, identity: machineIdentity(d.hostname, d.os, d.cpu_count) })), refetchInterval: metricsOpen || metricsCardOpen ? 30_000 : 60_000, enabled: true })
+  // A failing query that never produced a frame refetches through `pending`,
+  // which clears `isError` for the length of each retry: the readout and the
+  // failure notice would blink on every poll, and the desktop bar re-collapse
+  // with them. The last settled result is still the failure until a frame lands.
+  const sysMetricsError = isError || (!sysMetrics && errorUpdatedAt > sysMetricsUpdatedAt)
   // Tick every 10s while widget is open so `sysMetricsStale` re-evaluates even when the query stops refetching (backgrounded tab, network drop).
   const [, setStaleTick] = useState(0)
   useEffect(() => {
@@ -136,7 +145,8 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean) {
   const metricsDescribedBy = metricsHoverAnchor && metricsCardRole === 'tooltip' ? metricsCardId : undefined
   // Re-read the rung's verdict on any resize of the group -- its width is what
   // the container query measures -- and whenever the update pill mounts or
-  // unmounts, which moves the rung without resizing anything.
+  // unmounts, which moves the rung without resizing anything, or the actions
+  // group's desktop ladder changes level.
   useEffect(() => {
     const probe = metricsProbeRef.current
     const group = metricsGroupRef.current
@@ -147,7 +157,7 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean) {
     const ro = new ResizeObserver(read)
     ro.observe(group)
     return () => ro.disconnect()
-  }, [updateAvailable, isMobile])
+  }, [updateAvailable, isMobile, actionsLevel])
   const closeMetricsPopover = useCallback(() => setMetricsPopoverAnchor(null), [])
   const toggleMetricsPopover = useCallback(() => {
     setMetricsPopoverAnchor(prev => {
@@ -194,6 +204,16 @@ export function useMetricsReadout(isMobile: boolean, updateAvailable: boolean) {
   useEffect(() => {
     if (metricsInlineFits || capsuleCollapsed) closeMetricsPopover()
   }, [metricsInlineFits, capsuleCollapsed, closeMetricsPopover])
+  // An actions-ladder level change re-lays out the group without a window
+  // resize, so it can move the trigger or hide it (the capsule rung hides
+  // everything after the connection dot). Both cards anchor to a snapshot of
+  // the trigger's box, so the pinned popover and the hover card close rather
+  // than pointing at empty space.
+  const closeMetricsHover = metricsHover.close
+  useEffect(() => {
+    closeMetricsPopover()
+    closeMetricsHover()
+  }, [actionsLevel, closeMetricsPopover, closeMetricsHover])
   return {
     metricsOpen, setMetricsOpen, metricsInlineFits, metricsPopoverOpen, metricsProbeRef, metricsGroupRef, metricsBtnRef,
     metricsPopoverRef, capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, metricsHover,
@@ -210,13 +230,29 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     metricsOpen, setMetricsOpen, metricsInlineFits, metricsPopoverOpen, metricsBtnRef, metricsHover, sysMetrics,
     sysMetricsError, sysMetricsStale, metricsDescribedBy, toggleMetricsPopover,
   } = metrics
-  if (!metricsInlineFits) {
-    // No room for the inline readings here, so the click opens the
-    // popover and the stored preference is left untouched -- it still
-    // describes what to do once the readings fit again.
-    return (<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} ${metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} aria-label={i18nT('app.system_metrics')} aria-haspopup="dialog" aria-expanded={metricsPopoverOpen} onClick={toggleMetricsPopover}><AudioWaveform size={12} /></button>)
-  } else if (!metricsOpen) {
-    return (<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} text-muted hover:text-text`} onClick={() => { metricsHover.close(); setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') }} aria-label={i18nT('app.system_metrics')} aria-pressed={false}><AudioWaveform size={12} /></button>)
+  // In the collapsed band (the ladder has dropped the readings) a
+  // click opens the popover and the stored preference is left
+  // untouched -- it still describes what to do once the readings fit
+  // again. The band changes the control's behaviour and ARIA only,
+  // never what it renders: the desktop top bar measures these
+  // contents to pick the band (lib/useTopbarCollapse.ts), so contents
+  // that changed with the band would feed back into that measurement
+  // and the two would flip back and forth without settling. The open
+  // forms show whether their card is pinned through CSS, not contents:
+  // each open form's button is a Tailwind `group`, and its glyph
+  // carries a `group-aria-*` variant that reads this `aria-expanded`,
+  // which the inline band never sets.
+  const popoverTrigger = metricsInlineFits ? null : {
+    ref: metricsBtnRef,
+    ...metricsHover.triggerProps,
+    'aria-describedby': metricsDescribedBy,
+    'aria-label': i18nT('app.system_metrics'),
+    'aria-haspopup': 'dialog' as const,
+    'aria-expanded': metricsPopoverOpen,
+    onClick: toggleMetricsPopover,
+  }
+  if (!metricsOpen) {
+    return (<button key="metrics" className={`${seg} ${popoverTrigger && metricsPopoverOpen ? 'text-accent' : 'text-muted hover:text-text'}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-label': i18nT('app.system_metrics'), 'aria-pressed': false, onClick: () => { metricsHover.close(); setMetricsOpen(true); safeSetItem('mc-topbar-metrics', '1') } })}><AudioWaveform size={12} /></button>)
   } else if (!sysMetrics) {
     // Every OPEN state pushes a toggle. This branch is reached
     // whenever the query has produced no frame, which is the whole
@@ -228,7 +264,12 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     // reported "the metrics doesn't open". The control has to
     // outlive the data it displays.
     if (sysMetricsError) {
-      return (<button key="metrics" className={`${seg} text-danger text-[11px]`} title={i18nT('app.click_to_hide')} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}><AudioWaveform size={11} /> {i18nT('app.metrics_unavailable')}</button>)
+      // The failure text lives in MetricsErrorNotice, while this control keeps
+      // the same icon shape in both bands so the ladder's measurement settles.
+      return (<button key="metrics" className={`${seg} group`} {...(popoverTrigger ?? { title: `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`, 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
+        <span className="sr-only">{i18nT('app.system_metrics')}</span>
+        <AudioWaveform size={12} className="text-accent group-aria-[expanded=false]:!text-muted" />
+      </button>)
     } else {
       // Em dashes, not a spinner. The sibling usage segment draws the
       // same distinction for the same reason: a spinner asserts a
@@ -247,12 +288,13 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
       // `container-type`-contained group is what stranded the header's
       // backdrop (see .topbar-glass in index.css), so the two halves
       // of this fix meet here.
-      return (<button key="metrics" className={`${seg} gap-2 text-[11px] font-mono opacity-60`} title={`${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`} aria-pressed={true} onClick={() => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+      return (<button key="metrics" className={`${seg} group gap-2 text-[11px] font-mono opacity-60`} {...(popoverTrigger ?? { title: `${i18nT('app.system_metrics')} — ${i18nT('app.click_to_hide')}`, 'aria-pressed': true, onClick: () => { setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
         {/* Same two-form structure as the loaded readout: the
             container query picks the icon on the narrow rung, and the
-            name is sr-only so the icon-only form is still named. */}
+            name is sr-only so the icon-only form is still named. The
+            glyph's tint follows the loaded readout's too. */}
         <span className="sr-only">{i18nT('app.system_metrics')}</span>
-        <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+        <AudioWaveform size={12} className="tb-narrow-only text-accent group-aria-[expanded=false]:!text-muted" />
         <span className="tb-drop-metrics flex items-center gap-2 text-muted">
         <span>{i18nT('app.cpu')} —</span>
         <span>{i18nT('app.mem')} —</span>
@@ -275,7 +317,7 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
     // click-to-hide hint, and a native title would pop up on top of
     // it. The readings are visible text here, so they are already in
     // the button's accessible name.
-    return (<button key="metrics" ref={metricsBtnRef} {...metricsHover.triggerProps} aria-describedby={metricsDescribedBy} className={`${seg} gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} aria-pressed={true} onClick={() => { metricsHover.close(); setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') }}>
+    return (<button key="metrics" className={`${seg} group gap-2 text-[11px] font-mono ${sysMetricsStale ? 'opacity-60' : ''}`} {...(popoverTrigger ?? { ref: metricsBtnRef, ...metricsHover.triggerProps, 'aria-describedby': metricsDescribedBy, 'aria-pressed': true, onClick: () => { metricsHover.close(); setMetricsOpen(false); safeSetItem('mc-topbar-metrics', '0') } })}>
       {/* Both forms are rendered and the container query picks one:
           the rung has to fire on the GROUP's width, which no JS
           branch here can see. Collapsing to the icon (rather than
@@ -290,8 +332,16 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
           the two forms are otherwise the same glyph with the same
           name, so clicking the toggle would produce no perceivable
           change while still writing the preference. `aria-pressed`
-          carries the same distinction to assistive tech. */}
-      <AudioWaveform size={12} className="tb-narrow-only text-accent" />
+          carries the same distinction to assistive tech. Where a click
+          pins the card instead, the glyph is this control's only
+          visible part, so it is muted until the card is pinned. That
+          is keyed off the button's `aria-expanded` in CSS rather than
+          by a class chosen here, so the band sees the same contents
+          (see popoverTrigger). The muted variant is `!important`: a
+          theme's own `.text-accent` override (kiro-dark, index.css)
+          matches at the same specificity and later, so a plain variant
+          loses to it and the unpinned glyph stays accent. */}
+      <AudioWaveform size={12} className="tb-narrow-only text-accent group-aria-[expanded=false]:!text-muted" />
       <span className="tb-drop-metrics flex items-center gap-2">
       <span className={cpuValid ? metricColor(m.cpuPct / 100) : 'text-muted'}>{i18nT('app.cpu')} {cpuValid ? fmtPercent(m.cpuPct / 100) : '—'}</span>
       <span className={memValid ? metricColor(memPct) : 'text-muted'}>{i18nT('app.mem')} {memValid ? fmtPercent(memPct) : '—'}</span>
@@ -299,6 +349,23 @@ export function metricsSegment(metrics: MetricsReadout, seg: string): ReactNode 
       </span>
     </button>)
   }
+}
+
+/** The read-failure hand-off that follows the desktop capsule. */
+export function MetricsErrorNotice({ metrics }: { metrics: MetricsReadout }) {
+  const { capsuleCollapsed, metricsOpen, sysMetrics, sysMetricsError } = metrics
+  if (capsuleCollapsed || !metricsOpen || sysMetrics || !sysMetricsError) return null
+  const message = i18nT('app.metrics_unavailable')
+  return (
+    <ErrorNotice
+      variant="inline"
+      askAgent
+      message={message}
+      messageClassName="tb-metrics-notice-msg"
+      className="tb-metrics-notice shrink-0"
+      testId="topbar-metrics-error"
+    />
+  )
 }
 
 /** The metrics card, pinned by a click in the narrow band or previewed on hover. */
@@ -349,6 +416,10 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
           { label: i18nT('app.mem'), valid: memValid, pct: memValid ? m.memUsed / m.memTotal : NaN, detail: memValid ? `${fmtNumber(m.memUsed, { maximumFractionDigits: 1 })}/${fmtUnit(m.memTotal, 'gigabyte', { maximumFractionDigits: 1 })}` : i18nT('app.memory_unavailable') },
           { label: i18nT('app.dsk'), valid: dskValid, pct: dskValid ? dskUsed / m.diskTotal : NaN, detail: dskValid ? `${fmtNumber(dskUsed, { maximumFractionDigits: 0 })}/${fmtUnit(m.diskTotal, 'gigabyte', { maximumFractionDigits: 0 })}` : i18nT('app.disk_unavailable') },
         ]
+        const id = sysMetrics.identity
+        // OS family and core count tell machines apart when the hostname
+        // alone does not: a Mac commonly reports a bare serial-like name.
+        const idDetail = id ? [id.os, id.cores > 0 ? i18nT('app.metrics_card_cores', { count: id.cores }) : ''].filter(Boolean).join(' \u00b7 ') : ''
         return (
           <>
             {rows.map(r => (
@@ -360,6 +431,23 @@ export function MetricsCard({ metrics }: { metrics: MetricsReadout }) {
                 </span>
               </div>
             ))}
+            {/* Which machine these readings belong to. Every instance tab
+                renders this same card from its own gateway, so the numbers
+                alone cannot say whose they are. The line shows the first
+                label so a long FQDN does not widen the card. The tooltip
+                always carries the full name: the line truncates, so even a
+                dotless name the short form left whole can be cut off. */}
+            {id && (
+              <div className="border-t border-border pt-1.5 flex flex-col gap-px">
+                {id.host && (
+                  <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-text" title={id.fullHost}>
+                    <Monitor aria-hidden="true" size={11} className="shrink-0 text-muted" />
+                    <span className="font-mono truncate max-w-[13rem]">{id.host}</span>
+                  </div>
+                )}
+                {idDetail && <div className="text-[10px] text-muted">{idDetail}</div>}
+              </div>
+            )}
             {/* The expanded readout's click hides it; the hover card is where
                 that affordance is announced now that the button carries no
                 title tooltip. */}

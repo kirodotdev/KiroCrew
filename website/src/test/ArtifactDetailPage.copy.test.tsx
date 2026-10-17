@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, waitFor, fireEvent } from '@testing-library/react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, useNavigate } from 'react-router-dom'
 import ArtifactDetailPage from '../pages/ArtifactDetailPage'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
 import type { Artifact } from '../types'
+import { moreButton, openMore } from './artifactMoreMenu'
 
 // The sandboxed frame mints its document URL through the api client. The
 // automock resolves every method to `undefined`, which the component cannot
@@ -53,7 +54,13 @@ function renderRoute() {
   )
 }
 
-const copyBtn = () => screen.getByRole('button', { name: 'Copy content' })
+// Copy lives in the toolbar's "More" menu, which stays open after a copy so the
+// item's Copied / Copy failed label is the confirmation.
+const copyItem = (name: string = 'Copy content') => {
+  if (!screen.queryByRole('menu')) openMore()
+  return screen.getByRole('menuitem', { name })
+}
+const copyBtn = () => copyItem()
 
 describe('ArtifactDetailPage copy content', () => {
   beforeEach(() => {
@@ -83,33 +90,26 @@ describe('ArtifactDetailPage copy content', () => {
     // Raw source as stored — not the rendered markdown.
     expect(copyToClipboard).toHaveBeenCalledWith(RAW)
     // Brief confirmation: the control flips to its "Copied" state.
-    expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    expect(await screen.findByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
   })
 
-  it('aligns the copy control with the reading-width card and follows full width', async () => {
+  it('is offered from the toolbar\'s More menu rather than a row of its own above the body', async () => {
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    const toolbar = copyBtn().parentElement as HTMLElement
-
-    expect(toolbar.style.maxWidth).toBe('var(--mc-content-width, 900px)')
-    expect(toolbar.style.margin).toBe('0px auto')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Medium width' }))
-    expect(toolbar.style.maxWidth).toBe('')
-    expect(toolbar.style.margin).toBe('')
+    expect(moreButton().closest('[data-hover-tip]')?.parentElement).toHaveClass('mc-art-toolbar')
+    expect(copyBtn().closest('[role="menu"]')).not.toBeNull()
   })
 
-  it('keeps iframe artifacts and their copy control full width', async () => {
+  it('keeps iframe artifacts full width', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({ kind: 'html', content: '<main>Full-width report</main>' }),
     )
     const { container } = renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
 
-    const toolbar = copyBtn().parentElement as HTMLElement
-    expect(toolbar.style.maxWidth).toBe('')
-    expect(toolbar.style.margin).toBe('')
-    expect(screen.queryByRole('button', { name: 'Medium width' })).toBeNull()
+    expect(copyBtn()).toBeInTheDocument()
+    // No reading-width setting for an iframe: it always spans the pane.
+    expect(screen.queryByRole('menuitemcheckbox', { name: 'Full width' })).toBeNull()
 
     const iframe = await waitFor(() => {
       const node = container.querySelector('iframe')
@@ -119,46 +119,37 @@ describe('ArtifactDetailPage copy content', () => {
     expect((iframe.parentElement as HTMLElement).style.maxWidth).toBe('')
   })
 
-  it('shows a brief accessible failure state when the copy reports failure', async () => {
+  it('reports a failed copy through the page notice and closes the menu so it is seen', async () => {
     // Under the boolean contract `copyToClipboard` never rejects; a failed copy
     // resolves `false`. The failure UI must key off that, not off a rejection.
     vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    vi.useFakeTimers()
 
     fireEvent.click(copyBtn())
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    const failed = screen.getByRole('button', { name: 'Copy failed' })
-    expect(failed).toHaveAttribute('aria-live', 'polite')
-    expect(failed).toHaveClass('text-danger')
-
-    act(() => vi.advanceTimersByTime(1500))
-    expect(copyBtn()).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    expect(screen.getByRole('alert')).toHaveTextContent('Copy failed')
+    // The item itself never turns into an error surface: it still reads Copy content.
+    expect(copyItem('Copy content')).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Copy failed' })).toBeNull()
   })
 
-  it('lets a retry own the status and timeout after a copy failure', async () => {
+  it('lets a retry after a failure own the status and timeout', async () => {
     vi.mocked(copyToClipboard)
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    vi.useFakeTimers()
 
     fireEvent.click(copyBtn())
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    vi.useFakeTimers()
+    fireEvent.click(copyBtn())
     await act(async () => { await Promise.resolve() })
-    const failed = screen.getByRole('button', { name: 'Copy failed' })
-
-    fireEvent.click(failed)
-    await act(async () => { await Promise.resolve() })
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
 
     act(() => vi.advanceTimersByTime(1499))
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
     act(() => vi.advanceTimersByTime(1))
     expect(copyBtn()).toBeInTheDocument()
   })
@@ -175,12 +166,12 @@ describe('ArtifactDetailPage copy content', () => {
     fireEvent.click(copyBtn())
     fireEvent.click(copyBtn())
     await act(async () => { resolveSecond?.(true) })
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
 
     // The stale first attempt settles late as a failure; the attempt guard must
     // keep it from clobbering the current 'Copied' state.
     await act(async () => { resolveFirst?.(false) })
-    expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Copied' })).toBeInTheDocument()
   })
 
   it('copies the selected historical version, not live', async () => {
@@ -200,6 +191,32 @@ describe('ArtifactDetailPage copy content', () => {
     expect(copyToClipboard).toHaveBeenCalledWith('old v1 body')
   })
 
+  it('drops a copy failure notice when the route moves to another artifact', async () => {
+    // The route element is reused across artifacts, so A's failure banner
+    // must not stay up over B.
+    function SwitchArtifact() {
+      const navigate = useNavigate()
+      return <button type="button" onClick={() => navigate('/artifacts/other')}>go to other</button>
+    }
+    vi.mocked(api).artifact = vi.fn((slug: string) => Promise.resolve(mkArtifact({ slug, name: slug })))
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+    renderWithProviders(
+      <>
+        <SwitchArtifact />
+        <Routes>
+          <Route path="/artifacts/:slug" element={<ArtifactDetailPage />} />
+        </Routes>
+      </>,
+      { route: '/artifacts/cr-queue' },
+    )
+    await screen.findByText('cr-queue', { selector: 'button' })
+    fireEvent.click(copyBtn())
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Copy failed'))
+    fireEvent.click(screen.getByRole('button', { name: 'go to other' }))
+    await screen.findByText('other', { selector: 'button' })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('offers no copy button for image artifacts (bytes, not text)', async () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(
       mkArtifact({
@@ -210,15 +227,18 @@ describe('ArtifactDetailPage copy content', () => {
     )
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-    expect(screen.queryByRole('button', { name: 'Copy content' })).toBeNull()
+    openMore()
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: 'Copy content' })).toBeNull()
   })
 
   it('hides the copy button while editing', async () => {
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Edit content' }))
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Copy content' })).toBeNull(),
-    )
+    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel/ })).toBeInTheDocument())
+    openMore()
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: 'Copy content' })).toBeNull()
   })
 })

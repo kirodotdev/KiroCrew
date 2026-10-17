@@ -433,6 +433,7 @@ def test_pod_up_boots_end_to_end_under_the_windows_branches(cfg, tmp_path, monke
     monkeypatch.setattr(rt.win_backend, "supervise_gateway", fake_supervise)
     monkeypatch.setattr(rt.win_backend, "schtasks", lambda *a: _cp())
 
+    win.runs.reserve(cfg, "demo")  # `pod up` reserves; the boot claims it first.
     rc = rt.boot(cfg, "demo")
 
     out = capsys.readouterr().out
@@ -485,6 +486,7 @@ def test_pod_up_boots_end_to_end_with_a_seeded_scenario(cfg, tmp_path, monkeypat
     monkeypatch.setattr(rt.win_backend, "supervise_gateway", lambda *a, **k: 0)
     monkeypatch.setattr(rt.win_backend, "schtasks", lambda *a: _cp())
 
+    win.runs.reserve(cfg, "demo")  # `pod up` reserves; the boot claims it first.
     rc = rt.boot(cfg, "demo")
     out = capsys.readouterr().out
     assert rc == 0, f"boot refused: {out}"

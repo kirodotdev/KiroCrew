@@ -25,8 +25,7 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   /** The host stretches the sidebar to its own width (the mobile drawer, the
    *  sessions embed), so no chat pane sits beside it to reserve room for. */
   fillsHost?: boolean
-  /** Board view is showing. Only the board may grow past SIDEBAR_MAX, and
-   *  only the board reserves a minimum chat pane beside it. */
+  /** Board view is showing. Only the board may grow past SIDEBAR_MAX. */
   boardActive: boolean
 }) {
   // The drag ceiling follows the live window and nav rail, read at call time
@@ -40,10 +39,9 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   boardActiveRef.current = boardActive
   const winWRef = useRef(winW)
   winWRef.current = winW
-  // Board view, the only view that grows past SIDEBAR_MAX, leaves the chat
-  // pane its minimum. The list views reserve only the nav rail, as the
-  // drawer's own clamp does (clampSidebarWidth).
-  const chatMin = fillsHost || !boardActive ? 0 : CHAT_PANE_MIN_W
+  // Every view beside a chat pane leaves it its minimum, so the list views
+  // and board view share one paint rule on a narrow window.
+  const chatMin = fillsHost ? 0 : CHAT_PANE_MIN_W
   const chatMinRef = useRef(chatMin)
   chatMinRef.current = chatMin
   const ceilingNow = useCallback(

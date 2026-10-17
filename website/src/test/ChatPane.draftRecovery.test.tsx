@@ -13,6 +13,7 @@ import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import { i18nT } from '../i18n/t'
 
 /* Draft / recovery hardening for ChatPane, surfaced by review of the
  * steer-only DM composer (#8852). A pane can be rebound to another slot
@@ -212,6 +213,35 @@ describe('ChatPane draft & recovery hardening (steer-only DM thread)', () => {
     // The queue card's cancel restores the typed text and re-stages the chip.
     await waitFor(() => expect(queuedSendStash.get('q-inlined')).toEqual({ raw: 'read this', files: ['/tmp/uploads/report.pdf'], sent: 'read this\n[attached_file 1] /tmp/uploads/report.pdf' }))
     queuedSendStash.delete('q-inlined')
+  })
+
+  it('an idle plain send whose receipt never came keeps its bubble pending, marks it, and warns under it', async () => {
+    // Idle pane: the send mints an optimistic bubble, then the deadline fires.
+    // The bubble stays (a restore could duplicate a turn that did run), so the
+    // pane must say so: the deadline mark draws the bubble's pending line and
+    // a WARN notice lands under it, as the main chat page does.
+    forcedReceipt = { status: 'response-late', body: {} }
+    const { store } = renderPane('member-idle-late', { running: false })
+    const box = await composer()
+    fireEvent.change(box, { target: { value: 'did this arrive?' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    await waitFor(() => expect(lastSendTurnOpts).not.toBeNull())
+    expect(lastSendTurnOpts?.steer).toBeFalsy()
+    const rows = () => selectSlotMessages(store.getState() as RootState, 'member-idle-late')
+    const notice = await waitFor(() => {
+      const row = rows().find(m => m.role === 'notice')
+      expect(row).toBeDefined()
+      return row!
+    })
+    expect(notice.content).toBe('\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'))
+    const bubbles = rows().filter(m => m.role === 'user' && m.content === 'did this arrive?')
+    expect(bubbles).toHaveLength(1)
+    expect(bubbles[0].meta?.optimistic).toBe(true)
+    expect(bubbles[0].meta?.deliveryUnconfirmed).toBe(true)
+    expect(rows().indexOf(notice)).toBe(rows().indexOf(bubbles[0]) + 1)
+    // No restore: nothing proved the send failed.
+    expect((box as HTMLTextAreaElement).value).toBe('')
+    expect(rows().some(m => m.role === 'error')).toBe(false)
   })
 
   it('an identical queue entry does not stand in for the unconfirmed send — the draft still comes back', async () => {

@@ -145,10 +145,16 @@ describe('fr spacing (style/fr.md §1)', () => {
         // the REST of the value, so prose beside a path is still held to §1 —
         // an early return here would let a malformed sentence ride in on a path.
         // URI schemes are literals too: the colon in `skill://` is not French
-        // punctuation and must stay byte-for-byte usable by the reader.
+        // punctuation and must stay byte-for-byte usable by the reader. So is an
+        // AWS IAM action (`transcribe:StartStreamTranscription`), which the reader
+        // pastes into a policy.
         const withoutUris = value.replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/\S*/g, '')
         const withoutDrivePaths = withoutUris.replace(/\b[A-Za-z]:[\\/]\S*/g, '')
-        return WRONG_DOUBLE_SPACE.test(withoutDrivePaths)
+        const withoutIamActions = withoutDrivePaths.replace(
+          /\b[a-z][a-z0-9-]*:[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)+\b/g,
+          '',
+        )
+        return WRONG_DOUBLE_SPACE.test(withoutIamActions)
       })
       .map(([key, value]) => `${key}: ${JSON.stringify(value.slice(0, 60))}`)
     expect(bad, `${report(bad)}\n\nThere is no ceiling to raise for these — the value is yours.`)

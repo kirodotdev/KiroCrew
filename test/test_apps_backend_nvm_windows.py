@@ -127,8 +127,8 @@ class TestPosixStillUsesNvm:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Kills the mutant that returns None unconditionally (or keys the guard
-        # off the wrong flag): on POSIX the ``bash -c`` lookup must still fire,
-        # exactly as before.
+        # off the wrong flag): on POSIX the ``bash -c`` lookup must still fire.
+        # The nvm.sh path is bash's ``$1``, never part of the script text.
         nvm = _nvm_dir(tmp_path, monkeypatch)
         bin_dir = tmp_path / "versions" / "bin"
         bin_dir.mkdir(parents=True)
@@ -137,7 +137,13 @@ class TestPosixStillUsesNvm:
         calls = _spy_runs(monkeypatch, stdout=f"{bin_dir / 'node'}\n")
         assert bmod._resolve_nvm_path("npm") == str(bin_dir / "npm")
         assert calls == [
-            ["bash", "-c", f'source "{nvm / "nvm.sh"}" --no-use && nvm which current'],
+            [
+                "bash",
+                "-c",
+                'source -- "$1" --no-use && nvm which current',
+                "bash",
+                str(nvm / "nvm.sh"),
+            ],
         ]
 
     def test_missing_nvm_sh_still_returns_none_without_a_subprocess(

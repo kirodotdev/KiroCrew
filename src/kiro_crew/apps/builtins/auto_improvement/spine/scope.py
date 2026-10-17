@@ -1,7 +1,7 @@
 """Diff-scope — restrict a run to the files changed between two branches.
 
 The self-improvement use case (point the app at its OWN feature branch): discovery
-otherwise ranges over the WHOLE target package (``discover_defect_surfaces`` scans
+otherwise ranges over the WHOLE target package (the profile's ``discover`` scans
 ``clone/src/kiro_crew``), so a bug run would fix all of Kiro Crew, not just the app.
 Scoping the run to ``diff(base_ref, HEAD)`` confines it to exactly the change set the
 branch introduced — i.e. the feature you are dogfooding — without any hand-maintained

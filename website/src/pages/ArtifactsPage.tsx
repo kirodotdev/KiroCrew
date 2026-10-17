@@ -1,458 +1,54 @@
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeSetItem } from '../utils/safeStorage'
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { AlertTriangle, Bookmark, ExternalLink, Globe, X, Share2, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, FolderOpen, ChevronRight, ChevronDown, ChevronUp, Star, FileText, FilePlus } from 'lucide-react'
-import { openPopout } from '../utils/artifactPopout'
-import { VirtuosoMasonry } from '@virtuoso.dev/masonry'
-import type { ItemContent } from '@virtuoso.dev/masonry'
-// At one column the gallery is a list, and it is windowed by this app's own
-// virtualizer rather than a library: see `LibraryList` for the measured reason.
-import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, Bookmark, Globe, X, Loader2, LayoutDashboard, Table as TableIcon, Folder as FolderIcon, FolderPlus, ChevronDown, Star, FileText, FilePlus } from 'lucide-react'
 import { useCollapseOnScroll, COLLAPSE_MS, CHROME_ATTR } from '../hooks/useCollapseOnScroll'
-import { DndContext, DragOverlay, MeasuringStrategy, pointerWithin, type DragEndEvent, type DragStartEvent, type CollisionDetection, type Modifier } from '@dnd-kit/core'
+import { DndContext, DragOverlay, MeasuringStrategy, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import SegmentedControl from '../components/SegmentedControl'
 import { api } from '../api/client'
-import { Card, CardTitle, PageHeader, Btn, Badge, SearchInput, EmptyState, Input } from '../components/ui'
+import { PageHeader, Btn, SearchInput, EmptyState, Input } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
-import Clickable from '../components/Clickable'
 import SimpleSelect from '../components/SimpleSelect'
-import RemoteArtifactCard from '../components/RemoteArtifactCard'
-import { publishNoticeKey } from '../components/PublishHub'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../components/ui/dropdown-menu'
-import { timeAgo as _timeAgo } from '../utils/timeAgo'
 import ArtifactFolderDeleteDialog from '../components/ArtifactFolderDeleteDialog'
-import { DndActiveProbe, DndDraggable, DndDroppable } from '../components/dnd'
+import { DndActiveProbe } from '../components/dnd'
 import { useArtifactFolders, useInvalidateArtifactFolders, useMoveArtifactToFolder, type MoveArtifactOptions } from '../hooks/useArtifactFolders'
 import useMoveUndo from '../hooks/useMoveUndo'
 import MoveUndoBar from '../components/MoveUndoBar'
 import { AnimatePresence } from 'framer-motion'
 import { useDndSensors } from '../hooks/useDndSensors'
-import { childFolders, isDescendantFolder, folderSubtreeStats, folderBreadcrumb } from '../utils/artifactFolderTree'
-import { compareText } from '../i18n/format'
+import { childFolders, isDescendantFolder, folderSubtreeStats } from '../utils/artifactFolderTree'
 import { useCloudDeploymentEnabled } from '../hooks/useCloudDeploymentEnabled'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
-import { markJustCreatedBlank } from '../lib/blankHandoff'
-import { IMPORT_ACCEPT, IMPORTABLE_EXT_LIST, MAX_IMPORT_BYTES, planFileImport, wasContentRedacted, type ImportPlan, type ImportRejection } from '../lib/artifactImport'
+import { IMPORT_ACCEPT } from '../lib/artifactImport'
 import { haptic } from '../lib/haptic'
-import type { Artifact, ArtifactFolder, PublishProviderDescriptor, RemoteArtifact, SessionDoc } from '../types'
-import { KIND_BADGE, isoToTs, docFileType, FolderColorSwatches, FolderGlyph, FolderNameInput, FolderMenu, SessionDocStar, LibraryTable, LibraryTree } from '../components/library/LibraryTable'
+import type { Artifact, ArtifactFolder, PublishProviderDescriptor, SessionDoc } from '../types'
+import { docFileType, FolderColorSwatches, FolderGlyph, FolderNameInput, LibraryTable, LibraryTree } from '../components/library/LibraryTable'
 import SessionDocPreview from '../components/library/SessionDocPreview'
+import ArtifactScopeChips, { type ArtifactChatScopeParam } from '../components/library/ArtifactScopeChips'
 import type { SortKey, SortState, LibraryDrag, FolderActions } from '../components/library/LibraryTable'
-import { WidgetThumb, ContentThumb, ImageThumb, WebAppThumb } from '../components/library/ArtifactThumbs'
 import { useColumnCount } from '../hooks/useColumnCount'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
+import { useGuideSelection } from '../guide/guidePredicates'
 
-const KIND_OPTIONS = ['', 'widget', 'html', 'markdown', 'svg', 'json', 'text', 'webapp', 'image'] as const
+import { KIND_OPTIONS, ARTIFACT_SORT_STORAGE_KEY, readPersistedSort, sortArtifacts } from './artifactsPageModel'
+import {
+  artifactLibraryCollision,
+  snapOverlayToCursor,
+  FolderCard,
+  FolderCardGrid,
+  FolderBreadcrumbBar,
+} from './ArtifactsPageFolders'
+import { type GridEntry, VIRTUALIZE_AT, LibraryMasonry } from './ArtifactsPageGallery'
+import { SessionDocsGallery, RemoteBrowseSection } from './ArtifactsPageSections'
+import { useArtifactsPageCreate } from './useArtifactsPageCreate'
 
-/** Explain a refused "Add Artifact" pick in the library's error banner.
- *
- * Kept next to the page rather than inside `lib/artifactImport.ts` so that
- * module stays free of catalog lookups and unit-testable without i18n. */
-function importRejectionText(reason: ImportRejection): string {
-  switch (reason) {
-    case 'unsupported-type':
-      return `${i18nT('pages.artifactsPage.add_artifact_error_unsupported_type')} ${IMPORTABLE_EXT_LIST}`
-    case 'too-large':
-      return i18nT('pages.artifactsPage.add_artifact_error_too_large', {
-        limit: Math.floor(MAX_IMPORT_BYTES / (1024 * 1024)),
-      })
-    case 'empty':
-      return i18nT('pages.artifactsPage.add_artifact_error_empty')
-    case 'not-text':
-      return i18nT('pages.artifactsPage.add_artifact_error_not_text')
-    case 'unreadable':
-      return i18nT('pages.artifactsPage.add_artifact_error_unreadable')
-  }
-}
-
-// ── Table column sorting ─────────────────────────────────────────────────
-// Clicking a header cycles asc → desc → default (the server's order). The
-// star and Actions columns are controls, not data, and stay unsortable.
-
-const ARTIFACT_SORT_STORAGE_KEY = 'mc-artifacts-sort'
-const SORT_KEYS = new Set<SortKey>(['name', 'slug', 'kind', 'source', 'version', 'tags', 'updated'])
-
-function readPersistedSort(): SortState {
-  try {
-    const value: unknown = JSON.parse(safeGetItem(ARTIFACT_SORT_STORAGE_KEY) ?? 'null')
-    if (!value || typeof value !== 'object') return null
-    const { key, dir } = value as { key?: unknown; dir?: unknown }
-    return typeof key === 'string' && SORT_KEYS.has(key as SortKey) && (dir === 'asc' || dir === 'desc')
-      ? { key: key as SortKey, dir }
-      : null
-  } catch {
-    return null
-  }
-}
-
-/** Type-aware comparator: numeric for version, chronological for updated,
- * locale-collated natural string for the rest (compareText names the active
- * UI locale — never the host's). Direction is applied by the caller. */
-function compareArtifacts(a: Artifact, b: Artifact, key: SortKey): number {
-  switch (key) {
-    case 'version':
-      return a.version - b.version
-    case 'updated': {
-      // Byte-order ISO-8601 compare (same backend format, +00:00 offset):
-      // chronological AND keeps the microsecond precision Date.parse drops,
-      // so two artifacts updated within the same second still order correctly.
-      const au = a.updated_at || ''
-      const bu = b.updated_at || ''
-      return au < bu ? -1 : au > bu ? 1 : 0
-    }
-    case 'source':
-      return compareText(a.session_title || a.source || '', b.session_title || b.source || '')
-    case 'tags':
-      return compareText((a.tags || []).join(', '), (b.tags || []).join(', '))
-    case 'slug':
-      return compareText(a.slug, b.slug)
-    case 'kind':
-      return compareText(a.kind, b.kind)
-    default:
-      return compareText(a.name, b.name)
-  }
-}
-
-function sortArtifacts(items: Artifact[], sort: SortState): Artifact[] {
-  if (!sort) return items
-  const mul = sort.dir === 'desc' ? -1 : 1
-  // Array.prototype.sort is stable, so equal rows keep the server's order.
-  return [...items].sort((a, b) => compareArtifacts(a, b, sort.key) * mul)
-}
-
-// ── Masonry library ──────────────────────────────────────────────────────
-// The Library renders as a virtualized masonry (瀑布流) via VirtuosoMasonry.
-// Widget/html artifacts get a live sandboxed preview thumbnail that self-sizes
-// (height reporter), giving the waterfall its natural varying heights; other
-// kinds get a content snippet. Virtualization means only on-screen previews
-// mount, so N sandboxed iframes stay cheap.
-
-/** A cell in the "Your Artifacts" grid — a local artifact. */
-type GridEntry = { kind: 'local'; key: string; art: Artifact }
-
-type LibCtx = {
-  onOpen: (slug: string) => void
-  onDelete: (a: Artifact) => void
-  deletingSlug: string | null
-  onTogglePin: (a: Artifact) => void
-  pinningSlug: string | null
-}
-
-// ── Folders ──────────────────────────────────────────────────
-// The library's DnD has only `folder-drop` droppables (folder cards/rows,
-// breadcrumb segments, the Unfiled lane), so pointer containment is the whole
-// story: a drop target is "over" only while the cursor is inside it. No
-// closest-fallback — that would keep the nearest folder permanently
-// highlighted during any drag, even with the cursor nowhere near it.
-const artifactLibraryCollision: CollisionDetection = (args) => pointerWithin(args)
-
-// Center the DragOverlay ghost on the cursor. Without this the overlay spawns
-// at the dragged element's top-left — grabbing a tall masonry card near its
-// bottom leaves the ghost hundreds of pixels above the pointer. (Inline port
-// of @dnd-kit/modifiers' snapCenterToCursor; the package isn't a dependency.)
-const snapOverlayToCursor: Modifier = ({ activatorEvent, draggingNodeRect, transform }) => {
-  if (draggingNodeRect && activatorEvent && 'clientX' in activatorEvent && 'clientY' in activatorEvent) {
-    const evt = activatorEvent as PointerEvent
-    const offsetX = evt.clientX - draggingNodeRect.left
-    const offsetY = evt.clientY - draggingNodeRect.top
-    return {
-      ...transform,
-      x: transform.x + offsetX - draggingNodeRect.width / 2,
-      y: transform.y + offsetY - draggingNodeRect.height / 2,
-    }
-  }
-  return transform
-}
-
-/** Mini preview tile inside a gallery folder card — the same lazy full-fetch
- * the masonry cards use (shared ['artifact', slug] cache), clipped to a small
- * fixed-height tile so the folder reads as "a glimpse of what's inside". */
-function FolderMiniThumb({ a }: { a: Artifact }) {
-  const { data: full } = useQuery<Artifact>({
-    queryKey: ['artifact', a.slug],
-    queryFn: () => api.artifact(a.slug),
-    staleTime: 60_000,
-    enabled: !!a.slug,
-  })
-  const hasPreview = a.kind === 'widget' || a.kind === 'html'
-  const content = full?.content || ''
-  return (
-    <div className="h-[84px] rounded-md border border-border overflow-hidden bg-bg-elevated pointer-events-none" title={a.name}>
-      {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} mini /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} mini />}
-    </div>
-  )
-}
-
-/** Gallery folder card: click to enter, draggable (nest via drop on another
- * folder card / breadcrumb), droppable (receives artifacts and folders).
- * Carries the same mb-3 row gap the masonry cards use; the column gutter is
- * the FolderCardGrid's `gap-x-3`, so the card must NOT add an `mr-3` of its own. */
-function FolderCard({ folder, folders, previewArtifacts, actions }: {
-  folder: ArtifactFolder
-  folders: ArtifactFolder[]
-  previewArtifacts: Artifact[]
-  actions: FolderActions
-}) {
-  const stats = folderSubtreeStats(folders, folder.id)
-  const renaming = actions.renamingId === folder.id
-  const preview = previewArtifacts.slice(0, 3)
-  return (
-    <DndDroppable id={`folder-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
-      {({ setNodeRef: setDropRef, isOver }) => (
-        <DndDraggable id={`folder:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
-          {({ setNodeRef: setDragRef, listeners, isDragging }) => (
-            <div
-              ref={(el) => { setDropRef(el); setDragRef(el) }}
-              {...(renaming ? {} : listeners)}
-              onClick={() => { if (!renaming) actions.onOpen(folder.id) }}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (!renaming && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); actions.onOpen(folder.id) } }}
-              aria-label={i18nT('pages.artifactsPage.open_folder', { name: folder.name })}
-              className={`group mb-3 rounded-lg border bg-card p-3 cursor-pointer transition-all hover:border-border-strong hover:shadow-md ${
-                isOver ? 'border-accent ring-2 ring-accent/40 bg-accent/5' : 'border-border'
-              }`}
-              style={{
-                opacity: isDragging ? 0.4 : 1,
-                ...(folder.color && !isOver ? { borderLeft: `3px solid ${folder.color}` } : {}),
-              }}
-            >
-              {/* Content glimpse: up to three mini previews of what's inside. */}
-              <div className={`grid gap-1.5 mb-2.5 ${preview.length === 3 ? 'grid-cols-3' : preview.length === 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                {preview.length > 0 ? (
-                  preview.map((a) => <FolderMiniThumb key={a.slug} a={a} />)
-                ) : (
-                  <div className="h-[84px] rounded-md border border-dashed border-border flex items-center justify-center text-muted">
-                    <FolderOpen size={22} className="opacity-50" />
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <FolderGlyph folder={folder} size={17} />
-                <div className="min-w-0 flex-1">
-                  {renaming ? (
-                    <FolderNameInput
-                      initial={folder.name}
-                      placeholder={i18nT('pages.artifactsPage.rename_folder')}
-                      onCommit={(name) => actions.onRenameSubmit(folder, name)}
-                      onCancel={actions.onRenameCancel}
-                    />
-                  ) : (
-                    <div className="text-[15px] leading-tight text-text-strong font-semibold truncate">{folder.name}</div>
-                  )}
-                  <div className="text-[11px] text-muted mt-0.5">
-                    {i18nT('pages.artifactsPage.artifact', { count: stats.artifactCount })}
-                    {stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
-                  </div>
-                </div>
-                <div className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity shrink-0">
-                  <FolderMenu folder={folder} folders={folders} actions={actions} />
-                </div>
-              </div>
-            </div>
-          )}
-        </DndDraggable>
-      )}
-    </DndDroppable>
-  )
-}
-
-/** Width of one card gutter (`mr-3` on the masonry cards, `gap-x-3` here). */
-const CARD_GUTTER_PX = 12
-
-/** Grid for folder cards, sized to align column-for-column with the masonry
- * gallery below (same 300px column pitch, same gutter).
- *
- * The gutter is a grid `gap`, NOT the masonry's `-mr-3` wrapper + per-card
- * `mr-3` scheme. That scheme makes the wrapper one gutter WIDER than its
- * parent, which is harmless in a padded page column but is 12px of scrollable
- * overflow inside a scroll container — and once the gallery virtualizes this
- * grid lives inside the capped, `overflow-y-auto` folder region (which makes
- * its overflow-x `auto` too), so the wrapper painted a horizontal scrollbar
- * under the folder cards. The gutter is passed to the column count so both
- * grids still divide the same width and never disagree at a boundary. */
-function FolderCardGrid({ children }: { children: React.ReactNode }) {
-  const [ref, cols] = useColumnCount(300, CARD_GUTTER_PX)
-  return (
-    <div ref={ref} className="grid gap-x-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-      {children}
-    </div>
-  )
-}
-
-/** Gallery breadcrumb: "All Artifacts › Parent › Current". Non-current
- * segments navigate on click and accept drops (move the dragged item up to
- * that level; the root segment unfiles). */
-function FolderBreadcrumbBar({ folders, currentFolderId, onNavigate }: {
-  folders: ArtifactFolder[]
-  currentFolderId: string
-  onNavigate: (folderId: string) => void
-}) {
-  const chain = folderBreadcrumb(folders, currentFolderId)
-  const segment = (label: string, folderId: string, isCurrent: boolean) => (
-    <DndDroppable key={folderId || 'root'} id={`crumb-drop:${folderId || 'root'}`} data={{ type: 'folder-drop', folderId }}>
-      {({ setNodeRef, isOver }) => (
-        <button
-          ref={setNodeRef}
-          type="button"
-          disabled={isCurrent}
-          onClick={() => onNavigate(folderId)}
-          className={`px-1.5 py-0.5 rounded text-sm bg-transparent border-none transition-colors ${
-            isCurrent
-              ? 'text-text-strong font-medium cursor-default'
-              : 'text-muted hover:text-text cursor-pointer'
-          } ${isOver ? 'ring-2 ring-accent/40 text-text' : ''}`}
-        >
-          {label}
-        </button>
-      )}
-    </DndDroppable>
-  )
-  return (
-    <nav aria-label={i18nT('pages.artifactsPage.folder_breadcrumb')} className="flex items-center flex-wrap gap-0.5 mb-3">
-      {segment(i18nT('pages.artifactsPage.all_artifacts'), '', chain.length === 0)}
-      {chain.map((f, i) => (
-        <span key={f.id} className="flex items-center gap-0.5">
-          <ChevronRight size={12} className="text-muted" />
-          {segment(f.name, f.id, i === chain.length - 1)}
-        </span>
-      ))}
-    </nav>
-  )
-}
-
-/** A single masonry card. Rendered by VirtuosoMasonry for each artifact. */
-function LocalCardBody({ a, context }: { a: Artifact; context: LibCtx }) {
-  const { onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug } = context
-  // The list payload omits `content` (metadata only). Fetch the full artifact
-  // lazily so the preview can render — virtualization means only on-screen
-  // cards fetch, and the ['artifact', slug] key shares cache with the detail page.
-  const { data: full } = useQuery<Artifact>({
-    queryKey: ['artifact', a.slug],
-    queryFn: () => api.artifact(a.slug),
-    staleTime: 60_000,
-    enabled: !!a.slug,
-  })
-  const deleting = deletingSlug === a.slug
-  const hasPreview = a.kind === 'widget' || a.kind === 'html'
-  const content = full?.content || ''
-  // Author affordance: an imported artifact shows whose copy it came from; a
-  // locally-authored artifact shows nothing (implicitly me).
-  const author = a.source === 'import'
-    ? (a.fork_metadata?.upstream_owner || a.publication?.published_by || '')
-    : ''
-  return (
-    // Draggable onto folder cards / breadcrumb segments / table folder rows
-    //. The sensors' activation constraints (see dndSensors) keep a plain click
-    // and a finger swipe reaching the card / the gallery scroller.
-    <DndDraggable id={`artifact:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
-      {({ setNodeRef, listeners, isDragging }) => (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(a.slug)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(a.slug)
-        }
-      }}
-      style={{ opacity: isDragging ? 0.4 : 1 }}
-      className="mb-3 mr-3 rounded-lg border border-border bg-card overflow-hidden hover:border-border-strong hover:shadow-md transition-all cursor-pointer"
-    >
-      {/* Preview is non-interactive so clicks fall through to the card's onClick. */}
-      <div className="pointer-events-none">
-        {a.kind === 'webapp' ? <WebAppThumb art={full ?? a} /> : a.kind === 'image' ? <ImageThumb a={a} /> : hasPreview ? <WidgetThumb content={content} slug={a.slug} /> : <ContentThumb content={content} kind={a.kind} />}
-      </div>
-      <div className="p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm text-text-strong font-medium truncate">{a.name}</span>
-              {a.publication && (
-                <Share2
-                  size={12}
-                  className={a.publication.last_error ? 'text-danger shrink-0' : a.publication.notice ? 'text-warn shrink-0' : 'text-ok shrink-0'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : a.publication.notice ? i18nT(publishNoticeKey({ rolling_out: 'pages.artifactsPage.published_rolling_out', distribution_disabled: 'pages.artifactsPage.published_distribution_disabled', notice_generic: 'pages.artifactsPage.published_notice_generic' }, a.publication.notice_code)) : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
-                />
-              )}
-            </div>
-            <code className="text-[11px] text-muted">{a.slug}</code>
-            {author && <span className="block text-[11px] text-muted mt-0.5">{i18nT('pages.artifactsPage.by')} {author}</span>}
-          </div>
-          <Badge variant={KIND_BADGE[a.kind]}>{a.kind}</Badge>
-        </div>
-        {a.description && <div className="text-[12px] text-muted mt-1 line-clamp-2">{a.description}</div>}
-        {a.tags && a.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
-            {a.tags.map((t) => (
-              <span key={t} className="text-[11px] px-1.5 py-0.5 rounded bg-bg-elevated border border-border text-muted">{t}</span>
-            ))}
-          </div>
-        )}
-        <div className="flex items-center justify-between mt-2">
-          <span className="text-[11px] text-muted">{i18nT('pages.artifactsPage.v')}{a.version} · {_timeAgo(isoToTs(a.updated_at))}</span>
-          <div className="flex items-center gap-1">
-            {/* Star sits FIRST: it is persistent state (and the retention
-              * control that exempts an auto-registered widget from
-              * prune_auto_widgets), so it reads apart from the one-shot
-              * pop-out / delete actions that follow. Not overlaid on the
-              * thumbnail — that layer is pointer-events-none so clicks fall
-              * through to the card's onClick. */}
-            <button
-              type="button"
-              disabled={pinningSlug === a.slug}
-              onClick={(e) => { e.stopPropagation(); onTogglePin(a) }}
-              className={`p-1 rounded transition-colors cursor-pointer bg-transparent border-none disabled:cursor-default ${a.pinned ? 'text-accent' : 'text-muted hover:text-accent'}`}
-              title={a.pinned ? i18nT('pages.artifactsPage.starred_click_to_unstar') : i18nT('pages.artifactsPage.star_artifact')}
-              aria-label={a.pinned ? i18nT('pages.artifactsPage.remove_star_from_artifact') : i18nT('pages.artifactsPage.star_artifact')}
-              aria-pressed={!!a.pinned}
-            >
-              {pinningSlug === a.slug
-                ? <Loader2 size={13} className="animate-spin" />
-                : <Star size={13} className={a.pinned ? 'fill-current' : ''} />}
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); openPopout(a.slug, a.name) }}
-              className="p-1 rounded text-muted hover:text-text transition-colors cursor-pointer bg-transparent border-none"
-              title={i18nT('pages.artifactsPage.pop_out_into_its_own_window')}
-              aria-label={i18nT('pages.artifactsPage.pop_out_to_window')}
-            >
-              <ExternalLink size={13} />
-            </button>
-            <button
-              type="button"
-              disabled={deleting}
-              onClick={(e) => { e.stopPropagation(); onDelete(a) }}
-              className="p-1 rounded text-muted hover:text-danger transition-colors cursor-pointer bg-transparent border-none disabled:opacity-60 disabled:cursor-default"
-              title={i18nT('pages.artifactsPage.remove_from_library')}
-              aria-label={i18nT('pages.artifactsPage.remove_from_artifacts_library')}
-            >
-              {deleting ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-      )}
-    </DndDraggable>
-  )
-}
-
-const GridCard: ItemContent<GridEntry, LibCtx> = ({ data: entry, context }) => {
-  // VirtuosoMasonry can pass an out-of-range (undefined) entry for one tick
-  // while its internal list catches up to a shrunk data array; bail before any
-  // field access (guards against the black-screen crash on an out-of-range entry).
-  if (!entry) return null
-  return <LocalCardBody a={entry.art} context={context} />
-}
+export { VIRTUALIZE_AT } from './ArtifactsPageGallery'
 
 /**
  * Collapses its children to zero height when `collapsed`, freeing the space for
@@ -517,327 +113,6 @@ function CollapsibleChrome({ collapsed, children }: { collapsed: boolean; childr
   )
 }
 
-/** Card count at which the gallery switches from a content-sized CSS-columns
- *  masonry to the virtualized one.
- *
- *  Module scope because TWO places decide on it: the gallery picks its render
- *  mode, and the page decides which element owns vertical scrolling. Virtualized
- *  mode brings its own scroller, so if these two ever read different numbers the
- *  page ends up with two same-axis scrollers again — the exact defect the
- *  single-scroller plumbing below exists to remove. */
-export const VIRTUALIZE_AT = 30
-
-/** Height-cache partition for the gallery. NOT a chat session id — it is
- *  exempted in `utils/storageGc` (`RESERVED_NAMESPACES`) so the startup pass
- *  does not read it as a dead session and wipe it. */
-const ARTIFACT_HEIGHT_NS = 'artifacts-gallery'
-
-/** Reserve for a card whose height has never been measured. The cache's own
- *  measured heights replace this per card; it only sets the very first paint. */
-const GALLERY_ESTIMATED_CARD_H = 260
-
-/** One column of artifact cards, windowed by this app's own virtualizer.
- *
- *  `react-virtuoso` was measured keeping the main thread ~25% busy THROUGH a
- *  swipe (53 layouts over six swipes) because it maintains a ResizeObserver per
- *  mounted item and recomputes continuously. `useVirtualChat` is built the other
- *  way on that hot path: a PASSIVE scroll listener, at most ONE rAF-coalesced
- *  window recompute per frame, computed as arithmetic over CACHED heights rather
- *  than by measuring, and ResizeObserver-driven work held back until the scroll
- *  settles (`SCROLL_SETTLE_MS`) so it cannot fire mid-fling. It also accepts an
- *  external scroller, which is the capability this page needs — the page column
- *  has to keep the axis.
- *
- *  `followOutput: false` because a gallery is not a transcript: appends must not
- *  pull the viewport to the bottom. */
-function LibraryList({
-  entries,
-  context,
-  scrollerRef,
-}: {
-  entries: GridEntry[]
-  context: LibCtx
-  scrollerRef: React.RefObject<HTMLDivElement | null>
-}) {
-  const virt = useVirtualChat<GridEntry>({
-    items: entries,
-    getKey: (e) => e.key,
-    sessionId: ARTIFACT_HEIGHT_NS,
-    estimatedHeight: GALLERY_ESTIMATED_CARD_H,
-    // Deliberately tight. Every mounted card is a live sandboxed document, so the
-    // window size IS the cost here: measured at the default (5 each way) the page
-    // held 12-19 iframes and the scroll phase ran 31% busy over 63 layouts,
-    // against 3-5 iframes and 25% over 53 at a tight window. A gallery has no
-    // streaming tail to keep warm, so it has no reason to hold a wide span.
-    overscan: 1,
-    followOutput: false,
-    // A gallery opens at the HEAD, not the chat default tail. Beyond the
-    // landing position this kills a mount-time flicker loop: opening at the
-    // tail puts every unmeasured card ABOVE the viewport, so each real
-    // measurement forces a scrollTop compensation write; at the head the
-    // corrections all land in the bottom spacer, out of sight.
-    initialPlacement: 'top',
-    // Mixed HTML/GIF/image cards vary widely around the estimate, and the
-    // debounced first-measure sync starves under a scroll-driven mounting
-    // streak — each handoff to the before-spacer then bounces the viewport by
-    // (real − estimate). See the option doc.
-    eagerFirstMeasure: true,
-    externalScrollerRef: scrollerRef,
-  })
-  return (
-    <div data-testid="artifacts-gallery-list">
-      {/* Sentinels drive window expansion at the ends. */}
-      <div ref={virt.topSentinelRef} aria-hidden style={{ height: 1 }} />
-      {/* Spacers stand in for everything outside the mounted window so the
-        * scrollbar stays honest while only the window is real DOM.
-        * overflow-anchor:none so the browser anchors on real content rather than
-        * on a spacer that resizes as the window moves. */}
-      <div aria-hidden style={{ height: virt.offsetBefore, overflowAnchor: 'none' }} />
-      {virt.virtualItems.map((vi) =>
-        vi.mounted ? (
-          // The measure ref is what feeds the height cache; without it a card's
-          // real height is never learned and every reserve stays an estimate.
-          // `flow-root` is load-bearing: the card inside carries the list gap
-          // as its own mb-3, and without a BFC that margin COLLAPSES THROUGH
-          // this wrapper — offsetHeight then under-reports every row by 12px,
-          // the offset tree accumulates the error (~96px per viewport of short
-          // cards), and engines without native scroll anchoring (iOS Safari)
-          // render the drift as a visible bounce at content-determined, fixed
-          // positions. Chrome's anchoring silently absorbs it, which is why a
-          // Chromium probe shows nothing.
-          <div key={vi.key} ref={virt.measureRef(vi.index)} className="flow-root">
-            <MasonryCard data={vi.data} context={context} index={vi.index} />
-          </div>
-        ) : (
-          <div key={vi.key} aria-hidden style={{ height: vi.height, overflowAnchor: 'none' }} />
-        ),
-      )}
-      <div aria-hidden style={{ height: virt.offsetAfter, overflowAnchor: 'none' }} />
-      <div ref={virt.bottomSentinelRef} aria-hidden style={{ height: 1 }} />
-    </div>
-  )
-}
-
-/** The "Your Artifacts" grid of local artifacts. */
-function LibraryMasonry({
-  entries,
-  cols,
-  widthRef,
-  scrollerRef,
-  fillPage,
-  onOpen,
-  onDelete,
-  deletingSlug,
-  onTogglePin,
-  pinningSlug,
-}: {
-  entries: GridEntry[]
-  /** Measured ONCE, at the page level. The page reads the same number to decide
-   *  who owns the scroll axis, so measuring it a second time here could disagree
-   *  at a boundary width and leave the page with two same-axis scrollers — the
-   *  trap `VIRTUALIZE_AT` is hoisted to module scope to avoid. */
-  cols: number
-  /** Attached to the width-defining wrapper below so the page's measurement is
-   *  taken from the element that actually lays the columns out. */
-  widthRef: React.Ref<HTMLDivElement>
-  /** The page's scrolling column. A ref, not the resolved element: the
-   *  virtualizer takes `externalScrollerRef` and reads it when it needs it, so
-   *  nothing has to re-render just because the element appeared. */
-  scrollerRef: React.RefObject<HTMLDivElement | null>
-  /** Fill the remaining page height only when no remote sections need the page axis. */
-  fillPage: boolean
-  onOpen: (slug: string) => void
-  onDelete: (a: Artifact) => void
-  deletingSlug: string | null
-  onTogglePin: (a: Artifact) => void
-  pinningSlug: string | null
-}) {
-  const context = useMemo<LibCtx>(
-    () => ({ onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug }),
-    [onOpen, onDelete, deletingSlug, onTogglePin, pinningSlug],
-  )
-  // Below this count, render a content-sized CSS-columns masonry so the
-  // gallery takes only the height its cards need — no reserved blank space.
-  // At or above it the gallery virtualizes so a large library of iframe-preview
-  // cards stays performant.
-  const virtualized = entries.length >= VIRTUALIZE_AT
-  // ONE column is not a waterfall, it is a list — and a list can be windowed
-  // against an EXTERNAL scroller (`LibraryList`). `VirtuosoMasonry` cannot: its
-  // whole prop surface is columnCount/data/context/ItemContent/initialItemCount/
-  // useWindowScroll, so a virtualized masonry can only ever own a scroller of its
-  // own. Handing the axis to the page instead is what keeps every section above
-  // and below the gallery reachable by scrolling, and it is free here because at
-  // one column the two layouts render the same thing.
-  const asList = virtualized && cols === 1
-  // Multi-column masonry always needs its own viewport. It fills the page only
-  // when there are no remote sections; otherwise it is a bounded section inside
-  // the scrolling page. A one-column list uses the page's external scroller.
-  const masonryOwnsScroll = virtualized && cols > 1
-  return (
-    // -mr-3 offsets each card's own mr-3 so the trailing column's gutter
-    // doesn't add page width; cards carry mr-3 (gutter) + mb-3 (row gap).
-    <div ref={widthRef} data-testid="artifacts-gallery" className={masonryOwnsScroll
-      ? (fillPage ? '-mr-3 flex-1 min-h-0' : '-mr-3 h-[60vh]')
-      : '-mr-3'}>
-      {asList ? (
-        <LibraryList entries={entries} context={context} scrollerRef={scrollerRef} />
-      ) : masonryOwnsScroll ? (
-        <VirtuosoMasonry
-          key={cols}
-          columnCount={cols}
-          data={entries}
-          context={context}
-          ItemContent={GridCard}
-          // The parent supplies either the remaining page height or a bounded
-          // section height when remote lists need to scroll past the gallery.
-          style={{ height: '100%' }}
-        />
-      ) : (
-        <div style={{ columnCount: cols, columnGap: 0 }}>
-          {entries.map((e, i) => (
-            <MasonryGridItem key={e.key} data={e} context={context} index={i} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// Non-virtualized wrapper so small galleries use a content-sized CSS-columns
-// layout (no reserved blank height) while reusing the exact same card renderer
-// the virtualized masonry uses. break-inside-avoid keeps a card whole within a
-// column. GridCard is an ItemContent (FC|ComponentClass union), so it must be
-// rendered as a JSX element, not called.
-const MasonryCard = GridCard
-function MasonryGridItem({ data, context, index }: { data: GridEntry; context: LibCtx; index: number }) {
-  return (
-    <div className="break-inside-avoid">
-      <MasonryCard data={data} context={context} index={index} />
-    </div>
-  )
-}
-
-/** Unsaved session documents in the GALLERY view. The table and tree views
- * fold these into their rows (SessionDocRow) — but the gallery is the DEFAULT
- * view, so without this section a document badged "Artifact" in the chat
- * transcript is invisible on this page until the user discovers the table
- * toggle. Same affordance as SessionDocRow: the leading star materializes the
- * document into a real, starred artifact. */
-/* Cap the docs section so an active user's cross-session firehose cannot push
- * the saved library — the page's primary content — below the fold (the same
- * burial this section exists to cure, inverted). Same disclosure pattern as
- * FileChangeChips' COLLAPSED_COUNT. */
-const SESSION_DOCS_COLLAPSED = 5
-const SESSION_DOCS_COLLAPSE_KEY = 'mc-artifacts-session-docs-collapsed'
-
-function SessionDocsGallery({ docs, pending, onMaterialize, materializingPath, onPreview }: {
-  docs: SessionDoc[]
-  /** True while the session-docs query is in flight — renders a fixed-height
-   *  skeleton so the section does not pop in and shift the gallery under the
-   *  user's cursor once the query resolves. */
-  pending: boolean
-  onMaterialize: (path: string, sessionKey?: string) => void
-  materializingPath: string | null
-  /** Row click opens the read-only preview (the star stays the save gesture). */
-  onPreview: (d: SessionDoc) => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-  // Persisted: a user who never intends to save these docs can put the section
-  // away for good; the header stays as a one-click way back.
-  const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem(SESSION_DOCS_COLLAPSE_KEY) === '1',
-  )
-  const listRef = useRef<HTMLDivElement>(null)
-  const toggleCollapsed = () => {
-    setCollapsed((v) => {
-      safeSetItem(SESSION_DOCS_COLLAPSE_KEY, v ? '' : '1')
-      return !v
-    })
-  }
-  // A successful materialize unmounts its row; without this, focus falls to
-  // <body> and keyboard users lose their place. Re-anchor on the list.
-  const handleMaterialize = (path: string, sessionKey?: string) => {
-    onMaterialize(path, sessionKey)
-    listRef.current?.focus()
-  }
-  if (pending && !docs.length) {
-    // Fixed-height placeholder (~header + one row) reserving the slot.
-    return (
-      <Card className="mt-0 p-3" aria-busy="true">
-        <div className="h-[24px] w-40 rounded bg-bg-hover animate-pulse mb-2" />
-        <div className="h-[32px] rounded-lg bg-bg-hover animate-pulse" />
-      </Card>
-    )
-  }
-  if (!docs.length) return null
-  const overflow = docs.length > SESSION_DOCS_COLLAPSED
-  const visible = overflow && !expanded ? docs.slice(0, SESSION_DOCS_COLLAPSED) : docs
-  return (
-    <Card className="mt-0 p-3">
-      <CardTitle className={collapsed ? 'mb-0 px-1' : 'mb-2 px-1'}>
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-expanded={!collapsed}
-          className="flex items-center gap-2 bg-transparent border-none p-0 cursor-pointer text-inherit"
-        >
-          {collapsed ? <ChevronRight size={14} className="shrink-0 text-muted" /> : <ChevronDown size={14} className="shrink-0 text-muted" />}
-          {i18nT('pages.artifactsPage.from_your_chats')}
-          {collapsed && <span className="text-muted font-normal">({docs.length})</span>}
-        </button>
-      </CardTitle>
-      {!collapsed && (
-      <>
-      {/* Expanded, this list is the full session-doc set (hundreds of rows). It
-        * lives inside the page column, which hands its scroll axis to the
-        * gallery once that virtualizes — so an unbounded list here is CLIPPED
-        * with no way to reach the rest of it. Cap it and let it scroll itself.
-        * Collapsed to five rows it needs no cap, so the common case still has a
-        * single scroller on the page. */}
-      <div
-        ref={listRef}
-        tabIndex={-1}
-        className={`flex flex-col gap-0.5 outline-hidden ${expanded ? 'max-h-[40vh] overflow-y-auto' : ''}`}
-      >
-        {visible.map((d) => (
-          // Click opens a read-only preview — a READ, no registration, no side
-          // effects. Promotion into the library stays on the explicit star
-          // (which stops propagation so starring never also opens the preview).
-          <Clickable
-            key={d.path}
-            onClick={() => onPreview(d)}
-            className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-bg-hover transition-colors"
-          >
-            <SessionDocStar d={d} busy={materializingPath === d.path} onMaterialize={handleMaterialize} />
-            <FileText size={13} className="text-ok shrink-0" />
-            <span className="text-sm text-text-strong font-medium truncate min-w-0 max-w-[280px]">{d.name}</span>
-            <span className="text-[11px] text-muted truncate min-w-0 flex-1">{d.path}</span>
-            <span className="text-[12px] text-muted truncate min-w-0 max-w-[180px]" title={d.session_title}>{d.session_title}</span>
-            <span className="text-[12px] text-muted whitespace-nowrap shrink-0">{_timeAgo(isoToTs(d.updated_at))}</span>
-          </Clickable>
-        ))}
-      </div>
-      {/* OUTSIDE the scrollable list on purpose: inside it, "Show less" sat
-        * after the last of hundreds of rows, so the control that undoes the
-        * expansion was itself only reachable by scrolling past everything the
-        * expansion added. */}
-      {overflow && (
-        <Btn
-          onClick={() => setExpanded((v) => !v)}
-          className="justify-center w-full px-2 py-1.5 mt-1 rounded-lg text-[11.5px] font-medium border-none"
-          aria-expanded={expanded}
-        >
-          {expanded
-            ? <><ChevronUp size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.show_less')}</>
-            : <><ChevronDown size={13} className="shrink-0" /> {i18nT('pages.artifactsPage.show_all_count', { count: docs.length })}</>}
-        </Btn>
-      )}
-      </>
-      )}
-    </Card>
-  )
-}
-
 export default function ArtifactsPage() {  const navigate = useNavigate()
   const qc = useQueryClient()
   // Hides the AWS deploy console entry when the platform withholds cloud
@@ -883,7 +158,25 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     setSearchParams(folderId ? { folder: folderId } : {}, { replace: false })
   }, [setSearchParams])
   const { folders } = useArtifactFolders()
-  const filtersActive = !!(filter || tagFilter || kindFilter || pinnedOnly)
+  // ── Chat scope ───────────────────────────────────────────────
+  // ?touched_by=<slot> and ?chat_folder=<id> narrow the library to what one
+  // chat, or the chats filed in one sidebar folder, created, read or edited.
+  // The server resolves both. Each renders as a dismissible chip, and like any
+  // other filter an active scope lists matches flat across all folders.
+  const touchedByScope = searchParams.get('touched_by') || ''
+  const chatFolderScope = searchParams.get('chat_folder') || ''
+  const chatScopeActive = !!(touchedByScope || chatFolderScope)
+  const clearChatScope = useCallback((param: ArtifactChatScopeParam) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete(param)
+      return next
+    }, { replace: false })
+  }, [setSearchParams])
+  const filtersActive = !!(filter || tagFilter || kindFilter || pinnedOnly || chatScopeActive)
+  // Unsaved session documents are not artifact records, so a chat scope (which
+  // the server applies to records only) hides them like a tag or star filter does.
+  const hideSessionDocs = pinnedOnly || !!tagFilter || chatScopeActive
   // If the URL points at a deleted/unknown folder, treat it as root rather
   // than showing a phantom empty view.
   const scopeFolderId = folders.some(f => f.id === currentFolderId) ? currentFolderId : ''
@@ -984,147 +277,18 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     })
     scheduleIconRefetch()
   }, [createFolderMut, view, filtersActive, scopeFolderId, newFolderColor, scheduleIconRefetch])
-
-  // ── Add Artifact — import a file from the user's machine ──────
-  // The file's text is COPIED into artifact storage, so the artifact does not
-  // stay bound to the file on disk (see lib/artifactImport.ts for why).
-  const addFileInputRef = useRef<HTMLInputElement>(null)
-  // `addError` holds FAILURES (a rejected request, a refused import); the
-  // pure client-side pick checks (unsupported type, too large, empty, not
-  // text) are validation hints and live in `pickHint`, rendered as plain text.
-  const [addError, setAddError] = useState<string | null>(null)
-  const [pickHint, setPickHint] = useState<string | null>(null)
-  const addArtifactMut = useMutation({
-    mutationFn: async (vars: ImportPlan & { folder: string }) => {
-      // Create unfiled, then file by id. `POST /api/artifacts` resolves its
-      // `folder` field with mkdir -p semantics, so a folder id that went
-      // stale between the pick and the save (folder deleted in another tab,
-      // or a bookmarked ?folder=<id> URL) is not recognised as an id and gets
-      // treated as a NAME — minting a junk folder called e.g. "a1b2c3d4e5f6".
-      // The dedicated folder endpoint resolves ids only and errors on a stale
-      // one, so the worst case is an artifact left at the library root.
-      // This mirrors New Folder, which passes `parent_id` for the same reason.
-      const art = (await api.createArtifact({
-        name: vars.name,
-        content: vars.content,
-        kind: vars.kind,
-      })) as Artifact
-      // The store redacts credential-like text on every READ but stores the
-      // POST body verbatim, so a file carrying real credential material would
-      // read back as placeholders — and the next edit would save those
-      // placeholders over the imported text. Refuse the import rather than
-      // leave an artifact that silently corrupts itself (and rather than keep
-      // the secret in the library at all).
-      if (wasContentRedacted(vars.content, art.content)) {
-        try {
-          await api.deleteArtifact(art.slug)
-        } catch {
-          // Best effort: the refusal message is what matters, and the artifact
-          // is reachable in the library if this cleanup did not land.
-        }
-        return { art, filed: false, redacted: true }
-      }
-      let filed = true
-      if (vars.folder) {
-        try {
-          await api.setArtifactFolder(art.slug, vars.folder)
-        } catch {
-          // The artifact exists and is reachable — only its placement failed.
-          // Surfaced below rather than failing the whole add.
-          filed = false
-        }
-      }
-      return { art, filed, redacted: false }
-    },
-    onSuccess: ({ art, filed, redacted }) => {
-      qc.invalidateQueries({ queryKey: ['artifacts'] })
-      invalidateFolders()
-      if (redacted) {
-        setAddError(i18nT('pages.artifactsPage.add_artifact_error_redacted'))
-        return
-      }
-      if (!filed) {
-        // Stay put so the note is actually read; the artifact is at the root.
-        setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
-        return
-      }
-      // Open the new artifact: it confirms the file rendered, and it is the
-      // only reliable feedback — a fresh artifact is unpinned, so it would be
-      // invisible to a user whose library is filtered to Starred.
-      navigate(`/artifacts/${art.slug}`)
-    },
-  })
-  const handleAddArtifact = useCallback(() => {
-    setAddError(null)
-    setPickHint(null)
-    addFileInputRef.current?.click()
-  }, [])
-  const handleAddArtifactFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    // Clear the input first so picking the SAME file again re-fires `change`
-    // (the value is unchanged otherwise, and the event never fires).
-    e.target.value = ''
-    if (!file) return
-    setAddError(null)
-    setPickHint(null)
-    const result = await planFileImport(file)
-    if (!result.ok) {
-      // 'unreadable' is a caught read failure; the rest are pick validation.
-      if (result.reason === 'unreadable') setAddError(importRejectionText(result.reason))
-      else setPickHint(importRejectionText(result.reason))
-      return
-    }
-    // File it into the folder being browsed, matching New Folder's placement.
-    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
-    addArtifactMut.mutate({ ...result.plan, folder: parent })
-  }, [addArtifactMut, view, filtersActive, scopeFolderId])
-
-  // ── New Artifact — start a blank document in the library ───────
-  // Create-first, name-later: the artifact is created empty and the detail
-  // page opens with its editor already focused, so the user starts typing
-  // immediately instead of answering a name prompt before they know what
-  // they are writing. The kind is left unspecified so the store defaults it
-  // to markdown and marks it auto-assigned — the first save that looks like
-  // JSON or SVG re-types it (see detect_editor_kind in artifact_store/rules.py).
-  //
-  // The cost of create-first is litter (abandoned empty documents); the
-  // detail page pays for it by discarding an untouched blank on leave, which
-  // is why `justCreatedBlank` is handed over in navigation state.
-  const newArtifactMut = useMutation({
-    mutationFn: async (vars: { folder: string }) => {
-      const art = (await api.createArtifact({
-        name: i18nT('pages.artifactsPage.untitled_artifact_name'),
-        content: '',
-      })) as Artifact
-      let filed = true
-      if (vars.folder) {
-        try {
-          // Same reasoning as the import path: file by id through the
-          // dedicated endpoint, which errors on a stale folder id rather
-          // than minting a junk folder from it.
-          await api.setArtifactFolder(art.slug, vars.folder)
-        } catch {
-          filed = false
-        }
-      }
-      return { art, filed }
-    },
-    onSuccess: ({ art, filed }) => {
-      qc.invalidateQueries({ queryKey: ['artifacts'] })
-      invalidateFolders()
-      if (!filed) setAddError(i18nT('pages.artifactsPage.add_artifact_error_unfiled'))
-      // One-shot, module-scoped: a reload must NOT re-arm the detail page's
-      // cleanup on a document the user has come back to.
-      markJustCreatedBlank(art.slug, art.name)
-      navigate(`/artifacts/${art.slug}`)
-    },
-  })
-  const handleNewArtifact = useCallback(() => {
-    setAddError(null)
-    if (newArtifactMut.isPending) return
-    const parent = view === 'grid' && !filtersActive ? scopeFolderId : ''
-    newArtifactMut.mutate({ folder: parent })
-  }, [newArtifactMut, view, filtersActive, scopeFolderId])
+  const {
+    addFileInputRef,
+    addError,
+    setAddError,
+    pickHint,
+    setPickHint,
+    addArtifactMut,
+    handleAddArtifact,
+    handleAddArtifactFile,
+    newArtifactMut,
+    handleNewArtifact,
+  } = useArtifactsPageCreate({ qc, navigate, invalidateFolders, view, filtersActive, scopeFolderId })
 
   const folderActions = useMemo<FolderActions>(() => ({
     onOpen: openFolder,
@@ -1177,11 +341,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   }, [deletingFolder, folders, scopeFolderId, openFolder, invalidateFolders])
 
   const { data, isLoading, error, refetch } = useQuery<{ artifacts: Artifact[] }>({
-    queryKey: ['artifacts', { tag: tagFilter, kind: kindFilter }],
+    queryKey: ['artifacts', { tag: tagFilter, kind: kindFilter, touchedBy: touchedByScope, chatFolder: chatFolderScope }],
     queryFn: () =>
       api.artifacts({
         tag: tagFilter || undefined,
         kind: kindFilter || undefined,
+        touchedBy: touchedByScope || undefined,
+        chatFolder: chatFolderScope || undefined,
       }),
   })
 
@@ -1475,7 +641,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const sessionDocsQ = useQuery<{ docs: SessionDoc[] }>({
     queryKey: ['artifact-session-docs'],
     queryFn: () => api.artifactSessionDocs(),
-    enabled: !pinnedOnly,
+    enabled: !pinnedOnly && !chatScopeActive,
     staleTime: 30_000,
   })
   // A suffixed slug means the canonical one still serves the older artifact, so without
@@ -1551,6 +717,9 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     () => scopedVisible.map((a) => ({ kind: 'local' as const, key: a.slug, art: a })),
     [scopedVisible],
   )
+  // The library is where an artifact is chosen; opening one makes the pick,
+  // reported by the artifact's own page (ArtifactDetailPage).
+  useGuideSelection('artifact_open', { selected: false, available: gridEntries.length > 0 })
 
   const handleDelete = useCallback((a: Artifact) => {
     if (window.confirm(i18nT('pages.artifactsPage.remove_artifact_confirm', { slug: a.slug }))) {
@@ -1641,6 +810,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
         type="button"
         onClick={() => { setPinnedOnly(true); safeSetItem('mc-artifacts-pinned-only', '1') }}
         aria-pressed={pinnedOnly}
+        {...uiLocation('artifacts.starred')}
         className={`px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors cursor-pointer border-none inline-flex items-center gap-1 ${pinnedOnly ? 'bg-accent text-accent-fg' : 'bg-transparent text-muted hover:text-text'}`}
       >
         <Star size={12} className={pinnedOnly ? 'fill-current' : ''} /> {i18nT('pages.artifactsPage.starred')}
@@ -1775,10 +945,11 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 disabled={newArtifactMut.isPending}
                 className="flex items-center gap-1.5 rounded-r-none"
                 title={i18nT('pages.artifactsPage.start_a_new_blank_document_in_the_library')}
+                {...uiLocation('artifacts.new')}
               >
                 {newArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <FilePlus size={13} />} {i18nT('pages.artifactsPage.new_artifact')}
               </Btn>
-              <DropdownMenu>
+              <DropdownMenu guideScope="menu:artifacts.add-menu">
                 <DropdownMenuTrigger asChild>
                   <Btn
                     // On a phone this menu also holds the folder action, so an
@@ -1797,12 +968,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                     // pinning a literal height that the label's font would
                     // outgrow.
                     className="rounded-l-none border-l-0 px-1 self-stretch"
+                    {...uiLocation('artifacts.add-menu')}
                   >
                     {addArtifactMut.isPending ? <Loader2 size={13} className="animate-spin" /> : <ChevronDown size={13} />}
                   </Btn>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={handleAddArtifact}>
+                  <DropdownMenuItem onSelect={handleAddArtifact} {...uiLocation('artifacts.import')}>
                     <FileText size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.import_from_a_file')}
                   </DropdownMenuItem>
                   {/* On a phone this menu is also where the folder action lives:
@@ -1844,7 +1016,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               onChange={handleAddArtifactFile}
             />
             {!isMobile && (
-              <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')}>
+              <Btn onClick={handleNewFolder} className="flex items-center gap-1.5" title={i18nT('pages.artifactsPage.create_a_folder_to_organize_your_artifacts')} {...uiLocation('artifacts.new-folder')}>
                 <FolderPlus size={13} /> {i18nT('pages.artifactsPage.new_folder')}
               </Btn>
             )}
@@ -1903,7 +1075,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               </div>
             </div>
             {cloudDeployEnabled && !isMobile && deployPreview && (
-              <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')}>
+              <Btn onClick={() => navigate('/deploy')} className="flex items-center gap-1.5 ml-auto" title={i18nT('pages.artifactsPage.artifact_deploy_aws_profiles_and_published_sites')} {...uiLocation('artifacts.deploy')}>
                 <Globe size={13} /> {i18nT('pages.artifactsPage.artifact_deploy')}
               </Btn>
             )}
@@ -1916,6 +1088,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               )
               : starredToggle}
           </div>
+          <ArtifactScopeChips touchedBy={touchedByScope} chatFolder={chatFolderScope} onClear={clearChatScope} askAgent={handoffSafe} />
         </CollapsibleChrome>
 
           {/* One DndContext spans breadcrumb + folder cards + gallery/table so
@@ -2011,7 +1184,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
               * discoverability gap this feature exists to close. Table/tree
               * views fold the docs into their own rows instead. Skipped while
               * folder-scoped (docs are unfiled) and in the Starred view. */}
-            {view === 'grid' && !pinnedOnly && !tagFilter && (filtersActive || !scopeFolderId) && (
+            {view === 'grid' && !hideSessionDocs && (filtersActive || !scopeFolderId) && (
               <CollapsibleChrome collapsed={chromeCollapsed}>
                 <SessionDocsGallery
                   docs={sessionDocs}
@@ -2043,7 +1216,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 action={<Btn onClick={() => { void refetch(); void allTagsQ.refetch(); void qc.invalidateQueries({ queryKey: ['artifact-folders'] }) }}>{i18nT('pages.artifactsPage.retry')}</Btn>}
               />
             ) : gridEntries.length === 0 && (view === 'grid' || filtersActive) ? (
-              (artifacts.length === 0 && folders.length === 0) ? (
+              (artifacts.length === 0 && folders.length === 0 && !chatScopeActive) ? (
                 <EmptyState
                   icon={<Bookmark className="lucide-inline" />}
                   title={i18nT('pages.artifactsPage.no_artifacts_yet')}
@@ -2083,7 +1256,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 deletingSlug={deleteMut.isPending ? (deleteMut.variables as string) : null}
                 onTogglePin={handleTogglePin}
                 pinningSlug={pinningSlug}
-                sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
+                sessionDocs={hideSessionDocs ? [] : sessionDocs}
                 onMaterialize={pinnedOnly ? undefined : handleMaterialize}
                 onPreviewDoc={handlePreviewDoc}
                 materializingPath={materializingPath}
@@ -2104,7 +1277,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 pinningSlug={pinningSlug}
                 overFolderId={overFolderId}
                 dragActive={!!activeDrag}
-                sessionDocs={pinnedOnly || tagFilter ? [] : sessionDocs}
+                sessionDocs={hideSessionDocs ? [] : sessionDocs}
                 onMaterialize={pinnedOnly ? undefined : handleMaterialize}
                 onPreviewDoc={handlePreviewDoc}
                 materializingPath={materializingPath}
@@ -2189,120 +1362,6 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
         )}
       </AnimatePresence>
     </>
-  )
-}
-
-
-/** Browse one publish provider's remote artifacts (provider-routed; vendor
- * copy comes from the provider's own display_name). Loading stays quiet so a
- * remote cannot block the library; failures use a bounded inline notice. */
-function RemoteBrowseSection({ provider, onForked, onCloned }: {
-  provider: PublishProviderDescriptor
-  onForked: (slug: string) => void
-  onCloned: (slug: string) => void
-}) {
-  const [search, setSearch] = useState('')
-  const scope = provider.discovery_model.list_mine ? 'mine'
-    : provider.discovery_model.list_shared_with_me ? 'shared' : 'public'
-  const useSearch = !!search && provider.discovery_model.full_text_search
-  const {
-    data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage, isPlaceholderData,
-  } = useInfiniteQuery<
-    { artifacts: RemoteArtifact[]; next_page_token?: string | null }
-  >({
-    // Tag the key with the mode ('q' vs 'scope') so a full-text query that
-    // happens to equal the scope word (e.g. typing "mine") can't collide with
-    // the scope listing's cache entry.
-    queryKey: ['remote-artifacts', provider.name, useSearch ? ['q', search] : ['scope', scope]],
-    queryFn: ({ pageParam }) =>
-      api.browseRemoteArtifacts(provider.name, {
-        ...(useSearch ? { q: search } : { scope }),
-        ...(pageParam ? { pageToken: pageParam as string } : {}),
-      }),
-    initialPageParam: '',
-    // The provider paginates via next_page_token; stop when it stops handing
-    // one out (null/empty ⇒ last page). Without this, remote artifacts beyond
-    // the provider's first page would be unreachable.
-    getNextPageParam: (last) => last.next_page_token || undefined,
-    staleTime: 60_000,
-    // Keep the prior page's rows while a new full-text query fetches. Without
-    // this, every keystroke changes the key → data=undefined → isLoading=true →
-    // the section (and the focused SearchInput inside it) unmounts, dropping
-    // keyboard focus mid-word.
-    placeholderData: keepPreviousData,
-  })
-  const items: RemoteArtifact[] = (data?.pages || []).flatMap((p) => p.artifacts || [])
-  // Drop artifacts already on this device (cloned or forked) — they live in
-  // Your Artifacts above, so listing them here too would be a duplicate.
-  const notLocal = items.filter(a => !a.local_slug)
-  if (isLoading && !notLocal.length) return null
-  // Remote discovery is optional to the local library, but its failure must
-  // remain actionable without recreating the full-width provider card.
-  if (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    return (
-      <div className="mt-3 flex max-w-lg items-start gap-2">
-        <ErrorNotice
-          variant="inline"
-          title={provider.display_name}
-          message={errorMessage}
-          askAgent
-          className="min-w-0 flex-1"
-          messageClassName="line-clamp-2"
-          messageTooltip={errorMessage}
-          testId={`remote-browse-error-${provider.name}`}
-        />
-        <Btn onClick={() => refetch()} className="shrink-0">
-          {i18nT('pages.artifactsPage.retry')}
-        </Btn>
-      </div>
-    )
-  }
-  if (!notLocal.length && !search) return null
-  const filtered = search && !useSearch
-    ? notLocal.filter(a => a.title.toLowerCase().includes(search.toLowerCase()) || a.tags?.some(t => t.toLowerCase().includes(search.toLowerCase())))
-    : notLocal
-  // In full-text mode the shown rows can be the PREVIOUS query's results
-  // (keepPreviousData) while a new query fetches, and they are NOT locally
-  // re-filtered — so clone/fork would act on a stale artifact. Disable those
-  // actions until the current query resolves. (Scope/list mode isn't affected:
-  // its rows are locally filtered and the id-match stays valid.)
-  const actionsStale = useSearch && isPlaceholderData
-  return (
-    <Card className="mt-4">
-      <CardTitle>{i18nT('pages.artifactsPage.on')} {provider.display_name}</CardTitle>
-      <div className="mb-2">
-        <SearchInput placeholder={i18nT('pages.artifactsPage.filter_artifacts', { provider: provider.display_name })} value={search} onChange={e => setSearch((e.target as HTMLInputElement).value)} />
-      </div>
-      <div className="divide-y divide-border">
-        {filtered.map((a) => (
-          <RemoteArtifactCard
-            key={a.external_id}
-            artifact={a}
-            provider={provider.name}
-            providerLabel={provider.display_name}
-            onForked={onForked}
-            onCloned={onCloned}
-            actionsDisabled={actionsStale}
-          />
-        ))}
-      </div>
-      {hasNextPage && (
-        <div className="mt-2 flex justify-center">
-          {/* Stable aria-label: while loading the button shows only a spinner
-              icon, so it needs an accessible name in both states. */}
-          <Btn
-            onClick={() => fetchNextPage()}
-            disabled={isFetchingNextPage}
-            aria-label={i18nT('pages.artifactsPage.load_more_artifacts', { provider: provider.display_name })}
-          >
-            {isFetchingNextPage
-              ? <Loader2 className="lucide-inline w-3.5 h-3.5 animate-spin" />
-              : i18nT('pages.artifactsPage.load_more')}
-          </Btn>
-        </div>
-      )}
-    </Card>
   )
 }
 

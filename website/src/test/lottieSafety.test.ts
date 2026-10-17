@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { referencesRemoteAsset } from '../lib/appearancePacks/lottieSafety'
+import parity from './fixtures/lottieRemoteAssetCases.json'
 
 /** A minimal document, with whatever the test is about spliced in. */
 const doc = (over: Record<string, unknown> = {}) => ({
@@ -216,5 +217,15 @@ describe('junk', () => {
 
   it('ignores a non-object entry inside the font list', () => {
     expect(referencesRemoteAsset(doc({ fonts: { list: [null, 'nope', 7] } }))).toBe(false)
+  })
+})
+
+describe('parity with the import warning', () => {
+  // The import names a clip this predicate refuses, so the person who picked the
+  // file learns why the crew will show the ghost. `test_appearance_packs_lottie_safety.py`
+  // runs the server's copy over this same file: a case either side answers
+  // differently is a warning that lies.
+  it.each(parity.cases.map((c) => [c.name, c.doc, c.remote] as const))('%s', (_name, doc, remote) => {
+    expect(referencesRemoteAsset(doc)).toBe(remote)
   })
 })

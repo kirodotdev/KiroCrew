@@ -58,9 +58,16 @@ const folders = REAL ? realFolders : [
   { id: 'f2', name: 'Shut', order: 1, collapsed: true },
 ]
 
+const FIXTURE_ANCHOR = Date.parse('2026-08-27T00:00:00Z')
+const NOW = Date.now()
 const slot = (key, title, folder_id, last_ts) => ({
   key, title, messages: 4, running: false, agent: 'kirocrew',
-  created: '2026-07-20T01:00:00Z', last_ts, folder_id,
+  created: '2026-07-20T01:00:00Z',
+  // Preserve the fixture's ordering while keeping every row inside the active
+  // window. Fixed 2026-08 dates eventually crossed the dormant-session cutoff,
+  // hiding the very parent row scenarios B/D are meant to target.
+  last_ts: new Date(NOW - (FIXTURE_ANCHOR - Date.parse(last_ts))).toISOString(),
+  folder_id,
 })
 
 const slots = REAL ? (() => {
@@ -81,8 +88,19 @@ const slots = REAL ? (() => {
 async function main() {
   const { srv, base } = await serveDist(process.env.REPRO_DIST || undefined)
   const browser = await chromium.launch()
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  const recordVideo = process.env.RECORD_VIDEO === '1'
+  const context = await browser.newContext({
+    viewport: { width: 1400, height: 900 },
+    ...(recordVideo ? { recordVideo: { dir: OUT, size: { width: 1400, height: 900 } } } : {}),
+  })
   const page = await context.newPage()
+  const video = page.video()
+  const activeFolderIds = () => page.evaluate(() => [...new Set(
+    [...document.querySelectorAll('[data-folder-drop], [data-folder-parent-drop]')]
+      .filter(el => String(el.className).includes('ring-accent'))
+      .map(el => el.getAttribute('data-folder-drop') || el.getAttribute('data-folder-parent-drop'))
+      .filter(Boolean),
+  )])
 
   await stubDashboardApi(page, { folders, slots })
   logPageProblems(page)
@@ -114,17 +132,37 @@ async function main() {
     await page.mouse.down()
     // small jiggle to satisfy activation constraint, then stepped travel
     await page.mouse.move(s.x + 6, s.y + 6, { steps: 3 })
-    await page.mouse.move(target.x, target.y, { steps: 15 })
+    const resolvedTarget = typeof target === 'function' ? await target() : target
+    await page.mouse.move(resolvedTarget.x, resolvedTarget.y, { steps: 15 })
     await page.waitForTimeout(300) // let measuring/over settle
     // Record which folder-drop target (if any) is highlighted at hover time.
-    const ringed = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-folder-drop]')]
-        .filter(el => el.className.includes('ring-accent'))
-        .map(el => el.getAttribute('data-folder-drop')))
+    const ringed = await activeFolderIds()
+    const parentTargets = await page.evaluate(() => {
+      const ghost = document.querySelector('[data-testid="session-drag-ghost"]')?.getBoundingClientRect()
+      return [...document.querySelectorAll('[data-folder-parent-drop]')].map(el => {
+        const box = el.getBoundingClientRect()
+        const label = el.querySelector('[data-folder-parent-drop-label]')?.getBoundingClientRect()
+        const labelOverlapsGhost = !!label && !!ghost
+          && label.left < ghost.right && label.right > ghost.left
+          && label.top < ghost.bottom && label.bottom > ghost.top
+        return {
+          folder: el.getAttribute('data-folder-parent-drop'),
+          text: el.textContent?.trim() || '',
+          width: box.width,
+          height: box.height,
+          active: el.className.includes('ring-accent'),
+          labelUncovered: !!label && !!ghost && !labelOverlapsGhost,
+          labelBox: label ? { left: label.left, top: label.top, right: label.right, bottom: label.bottom } : null,
+          ghostBox: ghost ? { left: ghost.left, top: ghost.top, right: ghost.right, bottom: ghost.bottom } : null,
+        }
+      })
+    })
+    const selfRefusalVisible = await page.getByText("Can't drop a session into itself… itself… itself…", { exact: true })
+      .isVisible().catch(() => false)
     await page.screenshot({ path: `${OUT}/${shotName}-hover.png` })
     await page.mouse.up()
     await page.waitForTimeout(400)
-    return ringed
+    return { ringed, parentTargets, selfRefusalVisible }
   }
 
   // Locators. Session rows are draggable cards; find them by title text.
@@ -150,8 +188,9 @@ async function main() {
     patches.length = 0
     const t = await page.getByText(targetTitle, { exact: true }).first().boundingBox()
     if (!t) { results.push(`${name}: TARGET NOT VISIBLE (${targetTitle})`); return }
-    const ringed = await drag(sessionRow(srcTitle), center(t), name)
-    results.push({ name, patches: [...patches], ringed })
+    const dropTarget = opts.targetPoint ? () => opts.targetPoint(page) : center(t)
+    const { ringed, parentTargets, selfRefusalVisible } = await drag(sessionRow(srcTitle), dropTarget, name)
+    results.push({ name, patches: [...patches], ringed, parentTargets, selfRefusalVisible })
     await page.screenshot({ path: `${OUT}/${name}-after.png` })
   }
 
@@ -188,10 +227,7 @@ async function main() {
     let ringNow = []
     for (let i = 0; i < 60; i++) {
       await page.waitForTimeout(200)
-      ringNow = await page.evaluate(() =>
-        [...document.querySelectorAll('[data-folder-drop]')]
-          .filter(el => el.className.includes('ring-accent'))
-          .map(el => el.getAttribute('data-folder-drop')))
+      ringNow = await activeFolderIds()
       const kiroHeader = await page.getByText('Kiro', { exact: true }).first().boundingBox().catch(() => null)
       if (kiroHeader && Math.abs(kiroHeader.y + kiroHeader.height / 2 - holdY) < 60) break
     }
@@ -200,10 +236,7 @@ async function main() {
     const kh = await page.getByText('Kiro', { exact: true }).first().boundingBox().catch(() => null)
     if (kh) await page.mouse.move(kh.x + kh.width / 2, kh.y + kh.height / 2, { steps: 4 })
     await page.waitForTimeout(400)
-    const ringAtDrop = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-folder-drop]')]
-        .filter(el => el.className.includes('ring-accent'))
-        .map(el => el.getAttribute('data-folder-drop')))
+    const ringAtDrop = await activeFolderIds()
     await page.screenshot({ path: `${OUT}/R1-on-kiro-header-hover.png` })
     await page.mouse.up()
     await page.waitForTimeout(500)
@@ -233,14 +266,42 @@ async function main() {
     })
     const src2 = await page.getByText('kas task number 2', { exact: true }).first().boundingBox()
     if (kiroRow && src2) {
-      const ringed = await drag(page.getByText('kas task number 2', { exact: true }).first(), { x: kiroRow.x, y: kiroRow.y }, 'R2-kas-to-kiro-sessionrow')
-      results.push({ name: 'R2-kas-to-kiro-sessionrow', patches: [...patches], ringed })
+      const { ringed, parentTargets, selfRefusalVisible } = await drag(page.getByText('kas task number 2', { exact: true }).first(), { x: kiroRow.x, y: kiroRow.y }, 'R2-kas-to-kiro-sessionrow')
+      results.push({ name: 'R2-kas-to-kiro-sessionrow', patches: [...patches], ringed, parentTargets, selfRefusalVisible })
     } else {
       results.push({ name: 'R2-kas-to-kiro-sessionrow', patches: [], ringed: [], error: 'no kiro direct row visible alongside KAS rows' })
     }
   } else {
   // Scenario A: child-folder session -> parent header. Expect PATCH folder f1.
   await scenario('A-child-to-parent-header', 'Session in Child', 'Parent')
+  // Scenario H: release in the 6px where the explicit parent's 44px painted
+  // target overlaps Child's 32px sticky header. The label and persisted folder
+  // must agree on Parent; resolving Child makes this exact user gesture a no-op.
+  await scenario('H-child-to-parent-overlap', 'Session in Child', 'Parent', {
+    targetPoint: async (p) => p.evaluate(() => {
+      const parent = document.querySelector('[data-folder-parent-drop="f1"]')?.getBoundingClientRect()
+      const child = document.querySelector('[data-folder-drop="f1a"]')?.firstElementChild?.getBoundingClientRect()
+      if (!parent || !child) throw new Error('parent target or child header is not measurable')
+      const overlapTop = Math.max(parent.top, child.top)
+      const overlapBottom = Math.min(parent.bottom, child.bottom)
+      if (!(overlapBottom > overlapTop)) throw new Error('parent target does not overlap child header')
+      return { x: (parent.left + parent.right) / 2, y: (overlapTop + overlapBottom) / 2 }
+    }),
+  })
+  // Scenario I: an ungrouped source exposes BOTH Parent and Child explicit
+  // targets. Release where those 44px targets overlap; Parent paints above
+  // Child by sticky depth and must win independently of registration order.
+  await scenario('I-root-to-outer-target-overlap', 'Ungrouped session', 'Parent', {
+    targetPoint: async (p) => p.evaluate(() => {
+      const parent = document.querySelector('[data-folder-parent-drop="f1"]')?.getBoundingClientRect()
+      const child = document.querySelector('[data-folder-parent-drop="f1a"]')?.getBoundingClientRect()
+      if (!parent || !child) throw new Error('adjacent explicit targets are not measurable')
+      const overlapTop = Math.max(parent.top, child.top)
+      const overlapBottom = Math.min(parent.bottom, child.bottom)
+      if (!(overlapBottom > overlapTop)) throw new Error('explicit targets do not overlap')
+      return { x: (parent.left + parent.right) / 2, y: (overlapTop + overlapBottom) / 2 }
+    }),
+  })
   // Scenario B: child-folder session -> parent's own session row. Expect f1.
   await scenario('B-child-to-parent-sessionrow', 'Session in Child', 'Session in Parent')
   // Scenario C: ungrouped session -> parent header. Expect f1.
@@ -264,7 +325,9 @@ async function main() {
   // whose ring must be lit at drop time ('' = a null-folder target, no ring
   // expectation because the lane/ungroup bucket carries no folder marker).
   const EXPECT = {
-    'A-child-to-parent-header': { slot: 's-child', folder: 'f1' },
+    'A-child-to-parent-header': { slot: 's-child', folder: 'f1', target: { folder: 'f1', text: 'Drop into Parent' } },
+    'H-child-to-parent-overlap': { slot: 's-child', folder: 'f1', target: { folder: 'f1', text: 'Drop into Parent' } },
+    'I-root-to-outer-target-overlap': { slot: 's-root', folder: 'f1', target: { folder: 'f1', text: 'Drop into Parent' } },
     'B-child-to-parent-sessionrow': { slot: 's-child', folder: 'f1' },
     'C-root-to-parent-header': { slot: 's-root', folder: 'f1' },
     'D-root-to-parent-sessionrow': { slot: 's-root', folder: 'f1' },
@@ -279,12 +342,26 @@ async function main() {
     const patchOk = !!want && r.patches.length === 1
       && r.patches[0].slot === want.slot && r.patches[0].body?.folder_id === want.folder
     const ringOk = !!want && (want.folder === '' || (r.ringed || []).includes(want.folder))
-    const ok = patchOk && ringOk && !r.error
+    const target = want?.target
+      ? (r.parentTargets || []).find(t => t.folder === want.target.folder)
+      : null
+    const targetOk = !want?.target || (!!target
+      && target.text === want.target.text
+      && target.height >= 44
+      && target.active
+      && target.labelUncovered)
+    const ok = patchOk && ringOk && targetOk && !r.error
     if (!ok) failed++
-    console.log(`${ok ? 'PASS' : 'FAIL'} ${r.name}: patches=${JSON.stringify(r.patches)} ring=${JSON.stringify(r.ringed)}${r.error ? ' error=' + r.error : ''}`)
+    console.log(`${ok ? 'PASS' : 'FAIL'} ${r.name}: patches=${JSON.stringify(r.patches)} ring=${JSON.stringify(r.ringed)} target=${JSON.stringify(target)} selfRefusalVisible=${!!r.selfRefusalVisible}${r.error ? ' error=' + r.error : ''}`)
   }
   process.exitCode = failed ? 1 : 0
 
+  await context.close()
+  if (recordVideo && video) {
+    const videoPath = `${OUT}/parent-drop-flow.webm`
+    await video.saveAs(videoPath)
+    console.log('wrote', videoPath)
+  }
   await browser.close()
   srv.close()
 }

@@ -38,11 +38,9 @@ scan. CI runs `check_brand_name.py --test` before the scan and `docs_lint.py
 while the scan stays clean, so a floor carrying only the scan passes locally and
 fails after push. Both self-tests sit ahead of their scans in `gates[]`.
 
-Note that "CI" here means both workflows. The eleven cheapest blocking gates —
-`vendor-manifest`, `brand-lint`, `focus-cue-lint`,
-`feature-map-lint`, `changelog-history`, `decision-ledger-history`,
-`builtin-skill-scope`, `loop-bound-locks`, `testpaths-coverage`, `harness-parity`
-and `docs-lint` — run in `.github/workflows/fast-gate.yml`, not `ci.yml`, so
+Note that "CI" here means both workflows. The cheapest blocking gates — every job
+under `jobs:` in `.github/workflows/fast-gate.yml` (read the file for the current
+list; a count copied here goes stale) — run there, not in `ci.yml`, so
 `ci.yml` gaining a blocking scan is no longer the only way the floor can fall
 behind. The commands are unchanged, so `gates[]` needs no edit for the move
 itself; what the split costs is described under "Scan by every shape a step can
@@ -147,12 +145,10 @@ PR. A check written as a bare binary (`cfn-lint`, `mypy`, `flake8`) is invisible
 a `scripts/`-and-`npm run` scan, so the parity test also enumerates the **tool
 names** `ci.yml` invokes and makes each one either a gate or a named exemption.
 
-That test reads `ci.yml` and only `ci.yml`, which the Fast Gate split turned into a
-hole rather than a failure: the gates it moved are all still in `gates[]`, so
-nothing goes red, but a NEW blocking gate added to `fast-gate.yml` would no longer
-fail this test when the floor misses it — exactly the review round the parity test
-exists to prevent. Extend the scan to both workflow files before adding a gate
-there.
+That test reads both `ci.yml` and `fast-gate.yml` (comment lines stripped), so a
+NEW blocking gate added to either workflow fails it until the floor carries the
+gate or names it exempt. A gate added to any OTHER blocking workflow is outside the
+scan: extend the scan to that file in the same change.
 
 Strip comment-only lines before any such scan. `ci.yml` names commands in prose as
 well as running them — the Type check step's comment explains why it spells out
@@ -163,10 +159,12 @@ ratchet number out of a comment.
 ## A test gate runs the RELATED set; the full suite is CI's
 
 The two test gates are the most expensive entries on the floor by orders of
-magnitude: 62,108 collected backend tests — collection alone takes ~100s before a
-single test executes — and ~1,444 frontend spec files. CI shards that across eight
-backend runners plus several frontend shards and runs it on `refs/pull/<N>/merge`
-regardless, so paying for it serially on a workstation, once per iteration of a
+magnitude: a full run is the whole backend suite and the whole frontend suite. CI
+shards both — the backend suite in the `backend-test` and `backend-test-windows`
+matrices, the frontend suite in `frontend-test`, each split by its job's own
+`SHARD_COUNT` in `.github/workflows/ci.yml` (read the file for the current split;
+a count copied here goes stale) — and runs them on `refs/pull/<N>/merge`
+regardless, so paying for them serially on a workstation, once per iteration of a
 ten-round inner loop, buys a signal CI produces anyway — and with `-n auto` it did
 so with one xdist worker per core, starving every other session on a shared box.
 
@@ -175,8 +173,8 @@ own. For the surface it is asked about it runs the union of: test files in the
 diff; `test_<module>.py` / `test_<module>_*.py` (vitest: `<Stem>.*.test.ts`) for
 each changed module; test files that textually reference a changed file; and,
 when the OTHER surface changed, the cross-surface set `ci-surface-tests.py`
-computes for CI (**350** backend files / **146** frontend specs, measured). Two
-outcomes, and neither is "everything":
+computes for CI (its `--summary` flag prints the current size). Two outcomes, and
+neither is "everything":
 
 | condition | verdict |
 |---|---|
@@ -196,6 +194,17 @@ default.
 `scripts/leaf_test_scope.py` is unchanged in contract: CI consumes its verdict to
 skip the matrix, so it must stay SOUND and its escalations still mean "CI runs
 the full suite" — which is exactly where the full suite belongs.
+
+`scripts/local-gate.py` does not rerun a command that already passed on the same tree.
+It keeps one proof per command under `<git-dir>/local-gate-proofs/`, keyed by the tree
+(HEAD plus staged, unstaged and untracked edits; `.gitignore`d files are outside it), the
+argv, the working directory, a digest of the whole command environment and the tools
+behind the argv (this interpreter and every package installed in it; for npm and npx also
+the node they resolve to and the lockfile npm wrote for `node_modules`), and it reports
+`reused, not run`. A command whose tools cannot be named always runs. A proof lasts an
+hour, a failure is never kept, and a pass is kept only when the tree did not move while
+the command ran. `--no-reuse` runs everything, which is the move after changing something
+no package list or lockfile names (a built `dist/`, a hand edit under `node_modules`).
 
 **The surface split is transcribed from `ci.yml`'s `changes` job, buckets and veto
 alike, because that job is the authority for the question.** Its three buckets are

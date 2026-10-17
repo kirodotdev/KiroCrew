@@ -9,7 +9,9 @@ import type {
   ProviderLabels,
   AgentBinding,
   NormalizedUsage,
+  TokenEstimate,
   NormalizedProviderHook,
+  NormalizedUnsentHook,
   NormalizedPlugin,
   ModelInfo,
   PermissionMode,
@@ -132,6 +134,44 @@ interface RawDailyHistory {
   messages: number
   tool_calls: number
   credits?: number
+  est_tokens?: number
+}
+
+/** Raw estimated token use over one period, from /api/usage/kiro. */
+interface RawTokenEstimate {
+  input?: number
+  output?: number
+  requests?: number
+}
+
+/** Raw `sessions.estimated_tokens` block from /api/usage/kiro. */
+interface RawEstimatedTokens {
+  this_month?: RawTokenEstimate
+  last_month?: RawTokenEstimate
+  unreadable_sessions?: number
+}
+
+/** A finite count from the payload, or 0. */
+function finiteCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function tokenEstimate(raw: RawTokenEstimate | undefined): TokenEstimate {
+  return { input: finiteCount(raw?.input), output: finiteCount(raw?.output), requests: finiteCount(raw?.requests) }
+}
+
+/**
+ * The estimate block, or undefined when the backend sends none (an older
+ * gateway), so the Usage tab shows no estimate rather than a confident zero.
+ */
+function estimatedTokens(raw: unknown): NormalizedUsage['sessions']['estimatedTokens'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const e = raw as RawEstimatedTokens
+  return {
+    thisMonth: tokenEstimate(e.this_month),
+    lastMonth: tokenEstimate(e.last_month),
+    incomplete: finiteCount(e.unreadable_sessions) > 0,
+  }
 }
 
 /** Raw provider-hook entry from /api/kiro-hooks. */
@@ -139,6 +179,17 @@ interface RawHookEntry {
   command: string
   matcher?: string
   source?: string
+}
+
+/** Raw `unsent` entry from /api/kiro-hooks: a validated `agent.kiro_hooks`
+ *  document left out of the kiro-cli spec. */
+interface RawUnsentHook {
+  name?: string
+  trigger?: string
+  matcher?: string
+  action_type?: string
+  command?: string
+  reason?: string
 }
 
 /** Raw plugin (agent/skill/mcp) entry from /api/capability/*. */
@@ -220,7 +271,7 @@ export class AcpAdapter implements ProviderAdapter {
     return agent.kiro_agent || agent.name
   }
 
-  async resolveModel(agentName: string): Promise<string> {
+  async resolveModel(agentName: string, app?: string): Promise<string> {
     // Ask the backend which model a new session on this agent would run on, so
     // the composer shows the real value before a session exists to report one.
     //
@@ -234,9 +285,10 @@ export class AcpAdapter implements ProviderAdapter {
     //
     // `agentName` is a KiroCrew agent name (a "crew"), not a kiro agent
     // template — the per-agent default is stored per crew, and several crews can
-    // share one template.
+    // share one template. `app` names the app that owns the session, so the
+    // answer includes that app's own model setting as the session start does.
     try {
-      const d = await api.agentResolvedModel(agentName)
+      const d = await (app ? api.agentResolvedModel(agentName, app) : api.agentResolvedModel(agentName))
       return d?.model || ''
     } catch {
       return ''
@@ -300,12 +352,14 @@ export class AcpAdapter implements ProviderAdapter {
         thisMonth: { sessions: s.this_month.sessions, messages: s.this_month.messages, toolCalls: s.this_month.tool_calls },
         avgMsgsPerSession: s.avg_msgs_per_session,
         refusedTranscripts: s.refused_transcripts ?? 0,
+        estimatedTokens: estimatedTokens(s.estimated_tokens),
         dailyHistory: (s.daily_history || []).map((d: RawDailyHistory) => ({
           date: d.date,
           sessions: d.sessions,
           messages: d.messages,
           toolCalls: d.tool_calls,
           credits: typeof d.credits === 'number' && Number.isFinite(d.credits) ? d.credits : undefined,
+          estTokens: typeof d.est_tokens === 'number' && Number.isFinite(d.est_tokens) ? d.est_tokens : undefined,
         })),
       },
       billing: b.plan ? {
@@ -332,6 +386,20 @@ export class AcpAdapter implements ProviderAdapter {
       }))
     }
     return result
+  }
+
+  async fetchUnsentProviderHooks(): Promise<NormalizedUnsentHook[]> {
+    const data = await api.kiroHooks()
+    // An older gateway sends no `unsent`; that reads as nothing left out.
+    const unsent: RawUnsentHook[] = Array.isArray(data.unsent) ? data.unsent : []
+    return unsent.map(u => ({
+      name: u.name || '',
+      trigger: u.trigger || '',
+      matcher: u.matcher || '',
+      actionType: u.action_type || '',
+      command: u.command || '',
+      reason: u.reason || '',
+    }))
   }
 
   async listPlugins(): Promise<NormalizedPlugin[]> {

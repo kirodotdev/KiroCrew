@@ -93,6 +93,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
     app.router.add_get("/api/usage", handlers.api_usage)
+    app.router.add_get("/api/usage/series", handlers.api_usage_series)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
     app.router.add_get("/api/telemetry/context-trace", handlers.api_context_trace)
     app.router.add_get("/api/usage/turns", handlers.api_usage_turns)
@@ -118,6 +119,7 @@ def register(app: web.Application) -> None:
     # ahead of /{key} anyway, matching the ordering discipline the note above sets.
     app.router.add_get("/api/sessions/clearable/count", handlers.api_sessions_clearable_count)
     app.router.add_get("/api/sessions/{key}", handlers.api_session_detail)
+    app.router.add_get("/api/sessions/{key}/meta", handlers.api_session_meta)
     app.router.add_delete("/api/sessions/{key}", handlers.api_session_delete)
     app.router.add_get("/api/logs", handlers.api_logs)
     app.router.add_get("/api/logs/level", handlers.api_log_level_get)
@@ -170,6 +172,11 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Project AWS profile binding (the composer's project chip). Owner-gated in
+    # the handler and browser-called like the consent pair: which account an
+    # agent's AWS commands reach by default is the operator's choice.
+    app.router.add_get("/api/aws/project-profile", handlers.api_aws_project_profile_get)
+    app.router.add_put("/api/aws/project-profile", handlers.api_aws_project_profile_put)
     # Decision-seam consent (Settings > Developer > Feature Previews). Owner-gated
     # in the handler and browser-called like the AWS pair above, for the same
     # reason: it is the operator's out-of-band surface for an egress

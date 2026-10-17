@@ -106,6 +106,21 @@ class ConnectionStatus(TypedDict, total=False):
     #: registration error no user can act on, so the row says what the missing step
     #: is and where it lives (Settings → OAuth Apps).
     needsClientConfig: bool
+    #: Other configured MCP entries that are backed by the SAME OAuth grant
+    #: artifacts as this provider (``grant_key`` equality). Present and non-empty
+    #: only for a provider whose grant is present AND shared. It lets the card
+    #: show, proactively, that a connection is shared (and that a local
+    #: disconnect/reconnect keeps the underlying token) without the user having to
+    #: attempt a Disconnect. Names only, never a credential: the census reads
+    #: config URLs, not tokens.
+    grantSharedWith: list[str]
+    #: True when the shared-grant census could not read every source (an unreadable
+    #: file, or a URL it could not safely compare), so an EMPTY ``grantSharedWith``
+    #: means "could not confirm sole ownership" rather than "definitely not shared".
+    #: Present only when true and the grant is present. Lets the card soften its copy
+    #: instead of asserting the grant is unshared on a partial read -- the same
+    #: fail-closed stance the Disconnect path takes.
+    grantSharedUnconfirmed: bool
 
 
 def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
@@ -387,10 +402,19 @@ def _grant_presence_map(providers: list[Provider]) -> dict[str, bool | None]:
     }
 
 
-async def collect_connection_statuses() -> list[ConnectionStatus]:
+async def collect_connection_statuses(
+    project_dirs: tuple[Path, ...] = (),
+) -> list[ConnectionStatus]:
     """Authorization verdict + first-connect time for every visible provider.
 
     Reachability is intentionally not probed here -- see the module docstring.
+
+    ``project_dirs`` are the open checkouts whose ``<project>/.kiro/agents`` specs
+    the shared-grant census must reach, exactly as the Disconnect path reads them:
+    a project-local spec can be the OTHER entry sharing a provider's grant, and
+    omitting it would under-report sharing for a user who has one. The default of
+    no projects is honest absence (a caller with no dashboard slot state has no
+    open checkout), not a shortcut.
     """
     from kiro_crew.connections.mint import pending_mint_for
 
@@ -452,6 +476,51 @@ async def collect_connection_statuses() -> list[ConnectionStatus]:
                 # next to the flag rather than being overwritten by it.
                 entry["reason"] = "client_not_configured"
         statuses.append(entry)
+
+    # The shared-grant axis: for a provider whose grant is PRESENT, say whether the
+    # same OAuth grant artifacts are also configured by another entry. Only for a
+    # present grant -- "shared" is a fact about a grant that exists, and a provider
+    # with no grant has nothing to share. One census read answers every such
+    # provider (grant_sharers_map), reusing the exact ownership judgement a later
+    # Disconnect would make, so the card can show the connection is shared without
+    # the user clicking Disconnect first.
+    present = [
+        (str(p["slug"]), str(p["mcp_url"])) for p in providers if grants.get(p["slug"]) is True
+    ]
+    if present:
+        from kiro_crew.connections.ownership import grant_sharers_map
+
+        # Fail-soft, never fail-closed: the shared-grant axis is an ADDITIVE hint
+        # on an already-computed verdict. If the census read raises (a stalled
+        # mount, an unreadable config), the authorization verdict the card
+        # actually gates on is already in `statuses` -- dropping the hint is
+        # strictly better than letting one optional field turn the whole feed
+        # into a 500 and blank every card. The omission reads as "not known to be
+        # shared", the same honest default as a provider never asked about.
+        try:
+            sharing = await grant_sharers_map(present, project_dirs)
+        except Exception as exc:  # noqa: BLE001 -- an optional hint must not fail the feed
+            # Log the exception TYPE only, never a traceback: the census reads MCP
+            # config URLs, some of which carry tokens in their query string, and a
+            # traceback (exc_info) can echo those URLs into the log.
+            logger.warning(
+                "shared-grant census failed (%s); status served without it",
+                type(exc).__name__,
+            )
+            sharing = {}
+        by_slug = {e["slug"]: e for e in statuses}
+        for slug, result in sharing.items():
+            shared_entry = by_slug.get(slug)
+            if shared_entry is None:
+                continue
+            if result.shared_with:
+                shared_entry["grantSharedWith"] = list(result.shared_with)
+            elif result.census_incomplete:
+                # No sharer found, but a source could not be read: say "could not
+                # confirm sole ownership" rather than let an empty list read as
+                # proven-unshared. Only when NOT already shared -- a named sharer is
+                # the stronger, certain fact and needs no hedge.
+                shared_entry["grantSharedUnconfirmed"] = True
 
     recorded = await asyncio.to_thread(reconcile_connected_since, statuses, now)
     for entry in statuses:

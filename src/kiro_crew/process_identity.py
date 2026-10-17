@@ -68,10 +68,11 @@ them.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import sys
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
@@ -248,6 +249,46 @@ def process_handle_of(session: Any) -> ProcessHandle:
     )
 
 
+#: Upper bound on the tree walk a teardown runs before it takes its handles.
+#: The walk is best-effort evidence; a teardown never waits longer than this.
+TREE_REFRESH_TIMEOUT = 3.0
+
+
+async def refresh_live_process_tree(sessions: Any, session_key: str) -> None:
+    """Refresh the child records of the session live under *session_key*, before its handle is taken.
+
+    The client records its tree once at startup, so children a turn started
+    are missing from the handle :func:`process_handle_of` copies -- and only a
+    RECORDED member may vouch for a leaderless group
+    (:func:`_group_member_vouches`). Teardown paths call this immediately
+    before they read their handles. The provider's client answers it: an
+    ``AcpClient`` walks its own verified leader, and a kiro-backend
+    ``AcpSessionProvider`` hands it to its ``AcpRuntime``'s guarded snapshot. A
+    provider whose client has no async ``refresh_process_tree`` is skipped.
+    Bounded by ``TREE_REFRESH_TIMEOUT``, and a timeout or error is logged
+    and swallowed: a teardown must never hang or fail on the walk. Torn-down
+    sessions are not walked -- their handles were captured at the pop.
+    """
+    live = getattr(sessions, "_sessions", None)
+    session = live.get(session_key) if isinstance(live, Mapping) else None
+    provider = getattr(session, "provider", None)
+    client = getattr(provider, "_client", None)
+    refresh = getattr(client, "refresh_process_tree", None)
+    if not inspect.iscoroutinefunction(refresh):
+        return
+    timeout = TREE_REFRESH_TIMEOUT
+    try:
+        await asyncio.wait_for(refresh(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Process tree refresh for %s timed out after %.1fs; using the earlier record",
+            session_key,
+            timeout,
+        )
+    except Exception:
+        logger.warning("Process tree refresh for %s failed", session_key, exc_info=True)
+
+
 def _tree_survived(handle: ProcessHandle) -> bool:
     """Whether what the handle's leader left behind still stands.
 
@@ -336,10 +377,12 @@ def _group_member_vouches(handle: ProcessHandle) -> bool:
     whichever tree takes it next -- so a leaderless group may only be signalled
     while it can still name a member verified as this run's: the root itself
     (a zombie still reads its start id and its group), or one of the descendants
-    the client recorded at spawn, whose start id reads back and whose group is
-    the retained one. A member the client never recorded (a late spawn) cannot
-    vouch, and a group only such members keep alive is not signalled -- reported,
-    never reaped. The same rule ``session_pid``'s orphan teardown applies.
+    the client recorded -- at startup, and again when a teardown refreshed the
+    tree just before taking the handle (:func:`refresh_live_process_tree`) --
+    whose start id reads back and whose group is the retained one. A member
+    never recorded, including one started after the last refresh, cannot vouch,
+    and a group only such members keep alive is not signalled -- reported, never
+    reaped. The same rule ``session_pid``'s orphan teardown applies.
     """
     pgid = handle.pgid
     pid = handle.pid

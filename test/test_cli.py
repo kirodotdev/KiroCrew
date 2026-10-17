@@ -4,8 +4,10 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import http.server
 import json
 import os
+import socketserver
 import stat
 import subprocess
 import sys
@@ -20,8 +22,14 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.cli_commands import _cron
 from kiro_crew.cli_doctor import _doctor
-from kiro_crew.cli_server import _update
+from kiro_crew.cli_server import (
+    _owner_verified_secret_urlopen as _REAL_OWNER_VERIFIED_SECRET_URLOPEN,
+)
+from kiro_crew.cli_server import (
+    _update,
+)
 from kiro_crew.service.common import RestartReport
+from kiro_crew.stt import decoder as stt_decoder
 
 
 def _add_job_kwargs(**overrides):
@@ -144,12 +152,18 @@ def _pin_default_config(monkeypatch) -> None:
     runner installed that wheel, and on POSIX an absent one is a hard issue: the
     tests asserting ``_doctor()`` does not exit would then report the host rather
     than the behaviour they name. The STT arms pin it back on for themselves.
+
+    The harness is pinned to kiro-cli: a fresh config defaults to KAS, whose
+    engine check needs a kiro-cli with ``--agent-engine`` that the stubbed
+    ``kiro-cli 1.0.0`` does not report.
     """
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
     from kiro_crew.config.loader import KiroCrewConfig
 
     def _pristine() -> KiroCrewConfig:
         cfg = KiroCrewConfig()
         cfg.stt.enabled = False
+        cfg.agent.acp_backend = ACP_BACKEND_KIRO
         return cfg
 
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _pristine()))
@@ -244,10 +258,14 @@ class TestDoctor:
         The autouse ``_hermetic_config`` fixture pins STT OFF so unrelated doctor
         tests never reach this section, so any test that wants it has to ask.
         """
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
         from kiro_crew.config.loader import KiroCrewConfig
 
         def _cfg() -> KiroCrewConfig:
             cfg = KiroCrewConfig()
+            # kiro-cli, like ``_pin_default_config``: the KAS engine row is not
+            # the subject here.
+            cfg.agent.acp_backend = ACP_BACKEND_KIRO
             cfg.stt.enabled = True
             for name, value in fields.items():
                 setattr(cfg.stt, name, value)
@@ -1836,6 +1854,23 @@ class TestManifest:
 class TestLogout:
     """Tests for _logout CLI function."""
 
+    @pytest.fixture(autouse=True)
+    def _posix_ownership(self, _floor_monkeypatch):
+        # Pin the POSIX branch so the connection-bound ownership proof takes its
+        # uid path on every runner; on Windows it would otherwise take the SID
+        # path and refuse first. Route the owner-verified secret transport
+        # through the stubbed loopback_urlopen so the send works without a real
+        # unix socket; the transport's own proof is covered in
+        # test_cli_server_more_coverage.
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
+
     def test_logout_success(self, tmp_path, monkeypatch):
         """Successful logout prints success message."""
         secret_file = tmp_path / ".local_secret"
@@ -2349,6 +2384,20 @@ class TestStop:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _no_alias_service(self):
+        # ``_stop`` consults ``service_alias_holder()`` before the foreground
+        # SIGTERM-by-port path (an alias of another unit must not be signalled).
+        # The real call shells out to ``systemctl show kirocrew.service`` on the
+        # test host, so pin it None here, as ``TestRestart`` does; the alias
+        # refusal test overrides it. Keeping this a dedicated fixture (not folded
+        # into ``_no_service``) makes the hermeticity guard explicit.
+        with patch(
+            "kiro_crew.cli_server.service_controller.service_alias_holder",
+            return_value=None,
+        ):
+            yield
+
     def _ports(self, pids):
         return patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=pids)
 
@@ -2790,6 +2839,84 @@ class TestStop:
         out = capsys.readouterr().out
         assert "SIGTERM" in out or "Terminated" in out
 
+    def test_an_alias_holding_the_name_is_refused_before_the_foreground_path(self, capsys):
+        """When ``kirocrew.service`` is an alias of another unit, ``stop_service()``
+        fails closed (returns False), but the foreground fallback must NOT then
+        SIGTERM the alias target's managed process: refuse, exit 1, signal
+        nothing, and never consult ``find_listening_pids``."""
+        from kiro_crew.cli_server import _stop
+        from kiro_crew.service.linux import AliasHolder
+
+        mock_sel = MagicMock()
+        holder = AliasHolder("system", "other.service")
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.service_alias_holder",
+                return_value=holder,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids") as mock_find,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop()
+            assert exc.value.code == 1
+        mock_find.assert_not_called()
+        out = capsys.readouterr().out
+        assert "alias of other.service" in out
+        assert "system scope" in out
+        assert "does not manage that unit" in out
+        # The remedy names the verb the user asked for (stop, not restart) and
+        # the system-scope spelling (sudo systemctl, not --user).
+        assert "`sudo systemctl stop other.service`" in out
+        assert "restart" not in out
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=service_name_is_alias" in resources
+        assert "scope=system" in resources
+        assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+    def test_a_user_scope_alias_refusal_names_the_user_manager_and_the_stop_verb(self, capsys):
+        """A user-scope alias must be managed with ``systemctl --user`` (plain
+        ``sudo systemctl`` reaches the system manager and misses it), and a
+        ``kirocrew stop`` must point at ``stop``, not ``restart``."""
+        from kiro_crew.cli_server import _stop
+        from kiro_crew.service.linux import AliasHolder
+
+        mock_sel = MagicMock()
+        holder = AliasHolder("user", "other.service")
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.service_alias_holder",
+                return_value=holder,
+            ),
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids") as mock_find,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop()
+            assert exc.value.code == 1
+        mock_find.assert_not_called()
+        out = capsys.readouterr().out
+        assert "user scope" in out
+        assert "`systemctl --user stop other.service`" in out
+        assert "sudo" not in out
+        assert "restart" not in out
+
+    def test_an_explicit_port_bypasses_the_alias_refusal(self, capsys):
+        """``kirocrew stop --port N`` explicitly targets a foreground gateway on
+        that port, so the service short-circuit (and its alias guard) is skipped."""
+        from kiro_crew.cli_server import _stop
+
+        with (
+            self._mock_sel(),
+            patch("kiro_crew.cli_server.service_controller.service_alias_holder") as mock_alias,
+            self._ports([]),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        mock_alias.assert_not_called()
+        assert "No Kiro Crew gateway" in capsys.readouterr().out
+
 
 class TestWaitForPidsExit:
     """Tests for the bounded ``_wait_for_pids_exit`` helper."""
@@ -2868,6 +2995,18 @@ class TestRestart:
         with patch(
             "kiro_crew.cli_server.service_controller.is_service_active",
             return_value=False,
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _no_alias_service(self):
+        # ``_restart`` consults ``service_alias_holder()`` before the foreground
+        # path (an alias of another unit must not be SIGTERM'd/respawned). The
+        # real call shells out to systemctl, so pin it None here; the alias
+        # refusal test overrides it.
+        with patch(
+            "kiro_crew.cli_server.service_controller.service_alias_holder",
+            return_value=None,
         ):
             yield
 
@@ -3985,6 +4124,45 @@ class TestRestart:
         mock_spawn.assert_called_once()
         assert "does not look like a Kiro Crew gateway" not in capsys.readouterr().out
 
+    def test_an_alias_holding_the_name_is_refused_before_the_foreground_path(self, capsys):
+        """When ``kirocrew.service`` is an alias of another unit, ``restart_service()``
+        returns an empty report and ``is_service_active()`` is False, but the
+        foreground fallback must NOT then SIGTERM the alias target's managed
+        process and spawn a replacement beside it: refuse, exit 1, signal and
+        spawn nothing."""
+        from kiro_crew.cli_server import _restart
+        from kiro_crew.service.common import RestartReport
+        from kiro_crew.service.linux import AliasHolder
+
+        mock_sel = MagicMock()
+        holder = AliasHolder("system", "other.service")
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            patch(
+                "kiro_crew.cli_server.service_controller.restart_service",
+                return_value=RestartReport(),
+            ),
+            patch(
+                "kiro_crew.cli_server.service_controller.service_alias_holder",
+                return_value=holder,
+            ),
+            patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+            patch("kiro_crew.cli_server.platform_compat.find_listening_pids") as mock_ports,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _restart(None)
+            assert exc.value.code == 1
+        mock_spawn.assert_not_called()
+        mock_ports.assert_not_called()
+        out = capsys.readouterr().out
+        assert "alias of other.service" in out
+        assert "system scope" in out
+        # restart verb + system-scope spelling.
+        assert "`sudo systemctl restart other.service`" in out
+        resources = mock_sel.log_api_access.call_args.kwargs["resources"]
+        assert "reason=service_name_is_alias" in resources
+        assert "scope=system" in resources
+
 
 class TestRestartReadinessVerdict:
     """`restart` must report success only once the REPLACEMENT is serving.
@@ -4083,6 +4261,55 @@ class TestRestartReadinessVerdict:
         assert "reason=replacement_died exit=1" in resources
         # No point chasing a token for a gateway that is not there.
         mock_token_url.assert_not_called()
+
+    def test_replacement_that_dies_relays_only_its_own_log_lines(self, tmp_path, capsys):
+        """The died-immediately report quotes what the replacement wrote, not older lines.
+
+        The replacement rotates the old, longer gateway.log to .prev at boot and logs its
+        refusal into a fresh file, so the relay has to follow the rotation.
+        """
+        from kiro_crew import cli_server
+
+        log = tmp_path / "gateway.log"
+        log.write_text("ERROR old gateway line from yesterday\n" * 50, encoding="utf-8")
+        real_mark = cli_server._gateway_log_mark
+
+        def mark_then_boot():
+            mark = real_mark()
+            log.replace(log.with_suffix(".log.prev"))
+            log.write_text(
+                "ERROR Refusing to start: persistence preflight failed\nfix: free disk space\n",
+                encoding="utf-8",
+            )
+            return mark
+
+        with (
+            patch("kiro_crew.cli_server.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_server._gateway_log_mark", side_effect=mark_then_boot),
+        ):
+            code, _sel, _url = self._drive(poll=1, ready_status=0, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "Its last lines in gateway.log:" in out
+        assert "Refusing to start: persistence preflight failed" in out
+        assert "fix: free disk space" in out
+        assert "old gateway line" not in out
+
+    def test_replacement_that_never_becomes_ready_relays_no_log_lines(self, tmp_path, capsys):
+        """A still-running replacement is not dead, so its log is not quoted as the cause."""
+        (tmp_path / "gateway.log").write_text("INFO still booting\n", encoding="utf-8")
+
+        with (
+            patch("kiro_crew.cli_server.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_server._gateway_log_mark", return_value=(None, None, 0)),
+        ):
+            code, _sel, _url = self._drive(poll=None, ready_status=503, marker_pid=[None, None])
+
+        assert code == 1
+        out = capsys.readouterr().out
+        assert "did not become ready" in out
+        assert "still booting" not in out
 
     def test_replacement_that_never_becomes_ready_is_reported_as_a_failure(self, capsys):
         """A live-but-not-serving replacement must exit non-zero with timeout wording."""
@@ -4776,6 +5003,52 @@ class TestDoctorMcpTools:
         assert agent_path.read_bytes() == before
         assert "agent config (auto-fix skipped: shared home)" in issues
 
+    def test_auto_fix_refused_at_the_locked_recheck_is_audited_and_writes_nothing(
+        self, tmp_path, capsys
+    ):
+        """Ownership that changes between the probe and the write is caught under
+        the agent-spec lock, and the audit records that final refusal."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=[],
+            allowed=[],
+            servers={
+                "kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]},
+                "kirocrew-cron": {"command": "/bin/kirocrew", "args": ["mcp-cron"]},
+            },
+        )
+        before = agent_path.read_bytes()
+        issues: list[str] = []
+        sel_mock = MagicMock()
+        with (
+            patch(
+                "kiro_crew.agent._decline_shared_agent_home",
+                side_effect=[None, agent_path],
+            ),
+            patch("kiro_crew.cli_doctor.sel", sel_mock),
+            self._mock_probe(
+                {
+                    "kirocrew-core": ("ok", [], ""),
+                    "kirocrew-cron": ("ok", [], ""),
+                }
+            ),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "Auto-fix skipped: shared home" in out
+        assert agent_path.read_bytes() == before
+        assert "agent config (auto-fix skipped: shared home)" in issues
+        sel_mock.return_value.log_api_access.assert_called_once_with(
+            caller="system",
+            operation="agent_home_write",
+            outcome="denied",
+            source="cli_doctor",
+            resources=str(agent_path),
+        )
+
     def test_declined_home_reports_a_forbidden_grant_without_writing(self, tmp_path, capsys):
         """A declined home leaves a ceiling-forbidden grant on disk, logs no
         SEL revoke, and reports the grant for the owning install to repair."""
@@ -4815,7 +5088,95 @@ class TestDoctorMcpTools:
         assert issues == [
             f"{ref} auto-approve forbidden by ceiling (repair from the owning install)"
             for ref in ("@kirocrew-cron", "@kirocrew-core")
-        ] + ["agent config (auto-fix skipped: shared home)"]
+        ] + [
+            "@kirocrew-guide config",
+            "@kirocrew-mate config",
+            "agent config (auto-fix skipped: shared home)",
+        ]
+
+    def test_ceiling_revoke_drops_per_tool_grants_too(self, tmp_path, capsys):
+        """Withholding auto-approve drops the bare ref and every ``@server/tool``
+        grant of that server, duplicates included, and nothing else."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=["@kirocrew-core"],
+            allowed=[
+                "@kirocrew-core",
+                "@kirocrew-core/send_message",
+                "@kirocrew-core/send_message",
+                "@kirocrew-corex/run",
+                "fs_read",
+            ],
+            servers={"kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]}},
+        )
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=None),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.sel", MagicMock()),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        written = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert written["allowedTools"] == ["@kirocrew-corex/run", "fs_read"]
+        assert "@kirocrew-core" in written["tools"]
+
+    def test_a_confirm_tools_withhold_is_not_reported_as_a_ceiling(self, tmp_path, capsys):
+        """The operator's own ``hooks.confirm_tools`` names itself as the cause."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=["@kirocrew-core"],
+            allowed=["@kirocrew-core"],
+            servers={"kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]}},
+        )
+        sel_mock = MagicMock()
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=None),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.withheld_by_confirm_tools", return_value=True),
+            patch("kiro_crew.cli_doctor.sel", sel_mock),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, [])
+        out = capsys.readouterr().out
+        assert "@kirocrew-core: 🔒 auto-approve withheld by hooks.confirm_tools" in out
+        assert "security policy" not in out
+        resources = [
+            c.kwargs.get("resources", "")
+            for c in sel_mock.return_value.log_api_access.call_args_list
+            if c.kwargs.get("operation") == "mcp_auto_approve_withheld"
+        ]
+        assert resources and "(hooks.confirm_tools)" in resources[0]
+
+    def test_declined_home_names_confirm_tools_as_the_cause(self, tmp_path, capsys):
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=["@kirocrew-core"],
+            allowed=["@kirocrew-core"],
+            servers={"kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]}},
+        )
+        issues: list[str] = []
+        with (
+            patch("kiro_crew.agent._decline_shared_agent_home", return_value=agent_path),
+            patch("kiro_crew.cli_doctor.may_skip_gate_now", return_value=False),
+            patch("kiro_crew.cli_doctor.withheld_by_confirm_tools", return_value=True),
+            patch("kiro_crew.cli_doctor.sel", MagicMock()),
+            self._mock_probe({}),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        assert (
+            "@kirocrew-core auto-approve withheld by hooks.confirm_tools "
+            "(repair from the owning install)"
+        ) in issues
 
     def test_auto_fix_never_blanket_allows_computer_use(self, tmp_path, capsys):
         """**Doctor must never add ``@kirocrew-computer`` to ``allowedTools``.**
@@ -4862,6 +5223,25 @@ class TestDoctorMcpTools:
         # The other managed servers are unaffected — the carve-out is scoped.
         assert "@kirocrew-core" in updated["allowedTools"]
         assert "@kirocrew-cron" in updated["allowedTools"]
+
+    def test_auto_fix_never_blanket_allows_the_guide_set(self, tmp_path, capsys):
+        """The guide set is always on but granted per tool, so doctor mounts its
+        ref and never mints the whole-server grant: that would pre-approve a tool
+        added to the server later, before anyone reviewed it."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_path)
+        data = json.loads(agent_path.read_text(encoding="utf-8"))
+        data["tools"] = []
+        data["allowedTools"] = []
+        agent_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        with self._mock_probe({}):
+            _doctor_mcp_tools(agent_path, [])
+        updated = json.loads(agent_path.read_text(encoding="utf-8"))
+        assert "@kirocrew-guide" in updated["tools"]
+        assert "@kirocrew-guide" not in updated["allowedTools"]
+        assert "@kirocrew-core" in updated["allowedTools"]
 
     def test_auto_fix_preserves_a_user_made_computer_use_grant(self, tmp_path, capsys):
         """Doctor never MINTS the grant, but never REMOVES a user's own either.
@@ -5281,10 +5661,14 @@ class TestDoctorStt:
         Applied last, so a test that wants the off arm asks for it explicitly
         (``enabled=False``) rather than relying on what the autouse pin left behind.
         """
+        from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
         from kiro_crew.config.loader import KiroCrewConfig
 
         def _cfg() -> KiroCrewConfig:
             cfg = KiroCrewConfig()
+            # kiro-cli, like ``_pin_default_config``: the KAS engine row is not
+            # the subject here.
+            cfg.agent.acp_backend = ACP_BACKEND_KIRO
             cfg.stt.enabled = True
             for name, value in fields.items():
                 setattr(cfg.stt, name, value)
@@ -5356,13 +5740,73 @@ class TestDoctorStt:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
             patch("kiro_crew.slack.enterprise.validate_enterprise", return_value=True),
-            patch.dict("sys.modules", modules or {}),
+            pytest.MonkeyPatch.context() as _mp,
         ):
+            # Fake ONLY the named sys.modules keys, each restored to its exact prior
+            # state (present, absent or None) on exit. A whole-dict
+            # patch.dict("sys.modules", ...) would instead evict a submodule this
+            # run imports for the first time inside the block
+            # (kiro_crew.acp.skill_projection, reached lazily via the ACP driver),
+            # leaving the kiro_crew.acp package attribute pointing at a now-orphan
+            # module object -- cross-test pollution a co-runner then trips over.
+            # setitem is the scoped restore testing-conventions D11 mandates.
+            for _name, _mod in (modules or {}).items():
+                _mp.setitem(sys.modules, _name, _mod)
             try:
                 _doctor()
             except SystemExit as exc:
                 code = int(exc.code or 0)
         return capsys.readouterr().out, code
+
+    def test_report_module_faking_does_not_evict_lazily_imported_modules(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """``_report``'s ``modules=`` faking must not corrupt a co-runner's module identity.
+
+        The doctor run inside ``_report`` reaches ``kiro_crew.acp.skill_projection``
+        lazily (through the ACP driver), so on a cold xdist worker that submodule is
+        imported for the FIRST time inside the module-faking block. The faking must
+        leave it in place: after ``_report`` returns, ``sys.modules``, the
+        ``kiro_crew.acp`` package attribute and a re-import all have to name one
+        module object.
+
+        A whole-dict ``patch.dict("sys.modules", ...)`` restores its entry snapshot
+        on exit and so evicts that submodule while the package attribute still
+        names it. A later test on the same worker then re-imports it as a second
+        object, monkeypatches that one, and the runtime's function-local
+        ``from kiro_crew.acp.skill_projection import ...`` resolves the unpatched
+        real preparer. This drives the real helper, so it fails on that restore.
+        """
+        import importlib
+
+        name = "kiro_crew.acp.skill_projection"
+        # Drop every trace so the doctor's import is a genuine first import, the
+        # window a cold xdist worker hits. monkeypatch puts both back at teardown.
+        acp_pkg = importlib.import_module("kiro_crew.acp")
+        monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.delattr(acp_pkg, "skill_projection", raising=False)
+
+        faked = {
+            "amazon_transcribe": MagicMock(),
+            "amazon_transcribe.client": MagicMock(),
+            "boto3": MagicMock(),
+        }
+        # Each faked key's prior state: real modules on a host with the voice extra,
+        # absent on one without. The pin asserts restoration of THIS state, so it is
+        # host-independent.
+        missing = object()
+        before = {k: sys.modules.get(k, missing) for k in faked}
+
+        self._report(tmp_path, capsys, modules=faked)
+
+        for k in faked:
+            assert sys.modules.get(k, missing) is before[k]
+        # The doctor really did import the submodule inside the block; without this
+        # the identity assertions below would pass vacuously.
+        survivor = getattr(acp_pkg, "skill_projection", None)
+        assert survivor is not None, "the doctor run no longer imports skill_projection"
+        assert sys.modules.get(name) is survivor
+        assert importlib.import_module(name) is survivor
 
     def test_doctor_stt_local_engine_and_model_ready(self, tmp_path, capsys, monkeypatch):
         """The ready state names the resolved catalog model AND where it sits, so
@@ -5488,6 +5932,9 @@ class TestDoctorStt:
 
         self._stt(monkeypatch, provider="transcribe")
         monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.ARTIFACTS[0].platform_key
+        )
         out, _code = self._report(
             tmp_path,
             capsys,
@@ -5503,6 +5950,37 @@ class TestDoctorStt:
         assert "reinstall Kiro Crew (the bundled audio decoder is missing)" in section
         assert "brew install ffmpeg" not in section
         assert "winget install" not in section
+
+    def test_doctor_release_without_a_bundled_decoder_points_at_a_system_ffmpeg(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """The macOS Intel release ships no decoder, so reinstalling cannot fix it.
+
+        Its only decoder is a system one, the same as a source install's, and the
+        remedy line has to say so instead of blaming a payload that never shipped.
+        """
+        import kiro_crew.cli_doctor as _doc
+
+        self._stt(monkeypatch, provider="transcribe")
+        monkeypatch.setattr(_doc.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(
+            stt_decoder, "platform_key", lambda *a, **k: stt_decoder.DECODERLESS_BUNDLE_PLATFORM
+        )
+        out, _code = self._report(
+            tmp_path,
+            capsys,
+            ffmpeg=False,
+            modules={
+                "amazon_transcribe": MagicMock(),
+                "amazon_transcribe.client": MagicMock(),
+                "boto3": MagicMock(),
+            },
+        )
+
+        section = self._stt_section(out)
+        assert "ffmpeg:" in section and "not found" in section
+        assert "reinstall Kiro Crew" not in section
+        assert "Fix: " in section
 
     def test_doctor_stt_transcribe_provider(self, tmp_path, capsys, monkeypatch):
         """The local-only lines belong to the local provider. Printing an engine or
@@ -5670,6 +6148,7 @@ class TestConfigDirOverride:
     def test_logout_reads_secret_for_listener_port(self, monkeypatch):
         """_logout resolves the secret paired with the requested listener."""
         read_secret = MagicMock(return_value="test-secret")
+        monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
         monkeypatch.setattr("kiro_crew.cli_server.read_local_secret", read_secret)
 
         from kiro_crew.cli_server import _logout
@@ -5679,6 +6158,12 @@ class TestConfigDirOverride:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": __import__(
+                "kiro_crew.cli_server", fromlist=["loopback_urlopen"]
+            ).loopback_urlopen(req, timeout=timeout),
+        )
         with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)
         read_secret.assert_called_once_with(5476, dial_host="127.0.0.1")
@@ -5704,7 +6189,8 @@ class TestConfigDirOverride:
         any lockdown applied only AFTER the tokens are on disk leaves them
         readable through the directory's inherited DACL in the failure window.
         The lockdown therefore lands on the temp file, before any token byte
-        reaches it."""
+        reaches it, and that temp sits in the masked staging directory rather
+        than beside .env."""
         import os as os_mod
 
         import kiro_crew.cli_setup as cs
@@ -5727,11 +6213,12 @@ class TestConfigDirOverride:
 
         monkeypatch.setattr(pc, "restrict_to_owner", _spy)
         cs._setup_slack_tokens()
-        # Locked exactly once, on a file in the credential dir, while it was
-        # still empty of tokens.
-        assert seen == [(tmp_path, False)]
+        # Locked exactly once, on a file in the masked staging directory, while
+        # it was still empty of tokens.
+        assert seen == [(tmp_path / "auth-store-staging", False)]
         assert "xoxb-test" in env_file.read_text(encoding="utf-8")
         assert not list(tmp_path.glob("*.tmp"))  # no temp residue
+        assert not list((tmp_path / "auth-store-staging").iterdir())
         if os_mod.name == "posix":
             assert env_file.stat().st_mode & 0o777 == 0o600
 
@@ -6015,6 +6502,60 @@ class TestSpawnCliAuth:
         out = capsys.readouterr().out
         assert "Error" in out
         assert "gateway not running" not in out
+
+    def _list_rows(self, monkeypatch, capsys, payload: dict) -> str:
+        """Run ``spawn list`` against a canned gateway answer and return stdout."""
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _port, **_kw: "s")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(payload).encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        monkeypatch.setattr(
+            "kiro_crew.cli_commands.loopback_urlopen", lambda _req, timeout=0: mock_resp
+        )
+
+        from kiro_crew.cli_commands import _spawn
+
+        _spawn(argparse.Namespace(spawn_action="list", port=5476))
+        return capsys.readouterr().out
+
+    def test_spawn_list_queued_row_prints_no_terminal_controls(self, monkeypatch, capsys):
+        """A queued spawn's id and task are agent-authored: no live escape, no forged row."""
+        esc = "\x1b"
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [],
+                "queued": [
+                    {
+                        "id": f"q{esc}[2Jid",
+                        "task": f"do it{esc}]0;pwned\x07\n  ✅ forged-row  done",
+                    }
+                ],
+            },
+        )
+        assert esc not in out
+        assert "\x07" not in out
+        assert len(out.strip().splitlines()) == 1
+        assert "forged-row" in out  # kept as visible text, on the SAME line
+
+    def test_spawn_list_running_row_prints_no_terminal_controls(self, monkeypatch, capsys):
+        """The running-agent rows share the queued rows' rule."""
+        esc = "\x1b"
+        out = self._list_rows(
+            monkeypatch,
+            capsys,
+            {
+                "agents": [
+                    {"id": f"a{esc}[31m1", "task": f"t{esc}[2K\r\n  ✅ forged  done", "done": False}
+                ],
+                "queued": [],
+            },
+        )
+        assert esc not in out
+        assert "\r" not in out
+        assert len(out.strip().splitlines()) == 1
 
 
 class TestArtifactCli:
@@ -6655,12 +7196,9 @@ class TestDoctorEmbeddings:
     def _hermetic_config(self, monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
         _pin_default_config(monkeypatch)
-        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses: name the
-        # missing bundled libs, or blame the operator's override directory. Which branch a
-        # test exercises is therefore part of its scenario, not an ambient property of the
-        # host — and the variable is easy to inherit, because the real loader sets it to its
-        # own bundled libs dir the first time embeddings load. Cleared per test; the tests
-        # that exercise the override branch set it themselves.
+        # LLAMA_CPP_LIB_PATH selects between two mutually exclusive diagnoses:
+        # the bundled tree or an operator override. Each test owns whether the
+        # live environment or the startup-removal record supplies that value.
         monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
 
     @staticmethod
@@ -6672,51 +7210,28 @@ class TestDoctorEmbeddings:
         model_present: bool,
         platform_supported: bool = True,
         missing_libs: dict | None = None,
-        loader_setdefaults: str = "",
         lib_path_override: str | None = None,
+        dropped_lib_path: str | None = None,
     ):
-        """Run _doctor with the embeddings runtime/model state stubbed.
+        """Run _doctor with the embedding and library-path state stubbed.
 
-        ``loader_setdefaults`` reproduces the real loader's side effect of
-        ``setdefault``-ing LLAMA_CPP_LIB_PATH to its own bundled libs dir, which
-        is what makes reading that var after the load call ambiguous.
-
-        ``lib_path_override`` controls the LLAMA_CPP_LIB_PATH the doctor sees:
-        ``None`` (default) CLEARS it — the var LEAKS between tests otherwise,
-        because both the ``loader_setdefaults`` path and the real embeddings
-        loader plant it via ``os.environ.setdefault`` (invisible to
-        monkeypatch teardown), so whichever test ran first in the pytest
-        worker poisoned override-sensitive assertions (shard-layout-dependent
-        CI failures). A string sets the override deliberately, via monkeypatch
-        so it is restored on teardown.
+        ``lib_path_override`` controls the live environment. ``dropped_lib_path``
+        controls the startup record used when the variable is absent.
         """
         agent_file = tmp_path / "kirocrew.json"
         _healthy_agent_file(agent_file)
         import kiro_crew.cli_doctor as doc
 
         if lib_path_override is None:
-            # setenv FIRST so monkeypatch records a teardown action even when
-            # the var is ABSENT: delenv(raising=False) on a missing var
-            # registers nothing, so the loader_setdefaults path's direct
-            # os.environ.setdefault would still leak into later tests in
-            # workers where the var was never set (GPT review). The
-            # setenv+delenv pair restores the original state either way.
+            # The setenv+delenv pair records absence for teardown even when the
+            # inherited process environment did not contain the variable.
             monkeypatch.setenv("LLAMA_CPP_LIB_PATH", "")
             monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
         else:
             monkeypatch.setenv("LLAMA_CPP_LIB_PATH", lib_path_override)
 
-        def _load():
-            if loader_setdefaults:
-                # Through monkeypatch, not a bare os.environ write: the real loader's
-                # setdefault is a process-wide mutation, and reproducing it literally leaked
-                # the variable into every later test in the same worker, flipping them onto
-                # the override branch depending on distribution order.
-                if "LLAMA_CPP_LIB_PATH" not in os.environ:
-                    monkeypatch.setenv("LLAMA_CPP_LIB_PATH", loader_setdefaults)
-            return object if runtime_ok else None
-
-        monkeypatch.setattr(doc, "_load_llama_class", _load)
+        monkeypatch.setattr(doc, "dropped_inherited_lib_path", lambda: dropped_lib_path)
+        monkeypatch.setattr(doc, "_load_llama_class", lambda: object if runtime_ok else None)
         monkeypatch.setattr(
             doc, "_platform_libs_dirname", lambda: "macos_arm64" if platform_supported else None
         )
@@ -6806,33 +7321,64 @@ class TestDoctorEmbeddings:
         assert "Missing native libs" not in out
         assert "reinstall Kiro Crew" not in out
 
-    def test_doctor_does_not_mistake_the_loaders_own_setdefault_for_an_override(
-        self, tmp_path, capsys, monkeypatch
+    @pytest.mark.parametrize("value_source", ["environment", "startup-record"])
+    def test_doctor_does_not_mistake_an_inherited_bundled_path_for_an_override(
+        self, tmp_path, capsys, monkeypatch, value_source: str
     ):
-        """A complete payload that fails to import is not reported as overridden.
-
-        `_load_llama_class()` `setdefault`s LLAMA_CPP_LIB_PATH to its OWN bundled
-        libs dir, so reading the var AFTER that call cannot distinguish "operator
-        set it" from "the loader just set it to the bundle" — which produced the
-        self-contradiction "the libs load from <bundled path>, not the bundled
-        tree". Doctor must sample the environment before the load.
-        """
-        monkeypatch.delenv("LLAMA_CPP_LIB_PATH", raising=False)
-        # Libs ARE missing, so reading the var too late suppresses the real
-        # packaging diagnosis and prints the override note in its place. With no
-        # missing libs both branches stay silent and the bug is invisible.
+        """The live and recorded forms both diagnose this install's bundled tree."""
+        inherited = (
+            "/opt/kirocrew/0.7.9/lib/python3.12/site-packages/kiro_crew/_vendor/"
+            "llama_cpp_libs/macos_arm64"
+        )
         self._run_doctor(
             tmp_path,
             monkeypatch,
             runtime_ok=False,
             model_present=False,
             missing_libs={"macos_arm64": ["libllama.dylib"]},
-            loader_setdefaults="/bundled/_vendor/llama_cpp_libs/x",
+            lib_path_override=inherited if value_source == "environment" else None,
+            dropped_lib_path=inherited if value_source == "startup-record" else None,
         )
         out = capsys.readouterr().out
 
         assert "not the bundled tree" not in out
         assert "Missing native libs for macos_arm64: libllama.dylib" in out
+        assert f"LLAMA_CPP_LIB_PATH={inherited}" in out
+        if value_source == "startup-record":
+            assert "inherited from another Kiro Crew process and removed at startup" in out
+        else:
+            assert "is ignored; this install uses its own bundled tree" in out
+        assert "point it at a directory of your own" in out
+
+    @pytest.mark.parametrize("value_source", ["environment", "startup-record"])
+    def test_doctor_reports_an_empty_lib_path_as_unset_not_inherited(
+        self, tmp_path, capsys, monkeypatch, value_source: str
+    ):
+        """An empty value is reported as unset on either path, never as inherited.
+
+        The startup record only establishes that the variable was empty and
+        removed; a live empty value is simply treated as unset. Neither may
+        claim it came from another Kiro Crew process.
+        """
+        self._run_doctor(
+            tmp_path,
+            monkeypatch,
+            runtime_ok=True,
+            model_present=True,
+            lib_path_override="" if value_source == "environment" else None,
+            dropped_lib_path="" if value_source == "startup-record" else None,
+        )
+        out = capsys.readouterr().out
+
+        assert "lib path:    ⏹ LLAMA_CPP_LIB_PATH=(empty)" in out
+        assert "inherited from another Kiro Crew process" not in out
+        if value_source == "startup-record":
+            assert "was empty and removed at startup; treated as unset." in out
+            assert "is empty, so it is treated as unset." not in out
+        else:
+            assert "is empty, so it is treated as unset." in out
+            assert "was empty and removed at startup; treated as unset." not in out
+        assert "point it at a directory of your own" in out
 
     def test_doctor_unsupported_platform_is_not_an_issue(self, tmp_path, capsys, monkeypatch):
         """No vendored libs for this platform = designed degradation, not a doctor failure."""
@@ -6913,6 +7459,134 @@ class TestDoctorEmbeddings:
         out = capsys.readouterr().out
         assert "model url:   ❌ unreachable" in out
         assert "Check network connectivity" in out
+
+
+class TestGatewayLogRelay:
+    """``_gateway_log_lines_since``: what a failed restart quotes from gateway.log."""
+
+    @staticmethod
+    def _lines(tmp_path, content: bytes, offset):
+        """Relay *content* as if gateway.log measured *offset* bytes before the spawn."""
+        from kiro_crew import cli_server
+
+        log = tmp_path / "gateway.log"
+        log.write_bytes(content)
+        st = log.stat()
+        mark = None if offset is None else (st.st_dev, st.st_ino, offset)
+        with patch("kiro_crew.cli_server.config_dir", return_value=tmp_path):
+            return cli_server._gateway_log_lines_since(mark)
+
+    @staticmethod
+    def _rotate_and_relay(tmp_path, old: bytes, before_rotation: bytes, after: bytes):
+        """Mark a non-empty gateway.log, then do what a booting replacement does.
+
+        The replacement's inherited stdout appends *before_rotation* to the measured
+        file, ``cli._setup_cli_logging`` renames it to gateway.log.prev (the same
+        ``Path.replace`` it runs at boot), and *after* lands in a fresh gateway.log.
+        """
+        from kiro_crew import cli_server
+
+        log = tmp_path / "gateway.log"
+        log.write_bytes(old)
+        with patch("kiro_crew.cli_server.config_dir", return_value=tmp_path):
+            mark = cli_server._gateway_log_mark()
+            with open(log, "ab") as fh:
+                fh.write(before_rotation)
+            log.replace(log.with_suffix(".log.prev"))
+            log.write_bytes(after)
+            return cli_server._gateway_log_lines_since(mark)
+
+    def test_an_unknown_offset_relays_nothing(self, tmp_path):
+        assert self._lines(tmp_path, b"ERROR something\n", None) == []
+
+    def test_a_log_that_did_not_grow_relays_nothing(self, tmp_path):
+        assert self._lines(tmp_path, b"old\n", 4) == []
+
+    def test_a_missing_log_relays_nothing(self, tmp_path):
+        from kiro_crew import cli_server
+
+        with patch("kiro_crew.cli_server.config_dir", return_value=tmp_path):
+            mark = cli_server._gateway_log_mark()
+            assert mark == (None, None, 0)
+            assert cli_server._gateway_log_lines_since(mark) == []
+
+    def test_a_log_created_after_the_mark_is_relayed_whole(self, tmp_path):
+        from kiro_crew import cli_server
+
+        with patch("kiro_crew.cli_server.config_dir", return_value=tmp_path):
+            mark = cli_server._gateway_log_mark()
+            (tmp_path / "gateway.log").write_bytes(b"ERROR Refusing to start\n")
+            assert cli_server._gateway_log_lines_since(mark) == ["ERROR Refusing to start"]
+
+    def test_a_rotated_log_shorter_than_the_old_one_is_still_relayed(self, tmp_path):
+        """The boot rotation starts a fresh file, so the old size is no offset into it."""
+        old = b"INFO old gateway line\n" * 200
+        got = self._rotate_and_relay(
+            tmp_path, old, b"", b"ERROR Refusing to start: persistence preflight failed\n"
+        )
+        assert got == ["ERROR Refusing to start: persistence preflight failed"]
+
+    def test_a_rotated_log_longer_than_the_old_one_is_read_from_its_start(self, tmp_path):
+        old = b"INFO old\n"
+        after = b"INFO replacement booting\n" * 3 + b"ERROR no worker thread\n"
+        got = self._rotate_and_relay(tmp_path, old, b"", after)
+        assert got == ["INFO replacement booting"] * 3 + ["ERROR no worker thread"]
+
+    def test_output_written_before_the_rotation_is_relayed_from_prev(self, tmp_path):
+        got = self._rotate_and_relay(
+            tmp_path,
+            b"INFO old gateway line\n",
+            b"WARNING written before logging setup\n",
+            b"ERROR signing-key preflight timed out\n",
+        )
+        assert got == [
+            "WARNING written before logging setup",
+            "ERROR signing-key preflight timed out",
+        ]
+
+    def test_a_prev_file_from_an_earlier_boot_is_not_relayed(self, tmp_path):
+        """A gateway.log.prev that is not the measured file belongs to an older gateway."""
+        from kiro_crew import cli_server
+
+        log = tmp_path / "gateway.log"
+        (tmp_path / "gateway.log.prev").write_bytes(b"ERROR from last week\n")
+        log.write_bytes(b"INFO old\n")
+        with patch("kiro_crew.cli_server.config_dir", return_value=tmp_path):
+            mark = cli_server._gateway_log_mark()
+            # A size rollover renames the measured file away; it stays alive as .1, so
+            # its inode cannot be reused by the fresh gateway.log.
+            log.replace(tmp_path / "gateway.log.1")
+            log.write_bytes(b"ERROR Refusing to start\n")
+            assert cli_server._gateway_log_lines_since(mark) == ["ERROR Refusing to start"]
+
+    def test_only_the_last_lines_are_kept_and_blank_lines_dropped(self, tmp_path):
+        from kiro_crew import cli_server
+
+        body = "".join(f"line {i}\n\n" for i in range(50)).encode()
+        got = self._lines(tmp_path, body, 0)
+        assert len(got) == cli_server._RESTART_LOG_RELAY_LINES
+        assert got[-1] == "line 49"
+        assert got[0] == f"line {50 - cli_server._RESTART_LOG_RELAY_LINES}"
+
+    def test_terminal_control_sequences_are_stripped(self, tmp_path):
+        got = self._lines(tmp_path, b"\x1b]0;pwned\x07ERROR \x1b[31mred\x1b[0m\x9b\n", 0)
+        assert len(got) == 1
+        assert "\x1b" not in got[0] and "\x07" not in got[0]
+        assert "ERROR" in got[0] and "red" in got[0]
+
+    def test_a_line_cut_by_the_byte_cap_is_dropped(self, tmp_path):
+        from kiro_crew import cli_server
+
+        cap = cli_server._RESTART_LOG_RELAY_BYTES
+        body = b"x" * (cap + 10) + b"\nlast line\n"
+        got = self._lines(tmp_path, body, 0)
+        assert got == ["last line"]
+
+    def test_a_long_line_is_capped(self, tmp_path):
+        from kiro_crew import cli_server
+
+        got = self._lines(tmp_path, b"y" * 5000 + b"\n", 0)
+        assert got == ["y" * cli_server._RESTART_LOG_RELAY_LINE_CHARS]
 
 
 class TestResolveRestartReadyTimeout:
@@ -7325,8 +7999,69 @@ class TestWaitGatewayReady:
             assert cli_server._probe_gateway_ready(7777) == 503
 
 
+def _route_tcp_send_through_verdict(monkeypatch, verdict):
+    """Drive the REAL ``_owner_verified_secret_urlopen`` down its TCP branch.
+
+    No unix socket resolves, so the send rides ``tcp_verified_urlopen``. The fake
+    opener mirrors its contract -- run ``verify_peer`` on the connected socket
+    BEFORE any byte -- and records a send only if the verifier did not raise.
+    ``_connected_peer_verdict`` is pinned to *verdict*, and SEL is captured so
+    no audit record escapes the test. Returns ``(sends, sel_calls)``.
+    """
+    from kiro_crew import cli_server
+
+    # The token / restart-poll test classes route the helper to a plain stub via
+    # an autouse fixture; this driver asserts on the REAL helper, so restore it.
+    monkeypatch.setattr(
+        cli_server, "_owner_verified_secret_urlopen", _REAL_OWNER_VERIFIED_SECRET_URLOPEN
+    )
+    monkeypatch.setattr(
+        "kiro_crew.cli_server.dashboard_socket_path",
+        lambda _port: (_ for _ in ()).throw(RuntimeError("no socket")),
+    )
+    monkeypatch.setattr(cli_server, "_connected_peer_verdict", lambda _sock: verdict)
+    sel_calls: list[dict] = []
+    monkeypatch.setattr(
+        cli_server,
+        "sel",
+        lambda: types.SimpleNamespace(log_api_access=lambda **kw: sel_calls.append(kw)),
+    )
+    sends: list[object] = []
+
+    def fake_tcp(req, timeout, *, verify_peer):
+        verify_peer(object())
+        sends.append((req, timeout))
+        resp = MagicMock()
+        resp.read.return_value = b'{"token": "tok"}'
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+    monkeypatch.setattr(
+        cli_server,
+        "unix_socket_urlopen",
+        lambda *a, **k: pytest.fail("no unix socket exists; must not be dialed"),
+    )
+    return sends, sel_calls
+
+
 class TestPrintTokenUrl:
     """Tests for _print_token_url (auto-token after restart)."""
+
+    @pytest.fixture(autouse=True)
+    def _route_secret_transport(self, _floor_monkeypatch):
+        # Route the owner-verified secret transport through the stubbed
+        # loopback_urlopen so the post-restart token poll works without a real
+        # unix socket; the transport's own proof is covered elsewhere.
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
 
     def test_prints_token_on_success(self, tmp_path, capsys, monkeypatch):
         from kiro_crew.cli_server import _print_token_url
@@ -7353,7 +8088,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -7378,7 +8113,7 @@ class TestPrintTokenUrl:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
+        with patch("kiro_crew.cli_server._owner_verified_secret_urlopen", return_value=mock_resp):
             _print_token_url(7777)
 
         out = capsys.readouterr().out
@@ -7436,6 +8171,116 @@ class TestPrintTokenUrl:
 
         out = capsys.readouterr().out
         assert "kirocrew token" in out
+
+    def test_peer_refusal_falls_into_the_nonfatal_fallback(self, capsys, monkeypatch):
+        # A TCP-only gateway whose run-marker write has not landed yet while the
+        # port already serves yields a MISMATCH during the restart window ->
+        # _GatewayPeerRefused. It is not an OSError, so it must be caught by the
+        # retry loop and hit the non-fatal fallback instead of escaping as a
+        # traceback. One loop pass runs the refusing send, then the deadline
+        # passes so the loop prints the fallback.
+        import kiro_crew.cli_server as _cs
+        from kiro_crew.cli_server import _print_token_url
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+        # Positive wait so the while-guard admits one pass; monotonic steps past
+        # the deadline right after that pass, and sleep is a no-op so the test
+        # does not block on the loop's trailing sleep(1).
+        monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 10)
+        # First two monotonic() reads (deadline anchor + first while-guard) sit
+        # before the deadline so one pass runs; every read after jumps past it,
+        # so the loop exits after that single swallowed refusal. A plain counter
+        # (not an exhaustible iterator) tolerates extra reads without raising.
+        ticks = {"n": 0}
+
+        def _clock():
+            ticks["n"] += 1
+            return 0.0 if ticks["n"] <= 2 else 100.0
+
+        # Rebind cli_server's own ``time`` reference to a shim that fakes only
+        # monotonic/sleep and delegates every other name to the real module.
+        # Patching ``cli_server.time.monotonic`` directly would mutate the
+        # shared stdlib ``time`` object and freeze the clock for the whole test
+        # worker; this confines the fakes to cli_server's view and undoes
+        # cleanly at teardown.
+        import time as _real_time
+
+        class _FakeTime:
+            monotonic = staticmethod(_clock)
+
+            @staticmethod
+            def sleep(_s):
+                return None
+
+            def __getattr__(self, name):
+                return getattr(_real_time, name)
+
+        monkeypatch.setattr(_cs, "time", _FakeTime())
+
+        calls = {"n": 0}
+
+        def _refuse(*_a, **_k):
+            calls["n"] += 1
+            raise _cs._GatewayPeerRefused("peer not proven")
+
+        # Overrides the class autouse routing fixture for this test.
+        monkeypatch.setattr(_cs, "_owner_verified_secret_urlopen", _refuse)
+
+        _print_token_url(7777)  # must NOT raise -- the refusal is swallowed
+
+        # The refusing send ran (branch actually exercised: if the retry handler
+        # did not name _GatewayPeerRefused this call would have propagated).
+        assert calls["n"] == 1
+        out = capsys.readouterr().out
+        assert "kirocrew token" in out
+
+    @pytest.mark.parametrize("verdict_name", ["MISMATCH"])
+    def test_minting_secret_is_withheld_from_an_unproven_listener(
+        self, capsys, monkeypatch, verdict_name
+    ):
+        """A secret is available but the connected peer is NOT proven ours.
+
+        /api/token/local mints owner tokens, so handing the X-Local-Secret to
+        whatever answers 127.0.0.1 would let a foreign local process act as the
+        operator. With no unix socket to prefer, the send rides
+        ``tcp_verified_urlopen`` whose connect-time verifier refuses on anything
+        that is not a positively proven MATCH -- a resolved foreign peer and an
+        unresolvable one are one MISMATCH. The refusal is a ``_GatewayPeerRefused``
+        the restart loop absorbs, so the arm ends with the non-fatal
+        ``kirocrew token`` remedy and nothing is sent.
+
+        A fake clock gives the loop exactly one real iteration (a positive wait,
+        not ``_RESTART_TOKEN_WAIT=0`` which would skip the body entirely and make
+        the no-send assertion vacuous), so the gate is genuinely exercised: the
+        secret IS read, and the connection-bound verifier alone stops the send.
+        """
+        from kiro_crew import cli_server
+
+        secret_reads: list[int] = []
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret",
+            lambda port, **_kw: secret_reads.append(port) or "test-secret",
+        )
+        sends, _sel_calls = _route_tcp_send_through_verdict(
+            monkeypatch, getattr(cli_server._ConnectedPeerVerdict, verdict_name)
+        )
+
+        # Clock: start=0, one in-loop check at 1s (< 15s deadline), then 16s to
+        # cross the deadline after the swallowed refusal. The body runs once.
+        remaining = [0.0, 1.0, 16.0]
+        clock = types.SimpleNamespace(
+            monotonic=lambda: remaining.pop(0) if len(remaining) > 1 else remaining[0],
+            sleep=lambda _s: None,
+        )
+        with patch.object(cli_server, "time", clock):
+            cli_server._print_token_url(7777)  # must NOT raise
+
+        assert secret_reads == [7777], "the loop body must run once and read the secret"
+        assert sends == [], "the minting secret must not be sent to an unproven listener"
+        out = capsys.readouterr().out
+        assert "kirocrew token" in out, "the refusal falls into the non-fatal remedy"
 
 
 @pytest.mark.skipif(
@@ -7773,6 +8618,21 @@ class TestChildWatcherApiRemoved:
 class TestTokenCommand:
     """Tests for the ``kirocrew token`` command handler (``_token``)."""
 
+    @pytest.fixture(autouse=True)
+    def _posix_ownership(self, _floor_monkeypatch):
+        # Pin the POSIX branch so the connection-bound ownership proof takes its
+        # uid path; the non-POSIX branch would take the SID path and refuse
+        # first. Route the owner-verified secret transport through the stubbed
+        # loopback_urlopen so the send works without a real unix socket.
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
+
     def _mock_token_response(self, token: str) -> MagicMock:
         mock_resp = MagicMock()
         mock_resp.read.return_value = f'{{"token": "{token}"}}'.encode()
@@ -7800,7 +8660,7 @@ class TestTokenCommand:
 
         args = argparse.Namespace(ttl="1h", port=7777)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
             return_value=self._mock_token_response("abc123"),
         ):
             _token(args)
@@ -7832,7 +8692,7 @@ class TestTokenCommand:
 
         args = argparse.Namespace(ttl="1h", port=7777)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
             return_value=self._mock_token_response("xyz789"),
         ):
             _token(args)
@@ -7893,7 +8753,8 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen", side_effect=urllib.error.URLError("refused")
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
+            side_effect=urllib.error.URLError("refused"),
         ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7907,7 +8768,8 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen", return_value=self._mock_token_response("")
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
+            return_value=self._mock_token_response(""),
         ):
             with pytest.raises(SystemExit) as excinfo:
                 _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7929,7 +8791,7 @@ class TestTokenCommand:
 
         self._stub_token_env(tmp_path, monkeypatch)
         with patch(
-            "kiro_crew.cli_server.loopback_urlopen",
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
             return_value=self._mock_token_response("eyJa.b"),
         ):
             _token(argparse.Namespace(ttl="1h", port=7777))
@@ -7939,6 +8801,591 @@ class TestTokenCommand:
         for line in lines:
             assert line.lstrip().startswith("http"), f"non-URL text on stdout: {line!r}"
         assert "token=eyJa.b" in captured.out
+
+    @pytest.mark.parametrize(
+        ("verdict_name", "reason"),
+        [
+            ("MISMATCH", "could not be proven to be this install's gateway"),
+            ("MISMATCH", "install lsof"),
+        ],
+    )
+    def test_minting_secret_is_withheld_from_an_unproven_listener(
+        self, tmp_path, capsys, monkeypatch, verdict_name, reason
+    ):
+        """A secret is available but the connected peer is not proven ours.
+
+        ``/api/token/local`` mints owner tokens, so the request must not be sent
+        to a peer whose gateway-ownership is unproven. With no unix socket to
+        prefer, the send rides ``tcp_verified_urlopen``; its connect-time verifier
+        raises ``_GatewayPeerRefused`` on anything that is not a positively proven
+        MATCH -- a resolved foreign peer (the TOCTOU/squatter case) and an
+        unresolvable one are one MISMATCH. ``_token`` reports the refusal -- not
+        "could not reach gateway" -- exits 1 with the reason on stderr (the single
+        message names both the ownership proof and the install-lsof remedy), and
+        never sends.
+        """
+        from kiro_crew import cli_server
+        from kiro_crew.cli_server import _token
+
+        self._stub_token_env(tmp_path, monkeypatch)
+        sends, sel_calls = _route_tcp_send_through_verdict(
+            monkeypatch, getattr(cli_server._ConnectedPeerVerdict, verdict_name)
+        )
+
+        with pytest.raises(SystemExit) as excinfo:
+            _token(argparse.Namespace(ttl="1h", port=7777))
+
+        assert excinfo.value.code == 1
+        assert sends == [], "the minting secret was sent to an unproven listener"
+        captured = capsys.readouterr()
+        assert "ownership could not be verified" in captured.err
+        assert reason.lower() in captured.err.lower()
+        assert "Could not reach gateway" not in captured.err
+        assert captured.out == ""
+        denied = [c for c in sel_calls if c.get("outcome") == "denied"]
+        assert denied and denied[-1]["operation"] == "gateway_token"
+
+
+class TestOwnerVerifiedSecretTransport:
+    """The owner-minting / approve sends bind their ownership proof to the
+    connected socket on every path (``_token``, ``_print_token_url`` and
+    ``_update_approve`` all route through ``_owner_verified_secret_urlopen``).
+
+    With the gateway's own unix socket present the send goes over that socket
+    with a ``verify_peer`` hook that refuses unless the kernel confirms the peer
+    is this account (``check_peer_is_self``) AND the gateway recorded for the
+    port (``_connected_unix_peer_is_recorded_gateway``). With no AF_UNIX socket
+    -- a TCP-only gateway or native Windows -- the send rides
+    ``tcp_verified_urlopen`` whose ``verify_peer`` resolves the far end of THIS
+    4-tuple (``_connected_peer_verdict``): only MATCH sends; anything else is a
+    MISMATCH -- a squatter that won a check-to-connect gap and an unresolvable
+    peer are one fail-closed decision -- raising ``_GatewayPeerRefused``, which
+    is NOT an OSError so it survives urllib's URLError wrap. Covers the three
+    secret-bearing sends (``_token``, ``_print_token_url``, ``_update_approve``).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sel_calls(self, _floor_monkeypatch):
+        from kiro_crew import cli_server
+
+        calls: list[dict] = []
+        _floor_monkeypatch.setattr(
+            cli_server,
+            "sel",
+            lambda: types.SimpleNamespace(log_api_access=lambda **kw: calls.append(kw)),
+        )
+        return calls
+
+    @staticmethod
+    def _resp(payload: bytes = b'{"ok": true}') -> MagicMock:
+        resp = MagicMock()
+        resp.read.return_value = payload
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def _capture_unix_verifier(self, monkeypatch, tmp_path, operation="gateway_token"):
+        """Run the real helper down its unix branch; return the verify_peer it built."""
+        from kiro_crew import cli_server
+
+        sock_file = tmp_path / "gw.sock"
+        sock_file.write_bytes(b"")  # the file must EXIST to be preferred
+        monkeypatch.setattr("kiro_crew.cli_server.dashboard_socket_path", lambda _p: sock_file)
+        holder: dict = {}
+
+        def fake_unix(req, timeout, *, socket_path, verify_peer):
+            holder["socket_path"] = socket_path
+            holder["verify_peer"] = verify_peer
+            return self._resp()
+
+        monkeypatch.setattr(cli_server, "unix_socket_urlopen", fake_unix)
+        cli_server._owner_verified_secret_urlopen(MagicMock(), 7777, 5, operation=operation)
+        return holder
+
+    def _capture_tcp_verifier(self, monkeypatch, operation="gateway_token"):
+        """Run the real helper down its TCP branch; return the verify_peer it built."""
+        from kiro_crew import cli_server
+
+        holder: dict = {}
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            holder["verify_peer"] = verify_peer
+            return self._resp()
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+        monkeypatch.setattr(
+            cli_server,
+            "unix_socket_urlopen",
+            lambda *a, **k: pytest.fail("no unix socket to prefer; must not be dialed"),
+        )
+        cli_server._owner_verified_secret_urlopen(MagicMock(), 7777, 5, operation=operation)
+        return holder["verify_peer"]
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="asserts the AF_UNIX socket is preferred over TCP; AF_UNIX-only",
+    )
+    def test_prefers_the_unix_socket_with_a_peer_verifier_when_it_exists(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew import cli_server
+
+        tcp_calls: list[object] = []
+        monkeypatch.setattr(
+            cli_server, "tcp_verified_urlopen", lambda *a, **k: tcp_calls.append((a, k))
+        )
+        monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: tcp_calls.append(a))
+        holder = self._capture_unix_verifier(monkeypatch, tmp_path)
+
+        assert holder["socket_path"] == str(tmp_path / "gw.sock")
+        assert callable(holder["verify_peer"]), "the unix send must carry a peer verifier"
+        assert tcp_calls == [], "TCP must stay untouched when the owner-only socket exists"
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("socket"), "AF_UNIX"),
+        reason="drives the AF_UNIX verify_peer refusal; AF_UNIX-only",
+    )
+    def test_unix_verify_peer_requires_this_account_and_the_recorded_gateway(
+        self, monkeypatch, tmp_path, _sel_calls
+    ):
+        from kiro_crew import cli_server
+        from kiro_crew.mcp_gateway.socketsec import PeerCredResult
+
+        # cli_server binds check_peer_is_self at module import, so patch the name
+        # there; the verifier closure reads it at call time.
+        monkeypatch.setattr(cli_server, "check_peer_is_self", lambda _s: PeerCredResult.MISMATCH)
+        verify = self._capture_unix_verifier(monkeypatch, tmp_path)["verify_peer"]
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            verify(object())
+
+        # Same-uid peer that is NOT this install's recorded gateway (an impostor
+        # that rebound the socket path) still refuses -- uid alone is not enough.
+        monkeypatch.setattr(cli_server, "check_peer_is_self", lambda _s: PeerCredResult.MATCH)
+        monkeypatch.setattr(
+            cli_server, "_connected_unix_peer_is_recorded_gateway", lambda _s, _p: False
+        )
+        verify = self._capture_unix_verifier(monkeypatch, tmp_path)["verify_peer"]
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            verify(object())
+
+        # Same-uid peer that IS the recorded gateway proceeds.
+        monkeypatch.setattr(
+            cli_server, "_connected_unix_peer_is_recorded_gateway", lambda _s, _p: True
+        )
+        verify = self._capture_unix_verifier(monkeypatch, tmp_path)["verify_peer"]
+        verify(object())  # must not raise
+
+        outcomes = [c["outcome"] for c in _sel_calls]
+        assert outcomes == ["denied", "denied", "allowed"]
+        assert all(c["operation"] == "gateway_token" for c in _sel_calls)
+
+    def test_refusal_is_not_an_oserror(self):
+        # urllib's do_open wraps an OSError into URLError, which callers report
+        # as "gateway not running"; the refusal must escape that wrap.
+        from kiro_crew import cli_server
+
+        assert not issubclass(cli_server._GatewayPeerRefused, OSError)
+
+    def test_without_a_unix_socket_sends_over_tcp_verified_only_on_match(
+        self, monkeypatch, tmp_path, _sel_calls
+    ):
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.dashboard_socket_path", lambda _p: tmp_path / "absent.sock"
+        )
+        verify = self._capture_tcp_verifier(monkeypatch, operation="gateway_update_approve")
+
+        monkeypatch.setattr(
+            cli_server, "_connected_peer_verdict", lambda _s: cli_server._ConnectedPeerVerdict.MATCH
+        )
+        verify(object())  # MATCH: the credential header is written
+
+        # MISMATCH is the TOCTOU/squatter case (something else accepted THIS
+        # connection after the gateway's port was freed) AND the unresolvable-
+        # peer case (lsof-less macOS) folded into one fail-closed decision; the
+        # single refusal message names the install-lsof / owner-only-socket
+        # remedy.
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
+        )
+        with pytest.raises(cli_server._GatewayPeerRefused, match="install lsof"):
+            verify(object())
+
+        assert [c["outcome"] for c in _sel_calls] == ["allowed", "denied"]
+        assert all(c["operation"] == "gateway_update_approve" for c in _sel_calls)
+        assert "connected_peer_verified" in _sel_calls[0]["resources"]
+        assert "connected_peer_unverified" in _sel_calls[1]["resources"]
+
+    def test_windows_binds_the_proof_to_the_connected_tcp_socket(self, monkeypatch):
+        # Native Windows has no AF_UNIX, so the send rides TCP -- but the proof
+        # is bound to the connected socket via tcp_verified_urlopen's verifier.
+        from kiro_crew import cli_server
+
+        monkeypatch.delattr(cli_server.socket, "AF_UNIX", raising=False)
+        verify = self._capture_tcp_verifier(monkeypatch)
+
+        monkeypatch.setattr(
+            cli_server, "_connected_peer_verdict", lambda _s: cli_server._ConnectedPeerVerdict.MATCH
+        )
+        verify(object())  # must not raise
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
+        )
+        with pytest.raises(cli_server._GatewayPeerRefused):
+            verify(object())
+
+    def test_connected_peer_identity_proof(self, monkeypatch):
+        # The PEER PID of THIS established 4-tuple (get_tcp_peer_pid, not a port
+        # snapshot) must equal the recorded gateway pid, with a matching start
+        # token, owned by this account -- uid on POSIX, owner SID on Windows.
+        from kiro_crew import cli_server
+        from kiro_crew.instances import run_marker
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 7777)
+
+        verdict = cli_server._ConnectedPeerVerdict
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+
+        # --- POSIX: ownership by uid.
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 4242)
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MATCH
+
+        # A different pid accepted this connection -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 9999)
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+
+        # Recorded pid but a stale/forged start token -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: 4242)
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok-other")
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+
+        # Owned by a different uid, or owner unresolvable -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 65534)
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: None)
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+
+        # No recorded gateway for the port -- MISMATCH.
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: None)
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+
+        # --- Windows: ownership by access-token owner SID (no uid there).
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-me")
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-me")
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MATCH
+        monkeypatch.setattr(platform_compat, "process_owner_sid", lambda _pid: "S-1-5-21-attacker")
+        assert cli_server._connected_peer_verdict(_Sock()) is verdict.MISMATCH
+
+    def test_connected_peer_proof_passes_the_gateway_endpoint_as_client(self, monkeypatch):
+        # The gateway is the far end: its endpoint (our getpeername) is the
+        # client_endpoint and ours (getsockname) the server_endpoint, so
+        # get_tcp_peer_pid resolves the GATEWAY's pid, not our own.
+        from kiro_crew import cli_server
+        from kiro_crew.instances import run_marker
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 7777)
+
+        seen: dict = {}
+
+        def fake_peer_pid(*, server_endpoint, client_endpoint):
+            seen["server"] = server_endpoint
+            seen["client"] = client_endpoint
+            return 4242
+
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", fake_peer_pid)
+        monkeypatch.setattr(run_marker, "read_pid_record_path", lambda _p: (4242, "tok"))
+        monkeypatch.setattr(run_marker, "pid_start_token", lambda _pid: "tok")
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+        assert cli_server._connected_peer_verdict(_Sock()) is cli_server._ConnectedPeerVerdict.MATCH
+        assert seen["client"] == ("127.0.0.1", 7777)  # gateway endpoint
+        assert seen["server"] == ("127.0.0.1", 54321)  # our endpoint
+
+    def test_unresolvable_peer_is_a_fail_closed_mismatch(self, monkeypatch):
+        from kiro_crew import cli_server
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 7777)
+
+        # A peer that cannot be resolved -- a resolver that returns nothing, or a
+        # host with no trusted lsof -- is one fail-closed MISMATCH: an owner-
+        # minting secret is never written to a peer that cannot be proven. The
+        # bounded retry exhausts (sleep stubbed) and still fails closed. Patch
+        # cli_server's own ``time`` binding with a local namespace rather than
+        # mutating the shared stdlib module, so no other worker-wide caller sees
+        # the fakes.
+        monkeypatch.setattr(platform_compat, "get_tcp_peer_pid", lambda **_kw: None)
+        clock = iter([0.0, 0.1, 2.0])
+        fake_time = types.SimpleNamespace(
+            sleep=lambda _s: None,
+            monotonic=lambda: next(clock, 2.0),
+        )
+        monkeypatch.setattr(cli_server, "time", fake_time)
+        assert (
+            cli_server._connected_peer_verdict(_Sock()) is cli_server._ConnectedPeerVerdict.MISMATCH
+        )
+
+    def test_transient_none_peer_pid_is_retried_before_failing_closed(self, monkeypatch):
+        """A connection still in the gateway's accept queue shows inode 0, so the
+
+        peer resolver is momentarily None against a healthy TCP-only gateway slow
+        to ``accept()``. The verdict retries the resolve for a bounded window and
+        resolves MATCH once the pid appears, instead of refusing on the first miss.
+        """
+        from kiro_crew import cli_server
+
+        class _Sock:
+            def getsockname(self):
+                return ("127.0.0.1", 54321)
+
+            def getpeername(self):
+                return ("127.0.0.1", 7777)
+
+        # None on the first poll (connection not yet accept()ed), then the real
+        # recorded pid on the next -- the accept-queue race the retry closes.
+        polls = [None, 4242]
+        monkeypatch.setattr(
+            platform_compat, "get_tcp_peer_pid", lambda **_kw: polls.pop(0) if polls else 4242
+        )
+        # Patch cli_server's own ``time`` binding (not the shared stdlib module):
+        # monotonic stays under the retry deadline so the one extra poll happens.
+        fake_time = types.SimpleNamespace(sleep=lambda _s: None, monotonic=lambda: 0.0)
+        monkeypatch.setattr(cli_server, "time", fake_time)
+        monkeypatch.setattr(cli_server, "_recorded_gateway_pid", lambda _port: 4242)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", True)
+        monkeypatch.setattr(cli_server.os, "getuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(platform_compat, "process_owner_uid", lambda _pid: 1000)
+        assert cli_server._connected_peer_verdict(_Sock()) is cli_server._ConnectedPeerVerdict.MATCH
+        assert polls == [], "the retry must poll again after the first None"
+
+    def test_connected_unix_peer_is_recorded_gateway_requires_pid_and_token(self, monkeypatch):
+        # The uid check proves only same-account; a same-uid impostor that
+        # rebound the socket path passes it. The pid + start-token bind defeats it.
+        from kiro_crew import cli_server
+
+        monkeypatch.setattr(cli_server.run_marker, "pid_start_token", lambda _pid: "tok-real")
+
+        def record(pid, token):
+            monkeypatch.setattr(
+                cli_server.run_marker, "read_pid_record_path", lambda _p: (pid, token)
+            )
+
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _s: 4242)
+        record(4242, "tok-real")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 7777) is True
+
+        # Same-uid impostor on a DIFFERENT pid.
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _s: 9999)
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 7777) is False
+
+        # Recorded pid but a stale start token (recycled pid / forged record).
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _s: 4242)
+        record(4242, "tok-stale")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 7777) is False
+
+        # Peer pid unreadable -- fail closed.
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _s: None)
+        record(4242, "tok-real")
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 7777) is False
+
+        # No recorded gateway for the port -- fail closed.
+        monkeypatch.setattr(cli_server, "get_peer_pid", lambda _s: 4242)
+        monkeypatch.setattr(cli_server.run_marker, "read_pid_record_path", lambda _p: None)
+        assert cli_server._connected_unix_peer_is_recorded_gateway(object(), 7777) is False
+
+    # ── _update_approve shares the same send helper ─────────────────────────
+
+    def test_the_duplicate_helper_is_gone(self):
+        from kiro_crew import cli_server
+
+        assert not hasattr(cli_server, "_authenticated_internal_urlopen"), (
+            "the duplicate approve-path helper must be deleted; _update_approve "
+            "shares _owner_verified_secret_urlopen"
+        )
+
+    @staticmethod
+    def _arm_pending_update(monkeypatch):
+        from kiro_crew import cli_server
+        from kiro_crew.platform import update_capability, update_stepup
+
+        pending = types.SimpleNamespace(
+            version="9.9.9", channel="stable", nonce="nonce-xyz", expires_in=120
+        )
+        monkeypatch.setattr(
+            update_capability,
+            "derive_capability",
+            lambda: types.SimpleNamespace(managed_by="pip"),
+        )
+        monkeypatch.setattr(update_stepup, "read_pending", lambda: pending)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda *a, **k: "sek", raising=False)
+
+    def test_update_approve_sends_through_the_single_helper(self, monkeypatch):
+        from kiro_crew import cli_server
+
+        self._arm_pending_update(monkeypatch)
+        sent: list[object] = []
+
+        def _fake_send(req, port, timeout, *, operation=""):
+            sent.append((port, operation, req.get_header("X-internal-secret")))
+            return self._resp(json.dumps({"version": "9.9.9"}).encode("utf-8"))
+
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", _fake_send)
+
+        cli_server._update_approve()
+
+        assert sent == [(7777, "gateway_update_approve", "sek")]
+
+    def test_update_approve_surfaces_the_peer_refusal(self, monkeypatch, capsys):
+        """A live gateway whose connected peer is refused is NOT "not running"."""
+        from kiro_crew import cli_server
+
+        self._arm_pending_update(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.dashboard_socket_path",
+            lambda _port: (_ for _ in ()).throw(RuntimeError("no socket")),
+        )
+        monkeypatch.setattr(
+            cli_server,
+            "_connected_peer_verdict",
+            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
+        )
+        sends: list[object] = []
+
+        def fake_tcp(req, timeout, *, verify_peer):
+            verify_peer(object())
+            sends.append(req)
+            return self._resp()
+
+        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
+
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update_approve()
+
+        assert exc.value.code == 1
+        assert sends == [], "the nonce + secret must not reach an unproven peer"
+        out = capsys.readouterr().out
+        assert "ownership could not be verified" in out
+        assert "not running" not in out
+
+
+class _NoFqdnHTTPServer(http.server.HTTPServer):
+    # http.server resolves socket.getfqdn(host) on bind, which can stall on some
+    # hosts while the socket is bound but not listening; this loopback test
+    # server is reached by port, never by name, so skip the lookup.
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
+class TestTcpVerifiedUrlopen:
+    """``tcp_verified_urlopen`` drives a real loopback TCP connection and runs
+    its ``verify_peer`` hook on the connected socket BEFORE the first byte.
+
+    Exercises the transport end to end against a tiny loopback HTTP server: a
+    hook that passes lets the request reach the server; a hook that raises closes
+    the connection so the server never receives the request line, and the raised
+    (non-OSError) exception propagates unwrapped.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _server():
+
+        received: list[str] = []
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 -- stdlib contract
+                received.append(self.path)
+                body = b'{"ok": true}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_a):  # silence the test log
+                return
+
+        srv = _NoFqdnHTTPServer(("127.0.0.1", 0), _Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            yield srv.server_address[1], received
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            t.join(timeout=5)
+
+    def test_verify_peer_passes_sends_request(self):
+        from kiro_crew.loopback_http import tcp_verified_urlopen
+
+        with self._server() as (port, received):
+            seen_sock: list[object] = []
+
+            def verify(sock):
+                seen_sock.append(sock)  # ran on the connected socket, no raise
+
+            with tcp_verified_urlopen(
+                f"http://127.0.0.1:{port}/api/token/local", timeout=5, verify_peer=verify
+            ) as resp:
+                assert json.loads(resp.read()) == {"ok": True}
+            assert received == ["/api/token/local"], "the request must reach the server"
+            assert seen_sock, "verify_peer must run on the connected socket"
+
+    def test_verify_peer_raises_sends_nothing(self):
+        from kiro_crew.loopback_http import tcp_verified_urlopen
+
+        class _Refused(Exception):
+            """A NON-OSError refusal, so it propagates unwrapped (not URLError)."""
+
+        with self._server() as (port, received):
+
+            def verify(_sock):
+                raise _Refused("peer not proven")
+
+            with pytest.raises(_Refused):
+                tcp_verified_urlopen(
+                    f"http://127.0.0.1:{port}/api/token/local", timeout=5, verify_peer=verify
+                )
+            assert received == [], "a refused peer must never receive the request"
+
+    def test_no_verifier_sends_request(self):
+        from kiro_crew.loopback_http import tcp_verified_urlopen
+
+        with self._server() as (port, received):
+            with tcp_verified_urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+                assert resp.status == 200
+            assert received == ["/health"]
 
 
 class TestBannerBranding:
@@ -7982,7 +9429,14 @@ class TestBannerBranding:
         import kiro_crew.cli as cli_mod
         import kiro_crew.cli_chat as chat_mod
 
-        for mod in (cli_mod, chat_mod):
+        # cli.py, every module split out of it, and cli_chat.
+        split_out = [sys.modules[name] for name in cli_mod._OWNERS]
+        split_out += [
+            cli_mod.cli_parser_gateway,
+            cli_mod.cli_parser_agent,
+            cli_mod.cli_parser_admin,
+        ]
+        for mod in (cli_mod, *split_out, chat_mod):
             src = Path(mod.__file__).read_text(encoding="utf-8")
             assert "BANNER = r" not in src, f"{mod.__name__} re-inlined the banner literal"
 
@@ -9331,11 +10785,33 @@ class TestChatPermissionRequest:
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
-        self._direct_tool_call(client)
+        self._direct_tool_call(client, path=str(tmp_path / "notes.md"))
         event = client._build_permission_event(self._direct_permission_message())
 
         assert event.is_shell is False
         assert event.shell_classified is True
+        assert event.raw_params_trusted is True
+        provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
+        assert provider.calls == [("approve", "req-direct", False)]
+        assert reads["n"] == 1
+        assert [s["outcome"] for s in sels] == ["allowed"]
+
+    @pytest.mark.asyncio
+    async def test_direct_client_relative_edit_target_reaches_the_prompt(
+        self, monkeypatch, tmp_path
+    ):
+        """An ordinary relative edit target is the routine shape on every
+        backend. Its params spelling is judged verbatim as it always was and
+        the request goes to the human, exactly like the absolute sibling above;
+        only a DELETE's relative target (the call's sole evidence) is refused
+        as unverifiable (``tool_paths.PARAMS_ONLY_TARGET_KINDS``)."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        self._direct_tool_call(client, path="notes.md")
+        event = client._build_permission_event(self._direct_permission_message())
+
         assert event.raw_params_trusted is True
         provider, sels, reads = await self._drive(monkeypatch, event=event, answer="a")
         assert provider.calls == [("approve", "req-direct", False)]
@@ -9373,8 +10849,13 @@ class TestChatPermissionRequest:
         from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        # Absolute so the hook gate has nothing to refuse on the target itself;
+        # what this pins is that inline data earns no provenance, and the
+        # refusal is the unverified-shell one, not a target denial.
         event = client._build_permission_event(
-            self._direct_permission_message(tool_call_id="uncached", inline_path="notes.md")
+            self._direct_permission_message(
+                tool_call_id="uncached", inline_path=str(tmp_path / "notes.md")
+            )
         )
 
         assert event.raw_params_trusted is False

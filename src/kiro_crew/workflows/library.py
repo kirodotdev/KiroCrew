@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.workflows.store import default_workflow_library_dir
@@ -136,7 +137,7 @@ class WorkflowDefinitionLibrary:
         try:
             temp_path.write_text(payload, encoding="utf-8")
             platform_compat.restrict_to_owner(temp_path)
-            os.replace(temp_path, path)
+            replace_with_retry(temp_path, path)
         except Exception:
             try:
                 temp_path.unlink(missing_ok=True)

@@ -39,6 +39,7 @@ vi.mock('./FolderMoveSubmenu', () => ({
 vi.mock('./SendToInstanceSubmenu', () => ({ default: () => <div>zzq-send</div> }))
 vi.mock('./SessionColorSwatches', () => ({ default: () => <div>zzq-colors</div> }))
 vi.mock('./LinkedSurfacesSection', () => ({ default: () => <div>zzq-links</div> }))
+vi.mock('./SessionTurnLimitMenu', () => ({ SessionTurnLimitSubmenu: () => <div>zzq-turn-limit</div> }))
 
 const actions = vi.hoisted(() => ({
   toggleRead: vi.fn(),
@@ -107,6 +108,51 @@ describe('SessionActionsMenu', () => {
     expect(actions.copyLink).toHaveBeenCalledWith('zzq-slot')
     fireEvent.click(btn('Close session'))
     expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('shows a muted reach line under Close when the host passes closeHint', () => {
+    setup({ closeHint: 'Sessions under it stay open.' })
+    expect(screen.getByTestId('close-item-hint').textContent).toBe('Sessions under it stay open.')
+    fireEvent.click(btn(/Close session/))
+    expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('renders a custom closeLabel in place of "Close session", with and without a hint', () => {
+    // An adopted remote-crew row passes "Remove from this machine": its ✕ removes
+    // only the local copy, so the default close label would misdescribe the action.
+    const { unmount } = setup({ closeLabel: 'Remove from this machine' })
+    fireEvent.click(btn('Remove from this machine'))
+    expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+    expect(screen.queryByRole('button', { name: 'Close session' })).toBeNull()
+    unmount()
+
+    actions.close.mockReset()
+    setup({ closeLabel: 'Remove from this machine', closeHint: 'It keeps running on nobita. To open it again, find it under nobita in the sidebar.' })
+    expect(screen.getByTestId('close-item-hint').textContent).toBe('It keeps running on nobita. To open it again, find it under nobita in the sidebar.')
+    fireEvent.click(btn(/Remove from this machine/))
+    expect(actions.close).toHaveBeenCalledWith('zzq-slot')
+  })
+
+  it('renders the close item neutral (not destructive-red) when closeNeutral is set', () => {
+    // An adopted remote-crew row passes closeNeutral: removing the local copy is
+    // reversible (the session stays live on its peer), so the red danger styling
+    // of a real close would signal an irreversible loss it does not cause (#19958).
+    const { unmount } = setup({ closeLabel: 'Remove from this machine', closeNeutral: true })
+    const neutral = btn('Remove from this machine')
+    expect(neutral.className).not.toMatch(/text-danger/)
+    // And it carries the Unlink glyph, not the destructive ✕ — the two actions
+    // must not look like the same thing (#19958, ruling 3). lucide stamps the
+    // icon name on the rendered <svg> class.
+    expect(neutral.querySelector('svg.lucide-unlink')).not.toBeNull()
+    expect(neutral.querySelector('svg.lucide-x')).toBeNull()
+    unmount()
+
+    // Default (a real close) stays red AND keeps the ✕ glyph.
+    setup()
+    const danger = btn('Close session')
+    expect(danger.className).toMatch(/text-danger/)
+    expect(danger.querySelector('svg.lucide-x')).not.toBeNull()
+    expect(danger.querySelector('svg.lucide-unlink')).toBeNull()
   })
 
   it('wires Reload session to the slot and disables it while a turn runs', () => {

@@ -41,6 +41,11 @@ from kiro_crew.crew_log.writer import (
 UNIT = "acp-writer-0001"
 OTHER = "acp-writer-0002"
 LOGGER = "kiro_crew.crew_log.writer"
+# Entries a real-thread test queues per unit. Every append opens the log and fsyncs it,
+# and a Windows runner's fsync can take hundreds of milliseconds, so the count is what
+# sets these tests' wall time against their flush ceiling. Order and a held backlog
+# need several entries, not many.
+_BACKLOG = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -995,17 +1000,18 @@ def test_a_hung_write_holds_the_backlog_and_a_bounded_shutdown_says_so(units, po
     try:
         _on_loop(lambda: writer.submit(UNIT, WriteJob.append(_hangs, "a write that hangs")))
         assert entered.wait(20.0), "the writer never picked up the hanging job"
-        _on_loop(lambda: [writer.submit(UNIT, _step(units, UNIT, n)) for n in range(64)])
+        _on_loop(lambda: [writer.submit(UNIT, _step(units, UNIT, n)) for n in range(_BACKLOG)])
         stats = writer.stats()
-        assert stats.buffered == 64 and stats.dropped == 0 and stats.peak_buffered == 64
+        assert stats.buffered == _BACKLOG and stats.dropped == 0
+        assert stats.peak_buffered == _BACKLOG
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             report = writer.drain_for_shutdown(0.2)
-        assert report == DrainReport(False, 64, 0, True)
+        assert report == DrainReport(False, _BACKLOG, 0, True)
         assert _messages(caplog, "did not finish writing")
     finally:
         release.set()
-    assert writer.flush(timeout=20.0)
-    assert units.steps(UNIT) == list(range(64))
+    assert writer.flush(timeout=20.0), writer.stats()
+    assert units.steps(UNIT) == list(range(_BACKLOG))
 
 
 def test_a_hung_write_delays_another_unit_without_reordering_or_losing_it(units, pool):
@@ -1094,11 +1100,13 @@ def test_entries_from_a_loop_land_in_order_on_the_writer_thread(units, pool):
         return WriteJob.append(run, f"step {n}")
 
     _on_loop(
-        lambda: [writer.submit(unit, _job(unit, n)) for n in range(40) for unit in (UNIT, OTHER)]
+        lambda: [
+            writer.submit(unit, _job(unit, n)) for n in range(_BACKLOG) for unit in (UNIT, OTHER)
+        ]
     )
-    assert writer.flush(timeout=20.0)
-    assert units.steps(UNIT) == list(range(40))
-    assert units.steps(OTHER) == list(range(40))
+    assert writer.flush(timeout=20.0), writer.stats()
+    assert units.steps(UNIT) == list(range(_BACKLOG))
+    assert units.steps(OTHER) == list(range(_BACKLOG))
     assert all(name.startswith("test-crewlog") for name in threads), threads
 
 
@@ -1219,13 +1227,18 @@ def test_a_write_error_raised_while_handling_another_holds_no_lease(units, clock
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
         writer.submit(UNIT, _step(units, UNIT, 1))
         assert writer.flush(timeout=60.0)
+        # What an earlier test's orphaned task looks like when the collector runs here:
+        # asyncio's default handler logs it with ``exc_info=False``, which is not None.
+        logging.getLogger("asyncio").error("Task was destroyed but it is pending!", exc_info=False)
     assert writer.stats().dropped == 1
-    rendered = [
-        r for r in caplog.records if r.levelno == logging.DEBUG and "failed:" in r.getMessage()
-    ]
+    # Only the writer's own records: caplog captures the root, and a record another
+    # subsystem logs in this window (asyncio's GC complaint about an earlier test's
+    # orphaned task) says nothing about what the writer kept.
+    records = [r for r in caplog.records if r.name == LOGGER]
+    rendered = [r for r in records if r.levelno == logging.DEBUG and "failed:" in r.getMessage()]
     assert rendered, "the debug arm never logged a later failure"
     assert "Traceback (most recent call last)" in rendered[0].getMessage()
-    assert all(r.exc_info is None for r in caplog.records), "a record carried the exception"
+    assert all(r.exc_info is None for r in records), "a record carried the exception"
 
 
 # --------------------------------------------------------------------------- #
@@ -1238,7 +1251,9 @@ def _budget(clock: _Clock, **kw: Any) -> WarningBudget:
 
 
 def _warnings(caplog) -> list[str]:
-    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    return [
+        r.getMessage() for r in caplog.records if r.name == LOGGER and r.levelno >= logging.WARNING
+    ]
 
 
 def test_a_second_kind_of_failure_is_named_even_after_an_earlier_one(clock, caplog):
@@ -1327,10 +1342,11 @@ def test_a_repeat_is_logged_at_debug_as_text_without_the_exception(clock, caplog
                 raise OSError(28, "full")
             except OSError as exc:
                 budget.report("appending an entry", exc, op="crew-append")
-    debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    records = [r for r in caplog.records if r.name == LOGGER]
+    debug = [r for r in records if r.levelno == logging.DEBUG]
     assert len(debug) == 1
     assert "Traceback (most recent call last)" in debug[0].getMessage()
-    assert all(r.exc_info is None for r in caplog.records)
+    assert all(r.exc_info is None for r in records)
 
 
 def test_the_writer_reports_through_the_budget_and_logger_it_is_given(units, clock, caplog):
@@ -1344,6 +1360,7 @@ def test_the_writer_reports_through_the_budget_and_logger_it_is_given(units, clo
     with caplog.at_level(logging.WARNING, logger="kiro_crew.crew_log.emit"):
         writer.submit(UNIT, _step(units, UNIT, 1))
         assert writer.flush(timeout=60.0)
-    assert {r.name for r in caplog.records} == {"kiro_crew.crew_log.emit"}
+    crew_log = {r.name for r in caplog.records if r.name.startswith("kiro_crew.crew_log")}
+    assert crew_log == {"kiro_crew.crew_log.emit"}
     assert _messages(caplog, "session log writes are failing")
     assert _messages(caplog, "gave up on")

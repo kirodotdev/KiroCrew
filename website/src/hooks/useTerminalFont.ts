@@ -1,20 +1,23 @@
 import { useSyncExternalStore } from 'react'
 import { safeSetItem } from '../utils/safeStorage'
 
-/* ── Built-in terminal font preference ──────────────────────────────────────
+/* ── Built-in terminal appearance preference ────────────────────────────────
  * A single app-wide preference for the xterm.js terminals (activity-bar tabs
- * AND the docked bottom panel), controlling the font family and size xterm
- * renders with. It is a per-CLIENT rendering choice — the font must be
- * installed on the machine doing the viewing — so it is persisted in
- * localStorage rather than server-side config, and is intentionally NOT synced
- * across devices (a font present on your laptop may be absent on a remote you
- * connect from). This mirrors useBottomTerminal's module-level + localStorage
- * store so terminals pick it up without a redux round-trip.
+ * AND the docked bottom panel), controlling the font family, cell size and
+ * cursor shape xterm renders with. It is a per-CLIENT rendering choice — the
+ * font must be installed on the machine doing the viewing, and the cursor is a
+ * local render too — so it is persisted in localStorage rather than server-side
+ * config, and is intentionally NOT synced across devices (a font present on
+ * your laptop may be absent on a remote you connect from). This mirrors
+ * useBottomTerminal's module-level + localStorage store so terminals pick it up
+ * without a redux round-trip.
  *
- * The primary motivation is Powerline/Nerd Font support: the built-in terminal
- * hard-coded a font that lacks the private-use-area glyphs prompt themes rely
- * on, so those rendered as tofu. Pointing it at an installed Nerd Font fixes
- * that. */
+ * The font support's primary motivation is Powerline/Nerd Font glyphs: the
+ * built-in terminal hard-coded a font that lacks the private-use-area glyphs
+ * prompt themes rely on, so those rendered as tofu. Pointing it at an installed
+ * Nerd Font fixes that. The cursor style lets a reader swap the default
+ * blinking block — which obscures the character it sits on — for a thin bar or
+ * underline, matching most text editors. */
 
 /**
  * Default terminal font, shaped as a `fontFamily` style value (the historical
@@ -39,11 +42,27 @@ export const DEFAULT_TERMINAL_FONT_SIZE = terminalFontDefaults.fontSize
 export const MIN_TERMINAL_FONT_SIZE = 8
 export const MAX_TERMINAL_FONT_SIZE = 32
 
+/**
+ * The xterm cursor shapes we expose, a subset of xterm's `cursorStyle` union.
+ * `block` is the historical hard-coded default, so defaulting to it keeps every
+ * existing terminal unchanged until the user asks. `bar` and `underline` are
+ * the thin-cursor shapes the request asked for (and most editors use).
+ */
+export type TerminalCursorStyle = 'block' | 'bar' | 'underline'
+export const TERMINAL_CURSOR_STYLES: readonly TerminalCursorStyle[] = ['block', 'bar', 'underline']
+/** Default cursor shape (the historical hard-coded value). */
+export const DEFAULT_TERMINAL_CURSOR_STYLE: TerminalCursorStyle = 'block'
+
+const isCursorStyle = (v: unknown): v is TerminalCursorStyle =>
+  typeof v === 'string' && (TERMINAL_CURSOR_STYLES as readonly string[]).includes(v)
+
 export interface TerminalFontState {
   /** Raw user-entered font family. Empty string means "use the default stack". */
   fontFamily: string
   /** Cell font size in px, always clamped to [MIN, MAX]. */
   fontSize: number
+  /** xterm cursor shape — block (default), bar, or underline. */
+  cursorStyle: TerminalCursorStyle
 }
 
 const STORAGE_KEY = 'mc-terminal-font'
@@ -52,7 +71,11 @@ const clampSize = (n: number): number =>
   Math.max(MIN_TERMINAL_FONT_SIZE, Math.min(MAX_TERMINAL_FONT_SIZE, Math.round(n)))
 
 function loadPersisted(): TerminalFontState {
-  const base: TerminalFontState = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE }
+  const base: TerminalFontState = {
+    fontFamily: '',
+    fontSize: DEFAULT_TERMINAL_FONT_SIZE,
+    cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE,
+  }
   if (typeof localStorage === 'undefined') return base
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -62,6 +85,7 @@ function loadPersisted(): TerminalFontState {
     return {
       fontFamily: typeof p.fontFamily === 'string' ? p.fontFamily : '',
       fontSize: typeof p.fontSize === 'number' ? clampSize(p.fontSize) : DEFAULT_TERMINAL_FONT_SIZE,
+      cursorStyle: isCursorStyle(p.cursorStyle) ? p.cursorStyle : DEFAULT_TERMINAL_CURSOR_STYLE,
     }
   } catch {
     return base
@@ -74,7 +98,11 @@ const listeners = new Set<() => void>()
 function emit(): void { for (const cb of listeners) cb() }
 
 function set(next: TerminalFontState): void {
-  if (next.fontFamily === state.fontFamily && next.fontSize === state.fontSize) return
+  if (
+    next.fontFamily === state.fontFamily &&
+    next.fontSize === state.fontSize &&
+    next.cursorStyle === state.cursorStyle
+  ) return
   state = next
   emit()
   try { safeSetItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* quota / locked storage */ }
@@ -91,8 +119,12 @@ export function setTerminalFontSize(px: number): void {
   set({ ...state, fontSize: clampSize(px) })
 }
 
+export function setTerminalCursorStyle(cursorStyle: TerminalCursorStyle): void {
+  set({ ...state, cursorStyle })
+}
+
 export function resetTerminalFont(): void {
-  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE })
+  set({ fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE })
 }
 
 /** Current preference — for non-React callers (xterm construction in CliPanel). */
@@ -145,7 +177,7 @@ export function subscribeTerminalFont(cb: () => void): () => void {
 
 /** Test-only: reset the module store and its persisted copy. */
 export function __resetTerminalFontStore(): void {
-  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE }
+  state = { fontFamily: '', fontSize: DEFAULT_TERMINAL_FONT_SIZE, cursorStyle: DEFAULT_TERMINAL_CURSOR_STYLE }
   emit()
   if (typeof localStorage !== 'undefined') {
     try { localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }

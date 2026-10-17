@@ -68,6 +68,10 @@ FAKE_VALUES = {
     "github.event.pull_request.number": "(local run - no PR yet)",
     "github.repository": "kirodotdev/KiroCrew",
     "runner.temp": "/tmp/stage",
+    # The lanes' merge-base step outputs; locally the base IS the merge-base.
+    "steps.merge_base.outputs.pr": "a" * 40,
+    "steps.merge_base.outputs.tree": "a" * 40,
+    "steps.merge_base.outputs.patch_base": "a" * 40,
 }
 
 

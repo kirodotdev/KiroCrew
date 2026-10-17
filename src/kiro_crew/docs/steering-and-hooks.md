@@ -32,7 +32,7 @@ session subprocess runs with the chat slot's project directory as its working
 directory. On the Claude Code backend, which does not read an agent spec's
 `resources` array, the gateway loads the global root explicitly —
 `steering_target_admissible` and `_load_steering_resources` in
-`src/kiro_crew/context.py` glob the agent config's
+`src/kiro_crew/context_assembly/agent_spec.py` glob the agent config's
 `file://.kiro/steering/**/*.md` resource against `$HOME`.
 
 A workspace file therefore needs a project bound to the chat slot. With no
@@ -272,7 +272,15 @@ Windows. Write `$KIROCREW_HOOK_EVENT` on one and `%KIROCREW_HOOK_EVENT%` on the
 other; single quotes group nothing under `cmd.exe`.
 
 Both platforms get `KIROCREW_HOOK_EVENT` and `KIROCREW_HOOK_CONTEXT` in the
-environment, and the hook-event JSON on stdin.
+environment, and the hook-event JSON on stdin. `KIROCREW_HOOK_CONTEXT` is capped
+at 500 characters on every event. Read the full text from stdin instead: `prompt`
+on `UserPromptSubmit`, `assistant_text` on `Stop`.
+
+The stdin JSON names who fired the event, each key only when known, so read
+them with a default: `session_key` is the firing session's own key (a dashboard
+chat, a channel thread); `subagent_id` and `parent_session_key` appear only on
+an event a spawned subagent fired. To tell a person's turn from a subagent's,
+check for `subagent_id`, not `parent_session_key`.
 
 **A hook does not inherit the gateway's environment.** The gateway process holds
 provider keys and tokens, so a hook subprocess gets an allowlisted slice instead
@@ -390,6 +398,18 @@ Off stays off through autoimport too. A script under `~/.kiro/hooks` is normally
 picked up on its own, so a hook you switched off by naming that script would come
 back as a fresh discovery on autoimport's default event. The script named by a
 hook you switched off is left out of that scan.
+
+The Hooks page shows each of these hooks. In the **ACP Agent Hooks** table,
+after the hooks kiro-cli was handed, every hook in `agent.kiro_hooks` that was
+accepted but left out gets a row with no order number and the `never fires` mark.
+Under its command the row says why: kiro-cli has no event for the trigger, it
+cannot run an `agent` action, or the hook is set to `enabled: false` or
+`confirm: true` (and its script is also left out of the scan). The reason comes
+from the same function that builds the kiro-cli spec
+(`hook_document_unsent_reason`). The rows are read from `config.json` as it is
+now, while the rows above them are the spec as last written, so an edit you have
+not refreshed yet shows on this list first. A hook that fails validation is not
+listed; the log and the security event log name it.
 
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.

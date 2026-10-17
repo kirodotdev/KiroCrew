@@ -46,6 +46,15 @@ async def _session_replay_history(
         # start can spend the flag: a warm turn that never rebuilds history
         # must not burn the one chance the reset asked for.
         if state.sessions.consume_replay_suppression(session_key):
+            # Suppression arm of the FRESH first-turn history debt: a reset asked
+            # to forget, so there is no history to deliver and nothing to re-queue.
+            # Pay the debt NOW, unconditionally — even if this turn then ends
+            # pre-token, the re-queue must not replay the conversation the reset
+            # dropped. (The build arm's debt is settled by the finally in
+            # ``_run_chat``, gated on ``_first_turn_history_assembled`` and a
+            # durably-kept turn, because its replay only reaches the provider when
+            # the stream starts.)
+            state.sessions.consume_first_turn_history_owed(session_key)
             logger.info(
                 "Session replay suppressed by an explicit conversation reset: %s",
                 session_key,

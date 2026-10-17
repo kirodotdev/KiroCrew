@@ -4,13 +4,7 @@ from __future__ import annotations
 
 import json
 
-from kiro_crew.suggestions import (
-    _FALLBACK_SUGGESTIONS,
-    SUGGESTION_KINDS,
-    SuggestionsCache,
-    _parse_suggestions,
-    _redact_suggestions,
-)
+from kiro_crew.suggestions import SuggestionsCache, _parse_suggestions, _redact_suggestions
 
 
 def test_object_items_keep_a_known_kind() -> None:
@@ -53,8 +47,7 @@ def test_redaction_keeps_kind() -> None:
     assert "AKIAIOSFODNN7EXAMPLE" not in out[0]["text"]
 
 
-def test_fallbacks_use_only_known_kinds_and_are_copied() -> None:
-    assert all(s["kind"] in SUGGESTION_KINDS for s in _FALLBACK_SUGGESTIONS)
-    cache = SuggestionsCache()
-    cache.suggestions[0]["text"] = "mutated"
-    assert _FALLBACK_SUGGESTIONS[0]["text"] != "mutated"
+def test_a_cache_that_never_generated_holds_no_cards() -> None:
+    # Served when the first generation outlasts the request's wait: the welcome
+    # screen then renders its own localized cards, never a server-side English set.
+    assert SuggestionsCache().suggestions == []

@@ -255,6 +255,25 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
  * STEER into the live turn through the receipt-aware path (steerMutation), not
  * the plain send() that would queue behind that turn. When the turn has ended,
  * the same answer starts an ordinary next turn. */
+describe('project chip while sub-agents are attached', { timeout: 20_000 }, () => {
+  const projectChip = () => screen.getByRole('button', { name: /Project: |Select project/ })
+
+  it('stays locked when only sub-agents keep the composer busy', async () => {
+    await renderChat({ subagentsRunning: true, turnRunning: false })
+    expect(projectChip()).toBeDisabled()
+  })
+
+  it('stays locked while a reply streams with sub-agents attached', async () => {
+    await renderChat({ subagentsRunning: true, turnRunning: true })
+    expect(projectChip()).toBeDisabled()
+  })
+
+  it('stays enabled while a reply streams with no sub-agents', async () => {
+    await renderChat({ subagentsRunning: false, turnRunning: true })
+    expect(projectChip()).toBeEnabled()
+  })
+})
+
 describe('native question card (#10634) — main chat', { timeout: 20_000 }, () => {
   const seedNativeCard = (store: ReturnType<typeof makeStore>) => {
     act(() => {

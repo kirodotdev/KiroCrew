@@ -177,3 +177,55 @@ describe('ChatInput optimize: the write-back is verified against the DOM', () =>
     warn.mockRestore()
   })
 })
+
+/**
+ * A folder chip is derived from its `@rel/` token in the draft in every
+ * composer, including the ones that pass no `optimizerMentionGuard` (a split
+ * pane). So the optimizer itself refuses a rewrite whose folder tokens are not
+ * exactly the draft's, and the draft stays as the user wrote it.
+ */
+describe('ChatInput optimize: folder mentions survive without a host guard', () => {
+  const FOLDER_DRAFT = 'please review @src/utils/ for the bug'
+
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0)
+      return 0
+    })
+    delete (document as unknown as { execCommand?: unknown }).execCommand
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['turns the folder mention into prose', 'Review the utils folder and fix the bug.'],
+    ['breaks the folder token boundary', 'Fix the bug in @src/utils/.'],
+    ['adds a folder mention', 'Review @src/utils/ and @src/lib/ for the bug.'],
+  ])('refuses a rewrite that %s', async (_case, rewrite) => {
+    const onChange = vi.fn()
+    vi.stubGlobal('fetch', stubOptimizer(rewrite))
+    // Trailing spaces make the refused path write the trimmed draft back,
+    // which is the signal that the optimize has settled.
+    renderWithProviders(
+      <ChatInput value={`${FOLDER_DRAFT}   `} onChange={onChange} onSend={vi.fn()} connected={true} />,
+    )
+    clickOptimize()
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(FOLDER_DRAFT))
+    expect(onChange).not.toHaveBeenCalledWith(rewrite)
+  })
+
+  it('applies a rewrite that keeps the folder mention', async () => {
+    const onChange = vi.fn()
+    const rewrite = 'Review @src/utils/ and fix the bug.'
+    vi.stubGlobal('fetch', stubOptimizer(rewrite))
+    renderWithProviders(
+      <ChatInput value={FOLDER_DRAFT} onChange={onChange} onSend={vi.fn()} connected={true} />,
+    )
+    clickOptimize()
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith(rewrite))
+  })
+})

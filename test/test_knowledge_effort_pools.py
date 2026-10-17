@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.testing.wait import await_until
 
 
 class _FakePool:
@@ -184,7 +185,7 @@ class TestKnowledgeFetchPoolWiring:
         async with TestClient(TestServer(app)) as client:
             response = await client.post(f"/api/knowledge/sources/{source_id}/sync")
             assert response.status == 200
-            await asyncio.wait_for(done.wait(), timeout=5)
+            await await_until(done, what="sync completes")
 
         assert observed["pool"] is fetch_pool
 

@@ -8,10 +8,14 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Dashboard-owned prefixes are defined once in `src/kiro_crew/dashboard/state.py`.
+Most dashboard-owned prefixes are defined once in
+`src/kiro_crew/dashboard/state_parts/injected_turns.py` (re-exported by
+`src/kiro_crew/dashboard/state.py`, their import path);
+a few (the MCP app message envelope among them) live in
+`src/kiro_crew/dashboard/chat_utils_injected_rows.py`.
 The two core-safe sub-agent completion markers live in `src/kiro_crew/constants.py`
-so `subagent.py` can import them without importing the dashboard layer; `state.py`
-imports and aggregates them. Classification is by `str.startswith` on the resolved
+so `subagent.py` can import them without importing the dashboard layer;
+`injected_turns.py` imports and aggregates them. Classification is by `str.startswith` on the resolved
 prefix or prefix tuple, never by a loose regex.
 
 ## Cron notification
@@ -61,7 +65,7 @@ Head: <revision>. Changed: <allowlisted canonical facts>.
 Next action: <bounded instructions>.
 ```
 
-`MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state.py`.
+`MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,
 stdout, or stderr. Dashboard stores it as role `nudge` with compact monitor
@@ -71,7 +75,7 @@ that the resulting agent action finished.
 
 ## Sub-agent completion
 
-A background sub-agent finished. `slack/gateway.py` builds the envelope on the
+A background sub-agent finished. `slack/gateway_runtime/subagent_report.py` builds the envelope on the
 single completion path that serves every terminal outcome:
 
 ```
@@ -85,7 +89,7 @@ Usage: <credits> credits · <elapsed>
 ```
 
 - `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
-  `constants.py` and included in `state.py`'s `SUBAGENT_COMPLETION_PREFIXES`
+  `constants.py` and included in `injected_turns.py`'s `SUBAGENT_COMPLETION_PREFIXES`
   aggregate.
 - `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
   The agent-name parenthetical is present only when the sub-agent ran under a named
@@ -108,7 +112,7 @@ Usage: <credits> credits · <elapsed>
 - A user-stopped agent says so explicitly and instructs the parent not to treat the
   partial output as a finished result or retry it unprompted.
 - A wide wave is delivered in chunks under a sibling prefix,
-  `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `state.py` bundles with the others into
+  `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `injected_turns.py` bundles with the others into
   `SUBAGENT_COMPLETION_PREFIXES` for the same `str.startswith` classification. A
   chunk is NOT the wave: a mid-wave chunk carries progress facts (how many of the
   total are delivered, how many still running) and tells the parent to process
@@ -125,11 +129,19 @@ Usage: <credits> credits · <elapsed>
 races the sub-agents. Your reply is what the user sees, so fold the results into it
 rather than pasting them.
 
-When every agent in a fan-out has completed and each result has been processed, one
-further synthesis turn is fired, prefixed `SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM]
-Sub-agent synthesis:'`. Its visible reply is the consolidated, user-facing summary,
-so treat it as the deliverable: restate the goal, synthesize across the agents
-rather than repeating each in turn, and give concrete next actions.
+When every agent in a fan-out has completed and the results reached you in two or
+more completion turns, one further synthesis turn is fired, prefixed
+`SUBAGENT_SYNTHESIS_PREFIX = '[SYSTEM] Sub-agent synthesis:'`. Its visible reply is
+the consolidated, user-facing summary, so treat it as the deliverable: restate the
+goal, synthesize across the agents rather than repeating each in turn, and give
+concrete next actions. A batch whose results all arrived in one turn (a lone
+sub-agent, or one wave digest) normally gets no synthesis turn: that turn's reply
+is the deliverable. The one exception is a task store the turn-end fire gate
+could not read; its later re-check fires the synthesis as before. Because the
+synthesis turn is not always there, a completed run that made no tool call
+carries its own ``⚠ Agent `<id>` made no tool calls in this run…`` line, in the
+completion event or under its digest entry, asking the parent to check any
+reported change on disk.
 
 The prompt itself is appended to the slot as an `inject` row carrying
 `meta.injectKind = "synthesis"`, and the turn is dispatched with
@@ -141,7 +153,8 @@ time-to-first-token distribution.
 ## Sub-agent delivery failure
 
 A sub-agent reached a terminal state but injecting its report into the parent
-session failed (most commonly a delivery timeout). `subagent.py` builds:
+session failed (most commonly a delivery timeout). `subagent_manager/terminal.py` builds,
+reached through `SubagentManager.notify_injection_failed`:
 
 ```
 [Subagent completion event]
@@ -188,7 +201,8 @@ usage because a run the restart caught has no settled terminal billing record:
   and a line saying the text stops wherever the restart landed. `result.txt` is
   appended per streamed chunk, so a run killed mid-turn leaves a non-empty file
   holding an opening sentence; this variant exists so the parent is not sent to
-  read a fragment as though it were the answer.
+  read a fragment as though it were the answer. It carries the same resume line
+  as the next variant, on the same condition.
 - `❌ lost to gateway restart` plus `No result was captured before the restart.`
   When the run's conversation is still resumable
   (`session_map.session_files_resumable` on the orphan's `session_id` /
@@ -216,6 +230,7 @@ boundary:
 | `recovery` | A runner-authored continuation | Its own recovery card, or a generic note if the marker is unrecognised |
 | `cron` | A scheduled job's output — the user's own | Labelled bubble (also carries `cronLabel`) |
 | `user_replay` | The user's original message, replayed because the turn emitted nothing | Ordinary bubble; it is speech |
+| `mcp_app` | A message an MCP app authored into the chat | App-labelled row (also carries `appLabel`); see [mcp-apps.md](../modules/mcp-apps.md) |
 
 `resolveInjectCard` in `website/src/pages/chat/RecoveryCard.tsx` is the single
 decision point, shared by `ChatPage` and the `transcriptRenderers` registry so the
@@ -229,7 +244,7 @@ surface drew before, so no history changes rendering underneath the user.
 
 The runner injects a synthetic continuation when a turn ended for a system reason
 rather than because the model was done. Each has its own prefix in
-`dashboard/state.py`, each renders as an `inject` message (not a user bubble), and
+`dashboard/state_parts/injected_turns.py`, each renders as an `inject` message (not a user bubble), and
 none is mirrored to a linked Slack or Telegram thread as though the user typed it:
 
 | Prefix | Fired when |
@@ -240,7 +255,7 @@ none is mirrored to a linked Slack or Telegram thread as though the user typed i
 | `[Interrupted turn — automatic recovery]` | A transient backend 5xx cut a turn short after tokens or tool calls had already streamed. |
 | `[Empty response — automatic recovery]` | The model returned no output twice. Continue the pending request; do not restart from scratch or re-run steps that already succeeded. |
 | `[Unfinished action — automatic recovery]` | The turn ended right after announcing an immediate action ("I'll do that now") without making the tool call, so nothing actually happened yet a billed turn was recorded. Instructs the model to carry out the announced action now — unless it was actually deferred pending the user's approval or an unmet condition, in which case it is told to hold and say what it is waiting for (a semantic consent backstop, since the terminal-promise detector's approval-gate deny-list cannot enumerate every conditional phrasing). Bounded to one attempt per turn; a second consecutive promise-only ending falls through and lands normally with a give-up notice. |
-| `[Connection lost — automatic recovery]` | A reset recovered an interrupted backend connection. The body lives in `chat_utils` so queue provenance and turn routing share one instruction. |
+| `[Connection lost — automatic recovery]` | A reset recovered an interrupted backend connection. The body lives in `chat_utils_injected_rows` so queue provenance and turn routing share one instruction. |
 | `[Session busy — automatic recovery]` | A reset recovered a turn the backend refused because the session was still busy. Distinct from the connection marker even though both requeue the same continuation shape: nothing was disconnected, and reporting a dropped connection to a user whose status card reads "Session busy" would contradict the card. |
 | `[Context compacted — automatic recovery]` | The backend compacted the conversation mid-turn and then ended the turn without finishing the work. The compaction succeeded, so the turn lands looking clean (a settled footer with elapsed time) and the chat would otherwise just stop. Bounded to one attempt. |
 | `[Continue — requested by the user]` | The user pressed Continue on an interrupted turn. It is in this family so `test_recovery_card_prefixes.py`'s cross-language drift guard covers it, but the value deliberately does not say "automatic recovery": a person pressed the button, and the card must not claim the system recovered by itself. |
@@ -264,7 +279,7 @@ colon.
 fallback.** ACP's permission response carries only `outcome`/`optionId`, so the
 host cannot attach a reason to a rejection — kiro-cli hands the model the fixed
 tool result `"User denied tool execution"`, which reads as the person having
-clicked No. `chat_runner._steer_policy_notice` therefore steers
+clicked No. `chat_turn.deny_chokepoints._steer_policy_notice` therefore steers
 `state.build_refusal_steer_notice`'s body into the turn **before** answering the
 permission request. Holding the unanswered request is what makes that race-free:
 the turn is provably in flight, so the notice is queued and folded in at the next
@@ -411,8 +426,8 @@ is a host deny. Per site:
   permits, never a sanctioned alternative.
 - `_approve`'s audit-or-deny arm, when the SEL row an unattended approval
   requires cannot be written -- the new `audit_unavailable` cause: the host
-  could not record the call, so it refused rather than run it unaudited;
-  nothing judged the action, and one retry is reasonable. Distinct from
+  could not record the call, so it refused rather than run it unaudited; the
+  call was approved, so this is a host fault and one retry is reasonable. Distinct from
   `hook_error`, which would send the model looking at a gate that never ran.
 
 `test_handlers_auto_improvement_deny_notice.py` enumerates every `reject_tool(`
@@ -470,9 +485,9 @@ Per site:
   absent (`child_low_fidelity`, no approver attached) — `surface_policy`.
 - the approvers' no (the per-subagent factory, the gateway fallback, the
   child-request approver) send no notice: the person's verdict is the truth.
-  The rejects that precede a `turn_limit` / `child_escalation_limit` bail send
-  none either: the run ends there, so no continuing turn exists for a notice to
-  correct.
+  The rejects that precede a `turn_limit` / `child_escalation_limit` / `stopped`
+  bail send none either: the run ends there, so no continuing turn exists for a
+  notice to correct.
 
 `test_eval_subagent_deny_notice.py` enumerates every `reject_tool(` in the two
 eval modules with its verdict and drives each of their denies; through a real
@@ -480,6 +495,48 @@ subagent run it drives each host deny above, the gateway approver's no and a
 `turn_limit` bail, all with a provider double recording steer/reject order.
 `test_tool_permission.py` drives every approver's no and both bails through the
 subagent's own ladder, and pins the ladder's order and its cause rule.
+
+**The CLI chat, the webhook turn, the reviewer pool and the auto-title turn
+steer the same notice.** Each reuses `llm_helpers._steer_host_deny`, audit →
+steer → reject:
+
+- `kirocrew chat` (`cli_chat.py`) refuses every host deny through ONE funnel,
+  `_refuse_host_deny`, whose `cause=` and `reason=` keywords are the per-site
+  verdict; the terminal notice each site prints afterwards is the person's, the
+  steered notice is the model's. The PreToolUse gate's deny — `policy`, with the
+  gate's reason; a subagent request without verifiable security context, and a
+  call whose command or tool identity cannot be verified — `policy`; the gate
+  raising — `hook_error`; a prompt that cannot be opened, rendered or read, and
+  a `-m` / no-terminal run that cannot ask — `approval_undeliverable`; an
+  approval whose audit-or-deny write fails — `audit_unavailable`. The person's
+  own no at the prompt is the one bare reject: there the generic wording is the
+  truth.
+- The webhook agent turn (`dashboard/handlers/hooks.py`) has no person
+  attached, so every deny is the host's. The cause follows the SEL `error` code
+  the deny records (`_WEBHOOK_DENY_NOTICE`): a hook `deny` — `policy`, with the
+  hook's reason; the gate raising — `hook_error`; no hook gate, a verdict that
+  would ask a person, a subagent request without verifiable context, and a
+  withheld name grant — `surface_policy`; an auto-approve whose audit fails —
+  `audit_unavailable`.
+- The code-review-sage reviewer pool (`sage_lib/review_pool.py`): the
+  permission floor's refusal — `policy`, with its reason. The standalone
+  fallback, which has no helper, rejects as before.
+- The auto-title turn (`messaging/auto_title.py`) is tool-free by contract; its
+  one reject is `surface_policy`.
+
+`test_surface_deny_notice_sites.py` finds every `reject_tool(` on the four
+surfaces by AST, gives each a verdict (steered, or the CLI's one user
+denial), and drives the CLI and auto-title denies with a provider double
+recording steer/reject order; the webhook and reviewer denies are driven beside
+their own harnesses (`test_webhook_permission_requests.py`, the app's
+`test_review_pool.py`).
+
+The ACP transport's own refusals (`acp/client_permissions.py`, `acp/session_handle.py`)
+sit below every surface and steer nothing: the security floor inside
+`approve_tool` backstops a surface that approved, the agent-spec restrictions a
+backend cannot express natively are enforced before any surface sees the
+request, and a stranded request drained before a new turn has no turn in flight
+to steer into.
 
 The recovery classification for the last two rows of the marker table above
 is **structural**: the queue entry
@@ -699,7 +756,7 @@ ordinary user message beginning `[UI] `, sent by a human, carrying an origin tag
 
 ## Other injected envelopes
 
-These carry no `state.py` prefix constant, so they are classified by their own
+These carry no `injected_turns.py` prefix constant, so they are classified by their own
 literal header rather than through `str.startswith` on a shared prefix. The
 system prompt names each one so the model reads it as data or as automation
 speech rather than as the user.
@@ -707,15 +764,20 @@ speech rather than as the user.
 | Envelope | Emitted by | What it means to the model |
 |---|---|---|
 | `[work ledger — …]` | `session_ledger.py` snapshot builder, composed into a nudge by `dashboard/handlers/autonudge.py` | Durable per-session state that outranks the model's recollection of earlier cycles. |
-| `[Hook context:]` … `[End of hook context]` | `context.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
+| `[Hook context:]` … `[End of hook context]` | `context_assembly/turn_message.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
+| `[MCP app message from "server/tool"]` … `[End of MCP app message]` | `dashboard/chat_utils_injected_rows.py` (`APP_MESSAGE_PREFIX`, `APP_MESSAGE_END`; queue kind `mcp_app_message`) | A message an MCP app sent into the chat; the app's words, not the user's. See [mcp-apps.md](../modules/mcp-apps.md). |
+| `[Workflow completion event]` | `dashboard/workflow_inject.py` | A background workflow run finished; the next line names the workflow, run id and status. |
+| `[Content filter — continuing on the fallback model]` | `REFUSAL_FALLBACK_RECOVERY_PREFIX` in `dashboard/state_parts/injected_turns.py`, built in `dashboard/chat_utils_turn_recovery.py` | The primary model refused on a content filter and the turn continues on the fallback model. |
+| `[Task checklist — automatic recovery]` | `todo_recovery_prompt` in `dashboard/state_parts/slot_todo.py` | The conversation restarted, so the todo tool holds an empty list; rebuild it from the dashboard checklist shown. |
 | `[Previous run result — do NOT repeat the same content]` | `cron_service/identity.py` (`build_cron_session_context`) | A recurring cron's own last output, so the turn reports only what changed. |
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, **or** the macOS kernel reports memory pressure of WARN or worse (`ResourceStatus.memory_pressure_held`) while the figure reads ample or cannot be read; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skill_runtime/delivery.py` pointer renderer (`trigger_hint`) | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
-| `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and learns nothing from the chat — the transcript itself is kept in History for the user, but no lesson, memory or summary is derived from it. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the transcript. |
+| `[Kiro Crew host notice] You have made the same tool call …` | `repeat_loop.py` (`build_repeat_loop_notice`), steered by `dashboard/chat_turn/deny_chokepoints.py` (`_steer_repeat_loop_notice`) | The same tool call with the same input returned the same result `REPEAT_LOOP_THRESHOLD` times in one turn. Advice only: nothing was refused or stopped, it is sent at most once per call per turn, and it never joins the refusal ledger, so it schedules no recovery turn. Sent only where `supports_refusal_steer` holds; a hint written after the turn's last tool result may go unread, which is harmless because the loop has ended. |
+| `[INCOGNITO SESSION]` / `[TEMPORARY SESSION]` | `dashboard/chat_utils_slots.py` ephemeral-session prefixes | An instruction, not a tool-level gate: it forbids memory tools (writes in incognito, reads as well in temporary) and learns nothing from the chat — the transcript itself is kept in History for the user, but no lesson, memory or summary is derived from it. `learn_remove` and the cron tools stay permitted as active user actions, and a cron change persists outside the transcript. |
 
 ## Adding a new envelope
 
-- Define the prefix in `dashboard/state.py` next to the others.
+- Define the prefix in `dashboard/state_parts/injected_turns.py` next to the others.
 - Classify with `startswith` on that constant, and if the entry must survive queue
   transformations, tag the queue entry's `kind` instead of matching content.
 - Decide the slot role (`inject`, `subagent`, `nudge`) so the frontend renders it

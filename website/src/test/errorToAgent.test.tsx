@@ -12,11 +12,11 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { useEffect } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import AskAgentButton from '../components/AskAgentButton'
-import ErrorNotice from '../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem, type ErrorNoticeMenuItemComponent } from '../components/ErrorNotice'
 import {
   NavigationLeaveGuardProvider,
   useGuardedLeave,
@@ -34,6 +34,7 @@ import {
   findReport,
   handoffToChat,
   installSoftNavigate,
+  isGatewayConnected,
   parseErrorCode,
   persistClaimedChatHandoffs,
   recentErrors,
@@ -42,8 +43,10 @@ import {
   redactSecrets,
   requestPath,
   sendErrorToChat,
+  setGatewayConnected,
   subscribeChatHandoff,
   __resetErrorJournalForTests,
+  __resetGatewayConnectedForTests,
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 
@@ -106,6 +109,7 @@ function renderGuardedErrorNotice(allow: boolean) {
 beforeEach(() => {
   __resetErrorJournalForTests()
   __resetNavSeamForTests()
+  __resetGatewayConnectedForTests()
   navigated.length = 0
   sessionStorage.clear()
   installSoftNavigate(to => { navigated.push(to) })
@@ -113,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetNavSeamForTests()
+  __resetGatewayConnectedForTests()
   vi.restoreAllMocks()
 })
 
@@ -765,5 +770,50 @@ describe('ErrorNotice', () => {
     render(<ErrorNotice message="oops" variant="inline" onDismiss={() => {}} dismissLabel="Dismiss to retry" dismissLabelVisible />)
     expect(screen.getByRole('button', { name: 'Dismiss to retry' })).toHaveTextContent('Dismiss to retry')
     expect(screen.getByRole('button', { name: 'Dismiss to retry' })).toHaveAttribute('title', 'Dismiss to retry')
+  })
+})
+
+describe('gateway connectivity gate', () => {
+  it('defaults to connected, so surfaces that never mount the socket keep the button', () => {
+    // Boundary fallbacks and bare test renders learn nothing about the socket;
+    // the gate must fail open for them.
+    expect(isGatewayConnected()).toBe(true)
+    render(<AskAgentButton message="tree threw" />)
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('hides the button while the gateway is unreachable and restores it on reconnect', () => {
+    render(<AskAgentButton message="Failed to fetch" />)
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+
+    // The gateway drops: the hand-off would deliver the error to a composer
+    // that cannot send, so the affordance goes away entirely.
+    act(() => setGatewayConnected(false))
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+
+    // And comes BACK without the caller re-rendering — the button subscribes.
+    act(() => setGatewayConnected(true))
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+  })
+
+  it('ErrorNotice keeps the diagnostic and dismiss while disconnected — only the hand-off hides', () => {
+    const onDismiss = vi.fn()
+    render(<ErrorNotice message="Failed to fetch" askAgent onDismiss={onDismiss} />)
+
+    act(() => setGatewayConnected(false))
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to fetch')
+    expect(screen.getByRole('button', { name: /dismiss/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+  })
+
+  it('the menu-item hand-off hides while disconnected too', () => {
+    const Item: ErrorNoticeMenuItemComponent = ({ onSelect, children, ...rest }) => (
+      <button type="button" {...rest} onClick={() => onSelect?.(new Event('select'))}>{children}</button>
+    )
+    render(<ErrorNoticeMenuItem Item={Item} message="export failed" describedBy="zzq-alert" />)
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+
+    act(() => setGatewayConnected(false))
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
   })
 })

@@ -42,6 +42,15 @@ export function subscribeNativeNavigate(onPath: (path: string) => void): (() => 
 }
 
 /**
+ * The native View > Toggle Focus Mode item. Returns the unsubscribe, or nothing
+ * outside the desktop app.
+ */
+export function subscribeNativeFocusModeToggle(onToggle: () => void): (() => void) | undefined {
+  const electronAPI = window.electronAPI
+  return electronAPI?.onToggleFocusMode?.(onToggle)
+}
+
+/**
  * macOS fullscreen hides the native traffic lights, so the header's 84px
  * clearance inset drops while fullscreen (mac-fullscreen class on the root).
  * Native traffic lights sit over the consolidated 42px header, so there is no

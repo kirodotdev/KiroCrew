@@ -30,6 +30,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_path
 from kiro_crew.dashboard import stt_stream
 from kiro_crew.stt import engine as engine_mod
 from kiro_crew.stt import models
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 
 def _req(method: str, body: dict | None = None):
@@ -333,7 +334,7 @@ class _LocalEndpointStream:
         self.final_decodes += 1
         if self.final_decodes == 2:
             self.second_decode_started.set()
-            await asyncio.wait_for(self.release_second_decode.wait(), 5)
+            await await_until(self.release_second_decode)
             return self.second_text
         return "check the files"
 
@@ -341,7 +342,7 @@ class _LocalEndpointStream:
         self.judgments.append(prompt)
         if len(self.judgments) == 1:
             self.first_judge_started.set()
-            await asyncio.wait_for(self.release_judge.wait(), 5)
+            await await_until(self.release_judge)
         return "COMPLETE"
 
     def __aiter__(self):
@@ -350,7 +351,7 @@ class _LocalEndpointStream:
     async def __anext__(self):
         if self.closed:
             raise StopAsyncIteration
-        msg = await asyncio.wait_for(self.incoming.get(), 5)
+        msg = await finished(self.incoming.get(), "incoming message")
         self.received += 1
         self.received_changed.set()
         return msg
@@ -369,17 +370,13 @@ class _LocalEndpointStream:
             )
 
     async def next_frame(self, kind):
-        async with asyncio.timeout(5):
-            while True:
-                frame = await self.outgoing.get()
-                if frame["type"] == kind:
-                    return frame
+        while True:
+            frame = await finished(self.outgoing.get(), f"next frame of kind {kind!r}")
+            if frame["type"] == kind:
+                return frame
 
     async def wait_received(self, count):
-        async with asyncio.timeout(5):
-            while self.received < count:
-                self.received_changed.clear()
-                await self.received_changed.wait()
+        await async_wait_until(lambda: self.received >= count)
 
     def start(self):
         cfg = KiroCrewConfig.load()
@@ -392,7 +389,7 @@ class _LocalEndpointStream:
         self.release_judge.set()
         self.release_second_decode.set()
         task.cancel()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 5)
+        await finished(asyncio.gather(task, return_exceptions=True), "task cleanup")
 
 
 def _endpoint_utterance(*, speech_seconds=1.2):
@@ -414,11 +411,11 @@ async def test_local_backlog_invalidates_judgment_before_next_final(monkeypatch,
         await stream.next_frame("ready")
         stream.send_audio(_endpoint_utterance())
         await stream.next_frame("final")
-        await asyncio.wait_for(stream.first_judge_started.wait(), 5)
+        await await_until(stream.first_judge_started)
         stream.send_audio(_endpoint_utterance())
-        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        await await_until(stream.second_decode_started)
         stream.release_judge.set()
-        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        await finished(_drain_until_idle(stream.endpoint), "endpoint idle")
         assert not any(frame["type"] == "endpoint" for frame in stream.frames)
         stream.release_second_decode.set()
         assert (await stream.next_frame("final"))["text"] == second_text
@@ -445,11 +442,11 @@ async def test_local_coalesced_next_speech_blocks_older_final(monkeypatch):
         stream.send_audio(coalesced, chunk_bytes=len(coalesced))
         await stream.next_frame("final")
         stream.release_judge.set()
-        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        await finished(_drain_until_idle(stream.endpoint), "endpoint idle")
         assert stream.judgments == []
         assert not any(frame["type"] == "endpoint" for frame in stream.frames)
         stream.send_audio(utterance[next_prefix:])
-        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        await await_until(stream.second_decode_started)
         stream.release_second_decode.set()
         await stream.next_frame("final")
         await stream.next_frame("endpoint")
@@ -468,7 +465,7 @@ async def test_local_continued_silence_keeps_auto_submit_live(monkeypatch):
         await stream.next_frame("ready")
         stream.send_audio(_endpoint_utterance())
         await stream.next_frame("final")
-        await asyncio.wait_for(stream.first_judge_started.wait(), 5)
+        await await_until(stream.first_judge_started)
         received = stream.received
         stream.send_audio(bytes(32000))
         await stream.wait_received(received + 10)
@@ -490,11 +487,11 @@ async def test_local_coalesced_empty_final_rechecks_once(monkeypatch):
         assert len(coalesced) < stt_stream._MAX_WS_MSG_SIZE
         stream.release_judge.set()
         stream.send_audio(coalesced, chunk_bytes=len(coalesced))
-        await asyncio.wait_for(stream.second_decode_started.wait(), 5)
+        await await_until(stream.second_decode_started)
         stream.release_second_decode.set()
         await stream.next_frame("final")
         assert (await stream.next_frame("final"))["text"] == ""
-        await asyncio.wait_for(_drain_until_idle(stream.endpoint), 5)
+        await finished(_drain_until_idle(stream.endpoint), "endpoint idle")
         assert len(stream.judgments) == 1
         assert [frame for frame in stream.frames if frame["type"] == "endpoint"] == [
             {"type": "endpoint", "complete": True}

@@ -12,6 +12,8 @@ const mockBrowseDirs = (path = '/home/u', dirs: { name: string; path: string }[]
 
 beforeEach(() => {
   vi.spyOn(api, 'recentProjects').mockResolvedValue({ dirs: ['/home/u/projA', '/home/u/projB'] })
+  // Spied even where no test reads it: unspied it would reach the real `fetch`.
+  vi.spyOn(api, 'favoriteProjects').mockResolvedValue({ dirs: [] })
   vi.spyOn(api, 'browseDirs').mockResolvedValue(mockBrowseDirs())
 })
 

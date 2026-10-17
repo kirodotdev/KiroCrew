@@ -65,6 +65,11 @@ IMESSAGE_SAFE_MESSAGE_CHARS = 4000
 # capability flag. Group chats and attachments are out of scope for v1, and
 # session resume is not honoured because inbound routing keys off the handle
 # rather than a mirrored session binding.
+#
+# ``returns_message_id=False``: the bridge reports a sent message's GUID only
+# best-effort, so a delivered send can answer with an empty id. Every real
+# failure raises out of ``IMessageClient.send`` instead, which makes "nothing
+# raised" the delivery signal here, as on WeCom and Feishu.
 IMESSAGE_CAPABILITIES = TransportCapabilities(
     streaming=False,
     edit=False,
@@ -77,6 +82,7 @@ IMESSAGE_CAPABILITIES = TransportCapabilities(
     max_buttons=0,
     supports_proactive_send=True,
     supports_session_resume=False,
+    returns_message_id=False,
 )
 
 

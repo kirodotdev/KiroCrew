@@ -166,7 +166,7 @@ export const CHECKS = [
     // alone: the assertion cannot run under the pseudolocale (every term renders
     // accented by design), so leaving it there would have meant a gate that
     // renders, reports and exits 0 while checking no term. Comparing catalog
-    // VALUES covers all 9 shipped locales instead of the one probe locale a render
+    // VALUES covers every shipped catalog instead of the one probe locale a render
     // budget could afford, and costs no render time. Hard-zero: a respelt product
     // name is a defect in every locale, with no ceiling to inherit.
     id: 'dnt', script: 'dnt', scope: 'repo', enforce: 'hard-zero',

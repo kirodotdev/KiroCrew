@@ -332,6 +332,47 @@ class TestApprovalAndAudit(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["app"], "code-review-sage")
         self.assertFalse(seen["security_only"])
 
+    async def test_policy_deny_steers_the_host_notice_before_rejecting(self):
+        # No person reviews the reviewer's calls, so the deny is the host's:
+        # kiro-cli would tell the model "User denied tool execution", and the
+        # review text would blame a user. The notice must reach the session
+        # while the request is still unanswered -- steer, THEN reject.
+        trace: list = []
+
+        async def _steer(_handle, text):
+            trace.append(("steer", text))
+            return True
+
+        async def _reject(_handle, request_id):
+            trace.append(("reject", request_id))
+
+        script = [
+            _ev(
+                rp.EVENT_PERMISSION_REQUEST,
+                request_id="r-policy",
+                title="WorkspaceSearch",
+                tool_kind="other",
+            )
+        ]
+        _install_fake_runtime(self, script=script)
+        with unittest.mock.patch.object(
+            rp, "refusal_for", lambda *_a, **_kw: "Blocked by security policy: private repo"
+        ), unittest.mock.patch.object(
+            FakeHandle, "supports_refusal_steer", True, create=True
+        ), unittest.mock.patch.object(
+            FakeHandle, "steer", _steer, create=True
+        ), unittest.mock.patch.object(FakeHandle, "reject_tool", _reject):
+            pool = ReviewPool(work_dir=_work_dir(self))
+            await pool.begin_batch()
+            await pool.send("t")
+            await pool.end_batch()
+
+        self.assertEqual([kind for kind, _ in trace], ["steer", "reject"])
+        notice = trace[0][1]
+        self.assertTrue(notice.startswith("[Kiro Crew host notice]"), notice)
+        self.assertIn("User denied tool execution", notice)
+        self.assertIn("private repo", notice)
+
     async def test_policy_deny_audit_survives_reject_failure(self):
         calls: list = []
 

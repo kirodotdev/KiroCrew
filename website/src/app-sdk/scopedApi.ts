@@ -17,6 +17,8 @@ import { createContext, useContext, type ReactNode } from 'react'
 import React from 'react'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { noteSessionExpiredResponse } from '../api/sessionExpirySignal'
+import { AcceptedBodyUnreadable, ApiError } from '../api/apiError'
+import { AppApiPermissionError } from './apiError'
 import { useAppIdentity } from './identity'
 
 export interface AppApi {
@@ -44,9 +46,13 @@ export interface AppApiError extends Error {
   readonly body: string
 }
 
-class ScopedApiError extends Error implements AppApiError {
-  constructor(readonly status: number, readonly body: string) {
-    super(`API ${status}: ${body}`)
+/** A scoped non-2xx. Extends the dashboard's own typed error so the chat-core
+ *  send wire (`err instanceof ApiError`) reads it as a refusal carrying the
+ *  status, while keeping the `AppApiError` name and `API <status>: <body>`
+ *  message apps have always seen. One spelling for "scoped non-2xx". */
+class ScopedApiError extends ApiError implements AppApiError {
+  constructor(status: number, body: string) {
+    super(status, `API ${status}: ${body}`, body)
     this.name = 'AppApiError'
   }
 }
@@ -84,7 +90,32 @@ export function useCtx(): AppSdkContextValue {
 }
 
 
-function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: string): AppApi {
+/** Whether a NORMALIZED pathname matches one of the declared API patterns.
+ *  Mirrors token_auth._api_pattern_matches: only declared trailing wildcards
+ *  are interpreted, and there are no implicit feature grants. */
+function matchesDeclared(allowedPaths: readonly string[], normalized: string): boolean {
+  return allowedPaths.some(entry => {
+    const pattern = entry.trim()
+    if (!pattern) return false
+    if (pattern.endsWith('/*')) {
+      const base = pattern.slice(0, -2)
+      return normalized === base || normalized.startsWith(base + '/')
+    }
+    if (pattern.endsWith('*')) return normalized.startsWith(pattern.slice(0, -1))
+    return normalized === pattern || normalized.startsWith(pattern + '/')
+  })
+}
+
+/** Whether the scoped client would let `path` through for these declared
+ *  patterns -- the same answer its request check gives, without throwing. A
+ *  component uses it to hide a control whose request would be refused (the
+ *  ChatEmbed attach control reads it for `/api/upload/file`). */
+export function apiPathAllowed(allowedPaths: readonly string[], path: string): boolean {
+  if (/^(?:https?:)?[/\\]{2}/i.test(path) || path.includes('\\')) return false
+  return matchesDeclared(allowedPaths, new URL(path, 'http://localhost').pathname)
+}
+
+function createScopedApi(allowedPaths: string[], appName: string, sessionKey: string | undefined, appLabel: string): AppApi {
   const check = (path: string): string => {
     // Reject absolute and protocol-relative URLs to prevent SSRF. Backslashes
     // are rejected too: the URL parser treats `\` like `/`, so `/\evil.com` or
@@ -96,20 +127,8 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     // declared scope (e.g. `/api/apps/x/../../secret` → `/api/secret`).
     const parsed = new URL(path, 'http://localhost')
     const normalized = parsed.pathname
-    // Match token_auth._api_pattern_matches: normalize the request first, then
-    // interpret only declared trailing wildcards. No implicit feature grants.
-    const allowed = allowedPaths.some(entry => {
-      const pattern = entry.trim()
-      if (!pattern) return false
-      if (pattern.endsWith('/*')) {
-        const base = pattern.slice(0, -2)
-        return normalized === base || normalized.startsWith(base + '/')
-      }
-      if (pattern.endsWith('*')) return normalized.startsWith(pattern.slice(0, -1))
-      return normalized === pattern || normalized.startsWith(pattern + '/')
-    })
-    if (!allowed) {
-      throw new Error(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`)
+    if (!matchesDeclared(allowedPaths, normalized)) {
+      throw new AppApiPermissionError(`[app-sdk] App "${appName}" not permitted to access ${normalized}. Declared: [${allowedPaths.join(', ')}]`, appLabel)
     }
     return normalized + parsed.search
   }
@@ -149,11 +168,24 @@ function createScopedApi(allowedPaths: string[], appName: string, sessionKey?: s
     if (res.status === 204 || res.status === 205) {
       return undefined as T
     }
-    const text = await res.text()
+    // Past this point the server has ACCEPTED the request; a body that cannot
+    // be read (stream cut) or parsed is a lost receipt, not a failed request.
+    // Tag it so a send path can tell it from a request that never left (which
+    // `fetch` also reports as a `TypeError`) and not offer a duplicate retry.
+    let text: string
+    try {
+      text = await res.text()
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e, res)
+    }
     if (text.trim() === '') {
       return undefined as T
     }
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (e) {
+      throw new AcceptedBodyUnreadable(e, res)
+    }
   }
 
   const jsonRequest = <T,>(path: string, method: string, body: unknown, init?: RequestInit): Promise<T> => {
@@ -217,6 +249,7 @@ export function AppScopedApiProvider({
   allowedApiPaths,
   navigateFn,
   appName,
+  appDisplayName,
   appVersion = '0.0.0',
   allowedEvents = NO_EVENTS,
   active = true,
@@ -228,6 +261,13 @@ export function AppScopedApiProvider({
   allowedApiPaths: string[]
   navigateFn: (path: string) => void
   appName?: string
+  /**
+   * What the user calls this app (the manifest's display name). `appName` is
+   * the app's ID and stays the key for permissions, event scoping and the
+   * developer-facing warnings; this is only for copy shown to the USER -- the
+   * permission-denied refusal row names the app by it. Omitted, the id is used.
+   */
+  appDisplayName?: string
   appVersion?: string
   allowedEvents?: string[]
   /** Whether the app's host surface is currently visible; published as
@@ -257,7 +297,7 @@ export function AppScopedApiProvider({
   const apiKey = JSON.stringify(allowedApiPaths)
   const eventsKey = JSON.stringify(allowedEvents)
   const value = React.useMemo<AppSdkContextValue>(() => ({
-    api: createScopedApi(allowedApiPaths, resolvedName, sessionKey),
+    api: createScopedApi(allowedApiPaths, resolvedName, sessionKey, appDisplayName || resolvedName),
     info: {
       name: resolvedName,
       version: appVersion,
@@ -268,7 +308,7 @@ export function AppScopedApiProvider({
     navigate: navigateFn,
     notify: notifyFn,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [resolvedName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
+  }), [resolvedName, appDisplayName, appVersion, apiKey, eventsKey, sessionKey, active, subscribeFn, navigateFn, notifyFn])
 
   return React.createElement(AppSdkContext.Provider, { value }, children)
 }

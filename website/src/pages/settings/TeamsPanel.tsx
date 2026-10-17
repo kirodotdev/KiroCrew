@@ -12,8 +12,11 @@ import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/clien
 
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
+import { OptionalSdkCard } from './OptionalSdkCard'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Teams"
+/** Distribution name -- do-not-translate, like the brand name above. */
+const SDK_PACKAGE = "PyJWT"
 const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/teams-integration.md'
@@ -331,21 +334,20 @@ export function TeamsPanel() {
           channel refuses to start without PyJWT: enabling Teams without the
           extra installed does nothing and reports nothing. Compared against
           `false` rather than falsy — a gateway that predates the field sends
-          none, and absence must not be read as a missing dependency. */}
-      {data.jwt_available === false && (
+          none, and absence must not be read as a missing dependency. When the
+          shared card below reports the package missing it says all of this and
+          names the gateway's own interpreter, so the alert stands aside; it
+          still shows when a `jwt` module is found but is not a usable PyJWT
+          (HAS_JWT false), which the card's find_spec probe cannot see. */}
+      {data.jwt_available === false && data.sdk_installed !== false && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 mb-3 mt-2">
           <AlertTriangle className="lucide-inline text-warn flex-none mt-0.5" aria-hidden />
           <span className="text-[12px] text-text">
-            {/* One key for the whole notice: the install command has to stay
-                verbatim, and splitting the sentence around it would pin every
-                locale to English word order. */}
-            <Trans
-              i18nKey="pages.settings.teamsPanel.jwt_required"
-              components={{ mono: <code className="font-mono" /> }}
-            />
+            <Trans i18nKey="pages.settings.teamsPanel.jwt_required" />
           </span>
         </div>
       )}
+      <OptionalSdkCard channel={CHANNEL_NAME} packageLabel={SDK_PACKAGE} status={data} />
 
       {/* ── Read-only notice (remote session) ── */}
       {ro && (

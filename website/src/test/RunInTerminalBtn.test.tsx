@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
+import { RunInTerminalScope } from '../components/runInTerminalScope'
 import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 
 // "Run in terminal" dispatches a `mc:run-in-terminal` request on window;
@@ -88,6 +89,16 @@ describe('RunInTerminalBtn', () => {
     clickAndConfirm()
     expect(requests).toHaveLength(1)
     expect(requests[0].code).toBe('echo hello')
+    // Outside every host page the request carries no scope.
+    expect(requests[0]).not.toHaveProperty('scope')
+  })
+
+  it('stamps the scope of the host page it renders under', () => {
+    renderWithProviders(
+      <RunInTerminalScope.Provider value="host-1"><RunInTerminalBtn code="echo hello" /></RunInTerminalScope.Provider>,
+    )
+    clickAndConfirm()
+    expect(requests[0]).toMatchObject({ code: 'echo hello', scope: 'host-1' })
   })
 
   it('carries the fence language in the run request', () => {

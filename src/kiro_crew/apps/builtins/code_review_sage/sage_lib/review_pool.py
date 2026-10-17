@@ -103,6 +103,13 @@ try:  # SEL audit — the runtime layer has no audit_source, so the pool emits i
 except Exception:  # pragma: no cover - standalone / test fallback
     _sel = None  # type: ignore[assignment]
 
+try:  # the in-band notice every headless host deny steers before it rejects
+    from kiro_crew.constants import DENY_CAUSE_POLICY
+    from kiro_crew.llm_helpers import _steer_host_deny
+except Exception:  # pragma: no cover - standalone / test fallback
+    DENY_CAUSE_POLICY = "policy"
+    _steer_host_deny = None  # type: ignore[assignment]
+
 try:  # same resolver the AcpRuntime spawn path uses to locate the agent CLI
     from kiro_crew.kiro_cli import resolve_kiro_cli
 except Exception:  # pragma: no cover - standalone / test fallback
@@ -185,11 +192,13 @@ def sandbox_unavailable_message(exc: BaseException | None = None) -> str:
 
     Windows gets its own wording because the cause there is structural rather
     than a misconfiguration: Kiro Crew has no native Windows sandbox backend at
-    all (macOS uses Seatbelt, Linux uses user namespaces), so the only confined
-    path is kiro-cli's own internal sandbox taking the spawn. When that
-    delegation does not apply, the spawn fail-closes — which is correct, and is
-    why this names the one config key that changes the answer instead of leaving
-    the user with a bare exception or an empty review.
+    all (macOS uses Seatbelt, Linux uses user namespaces). An undeclared
+    ``agent.sandbox_allow_unsandboxed_exec`` already resolves true on Windows
+    (``config.loader.unsandboxed_exec_platform_default``), so reaching this
+    refusal there means the key was declared false or a governance
+    ``sandbox.min_level`` floor requires a sandbox. The spawn fail-closes, which
+    is correct; the message names both causes instead of leaving the user with a
+    bare exception or an empty review.
     """
     detail = str(exc).strip() if exc is not None else ""
     if _is_windows():
@@ -199,9 +208,10 @@ def sandbox_unavailable_message(exc: BaseException | None = None) -> str:
             "(Seatbelt) and Linux (user namespaces) only, so a review is confined "
             "on Windows solely when kiro-cli's own internal sandbox takes the "
             "spawn — and it is refused rather than run unaudited when that does "
-            "not apply. To allow an unsandboxed review worker explicitly, set "
-            "agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json "
-            "and restart the gateway. Everything that does not spawn a reviewer "
+            "not apply. On Windows an unsandboxed worker is allowed by default, so "
+            "this refusal means agent.sandbox_allow_unsandboxed_exec is set to "
+            "false in config, or a governance sandbox.min_level floor requires a "
+            "sandbox. Everything that does not spawn a reviewer "
             "still works: adding repositories, listing and opening pull requests, "
             "reading past reports, and publishing an already-staged draft review."
         )
@@ -376,7 +386,7 @@ def _write_effort_overlay(work_dir: str, model: str, effort: str = REVIEW_EFFORT
     on session/new; workspace settings override the global ``~/.kiro/settings/cli.json``,
     so this is scoped to the review worker's cwd (the app root) and NEVER changes the
     user's own interactive sessions. Schema (canonical impl:
-    ``kiro_crew/providers/acp.py:_write_cli_overlay``)::
+    ``kiro_crew/providers/acp_cli_overlay.py:_write_cli_overlay``)::
 
         {"chat.modelDefaults": {"<model>": {"output_config": {"effort": "<level>"}}}}
 
@@ -661,6 +671,13 @@ class ReviewPool:
                                     request_id=req_id,
                                     outcome="rejected_hook_deny",
                                 )
+                                # No person reviews these calls, so the deny is
+                                # the host's: tell the reviewer model which rule
+                                # refused it before kiro-cli reports a user denial.
+                                if _steer_host_deny is not None:
+                                    await _steer_host_deny(
+                                        handle, ev, reason, cause=DENY_CAUSE_POLICY
+                                    )
                                 await handle.reject_tool(req_id)
                                 continue
                             try:

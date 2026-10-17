@@ -59,6 +59,8 @@ cron resume <id>
 
 A job's `timezone` (CLI `--timezone`) is the zone its wall clock is read in: a `cron_expr`'s hour and minute fields, and a clock time given as `at_time` / `--at` such as `"9am"` or `"tomorrow 17:30"`. Without one, both are read in the global config timezone, falling back to UTC. `cron_add(at_time="9am", timezone="America/Los_Angeles")` therefore fires at 9am in Los Angeles even on a gateway whose config timezone is UTC. A clock time the zone skips (such as the hour lost when daylight saving time starts) is refused rather than moved. A relative `at_time` (`"in 2 hours"`), a Unix `at` and a `delay` name an instant already, so the timezone only changes how the job is displayed.
 
+A zone's rules come from the timezone data the gateway's Python finds: the operating system's zoneinfo on macOS and Linux, the `tzdata` package on Windows. Out-of-date data still resolves every zone name, so a job in a zone whose rules changed runs at the old rule's hour (with data older than IANA tzdb 2026b, a 9am job in `America/Vancouver` runs at 10am from 2026-11-01). `kirocrew doctor` reports such data on its `tz data` row and names the update; restart the gateway afterwards, since it keeps every zone it already loaded.
+
 ## How It Works
 
 1. The cron timer fires at the scheduled time.
@@ -111,6 +113,19 @@ Jobs can specify an agent — useful for running specialized agents on a schedul
 - **Script cron**: set `script` to `~/.kiro/crew/crons/file.py:function`; it bypasses the LLM and cannot be combined with `command`.
 - **Command cron**: set `command` to a shell command; it bypasses the LLM and cannot be combined with `script`.
 
+A command cron runs under `sh -c` and is vetted when it is added and again each time it fires. The vet refuses:
+
+- command substitution: `$(...)`, backticks, `$((...))`;
+- any `${...}` other than a plain `${NAME}` (no `${X:-default}`, `${X#prefix}`, `${#X}`);
+- `$'...'` ANSI-C quoting;
+- brace expansion such as `{a,b}` or `{1..9}`, including a quoted regex interval like `'[0-9]{1,3}'`. A spaceless jq object such as `jq '{id,name}'` is accepted once a plain space follows the comma inside the same quotes (`jq '{id, name}'`). For a basic-regex tool, escape the braces inside double quotes (`grep "[0-9]\{1,3\}"`);
+- positional and special parameters: `$1`, `$@`, `$*`, `$#`;
+- loops and compound commands: `for`, `while`, `until`, `case`;
+- a variable reference (`A=x; cmd $A`, `A=x cmd $A`, `A=x && cmd $A`): the check does not model how the shell scopes or rewrites a value, so any `$NAME` or `${NAME}` read anywhere in the text is refused, comments, quoted values and nested shells included, assigned or not. Only `$HOME` may be read, and `HOME` may appear only as `$HOME` or `${HOME}` (so `read HOME`, `HOME=x` and `export HOME` are refused);
+- a `$` followed by a quote, a backslash or another character that is not an expansion: allowed only at the end of the command or before whitespace or one of `/ | . , : )`, so `sed 's/x$/y/'` passes and `grep "x$" f` does not; `$!`, `$-`, `$?` and `$$` are refused too, because `$!` is empty before a background job and no other rule owns them.
+
+The `command` field is capped at 5000 characters. A command cron needs a working POSIX `/bin/sh` that passes the gateway's probe, so it never runs on Windows. For any of these, use a script cron instead: its body is scanned in full.
+
 For script crons, `message` is available as `ctx.message`. Import the context helpers and flow-control exceptions from `kiro_crew.cron_script`:
 
 ```python
@@ -122,7 +137,17 @@ def run(ctx):
     raise Report("Result recorded; keep this cron scheduled")
 ```
 
-`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
+`ctx.notify(text, **kwargs)` sends a gateway message and `ctx.call_tool(server, tool, args)` invokes an MCP tool. `call_tool` keeps one server per name for the whole run: a call the server answers, with a result or a tool error, leaves it running for the next call; a call that fails any other way stops it, and the next call starts a fresh one. `kirocrew cron preview` uses the same lifecycle. `raise Skip()` ends this tick silently, `raise Done()` completes and removes the job, and `raise Report(message)` delivers a message while keeping the job scheduled.
+
+A script can also drive dashboard sessions. Each method raises `RuntimeError` carrying the gateway's reason when the gateway refuses or cannot be reached:
+
+- `ctx.list_session_folders()` returns the dashboard's session folders.
+- `ctx.create_session_folder(name)` creates a folder and returns it.
+- `ctx.open_session(name, folder_id=..., agent=..., model=...)` opens a session and returns its slot key. Omitted arguments take the gateway's defaults. A non-empty `name` is also the session's title, so the sidebar shows it instead of an auto-generated one. The title is set only when the session is created; reopening the same name keeps its current title, including one you renamed.
+- `ctx.send_to_session(slot, message)` queues the message as that slot's next turn and returns at once: `{"ok": True, "slot": <key>}` when the slot was idle, or `{"ok": True, "queued": True, "queue_id": <id>}` when it was busy.
+- `ctx.set_session_mode(slot, mode)` sets that session's tool approval mode to `trust` or `trust_reads` and returns `{"ok": True, "mode": <mode>}`. Any other mode is refused with `mode_not_allowed` and an unnamed slot with `slot_required`.
+
+Folder names, session names and messages are redacted like `notify()` text. With `agent.session_control` off, `open_session`, `send_to_session` and `set_session_mode` are refused with `session_control_disabled`; `send_to_session` or `set_session_mode` on a slot another creator made is refused with `not_creator`. A cron bound to a crew member is refused on `open_session` and `send_to_session`. These calls use the cron's own internal credential: do not shell out to `kirocrew token` for a dashboard token.
 
 Preview a script cron locally with real MCP tools; notifications are captured and printed instead of delivered:
 
@@ -201,6 +226,14 @@ Add skip dates to an existing job:
 cron_update(job_id="abc123", skip_dates=["2026-12-25", "2026-12-26"])
 ```
 
+Remove every skip date, so the job fires on all its scheduled days again:
+
+```
+cron_update(job_id="abc123", clear_skip_dates=true)
+```
+
+`skip_dates=[]` means the same, but some clients drop an empty list before it reaches the server, and then the skip dates stay. `clear_skip_dates` is refused beside a non-empty `skip_dates`.
+
 ## Execution Jitter
 
 To avoid traffic spikes from thousands of users' jobs all firing at the same instant, Kiro Crew adds a small random delay before executing scheduled jobs:
@@ -262,4 +295,4 @@ If the key names no recorded session the command still succeeds but warns: a bra
 
 - **Failure alerts** — a failed run delivers its REASON to the dashboard bell and (when Slack is configured) to the job's channel or the owner's DM, not only to the gateway log. Covers all three job kinds and a fire-time policy denial, which is otherwise invisible.
 - **Failure dedup** — a repeat of the same reason withholds the Slack DM and marks the bell as suppressed; a different reason alerts in full, and the DM returns after an hour. A `silent: true` job alerts nowhere. Both still count toward auto-pause: dedup silences the DM, never the evidence. Success clears the failure state, so a relapse alerts fresh.
-- **Zombie reaper** — a periodic sweep (60s interval, 30 min deadline) force-kills cron executions that exceed their deadline. Prevents resource leaks from stuck jobs.
+- **Zombie reaper** — a periodic sweep (60s interval, 30 min deadline) force-kills cron executions that exceed their deadline. Prevents resource leaks from stuck jobs. When the kill cannot be delivered or confirmed, the run's `last_error` ends `; kill failed: <reason>` and its audit outcome is `failed`. Cancelling a run behaves the same.

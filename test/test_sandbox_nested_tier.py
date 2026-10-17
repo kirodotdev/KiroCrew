@@ -17,8 +17,10 @@ import os
 from unittest.mock import patch
 
 import pytest
+from test_sandbox_launcher_program import launch, payload, rendered_payload
 
 import kiro_crew.sandbox as sandbox_mod
+from kiro_crew import sandbox_launcher_program as program
 from kiro_crew.sandbox import (
     _build_launcher_script,
     reset_backend,
@@ -41,8 +43,8 @@ def clean_state(monkeypatch):
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
     # ``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new
-    # support; pin it so the launcher text never depends on a binary this
-    # module is not about, and no ssh is spawned from the test process.
+    # support; pin it so the launcher never depends on a binary this module
+    # is not about, and no ssh is spawned from the test process.
     monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
     # The passthrough info log is once-only per process; clear it so caplog
     # assertions in this module are order-independent, and restore the prior
@@ -64,20 +66,30 @@ class TestLauncherExportsLevel:
     """Both launcher sites must record the tier beside the ACTIVE marker."""
 
     @pytest.mark.parametrize("level", ["standard", "cc", "strict"])
-    def test_linux_launcher_templates_level_constant(self, level):
-        script = _build_launcher_script(level)
-        assert f'SANDBOX_LEVEL = "{level}"' in script
-        # The export must live in the script body so the sandboxed tree
-        # carries the tier at runtime, not just the template.
-        assert 'os.environ["KIROCREW_SANDBOX_LEVEL"] = SANDBOX_LEVEL' in script
+    def test_linux_launcher_templates_level_constant(self, level, tmp_path):
+        carried = rendered_payload(_build_launcher_script(level))
+        assert carried["sandbox_level"] == level
+        # The launcher child must EXPORT it, so the sandboxed tree carries the tier
+        # at runtime, not just the plan: run the program's scrub stage on the plan
+        # the launcher carries and read the environment the agent inherits.
+        run = launch(tmp_path, carried, environ={})
+        program.scrub_env(run)
+        assert run.environ["KIROCREW_SANDBOX_LEVEL"] == level
+        assert run.environ["KIROCREW_SANDBOX_ACTIVE"] == "1"
 
-    def test_linux_launcher_level_export_after_scrub(self):
-        # The level export must sit after the env-scrub loop (same guarantee
-        # as the ACTIVE marker: a scrubbed prefix cannot delete it).
-        script = _build_launcher_script("strict")
-        scrub_pos = script.index("for key in list(os.environ):")
-        level_pos = script.index('os.environ["KIROCREW_SANDBOX_LEVEL"]')
-        assert level_pos > scrub_pos
+    def test_linux_launcher_level_export_after_scrub(self, tmp_path):
+        # The level export must land after the env scrub (same guarantee as the
+        # ACTIVE marker: a scrubbed prefix cannot delete it). A scrub prefix that
+        # covers both markers, and an inherited value for each, prove the order:
+        # an export placed before the scrub would be deleted by it.
+        run = launch(
+            tmp_path,
+            payload(env_prefixes=["KIROCREW_SANDBOX"], sandbox_level="strict"),
+            environ={"KIROCREW_SANDBOX_LEVEL": "standard", "KIROCREW_SANDBOX_ACTIVE": "0"},
+        )
+        program.scrub_env(run)
+        assert run.environ["KIROCREW_SANDBOX_LEVEL"] == "strict"
+        assert run.environ["KIROCREW_SANDBOX_ACTIVE"] == "1"
 
     @pytest.mark.parametrize("level", ["standard", "cc", "strict"])
     def test_macos_env_prefix_carries_level(self, level, tmp_path, monkeypatch):

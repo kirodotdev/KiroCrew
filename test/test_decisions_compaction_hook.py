@@ -427,7 +427,7 @@ class TestManualCompactIsExcluded:
         pattern = re.compile(r"_compact_session\s*\(")
         allowed = {
             Path("src/kiro_crew/session_compaction.py"),
-            Path("src/kiro_crew/session.py"),
+            Path("src/kiro_crew/session_parts/turn_context.py"),
         }
         offenders = []
         for path in (REPO / "src").rglob("*.py"):
@@ -439,7 +439,12 @@ class TestManualCompactIsExcluded:
         assert offenders == []
 
     def test_the_manual_dashboard_path_runs_the_command_through_the_provider(self):
-        runner = (REPO / "src/kiro_crew/dashboard/chat_runner.py").read_text(encoding="utf-8")
+        runner_path = REPO / "src/kiro_crew/dashboard/chat_runner.py"
+        runner = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(runner_path.with_name("chat_turn").glob("*.py")), runner_path]
+            if turn_file.name != "__init__.py"
+        )
         assert 'first_word == "/compact"' in runner
         assert "_compact_session" not in runner
 

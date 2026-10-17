@@ -65,6 +65,7 @@ class TestBlindRecycleBackstopIsNotPctGated:
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
+        await mgr._ensure_background()
 
         provider = mgr._sessions[BACKGROUND_KEY].provider
         provider.context_usage_pct = lambda: 3.0
@@ -83,6 +84,7 @@ class TestBlindRecycleBackstopIsNotPctGated:
         """Control: the backstop is a prompt count, not "recycle every turn"."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
+        await mgr._ensure_background()
 
         provider = mgr._sessions[BACKGROUND_KEY].provider
         provider.context_usage_pct = lambda: 3.0
@@ -100,6 +102,7 @@ class TestBlindRecycleBackstopIsNotPctGated:
         """An operator reading "context at 3%" would not find the real trigger."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.start_pool()
+        await mgr._ensure_background()
 
         provider = mgr._sessions[BACKGROUND_KEY].provider
         provider.context_usage_pct = lambda: 3.0

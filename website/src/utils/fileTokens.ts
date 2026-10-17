@@ -1,6 +1,7 @@
 /** Shared file-token utilities used by send() and renderUserContent(). */
 
 import { decodeLocalPath } from './urlTransform'
+import { WINDOWS_SHAPED_PATH_RE } from './pathBasename'
 
 export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
@@ -9,6 +10,14 @@ export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
  *  client's cap decision, and a client that is more permissive than the server
  *  only produces uploads that die at the door. */
 export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
+
+/** A served MB ceiling (`upload_max_mb`, or `knowledge_upload_max_mb`, which
+ *  may be fractional), or null when the gateway did not serve a usable figure.
+ *  Null means there is no limit to show or pre-check against -- the server
+ *  enforces its own ceiling regardless -- and no default stands in for it. */
+export function servedUploadMb(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+}
 
 /** Parse file paths from message meta or [attached_file N] patterns in content. */
 export function parseFiles(content: string, meta?: Record<string, unknown>): string[] {
@@ -239,6 +248,29 @@ export function restoreUnreferencedImages(content: string, meta?: Record<string,
   return [imgMd, content].filter(Boolean).join('\n\n')
 }
 
+/** Every `@rel` spelling the send path accepts for `p`: its trailing path
+ *  suffixes, LONGEST first (`/repo/src/a.ts` -> `repo/src/a.ts`, `src/a.ts`,
+ *  `a.ts`). `buildRelMap` tries them in this order, and the queued-cancel
+ *  restore picks one from the same set, so a mention the restore writes is one
+ *  the next send resolves. */
+function pathSuffixes(p: string): string[] {
+  const segs = p.split('/')
+  return segs.slice(1).map((_, i) => segs.slice(i + 1).join('/'))
+}
+
+/** `p` relative to the project root `project`, or undefined when `p` is not
+ *  under it. The same strip `makeRelative` (FilePickerMenu) applies to the
+ *  normalized project root, which is the spelling the picker inserts and the
+ *  only one the composer revives a chip for after its mention is deleted and
+ *  brought back (undo). Kept here rather than imported so this module stays
+ *  free of component imports. */
+function projectRelative(p: string, project?: string): string | undefined {
+  if (!project) return undefined
+  const root = normalizeWindowsPath(project)
+  const r = /[/\\]$/.test(root) ? root : root + (root.includes('\\') && !root.includes('/') ? '\\' : '/')
+  return p.startsWith(r) ? p.slice(r.length) : undefined
+}
+
 /** Walk path segments to find the shortest @suffix present in text.
  *  Matching uses `mentionTokenRegex` -- the SAME boundary contract the
  *  reconciliation uses -- so a mention the reconciliation counts by its
@@ -252,10 +284,7 @@ export function restoreUnreferencedImages(content: string, meta?: Record<string,
  *  inline, so the file is still attached, as its own marker line. */
 export function buildRelMap(paths: string[], text: string): Map<string, string> {
   const map = new Map<string, string>()
-  const suffixesOf = (p: string) => {
-    const segs = p.split('/')
-    return segs.slice(1).map((_, i) => segs.slice(i + 1).join('/'))
-  }
+  const suffixesOf = pathSuffixes
   for (const p of paths) {
     // Sibling candidate set for the prefix rule: every OTHER path's own
     // suffixes. A suffix of p that a longer sibling suffix literally extends
@@ -421,7 +450,7 @@ export interface SendPayload {
  *  host-naming UNC shape. A UNC upload is emitted as `//host/share/…`, which
  *  reaches the renderer as a scheme-less relative URL and is validated against
  *  the gateway's trusted attachment roots server-side. */
-const WIN_PRODUCER_PATH_RE = /^(?:[A-Za-z]:|\\\\[^\\/]+)[\\/]/
+const WIN_PRODUCER_PATH_RE = WINDOWS_SHAPED_PATH_RE
 
 /** Forward-slash form of a Windows-shaped absolute path (drive letter / UNC).
  *  A path that is not Windows-shaped is returned untouched: on POSIX `\` is a
@@ -667,6 +696,32 @@ export interface RestoredComposerState {
   text: string
   /** Attachment paths (images included) to re-stage into pendingFiles. */
   files: string[]
+  /** Path -> the `@rel` mention(s) the restore wrote back for it, in the
+   *  shape the composer's alias bookkeeping records for a picked file, so a
+   *  restored mention and its chip stay reconciled (deleting the mention
+   *  unstages the chip; removing the chip strips the mention). Present only
+   *  when an inline marker was restored. */
+  aliases?: Record<string, string[]>
+}
+
+/** Every occurrence of the exact marker text `marker` in `text` that the send
+ *  path could have written: it starts at the start of the text or after
+ *  whitespace, and ends at whitespace or the end. MARKER_TRAILER_SEP is
+ *  whitespace here, as it is for every marker reader. `inline` is true when
+ *  other text shares the marker's line (the same position rule
+ *  `resolveFileSegment` uses to tell a mention from a bare upload). */
+function markerOccurrences(text: string, marker: string): Array<{ at: number; end: number; inline: boolean }> {
+  const out: Array<{ at: number; end: number; inline: boolean }> = []
+  for (let at = text.indexOf(marker); at !== -1; at = text.indexOf(marker, at + 1)) {
+    const end = at + marker.length
+    if (at > 0 && !/\s/.test(text[at - 1])) continue
+    if (end < text.length && !/\s/.test(text[end])) continue
+    const lineStart = text.lastIndexOf('\n', at - 1) + 1
+    const nl = text.indexOf('\n', end)
+    const rest = text.slice(lineStart, at) + text.slice(end, nl === -1 ? text.length : nl)
+    out.push({ at, end, inline: rest.trim().length > 0 })
+  }
+  return out
 }
 
 /**
@@ -701,7 +756,8 @@ export interface RestoredComposerState {
  * Deliberately left VERBATIM, because their path boundary is not provable
  * from the wire text alone (any whitespace-bounded capture can truncate a
  * spaced path, staging a nonexistent file and re-sending the wrong one):
- *  - embedded (@-mention) markers sitting inline in prose;
+ *  - embedded (@-mention) markers sitting inline in prose, when the entry
+ *    carries no attachment list (see `files` below);
  *  - own-line markers whose remainder contains whitespace — equally a spaced
  *    bare-upload path and a line-start mention followed by prose;
  *  - `[attached_dir N]` markers (always inline in prose);
@@ -724,16 +780,35 @@ export interface RestoredComposerState {
  * `files` is the entry's own ORDERED non-image attachment list when the
  * server echoed one (slot-detail `queue[]` item or `queue_push` frame),
  * the same list `[attached_file N]` indexes on a user row: marker N names
- * `files[N-1]`. With it the own-line claim needs no shape rule — the marker
- * line is matched by EXACT text, so a spaced bare-upload path
- * (`/tmp/My Report.pdf`) is claimed whole, the shape the wire text alone
- * could never prove. Inline (@-mention) markers and `[attached_dir N]`
- * markers stay verbatim either way: their composer spelling is the `@rel`
- * the user typed, which neither the wire text nor the list records. An
- * entry without a list (a legacy entry, an older gateway) takes the shape
- * rules above unchanged. The round-trip arbiter gates both paths.
+ * `files[N-1]`. With it every claim is matched by EXACT text, so a path's
+ * boundary is known, spaces included:
+ *  - an own-line marker is a bare upload: the line goes, the path re-stages
+ *    (`/tmp/My Report.pdf` whole — the shape the wire text alone could
+ *    never prove);
+ *  - a marker with other text on its line is an @-mention: every occurrence
+ *    of it, with the MARKER_TRAILER_SEP the send put on either side, becomes
+ *    `@<suffix>` and the path re-stages. The suffix is one of the path's
+ *    trailing suffixes, the set `buildRelMap` resolves, that no other staged
+ *    path shares: the path relative to `project` (the composer's own
+ *    spelling, `@src/a.ts` for `src/a.ts` in the project, and the only one
+ *    whose chip comes back when the mention is deleted and undone) when it
+ *    qualifies, else the shortest that does. "Other staged paths" includes
+ *    `alsoStaged`, the files already staged in the composer this restore
+ *    merges into, so two cancelled cards naming `x/a.txt` and `y/a.txt`
+ *    cannot both come back as `@a.txt` and bind to one file. A suffix another
+ *    staged suffix extends with boundary-consumable characters (`report`
+ *    beside `report,`, either way round) is refused as well, since
+ *    `@report, please` would read as the longer file's mention. A path with
+ *    no usable suffix is not claimed; its marker stays verbatim. Any suffix
+ *    that resolves back to the same file sends the same bytes, which the
+ *    arbiter checks.
+ * `[attached_dir N]` markers stay verbatim either way. An entry without a
+ * list (a legacy entry, an older gateway) takes the shape rules above
+ * unchanged. The round-trip arbiter gates both paths.
  */
-export function restoreQueuedContent(content: string, files?: readonly string[]): RestoredComposerState {
+export function restoreQueuedContent(
+  content: string, files?: readonly string[], alsoStaged?: readonly string[], project?: string,
+): RestoredComposerState {
   const staged: string[] = []
   let text = content
 
@@ -753,13 +828,39 @@ export function restoreQueuedContent(content: string, files?: readonly string[])
     }
   }
 
-  const claims: Array<{ path: string; matched: string }> = []
+  const claims: Array<{ path: string; matched: string; mention?: string }> = []
   if (files?.length) {
     // The list names each marker's exact path, so the claim is the exact
-    // own-line token `[attached_file N] files[N-1]` — whitespace in the path
+    // token `[attached_file N] files[N-1]` — whitespace in the path
     // included. A marker the list does not account for is not claimed.
+    // Mention spelling: a suffix no OTHER staged path shares -- this entry's
+    // own (list or image block) and `alsoStaged`, the files the composer this
+    // restore merges into already holds. `buildRelMap` binds a mention by
+    // exact suffix, so a suffix no other staged path has can only bind back
+    // here on the next send. A suffix that another staged suffix extends
+    // with boundary-consumable characters, in either direction (`report`
+    // beside `report,`), is refused too: that is the prefix-sibling hazard
+    // `extendsConsumably` names, where `@report, please` reads as the longer
+    // file's mention. Of the usable suffixes, the project-relative one comes
+    // first: the composer revives a chip only for that spelling, so any other
+    // left a deleted-then-undone mention without its file on the next send.
+    // Otherwise the shortest. A path with no usable suffix is not claimed and
+    // its marker stays verbatim.
+    const all = [...staged, ...files, ...(alsoStaged ?? [])]
     files.forEach((path, i) => {
       const line = `[attached_file ${i + 1}] ${path}`
+      if (markerOccurrences(text, line).some((o) => o.inline)) {
+        const others = all.filter((q) => q !== path).flatMap(pathSuffixes)
+        const shared = new Set(others)
+        const clashes = (s: string) =>
+          shared.has(s) || others.some((o) => extendsConsumably(s, o) || extendsConsumably(o, s))
+        const suffixes = pathSuffixes(path)
+        const projectRel = projectRelative(path, project)
+        const preferred = projectRel !== undefined && suffixes.includes(projectRel) ? [projectRel] : []
+        const rel = [...preferred, ...suffixes.reverse()].find((s) => !clashes(s))
+        if (rel) claims.push({ path, matched: line, mention: `@${rel}` })
+        return
+      }
       const esc = line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       if (new RegExp(`^${esc}[ \\t]*$`, 'm').test(text)) claims.push({ path, matched: line })
     })
@@ -772,7 +873,22 @@ export function restoreQueuedContent(content: string, files?: readonly string[])
       claims.push({ path: m[2], matched: m[0] })
     }
   }
+  const aliases: Record<string, string[]> = {}
   for (const c of claims) {
+    staged.push(c.path)
+    if (c.mention) {
+      // Every occurrence becomes the mention, right to left so earlier
+      // offsets stay valid. A separator touching the marker is always the
+      // send's own (it emits one beside a user-typed hair space too), so
+      // exactly one is dropped on each side, as `resolveFileSegment` does.
+      for (const o of markerOccurrences(text, c.matched).reverse()) {
+        const start = text[o.at - 1] === MARKER_TRAILER_SEP ? o.at - 1 : o.at
+        const end = text[o.end] === MARKER_TRAILER_SEP ? o.end + 1 : o.end
+        text = text.slice(0, start) + c.mention + text.slice(end)
+      }
+      aliases[c.path] = [c.mention]
+      continue
+    }
     const esc = c.matched.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     // Remove the marker line together with exactly ONE adjacent newline — the
     // producer's own separator (`[llmRaw, tokens].join('\n')` appends trailing
@@ -780,7 +896,6 @@ export function restoreQueuedContent(content: string, files?: readonly string[])
     // instead). Consuming the separator here is what lets the surrounding
     // user text survive byte-exact, leading/trailing whitespace included.
     text = text.replace(new RegExp(`^${esc}\\n|\\n?${esc}$`, 'm'), '')
-    staged.push(c.path)
   }
 
   // FINAL ARBITER — the definition of lossless, applied literally: a claim
@@ -796,7 +911,7 @@ export function restoreQueuedContent(content: string, files?: readonly string[])
   if (dedupedFiles.length && prepareSendPayload(text, dedupedFiles).txt !== content) {
     return { text: content, files: [] }
   }
-  return { text, files: dedupedFiles }
+  return Object.keys(aliases).length ? { text, files: dedupedFiles, aliases } : { text, files: dedupedFiles }
 }
 
 /* ------------------------------------------------------------------------- */

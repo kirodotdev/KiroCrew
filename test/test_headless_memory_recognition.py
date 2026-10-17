@@ -112,7 +112,7 @@ async def test_registered_child_member_memory_and_teardown(env, tmp_path, monkey
             )
             assert response is None
             sessions.release(key, cleanup=False)
-            env.bind_session("dashboard:bob", "member-bob")
+            await env.bind_session_async("dashboard:bob", "member-bob")
             env.state._slots["bob"] = SimpleNamespace(is_restricted=False, blocks_reads=False)
             foreign = await memory_member.api_memory_recall(
                 make_request(

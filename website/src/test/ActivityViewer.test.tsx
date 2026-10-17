@@ -676,6 +676,44 @@ describe('ActivityViewer — Artifacts tab', () => {
     expect(cancel.className).toContain('whitespace-nowrap')
   })
 
+  // #19930: the card's hand-rolled `m`/`s` string had no hours band, so a run
+  // past an hour read `69m 32s`. It now routes through the shared fmtElapsed.
+  it.each([
+    ['running', 'tool' as const, 4_172_000, 0, '1h 9m 32s', '69m 32s'],
+    ['settled', 'done' as const, 4_031_000, 4031, '1h 7m 11s', '67m 11s'],
+  ])('renders a %s card past an hour with an hours band', (_label, status, runMs, elapsed, shown, old) => {
+    // Pin the clock so the live 1 Hz figure cannot tick past the asserted value.
+    const t0 = 1_700_000_000_000
+    vi.spyOn(Date, 'now').mockReturnValue(t0)
+    const timing = { status, startedAt: t0 - runMs, elapsed }
+    const store = configureStore({
+      reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
+    })
+    store.dispatch(openActivityToTab('subagents'))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ActivityViewer
+            toolLog={[]}
+            open
+            onToggle={vi.fn()}
+            slot="test-slot"
+            subagents={{
+              s1: { id: 's1', task: 'long run', agent: 'kirocrew', streaming: '', lastTool: 'read', ...timing },
+            }}
+          />
+        </QueryClientProvider>
+      </Provider>,
+    )
+    try {
+      expect(screen.getAllByText(shown).length).toBeGreaterThan(0)
+      expect(screen.queryByText(old)).toBeNull()
+    } finally {
+      vi.mocked(Date.now).mockRestore()
+    }
+  })
+
   it.each([0.25, 0, -1, Number.NaN, undefined])('shows credit summaries only for managed expanded cards (%s)', (credits) => {
     const store = configureStore({
       reducer: { chat: chatReducer, dashboard: dashboardReducer, notifications: notificationsReducer },
@@ -734,7 +772,7 @@ describe('ActivityViewer — queued subagents', () => {
   const SLOT = 'test-slot'
   const baseProps = { subagents: {}, toolLog: [], open: true, onToggle: vi.fn(), slot: SLOT }
 
-  function queuedWrapper(queued: number, reason?: { reason: string; available_gb?: number; required_gb?: number }) {
+  function queuedWrapper(queued: number, reason?: { reason: string; available_gb?: number; required_gb?: number; max_wait_secs?: number }) {
     return function Wrapper({ children }: { children: React.ReactNode }) {
       const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
       const store = configureStore({
@@ -793,9 +831,53 @@ describe('ActivityViewer — queued subagents', () => {
     })
     const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
     expect(text).toBe(
-      '1 waiting to start — macOS reports memory pressure; the starts resume on their own once it eases or the running agents finish; starts give up once the pressure outlasts the wait limit',
+      '1 waiting to start — macOS reports memory pressure; close other apps to ease it',
     )
     expect(text).not.toMatch(/GB/)
+  })
+
+  it('names the live wait bound on a memory wait, plural-aware', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'memory_pressure', max_wait_secs: 1800 }),
+    })
+    expect(screen.getByTestId('subagent-queued-banner').textContent).toBe(
+      '1 waiting to start — macOS reports memory pressure; close other apps to ease it; they never start if memory stays short for 30\u00A0minutes',
+    )
+  })
+
+  it('names a one-hour bound in the singular on a figure-less low-memory wait', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'low_memory', max_wait_secs: 3600 }),
+    })
+    expect(screen.getByTestId('subagent-queued-banner').textContent).toBe(
+      '1 waiting to start — not enough free memory; free up memory to continue; they never start if memory stays short for 1\u00A0hour',
+    )
+  })
+
+  it('adds the bound after both figures on a low-memory wait', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'low_memory', available_gb: 3.2, required_gb: 4.5, max_wait_secs: 90 }),
+    })
+    const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
+    expect(text).toMatch(/4\.5\s?GB/)
+    expect(text).toContain('they never start if memory stays short for 1\u00A0minute 30\u00A0seconds')
+  })
+
+  it('says outright that a 0 bound waits with no time limit', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'low_memory', max_wait_secs: 0 }),
+    })
+    expect(screen.getByTestId('subagent-queued-banner').textContent)
+      .toBe('1 waiting to start — not enough free memory; free up memory to continue; they wait with no time limit')
+  })
+
+  it('names no limit at all when an older gateway sends no bound', () => {
+    render(<ActivityViewer {...baseProps} view="subagents" />, {
+      wrapper: queuedWrapper(1, { reason: 'memory_pressure' }),
+    })
+    const text = screen.getByTestId('subagent-queued-banner').textContent ?? ''
+    expect(text).not.toContain('time limit')
+    expect(text).not.toContain('never start')
   })
 
   it('tells the user what to do about a memory wait', () => {

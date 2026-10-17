@@ -21,10 +21,20 @@
  * threading in ChatMessageList.test.tsx and ChatEmbed.test.tsx.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const source = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf-8')
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+// so the pins read the page and those owners.
+const PAGES_DIR = resolve(__dirname, '..', 'pages')
+const OWNER_DIR = resolve(PAGES_DIR, 'chat', 'page')
+const source = [
+  readFileSync(resolve(PAGES_DIR, 'ChatPage.tsx'), 'utf-8'),
+  ...readdirSync(OWNER_DIR).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(resolve(OWNER_DIR, f), 'utf-8')),
+  ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
+    .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf-8')),
+].join('\n')
 
 /** Every `<CollapsibleToolGroup ...>` opening tag's attribute block. */
 function mountAttributeBlocks(src: string): string[] {

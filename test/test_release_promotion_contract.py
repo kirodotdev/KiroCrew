@@ -320,6 +320,13 @@ def test_prerelease_candidate_runs_same_sha_test_gate() -> None:
     gate = jobs["release-candidate-tests"]
     assert gate["if"] == "needs.version.outputs.channel == 'insider'"
     assert gate["needs"] == "version"
+    assert gate["timeout-minutes"] == 60
+    assert gate["strategy"] == {
+        "max-parallel": 4,
+        "fail-fast": False,
+        "matrix": {"group": list(range(1, 9))},
+    }
+    assert gate["env"]["SHARD_COUNT"] == 8
 
     checkout = next(
         step for step in gate["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")
@@ -331,7 +338,10 @@ def test_prerelease_candidate_runs_same_sha_test_gate() -> None:
     assert "GITHUB_SHA" in verify["run"]
 
     tests = _step(RELEASE, "release-candidate-tests", "Run release candidate tests")
-    assert "pytest" in tests["run"]
+    assert "python -m pytest" in tests["run"]
+    assert "-p scripts.ci_file_shards" in tests["run"]
+    assert '--file-shards "$SHARD_COUNT"' in tests["run"]
+    assert "--file-shard ${{ matrix.group }}" in tests["run"]
     assert "--no-cov" in tests["run"]
 
 
@@ -861,3 +871,23 @@ def test_a_published_release_is_never_uploaded_to_again() -> None:
     # into two notions of "completed".
     predicate = '[ "$drafted" = "false" ] && [ "$marked" = "true" ]'
     assert predicate in _completion_step("Reconcile an interrupted or repeated run")["run"]
+
+
+def test_release_assets_upload_one_at_a_time() -> None:
+    """The release page uploads its assets serially, never all at once.
+
+    ``action-gh-release`` starts every upload in parallel unless
+    ``preserve_order`` is set. Since 0.9.0 the set carries three macOS DMG/zip
+    pairs of about 1 GB each, and on v0.9.0-insider.3 the step stopped twice
+    with no error after only part of the assets landed. ``overwrite_files``
+    (the action's default) deletes each asset just before re-uploading it, so a
+    parallel rerun first empties the page; serially, at most one asset is
+    missing at any moment. A glob that matches nothing must fail rather than
+    publish an empty page.
+    """
+    job = _workflow(RELEASE)["jobs"]["github-release"]
+    create = _step(RELEASE, "github-release", "Create GitHub Release")
+    assert create["with"]["preserve_order"] is True
+    assert create["with"]["fail_on_unmatched_files"] is True
+    # Serial uploads of several GB need more than the old 20 minutes.
+    assert job["timeout-minutes"] >= 60

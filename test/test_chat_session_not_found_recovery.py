@@ -154,6 +154,89 @@ async def test_lost_session_twice_ends_on_a_clear_error_without_looping(tmp_path
     assert slot._session_not_found_retry_used is True
 
 
+def _credential_dead() -> AcpError:
+    """A ``cloud_credential_error`` frame, raised through the real raise path."""
+    from kiro_crew.acp.transport_errors import _raise_acp_error
+
+    try:
+        _raise_acp_error(
+            {
+                "code": -32603,
+                "message": (
+                    "Internal error: API Error: Could not load AWS credentials · "
+                    "Could not load credentials from any providers. Check or "
+                    "refresh your AWS credentials and try again."
+                ),
+                "data": {"errorKind": "cloud_credential_error"},
+            }
+        )
+    except AcpError as exc:
+        return exc
+    raise AssertionError("_raise_acp_error did not raise")
+
+
+@pytest.mark.asyncio
+async def test_broken_credential_helper_ends_on_the_providers_remedy(tmp_path, monkeypatch):
+    """A helper that is really broken (expired SSO, revoked role) fails the fresh
+    process too. The chat recycles once, worded for credentials, then ends on the
+    provider's own instruction -- not on "start a new chat", which fails alike."""
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.llm_helpers import CREDENTIAL_RELOAD_RETRY_NOTICE
+
+    calls: list[str] = []
+
+    async def _fail(msg):
+        calls.append(msg)
+        raise _credential_dead()
+        yield  # pragma: no cover
+
+    state = _state(tmp_path, monkeypatch)
+    _wire(state, _client(_fail))
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+
+    await _run_chat(state, slot, "continue")
+    await _drain(state)
+
+    assert len(calls) == 2
+    assert state.sessions.reset.await_count == 2
+    errors = _errors(slot)
+    assert errors.count(CREDENTIAL_RELOAD_RETRY_NOTICE) == 1
+    assert SESSION_NOT_FOUND_RETRY_TEXT not in errors
+    assert "Check or refresh your AWS credentials" in errors[-1]
+    assert errors[-1] != SESSION_NOT_FOUND_GIVE_UP_TEXT
+    assert slot._queue == []
+
+
+@pytest.mark.asyncio
+async def test_stale_credentials_recycle_once_then_land(tmp_path, monkeypatch):
+    """The healthy-helper case the fix was built for still lands on the replay."""
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.llm_helpers import CREDENTIAL_RELOAD_RETRY_NOTICE
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    calls: list[str] = []
+
+    async def _stream(msg):
+        calls.append(msg)
+        if len(calls) == 1:
+            raise _credential_dead()
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="fresh credentials loaded")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    state = _state(tmp_path, monkeypatch)
+    _wire(state, _client(_stream))
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+
+    await _run_chat(state, slot, "what next?")
+    await _drain(state)
+
+    assert len(calls) == 2
+    assert CREDENTIAL_RELOAD_RETRY_NOTICE in _errors(slot)
+    assert any("fresh credentials loaded" in t for t in _assistant(slot))
+
+
 @pytest.mark.parametrize(
     ("exc", "expected"),
     [

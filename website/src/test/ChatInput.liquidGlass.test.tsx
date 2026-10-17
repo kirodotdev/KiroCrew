@@ -108,9 +108,10 @@ describe('composer liquid glass', () => {
   it('defines the glass tokens (tint, band, edge, hairline) for both polarities, none with a focus form', () => {
     // The default tint is the `thin` step of the thickness ladder (the full
     // ladder is pinned in Glass.thickness.test.tsx); band / edge / hairline are
-    // one value per polarity.
-    expect(INDEX_CSS).toMatch(/:root \{\s*--glass-tint-ultrathin:[^}]*--glass-tint-thin: rgba\(30, 30, 34, 0\.40\);[^}]*--glass-tint-step: var\(--glass-tint-thin\);\s*--glass-tint: var\(--glass-tint-thin\);\s*--glass-band: rgba\(255, 255, 255, 0\.22\); --glass-edge: rgba\(255, 255, 255, 0\.14\); --glass-hairline: rgba\(0, 0, 0, 0\.50\);\s*\}/)
-    expect(INDEX_CSS).toMatch(/\[data-mode="light"\] \{\s*--glass-tint-ultrathin:[^}]*--glass-tint-thin: rgba\(240, 240, 240, 0\.45\);[^}]*--glass-band: rgba\(255, 255, 255, 1\); --glass-edge: rgba\(0, 0, 0, 0\.24\); --glass-hairline: rgba\(0, 0, 0, 0\.20\);\s*\}/)
+    // one value per polarity. The band has a plain token too, like the tint's
+    // step, so a hue modifier can mix into it (issue #18314).
+    expect(INDEX_CSS).toMatch(/:root \{\s*--glass-tint-ultrathin:[^}]*--glass-tint-thin: rgba\(30, 30, 34, 0\.40\);[^}]*--glass-tint-step: var\(--glass-tint-thin\);\s*--glass-tint: var\(--glass-tint-thin\);\s*--glass-band-plain: rgba\(255, 255, 255, 0\.22\); --glass-band: var\(--glass-band-plain\); --glass-edge: rgba\(255, 255, 255, 0\.14\); --glass-hairline: rgba\(0, 0, 0, 0\.50\);\s*\}/)
+    expect(INDEX_CSS).toMatch(/\[data-mode="light"\] \{\s*--glass-tint-ultrathin:[^}]*--glass-tint-thin: rgba\(240, 240, 240, 0\.45\);[^}]*--glass-band-plain: rgba\(255, 255, 255, 1\); --glass-band: var\(--glass-band-plain\); --glass-edge: rgba\(0, 0, 0, 0\.24\); --glass-hairline: rgba\(0, 0, 0, 0\.20\);\s*\}/)
   })
 
   it('stands the context shelf on a short fade to page colour', () => {
@@ -121,7 +122,7 @@ describe('composer liquid glass', () => {
     // second line under the pane.
     // Neither the shelf nor the fade is its own stacking context: the
     // `z-index: -1` layer resolves against the dock's input-area wrapper
-    // (ChatPage's `relative z-10 dock-inert`), so it sits BEHIND the pane's
+    // (ComposerDockView's `relative z-10 dock-inert`), so it sits BEHIND the pane's
     // shadow (a fade painted over the shadow whitened it out part-way and left
     // a bright band under the pane), above the transcript and below the chips;
     // that wrapper is also its containing block, so it spans the dock root --
@@ -240,14 +241,18 @@ describe('composer liquid glass', () => {
   // chip on a thick pane is a thick accent, not a thin one.
   it('has no CSS copy of the material, only tint steps on the host', () => {
     expect(INDEX_CSS).not.toContain('glass-pane')
-    expect(INDEX_CSS).toContain('.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); }')
-    expect(INDEX_CSS).toContain('.glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }')
-    expect(INDEX_CSS).toContain('.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); }')
+    // A hue modifier tints the light bands too, at the SAME share it tints the
+    // body, mixed into the polarity's plain band: a white band on a purple pane
+    // read as a white frame, not as light (issue #18314).
+    expect(INDEX_CSS).toContain('.glass-accent { --glass-tint: color-mix(in srgb, var(--accent) 14%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--accent) 14%, var(--glass-band-plain)); }')
+    expect(INDEX_CSS).toContain('.glass-warn { --glass-tint: color-mix(in srgb, var(--warn) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--warn) 12%, var(--glass-band-plain)); }')
     // The top bar's readout capsule while the gateway is offline (App.tsx).
-    expect(INDEX_CSS).toContain('.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); }')
+    expect(INDEX_CSS).toContain('.glass-danger { --glass-tint: color-mix(in srgb, var(--danger) 12%, var(--glass-tint-step)); --glass-band: color-mix(in srgb, var(--danger) 12%, var(--glass-band-plain)); }')
+    // The neutral steps leave the band alone.
+    expect(INDEX_CSS).toContain('.glass-faded { --glass-tint: color-mix(in srgb, var(--glass-tint-step) 55%, transparent); }')
     expect(INDEX_CSS).toContain('.glass-hover:hover { --glass-tint: color-mix(in srgb, var(--text) 8%, var(--glass-tint-step)); }')
     // No pre-mixed root tokens: a mix on :root would always be the thin step.
-    expect(INDEX_CSS).not.toMatch(/--glass-tint-(accent|warn|danger|hover|faded):/)
+    expect(INDEX_CSS).not.toMatch(/--glass-(tint|band)-(accent|warn|danger|hover|faded):/)
   })
 
   // The material must solidify wherever the app's other glass does: reduced

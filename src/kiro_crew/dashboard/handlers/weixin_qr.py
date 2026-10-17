@@ -53,6 +53,7 @@ from kiro_crew.dashboard.channel_folders import (
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 from kiro_crew.dashboard.handlers.messaging import is_direct_local_request
+from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env
 from kiro_crew.weixin.client import ILINK_BASE_URL, WeixinClient
 
 logger = logging.getLogger(__name__)
@@ -98,14 +99,15 @@ def _atomic_write(path: Path, text: str, *, secret: bool = False) -> None:
     with ``mkstemp`` so concurrent writers to the same target cannot collide on a
     deterministic ``.tmp`` name (an ENOENT race).
 
-    Permissions are never weakened. ``secret=True`` passes
-    ``restrict_to_owner=True`` to the shared helper, which locks the unique
-    temp file down to its owner BEFORE any content byte is written — POSIX mode
-    bits are meaningless against NTFS ACLs, so a lockdown applied to the final
-    path after the write would leave the credential readable under the
-    directory-inherited DACL for the whole write. ``restrict_on_error="warn"``
-    keeps this writer's contract: a host where the lockdown cannot be applied
-    must not abort a credential save that already succeeded. For a non-secret
+    Permissions are never weakened. ``secret=True`` is the ``.env`` write: it
+    goes through :func:`kiro_crew.hidden_leaf_staging.publish_env`, which stages
+    the temp inside the masked staging directory rather than beside ``.env``
+    and locks it down to its owner BEFORE any content byte is written — POSIX
+    mode bits are meaningless against NTFS ACLs, so a lockdown applied to the
+    final path after the write would leave the credential readable under the
+    directory-inherited DACL for the whole write. A refused lockdown warns: a
+    host where it cannot be applied must not abort a credential save that
+    already succeeded. For a non-secret
     file the EXISTING mode is carried over, because the replacement would
     otherwise adopt the umask default and silently downgrade an
     already-restricted file — ``config.json`` can hold inline fallback
@@ -113,7 +115,7 @@ def _atomic_write(path: Path, text: str, *, secret: bool = False) -> None:
     local users.
     """
     if secret:
-        atomic_write(path, text, restrict_to_owner=True, restrict_on_error="warn")
+        publish_env(path, text)
         return
     preserved: Optional[int] = None
     try:
@@ -365,6 +367,11 @@ async def weixin_qr_status(request: web.Request) -> web.Response:
         # the owner-only DACL restrict_to_owner() applies.
         async with _get_config_lock():
             await asyncio.to_thread(_persist)
+    except EnvStagingRefused as exc:
+        # The .env's staging directory is unusable: nothing was written, and the
+        # message names the directory and its fix.
+        logger.warning("weixin: QR sign-in not saved: %s", exc)
+        return web.json_response({"error": str(exc), "code": "env_staging_refused"}, status=409)
     except Exception as exc:
         # A corrupt config.json or an un-restrictable credential file must NOT be
         # reported as a successful sign-in.

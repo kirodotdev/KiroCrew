@@ -18,7 +18,8 @@
  * Deliberately NOT a mic owner and NOT a persistence layer: the microphone, the
  * MediaRecorder and the streaming socket still stop on unmount, so leaving Chat
  * never leaves a recording running without any UI to see or stop it. Only the
- * pending request lives here, and only until the tab unloads.
+ * pending request lives here, plus the audio of the latest failed one (see
+ * `failed`), and only until the tab unloads.
  *
  * The caller refuses to start a session while a transcription is in flight, so
  * at most one request is ever in flight — but several RESULTS can be waiting for
@@ -44,6 +45,23 @@ export interface PendingTranscription {
   sessionId: string | null
 }
 
+/**
+ * The audio of a request that failed, kept so the user can try it again, save
+ * it, or let it go instead of losing what they said.
+ */
+export interface FailedCapture {
+  blob: Blob
+  /** File extension of the recorder's container (`webm`, `ogg`, `mp4`). */
+  ext: string
+  /**
+   * True when posting the same audio again can succeed: the request never
+   * reached the transcriber, or the transcriber failed on its side. False when
+   * the gateway refused the audio itself (too large, too long), where the same
+   * bytes get the same answer and only saving the recording helps.
+   */
+  retryable: boolean
+}
+
 /** Terminal outcome of one request. Exactly one is delivered per `beginTranscription`. */
 export interface TranscriptResult {
   /** Matches the `PendingTranscription` this settles. */
@@ -53,6 +71,11 @@ export interface TranscriptResult {
   /** Already-localized failure message, surfaced as the hook's `error`. */
   error?: string
   sessionId: string | null
+  /**
+   * The audio of a failed request. Settling a result that carries one makes it
+   * the inbox's single held capture (see `failedCapture`).
+   */
+  capture?: FailedCapture
 }
 
 export interface TranscriptSink {
@@ -77,6 +100,12 @@ export interface TranscriptSink {
    * when nobody can take it the inbox keeps it until an owner appears.
    */
   acceptsUnowned?: boolean
+  /**
+   * The inbox has let go of the capture of failed request `id`: it was discarded,
+   * taken for a retry, or dropped for a new recording. A subscriber offering
+   * Retry, Save or Discard for it withdraws the offer and its notice.
+   */
+  release?: (id: number) => void
 }
 
 const sinks = new Set<TranscriptSink>()
@@ -94,6 +123,28 @@ const held: TranscriptResult[] = []
 const HELD_MAX = 16
 let inFlight: PendingTranscription | null = null
 let nextId = 0
+/**
+ * The one failed capture the tab holds, if any, with the failure it belongs to.
+ * One, not a list: it exists so the notice in front of the user can act on it,
+ * and only the latest failure has a notice. It lives in module memory and
+ * nowhere else, so the audio is gone when the tab unloads; before that it is
+ * dropped on Discard, on a retry (which carries it again only if that attempt
+ * fails too) and when a new recording starts capturing. Kept whole so a
+ * composer that mounts later (a trip to Settings and back) is shown the same
+ * notice and can still reach the audio.
+ */
+let failed: TranscriptResult & { capture: FailedCapture } | null = null
+
+function dropFailed(): void {
+  if (!failed) return
+  const { id } = failed
+  failed = null
+  // A failure that settled with no composer mounted still waits in `held`; it
+  // must not bring the audio back when it is finally delivered.
+  const i = held.findIndex(r => r.id === id)
+  if (i >= 0) held[i] = { ...held[i], capture: undefined }
+  for (const s of sinks) s.release?.(id)
+}
 
 function hold(result: TranscriptResult): void {
   held.push(result)
@@ -143,8 +194,9 @@ function dispatchSettle(result: TranscriptResult, releaseBusy: boolean): boolean
 
 /**
  * Register a delivery target. An already-running request is replayed as a
- * `begin` so a returning instance restores the busy indicator, and a result that
- * settled while no instance existed is handed over.
+ * `begin` so a returning instance restores the busy indicator, a result that
+ * settled while no instance existed is handed over, and a failure whose audio
+ * is still held is shown again.
  *
  * The hand-over is deferred to a microtask rather than applied inline. A
  * subscriber mounts inside a page whose own prefill and draft effects commit in
@@ -166,6 +218,14 @@ export function subscribeTranscripts(next: TranscriptSink): () => void {
   // held for the next instance rather than being delivered into sinks that are
   // gone.
   if (held.length) queueMicrotask(() => flushHeld(true))
+  // A failure that was already delivered, and whose audio is still held, is
+  // shown again to the newcomer: its notice is the only way to that audio.
+  // Deferred like the hand-over above, and only to this subscriber while it is
+  // still live; a failure still in `held` reaches it through the flush instead.
+  if (failed && !held.some(r => r.id === failed!.id)) {
+    const replay = failed
+    queueMicrotask(() => { if (failed === replay && sinks.has(next)) next.settle(replay, true) })
+  }
   return () => { sinks.delete(next) }
 }
 
@@ -192,8 +252,42 @@ export function settleTranscription(result: TranscriptResult): void {
   // Guarded so a straggler cannot clear a NEWER request's in-flight record and
   // leave a returning instance showing idle while that one is still running.
   if (inFlight?.id === result.id) inFlight = null
+  // Held before delivery, so a subscriber reading `failedCapture` while it
+  // settles finds the audio it is about to offer.
+  if (result.capture) {
+    dropFailed()
+    failed = { ...result, capture: result.capture }
+  }
   if (sinks.size && dispatchSettle(result, true)) return
   hold(result)
+}
+
+/** The capture failed request `id` left behind, while the inbox still holds it. */
+export function failedCapture(id: number): FailedCapture | null {
+  return failed?.id === id ? failed.capture : null
+}
+
+/**
+ * Let the held capture go. With `id`, only while it is still that request's: a
+ * notice acting on a failure that has since been replaced must not drop the
+ * newer one.
+ */
+export function discardFailedCapture(id?: number): void {
+  if (id !== undefined && failed?.id !== id) return
+  dropFailed()
+}
+
+/**
+ * Hand back the held capture of request `id` for one more attempt, and stop
+ * holding it: a retry that fails settles with the capture again, one that
+ * succeeds leaves nothing behind. Null while another transcription is in
+ * flight, which keeps the one-request-at-a-time rule the mic controls rely on.
+ */
+export function takeFailedCapture(id: number): { capture: FailedCapture; sessionId: string | null } | null {
+  if (inFlight || failed?.id !== id) return null
+  const { capture, sessionId } = failed
+  dropFailed()
+  return { capture, sessionId }
 }
 
 /** Test seam: how many results are waiting for a composer. */

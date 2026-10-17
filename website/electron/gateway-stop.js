@@ -13,6 +13,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { dialTarget, listenerSecretsFor } = require("./local-token");
 
 const KIROCREW_EXE_NAMES = new Set(["kirocrew", "kirocrew-backend"]);
 const PYTHON_EXE_RE = /^(?:python(?:\d+(?:\.\d+)*)?w?|py)$/i;
@@ -32,6 +33,26 @@ const KIROCREW_MODULE_RE = /^(?:kiro_crew|kirocrew_[a-z0-9][a-z0-9_]*)$/;
 // Both constants are pinned to their Python twins by
 // `test/test_cli.py::TestDesktopGatewayIdentityParity`; change them together.
 const KIROCREW_SERVER_SUBCOMMANDS = new Set(["gateway", "dashboard", "start"]);
+
+// The code the updater's pre-swap stop rejects with when a gateway running from
+// this app's own bundle still holds the port after the stop. Both update lanes
+// read it to refuse the swap: replacing the files under that process leaves its
+// lazily imported modules reading new code against old in-memory ones.
+const GATEWAY_STILL_RUNNING = "gateway-still-running";
+
+// `stopCommand` is the command the user runs to stop that gateway themselves.
+// The lanes carry it to the renderer and the quit-time notification, so the
+// refusal names the step that lets the next install through.
+function gatewayStillRunningError(port, stopCommand = `kirocrew stop --port ${port}`) {
+  const error = new Error(`a gateway from this app's bundle still holds port ${port}`);
+  error.code = GATEWAY_STILL_RUNNING;
+  error.stopCommand = stopCommand;
+  return error;
+}
+
+function isGatewayStillRunning(error) {
+  return Boolean(error) && error.code === GATEWAY_STILL_RUNNING;
+}
 
 function commandLineTokens(commandLine) {
   const tokens = [];
@@ -208,39 +229,46 @@ function kirocrewCommandShape(
 const INIT_PPID = 1;
 
 /**
- * POST /api/shutdown with the local secret (mirrors the dashboard's
- * X-Local-Secret auth). Resolves true on HTTP 200, false on any failure
- * (missing secret, connection error, timeout, non-200) so the caller can fall
- * back to signals.
+ * POST /api/shutdown with a secret this gateway published (mirrors the
+ * dashboard's X-Local-Secret auth). Resolves true on HTTP 200, false on any
+ * failure (refused target, no usable secret, connection error, timeout,
+ * non-200) so the caller can fall back to signals.
  *
+ * Only an `http:` loopback target is ever sent a secret, and only the listener
+ * entry the gateway published for the dialed address and port
+ * (`listenerSecretsFor`): it authenticates only against the listener it is
+ * sent to. The home-wide `.local_secret` is never sent. It is a last-writer-wins
+ * slot shared by every gateway on this data home, and nothing this app can
+ * observe proves the dialed port reaches only its own child: an unprivileged
+ * `lsof` does not list another user's sockets. A gateway that publishes no
+ * entry gets no request, and the caller stops it with signals.
+ *
+ * @param {object} opts
  * @returns {Promise<boolean>}
  */
-function postShutdown({
+async function postShutdown({
   backendUrl,
   kirocrewHome,
-  secrets,
   httpMod = http,
   fsMod = fs,
   pathMod = path,
   timeoutMs = 5000,
 }) {
-  // The caller may pass more than one candidate secret, and the running gateway
-  // is authenticated by whichever one it actually loaded. Try every candidate
-  // and let a 200 pick the live one: a stale/wrong secret returning 403 must NOT
+  const target = dialTarget(backendUrl);
+  if (!target || !kirocrewHome) return false;
+  // More than one candidate can be present, and the running gateway is
+  // authenticated by whichever one it actually loaded. Try every candidate and
+  // let a 200 pick the live one: a stale entry returning 403 must NOT
   // short-circuit the clean-flush path into a hard SIGTERM that skips
-  // session/memory/cron persistence.
-  let secretList = Array.isArray(secrets) ? secrets : [];
-  if (!secretList.length) {
-    try {
-      const s = fsMod.readFileSync(pathMod.join(kirocrewHome, ".local_secret"), "utf8");
-      secretList = [s];
-    } catch { /* none readable */ }
-  }
-  secretList = [...new Set(secretList.map((s) => (s || "").trim()).filter(Boolean))];
-  if (!secretList.length) return Promise.resolve(false);
+  // session/memory/cron persistence. Every candidate names the dialed listener,
+  // so the walk never widens where a secret goes.
+  const secretList = listenerSecretsFor({
+    target, home: kirocrewHome, path: pathMod, fs: fsMod,
+  });
+  if (!secretList || !secretList.length) return false;
 
   let u;
-  try { u = new URL(`${backendUrl}/api/shutdown`); } catch { return Promise.resolve(false); }
+  try { u = new URL(`${target.origin}/api/shutdown`); } catch { return false; }
 
   const attempt = (secret) => new Promise((resolve) => {
     const req = httpMod.request(
@@ -397,7 +425,6 @@ async function stopGatewayGracefully(
   {
     backendUrl,
     kirocrewHome,
-    secrets,
     timeoutMs = 15000,
     postShutdownFn = postShutdown,
     httpMod,
@@ -496,7 +523,7 @@ async function stopGatewayGracefully(
     armEscalation(deadline);
     proc.once("exit", () => { clearTimeout(killTimer); clearTimeout(hardTimer); });
     // Prefer the clean endpoint; kill only if it didn't take.
-    postShutdownFn({ backendUrl, kirocrewHome, secrets, httpMod, fsMod, pathMod }).then((ok) => {
+    postShutdownFn({ backendUrl, kirocrewHome, httpMod, fsMod, pathMod }).then((ok) => {
       if (ok || proc.exitCode !== null) return;
       killWith("SIGTERM");
     });
@@ -815,4 +842,7 @@ module.exports = {
   isKirocrewCommand,
   isKirocrewGatewayCommand,
   INIT_PPID,
+  GATEWAY_STILL_RUNNING,
+  gatewayStillRunningError,
+  isGatewayStillRunning,
 };

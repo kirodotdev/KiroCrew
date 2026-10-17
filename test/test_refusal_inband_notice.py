@@ -673,7 +673,11 @@ class TestEveryHostDenyCallSiteIsWired:
     CALL = re.compile(r"^\s*await (?:%s)\(" % "|".join(HELPERS))
 
     def _src(self) -> str:
-        return self.RUNNER.read_text(encoding="utf-8")
+        return "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(self.RUNNER.with_name("chat_turn").glob("*.py")), self.RUNNER]
+            if turn_file.name != "__init__.py"
+        )
 
     def _call_blocks(self) -> list[tuple[int, str]]:
         lines = self._src().splitlines(keepends=True)
@@ -763,7 +767,11 @@ class TestEveryHostDenyCallSiteIsWired:
         # anyway, so "user denied tool execution" is not merely unhelpful but
         # false. Pinned separately because it is the one a reader most needs to
         # trust, and both its deny calls were among the four originally missed.
-        src = self.RUNNER.read_text(encoding="utf-8")
+        src = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [*sorted(self.RUNNER.with_name("chat_turn").glob("*.py")), self.RUNNER]
+            if turn_file.name != "__init__.py"
+        )
         approved = src.split('if outcome == "approved":', 1)
         assert len(approved) == 2, "the interactive approved branch moved -- guard is stale"
         window = approved[1][:4000]

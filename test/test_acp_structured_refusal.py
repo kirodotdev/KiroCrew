@@ -223,6 +223,29 @@ class TestCard:
         assert "suggests model" not in text
         assert text.startswith("Response declined by the model.")
 
+    def test_fallback_off_hint_absent_by_default(self):
+        # fallback_off defaults False; the discovery sentence must not appear.
+        text = refusal_card_text(None)
+        assert "agent.refusal_fallback_model" not in text
+
+    def test_fallback_off_hint_names_the_setting(self):
+        # When fallback_off=True the card names agent.refusal_fallback_model.
+        text = refusal_card_text(None, fallback_off=True)
+        assert "agent.refusal_fallback_model" in text
+        assert "switched off" in text
+
+    def test_fallback_off_hint_is_additive_with_rephrase_tail(self):
+        # The hint appends to the rephrase tail, not as an alternative branch.
+        text = refusal_card_text(None, fallback_off=True)
+        assert "rephrasing" in text
+        assert "agent.refusal_fallback_model" in text
+
+    def test_fallback_off_hint_is_additive_with_recommended_model_tail(self):
+        # The hint also appends when the provider suggests a model, not lost.
+        text = refusal_card_text(RefusalInfo(recommended_model="m-alt"), fallback_off=True)
+        assert "suggests model 'm-alt'" in text
+        assert "agent.refusal_fallback_model" in text
+
 
 class TestEveryFieldIsScrubbed:
     """Round-2 GPT finding: ``category`` / ``recommendedModel`` reach the same

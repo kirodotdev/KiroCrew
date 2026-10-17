@@ -22,7 +22,6 @@ import os
 import struct
 import subprocess
 import sys
-import time
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +29,7 @@ import pytest
 from kiro_crew import platform_compat as pc
 from kiro_crew import session_pid as sp
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
+from kiro_crew.testing.wait import wait_until
 
 _MARKER = f"{KIROCREW_SPAWNED_ENV}={KIROCREW_SPAWNED_VALUE}".encode()
 
@@ -310,12 +310,17 @@ class TestTheArmLicensesNothingElse:
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="reads the real Darwin kernel")
 @pytest.mark.xdist_group(name="subprocess_spawn")
+@pytest.mark.usefixtures("fresh_darwin_libc_handles")
 class TestDarwinEnvironIsReadableSameUid:
     """The oracle's proof: a real same-uid child, no elevated privilege.
 
     An identity oracle that cannot be demonstrated is not usable here, because a
     wrong True is a SIGKILL on somebody else's process. These two tests are that
-    demonstration -- ordinary user, ordinary child, real ``sysctl``.
+    demonstration -- ordinary user, ordinary child, real ``sysctl``. The libc
+    handle they read through is rebuilt from the real libc for each test
+    (``fresh_darwin_libc_handles``): one cached from an earlier test's fake
+    ``ctypes.CDLL`` would fail the marker test however long it waited and let
+    the refusal test pass on ``None``.
     """
 
     @staticmethod
@@ -330,31 +335,92 @@ class TestDarwinEnvironIsReadableSameUid:
         # real subjects are launchers such as ``node`` and ``python``, which are
         # never platform binaries, and the test interpreter is the one such
         # executable every host has.
-        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], env=env)
+        #
+        # The child says it is running before anything reads it. ``Popen`` returns
+        # once the FIRST exec has happened, and the first exec is not always the
+        # last: a framework build's ``bin/python3.x`` is a launcher stub that
+        # re-execs ``Python.app`` in place (``posix_spawn`` with
+        # ``POSIX_SPAWN_SETEXEC``), so the pid holds two images one after the
+        # other. Python code runs only in the last one, so the byte on stdout
+        # means the record now read is the final image's, the one a sweep
+        # would read.
+        return subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time; sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)",
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+        )
+
+    @staticmethod
+    def _await_ready(proc: subprocess.Popen[bytes]) -> None:
+        """Wait for the child's ready line. The deadline only turns a hang into a named failure."""
+        assert proc.stdout is not None
+        fd = proc.stdout.fileno()
+        os.set_blocking(fd, False)
+        seen = bytearray()
+
+        def _ready() -> bool:
+            try:
+                chunk = os.read(fd, 64)
+            except BlockingIOError:
+                return False
+            if not chunk:
+                raise AssertionError(
+                    f"the child exited before it reported ready (returncode {proc.poll()})"
+                )
+            seen.extend(chunk)
+            return b"\n" in seen
+
+        wait_until(
+            _ready, describe=lambda: f"read so far {bytes(seen)!r}, returncode {proc.poll()}"
+        )
+
+    @staticmethod
+    def _state(reads: list[list[bytes] | None]) -> str:
+        """What the oracle saw, for an assertion message, from the read that gave the verdict."""
+        entries = reads[-1] if reads else None
+        return (
+            f"session_pid.sys.platform={sp.sys.platform!r}, "
+            f"environ reads {len(reads)}, "
+            f"libc handle {'missing' if pc._darwin_libc_sysctl is None else 'built'}, "
+            f"environ {'unreadable' if entries is None else f'{len(entries)} entries'}"
+        )
+
+    def _read_settled(self, env: dict[str, str]) -> tuple[bool | None, str]:
+        """Spawn a child with *env*, wait until it runs, and read its marker once."""
+        proc = self._child(env)
+        reads: list[list[bytes] | None] = []
+        real_environ = pc.darwin_process_environ
+
+        def _recorded(pid: int) -> list[bytes] | None:
+            entries = real_environ(pid)
+            reads.append(entries)
+            return entries
+
+        try:
+            self._await_ready(proc)
+            with patch.object(pc, "darwin_process_environ", _recorded):
+                verdict = sp._read_env_has_kirocrew_marker(proc.pid)
+            return verdict, self._state(reads)
+        finally:
+            proc.kill()
+            proc.wait()
+            assert proc.stdout is not None
+            proc.stdout.close()
 
     def test_a_child_spawned_with_the_marker_is_identified(self) -> None:
-        """Polls briefly: the record shows the parent's environment until exec
-        completes. Production is immune -- the sweep's min-age floor is minutes.
-        """
-        env = {**os.environ, KIROCREW_SPAWNED_ENV: KIROCREW_SPAWNED_VALUE}
-        proc = self._child(env)
-        try:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if sp._env_has_kirocrew_marker(proc.pid):
-                    break
-                time.sleep(0.05)
-            assert sp._env_has_kirocrew_marker(proc.pid) is True
-            assert os.geteuid() != 0, "the read must be proven unprivileged"
-        finally:
-            proc.kill()
-            proc.wait()
+        verdict, state = self._read_settled(
+            {**os.environ, KIROCREW_SPAWNED_ENV: KIROCREW_SPAWNED_VALUE}
+        )
+        assert verdict is True, state
+        assert os.geteuid() != 0, "the read must be proven unprivileged"
 
     def test_a_child_spawned_without_the_marker_is_refused(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != KIROCREW_SPAWNED_ENV}
-        proc = self._child(env)
-        try:
-            assert sp._env_has_kirocrew_marker(proc.pid) is False
-        finally:
-            proc.kill()
-            proc.wait()
+        """Readable AND unmarked: ``None`` here would mean the read never happened."""
+        verdict, state = self._read_settled(
+            {k: v for k, v in os.environ.items() if k != KIROCREW_SPAWNED_ENV}
+        )
+        assert verdict is False, state

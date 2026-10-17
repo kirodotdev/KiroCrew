@@ -34,6 +34,16 @@ class TestErrors:
         assert "internal error" in str(err)
         assert err.status == 500
 
+    def test_context_not_queued_429_maps_to_its_own_code(self):
+        err = http_error(429, {"error": "queue full", "code": "context_not_queued"})
+        assert err.code == ErrorCode.CONTEXT_NOT_QUEUED
+        assert err.status == 429
+        assert "queue full" in str(err)
+
+    def test_plain_429_body_stays_rate_limited(self):
+        err = http_error(429, {"error": "slow down"})
+        assert err.code == ErrorCode.RATE_LIMITED
+
     def test_to_dict(self):
         err = KiroCrewError(ErrorCode.NOT_FOUND, "not found", status=404)
         d = err.to_dict()

@@ -71,6 +71,11 @@ export interface ContributedCommand {
   id: string
   /** `displayName` of the contributing app, or its name. */
   appLabel: string
+  /**
+   * The contributing app's `name`. Sent beside `agent` so the backend can refuse a
+   * turn on which that bare agent name would resolve to anything but this app's spec.
+   */
+  appName: string
   title: string
   subtitle: string
   /** Host glyph name; the renderer maps it, and an unknown name falls back. */
@@ -80,6 +85,14 @@ export interface ContributedCommand {
   prompt: string
   /** Send the seeded prompt immediately rather than leaving it in the composer. */
   autoSend: boolean
+  /**
+   * Agent the seeded session is created with; '' means the dashboard default.
+   * Install refuses a value that is not one of the contributing app's own agents
+   * (`AppManifest.validate`), so this can only select an agent the app ships. A
+   * value outside the bare-stem pattern the backend enforces is dropped to ''
+   * rather than dropping the row: the prompt still lands, visibly, on the default.
+   */
+  agent: string
   argument: ContributedArgument | null
 }
 
@@ -424,6 +437,7 @@ function readCommand(app: CommandAppRecord, raw: unknown): ContributedCommand | 
   return {
     id: `app:${app.name}:${id}`,
     appLabel,
+    appName: app.name,
     title,
     subtitle,
     icon: str(obj.icon),
@@ -443,6 +457,7 @@ function readCommand(app: CommandAppRecord, raw: unknown): ContributedCommand | 
     // reaches here with it. This clamp is for the app that skipped that check: an
     // unknown manifest key arrives through `extra` having passed no schema at all.
     autoSend: obj.autoSend === true && argument !== undefined,
+    agent: typeof obj.agent === 'string' && /^[A-Za-z0-9._-]{1,120}$/.test(obj.agent) ? obj.agent : '',
     argument: argument ?? null,
   }
 }

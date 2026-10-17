@@ -18,6 +18,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -30,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── config flag + constants ────────────────────────────────────────────────
 
@@ -1121,6 +1123,246 @@ class TestRunMarker:
         assert d.is_dir()
 
 
+# ── Windows sharing-violation retry on the sidecar readers (GH-12364) ──
+
+
+class TestRunMarkerSidecarReadRetry:
+    """A sidecar reader must not fold a transient Windows sharing violation into
+    ``""`` / ``None``.
+
+    The markers are published with ``mkstemp`` + ``os.replace``
+    (``write_marker``). On Windows a reader that lands in the ``os.replace``
+    window raises ``PermissionError`` (``WinError 32``). The old plain
+    ``read_text`` folded that into ``""`` -- indistinguishable from a genuinely
+    absent marker, so a caller checking whether a gateway runs on a port got a
+    silent FALSE NEGATIVE. Every reader now goes through
+    ``atomic_write.read_bytes_with_retry``, which retries that bounded window.
+
+    ``read_sharing_violation`` patches ``Path.read_bytes`` and so covers the
+    uncapped readers (``read_secret`` / ``read_launcher`` via ``_read_sidecar``).
+    The capped readers (``read_pid`` and the ``.start`` sidecar) pass
+    ``max_bytes`` and so read through ``_read_bytes``; those are faulted by
+    patching ``atomic_write._read_bytes``, the single chokepoint both branches of
+    the helper call. POSIX permits the read, so this fault only reproduces on the
+    simulator here and on a real Windows host -- it is skipped on this Linux
+    worker's live filesystem, which is why the simulator exists. Not run on a
+    real Windows host.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff_sleep(self, _floor_monkeypatch):
+        """Keep the bounded retry instant; attempt COUNT is what matters here.
+
+        Only the simulator tests belong under this fixture. The real-file
+        concurrency test lives in ``TestRunMarkerSidecarConcurrentRewrite``
+        below, OUTSIDE it, because there the attempts must be spaced in time:
+        with the sleep zeroed the whole budget fits inside one writer syscall.
+
+        Patches through ``_floor_monkeypatch`` (the isolation floor's own
+        ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
+        used the shared instance would be lifted by any test here that called
+        ``monkeypatch.undo()`` mid-body, silently restoring the real backoff
+        sleep for the rest of that test (D11 / semgrep
+        ``kirocrew.test-autouse-shared-monkeypatch``).
+        """
+        from kiro_crew import atomic_write as aw
+
+        _floor_monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+
+    def _write_full_marker(self, run_marker, port, monkeypatch, tmp_path):
+        """Fabricate a venv launcher and write a full marker set for *port*."""
+        bindir = tmp_path / "venv" / "bin"
+        bindir.mkdir(parents=True)
+        launcher = bindir / ("kirocrew.exe" if os.name == "nt" else "kirocrew")
+        launcher.write_text("#!/bin/sh\n")
+        launcher.chmod(0o755)
+        monkeypatch.setattr(sys, "executable", str(bindir / "python"))
+        run_marker.write_marker(port)
+        return launcher
+
+    def test_read_secret_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """A transient fault on the credential sidecar retries, not folds to ""."""
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        atomic_write(run_marker.secret_path(6776), "s3cr3t-value", mode=0o600)
+
+        with read_sharing_violation(match="gateway-6776.secret", times=2) as sim:
+            got = run_marker.read_secret(6776)
+
+        assert got == "s3cr3t-value"  # not "" -- the window was ridden out
+        assert sim["n"] == 3  # 2 faults + the successful read
+
+    def test_read_launcher_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """The marker (launcher path) reader rides the window out too."""
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        launcher = self._write_full_marker(run_marker, 6776, monkeypatch, tmp_path)
+
+        with read_sharing_violation(match="gateway-6776.bin", times=2) as sim:
+            got = run_marker.read_launcher(6776)
+
+        assert got == str(launcher)  # not None
+        assert sim["n"] == 3
+
+    def test_read_pid_retries_the_sharing_violation(self, tmp_path, monkeypatch):
+        """read_pid -- the identity claim the issue names -- must not fold to None.
+
+        read_pid reads through the capped path (``max_bytes``), so it is faulted
+        at ``_read_bytes`` rather than ``Path.read_bytes``.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import atomic_write as aw
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        self._write_full_marker(run_marker, 6776, monkeypatch, tmp_path)
+        pid_name = run_marker.pid_path(6776).name
+
+        real_read_bytes = aw._read_bytes
+        state = {"n": 0}
+
+        def _faulting(target, max_bytes):
+            if target.name == pid_name:
+                state["n"] += 1
+                if state["n"] <= 2:
+                    raise PermissionError(
+                        f"[WinError 32] simulated sharing violation reading {target}"
+                    )
+            return real_read_bytes(target, max_bytes)
+
+        monkeypatch.setattr(aw, "_read_bytes", _faulting)
+        got = run_marker.read_pid(6776)
+
+        assert got == os.getpid()  # not None -- the window was ridden out
+        assert state["n"] == 3
+
+    def test_absent_marker_still_reads_as_empty(self, tmp_path, monkeypatch):
+        """A GENUINELY absent file still yields ""/None -- absence is unchanged.
+
+        FileNotFoundError is not a sharing violation; the helper does not retry
+        it and the readers fold it to their empty value exactly as before.
+        """
+        from windows_sim import read_sharing_violation
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew import platform_compat
+        from kiro_crew.instances import run_marker
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        # No marker set written at all. Even under an active fault simulator, a
+        # missing file raises FileNotFoundError, not PermissionError, so it is
+        # not retried and the empty return is preserved.
+        with read_sharing_violation(times=10_000):
+            assert run_marker.read_secret(9999) == ""
+            assert run_marker.read_launcher(9999) is None
+        assert run_marker.read_pid(9999) is None
+
+    def test_no_contention_common_path_is_unchanged(self, tmp_path, monkeypatch):
+        """With no concurrent writer the readers return the same values as before.
+
+        The retry helper is a plain read on POSIX and on the no-fault Windows
+        path, so the common case is byte-for-byte prior behaviour.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.instances import run_marker
+
+        launcher = self._write_full_marker(run_marker, 7001, monkeypatch, tmp_path)
+        assert run_marker.read_launcher(7001) == str(launcher)
+        assert run_marker.read_pid(7001) == os.getpid()
+
+
+class TestRunMarkerSidecarConcurrentRewrite:
+    """Real files, real threads: a reader racing a tight ``atomic_write`` loop.
+
+    Deliberately NOT a member of ``TestRunMarkerSidecarReadRetry``. That class's
+    autouse fixture zeroes ``_REPLACE_BACKOFF_SECONDS`` because its simulator
+    tests count attempts; here the attempts must be spaced in TIME. On Windows
+    the writer's ``os.replace`` (``MoveFileEx`` superseding the target) runs with
+    the GIL released, and every read that opens the file meanwhile raises
+    WinError 32, so with the sleep zeroed the reader burns all ten attempts in a
+    few microseconds INSIDE that one syscall and folds to ``None`` -- a false
+    absence the ``Backend Tests (Windows)`` matrix saw intermittently. The
+    product's 50 ms backoff is what rides the window out, so it stays in force.
+    """
+
+    def test_concurrent_rewrites_never_fold_to_a_false_absence(self, tmp_path, monkeypatch):
+        """The issue's own reproduction, on real files.
+
+        One thread rewrites a sidecar in a tight ``atomic_write`` (mkstemp +
+        os.replace) loop while the main thread reads it thousands of times. On
+        POSIX no sharing violation occurs, so this asserts the positive invariant
+        that holds on every platform: a read that returns a value never returns a
+        TORN or EMPTY one -- it is always a value some writer published, never ""
+        while the file exists. (The Windows-specific fold is covered
+        deterministically by the simulator tests in
+        ``TestRunMarkerSidecarReadRetry``.)
+
+        The launcher-marker sidecar stands in for the whole sidecar family here:
+        the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
+        reader, so the concurrent-rewrite invariant is identical whichever sidecar
+        is exercised. ``read_secret`` has its own deterministic coverage.
+
+        The writer's failure is surfaced, not swallowed: a writer that dies
+        (``replace_with_retry`` out of budget against a reader's open handle)
+        leaves a stable file behind, and every later read would then pass this
+        test vacuously. The reads also start only after the writer's first
+        publish, so they are known to race a live writer.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        from kiro_crew.atomic_write import atomic_write
+        from kiro_crew.instances import run_marker
+
+        marker = run_marker.marker_path(6776)
+        values = {f"/opt/venv-{i}/bin/kirocrew" for i in range(50)}
+        atomic_write(marker, "/opt/venv-0/bin/kirocrew\n", mode=0o600)
+
+        stop = threading.Event()
+        first_publish = threading.Event()
+        writer_error: list[BaseException] = []
+
+        def _rewrite():
+            i = 0
+            try:
+                while not stop.is_set():
+                    atomic_write(marker, f"/opt/venv-{i % 50}/bin/kirocrew\n", mode=0o600)
+                    i += 1
+                    first_publish.set()
+            except BaseException as exc:  # surfaced on the main thread below
+                writer_error.append(exc)
+
+        writer = threading.Thread(target=_rewrite, daemon=True)
+        writer.start()
+        try:
+            # The reads must race a live writer: on a saturated host the main
+            # thread could otherwise finish every read before the writer's first
+            # publish and prove nothing.
+            assert first_publish.wait(5), "the writer never published: the reads raced nothing"
+            for _ in range(3000):
+                got = run_marker.read_launcher(6776)
+                # The sidecar exists for the whole run, so a reader must never
+                # see it as absent, and must only ever see a published value.
+                assert got is not None, "a reader folded a concurrent write into a false absence"
+                assert got in values, f"a reader saw a torn value: {got!r}"
+        finally:
+            stop.set()
+            writer.join(timeout=5)
+        assert not writer.is_alive(), "the writer thread did not stop"
+        assert not writer_error, f"the writer died mid-run: {writer_error[0]!r}"
+
+
 # ── run-marker port discovery (clients find a gateway on a non-default port) ──
 
 
@@ -1292,11 +1534,11 @@ class TestRunMarkerDiscovery:
         monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: "1730.000042")
         assert run_marker.pid_start_token(4242) == "1730.000042"
 
-        # The preferred producer implements Linux and macOS only. When it says
-        # nothing, the fallback is consulted rather than the token going empty --
-        # that fallback is the ONLY start identity available on Windows (a
-        # creation FILETIME), so skipping it would make a pod there permanently
-        # unprovable.
+        # The preferred producer answers None on an unrecognised host or a
+        # failed read. When it says nothing, the fallback is consulted rather
+        # than the token going empty -- that fallback is the ONLY start identity
+        # available on Windows (a creation FILETIME), so skipping it would make a
+        # pod there permanently unprovable.
         monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: None)
         monkeypatch.setattr(platform_compat, "process_start_time", lambda pid: "133724160000000000")
         assert run_marker.pid_start_token(4242) == "133724160000000000"
@@ -1775,6 +2017,167 @@ class TestSshTunnelArgvCompression:
         reg.add(name="CD2", ssh_host="cd-2-alias", instance_id="cd-2")
         assert (await mgr_on.connect("cd-2")).state == TunnelState.CONNECTED
         assert captured["compression"] is True
+
+
+class TestTunnelStatusCarriesTheDialIdentity:
+    """The status surfaces the identity the tunnel was ACTUALLY dialled with.
+
+    A credential path binds to this (not to the agent-writable registry row), so
+    the fields have to name the node and account the open port reaches and must
+    not change for the life of the tunnel.
+    """
+
+    def test_an_ssm_tunnel_surfaces_its_node_and_account(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        tun = _SshTunnel(
+            "ssm-1",
+            "",
+            53410,
+            7879,
+            transport="ssm",
+            ssm_target="mi-0a1b2c3d4e5f67890",
+            aws_profile="prof",
+            aws_region="us-east-1",
+        )
+        d = tun.status.to_dict()
+        assert d["transport"] == "ssm"
+        assert d["ssm_target"] == "mi-0a1b2c3d4e5f67890"
+        assert d["aws_profile"] == "prof"
+        assert d["aws_region"] == "us-east-1"
+
+    def test_an_ssh_tunnel_carries_no_ssm_coordinates(self):
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        # Even if an SSH forward is handed SSM-shaped values, the status reports
+        # none, so a record requiring an SSM node can never match an SSH tunnel.
+        tun = _SshTunnel(
+            "ssh-1",
+            "host.example",
+            53411,
+            7879,
+            transport="ssh",
+            ssm_target="mi-should-be-ignored",
+            aws_profile="prof",
+            aws_region="us-east-1",
+        )
+        d = tun.status.to_dict()
+        assert d["transport"] == "ssh"
+        assert d["ssm_target"] == ""
+        assert d["aws_profile"] == ""
+        assert d["aws_region"] == ""
+
+
+class TestSshTunnelWindowsRefusal:
+    """On native Windows an ssh-tunnel spawn failure names the platform.
+
+    The surface is documented "not yet" supported on Windows, where the
+    ``ssh -N -L`` child needs the OpenSSH client on PATH (not guaranteed). When
+    that spawn fails, ``start()`` reports "SSH tunnel is not yet supported on
+    Windows" instead of a generic spawn error indistinguishable from "ssh is
+    missing", mirroring ``apps/lifecycle_scripts.py``. Crucially it does NOT
+    refuse before the spawn: a Windows host whose ``ssh`` IS on PATH still spawns
+    and connects, so a tunnel that works today is untouched. SSM/POSIX unchanged.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ssh_spawn_failure_on_windows_names_the_platform(self, monkeypatch):
+        from kiro_crew import platform_compat
+        from kiro_crew.instances.ssh_tunnel_manager import (
+            _WINDOWS_SSH_TUNNEL_UNSUPPORTED,
+            TunnelState,
+            _SshTunnel,
+        )
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        # ssh is not on PATH on this Windows host, so the spawn raises OSError —
+        # the exact generic-error case the issue reports.
+        async def _ssh_missing(*a, **k):
+            raise FileNotFoundError("[WinError 2] The system cannot find the file specified")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _ssh_missing)
+
+        tun = _SshTunnel("cd-1", "cd-1-alias", 53400, 7879, transport="ssh")
+        ok = await tun.start()
+
+        assert ok is False
+        assert tun.status.state == TunnelState.ERROR
+        # Names the platform constraint, not just "failed to spawn ssh tunnel".
+        assert tun.status.error.startswith(_WINDOWS_SSH_TUNNEL_UNSUPPORTED)
+        assert "not yet supported on Windows" in tun.status.error
+        assert not tun.status.error.startswith("failed to spawn")
+
+    @pytest.mark.asyncio
+    async def test_ssh_tunnel_is_not_refused_before_spawn_on_windows(self, monkeypatch):
+        # The fix must NOT close a path that may work: a Windows host whose ssh
+        # IS on PATH spawns successfully, so start() reaches the spawn rather than
+        # refusing up front. (The spawn is stubbed to raise AFTER being entered,
+        # so we only assert the spawn was reached, not the connect outcome.)
+        from kiro_crew import platform_compat
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        reached_spawn = False
+
+        async def _spawn(*a, **k):
+            nonlocal reached_spawn
+            reached_spawn = True
+            raise OSError("stop here, after entering the spawn")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _spawn)
+
+        tun = _SshTunnel("cd-1", "cd-1-alias", 53400, 7879, transport="ssh")
+        await tun.start()
+
+        assert reached_spawn is True, "start() must reach the spawn, not refuse before it"
+
+    @pytest.mark.asyncio
+    async def test_ssm_spawn_failure_on_windows_keeps_the_generic_message(self, monkeypatch):
+        # The Windows wording is scoped to the ssh transport: an SSM spawn
+        # failure on Windows keeps the generic spawn-error message.
+        from kiro_crew import platform_compat
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+        async def _fail(*a, **k):
+            raise OSError("boom")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+
+        tun = _SshTunnel(
+            "ssm-1", "", 53410, 7879, transport="ssm", ssm_target="i-0123456789abcdef0"
+        )
+        ok = await tun.start()
+
+        assert ok is False
+        assert tun.status.state == TunnelState.ERROR
+        assert tun.status.error.startswith("failed to spawn ssm tunnel")
+        assert "Windows" not in tun.status.error
+
+    @pytest.mark.asyncio
+    async def test_ssh_spawn_failure_on_posix_keeps_the_generic_message(self, monkeypatch):
+        # Control: on POSIX an ssh spawn failure keeps the generic message
+        # (behaviour unchanged off Windows).
+        from kiro_crew import platform_compat
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+
+        async def _fail(*a, **k):
+            raise OSError("boom")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fail)
+
+        tun = _SshTunnel("cd-2", "cd-2-alias", 53420, 7879, transport="ssh")
+        ok = await tun.start()
+
+        assert ok is False
+        assert tun.status.state == TunnelState.ERROR
+        assert tun.status.error.startswith("failed to spawn ssh tunnel")
+        assert "Windows" not in tun.status.error
 
 
 requires_ssh = pytest.mark.skipif(shutil.which("ssh") is None, reason="ssh not available")
@@ -4334,6 +4737,53 @@ class TestTokenMintGeneric:
         exit_127 = cmd.index("exit 127")
         assert not_found < diagnosis < exit_127
 
+    def test_candidate_ladder_covers_managed_launcher_dir(self):
+        """A remote provisioned by a managed installer has ``kirocrew`` under
+        ``~/.toolbox/bin`` -- the launcher dir ``env._EXTRA_PATH_DIRS`` already
+        searches locally -- and in neither of the two classic locations. Every
+        mint on such a remote exits 127 unless ``remote_bin`` is set by hand.
+        The ladder must try that dir, AFTER the two install-script locations so
+        nothing moves for a remote that has those."""
+        from kiro_crew.env import _EXTRA_PATH_DIRS
+        from kiro_crew.instances.token_mint import REMOTE_BIN_CANDIDATES, build_candidate_command
+
+        assert REMOTE_BIN_CANDIDATES[:2] == (
+            "$HOME/.local/bin/kirocrew",
+            "$HOME/.kirocrew-app/.venv/bin/kirocrew",
+        )
+        assert "$HOME/.toolbox/bin/kirocrew" in REMOTE_BIN_CANDIDATES
+        # The ladder names the same directory the local launcher search does, so
+        # the two cannot disagree about where a managed install puts the binary.
+        assert "{home}/.toolbox/bin" in _EXTRA_PATH_DIRS
+        cmd = build_candidate_command("token")
+        assert '"$HOME/.toolbox/bin/kirocrew"' in cmd
+        # Every candidate is a $HOME-rooted literal: the snippet is double-quoted
+        # shell, so a candidate with a quote or a `$(` would be a new injection
+        # surface on the remote command line.
+        for cand in REMOTE_BIN_CANDIDATES:
+            assert re.fullmatch(r"\$HOME(/[A-Za-z0-9._-]+)+/kirocrew", cand), cand
+
+    def test_not_found_path_names_the_remote_bin_override(self):
+        """When no candidate is executable the error must say what to do, not
+        just what was tried: the override field is ``remote_bin``, and the
+        example is in ``~/`` form because the validator refuses ``$``. The hint
+        comes AFTER the per-candidate diagnosis and BEFORE ``exit 127``, so it
+        is only ever printed on the failure path."""
+        from kiro_crew.instances.token_mint import REMOTE_BIN_HINT, build_candidate_command
+
+        assert "remote_bin" in REMOTE_BIN_HINT
+        assert "~/" in REMOTE_BIN_HINT
+        assert "$" not in REMOTE_BIN_HINT
+        assert '"' not in REMOTE_BIN_HINT  # embedded in a double-quoted echo
+        cmd = build_candidate_command("token")
+        assert f'echo "{REMOTE_BIN_HINT}" >&2;' in cmd
+        diagnosis = cmd.index("candidate diagnosis:")
+        hint = cmd.index(REMOTE_BIN_HINT)
+        exit_127 = cmd.index("exit 127")
+        assert diagnosis < hint < exit_127
+        # The success path never prints it: the hint sits after the exec loop.
+        assert cmd.index('exec "$b" token;') < hint
+
     def test_run_remote_kirocrew(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
 
@@ -4503,6 +4953,34 @@ class TestTokenMintGeneric:
         assert proc.kill_calls == 1
         assert proc.communicate_calls == 2
         assert proc.wait_calls == 0
+
+    @pytest.mark.parametrize("budget, names_setting", [(30.0, True), (120.0, False)])
+    def test_mint_timeout_names_the_mint_budget_setting(self, monkeypatch, budget, names_setting):
+        """An SSH mint timeout names ``instances.mint_timeout_secs`` as the next step.
+
+        At the ceiling the setting cannot go higher, so the message points at the
+        host's reachability instead of telling the user to raise it.
+        """
+        from kiro_crew.instances import token_mint as tm
+
+        proc = self._HangProc()
+
+        async def fake_exec(*a, **k):
+            return proc
+
+        async def _tree(pid, sig):
+            return True
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(platform_compat, "kill_process_tree_async", _tree)
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            asyncio.run(tm.mint_remote_token("cd-1", ttl="20h", timeout_secs=budget))
+        msg = str(excinfo.value)
+        assert msg.startswith(f"timed out minting token on cd-1 after {budget}s")
+        assert "jump host or proxy" in msg
+        assert ("instances.mint_timeout_secs" in msg) is names_setting
+        assert ("applies to SSH and SSM mints alike" in msg) is names_setting
+        assert ("already at its maximum" in msg) is not names_setting
 
     def test_run_remote_kirocrew_timeout_reaps_child_via_communicate_not_wait(self, monkeypatch):
         from kiro_crew.instances import token_mint as tm
@@ -4762,7 +5240,7 @@ class TestTunnelStatus:
         t.status.local_port = 7778
 
         task = aio.create_task(t.stop())
-        await aio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered, what="the teardown entering")
 
         # Mid-teardown, with the port not yet released and the caller still holding a
         # reference to this object.
@@ -4773,7 +5251,7 @@ class TestTunnelStatus:
         assert t.status.state is TunnelState.STOPPED
 
         release.set()
-        await aio.wait_for(task, timeout=5)
+        await await_until(task, what="stop() finishing")
         assert t.status.state is TunnelState.STOPPED
 
     @pytest.mark.asyncio
@@ -4917,7 +5395,9 @@ class TestSelfHealRefreshRestart:
 
             stm._PROBE_INTERVAL = 0.01
             try:
-                await _aio.wait_for(t._probe_loop(), timeout=2)
+                await await_until(
+                    _aio.ensure_future(t._probe_loop()), what="the probe loop exiting"
+                )
             finally:
                 stm._PROBE_INTERVAL = stm_interval
 
@@ -4945,11 +5425,11 @@ class TestSelfHealRefreshRestart:
 
         async def main():
             task = asyncio.create_task(mgr._recover("cd-1"))
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="the slow rebuild starting")
             # Slow rebuild is in flight — the manager lock must NOT be held (the fix).
             assert not mgr._lock.locked()
             release.set()
-            await asyncio.wait_for(task, timeout=2)
+            await await_until(task, what="_recover finishing")
             assert mgr.status("cd-1").state == TunnelState.CONNECTED
             # The rebuild only re-binds locally, so the counter stands at the
             # value this recovery raised it to (1), not reset by the rebuild.
@@ -5091,6 +5571,56 @@ class TestSelfHealRefreshRestart:
         t._stderr_buf = "Certificate has expired\n"
         assert "auth failed" in t._exit_error(255).lower()
 
+    def test_first_connect_transport_drop_points_at_ssh_host(self):
+        """A drop before the forward ever came up most often means the
+        instance's ``ssh_host`` names a host that does not exist under that
+        name (rebuilt, renamed): the proxy closes the socket before the ssh
+        handshake and ssh prints only "Connection closed by UNKNOWN". The
+        first-connect classification must name ``ssh_host``; a drop on a tunnel
+        that WAS up must not, because that host was reachable."""
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        t = _SshTunnel("cd-1", "h", 1, 2)
+        t._stderr_buf = (
+            "kex_exchange_identification: Connection closed by remote host\r\n"
+            "Connection closed by UNKNOWN port 65535\r\n"
+        )
+        first = t._exit_error(255, first_connect=True)
+        assert first.startswith("ssh tunnel transport drop (")
+        assert "ssh_host" in first
+        assert "Connection closed by UNKNOWN port 65535" in first
+        # Steady-state wording is unchanged: same classification, no hint.
+        steady = t._exit_error(255)
+        assert steady.startswith("ssh tunnel transport drop:")
+        assert "ssh_host" not in steady
+        # The hint never leaks into the other classes.
+        t._stderr_buf = "host: Permission denied (publickey).\n"
+        assert "ssh_host" not in t._exit_error(255, first_connect=True)
+        t._stderr_buf = "bind [127.0.0.1]:7778: Address already in use\n"
+        assert "ssh_host" not in t._exit_error(255, first_connect=True)
+
+    @pytest.mark.asyncio
+    async def test_wait_until_ready_child_death_is_a_first_connect_error(self):
+        """``_wait_until_ready`` is the first-connect path, so a child that dies
+        there with a transport drop surfaces the ``ssh_host`` hint in
+        ``status.error`` -- the string the dashboard shows on Connect."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState, _SshTunnel
+
+        class _Proc:
+            def __init__(self):
+                self.returncode = 255
+                self.stderr = self
+
+            async def read(self):
+                return b"Connection closed by UNKNOWN port 65535\r\nConnection reset by peer\r\n"
+
+        t = _SshTunnel("cd-1", "stale-alias", 53991, 7777, connect_timeout_secs=1.0)
+        t._proc = _Proc()
+        assert await t._wait_until_ready() is False
+        assert t.status.state == TunnelState.ERROR
+        assert "ssh_host" in t.status.error
+        assert t.status.error.startswith("ssh tunnel transport drop (")
+
     def test_recover_backoff_grows_and_caps(self):
         from kiro_crew.instances.ssh_tunnel_manager import (
             _RECOVER_BACKOFF_MAX_SECS,
@@ -5156,7 +5686,7 @@ class TestSelfHealRefreshRestart:
         # A refresh begins against the CURRENT tunnel and blocks inside its mint.
         arm.set()
         refresh = asyncio.create_task(mgr._refresh_token_once("cd-1"))
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the rebuild starting")
         # Meanwhile the tunnel is replaced (an edit + reconnect, or a self-heal).
         await mgr.disconnect("cd-1")
         await mgr.connect("cd-1")
@@ -5225,7 +5755,7 @@ class TestSelfHealRefreshRestart:
         fail_next["n"] = 1
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the rebuild starting")
 
         # The ordinary operator reaction: reconnect. connect() replaces the
         # (ERROR) tunnel left by the failed tier-1 rebuild and bumps the epoch.
@@ -5238,7 +5768,7 @@ class TestSelfHealRefreshRestart:
         good_epoch = mgr._tunnel_epoch["cd-1"]
 
         release.set()
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, what="the recovery task finishing")
         # The stale mint was refused whole: token, mint bookkeeping, the live
         # tunnel (no stale rebuild) and the refresh schedule are all untouched.
         assert mgr._tokens["cd-1"] == good != "TOK-STALE"
@@ -5340,14 +5870,14 @@ class TestSelfHealRefreshRestart:
         mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="the rebuild parking")
 
         # The user turns the instance off while the rebuild is parked.
         assert await mgr.disconnect("cd-1") is True
         assert reg.get("cd-1").was_connected is False
 
         release.set()
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, what="the recovery task finishing")
 
         # The recovery stood down: nothing tracked, nothing recorded.
         assert "cd-1" not in mgr._tunnels
@@ -5385,7 +5915,7 @@ class TestSelfHealRefreshRestart:
         mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="the rebuild parking")
 
         # The user reconnects while the rebuild is parked.
         await mgr.connect("cd-1")
@@ -5394,7 +5924,7 @@ class TestSelfHealRefreshRestart:
         fresh_epoch = mgr._tunnel_epoch["cd-1"]
 
         release.set()
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, what="the recovery task finishing")
 
         # connect's live tunnel was not overwritten, orphaned, or dropped.
         assert mgr._tunnels["cd-1"] is fresh_tunnel
@@ -5435,14 +5965,14 @@ class TestSelfHealRefreshRestart:
         mgr._tunnels["cd-1"].status.state = TunnelState.ERROR
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="the rebuild parking")
         rebuilt = mgr._tunnels["cd-1"]
 
         # The user turns the instance off while the start is parked.
         assert await mgr.disconnect("cd-1") is True
 
         release.set()
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, what="the recovery task finishing")
 
         # The rebuild reaped its own tunnel: nothing tracked, nothing running,
         # and the disconnect's record stands.
@@ -5492,13 +6022,15 @@ class TestSelfHealRefreshRestart:
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
         mgr._track_recovery("cd-1", recovery)
-        await asyncio.wait_for(parked.wait(), timeout=5)
+        await await_until(parked, what="the rebuild parking")
 
         await mgr.shutdown()
         release.set()
         # The recovery survived its cancellation (swallowed in stop()) but its
         # expected epoch is stale: the gated install refuses.
-        await asyncio.wait_for(asyncio.gather(recovery, return_exceptions=True), timeout=5)
+        await await_until(
+            asyncio.gather(recovery, return_exceptions=True), what="the recovery settling"
+        )
 
         assert "cd-1" not in mgr._tunnels
 
@@ -5521,11 +6053,17 @@ class TestSelfHealRefreshRestart:
         arm.set()
         recovery = asyncio.create_task(mgr._recover("cd-1"))
         mgr._track_recovery("cd-1", recovery)  # as _on_tunnel_exit would
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started, what="the rebuild starting")
 
-        assert await asyncio.wait_for(mgr.disconnect("cd-1"), timeout=5) is True
+        assert (
+            await await_until(
+                asyncio.ensure_future(mgr.disconnect("cd-1")),
+                what="the disconnect finishing",
+            )
+            is True
+        )
         release.set()
-        await asyncio.wait_for(recovery, timeout=5)
+        await await_until(recovery, what="the recovery task finishing")
 
         assert "cd-1" not in mgr._tokens
         assert "cd-1" not in mgr._tunnels
@@ -5669,7 +6207,7 @@ class TestSelfHealRefreshRestart:
                 return False
 
             t._forward_alive = _unreachable
-            await asyncio.wait_for(t._probe_loop(), timeout=2)
+            await await_until(asyncio.ensure_future(t._probe_loop()), what="the probe loop exiting")
             await asyncio.sleep(0.05)
             assert t._probe_failed is True
             assert "health probe failed" in t._exit_error(-15)
@@ -6403,12 +6941,15 @@ class TestStartupRevive:
                 armed.append("armed")
                 return set()
 
+            async def shutdown(self):  # registered with the pre-exec seam
+                pass
+
         monkeypatch.setattr(server, "SshTunnelManager", lambda *a, **k: _ManagerDouble())
 
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def _blocking_revive(registry, manager):
+        async def _blocking_revive(registry, manager, state=None):
             started.set()
             await release.wait()  # simulate a hung SSH connect that never returns
 
@@ -6424,7 +6965,18 @@ class TestStartupRevive:
         startup_handler = list(app.on_startup)[-1]
 
         # Must return promptly even though revive never completes.
-        await asyncio.wait_for(startup_handler(app), timeout=2.0)
+        # `_instances_startup` has no await points by design -- it schedules the
+        # revive as a tracked background task and returns. Drive it one step with no
+        # loop turn: a coroutine that completes raises StopIteration, so the
+        # background task gets no turn (the `armed == []` ordering below needs that).
+        # A regression that awaits the sequencer inline instead yields a value here
+        # and fails by name at once rather than hanging the xdist worker (D8).
+        startup_coro = startup_handler(app)
+        try:
+            with pytest.raises(StopIteration):
+                startup_coro.send(None)
+        finally:
+            startup_coro.close()
 
         # NOT on the boot path. `on_startup` runs inside `runner.setup()`, before the
         # HTTP port is bound, and re-taking the holds costs a registry read plus one
@@ -6434,7 +6986,7 @@ class TestStartupRevive:
 
         # Revive was scheduled as a tracked background task, not awaited.
         assert len(state._background_tasks) == 1
-        await asyncio.wait_for(started.wait(), timeout=2.0)  # it did start in the bg
+        await await_until(started, what="the background revive starting")  # it did start in the bg
 
         # ...but it ran BEFORE the revive, which is the ordering that matters: revive
         # reconnects instances that allocate ports, and a lease whose hold is not yet
@@ -6444,7 +6996,7 @@ class TestStartupRevive:
         # Cleanup: release the hung revive and drain the task.
         release.set()
         for t in list(state._background_tasks):
-            await asyncio.wait_for(t, timeout=2.0)
+            await await_until(t, what="the background task finishing")
 
 
 # ── SSM connection method ──────────────────────────────────────────────────
@@ -7123,6 +7675,11 @@ class TestSsmTunnelArgv:
         # is the fallback path and settles returncode.
         monkeypatch.setattr(stm._SshTunnel, "_signal_group", staticmethod(lambda pid, sig: False))
 
+        async def _undelivered(_pid, _sig):
+            return False
+
+        monkeypatch.setattr(stm._SshTunnel, "_signal_group_async", staticmethod(_undelivered))
+
         async def main():
             t = _SshTunnel(
                 "cd-1",
@@ -7711,6 +8268,31 @@ class TestSsmMintOutputRedaction:
             text
         ), f"{vector_name}: SSM tail is weaker than the SSH tail it mirrors"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("budget, names_setting", [(90.0, True), (120.0, False)])
+    async def test_ssm_mint_timeout_names_the_mint_budget_setting(
+        self, monkeypatch, budget, names_setting
+    ):
+        """An SSM mint timeout names ``instances.mint_timeout_secs`` and the SSM agent.
+
+        At the ceiling the setting cannot go higher, so the message points at the
+        target's reachability instead of telling the user to raise it.
+        """
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        async def _times_out(*a, **k):
+            raise asyncio.TimeoutError
+
+        monkeypatch.setattr(sm, "_send_over_ssm", _times_out)
+        with pytest.raises(sm.TokenMintError) as excinfo:
+            await sm.mint_remote_token_ssm("i-0123456789abcdef0", ttl="20h", timeout_secs=budget)
+        msg = str(excinfo.value)
+        assert msg.startswith("timed out minting token on i-0123456789abcdef0 over SSM")
+        assert f"polling budget {budget}s" in msg
+        assert "SSM agent is online" in msg
+        assert ("instances.mint_timeout_secs" in msg) is names_setting
+        assert ("already at its maximum" in msg) is not names_setting
+
 
 class TestSsmDiagnostics:
     """The SSM diagnosis ladder reports the first broken link, SSM-worded."""
@@ -7895,10 +8477,18 @@ class TestForwarderPidHints:
         assert inst.forwarder_start == (pc.process_start_time(my_pid) or "")
         assert inst.forwarder_start != ""  # readable for a live process we own
         assert inst.local_port > 0
+        # The argv the kernel reports for the child is recorded at spawn.
+        assert inst.forwarder_argv_sig == (pc.process_argv_fingerprint(my_pid) or "")
         # The identity is signed with the gateway's key, bound to this
-        # instance, pid, start, and port.
+        # instance, pid, start, port, and argv fingerprint.
         assert inst.forwarder_sig == stm._forwarder_identity_sig(
-            key, "cd-1", my_pid, inst.forwarder_start, inst.local_port
+            key,
+            "cd-1",
+            my_pid,
+            inst.forwarder_start,
+            inst.local_port,
+            inst.forwarder_argv_sig,
+            "ssh",
         )
 
     @pytest.mark.asyncio
@@ -7920,6 +8510,7 @@ class TestForwarderPidHints:
         assert inst.forwarder_pid == 0
         assert inst.forwarder_start == ""
         assert inst.forwarder_sig == ""
+        assert inst.forwarder_argv_sig == ""
 
     @pytest.mark.asyncio
     async def test_mark_recovered_refreshes_forwarder_identity(self, tmp_path):
@@ -7991,7 +8582,7 @@ class TestForwarderPidHints:
         # The identity and the port it is signed with stay consistent, so a
         # later reclaim can still authenticate this child.
         assert inst.forwarder_sig == stm._forwarder_identity_sig(
-            key, "cd-1", my_pid, "424242", rebuilt
+            key, "cd-1", my_pid, "424242", rebuilt, inst.forwarder_argv_sig, "ssh"
         )
         assert inst.forwarder_sig != ""
 
@@ -8050,6 +8641,7 @@ class TestForwarderPidHints:
             "forwarder_pid",
             "forwarder_start",
             "forwarder_sig",
+            "forwarder_argv_sig",
             "was_connected",
         }
         assert set(recovered_kwargs) == identity_fields
@@ -8178,10 +8770,24 @@ class TestOrphanForwarderReclaim:
     occupancy of the holder's port is the trigger under test.
     """
 
-    def _mgr(self, tmp_path, *, base_port):
+    @staticmethod
+    def _os_assigned_base_port():
+        """A base port the OS just handed out, so no two cases share one.
+
+        These tests keep the probe REAL, and the probe is a bind. A fixed base
+        port shared by the parametrized cases of one test lets xdist workers
+        probe the same port at the same moment; on Windows the exclusive bind
+        makes one of them see the port as taken and ``connect()`` fail.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def _mgr(self, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
+        base_port = self._os_assigned_base_port()
         reg = InstancesRegistry(path=tmp_path / "instances.json")
 
         async def ok_mint(
@@ -8262,9 +8868,9 @@ class TestOrphanForwarderReclaim:
 
         monkeypatch.setattr(stm, "_reclaim_identity_key", lambda: cls._TEST_IDENTITY_KEY)
 
-        def sign(instance_id, pid, start, port):
+        def sign(instance_id, pid, start, port, argv_sig="", transport="ssh"):
             return stm._forwarder_identity_sig(
-                cls._TEST_IDENTITY_KEY, instance_id, pid, start, port
+                cls._TEST_IDENTITY_KEY, instance_id, pid, start, port, argv_sig, transport
             )
 
         return sign
@@ -8311,7 +8917,7 @@ class TestOrphanForwarderReclaim:
             sign = self._pin_identity_key(monkeypatch)
             start = pc.process_start_time(proc.pid)
             assert start, "test needs a readable start-time identity"
-            reg, mgr = self._mgr(tmp_path, base_port=54300)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             # What the pre-kill gateway persisted: port + signed child identity.
             reg.update(
@@ -8329,9 +8935,11 @@ class TestOrphanForwarderReclaim:
             # (a) the old forwarder process is not alive…
             assert proc.wait(timeout=10) is not None
             # …and its port is released.
-            deadline = time.monotonic() + 5.0
-            while not _is_port_free(port) and time.monotonic() < deadline:
-                time.sleep(0.05)
+            await async_wait_until(
+                lambda: _is_port_free(port),
+                off_loop=True,
+                describe=lambda: f"port {port} is still bound",
+            )
             assert _is_port_free(port), "reclaimed forwarder's port was not released"
             # The connect succeeds regardless of which loopback port it lands on.
             # It asserts only that a valid port was recorded, not a DIFFERENT one:
@@ -8368,7 +8976,7 @@ class TestOrphanForwarderReclaim:
         sign = self._pin_identity_key(monkeypatch)
         seen: dict = {}
 
-        def capture(pid, start, expected_argv, port, tree, audit):
+        def capture(pid, start, expected_argv, port, tree, audit, expected_argv_sig=""):
             seen["argv"] = list(expected_argv)
             return "identity_mismatch"
 
@@ -8378,7 +8986,7 @@ class TestOrphanForwarderReclaim:
         holder.listen(1)
         port = holder.getsockname()[1]
         try:
-            reg, mgr = self._mgr(tmp_path, base_port=54350)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             pid, start = 424242, "12345"
             reg.update(
@@ -8442,7 +9050,7 @@ class TestOrphanForwarderReclaim:
             monkeypatch.setattr(stm, "_RECLAIM_TERM_GRACE_SECS", 0.3)
             start = pc.process_start_time(proc.pid)
             assert start
-            reg, mgr = self._mgr(tmp_path, base_port=54700)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             reg.update(
                 "cd-1",
@@ -8489,7 +9097,7 @@ class TestOrphanForwarderReclaim:
             # surrogate = the malformed-text shapes that must read as
             # verification failure, never crash the connect path.
             for forged_sig in ("", "deadbeef" * 8, "签名不对", "\udc80bad"):
-                reg, mgr = self._mgr(tmp_path, base_port=55000)
+                reg, mgr = self._mgr(tmp_path)
                 reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
                 reg.update(
                     "cd-1",
@@ -8527,7 +9135,7 @@ class TestOrphanForwarderReclaim:
             )
             sign = self._pin_identity_key(monkeypatch)
             start = pc.process_start_time(proc.pid) or "x"
-            reg, mgr = self._mgr(tmp_path, base_port=54900)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             reg.update(
                 "cd-1",
@@ -8564,7 +9172,7 @@ class TestOrphanForwarderReclaim:
             )
             self._fake_orphan(monkeypatch)
             sign = self._pin_identity_key(monkeypatch)
-            reg, mgr = self._mgr(tmp_path, base_port=54800)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             reg.update(
                 "cd-1",
@@ -8596,7 +9204,7 @@ class TestOrphanForwarderReclaim:
             self._fake_orphan(monkeypatch)
             sign = self._pin_identity_key(monkeypatch)
             start = pc.process_start_time(proc.pid) or "x"
-            reg, mgr = self._mgr(tmp_path, base_port=54400)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             # Even with a CORRECT start-time identity the argv gate must still
             # refuse: the real argv builder expects `ssh …`, not python.
@@ -8615,6 +9223,248 @@ class TestOrphanForwarderReclaim:
             assert proc.poll() is None, "a foreign process holding the port was signalled"
             inst = reg.get("cd-1")
             assert inst.local_port != port  # allocated around the occupied port
+        finally:
+            self._cleanup(proc)
+
+    def _spawn_shebang_port_holder(self, tmp_path):
+        """Like :meth:`_spawn_port_holder`, but run through a ``#!`` script.
+
+        The kernel rewrites a shebang child's argv to ``<interpreter> <script>``,
+        the same thing it does to an ``aws`` CLI v1 entrypoint. So the command
+        line anyone would rebuild (just the script) never equals what the
+        kernel reports for the running child.
+        """
+        script = tmp_path / "fake-forwarder"
+        script.write_text(
+            f"#!{sys.executable}\n"
+            "import socket, sys, time\n"
+            "s = socket.socket()\n"
+            "s.bind(('127.0.0.1', 0))\n"
+            "s.listen(1)\n"
+            "sys.stdout.write('%d\\n' % s.getsockname()[1])\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(120)\n"
+        )
+        script.chmod(0o700)
+        proc = subprocess.Popen(
+            [str(script)],
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            port = int(proc.stdout.readline().strip())
+        except Exception:
+            proc.kill()
+            raise
+        threading.Thread(target=proc.wait, daemon=True).start()
+        return proc, port, [str(script)]
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows records no argv fingerprint; a shebang child is POSIX-only",
+    )
+    @pytest.mark.parametrize("flip_compression", [False, True])
+    @pytest.mark.asyncio
+    async def test_recorded_argv_fingerprint_survives_command_line_drift(
+        self, tmp_path, monkeypatch, flip_compression
+    ):
+        """A forwarder whose rebuilt command line differs from its live argv
+        is still reclaimed when its spawn-time fingerprint matches.
+
+        The child runs through a shebang, so its kernel argv carries the
+        interpreter the rebuilt argv lacks; with ``flip_compression`` the
+        compression setting changes between spawn and reclaim as well. The
+        rebuild is pointed at the script alone (what a v1 ``aws`` rebuild looks
+        like), so only the recorded fingerprint can confirm the identity.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.port_allocator import _is_port_free
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, rebuilt = self._spawn_shebang_port_holder(tmp_path)
+        try:
+            monkeypatch.setattr(
+                stm,
+                "_build_ssh_tunnel_argv",
+                lambda host, lp, rp, compression=True: list(rebuilt),
+            )
+            self._fake_orphan(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid)
+            argv_sig = pc.process_argv_fingerprint(proc.pid)
+            assert start and argv_sig, "test needs a readable spawn-time identity"
+            # The drift this test is about: the rebuild is not the live argv.
+            assert not pc.process_argv_matches_exact(proc.pid, rebuilt)
+            reg, mgr = self._mgr(tmp_path)
+            if flip_compression:
+                mgr._ssh_compression = not mgr._ssh_compression
+            reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+            reg.update(
+                "cd-1",
+                local_port=port,
+                forwarder_pid=proc.pid,
+                forwarder_start=start,
+                forwarder_argv_sig=argv_sig,
+                forwarder_sig=sign("cd-1", proc.pid, start, port, argv_sig),
+                was_connected=True,
+            )
+
+            st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert proc.wait(timeout=10) is not None, "the drifted orphan was not reclaimed"
+            # "reclaimed" is only reported once the port let go.
+            assert _is_port_free(port)
+        finally:
+            self._cleanup(proc)
+
+    @pytest.mark.skipif(os.name == "nt", reason="ppid probe of a posix-spawned stand-in")
+    @pytest.mark.asyncio
+    async def test_recorded_argv_fingerprint_mismatch_is_never_signalled(
+        self, tmp_path, monkeypatch
+    ):
+        """A signed record whose fingerprint is not the live process's argv is
+        left alone, even when the rebuilt command line would have matched."""
+        import hashlib
+
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, argv = self._spawn_port_holder()
+        try:
+            # The rebuild matches, so only the fingerprint can refuse.
+            monkeypatch.setattr(
+                stm,
+                "_build_ssh_tunnel_argv",
+                lambda host, lp, rp, compression=True: list(argv),
+            )
+            self._fake_orphan(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid) or "x"
+            other = hashlib.sha256(b"ssh\0-N\0some-other-forward").hexdigest()
+            reg, mgr = self._mgr(tmp_path)
+            reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+            reg.update(
+                "cd-1",
+                local_port=port,
+                forwarder_pid=proc.pid,
+                forwarder_start=start,
+                forwarder_argv_sig=other,
+                forwarder_sig=sign("cd-1", proc.pid, start, port, other),
+                was_connected=True,
+            )
+
+            st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert proc.poll() is None, "a process with a different argv was signalled"
+        finally:
+            self._cleanup(proc)
+
+    @pytest.mark.skipif(os.name == "nt", reason="ppid probe of a posix-spawned stand-in")
+    @pytest.mark.asyncio
+    async def test_dropping_the_signed_fingerprint_does_not_fall_back(self, tmp_path, monkeypatch):
+        """Erasing ``forwarder_argv_sig`` from a record signed with it fails the
+        MAC, so the record cannot be pushed back onto the rebuilt-argv check."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        proc, port, argv = self._spawn_port_holder()
+        seen: list = []
+        try:
+            monkeypatch.setattr(
+                stm,
+                "_build_ssh_tunnel_argv",
+                lambda host, lp, rp, compression=True: list(argv),
+            )
+            monkeypatch.setattr(
+                stm, "_verify_and_reclaim_forwarder", lambda *a, **k: seen.append(a) or "x"
+            )
+            self._fake_orphan(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid) or "x"
+            reg, mgr = self._mgr(tmp_path)
+            reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+            reg.update(
+                "cd-1",
+                local_port=port,
+                forwarder_pid=proc.pid,
+                forwarder_start=start,
+                forwarder_argv_sig="",  # erased after the gateway signed it
+                forwarder_sig=sign("cd-1", proc.pid, start, port, "ab" * 32),
+                was_connected=True,
+            )
+
+            st = await mgr.connect("cd-1")
+
+            assert st.state == TunnelState.CONNECTED
+            assert seen == [], "a record with a broken signature reached the identity check"
+            assert proc.poll() is None
+        finally:
+            self._cleanup(proc)
+
+    def test_forwarder_sig_message_keeps_the_older_four_field_form(self):
+        """An empty fingerprint signs exactly what older gateways signed, so
+        their records still verify; a fingerprint changes the signature."""
+        import hashlib
+        import hmac
+
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+
+        key = b"k" * 32
+        old = hmac.new(key, b"cd-1\x004242\x00S1\x0054300", hashlib.sha256).hexdigest()
+        assert stm._forwarder_identity_sig(key, "cd-1", 4242, "S1", 54300) == old
+        assert stm._forwarder_identity_sig(key, "cd-1", 4242, "S1", 54300, "") == old
+        assert stm._forwarder_identity_sig(key, "cd-1", 4242, "S1", 54300, "ab" * 32) != old
+        # The spawn transport is signed with the fingerprint.
+        assert stm._forwarder_identity_sig(
+            key, "cd-1", 4242, "S1", 54300, "ab" * 32, "ssh"
+        ) != stm._forwarder_identity_sig(key, "cd-1", 4242, "S1", 54300, "ab" * 32, "ssm")
+
+    @pytest.mark.skipif(os.name == "nt", reason="ppid probe of a posix-spawned stand-in")
+    @pytest.mark.asyncio
+    async def test_switched_transport_is_refused_before_any_signal(self, tmp_path, monkeypatch):
+        """A record signed for an ssh child is refused once the instance's
+        settings say SSM, so the SSM group signal never reaches a child that
+        shares the dead gateway's process group."""
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+        from kiro_crew import platform_compat as pc
+
+        proc, port, _argv = self._spawn_port_holder()
+        seen: list = []
+        try:
+            monkeypatch.setattr(
+                stm, "_verify_and_reclaim_forwarder", lambda *a, **k: seen.append(a) or "x"
+            )
+            self._fake_orphan(monkeypatch)
+            sign = self._pin_identity_key(monkeypatch)
+            start = pc.process_start_time(proc.pid) or "x"
+            argv_sig = "ab" * 32
+            reg, mgr = self._mgr(tmp_path)
+            reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
+            params = stm._TransportParams(method="ssm", ssm_target="i-0123456789abcdef0")
+            assert params.forwards_over_ssm
+            reg.update(
+                "cd-1",
+                local_port=port,
+                forwarder_pid=proc.pid,
+                forwarder_start=start,
+                forwarder_argv_sig=argv_sig,
+                forwarder_sig=sign("cd-1", proc.pid, start, port, argv_sig, "ssh"),
+            )
+
+            await mgr._reclaim_orphan_forwarder(reg.get("cd-1"), params)
+            assert seen == [], "a transport-switched record reached the signal path"
+
+            # Control: the same record signed for SSM gets past the MAC.
+            reg.update("cd-1", forwarder_sig=sign("cd-1", proc.pid, start, port, argv_sig, "ssm"))
+            await mgr._reclaim_orphan_forwarder(reg.get("cd-1"), params)
+            assert len(seen) == 1
+            assert proc.poll() is None
         finally:
             self._cleanup(proc)
 
@@ -8746,7 +9596,7 @@ class TestOrphanForwarderReclaim:
             sign = self._pin_identity_key(monkeypatch)
             start = pc.process_start_time(proc.pid)
             assert start, "test needs a readable start-time identity"
-            reg, mgr = self._mgr(tmp_path, base_port=55100)
+            reg, mgr = self._mgr(tmp_path)
             self._record(
                 reg, port=port, pid=proc.pid, start=start, sig=sign("cd-1", proc.pid, start, port)
             )
@@ -8755,7 +9605,7 @@ class TestOrphanForwarderReclaim:
             monkeypatch.setattr(
                 stm,
                 "_verify_and_reclaim_forwarder",
-                lambda pid, start, argv_, port_, tree, audit: reached.append(
+                lambda pid, start, argv_, port_, tree, audit, argv_sig="": reached.append(
                     (pid, start, list(argv_), port_, tree)
                 )
                 or "identity_mismatch",
@@ -8793,7 +9643,7 @@ class TestOrphanForwarderReclaim:
             self._windows_orphan_gate(monkeypatch, parent="older")
             sign = self._pin_identity_key(monkeypatch)
             start = pc.process_start_time(proc.pid) or "x"
-            reg, mgr = self._mgr(tmp_path, base_port=55200)
+            reg, mgr = self._mgr(tmp_path)
             self._record(
                 reg, port=port, pid=proc.pid, start=start, sig=sign("cd-1", proc.pid, start, port)
             )
@@ -8818,10 +9668,13 @@ class TestOrphanForwarderReclaim:
         self, tmp_path, monkeypatch, orphan_test, mismatch
     ):
         """With the orphan gate OPEN on either platform's test, a forged MAC, a
-        start-time mismatch or a foreign argv still signals nothing."""
+        start-time mismatch or a foreign argv still signals nothing.
+
+        Reclaim needs the recorded listener, not a replacement tunnel: allocating
+        a replacement adds a probe-to-bind race unrelated to identity refusal.
+        """
         import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew import platform_compat as pc
-        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         proc, port, argv = self._spawn_port_holder()
         try:
@@ -8839,12 +9692,13 @@ class TestOrphanForwarderReclaim:
             start = pc.process_start_time(proc.pid) or "x"
             recorded = "not-the-recorded-identity" if mismatch == "start" else start
             sig = "deadbeef" * 8 if mismatch == "sig" else sign("cd-1", proc.pid, recorded, port)
-            reg, mgr = self._mgr(tmp_path, base_port=55300)
+            reg, mgr = self._mgr(tmp_path)
             self._record(reg, port=port, pid=proc.pid, start=recorded, sig=sig)
 
-            st = await mgr.connect("cd-1")
+            params = stm._TransportParams(method="ssh", ssh_host="cd-1-alias")
+            async with mgr._lock:
+                await mgr._reclaim_orphan_forwarder(reg.get("cd-1"), params)
 
-            assert st.state == TunnelState.CONNECTED
             assert proc.poll() is None, f"a {mismatch}-mismatched forwarder was signalled"
         finally:
             self._cleanup(proc)
@@ -8857,7 +9711,7 @@ class TestOrphanForwarderReclaim:
 
         proc, port, _argv = self._spawn_port_holder()
         try:
-            reg, mgr = self._mgr(tmp_path, base_port=54500)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             reg.update("cd-1", local_port=port, was_connected=True)  # identity stays unset
 
@@ -8899,7 +9753,7 @@ class TestOrphanForwarderReclaim:
             s.close()
 
             start = pc.process_start_time(proc.pid) or "x"
-            reg, mgr = self._mgr(tmp_path, base_port=54600)
+            reg, mgr = self._mgr(tmp_path)
             reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1")
             reg.update(
                 "cd-1",

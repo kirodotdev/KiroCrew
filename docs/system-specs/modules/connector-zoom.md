@@ -32,9 +32,8 @@ The concerns that are generic across every provider stream live in
   vendor locator.
 - **Credential axis** — Zoom's two auth modes are the shared `CredentialMode`
   values `oauth_user` and `service_to_service` (Zoom issues no
-  `fine_grained_pat`), not a parallel Zoom enum; and an operation is described
-  by the shared `OperationDescriptor`'s `service_id`/`operation_kind`/`effect`/
-  `credential_modes`.
+  `fine_grained_pat`), not a parallel Zoom enum. The Zoom vendor package defines
+  no operation descriptor of its own.
 
 What stays **vendor logic** here is everything Zoom-specific: the UUID
 double-encoding rule, the recurrence/occurrence and time semantics, the
@@ -108,17 +107,16 @@ refuses to collapse them.** An account-level Server-to-Server credential does
 **not**, by the fact of being account-level, prove it can (or cannot) target a
 specified human host: reaching a specific host depends on the scopes the account
 admin actually authorized for that app, which is a per-operation, per-account
-fact, not an inference from the credential's mode. So an unverified
-`(auth_mode, host)` combination stays **`unknown`** in either direction — it is
-never asserted reachable because the credential is account-level, and never
-asserted unreachable for the same reason. Every create-path operation therefore
-**reads back `host_id` and asserts it equals the requested target**, because a
-create that silently ran against a different host than intended is a correctness
-failure the credential's mode alone cannot rule out. An earlier `W00`-derived
-causal claim — that an account-level Server-to-Server credential settles host
-reachability on its own — is **withdrawn**; it generalized from the credential's
-name rather than from Zoom's own per-operation scope grants, and this document
-supersedes it. Verification of a `(auth_mode, operation)` pair is done against
+fact, not an inference from the credential's mode. These are obligations on a
+future create-path adapter; this slice has no create-path operation, and
+`HOST_REACHABILITY_UNKNOWN` has no consumer yet. An unverified `(auth_mode, host)`
+combination must stay **`unknown`** in either direction — never asserted reachable
+because the credential is account-level, and never asserted unreachable for the same
+reason — and every create-path operation must **read back `host_id` and assert it
+equals the requested target**, because a create that silently ran against a
+different host than intended is a correctness failure the credential's mode alone
+cannot rule out. An account-level Server-to-Server credential does not settle host
+reachability on its own. Verification of a `(auth_mode, operation)` pair is done against
 Zoom's own official scope documentation and the account/host reachability those
 scopes actually grant, per operation, never assumed from the mode.
 
@@ -246,9 +244,8 @@ per Zoom's official Meetings API reference, a host on a **Pro, Business, or
 higher** subscription plan with the **Meeting Summary with AI Companion** user
 setting enabled (the Webinar variant needs the Webinar Summary setting), and
 End-to-End Encrypted meetings do not support summaries. The base AI Companion
-summary is therefore **not** a Basic/free-tier feature. This resolves the `W00`
-"minimum license tier unknown" gap to an official-baseline fact: the minimum
-tier is a paid licensed plan (Pro or above), not free. **Summary templates**
+summary is therefore **not** a Basic/free-tier feature: the minimum tier is a paid
+licensed plan (Pro or above). **Summary templates**
 (`summary_template_id`, the "Get user summary templates" API) are a further,
 separately-gated capability of **Custom AI Companion** (a paid add-on), distinct
 from the base summary tier. A broader "AI meeting templates" REST surface beyond
@@ -298,25 +295,22 @@ Zoom credential shape survives — it is a detector, not a second redaction
 policy. Both the detector and the vendor redactor are self-contained pure logic,
 unit-testable without a socket.
 
-**Named follow-up (a later slice, not this one).** The OAuth `access_token` /
-`refresh_token` FIELD-shape patterns `redact_zoom_secrets` scrubs are
-OAuth-generic, not Zoom-specific — only the signed `/rec/` media URL shape is
-genuinely Zoom's. Carrying the generic field-shape patterns vendor-side means
-each later connector slice (`W12`+) would re-implement them or leak token fields
-past the site-wide pass. The steady end state is that those generic patterns
-live in the control plane's site-wide scanner (a small, separately-scoped
-follow-up under W01's ownership of `control_plane`), leaving only the Zoom-shape
-`/rec/` URL redaction here. This slice does not make that change — it does not
-ghost-write the shared module — but names it so the direction is on record.
+**Known limitation.** The OAuth `access_token` / `refresh_token` FIELD-shape
+patterns `redact_zoom_secrets` scrubs are OAuth-generic, not Zoom-specific — only
+the signed `/rec/` media URL shape is genuinely Zoom's. Carried vendor-side, each
+later connector would have to re-implement them or leak token fields past the
+site-wide pass. Those generic patterns belong in the control plane's site-wide
+scanner, leaving only the Zoom-shape `/rec/` URL redaction here.
 
 ## Negative fault tests (all six)
 
 The test suite pins six negative-path behaviors, one per real failure mode this
 contract has:
 
-1. **Un-double-encoded UUID** — a UUID starting with `/` (or containing `//`)
-   sent without double-encoding maps to the ambiguous-`3001` class, not to a
-   genuine absence.
+1. **Un-double-encoded UUID** — `needs_double_encoding` recognizes a UUID that
+   starts with `/` (or contains `//`), and `classify_error(3001)` classifies `3001`
+   as ambiguous rather than a genuine absence. The two are independent functions;
+   nothing maps one to the other.
 2. **Recurrence update missing `occurrence_id`** — an update meant for a single
    occurrence but missing `occurrence_id` is recognized as hitting the parent
    series, not silently accepted as the intended single-occurrence edit.
@@ -333,18 +327,10 @@ contract has:
    placed into an error/log string is caught by the redaction predicate and does
    not survive.
 
-## Evidence provenance
+## Sources
 
 The contract facts above are drawn from Zoom's own official developer
 documentation (the `developers.zoom.us` Meetings and Reports API references and
-Zoom support articles on AI Companion licensing), verified pointwise for the
-four items `W00` had left unresolved: the recording-archive REST surface, the AI
-Companion summary minimum license tier, the reports/devices family shape, and AI
-meeting templates. Community forum posts were treated as untrusted and were not
-used to assert any endpoint. Where an item could not be confirmed against an
-official rendered page it is recorded as `unknown` / `not_yet_sourced` rather
-than guessed; no requirement is deleted for lack of a source, and no other
-provider was rescanned. Reusable `W00` evidence (the campaign's Zoom operation
-catalog, `auth_facts`, and per-operation readback assertions) is referenced
-rather than re-derived, and its `unknown`-status entries are treated as unknown,
-not as vendor-proven.
+Zoom support articles on AI Companion licensing). Community forum posts are not
+used to assert any endpoint. An item that cannot be confirmed against an official
+page is recorded as `unknown` / `not_yet_sourced` rather than guessed.

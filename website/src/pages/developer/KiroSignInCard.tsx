@@ -8,23 +8,11 @@ import { Btn, Card, CardTitle } from '../../components/ui'
 import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { signInLapsed } from './kiroSignInState'
 
 // Same cache key the embedded flow reads status under (KasLoginGate.QUERY_KEY):
 // a sign-out here must invalidate the flow's query, not a private copy of it.
 const STATUS_QUERY_KEY = ['kas-login'] as const
-
-/**
- * Whether the stored sign-in can still do its job. Two independent verdicts
- * from the gateway, both token-free: `usable` is the spawn-time predicate (an
- * expired access token with nothing to renew it), `refresh_rejected` is the
- * issuer's refusal recorded by the last refresh attempt. Either one means the
- * agents will be told they are not signed in until the user signs in again --
- * and NOTHING falls back to kiro-cli's login on its own, which is why the card
- * has to say so rather than let a live-looking account sit there.
- */
-function signInLapsed(status: KasLoginStatus): boolean {
-  return !status.usable || status.refresh_rejected
-}
 
 function SignedInSummary({
   status,
@@ -67,7 +55,7 @@ function SignedInSummary({
       <div className="flex flex-wrap items-start gap-3">
         <div
           className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-            lapsed ? 'bg-warn/15 text-warn' : 'bg-ok/15 text-ok'
+            lapsed ? 'bg-warn/15 text-warn-text' : 'bg-ok/15 text-ok-text'
           }`}
           aria-hidden="true"
         >

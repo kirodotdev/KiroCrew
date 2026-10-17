@@ -131,7 +131,11 @@ class TestNoSurfaceReimplementsThePipeline:
     tests in ``test_spawn_agent_roster``."""
 
     def test_the_grammar_filter_is_applied_in_exactly_one_place(self) -> None:
-        subagent_src = pathlib.Path(sa.__file__).read_text(encoding="utf-8")
+        family = pathlib.Path(sa.__file__)
+        subagent_src = "".join(
+            path.read_text(encoding="utf-8")
+            for path in (family, *sorted(family.with_name("subagent_parts").glob("*.py")))
+        )
         spawn_src = pathlib.Path(spawn_tools.__file__).read_text(encoding="utf-8")
         assert (
             subagent_src.count("is_registered_agent_name(n)") == 1

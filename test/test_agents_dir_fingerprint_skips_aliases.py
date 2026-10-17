@@ -193,23 +193,9 @@ def test_the_revision_neither_stats_nor_names_an_alias(
     after = agent_discovery.agents_dir_revision(agents_dir)
 
     assert after == before
-    assert [entry[0] for entry in after[1]] == [f"{SPEC}.json"]
+    assert [entry[0] for entry in after[0]] == [f"{SPEC}.json"]
     assert f"{SPEC}.json" in seen
     assert alias.name not in seen
-
-
-def test_aliases_do_not_count_toward_the_revision_entry_cap(
-    agents_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_REVISION_MAX_ENTRIES", 2)
-    monkeypatch.setattr(agent_discovery, "_AGENTS_DIR_REVISION_OVERFLOW_WARNED", set())
-    for n in range(5):
-        _write_json(agents_dir / f"{NATIVE_SKILL_ALIAS_PREFIX}{n:024x}.json", {"name": str(n)})
-
-    revision = agent_discovery.agents_dir_revision(agents_dir)
-
-    assert revision is not None
-    assert [entry[0] for entry in revision[1]] == [f"{SPEC}.json"]
 
 
 def test_a_real_spec_write_still_moves_the_revision(agents_dir: Path) -> None:

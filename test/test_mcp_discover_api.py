@@ -112,6 +112,14 @@ def fake_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _rebuild_that_writes(**kwargs) -> Path:
+    """A rebuild that wrote the spec: it reports the write the way the real one does."""
+    wrote_out = kwargs.get("_wrote_out")
+    if wrote_out is not None:
+        wrote_out.append(True)
+    return Path("/dev/null")
+
+
 @pytest.fixture
 def sandbox(fake_home, monkeypatch):
     """Sandbox the mcp.py module-level config paths + collaborator seams.
@@ -132,7 +140,7 @@ def sandbox(fake_home, monkeypatch):
 
     import kiro_crew.agent as agent_mod
 
-    rebuild = MagicMock()
+    rebuild = MagicMock(side_effect=_rebuild_that_writes)
     monkeypatch.setattr(agent_mod, "rebuild_agent_config", rebuild)
 
     return SimpleNamespace(
@@ -440,6 +448,7 @@ class TestDiscoverInstall:
                 "required_env": ["WEATHER_API_KEY"],
                 "method": "npx",
                 "enabled": False,
+                "agent_spec_rewritten": True,
             }
             # The translated spec landed in the KiroCrew scope — DISABLED,
             # because required env is unset: enabling after configuration is
@@ -456,6 +465,24 @@ class TestDiscoverInstall:
             # SEL-logged with the install operation.
             ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
             assert "mcp_discover_install" in ops
+        finally:
+            await client.close()
+
+    async def test_install_reports_a_declined_rebuild(self, sandbox, fake_sel, reset_registry):
+        """The shared-home guard refused the write: saved, but not live yet."""
+        sandbox.rebuild.side_effect = lambda **_: Path("/dev/null")
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["name"] == "weather"
+            assert data["agent_spec_rewritten"] is False
+            written = json.loads(sandbox.kirocrew_json.read_text(encoding="utf-8"))
+            assert "weather" in written["mcpServers"], "the install must stay saved"
         finally:
             await client.close()
 

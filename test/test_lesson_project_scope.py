@@ -299,7 +299,7 @@ class TestSkillLoaderSharesTheGate:
 
         monkeypatch.setattr(skills_mod, "project_scope_satisfied", _spy)
         assert skills_mod.SkillsLoader._repo_scope_satisfied("src/pkg", tmp_path) is True
-        # A second implementation in skills.py would leave this empty, which is the
+        # A second implementation in skills_selection.py would leave this empty, which is the
         # drift this test exists to prevent.
         assert calls == [("src/pkg", tmp_path)]
 

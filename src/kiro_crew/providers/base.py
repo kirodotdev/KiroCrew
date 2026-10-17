@@ -45,6 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
     from kiro_crew.recovery.ladder import InfraError
+    from kiro_crew.trust_patterns import GrantDeadline
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -105,6 +106,18 @@ class LLMProvider(ABC):
     #: provider started anywhere else starts BACKGROUND.
     start_priority: StartPriority = StartPriority.BACKGROUND
 
+    #: True only on a provider whose ``supports_effort()`` reports the live
+    #: model. The base ``supports_effort()`` returns a placeholder False, so a
+    #: caller that acts on a False answer must check this first.
+    reports_effort_support: bool = False
+
+    #: True only on a provider whose ``approve_tool`` takes ``withdraw_if``, a
+    #: predicate its transport reads again after the security floor and under
+    #: the write lock right before the approval is written; once it holds,
+    #: nothing is written and ``permission_floor.ApprovalWithdrawn`` is raised.
+    #: Read from the provider's TYPE, so a loose mock cannot opt in by accident.
+    approval_withdrawable: bool = False
+
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
         """Private prompt receipts belong to this provider, never the builder."""
@@ -130,6 +143,16 @@ class LLMProvider(ABC):
         """Exact documents supplied at native startup, empty without evidence."""
         return {}
 
+    @property
+    def member_dispatch_mounted(self) -> bool | None:
+        """Whether this session holds the member session-control tools.
+
+        ``None`` means no evidence: the context builder then falls back to the
+        configured member backend's capability. A provider that composes a
+        session's MCP array answers True/False from that composition.
+        """
+        return None
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""
@@ -139,16 +162,35 @@ class LLMProvider(ABC):
         """Gracefully shut down."""
 
     @abstractmethod
-    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+    async def stream(
+        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+    ) -> AsyncIterator[LLMEvent]:
         """Send a message and yield events.
 
+        ``timeout`` is an optional transport budget captured by an outer owner;
+        ``None`` keeps the provider's normal live-config resolution.
         ``allow_image=False`` sends *message* as text only: no image path in it
         is read or inlined as an image block.
         """
         yield LLMEvent(kind=EVENT_COMPLETE)  # pragma: no cover
 
+    def prompt_timeout_for_deadline(self, deadline: float) -> float | None:
+        """Transport budget for an immutable outer deadline, if supported.
+
+        ``None`` preserves the legacy ``stream(message)`` call shape. Providers
+        that can honor an explicit immutable budget override this method; callers
+        resolve it through ``kiro_crew.agent_sdk.capture_prompt_timeout``.
+        """
+        return None
+
     @abstractmethod
-    async def approve_tool(self, request_id: str | int, *, always: bool = False) -> bool:
+    async def approve_tool(
+        self,
+        request_id: str | int,
+        *,
+        always: bool = False,
+        deadline: GrantDeadline | None = None,
+    ) -> bool:
         """Approve a pending tool permission request and report whether it was sent.
 
         Return ``True`` after sending an allow answer. Return ``False`` when the
@@ -159,6 +201,10 @@ class LLMProvider(ABC):
         persistent approval (ACP backends echoing optionId, claude-agent-acp
         emitting an addRules suggestion) should honor it; others may treat
         it as a synonym for one-shot allow.
+
+        ``deadline`` is set only by an approval a timed grant backs. Once it has
+        passed, send nothing, leave the request pending, and raise
+        :class:`~kiro_crew.trust_patterns.GrantEnded` so the caller prompts.
         """
 
     @abstractmethod
@@ -356,13 +402,24 @@ class LLMProvider(ABC):
 
     @property
     def member_capabilities_supported(self) -> bool:
-        """Whether a dedicated startup can load a complete member agent spec."""
+        """Whether a dedicated startup can verify native loading or a saved projection."""
+
+        return False
+
+    @property
+    def member_tool_limits_supported(self) -> bool:
+        """Whether a saved member spec's per-tool ``disabledTools`` is honoured."""
         return False
 
     @property
     def loaded_capability_template(self) -> str:
-        """Confirmed active full-spec template; empty means no loading evidence."""
+        """Confirmed saved template; projection gaps are reported separately."""
         return ""
+
+    @property
+    def capability_projection_gaps(self) -> tuple[str, ...]:
+        """Saved fields this runtime cannot demonstrate applying."""
+        return ()
 
     @property
     def exit_code(self) -> int | None:
@@ -686,6 +743,19 @@ class LLMProvider(ABC):
         the ACP implementations answer from
         ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership."""
         return True
+
+    @property
+    def harness_managed_compaction_backend(self) -> str | None:
+        """Backend id when the harness compacts on its own initiative, else ``None``.
+
+        Asked by the automatic threshold, never by a manual ``/compact``. A
+        harness that summarizes unasked and reports it is left to do so at the
+        threshold, even when Crew can also hand it a manual ``/compact``.
+        Default ``None``: a provider that has not named one is compacted by
+        Crew at the threshold as before. The ACP implementations answer from
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`` membership. Consumers must
+        act only on a non-empty ``str`` value."""
+        return None
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

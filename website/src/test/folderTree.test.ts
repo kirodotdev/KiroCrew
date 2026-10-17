@@ -137,7 +137,7 @@ describe('collectFolderSubtreeIds', () => {
 
 describe('bySidebarOrder', () => {  /**
    * The single definition every surface that draws siblings must use — the tree
-   * walk here, and both of ChatSidebar's nested renders. A render path with its
+   * walk here, and both of chat-sidebar/folderBlocks.tsx's and chat-sidebar/boardLane.tsx's nested renders. A render path with its
    * own comparator (or none) shows a sequence the person never chose, which is
    * what the nested subfolder render did before `chat_folder_move` could set a
    * position at all.

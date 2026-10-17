@@ -9,8 +9,8 @@ masked preview + presence boolean; raw token values are write-only.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
-import os
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
-        _write_env_off_loop,
+        _write_env_or_roll_back,
         channel_restart_required,
         clean_session_folder,
         ensure_channel_folder,
@@ -121,7 +121,8 @@ async def api_webex_config_get(request: web.Request) -> web.Response:
     )
 
     cfg = KiroCrewConfig.load()
-    creds = cfg.load_credentials()
+    # Off-loop: a secret:// reference is read and decrypted from the vault.
+    creds = await asyncio.to_thread(cfg.load_credentials)
     token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
     state: DashboardState = request.app["state"]
     return web.json_response(
@@ -407,9 +408,20 @@ async def _webex_config_save(request: web.Request) -> web.Response:
                 except ConfigReadError:
                     return _deny("config.json is corrupt", status=500)
 
-            # Create the configured session folder now, on this user-initiated save,
-            # so the reconcile path never has to write the folder store. Best-effort:
-            # a failure leaves conversations unfiled until the next save.
+            if env_updates:
+                # A failed .env write undoes the config commit above, so a refused
+                # save changes nothing (see _write_env_or_roll_back).
+                rollback = (
+                    functools.partial(_cfg_write.rollback, "Webex")
+                    if changes or blank_keys
+                    else None
+                )
+                await _write_env_or_roll_back(env_updates, rollback)
+
+            # Create the configured session folder only once the .env write above has
+            # landed, so a refused save leaves no new or renamed folder. Doing it on this
+            # user-initiated save means the reconcile path never writes the folder store.
+            # Best-effort: a failure leaves conversations unfiled until the next save.
             _folder_name = stored_folder_name(webex_cfg.get("session_folder"))
             if _folder_name:
                 _state = request.app.get("state")
@@ -420,41 +432,6 @@ async def _webex_config_save(request: web.Request) -> web.Response:
                         _folder_name,
                         relabel="session_folder" in changes,
                     )
-            if env_updates:
-                # Off-loop: the .env write is blocking file IO (lock, temp write,
-                # owner-only lockdown, replace) and must not block the event loop.
-                #
-                # Cancellation guard: see Teams save for the full rationale. Only
-                # roll config back when the .env write actually failed, not when
-                # cancellation arrived after the write already committed.
-                _env_write_task_wx: asyncio.Task[None] = asyncio.ensure_future(
-                    _write_env_off_loop(env_updates)
-                )
-                try:
-                    await asyncio.shield(_env_write_task_wx)
-                except asyncio.CancelledError:
-                    await asyncio.gather(_env_write_task_wx, return_exceptions=True)
-                    _env_exc_wx = (
-                        _env_write_task_wx.exception()
-                        if not _env_write_task_wx.cancelled()
-                        else None
-                    )
-                    if _env_exc_wx is not None:
-                        if changes or blank_keys:
-                            await _cfg_write.rollback("Webex")
-                    raise
-                except BaseException:
-                    # Roll config back so a failed .env write cannot leave the
-                    # NEW metadata paired with the OLD token on disk.
-                    if changes or blank_keys:
-                        await _cfg_write.rollback("Webex")
-                    raise
-                # Keep the live process environment in sync (see the Slack save path).
-                for key, new_val in env_updates.items():
-                    if new_val is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,

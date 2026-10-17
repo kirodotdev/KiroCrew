@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew import platform_compat
@@ -225,17 +226,53 @@ def require_memory_consolidation_session_key(session_key: str, expected_store: s
         raise ValueError("Consolidation session does not match the store")
 
 
-def local_owner_bootstrap_allowed(request: Any) -> bool:
-    """Require positive host provenance regardless of installed memory stores."""
+@dataclass(frozen=True)
+class LocalOwnerProvenance:
+    """Positive host provenance of a caller admitted to the local owner-token mint.
+
+    ``app`` names the app whose gateway-spawned backend owns the calling process,
+    read from the backend registry; it is ``None`` for an ordinary host process
+    the registry does not know. The mint stamps it into its audit record, so an
+    owner token minted by an app is attributed to that app. It is NOT a token
+    claim: an ``app``-scoped token is refused by the owner-dashboard check, so
+    carrying it in the token would withdraw the capability this admission grants.
+    """
+
+    app: str | None = None
+
+
+def local_owner_bootstrap_provenance(request: Any) -> LocalOwnerProvenance | None:
+    """Positive host provenance of the caller, or ``None`` when it is refused.
+
+    Admission is unchanged from the boolean gate: a kernel-identified peer with
+    a readable process incarnation that is either an ordinary host process or a
+    live backend this gateway spawned. The backend registry is consulted first
+    so that a spawned backend is attributed by name even where it also passes as
+    a host process (an unsandboxed backend shares the gateway's namespaces); the
+    order changes what is RECORDED, never what is admitted.
+    """
     try:
         pid = _request_peer_pid(request)
-        return bool(
-            isinstance(pid, int)
-            and platform_compat.get_process_start_id(pid)
-            and (_verified_host_process(pid) or _gateway_spawned_app_backend(pid))
-        )
+        if not (isinstance(pid, int) and platform_compat.get_process_start_id(pid)):
+            return None
+        try:
+            app = _gateway_spawned_app_backend(pid)
+        except Exception:
+            # A registry that cannot answer names no app; the host leg below still
+            # decides admission exactly as it does for a caller no backend owns.
+            app = None
+        if app:
+            return LocalOwnerProvenance(app=str(app))
+        if _verified_host_process(pid):
+            return LocalOwnerProvenance()
+        return None
     except Exception:
-        return False
+        return None
+
+
+def local_owner_bootstrap_allowed(request: Any) -> bool:
+    """Require positive host provenance regardless of installed memory stores."""
+    return local_owner_bootstrap_provenance(request) is not None
 
 
 def _verified_host_process(pid: int) -> bool:
@@ -247,13 +284,18 @@ def _verified_host_process(pid: int) -> bool:
     return sys.platform == "win32"
 
 
-def _gateway_spawned_app_backend(pid: int) -> bool:
-    """Recognize a live app backend launched and tracked by this gateway."""
+def _gateway_spawned_app_backend(pid: int) -> str | None:
+    """Name the live app backend launched and tracked by this gateway that owns *pid*.
+
+    ``None`` when no spawned backend owns the process, and when the backend
+    registry cannot be imported at all: an unanswerable question is a refusal of
+    this leg, never an admission.
+    """
     try:
-        from kiro_crew.apps.backend import spawned_backend_owns_pid
+        from kiro_crew.apps.backend import spawned_backend_owner
     except Exception:
-        return False
-    return spawned_backend_owns_pid(pid)
+        return None
+    return spawned_backend_owner(pid)
 
 
 def _request_peer_pid(request: Any) -> int | None:

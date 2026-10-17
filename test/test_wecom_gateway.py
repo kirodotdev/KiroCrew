@@ -228,7 +228,7 @@ class TestSkipReasonWarning:
     credentials" into one boolean, and the channel registry's enabled-only gate
     skips ``maybe_start_wecom`` entirely for both states -- so the skip reason
     is logged by :func:`warn_if_wecom_uncredentialed` at flag-computation time
-    (the production wiring is pinned in ``test_slack_gateway.py``). These pin
+    (the production wiring is pinned in ``test_slack_gateway_channels.py``). These pin
     the helper's contract: exactly one WARNING (visible at the default log
     level) naming exactly the missing credential name(s), values never logged,
     and complete silence when the channel is disabled or fully credentialed.

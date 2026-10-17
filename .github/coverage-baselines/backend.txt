@@ -35,7 +35,6 @@ src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/http.py 53.8  
 src/kiro_crew/apps/builtins/ops_mission_control/backend/providers/pagerduty.py 68.8   # 75/109
 src/kiro_crew/apps/builtins/workflows/server.py 61.2   # 82/134
 src/kiro_crew/apps/route_registry.py 51.9   # 67/129
-src/kiro_crew/cli_chat.py 29.5   # 46/156
 src/kiro_crew/cli_cloud.py 61.2   # 178/291
 src/kiro_crew/cloud/ui.py 51.4   # 90/175
 src/kiro_crew/cloud/wizard.py 65.8   # 283/430
@@ -46,7 +45,6 @@ src/kiro_crew/dashboard/_types.py 0.0   # 0/3
 src/kiro_crew/dashboard/handlers/weixin_qr.py 47.0   # 119/253
 src/kiro_crew/dashboard/handlers_channel.py 40.4   # 84/208
 src/kiro_crew/dashboard/ws.py 64.4   # 130/202
-src/kiro_crew/diagnostics.py 69.1   # 143/207
 src/kiro_crew/discord/gateway.py 19.6   # 10/51
 src/kiro_crew/emoji_list.py 0.0   # 0/1
 src/kiro_crew/instances/ssm_token_mint.py 21.5   # 17/79
@@ -56,8 +54,6 @@ src/kiro_crew/mcp_gateway/stub.py 66.6   # 353/530
 src/kiro_crew/mcp_gateway/transport.py 73.1   # 163/223
 src/kiro_crew/slack/allowlist.py 57.1   # 68/119
 src/kiro_crew/slack/client.py 67.2   # 246/366
-src/kiro_crew/suggestions.py 18.7   # 31/166
-src/kiro_crew/telegram/client.py 61.8   # 306/495
 src/kiro_crew/telegram/gateway.py 15.5   # 11/71
 src/kiro_crew/webex/client.py 64.1   # 173/270
 src/kiro_crew/weixin/gateway.py 20.4   # 11/54

@@ -8,6 +8,8 @@ const path = require("node:path");
 const {
   buildGatewayEnvironment,
   bundledKiroCliEnvironment,
+  bundledKasEnvironment,
+  staysWithinStagedTree,
   gatewayBytecodeEnvironment,
   GATEWAY_UTF8_ENV,
 } = require("../gateway-env");
@@ -220,6 +222,109 @@ test("a bundled copy that does not run here is NOT exported, and the reason is l
   assert.match(logged[1], /ENOENT/);
 });
 
+// --- bundled KAS engine -------------------------------------------------------
+
+/** A fake resources tree holding one staged KAS root; `files` maps path -> text. */
+function kasResources(files) {
+  const dirs = new Set();
+  for (const file of Object.keys(files)) {
+    let d = path.posix.dirname(file);
+    while (d && d !== "/" && !dirs.has(d)) {
+      dirs.add(d);
+      d = path.posix.dirname(d);
+    }
+  }
+  return {
+    statSync(target) {
+      if (dirs.has(target)) return { isDirectory: () => true };
+      if (target in files) return { isDirectory: () => false };
+      throw Object.assign(new Error(`ENOENT ${target}`), { code: "ENOENT" });
+    },
+    readFileSync(target) {
+      if (target in files) return files[target];
+      throw Object.assign(new Error(`ENOENT ${target}`), { code: "ENOENT" });
+    },
+  };
+}
+
+const KAS_RECORD = JSON.stringify({ node_bin: "node/node-v22.23.3-linux-x64/bin/node" });
+
+test("a staged KAS engine is exported as its arch root, read from BUNDLED-VERSION", () => {
+  // The shell carries no pin: the version it probes is whatever the build staged.
+  const fs = kasResources({
+    "/res/backend-dist/kas-arm64/BUNDLED-VERSION": "0.66.33\n",
+    "/res/backend-dist/kas-arm64/0.66.33/install.json": KAS_RECORD,
+  });
+  const env = bundledKasEnvironment(fs, path.posix, "/res", { arch: "arm64" });
+  assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas-arm64" });
+});
+
+test("a single-arch build's unsuffixed KAS root is found after the arch-suffixed one", () => {
+  const fs = kasResources({
+    "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas/0.66.33/install.json": KAS_RECORD,
+  });
+  const env = bundledKasEnvironment(fs, path.posix, "/res", { arch: "x64" });
+  assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas" });
+});
+
+test("a KAS root for another architecture is never exported", () => {
+  // A universal build that stages kas-x64 only is not a bundle for an arm64 shell:
+  // the wrong-arch Node must not be handed to the gateway.
+  const fs = kasResources({
+    "/res/backend-dist/kas-x64/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas-x64/0.66.33/install.json": KAS_RECORD,
+  });
+  assert.deepStrictEqual(bundledKasEnvironment(fs, path.posix, "/res", { arch: "arm64" }), {});
+});
+
+test("no KAS payload, a source checkout, or a root without its record exports nothing", () => {
+  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, "/res", { arch: "x64" }), {});
+  assert.deepStrictEqual(bundledKasEnvironment(kasResources({}), path.posix, undefined, { arch: "x64" }), {});
+  const noRecord = kasResources({ "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33" });
+  assert.deepStrictEqual(bundledKasEnvironment(noRecord, path.posix, "/res", { arch: "x64" }), {});
+});
+
+test("the staged Node is never run at boot, even when a spawnSync is handed in", () => {
+  // The route is off by default, so the shell spends nothing on it per launch: the
+  // build probed the staged Node, and a copy that cannot run here fails at session
+  // spawn for the users who turned it on.
+  const fs = kasResources({
+    "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",
+    "/res/backend-dist/kas/0.66.33/install.json": KAS_RECORD,
+  });
+  const env = bundledKasEnvironment(fs, path.posix, "/res", {
+    arch: "x64",
+    spawnSync: () => assert.fail("bundledKasEnvironment executed the staged Node"),
+  });
+  assert.deepStrictEqual(env, { KIROCREW_BUNDLED_KAS_DIR: "/res/backend-dist/kas" });
+});
+
+test("a staged record whose node_bin or version could leave the staged tree is never executed", () => {
+  // The backend seals the staged root read-only for sandboxed children; this is the
+  // shell's own fence over the same two fields, so a rewritten record cannot make
+  // the (unsandboxed) gateway run a file outside what the build staged.
+  const probe = { arch: "x64", log: () => {} };
+  for (const nodeBin of ["../../../tmp/evil", "/tmp/evil", "C:\\evil\\node.exe", "node/./bin/node", "", "node//bin"]) {
+    const fs = kasResources({
+      "/res/backend-dist/kas/BUNDLED-VERSION": "0.66.33",
+      "/res/backend-dist/kas/0.66.33/install.json": JSON.stringify({ node_bin: nodeBin }),
+    });
+    assert.deepStrictEqual(bundledKasEnvironment(fs, path.posix, "/res", probe), {}, nodeBin);
+  }
+  for (const version of ["../kas-x64/0.66.33", "0.66.33/..", "..", "a/b"]) {
+    const fs = kasResources({
+      "/res/backend-dist/kas/BUNDLED-VERSION": version,
+      [`/res/backend-dist/kas/${version}/install.json`]: KAS_RECORD,
+    });
+    assert.deepStrictEqual(bundledKasEnvironment(fs, path.posix, "/res", probe), {}, version);
+  }
+  assert.strictEqual(staysWithinStagedTree("node/node-v22.23.3-linux-x64/bin/node"), true);
+  assert.strictEqual(staysWithinStagedTree("node\\node-v22.23.3-win-x64\\node.exe"), true);
+  assert.strictEqual(staysWithinStagedTree("0.66.33", { single: true }), true);
+  assert.strictEqual(staysWithinStagedTree(42), false);
+});
+
 test("the owned gateway spawn exports the bundled kiro-cli directory after probing it", () => {
   const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
   assert.match(
@@ -238,8 +343,42 @@ test("the one desktop gateway spawn uses the hardened environment builder", () =
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\),/,
+    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\},\s*\{ bundled, platform: processObj\.platform \}\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
       "through buildGatewayEnvironment",
   );
 });
+
+for (const platform of ["win32", "darwin", "linux"]) {
+  test(`${platform} bundled gateway removes inherited Python import overrides`, () => {
+    const inherited = {
+      PATH: "system-bin",
+      PYTHONPATH: "checkout",
+      PYTHONHOME: "other-python",
+      PYTHONNOUSERSITE: "",
+      PythonPath: "mixed-checkout",
+      pythonhome: "mixed-python",
+      PythonNoUserSite: "",
+    };
+    const before = { ...inherited };
+    const env = buildGatewayEnvironment(inherited, { bundled: true, platform });
+    assert.equal(env.PYTHONPATH, undefined);
+    assert.equal(env.PYTHONHOME, undefined);
+    assert.equal(env.PYTHONNOUSERSITE, inherited.PYTHONNOUSERSITE);
+    assert.equal(env.PythonNoUserSite, inherited.PythonNoUserSite);
+    assert.equal(
+      buildGatewayEnvironment({}, { bundled: true, platform }).PYTHONNOUSERSITE,
+      undefined,
+      "bundled isolation must not disable user-site imports in Python descendants",
+    );
+    for (const key of ["PythonPath", "pythonhome"]) {
+      assert.equal(env[key], platform === "win32" ? undefined : inherited[key]);
+    }
+    assert.equal(env.PATH, inherited.PATH);
+    assert.deepStrictEqual(inherited, before);
+    const development = buildGatewayEnvironment(inherited, { bundled: false, platform });
+    for (const key of Object.keys(inherited)) {
+      assert.equal(development[key], inherited[key]);
+    }
+  });
+}

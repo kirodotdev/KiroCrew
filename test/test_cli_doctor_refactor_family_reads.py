@@ -139,6 +139,8 @@ def test_a_family_first_read_inside_a_package_rebind_keeps_nothing_of_it(tmp_pat
     }
 
 
-@pytest.mark.parametrize("name", ["sandbox", "platform_compat", "stt", "apparmor", "intent_probe"])
+@pytest.mark.parametrize(
+    "name", ["sandbox", "platform_compat", "session_pid", "stt", "apparmor", "intent_probe"]
+)
 def test_the_facade_holds_each_module_the_families_read(name) -> None:
     assert isinstance(vars(cli_doctor)[name], ModuleType)

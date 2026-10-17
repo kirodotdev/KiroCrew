@@ -41,11 +41,17 @@ RUNTIME = REPO_ROOT / "src" / "kiro_crew" / "apps" / "builtins" / "aws_control" 
 
 
 def _payload() -> list[Path]:
-    """The members no other rule reaches: everything that is not ``.py`` or ``.md``."""
+    """The members no other rule reaches: everything that is not ``.py`` or ``.md``.
+
+    ``.whl`` is excluded because a wheel under ``vendor/`` is build INPUT rather than
+    content: it is staged there to build a MicroVM image and must reach no lane. Were
+    it in this list, the guards saying it must ship and the guards saying it must not
+    would contradict each other on any machine that had staged one.
+    """
     return [
         p
         for p in sorted(RUNTIME.rglob("*"))
-        if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".py", ".md"}
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix not in {".py", ".md", ".whl"}
     ]
 
 
@@ -106,19 +112,26 @@ def _package_data_patterns() -> list[str]:
     return patterns
 
 
-def _wheel_shipped() -> set[Path]:
-    """What ``package_data`` selects, EXPANDED against the real tree.
+def _wheel_selected(pkg_root: Path) -> set[Path]:
+    """What ``package_data`` selects, EXPANDED against the tree rooted at ``pkg_root``.
 
     ``Path.glob`` rather than ``fnmatch``, because that is what setuptools does and the
     two disagree on the thing that matters here -- ``fnmatch``'s ``*`` crosses a path
     separator, so it would accept a pattern that never descends into
     ``aws_control/crew/runtime/`` and report a lane as covered while every wheel shipped
     nothing.
+
+    Takes the root so one resolver answers for the real tree and for a fixture tree
+    holding a state the real one must not be left in, such as a staged wheel.
     """
     patterns = _package_data_patterns()
     assert patterns, "no package_data patterns parsed"
-    pkg_root = REPO_ROOT / "src" / "kiro_crew"
     return {p.resolve() for pat in patterns for p in pkg_root.glob(pat) if p.is_file()}
+
+
+def _wheel_shipped() -> set[Path]:
+    """What ``package_data`` selects out of the real source tree."""
+    return _wheel_selected(REPO_ROOT / "src" / "kiro_crew")
 
 
 def test_the_payload_this_guards_is_not_empty() -> None:
@@ -229,4 +242,84 @@ def test_the_wheel_rules_do_not_carry_the_container_test_suite() -> None:
     assert not shipped, (
         "the image's own test suite is in the wheel, so a pip or desktop install carries "
         f"tests nothing on that machine can run: {len(shipped)} files, e.g. {shipped[:3]}"
+    )
+
+
+# --------------------------------------------------------------------------
+# The staged wheel, which must travel in NEITHER lane
+# --------------------------------------------------------------------------
+# `vendor/` is the one directory in this tree whose contents are build INPUT rather
+# than shipped content: `scripts/build_microvm_image_zip.py` stages a Kiro Crew wheel
+# there and `cloud/microvm/engine.py` reads it back to assemble a MicroVM recipe. A
+# packaging rule that reaches it therefore puts each wheel inside the next one.
+#
+# Measured on one tree: 36.20 MB built with the directory empty, 72.22 MB built with
+# one wheel staged, the staged wheel appearing as a 35.94 MB member. `MAX_RECIPE_BYTES`
+# is 64 MiB, so the FIRST image build on a machine succeeds and the second refuses with
+# "the recipe zip is N bytes, over the 67108864-byte ceiling" -- a failure that names a
+# size and not its cause.
+#
+# `.gitignore` does not prevent this. It governs what git carries; setuptools packages
+# from the working tree and never consults it.
+#
+# Both lanes are asserted because neither implies the other. `include_package_data` is
+# on, so setuptools reads MANIFEST.in through the egg-info manifest even for a
+# wheel-only build: a rule in EITHER file can put the staged wheel in a wheel.
+
+_STAGED_WHEEL = "kirocrew-0.9.0-py3-none-any.whl"
+_VENDOR_REL = "apps/builtins/aws_control/crew/runtime/vendor"
+
+
+def test_the_staging_directory_ships_its_placeholder() -> None:
+    """Non-vacuity, and it pins what the vendor rules exist to carry.
+
+    The directory must exist in an installed copy so that a build with nothing staged
+    reports a missing WHEEL rather than a missing directory. If the placeholder stopped
+    shipping, the guards below would still pass while the vendor rules carried nothing
+    at all -- which is the state they were in when the only thing they ever shipped was
+    the staged wheel.
+    """
+    placeholder = RUNTIME / "vendor" / ".gitkeep"
+    assert placeholder.is_file(), "the placeholder that keeps the staging directory is gone"
+
+    rules = _sdist_rules()
+    assert _reaches_sdist(placeholder, rules), "no sdist rule carries the staging placeholder"
+    assert placeholder.resolve() in _wheel_shipped(), "package_data drops the staging placeholder"
+
+
+def test_the_sdist_rules_do_not_carry_a_staged_wheel() -> None:
+    """A wheel staged for an image build must reach no sdist, and so no published wheel."""
+    rules = _sdist_rules()
+    assert rules, "MANIFEST.in has no recursive-include after its excludes"
+
+    staged = RUNTIME / "vendor" / _STAGED_WHEEL
+    assert not _reaches_sdist(staged, rules), (
+        f"an sdist rule carries {_VENDOR_REL}/*.whl, so every wheel built from an sdist "
+        "embeds the previous wheel and the next image build refuses on size"
+    )
+
+
+def test_the_wheel_rules_do_not_carry_a_staged_wheel(tmp_path: Path) -> None:
+    """Same for ``package_data``, evaluated with a wheel actually staged.
+
+    Against a fixture tree rather than the real one: the real source tree must not be
+    left holding a wheel, since ``engine._staged_wheel`` refuses a directory with more
+    than one and an interrupted test would break the next image build. The patterns and
+    the resolver are the real ones.
+    """
+    pkg_root = tmp_path / "kiro_crew"
+    vendor = pkg_root / _VENDOR_REL
+    vendor.mkdir(parents=True)
+    (vendor / ".gitkeep").write_text("", encoding="utf-8")
+    (vendor / _STAGED_WHEEL).write_bytes(b"PK\x03\x04 not really a wheel")
+
+    selected = {p.name for p in _wheel_selected(pkg_root)}
+
+    assert ".gitkeep" in selected, (
+        "the fixture tree selected nothing, so this guard is measuring a resolver that "
+        "cannot see the directory rather than a rule that excludes the wheel"
+    )
+    assert _STAGED_WHEEL not in selected, (
+        f"a package_data pattern reaches {_VENDOR_REL}/*.whl, so a pip or desktop install "
+        "carries the previous wheel inside this one and the next image build refuses on size"
     )

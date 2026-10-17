@@ -15,20 +15,148 @@ New fields a persisted row carries, or new redaction a row needs, belong here.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.chat_attachments import ImageBudget
 from kiro_crew.dashboard.chat_utils import (
+    UNKNOWN_ROW_FIELDS_KEY,
     _redact_meta_for_role,
     drop_records_without_placeholders,
     redact_display_content,
     with_bounded_redaction_records,
 )
-from kiro_crew.history import carry_provenance
+from kiro_crew.history import PROVENANCE_FIELDS, carry_provenance
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
+
+logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
+
+
+#: Every top-level key this build writes on a persisted transcript row: the keys
+#: ``_build_message_entry_uncached`` writes, and ``tools``, which
+#: ``ConversationLog.append`` writes. A row key outside this set came from a newer
+#: build. ``test_slot_save_newer_row_fields`` pins that the builder writes nothing
+#: outside it.
+_KNOWN_ROW_KEYS = frozenset(
+    {"role", "content", "ts", "cls", "meta", "variants", "variant_idx", "tools", *PROVENANCE_FIELDS}
+)
+
+#: The most one restored row keeps of the fields a newer build wrote on it, measured
+#: as the JSON the save writes them back as (``json.dumps``: ASCII, so a character is a
+#: byte). One bound on the whole set bounds every kept key, string and nested
+#: container, and it applies where restore keeps them. A row over it keeps none of them
+#: (logged), so its next save writes the row as this build knows it.
+MAX_UNKNOWN_ROW_FIELDS_BYTES = 64 * 1024
+
+#: The most one slot keeps in total, measured the same way. The row count does not
+#: bound it: the refresh and reconcile paths append past the 500-row restore window,
+#: up to ``_MAX_SLOT_MESSAGES`` (10,000) rows. When the bytes the slot holds pass it,
+#: counted afresh over ``slot.messages`` (never the running count alone), the oldest
+#: rows' kept fields are dropped first, down to half of it so the next drop is not one
+#: row away, and those rows are written without them by the next save.
+MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES = 1024 * 1024
+
+
+class _KeptRowFields(dict):  # type: ignore[type-arg]
+    """One row's kept fields, with the size measured when they were kept."""
+
+    __slots__ = ("nbytes",)
+    nbytes: int
+
+
+def remember_unknown_row_fields(slot: _ChatSlot, row: dict) -> None:
+    """Keep the fields a newer build wrote on *row* on the slot's newest message.
+
+    That message is the one restore just built from the persisted *row*. Only keys
+    outside :data:`_KNOWN_ROW_KEYS` are kept, as read, so the save can write them back
+    (:func:`_build_message_entry_uncached`), up to :data:`MAX_UNKNOWN_ROW_FIELDS_BYTES`
+    for the row (over it, none are kept) and :data:`MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES`
+    for the slot (:func:`_drop_oldest_unknown_row_fields`). The key never leaves the
+    server: every path that sends a message out removes it
+    (``chat_utils.without_unknown_row_fields``).
+    """
+    unknown = {key: value for key, value in row.items() if key not in _KNOWN_ROW_KEYS}
+    if not unknown:
+        return
+    size = len(json.dumps(unknown))
+    if size > MAX_UNKNOWN_ROW_FIELDS_BYTES:
+        logger.warning(
+            "Restored transcript row has %d field(s) from a newer build totalling %d bytes, "
+            "over the %d-byte cap; they are not kept, so the next save writes the row without them",
+            len(unknown),
+            size,
+            MAX_UNKNOWN_ROW_FIELDS_BYTES,
+        )
+        return
+    kept = _KeptRowFields(unknown)
+    kept.nbytes = size
+    slot.messages[-1][UNKNOWN_ROW_FIELDS_KEY] = kept
+    # The running count is an upper bound: rows a window rebuild, a trim or a rewind
+    # took out of ``slot.messages`` are still in it. So it only decides WHEN to
+    # recount; whether anything is dropped is decided on the bytes the slot holds now.
+    total = getattr(slot, "_unknown_row_fields_bytes", 0) + size
+    if total > MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES:
+        total = _kept_row_fields_bytes(slot)
+    slot._unknown_row_fields_bytes = total
+    if total > MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES:
+        _drop_oldest_unknown_row_fields(slot)
+
+
+def _kept_size(kept: dict) -> int:
+    """One row's kept fields' size: the one measured when they were kept."""
+    size = getattr(kept, "nbytes", None)
+    return len(json.dumps(kept)) if size is None else size
+
+
+def _kept_row_fields_bytes(slot: _ChatSlot) -> int:
+    """The bytes of newer-build fields *slot*'s messages hold now."""
+    total = 0
+    for m in slot.messages:
+        kept = m.get(UNKNOWN_ROW_FIELDS_KEY)
+        if kept is not None:
+            total += _kept_size(kept)
+    return total
+
+
+def _drop_oldest_unknown_row_fields(slot: _ChatSlot) -> None:
+    """Keep the newest rows' fields within half the slot budget; drop every older row's.
+
+    A row that loses them stays the same dict: the key's value is set to None in place.
+    Rewind and edit-resend find the rows that arrived during their awaits by identity
+    (``id(row)``), so a row replaced by a copy would read as arrived. Setting an existing
+    key also never resizes the dict, which a slot-detail render may be iterating on a
+    worker thread. The save skips a None value and every egress path strips the key.
+    """
+    keep_up_to = MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES // 2
+    kept_total = 0
+    dropped = 0
+    full = False
+    messages = slot.messages
+    for index in range(len(messages) - 1, -1, -1):
+        m = messages[index]
+        kept = m.get(UNKNOWN_ROW_FIELDS_KEY)
+        if kept is None:
+            continue
+        size = _kept_size(kept)
+        if not full and kept_total + size <= keep_up_to:
+            kept_total += size
+            continue
+        full = True
+        m[UNKNOWN_ROW_FIELDS_KEY] = None
+        dropped += 1
+    slot._unknown_row_fields_bytes = kept_total
+    if dropped:
+        logger.warning(
+            "Slot %s: fields from a newer build on %d older row(s) are not kept, so the "
+            "slot stays within %d bytes of them; the next save writes those rows without them",
+            getattr(slot, "key", "?"),
+            dropped,
+            MAX_UNKNOWN_ROW_FIELDS_SLOT_BYTES,
+        )
 
 
 def _attach_variants(slot: _ChatSlot, m: dict) -> None:
@@ -199,4 +327,14 @@ def _build_message_entry_uncached(
         # keep them; `_redact_meta_for_role` re-validates whatever survives.
         drop_records_without_placeholders(meta_in, content)
         entry["meta"] = _redact_meta_for_role(role, meta_in)
+    # Fields a newer build wrote on this row, kept by restore
+    # (``remember_unknown_row_fields``): written back exactly as read, fill-only, so a
+    # key this build writes is never overwritten -- the rule ``crons.json`` and the
+    # config file apply to unknown keys. They were on disk already; writing them back
+    # unchanged adds no exposure, and redaction keeps applying to the fields above.
+    unknown = m.get(UNKNOWN_ROW_FIELDS_KEY)
+    if isinstance(unknown, dict):
+        for key, value in unknown.items():
+            if key not in _KNOWN_ROW_KEYS:
+                entry.setdefault(key, value)
     return entry

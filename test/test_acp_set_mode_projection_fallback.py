@@ -134,7 +134,7 @@ async def _with_reader(rt: AcpRuntime, coro):
             pass
 
 
-async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> None:
+async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) -> str | None:
     """Run the real bracket with the re-preparation returning *projection*."""
     rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
     with (
@@ -144,7 +144,7 @@ async def _activate(rt: AcpRuntime, projection: NativeSkillProjection | None) ->
         ),
         patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None),
     ):
-        await rt._activate_mode_bracketed(
+        return await rt._activate_mode_bracketed(
             "s1", "ops", budget=5.0, payload_snapshot=None, wire_registered=True
         )
 
@@ -190,8 +190,11 @@ async def test_an_alias_the_host_loads_after_its_reload_is_used(no_retry_wait, c
     kiro.reload_after_misses = 1
     caplog.set_level(logging.WARNING, logger="kiro_crew.acp.runtime")
 
-    await _with_reader(rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS})))
+    activated_alias = await _with_reader(
+        rt, _activate(rt, NativeSkillProjection({"ops": FRESH_ALIAS}))
+    )
 
+    assert activated_alias == FRESH_ALIAS
     rt.terminate_session.assert_not_awaited()
     assert kiro.set_modes == [FRESH_ALIAS, FRESH_ALIAS]
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -415,3 +418,164 @@ def test_recognised_aliases_stay_bounded_keep_the_spawn_ones_first_and_warn(monk
     assert current._recognised[SIBLING_SPAWN_ALIAS] == "dev"
     warned = [r for r in caplog.records if "not recognised past" in r.getMessage()]
     assert len(warned) == 1
+
+
+def _real_preparation_tree(tmp_path, monkeypatch):
+    """Point the REAL preparation at an empty temp agents tree; return its directory."""
+    from kiro_crew.acp import skill_projection
+
+    home = tmp_path / "kiro"
+    agents = home / "agents"
+    agents.mkdir(parents=True)
+    monkeypatch.setattr(skill_projection, "kiro_home", lambda: home)
+    monkeypatch.setattr(skill_projection, "data_home", lambda: tmp_path / "crew", raising=False)
+    monkeypatch.setattr(skill_projection, "kiro_agents_dir", lambda: agents)
+    monkeypatch.setattr(skill_projection, "list_agents", lambda **kw: [])
+    return agents
+
+
+async def _activate_with_real_preparation(rt: AcpRuntime) -> str | None:
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    with patch("kiro_crew.agent.require_unchanged_derived_spec", return_value=None):
+        return await rt._activate_mode_bracketed(
+            "s1", "ops", budget=5.0, payload_snapshot=None, wire_registered=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_in_process_queue_timeout_is_not_blamed_on_another_process(
+    tmp_path, monkeypatch, no_retry_wait, counted
+):
+    """Another start in THIS gateway holds the in-process skill-view lock past the
+    queue's wait. No other process is involved, so the refusal must not say one
+    holds the lock."""
+    from kiro_crew.acp import skill_projection
+
+    agents = _real_preparation_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(skill_projection, "_IN_PROCESS_PROJECTION_WAIT_SECS", 0.05)
+    rt, kiro = _runtime({FRESH_ALIAS})
+    held = skill_projection._in_process_projection_lock(agents)
+    assert held.acquire(timeout=5)
+    try:
+        with pytest.raises(AcpRuntimeError) as refused:
+            await _with_reader(rt, _activate_with_real_preparation(rt))
+    finally:
+        held.release()
+
+    message = str(refused.value)
+    assert "could not be prepared" in message
+    assert "another Kiro Crew process" not in message
+    assert "this gateway" in message
+    assert kiro.set_modes == []
+    rt.terminate_session.assert_awaited_once_with("s1")
+    assert counted == [(runtime_mod.SKILL_VIEW_FALLBACKS, {"outcome": "refused_unprepared"})]
+
+
+@pytest.mark.asyncio
+async def test_a_cross_process_lock_holder_is_still_named(
+    tmp_path, monkeypatch, no_retry_wait, counted
+):
+    """The file lock itself timed out: another process holds it, and the refusal
+    says so."""
+    from contextlib import contextmanager
+
+    from kiro_crew.acp import skill_projection
+
+    _real_preparation_tree(tmp_path, monkeypatch)
+
+    @contextmanager
+    def held_elsewhere(fd, **kwargs):
+        raise OSError("file lock still held after 30s")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(skill_projection.platform_compat, "file_lock", held_elsewhere)
+    rt, kiro = _runtime({FRESH_ALIAS})
+
+    with pytest.raises(AcpRuntimeError, match="held by another Kiro Crew process"):
+        await _with_reader(rt, _activate_with_real_preparation(rt))
+
+    assert kiro.set_modes == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_settings_lock_blames_no_process(
+    tmp_path, monkeypatch, no_retry_wait, counted
+):
+    """The alias lock was taken but the workspace settings lock was not: its holder
+    is unknown, so the refusal names no process."""
+    from kiro_crew.acp import skill_projection
+
+    _real_preparation_tree(tmp_path, monkeypatch)
+
+    def busy_settings_lock(work_dir):
+        raise OSError("workspace CLI settings lock still held after 5s")
+
+    monkeypatch.setattr(skill_projection, "workspace_cli_settings_lock", busy_settings_lock)
+    rt, kiro = _runtime({FRESH_ALIAS})
+
+    with pytest.raises(AcpRuntimeError) as refused:
+        await _with_reader(rt, _activate_with_real_preparation(rt))
+
+    message = str(refused.value)
+    assert "a lock or file it needs was unavailable" in message
+    assert "another Kiro Crew process" not in message
+    assert "this gateway" not in message
+    assert kiro.set_modes == []
+
+
+@pytest.mark.asyncio
+async def test_a_bad_alias_lock_file_blames_no_process(
+    tmp_path, monkeypatch, no_retry_wait, counted
+):
+    """The alias lock FILE is unusable (here a symlink): no process holds it, so
+    the refusal names none."""
+    _real_preparation_tree(tmp_path, monkeypatch)
+    from kiro_crew.acp import skill_projection
+
+    # The lock lives under the data home, not beside the aliases.
+    lock_path = skill_projection._projection_lock_path()
+    real_is_link = skill_projection.platform_compat.is_link_or_junction
+    monkeypatch.setattr(
+        skill_projection.platform_compat,
+        "is_link_or_junction",
+        lambda path: path == lock_path or real_is_link(path),
+    )
+    rt, kiro = _runtime({FRESH_ALIAS})
+
+    with pytest.raises(AcpRuntimeError) as refused:
+        await _with_reader(rt, _activate_with_real_preparation(rt))
+
+    message = str(refused.value)
+    assert "a lock or file it needs was unavailable" in message
+    assert "another Kiro Crew process" not in message
+    assert kiro.set_modes == []
+
+
+@pytest.mark.asyncio
+async def test_a_file_lock_error_that_is_not_a_timeout_blames_no_process(
+    tmp_path, monkeypatch, no_retry_wait, counted
+):
+    """``flock`` failing with an errno (here ENOLCK, as on some network mounts) is
+    about this descriptor, not another holder, so the refusal names none."""
+    import errno
+    from contextlib import contextmanager
+
+    from kiro_crew.acp import skill_projection
+
+    _real_preparation_tree(tmp_path, monkeypatch)
+
+    @contextmanager
+    def no_locks(fd, **kwargs):
+        raise OSError(errno.ENOLCK, "No locks available")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(skill_projection.platform_compat, "file_lock", no_locks)
+    rt, kiro = _runtime({FRESH_ALIAS})
+
+    with pytest.raises(AcpRuntimeError) as refused:
+        await _with_reader(rt, _activate_with_real_preparation(rt))
+
+    message = str(refused.value)
+    assert "a lock or file it needs was unavailable" in message
+    assert "another Kiro Crew process" not in message
+    assert kiro.set_modes == []

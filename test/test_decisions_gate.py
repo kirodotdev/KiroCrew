@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -59,6 +58,14 @@ _EXFIL_URL = "see https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
 
 POINT = "skills.select"
 QUESTIONS = [Choice(id="verdict", prompt="Which skill?", options=["NONE", "DUP"])]
+
+#: Lost-run ceiling on a ``decide`` whose append never lands. Measured: the call
+#: returns in under 0.6 s with every off-loop hop starved (a 0.3 s executor delay,
+#: or a GIL hog), so only a call that waited off the loop on the append -- or on a
+#: bound the test lifts past this, the commit grace or the provider budget --
+#: reaches it. Well under half the suite's ``--timeout=120``, so reaching it is a
+#: named failure, never a dead worker.
+_STALLED_APPEND_CEILING_SECS = 10.0
 
 
 def _config(
@@ -824,6 +831,57 @@ class TestScrub:
         assert oracle.entered is False
         assert log_home()[0]["scrubbed"] is True
 
+    def test_a_credential_in_a_choice_criteria_value_is_found(self, install_impl, log_home):
+        """A rubric authored ONLY in ``Choice.criteria`` -- the field this PR adds --
+        leaves the machine in the request, so a credential there is refused before
+        the network like any other wire text. The prompt and options are clean, so
+        the only path to the finding is ``criteria``."""
+        oracle = install_impl(_ExplodingOracle())
+        questions = [
+            Choice(
+                id="q",
+                prompt="which?",
+                options=["fine", "also-fine"],
+                criteria={"fine": f"the key is {_AWS_KEY_SAMPLES[0]}"},
+            )
+        ]
+        assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is None
+        assert oracle.entered is False
+        assert log_home()[0]["scrubbed"] is True
+
+    def test_the_criteria_scrub_depends_on_criteria_reaching_question_texts(
+        self, install_impl, log_home, monkeypatch
+    ):
+        """Pins that the coverage above rides on ``criteria`` being included in
+        ``question_texts``: with the criteria values dropped from what the scanner
+        sees, the same credential-bearing question reaches the provider. So the
+        green of the test above is load-bearing on the criteria line, not incidental
+        to the prompt or options -- which are clean here."""
+        from kiro_crew.decisions import types as types_mod
+
+        real_question_texts = types_mod.question_texts
+
+        def _without_criteria(question):
+            texts = real_question_texts(question)
+            if isinstance(question, Choice) and question.criteria:
+                dropped = {str(v) for v in question.criteria.values() if v}
+                return [t for t in texts if t not in dropped]
+            return texts
+
+        # ``gate`` imports ``question_texts`` by name, so patch where it is bound.
+        monkeypatch.setattr(gate_mod, "question_texts", _without_criteria)
+        oracle = install_impl(_RecordingOracle(value="fine"))
+        questions = [
+            Choice(
+                id="q",
+                prompt="which?",
+                options=["fine", "also-fine"],
+                criteria={"fine": f"the key is {_AWS_KEY_SAMPLES[0]}"},
+            )
+        ]
+        assert asyncio.run(decide(POINT, "clean state", questions, config=_config())) is not None
+        assert len(oracle.calls) == 1
+
     @pytest.mark.parametrize(
         "make",
         [
@@ -1110,25 +1168,65 @@ class TestLoggingCannotCostTheResult:
         budget, so an outer wait sized at ``timeout_secs() + _LOG_BUDGET_SECS``
         covers a ``decide`` whose log write never lands.
 
-        Timed INSIDE the loop deliberately. The worker thread is not cancellable,
-        so a loop being CLOSED still joins it -- ``asyncio.run`` would pay the
-        whole stall at shutdown and hide the property under test. The bound is on
-        what ``decide`` holds its caller for, which is what an outer wait sizes
-        against; a gateway's loop is long-lived, so the abandoned thread finishes
-        its one append in the background.
+        The stall is an append parked on an event only this test sets, so nothing
+        here is timed: ``decide`` returning while that append is still held is the
+        property. Every other bound on the path -- the commit grace a caller with no
+        receipt never pays, and the provider budget -- is lifted past the ceiling,
+        so a call that waited off the loop on the append or on the wrong bound runs
+        into the ceiling and fails there by name, and one that ran the append ON the
+        loop returns only after the hold, which ``returned`` records.
+
+        Released INSIDE the loop deliberately. The worker thread is not
+        cancellable, so a loop being CLOSED still joins it, and a release left
+        until after ``asyncio.run`` would hold that join on itself. A gateway's
+        loop is long-lived, so the abandoned thread finishes its one append in
+        the background.
         """
+        import threading
+
         install_impl(_RecordingOracle())
-        monkeypatch.setattr(gate_mod, "_LOG_BUDGET_SECS", 0.02)
-        monkeypatch.setattr(log_mod, "append", lambda row: time.sleep(0.4))
+        entered = threading.Event()
+        release = threading.Event()
+        returned = threading.Event()
+        past_ceiling = 1.5 * _STALLED_APPEND_CEILING_SECS
 
-        async def _timed():
-            started = time.monotonic()
-            answers = await decide(POINT, "hi", QUESTIONS, config=_config())
-            return answers, time.monotonic() - started
+        def _stalled(row, *, commit_event=None):
+            entered.set()
+            # Bounded past the ceiling, so even an append run ON the loop cannot wedge it.
+            release.wait(2 * _STALLED_APPEND_CEILING_SECS)
+            returned.set()
+            if commit_event is not None:
+                commit_event.set()
+            return True
 
-        answers, elapsed = asyncio.run(_timed())
+        # Zero, not a small value: the write budget expires on its first await.
+        monkeypatch.setattr(gate_mod, "_LOG_BUDGET_SECS", 0)
+        monkeypatch.setattr(gate_mod, "_LOG_COMMIT_GRACE_SECS", past_ceiling)
+        monkeypatch.setattr(log_mod, "append", _stalled)
+        config = _config(timeout_ms=int(past_ceiling * 1000))
+
+        async def _drive():
+            loop = asyncio.get_running_loop()
+            asked_at = loop.time()
+            try:
+                answers = await asyncio.wait_for(
+                    decide(POINT, "hi", QUESTIONS, config=config), _STALLED_APPEND_CEILING_SECS
+                )
+                assert not returned.is_set(), "decide held the append it should have handed off"
+                # Nothing has released the append yet: the ``finally`` is the only release.
+                return answers, await asyncio.to_thread(entered.wait, _STALLED_APPEND_CEILING_SECS)
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "decide held its caller past _STALLED_APPEND_CEILING_SECS "
+                    f"({_STALLED_APPEND_CEILING_SECS:.0f}s, {loop.time() - asked_at:.1f}s spent): "
+                    "it waited on the stalled append or on a bound other than the write budget"
+                )
+            finally:
+                release.set()
+
+        answers, handed_off = asyncio.run(_drive())
         assert answers is not None, "a log that never lands must not cost the answers"
-        assert elapsed < 0.3, f"the write held the caller for {elapsed:.3f}s"
+        assert handed_off, "the row never reached the append, so nothing was stalled"
 
     def test_no_provider_message_reaches_the_application_log(self, install_impl, log_home, caplog):
         """Not the row and not the logger: a provider can quote the request back."""
@@ -1229,3 +1327,85 @@ class TestExtraRowFields:
             is None
         )
         assert log_home() == []
+
+
+# ---------------------------------------------------------------------------
+# Provider-stamped response metadata on the row
+# ---------------------------------------------------------------------------
+
+
+class _MetaOracle:
+    """A passing oracle that exposes ``last_response_meta`` the way ``JevOracle`` does."""
+
+    def __init__(self, meta):
+        self.last_response_meta = meta
+
+    async def ask(self, state, questions):
+        return {q.id: Answer(id=q.id, value="DUP", p=0.9, confidence=0.8) for q in questions}
+
+
+class TestResponseMetadataOnRow:
+    """``last_response_meta`` from the lane's oracle rides onto the success row."""
+
+    @pytest.mark.asyncio
+    async def test_model_usage_and_request_id_land_on_the_success_row(self, install_impl, log_home):
+        install_impl(
+            _MetaOracle(
+                {
+                    "provider_model": "jev-1.13",
+                    "input_tokens": 312,
+                    "output_tokens": 48,
+                    "request_id": "req_abc",
+                }
+            )
+        )
+        answers = await decide(POINT, {"q": "x"}, QUESTIONS, config=_config())
+        assert answers is not None
+        row = log_home()[0]
+        assert row["provider_model"] == "jev-1.13"
+        assert row["input_tokens"] == 312
+        assert row["output_tokens"] == 48
+        assert row["request_id"] == "req_abc"
+        assert row["answers"] is not None
+
+    @pytest.mark.asyncio
+    async def test_a_lane_that_stamps_no_metadata_writes_a_plain_row(self, install_impl, log_home):
+        """An oracle without the attribute (the LLM judge lane) leaves the row plain."""
+        install_impl(_RecordingOracle())  # no last_response_meta attribute at all
+        answers = await decide(POINT, {"q": "x"}, QUESTIONS, config=_config())
+        assert answers is not None
+        row = log_home()[0]
+        assert "provider_model" not in row
+        assert "request_id" not in row
+
+    @pytest.mark.asyncio
+    async def test_a_none_metadata_adds_nothing(self, install_impl, log_home):
+        install_impl(_MetaOracle(None))
+        await decide(POINT, {"q": "x"}, QUESTIONS, config=_config())
+        row = log_home()[0]
+        assert "provider_model" not in row
+
+    @pytest.mark.asyncio
+    async def test_a_callers_extra_wins_a_name_collision(self, install_impl, log_home):
+        """The point's own field wins; metadata only ever adds, never overwrites."""
+        install_impl(_MetaOracle({"provider_model": "from-provider", "request_id": "req_x"}))
+        await decide(
+            POINT,
+            {"q": "x"},
+            QUESTIONS,
+            config=_config(),
+            extra={"provider_model": "from-point"},
+        )
+        row = log_home()[0]
+        assert row["provider_model"] == "from-point"
+        assert row["request_id"] == "req_x"
+
+    @pytest.mark.asyncio
+    async def test_metadata_does_not_ride_a_failure_row(self, install_impl, log_home):
+        """An error row carries no metadata: the oracle sets it only on success,
+        and a failing oracle never ran the attribute set."""
+        install_impl(_RaisingOracle(RuntimeError("transport")))
+        assert await decide(POINT, {"q": "x"}, QUESTIONS, config=_config()) is None
+        row = log_home()[0]
+        assert row["error"] == gate_mod.ERROR_PROVIDER
+        assert "provider_model" not in row

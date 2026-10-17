@@ -19,6 +19,7 @@ from dashboard_owner_helpers import as_owner
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.connections import get_provider, tool_test
 from kiro_crew.dashboard.handlers import connections
+from kiro_crew.testing.wait import await_until
 
 
 def _provider() -> dict[str, Any]:
@@ -165,7 +166,7 @@ async def test_cancellation_propagates_after_client_shutdown(fake_client, monkey
 
     monkeypatch.setattr(fake_client, "command_result", blocked_command)
     task = asyncio.create_task(tool_test.test_connection_tools(_provider()))
-    await asyncio.wait_for(command_started.wait(), timeout=1.0)
+    await await_until(command_started, what="command handler started")
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):

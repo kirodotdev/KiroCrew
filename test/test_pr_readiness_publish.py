@@ -30,9 +30,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-WORKFLOW = (
-    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pr-readiness.yml"
-)
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "pr-readiness.yml"
 
 PUBLISH_STEP = "Publish status and label"
 CLEANUP_STEP = "Remove readiness labels from closed pull request"
@@ -158,7 +156,9 @@ def _helper_script() -> str:
     """The retry-helper install step every other step sources at runtime."""
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     steps = spec["jobs"]["readiness"]["steps"]
-    matches = [s["run"] for s in steps if "run" in s and "cat > \"$RUNNER_TEMP/gh-retry.sh\"" in s["run"]]
+    matches = [
+        s["run"] for s in steps if "run" in s and 'cat > "$RUNNER_TEMP/gh-retry.sh"' in s["run"]
+    ]
     assert len(matches) == 1, "expected exactly one retry-helper install step"
     return matches[0]
 
@@ -344,9 +344,7 @@ def test_a_label_removed_by_a_concurrent_run_still_publishes(runner: Runner) -> 
 
 
 def test_a_label_created_by_a_concurrent_run_still_publishes(runner: Runner) -> None:
-    result = runner.run(
-        repo_labels=("some-unrelated-label",), fail_label_create=True
-    )
+    result = runner.run(repo_labels=("some-unrelated-label",), fail_label_create=True)
     assert result.ok, result.proc.stderr
     assert result.published is not None
 
@@ -467,6 +465,7 @@ def _recheck_runner(
     legacy_status: str = "completed",
     legacy_conclusion: str | None = "success",
     current_conclusion: str = "success",
+    codeql_pr_runs: tuple[dict[str, object], ...] = (),
 ) -> Runner:
     spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     job_env = spec["jobs"]["readiness"]["env"]
@@ -523,6 +522,9 @@ def _recheck_runner(
                 "head_branch": "feat/x",
             }
         )
+    # The checked-in CodeQL workflow's runs (advanced setup) sit on the
+    # same pull_request runs page.
+    workflow_runs.extend(codeql_pr_runs)
     (runner.fixtures / "runs.json").write_text(json.dumps({"workflow_runs": workflow_runs}))
     # CodeQL is a `dynamic` run and its security verdict is a separate exact-SHA
     # check-run, so both pages back the publish re-check. Green by default, so a
@@ -711,7 +713,9 @@ def test_a_fast_gate_re_run_holds_the_publish_until_every_lane_reports_on_the_ne
     attempt, as the verdict step binds, none of them is current and the publish
     is held for every lane.
     """
-    result = _recheck_runner(runner, "completed", fork=True, fork_rows_attempt=1, fast_gate_attempt=2).run()
+    result = _recheck_runner(
+        runner, "completed", fork=True, fork_rows_attempt=1, fast_gate_attempt=2
+    ).run()
     assert result.published is not None
     assert result.published["state"] == "pending"
     assert "(not started)" in result.published["description"]
@@ -914,7 +918,7 @@ def test_the_hold_reads_the_run_and_never_the_status(hold_script: str) -> None:
     it is about to replace. A conditional hold on the STATUS is a read followed
     by a write, and a concurrent isolated publisher can land a stale success
     between the two."""
-    assert 'repos/$REPO/actions/runs/$RUN_ID' in hold_script
+    assert "repos/$REPO/actions/runs/$RUN_ID" in hold_script
     assert "commits/$SHA/status" not in hold_script
     assert "/statuses/" in hold_script
     assert '"pending"' in hold_script
@@ -1050,6 +1054,91 @@ def test_no_dynamic_codeql_run_holds_nothing(runner: Runner) -> None:
     not started -- and in the latter case the verdict step said pending. A hold
     here would stall every PR whose base is not the default branch."""
     result = _recheck_runner(runner, "completed", codeql_runs_present=False).run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+
+
+def _checked_in_codeql(
+    run_id: int,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    *,
+    started: str = "2026-08-07T19:00:20Z",
+    head_branch: str = "feat/x",
+) -> dict[str, object]:
+    """One run of the checked-in .github/workflows/codeql.yml (advanced setup)."""
+    return {
+        "id": run_id,
+        "name": "CodeQL",
+        "path": ".github/workflows/codeql.yml",
+        "status": status,
+        "conclusion": conclusion if status == "completed" else None,
+        "run_started_at": started,
+        "head_repository": {"full_name": "kirodotdev/KiroCrew"},
+        "head_branch": head_branch,
+    }
+
+
+@pytest.mark.parametrize(
+    ("run", "check_conclusion", "state"),
+    [
+        # With no dynamic run, the checked-in run is read the way the
+        # verdict step reads it, arm for arm.
+        (_checked_in_codeql(30), "success", "success"),
+        (_checked_in_codeql(30), "failure", "failure"),
+        (_checked_in_codeql(30), "neutral", "pending"),
+        (_checked_in_codeql(30, "in_progress"), "success", "pending"),
+        (_checked_in_codeql(30, conclusion="failure"), "success", "failure"),
+        (_checked_in_codeql(30, conclusion="cancelled"), "success", "failure"),
+        # A skipped checked-in run scanned nothing: the verdict step's pending.
+        (_checked_in_codeql(30, conclusion="skipped"), "success", "pending"),
+        # Another PR's run on the same SHA holds nothing for this one.
+        (_checked_in_codeql(30, "in_progress", head_branch="feat/other"), "success", "success"),
+    ],
+)
+def test_the_checked_in_codeql_run_is_re_checked_when_default_setup_is_off(
+    runner: Runner, run: dict[str, object], check_conclusion: str, state: str
+) -> None:
+    result = _recheck_runner(
+        runner,
+        "completed",
+        codeql_runs_present=False,
+        codeql_check_conclusion=check_conclusion,
+        codeql_pr_runs=(run,),
+    ).run()
+    assert result.published is not None
+    assert result.published["state"] == state
+    if state != "success":
+        assert "CodeQL" in result.published["description"]
+
+
+def test_a_cancelled_checked_in_twin_yields_to_the_later_started_run(runner: Runner) -> None:
+    result = _recheck_runner(
+        runner,
+        "completed",
+        codeql_runs_present=False,
+        codeql_pr_runs=(
+            _checked_in_codeql(31, conclusion="cancelled", started="2026-08-07T19:00:20Z"),
+            _checked_in_codeql(30, started="2026-08-07T19:00:30Z"),
+        ),
+    ).run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+
+
+@pytest.mark.parametrize("checked_in", ["skipped", "failure", "in_progress"])
+def test_a_dynamic_run_answers_for_codeql_even_with_a_checked_in_run(
+    runner: Runner, checked_in: str
+) -> None:
+    """Default setup on: the checked-in run is skipped (variable unset) or
+    fails its upload (variable set too early). The dynamic run is the source,
+    exactly as the verdict step reads it."""
+    run = (
+        _checked_in_codeql(30, "in_progress")
+        if checked_in == "in_progress"
+        else _checked_in_codeql(30, conclusion=checked_in)
+    )
+    result = _recheck_runner(runner, "completed", codeql_pr_runs=(run,)).run()
     assert result.published is not None
     assert result.published["state"] == "success"
 

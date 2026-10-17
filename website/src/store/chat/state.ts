@@ -45,6 +45,7 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
   )
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
+export type EndedTurn = { gen: string; turn: number }
 
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
@@ -86,6 +87,12 @@ export interface SideQueueEntry {
   raw?: boolean
 }
 
+/** A notice that describes a STANDING state; `restoredDraft` marks the variant
+ *  that says "your text is back in the composer" -- only that one is retired
+ *  when the draft is emptied. */
+export interface SideStandingNotice { text: string; restoredDraft: boolean }
+export interface SideSendStatus { error?: string; notice?: SideStandingNotice }
+
 export interface SideState {
   messages: SideMessage[]
   lastRunId?: string
@@ -97,6 +104,14 @@ export interface SideState {
    *  Set by whichever convergence path lands first; cleared once consumed, so a
    *  lost HTTP response cannot mean lost text and neither path double-applies. */
   releasedText?: string
+  /** The last send's outcome that the panel must still show for this slot: a
+   *  framed failure line and/or a standing "delivery unconfirmed" notice. Kept
+   *  in the store beside `releasedText` rather than in the panel, so it lives
+   *  and dies with the text it explains -- a hand-back that survives a slot
+   *  switch or an unmount reappears WITH its "check the transcript before
+   *  resending" warning, and slot A's status never shows while slot B is
+   *  displayed. Cleared by the next submit to this slot. */
+  sendStatus?: SideSendStatus
   /** Queue ids that have reached a TERMINAL state (drained or cancelled).
    *  A submit's HTTP callback can run after the frame that removed its entry,
    *  and re-pushing then shows a card the server no longer has — one that 404s
@@ -135,6 +150,11 @@ export interface FollowupItem {
  *  resolves any of them into the string a row shows. */
 export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
 
+export interface QuestionNotice {
+  message: string
+  kind: 'restored' | 'release_failed'
+}
+
 export interface ChatState {
   recoveryRevision?: number
   lastRecoveryRequestId?: string
@@ -155,6 +175,12 @@ export interface ChatState {
   slotSwitchRequestId: string | null
   /** Slot the in-flight switch targets; it only installs a cursor for that one. */
   slotSwitchTarget: string | null
+  /** requestId of the newest switchSlot request, written by every `pending`
+   *  and, unlike `slotSwitchRequestId`, not cleared when that request
+   *  settles. A settlement carrying a different requestId was superseded by a
+   *  later switch, which owns the pane, so it applies nothing. Null after a
+   *  hand-rolled `pending` that carries no requestId. */
+  slotSwitchLatestRequestId: string | null
   /** Pre-switch selection, recorded by `switchSlot.pending` so `rejected` can
    *  restore it when the target turns out to be GONE (404). `pending` mutates
    *  four things atomically -- `activeSlot`, the outgoing slot's activity, its
@@ -206,6 +232,14 @@ export interface ChatState {
    *  generation replaces the floor instead of being ordered against it. */
   lastChunkGen: string | undefined
   _wsChunkedDuringFetch: boolean
+  /** How many rows `messages` held when the active slot's switch fetch was
+   *  dispatched (the cache `switchSlot.pending` restored, or none). Rows past
+   *  it were appended LIVE while that fetch was in flight -- a send into the
+   *  slot being opened -- and `switchSlot.fulfilled` keeps the user's own
+   *  bubbles among them when the page it replaces the view with predates them.
+   *  Transient like `_wsChunkedDuringFetch`; optional so a preloaded test state
+   *  need not spell it. */
+  _switchLiveFrom?: number
   /** Count of live frames reduced into the ACTIVE view (`applyActiveFrame`),
    *  for the life of this tab. A thunk that awaits across several requests
    *  samples it before and after, and declines to replace `messages` when it
@@ -269,8 +303,19 @@ export interface ChatState {
    *  for ErrorNotice's agent hand-off. Cleared on dismiss or on the next attempt. */
   undeletableHistory: HistoryDeleteRefusal | null
   pendingInput: string | null
+  /** Text staged from the Side Chat into the main composer, keyed by the slot
+   *  it belongs to. Kept apart from `pendingInput` because it APPENDS to the
+   *  live composer rather than replacing it, and keyed by `slot` because a Side
+   *  Chat exists on more than one host (the dashboard ChatPage AND a Crew
+   *  Member's ChatPane): each host consumes the hand-off ONLY when the staged
+   *  slot matches the slot it is showing, so a member's hand-off can never land
+   *  in the dashboard composer of another session. The consumer merges it
+   *  against the live draft before seeding, so a hand-off never clobbers what
+   *  the user is typing. */
+  mainComposerAppend: { slot: string; text: string } | null
   /** Transient feedback for agent-rebind failures shared by the picker and
-   *  global cycle shortcuts. The App shell owns rendering and expiry. */
+   *  global cycle shortcuts, and for a new chat that could not get its own
+   *  session folder. The App shell owns rendering and expiry. */
   agentSwitchNotice: { message: string } | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
@@ -297,6 +342,8 @@ export interface ChatState {
    *  rather than asserting a precise figure. */
   slotContextTokens: Record<string, { used?: number; window: number }>
   voicePlaying: boolean
+  /** A speech request for the active slot is waiting for its first audio. */
+  voicePreparing: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
   /** Aggregate "waiting to start" count per slot — agents accepted but queued
@@ -379,6 +426,16 @@ export interface ChatState {
    *  turn issues can supersede it and still keep the rows it never fetched.
    *  Absent once superseded, so the upgrade happens at most once per slot. */
   slotPaneBounded: Record<string, number>
+  /** A BACKGROUND pane's own paging cursor: the `next_before` offset that
+   *  addresses the rows just older than `slotMessages[slot][0]`. Present only
+   *  while the pane's marker says more history exists and the writer knew the
+   *  offset; `writeSlotPage` keeps it beside the array it describes. The active
+   *  slot pages with `slotOldestIndex` instead. */
+  slotPaneNextBefore?: Record<string, number>
+  /** A background pane's older-page fetch in flight, and whether its last one
+   *  failed. Per slot, so one pane's walk never blocks or reddens another's. */
+  slotPaneLoadingOlder?: Record<string, boolean>
+  slotPaneOlderError?: Record<string, boolean>
   /** The server's own message count for a slot, as of the last slot-detail fetch.
    *
    *  This exists to tell two indistinguishable populations apart at the warm
@@ -428,6 +485,9 @@ export interface ChatState {
   /** Path B: per-slot one-time hydration guard so the server history is
    *  prepended exactly once even if a WS frame seeds slotMessages first. */
   slotHydrated: Record<string, boolean>
+  /** Terminal queue ids seen before a pane's first hydrate. Discarded when
+   *  that hydrate consumes them; later history upgrades keep the live queue. */
+  slotPaneRemovedQueueIds?: Record<string, string[]>
   slotLoading: boolean
   slotHistory: string[]
   /** Whether a non-empty slots frame has arrived. Distinguishes a reconnect's
@@ -458,10 +518,18 @@ export interface ChatState {
    *  newest view. A same-value round trip (idle -> a turn ran -> idle) always
    *  counts a turn start, so the epoch tells it apart from "never moved". */
   activeRunEpochAtEntry: number
+  /** Newest server turn this tab knows ended, per slot. The gateway generation
+   *  makes the monotonic turn counter comparable across frames and history. */
+  endedTurn: Record<string, EndedTurn>
   /** Pending ask_question cards keyed by slot. Keyed (rather than a single
    *  card) so concurrent ask_question calls from two slots cannot evict each
    *  other — the losing agent would block until its timeout. */
-  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; serverCardId?: string; native?: boolean; draftActive?: boolean }>
+  pendingQuestions: Record<string, { slot: string; ask_id?: string; questions: Array<{ question: string; header?: string; options: Array<{ label: string; description?: string }>; multiSelect?: boolean }>; serverCardId?: string; native?: boolean; draftActive?: boolean; draftAnswers?: Record<string, string> }>
+  questionRequestsInFlight: Record<string, true | 'composer' | 'queued'>
+  /** Ask ids whose successful settlement must suppress draft recovery on every surface. */
+  questionsSettled: Record<string, true>
+  /** Restored-answer statuses and card-release failures kept outside transcript hydration. */
+  restoredQuestionNotices: Record<string, QuestionNotice>
   // Agent-authored follow-up suggestions (suggest_followup MCP tool), rendered
   // as a card above the composer. Keyed BY SLOT: a single global card let a
   // suggestion arriving in session B silently evict session A's unacted-on card,
@@ -498,6 +566,11 @@ export interface ChatState {
   // the slots-sync ignores a server running=false for it (the snapshot may
   // predate the send). Cleared on server confirmation or turn end.
   pendingTurnSlot: string | null
+  // The last close the server refused, so the row that came back is explained.
+  // Set by `deleteSlot` itself, so every close path (sidebar X, any session
+  // menu, Cmd+W) reports it; the sidebar renders it. `historyWrite` is the
+  // server's "still saving" refusal; anything else is a plain failed close.
+  closeRefused: { key: string; title: string; reason: 'historyWrite' | 'failed' } | null
 }
 
 export const initialState: ChatState = {
@@ -512,6 +585,7 @@ export const initialState: ChatState = {
   slotCursorKey: null,
   slotSwitchRequestId: null,
   slotSwitchTarget: null,
+  slotSwitchLatestRequestId: null,
   slotSwitchOrigin: null,
   switchSlotGone: null,
   loadingOlder: false,
@@ -529,6 +603,7 @@ export const initialState: ChatState = {
   lastResumeRequestId: null,
   undeletableHistory: null,
   pendingInput: null,
+  mainComposerAppend: null,
   agentSwitchNotice: null,
   creatingSlot: false,
   foregroundCreateId: null,
@@ -536,6 +611,7 @@ export const initialState: ChatState = {
   slotContextPct: {},
   slotContextTokens: {},
   voicePlaying: false,
+  voicePreparing: false,
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},
@@ -566,10 +642,15 @@ export const initialState: ChatState = {
   slotHistory: [],
   slotsSnapshotSeen: false,
   pendingQuestions: {},
+  questionRequestsInFlight: {},
+  questionsSettled: {},
+  restoredQuestionNotices: {},
   followups: {},
   folderSuggestions: {},
   stopPressedAt: {},
   runEpoch: {},
   activeRunEpochAtEntry: 0,
+  endedTurn: {},
   pendingTurnSlot: null,
+  closeRefused: null,
 }

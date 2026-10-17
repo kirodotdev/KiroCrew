@@ -215,7 +215,30 @@ def _directory_is_writable(directory: str) -> bool:
     removal is retried after the close — the ordinary best-effort shape. That is not a
     macOS path: it is what the Windows test shards exercise, since this module imports and
     runs anywhere and its probe is covered on every platform.
+
+    **A non-mutating :func:`os.access` check short-circuits the create when it already
+    reports the directory writable.** The create-probe mutates the directory it probes —
+    the create and its unlink advance the directory's mtime — and that mutation is visible
+    on the common refused case: a stock ``/Applications`` is ``drwxrwxr-x root:admin`` and
+    every admin user is in ``admin``, so a refused launch of a third-party bundle advances
+    ``/Applications``' mtime. ``os.access(directory, os.W_OK)`` answers the same question
+    for the stock case without touching the filesystem, and a POSITIVE answer is safe to
+    trust directly: it can only cause the caller to REFUSE, which is the fail-closed side.
+    A NEGATIVE ``os.access`` answer is NOT trusted — it models permission the way the
+    create-probe exists to avoid (group membership, ACLs, SIP), and trusting a false
+    "unwritable" would TRUST a planted binary — so the real create-probe still runs and
+    remains the only authority for the "unwritable" verdict. The mtime side effect is thus
+    absent from the stock refused case while the refusal set and the fail-closed guarantee
+    are both unchanged.
     """
+    try:
+        if os.access(directory, os.W_OK):
+            return True
+    except OSError:
+        # os.access does not raise for the ordinary answers, but a broken path could.
+        # Fall through to the create-probe, which classifies every outcome itself.
+        pass
+
     probe = os.path.join(directory, _WRITE_PROBE_NAME)
 
     def remove() -> bool:

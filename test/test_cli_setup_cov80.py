@@ -187,6 +187,18 @@ class TestSetupSlashCommand:
         assert cfg_file.read_text(encoding="utf-8") == "{not json"
         assert "Could not read" in capsys.readouterr().out
 
+    def test_a_wrong_typed_command_falls_back_to_the_default(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-string ``slack.command`` degrades to the default rather than
+        reaching the char loop that validates it. The ``slack`` SECTION is a
+        valid object here, so the section guard does not apply — only the
+        nested-value coercion does."""
+        cfg_file.write_text(json.dumps({"slack": {"command": 123}}), encoding="utf-8")
+        self._answer(monkeypatch, None)  # EOF/skip keeps the current value
+        _setup_slash_command()
+        assert self._saved(cfg_file) == "kirocrew"
+
 
 class TestFindElectronDir:
     def test_the_project_dir_env_var_wins(

@@ -263,6 +263,68 @@ describe('FollowUpBar', () => {
     })
   })
 
+  // ─── Single-select [OPTION:] rows: tooltip must not promise multi-select ──
+  // A single-select pick REPLACES the previous one, so "Shift+Click to select
+  // multiple" / "Click to add to selection" would describe a gesture whose
+  // result is silently dropped.
+  describe('quickSend tooltip wording by selection mode', () => {
+    const tipFor = (label: string) => {
+      fireEvent.focus(screen.getByRole('button', { name: label }))
+      return screen.getByRole('tooltip').textContent ?? ''
+    }
+
+    it('single-select with no picks says Shift+Click adds without sending', () => {
+      render(<FollowUpBar options={['Deploy']} picked={new Set()} onSelect={() => {}} onSend={() => {}} quickSend multi={false} />)
+      const tip = tipFor('Deploy')
+      expect(tip).toContain('Click to send instantly, Shift+Click to add to the message without sending')
+      expect(tip).not.toMatch(/select multiple/i)
+    })
+
+    it('single-select with a pick says the click replaces the selection', () => {
+      render(<FollowUpBar options={['Roll back']} picked={new Set(['Deploy'])} onSelect={() => {}} onSend={() => {}} quickSend multi={false} />)
+      const tip = tipFor('Roll back')
+      expect(tip).toContain('Click to replace selection')
+      expect(tip).not.toMatch(/add to selection/i)
+    })
+
+    it('multi omitted keeps the multi-select wording (control)', () => {
+      const { unmount } = render(<FollowUpBar options={['Deploy']} picked={new Set()} onSelect={() => {}} onSend={() => {}} quickSend />)
+      expect(tipFor('Deploy')).toContain('Shift+Click to select multiple')
+      unmount()
+      render(<FollowUpBar options={['Roll back']} picked={new Set(['Deploy'])} onSelect={() => {}} onSend={() => {}} quickSend />)
+      expect(tipFor('Roll back')).toContain('Click to add to selection')
+    })
+  })
+
+  // ─── Quick Send off: a single-select pick still REPLACES ─────────────────
+  // selectSingleFollowUpOption swaps the pick whether or not Quick Send is on,
+  // so "Click to add to input" would promise an add that never happens.
+  describe('non-quickSend tooltip wording by selection mode', () => {
+    const tipFor = (label: string) => {
+      fireEvent.focus(screen.getByRole('button', { name: label }))
+      return screen.getByRole('tooltip').textContent ?? ''
+    }
+
+    it('single-select with a pick and onSend says the click replaces (double-click sends)', () => {
+      render(<FollowUpBar options={['Roll back']} picked={new Set(['Deploy'])} onSelect={() => {}} onSend={() => {}} multi={false} />)
+      const tip = tipFor('Roll back')
+      expect(tip).toContain('Click to replace selection (double-click to send)')
+      expect(tip).not.toMatch(/add to input/i)
+    })
+
+    it('single-select with a pick and no onSend says the click replaces', () => {
+      render(<FollowUpBar options={['Roll back']} picked={new Set(['Deploy'])} onSelect={() => {}} multi={false} />)
+      const tip = tipFor('Roll back')
+      expect(tip).toContain('Click to replace selection')
+      expect(tip).not.toMatch(/add to input/i)
+    })
+
+    it('multi omitted with a pick keeps the add-to-input wording (control)', () => {
+      render(<FollowUpBar options={['Roll back']} picked={new Set(['Deploy'])} onSelect={() => {}} onSend={() => {}} />)
+      expect(tipFor('Roll back')).toContain('Click to add to input (double-click to select and send)')
+    })
+  })
+
   // ─── Quick-send instant-send state preserves no-lag UX ───────────────────
   describe('with onSend + quickSend (instant-send state)', () => {
     beforeEach(() => { vi.useFakeTimers() })

@@ -444,9 +444,8 @@ def _dispatch_turn(
     from kiro_crew.dashboard.chat_runner import _run_chat
 
     try:
-        # Deferred like the other dashboard imports; the resolver follows a
-        # raised agent.chat_turn_timeout_secs above the 2h default and runs
-        # OFF the event loop (inside the task, via asyncio.to_thread).
+        # Deferred like the other dashboard imports; timeout resolution runs
+        # off-loop inside the task, before the chat coroutine starts.
         from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn
     except Exception:  # pragma: no cover - resolver always present in prod
         bounded_chat_turn = None  # type: ignore[assignment]
@@ -465,12 +464,24 @@ def _dispatch_turn(
         _on_irreversibly_consumed=on_irreversibly_consumed,
     )
     if bounded_chat_turn is not None:
-        task = asyncio.create_task(bounded_chat_turn(run_chat))
+        task = asyncio.create_task(bounded_chat_turn(run_chat, state=state, slot=slot))
     else:
         task = asyncio.create_task(asyncio.wait_for(run_chat, timeout=float(CHAT_TURN_TIMEOUT)))
     slot.task = task
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
+
+    def _consume_turn_result(done: asyncio.Task[Any]) -> None:
+        if done.cancelled():
+            return
+        try:
+            exc = done.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None and not isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+            logger.error("Spec Builder chat turn failed: %s", exc, exc_info=exc)
+
+    task.add_done_callback(_consume_turn_result)
     state.push_slots_update()
     return task
 

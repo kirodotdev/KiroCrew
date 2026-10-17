@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from body_stream_helpers import BodyStreamPayload
 
 from kiro_crew import webhooks
 from kiro_crew.dashboard.handlers import hooks as H
@@ -78,7 +79,19 @@ def _req(
         stamp = int(time.time()) if timestamp is None else timestamp
         hdrs[webhooks.TIMESTAMP_HEADER] = str(stamp)
         hdrs[webhooks.SIGNATURE_HEADER] = webhooks.sign_payload(sign_with, stamp, raw)
-    req = make_mocked_request(method, path, match_info=match_info or {}, headers=hdrs)
+    if body is not None:
+        # A real body stream with its declared type: the dashboard routes read
+        # through ``read_bounded_json``, which checks the media type and drains
+        # ``request.content`` rather than calling ``read()``.
+        hdrs.setdefault("Content-Type", "application/json")
+        hdrs.setdefault("Content-Length", str(len(raw)))
+    req = make_mocked_request(
+        method,
+        path,
+        match_info=match_info or {},
+        headers=hdrs,
+        payload=BodyStreamPayload(raw),
+    )
     state = MagicMock()
     state.owner_id = owner_id
     req.app["state"] = state
@@ -525,6 +538,62 @@ class TestNonObjectJsonBodies:
         assert resp.status != 400
 
 
+class TestJsonContentTypeGate:
+    """The hook/webhook dashboard routes read through ``read_bounded_json``.
+
+    So a body that is present but not DECLARED JSON is refused 415 before it is
+    read -- including on the ``default_empty`` routes, which default an absent
+    or unparseable body but must not default a refused one.
+    """
+
+    _ROUTES = [
+        ("api_webhooks_switch", "POST", "/api/webhooks/switch", {"enabled": False}),
+        ("api_webhook_token_create", "POST", "/api/webhooks/tokens", {"label": "x"}),
+        ("api_webhook_test", "POST", "/api/webhooks/test", {"message": "hi"}),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler,method,path,body", _ROUTES)
+    @pytest.mark.parametrize("content_type", ["text/plain", "application/x-www-form-urlencoded"])
+    async def test_a_non_json_media_type_is_refused_415(
+        self, wired, handler, method, path, body, content_type
+    ):
+        req = _req(method, path, body, headers={"Content-Type": content_type})
+        resp = await getattr(H, handler)(req)
+        assert resp.status == 415
+        assert (await _payload(resp))["code"] == "unsupported_media_type"
+        assert webhooks.token_store().count() == 0
+
+    @pytest.mark.asyncio
+    async def test_token_update_is_gated_too(self, wired):
+        req = _req(
+            "PATCH",
+            "/api/webhooks/tokens/t1",
+            {"enabled": False},
+            match_info={"token_id": "t1"},
+            headers={"Content-Type": "text/plain"},
+        )
+        resp = await H.api_webhook_token_update(req)
+        assert resp.status == 415
+
+    @pytest.mark.asyncio
+    async def test_a_declared_oversize_is_refused_413(self, wired):
+        req = _req(
+            "POST",
+            "/api/webhooks/test",
+            {"message": "hi"},
+            headers={"Content-Length": str(H._HOOK_BODY_MAX_BYTES + 1)},
+        )
+        resp = await H.api_webhook_test(req)
+        assert resp.status == 413
+        assert (await _payload(resp))["code"] == "payload_too_large"
+
+    @pytest.mark.asyncio
+    async def test_a_json_body_is_still_accepted(self, wired):
+        resp = await H.api_webhooks_switch(_req("POST", "/api/webhooks/switch", {"enabled": False}))
+        assert resp.status == 200
+
+
 class TestIdentifierRedaction:
     """Hook ids are agent-supplied free text, so they are egress too."""
 
@@ -812,7 +881,7 @@ class TestOneTurnPerSessionKey:
     async def test_the_key_is_released_when_the_turn_finishes(self, wired, monkeypatch):
         """A completed turn must not leave its key claimed forever."""
         monkeypatch.setattr(H, "_run_hook_inner", AsyncMock(return_value="done"))
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -873,7 +942,7 @@ class TestOneTurnPerSessionKey:
             return_value=None if crashed else "done",
         )
         monkeypatch.setattr(H, "_run_hook_inner", inner)
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -906,7 +975,7 @@ class TestOneTurnPerSessionKey:
     async def test_a_crashed_turn_still_releases_the_key(self, wired, monkeypatch):
         """A failing turn must not wedge the session key permanently."""
         monkeypatch.setattr(H, "_run_hook_inner", AsyncMock(side_effect=RuntimeError("boom")))
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -940,7 +1009,7 @@ class TestDeliveryIsRecordedAfterItHappens:
 
     @staticmethod
     def _state():
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         return state
@@ -1651,7 +1720,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_completed_run_recorded_with_token(self, wired, monkeypatch):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()
@@ -1682,7 +1751,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_timeout_run_recorded(self, wired):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()
@@ -1705,7 +1774,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_error_run_recorded(self, wired):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()

@@ -19,8 +19,13 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from kiro_crew.acp._dispatch import redact_text
-from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable
-from kiro_crew.acp.types import ACP_BACKENDS_HOST_AUTH_CALLBACK
+from kiro_crew.acp.runtime_models import (
+    DEFAULT_MODEL,
+    advertised_model_ids,
+    model_is_unusable,
+    resolve_pin_spelling_on,
+)
+from kiro_crew.acp.types import ACP_BACKENDS_HOST_AUTH_CALLBACK, ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.sandbox import (
@@ -214,11 +219,22 @@ class AcpError(Exception):
     """
 
     def __init__(
-        self, *args: object, transient: bool | None = None, code: int | None = None
+        self,
+        *args: object,
+        transient: bool | None = None,
+        code: int | None = None,
+        user_worded: bool = False,
     ) -> None:
         super().__init__(*args)
         self.transient = transient
         self.code = code
+        # Whether Kiro Crew wrote this message for a person to read: a curated
+        # formatter branch, or a raise site with fixed recovery wording. False
+        # for the formatter's fallback, which passes the provider's own text or
+        # the raw error dict through. A surface that shows backend errors to a
+        # chat audience keys on this, not on ``transient``, which is a retry
+        # verdict and is set on the fallback too.
+        self.user_worded = user_worded
         # Reactive-fallback metadata, set by :func:`_raise_acp_error` when a
         # prompt-time error names a rejected model (so run_bg_oneliner can retry
         # once with a served model). Guarded so AcpModelUnavailable — which sets
@@ -263,6 +279,19 @@ class AcpError(Exception):
         # current attachment from an unsupported image retained in native
         # history. Set only from the raw provider data field.
         self.image_format_unsupported: bool = False
+        # Whether a TRANSIENT failure is the network path to the provider
+        # (dispatch failure, connection reset or refused, DNS, TLS, connect
+        # timeout) rather than a provider answer such as a 5xx or a throttle.
+        # Decided from the raw frame by :func:`_raise_acp_error`, because the
+        # formatter rewrites a dispatch failure into the generic 5xx prose.
+        # ``None`` means unclassified: readers fall back to the message text.
+        self.connection_failure: bool | None = None
+        # Set by :func:`_raise_acp_error` when the frame's ``data`` names
+        # ``errorKind: cloud_credential_error``: the process cached credentials
+        # it cannot reload, so the remedy is a fresh process, not a retry.
+        # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
+        # reset-and-reload-once path a dropped session takes.
+        self.credential_reload: bool = False
 
 
 class AcpTimeoutError(AcpError):
@@ -419,6 +448,20 @@ class PiGateExtensionTampered(AcpError):  # noqa: N818
     """
 
 
+class AcpConversationBindingMismatch(AcpError):  # noqa: N818
+    """Preserved thinking belongs to a different conversation prefix.
+
+    The provider rejected the request before generation and its own text names
+    the stored native conversation as the problem. Retrying the same ACP session
+    resends the same incompatible history, so ``transient`` is always False; a
+    caller may recover only by dropping that native conversation.
+
+    Deliberately narrower than a generic invalid thinking signature: a tampered or
+    undecryptable signature does not say it is bound to another conversation and
+    stays a terminal :class:`AcpError`.
+    """
+
+
 class AcpModelUnavailable(AcpError):  # noqa: N818
     """An explicitly requested model is not available to this account.
 
@@ -440,6 +483,7 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
         advertised: Sequence[str] | None = None,
         *,
         advertised_but_refused: bool = False,
+        backend: str,
     ) -> None:
         self.model_id = model_id
         self.advertised = list(advertised or [])
@@ -470,15 +514,65 @@ class AcpModelUnavailable(AcpError):  # noqa: N818
                 f"account restriction; try another entry from the list or restart "
                 f"the session. Available models: {usable}.",
                 transient=False,
+                user_worded=True,
             )
             return
-        super().__init__(
-            f"The model {model_id!r} is not available on your account. "
-            f"Available models: {usable}. "
-            f"If you expected this model to be included in your plan, check which "
-            f"account you are signed in as with `kiro-cli whoami` — a Builder ID "
-            f"sign-in carries a different entitlement than organization SSO.",
-            transient=False,
+        # The hint is for every harness that signs in through the host kiro-cli
+        # identity store (kiro itself and KAS, spawned as ``kiro-cli acp
+        # --auth-method cli``): there `kiro-cli whoami` names the account whose
+        # entitlement the advertised list reflects. ``host_auth`` owns that fact,
+        # so a backend's own string is not the test.
+        if not host_auth.signs_in_separately(backend):
+            super().__init__(
+                f"The model {model_id!r} is not available on your account. "
+                f"Available models: {usable}. "
+                f"If you expected this model to be included in your plan, check which "
+                f"account you are signed in as with `kiro-cli whoami` — a Builder ID "
+                f"sign-in carries a different entitlement than organization SSO.",
+                transient=False,
+                user_worded=True,
+            )
+            return
+        # The sign-in advice above is about the host kiro-cli identity store:
+        # `kiro-cli whoami` and Builder ID versus organization SSO mean nothing to
+        # a harness that signs in separately, and there a miss is as likely a
+        # catalog spelling as an entitlement. Say only what is known. "Does the
+        # list carry this id" is the shared predicate's question, asked here only
+        # when there IS a list: its empty-set answer is "allow", which would read
+        # as "advertised" against "none advertised".
+        if self.advertised and not model_is_unusable(model_id, self.advertised):
+            detail = (
+                f"The {backend} adapter refused to switch to the model "
+                f"{model_id!r}, which it advertises; it may not be available to "
+                f"the account this session uses."
+            )
+        else:
+            detail = (
+                f"The model {model_id!r} is not among the models this {backend} "
+                f"session advertises."
+            )
+        super().__init__(f"{detail} Available models: {usable}.", transient=False, user_worded=True)
+
+    @classmethod
+    def for_recorded_refusal(
+        cls, model_id: str, available_models: object, *, backend: str
+    ) -> AcpModelUnavailable:
+        """The error for a pick that a non-strict apply recorded as refused.
+
+        Callers outside the ACP layer hold only the provider's raw
+        ``available_models()`` entries and the backend name. The wording verdict
+        (the advertised ids, and whether a pair-id harness's list serves the bare
+        id) is computed here, so those callers need no ACP model helpers.
+        """
+        advertised = advertised_model_ids(available_models)
+        return cls(
+            model_id,
+            advertised,
+            backend=backend,
+            advertised_but_refused=(
+                backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS
+                and bool(resolve_pin_spelling_on(model_id, advertised, backend=backend))
+            ),
         )
 
 
@@ -577,6 +671,14 @@ _RE_CONNECTION = re.compile(
     r"|\bsocket hang ?up\b"
     r"|\bfetch failed\b"
     r"|\bconnection (?:refused|reset|closed|error|timed ?out)\b",
+    re.IGNORECASE,
+)
+# Connector-level failures that never produced a provider answer. Separate from
+# _RE_CONNECTION because a dispatch failure and a named connection reset sit in
+# the 5xx family for formatting, yet they say the network path dropped, not that
+# the provider answered with an error.
+_RE_CONNECTOR_FAILURE = re.compile(
+    rf"\b(?:dispatch{_5XX_SEP}failure|connection{_5XX_SEP}reset(?:{_5XX_SEP}error)?)\b",
     re.IGNORECASE,
 )
 # Genuine retry hint only. "response stream" is deliberately NOT matched here,
@@ -810,7 +912,7 @@ async def sandbox_init_failure_for_runtime(runtime: Any) -> "AcpSandboxInitFaile
 
     ONE function for the three sites that translate a shared-runtime STARTUP
     failure, so they cannot answer this differently. All three are in
-    ``providers/acp.py`` -- the first ``spawn()``, the resume respawn, and
+    ``providers/acp_runtime_start.py`` -- the first ``spawn()``, the resume respawn, and
     ``create_session()`` -- and each already restates the auth translation inline.
     A third restatement of THIS one is how one startup path ends up classifying
     what another does not, which is the shape that let the shared-runtime startup
@@ -1000,6 +1102,50 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
 # co-occurring retry hint or 5xx wrapper must not rescue a size verdict.
 _RE_OVERSIZED_REQUEST = re.compile(r"[Tt]his message is too large to send")
 
+# The claude adapter's spelling of a request larger than the model accepts:
+# ``Internal error: API Error: 400 Input is too long.`` (or ``Prompt is too
+# long``). Unlike kiro-cli it puts the sentence in the JSON-RPC ``message``, not
+# in ``data`` (which carries only ``{"errorKind": "unknown"}``), so this one is
+# matched against ``message`` -- anchored at its start, so it reads the adapter's
+# own wording and never a phrase echoed further into some other error. The
+# overflow is in the conversation history the adapter re-sends on every turn
+# (accumulated images are the usual cause), so the identical payload is refused
+# on every retry and on every model: a CONTEXT OVERFLOW in the same sense as
+# _RE_CONTEXT_WINDOW_OVERFLOW, and tagged the same way at raise time.
+_RE_ADAPTER_INPUT_TOO_LONG = re.compile(
+    r"^\s*(?:Internal error:\s*)?(?:API Error:\s*\d{3}\s+)?(?:Input|Prompt) is too long\b",
+    re.IGNORECASE,
+)
+
+# A preserved-thinking signature rejection whose own provider text says the block
+# is bound to another conversation is recoverable by replacing the NATIVE
+# conversation. Both clauses must appear IN ONE FIELD: the shorter
+# invalid-signature form also covers tampered or undecryptable signatures, and
+# pairing a clause from ``data`` with unrelated prose from ``message`` would mint
+# a recoverable verdict the provider never sent.
+_RE_THINKING_SIGNATURE_INVALID = re.compile(
+    r"Invalid `signature` in `thinking` block", re.IGNORECASE
+)
+_RE_THINKING_BOUND_TO_OTHER_CONVERSATION = re.compile(
+    r"\bblock is bound to a different conversation\b", re.IGNORECASE
+)
+
+
+def _is_thinking_binding_mismatch(error: object) -> bool:
+    """Whether one raw provider field carries both binding-mismatch clauses."""
+    if not isinstance(error, dict):
+        return False
+    for key in ("data", "message"):
+        value = error.get(key)
+        if (
+            isinstance(value, str)
+            and _RE_THINKING_SIGNATURE_INVALID.search(value)
+            and _RE_THINKING_BOUND_TO_OTHER_CONVERSATION.search(value)
+        ):
+            return True
+    return False
+
+
 # kiro-cli's wording for a concurrent in-flight prompt on the session, read by
 # the user-facing formatter below and by `_raise_acp_error`'s AcpPromptBusy
 # classification. One pattern, but two haystacks: the formatter scopes to the
@@ -1085,6 +1231,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     unentitled-model(terminal) → usage-limit(terminal) →
     malformed-request(terminal) → context-window-overflow(terminal) →
     unsupported-image(terminal) → oversized-request(terminal) →
+    adapter input-too-long(terminal) →
     model-unavailable → throttle →
     credential-propagation(transient) → auth(terminal) →
     session-expiry(terminal) → connection failure(transient) → generic 5xx /
@@ -1143,6 +1290,12 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
         # retry. Stated here because the sentence itself ends in "try again":
         # left to the unknown fall-through, a retry-hint pattern added below
         # could read a size verdict as a momentary blip.
+        return False
+    if _RE_ADAPTER_INPUT_TOO_LONG.search(message):
+        # Terminal: the claude adapter re-sends the same oversized history on
+        # every attempt and every model, so neither a retry nor the fallback
+        # chain can make it fit. Stated explicitly so a 5xx token or retry hint
+        # added to the same frame cannot rescue a size verdict.
         return False
     if _RE_MODEL_UNAVAILABLE.search(data):
         return True
@@ -1221,8 +1374,9 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
 
     Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
     malformed-request → model-unavailable → throttle → credential-propagation →
-    auth → session-expiry → connection → 5xx (named / status / retry hint) →
-    unknown. ``unknown`` is terminal. This is the public face of the private
+    auth → session-expiry → connection (including a connector dispatch
+    failure, which the formatter words as a 5xx) → 5xx (named / status / retry
+    hint) → unknown. ``unknown`` is terminal. This is the public face of the private
     ``_RE_*`` patterns: the dependency coordinator's ACP adapter and any other
     reader classify through it so a third copy of the vocabulary cannot drift.
     """
@@ -1246,7 +1400,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
         return ProviderErrorClass(PROVIDER_ERROR_AUTH, False, match.group(0))
     if _is_session_expired(text):
         return ProviderErrorClass(PROVIDER_ERROR_SESSION_EXPIRED, False, "session expired")
-    match = _RE_CONNECTION.search(text)
+    match = _RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
     match = (
@@ -1287,6 +1441,23 @@ def _format_acp_error(
 ) -> str:
     """Format a JSON-RPC error from the ACP backend into actionable user text.
 
+    See :func:`_format_acp_error_worded`, which also reports whether the text
+    came from a curated branch.
+    """
+    return _format_acp_error_worded(error, available_models, backend=backend)[0]
+
+
+def _format_acp_error_worded(
+    error: object,
+    available_models: Sequence[str] | None = None,
+    *,
+    backend: str = "",
+) -> tuple[str, bool]:
+    """Format a JSON-RPC error, and say whether a curated branch worded it.
+
+    The flag is False only for the fallback below, which shows the provider's own
+    message or the raw error dict. Every other branch writes fixed recovery text.
+
     The ACP backend (kiro-cli or claude-agent-acp) surfaces upstream Bedrock
     failures as JSON-RPC ``error`` objects with shape
     ``{"code": int, "message": str, "data": str}``.  The ``data`` field
@@ -1306,6 +1477,7 @@ def _format_acp_error(
     through ``redact_credentials`` and ``redact_exfiltration_urls`` before
     being raised to the dashboard / Slack / CLI surfaces.
     """
+    worded = True
     if isinstance(error, dict):
         data = str(error.get("data", "") or "")
         message = str(error.get("message", "") or "")
@@ -1406,6 +1578,16 @@ def _format_acp_error(
                 "conversation the accumulated history no longer fits, so start a fresh "
                 "session; in a fresh session the always-loaded agent resources and "
                 "tools already fill the window, so reduce them."
+                f"{req_id_suffix}"
+            )
+        elif _RE_ADAPTER_INPUT_TOO_LONG.search(message):
+            # The provider's sentence first (it is what the CLI prints), then
+            # the fix. Surface-blind like its kiro-cli sibling above: it names
+            # no dashboard control, only the remedy every surface has.
+            formatted = (
+                "This chat is too big for the model to read in one request (Input is "
+                "too long), often because it holds many images such as screenshots. "
+                "Retrying or switching models will not help. Start a fresh session."
                 f"{req_id_suffix}"
             )
         elif _RE_IMAGE_FORMAT_UNSUPPORTED.search(data):
@@ -1611,6 +1793,7 @@ def _format_acp_error(
             # no fix; the declared message names the one that works.
             formatted = f"{host_auth.signed_out_message(backend)}{req_id_suffix}"
         else:
+            worded = False
             # Unrecognised failure mode. Show the PROVIDER'S OWN message when
             # there is one — it is the true error, and the same words the CLI
             # prints, so the two surfaces agree. This is the path every provider
@@ -1636,6 +1819,7 @@ def _format_acp_error(
             else:
                 formatted = f"Prompt error: {error}"
     else:
+        worded = False
         formatted = f"Prompt error: {error}"
 
     # Defense-in-depth: scrub any credentials or suspicious exfiltration URLs
@@ -1654,7 +1838,7 @@ def _format_acp_error(
             len(url_warnings),
             len(cred_warnings),
         )
-    return redacted
+    return redacted, worded
 
 
 # ---------------------------------------------------------------------------
@@ -1673,6 +1857,27 @@ def _rejected_model_from_error(error: object) -> str | None:
     data = f"{error.get('data', '')} {error.get('message', '')}"
     m = _RE_INVALID_MODEL_ID.search(data) or _RE_MODEL_UNAVAILABLE.search(data)
     return m.group(1) if m else None
+
+
+def _error_kind_from_frame(error: object) -> str:
+    """Return the structured ``errorKind`` a raw ACP frame's ``data`` carries.
+
+    claude-agent-acp names some provider answers with a machine-readable kind
+    alongside the prose (``{"code": -32603, "message": "Internal error",
+    "data": {"errorKind": "cloud_credential_error"}}`` -- the same field the
+    ``{'errorKind': 'unknown'}`` wrapper note at ``_RE_5XX_HINT`` describes).
+    Only a ``data`` that IS a mapping is read: the formatter pastes a
+    non-mapping ``data`` verbatim into the user-visible message, so matching
+    the kind out of that string would be the prose path structured readers
+    exist to avoid. Returns "" when the frame names no kind.
+    """
+    if not isinstance(error, dict):
+        return ""
+    data_field = error.get("data")
+    if isinstance(data_field, dict):
+        kind = data_field.get("errorKind")
+        return kind if isinstance(kind, str) else ""
+    return ""
 
 
 def _raise_acp_error(
@@ -1698,14 +1903,30 @@ def _raise_acp_error(
     so kiro's message is the right answer for it. The retry verdict does not
     depend on it.
     """
-    formatted = _format_acp_error(error, available_models, backend=backend)
+    formatted, worded = _format_acp_error_worded(error, available_models, backend=backend)
     # Detect prompt-busy from the raw error (before formatting rewrites it)
     raw_data = ""
     if isinstance(error, dict):
         raw_data = f"{error.get('data', '')} {error.get('message', '')}"
     if _PROMPT_BUSY_RE.search(raw_data):
-        raise AcpPromptBusy(formatted)
-    err = AcpError(formatted, transient=_is_transient_raw_error(error, available_models))
+        raise AcpPromptBusy(formatted, user_worded=worded)
+    # A binding mismatch changes only the exception TYPE and its retry verdict;
+    # it is built here, not raised early, so the tags below still read the frame.
+    err: AcpError
+    if _is_thinking_binding_mismatch(error):
+        err = AcpConversationBindingMismatch(formatted, transient=False, user_worded=worded)
+    else:
+        err = AcpError(
+            formatted,
+            transient=_is_transient_raw_error(error, available_models),
+            user_worded=worded,
+        )
+    # Tag a network-path drop so the interactive retry ladder can wait out a
+    # short outage instead of spending the fixed provider-error budget. Only a
+    # transient verdict qualifies, so a terminal frame never becomes waitable.
+    err.connection_failure = (
+        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
+    )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four
@@ -1713,7 +1934,13 @@ def _raise_acp_error(
     # validation failure, and kiro-cli's own refusal of a request it could not
     # shrink to fit -- each reproduced exactly by re-sending the same context.
     raw_data_field = str(error.get("data", "") or "") if isinstance(error, dict) else ""
-    _context_overflow = bool(_RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field))
+    raw_message_field = str(error.get("message", "") or "") if isinstance(error, dict) else ""
+    # The claude adapter's overflow rides in ``message`` (anchored match, see
+    # _RE_ADAPTER_INPUT_TOO_LONG); every other tag below stays data-scoped.
+    _context_overflow = bool(
+        _RE_CONTEXT_WINDOW_OVERFLOW.search(raw_data_field)
+        or _RE_ADAPTER_INPUT_TOO_LONG.search(raw_message_field)
+    )
     _image_format_unsupported = bool(_RE_IMAGE_FORMAT_UNSUPPORTED.search(raw_data_field))
     if (
         _context_overflow
@@ -1761,4 +1988,12 @@ def _raise_acp_error(
         raw_data_field, available_models
     ):
         err.usage_limit = True
+    # A stale-credential answer, read from the structured field (not the prose),
+    # recycles the process instead of retrying it. Pinned non-transient: the
+    # prose ends in "try again", and a retry would re-ask the one process that
+    # cannot reload. Not ``auth_required``: that card signs in the wrong identity
+    # for a harness that loads its own credentials (harness parity H6).
+    if _error_kind_from_frame(error) == "cloud_credential_error":
+        err.credential_reload = True
+        err.transient = False
     raise err

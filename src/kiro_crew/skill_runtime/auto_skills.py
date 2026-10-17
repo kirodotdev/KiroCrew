@@ -6,7 +6,7 @@ space with one allocator: ``create_auto_skill``, ``stage_skill_candidate`` and
 ``restore_auto_skill`` each test a name with ``_auto_slug_available`` under
 ``_auto_slug_claim_lock``. Also stages candidates and removes them from the queue.
 
-Reading, judging and approving a queued candidate stays in the facade, which is
+Reading, judging and approving a queued candidate lives in ``kiro_crew.skills_review``,
 the registered redaction sink for pending candidate content.
 """
 
@@ -155,7 +155,7 @@ def create_auto_skill(
         if not loader._auto_slug_available(slug, claim="live"):
             # The pending queue holds this slug for a NEW candidate, so
             # ``auto/<slug>`` is that candidate's promotion destination.
-            # Publishing over it strands it for good: ``approve_pending_skill``
+            # Publishing over it strands it for good: ``approve_pending_skill_checked``
             # refuses it while the live directory stands, and TTL pruning then
             # deletes it unreviewed. One side of the collision has to lose, and
             # the publish is the cheaper loss: it goes back to the caller as a
@@ -531,7 +531,7 @@ def _auto_slug_claim_lock(loader: SkillsLoader) -> Iterator[bool]:
     on its own but cannot make the CROSS-namespace pair safe. Two processes
     sharing one skills home can each pass the other half's test and then create
     their own directory, which strands the queued candidate:
-    ``approve_pending_skill`` refuses it while the live directory stands and TTL
+    ``approve_pending_skill_checked`` refuses it while the live directory stands and TTL
     pruning then deletes it unreviewed. Proceeding unlocked would reopen exactly
     that window, so an unacquired lock is a refusal, not a licence.
 
@@ -605,7 +605,7 @@ def _auto_slug_available(
     The live tree and the pending queue are two halves of ONE slug space: a
     queued NEW candidate's promotion destination is ``auto/<slug>``, so a
     claim that consults only its own half can take a name the other half
-    depends on, and the losing side goes silently. ``approve_pending_skill``
+    depends on, and the losing side goes silently. ``approve_pending_skill_checked``
     refuses a candidate whose live name is occupied (``live_exists``) for as
     long as that directory stands, and TTL pruning then deletes the candidate
     unreviewed. Both claim paths test a name here, under
@@ -622,7 +622,7 @@ def _auto_slug_available(
       name is taken is unapprovable.
     - ``"pending-update"`` — queueing an UPDATE candidate. Free when the
       pending directory is absent; the live tree does not constrain it,
-      because ``approve_pending_update`` promotes over the live ``target``
+      because ``approve_pending_update_checked`` promotes over the live ``target``
       named in the candidate's metadata and never consults
       ``auto/<candidate-slug>``.
 
@@ -686,9 +686,9 @@ def stage_skill_candidate(
     branch. Caller passes already-redacted content.
 
     ``kind`` distinguishes a brand-new candidate (``"new"``, the default,
-    approved via ``approve_pending_skill``) from an UPDATE proposal against
+    approved via ``approve_pending_skill_checked``) from an UPDATE proposal against
     an existing live auto-skill (``"update"``, approved via
-    ``approve_pending_update``). For an update, ``target`` names the live
+    ``approve_pending_update_checked``). For an update, ``target`` names the live
     auto-skill (``auto/<slug>``) and ``base_version`` records the live
     version the merge was based on. These are written into ``.meta.json``
     (``kind`` always; ``target`` / ``base_version`` only when provided) so
@@ -861,7 +861,7 @@ def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
     if not pdir.is_dir():
         return False
     # Captured BEFORE the removal so a same-slug replacement staged after
-    # this instant keeps its notification (see approve_pending_skill).
+    # this instant keeps its notification (see approve_pending_skill_checked).
     consumed_at = datetime.now(tz=timezone.utc).isoformat()
     shutil.rmtree(pdir)
     logger.info("Dismissed pending skill: %s", slug)

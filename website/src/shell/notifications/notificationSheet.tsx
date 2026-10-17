@@ -15,6 +15,7 @@ import NotificationFeed from '../../components/notifications/NotificationFeed'
 import NotificationBanner from '../../components/notifications/NotificationBanner'
 import { recordEvent } from '../../rum'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 
 /**
  * Desktop width of the notification sheet, in px.
@@ -455,6 +456,7 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
                   <button
                     className="text-[12px] text-accent hover:text-accent-hover bg-transparent border-none cursor-pointer"
                     onClick={() => leave(() => { closePanel(); navigate('/notifications') }, '/notifications')}
+                    {...uiLocation('shell.notifications.open-inbox')}
                   >
                     {i18nT('app.open_inbox')}
                   </button>

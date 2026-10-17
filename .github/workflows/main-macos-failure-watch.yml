@@ -1,0 +1,317 @@
+name: Main macOS Failure Watch
+
+# The merge queue proves every test workflow on the merge group before a PR
+# lands, EXCEPT the two macOS legs (`ci.yml` E2E Gateway Boot (macos-15);
+# `build.yml` Build Desktop (macos-15) + Smoke-install macOS DMG). Hosted mac
+# runners have waited hours at this merge rate, so those two legs run on main's
+# post-merge push instead. A red mac leg on main therefore reaches nobody:
+# GitHub's own failure e-mail goes to the PUSH ACTOR, which for a queued merge
+# is the merge queue itself, not the author whose change just broke Darwin.
+#
+# This watcher is that pager. It listens for the completion of `CI` and `Build`
+# and, when the run was a PUSH to main that ended `failure` or `timed_out` with
+# at least one macOS job red, it:
+#
+#   1. reads the squash commit's trailing `(#N)` and comments on PR #N, tagging
+#      its author with the failed job names and the run URL -- the one step that
+#      makes the red reach a person -- but ONLY on the first red of a streak
+#      (see RED STREAK below); a later red leaves an untagged note; and
+#   2. opens (or bumps) ONE fixed-title tracking issue per source workflow,
+#      assigned to the first red's author only, so the red stays visible until
+#      a human closes it.
+#
+# RED STREAK: before tagging anyone, the step reads the earlier completed push
+# runs of the same workflow on main and takes the newest one whose macOS jobs
+# reached a verdict. If those were already red, this commit landed on a red
+# main and its author is a bystander: no mention, no "please fix", no
+# assignment. A push whose macOS legs run green ends the streak, so the next
+# red pages its own author. Later authors are never added to an open issue.
+#
+# WHY `workflow_run` AND NOT A STEP IN `ci.yml` / `build.yml`: the same reason
+# `scheduled-failure-watch.yml` gives. A step per workflow drifts, and a job in
+# the source workflow would need `issues: write` on a tree that otherwise holds
+# `contents: read` only. One consumer with a two-name list cannot drift, needs no
+# checkout, and is the shape readiness and the scheduled watcher already use.
+#
+# WHY GATED ON `event == 'push'` AND `head_branch == 'main'`: a pull_request run
+# carries its check on the PR, and a merge_group run is folded into readiness by
+# `merge-queue-readiness.yml`; both already reach their author. Only the
+# post-merge push is unwatched. The `head_repository` check states the
+# no-forks intent outright: a fork's push never runs this repo's CI anyway.
+#
+# WHY FAILURE *AND* TIMED_OUT, BUT NOT CANCELLED: a run that hit its
+# workflow-level clock is as invisible as a red one. `cancelled` is NOT a
+# failure here: with MERGE_QUEUE_ENABLED unset, `ci.yml` and `build.yml` key
+# their push runs on the ref and a later push evicts the pending one by design.
+#
+# WHY ONLY macOS JOBS COUNT: with the queue on, the push path runs nothing else,
+# so any red IS a mac red. With the queue off, the push runs the full matrix and
+# a Linux or Windows red there was already seen (or will be) on the PR and the
+# merge group. A job counts as a macOS leg by the runner label it asked for
+# (`macos-*`), not by its display name, so a renamed job stays watched.
+#
+# DEDUPE: one open issue per source workflow, found by its EXACT fixed title
+# among the open issues carrying the `main-macos-failure` label, read through
+# the issues API by label and never `--search` (the search index lags a create;
+# title search is a phrase match). The PR mention is once per red streak (see
+# above); a later red's PR gets an untagged note. The issue bump IS throttled
+# to one per 6 hours, counting only this watcher's own bumps, so a mac leg that
+# is red on every merge does not bury the run links under a comment per push.
+# There is no close window: this watcher fires once per merge, not on a 10
+# minute tick, so a close while still red re-files at most once, unassigned.
+#
+# PERMISSIONS: `actions: read` to list the run's jobs (the event payload carries
+# the run's conclusion but not which job went red) and the earlier push runs
+# the streak check reads; `issues: write` to open and
+# bump the tracking issue AND to comment on the PR (a PR is an issue to the
+# comments endpoint, which accepts either `issues` or `pull-requests` write);
+# `pull-requests: read` to read the PR's author. The watcher never checks out
+# code and never reads the source run's artifacts.
+#
+# RUNNER: `ubuntu-latest`. A `workflow_run` completion has no live collaborator
+# actor for the AWS webhook allowlist to check, so it cannot route to the
+# CodeBuild fleet -- the same reason `scheduled-failure-watch.yml` stays hosted.
+#
+# `test/test_main_macos_failure_watch.py` pins the two watched names against the
+# real `name:` of `ci.yml` and `build.yml` (a `workflow_run` trigger on a
+# misspelt name never fires and never says so), the gate, the permissions, and
+# executes the step with `gh` stubbed.
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+      - "Build"
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+  pull-requests: read
+
+# One watcher per source workflow at a time, and the one in progress is never
+# killed: two watchers for the same workflow side by side is how a dedupe check
+# passes twice and files two issues. GitHub keeps one PENDING run per group, so
+# a third completion inside one watcher's ~10 s run evicts the queued one and
+# that commit is not paged. Push runs of `CI` and `Build` on main finish one
+# landed commit apart, minutes rather than seconds, so that is the rare case.
+#
+# Only a run the job gate would take joins that group. Every pull_request and
+# merge_group completion of `CI`/`Build` also starts this workflow (the job is
+# skipped), and if those shared the group, one of them arriving while a push
+# watcher runs would evict the PENDING push watcher behind it. They get a group
+# of their own run instead.
+concurrency:
+  group: >-
+    ${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    && format('main-macos-failure-watch-{0}', github.event.workflow_run.name)
+    || format('main-macos-failure-watch-skip-{0}', github.run_id) }}
+  cancel-in-progress: false
+
+jobs:
+  page:
+    name: Page the author of a red macOS leg on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+       github.event.workflow_run.conclusion == 'timed_out')
+    steps:
+      - name: Comment on the PR and open or bump the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SOURCE_NAME: ${{ github.event.workflow_run.name }}
+          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          # The commit message is attacker-influenced text (a PR title). It is
+          # read from the environment, never interpolated into this script.
+          HEAD_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
+        run: |
+          set -euo pipefail
+          export TITLE="$SOURCE_NAME macOS leg is failing on main"
+          # The 6-hour bump window, in the exact shape the issues API's
+          # `since` filter takes.
+          export SINCE="$(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          SHORT_SHA="${HEAD_SHA:0:12}"
+
+          # 1. Which jobs went red, and were any of them macOS legs? A job is a
+          #    macOS leg by the runner label it requested. A failed jobs read
+          #    aborts rather than paging blind: `set -e` stops on a non-zero gh.
+          failed_mac="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select((.conclusion == "failure" or .conclusion == "timed_out") and (.labels | any(ascii_downcase | startswith("macos")))) | .name] | join(", ")')"
+          if [ -z "$failed_mac" ]; then
+            echo "Run $RUN_URL ended $SOURCE_CONCLUSION but no macOS job failed; not a mac red, nothing to page."
+            exit 0
+          fi
+          echo "Red macOS job(s) on $SHORT_SHA: $failed_mac"
+
+          # 2. The squash commit's trailing `(#N)` names the PR that landed it.
+          #    Only the FIRST line is read, and only a trailing `(#digits)`.
+          #    A parameter expansion, not `| head -n 1`: under `pipefail` a long
+          #    message makes printf take SIGPIPE and the step abort unpaged.
+          first_line="${HEAD_MESSAGE%%$'\n'*}"
+          pr_number="$(printf '%s' "$first_line" | sed -nE 's/.*\(#([0-9]+)\)[[:space:]]*$/\1/p')"
+          author=""
+          if [ -n "$pr_number" ]; then
+            # A read failure here must not stop the issue below: the issue is
+            # the durable record, the PR comment is the courtesy ping.
+            author="$(gh api "repos/$REPO/pulls/$pr_number" --jq '.user.login' 2>/dev/null || true)"
+          fi
+
+          # 3. Is this the FIRST red of a streak? Read the earlier completed
+          #    push runs of the same workflow on main, newest first, and find
+          #    the newest one whose macOS jobs reached a verdict. Red there means
+          #    main was already red before this commit landed: this author did
+          #    not break it, so they are NOT tagged and NOT assigned; only the
+          #    author of the first red run is paged, once per streak, and a run
+          #    whose macOS legs are green again ends the streak. Cancelled
+          #    (evicted) runs and runs whose macOS jobs were skipped give no
+          #    verdict and are passed over, at most 10 of them. A failed read
+          #    pages anyway (with a warning): staying silent on a real first red
+          #    is the failure this watcher exists to prevent.
+          #
+          #    A re-run of failed jobs completes again under the SAME run id. If
+          #    the attempt before it was already red on a macOS leg, that
+          #    attempt's watcher already commented on the PR: this one is a
+          #    `rerun` and comments on nothing and assigns no one.
+          #
+          #    Push runs of different commits can overlap. A later commit's red
+          #    that finishes while the breaking commit's run is still going sees
+          #    no earlier red and pages too. That over-pages one bystander rather
+          #    than risk silence: waiting on the run in flight would page no one
+          #    if it ended green, and a green completion never wakes this job.
+          mac_verdict='[.jobs[] | select(.labels | any(ascii_downcase | startswith("macos"))) | .conclusion] | if any(. == "failure" or . == "timed_out") then "red" elif any(. == "success") then "green" else "none" end'
+          streak="first"
+          streak_sha=""
+          streak_url=""
+          if [ "$RUN_ATTEMPT" -gt 1 ] 2>/dev/null; then
+            prior_state="$(gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$((RUN_ATTEMPT - 1))/jobs?per_page=100" \
+              --jq "$mac_verdict")" || prior_state="error"
+            if [ "$prior_state" = "red" ]; then
+              streak="rerun"
+            fi
+          fi
+          prev_runs=""
+          if [ "$streak" = "first" ]; then
+            prev_runs="$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push&status=completed&per_page=30" \
+            --jq '[.workflow_runs[] | select(.id < (env.RUN_ID | tonumber) and .conclusion != "cancelled" and .conclusion != "skipped")] | .[:10][] | "\(.id) \(.head_sha) \(.html_url)"')" \
+            || { echo "::warning::Could not read earlier push runs of $SOURCE_NAME; paging as a first red."; prev_runs=""; }
+          fi
+          while read -r prev_id prev_sha prev_url; do
+            [ -n "$prev_id" ] || continue
+            prev_state="$(gh api "repos/$REPO/actions/runs/$prev_id/jobs?per_page=100" \
+              --jq "$mac_verdict")" || prev_state="error"
+            case "$prev_state" in
+              red) streak="continues"; streak_sha="${prev_sha:0:12}"; streak_url="$prev_url"; break ;;
+              green) break ;;
+              none) continue ;;
+              *) echo "::warning::Could not read the jobs of earlier run $prev_url; paging as a first red."; break ;;
+            esac
+          done <<< "$prev_runs"
+          echo "Red streak: $streak${streak_sha:+ (already red at $streak_sha)}"
+
+          # 4. Comment on the PR. It goes through the issues API (a PR is an
+          #    issue there) so no checkout and no GraphQL are needed. On the
+          #    first red of a streak it tags the author and asks for a fix; on
+          #    a later red it is a plain note with no mention and no ask.
+          pr_line="No PR was commented on for this run."
+          if [ -n "$pr_number" ] && [ "$streak" = "rerun" ]; then
+            pr_line="This is re-run attempt $RUN_ATTEMPT; an earlier attempt already commented on PR #$pr_number."
+            echo "Re-run attempt $RUN_ATTEMPT of a run already red on macOS; not commenting on PR #$pr_number again."
+          elif [ -n "$pr_number" ]; then
+            if [ "$streak" = "first" ]; then
+              mention=""
+              if [ -n "$author" ]; then
+                mention="@$author "
+              fi
+              pr_body="${mention}the \`$SOURCE_NAME\` run for this PR's squash commit \`$SHORT_SHA\` on \`main\` ended \`$SOURCE_CONCLUSION\` on a macOS leg the merge queue cannot run before landing:
+
+          - failed job(s): $failed_mac
+          - run: $RUN_URL
+
+          The merge group proved every other leg; only the hosted macOS legs run after the merge, so this comment is how the red reaches you. Please look at the run log and open a fix (or revert) PR. Tracking issue: the open \`$TITLE\` issue under the \`main-macos-failure\` label.
+
+          <sub>Posted by \`.github/workflows/main-macos-failure-watch.yml\`.</sub>"
+            else
+              pr_body="Note: the \`$SOURCE_NAME\` macOS leg on \`main\` was already red before this PR's squash commit \`$SHORT_SHA\` landed (earlier push run at \`$streak_sha\`: $streak_url), so this PR is not being asked to fix it. This run ($RUN_URL) failed: $failed_mac. The open \`$TITLE\` issue under the \`main-macos-failure\` label tracks the streak.
+
+          <sub>Posted by \`.github/workflows/main-macos-failure-watch.yml\`.</sub>"
+            fi
+            if gh api "repos/$REPO/issues/$pr_number/comments" -f body="$pr_body" >/dev/null; then
+              pr_line="PR #$pr_number carries a comment about this run."
+            else
+              echo "::warning::Could not comment on PR #$pr_number for $RUN_URL; the tracking issue below still records the red."
+            fi
+          else
+            echo "::notice::No trailing (#N) on the first line of $SHORT_SHA's message; no PR to comment on. The tracking issue below records the red unassigned."
+          fi
+
+          # 5. The tracking issue. The label must exist before the list and the
+          #    create can use it; --force makes "already exists" a no-op, and a
+          #    refused label write is a notice, not an abort (the create fails
+          #    loud on its own if the label really is missing).
+          gh label create main-macos-failure --repo "$REPO" --force \
+            --color B60205 \
+            --description "A macOS leg went red on a push to main; filed by main-macos-failure-watch.yml" \
+            >/dev/null \
+            || echo "::notice::Could not ensure the main-macos-failure label (continuing); it may already exist or label writes may be refused."
+          existing="$(gh issue list --repo "$REPO" --state open --label main-macos-failure \
+            --limit 100 --json number,title \
+            --jq 'map(select(.title == env.TITLE)) | .[0].number // empty')"
+          # Only the author of a streak's first red is ever tagged or assigned
+          # here; `where` itself names the PR without a mention, so a bump on a
+          # later red pings nobody.
+          where="\`$SHORT_SHA\`"
+          if [ -n "$pr_number" ]; then
+            where="$where (PR #$pr_number)"
+          fi
+          assignee=""
+          if [ "$streak" = "first" ]; then
+            assignee="$author"
+          fi
+          body="The \`$SOURCE_PATH\` push run for $where${assignee:+ by @$assignee} on \`main\` ended \`$SOURCE_CONCLUSION\` on a macOS leg: $RUN_URL
+
+          Failed job(s): $failed_mac
+
+          The merge queue verifies every other leg on the merge group before a PR lands; only the hosted macOS legs run on main's post-merge push, so nothing else pages anyone when one of them goes red. $pr_line Check the run log, fix the cause, and close this issue once a push to \`main\` runs the leg green again. While it stays open, later red runs add a comment here at most once every 6 hours and leave their own PR an untagged note, never a mention or an assignment: only the author of the first red after a green run is paged. If this issue is closed while the leg is still red, the next red run opens a fresh one, unassigned.
+
+          <sub>Filed by \`.github/workflows/main-macos-failure-watch.yml\`.</sub>"
+          if [ -n "$existing" ]; then
+            # Bump at most once per 6 hours, counting only the watcher's OWN
+            # bumps: a human comment in the thread must not silence the run
+            # links. `since` is the issues API's own filter (no search index).
+            recent="$(gh api "repos/$REPO/issues/$existing/comments?since=$SINCE&per_page=100" \
+              --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("Still failing")))] | length')"
+            if [ "$recent" = "0" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "Still failing ($SOURCE_CONCLUSION) at $where: $RUN_URL -- $failed_mac"
+            else
+              echo "Open issue #$existing was bumped within the last 6 hours; not bumping again for $RUN_URL"
+            fi
+            # A later author is never added to an open issue: its assignee is
+            # whoever was paged when it was filed, and adding each author who
+            # lands while main is red is how bystanders get blamed.
+          else
+            # Create first, assign second: an unassignable author must not
+            # stop the filing, and `--assignee` on create would.
+            created="$(gh issue create --repo "$REPO" --title "$TITLE" \
+              --label main-macos-failure --label "area: ci" --body "$body")"
+            printf '%s\n' "$created"
+            if [ -n "$assignee" ]; then
+              new_number="$(printf '%s' "$created" | sed -nE 's#.*/issues/([0-9]+)[[:space:]]*$#\1#p')"
+              if [ -n "$new_number" ]; then
+                gh issue edit "$new_number" --repo "$REPO" --add-assignee "$assignee" >/dev/null \
+                  || echo "::notice::Could not assign @$assignee to #$new_number (continuing)."
+              else
+                echo "::notice::Issue created but its number could not be read from the create output; not assigning @$assignee."
+              fi
+            fi
+          fi

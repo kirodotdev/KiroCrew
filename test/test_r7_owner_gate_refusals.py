@@ -160,6 +160,24 @@ async def test_workflow_run_intent_refuses_non_owner() -> None:
     assert service.from_intent is None, "a non-owner's intent run started"
 
 
+async def test_workflow_run_rerun_refuses_non_owner() -> None:
+    """POST /api/workflows/runs/{id}/rerun -- starts a new run, optionally edited.
+
+    The new run executes under the prior run's origin session, so a non-owner
+    rerun would run their script with the owner's run identity.
+    """
+    app, service = _workflow_app()
+    async with _client(app, _non_owner_claims()) as client:
+        response = await client.post(
+            "/api/workflows/runs/wf_1/rerun", json={"source": "ctx.agent('x')"}
+        )
+        status, body = response.status, await _body(response)
+
+    assert status == 403, f"non-owner reran a workflow: {status} {body}"
+    assert body.get("code") == OWNER_ONLY, body
+    assert service.rerun is None, "a non-owner's rerun started"
+
+
 # ── crons: the sibling of finding 65's own PoC, kept here so the app-token
 #    carve-out cannot be widened into an every-caller exemption unnoticed ──
 

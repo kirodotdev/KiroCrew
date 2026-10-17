@@ -89,6 +89,11 @@ function setSessionTitle(sessionId: string, title: string) {
   if (ls) for (const cb of ls) cb()
 }
 
+/** A session's live terminal title right now, for code outside render. */
+export function getTerminalTitle(sessionId: string): string | undefined {
+  return titles.get(sessionId)
+}
+
 /** React hook: a session's live terminal title (undefined until the first
  *  title frame arrives — callers fall back to the tab's default cwd title). */
 export function useTerminalTitle(sessionId: string): string | undefined {

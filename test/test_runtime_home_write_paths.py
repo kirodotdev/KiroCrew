@@ -33,7 +33,7 @@ deliberately NOT asserted (a comment cannot create a directory;
 reference the legacy home *on purpose* to seed from it or keep
 detecting it (``config/paths.py``, ``security.py``,
 ``sandbox.py``, ``history.py``, ``cloud/source.py``,
-``apps/builtins/file_explorer/server.py``, ``kiro_prerequisite.py``,
+``apps/builtins/file_explorer/server.py``, ``kiro_prerequisite_service.py``,
 ``instances/token_mint.py``, plus the two allow-listed scripts below).
 """
 

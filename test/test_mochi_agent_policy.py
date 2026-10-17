@@ -118,11 +118,11 @@ class TestBuildPolicy:
 
         The chat prompt tells the pet to spawn_run, learn_add, and cron_add — all
         in kirocrew-core / kirocrew-cron. Leaving those to the fail-closed
-        neutralize pass stranded every such instruction. But mochi-bg is itself a
-        spawned subagent whose contract forbids these tools ("subagents cannot
-        spawn other subagents"), so bg gets NEITHER — its managedToolPolicy
-        unmount of spawn_run is the structural enforcement of that invariant, and
-        a grant would swap it for a prompt-only one on an untrusted-content path.
+        neutralize pass stranded every such instruction. But mochi-bg reads
+        untrusted content, and nested spawns are allowed platform-wide, so the
+        denial lives on this agent: bg gets NEITHER, the neutralize pass disables
+        both servers for it, and its managedToolPolicy.exclude list separately
+        hides and refuses spawn_run, task_run and cron_add/update/remove/remove_all.
         """
         monkeypatch.setattr(
             "kiro_crew.apps.builtins.mochi.agent_policy._ambient_servers",
@@ -140,7 +140,7 @@ class TestBuildPolicy:
         # on a ceiling-less host (this is the fix for the GPT-flagged bypass).
         assert chat["servers"]["kirocrew-core"]["mountOnly"] is True
         assert chat["servers"]["kirocrew-cron"]["mountOnly"] is True
-        # background: NEITHER granted, BOTH denied (a subagent must not spawn)
+        # background: NEITHER granted, BOTH denied (bg reads untrusted content)
         assert "kirocrew-core" not in bg["servers"]
         assert "kirocrew-cron" not in bg["servers"]
         assert "kirocrew-core" in bg["neutralize"]

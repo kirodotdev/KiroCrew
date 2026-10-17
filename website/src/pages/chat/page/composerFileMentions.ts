@@ -8,8 +8,10 @@ import {
   parseDirTokens, spliceDirTokens,
 } from '../../../utils/fileTokens'
 import { findTokenRanges } from '../../../utils/pasteTokens'
+import { i18nT } from '../../../i18n/t'
 import { revealComposer } from '../composerFocus'
 import type { ComposerStaging } from './composerStaging'
+import type { MentionKeyMods } from '../../../components/chat-input/props'
 
 /**
  * The composer's `@`-mentions of files and folders, and the file chips they
@@ -69,6 +71,88 @@ interface FileMentionActionsOptions {
   voicePendingCaretRef: MutableRefObject<number | null>
   /** Set here to the reconciliation; the draft-commit sink calls it. */
   reconcileFileChipsRef: MutableRefObject<((text: string) => void) | null>
+  /**
+   * Politely announce an attachment change the reconciliation made on its own
+   * (a hand-edited or pasted `@mention` un/restaging a chip), for screen-reader
+   * users who get no focus change from it. Set by ChatPage to write the composer's
+   * `aria-live` status region. Only the AUTOMATIC path calls this: the chip's own
+   * ✕ and a picker pick already move focus, so `removeFileChip` deliberately does
+   * not announce (that would double-announce — #14597).
+   */
+  announceAttachmentChange?: (message: string) => void
+}
+
+/** What the mention decisions below read besides the text: the slot's
+ *  separator fold (`foldWinSep`, folding only on a Windows-shaped project)
+ *  and its project root (revival re-derives each alias under it). Taken as a
+ *  value so a decision made later -- the optimizer guard judging a result that
+ *  lands after a session switch -- still reads the slot it was asked about. */
+interface MentionScope { fold: (s: string) => string; project: string }
+
+function mentionScope(project: string | undefined): MentionScope {
+  const root = project || ''
+  return { fold: foldWinSep(isWindowsShapedPath(root)), project: root }
+}
+
+/** `relMentionedHere` under an explicit scope (its reasoning is there). */
+function relMentionedIn(scope: MentionScope, text: string, rel: string, otherAliases?: ReadonlySet<string>): boolean {
+  const { fold } = scope
+  const bare = otherAliases && new Set([...otherAliases].map(a => fold(a.startsWith('@') ? a.slice(1) : a)))
+  return mentionTokenRegex(fold(rel), '', bare).test(fold(text))
+}
+
+/** Recorded aliases of every known path other than `p` that are LIVE in
+ *  `input`, optionally limited to the paths in `onlyPaths`. Presence is
+ *  tested with the permissive boundary and no cross-alias context (no
+ *  recursion). The reconciliation explains why each protecting set has the
+ *  scope it has. */
+function liveAliasesIn(
+  scope: MentionScope, input: string, known: Record<string, string[]>, p: string, onlyPaths?: ReadonlySet<string>,
+): Set<string> {
+  const others = new Set<string>()
+  for (const [otherPath, otherTokens] of Object.entries(known)) {
+    if (otherPath === p || (onlyPaths && !onlyPaths.has(otherPath))) continue
+    otherTokens.forEach(t => { if (relMentionedIn(scope, input, t.slice(1))) others.add(t) })
+  }
+  return others
+}
+
+/** `fileChipRevives` under an explicit scope (its reasoning is there). */
+function chipRevivesIn(
+  scope: MentionScope, input: string, p: string, known: Record<string, string[]>, staged: ReadonlySet<string>,
+): boolean {
+  const aliases = known[p]
+  if (!aliases?.length) return false
+  const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
+  const currentRel = makeRelative(p, normalizeWindowsPath(scope.project))
+  const otherAliases = liveAliasesIn(scope, input, known, p)
+  const stagedLive = liveAliasesIn(scope, input, known, p, staged)
+  return aliases.some(token => {
+    const storedRel = token.slice(1)
+    if (!sameSlash(storedRel, currentRel)) return false
+    if ([...stagedLive].some(s => extendsConsumably(s, token))) return false
+    return relMentionedIn(scope, input, storedRel, otherAliases)
+  })
+}
+
+/** THE reconciliation decision for `input`: which staged chips it drops
+ *  (`stale`) and which unstaged ones it restages (`revived`). One function,
+ *  so the reconciliation and the optimizer guard ask exactly the same
+ *  question; why each set is scoped the way it is lives at its use in
+ *  `reconcileFileChips`. */
+function planFileChips(
+  scope: MentionScope, input: string, known: Record<string, string[]>, pendingFiles: readonly string[],
+): { stale: string[]; revived: string[] } {
+  const staged = new Set(pendingFiles)
+  const stale = pendingFiles.filter(p => {
+    const aliases = known[p]
+    if (aliases == null || aliases.length === 0) return false
+    const others = liveAliasesIn(scope, input, known, p, staged)
+    return !aliases.some(token => relMentionedIn(scope, input, token.slice(1), others))
+  })
+  const revived = Object.keys(known).filter(p =>
+    !staged.has(p) && !stale.includes(p) && chipRevivesIn(scope, input, p, known, staged))
+  return { stale, revived }
 }
 
 /**
@@ -84,6 +168,7 @@ export function useFileMentionActions({
   voiceCaretRef,
   voicePendingCaretRef,
   reconcileFileChipsRef,
+  announceAttachmentChange,
 }: FileMentionActionsOptions) {
   const { pendingFiles, setPendingFiles, pendingFilesRef, pasteBlocksRef, currentSlotTokens, recordSlotToken } = staging
   // Mention checks in this block compare both separator forms only for a
@@ -138,9 +223,7 @@ export function useFileMentionActions({
     // mixed (`@src\foo/bar.ts`, fork GPT review) -- and a sibling alias
     // recorded in another spelling still triggers the prefix-sibling rule,
     // and revival's asymmetry guard with it.
-    const fold = foldWinSep(isWindowsShapedPath(currentProjectRef.current || ''))
-    const bare = otherAliases && new Set([...otherAliases].map(a => fold(a.startsWith('@') ? a.slice(1) : a)))
-    return mentionTokenRegex(fold(rel), '', bare).test(fold(text))
+    return relMentionedIn(mentionScope(currentProjectRef.current), text, rel, otherAliases)
   }, [currentProjectRef])
 
   // "Add to context" from the file-browser rail's row context menu: insert the
@@ -326,22 +409,6 @@ export function useFileMentionActions({
     revealComposer()
   }, [recordSlotToken, clampOutOfTokens, currentSlotTokens, relMentionedHere, setInput, voiceCaretRef, currentProjectRef, inputRef, voicePendingCaretRef, pendingFilesRef, setPendingFiles])
 
-  // Recorded aliases of every known path other than `p` that are LIVE in
-  // `input`, optionally limited to the paths in `onlyPaths`. Presence is
-  // tested with the permissive boundary and no cross-alias context (no
-  // recursion). The reconciliation below explains why each protecting set
-  // has the scope it has.
-  const liveOtherAliases = useCallback((
-    input: string, known: Record<string, string[]>, p: string, onlyPaths?: ReadonlySet<string>,
-  ) => {
-    const others = new Set<string>()
-    for (const [otherPath, otherTokens] of Object.entries(known)) {
-      if (otherPath === p || (onlyPaths && !onlyPaths.has(otherPath))) continue
-      otherTokens.forEach(t => { if (relMentionedHere(input, t.slice(1))) others.add(t) })
-    }
-    return others
-  }, [relMentionedHere])
-
   // THE revival decision: would the reconciliation re-stage the unstaged file
   // `p` off the mentions in `input`, given the recorded `known` aliases and
   // the `staged` set? One function, so the chip remove handler asks exactly
@@ -351,20 +418,7 @@ export function useFileMentionActions({
   // for each condition is at its use in `reconcileFileChips`.
   const fileChipRevives = useCallback((
     input: string, p: string, known: Record<string, string[]>, staged: ReadonlySet<string>,
-  ) => {
-    const aliases = known[p]
-    if (!aliases?.length) return false
-    const sameSlash = (a: string, b: string) => a.replace(/\\/g, '/') === b.replace(/\\/g, '/')
-    const currentRel = makeRelative(p, normalizeWindowsPath(currentProjectRef.current || ''))
-    const otherAliases = liveOtherAliases(input, known, p)
-    const stagedLive = liveOtherAliases(input, known, p, staged)
-    return aliases.some(token => {
-      const storedRel = token.slice(1)
-      if (!sameSlash(storedRel, currentRel)) return false
-      if ([...stagedLive].some(s => extendsConsumably(s, token))) return false
-      return relMentionedHere(input, storedRel, otherAliases)
-    })
-  }, [liveOtherAliases, relMentionedHere, currentProjectRef])
+  ) => chipRevivesIn(mentionScope(currentProjectRef.current), input, p, known, staged), [currentProjectRef])
 
   // pickedFileTokens reconciliation -- keeps a file chip in sync with its
   // `@rel` alias(es) in BOTH directions, the same way a folder chip
@@ -426,7 +480,6 @@ export function useFileMentionActions({
   const reconcileFileChips = useCallback((input: string) => {
     const known = currentSlotTokens()
     if (!known) return
-    const staged = new Set(pendingFiles)
     // Deliberately NOT a general boundary-checked path-SUFFIX fallback (tried
     // and reverted -- fork GPT review, two rounds): recognizing "any suffix of
     // this path is mentioned" as proof of reference sounds safe for a single
@@ -467,12 +520,9 @@ export function useFileMentionActions({
     // attachments. A dead alias has no text occurrence left to
     // mis-attribute, so it protects nothing; the round-18 hazard
     // needs the longer mention actually present.
-    const otherAliasesFor = (p: string) => liveOtherAliases(input, known, p, staged)
-    const stale = pendingFiles.filter(p => {
-      const aliases = known[p]
-      if (aliases == null || aliases.length === 0) return false
-      return !aliases.some(token => relMentionedHere(input, token.slice(1), otherAliasesFor(p)))
-    })
+    // (`planFileChips` computes `stale` with exactly that staged-scoped,
+    // liveness-gated protecting set.)
+    //
     // Revival's protecting set is WIDER (fork GPT review): revival's
     // candidates are UNSTAGED entries, so a staged-scoped set is empty
     // exactly when it matters -- stage `report` and `report,`, delete both
@@ -487,7 +537,7 @@ export function useFileMentionActions({
     // preferred over the false positive it replaces: an OLD project's alias
     // literally live in the text refuses to revive a same-prefix file -- a
     // visible false negative, one pick away. (`fileChipRevives` builds this
-    // set as `liveOtherAliases(input, known, p)`.)
+    // set as `liveAliasesIn(scope, input, known, p)`.)
     //
     // Revival asymmetry guard (fork GPT review), also in `fileChipRevives`:
     // a LONGER candidate whose
@@ -499,20 +549,74 @@ export function useFileMentionActions({
     // strict onto the SHORTER staged alias), so without this the longer
     // candidate always got the permissive boundary against a shorter
     // staged sibling and silently re-attached. Same predicate, opposite
-    // direction; staged-scoped and liveness-gated like otherAliasesFor, so
+    // direction; staged-scoped and liveness-gated like the stale check's set, so
     // the M2(b) both-unstaged revival (no staged sibling) is untouched and
     // the round-20 dead-history hazard stays closed. Accepted residual:
     // pasting `@report,` back while `report` is staged does not revive
     // `report,` -- a visible false negative, one pick away.
-    const revived = Object.keys(known).filter(p =>
-      !staged.has(p) && !stale.includes(p) && fileChipRevives(input, p, known, staged))
+    const { stale, revived } = planFileChips(mentionScope(currentProjectRef.current), input, known, pendingFiles)
     if (!stale.length && !revived.length) return
     setPendingFiles(prev => {
       const next = prev.filter(p => !stale.includes(p))
       return revived.reduce((acc, p) => addPendingFile(acc, p), next)
     })
-  }, [currentSlotTokens, relMentionedHere, liveOtherAliases, fileChipRevives, pendingFiles, setPendingFiles])
+    // Announce the change the user did NOT initiate directly. Reconciliation
+    // runs when an `@mention` is hand-edited or pasted, which moves no focus, so
+    // a screen-reader user otherwise gets no sign a chip appeared or vanished and
+    // may send with (or without) a file they did not mean to (#14597). The chip's
+    // own ✕ and a picker pick move focus already, so they do not route here.
+    // A chip shows its basename, so the announcement names the file the same way;
+    // when one edit changes several at once, the names join into one message so
+    // the single live region is not overwritten before it is read.
+    //
+    // ONE reconciliation == ONE announce call, even when the same edit both
+    // restages and unstages chips (paste one `@mention` over another). The two
+    // messages are joined into a single string so React does not batch two
+    // `setAttachmentAnnouncement` calls into one render and drop the first --
+    // which would otherwise leave a screen reader hearing only the removal --
+    // and so the live region's nonce advances exactly once (two calls advanced
+    // it by two, and `nonce % 2` could land back on its prior parity and never
+    // fire). Restore is named before removal so the net new attachment is heard
+    // first.
+    if (announceAttachmentChange) {
+      const basename = (p: string) => p.split(/[/\\]/).filter(Boolean).pop() || p
+      const parts: string[] = []
+      if (revived.length) {
+        parts.push(i18nT('components.chatInput.attachment_restored', {
+          file: revived.map(basename).join(', '),
+        }))
+      }
+      if (stale.length) {
+        parts.push(i18nT('components.chatInput.attachment_removed', {
+          file: stale.map(basename).join(', '),
+        }))
+      }
+      if (parts.length) announceAttachmentChange(parts.join('. '))
+    }
+  }, [currentSlotTokens, currentProjectRef, pendingFiles, setPendingFiles, announceAttachmentChange])
   reconcileFileChipsRef.current = reconcileFileChips
+
+  // The prompt optimizer replaces the whole draft, and the next draft commit
+  // reconciles its result like any edit: a rewrite that dropped or reworded a
+  // staged file's mention would unstage that chip while the composer was
+  // readOnly -- no user edit -- and the send would leave the file out. The
+  // guard is taken when the optimize starts, so a result that lands after a
+  // session switch is judged against the slot it was asked about, and the
+  // check it returns asks the reconciliation's own question (`planFileChips`)
+  // of the rewrite: a rewrite is kept only when it would leave the
+  // attachments exactly as the draft does, neither dropping a chip nor
+  // restaging one the user removed.
+  const optimizerMentionGuard = useCallback((draft: string) => {
+    const scope = mentionScope(currentProjectRef.current)
+    const known = Object.fromEntries(Object.entries(currentSlotTokens() ?? {}).map(([p, a]) => [p, [...a]]))
+    const pending = [...pendingFilesRef.current]
+    const before = planFileChips(scope, draft, known, pending)
+    const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every(x => b.includes(x))
+    return (rewrite: string) => {
+      const after = planFileChips(scope, rewrite, known, pending)
+      return sameSet(after.stale, before.stale) && sameSet(after.revived, before.revived)
+    }
+  }, [currentSlotTokens, currentProjectRef, pendingFilesRef])
 
   /** The file chip's remove (ChatInput `onRemoveFile`). */
   const removeFileChip = (p: string) => {
@@ -695,6 +799,136 @@ export function useFileMentionActions({
     else if (liveToken) recordSlotToken(p, liveToken)
     setInput(prev => stripMentions(prev))
   }
+  // Backspace/Delete on or next to a STAGED file mention removes the whole
+  // `@mention` as one unit, so a hand-edit can never leave a half-reference
+  // (`@src/main.t`) in the text whose chip the reconciliation then silently
+  // unstages, sending the agent a file name with no attachment (#14675). The
+  // chip follows via the reconciliation effect, which drops a chip whose
+  // aliases no longer appear. Returns the atomic-delete result (new text and
+  // caret) when the keystroke lands on a staged mention, or null to let the
+  // key fall through to the default one-character edit -- a plain word, a
+  // typed `@token` with no staged chip behind it, or any key but a modifier-
+  // free Backspace/Delete on a collapsed caret. Only the recorded aliases of
+  // currently-staged files are treated atomically: a leftover alias of a
+  // removed chip is ordinary text the user is editing by hand.
+  const mentionKeyEdit = (
+    text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods,
+  ): { value: string; caret: number } | null => {
+    if (key !== 'Backspace' && key !== 'Delete') return null
+    // Shift+Delete over a selection is the native Cut chord on Windows/Linux:
+    // handing it to the atomic delete would preventDefault the browser's cut,
+    // so the selection vanishes and nothing reaches the clipboard — the user
+    // loses the text. Let it fall through so the native cut runs (cut is the
+    // deferred value-change seam, #18263) (crew-pr-reviewer / Opus).
+    if (key === 'Delete' && mods.shift && selStart !== selEnd) return null
+    // Shift alone is a plain delete (Shift+Backspace == Backspace); a word-
+    // delete chord (Ctrl/Alt, not Cmd) deletes the adjacent mention whole, the
+    // way the paste-token atom does, so `@src/main.ts` never degrades to a
+    // half-reference `@src/main.` the chip then unstages (crew-pr-reviewer).
+    // Cmd (meta) line-delete is left to the browser — a mention sits mid-line
+    // and the native line delete is the user's intent, not a chip edit.
+    const wordDelete = (mods.alt || mods.ctrl) && !mods.meta
+    if (mods.meta) return null
+    if (!wordDelete && (mods.alt || mods.ctrl)) return null
+    const hasSelection = selStart !== selEnd
+    const slotTokens = currentSlotTokens()
+    if (!slotTokens) return null
+    const staged = new Set(pendingFilesRef.current)
+    const fold = foldWinSep(isWindowsShapedPath(currentProjectRef.current || ''))
+    const folded = fold(text)
+    const caret = selStart
+    // Every alias of every currently-staged file, each with the sibling set
+    // the shared matcher needs so one mention is never read as the prefix of
+    // a longer sibling's (`report` vs `report,`). Separators are folded on a
+    // Windows-shaped project so a respelled mention is still found; the fold
+    // is 1:1, so indices on the folded copy are the original's.
+    const aliases: string[] = []
+    for (const p of staged) for (const t of slotTokens[p] ?? []) aliases.push(fold(t.slice(1)))
+    // Longest alias first: when one staged mention is a prefix of another
+    // (`@report` vs `@report final.pdf`), the complete mention must win the
+    // scan, else the short alias matches inside the long one and leaves a
+    // half-reference whose chip then unstages (GPT 6.1 review).
+    aliases.sort((a, b) => b.length - a.length)
+    const siblingSet = new Set(aliases)
+    // The whole-mention spans [at, end) this keystroke should remove, each as
+    // original-string indices (the fold is 1:1). A collapsed caret keeps at
+    // most one; a selection keeps every mention the range overlaps.
+    const hits: { at: number; end: number }[] = []
+    for (const bare of aliases) {
+      const others = new Set([...siblingSet].filter(a => a !== bare))
+      const re = mentionTokenRegex(bare, 'g', others)
+      for (let m = re.exec(folded); m !== null; m = re.exec(folded)) {
+        if (m[0].length === 0) { re.lastIndex++; continue }
+        const at = m.index + m[1].length // the `@`
+        const end = m.index + m[0].length // just past the token (boundary is a lookahead)
+        let take: boolean
+        if (hasSelection) {
+          // A selection that overlaps any part of the mention takes it whole —
+          // a partial cover would otherwise slice it to a half-reference.
+          take = selStart < end && selEnd > at
+        } else if (wordDelete) {
+          // Word-delete chord (Ctrl/Alt+Backspace / +Delete): use the SAME
+          // predicate as a plain delete — the caret inside the mention or just
+          // at its near edge — so the two paths agree (a plain Backspace inside
+          // `@src/main.ts` is already atomic, so the word-delete must be too),
+          // AND treat the whitespace between the caret and the mention end as
+          // adjacent: a word delete deletes back/forward across spaces to the
+          // token, so Ctrl/Alt+Backspace with the caret after the trailing
+          // space of `@src/main.ts ` must take the whole mention, not leave the
+          // half-reference `@src/main.` the chip then unstages (crew-pr-reviewer).
+          const onlySpaceBetween = (a: number, b: number) => {
+            for (let i = a; i < b; i++) if (folded[i] !== ' ' && folded[i] !== '\t') return false
+            return true
+          }
+          take = key === 'Backspace'
+            ? (caret > at && caret <= end) || (caret > end && onlySpaceBetween(end, caret))
+            : (caret >= at && caret < end) || (caret < at && onlySpaceBetween(caret, at))
+        } else {
+          // Plain (or Shift-held) Backspace fires when the caret is just past
+          // the mention or inside it; Delete when it is just before or inside.
+          // Strictly inside is covered by both so a mid-mention edit is atomic.
+          take = key === 'Backspace' ? caret > at && caret <= end : caret >= at && caret < end
+        }
+        if (take && !hits.some(h => h.at === at && h.end === end)) hits.push({ at, end })
+      }
+    }
+    if (hits.length === 0) return null
+    hits.sort((a, b) => a.at - b.at)
+    if (hasSelection) {
+      // Remove the selection together with the whole of every mention it
+      // overlaps, so a partial-cover selection never strands a fragment.
+      // Span the FURTHEST end (and nearest start) across every hit, not the
+      // last one by start: when a prefix sibling shares a start (`@report` in
+      // `@report final.pdf`) the shorter span can sort last on `at`, and
+      // taking its end would truncate the longer mention and orphan
+      // `final.pdf` (GPT 6.1 review).
+      const s = Math.min(selStart, ...hits.map(h => h.at))
+      const e = Math.max(selEnd, ...hits.map(h => h.end))
+      return { value: text.slice(0, s) + text.slice(e), caret: s }
+    }
+    const { at, end } = hits[0]
+    // Word-delete across whitespace: when a Ctrl/Alt+Backspace fires with the
+    // caret after the mention's trailing space(s) (or +Delete before its
+    // leading space(s)), the native word delete would consume that whitespace
+    // too, so remove the mention together with the spaces between it and the
+    // caret. The adjacency was already proven whitespace-only above.
+    if (wordDelete) {
+      if (key === 'Backspace' && caret > end) {
+        return { value: text.slice(0, at) + text.slice(caret), caret: at }
+      }
+      if (key === 'Delete' && caret < at) {
+        return { value: text.slice(0, caret) + text.slice(end), caret }
+      }
+    }
+    // Consume one adjacent space so the surrounding text does not collapse
+    // to a double space (`a @f b` -> `a  b`); drop the leading one when
+    // there is no trailing space to take instead.
+    let s = at
+    let e = end
+    if (e < text.length && text[e] === ' ') e++
+    else if (s > 0 && text[s - 1] === ' ') s--
+    return { value: text.slice(0, s) + text.slice(e), caret: s }
+  }
   /** The folder chip's remove (ChatInput `onRemoveDir`). */
   const removeDirChip = (rel: string) => {
     // The chip derives from the `@rel/` token, so removing the
@@ -718,5 +952,5 @@ export function useFileMentionActions({
     if (token) recordSlotToken(canon, token)
     setPendingFiles(prev => addPendingFile(prev, canon))
   }
-  return { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile }
+  return { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile, mentionKeyEdit, optimizerMentionGuard }
 }

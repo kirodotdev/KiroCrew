@@ -8,9 +8,10 @@ import type { ChatSlot } from '../types'
 
 // Issue #6495: slots created before the default agent was stamped into slot
 // metadata (PR #5699) carry agent:'' and were labeled with the literal
-// 'default' in the agents rail. The label must resolve to the alias that will
-// actually answer — the configured default agent — and degrade to the literal
-// 'default' only while that value has not loaded.
+// 'default' in the agents rail. The label must resolve to the agent that will
+// actually answer — the default custom agent (a template, `default_template` on
+// the route), never the roster's default crewmate alias beside it — and degrade
+// to the literal 'default' only while that value has not loaded.
 //
 // The hook reads GET /api/config/default-agent (api.defaultAgent), NOT
 // useAgents(0): the latter fires the owner-only, config-writing
@@ -47,7 +48,7 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
 
   it('maps a paused running cron and live subagent from their API envelopes (#11802)', async () => {
     const { api } = await import('../api/client')
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
     vi.mocked(api).crons.mockResolvedValue({
       jobs: [{
         id: 'job-1', name: 'Nightly check', message: 'check', enabled: false,
@@ -78,7 +79,7 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
 
   it('labels an agent-less slot with the resolved default alias', async () => {
     const { api } = await import('../api/client')
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
 
     const store = storeWithSlots([mkSlot()])
     const { result } = renderHookWithProviders(() => useAgentSync(), { store })
@@ -91,7 +92,7 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
 
   it('keeps a pinned slot agent even when a default is resolved', async () => {
     const { api } = await import('../api/client')
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
 
     // A legacy control row in the same store proves the resolved default has
     // FLUSHED into the labels before the pinned row is asserted — without it
@@ -122,13 +123,13 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
     // Deferred resolution the test flushes EXPLICITLY, so the assertion runs
     // against a state that has provably absorbed the empty response rather
     // than against the identical pre-fetch frame.
-    let resolveFetch!: (v: { default_agent: string }) => void
+    let resolveFetch!: (v: { default_agent: string; default_template: string }) => void
     vi.mocked(api).defaultAgent.mockReturnValue(new Promise(r => { resolveFetch = r }))
 
     const store = storeWithSlots([mkSlot()])
     const { result } = renderHookWithProviders(() => useAgentSync(), { store })
 
-    await act(async () => { resolveFetch({ default_agent: '' }) })
+    await act(async () => { resolveFetch({ default_agent: 'radar', default_template: '' }) })
     const slot = result.current.agents.find(a => a.id === 'slot-chat-1')
     expect(slot?.label).toBe('default')
   })
@@ -143,7 +144,7 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
     const { renderHook } = await import('@testing-library/react')
     const { api } = await import('../api/client')
 
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'atlas' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'atlas' })
     const store = storeWithSlots([mkSlot()])
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -157,7 +158,7 @@ describe('useAgentSync legacy empty-agent slot label (#6495)', () => {
       expect(result.current.agents.find(a => a.id === 'slot-chat-1')?.label).toBe('atlas · default')
     })
 
-    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'nova' })
+    vi.mocked(api).defaultAgent.mockResolvedValue({ default_agent: 'radar', default_template: 'nova' })
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['default-agent'] })
     })

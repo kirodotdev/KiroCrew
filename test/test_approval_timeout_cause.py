@@ -89,7 +89,7 @@ class TestTheBoundedSteerSpellings:
             for path in pkg.rglob("*.py")
             if pattern.search(path.read_text(encoding="utf-8", errors="ignore"))
         }
-        assert spellings == {"dashboard/chat_runner.py", "deny_notice.py"}, (
+        assert spellings == {"dashboard/chat_turn/deny_chokepoints.py", "deny_notice.py"}, (
             "a new bounded steer-notice send appeared; fold it into "
             "deny_notice.steer_refusal_notice instead of adding a third spelling "
             f"(found: {sorted(spellings)})"
@@ -153,7 +153,7 @@ class TestSessionDecider:
             False,
             DENY_CAUSE_APPROVAL_TIMEOUT,
         )
-        assert await pending.decide("webex:a@b.com", _event(3)) is False
+        assert (await pending.decide_with_cause("webex:a@b.com", _event(3)))[0] is False
 
     @pytest.mark.asyncio
     async def test_a_click_records_no_cause(self):

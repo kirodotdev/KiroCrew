@@ -186,7 +186,7 @@ The source install below remains the fully supported path.
 | Tool | Why | Get it |
 |------|-----|--------|
 | **Git for Windows** | clone the repo | https://git-scm.com/download/win |
-| **kiro-cli** | the default agent backend (ACP); install and sign in separately | https://kiro.dev/cli/ |
+| **kiro-cli** | the agent backend (ACP); it also relays the default KAS harness; install and sign in separately | https://kiro.dev/cli/ |
 | **Python 3.12-3.13** | the venv runtime. `python_requires` is `>=3.12` and 3.13 is in the supported range, but **3.12 is the tested Windows runtime** (it is what the Windows CI shard runs, and numpy 1.x ships no 3.13 Windows wheel) | https://python.org (install user-scoped), or `winget install Python.Python.3.12` |
 | **Node.js 22.12+** | required by `make.ps1 build` to build and stage the React dashboard; installed desktop/wheel artifacts already contain the bundle | `winget install OpenJS.NodeJS.LTS` |
 
@@ -279,9 +279,17 @@ spawned.
 ## Kiro sandbox delegation and the unsandboxed-exec opt-in
 
 Windows has no Kiro Crew OS sandbox backend. The official Kiro CLI does have its
-own sandbox, so Kiro Crew delegates the default chat backend, model list, account
-identity and usage reads to it automatically. A fresh desktop install therefore
-does **not** need a config edit before the first chat.
+own sandbox, so Kiro Crew delegates the Kiro CLI chat backend, model list, account
+identity and usage reads to it automatically.
+
+**The default chat harness, KAS, runs UNCONFINED on Windows.** KAS has no OS
+sandbox of its own on this platform, and it is not a Kiro CLI spawn, so it takes
+the same no-backend path as the other harnesses below: it can read your home
+directory, including `.aws` and `.ssh`. A fresh desktop install still needs no
+config edit before the first chat. To keep chat inside Kiro CLI's sandbox, pick
+**Kiro CLI** in Settings → Agent Harness (stored as `"acp_backend": "kiro"`).
+With the opt-out below declared, a KAS chat is refused with a message naming
+`sandbox_allow_unsandboxed_exec`; pick Kiro CLI to chat under that posture.
 
 Everything else — scripts, hooks, third-party ACP backends, app backends, MCP
 probes and the `gh`/`glab` provider CLIs — has no proven internal sandbox to
@@ -340,7 +348,7 @@ while the other 503s. Concretely:
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec` — the official Kiro backend delegates to Kiro CLI's built-in sandbox, while the parent scrubs sensitive environment variables. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec`. The default KAS harness runs unconfined under this platform's default (declare `sandbox_allow_unsandboxed_exec=false` to refuse it); the Kiro CLI harness delegates to Kiro CLI's built-in sandbox. The parent scrubs sensitive environment variables either way. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
 | Project skills (`<project>/.kiro/skills`) | not yet — Python on Windows does not expose handle-relative directory traversal that can reject every reparse point before resolving it. Catalog, consent and loading fail closed before canonicalizing the project path, preventing a raced junction to a UNC share from initiating SMB authentication. Global and installed skills continue to work. |
 | Theme-pack install, detail, assets, overlays, topbars, and removal | works — opened pack files are contained with `GetFinalPathNameByHandleW`; descriptor resolution fails closed instead of trusting a pathname-only check |
 | LLM cron jobs (the `message` kind) | works |
@@ -500,6 +508,28 @@ on disk, then binds its port regardless. A hang reaches none of that.
 `_WIN_LOCK_TIMEOUT_SECS` and `_WIN_LOCK_POLL_SECS` are aliases of the
 platform-neutral names.
 
+### The five-whys log lock follows the same rule
+
+`scripts/five_whys.py` serializes each mutating command on a `<log>.lock`
+sidecar, and it cannot import `platform_compat`: a skill script is copied out of
+the package and run as a bare `python3` file, so `kiro_crew` is usually not on
+its path. Its `_flock` therefore applies the rule above itself, with the
+helper's poll interval and ceiling. On Windows it polls
+`LK_NBLCK` every `_LOCK_POLL_SECS` until the holder lets go, so a second
+command against the same log serializes behind the first instead of failing
+with `EDEADLOCK` after about ten seconds. Only `EACCES` and `EDEADLOCK` are
+read as "held"; any other errno is about the descriptor and surfaces at once.
+Past `_LOCK_TIMEOUT_SECS` it exits with "refusing to proceed unserialized"
+rather than appending without the lock, and `_log_lock` unlocks only a lock it
+took, because unlocking a range this process never held fails `EACCES` on
+Windows and would replace that message. POSIX keeps its kernel-blocking
+`flock`.
+
+`test/test_five_whys_windows_lock.py` pins the wait against a fake CRT that
+gives up on the blocking code as `_locking` does, pins the poll interval and
+ceiling to the helper's, and its source scan fails any module under
+`src/kiro_crew` that passes `LK_LOCK` or `LK_RLCK`.
+
 ## `os.kill(pid, 0)` is a process killer here, not a liveness probe
 
 On POSIX, `os.kill(pid, 0)` is the idiomatic "does this pid exist?" test: signal 0
@@ -635,7 +665,7 @@ branches read `/proc`, `sysctl` or `resource` instead of calling Win32.
 
 Taking `ctypes.POINTER()` is what pins the type, so a struct that is only ever
 instantiated (never pointed at) does not leak — but the distinction is too subtle
-to rely on, and `test_platform_compat.py::TestCtypesStructsAreModuleScoped`
+to rely on, and `test_platform_compat_windows_tree.py::TestCtypesStructsAreModuleScoped`
 enforces the blanket rule by parsing each helper's source. That check runs on the
 POSIX fleet too, where the Windows branches never execute.
 
@@ -655,8 +685,8 @@ validates every parent->child edge against exact creation/exit times across two
 snapshots, and treats an unreadable tree as `None` → 0 MiB so the ceiling never
 fires on a guess. The cost is one enumeration per candidate instead of the single
 shared `/proc` scan the POSIX sweep does per tick; `_build_child_map` therefore
-deliberately has no Windows branch. macOS still has no ctypes-only per-pid RSS
-path and keeps returning 0.
+deliberately has no Windows branch. macOS sums each process's footprint over
+libproc's live child lists (`platform_compat.darwin_footprint_tree_mb`).
 
 ## Directory links on Windows
 
@@ -675,6 +705,45 @@ notably the md-notebook `.trash` guard, whose refusal would otherwise be
 POSIX-only and let a Windows junction redirect a trashed note out of the vault.
 A *file* symlink has no junction equivalent, so the few tests that plant one
 stay Windows-skipped in `test/windows-expected-failures.txt`.
+
+## Running the gateway without the desktop app
+
+The desktop app is a window around the gateway, not the gateway itself. On a
+host where that window cannot render — a VMware or VirtualBox guest reached over
+RDP, a VDI session, a server nobody signs in to — `kirocrew gateway` runs the
+same server and dashboard with no Electron process at all, and you use the
+dashboard from a browser. Try this when the desktop window still fails after the
+software-rendering relaunch described under [Troubleshooting](#troubleshooting).
+
+1. **Start the gateway.** From a source install, run `kirocrew gateway`. The
+   desktop installer does not add the CLI to `PATH`, so from a desktop install
+   call the bundled shim by its full path:
+
+   ```powershell
+   & "<install dir>\resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd" gateway
+   ```
+
+   Leave that window open; closing it stops the gateway.
+2. **Open the dashboard.** In a second shell on the same host, run
+   `kirocrew token` (the same shim, with `token` in place of `gateway`) and open
+   the link it prints within five minutes.
+3. **Stay signed in.** The link sets an access cookie and a 30-day refresh
+   cookie, and the dashboard rotates both before the access cookie expires, so
+   you do not need a new link every 20 hours. You need one again only after
+   30 days without opening the dashboard. The clocks are described under
+   [Session duration](remote-and-mobile.md#session-duration).
+
+Only one gateway listens on a port (`5476` by default). If you open the desktop
+app while this gateway is serving, the app reuses it instead of starting a
+second one, so you can switch between the browser and the app without stopping
+anything.
+
+What this does **not** give you is supervision. `kirocrew service install` has
+no Windows backend: it prints that service management is supported only on
+systemd and launchd. A gateway started this way stops when you sign out or close
+its window, does not start at boot, and is not restarted if it exits. Windows
+supervision is a separate piece of work, proposed in
+[#11289](https://github.com/kirodotdev/KiroCrew/pull/11289).
 
 ## Troubleshooting
 
@@ -698,6 +767,13 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   Chromium cannot start a sandboxed child process on this device at all, so the
   software-rendering relaunch does not help, because rendering is not what is
   failing.
+
+  The app now says so on screen: once its reloads are spent, a native error
+  dialog reports how many times the window process exited and with which code,
+  and on Windows, when that code is `-2147483645` and no dashboard page had
+  loaded yet, it also names this cause, states that the sandbox is not turned
+  off, and has a button that opens this section. An older version shows only
+  the black window; the log lines below are the same either way.
 
   `gateway-launch.log` (in `%APPDATA%\kirocrew-desktop\logs\`; a nightly install
   uses `kirocrew-desktop-nightly`) shows `renderer died` lines up to the reload
@@ -778,6 +854,16 @@ stay Windows-skipped in `test/windows-expected-failures.txt`.
   when wrong, and the most-cited one
   (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
   118 even though the Chrome enterprise *policy* of the same name still works.
+
+  If instead the symptom is the agent's **`git`/`cr` commands** being killed
+  ("A process was blocked because malicious behavior was detected") while the
+  app window itself is fine, that is a different case: read the detection entry
+  in your security console to find the exact image path and detection id, then
+  ask whoever administers endpoint security to scope an exception to that pair.
+  The spawn mechanism described in
+  [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md)
+  is macOS/Linux-specific, so use that guide's "durable fix" steps for scoping
+  the exception, not its explanation of the cause.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

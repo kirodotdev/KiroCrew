@@ -117,6 +117,34 @@ def _parse_gitlab_path(path: str) -> tuple[str, int, str]:
     return best
 
 
+def _github_ref(host: str, path: str) -> SourceRef:
+    """Build a GitHub ``SourceRef`` for an already-authorized host.
+
+    github.com and an allowlisted GitHub Enterprise host share one path grammar;
+    only the host differs, and it is kept on the ref (and in the canonical URL)
+    so every provider call and every link built later targets the same instance.
+    """
+    match = _GITHUB_PATH_RE.fullmatch(path)
+    if not match:
+        raise ValueError(
+            "Expected a GitHub URL like https://github.com/org/repo/pull/123 "
+            "or https://github.com/org/repo/issues/123."
+        )
+    owner, repo, segment, number = match.groups()
+    if owner in {".", ".."} or repo in {".", ".."}:
+        raise ValueError("Invalid GitHub owner/repo path.")
+    normalized = urlunparse(("https", host, path, "", "", ""))
+    return SourceRef(
+        "github",
+        normalized,
+        host,
+        owner,
+        repo,
+        int(number),
+        kind=_GITHUB_SEGMENT_KINDS[segment.lower()],
+    )
+
+
 def _gitlab_ref(host: str, path: str) -> SourceRef:
     """Build a GitLab ``SourceRef`` for an already-authorized host."""
     project, number, kind = _parse_gitlab_path(path)
@@ -160,13 +188,82 @@ def _jira_ref(host: str, path: str) -> SourceRef:
     return SourceRef("jira", normalized, host, "", project_key, int(number_text), kind="issue")
 
 
+# Bitbucket Server keeps a pull request at
+# ``<context>/projects/KEY/repos/SLUG/pull-requests/N``, optionally followed by
+# the UI tab the link was copied from. Split on "/" and matched from the end, so
+# no pattern backtracks over an operator-chosen context path.
+_BITBUCKET_SERVER_TABS = frozenset({"overview", "diff", "commits", "builds"})
+# A URL path separator, the same on every OS.
+_URL_PATH_SEPARATOR = "/"
+_BITBUCKET_SERVER_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}")
+_BITBUCKET_SERVER_SLUG_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_BITBUCKET_SERVER_CONTEXT_SEGMENT_RE = re.compile(r"[A-Za-z0-9._~-]{1,64}")
+_BITBUCKET_SERVER_URL_HINT = (
+    "Expected a Bitbucket Server URL like "
+    "https://<host>/projects/KEY/repos/repo/pull-requests/123."
+)
+
+
+def _bitbucket_server_ref(host: str, path: str) -> SourceRef:
+    """Build a Bitbucket Server ``SourceRef`` for an already-authorized host.
+
+    ``owner`` is the project key, ``repo`` the repository slug, and ``project``
+    the instance's context path (``""`` at the root, ``/bitbucket`` behind a
+    reverse proxy), so two instances sharing one host keep distinct identities
+    and every REST call is built under the same context path the link used.
+    The canonical URL drops the UI tab suffix.
+    """
+    segments = path.split(_URL_PATH_SEPARATOR)
+    if len(segments) > 1 and segments[-1].lower() in _BITBUCKET_SERVER_TABS:
+        segments = segments[:-1]
+    if (
+        len(segments) < 7
+        or segments[0] != ""
+        or segments[-6] != "projects"
+        or segments[-4] != "repos"
+        or segments[-2] != "pull-requests"
+    ):
+        raise ValueError(_BITBUCKET_SERVER_URL_HINT)
+    key, slug, number_text = segments[-5], segments[-3], segments[-1]
+    context = segments[1:-6]
+    if (
+        not _BITBUCKET_SERVER_KEY_RE.fullmatch(key)
+        or not _BITBUCKET_SERVER_SLUG_RE.fullmatch(slug)
+        or slug in {".", ".."}
+        or not (number_text.isascii() and number_text.isdigit() and len(number_text) <= 15)
+        or int(number_text) <= 0
+        or len(context) > 8
+        or any(
+            segment in {".", ".."} or not _BITBUCKET_SERVER_CONTEXT_SEGMENT_RE.fullmatch(segment)
+            for segment in context
+        )
+    ):
+        raise ValueError(_BITBUCKET_SERVER_URL_HINT)
+    number = int(number_text)
+    prefix = "".join(f"/{segment}" for segment in context)
+    canonical_path = f"{prefix}/projects/{key}/repos/{slug}/pull-requests/{number}"
+    normalized = urlunparse(("https", host, canonical_path, "", "", ""))
+    return SourceRef(
+        contract.BITBUCKET_SERVER_PROVIDER,
+        normalized,
+        host,
+        key,
+        slug,
+        number,
+        project=prefix,
+        kind="change",
+    )
+
+
 def parse_source_url(raw_url: str) -> SourceRef:
     """Validate and normalize a supported pull/merge-request or issue URL.
 
-    Public GitHub and gitlab.com are always accepted. A self-managed GitLab
-    instance is accepted only when its exact ``host[:port]`` appears in the
-    operator's ``dashboard.gitlab_hosts`` allowlist, so browser input can never
-    choose which instance the credential-bearing CLI talks to.
+    Public GitHub and gitlab.com are always accepted. A GitHub Enterprise or
+    self-managed GitLab instance is accepted only when its exact ``host[:port]``
+    appears in the operator's ``dashboard.github_hosts`` or
+    ``dashboard.gitlab_hosts`` allowlist, and a Bitbucket Server pull request only
+    when its host is in ``dashboard.bitbucket_server_hosts``, so browser input can
+    never choose which instance a credential-bearing read talks to.
     Exact parsed-host checks prevent URLs that merely mention a trusted host in
     their path, query, or userinfo from reaching a provider CLI.
 
@@ -188,25 +285,7 @@ def parse_source_url(raw_url: str) -> SourceRef:
     path = parsed.path.rstrip("/")
 
     if host in {"github.com", "www.github.com"}:
-        match = _GITHUB_PATH_RE.fullmatch(path)
-        if not match:
-            raise ValueError(
-                "Expected a GitHub URL like https://github.com/org/repo/pull/123 "
-                "or https://github.com/org/repo/issues/123."
-            )
-        owner, repo, segment, number = match.groups()
-        if owner in {".", ".."} or repo in {".", ".."}:
-            raise ValueError("Invalid GitHub owner/repo path.")
-        normalized = urlunparse(("https", "github.com", path, "", "", ""))
-        return SourceRef(
-            "github",
-            normalized,
-            "github.com",
-            owner,
-            repo,
-            int(number),
-            kind=_GITHUB_SEGMENT_KINDS[segment.lower()],
-        )
+        return _github_ref("github.com", path)
 
     if host in {"gitlab.com", "www.gitlab.com"}:
         return _gitlab_ref("gitlab.com", path)
@@ -218,8 +297,17 @@ def parse_source_url(raw_url: str) -> SourceRef:
     # port) so the same URL resolves identically on both sides.
     port = parsed.port
     candidate = f"{host}:{port}" if port and port != 443 else host
+    # GitHub Enterprise is checked before the GitLab and Jira allowlists. Config
+    # load refuses a host listed in two of them, so this order is only a backstop.
+    if host and candidate in hosts._allowed_github_hosts():
+        return _github_ref(candidate, path)
     if host and candidate in hosts._allowed_gitlab_hosts():
         return _gitlab_ref(candidate, path)
+    # Bitbucket Server has no public default host, so it is recognized only
+    # through its allowlist. Config load refuses a host listed under two
+    # providers, so placing it after GitHub Enterprise and GitLab is a backstop.
+    if host and candidate in hosts._allowed_bitbucket_server_hosts():
+        return _bitbucket_server_ref(candidate, path)
 
     # Jira: Atlassian Cloud (``*.atlassian.net``) is recognized automatically --
     # the suffix is Atlassian-operated, so it identifies the product the way
@@ -240,10 +328,12 @@ def parse_source_url(raw_url: str) -> SourceRef:
         return registered
 
     raise ValueError(
-        "Only github.com pull requests and issues, gitlab.com merge requests and "
+        "Only github.com pull requests and issues (or those on a GitHub Enterprise "
+        "host listed in dashboard.github_hosts), gitlab.com merge requests and "
         "issues, merge requests or issues on a GitLab host listed in "
-        "dashboard.gitlab_hosts, and Jira issues on *.atlassian.net or a host "
-        "listed in dashboard.jira_hosts are supported."
+        "dashboard.gitlab_hosts, pull requests on a Bitbucket Server host listed "
+        "in dashboard.bitbucket_server_hosts, and Jira issues on *.atlassian.net "
+        "or a host listed in dashboard.jira_hosts are supported."
     )
 
 
@@ -273,8 +363,8 @@ def parse_repo_url(raw_url: str) -> RepoRef:
 
     Reuses the exact host, scheme, and allowlist guarantees of
     :func:`parse_source_url`: HTTPS only, no userinfo, and a host that is
-    github.com, gitlab.com, or an operator-allowlisted self-managed GitLab
-    instance (via :func:`ensure_gitlab_hosts_loaded`). Fails closed on every
+    github.com, gitlab.com, or an operator-allowlisted GitHub Enterprise or
+    self-managed GitLab instance (via :func:`ensure_gitlab_hosts_loaded`). Fails closed on every
     other host so browser input can never point a credential-bearing CLI at an
     arbitrary server. A pull/issue URL (extra path segments) is refused rather
     than silently truncated to its owner/repo root.
@@ -304,6 +394,15 @@ def parse_repo_url(raw_url: str) -> RepoRef:
     # host is authorized here; the project path is not deeply validated.
     port = parsed.port
     candidate = f"{host}:{port}" if port and port != 443 else host
+    if host and candidate in hosts._allowed_github_hosts():
+        if len(segments) != 2:
+            raise ValueError(
+                "Expected a GitHub Enterprise repository URL like https://<host>/owner/repo."
+            )
+        owner, repo = segments[0], _strip_git_suffix(segments[1])
+        if owner in {".", ".."} or repo in {".", ".."} or not repo:
+            raise ValueError("Invalid GitHub owner/repo path.")
+        return RepoRef("github", candidate, owner, repo)
     is_public_gitlab = host in {"gitlab.com", "www.gitlab.com"}
     if host and (is_public_gitlab or candidate in hosts._allowed_gitlab_hosts()):
         if len(segments) < 2:
@@ -315,6 +414,7 @@ def parse_repo_url(raw_url: str) -> RepoRef:
         return RepoRef("gitlab", gitlab_host, owner, _strip_git_suffix(segments[-1]))
 
     raise ValueError(
-        "Only github.com and gitlab.com (or a GitLab host listed in "
-        "dashboard.gitlab_hosts) repository URLs are supported."
+        "Only github.com and gitlab.com (or a GitHub Enterprise host listed in "
+        "dashboard.github_hosts, or a GitLab host listed in dashboard.gitlab_hosts) "
+        "repository URLs are supported."
     )

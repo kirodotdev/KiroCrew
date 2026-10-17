@@ -15,7 +15,8 @@ a Telegram DM route and a Telegram forum Topic without any of them colliding —
 and it is why :func:`is_restricted` answers correctly for a
 ``telegram:{agent}:direct:{user}`` key, which a ``startswith("slack:")`` test
 never could. The LRUs are process-local; :func:`hydrate` rebuilds them from the
-durable ``SessionMap`` flag so a mode survives a gateway restart.
+durable ``SessionMap`` flag, and :func:`hydrate_inbound` from that flag and the
+transcript header together, so a mode survives a gateway restart.
 
 What a second channel must supply
 ---------------------------------
@@ -77,9 +78,10 @@ reservation back the same way: durable clear awaited first, then the header
 restored to the strictest claim still standing and the mark dropped; a clear
 that fails RETAINS the mode. ``test_messaging_privacy_mode`` pins the shape
 structurally: ``set_flag`` and ``aflush`` are called nowhere but :func:`_land`,
-and :func:`mark` nowhere but the primitive, :func:`hydrate` (which restores
-from the durable map and skips a row still landing) and the two in-memory
-wrappers a caller with no durable store uses.
+and :func:`mark` nowhere but the primitive, :func:`hydrate` and
+:func:`hydrate_inbound` (which restore from the durable records and skip a mode
+still landing) and the two in-memory wrappers a caller with no durable store
+uses.
 """
 
 from __future__ import annotations
@@ -93,6 +95,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -327,7 +330,8 @@ async def _serialized(session_key: str) -> AsyncIterator[None]:
     """Hold *session_key*'s durable-write lock for the block.
 
     :func:`_commit_mode` runs its durable steps under it, :func:`_release_mode`
-    its whole sequence, and the startup sweep (``SessionMap.stamp_privacy_headers``)
+    its whole sequence, :func:`hydrate_inbound` its header read and mark, and
+    the startup sweep (``SessionMap.stamp_privacy_headers``)
     each row's re-read and stamp, so on one session the durable records are
     written by one sequence at a time -- a release computes its restore target
     from claims no other release is in the middle of taking back, a commit's
@@ -401,12 +405,13 @@ _notice = notice
 def mark(mode: str, session_key: str) -> None:
     """Record *session_key* in *mode*'s bounded LRU -- the in-process PUBLICATION.
 
-    Called from three places only, and the structural test pins the list:
+    Called from four places only, and the structural test pins the list:
     :func:`_commit_mode`, after the durable row is on disk; :func:`hydrate`,
-    which restores a row the map already holds durably; and the two in-memory
-    wrappers below, for a caller with no durable store at all. Nothing else
-    may publish a mode -- a mark ahead of the row is exactly what a restart
-    loses.
+    which restores a row the map already holds durably; :func:`hydrate_inbound`,
+    which restores the mode the transcript header already records; and the two
+    in-memory wrappers below, for a caller with no durable store at all.
+    Nothing else may publish a mode -- a mark ahead of the row is exactly what
+    a restart loses.
     """
     tracker = _tracker(mode)
     tracker[session_key] = None
@@ -493,6 +498,11 @@ def hydrate(sessions: object, session_key: str) -> None:
     process-local LRUs start empty. Idempotent and allocation-free for an
     unflagged key, so a caller may run it on every decision point.
 
+    Reads the map ROW only: it is sync, and the gates that call it from the
+    loop cannot read a transcript without blocking it. The async inbound gates
+    call :func:`hydrate_inbound`, which runs this and also restores the mode the
+    transcript header records.
+
     Restores only a row the map holds DURABLY. A flag whose commit is still in
     flight (:func:`_landing`) is in the map's memory ahead of its disk write;
     marking it here would publish a mode the write may yet fail to land, so it
@@ -505,6 +515,61 @@ def hydrate(sessions: object, session_key: str) -> None:
     for mode, _pattern in _MODES:
         if sm.get_flag(session_key, mode) and not _landing(mode, session_key):
             mark(mode, session_key)
+
+
+def _header_mode(session_key: str) -> str:
+    """The private mode *session_key*'s transcript header records, or ``""``.
+
+    Blocking file I/O: :func:`hydrate_inbound` runs it off the loop. A header
+    that cannot be read records nothing here; the row still counts.
+    """
+    # Call-time import for the cycle :func:`_persist_transcript_mode` names.
+    from kiro_crew.history import ConversationLog, transcript_privacy_mode
+
+    try:
+        metadata = ConversationLog().get_metadata(session_key)
+    except Exception:
+        logger.warning("could not read the transcript header of %s", session_key, exc_info=True)
+        return ""
+    return transcript_privacy_mode(metadata.get("memory_mode"))
+
+
+async def hydrate_inbound(sessions: object, session_key: str) -> None:
+    """Restore *session_key*'s mode from BOTH durable records: the map row and the header.
+
+    The restore every async inbound gate runs. :func:`hydrate` restores the
+    row's flags; this also reads the transcript header's ``memory_mode`` off
+    the loop and marks it, so whichever record is stricter stands -- a mark
+    only adds a restriction, and nothing here takes one away. A thread whose
+    row the map does not hold (the map file could not be read at load, so the
+    map started empty) stays restricted when its header records the mode. The
+    rows stay retained: the row is still the record :func:`hydrate` and the
+    startup header sweep read.
+
+    The header read and its mark run under the session's durable-write lock
+    (:func:`_serialized`), so a release cannot restore the header between the
+    two and have a stale read re-publish the mode it took back. A header mode
+    whose commit is still landing is skipped, as :func:`hydrate` skips its row:
+    :func:`_commit_mode` marks it once both records are on disk. A caller with
+    no *sessions* -- the in-memory-only contract -- reads no header.
+
+    Only a CHANNEL session's header is read (:func:`is_channel_session_key`).
+    The trackers decide what a channel turn persists, and their mark makes it
+    skip the transcript; a private chat of another surface -- a dashboard chat a
+    channel thread is routed into -- keeps its transcript and gates its derived
+    reads on the header itself, so publishing its header here would drop turns
+    that surface keeps. Such a key restores from its row alone.
+    """
+    if sessions is None:
+        return
+    if not is_channel_session_key(session_key):
+        hydrate(sessions, session_key)
+        return
+    async with _serialized(session_key):
+        header = await asyncio.to_thread(_header_mode, session_key)
+        hydrate(sessions, session_key)
+        if header and not _landing(header, session_key):
+            mark(header, session_key)
 
 
 async def _land(sm: Any, session_key: str, mode: str, value: bool) -> None:
@@ -1073,9 +1138,11 @@ async def _release_mode(
     The commit lands its records strict-first -- the row, the header, then the
     mark. The release loosens them in the OPPOSITE order, so that a sequence
     that stops anywhere leaves the record the next boot trusts still saying the
-    mode: :func:`hydrate` restores the mark from the map ROW alone, and the
-    startup sweep (``SessionMap.stamp_privacy_headers``) re-stamps headers FROM
-    rows, never rows from headers -- so the row is the last record loosened.
+    mode: :func:`hydrate` restores the mark from the map ROW alone,
+    :func:`hydrate_inbound` from the row and the header together (either one
+    still saying the mode keeps it), and the startup sweep
+    (``SessionMap.stamp_privacy_headers``) re-stamps headers FROM rows, never
+    rows from headers -- so the row is the last record loosened.
 
     1. The durable header, restored to :func:`_restore_target` -- the strictest
        of what it recorded before this reservation and every other mode still

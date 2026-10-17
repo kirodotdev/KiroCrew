@@ -52,6 +52,15 @@ Two consequences worth internalising:
   over from your entry as overrides. The `command` in a registry-type entry is
   not what launches.
 
+Registry servers a user installs from Kiro IDE or the Kiro CLI land in
+`~/.kiro/settings/mcp.json` as bare pointers, `{"type": "registry"}` with no
+`command` or `url`. Kiro Crew carries each pointer into the `kirocrew` agent spec
+unchanged, so kiro-cli resolves it there exactly as it does for its own sessions,
+and the dashboard lists it as **Not verified** rather than starting it (Kiro Crew
+cannot read the catalog). A pointer goes through the same tool-ref and
+auto-approve rules as any other user server. Sessions on the Claude and KAS
+backends still withhold every marked entry.
+
 Governance also **fails closed**: if the client cannot reach the governance API,
 MCP is disabled entirely rather than falling open.
 
@@ -75,7 +84,13 @@ are the ones dropped.
 Verify with `kirocrew doctor`, which grows an `MCP Governance (enterprise)`
 section when the local identity is one an administrator's registry can govern
 (an IAM Identity Center or API-key sign-in), when `agent.mcp_registry_mode` is
-set, or when registry-marked entries are present.
+set, or when registry-marked entries are present. The identity comes from the
+`auth.idc.*` rows in kiro-cli's local store or a `KIRO_API_KEY`. Some kiro-cli
+builds sign an Identity Center user in without writing those rows, so before
+telling you to turn registry mode off, doctor asks `kiro-cli whoami` for the
+account type. If whoami cannot answer either, the section says the identity is
+unknown and asks you to check with `kiro-cli whoami`, rather than assuming a
+personal account.
 
 ### 2. Have the administrator allow-list the servers
 
@@ -283,10 +298,11 @@ the authority narrowed by it: allow-lists intersect, deny-lists union, a strictn
 level takes the stricter value. A subordinate cannot repeal by omission either — a
 scope it simply leaves out keeps the authority's value.
 
-Two values a subordinate sets are kept only when the authority left them empty:
+One value a subordinate sets is kept only when the authority left it empty:
 `updates.source` (where both name one, the authority's glob stands — two globs have no
-expressible intersection) and `channels.posture` (the authority's posture wins; a
-subordinate posture is not yet folded). A `min_version`
+expressible intersection). `channels.posture` folds leaf by leaf: where both tiers
+set the same leaf, an id must be allowed by both; a leaf only the subordinate sets
+is added as a further restriction. A `min_version`
 floor does fold: the higher of the two wins. A
 `~/.kiro/crew/security_policy.json` that cannot be used (unreadable, not JSON, or
 a document the schema rejects) beneath a central document is skipped with one
@@ -484,8 +500,9 @@ policy: `require_policy_signature` in the operator-controlled
 `admission_policy.json`, which demands one on *every* policy tier, the fetched one
 included.
 
-The trust key lives in that same file, under `trust_keys` keyed by the policy's
-`identity.issuer`. Both live there rather than in the policy for the same reason: a
+The trust key lives in that same file, keyed by the policy's `identity.issuer`:
+under `trust_public_keys` as a base64 Ed25519 **public** key (recommended), or under
+`trust_keys` as a shared HMAC secret. Both live there rather than in the policy for the same reason: a
 document must not be the authority on whether it has to be authentic, since an
 attacker rewriting the policy would simply clear such a flag — and
 `admission_policy.json` is on the protected floor the agent cannot write.
@@ -496,11 +513,15 @@ file does not invalidate it while changing any value does.
 
 Two limitations, stated plainly:
 
-- **The primitive is symmetric HMAC-SHA256.** Any host that can verify a
-  signature holds a secret that can also *produce* one, so this detects an
-  endpoint or transport that tampered with the document — not a host that decided
-  to forge its own. It raises the bar; it is not a public-key attestation. An
-  asymmetric verify swaps in behind the same helper if that changes.
+- **`trust_keys` is symmetric HMAC-SHA256.** Any host that can verify such a
+  signature holds a secret that can also *produce* one, so it detects an endpoint
+  or transport that tampered with the document — not a host that decided to forge
+  its own. `trust_public_keys` is the public-key answer: the host holds only the
+  public half and the private half stays with whoever signs. An issuer listed in
+  `trust_public_keys` is verified with Ed25519 alone; its `trust_keys` entry is no
+  longer consulted, even when the public-key value is a `null` or empty
+  placeholder: every policy from that issuer then reads as unverified, and is
+  refused when `require_policy_signature` is set.
 - **No signing runbook ships.** There is no `kirocrew policy sign`, no key
   distribution tooling and no rotation procedure; you compute the signature and
   place the key yourself. `require_policy_signature` on a fleet with no matching
@@ -508,6 +529,19 @@ Two limitations, stated plainly:
   `false` — as [the example policy](assets/security-policy.example.json) does — is
   a reasonable starting point when the endpoint is already an authenticated,
   TLS-fronted internal service.
+
+**Moving an issuer from HMAC to Ed25519.** The order matters, because provisioning
+the public key immediately un-verifies every still-HMAC-signed document cached for
+that issuer:
+
+1. Re-sign the policy with the Ed25519 private key (the signature is the base64 of
+   the 64-byte signature over the canonical payload) and publish it.
+2. Confirm every host has fetched the re-signed document.
+3. Add `trust_public_keys[<issuer>]` (base64 of the raw 32-byte public key) to
+   `admission_policy.json`.
+4. Delete the issuer's `trust_keys` entry. Step 3 already stops it being used for
+   policy documents; deleting it removes the secret from the host. Keep it if the
+   same name also signs plugin manifests, which still verify through `trust_keys`.
 
 ### What is not included
 

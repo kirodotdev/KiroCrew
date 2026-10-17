@@ -37,9 +37,8 @@ const items = (): TurnItem[] => [
 const turn = (complete: boolean): Extract<DisplayItem, { kind: 'turn' }> =>
   ({ kind: 'turn', items: items(), complete })
 
-/** The element CollapsibleSection wraps its children in, and the attribute it
- *  carries exactly while it is hiding them. */
-const fold = (c: HTMLElement) => c.querySelector('[style*="overflow: hidden"]')
+/** The first folded row: a fold marks each row it hides with this attribute. */
+const fold = (c: HTMLElement) => c.querySelector('[data-collapsed="true"]')
 
 describe('TurnBlock — the steps fold at mount', () => {
   it('mounts the reasoning collapsed when the preference is on', () => {
@@ -56,10 +55,11 @@ describe('TurnBlock — the steps fold at mount', () => {
     const { container } = render(<TurnBlock turn={turn(true)} renderItem={renderItem} collapseAll={false} />)
     // Preference off is "show intermediate reasoning between tool calls": the
     // prose renders in place and nothing is hidden behind a reasoning fold.
-    // Only the tool row folds, and default mode folds by UNMOUNTING it.
-    expect(screen.getByTestId('item-0')).toBeInTheDocument()
-    expect(container.querySelector('[data-collapsed="true"]')).toBeNull()
+    // Only the tool row folds: its row element stays, its content unmounts.
+    expect(screen.getByTestId('item-0').closest('[data-collapsed="true"]')).toBeNull()
+    expect(screen.getByTestId('item-2').closest('[data-collapsed="true"]')).toBeNull()
     expect(screen.queryByTestId('item-1')).toBeNull()
+    expect(container.querySelectorAll('[data-collapsed="true"]')).toHaveLength(1)
   })
 
   it('renders no fold at all while the turn reads as incomplete', () => {

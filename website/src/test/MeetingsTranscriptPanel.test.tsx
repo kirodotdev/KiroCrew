@@ -74,7 +74,7 @@ describe('TranscriptPanel', () => {
   it('surfaces a full transcript and hides undurable partial speech', () => {
     render(<TranscriptPanel segments={SEGMENTS} partial="not durable" full />)
 
-    expect(screen.getByRole('status')).toHaveTextContent(
+    expect(screen.getByRole('alert')).toHaveTextContent(
       'Transcript is full. New speech and broadcasts are no longer being recorded or sent to agents.',
     )
     expect(screen.queryByText('not durable')).toBeNull()

@@ -22,6 +22,7 @@ import binascii
 import json
 import logging
 import re
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -133,8 +134,23 @@ class _PinnedRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-#: An opener that validates redirects. Module-level so every fetch shares it.
-_OPENER = urllib.request.build_opener(_PinnedRedirects())
+#: The one opener every fetch shares. Built on first fetch, not at import, so
+#: importing this module stays cheap on the gateway boot path.
+_shared_opener: urllib.request.OpenerDirector | None = None
+_shared_opener_lock = threading.Lock()
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """The redirect-validating opener, built once and then shared.
+
+    Fetches run on worker threads, so the lock keeps two first fetches from
+    each building their own.
+    """
+    global _shared_opener
+    with _shared_opener_lock:
+        if _shared_opener is None:
+            _shared_opener = urllib.request.build_opener(_PinnedRedirects())
+        return _shared_opener
 
 
 def _get(url: str, *, as_json: bool) -> Any:
@@ -146,9 +162,9 @@ def _get(url: str, *, as_json: bool) -> Any:
         url,
         headers={"User-Agent": "KiroCrew-CrewCompanion"},  # brand-ok: wire identifier, not prose
     )
-    # Through _OPENER, never the module-level urlopen: the default opener follows
+    # Through _opener(), never the module-level urlopen: the default opener follows
     # redirects without re-validating them.
-    with _OPENER.open(request, timeout=FETCH_TIMEOUT_SECS) as response:  # noqa: S310
+    with _opener().open(request, timeout=FETCH_TIMEOUT_SECS) as response:  # noqa: S310
         chunks, total = [], 0
         while True:
             chunk = response.read(64 * 1024)
@@ -494,7 +510,11 @@ def import_bundle(appearances: Any, payload: Any) -> dict[str, Any]:
             art += 1
         else:
             return {"ok": False, "error": f"Unsupported file in bundle: {safe}"}
-        if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+        try:
+            size = len(content.encode("utf-8"))
+        except UnicodeEncodeError:
+            return {"ok": False, "error": f"Unsupported file in bundle: {safe}"}
+        if size > MAX_FILE_BYTES:
             return {"ok": False, "error": f"File too large in bundle: {safe}"}
         clean[safe] = content
 

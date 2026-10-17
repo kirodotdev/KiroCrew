@@ -1,5 +1,6 @@
 """The model a dashboard turn runs on: the session-start settle, the fallback chain, the
-swap, the restore probe and the refusal hop."""
+swap, the restore probe, the refusal hop, the canonical-model backfill and the pinned-model
+verdict."""
 
 from __future__ import annotations
 
@@ -13,20 +14,23 @@ if TYPE_CHECKING:
         FallbackState,
         KiroCrewConfig,
         RefusalInfo,
-        _backfill_canonical_model,
         _ChatSlot,
-        _pinned_model_verdict,
         advance_fallback_candidate,
+        advertised_model_ids,
+        capabilities_of,
         configured_fallback_chain,
         effective_session_key,
+        is_claude_code,
         logger,
         model_is_unusable,
+        model_registry,
         pick_epoch_host,
         probe_fallback_restore,
         provider_active_model,
         provider_advertised_ids,
         provider_raw_model,
         resolve_effective_model,
+        resolve_pin_spelling,
         resolve_substitute_set_model,
         session_agent_selection_kind,
         slot_switch_session_lock,
@@ -79,13 +83,16 @@ def _default_session_model(
     """
     if slot.model or agent_model or cfg is None:
         return ""
+    # A slot an app owns starts on that app's own model setting when the agent
+    # pins none (``resolve_effective_model`` tier 3). Any other slot resolves
+    # through the same call it always has.
+    app_name = getattr(slot, "_app", "")
+    app_kw = {"app_name": app_name} if isinstance(app_name, str) and app_name else {}
     try:
-        kind = session_agent_selection_kind(
-            effective_session_key(slot), slot.agent or cfg.default_agent
-        )
+        kind = session_agent_selection_kind(effective_session_key(slot), slot.agent)
         if kind == "template":
-            return resolve_effective_model(cfg, slot.agent or None, selection_kind=kind)
-        return resolve_effective_model(cfg, slot.agent or None)
+            return resolve_effective_model(cfg, slot.agent or None, selection_kind=kind, **app_kw)
+        return resolve_effective_model(cfg, slot.agent or None, **app_kw)
     except Exception:  # noqa: BLE001 — includes StopIteration; see docstring
         logger.warning("Failed to resolve the default model for slot %s", slot.key, exc_info=True)
         return ""
@@ -657,12 +664,16 @@ async def _settle_session_model(
     resumed: bool,
     _is_refusal_retry_turn: bool,
     _synthetic_recovery_turn: bool,
+    inherited_model: str = "",
 ) -> bool:
     """Settle the model a turn's session runs on before anything model-dependent.
 
     Restores a refusal fallback the previous turn left, backfills an unpinned slot
     from the provider, records the pinned-model verdict a fresh or reloaded session
     gives and the model it serves. True when the session withheld the slot's pin.
+
+    ``inherited_model`` is the default an unpinned slot inherits this turn
+    (``_default_session_model``); while it is set, nothing is backfilled.
     """
     # ── Refusal-fallback restore (agent.refusal_fallback_model) ──
     # A refusal retry swapped the live session for ONE message; at the
@@ -709,7 +720,13 @@ async def _settle_session_model(
         # here). An unpinned slot simply stays unpinned for the
         # fallback's duration; the next non-fallback turn backfills as
         # before.
-        slot.model = _backfill_canonical_model(client, provider_name) or slot.model
+        #
+        # A slot that inherits a resolved default is not written either:
+        # storing the served model would turn "inherit" into a pin, and the
+        # slot would stop following a later change to the default. The chip
+        # reads the served model through ``_sync_served_model`` instead.
+        if not inherited_model:
+            slot.model = _backfill_canonical_model(client, provider_name) or slot.model
     elif is_new or resumed:
         # Record the verdict for BOTH answers, not only the withhold: it is
         # carried in the slots payload so the composer reads the
@@ -777,3 +794,122 @@ async def _settle_session_model(
             "msg msg-info",
         )
     return withheld_pin
+
+
+def _is_bedrock_profile_id(model: str) -> bool:
+    """True if *model* is a concrete Bedrock inference-profile id rather than a
+    portable model alias.
+
+    A region-routed inference profile (``global.anthropic.claude-opus-4-8[1m]``,
+    ``us.anthropic.…``) pins one specific Bedrock model + region. kiro-cli
+    resolves the picked alias to such an id internally and reports it on
+    ``client._model``; the portable forms the picker sets (``claude-opus-4.7``,
+    ``sonnet``, ``deepseek-3.2``) never carry the ``*.anthropic.*`` namespace or
+    the ``[1m]`` capability suffix.
+    """
+    m = model.lower()
+    return "anthropic." in m or "[1m]" in m
+
+
+def _backfill_canonical_model(client: Any, provider: str) -> str:
+    """Read the provider's resolved model (``client.client._model``) and map it
+    to its canonical registry key for the dropdown, or ``""`` if unavailable.
+
+    AcpProvider stores a provider id on ``_model``. ``canonicalize_for_provider``
+    maps it back to the canonical key ONLY for ``claude_code`` (the canonical-
+    keyed dropdown); for kiro/acp it is a no-op so a kiro dotted id that happens
+    to be spelled like a claude_code alias (e.g. ``claude-sonnet-4.6``,
+    ``claude-haiku-4.5``) is NOT rewritten to a claude_code canonical key.
+    Skips the ``"auto"`` sentinel. Single home for the slot.model backfill so the
+    early (pre-turn) and late (mid-turn init) sites agree.
+
+    kiro-profile guard: on the kiro/acp path ``canonicalize_for_provider`` is a
+    no-op, so a backfilled value is stored into ``slot.model`` verbatim and
+    re-sent as a ``set_model`` override on every resume. kiro reports the
+    RESOLVED Bedrock inference-profile id (e.g.
+    ``global.anthropic.claude-opus-4-8[1m]``) — not the alias the user picked —
+    so backfilling it pins the slot to one profile + region. A session that once
+    resolved to the 1M Opus profile then stays nailed to it across resumes even
+    when that profile is capacity-throttled, and the picker cannot
+    dislodge the poisoned value (observed: every "model unavailable" throttle hit
+    the profile-form id, never the dotted alias, which kiro routes with capacity
+    awareness). So for non-``claude_code`` providers we DROP a profile-form id
+    (return ``""``) to keep ``slot.model`` empty and let the next get_or_create
+    re-resolve; a portable alias (what the picker actually sets) is still kept.
+    claude_code is unaffected: its profile id canonicalizes to a dropdown key
+    that is the model the user explicitly chose.
+    """
+    prov_model = getattr(getattr(client, "client", None), "_model", "") or ""
+    if not (isinstance(prov_model, str) and prov_model and prov_model != "auto"):
+        return ""
+    if not is_claude_code(provider) and _is_bedrock_profile_id(prov_model):
+        return ""
+    return model_registry.canonicalize_for_provider(prov_model, provider)
+
+
+def _pinned_model_verdict(client: Any, model: str, provider: str) -> bool | None:
+    """Whether the live session can run the model this slot is pinned to.
+
+    ``True`` withheld, ``False`` runnable, ``None`` **unknown**. The third state
+    is the reason this exists as its own function: the verdict is carried in the
+    slots payload so the composer stops re-deriving "usable?" from
+    picker-list membership, and a consumer must be able to tell "the account
+    cannot run this" from "nothing has told us yet". Every fail-open branch
+    below is a genuine unknown, not a runnable answer:
+
+    * no pin, or the ``auto`` sentinel -- nothing to judge;
+    * ``claude_code`` / the claude backend -- ``slot.model`` holds a canonical
+      key (or a prefixed provider id) against BARE advertised ids, and comparing
+      those two namespaces would call every legitimate model unusable (see
+      :func:`model_is_unusable`'s namespace note);
+    * a provider with no ``available_models`` getter, or one that raised;
+    * an empty advertised set -- no session yet, or a backend that omits
+      ``models``. :func:`model_is_unusable` folds this into "allow the send",
+      which is the right call for the WIRE; for a DISPLAYED verdict it has to
+      stay distinguishable from an entitled answer, so it is caught here.
+
+    ``providers.acp`` withholds an inherited/persisted model the account is not
+    entitled to and leaves the session on the backend default, so the turn
+    succeeds -- but nothing told the user, and the composer chip plus the picker
+    went on reporting a model no turn would ever use (observed after a plan
+    downgrade: the chip still read ``claude-opus-5`` while every turn ran on
+    auto). This is the read side of that withhold, using the SAME predicate and
+    the SAME namespace fold (:func:`resolve_pin_spelling`) the wire sites use,
+    so the two cannot disagree about what "usable" means.
+
+    A ``True`` verdict is REPORTED, never acted on: the caller does not clear the
+    pin. The withhold already keeps the model off the wire, so a stale pin is
+    inert and recovers by itself if entitlement returns.
+
+    A pin can carry a stale ``<namespace>::<bare-id>`` qualifier from the
+    catalog that advertised it when it was stored, while the session being
+    judged advertises the BARE id -- the same class of namespace mismatch the
+    advertised-list capability above acknowledges, except here the
+    two spellings ARE comparable once the qualifier is peeled. So a literal
+    miss is retried through :func:`resolve_pin_spelling` (full id first, then
+    one peeled qualifier): the retry can only clear a false withhold, never
+    create one, and a pin the backend genuinely does not serve still answers
+    withheld under either spelling. The qualifier is deliberately NOT matched
+    against ``agent.provider`` -- that config value is a fixed enum (``acp``)
+    and never the vocabulary a catalog qualifies its ids with, so keying on it
+    would leave the fold unreachable. And when this verdict clears, the wire
+    sites clear the same way (they resolve and send the advertised spelling),
+    so a ``False`` here still answers "will a turn use this pin?" truthfully.
+    """
+    if not model or model == "auto" or is_claude_code(provider):
+        return None
+    if capabilities_of(client).resolves_model_from_advertised_list:
+        return None
+    getter = getattr(client, "available_models", None)
+    if not callable(getter):
+        return None
+    try:
+        advertised = advertised_model_ids(getter())
+    except Exception:
+        return None
+    if not advertised:
+        return None
+    verdict = model_is_unusable(model, advertised)
+    if verdict and resolve_pin_spelling(model, advertised):
+        verdict = False
+    return verdict

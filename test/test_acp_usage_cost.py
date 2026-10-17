@@ -175,15 +175,16 @@ class TestPromptStatsCostDelta:
         nxt.apply_cost_cumulative(0.40)
         assert math.isclose(nxt.cost_usd, 0.15)
 
-    def test_cumulative_reset_never_emits_negative_delta(self):
+    def test_cumulative_drop_rebases_and_bills_nothing(self):
         stats = AcpPromptStats()
         stats.apply_cost_cumulative(0.25)
-        # Adapter restarted: cumulative dropped below the baseline. The new
-        # total is spend since the reset — taken whole, never negative.
+        # The ledger came back at a total Crew never saw: taking it whole would
+        # re-bill a restored session's lifetime, so it rebases and bills $0.
         stats.apply_cost_cumulative(0.05)
-        assert math.isclose(stats.cost_usd, 0.30)
-        assert stats.cost_usd >= 0.25  # never went down
+        assert math.isclose(stats.cost_usd, 0.25)
         assert math.isclose(stats.cost_session_usd, 0.05)
+        stats.apply_cost_cumulative(0.07)
+        assert math.isclose(stats.cost_usd, 0.27)
 
     def test_reset_context_state_drops_baseline(self):
         stats = AcpPromptStats()
@@ -317,12 +318,13 @@ class TestClientTracking:
         client._track_prompt_usage({"stopReason": "end_turn"})
         assert client.last_prompt_stats.to_turn_usage() == TurnUsage()
 
-    def test_reset_state_drops_cost_baseline(self):
-        """A replacement process restarts the adapter's cumulative cost counter
-        at zero. If the delta baseline survived ``_reset_state``, a new counter
-        that catches back up to the old total would bill only the difference
-        (the monotonic guard cannot see a caught-up counter), silently dropping
-        spend."""
+    def test_reset_state_keeps_cost_baseline(self):
+        """``_reset_state`` leaves the baseline to how the next session opens.
+
+        A restore of the same session brings the old ledger back, so the
+        baseline must survive the process; a ``session/new`` zeroes it through
+        ``begin_cost_session``.
+        """
         from collections import deque
         from unittest.mock import patch
 
@@ -344,13 +346,12 @@ class TestClientTracking:
         with patch("kiro_crew.session._untrack_pid"):
             client._reset_state()
 
-        assert client.last_prompt_stats.cost_session_usd == 0.0
-        # The already-billed per-turn delta is kept (carry_over() zeroes it at
-        # the next turn boundary); only the process-scoped baseline restarts.
+        assert client.last_prompt_stats.cost_session_usd == pytest.approx(0.50)
+        # The already-billed per-turn delta is kept; carry_over() zeroes it at
+        # the next turn boundary.
         assert client.last_prompt_stats.cost_usd == pytest.approx(0.50)
-        # The new process's first reading is billed whole, not delta'd against
-        # the dead process's counter.
         client.last_prompt_stats = client.last_prompt_stats.carry_over()
+        client.last_prompt_stats.begin_cost_session("s-new")
         client.last_prompt_stats.apply_cost_cumulative(0.55)
         assert client.last_prompt_stats.cost_usd == pytest.approx(0.55)
 

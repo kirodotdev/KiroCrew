@@ -82,7 +82,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypeGuard
 
 from kiro_crew.mcp_gateway.apps import AUDIENCE_MODEL, visibility_allows
 
@@ -117,6 +117,56 @@ _MAX_NAME_CHARS = 80
 #: a pathological or hostile listing rather than a limit a genuine one meets.
 _MAX_TOOLS = 2048
 _MAX_NAME_LEN = 512
+
+
+def admits_name(name: object) -> TypeGuard[str]:
+    """Whether the surface admits *name* as a tool name: a ``str`` of at most
+    ``_MAX_NAME_LEN`` characters, any spelling.
+
+    The ONE definition of what an MCP server may call a tool as far as Crew is
+    concerned. The tool-surface guard below admits exactly this, and the ACP
+    identity read (``acp._dispatch.mcp_identity_name``) retains an MCP
+    server/tool name only when it passes here too -- so a rule an operator
+    writes against a name this surface listed always has an identity to bind
+    to, and a name the surface would refuse is never carried into the deny tier.
+    Spelling is deliberately unconstrained: an MCP name is the server's string,
+    matched exactly (never as a pattern), so a metacharacter in it is inert, and
+    a control in it is escaped where a name is rendered (:func:`_sanitise`)
+    rather than refused here -- refusing it would drop the very identity a
+    per-tool deny binds to.
+    """
+    return isinstance(name, str) and len(name) <= _MAX_NAME_LEN
+
+
+def mcp_identity_name(value: object) -> str:
+    """*value* as an MCP server or tool name the surface admits, or ``""``.
+
+    The retention form of :func:`admits_name` for a frame field: an absent,
+    non-string or over-long value reads as no name -- never cut, since a
+    truncated name is a different tool to an exact deny.
+    """
+    if not admits_name(value) or not value:
+        return ""
+    return value
+
+
+def mcp_identity_unreadable(value: object) -> bool:
+    """Whether *value* PRESENTS an MCP name the bound refuses.
+
+    The distinction :func:`mcp_identity_name` alone cannot make: it answers
+    ``""`` for an absent field and for a 513-character one alike, and the two
+    must not be read the same way. An absent half is a frame that names no
+    server (an ordinary built-in call); a present half the bound refuses is a
+    frame that DOES name a tool, in a spelling Crew cannot retain -- and reading
+    it as absent would drop the exact per-tool deny that name is under and hand
+    the call to the title-keyed grant loop. So a present-but-refused half is
+    reported here, and every site that answers a permission request refuses the
+    call outright rather than judging it under no identity. ``None`` and the
+    empty string are absent; any other value the bound refuses (over-long, or
+    not a string at all) is unreadable.
+    """
+    return value is not None and value != "" and mcp_identity_name(value) == ""
+
 
 #: Line terminators that live OUTSIDE the C0/C1 ranges, so a predicate built
 #: from those ranges alone would let them through. See :func:`_is_control`.
@@ -187,7 +237,7 @@ def project_tool_surface(result: Any) -> Optional[ToolSurface]:
             # tool must not be able to do that.
             continue
         name = entry.get("name")
-        if not isinstance(name, str) or len(name) > _MAX_NAME_LEN:
+        if not admits_name(name):
             return None
         if name in surface:
             return None

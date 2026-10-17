@@ -151,6 +151,23 @@ self.addEventListener('fetch', e => {
   // as a broken image until the tab reloads. Let the browser fetch them natively.
   if (url.pathname === '/logo.png') return
   if (url.pathname.startsWith('/static/')) return
+  // The AudioContext worklet module for dictation / streaming STT, fetched by
+  // `audioWorklet.addModule('/pcm-worklet.js')` when a voice session mounts (a new
+  // chat, meetings transcription). It gets the SAME retry as hashed assets and
+  // /vendor/ stubs, and for the same reason: `addModule` is called ONCE with no
+  // retry of its own, and a voice session cannot start without this module, so a
+  // single transient 5xx there is a boot-critical failure fetchAssetWithRetry
+  // exists to prevent — the same proxy-capacity 5xx (the tailscale case above)
+  // that dead-pages /assets/ and /vendor/. Without this branch the path was not
+  // skipped: it fell through to the network-first shell handler below, which
+  // already intercepted it but fetched it ONCE with no retry, so a transient 5xx
+  // rejected the one-shot addModule. Routing it through fetchAssetWithRetry adds
+  // the retry (two extra tries with jitter) without changing anything else; the
+  // response is still never cached.
+  if (url.pathname === '/pcm-worklet.js') {
+    e.respondWith(fetchAssetWithRetry(e.request))
+    return
+  }
 
   // ── Shell navigation: network-first, fall back to cached shell ──────
   e.respondWith(

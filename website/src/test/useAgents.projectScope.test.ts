@@ -153,6 +153,35 @@ describe('useAgents project scoping', () => {
     expect(result.current.agents[0].name).toBe('two-agent')
   })
 
+  it('keeps displayAgents through a slot switch so sidebar agent labels keep their colour', async () => {
+    // The sidebar tints each row's agent label from this roster. Emptying it
+    // on a session switch turned every package agent's purple label grey until
+    // the new slot's fetch resolved, then purple again. `agents` must still
+    // clear (picker safety, above); `displayAgents` must not.
+    mockApi.agentCatalog.mockResolvedValue({
+      agents: [{ name: 'drs-daily', scope: 'global', source: 'package' }],
+      default_agent: 'kirocrew',
+    })
+    let resolveSecond: (v: unknown) => void = () => {}
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string }) => useAgents(0, key, '/repo/one'),
+      { initialProps: { key: 'chat-1' } },
+    )
+    await waitFor(() => expect(result.current.displayAgents).toHaveLength(1))
+
+    mockApi.agentCatalog.mockImplementationOnce(
+      () => new Promise(res => { resolveSecond = res }),
+    )
+    rerender({ key: 'chat-2' })
+
+    expect(result.current.agents).toHaveLength(0)
+    expect(result.current.displayAgents.map(a => a.name)).toEqual(['drs-daily'])
+
+    resolveSecond({ agents: [{ name: 'other', scope: 'global' }], default_agent: 'kirocrew' })
+    await waitFor(() => expect(result.current.displayAgents.map(a => a.name)).toEqual(['other']))
+    expect(result.current.agents.map(a => a.name)).toEqual(['other'])
+  })
+
   it('does not clear the roster on a same-project refresh (no flicker)', async () => {
     const { result, rerender } = renderHook(
       ({ trig }: { trig: number }) => useAgents(trig, 'chat-1', '/repo/one'),

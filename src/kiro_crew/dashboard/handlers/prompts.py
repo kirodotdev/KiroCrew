@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import hashlib
 import logging
@@ -19,6 +20,7 @@ from kiro_crew import pinned_fs
 from kiro_crew.agent_discovery import (
     SkillScopeResolutionError,
     agent_skill_globs,
+    served_provider_label,
     session_skill_globs,
 )
 from kiro_crew.config.loader import KiroCrewConfig
@@ -930,6 +932,40 @@ _PROMPT_SCOPES = ("global", "local")
 MAX_PROMPT_NAME_BYTES = 200
 
 
+#: Windows errors that name a too-long path: ``ERROR_FILENAME_EXCED_RANGE`` (206),
+#: which CPython files under ``errno.ENOENT``, and ``ERROR_BUFFER_OVERFLOW`` (111),
+#: which it files under ``EINVAL`` -- so ``errno`` alone names neither.
+_WINERROR_FILENAME_EXCED_RANGE = 206
+_WINERROR_BUFFER_OVERFLOW = 111
+_WINERRORS_TOO_LONG = frozenset({_WINERROR_FILENAME_EXCED_RANGE, _WINERROR_BUFFER_OVERFLOW})
+#: Module-level so a test can take the Windows by-name branch on any host.
+_IS_WINDOWS = os.name == "nt"
+
+
+def _is_path_too_long_error(exc: BaseException) -> bool:
+    """True when *exc* is the filesystem refusing a path for its LENGTH.
+
+    ``MAX_PROMPT_NAME_BYTES`` bounds the NAME, but the create is handed the name
+    joined onto its root, and whether that whole string is accepted is a property
+    of the HOST, not of the string: a Windows host without long-path support caps
+    it at ``MAX_PATH`` while a host with ``LongPathsEnabled`` takes the same path
+    without complaint. No pre-flight length can be right on both, so neither
+    create guesses; each performs the write and maps the filesystem's own refusal
+    onto the coded 400 the name bound already returns. The prompts create and the
+    skills create classify through this one predicate so the two cannot drift.
+    Every other ``OSError`` keeps its current handling -- including a code that
+    MIGHT mean the length but names something else too, which is left to say what
+    it says rather than re-read.
+
+    POSIX reports ``ENAMETOOLONG``; Windows reports one of the codes above.
+    """
+    if not isinstance(exc, OSError):
+        return False
+    if exc.errno == errno.ENAMETOOLONG:
+        return True
+    return getattr(exc, "winerror", None) in _WINERRORS_TOO_LONG
+
+
 def _linked_prompt_root(d: Path) -> bool:
     """True when the prompt directory itself is a link, so writes would land
     outside the tree the caller named.
@@ -1218,6 +1254,20 @@ def _prompt_audit(op: str, outcome: str, **meta: Any) -> None:
 #: needs no lock: its atomicity is O_EXCL on the open itself.
 _PROMPT_WRITE_LOCK = threading.Lock()
 
+#: Serializes the skill PUT's compare against ``base_hash`` with its write, for
+#: the same reason as the prompt lock: the two are separate filesystem calls.
+#: The pin and inject-on-trigger toggles and pending-candidate approval rewrite
+#: the same SKILL.md, so they take it too; otherwise a write landing between a
+#: PUT's compare and its write would be overwritten with both requests
+#: reporting success.
+_SKILL_WRITE_LOCK = threading.Lock()
+
+
+def _under_skill_write_lock(fn: Any, *args: Any) -> Any:
+    """Run one SKILL.md writer while holding ``_SKILL_WRITE_LOCK``."""
+    with _SKILL_WRITE_LOCK:
+        return fn(*args)
+
 
 def _refuse(op: str, outcome: str, code: str, **meta: Any) -> None:
     """Audit a refused prompt write under the same identifier the response carries.
@@ -1353,7 +1403,7 @@ async def api_prompts_create(request: web.Request) -> web.Response:
     session_key = _read_session_key(request)
     project_dir = _prompt_local_project(request, state, session_key)
 
-    def _write() -> str | None:
+    def _write_inner() -> str | None:
         target_dir, err = _resolve_prompt_dir(scope, project_dir)
         if target_dir is None:
             return err
@@ -1380,6 +1430,21 @@ async def api_prompts_create(request: web.Request) -> web.Response:
                     f.write(content)
             except FileExistsError:
                 return "exists"
+            except FileNotFoundError as exc:
+                # On Windows ``path.open`` is the CRT ``_wopen``, whose too-long
+                # refusal carries only ``errno`` ENOENT and no ``winerror``, so
+                # ``_is_path_too_long_error`` cannot see it. The parent was just
+                # made above, so if it still exists a missing parent is not the
+                # cause and the joined path's length is. A ``winerror`` code is
+                # left to the shared predicate, which reads it as it says.
+                if (
+                    _IS_WINDOWS
+                    and created_ident is None
+                    and getattr(exc, "winerror", None) is None
+                    and target_dir.is_dir()
+                ):
+                    return "path_too_long"
+                raise
             except OSError:
                 # The file now exists but holds a partial body, and O_EXCL would
                 # answer the retry with 409 forever. Remove it so the caller's next
@@ -1534,78 +1599,44 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             # No O_TMPFILE on this filesystem. The body goes under its own name
             # and the failure path removes it, bound to the inode this call
             # created so the removal addresses an object rather than a name. The
-            # residual is the one pinned_fs's _unlink_verified documents as
+            # residual is the one pinned_fs.unlink_verified documents as
             # irreducible and ships: the verify and the unlink are two syscalls
             # on one name, so a replacement landing between them is lost. It is
             # accepted here for the reason it is accepted there -- POSIX offers
             # nothing better -- and it is now confined to filesystems that cannot
             # build an unnamed inode.
-            # O_EXCL keeps create-if-absent atomic; O_NOFOLLOW refuses an
-            # existing symlink at the name rather than writing through it. Both
-            # resolve relative to the pinned directory, so a swap after the check
-            # cannot redirect this write. O_BINARY matters only on Windows, which
-            # has no openat and takes the by-name branch above, but the flag
-            # belongs on any os.open this code owns.
+            #
+            # The transaction itself is pinned_fs.write_new_file_pinned's, shared
+            # with the steering and skill creates: the O_EXCL|O_NOFOLLOW create
+            # relative to the pinned directory, the identity probe before the
+            # first write, the short-write loop, the close inside the guard, and
+            # the identity-checked rollback. fsync=True adds what 201 promises
+            # here and the other two creates do not: the body is flushed before
+            # the close, and the ENTRY is flushed after it -- a directory flush
+            # that fails withdraws the publication through the same rollback, so
+            # a caller that gets the 500 retries into a clean create. Only the
+            # taxonomy is this surface's: an occupied name is "exists".
             try:
-                fd = os.open(
-                    filename,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | os.O_NOFOLLOW
-                    | getattr(os, "O_BINARY", 0),
-                    0o666,
-                    dir_fd=dir_fd,
+                pinned_fs.write_new_file_pinned(
+                    dir_fd, filename, content.encode("utf-8"), mode=0o666, fsync=True
                 )
             except FileExistsError:
                 return "exists"
-            # Annotated once, in the no-openat branch above: mypy reads both
-            # branches as one scope, so re-annotating here is a [no-redef].
-            created_ident = None
-            try:
-                # Identity of the inode THIS create made, read from the
-                # descriptor while it is provably ours, and unset until then so a
-                # failure before this point forgoes the cleanup rather than
-                # unlinking on a guess.
-                leaf_st = os.fstat(fd)
-                created_ident = (leaf_st.st_dev, leaf_st.st_ino)
-                data = content.encode("utf-8")
-                written = 0
-                while written < len(data):
-                    written += os.write(fd, data[written:])
-                os.fsync(fd)
-                # Closed INSIDE the guarded region: close is the other place a
-                # deferred write error surfaces, so a close in a `finally` beside
-                # the cleanup arm would skip the removal below and strand the
-                # partial body. Clearing `fd` first keeps the arm's fallback
-                # close from double-closing; atomic_write uses the same two lines
-                # for the same reason.
-                fd, open_fd = -1, fd
-                os.close(open_fd)
-                # Same reason as the unnamed branch above: the O_EXCL open made
-                # the entry, and the entry needs its own flush before 201 can
-                # claim the prompt is on disk. It raises here too -- and on THIS
-                # path the failure also withdraws the publication, because the
-                # arm below already removes this call's own leaf under an identity
-                # check. A caller that gets the 500 can retry into a clean create.
-                os.fsync(dir_fd)
-            except BaseException:
-                if fd >= 0:
-                    try:
-                        os.close(fd)
-                    except OSError:
-                        pass
-                try:
-                    if created_ident is not None:
-                        st_now = os.stat(filename, dir_fd=dir_fd, follow_symlinks=False)
-                        if (st_now.st_dev, st_now.st_ino) == created_ident:
-                            os.unlink(filename, dir_fd=dir_fd)
-                except OSError:
-                    pass
-                raise
         finally:
             os.close(dir_fd)
         return None
+
+    def _write() -> str | None:
+        # The name fit its budget, but the JOINED path handed to the filesystem
+        # may still be too long for THIS host (a Windows install without
+        # long-path support). Map that one refusal onto a coded 400 sentinel; let
+        # every other OSError keep the generic write-failure handling below.
+        try:
+            return _write_inner()
+        except OSError as exc:
+            if _is_path_too_long_error(exc):
+                return "path_too_long"
+            raise
 
     # A filesystem refusal (EACCES, ENOSPC, a name the FS still rejects) must
     # leave an audit trail and a coded answer, not escape as a bare 500 from
@@ -1631,6 +1662,13 @@ async def api_prompts_create(request: web.Request) -> web.Response:
         _refuse(op, "blocked", "linked_prompt_root", scope=scope)
         return web.json_response(
             {"error": "prompt directory is a link", "code": "linked_prompt_root"}, status=403
+        )
+    if err == "path_too_long":
+        # A request-shape refusal, answered and audited like the name bound's.
+        _refuse(op, "bad_request", "name_too_long", name=safe_name, scope=scope)
+        return web.json_response(
+            {"error": "prompt name is too long for its destination path", "code": "name_too_long"},
+            status=400,
         )
     if err == "exists":
         _refuse(op, "conflict", "prompt_exists", name=safe_name, scope=scope)
@@ -2313,7 +2351,13 @@ async def api_skills(request: web.Request) -> web.Response:
                 active = sessions.get_agent(session_key)
                 if isinstance(active, str) and active:
                     agent = active
-            only = session_skill_globs(session_key, agent, project_dir=project_dir)
+            served = sessions.get_provider(session_key) if sessions is not None else None
+            only = session_skill_globs(
+                session_key,
+                agent,
+                project_dir=project_dir,
+                provider_type=served_provider_label(served),
+            )
             if action == "read":
                 outcome = skills.read_scoped_skill_page(
                     key,
@@ -2375,6 +2419,10 @@ async def api_skills(request: web.Request) -> web.Response:
                 "matches": result,
                 "next_offset": next_offset,
                 "incomplete": report.incomplete,
+                # The caller cannot see its own skill:// mapping, so a miss would
+                # otherwise read as "not installed" when it means "not in scope".
+                # A bit, not a count: `only` holds fnmatch globs, not skills.
+                "scoped": only is not None,
             }
 
         try:
@@ -2844,8 +2892,8 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
 
     def _approve_and_bound() -> str | None:
         # Route on candidate kind: an UPDATE candidate rewrites an existing live
-        # skill (approve_pending_update); a NEW candidate is promoted fresh
-        # (approve_pending_skill). kind is read from the candidate detail
+        # skill (approve_pending_update_checked); a NEW candidate is promoted fresh
+        # (approve_pending_skill_checked). kind is read from the candidate detail
         # (top-level or nested ``meta``), defaulting to the new path.
         kind = None
         try:
@@ -2856,10 +2904,14 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
             _meta_raw = _detail.get("meta")
             _meta: dict = _meta_raw if isinstance(_meta_raw, dict) else {}
             kind = _detail.get("kind") or _meta.get("kind")
-        if kind == "update":
-            nm = skills.approve_pending_update_checked(slug)
-        else:
-            nm = skills.approve_pending_skill_checked(slug)
+        # Under the skill write lock: an update promotion replaces a live
+        # SKILL.md, so it must not land between a PUT's compare and its write.
+        # The lifecycle bound below archives other skills and stays outside it.
+        with _SKILL_WRITE_LOCK:
+            if kind == "update":
+                nm = skills.approve_pending_update_checked(slug)
+            else:
+                nm = skills.approve_pending_skill_checked(slug)
         if nm:
             # Approving consumes a slot — enforce the bound (archive, never
             # delete). Best-effort; runs in the same off-loop executor job.
@@ -3008,11 +3060,11 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
 async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
     """POST /api/skills/-/pending/-/dismiss-all — dismiss pending candidates.
 
-    Accepts an optional JSON body ``{"slugs": ["slug1", ...]}``.  When present,
-    only those slugs are dismissed (the client passes the set it displayed to the
+    Requires a JSON body ``{"slugs": ["slug1", ...]}`` with a non-empty array.
+    Only those slugs are dismissed (the client passes the set it displayed to the
     user, so a candidate staged *after* the confirmation dialog is never silently
-    deleted).  When the body is absent or ``slugs`` is empty, ALL pending
-    candidates are dismissed (back-compat / fallback).
+    deleted). When the body is absent or ``slugs`` is missing or empty, the route
+    returns 400 ``slugs_required`` and dismisses nothing.
     """
     denied = _deny_non_owner_skill_operation(request, "skill_pending_dismiss_all")
     if denied is not None:
@@ -3111,7 +3163,7 @@ async def api_skill_pin(request: web.Request) -> web.Response:
         return web.json_response({"error": "name required"}, status=400)
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), skills.set_pinned, name, pinned
+            discovery_executor(), _under_skill_write_lock, skills.set_pinned, name, pinned
         )
     except Exception:
         _sel().log_tool_invocation(
@@ -3193,7 +3245,11 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
         return web.json_response({"error": "name required", "code": "name_required"}, status=400)
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), skills.set_inject_on_trigger, name, inject
+            discovery_executor(),
+            _under_skill_write_lock,
+            skills.set_inject_on_trigger,
+            name,
+            inject,
         )
     except Exception:
         _sel().log_tool_invocation(
@@ -3322,7 +3378,64 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         content = body.get("content", "")
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
-        ok = await asyncio.to_thread(skills.update_skill, name, content)
+        # Optional edit base, the same contract as the prompts PUT: the GET
+        # hands out ``hash`` (sha256 of SKILL.md), and an editor that presents
+        # it as ``base_hash`` is refused with 409 ``content_conflict`` when the
+        # file on disk differs from that base. An agent rewrites SKILL.md with
+        # no push to the dashboard, so a save built on an older read would
+        # otherwise silently revert that edit. A PUT without ``base_hash``
+        # writes unconditionally.
+        raw_hash = body.get("base_hash")
+        if raw_hash is not None and (
+            not isinstance(raw_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", raw_hash)
+        ):
+            return web.json_response(
+                {
+                    "error": "base_hash (sha256 of the content the edit was based on) is malformed",
+                    "code": "base_hash_required",
+                },
+                status=400,
+            )
+        base_hash: str | None = raw_hash
+
+        def _compare_and_update() -> str:
+            # Serialized so two dashboard saves cannot both verify the same
+            # base before either writes. A writer outside this process takes
+            # no lock, so the gap between the compare and the write is narrowed
+            # to one thread hop rather than closed.
+            with _SKILL_WRITE_LOCK:
+                if base_hash is not None:
+                    current = skills.load_skill(name)
+                    if current is None:
+                        # An unreadable or refused file cannot be verified
+                        # against the base, so it is not written.
+                        return "not_found"
+                    if hashlib.sha256(current.encode("utf-8")).hexdigest() != base_hash:
+                        return "conflict"
+                return "ok" if skills.update_skill(name, content) else "not_found"
+
+        result = await asyncio.to_thread(_compare_and_update)
+        if result == "conflict":
+            try:
+                _sel().log_tool_invocation(
+                    session_key="",
+                    agent="api",
+                    source="dashboard",
+                    tool_name="api_skill_update",
+                    tool_kind="skill",
+                    outcome="rejected",
+                    metadata={"name": name, "reason": "content_conflict"},
+                )
+            except Exception:  # noqa: BLE001 — never 500 on an audit write
+                logger.debug("Could not audit skill update conflict", exc_info=True)
+            return web.json_response(
+                {
+                    "error": "the skill changed on disk after the edit was started",
+                    "code": "content_conflict",
+                },
+                status=409,
+            )
+        ok = result == "ok"
         try:
             _sel().log_tool_invocation(
                 session_key="",
@@ -3423,7 +3536,14 @@ async def api_skill_detail(request: web.Request) -> web.Response:
             content = content_value
     if content is None:
         return web.json_response({"error": "not found"}, status=404)
-    return web.json_response({"name": name, "content": content})
+    # ``hash`` is the edit base a PUT presents as ``base_hash``.
+    return web.json_response(
+        {
+            "name": name,
+            "content": content,
+            "hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        }
+    )
 
 
 async def api_skills_create(request: web.Request) -> web.Response:
@@ -3475,21 +3595,37 @@ async def api_skills_create(request: web.Request) -> web.Response:
             status=400,
         )
     skills = _get_skills(state)
+
+    def _audit(outcome: str, **extra: str) -> None:
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skills_create",
+                tool_kind="skill",
+                outcome=outcome,
+                metadata={"name": safe_name, **extra},
+            )
+        except Exception:  # noqa: BLE001 — the outcome is decided; never 500 on an audit write
+            logger.debug("Could not audit skill create outcome", exc_info=True)
+
     # Off the loop for the same reason api_skill_detail offloads its two calls:
     # create_skill walks a pinned parent chain and writes the SKILL.md.
-    ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
     try:
-        _sel().log_tool_invocation(
-            session_key="",
-            agent="api",
-            source="dashboard",
-            tool_name="api_skills_create",
-            tool_kind="skill",
-            outcome="ok" if ok else "rejected",
-            metadata={"name": safe_name},
+        ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
+    except OSError as exc:
+        if not _is_path_too_long_error(exc):
+            raise
+        # The name fit its budget but ``<root>/<name>/SKILL.md`` did not fit this
+        # host: a request-shape refusal, answered like the name bound's, and
+        # audited because the write reached the filesystem.
+        _audit("rejected", code="name_too_long")
+        return web.json_response(
+            {"error": "skill name is too long for its destination path", "code": "name_too_long"},
+            status=400,
         )
-    except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
-        logger.debug("Could not audit skill create outcome", exc_info=True)
+    _audit("ok" if ok else "rejected")
     if not ok:
         return web.json_response(
             {"error": f"skill '{safe_name}' already exists", "code": "skill_exists"}, status=409

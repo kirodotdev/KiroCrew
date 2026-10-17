@@ -240,6 +240,7 @@ export function useAgentSession(): UseAgentSession {
             folder_id: folderId,
             title: truncate(title),
             memory_mode: 'persistent',
+            sessionFolder: false,
           }),
         ).unwrap()
         // The slot is persisted but not yet linked, so a failure before the seed

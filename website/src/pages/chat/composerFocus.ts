@@ -35,7 +35,9 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  *     composer on the page (or focus outside any pane in a view with no
  *     focused marker) the first match IS the right one.
  *
- * The probe is the stable `data-composer-input` hook, NOT the textarea's
+ * The probe is the stable `data-composer-input` hook, on either composer: the
+ * plain textarea or the Lexical contenteditable div (the Style Markdown While
+ * Typing setting renders the latter), NOT the textarea's
  * aria-label: the label is `i18nT('components.chatInput.message_input')` and
  * every catalog translates it, so a label-based selector matches in English
  * only and focus silently no-ops in the other eleven languages. The `data-`
@@ -45,9 +47,9 @@ import { isTouchDevice } from '../../utils/isTouchDevice'
  * Steps 1 and 2 are `focusedPane()` below, shared with the pending-approval
  * lookup so both chords agree about which pane they are in.
  */
-export function queryComposer(): HTMLTextAreaElement | null {
+export function queryComposer(): HTMLElement | null {
   const pane = focusedPane()
-  const scoped = pane?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+  const scoped = pane?.querySelector<HTMLElement>('[data-composer-input]')
   if (scoped) return scoped
   /**
    * Document-wide fallback, EXCLUDING the side chat's own composer.
@@ -71,7 +73,7 @@ export function queryComposer(): HTMLTextAreaElement | null {
    * `[data-side-chat-input]` is the marker ChatPage already uses to find that
    * composer (`handleAsk`'s mount probe), not one invented here.
    */
-  const all = document.querySelectorAll<HTMLTextAreaElement>('textarea[data-composer-input]')
+  const all = document.querySelectorAll<HTMLElement>('[data-composer-input]')
   for (const ta of all) {
     if (!ta.closest('[data-side-chat-input]')) return ta
   }
@@ -132,7 +134,7 @@ export function requestComposerExpand(): boolean {
  * synchronous: when the composer is already there the callback runs before this
  * returns, so neither caller loses the ordering its own comment relies on.
  */
-export function queryComposerOrExpand(then: (ta: HTMLTextAreaElement) => void): void {
+export function queryComposerOrExpand(then: (ta: HTMLElement) => void): void {
   const ta = queryComposer()
   if (ta) { then(ta); return }
   if (!requestComposerExpand()) return
@@ -140,6 +142,25 @@ export function queryComposerOrExpand(then: (ta: HTMLTextAreaElement) => void): 
     const revealed = queryComposer()
     if (revealed) then(revealed)
   })
+}
+
+/**
+ * Focus a resolved composer with the caret AFTER its text.
+ *
+ * A textarea keeps its own selection, which a programmatic pre-fill leaves at
+ * the end, so `focus()` alone is right there. The Lexical composer (Style
+ * Markdown While Typing) is a contenteditable div that follows the DOM
+ * selection, and a bare `focus()` puts the caret at offset 0, so the next key
+ * would land in front of a pre-filled quote or `@`-mention. Collapse the
+ * selection to the end there, as the side chat's seed nudge already does.
+ */
+export function focusComposerElement(el: HTMLElement): void {
+  el.focus()
+  if (el instanceof HTMLTextAreaElement) return
+  const sel = window.getSelection()
+  if (!sel) return
+  sel.selectAllChildren(el)
+  sel.collapseToEnd()
 }
 
 /**
@@ -212,7 +233,7 @@ export function queryPendingApprovalAction(): HTMLElement | null {
 export function focusComposer(): void {
   requestAnimationFrame(() => {
     if (isTouchDevice()) return
-    queryComposerOrExpand(ta => ta.focus())
+    queryComposerOrExpand(focusComposerElement)
   })
 }
 
@@ -230,7 +251,7 @@ export function revealComposer(): void {
       if (isTouchDevice()) {
         if (typeof ta.scrollIntoView === 'function') ta.scrollIntoView({ block: 'nearest' })
       } else {
-        ta.focus()
+        focusComposerElement(ta)
       }
     })
   })
@@ -400,7 +421,8 @@ function focusOnceSwitchHasLanded(key: string, store: ActiveSlotStore): void {
 export function focusComposerNow(key?: string): void {
   if (isTouchDevice()) return
   if (activeElementIsEditable()) return
-  queryComposerForSlot(key)?.focus()
+  const el = queryComposerForSlot(key)
+  if (el) focusComposerElement(el)
 }
 
 /**
@@ -425,13 +447,13 @@ export function focusComposerNow(key?: string): void {
  * null for an undefined `key`, since a gesture that opened nothing has no pane
  * to claim.
  */
-function queryComposerForSlot(key: string | undefined): HTMLTextAreaElement | null {
+function queryComposerForSlot(key: string | undefined): HTMLElement | null {
   const panes = document.querySelectorAll<HTMLElement>('[data-chat-pane]')
   if (panes.length === 0) return queryComposer()
   if (key === undefined) return null
   for (const pane of panes) {
     if (pane.getAttribute('data-pane-slot') !== key) continue
-    return pane.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
+    return pane.querySelector<HTMLElement>('[data-composer-input]')
   }
   return null
 }
@@ -502,7 +524,7 @@ const COMPOSER_RELEASE_TTL_MS = 1500
 export function releaseComposerForKeyboardSwitch(): void {
   composerReleaseArmedAt = Date.now()
   const ae = document.activeElement
-  if (ae instanceof HTMLTextAreaElement && ae.hasAttribute('data-composer-input')) ae.blur()
+  if (ae instanceof HTMLElement && ae.hasAttribute('data-composer-input')) ae.blur()
 }
 
 /** Consume the one-shot release. True = the autofocus effect must skip this transition. */

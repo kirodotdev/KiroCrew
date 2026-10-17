@@ -21,8 +21,9 @@ WHY THESE ROUTES AND NOT THE APP BACKEND'S EXISTING ONES
 Dev Fleet already serves ``/api/pod/up`` and friends from its backend subprocess,
 reached through the gateway's ``/apps/dev-fleet/api/*`` reverse proxy. That proxy
 is browser-shaped: it requires a dashboard session cookie or token, and the agent
-holds neither (cookies are httpOnly, ``KIROCREW_INTERNAL_SECRET`` is stripped from
-agent env, and ``.local_secret`` is on the sensitive-path denylist). Admitting an
+holds neither (cookies are httpOnly, the gateway mints its internal secret
+in-process and never puts it in an agent's env, and ``.local_secret`` is on the
+sensitive-path denylist). Admitting an
 internal-secret caller to that proxy would have opened the app's WHOLE backend
 surface to anything holding the secret, so instead these four routes are named
 one by one in ``server._STRICT_INTERNAL_API_PATHS`` -- the same shape
@@ -292,8 +293,10 @@ async def handle_pod_up(request: web.Request) -> web.Response:
 
     The response carries the ``base_url`` and ``token`` the CLI's ``--json`` prints,
     which is the whole point: minting happens here, in the gateway, from the pod's
-    own ``.local_secret``. The agent receives a scoped 2h credential and never
-    touches the secret that produced it.
+    own ``.local_secret``. The agent receives a credential scoped to that pod and
+    never touches the secret that produced it. The response also carries
+    ``link_ttl_secs`` and ``session_ttl_secs``: how long the raw token is accepted,
+    and how long the session it opens lasts.
 
     Provisioning is deliberately NOT reachable from here. A cold venv plus an SPA
     build is minutes of work, and holding one request -- and one MCP tool call --

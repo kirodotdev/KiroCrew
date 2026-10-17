@@ -79,7 +79,10 @@ def test_the_payload_can_actually_boot_a_gateway(workflow: str) -> None:
     find. Without this test, deleting the assembly step would leave a green
     invocation that fails only on a Windows runner.
     """
-    assert "needs: build-wheel" in workflow, "the job does not consume the built wheel"
+    import yaml
+
+    needs = yaml.safe_load(workflow)["jobs"]["build-windows-installer"]["needs"]
+    assert "build-wheel" in needs, "the job does not consume the built wheel"
     assert "cpython-3.12-windows-x86_64-none" in workflow, "no PBS interpreter is provisioned"
     assert "precompile_windows.py" in workflow, "the gateway import closure is not precompiled"
 

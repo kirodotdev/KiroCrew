@@ -218,7 +218,11 @@ class TestMcpCoreUserActions:
         assert "required" in result.lower()
 
     def test_spawn_status_non_string_id(self):
-        result = self._simulate_tool_call("spawn_status", {"agent_id": 123})
+        # A numeric-looking id re-typed to an int by an upstream deferred-schema
+        # runtime is defensively coerced back to its string form ("123") at the
+        # MCP entry point, so it is accepted and reaches the handler. A
+        # genuinely non-coercible type (a list) is still rejected.
+        result = self._simulate_tool_call("spawn_status", {"agent_id": ["x"]})
         assert "Error" in result
 
     def test_spawn_status_rejects_non_alnum_id(self):
@@ -668,10 +672,12 @@ class TestBadInputsCaught:
         assert "unknown field" in result
 
     def test_wrong_type_rejected(self):
+        # A genuinely wrong type (list) on a string field is still rejected.
+        # A number on a string field is defensively converted to its string form.
         result = self._core_call(
             "spawn_run",
             {
-                "task": 12345,  # should be string
+                "task": ["not", "a", "string"],  # list, not coercible
             },
         )
         assert "Error" in result

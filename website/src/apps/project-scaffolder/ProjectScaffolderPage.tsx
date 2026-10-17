@@ -387,7 +387,7 @@ function NestedSuggestions({ rows, open, onOpenChange, selected, onToggle, onBul
 function WarningList({ warnings }: { warnings: string[] }) {
   if (!warnings.length) return null
   return (
-    <div className="bg-warn-subtle text-warn rounded-md px-3 py-2 mb-3" data-testid="scan-warnings">
+    <div className="bg-warn-subtle text-warn-text rounded-md px-3 py-2 mb-3" data-testid="scan-warnings">
       <div className="flex items-center gap-1.5 text-[12px] font-semibold">
         <AlertTriangle size={13} className="lucide-inline" />
         {i18nT('apps.projectScaffolder.projectScaffolderPage.warnings')}

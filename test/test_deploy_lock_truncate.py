@@ -12,7 +12,7 @@ pinned.
 Truncation is the direct, platform-independent observable: seed each lock
 sidecar with bytes, drive the public function that takes the lock, and assert
 the bytes survive. Under ``open(lock_path, "w")`` every one of these fails on
-every platform (the file is emptied); under ``touch`` + ``"r+"`` they pass.
+every platform (the file is emptied); under ``open_lock_file`` they pass.
 """
 
 from __future__ import annotations

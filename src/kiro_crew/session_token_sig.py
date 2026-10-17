@@ -35,7 +35,7 @@ it holds to another slot's key. So:
 Retraction belongs to ``session_pid._prune_stale_session_token_files`` rather than to a
 call at session teardown, and its lifecycle is worth stating exactly, because "sweep"
 suggests something it is not: it runs from ``cleanup_orphaned_sessions``, which is
-STARTUP AND GRACEFUL SHUTDOWN ONLY (``session.py`` says so in as many words). So a
+STARTUP AND GRACEFUL SHUTDOWN ONLY (``session_parts/sweeps.py`` says so in as many words). So a
 gateway that runs for a month prunes nothing in between, and the bound on the directory
 is one file per session started since the last boot or clean stop.
 

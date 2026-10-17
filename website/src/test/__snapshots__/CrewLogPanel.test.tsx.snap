@@ -140,7 +140,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
             kill failed: pid 8821 still alive
           </span>
           <button
-            class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-danger/80 hover:text-danger bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2 "
+            class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-danger-text bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2 "
             title="Open a chat with this error's full context attached"
             type="button"
           >
@@ -194,7 +194,7 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         class="py-[3px] border-b border-border"
       >
         <span
-          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-warn-subtle text-warn"
+          class="inline-flex items-center px-2 py-px rounded-full text-[10.5px] font-semibold bg-warn-subtle text-warn-text"
         >
           running
         </span>

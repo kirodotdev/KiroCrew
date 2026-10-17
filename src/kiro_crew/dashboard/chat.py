@@ -40,9 +40,13 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_reorder,
     api_chat_folder_update,
     api_chat_folders,
+    api_chat_pinned_order,
     api_chat_slot_folder,
     api_chat_slot_mode,
+    api_chat_slot_muted,
+    api_chat_slot_mutes_opened,
     api_chat_slot_pin,
+    load_pinned_order_after_listen,
 )
 from kiro_crew.dashboard.chat_fork import api_chat_slot_fork  # noqa: F401
 from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
@@ -77,10 +81,15 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_stop,
     api_chat_slot_summary,
     api_chat_slot_summary_generate,
+    api_chat_slot_turn_timeout,
     api_chat_slot_workspace,
     api_chat_slots,
     api_chat_slots_cleanup,
     api_chat_slots_model,
+    api_chat_slots_unrestored,
+    api_favorite_project_add,
+    api_favorite_project_remove,
+    api_favorite_projects,
     api_recent_projects,
 )
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401

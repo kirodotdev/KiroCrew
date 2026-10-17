@@ -5,7 +5,7 @@
  * copy sat in module-level ALL-CAPS tables (invisible to every i18n gate) or in
  * an inline tile array (visible, deferred):
  *
- *   1. session filter + sort menu   `pages/ChatSidebar.tsx`
+ *   1. session filter + sort menu   `pages/chat-sidebar/SearchDock.tsx`
  *   2. reasoning-effort popover     `lib/effort.ts` via ReasoningEffortDropdown
  *   3. Overview status tiles        `pages/OverviewPage.tsx`
  *

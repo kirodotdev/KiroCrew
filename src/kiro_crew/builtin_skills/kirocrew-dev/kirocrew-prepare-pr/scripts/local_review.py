@@ -8,8 +8,9 @@ someone tunes a workflow prompt: local review then goes green on a bar the serve
 does not use, and the drift is invisible until the server round that finds it.
 
 So this script does not describe the contract - it EXTRACTS it, live, from the
-reviewer workflows at the worktree's own checkout, and assembles one task file
-per reviewer:
+reviewer workflows as they stand at the BASE commit (read out of git, so the
+branch under review cannot rewrite its own rules; see ``read_base_contract``),
+and assembles one task file per reviewer:
 
   * GPT lane (spliced-prompt workflow, e.g. .github/workflows/codex-review.yml):
     the reviewer prompt is assembled purely by splicing shared
@@ -1399,6 +1400,11 @@ def assemble(
         "github.event.pull_request.number": pr_number or "(local run - no PR yet)",
         "github.repository": repo_slug,
         "runner.temp": stage_dir,
+        # The lanes' shallow-checkout step hands later steps the merge-base it
+        # fetched. Locally `base_sha` already IS that merge-base.
+        "steps.merge_base.outputs.pr": base_sha,
+        "steps.merge_base.outputs.tree": base_sha,
+        "steps.merge_base.outputs.patch_base": base_sha,
     }
 
     lanes: list[Lane] = []

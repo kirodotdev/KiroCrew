@@ -9,7 +9,8 @@ already owns them for the ``crew`` and ``session`` kinds::
 A member's log is a third KIND there rather than a second mechanism beside it.
 That is the whole point of this file being thin: the ``crew-log`` root is masked
 from the sandbox and fenced against the agent file tools (``security/paths.py``,
-``sandbox.py``), named at the root so every kind inherits it. A per-member log
+``sandbox_leaves.py``, ``sandbox_precreate.py``), named at the root so every kind
+inherits it. A per-member log
 stored anywhere else would need its own fence entry, and the next log added would
 miss it the same way -- an append-only record the agent can rewrite is not an
 append-only record, and that property has to hold by WHERE THE FILE LIVES rather

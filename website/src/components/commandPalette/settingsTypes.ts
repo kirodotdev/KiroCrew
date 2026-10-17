@@ -30,8 +30,19 @@ export interface SettingEntry {
    * DOM lookup still matches the rendered text.
    */
   labelSuffix?: string
-  /** Optional description from the JSX prop. */
+  /**
+   * The row's always-visible help, from the JSX `description` prop. Only text
+   * the row shows on screen lands here, so a consumer may quote it as on-row
+   * copy.
+   */
   description?: string
+  /**
+   * The row's tip prose, from the JSX `hint` prop: shown only behind the row's
+   * info tip, never on the row itself. Kept apart from `description` so no
+   * consumer quotes tip text as if the row displayed it. Search and the palette
+   * subtitle read both (see `settingHelpText`).
+   */
+  hint?: string
   /** Which settings tab this belongs to (matches SettingsPage TABS key). */
   tab: string
   /** Which primitive renders this setting. */
@@ -71,7 +82,18 @@ export interface SettingEntry {
  * `label`/`description` from the English catalogs — the same strings the
  * panel renders, which keeps `data-setting-label` highlighting exact.
  */
-export type ManualSettingEntry = Omit<SettingEntry, 'label' | 'labelKey' | 'description'> & {
+export type ManualSettingEntry = Omit<SettingEntry, 'label' | 'labelKey' | 'description' | 'hint'> & {
   labelKey: string
   descriptionKey?: string
+}
+
+/**
+ * All of a row's help text, tip first, for readers that want every word the
+ * row explains itself with (search corpus, palette subtitle) and do not care
+ * where it renders. The tip states what the row is and the visible description
+ * states the consequence, so tip-then-description reads as prose.
+ */
+export function settingHelpText(entry: { description?: string; hint?: string }): string | undefined {
+  const text = [entry.hint, entry.description].filter((s): s is string => !!s).join(' ')
+  return text || undefined
 }

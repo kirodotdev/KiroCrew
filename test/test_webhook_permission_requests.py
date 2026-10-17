@@ -41,6 +41,7 @@ from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
+from kiro_crew.testing.wait import await_until
 
 _REQUEST_ID = "perm-req-9790"
 
@@ -146,6 +147,7 @@ def _drive(
     gate_result=None,
     event=None,
     approval_sent: bool = True,
+    client: _FakeClient | None = None,
 ):
     """Run one webhook turn; return (client, sel, gate, result_text)."""
     sel = _RecordingSel()
@@ -158,7 +160,7 @@ def _drive(
     # tests intercept).
     monkeypatch.setattr(usage, "_write_token_record", lambda _record, _now: None)
 
-    client = _FakeClient(event, approval_sent=approval_sent)
+    client = client or _FakeClient(event, approval_sent=approval_sent)
     if gate_result is None and gate_action is not None:
         gate_result = ToolHookResult(action=gate_action)
     gate = _FakeGate(gate_result) if gate_result is not None else None
@@ -363,3 +365,88 @@ def test_permission_kind_constant_matches_the_wire_vocabulary():
     """The handler spells the event kind locally (the agent-sdk boundary gate
     forbids adding an ACP import edge); this pin breaks if the vocabulary moves."""
     assert _EVENT_PERMISSION_REQUEST_KIND == EVENT_PERMISSION_REQUEST
+
+
+# ── The in-band host notice ──────────────────────────────────────────────────
+#
+# kiro-cli tells the model "User denied tool execution" for every rejection. No
+# person is attached to a webhook turn, so every deny is the HOST's, and the
+# model must read which one before the reject goes on the wire -- while the
+# request is unanswered the turn is provably in flight and the notice is queued.
+
+
+class _SteeringClient(_FakeClient):
+    """A steer-capable client recording steer and reject in one ordered trace."""
+
+    supports_refusal_steer = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.trace: list[tuple[str, object]] = []
+
+    async def steer(self, text: str) -> bool:
+        self.trace.append(("steer", text))
+        return True
+
+    async def reject_tool(self, request_id) -> None:
+        self.trace.append(("reject", request_id))
+        await super().reject_tool(request_id)
+
+
+def _notice(client: _SteeringClient) -> str:
+    assert [kind for kind, _ in client.trace] == ["steer", "reject"], client.trace
+    text = str(client.trace[0][1])
+    assert text.startswith("[Kiro Crew host notice]")
+    assert "User denied tool execution" in text
+    return text
+
+
+@pytest.mark.parametrize(
+    ("gate_result", "clause", "fragment"),
+    [
+        (None, "tool policy of the surface", "no hook gate"),
+        (
+            ToolHookResult(action=TOOL_DENY, reason="Blocked by security policy: secrets dir"),
+            "blocked by a Kiro Crew safety policy",
+            "secrets dir",
+        ),
+        (ToolHookResult(action=TOOL_ALLOW), "tool policy of the surface", "no person to approve"),
+        (RuntimeError("gate exploded"), "PreToolUse hook raised", "hook gate raised"),
+    ],
+    ids=["no_hook_store", "hook_deny", "no_interactive_approver", "gate_error"],
+)
+def test_every_webhook_deny_steers_its_cause_before_rejecting(
+    monkeypatch, gate_result, clause, fragment
+):
+    client = _SteeringClient()
+    _drive(monkeypatch, None, gate_result=gate_result, client=client)
+    text = _notice(client)
+    assert clause in text and fragment in text, text
+    assert client.rejected == [_REQUEST_ID]
+
+
+def test_an_unauditable_auto_approve_steers_the_audit_cause(monkeypatch):
+    class _RaisingSel(_RecordingSel):
+        def log_tool_invocation(self, **kwargs) -> None:
+            if kwargs.get("outcome") == OUTCOME_PENDING_APPROVAL:
+                raise OSError("audit disk full")
+
+    import kiro_crew.dashboard.handlers as handlers_pkg
+
+    monkeypatch.setattr(handlers_pkg, "sel", lambda: _RaisingSel())
+    monkeypatch.setattr(usage, "_write_token_record", lambda _record, _now: None)
+    client = _SteeringClient()
+    builder = _FakeContextBuilder(_FakeGate(ToolHookResult(action=TOOL_AUTO_APPROVE)))
+
+    async def _turn() -> None:
+        await await_until(
+            asyncio.ensure_future(
+                _run_hook_inner(_FakeState(client, builder), "hook:test:9790", "go", None)
+            ),
+            what="the webhook turn",
+        )
+
+    asyncio.run(_turn())
+    text = _notice(client)
+    assert "could not write the audit record" in text
+    assert client.approved == []

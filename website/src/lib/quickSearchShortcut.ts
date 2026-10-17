@@ -1,5 +1,6 @@
 import { isMac } from '../utils/platform'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { CODE_TOKENS } from './shortcutRegistry'
 
 /**
  * Configurable activation shortcut for the Search Everywhere command palette.
@@ -81,9 +82,21 @@ export function isValidChord(c: Partial<QuickSearchChord> | null | undefined): c
   return c.mod === true || c.ctrl === true || c.alt === true
 }
 
+/**
+ * US-layout shifted glyph → the unshifted key it sits on. Before
+ * {@link eventKeyToken} read punctuation from `code`, a Shift+punctuation chord
+ * was recorded with the SHIFTED glyph (Ctrl+Shift+` stored as `~`); mapping it
+ * back keeps those stored chords matching the positional token.
+ */
+const LEGACY_SHIFTED_GLYPHS: Readonly<Record<string, string>> = {
+  '~': '`', '<': ',', '>': '.', '?': '/', '|': '\\', '{': '[', '}': ']',
+  '_': '-', '+': '=', ':': ';', '"': "'",
+}
+
 /** Lowercase the key token so matching is case-insensitive and Shift-stable. */
 export function normalizeChord(c: QuickSearchChord): QuickSearchChord {
-  const out: QuickSearchChord = { key: c.key.toLowerCase() }
+  const lowered = c.key.toLowerCase()
+  const out: QuickSearchChord = { key: (c.shift && LEGACY_SHIFTED_GLYPHS[lowered]) || lowered }
   if (c.mod) out.mod = true
   if (c.ctrl) out.ctrl = true
   if (c.alt) out.alt = true
@@ -136,9 +149,10 @@ export function saveQuickSearchConfig(config: QuickSearchConfig): boolean {
 /**
  * The stable physical key token for a keydown, or `null` when the event carries
  * no usable key (a bare modifier press, or a dead key). Prefers
- * `KeyboardEvent.code` for letters/digits so the token is independent of Shift
- * state and the macOS Option layer; falls back to `KeyboardEvent.key` for named
- * keys (`ArrowUp`, `Enter`, punctuation).
+ * `KeyboardEvent.code` for letters, digits and punctuation so the token is
+ * independent of Shift state and the macOS Option layer — Ctrl+Shift+` reads as
+ * `` ` ``, not the `~` that `key` reports — and falls back to `KeyboardEvent.key`
+ * for named keys (`ArrowUp`, `Enter`).
  */
 export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | null {
   const code = e.code
@@ -146,10 +160,28 @@ export function eventKeyToken(e: Pick<KeyboardEvent, 'code' | 'key'>): string | 
     if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
     if (/^Digit\d$/.test(code)) return code.slice(5)
     if (/^Numpad\d$/.test(code)) return code.slice(6)
+    const punct = CODE_TOKENS[code]
+    if (punct) return punct
   }
   const key = e.key
   if (!key || key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta') return null
   return key.length === 1 ? key.toLowerCase() : key
+}
+
+/**
+ * The token a keydown matches, folded through {@link LEGACY_SHIFTED_GLYPHS}
+ * while Shift is held — the same fold {@link normalizeChord} applies to the
+ * stored side. Only a token read from `key` can carry a shifted glyph (an ISO
+ * `IntlBackslash` reporting `|`, or `~` on a Mac ISO board), so the fold leaves
+ * positional tokens alone. The typed glyph of a key that HAS a positional token
+ * is never matched: on many layouts it is another key's glyph (Italian
+ * Backquote types `\`), and matching it would hand one key's binding to another.
+ */
+function eventToken(e: Pick<KeyboardEvent, 'code' | 'key' | 'shiftKey'>): string | null {
+  const token = eventKeyToken(e)
+  if (token === null) return null
+  const lowered = token.toLowerCase()
+  return (e.shiftKey && LEGACY_SHIFTED_GLYPHS[lowered]) || lowered
 }
 
 /**
@@ -175,8 +207,7 @@ export function chordMatchesEvent(
   chord: QuickSearchChord,
   mac: boolean = isMac,
 ): boolean {
-  const token = eventKeyToken(e)
-  if (token === null || token.toLowerCase() !== chord.key.toLowerCase()) return false
+  if (eventToken(e) !== chord.key.toLowerCase()) return false
   if (mac) {
     if (!!chord.mod !== e.metaKey || !!chord.ctrl !== e.ctrlKey) return false
   } else {

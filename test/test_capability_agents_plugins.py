@@ -139,6 +139,14 @@ class _FakeManager:
         self.calls.append(f"uninstall:{package}")
         return self._result()
 
+    async def install_skill(self, package: str) -> CapabilityResult:
+        self.calls.append(f"install_skill:{package}")
+        return self._result()
+
+    async def uninstall_skill(self, package: str) -> CapabilityResult:
+        self.calls.append(f"uninstall_skill:{package}")
+        return self._result()
+
     async def list_plugins(self) -> List[Dict[str, Any]]:
         self.calls.append("list_plugins")
         return self.plugins
@@ -188,21 +196,35 @@ def _body(response) -> Any:
 
 @pytest.fixture()
 def no_agent_rebuild(monkeypatch):
-    """Stub the agent-config rebuild — it is filesystem-heavy and not under test."""
-    rebuilds: List[bool] = []
-    monkeypatch.setattr(
-        "kiro_crew.dashboard.handlers.agents.install_agent", lambda *a, **k: rebuilds.append(True)
-    )
+    """Stub the agent-spec rebuild — it is filesystem-heavy and not under test.
+
+    ``rebuild_agent_spec`` reports whether the rewrite landed; the handlers put
+    that verdict on the response as ``agent_spec_rewritten``. The stub records the
+    ``context`` string each call passes and returns ``verdict`` (default ``True``,
+    a confirmed rewrite). Set ``verdict`` on the returned object before the handler
+    runs to exercise the declined-rewrite path (shared-home guard refusal)."""
+
+    class _Rebuild:
+        def __init__(self) -> None:
+            self.contexts: List[str] = []
+            self.verdict = True
+
+        def __call__(self, context: str) -> bool:
+            self.contexts.append(context)
+            return self.verdict
+
+    rebuilt = _Rebuild()
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.agents.rebuild_agent_spec", rebuilt)
     cleared: List[bool] = []
     monkeypatch.setattr(
         agents_handler, "clear_list_agents_cache", lambda: cleared.append(True)
     )
-    return rebuilds, cleared
+    return rebuilt, cleared
 
 
 class TestAgentPackageHandlers:
     def test_install_happy_path_rebuilds_and_invalidates(self, monkeypatch, no_agent_rebuild):
-        rebuilds, cleared = no_agent_rebuild
+        rebuilt, cleared = no_agent_rebuild
         mgr = _FakeManager()
         _install_manager(monkeypatch, mgr)
         state = _FakeState()
@@ -213,13 +235,52 @@ class TestAgentPackageHandlers:
             )
         )
         assert resp.status == 200
-        assert _body(resp) == {"ok": True, "package": "MyPkg"}
+        # A confirmed rewrite rides back on the response so the UI can tell the
+        # user the package actually reached the agent spec.
+        assert _body(resp) == {"ok": True, "package": "MyPkg", "agent_spec_rewritten": True}
         assert mgr.calls == ["install:MyPkg"]
         # An agent package carries skills/prompts too, so the config must be
         # rebuilt AND the mtime-signature cache invalidated.
-        assert rebuilds == [True]
+        assert rebuilt.contexts == ["agent install"]
         assert cleared == [True]
         assert state.refreshed == ["agents"]
+
+    def test_install_reports_a_declined_rewrite(self, monkeypatch, no_agent_rebuild):
+        """The one bug this fixes: the package install succeeded but the shared-home
+        guard declined to rewrite the spec, so the response must say so (``False``)
+        with a 200 — the package landed, the spec did not — instead of claiming an
+        unqualified success. The on-disk catalog still changed, so the cache is
+        still cleared."""
+        rebuilt, cleared = no_agent_rebuild
+        rebuilt.verdict = False
+        mgr = _FakeManager()
+        _install_manager(monkeypatch, mgr)
+        state = _FakeState()
+
+        resp = asyncio.run(
+            agents_handler.api_capability_agents_install(
+                _FakeRequest({"package": "MyPkg"}, state)
+            )
+        )
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True, "package": "MyPkg", "agent_spec_rewritten": False}
+        assert mgr.calls == ["install:MyPkg"]
+        assert cleared == [True]
+        assert state.refreshed == ["agents"]
+
+    def test_uninstall_reports_the_rewrite_verdict(self, monkeypatch, no_agent_rebuild):
+        rebuilt, cleared = no_agent_rebuild
+        rebuilt.verdict = False
+        mgr = _FakeManager()
+        _install_manager(monkeypatch, mgr)
+        resp = asyncio.run(
+            agents_handler.api_capability_agents_uninstall(
+                _FakeRequest({"package": "MyPkg"}, _FakeState())
+            )
+        )
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True, "package": "MyPkg", "agent_spec_rewritten": False}
+        assert rebuilt.contexts == ["agent uninstall"]
 
     def test_uninstall_calls_the_uninstall_op(self, monkeypatch, no_agent_rebuild):
         mgr = _FakeManager()
@@ -395,7 +456,7 @@ class TestAgentPackageHandlers:
         assert resp.status == 400
 
     def test_500_when_the_op_fails_and_no_rebuild_runs(self, monkeypatch, no_agent_rebuild):
-        rebuilds, cleared = no_agent_rebuild
+        rebuilt, cleared = no_agent_rebuild
         mgr = _FakeManager(ok=False)
         _install_manager(monkeypatch, mgr)
         resp = asyncio.run(
@@ -406,7 +467,7 @@ class TestAgentPackageHandlers:
         assert resp.status == 500
         assert "boom" in _body(resp)["error"]
         # A failed install must not trigger a rebuild or cache clear.
-        assert rebuilds == [] and cleared == []
+        assert rebuilt.contexts == [] and cleared == []
 
 
 class TestPluginHandlers:
@@ -680,3 +741,84 @@ class TestRouteRegistration:
             "api_capability_plugins_sync",
         ):
             assert callable(getattr(handlers, name))
+
+
+def _json_request(body: Dict[str, Any], state: Any) -> "_FakeRequest":
+    """A request the skill handlers' ``read_bounded_json(max_bytes=None)`` accepts.
+
+    That uncapped path calls ``request.json()`` after a content-type gate, so the
+    double only needs a JSON content type and a readable body alongside its
+    ``.json()`` — no byte stream. ``_FakeRequest`` carries ``json`` + ``app``; the
+    two attributes the gate reads (``content_type``, ``can_read_body``) are set here.
+    """
+    request = _FakeRequest(body, state)
+    request.content_type = "application/json"
+    request.can_read_body = True
+    return request
+
+
+class TestSkillPackageHandlers:
+    """The skill install/uninstall handlers surface the agent-spec rebuild verdict.
+
+    This is the same class of bug as the agent-package handlers: the package op
+    runs through the capability manager, then the agent spec is rebuilt — and the
+    response must report whether that rebuild actually landed, not claim an
+    unqualified success when the shared-home guard declined to write.
+    """
+
+    def test_install_reports_a_confirmed_rewrite(self, monkeypatch, no_agent_rebuild):
+        rebuilt, _cleared = no_agent_rebuild
+        mgr = _FakeManager()
+        _install_manager(monkeypatch, mgr)
+        state = _FakeState()
+
+        resp = asyncio.run(
+            agents_handler.api_capability_skills_install(_json_request({"package": "MySkill"}, state))
+        )
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True, "package": "MySkill", "agent_spec_rewritten": True}
+        assert mgr.calls == ["install_skill:MySkill"]
+        assert rebuilt.contexts == ["skill install"]
+        assert state.refreshed == ["agents"]
+
+    def test_install_reports_a_declined_rewrite(self, monkeypatch, no_agent_rebuild):
+        rebuilt, _cleared = no_agent_rebuild
+        rebuilt.verdict = False
+        mgr = _FakeManager()
+        _install_manager(monkeypatch, mgr)
+        state = _FakeState()
+
+        resp = asyncio.run(
+            agents_handler.api_capability_skills_install(_json_request({"package": "MySkill"}, state))
+        )
+        assert resp.status == 200
+        # The skill package installed, but the spec kept the previous paths.
+        assert _body(resp) == {"ok": True, "package": "MySkill", "agent_spec_rewritten": False}
+        assert state.refreshed == ["agents"]
+
+    def test_uninstall_reports_a_declined_rewrite(self, monkeypatch, no_agent_rebuild):
+        rebuilt, _cleared = no_agent_rebuild
+        rebuilt.verdict = False
+        mgr = _FakeManager()
+        _install_manager(monkeypatch, mgr)
+        state = _FakeState()
+
+        resp = asyncio.run(
+            agents_handler.api_capability_skills_uninstall(_json_request({"package": "MySkill"}, state))
+        )
+        assert resp.status == 200
+        assert _body(resp) == {"ok": True, "package": "MySkill", "agent_spec_rewritten": False}
+        assert mgr.calls == ["uninstall_skill:MySkill"]
+        assert rebuilt.contexts == ["skill uninstall"]
+
+    def test_install_failure_skips_the_rebuild(self, monkeypatch, no_agent_rebuild):
+        rebuilt, _cleared = no_agent_rebuild
+        mgr = _FakeManager(ok=False)
+        _install_manager(monkeypatch, mgr)
+
+        resp = asyncio.run(
+            agents_handler.api_capability_skills_install(_json_request({"package": "MySkill"}, _FakeState()))
+        )
+        assert resp.status == 500
+        # A failed install must not run the rebuild or claim a verdict.
+        assert rebuilt.contexts == []

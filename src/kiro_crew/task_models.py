@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.execution_context import ExecutionContext
 
@@ -41,6 +42,15 @@ class TaskStatus(enum.Enum):
     CANCELLED = "cancelled"
 
 
+class VerificationStatus(enum.StrEnum):
+    """A step's test verdict, apart from execution. Only PASSED is verified."""
+
+    PASSED = "passed"  # the configured test command ran and exited 0
+    FAILED = "failed"
+    SKIPPED = "skipped"  # tests turned off, or the command could not start
+    NOT_CONFIGURED = "not_configured"  # taskrunner.test_command is empty
+
+
 @dataclass
 class Task:
     """A single task decomposed from the spec."""
@@ -52,6 +62,7 @@ class Task:
     attempts: int = 0
     error: str = ""
     result: str = ""
+    verification: str = ""  # a VerificationStatus value; "" until a verdict exists
     # A "resume, do not restart" instruction rendered on every attempt
     # regardless of attempt count. Set when a process death may have left the
     # step's prompt run (an ambiguous-delivery death, or one after output or a
@@ -69,6 +80,15 @@ class Task:
     created_at: float = 0.0
     started_at: float = 0.0
     finished_at: float = 0.0
+
+    if not TYPE_CHECKING:
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            # The one rule for every reset path: a step set back to pending, or
+            # started for an attempt, has no verdict until its tests finish.
+            super().__setattr__(name, value)
+            if name == "status" and value in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS):
+                super().__setattr__("verification", "")
 
 
 @dataclass

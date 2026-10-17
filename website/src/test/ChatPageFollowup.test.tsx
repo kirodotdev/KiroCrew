@@ -1,9 +1,9 @@
 /**
- * ChatPage-level orchestration for the follow-up card's worktree action.
+ * ChatPage-level orchestration for the follow-up card's spawn actions.
  *
  * The card component and the reducers are covered in FollowUpCard.test.tsx; what
  * is only reachable from the page is the ORDER and the failure handling of the
- * multi-step handoff: create the worktree, open a
+ * multi-step handoff: create the worktree (in a git repository), open a
  * session, scope it to the new directory, activate it, and only then prefill —
  * with the session deleted again if scoping fails, so a retry cannot accumulate
  * wrongly-scoped sessions.
@@ -28,12 +28,18 @@ vi.mock('react-virtuoso', () => ({
 }))
 vi.mock('../api/client', () => ({
   api: {
+    // The composer's project pill reads the project's AWS profile binding.
+    projectAwsProfile: vi.fn().mockResolvedValue({ path: '/repo', profile: null, boundDir: null, profiles: [], status: null }),
     // Both slots: the created one must be listed or `switchSlot` cannot activate it.
     chatSlots: vi.fn().mockResolvedValue([
       { key: 'chat-1', messages: 1, running: false, mode: '', project: '/repo' },
       { key: 'chat-2', messages: 0, running: false, mode: '', project: '/repo-wt-limits' },
     ]),
     chatSlotDetail: vi.fn().mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 }),
+    // The pane's unrestored-tabs notice reads this on arrival. Unmocked, the read
+    // FAILS and the notice says so -- correctly, but it is a second `role="alert"`
+    // in a file that asks for the only one.
+    chatSlotsUnrestored: vi.fn().mockResolvedValue({ reported: true, count: 0 }),
     sendChat: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) }),
     chatHistory: vi.fn().mockResolvedValue({ sessions: [] }),
     dashboardConfig: vi.fn().mockResolvedValue({}),
@@ -61,6 +67,9 @@ vi.mock('../api/client', () => ({
     // worktree-failure notice the assertions below look up by role.
     kirocrewConfig: vi.fn().mockResolvedValue({}),
     agentResolvedModel: vi.fn().mockResolvedValue({ pinned: false }),
+    // The composer's git probe, which decides between the worktree route and
+    // the plain new-chat route on the card.
+    projectGit: vi.fn().mockResolvedValue({ repo: true, branch: 'main' }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
@@ -137,6 +146,7 @@ beforeEach(() => {
   ;(api.createWorktree as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, path: '/repo-wt-limits', branch: 'followup/add-rate-limits' })
   ;(api.createChatSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ key: 'chat-2', title: 'chat-2', messages: 0, running: false })
   ;(api.chatSlotProject as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+  ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: true, branch: 'main' })
 })
 
 describe('ChatPage follow-up worktree orchestration', () => {
@@ -240,6 +250,38 @@ describe('ChatPage follow-up worktree orchestration', () => {
     expect(api.createChatSlot).not.toHaveBeenCalled()
     expect(composer().value).toBe('')
     expect(store.getState().chat.followups['chat-1']).toBeDefined()
+  })
+
+  it('in a project that is not a git repo, opens a new chat in the same project and folder without git', async () => {
+    ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: false })
+    const store = makeStore('folder-proj')
+    await renderPage(store)
+    fireEvent.click(await screen.findByRole('button', { name: /start in new chat/i }))
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
+    // Same folder as the spawning session (positional folder_id, index 7) and
+    // the same project directory, scoped before the slot is published.
+    expect((api.createChatSlot as ReturnType<typeof vi.fn>).mock.calls[0][7]).toBe('folder-proj')
+    await waitFor(() => expect(api.chatSlotProject).toHaveBeenCalledWith('chat-2', '/repo'))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    await waitFor(() => expect(composer().value).toBe(ITEM.prompt))
+    expect(api.createWorktree).not.toHaveBeenCalled()
+  })
+
+  it('in a project that is not a git repo, keeps the card with an inline error when the chat cannot be opened', async () => {
+    ;(api.projectGit as ReturnType<typeof vi.fn>).mockResolvedValue({ repo: false })
+    ;(api.chatSlotProject as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('nope'))
+    const store = makeStore()
+    await renderPage(store)
+    fireEvent.click(await screen.findByRole('button', { name: /start in new chat/i }))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/the new chat could not be opened/i))
+    // createSlot removed the session it could not scope, so nothing is left
+    // behind, the origin composer is untouched and the suggestion survives.
+    expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2')
+    expect(store.getState().dashboard.slots.map(s => s.key)).not.toContain('chat-2')
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(composer().value).toBe('')
+    expect(store.getState().chat.followups['chat-1']).toBeDefined()
+    expect(api.createWorktree).not.toHaveBeenCalled()
   })
 
   it('"Add to this session" prefills without touching git', async () => {

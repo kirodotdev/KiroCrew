@@ -1296,7 +1296,30 @@ class TestRowStemMemo:
         assert vm._row_stem_tokens.cache_info().misses == 0
         assert vm._row_stem_tokens.cache_info().hits == 0
 
-    def test_row_side_trace_is_identical_when_the_query_count_doubles(self, tmp_path: Path, opened) -> None:
+    def _count_row_tokenizations(self, monkeypatch) -> list[str]:
+        """Record every row text the fact scan actually tokenizes.
+
+        The scan memoizes row tokens on the resident scoring set (a per-set memo
+        bounded by the population it already holds), and that memo derives each
+        entry through ``text_scoring._row_stem_tokens_uncached``, so a call there
+        is a miss. The module-level LRU is not on this path: it thrashes to a
+        zero hit rate on any scan wider than its bound.
+        """
+        from kiro_crew.vector_memory_runtime import text_scoring
+
+        seen: list[str] = []
+        real = text_scoring._row_stem_tokens_uncached
+
+        def counting(text: str):
+            seen.append(text)
+            return real(text)
+
+        monkeypatch.setattr(text_scoring, "_row_stem_tokens_uncached", counting)
+        return seen
+
+    def test_row_side_trace_is_identical_when_the_query_count_doubles(
+        self, tmp_path: Path, opened, monkeypatch
+    ) -> None:
         """Two more queries over the same rows cost ZERO new row tokenizations.
 
         This is the shape assertion for the memo: the row side depends only on
@@ -1306,28 +1329,31 @@ class TestRowStemMemo:
         would evict the bounded row population it exists to keep.
         """
         store = _semantic_store(tmp_path, 30, opened=opened)
+        seen = self._count_row_tokenizations(monkeypatch)
 
         for query in ("rebuild the gateway", "cache the runner result"):
             store.get_semantic_context(query, cap=4000)
-        after_first_pass = vm._row_stem_tokens.cache_info().misses
+        after_first_pass = len(seen)
         assert after_first_pass > 0, "expected the first pass to populate the memo"
 
         for query in ("gateway runner rebuild", "which result was cached"):
             store.get_semantic_context(query, cap=4000)
-        assert vm._row_stem_tokens.cache_info().misses == after_first_pass
+        assert len(seen) == after_first_pass
 
-    def test_first_pass_tokenizes_each_row_text_once(self, tmp_path: Path, opened) -> None:
+    def test_first_pass_tokenizes_each_row_text_once(self, tmp_path: Path, opened, monkeypatch) -> None:
         """Misses scale with distinct row texts, not with rows times queries."""
         n_rows = 30
         store = _semantic_store(tmp_path, n_rows, opened=opened)
+        seen = self._count_row_tokenizations(monkeypatch)
         # Two entries per row — one for the key, one for the value — derived from
         # the row count rather than restated, so the fixture and the expectation
         # cannot drift apart.
         expected_misses = 2 * n_rows
         store.get_semantic_context("rebuild the gateway", cap=4000)
-        assert vm._row_stem_tokens.cache_info().misses == expected_misses
+        assert len(seen) == expected_misses
+        assert len(set(seen)) == expected_misses, "a row text was tokenized twice"
         store.get_semantic_context("cache the runner result", cap=4000)
-        assert vm._row_stem_tokens.cache_info().misses == expected_misses
+        assert len(seen) == expected_misses
 
     def test_changed_row_text_is_tokenized_afresh(self, tmp_path: Path, opened) -> None:
         """A stale memo serving the old token set would be a CORRECTNESS bug.

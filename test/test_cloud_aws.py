@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import select
+import sys
+import threading
 
 import pytest
 
@@ -312,3 +316,132 @@ class TestChokepointHumanActionGuard:
         # A human terminal (no session key) can run a mutation.
         rc, _o, _e = aws.run_aws(["cloudformation", "delete-stack", "--stack-name", "x"])
         assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# A timed-out ``aws`` call must return promptly even while a process the CLI
+# started still holds the piped stdout/stderr: ``proc.kill()`` stops only the
+# CLI, so the drain after it is bounded. The reproducer runs the real
+# ``run_aws`` and the real ``popen_limited`` on real children; only the argv
+# builder, the sandbox wrappers, the chokepoint guard and the env builder are
+# stubbed, and none of those is part of the wait. The stand-in CLI and its
+# helper block reading a pipe the test holds, so they live until the test
+# closes it: no sleep decides how long anything runs.
+# --------------------------------------------------------------------------- #
+_JOIN_BOUND_SECS = 8
+
+
+def _stand_in_cli(hold_fd, ready_fd=None):
+    """Argv for a python stand-in CLI that blocks until ``hold_fd`` reaches end of file.
+
+    With ``ready_fd`` it first forks a helper that inherits the piped stdout and
+    stderr, the shape of a process the CLI started that outlives a killed CLI. The
+    helper writes one byte to ``ready_fd`` and then blocks on ``hold_fd`` too, holding
+    the pipes until the test closes the other end of ``hold_fd``.
+    """
+    src = "import os\n"
+    if ready_fd is not None:
+        src += (
+            "if os.fork() == 0:\n"
+            "    os.write({ready}, b'r')\n"
+            "    os.read({hold}, 1)\n"
+            "    os._exit(0)\n"
+        )
+    src += "os.read({hold}, 1)\n"
+    return [sys.executable, "-c", src.format(hold=hold_fd, ready=ready_fd)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX reproducer: the stand-in forks")
+class TestATimedOutCallReturnsWhileAHelperHoldsThePipes:
+    @pytest.fixture(autouse=True)
+    def _children_run_in_tmp_path(self, tmp_path, _floor_monkeypatch):
+        """Every real child these tests start runs in ``tmp_path``, never in the checkout."""
+        real = aws.popen_limited
+        _floor_monkeypatch.setattr(aws, "popen_limited", functools.partial(real, cwd=tmp_path))
+
+    def _run_in_thread(self, monkeypatch, args, *, timeout, pass_fds=()):
+        monkeypatch.setattr(aws, "assert_chokepoint_allowed", lambda a: None)
+        monkeypatch.setattr(aws, "_build_argv", lambda a, p, r: list(a))
+        monkeypatch.setattr(aws, "wrap_argv", lambda argv, mode: (argv, ""))
+        monkeypatch.setattr(aws, "cgroup_scope_argv", lambda argv: argv)
+        monkeypatch.setattr(aws, "aws_spawn_env", lambda head: dict(os.environ))
+        if pass_fds:
+            spawn = aws.popen_limited
+            monkeypatch.setattr(aws, "popen_limited", functools.partial(spawn, pass_fds=pass_fds))
+        captured: dict = {}
+        procs: list = []
+
+        def _call():
+            captured["value"] = aws.run_aws(args, timeout=timeout, proc_sink=procs.append)
+
+        thread = threading.Thread(target=_call, daemon=True)
+        thread.start()
+        thread.join(_JOIN_BOUND_SECS)
+        return thread, captured, procs
+
+    def test_a_timed_out_call_returns_while_a_helper_holds_the_pipes(self, monkeypatch):
+        # The call times out at 2 s and drains for at most 1 s, well inside the join
+        # bound, while the helper holds the pipes until `finally` closes `hold_w`.
+        monkeypatch.setattr(aws, "_POST_KILL_DRAIN_SECS", 1, raising=False)
+        hold_r, hold_w = os.pipe()
+        ready_r, ready_w = os.pipe()
+        thread = None
+        try:
+            args = _stand_in_cli(hold_r, ready_w)
+            thread, captured, procs = self._run_in_thread(
+                monkeypatch, args, timeout=2, pass_fds=(hold_r, ready_w)
+            )
+            up, _, _ = select.select([ready_r], [], [], _JOIN_BOUND_SECS)
+            assert up and os.read(ready_r, 1) == b"r", "the helper never started"
+            assert not thread.is_alive(), (
+                "run_aws stayed blocked past its 2s timeout and its drain bound: "
+                "a helper still held the pipes"
+            )
+            rc, out, err = captured["value"]
+            assert (rc, out) == (124, "")
+            assert "timed out after 2s" in err
+            assert procs[0].stdout.closed and procs[0].stderr.closed, "our read ends stayed open"
+        finally:
+            os.close(hold_w)  # end of file: the helper exits, and on main the call returns
+            if thread is not None:
+                thread.join(_JOIN_BOUND_SECS)
+            for fd in (hold_r, ready_r, ready_w):
+                os.close(fd)
+
+    def test_timed_out_call_with_no_helper_returns_124(self, monkeypatch):
+        hold_r, hold_w = os.pipe()
+        thread = None
+        try:
+            args = _stand_in_cli(hold_r)
+            thread, captured, _procs = self._run_in_thread(
+                monkeypatch, args, timeout=1, pass_fds=(hold_r,)
+            )
+            assert not thread.is_alive()
+            rc, _out, err = captured["value"]
+            assert rc == 124
+            assert "timed out after 1s" in err
+        finally:
+            os.close(hold_w)
+            if thread is not None:
+                thread.join(_JOIN_BOUND_SECS)
+            os.close(hold_r)
+
+    def test_call_that_finishes_in_time_is_unchanged(self, monkeypatch):
+        args = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.write('ok'); sys.stderr.write('e')",
+        ]
+        thread, captured, _procs = self._run_in_thread(monkeypatch, args, timeout=30)
+        thread.join(_JOIN_BOUND_SECS)
+        assert not thread.is_alive()
+        assert captured["value"] == (0, "ok", "e")
+
+    def test_the_cli_runs_in_tmp_path_not_in_the_checkout(self, tmp_path, monkeypatch):
+        args = [sys.executable, "-c", "import os, sys; sys.stdout.write(os.getcwd())"]
+        thread, captured, _procs = self._run_in_thread(monkeypatch, args, timeout=30)
+        assert not thread.is_alive()
+        rc, out, _err = captured["value"]
+        assert rc == 0
+        ran_in = os.path.realpath(out)
+        assert ran_in == os.path.realpath(tmp_path), f"the CLI ran in {out}, not in {tmp_path}"

@@ -20,7 +20,21 @@ classification the barrier can reach:
   a green run                                    counted as an absent run;
 * a run seen but never decided                 -> exit 1 at the TOTAL budget (a pending
                                                  fork approval or a run stuck in
-                                                 progress).
+                                                 progress);
+* a push's gate run evicted from its           -> the barrier proves it with reads only and
+  concurrency group before it started             waits to be cancelled, never exiting 0;
+                                                 as the probe it records the proof and
+                                                 stops; a gate run that started, one with
+                                                 no run entering the group at its
+                                                 cancellation, a failed gate, an
+                                                 unreadable proof and every pull request
+                                                 still fail closed.
+
+``.github/scripts/cancel-superseded-run.sh`` runs the barrier as that probe and holds
+the workflow's one write. It is driven by the same harness: a proven supersession
+makes exactly one POST, to this run's own ``/cancel``; every other outcome makes no
+write and exits 0; a refused cancel exits 1; and anything but a push to main is
+refused before any call.
 
 Two seams make this run in zero wall-clock time and reproduce the production body
 exactly when unset:
@@ -30,8 +44,10 @@ exactly when unset:
 * ``AWAIT_FG_SLEEP`` -- ``:`` (a no-op), so the loop spins. Default: ``sleep``.
 
 ``gh`` is a stub on PATH that replays a scripted sequence of ``/actions/workflows/
-fast-gate.yml/runs`` responses, one per poll -- exactly how the real barrier reads a
-run that is not there yet, then is.
+fast-gate.yml/runs?head_sha=`` responses, one per poll -- exactly how the real barrier
+reads a run that is not there yet, then is. The supersession reads (the gate run's
+jobs, the branch's run listing) and the cancel are answered from fixed files,
+and every call is logged so a test can assert which ones were made.
 """
 
 from __future__ import annotations
@@ -53,6 +69,7 @@ _SCRIPT = _REPO_ROOT / ".github" / "scripts" / "await-fast-gate.sh"
 _BRANCH = "feature/mine"
 _HEAD_REPO = "kirodotdev/KiroCrew"
 _SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+_RUN_ID = "4242"
 
 needs_bash = pytest.mark.skipif(
     os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
@@ -60,7 +77,7 @@ needs_bash = pytest.mark.skipif(
 )
 
 
-def _run(rid: int, status: str, conclusion: str | None) -> dict:
+def _run(rid: int, status: str, conclusion: str | None, **extra: object) -> dict:
     return {
         "id": rid,
         "head_branch": _BRANCH,
@@ -68,6 +85,7 @@ def _run(rid: int, status: str, conclusion: str | None) -> dict:
         "conclusion": conclusion,
         "html_url": f"https://github.com/x/actions/runs/{rid}",
         "head_repository": {"full_name": _HEAD_REPO},
+        **extra,
     }
 
 
@@ -78,7 +96,16 @@ def _page(*runs: dict) -> str:
 class _Harness:
     """A ``gh`` stub plus a fake clock, driving the script one poll at a time."""
 
-    def __init__(self, tmp_path: Path, pages: list[str], *, tick: int = 30) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        pages: list[str],
+        *,
+        tick: int = 30,
+        jobs: str | None = None,
+        group: str | None = None,
+        cancel_fails: bool = False,
+    ) -> None:
         self._dir = tmp_path
         # Each line of this file is one poll's `gh api ...` stdout, consumed in
         # order. The special token __FAIL__ makes the stub exit non-zero with no
@@ -88,14 +115,50 @@ class _Harness:
         self._responses.write_text("".join(p + "\n" for p in pages), encoding="utf-8")
         self._cursor = tmp_path / "gh-cursor"
         self._cursor.write_text("0", encoding="utf-8")
+        # The supersession reads answer from fixed files (absent = the call fails,
+        # so an unexpected read is loud), and every call's argv is logged.
+        self._calls = tmp_path / "gh-calls"
+        self._calls.write_text("", encoding="utf-8")
+        jobs_file = tmp_path / "gh-jobs"
+        group_file = tmp_path / "gh-group"
+        cancel_fail = tmp_path / "gh-cancel-fails"
+        if jobs is not None:
+            jobs_file.write_text(jobs, encoding="utf-8")
+        if group is not None:
+            group_file.write_text(group, encoding="utf-8")
+        if cancel_fails:
+            cancel_fail.write_text("", encoding="utf-8")
 
-        # A `gh` that pops the next scripted response. The last line is reused
-        # once the list is exhausted, so a poll past the script keeps the final
-        # state rather than erroring on an empty read.
+        # A `gh` that pops the next scripted response for a poll's listing. The
+        # last line is reused once the list is exhausted, so a poll past the
+        # script keeps the final state rather than erroring on an empty read.
         gh = tmp_path / "gh"
         gh.write_text(
             textwrap.dedent(f"""\
                 #!/usr/bin/env bash
+                printf '%s\\n' "$*" >> {self._calls}
+                fixed() {{
+                  if [ ! -f "$1" ]; then echo "gh: unexpected call: $2" >&2; exit 1; fi
+                  if [ "$(cat "$1")" = "__FAIL__" ]; then
+                    echo "gh: simulated API failure" >&2
+                    exit 1
+                  fi
+                  cat "$1"
+                  exit 0
+                }}
+                case "$*" in
+                  *"/cancel"*)
+                    if [ -f {cancel_fail} ]; then
+                      echo "gh: HTTP 409: Cannot cancel a workflow run" >&2
+                      exit 1
+                    fi
+                    exit 0
+                    ;;
+                  *"/jobs"*) fixed {jobs_file} jobs ;;
+                  *"head_sha="*) ;;
+                  *"fast-gate.yml/runs"*) fixed {group_file} listing ;;
+                  *) echo "gh: unexpected call" >&2; exit 1 ;;
+                esac
                 i="$(cat {self._cursor})"
                 line="$(sed -n "$((i + 1))p" {self._responses})"
                 next=$((i + 1))
@@ -132,29 +195,50 @@ class _Harness:
         self._now = now
 
     def run(
-        self, *, appear_budget: int = 180, total_budget: int = 720
+        self,
+        *,
+        appear_budget: int = 180,
+        total_budget: int = 720,
+        event: str = "pull_request",
+        branch: str = _BRANCH,
+        script: Path = _SCRIPT,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
+        env.pop("SUPERSEDED_FILE", None)
         env["PATH"] = f"{self._dir}{os.pathsep}{env.get('PATH', '')}"
         env.update(
             GH_TOKEN="x",
             REPO=_HEAD_REPO,
             SHA=_SHA,
-            EVENT="pull_request",
-            BRANCH=_BRANCH,
+            EVENT=event,
+            BRANCH=branch,
             HEAD_REPO=_HEAD_REPO,
+            RUN_ID=_RUN_ID,
             APPEAR_BUDGET=str(appear_budget),
             TOTAL_BUDGET=str(total_budget),
             AWAIT_FG_NOW=str(self._now),
             AWAIT_FG_SLEEP=":",
+            TMPDIR=str(self._dir),
         )
+        env.update(extra_env or {})
         return subprocess.run(
-            ["bash", str(_SCRIPT)],
+            ["bash", str(script)],
             capture_output=True,
             env=env,
             cwd=self._dir,
             **UTF8_TEXT,
         )
+
+    @property
+    def calls(self) -> list[str]:
+        return self._calls.read_text(encoding="utf-8").splitlines()
+
+    def cancels(self) -> list[str]:
+        return [c for c in self.calls if "/cancel" in c]
+
+    def writes(self) -> list[str]:
+        return [c for c in self.calls if "--method GET" not in c]
 
 
 @needs_bash
@@ -260,6 +344,288 @@ class TestTheBarrierPollClassifiesEveryOutcome:
         assert proc.returncode == 1, proc.stdout
         assert "Failing closed rather than starting the matrix unverified" in proc.stdout
         assert "in_progress" in proc.stdout
+
+
+# Shaped on a real eviction: the gate run for this commit waited in Fast Gate's
+# group behind an older run that held the running slot, and the next push's run
+# entered the group one second before this one was cancelled.
+_CREATED = "2026-10-14T15:16:53Z"
+_CANCELLED = "2026-10-14T15:26:18Z"
+_EVICTOR_START = "2026-10-14T15:26:17Z"
+_OLDER_START = "2026-10-14T15:09:49Z"
+_LONG_AFTER = "2026-10-14T15:40:00Z"
+_NO_JOBS = json.dumps({"total_count": 0, "jobs": []})
+_RAN_JOBS = json.dumps({"total_count": 15, "jobs": [{"id": 1}]})
+_MAIN = "main"
+_CANCEL_SCRIPT = _REPO_ROOT / ".github" / "scripts" / "cancel-superseded-run.sh"
+
+
+def _gate(conclusion: str = "cancelled") -> dict:
+    return _run(
+        20,
+        "completed",
+        conclusion,
+        event="push",
+        head_branch=_MAIN,
+        run_attempt=1,
+        head_sha=_SHA,
+        created_at=_CREATED,
+        updated_at=_CANCELLED,
+        run_started_at=_CREATED,
+    )
+
+
+def _other(rid: int, started: str, sha: str) -> dict:
+    return _run(
+        rid,
+        "queued",
+        None,
+        event="push",
+        head_branch=_MAIN,
+        run_attempt=1,
+        head_sha=sha,
+        created_at=started,
+        updated_at=started,
+        run_started_at=started,
+    )
+
+
+_OLDER = _other(10, _OLDER_START, "1" * 40)
+_EVICTOR = _other(30, _EVICTOR_START, "2" * 40)
+_LATER = _other(31, "2026-10-14T15:26:37Z", "4" * 40)
+
+
+@needs_bash
+class TestASupersededPushGateIsCancelledNotFailed:
+    """The barrier proves the eviction, then waits read-only to be cancelled."""
+
+    def test_a_push_gate_evicted_before_it_started_waits_to_be_cancelled(
+        self, tmp_path: Path
+    ) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _OLDER, _EVICTOR, _LATER),
+        )
+        proc = h.run(event="push", branch=_MAIN)
+        # The barrier only reads: the cancel is the cancel job's, not this one's.
+        assert h.writes() == [], h.calls
+        assert "evicted from its concurrency group" in proc.stdout
+        assert "Cancel Superseded Run" in proc.stdout
+        # The run named is the one that started closest to the cancellation, not
+        # a later push that also falls inside the slack window.
+        assert "https://github.com/x/actions/runs/30" in proc.stdout
+        assert "https://github.com/x/actions/runs/31" not in proc.stdout
+        # On a runner the cancel job's cancel ends this job mid-wait. If it never
+        # lands, the barrier still fails closed: it never releases the matrix.
+        assert proc.returncode == 1, proc.stdout
+        assert "Fast Gate passed" not in proc.stdout
+        assert "was not cancelled within 150s" in proc.stdout
+
+    def test_the_probe_records_the_proof_and_stops_without_waiting(self, tmp_path: Path) -> None:
+        proof = tmp_path / "proof"
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _OLDER, _EVICTOR, _LATER),
+        )
+        proc = h.run(event="push", branch=_MAIN, extra_env={"SUPERSEDED_FILE": str(proof)})
+        assert proc.returncode == 1, proc.stdout
+        assert h.writes() == [], h.calls
+        recorded = proof.read_text(encoding="utf-8")
+        assert "https://github.com/x/actions/runs/20 never started" in recorded
+        assert "https://github.com/x/actions/runs/30" in recorded
+        assert "was not cancelled within" not in proc.stdout
+        assert "Fast Gate passed" not in proc.stdout
+
+    @pytest.mark.parametrize("conclusion", ["success", "failure"])
+    def test_the_probe_switch_never_changes_a_decided_gate(
+        self, tmp_path: Path, conclusion: str
+    ) -> None:
+        proof = tmp_path / "proof"
+        h = _Harness(tmp_path, [_page(_gate(conclusion))], jobs=_NO_JOBS)
+        proc = h.run(event="push", branch=_MAIN, extra_env={"SUPERSEDED_FILE": str(proof)})
+        assert proc.returncode == (0 if conclusion == "success" else 1), proc.stdout
+        assert not proof.exists()
+
+    def test_a_push_gate_that_started_and_was_cancelled_still_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_RAN_JOBS,
+            group=_page(_gate(), _OLDER, _EVICTOR),
+        )
+        proc = h.run(event="push", branch=_MAIN)
+        assert proc.returncode == 1, proc.stdout
+        assert "concluded 'cancelled'" in proc.stdout
+        assert h.cancels() == [], h.calls
+
+    def test_a_push_gate_cancelled_with_no_run_entering_its_group_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        # Never started, but no run arrived while it waited: the older run started
+        # before it was created and the other one long after it was cancelled. That
+        # is a cancel of this commit's gate, not an eviction.
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _OLDER, _other(40, _LONG_AFTER, "3" * 40)),
+        )
+        proc = h.run(event="push", branch=_MAIN)
+        assert proc.returncode == 1, proc.stdout
+        assert "concluded 'cancelled'" in proc.stdout
+        assert h.cancels() == [], h.calls
+
+    def test_a_failed_push_gate_fails_closed_without_reading_further(self, tmp_path: Path) -> None:
+        h = _Harness(tmp_path, [_page(_gate("failure"))], jobs=_NO_JOBS)
+        proc = h.run(event="push", branch=_MAIN)
+        assert proc.returncode == 1, proc.stdout
+        assert "concluded 'failure'" in proc.stdout
+        assert len(h.calls) == 1 and "head_sha=" in h.calls[0], h.calls
+
+    def test_a_pull_request_cancel_is_unchanged(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _OLDER, _EVICTOR),
+        )
+        proc = h.run(event="pull_request", branch=_MAIN)
+        assert proc.returncode == 1, proc.stdout
+        assert "concluded 'cancelled'" in proc.stdout
+        assert len(h.calls) == 1 and "head_sha=" in h.calls[0], h.calls
+
+    @pytest.mark.parametrize("unreadable", ["jobs", "group"])
+    def test_an_unreadable_proof_fails_closed(self, tmp_path: Path, unreadable: str) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs="__FAIL__" if unreadable == "jobs" else _NO_JOBS,
+            group="__FAIL__" if unreadable == "group" else _page(_gate(), _EVICTOR),
+        )
+        proc = h.run(event="push", branch=_MAIN)
+        assert proc.returncode == 1, proc.stdout
+        assert "concluded 'cancelled'" in proc.stdout
+        assert "not treated as superseded" in proc.stdout
+        assert h.cancels() == [], h.calls
+
+    def test_the_barrier_never_cancels_even_when_the_proof_holds(self, tmp_path: Path) -> None:
+        # The barrier's token is read-only on every event, so the proof only ever
+        # makes it wait; a refused or absent cancel cannot change its outcome.
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _EVICTOR),
+            cancel_fails=True,
+        )
+        proc = h.run(event="push", branch=_MAIN)
+        assert h.cancels() == [], h.calls
+        assert proc.returncode == 1, proc.stdout
+
+
+def _probe_lines_are_not_annotations(stdout: str) -> None:
+    # The probe's `::error::`/`::warning::` lines belong to Await Fast Gate; in the
+    # cancel job they are shown indented, so the runner does not raise them twice.
+    for line in stdout.splitlines():
+        if "probe|" in line:
+            assert line.startswith("  probe| "), line
+
+
+@needs_bash
+class TestTheCancelJobCancelsOnlyAProvenSupersession:
+    """cancel-superseded-run.sh: the workflow's one write, behind the barrier's proof."""
+
+    def test_a_proven_supersession_cancels_this_run_once(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _OLDER, _EVICTOR, _LATER),
+        )
+        proc = h.run(event="push", branch=_MAIN, script=_CANCEL_SCRIPT)
+        assert h.writes() == [
+            f"api --method POST repos/{_HEAD_REPO}/actions/runs/{_RUN_ID}/cancel"
+        ], h.calls
+        assert "::warning::Fast Gate run https://github.com/x/actions/runs/20" in proc.stdout
+        assert "https://github.com/x/actions/runs/30" in proc.stdout
+        # On a runner the cancel ends this job. If it never lands, the job says so
+        # and exits non-zero; it never reports success after asking.
+        assert proc.returncode == 1, proc.stdout
+        assert "still running after 90s" in proc.stdout
+        _probe_lines_are_not_annotations(proc.stdout)
+        # Its working files are gone.
+        assert not list(tmp_path.glob("cancel-superseded.*")), list(tmp_path.iterdir())
+
+    @pytest.mark.parametrize(
+        "case",
+        ["passed", "failed", "started-then-cancelled", "nothing-entered", "unreadable"],
+    )
+    def test_anything_else_cancels_nothing_and_leaves_the_verdict_to_the_barrier(
+        self, tmp_path: Path, case: str
+    ) -> None:
+        gate = {
+            "passed": _gate("success"),
+            "failed": _gate("failure"),
+        }.get(case, _gate())
+        jobs = _RAN_JOBS if case == "started-then-cancelled" else _NO_JOBS
+        group = {
+            "nothing-entered": _page(_gate(), _OLDER, _other(40, _LONG_AFTER, "3" * 40)),
+            "unreadable": "__FAIL__",
+        }.get(case, _page(_gate(), _OLDER, _EVICTOR))
+        h = _Harness(tmp_path, [_page(gate)], jobs=jobs, group=group)
+        proc = h.run(event="push", branch=_MAIN, script=_CANCEL_SCRIPT)
+        assert h.writes() == [], h.calls
+        assert proc.returncode == 0, proc.stdout
+        assert "nothing to cancel" in proc.stdout
+        assert "Await Fast Gate reports the verdict" in proc.stdout
+        _probe_lines_are_not_annotations(proc.stdout)
+        if case == "failed":
+            assert "  probe| ::error::Fast Gate concluded 'failure'" in proc.stdout
+
+    def test_a_refused_cancel_fails_and_names_the_refusal(self, tmp_path: Path) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _EVICTOR),
+            cancel_fails=True,
+        )
+        proc = h.run(event="push", branch=_MAIN, script=_CANCEL_SCRIPT)
+        assert len(h.cancels()) == 1, h.calls
+        assert proc.returncode == 1, proc.stdout
+        assert "Could not cancel this run" in proc.stdout
+        assert "Cannot cancel a workflow run" in proc.stdout
+
+    @pytest.mark.parametrize(
+        ("event", "branch", "run_id"),
+        [
+            ("pull_request", _MAIN, _RUN_ID),
+            ("merge_group", _MAIN, _RUN_ID),
+            ("push", "release/1.0", _RUN_ID),
+            ("push", _MAIN, ""),
+        ],
+    )
+    def test_it_refuses_anything_but_a_push_to_main_before_any_call(
+        self, tmp_path: Path, event: str, branch: str, run_id: str
+    ) -> None:
+        h = _Harness(
+            tmp_path,
+            [_page(_gate())],
+            jobs=_NO_JOBS,
+            group=_page(_gate(), _EVICTOR),
+        )
+        proc = h.run(
+            event=event, branch=branch, script=_CANCEL_SCRIPT, extra_env={"RUN_ID": run_id}
+        )
+        assert proc.returncode == 1, proc.stdout
+        assert "nothing was cancelled" in proc.stdout
+        assert h.calls == [], h.calls
 
 
 @needs_bash

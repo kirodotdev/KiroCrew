@@ -17,11 +17,13 @@ nothing:
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -349,6 +351,218 @@ async def test_ambiguous_combined_post_failure_never_posts_twice(mock_sel, fixed
             assert resp.status != 200
     slack.post_message.assert_not_awaited()
     assert slack.post_blocks.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_outcome_tells_the_caller_the_message_may_be_there(
+    mock_sel, fixed_token
+) -> None:
+    """A post that failed with an unknown outcome may be in the conversation, so
+    the caller is told the delivery was not confirmed, not that it failed."""
+    slack = _mock_slack()
+    slack.post_blocks = AsyncMock(side_effect=TimeoutError("slack timed out"))
+    state = _mock_state(slack)
+    app = _make_app(state)
+    with patch("kiro_crew.dashboard.handlers.messaging.KiroCrewConfig") as cfg_cls:
+        cfg_cls.load.return_value = _cfg()
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={"text": "hi", "session": "slack", "include_session_link": True},
+                headers={"X-Session-Key": _SESSION_KEY},
+            )
+            assert resp.status == 502
+            data = await resp.json()
+    assert data["slack"] is False
+    assert data["error"].startswith("Slack delivery was not confirmed: slack timed out")
+    assert "may have been posted" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_post_is_still_reported_as_failed(mock_sel) -> None:
+    """A post Slack refused outright landed nowhere, so it reads as a failure."""
+    from slack_sdk.errors import SlackApiError
+
+    slack = _mock_slack()
+    slack.post_message = AsyncMock(
+        side_effect=SlackApiError("channel_not_found", {"ok": False, "error": "channel_not_found"})
+    )
+    state = _mock_state(slack)
+    app = _make_app(state)
+    with patch("kiro_crew.dashboard.handlers.messaging.KiroCrewConfig") as cfg_cls:
+        cfg_cls.load.return_value = _cfg()
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/send-message",
+                json={"text": "hi", "session": "slack"},
+                headers={"X-Session-Key": _SESSION_KEY},
+            )
+            assert resp.status == 502
+            data = await resp.json()
+    assert data["error"].startswith("Slack delivery failed: channel_not_found")
+    slack.post_message.assert_awaited_once()
+
+
+# ── The fallback through the real Slack SDK: which answers count as a refusal ──
+#
+# slack_sdk raises the same SlackApiError for a refusal and for an answer whose
+# outcome is unknown, so these drive the real RealSlackClient and AsyncWebClient
+# over a stand-in HTTP session that records which posts Slack stored.
+
+_CALLER_TEXT = "Build finished: 3 tests failed"
+_LINK_URL = f"{_DASH_ORIGIN}/chat?sid={_BARE_KEY}&token={_TOKEN}"
+
+# (stored, HTTP status, content type, body) of the first chat.postMessage answer.
+_FIRST_ANSWERS = {
+    "gateway_502_page": (True, 502, "text/html", "<html><body>502 Bad Gateway</body></html>"),
+    "internal_error": (True, 200, "application/json", '{"ok": false, "error": "internal_error"}'),
+    "fatal_error": (True, 200, "application/json", '{"ok": false, "error": "fatal_error"}'),
+    "truncated_body": (True, 200, "application/json", '{"ok": true, "channel": "D_OW'),
+    "invalid_blocks": (False, 200, "application/json", '{"ok": false, "error": "invalid_blocks"}'),
+    "rate_limited": (False, 429, "application/json", '{"ok": false, "error": "ratelimited"}'),
+}
+
+
+class _SlackHttpResponse:
+    def __init__(self, status: int, content_type: str, body: str) -> None:
+        self.status = status
+        self.content_type = content_type
+        self.headers = {"Content-Type": content_type}
+        self._body = body
+
+    async def json(self):
+        # aiohttp refuses a body not labelled application/json.
+        if self.content_type != "application/json":
+            raise aiohttp.ContentTypeError(
+                MagicMock(), (), status=self.status, message="unexpected mimetype"
+            )
+        return json.loads(self._body)
+
+    async def text(self) -> str:
+        return self._body
+
+
+class _SlackHttpSession:
+    """Stands in for the aiohttp session under slack_sdk's AsyncWebClient."""
+
+    closed = False
+
+    def __init__(self, first_answer: str) -> None:
+        self.first_answer = first_answer
+        self.posts: list[dict] = []
+        self.stored: list[dict] = []
+
+    def request(self, verb: str, url: str, **kwargs):
+        session = self
+
+        class _Exchange:
+            async def __aenter__(self):
+                return session.answer(url, kwargs)
+
+            async def __aexit__(self, *exc) -> bool:
+                return False
+
+        return _Exchange()
+
+    def answer(self, url: str, kwargs: dict) -> _SlackHttpResponse:
+        if url.endswith("conversations.open"):
+            body = '{"ok": true, "channel": {"id": "D_OWNER"}}'
+            return _SlackHttpResponse(200, "application/json", body)
+        assert url.endswith("chat.postMessage"), url
+        payload = dict(kwargs.get("json") or {})
+        self.posts.append(payload)
+        if len(self.posts) == 1:
+            stored, status, content_type, body = _FIRST_ANSWERS[self.first_answer]
+            if stored:
+                self.stored.append(payload)
+            return _SlackHttpResponse(status, content_type, body)
+        self.stored.append(payload)
+        body = json.dumps({"ok": True, "ts": f"1712793600.00000{len(self.posts)}"})
+        return _SlackHttpResponse(200, "application/json", body)
+
+
+async def _send_through_the_real_sdk(first_answer: str, *, caller_blocks: bool):
+    from slack_sdk.web.async_client import AsyncWebClient
+
+    from kiro_crew.dashboard.messaging_api import proactive_send
+    from kiro_crew.slack.client import RealSlackClient
+
+    http = _SlackHttpSession(first_answer)
+    client = RealSlackClient("test-token")
+    client._web = AsyncWebClient(token="test-token", session=http)
+    outcome = proactive_send._SendMessageOutcome()
+    section = {"type": "section", "text": {"type": "mrkdwn", "text": _CALLER_TEXT}}
+    await proactive_send._post_send_message_to_slack(
+        SimpleNamespace(slack_client=client, owner_id="U_OWNER"),
+        outcome,
+        blocks=[section] if caller_blocks else None,
+        text=_CALLER_TEXT,
+        options=[],
+        target_channel="",
+        target_user="",
+        thread_ts=None,
+        reply_broadcast=None,
+        session_link_url=_LINK_URL,
+    )
+    copies = [post for post in http.stored if post.get("text") == _CALLER_TEXT]
+    return http, outcome, copies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_blocks", [False, True], ids=["text", "blocks"])
+@pytest.mark.parametrize(
+    "first_answer", ["gateway_502_page", "internal_error", "fatal_error", "truncated_body"]
+)
+async def test_an_unknown_outcome_is_never_posted_again(first_answer, caller_blocks) -> None:
+    """A gateway page, a body that is not JSON, internal_error and fatal_error all
+    raise SlackApiError, and after each the post may have landed: the message is
+    not posted a second time without the button, and the failure is unconfirmed."""
+    http, outcome, copies = await _send_through_the_real_sdk(
+        first_answer, caller_blocks=caller_blocks
+    )
+    assert len(http.posts) == 1
+    assert len(copies) == 1
+    assert outcome.sent_slack is False
+    assert outcome.slack_failure == "unconfirmed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_blocks", [False, True], ids=["text", "blocks"])
+async def test_a_refused_combined_post_falls_back_once_without_the_button(caller_blocks) -> None:
+    """Slack refused the combined post, so nothing landed: the message posts once
+    without the button, and the button trails as its own follow-up."""
+    http, outcome, copies = await _send_through_the_real_sdk(
+        "invalid_blocks", caller_blocks=caller_blocks
+    )
+    assert outcome.sent_slack is True
+    assert len(copies) == 1
+    assert "actions" not in json.dumps(copies[0].get("blocks", []))
+    assert len(http.posts) == 3
+    assert "actions" in json.dumps(http.posts[2]["blocks"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_blocks", [False, True], ids=["text", "blocks"])
+async def test_a_rate_limited_post_is_not_posted_again_and_says_why(caller_blocks) -> None:
+    """A 429 is a refusal, so nothing was posted: the message is not posted again
+    without the button, and the caller is told the rate limit stopped it."""
+    from kiro_crew.dashboard.messaging_api import proactive_send
+
+    http, outcome, copies = await _send_through_the_real_sdk(
+        "rate_limited", caller_blocks=caller_blocks
+    )
+    assert len(http.posts) == 1
+    assert copies == []
+    assert outcome.slack_failure == "rate_limited"
+    resp = proactive_send._send_message_response(
+        outcome, sent_session=False, channel_target="", channel_type=""
+    )
+    error = json.loads(resp.body.decode("utf-8"))["error"]
+    assert resp.status == 502
+    assert error.startswith(
+        "Slack delivery failed: the message was not posted because Slack rate-limited"
+    )
+    assert "not confirmed" not in error
 
 
 # ── The link: server-side slot-key surfacing + presigned token ──

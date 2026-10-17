@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from body_stream_helpers import attach_json_body
 
 from kiro_crew import webhooks
 from kiro_crew.dashboard.handlers import hooks as hooks_handlers
@@ -175,12 +176,7 @@ class TestManagementRoutesOffloadStoreIo:
         delete = _LoopGuard(webhooks.WebhookTokenStore.delete, "token_store.delete")
 
         req = MagicMock()
-        payload = {"label": "ci", "agent": "kirocrew"}
-
-        async def _json():
-            return payload
-
-        req.json = _json
+        attach_json_body(req, json.dumps({"label": "ci", "agent": "kirocrew"}).encode())
         req.get = lambda *a, **k: "dashboard"
         req.match_info = {}
         # The mint route is owner-gated (``require_owner_dashboard_request``), and
@@ -204,7 +200,7 @@ class TestManagementRoutesOffloadStoreIo:
 
         token_id = json.loads(resp.text)["entry"]["id"]
         req.match_info = {"token_id": token_id}
-        payload = {"enabled": False}
+        attach_json_body(req, json.dumps({"enabled": False}).encode())
         with patch.object(webhooks.WebhookTokenStore, "update", update), \
                 patch.object(hooks_handlers, "_sel", MagicMock()):
             resp = asyncio.run(hooks_handlers.api_webhook_token_update(req))
@@ -221,11 +217,7 @@ class TestManagementRoutesOffloadStoreIo:
         switch = _LoopGuard(webhooks.WebhookTokenStore.set_switch, "set_switch")
 
         req = MagicMock()
-
-        async def _json():
-            return {"enabled": False}
-
-        req.json = _json
+        attach_json_body(req, json.dumps({"enabled": False}).encode())
         req.get = lambda *a, **k: "dashboard"
         # The switch route is owner-gated, same as the mint route above, and the
         # predicate reads ``state.owner_id`` plus the claims the token-auth

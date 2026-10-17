@@ -430,20 +430,22 @@ def test_every_binder_declares_whether_it_vouches():
     # the capped map.
     #
     # "True" is an establishing site whose key IS (or becomes) a real create-capable
-    # slot: `_persist_birth` binds the freshly created child slot, and
-    # `bind_private_session_store` establishes own-store dispatch authority for a
-    # member's dashboard slot from a trusted store argument, not from a record the
-    # session can write. `record_agent_selection` threads the decision because it
-    # serves both shapes.
+    # slot: `_persist_birth` binds the freshly created child slot,
+    # `_pin_private_agent_assignment` binds a dashboard tab or member DM thread the
+    # owner pointed at a member, publishing the store config resolves for that
+    # member, and `bind_private_session_store` establishes own-store dispatch
+    # authority for a member's dashboard slot from a trusted store argument, not from
+    # a record the session can write. `record_agent_selection` threads the decision
+    # because it serves both shapes.
     #
-    # `_reconcile_legacy_cron_session` rebinds a `cron:` key, which is never the
+    # `rebind_cron_session_template` rebinds a `cron:` key, which is never the
     # caller slot of an own-store admission, so it publishes with `vouch=False`.
     expected = {
-        ("cron_service/identity.py", "_reconcile_legacy_cron_session"): "False",
+        ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
-        ("dashboard/chat_persistence.py", "_pin_private_agent_assignment"): "ABSENT",
+        ("dashboard/chat_persistence.py", "_pin_private_agent_assignment"): "True",
         ("dashboard/handlers/hooks.py", "bind_captured"): "False",
-        ("dashboard/session_control.py", "_persist_birth"): "True",
+        ("dashboard/session_control_parts/session_create.py", "_persist_birth"): "True",
         ("member_memory_auth.py", "bind_private_session_store"): "True",
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
         ("subagent_manager/run.py", "publish_execution"): "ABSENT",

@@ -88,7 +88,9 @@ At startup the bot publishes the menu commands from `COMMAND_SPEC` through `setM
 - `/queue <msg>` — while a reply is generating, hold this message and answer
   it after the current turn (overrides `queue_mode` for this message)
 - `/agent` (or `/agents`) — pick the agent from an inline-button list of the specs installed on
-  this machine. Button-only for the same reason `/model` is. Unlike a model, an
+  this machine, except Kiro Crew's own internal agents and app-installed
+  (`<app>--<agent>`) agents. It shows at most 24; a final inert
+  "… and N more not shown" row counts the rest. Button-only for the same reason `/model` is. Unlike a model, an
   agent cannot be swapped inside a running session — the spec decides which MCP
   servers and skills that process loaded at spawn — so a pick opens a fresh
   conversation. The previous one is not destroyed: switching back returns to it.
@@ -178,7 +180,7 @@ finishes rather than queueing a button press whose origin could go stale.
 
 When the agent produces an image — a chart, a screenshot, a rendered diagram —
 Telegram gets the **picture**, uploaded as its own message right after the
-answer. Before this it printed the filesystem path as text. Only real images are
+answer. Only real images are
 sent, decided by the file's leading bytes rather than its name, and only from
 inside the session's own working directory; anything refused keeps its original
 markdown so you can see what was skipped and why.
@@ -218,6 +220,33 @@ Everything lives in the `telegram` section of `config.json`:
 Prefer the `TELEGRAM_BOT_TOKEN` env var over `bot_token` — it keeps your secret
 out of `config.json`.
 
+**Behind a network that blocks `api.telegram.org`?** Set `TELEGRAM_API_BASE_URL`
+to a reverse proxy that forwards to the Bot API. It is a full method template
+containing `{token}` and `{method}`, e.g.
+`https://your-proxy.example.com/bot{token}/{method}`. A path prefix is kept, so
+`https://your-proxy.example.com/tg/bot{token}/{method}` sends both method calls
+and file/photo downloads under `/tg`. When set, it is used for all Bot API
+method calls, the dashboard's token verification (`getMe`), and file/photo
+downloads (whose origin and path prefix are derived from it). When unset,
+everything uses the public `https://api.telegram.org` host exactly as before.
+
+File and photo downloads are derived by replacing the trailing
+`bot{token}/{method}` with `file/bot{token}/<path>`, so they need the template to
+end in exactly that, with no query string after it. A template of any other
+shape, such as `https://your-proxy.example.com/tg/{token}/{method}`, still serves
+method calls, but a download is refused with an error naming
+`TELEGRAM_API_BASE_URL` instead of being requested from a guessed URL.
+
+Because the URL carries your bot token, the scheme must be `https`. A plaintext
+`http://` value is accepted **only for a loopback host** (`127.0.0.1`, `::1`,
+`localhost`), where the token never leaves the machine — useful for a local dev
+proxy. Any other `http://` value, or a template missing `{token}`/`{method}`, is
+ignored with a warning and the public host is used instead.
+
+This is distinct from `HTTPS_PROXY`: use `HTTPS_PROXY` for an ordinary forward
+proxy, and `TELEGRAM_API_BASE_URL` when the API host itself must be swapped for a
+reverse-proxy origin.
+
 **If something's off:** no reply usually means your ID isn't allowed or
 `enabled` is `false`; a missing `Telegram channel started` line means the token
 isn't set; slow replies behind a proxy mean you should set `HTTPS_PROXY` for the
@@ -226,7 +255,7 @@ gateway. In a group, check `allow_forum` AND that the supergroup's negative
 bot is in the Topic and still silent, check `forum_activation`: on `mention` it
 answers only when addressed, and on `off` it answers nothing.
 
-A restart no longer replays your last few messages: the `getUpdates` cursor is kept in `~/.kiro/crew/routing/telegram_offset.json`. Delete that file only if you want a deliberate replay of whatever Telegram still holds.
+The `getUpdates` cursor is kept in `~/.kiro/crew/routing/telegram_offset.json`, so a restart continues from it. Delete that file only if you want a deliberate replay of whatever Telegram still holds.
 
 Transport capabilities: streaming, edits, reactions, inbound and outbound files, rich blocks, forum-topic threads, native tables, and proactive sends are enabled. Text chunks are capped at 4,000 characters and interactive prompts at 25 buttons; excess choices become numbered text.
 

@@ -213,6 +213,18 @@ describe('IssuePanel', () => {
     expect(screen.getByText('gh auth login')).toBeInTheDocument()
   })
 
+  it('carries an Enterprise host-scoped login command inside the notice, labelled GitHub', async () => {
+    mockApi.fetchIssueSource.mockRejectedValue(new Error(JSON.stringify({
+      error: 'gh: not logged in. Run `gh auth login --hostname ghe.example.com`, then retry.',
+      code: 'provider_error',
+      loginCommand: 'gh auth login --hostname ghe.example.com',
+    })))
+    renderPanel({ issues: [links[0]] })
+    const notice = await screen.findByTestId('issue-panel-load-error')
+    expect(notice).toHaveTextContent('GitHub CLI login required')
+    expect(notice.querySelector('code')?.textContent).toBe('gh auth login --hostname ghe.example.com')
+  })
+
   it('refreshes only on demand, passing the force flag', async () => {
     renderPanel({ issues: [links[0]] })
     await screen.findByText('Crash on empty label list')

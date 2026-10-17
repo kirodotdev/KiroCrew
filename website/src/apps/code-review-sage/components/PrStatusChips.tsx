@@ -32,7 +32,7 @@ function StateChip({ src }: { src: PullRequestSource }) {
     )
   }
   return (
-    <span className={`${CHIP} border-ok text-ok bg-ok-subtle`}>
+    <span className={`${CHIP} border-ok text-ok-text bg-ok-subtle`}>
       <GitPullRequest size={10} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.prStatusChips.open')}
     </span>
   )

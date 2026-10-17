@@ -3,7 +3,7 @@
  *  watchdog compose this from `useWebSocket`. */
 import { useMemo, useRef, type MutableRefObject } from 'react'
 import type { AppDispatch } from '../../store'
-import { sseDisconnected } from '../../store/dashboardSlice'
+import { markGatewayDisconnected } from './gatewayConnectivity'
 
 export type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -86,7 +86,7 @@ export function useSocketConnection(): SocketConnection {
       // Stale WS (e.g. from StrictMode cleanup) — ignore entirely.
       if (wsRef.current !== ws) return
 
-      dispatch(sseDisconnected())
+      markGatewayDisconnected(dispatch)
       wsRef.current = null
 
       if (closingRef.current) return

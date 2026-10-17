@@ -22,12 +22,22 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from kiro_crew.acp.client import (
+    AcpError,
+    AcpProcessDied,
+    AcpPromptBusy,
+    AcpRegistrationRateLimited,
+    AcpTimeoutError,
+    _raise_acp_error,
+)
 from kiro_crew.acp.types import (
+    EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
     STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
+    STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session import BACKGROUND_KEY
@@ -271,6 +281,113 @@ class TestTransportBookkeepingIsolation:
         assert calls == {"success": 1, "failure": 0}
 
 
+class _VerdictSessions(FakeSessions):
+    """Books the turn's verdict, its resets and its context check in one ledger.
+
+    ``breaker_trips`` makes ``record_failure`` answer as the real breaker does at
+    its threshold: it resets the session itself and returns True. Each reset ends
+    the runtime that is live, and a same-key message claims a successor while the
+    reset is awaited.
+    """
+
+    def __init__(self, provider, *, breaker_trips=False):
+        super().__init__(provider)
+        self.breaker_trips = breaker_trips
+        self.ledger: list[str] = []
+        self.runtimes = ["first"]
+        self.killed: list[str] = []
+
+    def record_success(self, session_key):
+        self.ledger.append("success")
+
+    async def record_failure(self, session_key):
+        self.ledger.append("failure")
+        if self.breaker_trips:
+            await self.reset(session_key)
+            return True
+        return False
+
+    async def reset(self, session_key):
+        self.ledger.append("reset")
+        self.killed.append(self.runtimes[-1])
+        self.runtimes.append(f"successor {len(self.runtimes)}")
+
+    def check_context_usage(self, key, provider):
+        self.ledger.append("context_check")
+        return 0.0
+
+
+class TestTransportUnfinishedTurn:
+    """A turn the backend never finished is a failure on this path too, and resets.
+
+    ``TurnDriver.run`` follows the partial text with the notice that the next
+    message starts the agent again, on every path that drives it. This dispatcher
+    makes that true: it books a failure and resets the session, once.
+    """
+
+    def _run(self, monkeypatch, stop_reason, *, breaker_trips=False):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+        slack = RecordingSlackClient()
+        sessions = _VerdictSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text="half an answer"),
+                    make_event(EVENT_COMPLETE, stop_reason=stop_reason),
+                ]
+            ),
+            breaker_trips=breaker_trips,
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+        )
+        return sessions, slack
+
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    def test_an_unfinished_turn_is_a_failure_and_resets_the_session(self, monkeypatch, stop_reason):
+        sessions, slack = self._run(monkeypatch, stop_reason)
+        shown = "\n".join(str(v) for (_m, kw) in slack.transcript for v in kw.values())
+        assert "did not finish its answer" in shown, shown
+        # No success, one failure, one reset, and no context check on the runtime
+        # the reset replaced.
+        assert sessions.ledger == ["failure", "reset"]
+        assert sessions.killed == ["first"]
+
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    def test_at_the_breaker_threshold_an_unfinished_turn_resets_once(
+        self, monkeypatch, stop_reason
+    ):
+        """The failure that trips the breaker resets the session inside
+        ``record_failure``. A successor a same-key message started during that reset
+        is the live runtime afterwards, so the turn must not reset it again."""
+        sessions, _slack = self._run(monkeypatch, stop_reason, breaker_trips=True)
+        assert "failure" in sessions.ledger and "success" not in sessions.ledger, sessions.ledger
+        killed = sessions.killed
+        assert killed == ["first"], f"the dispatcher reset again after the breaker did: {killed}"
+        assert sessions.ledger == ["failure", "reset"]
+
+    def test_a_finished_turn_is_a_success_and_keeps_the_session(self, monkeypatch):
+        sessions, _slack = self._run(monkeypatch, STOP_REASON_END_TURN)
+        assert sessions.ledger == ["success", "context_check"]
+        assert sessions.killed == []
+
+
 # ── Keyword commands on the transport path (spawn/run/cron/sessions) ──
 from kiro_crew.slack import handler as _handler  # noqa: E402
 
@@ -371,6 +488,192 @@ def test_member_memory_refusal_redacts_before_posting(monkeypatch):
     assert private_path not in posted and "alice" not in posted
     assert credential not in posted
     assert sessions.agents == []
+
+
+def _classified_acp_error(data: str) -> AcpError:
+    """An ``AcpError`` built the way the ACP client builds one from an error frame."""
+    try:
+        _raise_acp_error({"code": -32603, "message": "Internal error", "data": data})
+    except AcpError as exc:
+        return exc
+    raise AssertionError("_raise_acp_error did not raise")
+
+
+def test_classified_acp_error_reaches_the_user(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    failure = _classified_acp_error("The monthly usage limit has been reached.")
+    monkeypatch.setattr(
+        transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
+    )
+    slack, _sessions = _run_transport_text(monkeypatch, "hello there")
+    assert f"❌ {failure}" in _posts(slack)
+
+
+def test_classified_acp_error_is_redacted_on_the_wire(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    private_path = "/Users/alice/secret/x"
+    failure = _classified_acp_error(
+        f"The monthly usage limit has been reached. cannot read {private_path}"
+    )
+    assert failure.user_worded and private_path in str(failure)
+    monkeypatch.setattr(
+        transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
+    )
+    slack, _sessions = _run_transport_text(monkeypatch, "hello there")
+    posted = "\n".join(_posts(slack))
+    assert "❌ The monthly usage limit has been reached. cannot read " in posted
+    assert private_path not in posted and "alice" not in posted
+
+
+class TestTransportErrorText:
+    """The reply posted when a transport turn raises.
+
+    A classified backend ``AcpError`` (e.g. a usage limit) reaches the user as its
+    own redacted, length-capped reason; everything else keeps the generic text.
+    """
+
+    def test_classified_acp_error_shows_its_reason(self):
+        err = _classified_acp_error("The monthly usage limit has been reached.")
+        assert err.usage_limit
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
+        assert "monthly usage limit" in str(err)
+
+    def test_prompt_busy_shows_its_reason(self):
+        err = _classified_acp_error("Prompt already in progress")
+        assert isinstance(err, AcpPromptBusy)
+        assert transport_dispatch._transport_error_text(err) == f"❌ {err}"
+
+    def test_prompt_busy_with_provider_text_keeps_the_generic_reply(self):
+        # Busy named only in ``message``: the formatter's curated busy branch
+        # reads ``data``, so the text is the fallback's provider passthrough.
+        try:
+            _raise_acp_error(
+                {
+                    "code": -32603,
+                    "message": "Prompt already in progress",
+                    "data": "provider raw text <!here> secret-ish",
+                }
+            )
+        except AcpPromptBusy as exc:
+            err = exc
+        else:
+            raise AssertionError("_raise_acp_error did not raise AcpPromptBusy")
+        assert not err.user_worded
+        assert (
+            transport_dispatch._transport_error_text(err)
+            == transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_classified_acp_error_is_redacted_before_posting(self):
+        private_path = "/Users/alice/secret/x"
+        credential = "AKIAIOSFODNN7EXAMPLE"
+        err = AcpError(
+            f"Backend refused: cannot read {private_path}; key {credential}",
+            transient=False,
+            user_worded=True,
+        )
+        text = transport_dispatch._transport_error_text(err)
+        assert text.startswith("❌ Backend refused: cannot read ")
+        assert private_path not in text and "alice" not in text
+        assert credential not in text
+
+    @pytest.mark.parametrize("split", ["AKIA*{}*", "AKIA**{}**", "AKIA_{}_", "AKIA`{}`"])
+    def test_a_key_split_by_display_markup_is_redacted(self, split):
+        rest = "IOSFODNN7EXAMPLE"
+        err = _classified_acp_error(
+            "The monthly usage limit has been reached. key " + split.format(rest)
+        )
+        assert err.user_worded and rest in str(err)
+        text = transport_dispatch._transport_error_text(err)
+        assert text.startswith("❌ The monthly usage limit has been reached.")
+        assert rest not in text
+
+    def test_classified_acp_error_is_truncated(self):
+        cap = transport_dispatch._TRANSPORT_ERROR_DETAIL_MAX_CHARS
+        err = _classified_acp_error("The monthly usage limit has been reached. " + "x" * cap)
+        assert err.user_worded and len(str(err)) > cap
+        assert transport_dispatch._transport_error_text(err) == "❌ " + str(err)[:cap]
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ACP process exited (code=1): Traceback (most recent call last) ...",
+            "Shutdown in progress",
+        ],
+    )
+    def test_unclassified_acp_error_keeps_generic_text(self, message):
+        assert transport_dispatch._transport_error_text(AcpError(message)) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_timeout_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(AcpTimeoutError("t")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_process_died_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(AcpProcessDied("d")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_rate_limited_process_death_keeps_generic_text(self):
+        err = AcpRegistrationRateLimited("registration throttled")
+        assert err.transient is True
+        assert transport_dispatch._transport_error_text(err) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    @pytest.mark.parametrize(
+        "frame",
+        [
+            {"code": -32603, "message": "Internal error", "data": {"provider": {"raw": 1}}},
+            {"code": -32603, "message": "Internal error"},
+            {"code": -32000, "message": "Something odd", "data": None},
+            {"code": -32603, "message": "Internal error", "data": "upstream: at /srv/app.py:3"},
+        ],
+        ids=["unrecognised-data", "no-data", "other-code", "provider-passthrough"],
+    )
+    def test_fallback_wording_keeps_generic_text(self, frame):
+        """The formatter's fallback shows the provider's own text or the raw error
+        dict. It carries ``transient=False`` like a curated message, so the gate
+        must key on ``user_worded`` or this text would reach the channel."""
+        try:
+            _raise_acp_error(frame)
+        except AcpError as err:
+            assert err.transient is False and not err.user_worded
+            assert transport_dispatch._transport_error_text(err) == (
+                transport_dispatch._TRANSPORT_ERROR_TEXT
+            )
+        else:
+            raise AssertionError("_raise_acp_error did not raise")
+
+    def test_retryable_error_keeps_generic_text(self):
+        """A worded but retryable failure (throttling) keeps the generic reply, as
+        the Telegram transport does."""
+        err = _classified_acp_error("ThrottlingException: Rate exceeded")
+        assert err.transient is True and err.user_worded
+        assert transport_dispatch._transport_error_text(err) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_non_acp_fault_keeps_generic_text(self):
+        assert transport_dispatch._transport_error_text(RuntimeError("internal detail")) == (
+            transport_dispatch._TRANSPORT_ERROR_TEXT
+        )
+
+    def test_slack_markup_in_the_reason_cannot_notify_anyone(self):
+        """A provider error can echo arbitrary text; ``<!channel>`` or ``<@U…>`` in
+        it must reach Slack as inert text, not a channel-wide or user ping."""
+        text = transport_dispatch._transport_error_text(
+            _classified_acp_error(
+                "The monthly usage limit has been reached. <!channel> ping <@U0VICTIM> & more"
+            )
+        )
+        assert "<!channel>" not in text and "<@U0VICTIM>" not in text
+        assert "&lt;!channel&gt;" in text and "&lt;@U0VICTIM&gt;" in text
+        assert "&amp; more" in text
 
 
 class TestTransportKeywordCommands:
@@ -812,6 +1115,45 @@ class TestTransportCompactionReinjection:
         self._run(sessions, cb)
         assert cb.captured.get("needs_reinjection") is True
         assert failures == [canonical_key(_MSG_TS)]
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.parametrize(("status", "marks"), [("completed", 1), ("failed", 0)])
+    def test_a_backend_compaction_arms_the_flag_for_the_next_turn(self, monkeypatch, status, marks):
+        # The backend compacted its own window mid-turn: the session-start context
+        # is gone even though this turn landed, so the next turn must send it.
+        self._prep(monkeypatch)
+        sessions = _CapturingSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text="hi"),
+                    make_event(EVENT_COMPACTION_STATUS, text=status),
+                    make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+        self._run(sessions, _CapturingCtxBuilder())
+        assert ledger["marks"] == marks and ledger["armed"] is bool(marks)
+
+    def test_a_backend_compaction_arms_the_flag_when_the_turn_then_dies(self, monkeypatch):
+        self._prep(monkeypatch)
+
+        class _CompactThenDie(ScriptedProvider):
+            async def stream(self, message):
+                self.stream_calls += 1
+                yield make_event(EVENT_COMPACTION_STATUS, text="completed")
+                raise RuntimeError("backend died after compacting")
+
+        sessions = _CapturingSessions(_CompactThenDie([]))
+        ledger = _arm_reinjection(sessions)
+        ledger["armed"] = False
+
+        async def _record_failure(key):
+            return None
+
+        sessions.record_failure = _record_failure
+        self._run(sessions, _CapturingCtxBuilder())
         assert ledger["marks"] == 1 and ledger["armed"] is True
 
 

@@ -17,10 +17,8 @@ projection, and a ``frozenset`` is why they are only two: it carries one bit -- 
 or out -- so nothing about a non-member is legible in the source data, and three
 reasons a reader wants told apart collapse into one absence: cannot do it, does it
 differently, and nobody has measured it. ``ACP_BACKENDS_MEMBER_DISPATCH`` shows the
-collapse: pi is a non-member because a mount there is INERT (the array is accepted
-and never forwarded), deepseek is a non-member on H6 -- it has the mount and, since
-Crew's gate plugin, an enforced routing, but no member-dispatch decision has been
-taken for that harness -- and KAS is a member on a captured mount.
+collapse: kiro is a non-member because it has no per-session channel at all, and
+KAS is a member on a captured mount.
 
 The third level is NOT derived from the sets, because it is not in them. It is
 :data:`DECLARED_UNMEASURED`, a per-harness per-line table carrying a reason per
@@ -29,10 +27,8 @@ deliberate exception to the rule the rest of the file keeps, taken for the one f
 the rule cannot reach: "nobody has driven this yet" is a statement about Crew's own
 EVIDENCE rather than about the harness, it exists today only as prose in a set's
 comment, and no bit anywhere carries it. So the alternative to declaring it is not
-deriving it: it is a two-level card, where ``ACP_BACKENDS_COMPACT`` excludes pi and
-goose for want of a driven capture ("both are unclassified", in the set's own words)
-and that exclusion wears the same mark as a harness with no compaction surface at
-all. Those two answers are not one answer, and a reader of two levels cannot see
+deriving it: it is a two-level card, where a set that excludes a harness for want
+of a driven capture wears the same mark as a harness with no such surface at all. Those two answers are not one answer, and a reader of two levels cannot see
 which cell a measurement would pay for.
 
 Five things keep the exception from growing into the per-harness table this
@@ -42,10 +38,9 @@ projection exists to remove:
   says the gap is evidence. ``test_backend_cards`` reads that comment and fails an
   entry the vocabulary does not support, so the table cannot drift away from the
   prose and the threshold is a gate rather than a convention to remember;
-* "a decision is missing" is not this state. deepseek has no member dispatch because
-  no decision has mounted Crew's control plane into it -- H6 carries nothing over
-  from codex's or opencode's -- so the feature does not work there today and
-  NOT AVAILABLE is the true mark. Unmeasured is
+* "a decision is missing" is not this state. A harness no decision has admitted to
+  a set does not have the feature -- H6 carries nothing over from another member --
+  so NOT AVAILABLE is the true mark. Unmeasured is
   for a line whose answer is unknown, never for one whose answer is no;
 * an entry may not contradict the projection. A member has demonstrated the
   capability, so :func:`_card_lines` applies an entry only to a line that is already
@@ -71,7 +66,7 @@ boolean.
 
 Which memberships reach a card, and how
 --------------------------------------
-Four buckets, and every ``ACP_BACKENDS_*`` set in the vocabulary module reaches at
+Five buckets, and every ``ACP_BACKENDS_*`` set in the vocabulary module reaches at
 least one of them (``test_backend_cards`` fails when a new set reaches none, so
 adding a set forces the decision rather than defaulting it):
 
@@ -79,7 +74,13 @@ adding a set forces the decision rather than defaulting it):
   appears or disappears, a command is refused, tools are absent from a session, a
   chat cannot be continued. These are :data:`USER_FACING_LINES`, and each is a
   capability whose ABSENCE is a loss, because that is what an available /
-  not-available mark means to a reader.
+  not-available mark means to a reader. It is a CURATED core of seven, the only
+  lines the card's "supports N of M" counts, so the set stays small enough to
+  hold in one's head and a count compares like with like.
+* **detail** -- a real capability whose absence is a loss, but not one a user
+  picks a harness by: how a saved spec loads, an agent-side orchestration verb,
+  an agent-file format. These are :data:`DETAIL_LINES`, carried on the wire as
+  ``details``, folded behind a disclosure on the panel and outside the count.
 * **security** -- it changes which layer confines the agent, whether Crew hands
   its own credential to the child, or how an unclassifiable approval is answered.
   These are :data:`SECURITY_LINES`. They are stated only when they HOLD and are
@@ -180,7 +181,7 @@ from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
 LINE_CREW_TOOLS = "crew_tools"
 #: A crew-member chat gets the session-control tools mounted.
 LINE_MEMBER_THREAD_TOOLS = "member_thread_tools"
-#: An enrolled member's whole saved agent spec is loaded at spawn.
+#: An enrolled member's saved spec is loaded or projected at spawn.
 LINE_MEMBER_SAVED_AGENT = "member_saved_agent"
 #: A Side Chat turn may execute read-only tools.
 LINE_SIDE_CHAT_TOOLS = "side_chat_tools"
@@ -247,11 +248,15 @@ class _LineSpec:
     sets: Tuple[str, ...]
 
 
-#: The lines an operator choosing a harness reads, in the order the card renders.
+#: The CORE lines: the curated set an operator choosing a harness reads, in the
+#: order the card renders, and the only lines its "supports N of M" counts.
 #:
-#: Server-owned order, so a new line appears in the right place with no frontend
-#: edit. Grouped: what reaches a session, then what a crew member's session gets,
-#: then what a turn can do, then what can be tuned.
+#: Small on purpose, so a reader can hold the whole set in their head: does Crew
+#: work here (its tools, a crewmate's chat), what can a chat do (Side Chat tools,
+#: steer a running turn, /compact), and what can be tuned (effort, model). A
+#: capability that is real but not one a user picks a harness by belongs in
+#: :data:`DETAIL_LINES` instead. Server-owned order, so a new line appears in the
+#: right place with no frontend edit.
 USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     # Two channels carry Crew's tools, and a harness needs only one of them.
     # Members of the per-session array receive the server list on ``session/new``;
@@ -268,13 +273,19 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
         LINE_CREW_TOOLS, ("ACP_BACKENDS_SESSION_MCP_ARRAY", "ACP_BACKENDS_KIRO_SLASH_COMMANDS")
     ),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
-    _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
-    _LineSpec(LINE_SUBAGENT_CONTINUATION, ("ACP_BACKENDS_SESSION_SHARING",)),
-    # Two verbs carry a user's mid-turn message: kiro-cli's ``_session/steer`` and
-    # codex-acp's ``_session/steering``. A user asks "can I add to a running turn?",
-    # and either verb answers yes, so the line is their union.
-    _LineSpec(LINE_MID_TURN_STEER, ("ACP_BACKENDS_STEER", "ACP_BACKENDS_STEERING_REQUEST")),
+    # Three verbs carry a user's mid-turn message: kiro-cli's ``_session/steer``,
+    # codex-acp's ``_session/steering``, and opencode's second ``session/prompt``
+    # that joins the running turn. A user asks "can I add to a running turn?", and
+    # any of them answers yes, so the line is their union.
+    _LineSpec(
+        LINE_MID_TURN_STEER,
+        (
+            "ACP_BACKENDS_STEER",
+            "ACP_BACKENDS_STEERING_REQUEST",
+            "ACP_BACKENDS_STEER_CONCURRENT_PROMPT",
+        ),
+    ),
     _LineSpec(LINE_MANUAL_COMPACT, ("ACP_BACKENDS_COMPACT",)),
     # Effort travels down one of two channels, and neither set alone answers the
     # question a user asks. The config-option members advertise an ``effort``
@@ -293,6 +304,25 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
         LINE_MODEL_SWITCH,
         ("ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION", "ACP_BACKENDS_KIRO_SLASH_COMMANDS"),
     ),
+)
+
+#: Capabilities a harness may differ on that are NOT on the curated card.
+#:
+#: Each is a real capability -- a membership whose absence is a loss -- but not one a
+#: user weighs when picking a harness: it is a detail of how a saved spec loads, an
+#: agent-side orchestration verb, or an agent-file format. Kept as lines so the
+#: panel can show them behind a folded disclosure, and kept OUT of the card's
+#: count so "supports N of M" is a number over the core set alone.
+DETAIL_LINES: Tuple[_LineSpec, ...] = (
+    # Only kiro-cli loads an enrolled member's whole saved spec at spawn. The
+    # question a user asks -- does a crewmate get Crew's tools here? -- is the
+    # member-thread line on the card; this one says how the spec arrives.
+    _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),
+    # ``spawn_continue`` is a verb the AGENT calls, not a control the user
+    # presses, and a non-member's subagents get dedicated sessions, which the
+    # set's own comment calls working behaviour rather than a degraded one.
+    _LineSpec(LINE_SUBAGENT_CONTINUATION, ("ACP_BACKENDS_SESSION_SHARING",)),
+    # An agent-file FORMAT: every harness loads the JSON spec Crew writes.
     _LineSpec(LINE_MARKDOWN_AGENTS, ("ACP_BACKENDS_MARKDOWN_AGENT_SPECS",)),
 )
 
@@ -350,6 +380,20 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "H6) rather than inherited from session control; if the two memberships ever "
         "diverge, that divergence is what earns a line"
     ),
+    "ACP_BACKENDS_NATIVE_TODOS": (
+        "whether the dashboard may forward the harness-native /todos command. The "
+        "dashboard still renders agent-authored task state for every harness, so this "
+        "membership selects a command-dispatch path rather than a task capability a "
+        "reader loses by choosing another harness. A wrong membership forwards a "
+        "command the acquired provider cannot serve, which is a defect"
+    ),
+    "ACP_BACKENDS_LOCAL_CLEAR": (
+        "whether the dashboard answers /clear itself or hands it to the harness. "
+        "/clear drops the conversation on every harness either way, so a reader "
+        "choosing a harness loses nothing. A wrong membership either sends /clear "
+        "to the model as text, or answers a harness that would have run it, which "
+        "is a defect"
+    ),
     "ACP_BACKENDS_HOOKS_LIST": (
         "which backend's agent may ask its client for the hooks matching a trigger, and "
         "have the client run one. Nothing a reader choosing a harness can act on: Crew "
@@ -394,6 +438,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
     "ACP_BACKENDS_SESSION_EVICTION": (
         "whether the teardown verb Crew sends disposes a session on the shared process. "
         "Invisible when right, a memory leak when wrong, which is a defect"
+    ),
+    "ACP_BACKENDS_MEMBER_TOOL_LIMITS": (
+        "whether a saved member spec's per-tool tool switch-off is honoured. A "
+        "non-member refuses such a spec before spawn with an error naming the fix, "
+        "so nothing runs wider than it was saved; the card's saved-agent line already "
+        "says whether the spec loads at all"
     ),
     "ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE": (
         "which channel carries the agent spec's own servers to the session, read by the "
@@ -458,6 +508,10 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "which verb restores a session, and which capability advertises it. The "
         "user reopens a chat either way"
     ),
+    "ACP_BACKENDS_FORK_AT_MESSAGE": (
+        "whether an edited message's rewind forks the native session or replays "
+        "the transcript as text. The edit runs either way"
+    ),
     "ACP_BACKENDS_SELF_SERVED_ACP": (
         "whether a harness's whole launch is a row of ACP_BACKEND_LAUNCH, so the "
         "spawn path, the install probe and the driver seams resolve argv from that "
@@ -467,6 +521,20 @@ OFF_CARD_SETS: Mapping[str, str] = {
     "ACP_BACKENDS_STRUCTURED_REFUSAL": (
         "whether a refusal card gains a category line. Visible, and nothing a "
         "reader can act on or would pick a harness for"
+    ),
+    "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": (
+        "how a harness that writes a turn's provider failure as message text is "
+        "made to report it as a failure. Every harness ends such a turn on an error "
+        "row once this is right, so a reader choosing a harness loses nothing; a "
+        "wrong membership either shows a failure as an answer or an answer as a "
+        "failure, which is a defect"
+    ),
+    "ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL": (
+        "whether a kindless permission frame takes its tool_call's kind so the "
+        "gate's kind-keyed tiers see the harness's classification. Both states are "
+        "the gate working as measured for that harness; a wrong membership is a "
+        "vetoed read or an unrouted delete, which is a defect, not a feature the "
+        "reader would choose a harness by"
     ),
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
@@ -489,6 +557,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "caller asks the right path; a wrong membership is a spawn under the "
         "WRONG IDENTITY -- kas or codex under a bare kiro-cli spawn -- which is a "
         "defect, not an absent feature a reader choosing a harness acts on"
+    ),
+    "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": (
+        "whether a session/new stdio element whose command cannot be found is left "
+        "out and reported as a failed server, rather than handed to a harness that "
+        "drops it silently or fails the whole session over it. A repair of a "
+        "harness hazard on the start path, not a capability a reader choosing a "
+        "harness gains or loses: the server is unusable either way, and the report "
+        "already names it on every backend that sends the array"
     ),
     "ACP_BACKENDS_HONOR_ZERO_TOOL_BAN": (
         "whether an agent spec's `\"tools\": []` holds against this backend's "
@@ -558,30 +634,14 @@ class UnmeasuredLine:
 #: string so a literal id is illegible, and a renamed constant raises here instead of
 #: quietly reading as a harness nobody has.
 #:
-#: The one entry rests on words in ``ACP_BACKENDS_COMPACT``: pi dispatches
-#: ``/compact`` before any model turn in its own source, it could not be driven where
-#: that was written (it answers ``Authentication required``), and the set asks for the
-#: bar opencode and goose met -- a live session whose ``usage_update.used`` was seen to
-#: fall. Until then Crew declines its ``/compact`` with ``COMPACT_ARM_UNCLASSIFIED``,
-#: which promises nothing, and this is the card saying the same thing rather than
-#: reporting a limit of the harness.
+#: The table is empty: every core line of every known harness has an answer. An
+#: entry is added only when a deciding set's own comment names the harness and says
+#: the gap is missing evidence, never missing capability.
 #:
 #: USER-FACING lines only, which is not an omission: the security and operator notes
 #: are stated only when they HOLD, so an unmeasured one is already absent rather than
 #: crossed out, and a third level would have nothing to correct.
-DECLARED_UNMEASURED: Mapping[Tuple[str, str], UnmeasuredLine] = {
-    ("ACP_BACKEND_PI", LINE_MANUAL_COMPACT): UnmeasuredLine(
-        reason=REASON_NO_DRIVEN_CAPTURE,
-        declared_by="ACP_BACKENDS_COMPACT",
-        citation=(
-            "pi-acp 0.0.33 intercepts /compact in prompt() and awaits "
-            "session.proc.compact(...), so the source says inline. What it has no "
-            "driven capture of is the context actually shrinking, and it could not be "
-            "driven where the set was written -- it answers Authentication required. "
-            "Until then it is unclassified"
-        ),
-    ),
-}
+DECLARED_UNMEASURED: Mapping[Tuple[str, str], UnmeasuredLine] = {}
 
 
 @dataclass(frozen=True)
@@ -613,9 +673,12 @@ class BackendCard:
     #: The policy-facing spelling, which is also the panel's name fallback.
     policy_id: str
 
-    #: Every user-facing line, in server order, available or not -- or, for the
+    #: Every core line, in server order, available or not -- or, for the
     #: cells :data:`DECLARED_UNMEASURED` names, not measured.
     capabilities: Tuple[CardLine, ...]
+
+    #: Every :data:`DETAIL_LINES` line, same three states, never in the count.
+    details: Tuple[CardLine, ...]
 
     #: The ids of the SECURITY notes that hold, in server order. Rendered beside
     #: :attr:`tool_approval` rather than behind a disclosure.
@@ -716,8 +779,8 @@ def _unmeasured_lines(backend: str) -> Dict[str, UnmeasuredLine]:
     return by_backend.get(backend, {})
 
 
-def _card_lines(backend: str) -> Tuple[CardLine, ...]:
-    """Every user-facing line for *backend*, in server order.
+def _card_lines(backend: str, specs: Tuple[_LineSpec, ...]) -> Tuple[CardLine, ...]:
+    """Every line of *specs* for *backend*, in server order.
 
     Membership decides first and the declared table only ever SOFTENS a negative:
     an entry reaches a line that is already not available, so a harness that has
@@ -727,7 +790,7 @@ def _card_lines(backend: str) -> Tuple[CardLine, ...]:
     """
     declared = _unmeasured_lines(backend)
     produced = []
-    for spec in USER_FACING_LINES:
+    for spec in specs:
         available = _holds(backend, spec)
         entry = None if available else declared.get(spec.id)
         produced.append(
@@ -760,12 +823,27 @@ def card_for(backend: str) -> BackendCard:
     return BackendCard(
         backend=backend,
         policy_id=_policy_id(backend),
-        capabilities=_card_lines(backend),
+        capabilities=_card_lines(backend, USER_FACING_LINES),
+        details=_card_lines(backend, DETAIL_LINES),
         security_notes=tuple(spec.id for spec in SECURITY_LINES if _holds(backend, spec)),
         operator_notes=tuple(spec.id for spec in OPERATOR_LINES if _holds(backend, spec)),
         tool_approval=backends.routing_for(backend).value,
         offered_by_build=backend in backends.registered_backends(),
     )
+
+
+def _line_payload(line: CardLine) -> Dict[str, object]:
+    """One card line as JSON."""
+    return {
+        "id": line.id,
+        # Still a BOOL, and still first. An unmeasured line answers False here,
+        # so a reader that predates the two fields beside it -- an older panel
+        # against a newer gateway -- gets the fail-closed not-available answer
+        # rather than inheriting a third state it has no way to render.
+        "available": line.available,
+        "measured": line.measured,
+        "unmeasured_reason": line.unmeasured_reason,
+    }
 
 
 def card_payload(backend: str) -> Dict[str, object]:
@@ -780,20 +858,10 @@ def card_payload(backend: str) -> Dict[str, object]:
     """
     card = card_for(backend)
     return {
-        "capabilities": [
-            {
-                "id": line.id,
-                # Still a BOOL, and still first. An unmeasured line answers False
-                # here, so a reader that predates the two fields beside it -- an
-                # older panel against a newer gateway -- gets the fail-closed
-                # not-available answer rather than inheriting a third state it has
-                # no way to render.
-                "available": line.available,
-                "measured": line.measured,
-                "unmeasured_reason": line.unmeasured_reason,
-            }
-            for line in card.capabilities
-        ],
+        "capabilities": [_line_payload(line) for line in card.capabilities],
+        # Same shape as ``capabilities`` and outside its count: the panel folds
+        # these behind a disclosure, and a gateway that predates them sends none.
+        "details": [_line_payload(line) for line in card.details],
         "security_notes": list(card.security_notes),
         "operator_notes": list(card.operator_notes),
         # The routing value itself, not a record around it. A second reading of the

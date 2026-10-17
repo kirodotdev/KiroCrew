@@ -41,7 +41,7 @@ import hmac
 import logging
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.mcp_apps_render import load_spool
@@ -174,8 +174,51 @@ def _tool_visible_to_app(tool: dict[str, Any]) -> bool:
     return visibility_allows(tool, AUDIENCE_APP).allowed
 
 
+def _agent_for_call(record: Mapping[str, Any]) -> Optional[str]:
+    """The agent that produced this spool *record*, or ``None`` when unknown.
+
+    This is the governance input, so BOTH properties below have to hold at
+    once, and the store the answer comes from is what decides whether they do.
+
+    1. It must name the agent whose call THIS is. ``backend.pool_key`` cannot:
+       the agent is not a pool dimension, so a shared backend's key names no
+       agent, and the registrant that happened to spawn it is not the caller.
+    2. The governed agent must not be able to write it. The session's own
+       transcript metadata fails this — an agent with a shell edits its own
+       ``execution_context.selection_name`` to any name it likes, blank or a
+       real agent carrying no task-bound deny profile, and the ceiling is gone.
+       The durable vouch fails property 1 in the other direction: it is written
+       only for member-bound persistent bindings, so an ordinary dashboard
+       session or a subagent has none and every callback would be refused.
+
+    The SPOOL RECORD satisfies both. ``gatewayd`` writes it at interception
+    (``Backend._fetch_and_deliver_ui``) and stamps in the agent the PRODUCING
+    STUB declared on its Register frame, which arrived over the gateway's own
+    uid socket from the stub the rewriter wrote. So the value is per call rather
+    than per session — correct for a shared backend serving several agents — and
+    it lives in the owner-only spool directory only gatewayd writes. No
+    session-side store is consulted, which is why no class of session is left
+    unanswerable.
+
+    Two answers, and ONLY two:
+
+    * A stamped agent — the agent that produced this render. Returned.
+    * An absent or empty one — ``None``, and the caller denies. A record written
+      by an older gateway, or by an interception whose stub declared no agent,
+      lands here: unknown is indistinguishable from narrow, so it refuses.
+    """
+    agent = str(record.get("agent") or "")
+    if not agent:
+        logger.warning(
+            "app-call: the spool record names no producing agent; denying "
+            "rather than governing the call against a default surface",
+        )
+        return None
+    return agent
+
+
 def _governance_denial(
-    server: str, tool_name: str, session_key: str, *, agent: str = ""
+    server: str, tool_name: str, session_key: str, *, agent: Optional[str] = ""
 ) -> Optional[str]:
     """Evaluate governance (``policy ∩ profile``) for an app-originated call.
 
@@ -185,10 +228,12 @@ def _governance_denial(
     single un-disableable ceiling across BOTH tool-invocation authorities —
     an enterprise deny that binds the model now binds an embedded app too.
 
-    ``agent`` is the producing backend's agent name: a tightly-scoped agent may
-    carry its own task-bound deny profile, and resolving without it would let
-    an app callback execute a tool the agent's own profile forbids (its ceiling
-    would be silently widened to the surface profile).
+    ``agent`` is the agent that PRODUCED this render, as
+    :func:`_agent_for_call` read it off the spool record. A tightly-scoped agent may carry
+    its own task-bound deny profile, so resolving without it would let an app
+    callback execute a tool that agent's profile forbids (its ceiling would be
+    silently widened to the surface profile). ``None`` means the resolution
+    failed, and denies: an unknown agent is indistinguishable from a narrow one.
 
     Freshness note: Plane A uses the boot-frozen ceiling on the dashboard
     process; gatewayd is a separate daemon, so the policy is loaded per call
@@ -199,6 +244,8 @@ def _governance_denial(
     from Plane A's soft fail-open, which is backstopped by the always-on deny
     floor — a floor this app-originated path does not traverse.
     """
+    if agent is None:
+        return "cannot resolve the calling session's agent"
     try:
         # circular import: platform.governance imports gateway-adjacent modules;
         # loaded per-call (also keeps the policy read fresh). Keep lazy.
@@ -368,9 +415,15 @@ async def handle_app_call(pool: Any, frame: dict[str, Any]) -> dict[str, Any]:
     # Governance ceiling (policy ∩ profile) on the canonical @server/tool ref —
     # same decision Plane A applies to model-originated MCP calls. Offloaded:
     # the evaluation reads the policy file from disk. Fail-closed inside.
+    # The agent comes off THIS record, stamped by gatewayd at interception from
+    # the producing stub's Register frame — not from the backend (pooled, so its
+    # key names no agent) and not from any session-side store (which the
+    # governed agent could write). See :func:`_agent_for_call`. Already in
+    # memory, so it costs no read of its own.
     denial = await asyncio.to_thread(
-        _governance_denial, server, tool_name, session_key,
-        agent=getattr(backend.pool_key, "agent_name", "") or "",
+        lambda: _governance_denial(
+            server, tool_name, session_key, agent=_agent_for_call(record)
+        )
     )
     if denial is not None:
         return _rejected(denial, **audit_kw)

@@ -1,13 +1,13 @@
 """The channel transports' lifecycle after the orchestrator is built.
 
 The connect-time ``channels`` governance gate every transport start passes, the
-governed Slack socket connect, the live-config appliers (in-process restart of one
-channel, the Slack hot-field applier), the boot-time re-hoist from the config
-watcher, readiness badges, and the replay of the durable inbound spool.
+governed Slack socket connect, the live-config appliers (in-process restart of
+one channel, the Slack hot-field applier, the default-agent applier), the
+boot-time re-hoist from the config watcher, readiness badges, and the replay of
+the durable inbound spool.
 
 The per-channel hoists, ``_register_config_appliers`` and
-``_start_channel_transports`` stay in the facade: the hot-reload and readiness
-audits parse them there.
+``_start_channel_transports`` are in ``channel_boot``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -635,6 +635,33 @@ async def _on_slack_config_change(self: GatewayOrchestrator, change: ConfigChang
             "slack.command changed in config; the slash command is registered in "
             "the Slack app manifest, so this takes effect on the next gateway start"
         )
+
+
+def _on_default_agent_config_change(self: GatewayOrchestrator, change: ConfigChange) -> None:
+    """Make a reloaded ``agent.default_agent`` the agent a new thread in Slack starts on.
+
+    The handler caches the agent a thread with no ``!ta`` / ``!agent`` override
+    starts on. This applier writes that cache for a change made by any other
+    writer (the dashboard, ``kirocrew config set``, an editor); ``!agent`` sets it
+    itself right after its own write, and the watcher then applies the same value.
+
+    A DISCARDED ``agent`` section holds defaults, and adopting those would drop
+    the configured agent: the configured default stays in force and this path is
+    raised as :class:`ConfigDeferred`, retried until the section validates.
+
+    It is its own subscription, apart from :func:`_on_slack_config_change`. The
+    watcher merges the paths a subscription defers with those it already holds
+    stale, so a deferral raised from the Slack applier would keep the Slack paths
+    stale for as long as the ``agent`` section stays discarded, and the Slack work
+    (an authorization audit record, the enterprise-id reload) would run again on
+    every tick.
+    """
+    from kiro_crew.slack import handler as slack_handler
+
+    new = change.new
+    if "agent" in new.degraded_sections:
+        raise ConfigDeferred(change.under("agent.default_agent"))
+    slack_handler.adopt_default_agent(new.agent.default_agent)
 
 
 async def _adopt_channel_sections_from_watcher(

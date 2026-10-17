@@ -53,6 +53,7 @@ from kiro_crew.apps.job_sdk import (
     register_sdk,
     registered_apps,
 )
+from kiro_crew.testing.wait import wait_until
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -67,24 +68,20 @@ _MODE_BITS_BITE = hasattr(os, "geteuid") and os.geteuid() != 0
 
 def _wait_terminal(sdk: JobSDK, run_id: str, timeout: float = 5.0) -> JobRun:
     """Poll until the run reaches a terminal status, or fail with what we saw."""
-    deadline = time.monotonic() + timeout
-    last = None
-    while time.monotonic() < deadline:
-        last = sdk.get(run_id)
-        if last is not None and last.is_terminal:
-            return last
-        time.sleep(0.01)
-    observed = last.status if last is not None else "<no record>"
-    raise AssertionError(f"run {run_id} not terminal within {timeout}s; observed status={observed}")
+
+    def _done() -> JobRun | None:
+        r = sdk.get(run_id)
+        return r if r is not None and r.is_terminal else None
+
+    return wait_until(
+        _done,
+        timeout=timeout,
+        describe=lambda: "status=" + (sdk.get(run_id).status if sdk.get(run_id) else "<no record>"),
+    )
 
 
 def _wait_until(predicate, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError(f"condition not met within {timeout}s")
+    wait_until(predicate, timeout=timeout)
 
 
 @pytest.fixture
@@ -267,11 +264,7 @@ class TestCancellation:
 
         def runner(h, **kw):
             started.set()
-            # Poll the cancel signal cooperatively.
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    return
-                time.sleep(0.01)
+            h.cancelled.wait()
 
         sdk.register("loop", runner, cancellable=True)
         run_id = sdk.start("loop")
@@ -364,7 +357,7 @@ class TestCheckpoint:
                 # Reaches a checkpoint each iteration; raises once cancel lands.
                 h.checkpoint()
                 ran_on.append(1)
-                time.sleep(0.01)
+                h.cancelled.wait()  # block until cancel; checkpoint above raises on it
 
         sdk.register("stoppable", runner, cancellable=True)
         run_id = sdk.start("stoppable")
@@ -386,8 +379,7 @@ class TestCheckpoint:
 
         def runner(h, **kw):
             started.set()
-            while not h.cancelled.is_set():
-                time.sleep(0.01)
+            h.cancelled.wait()
             # A cancel is now pending. The runner tries to finish anyway; the
             # checkpoint refuses to let it record success.
             h.checkpoint()
@@ -954,12 +946,8 @@ class TestRemoveAll:
 
         def runner(h, **kw):
             started.set()
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    cancelled_seen.set()
-                    return
-                time.sleep(0.01)
-            release.wait(5.0)
+            h.cancelled.wait()
+            cancelled_seen.set()
             return {}
 
         sdk.register("live", runner, cancellable=True)
@@ -1070,10 +1058,7 @@ class TestDisableTrace:
 
         def runner(h, **kw):
             started[h.kind].set()
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    return
-                time.sleep(0.01)
+            h.cancelled.wait()
 
         sdk.register("alpha", runner, cancellable=True)
         sdk.register("beta", runner, cancellable=True)
@@ -1160,10 +1145,7 @@ class TestDisableTrace:
             if behavior.get(h.run_id) == "stubborn":
                 stop.wait(10.0)  # ignores the cancel signal outright
                 return {}
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    return
-                time.sleep(0.01)
+            h.cancelled.wait()
 
         sdk.register("work", runner, cancellable=True)
         coop = sdk.start("work")
@@ -1200,10 +1182,8 @@ class TestDisableTrace:
         def runner(h, **kw):
             worker.append(threading.current_thread())
             started.set()
-            for _ in range(500):
-                if h.cancelled.is_set() or release.is_set():
-                    return
-                time.sleep(0.01)
+            while not (h.cancelled.is_set() or release.is_set()):
+                h.cancelled.wait(timeout=5.0)  # re-check release every 5 s
 
         sdk.register("work", runner, cancellable=True)
         run_id = sdk.start("work")
@@ -1245,10 +1225,7 @@ class TestDisableTrace:
 
         def runner(h, **kw):
             started.set()
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    return
-                time.sleep(0.01)
+            h.cancelled.wait()
 
         sdk.register("work", runner, cancellable=True)
         run_id = sdk.start("work")
@@ -1663,10 +1640,7 @@ class TestAsyncTwins:
 
         def runner(h, **kw):
             started.set()
-            for _ in range(500):
-                if h.cancelled.is_set():
-                    return
-                time.sleep(0.01)
+            h.cancelled.wait()
 
         sdk.register("loop", runner, cancellable=True)
         run_id = sdk.start("loop")
@@ -1845,9 +1819,7 @@ class TestDiscardGuard:
         run_id = sdk.start("work")
         assert body_entered.wait(5), "the worker never entered its body"
 
-        deadline = time.monotonic() + 5
-        while sdk.get(run_id).status != RUNNING and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: sdk.get(run_id).status == RUNNING, timeout=5)
         assert sdk.get(run_id).status == RUNNING
 
         real_iter = sdk._store.iter_runs  # noqa: SLF001 - driving the interleaving
@@ -1860,14 +1832,19 @@ class TestDiscardGuard:
                     assert run.status == RUNNING
                     # ...and now the worker really completes and really leaves _live.
                     release.set()
-                    end = time.monotonic() + 5
-                    while time.monotonic() < end:
-                        latest = sdk.get(run_id)
-                        if latest.is_terminal and run_id not in sdk._live:  # noqa: SLF001
-                            finished.append(latest.to_dict())
-                            break
-                        time.sleep(0.01)
-                    assert finished, "the worker did not settle in time"
+
+                    def _settled():
+                        r = sdk.get(run_id)
+                        return (
+                            r
+                            if r is not None and r.is_terminal and run_id not in sdk._live
+                            else None
+                        )  # noqa: SLF001
+
+                    latest = wait_until(
+                        _settled, timeout=5, describe=lambda: "the worker did not settle in time"
+                    )
+                    finished.append(latest.to_dict())
                 yield run
 
         sdk._store.iter_runs = interleaved  # type: ignore[method-assign] # noqa: SLF001
@@ -2145,8 +2122,7 @@ class TestDisableStopsTheWork:
 
         def runner(h, **kw):
             started.set()
-            while not h.cancelled.is_set():
-                time.sleep(0.01)
+            h.cancelled.wait()
             finished.set()
             return {}
 
@@ -3927,13 +3903,12 @@ class TestStoppingWorkTheRunnerHandedBack:
         try:
             sdk.register("hostilecb", wrapper)
             run_id = sdk.start("hostilecb")
-            deadline = time.monotonic() + 5.0
-            run = None
-            while time.monotonic() < deadline:
-                run = sdk.get(run_id)
-                if run is not None and run.is_terminal:
-                    break
-                time.sleep(0.01)
+
+            def _terminal():
+                r = sdk.get(run_id)
+                return r if r is not None and r.is_terminal else None
+
+            run = wait_until(_terminal, timeout=5.0, describe=lambda: "the record vanished")
             assert run is not None, "the record vanished"
             assert run.status == FAILED, (
                 f"a done callback raising BaseException left the record at "
@@ -4085,7 +4060,7 @@ class TestCleanupDoesNotBlockTheLoop:
             async def ticker() -> None:
                 nonlocal ticks
                 while True:
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.02)  # flake-ok: measures free-loop time per tick
                     ticks += 1
 
             spin = asyncio.ensure_future(ticker())

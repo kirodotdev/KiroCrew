@@ -106,6 +106,8 @@ describe('usePanelDocumentActions.saveFile — stale pre-owner session', () => {
     await saveFile(PATH, 'saved bytes')
 
     expect(bannerEl()).toBeNull()
+    // The file tab is the only editable buffer for a path, so the save restamps
+    // its baseline; the coexisting wtdiff tab is a read-only diff (#9695).
     expect(patchTab).toHaveBeenCalledWith(`file:${PATH}`, { savedContent: 'saved bytes' })
     // The draft differs from what was saved, so it is newer work and is kept.
     expect(getInlineDraft(SLOT, PATH)).toBe('newer draft')

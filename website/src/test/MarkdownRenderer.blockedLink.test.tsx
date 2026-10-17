@@ -4,6 +4,7 @@ import { render, fireEvent, waitFor, within, act, cleanup } from '@testing-libra
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { BlockedLinkChip, RedactionCardSlot, RedactionCoach, RedactionProvider, REVEAL_MS, setAllowHold, useRedactionUi } from '../components/RedactionCards'
 import { api } from '../api/client'
+import { expectCardListsHostRecords } from './blockedLinkCardAsserts'
 
 const copied: string[] = []
 let copyResult = true
@@ -57,21 +58,27 @@ afterEach(() => {
 })
 
 describe('Blocked link chip', () => {
-  it('matches the prototype: label, host and path, query length, Inspect', () => {
-    const { getByTestId } = render(<MarkdownRenderer content={`The page: ${PH('reviews.corp.example')}`} blockedLinks={[link()]} slotKey="s1" />)
+  it('shows the label, the host alone and Inspect, never the record path or query length', () => {
+    const { getByTestId, queryByTestId } = render(<MarkdownRenderer content={`The page: ${PH('reviews.corp.example')}`} blockedLinks={[link()]} slotKey="s1" />)
     const chip = getByTestId('blocked-link-chip')
     expect(chip.textContent).toContain('Blocked link')
-    expect(getByTestId('blocked-link-target').textContent).toBe('reviews.corp.example/reviews')
-    expect(getByTestId('blocked-link-query').textContent).toBe('⋯ query 290 chars')
+    // The host is the only thing the chip can prove about its own link: the
+    // one record on the host does not prove it is this chip's.
+    expect(getByTestId('blocked-link-target').textContent).toBe('reviews.corp.example')
+    expect(queryByTestId('blocked-link-query')).toBeNull()
+    expect(chip.textContent).not.toContain('/reviews')
+    expect(chip.textContent).not.toContain('290')
     expect(getByTestId('blocked-link-inspect').textContent).toBe('Inspect')
     expect(chip.closest('a')).toBeNull()
   })
+
+
 
   it('Inspect opens the card after the paragraph with the prototype sections', () => {
     const { getByTestId, container } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
     fireEvent.click(getByTestId('blocked-link-inspect'))
     const card = getByTestId('blocked-link-card')
-    expect(card.textContent).toContain('This link is blocked. It cannot open or preview.')
+    expect(card.textContent).toContain('Blocked links to this host in this reply')
     expect(card.textContent).toContain('Destination: reviews.corp.example')
     expect(card.textContent).toContain('Reason: the query has 290 characters.')
     expect(getByTestId('blocked-link-review').textContent).toContain('Review full URL')
@@ -122,11 +129,13 @@ describe('Blocked link chip', () => {
     const onChange = (e: Event) => seen.push((e as CustomEvent).detail)
     window.addEventListener('mc:redaction-hosts-changed', onChange)
     try {
-      const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" />)
+      const { getByTestId } = render(<MarkdownRenderer content={PH('reviews.corp.example')} blockedLinks={[link()]} slotKey="s1" messageTs="2026-01-01T00:00:05Z" />)
       fireEvent.click(getByTestId('blocked-link-inspect'))
       fireEvent.click(getByTestId('blocked-link-allow'))
       fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
-      await waitFor(() => expect(seen).toEqual([{ slot: 's1' }]))
+      // The reply's own time rides along, so the reload re-serves this row even
+      // when it sits above the newest page (#17023).
+      await waitFor(() => expect(seen).toEqual([{ slot: 's1', messageTs: '2026-01-01T00:00:05Z' }]))
     } finally {
       window.removeEventListener('mc:redaction-hosts-changed', onChange)
     }
@@ -207,6 +216,206 @@ describe('Blocked link chip', () => {
     fireEvent.click(getByTestId('blocked-link-inspect'))
     fireEvent.click(getByTestId('blocked-link-copy'))
     await waitFor(() => expect(copied).toEqual(['https://reviews.corp.example/reviews?filter=abc']))
+  })
+
+  // #17568: one host blocked in four paragraphs. The card used to be keyed on
+  // the host, so one Inspect opened a card under every paragraph, each listing
+  // all four addresses with nothing saying which chip was clicked.
+  describe('several blocked links on one host in separate blocks', () => {
+    const host = 'reviews.corp.example'
+    const records = [1, 2, 3, 4].map(n => link({ path: `/r${n}`, url: `https://${host}/r${n}?q=${'x'.repeat(250)}` }))
+    const content = [1, 2, 3, 4].map(n => `Link ${n}: ${PH(host)}`).join('\n\n')
+    /** The text of the block a card opens after: the nearest earlier sibling
+     *  on the card's way up to the rendered reply. */
+    const blockBefore = (card: HTMLElement): string => {
+      for (let el: HTMLElement | null = card; el; el = el.parentElement) {
+        if (el.previousElementSibling) return el.previousElementSibling.textContent ?? ''
+      }
+      return ''
+    }
+    const targets = (card: HTMLElement) => within(card).queryAllByTestId('blocked-link-entry-target').map(e => e.textContent)
+    const marks = (card: HTMLElement) => within(card).getAllByTestId('blocked-link-entry').filter(e => e.getAttribute('aria-current') !== null)
+
+    it('one Inspect opens one card, right after the block holding that chip', () => {
+      const { getAllByTestId } = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
+      const chips = getAllByTestId('blocked-link-inspect')
+      expect(chips).toHaveLength(4)
+      fireEvent.click(chips[2])
+      const cards = getAllByTestId('blocked-link-card')
+      expect(cards).toHaveLength(1)
+      expect(blockBefore(cards[0])).toMatch(/^Link 3: /)
+      // Each chip's block has its own card id, so the chips of other blocks
+      // report that card closed.
+      expect(chips[2].getAttribute('aria-expanded')).toBe('true')
+      for (const i of [0, 1, 3]) expect(chips[i].getAttribute('aria-expanded')).toBe('false')
+      expect(chips[2].getAttribute('aria-controls')).toBe(cards[0].id)
+      for (const i of [0, 1, 3]) expect(chips[i].getAttribute('aria-controls')).not.toBe(cards[0].id)
+    })
+
+    it('lists every address of the host in record order, whichever chip was clicked, and presents none as the clicked link', () => {
+      // A chip's place among the host's chips is not evidence of which record
+      // it stands for, so no click moves an entry to the top.
+      for (const i of [0, 1, 2, 3]) {
+        const { getAllByTestId, getByTestId, unmount } = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
+        fireEvent.click(getAllByTestId('blocked-link-inspect')[i])
+        const card = getByTestId('blocked-link-card')
+        expect(targets(card)).toEqual([1, 2, 3, 4].map(n => `${host}/r${n}`))
+        expectCardListsHostRecords(card, records, host)
+        unmount()
+      }
+    })
+
+    it('keeps the host title and per-entry Destination line when the card lists several links', () => {
+      const { getAllByTestId, getByTestId } = render(<MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" />)
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      const card = getByTestId('blocked-link-card')
+      expect(card.textContent).toContain('Blocked links to this host in this reply')
+      expect(card.textContent?.match(/Destination: reviews\.corp\.example/g)).toHaveLength(4)
+      expect(card.textContent).toContain('Reason: the query has 290 characters.')
+    })
+
+    it('two chips of the host in one block share its one card', () => {
+      const list = [1, 2, 3, 4].map(n => `- Link ${n}: ${PH(host)}`).join('\n')
+      const { getAllByTestId, getByTestId, queryAllByTestId } = render(<MarkdownRenderer content={list} blockedLinks={records} slotKey="s1" />)
+      const chips = getAllByTestId('blocked-link-inspect')
+      fireEvent.click(chips[0])
+      expect(getAllByTestId('blocked-link-card')).toHaveLength(1)
+      expect(targets(getByTestId('blocked-link-card'))).toEqual([1, 2, 3, 4].map(n => `${host}/r${n}`))
+      expect(marks(getByTestId('blocked-link-card'))).toEqual([])
+      // Every chip of the block controls that one card, so each reports it
+      // open, and any of them closes it, as on main.
+      const card = getByTestId('blocked-link-card')
+      for (const c of chips) expect(c.getAttribute('aria-controls')).toBe(card.id)
+      expect(chips.map(c => c.getAttribute('aria-expanded'))).toEqual(['true', 'true', 'true', 'true'])
+      fireEvent.click(chips[3])
+      expect(queryAllByTestId('blocked-link-card')).toEqual([])
+    })
+
+    it('lists a one-record host the same way, whatever the placeholder count', () => {
+      const one = [records[1]]
+      // One placeholder, a repeated address, and a placeholder no record
+      // describes: the card lists the one record under its own address and
+      // never says it is the link clicked.
+      for (const md of [`Only: ${PH(host)}`, `A ${PH(host)}\n\nB ${PH(host)}`, `![${PH(host)}](x.png) then ${PH(host)}`]) {
+        const { getAllByTestId, getByTestId, unmount } = render(<MarkdownRenderer content={md} blockedLinks={one} slotKey="s1" />)
+        fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+        expectCardListsHostRecords(getByTestId('blocked-link-card'), one, host)
+        unmount()
+      }
+    })
+
+    it('styles every chip alike while their card is open', () => {
+      const list = [1, 2, 3, 4].map(n => `- Link ${n}: ${PH(host)}`).join('\n')
+      const { getAllByTestId } = render(<MarkdownRenderer content={list} blockedLinks={records} slotKey="s1" />)
+      const chips = getAllByTestId('blocked-link-inspect')
+      fireEvent.click(chips[2])
+      // No visual "pressed" state: a filled chip would read as tied to the
+      // card's first entry, which the card does not claim.
+      expect(new Set(chips.map(c => c.className)).size).toBe(1)
+    })
+
+    it('shows the outcome of Allow under the entry it was pressed from', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const revoke = vi.spyOn(api, 'redactionRevokeHost').mockResolvedValue({ ok: true } as never)
+      const { getAllByTestId, getByTestId } = render(
+        <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs="2026-10-07T06:00:00Z" />,
+      )
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[0])
+      const entries = () => within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(within(entries()[1]).getByTestId('blocked-link-feedback').textContent).toContain(host))
+      expect(entries().map(e => within(e).queryByTestId('blocked-link-feedback') !== null)).toEqual([false, true, false, false])
+      expect(marks(getByTestId('blocked-link-card'))).toEqual([])
+      fireEvent.click(within(entries()[1]).getByTestId('blocked-link-undo'))
+      await waitFor(() => expect(revoke).toHaveBeenCalledWith('default', host))
+    })
+
+    it('keeps the one card under its block when the reloaded reply shows the host as plain links', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const ts = '2026-10-07T05:00:00Z'
+      const { getAllByTestId, getByTestId, rerender, container } = render(
+        <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs={ts} />,
+      )
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[2])
+      const entry = within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')[2]
+      expect(within(entry).getByTestId('blocked-link-entry-target').textContent).toBe(`${host}/r3`)
+      fireEvent.click(within(entry).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entry).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
+      const restored = records.map((r, i) => `Link ${i + 1}: [page](${r.url})`).join('\n\n')
+      rerender(<MarkdownRenderer content={restored} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
+      const cards = getAllByTestId('blocked-link-card')
+      expect(cards).toHaveLength(1)
+      expect(blockBefore(cards[0])).toMatch(/^Link 3: /)
+      // The reload removed the placeholders; the card lists the same records,
+      // and the pressed entry keeps its outcome with Undo.
+      expectCardListsHostRecords(cards[0], records, host)
+      const withOutcome = getAllByTestId('blocked-link-feedback')
+      expect(withOutcome).toHaveLength(1)
+      const pressed = withOutcome[0].closest('[data-testid="blocked-link-entry"]') as HTMLElement
+      expect(within(pressed).getByTestId('blocked-link-entry-target').textContent).toBe(`${host}/r3`)
+      fireEvent.keyDown(document, { key: 'Escape' })
+      await waitFor(() => expect(container.querySelector('[data-testid="blocked-link-card"]')).toBeNull())
+    })
+
+    it('keeps a one-address card listing that address after Allow and the reload', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const ts = '2026-10-09T01:00:00Z'
+      const { getByTestId, rerender } = render(<MarkdownRenderer content={`Only: ${PH(host)}`} blockedLinks={[records[0]]} slotKey="s1" messageTs={ts} />)
+      fireEvent.click(getByTestId('blocked-link-inspect'))
+      fireEvent.click(getByTestId('blocked-link-allow'))
+      fireEvent.click(getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
+      rerender(<MarkdownRenderer content={`Only: [page](${records[0].url})`} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
+      expectCardListsHostRecords(getByTestId('blocked-link-card'), [records[0]], host)
+    })
+
+    it('reopens the held card under its own block, which Allow leaves in place', async () => {
+      vi.spyOn(api, 'redactionAllowHost').mockResolvedValue({ ok: true, workspace: 'default' })
+      const ts = '2026-10-12T04:00:00Z'
+      const { getAllByTestId, getByTestId, rerender } = render(
+        <MarkdownRenderer content={content} blockedLinks={records} slotKey="s1" messageTs={ts} />,
+      )
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[3])
+      const opened = getByTestId('blocked-link-card').id
+      const entry = within(getByTestId('blocked-link-card')).getAllByTestId('blocked-link-entry')[0]
+      fireEvent.click(within(entry).getByTestId('blocked-link-allow'))
+      fireEvent.click(within(entry).getByTestId('blocked-link-allow-confirmed'))
+      await waitFor(() => expect(getByTestId('blocked-link-undo')).toBeTruthy())
+      const restored = records.map((r, i) => `Link ${i + 1}: [page](${r.url})`).join('\n\n')
+      rerender(<MarkdownRenderer content={restored} blockedLinks={[]} slotKey="s1" messageTs={ts} />)
+      const cards = getAllByTestId('blocked-link-card')
+      expect(cards).toHaveLength(1)
+      expect(cards[0].id).toBe(opened)
+      expect(blockBefore(cards[0])).toMatch(/^Link 4: /)
+    })
+
+    it('labels the chip with the host alone when one kept address is recorded twice', () => {
+      const same = link({ path: '/same', url: `https://${host}/same?q=${'x'.repeat(250)}` })
+      const body = `First ${PH(host)} and again ${PH(host)}.`
+      const { getAllByTestId, queryAllByTestId } = render(<MarkdownRenderer content={body} blockedLinks={[same, { ...same }]} slotKey="s1" />)
+      for (const t of getAllByTestId('blocked-link-target')) expect(t.textContent).toBe(host)
+      expect(queryAllByTestId('blocked-link-query')).toEqual([])
+    })
+
+    it('labels the chip with the host alone when two records differ', () => {
+      const body = `First ${PH(host)} and second ${PH(host)}.`
+      const { getAllByTestId, queryAllByTestId } = render(<MarkdownRenderer content={body} blockedLinks={[records[0], records[1]]} slotKey="s1" />)
+      for (const t of getAllByTestId('blocked-link-target')) expect(t.textContent).toBe(host)
+      expect(queryAllByTestId('blocked-link-query')).toEqual([])
+    })
+
+    it('lists records that agree on every field as one entry, as on main', () => {
+      const twin = link({ path: '/same', url: null, url_withheld: 'credential', query_chars: 26 })
+      const body = `First ${PH(host)} and second ${PH(host)}.`
+      const { getAllByTestId, getByTestId } = render(<MarkdownRenderer content={body} blockedLinks={[twin, { ...twin }]} slotKey="s1" />)
+      for (const t of getAllByTestId('blocked-link-target')) expect(t.textContent).toBe(host)
+      fireEvent.click(getAllByTestId('blocked-link-inspect')[1])
+      const card = getByTestId('blocked-link-card')
+      expect(within(card).getAllByTestId('blocked-link-entry')).toHaveLength(1)
+      expect(marks(card)).toEqual([])
+    })
   })
 
   it('a placeholder with no record stays plain text', () => {
@@ -413,14 +622,14 @@ describe('reveal focus ownership', () => {
 
   it('announces a held card that reopens when its reply remounts without an opener', () => {
     const replyKey = 's1:held-remount'
-    setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed' })
+    setAllowHold(replyKey, 'reviews.corp.example', { workspace: 'w', records: [link()], outcome: 'allowed', cardId: 'rx-link-reviews.corp.example~0.0' })
     try {
       ;(document.activeElement as HTMLElement | null)?.blur()
       vi.useFakeTimers()
       const ui = render(
         <RedactionProvider credentials={[]} blockedLinks={[link()]} replyKey={replyKey}>
-          <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} />
-          <RedactionCardSlot ids="rx-link-reviews.corp.example" />
+          <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} block="0.0" />
+          <RedactionCardSlot ids="rx-link-reviews.corp.example~0.0" />
         </RedactionProvider>,
       )
       act(() => { vi.advanceTimersByTime(REVEAL_MS) })
@@ -451,8 +660,8 @@ describe('reveal focus ownership', () => {
     }
     const ui = render(
       <RedactionProvider credentials={[]} blockedLinks={[link()]}>
-        <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} />
-        <RedactionCardSlot ids="rx-link-reviews.corp.example" />
+        <BlockedLinkChip domain="reviews.corp.example" placeholder={PH('reviews.corp.example')} block="0.0" />
+        <RedactionCardSlot ids="rx-link-reviews.corp.example~0.0" />
         <NextRequest />
       </RedactionProvider>,
     )
@@ -507,7 +716,7 @@ describe('reveal focus ownership', () => {
     act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
     expect(document.activeElement).toBe(next)
     act(() => { vi.advanceTimersByTime(REVEAL_MS / 2) })
-    expect(document.activeElement?.id).toBe('rx-link-other.corp.example')
+    expect(document.activeElement?.id).toMatch(/^rx-link-other\.corp\.example~/)
   })
 })
 

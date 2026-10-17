@@ -31,7 +31,7 @@ const noopVoiceControl = () => {}
 /** The dictation bridge: the caret a transcript splices in at, the panel that
  *  replaces the textarea while recording, focus while a transcript lands, and
  *  Escape to discard. */
-export function useDictationControls({ composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel, voiceRecording, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle }: {
+export function useDictationControls({ composerControl, value, autoFocusKey, anyPickerOpenRef, voiceCaretRef, voicePendingCaretRef, voiceDictationPanel, voiceRecording, voiceDrainCancellable, voiceError, voiceSampleRef, voiceTranscribing, onVoiceCancel, onVoiceToggle }: {
   composerControl: () => ComposerControl | null
   value: string
   autoFocusKey?: string | null
@@ -41,6 +41,10 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   voicePendingCaretRef: VoiceInput['voicePendingCaretRef']
   voiceDictationPanel: boolean
   voiceRecording: boolean
+  /** A released streaming utterance is still queued behind the recogniser and
+   *  can be called off. True exactly through the post-release drain, when
+   *  `voiceRecording` is already false — the window this control exists for. */
+  voiceDrainCancellable: boolean
   voiceError: VoiceInput['voiceError']
   voiceSampleRef: VoiceInput['voiceSampleRef']
   voiceTranscribing: boolean
@@ -141,6 +145,16 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   // so an abandoned dictation is thrown away. Clicking the mic remains the
   // commit path (stop + transcribe).
   //
+  // It also covers the post-release DRAIN, not just a live recording: a streaming
+  // release reports capture over (`voiceRecording` false) while the utterance
+  // stays queued behind a cold model, so keyed on `voiceRecording` alone this
+  // listener unbinds at the release and the composer locks with no keyboard way
+  // out (#13500). `voiceDrainCancellable` is that drain window. Through it the
+  // only action is the discard: the `onVoiceToggle` fallback (stop + discard a
+  // live recording) is withheld once capture has ended, since toggling there
+  // would open a fresh recording — so a drain with no `onVoiceCancel` binds
+  // nothing rather than the wrong action.
+  //
   // BUBBLE phase, not capture, and it yields three ways. Capture phase runs
   // before every descendant, so an open menu/popover/selector (this composer
   // has many) would lose its own Escape to this handler — recording would stop
@@ -163,8 +177,10 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
   // defaultPrevented, so a snip started during recording would otherwise be
   // cancelled by the same keypress that stopped the recording.
   useEffect(() => {
-    const cancel = onVoiceCancel || onVoiceToggle
-    if (!voiceRecording || !cancel) return
+    // A drain is discarded through `onVoiceCancel` alone; a live recording may
+    // also fall back to `onVoiceToggle`, which stops-and-discards it.
+    const cancel = onVoiceCancel || (voiceRecording ? onVoiceToggle : undefined)
+    if ((!voiceRecording && !voiceDrainCancellable) || !cancel) return
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented) return
       if (anyPickerOpenRef.current) return
@@ -175,7 +191,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [voiceRecording, onVoiceCancel, onVoiceToggle, anyPickerOpenRef])
+  }, [voiceRecording, voiceDrainCancellable, onVoiceCancel, onVoiceToggle, anyPickerOpenRef])
 
   return { publishLexicalSelection, recordCaret, showDictation, cancelVoiceDrain }
 }

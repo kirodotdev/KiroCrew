@@ -3,8 +3,8 @@ title: Notification Bridge (bus egress fanout to chat transports)
 status: accepted
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 670
 implementation-prs: []
 tracking-issues: [589]
@@ -19,7 +19,7 @@ superseded-by: []
 > `docs/system-specs/modules/app-notifications.md` is the record of what the
 > bus does today.
 
-- Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink at `dashboard/state.py:1758`. No open PR and no live branch is building B1–B4.
+- Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink, `NotificationBus(sink=self._deliver_note)` in `DashboardState`. No open PR and no live branch is building B1–B4.
 - Correction to the Summary below: it says the bus RFC's "Phases 1–5, all shipped". Phases 1/3/4 are complete, but Phase 2 has no producer app and Phase 5's kind-routing cleanup is still present in `NotificationDetailPanel.tsx`. Every dependency **this** RFC actually needs is real; the blanket claim is not.
 - Author: zezhexu
 - Created: 2026-07-28
@@ -36,8 +36,8 @@ The local notification bus (rfc-local-notification-bus.md, Phases 1–5, all shi
 
 Ingress and the bus core are complete:
 
-- Producers: `notify()` adapter (system modules), `POST /api/notifications/app` (app-token producers), `POST /api/notifications/agent` + the `send_notification` MCP tool (agent sessions). All paths funnel through the `NotificationPayload.validate()` trust root.
-- Bus core: persistence with TTL sweep, priority tiers, per-channel settings (mute, priority override, sound), group stacking, inline actions.
+- Producers: `notify()` adapter (system modules), `POST /api/notifications/push` (app-token producers), `POST /api/notifications/agent` + the `send_notification` MCP tool (agent sessions). All paths funnel through the `NotificationPayload.validate()` trust root.
+- Bus core: persistence with TTL sweep, priority tiers, per-channel settings (mute, priority override; sound is one client-side setting), group stacking, inline actions.
 
 Egress is a single hardcoded consumer:
 

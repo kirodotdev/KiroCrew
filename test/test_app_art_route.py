@@ -35,6 +35,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.apps import routes as app_routes
+from kiro_crew.testing.wait import await_until
 
 APP = "demo-app"
 
@@ -457,7 +458,10 @@ async def test_a_declared_FIFO_does_not_hang_the_request(
         "kiro_crew.apps.routes.get_app_manifest",
         lambda name: _FakeManifest({"iconPath": "assets/piped.webp"}),
     )
-    status, _ = await asyncio.wait_for(_get(f"/apps/{APP}/art/assets/piped.webp"), timeout=10)
+    status, _ = await await_until(
+        asyncio.ensure_future(_get(f"/apps/{APP}/art/assets/piped.webp")),
+        what="the FIFO art request completing",
+    )
     assert status == 404, "a FIFO is not a plain file, so it is not servable"
 
 

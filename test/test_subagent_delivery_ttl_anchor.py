@@ -52,6 +52,7 @@ from kiro_crew.subagent_persistence import (
     prune_stale_tombstones,
     write_result_chunk,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -160,10 +161,7 @@ def _finished_run(agent_id: str, root) -> None:
 
 async def _settled(predicate, timeout: float = 3.0) -> None:
     """Poll until *predicate* holds — settlement lands on a worker thread."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while not predicate() and asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(0.02)
-    assert predicate()
+    await async_wait_until(predicate, timeout=timeout)
 
 
 # ── The slot-side ledger of owed delivery marks ───────────────────────
@@ -588,11 +586,11 @@ class TestTeardownGateOnQueuedSettlement:
         done.set_result(None)
 
         # The settlement is waiting on the run's teardown, and has written nothing.
-        await asyncio.wait_for(gate.awaited.wait(), timeout=5)
+        await await_until(gate.awaited)
         assert not (agent_root / "a1" / "tombstone.json").exists()
 
         gate.set()
-        await asyncio.wait_for(asyncio.gather(*list(state._background_tasks)), timeout=5)
+        await await_until(asyncio.ensure_future(asyncio.gather(*list(state._background_tasks))))
         assert (agent_root / "a1" / "tombstone.json").exists()
 
     @pytest.mark.asyncio
@@ -1125,13 +1123,13 @@ class TestReaperDoesNotPruneAQueuedPromise:
         ):
             delivery = asyncio.create_task(on_done(info))
             try:
-                await asyncio.wait_for(busy_checked.wait(), 3)
+                await await_until(busy_checked)
                 assert not parent.done()
                 assert not delivery.done()
                 assert not injected
                 parent_release.set()
-                await asyncio.wait_for(delivery, 3)
-                await asyncio.wait_for(_drain_injections(orch), 3)
+                await await_until(delivery)
+                await await_until(asyncio.ensure_future(_drain_injections(orch)))
             finally:
                 parent_release.set()
                 await parent

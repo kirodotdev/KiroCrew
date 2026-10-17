@@ -233,6 +233,11 @@ export function subscribePaneDraft(slot: string, onArrival: () => void): () => v
   }
 }
 
+/** Whether some pane is showing `slot` right now. */
+export function hasPaneListener(slot: string): boolean {
+  return (listeners.get(slot)?.size ?? 0) > 0
+}
+
 /** Merge a late recovery (or a late upload) into `slot`'s parked composer:
  *  text appends under the shared recovery rule, paths union, paste blocks
  *  carry over with their tokens re-numbered past the parked ones
@@ -250,6 +255,42 @@ export function mergePaneDraft(slot: string, text: string, files: string[], past
   if (subs) for (const fn of Array.from(subs)) fn()
 }
 
+/** Text a live composer should SWAP OUT for the next arrival on its slot,
+ *  instead of appending to it. Set by `swapPaneDraftText`, taken once by the
+ *  pane's arrival handler (`takePaneDraftSwap`). */
+const swaps = new Map<string, string>()
+
+/** The suggested prompt last put into each slot's composer, for `suggestPaneDraft`. */
+const lastSuggested = new Map<string, string>()
+
+/** Put a suggested prompt into `slot`'s composer IN PLACE OF the one this
+ *  put there last, but only while the composer still holds exactly that one
+ *  (nothing typed or edited since): a second prompt then replaces the first
+ *  instead of stacking on it. When the composer holds anything else the text
+ *  appends under the shared merge rule, so nothing the user wrote is dropped. */
+export function suggestPaneDraft(slot: string, next: string): void {
+  const p = lastSuggested.get(slot)?.trim()
+  lastSuggested.set(slot, next)
+  if (!p) { mergePaneDraft(slot, next, []); return }
+  if (hasPaneListener(slot)) {
+    // Live composer: the parked store is empty (the pane took it), so the
+    // swap is decided against the composer's own text in its arrival handler.
+    swaps.set(slot, p)
+    mergePaneDraft(slot, next, [])
+    return
+  }
+  const cur = readPaneDraft(slot)
+  if (cur.text.trim() === p) { writePaneDraft(slot, { ...cur, text: next }); return }
+  mergePaneDraft(slot, next, [])
+}
+
+/** Read AND clear the pending swap for `slot` (see `swapPaneDraftText`). */
+export function takePaneDraftSwap(slot: string): string | undefined {
+  const s = swaps.get(slot)
+  swaps.delete(slot)
+  return s
+}
+
 /** Test-only: drop the in-memory mirror and every subscriber. The mirror is
  *  read BEFORE storage by design, so `sessionStorage.clear()` between tests
  *  does not reset it — a pane unmounted at the end of one test parks its
@@ -257,6 +298,8 @@ export function mergePaneDraft(slot: string, text: string, files: string[], past
 export function __resetPaneDraftsForTests(): void {
   mirror.clear()
   listeners.clear()
+  swaps.clear()
+  lastSuggested.clear()
   // The store is the fallback read when the mirror is empty, so a reset that
   // left the persisted entries behind would hand the previous test's park
   // straight back on the next mount. Best-effort: a suite that stubs storage

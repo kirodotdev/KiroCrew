@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-/** Mirrors the backend's `STOP_DECLINED_ESCALATION_SECS` (session_lifecycle.py). */
+/** Mirrors the backend's `STOP_DECLINED_ESCALATION_SECS` (session_lifecycle_parts/stop_decline.py). */
 export const STOP_DECLINED_HINT_MS = 60_000
 
 /**

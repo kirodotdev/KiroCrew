@@ -17,6 +17,7 @@ import asyncio
 import pytest
 
 from kiro_crew.acp.session_handle import AcpProcessDied, AcpSessionHandle
+from kiro_crew.testing.wait import await_until
 
 
 class _DeadRuntime:
@@ -86,6 +87,9 @@ async def test_response_wait_raise_carries_attribution():
     q.put_nowait(None)  # poison sentinel: runtime died
 
     with pytest.raises(AcpProcessDied) as exc_info:
-        await asyncio.wait_for(h._wait_for_response(1, timeout=2.0), timeout=5.0)
+        await await_until(
+            asyncio.ensure_future(h._wait_for_response(1, timeout=2.0)),
+            what="the response wait ending on the poison sentinel",
+        )
 
     assert "background runtime reap" in str(exc_info.value)

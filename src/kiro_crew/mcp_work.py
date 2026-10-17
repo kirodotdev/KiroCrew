@@ -122,6 +122,9 @@ _RECORD_FIELDS: tuple[str, ...] = (
     "goal",
     "round",
     "fails",
+    "item_cap",
+    "concurrency_cap",
+    "new_goal",
 )
 
 #: Fields ``work_ledger_read`` forwards as a query string. Same defence as
@@ -199,7 +202,7 @@ def _drop_rank(row: dict[str, Any]) -> tuple[bool, bool, datetime, str]:
     )
 
 
-def _fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
+def fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
     """Render the ledger read under *budget* chars, always as valid JSON.
 
     Each stage runs only while the text is still over budget, and a trimmed reply
@@ -308,6 +311,14 @@ def _fit_ledger(doc: dict[str, Any], budget: int = _READ_BUDGET_CHARS) -> str:
         ids = ids[: len(ids) // 2]
 
 
+#: The private spelling this function carried while the tool layer was its only
+#: caller. Kept as an alias rather than as a second implementation: the work-ledger
+#: wake builds the same document and has to fit it the same way, and a reader of
+#: either name must land on one set of rules. The two are the same object, so a test
+#: that patches a collaborator of this module still reaches the live one.
+_fit_ledger = fit_ledger
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface this server advertises."""
     return [
@@ -332,9 +343,21 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "reads without interpreting it. Call it at each real milestone rather "
                 "than on a timer. 'progress' is informational; 'blocked' means an "
                 "external dependency stopped the work; 'question' means the conductor's "
-                "own decision is needed (the two differ by who must act); 'done' claims "
+                "own decision is needed (the two differ by who must act). THIS IS THE "
+                "ONLY THING THAT WAKES YOUR CONDUCTOR: 'blocked', 'question' and 'done' "
+                "wake it, 'progress' does not, and a turn that ends without a report "
+                "wakes nobody — so before you stop, say why you stopped. A pause you "
+                "expect to be resumed from is a 'progress' report: it records where you "
+                "stopped and spends your conductor no turn. On 'blocked' "
+                "or 'question', set reason when only a person can move it: 'approval' "
+                "when a tool approval timed out or is waiting, 'needs_human' when only "
+                "a person can unblock you; leave it unset for a build or service. A "
+                "ledger whose open items all wait on a person holds the conductor's "
+                "patrol until something changes. 'done' claims "
                 "the acceptance condition is met — put the evidence in artifacts and any "
-                "pull-request number in pr. A 'done' is a claim the conductor verifies, "
+                "pull-request number in pr. A 'done' with neither is refused "
+                "done_without_evidence; a check that could not run is still recorded "
+                "as an artifact that says so. A 'done' is a claim the conductor verifies, "
                 "never an acceptance: nothing here can write a verdict. Write facts and "
                 "pointers to what you produced, not requests. Which item this lands on "
                 "is resolved from your own session — there is no item parameter."
@@ -378,6 +401,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "so naming a number does not move your own bar."
                         ),
                     },
+                    "reason": {
+                        "type": "string",
+                        "enum": ["approval", "needs_human"],
+                        "description": (
+                            "On 'blocked' or 'question': the person this waits on. Refused "
+                            "with 'progress' or 'done'. Each report replaces it."
+                        ),
+                    },
                 },
                 "required": ["status", "summary"],
             },
@@ -387,13 +418,14 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Read the work ledger this conductor session owns: the conductor "
                 "record, every item with all its fields, each item's derived 'orphaned', "
-                "'stale' and 'acceptance_concrete' flags, the newest events per item, and "
+                "'stale', 'acceptance_concrete', 'unpatrolled' and 'pending_overdue' "
+                "flags, the newest events per item, and "
                 "a ready-to-pipe 'accept_batch' document for the goal-conductor skill's "
                 "accept_eval.py. The ledger is your own. With no arguments that is the "
                 "whole board, each item with its last 20 events; every argument NARROWS "
                 "it. compact=true is the cheap patrol read: per item only item_id, title, "
-                "state, created_at, status, summary, decision, verdict, pr, worker_session_key, "
-                "last_report_at and the three flags — no events, acceptance or "
+                "state, created_at, status, reason, summary, decision, verdict, pr, worker_session_key, "
+                "last_report_at and the five flags — no events, acceptance or "
                 "accept_batch. item_id=<id> reads one item in full; state= and since= "
                 "select rows (accept_batch is always the whole board); events=<n> "
                 "shortens the tails. A reply over the tool-result budget is trimmed to "
@@ -418,7 +450,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "verdict=fail on and left open counts again, since that hands the retry "
                 "back to the worker. A worker session that has closed after at least one "
                 "report counts as quiet at once, without waiting out the window. "
-                "Answers 'no_ledger' when this session owns "
+                "An item is pending_overdue once its acceptance has read 'pending' for "
+                "24 hours on end (never for a human_approval bar): ask the user, then "
+                "either write its bar again with action=accept, which starts a fresh "
+                "run, or close it. Answers 'no_ledger' when this session owns "
                 "none yet."
             ),
             "inputSchema": {
@@ -450,8 +485,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "boolean",
                         "description": (
                             "Status columns and the orphaned / stale / "
-                            "acceptance_concrete flags only — no events, acceptance or "
-                            "accept_batch."
+                            "acceptance_concrete / unpatrolled / pending_overdue flags "
+                            "only — no events, acceptance or accept_batch."
                         ),
                     },
                 },
@@ -476,7 +511,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "call, because the field sets are disjoint: 'goal' sets the goal and "
                 "round (and opens the ledger); 'create' mints an item from title + "
                 "acceptance; 'bind' attaches a worker session key to an item — do this "
-                "BEFORE seeding that session, so the worker never starts unbound; "
+                "BEFORE seeding that session, so the worker never starts unbound. When "
+                "your session has no active loop (none, or one the system stopped), a "
+                "bind also arms a default work-ledger patrol on it; a loop a person "
+                "stopped is kept. The reply always ends 'patrol=<armed|existing|"
+                "refused|unsupported> (<reason>)', plus what to do when none runs; your "
+                "own monitor_start replaces that default; "
                 "'decide' records what you decided and why (the one field a worker reads "
                 "as an instruction); 'verdict' records accept_eval.py's verdict and the "
                 "fail count; 'accept' promotes a worker's claimed pr into the item's "
@@ -557,6 +597,35 @@ def _tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": "verdict: acceptance attempts that came back fail.",
                     },
+                    "item_cap": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 256,
+                        "description": (
+                            "goal: how many items this goal is expected to create in "
+                            "total, every round included; default 20. Advisory: nothing "
+                            "is refused past it; work_ledger_read reports "
+                            "cap_exceeded=true and you tell the user."
+                        ),
+                    },
+                    "concurrency_cap": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 32,
+                        "description": (
+                            "goal: how many items this goal may hold open at once; "
+                            "default 6. A create past it is refused "
+                            "goal_concurrency_cap_reached: wait for an item to land, or "
+                            "ask the user and raise it here."
+                        ),
+                    },
+                    "new_goal": {
+                        "type": "boolean",
+                        "description": (
+                            "goal: true only when the user gave a NEW goal; starts its "
+                            "item count again. Needs `goal`. Rewording keeps the count."
+                        ),
+                    },
                 },
                 "required": ["action"],
             },
@@ -623,7 +692,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         return redact(json.dumps(brief, indent=2, ensure_ascii=False))
 
     if name == "work_report":
-        payload = {k: v for k, v in args.items() if k in ("status", "summary", "artifacts", "pr")}
+        payload = {
+            k: v for k, v in args.items() if k in ("status", "summary", "artifacts", "pr", "reason")
+        }
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):
             return _refusal("could not record your report", resp)
@@ -659,7 +730,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # The ledger holds worker-authored prose written from untrusted work, and a
         # patrol cycle re-reads it into context every round: redacted, and fitted
         # under the runtime's tool-result cut so a cut never tears the JSON.
-        return _fit_ledger(resp)
+        return fit_ledger(resp)
 
     if name == "work_ledger_rebuild":
         resp = _post(_REBUILD_PATH, {}, session_key=caller_key)
@@ -678,11 +749,16 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         item = resp.get("item") or {}
         action = resp.get("action") or payload.get("action") or ""
         if item:
-            return (
+            line = (
                 f"Recorded {action}. item={item.get('item_id') or '(unknown)'} "
                 f"state={item.get('state') or '(unset)'} "
                 f"verdict={item.get('verdict') or '(none)'}"
             )
+            if action == "bind":
+                from kiro_crew.conductor_patrol import reply_line
+
+                line += reply_line(resp)
+            return line
         conductor = resp.get("conductor") or {}
         return f"Recorded {action}. round={conductor.get('round', '(unset)')}"
 

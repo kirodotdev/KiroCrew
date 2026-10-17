@@ -46,7 +46,8 @@ _HISTORICAL_SURFACE = frozenset("""
     _DIRECT_FETCH_PENDING_MAX _DIRECT_FETCH_RESERVATIONS _DIRECT_FETCH_WAITERS
     _DIRECT_FETCH_WAIT_SECS _DISCUSSION_OUTPUT_BYTES _FULL_FETCH_GENERATIONS
     _FULL_FETCH_INFLIGHT _FULL_FETCH_RESERVATION_BYTES _FULL_FETCH_TASKS _GH_ENV_PASSTHROUGH
-    _GH_LOGIN_RE _GITHUB_AUTO_MERGE_MUTATION _GITHUB_MERGE_METHODS _GITHUB_NODE_ID_RE
+    _GH_LOGIN_RE _GITHUB_AUTO_MERGE_MUTATION _GITHUB_MERGE_METHODS _GITHUB_MERGE_MUTATION
+    _GITHUB_NODE_ID_RE
     _GITHUB_PATH_RE _GITHUB_PULL_REQUEST_NODE_QUERY _GITHUB_REACTION_KEYS
     _GITHUB_READY_MUTATION _GITHUB_RESOLVE_MUTATION _GITHUB_REVIEW_ID_RE
     _GITHUB_REVIEW_THREADS_QUERY _GITHUB_SEGMENT_KINDS _GITHUB_THREAD_ID_RE
@@ -84,7 +85,7 @@ _HISTORICAL_SURFACE = frozenset("""
     _fetch_gitlab_issue _fetch_issue_uncached _fetch_jira_issue
     _fetch_pull_request_checks_uncached _fetch_pull_request_uncached _fetch_repo_visibility
     _finish_inflight _flatten_paginated _flush_check_updates _full_payload_ttl _get_jira_auth
-    _gh_conditional_get _github_check _github_check_identity _github_check_rank _github_checks
+    _gh_conditional_get _github_check _github_checks
     _github_comment _github_dismiss_review _github_graphql_dismisses_stale
     _github_issue_comment _github_issue_reactions _github_linked_changes _github_merge_state
     _github_pending_review _github_pending_review_comments _github_pull_request_head_sha

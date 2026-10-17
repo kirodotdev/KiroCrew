@@ -15,8 +15,9 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { membersPagePaths } from './membersPageFamily'
 
 import ResizeHandle from '../components/ResizeHandle'
 import type { usePointerDrag } from '../hooks/usePointerDrag'
@@ -31,20 +32,38 @@ const NOOP_HANDLE: HandleProps = {
   onLostPointerCapture: () => {},
 }
 
-const SURFACES: ReadonlyArray<readonly [name: string, file: string]> = [
-  ['ChatSidebar', join(process.cwd(), 'src', 'pages', 'ChatSidebar.tsx')],
-  ['MembersPage', join(process.cwd(), 'src', 'pages', 'members', 'MembersPage.tsx')],
+/** The sidebar's own files: the facade and the owners under pages/chat-sidebar/ it
+ *  composes, which draw the sidebar's JSX. */
+function sidebarFiles(): string[] {
+  const out = [join(process.cwd(), 'src', 'pages', 'ChatSidebar.tsx')]
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push(p)
+    }
+  }
+  walk(join(process.cwd(), 'src', 'pages', 'chat-sidebar'))
+  return out
+}
+
+const SURFACES: ReadonlyArray<readonly [name: string, files: readonly string[]]> = [
+  ['ChatSidebar', sidebarFiles()],
+  // The roster column draws the grip; the negative half reads every file of the page.
+  ['MembersPage', [join(process.cwd(), 'src', 'pages', 'members', 'MembersPageRoster.tsx'), ...membersPagePaths()]],
 ]
 
 describe('column resize grip — one component on both pages', () => {
-  it.each(SURFACES)('%s mounts the shared ResizeHandle and hand-rolls no vertical separator', (_name, file) => {
-    const src = readFileSync(file, 'utf8')
+  it.each(SURFACES)('%s mounts the shared ResizeHandle and hand-rolls no vertical separator', (_name, files) => {
+    const src = readFileSync(files[0], 'utf8')
+    // The page and every owner it composes: the negative half covers all of them.
+    const joined = files.map(f => readFileSync(f, 'utf8')).join('\n')
     expect(src).toMatch(/import ResizeHandle from '(\.\.\/)+components\/ResizeHandle'/)
     expect(src).toContain('<ResizeHandle')
     // A raw vertical separator in the page is the drift this pin forbids. The
     // sidebar's horizontal history-pane splitter is a different affordance and
     // stays out of scope, hence the orientation in the pattern.
-    expect(src).not.toMatch(/aria-orientation="vertical"/)
+    expect(joined).not.toMatch(/aria-orientation="vertical"/)
   })
 
   it('renders the sidebar bar recipe: 6px hit strip carrying a 2px rounded accent-on-hover bar', () => {

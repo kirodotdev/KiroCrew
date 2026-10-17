@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import collections
+import concurrent.futures
 import contextlib
+import functools
 import json
 import logging
 import os
+import queue
 import select
 import signal
 import sys
 import threading
 import time
+import types
 import urllib.request
-from typing import Any, Callable, Literal, NamedTuple, Optional
+from collections.abc import Mapping
+from typing import Any, Callable, Literal, NamedTuple, Optional, overload
 
 from kiro_crew import platform_compat
-from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret  # noqa: F401
 from kiro_crew.dashboard.origin import parse_dashboard_url  # noqa: F401
 from kiro_crew.install_liveness import (
@@ -32,6 +36,8 @@ from kiro_crew.json_line import (
 )
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
+    INFLIGHT_CAPABILITY_KEY,
+    INFLIGHT_NOTIFICATION,
     CallerContext,
     caller_identity_capability,
     current_caller,
@@ -56,6 +62,11 @@ from kiro_crew.validation import (
     validate_jsonrpc_request,
     validate_jsonrpc_response,
 )
+
+#: JSON-RPC 2.0 "method not found". Spelled here, not imported from
+#: ``kiro_crew.acp.types``: importing that module runs the ``kiro_crew.acp``
+#: package, which pulls the whole ACP client into every stdio MCP server.
+JSONRPC_METHOD_NOT_FOUND = -32601
 
 logger = logging.getLogger(__name__)
 
@@ -92,17 +103,26 @@ def internal_caller() -> str | None:
 # Overflow gets an immediate JSON-RPC busy error instead of silence.
 PENDING_CALLS_MAX = 32
 
+# One gateway pool shares one backend: bound what the pending queue drains into.
+# Each parked entry holds a dict slot and at most one pool step; twice the queue
+# bound leaves generous room for waiting calls without unbounded retention.
+DEFERRED_PARKED_MAX = 64
+
 # Max cancelled-request ids retained. ``notifications/cancelled`` can arrive
 # for any request id over the life of the (long-lived, per-session) MCP server
 # process; retaining them in an unbounded set leaks one entry per cancel. Once
 # this cap is reached the oldest ids are evicted FIFO.
 CANCELLED_IDS_MAX = 1024
+# Max frames the Windows stdin pump (``_start_stdin_pump``) reads ahead of the
+# loop. Past it the pump blocks and the rest stays in the pipe, so the client
+# feels backpressure exactly as it does when the POSIX loop is slow to read.
+STDIN_PUMP_MAX_FRAMES = 64
 
-#: Largest Content-Length body :func:`_read_message` reads whole: the gateway's
-#: default per-line read limit (``mcp_gateway.pool._DEFAULT_READ_BUFFER_LIMIT``,
+#: Largest frame body :func:`_read_message` reads whole, Content-Length body
+#: or bare-JSON line alike: the gateway's default per-line read limit (``mcp_gateway.pool._DEFAULT_READ_BUFFER_LIMIT``,
 #: pinned equal by a test so this server need not import the gateway). A larger
-#: body is drained in bounded chunks and answered as too large, so a corrupt
-#: header can neither allocate it nor desync the framing.
+#: body is drained in bounded chunks and answered as too large, so neither a
+#: corrupt header nor an endless line can allocate it or desync the framing.
 MAX_CONTENT_LENGTH_BYTES = 64 * 1024 * 1024
 #: A declared length past this is no body any sender drains to: the header is
 #: corrupt, and draining to it would swallow every later request.
@@ -179,24 +199,286 @@ def _remember_cancelled_id(
             break
 
 
-# Thread-local cancel event set by run_mcp_stdio_loop worker threads.
-# Cooperative tools (wait, spawn_sub_agents) should call is_tool_cancelled()
-# in their polling loops.
-_thread_cancel_event: Optional[threading.Event] = None
+class DeferredTool:
+    """A tool call whose remaining work is a sequence of SHORT steps.
 
+    The dispatch loop runs one worker thread per server, so a tool that spends
+    its whole duration asleep (``wait`` sleeps up to 1800s; ``spawn_sub_agents``
+    polls for up to 7200s) parks that worker and every other caller's call
+    behind it -- on the pooled ``kirocrew-core`` backend that is every dashboard
+    session at once. A handler that only has to WAIT returns one of these from
+    the worker instead of a result string: the worker frees the moment the
+    handler returns, and the loop runs :meth:`step` from its own timer whenever
+    :meth:`due_at` has passed. The call is settled when a step returns text.
 
-def is_tool_cancelled() -> bool:
-    """Return True if the current in-flight tool call has been cancelled.
+    Contract for a ``step``: it is short (an HTTP round-trip to the loopback
+    gateway, never a sleep), it runs with the call's caller identity installed
+    exactly as the worker had it, and it may raise :class:`ToolCancelled` to end
+    the call with no response. Steps run on a small shared pool, not on the
+    dispatch thread, so a step that blocks on a stalled gateway delays other
+    steps, never the loop's ``ping`` answers or the single worker.
 
-    Cooperative tools like ``wait`` should check this in their sleep loop
-    and exit early (raising ``ToolCancelled``) when True.
+    Outside the dispatch loop -- a direct ``_call_tool`` from a test or the
+    CLI -- :func:`drive_deferred` runs the steps inline, so a deferred tool
+    behaves exactly like a blocking one there.
     """
-    evt = _thread_cancel_event
-    return evt is not None and evt.is_set()
+
+    def due_at(self) -> float:
+        """``time.monotonic()`` value at or after which the next step may run."""
+        raise NotImplementedError
+
+    def step(self) -> str | None:
+        """Do one bounded unit of work; return the result text when done."""
+        raise NotImplementedError
+
+    def cancel(self) -> None:
+        """Best-effort hook when the call is cancelled before it settled."""
+        return None
+
+    def abandon(self) -> str | None:
+        """Called instead of :meth:`cancel` when the loop must answer this
+        call without ever stepping it again: the parked table is full, the
+        step pool cannot start, or a pruned install is exiting.
+
+        Return final response text when the call has already done something a
+        retry would repeat; ``None`` (the default) means the caller may safely
+        retry and is told to.
+        """
+        return None
+
+    def on_settled(self, text: str) -> None:
+        """Hook run by whoever drives the steps, once, with the text that
+        settled the call, AFTER it has decided the call was not cancelled.
+
+        Side effects that must happen exactly once per call and only for a
+        call that is answered -- the SEL ``completed``/``failed`` row -- live
+        here rather than in the settling ``step()``: a step runs on a pool
+        thread and can return text while a cancel is landing on the dispatch
+        thread, which then drops the text and audits ``cancelled``. Only the
+        driver sees both, so only the driver may commit.
+        """
+        return None
+
+
+def drive_deferred(deferred: DeferredTool, *, clock: Any = time) -> str:
+    """Run ``deferred`` to completion inline, sleeping between steps.
+
+    ``clock`` is a module-like object with ``monotonic`` and ``sleep``, so a
+    caller can hand in the one its tests patch (``mcp_core.time``). Nothing
+    can cancel an inline drive, so the settling text is committed at once.
+    """
+    while True:
+        result = deferred.step()
+        if result is not None:
+            deferred.on_settled(result)
+            return result
+        delay = deferred.due_at() - clock.monotonic()
+        if delay > 0:
+            clock.sleep(delay)
+
+
+def map_deferred(deferred: DeferredTool, fn: Callable[[str], str]) -> DeferredTool:
+    """``deferred`` with ``fn`` applied to the text that settles it -- the
+    deferred form of ``fn(handler(...))`` for a wrapper that post-processes a
+    blocking tool's result."""
+    return _MappedDeferred(deferred, fn)
+
+
+class _MappedDeferred(DeferredTool):
+    def __init__(self, inner: DeferredTool, fn: Callable[[str], str]) -> None:
+        self._inner = inner
+        self._fn = fn
+
+    def due_at(self) -> float:
+        return self._inner.due_at()
+
+    def step(self) -> str | None:
+        result = self._inner.step()
+        return None if result is None else self._fn(result)
+
+    def cancel(self) -> None:
+        self._inner.cancel()
+
+    def abandon(self) -> str | None:
+        text = self._inner.abandon()
+        return None if text is None else self._fn(text)
+
+    def on_settled(self, text: str) -> None:
+        self._inner.on_settled(text)
+
+
+#: How often the loop reports in-flight deferred ids while any exist
+#: (``INFLIGHT_NOTIFICATION``, sent only to a client that declared
+#: ``INFLIGHT_CAPABILITY_KEY``; both live in ``mcp_caller``). Well
+#: under the gateway's ``HEARTBEAT_TIMEOUT_SECS`` (300s) so a report is never
+#: late enough for a healthy call to cross the slow-request threshold.
+INFLIGHT_REPORT_SECS = 30.0
+
+#: A deferred call whose current step has run longer than this is NOT reported
+#: as progressing: a step is an HTTP round-trip, so one that holds a pool
+#: thread for a minute is the stall the report exists to expose.
+DEFERRED_STEP_STUCK_SECS = 60.0
+
+#: Threads the loop runs deferred steps on. A ``wait`` step is a millisecond
+#: keepalive and a ``spawn_sub_agents`` step one poll pass, but an
+#: ``ask_question`` step holds the server's fixed ``ASK_WAIT_SLICE_SECS``
+#: long-poll and a parent's resume probe is held server-side up to 8s, so the pool is sized
+#: for a few of those in flight at once without starving the quick steps. The
+#: bound exists so a gateway that stops answering cannot grow threads without limit.
+DEFERRED_STEP_WORKERS = 8
+
+
+class _StepPool:
+    """A fixed set of worker threads, all created UP FRONT, fed by one queue.
+
+    Not ``concurrent.futures.ThreadPoolExecutor``: that starts its threads
+    lazily inside ``submit``, AFTER the work item is queued, so a thread start
+    that fails under the process's thread ceiling raises out of ``submit`` while
+    the item stays queued and an idle worker runs it later -- for a deferred
+    step, a call just answered with an error could then consume an answer or a
+    collect nobody receives. Here ``submit`` only enqueues and cannot fail; the
+    one place a thread start can fail is construction, where nothing is queued
+    yet, so the caller fails that single call and retries the pool next tick.
+    A PARTIALLY started pool is not kept: ``DEFERRED_PARKED_MAX`` admits calls
+    on the assumption of ``workers`` threads, and one or two threads behind a
+    full table queue an ask's poll past the coordinator's answer grace, so an
+    answer would be lost. The started threads are released and construction
+    raises, which is the refusal path the caller already has.
+    """
+
+    def __init__(self, workers: int, name: str) -> None:
+        self._queue: "queue.SimpleQueue[_StepPool._Item | None]" = queue.SimpleQueue()
+        self._threads: list[threading.Thread] = []
+        for i in range(workers):
+            thread = threading.Thread(target=self._run, name=f"{name}-{i}", daemon=True)
+            try:
+                thread.start()
+            except RuntimeError:
+                self.shutdown()
+                raise
+            self._threads.append(thread)
+
+    @property
+    def workers(self) -> int:
+        return len(self._threads)
+
+    class _Item:
+        """One queued step. A cancelled future's item stays in the queue until
+        a worker reaches it, so cancelling drops its ``fn`` and ``args`` here:
+        the queue then holds an empty shell, not the step's call and payload."""
+
+        __slots__ = ("fut", "fn", "args")
+
+        def __init__(self, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
+            self.fut: "concurrent.futures.Future[Any]" = concurrent.futures.Future()
+            self.fn: "Callable[..., Any] | None" = fn
+            self.args: tuple[Any, ...] = args
+            self.fut.add_done_callback(self._release_if_cancelled)
+
+        def _release_if_cancelled(self, fut: "concurrent.futures.Future[Any]") -> None:
+            if fut.cancelled():
+                self.fn = None
+                self.args = ()
+
+    def submit(self, fn: Callable[..., Any], *args: Any) -> "concurrent.futures.Future[Any]":
+        """Queue ``fn(*args)``; never starts a thread, so it never raises."""
+        item = self._Item(fn, args)
+        self._queue.put(item)
+        return item.fut
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            fut, fn, args = item.fut, item.fn, item.args
+            if not fut.set_running_or_notify_cancel():
+                continue
+            # Only a cancel clears ``fn``, and a cancelled future never runs.
+            assert fn is not None
+            try:
+                fut.set_result(fn(*args))
+            except BaseException as exc:  # noqa: BLE001 - delivered through the future
+                fut.set_exception(exc)
+
+    def shutdown(self) -> None:
+        """Let every worker exit once the queue ahead of the sentinel drains."""
+        for _ in self._threads:
+            self._queue.put(None)
+
+
+class _DeferredEntry:
+    """Dispatch-loop bookkeeping for one parked call (see :class:`DeferredTool`).
+
+    ``stepping`` is the pool future of the step in flight, or ``None`` between
+    steps; ``step_queued`` is when it was submitted and ``step_started`` when
+    it began RUNNING on its pool thread (``0.0`` while still queued behind
+    other steps). ``progressing`` bounds each phase separately, so a short
+    queue wait never reads as a stuck step, while a step that never gets a
+    thread stops being vouched for. ``cancelled`` marks a call whose cancel
+    arrived mid-step: its step's result is dropped when the step returns, since
+    a cancelled request gets no response.
+    """
+
+    __slots__ = (
+        "req_id",
+        "tool_name",
+        "caller_ctx",
+        "tenant_nonce",
+        "deferred",
+        "stepping",
+        "step_queued",
+        "step_started",
+        "cancelled",
+    )
+
+    def __init__(
+        self,
+        req_id: Any,
+        tool_name: str,
+        caller_ctx: "CallerContext | None",
+        tenant_nonce: str,
+        deferred: DeferredTool,
+    ) -> None:
+        self.req_id = req_id
+        self.tool_name = tool_name
+        self.caller_ctx = caller_ctx
+        self.tenant_nonce = tenant_nonce
+        self.deferred = deferred
+        self.stepping: Optional[concurrent.futures.Future[str | None]] = None
+        self.step_queued = 0.0
+        self.step_started = 0.0
+        self.cancelled = False
+
+    @property
+    def session_key(self) -> str:
+        return self.caller_ctx.session_key if self.caller_ctx else ""
+
+    def progressing(self, now: float) -> bool:
+        """True unless the step in flight has exceeded the stuck bound in its
+        current phase: queued for a pool thread longer than the bound (every
+        worker is itself stuck, so this call is not moving either), or holding
+        its thread longer than the bound. Between steps a call is progressing.
+        """
+        if self.stepping is None:
+            return True
+        since = self.step_started if self.step_started else self.step_queued
+        return (now - since) < DEFERRED_STEP_STUCK_SECS
+
+
+def _declares_inflight_capability(init_params: dict[str, Any]) -> bool:
+    """Whether an ``initialize`` request's client capabilities carry
+    :data:`INFLIGHT_CAPABILITY_KEY` under ``experimental``."""
+    caps = init_params.get("capabilities")
+    if not isinstance(caps, dict):
+        return False
+    experimental = caps.get("experimental")
+    return isinstance(experimental, dict) and INFLIGHT_CAPABILITY_KEY in experimental
 
 
 class ToolCancelled(Exception):
-    """Raised by cooperative tools when ``is_tool_cancelled()`` returns True."""
+    """Raised by a tool (or a deferred step) that gives up because its call was
+    cancelled; the loop answers nothing and audits the call as cancelled."""
 
     pass
 
@@ -230,7 +512,7 @@ SKIP = _Skipped()
 # call races the load window. Written through fd 1, the bytes land in
 # /dev/null: no exception, no short write, the SEL audit still records
 # ``success`` -- and the client waits forever until the ACP tool-stall watchdog
-# (``acp/client.py::_TOOL_STALL_TIMEOUT``, 600s) kills the turn.
+# (``acp/client_timeouts.py::_TOOL_STALL_TIMEOUT``, 600s) kills the turn.
 #
 # ``snapshot_stdout_fd()`` takes an ``os.dup(1)`` at server startup, BEFORE any
 # tool can run. A dup'd descriptor keeps pointing at the original pipe no
@@ -329,6 +611,10 @@ def _write_all(fd: int, payload: bytes) -> int:
 # limit. Eviction only costs a re-fetch on that session's next call.
 _EXCLUDED_TOOLS_CACHE_MAX = 256
 _excluded_tools_by_session: dict[str, set[str]] = {}
+# The include lists cached beside each session's exclusions, written and evicted
+# with them, and read only on a hit in ``_excluded_tools_by_session``. A session
+# whose policy narrows no server has no entry.
+_included_tools_by_session: dict[str, dict[str, frozenset[str]]] = {}
 # Two separate negative caches with different TTLs because the two conditions get
 # OPPOSITE answers at ``tools/call``: the long HTTP-error window refuses, the short
 # startup-race window stays permissive, so a brief race must never be answered out
@@ -345,6 +631,12 @@ _last_startup_race_time: float = 0.0  # no session key or 404 — recovers fast
 # ordinary: a mapping is published mid-window on every warm-pool claim.
 _last_startup_race_key: str = ""
 _failure_count: int = 0
+# Class name of the exception behind the last ``resolution_failed``. A negative
+# cache hit hands it back as the refusal's cause, so the agent and the audit log
+# still name WHY while the long window is answering instead of the gateway.
+_last_failure_class: str = ""
+# Cap on the scrubbed exception message the audit event carries.
+_FAILURE_MESSAGE_MAX = 200
 # Long TTL applies only when the gateway is genuinely unreachable
 # (HTTP errors other than 404, connection refused, timeout).  Kept short
 # (60s) because this window is how long ``tools/call`` keeps REFUSING for a
@@ -373,6 +665,10 @@ _MAX_WARNING_FAILURES: int = 2
 _POLICY_DETAIL_MAX_CHARS: int = 600
 
 
+#: The ``ToolPolicy.included`` of a policy that narrows no server.
+_NO_INCLUDE: Mapping[str, frozenset[str]] = types.MappingProxyType({})
+
+
 class ToolPolicy(NamedTuple):
     """The exclusion set for one session, plus whether it was actually read.
 
@@ -395,13 +691,26 @@ class ToolPolicy(NamedTuple):
     gave one -- the ``reason`` field of a ``409 policy_unreadable`` body, which
     names the spec file it could not read and what to do about it. Text only,
     never a decision: nothing reads it but the refusal message, so a caller
-    that ignores it behaves exactly as before it existed. Empty whenever the
-    gateway sent none, which every path other than that 409 does.
+    that ignores it behaves exactly as before it existed. For
+    ``resolution_failed`` it is the class name of the exception that stopped the
+    read (``ConnectionRefusedError``), so the agent sees which failure it hit;
+    the scrubbed message goes only to the audit event. Empty on every other path.
+
+    ``included`` maps a server name to the only tools that server may list and
+    run for this session. A server with no entry is not narrowed. The gateway
+    derives it from an agent spec that opts in with
+    ``managedToolPolicy.honourToolRefs`` and grants the server only through
+    ``@<server>/<tool>`` refs; every other spec answers no entry at all.
     """
 
     excluded: frozenset[str]
     unresolved: str
     detail: str = ""
+    included: Mapping[str, frozenset[str]] = _NO_INCLUDE
+
+    def include_for(self, server: str) -> frozenset[str] | None:
+        """The include list *server* applies, or ``None`` when it is not narrowed."""
+        return self.included.get(server)
 
 
 def _ambient_audit_session() -> str:
@@ -542,6 +851,13 @@ def _policy_session_key() -> str | None:
     stops short of naming a co-tenant on a shared runtime: a misresolved key
     applies one session's operator tool exclusions to another, so this lookup
     refuses there rather than guessing.
+
+    This reads the ``KIROCREW_SESSION_KEY`` rung that is skipped when
+    ``host_pid_is_shared`` is true. On a shared pid the rung resolves no key,
+    ``identity.failed`` is set, ``None`` is returned, and
+    ``_resolve_tool_policy`` raises into the ``resolution_failed`` path —
+    which is in ``_UNRESOLVED_REFUSES_CALL``, so ``tools/call`` is refused
+    rather than proceeding under a co-tenant's exclusion set.
     """
     identity = resolve_own_identity()
     return None if identity.failed else identity.session_key
@@ -632,7 +948,7 @@ def _resolve_tool_policy(
     choice available without guessing which tools the operator meant to deny.
     """
     global _last_failure_time, _last_startup_race_time, _last_startup_race_key
-    global _failure_count
+    global _failure_count, _last_failure_class
     # Resolve BEFORE the cache is consulted when the gateway did not name the caller:
     # the entry has to be found under the session this call is for, and only
     # resolution knows which that is. A named caller needs no resolution at all — its
@@ -644,6 +960,11 @@ def _resolve_tool_policy(
     if session_key:
         _cached = _excluded_tools_by_session.get(session_key)
         if _cached is not None:
+            _cached_include = _included_tools_by_session.get(session_key)
+            if _cached_include:
+                return ToolPolicy(
+                    frozenset(_cached), "", included=types.MappingProxyType(_cached_include)
+                )
             return ToolPolicy(frozenset(_cached), "")
 
     now = time.monotonic()
@@ -680,8 +1001,9 @@ def _resolve_tool_policy(
             outcome="unresolved",
             source="mcp_shared",
             resources=f"reason={_reason}",
+            error=_last_failure_class if _failure_cached else "",
         )
-        return ToolPolicy(frozenset(), _reason)
+        return ToolPolicy(frozenset(), _reason, _last_failure_class if _failure_cached else "")
 
     try:
         port, _source = resolve_client_port_src(None)
@@ -966,11 +1288,39 @@ def _resolve_tool_policy(
                 f"{_shape}; fix the exclude list in this agent's spec, no restart needed",
             )
         resolved = set(exclude)
+        include = _parse_policy_include(policy.get("include"))
+        if include is None:
+            logger.warning(
+                "Tool policy for session %s has a malformed include; refusing calls "
+                "rather than enforcing the part that parses",
+                session_key,
+            )
+            sel().log_api_access(
+                caller=session_key,
+                operation="tool_policy.unreadable",
+                outcome="unresolved",
+                source="mcp_shared",
+                resources=f"session_key={session_key},include=malformed",
+            )
+            return ToolPolicy(
+                frozenset(),
+                "policy_unreadable",
+                "the policy the gateway answered has an include that is not a map of "
+                "server names to lists of tool names",
+            )
         # FIFO bound: dicts preserve insertion order; drop the oldest
         # session's entry when full (pooled backends serve churning sessions).
         while len(_excluded_tools_by_session) >= _EXCLUDED_TOOLS_CACHE_MAX:
-            _excluded_tools_by_session.pop(next(iter(_excluded_tools_by_session)))
+            _evicted = next(iter(_excluded_tools_by_session))
+            _excluded_tools_by_session.pop(_evicted)
+            _included_tools_by_session.pop(_evicted, None)
         _excluded_tools_by_session[session_key] = resolved
+        if include:
+            _included_tools_by_session[session_key] = include
+            return ToolPolicy(
+                frozenset(resolved), "", included=types.MappingProxyType(dict(include))
+            )
+        _included_tools_by_session.pop(session_key, None)
         return ToolPolicy(frozenset(resolved), "")
     except Exception as exc:
         # PATH 3/3. The gateway did not give a usable answer: no answer at all
@@ -989,6 +1339,7 @@ def _resolve_tool_policy(
         # there is no sibling the window wrongly affects.
         _last_failure_time = time.monotonic()
         _failure_count += 1
+        _last_failure_class = exc.__class__.__name__
         # Suppress repeated warnings — once we've logged twice the operator
         # has all the diagnostic info and further entries flood gateway.log
         # at every MCP server startup (10+ servers × every session start).
@@ -1010,8 +1361,51 @@ def _resolve_tool_policy(
             operation="tool_policy.resolution_failed",
             outcome="unresolved",
             source="mcp_shared",
+            resources=f"error_class={_last_failure_class}",
+            error=_failure_cause(exc),
         )
-        return ToolPolicy(frozenset(), "resolution_failed")
+        return ToolPolicy(frozenset(), "resolution_failed", _last_failure_class)
+
+
+def _parse_policy_include(raw: Any) -> dict[str, frozenset[str]] | None:
+    """The ``include`` of a policy the gateway answered, or ``None`` when it is malformed.
+
+    Absent is an empty map: no server is narrowed. Present, it must map server
+    names to lists of tool names. Any other shape is a narrowing whose extent is
+    unknown, and the caller refuses calls on it rather than enforcing the part
+    that parses, the same line it takes for a malformed ``exclude``.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, frozenset[str]] = {}
+    for server, tools in raw.items():
+        if not isinstance(server, str) or not server:
+            return None
+        if not isinstance(tools, list) or any(not isinstance(t, str) for t in tools):
+            return None
+        out[server] = frozenset(tools)
+    return out
+
+
+def _failure_cause(exc: BaseException) -> str:
+    """``Class: message`` for an audit event -- redacted, one line, capped.
+
+    The message can carry a URL, a path or a header value, so it goes through
+    the log redactor before it is written. A redactor that cannot run withholds
+    the message and keeps the class: the class alone is what names the cause.
+    """
+    name = exc.__class__.__name__
+    try:
+        from kiro_crew.platform import redact_log_via_context
+
+        message = redact_log_via_context(" ".join(str(exc).split()))
+    except Exception:
+        message = "<withheld: redaction unavailable>"
+    if len(message) > _FAILURE_MESSAGE_MAX:
+        message = message[: _FAILURE_MESSAGE_MAX - 3] + "..."
+    return f"{name}: {message}" if message else name
 
 
 def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
@@ -1085,6 +1479,80 @@ _UNRESOLVED_REFUSES_CALL = frozenset(
     {"policy_unreadable", "identity_unattested", "identity_unattestable", "resolution_failed"}
 )
 
+#: The directory this package's own code lives in. A tool handler whose code is
+#: under it belongs to a server Kiro Crew ships: its own control plane, and the
+#: builtin apps under ``apps/builtins``.
+_PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def serves_managed_tools(call_tool_fn: Callable[..., Any]) -> bool:
+    """True when *call_tool_fn* is Kiro Crew's own code, so the tool policy applies.
+
+    ``managedToolPolicy`` names the tools of Kiro Crew's managed servers that a
+    session may not reach (``src/kiro_crew/docs/agent-spec-fields.md``). A user-installed app that serves its own tools through
+    :func:`run_mcp_stdio_loop` is not one of those servers, and on the shared ACP
+    runtime it is never handed a session token -- identity rides only the control
+    plane -- so reading the policy for it could only ever fail closed and refuse
+    every call it serves. Its tools are already gated where the session is: the
+    agent spec's ``tools`` / ``allowedTools`` and kiro-cli's ``disabledTools``.
+
+    The check runs inside the app's own process, so it is not a boundary an app
+    could be held to: an app that wanted to skip it could skip this loop. What it
+    must NOT do is let Kiro Crew's own servers out, so every answer it cannot
+    establish is True: a handler with no readable code location, or one outside
+    every known shape, keeps the policy.
+    """
+    target: Any = call_tool_fn
+    while isinstance(target, functools.partial):
+        target = target.func
+    target = getattr(target, "__func__", target)
+    code = getattr(target, "__code__", None)
+    if code is None:
+        code = getattr(getattr(type(target), "__call__", None), "__code__", None)
+    filename = getattr(code, "co_filename", "") if code is not None else ""
+    if not filename or filename.startswith("<"):
+        return True
+    try:
+        real = os.path.realpath(filename)
+        named = platform_compat.strip_extended_length_prefix(filename)
+        drive = os.path.splitdrive(named)[0]
+        located = bool(drive) and os.path.isabs(named) and os.path.isfile(real)
+    except (OSError, ValueError):
+        return True
+    return _path_is_under(real, _PACKAGE_DIR, os.path, located=located)
+
+
+def _path_is_under(path: str, root: str, pathmod: Any = os.path, *, located: bool = True) -> bool:
+    """Whether absolute *path* is *root* or inside it; True when that cannot be told.
+
+    A path on another Windows drive is never inside *root*, but ``commonpath``
+    raises ``ValueError`` for it rather than answering. Read that case from the
+    drives first, so code on ``C:`` is not mistaken for the package on ``D:``
+    (a GitHub-hosted Windows runner checks out on ``D:`` and keeps its temp dir on
+    ``C:``). Any other refusal keeps the fail-closed answer.
+
+    Both sides are compared without the ``\\\\?\\`` long-path prefix, which
+    Windows ``realpath`` keeps on deep paths and which only spells a path. Another
+    drive is proof only when *located* (the caller found an existing file under an
+    absolute name with a drive). A relative name, or a rooted one with no drive,
+    resolves against the cwd at call time and a missing file proves nothing, so
+    those keep the policy. Only the backslash ``\\\\?\\`` form that Windows
+    ``realpath`` produces is folded; a forward-slash or ``\\\\.\\`` spelling is
+    left alone and takes the plain comparison.
+    """
+    path = platform_compat.strip_extended_length_prefix(path)
+    root = platform_compat.strip_extended_length_prefix(root)
+    path_drive = pathmod.normcase(pathmod.splitdrive(path)[0])
+    root_drive = pathmod.normcase(pathmod.splitdrive(root)[0])
+    if path_drive != root_drive:
+        return not located
+    try:
+        common = pathmod.commonpath([path, root])
+    except ValueError:
+        return True
+    # ``commonpath`` keeps the casing of its input; Windows paths compare caseless.
+    return pathmod.normcase(common) == pathmod.normcase(root)
+
 
 def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
     """Write a validated JSON-RPC response to stdout."""
@@ -1103,7 +1571,21 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
             "id": req_id,
             "error": {"code": -32603, "message": "Internal error"},
         }
-    body = json.dumps(resp)
+    _write_frame(resp, label=f"request {req_id}")
+
+
+def notify(method: str, params: dict[str, Any]) -> None:
+    """Write a server->client JSON-RPC notification (no ``id``) to stdout."""
+    _write_frame({"jsonrpc": "2.0", "method": method, "params": params}, label=method)
+
+
+def _write_frame(msg: dict[str, Any], *, label: str) -> None:
+    """Frame ``msg`` per the negotiated framing and write it to the client.
+
+    ``label`` names the frame in the torn-write log line (a request id, or a
+    notification method).
+    """
+    body = json.dumps(msg)
     if _framing == "content-length":
         payload = body.encode("utf-8")
         frame = f"Content-Length: {len(payload)}\r\n\r\n".encode("utf-8") + payload
@@ -1135,9 +1617,9 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
                 # it instead and let the client's own timeout handle the turn.
                 if getattr(exc, "bytes_written", 0):
                     logger.error(
-                        "Torn JSON-RPC frame for request %s: wrote %d of %d bytes "
+                        "Torn JSON-RPC frame for %s: wrote %d of %d bytes "
                         "before %s; dropping rather than duplicating the prefix",
-                        req_id,
+                        label,
                         exc.bytes_written,  # type: ignore[attr-defined]
                         len(frame),
                         exc.__class__.__name__,
@@ -1164,6 +1646,7 @@ def _audit_safe_args(value: Any) -> Any:
     return value
 
 
+@overload
 def call_tool_with_logging(
     name: str,
     raw_args: dict[str, Any],
@@ -1171,8 +1654,36 @@ def call_tool_with_logging(
     inner_fn: Callable[[str, dict[str, Any]], str],
     session_key: str,
     downstream_service: str,
-) -> str:
-    """Validate args, call inner tool function, and log the invocation."""
+) -> str: ...
+
+
+@overload
+def call_tool_with_logging(
+    name: str,
+    raw_args: dict[str, Any],
+    validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
+    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    session_key: str,
+    downstream_service: str,
+) -> "str | DeferredTool": ...
+
+
+def call_tool_with_logging(
+    name: str,
+    raw_args: dict[str, Any],
+    validate_fn: Callable[[str, dict[str, Any]], dict[str, Any]],
+    inner_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
+    session_key: str,
+    downstream_service: str,
+) -> "str | DeferredTool":
+    """Validate args, call inner tool function, and log the invocation.
+
+    A :class:`DeferredTool` the handler returns is passed through with its
+    audit row attached to the step that settles it. The overloads let a server
+    whose handlers only ever return text (every row-based server, the cron and
+    computer servers) keep a ``str`` contract without a cast at each call site;
+    only ``kirocrew-core``'s dispatcher admits a deferred.
+    """
     try:
         args = validate_fn(name, raw_args)
     except ValidationError as e:
@@ -1203,7 +1714,6 @@ def call_tool_with_logging(
         return f"Error: {neutralize_markers(str(e))}"
 
     result = inner_fn(name, args)
-    outcome = "failed" if result.startswith("Error:") else "completed"
     # Redact the serialized args before they land in the SEL audit resources.
     # Tool args can carry agent-supplied free text (e.g. artifact_post_comment
     # `text`, artifact_delete_comment `reason`) that may contain a credential;
@@ -1216,17 +1726,53 @@ def call_tool_with_logging(
         from kiro_crew.platform import redact_via_context
 
         resources = redact_via_context(json.dumps(_audit_safe_args(args)))[:500]
-    sel().log_tool_invocation(
-        session_key=session_key,
-        source="mcp",
-        tool_name=name,
-        # No ``tool_kind`` -- see the ValidationError path above.
-        outcome=outcome,
-        downstream_service=downstream_service,
-        resources=resources,
-        error="execution_failed" if outcome == "failed" else "",
-    )
+
+    def _audit(text: str) -> None:
+        outcome = "failed" if text.startswith("Error:") else "completed"
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="mcp",
+            tool_name=name,
+            # No ``tool_kind`` -- see the ValidationError path above.
+            outcome=outcome,
+            downstream_service=downstream_service,
+            resources=resources,
+            error="execution_failed" if outcome == "failed" else "",
+        )
+
+    if isinstance(result, DeferredTool):
+        # The call has not finished: audit it when its terminal step runs,
+        # whoever drives the steps (the dispatch loop or drive_deferred).
+        return _AuditedDeferred(result, _audit)
+    _audit(result)
     return result
+
+
+class _AuditedDeferred(DeferredTool):
+    """A :class:`DeferredTool` whose settling step also writes the SEL row
+    :func:`call_tool_with_logging` writes for a blocking tool at return."""
+
+    def __init__(self, inner: DeferredTool, audit: Callable[[str], None]) -> None:
+        self._inner = inner
+        self._audit = audit
+
+    def due_at(self) -> float:
+        return self._inner.due_at()
+
+    def step(self) -> str | None:
+        # An escaped exception propagates: the driver answers and audits it
+        # the way ``_run_tool`` does for a blocking tool, exactly once.
+        return self._inner.step()
+
+    def cancel(self) -> None:
+        self._inner.cancel()
+
+    def abandon(self) -> str | None:
+        return self._inner.abandon()
+
+    def on_settled(self, text: str) -> None:
+        self._inner.on_settled(text)
+        self._audit(text)
 
 
 def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
@@ -1251,9 +1797,23 @@ def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
     """
     global _framing
     raw = stdin.buffer
-    line = raw.readline()
+    # Room for the cap plus a CRLF terminator; the cap counts the body only.
+    line = raw.readline(MAX_CONTENT_LENGTH_BYTES + 2)
     if not line:
         return None  # EOF
+    terminated = line.endswith(b"\n")
+    body_len = len(line) - (2 if line.endswith(b"\r\n") else 1 if terminated else 0)
+    if body_len > MAX_CONTENT_LENGTH_BYTES:
+        head = line[:ID_PROBE_BYTES]
+        tail = line[-ID_PROBE_BYTES:]
+        while not terminated:
+            chunk = raw.readline(_DRAIN_CHUNK_BYTES)
+            if not chunk:
+                break
+            tail = (tail + chunk[-ID_PROBE_BYTES:])[-ID_PROBE_BYTES:]
+            terminated = chunk.endswith(b"\n")
+        _refuse_oversized(f"A line of more than {MAX_CONTENT_LENGTH_BYTES} bytes", head, tail)
+        return SKIP
     stripped = line.strip()
     if stripped[:15].lower() != b"content-length:":
         # Bare JSON line (backwards compat).
@@ -1314,22 +1874,7 @@ def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
             head += chunk[: ID_PROBE_BYTES - len(head)]
         tail = (tail + chunk[-ID_PROBE_BYTES:])[-ID_PROBE_BYTES:]
     if not keep:
-        req_id = recover_top_level_id(head, tail, requests_only=True)
-        logger.warning(
-            "Content-Length %d is over the %d-byte cap; body discarded (id %r)",
-            length,
-            MAX_CONTENT_LENGTH_BYTES,
-            req_id,
-        )
-        if req_id is not None:
-            respond(
-                req_id,
-                None,
-                error={
-                    "code": JSONRPC_INVALID_REQUEST,
-                    "message": f"Request over the {MAX_CONTENT_LENGTH_BYTES}-byte limit",
-                },
-            )
+        _refuse_oversized(f"Content-Length {length}", head, tail)
         return SKIP
     body = b"".join(chunks)
     msg = parse_json_object_line(body)
@@ -1337,6 +1882,27 @@ def _read_message(stdin) -> dict[str, Any] | _Skipped | None:
         _answer_unparseable(body)
         return SKIP
     return msg
+
+
+def _refuse_oversized(what: str, head: bytes, tail: bytes) -> None:
+    """Log a frame drained for being over :data:`MAX_CONTENT_LENGTH_BYTES`, and
+    answer it as too large under the top-level id found at either end."""
+    req_id = recover_top_level_id(head, tail, requests_only=True)
+    logger.warning(
+        "%s is over the %d-byte cap; body discarded (id %r)",
+        what,
+        MAX_CONTENT_LENGTH_BYTES,
+        req_id,
+    )
+    if req_id is not None:
+        respond(
+            req_id,
+            None,
+            error={
+                "code": JSONRPC_INVALID_REQUEST,
+                "message": f"Request over the {MAX_CONTENT_LENGTH_BYTES}-byte limit",
+            },
+        )
 
 
 def _answer_unparseable(frame: bytes) -> None:
@@ -1388,6 +1954,48 @@ def _stdin_holds_a_line(stdin) -> bool:
     return b"\n" in held
 
 
+class _NoFrame:
+    """What the loop's frame read returns when no frame arrived in time."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_FRAME"
+
+
+NO_FRAME = _NoFrame()
+
+
+def _start_stdin_pump(stdin) -> "queue.Queue[Any]":
+    """Read *stdin* frames on a daemon thread, in order, into a queue.
+
+    Windows ``select.select`` accepts only sockets, so a loop there cannot poll
+    stdin between ticks of a running call. A thread blocked in ``readline``
+    waits on it instead, which lets the loop answer pings, cancels and queued
+    calls while a tool runs exactly as it does on POSIX. Each item is what
+    :func:`_read_message` returned; ``None`` (end of stream) is the last one.
+    An exception raised reading a frame is queued as the last item, for the
+    loop to raise where a direct read would have. At most
+    :data:`STDIN_PUMP_MAX_FRAMES` frames wait in the queue; the pump blocks
+    until the loop takes one.
+    """
+    frames: "queue.Queue[Any]" = queue.Queue(maxsize=STDIN_PUMP_MAX_FRAMES)
+
+    def _pump() -> None:
+        while True:
+            try:
+                msg = _read_message(stdin)
+            except BaseException as exc:  # noqa: BLE001 - re-raised by the loop
+                frames.put(exc)
+                return
+            frames.put(msg)
+            if msg is None:
+                return
+
+    threading.Thread(target=_pump, name="mcp-stdin-pump", daemon=True).start()
+    return frames
+
+
 def _tool_call_name(params: dict[str, Any]) -> str | None:
     """The tool a ``tools/call`` names, or ``None`` when it names none usable."""
     name = params.get("name")
@@ -1427,18 +2035,38 @@ def run_mcp_stdio_loop(
     server_name: str,
     server_version: str,
     list_tools_fn: Callable[[], list[dict[str, Any]]],
-    call_tool_fn: Callable[[str, dict[str, Any]], str],
+    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
     *,
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
+    reports_inflight: bool = False,
 ) -> None:
     """Generic MCP stdio server loop — reads JSON-RPC from stdin, writes to stdout.
 
     Tool calls run in a worker thread so the main read loop stays responsive to
-    ``notifications/cancelled`` messages from the gateway. When a cancel is
-    received for an in-flight request, the worker thread is interrupted via
-    a threading.Event that cooperative tools (``wait``, ``spawn_sub_agents``)
-    check periodically. The cancelled request emits no response (per MCP spec).
+    ``notifications/cancelled`` messages from the gateway. A cancel for a call
+    running on the worker lets that call run to its end and suppresses its
+    response (per MCP spec); a cancel for a parked :class:`DeferredTool` drops
+    it and runs its ``cancel()`` hook.
+
+    A handler that only has to WAIT (``wait``, ``spawn_sub_agents``) returns a
+    :class:`DeferredTool` instead of parking the worker: the loop registers it,
+    runs its short ``step()`` from its own timer whenever ``due_at()`` has
+    passed, and answers the request when a step settles it. Parked calls hold
+    no thread, and the one worker stays free for the calls that compute.
+    A ``notifications/cancelled`` for a parked call
+    drops it with no response. While any call is parked, and when the client
+    declared :data:`INFLIGHT_CAPABILITY_KEY` in ``initialize``, the loop sends
+    :data:`INFLIGHT_NOTIFICATION` every :data:`INFLIGHT_REPORT_SECS` naming the
+    parked ids still progressing, so the gateway's wedge detector never reads a
+    parked call as a hung one.
+
+    That report is opt-in per server (*reports_inflight*). It exists for a loop
+    that parks ``DeferredTool`` calls; a server whose every tool is synchronous
+    gains nothing from it, and advertising it would only lower the gateway's
+    recycle ceiling under that server's running call. Without the opt-in the
+    loop neither advertises the capability nor sends the notification, even to
+    a client that declared it.
 
     ``tools/call`` requests that arrive while a worker is busy are buffered in
     a bounded FIFO queue and dispatched in order as the worker frees
@@ -1446,8 +2074,10 @@ def run_mcp_stdio_loop(
     that never came). Queue overflow gets an immediate busy error response.
 
     On Windows ``select.select`` cannot poll ``sys.stdin`` (it only accepts
-    sockets), so tool calls dispatch synchronously exactly as the pre-worker
-    loop did — no in-flight cancel/ping interleave there (POSIX-only feature).
+    sockets), so frames are read there on a pump thread
+    (:func:`_start_stdin_pump`) and the loop waits on its queue instead: the
+    worker, the parked-call timer, cancels and ping answers behave the same on
+    every platform.
 
     Before serving anything, a private dup of stdout is captured
     (:func:`snapshot_stdout_fd`) so responses survive a library's process-wide
@@ -1473,6 +2103,7 @@ def run_mcp_stdio_loop(
             call_tool_fn,
             advertise_caller_identity=advertise_caller_identity,
             error_prefix_is_error=error_prefix_is_error,
+            reports_inflight=reports_inflight,
         )
     finally:
         set_internal_caller(_prior_caller)
@@ -1487,14 +2118,82 @@ def run_mcp_stdio_loop(
         sys.exit(INSTALL_PRUNED_EXIT_CODE)
 
 
+#: Backstop wait while only a worker runs. Not a latency: the wake pipe ends
+#: the wait as soon as the worker finishes (see :class:`_WakePipe`).
+_WORKER_WAIT_SECS = 1.0
+#: Poll interval when no wake pipe could be made, and while parked calls are
+#: waiting for their next ``due_at`` (their schedule is still polled).
+_POLL_SECS = 0.1
+
+
+class _WakePipe:
+    """A self-pipe that wakes the read loop's ``select`` when work finishes.
+
+    The tool worker and the deferred-step pool write one byte when they finish;
+    the loop selects on stdin AND :attr:`read_fd`, so a finished call is
+    answered at once instead of at the next poll tick. POSIX only: Windows
+    ``select`` cannot take a pipe, so its stdin-pump loop keeps the
+    _POLL_SECS tick.
+
+    Writes and close share one lock, so a worker still running after the loop
+    exits (EOF joins it with a timeout) never writes into a closed -- or
+    reused -- descriptor.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.read_fd: int | None = None
+        self._write_fd: int | None = None
+        if not platform_compat.IS_POSIX:
+            return
+        try:
+            r, w = os.pipe()
+        except OSError:
+            return
+        try:
+            os.set_blocking(r, False)
+            os.set_blocking(w, False)
+        except OSError:
+            os.close(r)
+            os.close(w)
+            return
+        self.read_fd, self._write_fd = r, w
+
+    def wake(self, *_args: Any) -> None:
+        """Never raises: a full pipe already wakes the loop. Accepts and ignores
+        a future, so it doubles as a ``Future.add_done_callback`` hook."""
+        with self._lock:
+            if self._write_fd is None:
+                return
+            with contextlib.suppress(OSError):
+                os.write(self._write_fd, b"\0")
+
+    def drain(self) -> None:
+        with self._lock:
+            if self.read_fd is None:
+                return
+            with contextlib.suppress(OSError):
+                while os.read(self.read_fd, 4096):
+                    pass
+
+    def close(self) -> None:
+        with self._lock:
+            for fd in (self.read_fd, self._write_fd):
+                if fd is not None:
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+            self.read_fd = self._write_fd = None
+
+
 def _run_stdio_dispatch_loop(
     server_name: str,
     server_version: str,
     list_tools_fn: Callable[[], list[dict[str, Any]]],
-    call_tool_fn: Callable[[str, dict[str, Any]], str],
+    call_tool_fn: Callable[[str, dict[str, Any]], "str | DeferredTool"],
     *,
     advertise_caller_identity: bool = False,
     error_prefix_is_error: bool = False,
+    reports_inflight: bool = False,
 ) -> bool:
     """Read/dispatch body of :func:`run_mcp_stdio_loop`.
 
@@ -1505,14 +2204,18 @@ def _run_stdio_dispatch_loop(
     Returns True when it stopped because this process's install was pruned
     (see :func:`_refuse_from_pruned_install`), False on an ordinary EOF.
     """
-    # In-flight tool execution state: at most one at a time (sequential dispatch).
+    # In-flight tool execution state: at most one WORKER at a time (sequential
+    # dispatch of the part of a call that computes). A call that only waits
+    # leaves the worker as a DeferredTool and lives in ``_deferred`` below.
     _current_req_id: Any = None
     _current_caller_key: str = ""
+    _current_caller_ctx: "CallerContext | None" = None
+    _current_tenant_nonce: str = ""
     _cancel_event: Optional[threading.Event] = None
     _worker_thread: Optional[threading.Thread] = None
     _result_lock = threading.Lock()
     _result_ready = threading.Event()
-    _result_box: list = []  # [response_payload] or [] if cancelled
+    _result_box: list = []  # [response_payload | DeferredTool] or [] if cancelled
     _cancelled_ids: set = set()
     # Insertion-order tracker for _cancelled_ids so it can be pruned FIFO once
     # it reaches CANCELLED_IDS_MAX (prevents unbounded growth on long-lived
@@ -1527,10 +2230,20 @@ def _run_stdio_dispatch_loop(
     # Set by ``_dispatch`` when a pruned install answered every call and the
     # loop must stop so the pool respawns this server.
     _pruned_exit = False
+    # Deferred calls (``DeferredTool``), keyed by ``str(req_id)``. Owned by the
+    # dispatch thread: only it adds, steps and removes entries. Steps run on
+    # ``_step_pool`` so a step blocked on the gateway never blocks the loop.
+    _deferred: dict[str, _DeferredEntry] = {}
+    _step_pool: Optional[_StepPool] = None
+    # Whether the client's ``initialize`` declared INFLIGHT_CAPABILITY_KEY, and
+    # when the next report is due. Reports go out only while calls are parked
+    # or queued behind the worker.
+    _client_wants_inflight = False
+    _next_inflight_report = 0.0
 
     def _live_request_ids() -> set[str]:
-        """Ids of the active + still-queued requests whose cancellation flags
-        must survive FIFO eviction.
+        """Ids of the active, parked and still-queued requests whose
+        cancellation flags must survive FIFO eviction.
 
         If a flood of unrelated cancels evicted one of these before the
         dispatch loop consumed it (``str(req_id) in _cancelled_ids``), a
@@ -1540,6 +2253,7 @@ def _run_stdio_dispatch_loop(
         ids: set[str] = set()
         if _current_req_id is not None:
             ids.add(str(_current_req_id))
+        ids.update(_deferred)
         for _pc in _pending_calls:
             _pcid = _pc.get("id")
             if _pcid is not None:
@@ -1597,6 +2311,8 @@ def _run_stdio_dispatch_loop(
                 error={"code": JSONRPC_INTERNAL_ERROR, "message": "Internal error"},
             )
 
+    _applies_tool_policy = serves_managed_tools(call_tool_fn)
+
     def _caller_tool_policy(caller: "CallerContext | None") -> ToolPolicy:
         """This request's exclusion set AND whether the policy was readable.
 
@@ -1607,7 +2323,13 @@ def _run_stdio_dispatch_loop(
         The caller block's token rides along explicitly. This runs on the read
         loop before the worker installs the caller ContextVar, so the resolver
         cannot find the token there; a pooled backend has it nowhere else.
+
+        A server that is not Kiro Crew's own (:func:`serves_managed_tools`) has
+        no managed tools for the policy to name, so it is answered "nothing
+        excluded" without a read.
         """
+        if not _applies_tool_policy:
+            return ToolPolicy(frozenset(), "")
         return _resolve_tool_policy(
             caller.session_key if caller else "",
             caller_token=caller.session_token if caller else "",
@@ -1639,6 +2361,9 @@ def _run_stdio_dispatch_loop(
             return tools
         if policy.excluded:
             tools = [t for t in tools if t.get("name") not in policy.excluded]
+        included = policy.include_for(server_name)
+        if included is not None:
+            tools = [t for t in tools if t.get("name") in included]
         return tools
 
     def _tool_response(text: str) -> dict[str, Any]:
@@ -1655,12 +2380,9 @@ def _run_stdio_dispatch_loop(
         tenant_nonce: str = "",
     ) -> None:
         """Worker thread: run tool, store result unless cancelled."""
-        global _thread_cancel_event
-        # Inject cancel event into thread-local so cooperative tools can check it
-        _thread_cancel_event = cancel_evt
-        # Install the verified per-call caller for identity resolvers. Safe as
-        # a module slot: dispatch is strictly sequential (one worker at a
-        # time, joined before the next dispatch).
+        # Install the verified per-call caller for identity resolvers. A
+        # ContextVar, so this worker and the deferred-step pool threads (which
+        # install their own call's caller the same way) never see each other's.
         set_current_caller(caller_ctx)
         # And the connection's namespace separator, which is present even when
         # the caller is not: a tool that keys per-tenant state for a caller the
@@ -1668,7 +2390,7 @@ def _run_stdio_dispatch_loop(
         # Cleared in the same places as the caller.
         set_current_tenant_nonce(tenant_nonce)
         try:
-            result_text = call_tool_fn(tool_name, tool_args)
+            result = call_tool_fn(tool_name, tool_args)
         except ToolCancelled:
             # Tool cooperatively exited on cancel -- suppress response
             logger.info("tool cancelled for request %s", req_id)
@@ -1679,18 +2401,17 @@ def _run_stdio_dispatch_loop(
                 req_id,
                 caller_ctx.session_key if caller_ctx else "",
             )
-            _thread_cancel_event = None
             set_current_caller(None)
             set_current_tenant_nonce("")
             _result_ready.set()
+            _wake.wake()
             return
         except Exception as exc:
-            result_text = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
+            result = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
             _tool_errored = True
         else:
             _tool_errored = False
         finally:
-            _thread_cancel_event = None
             set_current_caller(None)
             set_current_tenant_nonce("")
         # Audit decision is made atomically with the cancellation check, under
@@ -1698,7 +2419,11 @@ def _run_stdio_dispatch_loop(
         # per request (a failed+late-cancel race must not emit two).
         with _result_lock:
             if not cancel_evt.is_set():
-                _result_box.append(_tool_response(result_text))
+                # A DeferredTool is boxed as-is: the loop registers it and
+                # answers the request when a later step settles it.
+                _result_box.append(
+                    result if isinstance(result, DeferredTool) else _tool_response(result)
+                )
                 if _tool_errored:
                     # Exception escaped call_tool_fn (may bypass its internal
                     # logging) -- audit the failure.
@@ -1713,6 +2438,8 @@ def _run_stdio_dispatch_loop(
                 # Late-cancel race: tool finished (or errored) but cancel
                 # arrived before delivery. From the client's perspective this
                 # invocation was cancelled.
+                if isinstance(result, DeferredTool):
+                    _cancel_quietly(result, req_id, caller_ctx, tenant_nonce)
                 _sel_audit(
                     "cancelled",
                     tool_name,
@@ -1721,6 +2448,48 @@ def _run_stdio_dispatch_loop(
                 )
                 _worker_audited[0] = True
         _result_ready.set()
+        _wake.wake()
+
+    def _cancel_quietly(
+        deferred: DeferredTool,
+        req_id: Any,
+        caller_ctx: "CallerContext | None",
+        tenant_nonce: str,
+    ) -> None:
+        """Run cleanup with the call's identity; a failing hook cannot end the loop.
+
+        The dispatch thread holds no call identity outside this hook; late-worker
+        cleanup likewise runs after the worker clears its identity in ``finally``.
+        """
+        set_current_caller(caller_ctx)
+        set_current_tenant_nonce(tenant_nonce)
+        try:
+            deferred.cancel()
+        except Exception:  # noqa: BLE001 - best-effort hook
+            logger.warning(
+                "%s: cancel hook failed for request %s", server_name, req_id, exc_info=True
+            )
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
+
+    def _abandon_quietly(entry: _DeferredEntry) -> str | None:
+        """Ask a parked call that will never step again for its final text,
+        with its identity installed; a raising hook reads as ``None``, so the
+        call falls back to the retryable refusal."""
+        set_current_caller(entry.caller_ctx)
+        set_current_tenant_nonce(entry.tenant_nonce)
+        try:
+            text = entry.deferred.abandon()
+        except Exception:  # noqa: BLE001 - best-effort hook
+            logger.warning(
+                "%s: abandon hook failed for request %s", server_name, entry.req_id, exc_info=True
+            )
+            return None
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
+        return text if isinstance(text, str) else None
 
     def _refuse_from_pruned_install(first_req_id: Any, tool_name: str) -> None:
         """Answer this call and every queued one, so none is left waiting.
@@ -1824,9 +2593,11 @@ def _run_stdio_dispatch_loop(
     def _dispatch(method: str, req_id: Any, params: dict[str, Any]) -> None:
         """Serve one request while no tool is running (the idle path)."""
         nonlocal _worker_thread, _current_req_id, _current_tool_name
-        nonlocal _current_caller_key, _cancel_event, _pruned_exit
+        nonlocal _current_caller_key, _current_caller_ctx, _current_tenant_nonce
+        nonlocal _cancel_event, _pruned_exit, _client_wants_inflight
         if method == "initialize":
             _caps: dict[str, Any] = {"tools": {"listChanged": False}}
+            _experimental: dict[str, Any] = {}
             if advertise_caller_identity:
                 # Pooled-operation opt-in for IDENTITY, not for pooling:
                 # gatewayd injects the per-call ``_meta.kirocrew.caller`` block
@@ -1837,7 +2608,16 @@ def _run_stdio_dispatch_loop(
                 # spawn -- it buys a shared process whose dispatch-loop caller
                 # slot never receives gateway-authored metadata, which is how a
                 # session-scoped tool silently degrades to unattached behaviour.
-                _caps["experimental"] = caller_identity_capability()
+                _experimental.update(caller_identity_capability())
+            _sends_inflight = reports_inflight
+            if _sends_inflight:
+                # Only a server that opted in advertises: a gateway that
+                # believes a backend reports applies the short recycle ceiling
+                # to its calls.
+                _experimental[INFLIGHT_CAPABILITY_KEY] = {}
+            if _experimental:
+                _caps["experimental"] = _experimental
+            _client_wants_inflight = _sends_inflight and _declares_inflight_capability(params)
             respond(
                 req_id,
                 {
@@ -1849,7 +2629,8 @@ def _run_stdio_dispatch_loop(
         elif method == "notifications/initialized":
             pass
         elif method == "notifications/cancelled":
-            # Cancel for a request that already completed -- ignore. Route
+            # Cancel for a request that already completed -- ignore -- or for a
+            # parked (deferred) one, which is live and gets settled here. Route
             # through the bounded recorder (not a raw set.add) so this idle
             # path honors the FIFO cap and keeps ``_cancelled_ids`` and
             # ``_cancelled_order`` in lockstep -- a raw add would grow the set
@@ -1863,6 +2644,7 @@ def _run_stdio_dispatch_loop(
                     str(cancelled_rid),
                     protected=_live_request_ids(),
                 )
+                _cancel_deferred(str(cancelled_rid))
         elif method == "tools/list":
             respond(req_id, {"tools": _listable_tools(_req_caller(params))})
         elif method == "ping":
@@ -2042,6 +2824,8 @@ def _run_stdio_dispatch_loop(
                     if _caller_ctx is None and spawned_without_gateway_identity():
                         _refusal += external_client_identity_note(server_name)
                 elif _policy.unresolved == "resolution_failed":
+                    # The exception class only; its message stays in the audit log.
+                    _cause = f" (cause: {_policy.detail})" if _policy.detail else ""
                     # A DIFFERENT diagnosis and a different remedy from the branch
                     # below, which is why it cannot share that text: the gateway was
                     # never reached, so no agent spec is implicated and there is
@@ -2053,19 +2837,30 @@ def _run_stdio_dispatch_loop(
                         f"server could not reach the gateway to read session "
                         f"{_policy_session}'s tool policy (resolution_failed): the "
                         f"read got no answer, or the gateway answered that it is "
-                        f"broken. No agent spec is implicated and nothing needs "
+                        f"broken{_cause}. No agent spec is implicated and nothing needs "
                         f"editing. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; the call succeeds on retry "
                         f"within {_NEGATIVE_CACHE_TTL:.0f}s of the gateway "
                         f"answering again."
                     )
                 else:
+                    # The gateway ANSWERED (a 409, or a 200 whose exclude this
+                    # process could not use), so the cause is a spec on disk,
+                    # never reachability. Saying so is the point of the second
+                    # sentence: the condition shares its symptom with an
+                    # unreachable gateway, and an operator who reads it as an
+                    # outage restarts processes that are healthy while the spec
+                    # stays broken. The list names every condition the
+                    # endpoint answers this code for, not just the parse.
                     _refusal = (
                         f"Error: tool '{tool_name}' is unavailable because this "
                         f"session's tool policy could not be read "
-                        f"({_policy.unresolved}): the gateway found an agent spec it "
-                        f"could not parse, or a managedToolPolicy of the wrong "
-                        f"shape. Refusing the call rather than ignoring an "
+                        f"({_policy.unresolved}): the gateway answered, but could not "
+                        f"determine this agent's policy from the agents directory -- "
+                        f"a spec there could not be read or parsed, two specs declare "
+                        f"the same name, or a managedToolPolicy has the wrong shape. "
+                        f"This is not a connection problem, and a restart will not "
+                        f"clear it. Refusing the call rather than ignoring an "
                         f"operator's exclusion list; fix or remove the unreadable "
                         f"spec in the agents directory."
                     )
@@ -2110,35 +2905,36 @@ def _run_stdio_dispatch_loop(
                     req_id,
                     _tool_response(f"Error: tool '{tool_name}' is not available for this agent"),
                 )
-            elif not platform_compat.IS_POSIX:
-                # Windows: select.select() cannot poll sys.stdin (WinError
-                # 10038), so no worker-thread interleave — dispatch the tool
-                # synchronously exactly as the pre-worker loop did.
-                # Exception handling mirrors the worker path: the client gets
-                # an Error response and the failure is SEL-audited with the
-                # caller identity (an escaped exception would kill the loop).
-                set_current_caller(_caller_ctx)
-                set_current_tenant_nonce(_tenant_nonce)
-                try:
-                    result_text = call_tool_fn(tool_name, tool_args)
-                except Exception as exc:
-                    result_text = f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
-                    _sel_audit(
-                        "failed",
-                        tool_name,
-                        req_id,
-                        _caller_ctx.session_key if _caller_ctx else "",
-                    )
-                finally:
-                    set_current_caller(None)
-                    set_current_tenant_nonce("")
-                respond(req_id, _tool_response(result_text))
+            elif (_included := _policy.include_for(server_name)) is not None and (
+                tool_name not in _included
+            ):
+                # The agent's spec grants this server tool by tool and opted in
+                # to having those refs honoured; a tool it did not name is not
+                # this agent's, listed or not.
+                sel().log_tool_invocation(
+                    session_key=_policy_session,
+                    source="mcp",
+                    tool_name=tool_name,
+                    tool_kind=server_name,
+                    outcome="rejected_not_included",
+                    error="managedToolPolicy.honourToolRefs",
+                )
+                respond(
+                    req_id,
+                    _tool_response(
+                        f"Error: tool '{tool_name}' is not available for this agent: its "
+                        f"spec grants {server_name} only through @{server_name}/<tool> refs "
+                        f"and does not name this one"
+                    ),
+                )
             else:
                 # Dispatch tool in worker thread so we can receive cancel notifications
                 _cancel_event = threading.Event()
                 _current_req_id = req_id
                 _current_tool_name = tool_name
                 _current_caller_key = _caller_ctx.session_key if _caller_ctx else ""
+                _current_caller_ctx = _caller_ctx
+                _current_tenant_nonce = _tenant_nonce
                 _worker_audited[0] = False
                 _result_ready.clear()
                 _result_box.clear()
@@ -2177,17 +2973,43 @@ def _run_stdio_dispatch_loop(
             )
 
     def _deliver_finished_worker(join_timeout: float) -> None:
-        """Join the finished worker and deliver its result, or audit its cancel."""
+        """Join the finished worker and deliver its result, or audit its cancel.
+
+        A boxed :class:`DeferredTool` is not a result yet: it is registered in
+        ``_deferred`` (unless the request was cancelled meanwhile) and answered
+        by the step that settles it.
+        """
         nonlocal _worker_thread, _current_req_id, _cancel_event
         if _worker_thread is not None:
             _worker_thread.join(timeout=join_timeout)
         _worker_thread = None
         with _result_lock:
-            if _result_box and str(_current_req_id) not in _cancelled_ids:
-                respond(_current_req_id, _result_box[0])
-            elif _result_box and not _worker_audited[0]:
+            boxed = _result_box[0] if _result_box else None
+            if boxed is not None and str(_current_req_id) not in _cancelled_ids:
+                if isinstance(boxed, DeferredTool):
+                    entry = _DeferredEntry(
+                        _current_req_id,
+                        _current_tool_name,
+                        _current_caller_ctx,
+                        _current_tenant_nonce,
+                        boxed,
+                    )
+                    # The handler decides the result type, so admission bounds retention.
+                    if len(_deferred) >= DEFERRED_PARKED_MAX:
+                        # A refused call may already have acted (a spawn POSTed
+                        # its children), which a retry would repeat.
+                        _abandon_or_refuse(entry, functools.partial(_refuse_table_full, entry))
+                    else:
+                        _deferred[str(_current_req_id)] = entry
+                else:
+                    respond(_current_req_id, boxed)
+            elif boxed is not None and not _worker_audited[0]:
                 # Boxed result dropped due to cancellation (cancel arrived
                 # after the worker delivered) -- audit it.
+                if isinstance(boxed, DeferredTool):
+                    _cancel_quietly(
+                        boxed, _current_req_id, _current_caller_ctx, _current_tenant_nonce
+                    )
                 _sel_audit(
                     "cancelled",
                     _current_tool_name,
@@ -2202,102 +3024,481 @@ def _run_stdio_dispatch_loop(
         _cancel_event = None
         _result_ready.clear()
 
-    while True:
-        # If a worker is running, poll for completion while also reading stdin
-        if _worker_thread is not None and _worker_thread.is_alive():
-            # Non-blocking stdin read with short timeout to interleave. A line
-            # already buffered is read first: select cannot see it.
-            readable = _stdin_holds_a_line(sys.stdin) or select.select([sys.stdin], [], [], 0.1)[0]
-            if not readable:
-                if _result_ready.is_set():
-                    _deliver_finished_worker(1.0)
+    def _run_step(entry: _DeferredEntry) -> str | None:
+        """Pool thread: one step with the call's identity installed, as the
+        worker had it. Reset after, since pool threads are reused."""
+        # Stamped here, when the thread is actually held, not at submit: a
+        # step queued behind others has not started being slow.
+        entry.step_started = time.monotonic()
+        set_current_caller(entry.caller_ctx)
+        set_current_tenant_nonce(entry.tenant_nonce)
+        try:
+            return entry.deferred.step()
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
+
+    def _settle_deferred(key: str, entry: _DeferredEntry, payload: Any, *, error: bool) -> None:
+        """Answer a parked call and forget it. ``payload`` is response text, or
+        an exception when ``error`` (an escaped exception, audited as failed).
+
+        Decided on the dispatch thread AFTER the cancel check, so the call's
+        ``on_settled`` commit (its SEL row) runs exactly once and never beside
+        a ``cancelled`` row for the same request.
+        """
+        del _deferred[key]
+        _cancelled_ids.discard(key)
+        if error:
+            _answer_failed(entry, payload)
+        else:
+            _commit_settled(entry, payload)
+
+    def _answer_failed(entry: _DeferredEntry, exc: Any) -> None:
+        """Answer a call whose step escaped with ``exc``, audited as failed."""
+        text = (
+            f"Error: {neutralize_markers(str(exc))}"  # not a directive: see call_tool_with_logging
+        )
+        _sel_audit("failed", entry.tool_name, entry.req_id, entry.session_key)
+        respond(entry.req_id, _tool_response(text))
+
+    def _refuse_pool_start(entry: _DeferredEntry, exc: Any) -> None:
+        """Answer a call whose step pool could not start, after letting the
+        tool retract what it opened (a question card is withdrawn), as the
+        other refusals of a call the loop will never step do."""
+        _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+        _answer_failed(entry, exc)
+
+    def _refuse_table_full(entry: _DeferredEntry) -> None:
+        """Turn away a call the parked table has no room for: retryable."""
+        _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+        _sel_audit("failed", entry.tool_name, entry.req_id, entry.session_key)
+        respond(
+            entry.req_id,
+            None,
+            error={"code": -32000, "message": "Server busy: parked-call table is full; retry"},
+        )
+
+    def _abandon_or_refuse(entry: _DeferredEntry, refuse: Callable[[], None]) -> None:
+        """Answer a call the loop will never step again (not in ``_deferred``).
+
+        A call that already did something a retry would repeat -- the children
+        a spawn POSTed keep running -- says so through its ``abandon`` hook and
+        is answered with that final text, settled like any other answer;
+        otherwise ``refuse`` gives the caller's own refusal.
+        """
+        text = _abandon_quietly(entry)
+        if text is not None:
+            _commit_settled(entry, text)
+        else:
+            refuse()
+
+    def _commit_settled(entry: _DeferredEntry, text: str) -> None:
+        """Commit with the call's identity installed, then answer with ``text``."""
+        set_current_caller(entry.caller_ctx)
+        set_current_tenant_nonce(entry.tenant_nonce)
+        try:
+            entry.deferred.on_settled(text)
+        except Exception:  # noqa: BLE001 - a failed commit must not lose the answer
+            # The SEL write failing is logged, as _sel_audit logs its own
+            # failures; the text the step produced is still the result.
+            logger.warning(
+                "%s: on_settled failed for request %s", server_name, entry.req_id, exc_info=True
+            )
+        finally:
+            set_current_caller(None)
+            set_current_tenant_nonce("")
+        respond(entry.req_id, _tool_response(text))
+
+    def _harvest_step(key: str, entry: _DeferredEntry) -> bool:
+        """Consume a FINISHED step: answer or drop the call as its outcome and
+        the cancel flag decide. Returns True when the entry was settled and
+        removed, False when it stays parked (the step returned no text, or is
+        still running)."""
+        fut = entry.stepping
+        if fut is None or not fut.done():
+            return False
+        entry.stepping = None
+        try:
+            outcome = fut.result()
+        except ToolCancelled:
+            # The step itself chose to end the call with no response.
+            del _deferred[key]
+            _cancelled_ids.discard(key)
+            _sel_audit("cancelled", entry.tool_name, entry.req_id, entry.session_key)
+            return True
+        except Exception as exc:  # noqa: BLE001 - a step must not end the server
+            if entry.cancelled:
+                # Same as the normal-return arm: the cancel hook still runs,
+                # so a question card is withdrawn even when its slice raised.
+                del _deferred[key]
+                _cancelled_ids.discard(key)
+                _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+                _sel_audit("cancelled", entry.tool_name, entry.req_id, entry.session_key)
+            else:
+                _settle_deferred(key, entry, exc, error=True)
+            return True
+        if entry.cancelled:
+            # Cancel landed while this step ran: a cancelled request gets no
+            # response, whatever the step produced.
+            del _deferred[key]
+            _cancelled_ids.discard(key)
+            _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+            _sel_audit("cancelled", entry.tool_name, entry.req_id, entry.session_key)
+            return True
+        if outcome is not None:
+            _settle_deferred(key, entry, outcome, error=False)
+            return True
+        return False
+
+    def _service_deferred() -> None:
+        """Collect finished steps, answer settled calls, submit due steps.
+
+        Runs on the dispatch thread between stdin reads. A step is submitted
+        at most once per entry at a time, so a slow step is never doubled.
+        """
+        nonlocal _step_pool
+        now = time.monotonic()
+        for key, entry in list(_deferred.items()):
+            try:
+                if entry.stepping is not None:
+                    _harvest_step(key, entry)
+                    continue
+                if entry.deferred.due_at() > now:
+                    continue
+                if _step_pool is None:
+                    try:
+                        _step_pool = _StepPool(DEFERRED_STEP_WORKERS, f"{server_name}-deferred")
+                    except Exception as exc:  # noqa: BLE001 - one call must not end the server
+                        # Not one thread for the pool (the scope's task
+                        # ceiling): this call fails, the loop and every other
+                        # parked call live on -- same contract as a worker that
+                        # cannot start in ``_dispatch`` -- and the pool is tried
+                        # again on the next due step. Nothing was queued, so
+                        # nothing runs later; a call that acted before it
+                        # parked answers with its abandon text instead.
+                        del _deferred[key]
+                        _cancelled_ids.discard(key)
+                        _abandon_or_refuse(entry, functools.partial(_refuse_pool_start, entry, exc))
+                        continue
+                entry.step_queued = now
+                entry.step_started = 0.0  # queued; _run_step stamps the start
+                entry.stepping = _step_pool.submit(_run_step, entry)
+                # A finished step is harvested at once, not at the next tick.
+                entry.stepping.add_done_callback(_wake.wake)
+            except Exception:  # noqa: BLE001 - one parked call must not end the server
+                # Same contract as the per-message guard on the read loop:
+                # whatever this entry's bookkeeping raised (a ``due_at`` that
+                # errs, a settle whose write tore), the call is answered and
+                # the loop keeps serving every other call.
+                logger.exception(
+                    "%s: servicing parked request %s failed; the loop continues",
+                    server_name,
+                    entry.req_id,
+                )
+                if _deferred.pop(key, None) is not None:
+                    _cancelled_ids.discard(key)
+                    if entry.stepping is not None:
+                        entry.stepping.cancel()
+                    respond(
+                        entry.req_id,
+                        None,
+                        error={"code": JSONRPC_INTERNAL_ERROR, "message": "Internal error"},
+                    )
+
+    def _cancel_deferred(rid: str) -> None:
+        """A ``notifications/cancelled`` names a parked call: settle it with no
+        response now, or mark it so the step in flight is dropped on return."""
+        entry = _deferred.get(rid)
+        if entry is None:
+            return
+        # A step still QUEUED behind busy pool threads is withdrawn here, so
+        # it never runs (a spawn's POST would start a child the client already
+        # cancelled); one already RUNNING is marked and its text dropped on
+        # return, as the pruned-exit path does.
+        if entry.stepping is not None and not entry.stepping.cancel():
+            entry.cancelled = True
+            return
+        del _deferred[rid]
+        _cancelled_ids.discard(rid)
+        _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+        _sel_audit("cancelled", entry.tool_name, entry.req_id, entry.session_key)
+        logger.info("cancel received for parked request %s", rid)
+
+    def _queued_request_ids() -> list[Any]:
+        """Ids of the tools/call requests still WAITING for the worker (not
+        cancelled). The call running on the worker is not among them.
+
+        Named only while the running call is one the client still ages: its
+        own slot freezes at about its start, so a hung worker crosses the
+        client's ceiling through it and the queue needs no slot of its own.
+        A CANCELLED running call has no slot any more (the gateway drops a
+        cancelled request from its table), so if the queue kept being vouched
+        for, a worker hung on a cancelled call would never be recycled while
+        pings are still answered. Then the queued calls age instead."""
+        if _current_req_id is not None and str(_current_req_id) in _cancelled_ids:
+            return []
+        return [
+            pc["id"]
+            for pc in _pending_calls
+            if pc.get("id") is not None and str(pc["id"]) not in _cancelled_ids
+        ]
+
+    def _maybe_report_inflight() -> None:
+        """Every INFLIGHT_REPORT_SECS, tell a client that asked which calls
+        are not to be aged by its wedge detector: parked calls still
+        progressing, and calls still queued behind the worker (their wait is
+        the queue's, not theirs). The call RUNNING on the worker is never
+        named, so the client's ceiling bounds how long one call runs."""
+        nonlocal _next_inflight_report
+        if not _client_wants_inflight or not (_deferred or _pending_calls):
+            return
+        now = time.monotonic()
+        if now < _next_inflight_report:
+            return
+        _next_inflight_report = now + INFLIGHT_REPORT_SECS
+        request_ids = [e.req_id for e in _deferred.values() if e.progressing(now)]
+        request_ids.extend(_queued_request_ids())
+        try:
+            notify(INFLIGHT_NOTIFICATION, {"requestIds": request_ids})
+        except Exception:  # noqa: BLE001 - a missed report costs one refresh, never the server
+            logger.warning("%s: in-flight report failed", server_name, exc_info=True)
+
+    def _refuse_parked_on_pruned_exit() -> None:
+        """A pruned install is exiting: answer every parked call.
+
+        A step in flight is let FINISH first (bounded by the stuck bound, the
+        longest a healthy step takes) and its outcome delivered: a step can
+        consume something that must not be retried -- the answer to a
+        question card, the children a collect pass marks collected -- and
+        telling the caller "retry" while that step completes would lose the
+        answer or run the children twice. The worker path has no such window
+        (a pruned install is detected before a call runs). A call still
+        parked after that gets the same retryable error its queued calls got,
+        so none waits on a dead process; a step that returned no text
+        consumed nothing, so retrying it is safe -- unless the call did its
+        unrepeatable work BEFORE parking, which its ``abandon`` hook says by
+        returning the final text it is answered with instead.
+        """
+        running = [e.stepping for e in _deferred.values() if e.stepping is not None]
+        if running:
+            concurrent.futures.wait(running, timeout=DEFERRED_STEP_STUCK_SECS)
+        for key, entry in list(_deferred.items()):
+            if _harvest_step(key, entry):
                 continue
-            req = _read_message(sys.stdin)
-            if req is None:
-                # EOF: wait for worker then exit
-                if _worker_thread:
-                    _worker_thread.join(timeout=5.0)
-                break
-            if isinstance(req, _Skipped):
-                # One iteration per dropped frame, so a finished worker's
-                # result is delivered before the next blocking read.
+            if entry.stepping is not None and not entry.stepping.cancel():
+                # ``cancel`` lost: a worker claimed the step after the wait
+                # above (one freed up and took it), or it has been running
+                # past the bound. Either way it IS running and may consume
+                # something a retry would repeat, so it is treated like the
+                # running steps above: let it finish, bounded, and deliver.
+                concurrent.futures.wait([entry.stepping], timeout=DEFERRED_STEP_STUCK_SECS)
+                if _harvest_step(key, entry):
+                    continue
+            del _deferred[key]
+            client_cancelled = entry.cancelled
+            if entry.stepping is not None:
+                # Cancelled while still QUEUED (no worker ever runs it: this
+                # call is about to be told to retry), or RUNNING past the
+                # bound twice over -- stuck. A stuck step's result, if one
+                # ever comes, has nowhere to go; the cancel hook lets the tool
+                # retract what it can (a question card is withdrawn).
+                entry.cancelled = True
+            if client_cancelled:
+                # The client already cancelled this call: it gets no response,
+                # only the cancel hook and a ``cancelled`` row, as
+                # ``_cancel_deferred`` settles a cancel at once.
+                _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+                _sel_audit("cancelled", entry.tool_name, entry.req_id, entry.session_key)
                 continue
+            # A call that already did something a retry would repeat (the
+            # children a spawn POSTed keep running) answers with its own final
+            # text instead of "retry", and is audited as the call it settled as.
+            _abandon_or_refuse(entry, functools.partial(_refuse_pruned, entry))
+
+    def _refuse_pruned(entry: _DeferredEntry) -> None:
+        """Tell a parked call this pruned install is restarting: retryable."""
+        _cancel_quietly(entry.deferred, entry.req_id, entry.caller_ctx, entry.tenant_nonce)
+        _sel_audit("rejected_install_pruned", entry.tool_name, entry.req_id, entry.session_key)
+        respond(
+            entry.req_id,
+            None,
+            error={
+                "code": -32000,
+                "message": (
+                    f"{server_name} is running from an install that an update removed "
+                    "and is restarting from the current one; retry the call"
+                ),
+            },
+        )
+
+    # Windows: select() cannot poll stdin, so a pump thread reads it.
+    _frames = None if platform_compat.IS_POSIX else _start_stdin_pump(sys.stdin)
+
+    def _next_frame(timeout: float | None) -> dict[str, Any] | _Skipped | _NoFrame | None:
+        """The next stdin frame, or :data:`NO_FRAME` when *timeout* seconds
+        pass with none (``None`` waits for one). A line already buffered is
+        read first: select cannot see it. On POSIX the wait also ends, with
+        :data:`NO_FRAME`, the moment the wake pipe fires (a worker or a step
+        finished)."""
+        if _frames is None:
+            if timeout is not None and not _stdin_holds_a_line(sys.stdin):
+                wake_fd = _wake.read_fd
+                waits: list[Any] = [sys.stdin] if wake_fd is None else [sys.stdin, wake_fd]
+                ready = select.select(waits, [], [], timeout)[0]
+                if wake_fd is not None and wake_fd in ready:
+                    _wake.drain()
+                if not any(r is sys.stdin for r in ready):
+                    return NO_FRAME
+            return _read_message(sys.stdin)
+        while True:
+            try:
+                # A bounded get even when waiting: an untimed lock acquire on
+                # Windows cannot be interrupted.
+                item = _frames.get(timeout=1.0 if timeout is None else timeout)
+            except queue.Empty:
+                if timeout is None:
+                    continue
+                return NO_FRAME
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    # Made here, right before the ``try`` that closes it, so no exit path
+    # leaks the two descriptors. The worker and step hooks above read it late.
+    _wake = _WakePipe()
+    try:
+        while True:
+            worker_busy = _worker_thread is not None and _worker_thread.is_alive()
+            if not worker_busy and _worker_thread is not None:
+                # Worker just finished: deliver (or register a deferred).
+                _deliver_finished_worker(0.1)
+            req: dict[str, Any] | _Skipped | _NoFrame | None
+            if not worker_busy and _pending_calls:
+                # Dispatch a queued tools/call (FIFO) before reading new input.
+                req = _pending_calls.popleft()
+            elif worker_busy or _deferred:
+                # Something is in flight: wait for stdin with a timeout so the
+                # loop can also deliver the worker, step parked calls and
+                # answer pings. The wake pipe ends the wait the moment the
+                # worker or a step finishes; the timeout is then only a
+                # backstop, except while parked calls wait for their next
+                # ``due_at`` (polled every _POLL_SECS), and on Windows, which
+                # has no wake pipe and keeps the _POLL_SECS tick.
+                _service_deferred()
+                _maybe_report_inflight()
+                if worker_busy and _result_ready.is_set():
+                    # Deliver a finished result before reading on: an EOF
+                    # read next would end the loop with it unsent.
+                    req = NO_FRAME
+                else:
+                    if _deferred or _wake.read_fd is None:
+                        timeout = _POLL_SECS
+                    else:
+                        timeout = _WORKER_WAIT_SECS
+                    req = _next_frame(timeout)
+                if isinstance(req, _NoFrame):
+                    if worker_busy and _result_ready.is_set():
+                        _deliver_finished_worker(1.0)
+                    continue
+                if req is None:
+                    # EOF: wait for worker then exit. Parked calls die with the
+                    # client that owned them; the ``finally`` below cancels
+                    # their queued steps so no worker runs one for a client
+                    # that is gone, then shuts the pool down.
+                    if _worker_thread:
+                        _deliver_finished_worker(5.0)
+                    break
+                if isinstance(req, _Skipped):
+                    # One iteration per dropped frame, so a finished worker's
+                    # result is delivered before the next blocking read.
+                    continue
+            else:
+                req = _next_frame(None)
+                if req is None:
+                    break
+                # An untimed read never answers NO_FRAME; the check narrows it.
+                if isinstance(req, (_Skipped, _NoFrame)):
+                    continue
+
             envelope = _servable(req)
             if envelope is None:
                 continue
             method, req_id, params = envelope
-            # Process only cancel notifications while tool is running
-            try:
-                if method == "notifications/cancelled":
-                    cancelled_rid = params.get("requestId")
-                    if cancelled_rid is not None:
-                        _remember_cancelled_id(
-                            _cancelled_ids,
-                            _cancelled_order,
-                            str(cancelled_rid),
-                            protected=_live_request_ids(),
-                        )
-                        if str(cancelled_rid) == str(_current_req_id) and _cancel_event:
-                            _cancel_event.set()
-                            logger.info("cancel received for in-flight request %s", cancelled_rid)
-                # Answer gateway pings even while a tool is in-flight so the
-                # ping-gated wedge detector sees the backend as responsive.
-                elif method == "ping" and req_id is not None:
-                    respond(req_id, {})
-                # Buffer tools/call requests that arrive while busy so they get a
-                # response when the worker frees (dropping them left the
-                # client waiting forever). Cancels against queued ids are honored
-                # at dispatch time via _cancelled_ids.
-                elif method == "tools/call" and req_id is not None:
-                    if len(_pending_calls) >= PENDING_CALLS_MAX:
-                        # Rejection is a tool-invocation decision -- audit it
-                        # (security-controls: all invocation decisions emit SEL).
-                        _sel_audit(
-                            "rejected_busy",
-                            params.get("name", ""),
-                            req_id,
-                            _req_caller_key(params),
-                        )
-                        respond(
-                            req_id,
-                            None,
-                            error={
-                                "code": -32000,
-                                "message": "Server busy: pending tool-call queue is full; retry",
-                            },
-                        )
-                    else:
-                        _pending_calls.append(req)
-                # Other messages while busy: drop gracefully. Notifications are
-                # fine to drop; initialize/initialized never arrive mid-tool.
-                elif method == "tools/list" and req_id is not None:
-                    respond(req_id, {"tools": _listable_tools(_req_caller(params))})
-            except Exception:  # noqa: BLE001 - one message must not end the server
-                _answer_internal_error(method, req_id)
-            continue
-
-        # Check if worker just finished
-        if _worker_thread is not None:
-            _deliver_finished_worker(0.1)
-
-        # Dispatch a queued tools/call (FIFO) before reading new input.
-        if _pending_calls:
-            req = _pending_calls.popleft()
-        else:
-            req = _read_message(sys.stdin)
-            if req is None:
-                break
-            if isinstance(req, _Skipped):
+            if worker_busy:
+                # Process only cancel notifications while tool is running
+                try:
+                    if method == "notifications/cancelled":
+                        cancelled_rid = params.get("requestId")
+                        if cancelled_rid is not None:
+                            _remember_cancelled_id(
+                                _cancelled_ids,
+                                _cancelled_order,
+                                str(cancelled_rid),
+                                protected=_live_request_ids(),
+                            )
+                            if str(cancelled_rid) == str(_current_req_id) and _cancel_event:
+                                _cancel_event.set()
+                                logger.info(
+                                    "cancel received for in-flight request %s", cancelled_rid
+                                )
+                            _cancel_deferred(str(cancelled_rid))
+                    # Answer gateway pings even while a tool is in-flight so the
+                    # ping-gated wedge detector sees the backend as responsive.
+                    elif method == "ping" and req_id is not None:
+                        respond(req_id, {})
+                    # Buffer tools/call requests that arrive while busy so they get a
+                    # response when the worker frees (dropping them left the
+                    # client waiting forever). Cancels against queued ids are honored
+                    # at dispatch time via _cancelled_ids.
+                    elif method == "tools/call" and req_id is not None:
+                        if len(_pending_calls) >= PENDING_CALLS_MAX:
+                            # Rejection is a tool-invocation decision -- audit it
+                            # (security-controls: all invocation decisions emit SEL).
+                            _sel_audit(
+                                "rejected_busy",
+                                params.get("name", ""),
+                                req_id,
+                                _req_caller_key(params),
+                            )
+                            respond(
+                                req_id,
+                                None,
+                                error={
+                                    "code": -32000,
+                                    "message": "Server busy: pending tool-call queue is full; retry",
+                                },
+                            )
+                        else:
+                            _pending_calls.append(req)
+                    # Any other request with an id gets the answer the idle path
+                    # gives it: _dispatch serves tools/list, initialize and the like
+                    # inline and answers an unknown method (a client's version
+                    # probe such as server/discover) with -32601 at once. Left
+                    # unanswered, the client would wait out its own timeout.
+                    # Notifications without an id are dropped.
+                    elif req_id is not None:
+                        _dispatch(method, req_id, params)
+                except Exception:  # noqa: BLE001 - one message must not end the server
+                    _answer_internal_error(method, req_id)
                 continue
 
-        envelope = _servable(req)
-        if envelope is None:
-            continue
-        method, req_id, params = envelope
-        try:
-            _dispatch(method, req_id, params)
-        except Exception:  # noqa: BLE001 - one message must not end the server
-            _answer_internal_error(method, req_id)
-        if _pruned_exit:
-            return True
-    return False
+            try:
+                _dispatch(method, req_id, params)
+            except Exception:  # noqa: BLE001 - one message must not end the server
+                _answer_internal_error(method, req_id)
+            if _pruned_exit:
+                _refuse_parked_on_pruned_exit()
+                return True
+        return False
+    finally:
+        # Whatever ended the loop -- EOF, a pruned install, an exception that
+        # escaped -- no parked call's step may run for a client that will never
+        # get the answer: cancel every future still queued (a running one is
+        # left to finish; nothing more can be done for it), THEN shut the pool
+        # down, since the sentinels queue behind anything still pending.
+        for entry in _deferred.values():
+            if entry.stepping is not None:
+                entry.stepping.cancel()
+        if _step_pool is not None:
+            _step_pool.shutdown()
+        _wake.close()

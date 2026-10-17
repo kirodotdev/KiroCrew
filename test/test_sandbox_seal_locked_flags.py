@@ -2,31 +2,30 @@
 
 Inside an unprivileged user namespace the kernel treats a mount's nosuid / nodev /
 noexec bits as locked (``MNT_LOCK_*``) and rejects with EPERM any remount whose
-flag set would clear them. The bind created by the ``READONLY_DIRS`` loop inherits
-those bits — locks included — from its source mount, so a remount carrying only
-``MS_RDONLY`` is refused on hosts whose ``/tmp`` (or ``/home``) is mounted
+flag set would clear them. The bind :func:`~kiro_crew.sandbox_launcher_program.seal_readonly`
+creates inherits those bits — locks included — from its source mount, so a remount
+carrying only ``MS_RDONLY`` is refused on hosts whose ``/tmp`` (or ``/home``) is mounted
 ``nosuid,nodev``: the systemd ``tmp.mount`` default on Amazon Linux 2023, Fedora
 and RHEL. ``_mount_or_die`` fails closed, so a plain ``MS_RDONLY`` remount would
 abort every sandboxed spawn there. ``_locked_mount_flags`` reads the new bind's effective
 flags via ``statvfs`` and the sealing remount ORs them back in — re-asserting a
 bit already in force can only keep restrictions, never widen access.
 
-Three layers here, mirroring the other sandbox launcher tests (the sources under
-test are extracted from the GENERATED script, so none of these can pass against
-code the launcher does not contain):
+Three layers here, each driving the launcher program module itself
+(``kiro_crew.sandbox_launcher_program``, the program a sandboxed spawn runs):
 
-- unit: the helper's ``f_flag`` → ``MS_*`` mapping, ``statvfs`` patched;
-- integration: the seal loop's remount call receives the helper's bits OR'd in,
-  and the helper reads the target AFTER the bind step;
+- unit: ``_locked_mount_flags``'s ``f_flag`` → ``MS_*`` mapping, ``statvfs`` patched;
+- integration: :func:`seal_readonly`'s remount receives the helper's bits OR'd in,
+  and the helper reads the target AFTER the bind step, recorded by a stand-in libc;
 - real kernel: NESTED namespaces. Flags are only locked on mounts a namespace
   INHERITED, never on mounts it created itself — so an outer namespace mounts a
   fresh tmpfs ``nosuid,nodev`` (inside the outer namespace, so the test does not
   depend on the host's ``/tmp`` options), and an inner nested namespace, for
-  which that tmpfs is inherited and therefore locked, runs the seal. A control
-  first proves the lock is real: the pre-fix remount (``MS_RDONLY`` alone) must
-  be refused with EPERM, then the fixed path must succeed and a write must be
-  refused with EROFS. Skips — never fails — where user namespaces, ``unshare``,
-  tmpfs mounting, or the flag locking itself are unavailable.
+  which that tmpfs is inherited and therefore locked, runs :func:`seal_readonly` with
+  the real libc. A control first proves the lock is real: a remount carrying
+  ``MS_RDONLY`` alone must be refused with EPERM, then the seal must succeed and a
+  write must be refused with EROFS. Skips — never fails — where user namespaces,
+  ``unshare``, tmpfs mounting, or the flag locking itself are unavailable.
 
 Everything is Linux-only: ``os.ST_NODEV`` / ``os.ST_NOEXEC`` are Linux-only
 constants (macOS defines only ``ST_RDONLY`` / ``ST_NOSUID``), and the control
@@ -36,8 +35,8 @@ under test is the Linux namespace launcher.
 from __future__ import annotations
 
 import errno
+import json
 import os
-import runpy
 import shutil
 import subprocess
 import sys
@@ -45,25 +44,14 @@ import textwrap
 from types import SimpleNamespace
 
 import pytest
+from test_sandbox_launcher_program import RecordingLibc, launch, payload
 
-import kiro_crew.sandbox as sandbox_mod
-from kiro_crew.sandbox import _build_launcher_script
+from kiro_crew import sandbox_launcher_program as program
 
 _LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="Linux namespace launcher only")
 
-
-@pytest.fixture(autouse=True)
-def _no_host_ssh_probe(monkeypatch):
-    """``_build_launcher_script`` asks the HOST's ``ssh -V`` for accept-new support.
-
-    The flag helper lifted out of the launcher does not depend on that answer, and a
-    real ssh spawned from the test process is a host dependency this module is not
-    about. Pinned so no binary runs.
-    """
-    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
-
-
-#: Flag values the launcher defines for itself; mirrored so extracted code can run.
+#: The kernel's ``MS_*`` values, stated here independently of the launcher's own
+#: constants so an assertion on a flag set checks the ABI value, not a mirror of it.
 _MS_RDONLY = 1
 _MS_NOSUID = 2
 _MS_NODEV = 4
@@ -71,80 +59,32 @@ _MS_NOEXEC = 8
 _MS_REMOUNT = 32
 _MS_BIND = 4096
 
-_HELPER_START = "_O_PATH = getattr"
-_HELPER_END = "REAL_UID = "
-
-
-def _cut(script: str, start_marker: str, end_marker: str) -> str:
-    """Slice *script* from the START OF THE LINE holding each marker.
-
-    Same trick as ``test_sandbox_mount_checked._region``: ``dedent`` measures the
-    common prefix across all lines, so a first line already stripped of its indent
-    would leave the rest indented and the block would not parse.
-    """
-    a = script.rindex("\n", 0, script.index(start_marker)) + 1
-    b = script.rindex("\n", 0, script.index(end_marker, a)) + 1
-    return script[a:b]
-
-
-def _seal_loop(script: str) -> str:
-    return (
-        "for d in READONLY_DIRS:"
-        + script.split("for d in READONLY_DIRS:", 1)[1].split("\n\n", 1)[0]
-    )
-
-
-def _helper_namespace(tmp_path) -> dict:
-    """Run the launcher's OWN ``_locked_mount_flags`` source; return its namespace.
-
-    Via ``runpy.run_path`` rather than ``exec`` of the text, for the same reason
-    ``test_sandbox_mount_checked`` does: equivalent here, but ``exec`` trips the
-    SAST gate's ``exec-detected`` rule on a false positive.
-    """
-    region = _cut(_build_launcher_script("strict"), _HELPER_START, _HELPER_END)
-    region_file = tmp_path / "helper_region.py"
-    region_file.write_text(region)
-    return runpy.run_path(
-        str(region_file),
-        init_globals={
-            "os": os,
-            "_MS_NOSUID": _MS_NOSUID,
-            "_MS_NODEV": _MS_NODEV,
-            "_MS_NOEXEC": _MS_NOEXEC,
-        },
-    )
-
 
 @_LINUX_ONLY
 class TestLockedMountFlagsHelper:
-    def test_nosuid_and_nodev_are_mapped_to_their_ms_flags(self, tmp_path, monkeypatch):
-        helper = _helper_namespace(tmp_path)["_locked_mount_flags"]
+    def test_nosuid_and_nodev_are_mapped_to_their_ms_flags(self, monkeypatch):
         monkeypatch.setattr(
             os, "statvfs", lambda _t: SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV)
         )
 
-        assert helper(b"/anywhere") == _MS_NOSUID | _MS_NODEV
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID | _MS_NODEV
 
-    def test_all_three_lockable_bits_are_mapped(self, tmp_path, monkeypatch):
-        helper = _helper_namespace(tmp_path)["_locked_mount_flags"]
+    def test_all_three_lockable_bits_are_mapped(self, monkeypatch):
         monkeypatch.setattr(
             os,
             "statvfs",
             lambda _t: SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV | os.ST_NOEXEC),
         )
 
-        assert helper(b"/anywhere") == _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID | _MS_NODEV | _MS_NOEXEC
 
-    def test_a_plain_flag_set_yields_zero_extra_flags(self, tmp_path, monkeypatch):
-        """No locked bit means the remount behaves exactly as it always did."""
-        helper = _helper_namespace(tmp_path)["_locked_mount_flags"]
+    def test_a_plain_flag_set_yields_zero_extra_flags(self, monkeypatch):
+        """No locked bit means the remount behaves exactly as it would without the helper."""
         monkeypatch.setattr(os, "statvfs", lambda _t: SimpleNamespace(f_flag=0))
 
-        assert helper(b"/anywhere") == 0
+        assert program._locked_mount_flags(b"/anywhere") == 0
 
-    def test_statvfs_failure_falls_back_to_zero_never_degrading_the_seal(
-        self, tmp_path, monkeypatch
-    ):
+    def test_statvfs_failure_falls_back_to_zero_never_degrading_the_seal(self, monkeypatch):
         """The fallback is 0 EXTRA flags — the remount itself still fails closed.
 
         A helper that raised here would turn a transient stat failure into a
@@ -152,25 +92,36 @@ class TestLockedMountFlagsHelper:
         a helper that silently skipped the remount would degrade the seal. Zero
         extra flags does neither.
         """
-        helper = _helper_namespace(tmp_path)["_locked_mount_flags"]
 
         def _boom(_t):
             raise OSError(errno.EACCES, "statvfs refused")
 
         monkeypatch.setattr(os, "statvfs", _boom)
 
-        assert helper(b"/anywhere") == 0
+        assert program._locked_mount_flags(b"/anywhere") == 0
 
-    def test_a_host_without_the_st_constants_maps_to_zero_not_a_crash(self, tmp_path, monkeypatch):
-        """macOS defines only ``ST_RDONLY``/``ST_NOSUID`` — the helper's extracted
-        source is executed by the POSIX-wide mount-region tests, so a missing
-        constant must read as 0, never raise ``AttributeError``."""
-        helper = _helper_namespace(tmp_path)["_locked_mount_flags"]
+    def test_a_host_without_the_st_constants_maps_to_zero_not_a_crash(self, monkeypatch):
+        """macOS defines only ``ST_RDONLY``/``ST_NOSUID``, and the launcher program is
+        imported on every host, so a missing constant must read as 0, never raise
+        ``AttributeError``."""
         monkeypatch.setattr(os, "statvfs", lambda _t: SimpleNamespace(f_flag=0xFFFF))
         monkeypatch.delattr(os, "ST_NODEV", raising=False)
         monkeypatch.delattr(os, "ST_NOEXEC", raising=False)
 
-        assert helper(b"/anywhere") == _MS_NOSUID
+        assert program._locked_mount_flags(b"/anywhere") == _MS_NOSUID
+
+
+class _OrderedLibc(RecordingLibc):
+    """A libc that logs each mount, by the object its target reaches, into *events*."""
+
+    def __init__(self, events: list[tuple]) -> None:
+        super().__init__()
+        self.events = events
+
+    def bound(self, source, target, fstype, flags):  # noqa: ANN001, ANN201
+        assert source == target, "a ceiling is bound over ITSELF"
+        self.events.append(("mount", os.stat(target).st_ino, flags))
+        return 0
 
 
 @_LINUX_ONLY
@@ -178,57 +129,30 @@ class TestSealRemountCarriesTheLockedBits:
     def test_remount_flags_include_the_helper_result_read_after_the_bind(
         self, tmp_path, monkeypatch
     ):
-        """The seal loop ORs the helper's bits into the remount, post-bind.
+        """The seal ORs the helper's bits into the remount, post-bind.
 
         Order is asserted, not just the flags: the helper must read the target
         AFTER the ``MS_BIND`` step, because that is when ``f_flag`` reflects the
         new bind — the mount whose locks the kernel will enforce on the remount.
-        """
-        script = _build_launcher_script("strict")
-        helper = _cut(script, _HELPER_START, _HELPER_END)
-        region_file = tmp_path / "seal_region.py"
-        region_file.write_text(helper + "\n" + textwrap.dedent(_seal_loop(script)) + "\n")
 
+        Each event names the inode its target REACHES, resolved while the stage's
+        descriptor is open: the stage hands ``mount`` and ``statvfs`` a descriptor
+        path pinning the object it classified, so the spelling is a live fd number
+        and says nothing on its own. What the assertion needs is the OBJECT, which is
+        what both the bind and the sealing remount must reach.
+        """
         target = tmp_path / "sealed"
         target.mkdir()
         sealed_ino = target.stat().st_ino
         events: list[tuple] = []
 
-        def _resolved(path) -> int:
-            """The inode *path* reaches, resolved while its descriptor is open.
-
-            The loop hands ``mount`` a descriptor path pinning the object it
-            classified, so the spelling is a live fd number and says nothing on
-            its own. What the assertion needs is the OBJECT, which is what both
-            the bind and the sealing remount must reach.
-            """
-            return os.stat(path).st_ino
-
-        def _record_mount(source, target_, flags, what):
-            assert source == target_, "a ceiling is bound over ITSELF"
-            events.append(("mount", _resolved(target_), flags))
-
         def _fake_statvfs(target_):
-            events.append(("statvfs", _resolved(target_)))
+            events.append(("statvfs", os.stat(target_).st_ino))
             return SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV)
 
+        run = launch(tmp_path, payload(readonly_dirs=[str(target)]), libc=_OrderedLibc(events))
         monkeypatch.setattr(os, "statvfs", _fake_statvfs)
-        runpy.run_path(
-            str(region_file),
-            init_globals={
-                "os": os,
-                "sys": sys,
-                "READONLY_DIRS": [str(target)],
-                "REQUIRED_MASK_TARGETS": frozenset(),
-                "_mount_or_die": _record_mount,
-                "_MS_BIND": _MS_BIND,
-                "_MS_REMOUNT": _MS_REMOUNT,
-                "_MS_RDONLY": _MS_RDONLY,
-                "_MS_NOSUID": _MS_NOSUID,
-                "_MS_NODEV": _MS_NODEV,
-                "_MS_NOEXEC": _MS_NOEXEC,
-            },
-        )
+        program.seal_readonly(run)
 
         assert events == [
             ("mount", sealed_ino, _MS_BIND),
@@ -241,6 +165,9 @@ class TestSealRemountCarriesTheLockedBits:
         ]
 
 
+#: The test's OWN mounts -- the outer tmpfs and the inner control -- go through this
+#: libc. The seal under test does not: the inner stage runs the launcher program's
+#: :func:`seal_readonly` through the program's own ``_load_libc``.
 _SHARED_PREAMBLE = textwrap.dedent("""\
     import ctypes
     import errno
@@ -250,7 +177,6 @@ _SHARED_PREAMBLE = textwrap.dedent("""\
     _MS_RDONLY = 1
     _MS_NOSUID = 2
     _MS_NODEV = 4
-    _MS_NOEXEC = 8
     _MS_REMOUNT = 32
     _MS_BIND = 4096
 
@@ -289,30 +215,31 @@ def _outer_script() -> str:
             sys.stderr.write("nested namespace unavailable: %s\\n"
                              % probe.stderr.decode(errors="replace"))
             sys.exit(43)
-        rc = subprocess.call(nested + [sys.executable, inner, sys.argv[1]])
+        rc = subprocess.call(nested + [sys.executable, inner, sys.argv[1]] + sys.argv[4:])
         sys.exit(rc)
         """)
     return _SHARED_PREAMBLE + "\n" + driver
 
 
 def _inner_script() -> str:
-    """Stage 2, the nested namespace: control, then the fixed seal path.
+    """Stage 2, the nested namespace: control, then the launcher program's seal.
 
-    Assembled from the GENERATED launcher source — ``_mount_or_die`` +
-    ``_locked_mount_flags`` + the ``READONLY_DIRS`` loop — so the code under test
-    is the code that ships.
+    The seal is :func:`~kiro_crew.sandbox_launcher_program.seal_readonly` itself: the
+    program file is loaded by path (``argv[2]``, the module this test process
+    imported) and driven with its own libc and the plan in ``argv[3]``, so the code
+    under test is the code that ships.
 
     The control comes first and is what gives the test its power: bind the
-    control dir over itself, then attempt the PRE-FIX remount (``MS_RDONLY``
-    alone). On a locked mount the kernel must refuse it with EPERM — the exact
-    locked-flag failure. If it succeeds the environment does not lock flags and the
-    test skips (44) rather than passing vacuously. Only then does the fixed
-    path run against the sealed dir; the seal must land and a write must be
-    refused with EROFS.
+    control dir over itself, then attempt a remount carrying ``MS_RDONLY`` alone. On
+    a locked mount the kernel must refuse it with EPERM — the exact locked-flag
+    failure. If it succeeds the environment does not lock flags and the test skips
+    (44) rather than passing vacuously. Only then does the seal run against the
+    sealed dir; it must land and a write must be refused with EROFS.
     """
-    script = _build_launcher_script("strict")
-    defs = _cut(script, "def _mount_or_die(", _HELPER_END)
-    control = textwrap.dedent("""\
+    body = textwrap.dedent("""\
+        import importlib.util
+        import json
+
         mnt = sys.argv[1].encode()
         control = os.path.join(mnt, b"control")
         if _libc.mount(control, control, None, _MS_BIND, None) != 0:
@@ -327,11 +254,15 @@ def _inner_script() -> str:
             sys.stderr.write("control remount failed with errno %d, not EPERM\\n"
                              % _control_errno)
             sys.exit(46)
+
+        spec = importlib.util.spec_from_file_location("launcher_program", sys.argv[2])
+        program = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(program)
+        with open(sys.argv[3], encoding="utf-8") as fh:
+            plan = json.load(fh)
+        program.seal_readonly(program.Launch(plan, program._load_libc(), environ={}))
+
         sealed = os.path.join(mnt, b"sealed")
-        READONLY_DIRS = [os.fsdecode(sealed)]
-        REQUIRED_MASK_TARGETS = frozenset()
-        """)
-    epilogue = textwrap.dedent("""\
         try:
             with open(os.path.join(sealed, b"probe"), "wb") as fh:
                 fh.write(b"x")
@@ -343,9 +274,7 @@ def _inner_script() -> str:
         sys.stderr.write("write succeeded; the seal did not hold\\n")
         sys.exit(1)
         """)
-    return "\n".join(
-        (_SHARED_PREAMBLE, defs, control, textwrap.dedent(_seal_loop(script)), epilogue)
-    )
+    return _SHARED_PREAMBLE + "\n" + body
 
 
 @_LINUX_ONLY
@@ -353,11 +282,12 @@ class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
     def test_prefix_remount_gets_eperm_and_the_fixed_seal_lands(self, tmp_path):
         """The regression on a real kernel, with its own power proven in-band.
 
-        The inner stage first shows the pre-fix remount is refused with EPERM
-        (so the locked-flag condition genuinely holds in this
-        environment), then runs the shipped seal path and asserts it succeeds
-        and the sealed dir refuses a write with EROFS. Pre-fix code fails here
-        at the seal step with the launcher's own ``sandbox: BLOCKED`` refusal.
+        The inner stage first shows a remount carrying ``MS_RDONLY`` alone is refused
+        with EPERM (so the locked-flag condition genuinely holds in this
+        environment), then runs the program's seal and asserts it succeeds and the
+        sealed dir refuses a write with EROFS. A seal whose remount dropped the
+        locked bits fails here at the seal step with the launcher's own
+        ``sandbox: BLOCKED`` refusal.
         """
         unshare = shutil.which("unshare")
         if unshare is None:
@@ -379,6 +309,8 @@ class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
         inner.write_text(_inner_script())
         mnt = tmp_path / "mnt"
         mnt.mkdir()
+        plan = tmp_path / "plan.json"
+        plan.write_text(json.dumps(payload(readonly_dirs=[str(mnt / "sealed")])))
         result = subprocess.run(
             [
                 unshare,
@@ -390,6 +322,8 @@ class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
                 str(mnt),
                 str(inner),
                 unshare,
+                program.__file__,
+                str(plan),
             ],
             capture_output=True,
             cwd=str(tmp_path),

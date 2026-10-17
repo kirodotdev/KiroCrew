@@ -1,6 +1,6 @@
 # OpenCode frame corpus
 
-Six files, all live. Read `../README.md` first for what a fixture is and what
+Seven files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -11,19 +11,21 @@ the corpus does and does not prove.
 | `session-load-live.jsonl` | live | a `session/load` from a second process: the replayed `user_message_chunk` / `agent_message_chunk` updates and the load result, which carries `configOptions` and no `modes` |
 | `mcp-directive-call-live.jsonl` | live | a Crew MCP `tool_call`, its `in_progress` refinement and its terminal `tool_call_update` -- the single-underscore `kirocrew-core_<tool>` title, an empty-then-refined `rawInput`, and a result carrying a directive marker |
 | `compact-live.jsonl` | live | a MANUAL `/compact`: an ordinary turn's `usage_update` and `stopReason`, then the `/compact` turn's summary `agent_message_chunk`, its far smaller `usage_update`, and its `stopReason: end_turn` with NO compaction status frame |
+| `effort-live.jsonl` | live | `session/set_config_option` results for the per-model `effort` select (low, medium, high on a reasoning model, absent on a plain one), a `-32602` refusal of an unoffered level, and the reset to the first level after a model switch |
 
 Captured off `opencode acp` 1.18.30 driving a local Ollama model, agent-to-client
 lines verbatim, with the recording user's home directory replaced by `~`.
 `tool-call-live.jsonl` is a **slice**: the 430 `agent_message_chunk` frames the
 model emitted around the tool call are omitted for length, and the fixture's own
-`_meta.note` says so.
+`_meta.note` says so. `effort-live.jsonl` is captured off the same version against a
+local OpenAI-compatible stub instead, and its `_meta.note` lists its reductions.
 
 ## What the permission capture establishes
 
 The permission frame is the one the enforcement story rests on. Kiro Crew's tool
 gate runs only when a harness sends `session/request_permission` for a tool call,
 and OpenCode sends it only while its own `permission` setting says to ask. The
-session's read-back (`AcpClient._verify_opencode_routing`) proves that setting is in
+session's read-back (`acp.harness.opencode._verify_opencode_routing`) proves that setting is in
 force; it cannot prove the harness then asks. `permission-request-live.jsonl` is that
 second half, observed: with `permission: ask` resolved, OpenCode emitted
 `session/request_permission` before running `bash`, waited for the client's

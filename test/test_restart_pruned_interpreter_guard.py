@@ -136,8 +136,9 @@ class TestTheDashboardRefusesBeforeDraining:
             "X_OK on Windows, so a file with no execute permission is accepted and "
             "there is nothing for this case to assert. The repo states that at "
             "papyrus/backend/tectonic.py:298 and gates it the same way at "
-            "preview_tools.py:156 and transcribe.py:688. The half that DOES hold on "
-            "both platforms is isfile, which is the pruned-interpreter state itself, "
+            "preview_tools.py:156 and transcribe_ffmpeg.py's _open_authenticated_in. "
+            "The half that DOES hold on both platforms is isfile, which is the "
+            "pruned-interpreter state itself, "
             "and test_a_pruned_interpreter_refuses_without_draining covers it "
             "everywhere."
         ),
@@ -203,7 +204,7 @@ class TestTheOrchestratorDefersBeforeDraining:
             "X_OK on Windows, so a file with no execute permission is accepted and "
             "there is nothing for this case to assert. Stated by the repo at "
             "papyrus/backend/tectonic.py:298 and gated the same way at "
-            "preview_tools.py:156 and transcribe.py:688."
+            "preview_tools.py:156 and transcribe_ffmpeg.py's _open_authenticated_in."
         ),
     )
     @pytest.mark.asyncio

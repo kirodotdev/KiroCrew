@@ -9,10 +9,42 @@ the sweep and is waiting on it.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import pytest
 
 from kiro_crew import vector_memory as vm
 from kiro_crew.vector_memory import VectorMemoryStore
+
+
+class _PaceClock:
+    """The store's ``time`` binding, with ``sleep`` answered by *on_sleep*.
+
+    The sweep reads its clock through the ``vector_memory`` facade, so the stub
+    rebinds only that name. Patching an attribute of the stdlib ``time`` module
+    would reach every thread in the worker: a periodic thread left by an earlier
+    test that enters ``time.sleep(60.0)`` would return at once, spin, and fill the
+    recorder. Only a sleep on the thread that installed the stub is answered;
+    any other caller of this binding gets the real clock.
+    """
+
+    def __init__(self, on_sleep):
+        self._on_sleep = on_sleep
+        self._owner = threading.get_ident()
+
+    def sleep(self, seconds: float) -> None:
+        if threading.get_ident() == self._owner:
+            self._on_sleep(seconds)
+        else:
+            time.sleep(seconds)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def _stub_pace_sleep(monkeypatch, on_sleep) -> None:
+    monkeypatch.setattr(vm, "time", _PaceClock(on_sleep))
 
 
 @pytest.fixture()
@@ -26,7 +58,7 @@ def store(tmp_path):
 def sleeps(monkeypatch):
     """Record pace sleeps instead of performing them."""
     recorded: list[float] = []
-    monkeypatch.setattr(vm.time, "sleep", lambda s: recorded.append(s))
+    _stub_pace_sleep(monkeypatch, recorded.append)
     return recorded
 
 
@@ -39,6 +71,25 @@ def _deferred_rows(store, n):
             preserve_existing=True,
             defer_embedding=True,
         )
+
+
+def test_the_pace_stub_records_only_the_sweep_threads_sleeps(store, sleeps, monkeypatch):
+    """Another thread's sleep, on the stdlib clock or on the store's binding, is
+    not recorded and really sleeps; only the test thread's pace sleeps are."""
+    monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.125)
+    others = [
+        threading.Thread(target=time.sleep, args=(0.0,)),
+        threading.Thread(target=vm.time.sleep, args=(0.0,)),
+    ]
+    for thread in others:
+        thread.start()
+        thread.join()
+    _deferred_rows(store, 1)
+    store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
+
+    assert store.backfill_missing_embeddings() == 1
+    assert sleeps == [0.125]
+    assert time.sleep is not vm.time.sleep
 
 
 def test_each_bulk_row_is_paced(store, sleeps, monkeypatch):
@@ -128,7 +179,7 @@ def test_the_pause_sits_between_rows_not_inside_a_write(store, monkeypatch):
         visible.append(int(rows[0]["n"]))
 
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
-    monkeypatch.setattr(vm.time, "sleep", _probe)
+    _stub_pace_sleep(monkeypatch, _probe)
     _deferred_rows(store, 2)
     store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
 
@@ -156,7 +207,7 @@ def test_an_episodic_vector_from_a_previous_space_is_dropped(store, monkeypatch)
     """
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
     # Simulate reconcile completing inside the pause.
-    monkeypatch.setattr(vm.time, "sleep", lambda s: setattr(store, "_space_generation", 99))
+    _stub_pace_sleep(monkeypatch, lambda s: setattr(store, "_space_generation", 99))
     _deferred_rows(store, 1)
     store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
 
@@ -176,7 +227,7 @@ def test_a_lesson_vector_from_a_previous_space_is_dropped(store, monkeypatch):
         store.db.commit()
 
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
-    monkeypatch.setattr(vm.time, "sleep", lambda s: setattr(store, "_space_generation", 99))
+    _stub_pace_sleep(monkeypatch, lambda s: setattr(store, "_space_generation", 99))
 
     assert store._backfill_lesson_embeddings(pace=True) == 0
     rows = store._fetch_all_locked(
@@ -196,7 +247,7 @@ def test_a_concurrent_writer_s_vector_is_not_overwritten(store, monkeypatch):
             store.db.commit()
 
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
-    monkeypatch.setattr(vm.time, "sleep", _fill_during_pause)
+    _stub_pace_sleep(monkeypatch, _fill_during_pause)
     _deferred_rows(store, 1)
     store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
 
@@ -232,7 +283,7 @@ def test_a_rewritten_lesson_does_not_receive_the_old_rule_s_vector(store, monkey
             store.db.commit()
 
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
-    monkeypatch.setattr(vm.time, "sleep", _rewrite_during_pause)
+    _stub_pace_sleep(monkeypatch, _rewrite_during_pause)
 
     store._backfill_lesson_embeddings(pace=True)
     after = store._fetch_all_locked("SELECT embedding FROM semantic_memory WHERE key = ?", (key,))
@@ -248,7 +299,7 @@ def test_a_row_tombstoned_during_the_pause_gets_no_vector(store, monkeypatch):
             store.db.commit()
 
     monkeypatch.setattr(vm, "bulk_pace_delay", lambda elapsed: 0.01)
-    monkeypatch.setattr(vm.time, "sleep", _tombstone_during_pause)
+    _stub_pace_sleep(monkeypatch, _tombstone_during_pause)
     _deferred_rows(store, 1)
     store.embed_fn = lambda text: [0.5, 0.5, 0.5, 0.5]
 

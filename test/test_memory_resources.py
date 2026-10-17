@@ -18,6 +18,7 @@ from kiro_crew.config.loader import KiroCrewConfig, MemoryStoreConfig
 from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 from kiro_crew.heartbeat import HeartbeatService
 from kiro_crew.memory import MemoryStore
+from kiro_crew.testing.wait import await_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 env = _member_env
@@ -94,7 +95,7 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
     monkeypatch.setattr(context, "_lesson_stores", {})
     task = asyncio.create_task(context._build_store_vectors("member-alice"))
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered, what="context_build_store_vectors")
         context.release_cached_memory_store("member-alice")
         release.set()
         with pytest.raises(memory_stores.UnknownMemoryStore, match="cache changed"):
@@ -252,7 +253,7 @@ async def test_first_eligible_heartbeat_schedules_one_backup_without_blocking_ti
     service._tick = 1
     try:
         await service._beat()
-        await asyncio.wait_for(started.wait(), 5)
+        await await_until(started, what="service_beat")
         assert observed_kwargs == [["should_stop"]]
         task = service._memory_backup_task
         service._tick = 30

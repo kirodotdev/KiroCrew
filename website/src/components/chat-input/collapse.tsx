@@ -3,6 +3,7 @@ import { ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { COMPOSER_EXPAND_EVENT } from '../../pages/chat/composerFocus'
 import { safeSetItem } from '../../utils/safeStorage'
 import { i18nT } from '../../i18n/t'
+import { uiLocation } from '../../uiLocations/uiLocation'
 import type { ComposerControl } from '../composerControl'
 
 /* The user-driven collapse: "put the message box away while I read". The
@@ -88,7 +89,7 @@ export function useComposerCollapse({ collapsible, composerControl, value }: {
    * Typing intent is an implicit expand.
    *
    * Every programmatic route to the composer resolves through the textarea
-   * (`queryComposer` finds `textarea[data-composer-input]`; the `/` shortcut and
+   * (`queryComposer` finds `[data-composer-input]`; the `/` shortcut and
    * the autoFocusKey effect call `inputRef.current?.focus()`), and a collapsed
    * composer has no textarea -- so without this, `/`, quote-to-compose, a widget
    * send and post-create focus all silently do nothing, and a pre-fill lands in a
@@ -220,12 +221,12 @@ export function CollapsedComposerBar({ collapsedBarRef, expandComposer, collapse
   return (
     <button
       type="button"
-      ref={collapsedBarRef}
       data-testid="composer-collapsed-bar"
       onClick={expandComposer}
       aria-expanded={false}
       aria-label={i18nT('components.chatInput.expand_composer')}
       title={i18nT('components.chatInput.expand_composer')}
+      {...uiLocation('composer.expand', collapsedBarRef)}
       className="w-full flex items-center gap-2 px-3.5 py-2 rounded-2xl border-none bg-transparent text-muted hover:text-text transition-colors cursor-pointer text-left"
     >
       <ChevronsUpDown size={16} className="shrink-0" />

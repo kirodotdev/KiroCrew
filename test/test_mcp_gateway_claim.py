@@ -16,7 +16,9 @@ verify:
 * the PID index is populated at register and cleaned up at teardown,
 * the stub Register payload carries the ``ancestor_pids`` chain, and
 * the ``claim`` sender module (``mcp_gateway.claim``) round-trips against a
-  real unix socket and no-ops safely without its preconditions.
+  real unix socket, treats only ``claimed`` as success, logs ``claim-noop`` at
+  INFO and every other reply at WARNING, and no-ops safely without its
+  preconditions.
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import socketsec
 from kiro_crew.mcp_gateway import stub as stub_mod
 from kiro_crew.mcp_gateway import transport
+from kiro_crew.testing.wait import await_until, default_timeout
 
 pytestmark = pytest.mark.xdist_group("mcp_gateway")
 
@@ -149,7 +152,9 @@ class _FakeBackend:
         self.forwarded = asyncio.Event()
         self._pending_requests: dict = {}
 
-    async def attach_stub(self, _uuid: str) -> "asyncio.Queue[bytes]":
+    async def attach_stub(
+        self, _uuid: str, *, agent: str = ""
+    ) -> "asyncio.Queue[bytes]":
         return asyncio.Queue()
 
     async def detach_stub(self, _uuid: str) -> int:
@@ -220,7 +225,7 @@ async def _handle(reader: Any, writer: Any) -> None:
             reader, writer, pool=_FakePool(), resolver=object(),
             socket_path=Path("/tmp/cp.sock"), hot_keys=None,
         ),
-        timeout=5.0,
+        timeout=default_timeout(),
     )
 
 
@@ -237,7 +242,7 @@ async def test_claim_retargets_live_connection(monkeypatch: pytest.MonkeyPatch) 
     reader.feed(_register(""))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     assert fb.callers == [None]
 
     ack = await gw._apply_claim(_claim(_WRAPPER_PID, "dashboard:chat-CP-1"))
@@ -245,7 +250,7 @@ async def test_claim_retargets_live_connection(monkeypatch: pytest.MonkeyPatch) 
 
     fb.forwarded.clear()
     reader.feed(_CALL)
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     reader.feed({"type": "unregister"})
     await task
 
@@ -285,7 +290,7 @@ async def test_claim_matches_host_pid_for_pidns_stub(monkeypatch: pytest.MonkeyP
     reader.feed(_register("", ancestor_pids=ns_pids))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     assert fb.callers == [None]
     # The connection must be claim-indexed under BOTH pid sets.
     for pid in host_chain + ns_pids:
@@ -297,7 +302,7 @@ async def test_claim_matches_host_pid_for_pidns_stub(monkeypatch: pytest.MonkeyP
 
     fb.forwarded.clear()
     reader.feed(_CALL)
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     reader.feed({"type": "unregister"})
     await task
 
@@ -327,7 +332,7 @@ async def test_register_resolves_identity_from_peer_ancestry(
     reader.feed(_register("", ancestor_pids=[43, 2]))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     reader.feed({"type": "unregister"})
     await task
 
@@ -361,7 +366,7 @@ async def test_no_host_indexing_when_peer_pid_unavailable(
     reader.feed(_register("", ancestor_pids=[43, 2]))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
 
     assert resolve_calls == []  # never resolved without a kernel-attested pid
     assert 9100 not in gw._CONN_INDEX and 9020 not in gw._CONN_INDEX
@@ -643,14 +648,14 @@ async def test_claim_replaces_existing_identity(monkeypatch: pytest.MonkeyPatch)
     reader.feed(_register("dashboard:old-session"))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
 
     ack = await gw._apply_claim(_claim(_PID, "dashboard:new-session"))
     assert ack["updated"] == 1
 
     fb.forwarded.clear()
     reader.feed(_CALL)
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     reader.feed({"type": "unregister"})
     await task
 
@@ -669,7 +674,7 @@ async def test_claim_idempotent_same_key(monkeypatch: pytest.MonkeyPatch) -> Non
     reader.feed(_register("dashboard:same-1"))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
 
     ack = await gw._apply_claim(_claim(_PID, "dashboard:same-1"))
     assert ack["type"] == "claimed" and ack["updated"] == 0 and ack["connections"] == 1
@@ -861,7 +866,7 @@ async def test_register_records_start_tokens_and_claim_verifies(
     reader.feed(_register(""))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     (conn,) = gw._CONN_INDEX[_PID]
     assert conn.pid_start_ids == {p: "111" for p in _ANCESTORS}
 
@@ -870,7 +875,7 @@ async def test_register_records_start_tokens_and_claim_verifies(
 
     fb.forwarded.clear()
     reader.feed(_CALL)
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     reader.feed({"type": "unregister"})
     await task
     assert fb.callers == [None, None]  # identity never misattributed
@@ -902,7 +907,7 @@ async def test_conn_index_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     reader.feed(_register(""))
     reader.feed(_CALL)
     task = asyncio.create_task(_handle(reader, _RecordingWriter()))
-    await asyncio.wait_for(fb.forwarded.wait(), timeout=5.0)
+    await await_until(fb.forwarded, what="the forwarded call")
     for pid in _ANCESTORS:
         assert pid in gw._CONN_INDEX and len(gw._CONN_INDEX[pid]) == 1
     reader.eof()
@@ -975,7 +980,7 @@ def _endpoint_dir() -> str | None:
 @pytest.mark.asyncio
 async def test_send_claim_roundtrip(short_sock_dir) -> None:
     """The sender round-trips a claim frame over a real unix socket and treats
-    a ``claimed`` ack as success, anything else as failure."""
+    a ``claimed`` ack as success."""
     received: list[dict[str, Any]] = []
     sock = short_sock_dir / "gw.sock"
 
@@ -996,6 +1001,84 @@ async def test_send_claim_roundtrip(short_sock_dir) -> None:
     assert received[0]["type"] == "claim" and received[0]["pid"] == 777
     assert received[0]["caller"]["session_key"] == "dashboard:chat-RT-1"
     assert received[0]["caller"]["session_type"] == "dashboard"
+
+
+async def _serve_one_reply(sock: Path, reply: bytes) -> Any:
+    """A gatewayd stand-in that reads one claim frame and answers ``reply``
+    verbatim (``b""`` closes without answering, the empty-reply shape)."""
+
+    async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readline()
+        if reply:
+            writer.write(reply)
+            await writer.drain()
+        writer.close()
+
+    return await transport.serve(sock, _serve, limit=1 << 16)
+
+
+def _sender_records(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    return [r for r in caplog.records if r.name == "kiro_crew.mcp_gateway.claim"]
+
+
+@pytest.mark.asyncio
+async def test_send_claim_noop_is_pending_at_info(
+    short_sock_dir, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``claim-noop`` is gatewayd's answer when the claim arrives before the
+    session's stubs register (the usual ordering): the binding is kept for the
+    register that follows, so the sender logs it at INFO. Nothing was
+    retargeted, so it still returns False. A WARNING here fires on every
+    healthy session start and buries the one case that matters (every claim
+    on the host answering noop)."""
+    sock = short_sock_dir / "noop.sock"
+    reply = json.dumps({"type": "claim-noop", "updated": 0, "connections": 0}).encode() + b"\n"
+    server = await _serve_one_reply(sock, reply)
+    try:
+        with caplog.at_level("INFO", logger="kiro_crew.mcp_gateway.claim"):
+            ok = await claim_mod.send_claim(str(sock), 7, "dashboard:x")
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert ok is False
+    records = _sender_records(caplog)
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "claim-push pending" in records[0].message
+    assert "session token binding" in records[0].message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(
+            json.dumps({"type": "claim-rejected", "reason": "test"}).encode() + b"\n",
+            id="claim-rejected",
+        ),
+        pytest.param(b"", id="empty-reply"),
+        pytest.param(json.dumps({"updated": 0}).encode() + b"\n", id="no-type"),
+        pytest.param(json.dumps(["claimed"]).encode() + b"\n", id="non-dict"),
+        pytest.param(json.dumps({"type": "claim-later"}).encode() + b"\n", id="unknown-type"),
+    ],
+)
+async def test_send_claim_non_ack_replies_return_false_at_warning(
+    short_sock_dir, caplog: pytest.LogCaptureFixture, reply: bytes
+) -> None:
+    """A rejection, an empty reply and every malformed shape stay a failure:
+    ``send_claim`` returns False and logs ONE ``not acknowledged`` WARNING, so
+    the noop log downgrade never widens into hiding a real refusal."""
+    sock = short_sock_dir / "nak.sock"
+    server = await _serve_one_reply(sock, reply)
+    try:
+        with caplog.at_level("INFO", logger="kiro_crew.mcp_gateway.claim"):
+            ok = await claim_mod.send_claim(str(sock), 7, "dashboard:x")
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert ok is False
+    records = _sender_records(caplog)
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "claim-push not acknowledged" in records[0].message
 
 
 @pytest.mark.asyncio

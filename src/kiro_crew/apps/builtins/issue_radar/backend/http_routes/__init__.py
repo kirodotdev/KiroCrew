@@ -15,6 +15,7 @@ re-exports every name defined here. The handlers live here:
   issue_writes     label, state and assignee writes on one issue
   investigation    the local per-item investigation record
   pr_actions       the privileged pull-request actions and their shared preamble
+  gitlab_groups    added GitLab groups and the review requests across each one
 
 **What ``backend.routes`` owns, and every monkeypatch seam, is reached through it
 at call time.** A handler here does ``from .. import routes`` inside the function

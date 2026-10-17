@@ -7,6 +7,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { namedCeiling } from '../../test/namedCeiling'
 
 import { api } from '../../api/client'
 import type {
@@ -124,6 +125,13 @@ function deferred<T>() {
 }
 
 /**
+ * Ceiling for the status poll's first read. It sits behind a chain: the provider
+ * read resolves, the card renders it as busy, and that render turns the status
+ * query's `enabled` on, so the read goes out in the commit after it.
+ */
+const STATUS_POLL_STARTS = namedCeiling('STATUS_POLL_STARTS', 5000)
+
+/**
  * Mount a card whose model is being prepared, with the status poll on a FAKE
  * clock. React Query arms the poll's interval when a status read settles, on
  * whatever setInterval is global at that moment, so the first read is held open
@@ -149,7 +157,7 @@ async function mountPreparing(
     </QueryClientProvider>,
   )
   // The poll starts in an effect after the frame that shows the provider read.
-  await waitFor(() => expect(status).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(status).toHaveBeenCalledTimes(1), STATUS_POLL_STARTS)
   vi.useFakeTimers()
   // React Query hands results to React on a setTimeout(0); on the fake clock one
   // queued mid-step lands a millisecond past the step, so run them as microtasks.

@@ -34,30 +34,50 @@ Captured per enrichment:
   byte counts (a large ``rx_queue`` at stall time is direct evidence of an
   inbound flood on that socket).
 
-Implementation is Linux-``/proc`` based (no subprocesses, no psutil — the
+The watchdog adds **where the loop thread is** beside them
+(:func:`describe_loop_thread`), read while the stall is still in progress.
+A loop blocked inside a native callback has no Python frame of its own:
+faulthandler's dump of it ends at asyncio's ``Handle._run`` and cannot say
+what that handle was running.  The capture names the handle's callback, so
+an ``os.close``, an ``os.waitpid`` or a C-extension method scheduled
+straight onto the loop is identified by name rather than by elimination.
+The full stack is not repeated here: faulthandler's dump and the diag
+recorder's ``loop_stall`` event already carry it.
+
+The socket table is Linux-``/proc`` based (no subprocesses, no psutil — the
 gateway venv does not ship psutil, and spawning a subprocess from a
 watchdog thread in a sick process is riskier than reading procfs).  Socket
 inodes come from the existing :func:`kiro_crew.acp.liveness.socket_inodes`
 rather than a second spelling of that walk.  On non-Linux platforms or any
-parse failure it degrades to a short note; it must never raise into the
-watchdog.
+parse failure it degrades to a short note; the loop thread's position comes
+from the interpreter and is captured on every platform.  Neither capture
+may raise into the watchdog.
 """
 
 from __future__ import annotations
 
+import asyncio.events
+import functools
 import ipaddress
 import os
 import struct
 import sys
 import time
+import types
 from pathlib import Path
 
 from kiro_crew.acp.liveness import socket_inodes
+from kiro_crew.diag.threads import _redact_frame
 
-__all__ = ["collect_stall_enrichment"]
+__all__ = ["collect_stall_enrichment", "describe_loop_thread"]
 
 # /proc/net/tcp{,6} socket-state code for ESTABLISHED.
 _TCP_ESTABLISHED = "01"
+
+#: The code object every asyncio ``Handle`` (and ``TimerHandle``) callback
+#: runs under.  An identity check against it cannot match a same-named
+#: function anywhere else.
+_HANDLE_RUN_CODE = asyncio.events.Handle._run.__code__
 
 
 def _decode_proc_addr(hex_addr: str, hex_port: str) -> tuple[str, int]:
@@ -133,4 +153,74 @@ def collect_stall_enrichment(silence_secs: float) -> list[str]:
             lines.append("(no established non-loopback TCP connections)")
     except Exception as exc:  # noqa: BLE001 — enrichment must never hurt the watchdog
         lines.append(f"(socket capture failed: {exc!r})")
+    return lines
+
+
+def _callable_name(callback: object) -> tuple[str, bool]:
+    """Return ``(dotted name, is_native)`` for a loop callback.
+
+    Built from attributes alone, never from ``repr``: the ``repr`` of a bound
+    method or a ``functools.partial`` runs the owner's and the arguments'
+    ``__repr__``, which is arbitrary code executed on the watchdog thread while
+    the loop thread is stopped inside those same objects.  ``is_native`` is
+    true when the callable is not a Python function, which is exactly the
+    case faulthandler cannot name.
+    """
+    for _ in range(8):
+        if not isinstance(callback, functools.partial):
+            break
+        callback = callback.func
+    function = getattr(callback, "__func__", callback)
+    native = not isinstance(function, types.FunctionType)
+    name = getattr(callback, "__qualname__", None) or getattr(callback, "__name__", None)
+    if not isinstance(name, str):
+        name = type(callback).__qualname__
+    module = getattr(callback, "__module__", None)
+    if not isinstance(module, str):
+        owner = getattr(callback, "__self__", None)
+        if isinstance(owner, types.ModuleType):
+            module = owner.__name__
+        elif owner is not None:
+            module = type(owner).__module__
+    return (f"{module}.{name}" if isinstance(module, str) else name), native
+
+
+def describe_loop_thread(thread_id: int | None) -> list[str]:
+    """Return lines naming where the event-loop thread is right now.
+
+    *thread_id* is the loop thread's ``threading.get_ident()``, recorded by the
+    watchdog's heartbeat; ``None`` (no heartbeat yet) yields no lines.  The
+    first line is the loop thread's innermost Python frame from
+    :func:`sys._current_frames`, formatted and scrubbed by the frame redactor
+    the diag recorder's stall capture uses.  When that frame is asyncio's
+    ``Handle._run``, a second line names the callback the handle is running
+    and says whether it is native: a native callback contributes no frame of
+    its own, so this line is the only record of what the loop is inside.
+    Called from the watchdog's daemon thread; never raises.
+    """
+    if thread_id is None:
+        return []
+    try:
+        frame = sys._current_frames().get(thread_id)
+    except Exception as exc:  # noqa: BLE001 — enrichment must never hurt the watchdog
+        return [f"(loop thread capture failed: {exc!r})"]
+    if frame is None:
+        return [f"(loop thread {thread_id:#x} has no Python frame)"]
+    try:
+        code = frame.f_code
+        where = _redact_frame(code.co_filename, frame.f_lineno or 0, code.co_name)
+        lines = [f"loop thread {thread_id:#x} is at {where}"]
+        if code is _HANDLE_RUN_CODE:
+            handle = frame.f_locals.get("self")
+            callback = getattr(handle, "_callback", None)
+            if callback is not None:
+                name, native = _callable_name(callback)
+                kind = (
+                    "a native callable with no Python frame of its own"
+                    if native
+                    else "a Python callable"
+                )
+                lines.append(f"  asyncio Handle._run is running {name} ({kind})")
+    except Exception as exc:  # noqa: BLE001 — a frame read must never hurt the watchdog
+        return [f"(loop thread frame read failed: {exc!r})"]
     return lines

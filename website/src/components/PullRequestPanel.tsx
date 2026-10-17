@@ -232,7 +232,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
 function stateTone(source: PullRequestSource): string {
   const state = source.state.toLowerCase()
   if (source.mergedAt || state === 'merged') return 'bg-aim/15 text-aim'
-  if (state === 'open' || state === 'opened') return 'bg-ok/15 text-ok'
+  if (state === 'open' || state === 'opened') return 'bg-ok/15 text-ok-text'
   return 'bg-bg-hover text-muted'
 }
 
@@ -397,7 +397,7 @@ const CI_META: Record<NonNullable<PullRequestStatus['ci']>, { icon: typeof Check
  * plus one health glyph while the pull request is live. Failed CI wins; a merge
  * conflict otherwise replaces pending/passed CI so an unmergeable branch never
  * reads as ready. Merged/closed suppress both CI and conflict because lifecycle
- * is the terminal signal there. `ChatSidebar.tsx::chipStatusGlyph` applies the
+ * is the terminal signal there. `SessionSourceChips.tsx::chipStatusGlyph` applies the
  * same precedence to the sidebar chip. */
 function SourceTabState({ status }: { status: PullRequestStatus | undefined }) {
   const lifecycle = status?.state
@@ -727,7 +727,7 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
           title={isGitHub
             ? i18nT('components.pullRequestPanel.github_merges_this_pull_request_automatically_on')
             : i18nT('components.pullRequestPanel.gitlab_merges_this_merge_request_when_the_pipeli')}
-          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${confirmAutoMerge || immediateMergeWarning ? 'border-warn text-warn hover:bg-warn/10' : 'border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`}
+          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-[11px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${confirmAutoMerge || immediateMergeWarning ? 'border-warn text-warn hover:text-warn-text hover:bg-warn/10' : 'border-border bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`}
         >
           {autoMergeMutation.isPending ? <Loader className="lucide-inline animate-spin" /> : <GitMerge className="lucide-inline" />}
           {immediateMergeWarning ? i18nT('components.pullRequestPanel.merge_now') : confirmAutoMerge ? i18nT('components.pullRequestPanel.confirm_auto_merge') : i18nT('components.pullRequestPanel.enable_auto_merge')}
@@ -1169,24 +1169,37 @@ export default function PullRequestPanel({
           fix the refresh. */}
       {query.error && !source && (
         <div className="flex-1 flex items-center justify-center px-6">
-          <div role="alert" className="max-w-md flex flex-col items-center">
-            <AlertCircle className={`lucide-inline mb-2 ${queryError.loginCommand ? 'text-warn' : 'text-danger'}`} />
-            <div className="text-[13px] font-medium text-text">
-              {queryError.loginCommand
-                ? queryError.loginCommand === 'gh auth login'
-                  ? i18nT('components.pullRequestPanel.github_cli_login_required')
-                  : i18nT('components.pullRequestPanel.gitlab_cli_login_required')
-                : i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
-            </div>
+          <div className="max-w-md w-full flex flex-col items-center">
+            {/* askAgent on, as in the Issues panel: the panel is read-only (no
+                draft), and a provider CLI that is missing or logged out is the
+                kind of failure the agent can diagnose. The login command rides
+                in the notice's footer, so it reads as the answer to the message. */}
             {queryError.loginCommand ? (
-              <>
-                <div className="text-[12px] text-muted mt-1 text-center">{i18nT('components.pullRequestPanel.kiro_crew_uses_your_local_provider_cli_to_load_p')}</div>
-                <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">{queryError.loginCommand}</code>
-              </>
+              <ErrorNotice
+                className="w-full"
+                title={queryError.loginCommand.startsWith('gh ')
+                  ? i18nT('components.pullRequestPanel.github_cli_login_required')
+                  : i18nT('components.pullRequestPanel.gitlab_cli_login_required')}
+                message={i18nT('components.pullRequestPanel.kiro_crew_uses_your_local_provider_cli_to_load_p')}
+                footer={<code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text break-all">{queryError.loginCommand}</code>}
+                actionPlacement="below"
+                askAgent
+                testId="pull-request-panel-load-error"
+              />
             ) : (
-              <div className="mt-2 w-full max-h-64 overflow-y-auto rounded-md bg-bg-hover/50 border border-border px-3 py-2 text-left text-[12px] text-muted whitespace-pre-wrap break-words font-mono leading-relaxed">{queryError.message}</div>
+              <ErrorNotice
+                className="w-full max-h-64 leading-relaxed"
+                messageClassName="font-mono whitespace-pre-wrap break-words"
+                title={i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
+                message={queryError.message}
+                messagePlacement="below"
+                actionPlacement="below"
+                scrollMessage
+                askAgent
+                testId="pull-request-panel-load-error"
+              />
             )}
-            <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" />{i18nT('components.pullRequestPanel.retry')}</Btn>
+            <Btn type="button" onClick={handleRefresh} className="mt-3 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-border bg-transparent text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.pullRequestPanel.retry')}</Btn>
           </div>
         </div>
       )}

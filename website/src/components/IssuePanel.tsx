@@ -133,7 +133,7 @@ function stateTone(source: IssueSource): string {
   if (source.state === 'closed') {
     return source.stateReason === 'not_planned' ? 'bg-bg-hover text-muted' : 'bg-aim/15 text-aim'
   }
-  return 'bg-ok/15 text-ok'
+  return 'bg-ok/15 text-ok-text'
 }
 
 /** Prefilled chat handoff for the whole issue: enough context for the agent to
@@ -473,22 +473,20 @@ export default function IssuePanel({
             {/* askAgent on: the panel is read-only (no draft), and a provider
                 CLI that is missing, logged out or answering 404 is exactly the
                 kind of failure the agent can diagnose. The login-required
-                branch keeps the command as the remedy text beneath. */}
+                branch carries the command in the notice's footer, laid out
+                like the Changes panel's. */}
             {queryError.loginCommand ? (
-              <>
-                <ErrorNotice
-                  className="w-full"
-                  title={i18nT('components.issuePanel.cli_login_required', {
-                    provider: queryError.loginCommand === 'gh auth login' ? 'GitHub' : 'GitLab',
-                  })}
-                  message={i18nT('components.issuePanel.kiro_crew_uses_your_local_provider_cli_to_load_i')}
-                  askAgent
-                  testId="issue-panel-load-error"
-                />
-                <code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text">
-                  {queryError.loginCommand}
-                </code>
-              </>
+              <ErrorNotice
+                className="w-full"
+                title={i18nT('components.issuePanel.cli_login_required', {
+                  provider: queryError.loginCommand.startsWith('gh ') ? 'GitHub' : 'GitLab',
+                })}
+                message={i18nT('components.issuePanel.kiro_crew_uses_your_local_provider_cli_to_load_i')}
+                footer={<code className="inline-block mt-2 px-2 py-1 rounded bg-bg-hover text-[12px] text-text break-all">{queryError.loginCommand}</code>}
+                actionPlacement="below"
+                askAgent
+                testId="issue-panel-load-error"
+              />
             ) : (
               <ErrorNotice
                 className="w-full max-h-64 overflow-y-auto leading-relaxed"

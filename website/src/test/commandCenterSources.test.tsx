@@ -2,19 +2,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, waitFor } from '@testing-library/react'
 import { focusManager, useQueryClient } from '@tanstack/react-query'
-import { createTestStore, renderHookWithProviders, renderWithProviders } from './helpers'
+import { createTestStore, renderHookWithProviders } from './helpers'
 import { api } from '../api/client'
-import { missingSourcesNotice, useCommandCenter } from '../pages/chat/command-center/useCommandCenter'
+import { CREW_BOARD_POLL_MS } from '../api/crewBoard'
+import { resetSlotProjectionRevisions, seedFoldedProjection, takeFoldedSlotProjection } from '../hooks/useWebSocket'
+import { missingSourcesNotice, useCommandCenter, WORK_BOARD_PULL_MS } from '../pages/chat/command-center/useCommandCenter'
 import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import { markQuestionSettled, setQuestionRequestInFlight } from '../store/chatSlice'
+import { updateSlot } from '../store/dashboardSlice'
+import { registerMainComposer } from '../utils/composerRestore'
 import { teamRoots } from '../pages/chat/command-center/model'
-import TaskDashboardFrame, { TASK_DASHBOARD_SANDBOX } from '../pages/chat/command-center/TaskDashboardFrame'
-import type { Artifact } from '../types'
 
-const artifact = (slug: string, session: string, content = '<h1>Task-specific map</h1>'): Artifact => ({
-  slug, session_key: session, name: slug, kind: 'html', source: 'chat', description: '', tags: ['task-dashboard'],
-  version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content,
-})
 function store() {
   const initial = createTestStore().getState()
   return createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
@@ -31,32 +30,12 @@ describe('task dashboard sources and containment', () => {
     vi.spyOn(api, 'approvals').mockResolvedValue([])
     vi.spyOn(api, 'workflowRuns').mockResolvedValue({ runs: [] })
     vi.spyOn(api, 'sessionWorkProjection').mockResolvedValue({ value: { items: [] } })
-    vi.spyOn(api, 'artifacts').mockResolvedValue({ artifacts: [artifact('own', 'dashboard:root'), artifact('child', 'builder'), artifact('foreign', 'unrelated'), artifact('unbound', '')] })
-  })
-
-  it('admits arbitrary authored layouts from the owning team, not similarly tagged unrelated sessions', async () => {
-    const { result } = renderHookWithProviders(() => useCommandCenter('root'), { store: store() })
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.dashboards.map(a => a.slug)).toEqual(['own', 'child'])
-    expect(result.current.nodes.map(n => n.slot)).toEqual(['root', 'builder'])
-    expect(result.current.relevant).toBe(true)
-    expect(result.current.stale).toBe(false)
-  })
-
-  it('admits channel-qualified artifacts only for the owning slot', async () => {
-    const initial = store().getState()
-    const channelStore = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'slack_1785.12', messages: 0, running: false }] } })
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [artifact('own', 'slack:1785.12'), artifact('canonical', 'slack_1785.12'), artifact('foreign', 'slack:999'), artifact('unknown', 'other:1785.12')] })
-    const { result } = renderHookWithProviders(() => useCommandCenter('slack_1785.12'), { store: channelStore })
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.dashboards.map(a => a.slug)).toEqual(['own', 'canonical'])
   })
 
   it('never falls back to the whole fleet while the owning slot is unresolved', () => {
     const { result } = renderHookWithProviders(() => useCommandCenter(null), { store: store() })
     expect(result.current.nodes).toEqual([])
     expect(result.current.attention).toEqual([])
-    expect(result.current.dashboards).toEqual([])
     expect(api.pendingQuestions).not.toHaveBeenCalled()
   })
 
@@ -64,7 +43,6 @@ describe('task dashboard sources and containment', () => {
     const { result } = renderHookWithProviders(() => useCommandCenter(null, true, 'fleet'), { store: store() })
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.nodes.map(n => n.slot)).toEqual(['root', 'builder', 'unrelated'])
-    expect(result.current.dashboards.map(a => a.slug)).toEqual(['own', 'child', 'foreign'])
     expect(api.sessionWorkProjection).not.toHaveBeenCalled()
     expect(result.current.stale).toBe(false)
     expect(result.current.updatedAt).toBeGreaterThan(0)
@@ -77,35 +55,97 @@ describe('task dashboard sources and containment', () => {
     expect(result.current.updatedAt).toBe(0)
   })
 
-  it('discovers a later publication and question for an isolated idle slot without a store update', async () => {
-    const initial = store().getState()
-    const idleStore = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: false }] } })
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
-    const { result } = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: idleStore })
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.relevant).toBe(false)
-    const unchangedState = idleStore.getState()
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [artifact('later', 'root')] })
-    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'root', card_id: 'later-question', questions: [{ question: 'Which scope?', options: [{ label: 'Stable' }] }] }])
-    await act(async () => { await result.current.queryClient.refetchQueries({ queryKey: ['command-center'] }) })
-    await waitFor(() => expect(result.current.relevant).toBe(true))
-    await waitFor(() => expect(result.current.attention.map(a => a.id)).toEqual(['question:root:later-question']))
-    expect(idleStore.getState()).toBe(unchangedState)
-    expect(result.current.dashboards.map(a => a.slug)).toEqual(['later'])
-  })
-
-  it('polls no source in any scope, leaving refresh to the frames that announce changes', async () => {
+  it('pulls the work board on a clock and polls no other source', async () => {
+    // The decision sources are refreshed by the frame that announces each of
+    // them, which is enough when the only failure is a missed frame. The work
+    // board also PULLS, so it catches up with the ledger whether or not a push
+    // arrives -- the one thing a client cannot be left waiting for.
     const intervals = (client: ReturnType<typeof useQueryClient>) => client.getQueryCache().findAll({ queryKey: ['command-center'] })
-      .flatMap(q => q.observers.map(o => o.options.refetchInterval))
+      .flatMap(q => q.observers.map(o => [q.queryKey, o.options.refetchInterval, o.options.enabled] as const))
     for (const [root, scope] of [['root', 'task'], [null, 'fleet']] as const) {
       const view = renderHookWithProviders(() => ({ ...useCommandCenter(root, true, scope), queryClient: useQueryClient() }), { store: store() })
       await waitFor(() => expect(view.result.current.loading).toBe(false))
       const seen = intervals(view.result.current.queryClient)
-      expect(seen.length).toBeGreaterThanOrEqual(4)
-      expect(seen.every(i => !i)).toBe(true)
+      expect(seen.length).toBeGreaterThanOrEqual(2)
+      const isWork = (key: readonly unknown[]) => key[2] === 'work'
+      for (const [key, interval] of seen) {
+        expect(interval, String(key)).toBe(isWork(key) ? WORK_BOARD_PULL_MS : undefined)
+      }
+      // The fleet page reads no per-session board, so its work query is disabled
+      // and the interval on it never fires.
+      expect(seen.filter(([key]) => isWork(key)).map(([, , enabled]) => enabled)).toEqual([scope === 'task'])
       view.unmount()
     }
     expect(api.pendingQuestions).toHaveBeenCalledTimes(2)
+  })
+
+  it('pulls at the cadence the Crew Board page already re-reads the same board', async () => {
+    // Not a figure chosen here: one dataset, one cadence, kept in step with the
+    // other surface that reads it.
+    expect(WORK_BOARD_PULL_MS).toBe(CREW_BOARD_POLL_MS)
+  })
+
+  it('applies the newest read even when a frame already applied a HIGHER revision', async () => {
+    // THE FIX. A pushed frame at revision 9 is applied; the server then answers a
+    // read at revision 2, because a revision belongs to the process that folded
+    // and orders frames, not reads. The read is the server's own current answer,
+    // so it becomes the board. Gating it instead left the panel on the pushed
+    // value with nothing able to correct it: the board read 4 items while the
+    // ledger held 5, and stayed there.
+    resetSlotProjectionRevisions()
+    const initial = store().getState()
+    const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    const pushed = [{ item_id: 'a', title: 'pushed', state: 'open' }]
+    const read = [{ item_id: 'a', title: 'pushed', state: 'open' }, { item_id: 'b', title: 'fifth item', state: 'open' }]
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [] }, revision: 1 })
+    const view = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: solo })
+    await waitFor(() => expect(view.result.current.loading).toBe(false))
+
+    const frame = takeFoldedSlotProjection({ slot: 'root', fold: 'work', revision: 9, value: { items: pushed } })
+    expect(frame.kind).toBe('folded')
+    if (frame.kind !== 'folded') throw new Error('expected a folded frame')
+    act(() => { seedFoldedProjection(view.result.current.queryClient, 'root', frame.frame) })
+    await waitFor(() => expect(view.result.current.workItems.map(w => w.item_id)).toEqual(['a']))
+
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: read }, revision: 2 })
+    await act(async () => {
+      await view.result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'root', 'work'], exact: true })
+    })
+    await waitFor(() => expect(view.result.current.workItems.map(w => w.item_id)).toEqual(['a', 'b']))
+    // And the query holds the response itself, not a value kept in its place. The
+    // read's own revision is stripped before caching, so it cannot later be read
+    // as a floor that rejects a newer push.
+    expect(view.result.current.queryClient.getQueryData(['command-center', 'root', 'work']))
+      .toEqual({ value: { items: read } })
+  })
+
+  it('a read never raises a floor that drops a later push', async () => {
+    // THE OTHER DIRECTION, and the one that regressed. A REST read answers with
+    // its own revision; a push frame then arrives at a LOWER number, because read
+    // and frame revisions are not one scale (the read's floor could sit above
+    // every frame the folding process will mint). The push MUST still apply --
+    // the read's revision is stripped before caching, so seedFoldedProjection
+    // finds no floor to reject it. Left on the entry, the push was dropped
+    // silently and the board stayed stale until the clock pull.
+    resetSlotProjectionRevisions()
+    const initial = store().getState()
+    const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
+    const read = [{ item_id: 'a', title: 'from read', state: 'open' }]
+    const pushed = [{ item_id: 'a', title: 'from read', state: 'open' }, { item_id: 'b', title: 'from push', state: 'open' }]
+    // The read answers at a HIGH revision 50.
+    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: read }, revision: 50 })
+    const view = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: solo })
+    await waitFor(() => expect(view.result.current.workItems.map(w => w.item_id)).toEqual(['a']))
+
+    // A push frame at a LOWER revision 7 then arrives; it must apply.
+    const frame = takeFoldedSlotProjection({ slot: 'root', fold: 'work', revision: 7, value: { items: pushed } })
+    expect(frame.kind).toBe('folded')
+    if (frame.kind !== 'folded') throw new Error('expected a folded frame')
+    act(() => { seedFoldedProjection(view.result.current.queryClient, 'root', frame.frame) })
+
+    await waitFor(() => expect(view.result.current.workItems.map(w => w.item_id)).toEqual(['a', 'b']))
+    expect(view.result.current.queryClient.getQueryData(['command-center', 'root', 'work']))
+      .toEqual({ value: { items: pushed }, revision: 7 })
   })
 
   it('finds a slot\'s team roots by walking its creators, stopping on a cycle', () => {
@@ -120,17 +160,14 @@ describe('task dashboard sources and containment', () => {
     expect(teamRoots(slots, 'a')).toEqual(['a', 'b'])
   })
 
-  it('reads the work board from the dock only for a team or a slot with a published view, and never refetches on focus', async () => {
+  it('reads the work board for the task panel and never refetches a healthy source on focus', async () => {
     const initial = store().getState()
     const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
-    // A lone slot with no published view: nothing keeps the dock on screen, so
-    // the whole-log fold stays unread.
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
-    const dock = renderHookWithProviders(() => ({ ...useCommandCenter('root', true, 'task', { dock: true }), queryClient: useQueryClient() }), { store: solo })
-    await waitFor(() => expect(dock.result.current.loading).toBe(false))
-    expect(api.sessionWorkProjection).not.toHaveBeenCalled()
+    const panel = renderHookWithProviders(() => ({ ...useCommandCenter('root'), queryClient: useQueryClient() }), { store: solo })
+    await waitFor(() => expect(panel.result.current.loading).toBe(false))
+    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
     const own = (key: readonly unknown[]) => key[0] === 'command-center' || key[0] === 'global-approvals'
-    const observers = dock.result.current.queryClient.getQueryCache().getAll().filter(q => own(q.queryKey)).flatMap(q => q.observers)
+    const observers = panel.result.current.queryClient.getQueryCache().getAll().filter(q => own(q.queryKey)).flatMap(q => q.observers)
     expect(observers.length).toBeGreaterThan(0)
     // A healthy source is left to its frames; only a failed one re-reads on focus.
     const onFocus = (o: (typeof observers)[number]) => {
@@ -138,33 +175,6 @@ describe('task dashboard sources and containment', () => {
       return typeof option === 'function' ? option(o.getCurrentQuery()) : option
     }
     expect(observers.every(o => onFocus(o) === false)).toBe(true)
-    dock.unmount()
-    // The same lone slot with its own published view: the dock is on screen for
-    // that view, so its verdict needs the board too.
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [artifact('own', 'dashboard:root')] })
-    const viewed = renderHookWithProviders(() => useCommandCenter('root', true, 'task', { dock: true }), { store: solo })
-    await waitFor(() => expect(viewed.result.current.loading).toBe(false))
-    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
-    viewed.unmount()
-    vi.mocked(api.sessionWorkProjection).mockClear()
-    const team = renderHookWithProviders(() => useCommandCenter('root', true, 'task', { dock: true }), { store: store() })
-    await waitFor(() => expect(team.result.current.loading).toBe(false))
-    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
-    team.unmount()
-    vi.mocked(api.sessionWorkProjection).mockClear()
-    const panel = renderHookWithProviders(() => useCommandCenter('root'), { store: solo })
-    await waitFor(() => expect(panel.result.current.loading).toBe(false))
-    expect(api.sessionWorkProjection).toHaveBeenCalledWith('root')
-  })
-
-  it('never shows a board the panel cached once the dock stops reading it', async () => {
-    const initial = store().getState()
-    const solo = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [{ key: 'root', messages: 0, running: true }] } })
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
-    vi.mocked(api.sessionWorkProjection).mockResolvedValue({ value: { items: [{ item_id: 'one', title: 'Old item', state: 'accepted' }] } })
-    const both = renderHookWithProviders(() => ({ panel: useCommandCenter('root'), dock: useCommandCenter('root', true, 'task', { dock: true }) }), { store: solo })
-    await waitFor(() => expect(both.result.current.panel.workItems).toHaveLength(1))
-    expect(both.result.current.dock.workItems).toEqual([])
   })
 
   it('keeps decisions fresh when an optional source fails, and shares the app approvals cache', async () => {
@@ -199,30 +209,65 @@ describe('task dashboard sources and containment', () => {
 
   it('names every failed optional source in one notice, saying the reassurance once', () => {
     expect(missingSourcesNotice([])).toBeNull()
-    const both = missingSourcesNotice(['runs', 'views'])!
-    expect(both).toBe(i18nT('commandCenter.partial_sources', { sources: fmtList([i18nT('commandCenter.source_runs'), i18nT('commandCenter.source_views')]) }))
+    const both = missingSourcesNotice(['runs', 'work'])!
+    expect(both).toBe(i18nT('commandCenter.partial_sources', { sources: fmtList([i18nT('commandCenter.source_runs'), i18nT('commandCenter.source_work')]) }))
     expect(both).toContain(i18nT('commandCenter.source_runs'))
-    expect(both).toContain(i18nT('commandCenter.source_views'))
-    expect(both).not.toContain(i18nT('commandCenter.source_work'))
+    expect(both).toContain(i18nT('commandCenter.source_work'))
   })
 
-  it('retains only stateless drafts by exact normalized slot and card, clearing on scope changes', async () => {
+  it('reports a draft for a BLOCKING ask too, while still refusing to retain its card', async () => {
+    // `hasQuestionDraft` is what a host keeps its panel mounted on, so it has to
+    // be true of every question being typed into. Retention is the narrower rule:
+    // a blocking `ask_id` card is owned by the live list and must not be resurrected
+    // past its retirement. Read off the retention map, a blocking ask reported no
+    // draft at all -- the host released the panel and the typed answer went with
+    // the unmount.
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const typed = { 'Which scope?': 'Stable' }
+    const blocking = { slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }
+    // The ask is live: a draft on a retired ask moves to the composer instead of being held.
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
+    const { result, rerender } = renderHookWithProviders(() => useCommandCenter('root'), { store: store() })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.hasQuestionDraft).toBe(false)
+    act(() => { result.current.onQuestionDraftChange(blocking, typed) })
+    expect(result.current.hasQuestionDraft).toBe(true)
+    // Only the live card is listed: the hook invents no second copy.
+    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:blocked'])
+    act(() => { result.current.onQuestionDraftChange(blocking, {}) })
+    expect(result.current.hasQuestionDraft).toBe(false)
+    // A stateless card reports the same way, and is retained as before.
+    const stateless = { slot: 'root', card_id: 'same', questions }
+    act(() => { result.current.onQuestionDraftChange(stateless, typed) })
+    expect(result.current.hasQuestionDraft).toBe(true)
+    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:blocked', 'question:root:same'])
+    // A question with neither id cannot be tracked, and must not claim a draft.
+    act(() => { result.current.onQuestionDraftChange(stateless, {}) })
+    act(() => { result.current.onQuestionDraftChange({ slot: 'root', questions }, typed) })
+    expect(result.current.hasQuestionDraft).toBe(false)
+    rerender()
+    expect(result.current.hasQuestionDraft).toBe(false)
+  })
+
+  it('retains stateless drafts by normalized slot and card, clearing on scope changes', async () => {
     let root: string | null = 'root'
     let scope: 'task' | 'fleet' = 'task'
     const { result, rerender } = renderHookWithProviders(() => useCommandCenter(root, true, scope), { store: store() })
     await waitFor(() => expect(result.current.loading).toBe(false))
     const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
     const own = { slot: 'dashboard:root', card_id: 'same', questions }
+    const answers = { 'Which scope?': 'Stable' }
     act(() => {
-      result.current.onQuestionDraftChange(own, true)
-      result.current.onQuestionDraftChange({ slot: 'builder', card_id: 'same', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', card_id: 'other', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }, true)
-      result.current.onQuestionDraftChange({ slot: 'root', questions }, true)
+      result.current.onQuestionDraftChange(own, answers)
+      result.current.onQuestionDraftChange({ slot: 'builder', card_id: 'same', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', card_id: 'other', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }, answers)
+      result.current.onQuestionDraftChange({ slot: 'root', questions }, answers)
     })
+    // The missing blocking ask restores immediately; only stateless drafts stay visible.
     expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same', 'question:builder:same', 'question:root:other'])
     const departingCallback = result.current.onQuestionDraftChange
-    act(() => result.current.onQuestionDraftChange({ ...own, slot: 'root' }, false))
+    act(() => result.current.onQuestionDraftChange({ ...own, slot: 'root' }, {}))
     expect(result.current.attention.map(a => a.id)).toEqual(['question:builder:same', 'question:root:other'])
     root = 'unrelated'
     rerender()
@@ -233,67 +278,123 @@ describe('task dashboard sources and containment', () => {
     root = null
     scope = 'fleet'
     rerender()
-    act(() => result.current.onQuestionDraftChange(own, true))
-    act(() => departingCallback(own, false))
+    act(() => result.current.onQuestionDraftChange(own, answers))
+    act(() => departingCallback(own, {}))
     expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same'])
     scope = 'task'
     rerender()
     expect(result.current.attention).toEqual([])
   })
 
-  it('reports a draft for a BLOCKING ask too, while still refusing to retain its card', async () => {
-    // `hasQuestionDraft` is what a host keeps its panel mounted on, so it has to
-    // be true of every question being typed into. Retention is the narrower rule:
-    // a blocking `ask_id` card is owned by the live list and must not be resurrected
-    // past its retirement. Read off the retention map, a blocking ask reported no
-    // draft at all -- the host released the panel and the typed answer went with
-    // the unmount.
-    const { result, rerender } = renderHookWithProviders(() => useCommandCenter('root'), { store: store() })
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
-    const blocking = { slot: 'root', ask_id: 'blocked', card_id: 'blocked-card', questions }
-    expect(result.current.hasQuestionDraft).toBe(false)
-    act(() => { result.current.onQuestionDraftChange(blocking, true) })
-    expect(result.current.hasQuestionDraft).toBe(true)
-    // Still not retained: the attention list carries nothing this hook invented.
-    expect(result.current.attention).toEqual([])
-    act(() => { result.current.onQuestionDraftChange(blocking, false) })
-    expect(result.current.hasQuestionDraft).toBe(false)
-    // A stateless card reports the same way, and is retained as before.
-    const stateless = { slot: 'root', card_id: 'same', questions }
-    act(() => { result.current.onQuestionDraftChange(stateless, true) })
-    expect(result.current.hasQuestionDraft).toBe(true)
-    expect(result.current.attention.map(a => a.id)).toEqual(['question:root:same'])
-    // A question with neither id cannot be tracked, and must not claim a draft.
-    act(() => { result.current.onQuestionDraftChange(stateless, false) })
-    act(() => { result.current.onQuestionDraftChange({ slot: 'root', questions }, true) })
-    expect(result.current.hasQuestionDraft).toBe(false)
-    rerender()
-    expect(result.current.hasQuestionDraft).toBe(false)
-    // A trailing [OPTIONS:] ask carries no id either, but a pick in it is a draft
-    // the host must hold the panel for; it is never retained as a card.
-    const followUp = { slot: 'root', followUp: true, questions }
-    act(() => { result.current.onQuestionDraftChange(followUp, true) })
-    expect(result.current.hasQuestionDraft).toBe(true)
-    expect(result.current.attention).toEqual([])
-    act(() => { result.current.onQuestionDraftChange(followUp, false) })
-    expect(result.current.hasQuestionDraft).toBe(false)
+  it('holds a pick in a trailing [OPTIONS:] ask as a draft only while that ask is offered', async () => {
+    // The ask carries no id, but a pick in it is unsent text the host must hold
+    // the panel for. It is the session's own, never retained past its retirement
+    // and never restored to the composer: the labels are the agent's words.
+    const initial = createTestStore().getState()
+    const taskStore = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slots: [
+      { key: 'root', title: 'Conductor', messages: 0, running: true },
+      { key: 'builder', created_by: 'root', messages: 1, running: false, has_options: true, options: ['Stable', 'Nightly'] },
+    ] } })
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    try {
+      const { result } = renderHookWithProviders(() => useCommandCenter('root'), { store: taskStore })
+      await waitFor(() => expect(result.current.loading).toBe(false))
+      const [offered] = result.current.attention
+      expect(offered.question?.followUp).toBe(true)
+      expect(result.current.hasQuestionDraft).toBe(false)
+      act(() => { result.current.onQuestionDraftChange(offered.question!, { '': 'Stable' }) })
+      expect(result.current.hasQuestionDraft).toBe(true)
+      // The hook invents no second card for the pick.
+      expect(result.current.attention.map(a => a.id)).toEqual([offered.id])
+      act(() => { result.current.onQuestionDraftChange(offered.question!, {}) })
+      expect(result.current.hasQuestionDraft).toBe(false)
+      // The session moved on under the pick: the draft goes with the ask.
+      act(() => { result.current.onQuestionDraftChange(offered.question!, { '': 'Stable' }) })
+      expect(result.current.hasQuestionDraft).toBe(true)
+      act(() => { taskStore.dispatch(updateSlot({ key: 'builder', running: true })) })
+      await waitFor(() => expect(result.current.hasQuestionDraft).toBe(false))
+      expect(result.current.attention).toEqual([])
+      expect(restored).toEqual([])
+      expect(result.current.restoredQuestionNotices).toEqual([])
+    } finally {
+      unregister()
+    }
   })
 
-  it('renders model HTML through the sandbox document service without a privileged bridge', async () => {
-    const modelHtml = '<article><h1>Dependency map</h1><script>window.taskSpecific=true</script></article>'
-    vi.spyOn(api, 'artifact').mockResolvedValue(artifact('own', 'root', modelHtml))
-    const mint = vi.spyOn(api, 'sandboxDocUrl').mockResolvedValue({ url: '/sandbox-doc/test/token' })
-    const { container } = renderWithProviders(<TaskDashboardFrame artifact={artifact('own', 'root')} active />)
-    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
-    const frame = container.querySelector('iframe')!
-    expect(frame.getAttribute('sandbox')).toBe(TASK_DASHBOARD_SANDBOX)
-    expect(frame.getAttribute('sandbox')).toBe('')
-    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
-    expect(mint).toHaveBeenCalledWith(expect.stringContaining('Dependency map'))
-    expect(mint.mock.calls[0][0]).toContain("connect-src 'none'")
-    expect(mint.mock.calls[0][0]).toContain("script-src 'none'")
-    expect(mint.mock.calls[0][0]).not.toContain('window.taskSpecific')
-    expect(container.querySelector('script')).toBeNull()
+  it('discards a settled blocking draft retired by another card surface', async () => {
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const blocking = { slot: 'root', ask_id: 'settled-elsewhere', questions }
+    const taskStore = store()
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const view = renderHookWithProviders(() => ({
+      ...useCommandCenter('root'),
+      queryClient: useQueryClient(),
+    }), { store: taskStore })
+
+    try {
+      await waitFor(() => expect(view.result.current.loading).toBe(false))
+      act(() => {
+        view.result.current.onQuestionDraftChange(blocking, { 'Which scope?': 'Stable' })
+        taskStore.dispatch(setQuestionRequestInFlight({ ask_id: 'settled-elsewhere', inFlight: true }))
+        taskStore.dispatch(markQuestionSettled({ ask_id: 'settled-elsewhere' }))
+        taskStore.dispatch(setQuestionRequestInFlight({ ask_id: 'settled-elsewhere', inFlight: false }))
+      })
+      vi.mocked(api.pendingQuestions).mockResolvedValue([])
+      await act(async () => {
+        await view.result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] })
+      })
+      await waitFor(() => expect(view.result.current.hasQuestionDraft).toBe(false))
+      expect(restored).toEqual([])
+      expect(view.result.current.restoredQuestionNotices).toEqual([])
+      expect(view.result.current.attention.some(item => item.id === 'question:root:settled-elsewhere')).toBe(false)
+    } finally {
+      unregister()
+    }
   })
+
+  it('discards a blocking draft when the pending snapshot says it was answered', async () => {
+    const questions = [{ question: 'Which scope?', options: [{ label: 'Stable' }] }]
+    const blocking = { slot: 'root', ask_id: 'answered-elsewhere', questions }
+    const taskStore = store()
+    vi.mocked(api.pendingQuestions).mockResolvedValue([blocking])
+    const restored: string[] = []
+    const unregister = registerMainComposer((slot, text) => {
+      restored.push(`${slot}:${text}`)
+      return true
+    })
+    const view = renderHookWithProviders(() => ({
+      ...useCommandCenter('root'),
+      queryClient: useQueryClient(),
+    }), { store: taskStore })
+
+    try {
+      await waitFor(() => expect(view.result.current.loading).toBe(false))
+      act(() => view.result.current.onQuestionDraftChange(
+        blocking,
+        { 'Which scope?': 'Stable' },
+      ))
+      const retired = Object.assign([], {
+        resolved: { 'answered-elsewhere': 'answered' },
+      })
+      vi.mocked(api.pendingQuestions).mockResolvedValue(retired)
+      await act(async () => {
+        await view.result.current.queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] })
+      })
+      await waitFor(() => expect(view.result.current.hasQuestionDraft).toBe(false))
+      expect(restored).toEqual([])
+      expect(view.result.current.restoredQuestionNotices).toEqual([])
+    } finally {
+      unregister()
+    }
+  })
+
 })

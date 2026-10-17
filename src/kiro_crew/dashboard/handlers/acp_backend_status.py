@@ -169,6 +169,7 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
     than holding a second, differently-shaped notion of a row -- and a field added
     to one verb cannot go missing from the other.
     """
+    from kiro_crew.acp_backends import backend_to_stored
     from kiro_crew.agent_sdk import (
         INSTALLED,
         MISSING,
@@ -180,7 +181,9 @@ def _row(state: Any, selectable: set) -> Dict[str, Any]:
 
     auth = declaration_for(state.backend)
     return {
-        "id": state.backend,
+        # The config-file spelling, so a row id is exactly what the panel PATCHes
+        # into ``agent.acp_backend`` (Kiro CLI is ``"kiro"``, never ``""``).
+        "id": backend_to_stored(state.backend),
         "policy_id": state.policy_id,
         "selectable": state.backend in selectable,
         "independent_setup": state.backend in ACP_BACKENDS_INDEPENDENT_SETUP,
@@ -266,10 +269,10 @@ async def api_acp_backend_status(request: web.Request) -> web.Response:
 async def api_acp_backend_recheck(request: web.Request) -> web.Response:
     """POST /api/acp-backends/recheck -- re-probe ONE backend, cache cleared first.
 
-    The body names the backend: ``{"backend": "<id>"}``. The kiro backend is the
-    empty string in this vocabulary and is a REAL value, so an absent key and
-    ``""`` cannot be told apart by truthiness -- the key's PRESENCE is what is
-    checked.
+    The body names the backend: ``{"backend": "<id>"}``, in the row-id (config
+    file) vocabulary, where Kiro CLI is ``"kiro"``. The runtime id ``""`` is also
+    accepted for Kiro CLI, so an absent key and ``""`` cannot be told apart by
+    truthiness -- the key's PRESENCE is what is checked.
 
     The id is validated against ``ACP_BACKENDS_KNOWN`` before anything is cleared or
     probed. Not defensive tidying: an unvalidated id would be a caller-chosen key
@@ -302,9 +305,15 @@ async def api_acp_backend_recheck(request: web.Request) -> web.Response:
     # from -- so the id set and the allowlist the PATCH validates against come
     # from one place. The SDK is not asked for it because its only answer would
     # be ``probe_backends()``, which probes all eight to learn eight names.
-    from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN
+    from kiro_crew.acp_backends import (
+        ACP_BACKEND_KIRO,
+        ACP_BACKENDS_KNOWN,
+        STORED_BACKEND_KIRO,
+    )
     from kiro_crew.agent_sdk import forget_for_recheck
 
+    if backend == STORED_BACKEND_KIRO:
+        backend = ACP_BACKEND_KIRO
     if not isinstance(backend, str) or backend not in ACP_BACKENDS_KNOWN:
         return web.json_response(
             {"error": _UNKNOWN_BACKEND_MESSAGE, "code": _CODE_UNKNOWN_BACKEND},

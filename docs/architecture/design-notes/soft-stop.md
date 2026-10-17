@@ -28,7 +28,7 @@ second press escalates immediately for a user who is not willing to wait it out.
 
 ## The budget
 
-`agent.soft_stop_budget_secs` (`AgentConfig` in `config/sections.py`), default `10.0`, clamped to
+`agent.soft_stop_budget_secs` (`AgentConfig` in `config/sections_agent.py`), default `10.0`, clamped to
 `[0.5, 60.0]`. `AgentConfig.__post_init__` clamps rather than raises, matching
 what the dashboard PATCH path and the loader already do; an out-of-range value
 logs a WARNING. `config/schema.py` picks the field up automatically by dataclass
@@ -375,7 +375,7 @@ entries, so the model can see that a previous turn was halted rather than comple
 The scan is bounded because a stop from hundreds of turns ago is not actionable
 context.
 
-`history.py` preserves the `cls` JSON for `role == "system"` messages (other roles
+`history_append.py` preserves the `cls` JSON for `role == "system"` messages (other roles
 rely on role-derived cls defaults), and session restore preserves it on reload, so
 card rendering and both context mechanisms survive a gateway restart.
 

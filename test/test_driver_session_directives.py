@@ -39,7 +39,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_RESULT,
     AcpEvent,
 )
-from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome, apply_session_directive
 from kiro_crew.messaging import TransportCapabilities, TurnDriver
 from kiro_crew.messaging.dispatch import _ChannelDirectiveState, build_directive_consumer
 from kiro_crew.messaging.renderer import Renderer
@@ -521,7 +521,7 @@ class TestChannelApplierBoundary:
         assert [c["outcome"] for c in directive_calls] == ["denied"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("kind", ["suggest_followup"])
     async def test_dashboard_only_directives_refused_on_channel_transport(
         self, kind, no_dashboard_tabs
     ):
@@ -607,10 +607,10 @@ class TestBuildDirectiveConsumer:
 
         async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
             seen.append((state, slot, session_key, kind, args, producer_is_channel))
-            return "ok"
+            return DirectiveOutcome("ok")
 
         monkeypatch.setattr(
-            "kiro_crew.dashboard.session_directive_apply.apply_session_directive", _spy
+            "kiro_crew.dashboard.session_directive_apply.apply_session_directive_outcome", _spy
         )
 
         class _Dispatcher:
@@ -641,10 +641,10 @@ class TestBuildDirectiveConsumer:
 
         async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
             seen.append((state, producer_is_channel))
-            return "ok"
+            return DirectiveOutcome("ok")
 
         monkeypatch.setattr(
-            "kiro_crew.dashboard.session_directive_apply.apply_session_directive", _spy
+            "kiro_crew.dashboard.session_directive_apply.apply_session_directive_outcome", _spy
         )
         sessions = object()
         consume = build_directive_consumer(session_key="slack:1755000000.1", sessions=sessions)

@@ -235,7 +235,7 @@ jobs:
               -f name="Fork workflow-change guard" -f head_sha="$HEAD_SHA" \
               -f status="completed" -f conclusion="failure" \
               -f "output[title]=stale override could not be cleared" \
-              -f "output[summary]=$1" >/dev/null 2>&1 || true
+              -f "output[summary]=$1" >/dev/null || true
           }
           rc=0
           err="$(gh api --method DELETE "repos/$REPO/issues/$PR/labels/$OVERRIDE_LABEL" 2>&1 >/dev/null)" || rc=$?

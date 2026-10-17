@@ -26,7 +26,13 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from body_stream_helpers import BodyStreamPayload
 
-from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.acp.types import (
+    EVENT_COMPLETE,
+    EVENT_PERMISSION_REQUEST,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_STALE_RECOVER,
+    AcpEvent,
+)
 from kiro_crew.dashboard.handlers.taskrunner import (
     _run_refine,
     _validate_spec_path,
@@ -175,6 +181,24 @@ def _body(resp: web.Response) -> Any:
 
 class TestStatus:
     @pytest.mark.asyncio
+    async def test_running_describes_only_visible_runs(self, tmp_path: Path) -> None:
+        """A hidden cron run must not make an idle visible result look active."""
+        runner = _runner(tmp_path)
+        runner.status.return_value = {
+            "running": True,
+            "runs": [
+                {"source": "dashboard", "running": False},
+                {"source": "cron", "running": True},
+            ],
+        }
+
+        resp = await api_taskrunner_status(_request(_state(runner), "GET"))
+
+        data = _body(resp)
+        assert data["runs"] == [{"source": "dashboard", "running": False}]
+        assert data["running"] is False
+
+    @pytest.mark.asyncio
     async def test_unavailable_when_no_runner(self) -> None:
         resp = await api_taskrunner_status(_request(_state(None), "GET"))
         assert resp.status == 200
@@ -241,6 +265,36 @@ class TestStatus:
 
 
 class TestStart:
+    @pytest.mark.asyncio
+    async def test_disabled_task_runner_app_refuses_start(self, tmp_path: Path) -> None:
+        # Disabled in Library means no new runs: the run would have no page.
+        runner = _runner(tmp_path)
+        with patch(
+            "kiro_crew.apps.manager._read_installed",
+            return_value=SimpleNamespace(enabled=False),
+        ) as read:
+            resp = await api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# t"})
+            )
+        assert resp.status == 409
+        assert _body(resp)["code"] == "app_disabled"
+        assert "Task Runner is disabled" in _body(resp)["error"]
+        read.assert_called_once_with("projects")
+        runner.start_background.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("meta", [None, SimpleNamespace(enabled=True)])
+    async def test_enabled_or_unregistered_app_still_starts(
+        self, tmp_path: Path, meta: Any
+    ) -> None:
+        runner = _runner(tmp_path)
+        with patch("kiro_crew.apps.manager._read_installed", return_value=meta):
+            resp = await api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# t"})
+            )
+        assert resp.status == 200
+        runner.start_background.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_no_runner_is_400(self) -> None:
         resp = await api_taskrunner_start(_request(_state(None), json_body={"spec": "x"}))
@@ -736,6 +790,7 @@ def _chat_state(runner: MagicMock | None) -> SimpleNamespace:
     state = SimpleNamespace(
         task_runner=runner,
         _background_tasks=set(),
+        get_slot=MagicMock(return_value=None),
         get_or_create_slot=MagicMock(return_value=slot),
         push_slots_update=MagicMock(),
     )
@@ -1512,6 +1567,43 @@ class TestRunRefine:
         state.sessions = sessions
         await _run_refine(state, "x")
         assert state._refine_status == "cancelled"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    async def test_a_refine_the_backend_never_finished_is_an_error(self, stop_reason) -> None:
+        """A cut-off refine is reported as an error that names the stop reason, and
+        its partial spec is still broadcast, so it cannot pass for a finished one."""
+        state = _refine_state()
+        state.sessions = self._sessions(
+            [
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK, text="## Spec\n1. Build the parser\n2. Wire the CL"
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason),
+            ]
+        )
+        await _run_refine(state, "build a thing")
+        final = state.broadcast_ws.call_args.args[1]
+        assert final["status"] == "error"
+        assert "did not finish the turn" in final["error"]
+        assert stop_reason in final["error"]
+        assert final["text"].endswith("Wire the CL")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_reason", ["end_turn", "cancelled"])
+    async def test_a_refine_that_ends_its_turn_is_done(self, stop_reason) -> None:
+        """A finished turn and a user-requested stop keep the refined spec."""
+        state = _refine_state()
+        state.sessions = self._sessions(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="## Spec\n1. Build the parser"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason),
+            ]
+        )
+        await _run_refine(state, "build a thing")
+        final = state.broadcast_ws.call_args.args[1]
+        assert final["status"] == "done"
+        assert final["error"] == ""
 
 
 class TestNonObjectBodiesAcrossConvertedHandlers:

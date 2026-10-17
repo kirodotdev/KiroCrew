@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
@@ -40,12 +39,17 @@ vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
+    // The warm greeting's read of the crewmate's work ledger. No ledger is the
+    // state every case not about the greeting wants: the chat opens bare.
+    crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
+    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
     memberBriefing: vi.fn(() => Promise.resolve({ slug: '', member: '', supported: true, text: '', updated_ts: null, redacted: false, truncated: false })),
-    memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    autonudgeForSlot: vi.fn(() => Promise.resolve({ enabled: true, loop: null })),
+    monitorForSlot: vi.fn(() => Promise.resolve({ enabled: true, monitor: null })),
     // The card's description comes from the crew registry; none of these cases need one.
     kirocrewAgents: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     // The card's list and the pushed section read one cron list and filter it per
@@ -64,6 +68,10 @@ vi.mock('../../api/client', () => ({
     agentCatalog: vi.fn(() => Promise.resolve({ agents: [], default_agent: 'kirocrew' })),
     workspaces: vi.fn(() => Promise.resolve({ workspaces: [] })),
     kirocrewConfig: vi.fn(() => Promise.resolve({ agents: {} })),
+    memberGoals: {
+      get: vi.fn(() => Promise.resolve({ goals: [] })), setGoal: vi.fn(), setKeyResults: vi.fn(), setSchedules: vi.fn(),
+    },
+    sendChat: vi.fn(),
   },
 }))
 
@@ -237,8 +245,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   delete (window as unknown as { __kirocrewPluginHandlesFiles?: boolean }).__kirocrewPluginHandlesFiles
-  // The Dashboard tab and the in-chat dock are a Feature Preview, on here.
-  localStorage.setItem(PREVIEW_DASHBOARD, '1')
   __resetPanelTabs()
   setWindowWidth(WIDE_WINDOW)
   vi.mocked(api.crons).mockResolvedValue({ jobs: JOBS } as never)
@@ -769,5 +775,193 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     fireEvent(window, new Event('resize'))
     await waitFor(() => expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument())
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
+  })
+})
+
+describe('MembersPage Profile card — Memory tile', () => {
+  async function openProfile(member: Record<string, unknown>) {
+    mockRoster([row(member)])
+    renderWithProviders(<NavigationLeaveGuardProvider><MembersPage /><LeaveProbe /></NavigationLeaveGuardProvider>)
+    fireEvent.click(await screen.findByText(member.name as string))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent(`member-${member.slug}`))
+    fireEvent.click(await screen.findByTestId('member-identity-pill'))
+    const card = await screen.findByTestId('crew-profile-panel')
+    fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
+    return await screen.findByTestId('crew-profile-memory')
+  }
+
+  it("opens THAT crewmate's private memory page, the store preselected", async () => {
+    const tile = await openProfile({
+      name: 'radar', slug: 'radar', slot_key: 'member-radar',
+      memory_store: 'member-radar', memory_version: 2, memory_owner: 'radar',
+    })
+    navigateSpy.mockClear()
+    fireEvent.click(tile)
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=member-radar'))
+  })
+
+  it('stays a readout for a crewmate on the shared store', async () => {
+    const tile = await openProfile({
+      name: 'scout', slug: 'scout', slot_key: 'member-scout',
+      memory_store: 'default', memory_version: 1, memory_owner: '',
+    })
+    expect(tile.tagName).toBe('DIV')
+  })
+})
+
+// Goals shares the real Profile guard and placement hosts with Schedules.
+describe('MembersPage Profile card — Goals retention and delivery', () => {
+  const goals = {
+    slug: 'oncall', member: 'oncall',
+    goals: [{ id: 'g00000001', number: 1, text: 'Keep releases current', created_at: 0, updated_at: 0, updated_by: 'user' }],
+    key_results: [{ id: 'k00000001', text: 'Release notes', target: '10', current: '', updated_at: 0, readings: [], goal_ids: ['g00000001'] }],
+    schedules: { daily: false, weekly: false, monthly: false, weekday: 1, month_day: 1, time: '09:00', timezone: '' },
+    reports: [], removed_goal: null, removed_key_result: null,
+    limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
+  }
+  type Draft = 'goal' | 'milestone' | 'tracking'
+  const draftText = 'Keep this draft'
+
+  beforeEach(() => {
+    for (const fn of Object.values(api.memberGoals)) vi.mocked(fn).mockReset()
+    vi.mocked(api.memberGoals.get).mockResolvedValue(goals as never)
+    vi.mocked(api.sendChat).mockReset()
+    vi.mocked(api.sendChat).mockResolvedValue({ ok: true, json: async () => ({ ok: true }) } as Response)
+  })
+
+  async function openGoalsDraft(kind: Draft, docked = false) {
+    if (docked) localStorage.setItem('mc-members-panel-open', '0')
+    await openCrewmate('oncall', ['scout'])
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Goals' }))
+    if (kind === 'goal') {
+      fireEvent.click(await screen.findByTestId('crew-goals-goal'))
+    } else if (kind === 'milestone') {
+      fireEvent.click(await screen.findByTestId('goal-key-result-open'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit milestone' }))
+    } else {
+      fireEvent.click(await screen.findByTestId('crew-goals-track'))
+    }
+    const input = kind === 'milestone'
+      ? await screen.findByLabelText('Milestone')
+      : await screen.findByTestId(kind === 'goal' ? 'crew-goals-long-term-input' : 'crew-goals-track-input')
+    fireEvent.change(input, { target: { value: draftText } })
+    await waitFor(() => expect(holdsDocument()).toBe(true))
+    return input
+  }
+
+  it.each(['goal', 'milestone', 'tracking'] as const)('guards every local exit and the route for a %s draft', async kind => {
+    const input = await openGoalsDraft(kind)
+    const exits = [
+      () => fireEvent.click(screen.getByTestId('crew-profile-close')),
+      () => fireEvent.click(screen.getByTestId('crew-profile-back')),
+      () => fireEvent.keyDown(screen.getByTestId('crew-profile-panel'), { key: 'Escape' }),
+      () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })),
+      // The pushed page covers the rail, but the tab exit must also guard a
+      // programmatic selection rather than unmounting the Goals body.
+      () => fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true })),
+      () => fireEvent.click(screen.getByTestId('member-back')),
+      () => fireEvent.click(screen.getByRole('button', { name: 'Open quiet sessions' })),
+    ]
+    for (const exit of exits) {
+      exit()
+      await answer('Cancel')
+      expect(input).toBeInTheDocument()
+      expect(input).toHaveValue(draftText)
+      expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
+    }
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    try {
+      expect(askToLeave()).toBe('false')
+      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?')
+      expect(input).toHaveValue(draftText)
+    } finally { confirm.mockRestore() }
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    await answer('Discard')
+    await waitFor(() => expect(holdsDocument()).toBe(false))
+    await waitFor(() => expect(screen.queryByDisplayValue(draftText)).toBeNull())
+  })
+
+  it.each(['goal', 'milestone', 'tracking'] as const)('keeps the %s draft on a declined member switch', async kind => {
+    const input = await openGoalsDraft(kind)
+    fireEvent.click(screen.getByTestId('crewmate-switcher'))
+    fireEvent.click(await screen.findByRole('option', { name: /scout/i }))
+    await answer('Cancel')
+    expect(input).toHaveValue(draftText)
+    expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall')
+  })
+
+  it.each(['goal', 'milestone', 'tracking'] as const)('retains the same %s input below md and on a remote panel reveal', async kind => {
+    const original = window.matchMedia
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      media: query, get matches() { return query.includes('max-width: 767px') && window.innerWidth < 768 },
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(), onchange: null,
+    }))
+    try {
+      const input = await openGoalsDraft(kind, true)
+      expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
+      setWindowWidth(390)
+      fireEvent(window, new Event('resize'))
+      await waitFor(() => expect(screen.getByTestId('member-back')).toBeInTheDocument())
+      expect(screen.getByDisplayValue(draftText)).toBe(input)
+      expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
+      setWindowWidth(WIDE_WINDOW)
+      fireEvent(window, new Event('resize'))
+      act(() => { window.dispatchEvent(new StorageEvent('storage', { key: 'mc-members-panel-open', newValue: '1' })) })
+      await screen.findByTestId('side-panel-root')
+      expect(screen.getByDisplayValue(draftText)).toBe(input)
+      expect(screen.getByTestId('crew-profile-docked')).toBeInTheDocument()
+      expect(screen.queryByRole('dialog')).toBeNull()
+    } finally { window.matchMedia = original }
+  })
+
+  it.each(['goal', 'milestone', 'tracking', 'checkins'] as const)('refuses all exits while a %s request is pending', async kind => {
+    let finish: (value: never) => void = () => {}
+    const pending = new Promise<never>(resolve => { finish = resolve })
+    const mutation = kind === 'goal' ? api.memberGoals.setGoal : kind === 'milestone' ? api.memberGoals.setKeyResults : kind === 'checkins' ? api.memberGoals.setSchedules : api.sendChat
+    vi.mocked(mutation).mockReturnValue(pending)
+    await openGoalsDraft(kind === 'checkins' ? 'goal' : kind)
+    if (kind === 'checkins') {
+      fireEvent.click(screen.getByTestId('crew-profile-back'))
+      await answer('Discard')
+      fireEvent.click(await screen.findByTestId('crew-goals-checkins-open'))
+      fireEvent.click(await screen.findByRole('switch', { name: 'Weekly report' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: kind === 'tracking' ? 'Send' : 'Save' }))
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    expect(holdsDocument()).toBe(true)
+    fireEvent.click(screen.getByTestId('crew-profile-close'))
+    fireEvent.click(screen.getByTestId('crew-profile-back'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Sessions', hidden: true }))
+    expect(askToLeave()).toBe('false')
+    expect(screen.getByTestId('crew-profile-panel')).toHaveAttribute('data-tab', 'goals')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await act(async () => { finish((kind === 'tracking' ? { ok: true, json: async () => ({ ok: true }) } : goals) as never) })
+    await waitFor(() => expect(holdsDocument()).toBe(false))
+  })
+
+  it.each(['dispatched', 'queued', 'refused', 'unknown', 'response-late', 'transport-error'] as const)('handles a %s receipt without silently losing or resending the request', async status => {
+    if (status === 'transport-error' || status === 'response-late') {
+      vi.mocked(api.sendChat).mockRejectedValue(status === 'response-late' ? new DOMException('deadline', 'AbortError') : new TypeError('connection lost'))
+    } else {
+      vi.mocked(api.sendChat).mockResolvedValue({
+        ok: status !== 'refused',
+        json: async () => { if (status === 'unknown') throw new SyntaxError('unreadable'); return status === 'queued' ? { ok: true, queued: true } : { ok: status === 'dispatched' } },
+      } as Response)
+    }
+    const input = await openGoalsDraft('tracking')
+    fireEvent.click(screen.getByTestId('crew-goals-track-send'))
+    if (status === 'dispatched' || status === 'queued') {
+      await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
+      expect(holdsDocument()).toBe(false)
+    } else {
+      const notice = await screen.findByTestId(status === 'refused' ? 'crew-goals-track-error' : 'crew-goals-track-unconfirmed')
+      if (status !== 'refused') expect(notice).toHaveTextContent('check the conversation above before sending it again')
+      expect(input).toHaveValue(draftText)
+      expect(holdsDocument()).toBe(true)
+      expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
+    }
+    expect(api.sendChat).toHaveBeenCalledTimes(1)
   })
 })

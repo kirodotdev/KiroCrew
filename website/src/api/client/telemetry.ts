@@ -29,7 +29,36 @@ export type WakaTimeStats = {
   }
 }
 
-export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
+/** Stacking dimensions `GET /api/usage/series` accepts. */
+export type UsageSeriesDimension = 'channel' | 'agent' | 'model' | 'cohort'
+
+/** One stack layer: a per-day value for every entry of the payload's `dates`.
+ *  `kind` separates a real bucket from the two reserved layers (`other`, the
+ *  fold of everything past the top-N, which carries how many buckets it holds;
+ *  `unattributed`, rows whose dimension value was never recorded). */
+export type UsageSeriesLayer = {
+  key: string
+  kind: 'bucket' | 'other' | 'unattributed'
+  values: number[]
+  total: number
+  members?: number
+}
+
+/** Dense local-day axis plus layers in stack order, bottom first. `truncated`
+ *  says the window held more turns than the server retains; `dropped_rows` is
+ *  how many of the oldest it left out and `complete_from` the first day it kept
+ *  whole (null when none is), so the chart can say so rather than present a
+ *  shortened window as the whole one. */
+export type UsageSeriesPayload = {
+  dates: string[]
+  series: UsageSeriesLayer[]
+  total: number
+  truncated: boolean
+  dropped_rows: number
+  complete_from: string | null
+}
+
+export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
@@ -83,16 +112,25 @@ export function createTelemetryEndpoints({ get, post, j }: ClientTransport) {
     /** The conductor's accepted work, not worker-reported completion. */
     sessionWorkProjection: (slot: string) =>
       get(`/api/sessions/${encodeURIComponent(slot)}/crew-log/projection/work`).then(j),
-    telemetryStartup: () => fetch('/api/telemetry/startup').then(j),
+    /** The Telemetry panel's payload. `range` is a query string (`days=7`, or
+     *  `since=<epoch>&until=<epoch>`); the gateway clamps it and echoes the window
+     *  it actually used as `window_days` / `window_start` / `window_end`. */
+    telemetryStartup: (range = '') => fetch('/api/telemetry/startup' + (range ? '?' + range : '')).then(j),
     // Per-turn context injection breakdown for one session. Independent of the
     // telemetry main switch: the usage rows it reads are always written.
     telemetryContextTrace: (slot: string) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
-     *  every row (the endpoint's app-ownership filter applies to app callers). */
-    usageTurns: (slot: string) =>
-      fetch('/api/usage/turns?slot=' + encodeURIComponent(slot)).then(j),
+     *  every row (the endpoint's app-ownership filter applies to app callers).
+     *  `range` is the same query string the panel's payload was fetched with. */
+    usageTurns: (slot: string, range = '') =>
+      fetch('/api/usage/turns?slot=' + encodeURIComponent(slot) + (range ? '&' + range : '')).then(j),
+    /** The Usage tab's stacked spend-over-time series: whole-install credits by
+     *  one dimension; the same always-written row store as `usageTurns`, with no
+     *  slot filter, which is why the route refuses app tokens. */
+    usageSeries: (by: UsageSeriesDimension) =>
+      get(`/api/usage/series?by=${encodeURIComponent(by)}`).then(j) as Promise<UsageSeriesPayload>,
     /** WakaTime coding stats for a named range. Returns { configured: false }
      *  when the integration is off; a 502 body carries { code: 'upstream_unavailable' }. */
     wakatimeStats: (range: string) =>

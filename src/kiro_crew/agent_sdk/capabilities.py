@@ -1,10 +1,11 @@
 """What a live session's backend can do — asked instead of which backend it is.
 
-Application code has six branches that depend on a PROPERTY of the harness: which
-model-id namespace it uses, whether its advertised list must be read back, which
-channel carries an effort change, whether compaction finishes inline, and which
-provider seam serves the session. Naming the harness instead of the property has
-one failure mode, always in the same direction. A fifth backend arrives, nobody
+Application code has seven branches that depend on a PROPERTY of the harness:
+which model-id namespace it uses, whether its advertised list must be read back,
+which channel carries an effort change, whether compaction finishes inline,
+whether it serves native todos, and which provider seam serves the session.
+Naming the harness instead of the property has one failure mode, always in the
+same direction. A fifth backend arrives, nobody
 edits the branch, and it silently takes whichever arm "not claude" happens to
 select — an arm it never demonstrated it can serve.
 ``docs/system-specs/modules/harness-parity.md`` calls this H6; RFC PR 3 is where it
@@ -59,6 +60,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_NATIVE_TODOS,
     model_registry_namespace,
 )
 from kiro_crew.agent_sdk.provider_identity import PROVIDER_ACP, PROVIDER_CLAUDE_CODE
@@ -153,6 +155,13 @@ class SessionCapabilities:
     #: itself, and firing them here too would run each one twice.
     crew_fires_spec_hooks: bool
 
+    #: Whether this harness interprets ``/todos`` as its native task-list command.
+    #:
+    #: This is deliberately narrower than general slash-command transport: the
+    #: kiro family has a native slash RPC but does not implement this command.
+    #: Unknown and newly registered backends remain False until they opt in.
+    supports_native_todos: bool
+
     #: Whether an agent spec's ``"tools": []`` is honoured as a total ban -- no
     #: MCP server AND no harness-native tool -- on this backend.
     #:
@@ -195,9 +204,16 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         model_id_namespace=model_registry_namespace(backend),
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
-        effort_via_slash_command=backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+        # The config option wins for a member of both sets: KAS sits in the
+        # kiro-family set but answers ``_kiro.dev/commands/execute`` with -32603
+        # (kiro-cli 2.28.0), so its effort travels only as ``effortLevel``.
+        effort_via_slash_command=(
+            backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS
+            and backend not in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
+        ),
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
         acp_client_spawnable=backend in ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     )
@@ -225,6 +241,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     effort_via_slash_command=False,
     compacts_inline=False,
     crew_fires_spec_hooks=False,
+    supports_native_todos=False,
     honors_zero_tool_ban=False,
     acp_client_spawnable=False,
 )
@@ -235,7 +252,7 @@ def capabilities_of(provider: object) -> SessionCapabilities:
 
     Accepts any shape and answers :data:`UNKNOWN_BACKEND_CAPABILITIES` for one
     that does not carry a real :class:`SessionCapabilities`. That is the calling
-    convention the six predicates this replaces already had — they were
+    convention the seven predicates this replaces already had — they were
     ``isinstance``-gated and answered False off a foreign shape — and it is what
     keeps a wrapper, an unstarted provider or a test double from reading as a
     member of every capability at once.
@@ -244,10 +261,26 @@ def capabilities_of(provider: object) -> SessionCapabilities:
     return caps if isinstance(caps, SessionCapabilities) else UNKNOWN_BACKEND_CAPABILITIES
 
 
+def capture_prompt_timeout(provider: object, deadline: float) -> float | None:
+    """Resolve a provider-declared transport budget for one outer deadline.
+
+    Capability ownership is read from the provider TYPE, matching the billing
+    seam: an instance-only attribute on a loose mock cannot opt in by accident.
+    A legacy duck provider declares nothing and returns ``None``, which tells the
+    caller to preserve its one-argument ``stream(message)`` invocation.
+    """
+    resolver = getattr(type(provider), "prompt_timeout_for_deadline", None)
+    if not callable(resolver):
+        return None
+    timeout = resolver(provider, deadline)
+    return float(timeout) if timeout is not None else None
+
+
 __all__ = [
     "MODEL_NAMESPACE_ACP",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
     "capabilities_for",
     "capabilities_of",
+    "capture_prompt_timeout",
 ]

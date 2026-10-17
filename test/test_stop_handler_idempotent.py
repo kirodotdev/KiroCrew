@@ -35,10 +35,7 @@ class _FakeSlot:
         #: nobody owns is cancellable by the dashboard caller.
         self._app = None
         self._active_turn_session_key = ""
-        #: Remote-execution binding — "local" so these tests exercise the LOCAL
-        #: stop path. ``stop_slot_turn`` reads it to decide whether the stop must
-        #: travel to a peer crew, and the property below mirrors ``_ChatSlot`` in
-        #: requiring the WHOLE binding rather than just the marker.
+        #: Relay-archive marker, "local" as on every ordinary slot.
         self.executor = "local"
         self.instance_id = ""
         self.remote_slot = ""
@@ -46,10 +43,6 @@ class _FakeSlot:
         self.messages: list[dict] = []
         self._dirty = False
         self.source_links_invalidated = 0
-
-    @property
-    def is_remote(self) -> bool:
-        return bool(self.executor == "remote" and self.instance_id and self.remote_slot)
 
     def append(self, role, content, cls_meta):
         self.messages.append({"role": role, "content": content, "cls": cls_meta})

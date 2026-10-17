@@ -122,3 +122,38 @@ async def test_clear_context_rejects_non_object_json(manager):
     )
 
     assert response.status == 400
+
+
+def _non_json_request(manager: ChannelManager, body: object, **match_info: str) -> MagicMock:
+    """A request whose JSON body is declared ``text/plain``."""
+    request = _request(manager, body, **match_info)
+    request.can_read_body = True
+    request.content_type = "text/plain"
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler,match_info",
+    [
+        (api_channel_create, {}),
+        (api_channel_post, {"id": "c1"}),
+        (api_channel_approve_agent, {"id": "c1", "aid": "a1"}),
+        (api_channel_clear_context, {"id": "c1"}),
+    ],
+)
+async def test_a_non_json_media_type_is_refused_415(manager, handler, match_info):
+    """``_json_object`` reads through ``read_bounded_json``."""
+    if match_info:
+        channel = manager.create(topic="incident")
+        assert channel is not None
+        match_info = {**match_info, "id": channel.id}
+        if "aid" in match_info:
+            agent = channel.add_agent(role="Orchestrator", is_orchestrator=True)
+            match_info["aid"] = agent.id
+    request = _non_json_request(manager, {"topic": "x", "text": "hi"}, **match_info)
+    response = await _invoke(handler, request)
+
+    assert response.status == 415
+    assert json.loads(response.text)["code"] == "unsupported_media_type"
+    request.json.assert_not_called()

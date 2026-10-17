@@ -57,6 +57,7 @@ def _run(harness: str) -> subprocess.CompletedProcess:
         ["bash", "-c", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 

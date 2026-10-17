@@ -1,22 +1,27 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { EyeOff, Ghost, Undo2, VenetianMask } from 'lucide-react'
+import { EyeOff, Ghost, Loader2, Undo2, VenetianMask } from 'lucide-react'
 import { Glass } from './Glass'
 
 import { i18nT } from '../i18n/t'
+import { uiLocation } from '../uiLocations/uiLocation'
 
 export type MemoryMode = 'persistent' | 'incognito' | 'temporary'
 
 interface MemoryModeChipProps {
   memoryMode?: string
   onSwitchMode: (mode: MemoryMode) => void
+  /** A switch is in flight: the chip is disabled and says so. */
+  switching?: boolean
+  /** An optimize must settle first: the chip is inert and says why. */
+  disabled?: boolean
 }
 
 const GAP = 6
 const EDGE = 8
 
 /** Memory-mode chooser chip: opens an incognito/temporary popover, or offers the way back when one is active. */
-export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps) {
+export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, disabled = false }: MemoryModeChipProps) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ bottom: number; left: number } | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -60,7 +65,11 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
   // A non-persistent memory mode is the ephemeral state; the trigger
   // then offers the way back instead of the chooser.
   const ephemeralActive = currentMode !== 'persistent'
-  const label = !ephemeralActive
+  const label = switching
+    ? i18nT('components.welcomeView.switching_memory_mode')
+    : disabled
+    ? i18nT('components.welcomeView.memory_mode_wait_for_optimize')
+    : !ephemeralActive
     ? i18nT('components.welcomeView.choose_memory_mode')
     : currentMode === 'incognito'
       ? i18nT('components.welcomeView.incognito_active_switch_to_persistent')
@@ -75,12 +84,14 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
         as="button"
         variant="chip"
         radius={8}
-        ref={btnRef}
         type="button"
         data-testid="memory-mode-chip"
-        className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer ${
+        disabled={switching || disabled}
+        aria-busy={switching || disabled}
+        {...uiLocation('chat.memory-mode', btnRef)}
+        className={`inline-flex items-center gap-1.5 rounded-lg border border-transparent px-3 py-1 text-[12px] transition-colors cursor-pointer disabled:cursor-wait ${
           ephemeralActive
-            ? 'glass-warn text-warn'
+            ? 'glass-warn glass-warn-fg'
             : 'glass-hover text-muted hover:text-text'
         }`}
         onClick={() => {
@@ -88,10 +99,10 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
           else onSwitchMode('persistent')
         }}
       >
-        {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
+        {switching ? <Loader2 size={13} className="animate-spin" /> : !ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
         <span>{label}</span>
       </Glass>
-      {open && createPortal(
+      {open && !switching && !disabled && createPortal(
         <div
           ref={popRef}
           data-testid="memory-mode-popover"
@@ -100,7 +111,7 @@ export function MemoryModeChip({ memoryMode, onSwitchMode }: MemoryModeChipProps
           style={pos ? { bottom: pos.bottom, left: pos.left } : { bottom: 0, left: 0, visibility: 'hidden' }}
         >
           {([
-            { key: 'incognito' as const, Icon: EyeOff, label: i18nT('components.welcomeView.incognito'), desc: i18nT('components.welcomeView.incognito_desc'), tile: 'bg-warn-subtle text-warn' },
+            { key: 'incognito' as const, Icon: EyeOff, label: i18nT('components.welcomeView.incognito'), desc: i18nT('components.welcomeView.incognito_desc'), tile: 'bg-warn-subtle text-warn-text' },
             { key: 'temporary' as const, Icon: VenetianMask, label: i18nT('components.welcomeView.temporary'), desc: i18nT('components.welcomeView.temporary_desc'), tile: 'bg-aim-subtle text-aim' },
           ] as const).map(t => (
             <button

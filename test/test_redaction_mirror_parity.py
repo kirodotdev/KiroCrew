@@ -1,8 +1,9 @@
 """Parity guard for the JWT credential patterns copied out of `security.py`.
 
 `security.py` owns the two JWT alternatives. Two other files carry hand-written
-copies because neither can import it: `pr_findings.py` is documented as portable
-and stdlib-only, and `sanitize.ts` runs in the browser. That is the exact setup
+copies because neither can import it: `_review_contract.py`, the prepare-pr
+scripts' shared module, is stdlib-only and portable, and `sanitize.ts` runs in
+the browser. That is the exact setup
 that already failed once: both copies missed the two-segment dashboard link
 token, so a bare token in CI-log prose and every token in chat rendered
 verbatim while the backend redacted them.
@@ -63,7 +64,7 @@ BACKEND_PKG = ROOT / "src" / "kiro_crew" / "security"
 # guard can point at the enforcing site while the sweep stays package-wide.
 BACKEND_EXFIL = BACKEND_PKG / "exfil.py"
 PREPARE_PR = (
-    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts" / "pr_findings.py"
+    ROOT / "src" / "kiro_crew" / "builtin_skills" / "kirocrew-dev" / "kirocrew-prepare-pr" / "scripts" / "_review_contract.py"
 )
 FRONTEND = ROOT / "website" / "src" / "utils" / "sanitize.ts"
 TOKEN_MINT = ROOT / "src" / "kiro_crew" / "instances" / "token_mint.py"
@@ -115,12 +116,12 @@ class TestMirrorsMatchTheBackend:
 
     def test_two_segment_alternative_is_verbatim_in_prepare_pr(self) -> None:
         _, two_segment = _jwt_alternatives()
-        assert PREPARE_PR.is_file(), f"mirror moved or was renamed: {PREPARE_PR}"
+        assert PREPARE_PR.is_file(), f"_review_contract.py mirror moved or was renamed: {PREPARE_PR}"
         assert two_segment in PREPARE_PR.read_text(encoding="utf-8"), (
-            "pr_findings.py no longer carries the two-segment link-token alternative "
+            "_review_contract.py no longer carries the two-segment link-token alternative "
             "from security.py verbatim. It runs under CPython, so it has no reason to "
             "diverge. Copy it across, or delete this assertion and say in "
-            f"pr_findings.py why the mirror is allowed to differ.\nexpected: {two_segment}"
+            f"_review_contract.py why the mirror is allowed to differ.\nexpected: {two_segment}"
         )
 
     def test_two_segment_body_is_verbatim_in_the_frontend_mirror(self) -> None:
@@ -181,7 +182,7 @@ class TestDeliberateNonMirrors:
     """Two JWT regexes are intentionally NOT pinned to the backend."""
 
     def test_prepare_pr_keeps_its_own_wider_three_segment_form(self) -> None:
-        """`pr_findings.py` predates the backend form and uses `{8,}` per segment.
+        """`_review_contract.py` predates the backend form and uses `{8,}` per segment.
 
         It is wider on the first segment and narrower on segment count. Only its
         two-segment alternative was added as a mirror; rewriting this one to match
@@ -192,7 +193,7 @@ class TestDeliberateNonMirrors:
         text = PREPARE_PR.read_text(encoding="utf-8")
         assert r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}" in text
         assert three_segment not in text, (
-            "pr_findings.py now also carries the backend three-segment alternative. "
+            "_review_contract.py now also carries the backend three-segment alternative. "
             "If that was deliberate, move the assertion into TestMirrorsMatchTheBackend."
         )
 

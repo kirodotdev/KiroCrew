@@ -1,10 +1,11 @@
-import { memo, useCallback, useId, useMemo, useState } from 'react'
-import { ChevronDown, FileDiff } from 'lucide-react'
+import { memo, useCallback, useEffect, useId, useMemo, useState } from 'react'
+import { AlertTriangle, ChevronDown, FileDiff } from 'lucide-react'
 
 import DiffBlock, { extractFilePath } from './DiffBlock'
 import { countDiffStats } from '../utils/diffLineCounts'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { pathBasename } from '../utils/pathBasename'
 
 /**
  * A prose ```diff fence, COLLAPSED to a one-line chip by default.
@@ -40,18 +41,31 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
  */
 const expandedDiffFences = new Set<string>()
 
+/**
+ * Warned fences that have already opened themselves once, keyed by `foldKey`.
+ * Without it a re-mount runs the auto-open effect again and re-opens a chip
+ * the user folded.
+ */
+const autoOpenedDiffFences = new Set<string>()
+
 /** Exported for tests: forget every remembered expansion. */
 export function resetExpandedDiffFences(): void {
   expandedDiffFences.clear()
+  autoOpenedDiffFences.clear()
 }
 
-export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pathHint, foldKey }: {
+export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pathHint, foldKey, warning }: {
   code: string
   complete: boolean
   onFileOpen?: (path: string) => void
   pathHint?: string
   /** Stable identity for remembering the open state; omit to keep it local. */
   foldKey?: string
+  /** Set when the fence may hold text that belongs after it (a finished reply
+   * whose fence never closed). The chip stays mounted, opens itself, and shows
+   * this line above it, so the user sees the chip they were watching expand
+   * rather than a different block replace it. */
+  warning?: string
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useState(() => !!foldKey && expandedDiffFences.has(foldKey))
@@ -71,12 +85,26 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
       return next
     })
   }, [foldKey])
+  // Open once when the warning arrives, and only once per fence: the effect
+  // keys on whether a warning exists, not on its text, so a language switch
+  // does not re-run it, and a re-mount finds the fence in
+  // `autoOpenedDiffFences` and leaves the user's fold alone.
+  const warned = !!warning
+  useEffect(() => {
+    if (!warned) return
+    if (foldKey) {
+      if (autoOpenedDiffFences.has(foldKey)) return
+      autoOpenedDiffFences.add(foldKey)
+      expandedDiffFences.add(foldKey)
+    }
+    setExpanded(true)
+  }, [warned, foldKey])
 
   const stats = useMemo(() => countDiffStats(code), [code])
   const headerPath = useMemo(() => extractFilePath(code)?.path, [code]) ?? pathHint ?? null
   // The chip shows the basename; two changed files sharing a name would render
   // as identical chips, so the full path lives in the native tooltip.
-  const basename = headerPath ? headerPath.split('/').pop() : null
+  const basename = headerPath ? pathBasename(headerPath) : null
   // An aria-label REPLACES the button's text, so the counts have to be in it:
   // without them a screen-reader user cannot hear how large the patch is
   // without opening it, which is the one decision the chip exists to support.
@@ -89,13 +117,19 @@ export default memo(function FoldableDiffBlock({ code, complete, onFileOpen, pat
   ].join(' · ')
 
   return (
-    <div>
+    <div data-testid={warning ? 'unclosed-diff' : undefined}>
+      {warning && (
+        <p role="note" className="my-1 flex items-center gap-1.5 text-[12px] font-medium text-warn">
+          <AlertTriangle size={12} className="shrink-0" aria-hidden />
+          {warning}
+        </p>
+      )}
       {/* Open look mirrors ToolCallLine's tool-card chip: filled background,
           full-strength text, chevron turned up. Colour alone did not read as a
           state. */}
       <button
         type="button"
-        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-hidden ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
+        className={`my-1 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[12px] leading-5 hover:text-text hover:border-border-strong cursor-pointer transition-colors focus-ring-accent ${expanded ? 'text-text border-border-strong bg-bg-hover' : 'text-muted border-border bg-bg-elevated'}`}
         data-diff-toggle
         data-testid="prose-diff-chip"
         title={headerPath ?? undefined}

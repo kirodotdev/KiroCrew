@@ -8,7 +8,6 @@ mutable runtime state, compatibility names, and process lifecycle.
 from __future__ import annotations
 
 import atexit
-import glob
 import html as _html
 import http.client
 import json
@@ -17,6 +16,7 @@ import re
 import selectors
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys as _sys
 import tempfile
@@ -37,6 +37,7 @@ from kiro_crew.apps.builtins.design_tweak.backend import (
     request_state,
 )
 from kiro_crew.apps.proxy_auth import verify_proxy_request
+from kiro_crew.env import nvm_version_bin_dirs
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
@@ -76,7 +77,6 @@ _RUNTIME_COMPAT_IMPORTS = (
     cast,
     get_credential_patterns,
     get_ppid,
-    glob,
     http.client,
     is_link_or_junction,
     is_sensitive_path,
@@ -265,7 +265,7 @@ _PEM_BODY_RE = preview_files.PEM_BODY_RE
 _STATIC_SRV: dict[str, dict[str, Any]] = {}
 
 _NODE_BIN_DIRS = dev_preview.NODE_BIN_DIRS
-_NVM_GLOB = dev_preview.NVM_GLOB
+_nvm_version_bin_dirs = nvm_version_bin_dirs
 _CHILD_ENV_STRIP = dev_preview.CHILD_ENV_STRIP
 _CHILD_ENV_STRIP_PREFIXES = dev_preview.CHILD_ENV_STRIP_PREFIXES
 _LOCKFILES = dev_preview.LOCKFILES
@@ -1003,6 +1003,19 @@ class _Server(ThreadingHTTPServer):
     """
 
     allow_reuse_address = IS_POSIX
+
+    def server_bind(self) -> None:
+        # ``http.server.HTTPServer.server_bind`` resolves ``socket.getfqdn(host)``
+        # between ``bind()`` and ``listen()``. That system-resolver lookup can
+        # stall on some macOS hosts while the socket sits bound but refuses every
+        # connect, which reads to a waiting parent as a server that never came up.
+        # This loopback listener is reached by address, never by name, so the
+        # lookup buys nothing -- skip it by binding through ``TCPServer`` and
+        # recording the address directly (mirrors plumb_cpu.LoopbackServer).
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def main() -> int:

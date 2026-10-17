@@ -147,6 +147,93 @@ async def test_provenance_written_once_before_the_spawn_event() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["high", ""])
+async def test_provenance_write_records_the_runs_reasoning_effort(effort: str) -> None:
+    """The run's per-spawn reasoning effort rides the same write as
+    ``requested_model``, so a continuation after a gateway restart restores it
+    from state.json. A run spawned without one records ``""``."""
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov02",
+        task="provenance task",
+        model="model-req",
+    )
+    info.reasoning_effort = effort
+    manager._log_spawned(info)
+    manager._agents[info.id] = info
+    writes: list[dict[str, Any]] = []
+
+    def _spy_update(agent_id: str, **kwargs: Any) -> bool:
+        writes.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_spy_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    prov_writes = [kw for kw in writes if "requested_model" in kw]
+    assert len(prov_writes) == 1, f"expected one provenance write, got {prov_writes}"
+    assert prov_writes[0]["requested_model"] == "model-req"
+    assert prov_writes[0].get("reasoning_effort") == effort, prov_writes[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("caller_pin", "role_pin"),
+    [("model-req", ""), ("", "role-model-x"), ("model-req", "role-model-x")],
+    ids=["caller-pin", "role-pin", "caller-pin-over-role-pin"],
+)
+async def test_provenance_write_records_the_callers_own_model_pin(
+    caller_pin: str, role_pin: str
+) -> None:
+    """``requested_model`` is the effective pin (the caller's, else the
+    ``agent.role_models['subagent']`` pin). A continuation after a gateway
+    restart has to tell the two apart, so the same write records the caller's
+    own pin as ``pinned_model``: a run spawned under a role pin records ``""``."""
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov03",
+        task="provenance task",
+        model=caller_pin,
+    )
+    manager._log_spawned(info)
+    manager._agents[info.id] = info
+    writes: list[dict[str, Any]] = []
+
+    def _spy_update(agent_id: str, **kwargs: Any) -> bool:
+        writes.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_spy_update),
+        patch("kiro_crew.subagent._subagent_default_model", return_value=role_pin),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    prov_writes = [kw for kw in writes if "requested_model" in kw]
+    assert len(prov_writes) == 1, f"expected one provenance write, got {prov_writes}"
+    assert prov_writes[0]["requested_model"] == (caller_pin or role_pin)
+    assert prov_writes[0].get("pinned_model") == caller_pin, prov_writes[0]
+
+
+@pytest.mark.asyncio
 async def test_provenance_write_retries_once_on_transient_failure() -> None:
     """The pre-spawn write is the SINGLE owner of the provenance fields, so a
     transient failure gets its second chance from that write's own bounded
@@ -254,6 +341,95 @@ async def test_provenance_write_retries_on_silently_skipped_merge() -> None:
     assert provenance_attempts["n"] == 2, "a reported skip must trigger the retry"
     assert len(landed) == 1 and landed[0]["requested_model"] == "model-req"
     assert info.error == ""
+
+
+def _session_record_manager(agent_id: str) -> tuple[SubagentManager, SubagentInfo]:
+    """A manager whose provider recorded a project cwd, for the session-record
+    write that is the only writer of ``cwd`` on the spawn path."""
+    sessions = _mock_sessions(served_model="model-served")
+    # The project the provider runs in is what the session record carries as
+    # ``cwd`` (run.py takes it from ``client.cwd``).
+    sessions.get_or_create.return_value[0].cwd = "/projects/chess"
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id=agent_id,
+        task="session record retry task",
+    )
+    manager._log_spawned(info)
+    manager._agents[info.id] = info
+    return manager, info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_attempt", ["raises", "skips"])
+async def test_session_record_write_retries_once(first_attempt: str) -> None:
+    """The session record is the SINGLE owner of ``cwd`` and ``session_id``, so a
+    transient failure -- an exception (a Windows sharing violation that outlived
+    the rename retry) or a reported skip (``update_state`` returned False because
+    the state was unreadable) -- gets one retry, exactly like the provenance
+    write, so a single failed attempt does not leave a record without
+    ``cwd``."""
+    manager, info = _session_record_manager(f"sessrt-{first_attempt}")
+    attempts = {"n": 0}
+    landed: list[dict[str, Any]] = []
+
+    def _flaky_update(agent_id: str, **kwargs: Any) -> bool:
+        if "session_id" in kwargs:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                if first_attempt == "raises":
+                    raise PermissionError("sharing violation")
+                return False
+            landed.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_flaky_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    assert attempts["n"] == 2, "a failed session record write must be retried once"
+    assert len(landed) == 1 and landed[0]["cwd"] == "/projects/chess"
+    assert info.error == ""
+
+
+@pytest.mark.asyncio
+async def test_session_record_write_that_never_lands_is_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Bounded: two failed attempts and the run goes on (persistence never blocks
+    the spawn), but the loss is logged at WARNING so a missing ``cwd`` is visible
+    in a CI job log."""
+    manager, info = _session_record_manager("sessrt-lost")
+    attempts = {"n": 0}
+
+    def _broken_update(agent_id: str, **kwargs: Any) -> bool:
+        if "session_id" in kwargs:
+            attempts["n"] += 1
+            raise PermissionError("sharing violation")
+        return True
+
+    with (
+        caplog.at_level("WARNING", logger="kiro_crew"),
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_broken_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    assert attempts["n"] == 2, "the retry is bounded at one"
+    assert info.error == ""
+    warnings = [
+        r for r in caplog.records if r.levelname == "WARNING" and "Session record" in r.getMessage()
+    ]
+    assert len(warnings) == 1 and info.id in warnings[0].getMessage()
 
 
 def _mock_sessions_with_tool_event(served_model: str, event: Any) -> MagicMock:
@@ -511,7 +687,12 @@ async def test_recovery_gate_respects_live_drain_latch() -> None:
             ),
             patch.object(manager, "_write_tombstone"),
         ):
-            await manager._run(info)
+            if expect_recovery:
+                # A hand-off to recovery ends the original run cancelled.
+                with pytest.raises(asyncio.CancelledError):
+                    await manager._run(info)
+            else:
+                await manager._run(info)
 
         assert bool(recovery_calls) is expect_recovery, (
             f"latch={latch}: expected recovery_scheduled={expect_recovery}, "
@@ -1490,11 +1671,11 @@ def test_no_on_loop_update_state_inside_a_coroutine() -> None:
     Scope-aware, so it is deterministic rather than a substring heuristic: only
     the INNERMOST enclosing frame counts, which is what makes a synchronous
     helper nested inside a coroutine (the shape a worker thread runs) not an
-    offender. The two retention writers -- ``_promote_conversation_impl`` and
-    ``release_conversation_impl`` -- are synchronous ``def``s, so they are
-    outside this gate's reach by that same rule; moving them is the rest of
-    this work and needs its own change (their other work, the ``SessionMap``
-    mutation, is required to stay on the loop).
+    offender. The retention writers are synchronous ``def``s, so they are
+    outside this gate's reach by that same rule: release's disk half
+    (``_release_disk_sync``) runs on a worker thread from every event-loop
+    caller, and ``_promote_conversation_impl`` stays on the loop by design (its
+    busy check, promotion and admission must commit with no await between).
     """
     import ast
     from pathlib import Path

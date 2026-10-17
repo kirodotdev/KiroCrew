@@ -754,14 +754,15 @@ _SUBAGENT_MODULES = [
     *sorted(
         path.relative_to(_SRC).as_posix() for path in (_SRC / "subagent_manager").rglob("*.py")
     ),
+    *sorted(path.relative_to(_SRC).as_posix() for path in (_SRC / "subagent_parts").glob("*.py")),
 ]
 
 
 def test_the_scanned_modules_hold_the_subagent_ladder():
     # The scan below means something only while the request arm lives in the
-    # files it scans: the run's one settle and its two limit bails.
+    # files it scans: the run's one settle, its two limit bails and its stop bail.
     assert "subagent_manager/run.py" in _SUBAGENT_MODULES
-    assert _ladder_entries("subagent_manager/run.py") == {"settle": 1, "bail": 2}
+    assert _ladder_entries("subagent_manager/run.py") == {"settle": 1, "bail": 3}
 
 
 @pytest.mark.parametrize("module", _SUBAGENT_MODULES)

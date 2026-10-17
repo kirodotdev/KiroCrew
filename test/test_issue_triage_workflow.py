@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
     not WORKFLOW.exists()
     # windows-latest ships Git Bash and jq, so `which` alone would let this run
     # there, where the stub PATH separator and chmod semantics differ. Matches
-    # the explicit nt guard in test_ai_review_workflows.py.
+    # the explicit nt guard in the test_ai_review_workflows_*.py parts.
     or os.name == "nt" or shutil.which("bash") is None or shutil.which("jq") is None,
     reason="requires the workflow file plus a POSIX bash and jq",
 )

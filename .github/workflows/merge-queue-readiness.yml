@@ -33,12 +33,13 @@ name: Merge Queue Readiness
 # starts when the job starts, so hosted runner queue time does not eat into it.
 # The budget is the polled lanes' own ceiling, not their typical time: a CI run
 # is ~25-30 minutes on the fleet, but ci.yml's longest `needs` chain of job
-# caps is 100 minutes (changes and await-fast-gate in parallel 15 ->
-# backend-test 60 -> coverage-combine 15 -> coverage-gate 10), so a shorter
-# budget would dequeue a pull request whose lanes were about to go green. The
-# 120-minute budget is that chain plus slack for the shards' own pickup.
+# caps is 160 minutes (changes and await-fast-gate in parallel 15 ->
+# backend-test 2 x 60, because max-parallel runs its 8 shards in two rounds of
+# 4 -> coverage-combine 15 -> coverage-gate 10), so a shorter budget would
+# dequeue a pull request whose lanes were about to go green. The 180-minute
+# budget is that chain plus slack for the shards' own pickup.
 # test_ci_fleet_routing_expression_parity.py holds the budget above that sum. Keep the ruleset's
-# merge-queue "status check timeout" at 180 minutes or more: this budget plus a
+# merge-queue "status check timeout" at 240 minutes or more: this budget plus a
 # slow hosted pickup.
 #
 # Only a verdict fails the group, and the first verdict is final: a run that
@@ -77,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     # Above the poll's TOTAL_BUDGET below, so the step's own error names the
     # slow lane rather than the job cap cutting it off.
-    timeout-minutes: 125
+    timeout-minutes: 185
     permissions:
       # actions:read is what lets this read the other workflows' runs on the
       # merge group's commit. It is READ on purpose: this poll never reruns a
@@ -108,14 +109,14 @@ jobs:
           # may not be visible for the first seconds. APPEAR_BUDGET covers that
           # race; after it, a run the API lists as absent is a real
           # misconfiguration and fails.
-          # TOTAL_BUDGET is 120 minutes: ci.yml's 100-minute longest chain of
-          # job caps (changes | await-fast-gate 15 -> backend-test 60 ->
-          # coverage-combine 15 -> coverage-gate 10) plus slack for the shards'
-          # own pickup. The ruleset's merge-queue status-check timeout has to
-          # stay at 180 minutes or more so that this budget plus a slow hosted
-          # pickup fits inside it.
+          # TOTAL_BUDGET is 180 minutes: ci.yml's 160-minute longest chain of
+          # job caps (changes | await-fast-gate 15 -> backend-test 2 rounds x
+          # 60 under max-parallel -> coverage-combine 15 -> coverage-gate 10)
+          # plus slack for the shards' own pickup. The ruleset's merge-queue
+          # status-check timeout has to stay at 240 minutes or more so that
+          # this budget plus a slow hosted pickup fits inside it.
           APPEAR_BUDGET=300
-          TOTAL_BUDGET=7200
+          TOTAL_BUDGET=10800
           # One runs listing per tick serves all six workflows, and the tick is
           # 60 s while a run may still be appearing, 180 s once all are seen
           # (CI takes ~25 minutes, so the slow tick costs at most ~3 minutes).

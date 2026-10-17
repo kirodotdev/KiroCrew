@@ -55,6 +55,16 @@ src/kiro_crew/dashboard_card_pages/*.html text eol=lf
 # Keep checkout conversion from changing it under core.autocrlf=true.
 /config-baseline.json text eol=lf
 
+# The agent settings registry is compared byte-for-byte with the live LF
+# extraction by website/scripts/lib/ui-index.mjs (checkSettingsExtraction).
+src/kiro_crew/docs/settings-registry.generated.json text eol=lf
+
+# `gen-ui-index.mjs --check` compares the committed index byte-for-byte with the
+# LF text it generates. Release builds set KC_UI_INDEX_STRICT=1, so a CRLF
+# checkout on the Windows runner reads as a stale index and fails the build.
+# (Its other output, guidePlans.gen.ts, is pinned by website/.gitattributes.)
+src/kiro_crew/docs/ui-index.generated.json text eol=lf
+
 # The ACP frame corpus is line-oriented data on both sides: a `.jsonl` fixture is read
 # ONE LINE AT A TIME as a separate JSON document, and its `.expected.json` snapshot is
 # compared against output written with an explicit LF. The snapshot writer and the host

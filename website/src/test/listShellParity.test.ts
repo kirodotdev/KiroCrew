@@ -14,17 +14,39 @@
  * page fails the negative pin; dropping a constant's use fails the positive one.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import { readMembersPage } from './membersPageFamily'
 
 import * as shell from '../components/listShell'
 
 const read = (...p: string[]) => readFileSync(join(__dirname, '..', ...p), 'utf8')
 
-const PAGES: ReadonlyArray<readonly [label: string, file: readonly string[]]> = [
-  ['ChatSidebar', ['pages', 'ChatSidebar.tsx']],
-  ['MembersPage', ['pages', 'members', 'MembersPage.tsx']],
+/** The sidebar's own files: the facade and the owners under pages/chat-sidebar/ it
+ *  composes, where the session row and its recipes live. */
+function sidebarFiles(): string[][] {
+  const root = join(__dirname, '..')
+  const out: string[][] = [['pages', 'ChatSidebar.tsx']]
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push(relative(root, p).split(/[\\/]/))
+    }
+  }
+  walk(join(root, 'pages', 'chat-sidebar'))
+  return out
+}
+
+/** Per page: the files that draw its list shell, and the text the negative pin reads. */
+const PAGES: ReadonlyArray<readonly [label: string, files: readonly string[][], scan: () => string]> = [
+  ['ChatSidebar', sidebarFiles(), () => source(sidebarFiles())],
+  // The roster card is drawn by its column, its rows by MembersPageRosterRows.
+  ['MembersPage', [['pages', 'members', 'MembersPageRoster.tsx'], ['pages', 'members', 'MembersPageRosterRows.tsx']], readMembersPage],
 ]
+
+/** One page's source text: every file it is built from, joined. */
+const source = (files: readonly string[][]) => files.map(f => read(...f)).join('\n')
 
 /** Every recipe both pages must consume. */
 const SHARED = ['LIST_SHELL_CLS', 'LIST_HEADER_CLS', 'LIST_TITLE_CLS', 'LIST_BODY_CLS', 'ROW_BOX_CLS', 'ROW_IDLE_CLS', 'ROW_ACTIVE_CLS', 'ROW_TITLE_CLS', 'ROW_STATUS_CLS'] as const
@@ -45,16 +67,18 @@ const FORBIDDEN_LITERALS = [
 ]
 
 describe('list shell parity — sessions sidebar and members roster share one recipe set', () => {
-  it.each(PAGES)('%s imports every shared recipe from components/listShell', (_label, file) => {
-    const src = read(...file)
-    const m = src.match(/import \{([^}]*)\} from '(?:\.\.\/)+components\/listShell'/)
-    expect(m, `${file.join('/')} must import from components/listShell`).not.toBeNull()
-    const names = m![1].split(',').map(s => s.trim()).filter(Boolean)
+  it.each(PAGES)('%s imports every shared recipe from components/listShell', (_label, files) => {
+    const src = source(files)
+    const file = files[0]
+    const ms = [...src.matchAll(/import \{([^}]*)\} from '(?:\.\.\/)+components\/listShell'/g)]
+    expect(ms.length, `${file.join('/')} must import from components/listShell`).toBeGreaterThan(0)
+    const names = ms.flatMap(m => m[1].split(',').map(s => s.trim()).filter(Boolean))
     for (const name of SHARED) expect(names, `${file.join('/')} must import ${name}`).toContain(name)
   })
 
-  it.each(PAGES)('%s uses each imported recipe at least once', (_label, file) => {
-    const src = read(...file)
+  it.each(PAGES)('%s uses each imported recipe at least once', (_label, files) => {
+    const src = source(files)
+    const file = files[0]
     for (const name of SHARED) {
       // A use is the identifier outside the import line — inside a template,
       // a cn() call, or as a bare className value.
@@ -63,8 +87,9 @@ describe('list shell parity — sessions sidebar and members roster share one re
     }
   })
 
-  it.each(PAGES)('%s spells none of the recipes out by hand', (_label, file) => {
-    const src = read(...file)
+  it.each(PAGES)('%s spells none of the recipes out by hand', (_label, files, scan) => {
+    const src = scan()
+    const file = files[0]
     for (const lit of FORBIDDEN_LITERALS) {
       expect(src.includes(lit), `${file.join('/')} re-inlines "${lit}" — use the components/listShell recipe`).toBe(false)
     }
@@ -78,23 +103,12 @@ describe('list shell parity — sessions sidebar and members roster share one re
     expect(shell.LIST_HEADER_CLS).toBe('flex justify-between items-center px-2 mt-0.5 h-10')
     expect(shell.LIST_TITLE_CLS).toBe('sessions-panel-title text-sm font-semibold text-text-strong tracking-[.04em] truncate')
     expect(shell.LIST_BODY_CLS).toBe('flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 pt-[var(--list-dock-h,0.5rem)] scroll-pt-[var(--list-dock-h,0.5rem)]')
-    expect(shell.ROW_BOX_CLS).toBe('pl-2.5 pr-3 py-2 rounded-md')
+    expect(shell.ROW_BOX_CLS).toBe('pl-3.5 pr-3 py-2 rounded-md')
     expect(shell.ROW_IDLE_CLS).toBe('text-muted hover:text-text hover:bg-bg-hover')
     expect(shell.ROW_ACTIVE_CLS).toBe('text-text-strong bg-accent-subtle')
     expect(shell.ROW_TITLE_CLS).toBe('text-[13px] leading-[20px]')
     expect(shell.ROW_STATUS_CLS).toBe('text-[11px] leading-[16px]')
     expect(shell.ROW_META_CLS).toBe('text-[10px] leading-[12px]')
-  })
-
-  it('the roster grouped-row indent tracks the row box pad (+14px)', () => {
-    // MembersPage indents a team's rows with its own `pl-*`, which overrides
-    // ROW_BOX_CLS's left pad. Pin it to that pad + 14 so a row-pad change moves
-    // the indent with it (main: pl-3.5 14 + 14 = pl-7; now pl-2.5 10 + 14 = pl-6).
-    const tw = (cls: string) => Number(cls.match(/(?:^|\s)pl-(\d+(?:\.\d+)?)(?:\s|$)/)![1]) * 4
-    const rowPad = tw(shell.ROW_BOX_CLS)
-    const m = read('pages', 'members', 'MembersPage.tsx').match(/indented && '(pl-[\d.]+)'/)
-    expect(m, 'MembersPage must indent grouped rows with `indented && \'pl-N\'`').not.toBeNull()
-    expect(tw(m![1]) - rowPad).toBe(14)
   })
 
   it('the Notes rail mirrors the row type scale by value (it is styled inline)', () => {

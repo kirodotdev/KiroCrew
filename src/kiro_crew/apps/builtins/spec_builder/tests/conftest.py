@@ -4,7 +4,7 @@ Mirrors the convention in ``test/conftest.py``: a named burn-down list of tests
 skipped on Windows, rather than scattering ``skipif`` markers. That conftest
 cannot cover this suite -- its hook is rooted at ``test/`` and these tests live
 under ``src/kiro_crew/apps/builtins/`` -- so the same policy is applied here for
-the one file that needs it.
+the route test files that need it.
 
 Why these specific tests, and why skipping is correct rather than a paper-over:
 ``routes.py`` pins the spec directory with a non-following ``O_DIRECTORY``

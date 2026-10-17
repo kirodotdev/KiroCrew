@@ -247,7 +247,12 @@ def api_key_will_be_dropped(environ: "Mapping[str, str] | None" = None) -> bool:
     source = os.environ if environ is None else environ
     if not source.get(_AUTH_ENV_VAR, "").strip():
         return False
-    return _AUTH_ENV_VAR not in _names_defined_in_env_file(loader.env_path())
+    try:
+        names = _names_defined_in_env_file(loader.env_path())
+    except loader.EnvFileWideEncodingError:
+        # The gateway reads a wide file as unset, so the key is dropped.
+        return True
+    return _AUTH_ENV_VAR not in names
 
 
 def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
@@ -281,6 +286,23 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
     if not api_key_will_be_dropped(environ):
         return ""
     dotenv = loader.env_path()
+    try:
+        _names_defined_in_env_file(dotenv)
+    except loader.EnvFileWideEncodingError as exc:
+        # Appending UTF-8 after a UTF-16/UTF-32 mark leaves a file the gateway
+        # still reads as unset, so the re-save is the only step to give.
+        return _with_home_note(
+            [
+                f"Note: {_AUTH_ENV_VAR} is set in this shell but the service will not",
+                "   inherit it, and the .env it would read the key from cannot be read:",
+                "",
+                f"     {loader.undecodable_env_message(dotenv, exc)}",
+                "",
+                f"   Then add {_AUTH_ENV_VAR} to it (0600) and restart the service:",
+                f"     {restart_command_hint()}",
+            ],
+            environ,
+        )
     # The append must never be the step that CREATES the file: under a standard
     # 022 umask a fresh .env is born 0644, and load_credentials() only tightens
     # it the next time it reads it — so the key would sit world-readable until
@@ -307,6 +329,11 @@ def headless_auth_warning(environ: "Mapping[str, str] | None" = None) -> str:
         f"     {remedy}",
         f"     {restart_command_hint()}",
     ]
+    return _with_home_note(lines, environ)
+
+
+def _with_home_note(lines: "list[str]", environ: "Mapping[str, str] | None") -> str:
+    """Join a warning's lines, adding the crew-home caveat when it applies."""
     if _home_override_is_set(environ):
         lines.append("")
         lines.append(
@@ -335,10 +362,14 @@ def _names_defined_in_env_file(path: Path) -> "set[str]":
     Values are compared for emptiness and otherwise discarded: nothing here
     returns, logs, or echoes one. An unreadable or absent file yields an empty
     set, which makes the caller warn — the safe direction, since a missed
-    warning is the defect being fixed.
+    warning is the defect being fixed. A UTF-16 or UTF-32 file raises
+    :class:`~kiro_crew.config.loader.EnvFileWideEncodingError` instead, because
+    its remedy is a re-save and not the append the empty-set warning gives.
     """
     try:
         raw = loader.read_env_text(path, encoding="utf-8")
+    except loader.EnvFileWideEncodingError:
+        raise
     except (OSError, UnicodeDecodeError):
         return set()
     names: set[str] = set()

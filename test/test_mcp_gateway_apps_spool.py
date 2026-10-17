@@ -665,13 +665,11 @@ class TestStripModelHiddenTools:
 def _pool_key(server: str = "excalidraw-mcp") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name="test-agent",
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
         binary_version="1.0",
         os_uid=1000,
-        config_snapshot_hash="jkl012",
     )
 
 

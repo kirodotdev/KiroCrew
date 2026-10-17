@@ -14,7 +14,7 @@
  * and are not painted at rest. `--disable-features=OverlayScrollbar` does not
  * change that. A real Electron/browser window does render the custom 6px bar
  * from ::-webkit-scrollbar in index.css (see the 6px inset comment in
- * ChatPage.tsx), so this harness under-reports the real UI.
+ * ChatTitleOverlay.tsx), so this harness under-reports the real UI.
  *
  * What it CAN prove, and what the probe below reports:
  *   - the computed `scrollbar-width` on the exact lane element (auto -> none),

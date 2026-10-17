@@ -158,7 +158,7 @@ class TestSlackRemoveAllAudit:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# One-shot auto-removal: deferred drain + delete_after_run consume (cron.py)
+# One-shot auto-removal: deferred drain + delete_after_run consume (``CronService``)
 # ──────────────────────────────────────────────────────────────────────
 class _SelRecorder:
     def __init__(self) -> None:
@@ -298,7 +298,7 @@ class TestMergeJobResultOneShotAudit:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# One-shot auto-removal: gateway direct Done removal (slack/gateway.py)
+# One-shot auto-removal: gateway direct Done removal (slack/gateway_runtime/cron_exec.py)
 # ──────────────────────────────────────────────────────────────────────
 def _make_gw():
     from kiro_crew.slack.gateway import GatewayOrchestrator

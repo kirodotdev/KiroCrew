@@ -9,6 +9,10 @@
  *    reads from the override and a "Reset to global (70%)" link renders.
  *  - `following-global`: no override, the slider sits at the global value and
  *    a "Following global (70%)" note replaces the reset link.
+ *  - `following-agent`: no override, but the session's agent declares its own
+ *    default (45%), so the slider sits there and the note names the agent.
+ *  - `overridden-over-agent`: an override on top of an agent default; the
+ *    reset link returns to the agent's 45%, not the global.
  *
  * Runs the REAL built SPA (website/dist) with every /api/** call answered from
  * fixtures — gateway-free. The slot detail payload seeds the context gauge
@@ -35,10 +39,12 @@ const ci = manual.components.chatInput
 const AUTO_COMPACT_AT = ci.auto_compact_at // "Auto-compact at"
 const RESET_TPL = ci.reset_to_global // "Reset to global ({{pct}}%)"
 const FOLLOWING_TPL = ci.following_global // "Following global ({{pct}}%)"
-if (!AUTO_COMPACT_AT || !RESET_TPL || !FOLLOWING_TPL) {
+const RESET_AGENT_TPL = ci.reset_to_agent_default // "Reset to the <agent/> agent's default ({{pct}}%)"
+const FOLLOWING_AGENT_TPL = ci.following_agent_default // "Following the <agent/> agent's default ({{pct}}%)"
+if (!AUTO_COMPACT_AT || !RESET_TPL || !FOLLOWING_TPL || !RESET_AGENT_TPL || !FOLLOWING_AGENT_TPL) {
   throw new Error('components.chatInput auto-compact keys missing — renamed?')
 }
-const fill = (tpl, pct) => tpl.replace('{{pct}}', String(pct))
+const fill = (tpl, pct, agent = '') => tpl.replace('{{pct}}', String(pct)).replace('<agent/>', agent)
 
 const SLOT = 'autocompact-demo'
 const now = Math.floor(Date.now() / 1000)
@@ -116,9 +122,30 @@ async function main() {
   await page.waitForTimeout(300)
   await page.screenshot({ path: `${OUT}/following-global.png` })
 
+  // State 3 — no override, the agent declares 45%: the slider follows it.
+  autocompact = { pct: null, global_pct: 70, agent_pct: 45, agent: 'orchestrator', min: 5, max: 90 }
+  await reopen(page)
+  await page.getByText(fill(FOLLOWING_AGENT_TPL, 45, 'orchestrator'), { exact: true }).waitFor({ timeout: 5000 })
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${OUT}/following-agent.png` })
+
+  // State 4 — an override over the agent default: reset returns to the agent's.
+  autocompact = { pct: 85, global_pct: 70, agent_pct: 45, agent: 'orchestrator', min: 5, max: 90 }
+  await reopen(page)
+  await page.getByText(fill(RESET_AGENT_TPL, 45, 'orchestrator'), { exact: true }).waitFor({ timeout: 5000 })
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${OUT}/overridden-over-agent.png` })
+
   await browser.close()
   srv.close()
-  console.log(`wrote ${OUT}/overridden.png and ${OUT}/following-global.png`)
+  console.log(`wrote 4 frames to ${OUT}`)
+}
+
+async function reopen(page) {
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  const chip = page.getByLabel('Context usage')
+  await chip.waitFor({ timeout: 15000 })
+  await chip.click()
 }
 
 main().catch(err => { console.error(err); process.exit(1) })

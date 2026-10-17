@@ -547,7 +547,7 @@ class TestThePreflightNeverBlocksTheGatewayEventLoop:
         self, bound: str, retained_user_stop: list[str]
     ) -> None:
         """The MCP-side run still performs the advisory in-turn preflight."""
-        refusal = control._retained_stop_refusal("monitor_watch", bound)
+        refusal = control._arming_preflight_refusal("monitor_watch", bound)
 
         assert retained_user_stop == ["/api/autonudge/session-monitor"]
         assert _names_the_blocker(refusal)

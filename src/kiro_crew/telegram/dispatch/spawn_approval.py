@@ -15,8 +15,14 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT
-from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, CHAT_TYPE_FORUM, parse_session_key
+from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
+    CHAT_TYPE_FORUM,
+    CHAT_TYPE_PRIVATE_TOPIC,
+    parse_session_key,
+)
 from kiro_crew.messaging.renderer import new_approval_nonce
+from kiro_crew.telegram.renderer import _display_safe
 from kiro_crew.telegram.transport import forum_gate_outcome
 
 if TYPE_CHECKING:
@@ -107,10 +113,10 @@ async def deliver_spawn_approval(
             ],
         ]
     }
-    # ``description`` is the gate's own ``spawn_run(<task-preview>)`` string,
-    # already credential/exfil-redacted in admission.py before it reaches
-    # here; escape it for the HTML body it lands in.
-    detail = " ".join((description or "spawn_run").split())
+    # The upstream literal scan cannot see credentials split by invisible
+    # format characters. Redact the rendered form before HTML escaping, which
+    # preserves those characters. Keep the destination check after this pass.
+    detail = _display_safe(" ".join((description or "spawn_run").split()))
     body = f"🔐 Approve sub-agent spawn?\n<pre>{html.escape(detail)}</pre>"
     if not self._spawn_prompt_destination_permitted(chat_id, thread_id):
         # Authorization for this destination was withdrawn between the turn that
@@ -229,26 +235,38 @@ def _spawn_prompt_destination_permitted(
         if not self._authorized(chat_id):
             return False
     else:
-        # A Topic press passes BOTH gates, the roster first and then the
-        # shared forum predicate. The roster is keyed by the PRESSING peer,
-        # and a Topic route names none of them -- any authorized peer in it
-        # may press -- so what the roster can answer here is whether it
-        # admits anybody at all. An empty roster denies every press, reject
-        # included, leaving a prompt in this Topic answerable by nobody.
-        if not self._allowed:
+        # A private-chat forum Topic carries a thread but its chat_id IS the
+        # peer's user id, so the conversation attests its own peer -- the SAME
+        # ``direct_peer_of`` discriminator ``may_send_to`` uses (no hand-rolled
+        # ``chat_id > 0`` copy), so this gate cannot admit a destination the
+        # egress check would refuse. A supergroup Topic carries a group chat_id
+        # that attests no peer (``direct_peer_of`` -> ""), so it goes through
+        # BOTH gates: the roster (keyed by the PRESSING peer, and a group Topic
+        # names none of them -- any authorized peer in it may press -- so what
+        # the roster can answer here is whether it admits anybody at all; an
+        # empty roster denies every press, reject included) and then the shared
+        # forum predicate. Absent a transport (unit harness), there is no
+        # attester, so there is no attestation and the destination is treated as
+        # a group Topic -- fail-closed, matching the egress step below.
+        peer = self.transport.direct_peer_of(str(chat_id)) if self.transport is not None else ""
+        is_private_topic = bool(peer)
+        if is_private_topic and self._authorized(chat_id):
+            pass
+        elif not self._allowed:
             return False
-        forum_cfg = self._live_cfg().telegram
-        if (
-            forum_gate_outcome(
-                "supergroup",
-                chat_id,
-                thread_id,
-                allow_forum=bool(forum_cfg.allow_forum),
-                allowed_forum_chat_ids=forum_cfg.allowed_forum_chat_ids,
-            )
-            is not None
-        ):
-            return False
+        else:
+            forum_cfg = self._live_cfg().telegram
+            if (
+                forum_gate_outcome(
+                    "supergroup",
+                    chat_id,
+                    thread_id,
+                    allow_forum=bool(forum_cfg.allow_forum),
+                    allowed_forum_chat_ids=forum_cfg.allowed_forum_chat_ids,
+                )
+                is not None
+            ):
+                return False
     gate = getattr(self.transport, "may_send_to", None)
     if gate is None:
         return True
@@ -271,7 +289,9 @@ def _spawn_chat_target(
     Reconstructs the conversation from the parent session key's grammar
     (``telegram:{agent}:{chat_type}:{scope…}``): a direct DM's scope is the
     peer's user id, and a Telegram private chat's id EQUALS that user id; a
-    forum route's scope is ``{chat_id}:{thread}``. A ``unified`` DM bucket
+    forum route's scope is ``{chat_id}:{thread}`` -- for a group forum Topic
+    (``direct_topic`` carries the same ``{chat_id}:{thread}`` shape, where the
+    chat_id is the peer's private-chat id). A ``unified`` DM bucket
     (``unified:{agent}``) parses as a non-telegram surface and returns None —
     it names no single conversation to post into, which is the same reason the
     origin mirror declines it. ``session_key`` is returned so the caller arms
@@ -282,7 +302,12 @@ def _spawn_chat_target(
     if parsed is None or parsed.surface != "telegram":
         return None
     try:
-        if parsed.chat_type == CHAT_TYPE_FORUM and len(parsed.scope) >= 2:
+        if (
+            parsed.chat_type in (CHAT_TYPE_FORUM, CHAT_TYPE_PRIVATE_TOPIC)
+            and len(parsed.scope) >= 2
+        ):
+            # Group forum Topic (scope ``{chat_id}:{thread}``) OR private-chat
+            # forum Topic (same scope shape; chat_id == the peer's user id).
             chat_id = int(parsed.scope[0])
             thread_id: int | None = int(parsed.scope[1])
         elif parsed.chat_type == CHAT_TYPE_DIRECT and len(parsed.scope) == 1:

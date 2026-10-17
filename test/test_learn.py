@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import sys
 import threading
@@ -80,6 +81,252 @@ class TestLessonStore:
         store.save(_make_lesson("Rule two"))
         store.save(_make_lesson("Rule three"))
         assert len(store.load_all()) == 3
+
+
+_RULE_A = '{"ts": "t", "rule": "Run the linter first", "category": "tool"}'
+_RULE_B = '{"ts": "t", "rule": "Write tests first", "category": "tool"}'
+
+
+class TestUnreadableRows:
+    """A row that does not read as a lesson costs only itself, and is reported."""
+
+    def _store_with(self, tmp_path: Path, *bad_lines: str) -> LessonStore:
+        (tmp_path / "lessons.jsonl").write_text(
+            "\n".join([_RULE_A, *bad_lines, _RULE_B]) + "\n", encoding="utf-8"
+        )
+        return LessonStore(base_dir=tmp_path)
+
+    @pytest.mark.parametrize("bad_line", ["null", "[]", '"Use tabs"', "5"])
+    def test_a_row_that_is_not_an_object_is_skipped_and_counted(
+        self, tmp_path: Path, bad_line: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        store = self._store_with(tmp_path, bad_line)
+        assert [le.rule for le in store.load_all()] == ["Run the linter first", "Write tests first"]
+        context = store.get_context()
+        assert "Run the linter first" in context and "Write tests first" in context
+        assert "Skipped 1 of 3 rows" in caplog.text
+
+    @pytest.mark.parametrize("rule", ["5", "null", '["a"]'])
+    def test_a_row_whose_rule_is_not_text_does_not_block_writes(
+        self, tmp_path: Path, rule: str
+    ) -> None:
+        store = self._store_with(tmp_path, '{"ts": "t", "rule": %s, "category": "tool"}' % rule)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert store.remove("Run the linter first") is True
+        assert [le.rule for le in store.load_all()] == ["Write tests first", "Pin tool versions"]
+
+    def test_the_next_write_drops_the_skipped_rows_and_the_warning_says_so(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The cron store's per-entry rule: a skipped record is dropped by the first
+        # write that follows, and the load warning, which names it, is the window
+        # to recover it.
+        caplog.set_level("WARNING", logger="kiro_crew.learn")
+        bad = [
+            '"Always use tabs"',
+            '{"ts": "t", "rule": 5, "category": "tool"}',
+            '{"ts": "t", "rule": "half a row',
+        ]
+        store = self._store_with(tmp_path, *bad)
+        assert store.save(_make_lesson("Pin tool versions")) == "inserted"
+        assert "Skipped 3 of 5 rows" in caplog.text and "(lines 2, 3, 4)" in caplog.text
+        assert "the next save removes them" in caplog.text
+        lines = store.path.read_text(encoding="utf-8").splitlines()
+        assert [line for line in lines if line in bad] == []
+        assert [le.rule for le in store.load_all()] == [
+            "Run the linter first",
+            "Write tests first",
+            "Pin tool versions",
+        ]
+
+    def test_the_migration_reader_skips_the_same_rows(self, tmp_path: Path) -> None:
+        from kiro_crew.vector_memory_runtime import migration
+
+        store = self._store_with(tmp_path, "null", '{"ts": "t", "rule": 5, "category": "tool"}')
+        rows = list(migration.legacy_lessons(store.path))
+        assert [row if row is migration.SKIP else row[0] for row in rows] == [
+            "Run the linter first",
+            migration.SKIP,
+            migration.SKIP,
+            "Write tests first",
+        ]
+
+
+def _pin_mtime(path: Path, st: os.stat_result) -> None:
+    """Give *path* the mtime in *st*: a rewrite inside the same timestamp tick."""
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+class TestCacheAcrossInstances:
+    """Every instance caches its own parse; a write through one reaches the others.
+
+    Two writes inside one timestamp tick leave the file's mtime unchanged. These
+    tests pin it back with ``os.utime`` so that case is deterministic.
+    """
+
+    def test_reads_with_no_write_between_are_served_from_the_cache(self, tmp_path: Path) -> None:
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Write tests first"))
+        first = store.load_all()
+        assert store.load_all() is first
+
+    def test_a_save_through_a_stale_instance_keeps_the_other_instances_save(
+        self, tmp_path: Path
+    ) -> None:
+        writer = LessonStore(base_dir=tmp_path)
+        other = LessonStore(base_dir=tmp_path)
+        writer.save(_make_lesson("Run the linter before every commit"))
+        other.load_all()
+        tick = writer.path.stat()
+        writer.save(_make_lesson("Never force-push a shared branch"))
+        _pin_mtime(writer.path, tick)
+
+        other.save(_make_lesson("Prefer tmp_path over /tmp in tests"))
+        assert [le.rule for le in LessonStore(base_dir=tmp_path).load_all()] == [
+            "Run the linter before every commit",
+            "Never force-push a shared branch",
+            "Prefer tmp_path over /tmp in tests",
+        ]
+
+    def test_a_removed_lesson_stops_reaching_another_instances_prompt(self, tmp_path: Path) -> None:
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save(_make_lesson("Deploy on Fridays"))
+        writer.save(_make_lesson("Write tests first"))
+        assert "Deploy on Fridays" in reader.get_context()
+        tick = writer.path.stat()
+        assert writer.remove("Deploy on Fridays") is True
+        _pin_mtime(writer.path, tick)
+
+        context = reader.get_context()
+        assert "Deploy on Fridays" not in context and "Write tests first" in context
+
+    def test_a_change_that_keeps_size_and_mtime_reaches_another_instance(
+        self, tmp_path: Path
+    ) -> None:
+        # Same-length clause and a pinned mtime: only the write generation tells the
+        # reader that its parse is stale.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        assert "NOT spaces" in reader.get_context()
+        tick = writer.path.stat()
+        assert writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces")) == "enriched"
+        assert writer.path.stat().st_size == tick.st_size
+        _pin_mtime(writer.path, tick)
+
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_write_landing_while_another_instance_parses_is_read_next_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The reader has read the old bytes when the other instance rewrites the file
+        # (same size, mtime pinned back). The reader's cache must not look current:
+        # the generation it keys on was read before the file.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        tick = writer.path.stat()
+        real_read_text = Path.read_text
+        landed: list[bool] = []
+
+        def read_then_rewrite(path: Path, *args: object, **kwargs: object) -> str:
+            text = real_read_text(path, *args, **kwargs)
+            if path == reader.path and not landed:
+                landed.append(True)
+                writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces"))
+                assert writer.path.stat().st_size == tick.st_size
+                _pin_mtime(writer.path, tick)
+            return text
+
+        with monkeypatch.context() as m:
+            m.setattr(Path, "read_text", read_then_rewrite)
+            assert "NOT spaces" in reader.get_context()
+        assert landed, "load_all no longer reads through Path.read_text; move the hook"
+
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_read_just_before_the_rename_is_not_current_afterwards(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The other instance parses just before the writer's rename. The bump follows
+        # the rename, so that parse stays keyed to the older generation.
+        writer = LessonStore(base_dir=tmp_path)
+        reader = LessonStore(base_dir=tmp_path)
+        writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        tick = writer.path.stat()
+        real_atomic_write = learn_mod.atomic_write
+        parsed: list[str] = []
+
+        def parse_then_write(*args: object, **kwargs: object) -> None:
+            parsed.append(reader.get_context())
+            real_atomic_write(*args, **kwargs)
+
+        with monkeypatch.context() as m:
+            m.setattr(learn_mod, "atomic_write", parse_then_write)
+            writer.save_or_enrich(_make_lesson("Use tabs", negative="NOT braces"))
+        assert writer.path.stat().st_size == tick.st_size
+        _pin_mtime(writer.path, tick)
+
+        assert "NOT spaces" in parsed[0]
+        context = reader.get_context()
+        assert "NOT braces" in context and "NOT spaces" not in context
+
+    def test_a_rewrite_by_another_process_that_changes_the_size_reaches_a_read(
+        self, tmp_path: Path
+    ) -> None:
+        # Another process appends a row: no generation bump in this process and the
+        # mtime pinned back. Only the size tells the cached read that the file moved.
+        store = LessonStore(base_dir=tmp_path)
+        store.save(_make_lesson("Run the linter before every commit"))
+        assert len(store.load_all()) == 1
+        tick = store.path.stat()
+        text = store.path.read_text(encoding="utf-8")
+        copy = text.replace("Run the linter before every commit", "Write tests first")
+        store.path.write_text(text + copy, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        assert [le.rule for le in store.load_all()] == [
+            "Run the linter before every commit",
+            "Write tests first",
+        ]
+
+    def test_a_save_starts_from_the_file_not_from_the_cache(self, tmp_path: Path) -> None:
+        # Another process rewrites the file: no generation bump in this process, same
+        # size, pinned mtime. A save that started from the cache would undo it.
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        store.load_all()
+        tick = store.path.stat()
+        edited = store.path.read_text(encoding="utf-8").replace("NOT spaces", "NOT braces")
+        store.path.write_text(edited, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        store.save(_make_lesson("Write tests first"))
+        rows = LessonStore(base_dir=tmp_path).load_all()
+        assert [(le.rule, le.negative) for le in rows] == [
+            ("Use tabs", "NOT braces"),
+            ("Write tests first", None),
+        ]
+
+    def test_a_remove_starts_from_the_file_not_from_the_cache(self, tmp_path: Path) -> None:
+        # The same foreign rewrite (same size, mtime pinned back): a remove built on the
+        # cache would write the clause it replaced back.
+        store = LessonStore(base_dir=tmp_path)
+        store.save_or_enrich(_make_lesson("Use tabs", negative="NOT spaces"))
+        store.save(_make_lesson("Deploy on Fridays"))
+        store.load_all()
+        tick = store.path.stat()
+        edited = store.path.read_text(encoding="utf-8").replace("NOT spaces", "NOT braces")
+        store.path.write_text(edited, encoding="utf-8")
+        _pin_mtime(store.path, tick)
+
+        assert store.remove("Deploy on Fridays") is True
+        rows = LessonStore(base_dir=tmp_path).load_all()
+        assert [(le.rule, le.negative) for le in rows] == [("Use tabs", "NOT braces")]
 
 
 class TestLessonStoreSecurity:

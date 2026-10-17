@@ -23,6 +23,10 @@ interface Props {
   searchPlaceholder?: string
   disabled?: boolean
   id?: string
+  /** Told when the list opens or closes, e.g. to fix its order for one visit. */
+  onOpenChange?: (open: boolean) => void
+  /** One line at the top of the open list, for a reason that applies to every row. */
+  notice?: string
 }
 
 export default function MultiSelect({
@@ -35,6 +39,8 @@ export default function MultiSelect({
   searchPlaceholder,
   disabled,
   id,
+  onOpenChange,
+  notice,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -87,7 +93,7 @@ export default function MultiSelect({
   }
 
   return (
-    <Popover open={open} onOpenChange={next => { setOpen(next); if (!next) setFilter('') }}>
+    <Popover open={open} onOpenChange={next => { setOpen(next); if (!next) setFilter(''); onOpenChange?.(next) }}>
       <PopoverTrigger
         id={id}
         disabled={disabled}
@@ -102,9 +108,12 @@ export default function MultiSelect({
         align="start"
         onEscapeKeyDown={event => event.stopPropagation()}
         onKeyDown={handleKeyDown}
-        className="w-[min(360px,calc(100vw-32px))] max-h-[360px] overflow-hidden p-0"
+        // A bounded column: the search row and the notice keep their height and the
+        // option list shrinks into what is left, so a notice that wraps on a narrow
+        // screen can never push the last rows below the popover's clipped edge.
+        className="flex w-[min(360px,calc(100vw-32px))] max-h-[360px] flex-col overflow-hidden p-0"
       >
-        <div className="flex flex-wrap items-center gap-2 border-b border-border p-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border p-2">
           <div className="flex min-w-[9rem] flex-1 items-center gap-2">
             <Search className="lucide-inline shrink-0 text-muted" aria-hidden />
             <Input
@@ -127,7 +136,12 @@ export default function MultiSelect({
             </div>
           )}
         </div>
-        <div ref={listRef} role="group" aria-label={label} className="max-h-[300px] overflow-y-auto p-1">
+        {notice && (
+          <div role="status" className="shrink-0 border-b border-border px-3 py-2 text-[12px] text-muted">
+            {notice}
+          </div>
+        )}
+        <div ref={listRef} role="group" aria-label={label} className="min-h-0 max-h-[300px] overflow-y-auto p-1">
           {filtered.length === 0 && (
             <div className="px-3 py-2 text-[13px] italic text-muted">
               {i18nT('components.searchableSelect.no_matches')}
@@ -141,7 +155,7 @@ export default function MultiSelect({
                 data-multi-select-option
                 aria-disabled={option.locked || undefined}
                 tabIndex={-1}
-                className={`flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors ${option.locked ? 'cursor-default opacity-70' : 'cursor-pointer hover:bg-bg-hover'}`}
+                className={`flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors ${option.locked ? 'cursor-default' : 'cursor-pointer hover:bg-bg-hover'}`}
               >
                 <Checkbox
                   tabIndex={-1}
@@ -151,7 +165,8 @@ export default function MultiSelect({
                   onChange={event => onToggle(option.value, event.target.checked)}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium text-text">{option.label}</span>
+                  {/* Muted text, not an opacity drop, so a locked row reads as unavailable. */}
+                  <span className={`block truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
                   {option.description && <span className="block truncate text-[11px] text-muted">{option.description}</span>}
                 </span>
               </label>

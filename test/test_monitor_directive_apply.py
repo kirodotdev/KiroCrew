@@ -599,6 +599,58 @@ async def test_structured_fields_cannot_silently_patch_a_legacy_loop(tmp_path):
     service.stop()
 
 
+class _SteppedTime:
+    """The ``time`` module with ``time()`` stepped by *step* seconds; every other name is real.
+
+    Bound as a module's own ``time``, never over the stdlib clock, so the event loop and
+    every other module keep the real one.
+    """
+
+    def __init__(self, step: float) -> None:
+        self._step = step
+
+    def time(self) -> float:
+        return time.time() + self._step
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("step", [0.0, 7200.0], ids=["no_step", "forward_step"])
+@pytest.mark.asyncio
+async def test_budget_raise_is_judged_on_the_timers_clock(tmp_path, monkeypatch, step):
+    """The spent-budget guard reads the loop's age as the timer reads it.
+
+    The loop is 30 minutes into a 1 hour budget. Read as ``time.time() - created_ts``,
+    a 2 hour forward step makes it 2.5 hours old, and a raise to 2 hours is refused as
+    spent while the timer would still fire.
+    """
+    from kiro_crew.autonudge_service.model import runtime_budget_exceeded
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "legacy prompt", idle_secs=600, max_runtime_secs=3600)
+    try:
+        loop.created_ts = time.time() - 1800
+        runtime_budget_exceeded(loop)  # the timer's read in this process
+        from kiro_crew.autonudge_service import model, mutations
+
+        for module in (sda, model, mutations):
+            monkeypatch.setattr(module, "time", _SteppedTime(step))
+        with patch("kiro_crew.autonudge.get_instance", return_value=service):
+            result = await apply_session_directive(
+                SimpleNamespace(),
+                SimpleNamespace(key="chat-1", _app=""),
+                "dashboard:chat-1",
+                "monitor_update",
+                {"patch": {"max_runtime_secs": 7200}},
+            )
+
+        assert "elapsed runtime" not in result, result
+        assert service.get_by_slot("chat-1").max_runtime_secs == 7200, result
+    finally:
+        service.stop()
+
+
 @pytest.mark.asyncio
 async def test_monitor_watch_does_not_replace_a_legacy_loop(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)
@@ -781,6 +833,119 @@ async def test_denied_monitor_update_is_surfaced_into_the_session(tmp_path):
     assert not text.startswith(sda.ARM_REFUSAL_NOTICE_PREFIX)
     assert "kept its previous instruction" in text
     assert "approval prompt" in text
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_denied_arm_in_a_crewmate_session_is_queued_for_the_agent(tmp_path):
+    # A crewmate's DM draws messages only (crewmateBubbles.isCrewmateChatRow
+    # drops every notice) and never replays a notice row to the model, so the
+    # notice row written for a refused arm reaches NEITHER the person nor the
+    # crewmate. There the refusal is ALSO queued for the crewmate's next turn
+    # with a system-injection kind, so it drains as an inject row (never a user
+    # bubble) and the crewmate can stop and re-arm the loop itself.
+    from kiro_crew.dashboard import session_directive_apply as _sda
+    from kiro_crew.dashboard.chat_turn.steer_queue import _QUEUE_KIND_ACTORS
+    from kiro_crew.dashboard.chat_utils import (
+        AUTOMATION_NOTICE_KIND,
+        is_system_injection_item,
+    )
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("member-helper", "watch the build", idle_secs=60)
+    await service.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
+    surfaced = MagicMock()
+    queued: list[dict] = []
+    state = SimpleNamespace(
+        _slots={
+            "member-helper": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(
+        key="member-helper",
+        _app="",
+        messages=[],
+        queue_append=lambda content, *a, **k: queued.append({"content": content, **k}) or "qid-1",
+    )
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.state.append_and_surface", surfaced),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:member-helper",
+            "monitor_update",
+            {"patch": {"message": "revised instruction"}},
+        )
+
+    assert "is PAUSED" in result
+    # The person-facing notice row is still written, tagged so the crewmate
+    # chat's allowlist can hide it (and only it, not person-actionable notices).
+    surfaced.assert_called_once()
+    _, _, role, notice_text, _ = surfaced.call_args.args
+    assert role == "notice"
+    assert surfaced.call_args.kwargs["meta"] == {"kind": _sda.ARM_REFUSAL_NOTICE_KIND}
+    # AND the refusal reaches the crewmate's next turn carrying the same text,
+    # stamped AUTOMATION_NOTICE_KIND so the drain treats it as a system
+    # injection (inject row, not a user follow-up) and never a person's bubble.
+    assert len(queued) == 1
+    assert queued[0]["content"].startswith("[Automation notice] ")
+    assert notice_text in queued[0]["content"]
+    assert queued[0]["kind"] == AUTOMATION_NOTICE_KIND
+    assert is_system_injection_item(
+        {"kind": AUTOMATION_NOTICE_KIND, "content": queued[0]["content"]}
+    )
+    assert _QUEUE_KIND_ACTORS[AUTOMATION_NOTICE_KIND] == "autonudge"
+    # A system-injection kind is orchestration (the user-follow-up guard is
+    # synthetic_payload OR system_injection), so the refusal is never mistaken
+    # for the person stepping in and never aborts a pending recovery.
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_denied_arm_in_a_plain_session_is_notice_only(tmp_path):
+    # Every non-crewmate session keeps the notice row as its only surface: the
+    # notice draws for the person and nothing is queued to the agent.
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "watch the build", idle_secs=60)
+    await service.update(loop.id, active=False, stopped_reason=APPROVAL_STALL_REASON)
+    surfaced = MagicMock()
+    queued: list[str] = []
+    state = SimpleNamespace(
+        _slots={
+            "chat-1": SimpleNamespace(
+                workspace="default", mode="", memory_mode="persistent", is_closing=False
+            )
+        },
+        sessions=None,
+        channel_transports={},
+    )
+    slot = SimpleNamespace(
+        key="chat-1",
+        _app="",
+        messages=[],
+        queue_append=lambda content, *a, **k: queued.append(content) or "qid-1",
+    )
+    with (
+        patch("kiro_crew.autonudge.get_instance", return_value=service),
+        patch("kiro_crew.dashboard.state.append_and_surface", surfaced),
+    ):
+        result = await apply_session_directive(
+            state,
+            slot,
+            "dashboard:chat-1",
+            "monitor_update",
+            {"patch": {"message": "revised instruction"}},
+        )
+
+    assert "is PAUSED" in result
+    surfaced.assert_called_once()
+    assert queued == []
     service.stop()
 
 
@@ -1809,5 +1974,123 @@ async def test_user_stop_of_row_replaced_before_write_is_refused(
         assert "Monitor NOT stopped" in result and "replaced by a new loop" in result
         assert "No further nudges will fire" not in result
         assert _directive_outcomes(audit, kind) == ["denied"]
+    finally:
+        service.stop()
+
+
+# ── monitor_update: the judge clear that survives a client dropping ``{}`` ──
+
+
+_OWN_BRIEF = {"wake_when": "a worker line says RULING", "quiet_when": "workers say WORKING"}
+
+
+async def _monitor_update_through_the_tool(monkeypatch, service, judge_arg):
+    """``monitor_update`` from the tool's own entry, then the consumer's apply.
+
+    The tool validates and encodes the patch; the consumer applies whatever the tool
+    produced, which is the path a live turn takes whether the directive travels in
+    the tool result or out of band. Returns ``(tool reply, decoded payload, result)``.
+    """
+    from kiro_crew import mcp_core, session_directive
+
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
+    # The tool's retained-stop preflight reads the gateway; none runs in this test,
+    # and the preflight is fail-open by design.
+    monkeypatch.setattr(mcp_core, "_get", lambda *a, **k: {"error": "no gateway here"})
+    reply = await asyncio.wait_for(
+        asyncio.to_thread(mcp_core._call_tool, "monitor_update", {"judge": judge_arg}),
+        timeout=30,
+    )
+    payload = session_directive.decode(reply, "monitor_update")
+    if payload is None:
+        return reply, None, ""
+    with patch("kiro_crew.autonudge.get_instance", return_value=service):
+        result = await apply_session_directive(
+            SimpleNamespace(),
+            SimpleNamespace(key="chat-1", _app=""),
+            "dashboard:chat-1",
+            "monitor_update",
+            payload,
+        )
+    return reply, payload, result
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [{}, {"wake_when": "", "quiet_when": ""}],
+    ids=["empty_object", "blank_criteria"],
+)
+@pytest.mark.asyncio
+async def test_blank_criteria_drop_the_owners_brief_as_an_empty_object_does(
+    tmp_path, monkeypatch, spelling
+):
+    """``{"wake_when": "", "quiet_when": ""}`` is the documented way to drop a brief.
+
+    A client that drops empty objects never delivers ``judge: {}``, so the tool
+    description names the blank-criteria spelling instead. The two must leave the
+    loop in the same state: no criterion of the owner's own (the reading the wake
+    tick keys the default brief on), the judge's read state reset, and ``{}`` once
+    the store is reloaded.
+    """
+    from kiro_crew import autonudge_judge
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    try:
+        armed = await service.add("chat-1", "watch chat-2", idle_secs=60, judge=_OWN_BRIEF)
+        armed.judge_quiet_streak = 3
+        armed.judge_cursors = {"chat-2": 5}
+
+        _reply, payload, result = await _monitor_update_through_the_tool(
+            monkeypatch, service, spelling
+        )
+
+        assert payload == {"patch": {"judge": spelling}}
+        assert "updated on this session (judge)" in result, result
+        loop = service.get_by_slot("chat-1")
+        assert loop is not None
+        assert autonudge_judge.criteria_of(autonudge_judge.spec_of(loop)) == ("", "")
+        assert loop.judge_quiet_streak == 0 and loop.judge_cursors == {}
+    finally:
+        service.stop()
+    # The durable record, read back the way startup reads it (without arming timers).
+    reloaded = await AutoNudgeService.load_for_maintenance(base_dir=tmp_path)
+    stored = reloaded.get_by_slot("chat-1")
+    assert stored is not None and stored.judge == {}
+
+
+@pytest.mark.asyncio
+async def test_a_judge_with_criteria_still_replaces_the_brief(tmp_path, monkeypatch):
+    service = AutoNudgeService(base_dir=tmp_path)
+    try:
+        await service.add("chat-1", "watch chat-2", idle_secs=60, judge=_OWN_BRIEF)
+
+        _reply, _payload, result = await _monitor_update_through_the_tool(
+            monkeypatch, service, {"wake_when": "a worker says BLOCKED", "quiet_when": ""}
+        )
+
+        assert "updated on this session (judge)" in result, result
+        loop = service.get_by_slot("chat-1")
+        assert loop is not None
+        assert loop.judge.get("wake_when") == "a worker says BLOCKED"
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_blank_brief_with_an_unknown_key_is_refused_and_changes_nothing(
+    tmp_path, monkeypatch
+):
+    service = AutoNudgeService(base_dir=tmp_path)
+    try:
+        await service.add("chat-1", "watch chat-2", idle_secs=60, judge=_OWN_BRIEF)
+
+        reply, payload, _result = await _monitor_update_through_the_tool(
+            monkeypatch, service, {"wake_when": "", "quiet_when": "", "wake": ""}
+        )
+
+        assert payload is None, "a refused brief emitted a directive"
+        assert reply.startswith("monitor_update:") and "wake" in reply, reply
+        loop = service.get_by_slot("chat-1")
+        assert loop is not None and loop.judge == _OWN_BRIEF
     finally:
         service.stop()

@@ -168,11 +168,10 @@ async def session_is_restricted(
     """
     if not session_key.startswith(_DASHBOARD_PREFIX):
         # Restore the durable flags before reading the process-local trackers (see
-        # the docstring). Idempotent, allocation-free for an unflagged key, and an
-        # in-memory ``SessionMap`` read rather than disk, so it is safe to run on
-        # the loop at every decision point. A state with no session manager is a
-        # no-op inside ``hydrate``.
-        privacy_mode.hydrate(getattr(dashboard_state, "sessions", None), session_key)
+        # the docstring): the map row and the transcript header, the stricter of
+        # the two standing. The header is read off the loop. A state with no
+        # session manager reads neither.
+        await privacy_mode.hydrate_inbound(getattr(dashboard_state, "sessions", None), session_key)
         # The channel's own mode, on the same predicate its transcript, memory and
         # title writes use, so one conversation cannot be private for three of them
         # and public for the fourth.
@@ -209,7 +208,7 @@ async def session_blocks_reads(
     truly ABSENT record reads False, because nothing on disk claims otherwise.
     """
     if not session_key.startswith(_DASHBOARD_PREFIX):
-        privacy_mode.hydrate(getattr(dashboard_state, "sessions", None), session_key)
+        await privacy_mode.hydrate_inbound(getattr(dashboard_state, "sessions", None), session_key)
         return privacy_mode.is_temporary(session_key)
     slot = live_dashboard_slot(dashboard_state, session_key)
     if slot is not None:

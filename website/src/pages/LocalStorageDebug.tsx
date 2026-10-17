@@ -132,7 +132,7 @@ export default function LocalStorageDebug() {
           <div className="flex gap-2">
             <button onClick={refresh} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title={i18nT('pages.localStorageDebug.refresh')}><RefreshCw size={13} /> {i18nT('pages.localStorageDebug.refresh')}</button>
             <button onClick={exportAll} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-border bg-card text-text hover:bg-bg-hover transition-all" title={i18nT('pages.localStorageDebug.export_json')}><Download size={13} /> {i18nT('pages.localStorageDebug.export')}</button>
-            <button onClick={clearOrphans} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-danger/50 bg-card text-danger hover:bg-danger-subtle transition-all" title={i18nT('pages.localStorageDebug.delete_cached_scroll_positions_from_old_sessions')}>
+            <button onClick={clearOrphans} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs border border-danger/50 bg-card text-danger hover:text-danger-text hover:bg-danger-subtle transition-all" title={i18nT('pages.localStorageDebug.delete_cached_scroll_positions_from_old_sessions')}>
               <Trash2 size={13} /> {i18nT('pages.localStorageDebug.clear_old_caches')}
             </button>
           </div>
@@ -170,7 +170,7 @@ export default function LocalStorageDebug() {
                 {g.prefix !== '(static keys)' && (
                   <button
                     onClick={() => deleteGroup(g.prefix)}
-                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-danger/30 text-danger hover:bg-danger-subtle transition-all"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-danger/30 text-danger hover:text-danger-text hover:bg-danger-subtle transition-all"
                     title={`Delete all ${g.count} keys`}
                   >
                     <Trash2 size={10} /> {i18nT('pages.localStorageDebug.clear')}
@@ -214,7 +214,7 @@ export default function LocalStorageDebug() {
                 <span data-i18n-opaque className="text-muted flex-shrink-0">{formatBytes(e.bytes)}</span>
                 <button
                   onClick={ev => { ev.stopPropagation(); deleteKey(e.key) }}
-                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger transition-all"
+                  className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 p-1 rounded hover:bg-danger-subtle text-danger hover:text-danger-text transition-all"
                   title={i18nT('pages.localStorageDebug.delete_key')}
                   aria-label={i18nT('pages.localStorageDebug.delete_key')}
                 >

@@ -3,8 +3,8 @@ title: Channel Plugin Architecture — shared runtime, channels as app extension
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-10-05
+audited-at: f97eeefbe3
 doc-pr: 689
 implementation-prs: [777, 1019, 1234]
 tracking-issues: []
@@ -15,17 +15,29 @@ superseded-by: []
 
 > **Current behaviour: see [`../system-specs/modules/messaging.md`](../system-specs/modules/messaging.md),**
 > which owns the shared turn pipeline's runtime contract. The §9 address rule
-> is split with [`rfc-session-address-model.md`](rfc-session-address-model.md);
-> that document owns the rule, and this one keeps only the reasoning that
-> produced it.
+> is not contested: §9 option B (canonical grammar) is the shipped design of
+> record, implemented by `messaging/link.py::parse_session_key`.
+> [`rfc-session-address-model.md`](rfc-session-address-model.md) owns the rule
+> going forward; its Phase 4 opaque identity is an open proposal awaiting a
+> maintainer ruling. This document keeps only the reasoning that produced §9.
 
 - Status: partial — the descriptor registry and shared lifecycle now ship in
   `src/kiro_crew/channels.py` and `src/kiro_crew/messaging/registry.py`, with ten
   built-in channels registered. The shared `messaging/dispatch.py` pipeline is
   widely adopted, but Slack, Discord, and Telegram retain channel-specific turn
   seams, and descriptor-driven config schemas plus a generic settings UI remain
-  incomplete. The sections below preserve the migration's original measurements
-  and decisions rather than describing every later landing.
+  incomplete. Section 3 items not on main: the `ChannelHooks` protocol; the
+  descriptor's `contract_version`, config schema, capabilities and
+  transport/renderer factories (`messaging/registry.py::ChannelDescriptor` carries
+  `channel_type`, `start`, `credentials`, `credential_fallbacks`,
+  `required_config` and `boot_keys`); and the generic channel config route and
+  settings form. §9 as shipped: rules 2, 3 and 5 and the parser half of rule 4 ship
+  (`messaging/link.py::parse_session_key`, `assert_colon_free`,
+  `build_dm_session_key`); rule 1 (a `/api/sessions/{key}` control plane) does not —
+  stop is `/api/chat/slots/{slot}/stop` — and the `dashboard:dashboard_` repair
+  stays in `session_map.py::_resolve_alias`. The sections below preserve the
+  migration's original measurements and decisions rather than describing every
+  later landing.
 - Author: zezhexu
 - Created: 2026-07-28
 - Related: rfc-federated-app-platform.md (frontend loading + registry this RFC rides), PR #572 + PR #627 (the parallel channel landings that produced the 9-file conflict set cited below), `kiro_crew/apps/module_loader.py` (SEC-012 trust model this RFC adopts)
@@ -35,7 +47,7 @@ superseded-by: []
 KiroCrew has 7 chat channels (slack, discord, telegram, webex, wecom, teams, weixin). Each new channel is built by copying the previous one. Measured on main `6298146` (2026-07-28):
 
 - **The turn-dispatch skeleton is duplicated 7 times: 3,796 lines total.** After normalizing channel names, `weixin/transport_dispatch.py` and `wecom/transport_dispatch.py` differ on 248 of ~760 combined lines — roughly two-thirds of every non-Slack dispatcher is the same sequence: governance gate → command intercept → busy-steer → session acquire → publish turn identity → build context → `TurnDriver.run` → guarded post-turn (record, persist, threshold notice, SEL audit) → `finally:` close/release. Telegram (1,045 lines) and Discord (803) are larger only because real per-channel features are interleaved with that same skeleton.
-- **Adding a channel means hand-editing 9 core files:** `config/loader.py`, `sandbox.py`, `slack/gateway.py`, `dashboard/handlers_system.py`, `dashboard/state.py`, `dashboard/server.py`, the governance contract test, `website/src/api/client.ts`, and `ChannelsPanel.tsx` (+ its test). This is not theoretical coupling: when Teams (#572) and WeChat (#627) landed in parallel, these exact files were the merge-conflict set, twice.
+- **Adding a channel means hand-editing 9 core files:** `config/loader.py`, `sandbox_tiers.py`, `slack/gateway.py`, `dashboard/handlers_system.py`, `dashboard/state.py`, `dashboard/server.py`, the governance contract test, `website/src/api/client.ts`, and `ChannelsPanel.tsx` (+ its test). This is not theoretical coupling: when Teams (#572) and WeChat (#627) landed in parallel, these exact files were the merge-conflict set, twice.
 - **The boot orchestrator lives inside the Slack package.** `slack/gateway.py` (5,512 lines) owns `_start_channel_transports()` and the governed members tuple. Every channel PR edits Slack's package to exist.
 - Bug classes get re-fixed per channel. The weixin review alone re-discovered, in channel-local code, problems the next channel will hit again: credential file permissions, two-file credential commit atomicity, event-loop stalls from sync I/O, fail-open policy parsing, hot poll loops.
 
@@ -97,7 +109,7 @@ The nine hand-edited seams reduce to **one required edit** (register the descrip
 | `slack/gateway.py` members tuple + start call | registry iterates descriptors |
 | `dashboard/handlers_system.py` members | derived from registry |
 | `dashboard/state.py` per-channel fields | generic `channel_state[type] = {connected, error}` map |
-| `sandbox.py` denylist entries | derived from descriptor cred fields |
+| `sandbox_tiers.py` denylist entries | derived from descriptor cred fields |
 | `dashboard/server.py` per-channel config routes | generic `/api/channels/{name}/config` |
 | governance contract test | stays, as the tripwire pinning membership |
 | `config/loader.py` dataclass + ctor | descriptor schema |
@@ -146,6 +158,14 @@ Each PR lands green on the existing suites; no behavior change until ⑤.
 - **A channel-only plugin mechanism separate from apps.** Rejected: two discovery/trust/distribution systems to maintain, and the apps platform already solved loading, admission, and signing.
 
 ## 9. Amendment: session address model (decided 2026-07-29)
+
+> **As shipped.** Rules 2, 3 and 5 ship, and so does the parser half of rule 4:
+> `messaging/link.py` provides `parse_session_key`, `assert_colon_free` and
+> `build_dm_session_key`. Rule 1 does not ship: no `/api/sessions/{key}/stop` or
+> `/steer` route exists, and stop stays `/api/chat/slots/{slot}/stop`. The
+> `dashboard:dashboard_` repair stays in `session_map.py::_resolve_alias`; it is
+> not in the parser. [rfc-session-address-model.md](rfc-session-address-model.md)
+> owns the rule, and its Phase 2 deletes that repair rather than moving it.
 
 PR ③ introduces the channel registry and the host's control seams. Before it
 lands, the shape of a session address must be fixed — otherwise the control

@@ -769,7 +769,6 @@ def _normalize_model(value: "str | None") -> str:
 
 def conclude_lane(
     *,
-    lane: str,
     fold: str,
     nothing_new: bool,
     marker_present: bool,
@@ -780,13 +779,10 @@ def conclude_lane(
 ) -> "tuple[str, str]":
     """Fold the lane signals into one ``(conclusion, why)`` -- the shared table.
 
-    ``lane`` is accepted and validated but DELIBERATELY not branched on: the
-    ruling that produced this table resolved the one asymmetry to the stricter
-    side, so there is no row where a fork and a same-repo run of the same inputs
-    reach different conclusions. The parameter stays because the two lanes must
-    pass it (it names the caller and reserves the seam), and because the contract
-    is that any future lane difference is a ROW here selected by ``lane`` -- never
-    a branch back in a YAML ``run:`` body.
+    It takes NO lane. Both lanes hand it the same signals, so for the same inputs a
+    fork and a same-repo run reach the same conclusion by construction: there is
+    no parameter a row could branch on to treat the more hostile source more
+    softly.
 
     ``refusal`` is the ``validate`` return code, which for some values NAMES why
     no leg ran. It selects a more specific ``why`` and never a different
@@ -794,9 +790,6 @@ def conclude_lane(
     published a softer verdict because it could explain itself would be a hole.
     It is keyed by exact match, so an unrecognized code reads as no refusal.
     """
-    if lane not in ("fork", "same-repo"):
-        raise CandidateError(f"unknown lane {lane!r} -- expected 'fork' or 'same-repo'")
-
     # gap_model is MODEL-AUTHORED input to a merge-blocking gate, so it is
     # UNTRUSTED. It is OR-ed in here and read ONLY inside the BLOCK branch below,
     # where a gap can do exactly one thing: upgrade concerns -> block. It can make
@@ -1044,7 +1037,6 @@ def monotonic_conclusion(
 
 def _cmd_conclude(args: argparse.Namespace) -> int:
     conclusion, why = conclude_lane(
-        lane=args.lane,
         fold=args.fold,
         nothing_new=_truthy(args.nothing_new),
         marker_present=_truthy(args.marker),
@@ -1151,7 +1143,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     c = sub.add_parser("conclude", help="map the fold + model signals to ONE lane conclusion")
-    c.add_argument("--lane", required=True, choices=["fork", "same-repo"])
     c.add_argument(
         "--fold",
         required=True,

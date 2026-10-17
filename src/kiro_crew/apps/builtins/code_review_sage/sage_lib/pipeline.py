@@ -395,6 +395,13 @@ def build_ship_comment(record: dict) -> str:
     return _redact(body)
 
 
+# The one definition of a finding's comment key, ``finding:<i>``, where ``i`` is
+# the finding's index in the record's ``findings`` list. ``build_pending_comments``
+# mints it below; the dismiss endpoint and the report's re-banding parse it with
+# this same pattern, so the key's shape lives in exactly one place.
+FINDING_KEY_RE = re.compile(r"^finding:(\d{1,6})$")
+
+
 def build_pending_comments(record: dict) -> list[dict]:
     """Build the full set of DRAFT comments for a reviewed change, with every body
     Python-redacted HERE (the deterministic chokepoint). The poster worker posts

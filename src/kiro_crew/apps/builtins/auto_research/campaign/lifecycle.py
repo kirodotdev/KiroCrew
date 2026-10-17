@@ -108,14 +108,41 @@ def _campaign_model(config: dict) -> str:
     Availability is NOT screened here: no advertised-model list exists outside a
     live session. If the pick stops being served, the session layer's withhold
     (``_pinned_model_verdict`` in chat_runner) KEEPS the pin, runs the worker on
-    the backend default, and posts a notice card — but that card lands in the
-    app-owned ``research-<cid>`` transcript, which the Research Lab page does not
-    render, so the fallback is not visible on this app's own surfaces.
+    the backend default, and posts a notice card into the app-owned
+    ``research-<cid>`` transcript, which the Research Lab page does not render.
+    The page learns of the fallback from the campaign list/detail payloads
+    instead: ``_worker_model_state`` in handlers copies the worker slot's
+    verdict and served model onto each campaign.
     """
     raw = config.get("model")
     if not isinstance(raw, str):
         return ""
     return raw.strip()
+
+
+def _campaign_model_error(config: dict) -> str | None:
+    """Why the config's ``model`` field is unusable, or ``None`` when it is fine.
+
+    Shared by create (``validate_campaign``) and fork, which accepts a model
+    override in its body, so both reject the same bad values the same way.
+    """
+    raw_model = config.get("model")
+    if raw_model is not None and not isinstance(raw_model, str):
+        return "Model must be a string"
+    if isinstance(raw_model, str) and len(raw_model.strip()) > _MAX_MODEL_LEN:
+        # Reject rather than truncate: a sliced id is a *different* string that
+        # is never served, which would take the silent-fallback path instead of
+        # a 400 that names the problem.
+        return f"Model id too long (max {_MAX_MODEL_LEN} characters)"
+    if (
+        _campaign_model(config)
+        and config.get("execution_mode", storage.DEFAULT_EXECUTION_MODE) == "workflow"
+    ):
+        # The workflow engine resolves its own models per step; a campaign-level
+        # pin would be silently ignored, which
+        # docs/system-specs/common/model-selection.md forbids.
+        return "Model selection requires agent mode — workflow mode runs on the default model"
+    return None
 
 
 def validate_campaign(config: dict) -> dict:
@@ -133,24 +160,9 @@ def validate_campaign(config: dict) -> dict:
     ):
         errors.append("Execution mode must be 'agent' or 'workflow'")
 
-    raw_model = config.get("model")
-    if raw_model is not None and not isinstance(raw_model, str):
-        errors.append("Model must be a string")
-    elif isinstance(raw_model, str) and len(raw_model.strip()) > _MAX_MODEL_LEN:
-        # Reject rather than truncate: a sliced id is a *different* string that
-        # is never served, which would take the silent-fallback path instead of
-        # a 400 that names the problem.
-        errors.append(f"Model id too long (max {_MAX_MODEL_LEN} characters)")
-    elif (
-        _campaign_model(config)
-        and config.get("execution_mode", storage.DEFAULT_EXECUTION_MODE) == "workflow"
-    ):
-        # The workflow engine resolves its own models per step; a campaign-level
-        # pin would be silently ignored, which
-        # docs/system-specs/common/model-selection.md forbids.
-        errors.append(
-            "Model selection requires agent mode — workflow mode runs on the default model"
-        )
+    model_error = _campaign_model_error(config)
+    if model_error:
+        errors.append(model_error)
 
     max_cycles = config.get("max_cycles", 30)
     if max_cycles > MAX_CYCLES_HARD_CAP:

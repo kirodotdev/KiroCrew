@@ -20,6 +20,11 @@
 //
 // The decision logic lives in a plain async tick() so tests can drive it with a
 // stubbed probe and no timers; start()/stop() only wrap the interval.
+//
+// A suspend is not a failure. A probe that settles more than two intervals after
+// it started was held up by the host, not the backend (a probe in flight when the
+// host sleeps fails on wake); it is logged and not counted. The run it interrupts
+// is kept, so a backend that was already failing still trips on its next failure.
 
 /**
  * @param {object} o
@@ -32,6 +37,8 @@
  * @param {() => boolean} [o.isWindowAlive]       false => stop (window closed)
  * @param {number} [o.failureThreshold=3]         consecutive failures before firing
  * @param {number} [o.intervalMs=10000]           poll cadence
+ * @param {() => number} [o.now=Date.now]         wall clock (counts a host
+ *                                                suspend), injectable for tests
  * @param {(fn: Function, ms: number) => any} [o.setIntervalFn]
  * @param {(h: any) => void} [o.clearIntervalFn]
  * @param {(msg: string) => void} [o.log]
@@ -45,6 +52,7 @@ function createLivenessMonitor({
   isWindowAlive = () => true,
   failureThreshold = 3,
   intervalMs = 10_000,
+  now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   log = () => {},
@@ -64,6 +72,7 @@ function createLivenessMonitor({
     }
     if (inFlight) return; // previous probe slower than the interval; skip
     inFlight = true;
+    const startedAt = now();
     try {
       await probe();
       if (consecutiveFailures > 0) {
@@ -72,6 +81,15 @@ function createLivenessMonitor({
       }
       consecutiveFailures = 0;
     } catch {
+      // The probe is bounded below one interval, so one that settles more
+      // than two intervals after it started was held up by the host, not the
+      // backend: the host slept (or this process stalled) while it was in
+      // flight, so its failure says nothing about the backend.
+      const heldMs = now() - startedAt;
+      if (heldMs > 2 * intervalMs) {
+        log(`backend probe failed after ${Math.round(heldMs / 1000)}s across a suspend; not counted`);
+        return;
+      }
       consecutiveFailures += 1;
       log(`backend probe failed (${consecutiveFailures}/${failureThreshold})`);
       if (consecutiveFailures >= failureThreshold && !fired) {

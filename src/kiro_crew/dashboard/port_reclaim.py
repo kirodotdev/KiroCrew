@@ -56,6 +56,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 
 from kiro_crew import platform_compat
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger("kiro_crew.dashboard.port_reclaim")
 
@@ -93,7 +94,7 @@ def _listeners_on_port(port: int) -> list[int] | None:
     try:
         out = subprocess.check_output(
             [lsof_bin, "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
-            text=True,
+            **UTF8_TEXT,
             stderr=subprocess.DEVNULL,
             timeout=5,
         ).strip()

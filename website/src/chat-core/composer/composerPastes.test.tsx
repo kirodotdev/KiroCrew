@@ -56,7 +56,7 @@ import { Composer } from './Composer'
 import { createComposerDraftStore, type ComposerDraftStore } from './draftStore'
 import { storeSentPastes, useComposerPastes, type ComposerPastes } from './composerPastes'
 import { buildOutgoingTurn, type OutgoingTurn } from './outgoingTurn'
-import { mergeCarriedDraft, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { formatToken, mergeCarriedDraft, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
 import { SlotProvider } from '../../providers/SlotContext'
 
 const PASTED = 'line1\nline2\nline3\nline4\nline5'
@@ -126,8 +126,8 @@ describe('useComposerPastes', () => {
     const { result } = renderHook(() => useComposerPastes())
     act(() => { result.current.install([A]) })
     let carried!: ReturnType<ComposerPastes['carry']>
-    act(() => { carried = result.current.carry(`retry ${TA}`, [B]) })
-    expect(carried.text).toBe('retry [ Paste #2 · 3 lines ]')
+    act(() => { carried = result.current.carry(`retry ${formatToken(B)}`, [B]) })
+    expect(carried.text).toBe(`retry ${formatToken({ ...B, seq: 2 })}`)
     expect(result.current.blocks).toEqual([A, { ...B, seq: 2 }])
   })
 
@@ -207,13 +207,13 @@ describe('Paste atom under the main chat preset (draft store)', () => {
     await mount(<PagePreset handle={handle} />)
     await act(async () => { fireEvent.change(box(), { target: { value: 'please read ' } }) })
     await pasteInto(box(), PASTED)
-    expect(box().value).toContain(T1)
+    expect(box().value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]/)
     expect(box().value).not.toContain('line3')
     expect(handle.blocks).toEqual([expect.objectContaining({ seq: 1, lines: 5, content: PASTED })])
     await act(async () => { fireEvent.keyDown(box(), { key: 'Enter', code: 'Enter' }) })
     expect(handle.sent).toHaveLength(1)
     expect(handle.sent[0].wire).toBe(`please read \n${PASTED}`)
-    expect(handle.sent[0].bubble).toBe(`please read \n${T1}`)
+    expect(handle.sent[0].bubble).toBe(`please read \n${formatToken(handle.blocks[0])}`)
     expect(handle.sent[0].meta.pastes).toEqual(handle.blocks)
   })
 
@@ -271,12 +271,13 @@ describe('Paste atom under the pane preset (controlled value)', () => {
     const handle = { sent: [] } as unknown as PaneHandle
     await mount(<PanePreset handle={handle} />)
     await pasteInto(box(), PASTED)
-    expect(box().value).toBe(T1)
+    const genToken = box().value
+    expect(genToken).toMatch(/^\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \]$/)
     const sentBlocks = handle.pastes.blocks
     await act(async () => { handle.setInput(''); handle.pastes.set([]) })
     expect(box().value).toBe('')
-    await act(async () => { refuse(handle, T1, sentBlocks) })
-    expect(box().value).toBe(T1)
+    await act(async () => { refuse(handle, genToken, sentBlocks) })
+    expect(box().value).toBe(genToken)
     await act(async () => { fireEvent.keyDown(box(), { key: 'Enter', code: 'Enter' }) })
     expect(handle.sent.at(-1)?.wire).toBe(PASTED)
   })
@@ -287,10 +288,10 @@ describe('Paste atom under the pane preset (controlled value)', () => {
     const one: PasteBlock = { id: 'p1', seq: 1, lines: 5, content: PASTED }
     const two: PasteBlock = { id: 'p2', seq: 1, lines: 4, content: SECOND }
     await act(async () => {
-      refuse(handle, T1, [one])
-      refuse(handle, '[ Paste #1 · 4 lines ]', [two])
+      refuse(handle, formatToken(one), [one])
+      refuse(handle, formatToken(two), [two])
     })
-    expect(box().value).toMatch(/\[ Paste #1 · 5 lines \][\s\S]*\[ Paste #2 · 4 lines \]/)
+    expect(box().value).toMatch(/\[ Paste #1(?:\u2063[\u200b\u200c]+\u2063)? · 5 lines \][\s\S]*\[ Paste #2(?:\u2063[\u200b\u200c]+\u2063)? · 4 lines \]/)
     await act(async () => { fireEvent.keyDown(box(), { key: 'Enter', code: 'Enter' }) })
     const wire = handle.sent.at(-1)?.wire ?? ''
     expect(wire).toContain(PASTED)

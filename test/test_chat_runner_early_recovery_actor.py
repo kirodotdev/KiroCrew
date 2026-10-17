@@ -13,7 +13,6 @@ path runs for real rather than being reasoned about.
 from __future__ import annotations
 
 import ast
-import inspect
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -161,7 +160,18 @@ class TestTheBindingIsStructural:
     def test_the_actor_is_bound_before_any_try_that_queues_a_recovery(self) -> None:
         fn = next(
             node
-            for node in ast.walk(ast.parse(inspect.getsource(chat_runner)))
+            for node in ast.walk(
+                ast.parse(
+                    "\n".join(
+                        turn_file.read_text(encoding="utf-8")
+                        for turn_file in [
+                            *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                            Path(chat_runner.__file__),
+                        ]
+                        if turn_file.name != "__init__.py"
+                    )
+                )
+            )
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_chat"
         )
         bound_at = min(

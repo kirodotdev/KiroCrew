@@ -25,7 +25,7 @@ vi.mock('../api/client', () => ({
     // the Kiro sign-in status, let alone render its chooser.
     kasLoginStatus: vi.fn().mockResolvedValue({ authenticated: false }),
     // The selected backend decides whether the sign-in signpost renders.
-    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
+    kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'kiro' } }),
   },
 }))
 

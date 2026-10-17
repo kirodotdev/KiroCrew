@@ -324,8 +324,8 @@ class TestStatusReports:
         assert "chat-2" in out and "rebase the PR" in out and "working" in out
         assert "chat-3" in out and "queued" in out and "2 queued" in out
 
-    def test_a_gone_row_says_the_dashboard_no_longer_holds_it(self) -> None:
-        """`gone` is the row a live-only list cannot produce, so the prose has to
+    def test_a_lost_row_says_the_dashboard_no_longer_holds_it(self) -> None:
+        """`lost` is a row a live-only list cannot produce, so the prose has to
         distinguish it — a model that reads it as merely idle will try to message a
         session that is not there."""
         out, _ = _st(
@@ -333,10 +333,35 @@ class TestStatusReports:
                 "ok": True,
                 "caller": "chat-1",
                 "tree": "readable",
-                "sessions": [{"target": "chat-7", "status": "gone", "source": "crew_log"}],
+                "sessions": [{"target": "chat-7", "status": "lost", "source": "crew_log"}],
             }
         )
-        assert "chat-7" in out and "gone" in out
+        assert "chat-7" in out and "lost" in out
+        assert "idle" not in out
+
+    def test_a_closed_row_says_it_finished_and_shows_its_stamp(self) -> None:
+        """`closed` is the worker that finished and closed its tab — the prose must
+        read as 'nothing to do', the opposite of `lost`, and surface ``closed_at``
+        as a human-readable UTC time rather than a raw epoch number."""
+        out, _ = _st(
+            {
+                "ok": True,
+                "caller": "chat-1",
+                "tree": "readable",
+                "sessions": [
+                    {
+                        "target": "chat-7",
+                        "status": "closed",
+                        "source": "crew_log",
+                        "closed_at": 1730000000000,
+                    }
+                ],
+            }
+        )
+        assert "chat-7" in out and "closed" in out
+        # Epoch MILLISECONDS rendered as UTC ISO-8601, not the raw number.
+        assert "2024-10-27T03:33:20Z" in out
+        assert "1730000000000" not in out
         assert "idle" not in out
 
     def test_an_incomplete_tree_says_the_count_is_a_floor(self) -> None:

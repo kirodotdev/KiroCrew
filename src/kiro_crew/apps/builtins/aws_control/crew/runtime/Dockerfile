@@ -233,8 +233,9 @@ RUN useradd --create-home --home-dir /var/lib/crew --shell /usr/sbin/nologin cre
                 /var/lib/crew/.kiro/agents \
     && chown -R crew:crew /var/lib/kirocrew /var/lib/crew
 
-# The three processes read their configuration only through container.common,
-# so these names are the whole environment contract.
+# The container's own processes (supervisor, front and backup sidecar) read their
+# configuration only through container.common, so these names are the whole
+# environment contract.
 #
 # SMC_CONFIG_DIR EQUALS SMC_DATA_HOME, and that is not an oversight. Verified
 # against a running gateway: Kiro Crew's config_dir() and data_home() resolve to
@@ -254,7 +255,8 @@ ENV HOME=/var/lib/crew \
     PYTHONDONTWRITEBYTECODE=1
 
 # Supplied at run time, never baked in: KIRO_IDENTITY, SMC_CONTROL_SECRET,
-# SMC_ROUTE_PREFIX, SMC_CREW_NAME, SMC_BACKUP_BUCKET, SMC_BACKUP_PREFIX.
+# SMC_ROUTE_PREFIX, SMC_CREW_NAME, SMC_BACKUP_BUCKET, SMC_BACKUP_PREFIX and, optionally,
+# SMC_BACKUP_INTERVAL_SECS (seconds between backup cycles; default 60, zero or less refused).
 USER crew
 
 # 8080 is the front process, the only listener the network reaches. The Kiro Crew

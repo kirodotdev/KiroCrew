@@ -19,8 +19,11 @@ them.
 | shared components, a11y, URL sanitization, data fetching, the stack, adding a dependency | [frontend-conventions](docs/frontend-conventions.md) |
 | any user-facing string, date, number, or sort order | [i18n-catalog](docs/i18n-catalog.md) + [i18n gates](../docs/ci/i18n-gates.md) |
 | `src/extensions.ts`, edition composition, registries | [extension-seams](docs/extension-seams.md) |
+| `src/api/` — `client.ts`, `api/client/*.ts`, adding an API method | [extension-seams](docs/extension-seams.md) (the transport seam and the method ratchets) |
+| a registered find_ui location: `src/uiLocations/` area descriptors, a `{...uiLocation(id)}` spread, `conditions.ts`, or anything the generated index is cut from (a registry, marker, descriptor or catalog) | [find_ui and the UI location index](../docs/architecture/mcp.md#find_ui-and-the-ui-location-index) + [Adding a UI location](../docs/architecture/mcp.md#adding-a-ui-location) — register at both sites, then run `npm run gen:ui` and commit the regenerated index, or the freshness gate fails |
 | tests (vitest, MSW, Playwright, Electron), or a test that fails only in CI | [testing](docs/testing.md) |
 | the Electron desktop shell | [electron/README.md](electron/README.md) |
+| a file nearing 2,000 lines, or splitting one | [code-style § No file over 2,000 lines](../docs/system-specs/common/code-style.md#no-file-over-2000-lines): `scripts/check_file_line_cap.py` enforces it in CI's lint jobs |
 | anything backend, or a whole-system question | [`../AGENTS.md`](../AGENTS.md) |
 
 Everything under `website/docs/` is indexed by [its README](docs/README.md).
@@ -67,7 +70,10 @@ the `internal-content-scan` check.
   that draft in a `{/* No hand-off: … */}` comment. Inside a Radix menu, leave it
   off and render a sibling `ErrorNoticeMenuItem`; its `describedBy` must point to
   the passive notice's `id`, so the hand-off is a real menu focus stop rather than
-  a nested button. Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
+  a nested button. When the agent the hand-off would open cannot run (its own
+  credential or backend is what failed), pass `noHandoffReason="…"` instead: a
+  reason for the reviewer, never rendered, and a type error next to `askAgent`.
+  Enforced by `AUTOSDE.yaml` (`errors-use-error-notice`).
 - **Security: every `dangerouslySetInnerHTML` goes through DOMPurify** via
   `md()` / `sanitize()` / `esc()` in `src/api/helpers.ts`. A bypass is an XSS bug,
   so there is no acceptable pointer for this one.

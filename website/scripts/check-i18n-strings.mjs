@@ -411,7 +411,7 @@ async function baseCounts(scope, files) {
  * ledger — `[added-lines]` at zero tolerance, and `[vs-base]` computed live on
  * both sides — hold every line a branch writes to the stricter standard. Without
  * this, a module-level ALL-CAPS label table is invisible to every gate, which is
- * how `ChatSidebar`'s filter/sort menus and `lib/effort.ts`'s level labels shipped
+ * how `chat-sidebar/SearchDock.tsx`'s filter/sort menus and `lib/effort.ts`'s level labels shipped
  * untranslated in ten locales while their files reported clean.
  */
 async function strictEngine() {
@@ -529,7 +529,7 @@ async function main() {
         + 'These two gates run `eslint.i18n.strict.config.js`, which also looks INSIDE\n'
         + 'ALL-CAPS module constants — the per-file ceilings do not, so a finding here can be\n'
         + 'one the ceiling numbers never counted. Store a catalog key in the table and\n'
-        + 'translate where it renders (see `FILTER_LABEL_KEY` in pages/ChatSidebar.tsx).',
+        + 'translate where it renders (see `FILTER_LABEL_KEY` in pages/chat-sidebar/SearchDock.tsx).',
       )
       process.exit(1)
     }
@@ -590,7 +590,7 @@ async function main() {
       + 'This does NOT fail the run —\n'
       + 'a whole-repo total cannot be charged to one diff. [added-lines] covers the same\n'
       + 'population for lines you wrote. Store a catalog key in the table and translate\n'
-      + 'where it renders (see `FILTER_LABEL_KEY` in pages/ChatSidebar.tsx). Densest files:\n'
+      + 'where it renders (see `FILTER_LABEL_KEY` in pages/chat-sidebar/SearchDock.tsx). Densest files:\n'
       + worst.map(([f, n]) => `  ${n}\t${f}`).join('\n'),
     )
   }

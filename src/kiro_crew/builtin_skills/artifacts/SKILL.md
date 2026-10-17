@@ -129,7 +129,7 @@ about style when the user delegated that choice.
 | `artifact_folder_move` | Reparent a folder (cycle-guarded) |
 | `artifact_folder_delete` | Remove a folder; safe by default, destructive with `delete_contents=true` |
 | `artifact_get_comments` | Read every comment thread on an artifact; pass `exclude_resolved` to skip threads already resolved |
-| `artifact_post_comment` | Open a thread, optionally anchored to a quoted span |
+| `artifact_post_comment` | Open a document-level thread (`slug`, `text`, optional `scope`); the tool takes no anchor — only the dashboard can anchor a comment to a span |
 | `artifact_reply_comment` | Reply in an existing thread |
 | `artifact_mark_review` | Advance a thread to REVIEW — addressed, awaiting human check |
 | `artifact_delete_comment` | Delete a thread you demonstrably applied; requires a reason |
@@ -320,7 +320,8 @@ Rules:
 
 When the user asks "what have we built?" / "what artifacts do we have?" /
 "show me my widgets", call `artifact_list` and present the results — slug,
-name, kind, version, updated_at. Group by tag if that aids comprehension.
+name, kind, version and tags (it lists newest first; `artifact_get` gives
+`updated_at`). Group by tag if that aids comprehension.
 
 `artifact_list` accepts `tag`, `kind`, and `q` (name substring) filters.
 Use them to narrow when the user gives constraints.

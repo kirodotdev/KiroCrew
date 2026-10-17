@@ -44,15 +44,25 @@ def _all_handlers() -> dict[str, object]:
     return out
 
 
+def _all_declared() -> list[str]:
+    """Every tool name a domain declares, enabled or not.
+
+    ``build_tool_list()`` is the ADVERTISED list and may omit a declared tool whose
+    app is switched off (``apps.advertised()``); the two halves this file holds in
+    sync are the declaration and the handler, so parity is read from ``schemas()``.
+    """
+    return [t["name"] for domain in DOMAIN_MODULES for t in _domain(domain).schemas()]
+
+
 def test_every_advertised_tool_has_a_handler() -> None:
     """A descriptor with no handler advertises a tool that cannot run."""
     advertised = {t["name"] for t in build_tool_list()}
     assert advertised - set(_all_handlers()) == set()
 
 
-def test_every_handler_is_advertised() -> None:
+def test_every_handler_is_declared() -> None:
     """A handler with no descriptor is unreachable: the model never learns the name."""
-    assert set(_all_handlers()) - {t["name"] for t in build_tool_list()} == set()
+    assert set(_all_handlers()) - set(_all_declared()) == set()
 
 
 @pytest.mark.parametrize("domain", DOMAIN_MODULES)
@@ -62,9 +72,21 @@ def test_descriptor_and_handler_live_in_the_same_module(domain: str) -> None:
     assert {t["name"] for t in module.schemas()} == set(module.HANDLERS)
 
 
+@pytest.mark.parametrize("domain", DOMAIN_MODULES)
+def test_a_domain_advertises_only_what_it_declares(domain: str) -> None:
+    """``advertised()`` may narrow ``schemas()``, never add to it or reshape a descriptor."""
+    module = _domain(domain)
+    advertised = getattr(module, "advertised", None)
+    if advertised is None:
+        return
+    declared = {t["name"]: t for t in module.schemas()}
+    for spec in advertised():
+        assert declared[spec["name"]] == spec, spec["name"]
+
+
 def test_tool_names_are_unique_across_domains() -> None:
     """Two domains claiming one name would make dispatch order decide the winner."""
-    names = [t["name"] for t in build_tool_list()]
+    names = _all_declared()
     assert sorted(names) == sorted(set(names))
 
 

@@ -108,7 +108,7 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
   const {
     prRun, report, reportLoading, reportError,
     startReview, cancelRun, cancelling, pool,
-    archiveRun, archiving, archiveError, runs, postComments, postCommentGroups,
+    archiveRun, archiving, archiveError, runs, postComments, postCommentGroups, dismissFinding,
     posting, postError, postingSelection,
   } = useSage()
   const [tab, setTab] = useState<Tab>('review')
@@ -224,6 +224,9 @@ export default function PrReviewDetail({ pr }: { pr: PrRef }) {
           // One request per change: a request posts one pending review against
           // one pull request, so a selection spanning changes is grouped.
           onPostSelection={(groups) => postCommentGroups(prRun.run_id, groups)}
+          dismissed={prRun.dismissed}
+          onDismissFinding={(changeId, key, reason) => dismissFinding(
+            prRun.run_id, changeId, key, reason)}
           onArchive={() => archiveRun(prRun.run_id)}
           archiving={archiving}
           archiveError={archiveError?.message ?? null}

@@ -1,6 +1,10 @@
+import { fileURLToPath } from 'node:url'
+import { dirname, relative, sep } from 'node:path'
+import { format } from 'node:util'
 import { afterEach, beforeEach, vi } from 'vitest'
 import '@testing-library/jest-dom'
 import { server } from './mocks/server'
+import actWarningBaseline from './act-warning-baseline.json'
 import { initI18n, i18next } from '../src/i18n'
 import { __resetStagingForTests } from '../src/components/pierreStaging'
 import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
@@ -486,6 +490,144 @@ if (typeof (globalThis as unknown as { WebGL2RenderingContext?: unknown }).WebGL
 // creates a loadable blob page, so no iframe fetch task is ever scheduled.
 URL.createObjectURL = (() => 'blob:mock') as typeof URL.createObjectURL
 URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL
+
+// The running test's file, relative to website/ with `/` separators.
+const WEBSITE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+let testFile = ''
+beforeEach(() => {
+  const testPath = expect.getState().testPath
+  if (testPath) testFile = relative(WEBSITE_ROOT, testPath).split(sep).join('/')
+})
+
+// ── Each test undoes the fake timers and storage writes it leaves ──
+// A test that installs fake timers or writes to storage and does not undo it hands
+// that state to every later test in the file, which then passes or fails by order.
+// Restore what the test INHERITED, not a blank slate: fake timers a beforeAll
+// installed stay installed and storage a beforeAll seeded stays seeded, so only the
+// test's own change is undone. One direction is not restored: a test that turns OFF
+// fake timers it inherited leaves them off, because the stand-in it removed (its
+// clock, its faked APIs) cannot be rebuilt faithfully. The restore runs from onTestFinished, after the
+// test's own afterEach, onTestFinished and fixture teardown and in its own
+// try/catch, so a hook that throws cannot skip it. The storage Map is restored
+// directly, past any spy a test left on Storage.prototype.
+// Two neighbours work differently. vite.config.ts's `unstubEnvs` resets every
+// vi.stubEnv before each test, a beforeAll or module-level stub included, so a test
+// stubs env in beforeEach or in its own body. Globals are not restored at all:
+// unstubbing cannot tell a file-wide stub from a test's own (pipelineBoardCard.test.ts
+// stubs CSSStyleSheet once at module level), so a test undoes its own vi.stubGlobal.
+//
+// The files below read storage an EARLIER test wrote, so they fail run alone or
+// shuffled; they keep the carry-over until fixed. SHRINK-ONLY:
+// setup.refactor.determinism.test.ts fails if the list grows.
+export const STORAGE_CARRYOVER_FILES: ReadonlySet<string> = new Set([
+  // Only the 'PR chip' describe seeds mc-session-stale-collapse-ms; the other three
+  // describes read its leftover. Owner: the ChatSidebar test scope's follow-up to
+  // #17195 (de-flake W2-08).
+  'src/test/ChatSidebar.sourceLinkChip.test.tsx',
+])
+type PolyfilledStorage = Storage & { _m: Map<string, string> }
+beforeEach(({ onTestFinished }) => {
+  const fakeAtStart = vi.isFakeTimers()
+  const stores: [PolyfilledStorage, Map<string, string>][] = STORAGE_CARRYOVER_FILES.has(testFile)
+    ? []
+    : [localStorage, sessionStorage]
+        .filter((store): store is PolyfilledStorage => (store as PolyfilledStorage)._m instanceof Map)
+        .map((store) => [store, new Map(store._m)])
+  onTestFinished(() => {
+    if (!fakeAtStart && vi.isFakeTimers()) vi.useRealTimers()
+    for (const [store, entries] of stores) store._m = new Map(entries)
+  })
+})
+
+// ── act() warnings ──
+// "not wrapped in act(...)" means a state update landed after the test's last
+// barrier (website/docs/testing.md § Rules every test keeps). The files in
+// act-warning-baseline.json still emit one: there the warning is counted and kept
+// out of the log. Any other file is expected to emit none; its warning is printed
+// as usual and reported again at the end of the file. Repeated full local runs list
+// the same files bar one or two, each seen in one run only, so whether a file warns
+// can depend on timing: that report does not fail the run. KIROCREW_ACT_STRICT=1 fails
+// the test that emitted the warning instead (or the file, for a warning outside any
+// test). A listed file that emitted none in a run of every one of its tests is
+// reported too, so the list shrinks. SHRINK-ONLY: remove a file once its barriers
+// are fixed; never add one to quiet a new warning.
+const ACT_WARNING_FILES: ReadonlySet<string> = new Set(actWarningBaseline)
+const ACT_STRICT = process.env.KIROCREW_ACT_STRICT === '1'
+let actInTest = 0
+let actInFile = 0
+let actInTests = 0
+let firstInTest = ''
+let firstInFile = ''
+const consoleError = console.error
+// Only a string argument is inspected: String() on any argument can throw (a
+// null-prototype object, a revoked Proxy, a throwing toString), and the wrapper must
+// never fail the console.error call it stands in for.
+export const isActWarning = (args: readonly unknown[]): boolean =>
+  args.some((arg) => typeof arg === 'string' && arg.includes('not wrapped in act('))
+const describeWarning = (args: unknown[]): string => {
+  try {
+    return format(...args).replace(/\s+/g, ' ').slice(0, 300)
+  } catch {
+    return String(args[0]).slice(0, 300)
+  }
+}
+console.error = (...args: unknown[]) => {
+  if (isActWarning(args)) {
+    actInTest += 1
+    actInFile += 1
+    const text = describeWarning(args)
+    if (!firstInTest) firstInTest = text
+    if (!firstInFile) firstInFile = text
+    if (ACT_WARNING_FILES.has(testFile)) return
+  }
+  consoleError(...args)
+}
+const actFailure = (count: number, where: string, first: string) =>
+  new Error(
+    `${count} act() warning(s) ${where}: a state update landed after the last barrier. ` +
+      'Wait for the state it produces (findBy*, waitFor, an awaited mock call); see ' +
+      `website/docs/testing.md § Rules every test keeps. First: ${first}`,
+  )
+// Checked from onTestFinished, so the warnings every afterEach caused are counted
+// and a strict failure cannot skip another hook.
+beforeEach(({ onTestFinished }) => {
+  actInTest = 0
+  firstInTest = ''
+  onTestFinished(() => {
+    const found = actInTest
+    actInTest = 0
+    actInTests += found
+    if (ACT_STRICT && found && !ACT_WARNING_FILES.has(testFile)) {
+      throw actFailure(found, 'in this test', firstInTest)
+    }
+  })
+})
+const everyTestRan = (suite: { tasks?: unknown[] }): boolean =>
+  (suite.tasks ?? []).every((task) => {
+    const t = task as { type?: string; mode?: string; tasks?: unknown[] }
+    return t.type === 'suite' ? everyTestRan(t) : t.mode === 'run'
+  })
+// Written to stderr directly: console output from a file-level afterAll can be
+// dropped by the reporter once the file's last test has been reported. Registered
+// before the MSW teardown below, so it runs after it (after-hooks run in reverse)
+// and a strict failure here cannot skip that teardown.
+afterAll(({}, suite) => {
+  if (!testFile) return
+  const listed = ACT_WARNING_FILES.has(testFile)
+  if (actInFile && !listed) {
+    process.stderr.write(
+      `[act-warnings] ${testFile}: ${actInFile} act() warning(s) in a file outside ` +
+        `integration/act-warning-baseline.json. First: ${firstInFile}\n`,
+    )
+    if (ACT_STRICT && actInFile > actInTests) {
+      throw actFailure(actInFile - actInTests, 'outside any test', firstInFile)
+    }
+  } else if (!actInFile && listed && everyTestRan(suite)) {
+    process.stderr.write(
+      `[act-warnings] ${testFile} emitted none in this run: once it stays clean, remove it from integration/act-warning-baseline.json.\n`,
+    )
+  }
+})
 
 // Start MSW server before all tests
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }))

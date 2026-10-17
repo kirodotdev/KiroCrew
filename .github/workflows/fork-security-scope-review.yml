@@ -656,6 +656,11 @@ jobs:
           # deny outranks every allow rule and CLI flag, so the bound holds even if
           # an allowlist entry is later widened. This matches the UX lane, which
           # denies the whole family.
+          #
+          # A COPY of the same-repo lane's arguments, pinned equal to them by
+          # `test_ai_review_workflows_scope_verdict.py`. Not read out of that file:
+          # here it would come from the base checkout, so the fence would follow
+          # the pull request's base rather than this default-branch workflow.
           claude_args: |
             --model us.anthropic.claude-opus-5-5
             --fallback-model us.anthropic.claude-sonnet-5-5
@@ -731,6 +736,10 @@ jobs:
             # from `END`, never taken from a partial read, and the class spells out
             # the five characters `[[:space:]]` matches inside a record so nothing
             # depends on the runners' mawk supporting a POSIX class.
+            # A COPY of the same-repo lane's capture, pinned equal to it by
+            # `test_ai_review_workflows_scope_verdict.py`. Not read out of that
+            # file: this job holds the Bedrock credential and runs no program
+            # read out of a checkout.
             v="$(awk '!found && tolower($0) ~ /^[ \t\v\f\r]*scope-verdict:/ { sub(/^[^:]*:[ \t\v\f\r]*/, ""); gsub(/\r/, ""); value = toupper($0); found = 1 } END { if (found) print value }' "$OUT")"
             [ -n "$v" ] && verdict="$v"
           fi
@@ -1062,6 +1071,12 @@ jobs:
             # a COPY and refuse the run, the same refusal the publish path applies to
             # a redacted confirmed row before it reaches the comment. A candidate
             # carrying a credential shape is not a legitimate operation worth adjudicating.
+            #
+            # A COPY of the same-repo lane's probe under this lane's own output key,
+            # pinned equal to it by `test_ai_review_workflows_scope_verdict.py`. Not
+            # read out of that file: shell taken from a checkout would run as
+            # written, while the surface list, the one block this lane does read
+            # from it, is filtered down to quoted paths before any use.
             cp "$NORMALIZED" scrub-probe.json
             probe=0
             python3 "$REDACTOR" --mode json --fail-if-changed scrub-probe.json || probe=$?
@@ -1151,6 +1166,7 @@ jobs:
       && github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.head_repository.full_name != github.repository
     strategy:
+      max-parallel: 4
       # Every leg reports. One platform's regression is not evidence about
       # another's, so a fail-fast cancel would hide the rows an operator on the
       # cancelled runner is the only one who can see.
@@ -1698,7 +1714,7 @@ jobs:
             # DEFAULT-branch harness (the trusted copy `adjudicate` judged with),
             # never a PR tree, so this call executes no fork code. This step only
             # reads its answer and maps it to a check-run conclusion.
-            conc="$(python3 scripts/scope_candidates.py conclude --lane fork \
+            conc="$(python3 scripts/scope_candidates.py conclude \
               --fold "$fold" --model "${MODEL_VERDICT:-UNKNOWN}" --marker "$marker" \
               --nothing-new "$nothing_new" --gap-script "$gap_script" --gap-model "$gap_model" \
               --refusal "${VALIDATE_RC:-}")"
@@ -1791,6 +1807,11 @@ jobs:
           echo "remedy=$remedy" >> "$GITHUB_OUTPUT"
           echo "Scope lane conclusion: $conclusion — $title"
 
+      # The body is this lane's own: it names the fork lane and the check-run's
+      # conclusion words, so it is not one block with the same-repo lane's. What
+      # the two share is the `[SCOPE-REVIEWED] $HEAD` stamp, and that is a COPY,
+      # pinned equal to the same-repo lane's by
+      # `test_ai_review_workflows_scope_verdict.py`.
       - name: Assemble the comment body
         if: always() && needs.generate.outputs.in_scope != 'false'
         env:
@@ -1916,7 +1937,7 @@ jobs:
           [ -z "${PR:-}" ] && { echo "no PR resolved; skipping comment"; exit 0; }
           MARKER="<!-- security-scope-review -->"
           # ONE publication primitive for every marker-comment write in this
-          # lane; test_ai_review_workflows.py pins it byte-identical across all
+          # lane; test_ai_review_workflows_comment_writes.py pins it byte-identical across all
           # of them, the way it already pins guarded_comment_upsert, so neither
           # the budget nor the honesty below can drift lane by lane.
           #
@@ -2356,13 +2377,24 @@ jobs:
             return 1
           }
           # Guarded upsert (#8292, #8344): the shared function below is defined
-          # byte-identically in every review lane; test_ai_review_workflows.py
+          # byte-identically in every review lane; test_ai_review_workflows_comment_writes.py
           # pins all copies to one canonical body so the invariant cannot
           # drift lane by lane.
           guarded_comment_upsert() {
             local marker="$1" stamp="$2" lane="$3" out_file="$4"
             local matches existing lookup_ok pr_head="" attempt withhold="" write_rc
-            local verdict_read_rc superseded=""
+            # What reached the slot is recorded as the step output `publication`,
+            # because every arm below returns 0 and the write status would
+            # otherwise end with this function. The fork Opus and GPT finalize
+            # steps read it: a verdict computed for this head is a pass there only
+            # once it is in the slot. `published` is this run's body in the slot,
+            # `superseded` a head this PR has moved past, and `not_published` every
+            # other arm. That includes an earlier run's sample for this head, which
+            # the PR then shows instead of this run's verdict, and an override note
+            # a repeat stopped at: that note names no head the repeat can check, and
+            # an override for THIS head is answered by the finalize step's own
+            # override input.
+            local verdict_read_rc superseded="" publication="not_published"
             # Find the bot's existing marker comment (first match wins) and
             # capture its id. Author filter: only a github-actions[bot]
             # comment can match, so a PR commenter cannot plant the marker and
@@ -2448,6 +2480,7 @@ jobs:
                 # publishes the verdict that counts, so a record here would
                 # point a reader at a revision nobody is reviewing.
                 superseded=1
+                publication="superseded"
                 withhold="$HEAD is no longer this PR's head ($pr_head)"
               fi
             fi
@@ -2481,6 +2514,7 @@ jobs:
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
+                printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
                 return 0
               fi
               if [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -2488,6 +2522,7 @@ jobs:
                 if [ -z "$superseded" ]; then
                   retain_unpublished_verdict withheld none "$stamp $HEAD" "$out_file"
                 fi
+                printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
                 return 0
               fi
               # The lookup SUCCEEDED and found nothing, so there is no verdict
@@ -2506,6 +2541,11 @@ jobs:
               else
                 echo "::error::$lane could not post its $HEAD notice, so this PR carries no $stamp comment at all.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
+              case "$write_rc" in
+                0) publication="published" ;;
+                4) publication="superseded" ;;
+              esac
+              printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
               return 0
             fi
             if [ "$lookup_ok" -eq 1 ] && [ -n "$existing" ] && [ "$existing" != "null" ]; then
@@ -2545,6 +2585,11 @@ jobs:
                 echo "::error::$lane produced a verdict for $HEAD but could not publish it, so this run's verdict is not in the slot.${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAILURE_NOTE}"
               fi
             fi
+            case "$write_rc" in
+              0) publication="published" ;;
+              4) publication="superseded" ;;
+            esac
+            printf 'publication=%s\n' "$publication" >> "${GITHUB_OUTPUT:-/dev/null}"
           }
           guarded_comment_upsert "$MARKER" "[SCOPE-REVIEWED]" "Fork Security Scope Review" "$RUNNER_TEMP/scope-comment.md"
 
@@ -2684,7 +2729,7 @@ jobs:
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=${scope_prefix}Security Scope Review — $TITLE" \
               -f "output[summary]=$summary" \
-              -f "output[text]=$lane_text" >/dev/null 2>&1; then
+              -f "output[text]=$lane_text" >/dev/null; then
               exit 0
             fi
             sleep 5

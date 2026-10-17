@@ -90,6 +90,8 @@ interface PeerSlot {
   title?: string
   running?: boolean
   pending_approval?: boolean
+  /** An unanswered question card is waiting on the slot. */
+  needs_input?: boolean
   /** ISO-8601. Moves only when a turn starts or ends — the ranking/display rung. */
   last_turn_ts?: string
   /** ISO-8601 of the newest saved row of any role; advances on every streamed tool call. */
@@ -107,15 +109,17 @@ interface PeerSlot {
    *  nests under a local session whose key merely matches. `slot` is the child's
    *  own record of who opened it -- the "opened by" glyph on a row placed under
    *  nothing, and the move-detection baseline; a peer whose creator is gone
-   *  sends `slot` with no `key`, the orphan case. `hub_key` is the one half in
-   *  the HUB's key space: the hub stamps it when the creator is a peer slot this
-   *  hub drives, naming the LOCAL row that drives it (the peer's own key for that
-   *  creator never crosses the wire), and the lane nests the child under that
-   *  local row. */
-  parent?: { slot?: string; key?: string; hub_key?: string }
+   *  sends `slot` with no `key`, the orphan case. `ancestor` is present and true
+   *  when the peer re-parented the row: `key` is an open ancestor and `slot` is a
+   *  creator that closed, so the two name different sessions. */
+  parent?: { slot?: string; key?: string; ancestor?: boolean }
   /** Present and true while the peer's lineage projection is still seeding, so
    *  this frame's `parent` is provisional. Absent on a settled frame. */
   lineage_pending?: boolean
+  /** The peer's own sidebar folder this slot is filed in, an id in the PEER's
+   *  folder space. Absent when the slot is unfiled, or on a peer build whose
+   *  chat-slots route does not forward it. */
+  folder_id?: string
 }
 
 /** A peer slot flattened into the shape the Sessions list already renders.
@@ -142,6 +146,7 @@ export interface InstanceSessionRow {
   running: boolean
   messages: number
   pending_approval?: boolean
+  needs_input?: boolean
   /** The peer that OWNS this session — what makes the badge and remote activation
    *  fire, and the only thing `isPeerRow()` reads. Required here (not optional as
    *  on `Slot`) because a row this hook emits always came from some peer.
@@ -150,9 +155,7 @@ export interface InstanceSessionRow {
   peer_id: string
   peer_name: string
   /** The identity the SERVER resolved for this row (`<instance_id>:<peer_key>`),
-   *  forwarded verbatim. The sidebar keys rows on it, and an adopted session's
-   *  local slot projects the same string, so the row the user clicked re-renders
-   *  instead of a second element mounting beside it. Composed in exactly one
+   *  forwarded verbatim. The sidebar keys rows on it. Composed in exactly one
    *  place — `api_instances_chat_slots` — so this format is not a contract the
    *  browser also has to know. */
   row_identity?: string
@@ -160,12 +163,28 @@ export interface InstanceSessionRow {
    *  conductor lane reads a peer row exactly as it reads a local one. Each half
    *  is kept only when it is a string, and the object only when at least one
    *  half survived. `key` is resolved within this row's `peer_id`, never across
-   *  origins (`lineage` in pages/chat-sidebar/conductor.ts); `hub_key` is
-   *  resolved against LOCAL rows only (`citedCreatorOf` in that same module);
-   *  `slot` feeds `orphanCitation`, `citesParent` and the `citedCreatorRef` move
-   *  baseline. */
-  parent?: { slot?: string; key?: string; hub_key?: string }
+   *  origins (`lineage` in pages/chat-sidebar/conductor.ts); `slot` feeds
+   *  `orphanCitation`, `citesParent` and the `citedCreatorRef` move baseline;
+   *  `ancestor` is what makes `closedCreatorCitation` answer for a peer row, and
+   *  without it a peer's re-parented worker reads as a child of the lead. */
+  parent?: { slot?: string; key?: string; ancestor?: boolean }
   lineage_pending?: boolean
+  /** The PEER's folder this row is filed in (`PeerFolder.id`). Deliberately NOT
+   *  `folder_id`: that field names a LOCAL folder, and every local folder
+   *  reader (placement, the folder filter, drag) would file a peer row into
+   *  whichever local folder happened to share the id. Read only by the crew
+   *  group, which nests the row under its peer folder. */
+  peer_folder_id?: string
+}
+
+/** One folder of a peer's own sidebar tree, as its `api/chat/folders` lists it.
+ *  Only what the crew group draws: the name, the tree shape and the stored
+ *  order. The tree is a read-only mirror; it is edited on the peer. */
+export interface PeerFolder {
+  id: string
+  name: string
+  parent_id?: string
+  order: number
 }
 
 export interface InstanceSessions {
@@ -188,10 +207,22 @@ export interface InstanceSessions {
   failure?: string
   /** True while any instance's first fetch is outstanding. */
   loading: boolean
+  /** Each crew's folder tree, by instance id. A crew whose folder read has not
+   *  answered, or failed, has no entry, and its rows render unfiled: the folder
+   *  names are a grouping aid and the rows are still all there. */
+  folders: ReadonlyMap<string, readonly PeerFolder[]>
+  /** A connected crew whose folder read failed with no tree to fall back on,
+   *  and that read's error text. Its rows render unfiled, and the group says why. */
+  folderFailures: ReadonlyMap<string, string>
 }
 
 const REFRESH_MS = 15_000
-const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false }
+/** Folders move far less often than sessions, and the peer's folder list walks
+ *  its archived sessions on disk to count them, so it is read less often. */
+const FOLDERS_REFRESH_MS = 60_000
+const NO_FOLDERS: ReadonlyMap<string, readonly PeerFolder[]> = new Map()
+const NO_FAILURES: ReadonlyMap<string, string> = new Map()
+const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false, folders: NO_FOLDERS, folderFailures: NO_FAILURES }
 
 /** Return `v` only when it really is a string, else `undefined`.
  *
@@ -215,6 +246,27 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : und
 
 const isConnected = (inst: InstanceView): boolean => inst.status?.state === 'connected'
 
+/** The folders in a peer's `api/chat/folders` answer, checked one by one: the
+ *  reply crossed a machine boundary, so a row without a string `id` and `name`
+ *  is dropped rather than rendered, and a repeated `id` keeps its first row. */
+export function peerFoldersOf(data: unknown): PeerFolder[] {
+  if (!Array.isArray(data)) return []
+  const out: PeerFolder[] = []
+  const seen = new Set<string>()
+  for (const f of data) {
+    if (!f || typeof f !== 'object') continue
+    const { id, name, parent_id: parent, order } = f as Record<string, unknown>
+    if (typeof id !== 'string' || !id || typeof name !== 'string' || seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id, name,
+      order: typeof order === 'number' && Number.isFinite(order) ? order : 0,
+      ...(typeof parent === 'string' && parent ? { parent_id: parent } : {}),
+    })
+  }
+  return out
+}
+
 /** Crews whose chat slots can be listed: connected, and running a dashboard
  *  behind the forward. A fargate crew is connected without one, so asking it
  *  for slots would only ever report it as unreachable. */
@@ -225,7 +277,7 @@ function listsSessions(inst: InstanceView): boolean {
 /** The badge a crew group header shows, from `TunnelStatus.state`. There is
  *  no "needs auth" badge: an auth failure diagnoses the same as an unreachable
  *  host today. `disconnected` and `stopped` both read as offline. */
-export type CrewBadge = 'online' | 'reconnecting' | 'error' | 'offline'
+export type CrewBadge = 'online' | 'reconnecting' | 'error' | 'offline' | 'disabled'
 
 export function crewBadge(state: string | undefined): CrewBadge | null {
   if (state === 'connected') return 'online'
@@ -242,8 +294,14 @@ export interface CrewGroup {
   name: string
   badge: CrewBadge | null
   offline: boolean
+  /** The owner turned this crew off; the group offers Enable. */
+  disabled: boolean
   /** `TunnelStatus.error`, shown as the badge's tooltip. */
   error?: string
+  /** The crew's own folder tree, nested inside the group. Absent until it answers. */
+  folders?: readonly PeerFolder[]
+  /** The crew's folder read failed and no tree is cached: its error text. */
+  foldersError?: string
 }
 
 /** The crew a sidebar row belongs to: the peer that owns it, or the crew a
@@ -260,6 +318,8 @@ export function crewOf(row: { peer_id?: string; executor?: string; instance_id?:
 export function crewGroupsFor(
   instances: readonly InstanceView[],
   rows: readonly { peer_id?: string; executor?: string; instance_id?: string }[],
+  folders: ReadonlyMap<string, readonly PeerFolder[]> = NO_FOLDERS,
+  folderFailures: ReadonlyMap<string, string> = NO_FAILURES,
 ): CrewGroup[] {
   const owned = new Set<string>()
   for (const r of rows) {
@@ -267,13 +327,17 @@ export function crewGroupsFor(
     if (id) owned.add(id)
   }
   return instances
-    .filter(inst => listsSessions(inst) || owned.has(inst.id))
+    // A disabled crew keeps its group, so the Enable action stays in reach.
+    .filter(inst => listsSessions(inst) || owned.has(inst.id) || !!inst.disabled)
     .map(inst => ({
       id: inst.id,
       name: inst.name || inst.id,
-      badge: crewBadge(inst.status?.state),
+      badge: inst.disabled ? 'disabled' : crewBadge(inst.status?.state),
       offline: !isConnected(inst),
+      disabled: !!inst.disabled,
       ...(inst.status?.error ? { error: inst.status.error } : {}),
+      ...(folders.has(inst.id) ? { folders: folders.get(inst.id) } : {}),
+      ...(folderFailures.has(inst.id) ? { foldersError: folderFailures.get(inst.id) } : {}),
     }))
 }
 
@@ -339,30 +403,40 @@ export function useInstanceSessions(
         const cited = s.parent && typeof s.parent === 'object' ? s.parent : undefined
         const parentKey = cited ? str(cited.key) : undefined
         const parentSlot = cited ? str(cited.slot) : undefined
-        const parentHubKey = cited ? str(cited.hub_key) : undefined
-        const parent = parentKey || parentSlot || parentHubKey
+        // `ancestor` crosses with the pair because it is what tells them apart: on
+        // such a row `key` is an open ANCESTOR and `slot` is a creator that closed,
+        // and a lane that receives the pair without the flag reads the nesting as an
+        // ordinary one and drops the closed-creator glyph. A peer's crew would then
+        // look like sessions the lead opened itself, which is the one reading the
+        // flag exists to prevent -- and the local lane would answer differently about
+        // the same fact. Narrowed to a literal `true` like every other boolean here:
+        // a machine boundary makes it an unvalidated value, not a known one.
+        const parent = parentKey || parentSlot
           ? {
             ...(parentSlot ? { slot: parentSlot } : {}),
             ...(parentKey ? { key: parentKey } : {}),
-            ...(parentHubKey ? { hub_key: parentHubKey } : {}),
+            ...(cited?.ancestor === true ? { ancestor: true } : {}),
           }
           : undefined
         rows.push({
           ...(parent ? { parent } : {}),
           ...(s.lineage_pending === true ? { lineage_pending: true } : {}),
+          ...(str(s.folder_id) ? { peer_folder_id: s.folder_id } : {}),
           key: s.key,
           title: str(s.title),
           last_turn_ts: str(s.last_turn_ts),
           last_ts: str(s.last_ts),
           created: str(s.created),
           agent: str(s.agent),
-          // An offline crew's row is a cached answer: its last `running` and
-          // `pending_approval` are not true now, so they are dropped.
+          // An offline crew's row is a cached answer: its last `running`,
+          // `pending_approval` and `needs_input` are not true now, so they are dropped.
           running: live && s.running === true,
           messages: 0,
           // Normalized like `running`: a truthy non-boolean from a peer would
-          // otherwise raise a pending-approval badge the peer never claimed.
+          // otherwise raise a pending-approval badge or a question the peer never
+          // claimed.
           pending_approval: live && s.pending_approval === true,
+          needs_input: live && s.needs_input === true,
           peer_id: inst.id,
           peer_name: name,
           row_identity: str(s.row_identity),
@@ -370,8 +444,36 @@ export function useInstanceSessions(
       }
     })
 
-    return { rows, failed, failure, loading }
+    return { rows, failed, failure, loading, folders: NO_FOLDERS, folderFailures: NO_FAILURES }
   }, [listed])
+
+  // Each crew's folder tree, through the owner-only proxy (`api/chat` is an
+  // admitted, redacted prefix). Same per-crew isolation as the slot reads. A
+  // failure with no cached tree keeps the rows, unfiled, and is reported beside
+  // them; a disconnected crew's old error says nothing about it now.
+  const combineFolders = useCallback((results: UseQueryResult<unknown>[]) => {
+    const out = new Map<string, readonly PeerFolder[]>()
+    const failures = new Map<string, string>()
+    results.forEach((r, i) => {
+      const inst = listed[i]
+      if (!inst) return
+      if (r.data !== undefined) out.set(inst.id, peerFoldersOf(r.data))
+      else if (isConnected(inst) && r.isError) {
+        failures.set(inst.id, r.error instanceof Error && r.error.message ? r.error.message : String(r.error))
+      }
+    })
+    return { folders: out.size === 0 ? NO_FOLDERS : out, folderFailures: failures.size === 0 ? NO_FAILURES : failures }
+  }, [listed])
+  const folderReads = useQueries({
+    queries: listed.map(inst => ({
+      queryKey: ['instance-folders', inst.id],
+      queryFn: () => api.crewPeerGet(inst.id, 'api/chat/folders') as Promise<unknown>,
+      enabled: enabled && isConnected(inst),
+      refetchInterval: FOLDERS_REFRESH_MS,
+      retry: false,
+    })),
+    combine: combineFolders,
+  })
 
   // `combine` structurally shares its result while the underlying query results
   // are unchanged. Without it, useQueries returns a fresh array on every render,
@@ -390,8 +492,9 @@ export function useInstanceSessions(
 
   return useMemo(() => {
     if (!enabled) return EMPTY
-    return instancesUnanswered && !combined.loading
-      ? { ...combined, loading: true }
-      : combined
-  }, [enabled, combined, instancesUnanswered])
+    return {
+      ...combined, folders: folderReads.folders, folderFailures: folderReads.folderFailures,
+      ...(instancesUnanswered && !combined.loading ? { loading: true } : {}),
+    }
+  }, [enabled, combined, folderReads, instancesUnanswered])
 }

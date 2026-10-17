@@ -86,7 +86,7 @@ export function modelSupportsEffort(model: string | undefined): boolean {
  * advertised its options" state that `known: false` reports. Treating it as an
  * error flashed the "could not verify effort options" notice, and disabled the
  * effort control, on every cold-start poll (issue #14817). Only a real fault --
- * a 403, a 503 `peer_unavailable`, a transport failure -- counts, which keeps the
+ * a 403, a 5xx, a transport failure -- counts, which keeps the
  * notice's "until the connection recovers" claim true.
  */
 export function selectionCapabilitiesFailed(q: { isError: boolean; error?: unknown }): boolean {

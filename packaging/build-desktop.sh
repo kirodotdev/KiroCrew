@@ -8,6 +8,7 @@
 #   4. Stage the dashboard into the package's static dir
 #   5. Prune caches/tests/unused stdlib to shrink the bundle
 #   6. Stage a pinned, sha256-verified kiro-cli into backend-dist/kiro-cli/
+#   6b. Stage the pinned KAS engine bundle into backend-dist/kas[-<arch>]/
 #   7. Package the desktop app with electron-builder -> DMG / AppImage / NSIS
 #
 # The result is a double-clickable app that embeds the whole Python backend +
@@ -39,6 +40,7 @@
 #   SKIP_FRONTEND=1 bash packaging/...         # reuse an already-staged dist
 #   SKIP_ELECTRON=1 bash packaging/...         # stop after the backend binary
 #   BUNDLE_KIRO_CLI=0 bash packaging/...       # ship without the bundled kiro-cli
+#   BUNDLE_KAS=0 bash packaging/...            # ship without the bundled KAS engine
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -181,12 +183,26 @@ is_macos_intel_backend() {
   }
 }
 
+# The audio decoder wheel a backend installs, or nothing.
+#
+# The macOS Intel backend installs NONE and resolves a system FFmpeg the way a
+# source install does (kiro_crew.stt.decoder.bundle_carries_decoder). Do not add
+# the wheel back for it: the runtime carries no pin for that platform, so a
+# bundled copy would never be authenticated or used.
+#   $1 = target arch, as build_backend receives it
+desktop_decoder_requirement() {
+  if is_macos_intel_backend "$1"; then
+    return 0
+  fi
+  printf '%s\n' "imageio-ffmpeg==0.6.0"
+}
+
 # NOTE ON THE APPLE-SILICON DECODER -- do NOT re-introduce a compressed payload.
 #
 # The arm64 imageio-ffmpeg executable ships as a PLAIN Mach-O under
-# Contents/Resources, exactly like its x86_64 sibling, so the app signer signs it
-# with Developer ID + hardened runtime + secure timestamp along with every other
-# nested binary (packaging/signing/generate-manifest.py enumerates it).
+# Contents/Resources, so the app signer signs it with Developer ID + hardened
+# runtime + secure timestamp along with every other nested binary
+# (packaging/signing/generate-manifest.py enumerates it).
 #
 # #6746 instead stored it as inert gzip data, to keep the bytes byte-identical to
 # the pinned upstream wheel across signing. The Apple notary service DECOMPRESSES
@@ -194,8 +210,8 @@ is_macos_intel_backend() {
 # closed on the whole release (submission 3dbd3c7d, three `error` issues on
 # .../binaries/ffmpeg-macos-aarch64-v7.1.gz/ffmpeg-macos-aarch64-v7.1: not signed
 # with a valid Developer ID certificate / no secure timestamp / hardened runtime
-# not enabled). The x86_64 copy of the same wheel, shipped raw in the same
-# submission, drew no issue at all -- that is the working shape.
+# not enabled). A raw Mach-O in the same submission drew no issue at all -- that
+# is the working shape.
 #
 # The runtime consequence is handled in kiro_crew.transcribe: the packaged decoder
 # is accepted either at the pinned upstream digest (local builds and the build gate
@@ -491,10 +507,12 @@ build_backend() {
   # installs from this checkout) prevents a surprise CMake/C++ source build. Missing
   # recogniser wheels fail every supported desktop build: local dictation is the
   # default and must be usable immediately. macOS Intel is the sole legacy exception.
+  local decoder_req
+  decoder_req="$(desktop_decoder_requirement "$want_arch")"
   env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
     "$out/bin/python3.12" -m pip install --prefer-binary \
     --no-warn-script-location --disable-pip-version-check \
-    "$ROOT[voice-aws]" "imageio-ffmpeg==0.6.0"
+    "$ROOT[voice-aws]" ${decoder_req:+"$decoder_req"}
   if ! env PYTHONNOUSERSITE=1 PYTHONPATH= KIROCREW_SKIP_FRONTEND=1 \
       "$out/bin/python3.12" -m pip install --prefer-binary \
       --only-binary pywhispercpp \
@@ -545,6 +563,20 @@ DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # home directory, for a service unit) is imported instead of the real module and
 # fails later with an unrelated-looking TypeError. -s does not cover this: it
 # removes the user site, not the launch entry.
+#
+# An inherited PYTHONPATH/PYTHONHOME is the other way a foreign tree gets in:
+# a development shell exporting PYTHONPATH=<checkout>/src makes this bundled
+# interpreter import checkout code mixed into the shipped backend, and
+# PYTHONHOME points it at another Python's stdlib. The desktop shell scrubs
+# both for the gateway it spawns (website/electron/gateway-env.js), but this
+# launcher is also run directly -- `kirocrew token`, `kirocrew stop`, the
+# ~/.local/bin/kirocrew shim -- so the scrub has to live here, at the entry
+# point every caller shares. Only these two are dropped: PYTHONUTF8,
+# PYTHONIOENCODING and the bytecode knobs the shell hands down stay in force,
+# and -E would discard them too. Children spawned by the backend (operator
+# Python, MCP servers, cron) inherit this scrubbed environment, exactly as they
+# do under the desktop shell.
+unset PYTHONPATH PYTHONHOME
 exec "$DIR/python3.12" -s -P -m kiro_crew "$@"
 LAUNCH
   chmod +x "$out/bin/kirocrew"
@@ -723,8 +755,14 @@ build_backend_windows() {
   # so the interpreter resolves relative to the bundle wherever it lands.
   # -P for the same reason as the POSIX launcher above: keep the caller's cwd
   # off sys.path so a stdlib-named directory there cannot shadow the stdlib.
+  # PYTHONPATH/PYTHONHOME are cleared for the same reason as the POSIX launcher
+  # too: a dev shell's checkout must not be imported into the bundled backend.
+  # `set "NAME="` deletes the variable, and cmd's environment is
+  # case-insensitive, so a mixed-case `PythonPath` goes with it. `setlocal`
+  # keeps the deletion inside this shim: a user running kirocrew.cmd from an
+  # interactive cmd window keeps their own PYTHONPATH afterwards.
   mkdir -p "$out/bin"
-  printf '@echo off\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
+  printf '@echo off\r\nsetlocal\r\nset "PYTHONPATH="\r\nset "PYTHONHOME="\r\n"%%~dp0..\\python.exe" -s -P -m kiro_crew %%*\r\n' > "$out/bin/kirocrew.cmd"
 
   log "Verifying self-containment ($(basename "$out"))…"
   PYTHONNOUSERSITE=1 "$out/python.exe" -s -P -m kiro_crew --version >/dev/null \
@@ -895,8 +933,9 @@ fi
 # A leftover staged marker from an earlier interrupted build is removed on
 # EVERY run, before any early exit: step 3b re-stages it when asked. This sits
 # ahead of the SKIP_ELECTRON return so a backend-only build cannot leave a
-# stale declaration behind for a hand-run electron-builder to pack.
-rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"
+# stale declaration behind for a hand-run electron-builder to pack. The baked
+# auth allowlist (step 3b2) is cleared the same way.
+rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
 
 if [ "${SKIP_ELECTRON:-0}" = "1" ]; then
   log "SKIP_ELECTRON=1 — backend(s) ready under $ELECTRON_DIR/backend-dist/"
@@ -947,6 +986,7 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
       if (parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
     }
     if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
+    if (!parsed.checkCommand) { console.error("marker has updateCommand but no checkCommand: every managed-lane check will fail; no update will ever be offered"); process.exit(1); }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
   # must not outlive the run -- a later build of a different edition from the
@@ -959,6 +999,30 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
   trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED"' EXIT
   cp "$MARKER_SRC" "$ELECTRON_DIR/EXTERNALLY-MANAGED"
   log "Baking EXTERNALLY-MANAGED marker into the app from $MARKER_SRC"
+fi
+
+# --- 3b2. Baked integrated-auth allowlist (optional) -------------------------
+# An edition that ships to a Kerberos-gated intranet names the hosts whose
+# Negotiate challenge the app's web contents may answer, as a comma-separated
+# list (`*.example.com,intranet.example.org`). It is validated by the same
+# parser the app runs (website/electron/auth-allowlist.js) and the build FAILS
+# on anything else: the reader ignores a malformed list, so a typo would
+# silently ship an app whose embedded pages get 401s. It is staged as
+# $ELECTRON_DIR/AUTH-SERVER-ALLOWLIST, packed into app.asar by package.json's
+# `files` list, and removed again on exit. Bash keeps one EXIT trap, so this
+# one names the marker too: arming it after step 3b replaces that trap. Unset,
+# nothing is staged and the app appends no switch.
+if [ -n "${KIROCREW_AUTH_SERVER_ALLOWLIST:-}" ]; then
+  AUTH_ALLOWLIST="$(node -e '
+    const { parseAuthServerAllowlist } = require(process.argv[1]);
+    const v = parseAuthServerAllowlist(process.argv[2]);
+    if (v === null) { console.error("not a comma-separated list of host or *.suffix patterns"); process.exit(1); }
+    process.stdout.write(v);
+  ' "$ELECTRON_DIR/auth-allowlist.js" "$KIROCREW_AUTH_SERVER_ALLOWLIST")" \
+    || { echo "❌ KIROCREW_AUTH_SERVER_ALLOWLIST rejected: $KIROCREW_AUTH_SERVER_ALLOWLIST" >&2; exit 1; }
+  trap 'rm -f "$ELECTRON_DIR/EXTERNALLY-MANAGED" "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"' EXIT
+  printf '%s\n' "$AUTH_ALLOWLIST" > "$ELECTRON_DIR/AUTH-SERVER-ALLOWLIST"
+  log "Baking AUTH-SERVER-ALLOWLIST into the app: $AUTH_ALLOWLIST"
 fi
 
 # --- 3c. Bundle kiro-cli into the app resources -------------------------------
@@ -1365,6 +1429,95 @@ if [ "${BUNDLE_KIRO_CLI:-1}" = "1" ]; then
   fetch_kiro_cli
 else
   log "BUNDLE_KIRO_CLI=0: app ships without a bundled kiro-cli"
+fi
+
+# --- 3d. Bundled KAS engine --------------------------------------------------
+# Stages the KAS engine bundle this release PINS (src/kiro_crew/acp/kas_pin.py:
+# KAS_PIN_VERSION + KAS_PIN_MANIFEST_SHA256) into the app's resources, so the
+# `agent.kas_bundle` route runs with no download and no kiro-cli at all. The
+# staging IS the backend's own installer (acp.kas_bundle.install_bundle, run
+# from the just-built backend tree): manifest bytes checked against the pin
+# before parsing, every artifact sha256+size-pinned by that manifest, tar
+# filter="data", a `node --version` probe on THIS host, one atomic publish --
+# the same code `kirocrew kas install` runs, so the staged tree is byte-for-byte
+# what an install would lay down and the backend reads it with the same reader.
+#
+# Layout mirrors the backend trees: one root per architecture on a universal
+# macOS build (backend-dist/kas-arm64/, backend-dist/kas-x64/: Node ships no
+# universal binary, the engine's own JS is shared), backend-dist/kas/ otherwise.
+# Each root holds <version>/{bundle,node,install.json} plus a BUNDLED-VERSION
+# provenance file beside it, which the Electron shell reads to know which
+# version directory's record to check (gateway-env.js, bundledKasEnvironment)
+# before it exports KIROCREW_BUNDLED_KAS_DIR. The backend ranks the data home's own
+# install ahead of this root, so `kirocrew kas install` keeps working in the app.
+#
+# BUNDLE_KAS=0 opts a build out; the switch then needs `kirocrew kas install`
+# first, exactly as a pip install does. Fetches from KAS_BUNDLE_URL (default:
+# the project's CDN); no per-user cache -- the artifacts are ~55 MB per arch and
+# the manifest digest is the pin, so nothing stale can be reused by mistake.
+#   $1 = backend tree (its python runs the installer)   $2 = dest root
+#   $3 = platform.system() name   $4 = platform.machine() name
+stage_kas_bundle() {
+  local tree="$1" dest="$2" system="$3" machine="$4" py
+  if [ -x "$tree/bin/python3.12" ]; then
+    py="$tree/bin/python3.12"
+  elif [ -x "$tree/python.exe" ]; then
+    py="$tree/python.exe"
+  else
+    echo "ERROR: no interpreter under $tree to run the KAS bundle installer" >&2
+    exit 1
+  fi
+  rm_rf_resilient "$dest"
+  mkdir -p "$dest"
+  # Paths and names reach Python via argv, never string splicing. -I (isolated):
+  # no user site, no PYTHONPATH, no PYTHON* env, so `kiro_crew` resolves to the
+  # backend this build just installed and nothing else on the build host.
+  "$py" -I - "$dest" "$system" "$machine" "${KAS_BUNDLE_URL:-}" <<'PY'
+import sys
+from pathlib import Path
+
+from kiro_crew.acp import kas_bundle
+from kiro_crew.acp.kas_pin import KAS_PIN_MANIFEST_SHA256, KAS_PIN_VERSION
+from kiro_crew.config.sections import KAS_BUNDLE_DEFAULT_URL
+
+dest, system, machine, base = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+base = base or KAS_BUNDLE_DEFAULT_URL
+print(f"    KAS {KAS_PIN_VERSION} for {system}/{machine} from {base}")
+manifest, url = kas_bundle.fetch_manifest(
+    base, version=KAS_PIN_VERSION, sha256=KAS_PIN_MANIFEST_SHA256
+)
+installed = kas_bundle.install_bundle(
+    manifest, source=url, root=dest, system=system, machine=machine
+)
+# Re-read through the same reader the gateway will use: a tree the reader
+# rejects is a build error here, not a refusal on the user's first prompt.
+again = kas_bundle.installed_bundle(root=dest, version=KAS_PIN_VERSION)
+assert again is not None and again.acp_server == installed.acp_server, "staged tree does not read back"
+(dest / "BUNDLED-VERSION").write_text(KAS_PIN_VERSION + "\n", encoding="utf-8")
+print(f"    engine: {installed.acp_server.relative_to(dest)}")
+print(f"    node:   {installed.node_bin.relative_to(dest)} (v{installed.node_version})")
+PY
+  kiro_cli_layout_gate "$dest"
+  echo "    staged KAS bundle -> backend-dist/$(basename "$dest")/ ($(du -sh "$dest" 2>/dev/null | cut -f1))"
+}
+
+if [ "${BUNDLE_KAS:-1}" = "1" ]; then
+  log "Staging the pinned KAS engine bundle…"
+  if [ "$UNIVERSAL" = "1" ]; then
+    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend-arm64" "$ELECTRON_DIR/backend-dist/kas-arm64" Darwin arm64
+    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend-x64" "$ELECTRON_DIR/backend-dist/kas-x64" Darwin x86_64
+  else
+    case "$OS" in
+      darwin)  KAS_SYSTEM=Darwin ;;
+      windows) KAS_SYSTEM=Windows ;;
+      *)       KAS_SYSTEM=Linux ;;
+    esac
+    KAS_MACHINE="$BUILD_ARCH"
+    [ "$KAS_MACHINE" = "aarch64" ] && KAS_MACHINE="arm64"
+    stage_kas_bundle "$ELECTRON_DIR/backend-dist/kirocrew-backend" "$ELECTRON_DIR/backend-dist/kas" "$KAS_SYSTEM" "$KAS_MACHINE"
+  fi
+else
+  log "BUNDLE_KAS=0: app ships without a bundled KAS engine"
 fi
 
 # --- 4. Package the desktop app with electron-builder -----------------------

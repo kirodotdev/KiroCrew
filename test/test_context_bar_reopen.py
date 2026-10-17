@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from windows_sim import read_text_sharing_violation
 
 from kiro_crew.acp.types import AcpPromptStats
 from kiro_crew.dashboard.state import DashboardState
@@ -494,6 +495,73 @@ def test_flush_during_startup_restore_cannot_evict_unrestored_tabs(tmp_path):
     on_disk = json.loads((tmp_path / "context_snapshots.json").read_text())
     assert on_disk["s1"]["pct"] == 12.0
     assert on_disk["s2"] == {"pct": 22.0, "model": "claude-opus-5"}
+
+
+def test_unreadable_snapshot_file_is_not_replaced_after_restore(tmp_path):
+    # After restore the write prunes to the open tabs, but an open tab with no
+    # fresh reading in this process still has its reading only on disk. A
+    # transient read failure (a Windows sharing violation) must not be latched
+    # as an empty, loaded map: the next write would then drop that reading.
+    # The write is skipped and the next flush retries the read.
+    snap_path = tmp_path / "context_snapshots.json"
+    snap_path.write_text(json.dumps({"s2": {"pct": 33.0, "model": "claude-opus-5"}}))
+    before = snap_path.read_bytes()
+    state = _make_state(tmp_path)
+    state.open_slots_restored = True
+    for name in ("s1", "s2"):
+        state.get_or_create_slot(name).model = "claude-opus-5"
+    state.broadcast_ws = MagicMock()
+    state.broadcast_context_usage("s1", {"slot": "s1", "pct": 11.4})
+
+    with read_text_sharing_violation(match="context_snapshots.json", times=1) as seen:
+        _flush(state)  # must swallow, not raise
+
+    assert seen["n"] == 1, "the simulator never intercepted the snapshot read"
+    assert snap_path.read_bytes() == before, "a failed read let the write drop s2"
+
+    _flush(state)
+
+    on_disk = json.loads(snap_path.read_text())
+    assert on_disk["s2"] == {"pct": 33.0, "model": "claude-opus-5"}
+    assert on_disk["s1"]["pct"] == 11.4
+
+
+@pytest.mark.asyncio
+async def test_slot_detail_retries_a_transiently_unreadable_snapshot_file(tmp_path):
+    # The first disk read can also come from the slot-detail handler. A
+    # transient failure there must not latch an empty map for the process
+    # lifetime: the next request reads the file and shows the reading.
+    (tmp_path / "context_snapshots.json").write_text(
+        json.dumps({"s1": {"pct": 31.5, "model": "claude-opus-5"}})
+    )
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("s1").model = "claude-opus-5"
+    state.sessions.get_provider = MagicMock(return_value=None)
+
+    with read_text_sharing_violation(match="context_snapshots.json", times=1):
+        first = await _detail(state, "s1")
+    second = await _detail(state, "s1")
+
+    assert "context_pct" not in first
+    assert second["context_pct"] == 31.5
+    assert second["context_stale"] is True
+
+
+def test_corrupt_snapshot_file_is_repaired_not_retried_forever(tmp_path):
+    # Content that was read but does not parse holds nothing recoverable. It
+    # is treated as empty and latched, so the write repairs the file instead
+    # of skipping on every flush (a permanent off-switch).
+    snap_path = tmp_path / "context_snapshots.json"
+    snap_path.write_text('{"s2": {"pct": 3')  # truncated
+    state = _make_state(tmp_path)
+    state.get_or_create_slot("s1").model = "claude-opus-5"
+    state.broadcast_ws = MagicMock()
+    state.broadcast_context_usage("s1", {"slot": "s1", "pct": 11.4})
+
+    _flush(state)
+
+    on_disk = json.loads(snap_path.read_text())
+    assert on_disk["s1"]["pct"] == 11.4
 
 
 def test_frame_without_a_usable_pct_is_not_recorded(tmp_path):

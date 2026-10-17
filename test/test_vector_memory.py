@@ -870,12 +870,20 @@ class TestValueSizeLimit:
         # The purpose of the helper: escaped and raw dumps of one value match.
         korean = "\ud55c\uad6d\uc5b4"  # U+D55C U+AD6D U+C5B4, hangugeo
         assert _json_value_equal(json.dumps(korean), json.dumps(korean, ensure_ascii=False))
-        # A value nested past the recursion limit must not crash the compare:
-        # it reports "changed" (safe) rather than raising and aborting the write.
+        # A value nested hundreds of levels deep must not crash the compare:
+        # the comparator walks an explicit stack, so the two dumps of one
+        # value are answered equal, and a leaf differing only in type is still
+        # caught at the bottom.
         deep = "\ud55c"
         for _ in range(999):
             deep = [deep]
-        assert _json_value_equal(json.dumps(deep), json.dumps(deep, ensure_ascii=False)) is False
+        assert _json_value_equal(json.dumps(deep), json.dumps(deep, ensure_ascii=False)) is True
+        deep_int: object = 1
+        deep_bool: object = True
+        for _ in range(999):
+            deep_int = [deep_int]
+            deep_bool = [deep_bool]
+        assert _json_value_equal(json.dumps(deep_int), json.dumps(deep_bool)) is False
 
     def test_bool_reset_of_numeric_fact_is_not_silently_skipped(
         self, tmp_path: Path, opened
@@ -2598,7 +2606,7 @@ class TestMemoryTuningPlumbing:
     # deferred writes too, so the ops-mission-control ledger indexer and lesson
     # recall are listed, as are the CLI's lesson, carve and import/migrate stores.
     _PLUMBED_SITES = (
-        "slack/gateway.py",
+        "slack/gateway_runtime/service_boot.py",
         "cli_server.py",
         "cli_commands.py",
         "dashboard/handlers/memory.py",
@@ -2612,7 +2620,7 @@ class TestMemoryTuningPlumbing:
     # neither table, so a new store cannot silently fall back to the defaults.
     _EXEMPT_SITES = {
         # Forwards its caller's `**vector_options` unchanged.
-        "vector_memory.py": "open_member_database and declared_store forward caller options",
+        "vector_memory_member.py": "open_member_database and declared_store forward caller options",
         # Builds its store on an arbitrary data_home whose config
         # KiroCrewConfig.load() does not read.
         "onboarding_import.py": "foreign data_home",
@@ -3992,13 +4000,26 @@ class TestDbLockGuard:
 
     def test_every_db_statement_is_lock_serialized(self) -> None:
         import ast
+        import importlib
         import inspect
 
         from kiro_crew import vector_memory
 
-        source = inspect.getsource(vector_memory)
-        tree = ast.parse(source)
-        violations = self._find_unserialized_statements(tree)
+        # The facade and every owner beside it (``from kiro_crew import vector_memory_<x>``);
+        # the vector_memory_runtime modules have their own test below.
+        owners = [
+            importlib.import_module(f"kiro_crew.{alias.name}")
+            for node in ast.parse(inspect.getsource(vector_memory)).body
+            if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew"
+            for alias in node.names
+            if alias.name.startswith("vector_memory_")
+        ]
+        assert owners, "the facade binds members from owners beside it"
+        violations = []
+        for module in (vector_memory, *owners):
+            violations.extend(
+                self._find_unserialized_statements(ast.parse(inspect.getsource(module)))
+            )
         assert not violations, "unserialized sqlite statement(s):\n" + "\n".join(violations)
 
     def test_every_runtime_db_statement_is_lock_serialized(self) -> None:
@@ -4240,15 +4261,37 @@ class TestAsyncInitOffloadGuard:
     def _find_inline_async_inits(cls, tree, where: str = "") -> list[str]:
         return cls._find_inline_async_lifecycle_calls(tree, {"init"}, where)
 
+    @staticmethod
+    def _candidates() -> list[tuple[Path, str, object]]:
+        """The corpus files holding both needles, with taskrunner.py read as one file
+        with its taskrunner_parts owners: ``TaskRunner``'s ``__init__`` stays in
+        taskrunner.py while its coroutines live in the owners, so a store bound in one
+        and closed in another is one module's binding."""
+        import ast
+
+        needles = ("VectorMemoryStore", "async")
+        pkg = source_corpus.src_root()
+        facade = pkg / "taskrunner.py"
+        runner_parts = pkg / "taskrunner_parts"
+        runner_owners = sorted(runner_parts.glob("[!_]*.py"))
+        assert runner_owners, "expected the taskrunner_parts owners beside taskrunner.py"
+        found: list[tuple[Path, str, object]] = [
+            (path, text, tree)
+            for path, text, tree in source_corpus.parsed_candidates(require_all=needles)
+            if path != facade and path.parent != runner_parts
+        ]
+        joined = "".join(p.read_text(encoding="utf-8") for p in [facade, *runner_owners])
+        if all(needle in joined for needle in needles):
+            found.append((facade, joined, ast.parse(joined)))
+        return found
+
     def test_no_async_function_calls_init_inline(self) -> None:
         # A violation needs a constructor binding (``VectorMemoryStore``) AND an
         # ``async`` def in the SAME module, so a file whose text lacks either can
         # never match: parse only the ones that hold both, off the shared corpus.
         pkg_root = source_corpus.src_root()
         violations: list = []
-        for py, _text, tree in source_corpus.parsed_candidates(
-            require_all=("VectorMemoryStore", "async")
-        ):
+        for py, _text, tree in self._candidates():
             rel = py.relative_to(pkg_root.parent)
             violations.extend(self._find_inline_async_inits(tree, where=f"{rel}:"))
         assert not violations, "inline async VectorMemoryStore.init() call(s):\n" + "\n".join(
@@ -4296,9 +4339,7 @@ class TestAsyncInitOffloadGuard:
         # ``VectorMemoryStore(...)`` in the same module as the ``async`` def.
         root = TestHandlerOffload1947._package_root()
         violations: list[str] = []
-        for path, _text, tree in source_corpus.parsed_candidates(
-            require_all=("VectorMemoryStore", "async")
-        ):
+        for path, _text, tree in self._candidates():
             violations.extend(
                 self._find_inline_async_lifecycle_calls(
                     tree, {"close"}, where=f"{path.relative_to(root)}:"
@@ -4462,14 +4503,24 @@ class TestHandlerOffload1947:
 
     @classmethod
     def _store_sources(cls) -> tuple[str, dict[str, str]]:
-        """The facade's source and every ``vector_memory_runtime`` module's, by stem."""
+        """The facade's source and every owner module's, by stem: the
+        ``vector_memory_runtime`` modules and the owners beside the facade."""
+        import ast
+
         root = cls._package_root()
+        facade = (root / "vector_memory.py").read_text(encoding="utf-8")
         runtime = {
             path.stem: path.read_text(encoding="utf-8")
             for path in sorted((root / "vector_memory_runtime").glob("*.py"))
             if path.stem != "__init__"
         }
-        return (root / "vector_memory.py").read_text(encoding="utf-8"), runtime
+        for node in ast.parse(facade).body:
+            if isinstance(node, ast.ImportFrom) and node.module == "kiro_crew":
+                for alias in node.names:
+                    if alias.name.startswith("vector_memory_"):
+                        path = root / f"{alias.name}.py"
+                        runtime[alias.name] = path.read_text(encoding="utf-8")
+        return facade, runtime
 
     @classmethod
     def _derive_locked_methods(cls) -> set[str]:
@@ -4484,10 +4535,13 @@ class TestHandlerOffload1947:
         """Fixpoint over one call graph spanning the store and its runtime modules.
 
         Nodes are ``VMS.<method>`` for store methods and ``<module>.<function>``
-        for runtime functions. The receiver is ``self`` in the store and ``store``
-        in a runtime function; a call to a runtime function is resolved through the
-        importing module's own ``from kiro_crew.vector_memory_runtime import mod``
-        aliases and ``from kiro_crew.vector_memory_runtime.mod import name`` names.
+        for owner functions. The receiver is ``self`` in the store and in an owner
+        function bound as a member (its first parameter is ``self``), and ``store``
+        in a runtime function; a member bound to an owner function (``m = _x.f``)
+        has that function as its one callee. A call to an owner function is resolved
+        through the importing module's own ``from kiro_crew.vector_memory_runtime import
+        mod`` and ``from kiro_crew import vector_memory_<x>`` aliases and
+        ``from kiro_crew.vector_memory_runtime.mod import name`` names.
         """
         import ast
 
@@ -4500,6 +4554,10 @@ class TestHandlerOffload1947:
                 if isinstance(node, ast.ImportFrom) and node.module == package:
                     for alias in node.names:
                         modules[alias.asname or alias.name] = alias.name
+                elif isinstance(node, ast.ImportFrom) and node.module == "kiro_crew":
+                    for alias in node.names:
+                        if alias.name in runtime:
+                            modules[alias.asname or alias.name] = alias.name
                 elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
                     package + "."
                 ):
@@ -4552,6 +4610,19 @@ class TestHandlerOffload1947:
                 callees[f"VMS.{node.name}"] = called
                 if locked:
                     direct.add(f"VMS.{node.name}")
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+                value = node.value
+                if isinstance(value, ast.Call) and len(value.args) == 1:
+                    value = value.args[0]
+                if (
+                    isinstance(node.targets[0], ast.Name)
+                    and isinstance(value, ast.Attribute)
+                    and isinstance(value.value, ast.Name)
+                    and value.value.id in modules
+                ):
+                    callees[f"VMS.{node.targets[0].id}"] = {
+                        f"{modules[value.value.id]}.{value.attr}"
+                    }
 
         for stem, source in runtime.items():
             tree = ast.parse(source)
@@ -4563,7 +4634,9 @@ class TestHandlerOffload1947:
             }
             for node in tree.body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    locked, called = edges(node, "store", modules, names, local, stem)
+                    first = node.args.args[0].arg if node.args.args else ""
+                    receiver = "self" if first == "self" else "store"
+                    locked, called = edges(node, receiver, modules, names, local, stem)
                     callees[f"{stem}.{node.name}"] = called
                     if locked:
                         direct.add(f"{stem}.{node.name}")
@@ -4697,6 +4770,35 @@ class TestHandlerOffload1947:
         assert self._derive_locked_from_sources(facade, runtime) == {
             "through_runtime",
             "through_callback",
+        }
+        # A member bound to an owner function, beside the facade or in the runtime
+        # package, is lock-reaching when that function (receiver ``self``) is.
+        bound_facade = facade.replace(
+            "class VectorMemoryStore:",
+            "from kiro_crew import vector_memory_owner as _owner\n\n"
+            "class VectorMemoryStore:\n"
+            "    bound_owner = _owner.locked\n"
+            "    bound_static = staticmethod(_owner.pure)\n"
+            "    bound_runtime = _reads.bound_fetch\n",
+        )
+        bound_runtime = {
+            **runtime,
+            "reads": runtime["reads"]
+            + "\ndef bound_fetch(self):\n    with self._db_lock:\n        return []\n",
+            "vector_memory_owner": textwrap.dedent("""
+                def locked(self):
+                    with self._db_lock:
+                        return []
+
+                def pure(text):
+                    return text
+                """),
+        }
+        assert self._derive_locked_from_sources(bound_facade, bound_runtime) == {
+            "through_runtime",
+            "through_callback",
+            "bound_owner",
+            "bound_runtime",
         }
 
     def test_guard_catches_seeded_violation(self) -> None:

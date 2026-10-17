@@ -1868,6 +1868,24 @@ class TestMirrorBackfillFidelity:
         assert "grep" not in body and "pytest" not in body
 
     @pytest.mark.asyncio
+    async def test_an_options_trailer_is_backfilled_as_numbered_text(self, tmp_path, monkeypatch):
+        # send_message takes no choices, so a backfilled answer builds no button:
+        # the trailer must arrive as a numbered list, not as raw markup.
+        state = _prep(tmp_path, monkeypatch)
+        transport = _real_caps_transport("telegram")
+        state.register_channel_transport(transport)
+        state.sessions.set_mirror_link = MagicMock()
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "ship it?")
+        slot.append("assistant", "Ready.\n\n[OPTIONS: Ship now | Wait]")
+        slot.drain()
+
+        await self._link(state)
+        body = "\n".join(self._sent(transport))
+        assert "[OPTIONS" not in body
+        assert "1. Ship now" in body and "2. Wait" in body
+
+    @pytest.mark.asyncio
     async def test_long_message_is_chunked_not_truncated(self, tmp_path, monkeypatch):
         state, transport = self._linked(tmp_path, monkeypatch, max_message_chars=500)
         slot = state.get_or_create_slot("s1")

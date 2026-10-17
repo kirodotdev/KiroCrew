@@ -10,7 +10,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { ApiError } from '../api/apiError'
-import { retryPolicy } from '../api/queryClient'
+import { refetchWhileFailed, retryPolicy, retryThroughRestart } from '../api/queryClient'
 
 /** The gateway's own lapse: `authRequired`, but NOT a proxy challenge. */
 const gatewayLapse = () => new ApiError(403, 'session expired', '', true, false)
@@ -42,5 +42,41 @@ describe('retryPolicy', () => {
     const boom = new ApiError(500, 'boom', 'boom', false, false)
     expect(retryPolicy(0, boom)).toBe(true)
     expect(retryPolicy(1, boom)).toBe(false)
+  })
+})
+
+describe('retryThroughRestart', () => {
+  it('rides out a dropped connection for three retries, where retryPolicy gives one', () => {
+    const drop = new TypeError('Failed to fetch')
+    expect(retryPolicy(1, drop)).toBe(false)
+    for (const attempt of [0, 1, 2]) expect(retryThroughRestart(attempt, drop), `attempt ${attempt}`).toBe(true)
+    expect(retryThroughRestart(3, drop)).toBe(false)
+  })
+
+  it('rides out a proxy 502/504 and the gateway\'s own 503 the same way', () => {
+    for (const status of [502, 503, 504]) {
+      const err = new ApiError(status, 'bad gateway', '', false, false)
+      expect(retryPolicy(1, err), `retryPolicy ${status}`).toBe(false)
+      expect(retryThroughRestart(2, err), `${status}`).toBe(true)
+      expect(retryThroughRestart(3, err), `${status}`).toBe(false)
+    }
+  })
+
+  it('is retryPolicy for every answered failure and for our own deadline', () => {
+    const boom = new ApiError(500, 'boom', 'boom', false, false)
+    expect(retryThroughRestart(0, boom)).toBe(true)
+    expect(retryThroughRestart(1, boom)).toBe(false)
+    expect(retryThroughRestart(0, proxyChallenge())).toBe(false)
+    expect(retryThroughRestart(3, throttled())).toBe(true)
+    const deadline = Object.assign(new Error('deadline'), { name: 'TimeoutError' })
+    expect(retryThroughRestart(0, deadline)).toBe(false)
+  })
+})
+
+describe('refetchWhileFailed', () => {
+  it('re-reads every 30s only while the read is failed', () => {
+    expect(refetchWhileFailed({ state: { status: 'error' } })).toBe(30_000)
+    expect(refetchWhileFailed({ state: { status: 'success' } })).toBe(false)
+    expect(refetchWhileFailed({ state: { status: 'pending' } })).toBe(false)
   })
 })

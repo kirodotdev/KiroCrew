@@ -1100,11 +1100,34 @@ class TestMacOSCatalogAndResolution:
         with pytest.raises(ComputerUseError, match="this user can write"):
             launch_macos.resolve_target("Paintbrush")
 
-    def test_the_write_probe_is_removed_and_reports_writable(self, tmp_path):
+    def test_the_write_probe_is_removed_and_reports_writable(self, monkeypatch, tmp_path):
         # A leftover probe in a system directory would be litter with our name on it.
+        # ``os.access`` is forced negative so the create-probe FALLBACK runs and its
+        # self-removal is what gets asserted (a writable dir would otherwise short-circuit
+        # on ``os.access`` before any file is created — see the no-mtime test below).
         from kiro_crew.computer_use import launch_macos
 
+        monkeypatch.setattr(launch_macos.os, "access", lambda *_a, **_k: False)
         assert launch_macos._directory_is_writable(str(tmp_path)) is True
+        assert list(tmp_path.iterdir()) == []
+
+    def test_an_os_access_writable_dir_is_NOT_probed_and_mtime_is_untouched(self, tmp_path):
+        """The common refused case must not mutate the directory.
+
+        A stock ``/Applications`` is ``drwxrwxr-x root:admin`` and every admin user is in
+        ``admin``, so ``os.access`` reports it writable. The non-mutating check answers
+        directly: ``True`` (so the caller still refuses) with no create, no unlink, and no
+        mtime change on the operator's directory.
+        """
+        from kiro_crew.computer_use import launch_macos
+
+        assert os.access(str(tmp_path), os.W_OK)  # the stock /Applications shape
+        # Pin the mtime to a fixed point in the past so a create-and-unlink would move it
+        # to "now" — a deterministic marker, not a timing assumption.
+        pinned_ns = 1_000_000_000_000_000_000
+        os.utime(str(tmp_path), ns=(pinned_ns, pinned_ns))
+        assert launch_macos._directory_is_writable(str(tmp_path)) is True
+        assert tmp_path.stat().st_mtime_ns == pinned_ns
         assert list(tmp_path.iterdir()) == []
 
     @pytest.mark.skipif(IS_WINDOWS, reason="Windows refuses to unlink a file that is open")
@@ -1118,6 +1141,7 @@ class TestMacOSCatalogAndResolution:
         """
         from kiro_crew.computer_use import launch_macos
 
+        monkeypatch.setattr(launch_macos.os, "access", lambda *_a, **_k: False)
         probe = tmp_path / launch_macos._WRITE_PROBE_NAME
         seen: dict = {}
         real_open = open
@@ -1154,8 +1178,11 @@ class TestMacOSCatalogAndResolution:
         self, monkeypatch, tmp_path, error, expected
     ):
         # "Assume writable" is the safe answer, because the caller then REFUSES. A name
-        # collision cannot prove unwritability either, so it fails closed too.
+        # collision cannot prove unwritability either, so it fails closed too. ``os.access``
+        # is forced negative so the create-probe runs and classifies each error itself.
         from kiro_crew.computer_use import launch_macos
+
+        monkeypatch.setattr(launch_macos.os, "access", lambda *_a, **_k: False)
 
         def boom(*_args, **_kwargs):
             raise error

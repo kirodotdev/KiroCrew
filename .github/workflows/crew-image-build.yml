@@ -33,6 +33,9 @@ name: Crew Image Build
 
 on:
   pull_request:
+    # The default types plus `ready_for_review`: jobs below skip while the PR
+    # is a draft, so leaving draft must start a fresh run on the same head.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       # The recipes themselves, their .dockerignore, container/requirements.txt,
       # the container/ tree the base image COPYs, and the supervisor module the
@@ -85,7 +88,9 @@ jobs:
     runs-on: ubuntu-latest
     # A fork that enables Actions should not spend its own minutes on a weekly
     # lane it never asked for; a fork's pull_request runs are unaffected.
-    if: github.event_name != 'schedule' || github.repository == 'kirodotdev/KiroCrew'
+    # It also skips while the PR is a draft; `ready_for_review` above runs it
+    # once the PR is ready.
+    if: (github.event_name != 'schedule' || github.repository == 'kirodotdev/KiroCrew') && github.event.pull_request.draft != true
     timeout-minutes: 30
     env:
       # Loopback only. The registry exists to mint a repository digest for a

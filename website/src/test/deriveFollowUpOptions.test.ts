@@ -589,3 +589,26 @@ describe('deriveFollowUpOptions', () => {
     })
   })
 })
+
+describe('deriveFollowUpOptions select mode', () => {
+  // `parseOptions` reads the mode off the marker; the derivation has to hand it on,
+  // or every chip row treats a single-select `[OPTION:]` offer as multi-select.
+  it('reports multi-select for an [OPTIONS:] marker', () => {
+    expect(deriveFollowUpOptions([user('q'), assistant(OPTIONS_MSG)], false).followUpMulti).toBe(true)
+  })
+
+  it('reports single-select for an [OPTION:] marker', () => {
+    const r = deriveFollowUpOptions([user('q'), assistant('Plan ready [OPTION: Go | Go All | Cancel]')], false)
+    expect(r.followUpOptions).toEqual(['Go', 'Go All', 'Cancel'])
+    expect(r.followUpMulti).toBe(false)
+  })
+
+  it('reports single-select for an [OPTION:] marker on a note row', () => {
+    expect(deriveFollowUpOptions([note('Approve? [OPTION: Yes | No]')], false).followUpMulti).toBe(false)
+  })
+
+  it('defaults to multi-select when nothing is on offer', () => {
+    expect(deriveFollowUpOptions([], false).followUpMulti).toBe(true)
+    expect(deriveFollowUpOptions([assistant('Plan ready [OPTION: Go | Cancel]')], true).followUpMulti).toBe(true)
+  })
+})

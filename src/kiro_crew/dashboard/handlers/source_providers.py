@@ -227,8 +227,6 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_fetch_github_checks",
         "_fetch_github_issue",
         "_github_check",
-        "_github_check_identity",
-        "_github_check_rank",
         "_github_checks",
         "_github_comment",
         "_github_issue_comment",
@@ -324,6 +322,9 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "_resolve_jira_token_from_vault",
         "SecretVault",
     ),
+    # Holds no name callers reach through this module; listed so the handler
+    # loads it, which installs the Bitbucket Server provider into the seam.
+    "bitbucket_server": (),
     "chip_status": (
         "_check_cache",
         "_CHECK_CACHE_MAX",
@@ -458,6 +459,7 @@ _OWNED_NAMES: dict[str, tuple[str, ...]] = {
         "enable_pull_request_auto_merge",
         "_GITHUB_AUTO_MERGE_MUTATION",
         "_GITHUB_MERGE_METHODS",
+        "_GITHUB_MERGE_MUTATION",
         "_GITHUB_NODE_ID_RE",
         "_github_pull_request_node",
         "_GITHUB_PULL_REQUEST_NODE_QUERY",
@@ -565,6 +567,12 @@ def _provider_error_response(
     else:
         code, reason = "provider_error", "provider_error"
     _audit_source_api(request, operation, "failed", reason)
+    # ``loginCommand`` is set only from the gateway's own allowlisted host, never
+    # parsed from provider text, so the client can show it as the remedy as-is.
+    if exc.login_command:
+        return web.json_response(
+            {"error": str(exc), "code": code, "loginCommand": exc.login_command}, status=503
+        )
     return web.json_response({"error": str(exc), "code": code}, status=503)
 
 

@@ -22,6 +22,10 @@ from kiro_crew.crashpad_inherit import (
 )
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
+# This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
+# so the shared macOS handle caches are put back after each one (see conftest.py).
+pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
 
 class _FakeLibc:
     """Records the Mach call instead of making it."""

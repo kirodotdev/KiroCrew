@@ -8,13 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import logging
+import os
+import re
+import shutil
 import time as _time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from kiro_crew import git_coord, platform_compat, runtime_death, shutdown_event, tool_permission
 from kiro_crew.acp.client import AcpProcessDied
+from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_CANCELLED,
     STOP_CLASS_FAILED,
@@ -23,6 +28,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
 )
+from kiro_crew.agent_sdk.mcp_problems import session_mcp_problems
 from kiro_crew.agent_sdk.spec_hooks import (
     invalidate_stale_kas_session,
     refuse_stale_switch,
@@ -43,6 +49,7 @@ from kiro_crew.llm_helpers import (
     provider_last_turn_usage,
     stream_and_collect_json,
 )
+from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.dispatch import (
     consume_reinjection,
     rearm_reinjection,
@@ -60,6 +67,7 @@ from kiro_crew.providers.base import (
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, default_ladder
 from kiro_crew.safety_override import safety_override
 from kiro_crew.sandbox import (
+    _resolve_spawn_target,
     create_subprocess_limited,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
@@ -75,6 +83,7 @@ from kiro_crew.task_models import (
     Project,
     Task,
     TaskStatus,
+    VerificationStatus,
 )
 from kiro_crew.task_planner import group_parallel_tasks
 
@@ -177,6 +186,117 @@ async def _end_stalled_step(
     return False
 
 
+#: Bound for the loop-detection fingerprint when the text is not a test run.
+_ERROR_FINGERPRINT_LINES = 20
+#: A normalized identity longer than this is stored as its digest: two
+#: summaries that share a long prefix but name different failing tests must
+#: still compare unequal, so the whole text counts, not its head.
+_ERROR_FINGERPRINT_LEN = 1000
+#: pytest's short summary names the failing tests. ``run_tests`` trims a failing
+#: run to its last 2000 chars, so the head of the text is not the stable part --
+#: these lines are.
+_TEST_SUMMARY_RE = re.compile(r"^[ \t]*(?:FAILED|ERROR)[ \t]+\S+.*$", re.MULTILINE)
+#: The short-summary names the failing test, but on a non-tty pytest truncates
+#: its ``FAILED <id> - <msg>`` line to the terminal width, so the assertion
+#: message is often cut off. Then a test that FAILS IN A DIFFERENT PLACE each
+#: attempt -- the agent fixes one assertion and the next one fails -- would share
+#: one summary line and read as a loop, the exact misfire this feature exists to
+#: avoid. So the failing LOCATION is folded into the identity too: pytest's
+#: traceback shows ``<path>:<line>: <ExcType>`` for each failure, and the ``E``
+#: assertion lines carry the failing expression. Both sit in the tail
+#: ``run_tests`` keeps, so a different failing line or assertion yields a
+#: different fingerprint while a genuinely stuck test (same location, same
+#: assertion) still collapses to one.
+_TEST_LOCATION_RE = re.compile(
+    r"^(?:[ \t]*E[ \t].*|\S.*?:\d+: \S.*)$",
+    re.MULTILINE,
+)
+#: Only a test-run error (see the ``task.error`` assignment after ``run_tests``)
+#: is reduced to its summary lines; a generic exception that happens to carry
+#: ``ERROR ...`` log lines keeps its own first lines as identity.
+_TEST_FAILURE_PREFIX = "Tests failed:"
+#: Volatile runs that legitimately differ between two attempts at the *same*
+#: failure. Bare digit runs and short hex literals are deliberately NOT masked:
+#: ``error variant 1`` vs ``error variant 2`` and ``case[0x1]`` vs ``case[0x2]``
+#: are the next parametrized case, and ``assert 3 == 0`` vs ``assert 1 == 0`` is
+#: a different assertion. Masking those makes steady progress look like a stuck
+#: loop; only address-length hex (6+ digits) is volatile.
+_VOLATILE_PATTERNS = (
+    re.compile(r"0x[0-9a-fA-F]{6,}"),
+    re.compile(r"\b\d+(?:\.\d+)?(?:ms|us|ns|s|m|h)\b"),
+    re.compile(r"\b(?i:port|pid)[ \t:=]+\d+\b"),
+    re.compile(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b"),
+)
+_VOLATILE_WS_RE = re.compile(r"\s+")
+#: pytest parametrize ids are bracketed node-id spans (``test_x[2s]``,
+#: ``test_x[1h-cold]``). They are identity, not noise: ``[1s]`` and ``[2s]`` are
+#: the next case of a steadily-advancing run, and a duration/port/hex volatile
+#: pattern would otherwise collapse them so the third failure trips loop
+#: detection and overwrites the real error with "Loop detected". A node-id span
+#: is a ``[...]`` that is ATTACHED to an identifier (``(?<=\w)``); a bracketed
+#: log prefix like ``[2026-09-29T05:00:00Z]`` or ``[pid 9912]`` stands on its
+#: own and is NOT protected, so its volatile contents are still masked.
+#:
+#: One alternation masks volatile runs AND protects node-id spans in a single
+#: ``re.sub`` pass: the first branch is the node-id span (named ``nodeid``), the
+#: rest are the volatile patterns above. ``_mask`` returns a matched node-id span
+#: verbatim and replaces every other match with ``#``. The node-id branch is
+#: first, so an identifier-attached ``[...]`` wins the alternation and is never
+#: masked, while a volatile form outside a node id is. One pass with no
+#: lift/restore means nothing is ever rewritten into a sentinel, so there is no
+#: placeholder collision and no restore step to make total.
+_FINGERPRINT_MASK_RE = re.compile(
+    "|".join([r"(?P<nodeid>(?<=\w)\[[^\[\]]*\])", *(p.pattern for p in _VOLATILE_PATTERNS)])
+)
+
+
+def _error_fingerprint(error: str) -> str:
+    """Normalize *error* so a repeated failure compares equal across retries.
+
+    Exact equality misses real loops (timestamps, durations, ports, PIDs, temp
+    paths change every attempt) and never fires on test failures (the full
+    output is embedded). For a test run the identity is the ``FAILED`` /
+    ``ERROR`` summary lines PLUS each failure's location -- the ``E`` assertion
+    lines and the ``<path>:<line>: <ExcType>`` traceback lines -- so a test that
+    fails in a DIFFERENT place each attempt (the agent fixes one assertion and
+    the next fails) does not collapse into a false loop; otherwise it is the
+    first lines. Only genuinely volatile forms are masked, and whitespace is
+    collapsed. Distinct failures (different missing modules, different test
+    names, a different parametrized case, a different failing line) still differ;
+    only the volatile runs vary. Comparison-only: ``task.error`` keeps the raw
+    text.
+    """
+    if error.startswith(_TEST_FAILURE_PREFIX):
+        # The failing-test identity is its FAILED/ERROR summary lines (which name
+        # the test) together with its failure LOCATION (E lines + file:line
+        # traceback lines). The summary alone is width-truncated on a non-tty, so
+        # a test failing at two different assertions would otherwise share one
+        # fingerprint and read as a loop while the agent is still converging.
+        identity = _TEST_SUMMARY_RE.findall(error) + _TEST_LOCATION_RE.findall(error)
+    else:
+        identity = []
+    if identity:
+        text = "\n".join(identity)
+    else:
+        text = "\n".join(error.splitlines()[:_ERROR_FINGERPRINT_LINES])
+
+    # One pass masks volatile runs and leaves identifier-attached node-id spans
+    # (``test_x[1s]``) alone, so a volatile pattern cannot collapse the
+    # successive cases of a ``pytest -x`` run that steps through ``[1s]``,
+    # ``[2s]``, ``[30m]`` into one fingerprint. A bracketed log prefix that is
+    # NOT attached to an identifier (``[2026-09-29T05:00:00Z] ...``, ``[pid
+    # 9912]``, ``[120ms]``) is not a node id, so its volatile contents are still
+    # masked and the fingerprint stays equal across retries.
+    def _mask(match: re.Match[str]) -> str:
+        return match.group(0) if match.lastgroup == "nodeid" else "#"
+
+    text = _FINGERPRINT_MASK_RE.sub(_mask, text)
+    text = _VOLATILE_WS_RE.sub(" ", text).strip()
+    if len(text) > _ERROR_FINGERPRINT_LEN:
+        return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    return text
+
+
 async def _check_error_loop(
     task: "Task",
     consecutive: int,
@@ -214,6 +334,7 @@ async def execute_single_task(
     extract_lesson_fn: Callable,
     session_key: str = "",
     taskq: "Admitted | None" = None,
+    require_verification: bool = False,
 ) -> bool:
     """Execute one task with approval gate, self-review, and memory update.
 
@@ -224,7 +345,9 @@ async def execute_single_task(
     """
     if not session_key:
         session_key = f"{SESSION_PREFIX}:{run.task_id}:task{task.index}"
-    _exec_kw = {"taskq": taskq} if taskq is not None else {}
+    _exec_kw: dict[str, Any] = {"taskq": taskq} if taskq is not None else {}
+    if require_verification:
+        _exec_kw["require_verification"] = True
 
     task.status = TaskStatus.IN_PROGRESS
     now = _time.time()
@@ -579,6 +702,7 @@ async def execute_task(
     on_notify: Callable,
     session_key: str = "",
     taskq: "Admitted | None" = None,
+    require_verification: bool = False,
 ) -> bool:
     """Execute a single task with retries and process recovery.
 
@@ -606,6 +730,8 @@ async def execute_task(
     # attempts so a retry on that same session is gated by ITS hooks. Only the
     # hook lookup reads it; the claim still asks for the step's own agent.
     switched_agent = ""
+    # Stores _error_fingerprint(task.error), not the raw text, so retries that
+    # differ only in volatile runs still compare equal.
     previous_error = ""
     consecutive_same_error = 0
     result_prefix = ""
@@ -633,6 +759,10 @@ async def execute_task(
             applied_answers.append("recovered")
             task.description = f"{task.description}\n\n## Operator input\n{recorded}\n"
 
+    # The MCP problem line this step already told the operator about, so a retry
+    # on the same broken servers does not repeat the notice every attempt.
+    mcp_noticed = ""
+
     # ``attempt`` is the TURN ordinal (the re-run prompt reads it), and
     # ``MAX_RETRIES`` bounds the LOGIC failures only: an in-place stall recovery
     # the ladder approved raises this ceiling by its own turn instead of
@@ -654,9 +784,11 @@ async def execute_task(
 
         _acquired = False
         # Post-compaction re-injection bookkeeping for the finally: whether this
-        # turn consumed the one-shot flag, and whether it landed (recorded success).
+        # turn consumed the one-shot flag, whether it landed (recorded success),
+        # and whether the backend reported that it compacted the session.
         _needs_reinjection = False
         _turn_landed = False
+        _turn_compacted = False
         # Whether this attempt's stream produced output or a tool call: a death
         # after either may have left work done, so its retry resumes rather than
         # restates the step (the chat runner's ``turn_emitted``).
@@ -668,6 +800,10 @@ async def execute_task(
         # survives the loop, so reading it directly would attribute this
         # attempt's death to a runtime it never used.
         _turn_provider: object | None = None
+        # This attempt's MCP problem line as read when its session opened. The
+        # failure handlers reset the session before the finally runs, and a
+        # reset replaces the provider's report with an empty one.
+        _mcp_at_open = ""
         try:
             from kiro_crew.context import inherit_session_memory
 
@@ -695,6 +831,7 @@ async def execute_task(
                 sessions, session_key, agent or "kirocrew", (client, is_new, _resumed), _claim
             )
             _turn_provider = client
+            _mcp_at_open = session_mcp_problems(client)
 
             task_prompt = await build_task_prompt(run, task, attempt, work_dir)
             if ctx:
@@ -783,6 +920,12 @@ async def execute_task(
                     _spec = await turn_spec_hooks(client, event.text or "")
                     _policy = _policy_for(spec=_spec)
                     await refuse_stale_switch(client, event.text or "")
+                elif event.kind == CONTEXT_EVENT_COMPACTION:
+                    # The backend compacted the session on its own: the
+                    # session-start context is gone from its window, and the
+                    # finally arms the flag.
+                    if event.text == "completed":
+                        _turn_compacted = True
                 elif event.kind == EVENT_TOOL_CALL:
                     _attempt_emitted = True
                     # Fire PreToolUse hooks for auto-approved tools (informational only).
@@ -973,26 +1116,35 @@ async def execute_task(
                 f"⚠️ Context window {pct:.0f}% full — compressing conversation history. "
                 "Accuracy may degrade due to summarized context.\n\n"
             )
-            try:
-                await client.compact()
-                # The manager's budget, the one resolver every caller uses; it
-                # holds in a standalone `kirocrew run`, which arms no
-                # live-config watcher.
-                compact_result = await client.wait_for_compaction(
-                    timeout=sessions.compact_wait_budget_secs()
+            unsupported = compact_unsupported_backend(client)
+            if unsupported:
+                # This backend never answers /compact, so the wait would only
+                # run out its budget before ending in this same reset.
+                logger.info(
+                    "Task %d: %s cannot compact, resetting session", task.index, unsupported
                 )
-                if compact_result.get("type") == "completed":
-                    logger.info("Task %d: compaction succeeded", task.index)
-                else:
-                    logger.warning(
-                        "Task %d: compaction %s, resetting session",
-                        task.index,
-                        compact_result.get("type", "unknown"),
-                    )
-                    await sessions.reset(session_key)
-            except Exception:
-                logger.debug("Mid-stream compaction failed, resetting", exc_info=True)
                 await sessions.reset(session_key)
+            else:
+                try:
+                    await client.compact()
+                    # The manager's budget, the one resolver every caller uses; it
+                    # holds in a standalone `kirocrew run`, which arms no
+                    # live-config watcher.
+                    compact_result = await client.wait_for_compaction(
+                        timeout=sessions.compact_wait_budget_secs()
+                    )
+                    if compact_result.get("type") == "completed":
+                        logger.info("Task %d: compaction succeeded", task.index)
+                    else:
+                        logger.warning(
+                            "Task %d: compaction %s, resetting session",
+                            task.index,
+                            compact_result.get("type", "unknown"),
+                        )
+                        await sessions.reset(session_key)
+                except Exception:
+                    logger.debug("Mid-stream compaction failed, resetting", exc_info=True)
+                    await sessions.reset(session_key)
             await on_notify(
                 f"🗜️ Task {task.index}: context compressed",
                 f"Context was {pct:.0f}% full — compacted to continue.",
@@ -1121,13 +1273,14 @@ async def execute_task(
                 await sessions.reset(session_key)
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 if await _check_error_loop(task, consecutive_same_error, on_notify, run):
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             run.last_task_time = _time.time()
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
@@ -1191,7 +1344,8 @@ async def execute_task(
             except Exception:
                 logger.debug("Session reset between retries failed", exc_info=True)
 
-            if previous_error and task.error == previous_error:
+            error_fp = _error_fingerprint(task.error)
+            if previous_error and error_fp == previous_error:
                 consecutive_same_error += 1
                 should_fail = await _check_error_loop(
                     task,
@@ -1203,30 +1357,80 @@ async def execute_task(
                     return False
             else:
                 consecutive_same_error = 0
-            previous_error = task.error
+            previous_error = error_fp
             if attempt < MAX_RETRIES + stop_recoveries:
                 continue
             task.status = TaskStatus.FAILED
             return False
         finally:
             # A turn that consumed the post-compaction flag but never landed
-            # discarded the prompt carrying the re-injected context; put the
-            # flag back so the next attempt re-injects it.
+            # discarded the prompt carrying the re-injected context, and a
+            # backend that compacted the session during the turn dropped it;
+            # either way the flag is set so the next attempt re-injects it.
             rearm_reinjection(
-                sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed
+                sessions,
+                session_key,
+                consumed=_needs_reinjection,
+                landed=_turn_landed,
+                compacted=_turn_compacted,
             )
             rollback_skill_bodies(ctx, session_key, landed=_turn_landed)
+            # Read before release: the report lives on this attempt's session,
+            # and a frame that landed mid-turn makes this reading the fuller
+            # one. A failure handler that already reset the session leaves it
+            # empty, so the reading taken at open stands in. Operator-only (log
+            # + dashboard notification), never fed back into a prompt.
+            mcp_problems = session_mcp_problems(_turn_provider) or _mcp_at_open
             if _acquired:
                 sessions.release(session_key)
+            if mcp_problems and mcp_problems != mcp_noticed:
+                mcp_noticed = mcp_problems
+                logger.warning(
+                    "Task %d: MCP servers unusable in this step — %s",
+                    task.index,
+                    mcp_problems,
+                )
+                try:
+                    await on_notify(
+                        f"\u26a0\ufe0f Task {task.index}: MCP servers unusable",
+                        f"MCP servers unusable in this step: {mcp_problems}",
+                        run=run,
+                    )
+                except Exception:
+                    logger.debug("MCP problem notice failed", exc_info=True)
 
-        # Run tests if configured
-        if auto_test and test_cmd:
+        # Only an exit-0 run of the configured command is PASSED (verified).
+        if not auto_test:
+            verdict, test_output = VerificationStatus.SKIPPED, "tests turned off"
+        elif not test_cmd:
+            verdict, test_output = VerificationStatus.NOT_CONFIGURED, "no test command"
+        else:
             test_ok, test_output = await run_tests(test_cmd, work_dir)
-            if not test_ok:
+            if test_ok is None:
+                verdict = VerificationStatus.SKIPPED
+            elif test_ok:
+                verdict = VerificationStatus.PASSED
+            else:
+                verdict = VerificationStatus.FAILED
+        task.verification = verdict
+        if verdict != VerificationStatus.PASSED:
+            if require_verification and verdict != VerificationStatus.FAILED:
+                # The verifier did not run, so the step fails on this attempt, without
+                # a retry. With tests off or no command, no agent turn can change
+                # that. A command that could not start is a fault in the configured
+                # command or its environment, not in the step's work. A path-style
+                # program resolves from the work directory, so a turn could create
+                # it, but the verdict would then come from a program the agent wrote.
+                verdict_text = verdict.replace("_", " ")
+                task.error = f"Verification is required but was {verdict_text}: {test_output}"
+                task.status = TaskStatus.FAILED
+                return False
+            if verdict == VerificationStatus.FAILED:
                 task.error = f"Tests failed:\n{test_output}"
                 logger.warning("Task %d tests failed (attempt %d)", task.index, attempt)
                 # Same retry logic as main task failure above
-                if previous_error and task.error == previous_error:
+                error_fp = _error_fingerprint(task.error)
+                if previous_error and error_fp == previous_error:
                     consecutive_same_error += 1
                     should_fail = await _check_error_loop(
                         task, consecutive_same_error, on_notify, run
@@ -1235,7 +1439,7 @@ async def execute_task(
                         return False
                 else:
                     consecutive_same_error = 0
-                previous_error = task.error
+                previous_error = error_fp
                 if attempt < MAX_RETRIES + stop_recoveries:
                     continue
                 task.status = TaskStatus.FAILED
@@ -1548,8 +1752,35 @@ def _close_proc_pipes(proc: asyncio.subprocess.Process) -> None:
             logger.debug("run_tests: closing proc transport failed", exc_info=True)
 
 
-async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
-    """Run the configured test command. Returns (success, output)."""
+def _test_command_start_problem(test_cmd: list[str], work_dir: Path, env: dict[str, str]) -> str:
+    """Why *test_cmd* cannot start in *work_dir*, or "" when nothing says so.
+
+    On POSIX the program is exec'd in the child, by the spawn shim or by a
+    sandbox wrapper, where a missing one is only an exit status (the shim's 127).
+    So it is resolved here first, the way the child resolves it: a bare name on
+    the child's PATH with the spawn's own resolver, a path from the work
+    directory. On Windows CreateProcess resolves the program in the parent and
+    raises FileNotFoundError itself.
+    """
+    if not os.path.isdir(work_dir):
+        return f"working directory {work_dir} is not a directory"
+    if not platform_compat.IS_POSIX:
+        return ""
+    program = test_cmd[0]
+    try:
+        _resolve_spawn_target(test_cmd, env, work_dir)  # a bare name; a path comes back as is
+    except FileNotFoundError:
+        return f"{program!r} is not on PATH"
+    if os.sep in program and shutil.which(os.path.join(work_dir, program)) is None:
+        return f"{program!r} is not an executable file"
+    return ""
+
+
+async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool | None, str]:
+    """Run the configured test command. Returns (success, output).
+
+    ``success`` is None when the command could not start: nothing was verified.
+    """
     # The test command and its working directory are both agent-influenced, so
     # route the spawn through the sandbox chokepoint: OS-level isolation plus a
     # credential-scrubbed environment.
@@ -1558,6 +1789,13 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
     )
     proc: asyncio.subprocess.Process | None = None
     try:
+        # Stats the working directory and PATH entries, so it runs off the loop.
+        problem = await asyncio.to_thread(_test_command_start_problem, test_cmd, work_dir, env)
+        if problem:
+            logger.warning(
+                "TaskRunner: test command could not start (%s); step not verified", problem
+            )
+            return None, f"test command could not start: {problem} (not verified)"
         proc = await create_subprocess_limited(
             *argv,
             cwd=str(work_dir),
@@ -1585,8 +1823,8 @@ async def run_tests(test_cmd: list[str], work_dir: Path) -> tuple[bool, str]:
         logger.warning("TaskRunner: tests timed out after %ds", TEST_TIMEOUT)
         return False, f"Test timed out after {TEST_TIMEOUT}s"
     except FileNotFoundError:
-        logger.debug("Test command not found, skipping tests")
-        return True, "test command not found (skipped)"
+        logger.warning("TaskRunner: test command could not start; step not verified")
+        return None, "test command could not start (not verified)"
     finally:
         # Reap the process group on EVERY exit path (timeout, crash, or normal
         # return where communicate() left the child alive) so orphaned test

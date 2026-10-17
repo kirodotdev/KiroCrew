@@ -47,7 +47,7 @@ _ARGV = ["/opt/kirocrew/bin/kirocrew", "mcp-core"]
 def clean_state(monkeypatch):
     """Reset cached backend, one-shot latches, and host-specific interference.
 
-    Mirrors ``test_sandbox_argv.clean_backend``: neutralize the host's real
+    Mirrors ``sandbox_argv_helpers.clean_backend``: neutralize the host's real
     kiro internal-sandbox setting (so the darwin delegation branch never
     preempts the code under test), clear the in-sandbox marker, and reset every
     per-process warning sentinel these tests assert on.

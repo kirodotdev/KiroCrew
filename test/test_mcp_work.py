@@ -176,7 +176,7 @@ def test_the_worker_report_tool_advertises_no_conductor_field():
     a field added to the inputSchema alone would be a promise the store refuses."""
     definition = next(t for t in mcp_work._list_tools() if t["name"] == "work_report")
     props = definition["inputSchema"]["properties"]
-    assert set(props) == {"status", "summary", "artifacts", "pr"}
+    assert set(props) == {"status", "summary", "artifacts", "pr", "reason"}
     assert definition["inputSchema"]["required"] == ["status", "summary"]
 
 

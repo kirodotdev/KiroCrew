@@ -84,6 +84,21 @@ def test_no_kas_id_is_reached_from_two_kiro_cli_names():
             seen[tool_id] = name
 
 
+def test_the_hook_rows_are_the_gate_s_policy_table_inverted():
+    # ONE kiro-cli <-> KAS table: every policy-table pair appears here as a row
+    # entry, and every row entry outside the hook-only tools is a policy-table
+    # pair, so a built-in added or renamed in one place cannot go missing in
+    # the other.
+    from kiro_crew.acp.kas_permissions import _HOOK_ONLY_ROWS
+    from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
+
+    pairs = {(name, tool_id) for name, ids in KAS_TOOL_IDS_BY_KIRO_TOOL.items() for tool_id in ids}
+    hook_only = {(name, tool_id) for name, ids in _HOOK_ONLY_ROWS.items() for tool_id in ids}
+    policy = {(name, kas_id) for kas_id, name in KIRO_CLI_NAME_BY_KAS_TOOL.items()}
+    assert policy <= pairs
+    assert pairs - hook_only - policy == {("fs_write", "fs_write")}
+
+
 # ── The id Crew reads off the wire ──
 
 

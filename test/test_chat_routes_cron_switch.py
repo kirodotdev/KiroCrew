@@ -379,7 +379,7 @@ class _UntouchableState:
         raise AssertionError(f"state.{name} read")
 
 
-class TestCronCreatorRefusal:
+class TestCronCreatorAdmission:
     """A ``cron:`` caller reaches only the slots it created, live or persisted."""
 
     _SLOT = "nightly-triage"
@@ -401,7 +401,8 @@ class TestCronCreatorRefusal:
     @staticmethod
     async def _refusal(state, slot_name, cron_creator=_CRON_KEY):
         req = _internal_request("POST", "/api/chat")
-        return await _shared.cron_creator_refusal(req, state, slot_name, cron_creator)
+        refusal, _, _ = await _shared.cron_creator_admission(req, state, slot_name, cron_creator)
+        return refusal
 
     @staticmethod
     def _assert_not_creator(resp: web.Response | None) -> None:
@@ -488,7 +489,7 @@ class TestCronCreatorRefusal:
 
         class _OwnerOpensMeanwhile(_FakeConversationLog):
             def has_log(self, key: str) -> bool:
-                state._slots[TestCronCreatorRefusal._SLOT] = SimpleNamespace(_created_by="")
+                state._slots[TestCronCreatorAdmission._SLOT] = SimpleNamespace(_created_by="")
                 return super().has_log(key)
 
         state.conversation_log = _OwnerOpensMeanwhile()

@@ -88,6 +88,14 @@ GATEWAYD_ARGV_TOKEN = "kiro_crew.mcp_gateway.gatewayd"
 #: Substrings that mark a file as the crew log, for the open-handle probe.
 CREW_LOG_PATH_TOKENS = ("crew-log", "crewlog", "crew_log")
 
+#: Environment variable the product sets on every agent-runtime child naming the
+#: authored agent it was spawned for. Matches
+#: ``kiro_crew.constants.KIROCREW_RUNTIME_AGENT_ENV``; restated so this module
+#: stays importable without the product, and pinned equal by the leak gate before
+#: it classifies anything. A host that binds its agent over the wire carries no
+#: ``--agent`` in argv, so this is the only per-process record of the agent.
+RUNTIME_AGENT_ENV = "KIROCREW_RUNTIME_AGENT"
+
 
 def _uid() -> int:
     return os.getuid()
@@ -106,6 +114,31 @@ def read_argv(pid: int, *, proc_root: Path = Path("/proc")) -> str:
     except OSError:
         return ""
     return raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()
+
+
+def read_environ_value(pid: int, name: str, *, proc_root: Path = Path("/proc")) -> str:
+    """The value of *name* in one pid's exec-time environment, or ``""``.
+
+    ``/proc/<pid>/environ`` is the kernel's copy of the environment the process
+    was started with, so a same-uid reader learns what the spawner set without
+    the process's cooperation. Unreadable (gone, another user's) or absent both
+    answer ``""``: the caller already has the pid, and an empty answer is "this
+    process says nothing about itself", never an error.
+    """
+    try:
+        raw = (proc_root / str(pid) / "environ").read_bytes()
+    except OSError:
+        return ""
+    prefix = f"{name}=".encode()
+    for entry in raw.split(b"\0"):
+        if entry.startswith(prefix):
+            return entry[len(prefix) :].decode("utf-8", "replace")
+    return ""
+
+
+def runtime_agent(pid: int, *, proc_root: Path = Path("/proc")) -> str:
+    """The authored agent the product recorded on *pid*'s environment, or ``""``."""
+    return read_environ_value(pid, RUNTIME_AGENT_ENV, proc_root=proc_root)
 
 
 def start_token(pid: int, *, proc_root: Path = Path("/proc")) -> str | None:
@@ -353,6 +386,9 @@ class ProcessFact:
     parent: int | None = None
     #: Why the process landed in its population, when that needs saying.
     note: str = ""
+    #: The authored agent the product named in the process's environment
+    #: (:data:`RUNTIME_AGENT_ENV`), ``""`` when it carries none.
+    runtime_agent: str = ""
 
     def summary(self) -> str:
         head = self.argv[:160] if self.argv else "(argv unreadable)"
@@ -361,6 +397,8 @@ class ProcessFact:
             bits.append(f"ppid={self.parent}")
         if self.unit:
             bits.append(f"unit={self.unit}")
+        if self.runtime_agent:
+            bits.append(f"agent={self.runtime_agent}")
         if self.note:
             bits.append(f"note={self.note}")
         return f"{' '.join(bits)} :: {head}"
@@ -501,6 +539,7 @@ def inventory(
                 unit=live.get(entry.pid, ""),
                 parent=ppid(entry.pid, proc_root=proc_root),
                 note="" if entry.pid in live else "tracked but outside the instance slice",
+                runtime_agent=runtime_agent(entry.pid, proc_root=proc_root),
             )
         )
 
@@ -511,6 +550,7 @@ def inventory(
             unit=unit,
             parent=ppid(pid, proc_root=proc_root),
             note="in the slice, in no registry entry",
+            runtime_agent=runtime_agent(pid, proc_root=proc_root),
         )
         for pid, unit in sorted(live.items())
         if pid not in seen_registry

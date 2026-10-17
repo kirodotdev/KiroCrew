@@ -11,9 +11,13 @@ import { useEffect, useState } from 'react'
  * Two properties are needed for the closed state, and they cannot both apply at
  * the same moment:
  *
- *   - `visibility: hidden` stops the closed rows PAINTING. It flips with `open`,
- *     so the shrinking track reads as empty space closing rather than rows
- *     sliding away.
+ *   - `visibility: hidden` plus `opacity: 0` stop the closed rows PAINTING.
+ *     Both flip with `open`, so the shrinking track reads as empty space
+ *     closing rather than rows sliding away. `visibility` alone is not enough:
+ *     it is inherited, and a row control that transitions `all` carries the
+ *     inherited value through its own transition, so the rows would paint for
+ *     the whole close. `opacity` is not inherited, so it hides them at once;
+ *     `visibility` stays for hit testing and the accessibility tree.
  *   - `content-visibility: hidden` stops them occupying LAYOUT. Without it the
  *     clipped rows still contribute scrollable overflow to the nearest scroll
  *     container, which is what let a collapsed folder leave ~3000px of dead
@@ -26,6 +30,15 @@ import { useEffect, useState } from 'react'
  * toward. A folder that mounts already closed suppresses immediately, so a
  * freshly rendered list neither animates nor reserves height.
  *
+ * `instantClose` closes with no transition, the same path
+ * `prefers-reduced-motion` takes. The list view sets it when the collapse
+ * starts from a PINNED header (see `stickyCollapse.ts`): the lane scrolls so
+ * the header holds still, and an animated close would then slide the folder's
+ * rows up past the header for the whole close, and with the rows hidden at
+ * once (above) the lane under the header would read as empty until the next
+ * folder rose into it. Closing in the same frame brings the next folder up
+ * under the header at once. Opening always animates.
+ *
  * This lives in one place deliberately: it used to be copied per call site, and
  * the copy kept the layout defect after the original was fixed.
  */
@@ -37,9 +50,12 @@ export const FOLDER_BODY_COLLAPSE_MS = 150
 export function FolderBody({
   open,
   padding = '2px',
+  instantClose = false,
   children,
 }: {
   open: boolean
+  /** Close with no transition (see the module note). Ignored while open. */
+  instantClose?: boolean
   /** Applied while open; the closed state always collapses padding to 0. */
   padding?: string
   children?: React.ReactNode
@@ -67,7 +83,7 @@ export function FolderBody({
       style={{
         display: 'grid',
         gridTemplateRows: open ? '1fr' : '0fr',
-        transition: `grid-template-rows ${FOLDER_BODY_COLLAPSE_MS}ms ease-out`,
+        transition: !open && instantClose ? 'none' : `grid-template-rows ${FOLDER_BODY_COLLAPSE_MS}ms ease-out`,
       }}
     >
       <div style={{
@@ -86,6 +102,7 @@ export function FolderBody({
         minHeight: 0,
         minWidth: 0,
         visibility: open ? 'visible' : 'hidden',
+        opacity: open ? 1 : 0,
         contentVisibility: layoutSuppressed ? 'hidden' : 'visible',
         padding: open ? padding : 0,
       }}>{children}</div>

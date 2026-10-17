@@ -21,7 +21,7 @@ from typing import Any
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import file_lock
+from kiro_crew.platform_compat import file_lock, open_lock_file
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +106,10 @@ def add_pending(params: dict[str, Any]) -> dict[str, Any]:
     # required=True: a deploy store that cannot obtain cross-process exclusion
     # must fail loudly rather than risk a double-deploy / lost write. flock_compat
     # is a Windows no-op, so this uses platform_compat's real msvcrt lock.
-    # touch + "r+": writable (msvcrt.locking needs it) but NON-TRUNCATING — a
-    # truncating "w" open of a lock file whose first byte another holder already
-    # locked raises a sharing violation on Windows instead of waiting. Full
-    # rationale: work_ledger._open_lock.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with file_lock(fd.fileno(), exclusive=True, required=True):
+    # open_lock_file opens writable and never truncates; its docstring carries
+    # the Windows rationale.
+    with open_lock_file(lock_path) as fd:
+        with file_lock(fd, exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             entries.append(entry)
             # Cap at _MAX_PENDING, drop oldest
@@ -132,11 +129,9 @@ def remove_pending(entry_id: str) -> bool:
     """Remove an entry (confirm or dismiss). Returns True if found."""
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    # touch + "r+": writable but non-truncating; see add_pending above and
-    # work_ledger._open_lock for the Windows sharing-violation rationale.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with file_lock(fd.fileno(), exclusive=True, required=True):
+    # open_lock_file: writable but non-truncating; see add_pending above.
+    with open_lock_file(lock_path) as fd:
+        with file_lock(fd, exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             before = len(entries)
             entries = [e for e in entries if e.get("id") != entry_id]
@@ -153,11 +148,9 @@ def claim_pending(entry_id: str) -> dict[str, Any] | None:
     """
     lock_path = _store_path().with_suffix(".lock")
     _store_path().parent.mkdir(parents=True, exist_ok=True)
-    # touch + "r+": writable but non-truncating; see add_pending above and
-    # work_ledger._open_lock for the Windows sharing-violation rationale.
-    lock_path.touch(exist_ok=True)
-    with open(lock_path, "r+") as fd:
-        with file_lock(fd.fileno(), exclusive=True, required=True):
+    # open_lock_file: writable but non-truncating; see add_pending above.
+    with open_lock_file(lock_path) as fd:
+        with file_lock(fd, exclusive=True, required=True):
             entries = _prune_expired(_load_raw())
             claimed = None
             remaining = []

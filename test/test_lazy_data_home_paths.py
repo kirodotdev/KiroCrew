@@ -20,7 +20,7 @@ A reviewer cannot be expected to catch the 17th occurrence by eye, so this is
 enforced structurally instead.
 
 The fix pattern (see ``dashboard/handlers/usage.py`` for the reference, and
-``instances/registry.py`` / ``sel.py`` / ``history.py`` for prior art)::
+``instances/registry.py`` / ``sel.py`` / ``history_files.py`` for prior art)::
 
     _SOME_DIR: Path | None = None          # explicit override hook, None = live
 

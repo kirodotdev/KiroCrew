@@ -24,8 +24,6 @@ import json
 import logging
 import math
 import re
-from collections.abc import Mapping
-from types import MappingProxyType
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import unquote
 
@@ -45,6 +43,7 @@ from kiro_crew.dashboard.handlers._shared import (
     read_capped_response,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.peer_redaction import redact_peer_text
 from kiro_crew.dashboard.session_transfer import (
     SnapshotUnstable,
     TranscriptBusy,
@@ -67,15 +66,18 @@ from kiro_crew.instances.registry import (
     MAX_CHAINED_PER_PARENT,
     MAX_VIA_HOPS,
     DuplicateInstanceError,
+    InstanceDisabledError,
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
     InvalidInstanceError,
     ancestor_ids,
     descendant_ids,
+    is_headless_provisioner,
     validate_ttl,
 )
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState
+from kiro_crew.instances.validation import UnsupportedConnectionMethodError
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact
@@ -543,6 +545,8 @@ _PATCH_FIELD_TYPES: dict[str, type] = {
     # crew's parent is chosen when it is added, and letting a PATCH re-parent one
     # would move a crew onto a hop whose depth was never checked.
     "via_remote_port": int,
+    # The owner's per-crew off switch. Turning it on tears the tunnel down.
+    "disabled": bool,
 }
 
 
@@ -556,6 +560,8 @@ def _wrong_typed_field(changes: dict) -> str | None:
             return f"invalid {key}: expected a number"
         if expected is str and not isinstance(value, str):
             return f"invalid {key}: expected a string"
+        if expected is bool and not isinstance(value, bool):
+            return f"invalid {key}: expected true or false"
     return None
 
 
@@ -676,7 +682,12 @@ async def api_instances_update(request: web.Request) -> web.Response:
             status=400,
         )
 
-    transport_changed = any(
+    # Disabling is a teardown too, and it takes the same locked path: the
+    # tunnel closes and the flag lands in one critical section, so a connect
+    # racing it is either torn down here or reads the flag and is refused.
+    # Every disable takes it, even one `current` reads as off: that read precedes
+    # the lock, so an enable and a connect can land after it.
+    transport_changed = changes.get("disabled") is True or any(
         k in transport_keys and v != getattr(current, k) for k, v in changes.items()
     )
     # Validate the PROPOSED record before touching the tunnel. The registry
@@ -954,6 +965,19 @@ async def api_instances_connect(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if not only_if_connected and getattr(state, "_gateway_restart_in_progress", False) is True:
+        # The restart's pre-exec seam has stopped (or is stopping) every
+        # forwarder, and the exec keeps this pid: a forwarder started now
+        # outlives it as an orphan nothing reclaims. `only_if_connected` starts
+        # nothing, so it is exempt.
+        _audit("connect", "denied", request_id=instance_id, error="gateway restarting")
+        return web.json_response(
+            {
+                "error": "the gateway is restarting; connect again once it is back",
+                "code": "restarting",
+            },
+            status=409,
+        )
     try:
         # Keyword only when asked: the default call keeps the manager's existing
         # positional contract (and every fake that implements it).
@@ -966,6 +990,29 @@ async def api_instances_connect(request: web.Request) -> web.Response:
     except KeyError:
         _audit("connect", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    except UnsupportedConnectionMethodError as e:
+        _audit("connect", "denied", request_id=instance_id, error="unsupported connection method")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                "error": str(e),
+                "code": UnsupportedConnectionMethodError.code,
+            },
+            status=409,
+        )
+    except InstanceDisabledError as e:
+        _audit("connect", "denied", request_id=instance_id, error="disabled")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                # The crew that is off, by id: for a chained crew, the one it rides.
+                "error": f"{e}; enable it to connect",
+                "code": "instance_disabled",
+            },
+            status=409,
+        )
     if rebuild:
         _audit("connect", "rebuild", request_id=instance_id)
     body = status.to_dict()
@@ -1185,6 +1232,95 @@ async def api_instances_restart(request: web.Request) -> web.Response:
         return web.json_response(result)
     _audit("restart", "failure", request_id=instance_id, error=result.get("message", ""))
     return web.json_response(result, status=502)
+
+
+#: How each ``start_remote_update`` refusal code answers over HTTP. Every one
+#: is decided before anything runs on the remote.
+_UPDATE_REFUSAL_STATUS = {
+    "not_found": 404,
+    "invalid_transport": 400,
+    "chained": 409,
+    "headless": 409,
+    "already_running": 409,
+}
+
+
+def _update_owner_denial(request: web.Request, operation: str) -> web.Response | None:
+    """The explicit owner check both update routes add on top of ``_guard``.
+
+    The update route runs a command on another machine, so it states the
+    positive owner identity itself rather than leaning on ``_guard``'s copy of
+    it: an app token or a Slack-minted ``!dashboard`` subject is refused here,
+    before the registry is read, even if ``_guard`` admitted it.
+    """
+    if not is_owner_dashboard_request(request):
+        _audit(operation, "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "updating a remote crew is owner-only")
+    return None
+
+
+async def api_instances_update_remote(request: web.Request) -> web.Response:
+    """POST /api/instances/{id}/update — run the remote crew's own updater.
+
+    Starts a background job that runs the fixed literal ``kirocrew update`` on
+    the remote, over the same transport runner and refusals as
+    ``/restart`` (a chained or headless crew is refused before anything runs),
+    then ``kirocrew restart`` when the update succeeds. The remote's own update
+    policy, install layout and updater decide what the update does. The request
+    carries no body and nothing in it reaches the remote command. Answers
+    ``202 {ok, job}`` at once; poll ``GET`` on the same path for progress.
+    One click starts one job: a second POST while one runs is refused 409.
+    """
+    denied = _guard(request, "update_remote")
+    if denied is not None:
+        return denied
+    denied = _update_owner_denial(request, "update_remote")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    if await asyncio.to_thread(_registry(state).get, instance_id) is None:
+        _audit("update_remote", "denied", request_id=instance_id, error="not found")
+        return web.json_response({"error": "not found", "code": "not_found"}, status=404)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("update_remote", "denied", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_unavailable"},
+            status=503,
+        )
+    result = await mgr.start_remote_update(instance_id)
+    if result.get("ok"):
+        _audit("update_remote", "success", request_id=instance_id)
+        return web.json_response(result, status=202)
+    code = str(result.get("code") or "")
+    message = str(result.get("message") or "remote update refused")
+    _audit("update_remote", "denied", request_id=instance_id, error=f"{code}: {message}")
+    return web.json_response(
+        {"ok": False, "code": code, "error": message},
+        status=_UPDATE_REFUSAL_STATUS.get(code, 502),
+    )
+
+
+async def api_instances_update_remote_status(request: web.Request) -> web.Response:
+    """GET /api/instances/{id}/update — the latest update job for this crew.
+
+    ``{job: null}`` when none has run since this gateway started. The job
+    survives the crew's restart and reconnect, so the dashboard reads the
+    outcome here rather than from the tunnel state.
+    """
+    denied = _guard(request, "update_remote_status")
+    if denied is not None:
+        return denied
+    denied = _update_owner_denial(request, "update_remote_status")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    mgr = getattr(state, "instances_manager", None)
+    job = mgr.remote_update_job(instance_id) if mgr is not None else None
+    _audit("update_remote_status", "success", request_id=instance_id)
+    return web.json_response({"job": job})
 
 
 async def api_instances_search_sessions(request: web.Request) -> web.Response:
@@ -1533,15 +1669,15 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
         # request leaves. Blocking; the send runs it off the loop.
         try:
             _revalidate_for_publication()
-        except TranscriptWithheld:
-            return {
-                "error": "cannot transfer a non-persistent session",
-                "code": "transfer_slot_not_persistent",
-            }
         except TranscriptBusy:
             return {
                 "error": "the session could not be copied consistently right now; please retry",
                 "code": "transfer_snapshot_unstable",
+            }
+        except TranscriptWithheld:
+            return {
+                "error": "cannot transfer a non-persistent session",
+                "code": "transfer_slot_not_persistent",
             }
         return None
 
@@ -1746,22 +1882,51 @@ def _cap_str(value: object, limit: int = _CAP_MAX_STR) -> str:
     """A peer-supplied string, redacted and clamped, or "" for anything else.
 
     Every one of these lands in a dashboard picker, so the peer's text is an
-    output boundary: it runs the relay's credential + exfiltration-URL chain
+    output boundary: it runs the peer-text credential + exfiltration-URL chain
     BEFORE the clamp, so a credential cannot survive by sitting past the limit.
     """
     if not isinstance(value, str):
         return ""
-    # Deferred: this module is imported on the gateway's boot path and the relay
-    # pulls in the chat-slot machinery, which a capability read does not need.
-    from kiro_crew.dashboard.remote_relay import redact_peer_text
-
     return redact_peer_text(sanitize_string(value))[:limit]
+
+
+def _remote_is_behind(local: str, remote: str) -> bool:
+    """Whether a peer runs a strictly OLDER build than this gateway.
+
+    Exact-version, so a patch or pre-release skew counts even though
+    :func:`versions_compatible` still lets the two crews exchange frames. Uses
+    the update checker's own ordering (``0.5.0rc3`` < ``0.5.0``), so "behind"
+    here means what "an update is available" means everywhere else. An empty or
+    unparseable version is never behind: the badge states a fact or says
+    nothing.
+    """
+    if not remote or not local or remote == local:
+        return False
+    from kiro_crew.dashboard.handlers.updates import _is_newer
+
+    return _is_newer(local, remote) is True
+
+
+def _can_run_remote_commands(inst: object) -> bool:
+    """Whether this dashboard can run a ``kirocrew`` verb on *inst*'s host.
+
+    The display side of ``SshTunnelManager._remote_command_target``'s refusals,
+    so the dashboard offers Update only where the gateway would accept it: a
+    chained crew (no shell from here) and a fargate or headless crew (no
+    gateway) are refused there, and offered nothing here. The manager remains
+    the authority; this only decides what is shown.
+    """
+    if getattr(inst, "via_instance_id", ""):
+        return False
+    if getattr(inst, "connection_method", "") == "fargate":
+        return False
+    return not is_headless_provisioner(str(getattr(inst, "provisioner_id", "") or ""))
 
 
 def _cap_list(payload: object, key: str) -> object:
     """The row list out of a peer reply that is either bare or wrapped in *key*.
 
-    The five capability endpoints do not agree on a shape: ``/api/models`` and
+    The roster endpoints do not agree on a shape: ``/api/models`` and
     ``/api/effort-levels`` answer a bare list, while ``/api/agents`` and
     ``/api/workspaces`` answer ``{"<key>": [...]}`` next to a sibling default.
     Normalizing here is what keeps a wrapped reply from reaching ``_cap_rows``,
@@ -1800,12 +1965,12 @@ def _cap_rows(payload: object, fields: dict[str, int]) -> list[dict[str, object]
 async def api_instances_capabilities(request: web.Request) -> web.Response:
     """GET /api/instances/{id}/capabilities — what a connected peer can do.
 
-    A local session bound to a peer for execution must offer the PEER's agents,
+    A frontend building a chat that runs on a connected peer must offer the PEER's agents,
     models, effort levels and workspaces in its header — showing this machine's
     would let the user pick a crew or model that does not exist over there. Those
     rosters are gateway-wide reads, and every existing frontend control fetches
     them same-origin from the local gateway, so this route is the per-instance
-    counterpart the frontend switches to when the active slot is peer-bound.
+    counterpart those frontend controls fetch for a peer instance.
 
     Deliberately NOT served through ``/api/instances/{id}/proxy/*``: that route
     forwards a caller-supplied path and is fenced to the ``api/chat`` /
@@ -1886,6 +2051,7 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
         else []
     )
     version_match = versions_compatible(kiro_crew.__version__, peer_version)
+    behind = _remote_is_behind(kiro_crew.__version__, peer_version)
     # The remote pre-session picker can offer these levels before a live slot
     # reports its config. Keep the hub's POST allowlist in sync with that offer.
     if version_match and effort_levels:
@@ -1897,10 +2063,13 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
             "instance_id": instance_id,
             "version": peer_version,
             "local_version": kiro_crew.__version__,
-            # The gate the relay enforces on every dispatch, surfaced so the UI
+            # The major.minor version gate, surfaced so the UI
             # can explain a refusal BEFORE the user types a message rather than
             # after their first send fails.
             "version_match": version_match,
+            # Exact-version skew, independent of the compatibility gate above:
+            # a patch-behind peer still chats, but the header says it is behind.
+            "behind": behind,
             "agents": _cap_rows(
                 _cap_list(agents_payload, "agents"),
                 {"name": 128, "description": _CAP_MAX_STR, "scope": 32, "model": 128},
@@ -1936,6 +2105,125 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
     )
 
 
+async def api_instances_approval_state(request: web.Request) -> web.Response:
+    """GET /api/instances/{id}/approval-state — a connected peer's machine-wide YOLO flag.
+
+    The crew window's approval-mode picker must show the mode the peer is really
+    in, and a peer's YOLO is not on its slot rows. So this reads the peer's
+    ``/api/status`` through the closed capability carrier and forwards one field
+    and nothing else: ``yolo``, ``None`` when the read failed or carried no
+    boolean, so the window can tell "off" from "unknown". A route of its own, not
+    a field of ``/capabilities``: the window polls it, and the roster reads must
+    not ride every poll. Owner-only, the same bar as the capability read.
+    """
+    denied = _guard(request, "approval_state")
+    if denied is not None:
+        return denied
+    from kiro_crew.dashboard.handlers._shared import _owner_denial_response
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+    if not is_owner_dashboard_request(request):
+        _audit("approval_state", "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew approval state is owner-only")
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info.get("id", "")
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("approval_state", "denied", error="instances manager unavailable")
+        return web.json_response(
+            {"error": "remote crews are not available", "code": "instances_unavailable"},
+            status=503,
+        )
+    peer_yolo: bool | None = None
+    try:
+        ok, payload = await mgr.peer_capability(instance_id, "/api/status")
+    except Exception as e:  # a dead tunnel reports "unknown", never a 500
+        logger.info("Peer status on %s raised (%s)", instance_id, type(e).__name__)
+        ok, payload = False, {"code": "capability_unreachable"}
+    if ok and isinstance(payload, dict):
+        yolo = payload.get("yolo")
+        # Only a real boolean is an answer: a missing or odd value is unknown,
+        # never "off", which would offer a Normal pick that ends a live YOLO.
+        peer_yolo = yolo if isinstance(yolo, bool) else None
+    _audit("approval_state", "success", request_id=instance_id)
+    return web.json_response({"yolo": peer_yolo})
+
+
+async def api_instances_versions(request: web.Request) -> web.Response:
+    """GET /api/instances/versions — every CONNECTED crew's version beside ours.
+
+    One read for the whole crew list, so the Remote Crew rows and the
+    post-update offer can show which remotes run an older build without opening
+    a capabilities read per row. Each version comes from the peer's own
+    ``/api/version`` through :meth:`SshTunnelManager.peer_capability`, the same
+    closed-path carrier capabilities uses. A peer that does not answer reports
+    ``version: ""`` and is never ``behind``. ``behind`` is the exact-version
+    compare of :func:`_remote_is_behind`.
+
+    Owner-only on top of ``_guard``: the reads run on each peer with the owner's
+    manager-held credential.
+    """
+    denied = _guard(request, "versions")
+    if denied is not None:
+        return denied
+    if not is_owner_dashboard_request(request):
+        _audit("versions", "denied", error="non-owner identity rejected")
+        return _owner_denial_response(request, "remote-crew versions are owner-only")
+    state: DashboardState = request.app["state"]
+    local = kiro_crew.__version__
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("versions", "success", request_id="no-manager")
+        return web.json_response({"local_version": local, "instances": []})
+    connected = [
+        iid
+        for iid, st in mgr.status_all().items()
+        if getattr(st, "state", None) is TunnelState.CONNECTED
+    ]
+    results = await asyncio.gather(
+        *(mgr.peer_capability(iid, "/api/version") for iid in connected),
+        return_exceptions=True,
+    )
+    names: dict[str, str] = {}
+    updatable: dict[str, bool] = {}
+    if connected:
+        try:
+            for inst in await asyncio.to_thread(_registry(state).list):
+                names[inst.id] = inst.name
+                updatable[inst.id] = _can_run_remote_commands(inst)
+        except Exception:
+            names, updatable = {}, {}
+    rows: list[dict[str, object]] = []
+    for iid, outcome in zip(connected, results):
+        version = ""
+        # Why this crew's version is unknown, as the carrier's own code, so a
+        # failed read is reported rather than looking like a current crew.
+        read_error = ""
+        if isinstance(outcome, BaseException):
+            logger.info("Peer version read on %s raised (%s)", iid, type(outcome).__name__)
+            read_error = "capability_unreachable"
+        else:
+            ok, payload = outcome
+            if ok and isinstance(payload, dict):
+                version = _cap_str(payload.get("version"), _CAP_MAX_VERSION_STR)
+            elif not ok:
+                read_error = (
+                    _cap_str(payload.get("code"), 64) if isinstance(payload, dict) else ""
+                ) or "capability_error"
+        rows.append(
+            {
+                "id": iid,
+                "name": _cap_str(names.get(iid) or iid, 128),
+                "version": version,
+                "behind": _remote_is_behind(local, version),
+                "updatable": updatable.get(iid, False),
+                "error": read_error,
+            }
+        )
+    _audit("versions", "success")
+    return web.json_response({"local_version": local, "instances": rows})
+
+
 #: Every field ``useInstanceSessions.ts`` reads off a peer slot, with the clamp
 #: each one gets. An ALLOWLIST rather than a passthrough, for the same reason as
 #: ``_cap_rows``: the peer's ``/api/chat/slots`` projection carries far more than
@@ -1952,27 +2240,27 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
     "last_turn_ts": 64,
     "last_ts": 64,
     "created": 64,
+    # The PEER's sidebar folder the row is filed in, an id in the peer's own folder
+    # space. The crew group nests the row under that folder, whose name the browser
+    # reads from the peer's ``api/chat/folders`` through the proxy. Clamped like
+    # ``key``: an opaque id, matched, never shown.
+    "folder_id": _PEER_FIELD_MAX_CHARS,
 }
 
 #: The booleans the sidebar reads, coerced with ``is True`` rather than
-#: truth-tested: a peer answering ``"running": "no"`` must not raise a spinner or
-#: an approval badge it never claimed. The hook normalizes these too — doing it
-#: here as well is what makes the WIRE honest, so this route answers the same way
-#: for any reader, not only the one frontend that happens to re-check.
-_PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval")
+#: truth-tested: a peer answering ``"running": "no"`` must not raise a spinner, an
+#: approval badge or a question it never claimed. The hook normalizes these too —
+#: doing it here as well is what makes the WIRE honest, so this route answers the
+#: same way for any reader, not only the one frontend that happens to re-check.
+_PEER_SLOT_BOOL_FIELDS = ("running", "pending_approval", "needs_input")
 
 #: The two keys ALLOWLISTED from a peer row's ``parent`` citation (``{slot, key}``,
 #: the shape ``lineage_parents`` puts on every local row), each clamped like
-#: ``key``. The wire carries a third, ``hub_key``, which is never read from the
-#: peer: ``_clean_peer_parent`` stamps it, and only when the cited creator is a
-#: peer slot this hub drives. The three answer different questions in the
-#: sidebar. ``key`` is a bare key in the PEER's key space and is what the
-#: conductor lane nests a peer-to-peer citation on, resolved against rows of the
-#: same origin only. ``hub_key`` is a key in the HUB's key space -- the local slot
-#: driving the creator -- and is what the lane nests on instead when present,
-#: resolved against local rows only (``citedCreatorOf``). ``slot`` is the child's
-#: own record of who opened it -- the "opened by" glyph on a row placed under
-#: nothing (``orphanCitation``, ``citesParent``) and the baseline the lane diffs
+#: ``key``. The two answer different questions in the sidebar. ``key`` is a bare
+#: key in the PEER's key space and is what the conductor lane nests a
+#: peer-to-peer citation on, resolved against rows of the same origin only.
+#: ``slot`` is the child's own record of who opened it -- the "opened by" glyph
+#: on a row placed under nothing (``orphanCitation``, ``citesParent``) and the baseline the lane diffs
 #: to tell a re-parented row from a new one (``citedCreatorRef``).
 #: ``lineage_parents`` leaves ``key`` null when the creator is gone and keeps
 #: ``slot``, so a citation with only ``slot`` is the orphan case, not a malformed
@@ -1985,9 +2273,7 @@ _PEER_SLOT_PARENT_FIELDS: dict[str, int] = {
 }
 
 
-def _clean_peer_parent(
-    value: object, driven: Mapping[str, str] = MappingProxyType({})
-) -> dict[str, str] | None:
+def _clean_peer_parent(value: object) -> dict[str, str] | None:
     """Shape a peer row's ``parent`` citation, or ``None`` when it carries none.
 
     A citation is a dict with a string ``key`` or a string ``slot``; one that has
@@ -1995,39 +2281,18 @@ def _clean_peer_parent(
     rather than forwarded as an empty object. Anything else -- ``None``, a string,
     a list -- is not a citation.
 
-    *driven* maps each peer slot key this hub itself drives to the LOCAL slot key
-    that drives it (see ``read_peer_slots``). A citation naming a driven key
-    must not carry that key to the
-    browser: the creator's row was filtered out of this listing precisely so its
-    peer slot key never crosses, and the citation would carry the same key by
-    another route. The citation is REWRITTEN rather than dropped: the creator is
-    on screen as the local row that drives it, so the child ships citing that
-    local row through ``hub_key`` (the one field that names a key in the HUB's
-    key space; ``key`` stays the peer's), and ``slot`` -- the half the lane reads
-    for its "opened by" glyph -- names the same local key. The conductor lane
-    then hangs the worker from the local row the user is actually chatting in.
-    Without a local key to redirect to, the citation is dropped whole and the
-    child ships as a root with no citation.
     """
     if not isinstance(value, dict):
         return None
     out: dict[str, str] = {}
     for field, limit in _PEER_SLOT_PARENT_FIELDS.items():
-        raw = value.get(field)
-        if isinstance(raw, str) and raw in driven:
-            local_key = driven[raw]
-            if not local_key:
-                return None
-            return {"slot": local_key, "hub_key": local_key}
-        shaped = _cap_str(raw, limit)
+        shaped = _cap_str(value.get(field), limit)
         if shaped:
             out[field] = shaped
     return out or None
 
 
-def _clean_peer_slot(
-    row: object, driven: Mapping[str, str] = MappingProxyType({})
-) -> dict[str, object] | None:
+def _clean_peer_slot(row: object) -> dict[str, object] | None:
     """Re-shape one untrusted peer slot: allowlist keys, redact, clamp, coerce.
 
     What ``_clean`` does for a peer's SEARCH row, applied to a peer's LIVE row.
@@ -2045,9 +2310,7 @@ def _clean_peer_slot(
 
     Returns ``None`` only for a non-dict, which is not a row at all. A row whose
     ``key`` is missing or unusable is still returned, shaped — the hook drops it
-    on its own ``typeof s.key !== 'string'`` guard, and dropping it here would
-    make a malformed row indistinguishable from a deduplicated one in the audit
-    count below.
+    on its own ``typeof s.key !== 'string'`` guard.
     """
     if not isinstance(row, dict):
         return None
@@ -2064,7 +2327,7 @@ def _clean_peer_slot(
     # provisional -- the lane skips such a frame when it records what the user has
     # opened, and a ``False`` here would look like a settled frame to a reader that
     # tests presence.
-    parent = _clean_peer_parent(row.get("parent"), driven)
+    parent = _clean_peer_parent(row.get("parent"))
     if parent is not None:
         out["parent"] = parent
     if row.get("lineage_pending") is True:
@@ -2106,44 +2369,25 @@ class PeerSlots(NamedTuple):
     the two readers need different fields off them: the chat-slots route shapes
     them through :func:`_clean_peer_slot` for the browser, while the adopt path
     reads fields that allowlist deliberately omits (``memory_mode``, the privacy
-    boundary an adopted session must inherit rather than default). ``filtered``
-    and ``over_cap`` are the audit counts the route reports.
+    boundary an adopted session must inherit rather than default). ``over_cap``
+    is the audit count the route reports.
     """
 
     rows: list[dict[str, object]]
-    filtered: int
     over_cap: int
-    #: The peer slot keys this hub drives, as judged for THIS listing, each mapped
-    #: to the LOCAL slot key that drives it. The rows carrying them are already
-    #: out of ``rows``; the chat-slots route needs the map again to rewrite a
-    #: surviving row's citation of one to the local key, so a driven key does not
-    #: reach the browser through ``parent`` after being kept out of ``key``, and
-    #: the child still nests under the row that opened it.
-    driven: Mapping[str, str] = MappingProxyType({})
 
 
 async def read_peer_slots(
     state: "DashboardState",
     instance_id: str,
-    *,
-    uncapped: bool = False,
 ) -> PeerSlots:
-    """Read *instance_id*'s live slot list, dropping the rows this hub drives.
+    """Read *instance_id*'s live slot list.
 
-    The read behind :func:`api_instances_chat_slots`, extracted so the adopt path
-    (:mod:`kiro_crew.dashboard.remote_adopt`) validates an adopt target against
-    the SAME view of the peer the sidebar renders. That shared view is what makes
-    the validation free of new policy: a key absent from it is forged, closed, or
-    a slot this hub already drives, and none of the three is adoptable.
-
-    ``uncapped`` turns OFF the returned-row cap, which is otherwise
-    ``MAX_LIVE_SLOTS`` (read in the body, so a test patching the module constant
-    still moves it). The cap exists to bound the per-row redaction the route then
-    runs, so a caller that does no per-row work has no reason to pay it — and for
-    the adopt path it would be actively wrong: a truncated tail would make a key
-    the peer really does hold look forged, refusing an adopt for a peer that
-    merely has many sessions open. Memory stays bounded either way by the BYTE
-    cap below, which is applied before anything is decoded.
+    The read behind :func:`api_instances_chat_slots`. The returned rows are
+    capped at ``MAX_LIVE_SLOTS`` (read in the body, so a test patching the module
+    constant still moves it) to bound the per-row redaction the route then runs.
+    Memory stays bounded by the BYTE cap below, which is applied before anything
+    is decoded.
 
     Raises :class:`PeerSlotsUnavailable` for every failure; returns
     :class:`PeerSlots` otherwise.
@@ -2238,52 +2482,16 @@ async def read_peer_slots(
             "malformed reply",
         )
 
-    # Snapshot the driven peer-slot keys HERE, immediately before filtering, not
-    # before the peer read above. ``_slots`` is mutated on the event loop, so a
-    # synchronous read is consistent by construction wherever it happens — but
-    # taken before the tunnel call it is simply STALER, and it misses exactly the
-    # binding an adopt creates while this listing is in flight. That row then
-    # survives the filter and the adopted session renders twice, once as the local
-    # slot and once as the peer row it was adopted from. Read after the await and
-    # the set is as current as the rows it judges. ``is_remote`` requires the WHOLE
-    # binding, so a half-written slot contributes no empty key.
-    #
-    # Keyed by the PEER's slot key and valued by the local key that drives it: the
-    # peer key is what the peer's rows cite, the local key is what a surviving
-    # child's citation is rewritten to (``_clean_peer_parent``), so a worker a
-    # driven lead opened on the peer nests under the local row of that lead.
-    driven: dict[str, str] = {
-        slot.remote_slot: key
-        for key, slot in state._slots.items()
-        if slot.is_remote and slot.instance_id == instance_id
-    }
-
-    # Drop the peer slots this hub itself drives. A row carrying no usable string
-    # key is KEPT rather than dropped here: the sidebar hook rejects it anyway,
-    # and dropping it in this pass would make a malformed row indistinguishable
-    # from a deduplicated one in the audit count below.
-    rows = [
-        row
-        for row in payload
-        if not (isinstance(row, dict) and isinstance(row.get("key"), str) and row["key"] in driven)
-    ]
-    filtered = len(payload) - len(rows)
+    rows = payload
 
     # A ROW cap as well as the byte cap, because the two bound different costs.
     # The byte cap bounds what is BUFFERED; this bounds what is then PROCESSED,
     # and the per-row work is not free — every string field of every surviving
-    # row runs the relay's redaction chain in ``_cap_str``. ``{"key":"x"},`` is
+    # row runs the peer-text redaction chain in ``_cap_str``. ``{"key":"x"},`` is
     # twelve bytes, so a hostile or broken peer fits hundreds of thousands of
     # rows under 4 MiB and spends the hub's CPU in the redactor rather than its
     # memory. A byte cap is not a row cap, which is why the capability reader
     # above carries both.
-    #
-    # Sliced AFTER the dedupe: bounding ``payload`` instead would let the slots
-    # this hub already drives consume the budget, so a peer whose sessions are
-    # mostly hub-driven would report fewer of its OWN than the cap allows. The
-    # dedupe pass itself is a membership test per row and is bounded by the byte
-    # cap; the shaping the route does is the expensive half and is what this
-    # bounds.
     #
     # ``MAX_LIVE_SLOTS`` rather than ``_CAP_MAX_ROWS`` even though both are 500
     # today, because only one of them is DERIVED: it is the ceiling a Kiro Crew
@@ -2298,47 +2506,21 @@ async def read_peer_slots(
     # honest and a refusal would cost it every row. Audited so a short list is
     # attributable to this bound instead of looking like sessions the peer never
     # reported.
-    effective_cap = None if uncapped else MAX_LIVE_SLOTS
-    over_cap = 0
-    if effective_cap is not None:
-        over_cap = max(0, len(rows) - effective_cap)
-        if over_cap:
-            rows = rows[:effective_cap]
-    return PeerSlots(
-        rows=rows, filtered=filtered, over_cap=over_cap, driven=MappingProxyType(driven)
-    )
+    over_cap = max(0, len(rows) - MAX_LIVE_SLOTS)
+    if over_cap:
+        rows = rows[:MAX_LIVE_SLOTS]
+    return PeerSlots(rows=rows, over_cap=over_cap)
 
 
 async def api_instances_chat_slots(request: web.Request) -> web.Response:
-    """GET /api/instances/{id}/chat-slots — a peer's LIVE sessions, deduplicated.
+    """GET /api/instances/{id}/chat-slots — a peer's LIVE sessions.
 
     Backs the merged-sessions sidebar preview, where a connected peer's open
     sessions appear as ordinary rows in this machine's Sessions list. Read-only:
     a peer-owned session offers no rename, close or pin, because those are
     local-slot operations that cannot reach a session on another machine.
 
-    Deliberately NOT the frontend calling
-    ``/api/instances/{id}/proxy/api/chat/slots``, which is what it did first. The
-    peer's reply needs a HUB-SIDE filter that only this process can apply. A local
-    session bound to this peer for EXECUTION (``executor == "remote"``) is backed
-    by a real slot ON the peer, so the peer lists it like any other of its own —
-    and the browser would then render one conversation TWICE: once as the local
-    row the user can actually chat in, and once as a read-only peer row that
-    navigates away to the instance pane.
-
-    The two are correlated only by the binding's ``remote_slot``, which is
-    deliberately not projected to the browser (see ``slot_projection``: it is the
-    PEER's slot key, meaningful only inside a request routed back through that
-    instance). Filtering here is what keeps it that way — the dedupe runs where
-    the binding already lives, so no peer slot key has to cross to the browser to
-    make it possible. The same rule covers the one other field that can carry a
-    peer slot key, a surviving row's ``parent`` citation: a citation naming a
-    driven key is rewritten by ``_clean_peer_parent`` to the LOCAL key that
-    drives it (``hub_key``), so the peer key stays off the wire by every route,
-    not only the row's own ``key`` -- and the worker still nests under the local
-    row that opened it.
-
-    Surviving rows are then re-shaped by ``_clean_peer_slot`` rather than
+    Rows are re-shaped by ``_clean_peer_slot`` rather than
     forwarded as the peer sent them. A slot title is MODEL-AUTHORED text from
     another machine, and ``slot_projection.py`` redacts a LOCAL slot's title
     (``redact(slot.display_title)``) before the browser ever sees it — so an
@@ -2377,19 +2559,9 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
         return web.json_response({"error": e.message, "code": e.code}, status=e.status)
 
     shaped = [
-        cleaned
-        for cleaned in (_clean_peer_slot(row, peer.driven) for row in peer.rows)
-        if cleaned is not None
+        cleaned for cleaned in (_clean_peer_slot(row) for row in peer.rows) if cleaned is not None
     ]
-    # Stamp the row identity HERE, so the server is the only author of it. The
-    # format is a contract in exactly one place: were the browser to compose
-    # `<instance_id>:<key>` as well, the equality between the two spellings would
-    # go unenforced — and that equality is the whole feature, since an adopted row
-    # keeps the peer row's identity precisely so the sidebar re-renders ONE row
-    # instead of mounting a second. `resolved_row_identity` produces this same
-    # string for the bound local slot, from `instance_id` + the peer's key, and
-    # `test_peer_row_identity_matches_the_projection` pins the two byte-equal.
-    #
+    # Stamp the row identity HERE, so the server is the only author of it.
     # After the allowlist, so a peer's own `row_identity` cannot reach the browser:
     # the value is composed from the instance id this route was called with plus
     # the row's allowlisted `key`.
@@ -2397,7 +2569,7 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
         key = row_out.get("key")
         if isinstance(key, str) and key:
             row_out["row_identity"] = f"{instance_id}:{key}"
-    detail = f"{len(shaped)} rows, {peer.filtered} hub-driven filtered"
+    detail = f"{len(shaped)} rows"
     if peer.over_cap:
         detail += f", {peer.over_cap} past the row cap"
     _audit("chat_slots", "success", request_id=f"{instance_id} ({detail})")
@@ -2410,8 +2582,6 @@ class ProxyReplyUnredactable(Exception):
 
 def _redact_peer_value(value: object) -> object:
     """Redact every string in a decoded peer JSON value, keys included."""
-    from kiro_crew.dashboard.remote_relay import redact_peer_text
-
     if isinstance(value, str):
         return redact_peer_text(value)
     if isinstance(value, list):
@@ -2439,8 +2609,6 @@ def _redact_peer_payload(text: str) -> str:
         raise ProxyReplyUnredactable() from None
     except json.JSONDecodeError:
         # Not JSON at all (a plain SSE data line): redact it as text.
-        from kiro_crew.dashboard.remote_relay import redact_peer_text
-
         return redact_peer_text(text)
     except ValueError:
         # Valid JSON Python will not decode (an integer past the digit limit):
@@ -2459,8 +2627,6 @@ def _redact_sse_event(event: bytes) -> bytes:
     newline). Every other line (``event:``, ``id:``, comments) is peer text
     as well and runs the same chain as plain text.
     """
-    from kiro_crew.dashboard.remote_relay import redact_peer_text
-
     out: list[str] = []
     data: list[str] = []
     for line in event.decode("utf-8", "replace").split("\n"):
@@ -2493,7 +2659,7 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     to the peer (the hub presents as a same-origin loopback client), and the
     peer's Set-Cookie never reaches the hub origin.
 
-    Every reply is redacted with the relay's peer-text chain before the
+    Every reply is redacted with the peer-text chain before the
     browser sees it, because the window renders peer text directly: a JSON
     body as one document, an SSE stream one event at a time.
     """

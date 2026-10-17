@@ -131,7 +131,7 @@ class TestPerProcessReads:
             b"1234 (\xff) \xfe) S 7 8 9 " + b"0 " * 15 + b"4242 0 55"
         )
         assert platform_compat.read_proc_stat(1234, proc_root=tmp_path) == platform_compat.ProcStat(
-            state="S", ppid=7, pgrp=8, session=9, start_ticks=4242, rss_pages=55
+            state="S", ppid=7, pgrp=8, session=9, start_ticks=4242, rss_pages=55, cpu_ticks=0
         )
         assert platform_compat._parse_ppid((tmp_path / "1234" / "stat").read_bytes()) == 7
 
@@ -384,16 +384,14 @@ class TestOneHome:
 # ── the pool caller ───────────────────────────────────────────────────────
 
 
-def _make_pool_key(server: str = "test-server", agent: str = "test-agent") -> PoolKey:
+def _make_pool_key(server: str = "test-server") -> PoolKey:
     return PoolKey(
         server_name=server,
-        agent_name=agent,
         command_args_hash="abc123",
         effective_env_hash="def456",
         work_dir="/tmp/test",
         binary_version="1.0",
         os_uid=1000,
-        config_snapshot_hash="jkl012",
     )
 
 

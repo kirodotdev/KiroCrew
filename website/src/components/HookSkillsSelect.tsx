@@ -9,6 +9,7 @@ import { Brain, ChevronDown, Plus } from 'lucide-react'
 import { api } from '../api/client'
 import { Btn } from './ui'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
+import { usePressActivation } from '../hooks/usePressActivation'
 import { i18nT } from '../i18n/t'
 import HookSkillsDropdown from './HookSkillsDropdown'
 
@@ -16,6 +17,8 @@ interface CatalogSkill {
   key: string
   name: string
   description?: string
+  /** Other keys that name this same file (see AgentSkillsEditor's CatalogSkill). */
+  aliases?: string[]
 }
 
 interface Props {
@@ -38,16 +41,20 @@ export default function SkillsMultiSelect({ selected, onChange }: Props) {
   const byKey = useMemo(() => {
     const m = new Map<string, CatalogSkill>()
     for (const s of catalog) m.set(s.key, s)
+    for (const s of catalog) for (const a of s.aliases ?? []) if (!m.has(a)) m.set(a, s)
     return m
   }, [catalog])
 
   const candidates = useMemo(
-    () => catalog.filter(s => !selected.includes(s.key)).sort((a, b) => compareText(a.name, b.name)),
+    () => catalog
+      .filter(s => !selected.includes(s.key) && !(s.aliases ?? []).some(a => selected.includes(a)))
+      .sort((a, b) => compareText(a.name, b.name)),
     [catalog, selected],
   )
 
   const { open, setOpen, filter, setFilter, dropdownRef, inputRef, filtered } =
     useFilteredDropdown(candidates)
+  const bindPress = usePressActivation()
 
   const add = (key: string) => { onChange([...selected, key]) }
   const remove = (key: string) => { onChange(selected.filter(k => k !== key)) }
@@ -71,7 +78,7 @@ export default function SkillsMultiSelect({ selected, onChange }: Props) {
         <Btn
           ref={btnRef}
           className="flex items-center gap-1 px-2 py-0.5 text-[12px]"
-          onClick={() => setOpen(!open)}
+          {...bindPress(() => setOpen(o => !o))}
         >
           <Plus className="lucide-inline" /> {i18nT('components.skillsMultiSelect.add_skill')}
           <ChevronDown className="lucide-inline text-muted" />

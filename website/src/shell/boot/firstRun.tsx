@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import OnboardingFlow from '../../components/OnboardingFlow'
-import MeetCrewmatesFlow from '../../components/MeetCrewmatesFlow'
-import { useMeetCrewmatesGate } from '../../hooks/useMeetCrewmatesGate'
 import AgentImportFlow from '../../components/AgentImportFlow'
 import PrivacyChapter from '../../components/PrivacyChapter'
 import { OnboardingShellHost } from '../../components/OnboardingChapterShell'
@@ -17,7 +15,7 @@ interface FirstRunFlags {
 
 /**
  * Which first-run chapter is on screen: Import setup, then Privacy, then the
- * Customize tour, then Meet CrewMates. Derived from the completion flags on every
+ * Customize tour. Derived from the completion flags on every
  * change, so the hand-offs below and the derive effect cannot disagree.
  */
 export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded }: FirstRunFlags) {
@@ -36,6 +34,10 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   const locallyPrivacyAcked =
     !!localStorage.getItem('mc-privacy-acked') || !!localStorage.getItem('mc-onboarded')
   const [showAgentImport, setShowAgentImport] = useState(false)
+  // Set by a replay of the importer alone, never by first run. First run finishes
+  // the chapter by itself when nothing is found to import; a replay shows that
+  // result, or the click that asked for it gets no answer.
+  const [keepEmptyImport, setKeepEmptyImport] = useState(false)
   const [showPrivacy, setShowPrivacy] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(
     () => locallyImportOnboarded && locallyPrivacyAcked && !localStorage.getItem('mc-onboarded'),
@@ -91,22 +93,22 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
     const replay = (event: Event) => {
       continueTourAfterImport.current =
         !!(event as CustomEvent<{ continueOnboarding?: boolean }>).detail?.continueOnboarding
+      // `/onboarding` replays all of first run, where an empty import step passes
+      // by itself; Settings replays the importer alone.
+      setKeepEmptyImport(!continueTourAfterImport.current)
       setShowOnboarding(false)
       setShowAgentImport(true)
     }
     window.addEventListener('mc-start-import', replay)
     return () => window.removeEventListener('mc-start-import', replay)
   }, [])
-  // Meet CrewMates: the crewmate first-run chapter, gated on zero crewmates +
-  // zero custom agents (see the hook).
-  const meetCrewmates = useMeetCrewmatesGate()
   return {
-    showAgentImport, setShowAgentImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, meetCrewmates,
+    showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
+    continueTourAfterImport, privacyExit, endFirstRun,
   }
 }
 
-/** The four chapters, inside the one first-run chrome host. */
+/** The three chapters, inside the one first-run chrome host. */
 export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked }: {
   firstRun: ReturnType<typeof useFirstRunChapters>
   onboarded: boolean
@@ -116,8 +118,8 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
   markPrivacyAcked: () => void
 }) {
   const {
-    showAgentImport, setShowAgentImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
-    continueTourAfterImport, privacyExit, endFirstRun, meetCrewmates,
+    showAgentImport, setShowAgentImport, keepEmptyImport, showPrivacy, setShowPrivacy, showOnboarding, setShowOnboarding,
+    continueTourAfterImport, privacyExit, endFirstRun,
   } = firstRun
   return (
     <>
@@ -132,6 +134,7 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
           feature tour) only after this flow. */}
       <AgentImportFlow
         initialOpen={showAgentImport}
+        keepOpenWhenEmpty={keepEmptyImport}
         onComplete={() => {
           markImportOnboarded()
           setShowAgentImport(false)
@@ -183,10 +186,6 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
         onComplete={endFirstRun}
         onSkipAll={endFirstRun}
       />
-      {/* First-run chapter 4 — Meet CrewMates. Fires once per workspace:
-          after the tour for a new user, or on the first Crewmates page
-          visit; also reopened from that page (mc-start-meet-crewmates). */}
-      <MeetCrewmatesFlow open={meetCrewmates.open} onDone={meetCrewmates.onDone} onCreated={meetCrewmates.onCreated} persistFailed={meetCrewmates.persistFailed} />
     </OnboardingShellHost>
     </>
   )

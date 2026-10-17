@@ -18,6 +18,17 @@ export function isRejectedDecision(decision: unknown): boolean {
   return typeof decision === 'string' && REJECTED_DECISIONS.includes(decision)
 }
 
+/** Tokens a resolver writes when the call was allowed to run: the one-shot
+ *  `approved`, and the standing grants the slot-approve route records in its
+ *  place (`trust`, `trust_reads`, `yolo`). Listed positively, so a token added
+ *  for some other outcome (a timeout, a cancel) never reads as an approval. */
+const APPROVED_DECISIONS = ['approved', 'trust', 'trust_reads', 'yolo']
+
+/** True for every decision token that means "the user let this call run". */
+export function isApprovedDecision(decision: unknown): boolean {
+  return typeof decision === 'string' && APPROVED_DECISIONS.includes(decision)
+}
+
 /** What the one-shot endpoint is able to honor. Not exported: it is only the
  *  declared return of `toApiDecision`, and a caller that needs the union can
  *  reach it through `ReturnType<typeof toApiDecision>`. */

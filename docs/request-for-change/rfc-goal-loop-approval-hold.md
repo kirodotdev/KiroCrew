@@ -1,6 +1,6 @@
 ---
 title: Goal loop approval hold -- an unanswered approval pauses a loop, and a work-ledger watch outlives its own bounds while work is open
-status: in-progress
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
 last-audited: 2026-10-05
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Goal loop approval hold
 
-- Status: in-progress. The decision was made by the operator who owns the conductor patrol (2026-10-05). The implementation is [#16993](https://github.com/kirodotdev/KiroCrew/pull/16993). That PR's First Principles lane reads an RFC's status off the base branch, so this document lands on its own first, as GOVERNANCE.md asks of an RFC. The implementation then rebases onto it.
+- Status: implemented. The decision was made by the operator who owns the conductor patrol (2026-10-05). The implementation is [#16993](https://github.com/kirodotdev/KiroCrew/pull/16993). That PR's First Principles lane reads an RFC's status off the base branch, so this document lands on its own first, as GOVERNANCE.md asks of an RFC. The implementation then rebased onto it and has since landed on main.
 - Amends [rfc-goal-popover-pause-play-controls.md](rfc-goal-popover-pause-play-controls.md) in two places, both named in section 3: how an unanswered approval ends a loop, and whether held time spends the runtime budget. That document's other decisions stand.
 - Related: [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work-ledger` watch), [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor), and the goal-conductor skill's `scripts/patrol_budget.py` (agent-side renewal).
 - Measured at `a97659dfc3`.

@@ -475,6 +475,33 @@ describe('SelectionToolbar — composer mode', () => {
     expect(composer.onClose).not.toHaveBeenCalled()
   })
 
+  it('keeps the border in the grown height, so typing does not shrink the box', async () => {
+    render(<Harness actions={actions} composer={composer} />)
+    const input = await openComposer() as HTMLTextAreaElement
+    // jsdom has no layout: stand in a one-line box, 34px tall with a 1px
+    // border, whose scrollHeight (padding + content, no border) is 32px.
+    Object.defineProperty(input, 'offsetHeight', { value: 34, configurable: true })
+    Object.defineProperty(input, 'offsetParent', { value: document.body, configurable: true })
+    Object.defineProperty(input, 'clientHeight', { value: 32, configurable: true })
+    Object.defineProperty(input, 'scrollHeight', { value: 32, configurable: true })
+    fireEvent.change(input, { target: { value: 'a' } })
+    expect(input.style.height).toBe('34px')
+  })
+
+  it('scrolls a draft at the height cap instead of clipping it by the border', async () => {
+    render(<Harness actions={actions} composer={composer} />)
+    const input = await openComposer() as HTMLTextAreaElement
+    // 159px of text in a 1px-bordered box: 161px needed, capped at 160, so the
+    // content box is 158px and the last line would be cut off unless it scrolls.
+    Object.defineProperty(input, 'offsetHeight', { value: 160, configurable: true })
+    Object.defineProperty(input, 'offsetParent', { value: document.body, configurable: true })
+    Object.defineProperty(input, 'clientHeight', { value: 158, configurable: true })
+    Object.defineProperty(input, 'scrollHeight', { value: 159, configurable: true })
+    fireEvent.change(input, { target: { value: 'long draft' } })
+    expect(input.style.height).toBe('160px')
+    expect(input.style.overflowY).toBe('auto')
+  })
+
   it('lays the icons out beside the input on a wide viewport and below it on a narrow one', async () => {
     render(<Harness actions={actions} composer={composer} />)
     await openComposer()

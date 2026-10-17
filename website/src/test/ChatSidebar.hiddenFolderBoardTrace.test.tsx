@@ -443,7 +443,7 @@ describe('one derived count, reported the same way everywhere', () => {
     }
     // Control: the replacement really is present, so the three absences above mean the
     // fragments are gone rather than that the file failed to load.
-    expect(SIDEBAR_SRC.includes(ns + 'hidden_folder_count')).toBe(true)
+    expect(SIDEBAR_SURFACE.map(([, text]) => text).join('\n').includes(ns + 'hidden_folder_count')).toBe(true)
   })
 })
 

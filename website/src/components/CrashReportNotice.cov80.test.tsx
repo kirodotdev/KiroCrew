@@ -109,6 +109,31 @@ describe('CrashReportNotice', () => {
     expect(screen.queryByTestId('crash-notice-reveal-error')).not.toBeInTheDocument()
   })
 
+  // The crash notice is where the user already knows something broke, so the
+  // report starts here: the shared Report a Problem dialog, with the crash
+  // context the banner holds (the count) already in the note.
+  it('opens the report dialog with the crash pre-filled in the note', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/report a problem/i)
+    const note = within(dialog).getByRole('textbox', { name: /what happened/i })
+    expect((note as HTMLTextAreaElement).value).toMatch(/closed unexpectedly/i)
+    expect((note as HTMLTextAreaElement).value).toMatch(/2/)
+    expect(reveal).not.toHaveBeenCalled()
+  })
+
+  it('keeps the crash banner when the report dialog is cancelled', async () => {
+    renderWithProviders(<CrashReportNotice />)
+    await screen.findByRole('status')
+    fireEvent.click(screen.getByRole('button', { name: /report issue/i }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /cancel/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('status')).toBeInTheDocument()
+  })
+
   it('dismisses for the rest of the session', async () => {
     renderWithProviders(<CrashReportNotice />)
     await screen.findByRole('status')

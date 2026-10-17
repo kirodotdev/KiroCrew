@@ -12,11 +12,11 @@ import asyncio
 import logging
 import os
 import re
-import shutil
 import time
 import uuid
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.config.loader import config_dir
 
@@ -245,7 +245,19 @@ def _app_sources_dir() -> Path:
 
 
 def app_source_dir(name: str) -> Path:
-    """Return ~/.kiro/crew/app-sources/{name}/ — persistent clone directory."""
+    """Return ~/.kiro/crew/app-sources/{name}/ — persistent clone directory.
+
+    Raises ValueError unless *name* passes ``app_name_error``, the app-name contract
+    every install already enforces, so a name read back from app-writable metadata
+    (``registry:<name>`` in ``installed.json``) cannot aim a caller outside the root
+    or at the root itself.
+    """
+    # Deferred: every module-level name here is also exported by the registry facade.
+    from kiro_crew.apps.manifest import app_name_error
+
+    error = app_name_error(name)
+    if error:
+        raise ValueError(error)
     return _app_sources_dir() / name
 
 
@@ -351,10 +363,10 @@ def _sweep_stale_checkouts_sync(sources_dir: Path, now_ts: float) -> list[str]:
             continue
         if mtime >= cutoff:
             continue
-        # Safe to remove — best-effort.
+        # Safe to remove — best-effort. `rmtree_force`, not `ignore_errors`: an aged
+        # checkout is a git tree, and Windows will not unlink its read-only packs.
         try:
-            shutil.rmtree(child, ignore_errors=True)
-            if not child.exists():
+            if platform_compat.rmtree_force(child):
                 removed.append(child.name)
         except Exception:  # noqa: BLE001 — best-effort
             pass

@@ -10,7 +10,7 @@
  * mountable unit seam for its renderMessage if-chain).
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { isInvisibleOnly, isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 
@@ -78,7 +78,17 @@ describe('isHiddenInvisibleAssistantRow', () => {
 })
 
 describe('ChatPage inline chain consults the skip (source contract)', () => {
-  const src = readFileSync(resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+  // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so
+  // the pins read the page and those owners.
+  const pagesDir = resolve(__dirname, '../pages')
+  const ownerDir = resolve(pagesDir, 'chat', 'page')
+  const isSource = (f: string) => /\.tsx?$/.test(f) && !/\.test\./.test(f)
+  const src = [
+    readFileSync(resolve(pagesDir, 'ChatPage.tsx'), 'utf8'),
+    ...readdirSync(ownerDir).filter(isSource).sort().map(f => readFileSync(resolve(ownerDir, f), 'utf8')),
+    ...readdirSync(pagesDir).filter(f => /^useChatPage/.test(f) && isSource(f)).sort()
+      .map(f => readFileSync(resolve(pagesDir, f), 'utf8')),
+  ].join('\n')
 
   it('skips hidden rows before the conversational branch', () => {
     // Since chat-core P5-a the page dispatches through the app-sdk registry:

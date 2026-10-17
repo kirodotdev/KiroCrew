@@ -183,6 +183,12 @@ export type AppsData = {
   categories: { category: Category; count: number }[]
   /** Source rows for the rail footer / Sources popover counts. */
   sources: SourceRow[]
+  /**
+   * True while the registries list (`listRegistries`) has not landed: still
+   * loading, or its fetch failed. `sources` carries no review tier then, so the
+   * consent gate shows the not-vetted box rather than read the listing as vetted.
+   */
+  registriesUnknown: boolean
   /** The Library list: installed apps with update state attached. */
   installedApps: LibraryApp[]
   /**
@@ -650,7 +656,7 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
       if (seen.has(key)) continue
       seen.add(key)
       const sourceId = sourceKey({ _registry: id })
-      merged.push({ name: id, label: reg.label || reg.name || reg.repo, count: counts.get(sourceId) || 0, builtin: false, review: reg.review })
+      merged.push({ name: id, label: reg.label || reg.name || reg.repo, count: counts.get(sourceId) || 0, builtin: false, review: reg.review, trust: reg.trust })
       counts.delete(sourceId)
     }
     // Display order last, through the same helper the External Registries card
@@ -715,6 +721,7 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
     featuredSections,
     categories,
     sources,
+    registriesUnknown: registriesData === undefined,
     installedApps,
     disabledCount,
     updatables,

@@ -1,7 +1,7 @@
 """CircuitBreaker keeps ``_states`` bounded (no per-identity leak).
 
 The gateway keys the breaker by ``PoolKey.stable_hash()`` — an open-ended space
-(agent x server x channel x config) — so fully-recovered or aged-out keys must
+(agent x server x config) — so fully-recovered or aged-out keys must
 not accumulate for the daemon's lifetime.
 """
 

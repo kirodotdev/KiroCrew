@@ -11,7 +11,7 @@ import { loadChatConfig } from '../chat/ChatSettings'
 import { useDocumentImeLatch } from '../../hooks/useImeGuard'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
-import { SESSION_LANES, inferLane } from '../chat/sessionLane'
+import { SESSION_LANES, inferLane, type LaneExtras } from '../chat/sessionLane'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import type { Slot } from './types'
 import { loadBoardFolderCollapse, boardCollapseKey, persistBoardOverride, clearFolderOverrides, persistClearFolderOverrides } from '../../utils/boardFolderCollapse'
@@ -289,6 +289,35 @@ export function useBoardColumnMutations({ queryClient, setBoardError, orderedCol
 /** The column writes, typed once for the owners that call them. */
 export type BoardColumnMutations = ReturnType<typeof useBoardColumnMutations>
 
+/** The live signals that file a session into a lane, read from the sidebar's
+ *  store-backed sets. One builder for every caller, so the board and any other
+ *  surface that classifies sessions by lane (the broadcast panel) agree. */
+export interface LaneSignals {
+  /** STARTED children only (`selectSidebarStartedSubagentCounts`): a queued
+   *  child is not work, so it must never be what files a session as Working. */
+  subagentStartedCounts: Record<string, number>
+  subagentApprovalCounts: Record<string, number>
+  workflowActiveSet: Set<string>
+  automationRunningSet: Set<string>
+}
+
+export function laneExtrasFor(slotKey: string, sig: LaneSignals): LaneExtras {
+  // Clamped against the running count exactly as the row status chain does:
+  // an approval count above the live agent count is stale, and unclamped it
+  // would pin an otherwise-idle session to Needs Approval indefinitely.
+  const running = sig.subagentStartedCounts[slotKey] || 0
+  // The raw payload's `running` covers only the slot's own turn. A dynamic
+  // workflow and a goal loop are both live work that outlive that flag, and
+  // the row status chain already reads them from the store — so the lane must
+  // too, or a session renders a workflow spinner while sitting in Idle.
+  return {
+    subagentAwaiting: Math.min(sig.subagentApprovalCounts[slotKey] || 0, running),
+    workflowActive: sig.workflowActiveSet.has(normalizeRunSessionKey(slotKey)),
+    goalLoopActive: sig.automationRunningSet.has(slotKey),
+    detailedSubagentsRunning: running > 0,
+  }
+}
+
 /** Whether a slot belongs in a column. */
 export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet }: {
   /** STARTED children only (`selectSidebarStartedSubagentCounts`): a queued
@@ -305,21 +334,9 @@ export function useColumnMatches({ subagentStartedCounts, subagentApprovalCounts
   const columnMatches = useCallback((col: TagColumn, slot: Slot): boolean => {
     if (col.source === 'state') {
       if (!col.state_key) return false
-      // Clamped against the running count exactly as the row status chain does:
-      // an approval count above the live agent count is stale, and unclamped it
-      // would pin an otherwise-idle session to Needs Approval indefinitely.
-      const running = subagentStartedCounts[slot.key] || 0
-      // `slot` here is the raw payload, whose `running` covers only the slot's
-      // own turn. A dynamic workflow and a goal loop are both live work that
-      // outlive that flag, and the row status chain already reads them from the
-      // store — so the lane must too, or a session renders a workflow spinner
-      // while sitting in Idle.
-      return inferLane(slot, {
-        subagentAwaiting: Math.min(subagentApprovalCounts[slot.key] || 0, running),
-        workflowActive: workflowActiveSet.has(normalizeRunSessionKey(slot.key)),
-        goalLoopActive: automationRunningSet.has(slot.key),
-        detailedSubagentsRunning: running > 0,
-      }) === col.state_key
+      return inferLane(slot, laneExtrasFor(slot.key, {
+        subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet,
+      })) === col.state_key
     }
     const slotTags = slot.tags || []
     // "include untagged" OR'd on top of any tag filter

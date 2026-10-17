@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { effortToCarry, filterInteractiveModels, legacyCodexEffort, normalizeHiddenModels, shouldSeparateModelEffort, switchGroupedModel, useModelPickerConfigured, useModelPickerHiddenModelsQuery } from '../hooks/useInteractiveModels'
@@ -249,10 +249,32 @@ describe('interactive model visibility', () => {
 
   it('is wired only into ChatPage and ChatPane consumers', () => {
     const root = resolve(process.cwd(), 'src')
-    const chatPage = readFileSync(resolve(root, 'pages/ChatPage.tsx'), 'utf8')
-    const chatPane = readFileSync(resolve(root, 'components/ChatPane.tsx'), 'utf8')
-    const bulkSwitcher = readFileSync(resolve(root, 'pages/ChatSidebar.tsx'), 'utf8')
-    const settings = readFileSync(resolve(root, 'pages/settings/ChatPanel.tsx'), 'utf8')
+    // ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page and those owners.
+    const ownerDir = resolve(root, 'pages/chat/page')
+    const chatPage = [
+      readFileSync(resolve(root, 'pages/ChatPage.tsx'), 'utf8'),
+      ...readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort().map(f => readFileSync(resolve(ownerDir, f), 'utf8')),
+      ...readdirSync(resolve(root, 'pages')).filter(f => /^useChatPage\w*\.ts$/.test(f)).sort().map(f => readFileSync(resolve(root, 'pages', f), 'utf8')),
+    ].join('\n')
+    const chatPane = ['components/useChatPanePickers.ts', 'components/ChatPanePickerMenus.tsx']
+      .map(rel => readFileSync(resolve(root, rel), 'utf8')).join('\n')
+    // The sidebar, whose bulk model switch lives in pages/chat-sidebar/bulkModelSwitch.tsx:
+    // the shell joined with every owner it composes.
+    const sidebarFiles = [resolve(root, 'pages/ChatSidebar.tsx')]
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir).sort()) {
+        const p = resolve(dir, name)
+        if (statSync(p).isDirectory()) walk(p)
+        else if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) sidebarFiles.push(p)
+      }
+    }
+    walk(resolve(root, 'pages/chat-sidebar'))
+    const bulkSwitcher = sidebarFiles.map(f => readFileSync(f, 'utf8')).join('\n')
+    // Settings ▸ Chat is a facade over sibling owners: read them as one text.
+    const settings = [
+      'ChatPanel.tsx', 'ChatPanelLinkPatternsEditor.tsx', 'chatPanelOptions.ts',
+      'useChatPanelDashboard.ts', 'useChatPanelModels.ts', 'useChatPanelTypedFields.ts',
+    ].map(file => readFileSync(resolve(root, 'pages/settings', file), 'utf8')).join('\n')
     expect(chatPage).toContain('const availableModels = effectiveModels')
     expect(chatPage).toContain('useFilteredDropdown(modelPickerModels)')
     expect(chatPage).toContain('filterInteractiveModels(effectiveModels')

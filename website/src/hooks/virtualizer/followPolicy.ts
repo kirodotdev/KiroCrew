@@ -34,6 +34,8 @@ import {
   bottomTarget,
   distanceFromBottom,
   evaluateAutoPin,
+  followAnchorMode,
+  isEngineClampBelowWrite,
   isSelfScroll,
   pinSuppressedNow,
   resolveUserScrollStick,
@@ -41,7 +43,7 @@ import {
   scrollIntentPending,
   type ScrollGeom,
 } from './FollowController'
-import { computeJumpWindow, getOffset as getOffsetFn, tailWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
+import { bottomPinWindow, computeJumpWindow, getOffset as getOffsetFn, tailWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
 import type { ScrollToIndexOptions } from './types'
 import type { ReadingPositionEntry } from './readingPosition'
 import type { ResizeBatch } from './measurement'
@@ -86,7 +88,7 @@ export interface FollowState {
   lastReaderScrollAtRef: Ref<number>
   pinCascadeUntilRef: Ref<number>
   detachSmoothAbort: () => void
-  releaseFollowBaseline: () => void
+  releaseFollowBaseline: (el: HTMLDivElement) => void
   writeScrollTop: WriteScrollTop
   getFollow: () => boolean
   /** Hardware scroll intent (wheel / touch / scrollbar grab / scrolling key).
@@ -161,11 +163,15 @@ export function useFollowState(followOutput: boolean): FollowState {
   // scroller: selecting text or clicking a link moves nothing, and holding on
   // every click would turn the transcript's own surface into a follow brake.
   const lastGrabInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
-  // When the scroller last dispatched a scroll event, of ANY origin. Compared
+  // When the scroller last dispatched a scroll event that moved the reader
+  // OFF our last write (outside SELF_SCROLL_EPSILON of it). Compared
   // against the upward and grab stamps above it answers "has the reader's
-  // scroll landed yet": a stamp newer than the last scroll event is intent
+  // scroll landed yet": a stamp newer than the last such event is intent
   // whose effect on `scrollTop` is still in flight, and `scrollIntentPending`
-  // holds the automatic pin off until it lands or expires (see pinAuto).
+  // holds the automatic pin off until it lands or expires (see pinAuto). An
+  // event inside the epsilon is NOT recorded here: it is either our own pin
+  // landing or the first frame of the reader's input, and it cannot say which,
+  // so it must not read as the reader's answer (see onFollowScroll).
   // Stamped by the scroll handler before anything else reads it.
   const lastScrollEventAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // Whether the reader has LEFT the bottom is answered by position alone --
@@ -184,9 +190,17 @@ export function useFollowState(followOutput: boolean): FollowState {
   // streamed past a reader who had put themselves at the end to watch it. The
   // coverage watchdog's per-tick forcePin used to paper over this by re-arming
   // follow every 500ms; with that misfire gone the reference has to be honest.
-  const releaseFollowBaseline = useCallback(() => {
+  const releaseFollowBaseline = useCallback((el: HTMLDivElement) => {
     lastWriteTopRef.current = -1
     lastWriteClientHRef.current = -1
+    // Follow is off, so the reader owns the position again: hand native scroll
+    // anchoring back on (the pin turned it off while it owned the bottom -- see
+    // followAnchorMode). writeScrollTop keeps it in step on every write and the
+    // scroll handler on every scroll event; this covers the releases that pin
+    // evaluation decides outside both -- pinAuto and prePaintRepin dropping
+    // `stick` from a resize or a commit, with no write of ours after it and no
+    // scroll event guaranteed to follow.
+    el.style.overflowAnchor = followAnchorMode(false)
   }, [])
   // Scroller height as of the last SCROLL event. Deliberately not
   // `viewportHeightRef`, which the ResizeObserver updates: the resize and the
@@ -385,6 +399,17 @@ export function useFollowState(followOutput: boolean): FollowState {
       if (inspectorOn()) devLog('WRITE', `${who ?? '?'} ${Math.round(el.scrollTop)}->${Math.round(top)}${behavior === 'smooth' ? ' smooth' : ''}`)
       if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior })
       else el.scrollTop = top
+      // Keep native scroll anchoring in step with who owns the position. While
+      // follow is armed the pin owns it and Gecko's anchoring must stand down
+      // (it fights a bottom pin -- see followAnchorMode); a compensation write
+      // for a scrolled-up reader (`stick` false) leaves anchoring ON, which is
+      // the mechanism that case depends on. Read `stickRef` rather than
+      // `accounting`: the scrolled-up compensations also pin-account, and keying
+      // on accounting would wrongly disable anchoring for the reader who needs
+      // it. Every follow path assigns `stickRef` before its write, so the value
+      // is current here, and the property set re-asserts before the next reflow
+      // that could trigger anchoring.
+      el.style.overflowAnchor = followAnchorMode(stickRef.current)
       lastWriteTopRef.current = accounting === 'pin' ? top : -1
       lastProgrammaticTopRef.current = top
       lastWriteClientHRef.current = accounting === 'pin' ? el.clientHeight : -1
@@ -437,6 +462,9 @@ export function useFollowState(followOutput: boolean): FollowState {
           if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollTop, behavior: 'auto' })
           lastWriteTopRef.current = -1
           lastWriteClientHRef.current = -1
+          // Follow released: the reader owns the position, so native anchoring
+          // comes back on (see followAnchorMode).
+          el.style.overflowAnchor = followAnchorMode(false)
           detachSmoothAbort()
         }
         // Replace any previous glide's listeners rather than stacking them:
@@ -513,6 +541,9 @@ export function usePinning<T>(ctx: {
   reading: Pick<ReadingPositionEntry, 'settleGateRef' | 'restoreOwnsPosition'>
 }): Pinning {
   const { followOutput, overscan, scrollerRef, itemsRef, runActiveRef, getH, setWindowRange } = ctx
+  // Live prices for scrollToBottom without making it depend on `getH`.
+  const getHRef = useRef(getH)
+  getHRef.current = getH
   const {
     stickRef,
     lastWriteTopRef,
@@ -647,7 +678,7 @@ export function usePinning<T>(ctx: {
     })
     const wasStick = stickRef.current
     stickRef.current = result.stick
-    if (wasStick && !result.stick) releaseFollowBaseline()
+    if (wasStick && !result.stick) releaseFollowBaseline(el)
     if (result.pin) {
       writeScrollTop(el, result.target, 'auto', 'pin', 'autopin')
     } else if (result.stick) {
@@ -683,6 +714,20 @@ export function usePinning<T>(ctx: {
     // -- and read as a user scroll -- the moment the box comes back. Same
     // predicate as pinAuto, deliberately (see scrollerCollapsed).
     if (scrollerCollapsed(el)) return
+    // Gecko clamps scrollTop at the forced layout this commit's geometry reads
+    // trigger and delivers the clamp's scroll event a frame later, after the
+    // tail has grown back; adopting the clamped position as the reference here,
+    // before any early return, makes that late event a self-scroll (see
+    // isEngineClampBelowWrite).
+    if (isEngineClampBelowWrite({
+      stick: stickRef.current,
+      geom: el,
+      lastWriteTop: lastWriteTopRef.current,
+      upwardInputWithinSettle: performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
+    })) {
+      lastWriteTopRef.current = el.scrollTop
+      lastWriteClientHRef.current = el.clientHeight
+    }
     // FOLLOWED reader: re-target the bottom PRE-PAINT in the same commit
     // that repriced the tree. pinAuto also does this, but post-paint --
     // which leaves ONE visible frame when a large reprice lands (idle
@@ -725,19 +770,35 @@ export function usePinning<T>(ctx: {
     })
     const wasStick = stickRef.current
     stickRef.current = decision.stick
-    if (wasStick && !decision.stick) releaseFollowBaseline()
+    if (wasStick && !decision.stick) releaseFollowBaseline(el)
     if (!decision.pin) return
     if (Math.abs(el.scrollTop - decision.target) > 0.5) writeScrollTop(el, decision.target, 'auto', 'pin', 'prepin')
   }, [
     writeScrollTop, releaseFollowBaseline,
     stickRef, lastHardInputAtRef, pinCascadeUntilRef, lastWriteClientHRef, lastWriteTopRef, runActiveRef, settleGateRef,
+    lastUpwardInputAtRef,
   ])
 
   const onFollowScroll = useCallback((el: HTMLDivElement, geom: ScrollGeom) => {
-    // Every scroll event, ours or the reader's, retires the in-flight upward
-    // intent (see lastScrollEventAtRef): from here on the position IS the
-    // reader's answer, and the decisions below read it.
-    lastScrollEventAtRef.current = performance.now()
+    // A scroll event that moved the reader OFF our last write retires the
+    // in-flight upward intent (see lastScrollEventAtRef): from here on the
+    // position IS the reader's answer, and the decisions below read it. One
+    // that landed INSIDE SELF_SCROLL_EPSILON of the write cannot decide either
+    // way, so it leaves the intent pending. The engine answers a wheel notch
+    // with an animation whose first frame moves a fraction of a pixel to a
+    // couple of pixels, and a slow precision touchpad reports a pixel or two
+    // per event: such a frame is indistinguishable from the sub-pixel landing
+    // of our own pin, so the handler below rightly leaves `stick` alone -- but
+    // read as the reader's ANSWER it also retired the hold, and a row appended
+    // in that frame then found a reader "resting on our write" and pinned them
+    // to the new bottom with an instant write that cancelled the notch's
+    // animation as well, so a reader could not leave the bottom of a streaming
+    // turn (kirodotdev/KiroCrew#18421). Left pending, the hold keeps the
+    // append's pin off until the notch's next frame lands outside the epsilon
+    // and releases follow here, or the intent expires unanswered (a wheel the
+    // transcript never answered) and the held pin retries against a reader who
+    // is still resting.
+    if (!isSelfScroll(geom.scrollTop, lastWriteTopRef.current)) lastScrollEventAtRef.current = performance.now()
     // Self-scroll pin writes and the frames of a smooth glide are excluded
     // from every reader-activity signal below: our own writes are not the
     // reader's travel, and the box's change across one of our events is not
@@ -890,7 +951,7 @@ export function usePinning<T>(ctx: {
         upwardInputWithinSettle:
           performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
       })
-      if (wasStick && !stickRef.current) releaseFollowBaseline()
+      if (wasStick && !stickRef.current) releaseFollowBaseline(el)
       const layoutClamp = stickRef.current && clampedAtBottom
       // A clamp is OUR layout change, so it must not be stamped as input.
       // `lastUserScrollAtRef` arms the SCROLL_SETTLE_MS gate that holds
@@ -954,6 +1015,13 @@ export function usePinning<T>(ctx: {
     // so a user move right after our own pin is measured against where the
     // pin actually left the viewport.
     lastObservedTopRef.current = el.scrollTop
+    // Native scroll anchoring follows `stick` as this event resolved it (see
+    // followAnchorMode): every release decided above -- a reader scroll-up, a
+    // grab mid smooth-glide -- hands it back on, and a reader scroll that
+    // re-arms follow turns it off before the next tail growth can drag the
+    // pin. Set once here, after both branches, so no path out of this handler
+    // leaves the mode stale.
+    el.style.overflowAnchor = followAnchorMode(stickRef.current)
     lastScrollClientHRef.current = el.clientHeight
   }, [
     followOutput, pinAuto, detachSmoothAbort, releaseFollowBaseline,
@@ -1003,10 +1071,42 @@ export function usePinning<T>(ctx: {
         // hold the gate open past it rather than pinning into its tail.
         pinCascadeUntilRef.current = now + SCROLL_SETTLE_MS
       } else {
+        // kirodotdev/KiroCrew#17320. A tail APPEND under a still, followed
+        // reader whose scrollTop was displaced DOWN off our last write by our
+        // OWN layout — the composer dock shrinking as the run ends drops the
+        // scroller's `paddingBottom` reserve, and the engine clamps scrollTop
+        // to the smaller max — then grows further when the reply's per-message
+        // footer (model/clock/duration, ~108px) renders. evaluateAutoPin's
+        // resting rule carries a reader who is on our write to the pixel, but
+        // this clamp lands them a few px BELOW it with no scroll event to
+        // re-baseline onto (the footer-grow RO beat it), so the reader falls to
+        // the idle-release branch and the footer is stranded under the dock.
+        //
+        // Re-baseline onto the clamped position here, exactly as the scroll
+        // handler does for a clamp it DID see ("resting on a re-baselined write
+        // counts as resting"), so pinAuto reads the append as content under a
+        // resting reader and carries them. Gated hard: a tail APPEND only
+        // (`genuineResize && tailRowResized` — never a mid-transcript
+        // disclosure), `stick` still armed, and the reader at or BELOW our write
+        // (`scrollTop <= lastWriteTop` — a clamp or a content push). A genuine
+        // scroll-up lowers scrollTop too, but it stamps `lastUserScrollAtRef`,
+        // so pinSuppressedNow above already held it out of this branch. This
+        // only re-anchors a reader this branch would otherwise strand; it
+        // writes no scroll of its own — pinAuto owns the write.
+        const el = scrollerRef.current
+        if (
+          el
+          && genuineResize && tailRowResized && stickRef.current
+          && lastWriteTopRef.current >= 0
+          && el.scrollTop <= lastWriteTopRef.current
+        ) {
+          lastWriteTopRef.current = el.scrollTop
+          lastWriteClientHRef.current = el.clientHeight
+        }
         pinAuto()
       }
     }
-  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef])
+  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef])
 
   // ---- scrollToIndex / scrollToBottom imperative APIs ----
 
@@ -1052,7 +1152,12 @@ export function usePinning<T>(ctx: {
       // reader who had left 24,600px from the end at `to-end 0px`.
       if (restoreOwnsPosition()) return
       // Mount the tail so the bottom items have real heights, then force-pin.
-      setWindowRange(tailWindow(count, overscan))
+      // The tail covers the viewport (bottomPinWindow): a bare overscan-sized
+      // tail unmounted the rows on screen and showed the spacer's placeholder
+      // bars for the frames until the pin's scroll remounted them. Prices are
+      // read through a ref so this callback keeps its identity across a
+      // session or height-scope change (the surface contract).
+      setWindowRange(bottomPinWindow(count, overscan, getHRef.current, el.clientHeight))
       // Arm follow immediately so a streaming chunk that lands between now and
       // the rAF is also followed.
       stickRef.current = followOutput

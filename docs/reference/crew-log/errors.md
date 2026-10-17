@@ -276,3 +276,22 @@ opposite.
 unparseable tail, which is the shape the next `open` truncates, so the recovery
 already exists; the distinct type is there so a caller can tell "nothing happened"
 from "something may have".
+
+### `CutUnaccounted`
+
+A cut was refused because the unit's cut counter could neither be raised to say
+the cut is in flight nor retired to say it proves nothing. Nothing is touched: the
+file is exactly as it was, and the next `open` repairs it again. It carries
+`code: "cut_unaccounted"` and `errno: EBUSY`.
+
+An `OSError` rather than a `CrewLogError` on purpose, and the difference is the
+retry posture. A `CrewLogError` is declined on its own merits, so the write-behind
+emitter treats it as permanent and drops the entry. The causes here are storage
+faults that clear — a full disk, a read-only remount, another process holding
+`.cuts` open — so reporting one that way would throw away a valid event a retry
+would have written.
+
+**Caller action** — Retry, or surface it as the failure of the operation the cut
+was recovering for (a torn tail before an append, an unreachable group at open).
+The truncation stays refused either way; what differs is only what the caller is
+told about trying again.

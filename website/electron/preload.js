@@ -32,6 +32,14 @@ contextBridge.exposeInMainWorld("kirocrew", {
   // are validated in the main process (handleWindowControl /
   // applyWindowControl).
   windowControl: (action) => ipcRenderer.send("window-control", String(action || "")),
+  // Announce a download the app is about to start, so the Electron shell's
+  // will-download handler auto-saves ONLY downloads the app explicitly asked
+  // for (the export path). Without a matching announcement a same-origin or
+  // blob download gets the normal Save dialog instead of a silent save. The
+  // main process keys the expectation by THIS frame's own origin; `filename`
+  // is the leaf name the download will carry. No-op (absent) in a plain
+  // browser, where downloadBlob falls back to the browser's own handling.
+  expectDownload: (filename) => ipcRenderer.send("download:expect", String(filename || "")),
 });
 
 contextBridge.exposeInMainWorld("electronAPI", {
@@ -117,6 +125,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     const handler = (_e, path) => cb(path);
     ipcRenderer.on("navigate", handler);
     return () => ipcRenderer.removeListener("navigate", handler);
+  },
+  // View > Toggle Focus Mode: main.js asks the dashboard to flip focus mode,
+  // whose own toggle is hidden while it is on.
+  onToggleFocusMode: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("focus-mode:toggle", handler);
+    return () => ipcRenderer.removeListener("focus-mode:toggle", handler);
   },
   onFullScreenChanged: (callback) => {
     const handler = (_event, isFullScreen) => callback(!!isFullScreen);
@@ -222,6 +237,36 @@ contextBridge.exposeInMainWorld("wslAPI", {
 // hides the control, keeping the built-in viewer as the only path there.
 contextBridge.exposeInMainWorld("fileOpenAPI", {
   open: (filePath) => ipcRenderer.invoke("dashboard:open-file", String(filePath || "")),
+});
+
+// Native folder chooser for the project picker's "Open system folder picker"
+// button. Neither call passes anything to the main process: the dialog's
+// options are fixed there. `available()` resolves whether this window's gateway
+// runs on this machine (the main process answers false for a connection window
+// pointed at a remote gateway).
+// `pick()` invokes `dashboard:pick-folder`, which runs the same checks and opens
+// the dialog; it resolves the chosen absolute folder, or null when the user
+// cancels, and rejects when the shell refuses or no dialog could be shown.
+// Absent in a plain browser and in the PWA -- the picker hides the button there
+// and keeps its in-app browser as the only path.
+contextBridge.exposeInMainWorld("folderPickAPI", {
+  available: () => ipcRenderer.invoke("dashboard:can-pick-folder"),
+  pick: () => ipcRenderer.invoke("dashboard:pick-folder"),
+});
+
+// External terminal bridge for the Files tab's "Open in external terminal" row
+// and its Settings picker. `detect` resolves { apps: [{id, label}], capable },
+// the allowlisted terminal apps installed on this machine; for a window whose
+// gateway is not this machine's it resolves { apps: [], capable: false }, so the
+// row and the picker stay hidden there. `open` hands the main process the
+// opaque grant the gateway answered POST /api/terminal/external with, and
+// resolves { ok, app?, error? }; the main process redeems the grant at the
+// gateway and starts nothing without it, so no app name, path or argument
+// crosses this bridge. `open` rejects for a window whose gateway is not this
+// machine's. Absent in a plain browser and the PWA, where the row is hidden.
+contextBridge.exposeInMainWorld("externalTerminalAPI", {
+  detect: () => ipcRenderer.invoke("external-terminal:detect"),
+  open: (grant) => ipcRenderer.invoke("external-terminal:open", String(grant || "")),
 });
 
 // Native zoom bridge for the Settings > Display "Zoom Level" stepper.

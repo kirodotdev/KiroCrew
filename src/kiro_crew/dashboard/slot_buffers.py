@@ -7,7 +7,6 @@ import json
 import logging
 import math
 import re
-import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -681,24 +680,6 @@ class SlotBufferCoordinator:
         return slot.release_pending_chunks()
 
     @staticmethod
-    def append_pending_context(
-        slot: Any,
-        entry: dict[str, Any],
-        *,
-        max_pending_context: int,
-        entry_expired: Callable[[dict[str, Any], float], bool],
-    ) -> None:
-        now = time.time()
-        if entry_expired(entry, now):
-            return
-        slot._pending_context[:] = [
-            current for current in slot._pending_context if not entry_expired(current, now)
-        ]
-        while len(slot._pending_context) >= max_pending_context:
-            slot._pending_context.pop(0)
-        slot._pending_context.append(entry)
-
-    @staticmethod
     def drop_foreign_authorized_notes(
         slot: Any,
         *,
@@ -818,7 +799,17 @@ class SlotBufferCoordinator:
             try:
                 if context is not None:
                     context["noteSession"] = live_session
-                    slot.append_pending_context(context)
+                    if not slot.append_pending_context(context):
+                        # The pop above already retired the retry marker. The
+                        # warning is the loss signal; the normal full-queue case
+                        # is refused earlier, at /note admission, so this fires
+                        # only on a race (an unexpiring /context takes the seat
+                        # between admission and flush) or a restart edge.
+                        logger.warning(
+                            "Slot %s delivered a held note without its context: "
+                            "the pending-context queue had no seat",
+                            slot.key,
+                        )
                 slot.append(
                     role="inject",
                     content=note["content"],

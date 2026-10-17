@@ -85,7 +85,7 @@ def test_claim_next_is_fifo_and_skips_excluded(store: TaskStore, clock: Clock) -
 
 def test_claim_respects_next_run_at_and_lease(store: TaskStore, clock: Clock) -> None:
     store.accept([_rec("d")])
-    store.defer("d", clock.t + 10, reason="pressure")
+    store.defer("d", wait=10, reason="pressure")
     assert store.claim("d") is None
     clock.t += 10
     assert store.claim("d") is not None

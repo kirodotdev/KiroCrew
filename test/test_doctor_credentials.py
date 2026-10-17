@@ -65,6 +65,9 @@ class TestCredentialsSection:
         monkeypatch.setattr(
             cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
         )
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "tool_outside_trusted_dirs", lambda name: None
+        )
         cli_doctor._doctor_credentials([])
         assert "install the AWS CLI to list profiles" in capsys.readouterr().out
 
@@ -108,6 +111,9 @@ class TestCredentialsSection:
         monkeypatch.setattr(
             cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
         )
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "tool_outside_trusted_dirs", lambda name: None
+        )
         cli_doctor._doctor_credentials([])
         out = capsys.readouterr().out
         assert "install the AWS CLI to check for credential_process" in out
@@ -144,6 +150,42 @@ class TestCredentialsSection:
         assert "install the AWS CLI" not in out
         assert "no credential_process" not in out
         assert "is not root-owned" not in out
+
+    def test_a_cli_outside_the_trusted_dirs_is_not_reported_as_absent(
+        self, fake_home, monkeypatch, capsys
+    ):
+        """A per-user install the trust policy never runs is present, not absent.
+
+        The standard per-user AWS CLI v2 install on Windows lives outside the
+        trusted system directories, so the resolver answers ``None`` and the
+        ownership gate never sees it. "Install the AWS CLI" sends that operator
+        to re-install what they have; the line must name the copy and the policy.
+        """
+        aws = fake_home / ".aws"
+        aws.mkdir()
+        (aws / "config").write_text("[profile p]\n")
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: None)
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
+        )
+        monkeypatch.setattr(
+            cli_doctor.platform_compat,
+            "tool_outside_trusted_dirs",
+            lambda name: "/opt/user/bin/aws" if name == "aws" else None,
+        )
+        cli_doctor._doctor_credentials([])
+        out = capsys.readouterr().out
+        assert (
+            "'/opt/user/bin/aws' is outside the trusted system directories, so it is not run" in out
+        )
+        assert "install the AWS CLI system-wide" in out
+        assert (
+            "'/opt/user/bin/aws' is outside the trusted system directories — not asked about"
+            " credential_process" in out
+        )
+        assert "install the AWS CLI to list profiles" not in out
+        assert "install the AWS CLI to check for credential_process" not in out
+        assert "no credential_process" not in out
 
     def test_a_resolved_cli_that_will_not_run_is_not_reported_as_absent(
         self, fake_home, monkeypatch, capsys

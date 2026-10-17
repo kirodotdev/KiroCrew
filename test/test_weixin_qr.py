@@ -39,7 +39,9 @@ def test_atomic_write_secret_is_owner_only(tmp_path):
 def test_atomic_write_secret_leaves_no_temp_file_behind(tmp_path):
     target = tmp_path / ".env"
     qr._atomic_write(target, "a=1\n", secret=True)
-    assert [p.name for p in tmp_path.iterdir()] == [".env"]
+    # The temp is staged in the masked staging directory, which stays behind empty.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env", "auth-store-staging"]
+    assert list((tmp_path / "auth-store-staging").iterdir()) == []
 
 
 def test_atomic_write_secret_locks_down_before_any_content_byte(tmp_path, monkeypatch):
@@ -86,7 +88,9 @@ def test_atomic_write_secret_survives_a_lockdown_refusal(tmp_path, monkeypatch):
     target = tmp_path / ".env"
     qr._atomic_write(target, "WEIXIN=abc\n", secret=True)  # must not raise
     assert target.read_text() == "WEIXIN=abc\n"
-    assert [p.name for p in tmp_path.iterdir()] == [".env"]  # no temp residue
+    # No temp residue: the staging directory is the only other entry, and it is empty.
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env", "auth-store-staging"]
+    assert list((tmp_path / "auth-store-staging").iterdir()) == []
 
 
 def test_env_value_round_trips_and_delete_preserves_other_keys(tmp_path, monkeypatch):

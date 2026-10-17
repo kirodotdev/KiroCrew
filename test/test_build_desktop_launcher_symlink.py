@@ -236,3 +236,109 @@ def test_launcher_keeps_the_symlink_walk(tmp_path):
     assert 'DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' not in launcher, (
         "launcher reverted to the naive BASH_SOURCE form that broke issue #845"
     )
+
+
+def _invoke_with_env(path: Path, env: dict, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(path), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, **env},
+    )
+
+
+def _make_env_reporting_bundle(root: Path) -> Path:
+    """A fake bundle whose stub interpreter reports the Python env it received.
+
+    ``<unset>`` distinguishes a variable that was removed from one that was
+    merely emptied: an empty ``PYTHONHOME=`` still breaks interpreter start-up,
+    so only a real unset counts.
+    """
+    launcher = _make_bundle(root)
+    stub = root / "bin" / "python3.12"
+    stub.write_text(
+        "#!/bin/bash\n"
+        'echo "PYTHONPATH=${PYTHONPATH-<unset>}"\n'
+        'echo "PYTHONHOME=${PYTHONHOME-<unset>}"\n'
+        'echo "PYTHONUTF8=${PYTHONUTF8-<unset>}"\n'
+        'echo "PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE-<unset>}"\n'
+    )
+    stub.chmod(0o755)
+    return launcher
+
+
+def test_strips_inherited_pythonpath_and_pythonhome_through_the_shim(tmp_path):
+    """The launcher itself drops PYTHONPATH/PYTHONHOME.
+
+    The desktop shell scrubs them for the gateway it spawns, but a user who
+    runs ``kirocrew token`` or ``kirocrew stop`` from a development shell
+    reaches the bundled interpreter through ``~/.local/bin/kirocrew`` and this
+    launcher, with no shell in between.  Without a scrub here the packaged CLI
+    imports ``PYTHONPATH=<checkout>/src`` mixed into the shipped backend.  This
+    runs the real launcher through the same symlink shape with both variables
+    poisoned and asserts the interpreter never sees them.
+    """
+    bundle = tmp_path / "app" / "backend-dist" / "kirocrew-backend-x86_64"
+    launcher = _make_env_reporting_bundle(bundle)
+    local_bin = tmp_path / "home" / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    shim = local_bin / "kirocrew"
+    shim.symlink_to(launcher)
+
+    poisoned = {
+        "PYTHONPATH": str(tmp_path / "checkout" / "src"),
+        "PYTHONHOME": str(tmp_path / "other-python"),
+        "PYTHONUTF8": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    for entry in (launcher, shim):
+        proc = _invoke_with_env(entry, poisoned, "token")
+
+        assert proc.returncode == 0, proc.stderr
+        assert "PYTHONPATH=<unset>" in proc.stdout, (
+            f"{entry.name}: bundled interpreter still inherits PYTHONPATH (issue #18378): "
+            f"{proc.stdout}"
+        )
+        assert "PYTHONHOME=<unset>" in proc.stdout, (
+            f"{entry.name}: bundled interpreter still inherits PYTHONHOME (issue #18378): "
+            f"{proc.stdout}"
+        )
+
+
+def test_keeps_the_other_python_knobs_the_shell_hands_down(tmp_path):
+    """Only the two import-path overrides go; the rest of PYTHON* is forwarded.
+
+    The desktop shell deliberately hands the gateway ``PYTHONUTF8=1`` and the
+    bytecode knobs through the environment, so a launcher that reached for
+    ``-E`` (ignore every PYTHON* variable) would silently undo those.  This
+    pins the narrow scrub.
+    """
+    launcher = _make_env_reporting_bundle(tmp_path / "bundle")
+
+    proc = _invoke_with_env(
+        launcher,
+        {"PYTHONPATH": "/x", "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "PYTHONUTF8=1" in proc.stdout, proc.stdout
+    assert "PYTHONDONTWRITEBYTECODE=1" in proc.stdout, proc.stdout
+    assert "PYTHONPATH=<unset>" in proc.stdout, proc.stdout
+
+
+def test_launcher_keeps_the_python_env_scrub():
+    """Wiring guard: the scrub stays an ``unset`` in the heredoc.
+
+    Names the exact line so a future edit that drops it, or swaps it for ``-E``
+    (which would also discard PYTHONUTF8 and the bytecode knobs), fails with an
+    unambiguous reason rather than only through the behavioural tests above.
+    """
+    launcher = _extract_launcher()
+
+    assert "unset PYTHONPATH PYTHONHOME" in launcher, (
+        "launcher lost its PYTHONPATH/PYTHONHOME scrub (issue #18378 regression)"
+    )
+    assert re.search(r'exec "\$DIR/python3\.12" (?:-[sP] )*-E', launcher) is None, (
+        "launcher must not use -E: it would also drop PYTHONUTF8 and the bytecode knobs"
+    )

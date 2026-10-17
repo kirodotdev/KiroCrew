@@ -49,6 +49,12 @@ describe('DetailPanel at phone widths', () => {
     // If another caller grows a width wrapper, this pins that it must be handled.
     const files = [
       'components/ArtifactPanel.tsx', 'components/MarkdownPanel.tsx',
+      'components/MarkdownPanelBody.tsx',
+      'components/MarkdownPanelHeader.tsx',
+      'components/markdownPanelSourcePos.ts',
+      'components/useMarkdownPanelDisk.ts',
+      'components/useMarkdownPanelFileState.ts',
+      'components/useMarkdownPanelFind.ts',
       'components/GitPanel.tsx', 'pages/chat/FolderPanel.tsx',
       'pages/chat/SidePanel.tsx', 'pages/aidlc/TaskDetailPanel.tsx',
     ]

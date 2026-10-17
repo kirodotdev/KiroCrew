@@ -5,12 +5,13 @@ Covers ``chat_runner._attach_turn_stats``: the helper that mirrors
 message of a completed turn, so the dashboard footer can show the same
 end-of-turn elapsed/credits line kiro-cli prints natively.
 """
+
 import time
 
 import pytest
 
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.chat_runner import _attach_turn_stats
+from kiro_crew.dashboard.chat_runner import _attach_owned_turn_stats, _attach_turn_stats
 from kiro_crew.dashboard.handlers import usage
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -126,7 +127,8 @@ class TestAttachTurnStats:
 
         # Turn 1's stats are untouched; the error message got nothing.
         assert slot.messages[0]["meta"]["turn_stats"] == {
-            "elapsed_ms": 5000, "credits": 1.0,
+            "elapsed_ms": 5000,
+            "credits": 1.0,
         }
         assert "turn_stats" not in slot.messages[1].get("meta", {})
 
@@ -140,6 +142,27 @@ class TestAttachTurnStats:
         _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=boundary)
         assert "turn_stats" not in slot.messages[0].get("meta", {})
         assert slot.messages[1]["meta"]["turn_stats"]["credits"] == 0.5
+
+    def test_reply_mids_skips_a_row_another_writer_appended(self):
+        # A workflow result lands after this turn's reply: with reply_mids the
+        # stats stay on the reply the runner appended.
+        from kiro_crew.dashboard.state import row_mid
+
+        slot = _ChatSlot("test-reply-mids")
+        reply = slot.append("assistant", "this turn", "msg msg-a", broadcast=False)
+        slot.append("assistant", "workflow result", "msg msg-a", broadcast=False)
+        _attach_owned_turn_stats(
+            slot,
+            3000,
+            0.5,
+            0.0,
+            turn_boundary=0,
+            model="",
+            ttft_ms=0,
+            reply_mids=[row_mid(reply)],
+        )
+        assert slot.messages[0]["meta"]["turn_stats"]["credits"] == 0.5
+        assert "turn_stats" not in slot.messages[1].get("meta", {})
 
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
         # Regression (Codex MEDIUM): a clear-conversation turn empties
@@ -156,15 +179,15 @@ class TestAttachTurnStats:
         # Clear handler: empties the list, resets boundary, appends confirmation.
         slot.messages.clear()
         reset_boundary = 0
-        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a",
-                    broadcast=False)
+        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a", broadcast=False)
 
         # With the stale (pre-clear) boundary the scan slice would be empty;
         # the reset boundary keeps the confirmation in scope.
         assert len(slot.messages[pre_clear_boundary:]) == 0
         _attach_turn_stats(slot, 2500, 0.3, 0.0, turn_boundary=reset_boundary)
         assert slot.messages[-1]["meta"]["turn_stats"] == {
-            "elapsed_ms": 2500, "credits": 0.3,
+            "elapsed_ms": 2500,
+            "credits": 0.3,
         }
 
     def test_preserves_existing_meta(self):

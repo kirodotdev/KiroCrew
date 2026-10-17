@@ -48,7 +48,7 @@ own repo.
 
 | Field | Rules |
 |-------|-------|
-| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
+| `name` | Required. Kebab-case, matched against `^[a-z0-9]+(?:-[a-z0-9]+)*$`, unique across all apps. This is the install id and the on-disk directory name. `system` is reserved (it would shadow the `system.*` notification-channel namespace), as are `library` (the dashboard serves `/apps/library` as a static page), `registry`, `registries`, `blob`, `install` and `register` (shared `/api/apps/<name>` routes registered ahead of the per-app catch-all), and the Windows device stems `con`, `prn`, `aux`, `nul`, `com1`–`com9` and `lpt1`–`lpt9` (the name becomes a directory, and Windows resolves those inside every directory). Names that merely resemble one — `console`, `com10`, `null-app` — are fine. All are refused on every platform, so an app that installs on Linux also installs on Windows. |
 | `version` | Required. Semver (`major.minor.patch`, optionally with a pre-release or build suffix). Bump on every release. |
 | `displayName` | Required. Rendered in a fixed-width row that truncates, so keep it short. |
 | `description` | Required. Plain text, no markdown. Discover's list row shows one truncated line; the feature cards clamp to two; the detail page shows it in full. Two or three sentences is the useful range. |
@@ -332,7 +332,8 @@ safeguards:
 
 Code shipped inside the Kiro Crew package (a built-in app) is exempt, but every
 other app's **executable** surfaces refuse to run unless the operator turns
-third-party execution on in Settings → Security → Trusted apps, which sets
+third-party execution on in Settings → Security → Third-party apps ("Trust every
+third-party app"), which sets
 `agent.apps_allow_third_party` to the JSON boolean `true`. That covers registry
 installs and their install scripts, `detectInstalled`, backend processes,
 in-gateway Python hooks, lifecycle scripts, and `openCommand`. Only the literal
@@ -570,15 +571,14 @@ POST /api/apps/register
   "version": "1.0.0",
   "displayName": "My App",
   "manifest": { ...full app.json... },
-  "origin": "external",
   "resources": "app",
   "lifecycle": "app"
 }
 ```
 
 The call is idempotent: registering again with a newer version updates the entry.
-`origin`, `resources`, and `lifecycle` default to `external`/`app`/`app` when
-omitted. Use this when the app has its own build or package system, needs
+`resources` and `lifecycle` default to `app` when omitted; the gateway always
+records `origin` as `external` and ignores any `origin` in the body. Use this when the app has its own build or package system, needs
 runtime-dynamic agent configuration, or manages its own agent, skill, and MCP
 registration. See
 [../system-specs/modules/app-kit-platform.md](../system-specs/modules/app-kit-platform.md)

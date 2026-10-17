@@ -26,6 +26,7 @@ from kiro_crew.messaging.queue_drain import (
 )
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS
+from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 
 async def _no_events(_command: str):
@@ -33,8 +34,10 @@ async def _no_events(_command: str):
         yield None
 
 
-def _factory(order: list[str]):
+def _factory(order: list[str], starts: list[dict] | None = None):
     def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+        if starts is not None:
+            starts.append(kwargs)
         if "fail-start" in order:
             raise RuntimeError("successor could not start")
         m = AsyncMock()
@@ -94,10 +97,12 @@ class _Runs:
         return len(agent_ids)
 
 
-async def _setup(wait_secs: float = 30.0, *, shared: bool = True):
+async def _setup(
+    wait_secs: float = 30.0, *, shared: bool = True, starts: list[dict] | None = None, **alloc
+):
     order: list[str] = []
-    mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory(order))
-    await mgr.get_or_create("dashboard:chat-1")
+    mgr = SessionManager(KiroCrewConfig(), provider_factory=_factory(order, starts))
+    await mgr.get_or_create("dashboard:chat-1", **alloc)
     key = mgr._fold_key("dashboard:chat-1")
     mgr.release(key)
     mgr._session_map.set(key, "sid-parent")
@@ -134,7 +139,7 @@ async def test_restart_waits_for_a_shared_sub_agent_then_runs_when_it_finishes()
     assert mgr._session_map._data.get(key, {}).get("sid") == "sid-parent"
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert await await_until(task, what="compact_in_place completed") == "recycled"
     assert order == ["shutdown"]
     assert runs.cancelled == []
     # The conversation is still there to come back to.
@@ -169,7 +174,7 @@ async def _restart(mgr, key, runs, *messages: str, before_restart=None) -> str:
     if before_restart is not None:
         before_restart()
     runs.finish()
-    return await asyncio.wait_for(task, timeout=5)
+    return await await_until(task, what="compact_in_place completed")
 
 
 @pytest.mark.asyncio
@@ -231,6 +236,61 @@ async def test_a_new_message_queues_behind_the_carried_one():
     assert mgr.enqueue(key, "ts-9", "after the restart", force=True)
     assert mgr.dequeue(key)[:2] == ("ts-1", "hello while waiting")
     assert mgr.dequeue(key) == ("ts-9", "after the restart", {})
+    await mgr.close_all()
+
+
+#: Allocation inputs the session cannot resolve again on its own.
+_CALLER_INPUTS = {"extra_env": {"X_ENV": "kept-out-of-repr"}, "reasoning_effort_override": "high"}
+
+
+def _caller_inputs(start: dict) -> dict:
+    return {name: start.get(name) for name in _CALLER_INPUTS}
+
+
+@pytest.mark.asyncio
+async def test_the_restarted_session_keeps_the_callers_env_and_effort():
+    """Started without them, the successor runs on the default env and effort."""
+    starts: list[dict] = []
+    mgr, key, runs, _order, _notices = await _setup(starts=starts, **_CALLER_INPUTS)
+
+    assert await _restart(mgr, key, runs) == "recycled"
+
+    assert [_caller_inputs(s) for s in starts] == [_CALLER_INPUTS, _CALLER_INPUTS]
+    # The env can hold secrets, and a session's repr reaches logs.
+    assert "kept-out-of-repr" not in repr(mgr._sessions[key])
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_live_effort_pick_retires_the_recorded_override():
+    """Restarted on the recorded level, the successor overrides the live pick."""
+    starts: list[dict] = []
+    mgr, key, runs, _order, _notices = await _setup(starts=starts, **_CALLER_INPUTS)
+    mgr.retire_effort_override(key)
+    mgr.retire_effort_override("dashboard:no-such-chat")
+
+    assert await _restart(mgr, key, runs) == "recycled"
+
+    assert starts[-1].get("extra_env") == _CALLER_INPUTS["extra_env"]
+    assert starts[-1].get("reasoning_effort_override") is None
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_reset_successor_keeps_the_callers_env_and_effort():
+    """The reset's successor is rebuilt from the same identity as the restart's."""
+    starts: list[dict] = []
+    mgr, key, _runs, _order, _notices = await _setup(shared=False, starts=starts, **_CALLER_INPUTS)
+    old = mgr._sessions[key]
+    assert mgr.enqueue(key, "ts-2", "parked for the successor", force=True)
+
+    assert await mgr.reset(key) is True
+    await async_wait_until(
+        lambda: (live := mgr._sessions.get(key)) is not None and live is not old,
+        describe=lambda: f"no successor under the key: {list(mgr._sessions)}",
+    )
+
+    assert [_caller_inputs(s) for s in starts] == [_CALLER_INPUTS, _CALLER_INPUTS]
     await mgr.close_all()
 
 
@@ -384,9 +444,49 @@ async def test_an_uncompactable_restart_also_waits_for_a_shared_sub_agent():
     assert notices == [(False, COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS)]
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert await await_until(task, what="recycle_unmanaged completed") == "recycled"
     assert order == ["shutdown"]
     assert runs.cancelled == []
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_an_uncompactable_hold_does_not_say_a_compaction_failed(monkeypatch, tmp_path):
+    """A backend with no compaction has none to fail, so neither surface may say so.
+
+    The dashboard leg runs its own callback, so its text is the one the outcome picks.
+    """
+    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.testing.wait import await_until
+
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    state = DashboardState(
+        sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+    )
+    state.wire_session_compact_callback()
+    dashboard = state.sessions.set_compact_callback.call_args.args[0]
+    slot = state.get_or_create_slot("chat-1")
+    mgr, key, runs, _order, _notices = await _setup()
+    channel: list[str] = []
+    posted = asyncio.Event()
+
+    async def _both_surfaces(k, pct, *, success, outcome="compacted"):
+        await dashboard(k, pct, success=success, outcome=outcome)
+        channel.append(notice_text("slack", pct, success=success, outcome=outcome))
+        posted.set()
+
+    mgr.set_compact_callback(_both_surfaces)
+    task = asyncio.ensure_future(mgr._compaction._recycle_unmanaged(key, mgr._sessions[key], 95.0))
+    await await_until(posted, what="the hold's waiting notice")
+
+    rows = [m["content"] for m in slot.messages if m.get("meta", {}).get("kind") == "compaction"]
+    assert len(rows) == 1 and len(channel) == 1, (rows, channel)
+    for text in (*rows, *channel):
+        assert "95%" in text and "waiting for its sub-agents" in text, text
+        assert "fail" not in text.lower(), text
+
+    runs.finish()
+    assert await await_until(task, what="the uncompactable restart") == "recycled"
     await mgr.close_all()
 
 
@@ -404,14 +504,14 @@ async def test_a_report_waiting_on_the_parent_lands_on_the_fresh_session():
     report = asyncio.ensure_future(mgr.get_or_create("dashboard:chat-1"))
     # Deterministic order: the report is parked on the held turn's lease before
     # the restart runs, so it cannot race the successor's start.
-    async with asyncio.timeout(5):
-        while not session.semaphore._waiters:
-            await asyncio.sleep(0.01)
+    await until_parked(
+        session.semaphore, describe=lambda: "report task not yet parked on semaphore"
+    )
     assert not report.done(), "the report waits while the hold keeps the turn"
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
-    provider, _is_new, _ = await asyncio.wait_for(report, timeout=5)
+    assert await await_until(task, what="compact_in_place completed") == "recycled"
+    provider, _is_new, _ = await await_until(report, what="report task completed")
     assert provider is not session.provider
     assert mgr.get_provider(key) is provider
     # Exactly one process ends: the old one. The successor is the one start the
@@ -421,18 +521,27 @@ async def test_a_report_waiting_on_the_parent_lands_on_the_fresh_session():
     await mgr.close_all()
 
 
+@pytest.mark.parametrize("uncompactable", [False, True])
 @pytest.mark.asyncio
-async def test_restart_stops_the_sub_agent_with_a_stopped_report_at_the_timeout():
+async def test_restart_stops_the_sub_agent_with_a_stopped_report_at_the_timeout(uncompactable):
     """The chat lives on after the restart, so the stop must report home.
 
-    The parent-end teardown would mark the run out of delivery instead.
+    The parent-end teardown would mark the run out of delivery instead. Both arms
+    share the hold, so the reason names neither: a backend with no compaction has
+    no failed one to blame.
     """
     mgr, key, runs, order, _notices = await _setup(wait_secs=0.05)
     session = mgr._sessions[key]
+    restart = mgr._compaction._recycle_unmanaged if uncompactable else mgr._compact_in_place
 
-    assert await asyncio.wait_for(mgr._compact_in_place(key, session, 95.0), 5) == "recycled"
+    assert (
+        await await_until(
+            asyncio.ensure_future(restart(key, session, 95.0)), what="restart completed"
+        )
+        == "recycled"
+    )
 
-    assert runs.stopped_reports == [("a1", "stopped at a failed compaction's restart")]
+    assert runs.stopped_reports == [("a1", "stopped at a context restart")]
     assert runs.cancelled == [], "the parent-end teardown drops the report"
     assert order == ["stop", "shutdown"], "sub-agents stop before the process goes"
     await mgr.close_all()
@@ -443,7 +552,13 @@ async def test_a_sub_agent_on_its_own_process_does_not_hold_the_restart():
     mgr, key, runs, order, notices = await _setup(shared=False)
     session = mgr._sessions[key]
 
-    assert await asyncio.wait_for(mgr._compact_in_place(key, session, 95.0), 5) == "recycled"
+    assert (
+        await await_until(
+            asyncio.ensure_future(mgr._compact_in_place(key, session, 95.0)),
+            what="compact_in_place completed",
+        )
+        == "recycled"
+    )
 
     assert order == ["shutdown"]
     assert runs.cancelled == []

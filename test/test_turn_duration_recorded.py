@@ -98,7 +98,9 @@ EXPECTED_SITES = {
     # persist emit (default True) would mis-file a linked-channel turn under the
     # slot's `dashboard` key.
     "dashboard/handlers/hooks.py": 1,
-    "slack/gateway.py": 3,  # 2 cron + _persist_turn_row helper
+    "slack/gateway.py": 0,  # the facade: its owners persist the gateway's rows
+    "slack/gateway_runtime/cron_turn.py": 2,  # 2 cron
+    "slack/gateway_runtime/heartbeat_turns.py": 1,  # _persist_turn_row helper
     # (the helper is the single call site for
     # heartbeat + its timeout + monitor + its
     # timeout)
@@ -166,6 +168,11 @@ def test_chat_runner_no_longer_builds_the_dead_stats_object():
     It also fed ``inc_duration_ms(usage.duration_ms)`` — the same structurally
     zero field — so it was doubly dead. Guard against it being reintroduced.
     """
-    src = (SRC / "dashboard" / "chat_runner.py").read_text(encoding="utf-8")
+    runner = SRC / "dashboard" / "chat_runner.py"
+    src = "\n".join(
+        turn_file.read_text(encoding="utf-8")
+        for turn_file in [*sorted(runner.with_name("chat_turn").glob("*.py")), runner]
+        if turn_file.name != "__init__.py"
+    )
     assert "stats = Stats()" not in src
     assert "from kiro_crew.stats import Stats" not in src

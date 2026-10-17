@@ -79,7 +79,7 @@ describe('AskAgentButton', () => {
     expect(screen.getByRole('button').className).toContain('bg-accent')
     unmount()
     render(<AskAgentButton message="zzq-a" />)
-    expect(screen.getByRole('button').className).toContain('text-danger/80')
+    expect(screen.getByRole('button').className).toContain('text-danger-text')
   })
 
   it('askAgentPrompt embeds the message', () => {

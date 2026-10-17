@@ -3,7 +3,7 @@
  *
  * The column gutter (`px-4`), the centring (`mx-auto w-full`) and the width
  * clamp (`maxWidth: var(--mc-content-width, …)`) are applied once, by the row
- * wrapper that the host puts around every rendered message: ChatPage's own row
+ * wrapper that the host puts around every rendered message: ChatTranscriptView's own row
  * div and `ChatMessageList`'s `ctx.row` / `ctx.wrapper`.
  *
  * Four cards used to apply that geometry a SECOND time at their own root. In
@@ -114,7 +114,7 @@ describe('transcript row geometry belongs to the host', () => {
   })
 
   /**
-   * ChatFooter is the mirror-image case. It is rendered RAW by ChatPage — as a
+   * ChatFooter is the mirror-image case. It is rendered RAW by ChatTranscriptView — as a
    * sibling of the row wrappers, not inside one — so it supplies the gutter
    * itself, and the contract is that it supplies it exactly ONCE. An inner
    * `px-3.5` stacked on that root gutter and pushed the running indicator 14px

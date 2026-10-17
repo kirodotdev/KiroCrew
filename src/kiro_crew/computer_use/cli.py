@@ -21,10 +21,10 @@ an LLM-facing capability to be an MCP tool (it is: ``computer_get_state``).
 its MCP twin (``computer_list_apps``), so neither brushes the rule.
 
 **Why ``call`` does not brush the MCP-first rule either.** It is not a new
-capability and it adds no tool: it is a *harness* over the existing ten, for a
+capability and it adds no tool: it is a *harness* over the existing tools, for a
 human reproducing a failure at a terminal. The rule exists so the model gets a
 structured tool rather than being told to shell out — and the model already has
-all eleven as MCP tools. ``call`` deliberately has no MCP twin, because a tool that
+every one of them as an MCP tool. ``call`` deliberately has no MCP twin, because a tool that
 runs other tools would let a model launder a per-call gate decision through one
 approved invocation.
 
@@ -109,9 +109,6 @@ def _session_key() -> str:
     return _CLI_SESSION_KEY
 
 
-# Shown when an unauthenticated invocation has no keystone opt-in. Names the flag
-# and the file, because "refused" without the remedy is not a usable diagnostic.
-
 # ``--calls`` entry keys. A batch entry is ``{"tool": "...", "args": {...}}``;
 # ``args`` is optional so a no-argument tool is ``{"tool": "computer_end_turn"}``.
 _CALL_KEY_TOOL = "tool"
@@ -136,11 +133,9 @@ A key=value argument is parsed as JSON when it can be (element_index=3,
 screenshot=false, x=120.5) and kept as a plain string otherwise (app=Finder).
 Wrap a value with spaces in shell quotes: text='hello there'.
 
-Every call runs through the same gate the agent does — the primary enable,
-security policy, the app denylist and the secure-field refusals all apply, so
-this cannot reach anything the agent could not. Under a policy that forces
-interactive approval, a mutating call is refused here: there is no prompt on this
-leg for anyone to answer.
+Every call runs through the same gate the agent does — the primary enable, the
+app denylist and allowed apps, and the secure-field refusals all apply, so this
+cannot reach anything the agent could not.
 
 Computer use is OFF by default and can only be enabled by you, from the
 dashboard: Settings -> Computer Use. An agent cannot enable it.

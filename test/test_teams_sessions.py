@@ -1,7 +1,7 @@
 """Teams ``/sessions``: pick a dashboard chat and continue it in the Teams chat.
 
 Every DECISION here is shared with Discord (``messaging/session_resume.py``) and its
-routing/settlement state machine is covered by ``test_discord_sessions.py``. So this
+routing/settlement state machine is covered by ``test_discord_sessions*.py``. So this
 suite pins the things that are Teams' own, and the ones a shared core cannot get right
 on a channel's behalf:
 

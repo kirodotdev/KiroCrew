@@ -1,8 +1,8 @@
 """Channel-side delivery for the host spawn-approval prompt — one seam, every channel.
 
 The single host-wide ``SubagentManager`` owns ONE ``on_spawn_approval`` callback,
-built in ``slack/gateway.py``, whose own surfaces are a Slack owner DM and the
-dashboard. Neither one can be answered by the person who started a spawn from a
+built in ``slack/gateway_runtime/subagent_wiring.py``, whose own surfaces are a Slack
+owner DM and the dashboard. Neither one can be answered by the person who started a spawn from a
 Telegram (or any other) channel conversation, and the gate refuses such a spawn
 fast with ``no_approval_surface`` rather than parking it to the reaper's
 deadline. The prompt belongs on the ORIGINATING channel's own inline keyboard,

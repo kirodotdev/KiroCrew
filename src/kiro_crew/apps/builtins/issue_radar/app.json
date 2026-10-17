@@ -49,6 +49,15 @@
   "backend": {
     "routes": "backend.routes:register_routes"
   },
+  "notifications": {
+    "channels": [
+      {
+        "id": "ci-failure",
+        "name": "CI failures on my pull requests",
+        "icon": "CircleX"
+      }
+    ]
+  },
   "ui": {
     "pages": [
       {

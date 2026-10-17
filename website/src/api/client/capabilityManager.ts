@@ -6,7 +6,7 @@
 
 import type { ClientTransport } from './transport'
 
-export function createCapabilityManagerEndpoints({ post, j }: ClientTransport) {
+export function createCapabilityManagerEndpoints({ post, j, jfetch: fetch }: ClientTransport) {
   const catalog = {
     // Graceful no-ops on a public install, where AIM is stubbed; the panels
     // render empty when the feature is absent.

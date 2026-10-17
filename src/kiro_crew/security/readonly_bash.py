@@ -113,10 +113,15 @@ _UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)|\$\[")
 # stripped before _UNSAFE_SHELL_RE — otherwise every `find … 2>/dev/null`
 # falls through to an interactive prompt. A redirect to any real path
 # (e.g. `cmd > out.txt`) still trips _UNSAFE_SHELL_RE and stays unsafe.
-# The `(?![\w./-])` guard pins the match to the literal device `/dev/null`:
-# without it, `>/dev/nullx` or `>/dev/null/../etc/passwd` would be scrubbed as
-# a sink, smuggling a real-file write past the unsafe-shell check.
-_DEVNULL_REDIR_RE = re.compile(r"(?:\d*>>?|&>)\s*/dev/null(?![\w./-])|\d*>&\d+")
+# The lookahead ends each idiom where bash ends the word: space, tab, newline,
+# an operator, or the end of the command. Anything else continues it, so
+# `>/dev/nullx`, `>/dev/null"x"` and `>&2x` (bash opens the file `2x`) are real
+# writes, not sinks. The classes are spelled out because `\s` and `\d` on a str
+# pattern also match U+00A0, `\r`, `\v`, `\f` and non-ASCII digits, which bash
+# keeps inside a word.
+_DEVNULL_REDIR_RE = re.compile(
+    r"(?:(?:[0-9]*>>?|&>)[ \t]*/dev/null|[0-9]*>&[0-9]+)(?=$|[ \t\n;&|()<>])"
+)
 
 # ── Side effects reached through an allowlisted read-only verb ──
 #
@@ -1478,3 +1483,101 @@ def unsafe_bash_reason(cmd: str) -> str:
     safety grounds).
     """
     return _classify_bash(cmd)
+
+
+#: Words that open a command position without being the program that runs there.
+_COMMAND_POSITION_OPENERS = frozenset({"(", ")", "{", "}", "!", "then", "do", "else", "elif"})
+
+#: Programs that run the next word of their argv as another program.
+_PROGRAM_RUNNERS = frozenset(
+    {"builtin", "command", "env", "exec", "nice", "nohup", "sudo", "time", "timeout", "xargs"}
+)
+
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+#: A redirection operator at the start of a word, with an optional fd or ``&``.
+_REDIRECT_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-?|>>|<>|>\||[<>])&?-?")
+
+#: Shell text that runs a command the position walk does not see.
+_HIDDEN_COMMAND_RE = re.compile(r"\$\(|`|[<>]\(")
+
+
+def _is_git(word: str) -> bool:
+    return word.replace("\\", "/").rsplit("/", 1)[-1].lower() in ("git", "git.exe")
+
+
+def command_invokes_git(cmd: str) -> bool:
+    """Whether ``cmd`` may run ``git`` at any command position.
+
+    git reads ``.git/config`` on every invocation, and ``core.fsmonitor`` /
+    ``core.hooksPath`` name a program there that no text classifier sees. So a
+    git subcommand :func:`is_read_only_bash` accepts as a read still runs whatever
+    the repository configures. The read-only auto-approve sites that may have no
+    human behind them ask this as well, and send a git command to their approver.
+
+    Every command position is checked: each side of ``&&`` / ``||`` / ``;`` /
+    ``|``, each line, inside a subshell or group, after ``VAR=value`` prefixes, and
+    after redirections, and after a program that runs its next word (``env``,
+    ``xargs`` ...). The program counts as git by basename in any case, with or
+    without ``.exe``. What cannot be read counts as git, the safe reading: quoting
+    that cannot be resolved, an expansion in the program position, and a command
+    or process substitution. Pure text work: nothing is
+    resolved on ``PATH`` and nothing touches the filesystem, so the synchronous
+    tool gate may call it on the event loop.
+    """
+    if _HIDDEN_COMMAND_RE.search(cmd):
+        # A command or process substitution runs a command this walk does not see.
+        return True
+    for segment in re.split(r"&&|\|\||[;|\n]|(?<![<>])&(?!>)", cmd.replace("\r", "\n")):
+        spaced = segment.replace("(", " ( ").replace(")", " ) ")
+        try:
+            words = shlex.split(spaced)
+        except ValueError:
+            return True
+        # POSIX quote removal eats a Windows path's backslashes, so the raw
+        # words are read too, with their quote characters dropped.
+        raw = [word.strip("'\"") for word in spaced.split()]
+        if _runs_git_at_a_command_position(words) or _runs_git_at_a_command_position(raw):
+            return True
+    return False
+
+
+def _runs_git_at_a_command_position(words: list[str]) -> bool:
+    after_runner = skip_target = False
+    for word in words:
+        if _is_git(word):
+            return True
+        if after_runner:
+            # A runner's own options and values (``timeout 5``, ``env -i``) sit
+            # before the program it runs, so every later word is read as a
+            # possible program. Over-refusing here only costs an approval card.
+            continue
+        if skip_target:
+            skip_target = False
+            continue
+        if word in _COMMAND_POSITION_OPENERS or _ASSIGNMENT_RE.match(word):
+            continue
+        redirect = _REDIRECT_RE.match(word)
+        if redirect:
+            # A redirection (``2>/dev/null``, ``> out``) may come before the
+            # program; a bare operator takes the next word as its target.
+            skip_target = redirect.end() == len(word)
+            continue
+        if "$" in word:
+            # An expansion in the program position names a program this walk
+            # cannot read, so it is read as git, the safe answer.
+            return True
+        if word.replace("\\", "/").rsplit("/", 1)[-1].lower() in _PROGRAM_RUNNERS:
+            after_runner = True
+            continue
+        return False
+    return False
+
+
+def writes_through_redirect(cmd: str) -> bool:
+    """Whether ``cmd`` writes through a redirect: :func:`_classify_bash`'s rule alone.
+
+    The ``_DEVNULL_REDIR_RE`` discards are not writes; every other ``>`` is, quoted
+    or not, since telling a quoted ``>`` apart needs bash's full quoting rules.
+    """
+    return ">" in _DEVNULL_REDIR_RE.sub(" ", cmd)

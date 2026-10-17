@@ -1274,11 +1274,8 @@ class TestTheProvisionLogIsDecodedAsUtf8:
         with pytest.raises(UnicodeDecodeError):
             self.PAYLOAD.decode("utf-8")  # guard the guard
 
-        with (
-            mock.patch.object(
-                provision, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
-            ),
-            mock.patch.object(provision, "cgroup_scope_argv", side_effect=lambda a: a),
+        with mock.patch.object(
+            provision, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
         ):
             code, out = provision._run(self._argv(), cwd=str(tmp_path), timeout=30)
 

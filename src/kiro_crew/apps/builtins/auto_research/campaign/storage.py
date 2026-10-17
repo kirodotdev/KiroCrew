@@ -23,6 +23,12 @@ from kiro_crew.apps.builtins.auto_research.session_keys import is_campaign_id
 from kiro_crew.atomic_write import read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.on_loop_db import OnLoopDBGuard
+from kiro_crew.owner_only_files import (
+    ensure_directory,
+    mkdirs_owner_only,
+    prepare_owner_only_sqlite,
+    write_text_owner_only_in_home,
+)
 
 logger = logging.getLogger(LOGGER_NAME)
 
@@ -111,7 +117,8 @@ _ON_LOOP_DB_GUARD = OnLoopDBGuard(
 def _get_db() -> sqlite3.Connection:
     _ON_LOOP_DB_GUARD.check()
     dbp = db_path()
-    dbp.parent.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(dbp.parent)
+    prepare_owner_only_sqlite(dbp)  # campaigns hold research findings: 0600 from creation
     # Explicit 30s busy timeout (vs the 5s driver default). The research worker
     # writes findings/status every cycle while the app's HTTP handlers also
     # read/write; the longer busy timeout absorbs brief write contention instead
@@ -259,8 +266,7 @@ def _cycle_finding_files(findings_dir: Path) -> list[Path]:
 def _campaign_dir(campaign_id: str) -> Path:
     """Create and return campaign dir. Only call with validated IDs."""
     d = research_dir() / campaign_id
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "findings").mkdir(exist_ok=True)
+    ensure_directory(d / "findings")  # creates d too; 0700 inside the data home
     return d
 
 
@@ -309,7 +315,7 @@ def _write_text(path: Path, text: str) -> None:
     UnicodeEncodeError on the first em dash or CJK character and no report
     would ever be produced.
     """
-    path.write_text(text, encoding="utf-8")
+    write_text_owner_only_in_home(path, text)  # research findings: 0600 in the data home
 
 
 def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
@@ -323,22 +329,22 @@ def _write_new_cycle_files(pending: list[tuple[Path, str]]) -> bool:
     for fpath, text in pending:
         if fpath.exists():
             continue
-        fpath.parent.mkdir(parents=True, exist_ok=True)
-        fpath.write_text(text, encoding="utf-8")
+        ensure_directory(fpath.parent)
+        write_text_owner_only_in_home(fpath, text)
         wrote = True
     return wrote
 
 
 def _copy_parent_findings(src: Path, dst: Path) -> None:
     """Seed a forked campaign with its parent's findings. Blocking; call off-loop."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(dst.parent)
     try:
         # Agent-written prose on both ends: pin UTF-8 so a fork does not lose the
         # parent's context to a locale-encoding error, and absorb bad bytes.
         content = src.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return
-    dst.write_text(content, encoding="utf-8")
+    write_text_owner_only_in_home(dst, content)
 
 
 def _unlink_if_present(path: Path) -> bool:
@@ -375,12 +381,12 @@ def write_status(campaign_id: str, status: str, **extra: Any) -> None:
     if not _validate_campaign_id(campaign_id):
         return
     d = _campaign_dir(campaign_id)
-    (d / "status.json").write_text(
+    write_text_owner_only_in_home(
+        d / "status.json",
         json.dumps(
             {"status": status, "campaign_id": campaign_id, "ts": time.time(), **extra},
             indent=2,
         ),
-        encoding="utf-8",
     )
 
 
@@ -389,7 +395,7 @@ def write_guidance(campaign_id: str, text: str) -> None:
         return
     d = _campaign_dir(campaign_id)
     # User-typed mid-campaign guidance — non-ASCII is the norm, not the edge case.
-    (d / "guidance.txt").write_text(text, encoding="utf-8")
+    write_text_owner_only_in_home(d / "guidance.txt", text)
 
 
 def get_findings(campaign_id: str) -> list[dict]:

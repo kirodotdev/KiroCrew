@@ -266,6 +266,8 @@ ALWAYS_ON_BIN_MCP_SERVERS = (
     "kirocrew-cron",
     "kirocrew-core",
     "kirocrew-computer",
+    "kirocrew-guide",
+    "kirocrew-mate",
 )
 OPT_IN_BIN_MCP_SERVERS = (
     "kirocrew-dashboard",
@@ -307,7 +309,14 @@ CONTROL_PLANE_SERVERS = ("kirocrew-core", "kirocrew-cron")
 # only way it is ever granted is by hand. So no legitimate residue can exist
 # under that name, and anything found there is necessarily the user's own: to be
 # left alone, not reclaimed on a technicality about how it happens to be spelled.
-STALE_MANAGED_MCP_SERVERS = frozenset(ALWAYS_ON_BIN_MCP_SERVERS)
+#
+# ``kirocrew-guide`` and ``kirocrew-mate`` are always on but are left out too:
+# no install method ever wrote either to the global file, so an entry there is
+# the user's own.
+STALE_MANAGED_MCP_SERVERS = frozenset(ALWAYS_ON_BIN_MCP_SERVERS) - {
+    "kirocrew-guide",
+    "kirocrew-mate",
+}
 
 
 def _predecessor_mcp_names() -> frozenset[str]:

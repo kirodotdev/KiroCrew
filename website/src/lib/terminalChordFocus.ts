@@ -1,4 +1,4 @@
-import { isBottomTerminalOpen, toggleBottomTerminal } from '../hooks/useBottomTerminal'
+import { addTab, isBottomTerminalOpen, toggleBottomTerminal } from '../hooks/useBottomTerminal'
 
 /**
  * The KEYBOARD path for toggling the docked terminal — the nav rail's button
@@ -60,6 +60,18 @@ export function toggleTerminalByChord(cwd?: string): void {
   if (!focusTarget) return
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => focusTarget.focus())
   else focusTarget.focus()
+}
+
+/**
+ * The keyboard path for "new terminal" (VS Code's Create New Terminal): opens
+ * the docked panel if needed and adds a tab — at the cap `addTab` focuses the
+ * last tab instead. When it OPENS the panel it remembers where focus was, the
+ * same as {@link toggleTerminalByChord}, so the toggle chord that later closes
+ * the panel from inside a shell puts focus back there.
+ */
+export function newTerminalByChord(cwd?: string): void {
+  if (!isBottomTerminalOpen()) openedFrom = document.activeElement
+  addTab(cwd)
 }
 
 /** Test-only: clear the remembered element between cases. */

@@ -180,6 +180,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_file_diff,
     api_file_download,
     api_file_grep,
+    api_file_kinds,
     api_file_office_preview,
     api_file_raw,
     api_file_read,
@@ -265,7 +266,10 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.members import (  # noqa: E402, F401
     api_member_activity,
     api_member_briefing,
+    api_member_fresh_start,
+    api_member_greet,
     api_member_projections,
+    api_member_recap,
     api_member_rules_get,
     api_member_rules_put,
     api_member_thread,
@@ -453,6 +457,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_detail,
     api_session_directive,
     api_session_keepalive,
+    api_session_meta,
     api_session_tool_policy,
     api_sessions,
     api_sessions_clear,
@@ -473,6 +478,7 @@ from kiro_crew.dashboard.handlers.side import (  # noqa: E402, F401
     api_side_queue_cancel,
     api_side_queue_edit,
     api_side_stop,
+    api_side_tools,
     api_side_turn,
 )
 
@@ -646,6 +652,7 @@ from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
     api_kiro_usage,
     api_usage,
 )
+from kiro_crew.dashboard.handlers.usage_series import api_usage_series  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_export,
     api_wakatime_stats,
@@ -971,6 +978,13 @@ from kiro_crew.dashboard.handlers.aws_consent import (  # noqa: E402, F401
     api_aws_consent_delete,
     api_aws_consent_get,
     api_aws_consent_post,
+)
+
+# Project AWS profile binding (aws.project_profiles) — the composer's project
+# chip reads and sets which named profile a project's sessions start with.
+from kiro_crew.dashboard.handlers.aws_project_profile import (  # noqa: E402, F401
+    api_aws_project_profile_get,
+    api_aws_project_profile_put,
 )
 
 # Computer use — the Settings config pair (browser, cookie-authed) plus the two

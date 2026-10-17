@@ -269,11 +269,16 @@ class TestTheSendPathHonoursIt:
         the tool stream, the reply and the stream teardown together. Asserted on
         source order because the alternative is four independent gates that drift.
         """
-        import inspect
-
         from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner)
+        src = "\n".join(
+            turn_file.read_text(encoding="utf-8")
+            for turn_file in [
+                *sorted(Path(chat_runner.__file__).with_name("chat_turn").glob("*.py")),
+                Path(chat_runner.__file__),
+            ]
+            if turn_file.name != "__init__.py"
+        )
         gate = src.index("and not slack_mirror_is_paused(state, session_key)")
         resolve = src.index("_mirror_thread, _mirror_chan = state.sessions.get_slack_link")
         assert gate < resolve, "the pause gate must precede link resolution"

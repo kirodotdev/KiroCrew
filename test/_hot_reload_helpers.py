@@ -855,6 +855,7 @@ def gated_cases() -> tuple[GatedCase, ...]:
             message_id="m1",
             chat_type=CHAT_GROUP,
             chat_id="oc_room",
+            bot_mentioned=True,
         )
 
         async def gate() -> bool:

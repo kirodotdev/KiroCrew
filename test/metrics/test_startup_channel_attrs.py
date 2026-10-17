@@ -40,6 +40,7 @@ class TestTelemetryChannelOf:
         assert telemetry_channel_of("telegram_123") == "telegram"
 
     def test_local_surfaces_get_their_own_labels(self):
+        assert telemetry_channel_of("_consolidate") == "consolidation"
         assert telemetry_channel_of("dashboard:chat-60-1785802461") == "dashboard"
         assert telemetry_channel_of("cron:job-1") == "cron"
         assert telemetry_channel_of("subagent:abc123") == "subagent"
@@ -48,6 +49,12 @@ class TestTelemetryChannelOf:
     def test_singleton_sessions(self):
         assert telemetry_channel_of("_bg") == "background"
         assert telemetry_channel_of("_hb") == "heartbeat"
+
+    def test_consolidation_label_requires_the_exact_singleton_key(self):
+        assert telemetry_channel_of("_consolidate") == "consolidation"
+        assert "consolidation" in TELEMETRY_CHANNELS
+        for key in ("_consolidateXYZ", "_consolidate:123", "_consolidate_123"):
+            assert telemetry_channel_of(key) == "other"
 
     def test_missing_key_is_unknown(self):
         assert telemetry_channel_of(None) == "unknown"
@@ -251,7 +258,11 @@ class TestPrefixDrift:
         from kiro_crew import session as session_mod
         from kiro_crew.messaging.link import telemetry_channel_of
 
-        for key in (session_mod.BACKGROUND_KEY, session_mod.HEARTBEAT_KEY):
+        for key in (
+            session_mod.BACKGROUND_KEY,
+            session_mod.HEARTBEAT_KEY,
+            session_mod.CONSOLIDATE_KEY,
+        ):
             assert telemetry_channel_of(key) != "other"
 
 
@@ -272,6 +283,38 @@ class TestPoolDecisions:
             "bypass_env",
             "disabled",
         } <= POOL_DECISIONS
+
+    def test_every_reason_the_allocator_assigns_is_modelled(self):
+        """A reason missing from the set is counted as ``other``, so its share
+        of lost pool hits cannot be read off the metric. Reads the allocator's
+        own assignments so a new bypass arm cannot ship unmodelled."""
+        import ast
+        import inspect
+
+        from kiro_crew.session_allocation_parts import get_or_create
+
+        tree = ast.parse(inspect.getsource(get_or_create))
+        assigned = {
+            node.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "pool_decision" for t in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and node.value.value
+        }
+        # The conditional expression arm assigns "hit" / "miss_empty".
+        assert {"bypass_shared_scratch", "bypass_cwd"} <= assigned
+        assert assigned | {"hit", "miss_empty"} <= POOL_DECISIONS
+
+    def test_shared_scratch_bypass_is_counted_by_name(self):
+        from kiro_crew.session import SessionManager
+
+        mgr = SessionManager.__new__(SessionManager)
+        rec = _Rec()
+        with patch("kiro_crew.session.get_recorder", return_value=rec):
+            mgr._record_pool_decision("bypass_shared_scratch", "subagent:abc")
+        assert [a["outcome"] for _, a in rec.counters] == ["bypass_shared_scratch"]
 
     def test_unmodelled_decision_folds_to_other(self):
         from kiro_crew.session import SessionManager

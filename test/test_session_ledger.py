@@ -30,6 +30,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import textwrap
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -468,7 +469,13 @@ def test_gateway_fire_callbacks_use_the_composer():
     """
     from kiro_crew.slack import gateway
 
-    src = inspect.getsource(gateway)
+    # Each adapter's own source, wherever its composed owner defines it, indented
+    # back to method level so the split above attributes each body to one adapter.
+    src = "".join(
+        textwrap.indent(textwrap.dedent(inspect.getsource(member)), "    ")
+        for name, member in sorted(vars(gateway.GatewayOrchestrator).items())
+        if re.fullmatch(r"_fire_\w+_nudge", name)
+    )
     adapters = _fire_adapter_bodies(src)
     assert adapters, "no _fire_*_nudge adapters found -- this pattern went stale"
 
@@ -476,7 +483,7 @@ def test_gateway_fire_callbacks_use_the_composer():
     assert not offenders, (
         "these fire adapters neither call compose_nudge_body nor delegate to a "
         "fire path that does, so their surface's loops start each cycle without "
-        f"the work-ledger snapshot: {offenders}"
+        f"the session ledger snapshot: {offenders}"
     )
 
 

@@ -770,8 +770,25 @@ def test_revive_raises_every_target_side_code_authorize_target_raises():
         "ambiguous_target",
         "target_slot_unavailable",
     }
+
+    def returned_codes(fn) -> set[str]:
+        # The shared archived-target predicate answers ``(reason, code)``; the code
+        # is the last element of each returned tuple.
+        import ast
+        import textwrap
+
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        return {
+            node.value.elts[-1].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Tuple)
+            and isinstance(node.value.elts[-1], ast.Constant)
+        }
+
     assert target_side, "the regex found no refusal codes in authorize_target"
-    assert target_side <= codes(sc.revive_session), target_side - codes(sc.revive_session)
+    revive_codes = codes(sc.revive_session) | returned_codes(sc._archived_target_refusal)
+    assert target_side <= revive_codes, target_side - revive_codes
 
 
 # ── HTTP wrapper ─────────────────────────────────────────────────────────────
@@ -1882,11 +1899,14 @@ def test_an_already_live_unprotected_slot_answers_target_already_live(tmp_path, 
     assert key in exc.value.message
 
 
-def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_path):
+def test_a_clear_that_lands_then_reads_unreadable_once_retries_and_publishes(tmp_path):
     """A just-rewritten metadata line is transiently unopenable on Windows, so a
     successful ``clear_closed`` can be followed by an unreadable verification.
-    That refuses (``resume_conflict``), and because the clear DID land the marker
-    must be restored, or the refused session reopens at the next start."""
+    The handler re-reads it off the loop, so a transient that clears on the next
+    try lets the read succeed and the resume publishes a correctly-reopened
+    session -- rather than refusing on the one-shot transient. The fail-safe
+    stands: a read that is unreadable across every retry still refuses (covered
+    by the persistent-lock cases)."""
     from kiro_crew.dashboard import chat_handlers
 
     state = _make_state(tmp_path)
@@ -1905,8 +1925,7 @@ def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_
 
     def _unreadable(k):
         # Transient, as on Windows: the verification read right after the
-        # rewrite cannot open the file; the restore's own confirmation read
-        # that follows the rollback write can.
+        # rewrite cannot open the file once; the handler's next re-read can.
         if landed.pop("unreadable_next", False):
             return {}, False
         return real_status(k)
@@ -1925,9 +1944,64 @@ def test_a_clear_that_lands_then_reads_unreadable_still_restores_the_marker(tmp_
             )
         )
     assert landed.get("cleared") is True, "fixture did not actually clear the marker"
-    assert outcome.refusal is not None and outcome.refusal.code == "resume_conflict"
+    # The one-shot transient was ridden out; the resume publishes.
+    assert outcome.refusal is None
+    assert outcome.slot is not None and outcome.slot.key == key
+    assert key in state._slots and key not in state._slots_under_construction
+    # The clear stands, because the resume succeeded: the session is live.
+    assert "closed" not in log.get_metadata(f"dashboard:{key}")
+
+
+def test_a_persistently_unreadable_verification_refuses_and_restores_the_marker(tmp_path):
+    """When the verification read is unreadable across EVERY retry, the resume
+    stays fail-closed: it refuses and publishes nothing, and the ``closed``
+    marker is written back so the session does not reopen at the next start.
+    With the confirmation re-read also unreadable the refusal escalates to
+    ``reopen_rollback_failed`` (the marker write landed but could not be
+    confirmed) -- either way it never publishes. The handler's extra re-reads
+    widen the window a transient has to clear; they never accept a line that
+    stays unreadable."""
+    from kiro_crew.dashboard import chat_handlers
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+    log = state.conversation_log
+    real_clear = log.clear_closed
+    armed = {"on": False, "cleared": None}
+
+    def _clear(k, **kw):
+        real_clear(k, **kw)  # actually drops the marker
+        armed["cleared"] = "closed" not in log.get_metadata(k)
+        armed["on"] = True
+
+    real_status = log.get_metadata_status
+
+    def _unreadable(k):
+        # Every read after the clear is unreadable: the lock never clears.
+        if armed["on"]:
+            return {}, False
+        return real_status(k)
+
+    async def _ok(_built):
+        return None
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(log, "clear_closed", _clear)
+        mp.setattr(log, "get_metadata_status", _unreadable)
+        outcome = asyncio.run(
+            chat_handlers.resume_slot_from_history(
+                state, name=key, history_key=f"dashboard:{key}", containment=_ok
+            )
+        )
+    assert armed["cleared"] is True, "fixture did not actually clear the marker"
+    # Fail-closed: refused, nothing published.
+    assert outcome.refusal is not None
+    assert outcome.refusal.code in ("resume_conflict", "reopen_rollback_failed")
+    assert outcome.slot is None
     assert key not in state._slots and key not in state._slots_under_construction
-    # Restored despite the unreadable verification, since the clear landed.
+    # The marker write landed (``update_metadata_if`` is not the stubbed read),
+    # so a now-unstubbed read sees the session closed again, not reopened.
     assert log.get_metadata(f"dashboard:{key}").get("closed") is True
 
 

@@ -2,7 +2,7 @@
 
 A Stop press appends the stop card as a ``system`` row whose ``content`` IS the
 JSON stop payload (``slot.append("system", stop_msg, stop_msg)`` — see the
-``is_stop_event_row`` docstring in ``dashboard/state.py``). The
+``is_stop_event_row`` docstring in ``dashboard/state_parts/transcript_rows.py``). The
 ``TranscriptReadProjection.last_message_info`` tail walk rejected only
 ``_type == "metadata"`` rows and empty text, so a transcript ending on a stop
 card handed the raw ``{"kind": "stop_event", …}`` dict to every preview caller:

@@ -426,3 +426,142 @@ class TestFindingRedactionCoversEveryString(unittest.TestCase):
     def test_an_ordinary_path_survives(self):
         out = RP._redact_finding({"file": "src/app/main.py", "line": 1})
         self.assertEqual(out["file"], "src/app/main.py")
+
+
+def _finding(severity: str) -> dict:
+    return {"dimension": "correctness", "severity": severity, "file": "f.py",
+            "line": 1, "snippet": "x", "observation": "o", "consequence": "c",
+            "suggestion": "s"}
+
+
+class TestRebandOnDismiss(unittest.TestCase):
+    """A dismissed finding leaves the band computation, and nothing else does."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        # Registered before the layout is built: a setUp that raises skips
+        # tearDown, and the cleanup must not depend on setUp finishing.
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.root = Path(self.tmp) / "apps" / "code-review-sage"
+        store.ensure_layout(self.root)
+
+    def _written(self, *recs: dict) -> dict:
+        for r in recs:
+            results.write_result(r, self.root, "run-x")
+        RP.generate(self.root, run_id="run-x")
+        payload = RP.read_report(self.root, "run-x")
+        assert payload is not None
+        return payload
+
+    def test_counts_drop_only_the_dismissed_findings(self):
+        rec = _rec("CR-1", red=1, yellow=2)
+        rec["findings"] = [_finding("red"), _finding("yellow"), _finding("yellow")]
+        self.assertEqual(RP.counts_without_dismissed(rec, {"finding:0"}),
+                         {"red": 0, "yellow": 2})
+        self.assertEqual(RP.counts_without_dismissed(rec, {"finding:1", "finding:2"}),
+                         {"red": 1, "yellow": 0})
+        # A key past the findings list, or not a finding key, changes nothing and
+        # a count never goes below zero.
+        self.assertEqual(RP.counts_without_dismissed(rec, {"finding:9", "ship", "x"}),
+                         {"red": 1, "yellow": 2})
+        self.assertEqual(RP.counts_without_dismissed({"counts": {"red": 0},
+                                                      "findings": [_finding("red")]},
+                                                     {"finding:0"}),
+                         {"red": 0, "yellow": 0})
+
+    def test_row_red_only_for_its_finding_drops_a_band(self):
+        rec = _rec("CR-1", blast="MEDIUM", red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        self.assertEqual(payload["rows"][0]["band"], "red")
+        out = RP.reband(payload, {"CR-1": {"finding:0": {"reason": "nope"}}},
+                        self.root, "run-x")
+        row = out["rows"][0]
+        self.assertEqual(row["band"], "yellow")        # blast=MEDIUM still holds
+        self.assertEqual(row["why"], "blast=MEDIUM")
+        self.assertEqual(out["bands"], {"red": 0, "yellow": 1, "green": 0})
+        # The report's own finding tallies stay: the dashboard subtracts the
+        # dismissals from these itself.
+        self.assertEqual(row["red"], 1)
+
+    def test_row_red_for_blast_stays_red(self):
+        rec = _rec("CR-1", blast="LARGE", red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        out = RP.reband(payload, {"CR-1": {"finding:0": {"reason": "nope"}}},
+                        self.root, "run-x")
+        self.assertEqual(out["rows"][0]["band"], "red")
+        self.assertEqual(out["rows"][0]["why"], "blast=LARGE")
+        self.assertEqual(out["bands"]["red"], 1)
+
+    def test_rows_without_dismissals_keep_their_band_and_order_follows(self):
+        red = _rec("CR-RED", blast="LARGE", red=1)
+        red["findings"] = [_finding("red")]
+        was_red = _rec("CR-WAS", red=1)
+        was_red["findings"] = [_finding("red")]
+        payload = self._written(red, was_red)
+        self.assertEqual([r["change_id"] for r in payload["rows"]], ["CR-RED", "CR-WAS"])
+        out = RP.reband(payload, {"CR-WAS": {"finding:0": {"reason": "nope"}}},
+                        self.root, "run-x")
+        by_id = {r["change_id"]: r for r in out["rows"]}
+        self.assertEqual(by_id["CR-RED"]["band"], "red")
+        self.assertEqual(by_id["CR-WAS"]["band"], "green")
+        self.assertEqual(out["bands"], {"red": 1, "yellow": 0, "green": 1})
+        self.assertEqual([r["change_id"] for r in out["rows"]], ["CR-RED", "CR-WAS"])
+
+    def test_the_recomputed_rationale_is_redacted(self):
+        # `why` repeats the record's blast rating when it meets the critical
+        # threshold, and the worker can write both. The build path scrubs the
+        # row; the re-banded fields must be scrubbed the same way.
+        secret = "AKIA" + "IOSFODNN7EXAMPLE"
+        rec = _rec("CR-1", blast=secret, red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        out = RP.reband(payload, {"CR-1": {"finding:0": {"reason": "x"}}},
+                        self.root, "run-x", {"triage": {"critical_blast": secret}})
+        row = out["rows"][0]
+        self.assertEqual(row["band"], "red")          # blast still holds it red
+        self.assertIn("blast=", row["why"])
+        self.assertNotIn(secret, row["why"])
+
+    def test_a_malformed_live_config_keeps_the_stored_band(self):
+        # config.json is worker-reachable and read live by the re-band; a
+        # shape `classify()` cannot use must not turn the report read into an
+        # error. The row keeps the band the stored report gave it.
+        rec = _rec("CR-1", blast="MEDIUM", red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        dismissed = {"CR-1": {"finding:0": {"reason": "x"}}}
+        bad_configs: list[dict] = [
+            {"triage": None}, {"triage": []},
+            {"triage": {"yellow_min_yellow_findings": "2"}},
+        ]
+        for bad in bad_configs:
+            out = RP.reband(payload, dismissed, self.root, "run-x", bad)
+            self.assertEqual(out["rows"][0]["band"], "red", bad)
+            self.assertEqual(out["bands"]["red"], 1, bad)
+
+    def test_a_record_rewritten_after_the_build_keeps_the_stored_band(self):
+        # The result record is worker-reachable too. A shape `classify()`
+        # cannot use, written after the report was built, keeps the band the
+        # stored report gave the row rather than failing the read.
+        rec = _rec("CR-1", blast="MEDIUM", red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        path = results.result_path("CR-1", self.root, "run-x")
+        dismissed = {"CR-1": {"finding:0": {"reason": "x"}}}
+        for over in ({"blast_radius": None}, {"counts": {"red": 1e309, "yellow": 0}}):
+            path.write_text(json.dumps({**rec, **over}), encoding="utf-8")
+            out = RP.reband(payload, dismissed, self.root, "run-x")
+            self.assertEqual(out["rows"][0]["band"], "red", over)
+
+    def test_no_dismissals_and_missing_record_leave_the_report_alone(self):
+        rec = _rec("CR-1", red=1)
+        rec["findings"] = [_finding("red")]
+        payload = self._written(rec)
+        self.assertEqual(RP.reband(payload, {}, self.root, "run-x")["rows"][0]["band"], "red")
+        self.assertEqual(RP.reband(payload, None, self.root, "run-x")["bands"]["red"], 1)
+        # A row whose record is gone cannot be recomputed; its stored band stands.
+        out = RP.reband(payload, {"CR-1": {"finding:0": {"reason": "x"}}},
+                        self.root, "run-other")
+        self.assertEqual(out["rows"][0]["band"], "red")

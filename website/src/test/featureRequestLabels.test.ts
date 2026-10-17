@@ -61,9 +61,26 @@ describe('feature-request label selection', () => {
     })
   })
 
-  it('no longer pins the pre-filled URL to a single label', () => {
-    expect(FEATURE_REQUEST_PROMPT_FALLBACK).not.toMatch(/labels=enhancement/)
-    expect(skill).not.toMatch(/labels=enhancement/)
+  // The pre-filled URL (Option 2) must carry no `labels=` query param, not
+  // merely no `labels=enhancement`: GitHub answers 404 to a `labels` query from
+  // anyone without permission to label issues in this repo, which is most
+  // reporters. Labels apply only through the `gh issue create` path (Option 3),
+  // and triage labels the rest. Both copies may still *mention* `labels=` in
+  // prose to explain why not to add it, so match only a real query param
+  // (`?labels=` / `&labels=`), not a backtick-quoted mention.
+  it('does not put a labels= query param in the pre-filled URL', () => {
+    expect(FEATURE_REQUEST_PROMPT_FALLBACK).not.toMatch(/[?&]labels=/)
+    expect(skill).not.toMatch(/[?&]labels=/)
+  })
+
+  // The pre-filled URL (Option 2) is offered only when its query string is
+  // under 200 characters; above that Crew redacts it in chat, so the agent —
+  // which knows the length because it builds the URL — leaves it out rather
+  // than handing the user a placeholder (the dead-end #12847 reports). Both
+  // copies must carry this gate so they agree.
+  it('gates the pre-filled URL on an under-200-character query string', () => {
+    expect(FEATURE_REQUEST_PROMPT_FALLBACK).toMatch(/under 200 characters/)
+    expect(skill).toMatch(/under 200 characters/)
   })
 
   it('no longer pins the gh create command to a single label', () => {

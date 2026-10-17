@@ -376,7 +376,7 @@ jobs:
               if gh api --method PATCH "repos/$REPO/check-runs/$1" \
                 -f status="completed" -f conclusion="$2" \
                 -f "output[title]=Internal Content Scan — $3" \
-                -f "output[summary]=$summary" >/dev/null 2>&1; then
+                -f "output[summary]=$summary" >/dev/null; then
                 return 0
               fi
               sleep 5
@@ -403,5 +403,5 @@ jobs:
               -f status="completed" -f conclusion="failure" ${ext_args[@]+"${ext_args[@]}"} \
               -f details_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID" \
               -f "output[title]=Internal Content Scan — could not run" \
-              -f "output[summary]=$summary" >/dev/null 2>&1 || true
+              -f "output[summary]=$summary" >/dev/null || true
           fi

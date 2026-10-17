@@ -5,6 +5,8 @@ import ToolCallLine from '../pages/chat/ToolCallLine'
 import { resolveByApprovalId, sseToolResult } from '../store/chatSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { stubPathKinds } from './pathKindStub'
 
 type ChatState = RootState['chat']
 
@@ -21,6 +23,16 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 }
 
 beforeEach(() => { localStorage.clear() })
+
+/** The verbatim text the pill's hover bubble carries. Focus opens it
+ *  synchronously (no intent timer); the formatted shell grid is aria-hidden,
+ *  so the verbatim copy is its sr-only span. */
+function pillTipText(): string | null {
+  fireEvent.focus(screen.getByRole('button', { name: /Show details/i }))
+  const tip = screen.queryByRole('tooltip')
+  if (!tip) return null
+  return tip.querySelector('.sr-only')?.textContent ?? tip.textContent
+}
 
 function toolMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
   return { role: 'tool', content: '🔧 Running: echo hello', cls: '', meta: { tool_call_id: 'tc_1', purpose: 'Say hello' }, ...overrides }
@@ -67,7 +79,7 @@ describe('ToolCallLine simplifiedToolNames', () => {
     // A lone `echo` is the Print action (utils/toolCallTitle); the raw command
     // stays reachable from the pill's tooltip and the expanded chip.
     expect(screen.getByText('Print')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe('echo hello')
+    expect(pillTipText()).toBe('echo hello')
   })
 
   it('substitutes the command digest for a purpose-less shell label that does not parse', () => {
@@ -219,7 +231,7 @@ describe('ToolCallLine simplifiedToolNames', () => {
     renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
     const pill = screen.getByText(/^python3 ledger\.py ticket-log --text "x+…$/)
     expect(pill.textContent?.length).toBeLessThanOrEqual(81)
-    expect(screen.getByRole('button', { name: /Show details/i }).getAttribute('title')).toBe(cmd)
+    expect(pillTipText()).toBe(cmd)
     expect(screen.queryByText('--text, x…')).toBeNull()
   })
 
@@ -479,7 +491,8 @@ describe('ToolCallLine inline expansion', () => {
 
 describe('ToolCallLine file-open icon', () => {
   beforeEach(() => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, status: 200 })) as unknown as typeof fetch
+    __resetPathKindCache()
+    stubPathKinds(() => 'file')
   })
 
   function fileMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -543,8 +556,8 @@ describe('ToolCallLine file-open icon', () => {
     expect(screen.queryByTitle(/in side panel$/)).toBeNull()
   })
 
-  it('does not render the icon when the file does not exist (HEAD 404)', async () => {
-    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 })) as unknown as typeof fetch
+  it('does not render the icon when the file does not exist', async () => {
+    stubPathKinds(() => null)
     const store = fileStore('{"path":"/etc/hosts"}')
     renderWithProviders(<ToolCallLine message={fileMsg()} running={false} onFileOpen={vi.fn()} />, { store })
     await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled())
@@ -971,5 +984,78 @@ describe('ToolCallLine elapsed timer survives remount', () => {
     const afterRemount = screen.getByText(/Running ·/)
     // Still shows ~30s, NOT reset to 0s
     expect(afterRemount.textContent).toMatch(/30|29|31/)
+  })
+})
+
+describe('ToolCallLine ask_question answers card', () => {
+  const answered = 'User has answered your questions:\n"Which colour?" -> "Red"'
+
+  function renderAnswered(mcpServer: string) {
+    const msg: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [msg],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: mcpServer, tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(<ToolCallLine message={msg} running={false} />, { store })
+  }
+
+  // ToolCallLine lazily imports AskAnswersCard, so chip queries wait explicitly for that chunk.
+  it('renders for kirocrew-core', async () => {
+    renderAnswered('kirocrew-core')
+    expect(await screen.findByTestId('ask-answers-chip', undefined, { timeout: 5_000 })).toBeTruthy()
+  })
+
+  it('does not render for a third-party server returning the same header', async () => {
+    // A trusted row in the same render is the positive control: once its chip loads, the lazy chunk is ready for both rows.
+    const evil: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_evil' } }
+    const ok: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ok' } }
+    const store = createTestStore({
+      chat: {
+        messages: [evil, ok],
+        activeSlot: 'S',
+        toolLog: [
+          { type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'evil-server', tool_call_id: 'tc_evil', output: answered, ts: 1 },
+          { type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ok', output: answered, ts: 2 },
+        ],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(
+      <>
+        <div data-testid="row-evil"><ToolCallLine message={evil} running={false} /></div>
+        <div data-testid="row-ok"><ToolCallLine message={ok} running={false} /></div>
+      </>,
+      { store },
+    )
+    const chips = await screen.findAllByTestId('ask-answers-chip', undefined, { timeout: 5_000 })
+    expect(chips).toHaveLength(1)
+    expect(screen.getByTestId('row-ok').contains(chips[0])).toBe(true)
+  })
+
+  it('renders only under the newest row when a reset reuses the tool_call_id', async () => {
+    const older: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const newer: ChatMessage = { role: 'tool', content: '🔧 ask_question', cls: '', meta: { tool_call_id: 'tc_ans' } }
+    const store = createTestStore({
+      chat: {
+        messages: [older, newer],
+        activeSlot: 'S',
+        toolLog: [{ type: 'tool', text: 'ask_question', tool_name: 'ask_question', mcp_server: 'kirocrew-core', tool_call_id: 'tc_ans', output: answered, ts: 1 }],
+        slotRunning: false,
+      } as unknown as ChatState,
+    })
+    renderWithProviders(
+      <>
+        <div data-testid="row-older"><ToolCallLine message={older} running={false} /></div>
+        <div data-testid="row-newer"><ToolCallLine message={newer} running={false} /></div>
+      </>,
+      { store },
+    )
+    const chips = await screen.findAllByTestId('ask-answers-chip', undefined, { timeout: 5_000 })
+    expect(chips).toHaveLength(1)
+    expect(screen.getByTestId('row-newer').contains(chips[0])).toBe(true)
   })
 })

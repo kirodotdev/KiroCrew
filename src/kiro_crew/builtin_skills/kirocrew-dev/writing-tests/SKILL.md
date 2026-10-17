@@ -109,7 +109,7 @@ Six shapes escape the env var:
   resolves `spool_path()` on the loop and hands it to the task, so the worker reads a
   location fixed at boot. Resolve every environment-derived input of a detached task on
   the calling side before detaching, or give the test a handle it can await.
-- **What a closed loop leaves behind.** pytest-asyncio 0.20 ends the loop with a bare
+- **What a closed loop leaves behind.** pytest-asyncio 0.21 ends the loop with a bare
   `loop.close()`. A pending task's coroutine then gets `GeneratorExit` at garbage
   collection, so its `finally` blocks run *then* (`_run_chat`'s queue cycle reaches a
   sync `KiroCrewConfig.load()`); a default-executor job (`to_thread`) is abandoned
@@ -294,7 +294,7 @@ commit and green on the fix (testing-conventions § Proving a determinism fix).
 The sixth class has a tell of its own: **the run ends early, not red.** On Windows a test that
 blocks past `--timeout` is not failed, its xdist worker is killed, and with
 `--max-worker-restart=0` the run aborts with every uncollected result missing. If a full run
-reports a few thousand tests instead of ~60k, look for `worker ... crashed while running` in the
+reports a few thousand tests instead of 100k+, look for `worker ... crashed while running` in the
 log: the named test is one that can wait forever. Wait on the observable state, not a guessed
 `sleep`, and bound the await whose refusal is under test with `asyncio.wait_for` so a missed
 refusal fails by name at that line.
@@ -399,8 +399,8 @@ spawned without `cwd=`.
 
 ## Rule 5 — Keep the parallel suite fast
 
-At ~56.5k tests, **per-test setup cost dominates any single slow test** — an autouse
-fixture is paid ~56,500 times. Profile, never guess; compare candidates back to back on
+At 100k+ tests, **per-test setup cost dominates any single slow test** — an autouse
+fixture is paid once per test, over 100,000 times. Profile, never guess; compare candidates back to back on
 the same host (run the change, then the base in `git worktree add --detach <dir> <base>`;
 never `git stash`: every worktree shares one stash list), because a loaded host makes an
 absolute number meaningless.
@@ -457,8 +457,8 @@ The consequence for how you write a test:
   for a 17 MB PNG; one `frombytes` over a bytes buffer was 10x smaller and
   byte-equivalent.
 - **Derive a size from the production constant** rather than restating it. A literal
-  `40_000_001` beside a `_MAX_LAYER_B_CHARS` of `40_000_000` hides both the coupling
-  and the cost, and goes stale silently.
+  one past a production size ceiling, restated beside that constant, hides both the
+  coupling and the cost, and goes stale silently.
 - Suspect a **module-scope literal** whenever a file's collection RSS is large; measure
   it with `pytest <file> --collect-only` and `/proc/self/status`'s `VmHWM`.
 
@@ -466,48 +466,36 @@ The consequence for how you write a test:
 
 ### Determinism top 12
 
-The [contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first),
-one box each. Every other item below is a specialised trap.
+One box per rule of the [Determinism contract](../../../../../docs/system-specs/common/testing-conventions.md#determinism-contract-read-this-first),
+naming the shape; the contract line holds the detail and its numbers. The helpers are in
+`kiro_crew.testing` (`clock`, `wait`, `ids`). Every other item below is a specialised trap.
 
-- [ ] D1: every wait polls the state it is about to assert under a bounded deadline that
-      RAISES quoting what it last read (`_await_parked` in `test_runloop_integration.py`);
-      no `sleep` stands in as a barrier, and an absence assertion follows a positive signal
-- [ ] D2: one clock, replaced on the module-under-test's own `time` / `datetime` binding
-      (`_PointClock` in `test_decisions_memory_recall_reachable.py`), never a `setattr`
-      that rebinds a stdlib clock or `time.sleep` for the whole worker
-- [ ] D3: no sleep to make two timestamps differ: the test sets them (`os.utime(ns=...)`,
-      a stepped clock, an explicit `created_at`), asserts strictly, and pins a time-sorted
-      output's tie-break with an equal-stamp pair
-- [ ] D4: no order asserted that the code does not define (`set`, `listdir`/`iterdir`/
-      `glob`, `as_completed` iteration, side effects appended in completion order): compare
-      as `set`/`Counter` or sort by a total key (`gather`'s return list is in argument
-      order and is fine)
-- [ ] D5: an expectation reads the zone the product stamps, with the instant frozen; a
-      local-time test pins its zone and runs under `UTC`, `Pacific/Kiritimati` and
-      `America/St_Johns` — injecting the zone where the product allows it, otherwise
-      `TZ` + `time.tzset()` in a fixture under a POSIX-only skip, re-`tzset()` after the
-      fixture's `monkeypatch.context()` restores it (never a bare `monkeypatch.undo()`)
-- [ ] D6: every RNG that feeds an assertion is `random.Random(SEED)`; every fake PID is
-      unallocatable (`_UNALLOCATABLE_PID`)
-- [ ] D7: no upper bound on a measured duration, rate or sample count, except a wait's
-      lost-run bound or a bound relative to a span the test measured itself; a lower
-      bound proving a deadline was honoured (one-tick margin) is fine, and an existing
-      complexity guard keeps its thread-CPU budget at the original constant
-- [ ] D8: every await, `join` or `communicate` the test itself must unblock is bounded and
-      fails by name (`asyncio.wait_for`, `join(timeout)` + `is_alive()`,
-      `communicate(timeout=)`)
-- [ ] D9: every listener binds port 0 and reports the port it got
-- [ ] D10: loopback only; the network is stubbed at the seam the product calls
-- [ ] D11: globals only through `monkeypatch` (an autouse fixture through
-      `_floor_monkeypatch`); no in-process `importlib.reload` of a shared module (a private
-      copy via `spec_from_file_location`, registered under its unique name in
-      `sys.modules` with `monkeypatch.setitem` before `exec_module`, never under the real
-      name); a `sys.modules` eviction restores the entry AND the parent package attribute
-      in the same scope
-- [ ] D12: proven: 20 repeats at `-n0`, 10 at `-n 4` with neighbours and a shuffled
-      order; a FIX to a flaky test also shows the forced condition red on the parent
-      commit and green on the fix; every timing number comes from CI-equivalent load,
-      never from an overloaded host
+- [ ] D1: wait on the asserted state with a raising, bounded poll (`wait_until`,
+      `async_wait_until`, `until_parked`), never a sleep
+      ([class 2](../../../../../docs/system-specs/common/testing-conventions.md#2-wall-clock-races))
+- [ ] D2: one clock, installed on the module-under-test's own binding
+      (`ManualClock.install`, the `manual_clock` fixture)
+      ([class 2](../../../../../docs/system-specs/common/testing-conventions.md#2-wall-clock-races))
+- [ ] D3: set the timestamps (`ManualClock(tick=...)`, `os.utime(ns=...)`, `seq_ids`),
+      assert order strictly, pin the tie-break
+      ([class 7](../../../../../docs/system-specs/common/testing-conventions.md#7-data-order-and-timestamp-ties))
+- [ ] D4: no asserted order the code does not define
+      ([class 7](../../../../../docs/system-specs/common/testing-conventions.md#7-data-order-and-timestamp-ties))
+- [ ] D5: the product's zone and a frozen instant, never the host's (`local_tz`)
+      ([class 1](../../../../../docs/system-specs/common/testing-conventions.md#1-nondeterministic-input))
+- [ ] D6: seeded RNGs and unallocatable fake PIDs (`seeded_rng`, `unallocatable_pids`)
+      ([class 1](../../../../../docs/system-specs/common/testing-conventions.md#1-nondeterministic-input))
+- [ ] D7: no upper bound on a measured duration beyond what the contract allows
+      ([class 5](../../../../../docs/system-specs/common/testing-conventions.md#5-absolute-time-budgets-on-instrumented-runs))
+- [ ] D8: every self-unblocked await, join or communicate bounded, failing by name
+      ([class 6](../../../../../docs/system-specs/common/testing-conventions.md#6-a-hang-is-a-lost-run-not-a-failed-test))
+- [ ] D9: listeners bind port 0 and report the port ([Rules](../../../../../docs/system-specs/common/testing-conventions.md#rules))
+- [ ] D10: loopback only, the network stubbed at the product's seam
+      ([side effects](../../../../../docs/system-specs/common/testing-conventions.md#side-effects-what-a-full-run-does-to-the-host-and-how-to-see-it))
+- [ ] D11: globals through `monkeypatch`, no in-process reload, evictions restored
+      ([class 4](../../../../../docs/system-specs/common/testing-conventions.md#4-order-dependence-and-shared-state))
+- [ ] D12: proven by repeats, a shuffled order and, for a fix, the forced condition
+      ([proving a fix](../../../../../docs/system-specs/common/testing-conventions.md#proving-a-determinism-fix))
 
 ### Specialised traps (search when your test touches X)
 
@@ -682,12 +670,14 @@ one box each. Every other item below is a specialised trap.
 - [ ] "Let it finish" is never a fixed `sleep`: wait on the state you are about to assert
       (poll it off-loop under a bounded deadline, or await its event) — two 200 ms sleeps
       that were enough at `-n0` read `starting` for every row on a loaded Windows worker
-- [ ] A store that hands each THREAD its own connection (`KnowledgeStore`) is torn down with
-      `_close_all_for_tests()`, never `close()` — `close()` releases the calling thread's handle and
-      leaves the ones `asyncio.to_thread` workers opened; and every inline `VectorMemoryStore`
-      / `SkillsLoader` / `SubagentManager` goes through the module's `opened` register-and-close
-      fixture, because an unclosed `sqlite3.Connection` is a self-cycle on 3.11+ and refcounting
-      never frees its `db`/`-wal`/`-shm`
+- [ ] An unclosed `sqlite3.Connection` is a self-cycle on 3.11+ and refcounting never frees
+      its `db`/`-wal`/`-shm`. Close every inline `VectorMemoryStore` / `KnowledgeStore` /
+      `SkillsLoader` / `SubagentManager` as the SQLite teardown item below says, e.g. through
+      `test/conftest.py`'s `opened` fixture. A `KnowledgeStore`'s `close()` is fine on the
+      owning thread; use `_close_all_for_tests()` when another thread held a connection
+- [ ] An exact bound on monotonic float arithmetic (`(now + cap) - now <= cap`) can miss by
+      one ulp on some platforms; compare with a named slack (`_FLOAT_SLACK = 1e-6`, as in
+      `test/test_knowledge.py`) or `pytest.approx`, never a bare `<=`
 - [ ] A fixture that plants a path under `tmp_path` and asserts a production "not under
       `$HOME`" refusal does NOT fire pins `Path.home` (the seam the product reads) to a
       sibling that is not an ancestor of the fixture — a developer's `TMPDIR` may sit inside

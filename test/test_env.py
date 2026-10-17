@@ -585,6 +585,26 @@ class TestNodeAllBinDirs:
         d.mkdir(parents=True)
         assert str(d) in node_all_bin_dirs()
 
+    def test_covers_macos_fnm_default_location(self, fake_home) -> None:
+        """fnm on macOS defaults to the Apple data dir, not XDG and not
+        ``~/.fnm``. Without this glob a plain macOS fnm install is a false
+        "no Node was found", sending the user down the wrong remediation.
+        The dir carries a space ("Application Support"), which must glob
+        correctly. Not run on a real macOS host -- the layout is reproduced
+        under a fake HOME, so this covers the path on every runner."""
+        d = (
+            fake_home
+            / "Library"
+            / "Application Support"
+            / "fnm"
+            / "node-versions"
+            / "v22.9.0"
+            / "installation"
+            / "bin"
+        )
+        d.mkdir(parents=True)
+        assert str(d) in node_all_bin_dirs()
+
     def test_cache_info_exists(self) -> None:
         """lru_cache exposes cache_info -- confirms decorator is applied."""
         assert hasattr(env_mod._node_all_bin_dirs, "cache_info")

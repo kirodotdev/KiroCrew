@@ -36,6 +36,7 @@ from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.providers import calendar as cal
 from kiro_crew.apps.builtins.meetings.backend.routes import _common
+from kiro_crew.testing.wait import await_until
 
 BASE = k.API_BASE
 
@@ -337,7 +338,7 @@ class TestLoopAndHooks:
         monkeypatch.setattr(poller, "poll_once", fake_tick)
         app = make_app(root)
         await poller.start_poller(app)
-        await asyncio.wait_for(done.wait(), timeout=5)
+        await await_until(done, what="poller done event")
         await poller.stop_poller(app)
         assert ticks >= 3
 
@@ -362,7 +363,7 @@ class TestLoopAndHooks:
         app = make_app(root)
         with caplog.at_level(logging.WARNING, logger="kirocrew.app.meetings"):
             await poller.start_poller(app)
-            await asyncio.wait_for(recovered.wait(), timeout=5)
+            await await_until(recovered, what="poller recovered from tick error")
             await poller.stop_poller(app)
         assert calls == 2
         assert any("calendar poll tick failed" in r.getMessage() for r in caplog.records)

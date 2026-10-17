@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -42,6 +42,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatInput from '../../components/ChatInput'
 import { Composer, type ComposerHandle } from './Composer'
+import { ComposerEditor, ComposerSend, composerSendState } from './atoms'
 import { createComposerDraftStore } from './draftStore'
 import { SlotProvider } from '../../providers/SlotContext'
 
@@ -136,5 +137,117 @@ describe('Composer root with a draft store (P3-f)', () => {
     expect(box.value).toBe('typed by the user')
     // Every text change above reached the editor; none re-rendered the host.
     expect(hostRenders).toBe(before)
+  })
+})
+
+describe('Composer capabilities (embedded preset)', () => {
+  it('voice: false keeps the Voice atom unmounted, so ChatInput gets no microphone', async () => {
+    await act(async () => {
+      render(
+        <Providers>
+          <Composer slotKey="chat-1-x" value="" onChange={() => {}} capabilities={{ voice: false }}>
+            <ChatInput {...input} />
+          </Composer>
+        </Providers>,
+      )
+    })
+    expect(mic()).toBeNull()
+  })
+
+  it('voice: false needs no router: the root mounts outside one', async () => {
+    await act(async () => {
+      render(
+        <Composer slotKey="chat-1-x" value="" onChange={() => {}} capabilities={{ voice: false }}>
+          <ComposerEditor aria-label="Editor" />
+        </Composer>,
+      )
+    })
+    expect(screen.getByRole('textbox', { name: 'Editor' })).toBeTruthy()
+  })
+})
+
+describe('Composer Editor + Send atoms (P3-f)', () => {
+  function Host({ running = false, hasAttachments = false, uploading = false }: { running?: boolean; hasAttachments?: boolean; uploading?: boolean }) {
+    const [text, setText] = useState('')
+    const [sent, setSent] = useState<string[]>([])
+    return (
+      <Composer slotKey="s" value={text} onChange={setText} capabilities={{ voice: false }}>
+        <ComposerEditor aria-label="Editor" />
+        <ComposerSend onSend={() => setSent(s => [...s, text])} running={running} hasAttachments={hasAttachments} uploading={uploading} />
+        <output data-testid="sent">{sent.join('|')}</output>
+      </Composer>
+    )
+  }
+  const send = () => document.querySelector<HTMLButtonElement>('[data-composer-send]')!
+
+  it('the editor writes the root text and Send enables only with content', async () => {
+    render(<Host />)
+    expect(send().dataset.composerSend).toBe('idle')
+    expect(send().disabled).toBe(true)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editor' }), { target: { value: 'hi' } })
+    expect(send().disabled).toBe(false)
+    fireEvent.click(send())
+    expect(screen.getByTestId('sent').textContent).toBe('hi')
+  })
+
+  it('a running turn turns Send into Queue once there is text, with the word shown', () => {
+    render(<Host running />)
+    expect(send().dataset.composerSend).toBe('idle')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editor' }), { target: { value: 'later' } })
+    expect(send().dataset.composerSend).toBe('queue')
+    expect(screen.getByRole('button', { name: 'Queue message' })).toBe(send())
+    // Visible text, not only colour, glyph and a tooltip.
+    expect(send().textContent).toBe('Queue')
+    expect(send().title).toBe('Run after the current work finishes')
+  })
+
+  it('staged files alone make a sendable turn, and queue while a turn runs', () => {
+    const { rerender } = render(<Host hasAttachments />)
+    expect(send().disabled).toBe(false)
+    expect(send().dataset.composerSend).toBe('idle')
+    rerender(<Host hasAttachments running />)
+    expect(send().dataset.composerSend).toBe('queue')
+    expect(send().disabled).toBe(false)
+  })
+
+  it('an upload still running refuses the press, with or without text', () => {
+    const { rerender } = render(<Host uploading hasAttachments />)
+    expect(send().disabled).toBe(true)
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editor' }), { target: { value: 'see attached' } })
+    expect(send().disabled).toBe(true)
+    rerender(<Host hasAttachments />)
+    expect(send().disabled).toBe(false)
+  })
+
+  it('reads a draft store without the host re-rendering', async () => {
+    const draft = createComposerDraftStore('')
+    render(
+      <Composer slotKey="s" draft={draft} onChange={v => draft.set(v)} capabilities={{ voice: false }}>
+        <ComposerEditor aria-label="Editor" />
+        <ComposerSend onSend={() => {}} />
+      </Composer>,
+    )
+    expect(send().disabled).toBe(true)
+    await act(async () => { draft.set('from the store') })
+    expect((screen.getByRole('textbox', { name: 'Editor' }) as HTMLTextAreaElement).value).toBe('from the store')
+    expect(send().disabled).toBe(false)
+  })
+
+  it('an atom outside a root fails loudly', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(() => render(<ComposerEditor />)).toThrow(/inside <Composer>/)
+    } finally { err.mockRestore() }
+  })
+})
+
+describe('composerSendState', () => {
+  it.each([
+    [{ running: false, hasContent: false }, 'idle'],
+    [{ running: false, hasContent: true }, 'idle'],
+    [{ running: true, hasContent: true }, 'queue'],
+    [{ running: true, hasContent: false }, 'idle'],
+  ] as const)('%o -> %s', (args, want) => {
+    expect(composerSendState(args)).toBe(want)
   })
 })

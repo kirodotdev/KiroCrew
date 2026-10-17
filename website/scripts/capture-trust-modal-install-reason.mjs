@@ -78,7 +78,7 @@ const GENERIC_BEFORE = 'could not be turned on, and nothing was changed'
  *  both sentences open with the one clause tying trust and "turned on" together. */
 const GRANTED = 'It is now trusted, but it could not be turned on'
 const ONE_SWITCH = `Trusting \u201c${DISPLAY}\u201d is what turns it on.`
-const REMOVE_TRUST = 'Trusted third-party apps to remove the trust'
+const REMOVE_TRUST = 'Third-party apps to remove the trust'
 const ENABLE_FAILED_REASON = 'backend failed to start: ModuleNotFoundError: fastapi'
 /** The instruction the generic copy carries and a permanent refusal must not. */
 /** The retry button, named for both things it does (it re-writes the trust grant
@@ -104,6 +104,13 @@ const DISMISS_LABEL = 'Dismiss notice and re-enable Install'
 /** The consent body's exit sentence, which describes the Cancel button: present
  *  while Cancel is offered, gone from the permanent refusal whose footer is Close alone. */
 const ON_CANCEL = 'Cancel changes nothing'
+/** The install path's own copy (#19645): its Cancel line (nothing is installed yet),
+ *  its outcome line (an install lands switched off) and its not-granted headline. */
+const INSTALL_ON_CANCEL = 'Cancel changes nothing: nothing is installed'
+const INSTALL_OUTCOME = 'it installs switched off'
+const INSTALL_GENERIC = 'could not be installed, and trust was not saved'
+const INSTALL_GRANTED = 'is now trusted, but it could not be installed'
+const INSTALL_ON_CANCEL_GRANTED = 'trusted, and the install does not run again'
 /** The exit sentence of the GRANTED failure: the grant landed and stands, so Cancel
  *  does not "change nothing" of trust -- the sentence names both facts the reader
  *  leaves with (trusted, switched off) and the generic one must not render beside
@@ -194,6 +201,10 @@ const SCENARIOS = {
   // for an ordinary reason, and the app is still there -- so no rollback, and
   // the modal's `failed` copy (granted=true) renders with the reason beneath.
   granted: { attempts: [], installed: true, disabled: true, enables: [DENIED, { status: 500, json: { error: ENABLE_FAILED_REASON } }] },
+  // The install path's GRANTED failure (#19645): the retried install fails, but
+  // the rollback probe then finds the app (it answers 200 once the retry ran),
+  // so the grant stands and `install_failed` renders.
+  installGranted: { attempts: [DENIED, TRANSIENT], probeFindsAfterRetry: true },
 }
 
 /** A fresh page with the API stubbed for one scenario. */
@@ -210,6 +221,10 @@ async function openPage(context, base, scenario) {
       // 404 is how "no app occupies this name" really arrives: it makes the page
       // load from the registry AND is the rollback probe's proof of absence.
       if (path === `/api/apps/${APP}`) {
+        if (SCENARIOS[scenario].probeFindsAfterRetry && installs >= 2) {
+          await route.fulfill({ json: { ...INSTALLED_APP, enabled: false } })
+          return true
+        }
         if (SCENARIOS[scenario].installed) {
           await route.fulfill({ json: SCENARIOS[scenario].disabled ? { ...INSTALLED_APP, enabled: false } : INSTALLED_APP })
           return true
@@ -266,7 +281,9 @@ async function openPage(context, base, scenario) {
 async function failThroughTheModal(page, settledFooter) {
   const modal = page.locator('[role="dialog"]').filter({ hasText: /to run its own code\?/ })
   await modal.waitFor({ timeout: 15000 })
-  await modal.getByRole('button', { name: 'Trust this app and enable' }).click()
+  // The install path's confirm says "Trust this app" (an install lands the app
+  // switched off); the enable path's says "Trust this app and enable".
+  await modal.getByRole('button', { name: /^Trust this app( and enable)?$/ }).click()
   await modal.getByRole('alert').waitFor({ timeout: 15000 })
   // Settle the rollback probe + untrust round trip so the copy is final. The
   // footer is the settle signal — and the dialog's own X is also NAMED Close
@@ -324,11 +341,13 @@ async function captureTransient(context, base) {
   const page = await openPage(context, base, 'transient')
   const modal = await failThroughTheModal(page, RETRY_BUTTON)
   const text = await modal.getByRole('alert').innerText()
-  if (!text.includes(GENERIC)) fail('a transient failure keeps the generic headline as its title', text)
-  if (!text.includes(ONE_SWITCH)) fail('the not-granted copy opens by tying trust and "turned on" into one switch', text)
+  // This flow starts from Install, so the headline is the install path's own
+  // (`install_failed_generic`): it names the install, never "turned on".
+  if (!text.includes(INSTALL_GENERIC)) fail('a transient install failure keeps the install headline as its title', text)
+  if (text.includes(ONE_SWITCH)) fail('the install path must not say trusting is what turns the app on', text)
   if (!text.includes(RETRY_INSTRUCTION)) fail('the generic copy must name the retry button as it is labelled', text)
   if (!text.includes(TRANSIENT_REASON)) fail("the modal must render the server's reason beneath it", text)
-  if (text.indexOf(GENERIC) > text.indexOf(TRANSIENT_REASON)) {
+  if (text.indexOf(INSTALL_GENERIC) > text.indexOf(TRANSIENT_REASON)) {
     fail("the headline must sit above the server's reason", text)
   }
   if (text.includes(DESKTOP_HEADLINE)) fail('a reason without the code must not get the desktop copy', text)
@@ -336,7 +355,9 @@ async function captureTransient(context, base) {
   if (await modal.getByRole('button', { name: 'Cancel', exact: true }).count() !== 1) {
     fail('a transient failure still offers Cancel', body)
   }
-  if (!body.includes(ON_CANCEL)) fail('the sentence describing Cancel stays while Cancel is offered', body)
+  if (!body.includes(INSTALL_ON_CANCEL)) fail('the install sentence describing Cancel stays while Cancel is offered', body)
+  if (body.includes('stays in place')) fail('the install path must not say the app stays in place', body)
+  if (body.includes(INSTALL_OUTCOME)) fail('the outcome line goes once a failure headline shows', body)
   await modal.screenshot({ path: `${OUT}/${PREFIX}-02-transient-failure.png` })
   await page.close()
 }
@@ -526,6 +547,39 @@ async function captureGranted(context, base) {
   await page.close()
 }
 
+/** The install path's consent state (#19645), before any attempt: the outcome
+ *  line says the app installs switched off, and Cancel says nothing is installed. */
+async function captureInstallConsent(context, base) {
+  const page = await openPage(context, base, 'transient')
+  const modal = page.locator('[role="dialog"]').filter({ hasText: /to run its own code\?/ })
+  await modal.waitFor({ timeout: 15000 })
+  await page.waitForTimeout(400)
+  const body = await modal.innerText()
+  if (!body.includes(INSTALL_OUTCOME)) fail('the install path says confirming installs the app switched off', body)
+  if (!body.includes(INSTALL_ON_CANCEL)) fail('the install path says Cancel leaves nothing installed', body)
+  if (body.includes('stays in place')) fail('the install path must not say the app stays in place', body)
+  await modal.screenshot({ path: `${OUT}/${PREFIX}-08-install-consent.png` })
+  await page.close()
+}
+
+/** The install path's GRANTED failure (#19645): trust saved, install failed. Its
+ *  headline and Cancel line name the install, never "turned on". */
+async function captureInstallGranted(context, base) {
+  const page = await openPage(context, base, 'installGranted')
+  const modal = await failThroughTheModal(page, RETRY_BUTTON)
+  const text = await modal.getByRole('alert').innerText()
+  if (!text.includes(INSTALL_GRANTED)) fail('the install granted copy says the app is trusted but not installed', text)
+  if (text.includes(ONE_SWITCH)) fail('the install path must not say trusting is what turns the app on', text)
+  if (!text.includes(TRANSIENT_REASON)) fail("the modal must render the server's reason beneath", text)
+  if (page.rollbacks() !== 0) fail('the grant must stand: the probe found the app', text)
+  const body = await modal.innerText()
+  if (!body.includes(INSTALL_ON_CANCEL_GRANTED)) fail('the install granted state names what Cancel leaves', body)
+  if (body.includes(ON_CANCEL_GRANTED)) fail('the install path must not use the enable path\'s Cancel line', body)
+  if (body.includes(INSTALL_OUTCOME)) fail('the outcome line goes once a failure headline shows', body)
+  await modal.screenshot({ path: `${OUT}/${PREFIX}-07-install-trust-saved-failure.png` })
+  await page.close()
+}
+
 async function main() {
   const { srv, base } = await serveDist(DIST)
   const browser = await chromium.launch()
@@ -540,10 +594,13 @@ async function main() {
     await captureNarrowPage(browser, base)
     await captureUpdatePage(context, base)
     await captureGranted(context, base)
+    await captureInstallGranted(context, base)
+    await captureInstallConsent(context, base)
     wrote.push(
       `${PREFIX}-02-transient-failure.png`, `${PREFIX}-03-trusted-page-banner.png`,
       `${PREFIX}-04-narrow-page-banner.png`, `${PREFIX}-05-update-page-banner.png`,
-      `${PREFIX}-06-trust-saved-failure.png`,
+      `${PREFIX}-06-trust-saved-failure.png`, `${PREFIX}-07-install-trust-saved-failure.png`,
+      `${PREFIX}-08-install-consent.png`,
     )
   }
   await browser.close()

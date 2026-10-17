@@ -13,10 +13,31 @@
  * class behind that reads as load-bearing.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { readMembersPage } from './membersPageFamily'
 
 const read = (...p: string[]) => readFileSync(join(__dirname, '..', ...p), 'utf8')
+
+/** The owners under pages/chat-sidebar/ the sidebar shell composes. */
+function sidebarOwnerSources(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(name) && !/\.test\./.test(name)) out.push(readFileSync(p, 'utf8'))
+    }
+  }
+  walk(join(__dirname, '..', 'pages', 'chat-sidebar'))
+  return out
+}
+
+/** A page's surface for the negative half: the sidebar shell joined with its owners, the
+ *  Crewmates page every file it is built from, any other page its one file. */
+const surface = (file: string[]) =>
+  file.join('/') === 'pages/ChatSidebar.tsx' ? [read(...file), ...sidebarOwnerSources()].join('\n')
+    : file[1] === 'members' ? readMembersPage() : read(...file)
 const css = read('index.css')
 
 /** hook class -> the source that must render it, and the regex proving it does */
@@ -63,23 +84,28 @@ describe('kiro-light shell hooks', () => {
 
   it.each([
     ['pages', 'ChatSidebar.tsx'],
-    ['pages', 'members', 'MembersPage.tsx'],
+    ['pages', 'members', 'MembersPageRoster.tsx'],
   ])('%s/%s mounts the shared list shell, so the kiro-light --panel step-back reaches both cards', (...file) => {
     // The roster once carried its own bg-bg-elevated card and stayed white on
     // the white canvas while the sessions list beside it stepped back to
     // --panel — the hook only reaches a card that mounts LIST_SHELL_CLS.
     const src = read(...file)
+    const joined = surface(file)
     expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/import \{[^}]*\bLIST_SHELL_CLS\b[^}]*\} from '(\.\.\/)+components\/listShell'/)
     expect(src, KEEP_HOOK('sidebar-inner', file)).toMatch(/\$\{LIST_SHELL_CLS\}/)
-    expect(src, KEEP_HOOK('sidebar-inner', file)).not.toMatch(/className="sidebar sidebar-inner /)
+    expect(joined, KEEP_HOOK('sidebar-inner', file)).not.toMatch(/className="sidebar sidebar-inner /)
   })
 
   it('the user bubble tint is scoped to the non-steer branch only', () => {
     // The steer bubble keeps bg-accent-subtle; tinting it too would erase the
-    // one cue that distinguishes a steer from an ordinary turn.
+    // one cue that distinguishes a steer from an ordinary turn. Both non-steer
+    // tones (#17839: the crewmate chat's accent fill and the default) keep the
+    // hook leading, so the kiro-light tint rule still selects the default one
+    // and the accent rules (keyed on `.user-bubble.user-bubble-accent`) win
+    // over it on the other.
     const src = read('pages', 'chat', 'UserMessage.tsx')
     expect(src, KEEP_HOOK('user-bubble', ['pages', 'chat', 'UserMessage.tsx'])).toMatch(
-      /isSteer \? 'bg-accent-subtle text-text' : 'user-bubble bg-card text-card-fg'/,
+      /isSteer \? 'bg-accent-subtle text-text' : tone === 'accent' \? 'user-bubble user-bubble-accent bg-accent text-accent-fg' : 'user-bubble bg-card text-card-fg'/,
     )
   })
 

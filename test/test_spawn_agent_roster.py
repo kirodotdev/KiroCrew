@@ -18,7 +18,6 @@ so the prose is free to change and the short-circuit is not.
 
 from __future__ import annotations
 
-import asyncio
 import types
 from unittest.mock import MagicMock, patch
 
@@ -134,7 +133,13 @@ class TestPredicateReadsTheWireCode:
 
         assert spawn_tools.AGENT_NOT_FOUND_CODE is sa.AGENT_NOT_FOUND_CODE
         for module, expected in ((sa, 1), (spawn_tools, 0)):
-            src = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+            path = pathlib.Path(module.__file__)
+            paths = (
+                [path, *sorted(path.with_name("subagent_parts").glob("*.py"))]
+                if module is sa
+                else [path]
+            )
+            src = "".join(p.read_text(encoding="utf-8") for p in paths)
             assert src.count('"agent_not_found"') == expected, (
                 f"{module.__name__} respells the refusal code; import "
                 "subagent.AGENT_NOT_FOUND_CODE instead"
@@ -145,7 +150,7 @@ class TestWaveStopsAfterTheFirstRefusal:
     def _run(self, args: dict, error: str) -> tuple[str, list[tuple[str, dict]]]:
         posts: list[tuple[str, dict]] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             posts.append((path, body))
             if path == "/api/spawn":
                 return {"error": error, "code": sa.AGENT_NOT_FOUND_CODE, "counted": True}
@@ -155,7 +160,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            return spawn_tools.spawn_run("spawn_run", args), posts
+            return spawn_tools.mcp_core._call_tool("spawn_run", args), posts
 
     def test_one_bad_name_is_posted_once_not_per_task(self) -> None:
         out, posts = self._run(
@@ -177,7 +182,7 @@ class TestWaveStopsAfterTheFirstRefusal:
         """The refusal is a property of the NAME: only members sharing it are skipped."""
         posts: list[dict] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             if path != "/api/spawn":
                 return {}
             posts.append(body)
@@ -193,7 +198,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            out = spawn_tools.spawn_run(
+            out = spawn_tools.mcp_core._call_tool(
                 "spawn_run",
                 {"tasks": ["a", "b", "c"], "agents": ["ghost", "scout", "ghost"]},
             )
@@ -204,7 +209,7 @@ class TestWaveStopsAfterTheFirstRefusal:
         """Acceptance is unknown there, so the name is not proven bad."""
         posts: list[dict] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             if path != "/api/spawn":
                 return {}
             posts.append(body)
@@ -218,7 +223,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            spawn_tools.spawn_run("spawn_run", {"tasks": ["a", "b"], "agent": "scout"})
+            spawn_tools.mcp_core._call_tool("spawn_run", {"tasks": ["a", "b"], "agent": "scout"})
         assert len(posts) == 2
 
 
@@ -262,7 +267,13 @@ class TestSpawnListUsesTheSameFilter:
         default = inspect.signature(sa.visible_agent_names).parameters["exclude"].default
         assert default is sa.UNADVERTISED_AGENTS
         for module in (sa, spawn_tools):
-            src = pathlib.Path(module.__file__).read_text(encoding="utf-8")
+            path = pathlib.Path(module.__file__)
+            paths = (
+                [path, *sorted(path.with_name("subagent_parts").glob("*.py"))]
+                if module is sa
+                else [path]
+            )
+            src = "".join(p.read_text(encoding="utf-8") for p in paths)
             expected = 1 if module is sa else 0
             for reserved in (
                 "kirocrew-conductor",
@@ -303,29 +314,41 @@ class TestRosterIsAdvertisedOnSpawnRun:
         desc = tools["spawn_run"]["inputSchema"]["properties"]["agent"]["description"]
         assert "Agent name" in desc and "Valid names" not in desc
 
-    def test_no_filesystem_scan_when_an_event_loop_is_running(self) -> None:
-        """``mcp_discovery._managed_tools_in_process`` calls ``_list_tools()`` from
-        ``async def probe_server`` on the gateway's loop (fallback hosts where the
-        probe spawn is refused). A directory scan there would stall the loop, and
-        that caller keeps only tool NAMES, so the roster is skipped instead.
+    def test_no_filesystem_scan_on_the_names_only_path(self) -> None:
+        """``mcp_discovery._managed_tools_in_process`` keeps only tool NAMES, so it
+        reads them through ``schemas(names_only=True)``, which never performs the
+        roster scan — the scan fills a description a names-only caller discards.
+        This replaced the former ``get_running_loop`` skip: the scan is not
+        reached rather than detected-and-skipped.
 
         Asserted by NON-CALL, not by raising: the hint swallows Exception to keep
         the tool advertisement alive, so a raising stub would be absorbed and the
-        test would pass with the guard deleted.
+        test would pass with the names-only guard deleted.
         """
         scan = MagicMock(return_value=_agents("scout"))
-
-        async def _on_loop() -> dict:
-            with patch.object(spawn_tools.mcp_core, "list_agents", scan):
-                return {t["name"]: t for t in spawn_tools.schemas()}
-
-        tools = asyncio.run(_on_loop())
+        with patch.object(spawn_tools.mcp_core, "list_agents", scan):
+            tools = {t["name"]: t for t in spawn_tools.schemas(names_only=True)}
         scan.assert_not_called()
+        # Names are still present and unchanged...
+        assert "spawn_run" in tools
         desc = tools["spawn_run"]["inputSchema"]["properties"]["agent"]["description"]
         assert "Valid names" not in desc
-        # ...while the stdio server, which runs no event loop, still gets it.
-        off_loop = self._schema(_agents("scout"))
-        assert "scout" in off_loop["spawn_run"]["inputSchema"]["properties"]["agent"]["description"]
+        # ...while the full descriptor build (what the stdio server serves a
+        # model) still performs the scan and carries the roster.
+        off_names = self._schema(_agents("scout"))
+        assert (
+            "scout" in off_names["spawn_run"]["inputSchema"]["properties"]["agent"]["description"]
+        )
+
+    def test_the_names_only_build_matches_the_full_build_names(self) -> None:
+        """The names-only path is a faithful substitute: same tool names, same
+        order as the full descriptor build."""
+        with patch.object(
+            spawn_tools.mcp_core, "list_agents", MagicMock(return_value=_agents("scout"))
+        ):
+            full = [t["name"] for t in spawn_tools.schemas()]
+            names_only = [t["name"] for t in spawn_tools.schemas(names_only=True)]
+        assert full == names_only
 
     def test_a_name_that_breaks_the_grammar_never_reaches_the_tool_list(self) -> None:
         """The tool list is always-on context in every session, so a spec-declared

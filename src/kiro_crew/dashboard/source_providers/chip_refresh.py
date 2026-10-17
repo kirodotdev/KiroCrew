@@ -29,9 +29,10 @@ from kiro_crew.dashboard.source_providers import (
 from kiro_crew.dashboard.source_providers.chip_status import _CheckUpdateCallback
 from kiro_crew.dashboard.source_providers.contract import SourceProviderNotConfigured
 
-# Bound both running and semaphore-waiting tasks. Overflow URLs receive a cache
-# timestamp with no status, which backs them off for one TTL instead of creating
-# a new task on every slots request.
+# Bound both running and semaphore-waiting tasks. A paced overflow URL is
+# re-stamped `(now, cached status)` instead of creating a new task on every slots
+# request, so it waits out its own lifecycle clock again (60 s open, 900 s open on
+# the idle tier, 1 h closed, 6 h merged). A forced overflow URL is not re-stamped.
 _CHECK_PENDING_MAX = 16
 # Public alias for periodic drivers that need to know the per-round admission
 # cap so they can rotate which URLs they submit first across rounds (fair
@@ -44,17 +45,39 @@ _CHECK_TASKS: set[asyncio.Task] = set()  # keep strong refs until done
 # bounds a rapid multi-turn session to one forced provider read per URL per
 # interval; every other caller stays on plain TTL pacing.
 _CHECK_FORCE_MIN_INTERVAL_SECS = 10.0
+# The idle tier: chips on slots nobody is using (no turn running, and no turn
+# ended and no owner opened the slot recently -- every tab restored at boot starts
+# here). An open pull request on such a chip is re-read on this slower clock, and
+# at most ``_IDLE_CHECK_PER_ROUND`` of those re-reads start per chip TTL across
+# the whole gateway, oldest read first. So the provider cost of a long sidebar
+# history is a small constant instead of a burst that grows with every PR link
+# the dashboard ever showed. A chip never read since boot is not on this budget:
+# it gets its first read at the normal admission pace, so chips still fill in
+# after a restart.
+_IDLE_CHECK_TTL_SECS = 15 * 60
+_IDLE_CHECK_PER_ROUND = 2
+# [window start, idle re-reads started in it]. One window for every owner
+# socket's driver, so a second dashboard window does not double the idle cost.
+_idle_check_window: list[float] = [float("-inf"), 0.0]
 
 
 def _chip_refresh_due(
-    entry: tuple[float, dict[str, str] | None] | None, now: float, *, force: bool
+    entry: tuple[float, dict[str, str] | None] | None,
+    now: float,
+    *,
+    force: bool,
+    open_ttl: float | None = None,
 ) -> bool:
     """Whether a chip-cache entry has aged out of its TTL.
 
     ``force`` (a turn boundary) bypasses the TTL for every lifecycle except
     ``merged``: a PR the agent may have just reopened is worth a forced read, a
     merged one cannot change and would only spend a provider subprocess per turn
-    for as long as its chip stays in the sidebar.
+    for as long as its chip stays in the sidebar. A merged chip still keeps its
+    own clock under force: once that clock has run out, a forced call reads it.
+
+    ``open_ttl`` replaces the open-PR TTL (the idle tier passes
+    ``_IDLE_CHECK_TTL_SECS``); merged and closed chips keep their own clocks.
     """
     if entry is None:
         return True
@@ -64,12 +87,16 @@ def _chip_refresh_due(
         return now - stamped_at >= cache._TERMINAL_TTL_SECS
     if force:
         return True
-    ttl = (
-        cache._lifecycle_ttl(state)
-        if state in projection._TERMINAL_CHIP_STATES
-        else chip_status._CHECK_TTL_SECS
-    )
-    return now - stamped_at >= ttl
+    return now - stamped_at >= _chip_ttl(state, open_ttl)
+
+
+def _chip_ttl(state: str, open_ttl: float | None = None) -> float:
+    """The clock a paced ``_chip_refresh_due`` applies to a chip state."""
+    if state in projection._TERMINAL_CHIP_STATES:
+        return cache._lifecycle_ttl(state)
+    if open_ttl is None:
+        return chip_status._CHECK_TTL_SECS
+    return open_ttl
 
 
 def schedule_check_refresh(
@@ -78,18 +105,21 @@ def schedule_check_refresh(
     """Kick bounded background refreshes for stale URLs without blocking.
 
     Returns the URLs whose value is expected to change shortly — the ones this
-    call started plus the ones a prior call already has in flight. Callers that
+    call started plus the due ones a prior call already has in flight (an
+    in-flight URL that is not due is not returned). Callers that
     serve the cache to a client (the source-strip status endpoint) use it to tell
     the client "poll again soon" instead of leaving it on TTL pacing, which would
     surface a just-refreshed state up to one extra TTL late. URLs deferred by the
-    pending-work cap are deliberately excluded: they were backed off for a TTL,
-    so nothing is coming sooner.
+    pending-work cap are deliberately excluded: nothing is coming sooner. A paced
+    deferred URL is re-stamped with its cached status, so it waits out its own
+    lifecycle clock again; a forced one is not re-stamped.
 
     ``force`` skips the TTL check for event-driven callers that know the remote
     state just moved (see ``request_check_refresh_now``). The pending cap and
     inflight dedup still apply, so a forced round can never outgrow a paced one.
-    A finished PR ages by ``_TERMINAL_TTL_SECS`` instead of the open-PR TTL, and a
-    MERGED one is not even force-read (``_chip_refresh_due``).
+    A finished PR ages on its own clock instead of the open-PR TTL -- a merged one
+    by ``_TERMINAL_TTL_SECS``, a closed one by ``_CLOSED_TTL_SECS`` -- and force
+    does not bypass a MERGED one's clock (``_chip_refresh_due``).
     """
     now = time.monotonic()
     refreshing: list[str] = []
@@ -101,10 +131,12 @@ def schedule_check_refresh(
             refreshing.append(url)
             continue
         if len(chip_status._check_inflight) >= _CHECK_PENDING_MAX:
-            # A paced (TTL) caller over the cap was backed off for a full TTL, so
-            # renew its timestamp to stop the slots endpoint re-attempting every
-            # poll. A forced caller (turn boundary) must instead stay eligible:
-            # renewing the timestamp here would push the periodic sweep out by a
+            # A paced (TTL) caller over the cap renews its timestamp with its
+            # cached status, to stop the slots endpoint re-attempting every poll;
+            # it then waits out its own lifecycle clock again (60 s open, 900 s
+            # open on the idle tier, 1 h closed, 6 h merged). A forced caller
+            # (turn boundary) must instead stay eligible: renewing the
+            # timestamp here would push the periodic sweep out by a
             # TTL and make the chip STALER in exactly the contention case force
             # exists for (more PR-linked slots than the pending cap).
             if not force:
@@ -113,10 +145,83 @@ def schedule_check_refresh(
             continue
         chip_status._check_inflight.add(url)
         refreshing.append(url)
+        if force:
+            # Every forced read that STARTS burns the URL's floor allowance, here
+            # and only here, whichever caller forced it. A URL already in flight
+            # or deferred by the cap above is not stamped: its read is pre-turn or
+            # never ran, and stamping it would lock out the corrective read.
+            chip_status._check_forced_at[url] = now
         task = asyncio.get_running_loop().create_task(_refresh_check_status(url, on_update))
         _CHECK_TASKS.add(task)
         task.add_done_callback(_CHECK_TASKS.discard)
     return refreshing
+
+
+def schedule_idle_check_refresh(
+    urls: list[str], on_update: _CheckUpdateCallback | None = None
+) -> list[str]:
+    """The idle tier of the chip sweep: chips on slots nobody is using.
+
+    Same fire-and-forget contract and return value as ``schedule_check_refresh``,
+    with two differences that bound the cost of a long sidebar history:
+
+    * a chip that has been read is due again only after ``_IDLE_CHECK_TTL_SECS``
+      (merged and closed chips keep their longer lifecycle clocks), and at most
+      ``_IDLE_CHECK_PER_ROUND`` such re-reads start per chip TTL, gateway-wide,
+      the longest-unread first so none is starved;
+    * a chip never read since boot is read now, but only up to the free pending
+      capacity. Submitting more would make the pending cap stamp the overflow as
+      "backed off" with no status, and it would then wait out the chip TTL with
+      no status at all. A chip that has never yielded a status (its first read
+      failed, or the pending cap backed it off) is retried on that same path
+      once the chip TTL has passed, so a boot hiccup does not leave it blank for the slow clock.
+    """
+    now = time.monotonic()
+    unread: list[str] = []
+    due: list[tuple[float, str]] = []
+    for url in dict.fromkeys(urls):
+        if url in chip_status._check_inflight:
+            continue
+        entry = chip_status._check_cache.get(url)
+        if entry is None:
+            unread.append(url)
+        elif entry[1] is None:
+            if now - entry[0] >= chip_status._CHECK_TTL_SECS:
+                unread.append(url)
+        elif _chip_refresh_due(entry, now, force=False, open_ttl=_IDLE_CHECK_TTL_SECS):
+            due.append((entry[0], url))
+    free = max(_CHECK_PENDING_MAX - len(chip_status._check_inflight), 0)
+    refreshing = schedule_check_refresh(unread[:free], on_update) if unread[:free] else []
+    window_start, started = _idle_check_window
+    if now - window_start >= chip_status._CHECK_TTL_SECS:
+        window_start, started = now, 0.0
+    free = max(_CHECK_PENDING_MAX - len(chip_status._check_inflight), 0)
+    budget = min(max(_IDLE_CHECK_PER_ROUND - int(started), 0), free)
+    picked = [url for _, url in sorted(due)[:budget]]
+    if picked:
+        reread = schedule_check_refresh(picked, on_update)
+        started += len(reread)
+        refreshing.extend(reread)
+    _idle_check_window[:] = [window_start, started]
+    return refreshing
+
+
+def schedule_tiered_check_refresh(
+    urls: list[str], idle: set[str], on_update: _CheckUpdateCallback | None = None
+) -> None:
+    """Split one chip sweep between the two tiers, keeping its order.
+
+    ``idle`` is the set of URLs that only idle slots link
+    (``DashboardState.idle_source_link_urls``): those go to
+    :func:`schedule_idle_check_refresh`, the rest to the chip TTL. Every
+    periodic or list-driven sweep goes through here, so none can skip the tier.
+    """
+    fast_urls = [url for url in urls if url not in idle]
+    idle_urls = [url for url in urls if url in idle]
+    if fast_urls:
+        schedule_check_refresh(fast_urls, on_update)
+    if idle_urls:
+        schedule_idle_check_refresh(idle_urls, on_update)
 
 
 def request_check_refresh_now(
@@ -142,19 +247,11 @@ def request_check_refresh_now(
             continue
         eligible.append(url)
     inflight_before = set(chip_status._check_inflight)
+    # `schedule_check_refresh` stamps the floor for every forced read it starts.
     refreshing = schedule_check_refresh(eligible, on_update, force=True)
-    # Distinguish URLs this call actually STARTED from ones a prior fetch already
-    # had in flight. `schedule_check_refresh` returns both, but only the started
-    # ones did a fresh post-turn read.
-    started = [url for url in refreshing if url not in inflight_before]
+    # Of the URLs it returns, the ones a prior fetch already had in flight did
+    # not do a fresh post-turn read: their fetch may predate this turn's push.
     already = [url for url in refreshing if url in inflight_before]
-    # Burn the once-per-interval force allowance ONLY for URLs actually STARTED.
-    # A URL deferred by the pending cap never ran, and an already-in-flight URL's
-    # fetch may have started BEFORE this turn's final push landed — stamping
-    # either as "just forced" would satisfy the floor with pre-turn data and lock
-    # out the corrective read for CHECK_FORCE_MIN_INTERVAL.
-    for url in started:
-        chip_status._check_forced_at[url] = now
     # For URLs whose in-flight fetch predates this turn boundary, request exactly
     # one follow-up forced read on completion (see `_refresh_check_status`), so a
     # stale pre-turn result cannot pin the chip for a full TTL.
@@ -179,6 +276,9 @@ _CHIP_CI_UNAVAILABLE = "ciUnavailable"
 async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None = None) -> None:
     previous = chip_status._check_cache.get(url)
     generation = chip_status._check_generations.get(url, 0)
+    # Set when a queued follow-up forced read was due but did not start (the
+    # pending cap refused it); the result below is then cached as already due.
+    followup_deferred = False
     try:
         async with chip_status._check_semaphore:
             status = await _fetch_check_status(url)
@@ -193,8 +293,18 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
             # The follow-up starts fresh (not in flight), so it is not re-queued
             # here — at most one follow-up per in-flight collision, bounded.
             chip_status._check_force_pending.discard(url)
+            # A follow-up that starts is floor-stamped by `schedule_check_refresh`
+            # itself, so a turn boundary inside the floor is paced instead of
+            # queueing yet another follow-up.
+            followup: list[str] = []
             with contextlib.suppress(Exception):
-                schedule_check_refresh([url], on_update, force=True)
+                followup = schedule_check_refresh([url], on_update, force=True)
+            # The URL left `_check_inflight` above, so a due follow-up that did
+            # not start was refused by the pending cap.
+            if url not in followup and _chip_refresh_due(
+                chip_status._check_cache.get(url), time.monotonic(), force=True
+            ):
+                followup_deferred = True
     if chip_status._check_generations.get(url, 0) != generation:
         # A mutation superseded this URL while the fetch was in flight, so the
         # result describes the pre-mutation state. Drop it rather than let it
@@ -249,7 +359,13 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
         # judge itself "changed", and drive the invalidation loop the flap damper
         # below contains.
         status = chip_status._keep_known_merge_state(status, previous[1] if previous else None)
-    chip_status._check_cache[url] = (time.monotonic(), status)
+    stamped_at = time.monotonic()
+    if followup_deferred:
+        # The pending cap deferred the follow-up forced read, so this possibly
+        # pre-turn result must not be cached as fresh for a full TTL: stamp it
+        # already due so the next paced sweep re-reads it.
+        stamped_at -= _chip_ttl(projection._chip_state(status))
+    chip_status._check_cache[url] = (stamped_at, status)
     chip_status._trim_check_cache()
     changed = status is not None and (previous is None or previous[1] != status)
     if not changed:
@@ -345,6 +461,7 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
                 ref.url,
                 "--json",
                 "state,isDraft,mergeable,mergeStateStatus,headRefOid",
+                host=ref.host,
             ),
             github._github_rollup_read(ref),
             return_exceptions=True,

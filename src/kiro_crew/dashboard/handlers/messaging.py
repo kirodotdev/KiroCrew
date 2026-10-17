@@ -17,14 +17,15 @@ import os
 import platform
 import re
 import time
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any, Callable, cast  # noqa: F401
 
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.agent_sdk.drivers.acp_vocab import NATIVE_CHILD_NOT_RESUMABLE  # noqa: F401
-from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.command_bus import (
     DEFAULT_COMMAND_TIMEOUT_MS,
     DEFAULT_DRAIN_WAIT_MS,
@@ -48,7 +49,6 @@ from kiro_crew.config.loader import (  # noqa: F401
 )
 from kiro_crew.constants import CHANNEL_SEND_NAMESPACES, SUBAGENT_COMPLETION_META_KEY  # noqa: F401
 from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable  # noqa: F401
-from kiro_crew.dashboard import messaging_api as _messaging_api
 from kiro_crew.dashboard.channel_folders import (  # noqa: F401
     CHANNEL_CONFIG_SECTIONS,
     channel_restart_required,
@@ -77,6 +77,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     internal_memory_scope,
     pip_extra_install_command,
     read_bounded_json,
+    spawn_parent_claim,
 )
 from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX
 from kiro_crew.dashboard.handlers.core import _hot_apply_after_write  # noqa: F401
@@ -97,6 +98,7 @@ from kiro_crew.dashboard.messaging_api import wecom_settings as _owner_wecom_set
 from kiro_crew.dashboard.messaging_api.channel_delivery import (  # noqa: F401
     _channel_delivery_key,
     _ChannelSendFailed,
+    _cron_job_for,
     _deliver_channel_dm,
     _deliver_to_channel,
     _owner_dm_target,
@@ -133,9 +135,12 @@ from kiro_crew.dashboard.messaging_api.notifications import (  # noqa: F401
     api_notifications_clear,
 )
 from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
+    _SLACK_ERRORS_WITH_UNKNOWN_OUTCOME,
+    _SOURCE_NAME_MAX,
     _audit_send_message,
     _deliver_send_message_fallback,
     _post_send_message_to_slack,
+    _proactive_source_line,
     _read_send_message,
     _redact_all,
     _resolve_session_link_url,
@@ -145,6 +150,9 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _SendMessageBody,
     _SendMessageOutcome,
     _session_link_blocks,
+    _slack_rate_limited,
+    _slack_rejected_outright,
+    _with_source_line,
     api_delete_message,
     api_update_message,
 )
@@ -183,6 +191,8 @@ from kiro_crew.dashboard.messaging_api.slack_settings import (  # noqa: F401
 )
 from kiro_crew.dashboard.messaging_api.spawn import (  # noqa: F401
     _continue_on_loop,
+    _qualified_model_refusal,
+    _requested_backend,
     _slot_for_parent,
     _spawn_on_loop,
     _spawn_request_memory_mode,
@@ -223,6 +233,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
     DashboardState,
+    load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import (  # noqa: F401
     LINK_WINDOW_SECS,
@@ -236,6 +247,8 @@ from kiro_crew.dashboard.ws_event_scope import (  # noqa: F401
     persisted_snapshot_denial_reason,
     slot_owner_snapshot,
 )
+from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env
+from kiro_crew.members import attributable_session_key, member_identity_for_session
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink  # noqa: F401
 from kiro_crew.messaging.renderer import (  # noqa: F401
@@ -243,6 +256,7 @@ from kiro_crew.messaging.renderer import (  # noqa: F401
     chunk_text,
     display_safe_for,
     format_overflow,
+    render_options_as_text,
 )
 from kiro_crew.messaging.transport import (  # noqa: F401
     DM_TARGET_PREFIX,
@@ -276,7 +290,8 @@ from kiro_crew.subagent import (  # noqa: F401
     SUCCESSOR_UNKNOWN,
     effort_applied_note,
     effort_drop_reason,
-    parent_spawn_allowlists,
+    effort_pending_note,
+    parent_template_allowlists,
 )
 from kiro_crew.subagent_manager.admission.types import (  # noqa: F401
     QueuedReadUnavailable,
@@ -735,6 +750,10 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     actions = body.get("actions")
     if actions is not None and not isinstance(actions, list):
         return web.json_response({"error": "actions must be a list"}, status=400)
+    # Attribution comes from an attested, non-app session header, never the
+    # body, so no caller can put another crewmate's face on its note.
+    attribution_key = await asyncio.to_thread(attributable_session_key, request)
+    member = await asyncio.to_thread(member_identity_for_session, attribution_key)
     payload = NotificationPayload(
         source="system",
         channel="system.agent",
@@ -745,6 +764,8 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         url=body.get("url"),
         group_key=body.get("group_key"),
         actions=actions,
+        member=member,
+        publisher_session=attribution_key or None,
     )
     try:
         note = state.notification_bus.push(payload)
@@ -1038,6 +1059,11 @@ async def api_send_message(request: web.Request) -> web.Response:
                 was_loaded = slot is not None
                 if slot is None:
                     slot = await rehydrate_slot_from_history_async(state, slot_key)
+                elif getattr(slot, "window_pending", False) is True:
+                    # A tab restored as a sidebar row loads its window before
+                    # the delivery below appends to it, with the read off the loop.
+                    await load_window_off_loop(slot)
+                    slot = state.get_slot(slot_key)
                 logger.info(
                     "send_message session=origin resolved slot_key=%s job=%s was_loaded=%s rehydrated=%s",
                     slot_key,
@@ -1125,6 +1151,7 @@ async def api_send_message(request: web.Request) -> web.Response:
                 channel_type=channel_type,
                 caller_session=caller_session,
                 declared_session=declared_session,
+                attribution_session=await asyncio.to_thread(attributable_session_key, request),
                 is_cron_caller=is_cron_caller,
                 send_to_slack=send_to_slack,
             )
@@ -2188,7 +2215,7 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
     return out
 
 
-async def _write_env_off_loop(updates: dict[str, str | None], *, config_kept: bool = False) -> None:
+async def _write_env_off_loop(updates: dict[str, str | None]) -> None:
     """Run the blocking ``.env`` write on a worker, drained under the config lock.
 
     Every caller holds ``_get_config_lock()`` across this, and a thread cannot be
@@ -2210,14 +2237,13 @@ async def _write_env_off_loop(updates: dict[str, str | None], *, config_kept: bo
 
     A ``.env`` saved as UTF-16 or UTF-32 is refused before anything is written
     (:func:`_write_env_updates_locked` never overwrites a file it cannot
-    parse). That refusal is raised here as a 409 carrying the fix, so every
-    channel save answers it the same way instead of with an opaque 500. A
-    caller that rolls its config write back on a failed ``.env`` write (Slack,
-    Teams, Webex, WeCom and Feishu) still does, because it catches every
-    exception; Discord and Telegram commit config before this call and keep it,
-    so their 409 leaves the config change in place and only the ``.env`` part
-    unsaved, which a retry after the UTF-8 re-save completes. Those two callers
-    pass ``config_kept=True`` so the 409 says their other settings were saved.
+    parse), and so is one whose masked staging directory cannot be used
+    (:class:`~kiro_crew.hidden_leaf_staging.EnvStagingRefused`). Each refusal is
+    raised here as a 409 carrying the fix, so every channel save answers it the
+    same way instead of with an opaque 500. Every
+    saver (Slack, Teams, Webex, WeCom, Feishu, Discord and Telegram) reaches
+    this through :func:`_write_env_or_roll_back`, which rolls the config write
+    back on any failure, so on every channel the 409 means nothing was saved.
     """
     fut = asyncio.ensure_future(asyncio.to_thread(_write_env_updates, updates))
     try:
@@ -2226,23 +2252,65 @@ async def _write_env_off_loop(updates: dict[str, str | None], *, config_kept: bo
         await asyncio.wait([fut])
         raise
     except _loader.EnvFileWideEncodingError as exc:
-        raise _wide_env_refusal(exc, config_kept=config_kept) from exc
+        raise _wide_env_refusal(exc) from exc
+    except EnvStagingRefused as exc:
+        raise web.HTTPConflict(
+            text=json.dumps({"error": str(exc)}),
+            content_type="application/json",
+        ) from exc
 
 
-def _wide_env_refusal(
-    exc: _loader.EnvFileWideEncodingError, *, config_kept: bool = False
-) -> web.HTTPConflict:
-    """The response for a channel save refused because ``.env`` is wide-encoded.
+async def _write_env_or_roll_back(
+    env_updates: dict[str, str | None],
+    rollback: Callable[[], Awaitable[None]] | None,
+) -> None:
+    """Write a channel save's ``.env`` half, undoing its config half on failure.
 
-    ``config_kept`` is set by a caller whose config write stays in place when
-    the ``.env`` write is refused, so the message does not imply the whole save
-    was discarded.
+    Every channel saver commits ``config.json`` first and then calls this, so the
+    second half of the transaction exists once and a new saver cannot copy only
+    part of it. *rollback* undoes the config commit; pass ``None`` when the save
+    wrote no config.
+
+    A failed write runs *rollback* and re-raises, so a refused save (the wide
+    ``.env`` 409 included) changes nothing. A cancellation drains the write
+    first and runs *rollback* only when the write itself failed: a write that
+    landed before the cancel arrived already pairs with the committed config,
+    and rolling the config back would split the pair it means to keep. The
+    cancellation is re-raised either way.
+
+    On success the process environment is updated to match: ``load_credentials()``
+    lets ``os.environ`` win over ``.env``, so a replaced or cleared token would
+    otherwise keep reading as installed until restart, and spawned children
+    would inherit the stale value.
     """
-    outcome = "The .env was not changed"
-    outcome += "; your other settings were saved." if config_kept else "."
+    write = asyncio.ensure_future(_write_env_off_loop(env_updates))
+    try:
+        await asyncio.shield(write)
+    except asyncio.CancelledError:
+        await asyncio.gather(write, return_exceptions=True)
+        failed = not write.cancelled() and write.exception() is not None
+        if failed and rollback is not None:
+            await rollback()
+        raise
+    except BaseException:
+        if rollback is not None:
+            await rollback()
+        raise
+    for key, new_val in env_updates.items():
+        # The value the .env line now holds: a new channel token reads back as
+        # its secret:// reference, the same value a restart propagates.
+        line_val = _loader.vault_channel_env_value(key, new_val)
+        if line_val is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = line_val
+
+
+def _wide_env_refusal(exc: _loader.EnvFileWideEncodingError) -> web.HTTPConflict:
+    """The response for a channel save refused because ``.env`` is wide-encoded."""
     message = (
         f"{_loader.env_path()} is saved as {exc.wide_encoding}, which Kiro Crew "
-        f"cannot read. Re-save it as UTF-8 and save again. {outcome}"
+        "cannot read. Re-save it as UTF-8 and save again. The .env was not changed."
     )
     return web.HTTPConflict(
         text=json.dumps({"error": message}),
@@ -2253,16 +2321,18 @@ def _wide_env_refusal(
 def _write_env_updates(updates: dict[str, str | None]) -> None:
     """Update select keys in config_dir/.env, preserving comments and order.
 
-    A value of ``None`` deletes the key; new keys are appended. The write goes
-    through :func:`kiro_crew.atomic_write.atomic_write` with
-    ``restrict_to_owner=True``, which locks the unique temp file down to its
-    owner BEFORE any content byte is written: POSIX mode bits protect nothing
-    on Windows (``fchmod_safe`` is a documented no-op there), so a lockdown
-    applied after the write would leave the tokens readable under the
-    directory-inherited DACL for the whole write — and indefinitely if the
-    lockdown fails. ``restrict_on_error="warn"`` keeps this writer's contract:
-    a host where the lockdown cannot be applied must not abort a token save
-    that already succeeded.
+    A value of ``None`` deletes the key; new keys are appended. A new channel
+    secret (:data:`~kiro_crew.config.loader.VAULT_CHANNEL_CREDENTIAL_KEYS`) is
+    stored in the vault and its line written as the ``secret://KEY`` reference
+    (:class:`~kiro_crew.secrets.migrate.ChannelSecretStore`). The write goes
+    through :func:`kiro_crew.hidden_leaf_staging.publish_env`, which stages
+    the temp inside the masked staging directory (never beside ``.env``, at a
+    name no sandbox mask covers) and locks it down to its owner BEFORE any
+    content byte is written: POSIX mode bits protect nothing on Windows
+    (``fchmod_safe`` is a documented no-op there), so a lockdown applied after
+    the write would leave the tokens readable under the directory-inherited
+    DACL for the whole write. A refused lockdown warns rather than aborting a
+    token save that already succeeded.
 
     CALLER CONTRACT: blocking, and every caller is an async request handler
     holding ``_get_config_lock()``, so each one must reach this through
@@ -2290,7 +2360,7 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     # OFF the gateway boot path (messaging.py is imported at startup). Importing
     # it inside the writer keeps it off the module-import path so gateway
     # readiness is not delayed by loading the migration module.
-    from kiro_crew.secrets.migrate import _env_lock_path
+    from kiro_crew.secrets.migrate import ChannelSecretStore, _env_lock_path
 
     lock_path = _env_lock_path(ep)
     lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -2302,7 +2372,16 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
             "the other operation finishes."
         )
     try:
-        _write_env_updates_locked(ep, updates)
+        # A new channel token goes to the vault and its .env line becomes the
+        # secret:// reference; a failed .env write puts the vault back.
+        store = ChannelSecretStore(ep)
+        env_updates = store.stage(updates)
+        try:
+            _write_env_updates_locked(ep, env_updates)
+        except BaseException:
+            store.rollback()
+            raise
+        store.finish()
     finally:
         platform_compat.release_lock(lock_fd)
         os.close(lock_fd)
@@ -2331,12 +2410,7 @@ def _write_env_updates_locked(ep: "Path", updates: dict[str, str | None]) -> Non
         if k not in seen and new_val:
             out.append(f"{k}={new_val}")
     content = "\n".join(out) + ("\n" if out else "")
-    atomic_write(
-        ep,
-        _loader.env_bom_prefix(ep) + content,
-        restrict_to_owner=True,
-        restrict_on_error="warn",
-    )
+    publish_env(ep, _loader.env_bom_prefix(ep) + content)
 
 
 async def api_slack_manifest(request: web.Request) -> web.Response:
@@ -2345,13 +2419,18 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
     Mirrors ``kirocrew manifest --url`` so the settings UI can offer one-click
     Slack app creation without the CLI: the bundled template gets the user's
     alias substituted, and the comment-stripped YAML is URL-encoded into
-    Slack's new-app deep link. Serves only the public template — no secrets.
+    Slack's new-app deep link. ``command`` is the slash command that manifest
+    registers. The gateway answers only ``/{slack.command}`` and this endpoint
+    writes no config, so a caller that passes ``?alias=`` gets the value its
+    ``kirocrew config set slack.command`` step needs. Settings → Slack passes no
+    alias, so its link registers the default ``/kirocrew``. Serves only the
+    public template — no secrets.
     """
     from kiro_crew import slack_manifest
 
     # Default to a non-identifying alias: $USER is a host account name and
     # should not be volunteered to every authenticated client.
-    alias = request.query.get("alias", "").strip() or "kirocrew"
+    alias = request.query.get("alias", "").strip() or slack_manifest.DEFAULT_ALIAS
     if not slack_manifest.valid_alias(alias):
         return web.json_response({"error": "invalid alias"}, status=400)
     try:
@@ -2364,6 +2443,7 @@ async def api_slack_manifest(request: web.Request) -> web.Response:
             "alias": alias,
             "manifest": rendered,
             "create_url": create_url,
+            "command": slack_manifest.slash_command(alias),
         }
     )
 
@@ -2643,10 +2723,14 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
 # Channels whose SDK ships as an optional extra rather than in core. Maps the
 # channel to (import name, extra name) so the panel can report BOTH whether the
 # SDK is importable by this gateway process and the exact command that installs
-# it into this interpreter. Teams (PyJWT) and WhatsApp (neonize) have the same
-# shape and are one entry each when their panels adopt the card.
+# it into this interpreter. Every panel that reports these renders the shared
+# optional-SDK card instead of a bare ``pip install`` line.
 _CHANNEL_SDK_EXTRA: dict[str, tuple[str, str]] = {
     "feishu": ("lark_oapi", "feishu"),
+    # PyJWT installs as the ``jwt`` package (teams/client.py imports ``jwt``).
+    "teams": ("jwt", "teams"),
+    # whatsapp/client.py probes ``find_spec("neonize")``.
+    "whatsapp": ("neonize", "whatsapp"),
 }
 
 
@@ -2654,7 +2738,7 @@ _CHANNEL_SDK_EXTRA: dict[str, tuple[str, str]] = {
 # ``kiro_crew.dashboard.handlers.messaging.<name>`` reaches it wherever it lives;
 # see ``kiro_crew.dashboard.messaging_api``. Run once, after this body has bound
 # every name and before the owner-surface guard below wraps the spawn routes.
-_messaging_api.compose(
+_facade_compose(
     globals(),
     (
         _owner_spawn,

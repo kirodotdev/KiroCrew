@@ -182,6 +182,8 @@ def test_membership_is_unchanged_by_the_move() -> None:
             ACP_BACKEND_CODEX,
             ACP_BACKEND_OPENCODE,
             ACP_BACKEND_GOOSE,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_PI,
         }
     )
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO})

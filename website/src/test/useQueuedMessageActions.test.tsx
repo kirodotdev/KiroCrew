@@ -61,6 +61,8 @@ function renderActions(opts: {
   /** Rows QueueStack would draw. Defaults to every row (all interactive). */
   visible?: ChatMessage[]
   restoreDraft?: (text: string, files: string[], aliases?: Record<string, string[]>) => void
+  stagedFiles?: () => readonly string[]
+  project?: () => string | undefined
 }) {
   const rows = opts.rows ?? [queued('q1', 'run the tests'), queued('q2', 'then deploy')]
   const slot = opts.slot === undefined ? 'chat-1' : opts.slot
@@ -73,6 +75,8 @@ function renderActions(opts: {
       allQueued: queue,
       visibleQueued: opts.visible ?? queue,
       restoreDraft: opts.restoreDraft,
+      stagedFiles: opts.stagedFiles,
+      project: opts.project,
     })
     return null
   }
@@ -217,6 +221,42 @@ describe('useQueuedMessageActions — cancel', () => {
     const { get } = renderActions({ rows: [queued('q1', sent)], restoreDraft })
     act(() => { get().onCancel('q1') })
     expect(restoreDraft).toHaveBeenCalledWith(sent, [], undefined)
+  })
+
+  it('a foreign card with an inline mention restores the mention, the chip and its alias (#14617)', () => {
+    // After a reload there is no stash. The row's list proves the inline
+    // marker's path, so the composer gets a readable mention instead of raw
+    // wire text, the file re-stages, and the alias rides along so the chip
+    // and the mention stay reconciled the way a picked file's do.
+    const sent = 'check [attached_file 1] /repo/a.txt\u200a, please'
+    const restoreDraft = vi.fn()
+    const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/a.txt'] } } as ChatMessage]
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('check @a.txt, please', ['/repo/a.txt'], { '/repo/a.txt': ['@a.txt'] })
+  })
+
+  it('spells a restored mention past the files the host composer already stages', () => {
+    // The restore merges into the host composer, so the host's staged files
+    // count when the parser picks a suffix: `@a.txt` would collide with the
+    // staged `/repo/x/a.txt` on the next send.
+    const sent = 'against [attached_file 1] /repo/y/a.txt'
+    const restoreDraft = vi.fn()
+    const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/y/a.txt'] } } as ChatMessage]
+    const { get } = renderActions({ rows, restoreDraft, stagedFiles: () => ['/repo/x/a.txt'] })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('against @y/a.txt', ['/repo/y/a.txt'], { '/repo/y/a.txt': ['@y/a.txt'] })
+  })
+
+  it('spells a restored mention of a project file relative to the host project', () => {
+    // The host composer revives a chip on undo only for the project-relative
+    // spelling, so the hook reads the host's project at cancel time.
+    const sent = 'check [attached_file 1] /repo/main/src/a.ts'
+    const restoreDraft = vi.fn()
+    const rows = [{ ...queued('q1', sent), meta: { queueId: 'q1', files: ['/repo/main/src/a.ts'] } } as ChatMessage]
+    const { get } = renderActions({ rows, restoreDraft, project: () => '/repo/main' })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('check @src/a.ts', ['/repo/main/src/a.ts'], { '/repo/main/src/a.ts': ['@src/a.ts'] })
   })
 
   it('an entry edited to drop its first attachment restores the renumbered survivor from the replaced list', () => {

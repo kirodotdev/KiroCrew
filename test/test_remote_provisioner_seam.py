@@ -617,19 +617,24 @@ class TestTheAliasRefusalSitsWhereTheFileIsConsumed:
 
         The name was removed from ``wrap_argv`` and the same behaviour was still reached
         through ``_materialize_sealable_ceilings``, so a per-function check is what missed it.
-        This asserts the strict FILE check's callers are exactly the two CONSUME seams, and
-        names them: the provisioner seam for ``cloud.json`` and the launch record's own read
-        for ``cloud_launch_state.json``. A spawn-path caller appearing under any name fails
+        This asserts the strict FILE check's callers are exactly the CONSUME seams, and
+        names them: the provisioner seam for ``cloud.json``, the launch record's own read
+        for ``cloud_launch_state.json``, and the whisper loader's trust check for a verified
+        model file. A spawn-path caller appearing under any name fails
         here, which is the property that was missed when the behaviour moved one function over.
         """
         import ast
+        import importlib
         import inspect
 
         import kiro_crew.sandbox as sandbox_mod
 
-        tree = ast.parse(inspect.getsource(sandbox_mod))
+        # The module and the owners carved out of it, which share its namespace.
+        modules = [sandbox_mod, *map(importlib.import_module, sandbox_mod._CARVED_OWNERS)]
+        trees = [ast.parse(inspect.getsource(module)) for module in modules]
         callers = {
             fn.name
+            for tree in trees
             for fn in ast.walk(tree)
             if isinstance(fn, ast.FunctionDef)
             for c in ast.walk(fn)
@@ -638,6 +643,7 @@ class TestTheAliasRefusalSitsWhereTheFileIsConsumed:
         assert callers == {
             "require_unaliased_cloud_config",
             "require_unaliased_launch_state",
+            "require_unaliased_model_file",
         }, sorted(callers)
 
     def test_the_consumer_refuses_an_aliased_config(self, monkeypatch, tmp_path):

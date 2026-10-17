@@ -69,6 +69,22 @@ function offsetToEditorPosition(contents: string, offset: number): { line: numbe
   }
 }
 
+/** The line ending most of `text`'s line breaks use: CRLF, a lone CR, or LF,
+ *  which is also the answer on a tie and for text with no line break. */
+function dominantLineEnding(text: string): '\n' | '\r\n' | '\r' {
+  let lf = 0, crlf = 0, cr = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 10) lf++
+    else if (c === 13) {
+      if (text.charCodeAt(i + 1) === 10) { crlf++; i++ } else cr++
+    }
+  }
+  if (crlf > lf && crlf >= cr) return '\r\n'
+  if (cr > lf && cr > crlf) return '\r'
+  return '\n'
+}
+
 function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undefined): void {
   if (markers == null) return
   editor.setMarkers(
@@ -233,11 +249,24 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     }),
     [file.name, file.lang, file.header, editorContents, editorKey],
   )
+  // A baseline with LF line endings only (the file panel's HEAD body, read
+  // with universal newlines) marks every line of a CRLF document changed, so
+  // the baseline takes the line ending most of the opening text uses. From
+  // the opening text, never the live buffer: a new baseline makes Pierre
+  // rebuild the document from the opening text, so a baseline that followed
+  // the buffer (an edit that removes every line break would flip it) would
+  // throw the session's edits away. The opening text changes only on a reseed
+  // or a recovery remount, which rebuild the document anyway.
+  const baseEol = useMemo(() => dominantLineEnding(editorContents), [editorContents])
+  const baseContents = useMemo(
+    () => (diffBase == null || baseEol === '\n' ? diffBase : diffBase.replace(/\r\n?|\n/g, baseEol)),
+    [diffBase, baseEol],
+  )
   const baseFile = useMemo<FileContents | null>(
-    () => (diffBase == null
+    () => (baseContents == null
       ? null
-      : { name: file.name, contents: diffBase, cacheKey: contentCacheKey(file.name, diffBase, surfaceId + ':edit-base') }),
-    [diffBase, file.name, surfaceId],
+      : { name: file.name, contents: baseContents, cacheKey: contentCacheKey(file.name, baseContents, surfaceId + ':edit-base') }),
+    [baseContents, file.name, surfaceId],
   )
   const renderLiveDiff = diffBase !== undefined
     && isPierreFilePairWithinBudget(baseFile, diffNewFile)

@@ -593,7 +593,7 @@ async def test_admission_errors_name_allocator_failures_and_log_them(caplog):
 
 
 @pytest.mark.asyncio
-async def test_admission_errors_keep_the_memory_refusal_text_and_log_the_cause(caplog):
+async def test_admission_errors_name_the_memory_refusal_reason_and_log_it(caplog):
     import logging
 
     from kiro_crew.workflow_memory import WorkflowMemoryError, admission_errors
@@ -604,11 +604,171 @@ async def test_admission_errors_keep_the_memory_refusal_text_and_log_the_cause(c
 
     with caplog.at_level(logging.WARNING, logger="kiro_crew.workflow_memory"):
         result = await start()
+    message = (
+        "Workflow memory is unavailable: Workflow caller and delivery memory must match. "
+        "No Global fallback was used."
+    )
     assert result == {
         "ok": False,
-        "error": "Workflow memory is unavailable; no Global fallback was used.",
-        "errors": ["Workflow memory is unavailable; no Global fallback was used."],
+        "error": message,
+        "errors": [message],
         "code": "workflow_memory_unavailable",
         "admission_rejected": True,
     }
     assert any("must match" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["a member cannot use the Global store", "member has no persisted identity"]
+)
+async def test_admission_errors_name_the_member_binding_reason_and_its_remedy(reason):
+    from kiro_crew.execution_context import _unavailable
+    from kiro_crew.workflow_memory import admission_errors
+
+    @admission_errors
+    async def start():
+        raise _unavailable(reason)
+
+    result = await start()
+    assert result["ok"] is False
+    assert result["admission_rejected"] is True
+    assert result["code"] == "workflow_memory_unavailable"
+    assert result["errors"] == [result["error"]]
+    error = result["error"]
+    assert error.startswith(f"Workflow memory is unavailable: {reason}. ")
+    assert "No Global fallback was used." in error
+    assert "start a chat with no crewmate picked" in error
+    assert "pick a crewmate that has its own memory" in error
+    # The shared wrapper is stripped, so neither half of it appears twice.
+    assert error.count("memory is unavailable") == 1
+    assert "Global was not used" not in error
+
+
+@pytest.mark.asyncio
+async def test_admission_errors_name_a_wrapped_memory_cause_but_not_an_os_cause():
+    from kiro_crew.execution_context import _unavailable
+    from kiro_crew.workflow_memory import WorkflowMemoryError, admission_errors
+
+    @admission_errors
+    async def wrapper_only():
+        try:
+            raise _unavailable("member database is unreadable")
+        except ValueError as exc:
+            raise WorkflowMemoryError(
+                "Workflow memory is unavailable; Global was not used"
+            ) from exc
+
+    @admission_errors
+    async def wrapped_member_binding():
+        try:
+            raise _unavailable("a member cannot use the Global store")
+        except ValueError as exc:
+            raise _unavailable("malformed execution context") from exc
+
+    @admission_errors
+    async def os_cause():
+        try:
+            raise OSError("/private/path says no")
+        except OSError as exc:
+            raise WorkflowMemoryError(
+                "Workflow memory is unavailable; Global was not used"
+            ) from exc
+
+    named = await wrapper_only()
+    assert named["error"] == (
+        "Workflow memory is unavailable: member database is unreadable. "
+        "No Global fallback was used."
+    )
+    binding = await wrapped_member_binding()
+    assert binding["error"].startswith(
+        "Workflow memory is unavailable: malformed execution context "
+        "(a member cannot use the Global store). No Global fallback was used. "
+    )
+    assert "start a chat with no crewmate picked" in binding["error"]
+    hidden = await os_cause()
+    assert hidden["error"] == "Workflow memory is unavailable; no Global fallback was used."
+    assert "/private/path" not in hidden["error"]
+
+
+@pytest.mark.asyncio
+async def test_admission_errors_keep_a_path_a_memory_store_refusal_formats_in_the_log(
+    tmp_path, caplog
+):
+    import logging
+
+    from kiro_crew.memory_stores import (
+        LEGACY_MEMBER_MANIFEST,
+        UnknownMemoryStore,
+        _legacy_member_manifest_owner,
+    )
+    from kiro_crew.workflow_memory import WorkflowMemoryError, admission_errors
+
+    # A directory where the manifest file belongs makes the real raise site
+    # format an OSError, and the path it names, into the refusal text.
+    (tmp_path / LEGACY_MEMBER_MANIFEST).mkdir()
+    with pytest.raises(UnknownMemoryStore) as raised:
+        _legacy_member_manifest_owner(tmp_path)
+    refusal = raised.value
+    assert tmp_path.name in str(refusal)
+
+    @admission_errors
+    async def direct():
+        raise refusal
+
+    @admission_errors
+    async def wrapped():
+        try:
+            raise refusal
+        except ValueError as exc:
+            raise WorkflowMemoryError(
+                "Workflow memory is unavailable; Global was not used"
+            ) from exc
+
+    for start in (direct, wrapped):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.workflow_memory"):
+            error = (await start())["error"]
+        assert error == "Workflow memory is unavailable; no Global fallback was used."
+        assert any(tmp_path.name in record.getMessage() for record in caplog.records)
+
+
+def test_every_named_memory_refusal_reason_is_fixed_text():
+    """The admission error names only reasons fixed at their raise site.
+
+    ``memory_refusal_message`` shows an execution-context refusal's reason and a
+    ``WorkflowMemoryError``'s text to the caller unredacted, which is safe only
+    while every raise site passes fixed text rather than formatting an
+    exception or a path into it.
+    """
+    import ast
+
+    import kiro_crew
+
+    package = Path(kiro_crew.__file__).resolve().parent
+    sites = {"_unavailable": [package / "execution_context.py"], "WorkflowMemoryError": []}
+    for path in sorted(package.rglob("*.py")):
+        if "WorkflowMemoryError(" in path.read_text(encoding="utf-8", errors="replace"):
+            sites["WorkflowMemoryError"].append(path)
+
+    formatted: list[str] = []
+    checked = 0
+    for name, paths in sites.items():
+        for path in paths:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == name
+                ):
+                    continue
+                checked += 1
+                fixed = len(node.args) == 1 and (
+                    (isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str))
+                    or isinstance(node.args[0], ast.Name)
+                )
+                if not fixed:
+                    formatted.append(f"{path.relative_to(package)}:{node.lineno}")
+    assert checked > 20
+    assert not formatted, f"memory refusals built from formatted text: {formatted}"

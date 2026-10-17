@@ -1,7 +1,7 @@
 """Tests: pending skill UPDATES + per-skill version history.
 
 Covers ``stage_skill_candidate(kind="update", ...)``, ``get_auto_skill_version``,
-``read_auto_skill_body`` and ``approve_pending_update`` — the update-approval
+``read_auto_skill_body`` and ``approve_pending_update_checked`` — the update-approval
 flow that snapshots the current live version into ``auto/<slug>/.versions/``
 before overwriting, and the guarantee that ``.versions`` never surfaces as a
 loadable skill.
@@ -113,7 +113,7 @@ def test_staged_update_meta_appears_in_pending_list(loader):
     assert detail["base_version"] == 1
 
 
-# ── approve_pending_update happy path ──
+# ── approve_pending_update_checked happy path ──
 
 def test_approve_update_carries_the_injection_opt_out_forward(loader):
     """A candidate never sets `inject_on_trigger`, so live must supply it.
@@ -133,7 +133,7 @@ def test_approve_update_carries_the_injection_opt_out_forward(loader):
     assert loader.split_triggered(["auto/quiet"])[1] == ["auto/quiet"]
 
     _stage_update(loader, "quiet", target="auto/quiet", body="## Steps\n\nv2 steps")
-    assert loader.approve_pending_update("quiet") == "auto/quiet"
+    assert loader.approve_pending_update_checked("quiet") == "auto/quiet"
 
     live_text = live.read_text(encoding="utf-8")
     assert "v2 steps" in live_text
@@ -145,7 +145,7 @@ def test_approve_update_carries_the_injection_opt_out_forward(loader):
 def test_approve_update_does_not_invent_an_opt_out(loader):
     _write_live(loader, "loud", body="v1 body")
     _stage_update(loader, "loud", target="auto/loud", body="## Steps\n\nv2 steps")
-    assert loader.approve_pending_update("loud") == "auto/loud"
+    assert loader.approve_pending_update_checked("loud") == "auto/loud"
 
     live_text = (loader._dir / "auto" / "loud" / "SKILL.md").read_text(encoding="utf-8")
     assert "inject_on_trigger" not in live_text
@@ -154,7 +154,7 @@ def test_approve_update_does_not_invent_an_opt_out(loader):
 def test_approve_update_snapshots_and_replaces(loader):
     _write_live(loader, "greet", created_at="2020-01-01T00:00:00+00:00", body="v1 body")
     _stage_update(loader, "greet", target="auto/greet", body="## Steps\n\nv2 steps")
-    assert loader.approve_pending_update("greet") == "auto/greet"
+    assert loader.approve_pending_update_checked("greet") == "auto/greet"
 
     live = loader._dir / "auto" / "greet" / "SKILL.md"
     live_text = live.read_text(encoding="utf-8")
@@ -184,7 +184,7 @@ def test_approve_update_moves_scripts_executable(loader):
         target="auto/withscript",
         scripts=[{"filename": "run.py", "content": "print('ok')\n"}],
     )
-    assert loader.approve_pending_update("withscript") == "auto/withscript"
+    assert loader.approve_pending_update_checked("withscript") == "auto/withscript"
     live_script = loader._dir / "auto" / "withscript" / "scripts" / "run.py"
     assert live_script.exists()
     if os.name != "nt":
@@ -196,7 +196,9 @@ def test_approve_update_moves_scripts_executable(loader):
 def test_approve_update_rejects_missing_target(loader):
     # target names a skill that is not live → refused, candidate intact.
     _stage_update(loader, "orphan", target="auto/nope")
-    assert loader.approve_pending_update("orphan") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("orphan")
+    assert refused.value.reason == "target_missing"
     assert any(p["slug"] == "orphan" for p in loader.list_pending_skills())
     assert not (loader._dir / "auto" / "nope").exists()
 
@@ -211,7 +213,9 @@ def test_approve_update_rejects_non_update_kind(loader):
         procedure_md="body",
         provenance=_prov(),
     )
-    assert loader.approve_pending_update("plain-cand") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("plain-cand")
+    assert refused.value.reason == "not_found"
     assert any(p["slug"] == "plain-cand" for p in loader.list_pending_skills())
 
 
@@ -223,7 +227,9 @@ def test_approve_update_rejects_symlink(loader):
     target = pdir / "real.txt"
     target.write_text("ok", encoding="utf-8")
     os.symlink(str(target), str(pdir / "scripts" / "evil.py"))
-    assert loader.approve_pending_update("symk") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("symk")
+    assert refused.value.reason == "invalid_layout"
     # Live untouched (still v1, original body), candidate still pending.
     assert loader.get_auto_skill_version("auto/symk") == 1
     assert "untouched" in (loader._dir / "auto" / "symk" / "SKILL.md").read_text()
@@ -235,7 +241,9 @@ def test_failed_update_leaves_candidate_and_live_intact(loader, monkeypatch):
     _stage_update(loader, "faux", target="auto/faux")
     # Redaction fails → abort before any live mutation.
     monkeypatch.setattr(loader, "_redact_file_in_place", lambda *a, **k: False)
-    assert loader.approve_pending_update("faux") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("faux")
+    assert refused.value.reason == "redaction_failed"
     # Candidate intact.
     assert (loader._pending_root() / "faux" / "SKILL.md").exists()
     # Live untouched, no snapshot written.
@@ -255,7 +263,7 @@ def test_approve_update_prunes_versions_at_cap(loader):
     for n in range(1, over):
         (vdir / f"v{n}-SKILL.md").write_text(f"snap {n}", encoding="utf-8")
     _stage_update(loader, "capped", target="auto/capped", base_version=over)
-    assert loader.approve_pending_update("capped") == "auto/capped"
+    assert loader.approve_pending_update_checked("capped") == "auto/capped"
     # Approve wrote v<over> and pruned to the newest MAX_SKILL_VERSIONS.
     remaining = sorted(int(p.name[1:].split("-")[0]) for p in vdir.iterdir())
     assert len(remaining) == MAX_SKILL_VERSIONS
@@ -270,7 +278,7 @@ def test_approve_update_prunes_versions_at_cap(loader):
 def test_versions_dir_absent_from_list_skills(loader):
     _write_live(loader, "shown", body="v1")
     _stage_update(loader, "shown", target="auto/shown", body="## Steps\n\nv2")
-    assert loader.approve_pending_update("shown") == "auto/shown"
+    assert loader.approve_pending_update_checked("shown") == "auto/shown"
     # .versions/v1-SKILL.md exists on disk...
     assert (loader._dir / "auto" / "shown" / ".versions" / "v1-SKILL.md").exists()
     # ...but the dot-dir is pruned from discovery: no key references it.
@@ -303,7 +311,7 @@ def test_preview_proposed_body_matches_what_approve_writes(loader):
     _write_live(loader, "prev-two", body="OLD")
     _stage_update(loader, "prev-two-update", target="auto/prev-two")
     proposed = loader.preview_pending_update("prev-two-update")["proposed_body"]
-    assert loader.approve_pending_update("prev-two-update") == "auto/prev-two"
+    assert loader.approve_pending_update_checked("prev-two-update") == "auto/prev-two"
     live = (loader._dir / "auto" / "prev-two" / "SKILL.md").read_text(encoding="utf-8")
     assert live == proposed
     assert "version: 2" in live
@@ -372,7 +380,9 @@ def test_approve_update_script_promotion_failure_loses_nothing(loader, monkeypat
         return real_copy(src, dst, *a, **kw)
 
     monkeypatch.setattr(shutil, "copy2", boom)
-    assert loader.approve_pending_update("prom-fail-update") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("prom-fail-update")
+    assert refused.value.reason == "promotion_failed"
 
     # Live skill untouched: still v2 with the old body, no half-promoted script.
     assert live_skill.read_text(encoding="utf-8") == live_before
@@ -396,7 +406,7 @@ def test_approve_update_promotes_scripts_on_success(loader):
         base_version=1,
         scripts=[{"filename": "go.py", "content": "print('hi')\n"}],
     )
-    assert loader.approve_pending_update("prom-ok-update") == "auto/prom-ok"
+    assert loader.approve_pending_update_checked("prom-ok-update") == "auto/prom-ok"
     live_script = loader._dir / "auto" / "prom-ok" / "scripts" / "go.py"
     assert live_script.exists()
     if os.name != "nt":
@@ -416,7 +426,7 @@ def test_approve_update_preserves_pinned_flag(loader):
     _stage_update(loader, "pinned-skill-update", target="auto/pinned-skill")
     # The preview must show the same content approve will write.
     proposed = loader.preview_pending_update("pinned-skill-update")["proposed_body"]
-    assert loader.approve_pending_update("pinned-skill-update") == "auto/pinned-skill"
+    assert loader.approve_pending_update_checked("pinned-skill-update") == "auto/pinned-skill"
 
     body = live_skill.read_text(encoding="utf-8")
     assert "pinned: true" in body
@@ -430,7 +440,7 @@ def test_approve_update_does_not_invent_pinned_flag(loader):
     """An unpinned target must not become pinned by the rewrite."""
     _write_live(loader, "unpinned-skill", version=1, body="OLD")
     _stage_update(loader, "unpinned-skill-update", target="auto/unpinned-skill")
-    assert loader.approve_pending_update("unpinned-skill-update") == "auto/unpinned-skill"
+    assert loader.approve_pending_update_checked("unpinned-skill-update") == "auto/unpinned-skill"
     body = (loader._dir / "auto" / "unpinned-skill" / "SKILL.md").read_text(encoding="utf-8")
     assert "pinned:" not in body
 
@@ -470,7 +480,9 @@ def test_approve_update_rollback_restores_overwritten_live_script(loader, monkey
         return real_copy(src, dst, *a, **kw)
 
     monkeypatch.setattr(shutil, "copy2", boom)
-    assert loader.approve_pending_update("ow-skill-update") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("ow-skill-update")
+    assert refused.value.reason == "promotion_failed"
 
     # The overwritten script is back to its original bytes and mode.
     assert old_script.read_text(encoding="utf-8") == "print('ORIGINAL')\n"
@@ -583,7 +595,7 @@ def test_approve_update_never_clobbers_an_existing_snapshot(loader):
     (vdir / "v1-SKILL.md").write_text("SNAPSHOT-OF-ORIGINAL-V1\n", encoding="utf-8")
 
     _stage_update(loader, "drift-update", target="auto/drift", base_version=1)
-    assert loader.approve_pending_update("drift-update") == "auto/drift"
+    assert loader.approve_pending_update_checked("drift-update") == "auto/drift"
 
     # The pre-existing v1 snapshot is intact...
     assert (vdir / "v1-SKILL.md").read_text(encoding="utf-8") == "SNAPSHOT-OF-ORIGINAL-V1\n"
@@ -612,7 +624,9 @@ def test_approve_update_rejects_symlinked_live_scripts_dir(loader, tmp_path):
         base_version=1,
         scripts=[{"filename": "go.py", "content": "print('hi')\n"}],
     )
-    assert loader.approve_pending_update("sym-live-update") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("sym-live-update")
+    assert refused.value.reason == "invalid_layout"
     # Nothing written outside, nothing changed live, candidate intact.
     assert list(outside.iterdir()) == []
     assert (live_dir / "SKILL.md").read_text(encoding="utf-8") == live_before
@@ -676,13 +690,15 @@ def test_approve_update_rejects_a_stale_base(loader):
     _stage_update(loader, "race-a", target="auto/race", base_version=1, body="## Steps\n\nFROM-A")
     _stage_update(loader, "race-b", target="auto/race", base_version=1, body="## Steps\n\nFROM-B")
 
-    assert loader.approve_pending_update("race-a") == "auto/race"
+    assert loader.approve_pending_update_checked("race-a") == "auto/race"
     live = loader._dir / "auto" / "race" / "SKILL.md"
     assert "FROM-A" in live.read_text(encoding="utf-8")
     assert loader.get_auto_skill_version("auto/race") == 2
 
     # The second is now stale -> refused, live untouched, candidate still pending.
-    assert loader.approve_pending_update("race-b") is None
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("race-b")
+    assert refused.value.reason == "stale_base"
     body = live.read_text(encoding="utf-8")
     assert "FROM-A" in body and "FROM-B" not in body
     assert loader.get_auto_skill_version("auto/race") == 2
@@ -707,7 +723,7 @@ def test_approve_update_allows_a_candidate_without_base_version(loader):
     import json as _json
 
     assert "base_version" not in _json.loads(meta_path.read_text(encoding="utf-8"))
-    assert loader.approve_pending_update("nobase-update") == "auto/nobase"
+    assert loader.approve_pending_update_checked("nobase-update") == "auto/nobase"
     assert "NEW" in (loader._dir / "auto" / "nobase" / "SKILL.md").read_text(encoding="utf-8")
 
 
@@ -715,7 +731,7 @@ def test_approve_update_matching_base_still_succeeds(loader):
     """The gate must not block the normal (in-sync) case."""
     _write_live(loader, "insync", version=4, body="OLD")
     _stage_update(loader, "insync-update", target="auto/insync", base_version=4)
-    assert loader.approve_pending_update("insync-update") == "auto/insync"
+    assert loader.approve_pending_update_checked("insync-update") == "auto/insync"
     assert loader.get_auto_skill_version("auto/insync") == 5
 
 
@@ -795,8 +811,10 @@ def test_stale_rejection_leaves_the_candidate_unredacted(loader):
     assert secret.encode() in before
 
     # Advance live so redact-b becomes stale.
-    assert loader.approve_pending_update("redact-a") == "auto/redact"
-    assert loader.approve_pending_update("redact-b") is None
+    assert loader.approve_pending_update_checked("redact-a") == "auto/redact"
+    with pytest.raises(skills_mod.PendingApprovalRefused) as refused:
+        loader.approve_pending_update_checked("redact-b")
+    assert refused.value.reason == "stale_base"
 
     # Still pending, and byte-identical to what was staged.
     assert candidate.exists()

@@ -24,6 +24,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import runtime_death
+from kiro_crew.agent_sdk.drivers.acp_vocab import is_user_worded_failure
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.dashboard.chat_utils import (
     expire_slack_options,
@@ -53,9 +54,11 @@ from kiro_crew.platform import current_context
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
+from kiro_crew.slack.format import escape_mrkdwn
 from kiro_crew.slack.handler import (
     _get_default_agent,
     _hydrate_conv_flags,
+    _hydrate_conv_header,
     _hydrate_thread_overrides,
     _is_slack_restricted,
     _maybe_auto_title_slack,
@@ -73,7 +76,7 @@ from kiro_crew.slack.handler import (
 from kiro_crew.slack.renderer import PARTIAL_TURN_MARKER
 from kiro_crew.slack.renderer import SlackApprovalDecider
 from kiro_crew.slack.renderer import SlackApprovalDecider as _APPROVAL_REGISTRY
-from kiro_crew.slack.renderer import SlackRenderer
+from kiro_crew.slack.renderer import SlackRenderer, _display_safe
 from kiro_crew.slack.thread_parent import (
     ThreadParent,
     fetch_thread_parent,
@@ -112,6 +115,49 @@ logger = logging.getLogger(__name__)
 #: Mirrors the native path's fallback (``handler.py``: ``_get_default_agent()
 #: or "kirocrew"``) and the many ``agent="kirocrew"`` call sites.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+#: Generic reply for a failed transport turn whose error text is not meant for
+#: the user (see ``_transport_error_text``).
+_TRANSPORT_ERROR_TEXT = "🔧 Something went wrong (transport path). Please try again."
+
+#: Longest error detail posted to Slack, the cap the native path applies to its
+#: ``UnknownMemoryStore`` refusal.
+_TRANSPORT_ERROR_DETAIL_MAX_CHARS = 1000
+
+
+def _redacted_error_detail(exc: BaseException) -> str:
+    """``str(exc)`` redacted, truncated and made inert as Slack markup.
+
+    Redaction runs before truncation so a cut can never leave the head of a
+    credential or path that the full-string passes would have matched. The
+    credential scan reads what Slack DISPLAYS as well as the bytes
+    (``_display_safe``): ``AKIA*<rest>*`` matches no pattern as written, yet
+    Slack renders the emphasis away and shows an intact key. The text
+    comes from outside Kiro Crew (a provider error can echo arbitrary input), so
+    Slack's entity characters are escaped last: ``<!channel>`` or ``<@U…>`` in it
+    must show as text, not notify anyone. Escaping after the cut means the cut can
+    never split an escape sequence.
+    """
+    detail = _display_safe(redact_local_paths(redact(str(exc)))[0])
+    return escape_mrkdwn(detail[:_TRANSPORT_ERROR_DETAIL_MAX_CHARS])
+
+
+def _transport_error_text(exc: BaseException) -> str:
+    """User-facing reply for a failed transport turn.
+
+    A classified backend ``AcpError`` (see ``is_user_worded_failure``) carries a
+    user-readable reason, for example a usage limit that retrying cannot fix, so
+    that reason is shown under the same ``❌`` prefix the native path uses. The
+    message can still quote a host path or a credential from the backend, so it
+    goes through the same redaction and length cap as the ``UnknownMemoryStore``
+    refusal. Every other failure, including an unclassified ``AcpError``, keeps
+    the generic retry text, because its message is internal detail.
+    """
+    if isinstance(exc, UnknownMemoryStore):
+        return _redacted_error_detail(exc)
+    if is_user_worded_failure(exc):
+        return f"❌ {_redacted_error_detail(exc)}"
+    return _TRANSPORT_ERROR_TEXT
 
 
 async def _refresh_dashboard_tab(session_key: str) -> None:
@@ -300,9 +346,9 @@ async def handle_message_transport(
             candidate_key = owner or canonical_key(reply_ts)
             if candidate_key != session_key:
                 await _hydrate_thread_overrides(candidate_key, conversation_log)
-                # The worker read may yield to a new thread owner. Resolve that
-                # owner before publishing either routing key; cached hydration
-                # returns without yielding when an owner is already known.
+                await _hydrate_conv_header(sessions, candidate_key)
+                # The worker reads may yield to a new thread owner. Resolve that
+                # owner before publishing either routing key.
                 if sessions.get_session_for_thread(reply_ts) != owner:
                     continue
                 _hydrate_conv_flags(sessions, candidate_key)
@@ -337,6 +383,7 @@ async def handle_message_transport(
     # after session_key, so we match it. Idempotent:
     # _hydrate_thread_overrides guards repeated I/O per session.
     await _hydrate_thread_overrides(session_key, conversation_log)
+    await _hydrate_conv_header(sessions, session_key)
     await _resolve_thread_owner("post-hydration")
     _hydrate_conv_flags(sessions, session_key)
 
@@ -508,6 +555,9 @@ async def handle_message_transport(
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
     _turn_landed = False
+    # The turn's driver, for the finally: it records whether the backend
+    # compacted the session, on every exit path.
+    driver: TurnDriver | None = None
     # This turn's thread-replies read; its watermark moves in the finally.
     _thread_replies: ThreadReplies | None = None
 
@@ -914,21 +964,54 @@ async def handle_message_transport(
         accumulated = await driver.run(full_message)
 
         # ── Post-turn bookkeeping ──
-        # The turn already succeeded (we have `accumulated`), so record success
-        # first and isolate the non-critical bookkeeping below — a failure in
+        # The turn ended without raising (we have `accumulated`), so book its
+        # verdict first and isolate the non-critical bookkeeping below — a failure in
         # context-usage accounting or conversation logging must NOT fall through
         # to the outer except and double-record the turn as a failure.
-        sessions.record_success(session_key)
-        # Beside the counter it stands in for: a landed turn clears the
-        # shared-death streak exactly as it clears the consecutive-failure count,
-        # so the streak stays a consecutive run rather than a lifetime total whose
-        # bound is permanently tripped.
-        runtime_death.clear_shared_deaths(session_key)
+        _unfinished = getattr(driver, "unfinished_turn", False) is True
+        if _unfinished:
+            # The handle ended a turn the backend never finished; the driver
+            # already followed the partial text with the timeout notice. The
+            # runtime still reads alive, so book a failure and reset the session
+            # (keeping the conversation), as the shared channel dispatcher and
+            # Telegram's do, or the next message waits on it again. The reset runs
+            # while this turn holds its permit, like the breaker reset the except
+            # branch below can make; the release in the ``finally`` sees that the
+            # permit died with the reset session and leaves a successor's alone.
+            logger.warning(
+                "transport_dispatch: the turn for %s ended unfinished; resetting the session",
+                session_key,
+            )
+            # At its threshold the breaker resets the session inside
+            # record_failure and answers True. A same-key message can claim a
+            # successor while that reset is awaited, so a second reset here
+            # would end the successor mid-turn: reset only when it did not.
+            breaker_reset = await sessions.record_failure(session_key)
+            if breaker_reset is not True:
+                try:
+                    await sessions.reset(session_key)
+                except Exception:
+                    logger.warning(
+                        "transport_dispatch: session reset after an unfinished turn "
+                        "failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
+        else:
+            sessions.record_success(session_key)
+            # Beside the counter it stands in for: a landed turn clears the
+            # shared-death streak exactly as it clears the consecutive-failure
+            # count, so the streak stays a consecutive run rather than a lifetime
+            # total whose bound is permanently tripped.
+            runtime_death.clear_shared_deaths(session_key)
         # The prompt (with any re-injected context) reached the model and the
         # turn completed, so the finally must NOT restore the one-shot flag --
         # unless the user cancelled it, which discards that prompt.
         _turn_landed = driver_turn_landed(driver)
-        Stats().inc_message_success()
+        if _unfinished:
+            Stats().inc_message_failed()
+        else:
+            Stats().inc_message_success()
 
         # Remember this turn's OPTIONS control, if it posted one, so the next
         # turn on this thread can strike it through.
@@ -973,7 +1056,11 @@ async def handle_message_transport(
             )
 
         try:
-            sessions.check_context_usage(session_key, client)
+            # Not for an unfinished turn: its runtime was just reset, so the
+            # reading is moot, and a compaction it fired would land on whatever
+            # holds the key now. The except branch below skips this check too.
+            if not _unfinished:
+                sessions.check_context_usage(session_key, client)
         except Exception:
             logger.warning(
                 "transport_dispatch: check_context_usage failed session=%s",
@@ -1284,15 +1371,7 @@ async def handle_message_transport(
             )
         else:
             try:
-                await slack.post_message(
-                    channel,
-                    (
-                        redact_local_paths(redact(str(exc)))[0][:1000]
-                        if isinstance(exc, UnknownMemoryStore)
-                        else "🔧 Something went wrong (transport path). Please try again."
-                    ),
-                    post_thread_ts,
-                )
+                await slack.post_message(channel, _transport_error_text(exc), post_thread_ts)
             except Exception:
                 pass
         try:
@@ -1314,9 +1393,16 @@ async def handle_message_transport(
         # armed past the end of its turn.
         _APPROVAL_REGISTRY.discard_session(session_key)
         # A turn that consumed the post-compaction flag but never landed
-        # discarded the prompt carrying the re-injected context; put the flag
-        # back so the next turn re-injects it.
-        rearm_reinjection(sessions, session_key, consumed=_needs_reinjection, landed=_turn_landed)
+        # discarded the prompt carrying the re-injected context, and a backend
+        # that compacted the session during the turn dropped it; either way the
+        # flag is set so the next turn re-injects it.
+        rearm_reinjection(
+            sessions,
+            session_key,
+            consumed=_needs_reinjection,
+            landed=_turn_landed,
+            compacted=getattr(driver, "compaction_completed", False) is True,
+        )
         # The replies watermark moves only past a turn that landed after a good
         # read; a cancelled or failed turn discarded the prompt that carried them.
         if _turn_landed and _thread_replies is not None and _thread_replies.read_ok:

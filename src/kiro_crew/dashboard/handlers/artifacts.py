@@ -27,7 +27,6 @@ import base64
 import copy
 import functools
 import getpass
-import json
 import logging
 import os
 import re
@@ -45,12 +44,14 @@ from aiohttp import web
 from kiro_crew import hooks, publish_sync
 from kiro_crew import sel as _sel_mod
 from kiro_crew.artifact_source import LINK, classify_source
+from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND
 from kiro_crew.artifacts import (
     EXPECT_ABSENT,
     MAX_CONTENT_BYTES,
     USER_SELECTABLE_KINDS,
     ArtifactAlreadyExistsError,
     ArtifactComment,
+    ArtifactConflictError,
     ArtifactError,
     ArtifactNotFoundError,
     ArtifactReplacedError,
@@ -65,8 +66,19 @@ from kiro_crew.artifacts import (
     webapp_metadata_from_dict,
 )
 from kiro_crew.constants import md_link_destination
-from kiro_crew.dashboard.chat_folders import generate_emoji_for_name
-from kiro_crew.dashboard.handlers._shared import _is_restricted_session
+from kiro_crew.dashboard.chat_folders import (
+    archived_session_names_in_folders,
+    chat_folder_subtree_ids,
+    generate_emoji_for_name,
+    live_slot_names_in_folders,
+)
+from kiro_crew.dashboard.handlers._shared import (
+    _is_restricted_session,
+    bounded_json_error_as_exception,
+    bounded_json_error_code,
+    read_bounded_json,
+    require_owner_dashboard_request,
+)
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_with_identity, stat_identity
@@ -116,8 +128,10 @@ _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB 
 # Publish-provider name grammar. Upstream imports this from ``validation`` where
 # it also backs the MCP publish-tool FieldSpecs; the public fork's validation
 # module doesn't carry those tools, so the constraint lives here at the sole
-# HTTP boundary that accepts a provider name.
-_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+# HTTP boundary that accepts a provider name. ``\Z``-anchored like
+# ``_SESSION_KEY_RE`` below: matched raw with ``.match``, so a ``$`` anchor would
+# admit a trailing newline.
+_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
 
 # Upper bound (seconds) on any single awaited remote-publish-provider network
 # call. Without it a slow/hung provider would block the awaiting request (and
@@ -136,6 +150,22 @@ def _json_response(data: Any, status: int = 200) -> web.Response:
 
 def _err(message: str, status: int = 400) -> web.Response:
     return web.json_response({"error": message}, status=status)
+
+
+async def _non_owner_refusal(request: web.Request, operation: str) -> web.Response | None:
+    """Refuse a signed-in dashboard caller who is not the owner; ``None`` admits.
+
+    Every state-changing artifact route calls this first, before it reads the
+    body or the store. Two callers are not dashboard subjects and keep their
+    own rules: an app token (``request["app"]`` set, bounded by its manifest
+    grant) and the loopback internal-secret transport the agent ``artifact_*``
+    tools, the CLI and app drivers use. That transport leaves ``app`` absent
+    and marks ``internal_auth``, so it is admitted on that mark rather than
+    refused by the owner check, which needs a present empty app claim.
+    """
+    if request.get("app") or request.get("internal_auth") is True:
+        return None
+    return await require_owner_dashboard_request(request, operation)
 
 
 def _notify_artifact_update(state: Any, slug: str, version: int, *, deleted: bool = False) -> None:
@@ -162,19 +192,31 @@ def _notify_artifact_update(state: Any, slug: str, version: int, *, deleted: boo
 
 
 async def _read_json_body(request: web.Request) -> dict[str, Any]:
-    """Read a JSON body, capped at ``_MAX_BODY_BYTES``."""
-    raw = await request.read()
-    if len(raw) > _MAX_BODY_BYTES:
+    """Read a JSON object body, capped at ``_MAX_BODY_BYTES``; absent is ``{}``.
+
+    Reads through :func:`read_bounded_json`, so the cap bounds what is
+    ALLOCATED, not only what is accepted: a declared oversize is refused before
+    a byte is read, and a chunked body stops streaming one chunk past the cap
+    instead of being buffered whole first.
+
+    A body that is present but does not declare a JSON content type is refused
+    415 ``unsupported_media_type`` before it is read. That refusal is RAISED as
+    an ``HTTPException``, not as ``ArtifactValidationError``, because every
+    caller turns the latter into a 400 and a 415 must reach the client as a 415.
+    The oversize and malformed answers keep this module's existing
+    ``ArtifactValidationError`` path (a 400 with the message), unchanged.
+    """
+    body, error = await read_bounded_json(request, max_bytes=_MAX_BODY_BYTES, allow_absent=True)
+    if error is None:
+        assert body is not None
+        return body
+    if error.status == 415:
+        raise bounded_json_error_as_exception(error)
+    if error.status == 413:
         raise ArtifactValidationError(f"request body exceeds {_MAX_BODY_BYTES} bytes")
-    if not raw:
-        return {}
-    try:
-        body = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ArtifactValidationError(f"invalid JSON: {exc}") from exc
-    if not isinstance(body, dict):
+    if bounded_json_error_code(error) == "body_not_object":
         raise ArtifactValidationError("request body must be a JSON object")
-    return body
+    raise ArtifactValidationError("invalid JSON")
 
 
 def _session_key(request: web.Request) -> str:
@@ -194,8 +236,10 @@ def _artifact_source_for_request(request: web.Request) -> str:
 #: opaque handles like ``chat-2`` / ``dashboard:chat-2`` / ``cron:foo`` / a Slack
 #: ``ts``; restrict to that charset so a malformed or hostile value (e.g. a JSON
 #: list, or injected markup) can neither poison persisted metadata nor reach the
-#: dashboard surface unsanitized.
-_SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,128}$")
+#: dashboard surface unsanitized. Anchored at ``\Z``, not ``$``: Python's ``$``
+#: also matches before a final newline, so a ``$`` anchor under ``.match`` admits
+#: ``"dashboard:abc\n"`` into the store, where keys compare exactly.
+_SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,128}\Z")
 
 
 def _clean_origin_session_key(raw: Any) -> str:
@@ -770,9 +814,7 @@ def _collect_session_docs(
             modified = 0.0
         session_title = sess.get("title") or key
         try:
-            file_change_reader = getattr(
-                conversation_log, "read_file_change_messages", None
-            )
+            file_change_reader = getattr(conversation_log, "read_file_change_messages", None)
             msgs = (
                 file_change_reader(key)
                 if callable(file_change_reader)
@@ -1086,6 +1128,25 @@ def _scan_artifacts(
     return out
 
 
+async def _chat_folder_session_names(state: Any, folder_id: str) -> set[str]:
+    """Slot names of every session filed in chat folder *folder_id* or under it.
+
+    Empty for no dashboard state, an unknown id, or a folder subtree with no
+    sessions. The open slots are read on the loop that owns the slot table;
+    the transcript scan for archived sessions runs on the slow-work pool.
+    """
+    if state is None:
+        return set()
+    folder_ids = chat_folder_subtree_ids(state, folder_id)
+    if not folder_ids:
+        return set()
+    names = live_slot_names_in_folders(state, folder_ids)
+    names |= await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), archived_session_names_in_folders, state, folder_ids
+    )
+    return names
+
+
 async def api_artifacts_list(request: web.Request) -> web.Response:
     tag = request.query.get("tag") or None
     kind = request.query.get("kind") or None
@@ -1130,11 +1191,19 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     # reason — but with no empty-bucket case, since an empty value here means
     # "don't scope" in the store rather than "no session ever touched it".
     _raw_touched = request.query.get("touched_by")
-    touched_by = (
-        (_clean_origin_session_key(_raw_touched) or _raw_touched)
-        if _raw_touched
-        else None
-    )
+    touched_by = (_clean_origin_session_key(_raw_touched) or _raw_touched) if _raw_touched else None
+    # ``chat_folder`` scopes to what the chats filed in one sidebar folder, or in
+    # the folders nested under it, touched: the union of ``touched_by`` over
+    # those sessions, open and archived. The sessions are resolved here from the
+    # folder id, so the client never names them, and the scope only narrows the
+    # same listing an unscoped call returns. Present-but-empty, an unknown
+    # folder, and a folder subtree holding no sessions all resolve to an empty
+    # set, which matches nothing.
+    touched_by_any: set[str] | None = None
+    if "chat_folder" in request.query:
+        touched_by_any = await _chat_folder_session_names(
+            request.app.get("state"), request.query.get("chat_folder") or ""
+        )
     try:
         store = get_default_store()
         # The listing reads one meta.json per artifact through the store's
@@ -1156,6 +1225,7 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
                 folder=folder,
                 session_key=session,
                 touched_by_session=touched_by,
+                touched_by_any=touched_by_any,
                 pinned=pinned,
             ),
         )
@@ -1180,9 +1250,7 @@ async def api_artifacts_list(request: web.Request) -> web.Response:
     return _json_response({"artifacts": out})
 
 
-async def _authoritative_promote_content(
-    path: str, root: str
-) -> tuple[str | None, str | None]:
+async def _authoritative_promote_content(path: str, root: str) -> tuple[str | None, str | None]:
     """Read the bytes to persist for a promotion from the SOURCE, server-side.
 
     The dashboard obtains its preview through ``/api/file-read``, which redacts
@@ -1304,14 +1372,192 @@ async def _promote_verdict(
         # placeholders AS the artifact's authoritative content, and for a copy
         # there is no pointer left to ever recover the real bytes. Since the
         # server will not read this path, the only honest answer is to decline.
-        return "", "", False, (
-            "source_path is outside the locations this instance may read "
-            "(home, data home, or a configured relocate root)"
+        return (
+            "",
+            "",
+            False,
+            (
+                "source_path is outside the locations this instance may read "
+                "(home, data home, or a configured relocate root)"
+            ),
         )
     return canonical_path, "", True, None
 
 
+# ── Dashboard package bindings ──────────────────────────────────────────────
+#
+# ``bound_to`` says WHOSE dashboard a ``kind="dashboard"`` package is. The store's
+# validator (``artifact_store.dashboard_package.validate_bound_to``) checks its SHAPE
+# and can check nothing else: it runs inside :class:`ArtifactStore`, a library the CLI
+# and cron use with no roster loaded and no gateway running. So "is there anything at
+# the other end of this binding" is asked HERE, on the one write path both doors reach
+# -- the browser's PATCH and MCP's ``artifact_save`` / ``artifact_update`` all arrive at
+# :func:`api_artifacts_create` / :func:`api_artifact_update`.
+#
+# ASKED ONLY WHEN THE WRITE CHANGES THE BINDING, and that single rule is the whole
+# answer for a target that dies later. A session closes, a crewmate is renamed, and the
+# package left behind stays exactly as servable as it was: the serve path refuses it
+# (``member_dashboard._resolve``'s ``member_not_found`` / ``dashboard_slug_ambiguous``,
+# ``api_session_dashboard``'s ``not_root_session``), and that is where the refusal
+# belongs, because the fact expires and a stored record cannot be re-asked. What a
+# write-time check CAN do is catch the author at the one moment the binding is still a
+# typo rather than history. So an edit carrying the binding it already had is never
+# re-litigated: a package whose target is gone can still be re-themed, re-versioned and
+# REBOUND to a live target, and no record written before this check can be stranded by
+# it.
+#
+# Neither half replaces the other, and the eligibility questions are the serve path's
+# own: ``_member_names_for_slug`` for a crewmate, ``is_root_session`` for a session. A
+# binding is accepted here exactly when the serve path would serve it.
+
+
+def _package_binding(content: Any) -> str | None:
+    """The ``bound_to`` a dashboard write would store, or ``None`` when it names none.
+
+    A non-string ``bound_to`` reads as none: its shape is the store validator's
+    question, and answering it here would give the caller two different 400s for one
+    malformed value.
+
+    Asked of EVERY update carrying content, before the record's kind is known, so it
+    must answer "not a binding" for arbitrary text rather than raise.
+
+    Decoded through the package module's OWN ``_decode_package`` rather than a
+    ``json.loads`` here, which is what makes that true. That function is the half of
+    ``parse_package`` that runs before any validator, and it already carries the three
+    guards a decoder of submitted text needs: the surrogate scan, the byte cap, and a
+    ``RecursionError`` branch for the case the byte cap does not cover (depth and size
+    come apart -- a quarter-megabyte of ``[`` is small and still exhausts the stack).
+    A second decoder spelled here would have to re-earn all three, and the first
+    revision of this function proved it: it caught only ``ValueError``, so content that
+    was valid JSON nested past the interpreter's limit turned a perfectly good
+    opaque-text write into a 500.
+
+    Every refusal it raises reads as "no binding here", which is the right answer for
+    all of them: arbitrary text, a package over the cap, and one carrying a lone
+    surrogate are each content the store refuses on its own terms a moment later.
+    """
+    from kiro_crew.artifact_store.dashboard_package import _decode_package
+
+    try:
+        parsed = _decode_package(content)
+    except ArtifactValidationError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    raw = parsed.get("bound_to")
+    return raw if isinstance(raw, str) else None
+
+
+def _refuse_binding(reason: str) -> str:
+    """One refusal sentence, with the caller's own text redacted.
+
+    EVERY binding refusal is built through here, which is the point of it being a
+    function rather than a wrap at the two returns. A refusal names the target the
+    caller submitted, so that it can say which binding was wrong -- and an agent can
+    put anything in a `bound_to` slug, including a credential-shaped string. Redacting
+    where the sentence is BUILT means no route, and no scope branch added later, can
+    return one that was never redacted, and it is the same text ``_audit`` records
+    rather than a second copy that happens to agree.
+
+    An ordinary target survives this unchanged: ``redact_credentials`` rewrites
+    credential-shaped spans, not identifiers, so a slug (``someone-else``) and a slot
+    key (``slack_1785370133.085469``) read back verbatim and the author can still see
+    their typo. Only an `AKIA...`-shaped target becomes ``[REDACTED: credential]``.
+    """
+    return _redact_text(reason)
+
+
+def _crewmate_binding_refusal(cfg: Any, slug: str) -> str | None:
+    """Why no crewmate can resolve to *slug*, or ``None`` when EXACTLY ONE does.
+
+    Takes the config the caller loaded, so the roster this answers from is the same one
+    a sibling check in the same request read.
+
+    EXACTLY one, which is the same count ``member_dashboard._resolve`` requires of this
+    same helper (``!= [member]``). Slugification is lossy, so a hand-edited roster
+    holding both ``Atlas`` and ``atlas`` derives one slug from two names: accepting that
+    binding because SOMETHING matched would store a page every read then refuses with
+    409 ``dashboard_slug_ambiguous``. Ambiguity refuses and never picks -- one of the
+    two crewmates would otherwise be handed the other's page -- and the remedy is a
+    person renaming one of them, which is what the serve-time refusal already says.
+
+    The RAW slug does the lookup and only the message is redacted: redacting first
+    would send ``[REDACTED: credential]`` to the roster and answer a different question
+    than the caller asked.
+    """
+    from kiro_crew.dashboard.handlers.members import _member_names_for_slug
+
+    owners = _member_names_for_slug(cfg, slug)
+    if not owners:
+        return _refuse_binding(
+            f"bound_to 'crewmate:{slug}' names no crew member, so nothing can ever "
+            "render this package: a crewmate's dashboard is resolved from the roster "
+            "by that slug. Create the crewmate first, or bind to an existing one"
+        )
+    if len(owners) > 1:
+        return _refuse_binding(
+            f"bound_to 'crewmate:{slug}' is ambiguous: {len(owners)} crew members "
+            "resolve to that slug, so this page would belong to none of them and every "
+            "read of it is refused 'dashboard_slug_ambiguous'. Ask the human to rename "
+            "one of them"
+        )
+    return None
+
+
+def _session_binding_refusal(state: Any, key: str) -> str | None:
+    """Why no session can be served *key*'s package, or ``None`` when one can.
+
+    ``is_root_session`` is the test :func:`api_session_dashboard` applies on every
+    read, and it is asked here for that reason rather than re-derived: a dispatched or
+    adopted session has no dashboard at all, by the product rule that a worker's
+    records belong to the board of whoever dispatched it.
+    """
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    slot = state.get_slot(_normalize_slot_key(key))
+    if slot is None:
+        return _refuse_binding(
+            f"bound_to 'session:{key}' names no live session, so nothing can render "
+            "this package: a session's dashboard reads the folds of that session's own "
+            "slot. Bind to a session this gateway knows"
+        )
+    if not is_root_session(slot):
+        return _refuse_binding(
+            f"bound_to 'session:{key}' is a dispatched or adopted session, which has "
+            "no dashboard of its own -- its records belong to the board of whoever "
+            "dispatched it, and this page would be refused 'not_root_session' on every "
+            "read. Bind to the root session instead"
+        )
+    return None
+
+
+async def _binding_refusal(state: Any, bound_to: str) -> str | None:
+    """Why *bound_to* can never be served, or ``None`` when it can.
+
+    Takes a binding the store validator has NOT seen yet, so an unknown scope reads as
+    "not this function's question" rather than as an accepted one: the shape check
+    behind it admits exactly two scopes and refuses everything else, and a scope this
+    rejected would be answered twice.
+
+    The roster read is offloaded and the slot read is not, matching the two serve-time
+    checks this mirrors: ``member_dashboard._resolve`` loads the config in a thread,
+    ``api_session_dashboard`` asks the live state inline.
+    """
+    scope, _, target = bound_to.partition(":")
+    if scope == "crewmate":
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        return _crewmate_binding_refusal(cfg, target)
+    if scope == "session":
+        return _session_binding_refusal(state, target)
+    return None
+
+
 async def api_artifacts_create(request: web.Request) -> web.Response:
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifacts_create")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -1421,12 +1667,92 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
             is_mcp = request.headers.get("X-Internal-Secret") is not None
             actor = "agent" if is_mcp else "user"
 
+            submitted_content = (
+                promoted_content if promoted_content is not None else body.get("content")
+            )
+            # THE DEDUP TARGET'S OWN BYTES, read by slug. `find_by_source_path` scans
+            # meta.json, so the record it returns carries no content -- and handing that
+            # to the gate is the same hole as reading an empty snapshot: with no stored
+            # binding to check, the gate judges only the binding this caller submitted,
+            # which is a claim the caller wrote. So a member who copies another's source
+            # path and re-saves it through this route could rebind their page.
+            #
+            # Content AND token from ONE read, for the reason the update path does it:
+            # the gate judges a snapshot and the write lands later.
+            dedup_content, dedup_token, dedup_state = await _run_off_loop(
+                lambda: _stored_snapshot_for(existing.slug)
+            )
+            if dedup_state == _SNAPSHOT_UNREADABLE and await _run_off_loop(
+                lambda: _gate_must_classify(existing.slug, submitted_content)
+            ):
+                _audit(
+                    tool="artifact_save",
+                    request=request,
+                    outcome="denied",
+                    error="stored snapshot unreadable",
+                    extra={"slug": existing.slug, "source_path": source_path},
+                )
+                return _err(
+                    "that artifact could not be read, so this save cannot be authorized "
+                    "against what it holds; nothing was written -- retry",
+                    status=503,
+                )
+            # The same binding gate the update route asks, on the path a create
+            # that lands on an existing slug takes. One of the two is not enough:
+            # whichever went unasked is the spelling a worker would use.
+            refused = await _run_off_loop(
+                lambda: _package_write_refusal(request, submitted_content, dedup_content)
+            )
+            if refused:
+                _audit(
+                    tool="artifact_create",
+                    request=request,
+                    outcome="denied",
+                    error="dashboard package binding",
+                    extra={"slug": existing.slug},
+                )
+                return _err(refused, status=403)
+
             # Pass through ALL supported fields (not just content).
             update_kwargs: dict[str, Any] = {
-                "content": promoted_content if promoted_content is not None else body.get("content"),
+                "content": submitted_content,
                 "actor": actor,
                 "snapshot": True,
             }
+            # UNDER THE TOKEN OF THE SNAPSHOT JUST JUDGED, so a rebind landing between
+            # the read above and this write is refused by the store rather than
+            # committed over -- the same guard the update route carries, on the path
+            # that reaches the same records through a source path.
+            #
+            # NO TOKEN MEANS NO WRITE for a package, rather than a write without the
+            # guard. The snapshot can be gone by the time it is read -- the dedup
+            # target deleted after the lookup, its slug recreated as somebody else's
+            # dashboard -- and that absence is exactly the case the gate cannot judge:
+            # with nothing stored it has only the binding this caller submitted, which
+            # the caller wrote, and the store's default would commit it over whatever
+            # now holds the slug.
+            if await _run_off_loop(lambda: _is_dashboard_package(dedup_content, submitted_content)):
+                if not dedup_token:
+                    _audit(
+                        tool="artifact_save",
+                        request=request,
+                        outcome="denied",
+                        error="no authorized snapshot for a dashboard package write",
+                        extra={"slug": existing.slug, "source_path": source_path},
+                    )
+                    return _err(
+                        "that slug no longer holds the dashboard package this save was "
+                        "authorized against, so there is nothing to write over; "
+                        "nothing was written -- refetch and re-base",
+                        status=409,
+                    )
+            # AND THE TOKEN OF THIS READ TRAVELS REGARDLESS, for the same reason as the
+            # update route: the refusal above fires on the stored content classifying as
+            # a package, so a dedup target that was ordinary prose would otherwise reach
+            # the write with nothing to compare and a dashboard arriving in the gap
+            # would be replaced. `update` decides what to do with it under its lock.
+            if dedup_token:
+                update_kwargs["snapshot_token"] = dedup_token
             if body.get("name"):
                 update_kwargs["name"] = body["name"]
             if body.get("tags") is not None:
@@ -1452,6 +1778,23 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
                     extra={"slug": existing.slug, "source_path": source_path},
                 )
                 return _err(str(exc))
+            except ArtifactConflictError as exc:
+                # The record moved between the snapshot the gate judged and this
+                # write, so nothing was written. Answered like the update route's
+                # conflict: what to refetch, not a 500.
+                _audit(
+                    tool="artifact_save",
+                    request=request,
+                    outcome="denied",
+                    error=str(exc),
+                    extra={"slug": existing.slug, "source_path": source_path},
+                )
+                # REDACTED: the conflict names the SLUG, and a slug is
+                # `[a-z0-9-]` -- which cannot be a `ghp_` but can be an `xoxb-` or a
+                # `glpat-`, the same shapes the named-package read refuses for.
+                from kiro_crew.platform.context import redact_via_context
+
+                return _err(redact_via_context(str(exc)), status=409)
             except ArtifactError as exc:
                 _audit(
                     tool="artifact_save",
@@ -1482,10 +1825,55 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     if merr:
         _audit(tool="artifact_save", request=request, outcome="denied", error=merr)
         return _err(merr)
+    # The third write path: a package created under a slug nothing holds yet. Gated
+    # like the other two, so "create it somewhere new" is not the way past the rule.
+    # No stored binding is passed because there is none: this path is reached only
+    # after the dedupe branch above found no artifact to land on.
+    #
+    # Gated on the bytes that are actually STORED, which is `promoted_content` when a
+    # `source_path` was promoted and the request body carried no `content` of its own
+    # (the same expression the create below writes, and the same one the dedupe branch
+    # gates as `submitted_content`). Asking about `body.get("content")` alone would let
+    # a caller send an empty body with a `source_path` whose file declares
+    # `bound_to: "crewmate:<someone else>"`: the gate would parse `""`, find no package
+    # and pass, and the other crewmate's tab would then serve and run this caller's page
+    # beside that crewmate's own fold values.
+    #
+    # OFF THE LOOP like its two siblings: the gate resolves the caller's slug through
+    # the roster, which loads the config from disk.
+    refused = await _run_off_loop(
+        lambda: _package_write_refusal(
+            request,
+            promoted_content if promoted_content is not None else body.get("content"),
+            None,
+        )
+    )
+    if refused:
+        _audit(
+            tool="artifact_save",
+            request=request,
+            outcome="denied",
+            error="dashboard package binding",
+        )
+        return _err(refused, status=403)
     folder_id, ferr = await _resolve_folder_ref_off_loop(body.get("folder"), create_missing=True)
     if ferr:
         _audit(tool="artifact_save", request=request, outcome="denied", error=ferr)
         return _err(ferr)
+    # A new package always declares a binding for the first time, so there is no
+    # previous one to compare against and every create is checked. Gated on the
+    # DECLARED kind, which is also what makes the store validate the content as a
+    # package at all: an inferred kind never comes back ``dashboard``, so a plain JSON
+    # document that happens to carry a ``bound_to`` field is left alone.
+    if body.get("kind") == DASHBOARD_KIND:
+        new_binding = _package_binding(
+            promoted_content if promoted_content is not None else body.get("content", "")
+        )
+        if new_binding is not None:
+            berr = await _binding_refusal(state, new_binding)
+            if berr:
+                _audit(tool="artifact_save", request=request, outcome="denied", error=berr)
+                return _err(berr)
     # Copy-vs-link: a disposable file (temp dir / Downloads / Desktop, or
     # anything with no project claim) is SNAPSHOTTED — we store no pointer at
     # all. A file inside a real project is LINKED, and the project root that
@@ -1493,29 +1881,35 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # rather than stored as a raw string: an unvalidated project file outside
     # $HOME yields a pointer the store then refuses to read.
     try:
-        art = get_default_store().create(
-            name=body.get("name", ""),
-            content=(
-                promoted_content if promoted_content is not None else body.get("content", "")
-            ),
-            slug=body.get("slug"),
-            kind=body.get("kind"),
-            # Honor an explicitly-supplied source (MCP tool / import path); for
-            # UI saves that omit it, derive the ACTUAL session origin
-            # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
-            source=(body.get("source") or _artifact_source_for_request(request)),
-            description=body.get("description", ""),
-            tags=body.get("tags") or [],
-            source_path=link_source_path,
-            source_root=link_source_root,
-            source_copy_only=link_copy_only,
-            folder_id=folder_id,
-            # Originating chat session for the Source column. Only a real slot
-            # key that passes the permitted grammar is stored (validated to
-            # prevent attribution spoofing / metadata poisoning); anything else
-            # collapses to "".
-            session_key=_clean_origin_session_key(body.get("origin_session_key")),
-            webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+        # Off the loop: a create writes the record, its first version and the
+        # index, and each of those syncs its bytes to the device before it
+        # renames. On slow or busy storage that is long enough to stall chat
+        # turns and heartbeats if it runs here.
+        art = await _run_off_loop(
+            lambda: get_default_store().create(
+                name=body.get("name", ""),
+                content=(
+                    promoted_content if promoted_content is not None else body.get("content", "")
+                ),
+                slug=body.get("slug"),
+                kind=body.get("kind"),
+                # Honor an explicitly-supplied source (MCP tool / import path); for
+                # UI saves that omit it, derive the ACTUAL session origin
+                # (dashboard/slack/cli/cron/subagent/...) rather than "manual".
+                source=(body.get("source") or _artifact_source_for_request(request)),
+                description=body.get("description", ""),
+                tags=body.get("tags") or [],
+                source_path=link_source_path,
+                source_root=link_source_root,
+                source_copy_only=link_copy_only,
+                folder_id=folder_id,
+                # Originating chat session for the Source column. Only a real slot
+                # key that passes the permitted grammar is stored (validated to
+                # prevent attribution spoofing / metadata poisoning); anything else
+                # collapses to "".
+                session_key=_clean_origin_session_key(body.get("origin_session_key")),
+                webapp_metadata=webapp_metadata_from_dict(body.get("webapp_metadata")),
+            )
         )
     except ArtifactValidationError as exc:
         _audit(
@@ -1572,9 +1966,7 @@ async def api_artifacts_create(request: web.Request) -> web.Response:
     # not the request body: a file-promoted save persists the server-read
     # bytes, and the client's copy can be stale or redacted. Advisory only;
     # the save has already succeeded.
-    payload["theme_contrast_warning"] = has_unthemed_hardcoded_colors(
-        art.kind, art.content or ""
-    )
+    payload["theme_contrast_warning"] = has_unthemed_hardcoded_colors(art.kind, art.content or "")
     return _json_response(payload, status=201)
 
 
@@ -1585,7 +1977,7 @@ async def api_artifact_detail(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     try:
         store = get_default_store()
-        art = store.get(slug)
+        art = await _run_off_loop(lambda: store.get(slug, assign_token=True))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -1691,7 +2083,115 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
     )
 
 
+def _package_write_refusal(request: web.Request, content: Any, stored: Any = None) -> str:
+    """The dashboard binding gate, imported HERE rather than at module scope.
+
+    ``dashboard.server`` imports this module at boot, and the controller behind this
+    gate reaches the template manifest and the projection registry. Importing it up
+    there would execute that graph before the socket binds, for every gateway, whether
+    or not a package dashboard is ever opened -- which is what the boot-path rule
+    forbids and what every other optional dashboard subsystem defers.
+    """
+    from kiro_crew.dashboard.handlers.member_dashboard_fields import package_write_refusal
+
+    return package_write_refusal(request, content, stored)
+
+
+def _is_dashboard_package(*texts: Any) -> bool:
+    """True when any of *texts* is a dashboard package.
+
+    The same classifier the gate uses, deferred for the same boot-path reason. Asked
+    here to decide whether a write needs the stale-write check below, so that a
+    judgement the gate made on a snapshot cannot be committed against a later one.
+
+    THE STORED SIDE IS CLASSIFIED THE WAY THE GATE CLASSIFIES IT -- off the envelope,
+    not by parsing. The two have to agree: the gate enforces a stored binding whatever
+    the layout does, so classifying the same record as "not a package" HERE authorizes
+    that write and then forwards no token to fence it. A legacy package whose field name
+    the current validator rejects is exactly that record, and its former owner's
+    kind-only PATCH would commit against a rebind that landed in between. Ownership and
+    the fence are halves of one answer and are read the same way.
+    """
+    from kiro_crew.dashboard.handlers.member_dashboard_fields import (
+        dashboard_package_of,
+        stored_package_binding,
+    )
+
+    return any(
+        dashboard_package_of(text) is not None or stored_package_binding(text) is not None
+        for text in texts
+    )
+
+
+#: A stored record was read: its content and token are the snapshot to authorize.
+_SNAPSHOT_FOUND = "found"
+#: The slug holds nothing. A FACT, not a failure -- there is no binding to authorize.
+_SNAPSHOT_ABSENT = "absent"
+#: The slug may hold anything; this read could not say. Never authorized against.
+_SNAPSHOT_UNREADABLE = "unreadable"
+
+
+def _gate_must_classify(slug: str, submitted: Any) -> bool:
+    """True when the dashboard binding gate is the rule that decides this write.
+
+    Asked only when the stored snapshot could not be READ, to decide whether that
+    failure costs the write. Two ways the gate owns it: the content being submitted is
+    a package, or the record already is one. The second is answered from the library
+    LISTING, which is metadata and so still readable when the record's own bytes are
+    not -- the kind is the one thing needed and it is not in those bytes.
+
+    Fails closed if even the listing cannot be read: a record that may be a crewmate's
+    dashboard is not written over on the strength of a failed lookup.
+    """
+    from kiro_crew.artifact_store.dashboard_package import DASHBOARD_KIND
+
+    if _is_dashboard_package(submitted):
+        return True
+    try:
+        return any(
+            str(getattr(record, "slug", "")) == slug
+            for record in get_default_store().list(kind=DASHBOARD_KIND)
+        )
+    except Exception:
+        logger.warning("artifacts: the dashboard listing could not be read for %r", slug)
+        return True
+
+
+def _stored_snapshot_for(slug: str) -> tuple[str | None, str | None, str]:
+    """What *slug* holds now, the token that says so, and whether the read could tell.
+
+    For the binding gate, which is why the three outcomes are kept apart instead of
+    collapsing into "no content". "Nothing stored" and "I could not read what is
+    stored" authorize very differently: the first has no binding to check, while the
+    second is a record that may be somebody's dashboard, and treating it as empty
+    checks only the binding the CALLER submitted and carries no token forward -- so a
+    transient read error becomes a worker's write over an owner's page.
+
+    The token travels with the content because the gate authorizes a SNAPSHOT: it reads
+    the stored binding here and the write lands later, so without carrying the token
+    forward an owner's rebind in between would be overwritten by a write authorized
+    against the binding it replaced. Blocking file IO, so callers run it off the event
+    loop.
+
+    """
+    try:
+        # ``assign_token=True`` because the token is the POINT of this read: a record
+        # that has never been written through the guarded path holds none, and without
+        # one minted here the compare-and-set below would have nothing to compare and
+        # the write would silently fall back to last-write-wins.
+        art = get_default_store().get(slug, assign_token=True)
+    except ArtifactNotFoundError:
+        return None, None, _SNAPSHOT_ABSENT
+    except Exception:
+        logger.warning("artifacts: %r could not be read for the dashboard binding gate", slug)
+        return None, None, _SNAPSHOT_UNREADABLE
+    return art.content, getattr(art, "content_token", None) or None, _SNAPSHOT_FOUND
+
+
 async def api_artifact_update(request: web.Request) -> web.Response:
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_update")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -1767,10 +2267,7 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             # unhashable one (list / dict) raises TypeError on the set lookup --
             # a 500 where the caller deserves a 400.
             if not isinstance(raw_kind, str) or raw_kind not in USER_SELECTABLE_KINDS:
-                msg = (
-                    f"kind must be one of {sorted(USER_SELECTABLE_KINDS)}; "
-                    f"got {raw_kind!r}"
-                )
+                msg = f"kind must be one of {sorted(USER_SELECTABLE_KINDS)}; " f"got {raw_kind!r}"
                 _audit(
                     tool="artifact_update",
                     request=request,
@@ -1779,6 +2276,144 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                     extra={"slug": slug, "kind": str(raw_kind)[:32]},
                 )
                 return _err(msg)
+        # WHAT THE SLUG HOLDS, read before either gate decides anything.
+        # Its two transport refusals come first because the target gate below opens
+        # with a read of its own, and on an unreadable or absent record that read is
+        # what answers -- a 500 or a 404 in place of the refusal that says nothing
+        # was authorized. The OWNERSHIP comparison this read feeds waits until after
+        # that gate, so the narrower question keeps its own answer.
+        #
+        # A DASHBOARD PACKAGE IS ITS OWNER'S. Asked before the write, because a
+        # worker that could write the package could write the page -- and the page
+        # runs script inside the frame that holds the owner's own fold values.
+        # Asked HERE rather than in the store because the rule needs the caller,
+        # and the store is handed content with no request behind it.
+        # WHAT THE SLUG HOLDS NOW is read first, because the stored binding is who the
+        # page belongs to: gating on the submitted one alone authorizes the caller
+        # against a claim the caller wrote, so a worker could rebind another
+        # crewmate's page to itself in a single update.
+        stored_content, stored_token, stored_state = await _run_off_loop(
+            lambda: _stored_snapshot_for(slug)
+        )
+        if stored_state == _SNAPSHOT_UNREADABLE and await _run_off_loop(
+            lambda: _gate_must_classify(slug, body.get("content"))
+        ):
+            # NOTHING IS AUTHORIZED AGAINST A READ THAT FAILED. Passing unknown content
+            # to the gate checks only the binding this caller submitted -- so a
+            # transient read error would be the one moment a worker's write lands on an
+            # owner's page. Refused only where the gate is the one that decides this
+            # write: every other kind keeps the behaviour it has without this gate,
+            # because an unreadable prose document is the store's own problem to report
+            # and turning it into a refusal here would be this feature charging every
+            # other kind for its rule.
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error="stored snapshot unreadable",
+                extra={"slug": slug},
+            )
+            return _err(
+                "that artifact could not be read, so this write cannot be authorized "
+                "against what it holds; nothing was written -- retry",
+                status=503,
+            )
+        if stored_state == _SNAPSHOT_ABSENT and await _run_off_loop(
+            lambda: _is_dashboard_package(body.get("content"))
+        ):
+            # A PACKAGE WRITE NEEDS A RECORD TO AUTHORIZE AGAINST. The slug holds
+            # nothing, so the gate below would have only the binding this caller
+            # submitted -- a claim the caller wrote -- and no token to carry forward.
+            # The store answers an absent slug with its own 404, so the one case this
+            # refusal changes is the race it exists for: the owner creating this slug
+            # between the read and the write, where the authorization would be of
+            # nothing and the write would land on their new page.
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error="dashboard package write to an empty slug",
+                extra={"slug": slug},
+            )
+            return _err(
+                "that slug holds no dashboard package, so there is no binding to "
+                "authorize this write against; create the package instead",
+                status=409,
+            )
+        # THE REBIND TARGET FIRST, because this question is the narrower one and it
+        # has a definite answer: whether `bound_to` names exactly one servable
+        # thing -- a crew member who exists, a slug two of them do not share, a live
+        # root session. The owner gate below asks a BROADER question, whose caller
+        # it cannot always resolve, and answering that one first replaced every one
+        # of these refusals with a single 403 -- a shallow gate standing in front of
+        # a specific one and hiding what it would have said.
+        # A REBIND is checked; a layout edit is not. The stored record answers both
+        # halves -- whether this is a package at all, and what it is bound to now -- so
+        # it is read only once a submitted ``bound_to`` makes the question live, which
+        # keeps every ordinary PATCH at the single write it already was. See the
+        # binding section above for why an unchanged binding is never re-asked.
+        #
+        # A REVERT is not a rebind, however different its binding looks. It submits a
+        # past version's whole package, and ``revert_package`` THROWS THAT BINDING AWAY
+        # and keeps the live one -- precisely so a rollback past a rebind cannot hand
+        # this page to whoever the stale binding names. Checking the submitted value
+        # would refuse the rollback for naming a target the store was never going to
+        # store, and the binding that does land was already checked when it was written.
+        submitted_binding = _package_binding(body.get("content"))
+        if submitted_binding is not None and event_type != "reverted":
+            stored = await _run_off_loop(lambda: get_default_store().get(slug))
+            # ``raw_kind`` is the kind this write SETTLES on, and a write converting the
+            # record away from ``dashboard`` stores no package at all -- the store stops
+            # reading the content as one, so there is no binding to be wrong.
+            stays_a_package = stored.kind == DASHBOARD_KIND and raw_kind in (
+                None,
+                DASHBOARD_KIND,
+            )
+            if stays_a_package and submitted_binding != _package_binding(stored.content):
+                berr = await _binding_refusal(state, submitted_binding)
+                if berr:
+                    _audit(
+                        tool="artifact_update",
+                        request=request,
+                        outcome="denied",
+                        error=berr,
+                        extra={"slug": slug},
+                    )
+                    return _err(berr)
+        # AND WHOSE PAGE THIS IS, after the target has been shown servable. Both
+        # gates run: that one judges the binding this write SUBMITS, this one the
+        # caller against the binding the record already HOLDS -- so a worker
+        # rebinding another crewmate's page to a target that happens to be valid
+        # is still refused here.
+        refused = await _run_off_loop(
+            lambda: _package_write_refusal(request, body.get("content"), stored_content)
+        )
+        if refused:
+            _audit(
+                tool="artifact_update",
+                request=request,
+                outcome="denied",
+                error="dashboard package binding",
+                extra={"slug": slug},
+            )
+            return _err(refused, status=403)
+        # THE TOKEN OF THE READ THIS WRITE WAS AUTHORIZED AGAINST, carried for EVERY
+        # write rather than only the ones classified as a package.
+        #
+        # The read above and the write below are two moments. Deciding HERE which
+        # writes need the token is the mistake that kept this hole open: the token was
+        # attached only where the stored snapshot or the submitted content classified
+        # as a package, so a PATCH of `{"kind": "markdown", "content": ...}` against a
+        # slug holding ordinary prose -- or holding nothing -- reached the store with
+        # nothing to compare at all, and the owner's dashboard arriving in the gap was
+        # rewritten, kind and bytes both.
+        #
+        # So this handler classifies nothing. It reports what it read and `update`
+        # decides, under the lock that loads the record, whether a dashboard is what
+        # the write is landing on. `expected_token` stays the CALLER's own
+        # compare-and-set for every other kind, untouched, because the editor's
+        # autosave depends on a prose write not being fenced it never asked for.
+        expected_token = body.get("expected_token")
         # OFF the event loop: update() writes current.html, a version snapshot
         # and -- for a linked artifact -- the source file itself, so running it
         # inline stalls the gateway for every other session on a large file or a
@@ -1799,6 +2434,8 @@ async def api_artifact_update(request: web.Request) -> web.Response:
                 event_type=event_type,
                 from_version=from_version,
                 snapshot=snapshot,
+                expected_token=expected_token,
+                snapshot_token=stored_token,
             )
         )
         # store.update() only loads content into the returned Artifact when
@@ -1826,6 +2463,24 @@ async def api_artifact_update(request: web.Request) -> web.Response:
             error=str(exc),
         )
         return _err(str(exc))
+    except ArtifactConflictError as exc:
+        # A stale content write: nothing was written. The body carries what the
+        # client needs to refetch and re-base.
+        _audit(
+            tool="artifact_update",
+            request=request,
+            outcome="denied",
+            error=str(exc),
+            extra={"slug": slug},
+        )
+        return web.json_response(
+            {
+                "error": str(exc),
+                "code": "artifact_conflict",
+                "current_token": exc.current_token,
+            },
+            status=409,
+        )
     except ArtifactError as exc:
         # Catches the base class fallback — store._write_text() raises
         # ArtifactError("refusing to write sensitive path: ...") which is
@@ -1933,6 +2588,9 @@ async def api_artifact_settle_blank(request: web.Request) -> web.Response:
 
     Responds ``{"outcome": "kept" | "saved" | "deleted"}``.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_settle_blank")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -1987,14 +2645,23 @@ async def api_artifact_settle_blank(request: web.Request) -> web.Response:
     except ArtifactNotFoundError as exc:
         # Already gone (double navigation, or deleted in another window). Nothing
         # to settle and nothing to report as an error.
-        _audit(tool="artifact_settle_blank", request=request, outcome="success",
-               extra={"slug": slug, "result": "absent"})
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="success",
+            extra={"slug": slug, "result": "absent"},
+        )
         return _json_response({"outcome": "kept", "detail": str(exc)})
     except ArtifactValidationError as exc:
         return _denied(str(exc))
     except ArtifactError as exc:
-        _audit(tool="artifact_settle_blank", request=request, outcome="error", error=str(exc),
-               extra={"slug": slug})
+        _audit(
+            tool="artifact_settle_blank",
+            request=request,
+            outcome="error",
+            error=str(exc),
+            extra={"slug": slug},
+        )
         return _err(str(exc), status=500)
     _audit(
         tool="artifact_settle_blank",
@@ -2008,6 +2675,9 @@ async def api_artifact_settle_blank(request: web.Request) -> web.Response:
 
 
 async def api_artifact_delete(request: web.Request) -> web.Response:
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_delete")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2022,7 +2692,7 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
     # Capture the pre-delete version so the deleted-variant WS event carries the
     # last-known version.
     try:
-        _existing = get_default_store().get(slug)
+        _existing = await _run_off_loop(lambda: get_default_store().get(slug))
     except ArtifactError:
         # Best-effort version capture only — swallow both the missing-slug and
         # invalid-slug (ArtifactValidationError) siblings so an invalid slug still
@@ -2289,7 +2959,9 @@ async def api_artifact_delete(request: web.Request) -> web.Response:
 async def api_artifact_versions(request: web.Request) -> web.Response:
     slug = request.match_info.get("slug", "")
     try:
-        versions = get_default_store().list_versions(slug)
+        # Off the loop although it only reads: it takes the store's lock, and a
+        # writer holds that lock across the sync of every file it publishes.
+        versions = await _run_off_loop(lambda: get_default_store().list_versions(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2305,7 +2977,10 @@ async def api_artifact_version_detail(request: web.Request) -> web.Response:
     except ValueError:
         return _err(f"invalid version: {version_str}")
     try:
-        art = get_default_store().get(slug, version=version)
+        # A read that can write: an artifact stored before the event log existed
+        # gets its synthetic history backfilled and persisted on first read, so
+        # this reaches _write_meta and its sync.
+        art = await _run_off_loop(lambda: get_default_store().get(slug, version=version))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2326,7 +3001,7 @@ async def api_artifact_events(request: web.Request) -> web.Response:
     """
     slug = request.match_info.get("slug", "")
     try:
-        art = get_default_store().get(slug)
+        art = await _run_off_loop(lambda: get_default_store().get(slug))
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:
@@ -2357,6 +3032,9 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     mutation endpoints — a restricted session must not be able to flood
     an artifact's event log.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_record_event")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2401,12 +3079,18 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
     if widget_index is not None and not isinstance(widget_index, int):
         return _err("metadata.widget_index must be an integer")
     try:
-        art, appended = get_default_store().record_impression(
-            slug,
-            by=actor,
-            session_id=session_id_hdr,
-            message_ts=message_ts,
-            widget_index=widget_index,
+        # Off the loop for the same reason as the create path: an impression
+        # appends to the event log and rewrites the record, both synced before
+        # their rename. This one fires per rendered widget, so it is the more
+        # frequent of the two.
+        art, appended = await _run_off_loop(
+            lambda: get_default_store().record_impression(
+                slug,
+                by=actor,
+                session_id=session_id_hdr,
+                message_ts=message_ts,
+                widget_index=widget_index,
+            )
         )
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
@@ -2504,6 +3188,9 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     an artifact is auto-saved first by the frontend (POST /api/artifacts), so
     this endpoint is always slug-based.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_publish")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2599,6 +3286,9 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
     Body: ``{visibility, shared_with[]}``. No re-upload. Returns the serialized
     artifact with the updated publication block.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_update_sharing")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2658,6 +3348,9 @@ async def api_artifact_unpublish(request: web.Request) -> web.Response:
     publication block. Returns the serialized artifact (now with
     ``publication: null``).
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_unpublish")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2692,6 +3385,9 @@ async def api_artifact_refresh_sharing(request: web.Request) -> web.Response:
     publication so the dashboard reflects truth. Gated like other mutations
     since it can update meta.json.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_refresh_sharing")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2746,6 +3442,9 @@ async def api_artifact_reprobe_notice(request: web.Request) -> web.Response:
     only when the condition has actually cleared). Gated like other mutations
     since it can update meta.json.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_reprobe_notice")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -2791,6 +3490,9 @@ async def api_artifact_reprobe_notice(request: web.Request) -> web.Response:
 
 async def api_artifact_pull_latest(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/pull-latest — pull upstream into a fork."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_pull_latest")
+    if owner_denied is not None:
+        return owner_denied
 
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
@@ -2922,6 +3624,9 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
     HERE — on the resolved ``publication.provider`` — before any provider
     dispatch (same fail-closed gate as publish / update-sharing).
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_overwrite_remote")
+    if owner_denied is not None:
+        return owner_denied
     slug = request.match_info.get("slug", "")
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
@@ -3000,6 +3705,9 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
 
 async def api_artifact_relocate(request: web.Request) -> web.Response:
     """PATCH /api/artifacts/{slug}/relocate — update source_path."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_relocate")
+    if owner_denied is not None:
+        return owner_denied
 
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
@@ -3212,6 +3920,9 @@ _ARTIFACT_FOLDER_ICON_TASKS: set[asyncio.Task[None]] = set()
 
 async def api_artifact_folder_create(request: web.Request) -> web.Response:
     """POST /api/artifact-folders — create a folder. Body: {name, parent?|parent_id?}."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_folder_create")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -3275,6 +3986,9 @@ async def api_artifact_folder_create(request: web.Request) -> web.Response:
 
 async def api_artifact_folder_update(request: web.Request) -> web.Response:
     """PATCH /api/artifact-folders/{id} — rename / reparent / reorder / icon."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_folder_update")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -3358,9 +4072,7 @@ async def api_artifact_folder_update(request: web.Request) -> web.Response:
         # it. A missing value means the rename did not run, so nothing to arm.
         epoch = armed_icon_epoch.get("value")
         if epoch is not None:
-            _spawn_artifact_folder_icon_task(
-                request, fid, str(body["name"]), expected_epoch=epoch
-            )
+            _spawn_artifact_folder_icon_task(request, fid, str(body["name"]), expected_epoch=epoch)
     path = await _run_off_loop(lambda: fstore.breadcrumb(fid))
     return _json_response(_serialize_folder(updated, path=path))
 
@@ -3397,9 +4109,7 @@ async def _withdraw_subtree_publications(folder_id: str, fstore: Any) -> tuple[s
     store = get_default_store()
     generations = await _run_off_loop(
         lambda: {
-            a.slug: a.created_at
-            for a in store.list()
-            if (getattr(a, "folder_id", "") or "") in ids
+            a.slug: a.created_at for a in store.list() if (getattr(a, "folder_id", "") or "") in ids
         }
     )
     for slug, born in generations.items():
@@ -3453,6 +4163,9 @@ async def api_artifact_folder_delete(request: web.Request) -> web.Response:
     only this folder. ``delete_contents=true`` cascades the whole subtree,
     permanently deleting every descendant artifact.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_folder_delete")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -3634,6 +4347,9 @@ async def api_artifact_set_folder(request: web.Request) -> web.Response:
     Body accepts ``{folder}`` (id OR human path, mkdir -p) or ``{folder_id}``
     (id-only). ``""`` / ``"root"`` / null unfiles. Metadata-only — no version bump.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_set_folder")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -3720,6 +4436,9 @@ async def api_artifact_set_pinned(request: web.Request) -> web.Response:
 
     Body: ``{"pinned": true|false}``. Metadata-only — no version bump.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_set_pinned")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -3842,6 +4561,9 @@ async def api_artifact_materialize(request: web.Request) -> web.Response:
     """POST /api/artifacts/materialize — turn a session document path into a
     real, saved (pinned) file-backed artifact. Body: ``{"path": "..."}``.
     Idempotent by source_path."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_materialize")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4063,6 +4785,9 @@ async def api_artifact_comments(request: web.Request) -> web.Response:
 
 async def api_artifact_post_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments — create a new comment."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_post_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4223,6 +4948,9 @@ async def api_artifact_post_comment(request: web.Request) -> web.Response:
 
 async def api_artifact_reply_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/reply — reply to a thread."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_reply_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4348,6 +5076,9 @@ async def api_artifact_reply_comment(request: web.Request) -> web.Response:
 
 async def api_artifact_mark_review(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/review — advance to REVIEW."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_mark_review")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4417,6 +5148,9 @@ async def api_artifact_mark_review(request: web.Request) -> web.Response:
 
 async def api_artifact_resolve_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/resolve — human-only resolve."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_resolve_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4476,6 +5210,9 @@ async def api_artifact_reopen_comment(request: web.Request) -> web.Response:
     """POST /api/artifacts/{slug}/comments/{id}/reopen — reopen a resolved
     thread (set status back to open).
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_reopen_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4526,6 +5263,9 @@ async def api_artifact_delete_comment(request: web.Request) -> web.Response:
     Human dashboard deletes are unchanged (no reason required, provider
     cascade preserved).
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_delete_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4658,6 +5398,9 @@ async def api_artifact_edit_comment(request: web.Request) -> web.Response:
     Status (open/review/resolved) is untouched — that's what resolve/reopen/
     review are for. Authorship (``author`` / ``is_agent``) is preserved.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.artifact_edit_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -4869,7 +5612,8 @@ async def api_remote_artifacts_browse(request: web.Request) -> web.Response:
     A non-empty ``q`` runs full-text ``search_remote`` (providers whose
     ``discovery_model().full_text_search`` is True); otherwise
     ``list_remote(scope)``. ``None`` from the provider means that discovery
-    primitive isn't supported (400). Gated like other reads-with-state. A
+    primitive isn't supported (400; an unsupported scope listing also carries
+    ``code: "scope_unsupported"``). Gated like other reads-with-state. A
     provider name with nothing registered under it answers 404; in the public
     edition the registry is empty, so every browse returns 404 — the surface is
     inert until a companion registers a provider. A registered provider that
@@ -4935,8 +5679,18 @@ async def api_remote_artifacts_browse(request: web.Request) -> web.Response:
         )
         return _err(reason, status=502)
     if result is None:
-        verb = "full-text search" if query else f"{scope} listing"
-        return _err(f"{provider_name} does not support {verb}", status=400)
+        if query:
+            return _err(f"{provider_name} does not support full-text search", status=400)
+        # A scope the provider does not list is not a failure: the code lets the
+        # browse UI move on to the next scope the provider advertises instead of
+        # rendering an error card, and keeps it apart from a provider that raised.
+        return _json_response(
+            {
+                "error": f"{provider_name} does not support {scope} listing",
+                "code": "scope_unsupported",
+            },
+            status=400,
+        )
     # Annotate on the UN-redacted rows (external_ids intact) using a single
     # off-loop store scan, THEN redact — annotating after redaction would look up
     # a credential-shaped external_id in its ``[REDACTED]`` form and miss the
@@ -4964,6 +5718,9 @@ async def api_remote_artifacts_clone(request: web.Request) -> web.Response:
     therefore enforced HERE, before the clone binds the two copies (same
     fail-closed gate as publish). Fork (pull-only lineage) stays ungated.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifacts_clone")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -5030,6 +5787,9 @@ async def api_remote_artifacts_fork(request: web.Request) -> web.Response:
     body) — provider-routed fork (independent copy with pull-only
     ``fork_metadata`` lineage). Ingress only — never arms a push — so no publish
     governance gate."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifacts_fork")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit(
@@ -5327,6 +6087,9 @@ async def api_remote_artifact_comments(request: web.Request) -> web.Response:
 
 async def api_remote_artifact_post_comment(request: web.Request) -> web.Response:
     """POST /api/remote-artifacts/{provider}/{external_id}/comments — scope=shared."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifact_post_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit_remote_denied(
@@ -5420,6 +6183,9 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
 
 async def api_remote_artifact_reply_comment(request: web.Request) -> web.Response:
     """POST /api/remote-artifacts/{provider}/{external_id}/comments/{id}/reply."""
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifact_reply_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit_remote_denied(
@@ -5464,9 +6230,7 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
             )
             return _err(f"{provider_name} does not support comments", status=400)
         rc = await asyncio.wait_for(
-            provider.reply_comment(
-                external_id=external_id, parent_remote_id=parent_id, body=text
-            ),
+            provider.reply_comment(external_id=external_id, parent_remote_id=parent_id, body=text),
             timeout=_REMOTE_PROVIDER_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
@@ -5505,6 +6269,9 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
     user does not own this artifact locally, so the status change writes
     straight through to the source.
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifact_mark_review")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit_remote_denied(
@@ -5576,6 +6343,9 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
     Delete a shared-artifact comment on the provider (writes through to the
     source — the user has no local copy to mirror it in).
     """
+    owner_denied = await _non_owner_refusal(request, "artifacts.remote_artifact_delete_comment")
+    if owner_denied is not None:
+        return owner_denied
     state = request.app.get("state")
     if state is None or _is_restricted_session(state, request):
         _audit_remote_denied(

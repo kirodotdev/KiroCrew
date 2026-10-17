@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         SleepInhibitor,
         _tailnet_publish_keeps_awake,
         logger,
+        register_pre_exec_stop,
     )
 
 
@@ -92,21 +93,38 @@ def _register_prevent_sleep_shutdown(app: web.Application, state: DashboardState
     and resolved here lazily via ``getattr``. Shared by both ``start_dashboard``
     and the headless ``start_api_server`` (``--slack-only``) so a graceful stop
     never leaves caffeinate / systemd-inhibit / the Windows execution-state
-    request dangling, in either mode.
+    request dangling, in either mode. An in-place restart skips this hook, so
+    :func:`_arm_prevent_sleep_poll` also registers the same release as a pre-exec
+    stop, and this hook unregisters it.
     """
 
     async def _prevent_sleep_shutdown(app_: web.Application) -> None:
-        task = getattr(state, "_prevent_sleep_task", None)
-        if task is not None:
-            task.cancel()
-        inhibitor = getattr(state, "_sleep_inhibitor", None)
-        if inhibitor is not None:
-            try:
-                inhibitor.set_active(False)
-            except Exception:
-                logger.debug("prevent-sleep release on shutdown failed", exc_info=True)
+        unregister = getattr(state, "_prevent_sleep_unregister", None)
+        if unregister is not None:
+            unregister()
+        _release_sleep_block(state)
 
     app.on_cleanup.append(_prevent_sleep_shutdown)
+
+
+def _release_sleep_block(state: DashboardState) -> None:
+    """Cancel the poll, so it cannot engage the block again, and release the block.
+
+    The release does not wait for the cancelled poll to unwind: a poll that has
+    already ended would never release on its way out. Shared by the cleanup hook
+    and the pre-exec stop. Idempotent, never raises, and runs on the loop thread:
+    the Windows request is thread-scoped, so engage and release must share a
+    thread.
+    """
+    task = getattr(state, "_prevent_sleep_task", None)
+    if task is not None:
+        task.cancel()
+    inhibitor = getattr(state, "_sleep_inhibitor", None)
+    if inhibitor is not None:
+        try:
+            inhibitor.set_active(False)
+        except Exception:
+            logger.debug("prevent-sleep release on shutdown failed", exc_info=True)
 
 
 def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
@@ -159,3 +177,12 @@ def _arm_prevent_sleep_poll(state: DashboardState, port: int) -> None:
     task = asyncio.create_task(_prevent_sleep_poll())
     task.add_done_callback(_prevent_sleep_done)
     state._prevent_sleep_task = task  # prevent GC; cancelled on cleanup
+
+    async def _stop_before_exec() -> None:
+        _release_sleep_block(state)
+
+    # `caffeinate -w` / `systemd-inhibit` watch this pid, which an in-place exec
+    # keeps, so the helper would outlive the image that spawned it and hold the
+    # block for the new image. The hook `_register_prevent_sleep_shutdown`
+    # installs unregisters this stop.
+    state._prevent_sleep_unregister = register_pre_exec_stop("Sleep inhibitor", _stop_before_exec)

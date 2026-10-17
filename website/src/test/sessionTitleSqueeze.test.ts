@@ -1,16 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // The title cluster moved into the shared SessionTitleControl (also mounted in
 // every split-view pane header); the row and its trailing controls stay in
-// ChatPage. The contract spans both files.
+// ChatTitleOverlay. The contract spans both files.
+// The page composes owners under pages/chat/page/ (and its useChatPage* siblings), so the pins read the page, those owners and the control.
+const PAGES_DIR = join(__dirname, '..', 'pages')
+const OWNER_DIR = join(PAGES_DIR, 'chat', 'page')
 const src = async () => {
-  const [page, control] = await Promise.all([
-    readFile(join(__dirname, '..', 'pages', 'ChatPage.tsx'), 'utf8'),
-    readFile(join(__dirname, '..', 'pages', 'chat', 'SessionTitleControl.tsx'), 'utf8'),
+  const ownerFiles = (await readdir(OWNER_DIR)).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+  const siblingFiles = (await readdir(PAGES_DIR)).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
+  const [page, owners, siblings, control] = await Promise.all([
+    readFile(join(PAGES_DIR, 'ChatPage.tsx'), 'utf8'),
+    Promise.all(ownerFiles.map(f => readFile(join(OWNER_DIR, f), 'utf8'))),
+    Promise.all(siblingFiles.map(f => readFile(join(PAGES_DIR, f), 'utf8'))),
+    readFile(join(PAGES_DIR, 'chat', 'SessionTitleControl.tsx'), 'utf8'),
   ])
-  return page + '\n' + control
+  return [page, ...owners, ...siblings, control].join('\n')
 }
 
 // A long session title pushed the trailing header controls off screen: measured at

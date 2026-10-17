@@ -110,6 +110,7 @@ class TestSubscription:
             "agents",
             "workspaces",
             "default_workspace",
+            "aws",
         )
         assert mgr._config_sub is subs[0]
 
@@ -189,6 +190,7 @@ class TestAdoptOnChange:
             "agent.role_efforts.background",
             "agent.tool_search",
             "agent.sandbox",
+            "agent.env.HTTPS_PROXY",
             "session.pool_size",
             "session.pool_agent",
             "session.pool_ttl_secs",

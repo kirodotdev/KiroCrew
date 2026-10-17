@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_runner import (
     _retire_local_turn_marker,
 )
 from kiro_crew.history import SLOT_OWNED_META_KEYS
+from kiro_crew.testing.wait import async_wait_until
 
 _RESTART_KIND = "gateway_restart_interruption"
 
@@ -43,7 +44,7 @@ def _restart_rows(messages: list[dict]) -> list[dict]:
 
 
 def _provider_mock() -> AsyncMock:
-    # Same shape as test_dashboard_chat._provider_mock: the telemetry accessors
+    # Same shape as dashboard_chat_helpers._provider_mock: the telemetry accessors
     # the runner reads after a turn are SYNCHRONOUS on the real provider, so they
     # are pinned as MagicMock or each call hands back a never-awaited coroutine.
     client = AsyncMock()
@@ -1428,3 +1429,154 @@ def test_a_lost_subagent_completion_opener_is_restored(tmp_path):
     assert restored is not None
     tail = [m for m in restored.messages if m.get("role") == "subagent"]
     assert tail and tail[-1]["content"] == completion["content"]
+
+
+# ── the text a SIGTERM shutdown cuts off ───────────────────────────────────
+
+
+def _client_cut_by_shutdown(text: str, session_closed: asyncio.Event) -> AsyncMock:
+    """Streams *text*, then dies the way an in-flight prompt does when close_all() ends it."""
+    from kiro_crew.acp.transport_errors import AcpProcessDied
+    from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+    client = _provider_mock()
+
+    async def _stream(msg):
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=text)
+        await asyncio.wait_for(session_closed.wait(), timeout=30)
+        raise AcpProcessDied("Process exited during prompt (exit code -15)")
+
+    client.stream = _stream
+    client.stream_command = _stream
+    return client
+
+
+async def _sigterm_mid_reply(tmp_path, monkeypatch, key: str, text: str):
+    """Run the shutdown order on a turn mid-reply: graceful save, then the session dies.
+
+    Returns the restored slot and the ``get_or_create`` calls the shutdown saw. A
+    successor turn the queue drain starts during the shutdown (the death arm queues
+    an automatic recovery) is the second call: it is held until the cut turn's
+    task has ended, then refused the way the session gate refuses a registration
+    behind the shutdown snapshot. The restore runs only after every started turn has
+    settled, so it reads what the next process would.
+    """
+    from kiro_crew import shutdown_event
+    from kiro_crew.dashboard.chat import _run_chat, save_all_slots_to_history
+    from kiro_crew.session_allocation import SessionClosingError
+
+    state = _state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot(key)
+    slot.append("user", "explain the plan", "msg msg-u")
+    session_closed = asyncio.Event()
+    cut_turn_ended = asyncio.Event()
+    calls: list[str] = []
+
+    async def _get_or_create(*_args, **_kwargs):
+        calls.append("cut turn" if not calls else "successor")
+        if len(calls) == 1:
+            return (_client_cut_by_shutdown(text, session_closed), True, False)
+        # A successor reaches the session gate only after writing its own marker.
+        # Held past the cut turn's end, as a registration parked behind the
+        # shutdown snapshot is, then refused as that gate refuses it.
+        await asyncio.wait_for(cut_turn_ended.wait(), timeout=30)
+        raise SessionClosingError("session manager is closing")
+
+    state.sessions.get_or_create = _get_or_create
+    turn = asyncio.create_task(_run_chat(state, slot, "explain the plan"))
+    slot.task = turn
+
+    def _streamed_text() -> bool:
+        if any(m.get("role") == "chunk" for m in slot.messages):
+            return True
+        assert not turn.done(), "the turn ended before it streamed any text"
+        return False
+
+    await async_wait_until(_streamed_text, describe=lambda: f"{len(slot.messages)} slot messages")
+    shutdown_event.set()
+    try:
+        save_all_slots_to_history(state)  # the shutdown's first step for chat slots
+        session_closed.set()  # sessions.close_all() ends the ACP process
+        await asyncio.wait_for(turn, timeout=30)
+        cut_turn_ended.set()
+        # Every turn the drain started settles before the restore: a successor's
+        # teardown is the last write the next process could see.
+        await async_wait_until(
+            lambda: slot.task is None or slot.task.done(),
+            describe=lambda: "a turn the drain started is still running",
+        )
+        pending = [t for t in state._background_tasks if not t.done()]
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=30)
+    finally:
+        cut_turn_ended.set()
+        shutdown_event.clear()
+    del state._slots[key]  # the next process restores from disk
+    return state, _rehydrate_slot_from_history(state, key), calls
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_keeps_the_text_the_user_watched_stream(tmp_path, monkeypatch):
+    text = "Part one of the plan is to move the queue first"
+    _state, restored, _calls = await _sigterm_mid_reply(tmp_path, monkeypatch, "cut", text)
+
+    assert restored is not None
+    contents = [str(m.get("content", "")) for m in restored.messages]
+    assert any(
+        text in c for c in contents
+    ), f"the text the user watched stream is gone after the restart: {contents}"
+    # The next start marks the cut and offers Resume, with the row after the text.
+    assert restored.to_dict()["interrupted"] is True
+    rows = _restart_rows(restored.messages)
+    assert len(rows) == 1
+    assert restored.messages.index(rows[0]) > next(i for i, c in enumerate(contents) if text in c)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_starts_no_recovery_turn_over_the_cut_reply(tmp_path, monkeypatch):
+    """The death arm queues an automatic recovery; the drain must not start it while
+    the process is going away. A recovery that starts writes its own in-flight
+    marker before the session gate refuses it, and that marker is what the next
+    start reads: the restart then shows the recovery's inject row and no
+    interruption row, in place of the cut reply's."""
+    text = "Part one of the plan is to move the queue first"
+    _state, restored, calls = await _sigterm_mid_reply(tmp_path, monkeypatch, "cut", text)
+
+    assert restored is not None
+    contents = [str(m.get("content", "")) for m in restored.messages]
+    assert not any(
+        "automatic recovery" in c for c in contents
+    ), f"the restart shows the recovery turn's row instead of the cut reply's: {contents}"
+    assert len(_restart_rows(restored.messages)) == 1
+    assert calls == ["cut turn"], f"a turn started during the shutdown: {calls}"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_finishes_keeps_its_reply_and_clears_the_marker(tmp_path, monkeypatch):
+    from kiro_crew.acp.types import STOP_REASON_END_TURN
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("done")
+    slot.append("user", "explain the plan", "msg msg-u")
+    state.sessions.get_or_create = AsyncMock(
+        return_value=(
+            _client_streaming(
+                [
+                    LLMEvent(kind=EVENT_TEXT_CHUNK, text="The whole answer."),
+                    LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            ),
+            True,
+            False,
+        )
+    )
+    await _run_chat(state, slot, "explain the plan")
+    del state._slots["done"]
+    restored = _rehydrate_slot_from_history(state, "done")
+
+    assert restored is not None
+    assert any("The whole answer." in str(m.get("content", "")) for m in restored.messages)
+    assert restored.to_dict()["interrupted"] is False
+    assert _restart_rows(restored.messages) == []

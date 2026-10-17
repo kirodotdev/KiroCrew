@@ -1196,3 +1196,54 @@ class TestCompactCapabilityGate:
         await d.handle_message(_inbound("two", message_id="m2"))
         assert not any("已自动压缩" in c for _, c in client.replies)
         assert not any("对话上下文已较长" in c for _, c in client.replies)
+
+
+# ── /agent (show and switch the conversation's agent) ──
+
+
+def _agent_roster():
+    from kiro_crew.agent_discovery import AgentInfo
+
+    return [
+        AgentInfo(name="beta", filename="beta.json", description="", model=""),
+        AgentInfo(
+            name="kirocrew-worker",
+            filename="kirocrew-worker.json",
+            description="",
+            model="",
+            kirocrew_owned=True,
+        ),
+    ]
+
+
+class TestAgentCommand:
+    @pytest.mark.asyncio
+    async def test_agent_name_switches_the_next_turn(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent beta"))
+        assert "Agent set to `beta`" in client.replies[-1][1]
+        await d.handle_message(_inbound("hi", message_id="m2"))
+        assert sessions.last_agent == "beta"
+
+    @pytest.mark.asyncio
+    async def test_internal_agent_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_COMPLETE)]))
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client, cfg=_cfg(default_agent=""))
+        await d.handle_message(_inbound("/agent kirocrew-worker"))
+        assert "No agent named" in client.replies[-1][1]
+        await d.handle_message(_inbound("hi", message_id="m2"))
+        assert sessions.last_agent == "kirocrew"
+
+    @pytest.mark.asyncio
+    async def test_bare_agent_shows_the_current_agent(self, monkeypatch) -> None:
+        monkeypatch.setattr("kiro_crew.telegram.transport_dispatch.list_agents", _agent_roster)
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(FakeProvider([])), FakeCtx(), client)
+        await d.handle_message(_inbound("/agent"))
+        reply = client.replies[-1][1]
+        assert "`beta`" in reply and "kirocrew-worker" not in reply

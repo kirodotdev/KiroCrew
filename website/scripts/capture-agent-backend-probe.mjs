@@ -102,33 +102,32 @@ const AUTH = {
 const CARD_LINES = [
   'crew_tools',
   'member_thread_tools',
-  'member_saved_agent',
-  'private_member_sessions',
   'side_chat_tools',
-  'subagent_continuation',
   'mid_turn_steer',
   'manual_compact',
   'reasoning_effort',
   'model_switch',
-  'markdown_agents',
 ]
+
+/** `backend_cards.DETAIL_LINES`: folded behind the card's disclosure, outside its count. */
+const DETAIL_LINES = ['member_saved_agent', 'subagent_continuation', 'markdown_agents']
 
 const AVAILABLE = {
   kiro: [
-    'crew_tools', 'member_saved_agent', 'private_member_sessions', 'side_chat_tools',
-    'subagent_continuation', 'mid_turn_steer', 'manual_compact', 'reasoning_effort',
-    'model_switch',
+    'crew_tools', 'side_chat_tools', 'mid_turn_steer', 'manual_compact', 'reasoning_effort',
+    'model_switch', 'member_saved_agent', 'subagent_continuation',
   ],
   kas: [
-    'crew_tools', 'member_thread_tools', 'private_member_sessions', 'mid_turn_steer',
+    'crew_tools', 'member_thread_tools', 'side_chat_tools', 'mid_turn_steer', 'manual_compact',
     'reasoning_effort', 'model_switch', 'markdown_agents',
   ],
-  claude: [
-    'crew_tools', 'member_thread_tools', 'private_member_sessions', 'manual_compact',
-    'reasoning_effort', 'model_switch',
+  claude: ['crew_tools', 'member_thread_tools', 'manual_compact', 'reasoning_effort', 'model_switch'],
+  codex: [
+    'crew_tools', 'member_thread_tools', 'mid_turn_steer', 'manual_compact', 'reasoning_effort',
+    'model_switch', 'subagent_continuation',
   ],
-  codex: ['crew_tools', 'reasoning_effort', 'model_switch'],
-  opencode: ['crew_tools', 'reasoning_effort', 'model_switch', 'markdown_agents'],
+  goose: ['crew_tools', 'member_thread_tools', 'manual_compact', 'model_switch'],
+  opencode: ['crew_tools', 'member_thread_tools', 'manual_compact', 'model_switch'],
   pi: ['reasoning_effort', 'model_switch'],
   deepseek: ['crew_tools', 'reasoning_effort', 'model_switch'],
 }
@@ -212,6 +211,10 @@ const MCP = {
 
 const card = policy_id => ({
   capabilities: CARD_LINES.map(id => ({
+    id,
+    available: (AVAILABLE[policy_id] || []).includes(id),
+  })),
+  details: DETAIL_LINES.map(id => ({
     id,
     available: (AVAILABLE[policy_id] || []).includes(id),
   })),
@@ -520,14 +523,14 @@ await shoot('agent-backend-codex-missing.png')
 // and the expanded frame is the only place the individual lines and the operator
 // notes can be seen at all.
 await reloadScene(SCENE_CLAUDE_BOTH)
-await page.getByText('Kiro CLI supports 9 of 11 features', { exact: false }).waitFor({ timeout: 20000 })
+await page.getByText('Kiro CLI supports 6 of 7 features', { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-cards-closed-disclosures.png')
 
 await openAllDisclosures(page)
 // Nothing of the MCP half is behind a toggle now -- the card carries a rule, its
 // exception and one settings group, all open -- so this frame waits on a line every
 // card has rather than on a disclosure's contents.
-await page.getByText('supports 9 of 11 features', { exact: false }).first().waitFor({ timeout: 20000 })
+await page.getByText('Kiro CLI supports 6 of 7 features', { exact: false }).first().waitFor({ timeout: 20000 })
 await shoot('agent-backend-cards-open.png')
 
 // Scene 9: the MCP half, once per state it can render. The card carries two kinds of
@@ -554,7 +557,7 @@ await shoot('agent-backend-mcp-per-call.png')
 // MCP half renders nothing at all. The frame is the evidence for that -- a card with no
 // MCP lines rather than a card with reassuring ones.
 await highlight('Kiro CLI')
-await page.getByText('supports 9 of 11 features', { exact: false }).first().waitFor({ timeout: 20000 })
+await page.getByText('Kiro CLI supports 6 of 7 features', { exact: false }).first().waitFor({ timeout: 20000 })
 await shoot('agent-backend-mcp-none.png')
 
 // claude keeps the settings group with no rule above it: its tool-off stops the tool it

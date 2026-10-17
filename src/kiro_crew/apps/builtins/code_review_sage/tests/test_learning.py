@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sage_lib import learning as L  # noqa: N812
 from sage_lib import store
@@ -97,6 +98,62 @@ class TestConsolidate(unittest.TestCase):
         self.assertFalse(res["ok"])
         # candidate preserved (not wiped) on refusal
         self.assertEqual(L.candidate_count(self.root), 1)
+
+    def test_duplicate_merge_preserves_rules_candidates_and_audit(self):
+        L.seed_common(self.root)
+        L.stage_learning(_pattern("Pending"), "human_comment", self.root)
+        common = L.common_file(self.root)
+        candidate = L.candidate_file(self.root)
+        before = (common.read_bytes(), candidate.read_bytes())
+        merged = (L.render_pattern(_pattern("Repeated", guidance="first"))
+                  + L.render_pattern(_pattern(" repeated ", guidance="second")))
+        res = L.consolidate_apply(merged, self.root)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["duplicate_ids"], [L.pattern_id("Repeated", "common")])
+        self.assertEqual(res["duplicate_titles"], ["Repeated", "repeated"])
+        self.assertEqual((common.read_bytes(), candidate.read_bytes()), before)
+        self.assertFalse(common.with_name(common.name + ".pre-consolidation").exists())
+        self.assertFalse((store.data_dir(self.root) / "learnings" / "consolidations.jsonl").exists())
+
+    def test_secret_in_a_heading_is_redacted_without_refusing_the_merge(self):
+        # The shape check reads the worker's text as written, so scrubbing a
+        # credential out of a heading cannot turn a valid merge into a refusal.
+        token = "ghp_" + "A" * 40
+        merged = L.render_pattern(_pattern("Rotate " + token))
+        res = L.consolidate_apply(merged, self.root)
+        self.assertTrue(res["ok"])
+        stored = L.common_file(self.root).read_text()
+        self.assertNotIn(token, stored)
+        self.assertEqual(len(L.parse_patterns(stored)), 1)
+
+    def test_redaction_collapsing_two_titles_into_one_is_refused(self):
+        # Two distinct credentials become the same redaction tag, so the titles are
+        # identical only in the text that would be stored. Uniqueness must be judged
+        # there, not on the worker's pre-redaction text.
+        merged = (L.render_pattern(_pattern("Rotate ghp_" + "A" * 40))
+                  + L.render_pattern(_pattern("Rotate ghp_" + "B" * 40)))
+        res = L.consolidate_apply(merged, self.root)
+        self.assertFalse(res["ok"])
+        redacted = "Rotate [REDACTED: credential]"
+        self.assertEqual(res["duplicate_ids"], [L.pattern_id(redacted, "common")])
+        self.assertEqual(res["duplicate_titles"], [redacted])
+
+    def test_redaction_that_leaves_no_pattern_is_refused(self):
+        L.seed_common(self.root)
+        before = L.common_file(self.root).read_bytes()
+        merged = L.render_pattern(_pattern("Keep this"))
+        with mock.patch.object(L, "_redact", return_value=""):
+            res = L.consolidate_apply(merged, self.root)
+        self.assertFalse(res["ok"])
+        self.assertIn("redaction left no recognizable patterns", res["error"])
+        self.assertEqual(L.common_file(self.root).read_bytes(), before)
+
+    def test_same_title_in_distinct_scopes_is_accepted(self):
+        merged = (L.render_pattern(_pattern("Repeated", scope="common"))
+                  + L.render_pattern(_pattern("Repeated", scope="repo")))
+        res = L.consolidate_apply(merged, self.root)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["patterns_now"], 2)
 
     def test_consolidate_records_audit(self):
         L.stage_learning(_pattern("S"), "fix_introduce", self.root)

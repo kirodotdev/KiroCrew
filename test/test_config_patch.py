@@ -150,6 +150,38 @@ async def test_backend_switch_after_setup_does_not_probe(tmp_config) -> None:
 
 
 @pytest.mark.asyncio
+async def test_picking_kiro_cli_stores_kiro_and_the_response_says_kiro(tmp_config) -> None:
+    """A Kiro CLI pick is stored as "kiro": "" on disk means "no choice" (KAS)."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    app = _make_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await _patch(client, "agent.acp_backend", "kiro")
+        assert response.status == 200
+        assert (await response.json())["agent"]["acp_backend"] == "kiro"
+        refused = await _patch(client, "agent.acp_backend", ACP_BACKEND_KIRO + "x")
+        assert refused.status == 400
+    assert json.loads(tmp_config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == "kiro"
+    assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KIRO
+
+
+@pytest.mark.asyncio
+async def test_patching_an_empty_harness_stores_no_choice(tmp_config) -> None:
+    """``""`` is "no choice": stored as is, it resolves to the KAS default."""
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    app = _make_app()
+    async with TestClient(TestServer(app)) as client:
+        response = await _patch(client, "agent.acp_backend", "")
+        assert response.status == 200
+        assert (await response.json())["agent"]["acp_backend"] == ACP_BACKEND_KAS
+    assert json.loads(tmp_config.read_text(encoding="utf-8"))["agent"]["acp_backend"] == ""
+    assert KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+
+
+@pytest.mark.asyncio
 async def test_selecting_installed_independent_agent_persists_first_run_completion(
     tmp_config, tmp_path, monkeypatch
 ) -> None:
@@ -394,6 +426,27 @@ class TestRoleModels:
             assert resp.status == 400
 
 
+class TestAgentEnvFloor:
+    @pytest.mark.asyncio
+    async def test_a_refused_agent_env_entry_on_disk_does_not_refuse_an_unrelated_patch(
+        self, tmp_config
+    ) -> None:
+        """The publish floor refuses an ``agent.env`` entry a write introduces; a
+        hand-edited one this write leaves as it found it must not turn an unrelated
+        dashboard setting into a 400."""
+        seeded = _seed_config()
+        seeded["agent"]["env"] = {"OPENCODE_CONFIG": "/x", "HTTPS_PROXY": "http://p:1"}
+        tmp_config.write_text(json.dumps(seeded), encoding="utf-8")
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.approval_mode", "interactive")
+            assert resp.status == 200, await resp.text()
+
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["approval_mode"] == "interactive"
+        assert stored["agent"]["env"] == seeded["agent"]["env"]
+
+
 # ── General ──────────────────────────────────────────────────────────────
 
 
@@ -636,6 +689,206 @@ class TestFolderSortRoundTrip:
         assert field.default == FOLDER_SORT_DEFAULT == "custom"
 
 
+# ── Sidebar session sort ─────────────────────────────────────────────────
+
+
+class TestSessionSortRoundTrip:
+    """``dashboard.session_sort`` is the one stored copy of the sidebar's session
+    order, written by the sort menu, so it follows the person to every browser:
+    what a PATCH stores must be what a fresh load reads, and nothing outside the
+    sort-key list may land."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key", ["date-desc", "date-asc", "created-desc", "created-asc", "name-asc", "name-desc"]
+    )
+    async def test_every_key_round_trips_through_the_config_file(self, tmp_config, key) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.session_sort", key)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["session_sort"] == key
+        assert KiroCrewConfig.load().dashboard.session_sort == key
+
+    @pytest.mark.asyncio
+    async def test_a_value_outside_the_key_list_is_refused_and_the_file_untouched(
+        self, tmp_config
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.session_sort", "name-asc")).status == 200
+            for bad in ("newest", "", "Name-Asc", "custom", 1, None, ["name-asc"]):
+                resp = await _patch(c, "dashboard.session_sort", bad)
+                assert resp.status == 400, bad
+        assert KiroCrewConfig.load().dashboard.session_sort == "name-asc"
+
+    def test_the_allowlist_enum_is_the_loader_list_spelled_once(self) -> None:
+        """The dataclass field's enum metadata, the shared constant and the PATCH
+        allowlist pinned equal, so a key cannot be writable without being
+        loadable or the other way round."""
+        from dataclasses import fields
+
+        from kiro_crew.config.sections import SESSION_SORT_MODES, DashboardConfig
+        from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+        spec = _EDITABLE_CONFIG["dashboard.session_sort"]
+        assert spec == {"type": "enum", "values": list(SESSION_SORT_MODES)}
+        field = next(f for f in fields(DashboardConfig) if f.name == "session_sort")
+        assert field.metadata["enum"] == list(SESSION_SORT_MODES)
+        assert field.default == "date-desc"
+
+
+class TestSessionSortCarryOver:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("dashboard", [None, {"folder_sort": "name"}])
+    async def test_if_unset_stores_an_absent_key(self, tmp_config, dashboard) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        if dashboard is not None:
+            data = _seed_config()
+            data["dashboard"] = dashboard
+            tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "name-desc", "if_unset": True},
+            )
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["session_sort"] == "name-desc"
+        if dashboard is not None:
+            assert stored["dashboard"]["folder_sort"] == "name"
+        assert KiroCrewConfig.load().dashboard.session_sort == "name-desc"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["name-asc", "date-desc", None, False, 0, "", [], {}])
+    async def test_if_unset_preserves_every_present_value(self, tmp_config, stored) -> None:
+        data = _seed_config()
+        data["dashboard"] = {"session_sort": stored}
+        tmp_config.write_text(json.dumps(data), encoding="utf-8")
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "name-desc", "if_unset": True},
+            )
+            assert resp.status == 409, await resp.text()
+            assert await resp.json() == {
+                "error": "dashboard.session_sort is already set",
+                "code": "already_set",
+            }
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("if_unset", ["yes", 1, None])
+    async def test_non_boolean_if_unset_writes_nothing(self, tmp_config, if_unset) -> None:
+        before = tmp_config.read_bytes()
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={
+                    "path": "dashboard.session_sort",
+                    "value": "name-desc",
+                    "if_unset": if_unset,
+                },
+            )
+            assert resp.status == 400, await resp.text()
+            assert await resp.json() == {"error": "if_unset must be a boolean"}
+        assert tmp_config.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("condition", [{}, {"if_unset": False}])
+    async def test_unconditional_patch_overwrites_a_present_key(
+        self, tmp_config, condition
+    ) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.session_sort", "name-asc")).status == 200
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                json={"path": "dashboard.session_sort", "value": "date-desc", **condition},
+            )
+            assert resp.status == 200, await resp.text()
+        assert KiroCrewConfig.load().dashboard.session_sort == "date-desc"
+
+
+# ── Auto-title refresh cadence (dashboard.title_refresh_every_turns) ─────
+
+
+class TestTitleRefreshEveryTurns:
+    """Settings → Chat → Sessions → "Auto-title refresh interval (turns)".
+
+    The row reads its value back from GET /api/config/kirocrew, which serializes
+    the LOADED config, so a stored value must load as the cadence chat_title runs.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [0, 4, 5, 1000])
+    async def test_a_value_round_trips_through_the_config_file(self, tmp_config, value) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.title_refresh_every_turns", value)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["title_refresh_every_turns"] == value
+        assert KiroCrewConfig.load().dashboard.title_refresh_every_turns == value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("low", [1, 2, 3])
+    async def test_one_to_three_is_stored_and_the_loader_raises_it(self, tmp_config, low) -> None:
+        # The gate admits the loader's whole domain, so a PATCH of 2 stores 2 the
+        # way `kirocrew config set` would, and the loader raises it to the minimum.
+        # The row reads back the loaded 4, the cadence that runs.
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import TITLE_REFRESH_EVERY_TURNS_MIN
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.title_refresh_every_turns", low)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["dashboard"]["title_refresh_every_turns"] == low
+        assert (
+            KiroCrewConfig.load().dashboard.title_refresh_every_turns
+            == TITLE_REFRESH_EVERY_TURNS_MIN
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_bad_value_is_refused_and_the_file_untouched(self, tmp_config) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import TITLE_REFRESH_EVERY_TURNS_MAX
+
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.title_refresh_every_turns", 8)).status == 200
+            for bad in (-1, TITLE_REFRESH_EVERY_TURNS_MAX + 1):
+                resp = await _patch(c, "dashboard.title_refresh_every_turns", bad)
+                assert resp.status == 400, bad
+                # The refusal names the gate's whole domain, 0 included.
+                expected = f"must be between 0 and {TITLE_REFRESH_EVERY_TURNS_MAX}"
+                assert expected in (await resp.json())["error"]
+            for bad in ("abc", None, [5]):
+                resp = await _patch(c, "dashboard.title_refresh_every_turns", bad)
+                assert resp.status == 400, bad
+        assert KiroCrewConfig.load().dashboard.title_refresh_every_turns == 8
+
+    @pytest.mark.asyncio
+    async def test_a_non_finite_number_is_refused_not_a_500(self, tmp_config) -> None:
+        # aiohttp's json.loads accepts Infinity/NaN, and int() raises
+        # OverflowError on Infinity: the validator must answer 400, not a 500.
+        async with TestClient(TestServer(_make_app())) as c:
+            for literal in ("Infinity", "-Infinity", "NaN"):
+                resp = await c.patch(
+                    "/api/config/kirocrew",
+                    data=f'{{"path": "dashboard.title_refresh_every_turns", "value": {literal}}}',
+                    headers={"Content-Type": "application/json"},
+                )
+                assert resp.status == 400, literal
+
+
 # ── Int validator ────────────────────────────────────────────────────────
 
 
@@ -697,6 +950,59 @@ class TestFloatValidator:
     async def test_float_non_numeric_returns_400(self, tmp_config) -> None:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "session.autocompact_pct", "abc")
+            assert resp.status == 400
+
+
+# ── Clamped float: session.compact_wait_secs ─────────────────────────────
+
+
+class TestCompactWaitSecsClamp:
+    """The wait budget is editable and clamps (not rejects) an out-of-range value.
+
+    The stored value is the one the load path would produce from it, and the
+    response carries a ``clamp_notice`` so the Settings row can say so.
+    """
+
+    @staticmethod
+    def _stored(cfg_path) -> object:
+        return json.loads(cfg_path.read_text(encoding="utf-8"))["session"]["compact_wait_secs"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [0, 60, 450, 3600])
+    async def test_in_range_value_is_stored_without_notice(self, tmp_config, value) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
+            assert resp.status == 200
+            body = await resp.json()
+        assert "clamp_notice" not in body
+        assert self._stored(tmp_config) == float(value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("value", "stored"),
+        [(1, 60.0), (59.5, 60.0), (3601, 3600.0), (99999, 3600.0), (-5, 0.0)],
+    )
+    async def test_out_of_range_value_is_clamped_with_notice(
+        self, tmp_config, value, stored
+    ) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
+            assert resp.status == 200
+            body = await resp.json()
+        assert body["clamp_notice"] == {
+            "path": "session.compact_wait_secs",
+            "requested": float(value),
+            "stored": stored,
+            "min": 60.0,
+            "max": 3600.0,
+        }
+        assert self._stored(tmp_config) == stored
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["abc", float("nan"), True, None])
+    async def test_non_number_is_still_rejected(self, tmp_config, value) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "session.compact_wait_secs", value)
             assert resp.status == 400
 
 
@@ -1467,3 +1773,84 @@ class TestUpdateNudgeKeys:
         async with TestClient(TestServer(_make_app())) as c:
             rec = {**self._REC, "skipped": "yes"}
             assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+
+class TestChatTurnTimeout:
+    """Settings → Chat → Advanced → "Turn Time Limit (seconds)".
+
+    The write gate uses the loader's own bounds, so Settings can never save a
+    ceiling the loader would then rewrite, and a saved value loads as written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_inside_the_range_round_trips(self, tmp_config) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.chat_turn_timeout_secs", 28800)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["chat_turn_timeout_secs"] == 28800
+        assert KiroCrewConfig.load().agent.chat_turn_timeout_secs == 28800
+
+    @pytest.mark.asyncio
+    async def test_both_loader_bounds_are_writable(self, tmp_config) -> None:
+        from kiro_crew.config.sections import CHAT_TURN_TIMEOUT_MAX, CHAT_TURN_TIMEOUT_MIN
+
+        async with TestClient(TestServer(_make_app())) as c:
+            for value in (CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX):
+                resp = await _patch(c, "agent.chat_turn_timeout_secs", value)
+                assert resp.status == 200, await resp.text()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [299, 86401, 0, -1, "four hours"])
+    async def test_a_value_the_loader_would_clamp_is_refused(self, tmp_config, value) -> None:
+        before = tmp_config.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", value)).status == 400
+        assert tmp_config.read_text(encoding="utf-8") == before
+
+    @pytest.mark.asyncio
+    async def test_a_saved_two_hour_limit_survives_superseded_default_adoption(
+        self, tmp_config, monkeypatch
+    ) -> None:
+        """7200 is the row's superseded default, and the row auto-adopts.
+
+        Saving it in Settings is an explicit choice, so the next load must not
+        read it as a materialized default and delete it.
+        """
+        from kiro_crew.config import loader as L
+        from kiro_crew.config import superseded_defaults as SD
+
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.chat_turn_timeout_secs", 7200)
+            assert resp.status == 200, await resp.text()
+        assert SD.acked_superseded() == {"agent.chat_turn_timeout_secs": 7200}
+        assert L.KiroCrewConfig.load().agent.chat_turn_timeout_secs == 7200
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["chat_turn_timeout_secs"] == 7200
+
+    @pytest.mark.asyncio
+    async def test_another_value_records_no_ack(self, tmp_config, monkeypatch) -> None:
+        from kiro_crew.config import loader as L
+        from kiro_crew.config import superseded_defaults as SD
+
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", 10800)).status == 200
+        assert SD.acked_superseded() == {}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_ack_aborts_the_write(self, tmp_config, monkeypatch) -> None:
+        """Without its ack the saved 7200 would be deleted on the next load."""
+        from kiro_crew.config import superseded_defaults as SD
+
+        def _refuse(_mutate):
+            raise SD.AckPathRefused("refused")
+
+        monkeypatch.setattr(SD, "_update_acked", _refuse)
+        before = tmp_config.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", 7200)).status == 500
+        assert tmp_config.read_text(encoding="utf-8") == before

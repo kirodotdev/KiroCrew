@@ -843,11 +843,19 @@ def _document(approvals: LaunchApprovals, refused: Mapping[str, Mapping[str, Any
 
 
 def _write(path: Path, text: str) -> None:
-    # Deferred: ``atomic_write`` pulls in platform helpers this leaf does not
-    # need at import time.
+    # Deferred: ``atomic_write`` and ``owner_only_files`` pull in platform
+    # helpers this leaf does not need at import time.
     from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.owner_only_files import mkdirs_owner_only
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # The store's directory is born ``0700``, whatever the process umask: a bare
+    # ``mkdir`` takes the umask default (``0755`` under the usual ``022``), and
+    # this directory is the SEAL for the store (the file-tool gate and the OS
+    # sandbox both fence it by name), so an other-readable one would publish
+    # which launches the operator approved to every account on the host. The
+    # sandbox precreates it ``0700`` on a Linux spawn; this is the first writer
+    # on a host that has not spawned yet, and it must not depend on that order.
+    mkdirs_owner_only(path.parent)
     atomic_write(path, text, mode=0o600)
 
 

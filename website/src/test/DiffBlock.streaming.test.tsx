@@ -20,9 +20,12 @@ vi.mock('../pierre', async importOriginal => {
 
 import DiffBlock from '../components/DiffBlock'
 import { i18nT } from '../i18n/t'
+import { __resetPathKindCache } from '../hooks/usePathKind'
+import { pathKindsFetch } from './pathKindStub'
 
 beforeEach(() => {
-  globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch
+  __resetPathKindCache()
+  globalThis.fetch = pathKindsFetch(() => 'file') as unknown as typeof fetch
   pierreDouble.render = null
 })
 

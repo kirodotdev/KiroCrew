@@ -15,10 +15,13 @@ import json
 import os
 import platform
 import re
+import socketserver
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Callable
 
@@ -565,6 +568,116 @@ class TestFetchBytes:
         monkeypatch.setattr(wheel_engine.urllib.request, "urlopen", raising)
         with pytest.raises(WheelUpdateError, match="could not fetch"):
             wheel_engine._fetch_bytes("https://x.example/f", 10, 1)
+
+
+class _LoopbackServer(HTTPServer):
+    """One-request-at-a-time loopback origin that serves ``payload`` with a chosen framing."""
+
+    payload: bytes = b""
+    chunked: bool = False
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind resolves the host name between bind() and
+        # listen(); a loopback origin needs no name.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
+class _PayloadHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        server = self.server
+        assert isinstance(server, _LoopbackServer)
+        body = server.payload
+        self.send_response(200)
+        if server.chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        if not server.chunked:
+            self.wfile.write(body)
+            return
+        for start in range(0, len(body), 4096):
+            part = body[start : start + 4096]
+            self.wfile.write(b"%x\r\n%s\r\n" % (len(part), part))
+        self.wfile.write(b"0\r\n\r\n")
+
+    def log_message(self, format: str, *args: object) -> None:
+        return None
+
+
+class TestRealHttpResponse:
+    """The fetch over a real ``http.client`` response, which the fakes above cannot model.
+
+    A Content-Length response closes itself, and the socket under it, in the read
+    that returns its last byte. The fakes expose no socket, so only a real
+    response reaches the per-read timeout after that close.
+    """
+
+    @pytest.fixture
+    def origin(self, monkeypatch: pytest.MonkeyPatch):
+        server = _LoopbackServer(("127.0.0.1", 0), _PayloadHandler)
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        thread.start()
+        # A ProxyHandler({}) opener: a developer host's proxy environment must not
+        # route the loopback request elsewhere.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        loopback = f"http://127.0.0.1:{server.server_port}/"
+        monkeypatch.setattr(
+            wheel_engine.urllib.request,
+            "urlopen",
+            lambda req, timeout: opener.open(loopback, timeout=timeout),
+        )
+        sockets: list[object] = []
+        real_socket = wheel_engine._response_socket
+
+        def _spy(resp: object) -> object | None:
+            sock = real_socket(resp)
+            sockets.append(sock)
+            return sock
+
+        monkeypatch.setattr(wheel_engine, "_response_socket", _spy)
+        try:
+            yield server, sockets
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "the loopback origin did not stop"
+
+    @pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+    def test_small_body_is_read_to_the_end(self, origin, chunked: bool) -> None:
+        server, sockets = origin
+        server.payload = json.dumps({"version": "9.9.9"}).encode()
+        server.chunked = chunked
+        try:
+            got = wheel_engine._fetch_bytes("https://x.example/latest-cli.json", 65536, 5)
+        except WheelUpdateError as exc:
+            pytest.fail(f"a complete body must not fail the fetch: {exc}")
+        assert got == server.payload
+        assert sockets and sockets[0] is not None, "the real response must expose its socket"
+
+    def test_multi_read_wheel_is_written_and_verified(self, origin, tmp_path: Path) -> None:
+        server, sockets = origin
+        server.payload = bytes(range(256)) * 769  # three full 64 KiB reads plus a tail
+        dest = tmp_path / "w.whl"
+        try:
+            wheel_engine._download_to_file(
+                f"{_ARTIFACT_BASE}/cli/stable/9.9.9/kirocrew-9.9.9-py3-none-any.whl",
+                dest,
+                cap=1 << 20,
+                timeout=5,
+                expected_sha=hashlib.sha256(server.payload).hexdigest(),
+            )
+        except WheelUpdateError as exc:
+            pytest.fail(f"a complete wheel must not fail the download: {exc}")
+        assert dest.read_bytes() == server.payload
+        assert sockets and sockets[0] is not None, "the real response must expose its socket"
 
 
 class TestRunHelper:

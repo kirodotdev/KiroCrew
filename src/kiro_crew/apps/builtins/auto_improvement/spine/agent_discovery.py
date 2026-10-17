@@ -56,9 +56,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.owner_only_files import ensure_directory, owner_only_opener_for
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
-from .git_safety import GIT_SAFE_CONFIG, require_pinned
+from .git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 # How many agent-discovered surfaces to keep per cycle. The agent is asked for a small,
 # high-signal set (not an exhaustive audit) — each surface costs a full bounded
@@ -127,7 +128,7 @@ def _git(args: list[str], cwd: Path, timeout: float = 60.0) -> str:
     where = str(Path(cwd).absolute())
     try:
         proc = subprocess.run(
-            ["git", "-C", where, *_GIT_SAFE_CONFIG, *args],
+            ["git", "-C", where, *_GIT_SAFE_CONFIG, *hook_off_args(where), *args],
             capture_output=True,
             timeout=timeout,
             cwd=where,
@@ -350,8 +351,8 @@ def _normalize_surface(
     default_rule: str,
 ) -> dict | None:
     """Coerce one agent-emitted record into the canonical surface-dict shape
-    ``{target, rule, message, file, line, symbol, hypothesis}`` (identical to what
-    ``build_gate.discover_defect_surfaces`` returns), or None if it lacks a usable file.
+    ``{target, rule, message, file, line, symbol, hypothesis}`` (the shape
+    ``_candidate_from`` consumes), or None if it lacks a usable file.
 
     Defensive: the agent controls these strings, so we validate the file is a real
     repo-relative source path (and, when scoped, inside the change set) before trusting
@@ -506,7 +507,7 @@ def _build_prompt(
         )
     # SKIP-LIST: loci already terminal in the ledger (filed/committed/failed_gate/duplicate
     # …). Re-proposing them wastes a full investigation read + is dropped downstream by the
-    # dedup gate anyway, so tell the agent up front NOT to report them — it spends its 6-read
+    # dedup gate anyway, so tell the agent up front NOT to report them — it spends its 8-read
     # budget on genuinely NEW surfaces (operator: discovery re-emits already-terminal
     # candidates every cycle). Capped so a long ledger can't blow the prompt budget.
     skip_block = ""
@@ -569,9 +570,10 @@ def _diag_log(log_dir: Path | None, payload: dict) -> None:
         return
     try:
         log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(log_dir)
         line = json.dumps(payload, default=str)
-        with open(log_dir / "agent_discovery.log", "a", encoding="utf-8") as fh:
+        log_path = log_dir / "agent_discovery.log"
+        with open(log_path, "a", encoding="utf-8", opener=owner_only_opener_for(log_path)) as fh:
             fh.write(line + "\n")
     except Exception:  # noqa: BLE001 — logging must never break discovery
         pass
@@ -599,8 +601,8 @@ def discover_surfaces_via_agent(
     cycle — coverage rotates across all files over the loop's cycles (operator directive:
     do not limit the search space; rotate rather than cut).
 
-    Same return shape as ``build_gate.discover_defect_surfaces`` so the caller treats both
-    sources identically: ``{target, rule, message, file, line, symbol, hypothesis}``.
+    The surface dicts the caller (``_candidate_from``) consumes, in the shape every
+    discovery source emits: ``{target, rule, message, file, line, symbol, hypothesis}``.
 
     Args:
       runner: an AgentRunner / SessionAgentRunner (anything with ``.run(prompt, ...)``

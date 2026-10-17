@@ -181,7 +181,7 @@ def _warn_lifecycle_loss(support: SeamSupport, detail: str) -> None:
     """Report why the CLI's lifecycle environment was left unchanged.
 
     ``UNVERIFIED`` names the attribution that failed and what to do about it.
-    Only ``UNSUPPORTED`` -- both bundles read, a hook genuinely gone -- may
+    Only ``UNSUPPORTED`` -- a bundle read, its hook genuinely gone -- may
     describe the installed CLI, because only then was the CLI measured. One
     message for both claimed the capability gap either way, which sends the
     operator to upgrade a CLI whose bundles already carry both hooks.

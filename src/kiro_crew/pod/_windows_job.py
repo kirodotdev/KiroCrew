@@ -2,11 +2,14 @@
 
 The caller assigns its original Popen handle BEFORE resuming a CREATE_SUSPENDED
 child. Assignment cannot retroactively contain descendants of a running process.
-A named job survives its publisher while members remain; opening never creates
-an empty replacement. A successful drain covers job members, not outside launch
-brokers, and authorizes reclamation only after the caller retires the publisher
-and validates the durable run identity. The windows backend and _windows_run
-own that publication and retirement protocol; resource ceilings stay separate.
+The job object outlives its publisher while members remain, but its NAME does
+not: a job name is visible only while some handle to the job is open, and
+members hold none, so once the publisher exits `open_existing` reports the job
+absent even while the members still run. Opening never creates an empty
+replacement. A successful drain covers job members, not outside launch brokers,
+and authorizes reclamation only after the caller retires the publisher and
+validates the durable run identity. The windows backend and _windows_run own
+that publication and retirement protocol; resource ceilings stay separate.
 """
 
 from __future__ import annotations
@@ -307,6 +310,25 @@ def retire_identity(handle: int, *, timeout: float) -> None:
         raise TimeoutError("Windows pod publisher did not retire")
     if result != 0:
         raise _error("wait for publisher retirement")
+
+
+def wait_identity(handle: int, *, timeout: float) -> bool:
+    """Whether the pinned process object signals within *timeout*; never terminates.
+
+    True means the process has exited, so no further write can come from it. A
+    wait error raises rather than reading as either answer.
+    """
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("identity wait timeout must be finite and non-negative")
+    kernel, _advapi = _load()
+    result = kernel.WaitForSingleObject(
+        _process_handle(handle), min(int(timeout * 1000), 0xFFFFFFFE)
+    )
+    if result == 0:
+        return True
+    if result == 258:  # WAIT_TIMEOUT: the object is still live.
+        return False
+    raise _error("wait for process identity")
 
 
 def close_identity(handle: int) -> None:

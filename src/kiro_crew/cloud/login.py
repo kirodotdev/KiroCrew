@@ -6,13 +6,16 @@ up: run ``kiro-cli login`` on the instance over SSM, scrape the device-code URL
 + code, and open that URL in the user's *local* browser. KiroCrew stores **no**
 Kiro credentials — they live in kiro-cli's own store on the instance.
 
-Two remote-login shapes (see ``docs/reference/kiro-cli/authentication.md``):
+Two remote-login shapes:
 
-- **Builder ID / IAM Identity Center → device code.** kiro-cli prints a
-  verification URL + code; the user opens it locally and approves. No port
-  forward needed. This is what :func:`start_device_login` targets.
-- **Social (Google/GitHub)** needs a forwarded callback port; that path is
-  automated with an SSM port-forward after kiro-cli prints the callback port.
+- **Device code.** Per ``docs/reference/kiro-cli/authentication.md`` the device
+  flow covers Builder ID, IAM Identity Center, Google and GitHub: kiro-cli
+  prints a verification URL + code; the user opens it locally and approves. No
+  port forward needed. This is what :func:`start_device_login` targets.
+- **Callback-port fallback.** When no device code is captured for a default
+  (non-pinned) target, :func:`start_device_login` falls back to a plain
+  ``kiro-cli login``; if that prints a loopback callback port, the port is
+  automated with an SSM port-forward.
 """
 
 from __future__ import annotations
@@ -78,8 +81,9 @@ _DRIVER_SETUP_FAILED_SENTINEL = "__KIRO_LOGIN_DRIVER_SETUP_FAILED__"
 # up by trusting a PID read from a file.
 _CANCEL_NO_PKILL_SENTINEL = "__KIRO_LOGIN_CANCEL_NO_PKILL__"
 # Printed (and the command exits non-zero) when the login process is STILL
-# running after the kill -- a `pkill` pattern that matches nothing exits 1 and
-# would otherwise be indistinguishable from a clean stop. This path is the only
+# running after the kill. `pkill` exits 0 on a match and 1 on none, so its
+# status cannot tell "already gone" from "pattern drifted", and exit 0 does not
+# prove the process died; only the `pgrep` re-probe confirms the stop. This path is the only
 # thing standing between a pattern drift on the box and a cancel that reports
 # success while the login keeps polling toward a sign-in nobody wants.
 _CANCEL_UNCONFIRMED_SENTINEL = "__KIRO_CANCEL_UNCONFIRMED__"
@@ -141,7 +145,8 @@ _TOKEN_PRESENT_SENTINEL = "__KIRO_AUTH_TOKEN_PRESENT__"
 _NOAUTH_SENTINEL = "__NOAUTH__"
 
 # Resolve the kiro-cli binary to an absolute path, PATH-independent. Under SSM's
-# `sudo -u <user> -i bash -lc` the login-shell PATH is sometimes unreliable
+# `echo <b64> | base64 -d | sudo -u <run_as> -i bash` wrapper (script on stdin,
+# see ``ssm._wrap_remote_command``) the login-shell PATH is sometimes unreliable
 # (we saw exit 127 "command not found" intermittently), so every remote
 # kiro-cli command sources this first and invokes "$KIRO" explicitly.
 _KIRO_BIN_RESOLVE = (
@@ -667,9 +672,9 @@ if [ "$killed" != 1 ]; then
   echo "{_CANCEL_NO_PKILL_SENTINEL}"
   exit 1
 fi
-# Confirm it, do not assume it. `pkill` exits 1 both when the pattern matched
-# nothing and when it matched and killed everything, so its status cannot tell a
-# working cancel from a pattern that no longer matches the box's command line.
+# Confirm it, do not assume it. `pkill` exits 0 on a match and 1 on none; its
+# status (discarded above) cannot tell "already gone" from a pattern that no
+# longer matches the box's command line, and exit 0 does not prove death.
 # Re-probe, and report UNCONFIRMED rather than a clean stop.
 if command -v pgrep >/dev/null 2>&1; then
   for _ in 1 2 3 4 5; do

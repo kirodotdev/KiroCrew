@@ -17,6 +17,8 @@ from unittest.mock import patch
 from sage_lib import learning as L  # noqa: N812
 from sage_lib import review_pool, store
 
+from kiro_crew.slugs import SLUG_CHARS
+
 
 def _pattern(title, **kw):
     p = {"title": title, "scope": "common", "repo_identity": "github.com/o/r",
@@ -98,6 +100,41 @@ class TestNamespaceManagement(unittest.TestCase):
 
     def test_create_rejects_traversal(self):
         self.assertFalse(L.create_namespace("../evil", self.root)["ok"])
+
+    def test_a_name_in_another_script_is_refused_naming_the_character(self):
+        # The name is the namespace's directory, so the rule stays a
+        # lowercase ASCII slug; the refusal carries a code and the refused
+        # character so the dashboard can say why in the user's language.
+        cases = [
+            ("\u8bba\u6587", "\u8bba"),  # Han
+            # The capital as typed, not the lowercase that looks like Latin "o".
+            ("\u041e\u0442\u0447\u0435\u0442", "\u041e"),
+            ("\u0627\u0644\u0641\u0631\u064a\u0642", "\u0627"),  # Arabic
+            ("Mu\u0308nchen", "\u00fc"),  # NFD: the letter, not the mark
+            ("\u0130stanbul", "\u0130"),  # not the U+0307 lowercasing produces
+            ("team/a", "/"),
+            ("a\u202eb", "U+202E"),  # never echoed raw
+        ]
+        for typed, char in cases:
+            res = L.create_namespace(typed, self.root)
+            self.assertFalse(res["ok"], typed)
+            self.assertEqual(res["code"], "invalid_namespace_name", typed)
+            self.assertEqual(res["char"], char, typed)
+        self.assertEqual(L.list_namespaces(self.root), ["default"])
+
+    def test_a_refusal_on_shape_names_no_character(self):
+        for typed in ("x", "-team", "team-", "a" * 65):
+            res = L.create_namespace(typed, self.root)
+            self.assertEqual((res["code"], res["char"]), ("invalid_namespace_name", ""), typed)
+
+    def test_the_rule_itself_is_unchanged_ascii(self):
+        # The regex's middle class is exactly the shared slug alphabet and nothing
+        # outside ASCII is admitted: the refusal is explained, not widened.
+        for code in range(0x110000):
+            if 0xD800 <= code <= 0xDFFF:
+                continue
+            ch = chr(code)
+            self.assertEqual(bool(L._NS_NAME_RE.match("a" + ch + "a")), ch in SLUG_CHARS, repr(ch))
 
 
 class TestNamespacedStaging(unittest.TestCase):

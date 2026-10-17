@@ -377,6 +377,7 @@ class TestLayersShareTheSchedule:
     def test_no_layer_keeps_a_private_backoff_literal(self):
         """The literals the ladder replaced must not come back."""
         import inspect
+        import sys
 
         from kiro_crew.acp import client
         from kiro_crew.mcp_gateway import manager
@@ -384,7 +385,10 @@ class TestLayersShareTheSchedule:
 
         assert "_RESPAWN_BACKOFF_START_SECS = 1.0" not in inspect.getsource(manager)
         assert "_RESPAWN_BACKOFF_MAX_SECS = 60.0" not in inspect.getsource(manager)
-        assert "_ACP_RESPAWN_BACKOFF_S = 2.0" not in inspect.getsource(client)
+        assert "_ACP_RESPAWN_BACKOFF_S = 2.0" not in "".join(
+            inspect.getsource(sys.modules[name])
+            for name in (client.__name__, *client._CLIENT_OWNERS)
+        )
         assert "RECOVERY_BACKOFF_BASE_SECS = 2.0" not in inspect.getsource(model)
 
 

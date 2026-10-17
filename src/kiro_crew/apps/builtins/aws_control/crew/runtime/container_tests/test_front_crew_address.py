@@ -136,3 +136,28 @@ def test_a_near_miss_name_does_not_address_the_crew(hostile: str) -> None:
     crew, refusal = judge_addressed_crew({"model": hostile}, "acme-support")
     assert crew is None
     assert refusal is not None and refusal.status_code == 404
+
+
+def test_a_launch_tag_is_refused_and_the_crew_name_is_accepted():
+    """The guest half of the host/guest addressing contract, measured on a live VM.
+
+    A crew's launch TAG and the crew NAME it serves are different strings. A turn
+    addressed with the tag is refused with a 404, which reads as a crew that is not
+    serving rather than one addressed by the wrong name -- so the host has to send
+    the name, and this is the function that decides.
+
+    The tag shape is named here on purpose: `other-crew` above proves a mismatch is
+    refused in general, and this proves it for the one value the host can actually
+    send by mistake. The host side -- that it resolves the NAME and never the tag --
+    is pinned in `test/test_crew_turn_proxy.py`, which cannot import this function
+    because the refusal it returns is a `JSONResponse`.
+    """
+    crew, refusal = judge_addressed_crew({"model": "kc-22d27f"}, "l2crew")
+    assert crew is None
+    assert refusal is not None
+    assert refusal.status_code == 404
+
+    # The same function, the same deployment, the name it does serve.
+    crew, refusal = judge_addressed_crew({"model": "l2crew"}, "l2crew")
+    assert refusal is None
+    assert crew == "l2crew"

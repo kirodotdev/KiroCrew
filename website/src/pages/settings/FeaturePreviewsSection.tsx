@@ -3,10 +3,13 @@ import { ArrowRight } from 'lucide-react'
 
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
-import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_DASHBOARD, PREVIEW_INSTANCE_SESSIONS, PREVIEW_LAYOUT_HARNESS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { usePreviewFlag, useRemoteCrewChat } from '../../hooks/usePreviewFlag'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_CREW, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import ErrorBoundary from '../../components/ErrorBoundary'
+import { KasBundleCard } from '../developer/KasBundleCard'
+import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
+import { useConfigSchema } from '../../components/settingRef/useConfigSchema'
 import { DecisionsCard } from './DecisionsCard'
-import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
 
 
@@ -132,10 +135,14 @@ export function FeaturePreviewsSection() {
   const artifactDeploy = usePreviewFlag(PREVIEW_ARTIFACT_DEPLOY)
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
-  const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
-  const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
+  const remoteCrewChat = useRemoteCrewChat()
   const layoutHarness = usePreviewFlag(PREVIEW_LAYOUT_HARNESS)
-  const dashboard = usePreviewFlag(PREVIEW_DASHBOARD)
+  const folderConductor = usePreviewFlag(PREVIEW_FOLDER_CONDUCTOR)
+  // The KAS engine card is for a deployment that can select KAS at all: the same
+  // gate its old mount used, read from the schema's `agent.acp_backend` enum. An
+  // unanswered schema hides nothing, as on the harness tab.
+  const acpBackends = useConfigSchema()?.get('agent.acp_backend')?.enum
+  const kasOffered = !acpBackends || acpBackends.includes(KIRO_SIGN_IN_BACKEND)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -249,6 +256,11 @@ export function FeaturePreviewsSection() {
           a chat dispatched to another MACHINE over the instances tunnel. One card
           each keeps a reader from flipping the wrong switch.
 
+          ONE card for both halves of that feature: starting a chat on a crew and
+          listing that crew's sessions in the sidebar. They were two switches, and
+          one on with the other off let a user open a chat on a crew and then find
+          no crew group to return to it from.
+
           NO ingress button, for the same reason as the crew card: turning it on
           puts the create-menu entry back in the same tick, and that menu is
           already in front of the user.
@@ -263,26 +275,9 @@ export function FeaturePreviewsSection() {
       <SettingsCard>
         <SettingsToggle
           label={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')}
-          hint={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
+          description={i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew_desc')}
           checked={remoteCrewChat}
-          onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
-        />
-      </SettingsCard>
-      {/* Adjacent to the card above and still SEPARATE from it, because the two
-          point opposite ways across the same tunnel: that flag DISPATCHES a chat
-          to another machine, this one LISTS the sessions that machine already
-          owns. Sharing a card would imply flipping one gets the other.
-
-          NO ingress button, and for a different reason than the crew cards: they
-          omit it because their door is already on screen, whereas this preview
-          has no page of its own at all — it changes the Sessions list every user
-          is already looking at, so the toggle IS the whole affordance. */}
-      <SettingsCard>
-        <SettingsToggle
-          label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
-          hint={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
-          checked={instanceSessions}
-          onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
+          onChange={v => setRemoteCrewChat(v)}
         />
       </SettingsCard>
       {/* Dev-only MECHANISM preview, not a shippable surface: the composable-layout
@@ -303,37 +298,43 @@ export function FeaturePreviewsSection() {
           onChange={v => setPreviewFlag(PREVIEW_LAYOUT_HARNESS, v)}
         />
       </SettingsCard>
-      {/* The Dynamic Dashboard: the dock above the composer, the side panel's
-          Dashboard view, the Crewmates Dashboard tab and the All dashboards
-          page. Still being designed, so held here until it is.
+      {/* A folder drawn around the session that conducts it: that card pinned
+          first inside the folder, with an accent bar and a `conductor` tag.
 
-          NO ingress button: turning it on puts the dock, the + menu entry and
-          the sidebar's "All dashboards" item back in the same tick, so a link
-          here would be a second door beside ones already on screen. NO "See
-          what it looks like" either, for the capture rule: the surface is
-          changing shape and a capture would be stale by the next change.
+          Flagged for the reason the others here are not: it is not a DOOR. The
+          cards above hold a page or a menu entry a reader can decline to open,
+          so shipping them visible costs nobody anything; this one re-orders a
+          list people read every day and there is nothing to decline. Held until
+          it has been lived with.
 
-          The ONE setting the dashboard owns gateway-wide — automatic cards for
-          every session, a cost opt-in — rides INSIDE this card and only while
-          the flag is on. Not in the panel's Overview or on the All dashboards
-          page: those are places meant for reading, and a setting belongs in
-          Settings. This card is the whole story of the preview, so the switch
-          that spends on its behalf lives here with the switch that reveals it.
-          It stays visible with the preview OFF: it is a gateway-wide server
-          setting, the preview is a per-device flag, and hiding the only
-          control for a spend opt-in would leave cards running with no way to
-          turn them off from this machine. */}
+          NO ingress button: turning it on redraws the Sessions list in the same
+          tick, and a link here would point at a list already on screen. NO "See
+          what it looks like" either -- the layout is still settling and a
+          capture would be stale by the next change, which is the same rule the
+          Dynamic Dashboard card above follows. */}
       <SettingsCard>
         <SettingsToggle
-          label={i18nT('pages.developer.featurePreviewsTab.dashboard')}
-          description={i18nT('pages.developer.featurePreviewsTab.dashboard_desc')}
-          checked={dashboard}
-          onChange={v => setPreviewFlag(PREVIEW_DASHBOARD, v)}
+          label={i18nT('pages.developer.featurePreviewsTab.folder_conductor')}
+          description={i18nT('pages.developer.featurePreviewsTab.folder_conductor_desc')}
+          checked={folderConductor}
+          onChange={v => setPreviewFlag(PREVIEW_FOLDER_CONDUCTOR, v)}
         />
-        <div className="pt-1" data-testid="feature-preview-dashboard-settings">
-          <AutomaticCardSetting active />
-        </div>
       </SettingsCard>
+      {/* The built-in KAS engine (`agent.kas_bundle`), the whole card: its switch
+          and the Install button for the pinned engine. It lives here, not on the
+          KAS harness row, while the route is in shadow testing, so the one click
+          that moves every new session onto an engine still being tested is not in
+          plain view of every KAS user. Unlike the cards above, the switch is a
+          server config value, not a per-device flag; the card writes it through
+          the same config PATCH it always did. Isolated so a throwing card cannot
+          take the section down. */}
+      {kasOffered && (
+        <SettingsCard>
+          <ErrorBoundary scope="feature-preview-kas-bundle" fallback={null}>
+            <KasBundleCard />
+          </ErrorBoundary>
+        </SettingsCard>
+      )}
       {/* LAST, and the only card here whose switch is not a per-device flag: it
           writes the KEYSTONE `decisions_consent.json`, not a config path. It lives in
           `DecisionsCard.tsx` because it is a list and a detail rather than one row,

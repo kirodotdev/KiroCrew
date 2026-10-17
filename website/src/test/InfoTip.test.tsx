@@ -476,6 +476,30 @@ describe('InfoTip', () => {
     expect(document.activeElement).toBe(btn)
   })
 
+  it('while open, the scroll keys fall through to the page when the tip has nothing to scroll', () => {
+    // A short tip fits its cap: `scrollHeight - clientHeight` is 0 and there is
+    // nothing for the keys to do. Claiming them anyway would strand a keyboard
+    // reader whose focus rests on the glyph, unable to scroll the page until
+    // the tip closes. So the keys must pass through exactly as they do closed.
+    render(<InfoTip text="Short tip" />)
+    const btn = trigger()
+    act(() => { btn.focus() })
+    const tip = screen.getByRole('tooltip')
+    Object.defineProperty(tip, 'scrollHeight', { configurable: true, value: 40 })
+    Object.defineProperty(tip, 'clientHeight', { configurable: true, value: 40 })
+
+    for (const key of ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End']) {
+      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+      act(() => { btn.dispatchEvent(ev) })
+      expect(ev.defaultPrevented, `${key} must not be claimed by a non-overflowing tip`).toBe(false)
+    }
+    expect(tip.scrollTop).toBe(0)
+
+    // Passing the keys through never closes the tip; the glyph keeps focus.
+    expect(screen.getByRole('tooltip')).toBe(tip)
+    expect(document.activeElement).toBe(btn)
+  })
+
   it('with the tip closed, the scroll keys on the glyph fall through to the page', () => {
     render(<InfoTip text="Closed tip" />)
     const btn = trigger()
@@ -529,8 +553,8 @@ describe('InfoTip', () => {
     fireEvent.click(btn)
     const tip = screen.getByRole('tooltip')
     expect(tip.style.top).toBe('')
-    expect(parseFloat(tip.style.bottom)).toBe(900 - 300 + 6)
-    expect(parseFloat(tip.style.maxHeight)).toBe(300 - 6 - 8)
+    expect(parseFloat(tip.style.bottom)).toBe(900 - 300 + 10)
+    expect(parseFloat(tip.style.maxHeight)).toBe(300 - 10 - 8)
   })
 
   it('falls below for a placement="top" glyph with no readable room above', () => {
@@ -541,7 +565,7 @@ describe('InfoTip', () => {
     fireEvent.click(btn)
     const tip = screen.getByRole('tooltip')
     expect(tip.style.bottom).toBe('')
-    expect(parseFloat(tip.style.top)).toBe(56 + 6)
+    expect(parseFloat(tip.style.top)).toBe(56 + 10)
   })
 
   it('anchors a tip for a glyph low in the viewport to its bottom edge and caps its height', () => {

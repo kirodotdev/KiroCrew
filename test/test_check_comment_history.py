@@ -170,6 +170,14 @@ class TestRuleFamilies:
         assert self._found("x = 1  # regression test pins this shape\n") == []
         assert self._found("x = 1  # regression for the truncated parse\n")
 
+    def test_plural_review_rounds_is_narration_too(self) -> None:
+        # The plural form narrates the review exactly as the singular does, so a
+        # singular-only pattern would let it through.
+        assert self._found("x = 1  # three review rounds named a missing entry\n") == [
+            (1, "review rounds")
+        ]
+        assert self._found("x = 1  # the review roundup is a dashboard view\n") == []
+
     @pytest.mark.parametrize("broken", ["def broken(:\n", "x = (\n"])
     def test_unparseable_source_raises_instead_of_reading_clean(self, broken: str) -> None:
         # A parse failure reading as "zero violations" would let a broken file

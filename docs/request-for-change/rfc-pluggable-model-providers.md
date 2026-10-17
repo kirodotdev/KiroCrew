@@ -3,8 +3,8 @@ title: Pluggable agent model providers
 status: draft
 author: ptias
 created: 2026-08-07
-last-audited: 2026-08-07
-audited-at: upstream/main
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 1872
 implementation-prs: []
 tracking-issues: [1693]
@@ -14,8 +14,9 @@ superseded-by: []
 # RFC: Pluggable agent model providers
 
 - Status: draft — **this RFC recommends that Kiro Crew support provider choice
-  for the agent model, and asks the maintainers to amend the `AGENTS.md` "Other
-  providers" invariant accordingly.** No design is proposed here: the shape of
+  for the agent model, and asks the maintainers to amend the "Other providers"
+  rule in [`docs/system-specs/oss-fork-boundaries.md`](../system-specs/oss-fork-boundaries.md) accordingly.** Harness choice already ships
+  through `agent.acp_backend`; this RFC is about the model provider beneath it. No design is proposed here: the shape of
   the seam is a separate discussion, and deliberately out of scope so the
   direction can be settled on its own merits.
 - Author: ptias
@@ -40,7 +41,7 @@ propose an implementation.
 ## Recommendation
 
 Accept provider choice for the **agent** model in principle, and amend the
-`AGENTS.md` "Other providers" bullet to say so. Treat the seam's shape,
+"Other providers" rule in [`docs/system-specs/oss-fork-boundaries.md`](../system-specs/oss-fork-boundaries.md) to say so. Treat the seam's shape,
 capability floor and guarantees as a follow-up design discussion.
 
 If full generality is the objection rather than the idea, accept it narrowly —
@@ -78,9 +79,9 @@ small surface, and it is the single cheapest option to accept.
 
 **Cost shape follows the product's own direction.** Long autonomous runs — crons,
 monitors, sub-agent fan-out — are where routine steps dominate spend, and they
-are exactly the workloads Kiro Crew has been growing toward. `agent.tips_model`
-and `agent.judge_model` already establish that per-role model selection is a
-shape this project accepts. Provider choice is the same idea one level down.
+are exactly the workloads Kiro Crew has been growing toward. `dashboard.tips_model`,
+`skills.judge_model` and the per-role `agent.role_models.<role>` overrides already
+establish that per-role model selection is a shape this project accepts. Provider choice is the same idea one level down.
 
 **The precedent is already half-built.** Local inference ships today for
 *embeddings*: `llama-cpp-python` is bundled and runs in-process, and
@@ -126,8 +127,8 @@ enjoys. This is a scoping decision, not an obstacle.
 
 A direction call, in one of two forms:
 
-1. **Accept in principle** (recommended). The maintainers amend the `AGENTS.md`
-   "Other providers" bullet, and scope/capability/guarantees move to a follow-up
+1. **Accept in principle** (recommended). The maintainers amend the "Other
+   providers" rule in `oss-fork-boundaries.md`, and scope/capability/guarantees move to a follow-up
    design discussion. Note the amendment should come from the maintainers, not
    from the PR that introduces the feature — a contributor PR editing the rule
    that forbids it is exactly the wrong shape, and this RFC does not ask for it.
@@ -135,7 +136,7 @@ A direction call, in one of two forms:
    reduced-capability mode, if generality is the concern.
 
 If the answer is instead to reaffirm KiroACP-only, this RFC asks that it be
-recorded with its rationale in `AGENTS.md` rather than left as a bare
+recorded with its rationale in `oss-fork-boundaries.md` rather than left as a bare
 prohibition, and for #1693 to be closed explicitly — so that the next contributor
 reaches the decision instead of rediscovering the argument.
 

@@ -111,7 +111,6 @@ def _looks_sensitive_standalone(path_posix: str) -> bool:
 
 
 # Filenames that are credential stores by convention, matched before any read.
-# Ported verbatim from ``crew_export/scan.py:_CREDENTIAL_NAME_RE``.
 _CREDENTIAL_NAME_RE = re.compile(r"""(?ix)
     ^(
         \.env(\..*)?

@@ -89,12 +89,10 @@ def logical_instructions(text: str) -> list[str]:
     The Dockerfile parser strips whole-line comments even inside a
     backslash-continued instruction, so that is mirrored before joining.
 
-    ``test/test_docker_wheel_layer_contract.py`` reads recipes the same way for
-    its own ratchet, against one hard-coded path rather than a caller's text.
-    The two are held byte-equal by a parity test in
-    ``test/test_crew_image_build_plan.py``, so this reader is a deliberate copy
-    and a divergence fails a test rather than silently classifying a recipe one
-    way here and another way there.
+    This is the single Dockerfile instruction reader in the repository.
+    ``test/test_docker_wheel_layer_contract.py`` reads recipes for its own
+    ratchet by calling this through a thin per-file wrapper (``_instructions``),
+    so the two gates cannot classify the same recipe differently.
     """
     logical: list[str] = []
     pending = ""
@@ -202,6 +200,19 @@ def _producer_of(rel: str, text: str, root: Path) -> str:
     return producer
 
 
+#: Recipe FRAGMENTS: files under the runtime directory that are appended to a
+#: recipe rather than built as one. A fragment has no ``FROM`` of its own, so
+#: building it alone is not a thing that can succeed.
+#:
+#: ``Dockerfile.microvm`` is the MicroVM lane's layer. That lane has no registry
+#: to hold a separately built ARM64 base, so ``cloud/microvm/recipe.py``
+#: concatenates the base recipe, the crew layer and this one into a single
+#: Dockerfile inside the zip it hands to ``CreateMicrovmImage``. The concatenation
+#: refuses if the crew layer stops starting from a base reference, which is what
+#: keeps the three from being mis-assembled.
+FRAGMENTS = frozenset({"Dockerfile.microvm"})
+
+
 def role_of(recipe: Path, root: Path = ROOT) -> tuple[str, str]:
     """One recipe's ``(role, base_arg)``, from its first ``FROM`` alone.
 
@@ -219,11 +230,20 @@ def role_of(recipe: Path, root: Path = ROOT) -> tuple[str, str]:
 
 
 def discover_recipes(root: Path = ROOT) -> list[Path]:
-    """Every ``Dockerfile*`` under the crew runtime directory, sorted."""
+    """Every standalone ``Dockerfile*`` under the crew runtime directory, sorted.
+
+    :data:`FRAGMENTS` are left out. They are not recipes: they carry no ``FROM``
+    because they are APPENDED to one, and this gate builds each discovered file on
+    its own. Named explicitly rather than inferred from a missing ``FROM``, so a
+    real recipe that lost its ``FROM`` still fails loudly instead of quietly
+    becoming a fragment.
+    """
     runtime_dir = root / RUNTIME_SUBPATH
     if not runtime_dir.is_dir():
         raise PlanError(f"no crew runtime directory at {RUNTIME_SUBPATH}")
-    return sorted(p for p in runtime_dir.glob("Dockerfile*") if p.is_file())
+    return sorted(
+        p for p in runtime_dir.glob("Dockerfile*") if p.is_file() and p.name not in FRAGMENTS
+    )
 
 
 def cited_producers(root: Path = ROOT) -> dict[str, list[str]]:

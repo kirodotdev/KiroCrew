@@ -190,6 +190,22 @@ describe('older-history fetch is cancelled when the user switches chat', () => {
   })
 })
 
+// ChatPage composes owners under pages/chat/page/ (and its useChatPage* siblings),
+// so the pins read the page and those owners.
+async function readChatPageSource(): Promise<string> {
+  const fs = await import('node:fs')
+  const path = await import('node:path')
+  const pages = path.resolve(__dirname, '..', 'pages')
+  const ownerDir = path.join(pages, 'chat', 'page')
+  return [
+    fs.readFileSync(path.join(pages, 'ChatPage.tsx'), 'utf8'),
+    ...fs.readdirSync(ownerDir).filter(f => /\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
+      .map(f => fs.readFileSync(path.join(ownerDir, f), 'utf8')),
+    ...fs.readdirSync(pages).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
+      .map(f => fs.readFileSync(path.join(pages, f), 'utf8')),
+  ].join('\n')
+}
+
 // The pin-jump effect turns any rejection into a "message unavailable" notice,
 // so a chat switch would now show it for a pin that is perfectly reachable.
 describe('an abort is distinguishable from a real failure', () => {
@@ -231,9 +247,7 @@ describe('an abort is distinguishable from a real failure', () => {
   })
 
   it('is guarded at the pin-jump call site before the unavailable notice', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = await readChatPageSource()
 
     // The catch must return on an abort BEFORE reaching the notice. A failed
     // page load is an ERROR (it renders through ErrorNotice via
@@ -245,9 +259,7 @@ describe('an abort is distinguishable from a real failure', () => {
   })
 
   it('picks the notice from the entry point, so the earlier-messages row avoids pin copy', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = await readChatPageSource()
 
     // Both entry points must tag themselves; `origin` is a required field, so a
     // future caller that forgets cannot silently inherit pin wording.
@@ -270,9 +282,7 @@ describe('an abort is distinguishable from a real failure', () => {
   })
 
   it('keeps the pin entry point on its own copy, so the transient string cannot regress it', async () => {
-    const fs = await import('node:fs')
-    const path = await import('node:path')
-    const src = fs.readFileSync(path.resolve(__dirname, '../pages/ChatPage.tsx'), 'utf8')
+    const src = await readChatPageSource()
 
     // The transient string is scoped to the earlier-messages origin; the pin
     // origin has no paging-error string, so it falls back to its own wording.

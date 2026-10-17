@@ -1,0 +1,18 @@
+{
+  "id": "flow",
+  "version": 1,
+  "title": "Flow",
+  "description": "Two charts over the same board. The burndown counts items still open at each step, with a straight ideal line from the first open to the last write, so a board falling behind its own pace is visible as a gap rather than as a number. The cumulative flow stacks how many items sat in each state at each step, which is what says whether work is piling up in one place. Both are computed in the page from the work fold's own created_at and closed_at stamps, so there is nothing agentic here and nothing for anyone to keep up to date.",
+  "source": "builtin",
+  "fields": {
+    "goal": { "type": "string", "source": { "fold": "work", "path": "conductor.goal" } },
+    "round": { "type": "number", "source": { "fold": "work", "path": "conductor.round" } },
+    "generation": { "type": "string", "source": { "fold": "work", "path": "conductor.generation" } },
+    "entries": { "type": "number", "source": { "fold": "work", "path": "conductor.entries" } },
+    "created_at": { "type": "string", "source": { "fold": "work", "path": "conductor.created_at" } },
+    "first_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.first_entry_at" } },
+    "last_entry_at": { "type": "string", "source": { "fold": "work", "path": "conductor.last_entry_at" } },
+    "items": { "type": "array", "source": { "fold": "work", "path": "items" } },
+    "omitted": { "type": "number", "source": { "fold": "work", "path": "omitted" } }
+  }
+}

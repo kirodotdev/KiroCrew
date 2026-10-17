@@ -13,14 +13,34 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from kiro_crew import platform_log_append
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import DecisionProviderConfig, DecisionsConfig
 from kiro_crew.context import ContextBuilder
-from kiro_crew.decisions import log
+from kiro_crew.decisions import gate, log
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+
+
+@pytest.fixture(autouse=True)
+def _generous_append_deadline(_floor_monkeypatch):
+    """Take the production append deadlines off the critical path of this test.
+
+    The assertions read the gate's CALL row back off the day-file once
+    ``build_message`` returns. That row is appended off-loop under
+    ``gate._LOG_BUDGET_SECS`` (50 ms), and a caller that asks for no receipt
+    returns when the budget expires while the shielded write lands later -- the
+    product's contract. Left in place, the test also asserts that a new-file
+    append beats 50 ms on the host, which the Windows shard intermittently does
+    not. ``platform_log_append._APPEND_TIMEOUT_SECONDS`` is the next budget on
+    the same path. The outcome row is appended synchronously by
+    ``skills_select`` and carries no budget. Raised, not removed: a genuinely
+    stuck writer still fails, by name, inside the suite's ``--timeout``.
+    """
+    _floor_monkeypatch.setattr(platform_log_append, "_APPEND_TIMEOUT_SECONDS", 10.0)
+    _floor_monkeypatch.setattr(gate, "_LOG_BUDGET_SECS", 20.0)
 
 
 @pytest.mark.asyncio

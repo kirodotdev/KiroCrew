@@ -1144,7 +1144,7 @@ class TestEveryWriterRevokesAStaleGrant:
         from kiro_crew import cli_doctor
 
         src = inspect.getsource(cli_doctor)
-        assert "allowed.remove(ref)" in src, "doctor must revoke, not merely decline to add"
+        assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src, "doctor must revoke, not merely decline to add"
 
     def test_no_writer_only_declines(self) -> None:
         """Each module that mints a grant must also be able to take one back."""
@@ -1304,10 +1304,13 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
 
         Every Crew-authored agent-spec writer in ``agent.py``, or in the
         ``agent_materialization`` modules it is composed from, must either
-        derive from ``build_agent_config`` (which filters), filter what it
-        writes through ``_may_auto_approve``, or not write an ``allowedTools``
-        key at all. ``_install_research_agent`` failed this before the fix:
-        it derived from a then-unfiltered constructor.
+        derive from ``build_agent_config`` (which filters), hand its own
+        assembled spec to ``_apply_allowed_tools_ceiling`` (the same filter the
+        constructor runs, pinned by the case above) or to the shared
+        ``write_governed_spec`` tail (which runs it), filter what it writes
+        through ``_may_auto_approve``, or not write an ``allowedTools`` key at
+        all. ``_install_research_agent`` failed this before the fix: it derived
+        from a then-unfiltered constructor.
         """
         import importlib
         import inspect
@@ -1334,7 +1337,9 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
             src = inspect.getsource(fn)
             covered = (
                 "build_agent_config(" in src
+                or "_apply_allowed_tools_ceiling(" in src
                 or "_may_auto_approve(" in src
+                or "write_governed_spec(" in src
                 or "allowedTools" not in src
             )
             assert covered, (
@@ -1521,7 +1526,7 @@ class TestDoctorAuditsItsRevocation:
 
         src = inspect.getsource(cli_doctor)
         assert 'operation="mcp_auto_approve_withheld"' in src
-        assert "allowed.remove(ref)" in src
+        assert "allowed[:] = without_mcp_refs(allowed, (name,))" in src
 
 
 class TestQueuedSpawnKeepsAppIdentity:

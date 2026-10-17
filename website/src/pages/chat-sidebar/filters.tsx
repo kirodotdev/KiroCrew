@@ -6,37 +6,41 @@ import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { shallowEqual } from 'react-redux'
 import type { SessionFilterKey, Slot } from './types'
 import { safeSetItem } from '../../utils/safeStorage'
-import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY } from './persistence'
+import { readStoredHiddenFolders, HIDDEN_FOLDERS_LS_KEY, readStoredTagFilter, TAG_FILTER_LS_KEY, FOLDERS_SHELVED_LS_KEY, readStoredRecentWindow, RECENT_WINDOW_LS_KEY, UNREAD_HIDDEN_LS_KEY, RUNNING_HIDDEN_LS_KEY, PINNED_HIDDEN_LS_KEY, readStoredModelFilter, writeStoredModelFilter, type StoredModelFilter } from './persistence'
 import { useAppSelector } from '../../store'
 import { selectSidebarWorkflowActiveKeys, selectSidebarAutomationRunningKeys, selectSidebarStartedSubagentCounts, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../../store/chatSlice'
 import { decomposeRecentWindow, type RecentUnit, clampRecentAmount, customRecentWindowMs, recentTickIntervalMs, isWithinRecentWindow } from '../recentWindow'
 import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
 import { slotActivityTs } from '../chat/sessionOrder'
 import { decideUnreadDrain } from '../unreadDrain'
-import { isPeerRow } from './rowIdentity'
+import type { ChatFolder } from '../../types'
 
 interface SessionFilterDef {
   key: SessionFilterKey
   storageKey: string
+  /** Persisted flag for the chip's HIDE state (drop matching rows). Absent on a
+   *  chip that cannot hide: Recent's row is already a flyout for its window, and
+   *  "hide recent" would only mean "older than the window", which nobody asked for. */
+  hideStorageKey?: string
   color: string
   icon: (active: boolean) => React.ReactNode
 }
 
 export const SESSION_FILTERS: SessionFilterDef[] = [
   {
-    key: 'unread', storageKey: 'mc-session-unread-only',
+    key: 'unread', storageKey: 'mc-session-unread-only', hideStorageKey: UNREAD_HIDDEN_LS_KEY,
     // Status token, not brand accent: this chip is the legend/toggle for the
     // same unread state whose row dot reads `var(--ok)` in SessionRow (#10479).
     color: 'var(--ok)',
     icon: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
   },
   {
-    key: 'running', storageKey: 'mc-session-running-only',
+    key: 'running', storageKey: 'mc-session-running-only', hideStorageKey: RUNNING_HIDDEN_LS_KEY,
     color: 'var(--warn)',
     icon: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
   },
   {
-    key: 'pinned', storageKey: 'mc-session-pinned-only',
+    key: 'pinned', storageKey: 'mc-session-pinned-only', hideStorageKey: PINNED_HIDDEN_LS_KEY,
     color: 'var(--accent)',
     icon: (active) => <Pin size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { fill: 'var(--accent)', stroke: 'none' } : {})} />,
   },
@@ -117,6 +121,24 @@ export function useSessionFilterState() {
     setFilterHiddenFolders(new Set())
     safeSetItem(HIDDEN_FOLDERS_LS_KEY, '[]')
   }, [])
+  /** The reveal's folder clear: un-hide `folderId` and its whole ancestor chain,
+   *  persisted like `toggleFolderFilter`. Cycle-guarded like the hidden subtree: a
+   *  hand-edited folders.json can hold a parent_id loop. */
+  const unhideFolderChain = useCallback((folderId: string | undefined, folders: readonly ChatFolder[]) => {
+    setFilterHiddenFolders(prev => {
+      const next = new Set(prev)
+      const visited = new Set<string>()
+      let curId = folderId
+      while (curId && !visited.has(curId)) {
+        visited.add(curId)
+        next.delete(curId)
+        const cid = curId
+        curId = folders.find(f => f.id === cid)?.parent_id
+      }
+      safeSetItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([...next]))
+      return next
+    })
+  }, [])
   /** Tag ids the list is narrowed to. Selecting several is a UNION ("Blocked or
    *  Waiting"), matching how a board column with several tags already behaves, so
    *  the two surfaces cannot disagree about what a multi-tag selection means. */
@@ -133,6 +155,47 @@ export function useSessionFilterState() {
     setFilterTagIds(new Set())
     safeSetItem(TAG_FILTER_LS_KEY, '[]')
   }, [])
+  /** Model keys the list is narrowed to (a union, like tags), and whether the
+   *  selection is inverted. One state object so the direction can never outlive
+   *  the selection it applies to: clearing the keys drops the exclude flag too,
+   *  and the next model selected narrows the list, as it would after a reload.
+   *
+   *  A toggle also drops every stored key no session uses any more (`present`
+   *  is the menu's own row set, so the clicked row is always in it). The filter
+   *  ignores a stale key but, left stored, it would keep `exclude` alive with
+   *  nothing ticked on screen: tick X and X disappears, under a "Not X" chip. */
+  const [modelFilter, setModelFilter] = useState<StoredModelFilter>(readStoredModelFilter)
+  const filterModelKeys = modelFilter.keys
+  const filterModelsExcluded = modelFilter.exclude
+  const toggleModelFilter = useCallback((key: string, present: Iterable<string>) => {
+    setModelFilter(prev => {
+      const presentSet = new Set(present)
+      const keys = new Set([...prev.keys].filter(stored => presentSet.has(stored)))
+      // The direction survives only if it applied to something on screen
+      // BEFORE this tick; a direction carried by stale keys alone is dropped.
+      const hadSelection = keys.size > 0
+      if (keys.has(key)) keys.delete(key); else keys.add(key)
+      const next = { keys, exclude: prev.exclude && hadSelection && keys.size > 0 }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
+  const setModelFilterExcluded = useCallback((exclude: boolean) => {
+    setModelFilter(prev => {
+      if (prev.exclude === exclude || prev.keys.size === 0) return prev
+      const next = { keys: prev.keys, exclude }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
+  const clearModelFilter = useCallback(() => {
+    setModelFilter(prev => {
+      if (prev.keys.size === 0) return prev
+      const next = { keys: new Set<string>(), exclude: false }
+      writeStoredModelFilter(next)
+      return next
+    })
+  }, [])
   // Shelved = the Folders section is rolled up to its heading, so a long folder
   // list stops crowding the Filter and Sort rows. Purely cosmetic: shelving
   // changes nothing about which folders are hidden, and the heading keeps
@@ -142,6 +205,41 @@ export function useSessionFilterState() {
   })
   const toggleFoldersShelved = useCallback(() => {
     setFoldersShelved(v => { const next = !v; safeSetItem(FOLDERS_SHELVED_LS_KEY, next ? '1' : '0'); return next })
+  }, [])
+  // Chips whose HIDE state is on: their matching rows are dropped from the list.
+  // Include chips OR together ("unread or pinned"), but a hide is an AND over
+  // the result, so "Unread + hide In progress" reads as unread sessions that are
+  // not running. A chip is either showing-only or hiding, never both: the two
+  // togglers below each clear the other state for their key. "Pause all
+  // filters" lifts the show-only chips only; a hide keeps hiding while paused,
+  // the same as the folder and tag filters, which the pause also leaves alone.
+  const [hiddenFilters, setHiddenFilters] = useState<Set<SessionFilterKey>>(() => {
+    const initialHidden = new Set<SessionFilterKey>()
+    for (const filterDef of SESSION_FILTERS) {
+      if (!filterDef.hideStorageKey) continue
+      const storedHidden = localStorage.getItem(filterDef.hideStorageKey) === '1'
+      if (localStorage.getItem(filterDef.storageKey) === '1') {
+        // A stored pair of '1's (hand-edited storage) resolves to show-only, and
+        // the losing flag is written back too: `clearHideFor` persists nothing
+        // for a key that is not in the set, so a stale '1' left here would come
+        // back as a hide on the next mount once show-only is turned off.
+        if (storedHidden) safeSetItem(filterDef.hideStorageKey, '0')
+        continue
+      }
+      if (storedHidden) initialHidden.add(filterDef.key)
+    }
+    return initialHidden
+  })
+  /** Drop `key`'s hide, persisted. A no-op when it is not hidden. */
+  const clearHideFor = useCallback((key: SessionFilterKey) => {
+    setHiddenFilters(prev => {
+      if (!prev.has(key)) return prev
+      const next = new Set(prev)
+      next.delete(key)
+      const filterDef = SESSION_FILTERS.find(sf => sf.key === key)!
+      if (filterDef.hideStorageKey) safeSetItem(filterDef.hideStorageKey, '0')
+      return next
+    })
   }, [])
   /** The menu row: off -> on, on -> off. A filter turned on while the filters
    *  are paused JOINS the pause (stored '2'). The person asked to see the whole
@@ -154,7 +252,10 @@ export function useSessionFilterState() {
       else { active.add(key); writeFilterStored(key, prev.paused ? FILTER_STORED_PAUSED : FILTER_STORED_ON) }
       return withPause(active, prev.paused)
     })
-  }, [])
+    // If the chip was hiding, show-only was off, so this toggle turned it ON and
+    // the hide must go. If the chip was not hiding, clearing is a no-op.
+    clearHideFor(key)
+  }, [clearHideFor])
   const disableFilter = useCallback((key: SessionFilterKey) => {
     setStatusFilters(prev => {
       if (!prev.active.has(key)) return prev
@@ -172,7 +273,8 @@ export function useSessionFilterState() {
       writeFilterStored(key, prev.paused ? FILTER_STORED_PAUSED : FILTER_STORED_ON)
       return withPause(active, prev.paused)
     })
-  }, [])
+    clearHideFor(key)
+  }, [clearHideFor])
   /** The menu's "Pause all filters" / "Resume all filters" row. Every active
    *  filter moves together and its stored value moves with it, so a reload comes
    *  back paused with the same filters still set. The `active` Set is reused, so
@@ -194,23 +296,47 @@ export function useSessionFilterState() {
       return { active: new Set(), paused: false }
     })
   }, [])
+  const toggleHideFilter = useCallback((key: SessionFilterKey) => {
+    const filterDef = SESSION_FILTERS.find(sf => sf.key === key)!
+    const hideStorageKey = filterDef.hideStorageKey
+    if (!hideStorageKey) return
+    setHiddenFilters(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) { next.delete(key); safeSetItem(hideStorageKey, '0') }
+      else { next.add(key); safeSetItem(hideStorageKey, '1') }
+      return next
+    })
+    // Mirror of toggleFilter: turning the hide on must drop show-only; turning
+    // it off finds show-only already off, so this is a no-op then.
+    disableFilter(key)
+  }, [disableFilter])
+  const clearHiddenFilters = useCallback(() => {
+    setHiddenFilters(prev => {
+      if (prev.size === 0) return prev
+      for (const filterDef of SESSION_FILTERS) {
+        if (filterDef.hideStorageKey && prev.has(filterDef.key)) safeSetItem(filterDef.hideStorageKey, '0')
+      }
+      return new Set()
+    })
+  }, [])
   return {
     activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
-    filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter,
+    filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter,
+    hiddenFilters, toggleHideFilter, clearHiddenFilters,
+    filterModelKeys, filterModelsExcluded, toggleModelFilter, setModelFilterExcluded, clearModelFilter,
   }
 }
 
-/** Which rows are running, recent or unread, the chip counts, the Recent window and the unread auto-drain. */
-export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, allRows, disableFilter }: {
+/** Which local rows are running, recent or unread, the Recent window and the unread auto-drain. */
+export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, disableFilter }: {
   unreadSlots: string[]
   activeFilters: Set<SessionFilterKey>
   /** Every active status filter is lifted, so none of them narrows the list. */
   filtersPaused: boolean
   enableFilter: (key: SessionFilterKey) => void
   localSlots: Slot[]
-  allRows: Slot[]
   disableFilter: (key: SessionFilterKey) => void
 }) {
   // Signal from the SSE/data-fetch layer indicating the initial slot list
@@ -342,30 +468,8 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
     // `recentTick` is an intentional dep: it forces recency to re-evaluate on
     // the heartbeat above so idle sessions age out of the Recent filter.
   }, [localSlots, runningSet, recentWindowMs, recentTick]) // eslint-disable-line react-hooks/exhaustive-deps
-  // Exhaustive over `SessionFilterKey` on purpose: a new filter key becomes a
-  // type error here instead of a predicate that silently matches nothing.
-  const _derivedLookup = useMemo<Record<SessionFilterKey, (slot: Slot) => boolean>>(() => ({
-    unread: slot => !isPeerRow(slot) && unreadSet.has(slot.key),
-    running: slot => isPeerRow(slot) ? slot.running === true : runningSet.has(slot.key),
-    pinned: slot => !isPeerRow(slot) && !!slot.pinned,
-    recent: slot => isPeerRow(slot)
-      ? isWithinRecentWindow(slotActivityTs(slot), Date.now(), recentWindowMs)
-      : recentSet.has(slot.key),
-  }), [unreadSet, runningSet, recentSet, recentWindowMs])
-  const filterCounts = useMemo(() => {
-    const counts = {} as Record<SessionFilterKey, number>
-    // Counted over `allRows` — the collection the filter RENDERS — not over
-    // `localSlots`. The two diverge for `running` and `recent`, whose predicates
-    // are origin-aware and so match peer rows: counting locals while rendering
-    // the merged set made those two badges under-report by exactly the remote
-    // rows the filter goes on to show. `unread` and `pinned` are unaffected
-    // either way because their predicates are themselves local-only
-    // (`!isPeerRow(slot) && …`), so widening the collection cannot add a match —
-    // which is why the badge must follow the RENDERED set rather than each
-    // predicate's notion of scope.
-    for (const filterDef of SESSION_FILTERS) counts[filterDef.key] = allRows.filter(_derivedLookup[filterDef.key]).length
-    return counts
-  }, [allRows, _derivedLookup])
+  // The chip predicates and their badge counts are the row model's (`./rows`), which
+  // reads these sets only for local rows.
   // Ref mirror of `activeFilters` so the auto-drain effect can read the
   // current toggle state without depending on it. Keeps the effect from
   // re-firing on its own setState output.
@@ -408,6 +512,6 @@ export function useSessionStatusFilters({ unreadSlots, activeFilters, filtersPau
   return {
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
-    commitRecentAmount, changeRecentUnit, runningSet, _derivedLookup, filterCounts,
+    commitRecentAmount, changeRecentUnit, runningSet, recentSet,
   }
 }

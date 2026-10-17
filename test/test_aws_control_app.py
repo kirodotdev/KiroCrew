@@ -672,9 +672,10 @@ class TestConsentTargetTracksTheOperation:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=self.ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", refuse_and_log),
         ):
-            asyncio.run(hooks._run_once())
+            asyncio.run(hooks._run_once(mock.Mock(start_async=AsyncMock())))
             operation = asyncio.run(accounts_mod.resolve_account_profile(self.ACCOUNT))
 
         assert gated == [("good", "eu-west-1")]
@@ -687,18 +688,18 @@ class TestConsentTargetTracksTheOperation:
             _registry([_entry("broken", account=self.ACCOUNT)], default="broken"),
             {"broken": _identity(False, detail="ExpiredToken")},
         )
+        sdk = mock.Mock(start_async=AsyncMock())
         with (
             mock.patch.object(accounts_mod, "list_accounts", AsyncMock(return_value=snapshot)),
             mock.patch.object(hooks.aws_consent, "probe_identity") as probe,
             mock.patch.object(hooks.backup_mod, "due_for_nightly") as due,
-            mock.patch.object(hooks, "_audit") as audit,
         ):
-            asyncio.run(hooks._run_once())
-        # No probe, no due-check, no consent check, no audit: there is no key to
+            asyncio.run(hooks._run_once(sdk))
+        # No probe, no due-check, no consent check, no claim: there is no key to
         # run under, so the loop stops before it can name one.
         probe.assert_not_called()
         due.assert_not_called()
-        audit.assert_not_called()
+        sdk.start_async.assert_not_called()
 
     def test_the_voice_services_do_not_touch_the_account_snapshot(self):
         """Polly and Transcribe read their own config; only s3/ce use the registry."""
@@ -2370,9 +2371,10 @@ class TestRound22Hardening:
         backup.clear_stop()
         assert not backup._STOP.is_set()
 
-    def test_nightly_backup_emits_sel_records(self):
+    def test_nightly_backup_claims_the_run_through_the_sdk(self):
         from kiro_crew.apps.builtins.aws_control import hooks
 
+        sdk = mock.Mock(start_async=AsyncMock(return_value="run-1"))
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -2385,25 +2387,30 @@ class TestRound22Hardening:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(
-                hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc123def456"
-            ),
-            mock.patch.object(
-                hooks.backup_mod,
-                "run_snapshot_backup",
-                return_value={"key": "snapshots/x.tar.gz"},
-            ),
-            mock.patch.object(hooks, "_audit") as audit,
+            mock.patch.object(hooks.backup_mod.storage, "find_drive", return_value="bkt"),
         ):
-            asyncio.run(hooks._run_once())
+            asyncio.run(hooks._run_once(sdk))
 
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        assert "invoked" in outcomes and "succeeded" in outcomes
+        # The run is a RECORDED SDK run, claimed under the
+        # account and the scheduled caller. The run's own SEL audit is the
+        # runner's job, pinned in test_aws_control_backup_job.py.
+        sdk.start_async.assert_awaited_once()
+        call = sdk.start_async.await_args
+        assert call.args[0] == hooks.backup_mod.KIND_SNAPSHOT
+        assert call.kwargs["dedupe_key"] == ACCOUNT
+        assert call.kwargs["params"] == {
+            hooks.backup_mod.JOB_PARAM_CALLER: hooks.backup_mod.CALLER_SCHEDULED,
+            hooks.backup_mod.JOB_PARAM_PROFILE: "p",
+            hooks.backup_mod.JOB_PARAM_REGION: "us-west-2",
+        }
 
-    def test_nightly_backup_failure_is_audited(self):
+    def test_a_refused_claim_does_not_crash_the_loop(self):
         from kiro_crew.apps.builtins.aws_control import hooks
+        from kiro_crew.apps.job_sdk import JobError
 
+        sdk = mock.Mock(start_async=AsyncMock(side_effect=JobError("shutting down")))
         with (
             mock.patch.object(
                 hooks.accounts_mod,
@@ -2416,19 +2423,13 @@ class TestRound22Hardening:
                 AsyncMock(return_value=aws_consent.Identity(ok=True, account=ACCOUNT)),
             ),
             mock.patch.object(hooks.backup_mod, "due_for_nightly", return_value=True),
+            mock.patch.object(hooks.backup_mod, "due_for_sessions_nightly", return_value=False),
             mock.patch.object(hooks.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
-            mock.patch.object(
-                hooks.storage_mod, "find_drive", return_value="kirocrew-drive-abc123def456"
-            ),
-            mock.patch.object(
-                hooks.backup_mod, "run_snapshot_backup", side_effect=RuntimeError("boom")
-            ),
-            mock.patch.object(hooks, "_audit") as audit,
+            mock.patch.object(hooks.backup_mod.storage, "find_drive", return_value="bkt"),
         ):
-            asyncio.run(hooks._run_once())  # swallowed, not raised
+            asyncio.run(hooks._run_once(sdk))  # swallowed, not raised
 
-        outcomes = [c.args[2] for c in audit.call_args_list]
-        assert "failed" in outcomes
+        sdk.start_async.assert_awaited_once()
 
 
 class TestRound23Junctions:

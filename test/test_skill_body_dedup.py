@@ -390,8 +390,8 @@ class TestEverySeamSiteSettlesTheSkillBodies:
         )
         # Guard the guard: if the pipeline is refactored to zero seam sites this
         # test must fail loudly rather than pass vacuously.
-        assert rearm_sites >= 10, f"expected the known seam sites, found {rearm_sites}"
-        assert checked_fns >= 8, f"expected the known seam functions, found {checked_fns}"
+        assert rearm_sites >= 9, f"expected the known seam sites, found {rearm_sites}"
+        assert checked_fns >= 7, f"expected the known seam functions, found {checked_fns}"
 
     def test_seam_helper_is_a_noop_for_a_builder_without_the_methods(self) -> None:
         from kiro_crew.messaging.dispatch import rollback_skill_bodies

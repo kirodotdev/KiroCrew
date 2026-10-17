@@ -16,8 +16,9 @@ class FakeSlot:
 
     def __init__(self) -> None:
         self.messages: list[tuple[str, str, str]] = []
+        self.credential_evidence = None
 
-    def append(self, role, content, cls):
+    def append(self, role, content, cls, *, meta=None):
         self.messages.append((role, content, cls))
 
 

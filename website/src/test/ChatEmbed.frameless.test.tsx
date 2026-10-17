@@ -8,6 +8,7 @@ const mockPost = vi.fn()
 
 vi.mock('../app-sdk/index', () => ({
   useAppApi: () => ({ get: mockGet, post: mockPost }),
+  useAppInfo: () => ({ name: 'test-app', version: '0', permissions: { api: ['/api/chat'], events: [] } }),
 }))
 
 vi.mock('../app-sdk/ChatMessageList', () => ({
@@ -39,18 +40,32 @@ describe('ChatEmbed framing', () => {
     await act(async () => {
       renderWithProviders(<ChatEmbed slotKey="my-slot" />)
     })
-    // The title strip shows title || slotKey — present when NOT frameless.
-    expect(screen.getByText('my-slot')).toBeInTheDocument()
+    // The title strip is present when NOT frameless.
+    expect(screen.getByTestId('chat-embed-title')).toBeInTheDocument()
     // Input still renders.
     expect(screen.getByLabelText('Chat message')).toBeInTheDocument()
+  })
+
+  it('shows "New session" for an untitled slot, keeping the slot key only on hover', async () => {
+    await act(async () => {
+      renderWithProviders(<ChatEmbed slotKey="coder-abc123" />)
+    })
+    // React Query delivers the first read through its notification timer.
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+    const header = screen.getByTestId('chat-embed-title')
+    expect(header).toHaveTextContent('New session')
+    expect(header).toHaveAttribute('title', 'coder-abc123')
+    // The internal id never appears as visible text.
+    expect(screen.queryByText('coder-abc123')).toBeNull()
   })
 
   it('hides the title strip when frameless is set', async () => {
     await act(async () => {
       renderWithProviders(<ChatEmbed slotKey="my-slot" frameless />)
     })
-    // No title strip → slotKey text is absent, but the chat + input still render.
-    expect(screen.queryByText('my-slot')).toBeNull()
+    // No title strip, but the chat + input still render.
+    expect(screen.queryByTestId('chat-embed-title')).toBeNull()
+    expect(screen.queryByText('New session')).toBeNull()
     expect(screen.getByLabelText('Chat message')).toBeInTheDocument()
     expect(screen.getByTestId('chat-message-list')).toBeInTheDocument()
   })

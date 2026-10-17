@@ -1293,6 +1293,9 @@ class TestServerAppliers:
             await asyncio.gather(*state._background_tasks)
         assert calls == [cfg]
         assert slot.model == "" and slot._model_pick_gen == 1 and pushed == [True]
+        # Stamped as the runtime's own write, so a reader that treats a moved
+        # generation as a person's pick (a crew's triage switch) skips it.
+        assert slot._model_runtime_pick_gen == 1
         assert state._background_tasks == set(), "the task drops out of the registry when done"
         # An unrelated leaf schedules nothing.
         await apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"agent.log_level"})))

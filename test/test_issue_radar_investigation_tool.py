@@ -7,8 +7,8 @@ bypass sets NOR the internal-path sets, and an agent session has no dashboard
 credential to satisfy the cookie path with:
 
   * the access cookie is httpOnly (the frontend cannot hand it over),
-  * ``KIROCREW_INTERNAL_SECRET`` is stripped from agent env by
-    ``sandbox._AGENT_DENIED_ENV_KEYS``,
+  * the gateway mints its internal secret in-process and never puts it in an
+    agent's env,
   * ``.local_secret`` — needed for the documented ``GET /api/token/local``
     bootstrap — is on the ``security.py`` sensitive-path denylist.
 
@@ -69,6 +69,16 @@ class TestGatewayPathIsReachableWithTheInternalSecret(unittest.TestCase):
 
 
 class TestToolRegistration(unittest.TestCase):
+    def setUp(self):
+        # The listing follows app enablement, and the isolated test home
+        # has no app installed, so Issue Radar is switched on at the one seam the
+        # listing reads; the descriptor content asserted below does not depend on it.
+        from kiro_crew.mcp_tools import apps as apps_tools
+
+        patcher = patch.object(apps_tools, "app_enabled_state", lambda name: name == "issue-radar")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_schema_is_registered_so_bad_args_do_not_crash_the_server(self):
         # An unregistered tool's internal ValidationError escapes the stdio loop
         # and kills the whole kirocrew-core server (see test_mcp_core_arg_crash).

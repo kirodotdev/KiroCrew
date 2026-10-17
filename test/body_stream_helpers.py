@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 
 class BodyStreamPayload:
@@ -31,13 +32,25 @@ class BodyStreamPayload:
 
     def __init__(self, raw: bytes) -> None:
         self._raw = raw
+        self._pos = 0
 
     async def iter_chunked(self, n: int):
         for i in range(0, len(self._raw), n):
             yield self._raw[i : i + n]
 
-    async def read(self) -> bytes:
-        return self._raw
+    async def read(self, n: int = -1) -> bytes:
+        """Whole body for ``read()``; the next *n* bytes for ``read(n)``.
+
+        ``read(n)`` is the incremental drain ``handlers/hooks.py::_read_hook_body``
+        runs, so it advances and answers ``b""`` at the end the way a real stream
+        does. ``read()`` keeps returning the whole body, which is what the
+        harnesses that predate ``read(n)`` rely on.
+        """
+        if n < 0:
+            return self._raw
+        chunk = self._raw[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
 
     def set_read_chunk_size(self, size: int) -> None:
         return None
@@ -59,3 +72,50 @@ def attach_body(request: Any, body: Any, *, raw: bytes | None = None) -> None:
     request.content_length = len(raw)
     request.charset = None
     request.can_read_body = bool(raw)
+
+
+def attach_json_body(request: Any, raw: bytes, *, content_type: str = "application/json") -> None:
+    """Attach *raw* to a mocked request as a JSON body the gated read accepts.
+
+    For the ``MagicMock`` harnesses of handlers whose body helper now reads
+    through ``read_bounded_json``: the stream double (:func:`attach_body`), the
+    declared ``content_type`` the media-type gate checks, and ``read`` kept
+    returning the same bytes for any code path that still calls it. A test of
+    the 415 passes another *content_type*. Not for ``make_mocked_request``
+    requests, whose ``content_type`` is derived from the headers: give those a
+    ``Content-Type`` header and ``payload=BodyStreamPayload(raw)`` instead.
+    """
+    attach_body(request, None, raw=raw)
+    request.content_type = content_type
+    request.read = AsyncMock(return_value=raw)
+
+
+class JsonBodyRequest:
+    """Base for hand-written request fakes that serve one JSON body.
+
+    A subclass defines :meth:`body_bytes`; this derives everything the gated
+    ``read_bounded_json`` consults from it (stream, length, charset,
+    ``can_read_body``, a JSON ``content_type``) plus ``read()`` for any path
+    that still reads whole.
+    """
+
+    content_type = "application/json"
+    charset: str | None = None
+
+    def body_bytes(self) -> bytes:
+        raise NotImplementedError
+
+    @property
+    def content(self) -> BodyStreamPayload:
+        return BodyStreamPayload(self.body_bytes())
+
+    @property
+    def content_length(self) -> int:
+        return len(self.body_bytes())
+
+    @property
+    def can_read_body(self) -> bool:
+        return bool(self.body_bytes())
+
+    async def read(self) -> bytes:
+        return self.body_bytes()

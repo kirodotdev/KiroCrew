@@ -380,6 +380,25 @@ describe('ChatPane plan-shaped follow-ups', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
+  it('a single-select [OPTION:] pick replaces the previous pick instead of joining it', async () => {
+    await renderPane('pane-plan-single', {}, PLAN_MESSAGES)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Go' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Go') })
+    expect(composer().value).toBe('Go')
+    await act(async () => { clickOption('Cancel') })
+    expect(composer().value).toBe('Cancel')
+  })
+
+  it('a multi-select [OPTIONS:] pick still joins the previous pick (control)', async () => {
+    await renderPane('pane-multi-control')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Alpha' })).toBeTruthy())
+    vi.useFakeTimers()
+    await act(async () => { clickOption('Alpha') })
+    await act(async () => { clickOption('Beta') })
+    expect(composer().value).toBe('Alpha, Beta')
+  })
+
   it('double-click sends the chip text through the pane\'s send path', async () => {
     await renderPane('pane-plan-dbl', {}, PLAN_MESSAGES)
     await waitFor(() => expect(screen.getByRole('button', { name: 'Go' })).toBeTruthy())

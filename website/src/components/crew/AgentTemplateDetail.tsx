@@ -34,6 +34,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { i18nT } from '../../i18n/t'
 import { parseErrorCode } from '../../utils/errorReport'
 import { templateSourceBadge, type TemplateProvenance } from '../../lib/templateSource'
+import { hideMateWithoutPreview } from '../../lib/assistantMember'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { PREVIEW_CREW } from '../../utils/previewFlags'
 
 /** How many chips render before the list collapses behind a "+N more". */
 const CHIP_CAP = 6
@@ -41,6 +44,18 @@ const CHIP_CAP = 6
 const PROMPT_CAP = 2000
 /** Mirror of the backend's template-name rule (a filename is permanent identity). */
 const TEMPLATE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/
+
+/** The server's refusal sentence for a failed save, or `''` when it gave none.
+ *  Only a 4xx refusal carries one: a 5xx is a server failure the user cannot
+ *  fix from here, the client writes `HTTP <status>` when the body had no
+ *  message, and an `error` that only repeats the body's `code` is an
+ *  identifier, not a sentence. */
+function refusalReason(e: unknown): string {
+  if (!(e instanceof ApiError) || e.status >= 500) return ''
+  const msg = e.message
+  if (!msg || msg === `HTTP ${e.status}` || msg === parseErrorCode(e.body)) return ''
+  return msg
+}
 
 interface InstalledAgent {
   name: string
@@ -133,7 +148,7 @@ function Chips({ items, tone }: { items: string[]; tone?: 'ok' | 'aim' | 'danger
   const shown = open ? items : items.slice(0, CHIP_CAP)
   const cls =
     tone === 'ok'
-      ? 'bg-ok/10 border-ok/30 text-ok'
+      ? 'bg-ok/10 border-ok/30 text-ok-text'
       : tone === 'aim'
         ? 'bg-aim-subtle border-aim/30 text-aim'
         : tone === 'danger'
@@ -254,6 +269,7 @@ export default function AgentTemplateDetail({
     queryKey: ['agents-installed'],
     queryFn: () => api.agentsInstalled(),
   })
+  const crewPreview = usePreviewFlag(PREVIEW_CREW)
   const { data: crewsData } = useQuery<{ agents?: CrewRow[] }>({
     queryKey: ['kirocrew-agents'],
     queryFn: () => api.kirocrewAgents(),
@@ -357,7 +373,9 @@ export default function AgentTemplateDetail({
 
   // The header hint claims "saved as you go", so a failed save must render:
   // silence here means the user walks away believing a save that never landed.
-  const [actionError, setActionError] = useState('')
+  // `title` is set only when the server gave a reason: the generic line then
+  // leads, so the notice still says the change did not save.
+  const [actionError, setActionError] = useState<{ message: string; title?: string } | null>(null)
 
   const afterRebind = (next: string) => {
     // The action that got us here already persisted the rebind server-side —
@@ -406,10 +424,10 @@ export default function AgentTemplateDetail({
       await api.agentReset(template, crew)
     } catch {
       // Nothing changed on failure, so say the change did not land.
-      setActionError(i18nT('components.agentTemplateDetail.save_failed'))
+      setActionError({ message: i18nT('components.agentTemplateDetail.save_failed') })
       return
     }
-    setActionError('')
+    setActionError(null)
     afterRebind(origin)
   }
 
@@ -458,7 +476,7 @@ export default function AgentTemplateDetail({
     }
   }
 
-  const usedBy = (crewsData?.agents || []).filter(c => c.kiro_agent === template)
+  const usedBy = hideMateWithoutPreview(crewsData?.agents || [], crewPreview).filter(c => c.kiro_agent === template)
   const sourceLabel = templateSourceBadge(listed)
   // Re-add only the value the select DISPLAYS when the catalog lacks it (a
   // legacy/unknown binding). An own-copy header shows the origin, so the
@@ -635,7 +653,9 @@ export default function AgentTemplateDetail({
         {/* No hand-off (no askAgent): a failed instant-save is fixed by
             re-clicking the same control, and the hand-off would close the
             sheet and discard the user's in-progress customization context. */}
-        {actionError && <ErrorNotice variant="inline" className="mt-2" message={actionError} />}
+        {actionError && (
+          <ErrorNotice variant="inline" className="mt-2" title={actionError.title} message={actionError.message} />
+        )}
 
         {!template ? null : isLoading ? (
           <p className="m-0 mt-4 text-[12px] italic text-muted">{i18nT('components.agentTemplateDetail.loading')}</p>
@@ -665,8 +685,14 @@ export default function AgentTemplateDetail({
                 disabled={readOnly}
                 onChange={m =>
                   patchModel.mutate(m, {
-                    onError: () => setActionError(i18nT('components.agentTemplateDetail.save_failed')),
-                    onSuccess: () => setActionError(''),
+                    // A refusal sentence follows the generic line; any other
+                    // failure shows the generic line alone.
+                    onError: (e: unknown) => {
+                      const saveFailed = i18nT('components.agentTemplateDetail.save_failed')
+                      const reason = refusalReason(e)
+                      setActionError(reason ? { title: saveFailed, message: reason } : { message: saveFailed })
+                    },
+                    onSuccess: () => setActionError(null),
                   })
                 }
                 clearLabel={i18nT('components.agentTemplateDetail.no_model_pinned')}

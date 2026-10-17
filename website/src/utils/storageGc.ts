@@ -59,7 +59,7 @@ const SESSION_PREFIXES = [
  *
  *  - `artifacts-gallery` — the virtualizer partitions its height cache by
  *    `sessionId`, and the gallery is not a chat session but still has to name a
- *    partition. Writer: `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPage.tsx`.
+ *    partition. Writer: `ARTIFACT_HEIGHT_NS` in `pages/ArtifactsPageGallery.tsx`.
  *    Reserved under every prefix, and the partition IS owned by this name, so an
  *    explicit delete of it is honoured.
  *  - `no-slot` — slot-less consumers park a per-slot preference here. Writer:

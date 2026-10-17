@@ -21,6 +21,7 @@ import { errMessage } from '../utils/thunkError'
 
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription } from './appstore/appManifest'
+import { withBase } from '@/lib/basePath'
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -245,7 +246,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
   const permissions = app.manifest?.permissions || {}
   const allowedApi = permissions.api || []
   const allowedEvents = permissions.events || []
-  const bundlePath = `/apps/${app.name}/ui/${entry}`
+  const bundlePath = withBase(`/apps/${app.name}/ui/${entry}`)
 
   // Dynamically import the app bundle. Keyed on resetKey so retry works.
   const LazyApp = useMemo(
@@ -301,6 +302,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
     <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)}>
       <AppApiProvider
         appName={app.name}
+        appDisplayName={appDisplayName(app)}
         appVersion={app.manifest?.version || app.version}
         // Provenance verbatim from `GET /api/apps`, which is the one claim an app
         // cannot forge: `builtin` is assigned only by register_builtin_apps() and

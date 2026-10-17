@@ -4,44 +4,46 @@ Each ``mount(2)`` in the launcher IS a security control: three hide credential
 paths, one pins mount propagation so the hiding cannot escape, and a pair exposes
 the governance cache read-only (bind, then remount MS_RDONLY -- the remount is
 what withholds the write, since MS_RDONLY is ignored on the initial bind).
-Discarding the return value made them all fail OPEN -- the path stayed visible, or
-stayed WRITABLE, and the agent ran anyway -- and nothing downstream noticed, because there is no post-mount
-emptiness check, the launcher has no logger, and the pre-exec hardlink scan only
-fires when a credential happens to carry an extra link.
+Discarding the return value would make them all fail OPEN -- the path stays visible,
+or stays WRITABLE, and the agent runs anyway -- and nothing downstream would notice,
+because there is no post-mount emptiness check, the launcher has no logger, and the
+pre-exec hardlink scan only fires when a credential happens to carry an extra link.
 
-These tests run the mount region lifted VERBATIM out of the shipped launcher, so
-they cannot drift away from what actually executes in the child. ``_libc`` is a
-stand-in whose ``mount`` returns a chosen rc, which is the only way to exercise
-the failure path at all: this test process cannot create a user namespace (a
-nested ``unshare`` is seccomp-denied inside an agent sandbox), and even outside
-one a real EPERM would need an LSM mount rule the test cannot install.
+These tests drive the launcher program's own stages
+(:func:`~kiro_crew.sandbox_launcher_program.enter_namespaces`, then
+:func:`~kiro_crew.sandbox_launcher_program.place_masks`) with the shared stand-in libc
+from ``test_sandbox_launcher_program``, whose ``mount`` fails on a chosen call. That is
+the only way to exercise the failure path at all: this test process cannot create a
+user namespace (a nested ``unshare`` is seccomp-denied inside an agent sandbox), and
+even outside one a real EPERM would need an LSM mount rule the test cannot install. The
+stand-in covers each bind's target as a real mount would, so every check the stages
+make after a mount runs for real.
 
-Every behavioural assertion below has its own break-arm in
-``test_break_arms_falsify_each_assertion``: a mutation applied to the shipped
-source, chosen to move that assertion's own value. One arm for the whole file
-would be inert for any assertion whose expected value happens to coincide with
-the mutant's output.
+One check has no behavioural form: that no mount site anywhere in the program skips
+the guard, including sites a given run does not reach. That one is an AST scan of the
+program source, and of the launcher each tier renders from it.
 """
 
 from __future__ import annotations
 
+import ast
 import collections
 import errno
 import os
-import runpy
-import stat
 import sys
-import tempfile
-import textwrap
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
+from test_sandbox_launcher_program import CoveringLibc, identity, launch, payload, refusal
 
-from kiro_crew.sandbox import _build_launcher_script
+from kiro_crew import sandbox, sandbox_launcher, sandbox_launcher_program
 
-# Every test here builds the shipped launcher, and ``_build_launcher_script`` calls
-# POSIX-only ``os.getuid``/``os.getgid`` (the namespace launcher is Linux-only), so
-# all of them raise AttributeError on Windows. Guarded rather than listed in
+program = sandbox_launcher_program
+
+# The source scan builds every tier's launcher, and ``_build_launcher_script`` calls
+# POSIX-only ``os.getuid``/``os.getgid`` (the namespace launcher is Linux-only), so it
+# raises AttributeError on Windows. Guarded rather than listed in
 # ``test/windows-expected-failures.txt``: that list is a burn-down backlog of gaps to
 # close, and a POSIX-only launcher is a permanent platform boundary. The sibling
 # launcher suites take the same route -- see ``test_sandbox_argv.py``.
@@ -50,40 +52,18 @@ pytestmark = pytest.mark.skipif(
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
 )
 
-#: Module-level helper: from its ``def`` to the first template substitution.
-_HELPER_START = "def _mount_or_die("
-_HELPER_END = "REAL_UID = "
-#: The propagation mount, on its own -- the tmpfs-source picker sits between it
-#: and the hiding loops and is deliberately not exercised here (it probes the
-#: host's /run/user and /dev/shm; ``_tmpfs_src`` is injected instead so every
-#: temp artifact lands under pytest's tmp_path).
-_PROP_START = "        # Private mount propagation"
-_PROP_END = "        # Pick a tmpfs-backed source dir"
-#: The private-window staging plus the three hiding mounts: credential dirs,
-#: sensitive files, ~/.ssh. Staging is inside the slice because the credential
-#: loop READS ``_private_stage`` to carve a window's placeholder out of the
-#: empty stand-in, so a slice that started at the hiding loops would exec a
-#: fragment with that name undefined.
-_HIDE_START = "        # Private windows: a directory INSIDE a hidden tree that stays"
-_HIDE_END = "        # Scrub sensitive env vars"
-
-#: What the extracted region must contain. Without this a marker rename would
-#: shrink a slice and leave every assertion below vacuously green against a
-#: fragment that fails to hold the guard. Deliberately STRUCTURAL, not the
-#: guard EXPRESSION: pinning a call's exact text here would make the break-arm
-#: that reverts that call fail on the landmark instead of on its assertion, and
-#: the call form is already pinned once, on purpose, by
-#: ``test_every_tier_routes_all_four_mounts_through_the_guard``.
-_LANDMARKS = (
-    "# Private mount propagation",  # the propagation site
-    "for p in PRIVATE_DIRS:",  # the private-window staging loop
-    "for d in SENSITIVE_DIRS:",  # the credential-dir loop
-    "for d in READONLY_DIRS:",  # the read-only exposure loop
-    "for d in WRITABLE_DIRS:",  # the write carve-out loop (fail-open)
-    "for f in SENSITIVE_FILES:",  # the sensitive-file loop
-    "if HIDE_SSH and (",  # the .ssh block
-    "sandbox: BLOCKED",  # the refusal
+#: The stages pin every target through ``O_PATH`` and mount it as ``/proc/self/fd/<n>``,
+#: which only Linux has, so the stage-driven tests run there alone.
+_LINUX_ONLY = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="the launcher stages pin with os.O_PATH and mount through /proc/self/fd, "
+    "neither of which exists outside Linux",
 )
+
+_MS_RDONLY = 1
+_MS_REMOUNT = 32
+_MS_BIND = 4096
+_MNT_DETACH = 2
 
 
 @pytest.fixture(autouse=True)
@@ -92,122 +72,42 @@ def _pin_ssh_accept_new(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The real probe runs the host's ``ssh -V``. It is ``lru_cache``d, but any test
     that clears the cache (``TestSshSupportsAcceptNew`` does) hands the next
-    launcher-building test in the process a real spawn -- 32 across the three
-    launcher suites on a five-run hygiene sweep, a host program none of them is about
-    (test-hygiene class 7). ``True`` is what a modern host answers.
+    launcher-building test in the process a real spawn -- a host program none of the
+    launcher suites is about (test-hygiene class 7). ``True`` is what a modern host
+    answers.
     """
     monkeypatch.setattr("kiro_crew.sandbox._ssh_supports_accept_new", lambda: True)
 
 
-def _resolved_identity(target: object) -> tuple[int, int] | None:
-    """``(st_dev, st_ino)`` of the object *target* names, or ``None``.
+class _Libc(CoveringLibc):
+    """The covering libc, with each ``umount2`` recorded together with its flags.
 
-    A pinned target is a ``/proc/self/fd/<n>`` bytes path; its fd is
-    still open when the launcher calls ``mount``, so it is ``fstat``-ed here at
-    that moment rather than by re-resolving the spelling later. A plain path is
-    ``lstat``-ed. ``None`` for anything that cannot be resolved (e.g. ``None`` for
-    the propagation mount, or an absent path).
-    """
-    spelling = None
-    if isinstance(target, str):
-        spelling = target
-    elif isinstance(target, bytes):
-        spelling = os.fsdecode(target)
-    if spelling is None:
-        return None
-    prefix = "/proc/self/fd/"
-    if spelling.startswith(prefix):
-        try:
-            info = os.fstat(int(spelling[len(prefix) :]))
-        except (OSError, ValueError):
-            return None
-        return (info.st_dev, info.st_ino)
-    try:
-        info = os.lstat(spelling)
-    except (OSError, ValueError):
-        return None
-    return (info.st_dev, info.st_ino)
-
-
-class _FakeLibc:
-    """``_libc``, with a ``mount`` that fails on a chosen call.
-
-    ``fail_at`` is 1-based over the calls this region makes, in source order:
-    1 = propagation, 2 = read-only bind, 3 = read-only remount, 4 = first
-    credential dir, 5 = first sensitive file, 6 = ~/.ssh. ``None`` means every
-    mount succeeds. The seal pair comes BEFORE the credential hide on purpose:
-    a hidden leaf under a sealed parent must be hidden on top of the parent's
-    self-bind, or the non-recursive bind masks the hide.
+    Kept off ``calls`` on purpose: ``fail_at`` numbers the MOUNTS in the order the
+    stages make them, and counting an unmount there would renumber every case below.
     """
 
     def __init__(self, *, fail_at: int | None, err: int = errno.EPERM) -> None:
-        self.fail_at = fail_at
-        self.err = err
-        self.calls: list[tuple[object, object, int]] = []
+        super().__init__(fail_at=fail_at, fail_errno=err)
         self.unmounts: list[tuple[object, int]] = []
-        #: Per-call ``(st_dev, st_ino)`` of the object each target RESOLVED to at
-        #: mount time, or ``None`` when it could not be resolved. Captured here
-        #: because the launcher pins its seal/hide targets as ``/proc/self/fd/<n>``
-        #: descriptor paths, whose fd is open only during the region's
-        #: run -- a caller comparing after the region has no fd left to fstat.
-        self.resolved: list[tuple[int, int] | None] = []
 
-    def mount(self, source, target, fstype, flags, data):  # noqa: ANN001
-        self.calls.append((source, target, flags))
-        self.resolved.append(_resolved_identity(target))
-        if self.fail_at is not None and len(self.calls) == self.fail_at:
-            import ctypes
-
-            ctypes.set_errno(self.err)
-            return -1
-        return 0
-
-    def umount2(self, target, flags):  # noqa: ANN001
-        """Retiring a private window's stage, recorded separately from the mounts.
-
-        Kept off ``calls`` on purpose: ``fail_at`` numbers the MOUNTS in source order,
-        and counting an unmount there would renumber every case below.
-        """
+    def umount2(self, target, flags):  # noqa: ANN001, ANN201
         self.unmounts.append((target, flags))
-        return 0
+        return super().umount2(target, flags)
 
 
-def _region(script: str) -> str:
-    """Helper + propagation site + hiding loops, lifted out of *script*.
-
-    Sliced from the START OF THE LINE, not from the marker: ``dedent`` measures
-    the common prefix across all lines, so a first line already stripped of its
-    indent leaves the rest indented and the block will not parse.
-    """
-
-    def cut(start_marker: str, end_marker: str) -> str:
-        a = script.rindex("\n", 0, script.index(start_marker)) + 1
-        b = script.rindex("\n", 0, script.index(end_marker, a)) + 1
-        return script[a:b]
-
-    helper = cut(_HELPER_START, _HELPER_END)
-    body = textwrap.dedent(cut(_PROP_START, _PROP_END)) + textwrap.dedent(
-        cut(_HIDE_START, _HIDE_END)
-    )
-    region = helper + "\n" + body
-    # Neutralise the post-mount name check: it asks whether the configured name
-    # now reaches the stand-in, which is only true after a REAL mount, and this
-    # ``_libc`` records instead of mounting. Left in force it would refuse every
-    # run here and these assertions would describe the harness. Its own verdict
-    # is tested in test_sandbox_mount_pinned_target.py against real objects.
-    _verify = "def _verify_masked_name(name, stand_in_id, what):"
-    _after = "def _locked_mount_flags(target):"
-    assert _verify in region, "the name-check helper was renamed"
-    assert _after in region, "the helper after the name check was renamed"
-    region = (
-        region[: region.index(_verify)]
-        + _verify
-        + "\n    return None\n\n"
-        + region[region.index(_after, region.index(_verify)) :]
-    )
-    missing = [m for m in _LANDMARKS if m not in region]
-    assert not missing, f"the extracted mount region is missing {missing}"
-    return region
+def _child_mounts(run: program.Launch, stages: Iterable[Callable[[program.Launch], None]]) -> None:
+    """Enter the namespaces with the parent's maps already written, then run *stages*."""
+    c2p_r, c2p_w = os.pipe()
+    p2c_r, p2c_w = os.pipe()
+    os.write(p2c_w, b"x")
+    try:
+        # Closes c2p_w and p2c_r itself, before its first mount.
+        program.enter_namespaces(run, c2p_w, p2c_r)
+    finally:
+        os.close(c2p_r)
+        os.close(p2c_w)
+    for stage in stages:
+        stage(run)
 
 
 def _run(
@@ -215,26 +115,28 @@ def _run(
     *,
     fail_at: int | None,
     err: int = errno.EPERM,
-    script: str | None = None,
     writable_dirs: list[str] | None = None,
     private_dirs: list[str] | None = None,
     sensitive_dirs: list[str] | None = None,
     readonly_dirs: list[str] | None = None,
     private_dir_ids: dict[str, list[int]] | None = None,
-) -> tuple[_FakeLibc, str | None]:
-    """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
+    stages: Iterable[Callable[[program.Launch], None]] = (program.place_masks,),
+) -> tuple[_Libc, str | None, program.Launch]:
+    """Run the launcher's mounts over a fake home.
 
-    Via ``runpy.run_path`` on the extracted region rather than ``exec`` of its
-    text: equivalent here -- both run the shipped source with an injected
-    namespace -- but ``exec`` trips the SAST gate's ``exec-detected`` rule, and a
-    suppression comment would be this repo's first, spent on a false positive.
+    Returns ``(libc, refusal_message_or_None, launch)``. By default every mount the
+    child makes before it scrubs the environment runs: the propagation mount, then
+    :func:`~kiro_crew.sandbox_launcher_program.place_masks`. With no overrides that is
+    six sites, in this order: 1 = propagation, 2 = read-only bind, 3 = read-only
+    remount, 4 = first credential dir, 5 = first sensitive file, 6 = ~/.ssh. The seal
+    pair comes BEFORE the credential hide on purpose: a hidden leaf under a sealed
+    parent must be hidden on top of the parent's self-bind, or the non-recursive bind
+    masks the hide.
     """
-    import ctypes
-
     home = tmp_path / "home"
     aws = home / ".aws"
     # ``exist_ok``: a case that needs a private window inside this mask root creates the
-    # window first, because the staging loop resolves it before this setup would run.
+    # window first, because the staging stage resolves it before this setup would run.
     aws.mkdir(parents=True, exist_ok=True)
     (aws / "credentials").write_text("[default]\n")
     ssh = home / ".ssh"
@@ -247,71 +149,43 @@ def _run(
     cache = home / ".kiro" / "crew" / "policy_cache"
     cache.mkdir(parents=True)
     (cache / "policy.json").write_text("{}\n")
-    src_dir = tmp_path / "tmpfs"
-    src_dir.mkdir()
 
-    libc = _FakeLibc(fail_at=fail_at, err=err)
-    ns = {
-        "_libc": libc,
-        "_MS_BIND": 4096,
-        "_MS_REC": 16384,
-        "_MS_PRIVATE": 1 << 18,
-        "_MS_RDONLY": 1,
-        "_MS_REMOUNT": 32,
-        "_MS_NOSUID": 2,
-        "_MS_NODEV": 4,
-        "_MS_NOEXEC": 8,
-        # Defined above the extracted slice, like the MS_ flags: the detach flag the
-        # stage-retirement helper passes to ``umount2``.
-        "_MNT_DETACH": 2,
-        # Step 2 (non-dumpable before the mount namespace) is outside this region.
-        "_launcher_nondumpable": False,
-        "ctypes": ctypes,
-        "os": os,
-        "stat": stat,
-        "sys": sys,
-        "tempfile": tempfile,
-        "_tmpfs_src": str(src_dir),
-        # Defined by the launcher alongside _tmpfs_src, before this region: the
-        # pid-bearing prefix tagging every bind-mount source for the janitor.
-        "_src_prefix": "kirocrew_sb_%d_" % os.getpid(),
-        "expose_data": {},
-        "EXPOSE_FILES": [],
-        # Overridable so the nesting test can hand the region a hidden leaf that
-        # lives INSIDE a sealed parent; the default keeps the six-site numbering.
-        "SENSITIVE_DIRS": [str(aws)] if sensitive_dirs is None else list(sensitive_dirs),
-        # Empty by default: these cases exercise a launcher whose caller vouched for no
-        # mask-root identity, so the child masks by name exactly as it always has. A
-        # populated map would make the loop refuse before reaching any mount.
-        "SENSITIVE_DIR_IDS": {},
-        # Empty by default for the same reason as WRITABLE_DIRS: a private
-        # window stages its own bind, which would shift the call numbering.
-        "PRIVATE_DIRS": list(private_dirs or []),
-        # Read by the staging loop for every window that sits under a mask root. Empty
-        # here: these cases vouch for no window identity, so the child stages by name.
-        "PRIVATE_DIR_IDS": dict(private_dir_ids or {}),
-        "READONLY_DIRS": [str(cache)] if readonly_dirs is None else list(readonly_dirs),
-        # Empty by default so the six-site call numbering above stays stable;
-        # the carve-out tests inject their own entry.
-        "WRITABLE_DIRS": list(writable_dirs or []),
-        "SENSITIVE_FILES": [str(lone)],
-        # Empty by default for the same reason as WRITABLE_DIRS: an entry here makes the
-        # region refuse before any mount when its path is absent or single-linked, which
-        # would end the run before the call numbering above is exercised. The alias tests
-        # inject their own entry.
-        "FAIL_CLOSED_FILE_MASKS": [],
-        "REQUIRED_MASK_TARGETS": frozenset(),
-        "SSH_DIR": str(ssh),
-        "SSH_KNOWN_HOSTS": str(ssh / "known_hosts"),
-        "HIDE_SSH": True,
-    }
-    region_file = tmp_path / "region.py"
-    region_file.write_text(_region(script or _build_launcher_script("strict")))
-    try:
-        runpy.run_path(str(region_file), init_globals=ns)
-    except SystemExit as exc:
-        return libc, str(exc.code)
-    return libc, None
+    libc = _Libc(fail_at=fail_at, err=err)
+    plan = payload(
+        # Overridable so the nesting test can hand the stages a hidden leaf that lives
+        # INSIDE a sealed parent; the default keeps the six-site numbering.
+        sensitive_dirs=[str(aws)] if sensitive_dirs is None else list(sensitive_dirs),
+        # Empty by default: a private window stages its own bind, which would shift the
+        # call numbering, and these cases vouch for no window identity.
+        private_dirs=list(private_dirs or []),
+        private_dir_ids=dict(private_dir_ids or {}),
+        readonly_dirs=[str(cache)] if readonly_dirs is None else list(readonly_dirs),
+        # Empty by default so the six-site call numbering above stays stable; the
+        # carve-out tests inject their own entry.
+        writable_dirs=list(writable_dirs or []),
+        sensitive_files=[str(lone)],
+        ssh_dir=str(ssh),
+        ssh_known_hosts=str(ssh / "known_hosts"),
+        hide_ssh=1,
+    )
+    run = launch(tmp_path, plan, libc=libc, environ={"HOME": str(home)})
+    return libc, refusal(_child_mounts, run, stages), run
+
+
+def _staged(libc: _Libc, run: program.Launch) -> list[bytes]:
+    """Targets of the window staging mounts: binds INTO a fresh stage under the stand-in root.
+
+    Every hiding mount sources from a descriptor path or a stand-in as well, so the
+    source alone cannot tell a stage from a mask; the TARGET can.
+    """
+    return [
+        call.target
+        for call in libc.calls
+        if isinstance(call.source, bytes)
+        and call.source.startswith(b"/proc/self/fd/")
+        and isinstance(call.target, bytes)
+        and call.target.startswith(os.fsencode(run.tmpfs_src))
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -319,17 +193,16 @@ def _run(
 # --------------------------------------------------------------------------
 
 
+@_LINUX_ONLY
 def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
-    """The guard must not turn a healthy spawn into a refusal.
-
-    Break-arm: ``happy_path`` (helper's ``!= 0`` flipped to ``== 0``).
-    """
-    libc, refusal = _run(tmp_path, fail_at=None)
-    assert refusal is None
+    """The guard must not turn a healthy spawn into a refusal."""
+    libc, message, _ = _run(tmp_path, fail_at=None)
+    assert message is None
     # propagation + read-only bind + its sealing remount + credential dir + file + ssh
     assert len(libc.calls) == 6
 
 
+@_LINUX_ONLY
 @pytest.mark.parametrize(
     ("fail_at", "expect_in_message"),
     [
@@ -359,103 +232,72 @@ def test_a_failed_mount_refuses_to_exec(
     THERE and readable, and only the remount that withholds write did not land.
     Proceeding would hand the child exactly the write access the pair exists to
     deny, with nothing observably wrong.
-
-    Break-arms: ``site1`` .. ``site6`` -- each restores the pre-fix unchecked
-    ``_libc.mount(...)`` call at that one site, so exactly the matching
-    parametrisation stops refusing.
     """
-    libc, refusal = _run(tmp_path, fail_at=fail_at)
-    assert refusal is not None, f"site {fail_at} let the spawn proceed"
-    assert "sandbox: BLOCKED" in refusal
-    assert expect_in_message in refusal
+    libc, message, _ = _run(tmp_path, fail_at=fail_at)
+    assert message is not None, f"site {fail_at} let the spawn proceed"
+    assert "sandbox: BLOCKED" in message
+    assert expect_in_message in message
     # Stops AT the failure: no mount is attempted after the one that failed.
     assert len(libc.calls) == fail_at
 
 
+@_LINUX_ONLY
 def test_the_refusal_names_the_hidden_path(tmp_path: Path) -> None:
     """An operator needs the path, not just 'a mount failed'.
 
     The path the operator must act on is the NAME they configured, which is what
     the label carries. The mount target itself is a descriptor path pinning the
     object that name resolved to, and would tell them nothing.
-
-    Break-arm: ``drop_path`` (the dirs site's label made a constant).
     """
-    libc, refusal = _run(tmp_path, fail_at=4)
-    assert refusal is not None
-    assert str(tmp_path / "home" / ".aws") in refusal
+    _libc, message, _ = _run(tmp_path, fail_at=4)
+    assert message is not None
+    assert str(tmp_path / "home" / ".aws") in message
 
 
+@_LINUX_ONLY
 def test_the_refusal_carries_the_errno(tmp_path: Path) -> None:
-    """errno is the only thing that distinguishes an LSM denial from ENOMEM.
-
-    Break-arm: ``drop_errno`` (errno removed from the helper's message).
-    """
-    _libc_unused, refusal = _run(tmp_path, fail_at=2, err=errno.ENOMEM)
-    assert refusal is not None
-    assert str(errno.ENOMEM) in refusal
-    assert os.strerror(errno.ENOMEM) in refusal
+    """errno is the only thing that distinguishes an LSM denial from ENOMEM."""
+    _libc, message, _ = _run(tmp_path, fail_at=2, err=errno.ENOMEM)
+    assert message is not None
+    assert str(errno.ENOMEM) in message
+    assert os.strerror(errno.ENOMEM) in message
 
 
+@_LINUX_ONLY
 def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     """Refusing is only defensible if the message says how to opt out.
 
     It names the real operator setting, ``agent.sandbox``.
-
-    Break-arm: ``drop_optout`` (the ``agent.sandbox`` sentence removed).
     """
-    _libc_unused, refusal = _run(tmp_path, fail_at=1)
-    assert refusal is not None
-    assert "agent.sandbox" in refusal
+    _libc, message, _ = _run(tmp_path, fail_at=1)
+    assert message is not None
+    assert "agent.sandbox" in message
 
 
-@pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="the private-window staging path pins with os.O_PATH and binds through "
-    "/proc/self/fd, neither of which exists outside Linux",
-)
+@_LINUX_ONLY
 def test_a_private_windows_stage_does_not_outlive_the_mask(tmp_path: Path) -> None:
     """The staging mount is a SECOND path to the window's real tree, and must not survive.
 
     The stage carries the window's inode across the bind that hides its parent, so the
     window can be bound back at its own path. What it leaves behind is the same tree
-    reachable under ``_tmpfs_src``, which nothing masks -- and a masked leaf INSIDE a
+    reachable under the stand-in root, which nothing masks -- and a masked leaf INSIDE a
     window is re-hidden at the window's path only, because a non-recursive bind carries no
     submount. So the leaf would be readable through the stage with the mask otherwise
     fully applied.
-
-    Break-arm: ``drop_stage_retirement``.
     """
     window = tmp_path / "home" / ".aws" / "alpha" / "data"
     window.mkdir(parents=True)
 
-    libc, refusal = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
+    libc, message, run = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
 
-    assert refusal is None
-    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
-    # mount sources from a descriptor path as well, so the source alone cannot tell
-    # a stage from a mask.
-    staged = [
-        t
-        for s, t, _flags in libc.calls
-        if isinstance(s, bytes)
-        and s.startswith(b"/proc/self/fd/")
-        and isinstance(t, bytes)
-        and t.startswith(str(tmp_path / "tmpfs").encode())
-    ]
+    assert message is None
+    staged = _staged(libc, run)
     assert len(staged) == 1, f"expected one staging mount, got {staged}"
-    assert libc.unmounts == [(staged[0], 2)], "the stage was not detached"
+    assert libc.unmounts == [(staged[0], _MNT_DETACH)], "the stage was not detached"
     assert not os.path.exists(staged[0].decode()), "the stage directory survived"
 
 
-_LINUX_WINDOW_ONLY = pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="the private-window staging path pins with os.O_PATH and binds through "
-    "/proc/self/fd, neither of which exists outside Linux",
-)
-
-
-@_LINUX_WINDOW_ONLY
+@_LINUX_ONLY
 def test_a_vouched_window_whose_identity_changed_refuses_the_spawn(tmp_path: Path) -> None:
     """A pinned window that is not the approved directory must end the spawn.
 
@@ -467,131 +309,231 @@ def test_a_vouched_window_whose_identity_changed_refuses_the_spawn(tmp_path: Pat
     window.mkdir(parents=True)
     real = os.lstat(window)
 
-    libc, refusal = _run(
+    libc, message, run = _run(
         tmp_path,
         fail_at=None,
         private_dirs=[str(window)],
         private_dir_ids={str(window): [real.st_dev, real.st_ino + 1]},
     )
 
-    assert refusal is not None, "a mismatched window identity was accepted"
-    assert "approved as a data window" in refusal
-    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
-    # mount sources from a descriptor path as well, so the source alone cannot tell
-    # a stage from a mask.
-    staged = [
-        t
-        for s, t, _flags in libc.calls
-        if isinstance(s, bytes)
-        and s.startswith(b"/proc/self/fd/")
-        and isinstance(t, bytes)
-        and t.startswith(str(tmp_path / "tmpfs").encode())
-    ]
+    assert message is not None, "a mismatched window identity was accepted"
+    assert "approved as a data window" in message
+    staged = _staged(libc, run)
     assert staged == [], f"the mismatched window was staged anyway: {staged}"
 
 
-@_LINUX_WINDOW_ONLY
+@_LINUX_ONLY
 def test_a_vouched_window_that_cannot_be_opened_refuses_the_spawn(tmp_path: Path) -> None:
     """The producer opened this window, so a child that cannot is in the same raced state."""
     (tmp_path / "home" / ".aws").mkdir(parents=True, exist_ok=True)
     window = tmp_path / "home" / ".aws" / "alpha" / "data"
 
-    _libc, refusal = _run(
+    _libc, message, _ = _run(
         tmp_path,
         fail_at=None,
         private_dirs=[str(window)],
         private_dir_ids={str(window): [1, 2]},
     )
 
-    assert refusal is not None, "an unopenable vouched window was skipped silently"
-    assert "cannot open" in refusal
+    assert message is not None, "an unopenable vouched window was skipped silently"
+    assert "cannot open" in message
 
 
-@_LINUX_WINDOW_ONLY
+@_LINUX_ONLY
 def test_a_window_whose_identity_matches_is_staged(tmp_path: Path) -> None:
     """The control: the ordinary case must still get its window."""
     window = tmp_path / "home" / ".aws" / "alpha" / "data"
     window.mkdir(parents=True)
     real = os.lstat(window)
 
-    libc, refusal = _run(
+    libc, message, run = _run(
         tmp_path,
         fail_at=None,
         private_dirs=[str(window)],
         private_dir_ids={str(window): [real.st_dev, real.st_ino]},
     )
 
-    assert refusal is None, f"a matching window was refused: {refusal}"
-    # The staging mount is the one whose TARGET is a fresh tmpfs stage: every hiding
-    # mount sources from a descriptor path as well, so the source alone cannot tell
-    # a stage from a mask.
-    staged = [
-        t
-        for s, t, _flags in libc.calls
-        if isinstance(s, bytes)
-        and s.startswith(b"/proc/self/fd/")
-        and isinstance(t, bytes)
-        and t.startswith(str(tmp_path / "tmpfs").encode())
-    ]
+    assert message is None, f"a matching window was refused: {message}"
+    staged = _staged(libc, run)
     assert len(staged) == 1, f"expected one staging mount, got {staged}"
 
 
-@_LINUX_WINDOW_ONLY
+@_LINUX_ONLY
 def test_a_window_no_one_vouched_for_is_skipped_not_refused(tmp_path: Path) -> None:
     """The second control: absence of an identity is not a mismatch.
 
-    The three pre-existing window producers pass paths only, so an unopenable window of
-    theirs must stay a skip -- nothing vouched for it, and refusing would turn an ordinary
-    absent scratch directory into a dead spawn.
+    The window producers that pass paths only must keep an unopenable window a skip --
+    nothing vouched for it, and refusing would turn an ordinary absent scratch directory
+    into a dead spawn.
     """
     (tmp_path / "home" / ".aws").mkdir(parents=True, exist_ok=True)
     window = tmp_path / "home" / ".aws" / "alpha" / "data"
 
-    _libc, refusal = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
+    _libc, message, _ = _run(tmp_path, fail_at=None, private_dirs=[str(window)])
 
-    assert refusal is None, f"an unvouched window was refused: {refusal}"
+    assert message is None, f"an unvouched window was refused: {message}"
 
 
-#: Every raw ``_libc.mount(`` line the launcher may contain, each exactly once.
-_PERMITTED_RAW_MOUNTS = (
-    "if _libc.mount(source, target, None, flags, None) != 0:",
-    "if _libc.mount(source, target, None, flags, None) != 0:",
-    'if _libc.mount(b"tmpfs", target, b"tmpfs", _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, '
-    'b"mode=0700,size=16k") != 0:',
-)
+# --------------------------------------------------------------------------
+# No mount site skips the guard
+# --------------------------------------------------------------------------
+
+
+def _is_mount_call(node: ast.AST) -> bool:
+    """A raw ``<libc>.mount(...)`` call: the one way the program reaches mount(2)."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "mount"
+    )
+
+
+class _MountSites(ast.NodeVisitor):
+    """Where a source calls ``mount(2)`` raw and whether each call's result is checked."""
+
+    def __init__(self) -> None:
+        self._functions: list[str] = []
+        #: Raw mount calls, by the function that makes them.
+        self.raw: collections.Counter[str] = collections.Counter()
+        #: Each ``if <mount>(...) != 0:`` test, normalised, with the function it is in.
+        self.checked: collections.Counter[tuple[str, str]] = collections.Counter()
+        #: Calls of the refusing guard ``_mount_or_die``.
+        self.guarded = 0
+
+    def _where(self) -> str:
+        return self._functions[-1] if self._functions else "<module>"
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._functions.append(node.name)
+        self.generic_visit(node)
+        self._functions.pop()
+
+    def visit_If(self, node: ast.If) -> None:
+        test = node.test
+        if (
+            isinstance(test, ast.Compare)
+            and _is_mount_call(test.left)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.NotEq)
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == 0
+        ):
+            self.checked[(self._where(), ast.unparse(test))] += 1
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if _is_mount_call(node):
+            self.raw[self._where()] += 1
+        elif isinstance(node.func, ast.Name) and node.func.id == "_mount_or_die":
+            self.guarded += 1
+        self.generic_visit(node)
+
+
+def _mount_sites(tree: ast.AST) -> tuple[dict[str, int], dict[tuple[str, str], int], int]:
+    sites = _MountSites()
+    sites.visit(tree)
+    return dict(sites.raw), dict(sites.checked), sites.guarded
+
+
+#: Every raw mount the program may make, by function, each exactly once: the refusing
+#: guard, its degrade-open sibling for the write carve-outs, and the unreadable mask's
+#: private tmpfs.
+_PERMITTED_RAW_MOUNTS = {"_mount_or_die": 1, "_mount_or_warn": 1, "_mount_private_tmpfs": 1}
+
+#: Each of those calls IS the test of an ``if ... != 0:``, in exactly this form.
+_CHECKED_RAW_MOUNTS = {
+    ("_mount_or_die", "launch.libc.mount(source, target, None, flags, None) != 0"): 1,
+    ("_mount_or_warn", "launch.libc.mount(source, target, None, flags, None) != 0"): 1,
+    (
+        "_mount_private_tmpfs",
+        "launch.libc.mount(b'tmpfs', target, b'tmpfs', _MS_NOSUID | _MS_NODEV | _MS_NOEXEC, "
+        "b'mode=0700,size=16k') != 0",
+    ): 1,
+}
+
+#: The call sites of ``_mount_or_die``: propagation, the read-only bind and its sealing
+#: remount, credential dirs, the private window's two -- staging its real contents out
+#: before the parent is masked, then binding them onto the placeholder inside the
+#: stand-in -- the nested re-mask that re-hides a masked leaf sitting INSIDE such a
+#: window, sensitive files and the read-only seal on an unreadable mask, and ~/.ssh.
+_GUARDED_SITES = 10
+
+_EXPECTED_SITES = (_PERMITTED_RAW_MOUNTS, _CHECKED_RAW_MOUNTS, _GUARDED_SITES)
 
 
 def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
-    """No tier may keep a raw, unchecked ``_libc.mount`` call site.
+    """No tier may keep a raw, unchecked mount call site.
 
-    Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
+    The raw calls are pinned as an exact multiset, by function and by the normalised
+    form of the check around each, not filtered by pattern, so any other raw call, a
+    second copy of one of these, or one whose result goes unchecked goes red. Scanned in
+    the program source and in the launcher each tier renders from it, which is what the
+    child runs.
     """
+    source = sandbox_launcher.launcher_program_source()
+    assert _mount_sites(ast.parse(source)) == _EXPECTED_SITES
     for level in ("strict", "cc", "standard"):
-        script = _build_launcher_script(level)
-        # The raw calls are pinned as an exact multiset, not filtered by pattern:
-        # the two guard helpers (_mount_or_die and its degrade-open sibling) each
-        # make one, and the unreadable mask's private-tmpfs helper makes one.
-        # Any other raw call, or a second copy of one of these, goes red.
-        raw = collections.Counter(
-            line.strip() for line in script.splitlines() if "_libc.mount(" in line
+        rendered = sandbox._build_launcher_script(level)
+        assert _mount_sites(ast.parse(rendered)) == _EXPECTED_SITES, level
+
+
+class _UnguardOneSite(ast.NodeTransformer):
+    """Turn the first ``_mount_or_die(launch, src, tgt, flags, what)`` in *function* raw."""
+
+    def __init__(self, function: str) -> None:
+        self.function = function
+        self._inside = False
+        self.done = False
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        outer = self._inside
+        self._inside = node.name == self.function
+        self.generic_visit(node)
+        self._inside = outer
+        return node
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        if not (
+            self._inside
+            and not self.done
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_mount_or_die"
+        ):
+            return node
+        self.done = True
+        launch_arg, src, tgt, flags, _what = node.args
+        libc = ast.Attribute(value=launch_arg, attr="libc", ctx=ast.Load())
+        none = ast.Constant(value=None)
+        return ast.Call(
+            func=ast.Attribute(value=libc, attr="mount", ctx=ast.Load()),
+            args=[src, tgt, none, flags, none],
+            keywords=[],
         )
-        assert raw == collections.Counter(
-            _PERMITTED_RAW_MOUNTS
-        ), f"{level}: unchecked mount call(s): {dict(raw)}"
-        # 1 def + 10 call sites: propagation, credential dirs, the read-only
-        # bind and its sealing remount, sensitive files and the read-only seal
-        # on an unreadable mask, ~/.ssh, the private window's two -- staging its real contents out before the parent is
-        # masked, then binding them onto the placeholder inside the stand-in --
-        # and the nested re-mask that re-hides a masked leaf sitting INSIDE such
-        # a window, applied after the window is bound.
-        assert script.count("_mount_or_die(") == 11
+
+
+def test_break_arm_reintroduce_raw_is_caught_by_the_tier_sweep() -> None:
+    """The no-raw-call-sites sweep must fail when a raw call comes back.
+
+    The same predicate the sweep uses: the sites must equal the permitted set on the
+    program as it ships, and differ from it once the credential-dir hide is reverted
+    to a raw, unchecked mount, so this arm cannot pass vacuously.
+    """
+    tree = ast.parse(sandbox_launcher.launcher_program_source())
+    assert _mount_sites(tree) == _EXPECTED_SITES
+    mutant = _UnguardOneSite("mask_sensitive")
+    mutant.visit(tree)
+    assert mutant.done
+    raw, checked, guarded = _mount_sites(ast.fix_missing_locations(tree))
+    assert (raw, checked, guarded) != _EXPECTED_SITES
+    assert raw["mask_sensitive"] == 1
+    assert not [where for where, _test in checked if where == "mask_sensitive"]
+    assert guarded == _GUARDED_SITES - 1
 
 
 # --------------------------------------------------------------------------
 # Seal before hide: a hidden leaf under a sealed parent
 # --------------------------------------------------------------------------
-
-_MS_BIND, _MS_REMOUNT = 4096, 32
 
 
 def _nested_pair(tmp_path: Path) -> tuple[str, str]:
@@ -604,45 +546,33 @@ def _nested_pair(tmp_path: Path) -> tuple[str, str]:
     return str(parent), str(leaf)
 
 
-def _seal_and_hide_positions(libc: _FakeLibc, parent: str, leaf: str) -> tuple[int, int, int]:
+def _seal_and_hide_positions(
+    libc: _Libc, parent_id: object, leaf_id: object
+) -> tuple[int, int, int]:
     """Call indexes of the parent's self-bind, its sealing remount, and the
-    leaf's hide, in the order the region issued them.
+    leaf's hide, in the order the stages issued them.
 
-    The launcher pins its targets as ``/proc/self/fd/<n>`` descriptor paths,
-    so a target is matched by the OBJECT it resolved to at mount
-    time (``libc.resolved``) rather than by the spelling, which need not equal
-    the configured path. The self-bind's SOURCE is still the raw parent path.
+    The stages pin their targets as ``/proc/self/fd/<n>`` descriptor paths, so a
+    target is matched by the OBJECT it reached at mount time rather than by the
+    spelling. The identities are taken before the run: once the leaf is masked its
+    name reaches the stand-in instead.
     """
     calls = libc.calls
-    resolved = libc.resolved
-    try:
-        parent_id = os.lstat(parent)
-        parent_key: tuple[int, int] | None = (parent_id.st_dev, parent_id.st_ino)
-    except OSError:
-        parent_key = None
-    try:
-        leaf_id = os.lstat(leaf)
-        leaf_key: tuple[int, int] | None = (leaf_id.st_dev, leaf_id.st_ino)
-    except OSError:
-        leaf_key = None
     self_bind = next(
-        i
-        for i, (_src, _tgt, flags) in enumerate(calls)
-        if resolved[i] == parent_key and flags == _MS_BIND
+        i for i, call in enumerate(calls) if call.target_id == parent_id and call.flags == _MS_BIND
     )
     remount = next(
         i
-        for i, (_src, _tgt, flags) in enumerate(calls)
-        if resolved[i] == parent_key and flags & _MS_REMOUNT
+        for i, call in enumerate(calls)
+        if call.target_id == parent_id and call.flags & _MS_REMOUNT
     )
     hide = next(
-        i
-        for i, (_src, _tgt, flags) in enumerate(calls)
-        if resolved[i] == leaf_key and flags == _MS_BIND
+        i for i, call in enumerate(calls) if call.target_id == leaf_id and call.flags == _MS_BIND
     )
     return self_bind, remount, hide
 
 
+@_LINUX_ONLY
 def test_a_hidden_leaf_under_a_sealed_parent_is_hidden_after_the_seal(
     tmp_path: Path,
 ) -> None:
@@ -656,71 +586,60 @@ def test_a_hidden_leaf_under_a_sealed_parent_is_hidden_after_the_seal(
     ``run/voice-runtime`` was ``cat``-readable, writes EROFS). Issued after the
     seal, the hide is a mount ON the sealed parent and stays reachable through
     it -- the same property the write carve-outs rely on.
-
-    Break-arm: ``test_break_arm_hide_before_seal_is_caught`` (the two loops
-    swapped back to the pre-fix order).
     """
     parent, leaf = _nested_pair(tmp_path)
-    libc, refusal = _run(tmp_path, fail_at=None, sensitive_dirs=[leaf], readonly_dirs=[parent])
-    assert refusal is None
-    self_bind, remount, hide = _seal_and_hide_positions(libc, parent, leaf)
-    assert self_bind < remount < hide, [c[1] for c in libc.calls]
+    parent_id, leaf_id = identity(parent), identity(leaf)
+    libc, message, _ = _run(tmp_path, fail_at=None, sensitive_dirs=[leaf], readonly_dirs=[parent])
+    assert message is None
+    self_bind, remount, hide = _seal_and_hide_positions(libc, parent_id, leaf_id)
+    assert self_bind < remount < hide, [call.target_path for call in libc.calls]
 
 
+@_LINUX_ONLY
 def test_seal_before_hide_keeps_the_carveout_after_the_seal(tmp_path: Path) -> None:
-    """The reorder must not disturb the carve-out's own ordering constraint:
+    """The ordering must not disturb the carve-out's own constraint:
     the write carve-out is still issued after the parent's seal, and
     after the leaf hide, so neither the hide nor the carve-out is masked."""
     parent, leaf = _nested_pair(tmp_path)
     scratch = Path(parent) / "mcp-tmp" / "probe-x" / "tmp"
     scratch.mkdir(parents=True)
-    libc, refusal = _run(
+    parent_id, leaf_id = identity(parent), identity(leaf)
+    libc, message, _ = _run(
         tmp_path,
         fail_at=None,
         sensitive_dirs=[leaf],
         readonly_dirs=[parent],
         writable_dirs=[str(scratch)],
     )
-    assert refusal is None
-    _self_bind, remount, hide = _seal_and_hide_positions(libc, parent, leaf)
+    assert message is None
+    _self_bind, remount, hide = _seal_and_hide_positions(libc, parent_id, leaf_id)
     carve = next(
         i
-        for i, (_src, tgt, flags) in enumerate(libc.calls)
-        if tgt == str(scratch).encode() and flags == _MS_BIND
+        for i, call in enumerate(libc.calls)
+        if call.target == str(scratch).encode() and call.flags == _MS_BIND
     )
-    assert remount < hide < carve, [c[1] for c in libc.calls]
+    assert remount < hide < carve, [call.target_path for call in libc.calls]
 
 
-def _swap_hide_and_seal(script: str) -> str:
-    """The pre-fix launcher: the SENSITIVE_DIRS hide loop ahead of the
-    READONLY_DIRS seal loop. Built by moving the blocks, not by editing them,
-    so the mutant differs from the shipped script in ORDER only."""
-    ro_start = script.index("        # Exposed-but-read-only dirs")
-    hide_start = script.index("        # Bind-mount empty dirs over credential paths")
-    carve_start = script.index("        # Writable carve-outs")
-    assert ro_start < hide_start < carve_start
-    return (
-        script[:ro_start]
-        + script[hide_start:carve_start]
-        + script[ro_start:hide_start]
-        + script[carve_start:]
-    )
-
-
+@_LINUX_ONLY
 def test_break_arm_hide_before_seal_is_caught(tmp_path: Path) -> None:
-    """Swapping the loops back must falsify the ordering assertion."""
+    """Running the hide stage ahead of the seal stage must falsify the ordering assertion.
+
+    The same stages, composed in the other order, so the run differs from
+    :func:`~kiro_crew.sandbox_launcher_program.place_masks` in ORDER only.
+    """
     parent, leaf = _nested_pair(tmp_path)
-    mutant = _swap_hide_and_seal(_build_launcher_script("strict"))
-    libc, refusal = _run(
+    parent_id, leaf_id = identity(parent), identity(leaf)
+    libc, message, _ = _run(
         tmp_path,
         fail_at=None,
-        script=mutant,
         sensitive_dirs=[leaf],
         readonly_dirs=[parent],
+        stages=(program.stage_private_windows, program.mask_sensitive, program.seal_readonly),
     )
-    assert refusal is None
-    self_bind, remount, hide = _seal_and_hide_positions(libc, parent, leaf)
-    assert hide < self_bind < remount, "the mutant did not reorder the mounts"
+    assert message is None
+    self_bind, remount, hide = _seal_and_hide_positions(libc, parent_id, leaf_id)
+    assert hide < self_bind < remount, "the composed stages did not reorder the mounts"
 
 
 # --------------------------------------------------------------------------
@@ -734,21 +653,22 @@ def _carveout_home(tmp_path: Path) -> str:
     return str(scratch)
 
 
+@_LINUX_ONLY
 def test_carveout_mounts_run_and_spawn_proceeds(tmp_path: Path) -> None:
     """Healthy path: the pair runs (bind + rw remount) and nothing refuses."""
     scratch = _carveout_home(tmp_path)
-    libc, refusal = _run(tmp_path, fail_at=None, writable_dirs=[scratch])
-    assert refusal is None
+    libc, message, _ = _run(tmp_path, fail_at=None, writable_dirs=[scratch])
+    assert message is None
     # six guarded sites + the carve-out bind + its rw remount
     assert len(libc.calls) == 8
     bind, remount = libc.calls[4], libc.calls[5]
-    assert bind[1] == scratch.encode() and remount[1] == scratch.encode()
+    assert bind.target == scratch.encode() and remount.target == scratch.encode()
     # The remount clears the seal: MS_RDONLY must NOT be re-passed.
-    _MS_RDONLY, _MS_REMOUNT = 1, 32
-    assert remount[2] & _MS_REMOUNT
-    assert not remount[2] & _MS_RDONLY
+    assert remount.flags & _MS_REMOUNT
+    assert not remount.flags & _MS_RDONLY
 
 
+@_LINUX_ONLY
 @pytest.mark.parametrize("fail_at", [5, 6], ids=["carveout-bind", "carveout-remount"])
 def test_a_failed_carveout_mount_degrades_open(
     tmp_path: Path, fail_at: int, capsys: pytest.CaptureFixture[str]
@@ -762,8 +682,8 @@ def test_a_failed_carveout_mount_degrades_open(
     not a fatal one.
     """
     scratch = _carveout_home(tmp_path)
-    libc, refusal = _run(tmp_path, fail_at=fail_at, writable_dirs=[scratch])
-    assert refusal is None, "an access-widening mount failure must not refuse"
+    libc, message, _ = _run(tmp_path, fail_at=fail_at, writable_dirs=[scratch])
+    assert message is None, "an access-widening mount failure must not refuse"
     # The hiding mounts AFTER the carve-out still ran: sensitive file + ssh,
     # and on a failed bind the pointless remount is skipped.
     expected_calls = 7 if fail_at == 5 else 8
@@ -772,130 +692,3 @@ def test_a_failed_carveout_mount_degrades_open(
     assert "sandbox: WARNING" in advisory
     assert "writable carve-out" in advisory
     assert "sandbox: BLOCKED" not in advisory
-
-
-# --------------------------------------------------------------------------
-# Break-arms: one mutation per assertion above
-# --------------------------------------------------------------------------
-
-#: ``name -> (mutation applied to the shipped script, what it must break)``.
-#: Each mutation is chosen to move ONE assertion's own value; a single arm would
-#: be inert for any assertion whose expected value coincided with the mutant's.
-_ARMS: dict[str, tuple[str, str]] = {
-    "site1": (
-        '_mount_or_die(None, b"/", _MS_REC | _MS_PRIVATE,\n'
-        '                      "making mount propagation private on /")',
-        '_libc.mount(None, b"/", None, _MS_REC | _MS_PRIVATE, None)',
-    ),
-    "site2": (
-        "_mount_or_die(_seal_target, _seal_target, _MS_BIND,\n"
-        '                              "exposing read-only path %s" % d)',
-        "_libc.mount(_seal_target, _seal_target, None, _MS_BIND, None)",
-    ),
-    "site3": (
-        "_mount_or_die(_rdonly_target, _rdonly_target,\n"
-        "                                      _MS_REMOUNT | _MS_BIND | _MS_RDONLY\n"
-        "                                      | _locked_mount_flags(_rdonly_target),\n"
-        '                                      "sealing read-only path %s" % d)',
-        "_libc.mount(_rdonly_target, _rdonly_target, None,\n"
-        "                                    _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None)",
-    ),
-    "site4": (
-        "_mount_or_die(per_dir_empty, target, _MS_BIND,\n"
-        '                              "hiding credential directory %s" % d)',
-        "_libc.mount(per_dir_empty, target, None, _MS_BIND, None)",
-    ),
-    "site5": (
-        "_mount_or_die(_empty_src, _file_target, _MS_BIND,\n"
-        '                              "hiding sensitive file %s" % f)',
-        "_libc.mount(_empty_src, _file_target, None, _MS_BIND, None)",
-    ),
-    "site6": (
-        "_mount_or_die(ssh_tmp, _ssh_target, _MS_BIND,\n"
-        '                                  "hiding ssh key directory %s" % SSH_DIR)',
-        "_libc.mount(ssh_tmp, _ssh_target, None, _MS_BIND, None)",
-    ),
-    "happy_path": (
-        "if _libc.mount(source, target, None, flags, None) != 0:\n"
-        "        _err = ctypes.get_errno()",
-        "if _libc.mount(source, target, None, flags, None) == 0:\n"
-        "        _err = ctypes.get_errno()",
-    ),
-    "drop_errno": (
-        '"sandbox: BLOCKED -- %s failed: errno %d (%s). The sandbox could not "',
-        '"sandbox: BLOCKED -- %s failed. The sandbox could not "',
-    ),
-    "drop_path": (
-        '"hiding credential directory %s" % d',
-        '"hiding a credential directory"',
-    ),
-    "drop_optout": (
-        '"visible. Lower agent.sandbox to run without this control deliberately."',
-        '"visible."',
-    ),
-}
-
-
-def _mutate(arm: str) -> str:
-    old, new = _ARMS[arm]
-    script = _build_launcher_script("strict")
-    assert script.count(old) == 1, f"arm {arm}: anchor not unique ({script.count(old)})"
-    return script.replace(old, new)
-
-
-@pytest.mark.parametrize("arm", sorted(_ARMS))
-def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
-    """Each arm must break its assertion -- proof the assertion has power."""
-    script = _mutate(arm)
-
-    if arm == "drop_errno":
-        # `errno %d` gone: the errno assertion cannot hold. The message
-        # is now malformed (%-args outnumber the placeholders), so a TypeError
-        # here is the same evidence as a missing number.
-        try:
-            _unused, refusal = _run(tmp_path, fail_at=2, err=errno.ENOMEM, script=script)
-        except TypeError:
-            return
-        assert refusal is None or str(errno.ENOMEM) not in refusal
-        return
-
-    if arm == "drop_path":
-        libc, refusal = _run(tmp_path, fail_at=4, script=script)
-        assert refusal is not None
-        assert libc.calls[-1][1].decode() not in refusal
-        return
-
-    if arm == "drop_optout":
-        _unused, refusal = _run(tmp_path, fail_at=1, script=script)
-        assert refusal is not None
-        assert "agent.sandbox" not in refusal
-        return
-
-    if arm == "happy_path":
-        # The guard now fires on SUCCESS, so an all-succeeding run refuses.
-        _unused, refusal = _run(tmp_path, fail_at=None, script=script)
-        assert refusal is not None
-        return
-
-    # site1..site6: that one site is unchecked again, so it proceeds silently.
-    site = int(arm[-1])
-    _unused, refusal = _run(tmp_path, fail_at=site, script=script)
-    assert refusal is None, f"arm {arm} still refused: {refusal}"
-
-
-def test_break_arm_reintroduce_raw_is_caught_by_the_tier_sweep() -> None:
-    """The no-raw-call-sites sweep must fail when a raw call comes back."""
-
-    # The same predicate the sweep uses: the multiset of raw mount lines must
-    # differ from the permitted set once one site is reverted to a raw call, and
-    # must equal it on the unmutated script, so this arm cannot pass vacuously.
-    def raw_lines(script: str) -> collections.Counter[str]:
-        return collections.Counter(
-            line.strip() for line in script.splitlines() if "_libc.mount(" in line
-        )
-
-    permitted = collections.Counter(_PERMITTED_RAW_MOUNTS)
-    assert raw_lines(_build_launcher_script("strict")) == permitted
-    assert (
-        raw_lines(_mutate("site4")) != permitted
-    ), "the sweep would not have noticed a reintroduced raw mount"

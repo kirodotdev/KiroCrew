@@ -28,15 +28,41 @@ interface ExportSessionItemProps {
    * only ever 400s.
    */
   readonly memoryMode?: 'persistent' | 'incognito' | 'temporary'
+  /**
+   * Which rendering this row downloads. `'json'` (the default) is the gzipped
+   * transfer bundle an Install reads back; `'md'` is the human-readable Markdown
+   * transcript, which installs nowhere.
+   *
+   * A prop rather than a submenu because the hosting menu passes in one `Item`
+   * primitive and not the Sub/SubTrigger/SubContent family a nested menu needs:
+   * two sibling rows need nothing new from the host, and a format choice with
+   * exactly two options reads no worse flat than nested.
+   */
+  readonly format?: 'json' | 'md'
 }
 
 /**
- * "Export to a file" — download this session as one `.kcsession.json.gz`.
+ * "Export to a file" — download this session as one `.kcsession.json.gz`, or as
+ * one `.kcsession.md` when `format` is `'md'`.
  *
  * Sits beside `SendToInstanceSubmenu` because it is the same act with the live
  * hop removed: the tunnel needs both machines up and reachable at the same
  * moment, and a file does not, so a sleeping laptop or a machine on another
  * account is reachable this way and not the other.
+ *
+ * **The two formats answer different questions, so each row says which one it
+ * is in its own label.** The JSON bundle is the one an Install reads back, so it
+ * is what moves a session to another machine. The Markdown document is for a
+ * person: a text editor opens it, a forge renders it, and its fenced code blocks
+ * survive a paste into a review or a ticket. Nothing reads Markdown back.
+ *
+ * Naming the OUTCOME rather than the file type is what makes the pair legible:
+ * two rows both reading "Export to a file", separated only by a muted format
+ * suffix, ask the user to already know which of the two the Import row below can
+ * read — and a user who guesses Markdown to move a session finds out at import
+ * time. Putting it in the label also keeps the row's identifying words from
+ * shifting when the trailing "Exported" note mounts beside them, and keeps a
+ * non-persistent session's row to two parts rather than three.
  *
  * **The menu deliberately stays open on select** (`preventDefault` on the item's
  * select event) and the outcome renders on the row, matching
@@ -49,13 +75,15 @@ interface ExportSessionItemProps {
  * Nothing is written and nothing is moved: an export is a read of one session,
  * so a repeat click is harmless and needs no confirm step.
  */
-export default function ExportSessionItem({ slotKey, Item, memoryMode }: ExportSessionItemProps) {
+export default function ExportSessionItem(
+  { slotKey, Item, memoryMode, format = 'json' }: ExportSessionItemProps,
+) {
   const errorId = useId()
   const [state, setState] = useState<ExportState>({ kind: 'idle' })
   const notPersistent = memoryMode !== undefined && memoryMode !== 'persistent'
 
   const exportMutation = useMutation({
-    mutationFn: () => api.exportSession(slotKey),
+    mutationFn: () => api.exportSession(slotKey, format),
     onMutate: () => { setState({ kind: 'exporting' }) },
     onSuccess: () => { setState({ kind: 'done' }) },
     onError: (e) => {
@@ -84,7 +112,11 @@ export default function ExportSessionItem({ slotKey, Item, memoryMode }: ExportS
           }}
       >
         <Download size={13} className="shrink-0 text-muted" />
-        <span className="flex-1">{i18nT('components.exportSessionItem.export_to_file')}</span>
+        <span className="flex-1">
+          {format === 'md'
+            ? i18nT('components.exportSessionItem.export_markdown')
+            : i18nT('components.exportSessionItem.export_json')}
+        </span>
         {notPersistent && (
           <span className="ml-auto text-[10px] text-muted shrink-0">
             {i18nT('components.exportSessionItem.not_saved_to_disk')}

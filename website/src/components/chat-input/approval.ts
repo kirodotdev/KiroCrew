@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useAppSelector, type useAppDispatch } from '../../store'
-import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, markSubagentApproving, sseSubagentDone } from '../../store/chatSlice'
+import { resolveByApprovalId, openActivityToTool, openActivityToTab, selectSlotPendingApproval, selectSlotPendingSpawnApprovals, selectSlotSubagents, isSpawnApprovalGone, markSubagentApproving, markSubagentApprovalGone, reconcileGoneSubagent, sseSubagentDone } from '../../store/chatSlice'
 import { useToolPillVisible } from '../../store/toolPillRegistry'
 import { api, ApiError } from '../../api/client'
+import { isTerminalApprovalRefusal } from '../../api/apiError'
 import { safeSetItem, safeGetItem } from '../../utils/safeStorage'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -11,9 +12,11 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 import { pickToolLabel } from '../../utils/toolLabel'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
 import { toApiDecision } from '../../utils/approvalDecision'
+import { baseCommandLabel, truncateCommandLabel } from '../../utils/trustPatterns'
 import { APPROVAL_MODE_ADJUSTED_LS_KEY } from '../ApprovalModePicker'
 import type { SubagentActivity } from '../../types'
 import { i18nT } from '../../i18n/t'
+import { fmtTime } from '../../i18n/format'
 
 /* The slot's approval chrome as state: the pending tool approval (its
    decision submit, the approval-mode discovery hint and nudge, the ghost
@@ -94,7 +97,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
   // The same notice slot carries two different things: STATUS about an
   // approval that expired (nothing failed on our side) and a FAILED decision
   // submit (a rejected request). Only the latter is an error surface.
-  const [approvalNoticeKind, setApprovalNoticeKind] = useState<'status' | 'error'>('status')
+  const [approvalNoticeKind, setApprovalNoticeKind] = useState<'status' | 'error' | 'granted'>('status')
 
   const activeSlot = slotId
   const approvalMeta = pendingApproval?.meta as Record<string, unknown> | undefined
@@ -201,17 +204,34 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     const t = setTimeout(() => setApprovalNotice(null), 8000)
     return () => clearTimeout(t)
   }, [approvalNotice])
+  // A failed spawn decision from the composer banner reports through this
+  // same error surface, so the tool and spawn paths share one notice.
+  const showApprovalError = useCallback((message: string) => {
+    setApprovalNoticeKind('error')
+    setApprovalNotice(message)
+  }, [])
   const showInChat = useCallback(() => {
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
 
-  const handleApprovalAction = useCallback((decision: string, pattern?: string) => {
+  const handleApprovalAction = useCallback((decision: string, pattern?: string, ttlSeconds?: number) => {
     if (!approvalId) return
     setApprovalSubmitting(true)
     setApprovalNotice(null)
     const finish = () => {
       dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision }))
       setApprovalSubmitting(false)
+      // A timed grant says what it covers and when it ends, since the card that
+      // offered the lifetime is gone the moment the decision lands. The time
+      // is the client's estimate from the click: the server's deadline starts
+      // on receipt, so the grant never ends before the time shown here.
+      if (ttlSeconds !== undefined && !approvalIsUnattended) {
+        const time = fmtTime(Date.now() + ttlSeconds * 1000)
+        setApprovalNoticeKind('granted')
+        setApprovalNotice(decision === 'trust_base'
+          ? i18nT('components.chatInput.trusted_base_until', { base: baseCommandLabel(approvalBaseCommand), time })
+          : i18nT('components.chatInput.trusted_command_until', { cmd: truncateCommandLabel(approvalFullCommand, 80), time }))
+      }
       // B2: tally manual one-shot approvals per slot. Only 'approved' counts —
       // a trust grant already reduces future prompts, and a rejection is not
       // approval fatigue. Fires once per dashboard install (localStorage
@@ -235,7 +255,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       // orphan: leaving it up makes every button look broken, so clear it and
       // say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
-        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale' }))
+        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale', allPending: true }))
         // Say WHOSE turn expired. Unattended sources deny-fast on a short
         // window (minutes), so by the time a human reads the card the job has
         // usually already been denied and moved on — "expired" alone reads as
@@ -263,28 +283,30 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
         api.resolveApproval(approvalId, 'approve').then(finish).catch(fail)
         return
       }
-      const extra: Record<string, string> = { request_id: approvalId }
+      const extra: Record<string, string | number> = { request_id: approvalId }
       if (pattern) extra.pattern = pattern
+      if (ttlSeconds !== undefined) extra.ttl_seconds = ttlSeconds
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
     }
-  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, dispatch])
+  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, approvalFullCommand, approvalBaseCommand, dispatch])
 
   return {
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
-    approvalNotice, setApprovalNotice, approvalNoticeKind,
+    approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
     approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, showGhost, showInChat, handleApprovalAction,
   }
 }
 
-export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
+export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch, showApprovalError }: {
   slotId: string | null
   slotApprovalChrome: boolean
   dispatch: AppDispatch
+  showApprovalError: (message: string) => void
 }) {
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -302,6 +324,30 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
   // for a "Resolving…" note. Cards stay in the pending list (status is still
   // 'pending') until the backend confirms, so the banner remains mounted.
   const spawnApprovalsResolving = pendingSpawnApprovals.length > 0 && pendingSpawnApprovals.every(a => a.approving)
+  // The card whose liveness read, sent from here after a gone refusal, failed.
+  // A notice of its own, not the shared approval notice: the refusal and the
+  // failed read are two facts, and the read fails a microtask after the
+  // refusal is shown, so one slot would wipe the only report of the refusal.
+  // The activity card keeps the same two apart (actionError / livenessError).
+  // Shown only while that card is still gone and unresolved: any reader that
+  // settles it (the chip's poll, a spawn frame) makes the notice false. Same
+  // bounded lifetime as the approval notice; the chip's poll keeps retrying
+  // and reports its own failed read.
+  const [livenessFailedFor, setLivenessFailedFor] = useState<string | null>(null)
+  useEffect(() => {
+    if (!livenessFailedFor) return
+    const t = setTimeout(() => setLivenessFailedFor(null), 8000)
+    return () => clearTimeout(t)
+  }, [livenessFailedFor])
+  const livenessStillOpen = useAppSelector(s => {
+    if (!livenessFailedFor) return false
+    const card = selectSlotSubagents(s, slotId)[livenessFailedFor]
+    return !!card && isSpawnApprovalGone(card)
+  })
+  const spawnLivenessError = slotApprovalChrome && livenessStillOpen
+    ? i18nT('pages.chat.subagentProgressBar.liveness_check_failed')
+    : null
+  const dismissSpawnLivenessError = useCallback(() => setLivenessFailedFor(null), [])
   const resolveOneSpawn = useCallback((a: SubagentActivity, action: 'approve' | 'reject') => {
     if (!a.approval_id || a.approving) return
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
@@ -316,11 +362,43 @@ export function useSpawnApprovals({ slotId, slotApprovalChrome, dispatch }: {
       if (action === 'reject' && slotId) {
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: i18nT('hooks.useWebSocket.approval_rejected') }))
       }
-    }).catch(() => dispatch(markSubagentApproving({ id: a.id, approving: false })))
-  }, [dispatch, slotId])
+    }).catch((err: unknown) => {
+      // The panel resolves this same id; a refusal that proves the approval
+      // gone is withdrawn through the one owner both surfaces read (#11180),
+      // instead of leaving buttons that can only re-send it.
+      if (isTerminalApprovalRefusal(err) && a.approval_id) {
+        dispatch(markSubagentApprovalGone({ id: a.id, approval_id: a.approval_id }))
+        // A rejected request, so an error surface, and the only one: the
+        // refusal is reported once, by the surface that sent it. The chip and
+        // the activity card show this id's liveness as neutral status.
+        showApprovalError(i18nT('components.approvalCard.approval_no_longer_pending'))
+        // The liveness read that settles the card. A refusal leaves it
+        // unresolved (the chip's poll retries) and is reported, not swallowed,
+        // on its own notice so the refusal above stays on screen: until the
+        // read answers, the composer stays blocked on this card.
+        if (slotId) {
+          dispatch(reconcileGoneSubagent({ slot: slotId, id: a.id, approval_id: a.approval_id })).unwrap()
+            .then(() => setLivenessFailedFor(prev => (prev === a.id ? null : prev)))
+            .catch(() => setLivenessFailedFor(a.id))
+        }
+        return
+      }
+      // Any other failure left the decision unrecorded: the buttons come back
+      // for a retry, and the notice says so through the same error surface and
+      // sentence the panel uses for this id.
+      dispatch(markSubagentApproving({ id: a.id, approving: false }))
+      const reason = err instanceof Error ? err.message : ''
+      showApprovalError(reason
+        ? i18nT('components.approvalCard.decision_not_recorded_error', { error: reason })
+        : i18nT('components.approvalCard.decision_failed'))
+    })
+  }, [dispatch, slotId, showApprovalError])
   const resolveSpawnApprovals = useCallback((action: 'approve' | 'reject') => {
     for (const a of pendingSpawnApprovals) resolveOneSpawn(a, action)
   }, [pendingSpawnApprovals, resolveOneSpawn])
 
-  return { pendingSpawnApprovals, reviewSpawnApprovals, spawnApprovalsResolving, resolveOneSpawn, resolveSpawnApprovals }
+  return {
+    pendingSpawnApprovals, reviewSpawnApprovals, spawnApprovalsResolving, resolveOneSpawn, resolveSpawnApprovals,
+    spawnLivenessError, dismissSpawnLivenessError,
+  }
 }

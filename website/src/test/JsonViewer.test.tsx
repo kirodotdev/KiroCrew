@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { JsonViewer } from '../components/FileRenderers'
+import { i18nT } from '../i18n/t'
 
 describe('JsonViewer', () => {
   it('renders ASCII JSON without showing the error banner', () => {
@@ -87,5 +89,84 @@ describe('JsonViewer', () => {
     expect(text).toContain('a'.repeat(199) + '\\""…')
     // The b's beyond the truncation point never render.
     expect(text).not.toContain('bbb')
+  })
+})
+
+describe('JsonViewer long string leaves', () => {
+  const showAll = (count: number) => i18nT('components.fileRenderers.json_string_show_all', { count })
+  const showLess = () => i18nT('components.fileRenderers.json_string_show_less')
+  const preview = (value: string) => JSON.stringify(value.slice(0, 200)) + '…'
+  // The element the toggle names in aria-controls: the string value itself.
+  const valueOf = (toggle: HTMLElement) => document.getElementById(toggle.getAttribute('aria-controls') ?? '')?.textContent
+
+  it('expands a long string to its full value and collapses it back to the preview', () => {
+    const value = 'a'.repeat(240) + 'END-MARKER'
+    render(<JsonViewer content={JSON.stringify({ prompt: value })} />)
+
+    const toggle = screen.getByRole('button', { name: showAll(250) })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(valueOf(toggle)).toBe(preview(value))
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(toggle).toHaveTextContent(showLess())
+    expect(valueOf(toggle)).toBe(JSON.stringify(value))
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(toggle).toHaveTextContent(showAll(250))
+    expect(valueOf(toggle)).toBe(preview(value))
+  })
+
+  it('opens and closes the full value from the keyboard', async () => {
+    const user = userEvent.setup()
+    const value = 'k'.repeat(230) + 'KEY-MARKER'
+    render(<JsonViewer content={JSON.stringify({ v: value })} />)
+
+    const toggle = screen.getByRole('button', { name: showAll(240) })
+    toggle.focus()
+    await user.keyboard('{Enter}')
+    expect(valueOf(toggle)).toBe(JSON.stringify(value))
+    await user.keyboard(' ')
+    expect(valueOf(toggle)).toBe(preview(value))
+  })
+
+  it('shows a string of exactly 200 characters whole, and offers the toggle from 201', () => {
+    const atLimit = 'b'.repeat(199) + 'Z'
+    const overLimit = 'c'.repeat(200) + 'Y'
+    const { container } = render(<JsonViewer content={JSON.stringify({ atLimit, overLimit })} />)
+
+    expect(container.textContent).toContain(JSON.stringify(atLimit))
+    expect(screen.queryByRole('button', { name: showAll(200) })).toBeNull()
+
+    const toggle = screen.getByRole('button', { name: showAll(201) })
+    expect(valueOf(toggle)).toBe(preview(overLimit))
+    fireEvent.click(toggle)
+    expect(valueOf(toggle)).toBe(JSON.stringify(overLimit))
+  })
+
+  it('expands a multiline prompt with its line breaks kept as JSON escapes', () => {
+    const value = Array.from({ length: 12 }, (_, i) => `Step ${i}: ${'p'.repeat(20)}`).join('\n') + '\nFINAL-LINE'
+    render(<JsonViewer content={JSON.stringify({ prompt: value })} />)
+
+    const toggle = screen.getByRole('button', { name: showAll(value.length) })
+    expect(valueOf(toggle)).not.toContain('FINAL-LINE')
+    fireEvent.click(toggle)
+    expect(valueOf(toggle)).toBe(JSON.stringify(value))
+    expect(valueOf(toggle)).toContain('\\nFINAL-LINE"')
+  })
+
+  it('keeps quotes and backslashes escaped in the preview and in the full value', () => {
+    // 29 characters per repeat, so the 200-character cut lands right after a
+    // backslash: the preview must still close on a whole `\\` escape.
+    const value = 'He said "stop" at C:\\temp\\x. '.repeat(8) + 'TAIL'
+    render(<JsonViewer content={JSON.stringify({ v: value })} />)
+
+    const toggle = screen.getByRole('button', { name: showAll(value.length) })
+    expect(valueOf(toggle)).toBe(preview(value))
+    expect(valueOf(toggle)).toMatch(/C:\\\\temp\\\\"…$/)
+    fireEvent.click(toggle)
+    expect(valueOf(toggle)).toBe(JSON.stringify(value))
+    expect(valueOf(toggle)).toContain('\\"stop\\" at C:\\\\temp\\\\x. TAIL"')
   })
 })

@@ -48,6 +48,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
@@ -143,7 +144,7 @@ def get_dumps_dir() -> Path:
     set), so dumps land in ``<data home>/logs/crash-dumps/``.
     """
     d = config_dir() / "logs" / _DUMP_DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
+    mkdirs_owner_only(d)  # logs/ and crash-dumps/ are born 0700
     return d
 
 
@@ -374,6 +375,28 @@ def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
     return pid, m.group(2), m.group(3)
 
 
+def _is_this_gateways_exec_supervisor(pid: int) -> bool:
+    """True when *pid* is the supervisor an in-app restart left as this process's ancestor.
+
+    An in-app restart ``os.execv``s the launcher, and a launcher that runs the
+    gateway as a supervised CHILD (``toolbox-exec``) leaves the old pid alive as
+    the new gateway's ancestor with its start identity unchanged -- so a dump or
+    marker the old image wrote names a PID that is live AND matches its recorded
+    start id, and both readers here would call its owner alive for as long as the
+    supervisor lives. That owner is this gateway's own previous image, and what
+    it held is gone: the dump fd was opened with ``os.open`` and is therefore
+    non-inheritable, so the exec closed it, and no cron run survives an exec
+    either. The file is a leftover of this gateway's own history, not a live
+    process's evidence.
+
+    The proof is :func:`platform_compat.is_exec_supervisor_of_this_process`: a
+    live ancestor whose image is not a Python interpreter, with no Python process
+    between. A live gateway ancestor still runs Python and keeps its files; an
+    unreadable image keeps the conservative verdict both readers already give.
+    """
+    return platform_compat.is_exec_supervisor_of_this_process(pid)
+
+
 def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool | None:
     """Best-effort liveness of the gateway that owns *dump_path*.
 
@@ -396,6 +419,10 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
     ``ps``-rendered token that can never equal what is read now, and treating
     that as a mismatch would unlink the dump of a gateway that is still alive
     across the upgrade. See :func:`_start_ids_comparable`.
+
+    One live, identity-matching PID is NOT a live owner: the supervisor an
+    in-app restart through a supervising launcher leaves behind. See
+    :func:`_is_this_gateways_exec_supervisor`.
     """
     owner = _dump_owner(dump_path)
     if owner is None:
@@ -406,6 +433,8 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
     if pid == os.getpid():
         return True
     if not is_pid_alive(pid):
+        return False
+    if _is_this_gateways_exec_supervisor(pid):
         return False
     if recorded_start is not None:
         current_start = _pid_start_id(pid)
@@ -581,7 +610,7 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
         flags |= os.O_NOINHERIT | os.O_BINARY
     else:
         flags |= os.O_CLOEXEC
-    fd = os.open(str(path), flags, 0o644)
+    fd = os.open(str(path), flags, 0o600)  # a dump holds stacks and paths: owner-only
 
     f = DumpFile(fd, path)
     # Write a header so the file is identifiable even before a dump fires.
@@ -838,6 +867,10 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
     identity as the one read now — a marker written before this build carries
     a ``ps``-rendered token, and calling that a mismatch would report a run
     that is still executing as abandoned. See :func:`_start_ids_comparable`.
+
+    The supervisor an in-app restart left as this process's ancestor is ``False``
+    too: the run it recorded ended with the exec. See
+    :func:`_is_this_gateways_exec_supervisor`.
     """
     if pid_domain is not None and pid_domain != _pid_domain():
         return None
@@ -849,7 +882,9 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
             return False
     if pid == os.getpid():
         return True
-    return pid_exists(pid)
+    if not pid_exists(pid):
+        return False
+    return not _is_this_gateways_exec_supervisor(pid)
 
 
 def dump_wedged_frames(dump_path: Path) -> list[str]:

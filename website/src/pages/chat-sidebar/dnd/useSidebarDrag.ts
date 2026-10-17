@@ -21,11 +21,13 @@ import type { FolderSortModeRead } from '../../../hooks/useFolderSortMode'
 import type { FolderMutations } from '../folders'
 
 /** The two folder drop writes: sibling renumber and re-parent. */
-export function useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, updateFolderMutation }: {
+export function useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, setFolderOfflineNotice, updateFolderMutation, connected }: {
   folderReorderable: boolean
   queryClient: QueryClient
   setFolderActionError: Dispatch<SetStateAction<string>>
+  setFolderOfflineNotice: Dispatch<SetStateAction<string>>
   updateFolderMutation: FolderMutations['updateFolderMutation']
+  connected: boolean
 }) {
   const reorderFolders = useCallback((activeId: string, overId: string) => {
     if (activeId === overId) return
@@ -37,6 +39,14 @@ export function useFolderDropOps({ folderReorderable, queryClient, setFolderActi
     // restriction is expected -- the affordance is withdrawn, not a write that
     // failed. Re-parenting by drag is routed before this and still works.
     if (!folderReorderable) return
+    // Offline this is the SAME gateway write `moveFolderTo` refuses, reached by
+    // the same drag one sink over. Ungated it moved optimistically, snapped back
+    // and raised a false "Folder update failed". Refused BEFORE the optimistic
+    // `setQueryData`, so the rows never move.
+    if (!connected) {
+      setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') }))
+      return
+    }
     // Read latest from cache to avoid stale-closure ordering on rapid successive drags
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
     // Scoped to the dragged folder's own container, not to the root lane: a
@@ -86,7 +96,7 @@ export function useFolderDropOps({ folderReorderable, queryClient, setFolderActi
       )
       queryClient.invalidateQueries({ queryKey: ['chat-folders'] })
     })
-  }, [queryClient, folderReorderable, setFolderActionError])
+  }, [queryClient, folderReorderable, setFolderActionError, connected, setFolderOfflineNotice])
   // Re-parent a folder: move it into `parentId`, or to the top level (null).
   // Client-side guards mirror the server (self/descendant targets rejected)
   // so an invalid pick or drop is a silent no-op instead of a 400 round-trip.
@@ -95,6 +105,14 @@ export function useFolderDropOps({ folderReorderable, queryClient, setFolderActi
   // arms on it. A guarded no-op never acknowledges, so an offer armed over one
   // simply expires unarmed.
   const moveFolderTo = useCallback((folderId: string, parentId: string | null, opts?: { onCommitted?: () => void }) => {
+    // Gated at the SINK, because re-parenting arrives by two routes (the
+    // Move-to-folder submenu's onPick and a drag). Offline both reached
+    // `updateFolderMutation`, so the row moved, snapped back, and claimed
+    // "Folder update failed" for a request that was never sent.
+    if (!connected) {
+      setFolderOfflineNotice(i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') }))
+      return
+    }
     const current = queryClient.getQueryData<ChatFolder[]>(['chat-folders']) ?? []
     const folder = current.find(f => f.id === folderId)
     if (!folder) return
@@ -102,7 +120,7 @@ export function useFolderDropOps({ folderReorderable, queryClient, setFolderActi
     if ((folder.parent_id || '') === target) return
     if (target && collectFolderSubtreeIds(current, folderId).has(target)) return
     updateFolderMutation.mutate({ id: folderId, body: { parent_id: target }, onCommitted: opts?.onCommitted })
-  }, [queryClient, updateFolderMutation])
+  }, [queryClient, updateFolderMutation, connected, setFolderOfflineNotice])
   return { reorderFolders, moveFolderTo }
 }
 

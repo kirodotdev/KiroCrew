@@ -1,32 +1,33 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useReducedMotion } from '../../hooks/useReducedMotion'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Package, X, Download, Copy } from 'lucide-react'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Download, Copy } from 'lucide-react'
 import { SettingsLink } from '../../components/SettingsLink'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import { useBranding } from '../../hooks/useBranding'
-import { useAppDispatch, useAppSelector } from '../../store'
-import { setUpdateProgress } from '../../store/dashboardSlice'
+import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
-import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
 import ReportProblemCard from './ReportProblemCard'
-import { api, ApiError } from '../../api/client'
-import { copyToClipboard } from '../../utils/clipboard'
+import { ARM_POLL_FAILURE_THRESHOLD, AGENT_REQUEST_POLL_MS, AgentUpdateRequestCard, copyCommand } from './AboutPanelUpdateFlow'
+import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGatewayUpdate } from './AboutPanelGatewayUpdate'
+import { api } from '../../api/client'
 import { gatewayAutoUpdateCopy, useGatewayAutoUpdateEffect, useUpdateSwitchesShown } from '../../utils/updateSwitches'
-import { adoptCheckedAutoUpdate, configReads, useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
+import { useGatewayAutoUpdate, type SwitchState } from '../../hooks/useGatewayAutoUpdate'
 import { useAppAutoDownload } from '../../hooks/useAppAutoDownload'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
 import { failedWithNoData } from '../../api/queryState'
 import ErrorNotice from '../../components/ErrorNotice'
+import { CopyCommand } from '../../components/agentHarness/CopyCommand'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
+import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
@@ -35,36 +36,6 @@ function formatRate(bps: number): string {
   if (!Number.isFinite(bps) || bps <= 0) return ''
   const mb = bps / (1024 * 1024)
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.round(bps / 1024)} KB/s`
-}
-
-/**
- * Why the GATEWAY update check produced no verdict.
- *
- * Distinct from `updateErrorText` below, which speaks for the Electron updater's
- * download/install lifecycle. These codes come from `/api/update/check` and mean
- * "the comparison did not happen" — never "you are up to date".
- *
- * An unrecognised code deliberately falls back to the generic reason instead of
- * being dropped: a newer gateway paired with an older bundle must still say the
- * check failed rather than silently render the success line.
- */
-const GATEWAY_CHECK_ERROR_KEYS: Record<string, string> = {
-  feed_unreachable: 'pages.settings.aboutPanel.update_check_error_feed_unreachable',
-  feed_malformed: 'pages.settings.aboutPanel.update_check_error_feed_malformed',
-  git_fetch_failed: 'pages.settings.aboutPanel.update_check_error_git_fetch_failed',
-  git_read_failed: 'pages.settings.aboutPanel.update_check_error_git_read_failed',
-  version_unparseable: 'pages.settings.aboutPanel.update_check_error_version_unparseable',
-  // Not failures: this gateway is not the update surface for the install it is
-  // running inside. A desktop bundle embeds this same backend, so it reaches this
-  // code and must defer to the Electron updater; a container is replaced by
-  // pulling a new image.
-  managed_by_app: 'pages.settings.aboutPanel.update_check_managed_by_app',
-  managed_by_image: 'pages.settings.aboutPanel.update_check_managed_by_image',
-}
-
-function gwCheckErrorText(code: string): string {
-  const key = GATEWAY_CHECK_ERROR_KEYS[code]
-  return i18nT(key || 'pages.settings.aboutPanel.update_check_error_unknown')
 }
 
 /**
@@ -95,6 +66,7 @@ const UPDATE_ERROR_KEYS = {
   misconfigured: 'pages.settings.aboutPanel.update_error_misconfigured',
   unknown: 'pages.settings.aboutPanel.update_error_unknown',
   installUnknown: 'pages.settings.aboutPanel.update_error_install_unknown',
+  gatewayStillRunning: 'pages.settings.aboutPanel.update_error_gateway_still_running',
 } as const
 
 function updateErrorText(st: UpdateState | null | undefined): string {
@@ -114,6 +86,12 @@ function updateErrorText(st: UpdateState | null | undefined): string {
     case 'stage-invalidated': return i18nT(UPDATE_ERROR_KEYS.stageInvalidated)
     case 'integrity': return i18nT(UPDATE_ERROR_KEYS.integrity)
     case 'misconfigured': return i18nT(UPDATE_ERROR_KEYS.misconfigured)
+    // The command itself renders beside this text (gatewayStopCommand), so the
+    // sentence points at it; without a command the install generic applies.
+    case 'gateway-still-running':
+      return gatewayStopCommand(st)
+        ? i18nT(UPDATE_ERROR_KEYS.gatewayStillRunning)
+        : i18nT(UPDATE_ERROR_KEYS.installUnknown)
     // Unclassified failure. The localized generic WINS over st.message: the raw
     // value is electron-updater's exception text, written for a developer reading
     // logs ("ShipIt could not replace the application bundle") and always English.
@@ -157,51 +135,6 @@ const HERO_BG: React.CSSProperties = {
 const REPORT_ISSUE_URL = 'https://github.com/kirodotdev/KiroCrew/issues/new'
 
 /**
- * How long a primed Restart button stays armed.
- *
- * Long enough to read the changed label and click again, short enough that an
- * armed control does not sit there as a trap for an unrelated click a minute
- * later.
- */
-const ARM_TIMEOUT_MS = 5000
-
-/**
- * Consecutive `armStatus` poll failures before the armed panel says so. One or
- * two misses are the normal cost of a 5s poll on a flaky link and the local
- * countdown covers them; a run of them means the approval landing can no
- * longer be observed, which the user must hear rather than wait on forever.
- */
-const ARM_POLL_FAILURE_THRESHOLD = 3
-/**
- * How often the About panel asks the gateway whether an agent has requested an
- * update. Exported for tests, which shrink it to land several consecutive
- * failures inside a test budget without touching the failure threshold.
- */
-export const AGENT_REQUEST_POLL_MS = { value: 5000 }
-
-/**
- * Copy a command and report the OUTCOME. `copyToClipboard` resolves `false`
- * when the legacy fallback fails without throwing (plain-HTTP remote gateway —
- * exactly the deployment these commands target) and rejects when both paths
- * are dead; either way painting "Copied" would tell the user their shell paste
- * is ready when the clipboard still holds something else.
- */
-async function copyCommand(
-  text: string,
-  setCopied: (v: boolean) => void,
-  setFailed: (v: boolean) => void,
-): Promise<void> {
-  let ok = false
-  try {
-    ok = await copyToClipboard(text)
-  } catch {
-    ok = false
-  }
-  setCopied(ok)
-  setFailed(!ok)
-}
-
-/**
  * Last-resort prerelease test for an info payload with NO channel fields.
  *
  * `electron/main.js` has an init-failure fallback whose getInfo() returns only
@@ -229,499 +162,13 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   )
 }
 
-/**
- * Restart control with a two-step confirm.
- *
- * A restart drops every active session, so it must not fire on a single stray
- * click — but it is also recoverable (the gateway comes straight back), which is
- * why this is an armed button rather than the typed-token treatment reserved for
- * bulk-destructive actions.
- *
- * The arm auto-expires: an armed control left on screen becomes a trap for the
- * next click minutes later, when the user has forgotten what they armed. The
- * timer is cleared on unmount so a restart that navigates away cannot fire
- * `setState` on a dead component.
- *
- * Rendered at two call sites with the same behaviour and different emphasis, so
- * the confirm step cannot drift between them.
- */
-export function RestartGatewayButton({
-  primary,
-  pending,
-  restarting,
-  onConfirm,
-  testId,
-}: {
-  primary?: boolean
-  pending: boolean
-  restarting: boolean
-  onConfirm: () => void
-  testId: string
-}) {
-  const [armed, setArmed] = useState(false)
-  useEffect(() => {
-    if (!armed) return
-    const timer = window.setTimeout(() => setArmed(false), ARM_TIMEOUT_MS)
-    return () => window.clearTimeout(timer)
-  }, [armed])
-
-  const busy = pending || restarting
-  return (
-    <Btn
-      primary={primary && !armed}
-      className={armed ? '!bg-[var(--warn)] !text-[var(--warn-fg)] hover:!opacity-80' : undefined}
-      disabled={busy}
-      data-testid={testId}
-      // No static aria-label: the visible text IS the accessible name, and it is
-      // what changes to announce the armed step. Pinning the label to "Restart
-      // gateway" made a screen reader say the same thing on both clicks, hiding
-      // the confirm from exactly the users who cannot see the colour change.
-      onClick={() => {
-        if (busy) return
-        if (!armed) { setArmed(true); return }
-        setArmed(false)
-        onConfirm()
-      }}
-    >
-      <RefreshCw size={13} className={`lucide-inline ${busy ? 'animate-spin' : ''}`} /> {restarting
-        ? i18nT('pages.settings.aboutPanel.restarting')
-        : armed
-          ? i18nT('pages.settings.aboutPanel.restart_confirm')
-          : i18nT('pages.settings.aboutPanel.restart_gateway')}
-    </Btn>
-  )
-}
-
-/** The in-app update flow for a managed-venv install (RFC OQ7 step-up).
- *
- * Arming records the request server-side and yields the ONE command that can
- * approve it — run on the gateway host, where reading the nonce file proves
- * an identity a dashboard session does not have. The nonce itself never
- * reaches this client, so this panel can request an update but can never
- * approve one.
- *
- * The phase machine is what keeps the post-approval story visible: a consumed
- * request (the poll answering `armed: false`) is the APPROVAL landing, so the
- * panel narrates `applying` from the shared update-progress push instead of
- * silently reverting to the Update button; a `failed` push pins the failure
- * with a retry. Expiry is decided only by the local countdown reaching zero,
- * so a poll racing the consume can never misread an approval as an expiry.
- */
-/**
- * Decide what an ARMED panel's poll answer of `armed: false` means. The wire
- * shape is ambiguous: a consumed request (approval landed) and a server-side
- * TTL lapse both read `armed: false`. A throttled background tab misses its
- * 1s countdown ticks, so the decremented counter alone would misread the
- * tab's own expiry as an approval and show "applying" forever — the decision
- * compares the absolute wall-clock deadline instead.
- */
-export function resolveUnarmedPhase(deadlineMs: number, now: number): 'expired' | 'applying' {
-  return now >= deadlineMs ? 'expired' : 'applying'
-}
-
-export function InAppUpdateFlow({
-  version,
-  manualCommand,
-  isChannelMove,
-  onHandoff,
-  askAgent = true,
-}: {
-  /**
-   * DISPLAY ONLY — the label on the Arm button. `armUpdate()` sends no version
-   * (the gateway arms against its own cached raw `latest_version`), so this is
-   * safe to pass folded and MUST be: the raw candidate of a promoted stable
-   * release reads `0.4.1rc1`, and a button offering to "update to 0.4.1rc1" on
-   * the stable channel names a prerelease that the user did not choose.
-   */
-  version: string
-  manualCommand: string
-  /**
-   * True when the target is the followed lane's release rather than a newer
-   * build — i.e. this arm performs a channel MOVE, which is a downgrade by
-   * construction (`channel_move_pending` is only true when the running build is
-   * newer). Labelling that "Update to v0.4.1" while running v0.5.0rc3 is the
-   * same direction-blind copy this change exists to remove.
-   */
-  isChannelMove?: boolean
-  /** Close an overlay host after Ask Agent successfully navigates to chat. */
-  onHandoff?: () => void
-  /** Disable hand-off where an enforcement overlay must remain visible. */
-  askAgent?: boolean
-}) {
-  const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
-  const [armed, setArmed] = useState<{
-    approveCommand: string
-    expiresIn: number
-    // Absolute wall-clock deadline. The decremented counter is display-only:
-    // a throttled background tab fires the 1s tick rarely, so the counter can
-    // sit far above zero long after the server TTL lapsed — every expiry
-    // DECISION compares against this deadline instead.
-    deadlineMs: number
-  } | null>(null)
-  // Mirror of `armed` for effects that must READ it without depending on it
-  // (see the poll-decision effect below).
-  const armedRef = useRef(armed)
-  useEffect(() => {
-    armedRef.current = armed
-  }, [armed])
-  const [cmdCopied, setCmdCopied] = useState(false)
-  const [cmdCopyFailed, setCmdCopyFailed] = useState(false)
-  const [armError, setArmError] = useState('')
-  // The gateway's apply narrates over the shared update-progress push; render
-  // it inline so the armed copy's "progress appears here" is literally true.
-  const progress = useAppSelector(st => st.dashboard.updateProgress)
-  const dispatch = useAppDispatch()
-  const arm = useMutation({
-    mutationFn: () => api.armUpdate(),
-    onSuccess: res => {
-      if (res.armed && res.approve_command) {
-        setArmError('')
-        // A fresh arm starts a fresh narrative: clear any progress left by a
-        // PRIOR attempt. Without this, a stale `failed` push instantly
-        // bounces the new armed panel back to the failure screen, making
-        // "Try again" a dead loop until some new push overwrites it.
-        dispatch(setUpdateProgress(null))
-        const expiresIn = res.expires_in ?? 600
-        setArmed({
-          approveCommand: res.approve_command,
-          expiresIn,
-          deadlineMs: Date.now() + expiresIn * 1000,
-        })
-        setPhase('armed')
-      } else {
-        setArmError(res.error || i18nT('pages.settings.aboutPanel.update_failed'))
-      }
-    },
-    onError: (e: unknown) => setArmError(
-      e instanceof ApiError ? e.message : i18nT('pages.settings.aboutPanel.update_failed'),
-    ),
-  })
-  // Countdown + liveness poll while ARMED. The count is cosmetic (the server
-  // enforces the TTL); the poll is what notices the request being consumed —
-  // approval happens in a terminal this tab cannot see.
-  const isArmed = phase === 'armed'
-  useEffect(() => {
-    if (!isArmed) return
-    const tick = setInterval(() => {
-      setArmed(a => {
-        if (!a) return a
-        // Derive the remaining time from the absolute deadline so a
-        // throttled tab that missed ticks recovers the true remainder.
-        const left = Math.ceil((a.deadlineMs - Date.now()) / 1000)
-        if (left > 0) return { ...a, expiresIn: left }
-        setPhase('expired')
-        return a
-      })
-    }, 1000)
-    return () => clearInterval(tick)
-  }, [isArmed])
-  // Liveness poll through react-query, enabled only while armed: a consumed
-  // request (armed: false) is the approval landing. A single error is left to
-  // retry on the next interval — the local countdown keeps running regardless —
-  // but a run of ARM_POLL_FAILURE_THRESHOLD consecutive failures is surfaced
-  // in the armed panel, because past that point the approval can land unseen.
-  const armStatusQuery = useQuery({
-    queryKey: ['update-arm-status'],
-    queryFn: () => api.armStatus(),
-    enabled: isArmed,
-    refetchInterval: 5000,
-  })
-  const polled = armStatusQuery.data
-  useEffect(() => {
-    if (!isArmed || !polled) return
-    if (!polled.armed) {
-      // See resolveUnarmedPhase: consumed and expired are indistinguishable
-      // on the wire, so the absolute deadline decides. Read the armed state
-      // through a ref rather than an effect dependency -- an `armed`
-      // dependency plus the re-anchor branch below (which builds a fresh
-      // object every poll) would re-run this effect off its own write,
-      // looping the render.
-      const a = armedRef.current
-      setPhase(a ? resolveUnarmedPhase(a.deadlineMs, Date.now()) : 'applying')
-    } else if (typeof polled.expires_in === 'number') {
-      const expiresIn = polled.expires_in
-      // The server is authoritative for the TTL: re-anchor the deadline --
-      // but only when the remainder actually moved, so a same-second poll
-      // answer does not mint a fresh object and re-trigger consumers.
-      setArmed(a =>
-        a && a.expiresIn !== expiresIn
-          ? { ...a, expiresIn, deadlineMs: Date.now() + expiresIn * 1000 }
-          : a
-      )
-    }
-  }, [isArmed, polled])
-  // The apply's OUTCOME arrives on the progress push, not the poll.
-  const progressStep = progress?.step
-  useEffect(() => {
-    if (phase !== 'applying' && phase !== 'armed') return
-    if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
-  }, [progressStep, phase])
-  const resetFailure = () => {
-    setPhase('idle')
-    setArmed(null)
-    setCmdCopied(false)
-    setCmdCopyFailed(false)
-  }
-  const runAction = () => {
-    if (phase === 'armed' && armed) {
-      void copyCommand(armed.approveCommand, setCmdCopied, setCmdCopyFailed)
-      return
-    }
-    if (phase === 'failed') {
-      resetFailure()
-      return
-    }
-    if (phase !== 'applying') arm.mutate()
-  }
-  const rootTestId = phase === 'armed'
-    ? 'in-app-update-armed'
-    : phase === 'applying'
-      ? 'in-app-update-applying'
-      : phase === 'failed'
-        ? 'in-app-update-failed'
-        : 'in-app-update'
-  const canStart = phase === 'idle' || phase === 'expired'
-
-  return (
-    <div className="flex flex-col gap-2" data-testid={rootTestId}>
-      {phase === 'applying' && (
-        <>
-          {progress?.detail && (
-            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
-              {progress.detail}
-            </p>
-          )}
-          <p className="text-[12px] text-muted">
-            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
-          </p>
-        </>
-      )}
-
-      {phase === 'failed' && (
-        <ErrorNotice
-          message={progress?.detail || i18nT('pages.settings.aboutPanel.update_failed')}
-          askAgent={askAgent}
-          onHandoff={onHandoff}
-        />
-      )}
-
-      {canStart && (
-        <>
-          {phase === 'expired' && (
-            <p className="text-[12px] text-muted" data-testid="arm-expired-note">
-              {i18nT('pages.settings.aboutPanel.approval_window_expired')}
-            </p>
-          )}
-          <p className="text-[13px] text-muted">
-            {i18nT(isChannelMove
-              ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
-              : 'pages.settings.aboutPanel.in_app_update_intro')}
-          </p>
-          <ErrorNotice message={armError} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
-          {manualCommand && (
-            <details className="text-[12px] text-muted">
-              <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
-              <div className="mt-2 p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all">
-                {manualCommand}
-              </div>
-            </details>
-          )}
-        </>
-      )}
-
-      {phase === 'armed' && armed && (
-        <>
-          <p className="text-[13px] text-muted">
-            {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
-          </p>
-          <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
-            data-testid="approve-command">
-            {armed.approveCommand}
-          </div>
-          <span className="text-[12px] text-muted" data-testid="arm-countdown">
-            {i18nT('pages.settings.aboutPanel.armed_expires_in', {
-              time: `${Math.floor(armed.expiresIn / 60)}:${String(armed.expiresIn % 60).padStart(2, '0')}`,
-            })}
-          </span>
-          {cmdCopyFailed && (
-            <ErrorNotice
-              variant="inline"
-              message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
-              askAgent={askAgent}
-              onHandoff={onHandoff}
-              testId="arm-copy-error"
-            />
-          )}
-          {armStatusQuery.failureCount >= ARM_POLL_FAILURE_THRESHOLD && (
-            <ErrorNotice
-              variant="inline"
-              message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
-              askAgent={askAgent}
-              onHandoff={onHandoff}
-              testId="arm-poll-error"
-            />
-          )}
-          <p className="text-[12px] text-muted">
-            {i18nT('pages.settings.aboutPanel.armed_waiting_note')}
-          </p>
-        </>
-      )}
-
-      <div>
-        <Btn
-          key="update-action"
-          data-testid="in-app-update-action"
-          primary={canStart}
-          onClick={runAction}
-          disabled={arm.isPending || phase === 'applying'}
-        >
-          {phase === 'applying' ? (
-            <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.applying_update')}</>
-          ) : phase === 'armed' ? (
-            <><Copy size={13} className="lucide-inline" /> {cmdCopied
-              ? i18nT('pages.settings.aboutPanel.copied')
-              : i18nT('pages.settings.aboutPanel.copy_command')}</>
-          ) : phase === 'failed' ? (
-            i18nT('pages.settings.aboutPanel.try_again')
-          ) : (
-            <>{isChannelMove
-              ? <GitBranch size={13} className="lucide-inline" />
-              : <ArrowUp size={13} className="lucide-inline" />} {version
-              ? i18nT(isChannelMove
-                ? 'pages.settings.aboutPanel.switch_to_version'
-                : 'pages.settings.aboutPanel.update_to_version', { version })
-              : i18nT('pages.settings.aboutPanel.update_now')}</>
-          )}
-        </Btn>
-      </div>
-    </div>
-  )
-}
-
-/** An agent's request that this packaged desktop install be updated (issue #503).
- *
- * The gateway holds a REQUEST — version, who asked, when — and nothing else:
- * no nonce, no token, no endpoint that turns the request into an install. The
- * only control that installs is the click below, which drives the same
- * `update:download` → `update:install` IPC the ordinary update card drives.
- * So the human click IS the approval, made by a person who is present, and an
- * agent that arms a request (and can read it — it is not secret) gains exactly
- * the ability to have this card appear. That is what makes agent
- * self-approval impossible by construction rather than by fence.
- *
- * Rendered only on a packaged install (`managed_by: "electron"` on the arm
- * projection) and only while a request is live. Two answers, side by side: a
- * prompt that offers only the affirmative control for the whole TTL is
- * pressure, not consent, and declining is the cheaper mistake — the agent can
- * ask again and nothing was installed.
- */
-export function AgentUpdateRequestCard({
-  request,
-  foundVersion,
-  busy,
-  panelError,
-  onInstall,
-  onDeclined,
-}: {
-  request: { request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number }
-  /** What the app's updater actually found, if a check has run. */
-  foundVersion?: string
-  busy: boolean
-  /**
-   * A failure the PANEL owns and the card must show: the request poll failing
-   * repeatedly, or the download the card started being refused. The card's own
-   * Decline failure is tracked inside.
-   */
-  panelError?: string
-  onInstall: () => void
-  onDeclined: () => void
-}) {
-  const [error, setError] = useState('')
-  const decline = useMutation({
-    // Bound to the request this card RENDERED: a stale click must not remove a
-    // newer request the user has not seen.
-    mutationFn: () => api.dismissUpdateArm(request.request_id || ''),
-    onSuccess: () => { setError(''); onDeclined() },
-    onError: () => setError(i18nT('pages.settings.aboutPanel.agent_request_decline_failed')),
-  })
-  // Anchor a deadline on each poll answer and tick locally, so the countdown
-  // moves every second instead of jumping with the 5s poll.
-  const serverExpires = typeof request.expires_in === 'number' ? request.expires_in : null
-  const [deadlineMs, setDeadlineMs] = useState<number | null>(null)
-  useEffect(() => {
-    setDeadlineMs(serverExpires === null ? null : Date.now() + serverExpires * 1000)
-  }, [serverExpires])
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  useEffect(() => {
-    if (deadlineMs === null) return
-    const tick = setInterval(() => setNowMs(Date.now()), 1000)
-    return () => clearInterval(tick)
-  }, [deadlineMs])
-  const expiresIn = deadlineMs === null ? null : Math.max(0, Math.floor((deadlineMs - nowMs) / 1000))
-  const requested = request.version || ''
-  // The requester named a version the feed does not offer. Still the human's
-  // call — the card installs what the feed HAS — but say so, or the click
-  // would appear to install one thing and install another.
-  const differs = !!requested && !!foundVersion && requested !== foundVersion
-  const askedAt = typeof request.armed_at === 'number' ? new Date(request.armed_at * 1000) : null
-  // The TTL is a day, so a minutes:seconds counter would read "1439:58".
-  // Humanize from the deadline instead — "in 24 hours", "in 3 minutes" — and
-  // let the same deadline drive the 1 s re-render below.
-  const expiresAt = deadlineMs === null ? null : new Date(deadlineMs)
-  return (
-    <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="agent-update-request">
-      <span className="text-[13px] font-medium text-text flex items-center gap-1.5">
-        <AlertCircle size={13} className="lucide-inline text-warn" />
-        {i18nT('pages.settings.aboutPanel.agent_request_heading')}
-      </span>
-      <span className="text-[12px] text-muted" data-testid="agent-update-request-body">
-        {requested
-          ? i18nT('pages.settings.aboutPanel.agent_request_body_version', {
-            who: request.requested_by || i18nT('pages.settings.aboutPanel.agent_request_unknown_requester'),
-            version: requested,
-          })
-          : i18nT('pages.settings.aboutPanel.agent_request_body_latest', {
-            who: request.requested_by || i18nT('pages.settings.aboutPanel.agent_request_unknown_requester'),
-          })}
-        {askedAt && !isNaN(askedAt.getTime()) ? ` · ${fmtRelative(askedAt)}` : ''}
-      </span>
-      {panelError && (
-        <ErrorNotice message={panelError} askAgent testId="agent-update-request-panel-error" />
-      )}
-      {differs && (
-        <span className="text-[12px] text-muted" data-testid="agent-update-request-differs">
-          {i18nT('pages.settings.aboutPanel.agent_request_feed_differs', { requested, found: foundVersion })}
-        </span>
-      )}
-      {expiresAt !== null && expiresIn !== null && (
-        <span className="text-[12px] text-muted" data-testid="agent-update-request-countdown">
-          {i18nT('pages.settings.aboutPanel.agent_request_expires', {
-            when: fmtRelative(expiresAt, { now: nowMs, style: 'long' }),
-          })}
-        </span>
-      )}
-      <ErrorNotice message={error} askAgent testId="agent-update-request-error" />
-      <div className="flex items-center gap-2">
-        {/* The button names the version it will actually deliver. When the feed
-            offers something other than what was requested, "Install & restart"
-            alone leaves the one click this card exists for unanswerable —
-            the reader cannot tell which version they are saying yes to. */}
-        <Btn primary data-testid="agent-update-request-install" disabled={busy || decline.isPending} onClick={onInstall}>
-          {busy
-            ? <RefreshCw size={13} className="lucide-inline animate-spin" />
-            : <Download size={13} className="lucide-inline" />}{' '}
-          {foundVersion
-            ? i18nT('pages.settings.aboutPanel.agent_request_install_version', { version: foundVersion })
-            : i18nT('pages.settings.aboutPanel.agent_request_install')}
-        </Btn>
-        <Btn data-testid="agent-update-request-decline" disabled={busy || decline.isPending} onClick={() => decline.mutate()}>
-          <X size={13} className="lucide-inline" />{' '}
-          {i18nT('pages.settings.aboutPanel.agent_request_decline')}
-        </Btn>
-      </div>
-    </div>
-  )
-}
+export {
+  AGENT_REQUEST_POLL_MS,
+  AgentUpdateRequestCard,
+  InAppUpdateFlow,
+  RestartGatewayButton,
+  resolveUnarmedPhase,
+} from './AboutPanelUpdateFlow'
 
 /**
  * A switch row's notices: the saved value could not be read (the switch then
@@ -1048,6 +495,10 @@ export function AboutPanel() {
   // its owner reads and no self-update lane, so both the switcher and the
   // channel row disappear rather than describing a control that changes nothing.
   const isExternallyManaged = updatesDisabled === 'externally-managed'
+  // A marker with updateCommand routes to the managed lane: the external
+  // package manager handles discovery and apply, but the managed-by notice
+  // and the copyable command still apply alongside the regular update controls.
+  const isManagedLane = !isExternallyManaged && !updatesDisabled && !!info?.updateCommand
   const checking = checkMutation.isPending || updateState?.state === 'checking'
 
   // "What's the difference?" disclosure next to the channel switcher. Collapsed
@@ -1154,6 +605,9 @@ export function AboutPanel() {
   const cardFailedPhase = updateState?.phase === 'download' || updateState?.phase === 'install'
   const cardFailed = cardState === 'error' && cardFailedPhase
   const cardInstallFailed = cardState === 'error' && updateState?.phase === 'install'
+  // An install refused because the gateway kept running: the error text ends
+  // by pointing at the command that stops it, rendered right under it.
+  const refusedStopCommand = cardInstallFailed ? gatewayStopCommand(updateState) : null
   const showUpdateCard = !checking && (cardState === 'found' || cardState === 'available' || cardState === 'downloading' || cardState === 'downloaded' || cardFailed)
   const cardBusy = cardState === 'available' || cardState === 'downloading'
   const cardReady = cardState === 'downloaded'
@@ -1225,6 +679,9 @@ export function AboutPanel() {
           testId="update-download-error"
         />
       )}
+      {refusedStopCommand && (
+        <CopyCommand><code data-testid="update-gateway-stop-command">{refusedStopCommand}</code></CopyCommand>
+      )}
       {/* The IPC call rejected before the updater ever emitted a failure state,
           so no `cardFailed` row describes it: the button would just re-arm with
           no message. Gated on !cardFailed so a real updater failure is never
@@ -1285,159 +742,21 @@ export function AboutPanel() {
     </div>
   ) : null
 
+  // Copy feedback for the desktop managed lane's update command.
+  const [managedCmdCopied, setManagedCmdCopied] = useState(false)
+  const [managedCmdCopyFailed, setManagedCmdCopyFailed] = useState(false)
+
   // --- Gateway (web dashboard) update flow ---
   // The gateway exposes /api/update/check + /api/update; used when not running
   // inside the Electron shell. "Check for updates" flips to "Update to vX" when
   // status.update_available is set; the update itself is gated behind a
   // changelog confirm because applying restarts the gateway.
-  const [gwChanges, setGwChanges] = useState('')
-  const [gwTarget, setGwTarget] = useState('')
-  // Display-only sibling of gwTarget, folded to the clean release version on
-  // stable. Never fed to InAppUpdateFlow or /api/update/arm.
-  const [gwTargetDisplay, setGwTargetDisplay] = useState('')
-  const [gwFound, setGwFound] = useState(false)
-  // Commit distance from the tracked upstream, straight from the check payload.
-  // Only a git checkout ever reports non-zero values; both stay 0 elsewhere.
-  const [gwAhead, setGwAhead] = useState(0)
-  const [gwBehind, setGwBehind] = useState(0)
-  // The honesty trio, straight from /api/update/check.
-  //
-  // `gwChecked` is what licenses the "you're on the latest version" line. It used
-  // to be enough that the request returned 200 — but for a wheel install the
-  // backend's check never actually ran, so a check that did nothing reported an
-  // out-of-date install as up to date. A 200 is now only a transport success;
-  // `checked` is the verdict, and `gwError` names why there is none.
-  const [gwChecked, setGwChecked] = useState(false)
-  const [gwError, setGwError] = useState('')
-  // Why there is no verdict when nothing FAILED: this gateway is not the update
-  // surface for the install it runs inside. Separate from `gwError` because
-  // rendering a deferral under "Couldn't check for updates" would be its own
-  // lie — nothing broke, the update arrives through a different surface.
-  const [gwUnavailableReason, setGwUnavailableReason] = useState('')
-  // Null = not yet known from a check; the redux status flag below carries the
-  // same fact for the pre-check case.
-  const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
-  const [gwChannel, setGwChannel] = useState('')
-  // Server-supplied reason for a refused switch; '' means 'no detail, use the generic line'.
-  const [gwChannelError, setGwChannelError] = useState('')
-  const [gwCommand, setGwCommand] = useState('')
-  const [gwCommandCopied, setGwCommandCopied] = useState(false)
-  const [gwCommandCopyFailed, setGwCommandCopyFailed] = useState(false)
-  const [managedCmdCopied, setManagedCmdCopied] = useState(false)
-  const [managedCmdCopyFailed, setManagedCmdCopyFailed] = useState(false)
-  const [showConfirm, setShowConfirm] = useState(false)
-  const [applyError, setApplyError] = useState('')
-  const [restarting, setRestarting] = useState(false)
-  const gwCheck = useMutation({
-    mutationFn: () => api.checkUpdate(),
-    // Where the saved switch's entry stood, so a late answer cannot overwrite a newer read.
-    onMutate: () => configReads(queryClient),
-    onSuccess: (d, _vars, readsWhenSent) => {
-      setGwChanges(d?.changes || '')
-      // `latest_version` is the field the gateway actually emits; `version` is
-      // read as a fallback only because it is what some older payloads carried.
-      const target = d?.latest_version || d?.version
-      if (target) setGwTarget(String(target))
-      // Same contract as the channel-switch handler below: adopt the
-      // display-only folded sibling (empty when the gateway predates it).
-      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
-      // Derive availability from the check response itself, not only the redux
-      // status flag (which refreshes on a slower WS status push). Otherwise a
-      // check that finds an update could still show "You're on the latest
-      // version" until the flag catches up.
-      setGwFound(d?.update_available === true)
-      setGwChecked(d?.check_status === 'succeeded')
-      // Adopted unconditionally (0 when absent) so one check's divergence can
-      // never survive into the next check's verdict.
-      setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
-      setGwBehind(typeof d?.commits_behind === 'number' ? d.commits_behind : 0)
-      // A DEFERRAL is not a failure: a desktop bundle reporting "the app
-      // updates itself" has not malfunctioned, and its reason has its own slot.
-      // Only `error_code` may render as an error.
-      setGwError(typeof d?.error_code === 'string' ? d.error_code : '')
-      setGwUnavailableReason(
-        typeof d?.unavailable_reason === 'string' ? d.unavailable_reason : ''
-      )
-      setGwChannel(typeof d?.channel === 'string' ? d.channel : '')
-      setGwCommand(
-        typeof d?.remediation?.command === 'string' ? d.remediation.command : ''
-      )
-      setGwCommandCopied(false)
-      setGwCommandCopyFailed(false)
-      if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
-      // The check read the saved switch too, which another tab or the CLI may
-      // have changed: adopt it, unless a save or a read has moved it since.
-      adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
-    },
-  })
-  const gwApply = useMutation({
-    mutationFn: () => api.applyUpdate(),
-    onSuccess: () => setRestarting(true),
-    onError: (e: unknown) => {
-      // A real server rejection (e.g. 409 dirty tree, 400) arrives as ApiError
-      // with a status code — surface it. A bare network failure means the POST's
-      // connection was reset by the gateway restart the update itself triggers;
-      // that is the expected success path, not a failure.
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.update_failed'))
-      else setRestarting(true)
-    },
-  })
-  // Restart WITHOUT updating: the missing half of the non-self-updatable flow.
-  // After the user runs the copied installer command in a terminal, the running
-  // gateway is still executing the old code and had no in-app way to reload.
-  //
-  // Same error shape as gwApply: os.execv kills the connection, so a bare
-  // network failure after the POST is the expected path, and only an ApiError
-  // (a real server rejection) is a failure worth showing.
-  const gwRestart = useMutation({
-    mutationFn: () => api.restartGateway(),
-    onSuccess: () => setRestarting(true),
-    onError: (e: unknown) => {
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
-      else setRestarting(true)
-    },
-  })
-  // Gateway channel switch (stable | insider | nightly). Unlike the desktop
-  // switcher this is a THREE-way control: cli.sh publishes and installs all
-  // three lanes, so every one of them is a real destination for a wheel install.
-  // Refuses on a git checkout or an externally managed layout (409), which is
-  // why the control is only rendered when the backend reported a channel.
-  const gwChannelMutation = useMutation({
-    mutationFn: (next: string) => api.setUpdateChannel(next),
-    onMutate: () => { setGwChannelError(''); return configReads(queryClient) },
-    onError: (e: unknown) => {
-      // The backend's 409s carry the only actionable detail there is ("a git
-      // checkout follows its git remote", or the externally-managed guidance
-      // naming the real update surface). A bare "Couldn't switch channel" leaves
-      // the user with no next step, so surface the server's reason when it gave
-      // one and fall back to the generic line when it did not.
-      setGwChannelError(e instanceof ApiError ? (e.message || '') : '')
-    },
-    onSuccess: (d, _vars, readsWhenSent) => {
-      // The response is the re-run check against the new channel, so adopt it
-      // wholesale rather than leaving the previous lane's verdict on screen.
-      //
-      // These MUST stay the same field names `gwCheck.onSuccess` reads: both
-      // handlers consume the same update-check contract, and when this one was
-      // left on the old names a successful switch that FOUND an update wrote
-      // `gwFound=false` / `gwChecked=false` and blanked the target — silently
-      // discarding the very verdict the switch was made to get.
-      if (typeof d?.channel === 'string') setGwChannel(d.channel)
-      setGwFound(d?.update_available === true)
-      setGwChecked(d?.check_status === 'succeeded')
-      setGwAhead(typeof d?.commits_ahead === 'number' ? d.commits_ahead : 0)
-      setGwBehind(typeof d?.commits_behind === 'number' ? d.commits_behind : 0)
-      // Only `error_code` may render as an error; a deferral is not a failure.
-      setGwError(typeof d?.error_code === 'string' ? d.error_code : '')
-      setGwCommand(typeof d?.update_command === 'string' ? d.update_command : '')
-      setGwCommandCopied(false)
-      setGwCommandCopyFailed(false)
-      setGwTarget(typeof d?.latest_version === 'string' ? d.latest_version : '')
-      setGwTargetDisplay(typeof d?.latest_version_display === 'string' ? d.latest_version_display : '')
-      if (typeof d?.can_apply === 'boolean') setGwSelfUpdatable(d.can_apply)
-      adoptCheckedAutoUpdate(queryClient, d, readsWhenSent)
-    },
-  })
+  const gwUpdate = useAboutPanelGatewayUpdate(queryClient)
+  const {
+    gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwSelfUpdatable, gwChannel,
+    gwChannelError, gwCommand, showConfirm, setShowConfirm, restarting, gwCheck, gwApply,
+    gwChannelMutation,
+  } = gwUpdate
   // Diverged: local commits on top of a moved upstream. `update_available` is
   // false there BY DESIGN (the apply path is a destructive reset), so this is
   // derived from the counts rather than from any availability flag — it is the
@@ -1577,7 +896,7 @@ export function AboutPanel() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [showConfirm, gwApply.isPending, restarting])
+  }, [showConfirm, gwApply.isPending, restarting, setShowConfirm])
 
   // Gateway-stamped build chips. Hoisted because they render in one of two
   // places: beside the license chip when the lanes agree, or on the gateway's
@@ -1962,38 +1281,15 @@ export function AboutPanel() {
           {isExternallyManaged ? (
             // The marker's owner (a distro/enterprise package manager) replaces
             // the whole install, so there is no Check button and no channel —
-            // just the fact, plus the owner's own update command when the
-            // marker carries one. Same command-box + copy pattern as the
-            // gateway's manual-update instructions below.
+            // just the "updates are managed by …" fact. A marker that ALSO
+            // carries an updateCommand routes to the managed lane instead and
+            // shows the notice + copyable command above the update controls.
             <div className="flex flex-col gap-2" data-testid="externally-managed-updates">
               <p className="text-sm text-muted">
                 {info?.managedBy
                   ? i18nT('pages.settings.aboutPanel.updates_managed_externally_by', { managedBy: info.managedBy })
                   : i18nT('pages.settings.aboutPanel.updates_managed_externally')}
               </p>
-              {info?.updateCommand && (
-                <>
-                  <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
-                    data-testid="managed-update-command">
-                    {info.updateCommand}
-                  </div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Btn onClick={() => copyCommand(info.updateCommand!, setManagedCmdCopied, setManagedCmdCopyFailed)}>
-                      <Copy size={13} className="lucide-inline" /> {managedCmdCopied
-                        ? i18nT('pages.settings.aboutPanel.copied')
-                        : i18nT('pages.settings.aboutPanel.copy_command')}
-                    </Btn>
-                    {/* askAgent on: the command is still on screen above. */}
-                    {managedCmdCopyFailed && (
-                      <ErrorNotice
-                        variant="inline"
-                        message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
-                        askAgent
-                      />
-                    )}
-                  </div>
-                </>
-              )}
             </div>
           ) : updatesDisabled ? (
             <p className="text-sm text-muted">
@@ -2015,6 +1311,36 @@ export function AboutPanel() {
             </p>
           ) : (
             <div className="flex flex-col gap-2.5">
+              {/* Managed lane: the marker names an external owner even though
+                  the updater is armed; show the managed-by notice and the
+                  copyable command above the regular update controls. */}
+              {isManagedLane && (
+                <div className="flex flex-col gap-2" data-testid="externally-managed-updates">
+                  <p className="text-sm text-muted">
+                    {info?.managedBy
+                      ? i18nT('pages.settings.aboutPanel.updates_managed_lane_by', { managedBy: info.managedBy })
+                      : i18nT('pages.settings.aboutPanel.updates_managed_lane')}
+                  </p>
+                  <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+                    data-testid="managed-update-command">
+                    {info.updateCommand}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Btn onClick={() => copyCommand(info.updateCommand!, setManagedCmdCopied, setManagedCmdCopyFailed)}>
+                      <Copy size={13} className="lucide-inline" /> {managedCmdCopied
+                        ? i18nT('pages.settings.aboutPanel.copied')
+                        : i18nT('pages.settings.aboutPanel.copy_command')}
+                    </Btn>
+                    {managedCmdCopyFailed && (
+                      <ErrorNotice
+                        variant="inline"
+                        message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
+                        askAgent
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
               <p className="text-sm text-muted">
                 {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
               </p>
@@ -2081,215 +1407,25 @@ export function AboutPanel() {
               installs on its own switch whatever this build's updater says. */}
           {updateSwitches.gateway && <GatewayAutoUpdateSwitch />}
         </>) : (
-          <div className="flex flex-col gap-2.5">
-            {(showUpdate || channelMovePending) ? (
-              <>
-                {showUpdate && (
-                  <p className="text-sm text-muted flex items-center gap-1.5">
-                    <ArrowUp size={13} className="lucide-inline text-accent" /> {i18nT('pages.settings.aboutPanel.a_new_version')}{(gwTargetDisplay || gwTarget) ? ` (v${gwTargetDisplay || gwTarget})` : ''} {i18nT('pages.settings.aboutPanel.is_available')}
-                  </p>
-                )}
-                {showManualUpdate ? (
-                  effectiveGwCanArm ? (
-                    <InAppUpdateFlow
-                      version={gwTargetDisplay || gwStatusLatestDisplay || gwTarget || gwStatusLatest}
-                      manualCommand={effectiveCommand || ''}
-                      isChannelMove={gwChannelMovePending}
-                    />
-                  ) : gwManagedByCommand ? (
-                    // A policy-pinned command provider owns this update, and a
-                    // check-only pin has no in-app apply. The installer copy
-                    // below would tell the user to run the exact mechanism the
-                    // policy exists to bypass — and they might actually do it,
-                    // fighting the managed install.
-                    <p className="text-[13px] text-muted" data-testid="policy-managed-update-note">
-                      {i18nT('pages.settings.aboutPanel.updates_managed_by_policy')}
-                    </p>
-                  ) : (
-                  // This install cannot replace its own code (a `cli.sh` wheel
-                  // install, not a git checkout), so there is no Update button to
-                  // offer — pressing one would 409. Show the command that does
-                  // work instead. The channel is spelled out in it deliberately:
-                  // the installer defaults to stable and never reads the channel
-                  // file, so a bare re-run would silently move this install to a
-                  // different lane.
-                  <div className="flex flex-col gap-2" data-testid="manual-update-instructions">
-                    <p className="text-[13px] text-muted">
-                      {effectiveGwChannel
-                        ? i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer_channel', { channel: effectiveGwChannel })
-                        : i18nT('pages.settings.aboutPanel.this_install_updates_by_re_running_the_installer')}
-                    </p>
-                    {effectiveCommand && (
-                      <>
-                        <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
-                          data-testid="manual-update-command">
-                          {effectiveCommand}
-                        </div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {/* copyToClipboard, not navigator.clipboard directly: the
-                              Clipboard API is unavailable on a plain-HTTP remote
-                              gateway — exactly the deployment this command targets —
-                              and flipping the label regardless would tell the user
-                              their shell paste is ready when the clipboard still
-                              holds something else. Await it, then confirm. */}
-                          <Btn onClick={() => copyCommand(effectiveCommand, setGwCommandCopied, setGwCommandCopyFailed)}>
-                            <Copy size={13} className="lucide-inline" /> {gwCommandCopied
-                              ? i18nT('pages.settings.aboutPanel.copied')
-                              : i18nT('pages.settings.aboutPanel.copy_command')}
-                          </Btn>
-                          {/* The step the flow used to end without. The installer
-                              replaced the code on disk; this process is still
-                              running the old version until it re-execs. Primary
-                              once the command has been copied, because that is
-                              when restarting is the actual next action. */}
-                          <RestartGatewayButton
-                            primary={gwCommandCopied}
-                            pending={gwRestart.isPending}
-                            restarting={restarting}
-                            onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
-                            testId="gateway-restart"
-                          />
-                        </div>
-                        {/* Below the Copy/Restart row, not inside it: the hand-off
-                            link counts as a third action there
-                            (max-two-buttons-per-row). askAgent on: the command is
-                            still on screen above. */}
-                        {gwCommandCopyFailed && (
-                          <ErrorNotice
-                            variant="inline"
-                            message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
-                            askAgent
-                            testId="manual-update-copy-error"
-                          />
-                        )}
-                        <p className="text-[12px] text-muted">
-                          {i18nT('pages.settings.aboutPanel.restart_after_installer_note')}
-                        </p>
-                        {/* askAgent on: a refused restart leaves nothing unsaved —
-                            the installer already ran in the user's terminal. */}
-                        <ErrorNotice message={applyError} askAgent testId="manual-update-restart-error" />
-                      </>
-                    )}
-                  </div>
-                  )
-                ) : (
-                  <div>
-                    <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>
-                      {/* Whole-sentence keys, not "Update" + " to vX": the version
-                          does not follow the verb in every language. */}
-                      <ArrowUp size={13} className="lucide-inline" /> {gwTarget
-                        ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
-                        : i18nT('pages.settings.aboutPanel.update_now')}
-                    </Btn>
-                  </div>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="text-sm text-muted">
-                  {lastCheckedAt
-                    ? i18nT('pages.settings.aboutPanel.checks_for_updates_with_timing', {
-                        name: botName || 'Kiro Crew',
-                        timing: i18nT('pages.settings.aboutPanel.last_checked_ago_next_check_in', {
-                          ago: fmtRelative(lastCheckedAt * 1000),
-                          // Clamp: after machine sleep the scheduled check can be
-                          // past-due, and an unclamped value renders a future event
-                          // in the past tense ("next automatic check 8 hours ago").
-                          next: fmtRelative(Math.max((lastCheckedAt + checkIntervalSecs) * 1000, Date.now())),
-                        }),
-                      })
-                    : <>{botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}</>}
-                </p>
-                <div>
-                  <Btn onClick={() => gwCheck.mutate()} disabled={gwCheck.isPending}>
-                    <RefreshCw size={13} className={`lucide-inline ${gwCheck.isPending ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
-                  </Btn>
-                </div>
-                {/* A 200 is transport success, NOT a verdict: `checked` is the
-                    verdict. Gating the success line on it is the fix for the
-                    original bug, where a wheel install's no-op check rendered
-                    "you're on the latest version" while being two releases
-                    behind. An unrecognised error code still lands here (in the
-                    error branch), never in the success branch. */}
-                {gwCheck.isSuccess && gwChecked && !gwError && !gwUnavailableReason && !showUpdate && (
-                  gwDiverged ? (
-                    /* The third verdict: diverged. "No update available" here is
-                       the no-auto-apply safety property doing its job, not
-                       currency, so saying "latest version" would be false in the
-                       other direction. Counts plus the manual next step, and
-                       deliberately NO apply button: this panel's Update button
-                       POSTs /api/update, whose git path is a bare `git pull` — an
-                       unrequested merge into the diverged branch (the unattended
-                       auto-update path is the `git reset --hard` that would
-                       discard the commits outright; both are wrong here). */
-                    <span className="text-warn text-[13px] flex items-start gap-1.5" role="status" data-testid="diverged">
-                      <GitBranch size={13} className="lucide-inline shrink-0 mt-0.5" aria-hidden />
-                      <span>{gwDivergedText}</span>
-                    </span>
-                  ) : (
-                    <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
-                  )
-                )}
-                {gwCheck.isSuccess && !!gwUnavailableReason && (
-                  <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>
-                )}
-                {/* askAgent on: a failed read; the Check button above is the retry. */}
-                {(gwCheck.isError || (gwCheck.isSuccess && !!gwError)) && (
-                  <ErrorNotice
-                    variant="inline"
-                    message={`${i18nT('pages.settings.aboutPanel.couldn_t_check_for_updates_2')}${gwError ? `: ${gwCheckErrorText(gwError)}` : ''}`}
-                    askAgent
-                    testId="check-failed"
-                  />
-                )}
-              </>
-            )}
-            <GatewayAutoUpdateSwitch />
-
-            {/* Standing maintenance action, NOT gated on an update being
-                available. Restarting is how this install picks up code that
-                already changed on disk — a re-run installer, a `pip install -e .`
-                during development, a config change that needs a fresh process —
-                and none of those imply a pending release. Keeping it out of the
-                update branch is the difference between a control that is there
-                when needed and one that only appears when an update happens to
-                be offered.
-
-                Hidden while the manual-update card is on screen: that card
-                already renders a Restart button wired to the same mutation, and
-                two identical buttons a few rows apart read as two different
-                actions. */}
-            {!showManualUpdate && (
-              <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-border"
-                data-testid="gateway-restart-row">
-                {/* One label, not a title + note pair: the button already names the
-                    action, so a "Restart gateway" heading beside a "Restart gateway"
-                    button says the same thing twice. This mirrors the auto-update
-                    row above — a single explanatory label plus its control — and
-                    spends the space on the consequence instead. */}
-                <span className="text-sm text-muted">{i18nT('pages.settings.aboutPanel.restart_row_note')}</span>
-                <div className="shrink-0">
-                  <RestartGatewayButton
-                    pending={gwRestart.isPending}
-                    restarting={restarting}
-                    onConfirm={() => { setApplyError(''); gwRestart.mutate() }}
-                    testId="gateway-restart-standing"
-                  />
-                </div>
-              </div>
-            )}
-            {/* The in-flow button renders its own error inside the update card;
-                this one has no card, so the shared error surfaces here. Gated on
-                the SAME condition as the row itself -- keying it on `showUpdate`
-                instead left a self-updatable install with a pending update showing
-                the row while swallowing its error, so a rejected restart gave the
-                user no feedback whatsoever. */}
-            {/* askAgent on: a refused restart of a standing action; nothing on
-                this card is a draft. */}
-            {!showManualUpdate && (
-              <ErrorNotice message={applyError} askAgent testId="gateway-restart-error" />
-            )}
-          </div>
+          <AboutPanelGatewayUpdates
+            gwUpdate={gwUpdate}
+            showUpdate={showUpdate}
+            channelMovePending={channelMovePending}
+            showManualUpdate={showManualUpdate}
+            effectiveGwCanArm={effectiveGwCanArm}
+            effectiveCommand={effectiveCommand}
+            effectiveGwChannel={effectiveGwChannel}
+            gwChannelMovePending={gwChannelMovePending}
+            gwManagedByCommand={gwManagedByCommand}
+            gwStatusLatest={gwStatusLatest}
+            gwStatusLatestDisplay={gwStatusLatestDisplay}
+            gwDiverged={gwDiverged}
+            gwDivergedText={gwDivergedText}
+            lastCheckedAt={lastCheckedAt}
+            checkIntervalSecs={checkIntervalSecs}
+            botName={botName}
+            autoUpdateSwitch={<GatewayAutoUpdateSwitch />}
+          />
         )}
 
         {/* The full changelog used to be inlined here, open by default. It grows
@@ -2310,72 +1446,7 @@ export function AboutPanel() {
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
-        // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- backdrop click-to-dismiss is a supplementary mouse affordance; the keyboard path is the document-level Escape listener above plus the Close button, and making the dialog surface itself a tab stop would put a stop in front of its own content
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise"
-             role="dialog" aria-modal="true" aria-label={i18nT('pages.settings.aboutPanel.update')}
-             onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}>
-          {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions -- the only handler is a propagation guard keeping a click inside the panel from reaching the backdrop's dismiss; it performs no action, so there is no keyboard equivalent to provide */}
-          <div role="document" className="bg-card border border-border rounded-xl p-6 max-w-md w-full mx-4 shadow-xl" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-3">
-              {/* Whole-sentence key, not "Update" + " to vX": the version does
-                  not follow the verb in every language. Diverged drops the
-                  version — there is nothing to update to. */}
-              <div className="text-sm font-bold text-text-strong flex items-center gap-1.5"><Package size={15} className="lucide-inline" /> {gwTarget && !gwDiverged
-                ? i18nT('pages.settings.aboutPanel.update_to_version', { version: gwTarget })
-                : i18nT('pages.settings.aboutPanel.update')}</div>
-              <button aria-label={i18nT('pages.settings.aboutPanel.close')} className="text-muted hover:text-text cursor-pointer bg-transparent border-none disabled:opacity-40 disabled:cursor-default" disabled={gwApply.isPending || restarting} onClick={() => { if (!gwApply.isPending && !restarting) setShowConfirm(false) }}><X size={15} /></button>
-            </div>
-            {gwCheck.isPending ? (
-              <div className="text-[13px] text-muted flex items-center gap-1.5 mb-4"><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.loading_changelog')}</div>
-            ) : gwDiverged ? (
-              /* The modal opened from a STALE update flag, and the check it
-                 fired came back diverged: there is nothing to apply, and the
-                 backend path behind the button below is a bare `git pull` — a
-                 silent merge into the user's branch. Say why instead. */
-              <p className="text-[13px] text-warn mb-4" data-testid="diverged-modal">{gwDivergedText}</p>
-            ) : gwChanges ? (
-              <>
-                <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('pages.settings.aboutPanel.what_s_new')}</div>
-                <div className="p-3 bg-bg rounded-lg border border-border max-h-56 overflow-y-auto mb-4 text-[13px] text-text"><MarkdownRenderer content={gwChanges} /></div>
-              </>
-            ) : (
-              <p className="text-[13px] text-muted mb-4">{i18nT('pages.settings.aboutPanel.a_newer_version_is_available')}</p>
-            )}
-            {/* The restart warning describes the apply below; a diverged modal
-                offers no apply, so warning about its restart would keep the
-                update promise the body just withdrew. */}
-            {!gwDiverged && (
-              <p className="text-[12px] text-muted mb-3">{i18nT('pages.settings.aboutPanel.updating_restarts_the_gateway_active_sessions_wi')}</p>
-            )}
-            {/* askAgent on: the apply's inputs are all server-side (a 409 dirty
-                tree, a 400) and this dialog holds no draft. `ErrorNotice` exposes
-                no onHandoff, but the hand-off navigates away and unmounts this
-                panel — modal included — so nothing is left sitting over the chat. */}
-            <ErrorNotice className="mb-3" message={applyError} askAgent testId="update-apply-error" />
-            {restarting ? (
-              <div className="text-[13px] text-accent flex items-center justify-center gap-1.5 py-2" role="status">
-                <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating_gateway_restarting')}
-              </div>
-            ) : gwCheck.isPending ? (
-              /* The pre-apply check is still running: its answer may be
-                 "diverged", so an enabled apply button here is a race the user
-                 can win against their own safety check. Hold the action until
-                 the verdict lands (the server enforces the same precondition,
-                 so this is honesty, not the only line of defense). */
-              <Btn className="w-full justify-center" disabled>
-                <RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.checking_for_updates')}
-              </Btn>
-            ) : gwDiverged ? (
-              <Btn className="w-full justify-center" data-testid="diverged-modal-close" onClick={() => setShowConfirm(false)}>
-                {i18nT('pages.settings.aboutPanel.close')}
-              </Btn>
-            ) : (
-              <Btn primary className="w-full justify-center" disabled={gwApply.isPending} onClick={() => gwApply.mutate()}>
-                {gwApply.isPending ? <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.updating')}</> : i18nT('pages.settings.aboutPanel.update_now')}
-              </Btn>
-            )}
-          </div>
-        </div>
+        <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} />
       )}
 
       <ReportProblemCard />

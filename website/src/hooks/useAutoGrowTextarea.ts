@@ -18,9 +18,19 @@ function measure(el: HTMLTextAreaElement, maxH: number): void {
   // cannot recover it, because becoming visible is not a value change.
   if (el.scrollHeight === 0 || !el.offsetParent) return
   el.style.height = 'auto'
-  el.style.height = `${Math.min(el.scrollHeight, maxH)}px`
-  el.style.overflowY = el.scrollHeight > maxH ? 'auto' : 'hidden'
+  // scrollHeight excludes the border, but `height` on a border-box element
+  // (preflight makes every element one) includes it, so without this the box
+  // shrank by its border on the first keystroke. The cap is compared with the
+  // border included too, or a draft that fits only without it would clip.
+  const needed = el.scrollHeight + el.offsetHeight - el.clientHeight
+  el.style.height = `${Math.min(needed, maxH)}px`
+  el.style.overflowY = needed > maxH ? 'auto' : 'hidden'
 }
+
+/** The hook's own measurement, for a box sized from its own handler (the
+ *  selection composer) or outside a value change (the sidebar rename
+ *  re-opening on an unchanged title), so no copy of it drifts. */
+export { measure as measureAutoGrowTextarea }
 
 export function useAutoGrowTextarea(
   ref: RefObject<HTMLTextAreaElement | null>,

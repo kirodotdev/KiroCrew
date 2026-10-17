@@ -13,41 +13,62 @@ import contextlib
 import io
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import socket
 import stat
 import tempfile
 import time
 import zipfile
-from collections.abc import Callable, Iterator
+import zlib
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, cast
 
 from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.agent_discovery import parsed_agent_specs
+from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.history import (
+    ARCHIVE_DIR_NAME,
+    ARCHIVE_SEGMENT_DELIMITER,
+    INCOGNITO_MEMORY_MODES,
+    SESSIONS_DIR_NAME,
+    THREADS_DIR_NAME,
+    THREADS_SIDECAR_SUFFIX,
+    TRANSCRIPT_HEADER_MAX_BYTES,
+    ConversationLog,
+    _safe_key,
+    memory_mode_from_header_line,
+)
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.notifications.settings import ChannelSettings, parse_imported_settings
+from kiro_crew.platform.governance import sanitize_agent_config_governance
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import (
     _DB_SIDECAR_GLOBS,
+    COMPONENTS,
     EXPORT_MANIFEST_VERSION,
     NotificationCopyUnsupported,
     _copy_notifications,
     _copy_tree_no_overwrite,
+    _core_file_not_installed,
     _do_replace,
+    _install_core_file_if_absent,
     _merge_crons,
     _merge_memory,
     _merge_named_stores,
@@ -107,6 +128,44 @@ EXCLUDE_DIRS = frozenset(
 
 def _mc_dir() -> Path:
     return Path(os.environ.get("KIROCREW_HOME", config_dir()))
+
+
+#: The snapshot ``memory`` component, which a memory-only export carries and a
+#: memory-only import applies: its two databases, the memory half of the workspace,
+#: and every named store (``memory_stores/``, walked by its own filter below).
+MEMORY_ONLY_FILES: tuple[str, ...] = COMPONENTS["memory"].files
+MEMORY_ONLY_TREES: tuple[str, ...] = tuple(
+    t for t in COMPONENTS["memory"].trees if t != MEMORY_STORES_DIR_NAME
+)
+
+
+#: The manifest version a memory-only export writes. It sits outside the range a
+#: whole-install import accepts (``1..EXPORT_MANIFEST_VERSION``), so a reader that does
+#: not know memory bundles refuses one instead of applying it as a whole install, where
+#: a Replace would reset every component the bundle does not carry.
+MEMORY_EXPORT_MANIFEST_VERSION = 1001
+
+
+def manifest_is_memory_only(manifest: object) -> bool:
+    """True when an export manifest declares it carries the memory component only."""
+    return isinstance(manifest, dict) and manifest.get("components") == ["memory"]
+
+
+def _is_memory_member(rest: tuple[str, ...]) -> bool:
+    """Whether an archive member (its path below the export prefix) is memory.
+
+    Lexical only, on the member NAME, so a memory-only import never extracts any
+    other component -- whatever else the archive carries stays in the zip.
+    """
+    if not rest:
+        return True  # the prefix directory itself
+    if rest == ("MANIFEST.json",):
+        return True
+    if len(rest) == 1:
+        return rest[0] in MEMORY_ONLY_FILES
+    if rest[0] == MEMORY_STORES_DIR_NAME:
+        return True
+    return any(rest[: len(t.split("/"))] == tuple(t.split("/")) for t in MEMORY_ONLY_TREES)
 
 
 def _is_excluded(rel_path: PurePosixPath) -> bool:
@@ -415,6 +474,40 @@ def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> i
                 os.close(fd)
 
 
+@contextlib.contextmanager
+def _open_contained_file(root_real: str, rel: PurePath) -> Iterator[int | None]:
+    """Open one export file with every ancestor pinned until its descriptor closes."""
+    with contextlib.ExitStack() as held:
+        here = root_real
+        try:
+            for part in ("", *rel.parts[:-1]):
+                here = os.path.join(here, part)
+                pin = platform_compat.pin_directory(here)
+                held.callback(os.close, pin)
+        except OSError:
+            yield None
+            return
+        fd = _open_verified(os.path.join(root_real, *rel.parts), root_real)
+        if fd is not None:
+            held.callback(os.close, fd)
+        yield fd
+
+
+# ZIP's DOS date fields have a seven-bit year and two-second resolution.
+_ZIP_DATE_MIN = (1980, 1, 1, 0, 0, 0)
+_ZIP_DATE_MAX = (2107, 12, 31, 23, 59, 58)
+
+
+def _zip_date_time(epoch: float) -> tuple[int, int, int, int, int, int]:
+    """Clamp header time only; session manifests retain the descriptor's true epoch."""
+    try:
+        date_time = time.localtime(epoch)[:6]
+    except (OSError, OverflowError, ValueError):
+        # Some platforms cannot convert negative or very large filesystem epochs.
+        return _ZIP_DATE_MIN if epoch < 0 else _ZIP_DATE_MAX
+    return min(_ZIP_DATE_MAX, max(_ZIP_DATE_MIN, date_time))
+
+
 def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     """Stream the bytes behind *fd* into *zf* as *arcname*.
 
@@ -436,7 +529,7 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     one defect for another.
     """
     st = os.fstat(fd)
-    info = zipfile.ZipInfo(arcname, date_time=time.localtime(st.st_mtime)[:6])
+    info = zipfile.ZipInfo(arcname, date_time=_zip_date_time(st.st_mtime))
     info.compress_type = zf.compression
     info.external_attr = (st.st_mode & 0xFFFF) << 16
     os.lseek(fd, 0, os.SEEK_SET)
@@ -445,6 +538,292 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
         zf.open(info, "w", force_zip64=True) as dest,
     ):
         shutil.copyfileobj(src, dest)
+
+
+#: A dashboard transcript's file name: ``<stem>.jsonl`` directly under ``sessions/``.
+_TRANSCRIPT_SUFFIX = ".jsonl"
+
+#: The longest first line a transcript header is read up to: the same bound the
+#: restricted-session write gate reads, so a longer line is unknown to both.
+_MAX_TRANSCRIPT_HEADER_BYTES = TRANSCRIPT_HEADER_MAX_BYTES
+
+
+def _transcript_stem(name: str) -> str | None:
+    """The session stem of a ``sessions/`` entry named *name*, or ``None``.
+
+    A stem is accepted only in the spelling ``history._safe_key`` writes (word
+    characters, ``-`` and ``.``), so an archive member cannot name a file this
+    platform's history layer would never produce -- a ``:`` or ``\\`` in it, say.
+    """
+    if not name.endswith(_TRANSCRIPT_SUFFIX):
+        return None
+    stem = name[: -len(_TRANSCRIPT_SUFFIX)]
+    if stem in ("", ".", "..") or _safe_key(stem) != stem:
+        return None
+    return stem
+
+
+#: The stem every dashboard chat's transcript carries: a dashboard slot key is
+#: ``dashboard:<slot>`` (`dashboard.chat_utils.dashboard_slot_key`), which
+#: ``history._safe_key`` writes as ``dashboard_<slot>``. Channel threads, cron runs
+#: and subagent runs keep transcripts under other stems and are not chats here.
+_DASHBOARD_STEM_PREFIX = "dashboard_"
+
+
+def _chat_stem(name: str) -> str | None:
+    """The stem of the dashboard chat whose transcript is *name*, or ``None``.
+
+    The one selection rule for which ``sessions/`` entries this feature carries, on
+    export and on import alike: a valid `_transcript_stem` that starts with
+    `_DASHBOARD_STEM_PREFIX` and names a slot after it.
+    """
+    stem = _transcript_stem(name)
+    if stem is None or not stem.startswith(_DASHBOARD_STEM_PREFIX):
+        return None
+    if len(stem) == len(_DASHBOARD_STEM_PREFIX):
+        return None
+    return stem
+
+
+def _transcript_header_verdict(first_line: bytes | None) -> str | None:
+    """Why a transcript may not travel in an archive, or ``None`` when it may.
+
+    Applied on both ends, export and import, so an archive can only ever carry what
+    an export of this build would write. The rule is the one every derived reader
+    applies to Incognito and Temporary chats: they are kept for the user's own
+    History and never exported or transferred. The mode comes from
+    `history.memory_mode_from_header_line`, the same parse the restricted-session
+    write gate uses, and the verdict fails CLOSED -- only a header that reads
+    persistent passes:
+
+    * a metadata header with no ``memory_mode`` reads persistent (a transcript
+      written before the mode existed);
+    * ``memory_mode`` ``persistent`` (any case, surrounding whitespace ignored)
+      passes;
+    * ``incognito`` and ``temporary`` are withheld as private chats;
+    * anything the parse cannot place -- no metadata header, a first line that is
+      not a JSON object, a non-string or unrecognised mode -- is withheld as
+      unreadable.
+    """
+    if first_line is None:
+        return "unreadable header"
+    if not first_line.strip():
+        return "empty transcript"
+    mode = memory_mode_from_header_line(first_line)
+    if mode == "persistent":
+        return None
+    if mode in INCOGNITO_MEMORY_MODES:
+        return "incognito or temporary chat"
+    return "unreadable header"
+
+
+def _read_first_line_fd(fd: int) -> bytes | None:
+    """The first line behind *fd*, without its newline; ``None`` past the header cap."""
+    os.lseek(fd, 0, os.SEEK_SET)
+    buf = bytearray()
+    while len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            return bytes(buf)
+        cut = chunk.find(b"\n")
+        if cut >= 0:
+            buf += chunk[:cut]
+            return bytes(buf) if len(buf) <= _MAX_TRANSCRIPT_HEADER_BYTES else None
+        buf += chunk
+    return None
+
+
+def _keep_top_level_transcript(rel: PurePath) -> bool:
+    """``sessions/<stem>.jsonl`` for a dashboard chat (`_chat_stem`) and nothing else.
+
+    Lexical only, like every walk filter.
+    """
+    return (
+        len(rel.parts) == 2
+        and rel.parts[0] == SESSIONS_DIR_NAME
+        and _chat_stem(rel.parts[1]) is not None
+    )
+
+
+def _rotation_segment_for_stem(name: str, stem: str) -> bool:
+    """Match the complete stem, including when another stem contains the delimiter."""
+    owner, delimiter, suffix = name.rpartition(ARCHIVE_SEGMENT_DELIMITER)
+    return owner == stem and bool(delimiter) and suffix.endswith(_TRANSCRIPT_SUFFIX)
+
+
+def _is_rotation_header(first_line: bytes | None) -> bool:
+    """Only retained rotation history travels; discarded edits never do."""
+    if first_line is None:
+        return False
+    try:
+        header = json.loads(first_line)
+    except (ValueError, RecursionError):
+        return False
+    return (
+        isinstance(header, dict)
+        and header.get("_type") == "archive"
+        and header.get("reason") == "rotate"
+    )
+
+
+def _add_session_from_fd(
+    zf: zipfile.ZipFile, fd: int, arcname: str, mtimes: dict[str, float]
+) -> None:
+    """Record absolute activity time from the same descriptor as the archived bytes."""
+    mtime = os.fstat(fd).st_mtime
+    _add_from_fd(zf, fd, arcname)
+    mtimes[arcname] = mtime
+
+
+#: Minimum manifest allowance in the archive's uncompressed-byte budget. The actual
+#: envelope is measured too, including the three counters at their maximum width.
+_MANIFEST_BASE_RESERVE = 64 * 1024
+#: Per record, beyond its JSON-encoded name: a float takes at most 24 ASCII bytes;
+#: indentation, colon, comma and newline take 8. This allowance covers both.
+_MANIFEST_PER_MEMBER_RESERVE = 64
+
+
+def _export_sessions(
+    zf: zipfile.ZipFile,
+    mc_real: str,
+    prefix: str,
+    mtimes: dict[str, float],
+    *,
+    manifest: dict,
+) -> tuple[int, int, int]:
+    """Write the persistent dashboard chats into *zf*; ``(exported, withheld, skipped)``.
+
+    The pinned walk discovers candidate stems only. Each transcript is reopened and
+    judged under its canonical history lock, which stays held through its threads
+    and images so a deleted chat's private replacement cannot donate companions.
+
+    The finished archive must pass this build's own import inventory check, so the
+    chats are budgeted against the caps import enforces, `_MAX_IMPORT_MEMBERS` and
+    `_MAX_IMPORT_UNCOMPRESSED`, counting every member already in *zf* and a reserve
+    for the manifest still to be written. Chats are taken most recently active first
+    (transcript mtime) and only whole: a chat whose files do not all fit is left out
+    and counted in ``skipped``, and a later, smaller chat may still fit.
+    """
+    candidates: list[tuple[float, str]] = []
+    for rel, fd in _walk_contained(
+        mc_real, PurePath(SESSIONS_DIR_NAME), _keep_top_level_transcript
+    ):
+        try:
+            mtime = os.fstat(fd).st_mtime
+        finally:
+            os.close(fd)
+        stem = _chat_stem(rel.parts[1])
+        if stem is not None:
+            candidates.append((mtime, stem))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+
+    # These are the only fields filled after selection; each is at most the number
+    # of candidates. Measure the actual envelope (including host/user strings) with
+    # those upper bounds, using the writer's indent and default ASCII escaping.
+    envelope = {
+        **manifest,
+        "contents": {
+            **manifest["contents"],
+            "session_count": len(candidates),
+            "sessions_withheld": len(candidates),
+            "sessions_skipped_size": len(candidates),
+        },
+        "session_mtimes": {},
+    }
+    # A nonempty nested map adds a newline plus two closing-brace indent spaces.
+    manifest_base = len(json.dumps(envelope, indent=2).encode("utf-8")) + 3
+    manifest_bytes_left = _MAX_SETTINGS_DOCUMENT_BYTES - manifest_base
+    infos = zf.infolist()
+    # +1: the manifest itself is one more member, so timestamp records also stay
+    # below _read_session_mtimes' _MAX_IMPORT_MEMBERS record cap.
+    members_left = _MAX_IMPORT_MEMBERS - len(infos) - 1
+    bytes_left = (
+        _MAX_IMPORT_UNCOMPRESSED
+        - sum(i.file_size for i in infos)
+        - max(_MANIFEST_BASE_RESERVE, manifest_base)
+    )
+
+    history = ConversationLog(base_dir=Path(mc_real) / SESSIONS_DIR_NAME)
+    exported = withheld = skipped = 0
+    for _mtime, stem in candidates:
+        with history.locked_stems([stem]):
+            rel = PurePath(SESSIONS_DIR_NAME, f"{stem}{_TRANSCRIPT_SUFFIX}")
+            with _open_contained_file(mc_real, rel) as transcript_fd:
+                if transcript_fd is None:
+                    continue
+                if _transcript_header_verdict(_read_first_line_fd(transcript_fd)) is not None:
+                    withheld += 1
+                    continue
+                # Sized in one pass and written in a second, both under the lock; the
+                # companions open one at a time, so an image-heavy chat never holds a
+                # descriptor per image.
+                members = 1
+                manifest_need = _manifest_entry_size(f"{prefix}/{rel.as_posix()}")
+                need = os.fstat(transcript_fd).st_size
+                for comp_rel, fd in _chat_companions(mc_real, stem):
+                    members += 1
+                    need += os.fstat(fd).st_size
+                    manifest_need += _manifest_entry_size(f"{prefix}/{comp_rel.as_posix()}")
+                need += manifest_need
+                if (
+                    members > members_left
+                    or need > bytes_left
+                    or manifest_need > manifest_bytes_left
+                ):
+                    skipped += 1
+                    continue
+                before = len(zf.infolist())
+                _add_session_from_fd(zf, transcript_fd, f"{prefix}/{rel.as_posix()}", mtimes)
+            for comp_rel, fd in _chat_companions(mc_real, stem):
+                _add_session_from_fd(zf, fd, f"{prefix}/{comp_rel.as_posix()}", mtimes)
+            # Charge what was actually written, not the estimate: a file that grew, or a
+            # companion that appeared, between the two passes still counts against the cap.
+            written = zf.infolist()[before:]
+            members_left -= len(written)
+            written_manifest_bytes = sum(_manifest_entry_size(i.filename) for i in written)
+            manifest_bytes_left -= written_manifest_bytes
+            bytes_left -= sum(i.file_size for i in written) + written_manifest_bytes
+            exported += 1
+    return exported, withheld, skipped
+
+
+def _manifest_entry_size(arcname: str) -> int:
+    """Reserve a record using the manifest writer's default JSON string escaping."""
+    return len(json.dumps(arcname).encode("utf-8")) + _MANIFEST_PER_MEMBER_RESERVE
+
+
+def _chat_companions(mc_real: str, stem: str) -> Iterator[tuple[PurePath, int]]:
+    """``(rel, fd)`` for each companion of *stem* that travels; each fd closes on resume.
+
+    The reply-thread sidecar, the flat image directory and the retained rotation
+    segments. Callers hold the chat's history lock across the whole iteration.
+    """
+    sidecar = PurePath(SESSIONS_DIR_NAME, THREADS_DIR_NAME, f"{stem}{THREADS_SIDECAR_SUFFIX}")
+    with _open_contained_file(mc_real, sidecar) as sidecar_fd:
+        if sidecar_fd is not None:
+            yield sidecar, sidecar_fd
+    # sessions/<stem>.attachments/ is flat: only its direct files travel.
+    images = PurePath(SESSIONS_DIR_NAME, f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+    for rel, fd in _walk_contained(
+        mc_real,
+        images,
+        lambda rel: len(rel.parts) == 3 and rel.parts[1] == f"{stem}{ATTACHMENTS_DIR_SUFFIX}",
+    ):
+        try:
+            yield rel, fd
+        finally:
+            os.close(fd)
+    archive = PurePath(SESSIONS_DIR_NAME, ARCHIVE_DIR_NAME)
+    for rel, fd in _walk_contained(
+        mc_real,
+        archive,
+        lambda rel: len(rel.parts) == 3 and _rotation_segment_for_stem(rel.name, stem),
+    ):
+        try:
+            if _is_rotation_header(_read_first_line_fd(fd)):
+                yield rel, fd
+        finally:
+            os.close(fd)
 
 
 _MANAGED_TEMPLATES = frozenset(Path(name).stem for name in OWNED_KIRO_AGENT_FILES)
@@ -459,6 +838,16 @@ def _clip(name: str) -> str:
     if len(name) <= MAX_TEMPLATE_NAME_CHARS:
         return name
     return name[: MAX_TEMPLATE_NAME_CHARS - 1] + "\u2026"
+
+
+def _installed_specs(agents_dir: Path | None = None) -> list[tuple[dict[str, Any], Path]]:
+    """Every parsed spec in the agents directory, read the one way this module reads
+    them (`parsed_agent_specs`, labelled for the SEL denial trail)."""
+    return parsed_agent_specs(
+        agents_dir if agents_dir is not None else kiro_agents_dir(),
+        operation="portability",
+        source="dashboard",
+    )
 
 
 def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
@@ -493,13 +882,25 @@ def crew_template_refs(config_path: Path) -> list[tuple[str, str]]:
     )
 
 
-def unbundled_agent_templates() -> tuple[list[str], int]:
-    """The agent templates this install's crews name -- none of them ride an export.
+def unbundled_agent_templates(bundled_stems: Iterable[str] = ()) -> tuple[list[str], int]:
+    """The agent templates this install's crews name that an export does not carry.
+
+    *bundled_stems* are the file stems the export carries; a crew may name one by
+    its stem or by the spec's declared ``name``, and both count as carried.
 
     Returns ``(names, more)``: at most :data:`MAX_TEMPLATE_WARNINGS` clipped names,
     and how many further names were left out.
     """
     names = sorted({template for _crew, template in crew_template_refs(_mc_dir() / "config.json")})
+    stems = set(bundled_stems)
+    if stems:
+        carried = set(stems)
+        for data, path in _installed_specs():
+            if path.stem in stems and isinstance(data, dict):
+                declared = data.get("name")
+                if isinstance(declared, str):
+                    carried.add(declared)
+        names = [n for n in names if n not in carried]
     kept = names[:MAX_TEMPLATE_WARNINGS]
     return [_clip(n) for n in kept], len(names) - len(kept)
 
@@ -516,9 +917,7 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     if not refs:
         return [], 0
     installed: set[str] = set()
-    for data, path in parsed_agent_specs(
-        kiro_agents_dir(), operation="portability", source="dashboard"
-    ):
+    for data, path in _installed_specs():
         installed.add(path.stem)
         if isinstance(data, dict) and isinstance(data.get("name"), str):
             installed.add(data["name"])
@@ -528,8 +927,323 @@ def missing_crew_templates(config_path: Path) -> tuple[list[dict[str, str]], int
     return rows, len(missing) - len(kept)
 
 
-def create_export_zip() -> tuple[bytes, dict]:
-    """Create a zip archive of KiroCrew state. Returns (zip_bytes, manifest_dict)."""
+#: Archive directory (under the export prefix) that carries opted-in agent templates.
+AGENT_TEMPLATES_DIR = "agents"
+
+#: Stands in for every ``mcpServers.*.env`` and ``mcpServers.*.headers`` value of a
+#: bundled template: those values hold tokens and keys, and an export carries none.
+AGENT_TEMPLATE_SECRET_PLACEHOLDER = "<redacted: set on this machine>"
+
+#: Most templates one export carries; the reference walk stops there.
+MAX_BUNDLED_AGENT_TEMPLATES = 200
+
+#: A bundled template's file stem: one path segment, no separators, no leading dot.
+_TEMPLATE_STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+#: The spec keys under ``toolsSettings.subagent`` that name further templates.
+_SUBAGENT_REF_KEYS = ("availableAgents", "trustedAgents")
+
+
+def _template_refs_in_spec(data: dict[str, Any]) -> list[str]:
+    """The template names *data* hands work to (its subagent allow lists).
+
+    Glob patterns are left out: they name no single template.
+    """
+    tools_settings = data.get("toolsSettings")
+    sub = tools_settings.get("subagent") if isinstance(tools_settings, dict) else None
+    if not isinstance(sub, dict):
+        return []
+    names: list[str] = []
+    for key in _SUBAGENT_REF_KEYS:
+        value = sub.get(key)
+        for name in value if isinstance(value, list) else ():
+            if isinstance(name, str) and name and not any(ch in name for ch in "*?["):
+                names.append(name)
+    return names
+
+
+def placeholder_mcp_values(data: dict[str, Any]) -> dict[str, Any]:
+    """A copy of template *data* with every MCP server ``env`` and ``headers`` value,
+    and its ``oauth.clientSecret``, replaced by :data:`AGENT_TEMPLATE_SECRET_PLACEHOLDER`.
+    The keys stay, so the receiving machine sees which values it has to fill in."""
+    out = json.loads(json.dumps(data))
+    servers = out.get("mcpServers")
+    for server in servers.values() if isinstance(servers, dict) else ():
+        if not isinstance(server, dict):
+            continue
+        for field in ("env", "headers"):
+            block = server.get(field)
+            if isinstance(block, dict):
+                server[field] = {key: AGENT_TEMPLATE_SECRET_PLACEHOLDER for key in block}
+            elif field in server:
+                server[field] = {}
+        oauth = server.get("oauth")
+        if isinstance(oauth, dict) and "clientSecret" in oauth:
+            oauth["clientSecret"] = AGENT_TEMPLATE_SECRET_PLACEHOLDER
+    return out
+
+
+def bundled_agent_templates() -> tuple[list[tuple[str, dict[str, Any]]], int]:
+    """``(file stem, redacted spec)`` for each template an opted-in export carries,
+    and how many templates the walk reached past the cap without a crew naming them.
+
+    Starts from the templates this install's crews name (:func:`crew_template_refs`)
+    and follows each template's subagent allow lists in turn, visiting every name
+    once so a cycle ends the walk. A name is matched against a spec's ``name`` field
+    or file stem, the test the config loader applies. Templates Kiro Crew writes
+    itself are skipped (every install regenerates them), as are specs reached
+    through a link and specs whose stem is not a plain file name.
+
+    At most :data:`MAX_BUNDLED_AGENT_TEMPLATES` are carried. The walk still finishes
+    past the cap so the count is exact: a crew-named template left out already
+    shows in :func:`unbundled_agent_templates`, so only the others are counted.
+    """
+    by_name: dict[str, tuple[str, dict[str, Any]]] = {}
+    for data, path in _installed_specs():
+        if not isinstance(data, dict) or path.is_symlink():
+            continue
+        if not _TEMPLATE_STEM_RE.match(path.stem) or path.stem in _MANAGED_TEMPLATES:
+            continue
+        by_name.setdefault(path.stem, (path.stem, data))
+        spec_name = data.get("name")
+        if isinstance(spec_name, str) and spec_name:
+            by_name.setdefault(spec_name, (path.stem, data))
+
+    named = {t for _holder, t in crew_template_refs(_mc_dir() / "config.json")}
+    pending = deque(sorted(named))
+    seen: set[str] = set()
+    chosen: dict[str, dict[str, Any]] = {}
+    left_out: dict[str, dict[str, Any]] = {}
+    while pending:
+        name = pending.popleft()
+        if name in seen or name in _MANAGED_TEMPLATES:
+            continue
+        seen.add(name)
+        found = by_name.get(name)
+        if found is None:
+            continue
+        stem, data = found
+        if stem in chosen or stem in left_out:
+            continue
+        if len(chosen) < MAX_BUNDLED_AGENT_TEMPLATES:
+            chosen[stem] = placeholder_mcp_values(data)
+        else:
+            left_out[stem] = data
+        pending.extend(_template_refs_in_spec(data))
+
+    def _named_by_a_crew(stem: str, data: dict[str, Any]) -> bool:
+        declared = data.get("name")
+        return stem in named or (isinstance(declared, str) and declared in named)
+
+    unnamed = [stem for stem, data in left_out.items() if not _named_by_a_crew(stem, data)]
+    return sorted(chosen.items()), len(unnamed)
+
+
+#: Largest bundled template an import reads.
+MAX_AGENT_TEMPLATE_BYTES = 1024 * 1024
+
+
+def is_agent_template_stem(name: str) -> bool:
+    """Whether *name* can name a bundled template: one plain file-name segment."""
+    return bool(_TEMPLATE_STEM_RE.match(name))
+
+
+#: What reading one damaged archive member can raise: a corrupt or truncated deflate
+#: stream (``zlib.error``, ``EOFError``), a bad CRC or header (``BadZipFile``), an
+#: encrypted member (``RuntimeError``), an unsupported compression method
+#: (``NotImplementedError``), and undecodable or malformed text (``ValueError``).
+_UNREADABLE_MEMBER = (
+    OSError,
+    ValueError,
+    RecursionError,
+    EOFError,
+    RuntimeError,
+    NotImplementedError,
+    zipfile.BadZipFile,
+    zlib.error,
+)
+
+
+def _archive_agent_templates(
+    zf: zipfile.ZipFile, want: frozenset[str] = frozenset()
+) -> tuple[dict[str, zipfile.ZipInfo], int, set[str]]:
+    """The bundled template members of *zf* by file stem, and what the cap left out.
+
+    Only ``<prefix>/agents/<stem>.json`` regular files whose stem is a plain file name
+    count. At most :data:`MAX_BUNDLED_AGENT_TEMPLATES` are kept; returns
+    ``(kept, more, beyond)`` where *more* counts the distinct stems past the cap and
+    *beyond* is those of them named in *want*, so a pick past the cap can say so
+    instead of reading as absent.
+    """
+    found: dict[str, zipfile.ZipInfo] = {}
+    # Exact, and bounded by the archive's own member cap (`_MAX_IMPORT_MEMBERS`),
+    # which both the validator and the importer enforce before this runs.
+    past_cap: set[str] = set()
+    for info in zf.infolist():
+        parts = PurePosixPath(info.filename).parts
+        if len(parts) != 3 or parts[1] != AGENT_TEMPLATES_DIR or info.is_dir():
+            continue
+        if _unsafe_member_name(info.filename) or _is_link_entry(info):
+            continue
+        stem, dot, ext = parts[2].rpartition(".")
+        if not dot or ext != "json" or not _TEMPLATE_STEM_RE.match(stem):
+            continue
+        if stem in found:
+            continue
+        if len(found) < MAX_BUNDLED_AGENT_TEMPLATES:
+            found[stem] = info
+        else:
+            past_cap.add(stem)
+    return found, len(past_cap), past_cap & want
+
+
+def _installed_template_names() -> set[str]:
+    """Every template name an import must not write over: each file stem in the
+    agents directory (parseable or not), each declared ``name``, and the templates
+    Kiro Crew writes itself."""
+    names = set(_MANAGED_TEMPLATES)
+    agents = kiro_agents_dir()
+    with contextlib.suppress(OSError):
+        with os.scandir(agents) as entries:
+            for entry in entries:
+                if entry.name.lower().endswith(".json"):
+                    names.add(entry.name[: -len(".json")])
+    for data, path in _installed_specs(agents):
+        names.add(path.stem)
+        if isinstance(data, dict) and isinstance(data.get("name"), str):
+            names.add(data["name"])
+    return names
+
+
+def _vet_bundled_template(
+    zf: zipfile.ZipFile, stem: str, info: zipfile.ZipInfo, installed: set[str]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(spec, None)`` when bundled template *stem* may be installed, else
+    ``(None, reason)``: ``exists`` (the stem or the declared name is taken here) or
+    ``invalid`` (too large, unreadable from the archive, not JSON, not an object, or
+    nested too deep). Never raises for a damaged member: an import calls this after
+    it has applied everything else."""
+    if stem in installed:
+        return None, "exists"
+    if info.file_size > MAX_AGENT_TEMPLATE_BYTES:
+        return None, "invalid"
+    try:
+        data = json.loads(strip_utf8_bom(zf.read(info).decode("utf-8")))
+    except _UNREADABLE_MEMBER:
+        return None, "invalid"
+    if not isinstance(data, dict) or exceeds_nesting(data):
+        return None, "invalid"
+    declared = data.get("name")
+    if isinstance(declared, str) and declared in installed:
+        return None, "exists"
+    return data, None
+
+
+def preview_agent_templates(zip_path: Path) -> tuple[list[dict[str, object]], int]:
+    """The templates *zip_path* carries, each with ``exists``: whether one by that
+    name is already installed here, so an import would skip it. Also returns how
+    many further templates the archive holds past :data:`MAX_BUNDLED_AGENT_TEMPLATES`,
+    which an import does not install."""
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        members, more, _beyond = _archive_agent_templates(zf)
+        if not members:
+            return [], more
+        installed = _installed_template_names()
+        rows: list[dict[str, object]] = []
+        for stem, info in sorted(members.items()):
+            _data, reason = _vet_bundled_template(zf, stem, info, installed)
+            if reason != "invalid":
+                rows.append({"name": stem, "exists": reason == "exists"})
+        return rows, more
+
+
+def _install_agent_templates(zip_path: Path, picked: list[str], summary: dict) -> None:
+    """Install the bundled templates the user picked into the agents directory.
+
+    A template is written only where no template of that name exists: the file is
+    created exclusively, so even one that appears mid-import is left alone. Each
+    one not written is named in ``agent_templates_skipped`` with its reason; a pick
+    past :data:`MAX_BUNDLED_AGENT_TEMPLATES` reads ``over_limit``, not absent.
+    """
+    written: list[str] = []
+    skipped: list[dict[str, str]] = []
+    with zipfile.ZipFile(str(zip_path), "r") as zf:
+        members, _more, beyond = _archive_agent_templates(zf, frozenset(picked))
+        installed = _installed_template_names()
+        agents = kiro_agents_dir()
+        for stem in picked:
+            info = members.get(stem)
+            if info is None:
+                absence = "over_limit" if stem in beyond else "not_in_archive"
+                skipped.append({"name": _clip(stem), "reason": absence})
+                continue
+            data, reason = _vet_bundled_template(zf, stem, info, installed)
+            if data is None:
+                skipped.append({"name": _clip(stem), "reason": reason or "invalid"})
+                continue
+            # A bundled spec carries its source's allowedTools and autoApprove
+            # verbatim, and both skip the PreToolUse gate, so this host's ceiling
+            # filters them before the spec is written, like every whole-spec writer.
+            sanitize_agent_config_governance(data)
+            target = agents / f"{stem}.json"
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                agents.mkdir(parents=True, exist_ok=True)
+                fd = os.open(target, flags | getattr(os, "O_BINARY", 0), 0o600)
+            except FileExistsError:
+                skipped.append({"name": _clip(stem), "reason": "exists"})
+                continue
+            except OSError:
+                skipped.append({"name": _clip(stem), "reason": "unwritable"})
+                continue
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, indent=2)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    target.unlink()
+                skipped.append({"name": _clip(stem), "reason": "unwritable"})
+                continue
+            installed.add(stem)
+            if isinstance(data.get("name"), str):
+                installed.add(data["name"])
+            written.append(stem)
+    if written:
+        clear_list_agents_cache()
+        summary["items"].append(f"agent templates ({len(written)} installed)")
+    summary["agent_templates_installed"] = written
+    summary["agent_templates_skipped"] = skipped
+
+
+def create_export_zip(
+    *,
+    include_sessions: bool = False,
+    memory_only: bool = False,
+    include_agent_templates: bool = False,
+) -> tuple[bytes, dict]:
+    """Create a zip archive of Kiro Crew state. Returns (zip_bytes, manifest_dict).
+
+    *include_sessions* adds the dashboard chats (`_export_sessions`). It is off by
+    default because a transcript holds everything the agent was shown, so an archive
+    that carries chats is a different thing to hand around than one that does not;
+    the manifest then records ``session_count`` and ``sessions_withheld``. With it
+    off the archive is unchanged.
+
+    *memory_only* narrows the archive to the snapshot's ``memory`` component
+    (`MEMORY_ONLY_FILES` and `MEMORY_ONLY_TREES`): no config, crons, hooks, skills,
+    other workspace files or chats, so memory can be handed to someone else without
+    the rest of the install. The manifest records ``components: ["memory"]``. It
+    wins over *include_sessions*.
+
+    *include_agent_templates* adds the agent templates the crews name, and the ones
+    those name in turn (:func:`bundled_agent_templates`), under ``agents/`` with every
+    MCP server ``env`` and ``headers`` value replaced by a placeholder. The manifest
+    then lists them in ``agent_templates``. Off by default; with it off the archive is
+    unchanged. A memory-only export carries none.
+    """
+    if memory_only:
+        include_sessions = False
+        include_agent_templates = False
     mc = _mc_dir()
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     prefix = f"kirocrew-export-{ts}"
@@ -541,16 +1255,21 @@ def create_export_zip() -> tuple[bytes, dict]:
     contents_summary: dict = {}
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        # Core JSON/text files
-        for fname in (
-            "config.json",
-            *_SETTINGS_DOCUMENTS,
-            "hooks.json",
-            "crons.json",
-            "notifications.jsonl",
-            "project_dir",
-            "workspace_dir",
-        ):
+        # Core JSON/text files (none of them is memory)
+        core_files: tuple[str, ...] = (
+            ()
+            if memory_only
+            else (
+                "config.json",
+                *_SETTINGS_DOCUMENTS,
+                "hooks.json",
+                "crons.json",
+                "notifications.jsonl",
+                "project_dir",
+                "workspace_dir",
+            )
+        )
+        for fname in core_files:
             src = mc / fname
             if src.is_file() and not src.is_symlink():
                 zf.write(str(src), f"{prefix}/{fname}")
@@ -560,7 +1279,7 @@ def create_export_zip() -> tuple[bytes, dict]:
         # the core files above -- the directory holds nothing else that rides (its lock
         # file is this host's runtime state), so the pinned tree walk below is not needed.
         teams_src = mc / "crew-teams" / "teams.json"
-        if teams_src.is_file() and not teams_src.is_symlink():
+        if not memory_only and teams_src.is_file() and not teams_src.is_symlink():
             zf.write(str(teams_src), f"{prefix}/crew-teams/teams.json")
             contents_summary["crew-teams/teams.json"] = teams_src.stat().st_size
 
@@ -581,7 +1300,10 @@ def create_export_zip() -> tuple[bytes, dict]:
         # configured spelling would return an empty archive on such a host.
         mc_real = os.path.realpath(mc)
         dir_counts: dict[str, int] = {}
-        for dirname in ("workspace", "plan_memory", "skills"):
+        # A memory-only export walks only the memory half of the workspace; its
+        # files still count as ``workspace_files`` so the import preview reads them.
+        trees = MEMORY_ONLY_TREES if memory_only else ("workspace", "plan_memory", "skills")
+        for dirname in trees:
             count = 0
             for rel, fd in _walk_contained(mc_real, PurePath(dirname), _keep_for_export):
                 try:
@@ -594,10 +1316,12 @@ def create_export_zip() -> tuple[bytes, dict]:
                 finally:
                     os.close(fd)
                 count += 1
-            dir_counts[dirname] = count
+            top = dirname.split("/", 1)[0]
+            dir_counts[top] = dir_counts.get(top, 0) + count
         contents_summary["workspace_files"] = dir_counts.get("workspace", 0)
-        contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
-        contents_summary["skill_count"] = dir_counts.get("skills", 0)
+        if not memory_only:
+            contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
+            contents_summary["skill_count"] = dir_counts.get("skills", 0)
 
         # Named memory stores: the same pinned walk, with the tree's own filter and the
         # fence lifted (see `_open_verified`). A store's databases go through the backup
@@ -625,15 +1349,41 @@ def create_export_zip() -> tuple[bytes, dict]:
                     stores.add(rel.parts[1])
         contents_summary["memory_store_count"] = len(stores)
 
-        # Manifest
+        bundled_templates: list[str] = []
+        if include_agent_templates:
+            carried, past_cap = bundled_agent_templates()
+            for stem, spec in carried:
+                zf.writestr(
+                    f"{prefix}/{AGENT_TEMPLATES_DIR}/{stem}.json", json.dumps(spec, indent=2)
+                )
+                bundled_templates.append(stem)
+            contents_summary["agent_template_count"] = len(bundled_templates)
+            if past_cap:
+                contents_summary["agent_templates_past_cap"] = past_cap
+
+        # Build the envelope before selecting chats so their timestamp map is
+        # budgeted against the same document the importer will read.
         manifest = {
-            "version": EXPORT_MANIFEST_VERSION,
+            "version": MEMORY_EXPORT_MANIFEST_VERSION if memory_only else EXPORT_MANIFEST_VERSION,
             "format": "zip",
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hostname": socket.gethostname(),
             "user": os.environ.get("USER", "unknown"),
             "contents": contents_summary,
         }
+        if memory_only:
+            manifest["components"] = ["memory"]
+        if include_agent_templates:
+            manifest["agent_templates"] = bundled_templates
+        if include_sessions:
+            session_mtimes: dict[str, float] = {}
+            exported, withheld, skipped = _export_sessions(
+                zf, mc_real, prefix, session_mtimes, manifest=manifest
+            )
+            contents_summary["session_count"] = exported
+            contents_summary["sessions_withheld"] = withheld
+            contents_summary["sessions_skipped_size"] = skipped
+            manifest["session_mtimes"] = session_mtimes
         zf.writestr(f"{prefix}/MANIFEST.json", json.dumps(manifest, indent=2))
 
     return buf.getvalue(), manifest
@@ -664,6 +1414,73 @@ def _is_link_entry(info: zipfile.ZipInfo) -> bool:
     return bool(mode) and stat.S_ISLNK(mode)
 
 
+_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
+
+
+def _unsafe_member_name(name: str, *, backslash_separates: bool | None = None) -> bool:
+    """True for a member name an extractor could place somewhere other than it reads.
+
+    Covers traversal and absolute names, and the Windows forms: a drive prefix
+    (``C:/x``) that ``zipfile`` strips on extraction, and, where the host treats a
+    backslash as a separator, a backslash-spelled traversal or drive. A stripped
+    drive moves the member up one level, out of the archive prefix, so a lexical
+    filter on the name (the memory-only filter, the one-top-directory check) would
+    describe a different place from where it lands. On POSIX a backslash is an
+    ordinary filename character that the export itself can write, so it is not
+    refused there.
+    """
+    if backslash_separates is None:
+        backslash_separates = os.sep == "\\" or os.altsep == "\\"
+    if backslash_separates:
+        name = name.replace("\\", "/")
+    if name.startswith("/"):
+        return True
+    parts = PurePosixPath(name).parts
+    if ".." in parts:
+        return True
+    return bool(parts) and bool(_DRIVE_PREFIX.match(parts[0]))
+
+
+def _read_manifest_bytes(zf: zipfile.ZipFile, member: str | zipfile.ZipInfo) -> bytes:
+    """A manifest member's bytes, refusing one larger than the manifest budget.
+
+    The budget is ``_MAX_SETTINGS_DOCUMENT_BYTES``, the same one the export sizes
+    its manifest to (session times included), so every backup this product writes
+    reads back. Checked before anything is inflated, so an oversized member is
+    never decoded. Pass the ``ZipInfo`` when iterating entries: a name resolves to
+    the LAST entry of that name, so reading duplicates by name reads one entry many
+    times.
+    """
+    info = member if isinstance(member, zipfile.ZipInfo) else zf.getinfo(member)
+    if info.file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        raise ValueError(f"Manifest member too large: {info.filename}")
+    return zf.read(info)
+
+
+def _top_manifest(infos: list[zipfile.ZipInfo], *, required: bool = True) -> zipfile.ZipInfo | None:
+    """The archive's one manifest, at ``<prefix>/MANIFEST.json``.
+
+    Only that placement is the manifest: a ``MANIFEST.json`` deeper in the tree is
+    ordinary content (a workspace or skill file can carry that name), so it never
+    decides what an import applies. Two at the top, under one prefix or two, are
+    refused, since then no single manifest describes the archive. With none,
+    ``required`` decides between refusing and returning ``None``.
+    """
+    tops = [
+        info
+        for info in infos
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(tops) > 1:
+        raise ValueError("More than one top-level MANIFEST.json in archive")
+    if not tops:
+        if required:
+            raise ValueError("No MANIFEST.json found in archive")
+        return None
+    return tops[0]
+
+
 def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
     """Validate a zip file for import.
 
@@ -676,8 +1493,7 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
 
             # Check for path traversal
             for name in names:
-                parts = PurePosixPath(name).parts
-                if ".." in parts or name.startswith("/"):
+                if _unsafe_member_name(name):
                     return False, f"Rejected path traversal: {name}", {}
 
             # Zip-bomb guard: bound entry count and total uncompressed size.
@@ -706,13 +1522,21 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
                     return False, f"Rejected link entry: {info.filename}", {}
 
             # Find manifest
-            manifest_entries = [n for n in names if n.endswith("MANIFEST.json")]
-            if not manifest_entries:
-                return False, "No MANIFEST.json found in archive", {}
-
-            manifest_data = json.loads(zf.read(manifest_entries[0]))
+            try:
+                top = _top_manifest(zf.infolist())
+                if top is None:  # required=True raises instead; this narrows the type
+                    return False, "No MANIFEST.json found in archive", {}
+                manifest_bytes = _read_manifest_bytes(zf, top)
+            except ValueError as exc:
+                return False, f"Rejected: {exc}", {}
+            manifest_data = json.loads(manifest_bytes)
             version = manifest_data.get("version")
-            if not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION:
+            memory_bundle = version == MEMORY_EXPORT_MANIFEST_VERSION and manifest_is_memory_only(
+                manifest_data
+            )
+            if not memory_bundle and (
+                not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION
+            ):
                 return False, f"Unsupported manifest version: {version}", {}
 
             return True, "", manifest_data
@@ -739,7 +1563,8 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     Returns ``(dropped, paused)`` — two lists, because they are two different
     outcomes and a caller that conflates them tells the user the wrong thing. A
     dropped job is gone; a paused one is fully restored and simply waiting to be
-    switched on. Rewrites *crons_path* in place. A missing file is left alone.
+    switched on. Replaces *crons_path* atomically when it changes anything; a
+    missing file, or a directory at that name, is left alone.
 
     The store is read and written as UTF-8, never through the locale codepage.
     Cron job names are operator-authored text and routinely non-ASCII — the same
@@ -777,15 +1602,93 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
        the first run an explicit human action. Message-only jobs are untouched:
        they prompt an agent, they do not execute anything on the host.
     """
-    if not crons_path.is_file():
-        return [], []
+    # The store is resolved ONCE for the read and published by an atomic replace
+    # in the same pinned directory. A by-name read followed by a by-name rewrite is
+    # two resolutions: a link or hardlink alias swapped in between would have the
+    # rewrite follow it and truncate whatever it names. A rename replaces the
+    # directory entry and never follows it, so what lands is what was judged.
+    dir_fd: int | None = None
     try:
-        data = json.loads(crons_path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
+        if pinned_fs.supports_pinned_walk():
+            dir_fd = pinned_fs.pin_parent(
+                os.path.realpath(crons_path.parent), what="imported cron store", refusal=OSError
+            )
+        try:
+            text = _read_staged_cron_store(crons_path, dir_fd)
+        except FileNotFoundError:
+            return [], []
+        except IsADirectoryError:
+            # Not a file at all: left alone exactly as the by-name `is_file()` did.
+            return [], []
+        return _sanitize_cron_text(text, crons_path, dir_fd)
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _read_staged_cron_store(crons_path: Path, dir_fd: int | None) -> str | None:
+    """Open the staged store once, judge the descriptor, and read through it.
+
+    Returns ``None`` when the name holds something that is not one regular file
+    (a link, a FIFO, a hardlink alias): that is unreadable as a store and is
+    replaced, never followed. ``O_NONBLOCK`` keeps a FIFO from hanging the
+    import. Raises ``FileNotFoundError`` for a missing store and
+    ``IsADirectoryError`` for a directory, which the caller leaves alone.
+    """
+    try:
+        if dir_fd is not None:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            fd = os.open(crons_path.name, flags, dir_fd=dir_fd)
+        else:
+            fd = platform_compat.open_file_no_reparse(crons_path, nonblocking=True)
+    except (FileNotFoundError, IsADirectoryError):
+        raise
+    except OSError:
+        return None
+    try:
+        seen = os.fstat(fd)
+        if stat.S_ISDIR(seen.st_mode):
+            raise IsADirectoryError(str(crons_path))
+        if not stat.S_ISREG(seen.st_mode) or seen.st_nlink != 1:
+            return None
+        chunks = []
+        try:
+            while chunk := os.read(fd, 1024 * 1024):
+                chunks.append(chunk)
+            # UTF-8, never the locale codepage: see _sanitize_imported_crons.
+            return b"".join(chunks).decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    finally:
+        os.close(fd)
+
+
+def _publish_staged_cron_store(crons_path: Path, dir_fd: int | None, data: object) -> None:
+    """Replace the staged store's directory entry with *data*, never writing through it."""
+    from kiro_crew.atomic_write import pinned_parent_replace_supported
+
+    pinned = dir_fd if dir_fd is not None and pinned_parent_replace_supported() else None
+    atomic_write(crons_path, json.dumps(data, indent=2), parent_dir_fd=pinned)
+
+
+def _sanitize_cron_text(
+    text: str | None, crons_path: Path, dir_fd: int | None
+) -> tuple[list[str], list[str]]:
+    """Apply the three rules of :func:`_sanitize_imported_crons` to the bytes read once."""
+    try:
+        if text is None:
+            raise ValueError("the staged cron store is not one regular file")
+        data = json.loads(text)
+    except ValueError:
         # Unparseable bytes are not installable as a cron store either, but they
         # are also not something this function can reason about — an empty store
         # is the only safe thing to hand the loader.
-        crons_path.write_text(json.dumps({"jobs": []}, indent=2), encoding="utf-8")
+        _publish_staged_cron_store(crons_path, dir_fd, {"jobs": []})
         return [_UNREADABLE_STORE], []
     # A store whose top level is not an object, or whose `jobs` is not a list, is
     # REPLACED rather than left alone. `CronService._load` treats such a document
@@ -793,7 +1696,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     # user is TOLD the store was unreadable at import time, instead of the
     # gateway silently starting with an empty schedule later.
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
-        crons_path.write_text(json.dumps({"jobs": []}, indent=2), encoding="utf-8")
+        _publish_staged_cron_store(crons_path, dir_fd, {"jobs": []})
         return [_UNREADABLE_STORE], []
     jobs = data["jobs"]
 
@@ -859,7 +1762,7 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
 
     if changed:
         data["jobs"] = kept
-        crons_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _publish_staged_cron_store(crons_path, dir_fd, data)
     return dropped, paused
 
 
@@ -1050,9 +1953,10 @@ def _vet_archive_settings(snap: Path, summary: dict) -> dict[str, object]:
                     channels, dropped = parse_imported_settings(text)
                 except (OSError, ValueError) as exc:
                     raise _SettingsRefused(f"the archive's {name} is unusable ({exc})") from None
-                src.write_text(
-                    json.dumps({"channel_settings": channels}, indent=2), encoding="utf-8"
-                )
+                # An atomic replace, as the ui-prefs branch above: a by-name
+                # write_text would follow a link or hardlink alias planted at the
+                # staged name since the read. No mode, matching the live writer.
+                atomic_write(src, json.dumps({"channel_settings": channels}, indent=2))
                 vetted[name] = (channels, dropped)
             else:
                 vetted[name] = _read_archive_object(src)
@@ -1187,8 +2091,288 @@ def _merge_settings(
         summary["settings_kept"] = kept
 
 
+def _listing(directory: Path) -> dict[str, os.DirEntry]:
+    """The entries of *directory* by name; empty when it cannot be listed."""
+    try:
+        with os.scandir(directory) as scan:
+            return {entry.name: entry for entry in scan}
+    except OSError:
+        return {}
+
+
+def _real_dir(entry: os.DirEntry | None) -> bool:
+    """A directory that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_dir(follow_symlinks=False)
+
+
+def _real_file(entry: os.DirEntry | None) -> bool:
+    """A regular file that is no link or reparse point, classified from its listing."""
+    return entry is not None and not _entry_is_link(entry) and entry.is_file(follow_symlinks=False)
+
+
+@contextlib.contextmanager
+def _open_import_session_file(root: Path, rel: PurePath) -> Iterator[int | None]:
+    """Open an extracted file with every component below the extraction root pinned.
+
+    The root is the private extraction directory, not the archive-supplied top-level
+    name. Descendants must never be resolved before opening: doing so would bless an
+    ancestor replaced by a symlink. The caller owns the yielded descriptor until exit.
+    """
+    with contextlib.ExitStack() as held:
+        fd: int | None = None
+        try:
+            parent = held.enter_context(
+                pinned_fs.open_pinned_descendant_dir(
+                    root, rel.parts[:-1], what="imported chat source"
+                )
+            )
+            if parent is None:
+                fd = platform_compat.open_file_no_reparse(root / rel, nonblocking=True)
+            else:
+                fd = os.open(
+                    rel.name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=parent,
+                )
+            held.callback(os.close, fd)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                fd = None
+        except (OSError, pinned_fs.PinnedPathRefusal):
+            fd = None
+        yield fd
+
+
+def _copy_import_session_fd(
+    mc: Path,
+    rel: PurePath,
+    fd: int,
+    *,
+    held: contextlib.ExitStack,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> bool:
+    """Keep each destination pin and created inode until this chat commits or rolls back."""
+    if rel.parent not in parents:
+        parents[rel.parent] = held.enter_context(
+            pinned_fs.open_pinned_descendant_dir(
+                mc, rel.parts[:-1], what="imported chat destination", create=True
+            )
+        )
+    parent = parents[rel.parent]
+
+    def record_opened(st: os.stat_result) -> None:
+        # The descriptor's identity is available even when the first write fails.
+        created[rel] = (st.st_dev, st.st_ino)
+
+    os.lseek(fd, 0, os.SEEK_SET)
+    # The primitive takes ownership; the reader's context still owns fd.
+    return pinned_fs.copy_file_pinned(
+        str(mc / rel),
+        str(mc / rel),
+        src_fd=os.dup(fd),
+        dst_dir_fd=parent,
+        dst_name=rel.name if parent is not None else None,
+        skip_existing=True,
+        on_opened=record_opened,
+    )
+
+
+def _rollback_import_session(
+    mc: Path,
+    parents: dict[PurePath, int | None],
+    created: dict[PurePath, tuple[int, int]],
+) -> list[str]:
+    """Remove only this call's files, through the pins held for their creation."""
+    left = []
+    for rel, identity in reversed(created.items()):
+        parent = parents[rel.parent]
+        try:
+            if parent is None:
+                removed = pinned_fs.unlink_verified_by_name(mc / rel.parent, rel.name, identity)
+            else:
+                removed = pinned_fs.unlink_verified(parent, rel.name, identity)
+        except OSError:
+            removed = False
+        if not removed:
+            left.append(rel.as_posix())
+    return left
+
+
+def _merge_sessions(snap: Path, mc: Path, summary: dict, *, allow_unpinned: bool) -> None:
+    """Add the archive's dashboard chats this install does not have yet.
+
+    Never overwrites: a transcript whose file name already exists here is left as
+    it is, along with its threads and images, so a re-import is a no-op and two
+    machines' copies of one chat are never spliced. Each candidate is re-judged by
+    `_transcript_header_verdict` -- the archive is not trusted to have come from an
+    export that applied it -- and by `_chat_stem`, so only dashboard chats, in the
+    spelling this platform's history layer writes, are installed.
+
+    Listings select candidates only. Every accepted file is opened with the whole
+    extraction-relative chain pinned, then copied from that descriptor into the
+    pinned destination with exclusive creation. Transcript and rotation headers
+    are judged through the descriptor that supplies the installed bytes. Nothing
+    is moved out of the extraction tree. Platforms without directory descriptors
+    use the import driver's declared unpinned policy and still copy, never move.
+
+    Records ``sessions_added``, ``sessions_skipped_existing``, ``sessions_withheld``
+    and ``sessions_failed`` in *summary*. Copy failures roll back only this call's
+    files under the stem lock and use the existing items/refused_merges reporting.
+    An archive without a ``sessions/`` tree records nothing.
+    """
+    if not _real_dir(_listing(snap).get(SESSIONS_DIR_NAME)):
+        return
+    src = snap / SESSIONS_DIR_NAME
+    entries = _listing(src)
+    threads_dir = entries.get(THREADS_DIR_NAME)
+    threads = _listing(src / THREADS_DIR_NAME) if _real_dir(threads_dir) else {}
+    archive_dir = entries.get(ARCHIVE_DIR_NAME)
+    segments = _listing(src / ARCHIVE_DIR_NAME) if _real_dir(archive_dir) else {}
+    _staging_is_pinned(allow_unpinned=allow_unpinned, what="chat import")
+    dest = mc / SESSIONS_DIR_NAME
+    history = ConversationLog(base_dir=dest)
+    added = existing = withheld = failed = 0
+    for name in sorted(entries):
+        entry = entries[name]
+        stem = _chat_stem(name)
+        if stem is None or not _real_file(entry):
+            continue
+        rel = PurePath(SESSIONS_DIR_NAME, name)
+        with _open_import_session_file(snap.parent, PurePath(snap.name) / rel) as fd:
+            if fd is None or _transcript_header_verdict(_read_first_line_fd(fd)) is not None:
+                withheld += 1
+                continue
+            # Exclusive file creation alone cannot keep two imports' companions
+            # together. Hold the transcript writers' lock through the whole install.
+            with history.locked_stems([stem]):
+                if os.path.lexists(dest / name):
+                    existing += 1
+                    continue
+                companions: list[PurePath] = []
+                sidecar = threads.get(f"{stem}{THREADS_SIDECAR_SUFFIX}")
+                if sidecar is not None and _real_file(sidecar):
+                    companions.append(PurePath(THREADS_DIR_NAME, sidecar.name))
+                images = entries.get(f"{stem}{ATTACHMENTS_DIR_SUFFIX}")
+                if images is not None and _real_dir(images):
+                    # Attachments are flat: only regular files directly inside.
+                    for image in _listing(Path(images.path)).values():
+                        if _real_file(image):
+                            companions.append(PurePath(images.name, image.name))
+                companions.extend(
+                    PurePath(ARCHIVE_DIR_NAME, segment.name)
+                    for segment in segments.values()
+                    if _rotation_segment_for_stem(segment.name, stem) and _real_file(segment)
+                )
+                with contextlib.ExitStack() as held:
+                    parents: dict[PurePath, int | None] = {}
+                    created: dict[PurePath, tuple[int, int]] = {}
+
+                    def install(member: PurePath, source_fd: int) -> None:
+                        if not _copy_import_session_fd(
+                            mc, member, source_fd, held=held, parents=parents, created=created
+                        ):
+                            raise OSError(f"chat file could not be installed: {member.as_posix()}")
+
+                    try:
+                        for companion in companions:
+                            member = PurePath(SESSIONS_DIR_NAME) / companion
+                            with _open_import_session_file(
+                                snap.parent, PurePath(snap.name) / member
+                            ) as companion_fd:
+                                if companion_fd is None:
+                                    continue
+                                if companion.parts[0] == ARCHIVE_DIR_NAME:
+                                    if not _is_rotation_header(_read_first_line_fd(companion_fd)):
+                                        continue
+                                install(member, companion_fd)
+                        # The transcript is the existing-chat marker; publish it last.
+                        install(rel, fd)
+                    except (OSError, pinned_fs.PinnedPathRefusal) as exc:
+                        left = _rollback_import_session(mc, parents, created)
+                        failed += 1
+                        summary["items"].append(f"sessions/{name} (failed: {exc})")
+                        if left:
+                            summary["items"].append(
+                                "sessions rollback incomplete (not removed: "
+                                + ", ".join(left)
+                                + ")"
+                            )
+                        continue
+                added += 1
+    summary["sessions_added"] = added
+    summary["sessions_skipped_existing"] = existing
+    summary["sessions_withheld"] = withheld
+    summary["sessions_failed"] = failed
+    if failed:
+        summary.setdefault("refused_merges", []).append("sessions")
+    summary["items"].append(
+        f"sessions (merged: {added} added, {existing} already here, {withheld} withheld, "
+        f"{failed} failed)"
+    )
+
+
+def _read_session_mtimes(zf: zipfile.ZipFile) -> dict[str, float]:
+    """Read optional absolute session times; unusable records leave extraction time.
+
+    This is bounded by both the settings-document byte cap and archive member cap.
+    ZIP wall-clock fields carry no zone, so they are never a fallback for activity.
+    """
+    manifests = [
+        info
+        for info in zf.infolist()
+        if len(PurePosixPath(info.filename).parts) == 2
+        and PurePosixPath(info.filename).name == "MANIFEST.json"
+    ]
+    if len(manifests) != 1 or manifests[0].file_size > _MAX_SETTINGS_DOCUMENT_BYTES:
+        return {}
+    try:
+        with zf.open(manifests[0]) as src:
+            raw = src.read(_MAX_SETTINGS_DOCUMENT_BYTES + 1)
+        if len(raw) > _MAX_SETTINGS_DOCUMENT_BYTES:
+            return {}
+        manifest = json.loads(raw)
+    except (OSError, ValueError, RecursionError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    records = manifest.get("session_mtimes")
+    if not isinstance(records, dict) or len(records) > _MAX_IMPORT_MEMBERS:
+        return {}
+    mtimes: dict[str, float] = {}
+    for name, value in records.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            epoch = float(value)
+        except OverflowError:
+            continue
+        if math.isfinite(epoch):
+            mtimes[name] = epoch
+    return mtimes
+
+
+def _read_member_json(zf: zipfile.ZipFile, name: str | zipfile.ZipInfo) -> object:
+    """One archive member parsed as JSON, or ``None`` when it does not parse.
+
+    An oversized member raises ``ValueError`` instead of reading as ``None``: the
+    caller asks whether ANY manifest declares memory only, and an unreadable one
+    must not quietly answer "no" and widen the import.
+    """
+    data = _read_manifest_bytes(zf, name)
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError):
+        return None
+
+
 def apply_import_zip(
-    zip_path: Path, mode: str = "merge", *, channel_settings: ChannelSettings | None = None
+    zip_path: Path,
+    mode: str = "merge",
+    *,
+    channel_settings: ChannelSettings | None = None,
+    memory_only: bool = False,
+    agent_templates: tuple[str, ...] = (),
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -1202,6 +2386,16 @@ def apply_import_zip(
         channel_settings: the running gateway's notification-settings store, so a
             restored mute applies at once and is not written back over by the
             in-memory copy. ``None`` (no gateway in this process) loads one from disk.
+        memory_only: apply only the memory component (`_is_memory_member`); every
+            other member stays in the zip. Also implied by an archive whose manifest
+            declares memory only. Merge only: a Replace raises ``ValueError``,
+            because a whole-install replace from a memory bundle would reset
+            everything the bundle does not carry.
+        agent_templates: the bundled agent templates (file stems under ``agents/``) to
+            install. Empty, the default, installs none. A picked template is written
+            only where no template of that name exists, in either mode; every one not
+            written is named in ``agent_templates_skipped``. A memory-only import
+            installs none.
 
     Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
     browser-preference backup was installed, which tells the dashboard to re-read it.
@@ -1286,18 +2480,52 @@ def apply_import_zip(
                     f"Import archive uncompressed size {total_uncompressed} exceeds cap "
                     f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
                 )
+            session_mtimes = _read_session_mtimes(zf)
+            if not memory_only:
+                # The same one manifest the validator read decides the scope; a file
+                # elsewhere that happens to be named MANIFEST.json is content. With no
+                # manifest at all nothing declares memory only (the validator is what
+                # requires one); two at the top are still refused.
+                top = _top_manifest(infos, required=False)
+                memory_only = top is not None and manifest_is_memory_only(
+                    _read_member_json(zf, top)
+                )
+            if memory_only and mode != "merge":
+                raise ValueError("A memory-only import is merge only")
             for info in infos:
                 parts = PurePosixPath(info.filename).parts
-                if ".." in parts or info.filename.startswith("/"):
+                if _unsafe_member_name(info.filename):
                     continue
                 if _is_link_entry(info):
                     continue
-                zf.extract(info, work)
+                if memory_only and not _is_memory_member(tuple(parts[1:])):
+                    continue
+                if len(parts) >= 2 and parts[1] == AGENT_TEMPLATES_DIR:
+                    # Bundled templates are their own component, installed below
+                    # straight from the archive and only when picked.
+                    continue
+                extracted = zf.extract(info, work)
+                # The filters above read the NAME; this checks where the extractor
+                # actually put it. A member that lost its top directory on the way
+                # out would be read as a different component than it was filtered as.
+                if Path(extracted).relative_to(work).parts[:1] != parts[:1]:
+                    raise ValueError(
+                        f"Rejected member that left its archive prefix: {info.filename}"
+                    )
+                if len(parts) >= 3 and parts[1] == SESSIONS_DIR_NAME and not info.is_dir():
+                    # Only accepted chats are copied out of this private staging tree;
+                    # no-overwrite copying preserves these epochs on installed files.
+                    ts = session_mtimes.get(info.filename)
+                    if ts is not None:
+                        with contextlib.suppress(OSError, OverflowError, ValueError):
+                            os.utime(extracted, (ts, ts))
 
         snap_dirs = [d for d in work.iterdir() if d.is_dir()]
         if len(snap_dirs) != 1:
             raise ValueError(f"Expected 1 top-level directory in zip, found {len(snap_dirs)}")
         snap = snap_dirs[0]
+        if memory_only:
+            summary["components"] = ["memory"]
 
         # Re-vet imported cron commands before ANY path below consumes
         # crons.json (merge, copy, or replace). An import archive is
@@ -1394,10 +2622,25 @@ def apply_import_zip(
             # Merge mode
             if (snap / "memory.db").is_file():
                 if not (mc / "memory.db").is_file():
-                    shutil.copy2(str(snap / "memory.db"), str(mc / "memory.db"))
-                    if (snap / "memory_index.db").is_file():
-                        shutil.copy2(str(snap / "memory_index.db"), str(mc / "memory_index.db"))
-                    summary["items"].append("memory (copied)")
+                    # Pinned, not copy2: see `_install_core_file_if_absent`.
+                    if _install_core_file_if_absent(snap / "memory.db", mc / "memory.db"):
+                        summary["items"].append("memory (copied)")
+                        if (snap / "memory_index.db").is_file() and not (
+                            _install_core_file_if_absent(
+                                snap / "memory_index.db", mc / "memory_index.db"
+                            )
+                        ):
+                            # Never overwritten, so a leftover index does not match
+                            # the memory.db just installed; see `_core_file_not_installed`.
+                            summary["items"].append(
+                                _core_file_not_installed(
+                                    mc / "memory_index.db", index=True, dashboard=True
+                                )
+                            )
+                            summary.setdefault("refused_merges", []).append("memory_index")
+                    else:
+                        summary["items"].append("memory (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("memory")
                 else:
                     _merge_memory(snap / "memory.db", mc / "memory.db")
                     summary["items"].append("memory (merged)")
@@ -1415,9 +2658,11 @@ def apply_import_zip(
                         # log the import as partial rather than a flat ok.
                         summary["items"].append("crons (skipped: unreadable or invalid cron store)")
                         summary.setdefault("refused_merges", []).append("crons")
-                else:
-                    shutil.copy2(str(snap / "crons.json"), str(mc / "crons.json"))
+                elif _install_core_file_if_absent(snap / "crons.json", mc / "crons.json"):
                     summary["items"].append("crons (copied)")
+                else:
+                    summary["items"].append("crons (skipped: not a regular file)")
+                    summary.setdefault("refused_merges", []).append("crons")
 
             # The team list, like hooks.json: installed only where the destination has
             # none -- decided and written under the store's own lock, document only, so
@@ -1431,8 +2676,11 @@ def apply_import_zip(
 
             if (snap / "hooks.json").is_file():
                 if not (mc / "hooks.json").is_file():
-                    shutil.copy2(str(snap / "hooks.json"), str(mc / "hooks.json"))
-                    summary["items"].append("hooks (copied)")
+                    if _install_core_file_if_absent(snap / "hooks.json", mc / "hooks.json"):
+                        summary["items"].append("hooks (copied)")
+                    else:
+                        summary["items"].append("hooks (skipped: not a regular file)")
+                        summary.setdefault("refused_merges", []).append("hooks")
                 else:
                     summary["items"].append("hooks (skipped, already exists)")
 
@@ -1514,6 +2762,14 @@ def apply_import_zip(
                     elif item.is_file() and not target.exists():
                         shutil.copy2(str(item), str(target))
                 summary["items"].append("skills (merged, auto/ skipped)")
+
+        # Both modes, and add-only in both: Replace restores the components it
+        # names, and chats are not one of them, so an archive -- with chats or
+        # without -- never deletes or overwrites a chat this install already has.
+        _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned)
+
+    if agent_templates and not memory_only:
+        _install_agent_templates(zip_path, sorted(set(agent_templates)), summary)
 
     # Warn, never refuse: the rows are already written, and a template can be
     # installed afterwards without importing again.

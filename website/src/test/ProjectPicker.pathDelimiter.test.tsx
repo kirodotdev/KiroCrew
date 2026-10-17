@@ -8,11 +8,13 @@ import ProjectPicker from '../components/ProjectPicker'
 
 const browseDirs = vi.fn()
 const recentProjects = vi.fn()
+const favoriteProjects = vi.fn()
 
 vi.mock('../api/client', () => ({
   api: {
     browseDirs: (path?: string) => browseDirs(path),
     recentProjects: () => recentProjects(),
+    favoriteProjects: () => favoriteProjects(),
   },
 }))
 
@@ -31,8 +33,12 @@ describe('ProjectPicker path delimiter (#1196)', () => {
   beforeEach(() => {
     browseDirs.mockReset()
     recentProjects.mockReset()
+    favoriteProjects.mockReset()
     // No recent projects -> the picker opens straight on the Browse tab.
     recentProjects.mockResolvedValue({ dirs: [] })
+    // Nor favourites: the landing tab is chosen from both lists, so Browse is only
+    // reached when neither has rows.
+    favoriteProjects.mockResolvedValue({ dirs: [] })
   })
 
   it('appends a trailing slash to the browsed directory path', async () => {

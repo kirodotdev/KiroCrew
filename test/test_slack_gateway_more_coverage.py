@@ -45,7 +45,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.autonudge import APPROVAL_STALL_REASON, CONSECUTIVE_FAILURE_REASON, NudgeLoop
+from kiro_crew.acp.types import AcpEvent
+from kiro_crew.autonudge import (
+    APPROVAL_STALL_REASON,
+    CONSECUTIVE_FAILURE_REASON,
+    MODEL_REFUSED_REASON,
+    NudgeLoop,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
@@ -57,6 +63,7 @@ from kiro_crew.monitoring.models import (
     MonitorState,
 )
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import await_until
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -115,17 +122,16 @@ def _slack_default_deliver() -> Any:
 
 
 class TestHeartbeatSafeToolNormalisation:
-    """A malformed ``mcp__`` title yields no server-qualified identity."""
+    """The title is never parsed: a malformed or a well-formed ``mcp__`` / ``@server``
+    title with no trusted identity behind it is refused the same way."""
 
-    def test_mcp_prefix_without_tool_segment_is_refused(self):
-        # "mcp__foo".split("__", 2) is only 2 parts, so neither the qualified
-        # form nor the bare-name strip applies: the title stays "mcp__foo",
-        # misses HEARTBEAT_SAFE_TOOLS, and (qualified == "") can never match an
-        # edition entry -> deny-by-default.
-        assert gw._is_heartbeat_safe_tool("mcp__foo") is False
-
-    def test_at_prefix_without_slash_is_refused(self):
-        assert gw._is_heartbeat_safe_tool("@server-only") is False
+    @pytest.mark.parametrize(
+        "title", ["mcp__foo", "@server-only", "mcp__kirocrew-core__learn_list", ""]
+    )
+    def test_a_title_alone_is_refused(self, title: str):
+        event = AcpEvent(kind="permission_request", title=title, tool_kind="mcp")
+        assert event.mcp_identity_trusted is False
+        assert gw._is_heartbeat_safe_tool(event) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -581,6 +587,53 @@ class TestShutdownExtras:
         assert stopped == ["update", "teardown"]
 
     @pytest.mark.asyncio
+    async def test_a_dashboard_started_policy_apply_is_stopped_before_the_teardown(self):
+        """``POST /api/update`` with a policy provider runs the same installer shape.
+
+        Its handler is cancelled only by aiohttp's own teardown, which the
+        graceful cap exits ahead of. Shutdown stops it with the coordinator, up
+        front, and waits for its rollback before the teardown.
+        """
+        from kiro_crew.dashboard.handlers import updates
+
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = None
+        orch.dashboard_state = None
+        orch._dashboard_runner = None
+        stopped: list[tuple[str, bool]] = []
+        started = asyncio.Event()
+        hold = asyncio.Event()  # never set: only a cancel ends the apply
+
+        async def _installer_running() -> bool | None:
+            started.set()
+            try:
+                await hold.wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0)  # the installer's own rollback step
+                stopped.append(("apply", True))
+                raise
+            return True
+
+        # The handler's own seam, standing in for the aiohttp request task.
+        handler = asyncio.create_task(updates._run_tracked_policy_apply(_installer_running))
+        await await_until(started, what="the apply to start")
+        apply_task = updates.policy_applies_in_flight()[0]
+        orch._stop_mcp_broker = AsyncMock(
+            side_effect=lambda: stopped.append(("teardown", apply_task.done()))
+        )
+        with patch.object(gw.registry, "shutdown_tasks", return_value=[]):
+            await await_until(asyncio.ensure_future(orch._shutdown()), what="the shutdown")
+
+        # The apply's cancel arm ran, and it had finished before the teardown.
+        assert stopped == [("apply", True), ("teardown", True)]
+        with pytest.raises(updates._PolicyApplyStopped):
+            await await_until(handler, what="the handler to unwind")
+        assert updates.policy_applies_in_flight() == []
+
+    @pytest.mark.asyncio
     async def test_an_update_task_that_will_not_stop_does_not_hold_shutdown(self, monkeypatch):
         orch = _make_orchestrator()
         orch.cron_svc = None
@@ -600,13 +653,23 @@ class TestShutdownExtras:
                 except asyncio.CancelledError:
                     continue
 
-        update = asyncio.create_task(_wedged())
+        update = asyncio.create_task(_wedged(), name="update-coordinator")
         orch._update_check_task = update
         await asyncio.sleep(0)
         try:
-            with patch.object(gw.registry, "shutdown_tasks", return_value=[]):
+            with (
+                patch.object(gw.registry, "shutdown_tasks", return_value=[]),
+                patch.object(gw.logger, "warning") as warning,
+            ):
                 await asyncio.wait_for(orch._shutdown(), timeout=10)
             assert not update.done()
+            # The warning names the task that would not stop, so a reader chasing
+            # an orphaned install knows which installer it was.
+            stuck = [call for call in warning.call_args_list if "did not stop" in str(call.args[0])]
+            assert len(stuck) == 1
+            assert stuck[0].args[0] % stuck[0].args[1:] == (
+                "Update work did not stop within 0s (update-coordinator); continuing shutdown"
+            )
         finally:
             release.set()
             await asyncio.wait_for(update, timeout=5)
@@ -899,7 +962,11 @@ class TestNotifyNudgeExpired:
         title = ds.notify.call_args.args[1]
         body = ds.notify.call_args.args[2]
         assert title == "Monitoring loop spent its time budget"
-        assert "60s wall-clock budget" in body
+        assert (
+            "60s runtime budget (awake time while the gateway runs; a restart counts "
+            "the time since created_ts on the wall clock)"
+        ) in body
+        assert "wall-clock budget" not in body
 
     @pytest.mark.parametrize(
         ("outcome", "title"),
@@ -1366,6 +1433,32 @@ class TestNotifyNudgeExpired:
         body = ds.notify.call_args.args[2]
         assert title == "Monitoring loop stopped — its cycles kept failing"
         assert "cycle cap" not in body
+        assert "restart the loop" in body
+
+    def test_model_refused_names_its_own_remedy(self):
+        """A refused cycle is reported as a refusal, with the refusal's remedies.
+
+        Falling through to the final ``else`` would tell the operator to raise a
+        cap the loop never hit. The cause is the model declining the prompt, so
+        the remedy is to reword, switch model or configure a fallback.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        loop = NudgeLoop(
+            id="loop-mr",
+            slot_key="chat-5",
+            message="patrol the ledger",
+            max_cycles=24,
+            cycle_count=3,
+            stopped_reason=MODEL_REFUSED_REASON,
+        )
+        orch._notify_nudge_expired(loop)
+        title = ds.notify.call_args.args[1]
+        body = ds.notify.call_args.args[2]
+        assert title == "Monitoring loop stopped — the model declined its last cycle"
+        assert "cycle cap" not in body
+        assert "agent.refusal_fallback_model" in body
         assert "restart the loop" in body
 
     def test_cycle_cap_outranks_a_stall(self):

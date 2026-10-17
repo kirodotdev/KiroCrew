@@ -91,13 +91,18 @@ class ClaudeCodeMirror(AgentConfigMirror):
             ),
             Concern.MODEL: Ruling(
                 _D.DELIVERED,
-                "settings.local.json `model` when the session pinned one, plus the "
+                "settings.local.json `model` when the session pinned one and the "
+                "provider-advertised model cache is warm (omitted, with "
+                "availableModels, on a cold cache), plus the "
                 "session/set_config_option verb. DEFAULT_MODEL ('auto') is omitted "
                 "so the adapter picks the allowlist head",
             ),
             Concern.MODEL_ALLOWLIST: Ruling(
                 _D.DELIVERED,
-                "settings.local.json `availableModels` from model_registry. Not "
+                "settings.local.json `availableModels` from "
+                "model_registry.seed_available_models: the provider-advertised ids, "
+                "never the static registry, so the key is written only when that "
+                "cache is warm and omitted on a cold cache. Not "
                 "cosmetic: the adapter merges availableModels across every settings "
                 "source, so a user ~/.claude carrying a short list collapses a "
                 "versioned [1m] id back to the 200K window",
@@ -246,11 +251,11 @@ class ClaudeCodeMirror(AgentConfigMirror):
         if not permission_surface_owned:
             logger.warning(
                 "session MCP: withholding the whole mcpServers array, pooled broker stubs "
-                "included -- Crew does not own this session's settings.local.json, so a "
-                "permissions.allow entry there could pre-approve a Crew tool and skip "
-                "session/request_permission entirely. This session runs without Crew's MCP "
-                "tools; the client's own warning names why the file could not be left out. "
-                "Removing or renaming the project's .claude/settings.local.json restores them.",
+                "included -- Crew does not govern this session's .claude/settings.local.json, "
+                "and a tool approved in a file Crew does not govern would never reach Crew's "
+                "permission check. This session runs without Crew's MCP tools. The ACP "
+                "client's log lines for that file name the cause and its fix; removing the "
+                "file does not help while another Crew session holds it.",
             )
             return SessionProjection(params={"mcpServers": []}, zero_tools=projection.zero_tools)
         out: list[dict[str, Any]] = list(projection.servers)
@@ -279,4 +284,5 @@ class ClaudeCodeMirror(AgentConfigMirror):
             disabled_servers=projection.disabled_servers,
             derived_spec_snapshot=projection.derived_spec_snapshot,
             zero_tools=projection.zero_tools,
+            agent_spec=projection.agent_spec,
         )

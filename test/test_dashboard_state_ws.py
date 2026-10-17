@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import socket
+import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_chat_send_echo_scope import echo_state  # noqa: F401  (fixture, used by name)
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -150,9 +155,7 @@ class TestSlotsBroadcastCarriesFolders:
         def get(self, key, default=None):
             return self._flags.get(key, default)
 
-    def test_frame_carries_folder_tree_without_counts(
-        self, state: DashboardState
-    ) -> None:
+    def test_frame_carries_folder_tree_without_counts(self, state: DashboardState) -> None:
         state.serialize_slots = MagicMock(return_value=[{"key": "chat-1", "folder_id": "f1"}])  # type: ignore[method-assign]
         # In-memory folder tree as loaded from folders.json — no history_count.
         state._folders = [
@@ -180,9 +183,9 @@ class TestSlotsBroadcastCarriesFolders:
         state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
         state._folders = [
             {"id": "ok", "name": "Keep", "order": 0},
-            {"name": "no id", "order": 1},   # missing id -> dropped
-            "not a dict",                     # non-dict -> dropped
-            {"id": 42, "name": "int id"},     # non-string id -> dropped
+            {"name": "no id", "order": 1},  # missing id -> dropped
+            "not a dict",  # non-dict -> dropped
+            {"id": 42, "name": "int id"},  # non-string id -> dropped
         ]
         ws = self._DashboardWS()
         state.register_ws(ws)  # type: ignore[arg-type]
@@ -192,9 +195,7 @@ class TestSlotsBroadcastCarriesFolders:
         frame = json.loads(ws.send_str.call_args[0][0])
         assert frame["folders"] == [{"id": "ok", "name": "Keep", "order": 0}]
 
-    def test_non_list_folder_store_yields_empty_tree(
-        self, state: DashboardState
-    ) -> None:
+    def test_non_list_folder_store_yields_empty_tree(self, state: DashboardState) -> None:
         # A scalar/dict where a list is expected would make list() raise; the
         # coercion must yield [] instead of crashing the slot push.
         state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
@@ -246,9 +247,7 @@ class TestSlotsBroadcastCarriesFolders:
         assert generations[0] == generations[1]
 
     @pytest.mark.asyncio
-    async def test_folder_mutation_advances_the_generation(
-        self, state: DashboardState
-    ) -> None:
+    async def test_folder_mutation_advances_the_generation(self, state: DashboardState) -> None:
         # Bumped in the mutate_folders funnel rather than at each call site, so a
         # new folder-writing endpoint cannot forget to do it.
         before = state.folders_generation()
@@ -605,15 +604,15 @@ class TestSlotEffectiveAgent:
         """`load()` is the publisher, so the resolver never reads config.json."""
         import kiro_crew.config.loader as loader
 
-        monkeypatch.setattr(
-            loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False)
-        )
+        monkeypatch.setattr(loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False))
 
         cfg = loader.KiroCrewConfig.load()
-        aliases, default_alias, ready = loader.agent_alias_snapshot()
+        aliases, fallback_template, ready = loader.agent_alias_snapshot()
         assert ready is True
         assert aliases == frozenset(cfg.agents)
-        assert default_alias in cfg.agents
+        # The fallback is the default TEMPLATE, as the runtime resolver binds an
+        # unhonored name; never a crewmate alias.
+        assert fallback_template == loader.default_template(cfg)
 
     def test_publish_overwrites_a_richer_previous_snapshot(self, monkeypatch) -> None:
         """The degraded-defaults path must SHRINK the snapshot, not union into it.
@@ -638,10 +637,46 @@ class TestSlotEffectiveAgent:
             default_agent="default",
         )
         loader.publish_agent_alias_snapshot(cfg)
-        aliases, default_alias, _ = loader.agent_alias_snapshot()
+        aliases, fallback_template, _ = loader.agent_alias_snapshot()
         assert aliases == frozenset({"default"})
-        assert default_alias == "default"
-        assert loader.resolve_effective_agent("researcher") == "default"
+        assert fallback_template == loader.DEFAULT_KIRO_TEMPLATE
+        assert loader.resolve_effective_agent("researcher") == loader.DEFAULT_KIRO_TEMPLATE
+
+    def test_the_fallback_named_is_the_default_template_not_the_default_crewmate(
+        self, monkeypatch
+    ) -> None:
+        """The display resolver and the runtime resolver must agree: an
+        unhonored name runs `agent.default_agent` (a template) on the default
+        workspace and Global memory, so the marker names that template, not the
+        `default` crewmate, whose row may bind another template and a private
+        store the session does not use."""
+        import dataclasses
+
+        import kiro_crew.config.loader as loader
+
+        self._pin(
+            monkeypatch,
+            aliases=set(),
+            default_alias="",
+            materialized=set(),
+        )
+        cfg = dataclasses.replace(
+            loader.KiroCrewConfig(),
+            agents={
+                "default": loader.KiroCrewAgentConfig(kiro_agent="worker"),
+                "scribe": loader.KiroCrewAgentConfig(kiro_agent="scribe"),
+            },
+            default_agent="scribe",
+            agent=dataclasses.replace(loader.KiroCrewConfig().agent, default_agent="atlas"),
+        )
+        loader.publish_agent_alias_snapshot(cfg)
+        _aliases, fallback_template, _ = loader.agent_alias_snapshot()
+        assert fallback_template == "atlas"
+        assert loader.resolve_effective_agent("deleted-app") == "atlas"
+        # The template itself, and both crewmate aliases, report no divergence.
+        assert loader.resolve_effective_agent("atlas") == ""
+        assert loader.resolve_effective_agent("default") == ""
+        assert loader.resolve_effective_agent("scribe") == ""
 
     def test_snapshot_is_published_as_one_immutable_triple(self, monkeypatch) -> None:
         """Why the read path needs no lock, as a gate rather than a comment.
@@ -653,9 +688,7 @@ class TestSlotEffectiveAgent:
         """
         import kiro_crew.config.loader as loader
 
-        monkeypatch.setattr(
-            loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False)
-        )
+        monkeypatch.setattr(loader, "_CONFIG_AGENT_ALIAS_SNAPSHOT", (frozenset(), "", False))
         before = loader.agent_alias_snapshot()
         loader.publish_agent_alias_snapshot(loader.KiroCrewConfig.load())
         after = loader.agent_alias_snapshot()
@@ -850,9 +883,7 @@ class TestCompactCallbackWiring:
         assert len(slot.messages) == baseline
 
     @pytest.mark.asyncio
-    async def test_channel_notice_failure_does_not_propagate(
-        self, state: DashboardState
-    ) -> None:
+    async def test_channel_notice_failure_does_not_propagate(self, state: DashboardState) -> None:
         """The compaction already succeeded; a broken channel must not raise."""
         cb = self._captured_callback(state)
 
@@ -1013,8 +1044,12 @@ class TestOwnerSourceStatusTransport:
             lambda url: {"ci": "passed", "state": "OPEN"} if url == source_url else None,
         )
         monkeypatch.setattr("kiro_crew.dashboard.state._repo_is_public", lambda url: True)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None
+        )
         monkeypatch.setattr(state, "is_yolo_active", lambda: False)
         sent: list[tuple[object, dict]] = []
         monkeypatch.setattr(
@@ -1072,14 +1107,10 @@ class TestOwnerSourceStatusTransport:
         assert set(owner_messages[0]) == set(dash_messages[0])
         assert owner_messages[0]["folders"] == dash_messages[0]["folders"]
         assert (
-            owner_messages[0]["gitlabHostsGeneration"]
-            == dash_messages[0]["gitlabHostsGeneration"]
+            owner_messages[0]["gitlabHostsGeneration"] == dash_messages[0]["gitlabHostsGeneration"]
         )
         assert isinstance(owner_messages[0]["governanceGeneration"], int)
-        assert (
-            owner_messages[0]["governanceGeneration"]
-            == dash_messages[0]["governanceGeneration"]
-        )
+        assert owner_messages[0]["governanceGeneration"] == dash_messages[0]["governanceGeneration"]
 
     def test_broadcast_serializes_each_slot_once_and_views_match_full_passes(
         self, state: DashboardState, monkeypatch
@@ -1114,8 +1145,12 @@ class TestOwnerSourceStatusTransport:
         monkeypatch.setattr(
             "kiro_crew.dashboard.state._repo_is_public", lambda url: url == public_url
         )
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None)
-        monkeypatch.setattr("kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_grant", lambda url: None
+        )
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.state._audit_public_status_denied", lambda url: None
+        )
         monkeypatch.setattr(state, "is_yolo_active", lambda: False)
         monkeypatch.setattr(state, "_spawn_ws_send", lambda client, message: None)
 
@@ -1380,9 +1415,7 @@ class TestOwnerSourceStatusTransport:
         state.unregister_ws.assert_called_once_with(fake_ws)
 
     @pytest.mark.asyncio
-    async def test_non_owner_status_refresh_only_for_confirmed_public(
-        self, monkeypatch
-    ) -> None:
+    async def test_non_owner_status_refresh_only_for_confirmed_public(self, monkeypatch) -> None:
         """A non-owner dashboard connection drives NEITHER a status refresh NOR
         a visibility probe, even when a confirmed-public repo is present — both
         run the operator's credentials, so only the owner's connection may
@@ -1494,7 +1527,9 @@ class TestPeriodicCheckStatusRefresh:
     ) -> None:
         slot_a = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot_a.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
+            slot_a.append(
+                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
+            )
         slot_b = state.get_or_create_slot("chat-b")
         slot_b.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
 
@@ -1583,7 +1618,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # The loop fired after one TTL tick with the visible chip URLs and the
         # broadcast callback (which pushes only on actual status change).
@@ -1615,7 +1650,9 @@ class TestPeriodicCheckStatusRefresh:
             calls["n"] += 1
             # Change the generation only on the periodic round, not the warm-up.
             if calls["n"] == 2:
-                source_providers._publish_provider_hosts(frozenset({"gitlab.acme.internal"}), frozenset())
+                source_providers._publish_provider_hosts(
+                    frozenset({"gitlab.acme.internal"}), frozenset()
+                )
             return frozenset()
 
         class Request(dict):
@@ -1665,13 +1702,11 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "_gitlab_hosts_loaded_at", 0.0)
         monkeypatch.setattr(source_providers, "_gitlab_hosts_generation", 0)
         monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
-        monkeypatch.setattr(
-            dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket()
-        )
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: FakeWebSocket())
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         state.push_slots_update.assert_called()
 
@@ -1713,9 +1748,7 @@ class TestPeriodicCheckStatusRefresh:
         assert payload["gitlabHostsGeneration"] == 7
 
     @pytest.mark.asyncio
-    async def test_ws_warms_gitlab_allowlist_before_first_serialization(
-        self, monkeypatch
-    ) -> None:
+    async def test_ws_warms_gitlab_allowlist_before_first_serialization(self, monkeypatch) -> None:
         """Slot source-link extraction is synchronous and cannot load the
         allowlist, so a self-hosted MR chip would be missing from the very first
         sidebar push unless the snapshot is warmed first."""
@@ -1781,7 +1814,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 30)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         assert order[:2] == ["ensure", "serialize"]
 
@@ -1851,7 +1884,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         refresh.assert_not_called()
         state.source_link_urls.assert_not_called()
@@ -1921,7 +1954,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
         # Non-owner: the driver never starts, so neither refresh is ever called
         # and source_link_urls is never polled by a refresh round.
         assert not check_refresh.called
@@ -2005,7 +2038,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_PENDING_MAX", 2)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # offset = round * cap(2) % len(3): rounds 0,1,2 lead with index 0,2,1 —
         # every URL leads within ceil(len/cap) rounds, so none is starved.
@@ -2085,7 +2118,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # Fired at least twice: the first raised, the loop logged and continued.
         assert len(calls) >= 2
@@ -2104,9 +2137,7 @@ class TestTurnBoundarySourceStatus:
     def test_per_slot_urls_are_scoped_and_capped(self, state: DashboardState) -> None:
         slot = state.get_or_create_slot("chat-a")
         for n in (1, 2, 3, 4):
-            slot.append(
-                "assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False
-            )
+            slot.append("assistant", f"see https://github.com/acme/repo/pull/{n}", broadcast=False)
         other = state.get_or_create_slot("chat-b")
         other.append("assistant", "and https://github.com/acme/other/pull/9", broadcast=False)
 
@@ -2119,7 +2150,9 @@ class TestTurnBoundarySourceStatus:
         ]
         assert state.source_link_urls_for_slot("nope") == []
 
-    def test_turn_boundary_forces_refresh_for_owner(self, state: DashboardState, monkeypatch) -> None:
+    def test_turn_boundary_forces_refresh_for_owner(
+        self, state: DashboardState, monkeypatch
+    ) -> None:
         from kiro_crew.dashboard.handlers import source_providers
 
         slot = state.get_or_create_slot("chat-a")
@@ -2260,3 +2293,138 @@ class TestTurnBoundarySourceStatus:
         for cleanup in app.on_cleanup:
             await cleanup(app)
         assert state.push_source_status not in source_providers._status_delta_sinks
+
+
+class TestWebSocketUnregisteredOnEveryExit:
+    """``api_ws`` unregisters the socket it registered, however the handler ends.
+
+    The connect-time frames are sent after the socket is registered and under an
+    ``except Exception`` that lets the handler carry on. A ``BaseException`` there --
+    the ``CancelledError`` a server with handler cancellation delivers when the
+    client goes away, or a ``GeneratorExit`` -- must still end in the ``finally``
+    that unregisters; a socket that skips it stays in ``_ws_clients`` and
+    ``_owner_ws_clients`` for the life of the gateway.
+    """
+
+    @pytest.mark.parametrize("ending", [asyncio.CancelledError, GeneratorExit])
+    @pytest.mark.asyncio
+    async def test_a_connect_frame_ended_by_a_base_exception_unregisters(
+        self, monkeypatch, ending
+    ) -> None:
+        from kiro_crew.dashboard import ws as dashboard_ws
+        from kiro_crew.dashboard.handlers import source_providers
+
+        state = MagicMock()
+        state.owner_id = "U_OWNER"
+        state.serialize_slots.return_value = []
+        state._yolo = False
+        state._folders = []
+        state.folders_generation.return_value = 0
+
+        class Request(dict):
+            def __init__(self) -> None:
+                super().__init__({"user": "U_OWNER", "app": "", "is_dashboard_user": True})
+                self.app = {"state": state}
+
+        class FakeWebSocket(dict):
+            closed = False
+
+            async def prepare(self, request) -> None:
+                return None
+
+            async def send_str(self, payload: str) -> None:
+                raise ending()
+
+            async def send_json(self, payload: dict) -> None:
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        fake_ws = FakeWebSocket()
+        monkeypatch.setattr(dashboard_ws, "_check_ws_origin", lambda request: None)
+        monkeypatch.setattr(dashboard_ws.web, "WebSocketResponse", lambda **kwargs: fake_ws)
+        monkeypatch.setattr(source_providers, "schedule_check_refresh", MagicMock())
+        monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
+
+        with contextlib.suppress(asyncio.CancelledError, GeneratorExit):
+            await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))
+
+        state.register_ws.assert_called_once()
+        state.unregister_ws.assert_called_once_with(fake_ws)
+
+    @pytest.mark.parametrize("disconnect", ["abort", "clean_close"])
+    @pytest.mark.asyncio
+    async def test_twenty_disconnects_during_the_connect_frames_leave_no_socket_registered(
+        self, echo_state, monkeypatch, disconnect: str  # noqa: F811
+    ) -> None:
+        """Twenty clients each go away while the handler is still sending its connect
+        frames: an abort (a closed tab, a dropped network) or, as the control, a clean
+        close. aiohttp's test server cancels a handler whose client is gone, so an
+        abort lands in the connect block as a ``CancelledError``. Every socket must
+        leave both registries."""
+        from aiohttp.test_utils import TestClient, TestServer
+        from chat_test_helpers import _make_app
+
+        from kiro_crew.dashboard.ws import api_ws
+
+        state = echo_state
+        connect_frames_held = asyncio.Event()
+
+        async def _held_members_baseline(ws) -> None:
+            # The connect block's second frame waits, so each disconnect lands
+            # inside the connect block rather than in the main receive loop.
+            await await_until(connect_frames_held)
+
+        monkeypatch.setattr(state, "send_members_subscribed", _held_members_baseline)
+        if disconnect == "clean_close":
+            # The control closes from the main receive loop, so nothing is held.
+            connect_frames_held.set()
+        app = _make_app(state)
+        app["allowed_origins"] = set()
+        app.router.add_get("/api/ws", api_ws)
+        try:
+            async with TestClient(TestServer(app)) as client:
+                host, port = client.server.host, client.server.port
+                origin = f"http://{host}:{port}"
+                app["allowed_origins"].add(origin)
+                for _ in range(20):
+                    if disconnect == "abort":
+                        await _abort_after_the_connect_snapshot(host, port, origin)
+                    else:
+                        socket_ = await client.ws_connect("/api/ws", headers={"Origin": origin})
+                        frame = await await_until(asyncio.ensure_future(socket_.receive_json()))
+                        assert frame["type"] == "slots"
+                        await socket_.close()
+                await async_wait_until(
+                    lambda: not state._ws_clients and not state._owner_ws_clients
+                )
+                left = (len(state._ws_clients), len(state._owner_ws_clients))
+        finally:
+            connect_frames_held.set()
+        assert left == (0, 0), f"sockets still registered after 20 {disconnect}s: {left}"
+
+
+async def _abort_after_the_connect_snapshot(host: str, port: int, origin: str) -> None:
+    """Upgrade, read the connect snapshot, then reset the TCP connection: no close frame."""
+    reader, writer = await asyncio.open_connection(host, port)
+    writer.write(
+        (
+            f"GET /api/ws HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
+            "Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            f"Sec-WebSocket-Version: 13\r\nOrigin: {origin}\r\n\r\n"
+        ).encode()
+    )
+    await writer.drain()
+    received = b""
+    while b"slots" not in received:
+        chunk = await await_until(asyncio.ensure_future(reader.read(4096)))
+        assert chunk, "the server closed the connection before its connect snapshot"
+        received += chunk
+    sock = writer.get_extra_info("socket")
+    if sock is not None:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    writer.transport.abort()

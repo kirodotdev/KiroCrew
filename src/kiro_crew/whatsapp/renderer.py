@@ -316,8 +316,9 @@ def render_chunks(
     if not text:
         return []
     if stable:
-        # PREFIX-STABLE, and stated HERE rather than as a mode on the shared
-        # splitter's default: the streaming turn renderer re-splits its growing
+        # PREFIX-STABLE: this caller opts into the shared splitter's stable mode
+        # (``split_markdown_safe(..., stable=True)``) rather than its default
+        # whole-body search. The streaming turn renderer re-splits its growing
         # body every frame and treats all but the last chunk as delivered, so it
         # needs chunk *i* decided by the text before it and NOTHING later. A sealed
         # chunk is a promise to the client that nothing may rewrite, so this cut

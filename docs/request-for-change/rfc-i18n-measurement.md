@@ -3,18 +3,18 @@ title: i18n — closing the measurement gap
 status: partial
 author: zezhexu
 created: 2026-08-01
-last-audited: 2026-08-03
-audited-at: 0ab6ed48
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr: 1075
-implementation-prs: [1009, 1047, 1107, 1123, 1321]
+implementation-prs: [1009, 1047, 1107, 1123, 1321, 14228]
 tracking-issues: [1004]
 supersedes: []
 superseded-by: []
 ---
 # RFC: i18n — closing the measurement gap
 
-- Status: partial — 1 of 6 proposals shipped, 1 partial, 3 unstarted, 1 deliberately deferred. **Shipped:** #3, the pseudolocale overflow gate (`website/scripts/check-i18n-render.mjs` + `lib/render-scan.mjs`, real `scrollWidth − clientWidth` measurement against the IBM expansion curve, wired into CI at `ci.yml:775`, PR #1107). **Partial:** #4, the `localeCompare` migration — the ceiling went 97 → 62 → 37 → **25** and `compareText` now has real consumers, but `SessionGridView.tsx` still sorts the `last_activity_ts` timestamp through `localeCompare`. **Unstarted:** #1 source-hash staleness, #2 GEMBA-MQM/MQM 2.0 scoring, #6 `saveMissing` + word-count coverage. **Deferred by decision, not neglect:** #5 lazy-loading, recorded as out-of-scope in issue #1004 pending a 25%-of-JS-gzip or >20-language trigger.
-- **Attribution caveat:** the two proposals that moved were already in flight under the pre-existing remediation program (issue #1004, which predates this RFC and already owned the pseudolocale assertions and locale-aware formatting). PR #1009 merged **18 hours before this document did**. The three genuinely novel *measurement* proposals — the ones the title is about — have zero code. Read "partial" accordingly.
+- Status: partial — 2 of 6 proposals shipped, 1 partial, 3 unstarted. **Shipped:** #3, the pseudolocale overflow gate (`website/scripts/check-i18n-render.mjs` + `lib/render-scan.mjs`, real `scrollWidth − clientWidth` measurement against the IBM expansion curve, PR #1107), which CI runs as the `i18n` lane of `scripts/ci_e2e_parallel.py` (`npm run i18n:render`; see `docs/ci/i18n-gates.md`); #5, lazy-loading, shipped in PR #14228 as one dynamic `import()` per authored catalog in `website/src/i18n/lazy.ts`, without `i18next-http-backend`. **Partial:** #4, the `localeCompare` migration — `compareText` has real consumers and the live ceiling is the `BASELINE` constant in `website/src/i18n/localeFormatting.test.ts`; `SessionGridView.tsx` sorts through `byRecentActivity` and calls no `localeCompare`. **Unstarted:** #1 source-hash staleness, #2 GEMBA-MQM/MQM 2.0 scoring, #6 `saveMissing` + word-count coverage.
+- **Attribution caveat:** the two proposals that moved first (#3, #4) were already in flight under the pre-existing remediation program (issue #1004, which predates this RFC and already owned the pseudolocale assertions and locale-aware formatting). PR #1009 merged **18 hours before this document did**. The three genuinely novel *measurement* proposals — the ones the title is about — have zero code. Read "partial" accordingly.
 - Author: zezhexu
 - Created: 2026-08-01
 - Audited at: `f6ec5834`; every number re-verified against `5ec356d5` before publication
@@ -44,11 +44,15 @@ value-per-diff, and is explicit about which of its findings are already fixed.
 Seven parallel audit lanes ran against a clean checkout at `f6ec5834`. Findings
 were then re-measured against `5ec356d5` before this document was written,
 because two i18n commits landed in between (see *Already fixed*). Numbers below
-are current unless marked *(at `f6ec5834`)*.
+are as measured at `5ec356d5` unless marked *(at `f6ec5834`)*; the live locale list
+is `website/src/i18n/languages.ts`, and the live `localeCompare` ceiling is the
+`BASELINE` in `website/src/i18n/localeFormatting.test.ts`.
 
 Stack: `i18next@26.3.6` + `react-i18next@17.0.11` (`website/package.json:61,68`).
-No ICU. Ten authored locales — `en, zh-CN, hi, es, fr, bn, pt, ru, de, it` — plus
-the `en-XA` pseudolocale (`website/src/i18n/languages.ts:50-75`).
+No ICU. At audit time, ten authored locales — `en, zh-CN, hi, es, fr, bn, pt, ru, de, it` — plus
+the `en-XA` pseudolocale. `SUPPORTED_LANGUAGES` in `website/src/i18n/languages.ts`
+lists twelve authored locales today (`ja` and `ko` added), so the ten-locale
+plural table and the 46,161-value figure below are audit-time measurements.
 
 ## Already fixed — findings this RFC withdraws
 
@@ -169,22 +173,24 @@ sidecar, where `contextSidecar.test.ts` catches a key *rename* but not a key who
 written*, so dates, times, numbers and sort order follow the *browser*, not
 `dashboard.language`. AST-verified. Split at that time: 39 `localeCompare` ·
 37 `toLocaleString` · 12 `toLocaleDateString` · 9 `toLocaleTimeString`. The live
-figure is the `BASELINE` ceiling in `website/src/i18n/localeFormatting.test.ts`,
-now **62** after the Phase 4 date/time batch migrated the 35 `toLocale*` date and
-time sites; what remains is 39 `localeCompare` plus 23 number/date sites. `compareText`/`collator` (`website/src/i18n/format.ts:399-418`)
-are built, tested, and have **zero consumers**.
+figure is the `BASELINE` ceiling in `website/src/i18n/localeFormatting.test.ts`;
+read the number there, not here. When this RFC was written, `compareText`/`collator`
+(`website/src/i18n/format.ts`) were built and tested with zero consumers; they
+have consumers across the dashboard today.
 
 This is load-bearing for any future RTL locale, not cosmetic: an `Intl` call
 without a locale inherits the browser's, which selects the wrong *numbering
 system* (Arabic-Indic vs Latin digits) independently of `dir`.
 
-**All ten authored catalogs are eagerly bundled** — 12 static imports, zero
-dynamic, in `website/src/i18n/index.ts:33-44`, and
+**All ten authored catalogs were eagerly bundled** at audit time — 12 static imports, zero
+dynamic, in `website/src/i18n/index.ts` — and
 `website/vite.config.ts:426-427` returns early for
 non-`node_modules` ids so no locale is ever split out. *(At `f6ec5834`: 940 KB
 gzip on the critical path, of which 877 KB — 91% — is unreadable by any single
 user.)* The file's own header sets the threshold at "roughly 6+ languages";
-ten ship.
+ten shipped. PR #14228 resolved this: catalog imports live in
+`website/src/i18n/catalogs.ts` for the eager entry, and the browser entry
+`website/src/i18n/lazy.ts` loads each catalog as its own chunk on demand.
 
 ### High
 
@@ -315,10 +321,12 @@ where collation is the wrong tool entirely —
 `website/src/pages/ChatSidebar.tsx:560`. Pure adoption otherwise: the seam is
 built and tested with zero consumers. Note `localeFormatting.test.ts` is
 exact-in-both-directions, so the same change **must** lower `BASELINE`
-(line 73) — a migration PR that leaves it at 97 fails CI.
+— as written at audit time, a migration PR that left it at 97 failed CI.
 
-**5. Lazy-load catalogs** via `i18next-http-backend` + a `<Suspense>` boundary,
-exactly as `website/src/i18n/index.ts:19-27` already prescribes.
+**5. Lazy-load catalogs.** Shipped in PR #14228 as per-locale dynamic `import()`
+in `website/src/i18n/lazy.ts`, with English bundled up front; it uses no
+`i18next-http-backend` and no `<Suspense>` boundary (`website/src/i18n/index.ts`
+header explains why `t()` stays synchronous).
 
 **6. Add `saveMissing` + word-count coverage reporting.** Cheap instrumentation for
 the two numbers we are blind to. Caveat: i18next does not fire `missingKeyHandler`

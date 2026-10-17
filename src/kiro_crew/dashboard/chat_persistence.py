@@ -38,7 +38,7 @@ import re
 import threading
 import time
 from collections import OrderedDict, deque  # noqa: F401
-from collections.abc import Iterable, Iterator, Mapping  # noqa: F401
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence  # noqa: F401
 from itertools import chain, islice  # noqa: F401
 from pathlib import Path
 from typing import Any
@@ -60,6 +60,7 @@ from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
     config_dir,
 )
+from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     ATTACHMENT_LIST_MAX_ITEMS,
@@ -90,10 +91,18 @@ from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     queue_persist_signature,
     sanitize_restored_queue,
 )
+from kiro_crew.dashboard.slot_retention import (
+    RESTORE_SLOT_BUDGET,
+    crew_bound_on_disk,
+    live_loop_slot_keys,
+    notify_left_in_history,
+    stored_loop_slot_keys,
+)
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_DISMISSED_SOURCE_LINKS,
     _TRANSIENT_ROLES,
     DashboardState,
+    SlotOrigin,
     _ChatSlot,
     _normalize_slot_key,
     _note_authorized_elsewhere,
@@ -137,6 +146,29 @@ from kiro_crew.validation import ARTIFACT_SLUG_RE  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+#: Env flag the container supervisor sets when it restored this boot's
+#: ``open_slots.json`` from a committed REMOTE snapshot and did NOT restore the
+#: transcripts (they arrive lazily, per turn). It tells the open-slot restore
+#: that a listed slot whose transcript is absent from local disk is a
+#: remote-only slot to keep as a reopen seed, not a dead tab to prune — the two
+#: are indistinguishable from local disk alone, and dropping a remote-only slot
+#: lets the next flush write an empty table the sidecar then commits. Unset on
+#: an ordinary boot (a developer gateway restart), where an absent transcript is
+#: a genuine answer and its key is pruned so dead tabs do not resurrect forever.
+ENV_AUTHORITY_RESTORED: str = "KIROCREW_CONTAINER_AUTHORITY_RESTORED"
+
+
+def _transcripts_may_be_remote_only() -> bool:
+    """True when absent-local transcripts may live in a not-yet-fetched remote.
+
+    Reads :data:`ENV_AUTHORITY_RESTORED`. Kept a function rather than a
+    module-level constant so a test can set the env and observe the branch
+    without a reimport, and so the value is read at restore time rather than at
+    import time (the supervisor sets it before the backend process starts).
+    """
+    return os.environ.get(ENV_AUTHORITY_RESTORED) == "1"
+
+
 #: Sentinel: the slot is a member key whose binding is missing/unreadable —
 #: skip publishing it (the transcript stays on disk; the member-thread
 #: endpoint re-creates and re-binds the slot on the next page open).
@@ -147,9 +179,6 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
-
-
-_MAX_HISTORY_CHARS = 8000
 
 
 # Fallback effort levels — used when no ACP session has reported its config
@@ -419,6 +448,33 @@ def save_all_slots_to_history(state: DashboardState) -> None:
         logger.debug("Shutdown: context snapshot flush failed", exc_info=True)
 
 
+async def wait_for_unwinding_turns(state: DashboardState | None) -> None:
+    """Wait for the dashboard turns ``sessions.close_all()`` cut off to finish unwinding.
+
+    The graceful shutdown, the update restart, the dashboard restart and the Slack
+    restart each run :func:`save_all_slots_to_history`, then ``close_all()``, then
+    exit or exec, and each awaits this right after ``close_all()``. A turn that was
+    mid-reply saves the text its user watched stream as it unwinds, after that first
+    save, and the exit or exec would otherwise beat it.
+
+    Bounded by ``DASHBOARD_TURN_UNWIND_SECS``, and never cancelling: a turn still
+    running at the deadline is left to the exit.
+    """
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return
+    unwinding = {
+        task
+        for task in (getattr(slot, "task", None) for slot in list(slots.values()))
+        if isinstance(task, asyncio.Future) and not task.done()
+    }
+    if not unwinding:
+        return
+    from kiro_crew import gateway_shutdown_budget
+
+    await asyncio.wait(unwinding, timeout=gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS)
+
+
 def _prefetch_rehydrate_inputs(
     conv_log: ConversationLog,
     history_key: str,
@@ -474,6 +530,252 @@ def _prefetch_rehydrate_inputs(
     )
 
 
+#: How many open tabs the startup restore builds with their window loaded,
+#: newest first. Every tab after these comes back as a sidebar row whose window
+#: loads when the tab is first opened (or anything else first reads its rows),
+#: so boot cost stops scaling with the size of every transcript ever left open.
+EAGER_WINDOW_RESTORES = 8
+
+#: Rows of a sidebar row's newest tail read at restore. The sidebar summary
+#: (last message, its options, the unread watermark, the interrupted flag)
+#: projects from these until the window loads.
+LAZY_TAIL_ROWS = 100
+
+
+#: The origins of a tab a person opened: the dashboard's own, and an untagged
+#: tab from a build that did not record one.
+_PERSON_ORIGINS = frozenset({"", SlotOrigin.USER})
+
+
+def _window_can_wait(meta: dict) -> bool:
+    """Whether a tab's window may load after startup instead of during it.
+
+    Only a person's own dashboard tab waits. Something other than the person
+    drives every other kind -- a linked channel, cron or workflow session, an
+    app, a remote binding, a session another session created -- and its next
+    delivery would arrive on a path that reads the window before anyone opens
+    the tab. Not either when the line carries a local turn the previous process
+    never tore down, nor held notes: settling those reconciles rows into the
+    window, and the sidebar would show the tab as it was before that settles.
+    The two kinds only the slot key can tell (a crew member's tab, a crew worker
+    bound to an open work item) are asked by :func:`_prefetch_open_slot_inputs`.
+    """
+    return (
+        str(meta.get("origin") or "") in _PERSON_ORIGINS
+        and not meta.get("linked_session_key")
+        and not meta.get("app")
+        and not meta.get("created_by")
+        and not meta.get("remote_slot")
+        and not _local_turn_generation(meta)
+        and not meta.get("deferred_notes")
+    )
+
+
+def _may_restore_as_row(restored: int, key: str, looped: set[str] | None) -> bool:
+    """Whether the open-tab restore may build *key* as a sidebar row.
+
+    Past the newest :data:`EAGER_WINDOW_RESTORES` tabs only, and never a tab an
+    armed auto-nudge loop drives (its next fire reads the window), nor any tab
+    while which tabs a loop drives is unknown.
+    """
+    return restored >= EAGER_WINDOW_RESTORES and looped is not None and key not in looped
+
+
+#: The longest text a sidebar row's tail keeps of one row. A longer message keeps
+#: its start (the sidebar preview) and its end (where a closing options line
+#: sits), joined by an ellipsis line.
+TAIL_TEXT_BOUND = 4096
+#: The longest presentation class a tail row keeps; a longer one is dropped. The
+#: summary reads a class only for a stop or permission marker, both short.
+_TAIL_CLS_BOUND = 1024
+#: The one-word markers the summary reads off a tail row's ``meta``: a notice's
+#: ``kind`` and ``notice`` (``is_system_notice``), a dispatching inject's
+#: ``injectKind`` (``_is_turn_inject``), and the applied quiet end's trusted tool
+#: identity and flag (``is_quiet_end_row``), without which a turn that ended
+#: through ``nothing_to_do`` reads as interrupted until the window loads. Each is
+#: kept only as a short scalar; every other key (tool payloads, variants,
+#: records) is left out of the tail.
+_TAIL_META_KEYS = ("kind", "injectKind", "notice", "tool_name", "mcp_server", "ends_turn")
+_TAIL_SCALAR_BOUND = 128
+
+
+def _bounded_text(text: str) -> str:
+    if len(text) <= TAIL_TEXT_BOUND:
+        return text
+    half = TAIL_TEXT_BOUND // 2
+    return f"{text[:half]}\n…\n{text[-half:]}"
+
+
+def _short_scalar(value: object) -> object | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and len(value) <= _TAIL_SCALAR_BOUND:
+        return value
+    return None
+
+
+def _display_tail(rows: list[dict]) -> list[dict]:
+    """A sidebar row's tail: a bounded projection of what the summary reads.
+
+    The tail stands in for the window in every summary read (the newest row's
+    time, the last message and its options, the interrupted flag, the source-link
+    chips), and it lives as long as the row stays unopened, so it keeps only
+    those fields and bounds each one. Non-user content is redacted exactly as the
+    window replay redacts it, before it is bounded, so a credential a legacy or
+    agent-written row carries never reaches the sidebar raw.
+    """
+    shown: list[dict] = []
+    for m in rows:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role", "assistant")
+        role = role if isinstance(role, str) and len(role) <= _TAIL_SCALAR_BOUND else ""
+        content = m.get("content", "")
+        content = content if isinstance(content, str) else ""
+        if role != "user":
+            content = redact_display_content(content)
+        row: dict = {"role": role, "content": _bounded_text(content)}
+        if isinstance(ts := m.get("ts"), str) and len(ts) <= _TAIL_SCALAR_BOUND:
+            row["ts"] = ts
+        if isinstance(cls := m.get("cls"), str) and len(cls) <= _TAIL_CLS_BOUND:
+            row["cls"] = cls
+        meta = m.get("meta")
+        if isinstance(meta, dict):
+            kept = {
+                key: value
+                for key in _TAIL_META_KEYS
+                if (value := _short_scalar(meta.get(key))) is not None
+            }
+            if kept:
+                row["meta"] = kept
+        shown.append(row)
+    return shown
+
+
+def _prefetch_open_slot_inputs(
+    conv_log: ConversationLog,
+    history_key: str,
+    *,
+    kiro_model_map: dict[str, str],
+    lazy: bool,
+) -> tuple[
+    dict,
+    bool,
+    list[dict] | None,
+    dict[str, str] | None,
+    tuple[str, str] | None,
+    str | None,
+    bool,
+    list[dict] | None,
+]:
+    """The open-tab restore's read for one tab, off the loop. BLOCKING.
+
+    :func:`_prefetch_rehydrate_inputs`, plus an eighth value: the tail rows of a
+    tab built as a sidebar row, else ``None``. With *lazy* and a person's own tab
+    whose window can wait, the transcript is read only as far as that bounded
+    tail; the messages value is then ``None`` and the tail is not. A tab whose
+    tail holds no row at all takes the full read, so a fork whose rows all live
+    in its ancestors still shows what it says.
+    """
+    if lazy:
+        slot_name = history_key.removeprefix("dashboard:")
+        meta, readable = conv_log.get_metadata_status(history_key)
+        if (
+            readable
+            and meta
+            and not meta.get("closed")
+            and _window_can_wait(meta)
+            and _member_restore_identity(slot_name) is None
+            and not crew_bound_on_disk(slot_name)
+        ):
+            tail = _display_tail(conv_log.read_messages_chained_tail(history_key, LAZY_TAIL_ROWS))
+            if tail:
+                return (
+                    meta,
+                    readable,
+                    None,
+                    kiro_model_map,
+                    None,
+                    _restored_agent_name(history_key, meta),
+                    _has_validated_effort_marker(meta.get("reasoning_effort")),
+                    tail,
+                )
+    return (
+        *_prefetch_rehydrate_inputs(
+            conv_log, history_key, kiro_model_map=kiro_model_map, with_status=True
+        ),
+        None,
+    )
+
+
+def _open_slot_restore_plan(
+    conv_log: ConversationLog, keys: list[object]
+) -> tuple[list[object], set[str] | None]:
+    """Order the open-tab keys newest first and read which tabs a loop drives. BLOCKING.
+
+    Newest is the transcript's mtime, which advances on every message, so the
+    tabs the restore budget keeps are the ones most recently used. The second
+    value is the set of slot keys an armed auto-nudge loop drives (always
+    restored), or ``None`` when the loop store cannot be read; the restore then
+    applies no budget rather than leave a loop's tab unbuilt, which ends the loop.
+    """
+
+    def _mtime(raw: object) -> float:
+        key = _sanitize_open_slot_key(raw)
+        if key is None:
+            return 0.0
+        mtime = conv_log.session_mtime(slot_transcript_key(key))
+        return float(mtime) if isinstance(mtime, (int, float)) else 0.0
+
+    looped = live_loop_slot_keys()
+    if looped is None:
+        looped = stored_loop_slot_keys()
+    return sorted(keys, key=_mtime, reverse=True), looped
+
+
+def _over_restore_budget(state: DashboardState, key: str, looped: set[str] | None) -> bool:
+    """Whether *key* is past the restore budget and not driven by a loop."""
+    if looped is None or key in looped:
+        return False
+    return state.live_slot_count() >= RESTORE_SLOT_BUDGET
+
+
+def _kept_past_budget(conv_log: ConversationLog, key: str) -> bool:
+    """Whether slot *key* takes the normal path past the budget. BLOCKING.
+
+    True for a pinned tab, for a tab in a folder (the recent-sessions restore
+    and the channel reconciler rebuild every foldered tab whatever its age, so
+    leaving one out here would neither hold the budget nor keep it in History),
+    for a crew worker tab bound to an open work item (the wake gate reads a
+    worker with no slot as closed), and for one with no
+    readable local metadata: an unreadable read or an absent transcript costs
+    the normal path no transcript read, and that path's own guards decide
+    whether the key stays in the reopen seed (unreadable, or remote-only after a
+    remote authority restore) or goes.
+    """
+    meta, readable = conv_log.get_metadata_status(slot_transcript_key(key))
+    if not readable or not meta or bool(meta.get("pinned")) or bool(meta.get("folder_id")):
+        return True
+    return crew_bound_on_disk(key)
+
+
+def _report_restore_budget(state: DashboardState, skipped: int) -> None:
+    if not skipped:
+        return
+    logger.info(
+        "restore_open_slots: left %d older tab(s) in history; the restore budget "
+        "is %d open sessions",
+        skipped,
+        RESTORE_SLOT_BUDGET,
+    )
+    notify_left_in_history(
+        state,
+        skipped,
+        f"{skipped} older open tab(s) were left in History at startup to keep "
+        f"{RESTORE_SLOT_BUDGET} sessions open at most.",
+    )
+
+
 def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
     """Drive the open-tab restore one tab at a time, yielding the running count.
 
@@ -487,9 +789,21 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
     :func:`restore_open_slots` for the behavioural contract.
     """
     if not state.conversation_log:
+        # Persistence is a no-op this process, so no listed tab went unshown: a real
+        # zero, and one the dashboard must hear (see _report_restore_with_no_seed).
+        _report_restore_with_no_seed(state)
         return
-    keys = _read_open_slots_keys()
+    keys, known = _read_open_slots_snapshot()
+    # An unknown set must not license the latch its caller flips, so say so before
+    # returning: an unreadable registry is not an empty one. Published BEFORE the
+    # report below, which reads it to decide which answer it is publishing.
+    state.open_slots_knowable = known
     if not keys:
+        # Both ways: a readable registry holding no keys reports a measured zero, and
+        # an unreadable one reports that the set could not be learned. The second is
+        # the state the user most needs to hear -- tabs may be missing and this boot
+        # cannot say -- and reporting neither leaves the dashboard polling in silence.
+        _report_restore_with_no_seed(state)
         return
     restored = 0
     # Rebound each pass so it reflects only THIS restore: a key that becomes
@@ -497,61 +811,223 @@ def _restore_open_slots_steps(state: DashboardState) -> "Iterator[int]":
     # off the class-level frozenset baseline.
     unrestored: set[str] = set()
     state.unrestored_slot_keys = unrestored
+    # The subset a reader is told about -- see _apply_restored_open_slot.
+    dropped: set[str] = set()
+    # Read once per restore: whether this boot's authority pair came from a
+    # remote snapshot whose transcripts are fetched lazily (see
+    # _transcripts_may_be_remote_only).
+    preserve_remote_only = _transcripts_may_be_remote_only()
     # Built once and shared across every tab — it is identical per slot.
     kiro_model_map = _build_kiro_model_map()
-    for raw in keys:
-        key = _sanitize_open_slot_key(raw)
-        if key is None or key in state._slots:
-            continue
-        try:
-            # Ask whether the metadata READ succeeded, not just whether it came
-            # back empty (``with_status``) — see _prefetch_rehydrate_inputs.
-            #
-            # These reads MUST stay inside the per-tab guard. The async driver
-            # has no except at its call site either, so anything escaping here
-            # aborts dashboard startup and costs every LATER tab too.
-            meta, readable, messages, model_map, member_identity, agent, effort_marker = (
-                _prefetch_rehydrate_inputs(
-                    state.conversation_log,
-                    slot_transcript_key(key),
-                    kiro_model_map=kiro_model_map,
-                    with_status=True,
+    # main's restore budget plan, kept: past the budget only a pinned or crew-bound
+    # tab is still built. The rest stay in history, out of the reopen seed.
+    keys, looped = _open_slot_restore_plan(state.conversation_log, keys)
+    skipped = 0
+    # Which key the loop is on, so an abort can name the ones it never read. A
+    # generator is ABANDONED by a GeneratorExit thrown AT its yield rather than by
+    # returning, so this driver reaches the same half-done state the async one does
+    # on cancellation, and owes the same tail-carry.
+    reached = 0
+    try:
+        for reached, raw in enumerate(keys):
+            key = _sanitize_open_slot_key(raw)
+            if key is None or key in state._slots:
+                continue
+            # Past the budget only a pinned or crew-bound tab is still built. The
+            # rest stay in history, out of the reopen seed: they were not shown to
+            # be unreadable.
+            if _over_restore_budget(state, key, looped):
+                try:
+                    pinned = _kept_past_budget(state.conversation_log, key)
+                except Exception:
+                    logger.debug("restore_open_slots: pin read failed for %s", key, exc_info=True)
+                    pinned = True
+                if not pinned:
+                    skipped += 1
+                    yield restored
+                    continue
+            try:
+                # Ask whether the metadata READ succeeded, not just whether it came
+                # back empty (``with_status``) — see _prefetch_rehydrate_inputs.
+                #
+                # These reads MUST stay inside the per-tab guard. The async driver
+                # has no except at its call site either, so anything escaping here
+                # aborts dashboard startup and costs every LATER tab too.
+                meta, readable, messages, model_map, member_identity, agent, effort_marker, tail = (
+                    _prefetch_open_slot_inputs(
+                        state.conversation_log,
+                        slot_transcript_key(key),
+                        kiro_model_map=kiro_model_map,
+                        lazy=_may_restore_as_row(restored, key, looped),
+                    )
                 )
-            )
-            restored += _apply_restored_open_slot(
-                state,
-                key,
-                meta=meta,
-                readable=readable,
-                messages=messages,
-                model_map=model_map,
-                member_identity=member_identity,
-                agent=agent,
-                effort_marker=effort_marker,
-                unrestored=unrestored,
-            )
-        except Exception:
-            logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
-            # Same epistemic position as an unreadable read: the session was not
-            # shown to be gone, so keep its key rather than erasing the seed.
-            unrestored.add(key)
-            # No rollback here: _rehydrate_slot_from_history undoes its own
-            # partial slot and restricted key, so every caller gets it rather
-            # than only the ones that remembered to compensate.
-        # Restore-time recovery of an app flag whose claim outlived it, after the
-        # handler above rather than inside it: a failure here must not mark the
-        # tab unrestored over a display flag. This driver's reads are inline by
-        # construction, so the spool read is too.
-        _recovered_slot = state._slots.get(key)
-        if _recovered_slot is not None:
-            _recover_mcp_app_claims(_recovered_slot)
-        # One yield point per tab, reached on EVERY outcome. A failing tab still
-        # costs real I/O, so a run of failing tabs that skipped the yield would
-        # monopolise the loop and feed the stall watchdog. The sync driver just
-        # spins through it; the async driver has its own per-tab yield.
-        yield restored
+                restored += _apply_restored_open_slot(
+                    state,
+                    key,
+                    meta=meta,
+                    readable=readable,
+                    messages=messages,
+                    model_map=model_map,
+                    member_identity=member_identity,
+                    agent=agent,
+                    effort_marker=effort_marker,
+                    unrestored=unrestored,
+                    preserve_remote_only=preserve_remote_only,
+                    tail=tail,
+                    dropped=dropped,
+                )
+            except Exception:
+                logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
+                # Same epistemic position as an unreadable read: the session was not
+                # shown to be gone, so keep its key rather than erasing the seed.
+                unrestored.add(key)
+                dropped.add(key)
+                # No rollback here: _rehydrate_slot_from_history undoes its own
+                # partial slot and restricted key, so every caller gets it rather
+                # than only the ones that remembered to compensate.
+            # Restore-time recovery of an app flag whose claim outlived it, after the
+            # handler above rather than inside it: a failure here must not mark the
+            # tab unrestored over a display flag. This driver's reads are inline by
+            # construction, so the spool read is too.
+            _recovered_slot = state._slots.get(key)
+            # A sidebar row recovers its claims when its window loads.
+            if _recovered_slot is not None and not _recovered_slot.window_pending:
+                _recover_mcp_app_claims(_recovered_slot)
+            # One yield point per tab, reached on EVERY outcome. A failing tab still
+            # costs real I/O, so a run of failing tabs that skipped the yield would
+            # monopolise the loop and feed the stall watchdog. The sync driver just
+            # spins through it; the async driver has its own per-tab yield.
+            yield restored
+    except BaseException:
+        # Every key from the one in hand onward is UNREAD, so it goes back into the
+        # reopen seed -- see _carry_unread_slot_keys for why the latch flipping in the
+        # caller's finally makes that the difference between a stale tab and a lost
+        # one. ``BaseException`` because the throw that ends a generator is
+        # GeneratorExit, which is not an Exception. Carrying the key in hand too even
+        # when it restored is harmless: _persist_open_slots dedups the union.
+        _carry_unread_slot_keys(keys[reached:], unrestored)
+        raise
     if restored:
         logger.info("Restored %d open tab(s) from open_slots.json", restored)
+    _report_restore_budget(state, skipped)
+    # After the loop, so the counts are final. Not in a finally: on the abort path the
+    # keys were just carried back into the seed, and this restore has no final answer
+    # about them to record.
+    _record_unrestored_open_tabs(state, listed=len(keys), restored=restored, kept=dropped)
+
+
+def _carry_unread_slot_keys(raw_keys: "Sequence[object]", unrestored: set[str]) -> int:
+    """Keep every key in *raw_keys* in the reopen seed; return how many were added.
+
+    What a restore owes the keys it never got to. ``open_slots_restored`` tells the
+    persist writers that ``_slots`` is the authoritative open-tab set, which is a
+    true statement only for a restore that RAN TO THE END -- so a pass cancelled at
+    tab 1 of 16 leaves it down, and a flush then merges instead of pruning the file
+    to the one tab that made it.
+
+    The carry is the other half, and the two are independent rather than alternative.
+    An unread key's honest position is the one an unreadable read already gets -- the
+    session was not shown to be gone -- so it joins the same ``unrestored_slot_keys``
+    set that path uses, and ``_persist_open_slots`` folds that set into every
+    snapshot it writes, licensed to prune or not. One rule then covers every key this
+    restore has no answer about, whether it stopped at the key or never reached it;
+    the latch separately denies the licence. Either alone keeps the file whole, which
+    is the point: the exit this guards against is the one where the process is being
+    torn down and the remaining code may not get to run.
+    """
+    carried = 0
+    for raw in raw_keys:
+        key = _sanitize_open_slot_key(raw)
+        if key is None or key in unrestored:
+            continue
+        unrestored.add(key)
+        carried += 1
+    return carried
+
+
+def _record_unrestored_open_tabs(
+    state: DashboardState,
+    *,
+    listed: int,
+    restored: int,
+    kept: "Iterable[str]",
+) -> None:
+    """Leave a durable account of the listed tabs that should be here and are not.
+
+    *kept* is the DROPPED subset rather than every key in the reopen seed, for the
+    reason :func:`_apply_restored_open_slot` gives: a remote-only seed is expected to
+    sit in that set across boots, and counting it would raise this notice on every
+    restart of a system behaving correctly.
+
+    Blocking: one store read per kept key to resolve the log it writes, then one
+    queued append each. Called from a worker thread, and only when a key was
+    actually kept -- the healthy restore pays nothing.
+
+    Also publishes the count the dashboard reads for its notice. That is here rather
+    than at each ``unrestored.add`` site so the number the user is shown and the
+    number the log records are one count taken at one moment.
+
+    The published report carries ``unknowable``, read off the same latch half the
+    persist writers read. A count is a measurement of a set that was READ, so a
+    restore whose registry no generation of which could be read has no count to
+    offer -- and the honest report there is not a zero but "the set could not be
+    learned", which the endpoint hands to the dashboard's error notice. It rides on
+    the report rather than on a second attribute because the two answers are one
+    fact taken at one moment, and because a reader that has to consult two fields to
+    know whether the first one means anything eventually consults only the first.
+    """
+    keys = sorted(kept)
+    state.unrestored_slot_notice = {
+        "count": len(keys),
+        "keys": keys,
+        "unknowable": not bool(getattr(state, "open_slots_knowable", True)),
+    }
+    if not keys:
+        return
+    try:
+        from kiro_crew.crew_log import emit as crew_log_emit
+    except Exception:  # pragma: no cover - crew log unavailable
+        return
+    if not crew_log_emit.enabled():
+        return
+    for key in keys:
+        try:
+            sid, _decided, _complete = crew_log_emit.slot_previous_store(key)
+            if not sid:
+                # No store under this slot to append to. The notice still carries the
+                # key, which is the half the user acts on.
+                continue
+            crew_log_emit.on_open_tab_unrestored(
+                sid, listed=listed, restored=restored, kept=len(keys)
+            )
+        except Exception:
+            logger.debug("restore_open_slots: could not record the drop of %s", key, exc_info=True)
+
+
+def _report_restore_with_no_seed(state: DashboardState) -> None:
+    """Publish the settled report of a restore that had no keys to enumerate.
+
+    An empty or absent registry restores nothing, and that is an ANSWER rather than
+    the absence of one -- the default answer, in fact: a fresh install, and anyone
+    whose last session closed every tab. Left unpublished, the notice stays ``None``,
+    ``GET /api/chat/slots/unrestored`` answers ``reported: false`` for the life of the
+    process, and ``useUnrestoredTabs`` re-asks every 5s on every dashboard page for
+    the life of the page. A poll that then fails past the retry ladder -- a gateway
+    restart is enough -- shows the red "could not check restored tabs" notice to a
+    user who lost nothing.
+
+    Routed through the one publisher so the shape cannot drift from the reporting
+    path, and safe to call on the event loop: the publisher's per-key store reads
+    only run when a key was kept, and here none was. Which of the two answers it
+    publishes -- a measured zero, or "the set could not be learned" -- the publisher
+    takes from ``open_slots_knowable``, so an unreadable registry reaches the
+    dashboard as the failure it is instead of as a zero.
+
+    For an exit that FINISHED, either way. A pass cancelled before it got through
+    the seed has no answer about the keys it never read, and ``None`` -- "the restore
+    has not reported" -- stays the honest reading for that one.
+    """
+    _record_unrestored_open_tabs(state, listed=0, restored=0, kept=())
 
 
 def _apply_restored_open_slot(
@@ -568,8 +1044,14 @@ def _apply_restored_open_slot(
     effort_marker: bool = False,
     conv_log: ConversationLog | None = None,
     started: float | None = None,
+    preserve_remote_only: bool = False,
+    tail: list[dict] | None = None,
+    dropped: set[str] | None = None,
 ) -> int:
     """Turn one prefetched open-tab read into a slot; return 1 if it restored.
+
+    *tail* (with *messages* ``None``) builds the tab as a sidebar row whose
+    window loads on first read; see :func:`_prefetch_open_slot_inputs`.
 
     LOOP-AFFINE — slot construction broadcasts through
     ``asyncio.Queue.put_nowait`` / ``Event.set``, so this half must run on the
@@ -580,16 +1062,49 @@ def _apply_restored_open_slot(
     passed only by the async driver, whose read happened in a worker thread. The
     synchronous generator reads inline with no suspension point, so its pre-read
     answers cannot have gone stale and it would only pay for redundant work.
+
+    *preserve_remote_only* carries :func:`_transcripts_may_be_remote_only`: when
+    the authority pair was restored from a remote snapshot without the
+    transcripts, a listed slot with no local transcript is a remote-only reopen
+    seed to keep, not a dead tab to prune.
+
+    *dropped* collects the keys a reader should be TOLD about, which is a narrower
+    set than *unrestored*. Both keep the key in the reopen seed, but they answer
+    different questions: ``unrestored`` is "do not prune this", while ``dropped`` is
+    "this tab should be here and is not". A remote-only seed is in the first and not
+    the second -- its transcript arrives lazily by design, and it stays in the seed
+    across every boot, so counting it would raise the same warning on every restart
+    for a system working as intended. A warning that repeats forever is one the user
+    learns to ignore, which costs the real loss its only visible signal.
     """
     if not readable:
         unrestored.add(key)
+        if dropped is not None:
+            dropped.add(key)
         logger.warning(
             "restore_open_slots: metadata unreadable for %s; keeping it "
             "in the reopen seed for the next restore instead of dropping it",
             key,
         )
         return 0
-    if messages is None:
+    if messages is None and tail is None:
+        if preserve_remote_only and not meta.get("closed"):
+            # The authority pair was restored from a remote snapshot without the
+            # transcripts (they arrive lazily, per turn), so an absent LOCAL
+            # transcript does not mean the slot is gone — its transcript lives in
+            # a remote this task has not fetched yet. Keep the key as a reopen
+            # seed. Dropping it lets the next 5s flush write an empty
+            # open_slots.json that the sidecar commits, silently losing the
+            # restored slot table on an ordinary task replacement. A tab the user
+            # closed with ✕ still carries ``meta.closed`` and is NOT kept.
+            unrestored.add(key)
+            logger.info(
+                "restore_open_slots: %s has no local transcript yet after a "
+                "remote authority restore; keeping it in the reopen seed until "
+                "lazy retrieval completes",
+                key,
+            )
+            return 0
         # No metadata (never persisted) or the user closed the tab with ✕. Both
         # are confident answers, so the key is NOT carried as unrestored — the
         # synchronous helper's own guards reached the same verdict before.
@@ -613,7 +1128,9 @@ def _apply_restored_open_slot(
     if conv_log is not None:
         # Synchronous and immediately before the build: no await may separate the
         # two (see _deletion_during_read).
-        gone = _deletion_during_read(conv_log, slot_transcript_key(key), meta, messages)
+        gone = _deletion_during_read(
+            conv_log, slot_transcript_key(key), meta, messages if tail is None else tail
+        )
         if gone is not None:
             logger.info(
                 "restore_open_slots: session %s was %s while its transcript "
@@ -632,6 +1149,7 @@ def _apply_restored_open_slot(
         _prefetched_member_identity=member_identity,
         _prefetched_agent=agent,
         _prefetched_effort_marker=effort_marker,
+        _lazy_tail=tail if messages is None else None,
     )
     return 1 if slot is not None else 0
 
@@ -655,19 +1173,47 @@ def restore_open_slots(state: DashboardState) -> int:
     (``meta.closed``) are skipped via _rehydrate_slot_from_history's own
     guard, so closing a tab and then restarting still loses the tab.
 
+    Tabs are built newest first. Once ``live_slot_count()`` reaches
+    ``RESTORE_SLOT_BUDGET`` only pinned tabs, tabs an armed auto-nudge loop
+    drives and crew worker tabs bound to an open work item are still built; the
+    rest stay in history, unrestored and undeleted, and one notification says so.
+
     Blocking: restores every tab without yielding. Startup on the event loop must
     use :func:`restore_open_slots_async` instead — see the note there.
     """
     restored = 0
+    # Same condition the async driver spells out, read off the generator's own
+    # lifecycle: a ``for`` over a generator only falls through when the generator
+    # RETURNS, so reaching this line means every key was looked at (or there were
+    # none). Anything that propagates -- including a raise from the snapshot read
+    # itself -- skips it and leaves the latch down.
+    enumerated = False
     try:
         for restored in _restore_open_slots_steps(state):
             pass
+        enumerated = True
     finally:
         # The open-tab restore has run this boot (even for a missing/empty
         # file): an empty ``_slots`` from here on is authoritative, so the
         # periodic flush may snapshot open_slots.json again — see
         # DashboardState._persist_open_slots.
-        state.open_slots_restored = True
+        #
+        # Unless the set was never KNOWABLE, or this pass never reached the end of
+        # it. Either way this process has no basis for calling ``_slots``
+        # authoritative, and leaving the latch down keeps the persist writers in
+        # merge mode for the rest of its life — which is the correct posture, not a
+        # stuck flag: a process that never learned the set must never prune it.
+        #
+        # The visible cost of that posture, for whoever reads this next: with the
+        # latch down every flush takes the merge branch, which re-reads the live
+        # registry. So a boot whose registry was REFUSED freezes the file -- the
+        # merge read is refused too and skips the write -- and a boot whose registry
+        # was merely damaged can only add to it. Either way a tab the user closes in
+        # this process is back in the sidebar on the next boot, and in the refused
+        # case a tab opened in it is not saved at all, until a restart or a read that
+        # succeeds. The registry keeps the set it had, which is the cheaper error
+        # than deleting a set nobody managed to read: this fails closed deliberately.
+        state.open_slots_restored = enumerated and bool(getattr(state, "open_slots_knowable", True))
     return restored
 
 
@@ -706,78 +1252,163 @@ async def restore_open_slots_async(state: DashboardState) -> int:
     """
     restored = 0
     state.restoring_open_slots = True
+    # Whether this restore reached the END of the seed, which is the only thing that
+    # makes ``_slots`` the authoritative open-tab set. Set at each exit that really
+    # is a completion -- including the two "nothing to restore" returns below -- and
+    # left False by every other exit, so a cancellation anywhere leaves the writers
+    # in merge mode instead of licensing a prune. It starts False BEFORE the first
+    # await for the reason the finally gives: the awaits ahead of the per-tab loop
+    # are suspension points too, and at the first of them not even the seed is read.
+    enumerated = False
     try:
         # No conversation log means persistence is a no-op this process, but the
         # restore has still "run": fall through to the finally so the latch
         # flips and the persist writers resume pruning instead of staying in the
         # permanent pre-restore merge mode.
         if not state.conversation_log:
+            enumerated = True
+            # A zero the dashboard must hear, like the generator's copy of this exit.
+            _report_restore_with_no_seed(state)
             return 0
-        keys = await asyncio.to_thread(_read_open_slots_keys)
+        keys, known = await asyncio.to_thread(_read_open_slots_snapshot)
+        # Published before the early return below, for the reason the generator's own
+        # copy of this line gives: the latch in the finally reads it, and so does the
+        # report, which is a measured zero or an unknowable set depending on it.
+        state.open_slots_knowable = known
         if not keys:
+            enumerated = True
+            # Both ways, like the generator: a readable registry with no keys reports
+            # a zero, an unreadable one reports that the set could not be learned.
+            _report_restore_with_no_seed(state)
             return 0
         # Rebound only once there is a snapshot to restore FROM, matching the
         # generator: a missing/malformed file must not clear a carried set.
         unrestored: set[str] = set()
         state.unrestored_slot_keys = unrestored
+        # The subset a reader is told about -- see _apply_restored_open_slot.
+        dropped: set[str] = set()
         conv_log = state.conversation_log
-        kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
-        for raw in keys:
-            key = _sanitize_open_slot_key(raw)
-            if key is None or key in state._slots:
-                continue
-            try:
-                started = time.time()
-                meta, readable, messages, model_map, member_identity, agent, effort_marker = (
-                    await asyncio.to_thread(
-                        _prefetch_rehydrate_inputs,
+        # Which key the loop is on, so a cancellation can name the ones it never
+        # read. This driver awaits once per tab, so a shutdown landing in the middle
+        # of a 16-tab restore is the ordinary case rather than an exotic one. Zero
+        # means none, which is what the model-map await below needs it to mean.
+        reached = 0
+        skipped = 0
+        try:
+            # Read once per restore (see _transcripts_may_be_remote_only).
+            preserve_remote_only = _transcripts_may_be_remote_only()
+            # INSIDE the carry guard. It is an await like any other, so a shutdown
+            # can land on it with the seed read and not one key looked at -- and
+            # outside the guard that exit carried nothing, which is the difference
+            # between the next flush merging and pruning.
+            kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
+            # main's restore budget plan, kept.
+            keys, looped = await asyncio.to_thread(_open_slot_restore_plan, conv_log, keys)
+            for reached, raw in enumerate(keys):
+                key = _sanitize_open_slot_key(raw)
+                if key is None or key in state._slots:
+                    continue
+                # Same budget as the inline driver, with the pin read off the loop.
+                if _over_restore_budget(state, key, looped):
+                    try:
+                        pinned = await asyncio.to_thread(_kept_past_budget, conv_log, key)
+                    except Exception:
+                        logger.debug(
+                            "restore_open_slots: pin read failed for %s", key, exc_info=True
+                        )
+                        pinned = True
+                    if not pinned:
+                        skipped += 1
+                        await asyncio.sleep(0)
+                        continue
+                try:
+                    started = time.time()
+                    (
+                        meta,
+                        readable,
+                        messages,
+                        model_map,
+                        member_identity,
+                        agent,
+                        effort_marker,
+                        tail,
+                    ) = await asyncio.to_thread(
+                        _prefetch_open_slot_inputs,
                         conv_log,
                         slot_transcript_key(key),
                         kiro_model_map=kiro_model_map,
-                        with_status=True,
+                        lazy=_may_restore_as_row(restored, key, looped),
                     )
-                )
-                restored += _apply_restored_open_slot(
-                    state,
-                    key,
-                    meta=meta,
-                    readable=readable,
-                    messages=messages,
-                    model_map=model_map,
-                    member_identity=member_identity,
-                    agent=agent,
-                    effort_marker=effort_marker,
-                    unrestored=unrestored,
-                    # Opts into the post-hop re-checks (close tombstone +
-                    # deletion): this driver's read ran in a worker thread, so
-                    # its answers can have gone stale.
-                    conv_log=conv_log,
-                    started=started,
-                )
-            except Exception:
-                logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
-                unrestored.add(key)
-            # Same recovery as the inline driver, with the spool read awaited:
-            # this driver runs on the loop, where a scan would stall the gateway.
-            _recovered_slot = state._slots.get(key)
-            if _recovered_slot is not None:
-                await _recover_mcp_app_claims_async(_recovered_slot)
-            # sleep(0) yields to the ready queue without adding wall-clock delay.
-            # Reached on EVERY outcome, including a failing tab (see the
-            # generator's note) — and still needed with the reads offloaded,
-            # because the apply half above runs here.
-            await asyncio.sleep(0)
+                    restored += _apply_restored_open_slot(
+                        state,
+                        key,
+                        meta=meta,
+                        readable=readable,
+                        messages=messages,
+                        model_map=model_map,
+                        member_identity=member_identity,
+                        agent=agent,
+                        effort_marker=effort_marker,
+                        unrestored=unrestored,
+                        # Opts into the post-hop re-checks (close tombstone +
+                        # deletion): this driver's read ran in a worker thread, so
+                        # its answers can have gone stale.
+                        conv_log=conv_log,
+                        started=started,
+                        preserve_remote_only=preserve_remote_only,
+                        tail=tail,
+                        dropped=dropped,
+                    )
+                except Exception:
+                    logger.debug("restore_open_slots: rehydrate failed for %s", key, exc_info=True)
+                    unrestored.add(key)
+                    dropped.add(key)
+                # Same recovery as the inline driver, with the spool read awaited:
+                # this driver runs on the loop, where a scan would stall the gateway.
+                _recovered_slot = state._slots.get(key)
+                # A sidebar row recovers its claims when its window loads.
+                if _recovered_slot is not None and not _recovered_slot.window_pending:
+                    await _recover_mcp_app_claims_async(_recovered_slot)
+                # sleep(0) yields to the ready queue without adding wall-clock delay.
+                # Reached on EVERY outcome, including a failing tab (see the
+                # generator's note) — and still needed with the reads offloaded,
+                # because the apply half above runs here.
+                await asyncio.sleep(0)
+        except BaseException:
+            # Cancelled (or aborted) mid-restore: every key from the one in hand
+            # onward is UNREAD. ``BaseException`` because asyncio.CancelledError is
+            # not an Exception, and cancellation is precisely the case the latch in
+            # the finally below gets wrong -- it tells the persist writers ``_slots``
+            # is authoritative when this loop never looked at most of the file.
+            _carry_unread_slot_keys(keys[reached:], unrestored)
+            raise
+        # Every key in the seed has now been looked at.
+        enumerated = True
         if restored:
             logger.info("Restored %d open tab(s) from open_slots.json", restored)
+        _report_restore_budget(state, skipped)
+        # Off the loop: the per-key store read that resolves which log to append to
+        # lists a directory per key (see emit.slot_previous_store), which is exactly
+        # the blocking work the rest of this driver exists to hoist.
+        await asyncio.to_thread(
+            _record_unrestored_open_tabs,
+            state,
+            listed=len(keys),
+            restored=restored,
+            kept=dropped,
+        )
     finally:
         # Always clear, even if a rehydrate raises — a stuck flag would silently
         # disable open-tab persistence for the rest of the process's life.
         state.restoring_open_slots = False
-        # The open-tab restore has run this boot (even on an early return or a
-        # raise): an empty ``_slots`` is authoritative from here, so a periodic
-        # flush may snapshot open_slots.json again — see
-        # DashboardState._persist_open_slots.
-        state.open_slots_restored = True
+        # ``_slots`` is the authoritative open-tab set only once this restore has
+        # ENUMERATED the whole seed and the seed was knowable in the first place.
+        # Both halves are necessary and neither implies the other: a cancellation
+        # during the snapshot await leaves a knowable-by-default state with nothing
+        # read, and an unreadable registry leaves a loop that enumerated an empty
+        # list. Either way the writers stay in merge mode, where they cannot prune --
+        # see DashboardState._persist_open_slots.
+        state.open_slots_restored = enumerated and bool(getattr(state, "open_slots_knowable", True))
     return restored
 
 
@@ -861,8 +1492,21 @@ def _pin_private_agent_assignment(
             execution = execution.with_mode(previous.memory_mode)
     if validate_only:
         return store
+    # Establishing, so it vouches. Every caller of this helper has already
+    # authorized the owner's own request (see the docstring), and the store being
+    # published is the one CONFIG resolves for the selected member: `execution`
+    # comes from `resolve_member_execution`, and `previous` is reused above only
+    # when its member AND store equal that config-resolved pair. So the vouched
+    # store is never one the session's own record chose. Without the vouch, a
+    # dashboard tab the owner bound to a member is published but unvouched, and
+    # its own-store `session_create` is refused as `memory_delegation_denied`
+    # ("this process holds no vouched identity for the caller") for its whole life.
     bind_session_execution(
-        session_key, execution, replace_existing=previous is not None, expected=previous
+        session_key,
+        execution,
+        replace_existing=previous is not None,
+        expected=previous,
+        vouch=True,
     )
     return store
 
@@ -875,7 +1519,9 @@ def _member_private_selection(
     The selection and prewarm-release paths share this classification. An
     optional captured store limits the choice to the caller's admitted routing.
     """
-    selected = agent or config.default_agent
+    # An empty name is the default TEMPLATE, which owns no member memory; it
+    # is never read as the default crewmate alias.
+    selected = agent
     if not selected or selected == "default":
         return "", ""
     store = getattr(config.agents.get(selected), "memory_store", "")
@@ -1007,7 +1653,7 @@ async def pin_private_agent_store(
     callers may already hold a slot lock, while config writers serialize private
     ownership changes through the namespace lock.
     """
-    selected = agent or config.default_agent
+    selected = agent
     _entry_selected, entry_store = _member_private_selection(selected, config)
     native_context = state.sessions.get_provider(session_key) is not None or bool(
         state.sessions.resumable_sid(session_key)
@@ -1078,6 +1724,154 @@ def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
     return member, members_mod.DM_SLOT_MODE
 
 
+class _PendingWindow:
+    """The deferred window load of a tab the open-tab restore built as a row.
+
+    Installed as ``slot._lazy_window`` and run once, by the slot's first read of
+    ``messages`` (or by ``state.load_window_off_loop``, which does :meth:`read`
+    on a worker thread first). Holds the ``metadata_codec.apply`` result so the load
+    settles the turn marker, held notes and title mark exactly as an eager
+    restore does, only later.
+    """
+
+    __slots__ = ("_applied", "_history_key", "_state")
+
+    def __init__(self, state: DashboardState, history_key: str, applied: Any) -> None:
+        self._state = state
+        self._history_key = history_key
+        self._applied = applied
+
+    def read(self, slot: _ChatSlot) -> tuple[list[dict], list[set[str]]]:
+        """Every disk read the load needs. BLOCKING; touches no slot state."""
+        conv_log = self._state.conversation_log
+        messages = conv_log.read_messages_chained(self._history_key) if conv_log else []
+        return messages, _read_mcp_app_claims(effective_session_key(slot))
+
+    def __call__(
+        self,
+        slot: _ChatSlot,
+        messages: list[dict] | None = None,
+        claims: list[set[str]] | None = None,
+    ) -> None:
+        if messages is None or claims is None:
+            messages, claims = self.read(slot)
+        # A pending row can still owe a metadata edit (a rename, a pin) that the
+        # window replay's clean mark would otherwise forget.
+        was_dirty = slot._dirty
+        _load_rehydrated_window(self._state, slot, messages, self._applied)
+        if was_dirty:
+            slot._dirty = True
+        _reconcile_mcp_app_claims(slot, claims)
+
+
+def _load_rehydrated_window(
+    state: DashboardState, slot: _ChatSlot, messages: list[dict], applied: Any
+) -> None:
+    """Replay *messages* into *slot* as its window and settle what needs it.
+
+    The window half of :func:`_rehydrate_slot_from_history`, shared with the
+    deferred load of a sidebar row (:class:`_PendingWindow`). LOOP-AFFINE like
+    the rest of slot construction. *applied* is the ``metadata_codec.apply``
+    result for this slot, whose ``settle`` needs the loaded rows.
+    """
+    # Only the recent window is loaded into memory; older on-disk lines become
+    # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
+    # therefore count those older lines so the save model preserves them.
+    older_cut = max(0, len(messages) - 500)
+    slot._disk_older_count = older_cut
+    # Recomputed from the on-disk rows on every load (never trusted from any
+    # stored value): the durable-only view of the same prefix, which is what
+    # absolute message positions are built over. See ``init_transcript_fields`` in
+    # dashboard/state_parts/slot_transcript.py.
+    # ``islice``, not ``messages[:older_cut]`` — this can run on the event
+    # loop for a large transcript, and a slice would copy the whole prefix.
+    slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
+    for m in messages[-500:]:
+        role = m.get("role", "assistant")
+        cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
+        content = m.get("content", "")
+        # Neither content nor meta is redacted here. Redaction happens where the
+        # data is EMITTED (chat_utils._prepare_messages for the slot detail
+        # endpoint, _ChatSlot.to_dict for the sidebar payload,
+        # _build_history_prefix for the ACP prompt) — every path a client or model
+        # can observe.
+        #
+        # CONTENT, however, is redacted right here, on load. That split is
+        # deliberate and measured, and it is the crux of this change:
+        #
+        #   field    | read sites | share of the ~7s load cost
+        #   ---------|------------|---------------------------
+        #   content  |    ~204    | ~0.4s  (6%)
+        #   meta     |     31     | ~5.5s  (79%)
+        #
+        # `meta.tool_input` carries the large tool payloads, so meta is where the
+        # boot cost actually lives — and its 31 readers are tractable: outside the
+        # emit sites (which redact and are covered by
+        # test_display_time_redaction.py) every one reads only CONTROL fields
+        # (`done`, `tool_call_id`), never payload text. Deferring meta to display
+        # time is therefore both where the win is and safely enumerable.
+        #
+        # `content` is the opposite on both axes: it is cheap (0.4s) and it has
+        # ~204 readers across the dashboard, so "every reader must remember to
+        # redact" is not an invariant anyone can hold. Three separate egress paths
+        # (the side-chat prompt, the orchestrator stage-result file, and the
+        # title-model prompt) can each leak restored content if a reader forgets.
+        # Paying 0.4s here restores the single chokepoint — any present or FUTURE
+        # reader of `m["content"]` gets clean bytes — instead of relying on an
+        # enumeration of every reader.
+        # `role != "user"`, never `not in ("user", "system")`: user-authored text
+        # stays raw because its author is its only reader, but `system` MUST be
+        # redacted — the write path excludes it, so system bytes reach disk raw.
+        if role != "user":
+            content = redact_display_content(content)
+        slot.append(
+            role,
+            content,
+            cls,
+            ts=m.get("ts", ""),
+            # broadcast=False: replaying history must not emit N `chat_message`
+            # events. _broadcast_chat_message redacts non-user content (parity
+            # with _prepare_messages) but deliberately not meta, and this
+            # helper also runs for on-demand cold-slot rehydrates while clients
+            # ARE connected, so broadcasting here would push unredacted meta
+            # straight to them. Clients get the transcript from the slot detail
+            # endpoint (redacted) and the sidebar from the coalesced slots push.
+            broadcast=False,
+            # meta is NOT redacted here — same reasoning as content, and
+            # it is where the cost actually was: tool `meta.tool_input` carries
+            # the large payloads, so meta redaction was ~5.5s of a ~7s restore
+            # while content redaction was only ~0.4s. Redacted at emit instead
+            # (chat_utils._prepare_messages), which is the only path that returns
+            # meta to a client. Blocked-link records are the exception: they are
+            # BOUNDED here because this is where the slot retains them, and the
+            # bound is a no-op for a row that carries none.
+            meta=(
+                with_bounded_redaction_records(m["meta"])
+                if isinstance(m.get("meta"), dict)
+                else None
+            ),
+            mint_mid=False,
+        )
+        # Provenance is not a slot.append() argument, so carry it onto the
+        # message the append just created. Without this the window loses where
+        # each turn came from and the next flush restamps it "dashboard".
+        carry_provenance(slot.messages[-1], m)
+        remember_unknown_row_fields(slot, m)
+        _attach_variants(slot, m)
+    slot.drain()
+    slot._resumed_count = len(slot.messages)
+    # The whole in-memory window is already on disk → it is the on-disk window
+    # region. Saves re-serialize the window in place; the frozen prefix (older
+    # turns counted above) is never rewritten.
+    slot._disk_window_len = len(slot.messages)
+    slot._dirty = False
+    # A local turn admitted by the previous process and never torn down, the
+    # held notes the window already delivered, and the title refresh mark
+    # re-based against the rows the window holds -- the fields whose read
+    # needs the window.
+    applied.settle(messages)
+
+
 def _rehydrate_slot_from_history(
     state: DashboardState,
     slot_name: str,
@@ -1089,8 +1883,14 @@ def _rehydrate_slot_from_history(
     _prefetched_member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     _prefetched_agent: str | None = None,
     _prefetched_effort_marker: bool = False,
+    _lazy_tail: list[dict] | None = None,
 ) -> _ChatSlot | None:
     """Rehydrate a single dashboard slot from persisted history.
+
+    *_lazy_tail* builds the slot as a sidebar row instead: every metadata field
+    is applied as usual, but the transcript window is left to load on the
+    slot's first read of ``messages`` (:class:`_PendingWindow`), and the tail
+    rows the caller already read stand in for the sidebar summary until then.
 
     *kiro_model_map* lets a bulk caller build the agent→model map once and share
     it across every slot instead of paying a fresh directory glob + JSON parse
@@ -1189,11 +1989,14 @@ def _rehydrate_slot_from_history(
         # read_messages alone caps visible history at 200 lines from THIS file and
         # drops the ancestor chain — long-running forked sessions would lose 200+
         # messages of context on every gateway restart.
-        messages = (
-            _prefetched_messages
-            if _prefetched_messages is not None
-            else state.conversation_log.read_messages_chained(history_key)
-        )
+        # A sidebar row (``_lazy_tail``) reads no transcript here at all.
+        messages: list[dict]
+        if _prefetched_messages is not None:
+            messages = _prefetched_messages
+        elif _lazy_tail is not None:
+            messages = []
+        else:
+            messages = state.conversation_log.read_messages_chained(history_key)
         if applied.minted_tab_id is not None:
             # Persist the freshly-minted tab_id AFTER reading the transcript above,
             # never before. update_metadata_off_loop dispatches an os.replace() of
@@ -1216,123 +2019,22 @@ def _rehydrate_slot_from_history(
             update_metadata_off_loop(
                 state.conversation_log, history_key, {"tab_id": applied.minted_tab_id}
             )
-        # Only the recent window is loaded into memory; older on-disk lines become
-        # the FROZEN PREFIX that saves never rewrite. _disk_older_count must
-        # therefore count those older lines so the save model preserves them.
-        older_cut = max(0, len(messages) - 500)
-        slot._disk_older_count = older_cut
-        # Recomputed from the on-disk rows on every load (never trusted from any
-        # stored value): the durable-only view of the same prefix, which is what
-        # absolute message positions are built over. See _ChatSlot.__init__.
-        # ``islice``, not ``messages[:older_cut]`` — this can run on the event
-        # loop for a large transcript, and a slice would copy the whole prefix.
-        slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
-        for m in messages[-500:]:
-            role = m.get("role", "assistant")
-            cls = m.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
-            content = m.get("content", "")
-            # Neither content nor meta is redacted here. Redaction happens where the
-            # data is EMITTED (chat_utils._prepare_messages for the slot detail
-            # endpoint, _ChatSlot.to_dict for the sidebar payload,
-            # _build_history_prefix for the ACP prompt) — every path a client or model
-            # can observe.
-            #
-            # CONTENT, however, is redacted right here, on load. That split is
-            # deliberate and measured, and it is the crux of this change:
-            #
-            #   field    | read sites | share of the ~7s load cost
-            #   ---------|------------|---------------------------
-            #   content  |    ~204    | ~0.4s  (6%)
-            #   meta     |     31     | ~5.5s  (79%)
-            #
-            # `meta.tool_input` carries the large tool payloads, so meta is where the
-            # boot cost actually lives — and its 31 readers are tractable: outside the
-            # emit sites (which redact and are covered by
-            # test_display_time_redaction.py) every one reads only CONTROL fields
-            # (`done`, `tool_call_id`), never payload text. Deferring meta to display
-            # time is therefore both where the win is and safely enumerable.
-            #
-            # `content` is the opposite on both axes: it is cheap (0.4s) and it has
-            # ~204 readers across the dashboard, so "every reader must remember to
-            # redact" is not an invariant anyone can hold. Three separate egress paths
-            # (the side-chat prompt, the orchestrator stage-result file, and the
-            # title-model prompt) can each leak restored content if a reader forgets.
-            # Paying 0.4s here restores the single chokepoint — any present or FUTURE
-            # reader of `m["content"]` gets clean bytes — instead of relying on an
-            # enumeration of every reader.
-            # `role != "user"`, never `not in ("user", "system")`: user-authored text
-            # stays raw because its author is its only reader, but `system` MUST be
-            # redacted — the write path excludes it, so system bytes reach disk raw.
-            if role != "user":
-                content = redact_display_content(content)
-            slot.append(
-                role,
-                content,
-                cls,
-                ts=m.get("ts", ""),
-                # broadcast=False: replaying history must not emit N `chat_message`
-                # events. _broadcast_chat_message redacts non-user content (parity
-                # with _prepare_messages) but deliberately not meta, and this
-                # helper also runs for on-demand cold-slot rehydrates while clients
-                # ARE connected, so broadcasting here would push unredacted meta
-                # straight to them. Clients get the transcript from the slot detail
-                # endpoint (redacted) and the sidebar from the coalesced slots push.
-                broadcast=False,
-                # meta is NOT redacted here — same reasoning as content, and
-                # it is where the cost actually was: tool `meta.tool_input` carries
-                # the large payloads, so meta redaction was ~5.5s of a ~7s restore
-                # while content redaction was only ~0.4s. Redacted at emit instead
-                # (chat_utils._prepare_messages), which is the only path that returns
-                # meta to a client. Blocked-link records are the exception: they are
-                # BOUNDED here because this is where the slot retains them, and the
-                # bound is a no-op for a row that carries none.
-                meta=(
-                    with_bounded_redaction_records(m["meta"])
-                    if isinstance(m.get("meta"), dict)
-                    else None
-                ),
-                mint_mid=False,
-            )
-            # Provenance is not a slot.append() argument, so carry it onto the
-            # message the append just created. Without this the window loses where
-            # each turn came from and the next flush restamps it "dashboard".
-            carry_provenance(slot.messages[-1], m)
-            _attach_variants(slot, m)
-        slot.drain()
-        slot._resumed_count = len(slot.messages)
-        # The whole in-memory window is already on disk → it is the on-disk window
-        # region. Saves re-serialize the window in place; the frozen prefix (older
-        # turns counted above) is never rewritten.
-        slot._disk_window_len = len(slot.messages)
-        slot._dirty = False
-        # A local turn admitted by the previous process and never torn down, the
-        # held notes the window already delivered, and the title refresh mark
-        # re-based against the rows the window holds -- the fields whose read
-        # needs the window. When both the local-turn marker and the relay marker
-        # are present the metadata is inconsistent (a slot runs locally OR on a
-        # peer), and one row is enough.
-        _had_local_turn_marker = applied.settle(messages)
-        if applied.relay_in_flight and not _had_local_turn_marker:
-            # The gateway crashed while this slot's turn was executing on the peer.
-            # The relay reader died with it and the turn's tail was never mirrored
-            # here, so the loaded window stops mid-turn. Append an explicit notice
-            # at the TAIL rather than resurrect a silently truncated conversation —
-            # the peer may well have finished, and the next send re-synchronises the
-            # visible history. ``broadcast=False`` is the sanctioned replay door
-            # (fork / transfer / window-rebuild use it): no clients exist at boot,
-            # and it appends a schema-correct row with a minted id. Placed AFTER
-            # ``_disk_window_len`` so the new row is not miscounted as
-            # already-persisted, with ``_dirty`` re-armed so the next flush writes
-            # it. The runtime ``_relay_in_flight`` stays False, so that flush clears
-            # the on-disk marker and a second restart cannot append the notice twice.
-            slot.append(
-                "error",
-                "This turn was interrupted when the app restarted. The crew may "
-                "have finished it — send again to pick the conversation back up.",
-                "msg msg-err",
-                broadcast=False,
-            )
-            slot._dirty = True
+        if _lazy_tail is not None:
+            # A sidebar row: the window waits for its first reader. The tail
+            # stands in for the summary, and nothing here read the transcript,
+            # so the tab_id backfill above has no read left to race.
+            slot._lazy_tail = _lazy_tail
+            # The loader keeps the parsed fields its settle needs, never the raw
+            # line: that line still carries whatever the restore bounds refused
+            # (an oversized queue, say), and the row may stay unopened for the
+            # life of the process. A row that can wait carries no local-turn
+            # marker, so settle reads the same answer from an empty line.
+            applied.meta = {}
+            slot._lazy_window = _PendingWindow(state, history_key, applied)
+            slot._dirty = False
+            logger.info("Restored session %s (%s) as a sidebar row", slot_name, slot.title)
+            return slot
+        _load_rehydrated_window(state, slot, messages, applied)
         logger.info("Rehydrated session %s (%s) from history", slot_name, slot.title)
         return slot
     except BaseException:
@@ -1584,6 +2286,7 @@ def _apply_recent_session(
     member_identity: tuple[str, str] | None = _IDENTITY_UNRESOLVED,
     agent: str | None = None,
     effort_marker: bool = False,
+    pending_backfills: list[tuple[str, dict]] | None = None,
 ) -> None:
     """Build the slot for one prefetched recent session.
 
@@ -1593,6 +2296,15 @@ def _apply_recent_session(
     synchronous generator and :func:`restore_recent_sessions_async` share one
     definition of the build while differing only in where the reads that feed it
     happen.
+
+    *pending_backfills* collects the ``(key, fields)`` of any tab-id metadata
+    backfill this slot mints, instead of firing it off the loop here. The async
+    driver passes a list and DRAINS it (its ``os.replace`` committed) before it
+    returns, so a caller's immediate on-loop transcript read right after restore
+    cannot land inside that replace window and trip a Windows sharing violation.
+    When ``None`` (the synchronous :func:`restore_recent_sessions` driver) the
+    backfill fires off the loop as before. Mirrors the drain
+    :func:`_rehydrate_slot_from_history` performs for the open-slot driver.
     """
     _restore_cfg = restore_cfg
     # Member keys resolve their pin from dm.json BEFORE construction (the
@@ -1633,7 +2345,18 @@ def _apply_recent_session(
         # helper. Dispatched AFTER the transcript read (the caller prefetches
         # messages first) so its os.replace() cannot race the read of the same
         # file — see the equivalent note in _rehydrate_slot_from_history.
-        update_metadata_off_loop(conv_log, key, {"tab_id": applied.minted_tab_id})
+        #
+        # Reading first makes THIS slot's own read quiescent, but firing the
+        # backfill off the loop here still leaves its os.replace in flight when
+        # the restore driver returns. A caller that reads this transcript on the
+        # loop right after restore (a sidebar read, a resume) can then land inside
+        # the replace window — the same Windows sharing violation. When the driver
+        # supplies a drain list we hand the backfill to it so the replace is
+        # committed before the driver returns; otherwise it fires off the loop.
+        if pending_backfills is not None:
+            pending_backfills.append((key, {"tab_id": applied.minted_tab_id}))
+        else:
+            update_metadata_off_loop(conv_log, key, {"tab_id": applied.minted_tab_id})
     older_cut = max(0, len(messages) - 500)
     slot._disk_older_count = older_cut
     # Durable-only view of the same prefix, recomputed from disk on every load —
@@ -1667,6 +2390,7 @@ def _apply_recent_session(
         )
         # See the equivalent call in _rehydrate_slot_from_history.
         carry_provenance(slot.messages[-1], m)
+        remember_unknown_row_fields(slot, m)
         _attach_variants(slot, m)
     slot.drain()
     slot._resumed_count = len(slot.messages)
@@ -1775,6 +2499,11 @@ async def restore_recent_sessions_async(
         return 0
     restored = 0
     state.restoring_open_slots = True
+    # Tab-id backfills this restore mints. Drained (its os.replace committed)
+    # before we return, so a caller's immediate on-loop transcript read cannot
+    # race a backfill still in flight on Windows. See _apply_recent_session's
+    # pending_backfills note, and the open-slot driver's equivalent drain.
+    pending_backfills: list[tuple[str, dict]] = []
     try:
         conv_log = state.conversation_log
         cutoff = time.time() - (window_minutes * 60) if window_minutes > 0 else None
@@ -1858,6 +2587,7 @@ async def restore_recent_sessions_async(
                 member_identity=_member_id,
                 agent=agent,
                 effort_marker=effort_marker,
+                pending_backfills=pending_backfills,
             )
             restored += 1
             # Same recovery, with the spool read awaited: this driver is
@@ -1867,6 +2597,41 @@ async def restore_recent_sessions_async(
                 await _recover_mcp_app_claims_async(_recovered_slot)
             await asyncio.sleep(0)
         _sync_dashboard_slots(state)
+        # Commit the tab-id backfills this restore minted BEFORE returning. Each
+        # is an os.replace of a session file; left in flight (the fire-and-forget
+        # off-loop helper), it would still be mid-replace when a caller reads the
+        # same transcript on the loop right after restore, and on Windows that
+        # open() is a sharing violation the on-loop read cannot wait out, so the
+        # read re-raises PermissionError. Awaited one at a time off the loop so
+        # the flock/os.close/os.replace stay off the event-loop thread.
+        #
+        # Through ``update_metadata_if(require_existing=True)``, NOT the plain
+        # upserting ``update_metadata``: deferring every backfill to here widens
+        # the gap between a tab restoring and its write landing, and a
+        # ``DELETE /api/sessions/{key}`` can fall inside it. The checked variant
+        # re-reads existence UNDER the write lock, so a session unlinked during
+        # the restore window is left deleted instead of being recreated as a
+        # metadata-only transcript the next recent-session restore reopens as an
+        # empty tab. The guard always proceeds; existence is the only gate, and
+        # the minted tab_id has no on-disk siblings so a backfill that is
+        # correctly skipped loses nothing. Best-effort: a backfill is metadata
+        # already reflected in the restored slot, so a lock timeout / I/O error /
+        # a skipped (deleted) write is logged, not raised.
+        for _bk_key, _bk_fields in pending_backfills:
+            try:
+                await asyncio.to_thread(
+                    conv_log.update_metadata_if,
+                    _bk_key,
+                    _bk_fields,
+                    lambda _meta: True,
+                    require_existing=True,
+                )
+            except Exception:  # noqa: BLE001 - best-effort metadata backfill
+                logger.warning(
+                    "restore_recent_sessions: tab-id backfill failed for %s",
+                    _bk_key,
+                    exc_info=True,
+                )
     finally:
         state.restoring_open_slots = False
     return restored
@@ -2112,8 +2877,20 @@ def _save_slot_to_history(
     expected_slot_name: str | None = None,
     rows_only: bool = False,
     pending_mode_slot: _ChatSlot | None = None,
+    mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
+    after_commit_under_lock: Callable[[], None] | None = None,
+    refuse_stale_empty_merge: bool = False,
+    turn_timeout_override: tuple[int | None] | None = None,
 ) -> bool:
     """Persist slot messages to JSONL history (append-safe).
+
+    ``refuse_stale_empty_merge``: let the empty-window merge of a message-less
+    slot refuse a stale queue snapshot or a replaced slot, as the full save
+    does. Only the periodic flush passes it, because it re-runs a refused pass
+    on its next tick. The forced route saves (tag, folder, pin, transfer) keep
+    committing their merge unconditionally, so none of them can newly report an
+    acknowledged edit as refused.
 
     The session file is modeled as **frozen prefix + live window**:
 
@@ -2225,9 +3002,40 @@ def _save_slot_to_history(
         )
         return False
     window = _write_guards.drop_notes_authorized_elsewhere(slot, window, note_auth_key)
+
+    # The two retryable refusals, evaluated under the transcript lock by both the
+    # empty-window merge and the full save below. Each returns the reason to log,
+    # or ``None`` to proceed.
+    def _queue_line_is_ours(meta: dict) -> bool:
+        # A rows-only write over another holder's line defers the queue key to
+        # that line, so it neither decides nor commits the queue.
+        return not (rows_only and meta and not _line_is_this_slots(slot, meta))
+
+    def _stale_queue_refusal(meta: dict) -> str | None:
+        # The lock orders the queue writers' commits, not their reads, so a
+        # writer holding an older queue can arrive here second.
+        if _queue_line_is_ours(meta) and _queue_snapshot_is_stale(slot, queue_write_basis):
+            return (
+                "another writer committed a newer queued-prompt value "
+                "while this save held an older snapshot"
+            )
+        return None
+
+    def _replaced_refusal() -> str | None:
+        if expected_slot_name is not None and state._slots.get(expected_slot_name) is not slot:
+            return f"slot {expected_slot_name} was replaced before the write committed"
+        return None
+
     if not window:
-        if force or closed:
-            _metadata_line.merge_empty_window(
+        # A restored row whose window is still pending has every row on disk
+        # already, so anything that dirtied it is a metadata edit (a rename, a
+        # colour) and the metadata-only merge is its whole save.
+        if force or closed or (getattr(slot, "window_pending", False) and slot._dirty):
+
+            def _refusal_under_lock(meta: dict) -> str | None:
+                return _stale_queue_refusal(meta) or _replaced_refusal()
+
+            refusal = _metadata_line.merge_empty_window(
                 state.conversation_log,
                 slot,
                 history_key,
@@ -2236,7 +3044,31 @@ def _save_slot_to_history(
                 closed=closed,
                 closed_at=closed_at,
                 pending_mode_target=pending_mode_target,
+                # Only the periodic flush opts in. A close commits
+                # unconditionally, as it does on main: its callers ignore a
+                # refused save, so a refusal would leave an open-shaped line
+                # that a restart resurrects.
+                refusal_under_lock=(
+                    _refusal_under_lock if refuse_stale_empty_merge and not closed else None
+                ),
+                # A route save (tag, folder, pin, transfer) is not refused, but
+                # an older queue snapshot must not overwrite a newer committed
+                # queue either: the route's edit commits and the queue key is
+                # left as it is on disk, still owed to the next save.
+                queue_deferred_under_lock=(
+                    (lambda meta: _stale_queue_refusal(meta) is not None)
+                    if not refuse_stale_empty_merge and not closed
+                    else None
+                ),
+                mutes_opened_override=mutes_opened_override,
+                muted_override=muted_override,
+                after_commit_under_lock=after_commit_under_lock,
+                turn_timeout_override=turn_timeout_override,
             )
+            if refusal is not None:
+                logger.warning("Slot %s empty-window save refused: %s", slot.key, refusal)
+                _keep_owed_after_refusal(slot)
+                return False
         return True
     # Skip a pure no-op: a freshly resumed slot with no new AND no edited
     # messages. ``slot._dirty`` is set by both append and in-place edits
@@ -2277,24 +3109,15 @@ def _save_slot_to_history(
             )
 
             # ── Stale-queue guard ───────────────────────────────────────────
-            # The lock orders the queue writers' commits, not their reads, so a
-            # writer holding an older queue can arrive here second. Refuse rather
-            # than put the older value back: nothing is written, the queue stays
-            # owed by the drift check, and the next pass re-decides against the
-            # state that exists. Skipped when this write defers the key to the
-            # line on disk (rows-only over another holder's line), because then
-            # it is not deciding the queue at all.
-            queue_line_is_ours = not (
-                rows_only and existing_meta and not _line_is_this_slots(slot, existing_meta)
-            )
-            if queue_line_is_ours and _queue_snapshot_is_stale(slot, queue_write_basis):
-                logger.warning(
-                    "Slot %s save refused: another writer committed a newer queued-prompt "
-                    "value while this save held an older snapshot",
-                    slot.key,
-                )
+            # Refuse rather than put an older queue back: nothing is written, the
+            # queue stays owed by the drift check, and the next pass re-decides
+            # against the state that exists.
+            refusal = _stale_queue_refusal(existing_meta)
+            if refusal is not None:
+                logger.warning("Slot %s save refused: %s", slot.key, refusal)
                 _keep_owed_after_refusal(slot)
                 return False
+            queue_line_is_ours = _queue_line_is_ours(existing_meta)
 
             path = state.conversation_log._path(history_key)
             if _write_guards.delete_won(
@@ -2322,12 +3145,9 @@ def _save_slot_to_history(
             # truncation has no future, so refuse the whole save (``False``,
             # nothing written) rather than land the stale snapshot on the
             # replacement's transcript.
-            if expected_slot_name is not None and state._slots.get(expected_slot_name) is not slot:
-                logger.warning(
-                    "Slot %s save refused: slot %s was replaced before the write committed",
-                    history_key,
-                    expected_slot_name,
-                )
+            refusal = _replaced_refusal()
+            if refusal is not None:
+                logger.warning("Slot %s save refused: %s", history_key, refusal)
                 # A refusal is not a commit, and the periodic writer cannot tell
                 # the difference: it clears ``_dirty`` on any return that did not
                 # raise. Keeping the state owed is what makes this guard safe for
@@ -2348,6 +3168,9 @@ def _save_slot_to_history(
                     queue_candidates=queue_candidates,
                     rewrite=rewrite,
                     rows_only=rows_only,
+                    mutes_opened_override=mutes_opened_override,
+                    muted_override=muted_override,
+                    turn_timeout_override=turn_timeout_override,
                 )
             )
             meta_str = json.dumps(meta_line) + "\n"
@@ -2380,7 +3203,24 @@ def _save_slot_to_history(
                 except OSError:
                     _preserve_mtime = None
 
-            atomic_write(path, payload, fsync=True)
+            try:
+                atomic_write(path, payload, fsync=True)
+            except BaseException:
+                # A failed save keeps nothing staged: its rows stay unjudged and
+                # the next save offers them again.
+                _display_verdicts.take_pending()
+                raise
+            # The rows just written are judged for display once, now, on the
+            # verdict worker (display_verdicts); a cheap hand-off, not the work.
+            _display_verdicts.submit_committed(slot.workspace)
+            # The staged value is now durable. Flip the live flag HERE, still
+            # inside the transcript ``_locked`` block, so a concurrent dirty
+            # flush -- which needs this same lock to serialize the slot -- cannot
+            # observe the still-prior flag and overwrite the committed value.
+            # This is the full-save twin of the empty-window merge's
+            # ``after_commit_under_lock`` hook; one or the other runs, never both.
+            if after_commit_under_lock is not None:
+                after_commit_under_lock()
             _record_pending_memory_mode(pending_mode_target, _mode)
             # The write committed: the deferred-note drop records it retired
             # are now safe to consume (see ``build_full_line``). Discard is
@@ -2501,6 +3341,10 @@ async def save_slot_off_loop(
     expected_slot_name: str | None = None,
     rows_only: bool = False,
     issued_by_the_retraction: bool = False,
+    mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
+    after_commit_under_lock: Callable[[], None] | None = None,
+    turn_timeout_override: tuple[int | None] | None = None,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
 
@@ -2581,6 +3425,10 @@ async def save_slot_off_loop(
             expected_slot_name=expected_slot_name,
             rows_only=rows_only,
             pending_mode_slot=pending_mode_slot,
+            mutes_opened_override=mutes_opened_override,
+            muted_override=muted_override,
+            after_commit_under_lock=after_commit_under_lock,
+            turn_timeout_override=turn_timeout_override,
         )
 
     def _begin_guarded_metadata_write() -> None:
@@ -2765,6 +3613,7 @@ from kiro_crew.dashboard.slot_persistence.message_entries import (  # noqa: E402
     _approx_window_payload_bytes,
     _attach_variants,
     _build_message_entry_uncached,
+    remember_unknown_row_fields,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,F401
     _RETIRED_MODES,
@@ -2778,6 +3627,7 @@ from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,
     _restore_model_fields,
     _restored_mode,
     _validate_autocompact_pct,
+    _validate_turn_timeout_secs,
 )
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: E402,F401
     _META_LAST_USER_AT,
@@ -2796,6 +3646,7 @@ from kiro_crew.dashboard.slot_persistence.restore_inputs import (  # noqa: E402,
     _load_restore_cfg,
     _read_mcp_app_claims,
     _read_open_slots_keys,
+    _read_open_slots_snapshot,
     _recent_session_slot_name,
     _reconcile_mcp_app_claims,
     _recover_mcp_app_claims,

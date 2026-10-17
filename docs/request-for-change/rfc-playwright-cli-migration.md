@@ -3,8 +3,8 @@ title: Playwright CLI Migration — retire the Playwright MCP proxy for playwrig
 status: partial
 author: Bolin Chen
 created: 2026-08-13
-last-audited: 2026-09-05
-audited-at: 424efa423
+last-audited: 2026-10-06
+audited-at: 9348a25a34
 doc-pr:
 implementation-prs: [3233, 3277]
 tracking-issues: []
@@ -124,7 +124,7 @@ them.
 The capability rests on a package whose only official distribution is the npm
 registry, and that is a real cost this migration accepts rather than solves:
 
-- `@playwright/cli` is a Node program (`#!/usr/bin/env node`, Node 18+), so there
+- `@playwright/cli` is a Node program (`#!/usr/bin/env node`; Kiro Crew requires Node 20+, `MIN_NODE_MAJOR` in `browser_cli/install.py`), so there
   is no way to drop a self-contained binary on a host. Bundling it would not
   remove that requirement, only the 19 MB download.
 - The upstream GitHub release carries **no build assets**, so "download the

@@ -22,8 +22,8 @@ from kiro_crew.dashboard.chat_utils import (
 )
 
 
-def _fake_config(provider: str):
-    return SimpleNamespace(agent=SimpleNamespace(provider=provider))
+def _fake_config(provider: str, acp_backend: str = ""):
+    return SimpleNamespace(agent=SimpleNamespace(provider=provider, acp_backend=acp_backend))
 
 
 def _make_app() -> web.Application:
@@ -34,10 +34,10 @@ def _make_app() -> web.Application:
     return app
 
 
-async def _get(provider: str):
+async def _get(provider: str, acp_backend: str = ""):
     with patch(
         "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
-        return_value=_fake_config(provider),
+        return_value=_fake_config(provider, acp_backend),
     ):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/slash-commands")
@@ -55,6 +55,15 @@ def test_description_map_covers_slash_commands():
 
 
 class TestApiSlashCommands:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend,supported", [("", False), ("claude", True)])
+    async def test_acp_todos_suggestion_uses_default_backend_capability(self, backend, supported):
+        payload = await _get("acp", backend)
+        names = {item["name"] for item in payload}
+
+        assert ("/todos" in names) is supported
+        assert not names & (_BLOCKED_SLASH_COMMANDS - {"/todos"})
+
     @pytest.mark.asyncio
     async def test_default_provider_returns_described_commands(self):
         payload = await _get("kiro")
@@ -85,14 +94,15 @@ class TestApiSlashCommands:
         assert "/todos" not in names
 
     @pytest.mark.asyncio
-    async def test_claude_code_provider_filters_blocked_commands(self):
+    @pytest.mark.parametrize("backend,supported", [("", False), ("claude", True)])
+    async def test_claude_code_provider_filters_blocked_commands(self, backend, supported):
         """The provider-reported path applies the same gate: a harness that
         reports a blocked command must not have it forwarded to the menu."""
-        provider = SimpleNamespace(_slash_commands=["compact", "tangent", "quit", "help"])
+        provider = SimpleNamespace(_slash_commands=["compact", "tangent", "todos", "quit", "help"])
         state = SimpleNamespace(sessions=SimpleNamespace(active_providers=lambda: [provider]))
         with patch(
             "kiro_crew.dashboard.handlers.agents.KiroCrewConfig.load",
-            return_value=_fake_config("claude_code"),
+            return_value=_fake_config("claude_code", backend),
         ):
             app = _make_app()
             app["state"] = state
@@ -104,3 +114,4 @@ class TestApiSlashCommands:
         assert "/compact" in names and "/help" in names and "/side" in names
         assert "/tangent" not in names
         assert "/quit" not in names
+        assert ("/todos" in names) is supported

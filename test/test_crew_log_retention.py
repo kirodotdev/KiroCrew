@@ -28,12 +28,18 @@ from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, store
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.session_ledger import _store_name
+from kiro_crew.testing.wait import wait_until
 
 SESSION = "s-retain"
 CREW = "qa"
 DAY_MS = 86_400_000
 #: The teardown marker, spelled here so a planted line matches what the sweep reads.
 _CLOSED = "session/closed"
+#: How long ``emit.flush`` may take to drain the writer. A lost-run bound, not the
+#: barrier: ``flush`` returns the moment the writer is quiet, so a passing run never
+#: waits it out. A unit's first append also creates the unit, and on a loaded Windows
+#: runner that drain takes longer than 5 s.
+_EMIT_DRAIN_SECS = 30.0
 
 
 def _opened(*, resumed: bool) -> dict:
@@ -1097,8 +1103,38 @@ def _newest_lifecycle_type(unit_id: str) -> str:
     return newest
 
 
+@pytest.fixture
+def drained_emitter(monkeypatch):
+    """The live crew-log emitter for a test that drives a real ``SessionManager``.
+
+    Fresh writer caches and a fresh session tree on the way in. On the way out the
+    writer is drained and retired, and the session tree's debounced checkpoint is
+    cancelled and waited out. Every lifecycle entry that lands arms that checkpoint
+    on the shared maintenance pool, where its worker sleeps out the debounce; left
+    alone, it outlives the test and runs during the next one.
+    """
+    from kiro_crew.crew_log import emit
+    from kiro_crew.crew_log import session_tree_projection as stp
+
+    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+    emit.reset_caches()
+    stp.reset_for_tests()
+    try:
+        yield
+    finally:
+        emit.flush(timeout=_EMIT_DRAIN_SECS)
+        emit.reset_caches()
+        tree = stp.projection()
+        stp.reset_for_tests()
+        wait_until(
+            lambda: not tree._write_scheduled,
+            describe=lambda: "the session tree's debounced checkpoint is still sleeping",
+        )
+
+
 @pytest.mark.asyncio
-async def test_destroying_a_session_records_the_teardown_in_its_log(monkeypatch):
+@pytest.mark.usefixtures("drained_emitter")
+async def test_destroying_a_session_records_the_teardown_in_its_log():
     """Without this entry NEITHER half of retention can ever collect the unit.
 
     The emitter holds a destroyed session's cached handle, and the write lease
@@ -1117,30 +1153,26 @@ async def test_destroying_a_session_records_the_teardown_in_its_log(monkeypatch)
     from kiro_crew.crew_log import emit
     from kiro_crew.session import SessionManager
 
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    emit.reset_caches()
-    try:
-        cfg = KiroCrewConfig()
-        cfg.session.timeout_secs = 2
-        manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-torn-down"))
-        await manager.get_or_create("thread-doomed")
+    cfg = KiroCrewConfig()
+    cfg.session.timeout_secs = 2
+    manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-torn-down"))
+    await manager.get_or_create("thread-doomed")
 
-        emit.on_session_opened("acp-torn-down", agent="kirocrew", slot="thread-doomed")
-        assert emit.flush(timeout=5.0)
-        assert _newest_lifecycle_type("acp-torn-down") == "session/opened"
+    emit.on_session_opened("acp-torn-down", agent="kirocrew", slot="thread-doomed")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert _newest_lifecycle_type("acp-torn-down") == "session/opened"
 
-        # ``SessionManager.destroy`` returns None -- it awaits the lifecycle's own
-        # destroy and discards its bool -- so the effect is what is asserted.
-        await manager.destroy("thread-doomed")
-        assert emit.flush(timeout=5.0)
+    # ``SessionManager.destroy`` returns None -- it awaits the lifecycle's own
+    # destroy and discards its bool -- so the effect is what is asserted.
+    await manager.destroy("thread-doomed")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        assert _newest_lifecycle_type("acp-torn-down") == _CLOSED
-    finally:
-        emit.reset_caches()
+    assert _newest_lifecycle_type("acp-torn-down") == _CLOSED
 
 
 @pytest.mark.asyncio
-async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep(monkeypatch):
+@pytest.mark.usefixtures("drained_emitter")
+async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep():
     """The end the teardown entry buys: an aged destroyed unit is collected.
 
     Pinned end to end rather than trusting the entry alone, because the two
@@ -1152,46 +1184,41 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep(monkeyp
     from kiro_crew.crew_log import emit
     from kiro_crew.session import SessionManager
 
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    emit.reset_caches()
-    try:
-        cfg = KiroCrewConfig()
-        cfg.session.timeout_secs = 2
-        manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-aged"))
-        await manager.get_or_create("thread-aged")
-        emit.on_session_opened("acp-aged", agent="kirocrew", slot="thread-aged")
-        assert emit.flush(timeout=5.0)
-        assert await manager.destroy("thread-aged") is None
-        assert emit.flush(timeout=5.0)
+    cfg = KiroCrewConfig()
+    cfg.session.timeout_secs = 2
+    manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-aged"))
+    await manager.get_or_create("thread-aged")
+    emit.on_session_opened("acp-aged", agent="kirocrew", slot="thread-aged")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert await manager.destroy("thread-aged") is None
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        # Age the close the sweep reads, the same way the fixtures above do.
-        path = _unit_dir(lg.KIND_SESSION, "acp-aged") / "log.jsonl"
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for index in range(len(lines) - 1, -1, -1):
-            entry = json.loads(lines[index])
-            if entry.get("type") == _CLOSED:
-                entry["time"] = store.now_ms() - 90 * DAY_MS
-                lines[index] = json.dumps(entry, separators=(",", ":"), sort_keys=True)
-                break
-        else:  # pragma: no cover - the assertion above already proved it is there
-            raise AssertionError("destroy wrote no close to age")
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Age the close the sweep reads, the same way the fixtures above do.
+    path = _unit_dir(lg.KIND_SESSION, "acp-aged") / "log.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        entry = json.loads(lines[index])
+        if entry.get("type") == _CLOSED:
+            entry["time"] = store.now_ms() - 90 * DAY_MS
+            lines[index] = json.dumps(entry, separators=(",", ":"), sort_keys=True)
+            break
+    else:  # pragma: no cover - the assertion above already proved it is there
+        raise AssertionError("destroy wrote no close to age")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-        # No ``reset_caches`` between the close and this sweep, deliberately. The
-        # close entry is what RELEASES the emitter's handle -- ``on_session_closed``
-        # drops it once no turn of that session is pinned -- so by the time the
-        # entry has landed the lease is already free and the ordinary sweep can
-        # claim it. That is the same release the delete funnel's flush waits for,
-        # observed from the other caller.
-        #
-        # Off the loop, as ``history`` calls it. Landing the close also wakes the eager
-        # folder, which reads this unit on its own thread; the removal waits for that
-        # batch only off the event-loop thread, and on Windows an unlink of the segment
-        # the fold holds open is refused and the unit reported not removed.
-        assert off_loop(store.sweep_expired, 30) == (1, 0)
-        assert not CrewLog.exists(lg.KIND_SESSION, "acp-aged")
-    finally:
-        emit.reset_caches()
+    # No ``reset_caches`` between the close and this sweep, deliberately. The
+    # close entry is what RELEASES the emitter's handle -- ``on_session_closed``
+    # drops it once no turn of that session is pinned -- so by the time the
+    # entry has landed the lease is already free and the ordinary sweep can
+    # claim it. That is the same release the delete funnel's flush waits for,
+    # observed from the other caller.
+    #
+    # Off the loop, as ``history`` calls it. Landing the close also wakes the eager
+    # folder, which reads this unit on its own thread; the removal waits for that
+    # batch only off the event-loop thread, and on Windows an unlink of the segment
+    # the fold holds open is refused and the unit reported not removed.
+    assert off_loop(store.sweep_expired, 30) == (1, 0)
+    assert not CrewLog.exists(lg.KIND_SESSION, "acp-aged")
 
 
 def test_the_header_slot_reader_refuses_a_unit_whose_id_does_not_fold_back():
@@ -1361,6 +1388,7 @@ def _newest_close_reason(unit_id: str) -> str:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("drained_emitter")
 async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reason(monkeypatch):
     """One map key is deleted, so a second key on the same sid still resolves it.
 
@@ -1373,62 +1401,54 @@ async def test_a_destroy_that_leaves_another_mapping_writes_a_NON_terminal_reaso
     from kiro_crew.crew_log import emit
     from kiro_crew.session import SessionManager
 
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    emit.reset_caches()
-    try:
-        cfg = KiroCrewConfig()
-        cfg.session.timeout_secs = 2
-        manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-shared"))
-        await manager.get_or_create("thread-shared")
-        emit.on_session_opened("acp-shared", agent="kirocrew", slot="thread-shared")
-        assert emit.flush(timeout=5.0)
+    cfg = KiroCrewConfig()
+    cfg.session.timeout_secs = 2
+    manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-shared"))
+    await manager.get_or_create("thread-shared")
+    emit.on_session_opened("acp-shared", agent="kirocrew", slot="thread-shared")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        # A surviving holder of the same sid, exactly as a repeated transfer import
-        # produces: a different key, the same session id.
-        monkeypatch.setattr(
-            manager._session_map, "find_key_by_sid", lambda _sid: "dashboard_chat-9-900"
-        )
-        await manager.destroy("thread-shared")
-        assert emit.flush(timeout=5.0)
+    # A surviving holder of the same sid, exactly as a repeated transfer import
+    # produces: a different key, the same session id.
+    monkeypatch.setattr(
+        manager._session_map, "find_key_by_sid", lambda _sid: "dashboard_chat-9-900"
+    )
+    await manager.destroy("thread-shared")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
-        _age_close_entry("acp-shared", days=400)
-        assert off_loop(store.sweep_expired, 30) == (0, 0)
-        assert CrewLog.exists(lg.KIND_SESSION, "acp-shared")
-    finally:
-        emit.reset_caches()
+    assert _newest_close_reason("acp-shared") == "destroyed_sid_retained"
+    _age_close_entry("acp-shared", days=400)
+    assert off_loop(store.sweep_expired, 30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, "acp-shared")
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("drained_emitter")
 async def test_an_unreadable_map_also_withholds_the_terminal_reason(monkeypatch):
     """An unreadable map is not evidence of revocation, so the claim is withheld."""
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.crew_log import emit
     from kiro_crew.session import SessionManager
 
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    emit.reset_caches()
-    try:
-        cfg = KiroCrewConfig()
-        cfg.session.timeout_secs = 2
-        manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-nomap"))
-        await manager.get_or_create("thread-nomap")
-        emit.on_session_opened("acp-nomap", agent="kirocrew", slot="thread-nomap")
-        assert emit.flush(timeout=5.0)
+    cfg = KiroCrewConfig()
+    cfg.session.timeout_secs = 2
+    manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-nomap"))
+    await manager.get_or_create("thread-nomap")
+    emit.on_session_opened("acp-nomap", agent="kirocrew", slot="thread-nomap")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        def _raise(_sid):
-            raise RuntimeError("map unreadable")
+    def _raise(_sid):
+        raise RuntimeError("map unreadable")
 
-        monkeypatch.setattr(manager._session_map, "find_key_by_sid", _raise)
-        await manager.destroy("thread-nomap")
-        assert emit.flush(timeout=5.0)
+    monkeypatch.setattr(manager._session_map, "find_key_by_sid", _raise)
+    await manager.destroy("thread-nomap")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
 
-        assert _newest_close_reason("acp-nomap") == "destroyed_sid_retained"
-    finally:
-        emit.reset_caches()
+    assert _newest_close_reason("acp-nomap") == "destroyed_sid_retained"
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("drained_emitter")
 async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_again(monkeypatch):
     """Even a forged mapping's resume puts the unit back out of reach.
 
@@ -1440,29 +1460,24 @@ async def test_a_session_opened_after_a_destroy_makes_the_unit_uncollectable_aga
     from kiro_crew.crew_log import emit
     from kiro_crew.session import SessionManager
 
-    monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
+    cfg = KiroCrewConfig()
+    cfg.session.timeout_secs = 2
+    manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-revived"))
+    await manager.get_or_create("thread-revived")
+    emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    monkeypatch.setattr(manager._session_map, "find_key_by_sid", lambda _sid: None)
+    await manager.destroy("thread-revived")
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
+    assert _newest_close_reason("acp-revived") == "destroyed"
+
+    _age_close_entry("acp-revived", days=400)
+    emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived", resumed=True)
+    assert emit.flush(timeout=_EMIT_DRAIN_SECS)
     emit.reset_caches()
-    try:
-        cfg = KiroCrewConfig()
-        cfg.session.timeout_secs = 2
-        manager = SessionManager(cfg, provider_factory=_provider_factory_reporting("acp-revived"))
-        await manager.get_or_create("thread-revived")
-        emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived")
-        assert emit.flush(timeout=5.0)
-        monkeypatch.setattr(manager._session_map, "find_key_by_sid", lambda _sid: None)
-        await manager.destroy("thread-revived")
-        assert emit.flush(timeout=5.0)
-        assert _newest_close_reason("acp-revived") == "destroyed"
 
-        _age_close_entry("acp-revived", days=400)
-        emit.on_session_opened("acp-revived", agent="kirocrew", slot="thread-revived", resumed=True)
-        assert emit.flush(timeout=5.0)
-        emit.reset_caches()
-
-        assert off_loop(store.sweep_expired, 30) == (0, 0)
-        assert CrewLog.exists(lg.KIND_SESSION, "acp-revived")
-    finally:
-        emit.reset_caches()
+    assert off_loop(store.sweep_expired, 30) == (0, 0)
+    assert CrewLog.exists(lg.KIND_SESSION, "acp-revived")
 
 
 def _stage_target(unit_id: str):

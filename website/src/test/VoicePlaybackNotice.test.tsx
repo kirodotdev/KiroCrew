@@ -56,6 +56,20 @@ describe('voice playback error notice', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
+  it('tells the user to confirm Amazon Polly when the consent gate refuses it', () => {
+    renderNotice('chat-a')
+    act(() => { reportVoiceFailure({ slot: 'chat-a', code: 'voice_consent_required' }) })
+    const notice = screen.getByTestId('voice-playback-error')
+    expect(notice).toHaveTextContent(
+      'Read aloud needs Amazon Polly confirmed for this AWS profile and region. Confirm it in the Text-to-speech settings, then try again.',
+    )
+    expect(notice).not.toHaveTextContent('Read aloud failed')
+    expect(screen.getByRole('link', { name: 'Read aloud settings (Text-to-speech)' })).toHaveAttribute(
+      'href', '/settings/voice?highlight=voice.provider-2',
+    )
+    expect(recentErrors()[0]).toMatchObject({ code: 'voice_consent_required', endpoint: '/api/voice/synthesize' })
+  })
+
   it('keeps errors and retry cleanup scoped to the visible conversation', () => {
     const { rerender } = renderNotice('chat-a')
     emit('voice-error', 'chat-b')

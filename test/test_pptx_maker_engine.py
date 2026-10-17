@@ -526,11 +526,8 @@ class TestTheEngineStdoutIsDecodedAsUtf8:
         with pytest.raises(UnicodeDecodeError):
             self.PAYLOAD.decode("utf-8")  # guard the guard
 
-        with (
-            mock.patch.object(
-                engine, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
-            ),
-            mock.patch.object(engine, "cgroup_scope_argv", side_effect=lambda a: a),
+        with mock.patch.object(
+            engine, "sandboxed_spawn_argv", return_value=(self._argv(), None, None)
         ):
             result = engine._spawn(["ignored"], cwd=str(tmp_path), timeout=30)
 
@@ -550,10 +547,7 @@ class TestTheEngineStdoutIsDecodedAsUtf8:
             "-c",
             f"import sys;sys.stdout.buffer.write({payload!r});sys.stdout.buffer.flush()",
         ]
-        with (
-            mock.patch.object(engine, "sandboxed_spawn_argv", return_value=(argv, None, None)),
-            mock.patch.object(engine, "cgroup_scope_argv", side_effect=lambda a: a),
-        ):
+        with mock.patch.object(engine, "sandboxed_spawn_argv", return_value=(argv, None, None)):
             result = engine._spawn(["ignored"], cwd=str(tmp_path), timeout=30)
 
         assert result.json() == {"added": ["提案 \U0001f600"]}

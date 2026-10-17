@@ -59,9 +59,11 @@ def schemas() -> list[dict[str, Any]]:
                 "<mcwidget>) so the user can find, view, and iterate on it later. "
                 "Returns the slug — a stable handle the user (and you) can "
                 "reference in future sessions ('iterate on artifact <slug>'). "
-                "Use this when the user asks to save a widget, when you create "
-                "something worth keeping, or before iterating (use artifact_update "
-                "for the iteration step itself)."
+                "Every <mcwidget> you emit in chat is ALREADY auto-registered as an "
+                "artifact (except in an incognito or temporary session), so do not "
+                "call this on emitted widget content (it makes a duplicate); the "
+                "user's star pins it. Use this for content you never emitted as a "
+                "widget. Iterate with artifact_get + artifact_update."
             ),
             "inputSchema": {
                 "type": "object",
@@ -86,12 +88,31 @@ def schemas() -> list[dict[str, Any]]:
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
+                        "enum": [
+                            "widget",
+                            "html",
+                            "markdown",
+                            "svg",
+                            "json",
+                            "text",
+                            "webapp",
+                            "dashboard",
+                        ],
                         "description": (
                             "Artifact kind. Optional — inferred from the content "
                             "when omitted (HTML-ish body -> widget, markdown text "
                             "-> markdown). Pass explicitly to override; markdown "
-                            "documents should set kind='markdown'."
+                            "documents should set kind='markdown'. kind='dashboard' "
+                            "is a dynamic dashboard's LAYOUT PACKAGE: content is a "
+                            "JSON object carrying exactly these five keys -- kind "
+                            "(the string 'dashboard'), bound_to, model, view, theme "
+                            "-- and no values anywhere in it, because values stay in "
+                            "the crew log and reach the page through the fold. The "
+                            "store refuses anything else, naming the rule it broke. "
+                            "To put your own page LIVE, use the dashboard_save tool "
+                            "instead: it writes this package for you and makes it "
+                            "the page your Dashboard tab draws, as a version a "
+                            "rollback can undo."
                         ),
                     },
                     "source": {
@@ -159,8 +180,9 @@ def schemas() -> list[dict[str, Any]]:
             "description": (
                 "Update an artifact's live state. Each agent edit "
                 "automatically creates a new version (like a git commit) — "
-                "the user can revert to any prior agent iteration via "
-                "artifact_revert. Use after artifact_get when iterating "
+                "the user can revert to any retained version via "
+                "artifact_revert (the newest 50 are kept; see "
+                "artifact_versions). Use after artifact_get when iterating "
                 "on an existing artifact at the user's request."
             ),
             "inputSchema": {
@@ -188,7 +210,18 @@ def schemas() -> list[dict[str, Any]]:
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Replacement tag list (optional).",
+                        "description": (
+                            "Replacement tag list (optional). To remove every "
+                            "tag, pass clear_tags: true instead of an empty list."
+                        ),
+                    },
+                    "clear_tags": {
+                        "type": "boolean",
+                        "description": (
+                            "true removes every tag. Use it rather than tags: [], "
+                            "which some clients drop before it reaches the "
+                            "server. Refused beside a non-empty tags."
+                        ),
                     },
                     "webapp_metadata": {
                         "type": "object",
@@ -245,7 +278,16 @@ def schemas() -> list[dict[str, Any]]:
                     "tag": {"type": "string", "description": "Filter by tag."},
                     "kind": {
                         "type": "string",
-                        "enum": ["widget", "html", "markdown", "svg", "json", "text", "webapp"],
+                        "enum": [
+                            "widget",
+                            "html",
+                            "markdown",
+                            "svg",
+                            "json",
+                            "text",
+                            "webapp",
+                            "dashboard",
+                        ],
                         "description": "Filter by kind.",
                     },
                     "q": {
@@ -426,9 +468,10 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "artifact_folder_list",
             "description": (
-                "List the artifact-library folder tree. Returns each folder's id, "
-                "name, parent_id, human path, and direct item_count. Use to "
-                "discover folder ids/paths before moving or organizing artifacts."
+                "List the artifact-library folder tree. Returns one line per "
+                "folder with its id, human path and direct item count, sorted by "
+                "path. Use to discover folder ids/paths before moving or "
+                "organizing artifacts."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
@@ -535,8 +578,10 @@ def schemas() -> list[dict[str, Any]]:
                 "Preview a deploy of a webapp artifact or local directory to a "
                 "public URL on the user's AWS account. This tool is PREVIEW-ONLY: "
                 "it returns scan status and deploy details but never executes. "
-                "Final confirmation happens in the dashboard at Artifacts -> "
-                "Artifact Deploy (/deploy) -> Pending confirmations. "
+                "Final confirmation happens in the dashboard on the Artifact "
+                "Deploy page (/deploy) -> Pending confirmations; the Artifacts "
+                "page shows its Artifact Deploy button only when the Artifact "
+                "Deploy Feature Preview is on, and /deploy works either way. "
                 "Restricted-session guard and SEL audit apply identically to the "
                 "HTTP endpoint."
             ),
@@ -550,12 +595,13 @@ def schemas() -> list[dict[str, Any]]:
                     "artifact_slug": {
                         "type": "string",
                         "description": (
-                            "Slug of a static artifact (widget/html/markdown) "
-                            "to deploy — its content is rendered as a page. "
-                            "kind=webapp artifacts are rejected (their content "
-                            "is an app summary, not deployable HTML — deploy "
-                            "the app's built directory via local_dir instead). "
-                            "Mutually exclusive with local_dir."
+                            "Slug of an artifact to deploy. A static artifact "
+                            "(widget/html/markdown) has its content rendered "
+                            "as a page; a kind=webapp artifact deploys its "
+                            "app's static root through the same checks as "
+                            "local_dir (refused with webapp_root_unavailable "
+                            "when that root cannot be resolved). Mutually "
+                            "exclusive with local_dir."
                         ),
                     },
                     "local_dir": {
@@ -806,6 +852,13 @@ def artifact_get(name: str, args: dict[str, Any]) -> str:
 def artifact_update(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, ARTIFACT_UPDATE_SCHEMA)
     slug = args["slug"]
+    # ``clear_tags`` is not a field of the artifact: it is the spelling of
+    # ``tags: []`` that survives a client which drops an empty list before it
+    # reaches this server, so it becomes that list here and never reaches the route.
+    if args.pop("clear_tags", None) is True:
+        if args.get("tags"):
+            return "Error: clear_tags removes every tag; pass it without tags"
+        args["tags"] = []
     update_body = {k: v for k, v in args.items() if k != "slug" and v is not None}
     if not update_body:
         return "Error: nothing to update (provide content/name/description/tags)"
@@ -1231,8 +1284,9 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
             f"Deploy blocked by scan ({d.get('count', '?')} non-credential "
             f"finding(s)):\n{findings}\n\n"
             f"These findings are overridable by a HUMAN: the deploy now "
-            f"appears under \"Pending confirmations\" in the dashboard at "
-            f"Artifacts -> Artifact Deploy (/deploy), where the user can "
+            f"appears under \"Pending confirmations\" on the dashboard's "
+            f"Artifact Deploy page (/deploy; its button on the Artifacts page "
+            f"needs the Artifact Deploy Feature Preview), where the user can "
             f"review the findings and "
             f"explicitly deploy anyway (or dismiss).\n"
             f"\nWARNING: Anyone with the published link can view this content. "
@@ -1266,9 +1320,10 @@ def deploy_artifact(name: str, args: dict[str, Any]) -> str:
         f"\nWARNING: Anyone with the published link can view this content. "
         f"It is served on the public internet with no authentication. Relay "
         f"this warning to the user before they confirm.\n"
-        f"\nThis deploy now appears under \"Pending confirmations\" in the "
-        f"dashboard: Artifacts -> Artifact Deploy (/deploy) -> Pending "
-        f"confirmations. Open it there to confirm or dismiss."
+        f"\nThis deploy now appears under \"Pending confirmations\" on the "
+        f"dashboard's Artifact Deploy page (/deploy; its button on the "
+        f"Artifacts page needs the Artifact Deploy Feature Preview). Open it "
+        f"there to confirm or dismiss."
     )
 
 

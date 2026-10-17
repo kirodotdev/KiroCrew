@@ -100,6 +100,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "```"
       }
     ],
@@ -115,6 +116,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "bash"
       }
     ],
@@ -130,6 +132,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "\n"
       }
     ],
@@ -145,6 +148,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "echo"
       }
     ],
@@ -160,6 +164,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": " k"
       }
     ],
@@ -175,6 +180,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "iro"
       }
     ],
@@ -190,6 +196,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "crew"
       }
     ],
@@ -205,6 +212,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "-op"
       }
     ],
@@ -220,6 +228,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "encode"
       }
     ],
@@ -235,6 +244,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "-live"
       }
     ],
@@ -250,6 +260,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "\n"
       }
     ],
@@ -265,6 +276,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "``"
       }
     ],
@@ -280,6 +292,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "`\n"
       }
     ],
@@ -295,6 +308,7 @@
     "events": [
       {
         "kind": "text_chunk",
+        "message_id": "msg_08d0ed8d5001m8efOiXpg15BoS",
         "text": "done"
       }
     ],

@@ -6,7 +6,6 @@ import inspect
 import json
 import textwrap
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +25,7 @@ from kiro_crew.memory_startup import (
     wait_for_memory_preparation,
 )
 from kiro_crew.slack.gateway import GatewayOrchestrator
+from kiro_crew.testing.wait import await_until, wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 env = _member_env
@@ -213,7 +213,22 @@ def test_the_crew_log_child_liveness_probe_is_registered_after_ready():
     dashboard_workers = source.index("self._start_dashboard_workers_after_memory_ready()")
     assert ready < register < dashboard_workers
 
-    boot = inspect.getsource(GatewayOrchestrator._init_subagents)
+    # ``_init_subagents`` and the completion consumer's phases it calls, which the
+    # facade composes from its sub-agent owners.
+    from kiro_crew.slack.gateway import _compose_subagent_completion
+
+    boot = "\n".join(
+        inspect.getsource(fn)
+        for fn in (
+            GatewayOrchestrator._init_subagents,
+            _compose_subagent_completion,
+            GatewayOrchestrator._subagent_wave_digest,
+            GatewayOrchestrator._route_subagent_to_tab,
+            GatewayOrchestrator._inject_subagent_into_channel_parent,
+            GatewayOrchestrator._finish_subagent_cron_or_notify,
+            GatewayOrchestrator._inject_with_retry,
+        )
+    )
     assert "crew_log_emit" not in boot, (
         "the emitter import belongs off the boot path: _init_subagents is an "
         "_init_* reached from run() before the readiness print"
@@ -311,7 +326,7 @@ async def test_preparation_does_not_queue_behind_a_saturated_default_executor(mo
     hold = threading.Event()
     busy = [loop.run_in_executor(None, hold.wait, 30) for _ in range(workers * 2)]
     try:
-        assert await asyncio.wait_for(gateway._wait_for_memory_preparation(), timeout=5)
+        assert await await_until(asyncio.ensure_future(gateway._wait_for_memory_preparation()))
         require_memory_ready()
         assert ran_on == ["mc-memprep_0"]
         # The default executor stayed full the whole time.
@@ -363,14 +378,11 @@ async def test_cancelled_preparation_still_stops_and_closes_its_own_worker(monke
 
 
 def _begin_when_released(timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return MemoryStartup.begin()
-        except MemoryStartupUnavailable:
-            if time.monotonic() > deadline:
-                raise
-            time.sleep(0.01)
+    return wait_until(
+        MemoryStartup.begin,
+        timeout=timeout,
+        ignoring=(MemoryStartupUnavailable,),
+    )
 
 
 def test_invalid_declared_store_is_scoped_without_failing_global_startup(monkeypatch):
@@ -498,9 +510,9 @@ async def test_owner_shutdown_wins_while_restore_worker_remains_fenced(monkeypat
     monkeypatch.setattr(memory_backup, "apply_pending_member_restores", restore)
     supervisor = asyncio.create_task(gateway._wait_for_memory_preparation())
     try:
-        await asyncio.wait_for(started.wait(), 5)
+        await await_until(started)
         stopping.set()
-        assert await asyncio.wait_for(supervisor, 1) is False
+        assert await await_until(supervisor, timeout=1) is False
         assert gateway._memory_startup.stopped
         assert not gateway._memory_startup_task.done()
         assert not gateway._memory_startup_task.cancelled()
@@ -638,7 +650,9 @@ async def test_a_subagent_run_fails_on_a_closed_memory_fence_instead_of_running_
     try:
         with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
             with pytest.raises(MemoryStartupUnavailable, match="restored and prepared"):
-                await asyncio.wait_for(manager._run_inner(info, "subagent:fenced01"), 10)
+                await await_until(
+                    asyncio.ensure_future(manager._run_inner(info, "subagent:fenced01"))
+                )
         prepare.assert_awaited_once()
         provider = sessions.get_or_create.return_value[0]
         provider.stream.assert_not_called()
@@ -661,7 +675,7 @@ async def test_stopped_worker_cannot_open_or_release_a_successors_barrier(monkey
     monkeypatch.setattr(memory_backup, "apply_pending_member_restores", restore)
     task = asyncio.create_task(gateway._wait_for_memory_preparation())
     try:
-        await asyncio.wait_for(started.wait(), 5)
+        await await_until(started)
         await asyncio.to_thread(gateway._stop_memory_startup)
         with pytest.raises(MemoryStartupUnavailable):
             require_memory_ready()

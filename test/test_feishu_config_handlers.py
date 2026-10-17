@@ -15,6 +15,14 @@ from pathlib import Path
 from aiohttp.test_utils import make_mocked_request
 
 import kiro_crew.config.loader as loader
+from kiro_crew.secrets import SecretVault
+
+
+def _vault_value(env: Path, key: str) -> str | None:
+    """The vault secret a channel save stored beside *env* under *key*."""
+    stored = SecretVault(env.parent).get(key)
+    return stored.reveal() if stored is not None else None
+
 
 APP_ID = "cli_a1b2c3d4e5f6g7h8"
 APP_SECRET = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd"
@@ -97,7 +105,8 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
     assert body["restart_required"] is True
     env_text = env.read_text(encoding="utf-8")
     assert f"FEISHU_APP_ID={APP_ID}" in env_text
-    assert f"FEISHU_APP_SECRET={APP_SECRET}" in env_text
+    assert "FEISHU_APP_SECRET=secret://FEISHU_APP_SECRET" in env_text
+    assert _vault_value(env, "FEISHU_APP_SECRET") == APP_SECRET
     if os.name != "nt":
         # POSIX-only: group/other must hold no bits on a file carrying secrets.
         # Windows locks the same file down with an owner-only ACL instead, where
@@ -105,7 +114,7 @@ def test_save_persists_credentials_and_config(tmp_path: Path, monkeypatch) -> No
         # bits there tests a mechanism the platform does not use.
         assert (env.stat().st_mode & 0o077) == 0
     assert os.environ["FEISHU_APP_ID"] == APP_ID
-    assert os.environ["FEISHU_APP_SECRET"] == APP_SECRET
+    assert os.environ["FEISHU_APP_SECRET"] == "secret://FEISHU_APP_SECRET"
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert cfg["feishu"]["enabled"] is True
     # The wire name is the shared panel's `allowed_user_ids`; on disk it must be
@@ -268,7 +277,8 @@ def test_save_strips_an_accidental_env_line_paste(tmp_path: Path, monkeypatch) -
     )
     status, _body = status_body
     assert status == 200
-    assert f"FEISHU_APP_SECRET={APP_SECRET}\n" in env.read_text(encoding="utf-8")
+    assert "FEISHU_APP_SECRET=secret://FEISHU_APP_SECRET\n" in env.read_text(encoding="utf-8")
+    assert _vault_value(env, "FEISHU_APP_SECRET") == APP_SECRET
     assert "FEISHU_APP_SECRET=FEISHU_APP_SECRET" not in env.read_text(encoding="utf-8")
 
 

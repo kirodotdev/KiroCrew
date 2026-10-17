@@ -46,6 +46,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform.defaults import RecipientMoved
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 from kiro_crew.sandbox import SandboxCeilingUnsealable
 from kiro_crew.sel import sel
@@ -238,15 +239,17 @@ def _call_engine_for(provider, provisioner_id: str, confirmed_recipient: str):
         accepts = True
 
     if accepts:
-        return provider.engine_for(provisioner_id, confirmed_recipient=confirmed_recipient)
-    if confirmed_recipient:
+        engine = provider.engine_for(provisioner_id, confirmed_recipient=confirmed_recipient)
+    elif confirmed_recipient:
         raise LaunchUnavailable(
             "lane_cannot_confirm",
             f"provisioner {provisioner_id!r} publishes a credential recipient to confirm, but "
             "its provider cannot accept the confirmation (its engine_for takes no "
             "confirmed_recipient). Nothing was launched",
         )
-    return provider.engine_for(provisioner_id)
+    else:
+        engine = provider.engine_for(provisioner_id)
+    return engine
 
 
 def _engine(
@@ -292,6 +295,12 @@ def _engine(
         # belongs to them to fix, with the file and the remedy named. Uncaught it became a 500,
         # which reads as "the gateway is broken" for a condition one command clears.
         raise LaunchUnavailable("config_alias_refused", str(exc)) from exc
+    except RecipientMoved as exc:
+        # The lane's configuration changed between the descriptor read that published the
+        # recipient and this engine build, so the operator confirmed a different image and key.
+        # Nothing was launched, and the remedy (re-read the recipient, confirm again) is the
+        # operator's, so it answers like the alias refusal rather than as a gateway fault.
+        raise LaunchUnavailable("recipient_moved", str(exc)) from exc
 
 
 def _launch_lock(state: "DashboardState") -> LoopBoundLock:
@@ -392,17 +401,33 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
     region = request.query.get("region", "")
     reach = await _in_executor(iam.reachability_check, profile, region)
     plugin = await _in_executor(ssm.session_manager_plugin_installed)
+    # Installed but refused by the provenance check is not "not installed": the
+    # install command would reinstall the same refused file. The row then shows the
+    # refusal reason and, when one is known, the command that clears it.
+    refusal = None if plugin else await _in_executor(ssm.session_manager_plugin_refusal)
     # The remedy is resolved server-side: this process knows which OS the check ran
     # on, and the browser does not (a remote gateway can be Linux while the user is
     # on a Mac). Empty when the platform has no one-liner — the UI then shows only
     # the localized "not installed" line.
-    plugin_cmd = "" if plugin else await _in_executor(ssm.session_manager_plugin_install_command)
+    if plugin:
+        plugin_cmd = ""
+    elif refusal is not None:
+        plugin_cmd = refusal.remedy_command
+    else:
+        plugin_cmd = await _in_executor(ssm.session_manager_plugin_install_command)
     _audit("preflight", "success")
     return web.json_response(
         {
             **reach,
             "session_manager_plugin": bool(plugin),
             "session_manager_plugin_command": plugin_cmd,
+            "session_manager_plugin_refused_path": refusal.path if refusal else "",
+            "session_manager_plugin_refused_reason": refusal.reason if refusal else "",
+            # The reason's kind and the owning account, so the dashboard can say it
+            # in the reader's language; the English reason stays the fallback.
+            "session_manager_plugin_refused_code": refusal.code if refusal else "",
+            "session_manager_plugin_refused_owner": refusal.owner if refusal else "",
+            "session_manager_plugin_refused_owner_uid": refusal.owner_uid if refusal else None,
         }
     )
 
@@ -1084,8 +1109,9 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     approved it, or the gateway restarted mid-wait. Re-runs **only** the sign-in
     step, with the identity stored on the job; the crew itself is left alone and
     nothing is re-provisioned. 409 while a launch or another sign-in is already
-    running (the guard that keeps one device code live at a time), 400 when the
-    job has no crew to sign in on.
+    running on this crew's instance, or while a launch has not created its
+    instance yet (the guard that keeps one device code live per crew), 400 when
+    the job has no crew to sign in on.
 
     It cannot change WHICH identity signs in: the job's persisted
     ``login_target`` is reused, which is the point — an Identity Center crew must
@@ -1102,6 +1128,9 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
     job_id = request.match_info["id"]
     # Same lock as create: the "nothing active" check awaits, so two restarts
     # arriving together would otherwise both pass it and race two remote logins.
+    # One lock for every crew is enough: it covers the local check and the RUNNING
+    # claim, never the remote login, so restarts on different crews wait on each
+    # other only for that check while two on one crew still serialize.
     async with _launch_lock(state):
         store = await _astore(state)
         job = await _in_executor(store.get, job_id)
@@ -1156,7 +1185,17 @@ async def api_cloud_launch_signin_restart(request: web.Request) -> web.Response:
                 status=400,
             )
         existing = await _in_executor(store.list)
-        active = next((j for j in existing if not j.terminal), None)
+        # Only a job that can reach THIS instance can race this sign-in: one already
+        # on it, or a launch whose instance is unknown until `provision` returns. A
+        # sign-in on another crew, or a launch already on its own instance, runs on.
+        active = next(
+            (
+                j
+                for j in existing
+                if not j.terminal and (not j.instance_id or j.instance_id == job.instance_id)
+            ),
+            None,
+        )
         if active is not None:
             _audit("launch_signin_restart", "denied", request_id=job_id, error="already running")
             return web.json_response(
@@ -1253,6 +1292,23 @@ def _start_teardown_watch(
     ).start()
 
 
+def _lane_of(store: "lj.LaunchJobStore", tag: str) -> str:
+    """Which provisioner created the crew carrying *tag*.
+
+    From the launch job, which is server-owned state: the tag in the URL is the
+    caller's, and a lane taken from the caller would let them pick which engine runs
+    against another lane's crew.
+
+    An unknown tag answers the built-in id, so a crew launched before the job store
+    recorded a lane -- or one whose job file has been reaped -- keeps the behaviour it
+    has always had rather than being refused.
+    """
+    return next(
+        (j.provider_id for j in store.list() if j.tag == tag and j.provider_id),
+        BUILTIN_PROVISIONER_ID,
+    )
+
+
 async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     """Shared stop/start/destroy: resolve the tag + profile/region, run off-loop."""
     denied = _guard(request, op)
@@ -1267,11 +1323,60 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     store = _store(state)  # constructing it touches no disk
     sync_teardown = bool(getattr(state, "cloud_launch_sync", False))
 
+    # Which lane created this crew decides what these verbs can even mean. Read off
+    # the loop because `list()` reads the job files.
+    #
+    # Without this the three verbs all ran the built-in EC2 lane's CloudFormation
+    # path, which looks for a stack named after the tag that only THAT lane creates.
+    # A crew from any other lane has no such stack, so the operator was told their
+    # credentials could not describe a stack that was never meant to exist -- a
+    # report that reads as a broken profile rather than a verb that does not apply.
+    lane = await _in_executor(lambda: _lane_of(store, tag))
+    if lane != BUILTIN_PROVISIONER_ID and op in ("stop", "start"):
+        # These two are the EC2 lane's reversible pair: stop parks an instance and
+        # keeps its disk, start brings the same disk back. A lane whose engine offers
+        # only `teardown` has no such pair, and `teardown` is not what either word
+        # promises -- it ends the crew and the home it was holding.
+        #
+        # So this is refused rather than mapped onto teardown. `Stop` in the panel
+        # asks for no confirmation, and a one-click button that silently destroyed a
+        # crew's conversations would be worse than the error it replaces. Deleting
+        # the crew is the operation this lane has, and it already confirms.
+        _audit(op, "denied", request_id=tag, error=f"lane {lane} has no {op}")
+        return web.json_response(
+            {
+                "error": (
+                    f"the crew {tag} runs on the {lane} lane, which cannot {op} a crew: it has "
+                    "no paused state to put one into or bring one back from. Deleting the crew "
+                    "ends it and releases what it is billing for, and that is the only one of "
+                    "these this lane can do"
+                ),
+                "code": "lane_cannot_pause",
+                "provisioner_id": lane,
+            },
+            status=409,
+        )
+
     def _work() -> dict:
         if op == "stop":
             return ec2.stop(tag, profile, region)
         if op == "start":
             return ec2.start(tag, profile, region)
+        if lane != BUILTIN_PROVISIONER_ID:
+            # Destroy, on a lane that owns its own teardown. The engine is the only
+            # thing that knows what this crew is made of, and it is what removes the
+            # compute, the enrolment and the crew's secret in one call.
+            engine = _engine(state, lane)
+            ok = bool(engine.teardown(tag=tag, profile=profile, region=region))
+            # The registry row still has to go, exactly as the built-in path's watcher
+            # does it, and the id comes from the job rather than the caller for the
+            # reason the comment below gives.
+            registered = next(
+                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
+            )
+            if ok and registered:
+                connect_mod.unregister_instance(registered)
+            return {"ok": ok, "cleanup": "done" if ok else "skipped", "provisioner_id": lane}
         # The instance id drives the registry cleanup below, and `unregister_instance`
         # matches it against EVERY registered box (by ssm_target, ssh_host or id) with
         # no cross-check against this tag. Accepting it from the caller therefore lets a
@@ -1323,6 +1428,23 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     except CloudActionDenied as e:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)
+    except KeyError:
+        # A delete on a lane whose engine cannot be resolved: ``_engine`` raises
+        # ``KeyError`` for a provider id with no launch engine. The row exists and
+        # the request is well formed, so this is a 400, not an unaudited 500 that
+        # would also leave the running crew undeletable from the panel. Same arm
+        # ``api_launch_task`` carries for the same resolution.
+        _audit(op, "denied", request_id=tag, error=f"no engine for lane {lane!r}")
+        return web.json_response(
+            {"error": f"lane {lane!r} has no teardown engine", "code": "unknown_provisioner"},
+            status=400,
+        )
+    except LaunchUnavailable as exc:
+        # The lane exists but its config block is missing/incomplete/unreadable, or
+        # ``cloud.json`` is a hardlink alias. 400 with the reason, not a 500: the
+        # operator can fix the config, and the message says what to change.
+        _audit(op, "denied", request_id=tag, error=f"{exc.code}: {exc}")
+        return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     except AWSError as e:
         _audit(op, "failure", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)

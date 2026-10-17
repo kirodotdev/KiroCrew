@@ -7,9 +7,10 @@ lives in :mod:`kiro_crew.irq`: state persistence, per-epoch reset, time-bounded
 dedupe, the coalescing window, and the consecutive-failure backstop.
 
 Probes live here rather than beside a driver because a probe outlives its
-drivers. The gh-pr probe was written for a script cron and is now also driven
-in-process by the auto-nudge scheduler; a probe owned by one driver would have
-had to be copied for the second, and two copies of a classifier drift.
+drivers. The gh-pr probe is driven in-process by the auto-nudge scheduler, and
+it refuses the retired script-cron driver (``GhPrProbe.identity``); a probe owned
+by one driver would have to be copied for a second, and two copies of a
+classifier drift.
 """
 
 from __future__ import annotations
@@ -75,6 +76,7 @@ def build(
     *,
     worker_running: Callable[[str], bool] | None = None,
     worker_closed: Callable[[str], bool] | None = None,
+    worker_looping: Callable[[str], bool] | None = None,
 ) -> "Probe | None":
     """Return a fresh probe for *kind*, or ``None`` when nothing observes it.
 
@@ -90,7 +92,7 @@ def build(
     only effect is to move this mapping somewhere a reader has to search for.
     Revisit at the third kind, or at the first one shipped from elsewhere.
 
-    ``worker_running`` and ``worker_closed`` are consumed only by the work-ledger
+    ``worker_running``, ``worker_closed`` and ``worker_looping`` are consumed only by the work-ledger
     probe (see :mod:`kiro_crew.probes.work_ledger` for why it takes them as values).
     They are accepted here rather than at the call site so the kind-to-probe mapping
     stays in ONE place: a driver that constructed one probe itself and asked this
@@ -104,5 +106,9 @@ def build(
         # it on every gateway boot (see the note on ``WORK_LEDGER`` above).
         from kiro_crew.probes.work_ledger import WorkLedgerProbe
 
-        return WorkLedgerProbe(worker_running=worker_running, worker_closed=worker_closed)
+        return WorkLedgerProbe(
+            worker_running=worker_running,
+            worker_closed=worker_closed,
+            worker_looping=worker_looping,
+        )
     return None

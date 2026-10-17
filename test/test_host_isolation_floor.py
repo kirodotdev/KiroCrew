@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import io
 import logging
 import os
@@ -349,6 +350,122 @@ class TestNoMetricIsEmittedAtImport:
 
         assert _root.IMPORT_TIME_METRIC_EMITTERS == [f"conftest import (before {module.nodeid})"]
         assert not provider._ever_built
+
+
+class TestNoConsentWorkerOutlivesItsTest:
+    """The metrics provider's consent-recheck thread is joined before a test's pins lift.
+
+    ``get_recorder()`` hands a consent re-read to a daemon thread once per recheck
+    window; that thread runs ``KiroCrewConfig.load()``, which reaches ``config_dir()``
+    and ``mkdir``s whatever ``KIROCREW_HOME`` names AT THAT MOMENT. Nothing resets the
+    recorder between tests, so the read can land under the next test's pin and create
+    that test's data home from a thread it never started. On Windows that is visible:
+    ``os.path.realpath`` keeps its ``\\\\?\\`` prefix when the directory above a
+    not-yet-existing path appears between its two lookups, which is how
+    ``test_pathres_loop_starvation.py`` saw ``\\\\?\\...\\<n>-kirocrew-home\\diag`` in one
+    build of the sensitive-target set and not the other.
+
+    The rootdir conftest's ``tryfirst`` teardown hook joins the worker, bounded, before
+    any fixture (the home pin included) unwinds. These tests drive that join on the
+    standalone copy with a scripted config read, so the live module state stays clean.
+    """
+
+    @staticmethod
+    def _schedule_worker(monkeypatch, load):
+        """Start a real consent worker whose ``KiroCrewConfig.load`` is *load*."""
+        from kiro_crew.metrics import provider
+
+        scripted = load
+
+        class _Config:
+            load = staticmethod(scripted)
+
+        monkeypatch.setattr(provider, "KiroCrewConfig", _Config)
+        with provider._lock:
+            assert not provider._check_in_flight, "a worker is already in flight; test order?"
+            provider._schedule_consent_check_locked()
+        workers = _root._live_telemetry_consent_workers()
+        assert len(workers) == 1, workers
+        return provider, workers[0]
+
+    def test_a_worker_still_reading_config_is_joined_under_this_tests_pins(
+        self, monkeypatch
+    ) -> None:
+        reading = threading.Event()
+        release = threading.Event()
+        home_seen: list[str | None] = []
+
+        def held_load():
+            reading.set()
+            # Held on an event, not a sleep: the worker is in flight for exactly as
+            # long as this test says, however the scheduler treats either thread.
+            assert release.wait(10.0), "the test never released the scripted read"
+            home_seen.append(os.environ.get("KIROCREW_HOME"))
+            raise RuntimeError("scripted: no config to read")
+
+        provider, worker = self._schedule_worker(monkeypatch, held_load)
+        try:
+            assert reading.wait(5.0), "the worker never started its read"
+            assert worker.is_alive(), "control: the read must still be in flight"
+            # The join runs on a side thread so this one can observe it WAITING: the
+            # worker cannot exit before the read is released, so the join cannot
+            # return before it either. No clock is consulted on either side.
+            outcome: list[object] = []
+            joiner = threading.Thread(
+                target=lambda: outcome.append(_root._join_telemetry_consent_worker()),
+                name="test-consent-joiner",
+            )
+            joiner.start()
+            assert joiner.is_alive(), "the join returned while the read was still held"
+            release.set()
+            joiner.join(10.0)
+            assert not joiner.is_alive(), "the join did not return once the read finished"
+            assert outcome == [None]
+            assert not worker.is_alive()
+            # The read finished while THIS test's pin was still in force -- the whole
+            # point of joining before any fixture unwinds.
+            assert home_seen == [os.environ["KIROCREW_HOME"]]
+            assert not provider._check_in_flight
+        finally:
+            release.set()
+            worker.join(5.0)
+
+    def test_a_worker_past_the_bound_is_reported_not_waited_for_forever(self, monkeypatch) -> None:
+        release = threading.Event()
+
+        def stuck_load():
+            release.wait(10.0)
+            raise RuntimeError("scripted: released")
+
+        monkeypatch.setattr(_root, "_EXECUTOR_JOIN_SECS", 0.2)
+        provider, worker = self._schedule_worker(monkeypatch, stuck_load)
+        try:
+            # The read is never released before the join returns, so a return at all
+            # proves the bound was honoured; the worker being alive afterwards proves
+            # the join did not wait for it. No wall-clock measurement is needed.
+            failure = _root._join_telemetry_consent_worker()
+            assert isinstance(failure, AssertionError)
+            assert _root._TELEMETRY_CONSENT_THREAD in str(failure)
+            assert "KIROCREW_HOME" in str(failure)
+            assert worker.is_alive(), "control: the worker was still stuck when reported"
+        finally:
+            release.set()
+            worker.join(5.0)
+        assert not worker.is_alive()
+
+    def test_with_no_worker_the_join_is_a_no_op(self) -> None:
+        assert _root._live_telemetry_consent_workers() == []
+        assert _root._join_telemetry_consent_worker() is None
+
+    def test_the_teardown_hook_joins_before_it_yields(self) -> None:
+        """The join must run on the pre-``yield`` side, where the pins still hold."""
+        source = inspect.getsource(_root.pytest_runtest_teardown)
+        statements = [line.strip() for line in source.splitlines()]
+        assert statements.count("yield") == 1, "the hook is no longer a single-yield hookwrapper"
+        before = statements[: statements.index("yield")]
+        after = statements[statements.index("yield") + 1 :]
+        assert "wedged_consent_worker = _join_telemetry_consent_worker()" in before
+        assert "raise wedged_consent_worker" in after
 
 
 class TestTheWorkspaceRootIsPinnedForEveryTestpath:
@@ -1221,7 +1338,7 @@ class TestTheWorkingDirectoryIsRestored:
 class TestTheTestLoopIsRetiredBeforeThePinsLift:
     """What a test's loop leaves behind must finish while ``KIROCREW_HOME`` is pinned.
 
-    pytest-asyncio 0.20 ends the loop with a bare ``loop.close()``: a still-pending
+    pytest-asyncio 0.21 ends the loop with a bare ``loop.close()``: a still-pending
     task's coroutine then runs its ``finally`` blocks at garbage collection, and a
     default-executor job (``asyncio.to_thread``) is abandoned mid-flight. Either one
     reaching ``config_dir()`` after the unpin resolves the OPERATOR's data home -- a fresh
@@ -1272,6 +1389,55 @@ class TestTheTestLoopIsRetiredBeforeThePinsLift:
             assert loop.run_until_complete(asyncio.to_thread(lambda: "ok")) == "ok"
         finally:
             loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+
+    def test_a_task_spawned_while_the_hook_cancels_is_retired_too(self) -> None:
+        """A cancelled task whose ``finally`` starts another task leaves no orphan.
+
+        A dashboard turn cancelled at teardown runs its queue cycle on the way out, and
+        that cycle dispatches the next queued turn as a NEW task. One cancel-and-wait
+        pass over a snapshot taken before the cancel never sees it, so it stays
+        pending on a loop pytest-asyncio then closes, and asyncio logs ``Task was
+        destroyed but it is pending!`` at whatever later moment the collector runs --
+        inside another test's ``caplog`` window, on another file's assertion.
+        """
+        import asyncio
+        import types
+
+        loop = asyncio.new_event_loop()
+        try:
+            seen: list[str] = []
+
+            async def successor() -> None:
+                try:
+                    await asyncio.Event().wait()  # parked until cancelled
+                finally:
+                    seen.append("successor finally")
+
+            async def turn() -> None:
+                try:
+                    await asyncio.Event().wait()  # parked until cancelled
+                finally:
+                    asyncio.ensure_future(successor())  # the next queued turn
+                    seen.append("turn finally")
+
+            async def arm() -> None:
+                asyncio.ensure_future(turn())
+                await asyncio.sleep(0)  # let it start
+
+            loop.run_until_complete(arm())
+            item = types.SimpleNamespace(funcargs={"event_loop": loop})
+
+            _root._join_test_loop_executor(item)
+
+            left = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            assert not left, (
+                f"the hook left {len(left)} task(s) pending that a cancelled task started "
+                "while unwinding; loop.close() orphans them and the collector logs them "
+                "into a later test"
+            )
+            assert seen == ["turn finally", "successor finally"]
+        finally:
             loop.close()
 
     def test_the_hook_runs_before_fixture_finalizers(self) -> None:

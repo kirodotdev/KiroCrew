@@ -14,7 +14,15 @@
  *  lower". The counter belongs to the process that folded, so a reconnect to
  *  another gateway can see a LOWER revision than this tab holds;
  *  `resetSlotProjectionRevisions` is what the connection calls so a fresh socket
- *  is not judged against the previous one's numbering. */
+ *  is not judged against the previous one's numbering.
+ *
+ *  THE REVISION ORDERS FRAMES AND NOTHING ELSE. It never gates a READ: a REST
+ *  response is applied whatever revision it carries, so the newest read always
+ *  wins. A briefly wrong board is acceptable — whoever reads it notices, and the
+ *  panel's own pull re-reads — while a board that can be held behind a number
+ *  indefinitely is not acceptable, which is what gating reads against a floor
+ *  costs. The ledger here holds only revisions this tab ACTUALLY APPLIED from a
+ *  frame, so a value it never received can never be below its own floor. */
 import type { QueryClient } from '@tanstack/react-query'
 import { slotKey } from '../../pages/chat/command-center/model'
 
@@ -26,7 +34,12 @@ export type FoldedSlotProjection = {
   value: Record<string, unknown>
 }
 
-/** The highest revision accepted, per slot and then per fold.
+/** The highest revision APPLIED FROM A FRAME, per slot and then per fold.
+ *
+ *  Written only by `takeFoldedSlotProjection`, and read only by it: a number
+ *  lands here exactly when this tab takes the value that carries it. Nothing the
+ *  server merely announces is recorded, because a floor above a value this tab
+ *  never received would drop the frame that finally delivers it.
  *
  *  NESTED rather than keyed by a joined string, so no separator has to be chosen
  *  that a slot key cannot contain. Module-level and not React state: the gate
@@ -42,47 +55,6 @@ const accepted = new Map<string, Map<string, number>>()
  *  re-read. */
 export function resetSlotProjectionRevisions(): void {
   accepted.clear()
-}
-
-/** Re-base this tab's revision floors on `slot_projection/subscribed`.
- *
- *  THE ORDER IS THE WHOLE POINT. The server sends this before the client issues
- *  any baseline read, so the floor is in place first. A baseline read already on
- *  the wire resolves into the same cache entry a pushed frame writes, and it
- *  resolves LATER — so without a floor the older response wins by arriving last.
- *
- *  REPLACED, never merged. A revision orders frames within ONE gateway process:
- *  a restarted gateway mints from 1 again, so a floor this tab kept from the old
- *  process would sit above every new frame and drop it as stale. The subscribe
- *  frame is the serving process's own truth, so it becomes the whole ledger.
- *
- *  Taken as a FLOOR and not as data: it carries revisions, never folded values,
- *  so this tab still reads its own baseline. Shape-checked per entry, because
- *  this is wire data and a bad `revisions` map must cost the floor rather than
- *  the connection. */
-export function recordSlotProjectionFloor(data: Record<string, unknown>): void {
-  const revisions = (data as { revisions?: unknown }).revisions
-  if (typeof revisions !== 'object' || revisions === null || Array.isArray(revisions)) return
-  accepted.clear()
-  for (const [slot, folds] of Object.entries(revisions as Record<string, unknown>)) {
-    if (!slot || typeof folds !== 'object' || folds === null || Array.isArray(folds)) continue
-    const own = slotKey(slot)
-    for (const [fold, revision] of Object.entries(folds as Record<string, unknown>)) {
-      if (!fold || typeof revision !== 'number' || !Number.isFinite(revision) || revision <= 0) continue
-      let held = accepted.get(own)
-      if (!held) accepted.set(own, (held = new Map()))
-      const current = held.get(fold)
-      if (current === undefined || revision > current) held.set(fold, revision)
-    }
-  }
-}
-
-/** The floor this tab holds for one (slot, fold); `0` when it holds none.
- *
- *  What a baseline reader checks a response against: a response carrying a
- *  revision at or below this is older than something already applied here. */
-export function slotProjectionFloor(slot: string, fold: string): number {
-  return accepted.get(slotKey(slot))?.get(fold) ?? 0
 }
 
 /** What a `slot_projection` frame turned out to be.
@@ -123,8 +95,8 @@ export function takeFoldedSlotProjection(data: Record<string, unknown>): SlotPro
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return { kind: 'bare' }
   // In the dashboard's own key form (`slotKey`), which is what a board's query
-  // key and its baseline reader use: the server may name the slot either way,
-  // and a floor recorded under the other spelling is a floor nothing reads.
+  // key uses: the server may name the slot either way, and a revision recorded
+  // under the other spelling is one nothing reads.
   const own = slotKey(slot)
   let folds = accepted.get(own)
   if (!folds) accepted.set(own, (folds = new Map()))
@@ -141,83 +113,6 @@ export function takeFoldedSlotProjection(data: Record<string, unknown>): SlotPro
  *  — its frame is simply not seeded, and its own reader still reads. */
 function foldQueryKey(root: string, fold: string): readonly unknown[] | null {
   return fold === 'work' ? ['command-center', root, 'work'] : null
-}
-
-/** One baseline response, or the value this tab already holds when it is NEWER.
- *
- *  The second half of the subscribe-before-baseline rule. The floor says which
- *  revision this tab has already applied; a response at or below it describes an
- *  older fold, and letting it become the cache value would undo a push by
- *  arriving later.
- *
- *  A response AT the floor is accepted. A pushed frame raises the floor even when
- *  it could not be seeded (a read was in flight), so the follow-up baseline that
- *  read exists to fetch carries exactly that revision -- refusing it would keep
- *  the older value standing with nothing left to correct it.
- *
- *  A COLD response below the floor (nothing held) is neither accepted nor
- *  held: it throws `StaleBaselineError`, and the query's retry reads again.
- *
- *  A response with NO revision is accepted. That is a gateway that pushes nothing
- *  — an older build, or the crew log switched off — and refusing its reads would
- *  leave the board empty rather than merely stale.
- *
- *  Pure: it reads the floor and returns one of its two inputs, so a caller can
- *  use it as the tail of a `queryFn` without a cache write of its own. */
-export function baselineOrHeld<T>(slot: string, fold: string, response: T, held: T | undefined): T {
-  const revision = (response as { revision?: unknown } | null)?.revision
-  if (typeof revision !== 'number' || !Number.isFinite(revision)) return response
-  const floor = slotProjectionFloor(slot, fold)
-  if (revision >= floor) return response
-  // Below the floor. A held value AT or above it is kept. Anything else -- nothing
-  // held, or a held value that is itself below the floor -- would serve a value
-  // older than one already announced, so keep nothing and throw, which the query
-  // client answers with one retry: a fresh read of the current fold.
-  if (heldRevision(held) >= floor) return held as T
-  throw new StaleBaselineError(slot, fold, revision)
-}
-
-/** *held*'s revision, or `0` when it carries none (or nothing is held). */
-function heldRevision(held: unknown): number {
-  const revision = (held as { revision?: unknown } | null | undefined)?.revision
-  return typeof revision === 'number' && Number.isFinite(revision) ? revision : 0
-}
-
-/** Invalidate every cached board whose held revision is below its cell's floor.
- *
- *  THE INVARIANT this module keeps: a cached projection value below the floor
- *  recorded for its cell is never served. A pushed frame keeps it by seeding the
- *  key or re-reading it, and a baseline read by `baselineOrHeld`. A floor written
- *  any other way -- the subscribe frame -- can land on a value a read already
- *  cached, with nothing else left to move it, so whoever writes such a floor calls
- *  this right after. Re-read rather than dropped, so the board keeps showing its
- *  value until the current one arrives. */
-export function invalidateBelowFloor(queryClient: QueryClient): void {
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: ['command-center'] })) {
-    const [, root, fold] = query.queryKey as unknown[]
-    if (typeof root !== 'string' || fold !== 'work' || query.queryKey.length !== 3) continue
-    if (query.state.data === undefined) continue
-    if (heldRevision(query.state.data) >= slotProjectionFloor(root, 'work')) continue
-    void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false })
-  }
-}
-
-/** A cold baseline older than this tab's floor: thrown so the query reads again.
- *
- *  It carries its facts as fields and no message: it never reaches a screen (the
- *  query's retry consumes it), so there is no copy to write or translate. */
-export class StaleBaselineError extends Error {
-  readonly slot: string
-  readonly fold: string
-  readonly revision: number
-
-  constructor(slot: string, fold: string, revision: number) {
-    super()
-    this.name = new.target.name
-    this.slot = slot
-    this.fold = fold
-    this.revision = revision
-  }
 }
 
 /** Whether a read is already in flight for the key *frame* would seed.
@@ -245,11 +140,15 @@ export function fetchingAnyFoldQuery(queryClient: QueryClient, frame: FoldedSlot
  *  An absent entry is seeded whole, because a tab that has not read yet is
  *  exactly the one a push saves a read for.
  *
- *  NEVER BACKWARDS. A REST baseline raises no floor (only frames and the subscribe
- *  frame do), so a frame can pass the floor and still be older than the value the
- *  cache holds: a read at revision 10 answered before a delayed frame at 9. When the
- *  held value's revision is at or above the frame's, it stays, and the key is
- *  already current.
+ *  NEVER BACKWARDS. The cached entry carries a `revision` only when a FRAME wrote
+ *  it: the work read strips its own revision before caching (see useCommandCenter),
+ *  because a read revision is not comparable to a frame revision. So the check
+ *  below compares a frame against an earlier FRAME, never against a read: a
+ *  redelivered or out-of-order frame older than one already applied is dropped,
+ *  while a read never raises the floor and the next frame always applies. The
+ *  check is made against the CACHED value, which is the only thing that knows.
+ *  When the held value's revision is at or above the frame's, it stays, and the
+ *  key is already current.
  *
  *  The caller owes `fetchingAnyFoldQuery` first: an in-flight read is not yet held. */
 export function seedFoldedProjection(

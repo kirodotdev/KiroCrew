@@ -24,6 +24,7 @@ credential file.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from pathlib import Path
 
@@ -91,7 +92,17 @@ def _drive(channel: str, monkeypatch, tmp_path: Path) -> list[int]:
             resp = await client.put(f"/api/{name}/config", json=body)
             return resp.status
 
-    status = asyncio.run(_run())
+    # A landed save copies its credentials into os.environ. Put every key it
+    # touched back as it was, so a token saved here never reaches a later test.
+    environ_before = dict(os.environ)
+    try:
+        status = asyncio.run(_run())
+    finally:
+        for key in set(os.environ) | set(environ_before):
+            if key not in environ_before:
+                os.environ.pop(key, None)
+            elif os.environ.get(key) != environ_before[key]:
+                os.environ[key] = environ_before[key]
     assert status == 200, f"{name} save did not succeed ({status}); the write was never reached"
     return threads
 
@@ -187,3 +198,153 @@ def test_cancelling_a_save_drains_the_env_write_before_releasing_the_lock(
     assert seen.index("worker-end") < seen.index(
         "second-ran"
     ), "the second save entered before the first write finished: %r" % (seen,)
+
+
+# ── the shared rollback step ─────────────────────────────────────────────────
+
+#: Every settings owner that commits config.json and then .env.
+_SAVER_OWNERS = ("slack", "teams", "webex", "wecom", "feishu", "discord", "telegram")
+
+
+@pytest.mark.parametrize("owner", _SAVER_OWNERS)
+def test_every_saver_writes_env_through_the_shared_rollback_step(owner: str) -> None:
+    """A saver reaches ``.env`` only through ``_write_env_or_roll_back``.
+
+    The write-then-roll-back-then-sync sequence exists once. A saver that called
+    ``_write_env_off_loop`` itself would be a second copy, and a copy is how one
+    saver ends up with the rollback but not the cancellation guard.
+    """
+    source = (
+        Path(mod.__file__).resolve().parent.parent / "messaging_api" / f"{owner}_settings.py"
+    ).read_text(encoding="utf-8")
+    assert source.count("await _write_env_or_roll_back(") == 1
+    assert "_write_env_off_loop(" not in source
+    assert "asyncio.shield(" not in source
+
+
+#: How long a wait the test itself unblocks may take before the run counts as
+#: lost: the bound this module's other self-released waits already use.
+_LOST_RUN_CEILING_SECS = 10.0
+
+
+def _rollback_probe() -> tuple[list[str], object]:
+    calls: list[str] = []
+
+    async def _rollback() -> None:
+        calls.append("rollback")
+
+    return calls, _rollback
+
+
+def test_a_failed_write_rolls_back_and_raises(monkeypatch) -> None:
+    async def _boom(_updates):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _boom)
+    calls, rollback = _rollback_probe()
+    with pytest.raises(OSError):
+        asyncio.run(mod._write_env_or_roll_back({"KC_PROBE_TOKEN": "x"}, rollback))
+    assert calls == ["rollback"]
+
+
+def test_a_failed_write_with_no_config_commit_just_raises(monkeypatch) -> None:
+    async def _boom(_updates):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _boom)
+    with pytest.raises(OSError):
+        asyncio.run(mod._write_env_or_roll_back({"KC_PROBE_TOKEN": "x"}, None))
+
+
+@pytest.mark.parametrize("write_fails", [False, True])
+def test_a_cancelled_save_rolls_back_only_when_the_write_failed(
+    write_fails: bool, monkeypatch
+) -> None:
+    """Cancel the caller while the write is parked; the write then lands or fails.
+
+    A write that landed pairs with the committed config, so rolling the config
+    back would split the pair. A write that failed leaves the config ahead of
+    ``.env``, so it is undone. The cancellation propagates in both cases.
+    """
+    release = asyncio.Event()
+
+    async def _parked(_updates):
+        await asyncio.wait_for(release.wait(), timeout=_LOST_RUN_CEILING_SECS)
+        if write_fails:
+            raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _parked)
+    calls, rollback = _rollback_probe()
+
+    async def _run() -> bool:
+        save = asyncio.create_task(mod._write_env_or_roll_back({"KC_PROBE_TOKEN": "x"}, rollback))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        save.cancel()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        release.set()
+        try:
+            await asyncio.wait_for(save, timeout=_LOST_RUN_CEILING_SECS)
+        except asyncio.CancelledError:
+            return True
+        return False
+
+    assert asyncio.run(_run()) is True
+    assert calls == (["rollback"] if write_fails else [])
+
+
+def test_a_landed_write_syncs_the_process_environment(monkeypatch) -> None:
+    async def _ok(_updates):
+        return None
+
+    monkeypatch.setattr(mod, "_write_env_off_loop", _ok)
+    calls, rollback = _rollback_probe()
+    with monkeypatch.context() as env:
+        env.setenv("KC_PROBE_CLEARED", "old")
+        # setenv first records the variable's original state (absent here), so
+        # the undo removes whatever the helper writes; delenv then clears it.
+        env.setenv("KC_PROBE_SET", "unset-before-the-save")
+        env.delenv("KC_PROBE_SET")
+        asyncio.run(
+            mod._write_env_or_roll_back({"KC_PROBE_SET": "new", "KC_PROBE_CLEARED": None}, rollback)
+        )
+        assert os.environ.get("KC_PROBE_SET") == "new"
+        assert "KC_PROBE_CLEARED" not in os.environ
+    # Once the scoped undo has run, neither probe is left behind for a later test.
+    assert "KC_PROBE_SET" not in os.environ
+    assert "KC_PROBE_CLEARED" not in os.environ
+    assert calls == []
+
+
+@pytest.mark.parametrize("channel", ["discord", "telegram"])
+def test_the_config_and_env_writes_run_under_the_live_config_hold(
+    channel: str, monkeypatch, tmp_path: Path
+) -> None:
+    """The Discord and Telegram saves roll their config write back on a failed
+    ``.env`` write, so, like the other savers, both writes run under
+    ``live.hold()``: the watcher must not apply a config the failing write may
+    yet undo."""
+    from kiro_crew.config import live
+
+    held_at: list[str] = []
+    watcher = live.watch()
+    real_json_write = loader.write_config_atomically
+    real_env_write = mod._write_env_off_loop
+
+    def _json_write(path, data, **kw):
+        held_at.append(f"config:{watcher._hold_depth}")
+        real_json_write(path, data, **kw)
+
+    async def _env_write(updates):
+        held_at.append(f"env:{watcher._hold_depth}")
+        await real_env_write(updates)
+
+    monkeypatch.setattr(loader, "write_config_atomically", _json_write)
+    monkeypatch.setattr(mod, "_write_env_off_loop", _env_write)
+    (tmp_path / "config.json").write_text(
+        '{"%s": {"enabled": false, "bot_token": "legacy"}}' % channel, encoding="utf-8"
+    )
+    _drive(channel, monkeypatch, tmp_path)
+    assert held_at == ["config:1", "env:1"], held_at
+    assert watcher._hold_depth == 0

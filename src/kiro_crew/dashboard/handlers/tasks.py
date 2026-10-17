@@ -155,7 +155,7 @@ def _scrub_prose(text: str) -> str:
     what makes a row diagnosable after the process that failed is gone -- so
     the redaction belongs on the way OUT, on every surface that serves it.
     :func:`security.redact_and_truncate` is the composition the sibling
-    surfaces spell by hand (``subagent.py``'s ``_redact``, the pair in
+    surfaces spell by hand (``subagent_parts/run_output.py``'s ``_redact``, the pair in
     ``taskrunner._execute_tasks``): exfiltration URLs FIRST, then credentials.
     That order is load-bearing rather than incidental -- a URL whose query IS
     the credential is the shape the URL rewriter exists for, and it replaces

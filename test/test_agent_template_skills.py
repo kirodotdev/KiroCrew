@@ -646,6 +646,7 @@ class TestPatchReordersManagedSkills:
     def _agent(self, fake_home: Path, monkeypatch, resources: list) -> Path:
         from kiro_crew.dashboard.handlers import agents as agents_handlers
 
+        monkeypatch.setenv("KIRO_HOME", str(fake_home / "ambient-kiro"))
         _make_skill(fake_home / ".kiro" / "skills", "one")
         _make_skill(fake_home / ".kiro" / "skills", "two")
         d = _agents_dir(fake_home)

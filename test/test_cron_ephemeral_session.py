@@ -76,7 +76,7 @@ class TestCronJobPersistentSessionField:
 class TestBuildCronSessionContext:
     """Helper that computes session_key + prompt for a given run.
 
-    This helper is what ``_cron_callback`` in slack/gateway.py will call.
+    This helper is what ``_cron_capture`` in slack/gateway_runtime/cron_fire.py will call.
     Extracting it lets us unit-test the decision without spinning up the gateway.
     """
 

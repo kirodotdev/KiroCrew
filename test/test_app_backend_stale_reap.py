@@ -39,7 +39,8 @@ def _model_a_host_without_ps(monkeypatch, *, identity):
     That is precisely Windows: `sys.platform` is not "linux", and there is no
     standard `ps` for the fallback to reach. `platform_compat` is the layer that
     can still answer there (process creation FILETIME through a query-only
-    handle) — its real per-platform behaviour is pinned in test_platform_compat.
+    handle) — its real per-platform behaviour is pinned in
+    test_platform_compat_process_identity.
     """
     monkeypatch.setattr(backend_mod.sys, "platform", "win32")
 

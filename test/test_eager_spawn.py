@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 from kiro_crew.config import live
 from kiro_crew.config.loader import (
     KiroCrewAgentConfig,
@@ -30,6 +30,7 @@ from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +69,9 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
 def _cfg(enabled: bool) -> MagicMock:
     cfg = KiroCrewConfig(agents={"default": KiroCrewAgentConfig()})
     cfg.session.eager_spawn = enabled
+    # Pin the harness: the tool-search replay gate is kiro-cli only, and a
+    # fresh config defaults to KAS.
+    cfg.agent.acp_backend = ACP_BACKEND_KIRO
     cfg_loader = MagicMock(return_value=cfg)
     return cfg_loader
 
@@ -278,10 +282,11 @@ class TestEagerSpawn:
     ):
         """Neither a fresh nor a resume prefetch may pre-register an ordinary
         provider when the real turn pins a protected V2 store (fresh, restored,
-        or inherited through an empty slot), when a restored store disagrees
-        with today's resolver, or when an explicit member is unavailable.
-        Classification follows resolved bindings, never the resolver's Global
-        fallback, and an empty slot resolves as the default member."""
+        or whatever the resolver answers for an empty slot), when a restored
+        store disagrees with today's resolver, or when an explicit member is
+        unavailable. Classification follows resolved bindings, never the
+        resolver's Global fallback. An empty slot is resolved as itself -- the
+        default TEMPLATE, never the default crewmate alias."""
         slot = _ChatSlot("t1")
         slot.agent = agent
         slot.memory_store = restored_store
@@ -294,9 +299,7 @@ class TestEagerSpawn:
             ) as resolve,
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
-        resolve.assert_called_once_with(
-            cfg, agent or cfg.default_agent, validate_memory_files=False
-        )
+        resolve.assert_called_once_with(cfg, agent, validate_memory_files=False)
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
@@ -743,11 +746,7 @@ class TestSpeculativeGetOrCreate:
         # Speculative creator still holds the semaphore (release() not called
         # yet) — an arriving real claimant will block on acquire.
         waiter = asyncio.ensure_future(mgr.get_or_create(key))
-        for _ in range(50):
-            if mgr._sessions[key].semaphore.locked():
-                break
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.02)  # let the waiter park inside acquire()
+        await until_parked(mgr._sessions[key].semaphore)
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
@@ -809,6 +808,12 @@ class TestProjectSetWiring:
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.push_slots_update = MagicMock()
+        # The arm guard probes the live session before arming the
+        # deferred reset; sessions is an instance attr spec= does not
+        # synthesize. A live provider makes the arm condition hold, so this
+        # test still exercises the eager-spawn wiring it is about.
+        state.sessions = MagicMock()
+        state.sessions.get_provider = MagicMock(return_value=object())
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)
@@ -1789,7 +1794,7 @@ class TestPrewarmAdmission:
 
         async def _hang(key, **_kwargs):
             started.set()
-            await asyncio.wait_for(finish.wait(), timeout=10)
+            await await_until(finish)
 
         state.sessions.get_or_create = AsyncMock(side_effect=_hang)
         with (
@@ -1798,17 +1803,16 @@ class TestPrewarmAdmission:
         ):
             task = asyncio.create_task(_eager_spawn(state, slot))
             try:
-                try:
-                    await asyncio.wait_for(started.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    pytest.fail("eager spawn did not reach get_or_create")
+                await await_until(started, what="eager spawn did not reach get_or_create")
                 assert len(chat_runner._armed_prefetches) == 1, "no reservation held during spawn"
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(task, timeout=5)
+                    await await_until(task)
             finally:
                 task.cancel()
-                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
+                await await_until(
+                    asyncio.ensure_future(asyncio.gather(task, return_exceptions=True))
+                )
         assert chat_runner._armed_prefetches == {}
 
     @pytest.mark.asyncio

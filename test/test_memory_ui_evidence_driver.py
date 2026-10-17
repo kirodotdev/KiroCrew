@@ -4,7 +4,10 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from _clock_isolation import assert_clock_is_private
 from e2e import test_memory_ui_evidence as evidence
+
+from kiro_crew.testing.clock import ManualClock
 
 
 @pytest.mark.parametrize(
@@ -104,11 +107,28 @@ def test_every_scenario_grep_selects_exactly_one_spec_title():
     assert len(titles) == len(evidence.SCENARIOS), (titles, list(evidence.SCENARIOS))
 
 
+def _pin_clock(monkeypatch):
+    """A clock only the driver reads, starting at 0.
+
+    Installed on the driver's own ``time`` binding. That binding IS the stdlib
+    module, so patching ``evidence.time.sleep`` would also catch every other
+    thread's sleep in the worker, and the recorded schedule would hold sleeps
+    the driver never took.
+    """
+    clock = ManualClock(monotonic_start=0.0)
+    clock.install(monkeypatch, evidence)
+    return clock
+
+
+def test_another_thread_keeps_the_real_sleep_and_clock(monkeypatch):
+    assert_clock_is_private(_pin_clock(monkeypatch), evidence)
+
+
 @pytest.mark.parametrize("failure", [503, 403, 500, "other"])
 def test_readiness_wait_retries_only_service_unavailable(monkeypatch, failure):
     import urllib.error
 
-    calls, sleeps = [], []
+    calls = []
 
     def get(path):
         calls.append(path)
@@ -119,36 +139,31 @@ def test_readiness_wait_retries_only_service_unavailable(monkeypatch, failure):
             raise AssertionError("gateway refused") from cause
         return {}
 
-    monkeypatch.setattr(evidence.time, "sleep", sleeps.append)
+    clock = _pin_clock(monkeypatch)
     client = SimpleNamespace(get=get)
     if failure == 503:
         evidence._await_ready(client, "/api/memory/stats?store=default")
         assert calls == ["/api/memory/stats?store=default"] * 2
-        assert sleeps == [0.5]
+        assert clock.sleeps == (0.5,)
     else:
         with pytest.raises(AssertionError):
             evidence._await_ready(client, "/api/memory/stats?store=default")
-        assert len(calls) == 1 and not sleeps
+        assert len(calls) == 1 and not clock.sleeps
 
 
 def test_readiness_wait_has_a_deadline(monkeypatch):
     import urllib.error
 
-    clock, calls = [0.0], []
-
-    def sleep(seconds):
-        clock[0] += seconds
+    clock, calls = _pin_clock(monkeypatch), []
 
     def get(path):
         calls.append(path)
         cause = urllib.error.HTTPError("http://localhost/test", 503, "pending", {}, None)
         raise AssertionError("recovery pending") from cause
 
-    monkeypatch.setattr(evidence.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(evidence.time, "sleep", sleep)
     with pytest.raises(AssertionError, match="recovery pending"):
         evidence._await_ready(SimpleNamespace(get=get), "/api/memory/stats?store=default", secs=1)
-    assert len(calls) == 3 and clock[0] == 1
+    assert len(calls) == 3 and clock.monotonic() == 1
 
 
 @pytest.mark.parametrize("has_run", [False, True])

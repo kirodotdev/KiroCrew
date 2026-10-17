@@ -57,11 +57,18 @@ import {
   watchCursorAwayNative,
 } from '../lib/cursorAway'
 import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotification } from '../lib/nativeNotify'
+import {
+  PANE_CLIPBOARD_IMAGE_TYPE, PANE_CLIPBOARD_RESULT_TYPE, PANE_CLIPBOARD_VERSION, parsePaneClipboardImageRequest,
+} from '../lib/paneClipboardRelay'
+import { hasGesture } from '../hooks/useFrameOpenLink'
+import { copyImageToClipboard } from '../utils/clipboard'
+import { copyImageWithText } from '../pages/chat/share/shareSupport'
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
-import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH, WIN_CAPTION_RESERVE_PX } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
+import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPaneSlot } from '../lib/paneLastSlot'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
@@ -114,6 +121,29 @@ const AUTO_WARM_STAGGER_MS = 1_500
 const MAX_REACTIVE_REMINTS = 3
 
 
+/**
+ * The live `--mc-win-caption-reserve` the main process sets inline on this
+ * document's <html> (pushWinCaptionReserve in electron/runtime/window/chrome.js),
+ * followed across every rewrite (zoom step, reload) so it can be relayed into
+ * embedded panes, which are separate documents and never inherit it. Empty when
+ * there is no Windows inset or the main process has not pushed a value yet.
+ */
+function useWinCaptionReserve(enabled: boolean): string {
+  const read = () => document.documentElement.style.getPropertyValue('--mc-win-caption-reserve').trim()
+  const [value, setValue] = useState(() => (enabled ? read() : ''))
+  useEffect(() => {
+    if (!enabled) {
+      setValue('')
+      return
+    }
+    setValue(read())
+    const observer = new MutationObserver(() => setValue(read()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] })
+    return () => observer.disconnect()
+  }, [enabled])
+  return value
+}
+
 export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
   // Windows counterpart of `macInset`: the caption overlay is a shell property,
   // not a window state, so it derives straight from the platform flag rather
@@ -126,9 +156,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const stripInsetStyle = macInset || winInset
     ? {
         ...(macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : null),
-        ...(winInset ? { paddingRight: WIN_CAPTION_RESERVE_PX } : null),
+        // Read the live, zoom-aware reserve the main process sets on <html>
+        // (--mc-win-caption-reserve). :root defaults that property to the
+        // static 142px in index.css, so a bare reference is first-paint-safe
+        // without an inline comma fallback here — and a comma fallback would
+        // not round-trip through happy-dom's CSSOM in tests. A fixed px here
+        // would drift from the zoom-aware header reserve the main process
+        // maintains.
+        ...(winInset ? { paddingRight: 'var(--mc-win-caption-reserve)' } : null),
       }
     : undefined
+  const winCaptionReserve = useWinCaptionReserve(winInset)
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -552,6 +590,11 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         reactiveMintsRef.current.set(id, spent + 1)
         paneLog('auth-expired', { id, spent: spent + 1 })
         void refreshToken(id)
+      } else if (data.type === PANE_ACTIVE_SLOT_TYPE) {
+        // The pane's chat changed. The SENDER is already trusted (its origin
+        // resolved to a warm tunnel above); the key is shape-checked inside.
+        // Kept so the next load of this crew reopens it (#16009).
+        rememberPaneSlot(id, (data as { key?: unknown }).key)
       } else if (data.type === 'mc-switch-instance') {
         // The embedded pane's inline switcher asks the parent to flip
         // the active tab. The SENDER is already trusted (its origin resolved to a
@@ -651,6 +694,52 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const watchId = (data as { id?: unknown }).id
         const live = paneCursorWatchRef.current
         if (live && live.paneId === id && live.watchId === watchId) stopPaneCursorWatch()
+      } else if (data.type === PANE_CLIPBOARD_IMAGE_TYPE) {
+        // A pane wants an image on the clipboard. Its own async Clipboard API is
+        // refused (this document's header scopes the clipboard to this origin,
+        // and an iframe cannot be delegated more than that), and an image has no
+        // execCommand path, so this frame writes on its behalf. Narrow by
+        // design (paneClipboardRelay.ts): the request must come from that pane's
+        // own frame, the pane must be the one on screen, and the person must
+        // have JUST clicked or pressed a key inside it -- live activation with
+        // the focused element being that iframe -- so a pane posting on its
+        // own copies nothing. Every refusal is still answered, so the pane can
+        // fall back at once instead of waiting out its timeout.
+        const frameEl = iframeRefs.current.get(id)
+        const frame = frameEl?.contentWindow
+        if (!frameEl || !frame || e.source !== frame) return
+        const req = parsePaneClipboardImageRequest(data)
+        if (!req) return
+        const origin = e.origin
+        const reply = (ok: boolean) => {
+          try {
+            frame.postMessage({ type: PANE_CLIPBOARD_RESULT_TYPE, v: PANE_CLIPBOARD_VERSION, id: req.id, ok }, origin)
+          } catch {
+            /* frame mid-navigation — the pane's own timeout reports "not copied" */
+          }
+        }
+        if (id !== activeIdRef.current || !hasGesture(frameEl)) {
+          // Journaled, because the pane can only fall back silently: a refusal
+          // here (most plausibly a slow image render outliving the click's
+          // activation window) must leave evidence of which check said no.
+          paneLog('clipboard-relay-refused', {
+            id,
+            activePane: id === activeIdRef.current,
+            activation: Boolean(navigator.userActivation?.isActive),
+            focusOnPane: document.activeElement === frameEl,
+          })
+          reply(false)
+          return
+        }
+        // The same helpers a top-level copy uses; this document's policy allows
+        // the clipboard, so they take their direct path here.
+        const written = req.text !== undefined
+          ? copyImageWithText(req.png, req.text)
+          : copyImageToClipboard(Promise.resolve(req.png))
+        void written.then(ok => {
+          if (!ok) paneLog('clipboard-relay-write-failed', { id })
+          reply(ok)
+        })
       } else if (data.type === 'mc-embedded-boot') {
         // The pane's bundle EXECUTED (posted from main.tsx before React renders,
         // see EmbeddedHostBridge for the ready half). This line splits the one
@@ -1035,9 +1124,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   }, [instancesQuery.data, warmCap, autoWarm])
 
   const warmIds = useMemo(() => Object.keys(warm), [warm])
+  // The src a pane was LOADED with, per id. The last-chat hint is read once per
+  // load (port, token, Retry count); re-reading it on every render would change
+  // the src, and a new src reloads the pane.
+  const srcCacheRef = useRef<Record<string, { load: string; src: string }>>({})
   const srcFor = useCallback(
     (id: string) => {
       const w = warm[id]
+      if (!w) { delete srcCacheRef.current[id]; return '' }
+      const load = `${w.port}|${w.token}|${reloadSeq[id] || 0}`
+      const cached = srcCacheRef.current[id]
+      if (cached?.load === load) return cached.src
       // Use the parent dashboard's OWN hostname (not a hardcoded 127.0.0.1) so
       // the iframe is same-site with the parent, so SameSite=Lax auth cookies
       // ride the iframe's subrequests. The scheme stays http: the gateway binds
@@ -1047,9 +1144,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // https here would instead fail the TLS handshake against the plain-http
       // forwarded port and never load. Non-loopback origins never reach here:
       // the pane is not mounted for them (see nonLoopbackOrigin).
-      return w ? `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}` : ''
+      const hint = readPaneSlot(id)
+      const src = `http://${window.location.hostname}:${w.port}/?token=${encodeURIComponent(w.token)}`
+        + (hint ? `&${PANE_SLOT_HINT_PARAM}=${encodeURIComponent(hint)}` : '')
+      srcCacheRef.current[id] = { load, src }
+      return src
     },
-    [warm],
+    [warm, reloadSeq],
   )
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab
@@ -1087,14 +1188,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         : null
       return {
         type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, focusMode,
+        ...(winCaptionReserve ? { winCaptionReserve } : null),
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
         stableOrder,
+        // This host performs image copies for the pane (mc-clipboard-image).
+        // Advertised so a pane relays only to a host that will answer.
+        clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1151,7 +1256,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
@@ -1290,11 +1395,17 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // without "microphone", getUserMedia in the remote dashboard rejects
           // with NotAllowedError; without "fullscreen",
           // document.fullscreenEnabled is false in the pane and the native
-          // <video> controls render a disabled fullscreen button; without
-          // "clipboard-write", navigator.clipboard.writeText() rejects in the
-          // pane, so every copy affordance fails (CliPanel's selection copy
-          // surfaces "Copy failed"; TerminalKeyBar and WebAppArtifactCard hit
-          // the same rejection). Local (top-level) use is unaffected.
+          // <video> controls render a disabled fullscreen button. clipboard-write
+          // is asked for too, but this delegation cannot grant it: the
+          // dashboard's own Permissions-Policy header scopes the clipboard to
+          // this origin (`clipboard-write=(self)`), and an `allow` attribute can
+          // only hand a frame what the embedding document's policy already gives
+          // that frame's origin. So navigator.clipboard is refused in every pane.
+          // Text copy still lands through the shared helper's execCommand
+          // fallback (it skips the refused call, so no policy violation is
+          // logged), and image copy is performed by THIS frame on the pane's
+          // behalf, gated on a gesture inside the pane (mc-clipboard-image,
+          // paneClipboardRelay.ts). Local (top-level) use is unaffected.
           // Loopback-only, and the pane already runs our own token-authed SPA,
           // so delegating these grants nothing a same-origin top-level load
           // wouldn't already. display-capture follows the same rule: without

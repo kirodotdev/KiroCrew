@@ -40,16 +40,19 @@ KillProvider = Callable[[LLMProvider], None]
 def pool_kiro_agent(cfg: Any) -> str:
     """The kiro agent the warm pool prewarms and claims for, as a session names it.
 
-    ``session.pool_agent`` (else ``agent.default_agent``) may be blank, a config
-    alias such as ``default``, or a kiro agent name, while a session asks the pool
-    for the RESOLVED kiro agent (``kirocrew`` for the default). A blank name or a
-    config alias is resolved here, through the same in-memory resolver a session's
-    bindings use, so the pool spawns that agent and matches that name. Any other
-    name is already a kiro agent and is kept as written: the resolver would map
-    one it cannot see (a project-scoped agent) to the default. A config the
-    resolver cannot read keeps the configured name too.
+    ``session.pool_agent`` may be blank, a config alias such as ``default``, or a
+    kiro agent name, while a session asks the pool for the RESOLVED kiro agent. A
+    blank name is what a plain session is: the default custom agent (a template),
+    resolved through the same in-memory resolver a session's bindings use with no
+    name at all -- never through the alias table, since ``agent.default_agent``
+    may spell the same name as a crewmate alias that binds a different template,
+    and the pool must prewarm what the session will run. A config alias is
+    resolved the same way a crewmate pick is. Any other name is already a kiro
+    agent and is kept as written: the resolver would map one it cannot see (a
+    project-scoped agent) to the default. A config the resolver cannot read keeps
+    the configured name too.
     """
-    name = cfg.session.pool_agent or getattr(cfg.agent, "default_agent", "")
+    name = cfg.session.pool_agent
     if name and name not in cfg.agents:
         return name
     try:
@@ -82,6 +85,8 @@ class WarmPoolOwner(Protocol):
     _starting_pids: set[int]
 
     async def _ensure_background(self) -> None: ...
+
+    def _bg_backend_supports_runtime(self) -> bool: ...
 
     async def _fill_warm_pool(self) -> None: ...
 
@@ -312,7 +317,7 @@ class WarmSessionPool:
 
             async def _start_bg_and_pool() -> None:
                 await self._stamp_privacy_headers_for_startup()
-                await self._owner._ensure_background()
+                await self._ensure_background_unless_lazy()
                 await self._owner._fill_warm_pool()
                 if self._pool_size:
                     self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
@@ -326,7 +331,7 @@ class WarmSessionPool:
             return
 
         await self._stamp_privacy_headers_for_startup()
-        await self._owner._ensure_background()
+        await self._ensure_background_unless_lazy()
         self._deps.logger.info("Background session ready")
 
         if self._pool_size:
@@ -336,6 +341,21 @@ class WarmSessionPool:
             self._pool_health_task = asyncio.create_task(self._owner._pool_health_loop())
             self._owner._background_tasks.add(self._pool_health_task)
             self._pool_health_task.add_done_callback(self._owner._background_tasks.discard)
+
+    async def _ensure_background_unless_lazy(self) -> None:
+        """Start the persistent background session now, unless it can wait.
+
+        On a backend whose background one-liners run on the shared multiplexed
+        runtime, the persistent session serves only the occasional background
+        turn (``SessionManager.get_or_create`` creates it on that first turn).
+        Starting it at boot held a whole idle agent process -- about 430 MB --
+        on every gateway, used or not. Other backends route every background
+        call through it, so they keep the boot start.
+        """
+        if self._owner._bg_backend_supports_runtime():
+            self._deps.logger.info("Background session deferred to its first use")
+            return
+        await self._owner._ensure_background()
 
     async def _stamp_privacy_headers_for_startup(self) -> None:
         """Stamp the mode into the flagged rows' transcript headers, once per start.

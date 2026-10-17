@@ -51,8 +51,8 @@ const AGENTS = [
 ]
 const MODELS = [
   { name: 'auto', description: '' },
-  { name: 'claude-opus-5', description: 'Deep reasoning' },
-  { name: 'gpt-5.6-sol', description: 'Fast' },
+  { name: 'claude-opus-5', description: 'Deep reasoning', rateMultiplier: 2.2 },
+  { name: 'gpt-5.6-sol', description: 'Fast', rateMultiplier: 0.4 },
 ]
 
 vi.mock('../hooks/useAgents', () => ({
@@ -84,6 +84,7 @@ vi.mock('../components/SimpleSelect', () => ({
     onChange,
     clearLabel,
     triggerFallback,
+    optionBadges,
     'aria-label': ariaLabel,
   }: {
     options: string[]
@@ -91,6 +92,7 @@ vi.mock('../components/SimpleSelect', () => ({
     onChange: (v: string) => void
     clearLabel?: string
     triggerFallback?: string
+    optionBadges?: ({ label: string; hint?: string } | undefined)[]
     'aria-label'?: string
   }) => {
     // Mirrors the real trigger: the selected row's own text, and `clearLabel`
@@ -123,16 +125,24 @@ vi.mock('../components/SimpleSelect', () => ({
               {clearLabel}
             </button>
           )}
-          {options.map(o => (
-            <button
-              key={o}
-              type="button"
-              role="option"
-              aria-selected={o === value}
-              onClick={() => onChange(o)}
-            >
-              {o}
-            </button>
+          {options.map((o, i) => (
+            <span key={o}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={o === value}
+                onClick={() => onChange(o)}
+              >
+                {o}
+              </button>
+              {/* Beside the option, not inside it, so the option's accessible
+                  name stays the bare value the tests pick by. */}
+              {optionBadges?.[i] && (
+                <span data-testid={`stub-badge-${o}`} title={optionBadges[i]?.hint}>
+                  {optionBadges[i]?.label}
+                </span>
+              )}
+            </span>
           ))}
         </div>
       </div>
@@ -147,6 +157,7 @@ vi.mock('../apps/issue-radar/context', () => ({
 }))
 
 import CrewEditor from '../apps/issue-radar/components/CrewEditor'
+import { formatMultiplier } from '../components/ModelDropdownList'
 import { djb2, ghostVariantCount } from '../apps/issue-radar/components/CrewGhost'
 import type { Crew } from '../apps/issue-radar/api'
 
@@ -251,6 +262,7 @@ describe('CrewEditor — create mode', () => {
     // (rather than one key) is caught too.
     pick('crew-editor-agent', 'kirocrew-crew')
     pick('crew-editor-model', 'claude-opus-5')
+    pick('crew-editor-triage-model', 'gpt-5.6-sol')
     fireEvent.change(screen.getByTestId('crew-editor-prompt'), {
       target: { value: 'stay off the release branch' },
     })
@@ -271,6 +283,7 @@ describe('CrewEditor — create mode', () => {
       avatar_variant: null,
       agent: 'kirocrew-crew',
       model: 'claude-opus-5',
+      triage_model: 'gpt-5.6-sol',
       extra_prompt: 'stay off the release branch',
       labels: ['area: dashboard'],
       auto_resolve_conflicts: true,
@@ -488,6 +501,86 @@ describe('CrewEditor — the agent and model pickers', () => {
     expect(
       field('crew-editor-agent').getByRole('option', { name: 'retired-agent' }),
     ).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
+describe('CrewEditor — the triage model picker', () => {
+  it('defaults to Off and offers the served model list', async () => {
+    await openCreate()
+    expect(trigger('crew-editor-triage-model')).toHaveTextContent(i18nT(`${K}.triage_model_off`))
+    expect(optionsOf('crew-editor-triage-model')).toEqual([
+      i18nT(`${K}.triage_model_off`),
+      'claude-opus-5',
+      'gpt-5.6-sol',
+    ])
+  })
+
+  it('leaves the work model out: as a triage model it is the same as Off', async () => {
+    renderEditor(CREW)
+    await screen.findByTestId('crew-editor')
+    expect(CREW.model).toBe('claude-opus-5')
+    expect(optionsOf('crew-editor-triage-model')).toEqual([
+      i18nT(`${K}.triage_model_off`),
+      'gpt-5.6-sol',
+    ])
+  })
+
+  it('shows each row its credit cost so the cheaper choice is visible', async () => {
+    await openCreate()
+    const triage = field('crew-editor-triage-model')
+    expect(triage.getByTestId('stub-badge-gpt-5.6-sol')).toHaveTextContent(formatMultiplier(0.4))
+    expect(triage.getByTestId('stub-badge-claude-opus-5')).toHaveTextContent(formatMultiplier(2.2))
+    expect(triage.getByTestId('stub-badge-gpt-5.6-sol')).toHaveAttribute(
+      'title',
+      i18nT('components.modelDropdownList.credit_multiplier', { value: formatMultiplier(0.4) }),
+    )
+  })
+
+  it('gives the Model picker the same badges, so the triage costs have a reference', async () => {
+    renderEditor(CREW)
+    await screen.findByTestId('crew-editor')
+    const model = field('crew-editor-model')
+    expect(model.getByTestId('stub-badge-claude-opus-5')).toHaveTextContent(formatMultiplier(2.2))
+    expect(model.getByTestId('stub-badge-gpt-5.6-sol')).toHaveTextContent(formatMultiplier(0.4))
+  })
+
+  it('gives a stored model the list no longer serves no cost badge', async () => {
+    renderEditor({ ...CREW, triage_model: 'retired-model' })
+    await screen.findByTestId('crew-editor')
+    expect(optionsOf('crew-editor-triage-model')).toContain('retired-model')
+    expect(field('crew-editor-triage-model').queryByTestId('stub-badge-retired-model')).toBeNull()
+  })
+
+  it('sends only the triage model when that is all that changed', async () => {
+    renderEditor(CREW)
+    await screen.findByTestId('crew-editor')
+    pick('crew-editor-triage-model', 'gpt-5.6-sol')
+    fireEvent.click(submitBtn())
+
+    await waitFor(() => expect(mockApi.updateCrew).toHaveBeenCalledTimes(1))
+    expect(mockApi.updateCrew).toHaveBeenCalledWith(ACTIVE, CREW.id, { triage_model: 'gpt-5.6-sol' })
+  })
+
+  it('switches triage off with an empty value', async () => {
+    renderEditor({ ...CREW, triage_model: 'gpt-5.6-sol' })
+    await screen.findByTestId('crew-editor')
+    pick('crew-editor-triage-model', i18nT(`${K}.triage_model_off`))
+    fireEvent.click(submitBtn())
+
+    await waitFor(() => expect(mockApi.updateCrew).toHaveBeenCalledTimes(1))
+    expect(mockApi.updateCrew).toHaveBeenCalledWith(ACTIVE, CREW.id, { triage_model: '' })
+  })
+
+  it('treats a record from a gateway without the field as Off', async () => {
+    // The fixture predates the field. Nothing changed, so nothing is sent: an
+    // absent field is not a pending edit.
+    expect('triage_model' in CREW).toBe(false)
+    renderEditor(CREW)
+    await screen.findByTestId('crew-editor')
+    expect(trigger('crew-editor-triage-model')).toHaveTextContent(i18nT(`${K}.triage_model_off`))
+    fireEvent.click(submitBtn())
+    await waitFor(() => expect(mockApi.updateCrew).toHaveBeenCalledTimes(1))
+    expect(mockApi.updateCrew).toHaveBeenCalledWith(ACTIVE, CREW.id, {})
   })
 })
 

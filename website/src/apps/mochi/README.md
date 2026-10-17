@@ -12,7 +12,7 @@ adding cross-boundary calls.
 | `website/src/apps/mochi/` (here) | All frontend: window entry HTML + React, bridges, vendored original renderer |
 | `src/kiro_crew/apps/builtins/mochi/` | Python backend: runtime (`hooks.py`), services, MCP server, routes, agents/skills |
 | `website/electron/mochi/` + `website/electron/mochi-session-token.js` | Electron shell layer: windows, preload, instance resolution, session-token borrowing |
-| `test/test_mochi_*.py` | Backend tests (flat `test/`, prefix-contained — see "Test placement") |
+| `test/test_mochi_*.py`, `src/kiro_crew/apps/builtins/mochi/tests/` | Backend tests: flat `test/` with the `test_mochi_` prefix, plus the in-package `tests/` (see "Test placement") |
 
 Reusable core modules do not depend on Mochi internals; composition roots and
 first-party registries name the app at explicit integration points. Those currently
@@ -39,8 +39,8 @@ ported line-for-line. It is intentional, not a nesting mistake.
   `./LottieRenderer` imports stay byte-identical to upstream and still port
   line-for-line. The Lottie one matters for more than deduplication: core's
   player refuses a clip that names a remote image or font before
-  `loadAnimation`, and a second copy here was the one call site in the tree
-  without that fence (#10249).
+  `loadAnimation`, and the re-export keeps that fenced player the only call
+  site in the tree.
 - `src/mochiApi.ts` — **the** seam. The composed `api` handle every vendored
   file imports. Original IPC calls resolve here to HTTP routes, WS events, or
   Electron preload channels. Spread order matters (web transports win over
@@ -81,11 +81,14 @@ origin, token fetcher, logger, and dashboard-window accessor. Shell tests live i
 
 ## Test placement
 
-Frontend and Electron tests live inside the mochi folders. Backend tests stay
-in the repo's flat `test/` with the `test_mochi_` prefix — moving them out
-would silently lose `conftest.py`'s autouse fixtures (including the
-`KIROCREW_HOME` isolation that keeps tests from writing to the real data
-home), and in-package tests would ship in the wheel.
+Frontend and Electron tests live inside the mochi folders. Backend tests live in
+two places: the repo's flat `test/` with the `test_mochi_` prefix, and the
+in-package `src/kiro_crew/apps/builtins/mochi/tests/` (for example
+`test_mochi_windows.py`). The in-package ones are collected through `setup.cfg`
+`testpaths` (which includes `src/kiro_crew/apps/builtins`) and ship with the package,
+the established convention for a builtin app's `tests/` (`MANIFEST.in` deliberately
+does not prune it). The repo-root `conftest.py` covers both locations, including the
+per-test `KIROCREW_HOME` isolation.
 
 ## Rules of thumb
 

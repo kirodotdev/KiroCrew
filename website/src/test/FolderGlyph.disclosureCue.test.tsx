@@ -7,7 +7,8 @@
  * Folder/FolderOpen shape (#11269: testers did not read the shape swap as
  * state). Non-collapse callers (modal preview, menus) that omit `open` render
  * the bare glyph. The overlay is absolutely positioned so the glyph box width
- * never changes and the folder-alignment geometry stays untouched.
+ * never changes and the folder-alignment geometry stays untouched, and it sits
+ * in a notch masked out of the shape so it never crosses the folder outline.
  */
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
@@ -62,5 +63,31 @@ describe('FolderGlyph disclosure cue', () => {
     )
     expect(getByTestId('g').querySelector('svg')).toBeTruthy()
     expect(queryByTestId('g-disclosure')).toBeNull()
+    // No chevron, no notch: the bare glyph is never masked.
+    expect(getByTestId('g-shape').getAttribute('style') ?? '').not.toMatch(/mask/)
+  })
+
+  // The chevron used to sit on top of the folder outline and hang past the box
+  // into the name's gap, reading as a smudge. It now sits in a hole cut out of
+  // the shape, centred inside the glyph box.
+  it.each([
+    ['lucide', undefined],
+    ['emoji', '🚀'],
+  ])('cuts a notch in the %s shape under the chevron', (_kind, icon) => {
+    const size = 12
+    const { getByTestId } = render(
+      <FolderGlyph icon={icon} size={size} open={false} testId="g" />,
+    )
+    const mask = getByTestId('g-shape').style.maskImage
+    expect(mask).toMatch(/^radial-gradient\(circle at ([\d.]+)px \1px, transparent/)
+    const centre = Number(mask.match(/at ([\d.]+)px/)![1])
+    const chevron = getByTestId('g-disclosure')
+    const width = Number(chevron.getAttribute('width'))
+    const left = parseFloat(chevron.style.left)
+    // The chevron is centred on the notch...
+    expect(left + width / 2).toBeCloseTo(centre)
+    // ...and the notch centre is inside the box, so lucide's chevron ink (a
+    // quarter of the icon size either side of centre) stays within it.
+    expect(centre + width / 4).toBeLessThanOrEqual(size)
   })
 })

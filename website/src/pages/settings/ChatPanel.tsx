@@ -1,461 +1,40 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsField, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
+import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsMultiSelect, SettingsStepper } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
-import { Btn, Input } from '../../components/ui'
-import { Plus, Trash2, MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
-import { configPatternRefused, configUrlTemplateOk } from '../../utils/autolinkRules'
-
-/** One `dashboard.link_patterns` rule as it travels the config wire; the
- * renderer-side validation lives in `utils/autolinkRules.setConfigAutolinkRules`. */
-export interface LinkPatternRule {
-  pattern: string
-  url: string
-}
+import { Btn } from '../../components/ui'
+import { MessageSquare, PenLine, Layers, PanelRight, Bot, UserRound, Sparkles, SlidersHorizontal } from 'lucide-react'
 import { loadChatConfig, saveChatConfig, MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE, type ChatConfig, type ContentWidth, type DashboardConfig, type MemoryMode, type SendMode } from '../chat/ChatSettings'
-import { api, type FeatureVideoStatus } from '../../api/client'
-import { useAppSelector } from '../../store'
-import { serializeDefaultMemoryModeUpdate } from '../../api/queryClient'
+import { api } from '../../api/client'
 import { useOptimisticConfigPaths, setConfigPathValue } from './useOptimisticConfigPaths'
-import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
+import { FieldHint, LinkPatternsEditor, type LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
+import {
+  RESTORE_OPTIONS, restoreLabels, COMPACT_OPTIONS, compactLabels, ROLE_OPTIONS, roleLabels,
+  TECH_OPTIONS, techLabels, SOFT_STOP_MIN, SOFT_STOP_MAX, SOFT_STOP_DEFAULT, TURN_LIMIT_MIN,
+  TURN_LIMIT_MAX, TURN_LIMIT_DEFAULT, TITLE_REFRESH_PATH, TITLE_REFRESH_MIN, TITLE_REFRESH_MAX,
+  normalizeTitleRefresh, type CompletionKeepMode, COMPLETION_KEEP_OPTIONS, type VerbosityLevel,
+  VERBOSITY_OPTIONS, MEMORY_MODE_OPTIONS, FOLDER_ROOT_EXAMPLE, memoryModeLabels, asMemoryMode,
+  asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
+  COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape,
+} from './chatPanelOptions'
+import { useChatPanelDashboard } from './useChatPanelDashboard'
+import { useChatPanelTypedFields } from './useChatPanelTypedFields'
+import { chatPanelConfigOpts, useChatPanelFallbackModels, useChatPanelModelDefaults } from './useChatPanelModels'
+import { AppModelsSection } from './AppModelsSection'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
-import { EFFORT_LEVELS, effortLabel, modelSupportsEffort } from '../../lib/effort'
-import { normalizeModelKey } from '../../lib/model'
+import { EFFORT_LEVELS } from '../../lib/effort'
 import { isMac } from '../../utils/platform'
 import { readBusySendDefault, setBusySendDefault, type BusySendMode } from '../../components/BusySendButton'
 import { platformShortcut } from '../../utils/platform'
 import { capRoleOther, clampRoleOther } from '../../lib/userProfile'
-import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
-import { fmtNumber } from '../../i18n/format'
-import { normalizeHiddenModels } from '../../hooks/useInteractiveModels'
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
-import { type KiroCrewAgent } from '../../components/AgentSelector'
-import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
-/**
- * Option labels are FUNCTIONS, not module-level arrays.
- *
- * Every `*_LABELS` array below used to be a module-level const, which is evaluated
- * once at import: an `i18nT()` call there would freeze whatever language was active
- * at boot and never re-resolve. Each resolver is called in the render body instead
- * (`optionLabels={roleLabels()}`), so a language switch re-reads the catalog.
- *
- * Each list stays POSITIONALLY paired with its `*_OPTIONS` array — `SettingsSelect`
- * matches a label to a value by index — so entries must be added and reordered in
- * lockstep.
- */
-const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
-/** Duration abbreviations are left verbatim (locale-aware unit formatting is Phase 4
- *  territory); only the `'0'` sentinel's label is prose. It reuses the in-chat
- *  settings popover's key — same setting, same option, one string to translate. */
-function restoreLabels(): string[] {
-  return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
-}
-/** How often the feature-video cache readout re-reads while the panel is open. */
-const FEATURE_VIDEO_POLL_MS = 15_000
 
-const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
-function compactLabels(): string[] {
-  return ['20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%']
-}
-
-// About You — slugs shared with onboarding step 2 and context.py's prompt maps.
-const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
-function roleLabels(): string[] {
-  return [
-    i18nT('pages.settings.chatPanel.not_set'),
-    i18nT('pages.settings.chatPanel.developer'),
-    i18nT('pages.settings.chatPanel.ux_designer'),
-    i18nT('pages.settings.chatPanel.product_manager'),
-    i18nT('pages.settings.chatPanel.data_ml'),
-    i18nT('pages.settings.chatPanel.it_ops'),
-    i18nT('pages.settings.chatPanel.other'),
-  ]
-}
-const TECH_OPTIONS = ['', ...TECH_SLUGS]
-function techLabels(): string[] {
-  return [
-    i18nT('pages.settings.chatPanel.not_set'),
-    i18nT('pages.settings.chatPanel.i_write_code'),
-    i18nT('pages.settings.chatPanel.somewhat'),
-    i18nT('pages.settings.chatPanel.not_technical'),
-  ]
-}
-
-const SOFT_STOP_MIN = 0.5
-const SOFT_STOP_MAX = 60
-const SOFT_STOP_DEFAULT = 10.0
-
-type CompletionKeepMode = 'head' | 'tail' | 'both'
-const COMPLETION_KEEP_OPTIONS: CompletionKeepMode[] = ['head', 'tail', 'both']
-
-type VerbosityLevel = 'default' | 'concise' | 'ultra' | 'answer_only'
-const VERBOSITY_OPTIONS: VerbosityLevel[] = ['default', 'concise', 'ultra', 'answer_only']
-
-const MEMORY_MODE_OPTIONS: MemoryMode[] = ['persistent', 'incognito', 'temporary']
-const DEFAULT_MEMORY_MODE_PATH = 'dashboardConfig.default_memory_mode'
-
-function memoryModeLabels(): string[] {
-  return [
-    i18nT('settings.chat.defaultMemoryMode.persistent'),
-    i18nT('components.welcomeView.incognito'),
-    i18nT('components.welcomeView.temporary'),
-  ]
-}
-
-function asMemoryMode(value: unknown): MemoryMode {
-  return MEMORY_MODE_OPTIONS.includes(value as MemoryMode)
-    ? value as MemoryMode
-    : 'persistent'
-}
-
-/**
- * Narrow a persisted `dashboard.verbosity` to a level this Select can render.
- *
- * The config loader reads the field with a plain `.get()` and does not type-check
- * it, so a hand-edited or migrated `config.json` can put any JSON there — e.g.
- * `{"dashboard": {"verbosity": {}}}` — and the GET response hands that object
- * straight to the UI. `?? 'default'` guards only null/undefined, so an object
- * would flow into SimpleSelect's `triggerFallback`
- * (`optionLabels?.[options.indexOf(value)] ?? (value || '—')`): `indexOf` misses,
- * the object is truthy, and React throws on rendering it as a child — taking the
- * whole Chat settings page down rather than degrading one row.
- */
-function asVerbosity(value: unknown): VerbosityLevel {
-  return VERBOSITY_OPTIONS.includes(value as VerbosityLevel)
-    ? (value as VerbosityLevel)
-    : 'default'
-}
-function completionKeepLabels(): string[] {
-  return [
-    i18nT('pages.settings.chatPanel.head_preserve_start_of_stream'),
-    i18nT('pages.settings.chatPanel.tail_preserve_end_final_summary'),
-    i18nT('pages.settings.chatPanel.both_head_tail_with_truncation_marker'),
-  ]
-}
-const COMPLETION_KEEP_CHARS_MIN = 0
-// Mirrors RESULT_FILE_MAX_BYTES on the backend (handlers/core.py _EDITABLE_CONFIG).
-const COMPLETION_KEEP_CHARS_MAX = 512000
-const COMPLETION_KEEP_CHARS_DEFAULT = 3000
-
-/** Shape of the kirocrewConfig query payload this panel reads and patches. */
-type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number }
-  session_summary?: { enabled?: boolean }
-  agent?: {
-    model?: string
-    role_models?: { background?: string; subagent?: string }
-    role_efforts?: { background?: string; subagent?: string }
-    reasoning_effort?: string
-    soft_stop_budget_secs?: number
-    completion_keep?: CompletionKeepMode
-    completion_keep_chars?: number
-    fallback_model?: string
-    refusal_fallback_model?: string
-  }
-  dashboard?: { user_role?: string; user_role_other?: string; user_technical_level?: string; prevent_sleep?: boolean }
-}
-
-function invalidRegex(pattern: string): boolean {
-  if (!pattern.trim()) return false
-  try {
-    new RegExp(pattern)
-    return false
-  } catch {
-    return true
-  }
-}
-
-/** Row editor for `dashboard.link_patterns` (regex -> URL template rewrite
- * rules the transcript renderer applies at display time).
- *
- * Carries `label` itself and renders the SettingsField frame internally --
- * the composite-primitive contract (same as TagListEditor) that makes the
- * settings-registry extractor and deep-link highlighting see it as one row.
- *
- * Commit points are blur and remove/add — not keystrokes — so one edit is one
- * PUT. Only persistable rows (non-empty pattern, http(s) url) go on the wire;
- * a half-typed row stays local until it qualifies. An invalid regex still
- * SAVES (the renderer skips rules the browser rejects) so a typo cannot eat
- * the rule text; the row flags it instead. Exported for its regression tests. */
-/**
- * Client-side validation hint for a rule-editor field. Deliberately NOT
- * `ErrorNotice`: nothing has failed — these describe input still being
- * typed, and the errors-use-error-notice rule forbids dressing validation
- * hints as errors (`role="alert"`, danger styling, agent hand-off).
- * `role="status"` announces politely, matching the AboutPanel status idiom.
- */
-function FieldHint({ message }: { message: string }) {
-  if (!message) return null
-  return <div className="text-[12px] text-warn mt-0.5" role="status">{message}</div>
-}
-
-export interface LinkPatternsDraft {
-  rows: LinkPatternRule[]
-  // Live refs, not snapshots: a save that settles after the editor unmounts
-  // must still move the remounted editor's watermarks and in-flight count.
-  adoptedKeyRef: { current: string }
-  pendingKeyRef: { current: string | null }
-  savesInFlightRef: { current: number }
-  saveChainRef: { current: Promise<unknown> }
-}
-
-export function LinkPatternsEditor({ label, description, hint, configKey, rules, onSave, disabled, draft }: {
-  label: string
-  description?: string
-  hint?: string
-  configKey?: string
-  rules: readonly LinkPatternRule[]
-  /**
-   * Persist the cleaned rules. Returning the save's settlement promise lets
-   * the editor advance its adopted watermark once the write is CONFIRMED —
-   * without it, a later external change back to the pre-save value would be
-   * indistinguishable from a failed save's rollback and silently swallowed,
-   * leaving stale rows to overwrite the external change on the next blur.
-   */
-  onSave: (next: LinkPatternRule[]) => void | Promise<unknown>
-  disabled?: boolean
-  /** Holder owned by the host that outlives this editor. A settings rail
-   *  unmounts the editor on a page switch; without this, a half-typed row the
-   *  commit gate refused to save would be gone on return. */
-  draft?: { current: LinkPatternsDraft | null }
-}) {
-  const [rows, setRows] = useState<LinkPatternRule[]>(() => draft?.current?.rows ?? rules.map(r => ({ ...r })))
-  // A commit swallowed by the half-edited gate, so the editor can say so at
-  // the commit point instead of relying on the offending row's own hint
-  // (which may be scrolled out of view when a DIFFERENT row was edited).
-  const [saveBlocked, setSaveBlocked] = useState(false)
-  const serverKey = JSON.stringify(rules)
-  // Two watermarks decide whether a server-value movement may replace local
-  // rows. `adopted` is the last server value local rows were built from —
-  // re-captured at each save, because that displayed value is exactly where
-  // a FAILED save's optimistic overlay rolls back to. `pending` is the value
-  // a save submitted, i.e. our own edit echoing back (the optimistic mask,
-  // then the confirmed write). Neither may overwrite rows: the rollback
-  // arriving as a "change" is how a rejected save (e.g. 400 on a duplicate
-  // pattern) would silently erase everything typed since the last save.
-  // A restored draft keeps the baseline its rows were built from, so a server
-  // change made while the editor was unmounted still merges through the
-  // adopt effect below instead of being masked by the old rows.
-  const [restored] = useState(() => draft?.current ?? null)
-  const ownAdoptedKeyRef = useRef(serverKey)
-  // Save serialization state: how many PUTs are unsettled, and the tail of
-  // the chain a new save must launch behind while any are in flight.
-  const ownSavesInFlightRef = useRef(0)
-  const ownSaveChainRef = useRef<Promise<unknown>>(Promise.resolve())
-  const ownPendingKeyRef = useRef<string | null>(null)
-  const adoptedKeyRef = restored?.adoptedKeyRef ?? ownAdoptedKeyRef
-  const savesInFlightRef = restored?.savesInFlightRef ?? ownSavesInFlightRef
-  const saveChainRef = restored?.saveChainRef ?? ownSaveChainRef
-  const pendingKeyRef = restored?.pendingKeyRef ?? ownPendingKeyRef
-  const rowsRef = useRef(rows)
-  rowsRef.current = rows
-  useEffect(() => () => {
-    if (draft) draft.current = { rows: rowsRef.current, adoptedKeyRef, pendingKeyRef, savesInFlightRef, saveChainRef }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- stash once, on unmount
-  }, [])
-  // Adopt an external change (another tab, `kirocrew config set`) whenever
-  // the server VALUE moves somewhere new; identity-only refetches leave
-  // local drafts alone because the key is the serialized value.
-  useEffect(() => {
-    if (serverKey === adoptedKeyRef.current) return // unmoved, or a failed save's rollback: rows win
-    if (serverKey === pendingKeyRef.current) return // our own save echoing: rows already show it
-    // Rows typed since the last sync are absent from the outgoing baseline;
-    // carry them across the adopt instead of erasing them. A clean row the
-    // external change deleted IS in the baseline, so it still goes. The
-    // surviving draft rendered beside the adopted rules is the conflict
-    // surface: the user sees both and the next blur commits the merge.
-    const baseline: LinkPatternRule[] = JSON.parse(adoptedKeyRef.current)
-    adoptedKeyRef.current = serverKey
-    pendingKeyRef.current = null
-    setRows(prev => {
-      const same = (a: LinkPatternRule, b: LinkPatternRule) =>
-        a.pattern === b.pattern && a.url.trim() === b.url.trim()
-      const drafts = prev.filter(r =>
-        (r.pattern.trim() !== '' || r.url.trim() !== '') &&
-        !baseline.some(b => same(b, r)) &&
-        !rules.some(s => same(s, r)))
-      return [...rules.map(r => ({ ...r })), ...drafts]
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- serverKey IS the value identity of `rules`
-  }, [serverKey])
-  const persistable = (list: readonly LinkPatternRule[]) => list
-    // Pattern text goes on the wire EXACTLY as typed — whitespace in a regex
-    // is load-bearing, so trimming here would broaden what the operator wrote
-    // (the server preserves it verbatim too and trims only URLs).
-    .map(r => ({ pattern: r.pattern, url: r.url.trim() }))
-    .filter(r => r.pattern.trim().length > 0 && configUrlTemplateOk(r.url))
-  // Inline flags for the two mistakes that otherwise fail silently: a URL the
-  // commit filter treats as half-edited (the row LOOKS accepted but is never
-  // PUT and vanishes on the next server adopt), and a duplicate pattern (the
-  // one editor-typable error that reaches the server's 400, which surfaces
-  // only as the generic failed-to-save banner). The URL check is the
-  // registry's own acceptance rule (`configUrlTemplateOk`), so userinfo and a
-  // `{match}` in the authority — templates a bare scheme regex passes but
-  // registration refuses — flag here instead of saving-then-never-linkifying.
-  const urlIncomplete = (url: string) =>
-    url.trim() !== '' && !configUrlTemplateOk(url.trim())
-  const duplicatePattern = (list: readonly LinkPatternRule[], i: number) => {
-    // Exact comparison, mirroring the server's dedup: patterns differing only
-    // in edge whitespace are DIFFERENT regexes and both may be saved.
-    const p = list[i].pattern
-    return p.trim() !== '' && list.some((r, j) => j < i && r.pattern === p)
-  }
-  const commit = (next: readonly LinkPatternRule[]) => {
-    // A half-edited row (some text, not yet persistable) blocks the whole
-    // save: clearing a URL to retype it must not delete the stored rule on
-    // blur. Deleting is the remove button's job, never a blur side effect.
-    // "Complete" is the registry's own acceptance rule (`configUrlTemplateOk`)
-    // so a template registration would refuse — userinfo, `{match}` in the
-    // authority — is withheld here exactly like an empty half, not silently
-    // filtered out of the PUT (which would delete the stored rule on blur).
-    const halfEdited = next.some(r => {
-      const pattern = r.pattern.trim()
-      const url = r.url.trim()
-      const complete = pattern.length > 0 && configUrlTemplateOk(url)
-      const empty = pattern.length === 0 && url.length === 0
-      return !complete && !empty
-    })
-    // Surface the block at the commit point, not only on the offending row:
-    // the row a user just edited may be far from the half-filled one, and a
-    // silently swallowed save reads as data loss.
-    setSaveBlocked(halfEdited)
-    if (halfEdited) return
-    const cleaned = persistable(next)
-    if (JSON.stringify(cleaned) !== JSON.stringify(persistable(rules))) {
-      // The currently-displayed server value is where the optimistic overlay
-      // rolls back to if this save is rejected; the submitted value is what
-      // echoes back if it lands. Mark both so the adopt effect can tell a
-      // rollback and our own echo apart from a genuine external change.
-      const submittedKey = JSON.stringify(cleaned)
-      adoptedKeyRef.current = serverKey
-      pendingKeyRef.current = submittedKey
-      // Serialize whole-list PUTs: two in-flight saves (edit-blur racing a
-      // remove) can settle out of order server-side, and last-writer-wins
-      // would resurrect the removed rule. A save launched while another is
-      // in flight defers behind it (failure included — both chain arms keep
-      // the tail alive); an idle chain launches inline, so single saves keep
-      // their synchronous shape. The pending/adopted marks above are
-      // per-launch and already guard a superseded save's handlers.
-      const settled = savesInFlightRef.current > 0
-        ? saveChainRef.current.then(() => onSave(cleaned))
-        : onSave(cleaned)
-      // The echo alone cannot advance the adopted watermark: the optimistic
-      // mask echoes the same value BEFORE the server accepts it, and doing so
-      // there would make a failed save's rollback look external and erase the
-      // typed rows. Only the settlement says which side of that fork we are
-      // on. Both handlers are guarded on the pending mark so a superseded
-      // save (edit + blur while the first save is in flight) cannot clobber
-      // the newer save's marks.
-      if (settled && typeof (settled as Promise<unknown>).then === 'function') {
-        savesInFlightRef.current += 1
-        const dec = () => {
-          savesInFlightRef.current -= 1
-        }
-        saveChainRef.current = (settled as Promise<unknown>).then(dec, dec)
-        ;(settled as Promise<unknown>).then(
-          () => {
-            // Confirmed: the submitted value is now the base rows are built
-            // from, so a later external change back to the pre-save value is
-            // adopted instead of being swallowed as a rollback.
-            if (pendingKeyRef.current === submittedKey) {
-              adoptedKeyRef.current = submittedKey
-              pendingKeyRef.current = null
-            }
-          },
-          () => {
-            // Rejected: the server never took the value, so it can only
-            // reappear as a genuine external change — drop the echo mark.
-            // The rollback itself still matches the adopted (pre-save)
-            // watermark, so the typed rows survive.
-            if (pendingKeyRef.current === submittedKey) pendingKeyRef.current = null
-          },
-        )
-      }
-    }
-  }
-  const update = (i: number, field: 'pattern' | 'url', value: string) => {
-    setRows(rs => rs.map((r, j) => (j === i ? { ...r, [field]: value } : r)))
-  }
-  const remove = (i: number) => {
-    const next = rows.filter((_, j) => j !== i)
-    setRows(next)
-    commit(next)
-  }
-  return (
-    <SettingsField label={label} description={description} hint={hint} configKey={configKey}>
-      <div className="flex flex-col gap-1.5">
-      {rows.map((row, i) => (
-        // Narrow-first: fields stack below the `sm` breakpoint — side-by-side
-        // at ~320px leaves each input ~100px, unusable for a regex. The URL
-        // input and remove button share a nested row so delete stays reachable
-        // without a third stacked line.
-        <div key={i} className="flex flex-col sm:flex-row items-stretch sm:items-start gap-1.5">
-          <div className="flex-1 min-w-0">
-            <Input
-              value={row.pattern}
-              onChange={e => update(i, 'pattern', e.target.value)}
-              onBlur={() => commit(rows)}
-              placeholder={i18nT('pages.settings.chatPanel.link_patterns_pattern_ph')}
-              aria-label={i18nT('pages.settings.chatPanel.link_patterns_pattern_aria')}
-              disabled={disabled}
-              className="w-full font-mono"
-            />
-            <FieldHint message={invalidRegex(row.pattern) ? i18nT('pages.settings.chatPanel.link_patterns_invalid_regex') : ''} />
-            <FieldHint message={!invalidRegex(row.pattern) && row.pattern.trim() !== '' && configPatternRefused(row.pattern) ? i18nT('pages.settings.chatPanel.link_patterns_unsafe_pattern') : ''} />
-            <FieldHint message={duplicatePattern(rows, i) ? i18nT('pages.settings.chatPanel.link_patterns_duplicate') : ''} />
-            <FieldHint message={row.pattern.trim() === '' && row.url.trim() !== '' ? i18nT('pages.settings.chatPanel.link_patterns_row_incomplete') : ''} />
-          </div>
-          <div className="flex flex-1 min-w-0 items-start gap-1.5">
-          <div className="flex-1 min-w-0">
-          <Input
-            value={row.url}
-            onChange={e => update(i, 'url', e.target.value)}
-            onBlur={() => commit(rows)}
-            // The catalog value carries `{{placeholder}}` (well-formed i18next
-            // interpolation, identical in every locale) and the literal
-            // `{match}` token arrives through interpolation — the i18n identity
-            // gate refuses raw single-brace tokens in catalog values, and the
-            // added-lines gate refuses a hardcoded attribute string here.
-            placeholder={i18nT('pages.settings.chatPanel.link_patterns_url_ph', { placeholder: '{match}' })}
-            aria-label={i18nT('pages.settings.chatPanel.link_patterns_url_aria')}
-            disabled={disabled}
-            className="w-full"
-          />
-          <FieldHint message={urlIncomplete(row.url) ? i18nT('pages.settings.chatPanel.link_patterns_url_invalid', { placeholder: '{match}' }) : ''} />
-          {/* A pattern with no URL yet blocks every commit from this editor
-              (the half-edited guard in `commit`), and nothing else marks it:
-              `urlIncomplete` only fires once the URL field holds text. */}
-          <FieldHint message={row.pattern.trim() !== '' && row.url.trim() === '' ? i18nT('pages.settings.chatPanel.link_patterns_row_incomplete') : ''} />
-          </div>
-          <Btn
-            onClick={() => remove(i)}
-            aria-label={i18nT('pages.settings.chatPanel.link_patterns_remove')}
-            disabled={disabled}
-          ><Trash2 className="lucide-inline" /></Btn>
-          </div>
-        </div>
-      ))}
-      <div>
-        <Btn
-          onClick={() => setRows(rs => [...rs, { pattern: '', url: '' }])}
-          disabled={disabled}
-        ><Plus className="lucide-inline" /> {i18nT('pages.settings.chatPanel.link_patterns_add')}</Btn>
-        <FieldHint message={saveBlocked ? i18nT('pages.settings.chatPanel.link_patterns_row_incomplete') : ''} />
-      </div>
-      </div>
-    </SettingsField>
-  )
-}
-
-type HiddenModelsUpdate = {
-  next: string[]
-  add?: string[]
-  remove?: string[]
-}
+export type { LinkPatternRule, LinkPatternsDraft } from './ChatPanelLinkPatternsEditor'
+export { LinkPatternsEditor } from './ChatPanelLinkPatternsEditor'
 
 export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const qc = useQueryClient()
@@ -511,144 +90,10 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // Full lifecycle contract: useOptimisticConfigPaths.ts.
   const overlay = useOptimisticConfigPaths(qc)
 
-  // ── Dashboard config (server-side) ──
-  const dashQ = useQuery<DashboardConfig>({
-    queryKey: ['dashboardConfig'],
-    queryFn: fetchDashboardConfig,
-  })
-  // Shown config: the in-flight save when one is pending, else the server's.
-  // Toggles both render this and BUILD THEIR PAYLOAD from it (setDash), so a
-  // second toggle during a save carries the first one's value forward.
-  const dashCfg = overlay.shown(
-    'dashboardConfig',
-    dashQ.data ?? { restore_sessions: false, restore_window_minutes: 30, merge_queued_messages: false, default_memory_mode: 'persistent' as const, widget_density: 'more' as const, verbosity: 'default' as const, quick_send: false, session_grid: false, tail_fork_enabled: false, link_previews: false, link_patterns: [], mcp_app_panel: false, auto_open_git_panel: false, session_card_source_links: true, folder_suggestions_enabled: true, use_builtin_browser: true, model_picker_hidden_models: [] },
-  )
-  const shownDefaultMemoryMode = overlay.shown(
-    DEFAULT_MEMORY_MODE_PATH,
-    dashCfg.default_memory_mode,
-  )
-
-  // ── Feature Tips opt-out (server-side per-user state) ──
-  const tipsQ = useQuery<{ enabled_config: boolean; opted_out: boolean }>({
-    queryKey: ['tipsStatus'],
-    queryFn: () => api.tipsStatus(),
-  })
-  const tipsOpts = overlay.mutationOpts<boolean>({
-    queryKey: ['tipsStatus'],
-    mutationFn: (enable: boolean) => api.tipsFeedback('', enable ? 'optin' : 'optout'),
-    path: () => 'tipsStatus.opted_out',
-    displayValue: enable => !enable,
-    applyToCache: (cached, enable) => ({ ...(cached as { enabled_config: boolean; opted_out: boolean }), opted_out: !enable }),
-    onFailure: () => setPathSaveError('tipsStatus.opted_out', i18nT('pages.settings.chatPanel.failed_to_save_tips_preference')),
-    onSupersede: clearOwnPathError,
-  })
-  const tipsMut = useMutation({
-    ...tipsOpts,
-    onSettled: (data: unknown, err: unknown, enable: boolean, token: number | undefined) => {
-      tipsOpts.onSettled(data, err, enable, token)
-      // Drop any cached/in-flight tip so a running Chat view can't display a
-      // tip fetched before the preference changed.
-      qc.removeQueries({ queryKey: ['tips-next'] })
-    },
-  })
-  const tipsConfigOff = tipsQ.data ? !tipsQ.data.enabled_config : false
-  const shownOptedOut = overlay.shown('tipsStatus.opted_out', tipsQ.data?.opted_out)
-
-  // ── Feature-video cache (read-only readout + one manual action) ──
-  //
-  // Both calls carry the ACTIVE SLOT's key. The status route's read gate reads
-  // "not restricted" for a missing key and for the shared `dashboard:ui`
-  // placeholder alike, so a request without one is served the permanent
-  // engagement history even from a temporary session -- the one kind of session
-  // whose contract is that reads are withheld. Naming the slot is what makes the
-  // server's own gate reachable, exactly as the startup modal does for the two
-  // routes it calls.
-  const activeSlot = useAppSelector(s => s.chat.activeSlot)
-  const fvSessionKey = activeSlot ? `dashboard:${activeSlot}` : undefined
-  //
-  // Polled rather than pushed, and only while this panel is mounted: the clips
-  // are fetched by a background pass that reports no events, so the only way to
-  // watch it move is to ask. 15s is slow enough to be free and quick enough that
-  // a clip finishing feels live. Closing the panel unmounts this and the polling
-  // stops with it -- which is why the interval is safe to leave running.
-  //
-  // The key is IN the query key: a restricted slot and an ordinary one get
-  // different answers from the same route, so one cache entry for both would
-  // serve whichever landed first.
-  const fvQ = useQuery<FeatureVideoStatus>({
-    queryKey: ['featureVideoStatus', fvSessionKey],
-    queryFn: () => api.featureVideoStatus(fvSessionKey),
-    refetchInterval: FEATURE_VIDEO_POLL_MS,
-  })
-  // Kicks the background pass and returns immediately; the readout above is what
-  // reports progress, so this refetches once rather than tracking the work.
-  const fvFetchMut = useMutation({
-    mutationFn: () => api.featureVideoFetchAll(fvSessionKey),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['featureVideoStatus'] }) },
-  })
-  const fv = fvQ.data
-  /**
-   * One line, three states, in the order that the most specific wins.
-   *
-   * Returns null while the read is still out, when the feature is off, and when
-   * the gateway reports no cache at all -- so the row is absent rather than
-   * showing a zero-of-zero that reads like an empty cache, or a policy that was
-   * never stated.
-   */
-  const featureVideoStatusLine = (): string | null => {
-    if (!fv || !fv.enabled) return null
-    // No `download_enabled` means this gateway has no cache to report -- the
-    // route answers 200 with an older payload that carries none of these
-    // fields. Show nothing rather than reading the absence as `false`, which
-    // would put a download policy on screen that does not exist.
-    if (fv.download_enabled === undefined) return null
-    if (fv.downloading) {
-      return i18nT('pages.settings.chatPanel.feature_videos_downloading', { id: fv.downloading })
-    }
-    if (!fv.download_enabled) {
-      return i18nT('pages.settings.chatPanel.feature_videos_downloads_disabled')
-    }
-    return i18nT('pages.settings.chatPanel.feature_videos_cached', {
-      cached: fv.cached, total: fv.total, release: fv.release,
-    })
-  }
-  const featureVideoLine = featureVideoStatusLine()
-
-  // Only the CHANGED keys go on the wire, the way `BrowserPanel`'s own dashboard
-  // mutation already does it: the config handler applies whichever keys the body
-  // carries, so a full-object PUT rebuilt from this tab's cache would write every
-  // OTHER setting back at its cached value -- clobbering one that a second tab
-  // (or `kirocrew config set`) changed after we cached it.
-  //
-  // The overlay still displays and caches the WHOLE object, so the patch is
-  // merged in both places. Merging onto the SHOWN config rather than the server
-  // value is what keeps the property above -- a second toggle during an in-flight
-  // save carries the first one's value forward -- and the monotonic token still
-  // keeps a slow earlier save from clobbering a newer one's display or cache write.
-  const dashMut = useMutation(overlay.mutationOpts<Partial<DashboardConfig>>({
-    queryKey: ['dashboardConfig'],
-    mutationFn: (patch: Partial<DashboardConfig>) => api.updateDashboardConfig(patch),
-    path: () => 'dashboardConfig',
-    displayValue: patch => ({ ...dashCfg, ...patch }),
-    applyToCache: (cached, patch) => ({ ...(cached as DashboardConfig), ...patch }),
-    onFailure: () => setPathSaveError('dashboardConfig', i18nT('pages.settings.chatPanel.failed_to_save_dashboard_config')),
-    onSupersede: clearOwnPathError,
-  }))
-  const defaultModeMut = useMutation(overlay.mutationOpts<MemoryMode>({
-    queryKey: ['dashboardConfig'],
-    mutationFn: (value: MemoryMode) => serializeDefaultMemoryModeUpdate(
-      value,
-      () => api.updateDashboardConfig({ default_memory_mode: value }),
-    ),
-    path: () => DEFAULT_MEMORY_MODE_PATH,
-    displayValue: value => value,
-    applyToCache: (cached, value) => ({
-      ...(cached as DashboardConfig),
-      default_memory_mode: value,
-    }),
-    onFailure: () => setPathSaveError(DEFAULT_MEMORY_MODE_PATH, i18nT('pages.settings.chatPanel.failed_to_save_dashboard_config')),
-    onSupersede: clearOwnPathError,
-  }))
+  const {
+    dashQ, dashCfg, shownDefaultMemoryMode, tipsQ, tipsMut, tipsConfigOff, shownOptedOut, fvQ,
+    fvFetchMut, fv, featureVideoLine, dashMut, defaultModeMut,
+  } = useChatPanelDashboard({ qc, setPathSaveError, clearOwnPathError, overlay })
 
   // ── KiroCrew config (server-side) ──
   const mcQ = useQuery<KirocrewConfigShape>({
@@ -657,32 +102,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   })
   const mcCfg = mcQ.data
 
-  /**
-   * Mutation options for a config PATCH with an OPTIMISTIC display: the seven
-   * Model-section selectors render `shown(path, server)`, so a pick shows
-   * immediately instead of waiting for the PATCH + refetch round-trip.
-   * Lifecycle (per-path pending entry, monotonic ownership token,
-   * token-guarded success cache write, error-path refetch) lives in
-   * useOptimisticConfigPaths — this factory only binds the panel's query
-   * key, PATCH call, and path-scoped failure banner. `''` is a meaningful
-   * value here ("model default" / fallback "disabled"); the overlay's
-   * explicit entry check preserves it.
-   *
-   * The failure banner is token-guarded by the hook: a pick superseded by a
-   * newer pick on the same path reports nothing when it eventually fails —
-   * the newer pick owns the display, and a stale "failed to save" beside a
-   * value that did persist is exactly the co-render this prevents.
-   */
-  const optimisticConfigOpts = (path: string, errMsg: (err: unknown) => string) =>
-    overlay.mutationOpts<string>({
-      queryKey: ['kirocrewConfig'],
-      mutationFn: (v: string) => api.patchConfig(path, v),
-      path: () => path,
-      displayValue: v => v,
-      applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, path, v),
-      onFailure: err => setPathSaveError(path, errMsg(err)),
-      onSupersede: clearOwnPathError,
-    })
+  const optimisticConfigOpts = chatPanelConfigOpts(overlay, setPathSaveError, clearOwnPathError)
 
   // ── User profile (About You) ──
   // Same slugs as onboarding step 2 (OnboardingFlow.tsx), validated by the
@@ -713,6 +133,39 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
+
+  // ── Auto-title refresh cadence (server-side; one background call per refresh) ──
+  // The GET serializes the LOADED config, so a hand-edited 2 shows as the 4 that
+  // runs. Per-path overlay like the Model selectors, so the stepper moves at click
+  // time and a slow save cannot roll back a sibling path. A failure also bumps the
+  // banner tick: this row sits low in the Sessions card, below the fold on a short
+  // window, and a stepper that only snaps back reads as a broken control.
+  const titleRefresh = normalizeTitleRefresh(mcCfg?.dashboard?.title_refresh_every_turns ?? 0)
+  const shownTitleRefresh = overlay.shown(TITLE_REFRESH_PATH, titleRefresh)
+  const titleRefreshMut = useMutation({
+    ...overlay.mutationOpts<number>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (v: number) => api.patchConfig(TITLE_REFRESH_PATH, v),
+      path: () => TITLE_REFRESH_PATH,
+      displayValue: v => v,
+      applyToCache: (cached, v) => setConfigPathValue(cached as KirocrewConfigShape, TITLE_REFRESH_PATH, v),
+      onFailure: () => {
+        setPathSaveError(TITLE_REFRESH_PATH, i18nT('pages.settings.chatPanel.failed_to_save_title_refresh'))
+        setChatSaveFailTick(t => t + 1)
+      },
+      onSupersede: clearOwnPathError,
+    }),
+    // Rapid clicks fire one PATCH each; a shared scope runs them in click
+    // order, so the last click is the value stored. onMutate still runs at
+    // click time, so the readout moves immediately.
+    scope: { id: TITLE_REFRESH_PATH },
+  })
+  const setTitleRefresh = (n: number) => {
+    const next = normalizeTitleRefresh(n)
+    if (next !== shownTitleRefresh) titleRefreshMut.mutate(next)
+  }
+  /** What the title-refresh readout shows for 0, the built-in schedule. */
+  const titleRefreshDefault = i18nT('pages.settings.chatPanel.title_refresh_default')
 
   // "Other" reveals a free-text role. Typed locally and committed on blur /
   // Enter so a PATCH does not fire per keystroke; seeded from the server once
@@ -761,349 +214,35 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     },
   })
 
-  // ── Throttle-fallback model (agent.fallback_model) ──
-  // Single-select dropdown fed by the same advertised-model list as the
-  // role-model rows (no free text — a typo'd id can't exist). "" = disabled,
-  // "auto" (default) = backend availability-aware routing, concrete id =
-  // tried first with "auto" as the final fallthrough.
-  const fallbackModel = mcCfg?.agent?.fallback_model ?? 'auto'
-  const shownFallbackModel = overlay.shown('agent.fallback_model', fallbackModel)
-  const fallbackMut = useMutation(
-    optimisticConfigOpts('agent.fallback_model', (err: unknown) => {
-      // Surface the backend's actual deny reason (e.g. an unentitled id)
-      // next to the generic failure line.
-      const reason = err instanceof Error && err.message ? `: ${err.message}` : ''
-      return i18nT('pages.settings.chatPanel.failed_to_save_fallback_model') + reason
-    })
-  )
-  const fallbackModelOptions = (shown: string, server: string): string[] => {
-    const opts = ['', 'auto', ...availableModels.map(m => m.name).filter(m => m !== 'auto')]
-    // Keep both the shown and the persisted id selectable while they differ:
-    // an in-flight pick must not drop the server's unadvertised id from the
-    // list, or the user could not switch back to it during that window.
-    for (const kept of [server, shown]) {
-      if (kept && !opts.includes(kept)) opts.splice(2, 0, kept)
-    }
-    return opts
-  }
-  const fallbackModelLabels = (opts: string[]): string[] =>
-    opts.map(m =>
-      m === ''
-        ? i18nT('pages.settings.chatPanel.fallback_disabled')
-        : m === 'auto'
-          ? i18nT('pages.settings.chatPanel.fallback_auto')
-          : m,
-    )
+  const {
+    fallbackModel, shownFallbackModel, fallbackMut, fallbackModelLabels, refusalFallbackModel,
+    shownRefusalFallbackModel, refusalFallbackMut, refusalFallbackModelLabels,
+  } = useChatPanelFallbackModels({ overlay, mcCfg, optimisticConfigOpts })
 
-  // ── Content-filter (refusal) fallback model (agent.refusal_fallback_model) ──
-  // Same advertised-model dropdown as the throttle fallback above. "" =
-  // disabled (default — a refusal surfaces exactly as before), "auto" = retry
-  // on the model the provider's refusal envelope recommends (when it names
-  // one), concrete id = retry the declined message once on it; the primary
-  // model is restored on the next message either way.
-  const refusalFallbackModel = mcCfg?.agent?.refusal_fallback_model ?? ''
-  const shownRefusalFallbackModel = overlay.shown('agent.refusal_fallback_model', refusalFallbackModel)
-  const refusalFallbackMut = useMutation(
-    optimisticConfigOpts('agent.refusal_fallback_model', (err: unknown) => {
-      // Surface the backend's actual deny reason (e.g. an unentitled id)
-      // next to the generic failure line.
-      const reason = err instanceof Error && err.message ? `: ${err.message}` : ''
-      return i18nT('pages.settings.chatPanel.failed_to_save_refusal_fallback_model') + reason
-    })
-  )
-  const refusalFallbackModelLabels = (opts: string[]): string[] =>
-    opts.map(m =>
-      m === ''
-        ? i18nT('pages.settings.chatPanel.fallback_disabled')
-        : m === 'auto'
-          ? i18nT('pages.settings.chatPanel.refusal_fallback_auto')
-          : m,
-    )
+  const {
+    localKeepChars, setLocalKeepChars, keepCharsMut, localTurnLimit, setLocalTurnLimit,
+    turnLimitEditedRef, turnLimitMut, localFolderRoot, setLocalFolderRoot, folderRootError,
+    setFolderRootError, folderRootSaved, setFolderRootSaved, folderRootErrorId,
+    folderRootEditedRef, folderRootIme, folderRootMut, commitFolderRoot, localWaitSecs,
+    setLocalWaitSecs, waitClampNotice, setWaitClampNotice, waitSecsEditedRef, waitSecsMut,
+    keepModeMut,
+  } = useChatPanelTypedFields({ qc, setSaveError, dashQ, mcQ, mcCfg })
 
-  const [localKeepChars, setLocalKeepChars] = useState('')
-  const keepCharsInitRef = useRef(false)
-  useEffect(() => {
-    if (mcQ.data && !keepCharsInitRef.current) {
-      keepCharsInitRef.current = true
-      setLocalKeepChars(String(mcQ.data.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT))
-    }
-  }, [mcQ.data])
-
-  const keepCharsMut = useMutation({
-    mutationFn: (n: number) => api.patchConfig('agent.completion_keep_chars', n),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
-    onError: () => {
-      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_completion_keep_characters'))
-      setLocalKeepChars(
-        String(mcCfg?.agent?.completion_keep_chars ?? COMPLETION_KEEP_CHARS_DEFAULT)
-      )
-    },
+  const {
+    availableModelsQ, availableModels, selectedModelIds, modelPickerSummary, toggleVisibleModel,
+    selectAllModels, deselectAllModels, shownDefaultModel, modelOptions, defaultModelMut, agentsQ,
+    pinAgentName, pinAgent, resolvedQ, pinReadsInFlight, pinReadsFailed, resolvedModel,
+    memberPinOverrides, showPinNotice, clearAgentPinMut, clearAgentPinError, shownDefaultEffort,
+    effortSupported, defaultEffortMut, shownBackgroundModel, shownSubagentModel, roleModelLabels,
+    backgroundModelOpts, subagentModelOpts, fallbackOpts, refusalFallbackOpts, backgroundModelMut,
+    subagentModelMut, shownBackgroundEffort, shownSubagentEffort, bgEffortSupported,
+    subEffortSupported, effortLabels, backgroundEffortMut, subagentEffortMut,
+    memberEffortPinOverrides, showEffortPinNotice, resolvedEffortLabel, clearAgentEffortPinMut,
+    clearAgentEffortPinError,
+  } = useChatPanelModelDefaults({
+    qc, setPathSaveError, clearOwnPathError, overlay, dashCfg, mcCfg, optimisticConfigOpts,
+    fallbackModel, shownFallbackModel, refusalFallbackModel, shownRefusalFallbackModel,
   })
-
-  const keepModeMut = useMutation({
-    mutationFn: (v: CompletionKeepMode) => api.patchConfig('agent.completion_keep', v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
-    onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_completion_keep_mode')),
-  })
-
-  // ── Default model + default reasoning effort ──
-  // These are the DEFAULTS for new sessions. A session's own model/effort
-  // picker still overrides them per-slot; nothing here touches live sessions.
-  // Same query key as every other model picker so the list is fetched once.
-  const availableModelsQ = useAvailableModelsQuery()
-  const availableModels = availableModelsQ.data
-  const hiddenModels = overlay.shown(
-    'dashboard.model_picker_hidden_models',
-    normalizeHiddenModels(dashCfg.model_picker_hidden_models),
-  )
-  const hiddenModelSet = new Set(hiddenModels)
-  const selectedModelIds = new Set(
-    availableModels
-      .filter(model => model.name === 'auto' || !hiddenModelSet.has(model.name))
-      .map(model => model.name),
-  )
-  const selectedModelCount = selectedModelIds.size
-  const modelPickerSummary = selectedModelCount === availableModels.length
-    ? i18nT('pages.settings.chatPanel.model_picker_all_models', { count: fmtNumber(availableModels.length) })
-    : i18nT('pages.settings.chatPanel.model_picker_selected_models', {
-        selected: fmtNumber(selectedModelCount),
-        total: fmtNumber(availableModels.length),
-      })
-  const hiddenModelsOpts = overlay.mutationOpts<HiddenModelsUpdate>({
-      queryKey: ['dashboardConfig'],
-      mutationFn: ({ add, remove }: HiddenModelsUpdate) => api.updateDashboardConfig({
-        ...(add ? { model_picker_hidden_models_add: add } : {}),
-        ...(remove ? { model_picker_hidden_models_remove: remove } : {}),
-      }),
-      path: () => 'dashboard.model_picker_hidden_models',
-      displayValue: update => update.next,
-      applyToCache: (cached, update) => ({
-        ...(cached as DashboardConfig),
-        model_picker_hidden_models: update.next,
-        model_picker_configured: true,
-      }),
-      onFailure: () => {
-        setPathSaveError(
-          'dashboard.model_picker_hidden_models',
-          i18nT('pages.settings.chatPanel.failed_to_save_selectable_models'),
-        )
-      },
-      onSupersede: clearOwnPathError,
-    })
-  const hiddenModelsMut = useMutation({
-    ...hiddenModelsOpts,
-    onSuccess: (data, update, token) => {
-      // This acknowledgement is monotonic even if a newer list edit superseded
-      // the successful save. Never mark a visit, pending write, or failure.
-      qc.setQueryData<DashboardConfig>(['dashboardConfig'], cached => cached
-        ? { ...cached, model_picker_configured: true }
-        : cached)
-      return hiddenModelsOpts.onSuccess(data, update, token)
-    },
-    // Serializing this path keeps this tab's delta sequence in UI order while the
-    // server applies each delta against the current config under its write lock.
-    scope: { id: 'dashboard.model_picker_hidden_models' },
-  })
-  const saveHiddenModels = (update: HiddenModelsUpdate) => {
-    hiddenModelsMut.mutate(update)
-  }
-  const toggleVisibleModel = (model: string, selected: boolean) => {
-    if (model === 'auto') return
-    const next = selected
-      ? hiddenModels.filter(value => value !== model)
-      : [...hiddenModels.filter(value => value !== model), model]
-    saveHiddenModels(selected ? { next, remove: [model] } : { next, add: [model] })
-  }
-  const advertisedModelIds = new Set(availableModels.map(model => model.name))
-  const hiddenUnadvertisedModels = hiddenModels.filter(model => !advertisedModelIds.has(model))
-  const advertisedOptionalModelIds = availableModels.filter(model => model.name !== 'auto').map(model => model.name)
-  const selectAllModels = () => saveHiddenModels({
-    next: hiddenUnadvertisedModels,
-    remove: advertisedOptionalModelIds,
-  })
-  const deselectAllModels = () => saveHiddenModels({
-    next: [...hiddenUnadvertisedModels, ...advertisedOptionalModelIds],
-    add: advertisedOptionalModelIds,
-  })
-  // '' in config means "unset" and resolves the same way 'auto' does, so both
-  // render as the 'auto' option rather than as a missing selection.
-  const defaultModel = mcCfg?.agent?.model || 'auto'
-  const shownDefaultModel = overlay.shown('agent.model', defaultModel)
-  const modelOptions = availableModels.map(m => m.name)
-  // A model the live backend no longer advertises must still be selectable,
-  // otherwise the select would silently jump to another entry and a stray
-  // change event would overwrite the user's stored choice. Both the SHOWN and
-  // the persisted value are kept: while a pick is in flight the server's
-  // unadvertised id must not vanish from the list, or the user could not
-  // change back to it during that window.
-  for (const kept of [defaultModel, shownDefaultModel]) {
-    if (!modelOptions.includes(kept)) modelOptions.unshift(kept)
-  }
-
-  const defaultModelOpts = optimisticConfigOpts('agent.model', () => i18nT('pages.settings.chatPanel.failed_to_save_default_model'))
-  const defaultModelMut = useMutation({
-    ...defaultModelOpts,
-    // The default agent's resolved model falls back to `agent.model`, so the
-    // pin notice below must re-ask the resolver once the new global lands.
-    onSuccess: (data: unknown, v: string, token: number) => {
-      qc.invalidateQueries({ queryKey: ['resolved-model'] })
-      return defaultModelOpts.onSuccess(data, v, token)
-    },
-  })
-
-  // A new chat on the default agent does not necessarily start on `agent.model`:
-  // the agent's own pin, then its template's pin, outrank it. The backend owns
-  // that precedence (`GET /api/agents/resolved-model`, the same resolver every
-  // new session runs through), so the notice below compares its answer with
-  // this select rather than re-deriving the chain from the roster — which would
-  // miss a template pin and would notice a pin the active harness cannot claim.
-  const agentsQ = useQuery<{ agents?: KiroCrewAgent[]; default_agent?: string }>({
-    queryKey: ['kirocrew-agents'],
-    queryFn: () => api.kirocrewAgents(),
-  })
-  const pinAgentName = agentsQ.data?.default_agent || 'default'
-  const pinAgent = agentsQ.data?.agents?.find(a => a.name === pinAgentName)
-  // Asked BY NAME, for the same agent the clear button below writes to, and
-  // only once the roster has named it. An unnamed ask ("the server's default
-  // agent") can answer for a different agent than a roster read that has not
-  // caught up with a default-agent change, and the button would then clear
-  // the wrong agent's pin.
-  const resolvedQ = useQuery<{ model?: string; pinned?: boolean }>({
-    queryKey: ['resolved-model', pinAgentName],
-    queryFn: () => api.agentResolvedModel(pinAgentName),
-    enabled: agentsQ.isSuccess,
-  })
-  // Either read in flight means the name or the verdict may be about to change
-  // under the button, so it waits. So does a global-default save still in
-  // flight: clearing the pin then would erase it before that save is known to
-  // land, and a rejected save would leave the agent on neither model.
-  const pinReadsInFlight = agentsQ.isFetching || resolvedQ.isFetching
-  // A failed re-read keeps the previous answer on screen, and that answer may
-  // no longer be true (the pin changed elsewhere), so the button waits for a
-  // good read too. The banner above names the failure and offers Retry.
-  const pinReadsFailed = agentsQ.isError || resolvedQ.isError
-  // Compared as canonical keys, not raw ids: a pin spelled `claude-opus-4.8`
-  // names the same model as the setting's `claude-opus-4-8[1m]` or `opus`.
-  const resolvedModel = resolvedQ.data?.model || ''
-  const resolvedKey = normalizeModelKey(resolvedModel)
-  const globalKey = normalizeModelKey(defaultModel)
-  // Only an explicit global default can be overridden: on Auto the setting
-  // itself says the agent config decides, so whatever resolves is expected. The
-  // SHOWN value is also accepted so a pick still in flight does not flash a
-  // notice against the answer the server has not recomputed yet.
-  const agentPinOverrides =
-    globalKey !== 'auto' &&
-    !!resolvedKey && resolvedKey !== 'auto' &&
-    resolvedKey !== globalKey &&
-    resolvedKey !== normalizeModelKey(shownDefaultModel)
-  // Which tier answered. `pinned` is the resolver's own word for "this agent's
-  // record carries a model pin" (the agent's own pin, never its template's);
-  // a resolved model without one came from a tier this panel cannot edit (the
-  // template, or the backend default when the global model is out of the
-  // agent's scope) — so that notice has no button and points at the chat model
-  // picker instead.
-  //
-  // `pinned` only says the record CARRIES a pin, not that the pin won: a pin
-  // the active backend cannot use is skipped by the resolver and kept on the
-  // record for when that backend returns. So the member wording, and the button
-  // that erases the pin, also require the resolved model to BE that pin. A pin
-  // that is carried but skipped belongs to another backend, which this notice
-  // does not cover, so it shows nothing rather than a wrong source.
-  const memberPinCarried = resolvedQ.data?.pinned === true
-  const memberPinApplied = memberPinCarried && !!pinAgent?.model &&
-    normalizeModelKey(pinAgent.model) === resolvedKey
-  const memberPinOverrides = agentPinOverrides && memberPinApplied
-  const showPinNotice = agentPinOverrides && (!memberPinCarried || memberPinApplied)
-  const clearAgentPinMut = useMutation({
-    // '' is the inherit sentinel: the agent falls back to the global default.
-    mutationFn: () => api.updateKirocrewAgent(pinAgentName, { model: '' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['kirocrew-agents'] })
-      qc.invalidateQueries({ queryKey: ['resolved-model'] })
-    },
-    // No onError banner: the failure renders inline beside the button that
-    // caused it (`clearAgentPinMut.error` below), not at the top of the panel.
-  })
-  const clearAgentPinError = clearAgentPinMut.isError
-    ? (clearAgentPinMut.error instanceof Error && clearAgentPinMut.error.message
-      ? i18nT('pages.settings.chatPanel.failed_to_clear_agent_model_pin', { error: clearAgentPinMut.error.message })
-      : i18nT('pages.settings.chatPanel.failed_to_clear_agent_model_pin_no_reason'))
-    : ''
-
-  const defaultEffort = mcCfg?.agent?.reasoning_effort ?? ''
-  const shownDefaultEffort = overlay.shown('agent.reasoning_effort', defaultEffort)
-  // Effort is only meaningful on reasoning-capable models. Rather than hide the
-  // row (which would make the setting look absent), keep it visible and
-  // disabled with an explanatory hint. Gated on the SHOWN model so the row's
-  // enabled state tracks the trigger the user is looking at, not a value the
-  // refetch has yet to replace.
-  const effortSupported = modelSupportsEffort(shownDefaultModel)
-  const defaultEffortMut = useMutation(
-    optimisticConfigOpts('agent.reasoning_effort', () =>
-      i18nT('pages.settings.chatPanel.failed_to_save_default_reasoning_effort')
-    )
-  )
-
-  // ── Per-role model defaults (agent.role_models) ──
-  // Same picker as the chat default above, but NOT the same precedence:
-  // `RoleModels.resolve_model` returns the role's own pin or "auto" and
-  // deliberately never falls back to `agent.model`, so unattended work cannot
-  // silently ride the interactive flagship on every cycle. "auto" therefore
-  // means "the provider picks", not "inherit the chat default" — which is why
-  // these rows label it differently from the chat row's Default (auto).
-  const backgroundModel = mcCfg?.agent?.role_models?.background || 'auto'
-  const subagentModel = mcCfg?.agent?.role_models?.subagent || 'auto'
-  const shownBackgroundModel = overlay.shown('agent.role_models.background', backgroundModel)
-  const shownSubagentModel = overlay.shown('agent.role_models.subagent', subagentModel)
-  // A pinned model the live backend no longer advertises must stay selectable
-  // (same reasoning as the chat-default picker), so prepend what is missing —
-  // both the shown value and the persisted one, so neither vanishes while a
-  // pick is in flight.
-  const roleModelOptions = (shown: string, server: string): string[] => {
-    const opts = availableModels.map(m => m.name)
-    for (const kept of [server, shown]) {
-      if (!opts.includes(kept)) opts.unshift(kept)
-    }
-    return opts
-  }
-  const roleModelLabels = (opts: string[]): string[] =>
-    opts.map(m => (m === 'auto' ? i18nT('pages.settings.chatPanel.role_model_auto') : m))
-  // One array per row, shared by `options` and `optionLabels`: SettingsSelect
-  // pairs a label to a value by INDEX, so both props must read the same list.
-  const backgroundModelOpts = roleModelOptions(shownBackgroundModel, backgroundModel)
-  const subagentModelOpts = roleModelOptions(shownSubagentModel, subagentModel)
-  const fallbackOpts = fallbackModelOptions(shownFallbackModel, fallbackModel)
-  const refusalFallbackOpts = fallbackModelOptions(shownRefusalFallbackModel, refusalFallbackModel)
-  const backgroundModelMut = useMutation(
-    optimisticConfigOpts('agent.role_models.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
-  )
-  const subagentModelMut = useMutation(
-    optimisticConfigOpts('agent.role_models.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_model'))
-  )
-
-  // Per-role reasoning effort, paired with each role's model. Empty inherits the
-  // the MODEL's own default: `RoleModels.resolve_effort` does not fall back to
-  // `agent.reasoning_effort` either. The effort row is only meaningful on a
-  // reasoning-capable model, so it disables against a resolved model.
-  //
-  // KNOWN GAP: the two gates below resolve `auto` to the CHAT default, which
-  // `resolve_model` never does — so a role on auto can offer an effort control
-  // for a model that role will not run on. Changing it is a behaviour change
-  // with a test asserting the current answer, so it is tracked separately
-  // rather than folded into this copy fix.
-  const backgroundEffort = mcCfg?.agent?.role_efforts?.background ?? ''
-  const subagentEffort = mcCfg?.agent?.role_efforts?.subagent ?? ''
-  const shownBackgroundEffort = overlay.shown('agent.role_efforts.background', backgroundEffort)
-  const shownSubagentEffort = overlay.shown('agent.role_efforts.subagent', subagentEffort)
-  const bgEffortSupported = modelSupportsEffort(shownBackgroundModel !== 'auto' ? shownBackgroundModel : shownDefaultModel)
-  const subEffortSupported = modelSupportsEffort(shownSubagentModel !== 'auto' ? shownSubagentModel : shownDefaultModel)
-  const effortLabels = EFFORT_LEVELS.map(l => (l === '' ? i18nT('pages.settings.chatPanel.model_default') : effortLabel(l)))
-  const backgroundEffortMut = useMutation(
-    optimisticConfigOpts('agent.role_efforts.background', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
-  )
-  const subagentEffortMut = useMutation(
-    optimisticConfigOpts('agent.role_efforts.subagent', () => i18nT('pages.settings.chatPanel.failed_to_save_role_effort'))
-  )
 
   // ── Plain diffs (localStorage, browser-local) ──
   // Deliberately NOT server config, unlike every other row in the Messages
@@ -1232,6 +371,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     <SettingsSubNav
       items={railItems}
       basePath={basePath}
+      guideTargetPrefix="settings.sub.chat."
       railWidth={220}
       listLabel={i18nT('pages.settings.chatPanel.rail_label')}
       backLabel={i18nT('settings.tabs.chat.label')}
@@ -1347,6 +487,47 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             onChange={v => defaultEffortMut.mutate(v)}
             disabled={!mcQ.isSuccess || !effortSupported}
           />
+          {/* Same row as the model pin notice above, for the effort the default
+              agent starts at instead of this setting. */}
+          {showEffortPinNotice && pinAgent && (
+            <div
+              className="mt-1 mb-3 flex flex-wrap items-center gap-3 text-[13px] text-warn"
+              role="status"
+              data-testid="agent-effort-pin-notice"
+            >
+              <span className="min-w-0 flex-1 break-words">
+                <Trans
+                  i18nKey={memberEffortPinOverrides
+                    ? 'pages.settings.chatPanel.agent_effort_pin_overrides_default'
+                    : 'pages.settings.chatPanel.agent_role_effort_overrides_default'}
+                  components={{
+                    agent: <span className="font-mono">{pinAgentName}</span>,
+                    // A translated level name, not an id, so not monospace.
+                    effort: <span className="font-medium">{resolvedEffortLabel}</span>,
+                  }}
+                />
+              </span>
+              {memberEffortPinOverrides && (
+                <>
+                  <Btn
+                    type="button"
+                    className="shrink-0"
+                    onClick={() => clearAgentEffortPinMut.mutate()}
+                    disabled={clearAgentEffortPinMut.isPending || pinReadsInFlight || pinReadsFailed || defaultEffortMut.isPending}
+                  >
+                    {i18nT('pages.settings.chatPanel.clear_agent_effort_pin')}
+                  </Btn>
+                  {/* No hand-off, for the same drafts as the model clear above. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="basis-full"
+                    message={clearAgentEffortPinError}
+                    testId="agent-effort-pin-clear-error"
+                  />
+                </>
+              )}
+            </div>
+          )}
         </SettingsCard>
         </div>
 
@@ -1433,6 +614,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           />
         </SettingsCard>
         </div>
+        <AppModelsSection index={5} />
       </>
           )
 
@@ -1488,8 +670,42 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.turns')}</h4>
         <SettingsCard index={1}>
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.turn_time_limit')}
+            description={i18nT('pages.settings.chatPanel.turn_time_limit_description')}
+            hint={i18nT('pages.settings.chatPanel.turn_time_limit_hint')}
+            type="number"
+            value={localTurnLimit}
+            min={TURN_LIMIT_MIN}
+            max={TURN_LIMIT_MAX}
+            step={300}
+            onChange={v => {
+              turnLimitEditedRef.current = true
+              setLocalTurnLimit(v)
+            }}
+            onBlur={() => {
+              if (!turnLimitEditedRef.current) return
+              turnLimitEditedRef.current = false
+              const saved = mcCfg?.agent?.chat_turn_timeout_secs ?? TURN_LIMIT_DEFAULT
+              const n = Number(localTurnLimit)
+              if (localTurnLimit.trim() === '' || !Number.isInteger(n) || n < TURN_LIMIT_MIN || n > TURN_LIMIT_MAX) {
+                setLocalTurnLimit(String(saved))
+                return
+              }
+              if (n === saved) return
+              turnLimitMut.mutate(n)
+            }}
+            disabled={!mcQ.isSuccess || turnLimitMut.isPending}
+            configKey="agent.chat_turn_timeout_secs"
+          />
+        </SettingsCard>
+      </div>
+
+      <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <SettingsCard index={2}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
             hint={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
@@ -1504,12 +720,44 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={!mcQ.isSuccess}
             configKey="session.autocompact_pct"
           />
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
+            description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}
+            hint={i18nT('pages.settings.chatPanel.compaction_wait_budget_hint')}
+            type="number"
+            value={localWaitSecs}
+            min={0}
+            max={3600}
+            step={30}
+            onChange={v => {
+              waitSecsEditedRef.current = true
+              setLocalWaitSecs(v)
+              setWaitClampNotice('')
+            }}
+            onBlur={() => {
+              if (!waitSecsEditedRef.current) return
+              waitSecsEditedRef.current = false
+              const saved = mcCfg?.session?.compact_wait_secs ?? 0
+              const n = Number(localWaitSecs)
+              if (localWaitSecs.trim() === '' || !Number.isFinite(n)) {
+                setLocalWaitSecs(String(saved))
+                return
+              }
+              if (n === saved) return
+              waitSecsMut.mutate(n)
+            }}
+            // Locked while a save is in flight: its result rewrites the field
+            // (the clamped value), which must never land on a newer draft.
+            disabled={!mcQ.isSuccess || waitSecsMut.isPending}
+            configKey="session.compact_wait_secs"
+          />
+          <FieldHint message={waitClampNotice} />
         </SettingsCard>
       </div>
 
       <div>
         <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.subagents')}</h4>
-        <SettingsCard index={2}>
+        <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
             hint={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}
@@ -1577,6 +825,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.quick_send')} hint={i18nT('pages.settings.chatPanel.click_a_suggested_reply_to_send_it_instantly', { mod: isMac ? '⇧' : 'Shift' })} checked={dashCfg.quick_send} onChange={v => setDash({ quick_send: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.merge_queued_messages')} hint={i18nT('pages.settings.chatPanel.combine_follow_up_messages_into_a_single_labeled')} checked={dashCfg.merge_queued_messages} onChange={v => setDash({ merge_queued_messages: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} hint={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
@@ -1629,6 +878,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_thinking_inline')} hint={i18nT('pages.settings.chatPanel.show_intermediate_reasoning_text_between_tool_ca')} checked={!chatCfg.collapseAllSteps} onChange={v => setChat('collapseAllSteps', !v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.pin_last_prompt')} hint={i18nT('pages.settings.chatPanel.pin_last_prompt_desc')} checked={chatCfg.pinLastPrompt} onChange={v => setChat('pinLastPrompt', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.simplified_tool_call_names')} hint={i18nT('pages.settings.chatPanel.when_enabled_inline_tool_pills_show_simplified_t')} checked={chatCfg.simplifiedToolNames} onChange={v => setChat('simplifiedToolNames', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.tool_calls_start_expanded')} hint={i18nT('pages.settings.chatPanel.tool_calls_start_expanded_desc')} checked={chatCfg.toolCallsStartExpanded} onChange={v => setChat('toolCallsStartExpanded', v)} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.file_change_chips')} hint={i18nT('pages.settings.chatPanel.how_file_diff_chips_appear_below_assistant_messa')} value={chatCfg.fileChipStyle} options={['expanded', 'minimal']} optionLabels={[i18nT('pages.settings.chatPanel.expanded_icon_name_stats'), i18nT('pages.settings.chatPanel.minimal_stats_only_name_on_hover')]} onChange={v => setChat('fileChipStyle', v as ChatConfig['fileChipStyle'])} />
           {/* Sits beside File change chips because it governs the same surface —
               how a diff reads in the transcript. Phrased as "plain diffs ON"
@@ -1654,7 +904,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.link_previews')} description={i18nT('pages.settings.chatPanel.show_a_favicon_and_page_title_instead_of_the_raw')} checked={dashCfg.link_previews} onChange={v => setDash({ link_previews: v })} disabled={dashDisabled} />
           <LinkPatternsEditor label={i18nT('pages.settings.chatPanel.link_patterns')} hint={i18nT('pages.settings.chatPanel.link_patterns_desc', { placeholder: '{match}' })} configKey="dashboard.link_patterns" rules={dashCfg.link_patterns ?? []} onSave={next => dashMut.mutateAsync({ link_patterns: next })} disabled={dashDisabled} draft={linkPatternsDraft} />
           <SettingsSelect label={i18nT('pages.settings.chatPanel.widget_density')} hint={i18nT('pages.settings.chatPanel.how_aggressively_the_agent_uses_inline_widgets_f')} value={dashCfg.widget_density ?? 'more'} options={['more', 'less']} optionLabels={[i18nT('pages.settings.chatPanel.more_encourage_widgets'), i18nT('pages.settings.chatPanel.less_only_when_needed')]} onChange={v => setDash({ widget_density: v as 'more' | 'less' })} disabled={dashDisabled} />
-          <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.how_terse_the_agent_s_prose_is_ultra_concise_cap')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.ultra_concise_3_sentences'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
+          <SettingsSelect label={i18nT('pages.settings.chatPanel.response_verbosity')} hint={i18nT('pages.settings.chatPanel.response_verbosity_hint')} value={asVerbosity(dashCfg.verbosity)} options={VERBOSITY_OPTIONS} optionLabels={[i18nT('pages.settings.chatPanel.default_normal_length'), i18nT('pages.settings.chatPanel.concise_trim_filler'), i18nT('pages.settings.chatPanel.answer_only_details_on_request')]} onChange={v => setDash({ verbosity: v as VerbosityLevel })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_context_percentage')} hint={i18nT('pages.settings.chatPanel.display_usage_percentage_next_to_the_context_pro')} checked={chatCfg.showContextPct} onChange={v => setChat('showContextPct', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_token_usage')} hint={i18nT('pages.settings.chatPanel.display_used_and_total_tokens_next_to_the_contex')} checked={chatCfg.showContextTokens} onChange={v => setChat('showContextTokens', v)} />
         </SettingsCard>
@@ -1744,6 +994,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.history_expanded')} hint={i18nT('pages.settings.chatPanel.expand_history_sidebar_by_default')} checked={chatCfg.historyExpanded} onChange={v => setChat('historyExpanded', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.confirm_before_closing_session')} hint={i18nT('pages.settings.chatPanel.show_a_confirmation_dialog_when_closing_a_sessio')} checked={chatCfg.confirmCloseSession} onChange={v => setChat('confirmCloseSession', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.compact_empty_folders')} hint={i18nT('pages.settings.chatPanel.a_folder_with_no_chats_takes_one_row_instead_of')} checked={chatCfg.hideEmptyFolderBody} onChange={v => setChat('hideEmptyFolderBody', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.full_titles_on_scroll')} hint={i18nT('pages.settings.chatPanel.full_titles_on_scroll_description')} checked={chatCfg.fullTitlesOnScroll} onChange={v => setChat('fullTitlesOnScroll', v)} />
           <SettingsSelect
             label={i18nT('settings.chat.defaultMemoryMode.label')}
             description={i18nT('settings.chat.defaultMemoryMode.description')}
@@ -1754,14 +1005,58 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             disabled={dashDisabled || defaultModeMut.isPending}
             configKey="dashboard.default_memory_mode"
           />
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.session_folder_root')}
+            description={i18nT('pages.settings.chatPanel.session_folder_root_desc')}
+            hint={i18nT('pages.settings.chatPanel.session_folder_root_hint')}
+            value={localFolderRoot}
+            placeholder={i18nT('pages.settings.chatPanel.session_folder_root_placeholder', { path: FOLDER_ROOT_EXAMPLE })}
+            onChange={v => {
+              folderRootEditedRef.current = true
+              setFolderRootError(null)
+              setFolderRootSaved(false)
+              setLocalFolderRoot(v)
+            }}
+            {...folderRootIme.bindEnter<HTMLInputElement | HTMLTextAreaElement>({ onEnter: commitFolderRoot, onBlur: commitFolderRoot })}
+            disabled={dashDisabled || folderRootMut.isPending}
+            invalidMessageId={folderRootError ? folderRootErrorId : undefined}
+            after={
+              <>
+                {/* No hand-off: the typed path is an unsaved draft in this field,
+                    and leaving the page to ask the agent would discard it. */}
+                <ErrorNotice id={folderRootErrorId} variant="inline" message={folderRootError?.message} report={folderRootError?.report} />
+                {folderRootSaved && !folderRootError && (
+                  <span role="status" className="text-[12px] text-muted">{i18nT('pages.settings.chatPanel.session_folder_root_saved')}</span>
+                )}
+              </>
+            }
+            configKey="dashboard.session_folder_root"
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.tail_only_fork')} description={i18nT('pages.settings.chatPanel.fork_keeps_only_the_messages_after_the_chosen_po')} checked={dashCfg.tail_fork_enabled} onChange={v => setDash({ tail_fork_enabled: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.restore_sessions')} hint={i18nT('pages.settings.chatPanel.re_open_recently_active_sessions_on_startup')} checked={dashCfg.restore_sessions} onChange={v => setDash({ restore_sessions: v })} disabled={dashDisabled} />
           {dashCfg.restore_sessions && (
             <SettingsSelect label={i18nT('pages.settings.chatPanel.restore_window')} hint={i18nT('pages.settings.chatPanel.time_window_for_session_restoration')} value={String(dashCfg.restore_window_minutes)} options={RESTORE_OPTIONS} optionLabels={restoreLabels()} onChange={v => setDash({ restore_window_minutes: Number(v) })} disabled={dashDisabled} />
           )}
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_summaries')} description={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_in_the_right_pa')} hint={i18nT('pages.settings.chatPanel.summarize_each_session_by_intent_hint')} checked={summaryEnabled} onChange={v => summaryMut.mutate(v)} disabled={!mcQ.isSuccess || summaryMut.isPending} />
+          {/* 0 is the built-in schedule and reads as "Default", so + leaves it
+              for the minimum cadence, − at the minimum returns to it, and − at
+              Default is disabled: there is nothing below it. A plain +/− stepper
+              like Message Font Size, no typed input. */}
+          <SettingsStepper
+            label={i18nT('pages.settings.chatPanel.title_refresh_every_turns')}
+            description={i18nT('pages.settings.chatPanel.title_refresh_every_turns_desc')}
+            hint={i18nT('pages.settings.chatPanel.title_refresh_every_turns_hint')}
+            value={shownTitleRefresh === 0 ? titleRefreshDefault : shownTitleRefresh}
+            onIncrement={() => setTitleRefresh(shownTitleRefresh < TITLE_REFRESH_MIN ? TITLE_REFRESH_MIN : shownTitleRefresh + 1)}
+            onDecrement={() => setTitleRefresh(shownTitleRefresh <= TITLE_REFRESH_MIN ? 0 : shownTitleRefresh - 1)}
+            disabled={!mcQ.isSuccess}
+            decrementDisabled={shownTitleRefresh === 0}
+            reserveWidthFor={[titleRefreshDefault, TITLE_REFRESH_MAX]}
+            configKey="dashboard.title_refresh_every_turns"
+          />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.session_card_source_links')} description={i18nT('pages.settings.chatPanel.session_card_source_links_desc')} checked={dashCfg.session_card_source_links} onChange={v => setDash({ session_card_source_links: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.folder_suggestions')} description={i18nT('pages.settings.chatPanel.offer_to_file_a_new_session_into_a_matching_fold')} checked={dashCfg.folder_suggestions_enabled} onChange={v => setDash({ folder_suggestions_enabled: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.topic_tags')} description={i18nT('pages.settings.chatPanel.topic_tags_desc')} checked={dashCfg.topic_tags_enabled ?? false} onChange={v => setDash({ topic_tags_enabled: v })} disabled={dashDisabled} />
         </SettingsCard>
           )
 

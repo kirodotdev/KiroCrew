@@ -64,6 +64,13 @@ except ImportError:  # pragma: no cover - standalone fallback
     _runtime_file_lock = None  # type: ignore[assignment]
     _runtime_open_creating = None  # type: ignore[assignment]
 
+# Owner-only directory creation in the data home, same guard shape: standalone
+# creates with the umask default, exactly as it has no owner-only lockdown.
+try:
+    from kiro_crew.owner_only_files import ensure_directory as _runtime_ensure_directory
+except ImportError:  # pragma: no cover - standalone fallback
+    _runtime_ensure_directory = None  # type: ignore[assignment]
+
 
 def _open_creating(name: str, flags: int, mode: int, dir_fd: int | None = None) -> int:
     """Open *name*, creating it when absent, without the Darwin ``O_CREAT`` race.
@@ -319,7 +326,10 @@ def mkdir_refusing_links(directory: str | os.PathLike) -> Path:
     """
     d = Path(directory)
     refuse_linked_parents(d / _CHAIN_PROBE)
-    d.mkdir(parents=True, exist_ok=True)
+    if _runtime_ensure_directory is not None:
+        _runtime_ensure_directory(d)  # 0700 levels in the data home
+    else:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -460,7 +470,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
     walk is the only check that sees a Windows JUNCTION at all, which
     ``os.path.islink`` reports as False.
     Callers own creating the parent, and every one of the nine does -- either
-    `mkdir(parents=True)` directly (`learning`, `report`, `followup`) or
+    :func:`mkdir_refusing_links` directly (`learning`, `report`, `followup`) or
     `ensure_layout` / `ensure_run_layout` (`discovery`, `results`). This function
     deliberately does NOT create it: an `exist_ok` mkdir here RESURRECTS a
     directory tree that a concurrent namespace deletion is removing, so the

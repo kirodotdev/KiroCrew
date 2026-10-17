@@ -44,6 +44,7 @@ def _inbound(
     message_id: str = "msg1",
     chat_type: str = "p2p",
     chat_id: str = "",
+    bot_mentioned: bool = False,
 ) -> LarkInbound:
     return LarkInbound(
         open_id=open_id,
@@ -51,6 +52,7 @@ def _inbound(
         message_id=message_id,
         chat_type=chat_type,
         chat_id=chat_id,
+        bot_mentioned=bot_mentioned,
     )
 
 
@@ -188,7 +190,11 @@ class TestChatTypeGate:
         dispatched: list[LarkInbound] = []
         t = self._t(dispatched)
         with patch("kiro_crew.feishu.transport.sel"):
-            await t.receive(_inbound("ou_abc", "hi", chat_type="group", chat_id="grp_allowed"))
+            await t.receive(
+                _inbound(
+                    "ou_abc", "hi", chat_type="group", chat_id="grp_allowed", bot_mentioned=True
+                )
+            )
         assert len(dispatched) == 1
 
 
@@ -244,9 +250,81 @@ class TestGroupGate:
             allowed_group_ids=["grp_allowed"],
             dispatch=dispatch,
         )
-        await t.receive(_inbound("ou_abc", "hello", chat_type="group", chat_id="grp_allowed"))
+        await t.receive(
+            _inbound(
+                "ou_abc", "hello", chat_type="group", chat_id="grp_allowed", bot_mentioned=True
+            )
+        )
         assert len(dispatched) == 1
         assert dispatched[0].text == "hello"
+
+
+class TestGroupMentionGate:
+    """Inside an allowed group only a message that mentions the bot is served.
+
+    The sender allow-list says who MAY drive a turn; it is not a signal that a
+    particular message asked for one. An app holding a broader read grant sees
+    every group message, so the transport, not the event subscription, decides.
+    """
+
+    @staticmethod
+    def _t(dispatched: list) -> FeishuTransport:
+        async def dispatch(inbound: LarkInbound) -> None:
+            dispatched.append(inbound)
+
+        return FeishuTransport(
+            FakeClient(),
+            allowed_open_ids=["ou_abc"],
+            allow_group=True,
+            allowed_group_ids=["grp_allowed"],
+            dispatch=dispatch,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_group_message_from_allowed_sender_is_dropped(self) -> None:
+        dispatched: list[LarkInbound] = []
+        t = self._t(dispatched)
+        with patch("kiro_crew.feishu.transport.sel") as mock_sel:
+            await t.receive(_inbound("ou_abc", "nice", chat_type="group", chat_id="grp_allowed"))
+        assert dispatched == []
+        # Chatter is not an access attempt: no audit record, and authorize()
+        # never ran (it would have audited a denial or let this through).
+        mock_sel().log_api_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_message_does_not_occupy_the_dedup_window(self) -> None:
+        dispatched: list[LarkInbound] = []
+        t = self._t(dispatched)
+        await t.receive(
+            _inbound("ou_abc", "nice", message_id="m9", chat_type="group", chat_id="grp_allowed")
+        )
+        assert "m9" not in t._seen
+
+    @pytest.mark.asyncio
+    async def test_mentioned_group_message_from_unlisted_sender_is_still_denied(self) -> None:
+        dispatched: list[LarkInbound] = []
+        t = self._t(dispatched)
+        with patch("kiro_crew.feishu.transport.sel") as mock_sel:
+            await t.receive(
+                _inbound(
+                    "ou_stranger",
+                    "hi",
+                    chat_type="group",
+                    chat_id="grp_allowed",
+                    bot_mentioned=True,
+                )
+            )
+        assert dispatched == []
+        assert mock_sel().log_api_access.call_args.kwargs["operation"] == (
+            "feishu_transport.authorize"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_does_not_consult_the_mention_flag(self) -> None:
+        dispatched: list[LarkInbound] = []
+        t = self._t(dispatched)
+        await t.receive(_inbound("ou_abc", "hello", chat_type="p2p", bot_mentioned=False))
+        assert len(dispatched) == 1
 
 
 class TestReceive:
@@ -560,9 +638,32 @@ class TestUnreadableInboundIsAnswered:
                 chat_type="group",
                 chat_id="oc_grp",
                 unsupported_type="image",
+                bot_mentioned=True,
             )
         )
         assert len(client.replies) == 1
+
+    @pytest.mark.asyncio
+    async def test_an_allow_listed_group_unmentioned_stays_silent(self) -> None:
+        """An image nobody addressed to the bot is room chatter, not a request."""
+        client = FakeClient()
+        t = self._transport(
+            client,
+            allowed_open_ids=["ou_abc"],
+            allow_group=True,
+            allowed_group_ids=["oc_grp"],
+        )
+        await t.receive(
+            LarkInbound(
+                open_id="ou_abc",
+                text="",
+                message_id="m1",
+                chat_type="group",
+                chat_id="oc_grp",
+                unsupported_type="image",
+            )
+        )
+        assert client.replies == []
 
     @pytest.mark.asyncio
     async def test_an_unknown_chat_type_stays_silent(self) -> None:

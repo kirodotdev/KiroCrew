@@ -61,16 +61,13 @@ unstaged is code the verification RAN against and the commit does not carry. Jud
 only the commit would report ``honoured`` for a fix whose verified behaviour is not
 the fix being reviewed.
 
-**An untracked ``*.py`` is judged too, and every other untracked path is not.** The
-asymmetry is the failure each side prevents. A tracked fix that imports an UNTRACKED
-module verifies green here and crashes on the merged checkout, which never carried the
-module -- so a Python file git does not know about is part of the change whether the
-fixer staged it or not. Everything else untracked is left alone because a test run
-leaves ``.kiro/crew/``, ``.kirocrew.breadcrumb``, caches and logs behind: refusing
-those would reject every fixer that ran the suite, which is the false rejection this
-gate exists to prevent. Ignored paths are git's own answer (``--exclude-standard``),
-and the untracked non-Python paths this gate skips are listed in ``ignored`` so the
-skip is visible rather than silent.
+**Every untracked path is judged too, whatever its extension.** A tracked fix that
+depends on a file git does not know about verifies green here and crashes on the
+merged checkout, which never carried it. The only untracked-specific exemptions are
+by NAME (:data:`UNTRACKED_RESIDUE`: ``.kiro`` and
+``.kirocrew.breadcrumb``, which a test run leaves behind); ignored paths are git's
+own answer (``--exclude-standard``), and every exempted path is listed in ``ignored``
+so the skip is visible rather than silent.
 
 **Two things are ignored, and both are noise this gate would otherwise report as a
 violation.** ``fix-contract.json`` itself, because the conductor put it there. And an
@@ -375,8 +372,8 @@ def untracked_paths(worktree: Path) -> tuple[list[str], str]:
     """Untracked, non-ignored paths. ``(paths, problem)``.
 
     ``--exclude-standard`` means the ignore decision is git's, not a second list here
-    that could disagree with ``.gitignore``. The caller splits these by suffix: see the
-    module docstring for why a ``*.py`` is judged and a scratch data home is not.
+    that could disagree with ``.gitignore``. The caller exempts only
+    :data:`UNTRACKED_RESIDUE`, by name; see the module docstring.
     """
     ok, text, problem = run_git(worktree, ["ls-files", "--others", "--exclude-standard"])
     if not ok:

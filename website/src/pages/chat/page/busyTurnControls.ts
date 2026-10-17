@@ -4,18 +4,19 @@ import type { ComposerHandle } from '../../../chat-core/composer/Composer'
 import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 import { buildOutgoingTurn, isEmptyTurn } from '../../../chat-core/composer/outgoingTurn'
+import { mintSendId } from '../../../chat-core/transport/sendTurn'
 import type { UseMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import { isNonInteractiveQueued, isSystemDelivery } from '../../../components/QueueStack'
 import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
-import { appendMessage, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
+import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
+import { answerRejectedMessage } from '../../../utils/questionAnswers'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
-import { mintSendId } from '../ChatPageMessageContent'
 import type { ComposerDraftStores } from './composerDrafts'
 import type { ComposerStaging } from './composerStaging'
 
@@ -28,8 +29,8 @@ interface BusyTurnControlsOptions {
   messages: ChatMessage[]
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
-  /** The receipt-aware steer POST (ChatPage's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null }) => void }
+  /** The receipt-aware steer POST (turnActions.ts's `applySteerReceipt` adapter). */
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) => void }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -44,6 +45,9 @@ interface BusyTurnControlsOptions {
   /** Per-slot time of the last soft-stop press (the force-stop arming window). */
   softStopAtMapRef: MutableRefObject<Map<string, number>>
   dispatch: AppDispatch
+  /** Reports a refused slash command on the composer's notice, while its
+   *  origin chat is still on screen (the restored text is then right below). */
+  onSlashRefused?: (res: { stage?: 'open' | 'turn' | 'agent'; error?: string }) => void
 }
 
 /**
@@ -71,6 +75,7 @@ export function useBusyTurnControls({
   pendingQuestion,
   softStopAtMapRef,
   dispatch,
+  onSlashRefused,
 }: BusyTurnControlsOptions) {
   const { drafts, fileDrafts, pasteDrafts, saveDrafts } = stores
   const { pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens, mergeSlotTokens } = staging
@@ -95,6 +100,17 @@ export function useBusyTurnControls({
     [allQueuedMessages],
   )
 
+  // A text steer outside the composer (a chip's text, a question card's answer):
+  // an optimistic steer bubble the echo reconciles by sendId, then the
+  // receipt-aware steer POST, which hands the text back on a refused or
+  // unconfirmed steer.
+  const steerText = useCallback((text: string, slot: string, auto = false) => {
+    const steerSendId = mintSendId()
+    drainPendingChunks()
+    dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
+    steerMutation.mutate({ text, sendId: steerSendId, slot, auto })
+  }, [steerMutation, dispatch])
+
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing for the next one. Mirrors send()'s payload prep so pending
   // files ride along — images become `![image](path)` markdown and other
@@ -102,13 +118,16 @@ export function useBusyTurnControls({
   // text-only channel, so unlike a queued send the image travels as its
   // absolute path for the agent to open with a tool, not as an inline
   // content block. Paste tokens are expanded for the LLM the same way
-  // send() does. The POST goes through ChatPage's steerMutation; fire-and-forget
+  // send() does. The POST goes through turnActions.ts's steerMutation; fire-and-forget
   // — the backend falls back to the queue if steer is unavailable, and echoes
   // the text inline via the 'steer_push' WS event. Composer, pending files,
   // paste blocks, and the per-slot drafts are all cleared HERE (not in
   // ChatInput) so text and attachments clear atomically.
-  const steer = useCallback((opts?: { auto?: boolean }) => {
+  const steer = useCallback((opts?: { auto?: boolean; text?: string }) => {
     if (!activeSlot) return
+    // A follow-up chip's own text, steered as-is: like an option send, it
+    // leaves the composer draft, attachments and staged quote alone.
+    const optionText = opts?.text
     // Nothing to inject into: the composer is busy purely because background
     // sub-agents are still running for this slot (spawn_run is fire-and-forget,
     // so the parent turn already ended). The intent is the same — act on this
@@ -117,7 +136,15 @@ export function useBusyTurnControls({
     // server-side hold that keeps a user message behind running sub-agents.
     // Delegating here, BEFORE the composer is read and cleared below, leaves
     // send() owning the draft, attachment and optimistic-bubble bookkeeping.
-    if (!slotRunning) { void send(undefined, undefined, true); return }
+    if (!slotRunning) { void send(optionText, undefined, true); return }
+    if (optionText) {
+      // Offline, a chip send is a no-op, as send() makes it: the chip stays.
+      if (!connected) return
+      composerRef.current?.voice()?.disarmForSend()
+      steerText(optionText, activeSlot, opts?.auto === true)
+      return
+    }
+    const askAtSteer = capturePendingAskId(store.getState().chat.pendingQuestions, activeSlot)
     const raw = inputRef.current.trim()
     const files = pendingFilesRef.current
     // A staged quote alone is a payload; a slash command is not a send, so the
@@ -160,6 +187,9 @@ export function useBusyTurnControls({
         const onScreen = originSlot === activeSlotRef.current && composerSlotRef.current === originSlot
         if (onScreen) {
           setInput(mergeIntoDraft(inputRef.current, cmdTxt))
+          // UNCONFIRMED is not a refusal: the text comes back, and the side
+          // panel's own standing notice is the report.
+          if (!res.unconfirmed) onSlashRefused?.(res)
         } else {
           const merged = mergeIntoDraft(drafts.current[originSlot], cmdTxt)
           setDraft(drafts.current, originSlot, merged)
@@ -203,7 +233,7 @@ export function useBusyTurnControls({
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer })
     // Staged session references are deliberately NOT part of steering: neither
     // carried into the payload nor cleared. Only the TEXT has a restore path
     // (steerMutation hands it back on a refused, failed or unconfirmed steer);
@@ -212,11 +242,11 @@ export function useBusyTurnControls({
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a full restore path.
     // Drops only this slot's own token sub-map -- see the same-shaped
-    // comment at send()'s send-clear site in ChatPage.
+    // comment at send()'s send-clear site in composerSend.ts.
     setInput(''); setPendingFiles([]); delete pickedFileTokens.current[activeSlot]; setPasteBlocks([])
     delete drafts.current[activeSlot]; delete fileDrafts.current[activeSlot]; delete pasteDrafts.current[activeSlot]
     saveDrafts()
-  }, [activeSlot, slotRunning, send, steerMutation, messageQuote, saveDrafts, dispatch, setInput,
+  }, [activeSlot, slotRunning, connected, send, steerText, steerMutation, messageQuote, saveDrafts, dispatch, setInput, onSlashRefused,
     // Refs and state setters: stable, so none of these re-creates the callback.
     activeSlotRef, composerRef, composerSlotRef, inputRef, drafts, fileDrafts, pasteDrafts,
     pendingFilesRef, pasteBlocksRef, setPasteBlocks, setPendingFiles, pickedFileTokens])
@@ -261,6 +291,12 @@ export function useBusyTurnControls({
     allQueued: allQueuedMessages,
     visibleQueued: queuedMessages,
     restoreDraft: restoreQueuedDraft,
+    // The restore merges into this composer, so a mention it writes back is
+    // spelled so it cannot collide with a file already staged here.
+    stagedFiles: () => pendingFilesRef.current,
+    // A mention written back for a project file is spelled relative to this
+    // slot's project, the spelling the composer revives a chip for on undo.
+    project: () => currentSlot?.project,
   })
   /** The composer's Stop press: soft stop, then an armed force stop. */
   const stopTurn = () => {
@@ -285,7 +321,7 @@ export function useBusyTurnControls({
     if (action !== 'ignore') dispatch(clearPendingPermissions())
   }
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
-  const keepQuestionAnswer = (text: string) => {
+  const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {
     // A 404 means the blocked wait is gone and the card has
     // already cleared. Keep the user's answer in the composer
     // for an explicit retry instead of auto-sending: even with
@@ -293,6 +329,8 @@ export function useBusyTurnControls({
     // example Kiro becoming unavailable), which would otherwise
     // leave the answer only in a non-persisted optimistic bubble.
     setInput((prev) => (prev.trim() ? `${prev}\n${text}` : text))
+    // The submit was rejected, so this is an error row (ErrorNotice), not a warn notice.
+    if (activeSlot) dispatch(appendSlotMessage({ slot: activeSlot, message: answerRejectedMessage(questions) }))
   }
   /** A question card's one-click answer. */
   const answerQuestionCard = (text: string) => {
@@ -335,10 +373,7 @@ export function useBusyTurnControls({
     const slot = activeSlot || undefined
     const isNativeCard = pendingQuestion?.native === true
     if (slot && isNativeCard && selectComposerBusy(store.getState(), slot)) {
-      const steerSendId = mintSendId()
-      drainPendingChunks()
-      dispatch(appendMessage({ role: 'user', content: text, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId } }))
-      steerMutation.mutate({ text, sendId: steerSendId, slot })
+      steerText(text, slot)
       return
     }
     void send(text, slot)

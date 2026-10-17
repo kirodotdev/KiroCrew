@@ -18,6 +18,7 @@ import { renderHook, act } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { useCollapseOnScroll, CHROME_ATTR, COLLAPSE_MS } from '../hooks/useCollapseOnScroll'
+import { readPageFamily } from './pageFamily'
 
 let host: HTMLDivElement
 let scroller: HTMLDivElement
@@ -176,7 +177,7 @@ describe('useCollapseOnScroll', () => {
 })
 
 describe('ArtifactsPage wires the collapse to the chrome, narrow only', () => {
-  const src = readFileSync(join(__dirname, '..', 'pages', 'ArtifactsPage.tsx'), 'utf8')
+  const src = readPageFamily('ArtifactsPage')
 
   it('gates the collapse on a phone AND on the gallery owning the axis', () => {
     // Ungated it would move the header on desktop, where the chrome is a small

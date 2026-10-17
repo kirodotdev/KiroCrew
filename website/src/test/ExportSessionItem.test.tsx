@@ -1,5 +1,5 @@
 /**
- * "Export to a file" — the session menu's file-export row.
+ * The session menu's two file-export rows (JSON for import, Markdown to read).
  *
  * Cheap outcome tests use a plain Item stub. Keyboard tests use a live Radix
  * dropdown because the contract under test is its roving focus and documented
@@ -63,10 +63,13 @@ function queryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
 }
 
-function renderRow(memoryMode?: 'persistent' | 'incognito' | 'temporary') {
+function renderRow(
+  memoryMode?: 'persistent' | 'incognito' | 'temporary',
+  format?: 'json' | 'md',
+) {
   return render(
     <QueryClientProvider client={queryClient()}>
-      <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode={memoryMode} />
+      <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode={memoryMode} format={format} />
     </QueryClientProvider>,
   )
 }
@@ -88,7 +91,7 @@ function row() {
 }
 
 function menuRow() {
-  return screen.getByRole('menuitem', { name: /export to a file/i })
+  return screen.getByRole('menuitem', { name: /export for import/i })
 }
 
 describe('ExportSessionItem', () => {
@@ -109,7 +112,43 @@ describe('ExportSessionItem', () => {
   it('offers the export for a persistent session', () => {
     renderRow('persistent')
     expect(row().disabled).toBe(false)
-    expect(screen.getByText('Export to a file')).toBeTruthy()
+    expect(screen.getByText('Export for import (JSON)')).toBeTruthy()
+  })
+
+  it('names the outcome, because only one of the two formats installs back', () => {
+    // Two rows that both read "Export to a file", told apart only by a muted
+    // format suffix, make the user already know which file the Import row can
+    // read -- and a user who guesses Markdown to move a session finds out at
+    // import time. Each label names what the file is FOR, so neither row has a
+    // suffix that could shift when the trailing "Exported" note mounts.
+    renderRow('persistent')
+    expect(screen.getByText('Export for import (JSON)')).toBeTruthy()
+    expect(screen.queryByText('JSON')).toBeNull()
+    renderRow('persistent', 'md')
+    expect(screen.getByText('Export as readable Markdown')).toBeTruthy()
+    expect(screen.queryByText('Markdown')).toBeNull()
+  })
+
+  it('defaults to the JSON bundle when no format is given', async () => {
+    renderRow('persistent')
+    row().click()
+    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledWith('slot-1', 'json'))
+  })
+
+  it('asks the endpoint for Markdown when that is the row clicked', async () => {
+    renderRow('persistent', 'md')
+    row().click()
+    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledWith('slot-1', 'md'))
+    await waitFor(() => expect(screen.getByText('Exported')).toBeTruthy())
+  })
+
+  it('refuses an incognito session in either format', () => {
+    // The backend refuses a restricted transcript whatever the format, so neither
+    // row may offer a click that only ever 400s.
+    renderRow('incognito', 'md')
+    expect(row().disabled).toBe(true)
+    row().click()
+    expect(mocks.exportSession).not.toHaveBeenCalled()
   })
 
   it('refuses an incognito session on the row, with the reason', () => {
@@ -133,7 +172,7 @@ describe('ExportSessionItem', () => {
   it('exports the slot it was given and reports the outcome on the row', async () => {
     renderRow('persistent')
     row().click()
-    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledWith('slot-1'))
+    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledWith('slot-1', 'json'))
     await waitFor(() => expect(screen.getByText('Exported')).toBeTruthy())
   })
 

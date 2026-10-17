@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         delivery_confirmed,
         display_safe_for,
         logger,
+        render_options_as_text,
         sole_direct_target,
     )
 
@@ -102,9 +103,9 @@ async def _deliver_channel_dm(
         return False, "", ""
     # Imported here, not at module scope: chat_runner imports from
     # kiro_crew.dashboard.handlers, so a top-level import closes that cycle. Only
-    # this one is deferred -- `HOST_SESSION_KEY` is a constant and is imported at
+    # these two are deferred -- `HOST_SESSION_KEY` is a constant and is imported at
     # module scope, where the top-level-imports rule wants it.
-    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+    from kiro_crew.dashboard.chat_runner import _authorize_recipient, _resolve_channel_target
 
     # A cron carries its own validated session key; an out-of-band send owns no
     # session, and the host sentinel is what operators bind host-side governance
@@ -114,18 +115,22 @@ async def _deliver_channel_dm(
     # on some channels (Discord opens a DM channel over REST), so a denied
     # channel must never reach it. Offloaded because the governance evaluation
     # reads profile files.
-    # The principal is supplied rather than derived: this addresses a
-    # ``configured_targets()`` entry, so the link carries a ``user:<id>`` target id
-    # and ``session_key`` is a host sentinel naming nobody. The id came off the
-    # transport's own allow-list via ``_owner_dm_target``, which is the authoritative
-    # answer the recipient check would otherwise be unable to reach.
+    #
+    # check_recipient=False, because this link carries the configured-target
+    # spelling (``user:<id>``) rather than a conversation id, and ``may_send_to``
+    # is a recipient predicate over conversation ids: a transport that judges the
+    # id itself (Telegram, whose private ``chat_id`` IS the peer's user id) can
+    # never match the prefixed spelling against its roster of bare ids. Governance
+    # and transport capability still gate the resolve here; the recipient is
+    # decided below, against the resolved conversation, the same two-step the
+    # mirror-link creation handler runs.
     governed = await asyncio.to_thread(
         functools.partial(
             _resolve_channel_target,
             state,
             session_key,
             ChannelLink(channel_type=channel_type, channel_id=target_id),
-            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+            check_recipient=False,
         )
     )
     if governed is None:
@@ -142,6 +147,31 @@ async def _deliver_channel_dm(
         # rather than fall back to a wider audience.
         return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
     conversation_id, thread_id = resolved
+    # Recipient authorization on the RESOLVED conversation, through the one shared
+    # decision the ladder's own recipient leg runs, so the two cannot drift. It
+    # fails closed on a raising transport and SEL-audits a denial. The principal is
+    # supplied rather than derived: ``session_key`` is a host sentinel naming
+    # nobody, and the id came off the transport's own allow-list via
+    # ``_owner_dm_target``, which is the authoritative answer for a transport that
+    # judges the peer rather than the conversation (a Discord DM channel id cannot
+    # be tested against a user roster). Offloaded like the ladder call above,
+    # whose recipient leg this is.
+    permitted = await asyncio.to_thread(
+        functools.partial(
+            _authorize_recipient,
+            live_transport,
+            channel_type,
+            conversation_id,
+            thread_id,
+            principal=target_id.removeprefix(_DM_TARGET_PREFIX),
+            session_key=session_key,
+        )
+    )
+    if not permitted:
+        logger.info(
+            "send_message: outbound to %s refused - recipient not allow-listed", channel_type
+        )
+        return False, "channel_not_permitted", f"{channel_type} is not permitted"
     # Chunked at the transport's own declared ceiling, as a mirrored turn is:
     # Discord rejects a message over its cap outright, so an unchunked long
     # report would arrive as a delivery failure instead of a message. At least one
@@ -170,7 +200,15 @@ async def _deliver_channel_dm(
     # 25s dump-then-exit alarm. Offloaded like the renderer's own send legs.
     units = await asyncio.to_thread(
         chunk_for_transport,
-        display_safe_for(text, live_transport.capabilities),
+        # ``send_message`` takes no choices, so a proactive send builds no button
+        # even where a reply would: number the ``[OPTIONS:]`` choices instead of
+        # sending the raw marker. After the display pass, whose control-comment
+        # strip would otherwise leave a trailing tag hiding the trailer. The two
+        # legs below do the same.
+        render_options_as_text(
+            display_safe_for(text, live_transport.capabilities),
+            live_transport.capabilities,
+        ),
         live_transport.capabilities,
     )
     try:
@@ -216,13 +254,22 @@ def _channel_delivery_key(state: DashboardState, caller_session: str, declared_s
     Returns ``""`` when neither source answers, which fails the send closed.
     """
     if caller_session.startswith("cron:"):
-        cron_id = caller_session.removeprefix("cron:").split(":")[0]
-        jobs = state.crons.list_jobs(include_disabled=True)
-        job = next((j for j in jobs if j.id == cron_id), None)
+        job = _cron_job_for(state, caller_session)
         if job is None:
             return ""
         return job.session_key or ""
     return declared_session
+
+
+def _cron_job_for(state: DashboardState, caller_session: str) -> Any | None:
+    """The cron job a ``cron:<job_id>[:<run>]`` caller names, or ``None``.
+
+    The one place the job id is read off the key: per-run keys carry extra
+    segments (``cron:<job_id>:<run_id>``), and only the first names the job.
+    """
+    cron_id = caller_session.removeprefix("cron:").split(":")[0]
+    jobs = state.crons.list_jobs(include_disabled=True)
+    return next((j for j in jobs if j.id == cron_id), None)
 
 
 async def _deliver_to_channel(
@@ -319,7 +366,11 @@ async def _deliver_to_channel(
     # purpose: this one splits plain text, while the gateway's splits markdown with
     # fence sealing, and collapsing them would silently retune one of the two.
     parts = chunk_text(
-        display_safe_for(text, transport.capabilities), transport.capabilities.max_message_chars
+        render_options_as_text(
+            display_safe_for(text, transport.capabilities),
+            transport.capabilities,
+        ),
+        transport.capabilities.max_message_chars,
     )
     for part in parts:
         try:
@@ -435,7 +486,10 @@ async def _send_to_channel_target(
     # a large body would stall the loop past the watchdog's 25s dump-then-exit alarm.
     parts = await asyncio.to_thread(
         chunk_for_transport,
-        display_safe_for(text, transport.capabilities),
+        render_options_as_text(
+            display_safe_for(text, transport.capabilities),
+            transport.capabilities,
+        ),
         transport.capabilities,
     )
     try:
@@ -444,12 +498,13 @@ async def _send_to_channel_target(
             # than raising, so reading only exceptions would answer 200 "ok" for a
             # message that never arrived — worse than an error, because the caller
             # (including the LLM, which cannot see the room) records it as delivered
-            # and moves on. But two transports carry no id at all (WeCom's proactive
-            # command, Feishu's reply) and raise on failure instead, so there the
+            # and moves on. But some transports carry no reliable id (WeCom's
+            # proactive command, Feishu's reply, iMessage's best-effort GUID) and
+            # raise on failure instead, so there the
             # empty string is the SUCCESS value. ``delivery_confirmed`` owns which
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
-            # delivered message on those two as lost.
+            # delivered message on those as lost.
             sent = await transport.send_message(conversation_id, part, thread_id=thread_id)
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")

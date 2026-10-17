@@ -1051,21 +1051,36 @@ class ArtifactKnowledgeSync:
         self._reconcile_task = asyncio.create_task(self._run_reconcile(source_id))
 
     async def _run_reconcile(self, source_id: str) -> None:
+        try:
+            await self.reconcile_now(source_id)
+        except Exception:
+            logger.exception("artifact KB reconcile failed")
+
+    async def reconcile_now(self, source_id: str) -> None:
+        """Run the reconcile pass now and log what it changed.
+
+        The start-time pass and the dashboard's manual Sync on the aggregate
+        source both come through here. The pass holds the same lock as the
+        live change-listener, so it never interleaves with an ingest or remove
+        already in flight. A failure of the pass itself propagates to the
+        caller; a single artifact that fails to ingest is logged inside
+        :func:`reconcile_artifacts` and does not fail the pass.
+        """
         async with self._lock:
-            try:
-                ingested, removed, deferred = await reconcile_artifacts(
-                    self.pipeline, self.art_store, source_id, self.kinds
-                )
-            except Exception:
-                logger.exception("artifact KB reconcile failed")
-                return
+            ingested, removed, deferred = await reconcile_artifacts(
+                self.pipeline, self.art_store, source_id, self.kinds
+            )
+        self._log_reconcile(ingested, removed, deferred)
+
+    @staticmethod
+    def _log_reconcile(ingested: int, removed: int, deferred: int) -> None:
         if not (ingested or removed or deferred):
             # The steady state. Logged at debug so an already-converged store
             # does not write a line on every boot.
             logger.debug("artifact KB reconcile: already in sync")
             return
         logger.info(
-            "artifact KB reconcile: %d ingested, %d removed, %d deferred to a later start",
+            "artifact KB reconcile: %d ingested, %d removed, %d deferred to a later pass",
             ingested,
             removed,
             deferred,
@@ -1073,7 +1088,7 @@ class ArtifactKnowledgeSync:
         if deferred:
             logger.info(
                 "artifact KB reconcile: %d artifact(s) exceed the per-run budget of "
-                "%d and will be picked up on the next start, newest first",
+                "%d and will be picked up by the next start or Sync, newest first",
                 deferred,
                 RECONCILE_INGEST_BUDGET,
             )

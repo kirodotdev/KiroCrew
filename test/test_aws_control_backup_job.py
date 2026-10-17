@@ -202,18 +202,19 @@ class TestEveryUploadRefusalIsAudited:
     def test_the_two_entry_points_pass_different_callers(self) -> None:
         """The constants only matter if the call sites actually differ.
 
-        Pinned by reading the sources: the Job SDK runner exists because an owner
-        asked through an owner-gated route, and the nightly loop has no owner at
-        all. If both ever named the same constant, the field would be decoration.
+        One registered runner now serves both callers: the owner click carries no
+        caller param (the owner default), and the nightly loop names
+        ``CALLER_SCHEDULED`` in the start's params. If both ever resolved to the
+        same constant, the field would be decoration.
         """
         assert backup.CALLER_OWNER != backup.CALLER_SCHEDULED
-        assert "CALLER_OWNER" in inspect.getsource(backup.make_job_runner)
-        # The nightly names its caller in `_push_nightly`, the per-kind helper
-        # `_run_once` delegates each due push to, rather than in `_run_once`
-        # itself. What the loop actually passes is pinned behaviourally in
-        # test_aws_control_nightly_sessions.py, which reads the runner's kwargs;
-        # this half only asserts the two entry points name different constants.
-        assert "CALLER_SCHEDULED" in inspect.getsource(hooks._push_nightly)
+        # The runner names BOTH: it defaults to the owner and switches to the
+        # schedule when the caller param says so.
+        runner_src = inspect.getsource(backup.make_job_runner)
+        assert "CALLER_OWNER" in runner_src
+        assert "CALLER_SCHEDULED" in runner_src
+        # The loop is the one that states the scheduled caller, in `_run_once`.
+        assert "CALLER_SCHEDULED" in inspect.getsource(hooks._run_once)
 
     def test_teardown_is_recorded_but_not_as_an_access_denial(self) -> None:
         """Every refusal leaves a record; only access decisions are denials.
@@ -490,13 +491,35 @@ def _post_run(kind: str, *, sdk: object | None = None, start=None):
 
 
 def _await_terminal(sdk: job_sdk.JobSDK, run_id: str, timeout: float = 5.0) -> job_sdk.JobRun:
-    """Block until the worker has written its terminal record."""
+    """Block until the worker has written its terminal record AND released its slot.
+
+    The terminal record is written before the live-table entry and its dedupe key
+    are dropped (``job_sdk`` writes the terminal status, then under its lock pops
+    ``_live`` and the ``(kind, dedupe_key)`` claim). A caller that returned on the
+    terminal record alone could fire a second ``start`` for the same
+    ``(kind, dedupe_key)`` inside that window, where the still-held claim makes the
+    SDK ADOPT the finished run instead of starting a fresh one -- so a test driving
+    two sequential runs of one account would see the second silently fold into the
+    first. Waiting for the run id to leave ``_live`` closes that window: the pop of
+    ``_live`` and the pop of the dedupe key happen in the same locked block, so once
+    the run is gone from the live set the key is free and the next ``start`` begins
+    a new run. ``_live`` is read directly because it is the authoritative in-process
+    signal for the claim; ``list_active`` reads the durable store, which the terminal
+    write has already cleared, so it cannot witness this window.
+    """
     deadline = time.monotonic() + timeout
+    settled: job_sdk.JobRun | None = None
     while time.monotonic() < deadline:
         run = sdk.get(run_id)
         if run is not None and run.is_terminal:
-            return run
+            settled = run
+            if run_id not in sdk._live:
+                return run
         time.sleep(0.01)
+    if settled is not None:
+        raise AssertionError(
+            f"run reached {settled.status} but its slot was not released within {timeout}s"
+        )
     run = sdk.get(run_id)
     raise AssertionError(f"run did not settle within {timeout}s: {run}")
 
@@ -1018,3 +1041,388 @@ class TestLedgerSurvives:
             )
         assert resp.status == 200
         assert _payload(resp)["runs"] == entry
+
+
+def _scheduled_params() -> dict[str, str]:
+    """The params a nightly start carries so the runner takes the scheduled path."""
+    return {backup.JOB_PARAM_CALLER: backup.CALLER_SCHEDULED}
+
+
+class TestRunnerReadsTheCallerFromParams:
+    """One registered runner serves both callers. The caller role rides in the
+    start's params; absent means the owner path."""
+
+    def test_a_scheduled_start_runs_as_the_schedule(self, sdk):
+        # The nightly loop names CALLER_SCHEDULED in params. The runner must pass
+        # that through to the gate and the work, so an unattended push is never
+        # attributed to the dashboard owner.
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None) as gate,
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert gate.call_args.kwargs["caller"] == backup.CALLER_SCHEDULED
+        assert work.call_args.kwargs["caller"] == backup.CALLER_SCHEDULED
+
+    def test_a_start_with_no_caller_param_runs_as_the_owner(self, sdk):
+        # The manual route carries no caller param. Absent is the owner path --
+        # the safe default, and the behaviour every pre-existing runner test
+        # already relies on.
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
+            _await_terminal(sdk, run_id)
+        assert work.call_args.kwargs["caller"] == backup.CALLER_OWNER
+
+
+class TestScheduledPathFallsBackToTheVerifiedProfile:
+    """Finding 2: `resolve_account_profile_cached` serves only from the warm
+    snapshot and returns None once it is past `_PROBE_TTL_SECS`. `start_async` is
+    fire-and-forget, so the runner resolves later than the loop's live probe; a gap
+    longer than the TTL would audit a just-verified nightly as failed. The loop
+    names the (profile, region) it freshly probed in params, so a scheduled run
+    falls back to it when the cache has expired."""
+
+    def test_a_scheduled_run_uses_the_verified_profile_when_the_cache_expired(self, sdk):
+        # The cache answers None (snapshot past the TTL), but the scheduled start
+        # carries the profile/region the loop just verified. The run must proceed
+        # on those rather than fail "no working connection".
+        verified = {
+            backup.JOB_PARAM_CALLER: backup.CALLER_SCHEDULED,
+            backup.JOB_PARAM_PROFILE: PROFILE,
+            backup.JOB_PARAM_REGION: REGION,
+        }
+        with (
+            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=None),
+            mock.patch.object(backup, "_authorize_upload", return_value=None) as gate,
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET) as find,
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=verified)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        # The verified pair flowed into the live-account gate, the drive discovery
+        # and the work -- the bucket is still re-discovered, not carried.
+        assert gate.call_args.args[1:] == (PROFILE, REGION)
+        find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
+        assert work.call_args.args[1:3] == (PROFILE, REGION)
+
+    def test_the_owner_path_does_not_fall_back_on_an_expired_cache(self, sdk):
+        # The fallback is scheduled-only: an owner run carries no profile/region
+        # param and its route pre-flight has just warmed the snapshot, so an
+        # expired cache for it is the honest "reconnect" failure, not a fallback.
+        with (
+            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=None),
+            mock.patch.object(backup.storage, "find_drive") as find,
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.FAILED
+        assert "no working connection" in run.error
+        find.assert_not_called()
+        work.assert_not_called()
+
+    def test_a_scheduled_run_prefers_the_live_cache_when_it_is_warm(self, sdk):
+        # When the cache IS warm the fallback must not shadow it: the per-run
+        # re-resolve is still the primary source, and the carried pair is only a
+        # fallback for the expired case.
+        live = ("live-prof", "eu-central-1")
+        verified = {
+            backup.JOB_PARAM_CALLER: backup.CALLER_SCHEDULED,
+            backup.JOB_PARAM_PROFILE: PROFILE,
+            backup.JOB_PARAM_REGION: REGION,
+        }
+        with (
+            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=live),
+            mock.patch.object(backup, "_authorize_upload", return_value=None) as gate,
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=verified)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert gate.call_args.args[1:] == live
+        assert work.call_args.args[1:3] == live
+
+
+class TestScheduledFailureFeedsTheBackoff:
+    """A nightly that fails must be recorded so the loop's due-check backs off:
+    without this record a deterministic fault re-attempts every half hour. An
+    owner failure is NOT recorded -- someone is present to see it."""
+
+    def test_a_failed_scheduled_run_records_the_attempt(self, sdk):
+        backup.set_nightly(ACCOUNT, True)
+
+        def _one_failed_wake():
+            with (
+                _resolvable(),
+                mock.patch.object(backup, "_authorize_upload", return_value=None),
+                mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+                mock.patch.object(backup, "other_install_ids", return_value=[]),
+                mock.patch.object(
+                    backup, "run_snapshot_backup", side_effect=RuntimeError("push broke")
+                ),
+            ):
+                run_id = sdk.start(
+                    backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params()
+                )
+                return _await_terminal(sdk, run_id)
+
+        run = _one_failed_wake()
+        # The run itself is still recorded failed -- the backoff is in addition to,
+        # not instead of, the honest terminal state the Backup row reads.
+        assert run.status == job_sdk.FAILED
+        snap = backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT, {})
+        assert snap.get("consecutive") == 1
+        # The error text is carried, so an operator reading the record learns WHAT
+        # keeps failing rather than only that something does.
+        assert "push broke" in snap.get("error", "")
+
+        # THE regression this backoff exists to prevent. The first retry delay row
+        # is zero by design, so a single failure stays DUE; the second failing wake
+        # is the one that must withhold the next attempt. Without the record feeding
+        # the due-check this reads True on every wake -- the loop re-attempting a
+        # deterministic fault every half hour.
+        run = _one_failed_wake()
+        assert run.status == job_sdk.FAILED
+        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 2
+        assert backup.due_for_nightly(ACCOUNT) is False
+
+    def test_a_successful_scheduled_run_clears_the_backoff(self, sdk):
+        # The other half of the loop the backoff serves: once the fault clears, a
+        # completing run must make the account eligible again rather than serving
+        # out a wait measured for a fault that is over. The clear lives inside the
+        # real `_record_run`, so the runner is driven to it through a success.
+        backup.set_nightly(ACCOUNT, True)
+        for _ in range(3):
+            backup.record_nightly_failure(
+                ACCOUNT,
+                backup.KIND_SNAPSHOT,
+                "eio",
+                run_witness=backup.nightly_run_witness(ACCOUNT, backup.KIND_SNAPSHOT),
+            )
+        assert backup.due_for_nightly(ACCOUNT) is False
+
+        def _completing(account, profile, region, bucket, *, caller):
+            return backup._record_run(
+                account, backup.KIND_SNAPSHOT, "snapshots/i/a.tar.gz", 9, "fp", "v1"
+            )
+
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "run_snapshot_backup", side_effect=_completing),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert backup.nightly_failures(ACCOUNT) == {}
+
+    def test_an_owner_failure_does_not_feed_the_backoff(self, sdk):
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(
+                backup, "run_snapshot_backup", side_effect=RuntimeError("push broke")
+            ),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.FAILED
+        assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT) is None
+
+    def test_a_teardown_does_not_feed_the_backoff(self, sdk):
+        # App disable / gateway stop surfaces as a failure while _STOP is set.
+        # Counting it would let a restart push the next night out, so it must not
+        # be recorded even though the caller is the schedule.
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(
+                backup, "run_snapshot_backup", side_effect=RuntimeError("shutting down")
+            ),
+        ):
+            backup.signal_stop()
+            try:
+                run_id = sdk.start(
+                    backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params()
+                )
+                run = _await_terminal(sdk, run_id)
+            finally:
+                backup.clear_stop()
+        assert run.status == job_sdk.FAILED
+        assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT) is None
+
+    def test_a_withheld_scheduled_run_does_not_feed_the_backoff(self, sdk):
+        # Finding 1: the owner withdrawing the unattended grant (or turning
+        # redaction on) mid-build raises ScheduledUploadWithheld from the gate --
+        # a policy "do not upload", not a fault. Counting it would grow the
+        # schedule's backoff for a run the owner chose to stop. This is the rule
+        # an ADOPTED run keeps: an owner's "Back up now" during a nightly adopts
+        # the in-flight scheduled run (CALLER_SCHEDULED, params do not merge), so
+        # if that run met the gate the owner would otherwise see a backoff grow
+        # for a failure they did not cause.
+        from kiro_crew.apps.builtins.aws_control.backend.backup_parts.uploads import (
+            ScheduledUploadWithheld,
+        )
+
+        with (
+            _resolvable(),
+            mock.patch.object(
+                backup,
+                "_authorize_upload",
+                side_effect=ScheduledUploadWithheld(
+                    "the unattended grant for this payload no longer holds; upload refused"
+                ),
+            ),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "run_snapshot_backup") as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            run = _await_terminal(sdk, run_id)
+        # The SDK run is still failed -- the bytes did not leave -- but the backoff
+        # is NOT fed, so the next wake is due exactly as before.
+        assert run.status == job_sdk.FAILED
+        assert backup.nightly_failures(ACCOUNT).get(backup.KIND_SNAPSHOT) is None
+        # The gate refused before the upload, so the work never ran.
+        work.assert_not_called()
+
+    def test_a_plain_scheduled_fault_still_feeds_the_backoff(self, sdk):
+        # The converse of the test above, so the withheld carve-out cannot be
+        # "never record anything scheduled": a genuine fault (not a withheld
+        # policy refusal) still records so a deterministic break backs off.
+        backup.set_nightly(ACCOUNT, True)
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(
+                backup, "run_snapshot_backup", side_effect=RuntimeError("push broke")
+            ),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.FAILED
+        assert backup.nightly_failures(ACCOUNT)[backup.KIND_SNAPSHOT]["consecutive"] == 1
+
+    """A scheduled run has no HTTP handler, so it emits its own SEL trail: the
+    invoked/(succeeded|unchanged)/failed record the dashboard layer adds to an owner
+    mutation, plus the shared-drive observation. The spec documents both as decisions,
+    so they are pinned here rather than left to the SDK's generic run record (which
+    cannot tell an unchanged night from an upload)."""
+
+    def _audit_outcomes(self, log):
+        return [
+            (c.kwargs["operation"], c.kwargs["outcome"]) for c in log.log_api_access.call_args_list
+        ]
+
+    def test_a_succeeded_run_audits_invoked_then_succeeded(self, sdk):
+        log = mock.MagicMock()
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "sel", lambda: log),
+            mock.patch.object(
+                backup, "run_snapshot_backup", return_value={"uploaded": True, "key": "k/a.tar.gz"}
+            ),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            _await_terminal(sdk, run_id)
+        outcomes = self._audit_outcomes(log)
+        assert ("aws_control.backup_nightly", "invoked") in outcomes
+        assert ("aws_control.backup_nightly", "succeeded") in outcomes
+        assert ("aws_control.backup_nightly", "unchanged") not in outcomes
+
+    def test_an_unchanged_run_audits_unchanged_not_succeeded(self, sdk):
+        log = mock.MagicMock()
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=[]),
+            mock.patch.object(backup, "sel", lambda: log),
+            mock.patch.object(
+                backup,
+                "run_snapshot_backup",
+                return_value={"uploaded": False, "key": "k/held.tar.gz"},
+            ),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            _await_terminal(sdk, run_id)
+        outcomes = self._audit_outcomes(log)
+        assert ("aws_control.backup_nightly", "unchanged") in outcomes
+        assert ("aws_control.backup_nightly", "succeeded") not in outcomes
+
+    def test_another_install_on_the_drive_is_audited_and_the_run_proceeds(self, sdk):
+        log = mock.MagicMock()
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=["inst-xyz"]),
+            mock.patch.object(backup, "sel", lambda: log),
+            mock.patch.object(
+                backup, "run_snapshot_backup", return_value={"uploaded": True, "key": "k/a.tar.gz"}
+            ) as work,
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT, params=_scheduled_params())
+            run = _await_terminal(sdk, run_id)
+        # A NOTICE, not a gate: the backup still runs with another install present.
+        assert run.status == job_sdk.DONE
+        work.assert_called_once()
+        assert ("aws_control.backup_shared_drive", "invoked") in self._audit_outcomes(log)
+
+    def test_an_owner_run_emits_no_nightly_audit(self, sdk):
+        # The owner path gets its audit from the HTTP layer; the runner must not
+        # double-file an unattended record for a run a person triggered.
+        log = mock.MagicMock()
+        with (
+            _resolvable(),
+            mock.patch.object(backup, "_authorize_upload", return_value=None),
+            mock.patch.object(backup.storage, "find_drive", return_value=BUCKET),
+            mock.patch.object(backup, "other_install_ids", return_value=["inst-xyz"]),
+            mock.patch.object(backup, "sel", lambda: log),
+            mock.patch.object(
+                backup, "run_snapshot_backup", return_value={"uploaded": True, "key": "k/a.tar.gz"}
+            ),
+        ):
+            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
+            _await_terminal(sdk, run_id)
+        ops = [c.kwargs["operation"] for c in log.log_api_access.call_args_list]
+        assert "aws_control.backup_nightly" not in ops
+        assert "aws_control.backup_shared_drive" not in ops
+
+
+class TestSharedDriveNoticeCostsOneListCall:
+    """The shared-drive check answers one question — "does another install write
+    here" — and one prefix answers it, so it stays at a single paid LIST however
+    many kinds the nightly pushes. This pins `other_install_ids`'s bound directly;
+    the runner only calls it for the snapshot kind, so the whole scheduled wake
+    pays at most this one call."""
+
+    def test_the_notice_costs_exactly_one_paid_list_call(self):
+        with mock.patch.object(backup, "_install_folders", return_value=set()) as folders:
+            backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        assert folders.call_count == 1
+        assert folders.call_args.args[3] == backup.KIND_SNAPSHOT
